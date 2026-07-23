@@ -73,20 +73,52 @@ function stripQuotes(s: string): string {
 }
 
 /**
+ * Split a string by commas, but ignore commas inside single or double quotes.
+ * Used for inline objects and inline arrays that may contain quoted values with commas.
+ */
+function splitRespectingQuotes(s: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      current += ch;
+    } else if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      current += ch;
+    } else if (ch === "," && !inSingle && !inDouble) {
+      parts.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  if (current || parts.length > 0) {
+    parts.push(current);
+  }
+  return parts;
+}
+
+/**
  * Parse a YAML inline array: [item1, item2, ...]
  * Items are unquoted or single/double-quoted scalars.
+ * Handles quoted values containing commas (e.g. ["option A, option B"]).
  */
 function parseInlineArray(s: string): string[] {
   s = s.trim();
   if (!s.startsWith("[") || !s.endsWith("]")) return [];
   const inner = s.slice(1, -1).trim();
   if (!inner) return [];
-  return inner.split(",").map((item) => stripQuotes(item.trim()));
+  return splitRespectingQuotes(inner).map((item) => stripQuotes(item.trim()));
 }
 
 /**
  * Parse a YAML inline object: {key: value, key2: value2}
  * Used for acceptance criteria entries.
+ * Handles quoted values that contain commas (e.g. text: "option A, option B").
  */
 function parseInlineObject(s: string): Record<string, string> {
   s = s.trim();
@@ -94,10 +126,7 @@ function parseInlineObject(s: string): Record<string, string> {
   const inner = s.slice(1, -1).trim();
   if (!inner) return {};
   const result: Record<string, string> = {};
-  // Split by ", " but not within quotes
-  // Simple approach: split by comma, then re-join if needed
-  // For our use case (id, text, verify), values don't contain commas
-  const parts = inner.split(",");
+  const parts = splitRespectingQuotes(inner);
   for (const part of parts) {
     const colonIdx = part.indexOf(":");
     if (colonIdx === -1) continue;
@@ -228,21 +257,70 @@ function parseBlockSequence(lines: string[]): Array<string | Record<string, stri
 
 /**
  * Parse a block mapping (indented key:value pairs).
+ * Handles nested block sequences (- item) and nested block mappings
+ * as child values when a key has no inline value (rest is empty).
  */
 function parseBlockMapping(lines: string[]): Record<string, unknown> {
   const obj: Record<string, unknown> = {};
-  for (const line of lines) {
+  // Determine the base indentation of these lines (indent of first non-blank line)
+  const firstMeaningful = lines.find((l) => l.trim());
+  const baseIndent = firstMeaningful?.match(/^(\s*)/)?.[1]?.length ?? 0;
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
     const trimmed = line.trimStart();
-    if (!trimmed || trimmed.startsWith("#")) continue;
+    if (!trimmed || trimmed.startsWith("#")) {
+      i++;
+      continue;
+    }
+
+    const lineIndent = line.match(/^(\s*)/)?.[1]?.length ?? 0;
+    // Only process lines at the base indentation level
+    if (lineIndent !== baseIndent) {
+      i++;
+      continue;
+    }
+
     const colonIdx = trimmed.indexOf(":");
-    if (colonIdx === -1) continue;
+    if (colonIdx === -1) {
+      i++;
+      continue;
+    }
+
     const key = trimmed.slice(0, colonIdx).trim();
     const rest = trimmed.slice(colonIdx + 1).trim();
-    if (!rest) continue;
-    if (rest.startsWith("[")) {
+
+    if (!rest) {
+      // Value is on subsequent lines — collect child lines (indent > baseIndent)
+      const childLines: string[] = [];
+      i++;
+      while (i < lines.length) {
+        const childLine = lines[i];
+        if (!childLine.trim()) {
+          childLines.push(childLine);
+          i++;
+          continue;
+        }
+        const childIndent = childLine.match(/^(\s*)/)?.[1]?.length ?? 0;
+        if (childIndent <= baseIndent) break; // back to same or outer level
+        childLines.push(childLine);
+        i++;
+      }
+      // Determine type: block sequence or nested block mapping
+      const firstChild = childLines.find((l) => l.trim());
+      if (firstChild?.trimStart().startsWith("- ")) {
+        obj[key] = parseBlockSequence(childLines);
+      } else if (firstChild) {
+        obj[key] = parseBlockMapping(childLines);
+      }
+      // (if no child lines, key is omitted — empty value)
+    } else if (rest.startsWith("[")) {
       obj[key] = parseInlineArray(rest);
+      i++;
     } else {
       obj[key] = parseScalar(rest);
+      i++;
     }
   }
   return obj;

@@ -103,8 +103,10 @@ export class TaskWatcher {
       const mtimeMs = stat.mtimeMs;
       const prev = projectStates.get(filePath);
 
-      // Skip if this file has been seen at this mtime already
-      if (prev && prev.mtimeMs === mtimeMs && prev.ingested) {
+      // Skip if this file has been seen at this mtime already.
+      // Reject or ingest: once we've processed this mtime, don't reprocess it.
+      // If the file is updated (mtime changes), it will be re-processed.
+      if (prev && prev.mtimeMs === mtimeMs) {
         continue;
       }
 
