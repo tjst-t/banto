@@ -132,4 +132,56 @@ describe("[AC-S654396-3-3] Project registry: multi-project, global reference res
     const res = await fetch(`${base}/api/v1/projects/proj-unknown/tasks`);
     assert.equal(res.status, 404);
   });
+
+  /**
+   * Regression: EventIndex project-namespace isolation (spec-multi-project §2).
+   * Two projects share the same taskId. /events for each project must return
+   * only that project's events — no cross-project leakage.
+   */
+  it("[AC-S654396-3-3-reg] events endpoint returns only own-project events when same taskId exists in two projects", async () => {
+    // Transition task-0001 in proj-a to queued, so it has 2 events (created + transitioned)
+    await fetch(`${base}/api/v1/projects/proj-a/tasks/task-0001/transition`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to: "queued" }),
+    });
+
+    // proj-a/task-0001/events must only contain proj-a events
+    const resA = await fetch(`${base}/api/v1/projects/proj-a/tasks/task-0001/events`);
+    assert.equal(resA.status, 200);
+    const bodyA = await resA.json() as { events: Array<{ projectTag: string; type: string }> };
+    assert.ok(Array.isArray(bodyA.events), "proj-a events must be an array");
+    assert.ok(bodyA.events.length >= 1, "proj-a must have at least 1 event for task-0001");
+    for (const evt of bodyA.events) {
+      assert.equal(
+        evt.projectTag,
+        "proj-a",
+        `proj-a/task-0001/events must not contain proj-b events (got projectTag=${evt.projectTag})`
+      );
+    }
+
+    // proj-b/task-0001/events must only contain proj-b events
+    const resB = await fetch(`${base}/api/v1/projects/proj-b/tasks/task-0001/events`);
+    assert.equal(resB.status, 200);
+    const bodyB = await resB.json() as { events: Array<{ projectTag: string; type: string }> };
+    assert.ok(Array.isArray(bodyB.events), "proj-b events must be an array");
+    assert.ok(bodyB.events.length >= 1, "proj-b must have at least 1 event for task-0001");
+    for (const evt of bodyB.events) {
+      assert.equal(
+        evt.projectTag,
+        "proj-b",
+        `proj-b/task-0001/events must not contain proj-a events (got projectTag=${evt.projectTag})`
+      );
+    }
+
+    // The two event sets must be disjoint: no shared eventIds
+    const idsA = new Set(bodyA.events.map((e) => (e as { eventId?: number }).eventId));
+    for (const evt of bodyB.events) {
+      const id = (evt as { eventId?: number }).eventId;
+      assert.ok(
+        !idsA.has(id),
+        `eventId ${String(id)} appears in both proj-a and proj-b event histories — cross-project leakage`
+      );
+    }
+  });
 });

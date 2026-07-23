@@ -102,7 +102,7 @@ describe("[AC-S654396-1-3] Event IDs, project tags, and task index", () => {
     const index = EventIndex.build(log2);
     log2.close();
 
-    const task0001History = index.getTaskHistory("task-0001");
+    const task0001History = index.getTaskHistory("task-0001", "proj-a");
     assert.equal(task0001History.length, 2, "task-0001 history should have 2 entries");
     // Verify sorted by eventId
     assert.ok(

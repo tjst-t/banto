@@ -128,8 +128,13 @@ export class Daemon {
     return this.store.getTask(taskId, projectTag);
   }
 
-  getTaskEvents(taskId: string): OrchestrationEvent[] {
-    return this.index.getTaskHistory(taskId);
+  /**
+   * Get events for a task, scoped to the given project.
+   * Passes projectTag to EventIndex to enforce namespace isolation
+   * (spec-multi-project §2): two projects may share the same taskId.
+   */
+  getTaskEvents(projectTag: string, taskId: string): OrchestrationEvent[] {
+    return this.index.getTaskHistory(taskId, projectTag);
   }
 
   /**

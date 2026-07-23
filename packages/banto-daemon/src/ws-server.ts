@@ -13,6 +13,7 @@
  * I2: errors not swallowed; malformed messages are logged and connection closed.
  */
 
+// D6: ws — Node v20 has no built-in WebSocket server API (only the client-side WebSocket is available from v21+).
 import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage, Server } from "node:http";
 import type { OrchestrationEvent } from "@banto/core";

@@ -44,6 +44,14 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
   res.end(json);
 }
 
+/** Sentinel error class to distinguish client-caused parse errors from server errors. */
+class BadRequestError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BadRequestError";
+  }
+}
+
 async function readBody(req: http.IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -58,7 +66,9 @@ async function readBody(req: http.IncomingMessage): Promise<unknown> {
       try {
         resolve(JSON.parse(data));
       } catch {
-        reject(new Error("invalid JSON body"));
+        // I2: reject with a typed error so callers can distinguish client
+        // malformed-JSON (→ 400) from server errors (→ 500).
+        reject(new BadRequestError("invalid JSON body"));
       }
     });
     req.on("error", reject);
@@ -159,7 +169,7 @@ export function createHttpServer(daemon: Daemon): http.Server {
           sendJson(res, 404, { error: "not_found" });
           return;
         }
-        const events = daemon.getTaskEvents(taskId);
+        const events = daemon.getTaskEvents(proj, taskId);
         sendJson(res, 200, { events });
       },
     },
@@ -253,7 +263,14 @@ export function createHttpServer(daemon: Daemon): http.Server {
       if (!match) continue;
 
       route.handler(req, res, match).catch((err: unknown) => {
-        // I2: internal errors are surfaced as 500 (not swallowed)
+        if (err instanceof BadRequestError) {
+          // Client sent malformed JSON: return 400 with structured error (I2: not swallowed).
+          if (!res.headersSent) {
+            sendJson(res, 400, { error: err.message });
+          }
+          return;
+        }
+        // I2: all other internal errors are surfaced as 500 (not swallowed).
         process.stderr.write(`[banto-daemon] HTTP handler error: ${String(err)}\n`);
         if (!res.headersSent) {
           sendJson(res, 500, { error: "internal_error" });

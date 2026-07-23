@@ -16,6 +16,9 @@
   },
   "dependencies": {
     "@banto/core": "*",
-    "ws": "*"
+    "ws": "^8.21.1"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
   }
 }

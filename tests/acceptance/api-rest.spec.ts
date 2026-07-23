@@ -161,4 +161,41 @@ describe("[AC-S654396-3-1] REST API: projects, tasks, events", () => {
     const res = await fetch(`${base}/api/v1/unknown`);
     assert.equal(res.status, 404);
   });
+
+  /**
+   * Regression: malformed JSON body must return 400 {"error":"..."}, not 500.
+   * Applies to any POST endpoint that reads a body.
+   */
+  it("[AC-S654396-3-1-reg] POST with invalid JSON body returns 400 with error field", async () => {
+    const res = await fetch(`${base}/api/v1/projects/proj-a/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{ not valid json",
+    });
+    assert.equal(res.status, 400, "invalid JSON body must yield 400, not 500");
+    const body = await res.json() as { error: string };
+    assert.ok(typeof body.error === "string" && body.error.length > 0, 'response must have {"error":"..."}');
+  });
+
+  it("[AC-S654396-3-1-reg] POST /api/v1/projects with invalid JSON body returns 400", async () => {
+    const res = await fetch(`${base}/api/v1/projects`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{ bad json",
+    });
+    assert.equal(res.status, 400, "invalid JSON body on project registration must yield 400");
+    const body = await res.json() as { error: string };
+    assert.ok(typeof body.error === "string" && body.error.length > 0, 'response must have {"error":"..."}');
+  });
+
+  it("[AC-S654396-3-1-reg] POST /api/v1/projects/proj-a/tasks/:id/transition with invalid JSON body returns 400", async () => {
+    const res = await fetch(`${base}/api/v1/projects/proj-a/tasks/task-0001/transition`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not-json-at-all",
+    });
+    assert.equal(res.status, 400, "invalid JSON body on transition must yield 400");
+    const body = await res.json() as { error: string };
+    assert.ok(typeof body.error === "string" && body.error.length > 0, 'response must have {"error":"..."}');
+  });
 });
