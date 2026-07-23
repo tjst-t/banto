@@ -195,6 +195,18 @@ export interface TaskSupersededEvent extends EventBase {
   supersededBy: string;
 }
 
+/**
+ * Task definition file was rejected during watcher ingest (I2: rejection recorded, not swallowed).
+ * The file is NOT added to the task registry. reason describes the validation failure.
+ */
+export interface TaskIngestRejectedEvent extends EventBase {
+  type: "task_ingest_rejected";
+  /** Absolute path of the rejected task definition file */
+  filePath: string;
+  /** Human-readable reason for rejection (e.g. "missing required field: scope.paths") */
+  reason: string;
+}
+
 /** Union of all orchestration event types */
 export type OrchestrationEvent =
   | TaskCreatedEvent
@@ -213,4 +225,5 @@ export type OrchestrationEvent =
   | TaskPausedEvent
   | TaskResumedEvent
   | TaskFailedEvent
-  | TaskSupersededEvent;
+  | TaskSupersededEvent
+  | TaskIngestRejectedEvent;

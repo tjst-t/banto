@@ -8,6 +8,7 @@
  *   - ProjectRegistry (project metadata)
  *   - StateMachine (transition rules)
  *   - WsEventServer (real-time event broadcast)
+ *   - TaskWatcher (polling watcher for work/tasks/*.md)
  *
  * D3: state is derived from events, never written directly.
  * D5: all logic lives here; HTTP/WS layers are pure routing/transport.
@@ -26,12 +27,18 @@ import { ProjectRegistry } from "./project-registry.js";
 import type { ProjectEntry } from "./project-registry.js";
 import { WsEventServer } from "./ws-server.js";
 import { createHttpServer } from "./http-server.js";
+import { TaskWatcher } from "./task-watcher.js";
 
 export interface DaemonConfig {
   /** Port to listen on. Default: 3000 */
   port: number;
   /** Root data directory (event log + registry). Default: ./data */
   dataDir: string;
+  /**
+   * Polling interval (ms) for the task-definition watcher.
+   * Default: 2000 ms. Set to a smaller value in tests for faster feedback.
+   */
+  watchIntervalMs: number;
 }
 
 export class Daemon {
@@ -42,6 +49,7 @@ export class Daemon {
   private readonly registry: ProjectRegistry;
   private readonly httpServer: http.Server;
   private readonly wsServer: WsEventServer;
+  private readonly watcher: TaskWatcher;
 
   private constructor(config: DaemonConfig) {
     this.config = config;
@@ -54,12 +62,14 @@ export class Daemon {
     this.wsServer = new WsEventServer(this.httpServer, (projectTag) =>
       this.log.getEventsByProject(projectTag)
     );
+    this.watcher = new TaskWatcher(this, config.watchIntervalMs);
   }
 
   static create(config: Partial<DaemonConfig> = {}): Daemon {
     const resolved: DaemonConfig = {
       port: config.port ?? parseInt(process.env["BANTO_PORT"] ?? "3000", 10),
       dataDir: config.dataDir ?? process.env["BANTO_DATA_DIR"] ?? "./data",
+      watchIntervalMs: config.watchIntervalMs ?? 2000,
     };
     return new Daemon(resolved);
   }
@@ -72,6 +82,7 @@ export class Daemon {
         process.stdout.write(
           `[banto-daemon] listening on port ${this.config.port} (dataDir=${this.config.dataDir})\n`
         );
+        this.watcher.start();
         resolve();
       });
     });
@@ -79,6 +90,7 @@ export class Daemon {
 
   /** Stop the daemon gracefully. */
   stop(): Promise<void> {
+    this.watcher.stop();
     return new Promise((resolve, reject) => {
       this.wsServer.close(() => {
         this.httpServer.close((err) => {
@@ -135,6 +147,14 @@ export class Daemon {
    */
   getTaskEvents(projectTag: string, taskId: string): OrchestrationEvent[] {
     return this.index.getTaskHistory(taskId, projectTag);
+  }
+
+  /**
+   * Get all events scoped to a project (including task_ingest_rejected).
+   * Used by the project events endpoint for full audit trail.
+   */
+  getProjectEvents(projectTag: string): OrchestrationEvent[] {
+    return this.log.getEventsByProject(projectTag);
   }
 
   /**
@@ -204,6 +224,22 @@ export class Daemon {
     }
 
     return result;
+  }
+
+  /**
+   * Emit a task_ingest_rejected event (I2: file validation failure is recorded, not swallowed).
+   * Called by TaskWatcher when a task definition file fails validation.
+   * D3: no task record is created; the rejection is the only artifact.
+   */
+  emitIngestRejected(projectTag: string, filePath: string, reason: string): void {
+    const event = this.log.append({
+      type: "task_ingest_rejected",
+      projectTag,
+      filePath,
+      reason,
+    });
+    // Refresh state (no-op for state, but keeps index current) and broadcast
+    this.applyAndBroadcast(event);
   }
 
   // ── Internal helpers ───────────────────────────────────────────────────────

@@ -232,6 +232,21 @@ export function createHttpServer(daemon: Daemon): http.Server {
       },
     },
 
+    // List all events for a project (includes task_ingest_rejected, etc.)
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/events$/,
+      handler: async (_req, res, match) => {
+        const proj = match[1];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const events = daemon.getProjectEvents(proj);
+        sendJson(res, 200, { events });
+      },
+    },
+
     // Global reference: GET /api/v1/tasks/:proj/:id (spec-multi-project §2)
     {
       method: "GET",

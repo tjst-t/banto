@@ -212,6 +212,11 @@ export class StateStore {
         // directly alter the task state machine (handled by daemon logic)
         break;
 
+      case "task_ingest_rejected":
+        // I2: rejection is recorded in the log for auditability but does NOT
+        // create any task record in the state store. The rejected file is ignored.
+        break;
+
       default: {
         // I2: unknown event types indicate a version mismatch (newer writer, older reader).
         // Silently skipping would corrupt derived state — throw instead so the caller can stop.
