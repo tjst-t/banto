@@ -11,7 +11,8 @@
   "scripts": {
     "test": "node --import tsx --test tests/acceptance/*.spec.ts",
     "build": "tsc -b",
-    "typecheck": "tsc --project tsconfig.check.json"
+    "typecheck": "tsc --project tsconfig.check.json",
+    "test:e2e": "node --import tsx --test \"tests/e2e/*.spec.ts\""
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
