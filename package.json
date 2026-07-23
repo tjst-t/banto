@@ -1,0 +1,21 @@
+{
+  "name": "banto",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --import tsx --test tests/acceptance/*.spec.ts",
+    "build": "tsc -b",
+    "typecheck": "tsc --project tsconfig.check.json"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "tsx": "^4.15.0",
+    "typescript": "^5.5.0"
+  }
+}
