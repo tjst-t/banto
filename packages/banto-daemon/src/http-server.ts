@@ -1,0 +1,270 @@
+/**
+ * HTTP API server for banto-daemon.
+ *
+ * Routes (minimum per story S654396-3):
+ *   GET  /api/v1/health
+ *   GET  /api/v1/projects
+ *   POST /api/v1/projects                              → 201
+ *   GET  /api/v1/projects/:proj/tasks
+ *   GET  /api/v1/projects/:proj/tasks/:id
+ *   GET  /api/v1/projects/:proj/tasks/:id/events
+ *   POST /api/v1/projects/:proj/tasks                  → task_created (draft)
+ *   POST /api/v1/projects/:proj/tasks/:id/transition   → state transition
+ *   GET  /api/v1/tasks/:proj/:id                       → global reference (spec §2)
+ *
+ * Error responses: JSON { "error": "..." }
+ * Authentication: none (local network, spec §8 open item, DEC-S654396-006)
+ *
+ * D5: all logic delegated to Daemon class; this file is pure routing.
+ * D6: node:http (no framework dependency).
+ * I2: errors thrown from handlers propagate to 500 response.
+ */
+
+import * as http from "node:http";
+import type { Daemon } from "./daemon.js";
+
+type Handler = (
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  match: RegExpMatchArray
+) => Promise<void>;
+
+interface Route {
+  method: string;
+  pattern: RegExp;
+  handler: Handler;
+}
+
+function sendJson(res: http.ServerResponse, status: number, body: unknown): void {
+  const json = JSON.stringify(body);
+  res.writeHead(status, {
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(json),
+  });
+  res.end(json);
+}
+
+async function readBody(req: http.IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.on("data", (chunk: Buffer) => {
+      data += chunk.toString("utf-8");
+    });
+    req.on("end", () => {
+      if (!data) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(data));
+      } catch {
+        reject(new Error("invalid JSON body"));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+export function createHttpServer(daemon: Daemon): http.Server {
+  const routes: Route[] = [
+    // Health check
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/health$/,
+      handler: async (_req, res) => {
+        sendJson(res, 200, { status: "ok" });
+      },
+    },
+
+    // List projects
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/projects$/,
+      handler: async (_req, res) => {
+        const projects = daemon.listProjects();
+        sendJson(res, 200, { projects });
+      },
+    },
+
+    // Register project
+    {
+      method: "POST",
+      pattern: /^\/api\/v1\/projects$/,
+      handler: async (req, res) => {
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const id = body["id"];
+        const repoPath = body["repoPath"];
+        const profile = typeof body["profile"] === "string" ? body["profile"] : "default";
+        if (typeof id !== "string" || typeof repoPath !== "string") {
+          sendJson(res, 400, { error: "id and repoPath are required" });
+          return;
+        }
+        try {
+          const entry = daemon.registerProject(id, repoPath, profile);
+          sendJson(res, 201, { id: entry.id });
+        } catch (err) {
+          sendJson(res, 409, { error: String(err instanceof Error ? err.message : err) });
+        }
+      },
+    },
+
+    // List tasks for a project
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/tasks$/,
+      handler: async (_req, res, match) => {
+        const proj = match[1];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const tasks = daemon.getTasksByProject(proj);
+        sendJson(res, 200, { tasks });
+      },
+    },
+
+    // Get task detail
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/tasks\/([^/]+)$/,
+      handler: async (_req, res, match) => {
+        const proj = match[1];
+        const taskId = match[2];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const task = daemon.getTask(proj, taskId);
+        if (!task) {
+          sendJson(res, 404, { error: "not_found" });
+          return;
+        }
+        sendJson(res, 200, { task });
+      },
+    },
+
+    // Get task events
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/tasks\/([^/]+)\/events$/,
+      handler: async (_req, res, match) => {
+        const proj = match[1];
+        const taskId = match[2];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const task = daemon.getTask(proj, taskId);
+        if (!task) {
+          sendJson(res, 404, { error: "not_found" });
+          return;
+        }
+        const events = daemon.getTaskEvents(taskId);
+        sendJson(res, 200, { events });
+      },
+    },
+
+    // Create task (→ draft)
+    {
+      method: "POST",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/tasks$/,
+      handler: async (req, res, match) => {
+        const proj = match[1];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const taskId = body["id"];
+        const title = body["title"];
+        if (typeof taskId !== "string" || typeof title !== "string") {
+          sendJson(res, 400, { error: "id and title are required" });
+          return;
+        }
+        try {
+          const task = daemon.createTask(proj, taskId, title, body);
+          sendJson(res, 201, { task });
+        } catch (err) {
+          sendJson(res, 409, { error: String(err instanceof Error ? err.message : err) });
+        }
+      },
+    },
+
+    // Transition task state
+    {
+      method: "POST",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/tasks\/([^/]+)\/transition$/,
+      handler: async (req, res, match) => {
+        const proj = match[1];
+        const taskId = match[2];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const task = daemon.getTask(proj, taskId);
+        if (!task) {
+          sendJson(res, 404, { error: "not_found" });
+          return;
+        }
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const to = body["to"];
+        if (typeof to !== "string") {
+          sendJson(res, 400, { error: "to is required" });
+          return;
+        }
+        const result = daemon.transition(proj, taskId, to, body["reason"] as string | undefined);
+        if (!result.ok) {
+          sendJson(res, 400, { error: result.reason });
+          return;
+        }
+        const updatedTask = daemon.getTask(proj, taskId);
+        sendJson(res, 200, { task: updatedTask });
+      },
+    },
+
+    // Global reference: GET /api/v1/tasks/:proj/:id (spec-multi-project §2)
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/tasks\/([^/]+)\/([^/]+)$/,
+      handler: async (_req, res, match) => {
+        const proj = match[1];
+        const taskId = match[2];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const task = daemon.getTask(proj, taskId);
+        if (!task) {
+          sendJson(res, 404, { error: "not_found" });
+          return;
+        }
+        sendJson(res, 200, { task });
+      },
+    },
+  ];
+
+  const server = http.createServer((req, res) => {
+    const method = req.method ?? "GET";
+    const url = req.url?.split("?")[0] ?? "/";
+
+    for (const route of routes) {
+      if (route.method !== method) continue;
+      const match = url.match(route.pattern);
+      if (!match) continue;
+
+      route.handler(req, res, match).catch((err: unknown) => {
+        // I2: internal errors are surfaced as 500 (not swallowed)
+        process.stderr.write(`[banto-daemon] HTTP handler error: ${String(err)}\n`);
+        if (!res.headersSent) {
+          sendJson(res, 500, { error: "internal_error" });
+        }
+      });
+      return;
+    }
+
+    // No route matched
+    sendJson(res, 404, { error: "not_found" });
+  });
+
+  return server;
+}

@@ -1,0 +1,30 @@
+[Unit]
+Description=banto daemon — HTTP API + WebSocket orchestration server
+Documentation=https://github.com/tjst-t/banto
+After=network.target
+
+[Service]
+Type=simple
+User=banto
+Group=banto
+WorkingDirectory=/opt/banto/current
+ExecStart=/usr/bin/node --import tsx packages/banto-daemon/src/index.ts
+Restart=on-failure
+RestartSec=5s
+
+# Configuration via environment variables
+# BANTO_PORT defaults to 3000
+Environment=BANTO_PORT=3000
+# BANTO_DATA_DIR defaults to ./data
+Environment=BANTO_DATA_DIR=/var/lib/banto/data
+
+# Graceful shutdown: systemd sends SIGTERM, daemon handles it
+TimeoutStopSec=30
+
+# Security hardening (local server, no internet exposure)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/banto
+
+[Install]
+WantedBy=multi-user.target
