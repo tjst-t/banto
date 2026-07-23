@@ -2,12 +2,12 @@
   "project": "banto",
   "description": "一人のPOがAIエージェントのチームを率いて開発するための統治環境（ガバナンスレイヤー＋POコックピット）",
   "progress": {
-    "current_sprint": null,
+    "current_sprint": "S254276",
     "total": 10,
     "done": 2,
-    "in_progress": 0,
+    "in_progress": 1,
     "remaining": 8,
-    "percentage": 20
+    "percentage": 27
   },
   "execution_order": [
     "S654396",
@@ -336,13 +336,13 @@
     },
     "S254276": {
       "title": "セッション実行（pi-rpc・spawn台帳・banto-core・tmux）",
-      "status": "pending",
+      "status": "partial",
       "description": "歩くスケルトンの完成。readyタスクをpi headlessセッションとしてworktreeにspawnし、実行者がdaemon APIツールで状態報告、kill -9からの孤児回復まで実機で通す",
       "milestone": true,
       "stories": {
         "S254276-1": {
           "title": "ランタイムドライバ契約とpi-rpc実装",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、readyになったタスクからpiのheadlessセッションがworktree内に自動起動されるようにしたい。なぜなら、エージェント実行の統治こそが番頭の本体だから。",
@@ -351,42 +351,42 @@
               "id": "AC-S254276-1-1",
               "description": "ランタイムドライバ契約（spawn／メッセージ注入／イベント購読／kill）がbanto-coreに定義され、pi-rpc実装が契約テストを通る",
               "test": "[AC-S254276-1-1] in tests/acceptance/runtime-driver-contract.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S254276-1-2",
               "description": "readyタスクのspawnで専用worktreeにpiセッションが起動し、タスクが planning へ遷移する",
               "test": "[AC-S254276-1-2] in tests/acceptance/spawn-pi.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S254276-1-3",
               "description": "イベントログにはセッションJSONLへのパス参照のみが記録され、トランスクリプト本文は複製されない",
               "test": "[AC-S254276-1-3] in tests/acceptance/session-reference-only.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
             "S254276-1-1": {
               "title": "ランタイムドライバ契約の型定義",
               "description": "spawn/inject/subscribe/killの契約とドライバ登録機構（banto-core）",
-              "status": "pending"
+              "status": "done"
             },
             "S254276-1-2": {
               "title": "pi-rpcドライバ実装",
               "description": "headless pi（RPCモード、JSONL/LF区切り）でのspawn。worktree作成を含む",
-              "status": "pending"
+              "status": "done"
             },
             "S254276-1-3": {
               "title": "セッションイベント変換",
               "description": "piセッションのイベントをdaemonオーケストレーションイベントへ変換（数百バイト規模を維持）",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
         "S254276-2": {
           "title": "spawn台帳と孤児回復",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、daemonが再起動しても実行中セッションが失われないようにしたい。なぜなら、常時稼働と将来の自動更新は孤児プロセスの引き取りが前提だから。",
@@ -395,47 +395,47 @@
               "id": "AC-S254276-2-1",
               "description": "spawnした子プロセス（pid・タスクID・セッションパス・worktree）が永続台帳に登録される",
               "test": "[AC-S254276-2-1] in tests/acceptance/spawn-ledger.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S254276-2-2",
               "description": "セッション実行中にdaemonをkill -9で落として再起動すると、台帳から孤児セッションへ再接続し状態追跡が継続する（実機smoke・モック不可）",
               "test": "[AC-S254276-2-2] in tests/acceptance/orphan-recovery.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S254276-2-3",
               "description": "照合ループが台帳と実プロセスの差分（消えた子プロセス）を検出し、failedイベントを積む",
               "test": "[AC-S254276-2-3] in tests/acceptance/spawn-reconcile.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
             "S254276-2-1": {
               "title": "spawn台帳の永続化",
               "description": "登録・削除とイベント連動",
-              "status": "pending"
+              "status": "done"
             },
             "S254276-2-2": {
               "title": "孤児回復ロジック",
               "description": "起動時に台帳から子プロセスを引き取り再接続",
-              "status": "pending"
+              "status": "done"
             },
             "S254276-2-3": {
               "title": "kill -9 実機smokeテスト",
               "description": "障害シナリオ（kill-9／プロセスクラッシュ）を実機で検証。モック・DRY_RUN不可",
-              "status": "pending"
+              "status": "done"
             },
             "S254276-2-4": {
               "title": "照合ジョブ",
               "description": "spawn台帳と実プロセスの定期突合（tickジョブ）",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
         "S254276-3": {
           "title": "banto-coreと実行者ツール最小セット",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、実行者エージェントがdaemon API経由のツールだけで作業状態を報告するようにしたい。なぜなら、判断ロジックをアダプタに置かず（D5）、自己申告ではなくイベントで状態を追跡する（I1）ためだから。",
@@ -444,47 +444,47 @@
               "id": "AC-S254276-3-1",
               "description": "banto-coreにツール定義・daemon APIクライアント・プロンプト資産読込が置かれ、pi Extensionアダプタはツール登録とフック接続のみの薄い皮である",
               "test": "[AC-S254276-3-1] in tests/acceptance/banto-core-layering.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S254276-3-2",
               "description": "実行者がフェーズ報告ツールを呼ぶと、daemonイベント経由で planning→implementing→review-ready と遷移する",
               "test": "[AC-S254276-3-2] in tests/acceptance/executor-phase-tools.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S254276-3-3",
               "description": "実行者のシステムプロンプトがプロンプト資産（層A）ファイルから読み込まれ、変更がgit差分として見える",
               "test": "[AC-S254276-3-3] in tests/acceptance/prompt-assets.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
             "S254276-3-1": {
               "title": "banto-coreパッケージ構成",
               "description": "ランタイム中立の共通ライブラリとしてワークスペース分離",
-              "status": "pending"
+              "status": "done"
             },
             "S254276-3-2": {
               "title": "実行者ツール定義とAPIクライアント",
               "description": "フェーズ報告・完了報告ツール。中身はすべてdaemon API呼び出し",
-              "status": "pending"
+              "status": "done"
             },
             "S254276-3-3": {
               "title": "pi Extensionアダプタ",
               "description": "banto-coreのツールをpiに登録する薄い皮",
-              "status": "pending"
+              "status": "done"
             },
             "S254276-3-4": {
               "title": "実行者プロンプト資産v0",
               "description": "実行者のシステムプロンプト（層A）。skills/への配置",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
         "S254276-4": {
           "title": "tmux接続と歩くスケルトンE2E",
-          "status": "pending",
+          "status": "blocked",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、タスク投入からエージェントの実装完了までを端末から一気通貫で確認したい。なぜなら、これが最初のマイルストーン（歩くスケルトン）の受け入れ基準だから。",
@@ -493,7 +493,7 @@
               "id": "AC-S254276-4-1",
               "description": "セッションはtmuxウィンドウとして起動され、POがSSHでアタッチして対話内容を確認できる",
               "test": "[AC-S254276-4-1] in tests/acceptance/tmux-attach.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S254276-4-2",
@@ -506,14 +506,15 @@
             "S254276-4-1": {
               "title": "tmux起動統合",
               "description": "pi-rpcドライバのセッションをtmuxウィンドウ内で起動する",
-              "status": "pending"
+              "status": "done"
             },
             "S254276-4-2": {
               "title": "歩くスケルトンE2Eシナリオ",
               "description": "サンプルプロジェクト＋実タスクでの一気通貫実機テスト",
               "status": "pending"
             }
-          }
+          },
+          "blocked_reason": "needs_human: LLM認証(ANTHROPIC_API_KEY等)がこの環境に無く、歩くスケルトンE2E(AC-S254276-4-2)を実機実行できない。キー設定後に npm run test:e2e で検証する"
         }
       }
     },
@@ -631,6 +632,20 @@
     }
   },
   "backlog": [
+    {
+      "title": "pi-rpcドライバにbanto-executor Extensionを配線する",
+      "kind": "bug",
+      "description": "spawnTask時にpiへ --extension で banto-executor を渡していないため、実行者ツール(report_phase/report_done)がpiセッション内で使えない。E2Eはプロンプト内の直接HTTP呼び出しで回避している。spawn時のextensionパス受け渡しと環境変数(BANTO_DAEMON_URL/BANTO_PROJECT/BANTO_TASK_ID)注入を実装する",
+      "added_in": "S254276",
+      "reason": "S254276-4実装中に発見。E2E再実行(認証設定後)の前提修正"
+    },
+    {
+      "title": "readyタスクの自動spawn(tickジョブ)",
+      "kind": "enhancement",
+      "description": "gate通過でreadyになったタスクをschedulerのtickジョブが自動でspawnTaskする。現状は明示API呼び出しのみ",
+      "added_in": "S254276",
+      "reason": "S254276独立検証で未実装が明示化された"
+    },
     {
       "title": "モデルtierルーティングと失敗駆動昇格",
       "kind": "feature",

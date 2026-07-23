@@ -73,6 +73,27 @@ export class DaemonClient {
     return body.tasks;
   }
 
+  /**
+   * Transition a task's state.
+   * POST /api/v1/projects/:proj/tasks/:id/transition
+   * D5: no logic here — pure HTTP call construction and response parsing.
+   * I2: non-2xx responses throw DaemonApiError.
+   */
+  async transition(
+    projectTag: string,
+    taskId: string,
+    to: string,
+    reason?: string
+  ): Promise<TaskRecord> {
+    const body: Record<string, string> = { to };
+    if (reason !== undefined) body["reason"] = reason;
+    const result = await this.post<{ task: TaskRecord }>(
+      `/api/v1/projects/${encodeURIComponent(projectTag)}/tasks/${encodeURIComponent(taskId)}/transition`,
+      body
+    );
+    return result.task;
+  }
+
   // ── Internal helpers ──────────────────────────────────────────────────────
 
   private async get<T>(path: string): Promise<T> {
@@ -80,6 +101,32 @@ export class DaemonClient {
     let res: Response;
     try {
       res = await fetch(url);
+    } catch (err) {
+      throw new DaemonConnectionError(this.baseUrl, err);
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      let msg = text;
+      try {
+        const parsed = JSON.parse(text) as Record<string, unknown>;
+        if (typeof parsed["error"] === "string") msg = parsed["error"];
+      } catch {
+        // use raw text
+      }
+      throw new DaemonApiError(res.status, msg);
+    }
+    return res.json() as Promise<T>;
+  }
+
+  private async post<T>(path: string, body: unknown): Promise<T> {
+    const url = `${this.baseUrl}${path}`;
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
     } catch (err) {
       throw new DaemonConnectionError(this.baseUrl, err);
     }
