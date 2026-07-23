@@ -4,10 +4,10 @@
   "progress": {
     "current_sprint": null,
     "total": 10,
-    "done": 0,
+    "done": 1,
     "in_progress": 0,
-    "remaining": 10,
-    "percentage": 0
+    "remaining": 9,
+    "percentage": 10
   },
   "execution_order": [
     "S654396",
@@ -24,13 +24,13 @@
   "sprints": {
     "S654396": {
       "title": "daemonコア基盤（イベントソーシング＋ステートマシン＋API）",
-      "status": "pending",
+      "status": "done",
       "description": "追記専用イベントログを状態の真実とするdaemonの骨格。タスクステートマシン、HTTP API＋WebSocket、プロジェクトレジストリ（マルチプロジェクトの初日組込み）、読み取り専用CLIまでを動くものとして出す",
       "milestone": false,
       "stories": {
         "S654396-1": {
           "title": "イベントソーシング基盤",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、daemonの実行時状態が追記専用イベントログのリプレイから導出されるようにしたい。なぜなら、クラッシュや再起動後もログの読み直しだけで状態が正確に復元される統治基盤が必要だから。",
@@ -39,47 +39,47 @@
               "id": "AC-S654396-1-1",
               "description": "イベント追記後にdaemonを再起動（kill -9 を含む）すると、リプレイにより同一の導出状態が得られる",
               "test": "[AC-S654396-1-1] in tests/acceptance/event-log-replay.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S654396-1-2",
               "description": "ログは時間セグメントに分割され、切替時にスナップショットが生成される。リプレイは最新スナップショット＋アクティブセグメントのみで完了する",
               "test": "[AC-S654396-1-2] in tests/acceptance/event-log-rotation.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S654396-1-3",
               "description": "全イベントにイベントIDとプロジェクトタグが付与され、タスク別の経緯ビューをインデックスから導出できる",
               "test": "[AC-S654396-1-3] in tests/acceptance/event-log-index.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
             "S654396-1-1": {
               "title": "イベント型定義とJSONLセグメントwriter/reader",
               "description": "オーケストレーションイベントの型（状態遷移・spawn/exit・ゲート判定・承認却下・PO操作・カード生成）と、追記専用JSONLセグメントの読み書き。トランスクリプトは記録せずパス参照のみ",
-              "status": "pending"
+              "status": "done"
             },
             "S654396-1-2": {
               "title": "リプレイエンジンと導出状態ストア",
               "description": "イベント列から現在状態（タスク・台帳）をin-memoryに導出する。導出値は永続化しない（D3）",
-              "status": "pending"
+              "status": "done"
             },
             "S654396-1-3": {
               "title": "スナップショットとローテーション",
               "description": "セグメント切替時のスナップショットダンプ、起動時の「最新スナップショット＋アクティブセグメント」リプレイ、サイズ/月次でのローテーション",
-              "status": "pending"
+              "status": "done"
             },
             "S654396-1-4": {
               "title": "障害注入テスト",
               "description": "書き込み途中のkill -9 → 再起動で状態一致を検証する実機テスト",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
         "S654396-2": {
           "title": "タスクステートマシン",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、タスクが仕様のステートマシンに沿ってのみ遷移するようにしたい。なぜなら、ゲートを黙って迂回できない統治は状態遷移の機械的強制の上に成り立つから。",
@@ -88,42 +88,42 @@
               "id": "AC-S654396-2-1",
               "description": "draft→queued→ready→planning→implementing→auditing→review-ready→in-review→approved→merging→merged→evaluating→closed の正規遷移がイベントとして記録され導出状態に反映される",
               "test": "[AC-S654396-2-1] in tests/acceptance/state-machine.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S654396-2-2",
               "description": "不正な遷移要求は拒否され、拒否理由がイベントログに残る",
               "test": "[AC-S654396-2-2] in tests/acceptance/state-machine-invalid.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S654396-2-3",
               "description": "横断遷移 paused / failed / superseded が適用でき、pausedは中断元の状態へ復帰できる",
               "test": "[AC-S654396-2-3] in tests/acceptance/state-machine-cross.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
             "S654396-2-1": {
               "title": "遷移表の実装",
               "description": "spec-daemon-core §1 の状態と遷移規則をデータとして定義（判断基準をコードに埋めない: D2）",
-              "status": "pending"
+              "status": "done"
             },
             "S654396-2-2": {
               "title": "遷移APIとバリデーション",
               "description": "遷移要求→検証→イベント発行の経路。不正遷移はエラーイベント（I2）",
-              "status": "pending"
+              "status": "done"
             },
             "S654396-2-3": {
               "title": "横断遷移の実装とテスト",
               "description": "paused（復帰先の記憶）・failed・superseded",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
         "S654396-3": {
           "title": "HTTP API＋WebSocketイベント購読",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、HTTP APIとWebSocketでタスク状態とイベントを取得・購読したい。なぜなら、GUI・CLI・エージェントツールをすべてdaemonの同格クライアントにする（D5）には安定したAPI面が唯一の入口だから。",
@@ -132,47 +132,47 @@
               "id": "AC-S654396-3-1",
               "description": "RESTでプロジェクト・タスクの一覧/詳細/経緯（イベント履歴）を取得できる",
               "test": "[AC-S654396-3-1] in tests/acceptance/api-rest.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S654396-3-2",
               "description": "WebSocketでイベントをリアルタイム購読でき、再接続時はイベントID指定で取りこぼしなく追いつける",
               "test": "[AC-S654396-3-2] in tests/acceptance/api-ws.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S654396-3-3",
               "description": "プロジェクトレジストリに複数プロジェクトを登録でき、グローバル参照が <project>/<id> 形式で解決される",
               "test": "[AC-S654396-3-3] in tests/acceptance/project-registry.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
             "S654396-3-1": {
               "title": "HTTPサーバとルーティング",
               "description": "標準ライブラリ優先（D6）。依存を足す場合は理由1行",
-              "status": "pending"
+              "status": "done"
             },
             "S654396-3-2": {
               "title": "WebSocket購読とresume",
               "description": "イベントID起点の追いつき配信",
-              "status": "pending"
+              "status": "done"
             },
             "S654396-3-3": {
               "title": "プロジェクトレジストリ",
               "description": "リポジトリパス＋プロファイルの登録。全イベントへのプロジェクトタグ付与と<project>/<id>解決",
-              "status": "pending"
+              "status": "done"
             },
             "S654396-3-4": {
               "title": "systemdユニットと起動整備",
               "description": "Ubuntu VM上のsystemdサービスとして起動・停止できる形にする",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
         "S654396-4": {
           "title": "読み取り専用CLI",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、`banto status` でdaemonとタスクの状態を確認したい。なぜなら、GUIができるまでの期間も毎Sprintの成果を動くものとして確かめたいから。",
@@ -181,25 +181,25 @@
               "id": "AC-S654396-4-1",
               "description": "banto status がdaemon稼働状態・登録プロジェクト・状態別タスク一覧を表示する",
               "test": "[AC-S654396-4-1] in tests/acceptance/cli-status.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S654396-4-2",
               "description": "banto events --follow がWebSocket経由でイベントストリームを追尾表示する",
               "test": "[AC-S654396-4-2] in tests/acceptance/cli-events.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
             "S654396-4-1": {
               "title": "daemon APIクライアント",
               "description": "banto-coreに置くランタイム中立クライアントの最初の形",
-              "status": "pending"
+              "status": "done"
             },
             "S654396-4-2": {
               "title": "status / events サブコマンド",
               "description": "CLI本体。ロジックは持たずAPI呼び出しのみ（D5）",
-              "status": "pending"
+              "status": "done"
             }
           }
         }
@@ -576,39 +576,57 @@
   },
   "dependencies": {
     "Scc9152": {
-      "depends_on": ["S654396"],
+      "depends_on": [
+        "S654396"
+      ],
       "reason": "watcher・ゲートはイベントログとステートマシンの上に成立する"
     },
     "S254276": {
-      "depends_on": ["Scc9152"],
+      "depends_on": [
+        "Scc9152"
+      ],
       "reason": "spawnはready昇格（依存駆動ゲート）を前提とする"
     },
     "S75f66b": {
-      "depends_on": ["S254276"],
+      "depends_on": [
+        "S254276"
+      ],
       "reason": "監査・マージはセッション実行の成果物を対象とする"
     },
     "S9d7fdb": {
-      "depends_on": ["S254276"],
+      "depends_on": [
+        "S254276"
+      ],
       "reason": "環境台帳・照合はspawn台帳のパターンとtickを流用し、レビューフロー接続はタスク実行を前提とする"
     },
     "S30a8fd": {
-      "depends_on": ["S75f66b"],
+      "depends_on": [
+        "S75f66b"
+      ],
       "reason": "アテンションキューの主要カード（レビュー待ち）はレビュー・マージフローから生成される"
     },
     "S24ddde": {
-      "depends_on": ["S254276"],
+      "depends_on": [
+        "S254276"
+      ],
       "reason": "Extension Packはbanto-coreとpi統合の上に築く"
     },
     "Sfc93b6": {
-      "depends_on": ["S30a8fd"],
+      "depends_on": [
+        "S30a8fd"
+      ],
       "reason": "ケイデンス議題・評価カードはアテンションキューに載る（別の儀式を作らない）"
     },
     "S7b7ba5": {
-      "depends_on": ["S9d7fdb"],
+      "depends_on": [
+        "S9d7fdb"
+      ],
       "reason": "外部VMドライバは環境ドライバ契約の拡張"
     },
     "Sbcf9df": {
-      "depends_on": ["Sfc93b6"],
+      "depends_on": [
+        "Sfc93b6"
+      ],
       "reason": "自動更新の安全性とマージポリシー拡大は改善ループの計測を前提とする"
     }
   },
@@ -660,6 +678,13 @@
       "kind": "chore",
       "description": "コンフリクト解消の失敗事例を再現E2Eシナリオとして検証スイートに追加し続ける運用（spec-daemon-core §4.2）",
       "reason": "マージ機構（S75f66b）稼働後の継続タスク"
+    },
+    {
+      "title": "daemonの状態リフレッシュをインクリメンタル適用にする",
+      "kind": "chore",
+      "description": "daemon.tsのrefreshState()がリクエスト毎にEventLogフルリプレイ+EventIndex再構築を行う。イベント適用のインクリメンタル化で性能劣化を防ぐ。shouldRotate()のstatSync失敗の静かなfalseも併せて警告出力に",
+      "added_in": "S654396",
+      "reason": "S654396独立検証で低severity妥協として記録。機能は正しいため次スプリント以降で対応"
     }
   ]
 }
