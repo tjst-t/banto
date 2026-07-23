@@ -3,14 +3,663 @@
   "description": "一人のPOがAIエージェントのチームを率いて開発するための統治環境（ガバナンスレイヤー＋POコックピット）",
   "progress": {
     "current_sprint": null,
-    "total": 0,
+    "total": 10,
     "done": 0,
     "in_progress": 0,
-    "remaining": 0,
+    "remaining": 10,
     "percentage": 0
   },
-  "execution_order": [],
-  "sprints": {},
-  "dependencies": {},
-  "backlog": []
+  "execution_order": [
+    "S654396",
+    "Scc9152",
+    "S254276",
+    "S75f66b",
+    "S9d7fdb",
+    "S30a8fd",
+    "S24ddde",
+    "Sfc93b6",
+    "S7b7ba5",
+    "Sbcf9df"
+  ],
+  "sprints": {
+    "S654396": {
+      "title": "daemonコア基盤（イベントソーシング＋ステートマシン＋API）",
+      "status": "pending",
+      "description": "追記専用イベントログを状態の真実とするdaemonの骨格。タスクステートマシン、HTTP API＋WebSocket、プロジェクトレジストリ（マルチプロジェクトの初日組込み）、読み取り専用CLIまでを動くものとして出す",
+      "milestone": false,
+      "stories": {
+        "S654396-1": {
+          "title": "イベントソーシング基盤",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、daemonの実行時状態が追記専用イベントログのリプレイから導出されるようにしたい。なぜなら、クラッシュや再起動後もログの読み直しだけで状態が正確に復元される統治基盤が必要だから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S654396-1-1",
+              "description": "イベント追記後にdaemonを再起動（kill -9 を含む）すると、リプレイにより同一の導出状態が得られる",
+              "test": "[AC-S654396-1-1] in tests/acceptance/event-log-replay.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S654396-1-2",
+              "description": "ログは時間セグメントに分割され、切替時にスナップショットが生成される。リプレイは最新スナップショット＋アクティブセグメントのみで完了する",
+              "test": "[AC-S654396-1-2] in tests/acceptance/event-log-rotation.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S654396-1-3",
+              "description": "全イベントにイベントIDとプロジェクトタグが付与され、タスク別の経緯ビューをインデックスから導出できる",
+              "test": "[AC-S654396-1-3] in tests/acceptance/event-log-index.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S654396-1-1": {
+              "title": "イベント型定義とJSONLセグメントwriter/reader",
+              "description": "オーケストレーションイベントの型（状態遷移・spawn/exit・ゲート判定・承認却下・PO操作・カード生成）と、追記専用JSONLセグメントの読み書き。トランスクリプトは記録せずパス参照のみ",
+              "status": "pending"
+            },
+            "S654396-1-2": {
+              "title": "リプレイエンジンと導出状態ストア",
+              "description": "イベント列から現在状態（タスク・台帳）をin-memoryに導出する。導出値は永続化しない（D3）",
+              "status": "pending"
+            },
+            "S654396-1-3": {
+              "title": "スナップショットとローテーション",
+              "description": "セグメント切替時のスナップショットダンプ、起動時の「最新スナップショット＋アクティブセグメント」リプレイ、サイズ/月次でのローテーション",
+              "status": "pending"
+            },
+            "S654396-1-4": {
+              "title": "障害注入テスト",
+              "description": "書き込み途中のkill -9 → 再起動で状態一致を検証する実機テスト",
+              "status": "pending"
+            }
+          }
+        },
+        "S654396-2": {
+          "title": "タスクステートマシン",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、タスクが仕様のステートマシンに沿ってのみ遷移するようにしたい。なぜなら、ゲートを黙って迂回できない統治は状態遷移の機械的強制の上に成り立つから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S654396-2-1",
+              "description": "draft→queued→ready→planning→implementing→auditing→review-ready→in-review→approved→merging→merged→evaluating→closed の正規遷移がイベントとして記録され導出状態に反映される",
+              "test": "[AC-S654396-2-1] in tests/acceptance/state-machine.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S654396-2-2",
+              "description": "不正な遷移要求は拒否され、拒否理由がイベントログに残る",
+              "test": "[AC-S654396-2-2] in tests/acceptance/state-machine-invalid.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S654396-2-3",
+              "description": "横断遷移 paused / failed / superseded が適用でき、pausedは中断元の状態へ復帰できる",
+              "test": "[AC-S654396-2-3] in tests/acceptance/state-machine-cross.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S654396-2-1": {
+              "title": "遷移表の実装",
+              "description": "spec-daemon-core §1 の状態と遷移規則をデータとして定義（判断基準をコードに埋めない: D2）",
+              "status": "pending"
+            },
+            "S654396-2-2": {
+              "title": "遷移APIとバリデーション",
+              "description": "遷移要求→検証→イベント発行の経路。不正遷移はエラーイベント（I2）",
+              "status": "pending"
+            },
+            "S654396-2-3": {
+              "title": "横断遷移の実装とテスト",
+              "description": "paused（復帰先の記憶）・failed・superseded",
+              "status": "pending"
+            }
+          }
+        },
+        "S654396-3": {
+          "title": "HTTP API＋WebSocketイベント購読",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、HTTP APIとWebSocketでタスク状態とイベントを取得・購読したい。なぜなら、GUI・CLI・エージェントツールをすべてdaemonの同格クライアントにする（D5）には安定したAPI面が唯一の入口だから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S654396-3-1",
+              "description": "RESTでプロジェクト・タスクの一覧/詳細/経緯（イベント履歴）を取得できる",
+              "test": "[AC-S654396-3-1] in tests/acceptance/api-rest.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S654396-3-2",
+              "description": "WebSocketでイベントをリアルタイム購読でき、再接続時はイベントID指定で取りこぼしなく追いつける",
+              "test": "[AC-S654396-3-2] in tests/acceptance/api-ws.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S654396-3-3",
+              "description": "プロジェクトレジストリに複数プロジェクトを登録でき、グローバル参照が <project>/<id> 形式で解決される",
+              "test": "[AC-S654396-3-3] in tests/acceptance/project-registry.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S654396-3-1": {
+              "title": "HTTPサーバとルーティング",
+              "description": "標準ライブラリ優先（D6）。依存を足す場合は理由1行",
+              "status": "pending"
+            },
+            "S654396-3-2": {
+              "title": "WebSocket購読とresume",
+              "description": "イベントID起点の追いつき配信",
+              "status": "pending"
+            },
+            "S654396-3-3": {
+              "title": "プロジェクトレジストリ",
+              "description": "リポジトリパス＋プロファイルの登録。全イベントへのプロジェクトタグ付与と<project>/<id>解決",
+              "status": "pending"
+            },
+            "S654396-3-4": {
+              "title": "systemdユニットと起動整備",
+              "description": "Ubuntu VM上のsystemdサービスとして起動・停止できる形にする",
+              "status": "pending"
+            }
+          }
+        },
+        "S654396-4": {
+          "title": "読み取り専用CLI",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、`banto status` でdaemonとタスクの状態を確認したい。なぜなら、GUIができるまでの期間も毎Sprintの成果を動くものとして確かめたいから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S654396-4-1",
+              "description": "banto status がdaemon稼働状態・登録プロジェクト・状態別タスク一覧を表示する",
+              "test": "[AC-S654396-4-1] in tests/acceptance/cli-status.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S654396-4-2",
+              "description": "banto events --follow がWebSocket経由でイベントストリームを追尾表示する",
+              "test": "[AC-S654396-4-2] in tests/acceptance/cli-events.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S654396-4-1": {
+              "title": "daemon APIクライアント",
+              "description": "banto-coreに置くランタイム中立クライアントの最初の形",
+              "status": "pending"
+            },
+            "S654396-4-2": {
+              "title": "status / events サブコマンド",
+              "description": "CLI本体。ロジックは持たずAPI呼び出しのみ（D5）",
+              "status": "pending"
+            }
+          }
+        }
+      }
+    },
+    "Scc9152": {
+      "title": "契約層とスケジューラ（work/watcher・スキーマ検証・依存駆動ゲート）",
+      "status": "pending",
+      "description": "ファイル（意図）とイベントログ（実行時状態）の分離を運用の入口から確立する。work/のタスク定義取り込み、frontmatterスキーマ検証、依存駆動ゲート、定期処理tick",
+      "milestone": false,
+      "stories": {
+        "Scc9152-1": {
+          "title": "タスク定義の取り込み（watcher）",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、work/tasks/ にタスク定義ファイルを置くだけでdaemonが検証して取り込むようにしたい。なぜなら、ファイルは意図・イベントログは実行時状態という分離（D3）を最初の運用経路として確立したいから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-Scc9152-1-1",
+              "description": "スキーマ適合のタスク定義を置くと draft→queued に遷移し、取り込みがイベントに記録される",
+              "test": "[AC-Scc9152-1-1] in tests/acceptance/watcher-ingest.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scc9152-1-2",
+              "description": "不正なfrontmatterのファイルは取り込み拒否され、理由付きでイベントに残る",
+              "test": "[AC-Scc9152-1-2] in tests/acceptance/watcher-reject.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scc9152-1-3",
+              "description": "daemonがタスクファイルのfrontmatterへ実行時状態（フェーズ等）を書き戻さない",
+              "test": "[AC-Scc9152-1-3] in tests/acceptance/no-writeback.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "Scc9152-1-1": {
+              "title": "frontmatterスキーマ定義",
+              "description": "spec-schemas に基づく task / epic のJSON Schema（meta/schemas/）。work/はフル契約・docs/は最小限",
+              "status": "pending"
+            },
+            "Scc9152-1-2": {
+              "title": "watcherと検証",
+              "description": "work/ の変更検知→スキーマ検証→enqueue。実装方式（fs watch / git hook）の選定理由をdecisionsに記録",
+              "status": "pending"
+            },
+            "Scc9152-1-3": {
+              "title": "拒否イベントとCLI表示",
+              "description": "取り込み結果（成功・拒否理由）をbanto statusから確認できるようにする",
+              "status": "pending"
+            }
+          }
+        },
+        "Scc9152-2": {
+          "title": "依存駆動ゲート",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、タスクの実行開始が依存グラフ・前提の未確定・物理資源の3条件だけで機械的に制御されるようにしたい。なぜなら、POの帯域を理由に実行を絞らない設計（spec-multi-project §3、数値WIPなし）だから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-Scc9152-2-1",
+              "description": "依存先が未完了のタスクは queued に留まり、依存解決により ready に昇格する",
+              "test": "[AC-Scc9152-2-1] in tests/acceptance/gate-deps.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scc9152-2-2",
+              "description": "マージベースにレビュー未通過の祖先がありscope.pathsが重なる場合はspawn保留、重ならなければ並行できる",
+              "test": "[AC-Scc9152-2-2] in tests/acceptance/gate-scope-overlap.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scc9152-2-3",
+              "description": "ゲート判定（通過・保留とその理由）がイベントとして記録される",
+              "test": "[AC-Scc9152-2-3] in tests/acceptance/gate-events.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "Scc9152-2-1": {
+              "title": "依存グラフ評価",
+              "description": "タスク定義のdepends参照から昇格可否を判定",
+              "status": "pending"
+            },
+            "Scc9152-2-2": {
+              "title": "スコープ重複判定",
+              "description": "scope.paths（glob）同士の重複判定と未レビュー祖先の検出",
+              "status": "pending"
+            },
+            "Scc9152-2-3": {
+              "title": "ゲート再評価トリガ",
+              "description": "レビュー通過・マージ・タスク取り込み時の再評価接続",
+              "status": "pending"
+            }
+          }
+        },
+        "Scc9152-3": {
+          "title": "スケジューラtick",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、daemonが定期処理を自律的に回し続けるようにしたい。なぜなら、TTL執行・照合・ゲート再評価・ローテーションは常時稼働daemonの前提機能だから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-Scc9152-3-1",
+              "description": "tickにジョブを登録でき、ゲート再評価とスナップショット/ローテーション判定がtick経由で駆動される",
+              "test": "[AC-Scc9152-3-1] in tests/acceptance/tick-jobs.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-Scc9152-3-2",
+              "description": "tickジョブの失敗が握りつぶされず、エラーイベントとして記録される",
+              "test": "[AC-Scc9152-3-2] in tests/acceptance/tick-errors.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "Scc9152-3-1": {
+              "title": "tickフレームワーク",
+              "description": "登録式の定期ジョブ実行（間隔は層Bパラメータとしてconfig参照）",
+              "status": "pending"
+            },
+            "Scc9152-3-2": {
+              "title": "既存処理のジョブ化",
+              "description": "ゲート再評価・ローテーションをtickジョブとして接続",
+              "status": "pending"
+            }
+          }
+        }
+      }
+    },
+    "S254276": {
+      "title": "セッション実行（pi-rpc・spawn台帳・banto-core・tmux）",
+      "status": "pending",
+      "description": "歩くスケルトンの完成。readyタスクをpi headlessセッションとしてworktreeにspawnし、実行者がdaemon APIツールで状態報告、kill -9からの孤児回復まで実機で通す",
+      "milestone": true,
+      "stories": {
+        "S254276-1": {
+          "title": "ランタイムドライバ契約とpi-rpc実装",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、readyになったタスクからpiのheadlessセッションがworktree内に自動起動されるようにしたい。なぜなら、エージェント実行の統治こそが番頭の本体だから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S254276-1-1",
+              "description": "ランタイムドライバ契約（spawn／メッセージ注入／イベント購読／kill）がbanto-coreに定義され、pi-rpc実装が契約テストを通る",
+              "test": "[AC-S254276-1-1] in tests/acceptance/runtime-driver-contract.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S254276-1-2",
+              "description": "readyタスクのspawnで専用worktreeにpiセッションが起動し、タスクが planning へ遷移する",
+              "test": "[AC-S254276-1-2] in tests/acceptance/spawn-pi.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S254276-1-3",
+              "description": "イベントログにはセッションJSONLへのパス参照のみが記録され、トランスクリプト本文は複製されない",
+              "test": "[AC-S254276-1-3] in tests/acceptance/session-reference-only.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S254276-1-1": {
+              "title": "ランタイムドライバ契約の型定義",
+              "description": "spawn/inject/subscribe/killの契約とドライバ登録機構（banto-core）",
+              "status": "pending"
+            },
+            "S254276-1-2": {
+              "title": "pi-rpcドライバ実装",
+              "description": "headless pi（RPCモード、JSONL/LF区切り）でのspawn。worktree作成を含む",
+              "status": "pending"
+            },
+            "S254276-1-3": {
+              "title": "セッションイベント変換",
+              "description": "piセッションのイベントをdaemonオーケストレーションイベントへ変換（数百バイト規模を維持）",
+              "status": "pending"
+            }
+          }
+        },
+        "S254276-2": {
+          "title": "spawn台帳と孤児回復",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、daemonが再起動しても実行中セッションが失われないようにしたい。なぜなら、常時稼働と将来の自動更新は孤児プロセスの引き取りが前提だから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S254276-2-1",
+              "description": "spawnした子プロセス（pid・タスクID・セッションパス・worktree）が永続台帳に登録される",
+              "test": "[AC-S254276-2-1] in tests/acceptance/spawn-ledger.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S254276-2-2",
+              "description": "セッション実行中にdaemonをkill -9で落として再起動すると、台帳から孤児セッションへ再接続し状態追跡が継続する（実機smoke・モック不可）",
+              "test": "[AC-S254276-2-2] in tests/acceptance/orphan-recovery.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S254276-2-3",
+              "description": "照合ループが台帳と実プロセスの差分（消えた子プロセス）を検出し、failedイベントを積む",
+              "test": "[AC-S254276-2-3] in tests/acceptance/spawn-reconcile.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S254276-2-1": {
+              "title": "spawn台帳の永続化",
+              "description": "登録・削除とイベント連動",
+              "status": "pending"
+            },
+            "S254276-2-2": {
+              "title": "孤児回復ロジック",
+              "description": "起動時に台帳から子プロセスを引き取り再接続",
+              "status": "pending"
+            },
+            "S254276-2-3": {
+              "title": "kill -9 実機smokeテスト",
+              "description": "障害シナリオ（kill-9／プロセスクラッシュ）を実機で検証。モック・DRY_RUN不可",
+              "status": "pending"
+            },
+            "S254276-2-4": {
+              "title": "照合ジョブ",
+              "description": "spawn台帳と実プロセスの定期突合（tickジョブ）",
+              "status": "pending"
+            }
+          }
+        },
+        "S254276-3": {
+          "title": "banto-coreと実行者ツール最小セット",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、実行者エージェントがdaemon API経由のツールだけで作業状態を報告するようにしたい。なぜなら、判断ロジックをアダプタに置かず（D5）、自己申告ではなくイベントで状態を追跡する（I1）ためだから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S254276-3-1",
+              "description": "banto-coreにツール定義・daemon APIクライアント・プロンプト資産読込が置かれ、pi Extensionアダプタはツール登録とフック接続のみの薄い皮である",
+              "test": "[AC-S254276-3-1] in tests/acceptance/banto-core-layering.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S254276-3-2",
+              "description": "実行者がフェーズ報告ツールを呼ぶと、daemonイベント経由で planning→implementing→review-ready と遷移する",
+              "test": "[AC-S254276-3-2] in tests/acceptance/executor-phase-tools.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S254276-3-3",
+              "description": "実行者のシステムプロンプトがプロンプト資産（層A）ファイルから読み込まれ、変更がgit差分として見える",
+              "test": "[AC-S254276-3-3] in tests/acceptance/prompt-assets.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S254276-3-1": {
+              "title": "banto-coreパッケージ構成",
+              "description": "ランタイム中立の共通ライブラリとしてワークスペース分離",
+              "status": "pending"
+            },
+            "S254276-3-2": {
+              "title": "実行者ツール定義とAPIクライアント",
+              "description": "フェーズ報告・完了報告ツール。中身はすべてdaemon API呼び出し",
+              "status": "pending"
+            },
+            "S254276-3-3": {
+              "title": "pi Extensionアダプタ",
+              "description": "banto-coreのツールをpiに登録する薄い皮",
+              "status": "pending"
+            },
+            "S254276-3-4": {
+              "title": "実行者プロンプト資産v0",
+              "description": "実行者のシステムプロンプト（層A）。skills/への配置",
+              "status": "pending"
+            }
+          }
+        },
+        "S254276-4": {
+          "title": "tmux接続と歩くスケルトンE2E",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、タスク投入からエージェントの実装完了までを端末から一気通貫で確認したい。なぜなら、これが最初のマイルストーン（歩くスケルトン）の受け入れ基準だから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S254276-4-1",
+              "description": "セッションはtmuxウィンドウとして起動され、POがSSHでアタッチして対話内容を確認できる",
+              "test": "[AC-S254276-4-1] in tests/acceptance/tmux-attach.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S254276-4-2",
+              "description": "E2E: work/tasks/へのタスク定義配置→取り込み→ready→spawn→エージェント実装→review-ready までを実機で通す（モック不可）",
+              "test": "[AC-S254276-4-2] in tests/acceptance/walking-skeleton.e2e.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S254276-4-1": {
+              "title": "tmux起動統合",
+              "description": "pi-rpcドライバのセッションをtmuxウィンドウ内で起動する",
+              "status": "pending"
+            },
+            "S254276-4-2": {
+              "title": "歩くスケルトンE2Eシナリオ",
+              "description": "サンプルプロジェクト＋実タスクでの一気通貫実機テスト",
+              "status": "pending"
+            }
+          }
+        }
+      }
+    },
+    "S75f66b": {
+      "title": "監査・マージ機構",
+      "status": "pending",
+      "description": "監査セッション、直列マージキュー（rebase→マージ前ゲート→マージ）、daemonによるテスト直接実行（I1）、scope.paths違反のdiff機械検査、コンフリクト解消タスクの自動起票",
+      "milestone": false,
+      "detail_level": "coarse",
+      "stories": {}
+    },
+    "S9d7fdb": {
+      "title": "評価環境v1",
+      "status": "pending",
+      "description": "環境プロファイル（meta/environments.yaml）、ドライバ契約（provision〜list）、ビルトインprocess/dockerドライバ、環境台帳・TTL・quota・照合、credentialsのsops分離",
+      "milestone": false,
+      "detail_level": "coarse",
+      "stories": {}
+    },
+    "S30a8fd": {
+      "title": "POコックピットv1（アテンションキュー＋tmuxジャンプ）",
+      "status": "pending",
+      "description": "spec-ui v1範囲: Web GUIの横断アテンションキュー（カード3部構成・滞留日数×ブロック影響度ソート）、カードからtmuxセッションへのドリルダウン、CLIの判断系操作",
+      "milestone": true,
+      "detail_level": "coarse",
+      "stories": {}
+    },
+    "S24ddde": {
+      "title": "Extension Packと対話セッション面",
+      "status": "pending",
+      "description": "文脈アクション面（番号付き選択肢・セッションフッター）、復帰リキャップ、bridge Extension、SDK単発セッション（classify・status_reporter・差分要約）、検討セッションの規約",
+      "milestone": false,
+      "detail_level": "coarse",
+      "stories": {}
+    },
+    "Sfc93b6": {
+      "title": "改善ループv1",
+      "status": "pending",
+      "description": "work/inbox/improvement、report_frictionツール、タスク後振り返り、ケイデンス合成カード、仮説駆動評価（hypothesis・評価カード・horizon）、P6/P7のprinciples追加",
+      "milestone": true,
+      "detail_level": "coarse",
+      "stories": {}
+    },
+    "S7b7ba5": {
+      "title": "Proxmoxドライバとstaging評価",
+      "status": "pending",
+      "description": "外部VMリファレンスドライバ（linked clone＋cloud-init、専用プール・限定権限・VMID帯予約）、staging評価フロー、Epic受け入れセッション",
+      "milestone": false,
+      "detail_level": "coarse",
+      "stories": {}
+    },
+    "Sbcf9df": {
+      "title": "自動更新と自律性拡大",
+      "status": "pending",
+      "description": "releases世代管理（currentシンボリックリンク切替・ロールバック）、シャドー実行による候補daemon検証、マージポリシー（auto/sampled/mandatory）、メタケイデンス",
+      "milestone": true,
+      "detail_level": "coarse",
+      "stories": {}
+    }
+  },
+  "dependencies": {
+    "Scc9152": {
+      "depends_on": ["S654396"],
+      "reason": "watcher・ゲートはイベントログとステートマシンの上に成立する"
+    },
+    "S254276": {
+      "depends_on": ["Scc9152"],
+      "reason": "spawnはready昇格（依存駆動ゲート）を前提とする"
+    },
+    "S75f66b": {
+      "depends_on": ["S254276"],
+      "reason": "監査・マージはセッション実行の成果物を対象とする"
+    },
+    "S9d7fdb": {
+      "depends_on": ["S254276"],
+      "reason": "環境台帳・照合はspawn台帳のパターンとtickを流用し、レビューフロー接続はタスク実行を前提とする"
+    },
+    "S30a8fd": {
+      "depends_on": ["S75f66b"],
+      "reason": "アテンションキューの主要カード（レビュー待ち）はレビュー・マージフローから生成される"
+    },
+    "S24ddde": {
+      "depends_on": ["S254276"],
+      "reason": "Extension Packはbanto-coreとpi統合の上に築く"
+    },
+    "Sfc93b6": {
+      "depends_on": ["S30a8fd"],
+      "reason": "ケイデンス議題・評価カードはアテンションキューに載る（別の儀式を作らない）"
+    },
+    "S7b7ba5": {
+      "depends_on": ["S9d7fdb"],
+      "reason": "外部VMドライバは環境ドライバ契約の拡張"
+    },
+    "Sbcf9df": {
+      "depends_on": ["Sfc93b6"],
+      "reason": "自動更新の安全性とマージポリシー拡大は改善ループの計測を前提とする"
+    }
+  },
+  "backlog": [
+    {
+      "title": "モデルtierルーティングと失敗駆動昇格",
+      "kind": "feature",
+      "description": "tier（reasoning/standard/fast）ルーティング表、プロバイダquota・時間窓予算、監査2回不通過での機械昇格と人間判断による格下げ（spec-daemon-core §3.5）",
+      "reason": "セッション実行が単一モデルで安定してから載せる"
+    },
+    {
+      "title": "claude-agent-sdkランタイムドライバ",
+      "kind": "feature",
+      "description": "サブスクリプション課金枠で回すためのドライバ。課金ポリシー変動をconfig1行の影響範囲に局所化する（spec-daemon-core §3.5）",
+      "reason": "pi-rpc参照実装の契約が固まってから"
+    },
+    {
+      "title": "横断Nextビューと横断集計",
+      "kind": "feature",
+      "description": "各プロジェクトのNext上位を並べる読み取り中心ビューと、improvementのクラス別横断集計",
+      "reason": "spec-multi-project §7: 2つ目のプロジェクトを載せる日まで作らない"
+    },
+    {
+      "title": "共有ブラウザペイン",
+      "kind": "feature",
+      "description": "レビュー環境のChromiumをCDP画像転送でGUIに表示。人とエージェントが同一インスタンスを見る（Palmux2の転送実装を参照）",
+      "reason": "spec-ui v1範囲外。GUIレビュー運用が始まってから"
+    },
+    {
+      "title": "バックログ構造化エディタGUI",
+      "kind": "feature",
+      "description": "タスク定義ファイル群の構造化エディタ（独自DBなし）。Epicツリー＋レーン、ドラッグ→daemon API→ファイル書換＋コミット",
+      "reason": "spec-ui v1範囲外"
+    },
+    {
+      "title": "エージェントボード（横断かんばん）",
+      "kind": "enhancement",
+      "description": "行=タスク、列=フェーズの横断かんばん。ステートマシンをそのまま描画するビューアに徹する",
+      "reason": "spec-ui v1範囲外"
+    },
+    {
+      "title": "アーキテクチャ見直し第3階",
+      "kind": "feature",
+      "description": "ホットスポット・再発集中・パッチ効率劣化の決定的検出、アーキテクトレビューア診断（SDK単発）、検疫マークと保留勧告（spec-improvement-loop §8）",
+      "reason": "改善ループv1の運用データが溜まってから"
+    },
+    {
+      "title": "コンフリクト解消の再現E2Eシナリオ蓄積",
+      "kind": "chore",
+      "description": "コンフリクト解消の失敗事例を再現E2Eシナリオとして検証スイートに追加し続ける運用（spec-daemon-core §4.2）",
+      "reason": "マージ機構（S75f66b）稼働後の継続タスク"
+    }
+  ]
 }
