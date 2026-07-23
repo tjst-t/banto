@@ -27,7 +27,13 @@ export type {
   TaskResumedEvent,
   TaskFailedEvent,
   TaskSupersededEvent,
+  TaskIngestRejectedEvent,
+  TickJobFailedEvent,
 } from "./events.js";
+
+// Task frontmatter parser + validator
+export { validateTaskFrontmatter, extractFrontmatter, parseYamlFrontmatter } from "./task-frontmatter.js";
+export type { TaskFrontmatter, FrontmatterValidation } from "./task-frontmatter.js";
 
 // EventLog
 export { EventLog } from "./event-log.js";

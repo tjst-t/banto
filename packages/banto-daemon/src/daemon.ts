@@ -8,6 +8,8 @@
  *   - ProjectRegistry (project metadata)
  *   - StateMachine (transition rules)
  *   - WsEventServer (real-time event broadcast)
+ *   - TaskWatcher (polling watcher for work/tasks/*.md)
+ *   - Scheduler (periodic tick jobs: gate re-evaluation, rotation, etc.)
  *
  * D3: state is derived from events, never written directly.
  * D5: all logic lives here; HTTP/WS layers are pure routing/transport.
@@ -26,12 +28,27 @@ import { ProjectRegistry } from "./project-registry.js";
 import type { ProjectEntry } from "./project-registry.js";
 import { WsEventServer } from "./ws-server.js";
 import { createHttpServer } from "./http-server.js";
+import { TaskWatcher } from "./task-watcher.js";
+import { Scheduler } from "./scheduler.js";
+import type { TickJob } from "./scheduler.js";
+import { GateEvaluator, evaluatePendingGates } from "./gate-evaluator.js";
 
 export interface DaemonConfig {
   /** Port to listen on. Default: 3000 */
   port: number;
   /** Root data directory (event log + registry). Default: ./data */
   dataDir: string;
+  /**
+   * Polling interval (ms) for the task-definition watcher.
+   * Default: 2000 ms. Set to a smaller value in tests for faster feedback.
+   */
+  watchIntervalMs: number;
+  /**
+   * Tick interval in milliseconds for the periodic scheduler.
+   * Default: 60000 (1 minute) for production.
+   * Override to a small value (e.g. 500) in tests to reduce wait time.
+   */
+  tickIntervalMs: number;
 }
 
 export class Daemon {
@@ -42,6 +59,15 @@ export class Daemon {
   private readonly registry: ProjectRegistry;
   private readonly httpServer: http.Server;
   private readonly wsServer: WsEventServer;
+  private readonly watcher: TaskWatcher;
+  private readonly scheduler: Scheduler;
+  private readonly gateEvaluator: GateEvaluator;
+  /**
+   * Dedup map for gate_evaluated events: "projectTag/taskId" → last result key.
+   * In-memory; resets on daemon restart (first eval after restart is always recorded).
+   * See evaluatePendingGates for dedup logic.
+   */
+  private readonly lastGateKey: Map<string, string> = new Map();
 
   private constructor(config: DaemonConfig) {
     this.config = config;
@@ -54,14 +80,55 @@ export class Daemon {
     this.wsServer = new WsEventServer(this.httpServer, (projectTag) =>
       this.log.getEventsByProject(projectTag)
     );
+    this.watcher = new TaskWatcher(this, config.watchIntervalMs);
+
+    // GateEvaluator: implements spec-multi-project §3 three-condition gate.
+    // AlwaysPassQuota is the default until Sprint S9d7fdb provides real quota.
+    this.gateEvaluator = new GateEvaluator();
+
+    // Scheduler: drives periodic jobs (D6: setInterval only, no external library).
+    this.scheduler = new Scheduler(this.log, config.tickIntervalMs);
+
+    // Built-in job: rotation check (spec §5, spec §2.3).
+    // Checks if the active segment exceeds the size threshold and rotates if so.
+    this.scheduler.registerJob("rotation-check", () => {
+      if (this.log.shouldRotate()) {
+        const snapshotState = StateStore.replay(this.log).toSnapshotState();
+        this.log.rotate(snapshotState);
+        // After rotation, rebuild in-memory state from the new active segment.
+        this.refreshState();
+      }
+    });
+
+    // Built-in job: dependency gate re-evaluation (spec §5, spec-multi-project §3).
+    // Evaluates all three gate conditions (deps, scope overlap, quota) for queued tasks.
+    this.scheduler.registerJob("gate-reeval", () => {
+      this.runGateReeval();
+    });
   }
 
   static create(config: Partial<DaemonConfig> = {}): Daemon {
     const resolved: DaemonConfig = {
       port: config.port ?? parseInt(process.env["BANTO_PORT"] ?? "3000", 10),
       dataDir: config.dataDir ?? process.env["BANTO_DATA_DIR"] ?? "./data",
+      watchIntervalMs: config.watchIntervalMs ?? 2000,
+      tickIntervalMs:
+        config.tickIntervalMs ??
+        parseInt(process.env["BANTO_TICK_INTERVAL_MS"] ?? "60000", 10),
     };
     return new Daemon(resolved);
+  }
+
+  /**
+   * Register a named periodic job to run on every tick.
+   * This is the public API for adding jobs from outside the daemon
+   * (e.g. from tests or future extension points).
+   *
+   * I2: job failures are caught, recorded as tick_job_failed events,
+   * and the scheduler continues (see Scheduler.runAllJobs).
+   */
+  registerTickJob(name: string, fn: TickJob): void {
+    this.scheduler.registerJob(name, fn);
   }
 
   /** Start listening. Returns a promise that resolves when the server is bound. */
@@ -72,6 +139,8 @@ export class Daemon {
         process.stdout.write(
           `[banto-daemon] listening on port ${this.config.port} (dataDir=${this.config.dataDir})\n`
         );
+        this.watcher.start();
+        this.scheduler.start();
         resolve();
       });
     });
@@ -79,6 +148,8 @@ export class Daemon {
 
   /** Stop the daemon gracefully. */
   stop(): Promise<void> {
+    this.watcher.stop();
+    this.scheduler.stop();
     return new Promise((resolve, reject) => {
       this.wsServer.close(() => {
         this.httpServer.close((err) => {
@@ -138,6 +209,24 @@ export class Daemon {
   }
 
   /**
+   * Get all events scoped to a project (including task_ingest_rejected and
+   * daemon-internal events like tick_job_failed under projectTag="daemon").
+   * Reads from the log directly for a full audit trail, consistent with the
+   * WS catch-up path.
+   */
+  getProjectEvents(projectTag: string): OrchestrationEvent[] {
+    return this.log.getEventsByProject(projectTag);
+  }
+
+  /**
+   * Get ALL events from the log (daemon-wide).
+   * Used by the daemon-level events endpoint (/api/v1/events).
+   */
+  getAllEvents(): OrchestrationEvent[] {
+    return this.log.readAllEvents();
+  }
+
+  /**
    * Create a new task in draft status.
    * Appends task_created event and refreshes in-memory state.
    */
@@ -172,6 +261,11 @@ export class Daemon {
    * Attempt a state transition for a task.
    * On rejection: appends transition_rejected event (I2) and returns { ok: false }.
    * Refreshes in-memory state and broadcasts on success.
+   *
+   * Gate re-evaluation is triggered when a task reaches a state that could
+   * resolve a block on queued tasks (any resolved or permanent-terminal state).
+   * This covers both condition 1 (dependency resolved) and condition 2
+   * (scope-overlap ancestor finishes review).
    */
   transition(
     projectTag: string,
@@ -203,7 +297,34 @@ export class Daemon {
       this.wsServer.broadcast(lastEvent);
     }
 
+    // Re-evaluate pending gates when the new status could unblock queued tasks.
+    // This covers:
+    //   - Condition 1: dep reached a resolved state (approved/merging/merged/evaluating/closed)
+    //   - Condition 1: dep reached a permanent block state (failed/superseded — triggers
+    //     permanent-block gate_evaluated records so the PO sees the block reason)
+    //   - Condition 2: a scope-overlapping ancestor advanced past unreviewed states
+    // We run on any successful transition that changes status so we don't miss edge cases.
+    if (result.ok) {
+      this.runGateReeval();
+    }
+
     return result;
+  }
+
+  /**
+   * Emit a task_ingest_rejected event (I2: file validation failure is recorded, not swallowed).
+   * Called by TaskWatcher when a task definition file fails validation.
+   * D3: no task record is created; the rejection is the only artifact.
+   */
+  emitIngestRejected(projectTag: string, filePath: string, reason: string): void {
+    const event = this.log.append({
+      type: "task_ingest_rejected",
+      projectTag,
+      filePath,
+      reason,
+    });
+    // Refresh state (no-op for state, but keeps index current) and broadcast
+    this.applyAndBroadcast(event);
   }
 
   // ── Internal helpers ───────────────────────────────────────────────────────
@@ -225,5 +346,37 @@ export class Daemon {
   private refreshState(): void {
     this.store = StateStore.replay(this.log);
     this.index = EventIndex.build(this.log);
+  }
+
+  /**
+   * Run gate re-evaluation for all queued tasks.
+   *
+   * Delegates to GateEvaluator (spec-multi-project §3: three conditions).
+   * Every judgment is recorded as gate_evaluated event (D3, I2).
+   * Refreshes in-memory state after any promotions.
+   *
+   * Called from:
+   *   (a) Scheduler tick (gate-reeval job) — periodic sweep
+   *   (b) After every successful state transition — immediate re-evaluation
+   *       when a dependency or scope-ancestor changes status
+   */
+  private runGateReeval(): void {
+    const allTasks = this.store.getAllTasks();
+    const queuedCount = allTasks.filter((t) => t.status === "queued").length;
+    const promoted = evaluatePendingGates(
+      this.log,
+      allTasks,
+      this.wsServer,
+      this.gateEvaluator,
+      this.lastGateKey
+    );
+    // Refresh state if there are any queued tasks or if a promotion occurred.
+    // gate_evaluated events are now written only on first evaluation or result change
+    // (dedup via lastGateKey). Even when no new events are written, we refresh if
+    // tasks were promoted to keep the index consistent.
+    // D3: state and index are always derived from the log.
+    if (queuedCount > 0 || promoted > 0) {
+      this.refreshState();
+    }
   }
 }
