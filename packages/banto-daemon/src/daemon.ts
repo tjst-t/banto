@@ -62,6 +62,12 @@ export class Daemon {
   private readonly watcher: TaskWatcher;
   private readonly scheduler: Scheduler;
   private readonly gateEvaluator: GateEvaluator;
+  /**
+   * Dedup map for gate_evaluated events: "projectTag/taskId" → last result key.
+   * In-memory; resets on daemon restart (first eval after restart is always recorded).
+   * See evaluatePendingGates for dedup logic.
+   */
+  private readonly lastGateKey: Map<string, string> = new Map();
 
   private constructor(config: DaemonConfig) {
     this.config = config;
@@ -361,12 +367,13 @@ export class Daemon {
       this.log,
       allTasks,
       this.wsServer,
-      this.gateEvaluator
+      this.gateEvaluator,
+      this.lastGateKey
     );
-    // Refresh state if any gate events were emitted (gate_evaluated events are
-    // always written — one per queued task — regardless of pass/block outcome).
-    // This keeps the EventIndex in sync so that getTaskEvents() returns the
-    // complete gate history including blocked evaluations (I2: not swallowed).
+    // Refresh state if there are any queued tasks or if a promotion occurred.
+    // gate_evaluated events are now written only on first evaluation or result change
+    // (dedup via lastGateKey). Even when no new events are written, we refresh if
+    // tasks were promoted to keep the index consistent.
     // D3: state and index are always derived from the log.
     if (queuedCount > 0 || promoted > 0) {
       this.refreshState();

@@ -97,12 +97,15 @@ export class StateStore {
           // Unknown keys from payload are also spread through for extensibility.
           const { title, ...rest } = event.payload;
           // Fixed fields placed after spread so payload cannot override id/status/projectTag.
+          // createdEventId is derived from the log (D3: derived state — not persisted independently;
+          // stored here so gate-evaluator can determine temporal ordering without re-reading the log).
           this.tasks.set(key, {
             ...rest,
             id: event.taskId,
             status: "draft",
             projectTag: event.projectTag,
             title: String(title ?? ""),
+            createdEventId: event.eventId,
           });
         }
         break;

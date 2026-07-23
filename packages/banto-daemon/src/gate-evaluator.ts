@@ -5,11 +5,16 @@
  *   1. Dependency graph: all depends[] tasks must be "resolved"
  *      - Resolved: approved | merging | merged | evaluating | closed
  *      - Permanent block: failed | superseded (unrecoverable, never resolves)
- *   2. Scope overlap × unreviewed ancestor (実質依存):
- *      - An unreviewed ancestor is a task in the same project whose status is
- *        queued | ready | planning | implementing | auditing | review-ready | in-review
- *        (i.e. NOT in approved | merging | merged | evaluating | closed)
- *      - If any unreviewed ancestor's scope.paths overlaps with the candidate's
+ *   2. Scope overlap × unreviewed temporal ancestor (実質依存):
+ *      - A temporal ancestor is a task in the same project that was created BEFORE
+ *        the candidate (createdEventId < candidate.createdEventId) and whose status
+ *        is queued | ready | planning | implementing | auditing | review-ready | in-review
+ *        (i.e. NOT in approved | merging | merged | evaluating | closed).
+ *      - "Before" is defined by task_created eventId order (monotonically increasing).
+ *        This breaks the deadlock that would arise if two tasks with overlapping scope
+ *        were created simultaneously and each blocked the other: the later-created task
+ *        defers to the earlier-created task, never vice versa.
+ *      - If any unreviewed temporal ancestor's scope.paths overlaps with the candidate's
  *        scope.paths, spawn is deferred.
  *      - Overlap detection is conservative: only when paths are provably disjoint
  *        is parallel execution allowed.
@@ -17,7 +22,9 @@
  *      (real environment quota is Sprint S9d7fdb). The interface is defined here.
  *
  * D2: gate conditions are data-driven (sets of states, not inline conditionals).
- * D3: every gate judgment is recorded as a gate_evaluated event.
+ * D3: gate judgments are recorded as gate_evaluated events only when the result
+ *     changes (passed value or blockedBy set). Initial evaluation is always recorded.
+ *     Re-recording identical results is suppressed to avoid log bloat.
  * D6: no third-party libs; glob intersection uses conservative string logic only.
  * I2: blocked reasons are explicit and recorded in blockedBy[].
  */
@@ -92,28 +99,47 @@ export class AlwaysPassQuota implements QuotaCheck {
 
 /**
  * Normalise a glob pattern to a comparable prefix form.
- * Strips trailing `**` and `*` wildcards to get the deepest known path component.
- * Returns the normalised segment prefix (empty string = matches everything).
+ * Cuts at the first `**` or single `*` wildcard to get the deepest known
+ * literal path component. Returns the normalised segment prefix
+ * (empty string = matches everything).
+ *
+ * Strategy: find the first `**` or `*` component and take the path up to
+ * (but not including) that segment. A mid-path wildcard like `src / ** / b.ts`
+ * means the prefix is `src/`, which is the deepest portion we can reliably
+ * compare.  This is intentionally conservative (may say "overlap" when none
+ * actually exists), which is the safe direction per D6.
  *
  * Examples:
- *   "src/**"          → "src/"
- *   "src/shared/**"   → "src/shared/"
- *   "src/a/b.ts"      → "src/a/b.ts"
- *   "**"              → ""          (matches everything)
- *   "*"               → ""          (matches anything at this level)
+ *   "src/**"              → "src/"
+ *   "src/shared/**"       → "src/shared/"
+ *   "src/[**]/b.ts"       → "src/"      (mid-path ** cut here; bracket notation avoids comment close)
+ *   "src/a/**"            → "src/a/"
+ *   "src/a/b.ts"          → "src/a/b.ts"
+ *   "**"                  → ""          (matches everything)
+ *   "*"                   → ""          (matches anything at this level)
+ *   "src/[*]/b.ts"        → "src/"      (mid-path * cut here)
  */
 function globPrefix(pattern: string): string {
   // Remove trailing slash first
-  let p = pattern.replace(/\/+$/, "");
+  const p = pattern.replace(/\/+$/, "");
 
-  // Strip trailing `/**` or `/*` or `**` or `*`
-  p = p
-    .replace(/\/\*\*$/, "/")
-    .replace(/\/\*$/, "/")
-    .replace(/\*\*$/, "")
-    .replace(/\*$/, "");
+  // Split on '/' and find the first segment containing a wildcard (* or **)
+  const segments = p.split("/");
+  const wildcardIdx = segments.findIndex((seg) => seg.includes("*"));
 
-  return p;
+  if (wildcardIdx === -1) {
+    // No wildcard — exact path
+    return p;
+  }
+
+  if (wildcardIdx === 0) {
+    // Wildcard in the first segment → matches from root → catch-all
+    return "";
+  }
+
+  // Return the literal prefix up to (not including) the wildcard segment,
+  // with a trailing "/" so startsWith comparisons work correctly.
+  return segments.slice(0, wildcardIdx).join("/") + "/";
 }
 
 /**
@@ -211,16 +237,28 @@ export class GateEvaluator {
       }
     }
 
-    // ── Condition 2: scope overlap × unreviewed ancestor ─────────────────────
+    // ── Condition 2: scope overlap × unreviewed temporal ancestor ────────────
     const taskPaths = this.getScopePaths(task);
     if (taskPaths.length > 0) {
-      // Ancestors: tasks in the same project that are unreviewed
-      const ancestors = allTasks.filter(
-        (t) =>
-          t.projectTag === task.projectTag &&
-          t.id !== task.id &&
-          UNREVIEWED_STATES.has(t.status)
-      );
+      // Temporal ancestors: tasks in the same project that were created BEFORE
+      // this task (createdEventId < task.createdEventId) and are still unreviewed.
+      // Using creation order (task_created eventId) breaks the symmetry that would
+      // cause a deadlock when two tasks with overlapping scope enter queued at the
+      // same time: only the later-created one defers, never the earlier one.
+      const taskCreatedEventId = (task as Record<string, unknown>)["createdEventId"];
+      const taskOrder =
+        typeof taskCreatedEventId === "number" ? taskCreatedEventId : Infinity;
+
+      const ancestors = allTasks.filter((t) => {
+        if (t.projectTag !== task.projectTag) return false;
+        if (t.id === task.id) return false;
+        if (!UNREVIEWED_STATES.has(t.status)) return false;
+        // Only tasks created strictly before this task are temporal ancestors.
+        const tCreatedEventId = (t as Record<string, unknown>)["createdEventId"];
+        const tOrder =
+          typeof tCreatedEventId === "number" ? tCreatedEventId : Infinity;
+        return tOrder < taskOrder;
+      });
 
       for (const ancestor of ancestors) {
         const ancestorPaths = this.getScopePaths(ancestor);
@@ -251,6 +289,32 @@ export class GateEvaluator {
   }
 }
 
+// ── Gate result dedup (in-memory, resets on daemon restart) ──────────────────
+
+/**
+ * Serialise a GateResult to a stable dedup key.
+ *
+ * Dedup semantics (per spec "passed値とblockedBy集合"):
+ *   - passed: boolean (true = all clear, false = blocked)
+ *   - blockedBy SET: the set of blocking entity IDs (the part before the first `(`
+ *     in each entry, e.g. "task-0050" from "task-0050(unresolved:implementing)").
+ *     Parenthetical state names are EXCLUDED — the dedup check cares about WHICH
+ *     entities are blocking, not their current sub-state. This prevents spurious
+ *     re-recording when a blocking dep transitions between unresolved states
+ *     (e.g. implementing → auditing → in-review) without leaving the blocking set.
+ *   - Sorted for order-independent comparison.
+ */
+function gateResultKey(result: GateResult): string {
+  // Extract the entity ID (strip everything from the first '(' onward)
+  const ids = result.blockedBy
+    .map((entry) => {
+      const parenIdx = entry.indexOf("(");
+      return parenIdx === -1 ? entry : entry.slice(0, parenIdx);
+    })
+    .sort();
+  return `${result.passed}:${ids.join(",")}`;
+}
+
 // ── evaluatePendingGates: the main loop ───────────────────────────────────────
 
 /**
@@ -261,8 +325,21 @@ export class GateEvaluator {
  *   (b) After any state_transitioned event that might resolve a block
  *       (specifically transitions to terminal/resolved states)
  *
- * D3: every gate judgment is recorded as gate_evaluated event.
- * I2: gate results (pass or block reason) are always recorded.
+ * D3: gate judgments are recorded as gate_evaluated events ONLY when the result
+ *     changes (passed value or blockedBy set differs from the previous evaluation).
+ *     The initial evaluation for a task is always recorded. This prevents log bloat
+ *     when a blocked task stays blocked across multiple ticks with the same blockedBy
+ *     set (e.g. the task is still blocked by the same dependency with no change).
+ *
+ * Dedup tracking: in-memory map (lastGateKey) keyed by "projectTag/taskId".
+ *   - Resets on daemon restart → the first evaluation after restart is always recorded.
+ *     This is acceptable: a restart produces at most one duplicate per queued task, and
+ *     ensures the log always has at least one gate_evaluated record per evaluation epoch.
+ *   - When blockedBy changes (a dep resolves while another remains), the result key
+ *     changes and a new event is emitted. This makes partial-resolution visible in the log.
+ *
+ * I2: gate results (pass or block reason) are always recorded on first evaluation
+ *     or when the result changes. Permanent blocks are still visible.
  *
  * Returns the number of tasks promoted to ready.
  */
@@ -270,23 +347,32 @@ export function evaluatePendingGates(
   log: EventLog,
   allTasks: TaskRecord[],
   wsServer: WsEventServer,
-  evaluator: GateEvaluator
+  evaluator: GateEvaluator,
+  lastGateKey: Map<string, string> = new Map()
 ): number {
   const queuedTasks = allTasks.filter((t) => t.status === "queued");
   let promoted = 0;
 
   for (const task of queuedTasks) {
     const result = evaluator.evaluate(task, allTasks);
+    const dedupKey = `${task.projectTag}/${task.id}`;
+    const newKey = gateResultKey(result);
+    const prevKey = lastGateKey.get(dedupKey);
 
-    // I2: always record the gate judgment
-    const gateEvent = log.append({
-      type: "gate_evaluated",
-      projectTag: task.projectTag,
-      taskId: task.id,
-      passed: result.passed,
-      blockedBy: result.blockedBy,
-    });
-    wsServer.broadcast(gateEvent);
+    // Record gate_evaluated only when:
+    //   - This is the first evaluation for this task (no prevKey), OR
+    //   - The result changed (passed value or blockedBy set is different)
+    if (prevKey !== newKey) {
+      lastGateKey.set(dedupKey, newKey);
+      const gateEvent = log.append({
+        type: "gate_evaluated",
+        projectTag: task.projectTag,
+        taskId: task.id,
+        passed: result.passed,
+        blockedBy: result.blockedBy,
+      });
+      wsServer.broadcast(gateEvent);
+    }
 
     if (result.passed) {
       StateMachine.transition(
@@ -298,6 +384,9 @@ export function evaluatePendingGates(
         "gate_passed"
       );
       promoted++;
+      // Clear dedup state for this task — it's no longer queued; if it somehow
+      // returns to queued later, the next evaluation will be fresh.
+      lastGateKey.delete(dedupKey);
     }
   }
 
