@@ -1,1 +1,3 @@
 docs/sprint-logs/
+.claude/worktrees/
+.claude/autopilot-*.lock
