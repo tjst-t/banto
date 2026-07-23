@@ -1,3 +1,6 @@
 docs/sprint-logs/
 .claude/worktrees/
 .claude/autopilot-*.lock
+node_modules/
+dist/
+*.tsbuildinfo

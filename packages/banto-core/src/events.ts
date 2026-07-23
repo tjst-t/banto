@@ -1,0 +1,162 @@
+/**
+ * Orchestration event types for the banto event sourcing system.
+ * All events are append-only and cover: state transitions, spawn/exit,
+ * gate decisions, approvals/rejections, PO operations, card generation.
+ *
+ * Session transcripts are NOT stored here — only path references (per spec §2.1).
+ */
+
+/** Task lifecycle states from daemon-core spec §1 */
+export type TaskStatus =
+  | "draft"
+  | "queued"
+  | "ready"
+  | "planning"
+  | "implementing"
+  | "auditing"
+  | "review-ready"
+  | "in-review"
+  | "approved"
+  | "merging"
+  | "merged"
+  | "evaluating"
+  | "closed"
+  | "paused"
+  | "failed"
+  | "superseded";
+
+/** Base fields present on every event (monotonically increasing eventId + projectTag) */
+export interface EventBase {
+  /** Monotonically increasing integer ID scoped to this log */
+  eventId: number;
+  /** ISO-8601 timestamp */
+  timestamp: string;
+  /** Project tag for multi-project support (spec-multi-project §1) */
+  projectTag: string;
+}
+
+/** Task created by PO or daemon */
+export interface TaskCreatedEvent extends EventBase {
+  type: "task_created";
+  taskId: string;
+  payload: {
+    title: string;
+    /** Optional transcript path reference (not content) */
+    transcriptPath?: string;
+    [key: string]: unknown;
+  };
+}
+
+/** Task state machine transition */
+export interface StateTransitionedEvent extends EventBase {
+  type: "state_transitioned";
+  taskId: string;
+  from: TaskStatus;
+  to: TaskStatus;
+  reason?: string;
+}
+
+/** Agent session spawned for a task */
+export interface AgentSpawnedEvent extends EventBase {
+  type: "agent_spawned";
+  taskId: string;
+  pid: number;
+  sessionPath: string;
+  worktree: string;
+  modelTier: "reasoning" | "standard" | "fast";
+}
+
+/** Agent session exited */
+export interface AgentExitedEvent extends EventBase {
+  type: "agent_exited";
+  taskId: string;
+  pid: number;
+  exitCode: number | null;
+  signal: string | null;
+}
+
+/** Dependency gate evaluated (queued → ready gate) */
+export interface GateEvaluatedEvent extends EventBase {
+  type: "gate_evaluated";
+  taskId: string;
+  passed: boolean;
+  blockedBy: string[];
+}
+
+/**
+ * PO approved a task for merge.
+ * D3: This event is a PO judgment record ONLY — it does NOT change task status.
+ * Status canonical source is state_transitioned exclusively.
+ */
+export interface TaskApprovedEvent extends EventBase {
+  type: "task_approved";
+  taskId: string;
+  approvedBy: string;
+}
+
+/**
+ * PO rejected a task.
+ * D3: This event is a PO judgment record ONLY — it does NOT change task status.
+ * Status canonical source is state_transitioned exclusively.
+ */
+export interface TaskRejectedEvent extends EventBase {
+  type: "task_rejected";
+  taskId: string;
+  rejectedBy: string;
+  reason: string;
+}
+
+/** PO operation (enqueue, prioritize, pause, etc.) */
+export interface PoOperationEvent extends EventBase {
+  type: "po_operation";
+  operation: string;
+  taskId?: string;
+  payload?: Record<string, unknown>;
+}
+
+/** Evaluation/retrospective card generated */
+export interface CardGeneratedEvent extends EventBase {
+  type: "card_generated";
+  cardId: string;
+  taskId?: string;
+  cardType: "evaluation" | "cadence" | "meta_cadence";
+  /** Path reference to card file, not content */
+  cardPath: string;
+}
+
+/** Environment provisioned for a task */
+export interface EnvProvisionedEvent extends EventBase {
+  type: "env_provisioned";
+  taskId: string;
+  envId: string;
+  worktree: string;
+}
+
+/** Environment torn down */
+export interface EnvTornDownEvent extends EventBase {
+  type: "env_torn_down";
+  taskId: string;
+  envId: string;
+}
+
+/** Merge completed */
+export interface TaskMergedEvent extends EventBase {
+  type: "task_merged";
+  taskId: string;
+  commitSha: string;
+}
+
+/** Union of all orchestration event types */
+export type OrchestrationEvent =
+  | TaskCreatedEvent
+  | StateTransitionedEvent
+  | AgentSpawnedEvent
+  | AgentExitedEvent
+  | GateEvaluatedEvent
+  | TaskApprovedEvent
+  | TaskRejectedEvent
+  | PoOperationEvent
+  | CardGeneratedEvent
+  | EnvProvisionedEvent
+  | EnvTornDownEvent
+  | TaskMergedEvent;
