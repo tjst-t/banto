@@ -92,11 +92,17 @@ export class StateStore {
         const key = StateStore.taskKey(event.projectTag, event.taskId);
         const existing = this.tasks.get(key);
         if (!existing) {
+          // Propagate well-known payload fields (depends, etc.) into the task record
+          // so that gate re-evaluation can inspect them without re-reading the log.
+          // Unknown keys from payload are also spread through for extensibility.
+          const { title, ...rest } = event.payload;
+          // Fixed fields placed after spread so payload cannot override id/status/projectTag.
           this.tasks.set(key, {
+            ...rest,
             id: event.taskId,
             status: "draft",
             projectTag: event.projectTag,
-            title: String(event.payload.title ?? ""),
+            title: String(title ?? ""),
           });
         }
         break;
@@ -208,6 +214,7 @@ export class StateStore {
       case "card_generated":
       case "env_provisioned":
       case "env_torn_down":
+      case "tick_job_failed":
         // These events are recorded for the log's truth value but don't
         // directly alter the task state machine (handled by daemon logic)
         break;

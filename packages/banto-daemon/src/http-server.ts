@@ -86,6 +86,16 @@ export function createHttpServer(daemon: Daemon): http.Server {
       },
     },
 
+    // Daemon-wide event log (all events, including daemon-internal ones)
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/events$/,
+      handler: async (_req, res) => {
+        const events = daemon.getAllEvents();
+        sendJson(res, 200, { events });
+      },
+    },
+
     // List projects
     {
       method: "GET",
@@ -150,6 +160,21 @@ export function createHttpServer(daemon: Daemon): http.Server {
           return;
         }
         sendJson(res, 200, { task });
+      },
+    },
+
+    // Get all events for a project (including daemon-internal tick_job_failed etc.)
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/events$/,
+      handler: async (_req, res, match) => {
+        const proj = match[1];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const events = daemon.getProjectEvents(proj);
+        sendJson(res, 200, { events });
       },
     },
 

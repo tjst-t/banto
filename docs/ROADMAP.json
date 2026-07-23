@@ -2,11 +2,11 @@
   "project": "banto",
   "description": "一人のPOがAIエージェントのチームを率いて開発するための統治環境（ガバナンスレイヤー＋POコックピット）",
   "progress": {
-    "current_sprint": null,
+    "current_sprint": "Scc9152",
     "total": 10,
     "done": 1,
-    "in_progress": 0,
-    "remaining": 9,
+    "in_progress": 1,
+    "remaining": 8,
     "percentage": 10
   },
   "execution_order": [
@@ -207,7 +207,7 @@
     },
     "Scc9152": {
       "title": "契約層とスケジューラ（work/watcher・スキーマ検証・依存駆動ゲート）",
-      "status": "pending",
+      "status": "in_progress",
       "description": "ファイル（意図）とイベントログ（実行時状態）の分離を運用の入口から確立する。work/のタスク定義取り込み、frontmatterスキーマ検証、依存駆動ゲート、定期処理tick",
       "milestone": false,
       "stories": {
