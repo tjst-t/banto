@@ -17,13 +17,15 @@
  */
 
 import * as http from "node:http";
+import * as path from "node:path";
 import {
   EventLog,
   StateStore,
   EventIndex,
   StateMachine,
+  RuntimeDriverRegistry,
 } from "@banto/core";
-import type { OrchestrationEvent, TaskStatus, TaskRecord, TransitionResult } from "@banto/core";
+import type { OrchestrationEvent, TaskStatus, TaskRecord, TransitionResult, RuntimeDriver, SpawnOptions } from "@banto/core";
 import { ProjectRegistry } from "./project-registry.js";
 import type { ProjectEntry } from "./project-registry.js";
 import { WsEventServer } from "./ws-server.js";
@@ -32,6 +34,7 @@ import { TaskWatcher } from "./task-watcher.js";
 import { Scheduler } from "./scheduler.js";
 import type { TickJob } from "./scheduler.js";
 import { GateEvaluator, evaluatePendingGates } from "./gate-evaluator.js";
+import { PiRpcDriver, createWorktree } from "./pi-rpc-driver.js";
 
 export interface DaemonConfig {
   /** Port to listen on. Default: 3000 */
@@ -49,6 +52,16 @@ export interface DaemonConfig {
    * Override to a small value (e.g. 500) in tests to reduce wait time.
    */
   tickIntervalMs: number;
+  /**
+   * Base directory for git worktrees created for spawned tasks.
+   * Default: <dataDir>/worktrees
+   */
+  worktreeBaseDir?: string;
+  /**
+   * Base directory for session JSONL files.
+   * Default: <dataDir>/sessions
+   */
+  sessionBaseDir?: string;
 }
 
 export class Daemon {
@@ -68,6 +81,12 @@ export class Daemon {
    * See evaluatePendingGates for dedup logic.
    */
   private readonly lastGateKey: Map<string, string> = new Map();
+  /**
+   * RuntimeDriver registry — maps driver IDs to RuntimeDriver implementations.
+   * Spec §3.5: pi-rpc is the reference implementation; additional drivers can be
+   * registered by callers (e.g. in tests, or when claude-agent-sdk is added).
+   */
+  readonly driverRegistry: RuntimeDriverRegistry;
 
   private constructor(config: DaemonConfig) {
     this.config = config;
@@ -75,6 +94,14 @@ export class Daemon {
     this.store = StateStore.replay(this.log);
     this.index = EventIndex.build(this.log);
     this.registry = ProjectRegistry.open(config.dataDir);
+
+    // Initialize driver registry with the pi-rpc reference implementation.
+    // D6: PiRpcDriver uses only child_process (stdlib) + the pi binary.
+    this.driverRegistry = new RuntimeDriverRegistry();
+    const piDriver = new PiRpcDriver({
+      sessionBaseDir: config.sessionBaseDir ?? path.join(config.dataDir, "sessions"),
+    });
+    this.driverRegistry.register("pi-rpc", piDriver);
 
     this.httpServer = createHttpServer(this);
     this.wsServer = new WsEventServer(this.httpServer, (projectTag) =>
@@ -115,6 +142,8 @@ export class Daemon {
       tickIntervalMs:
         config.tickIntervalMs ??
         parseInt(process.env["BANTO_TICK_INTERVAL_MS"] ?? "60000", 10),
+      worktreeBaseDir: config.worktreeBaseDir,
+      sessionBaseDir: config.sessionBaseDir,
     };
     return new Daemon(resolved);
   }
@@ -255,6 +284,148 @@ export class Daemon {
     const task = this.store.getTask(taskId, projectTag);
     if (!task) throw new Error("Invariant: task not found after creation"); // I2
     return task;
+  }
+
+  // ── Session spawn ──────────────────────────────────────────────────────────
+
+  /**
+   * Spawn a pi-rpc session for a task that is in "ready" status.
+   *
+   * Workflow:
+   *   1. Validate the task is in "ready" state.
+   *   2. Look up the project repo path.
+   *   3. Create a git worktree at <worktreeBaseDir>/<projectTag>/<taskId>.
+   *   4. Spawn pi via the registered driver (default: "pi-rpc").
+   *   5. Append agent_spawned event — sessionPath only, not transcript content (spec §2.1).
+   *   6. Transition task → "planning" (state machine enforces the guard).
+   *   7. Subscribe to driver events; when process exits, append agent_exited event.
+   *
+   * I2: any failure (worktree, spawn) appends task_failed + task never transitions.
+   *
+   * @param projectTag  Project tag.
+   * @param taskId      Task ID (must be in "ready" state).
+   * @param driverId    Driver to use (default: "pi-rpc").
+   * @param spawnExtra  Additional SpawnOptions fields (tools, systemPrompt, etc.).
+   */
+  async spawnTask(
+    projectTag: string,
+    taskId: string,
+    driverId = "pi-rpc",
+    spawnExtra: Partial<SpawnOptions> = {}
+  ): Promise<{ worktreePath: string; sessionPath: string; pid: number; sessionId: string }> {
+    // 1. Validate task state
+    const task = this.store.getTask(taskId, projectTag);
+    if (!task) throw new Error(`Task '${taskId}' not found in project '${projectTag}'`);
+    if (task.status !== "ready") {
+      throw new Error(
+        `Task '${taskId}' must be in 'ready' state to spawn (current: ${task.status})`
+      );
+    }
+
+    // 2. Look up project repo path (for worktree creation)
+    const project = this.registry.list().find((p) => p.id === projectTag);
+    const repoPath = project?.repoPath ?? "";
+
+    // 3. Resolve paths
+    const worktreeBase =
+      this.config.worktreeBaseDir ?? path.join(this.config.dataDir, "worktrees");
+    const worktreePath = path.join(worktreeBase, projectTag, taskId);
+    const sessionBase =
+      this.config.sessionBaseDir ?? path.join(this.config.dataDir, "sessions");
+    const sessionPath = path.join(sessionBase, projectTag, `${taskId}.jsonl`);
+
+    // 4. Create git worktree (if repo is available)
+    if (repoPath) {
+      try {
+        await createWorktree(repoPath, worktreePath);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.recordTaskFailed(projectTag, taskId, `worktree creation failed: ${reason}`);
+        throw err;
+      }
+    }
+
+    // 5. Look up driver
+    const driver = this.driverRegistry.get(driverId);
+    if (!driver) {
+      const reason = `Driver '${driverId}' not registered`;
+      this.recordTaskFailed(projectTag, taskId, reason);
+      throw new Error(reason);
+    }
+
+    // 6. Spawn session
+    let handle: { pid: number; sessionId: string; sessionPath: string };
+    try {
+      const opts: SpawnOptions = {
+        taskId,
+        worktreePath,
+        sessionPath,
+        systemPrompt: spawnExtra.systemPrompt ?? "",
+        tools: spawnExtra.tools ?? [],
+        modelTier: spawnExtra.modelTier,
+        driverOptions: spawnExtra.driverOptions,
+      };
+      handle = await driver.spawn(opts);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.recordTaskFailed(projectTag, taskId, `spawn failed: ${reason}`);
+      throw err;
+    }
+
+    // 7. Append agent_spawned event — session path reference ONLY (spec §2.1)
+    const spawnedEvent = this.log.append({
+      type: "agent_spawned",
+      projectTag,
+      taskId,
+      pid: handle.pid,
+      sessionPath: handle.sessionPath,
+      worktree: worktreePath,
+      modelTier: spawnExtra.modelTier ?? "standard",
+    });
+    this.applyAndBroadcast(spawnedEvent);
+
+    // 8. Transition to "planning"
+    this.transition(projectTag, taskId, "planning", "agent spawned");
+
+    // 9. Subscribe to driver events for this session → agent_exited
+    const unsub = driver.subscribe((event) => {
+      if (event.type === "process_exited" && event.sessionId === handle.sessionId) {
+        const exitedEvent = this.log.append({
+          type: "agent_exited",
+          projectTag,
+          taskId,
+          pid: event.pid,
+          exitCode: event.exitCode,
+          signal: event.signal,
+        });
+        this.applyAndBroadcast(exitedEvent);
+        unsub();
+      }
+    });
+
+    return {
+      worktreePath,
+      sessionPath: handle.sessionPath,
+      pid: handle.pid,
+      sessionId: handle.sessionId,
+    };
+  }
+
+  /**
+   * Record an unrecoverable task failure (I2).
+   * Appends task_failed event and transitions task to "failed" status.
+   * Private helper used by spawnTask error paths.
+   */
+  private recordTaskFailed(projectTag: string, taskId: string, reason: string): void {
+    const failedEvent = this.log.append({
+      type: "task_failed",
+      projectTag,
+      taskId,
+      reason,
+    });
+    this.applyAndBroadcast(failedEvent);
+    // Also transition state to "failed" so state machine reflects the failure
+    this.transition(projectTag, taskId, "failed", reason);
   }
 
   /**

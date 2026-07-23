@@ -58,3 +58,14 @@ export type { TransitionResult } from "./state-machine.js";
 // DaemonClient (fetch-based HTTP client for banto-daemon REST API)
 export { DaemonClient, DaemonConnectionError, DaemonApiError } from "./daemon-client.js";
 export type { ProjectEntry, HealthResponse } from "./daemon-client.js";
+
+// RuntimeDriver contract — runtime-neutral session lifecycle abstraction (spec §3.5)
+export { RuntimeDriverRegistry } from "./runtime-driver.js";
+export type {
+  RuntimeDriver,
+  SessionHandle,
+  SpawnOptions,
+  DriverEvent,
+  DriverEventHandler,
+  DriverId,
+} from "./runtime-driver.js";
