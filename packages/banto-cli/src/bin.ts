@@ -13,7 +13,7 @@
  *     ws is already a workspace dependency in banto-daemon, reused here).
  */
 
-import { DaemonClient, DaemonConnectionError } from "@banto/core";
+import { DaemonClient, DaemonConnectionError, DaemonApiError } from "@banto/core";
 import { cmdStatus } from "./cmd-status.js";
 import { cmdEvents } from "./cmd-events.js";
 
@@ -57,7 +57,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  if (err instanceof DaemonConnectionError) {
+  if (err instanceof DaemonConnectionError || err instanceof DaemonApiError) {
     process.stderr.write(`Error: ${err.message}\n`);
     process.exit(1);
   }

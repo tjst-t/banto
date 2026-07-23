@@ -114,7 +114,11 @@ export async function cmdEvents(client: DaemonClient, afterEventId?: number): Pr
 }
 
 function waitForSigint(connections: WebSocket[]): Promise<void> {
-  return new Promise<void>((resolve) => {
+  return new Promise<void>(() => {
+    // This Promise intentionally never resolves: cleanup ends the process
+    // directly. The ws library may keep the event loop alive with internal
+    // timers even after socket.close(), so process.exit(0) ensures SIGINT
+    // always results in a clean exit 0.
     const cleanup = () => {
       for (const ws of connections) {
         try {
@@ -123,10 +127,6 @@ function waitForSigint(connections: WebSocket[]): Promise<void> {
           // best-effort close
         }
       }
-      resolve();
-      // Force exit after cleanup: the ws library may keep the event loop
-      // alive with internal timers even after socket.close(). Using
-      // process.exit(0) ensures SIGINT always results in a clean exit 0.
       process.exit(0);
     };
     process.once("SIGINT", cleanup);
