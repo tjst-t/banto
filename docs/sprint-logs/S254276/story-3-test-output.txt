@@ -1,0 +1,949 @@
+
+> test
+> node --import tsx --test tests/acceptance/*.spec.ts
+
+TAP version 13
+# [banto-daemon] listening on port 0 (dataDir=/tmp/banto-rest-rGvugP)
+# Subtest: [AC-S654396-3-1] REST API: projects, tasks, events
+    # Subtest: [AC-S654396-3-1] GET /api/v1/health returns 200 ok
+    ok 1 - [AC-S654396-3-1] GET /api/v1/health returns 200 ok
+      ---
+      duration_ms: 35.813006
+      ...
+    # Subtest: [AC-S654396-3-1] GET /api/v1/projects returns empty list initially
+    ok 2 - [AC-S654396-3-1] GET /api/v1/projects returns empty list initially
+      ---
+      duration_ms: 3.897957
+      ...
+    # Subtest: [AC-S654396-3-1] POST /api/v1/projects registers a project (201)
+    ok 3 - [AC-S654396-3-1] POST /api/v1/projects registers a project (201)
+      ---
+      duration_ms: 7.043485
+      ...
+    # Subtest: [AC-S654396-3-1] GET /api/v1/projects lists the registered project
+    ok 4 - [AC-S654396-3-1] GET /api/v1/projects lists the registered project
+      ---
+      duration_ms: 2.393245
+      ...
+    # Subtest: [AC-S654396-3-1] POST /api/v1/projects/proj-a/tasks creates a task in draft
+    ok 5 - [AC-S654396-3-1] POST /api/v1/projects/proj-a/tasks creates a task in draft
+      ---
+      duration_ms: 7.606952
+      ...
+    # Subtest: [AC-S654396-3-1] GET /api/v1/projects/proj-a/tasks lists tasks
+    ok 6 - [AC-S654396-3-1] GET /api/v1/projects/proj-a/tasks lists tasks
+      ---
+      duration_ms: 2.640508
+      ...
+    # Subtest: [AC-S654396-3-1] GET /api/v1/projects/proj-a/tasks/task-0001 returns task detail
+    ok 7 - [AC-S654396-3-1] GET /api/v1/projects/proj-a/tasks/task-0001 returns task detail
+      ---
+      duration_ms: 2.34835
+      ...
+    # Subtest: [AC-S654396-3-1] POST /api/v1/projects/proj-a/tasks/task-0001/transition transitions state
+    ok 8 - [AC-S654396-3-1] POST /api/v1/projects/proj-a/tasks/task-0001/transition transitions state
+      ---
+      duration_ms: 12.980996
+      ...
+    # Subtest: [AC-S654396-3-1] POST transition with invalid target returns 400 + rejection
+    ok 9 - [AC-S654396-3-1] POST transition with invalid target returns 400 + rejection
+      ---
+      duration_ms: 2.937705
+      ...
+    # Subtest: [AC-S654396-3-1] GET /api/v1/projects/proj-a/tasks/task-0001/events returns event history
+    ok 10 - [AC-S654396-3-1] GET /api/v1/projects/proj-a/tasks/task-0001/events returns event history
+      ---
+      duration_ms: 1.673644
+      ...
+    # Subtest: [AC-S654396-3-1] GET non-existent task returns 404 with error: not_found
+    ok 11 - [AC-S654396-3-1] GET non-existent task returns 404 with error: not_found
+      ---
+      duration_ms: 1.218472
+      ...
+    # Subtest: [AC-S654396-3-1] unknown route returns 404
+    ok 12 - [AC-S654396-3-1] unknown route returns 404
+      ---
+      duration_ms: 1.194444
+      ...
+    # Subtest: [AC-S654396-3-1-reg] POST with invalid JSON body returns 400 with error field
+    ok 13 - [AC-S654396-3-1-reg] POST with invalid JSON body returns 400 with error field
+      ---
+      duration_ms: 1.678482
+      ...
+    # Subtest: [AC-S654396-3-1-reg] POST /api/v1/projects with invalid JSON body returns 400
+    ok 14 - [AC-S654396-3-1-reg] POST /api/v1/projects with invalid JSON body returns 400
+      ---
+      duration_ms: 1.667545
+      ...
+    # Subtest: [AC-S654396-3-1-reg] POST /api/v1/projects/proj-a/tasks/:id/transition with invalid JSON body returns 400
+    ok 15 - [AC-S654396-3-1-reg] POST /api/v1/projects/proj-a/tasks/:id/transition with invalid JSON body returns 400
+      ---
+      duration_ms: 1.962068
+      ...
+    1..15
+ok 1 - [AC-S654396-3-1] REST API: projects, tasks, events
+  ---
+  duration_ms: 95.299978
+  type: 'suite'
+  ...
+# [banto-daemon] listening on port 0 (dataDir=/tmp/banto-ws-taytig)
+# Subtest: [AC-S654396-3-2] WebSocket real-time subscription + resume
+    # Subtest: [AC-S654396-3-2] step 1: connect and subscribe → receive subscribed ack
+    ok 1 - [AC-S654396-3-2] step 1: connect and subscribe → receive subscribed ack
+      ---
+      duration_ms: 15.179932
+      ...
+    # Subtest: [AC-S654396-3-2] step 2: real-time event delivery — create task via REST, receive WS event
+    ok 2 - [AC-S654396-3-2] step 2: real-time event delivery — create task via REST, receive WS event
+      ---
+      duration_ms: 7.869486
+      ...
+    # Subtest: [AC-S654396-3-2] step 3+4: disconnect, inject 2 events, reconnect with after_event_id → catch-up delivery
+    ok 3 - [AC-S654396-3-2] step 3+4: disconnect, inject 2 events, reconnect with after_event_id → catch-up delivery
+      ---
+      duration_ms: 60.344169
+      ...
+    1..3
+ok 2 - [AC-S654396-3-2] WebSocket real-time subscription + resume
+  ---
+  duration_ms: 144.69891
+  type: 'suite'
+  ...
+# Subtest: [AC-S254276-3-1] banto-core layering: tools, client, prompt assets; adapter is thin
+    # Subtest: [AC-S254276-3-1] @banto/core exports reportPhaseTool, reportDoneTool, DaemonClient, loadPromptAsset
+    ok 1 - [AC-S254276-3-1] @banto/core exports reportPhaseTool, reportDoneTool, DaemonClient, loadPromptAsset
+      ---
+      duration_ms: 0.617187
+      ...
+    # Subtest: [AC-S254276-3-1] banto-core source files do NOT import pi or @mariozechner (runtime-neutral)
+    ok 2 - [AC-S254276-3-1] banto-core source files do NOT import pi or @mariozechner (runtime-neutral)
+      ---
+      duration_ms: 2.517734
+      ...
+    # Subtest: [AC-S254276-3-1] banto-core package.json does NOT list @mariozechner as a dependency
+    ok 3 - [AC-S254276-3-1] banto-core package.json does NOT list @mariozechner as a dependency
+      ---
+      duration_ms: 0.194393
+      ...
+    # Subtest: [AC-S254276-3-1] pi Extension adapter is 60 lines or fewer (thin wrapper constraint)
+    ok 4 - [AC-S254276-3-1] pi Extension adapter is 60 lines or fewer (thin wrapper constraint)
+      ---
+      duration_ms: 0.177566
+      ...
+    # Subtest: [AC-S254276-3-1] reportPhaseTool parameters conform to JSON Schema shape
+    ok 5 - [AC-S254276-3-1] reportPhaseTool parameters conform to JSON Schema shape
+      ---
+      duration_ms: 0.517178
+      ...
+    1..5
+ok 3 - [AC-S254276-3-1] banto-core layering: tools, client, prompt assets; adapter is thin
+  ---
+  duration_ms: 4.801085
+  type: 'suite'
+  ...
+# [banto-daemon] listening on port 0 (dataDir=/tmp/banto-cli-events-iQBP5U)
+# Subtest: [AC-S654396-4-2] banto events --follow
+    # Subtest: [AC-S654396-4-2] step 1: WS connection established, listening message appears
+    ok 1 - [AC-S654396-4-2] step 1: WS connection established, listening message appears
+      ---
+      duration_ms: 324.012335
+      ...
+    # Subtest: [AC-S654396-4-2] step 2: REST task_created event appears in stdout within 3s
+    ok 2 - [AC-S654396-4-2] step 2: REST task_created event appears in stdout within 3s
+      ---
+      duration_ms: 325.145358
+      ...
+    # Subtest: [AC-S654396-4-2] step 3: SIGINT → exit code 0, no stderr errors
+    ok 3 - [AC-S654396-4-2] step 3: SIGINT → exit code 0, no stderr errors
+      ---
+      duration_ms: 355.63826
+      ...
+    # Subtest: [AC-S654396-4-2] step 4: --after <id> catches up missed events on reconnect
+    ok 4 - [AC-S654396-4-2] step 4: --after <id> catches up missed events on reconnect
+      ---
+      duration_ms: 765.295644
+      ...
+    1..4
+ok 4 - [AC-S654396-4-2] banto events --follow
+  ---
+  duration_ms: 1810.434762
+  type: 'suite'
+  ...
+# [banto-daemon] listening on port 0 (dataDir=/tmp/banto-cli-status-Wsd0jX)
+# Subtest: [AC-S654396-4-1] banto status
+    # Subtest: [AC-S654396-4-1] step 1: banto status exits 0 and shows daemon, projects, tasks
+    ok 1 - [AC-S654396-4-1] step 1: banto status exits 0 and shows daemon, projects, tasks
+      ---
+      duration_ms: 355.602716
+      ...
+    # Subtest: [AC-S654396-4-1] step 2 (I2): daemon not running → exit non-0 + stderr error
+    ok 2 - [AC-S654396-4-1] step 2 (I2): daemon not running → exit non-0 + stderr error
+      ---
+      duration_ms: 269.173509
+      ...
+    1..2
+ok 5 - [AC-S654396-4-1] banto status
+  ---
+  duration_ms: 681.904533
+  type: 'suite'
+  ...
+# Subtest: [AC-S654396-1-3] Event IDs, project tags, and task index
+    # Subtest: [AC-S654396-1-3] all events have eventId and projectTag; task index derives history
+    ok 1 - [AC-S654396-1-3] all events have eventId and projectTag; task index derives history
+      ---
+      duration_ms: 1.814037
+      ...
+    1..1
+ok 6 - [AC-S654396-1-3] Event IDs, project tags, and task index
+  ---
+  duration_ms: 3.683424
+  type: 'suite'
+  ...
+# Subtest: [AC-S654396-1-1] Event log replay after restart
+    # Subtest: [AC-S654396-1-1] replays correct derived state after kill -9 and restart
+    ok 1 - [AC-S654396-1-1] replays correct derived state after kill -9 and restart
+      ---
+      duration_ms: 1.664031
+      ...
+    # Subtest: [AC-S654396-1-1] survives kill -9 via child process SIGKILL simulation
+    ok 2 - [AC-S654396-1-1] survives kill -9 via child process SIGKILL simulation
+      ---
+      duration_ms: 214.586601
+      ...
+    1..2
+ok 7 - [AC-S654396-1-1] Event log replay after restart
+  ---
+  duration_ms: 217.763875
+  type: 'suite'
+  ...
+# Subtest: [AC-S654396-1-2] Segment rotation and snapshot
+    # Subtest: [AC-S654396-1-2] rotation generates snapshot; replay uses snapshot + active segment only
+    ok 1 - [AC-S654396-1-2] rotation generates snapshot; replay uses snapshot + active segment only
+      ---
+      duration_ms: 2.067158
+      ...
+    1..1
+ok 8 - [AC-S654396-1-2] Segment rotation and snapshot
+  ---
+  duration_ms: 5.342518
+  type: 'suite'
+  ...
+# Subtest: [AC-S654396-1-2-reg] Same-month double-rotation segment name wraparound regression
+    # Subtest: [AC-S654396-1-2-reg] two rotations in the same month produce distinct segment names and all events survive full replay
+    ok 1 - [AC-S654396-1-2-reg] two rotations in the same month produce distinct segment names and all events survive full replay
+      ---
+      duration_ms: 1.386193
+      ...
+    1..1
+ok 9 - [AC-S654396-1-2-reg] Same-month double-rotation segment name wraparound regression
+  ---
+  duration_ms: 1.494495
+  type: 'suite'
+  ...
+# Subtest: [AC-S654396-I2] I2 — errors are not silently swallowed
+    # Subtest: [AC-S654396-I2-snapshot] corrupt snapshot writes warning to stderr and falls back to full replay
+    ok 1 - [AC-S654396-I2-snapshot] corrupt snapshot writes warning to stderr and falls back to full replay
+      ---
+      duration_ms: 1.409278
+      ...
+    # Subtest: [AC-S654396-I2-unknown-event] applyEvent throws on unknown event type
+    ok 2 - [AC-S654396-I2-unknown-event] applyEvent throws on unknown event type
+      ---
+      duration_ms: 0.923989
+      ...
+    1..2
+ok 10 - [AC-S654396-I2] I2 — errors are not silently swallowed
+  ---
+  duration_ms: 2.450352
+  type: 'suite'
+  ...
+# Subtest: [AC-S654396-D3] D3 — task status canonical source is state_transitioned only
+    # Subtest: [AC-S654396-D3] task_approved does not change task status
+    ok 1 - [AC-S654396-D3] task_approved does not change task status
+      ---
+      duration_ms: 0.737068
+      ...
+    # Subtest: [AC-S654396-D3] task_rejected does not change task status
+    ok 2 - [AC-S654396-D3] task_rejected does not change task status
+      ---
+      duration_ms: 0.665841
+      ...
+    # Subtest: [AC-S654396-D3] status transition to approved/failed via state_transitioned works correctly
+    ok 3 - [AC-S654396-D3] status transition to approved/failed via state_transitioned works correctly
+      ---
+      duration_ms: 0.565079
+      ...
+    1..3
+ok 11 - [AC-S654396-D3] D3 — task status canonical source is state_transitioned only
+  ---
+  duration_ms: 2.145144
+  type: 'suite'
+  ...
+# [banto-daemon] listening on port 0 (dataDir=/tmp/banto-tools-a0fWwe)
+# Subtest: [AC-S254276-3-2] Executor phase tools drive daemon state transitions
+    # Subtest: [AC-S254276-3-2] task starts in planning state
+    ok 1 - [AC-S254276-3-2] task starts in planning state
+      ---
+      duration_ms: 3.421151
+      ...
+    # Subtest: [AC-S254276-3-2] report_phase(implementing) transitions task to implementing
+    ok 2 - [AC-S254276-3-2] report_phase(implementing) transitions task to implementing
+      ---
+      duration_ms: 4.519511
+      ...
+    # Subtest: [AC-S254276-3-2] state_transitioned event is recorded in the event log
+    ok 3 - [AC-S254276-3-2] state_transitioned event is recorded in the event log
+      ---
+      duration_ms: 2.492195
+      ...
+    # Subtest: [AC-S254276-3-2] report_phase(review-ready) transitions task to review-ready via auditing
+    ok 4 - [AC-S254276-3-2] report_phase(review-ready) transitions task to review-ready via auditing
+      ---
+      duration_ms: 8.006612
+      ...
+    # Subtest: [AC-S254276-3-2] implementing→auditing and auditing→review-ready transitions are in event log
+    ok 5 - [AC-S254276-3-2] implementing→auditing and auditing→review-ready transitions are in event log
+      ---
+      duration_ms: 4.471429
+      ...
+    # Subtest: [AC-S254276-3-2] report_done(summary) with a separate task transitions to review-ready and records reason
+    ok 6 - [AC-S254276-3-2] report_done(summary) with a separate task transitions to review-ready and records reason
+      ---
+      duration_ms: 37.522556
+      ...
+    1..6
+ok 12 - [AC-S254276-3-2] Executor phase tools drive daemon state transitions
+  ---
+  duration_ms: 119.012401
+  type: 'suite'
+  ...
+# Subtest: [AC-S254276-3-2b] report_phase propagates connection errors (I2 / narrow catch)
+    # Subtest: [AC-S254276-3-2b] report_phase('review-ready') throws DaemonConnectionError when daemon is stopped
+    ok 1 - [AC-S254276-3-2b] report_phase('review-ready') throws DaemonConnectionError when daemon is stopped
+      ---
+      duration_ms: 9.944083
+      ...
+    1..1
+ok 13 - [AC-S254276-3-2b] report_phase propagates connection errors (I2 / narrow catch)
+  ---
+  duration_ms: 10.120037
+  type: 'suite'
+  ...
+# Subtest: [Fix-2] scope.paths in block-sequence format
+    # Subtest: [Fix-2] scope.paths as block sequence is accepted and parsed correctly
+    ok 1 - [Fix-2] scope.paths as block sequence is accepted and parsed correctly
+      ---
+      duration_ms: 5.797422
+      ...
+    # Subtest: [Fix-2] scope.paths as block sequence with single entry is accepted
+    ok 2 - [Fix-2] scope.paths as block sequence with single entry is accepted
+      ---
+      duration_ms: 0.343826
+      ...
+    # Subtest: [Fix-2] scope.paths as inline array still works (regression guard)
+    ok 3 - [Fix-2] scope.paths as inline array still works (regression guard)
+      ---
+      duration_ms: 1.514896
+      ...
+    1..3
+ok 14 - [Fix-2] scope.paths in block-sequence format
+  ---
+  duration_ms: 9.378714
+  type: 'suite'
+  ...
+# Subtest: [Fix-3] acceptance text with quoted commas
+    # Subtest: [Fix-3] acceptance text containing a comma inside quotes is parsed correctly
+    ok 1 - [Fix-3] acceptance text containing a comma inside quotes is parsed correctly
+      ---
+      duration_ms: 0.328033
+      ...
+    # Subtest: [Fix-3] acceptance text with single-quoted commas is parsed correctly
+    ok 2 - [Fix-3] acceptance text with single-quoted commas is parsed correctly
+      ---
+      duration_ms: 0.864708
+      ...
+    # Subtest: [Fix-3] acceptance with verify field containing comma is parsed correctly
+    ok 3 - [Fix-3] acceptance with verify field containing comma is parsed correctly
+      ---
+      duration_ms: 0.220321
+      ...
+    # Subtest: [Fix-3] multiple acceptance items without quoted commas still work (regression guard)
+    ok 4 - [Fix-3] multiple acceptance items without quoted commas still work (regression guard)
+      ---
+      duration_ms: 0.185178
+      ...
+    1..4
+ok 15 - [Fix-3] acceptance text with quoted commas
+  ---
+  duration_ms: 1.887906
+  type: 'suite'
+  ...
+# [banto-daemon] listening on port 0 (dataDir=/tmp/banto-gate-deps-YjVDVU)
+# Subtest: [AC-Scc9152-2-1] Gate condition 1: dependency-driven queued→ready
+    # Subtest: [AC-Scc9152-2-1a] task with unresolved dependency stays queued
+    ok 1 - [AC-Scc9152-2-1a] task with unresolved dependency stays queued
+      ---
+      duration_ms: 639.507902
+      ...
+    # Subtest: [AC-Scc9152-2-1b] task promotes to ready when dependency reaches 'closed'
+    ok 2 - [AC-Scc9152-2-1b] task promotes to ready when dependency reaches 'closed'
+      ---
+      duration_ms: 16.840797
+      ...
+    # Subtest: [AC-Scc9152-2-1c] 'merged' state counts as resolved (promotes dependent)
+    ok 3 - [AC-Scc9152-2-1c] 'merged' state counts as resolved (promotes dependent)
+      ---
+      duration_ms: 19.358349
+      ...
+    # Subtest: [AC-Scc9152-2-1d] 'approved' state counts as resolved (promotes dependent)
+    ok 4 - [AC-Scc9152-2-1d] 'approved' state counts as resolved (promotes dependent)
+      ---
+      duration_ms: 21.728782
+      ...
+    # Subtest: [AC-Scc9152-2-1e] task with no deps and no scope overlap promotes immediately to ready
+    ok 5 - [AC-Scc9152-2-1e] task with no deps and no scope overlap promotes immediately to ready
+      ---
+      duration_ms: 3.711908
+      ...
+    1..5
+ok 16 - [AC-Scc9152-2-1] Gate condition 1: dependency-driven queued→ready
+  ---
+  duration_ms: 745.608661
+  type: 'suite'
+  ...
+# [banto-daemon] listening on port 0 (dataDir=/tmp/banto-gate-events-nvlEX0)
+# Subtest: [AC-Scc9152-2-3] Gate evaluation is recorded as gate_evaluated events
+    # Subtest: [AC-Scc9152-2-3a] blocked gate records gate_evaluated(passed=false, blockedBy=[depId...])
+    ok 1 - [AC-Scc9152-2-3a] blocked gate records gate_evaluated(passed=false, blockedBy=[depId...])
+      ---
+      duration_ms: 636.559181
+      ...
+    # Subtest: [AC-Scc9152-2-3b] passed gate records gate_evaluated(passed=true, blockedBy=[])
+    ok 2 - [AC-Scc9152-2-3b] passed gate records gate_evaluated(passed=true, blockedBy=[])
+      ---
+      duration_ms: 22.415554
+      ...
+    # Subtest: [AC-Scc9152-2-3c] sequence shows blocked→passed when dependency resolves
+    ok 3 - [AC-Scc9152-2-3c] sequence shows blocked→passed when dependency resolves
+      ---
+      duration_ms: 45.860354
+      ...
+    # Subtest: [AC-Scc9152-2-3d] scope-overlap block records gate_evaluated with scope ancestor reference
+    ok 4 - [AC-Scc9152-2-3d] scope-overlap block records gate_evaluated with scope ancestor reference
+      ---
+      duration_ms: 12.724251
+      ...
+    1..4
+ok 17 - [AC-Scc9152-2-3] Gate evaluation is recorded as gate_evaluated events
+  ---
+  duration_ms: 763.940418
+  type: 'suite'
+  ...
+# [banto-daemon] listening on port 0 (dataDir=/tmp/banto-fix1-Mi29pZ)
+# Subtest: [Scc9152-2-fix1] Temporal ancestor ordering prevents deadlock
+    # Subtest: [fix1-a] earlier-created task (T1) promotes to ready; later-created (T2) stays queued
+    ok 1 - [fix1-a] earlier-created task (T1) promotes to ready; later-created (T2) stays queued
+      ---
+      duration_ms: 530.674687
+      ...
+    # Subtest: [fix1-b] after T1 passes review, T2 is promoted (no deadlock)
+# [banto-daemon] listening on port 0 (dataDir=/tmp/banto-fix2-ZUJQ8Y)
+    ok 2 - [fix1-b] after T1 passes review, T2 is promoted (no deadlock)
+      ---
+      duration_ms: 31.407676
+      ...
+    1..2
+ok 18 - [Scc9152-2-fix1] Temporal ancestor ordering prevents deadlock
+  ---
+  duration_ms: 600.092342
+  type: 'suite'
+  ...
+# Subtest: [Scc9152-2-fix2] gate_evaluated events are deduplicated
+    # Subtest: [fix2-a] blocked task does NOT accumulate gate_evaluated(passed=false) across ticks
+    ok 1 - [fix2-a] blocked task does NOT accumulate gate_evaluated(passed=false) across ticks
+      ---
+      duration_ms: 812.893009
+      ...
+    # Subtest: [fix2-b] new gate_evaluated IS recorded when blockedBy set changes (partial resolution)
+    ok 2 - [fix2-b] new gate_evaluated IS recorded when blockedBy set changes (partial resolution)
+      ---
+      duration_ms: 427.927047
+      ...
+    1..2
+ok 19 - [Scc9152-2-fix2] gate_evaluated events are deduplicated
+  ---
+  duration_ms: 1249.388954
+  type: 'suite'
+  ...
+# Subtest: [Scc9152-2-fix3] globsOverlap handles mid-path ** correctly
+    # Subtest: [fix3-a] src/a/** overlaps with src/**/b.ts
+    ok 1 - [fix3-a] src/a/** overlaps with src/**/b.ts
+      ---
+      duration_ms: 0.273211
+      ...
+    # Subtest: [fix3-b] src/a/** does NOT overlap with docs/**/b.ts (disjoint trees)
+    ok 2 - [fix3-b] src/a/** does NOT overlap with docs/**/b.ts (disjoint trees)
+      ---
+      duration_ms: 0.091157
+      ...
+    # Subtest: [fix3-c] src/** overlaps with src/**/util.ts
+    ok 3 - [fix3-c] src/** overlaps with src/**/util.ts
+      ---
+      duration_ms: 0.133622
+      ...
+    # Subtest: [fix3-d] pkg/a/**  overlaps with pkg/**/index.ts
+    ok 4 - [fix3-d] pkg/a/**  overlaps with pkg/**/index.ts
+      ---
+      duration_ms: 0.117837
+      ...
+    # Subtest: [fix3-e] src/x/** does NOT overlap with lib/**/y.ts (different trees)
+    ok 5 - [fix3-e] src/x/** does NOT overlap with lib/**/y.ts (different trees)
+      ---
+      duration_ms: 0.148403
+      ...
+    # Subtest: [fix3-f] ** (catch-all) always overlaps with anything
+    ok 6 - [fix3-f] ** (catch-all) always overlaps with anything
+      ---
+      duration_ms: 0.098748
+      ...
+    # Subtest: [fix3-g] exact path src/a/b.ts overlaps with src/**/b.ts
+    ok 7 - [fix3-g] exact path src/a/b.ts overlaps with src/**/b.ts
+      ---
+      duration_ms: 0.082393
+      ...
+    1..7
+ok 20 - [Scc9152-2-fix3] globsOverlap handles mid-path ** correctly
+  ---
+  duration_ms: 1.218411
+  type: 'suite'
+  ...
+# [banto-daemon] listening on port 0 (dataDir=/tmp/banto-gate-scope-VQ5NGa)
+# Subtest: [AC-Scc9152-2-2] Gate condition 2: scope.paths overlap with unreviewed ancestor
+    # Subtest: [AC-Scc9152-2-2a] overlapping scope with unreviewed ancestor → spawn deferred (queued)
+    ok 1 - [AC-Scc9152-2-2a] overlapping scope with unreviewed ancestor → spawn deferred (queued)
+      ---
+      duration_ms: 425.358208
+      ...
+    # Subtest: [AC-Scc9152-2-2b] non-overlapping scope → parallel execution allowed (ready)
+    ok 2 - [AC-Scc9152-2-2b] non-overlapping scope → parallel execution allowed (ready)
+      ---
+      duration_ms: 7.522664
+      ...
+    # Subtest: [AC-Scc9152-2-2c] task promotes to ready after ancestor passes review (approved)
+    ok 3 - [AC-Scc9152-2-2c] task promotes to ready after ancestor passes review (approved)
+      ---
+      duration_ms: 9.633476
+      ...
+    # Subtest: [AC-Scc9152-2-2d] glob intersection: 'src/**' overlaps with 'src/a/b.ts'
+    ok 4 - [AC-Scc9152-2-2d] glob intersection: 'src/**' overlaps with 'src/a/b.ts'
+      ---
+      duration_ms: 415.614746
+      ...
+    # Subtest: [AC-Scc9152-2-2e] 'src/**' and 'src/**' overlap (same prefix)
+    ok 5 - [AC-Scc9152-2-2e] 'src/**' and 'src/**' overlap (same prefix)
+      ---
+      duration_ms: 406.582663
+      ...
+    # Subtest: [AC-Scc9152-2-2f] 'docs/**' does not overlap with 'src/**' (disjoint trees)
+    ok 6 - [AC-Scc9152-2-2f] 'docs/**' does not overlap with 'src/**' (disjoint trees)
+      ---
+      duration_ms: 3.930727
+      ...
+    1..6
+ok 21 - [AC-Scc9152-2-2] Gate condition 2: scope.paths overlap with unreviewed ancestor
+  ---
+  duration_ms: 1321.570893
+  type: 'suite'
+  ...
+# [banto-daemon] listening on port 0 (dataDir=/tmp/banto-nw-data-jC3tim)
+# Subtest: [AC-Scc9152-1-3] Daemon never writes runtime state back to task file
+    # Subtest: [AC-Scc9152-1-3] frontmatter status is still 'draft' after ingest (not written back)
+    ok 1 - [AC-Scc9152-1-3] frontmatter status is still 'draft' after ingest (not written back)
+      ---
+      duration_ms: 0.534933
+      ...
+    # Subtest: [AC-Scc9152-1-3] mtime is unchanged after ingest
+    ok 2 - [AC-Scc9152-1-3] mtime is unchanged after ingest
+      ---
+      duration_ms: 0.162974
+      ...
+    # Subtest: [AC-Scc9152-1-3] file unchanged after additional API transition to planning
+    ok 3 - [AC-Scc9152-1-3] file unchanged after additional API transition to planning
+      ---
+      duration_ms: 4.894947
+      ...
+    1..3
+ok 22 - [AC-Scc9152-1-3] Daemon never writes runtime state back to task file
+  ---
+  duration_ms: 661.046128
+  type: 'suite'
+  ...
+# [banto-daemon] listening on port 0 (dataDir=/tmp/banto-registry-njP94z)
+# Subtest: [AC-S654396-3-3] Project registry: multi-project, global reference resolution
+    # Subtest: [AC-S654396-3-3] step 1: POST /api/v1/projects registers proj-a (201)
+    ok 1 - [AC-S654396-3-3] step 1: POST /api/v1/projects registers proj-a (201)
+      ---
+      duration_ms: 33.8393
+      ...
+    # Subtest: [AC-S654396-3-3] step 2: POST /api/v1/projects registers proj-b (201)
+    ok 2 - [AC-S654396-3-3] step 2: POST /api/v1/projects registers proj-b (201)
+      ---
+      duration_ms: 3.642174
+      ...
+    # Subtest: [AC-S654396-3-3] GET /api/v1/projects lists both projects
+    ok 3 - [AC-S654396-3-3] GET /api/v1/projects lists both projects
+      ---
+      duration_ms: 1.892083
+      ...
+    # Subtest: [AC-S654396-3-3] step 3: create task-0001 in proj-a
+    ok 4 - [AC-S654396-3-3] step 3: create task-0001 in proj-a
+      ---
+      duration_ms: 2.823303
+      ...
+    # Subtest: [AC-S654396-3-3] step 3: create task-0001 in proj-b (same ID, different project)
+    ok 5 - [AC-S654396-3-3] step 3: create task-0001 in proj-b (same ID, different project)
+      ---
+      duration_ms: 2.483071
+      ...
+    # Subtest: [AC-S654396-3-3] step 3: GET /api/v1/tasks/proj-a/task-0001 resolves to proj-a
+    ok 6 - [AC-S654396-3-3] step 3: GET /api/v1/tasks/proj-a/task-0001 resolves to proj-a
+      ---
+      duration_ms: 1.721697
+      ...
+    # Subtest: [AC-S654396-3-3] step 4: GET /api/v1/tasks/proj-b/task-0001 resolves to proj-b (separate object)
+    ok 7 - [AC-S654396-3-3] step 4: GET /api/v1/tasks/proj-b/task-0001 resolves to proj-b (separate object)
+      ---
+      duration_ms: 1.616589
+      ...
+    # Subtest: [AC-S654396-3-3] proj-a and proj-b task-0001 are independent objects
+    ok 8 - [AC-S654396-3-3] proj-a and proj-b task-0001 are independent objects
+      ---
+      duration_ms: 2.705766
+      ...
+    # Subtest: [AC-S654396-3-3] duplicate project registration returns 409
+    ok 9 - [AC-S654396-3-3] duplicate project registration returns 409
+      ---
+      duration_ms: 2.057412
+      ...
+    # Subtest: [AC-S654396-3-3] GET tasks for unknown project returns 404
+    ok 10 - [AC-S654396-3-3] GET tasks for unknown project returns 404
+      ---
+      duration_ms: 3.429814
+      ...
+    # Subtest: [AC-S654396-3-3-reg] events endpoint returns only own-project events when same taskId exists in two projects
+    ok 11 - [AC-S654396-3-3-reg] events endpoint returns only own-project events when same taskId exists in two projects
+      ---
+      duration_ms: 4.274712
+      ...
+    1..11
+ok 23 - [AC-S654396-3-3] Project registry: multi-project, global reference resolution
+  ---
+  duration_ms: 68.477281
+  type: 'suite'
+  ...
+# Subtest: [AC-S254276-3-3] Prompt assets are loaded from file (skills/ directory)
+    # Subtest: [AC-S254276-3-3] skills/executor-system.md exists at repo root
+    ok 1 - [AC-S254276-3-3] skills/executor-system.md exists at repo root
+      ---
+      duration_ms: 0.662414
+      ...
+    # Subtest: [AC-S254276-3-3] loadPromptAsset('executor-system') returns non-empty string from file
+    ok 2 - [AC-S254276-3-3] loadPromptAsset('executor-system') returns non-empty string from file
+      ---
+      duration_ms: 0.265208
+      ...
+    # Subtest: [AC-S254276-3-3] executor-system asset contains role description
+    ok 3 - [AC-S254276-3-3] executor-system asset contains role description
+      ---
+      duration_ms: 0.165379
+      ...
+    # Subtest: [AC-S254276-3-3] executor-system asset contains tool usage instructions
+    ok 4 - [AC-S254276-3-3] executor-system asset contains tool usage instructions
+      ---
+      duration_ms: 0.150806
+      ...
+    # Subtest: [AC-S254276-3-3] executor-system asset is read from file (not a hardcoded string)
+    ok 5 - [AC-S254276-3-3] executor-system asset is read from file (not a hardcoded string)
+      ---
+      duration_ms: 0.156215
+      ...
+    # Subtest: [AC-S254276-3-3] loadPromptAsset throws for non-existent asset (I2: not swallowed)
+    ok 6 - [AC-S254276-3-3] loadPromptAsset throws for non-existent asset (I2: not swallowed)
+      ---
+      duration_ms: 0.366541
+      ...
+    1..6
+ok 24 - [AC-S254276-3-3] Prompt assets are loaded from file (skills/ directory)
+  ---
+  duration_ms: 2.622741
+  type: 'suite'
+  ...
+# Subtest: [AC-S654396-2-3] Cross-cutting transitions: pause, resume, fail, supersede
+    # Subtest: [AC-S654396-2-3] pause from implementing, verify task_paused event and paused status
+    ok 1 - [AC-S654396-2-3] pause from implementing, verify task_paused event and paused status
+      ---
+      duration_ms: 2.840949
+      ...
+    # Subtest: [AC-S654396-2-3] resume from paused restores to implementing
+    ok 2 - [AC-S654396-2-3] resume from paused restores to implementing
+      ---
+      duration_ms: 2.842552
+      ...
+    # Subtest: [AC-S654396-2-3] fail() records task_failed event and sets status to failed
+    ok 3 - [AC-S654396-2-3] fail() records task_failed event and sets status to failed
+      ---
+      duration_ms: 0.908195
+      ...
+    # Subtest: [AC-S654396-2-3] supersede() records task_superseded event and sets status to superseded
+    ok 4 - [AC-S654396-2-3] supersede() records task_superseded event and sets status to superseded
+      ---
+      duration_ms: 0.638329
+      ...
+    # Subtest: [AC-S654396-2-3] pause from non-pausable state (draft) is rejected and logged
+    ok 5 - [AC-S654396-2-3] pause from non-pausable state (draft) is rejected and logged
+      ---
+      duration_ms: 0.608675
+      ...
+    # Subtest: [AC-S654396-2-3] resume() from non-paused state is rejected
+    ok 6 - [AC-S654396-2-3] resume() from non-paused state is rejected
+      ---
+      duration_ms: 0.53961
+      ...
+    # Subtest: [AC-S654396-2-3] pause from auditing and resume restores to auditing
+    ok 7 - [AC-S654396-2-3] pause from auditing and resume restores to auditing
+      ---
+      duration_ms: 0.683206
+      ...
+    1..7
+ok 25 - [AC-S654396-2-3] Cross-cutting transitions: pause, resume, fail, supersede
+  ---
+  duration_ms: 10.042743
+  type: 'suite'
+  ...
+# Subtest: [AC-S654396-2-2] Invalid transition: rejected and logged
+    # Subtest: [AC-S654396-2-2] draft → merged is rejected, reason logged, status unchanged
+    ok 1 - [AC-S654396-2-2] draft → merged is rejected, reason logged, status unchanged
+      ---
+      duration_ms: 4.169776
+      ...
+    # Subtest: [AC-S654396-2-2] multiple invalid transitions are all logged independently
+    ok 2 - [AC-S654396-2-2] multiple invalid transitions are all logged independently
+      ---
+      duration_ms: 0.682686
+      ...
+    # Subtest: [AC-S654396-2-2] forward-skip (draft → planning) is rejected
+    ok 3 - [AC-S654396-2-2] forward-skip (draft → planning) is rejected
+      ---
+      duration_ms: 0.662085
+      ...
+    # Subtest: [AC-S654396-2-2] backward transition (queued → draft) is rejected
+    ok 4 - [AC-S654396-2-2] backward transition (queued → draft) is rejected
+      ---
+      duration_ms: 0.570967
+      ...
+    1..4
+ok 26 - [AC-S654396-2-2] Invalid transition: rejected and logged
+  ---
+  duration_ms: 7.628263
+  type: 'suite'
+  ...
+# Subtest: [AC-S654396-2-1] Canonical state machine path — all transitions recorded and reflected
+    # Subtest: [AC-S654396-2-1] step 1: draft → queued
+    ok 1 - [AC-S654396-2-1] step 1: draft → queued
+      ---
+      duration_ms: 1.117059
+      ...
+    # Subtest: [AC-S654396-2-1] step 2: queued → ready
+    ok 2 - [AC-S654396-2-1] step 2: queued → ready
+      ---
+      duration_ms: 0.270767
+      ...
+    # Subtest: [AC-S654396-2-1] step 3: ready → planning
+    ok 3 - [AC-S654396-2-1] step 3: ready → planning
+      ---
+      duration_ms: 0.284207
+      ...
+    # Subtest: [AC-S654396-2-1] step 4: planning → implementing
+    ok 4 - [AC-S654396-2-1] step 4: planning → implementing
+      ---
+      duration_ms: 0.243655
+      ...
+    # Subtest: [AC-S654396-2-1] step 5: implementing → auditing
+    ok 5 - [AC-S654396-2-1] step 5: implementing → auditing
+      ---
+      duration_ms: 0.198847
+      ...
+    # Subtest: [AC-S654396-2-1] step 6: auditing → review-ready
+    ok 6 - [AC-S654396-2-1] step 6: auditing → review-ready
+      ---
+      duration_ms: 0.263096
+      ...
+    # Subtest: [AC-S654396-2-1] step 7: review-ready → in-review
+    ok 7 - [AC-S654396-2-1] step 7: review-ready → in-review
+      ---
+      duration_ms: 0.222224
+      ...
+    # Subtest: [AC-S654396-2-1] step 8: in-review → approved
+    ok 8 - [AC-S654396-2-1] step 8: in-review → approved
+      ---
+      duration_ms: 0.263175
+      ...
+    # Subtest: [AC-S654396-2-1] step 9: approved → merging
+    ok 9 - [AC-S654396-2-1] step 9: approved → merging
+      ---
+      duration_ms: 0.279401
+      ...
+    # Subtest: [AC-S654396-2-1] step 10: merging → merged
+    ok 10 - [AC-S654396-2-1] step 10: merging → merged
+      ---
+      duration_ms: 0.30643
+      ...
+    # Subtest: [AC-S654396-2-1] step 11: merged → evaluating
+    ok 11 - [AC-S654396-2-1] step 11: merged → evaluating
+      ---
+      duration_ms: 0.29936
+      ...
+    # Subtest: [AC-S654396-2-1] step 12: evaluating → closed — final status check
+    ok 12 - [AC-S654396-2-1] step 12: evaluating → closed — final status check
+      ---
+      duration_ms: 0.258659
+      ...
+    # Subtest: [AC-S654396-2-1] step 13: verify all 13 canonical transitions are recorded in log
+    ok 13 - [AC-S654396-2-1] step 13: verify all 13 canonical transitions are recorded in log
+      ---
+      duration_ms: 0.260181
+      ...
+    1..13
+ok 27 - [AC-S654396-2-1] Canonical state machine path — all transitions recorded and reflected
+  ---
+  duration_ms: 7.04041
+  type: 'suite'
+  ...
+# Subtest: [AC-S654396-2-1] Special path: auditing → merging (auto merge policy)
+    # Subtest: [AC-S654396-2-1-auto] auditing → merging is a valid transition (caller enforces auto policy)
+    ok 1 - [AC-S654396-2-1-auto] auditing → merging is a valid transition (caller enforces auto policy)
+      ---
+      duration_ms: 1.626525
+      ...
+    1..1
+ok 28 - [AC-S654396-2-1] Special path: auditing → merging (auto merge policy)
+  ---
+  duration_ms: 1.715418
+  type: 'suite'
+  ...
+# Subtest: [AC-S654396-2-1] Special path: merged → closed (no hypothesis)
+    # Subtest: [AC-S654396-2-1-nohyp] merged → closed is a valid transition
+    ok 1 - [AC-S654396-2-1-nohyp] merged → closed is a valid transition
+      ---
+      duration_ms: 0.762186
+      ...
+    1..1
+ok 29 - [AC-S654396-2-1] Special path: merged → closed (no hypothesis)
+  ---
+  duration_ms: 0.839371
+  type: 'suite'
+  ...
+# [banto-daemon] listening on port 0 (dataDir=/tmp/banto-tick-err-zPtSh2)
+# Subtest: [AC-Scc9152-3-2] Tick errors: failed jobs recorded as events, daemon survives
+    # Subtest: [AC-Scc9152-3-2] daemon stays alive after repeated tick job failures
+    ok 1 - [AC-Scc9152-3-2] daemon stays alive after repeated tick job failures
+      ---
+      duration_ms: 703.287224
+      ...
+    # Subtest: [AC-Scc9152-3-2] tick job failure is recorded as tick_job_failed event (I2: not swallowed)
+    ok 2 - [AC-Scc9152-3-2] tick job failure is recorded as tick_job_failed event (I2: not swallowed)
+      ---
+      duration_ms: 403.121222
+      ...
+    1..2
+ok 30 - [AC-Scc9152-3-2] Tick errors: failed jobs recorded as events, daemon survives
+  ---
+  duration_ms: 1148.145135
+  type: 'suite'
+  ...
+# [banto-daemon] listening on port 0 (dataDir=/tmp/banto-tick-jobs-ZQFaE5)
+# Subtest: [AC-Scc9152-3-1] Tick jobs: gate re-evaluation drives queued→ready
+    # Subtest: [AC-Scc9152-3-1] registered tick job (gate-reeval) fires autonomously and promotes queued task to ready
+    ok 1 - [AC-Scc9152-3-1] registered tick job (gate-reeval) fires autonomously and promotes queued task to ready
+      ---
+      duration_ms: 773.630058
+      ...
+    # Subtest: [AC-Scc9152-3-1] custom registered tick job fires via registerTickJob
+    ok 2 - [AC-Scc9152-3-1] custom registered tick job fires via registerTickJob
+      ---
+      duration_ms: 699.926944
+      ...
+    1..2
+ok 31 - [AC-Scc9152-3-1] Tick jobs: gate re-evaluation drives queued→ready
+  ---
+  duration_ms: 1480.685705
+  type: 'suite'
+  ...
+# [banto-daemon] listening on port 0 (dataDir=/tmp/banto-wi-data-6makGj)
+# Subtest: [AC-Scc9152-1-1] Watcher ingests valid task definition → draft→queued
+    # Subtest: [AC-Scc9152-1-1] places valid task file → task is ingested and reaches at least 'queued'
+    ok 1 - [AC-Scc9152-1-1] places valid task file → task is ingested and reaches at least 'queued'
+      ---
+      duration_ms: 611.535147
+      ...
+    # Subtest: [AC-Scc9152-1-1] GET /tasks/:id/events contains task_created and state_transitioned(draft→queued)
+    ok 2 - [AC-Scc9152-1-1] GET /tasks/:id/events contains task_created and state_transitioned(draft→queued)
+      ---
+      duration_ms: 2.328479
+      ...
+    # Subtest: [AC-Scc9152-1-1] file content is unchanged after watcher ingest (no write-back)
+    ok 3 - [AC-Scc9152-1-1] file content is unchanged after watcher ingest (no write-back)
+      ---
+      duration_ms: 0.233571
+      ...
+    1..3
+ok 32 - [AC-Scc9152-1-1] Watcher ingests valid task definition → draft→queued
+  ---
+  duration_ms: 652.310571
+  type: 'suite'
+  ...
+# [banto-daemon] listening on port 0 (dataDir=/tmp/banto-noflood-data-UFQWrX)
+# Subtest: [Fix-1] Rejected file does not re-emit task_ingest_rejected on every poll
+    # Subtest: [Fix-1] invalid file produces exactly 1 task_ingest_rejected across 3+ polling cycles
+    ok 1 - [Fix-1] invalid file produces exactly 1 task_ingest_rejected across 3+ polling cycles
+      ---
+      duration_ms: 1104.705007
+      ...
+    1..1
+ok 33 - [Fix-1] Rejected file does not re-emit task_ingest_rejected on every poll
+  ---
+  duration_ms: 1142.520041
+  type: 'suite'
+  ...
+# [banto-daemon] listening on port 0 (dataDir=/tmp/banto-wr-data-jixmeZ)
+# Subtest: [AC-Scc9152-1-2] Watcher rejects invalid task frontmatter with reason event
+    # Subtest: [AC-Scc9152-1-2] malformed file (missing scope.paths) → task_ingest_rejected event with reason
+    ok 1 - [AC-Scc9152-1-2] malformed file (missing scope.paths) → task_ingest_rejected event with reason
+      ---
+      duration_ms: 611.225343
+      ...
+    # Subtest: [AC-Scc9152-1-2] rejected file produces no task in the registry
+    ok 2 - [AC-Scc9152-1-2] rejected file produces no task in the registry
+      ---
+      duration_ms: 1.849239
+      ...
+    # Subtest: [AC-Scc9152-1-2] file without valid frontmatter delimiter → task_ingest_rejected
+    ok 3 - [AC-Scc9152-1-2] file without valid frontmatter delimiter → task_ingest_rejected
+      ---
+      duration_ms: 407.601035
+      ...
+    1..3
+ok 34 - [AC-Scc9152-1-2] Watcher rejects invalid task frontmatter with reason event
+  ---
+  duration_ms: 1058.11102
+  type: 'suite'
+  ...
+1..34
+# tests 136
+# suites 34
+# pass 136
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 7010.327029

@@ -69,3 +69,10 @@ export type {
   DriverEventHandler,
   DriverId,
 } from "./runtime-driver.js";
+
+// Executor tool definitions (runtime-neutral; no pi/agent-sdk imports)
+export { reportPhaseTool, reportDoneTool, bantoExecutorTools } from "./tools.js";
+export type { BantoTool, ToolResult, ToolTextContent, ToolParameterSchema } from "./tools.js";
+
+// Prompt asset loader (reads from skills/ directory at repo root)
+export { loadPromptAsset } from "./prompt-assets.js";
