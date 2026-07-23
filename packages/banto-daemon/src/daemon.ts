@@ -18,6 +18,7 @@
 
 import * as http from "node:http";
 import * as path from "node:path";
+import * as childProcess from "node:child_process";
 import {
   EventLog,
   StateStore,
@@ -70,6 +71,17 @@ export interface DaemonConfig {
    * Set to a small value (e.g. 500) in tests for fast detection.
    */
   reconcileIntervalMs?: number;
+  /**
+   * tmux session name for PO observation windows.
+   * When set, spawnTask() opens a tmux window named <taskId> in this session
+   * showing `tail -f <sessionPath>` for live agent transcript visibility.
+   * Default: "banto". Set to "" to disable tmux integration.
+   *
+   * Spec-ui §1.4: POはtmuxアタッチで対話内容を目視できる.
+   * D6: uses tmux CLI (stdlib-equivalent; no new npm dependency).
+   * Best-effort: tmux failure does NOT fail the task spawn.
+   */
+  tmuxSession?: string;
 }
 
 export class Daemon {
@@ -180,6 +192,7 @@ export class Daemon {
       worktreeBaseDir: config.worktreeBaseDir,
       sessionBaseDir: config.sessionBaseDir,
       reconcileIntervalMs: config.reconcileIntervalMs,
+      tmuxSession: config.tmuxSession,
     };
     return new Daemon(resolved);
   }
@@ -365,7 +378,7 @@ export class Daemon {
     taskId: string,
     driverId = "pi-rpc",
     spawnExtra: Partial<SpawnOptions> = {}
-  ): Promise<{ worktreePath: string; sessionPath: string; pid: number; sessionId: string }> {
+  ): Promise<{ worktreePath: string; sessionPath: string; pid: number; sessionId: string; tmuxWindow?: string }> {
     // 1. Validate task state
     const task = this.store.getTask(taskId, projectTag);
     if (!task) throw new Error(`Task '${taskId}' not found in project '${projectTag}'`);
@@ -440,7 +453,17 @@ export class Daemon {
     // 8. Transition to "planning"
     this.transition(projectTag, taskId, "planning", "agent spawned");
 
-    // 9. Register in spawn ledger (spec §3: persistent process registry).
+    // 9. Open a tmux window for PO observation (spec-ui §1.4, DEC-S254276-004).
+    // Best-effort: failure does NOT fail the task spawn.
+    // The window displays a tail of the session JSONL so POが tmux attach -t banto で
+    // エージェントの進行を目視できる.
+    let tmuxWindow: string | undefined;
+    const tmuxSession = this.config.tmuxSession ?? "banto";
+    if (tmuxSession) {
+      tmuxWindow = openTmuxWindow(tmuxSession, taskId, handle.sessionPath);
+    }
+
+    // 10. Register in spawn ledger (spec §3: persistent process registry).
     // I3: only processes we spawned are in the ledger.
     const ledgerEntry: LedgerEntry = {
       pid: handle.pid,
@@ -451,10 +474,11 @@ export class Daemon {
       driverId,
       sessionId: handle.sessionId,
       spawnedAt: new Date().toISOString(),
+      ...(tmuxWindow ? { tmux_window: tmuxWindow } : {}),
     };
     this.ledger.add(ledgerEntry);
 
-    // 10. Subscribe to driver events for this session → agent_exited + ledger removal
+    // 11. Subscribe to driver events for this session → agent_exited + ledger removal
     const unsub = driver.subscribe((event) => {
       if (event.type === "process_exited" && event.sessionId === handle.sessionId) {
         const exitedEvent = this.log.append({
@@ -468,6 +492,10 @@ export class Daemon {
         this.applyAndBroadcast(exitedEvent);
         // Remove from ledger: process is gone, no longer needs recovery.
         this.ledger.remove(projectTag, taskId);
+        // Best-effort: kill the tmux window when the session exits.
+        if (tmuxWindow) {
+          closeTmuxWindow(tmuxWindow);
+        }
         unsub();
       }
     });
@@ -477,6 +505,7 @@ export class Daemon {
       sessionPath: handle.sessionPath,
       pid: handle.pid,
       sessionId: handle.sessionId,
+      ...(tmuxWindow ? { tmuxWindow } : {}),
     };
   }
 
@@ -739,5 +768,108 @@ export class Daemon {
     if (queuedCount > 0 || promoted > 0) {
       this.refreshState();
     }
+  }
+}
+
+// ── tmux integration helpers ───────────────────────────────────────────────────
+//
+// Spec-ui §1.4: POはtmux attach -t banto でエージェントの進行を目視できる.
+// DEC-S254276-004: tmux new-window でビューウィンドウを開き、セッションJSONLを tail -f する.
+//
+// Implementation choice (v1): option (b) — the tmux window shows `tail -f <sessionPath>`
+// so PO can see the raw session transcript in real-time.
+// Rationale: pi RPC driver controls pi via stdin/stdout pipes (this daemon's process).
+// Opening pi as a TUI inside tmux (option c) would require a separate pi process with
+// a separate prompt — creating confusion about which pi is authoritative.
+// `tail -f` lets PO observe the actual RPC session transcript without bifurcating control.
+// tmux_window is recorded in the spawn ledger (DEC-S254276-004) so PO can look it up.
+//
+// D6: tmux is a system tool (no npm dependency added).
+// I2: tmux errors are logged to stderr but do NOT fail the spawn.
+
+/**
+ * Ensure the tmux session `sessionName` exists (create if absent).
+ * Returns true if the session is usable after this call.
+ */
+function ensureTmuxSession(sessionName: string): boolean {
+  // Check if session exists
+  const check = childProcess.spawnSync(
+    "tmux",
+    ["has-session", "-t", sessionName],
+    { encoding: "utf8" }
+  );
+  if (check.status === 0) return true; // already exists
+
+  // Create detached session
+  const create = childProcess.spawnSync(
+    "tmux",
+    ["new-session", "-d", "-s", sessionName],
+    { encoding: "utf8" }
+  );
+  if (create.status !== 0) {
+    process.stderr.write(
+      `[banto-daemon] tmux new-session failed: ${create.stderr ?? ""}\n`
+    );
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Open a new tmux window in `sessionName` named `windowName`.
+ * The window runs `tail -f <sessionPath>` with a startup echo so the pane is
+ * immediately non-empty (PO visual feedback before the agent writes its first line).
+ *
+ * Returns the window address "sessionName:windowName" on success, undefined on failure.
+ *
+ * D6: uses tmux CLI (stdlib-equivalent).
+ * I2: failure is logged to stderr; caller receives undefined and continues.
+ */
+function openTmuxWindow(
+  sessionName: string,
+  windowName: string,
+  sessionPath: string
+): string | undefined {
+  if (!ensureTmuxSession(sessionName)) return undefined;
+
+  // The shell command shown in the window:
+  //   1. Echo a header line so capture-pane is immediately non-empty.
+  //   2. tail -f the session JSONL once it appears (--retry waits for file to appear).
+  const cmd = `echo "[banto] Agent session started: ${windowName}" && tail -f --retry "${sessionPath}"`;
+
+  const result = childProcess.spawnSync(
+    "tmux",
+    ["new-window", "-d", "-t", sessionName, "-n", windowName, cmd],
+    { encoding: "utf8" }
+  );
+
+  if (result.status !== 0) {
+    process.stderr.write(
+      `[banto-daemon] tmux new-window failed for ${windowName}: ${result.stderr ?? ""}\n`
+    );
+    return undefined;
+  }
+
+  const windowAddr = `${sessionName}:${windowName}`;
+  process.stdout.write(
+    `[banto-daemon] tmux window opened: ${windowAddr} (tail ${sessionPath})\n`
+  );
+  return windowAddr;
+}
+
+/**
+ * Close a tmux window by its address (e.g. "banto:T-001").
+ * Best-effort: errors are logged, not thrown.
+ */
+function closeTmuxWindow(windowAddr: string): void {
+  const result = childProcess.spawnSync(
+    "tmux",
+    ["kill-window", "-t", windowAddr],
+    { encoding: "utf8" }
+  );
+  if (result.status !== 0) {
+    process.stderr.write(
+      `[banto-daemon] tmux kill-window ${windowAddr} failed: ${result.stderr ?? ""}\n`
+    );
   }
 }
