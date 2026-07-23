@@ -4,3 +4,4 @@ docs/sprint-logs/
 node_modules/
 dist/
 *.tsbuildinfo
+data/
