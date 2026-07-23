@@ -35,6 +35,12 @@ export interface LedgerEntry {
   sessionId: string;
   /** ISO-8601 timestamp of spawn */
   spawnedAt: string;
+  /**
+   * tmux window address (e.g. "banto:<taskId>") if a tmux window was opened
+   * for PO observation (spec-ui §1.4: POはtmuxアタッチで対話内容を目視).
+   * Optional — set only when tmux session management is active.
+   */
+  tmux_window?: string;
 }
 
 // ── Ledger file format ────────────────────────────────────────────────────────
