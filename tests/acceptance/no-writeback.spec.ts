@@ -77,7 +77,12 @@ acceptance:
     fs.writeFileSync(taskFile, originalContent, "utf-8");
     originalMtimeMs = fs.statSync(taskFile).mtimeMs;
 
-    // Wait for watcher to ingest and task to reach queued
+    // Wait for watcher to ingest and task to be registered (any status past draft).
+    // With Scc9152-2, a task with no deps and no overlapping ancestors may be
+    // promoted from queued → ready immediately, so we accept 'queued' OR 'ready'.
+    const INGESTED_STATUSES = new Set(["queued", "ready", "planning", "implementing",
+      "auditing", "review-ready", "in-review", "approved", "merging", "merged",
+      "evaluating", "closed"]);
     await pollUntil(
       async () => {
         const r = await fetch(`${base}/api/v1/projects/proj-nw/tasks/task-0001`);
@@ -85,7 +90,7 @@ acceptance:
         const b = await r.json() as { task: { status: string } };
         return b.task;
       },
-      (t) => t !== null && t.status === "queued",
+      (t) => t !== null && INGESTED_STATUSES.has(t.status),
       5000
     );
   });
@@ -114,18 +119,34 @@ acceptance:
     );
   });
 
-  it("[AC-Scc9152-1-3] file unchanged after additional API transition to ready", async () => {
-    // Trigger a further transition via API (queued → ready)
+  it("[AC-Scc9152-1-3] file unchanged after additional API transition to planning", async () => {
+    // Advance the task further (ready → planning) to verify the file is not
+    // modified even after multiple state changes.
+    // First ensure the task is in 'ready' (it may already be, due to Scc9152-2
+    // immediate gate evaluation).
+    const readyRes = await fetch(`${base}/api/v1/projects/proj-nw/tasks/task-0001`);
+    const readyBody = await readyRes.json() as { task: { status: string } };
+    if (readyBody.task.status !== "ready") {
+      // Task is queued (gate hasn't fired yet) — advance to ready first
+      const toReady = await fetch(`${base}/api/v1/projects/proj-nw/tasks/task-0001/transition`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: "ready" }),
+      });
+      assert.equal(toReady.status, 200, "queued→ready transition must succeed");
+    }
+
+    // Advance ready → planning
     const res = await fetch(`${base}/api/v1/projects/proj-nw/tasks/task-0001/transition`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ to: "ready" }),
+      body: JSON.stringify({ to: "planning" }),
     });
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 200, "ready→planning transition must succeed");
     const body = await res.json() as { task: { status: string } };
-    assert.equal(body.task.status, "ready");
+    assert.equal(body.task.status, "planning", "task must be in planning after transition");
 
-    // File must still be byte-for-byte identical
+    // File must still be byte-for-byte identical — no write-back ever
     const contentAfterTransition = fs.readFileSync(taskFile, "utf-8");
     assert.equal(
       contentAfterTransition,

@@ -31,6 +31,7 @@ import { createHttpServer } from "./http-server.js";
 import { TaskWatcher } from "./task-watcher.js";
 import { Scheduler } from "./scheduler.js";
 import type { TickJob } from "./scheduler.js";
+import { GateEvaluator, evaluatePendingGates } from "./gate-evaluator.js";
 
 export interface DaemonConfig {
   /** Port to listen on. Default: 3000 */
@@ -60,6 +61,13 @@ export class Daemon {
   private readonly wsServer: WsEventServer;
   private readonly watcher: TaskWatcher;
   private readonly scheduler: Scheduler;
+  private readonly gateEvaluator: GateEvaluator;
+  /**
+   * Dedup map for gate_evaluated events: "projectTag/taskId" → last result key.
+   * In-memory; resets on daemon restart (first eval after restart is always recorded).
+   * See evaluatePendingGates for dedup logic.
+   */
+  private readonly lastGateKey: Map<string, string> = new Map();
 
   private constructor(config: DaemonConfig) {
     this.config = config;
@@ -73,6 +81,10 @@ export class Daemon {
       this.log.getEventsByProject(projectTag)
     );
     this.watcher = new TaskWatcher(this, config.watchIntervalMs);
+
+    // GateEvaluator: implements spec-multi-project §3 three-condition gate.
+    // AlwaysPassQuota is the default until Sprint S9d7fdb provides real quota.
+    this.gateEvaluator = new GateEvaluator();
 
     // Scheduler: drives periodic jobs (D6: setInterval only, no external library).
     this.scheduler = new Scheduler(this.log, config.tickIntervalMs);
@@ -88,10 +100,10 @@ export class Daemon {
       }
     });
 
-    // Built-in job: dependency gate re-evaluation (spec §5).
-    // Promotes queued tasks to ready when all their dependencies are satisfied.
+    // Built-in job: dependency gate re-evaluation (spec §5, spec-multi-project §3).
+    // Evaluates all three gate conditions (deps, scope overlap, quota) for queued tasks.
     this.scheduler.registerJob("gate-reeval", () => {
-      this.evaluatePendingGates();
+      this.runGateReeval();
     });
   }
 
@@ -249,6 +261,11 @@ export class Daemon {
    * Attempt a state transition for a task.
    * On rejection: appends transition_rejected event (I2) and returns { ok: false }.
    * Refreshes in-memory state and broadcasts on success.
+   *
+   * Gate re-evaluation is triggered when a task reaches a state that could
+   * resolve a block on queued tasks (any resolved or permanent-terminal state).
+   * This covers both condition 1 (dependency resolved) and condition 2
+   * (scope-overlap ancestor finishes review).
    */
   transition(
     projectTag: string,
@@ -278,6 +295,17 @@ export class Daemon {
     if (allEvents.length > 0) {
       const lastEvent = allEvents[allEvents.length - 1];
       this.wsServer.broadcast(lastEvent);
+    }
+
+    // Re-evaluate pending gates when the new status could unblock queued tasks.
+    // This covers:
+    //   - Condition 1: dep reached a resolved state (approved/merging/merged/evaluating/closed)
+    //   - Condition 1: dep reached a permanent block state (failed/superseded — triggers
+    //     permanent-block gate_evaluated records so the PO sees the block reason)
+    //   - Condition 2: a scope-overlapping ancestor advanced past unreviewed states
+    // We run on any successful transition that changes status so we don't miss edge cases.
+    if (result.ok) {
+      this.runGateReeval();
     }
 
     return result;
@@ -321,99 +349,33 @@ export class Daemon {
   }
 
   /**
-   * Evaluate dependency gates for all queued tasks.
+   * Run gate re-evaluation for all queued tasks.
    *
-   * For each queued task that has a `depends` array in its payload, checks
-   * whether all listed dependency task IDs are in a terminal state (closed,
-   * merged, failed, superseded).  When all deps are met, appends a
-   * gate_evaluated(passed=true) event and transitions the task to ready.
+   * Delegates to GateEvaluator (spec-multi-project §3: three conditions).
+   * Every judgment is recorded as gate_evaluated event (D3, I2).
+   * Refreshes in-memory state after any promotions.
    *
-   * spec §5: "依存駆動ゲートの再評価" — tick-driven, not request-driven.
-   * D3: gate result is appended as an event; state is derived from events.
+   * Called from:
+   *   (a) Scheduler tick (gate-reeval job) — periodic sweep
+   *   (b) After every successful state transition — immediate re-evaluation
+   *       when a dependency or scope-ancestor changes status
    */
-  private evaluatePendingGates(): void {
+  private runGateReeval(): void {
     const allTasks = this.store.getAllTasks();
-    const queuedTasks = allTasks.filter((t) => t.status === "queued");
-
-    // Track whether at least one task was promoted so we can do a single
-    // refreshState() after the loop instead of one per promotion.
-    // Safe because: (a) dependency checks use terminal states only (closed/merged/
-    // failed/superseded), which cannot be reached by a queued→ready promotion within
-    // this same loop; (b) queuedTasks is a snapshot taken before the loop starts.
-    let anyPromoted = false;
-
-    for (const task of queuedTasks) {
-      // Read depends from task payload; stored as array of taskId strings.
-      // The `depends` field was stored in extra payload at creation time.
-      const depends = task["depends"];
-      if (!Array.isArray(depends) || depends.length === 0) {
-        // PROVISIONAL: Scc9152-2 がスコープ重複×未レビュー祖先・物理quota条件をここに拡張する。
-        // 本分岐は依存条件のみの暫定ゲート。
-        // No dependencies: gate always passes — promote immediately.
-        const gateEvent = this.log.append({
-          type: "gate_evaluated",
-          projectTag: task.projectTag,
-          taskId: task.id,
-          passed: true,
-          blockedBy: [],
-        });
-        this.wsServer.broadcast(gateEvent);
-        StateMachine.transition(
-          this.log,
-          task.id,
-          "queued",
-          "ready",
-          task.projectTag,
-          "gate_passed"
-        );
-        anyPromoted = true;
-        continue;
-      }
-
-      // Check each dependency: resolved when in a "terminal-ish" set.
-      // We consider closed, merged, failed, superseded as "done enough"
-      // to unblock a dependent task. (spec §1 has no explicit gate rule beyond
-      // "dependency graph" — using terminal states as the criterion.)
-      const terminalStates = new Set(["closed", "merged", "failed", "superseded"]);
-      const blockedBy: string[] = [];
-
-      for (const depId of depends) {
-        if (typeof depId !== "string") continue;
-        // Try to find the dependency in the same project first; then globally.
-        const dep =
-          this.store.getTask(depId, task.projectTag) ??
-          this.store.getTask(depId);
-        if (!dep || !terminalStates.has(dep.status)) {
-          blockedBy.push(depId);
-        }
-      }
-
-      const passed = blockedBy.length === 0;
-      const gateEvent = this.log.append({
-        type: "gate_evaluated",
-        projectTag: task.projectTag,
-        taskId: task.id,
-        passed,
-        blockedBy,
-      });
-      this.wsServer.broadcast(gateEvent);
-
-      if (passed) {
-        StateMachine.transition(
-          this.log,
-          task.id,
-          "queued",
-          "ready",
-          task.projectTag,
-          "gate_passed"
-        );
-        anyPromoted = true;
-      }
-    }
-
-    // Single refreshState() after the loop: avoids O(n) full replays when
-    // multiple tasks are promoted in one tick.
-    if (anyPromoted) {
+    const queuedCount = allTasks.filter((t) => t.status === "queued").length;
+    const promoted = evaluatePendingGates(
+      this.log,
+      allTasks,
+      this.wsServer,
+      this.gateEvaluator,
+      this.lastGateKey
+    );
+    // Refresh state if there are any queued tasks or if a promotion occurred.
+    // gate_evaluated events are now written only on first evaluation or result change
+    // (dedup via lastGateKey). Even when no new events are written, we refresh if
+    // tasks were promoted to keep the index consistent.
+    // D3: state and index are always derived from the log.
+    if (queuedCount > 0 || promoted > 0) {
       this.refreshState();
     }
   }
