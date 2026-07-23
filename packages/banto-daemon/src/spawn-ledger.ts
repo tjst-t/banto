@@ -15,7 +15,6 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
 
 // ── Ledger entry ─────────────────────────────────────────────────────────────
 
@@ -182,8 +181,8 @@ export class SpawnLedger {
     };
     const json = JSON.stringify(file, null, 2);
 
-    // Write to a temp file in the same directory, then rename (atomic on POSIX).
-    // D6: os.tmpdir() is stdlib.
+    // Write to a temp file in the same directory (same filesystem), then rename
+    // (atomic on POSIX).
     const dir = path.dirname(this.ledgerPath);
     fs.mkdirSync(dir, { recursive: true });
 

@@ -583,6 +583,11 @@ export class Daemon {
    *
    * Private helper used by spawnTask error paths and orphan recovery.
    */
+  // NOTE(review S254276-2 F2): StateMachine.fail() appends state_transitioned +
+  // task_failed, but only the last appended event is broadcast to WS subscribers
+  // (same trade-off as transition()). Live WS view may miss the intermediate
+  // state_transitioned; REST state is always consistent. Revisit with the
+  // attention-queue UI sprint (S30a8fd).
   private recordTaskFailed(projectTag: string, taskId: string, reason: string): void {
     const task = this.store.getTask(taskId, projectTag);
     if (task) {
