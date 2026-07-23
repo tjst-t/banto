@@ -96,6 +96,7 @@ export class StateStore {
           // so that gate re-evaluation can inspect them without re-reading the log.
           // Unknown keys from payload are also spread through for extensibility.
           const { title, ...rest } = event.payload;
+          // Fixed fields placed after spread so payload cannot override id/status/projectTag.
           this.tasks.set(key, {
             ...rest,
             id: event.taskId,

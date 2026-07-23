@@ -305,11 +305,20 @@ export class Daemon {
     const allTasks = this.store.getAllTasks();
     const queuedTasks = allTasks.filter((t) => t.status === "queued");
 
+    // Track whether at least one task was promoted so we can do a single
+    // refreshState() after the loop instead of one per promotion.
+    // Safe because: (a) dependency checks use terminal states only (closed/merged/
+    // failed/superseded), which cannot be reached by a queued→ready promotion within
+    // this same loop; (b) queuedTasks is a snapshot taken before the loop starts.
+    let anyPromoted = false;
+
     for (const task of queuedTasks) {
       // Read depends from task payload; stored as array of taskId strings.
       // The `depends` field was stored in extra payload at creation time.
       const depends = task["depends"];
       if (!Array.isArray(depends) || depends.length === 0) {
+        // PROVISIONAL: Scc9152-2 がスコープ重複×未レビュー祖先・物理quota条件をここに拡張する。
+        // 本分岐は依存条件のみの暫定ゲート。
         // No dependencies: gate always passes — promote immediately.
         const gateEvent = this.log.append({
           type: "gate_evaluated",
@@ -327,7 +336,7 @@ export class Daemon {
           task.projectTag,
           "gate_passed"
         );
-        this.refreshState();
+        anyPromoted = true;
         continue;
       }
 
@@ -368,8 +377,14 @@ export class Daemon {
           task.projectTag,
           "gate_passed"
         );
-        this.refreshState();
+        anyPromoted = true;
       }
+    }
+
+    // Single refreshState() after the loop: avoids O(n) full replays when
+    // multiple tasks are promoted in one tick.
+    if (anyPromoted) {
+      this.refreshState();
     }
   }
 }
