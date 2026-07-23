@@ -22,6 +22,11 @@ export type {
   EnvProvisionedEvent,
   EnvTornDownEvent,
   TaskMergedEvent,
+  TransitionRejectedEvent,
+  TaskPausedEvent,
+  TaskResumedEvent,
+  TaskFailedEvent,
+  TaskSupersededEvent,
 } from "./events.js";
 
 // EventLog
@@ -39,3 +44,7 @@ export { StateStore } from "./state-store.js";
 
 // EventIndex (in-memory task/project history views)
 export { EventIndex } from "./event-index.js";
+
+// StateMachine (task state machine: transition table + cross-cutting transitions)
+export { StateMachine } from "./state-machine.js";
+export type { TransitionResult } from "./state-machine.js";

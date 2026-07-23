@@ -128,6 +128,51 @@ export class StateStore {
         break;
       }
 
+      case "transition_rejected":
+        // D3/I2: rejection events are audit records only — they do NOT change task status.
+        // The attempted_from/to are recorded in the log for inspection.
+        break;
+
+      case "task_paused": {
+        // Cross-cutting: pause records suspended_from so resume() can restore it (D3).
+        const task = this.tasks.get(event.taskId);
+        if (task) {
+          task.suspendedFrom = event.suspended_from;
+          task.status = "paused";
+        }
+        break;
+      }
+
+      case "task_resumed": {
+        // Cross-cutting: restore status to suspended_from; clear suspendedFrom.
+        const task = this.tasks.get(event.taskId);
+        if (task) {
+          task.status = event.restored_to;
+          delete task.suspendedFrom;
+        }
+        break;
+      }
+
+      case "task_failed": {
+        // I2: unrecoverable error — mark as failed, record reason.
+        const task = this.tasks.get(event.taskId);
+        if (task) {
+          task.status = "failed";
+          task.failureReason = event.reason;
+        }
+        break;
+      }
+
+      case "task_superseded": {
+        // Escalation replacement — mark as superseded, record who superseded.
+        const task = this.tasks.get(event.taskId);
+        if (task) {
+          task.status = "superseded";
+          task.supersededBy = event.supersededBy;
+        }
+        break;
+      }
+
       case "agent_spawned":
       case "agent_exited":
       case "gate_evaluated":

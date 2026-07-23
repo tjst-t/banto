@@ -146,6 +146,55 @@ export interface TaskMergedEvent extends EventBase {
   commitSha: string;
 }
 
+/**
+ * Invalid transition attempt recorded for auditability (I2: errors not swallowed).
+ * D3: This event records the rejection fact; it does NOT change task status.
+ */
+export interface TransitionRejectedEvent extends EventBase {
+  type: "transition_rejected";
+  taskId: string;
+  attempted_from: TaskStatus;
+  attempted_to: TaskStatus;
+  reason: string;
+}
+
+/**
+ * Task paused from an active execution state.
+ * suspended_from records the pre-pause status so resume() can restore it (D3).
+ */
+export interface TaskPausedEvent extends EventBase {
+  type: "task_paused";
+  taskId: string;
+  suspended_from: TaskStatus;
+}
+
+/**
+ * Task resumed from paused state, restoring to the suspended_from status.
+ */
+export interface TaskResumedEvent extends EventBase {
+  type: "task_resumed";
+  taskId: string;
+  restored_to: TaskStatus;
+}
+
+/**
+ * Task entered unrecoverable failure state (I2: stop, don't swallow).
+ */
+export interface TaskFailedEvent extends EventBase {
+  type: "task_failed";
+  taskId: string;
+  reason: string;
+}
+
+/**
+ * Task superseded (replaced) by another task via escalation.
+ */
+export interface TaskSupersededEvent extends EventBase {
+  type: "task_superseded";
+  taskId: string;
+  supersededBy: string;
+}
+
 /** Union of all orchestration event types */
 export type OrchestrationEvent =
   | TaskCreatedEvent
@@ -159,4 +208,9 @@ export type OrchestrationEvent =
   | CardGeneratedEvent
   | EnvProvisionedEvent
   | EnvTornDownEvent
-  | TaskMergedEvent;
+  | TaskMergedEvent
+  | TransitionRejectedEvent
+  | TaskPausedEvent
+  | TaskResumedEvent
+  | TaskFailedEvent
+  | TaskSupersededEvent;
