@@ -1,0 +1,10 @@
+{
+  "projects": [
+    {
+      "id": "proj-x",
+      "repoPath": "/tmp/x",
+      "profile": "default",
+      "registeredAt": "2026-07-23T15:30:53.648Z"
+    }
+  ]
+}

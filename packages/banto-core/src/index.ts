@@ -48,3 +48,7 @@ export { EventIndex } from "./event-index.js";
 // StateMachine (task state machine: transition table + cross-cutting transitions)
 export { StateMachine } from "./state-machine.js";
 export type { TransitionResult } from "./state-machine.js";
+
+// DaemonClient (fetch-based HTTP client for banto-daemon REST API)
+export { DaemonClient, DaemonConnectionError, DaemonApiError } from "./daemon-client.js";
+export type { ProjectEntry, HealthResponse } from "./daemon-client.js";
