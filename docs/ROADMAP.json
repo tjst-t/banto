@@ -1,0 +1,16 @@
+{
+  "project": "banto",
+  "description": "一人のPOがAIエージェントのチームを率いて開発するための統治環境（ガバナンスレイヤー＋POコックピット）",
+  "progress": {
+    "current_sprint": null,
+    "total": 0,
+    "done": 0,
+    "in_progress": 0,
+    "remaining": 0,
+    "percentage": 0
+  },
+  "execution_order": [],
+  "sprints": {},
+  "dependencies": {},
+  "backlog": []
+}
