@@ -3,6 +3,9 @@
  *
  * D3: derived state is NEVER persisted. The log is the truth.
  * Only the snapshot (written at rotation time) is persisted.
+ * task.status is updated EXCLUSIVELY by the state_transitioned handler.
+ * Metadata events (task_paused / task_resumed / task_failed / task_superseded /
+ * task_merged) update ONLY their own metadata fields — never task.status.
  *
  * I2: errors not swallowed — unknown event types are skipped with a warning,
  * malformed events throw.
@@ -120,10 +123,61 @@ export class StateStore {
       }
 
       case "task_merged": {
+        // D3: task_merged is a metadata event only — it does NOT update status.
+        // Status canonical source is state_transitioned exclusively.
+        // (merging → merged transition is recorded as state_transitioned by the caller.)
         const task = this.tasks.get(event.taskId);
         if (task) {
-          task.status = "merged";
           task.commitSha = event.commitSha;
+        }
+        break;
+      }
+
+      case "transition_rejected":
+        // D3/I2: rejection events are audit records only — they do NOT change task status.
+        // The attempted_from/to are recorded in the log for inspection.
+        break;
+
+      case "task_paused": {
+        // D3: task_paused is a metadata event only — it does NOT update status.
+        // Status canonical source is state_transitioned exclusively.
+        // Records suspended_from so resume() can restore to the pre-pause state.
+        const task = this.tasks.get(event.taskId);
+        if (task) {
+          task.suspendedFrom = event.suspended_from;
+        }
+        break;
+      }
+
+      case "task_resumed": {
+        // D3: task_resumed is a metadata event only — it does NOT update status.
+        // Status canonical source is state_transitioned exclusively.
+        // Clears suspendedFrom since the task is no longer paused.
+        const task = this.tasks.get(event.taskId);
+        if (task) {
+          delete task.suspendedFrom;
+        }
+        break;
+      }
+
+      case "task_failed": {
+        // D3: task_failed is a metadata event only — it does NOT update status.
+        // Status canonical source is state_transitioned exclusively (to="failed").
+        // I2: records failure reason for diagnosis.
+        const task = this.tasks.get(event.taskId);
+        if (task) {
+          task.failureReason = event.reason;
+        }
+        break;
+      }
+
+      case "task_superseded": {
+        // D3: task_superseded is a metadata event only — it does NOT update status.
+        // Status canonical source is state_transitioned exclusively (to="superseded").
+        // Records supersededBy for audit trail.
+        const task = this.tasks.get(event.taskId);
+        if (task) {
+          task.supersededBy = event.supersededBy;
         }
         break;
       }
