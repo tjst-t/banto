@@ -51,7 +51,9 @@ export default function (pi: any): void {
         _toolCallId: string,
         params: Record<string, unknown>
       ): Promise<{ content: Array<{ type: string; text: string }>; details: Record<string, unknown> }> {
-        // Inject projectTag and taskId from environment into args (D5: no logic — env binding only)
+        // Inject projectTag and taskId from environment into args (D5: no logic — env binding only).
+        // Note: schema descriptions for projectTag/taskId state that in pi adapter context
+        // these are always overridden by BANTO_PROJECT/BANTO_TASK_ID env vars.
         const args = { ...params, projectTag, taskId };
         const result = await tool.execute(client, args);
         return { ...result, details: {} };

@@ -14,6 +14,7 @@
  */
 
 import type { DaemonClient } from "./daemon-client.js";
+import { DaemonApiError } from "./daemon-client.js";
 
 // ── Tool result type (plain, not tied to any runtime) ────────────────────────
 
@@ -92,11 +93,11 @@ export const reportPhaseTool: BantoTool<ReportPhaseArgs> = {
       },
       projectTag: {
         type: "string",
-        description: "Project tag as registered in banto daemon (e.g. 'my-project').",
+        description: "Project tag as registered in banto daemon (e.g. 'my-project'). pi adapter文脈ではBANTO_PROJECT envで上書きされる。",
       },
       taskId: {
         type: "string",
-        description: "Task ID to update (e.g. 'T-0001').",
+        description: "Task ID to update (e.g. 'T-0001'). pi adapter文脈ではBANTO_TASK_ID envで上書きされる。",
       },
       note: {
         type: "string",
@@ -114,13 +115,24 @@ export const reportPhaseTool: BantoTool<ReportPhaseArgs> = {
     //   review-ready  → daemon "auditing" then "review-ready"
     //     (the executor self-audits; auditing→review-ready means PO review requested)
     if (args.phase === "review-ready") {
+      // PROVISIONAL GOVERNANCE DEBT (S254276): 監査エージェントが未実装のため、実行者が
+      // implementing→auditing→review-ready を自己遷移する。これは vision優先順位2
+      // (ゲート・監査の構造的保証)に対する既知の暫定であり、Sprint S75f66b(監査・マージ機構)で
+      // auditing 遷移は監査エージェント/daemonゲートの専有操作に変更される。
+      // 記録: DEC-S254276-012
+
       // Two-hop: implementing → auditing → review-ready
-      // First hop may fail if already in auditing (idempotent); second hop is the target.
+      // First hop may fail with 400 if already in auditing (idempotent); second hop is the target.
+      // I2: only swallow DaemonApiError status 400 (transition conflict) — connection errors,
+      //     404s, and other failures must propagate so callers know the daemon is unreachable.
       try {
         await client.transition(args.projectTag, args.taskId, "auditing", args.note);
-      } catch {
-        // Already past implementing (e.g. already in auditing); proceed to review-ready.
-        // I2: only swallow the intermediate hop error — if review-ready also fails it propagates.
+      } catch (err) {
+        if (err instanceof DaemonApiError && err.status === 400) {
+          // Already past implementing (e.g. already in auditing); proceed to review-ready.
+        } else {
+          throw err;
+        }
       }
       await client.transition(args.projectTag, args.taskId, "review-ready", args.note);
     } else {
@@ -165,11 +177,11 @@ export const reportDoneTool: BantoTool<ReportDoneArgs> = {
       },
       projectTag: {
         type: "string",
-        description: "Project tag as registered in banto daemon.",
+        description: "Project tag as registered in banto daemon. pi adapter文脈ではBANTO_PROJECT envで上書きされる。",
       },
       taskId: {
         type: "string",
-        description: "Task ID that is done.",
+        description: "Task ID that is done. pi adapter文脈ではBANTO_TASK_ID envで上書きされる。",
       },
     },
     required: ["summary", "projectTag", "taskId"],
@@ -177,11 +189,22 @@ export const reportDoneTool: BantoTool<ReportDoneArgs> = {
   async execute(client, args): Promise<ToolResult> {
     // D5: daemon API transitions only.
     // "done" means the executor has self-audited; the path is implementing→auditing→review-ready.
+    // PROVISIONAL GOVERNANCE DEBT (S254276): 監査エージェントが未実装のため、実行者が
+    // implementing→auditing→review-ready を自己遷移する。これは vision優先順位2
+    // (ゲート・監査の構造的保証)に対する既知の暫定であり、Sprint S75f66b(監査・マージ機構)で
+    // auditing 遷移は監査エージェント/daemonゲートの専有操作に変更される。
+    // 記録: DEC-S254276-012
+
+    // I2: only swallow DaemonApiError status 400 (transition conflict — already in auditing).
+    //     Connection errors, 404s, and other failures must propagate.
     try {
       await client.transition(args.projectTag, args.taskId, "auditing", args.summary);
-    } catch {
-      // May already be in auditing; proceed to review-ready.
-      // I2: only swallow the intermediate hop — final transition error propagates.
+    } catch (err) {
+      if (err instanceof DaemonApiError && err.status === 400) {
+        // May already be in auditing; proceed to review-ready.
+      } else {
+        throw err;
+      }
     }
     await client.transition(
       args.projectTag,

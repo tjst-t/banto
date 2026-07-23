@@ -15,7 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { Daemon } from "@banto/daemon";
-import { DaemonClient, reportPhaseTool, reportDoneTool } from "@banto/core";
+import { DaemonClient, DaemonConnectionError, reportPhaseTool, reportDoneTool } from "@banto/core";
 
 describe("[AC-S254276-3-2] Executor phase tools drive daemon state transitions", () => {
   let tmpDir: string;
@@ -179,5 +179,31 @@ describe("[AC-S254276-3-2] Executor phase tools drive daemon state transitions",
     assert.equal(res.status, 200);
     const body = await res.json() as { task: { status: string } };
     assert.equal(body.task.status, "review-ready", "Done task must be in review-ready state");
+  });
+});
+
+// ── Connection error propagation test ────────────────────────────────────────
+
+describe("[AC-S254276-3-2b] report_phase propagates connection errors (I2 / narrow catch)", () => {
+  it("[AC-S254276-3-2b] report_phase('review-ready') throws DaemonConnectionError when daemon is stopped", async () => {
+    // Point client at a port with nothing listening
+    const deadClient = new DaemonClient("http://localhost:19999");
+
+    await assert.rejects(
+      () =>
+        reportPhaseTool.execute(deadClient, {
+          phase: "review-ready",
+          projectTag: "ghost-proj",
+          taskId: "T-ghost",
+        }),
+      (err: unknown) => {
+        assert.ok(
+          err instanceof DaemonConnectionError,
+          `Expected DaemonConnectionError, got ${err instanceof Error ? err.constructor.name : typeof err}`
+        );
+        return true;
+      },
+      "report_phase must propagate DaemonConnectionError instead of swallowing it"
+    );
   });
 });
