@@ -3,8 +3,10 @@
  *
  * D2: Transition rules are expressed as data (tables), not embedded conditionals.
  * D3: Task status is derived exclusively from state_transitioned events.
- *     Pause/resume/fail/supersede are recorded as their own event types
- *     and also modify status through those events — StateStore handles them.
+ *     pause/resume/fail/supersede each emit state_transitioned (which owns the
+ *     status change) PLUS their own metadata event (task_paused / task_resumed /
+ *     task_failed / task_superseded). StateStore must update status ONLY from
+ *     state_transitioned; the metadata events update only their own fields.
  * I2: Invalid transitions are NOT silently discarded. They are recorded as
  *     transition_rejected events so the audit trail is complete.
  *
@@ -22,8 +24,11 @@
  * Cross-cutting transitions (separate API):
  *   - pause(): any "active" state → paused (suspends from current, for resume)
  *   - resume(): paused → restored to suspended_from state
- *   - fail(): any state → failed (I2: unrecoverable error)
- *   - supersede(): any state → superseded (escalation replacement)
+ *   - fail(): any non-terminal state → failed (I2: unrecoverable error)
+ *   - supersede(): any non-terminal state → superseded (escalation replacement)
+ *
+ * All cross-cutting methods emit state_transitioned first (D3: single status
+ * source), then the metadata event.
  */
 
 import type { EventLog } from "./event-log.js";
@@ -59,6 +64,7 @@ const REGULAR_TRANSITIONS: ReadonlySet<string> = new Set<string>([
 /**
  * Paused is reachable from any of these "active" execution states.
  * Other states (terminal, already-paused) are not pausable.
+ * D2: expressed as data — pause() uses this set, not embedded conditionals.
  */
 const PAUSABLE_STATES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
   "queued",
@@ -70,6 +76,17 @@ const PAUSABLE_STATES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
   "in-review",
   "approved",
   "merging",
+]);
+
+/**
+ * Terminal states: once here a task cannot be failed or superseded again.
+ * D2: expressed as data — fail()/supersede() refuse to act if already terminal.
+ */
+const TERMINAL_STATES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+  "closed",
+  "merged",
+  "failed",
+  "superseded",
 ]);
 
 // ── Result types ─────────────────────────────────────────────────────────────
@@ -127,10 +144,11 @@ export class StateMachine {
   /**
    * Pause a task from an active execution state.
    *
-   * Appends task_paused event (suspended_from = current status).
-   * Returns { ok: false } if the task is not in a pausable state.
+   * Emits (in order):
+   *   1. state_transitioned(from=currentStatus, to="paused") — D3: owns the status change
+   *   2. task_paused(suspended_from=currentStatus)           — metadata: records restore point
    *
-   * D3: suspendedFrom is derived from the task_paused event, not stored separately.
+   * Returns { ok: false } if the task is not in a pausable state.
    */
   static pause(
     log: EventLog,
@@ -150,6 +168,15 @@ export class StateMachine {
       return { ok: false, reason: "not_pausable_from_current_state" };
     }
 
+    // D3: state_transitioned is the single canonical source of status changes
+    log.append({
+      type: "state_transitioned",
+      projectTag,
+      taskId,
+      from: currentStatus,
+      to: "paused",
+    });
+    // Metadata event: records suspended_from so resume() can restore it
     log.append({
       type: "task_paused",
       projectTag,
@@ -164,6 +191,10 @@ export class StateMachine {
    *
    * Caller must provide the suspended_from state (read from TaskRecord.suspendedFrom).
    * Returns { ok: false } if the task is not currently paused.
+   *
+   * Emits (in order):
+   *   1. state_transitioned(from="paused", to=suspendedFrom) — D3: owns the status change
+   *   2. task_resumed(restored_to=suspendedFrom)             — metadata: clears suspendedFrom
    */
   static resume(
     log: EventLog,
@@ -184,6 +215,15 @@ export class StateMachine {
       return { ok: false, reason: "task_not_paused" };
     }
 
+    // D3: state_transitioned is the single canonical source of status changes
+    log.append({
+      type: "state_transitioned",
+      projectTag,
+      taskId,
+      from: "paused",
+      to: suspendedFrom,
+    });
+    // Metadata event: signals that suspendedFrom should be cleared
     log.append({
       type: "task_resumed",
       projectTag,
@@ -196,13 +236,40 @@ export class StateMachine {
   /**
    * Fail a task with an unrecoverable error (I2: stop, record, don't swallow).
    * Any non-terminal state may be failed.
+   *
+   * Emits (in order):
+   *   1. state_transitioned(from=currentStatus, to="failed") — D3: owns the status change
+   *   2. task_failed(reason)                                 — metadata: records failure reason
+   *
+   * Returns { ok: false } if the task is already in a terminal state.
    */
   static fail(
     log: EventLog,
     taskId: string,
-    opts: { reason: string },
+    opts: { currentStatus: TaskStatus; reason: string },
     projectTag: string = "default"
   ): TransitionResult {
+    if (TERMINAL_STATES.has(opts.currentStatus)) {
+      log.append({
+        type: "transition_rejected",
+        projectTag,
+        taskId,
+        attempted_from: opts.currentStatus,
+        attempted_to: "failed",
+        reason: "already_terminal",
+      });
+      return { ok: false, reason: "already_terminal" };
+    }
+
+    // D3: state_transitioned is the single canonical source of status changes
+    log.append({
+      type: "state_transitioned",
+      projectTag,
+      taskId,
+      from: opts.currentStatus,
+      to: "failed",
+    });
+    // Metadata event: records failure reason
     log.append({
       type: "task_failed",
       projectTag,
@@ -215,13 +282,40 @@ export class StateMachine {
   /**
    * Supersede a task (escalation-driven replacement).
    * Records the superseding task ID for audit trail.
+   *
+   * Emits (in order):
+   *   1. state_transitioned(from=currentStatus, to="superseded") — D3: owns the status change
+   *   2. task_superseded(supersededBy)                           — metadata: records who superseded
+   *
+   * Returns { ok: false } if the task is already in a terminal state.
    */
   static supersede(
     log: EventLog,
     taskId: string,
-    opts: { by: string },
+    opts: { currentStatus: TaskStatus; by: string },
     projectTag: string = "default"
   ): TransitionResult {
+    if (TERMINAL_STATES.has(opts.currentStatus)) {
+      log.append({
+        type: "transition_rejected",
+        projectTag,
+        taskId,
+        attempted_from: opts.currentStatus,
+        attempted_to: "superseded",
+        reason: "already_terminal",
+      });
+      return { ok: false, reason: "already_terminal" };
+    }
+
+    // D3: state_transitioned is the single canonical source of status changes
+    log.append({
+      type: "state_transitioned",
+      projectTag,
+      taskId,
+      from: opts.currentStatus,
+      to: "superseded",
+    });
+    // Metadata event: records which task superseded this one
     log.append({
       type: "task_superseded",
       projectTag,
