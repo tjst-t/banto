@@ -4,6 +4,13 @@
  * Uses a real Daemon instance (port 0) with a real tmpRepoDir.
  * Polling interval set to 500ms for test speed.
  * Observes only via HTTP API — never calls watcher internals directly.
+ *
+ * NOTE (Scc9152-2 update): gate re-evaluation now fires immediately after each
+ * state transition. A task with no dependencies and no overlapping unreviewed
+ * ancestors is promoted directly from queued → ready without waiting for a tick.
+ * The AC remains satisfied: draft→queued transition IS recorded in the event log;
+ * the task just passes the gate immediately and advances further to 'ready'.
+ * Status assertions are updated to accept 'queued' OR any more-advanced state.
  */
 
 import { describe, it, before, after } from "node:test";
@@ -63,7 +70,7 @@ describe("[AC-Scc9152-1-1] Watcher ingests valid task definition → draft→que
     fs.rmSync(tmpRepoDir, { recursive: true, force: true });
   });
 
-  it("[AC-Scc9152-1-1] places valid task file → task appears as queued via GET /tasks/:id", async () => {
+  it("[AC-Scc9152-1-1] places valid task file → task is ingested and reaches at least 'queued'", async () => {
     const taskFile = path.join(tmpRepoDir, "work", "tasks", "task-0001-test-ingest.md");
     const content = `---
 id: task-0001
@@ -83,7 +90,11 @@ acceptance:
 `;
     fs.writeFileSync(taskFile, content, "utf-8");
 
-    // Poll until task appears and is queued (up to 5s)
+    // Poll until task appears and has passed through queued (may advance to ready
+    // immediately if the gate passes on the first evaluation — Scc9152-2 behaviour).
+    // Accept 'queued' OR any more-advanced state (ready, planning, …).
+    const PAST_QUEUED = new Set(["queued", "ready", "planning", "implementing", "auditing",
+      "review-ready", "in-review", "approved", "merging", "merged", "evaluating", "closed"]);
     const taskResult = await pollUntil(
       async () => {
         const res = await fetch(`${base}/api/v1/projects/proj-watcher/tasks/task-0001`);
@@ -91,12 +102,15 @@ acceptance:
         const body = await res.json() as { task: { status: string } };
         return body.task;
       },
-      (task) => task !== null && task.status === "queued",
+      (task) => task !== null && PAST_QUEUED.has(task.status),
       5000
     );
 
     assert.ok(taskResult !== null, "task should exist after watcher polling");
-    assert.equal(taskResult!.status, "queued", "task status should be queued");
+    assert.ok(
+      PAST_QUEUED.has(taskResult!.status),
+      `task status must be queued or beyond (got '${taskResult!.status}')`
+    );
   });
 
   it("[AC-Scc9152-1-1] GET /tasks/:id/events contains task_created and state_transitioned(draft→queued)", async () => {

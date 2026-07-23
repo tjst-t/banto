@@ -106,7 +106,10 @@ describe("[AC-S654396-3-1] REST API: projects, tasks, events", () => {
       body: JSON.stringify({ id: "task-0002", title: "Test task two" }),
     });
 
-    // Transition task-0001 draft → queued
+    // Transition task-0001 draft → queued.
+    // With Scc9152-2 gate evaluation: if task has no deps and no scope overlap,
+    // the gate fires immediately and promotes the task to 'ready' within the
+    // same HTTP call. The response body reflects the post-gate status.
     const res = await fetch(`${base}/api/v1/projects/proj-a/tasks/task-0001/transition`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -114,11 +117,16 @@ describe("[AC-S654396-3-1] REST API: projects, tasks, events", () => {
     });
     assert.equal(res.status, 200);
     const body = await res.json() as { task: { id: string; status: string } };
-    assert.equal(body.task.status, "queued");
+    // Accept 'queued' (gate not yet evaluated) OR 'ready' (gate passed inline).
+    const validStatuses = new Set(["queued", "ready"]);
+    assert.ok(
+      validStatuses.has(body.task.status),
+      `task status must be 'queued' or 'ready' after draft→queued transition, got '${body.task.status}'`
+    );
   });
 
   it("[AC-S654396-3-1] POST transition with invalid target returns 400 + rejection", async () => {
-    // task-0001 is now queued; try to jump to 'closed' (invalid)
+    // task-0001 is now in queued or ready state; try to jump to 'closed' (invalid from both)
     const res = await fetch(`${base}/api/v1/projects/proj-a/tasks/task-0001/transition`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
