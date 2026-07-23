@@ -8,6 +8,7 @@
  *   - ProjectRegistry (project metadata)
  *   - StateMachine (transition rules)
  *   - WsEventServer (real-time event broadcast)
+ *   - Scheduler (periodic tick jobs: gate re-evaluation, rotation, etc.)
  *
  * D3: state is derived from events, never written directly.
  * D5: all logic lives here; HTTP/WS layers are pure routing/transport.
@@ -26,12 +27,20 @@ import { ProjectRegistry } from "./project-registry.js";
 import type { ProjectEntry } from "./project-registry.js";
 import { WsEventServer } from "./ws-server.js";
 import { createHttpServer } from "./http-server.js";
+import { Scheduler } from "./scheduler.js";
+import type { TickJob } from "./scheduler.js";
 
 export interface DaemonConfig {
   /** Port to listen on. Default: 3000 */
   port: number;
   /** Root data directory (event log + registry). Default: ./data */
   dataDir: string;
+  /**
+   * Tick interval in milliseconds for the periodic scheduler.
+   * Default: 60000 (1 minute) for production.
+   * Override to a small value (e.g. 500) in tests to reduce wait time.
+   */
+  tickIntervalMs: number;
 }
 
 export class Daemon {
@@ -42,6 +51,7 @@ export class Daemon {
   private readonly registry: ProjectRegistry;
   private readonly httpServer: http.Server;
   private readonly wsServer: WsEventServer;
+  private readonly scheduler: Scheduler;
 
   private constructor(config: DaemonConfig) {
     this.config = config;
@@ -54,14 +64,49 @@ export class Daemon {
     this.wsServer = new WsEventServer(this.httpServer, (projectTag) =>
       this.log.getEventsByProject(projectTag)
     );
+
+    // Scheduler: drives periodic jobs (D6: setInterval only, no external library).
+    this.scheduler = new Scheduler(this.log, config.tickIntervalMs);
+
+    // Built-in job: rotation check (spec §5, spec §2.3).
+    // Checks if the active segment exceeds the size threshold and rotates if so.
+    this.scheduler.registerJob("rotation-check", () => {
+      if (this.log.shouldRotate()) {
+        const snapshotState = StateStore.replay(this.log).toSnapshotState();
+        this.log.rotate(snapshotState);
+        // After rotation, rebuild in-memory state from the new active segment.
+        this.refreshState();
+      }
+    });
+
+    // Built-in job: dependency gate re-evaluation (spec §5).
+    // Promotes queued tasks to ready when all their dependencies are satisfied.
+    this.scheduler.registerJob("gate-reeval", () => {
+      this.evaluatePendingGates();
+    });
   }
 
   static create(config: Partial<DaemonConfig> = {}): Daemon {
     const resolved: DaemonConfig = {
       port: config.port ?? parseInt(process.env["BANTO_PORT"] ?? "3000", 10),
       dataDir: config.dataDir ?? process.env["BANTO_DATA_DIR"] ?? "./data",
+      tickIntervalMs:
+        config.tickIntervalMs ??
+        parseInt(process.env["BANTO_TICK_INTERVAL_MS"] ?? "60000", 10),
     };
     return new Daemon(resolved);
+  }
+
+  /**
+   * Register a named periodic job to run on every tick.
+   * This is the public API for adding jobs from outside the daemon
+   * (e.g. from tests or future extension points).
+   *
+   * I2: job failures are caught, recorded as tick_job_failed events,
+   * and the scheduler continues (see Scheduler.runAllJobs).
+   */
+  registerTickJob(name: string, fn: TickJob): void {
+    this.scheduler.registerJob(name, fn);
   }
 
   /** Start listening. Returns a promise that resolves when the server is bound. */
@@ -72,6 +117,7 @@ export class Daemon {
         process.stdout.write(
           `[banto-daemon] listening on port ${this.config.port} (dataDir=${this.config.dataDir})\n`
         );
+        this.scheduler.start();
         resolve();
       });
     });
@@ -79,6 +125,7 @@ export class Daemon {
 
   /** Stop the daemon gracefully. */
   stop(): Promise<void> {
+    this.scheduler.stop();
     return new Promise((resolve, reject) => {
       this.wsServer.close(() => {
         this.httpServer.close((err) => {
@@ -135,6 +182,22 @@ export class Daemon {
    */
   getTaskEvents(projectTag: string, taskId: string): OrchestrationEvent[] {
     return this.index.getTaskHistory(taskId, projectTag);
+  }
+
+  /**
+   * Get all events for a project (including daemon-internal events
+   * like tick_job_failed that are not tied to a specific task).
+   */
+  getProjectEvents(projectTag: string): OrchestrationEvent[] {
+    return this.index.getProjectHistory(projectTag);
+  }
+
+  /**
+   * Get ALL events from the log (daemon-wide).
+   * Used by the daemon-level events endpoint (/api/v1/events).
+   */
+  getAllEvents(): OrchestrationEvent[] {
+    return this.log.readAllEvents();
   }
 
   /**
@@ -225,5 +288,88 @@ export class Daemon {
   private refreshState(): void {
     this.store = StateStore.replay(this.log);
     this.index = EventIndex.build(this.log);
+  }
+
+  /**
+   * Evaluate dependency gates for all queued tasks.
+   *
+   * For each queued task that has a `depends` array in its payload, checks
+   * whether all listed dependency task IDs are in a terminal state (closed,
+   * merged, failed, superseded).  When all deps are met, appends a
+   * gate_evaluated(passed=true) event and transitions the task to ready.
+   *
+   * spec §5: "依存駆動ゲートの再評価" — tick-driven, not request-driven.
+   * D3: gate result is appended as an event; state is derived from events.
+   */
+  private evaluatePendingGates(): void {
+    const allTasks = this.store.getAllTasks();
+    const queuedTasks = allTasks.filter((t) => t.status === "queued");
+
+    for (const task of queuedTasks) {
+      // Read depends from task payload; stored as array of taskId strings.
+      // The `depends` field was stored in extra payload at creation time.
+      const depends = task["depends"];
+      if (!Array.isArray(depends) || depends.length === 0) {
+        // No dependencies: gate always passes — promote immediately.
+        const gateEvent = this.log.append({
+          type: "gate_evaluated",
+          projectTag: task.projectTag,
+          taskId: task.id,
+          passed: true,
+          blockedBy: [],
+        });
+        this.wsServer.broadcast(gateEvent);
+        StateMachine.transition(
+          this.log,
+          task.id,
+          "queued",
+          "ready",
+          task.projectTag,
+          "gate_passed"
+        );
+        this.refreshState();
+        continue;
+      }
+
+      // Check each dependency: resolved when in a "terminal-ish" set.
+      // We consider closed, merged, failed, superseded as "done enough"
+      // to unblock a dependent task. (spec §1 has no explicit gate rule beyond
+      // "dependency graph" — using terminal states as the criterion.)
+      const terminalStates = new Set(["closed", "merged", "failed", "superseded"]);
+      const blockedBy: string[] = [];
+
+      for (const depId of depends) {
+        if (typeof depId !== "string") continue;
+        // Try to find the dependency in the same project first; then globally.
+        const dep =
+          this.store.getTask(depId, task.projectTag) ??
+          this.store.getTask(depId);
+        if (!dep || !terminalStates.has(dep.status)) {
+          blockedBy.push(depId);
+        }
+      }
+
+      const passed = blockedBy.length === 0;
+      const gateEvent = this.log.append({
+        type: "gate_evaluated",
+        projectTag: task.projectTag,
+        taskId: task.id,
+        passed,
+        blockedBy,
+      });
+      this.wsServer.broadcast(gateEvent);
+
+      if (passed) {
+        StateMachine.transition(
+          this.log,
+          task.id,
+          "queued",
+          "ready",
+          task.projectTag,
+          "gate_passed"
+        );
+        this.refreshState();
+      }
+    }
   }
 }

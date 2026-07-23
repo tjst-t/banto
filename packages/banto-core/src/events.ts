@@ -195,6 +195,18 @@ export interface TaskSupersededEvent extends EventBase {
   supersededBy: string;
 }
 
+/**
+ * A scheduler tick job failed.
+ * I2: errors are NOT swallowed — recorded here so the audit trail is complete.
+ * The daemon continues running after a tick job failure (scheduler catches and records).
+ * projectTag is set to the sentinel value "daemon" (daemon-internal, not a user project).
+ */
+export interface TickJobFailedEvent extends EventBase {
+  type: "tick_job_failed";
+  jobName: string;
+  error: string;
+}
+
 /** Union of all orchestration event types */
 export type OrchestrationEvent =
   | TaskCreatedEvent
@@ -213,4 +225,5 @@ export type OrchestrationEvent =
   | TaskPausedEvent
   | TaskResumedEvent
   | TaskFailedEvent
-  | TaskSupersededEvent;
+  | TaskSupersededEvent
+  | TickJobFailedEvent;

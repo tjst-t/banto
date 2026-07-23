@@ -27,6 +27,7 @@ export type {
   TaskResumedEvent,
   TaskFailedEvent,
   TaskSupersededEvent,
+  TickJobFailedEvent,
 } from "./events.js";
 
 // EventLog
