@@ -18,8 +18,15 @@ export type { TaskRecord };
 
 export class StateStore {
   // D3: all fields are derived; never written to disk directly
+  // Internal key is "${projectTag}/${id}" to support multi-project namespacing
+  // (spec-multi-project §2: same taskId may exist in different projects).
   private tasks: Map<string, TaskRecord> = new Map();
   private _replayStats: ReplayStats = { snapshotUsed: false, eventsReplayed: 0 };
+
+  /** Compose the internal map key from projectTag + taskId. */
+  private static taskKey(projectTag: string, taskId: string): string {
+    return `${projectTag}/${taskId}`;
+  }
 
   private constructor() {}
 
@@ -70,8 +77,11 @@ export class StateStore {
 
   private loadSnapshot(state: SnapshotState): void {
     this.tasks.clear();
-    for (const [id, record] of Object.entries(state.tasks)) {
-      this.tasks.set(id, record);
+    for (const [_key, record] of Object.entries(state.tasks)) {
+      // Use composite key (projectTag/id) internally.
+      // Snapshot keys are task IDs; rebuild from record.projectTag.
+      const key = StateStore.taskKey(record.projectTag, record.id);
+      this.tasks.set(key, record);
     }
   }
 
@@ -79,9 +89,10 @@ export class StateStore {
   private applyEvent(event: OrchestrationEvent): void {
     switch (event.type) {
       case "task_created": {
-        const existing = this.tasks.get(event.taskId);
+        const key = StateStore.taskKey(event.projectTag, event.taskId);
+        const existing = this.tasks.get(key);
         if (!existing) {
-          this.tasks.set(event.taskId, {
+          this.tasks.set(key, {
             id: event.taskId,
             status: "draft",
             projectTag: event.projectTag,
@@ -92,7 +103,8 @@ export class StateStore {
       }
 
       case "state_transitioned": {
-        const task = this.tasks.get(event.taskId);
+        const key = StateStore.taskKey(event.projectTag, event.taskId);
+        const task = this.tasks.get(key);
         if (task) {
           task.status = event.to;
         }
@@ -104,7 +116,8 @@ export class StateStore {
       case "task_approved": {
         // D3: task_approved is a PO judgment record only — it does NOT update status.
         // Status canonical source is state_transitioned exclusively.
-        const task = this.tasks.get(event.taskId);
+        const key = StateStore.taskKey(event.projectTag, event.taskId);
+        const task = this.tasks.get(key);
         if (task) {
           task.approvedBy = event.approvedBy;
         }
@@ -114,7 +127,8 @@ export class StateStore {
       case "task_rejected": {
         // D3: task_rejected is a PO judgment record only — it does NOT update status.
         // Status canonical source is state_transitioned exclusively.
-        const task = this.tasks.get(event.taskId);
+        const key = StateStore.taskKey(event.projectTag, event.taskId);
+        const task = this.tasks.get(key);
         if (task) {
           task.rejectedBy = event.rejectedBy;
           task.rejectionReason = event.reason;
@@ -126,7 +140,8 @@ export class StateStore {
         // D3: task_merged is a metadata event only — it does NOT update status.
         // Status canonical source is state_transitioned exclusively.
         // (merging → merged transition is recorded as state_transitioned by the caller.)
-        const task = this.tasks.get(event.taskId);
+        const key = StateStore.taskKey(event.projectTag, event.taskId);
+        const task = this.tasks.get(key);
         if (task) {
           task.commitSha = event.commitSha;
         }
@@ -142,7 +157,8 @@ export class StateStore {
         // D3: task_paused is a metadata event only — it does NOT update status.
         // Status canonical source is state_transitioned exclusively.
         // Records suspended_from so resume() can restore to the pre-pause state.
-        const task = this.tasks.get(event.taskId);
+        const key = StateStore.taskKey(event.projectTag, event.taskId);
+        const task = this.tasks.get(key);
         if (task) {
           task.suspendedFrom = event.suspended_from;
         }
@@ -153,7 +169,8 @@ export class StateStore {
         // D3: task_resumed is a metadata event only — it does NOT update status.
         // Status canonical source is state_transitioned exclusively.
         // Clears suspendedFrom since the task is no longer paused.
-        const task = this.tasks.get(event.taskId);
+        const key = StateStore.taskKey(event.projectTag, event.taskId);
+        const task = this.tasks.get(key);
         if (task) {
           delete task.suspendedFrom;
         }
@@ -164,7 +181,8 @@ export class StateStore {
         // D3: task_failed is a metadata event only — it does NOT update status.
         // Status canonical source is state_transitioned exclusively (to="failed").
         // I2: records failure reason for diagnosis.
-        const task = this.tasks.get(event.taskId);
+        const key = StateStore.taskKey(event.projectTag, event.taskId);
+        const task = this.tasks.get(key);
         if (task) {
           task.failureReason = event.reason;
         }
@@ -175,7 +193,8 @@ export class StateStore {
         // D3: task_superseded is a metadata event only — it does NOT update status.
         // Status canonical source is state_transitioned exclusively (to="superseded").
         // Records supersededBy for audit trail.
-        const task = this.tasks.get(event.taskId);
+        const key = StateStore.taskKey(event.projectTag, event.taskId);
+        const task = this.tasks.get(key);
         if (task) {
           task.supersededBy = event.supersededBy;
         }
@@ -207,9 +226,24 @@ export class StateStore {
     }
   }
 
-  /** Get a single task by ID. Returns undefined if not found. */
-  getTask(taskId: string): TaskRecord | undefined {
-    return this.tasks.get(taskId);
+  /**
+   * Get a single task by ID.
+   *
+   * When projectTag is provided (recommended), uses O(1) composite key lookup.
+   * When omitted, scans all tasks and returns the first match by taskId
+   * (backward-compatible for single-project tests; O(n)).
+   *
+   * Returns undefined if not found.
+   */
+  getTask(taskId: string, projectTag?: string): TaskRecord | undefined {
+    if (projectTag !== undefined) {
+      return this.tasks.get(StateStore.taskKey(projectTag, taskId));
+    }
+    // Backward-compatible scan for callers that don't yet pass projectTag
+    for (const record of this.tasks.values()) {
+      if (record.id === taskId) return record;
+    }
+    return undefined;
   }
 
   /** Get all tasks */
@@ -234,8 +268,11 @@ export class StateStore {
    */
   toSnapshotState(): SnapshotState {
     const tasks: Record<string, TaskRecord> = {};
-    for (const [id, record] of this.tasks.entries()) {
-      tasks[id] = { ...record };
+    for (const [_key, record] of this.tasks.entries()) {
+      // Use projectTag/id as snapshot key to support multi-project (no collision).
+      // loadSnapshot() ignores this key and reconstructs from record.projectTag + record.id.
+      const snapshotKey = StateStore.taskKey(record.projectTag, record.id);
+      tasks[snapshotKey] = { ...record };
     }
     return { tasks };
   }

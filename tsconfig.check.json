@@ -8,7 +8,8 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "paths": {
-      "@banto/core": ["./packages/banto-core/src/index.ts"]
+      "@banto/core": ["./packages/banto-core/src/index.ts"],
+      "@banto/daemon": ["./packages/banto-daemon/src/index.ts"]
     }
   },
   "include": [
