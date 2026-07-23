@@ -83,14 +83,22 @@ export interface GateEvaluatedEvent extends EventBase {
   blockedBy: string[];
 }
 
-/** PO approved a task for merge */
+/**
+ * PO approved a task for merge.
+ * D3: This event is a PO judgment record ONLY — it does NOT change task status.
+ * Status canonical source is state_transitioned exclusively.
+ */
 export interface TaskApprovedEvent extends EventBase {
   type: "task_approved";
   taskId: string;
   approvedBy: string;
 }
 
-/** PO rejected a task */
+/**
+ * PO rejected a task.
+ * D3: This event is a PO judgment record ONLY — it does NOT change task status.
+ * Status canonical source is state_transitioned exclusively.
+ */
 export interface TaskRejectedEvent extends EventBase {
   type: "task_rejected";
   taskId: string;

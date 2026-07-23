@@ -197,15 +197,18 @@ export class EventLog {
   }
 
   private nextNewSegmentName(archivedName: string): string {
-    // Try current month; if same name, append -2, -3, etc.
+    // Try current month first
     const current = this.currentSegmentName();
-    if (current !== archivedName) return current;
 
-    // Same month — add numeric suffix
-    const base = archivedName.replace(/\.jsonl$/, "");
-    const existing = this.listSegments();
+    // If the current month name doesn't exist on disk, it is safe to use
+    if (!fs.existsSync(path.join(this.eventsDir, current))) return current;
+
+    // The file already exists on disk (either it is the archived segment or a
+    // previously archived segment with the same month name).  Find the next
+    // available suffixed name: YYYY-MM-2.jsonl, -3, … until one is absent.
+    const base = current.replace(/\.jsonl$/, "");
     let n = 2;
-    while (existing.includes(`${base}-${n}.jsonl`)) n++;
+    while (fs.existsSync(path.join(this.eventsDir, `${base}-${n}.jsonl`))) n++;
     return `${base}-${n}.jsonl`;
   }
 
@@ -215,8 +218,13 @@ export class EventLog {
     try {
       const raw = fs.readFileSync(this.snapshotPath, "utf-8");
       return JSON.parse(raw) as Snapshot;
-    } catch {
-      // I2: don't swallow, but a corrupt snapshot means we replay from scratch
+    } catch (err) {
+      // I2: warn on stderr — corrupt snapshot is an abnormal condition.
+      // Falling back to full replay is safe but callers must know this happened.
+      process.stderr.write(
+        `[banto-core] WARNING: snapshot at ${this.snapshotPath} is corrupt and will be ignored; ` +
+          `falling back to full replay. Error: ${String(err)}\n`
+      );
       return null;
     }
   }

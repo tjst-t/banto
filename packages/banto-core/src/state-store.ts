@@ -99,17 +99,21 @@ export class StateStore {
       }
 
       case "task_approved": {
+        // D3: task_approved is a PO judgment record only — it does NOT update status.
+        // Status canonical source is state_transitioned exclusively.
         const task = this.tasks.get(event.taskId);
         if (task) {
-          task.status = "approved";
+          task.approvedBy = event.approvedBy;
         }
         break;
       }
 
       case "task_rejected": {
+        // D3: task_rejected is a PO judgment record only — it does NOT update status.
+        // Status canonical source is state_transitioned exclusively.
         const task = this.tasks.get(event.taskId);
         if (task) {
-          task.status = "failed";
+          task.rejectedBy = event.rejectedBy;
           task.rejectionReason = event.reason;
         }
         break;
@@ -135,10 +139,17 @@ export class StateStore {
         // directly alter the task state machine (handled by daemon logic)
         break;
 
-      default:
-        // Unknown event type: tolerate for forward compatibility (I2: don't throw on unknown future types)
-        // but don't swallow — log a warning conceptually (no logger available here, so no-op)
-        break;
+      default: {
+        // I2: unknown event types indicate a version mismatch (newer writer, older reader).
+        // Silently skipping would corrupt derived state — throw instead so the caller can stop.
+        // Cast through unknown: TypeScript narrows `event` to `never` here because the union
+        // is exhaustive at compile time, but unknown future types arrive at runtime. (any justified: unreachable branch)
+        const raw = event as unknown as { type: string; eventId: number }; // eslint-disable-line @typescript-eslint/no-explicit-any
+        throw new Error(
+          `StateStore.applyEvent: unknown event type "${raw.type}" (eventId=${raw.eventId}). ` +
+            "This may indicate a newer event log is being read by older code. Stopping to prevent state corruption."
+        );
+      }
     }
   }
 
