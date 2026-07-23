@@ -17,6 +17,8 @@ export { Scheduler } from "./scheduler.js";
 export type { TickJob } from "./scheduler.js";
 export { PiRpcDriver, createWorktree, removeWorktree } from "./pi-rpc-driver.js";
 export type { PiRpcDriverOptions } from "./pi-rpc-driver.js";
+export { SpawnLedger, isProcessAlive, killOrphanProcess } from "./spawn-ledger.js";
+export type { LedgerEntry } from "./spawn-ledger.js";
 
 // Start daemon when executed directly (not when imported as a module)
 // Detect direct execution: argv[1] ends with this file's path.

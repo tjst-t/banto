@@ -35,6 +35,8 @@ import { Scheduler } from "./scheduler.js";
 import type { TickJob } from "./scheduler.js";
 import { GateEvaluator, evaluatePendingGates } from "./gate-evaluator.js";
 import { PiRpcDriver, createWorktree } from "./pi-rpc-driver.js";
+import { SpawnLedger, isProcessAlive, killOrphanProcess } from "./spawn-ledger.js";
+import type { LedgerEntry } from "./spawn-ledger.js";
 
 export interface DaemonConfig {
   /** Port to listen on. Default: 3000 */
@@ -62,6 +64,12 @@ export interface DaemonConfig {
    * Default: <dataDir>/sessions
    */
   sessionBaseDir?: string;
+  /**
+   * Interval (ms) for the spawn-ledger reconcile job.
+   * Default: tickIntervalMs (shares the tick cadence).
+   * Set to a small value (e.g. 500) in tests for fast detection.
+   */
+  reconcileIntervalMs?: number;
 }
 
 export class Daemon {
@@ -88,12 +96,39 @@ export class Daemon {
    */
   readonly driverRegistry: RuntimeDriverRegistry;
 
+  /**
+   * Spawn ledger — persistent registry of active child processes (spec §3).
+   * Written atomically to <dataDir>/spawn-ledger.json.
+   * Exposed as readonly for tests (e.g. to inspect entries after spawn).
+   */
+  readonly ledger: SpawnLedger;
+
+  /**
+   * Separate interval handle for the reconcile job, running at reconcileIntervalMs
+   * (which may differ from the main tick). Null until start() is called.
+   */
+  private reconcileTimer: NodeJS.Timeout | null = null;
+
   private constructor(config: DaemonConfig) {
     this.config = config;
     this.log = EventLog.open(config.dataDir);
     this.store = StateStore.replay(this.log);
     this.index = EventIndex.build(this.log);
     this.registry = ProjectRegistry.open(config.dataDir);
+
+    // Open spawn ledger — I2: corruption → error event + empty ledger (never crash).
+    const { ledger, corruptionError } = SpawnLedger.open(config.dataDir);
+    this.ledger = ledger;
+    if (corruptionError) {
+      // Record the corruption as a daemon-internal event (I2: don't swallow).
+      // We record it during construction (before start()) so it's in the log.
+      this.log.append({
+        type: "tick_job_failed",
+        projectTag: "daemon",
+        jobName: "spawn-ledger-open",
+        error: corruptionError,
+      });
+    }
 
     // Initialize driver registry with the pi-rpc reference implementation.
     // D6: PiRpcDriver uses only child_process (stdlib) + the pi binary.
@@ -144,6 +179,7 @@ export class Daemon {
         parseInt(process.env["BANTO_TICK_INTERVAL_MS"] ?? "60000", 10),
       worktreeBaseDir: config.worktreeBaseDir,
       sessionBaseDir: config.sessionBaseDir,
+      reconcileIntervalMs: config.reconcileIntervalMs,
     };
     return new Daemon(resolved);
   }
@@ -161,8 +197,12 @@ export class Daemon {
   }
 
   /** Start listening. Returns a promise that resolves when the server is bound. */
-  start(): Promise<void> {
-    return new Promise((resolve, reject) => {
+  async start(): Promise<void> {
+    // Recover orphans from the ledger BEFORE accepting new requests.
+    // Spec §3: "daemon再起動時は台帳から孤児を引き取り再接続する"
+    await this.recoverOrphans();
+
+    await new Promise<void>((resolve, reject) => {
       this.httpServer.once("error", reject);
       this.httpServer.listen(this.config.port, "0.0.0.0", () => {
         process.stdout.write(
@@ -173,12 +213,25 @@ export class Daemon {
         resolve();
       });
     });
+
+    // Start the reconcile timer (separate from the main tick so tests can tune it).
+    const reconcileMs =
+      this.config.reconcileIntervalMs ?? this.config.tickIntervalMs;
+    this.reconcileTimer = setInterval(() => {
+      void this.reconcileLedger();
+    }, reconcileMs);
+    // Unref so the timer does not prevent the event loop from exiting in tests.
+    if (this.reconcileTimer.unref) this.reconcileTimer.unref();
   }
 
   /** Stop the daemon gracefully. */
   stop(): Promise<void> {
     this.watcher.stop();
     this.scheduler.stop();
+    if (this.reconcileTimer) {
+      clearInterval(this.reconcileTimer);
+      this.reconcileTimer = null;
+    }
     return new Promise((resolve, reject) => {
       this.wsServer.close(() => {
         this.httpServer.close((err) => {
@@ -387,7 +440,21 @@ export class Daemon {
     // 8. Transition to "planning"
     this.transition(projectTag, taskId, "planning", "agent spawned");
 
-    // 9. Subscribe to driver events for this session → agent_exited
+    // 9. Register in spawn ledger (spec §3: persistent process registry).
+    // I3: only processes we spawned are in the ledger.
+    const ledgerEntry: LedgerEntry = {
+      pid: handle.pid,
+      projectTag,
+      taskId,
+      sessionPath: handle.sessionPath,
+      worktree: worktreePath,
+      driverId,
+      sessionId: handle.sessionId,
+      spawnedAt: new Date().toISOString(),
+    };
+    this.ledger.add(ledgerEntry);
+
+    // 10. Subscribe to driver events for this session → agent_exited + ledger removal
     const unsub = driver.subscribe((event) => {
       if (event.type === "process_exited" && event.sessionId === handle.sessionId) {
         const exitedEvent = this.log.append({
@@ -399,6 +466,8 @@ export class Daemon {
           signal: event.signal,
         });
         this.applyAndBroadcast(exitedEvent);
+        // Remove from ledger: process is gone, no longer needs recovery.
+        this.ledger.remove(projectTag, taskId);
         unsub();
       }
     });
@@ -411,21 +480,142 @@ export class Daemon {
     };
   }
 
+  // ── Spawn ledger public API ────────────────────────────────────────────────
+
+  /**
+   * Return all current ledger entries (active spawned sessions).
+   * Used by tests and the HTTP API to inspect spawn state.
+   */
+  getLedgerEntries(): ReturnType<SpawnLedger["list"]> {
+    return this.ledger.list();
+  }
+
+  // ── Orphan recovery ────────────────────────────────────────────────────────
+
+  /**
+   * On daemon (re)start: read the ledger and handle surviving orphan processes.
+   *
+   * Spec §3 confirmed decision: pi-rpc stdin/stdout pipes are gone after daemon
+   * restart → full re-attach is not possible. Strategy:
+   *   (a) pid still alive → SIGTERM + SIGKILL, then emit task_failed
+   *       (reason: daemon_restart_orphaned). This ensures no ghost pi processes
+   *       linger and the task state is unambiguous.
+   *   (b) pid already dead → emit task_failed (reason: orphan_pid_not_found).
+   * Either way: ledger entry is removed after handling.
+   */
+  private async recoverOrphans(): Promise<void> {
+    const entries = this.ledger.list();
+    if (entries.length === 0) return;
+
+    process.stdout.write(
+      `[banto-daemon] recovering ${entries.length} orphan(s) from spawn ledger\n`
+    );
+
+    for (const entry of entries) {
+      const { pid, projectTag, taskId } = entry;
+
+      if (isProcessAlive(pid)) {
+        process.stdout.write(
+          `[banto-daemon] orphan pid=${pid} task=${projectTag}/${taskId} alive → terminating\n`
+        );
+        try {
+          await killOrphanProcess(pid);
+        } catch {
+          // Best-effort: if kill fails, record and continue
+        }
+        const reason = "daemon_restart_orphaned";
+        this.recordTaskFailed(projectTag, taskId, reason);
+      } else {
+        process.stdout.write(
+          `[banto-daemon] orphan pid=${pid} task=${projectTag}/${taskId} already dead → recording failure\n`
+        );
+        this.recordTaskFailed(projectTag, taskId, "orphan_pid_not_found");
+      }
+
+      // Remove from ledger regardless of pid state (I3: ledger = live processes only)
+      this.ledger.remove(projectTag, taskId);
+    }
+  }
+
+  /**
+   * Reconcile job: compare ledger entries against live OS processes.
+   * Detects processes that died without triggering the normal exit path
+   * (e.g. SIGKILL from outside the daemon).
+   *
+   * For each dead entry:
+   *   - emit task_failed event (reason: "process_not_found")
+   *   - remove from ledger
+   *
+   * Orphan worktrees are logged (not deleted per spec §3 task 4).
+   *
+   * Called by the reconcile timer (reconcileIntervalMs cadence).
+   */
+  private async reconcileLedger(): Promise<void> {
+    const entries = this.ledger.list();
+    for (const entry of entries) {
+      const { pid, projectTag, taskId, worktree } = entry;
+      if (!isProcessAlive(pid)) {
+        process.stdout.write(
+          `[banto-daemon] reconcile: pid=${pid} task=${projectTag}/${taskId} is dead → task_failed\n`
+        );
+        this.recordTaskFailed(projectTag, taskId, "process_not_found");
+        this.ledger.remove(projectTag, taskId);
+
+        // Log orphan worktree (spec §3 task 4: detect, do not delete)
+        if (worktree) {
+          process.stdout.write(
+            `[banto-daemon] orphan worktree detected (not deleted): ${worktree}\n`
+          );
+        }
+      }
+    }
+  }
+
   /**
    * Record an unrecoverable task failure (I2).
-   * Appends task_failed event and transitions task to "failed" status.
-   * Private helper used by spawnTask error paths.
+   *
+   * Uses StateMachine.fail() which emits:
+   *   1. state_transitioned(from=currentStatus, to="failed") — D3: single status source
+   *   2. task_failed(reason)                                 — metadata
+   *
+   * If the task does not exist or is already terminal, only task_failed is appended
+   * (the state machine handles the already-terminal guard internally).
+   *
+   * Private helper used by spawnTask error paths and orphan recovery.
    */
+  // NOTE(review S254276-2 F2): StateMachine.fail() appends state_transitioned +
+  // task_failed, but only the last appended event is broadcast to WS subscribers
+  // (same trade-off as transition()). Live WS view may miss the intermediate
+  // state_transitioned; REST state is always consistent. Revisit with the
+  // attention-queue UI sprint (S30a8fd).
   private recordTaskFailed(projectTag: string, taskId: string, reason: string): void {
-    const failedEvent = this.log.append({
-      type: "task_failed",
-      projectTag,
-      taskId,
-      reason,
-    });
-    this.applyAndBroadcast(failedEvent);
-    // Also transition state to "failed" so state machine reflects the failure
-    this.transition(projectTag, taskId, "failed", reason);
+    const task = this.store.getTask(taskId, projectTag);
+    if (task) {
+      // Use StateMachine.fail() which handles any → failed cross-cutting transition.
+      // This is the correct path for planning/implementing/etc. → failed.
+      StateMachine.fail(
+        this.log,
+        taskId,
+        { currentStatus: task.status as TaskStatus, reason },
+        projectTag
+      );
+    } else {
+      // Task not found in in-memory store (rare: event log has it, store out of sync,
+      // or task was never created). Append task_failed event directly (I2).
+      this.log.append({
+        type: "task_failed",
+        projectTag,
+        taskId,
+        reason,
+      });
+    }
+    // Refresh in-memory state and broadcast the latest event(s).
+    this.refreshState();
+    const allEvents = this.log.readAllEvents();
+    if (allEvents.length > 0) {
+      const lastEvent = allEvents[allEvents.length - 1];
+      this.wsServer.broadcast(lastEvent);
+    }
   }
 
   /**
