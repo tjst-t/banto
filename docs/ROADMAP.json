@@ -2,11 +2,11 @@
   "project": "banto",
   "description": "一人のPOがAIエージェントのチームを率いて開発するための統治環境（ガバナンスレイヤー＋POコックピット）",
   "progress": {
-    "current_sprint": null,
+    "current_sprint": "S9d7fdb",
     "total": 10,
     "done": 4,
-    "in_progress": 0,
-    "remaining": 6,
+    "in_progress": 1,
+    "remaining": 5,
     "percentage": 40
   },
   "execution_order": [
@@ -814,7 +814,7 @@
     },
     "S9d7fdb": {
       "title": "評価環境v1",
-      "status": "pending",
+      "status": "in_progress",
       "description": "環境プロファイル（meta/environments.yaml）、ドライバ契約（provision〜list）、ビルトインprocess/dockerドライバ、環境台帳・TTL・quota・照合、credentialsのsops分離",
       "milestone": false,
       "detail_level": "detailed",
