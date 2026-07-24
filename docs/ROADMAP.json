@@ -713,7 +713,7 @@
         },
         "S75f66b-5": {
           "title": "直列マージキュー（rebase→ゲート→マージ）",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、approvedになったタスクが直列マージキューで rebase→マージ前ゲート→マージ と自動処理され、メインラインが常にグリーンに保たれるようにしたい。なぜなら、マージ作業と後始末にPOのレビュー帯域を使わないこと（優先原則3）が番頭の目的だから。",
@@ -747,22 +747,22 @@
             "S75f66b-5-1": {
               "title": "マージキュー導出",
               "description": "approved到達順（イベントログのapproval順）のキューをリプレイから導出する純粋関数。処理中（merging）タスクの再開判定も含め、永続化ファイルは持たない（D3）。再起動復元をここで保証。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-5-2": {
               "title": "直列マージプロセッサ",
               "description": "tickジョブとしてキュー先頭のみ処理: 対象worktreeをメインラインへ rebase → S75f66b-4 のゲート実行 → fast-forward マージ → merged遷移。git操作はdaemonの child_process（標準git CLI、D6）。同時に1件のみ処理する直列性を保証（spec-daemon-core §4.1。Bors型バッチは将来拡張であり実装しない）。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-5-3": {
               "title": "マージ後処理",
               "description": "worktree・タスクブランチの削除（冪等、I3）、既存 gate-reeval ジョブによる依存タスクの ready 昇格接続、hypothesis無しタスクの merged→closed 遷移（既存遷移表）。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-5-4": {
               "title": "パイプラインE2E",
               "description": "サンプルプロジェクトで 投入→自動spawn→実装→監査→承認（policy autoは監査後直行）→マージ を実機で通す pipeline-merge.e2e.spec.ts。モック・DRY_RUN不可（S254276-4-2の規律を踏襲）。",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
