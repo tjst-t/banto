@@ -2,11 +2,11 @@
   "project": "banto",
   "description": "一人のPOがAIエージェントのチームを率いて開発するための統治環境（ガバナンスレイヤー＋POコックピット）",
   "progress": {
-    "current_sprint": null,
+    "current_sprint": "S75f66b",
     "total": 10,
     "done": 3,
-    "in_progress": 0,
-    "remaining": 7,
+    "in_progress": 1,
+    "remaining": 6,
     "percentage": 30
   },
   "execution_order": [
@@ -519,7 +519,7 @@
     },
     "S75f66b": {
       "title": "監査・マージ機構",
-      "status": "pending",
+      "status": "in_progress",
       "description": "監査セッション、直列マージキュー（rebase→マージ前ゲート→マージ）、daemonによるテスト直接実行（I1）、scope.paths違反のdiff機械検査、コンフリクト解消タスクの自動起票",
       "milestone": false,
       "detail_level": "detailed",
