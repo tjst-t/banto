@@ -90,3 +90,27 @@ export type { BantoTool, ToolResult, ToolTextContent, ToolParameterSchema } from
 
 // Prompt asset loader (reads from skills/ directory at repo root)
 export { loadPromptAsset } from "./prompt-assets.js";
+
+// Environment driver contract types — spec-environment §2
+// D1: field names in input/output shapes are FIXED to spec §2. Do NOT rename without ADR.
+export type {
+  EnvDriverVerb,
+  EnvHandle,
+  ProvisionInput,
+  DeployInput,
+  HealthcheckInput,
+  RunInput,
+  CollectInput,
+  TeardownInput,
+  ListInput,
+  ProvisionOutput,
+  DeployOutput,
+  HealthcheckOutput,
+  RunOutput,
+  CollectOutput,
+  TeardownOutput,
+  ListItem,
+  ListOutput,
+  EnvDriverInput,
+} from "./env-driver.js";
+export { ENV_DRIVER_VERBS } from "./env-driver.js";

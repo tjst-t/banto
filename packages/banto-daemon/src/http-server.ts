@@ -353,10 +353,9 @@ export function createHttpServer(daemon: Daemon): http.Server {
       },
     },
 
-    // S9d7fdb-1 (AC-S9d7fdb-1-3): Provision environment for a task.
-    // Story 1 scope: resolve profile name only — 404 if not found + env_provision_failed event.
-    // Actual driver invocation lands in Story 2.
-    // D5: all logic delegated to daemon.resolveEnvProfile; this is pure routing.
+    // S9d7fdb-2 (AC-S9d7fdb-2-2): Provision environment for a task via driver.
+    // Replaces the Story 1 stub (which returned 202 profile_resolved).
+    // D5: all logic delegated to daemon.provisionEnv; this is pure routing.
     {
       method: "POST",
       pattern: /^\/api\/v1\/projects\/([^/]+)\/tasks\/([^/]+)\/environment\/provision$/,
@@ -372,8 +371,6 @@ export function createHttpServer(daemon: Daemon): http.Server {
           sendJson(res, 404, { error: "task_not_found" });
           return;
         }
-        // Resolve profile name from task frontmatter's `environment` field,
-        // or allow caller to override via request body `profile`.
         const body = (await readBody(req)) as Record<string, unknown>;
         const profileName =
           typeof body["profile"] === "string"
@@ -387,14 +384,114 @@ export function createHttpServer(daemon: Daemon): http.Server {
           return;
         }
 
-        const result = daemon.resolveEnvProfile(proj, taskId, profileName);
+        const result = await daemon.provisionEnv(proj, taskId, profileName);
         if (!result.ok) {
           sendJson(res, result.httpStatus, { error: result.error });
           return;
         }
-        // Profile found: in Story 1, we return 202 Accepted (provision not yet implemented).
-        // Story 2 will replace this with actual driver invocation.
-        sendJson(res, 202, { status: "profile_resolved", profileName: result.profileName });
+        sendJson(res, 201, {
+          envId: result.envId,
+          profileName: result.profileName,
+          healthcheck: result.healthcheck,
+        });
+      },
+    },
+
+    // S9d7fdb-2 (AC-S9d7fdb-2-4): Tear down environment for a task (idempotent).
+    {
+      method: "POST",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/tasks\/([^/]+)\/environment\/teardown$/,
+      handler: async (req, res, match) => {
+        const proj = match[1];
+        const taskId = match[2];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const envId = typeof body["envId"] === "string" ? body["envId"] : undefined;
+        const result = await daemon.teardownEnv(proj, taskId, envId);
+        if (!result.ok) {
+          sendJson(res, result.httpStatus, { error: result.error });
+          return;
+        }
+        sendJson(res, 200, { status: "torn_down" });
+      },
+    },
+
+    // S9d7fdb-2 (AC-S9d7fdb-2-3): Run a command in the provisioned environment.
+    {
+      method: "POST",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/tasks\/([^/]+)\/environment\/run$/,
+      handler: async (req, res, match) => {
+        const proj = match[1];
+        const taskId = match[2];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const cmd = body["cmd"];
+        if (typeof cmd !== "string" || !cmd) {
+          sendJson(res, 400, { error: "cmd is required" });
+          return;
+        }
+        const envId = typeof body["envId"] === "string" ? body["envId"] : undefined;
+        const result = await daemon.runEnvCmd(proj, taskId, cmd, envId);
+        if (!result.ok) {
+          sendJson(res, result.httpStatus, { error: result.error });
+          return;
+        }
+        // I2: non-zero exit is reported faithfully — not treated as HTTP error
+        sendJson(res, 200, { exit: result.exit, log_path: result.log_path });
+      },
+    },
+
+    // S9d7fdb-2 (AC-S9d7fdb-2-3): Collect artifacts from the environment.
+    {
+      method: "POST",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/tasks\/([^/]+)\/environment\/collect$/,
+      handler: async (req, res, match) => {
+        const proj = match[1];
+        const taskId = match[2];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const envId = typeof body["envId"] === "string" ? body["envId"] : undefined;
+        const result = await daemon.collectEnv(proj, taskId, envId);
+        if (!result.ok) {
+          sendJson(res, result.httpStatus, { error: result.error });
+          return;
+        }
+        sendJson(res, 200, { dest: result.dest });
+      },
+    },
+
+    // S9d7fdb-2 (AC-S9d7fdb-2-3): List artifacts for a task.
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/tasks\/([^/]+)\/environment\/artifacts$/,
+      handler: async (_req, res, match) => {
+        const proj = match[1];
+        const taskId = match[2];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const artifacts = daemon.listTaskArtifacts(proj, taskId);
+        sendJson(res, 200, { artifacts });
+      },
+    },
+
+    // S9d7fdb-2 (AC-S9d7fdb-2-2): List all live environments (global).
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/environments$/,
+      handler: async (_req, res) => {
+        const environments = daemon.listAllEnvironments();
+        sendJson(res, 200, { environments });
       },
     },
   ];
