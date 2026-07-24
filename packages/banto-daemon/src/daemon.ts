@@ -801,13 +801,24 @@ export class Daemon {
       // D5: all orchestration logic here; HTTP layer is pure routing.
       // disableAuditSpawn: test suites that test gate/tick logic can opt out of the
       // side effect to avoid pi CLI resolution errors in CI environments.
-      if (fromStatus === "implementing" && toStatus === "auditing" && !this.config.disableAuditSpawn) {
-        // Fire-and-forget: spawn failure recorded via recordTaskFailed (I2).
-        // Deferred to next tick so the HTTP response is sent before any synchronous
-        // work in spawnAuditSession (e.g. loadPromptAsset, driver lookup) that might
-        // call recordTaskFailed, which would mutate task state before the caller sees
-        // the 200/auditing response.
-        setImmediate(() => void this.spawnAuditSession(projectTag, taskId));
+      if (fromStatus === "implementing" && toStatus === "auditing") {
+        if (this.config.disableAuditSpawn) {
+          // F2 (governance): emit observable event so the bypass is visible in the log.
+          // "黙って迂回できる経路を作らない" — suppression must never be silent.
+          const disabledEvent = this.log.append({
+            type: "audit_spawn_disabled",
+            projectTag,
+            taskId,
+          });
+          this.applyAndBroadcast(disabledEvent);
+        } else {
+          // Fire-and-forget: spawn failure recorded via recordTaskFailed (I2).
+          // Deferred to next tick so the HTTP response is sent before any synchronous
+          // work in spawnAuditSession (e.g. loadPromptAsset, driver lookup) that might
+          // call recordTaskFailed, which would mutate task state before the caller sees
+          // the 200/auditing response.
+          setImmediate(() => void this.spawnAuditSession(projectTag, taskId));
+        }
       }
     }
 
@@ -1132,7 +1143,10 @@ export class Daemon {
       `${taskId}-rework-${reworkIndex}.jsonl`
     );
 
-    // Build system prompt with findings injected.
+    // Build system prompt from executor-system asset (no findings injected here —
+    // D1: findings are delivered via driver.inject() after spawn, which is the
+    // runtime-driver contract's guaranteed delivery path. PiRpcDriver ignores
+    // systemPrompt at the spawn call but processes inject() as the first RPC message).
     let executorPrompt: string;
     try {
       executorPrompt = loadSkillAsset("executor-system");
@@ -1141,11 +1155,6 @@ export class Daemon {
       this.recordTaskFailed(projectTag, taskId, reason);
       return;
     }
-
-    const reworkPrompt =
-      executorPrompt +
-      "\n\n## 監査指摘（前回の提出で発見された問題）\n\n以下の指摘を解決してから report_done を呼んでください:\n\n" +
-      findings.map((f) => `- ${f}`).join("\n");
 
     const driver = this.driverRegistry.get("pi-rpc");
     if (!driver) {
@@ -1158,7 +1167,7 @@ export class Daemon {
       taskId,
       worktreePath,
       sessionPath,
-      systemPrompt: reworkPrompt,
+      systemPrompt: executorPrompt,
       tools: [],
       modelTier: "standard",
       driverOptions: {
@@ -1175,6 +1184,25 @@ export class Daemon {
       const reason = `rework session spawn failed: ${err instanceof Error ? err.message : String(err)}`;
       this.recordTaskFailed(projectTag, taskId, reason);
       return;
+    }
+
+    // D1: deliver findings via inject() — the runtime-driver contract's sanctioned
+    // message path. This is the guaranteed delivery channel; systemPrompt is ignored
+    // by PiRpcDriver (it does not pass it to the pi process). inject() sends the
+    // findings as the first RPC `prompt` message into the running session.
+    // I2: inject failure is logged but not fatal — the session is already spawned and
+    // the executor can still complete (the audit will re-check on the next verdict).
+    const findingsMessage =
+      "## 監査指摘（前回の提出で発見された問題）\n\n" +
+      "以下の指摘を解決してから report_done を呼んでください:\n\n" +
+      findings.map((f) => `- ${f}`).join("\n");
+    try {
+      await driver.inject(handle.sessionId, findingsMessage);
+    } catch (injectErr) {
+      process.stderr.write(
+        `[banto-daemon] spawnReworkSession: inject findings failed for ${projectTag}/${taskId}: ` +
+          `${injectErr instanceof Error ? injectErr.message : String(injectErr)}\n`
+      );
     }
 
     // Record agent_spawned for the rework session.
@@ -1237,7 +1265,7 @@ export class Daemon {
     for (let i = events.length - 1; i >= 0; i--) {
       const ev = events[i];
       if (ev.type === "audit_verdict") {
-        if ((ev as { verdict: string }).verdict === "fail") {
+        if (ev.verdict === "fail") {
           consecutiveFails++;
         } else {
           // pass resets the streak

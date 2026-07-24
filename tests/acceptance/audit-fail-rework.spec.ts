@@ -7,13 +7,18 @@
  *   Suite A — 1st fail rework:
  *     - POST audit-report(fail, findings) → task status becomes "implementing"
  *     - A new executor rework session is spawned (spawn ledger: taskId:rework)
- *     - The rework session's systemPrompt contains the findings string
+ *     - The rework findings are delivered via driver.inject() (D1: inject is the
+ *       guaranteed delivery path; PiRpcDriver ignores systemPrompt).
  *
  *   Suite B — 2nd consecutive fail:
  *     - 1st fail → implementing (rework spawned)
  *     - POST auditing again (auditing→implementing is rework, implementing→auditing retriggers audit)
  *     - 2nd fail → task status becomes "failed"
  *     - No new spawn in ledger for the failed task
+ *
+ *   Suite C — disableAuditSpawn emits audit_spawn_disabled event (F2 governance):
+ *     - implementing→auditing with disableAuditSpawn:true emits audit_spawn_disabled event
+ *     - No audit session is spawned, but the suppression is visible in the event log.
  *
  * Entry point: HTTP API (story_type=api, Rule 2).
  * D3: consecutive fail count derived from audit_verdict events in event log.
@@ -36,7 +41,8 @@ import type {
 } from "../../packages/banto-core/src/index.js";
 
 // ── CaptureDriver ─────────────────────────────────────────────────────────────
-// Records all SpawnOptions so tests can verify what systemPrompt was built.
+// Records all SpawnOptions AND inject calls so tests can verify findings delivery.
+// D1 fix: findings must arrive via inject(), not systemPrompt (PiRpcDriver ignores systemPrompt).
 
 interface CaptureRecord {
   opts: SpawnOptions;
@@ -44,8 +50,15 @@ interface CaptureRecord {
   sessionId: string;
 }
 
+interface InjectRecord {
+  sessionId: string;
+  message: string;
+}
+
 class CaptureDriver implements RuntimeDriver {
   readonly spawned: CaptureRecord[] = [];
+  /** Records all inject() calls in order (D1: findings delivered via inject). */
+  readonly injected: InjectRecord[] = [];
   private readonly sessions = new Map<string, { pid: number; proc: childProcess.ChildProcess }>();
   private readonly handlers: Set<DriverEventHandler> = new Set();
 
@@ -67,7 +80,10 @@ class CaptureDriver implements RuntimeDriver {
     return { pid, sessionId, sessionPath: opts.sessionPath };
   }
 
-  async inject(_sessionId: string, _message: string): Promise<void> { /* no-op */ }
+  /** D1: record inject calls so tests can assert findings delivery path. */
+  async inject(sessionId: string, message: string): Promise<void> {
+    this.injected.push({ sessionId, message });
+  }
 
   subscribe(handler: DriverEventHandler): () => void {
     this.handlers.add(handler);
@@ -222,7 +238,7 @@ describe("[AC-S75f66b-3-4] 1st audit fail: task back to implementing, rework ses
     );
   });
 
-  it("[AC-S75f66b-3-4] scenario-4-api step-2: rework session is spawned after 1st fail", async () => {
+  it("[AC-S75f66b-3-4] scenario-4-api step-2: rework session is spawned after 1st fail, findings delivered via inject()", async () => {
     // Wait for rework session spawn (async fire-and-forget in daemon)
     const spawnCount = await pollUntil(
       () => driver.spawned.length,
@@ -235,13 +251,31 @@ describe("[AC-S75f66b-3-4] 1st audit fail: task back to implementing, rework ses
     const reworkSpawn = driver.spawned[driver.spawned.length - 1];
     assert.ok(reworkSpawn, "rework spawn record must exist");
 
-    // Verify rework session's systemPrompt contains the findings
-    // (D3: findings are injected via prompt, not stored as a separate field)
+    // D1: findings must be delivered via driver.inject(), NOT systemPrompt.
+    // PiRpcDriver ignores systemPrompt at spawn time; inject() is the guaranteed
+    // delivery path (runtime-driver contract's sanctioned message channel).
+    // Poll for inject call (it fires asynchronously after spawn).
+    const injectSeen = await pollUntil(
+      () => driver.injected.length,
+      (count) => count >= 1,
+      5000
+    );
+    assert.ok(injectSeen >= 1, `driver.inject() must have been called with findings (got ${injectSeen} inject calls)`);
+
+    // Find the inject call targeted at the rework session
+    const reworkInject = driver.injected.find((r) => r.sessionId === reworkSpawn.sessionId);
+    assert.ok(
+      reworkInject,
+      `inject() must be called with the rework session's sessionId. ` +
+      `Injected sessions: ${JSON.stringify(driver.injected.map(r => r.sessionId))}`
+    );
+
+    // Verify findings appear in the injected message
     for (const finding of findings) {
       assert.ok(
-        reworkSpawn.opts.systemPrompt.includes(finding),
-        `Rework session systemPrompt must contain finding: "${finding}". ` +
-        `Prompt preview: ${reworkSpawn.opts.systemPrompt.slice(0, 500)}`
+        reworkInject!.message.includes(finding),
+        `inject() message must contain finding: "${finding}". ` +
+        `Message preview: ${reworkInject!.message.slice(0, 500)}`
       );
     }
   });
@@ -441,6 +475,88 @@ describe("[AC-S75f66b-3-4] 2nd consecutive audit fail: task becomes 'failed'", (
       activeRework.length,
       0,
       `Failed task must not have active rework ledger entry. Got: ${JSON.stringify(activeRework)}`
+    );
+  });
+});
+
+// ── Suite C: disableAuditSpawn emits audit_spawn_disabled event (F2 governance) ──
+
+describe("[F2-governance] disableAuditSpawn flag emits audit_spawn_disabled event (not silent)", () => {
+  let tmpDir: string;
+  let daemon: Daemon;
+  let base: string;
+
+  const proj = "proj-spawn-disabled";
+  const taskId = "task-spawn-disabled-1";
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-spawn-disabled-"));
+
+    daemon = Daemon.create({
+      port: 0,
+      dataDir: path.join(tmpDir, "data"),
+      watchIntervalMs: 99999,
+      tickIntervalMs: 99999,
+      reconcileIntervalMs: 99999,
+      tmuxSession: "",
+      // F2 test: disableAuditSpawn must emit observable event, not silently skip.
+      disableAuditSpawn: true,
+    });
+
+    await daemon.start();
+    base = `http://localhost:${daemon.port}`;
+
+    const projRes = await fetch(`${base}/api/v1/projects`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: proj, repoPath: tmpDir }),
+    });
+    assert.equal(projRes.status, 201, "project must register");
+  });
+
+  after(async () => {
+    await daemon.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("[F2] implementing→auditing with disableAuditSpawn emits audit_spawn_disabled event in event log", async () => {
+    // Create and advance task to implementing
+    const createRes = await fetch(`${base}/api/v1/projects/${proj}/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: taskId, title: "Spawn disabled test" }),
+    });
+    assert.equal(createRes.status, 201, "task must be created");
+
+    for (const to of ["queued", "planning", "implementing"]) {
+      const r = await fetch(
+        `${base}/api/v1/projects/${proj}/tasks/${taskId}/transition`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to }) }
+      );
+      assert.equal(r.status, 200, `transition to ${to} must succeed`);
+    }
+
+    // Trigger implementing→auditing: audit spawn is suppressed by flag
+    const auditRes = await fetch(
+      `${base}/api/v1/projects/${proj}/tasks/${taskId}/transition`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: "auditing" }) }
+    );
+    assert.equal(auditRes.status, 200, "implementing→auditing must succeed");
+
+    // F2: audit_spawn_disabled event must appear in the task event log (bypass is observable)
+    const eventsRes = await fetch(`${base}/api/v1/projects/${proj}/tasks/${taskId}/events`);
+    const { events } = await eventsRes.json() as { events: Array<{ type: string; taskId?: string }> };
+
+    const disabledEvent = events.find((e) => e.type === "audit_spawn_disabled");
+    assert.ok(
+      disabledEvent,
+      `audit_spawn_disabled event must appear in event log when disableAuditSpawn=true. ` +
+      `Events: ${JSON.stringify(events.map(e => e.type))}`
+    );
+    assert.equal(
+      disabledEvent!.taskId,
+      taskId,
+      "audit_spawn_disabled event must carry the correct taskId"
     );
   });
 });

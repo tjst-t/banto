@@ -285,6 +285,18 @@ export interface AuditVerdictEvent extends EventBase {
   findings: string[];
 }
 
+/**
+ * Audit session spawn was suppressed by the disableAuditSpawn config flag.
+ *
+ * F2 (governance): emitted so the bypass is visible in the event log — "黙って迂回できる経路を
+ * 作らない" (priority rule 2). This event is recorded instead of spawning the audit session,
+ * making the suppression auditable without spawning a real session (test-only flag).
+ */
+export interface AuditSpawnDisabledEvent extends EventBase {
+  type: "audit_spawn_disabled";
+  taskId: string;
+}
+
 /** Union of all orchestration event types */
 export type OrchestrationEvent =
   | TaskCreatedEvent
@@ -308,4 +320,5 @@ export type OrchestrationEvent =
   | TickJobFailedEvent
   | MergeGateEvaluatedEvent
   | AuditStartedEvent
-  | AuditVerdictEvent;
+  | AuditVerdictEvent
+  | AuditSpawnDisabledEvent;

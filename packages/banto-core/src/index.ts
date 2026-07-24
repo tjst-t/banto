@@ -32,6 +32,7 @@ export type {
   MergeGateEvaluatedEvent,
   AuditStartedEvent,
   AuditVerdictEvent,
+  AuditSpawnDisabledEvent,
 } from "./events.js";
 
 // Task frontmatter parser + validator

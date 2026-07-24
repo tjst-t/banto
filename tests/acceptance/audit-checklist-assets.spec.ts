@@ -183,8 +183,19 @@ describe("[AC-S75f66b-3-2] Checklist edit propagates to spawned audit session sy
   const taskId = "task-checklist-1";
 
   before(async () => {
-    // Save original checklist content
+    // F3 (robustness): save original checklist content BEFORE any mutation, then
+    // register unconditional SIGTERM/SIGINT handlers so a killed test run cannot
+    // leave the repo dirty (the in-process after() hook does not run on SIGKILL,
+    // but SIGTERM is sent by node:test on timeout — we catch it here).
     originalChecklist = fs.readFileSync(checklistPath, "utf-8");
+
+    function restoreChecklist(): void {
+      try { fs.writeFileSync(checklistPath, originalChecklist); } catch { /* best-effort */ }
+    }
+    // Register unconditional restore on exit signals (idempotent: safe to call multiple times).
+    process.once("exit", restoreChecklist);
+    process.once("SIGTERM", () => { restoreChecklist(); process.exit(143); });
+    process.once("SIGINT", () => { restoreChecklist(); process.exit(130); });
 
     // Add marker line to checklist (scenario-2-api step-1)
     fs.writeFileSync(checklistPath, originalChecklist + "\nCHECK-MARKER-42\n");
@@ -219,7 +230,8 @@ describe("[AC-S75f66b-3-2] Checklist edit propagates to spawned audit session sy
   });
 
   after(async () => {
-    // Restore original checklist (cleanup: revert edit)
+    // Unconditional restore: always rewrite the checklist before any other cleanup.
+    // This is safe even if the test threw — originalChecklist is the pre-test content.
     fs.writeFileSync(checklistPath, originalChecklist);
 
     await driver.killAll();
