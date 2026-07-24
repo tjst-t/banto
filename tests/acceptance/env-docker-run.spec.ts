@@ -246,3 +246,112 @@ describe("[AC-S9d7fdb-3-2] docker driver run — executes in container, non-zero
     handle = undefined;
   });
 });
+
+// ── Collect log isolation: two tasks must not cross-contaminate ───────────────
+//
+// AC-S9d7fdb-3-2 (review fix): log filenames are taskId-scoped (`${taskId}-run-*`).
+// Collect for task A must return only A's logs; task B's logs must not appear.
+// This is asserted at the filename/dir level — collecting for task A can only
+// find files prefixed with A's taskId, even if B's files are in the same logDir.
+
+describe("[AC-S9d7fdb-3-2-collect-isolation] collect log isolation — taskId-scoped filenames", () => {
+  const taskIdA = `task-collect-a-${Date.now()}`;
+  const taskIdB = `task-collect-b-${Date.now()}`;
+
+  let handleA: Record<string, unknown> | undefined;
+  let handleB: Record<string, unknown> | undefined;
+
+  before(() => {
+    assertDockerAvailable();
+
+    // Provision two separate environments
+    const rA = invokeDriver(
+      "provision",
+      { config: { compose: COMPOSE_FIXTURE }, taskId: taskIdA },
+      120_000
+    );
+    assert.equal(rA.exitCode, 0, `provision A failed: ${rA.stderr}`);
+    handleA = (parseOutput(rA.stdout) as { handle: Record<string, unknown> }).handle;
+
+    const rB = invokeDriver(
+      "provision",
+      { config: { compose: COMPOSE_FIXTURE }, taskId: taskIdB },
+      120_000
+    );
+    assert.equal(rB.exitCode, 0, `provision B failed: ${rB.stderr}`);
+    handleB = (parseOutput(rB.stdout) as { handle: Record<string, unknown> }).handle;
+  });
+
+  after(() => {
+    if (handleA) invokeDriver("teardown", { handle: handleA }, 30_000);
+    if (handleB) invokeDriver("teardown", { handle: handleB }, 30_000);
+  });
+
+  it("log filename for task A is prefixed with taskIdA (taskId-scoped)", () => {
+    assert.ok(handleA, "handleA must be set");
+
+    // Run a command for task A — this creates a log file in the shared logDir
+    const r = invokeDriver("run", { handle: handleA, cmd: "echo output-from-task-a" });
+    assert.equal(r.exitCode, 0, `run A failed (exit ${r.exitCode}): ${r.stderr}`);
+
+    const out = parseOutput(r.stdout) as { exit: number; log_path: string };
+    assert.equal(typeof out.log_path, "string", `log_path must be a string: ${JSON.stringify(out)}`);
+    assert.ok(fs.existsSync(out.log_path), `log_path must exist: ${out.log_path}`);
+
+    // The filename must be prefixed with taskIdA (not a bare "run-" prefix)
+    const basename = path.basename(out.log_path);
+    assert.ok(
+      basename.startsWith(`${taskIdA}-run-`),
+      `log filename must be taskId-scoped: expected prefix "${taskIdA}-run-", got "${basename}"`
+    );
+  });
+
+  it("collect for task A returns only A's logs — B's logs are not included", () => {
+    assert.ok(handleA, "handleA must be set");
+    assert.ok(handleB, "handleB must be set");
+
+    // Run a command for task B too, to put a B-prefixed log in the shared logDir
+    const rB = invokeDriver("run", { handle: handleB, cmd: "echo output-from-task-b" });
+    assert.equal(rB.exitCode, 0, `run B failed (exit ${rB.exitCode}): ${rB.stderr}`);
+    const outB = parseOutput(rB.stdout) as { exit: number; log_path: string };
+    assert.ok(fs.existsSync(outB.log_path), `B log_path must exist: ${outB.log_path}`);
+
+    // Also run for A (in case previous test ran in isolation)
+    const rA = invokeDriver("run", { handle: handleA, cmd: "echo output-from-task-a-again" });
+    assert.equal(rA.exitCode, 0, `run A failed (exit ${rA.exitCode}): ${rA.stderr}`);
+
+    // Collect for task A
+    const destA = fs.mkdtempSync(path.join(os.tmpdir(), "banto-collect-a-"));
+    try {
+      const rc = invokeDriver("collect", { handle: handleA, dest: destA });
+      assert.equal(rc.exitCode, 0, `collect A failed (exit ${rc.exitCode}): ${rc.stderr}`);
+
+      const collected = fs.readdirSync(destA);
+
+      // All collected files must be prefixed with taskIdA
+      for (const file of collected) {
+        assert.ok(
+          file.startsWith(`${taskIdA}-run-`),
+          `collected file "${file}" must be prefixed with "${taskIdA}-run-" (no cross-contamination)`
+        );
+      }
+
+      // No file from task B must appear
+      const bFiles = collected.filter((f) => f.startsWith(`${taskIdB}-run-`));
+      assert.equal(
+        bFiles.length,
+        0,
+        `collect for task A must not include task B's logs: found B files=${JSON.stringify(bFiles)}`
+      );
+
+      // At least one A log must be collected (we ran commands above)
+      const aFiles = collected.filter((f) => f.startsWith(`${taskIdA}-run-`));
+      assert.ok(
+        aFiles.length > 0,
+        `collect for task A must include at least one A log file: collected=${JSON.stringify(collected)}`
+      );
+    } finally {
+      fs.rmSync(destA, { recursive: true, force: true });
+    }
+  });
+});

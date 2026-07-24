@@ -368,13 +368,14 @@ function handleRun(input: Record<string, unknown>): void {
     process.exit(1);
   }
 
-  // Write output to a temp log file
+  // Write output to a taskId-scoped temp log file so concurrent tasks do not
+  // cross-contaminate each other's collected logs.
   // Log file cleanup is deferred to Story S9d7fdb-5 (reconcile/TTL wave).
   const logDir = path.join(os.tmpdir(), "banto-docker-driver-logs");
   fs.mkdirSync(logDir, { recursive: true });
   const logPath = path.join(
     logDir,
-    `run-${Date.now()}-${Math.random().toString(36).slice(2)}.log`
+    `${handle.taskId}-run-${Date.now()}-${Math.random().toString(36).slice(2)}.log`
   );
 
   // Use `docker compose run --rm <service> sh -c <cmd>` to execute a command
@@ -383,9 +384,15 @@ function handleRun(input: Record<string, unknown>): void {
   // NOTE: `docker compose exec` is NOT used here because on this host the
   // docker daemon fails to run exec with the AppArmor check even when
   // the container has security_opt: [apparmor=unconfined]. `compose run --rm`
-  // spawns a new container from the service definition (which inherits the
-  // security_opt), and exits with the command's exit code. (I2: non-zero exit
-  // is not swallowed — it is returned faithfully in the response body.)
+  // spawns a one-shot sibling container from the service definition (which
+  // inherits the security_opt) and exits with the command's exit code.
+  //
+  // SEMANTIC CONSEQUENCE: a one-shot sibling shares volumes+network but NOT the
+  // running container's writable layer, so `run` does not observe in-container
+  // filesystem state written after `provision`; revisit (use `compose exec`)
+  // when the host can load AppArmor profiles. Tracked as a backlog item by the
+  // sprint. (I2: non-zero exit is not swallowed — it is returned faithfully in
+  // the response body.)
   const r = runCmd(
     "docker",
     composeArgs(project, composeFile, ["run", "--rm", "--no-TTY", serviceName, "sh", "-c", cmd])
@@ -410,11 +417,16 @@ function handleCollect(input: Record<string, unknown>): void {
   // D3: daemon decides the dest path; driver writes to it.
   fs.mkdirSync(dest, { recursive: true });
 
-  // Collect any run log files associated with this task.
+  // Collect only run log files belonging to this task (taskId-prefixed filenames).
+  // Log files are named `${taskId}-run-<timestamp>-<random>.log` (written in
+  // handleRun). The taskId prefix ensures two concurrent tasks do not
+  // cross-contaminate each other's collected logs.
   // Log file cleanup is deferred (Story S9d7fdb-5).
+  const { taskId } = handle;
+  const taskLogPrefix = `${taskId}-run-`;
   const logDir = path.join(os.tmpdir(), "banto-docker-driver-logs");
   if (fs.existsSync(logDir)) {
-    const files = fs.readdirSync(logDir).filter((f) => f.startsWith("run-"));
+    const files = fs.readdirSync(logDir).filter((f) => f.startsWith(taskLogPrefix));
     for (const file of files) {
       fs.copyFileSync(path.join(logDir, file), path.join(dest, file));
     }
