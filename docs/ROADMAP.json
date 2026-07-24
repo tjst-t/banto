@@ -2,12 +2,12 @@
   "project": "banto",
   "description": "一人のPOがAIエージェントのチームを率いて開発するための統治環境（ガバナンスレイヤー＋POコックピット）",
   "progress": {
-    "current_sprint": "S9d7fdb",
+    "current_sprint": null,
     "total": 10,
-    "done": 4,
-    "in_progress": 1,
+    "done": 5,
+    "in_progress": 0,
     "remaining": 5,
-    "percentage": 40
+    "percentage": 50
   },
   "execution_order": [
     "S654396",
@@ -814,7 +814,7 @@
     },
     "S9d7fdb": {
       "title": "評価環境v1",
-      "status": "in_progress",
+      "status": "done",
       "description": "環境プロファイル（meta/environments.yaml）、ドライバ契約（provision〜list）、ビルトインprocess/dockerドライバ、環境台帳・TTL・quota・照合、credentialsのsops分離",
       "milestone": false,
       "detail_level": "detailed",
@@ -830,19 +830,19 @@
               "id": "AC-S9d7fdb-1-1",
               "description": "meta/environments.yamlのprofiles（driver・config・ttl・quota.max_instances・credentials参照名）がdaemonに読み込まれ、GET /api/v1/projects/:proj/environments でプロファイル一覧を確認できる",
               "test": "[AC-S9d7fdb-1-1] in tests/acceptance/env-profiles.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S9d7fdb-1-2",
               "description": "不正なプロファイル定義（driver欠落・ttl形式不正・quota型不正）は理由付きで拒否され、エラーイベントとして観測でき、daemonは落ちずに他の正常プロファイルを提供し続ける",
               "test": "[AC-S9d7fdb-1-2] in tests/acceptance/env-profiles-invalid.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S9d7fdb-1-3",
               "description": "存在しないプロファイル名をenvironment:で参照するタスクへのprovision要求は、理由付きで失敗として観測できる（環境は作られない）",
               "test": "[AC-S9d7fdb-1-3] in tests/acceptance/env-profile-unknown.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
@@ -874,25 +874,25 @@
               "id": "AC-S9d7fdb-2-1",
               "description": "ドライバ契約（動詞サブコマンド・stdin JSON入力・stdout JSON出力・exit 0以外は失敗・handleは不透明JSON）の共通契約テストスイートがあり、ビルトインprocessドライバが全7動詞（provision/deploy/healthcheck/run/collect/teardown/list）で通る",
               "test": "[AC-S9d7fdb-2-1] in tests/acceptance/env-driver-contract.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S9d7fdb-2-2",
               "description": "driver: processのプロファイルをprovisionするとローカルプロセスが起動してhealthcheckがok:trueを返し、env_provisionedイベントとAPIで環境を確認できる",
               "test": "[AC-S9d7fdb-2-2] in tests/acceptance/env-process-provision.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S9d7fdb-2-3",
               "description": "runで検証コマンドを実行すると{exit, log_path}が返り、ログとcollectの成果物がタスクごとの所定ディレクトリに集約されて読める",
               "test": "[AC-S9d7fdb-2-3] in tests/acceptance/env-process-run-collect.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S9d7fdb-2-4",
               "description": "teardownは冪等（対象が既に消えていても成功扱い）であり、listはtaskIDプレフィックス命名の管理下リソースのみを列挙する",
               "test": "[AC-S9d7fdb-2-4] in tests/acceptance/env-process-teardown-idempotent.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
@@ -929,19 +929,19 @@
               "id": "AC-S9d7fdb-3-1",
               "description": "driver: dockerのプロファイル（config: {compose: <file>}）をprovisionするとtaskIDプレフィックス名のcomposeプロジェクトが起動し、healthcheckで疎通を確認できる（実docker使用・モック不可）",
               "test": "[AC-S9d7fdb-3-1] in tests/acceptance/env-docker-provision.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S9d7fdb-3-2",
               "description": "runがコンテナ内でコマンドを実行して{exit, log_path}を返し、失敗コマンドの非ゼロexitがそのまま観測できる（I2: 握りつぶさない）",
               "test": "[AC-S9d7fdb-3-2] in tests/acceptance/env-docker-run.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S9d7fdb-3-3",
               "description": "teardownが冪等（composeプロジェクトが既に削除済みでも成功）で、listがプレフィックス付きcomposeプロジェクトを列挙し、dockerドライバが共通契約テストスイートを通る",
               "test": "[AC-S9d7fdb-3-3] in tests/acceptance/env-docker-teardown-list.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
@@ -973,25 +973,25 @@
               "id": "AC-S9d7fdb-4-1",
               "description": "provision成功時にhandle・プロファイル名・taskId・作成時刻が永続台帳に登録され、env_provisionedイベントとGET APIで稼働中環境の一覧を確認できる",
               "test": "[AC-S9d7fdb-4-1] in tests/acceptance/env-ledger.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S9d7fdb-4-2",
               "description": "環境稼働中にdaemonを再起動しても台帳から稼働中環境の追跡が継続する（台帳破損時はエラーイベントを積んで空台帳で継続し、落ちない）",
               "test": "[AC-S9d7fdb-4-2] in tests/acceptance/env-ledger-restart.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S9d7fdb-4-3",
               "description": "quota.max_instances到達中のprovision要求は理由付きで拒否され、ゲート条件3（QuotaCheck）によりそのプロファイルを参照するタスクのready昇格が保留され、空きが出ると昇格する",
               "test": "[AC-S9d7fdb-4-3] in tests/acceptance/env-quota.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S9d7fdb-4-4",
               "description": "タスクが終端状態（failed / closed / superseded）に達すると、daemonがその環境のteardownを保証し、env_torn_downイベントが積まれて台帳から除去される",
               "test": "[AC-S9d7fdb-4-4] in tests/acceptance/env-teardown-on-task-end.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
@@ -1028,19 +1028,19 @@
               "id": "AC-S9d7fdb-5-1",
               "description": "ttlを超過した環境がtickジョブで強制teardownされ、reason: ttl_expired付きのenv_torn_downイベントとして観測できる",
               "test": "[AC-S9d7fdb-5-1] in tests/acceptance/env-ttl.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S9d7fdb-5-2",
               "description": "teardown失敗はリトライされ、リトライ上限後も失敗する環境はケイデンス議題向けカード（card_generated, cardType: cadence）として積まれ、台帳に失敗マーク付きで残る（黙って台帳から消さない）",
               "test": "[AC-S9d7fdb-5-2] in tests/acceptance/env-teardown-retry.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S9d7fdb-5-3",
               "description": "照合tickジョブが各ドライバのlistと台帳を突合し、台帳に無い実リソース（daemon停止中に生じた孤児を含む）を検出してケイデンス議題向けカードとして積む（実機シナリオ: daemon停止中にドライバ管理下リソースを残して再起動）",
               "test": "[AC-S9d7fdb-5-3] in tests/acceptance/env-reconcile.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
@@ -1077,19 +1077,19 @@
               "id": "AC-S9d7fdb-6-1",
               "description": "environments.yamlのcredentialsは参照名のみで、daemonがsops暗号化ファイル（テストはage鍵）から復号した値をドライバプロセスの環境変数として直接渡し、ドライバからは参照できる",
               "test": "[AC-S9d7fdb-6-1] in tests/acceptance/env-credentials-sops.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S9d7fdb-6-2",
               "description": "credentialsの実値がイベントログ・API応答・環境台帳・runログ集約・セッションJSONLのいずれにも現れない（実値でのgrep検証）",
               "test": "[AC-S9d7fdb-6-2] in tests/acceptance/env-credentials-no-leak.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S9d7fdb-6-3",
               "description": "sops復号の失敗（暗号化ファイル欠落・鍵なし）時はprovisionが理由付きで失敗し、環境は作られない（credentials無しで黙って進まない）",
               "test": "[AC-S9d7fdb-6-3] in tests/acceptance/env-credentials-failure.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
@@ -1121,13 +1121,13 @@
               "id": "AC-S9d7fdb-7-1",
               "description": "environment:付きタスクがreviewフェーズ（in-review）に遷移すると、daemonが該当プロファイルを自動provisionし、env_provisionedイベントとAPIで環境を確認できる（environment:無しタスクでは何も起きない）",
               "test": "[AC-S9d7fdb-7-1] in tests/acceptance/env-review-provision.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S9d7fdb-7-2",
               "description": "該当タスクのtmuxウィンドウにペイン2が追加されて環境（dev serverの出力等）に接続され、POがSSH＋tmuxアタッチで目視できる",
               "test": "[AC-S9d7fdb-7-2] in tests/acceptance/env-review-tmux-pane.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
