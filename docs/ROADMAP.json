@@ -692,6 +692,18 @@
       "description": "daemon.tsのrefreshState()がリクエスト毎にEventLogフルリプレイ+EventIndex再構築を行う。イベント適用のインクリメンタル化で性能劣化を防ぐ。shouldRotate()のstatSync失敗の静かなfalseも併せて警告出力に",
       "added_in": "S654396",
       "reason": "S654396独立検証で低severity妥協として記録。機能は正しいため次スプリント以降で対応"
+    },
+    {
+      "title": "エージェント健康状態taxonomyとnudge/handoff(Later候補)",
+      "kind": "feature",
+      "description": "照合ループからworking/stalled/no-progress/zombie/idleを導出し、nudge/handoffをdaemon動詞に。spec-daemon-core §3(v1.x)・research-orchestrator-survey D 参照",
+      "reason": "調査反映。v1.xマーカー付き仕様追記のみ、タスク化はLater"
+    },
+    {
+      "title": "ask_predecessor(先行セッションへの質問、Later候補)",
+      "kind": "feature",
+      "description": "先行セッションJSONLを注入した短命SDKセッションへの一問一答。spec-daemon-core §3.5(v1.x)・research-orchestrator-survey E 参照",
+      "reason": "調査反映。v1.xマーカー付き仕様追記のみ、タスク化はLater"
     }
   ]
 }
