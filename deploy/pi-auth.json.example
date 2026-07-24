@@ -1,0 +1,5 @@
+{
+  "_comment": "piランタイムのLLM認証ファイルのサンプル。実物は ~/.pi/agent/auth.json に置く(chmod 600)。このファイル自体にはキーを書かないこと。OpenCode Zen は provider名 'opencode'、OpenCode Go は 'opencode-go'。両方持っている場合は両エントリを書いてよい。auth.json は環境変数(OPENCODE_API_KEY等)より優先される。",
+  "opencode": { "type": "api_key", "key": "REPLACE_WITH_OPENCODE_ZEN_KEY" },
+  "opencode-go": { "type": "api_key", "key": "REPLACE_WITH_OPENCODE_GO_KEY" }
+}

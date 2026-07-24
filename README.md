@@ -53,3 +53,20 @@ POST /api/v1/projects/:proj/tasks/:id/transition  { to, reason? }
 GET  /api/v1/tasks/:proj/:id                  (global reference)
 WS   /ws                                      subscribe { type:"subscribe", projectTag, after_event_id? }
 ```
+## LLM認証のセットアップ(pi / OpenCode)
+
+エージェント実行には pi ランタイムのLLM認証が必要です。`deploy/pi-auth.json.example` を `~/.pi/agent/auth.json` にコピーし、実際のAPIキーに書き換えてください(`chmod 600` 必須):
+
+```
+mkdir -p ~/.pi/agent
+cp deploy/pi-auth.json.example ~/.pi/agent/auth.json
+chmod 600 ~/.pi/agent/auth.json
+$EDITOR ~/.pi/agent/auth.json   # REPLACE_WITH_... を実キーに
+```
+
+- OpenCode **Zen** → プロバイダ名 `opencode`(エンドポイント https://opencode.ai/zen/v1)
+- OpenCode **Go** → プロバイダ名 `opencode-go`(https://opencode.ai/zen/go/v1)
+- 使わない方のエントリは削除してよい。auth.json は `OPENCODE_API_KEY` 等の環境変数より優先される
+- **実キーをリポジトリにコミットしないこと**(auth.json はホーム配下・リポジトリ外)
+
+検証: `npm run test:e2e`(歩くスケルトンE2E)が認証を使う最初のテストです。
