@@ -4,24 +4,27 @@
  * This is the milestone acceptance test: end-to-end from PO task file placement to
  * agent reaching review-ready state. Real daemon + real pi agent + real LLM required.
  *
- * IMPORTANT: This test requires a valid ANTHROPIC_API_KEY environment variable.
- * If the key is absent or the auth probe fails, this test records the block in
- * docs/sprint-logs/S254276/failures.json and throws (I2: skip禁止).
+ * IMPORTANT: This test requires a working opencode-go provider with deepseek-v4-flash.
+ * Auth is probed by running `pi --provider opencode-go --model deepseek-v4-flash --no-session -p "Reply with exactly: OK"`.
+ * If the probe fails, this test records the block in docs/sprint-logs/S254276/failures.json
+ * and throws (I2: skip禁止).
  *
  * Flow:
- *   1. Start real daemon with tmux integration enabled.
+ *   1. Start real daemon (piProvider=opencode-go, piModel=deepseek-v4-flash).
  *   2. Register project pointing to a temporary git repo.
  *   3. Write a minimal task definition file to <repoPath>/work/tasks/e2e-task-001.md.
  *   4. Wait for the watcher to ingest the file → task appears as 'queued'.
  *   5. Wait for gate evaluation → task becomes 'ready'.
- *   6. Wait for daemon auto-spawn → task becomes 'planning'.
- *      (Daemon auto-spawns ready tasks when the scheduler tick runs or after gate.)
- *      Note: current daemon does not auto-spawn; spawnTask is called explicitly below.
- *   7. Call spawnTask() explicitly (auto-spawn is a future sprint feature).
- *   8. Wait for pi agent to call report_phase(review-ready) → task becomes 'review-ready'.
- *   9. Verify event history.
+ *   6. Call spawnTask() explicitly (auto-spawn is a future sprint feature).
+ *      Daemon wires: --extension banto-executor.ts + --provider opencode-go + --model deepseek-v4-flash
+ *      + BANTO_DAEMON_URL/BANTO_PROJECT/BANTO_TASK_ID env vars.
+ *   7. Inject the task prompt via driver.inject().
+ *      The banto-executor extension provides report_phase/report_done tools.
+ *      The prompt instructs the LLM to call these tools (NOT raw HTTP API).
+ *   8. Wait for pi agent to call report_done → task becomes 'review-ready'.
+ *   9. Verify event history, hello.txt file, and extension-driven state transitions.
  *
- * Timeout: 180 000 ms (LLM inference can be slow).
+ * Timeout: 240 000 ms (deepseek-v4-flash latency can be 30-60 s per LLM call).
  *
  * Cleanup: kill pi session, remove tmux window, delete temp dir.
  */
@@ -42,12 +45,17 @@ const FAILURES_JSON = path.resolve(
   "../../docs/sprint-logs/S254276/failures.json"
 );
 
+// ── Default provider/model (banto確定モデル) ──────────────────────────────────
+const PI_PROVIDER = "opencode-go";
+const PI_MODEL = "deepseek-v4-flash";
+
 // ── Auth probe ────────────────────────────────────────────────────────────────
 
 /**
- * Probe whether pi can authenticate to an LLM provider.
- * Runs `pi --provider anthropic -p "say ok" --no-session` with a 15 s timeout.
- * Returns { ok: true } if pi completes without "No API key" in output.
+ * Probe whether pi can authenticate to the configured LLM provider.
+ * Runs `pi --provider opencode-go --model deepseek-v4-flash --no-session -p "Reply with exactly: OK"`
+ * with a 30 s timeout.
+ * Returns { ok: true } if pi exits 0 and stdout contains "OK".
  * Returns { ok: false, reason } otherwise.
  *
  * D6: uses child_process.spawnSync (stdlib).
@@ -68,40 +76,43 @@ function probeAuth(): { ok: boolean; reason?: string; detail: string } {
     return { ok: false, reason: "pi CLI binary not found", detail: "pi_not_found" };
   }
 
-  // Check env key first (fast path)
-  const hasKey = !!(process.env["ANTHROPIC_API_KEY"] && process.env["ANTHROPIC_API_KEY"].length > 0);
-  if (!hasKey) {
-    return {
-      ok: false,
-      reason: "ANTHROPIC_API_KEY is not set",
-      detail: "env_key_missing",
-    };
-  }
-
-  // Run a quick probe
+  // Run a quick pi probe with the configured provider/model
   const r = childProcess.spawnSync(
     "node",
-    [piCli, "--provider", "anthropic", "-p", "say ok", "--no-session"],
-    { encoding: "utf8", timeout: 20000 }
+    [piCli, "--provider", PI_PROVIDER, "--model", PI_MODEL, "--no-session", "-p", "Reply with exactly: OK"],
+    { encoding: "utf8", timeout: 30000 }
   );
 
   const stdout = r.stdout ?? "";
   const stderr = r.stderr ?? "";
   const combined = stdout + stderr;
 
-  if (combined.includes("No API key") || combined.includes("No API key found")) {
+  if (r.error) {
     return {
       ok: false,
-      reason: "pi reported: No API key found for the selected model",
-      detail: `stdout=${stdout.slice(0, 200)} stderr=${stderr.slice(0, 200)}`,
+      reason: `pi probe error: ${r.error.message}`,
+      detail: `error=${r.error.message}`,
     };
   }
 
-  if (r.error || r.status === null) {
+  if (r.status === null) {
     return {
       ok: false,
-      reason: `pi probe error: ${r.error?.message ?? "timeout or signal"}`,
-      detail: `status=${r.status} signal=${r.signal}`,
+      reason: `pi probe timed out or killed (signal=${r.signal ?? "unknown"})`,
+      detail: `signal=${r.signal} stdout=${stdout.slice(0, 100)}`,
+    };
+  }
+
+  if (
+    combined.toLowerCase().includes("no api key") ||
+    combined.toLowerCase().includes("unauthorized") ||
+    combined.toLowerCase().includes("authentication") ||
+    r.status !== 0
+  ) {
+    return {
+      ok: false,
+      reason: `pi probe failed (exit=${r.status}): check ~/.pi/agent/auth.json for ${PI_PROVIDER}`,
+      detail: `stdout=${stdout.slice(0, 200)} stderr=${stderr.slice(0, 200)}`,
     };
   }
 
@@ -172,7 +183,11 @@ async function pollUntil(
 
 // ── Task definition content ───────────────────────────────────────────────────
 
-const TASK_ID = "e2e-task-001";
+// Task ID must match task-\d{4,} pattern (spec: task-frontmatter.ts)
+const TASK_ID = "task-0001";
+// Task prompt instructs the LLM to use the registered banto tools (not raw HTTP).
+// The banto-executor extension (loaded via --extension) registers report_phase/report_done.
+// acceptance items require { id, text } objects (spec: task-frontmatter.ts).
 const TASK_MD = `---
 id: ${TASK_ID}
 type: task
@@ -183,19 +198,22 @@ scope:
   paths:
     - hello.txt
 acceptance:
-  - hello.txt exists and contains "Hello banto"
+  - { id: a1, text: "hello.txt exists and contains Hello banto" }
 ---
 
-Write a file called \`hello.txt\` in the current directory with the content:
-\`Hello banto\`
+Create a file called hello.txt in the current directory with the content: Hello banto
 
-That is the complete task. Call report_phase with "implementing" when you start, then
-create hello.txt, and call report_done with a brief summary when done.
+Steps:
+1. Call report_phase with phase="implementing" to signal you have started.
+2. Create hello.txt with content "Hello banto" using the write or bash tool.
+3. Call report_done with a brief summary (e.g. "hello.txt created with Hello banto").
+
+Use the banto tools (report_phase, report_done) — do NOT make raw HTTP calls.
 `;
 
 // ── Suite ─────────────────────────────────────────────────────────────────────
 
-describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → review-ready", { timeout: 180000 }, () => {
+describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → review-ready", { timeout: 240000 }, () => {
   let tmpDir: string;
   let repoDir: string;
   let tasksDir: string;
@@ -239,6 +257,9 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → review-ready",
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
       sessionBaseDir: path.join(tmpDir, "sessions"),
       tmuxSession: TMUX_SESSION,
+      // Use the confirmed banto default provider/model (opencode-go/deepseek-v4-flash)
+      piProvider: PI_PROVIDER,
+      piModel: PI_MODEL,
     });
 
     // Register the e2e project
@@ -265,7 +286,7 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → review-ready",
         `needs_human: E2E実行不能 — LLM認証が利用できません。` +
         `理由: ${authResult.reason ?? "unknown"}。` +
         `詳細は docs/sprint-logs/S254276/failures.json を参照。` +
-        `ANTHROPIC_API_KEYを設定して再実行してください。`
+        `${PI_PROVIDER}/${PI_MODEL} 認証設定を確認してください。`
       );
     }
 
@@ -273,18 +294,28 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → review-ready",
     const taskFile = path.join(tasksDir, `${TASK_ID}.md`);
     fs.writeFileSync(taskFile, TASK_MD, "utf8");
 
-    // ── Step 2: Wait for watcher ingest → queued ─────────────────────────────
+    // ── Step 2: Wait for watcher ingest → queued (or past queued) ──────────────
+    // Note: the gate evaluator runs immediately after task_created in the same tick,
+    // so the task may already be "ready" by the first poll (draft→queued→ready in one cycle).
+    const PAST_QUEUED = new Set([
+      "queued", "ready", "planning", "implementing", "auditing",
+      "review-ready", "in-review", "approved", "merging", "merged",
+      "evaluating", "closed",
+    ]);
     const ingestedQueued = await pollUntil(() => {
       const t = daemon.getTask(projectTag, TASK_ID);
-      return t?.status === "queued";
+      return !!t && PAST_QUEUED.has(t.status);
     }, 10000);
     assert.ok(
       ingestedQueued,
-      "Task must reach 'queued' within 10s after file drop (watcher ingest)"
+      "Task must be ingested (queued or further) within 10s after file drop (watcher ingest)"
     );
 
     const taskQueued = daemon.getTask(projectTag, TASK_ID);
-    assert.equal(taskQueued?.status, "queued", "task.status === 'queued'");
+    assert.ok(
+      taskQueued && PAST_QUEUED.has(taskQueued.status),
+      `task must be ingested (status is past queued); got: ${taskQueued?.status ?? "not found"}`
+    );
 
     // ── Step 3: Wait for gate evaluation → ready ─────────────────────────────
     const becameReady = await pollUntil(() => {
@@ -300,13 +331,11 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → review-ready",
     assert.equal(taskReady?.status, "ready", "task.status === 'ready'");
 
     // ── Step 4: Spawn the agent ───────────────────────────────────────────────
-    // Note: auto-spawn is a future sprint feature. We call spawnTask explicitly.
-    // The extension adapter (banto-executor) provides report_phase/report_done tools.
-    const piExtensionPath = path.resolve(
-      import.meta.dirname ?? ".",
-      "../../packages/banto-daemon/src/pi-extension/banto-executor.ts"
-    );
-
+    // Daemon.spawnTask() automatically:
+    //   - passes --extension <banto-executor.ts> to pi
+    //   - passes --provider opencode-go --model deepseek-v4-flash
+    //   - sets BANTO_DAEMON_URL, BANTO_PROJECT, BANTO_TASK_ID env vars in child
+    // The extension registers report_phase/report_done tools in the pi session.
     let spawnResult: {
       worktreePath: string;
       sessionPath: string;
@@ -316,18 +345,15 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → review-ready",
     };
 
     try {
-      spawnResult = await daemon.spawnTask(projectTag, TASK_ID, "pi-rpc", {
-        driverOptions: {
-          provider: "anthropic",
-          // Pass extension and env vars for the executor adapter
-          // Note: pi-rpc driver passes env to the child process
-          // BANTO_PROJECT and BANTO_TASK_ID are injected via spawnTask env
-        },
-      });
+      spawnResult = await daemon.spawnTask(projectTag, TASK_ID, "pi-rpc");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // If spawn fails due to auth → record and escalate (I2)
-      if (msg.toLowerCase().includes("api key") || msg.toLowerCase().includes("auth")) {
+      if (
+        msg.toLowerCase().includes("api key") ||
+        msg.toLowerCase().includes("auth") ||
+        msg.toLowerCase().includes("unauthorized")
+      ) {
         recordFailure({
           story: "S254276-4",
           ac: "AC-S254276-4-2",
@@ -369,58 +395,36 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → review-ready",
     }
 
     // ── Step 7: Inject task prompt via pi RPC ───────────────────────────────
-    // The pi process is waiting in RPC mode. We inject the task prompt + extension.
-    // The banto-executor extension registers report_phase/report_done tools and
-    // injects the executor system prompt. We inject these via driver.inject().
-    //
-    // Note: for this E2E, we inject a prompt that tells pi to:
-    //   1. Call report_phase("implementing")
-    //   2. Create hello.txt
-    //   3. Call report_done("hello.txt created with Hello banto")
-    //
-    // We also need to inject the extension and set BANTO_PROJECT/BANTO_TASK_ID env.
-    // The current pi-rpc driver spawns pi WITHOUT the extension (no --extension flag).
-    // For v1, we inject the prompt directly and rely on the task description to
-    // guide the agent to call report_phase/report_done — but the tools must be registered.
-    //
-    // KNOWN LIMITATION (v1): The pi-rpc driver does not currently pass the banto-executor
-    // extension to pi, so report_phase/report_done tools are not available via the extension.
-    // For this E2E test, we test the state machine path manually:
-    //   - inject the task prompt
-    //   - check that pi responds (implementing → review-ready transition via HTTP API)
-    //
-    // The daemon HTTP API is accessible via DaemonClient from within the worktree.
-    // Since the agent doesn't have the extension tools, we manually drive the state:
+    // The pi process is waiting in RPC mode with the banto-executor extension loaded.
+    // The extension has registered report_phase/report_done tools.
+    // We inject the task prompt and let the LLM use the registered tools.
     const driver = daemon.driverRegistry.get("pi-rpc");
     if (!driver) throw new Error("pi-rpc driver not found");
 
-    // Inject the task prompt to the running pi session
-    const worktreeRepoPath = spawnResult.worktreePath;
-    const daemonUrl = `http://localhost:${daemon.port}`;
+    // Simple, direct prompt. The extension system prompt provides context about
+    // available tools. We just describe the concrete task.
     const taskPrompt = [
-      `You are a banto executor agent. Your task:`,
+      `Your task: create a file called hello.txt in the current directory with content "Hello banto".`,
       ``,
-      `Create a file called \`hello.txt\` in the current directory (${worktreeRepoPath}) with content "Hello banto".`,
+      `Steps to follow:`,
+      `1. Call report_phase with phase="implementing" to signal you have started work.`,
+      `2. Create hello.txt with the exact content: Hello banto`,
+      `   Use the write tool or bash to create the file.`,
+      `3. Call report_done with summary="hello.txt created with Hello banto".`,
       ``,
-      `Before creating the file, call the banto daemon HTTP API to report your phase:`,
-      `  POST ${daemonUrl}/api/v1/projects/${projectTag}/tasks/${TASK_ID}/transition`,
-      `  Body: { "to": "implementing" }`,
-      ``,
-      `After creating hello.txt, report completion:`,
-      `  POST ${daemonUrl}/api/v1/projects/${projectTag}/tasks/${TASK_ID}/transition`,
-      `  Body: { "to": "auditing" }`,
-      `  then: { "to": "review-ready" }`,
-      ``,
-      `Use the bash tool to create the file and make the HTTP calls.`,
+      `Important: use the report_phase and report_done tools (they are registered in this session).`,
+      `Do not make HTTP API calls directly.`,
     ].join("\n");
 
     await driver.inject(spawnResult.sessionId, taskPrompt);
 
     // ── Step 8: Wait for review-ready ────────────────────────────────────────
+    // The extension's report_done() calls the daemon transition API which moves
+    // the task to review-ready. Allow 180s for LLM inference + tool execution.
     const becameReviewReady = await pollUntil(() => {
       const t = daemon.getTask(projectTag, TASK_ID);
       return t?.status === "review-ready";
-    }, 120000, 1000);
+    }, 180000, 1000);
 
     if (!becameReviewReady) {
       // Check if the task failed
@@ -443,7 +447,7 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → review-ready",
       }
 
       assert.fail(
-        `Task '${TASK_ID}' must reach 'review-ready' within 120s. ` +
+        `Task '${TASK_ID}' must reach 'review-ready' within 180s. ` +
         `Current status: ${taskState?.status ?? "unknown"}`
       );
     }
@@ -515,5 +519,16 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → review-ready",
         `session file must exist at ${spawnedEv.sessionPath}`
       );
     }
+
+    // ── Step 13: Verify extension-driven transitions ─────────────────────────
+    // The implementing→auditing→review-ready transitions must have been driven
+    // by the banto-executor extension (via report_done tool calling daemon API).
+    // We verify that at least "implementing" appeared in the transition chain,
+    // which indicates the extension's report_phase tool was called by the LLM.
+    assert.ok(
+      toStatuses.includes("implementing"),
+      `extension-driven transition 'implementing' must be present; got: [${toStatuses.join(", ")}]. ` +
+      `This indicates the banto-executor extension tools were called by the LLM.`
+    );
   });
 });

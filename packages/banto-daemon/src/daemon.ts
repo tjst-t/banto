@@ -82,6 +82,18 @@ export interface DaemonConfig {
    * Best-effort: tmux failure does NOT fail the task spawn.
    */
   tmuxSession?: string;
+  /**
+   * LLM provider name passed to pi via --provider.
+   * Default: "opencode-go" (VISION: models are interchangeable via opencode).
+   * Override via BANTO_PI_PROVIDER environment variable.
+   */
+  piProvider?: string;
+  /**
+   * LLM model ID passed to pi via --model.
+   * Default: "deepseek-v4-flash" (cheap, fast model for executor tasks).
+   * Override via BANTO_PI_MODEL environment variable.
+   */
+  piModel?: string;
 }
 
 export class Daemon {
@@ -145,8 +157,17 @@ export class Daemon {
     // Initialize driver registry with the pi-rpc reference implementation.
     // D6: PiRpcDriver uses only child_process (stdlib) + the pi binary.
     this.driverRegistry = new RuntimeDriverRegistry();
+    // Resolve banto-executor extension path relative to this file (daemon.ts lives in
+    // packages/banto-daemon/src/; the extension is in pi-extension/ sibling dir).
+    const extensionPath = new URL(
+      "./pi-extension/banto-executor.ts",
+      import.meta.url
+    ).pathname;
     const piDriver = new PiRpcDriver({
       sessionBaseDir: config.sessionBaseDir ?? path.join(config.dataDir, "sessions"),
+      defaultProvider: config.piProvider ?? "opencode-go",
+      defaultModel: config.piModel ?? "deepseek-v4-flash",
+      extensionPath,
     });
     this.driverRegistry.register("pi-rpc", piDriver);
 
@@ -193,6 +214,8 @@ export class Daemon {
       sessionBaseDir: config.sessionBaseDir,
       reconcileIntervalMs: config.reconcileIntervalMs,
       tmuxSession: config.tmuxSession,
+      piProvider: config.piProvider ?? process.env["BANTO_PI_PROVIDER"] ?? "opencode-go",
+      piModel: config.piModel ?? process.env["BANTO_PI_MODEL"] ?? "deepseek-v4-flash",
     };
     return new Daemon(resolved);
   }
@@ -422,6 +445,15 @@ export class Daemon {
     // 6. Spawn session
     let handle: { pid: number; sessionId: string; sessionPath: string };
     try {
+      // Inject daemon URL, projectTag, taskId into driverOptions so the pi driver
+      // can pass them as BANTO_DAEMON_URL/BANTO_PROJECT/BANTO_TASK_ID to the child
+      // process env. The banto-executor extension reads these to call the daemon API.
+      const daemonUrl = `http://localhost:${this.port}`;
+      const mergedDriverOptions: Record<string, unknown> = {
+        ...spawnExtra.driverOptions,
+        daemonUrl,
+        projectTag,
+      };
       const opts: SpawnOptions = {
         taskId,
         worktreePath,
@@ -429,7 +461,7 @@ export class Daemon {
         systemPrompt: spawnExtra.systemPrompt ?? "",
         tools: spawnExtra.tools ?? [],
         modelTier: spawnExtra.modelTier,
-        driverOptions: spawnExtra.driverOptions,
+        driverOptions: mergedDriverOptions,
       };
       handle = await driver.spawn(opts);
     } catch (err) {
