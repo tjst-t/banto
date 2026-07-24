@@ -46,6 +46,15 @@ import {
   fileConflictTask,
   deriveOriginResolutionPairs,
 } from "./conflict-filer.js";
+import { EnvLedger } from "./env-ledger.js";
+import type { EnvLedgerEntry } from "./env-ledger.js";
+import { runDriverVerb, resolveDriverPath, DEFAULT_DRIVER_TIMEOUT_MS } from "./env-driver-runner.js";
+import type {
+  ProvisionOutput,
+  HealthcheckOutput,
+  RunOutput,
+  ListOutput,
+} from "@banto/core";
 
 // ── Daemon-local skill asset loader ───────────────────────────────────────────
 //
@@ -144,6 +153,12 @@ export interface DaemonConfig {
    * Default: false (audit sessions are auto-spawned in production).
    */
   disableAuditSpawn?: boolean;
+  /**
+   * Timeout in milliseconds for a single driver verb invocation (spec-environment §8 decision).
+   * Planning note: daemon-side uniform configurable default.
+   * Default: 30 000 ms (30 s).
+   */
+  driverTimeoutMs?: number;
 }
 
 export class Daemon {
@@ -176,6 +191,13 @@ export class Daemon {
    * Exposed as readonly for tests (e.g. to inspect entries after spawn).
    */
   readonly ledger: SpawnLedger;
+
+  /**
+   * Environment ledger — persistent registry of provisioned environments (spec-environment §5).
+   * Written atomically to <dataDir>/env-ledger.json.
+   * Exposed as readonly for tests (e.g. to inspect entries after provision).
+   */
+  readonly envLedger: EnvLedger;
 
   /**
    * Separate interval handle for the reconcile job, running at reconcileIntervalMs
@@ -273,6 +295,18 @@ export class Daemon {
       });
     }
 
+    // Open env ledger — same I2 pattern as spawn ledger.
+    const { ledger: envLedger, corruptionError: envLedgerError } = EnvLedger.open(config.dataDir);
+    this.envLedger = envLedger;
+    if (envLedgerError) {
+      this.log.append({
+        type: "tick_job_failed",
+        projectTag: "daemon",
+        jobName: "env-ledger-open",
+        error: envLedgerError,
+      });
+    }
+
     // Initialize driver registry with the pi-rpc reference implementation.
     // D6: PiRpcDriver uses only child_process (stdlib) + the pi binary.
     this.driverRegistry = new RuntimeDriverRegistry();
@@ -367,6 +401,7 @@ export class Daemon {
         // always false (quota silently unenforced) — fall back to the default.
         (Number.parseInt(process.env["BANTO_MAX_CONCURRENT_SESSIONS"] ?? "5", 10) || 5),
       disableAuditSpawn: config.disableAuditSpawn ?? false,
+      driverTimeoutMs: config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS,
     };
     return new Daemon(resolved);
   }
@@ -1600,6 +1635,360 @@ export class Daemon {
       return { ok: false, httpStatus: 404, error: reason };
     }
     return { ok: true, profileName: found.name };
+  }
+
+  // ── Environment driver API (S9d7fdb-2) ────────────────────────────────────
+
+  /**
+   * Provision an environment for a task using its named profile's driver.
+   *
+   * S9d7fdb-2 (AC-S9d7fdb-2-2): This replaces the Story 1 stub that returned 202.
+   *
+   * Steps:
+   *   1. Resolve profile → driver name + config block.
+   *   2. Resolve absolute driver path (builtin or external).
+   *   3. Run `driver provision` with stdin {config, taskId}.
+   *   4. Run `driver healthcheck` with the returned handle.
+   *   5. Record env_provisioned event + ledger entry.
+   *
+   * D1: field names passed to driver are spec §2 FIXED: config, taskId, handle.
+   * I2: any driver failure → ok: false + env_provision_failed event (not swallowed).
+   * I3: taskId is passed to the driver so it can apply the naming prefix.
+   *
+   * Returns the new envId on success.
+   */
+  async provisionEnv(
+    projectTag: string,
+    taskId: string,
+    profileName: string
+  ): Promise<
+    | { ok: true; envId: string; profileName: string; healthcheck: { ok: boolean; detail?: string } }
+    | { ok: false; httpStatus: number; error: string }
+  > {
+    const { valid } = this.getEnvironmentProfiles(projectTag);
+    const profile = valid.find((p) => p.name === profileName);
+    if (!profile) {
+      const reason = `profile_not_found: "${profileName}" is not defined in meta/environments.yaml`;
+      const event = this.log.append({
+        type: "env_provision_failed",
+        projectTag,
+        taskId,
+        profileName,
+        reason,
+      });
+      this.applyAndBroadcast(event);
+      return { ok: false, httpStatus: 404, error: reason };
+    }
+
+    const driverPath = resolveDriverPath(profile.driver);
+    const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
+
+    // Step 1: provision
+    const provisionResult = await runDriverVerb(
+      driverPath,
+      "provision",
+      { config: profile.config ?? {}, taskId },
+      timeoutMs
+    );
+
+    if (!provisionResult.ok) {
+      const reason = `driver_provision_failed: ${provisionResult.error}`;
+      const event = this.log.append({
+        type: "env_provision_failed",
+        projectTag,
+        taskId,
+        profileName,
+        reason,
+      });
+      this.applyAndBroadcast(event);
+      return { ok: false, httpStatus: 502, error: reason };
+    }
+
+    const provOut = provisionResult.output as ProvisionOutput;
+    if (!provOut.handle || typeof provOut.handle !== "object") {
+      const reason = "driver_provision_failed: provision output missing handle";
+      const event = this.log.append({
+        type: "env_provision_failed",
+        projectTag,
+        taskId,
+        profileName,
+        reason,
+      });
+      this.applyAndBroadcast(event);
+      return { ok: false, httpStatus: 502, error: reason };
+    }
+
+    const handle = provOut.handle;
+
+    // Step 2: healthcheck
+    const hcResult = await runDriverVerb(
+      driverPath,
+      "healthcheck",
+      { handle },
+      timeoutMs
+    );
+
+    let healthcheck: { ok: boolean; detail?: string };
+    if (!hcResult.ok) {
+      // Healthcheck driver failure — treat as ok: false with detail
+      healthcheck = { ok: false, detail: hcResult.error };
+    } else {
+      const hcOut = hcResult.output as HealthcheckOutput;
+      healthcheck = { ok: hcOut.ok === true, detail: hcOut.detail };
+    }
+
+    // Step 3: record in ledger + emit event
+    const envId = `${taskId}-${profileName}-${Date.now()}`;
+    const entry: EnvLedgerEntry = {
+      envId,
+      projectTag,
+      taskId,
+      profileName,
+      driver: profile.driver,
+      handle,
+      createdAt: new Date().toISOString(),
+    };
+    this.envLedger.add(entry);
+
+    const event = this.log.append({
+      type: "env_provisioned",
+      projectTag,
+      taskId,
+      envId,
+      profileName,
+      driver: profile.driver,
+      healthcheck,
+    });
+    this.applyAndBroadcast(event);
+
+    return { ok: true, envId, profileName, healthcheck };
+  }
+
+  /**
+   * Tear down an environment (idempotent — spec-environment §2).
+   *
+   * S9d7fdb-2 (AC-S9d7fdb-2-4): teardown is idempotent; already-torn-down = success.
+   *
+   * I2: driver failure on a NON-idempotent error → ok: false (not swallowed).
+   *     But if the environment was already torn down, return ok: true immediately.
+   * I3: ledger entry marked tornDownAt after teardown.
+   */
+  async teardownEnv(
+    projectTag: string,
+    taskId: string,
+    envId?: string
+  ): Promise<{ ok: true } | { ok: false; httpStatus: number; error: string }> {
+    // Find the env entry — if envId given, use it; else use the latest live entry for task
+    let entry: EnvLedgerEntry | undefined;
+    if (envId) {
+      entry = this.envLedger.get(envId);
+      if (!entry) {
+        // Already torn down or never existed — idempotent success (spec §2: teardown冪等)
+        return { ok: true };
+      }
+    } else {
+      const liveEntries = this.envLedger.listByTask(projectTag, taskId);
+      entry = liveEntries[liveEntries.length - 1];
+      if (!entry) {
+        // No live environment for this task — idempotent success
+        return { ok: true };
+      }
+    }
+
+    if (entry.tornDownAt) {
+      // Already torn down — idempotent success
+      return { ok: true };
+    }
+
+    const driverPath = resolveDriverPath(entry.driver);
+    const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
+
+    const result = await runDriverVerb(
+      driverPath,
+      "teardown",
+      { handle: entry.handle },
+      timeoutMs
+    );
+
+    if (!result.ok) {
+      // I2: driver non-zero exit is a failure — return it (but note: spec requires
+      // drivers themselves to be idempotent; the daemon surfaces driver failures faithfully).
+      return { ok: false, httpStatus: 502, error: `driver_teardown_failed: ${result.error}` };
+    }
+
+    // Mark as torn down in ledger
+    this.envLedger.markTornDown(entry.envId);
+
+    const event = this.log.append({
+      type: "env_torn_down",
+      projectTag,
+      taskId,
+      envId: entry.envId,
+    });
+    this.applyAndBroadcast(event);
+
+    return { ok: true };
+  }
+
+  /**
+   * Run a command in a provisioned environment.
+   *
+   * S9d7fdb-2 (AC-S9d7fdb-2-3): returns {exit, log_path}; log_path is under the
+   * task's aggregation directory.
+   *
+   * D3: events carry path references only, never log bodies (spec-environment §6).
+   * I2: non-zero exit from the environment command is REPORTED (not swallowed) via
+   *     the log_path and the returned exit field.
+   */
+  async runEnvCmd(
+    projectTag: string,
+    taskId: string,
+    cmd: string,
+    envId?: string
+  ): Promise<
+    | { ok: true; exit: number; log_path: string }
+    | { ok: false; httpStatus: number; error: string }
+  > {
+    const entry = this._resolveEnvEntry(projectTag, taskId, envId);
+    if (!entry) {
+      return { ok: false, httpStatus: 404, error: "env_not_found: no live environment for this task" };
+    }
+
+    const driverPath = resolveDriverPath(entry.driver);
+    const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
+
+    const result = await runDriverVerb(
+      driverPath,
+      "run",
+      { handle: entry.handle, cmd },
+      timeoutMs
+    );
+
+    if (!result.ok) {
+      // I2: driver failure (e.g. process gone) → error, not swallowed
+      return { ok: false, httpStatus: 502, error: `driver_run_failed: ${result.error}` };
+    }
+
+    const runOut = result.output as RunOutput;
+    if (typeof runOut.exit !== "number" || typeof runOut.log_path !== "string") {
+      return { ok: false, httpStatus: 502, error: "driver_run_failed: invalid output (missing exit or log_path)" };
+    }
+
+    return { ok: true, exit: runOut.exit, log_path: runOut.log_path };
+  }
+
+  /**
+   * Collect artifacts from a provisioned environment into the task's aggregation directory.
+   *
+   * S9d7fdb-2 (AC-S9d7fdb-2-3): spec-environment §6 — daemon defines the dest path.
+   *
+   * D3: events carry path references only, never log bodies.
+   */
+  async collectEnv(
+    projectTag: string,
+    taskId: string,
+    envId?: string
+  ): Promise<
+    | { ok: true; dest: string }
+    | { ok: false; httpStatus: number; error: string }
+  > {
+    const entry = this._resolveEnvEntry(projectTag, taskId, envId);
+    if (!entry) {
+      return { ok: false, httpStatus: 404, error: "env_not_found: no live environment for this task" };
+    }
+
+    // Daemon defines the aggregation directory (spec §6: daemon規約, driver writes to dest)
+    const dest = this._taskArtifactsDir(projectTag, taskId);
+
+    const driverPath = resolveDriverPath(entry.driver);
+    const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
+
+    const result = await runDriverVerb(
+      driverPath,
+      "collect",
+      { handle: entry.handle, dest },
+      timeoutMs
+    );
+
+    if (!result.ok) {
+      return { ok: false, httpStatus: 502, error: `driver_collect_failed: ${result.error}` };
+    }
+
+    return { ok: true, dest };
+  }
+
+  /**
+   * List artifacts for a task (files under the task's aggregation directory).
+   *
+   * S9d7fdb-2 (AC-S9d7fdb-2-3): GET /api/v1/projects/:proj/tasks/:taskId/environment/artifacts
+   */
+  listTaskArtifacts(projectTag: string, taskId: string): string[] {
+    const dir = this._taskArtifactsDir(projectTag, taskId);
+    if (!fs.existsSync(dir)) return [];
+    try {
+      return this._listFilesRecursive(dir);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * List all live environments (from the env ledger).
+   *
+   * S9d7fdb-2 (AC-S9d7fdb-2-2): GET /api/v1/environments.
+   */
+  listAllEnvironments(): EnvLedgerEntry[] {
+    return this.envLedger.listLive();
+  }
+
+  /**
+   * List live environments for a specific task.
+   */
+  listTaskEnvironments(projectTag: string, taskId: string): EnvLedgerEntry[] {
+    return this.envLedger.listByTask(projectTag, taskId);
+  }
+
+  // ── Private env helpers ───────────────────────────────────────────────────
+
+  private _resolveEnvEntry(
+    projectTag: string,
+    taskId: string,
+    envId?: string
+  ): EnvLedgerEntry | undefined {
+    if (envId) {
+      const e = this.envLedger.get(envId);
+      return e && !e.tornDownAt ? e : undefined;
+    }
+    const live = this.envLedger.listByTask(projectTag, taskId);
+    return live[live.length - 1];
+  }
+
+  /**
+   * Resolve the task-scoped artifact aggregation directory.
+   * spec-environment §6: "収集先パスの規約はdaemonが定め、ドライバは渡されたdestに書くのみ"
+   *
+   * Path: <dataDir>/env-artifacts/<projectTag>/<taskId>
+   */
+  private _taskArtifactsDir(projectTag: string, taskId: string): string {
+    return path.join(this.config.dataDir, "env-artifacts", projectTag, taskId);
+  }
+
+  /**
+   * Recursively list all files under a directory.
+   * Returns absolute paths.
+   */
+  private _listFilesRecursive(dir: string): string[] {
+    const result: string[] = [];
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        result.push(...this._listFilesRecursive(full));
+      } else {
+        result.push(full);
+      }
+    }
+    return result;
   }
 
   // ── Internal helpers ───────────────────────────────────────────────────────

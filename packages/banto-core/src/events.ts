@@ -136,7 +136,15 @@ export interface EnvProvisionedEvent extends EventBase {
   type: "env_provisioned";
   taskId: string;
   envId: string;
-  worktree: string;
+  /** Profile name used to provision (e.g. "dev", "test") — spec-environment §2 */
+  profileName: string;
+  /** Driver name or path used (e.g. "process") */
+  driver: string;
+  /**
+   * Result of the healthcheck after provision.
+   * D3: path reference only — never log bodies (spec-environment §6).
+   */
+  healthcheck: { ok: boolean; detail?: string };
 }
 
 /** Environment torn down */
