@@ -471,6 +471,21 @@ export class Daemon {
       });
     });
 
+    // F2 (governance): emit daemon_config event when spawn-suppressing flags are set,
+    // so the suppression is visible in the event log (「黙って迂回できる経路を作らない」,
+    // priority rule 2). Without this, a production daemon started with disableAutoSpawn
+    // would silently not auto-spawn — invisible to the PO via GET /events.
+    // Pattern mirrors audit_spawn_disabled.
+    if (this.config.disableAutoSpawn || this.config.disableAuditSpawn) {
+      const configEvent = this.log.append({
+        type: "daemon_config",
+        projectTag: "daemon",
+        autoSpawnDisabled: this.config.disableAutoSpawn === true,
+        auditSpawnDisabled: this.config.disableAuditSpawn === true,
+      });
+      this.applyAndBroadcast(configEvent);
+    }
+
     // Start the reconcile timer (separate from the main tick so tests can tune it).
     const reconcileMs =
       this.config.reconcileIntervalMs ?? this.config.tickIntervalMs;
@@ -2071,10 +2086,21 @@ export class Daemon {
       const result = await this.teardownEnv(projectTag, taskId, entry.envId);
       if (!result.ok) {
         // I2: surface teardown failure — not swallowed. Story-5 TTL tick is the backstop.
+        // Write to stderr AND append to event log so the PO can see it via GET /events.
+        const errorMsg = result.error;
         process.stderr.write(
           `[banto-daemon] teardown-on-terminal: failed to tear down env ${entry.envId} ` +
-            `for task ${projectTag}/${taskId}: ${result.error}\n`
+            `for task ${projectTag}/${taskId}: ${errorMsg}\n`
         );
+        // Append tick_job_failed event so the failure is observable via the event log
+        // (I2 observability: PO can see teardown failure at GET /events, not just stderr).
+        const failEvent = this.log.append({
+          type: "tick_job_failed",
+          projectTag,
+          jobName: "teardown-on-terminal",
+          error: `env ${entry.envId} taskId=${taskId}: ${errorMsg}`,
+        });
+        this.applyAndBroadcast(failEvent);
       }
     }
     // Trigger gate re-eval so quota-blocked tasks can be promoted now that a slot freed.
