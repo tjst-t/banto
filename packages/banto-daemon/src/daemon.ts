@@ -1876,6 +1876,14 @@ export class Daemon {
         return;
       }
 
+      // Double-provision guard: if this task already has a live environment (e.g. the task
+      // re-enters in-review, or was provisioned explicitly), do not provision a second one.
+      // Profiles without a quota block would otherwise leak an extra environment per re-entry.
+      // The judgment is derived from the ledger (D3), not a separate flag.
+      if (this.envLedger.listByTask(projectTag, taskId).length > 0) {
+        return;
+      }
+
       // Run the full provision pipeline (profile → quota → credentials → driver → ledger).
       // provisionEnv() emits env_provisioned or env_provision_failed internally (I2).
       const result = await this.provisionEnv(projectTag, taskId, profileName);
@@ -3313,11 +3321,29 @@ function openEnvTmuxPane(
   // The shell command: echo a header then keep the pane alive so the PO sees it on attach.
   // `read -r` waits for any key — keeps the pane open until PO dismisses it manually.
   // Without a long-running command, tmux would kill the pane when echo exits (PO sees nothing).
-  const cmd = `echo "[banto env] Auto-provisioned environment for review: task=${taskId} env=${envId}" && echo "Press Enter to close..." && read -r`;
+  //
+  // SECURITY: taskId/envId are passed as tmux pane env vars via `-e KEY=VALUE` (argv
+  // elements, never shell-interpreted) and the command string is STATIC, referencing
+  // $BANTO_TASK/$BANTO_ENV. This prevents shell injection even if a task id contained
+  // shell metacharacters — the values reach the pane's shell only as literal env values.
+  const cmd =
+    'echo "[banto env] Auto-provisioned environment for review: task=$BANTO_TASK env=$BANTO_ENV"' +
+    ' && echo "Press Enter to close..." && read -r';
 
   const result = childProcess.spawnSync(
     "tmux",
-    ["split-window", "-d", "-h", "-t", windowAddr, cmd],
+    [
+      "split-window",
+      "-d",
+      "-h",
+      "-e",
+      `BANTO_TASK=${taskId}`,
+      "-e",
+      `BANTO_ENV=${envId}`,
+      "-t",
+      windowAddr,
+      cmd,
+    ],
     { encoding: "utf8" }
   );
 

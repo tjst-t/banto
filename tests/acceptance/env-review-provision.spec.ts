@@ -343,3 +343,104 @@ describe("[AC-S9d7fdb-7-1] auto-provision on in-review transition", () => {
     assert.equal(resp.status, 200, `teardown must succeed: ${JSON.stringify(resp.body)}`);
   });
 });
+
+// ── I2 nuance: a failing provision must NOT block the in-review transition ────
+describe("[AC-S9d7fdb-7-1] provision failure is non-blocking (task stays in-review)", () => {
+  let daemon: Daemon;
+  let daemonPort: number;
+  let dataDir: string;
+  let projectDir: string;
+  let baseUrl: string;
+  const projId = `rev-prov-fail-${Date.now()}`;
+  const taskF = `task-review-badenv-${Date.now()}`;
+
+  before(async () => {
+    daemonPort = await getFreePort();
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-review-provfail-test-"));
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-review-provfail-proj-"));
+
+    // environments.yaml defines only "dev"; the task references an UNKNOWN profile,
+    // so provisionEnv() will fail (unknown profile → env_provision_failed).
+    const metaDir = path.join(projectDir, "meta");
+    fs.mkdirSync(metaDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(metaDir, "environments.yaml"),
+      `profiles:\n  dev:\n    driver: process\n    config:\n      cmd: "true"\n    ttl: 1h\n`,
+      "utf8"
+    );
+    const tasksDir = path.join(projectDir, "work", "tasks");
+    fs.mkdirSync(tasksDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(tasksDir, `${taskF}.md`),
+      `---\nid: ${taskF}\ntitle: Review provision fail test\nenvironment: nonexistent-profile\n---\nContent.\n`,
+      "utf8"
+    );
+
+    daemon = Daemon.create({
+      port: daemonPort,
+      dataDir,
+      watchIntervalMs: 500,
+      tickIntervalMs: 60000,
+      driverTimeoutMs: 10000,
+      disableAuditSpawn: true,
+      disableAutoSpawn: true,
+    });
+    await daemon.start();
+    baseUrl = `http://127.0.0.1:${daemonPort}/api/v1`;
+
+    const regResp = await httpPost(`${baseUrl}/projects`, { id: projId, repoPath: projectDir });
+    assert.equal(regResp.status, 201, `project registration failed: ${JSON.stringify(regResp.body)}`);
+    const fResp = await httpPost(`${baseUrl}/projects/${projId}/tasks`, {
+      id: taskF, title: "Review provision fail test", environment: "nonexistent-profile",
+    });
+    assert.equal(fResp.status, 201, `task F creation failed: ${JSON.stringify(fResp.body)}`);
+    await driveToReviewReady(baseUrl, projId, taskF);
+  });
+
+  after(async () => {
+    await daemon.stop();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  it("transition to in-review returns 200 even though provision will fail", async () => {
+    const resp = await httpPost(
+      `${baseUrl}/projects/${projId}/tasks/${taskF}/transition`,
+      { to: "in-review" }
+    );
+    assert.equal(resp.status, 200, `in-review transition must succeed: ${JSON.stringify(resp.body)}`);
+  });
+
+  it("env_provision_failed is emitted for the task (failure surfaced, I2)", async () => {
+    await waitFor(async () => {
+      const resp = await httpGet(`${baseUrl}/projects/${projId}/events`);
+      const body = resp.body as { events: Array<Record<string, unknown>> };
+      return body.events.some(
+        (e) => e["type"] === "env_provision_failed" && e["taskId"] === taskF
+      );
+    }, 8000);
+    const resp = await httpGet(`${baseUrl}/projects/${projId}/events`);
+    const body = resp.body as { events: Array<Record<string, unknown>> };
+    const failed = body.events.find(
+      (e) => e["type"] === "env_provision_failed" && e["taskId"] === taskF
+    );
+    assert.ok(failed, `env_provision_failed must be emitted for the bad-profile task`);
+  });
+
+  it("the task remains in the in-review state (provision failure did not revert it)", async () => {
+    const resp = await httpGet(`${baseUrl}/projects/${projId}/tasks/${taskF}`);
+    const task = (resp.body as Record<string, unknown>)["task"] as Record<string, unknown>;
+    assert.equal(
+      task["status"],
+      "in-review",
+      `task must stay in-review despite provision failure: ${JSON.stringify(task)}`
+    );
+  });
+
+  it("no live environment leaked for the failed provision", async () => {
+    const resp = await httpGet(`${baseUrl}/environments`);
+    const body = resp.body as { environments: Array<Record<string, unknown>> };
+    const live = body.environments.find((e) => e["taskId"] === taskF && !e["tornDownAt"]);
+    assert.ok(!live, `no ledger entry must exist for a failed provision: ${JSON.stringify(body.environments)}`);
+  });
+});
