@@ -20,6 +20,19 @@ export type { PiRpcDriverOptions } from "./pi-rpc-driver.js";
 export { SpawnLedger, isProcessAlive, killOrphanProcess } from "./spawn-ledger.js";
 export type { LedgerEntry } from "./spawn-ledger.js";
 
+// MergeGate — pre-merge checks (scope violation + verify command execution)
+export {
+  checkScopeViolations,
+  runMergeGate,
+} from "./merge-gate.js";
+export type {
+  ScopeCheckInput,
+  ScopeCheckResult,
+  VerifyResult,
+  MergeGateResult,
+  MergeGateOptions,
+} from "./merge-gate.js";
+
 // Start daemon when executed directly (not when imported as a module)
 // Detect direct execution: argv[1] ends with this file's path.
 const _argv1 = process.argv[1] ?? "";

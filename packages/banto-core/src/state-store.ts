@@ -213,6 +213,7 @@ export class StateStore {
       case "agent_spawned":
       case "agent_exited":
       case "gate_evaluated":
+      case "merge_gate_evaluated":
       case "po_operation":
       case "card_generated":
       case "env_provisioned":
