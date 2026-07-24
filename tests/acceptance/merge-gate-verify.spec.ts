@@ -25,7 +25,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { execFileSync } from "node:child_process";
 import { runMergeGate } from "@banto/daemon";
-import { EventLog } from "@banto/core";
+import { EventLog, StateStore } from "@banto/core";
 import type { MergeGateEvaluatedEvent } from "@banto/core";
 
 // ── Git fixture helpers ────────────────────────────────────────────────────────
@@ -149,6 +149,25 @@ describe("[AC-S75f66b-4-2] Merge gate verify command execution (library)", () =>
       ],
     };
 
+    // Seed task_created + state_transitioned so StateStore can derive status after gate runs
+    logFail.append({
+      type: "task_created",
+      projectTag: "proj-verify",
+      taskId: "task-verify-fail",
+      payload: {
+        title: "Failing verify task",
+        scope: { paths: ["src/**"] },
+        acceptance: [{ id: "a1", text: "verify fails" }],
+      },
+    });
+    logFail.append({
+      type: "state_transitioned",
+      projectTag: "proj-verify",
+      taskId: "task-verify-fail",
+      from: "draft",
+      to: "merging",
+    });
+
     const result = await runMergeGate(logFail, task, {
       dataDir: dataDirFail,
       repoPath: repoFail,
@@ -159,6 +178,16 @@ describe("[AC-S75f66b-4-2] Merge gate verify command execution (library)", () =>
 
     // step 2 expected: gate fails due to non-zero exit (I1: daemon executed it directly)
     assert.equal(result.passed, false, "gate must fail when verify exits 1");
+
+    // I2 machine-verification: StateStore.replay must derive status = "failed"
+    const store = StateStore.replay(logFail);
+    const taskRecord = store.getTask("task-verify-fail", "proj-verify");
+    assert.ok(taskRecord !== undefined, "task record must exist in StateStore after replay");
+    assert.equal(
+      taskRecord!.status,
+      "failed",
+      "task derived status must be 'failed' after gate failure (I2: StateMachine.fail called)"
+    );
     const hasVerifyFailReason = result.reasons.some((r) => r.includes("verify_failed") && r.includes("a1"));
     assert.ok(hasVerifyFailReason, `reasons must mention verify_failed:a1; got: ${JSON.stringify(result.reasons)}`);
 

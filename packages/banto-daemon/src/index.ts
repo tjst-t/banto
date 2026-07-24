@@ -33,14 +33,6 @@ export type {
   MergeGateOptions,
 } from "./merge-gate.js";
 
-// Gate-evaluator glob helpers (reused by merge-gate and available to consumers, D6)
-export {
-  globsOverlap,
-  scopePathsOverlap,
-  fileMatchesGlob,
-  fileMatchesScopePaths,
-} from "./gate-evaluator.js";
-
 // Start daemon when executed directly (not when imported as a module)
 // Detect direct execution: argv[1] ends with this file's path.
 const _argv1 = process.argv[1] ?? "";

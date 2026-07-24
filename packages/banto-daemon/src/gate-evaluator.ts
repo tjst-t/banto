@@ -193,18 +193,25 @@ export function scopePathsOverlap(setA: string[], setB: string[]): boolean {
  *
  * Strategy (no minimatch, D6):
  *   - No wildcard:  exact string equality.
- *   - First segment is a wildcard ("**" or "*"): catch-all → always matches.
- *   - Wildcard in a non-first segment: use the literal prefix before the wildcard.
- *     The file must start with that prefix to be considered in scope.
- *     This is conservative in the safe direction for scope enforcement:
- *     a false "not in scope" result triggers a gate failure (escalation) rather
- *     than silently allowing an out-of-scope change through.
+ *   - First segment is "**" or "*": catch-all → always matches.
+ *   - Wildcard "**" in a non-first segment: the file must start with the literal
+ *     prefix before the wildcard segment — it may cross directory separators.
+ *   - Wildcard "*" (single star) in a non-first segment: the file must start
+ *     with the literal prefix AND the remainder after the prefix must NOT contain
+ *     a "/" (single star must not cross a directory separator). If the pattern
+ *     segment following "*" includes a file extension (e.g. "*.ts"), the matched
+ *     portion must also end with that extension.
+ *   Conservative direction: when unsure → not-in-scope → violation (fail-closed).
  *
  * Examples:
- *   fileMatchesGlob("src/a.ts",  "src/**")   → true  (starts with "src/")
- *   fileMatchesGlob("src/a.ts",  "src/a.ts") → true  (exact)
- *   fileMatchesGlob("docs/x.md", "src/**")   → false (different tree)
- *   fileMatchesGlob("any/path",  "**")        → true  (catch-all)
+ *   fileMatchesGlob("src/a.ts",       "src/**")   → true  (** crosses dirs)
+ *   fileMatchesGlob("src/a/b.ts",     "src/**")   → true  (** crosses dirs)
+ *   fileMatchesGlob("src/a.ts",       "src/*.ts") → true  (single *, same dir, .ts ext)
+ *   fileMatchesGlob("src/a/b.ts",     "src/*.ts") → false (* must not cross /)
+ *   fileMatchesGlob("src/a.js",       "src/*.ts") → false (wrong extension)
+ *   fileMatchesGlob("src/a.ts",       "src/a.ts") → true  (exact)
+ *   fileMatchesGlob("docs/x.md",      "src/**")   → false (different tree)
+ *   fileMatchesGlob("any/path",       "**")        → true  (catch-all)
  */
 export function fileMatchesGlob(filePath: string, pattern: string): boolean {
   const p = pattern.replace(/\/+$/, "");
@@ -221,10 +228,37 @@ export function fileMatchesGlob(filePath: string, pattern: string): boolean {
     return true;
   }
 
-  // Wildcard is at a non-first segment.
-  // Use the literal prefix up to (not including) the wildcard segment.
+  // Literal prefix before the wildcard segment (with trailing "/")
   const prefix = segments.slice(0, wildcardIdx).join("/") + "/";
-  return filePath.startsWith(prefix);
+
+  if (!filePath.startsWith(prefix)) {
+    return false;
+  }
+
+  const wildcardSeg = segments[wildcardIdx]!;
+
+  if (wildcardSeg === "**") {
+    // "**" crosses directory separators — prefix match is sufficient
+    return true;
+  }
+
+  // Single "*" (possibly with extension, e.g. "*.ts") — must NOT cross "/"
+  const remainder = filePath.slice(prefix.length);
+
+  // remainder must be a single path component (no "/" inside it)
+  if (remainder.includes("/")) {
+    return false;
+  }
+
+  // If the wildcard segment has a suffix after "*" (e.g. "*.ts" → suffix ".ts"),
+  // the file's remainder must end with that suffix.
+  const starPos = wildcardSeg.indexOf("*");
+  const suffix = wildcardSeg.slice(starPos + 1); // e.g. ".ts" or ""
+  if (suffix.length > 0 && !remainder.endsWith(suffix)) {
+    return false;
+  }
+
+  return true;
 }
 
 /**

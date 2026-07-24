@@ -25,7 +25,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { EventLog, TaskRecord } from "@banto/core";
+import type { EventLog, TaskRecord, TaskStatus } from "@banto/core";
 import { StateMachine } from "@banto/core";
 import { fileMatchesScopePaths } from "./gate-evaluator.js";
 
@@ -268,19 +268,29 @@ export async function runMergeGate(
   const scopePaths = getScopePaths(task);
   let scopeResult: ScopeCheckResult;
 
-  try {
-    scopeResult = await checkScopeViolations({
-      repoPath,
-      base,
-      branch,
-      scopePaths,
-    });
-  } catch (err) {
-    // I2: git exec failure → gate fail; record and stop
+  if (scopePaths.length === 0) {
+    // D2: fail-closed — a task with no scope.paths cannot prove any change is in scope.
+    // All changes are treated as out-of-scope violations. The explicit reason surfaces this
+    // in the audit trail so PO can correct the task definition.
     scopeResult = {
       passed: false,
-      violations: [`git_exec_error: ${String(err)}`],
+      violations: ["scope.paths is empty — gate fail-closed (all changes out of scope)"],
     };
+  } else {
+    try {
+      scopeResult = await checkScopeViolations({
+        repoPath,
+        base,
+        branch,
+        scopePaths,
+      });
+    } catch (err) {
+      // I2: git exec failure → gate fail; record and stop
+      scopeResult = {
+        passed: false,
+        violations: [`git_exec_error: ${String(err)}`],
+      };
+    }
   }
 
   // ── 2. Verify command execution ───────────────────────────────────────────
@@ -387,7 +397,7 @@ export async function runMergeGate(
   if (!passed) {
     // I2: gate failure is unrecoverable for this merge attempt — transition to failed.
     // The task status at this point should be 'merging'.
-    const currentStatus = task.status as import("@banto/core").TaskStatus;
+    const currentStatus = task.status as TaskStatus;
     StateMachine.fail(log, taskId, {
       currentStatus,
       reason: `merge_gate_failed: ${reasons.join("; ")}`,

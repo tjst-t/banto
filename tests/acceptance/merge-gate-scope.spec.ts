@@ -20,6 +20,7 @@ import * as os from "node:os";
 import { execFileSync } from "node:child_process";
 import { checkScopeViolations, runMergeGate } from "@banto/daemon";
 import { EventLog } from "@banto/core";
+import { fileMatchesGlob } from "../../packages/banto-daemon/src/gate-evaluator.js";
 
 // ── Git fixture helpers ────────────────────────────────────────────────────────
 
@@ -34,8 +35,9 @@ function setupGitRepo(repoDir: string): { base: string; branch: string } {
 
   // Initial commit on main
   fs.mkdirSync(path.join(repoDir, "src", "allowed"), { recursive: true });
+  fs.mkdirSync(path.join(repoDir, "docs"), { recursive: true });
   fs.writeFileSync(path.join(repoDir, "src", "allowed", "a.ts"), "// initial\n");
-  fs.writeFileSync(path.join(repoDir, "docs", "README.md"), "# docs\n", { recursive: true } as fs.WriteFileOptions);
+  fs.writeFileSync(path.join(repoDir, "docs", "README.md"), "# docs\n");
   git("add", "-A");
   git("commit", "-m", "initial");
 
@@ -161,6 +163,102 @@ describe("[AC-S75f66b-4-1] Merge gate scope violation check (library)", () => {
     assert.ok(
       gatePayload.reasons.some((r) => r.includes("docs/forbidden.md")),
       `event reasons must include docs/forbidden.md; got: ${JSON.stringify(gatePayload.reasons)}`
+    );
+  });
+});
+
+// ── F1: single-star glob must not cross directory separator ───────────────────
+
+describe("[S75f66b-4-F1] fileMatchesGlob: single * must not cross /", () => {
+  it("src/*.ts matches src/a.ts (same dir, correct extension)", () => {
+    assert.equal(
+      fileMatchesGlob("src/a.ts", "src/*.ts"),
+      true,
+      "src/*.ts must match src/a.ts"
+    );
+  });
+
+  it("src/*.ts does NOT match src/a/b.ts (single * must not cross /)", () => {
+    assert.equal(
+      fileMatchesGlob("src/a/b.ts", "src/*.ts"),
+      false,
+      "src/*.ts must NOT match src/a/b.ts — single * cannot cross /"
+    );
+  });
+
+  it("src/*.ts does NOT match src/a.js (wrong extension)", () => {
+    assert.equal(
+      fileMatchesGlob("src/a.js", "src/*.ts"),
+      false,
+      "src/*.ts must NOT match src/a.js — extension mismatch"
+    );
+  });
+
+  it("src/** matches src/a/b.ts (** crosses directory separators)", () => {
+    assert.equal(
+      fileMatchesGlob("src/a/b.ts", "src/**"),
+      true,
+      "src/** must match src/a/b.ts — ** crosses /"
+    );
+  });
+});
+
+// ── D2: empty scope.paths → explicit fail-closed reason ──────────────────────
+
+describe("[S75f66b-4-D2] runMergeGate: empty scope.paths fails with explicit reason", () => {
+  let repoDir: string;
+  let dataDir: string;
+
+  before(() => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-d2-repo-"));
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-d2-data-"));
+
+    // Minimal git repo: just an initial commit on main, no task branch needed
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: repoDir, stdio: "pipe" });
+    git("init", "-b", "main");
+    git("config", "user.email", "test@banto-test.local");
+    git("config", "user.name", "banto-test");
+    fs.writeFileSync(path.join(repoDir, "readme.txt"), "hello\n");
+    git("add", "-A");
+    git("commit", "-m", "initial");
+    // task branch: same as main (no diff)
+    git("checkout", "-b", "empty-scope-branch");
+  });
+
+  after(() => {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("gate fails with 'scope.paths is empty' reason when task has no scope.paths", async () => {
+    const log = EventLog.open(dataDir);
+
+    const task = {
+      id: "task-empty-scope",
+      projectTag: "proj-d2",
+      status: "merging",
+      title: "Task with no scope.paths",
+      scope: { paths: [] as string[] },
+      acceptance: [] as Array<{ id: string; text: string }>,
+    };
+
+    const result = await runMergeGate(log, task, {
+      dataDir,
+      repoPath: repoDir,
+      base: "main",
+      branch: "empty-scope-branch",
+      worktreePath: repoDir,
+    });
+
+    assert.equal(result.passed, false, "gate must fail when scope.paths is empty (fail-closed)");
+
+    const hasEmptyReason = result.reasons.some((r) =>
+      r.includes("scope.paths is empty")
+    );
+    assert.ok(
+      hasEmptyReason,
+      `reasons must include 'scope.paths is empty' fail-closed message; got: ${JSON.stringify(result.reasons)}`
     );
   });
 });
