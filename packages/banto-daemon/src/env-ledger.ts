@@ -43,6 +43,12 @@ export interface EnvLedgerEntry {
   ttlDeadline: string;
   /** ISO-8601 timestamp when environment was torn down (undefined = still live) */
   tornDownAt?: string;
+  /**
+   * Set to true when the TTL teardown tick gave up after retry exhaustion (Story-5).
+   * The entry is kept in the ledger (not removed) so the PO can see it via GET /environments
+   * and a cadence card is filed. I2: never silently dropped.
+   */
+  teardownFailed?: boolean;
 }
 
 // ── Quota helpers ─────────────────────────────────────────────────────────────
@@ -162,6 +168,17 @@ export class EnvLedger {
     const entry = this.entries.get(envId);
     if (!entry) return; // already removed or never existed — idempotent
     this.entries.set(envId, { ...entry, tornDownAt: new Date().toISOString() });
+    this.flush();
+  }
+
+  /**
+   * Mark an entry as teardown_failed (retry exhausted, escalation filed).
+   * The entry is NOT removed — it stays for audit and cadence escalation (I2, AC-S9d7fdb-5-2).
+   */
+  markTeardownFailed(envId: string): void {
+    const entry = this.entries.get(envId);
+    if (!entry) return; // already removed or never existed — idempotent
+    this.entries.set(envId, { ...entry, teardownFailed: true });
     this.flush();
   }
 

@@ -152,6 +152,12 @@ export interface EnvTornDownEvent extends EventBase {
   type: "env_torn_down";
   taskId: string;
   envId: string;
+  /**
+   * Reason for teardown. Optional — omitted for user-initiated teardown.
+   * "ttl_expired": TTL enforcement tick forced teardown (Story-5).
+   * "vanished": reconcile detected that the resource is gone from the driver list (Story-5).
+   */
+  reason?: "ttl_expired" | "vanished";
 }
 
 /** Merge completed */
