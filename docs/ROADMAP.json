@@ -536,7 +536,7 @@
     "S30a8fd": {
       "title": "POコックピットv1（アテンションキュー＋tmuxジャンプ）",
       "status": "pending",
-      "description": "spec-ui v1範囲: Web GUIの横断アテンションキュー（カード3部構成・滞留日数×ブロック影響度ソート）、カードからtmuxセッションへのドリルダウン、CLIの判断系操作",
+      "description": "spec-ui v1範囲: Web GUIの横断アテンションキュー（カード3部構成・滞留日数×ブロック影響度ソート）、カードからtmuxセッションへのドリルダウン、CLIの判断系操作。**PO判断(2026-07-24)によりスコープ追加**: [A] readyクエリのAPI/CLI一級化(work/tasks/task-0001-ready-query.md)と[C] アテンションカード生成のプッシュ通知(work/tasks/task-0003-push-notification.md)を本Sprintの詳細化時に取り込む(spec-daemon-core §6 / spec-ui §6 反映済み)",
       "milestone": true,
       "detail_level": "coarse",
       "stories": {}
