@@ -865,7 +865,7 @@
         },
         "S9d7fdb-2": {
           "title": "環境ドライバ契約とビルトインprocessドライバ",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、環境の提供・回収がprovision〜listのライフサイクル動詞契約に統一されるようにしたい。なぜなら、環境の中身はプロジェクトの自由にしつつ、提供の仕組みを一本化することが統治の前提だから（汎用CI基盤は作らない）。",
@@ -899,22 +899,22 @@
             "S9d7fdb-2-1": {
               "title": "ドライバ契約型とドライバ実行ラッパ",
               "description": "banto-coreに契約型（動詞・入出力JSON形・handle不透明）を定義し、daemonにドライバ実行ラッパ（サブプロセス起動、argv[0]=動詞、stdin JSON、stdout JSONパース、exitコード判定、タイムアウト）を実装する。ドライバを起動するのは常にdaemon（spec-environment §3）。stdinフィールド名はspec §2の表（config / handle / cmd / artifact path / dest）に忠実に固定する。",
-              "status": "pending"
+              "status": "done"
             },
             "S9d7fdb-2-2": {
               "title": "ドライバ契約テストハーネス",
               "description": "任意のドライバ実行ファイルに対して7動詞の契約（JSON形・exit規約・teardown冪等・listのtaskIDプレフィックス）を検証する共通ハーネス。runtime-driver-contract.spec.tsのパターンに倣う。S7b7ba5の外部ドライバもこのハーネスを通す前提。",
-              "status": "pending"
+              "status": "done"
             },
             "S9d7fdb-2-3": {
               "title": "ビルトインprocessドライバ実装",
               "description": "config {cmd, port}でローカルプロセスを起動するprocessドライバ。handleにpid・taskIDプレフィックス名を持ち、healthcheckはポート疎通、teardownはSIGTERM→SIGKILL（spawn-ledgerのkillOrphanProcessパターン流用）で冪等。D6: node標準ライブラリのみ。",
-              "status": "pending"
+              "status": "done"
             },
             "S9d7fdb-2-4": {
               "title": "run/collectのタスク別集約パス規約",
               "description": "runログ・collect成果物のタスクごとの所定ディレクトリ規約をdaemon側で定め、ドライバは渡されたdestに書くのみ（spec-environment §6）。監査・レビューセッションのコンテキスト注入元になるパスとしてAPIから参照可能にする。",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
