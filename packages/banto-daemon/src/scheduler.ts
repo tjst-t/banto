@@ -31,11 +31,13 @@ export class Scheduler {
   private readonly jobs: Map<string, TickJob> = new Map();
   private timer: ReturnType<typeof setInterval> | null = null;
   /**
-   * Promise for the currently-executing runAllJobs() call, or null when idle.
-   * Used by stop() to await in-flight job completion before the caller closes
-   * the event log (D3/I2: no events must be dropped after log.close()).
+   * Promises for ALL currently-executing runAllJobs() calls.
+   * A Set (not a single slot): a long-running tick can still be in flight when
+   * the next interval fires, and a single nullable slot would be overwritten,
+   * leaving the older run un-awaited by stop() — it would then outlive
+   * log.close() and throw on append (D3/I2: no events must be lost).
    */
-  private _inFlightRun: Promise<void> | null = null;
+  private readonly _inFlightRuns = new Set<Promise<void>>();
 
   constructor(
     private readonly log: EventLog,
@@ -57,10 +59,11 @@ export class Scheduler {
   start(): void {
     if (this.timer !== null) return;
     this.timer = setInterval(() => {
-      // Track the in-flight run so stop() can await it.
-      this._inFlightRun = this.runAllJobs().finally(() => {
-        this._inFlightRun = null;
+      // Track every in-flight run so stop() can await all of them.
+      const run: Promise<void> = this.runAllJobs().finally(() => {
+        this._inFlightRuns.delete(run);
       });
+      this._inFlightRuns.add(run);
     }, this.intervalMs);
     // Allow the Node.js event loop to exit if the timer is the only pending work.
     // Tests rely on unref() so that the process doesn't hang after daemon.stop().
@@ -86,9 +89,10 @@ export class Scheduler {
       clearInterval(this.timer);
       this.timer = null;
     }
-    // Await any in-flight runAllJobs() that fired before we cleared the interval.
-    if (this._inFlightRun !== null) {
-      await this._inFlightRun;
+    // Await every in-flight runAllJobs() that fired before we cleared the
+    // interval — overlapping ticks mean there can be more than one.
+    while (this._inFlightRuns.size > 0) {
+      await Promise.allSettled([...this._inFlightRuns]);
     }
   }
 
