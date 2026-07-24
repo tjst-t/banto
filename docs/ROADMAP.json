@@ -1112,7 +1112,7 @@
         },
         "S9d7fdb-7": {
           "title": "レビューフロー接続（reviewフェーズでの自動provision）",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、タスクがレビューフェーズに入ったら評価環境が自動でprovisionされ、そのタスクのtmuxウィンドウから動くものを確認したい。なぜなら、レビューのための環境準備をPOが手動で行わないことが成功基準だから。",
@@ -1134,12 +1134,12 @@
             "S9d7fdb-7-1": {
               "title": "in-review遷移フックでの自動provision",
               "description": "state_transitioned(in-review)を契機に、タスク定義のenvironmentプロファイルをprovisionする（quota・credentials・台帳の全経路を通る）。provision失敗はイベントで観測でき、レビュー遷移自体は妨げない（I2: 失敗を記録して止まる／握りつぶさない）。",
-              "status": "pending"
+              "status": "done"
             },
             "S9d7fdb-7-2": {
               "title": "tmuxペイン2接続",
               "description": "S254276のtmuxウィンドウ統合（spawn-ledgerのtmux_window）を流用し、該当タスクのウィンドウにペイン2を追加して環境の出力（processドライバのログtail等）へ接続する。tmux無し構成では接続をスキップしイベントに記録。",
-              "status": "pending"
+              "status": "done"
             }
           }
         }
