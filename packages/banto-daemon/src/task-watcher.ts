@@ -144,12 +144,13 @@ export class TaskWatcher {
     const fm = validation.frontmatter;
 
     // imp-0001 PO decision option-2: only status:queued triggers enqueue.
-    // status:draft = schema-validate only; record mtime so the file is not re-processed
-    // on each poll, but emit no events and create no task.
-    // When the PO later edits draft→queued, the mtime changes and the poll will
-    // re-enter this function with the new mtime and status "queued".
+    // Any other valid status (draft, done, failed, superseded, cancelled) =
+    // schema-validate only; record mtime so the file is not re-processed on
+    // each poll, but emit no events and create no task.
+    // When the PO later edits the status to "queued", the mtime changes and the
+    // poll will re-enter this function with the new mtime and ingest it.
     if (fm.status !== "queued") {
-      // Valid file but not yet queued — record mtime so we wait for a status change.
+      // Valid file but status is not queued — record mtime and wait for a status change.
       projectStates.set(filePath, { mtimeMs, ingested: false });
       return;
     }
