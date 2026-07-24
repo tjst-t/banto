@@ -364,6 +364,46 @@ export interface EnvProvisionFailedEvent extends EventBase {
   reason: string;
 }
 
+/**
+ * A tmux pane was successfully added to the task's tmux window for environment output.
+ *
+ * S9d7fdb-7 (AC-S9d7fdb-7-2): emitted after the env pane is attached in the task's
+ * existing tmux window so the PO can observe the provisioned environment on SSH+attach.
+ * D3: pane address is recorded here; no duplicate pane tracking state elsewhere.
+ * I2: not emitted on failure — env_review_tmux_pane_skipped covers failure/no-tmux paths.
+ */
+export interface EnvReviewTmuxPaneAttachedEvent extends EventBase {
+  type: "env_review_tmux_pane_attached";
+  taskId: string;
+  /** Provisioned environment ID */
+  envId: string;
+  /** Tmux window address (e.g. "banto:T-001") from the spawn ledger */
+  windowAddr: string;
+  /** Pane index that was added (2 = the env pane alongside the agent session pane) */
+  paneIndex: number;
+}
+
+/**
+ * Tmux pane attachment was skipped because no tmux session is configured,
+ * no spawn-ledger entry has a tmux window for this task, or tmux returned an error.
+ *
+ * S9d7fdb-7 (AC-S9d7fdb-7-2): I2 — skip must not be silent. This event makes the
+ * skip observable via GET /events so the PO knows no pane is waiting.
+ * "tmux-less config" (daemon.tmuxSession unset or "") → reason "no_tmux_session".
+ * "No window recorded in spawn ledger for this task" → reason "no_tmux_window".
+ * "tmux split-window command failed" → reason "tmux_error".
+ */
+export interface EnvReviewTmuxPaneSkippedEvent extends EventBase {
+  type: "env_review_tmux_pane_skipped";
+  taskId: string;
+  /** Provisioned environment ID (present when provision succeeded before the pane skip) */
+  envId: string;
+  /** Reason code for the skip */
+  reason: "no_tmux_session" | "no_tmux_window" | "tmux_error";
+  /** Optional detail message (e.g. tmux stderr) */
+  detail?: string;
+}
+
 /** Union of all orchestration event types */
 export type OrchestrationEvent =
   | TaskCreatedEvent
@@ -391,4 +431,6 @@ export type OrchestrationEvent =
   | AuditSpawnDisabledEvent
   | DaemonConfigEvent
   | EnvProfileRejectedEvent
-  | EnvProvisionFailedEvent;
+  | EnvProvisionFailedEvent
+  | EnvReviewTmuxPaneAttachedEvent
+  | EnvReviewTmuxPaneSkippedEvent;

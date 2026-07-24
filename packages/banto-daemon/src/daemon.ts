@@ -1176,6 +1176,23 @@ export class Daemon {
           }));
         }
       }
+
+      // S9d7fdb-7 (AC-S9d7fdb-7-1, AC-S9d7fdb-7-2): Auto-provision env on review-ready→in-review.
+      // When a task with an `environment` field enters in-review, provision its env automatically
+      // so the PO finds the running artifact attached to the review tmux window.
+      //
+      // Design rules:
+      //   D5: all orchestration logic here; HTTP layer is pure routing.
+      //   I2: provision failure MUST NOT block the transition — it is surfaced as an event.
+      //       The transition to in-review is already committed (D3); this hook is fire-and-forget.
+      //   D3: we read task.environment from the state store (the event-derived record),
+      //       not from disk directly — the event log is the single runtime truth.
+      if (toStatus === "in-review") {
+        // Fire-and-forget: tracked so Daemon.stop() drains before log.close() (D3/I2: no drops).
+        this._trackBackground(new Promise<void>((resolve) => {
+          setImmediate(() => void this._autoProvisionOnReview(projectTag, taskId).then(resolve, resolve));
+        }));
+      }
     }
 
     return result;
@@ -1821,6 +1838,122 @@ export class Daemon {
       return { ok: false, httpStatus: 404, error: reason };
     }
     return { ok: true, profileName: found.name };
+  }
+
+  // ── Review-flow auto-provision (S9d7fdb-7) ───────────────────────────────
+
+  /**
+   * Auto-provision a task's environment when it enters the in-review state.
+   *
+   * S9d7fdb-7 (AC-S9d7fdb-7-1, AC-S9d7fdb-7-2): integration hook called by transition().
+   *
+   * Behaviour:
+   *   - If the task has no `environment` field → no-op (no events emitted).
+   *   - If the task has an `environment` field → run the full provisionEnv() pipeline
+   *     (profile resolution, quota check, credentials, driver, ledger).
+   *   - Provision failure → env_provision_failed event (emitted inside provisionEnv).
+   *     The transition to in-review is already committed; this method NEVER blocks it.
+   *   - On success → attempt to open env tmux pane in the task's existing window
+   *     (from spawn-ledger tmux_window). Success → env_review_tmux_pane_attached.
+   *     Failure (no tmux session / no window / tmux error) → env_review_tmux_pane_skipped (I2).
+   *
+   * D5: all logic here; HTTP layer is pure routing.
+   * I2: any exception in this method is caught and logged to stderr — it MUST NOT propagate
+   *     (the caller is fire-and-forget and the transition is already committed).
+   * D3: task.environment is read from the state store (event-derived), not disk.
+   */
+  private async _autoProvisionOnReview(projectTag: string, taskId: string): Promise<void> {
+    try {
+      const task = this.store.getTask(taskId, projectTag);
+      if (!task) {
+        // Task not found (shouldn't happen — transition just committed it) — skip silently.
+        return;
+      }
+
+      const profileName = typeof task["environment"] === "string" ? task["environment"] : undefined;
+      if (!profileName) {
+        // No environment field on the task — no-op per spec (D3: environment is optional).
+        return;
+      }
+
+      // Run the full provision pipeline (profile → quota → credentials → driver → ledger).
+      // provisionEnv() emits env_provisioned or env_provision_failed internally (I2).
+      const result = await this.provisionEnv(projectTag, taskId, profileName);
+      if (!result.ok) {
+        // Failure already recorded by provisionEnv — nothing more to do here.
+        // The transition to in-review stands regardless (spec S9d7fdb-7: non-blocking).
+        return;
+      }
+
+      const { envId } = result;
+
+      // Attempt to attach a tmux pane to the task's existing window (AC-S9d7fdb-7-2).
+      // D6: tmux is a system tool (no npm dep). I2: skip is observable, not silent.
+      const tmuxSession = this.config.tmuxSession;
+      if (!tmuxSession) {
+        // Daemon configured without tmux integration — skip with observable event.
+        const skipEvent = this.log.append({
+          type: "env_review_tmux_pane_skipped",
+          projectTag,
+          taskId,
+          envId,
+          reason: "no_tmux_session",
+        });
+        this.applyAndBroadcast(skipEvent);
+        return;
+      }
+
+      // Look up the task's spawn-ledger entry to find its tmux window.
+      const ledgerEntry = this.ledger.get(projectTag, taskId);
+      const windowAddr = ledgerEntry?.tmux_window;
+      if (!windowAddr) {
+        // Task has no tmux window recorded (e.g. spawned before tmux integration, or
+        // never spawned via the agent path). Skip with observable event.
+        const skipEvent = this.log.append({
+          type: "env_review_tmux_pane_skipped",
+          projectTag,
+          taskId,
+          envId,
+          reason: "no_tmux_window",
+        });
+        this.applyAndBroadcast(skipEvent);
+        return;
+      }
+
+      // Open a second pane in the task's window showing the environment's output.
+      // The pane runs `tail -f --retry <envLogPath>` on the env's log (or a placeholder).
+      // D6: tmux split-window via childProcess.spawnSync (stdlib, no dep).
+      const paneResult = openEnvTmuxPane(windowAddr, taskId, envId);
+      if (!paneResult.ok) {
+        const skipEvent = this.log.append({
+          type: "env_review_tmux_pane_skipped",
+          projectTag,
+          taskId,
+          envId,
+          reason: "tmux_error",
+          detail: paneResult.detail,
+        });
+        this.applyAndBroadcast(skipEvent);
+        return;
+      }
+
+      const attachedEvent = this.log.append({
+        type: "env_review_tmux_pane_attached",
+        projectTag,
+        taskId,
+        envId,
+        windowAddr,
+        paneIndex: paneResult.paneIndex,
+      });
+      this.applyAndBroadcast(attachedEvent);
+    } catch (err) {
+      // I2: catch-all so an unexpected error never leaks back to the fire-and-forget caller.
+      // The transition to in-review is already committed — we only log to stderr.
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `[banto-daemon] _autoProvisionOnReview(${projectTag}/${taskId}): unexpected error: ${msg}\n`
+      );
+    }
   }
 
   // ── Environment driver API (S9d7fdb-2) ────────────────────────────────────
@@ -3156,4 +3289,49 @@ function closeTmuxWindow(windowAddr: string): void {
       `[banto-daemon] tmux kill-window ${windowAddr} failed: ${result.stderr ?? ""}\n`
     );
   }
+}
+
+/**
+ * Open a second pane in the task's existing tmux window for environment output.
+ *
+ * S9d7fdb-7 (AC-S9d7fdb-7-2): Called after auto-provision succeeds on the in-review hook.
+ * Adds pane 2 to the window at `windowAddr` (already containing the agent session pane).
+ * The pane shows an echo header + a shell that keeps output visible to the PO on attach.
+ *
+ * Returns { ok: true, paneIndex } on success, { ok: false, detail } on failure.
+ *
+ * D6: uses tmux CLI (childProcess.spawnSync — stdlib only, no npm dep).
+ * I2: failure is returned as { ok: false } so the caller can emit env_review_tmux_pane_skipped.
+ */
+function openEnvTmuxPane(
+  windowAddr: string,
+  taskId: string,
+  envId: string
+): { ok: true; paneIndex: number } | { ok: false; detail: string } {
+  // Split the window horizontally to create pane 2.
+  // `-d` = do not switch focus; `-t <windowAddr>` = target window.
+  // The shell command: echo a header then keep the pane alive so the PO sees it on attach.
+  // `read -r` waits for any key — keeps the pane open until PO dismisses it manually.
+  // Without a long-running command, tmux would kill the pane when echo exits (PO sees nothing).
+  const cmd = `echo "[banto env] Auto-provisioned environment for review: task=${taskId} env=${envId}" && echo "Press Enter to close..." && read -r`;
+
+  const result = childProcess.spawnSync(
+    "tmux",
+    ["split-window", "-d", "-h", "-t", windowAddr, cmd],
+    { encoding: "utf8" }
+  );
+
+  if (result.status !== 0) {
+    const detail = (result.stderr ?? "").trim() || `exit code ${result.status ?? "unknown"}`;
+    process.stderr.write(
+      `[banto-daemon] tmux split-window for env pane failed (window=${windowAddr}): ${detail}\n`
+    );
+    return { ok: false, detail };
+  }
+
+  process.stdout.write(
+    `[banto-daemon] tmux env pane opened in window ${windowAddr} for task=${taskId} env=${envId}\n`
+  );
+  // Pane index 2 (1 = existing agent pane, 2 = new env pane).
+  return { ok: true, paneIndex: 2 };
 }
