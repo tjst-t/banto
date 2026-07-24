@@ -297,6 +297,40 @@ export interface AuditSpawnDisabledEvent extends EventBase {
   taskId: string;
 }
 
+/**
+ * An environment profile definition in meta/environments.yaml was rejected
+ * because it failed schema validation (driver missing / ttl format / quota type).
+ *
+ * S9d7fdb-1 (AC-S9d7fdb-1-2): emitted at most once per (project, profile name, mtime)
+ * to avoid event flooding (watcher-reject no-flood pattern).
+ * D3: file is intent; this event records the rejection fact only.
+ * I2: errors not swallowed — recorded here so the audit trail is complete.
+ */
+export interface EnvProfileRejectedEvent extends EventBase {
+  type: "env_profile_rejected";
+  /** Profile name that failed validation */
+  profileName: string;
+  /** Human-readable reason naming the offending field */
+  reason: string;
+}
+
+/**
+ * A provision attempt for a task's environment failed.
+ *
+ * S9d7fdb-1 (AC-S9d7fdb-1-3): emitted when a task references an unknown profile name
+ * (or when provision fails for any other reason at the profile-resolution layer).
+ * D3: no env_provisioned event is emitted on failure.
+ * I2: failure is recorded, not swallowed.
+ */
+export interface EnvProvisionFailedEvent extends EventBase {
+  type: "env_provision_failed";
+  taskId: string;
+  /** The profile name that was requested but not found (or failed) */
+  profileName: string;
+  /** Human-readable failure reason */
+  reason: string;
+}
+
 /** Union of all orchestration event types */
 export type OrchestrationEvent =
   | TaskCreatedEvent
@@ -321,4 +355,6 @@ export type OrchestrationEvent =
   | MergeGateEvaluatedEvent
   | AuditStartedEvent
   | AuditVerdictEvent
-  | AuditSpawnDisabledEvent;
+  | AuditSpawnDisabledEvent
+  | EnvProfileRejectedEvent
+  | EnvProvisionFailedEvent;
