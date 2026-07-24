@@ -526,7 +526,7 @@
       "stories": {
         "S75f66b-1": {
           "title": "watcherのstatus:queuedのみenqueue（imp-0001 fix）",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、work/tasks/に status:draft で置いたタスク定義はenqueueされず、status:queued に書き換えたときに初めて取り込まれるようにしたい。なぜなら、draftはPOレビュー前の意図表明であり、勝手に実行キューへ入るとPOの判断主権（優先原則1）が侵されるから。",
@@ -554,18 +554,18 @@
             "S75f66b-1-1": {
               "title": "watcherのstatus分岐実装",
               "description": "task-watcher.ts の ingestFile で frontmatter.status を参照し、queued のみ createTask + draft→queued 遷移を行う。draft は validateTaskFrontmatter による検証のみ（成功時は取り込まずイベントも積まない、失敗時は task_ingest_rejected）。mtimeベースの再処理（draft→queued書き換え検知）が機能するよう fileStates の ingested 判定を維持する。imp-0001 PO判断・案2。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-1-2": {
               "title": "回帰テストと既存テストのdraft前提修正",
               "description": "tests/acceptance/watcher-draft-status.spec.ts を新設（draft据え置き／draft→queued書き換え／queued直接投入／不正draft拒否）。既存 watcher-ingest / watcher-reject 系テストのフィクスチャが status:draft 前提なら queued に更新する（P1: watcher関連スペックのみ）。",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
         "S75f66b-2": {
           "title": "readyタスクの自動spawn（tickジョブ）",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、依存駆動ゲートを通過して ready になったタスクが、私の手動操作なしに自動でspawnされるようにしたい。なぜなら、「spawnをPOが手動で行う必要がない」ことがvisionのsuccess criteriaそのものだから。",
@@ -593,17 +593,17 @@
             "S75f66b-2-1": {
               "title": "auto-spawn tickジョブ",
               "description": "daemonのSchedulerに auto-spawn ジョブを登録。ready状態のタスクをイベント由来の導出状態から列挙し（spec-daemon-core §6 readyクエリと同一のセマンティクス）、spawnTask() を呼ぶ。spawn済み・実行中・failed の判定はすべてイベントログ導出状態から行う（D3: 別途フラグを保存しない）。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-2-2": {
               "title": "同時実行上限（物理quota）",
               "description": "DaemonConfig に maxConcurrentSessions（層B、既定値あり）を追加。spawn台帳の実行中エントリ数と比較し、超過中はspawnをスキップ（拒否イベントは積まず次tickで再評価）。数値WIPではなく物理quotaとして扱う（spec-multi-project §3）。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-2-3": {
               "title": "受け入れテスト",
               "description": "auto-spawn-tick.spec.ts / auto-spawn-quota.spec.ts。ready昇格→自動spawn、上限待機→順次spawn、spawn失敗→failed固定（再spawnなし）をイベント列で検証。",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
@@ -669,7 +669,7 @@
         },
         "S75f66b-4": {
           "title": "マージ前ゲート（scope機械検査＋テスト直接実行）",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、マージ可否はエージェントの自己申告ではなく、daemon自身が実行するdiff機械検査とテストで決まるようにしたい。なぜなら、自己申告を信頼する検証は統治を保証せず（I1）、scope執行の最終防衛はランタイム非依存でなければならないから。",
@@ -697,17 +697,17 @@
             "S75f66b-4-1": {
               "title": "scope.paths diff機械検査",
               "description": "git diff --name-only <base>...<branch> の結果を scope.paths のglobと照合し、違反ファイルを列挙する検査器。glob照合は gate-evaluator.ts の既存glob資産を流用（D6）。判定は純粋関数としてテスト可能にする。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-4-2": {
               "title": "verifyコマンド直接実行",
               "description": "acceptance[].verify（spec-schemas §1）をrebase済みworktreeで child_process 実行（I1: daemon自身が実行、実行者の申告は使わない）。ログは <dataDir>/gate-logs/<taskId>/ に保存し、イベントにはパス参照のみ（spec-daemon-core §2.1と同型）。タイムアウトは層B設定。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-4-3": {
               "title": "ゲート判定イベントとfail処理",
               "description": "gate通過/拒否を理由付きイベント（既存 gate_evaluated 系の拡張または merge_gate 用イベント）で記録。fail時は StateMachine.fail() で止める（I2）。受け入れテスト3スペックを含む。",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
