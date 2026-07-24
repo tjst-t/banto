@@ -112,7 +112,16 @@ export interface PiRpcDriverOptions {
 }
 
 export class PiRpcDriver implements RuntimeDriver {
-  private readonly piCliPath: string;
+  /**
+   * Resolved pi CLI path. Null means "not yet resolved".
+   * Resolution is deferred to first spawn() call so that constructing
+   * PiRpcDriver does not throw when pi is absent (e.g. test environments
+   * that register a CaptureDriver before any spawn). I2: the error surfaces
+   * at spawn() time, not at construction time, so the daemon starts cleanly
+   * and tests using a different driver never encounter it.
+   */
+  private piCliPath: string | null;
+  private readonly piCliPathOverride: string | undefined;
   private readonly sessionBaseDir: string;
   private readonly defaultProvider: string;
   private readonly defaultModel: string;
@@ -121,45 +130,60 @@ export class PiRpcDriver implements RuntimeDriver {
   private readonly handlers: Set<DriverEventHandler> = new Set();
 
   constructor(opts: PiRpcDriverOptions = {}) {
-    // Resolve pi CLI path relative to this package's node_modules.
-    // D6: @mariozechner/pi-coding-agent is the only new dependency (VISION mandate).
-    if (opts.piCliPath) {
-      this.piCliPath = opts.piCliPath;
-    } else {
-      // Try to resolve from the package's own node_modules first, then parent.
-      // fileURLToPath(import.meta.url) gives the current file path.
-      const candidates = [
-        // Installed as a dependency of banto-daemon
-        new URL(
-          "../../../node_modules/@mariozechner/pi-coding-agent/dist/cli.js",
-          import.meta.url
-        ).pathname,
-        // Monorepo root node_modules (npm workspaces hoist)
-        new URL(
-          "../../../../node_modules/@mariozechner/pi-coding-agent/dist/cli.js",
-          import.meta.url
-        ).pathname,
-      ];
-      const found = candidates.find((p) => {
-        try {
-          fs.accessSync(p);
-          return true;
-        } catch {
-          return false;
-        }
-      });
-      if (!found) {
-        throw new Error(
-          "pi CLI not found. Install @mariozechner/pi-coding-agent or set piCliPath."
-        );
-      }
-      this.piCliPath = found;
-    }
+    // Defer pi CLI resolution to spawn() time (lazy). This allows the daemon
+    // to construct without throwing in environments where pi is not installed
+    // (e.g. test environments that override the driver before any spawn).
+    // I2: the error surfaces at spawn() — never swallowed.
+    this.piCliPathOverride = opts.piCliPath;
+    this.piCliPath = null; // resolved lazily on first spawn
 
     this.sessionBaseDir = opts.sessionBaseDir ?? "";
     this.defaultProvider = opts.defaultProvider ?? "opencode-go";
     this.defaultModel = opts.defaultModel ?? "deepseek-v4-flash";
     this.extensionPath = opts.extensionPath;
+  }
+
+  /**
+   * Resolve the pi CLI path on first use.
+   * I2: throws if not found — callers must handle the error.
+   */
+  private resolvePiCli(): string {
+    if (this.piCliPath !== null) return this.piCliPath;
+
+    if (this.piCliPathOverride) {
+      this.piCliPath = this.piCliPathOverride;
+      return this.piCliPath;
+    }
+
+    // Try to resolve from the package's own node_modules first, then parent.
+    // fileURLToPath(import.meta.url) gives the current file path.
+    const candidates = [
+      // Installed as a dependency of banto-daemon
+      new URL(
+        "../../../node_modules/@mariozechner/pi-coding-agent/dist/cli.js",
+        import.meta.url
+      ).pathname,
+      // Monorepo root node_modules (npm workspaces hoist)
+      new URL(
+        "../../../../node_modules/@mariozechner/pi-coding-agent/dist/cli.js",
+        import.meta.url
+      ).pathname,
+    ];
+    const found = candidates.find((p) => {
+      try {
+        fs.accessSync(p);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    if (!found) {
+      throw new Error(
+        "pi CLI not found. Install @mariozechner/pi-coding-agent or set piCliPath."
+      );
+    }
+    this.piCliPath = found;
+    return this.piCliPath;
   }
 
   // ── RuntimeDriver.spawn ─────────────────────────────────────────────────
@@ -188,11 +212,23 @@ export class PiRpcDriver implements RuntimeDriver {
         ? opts.driverOptions.extensionPath
         : null) ?? this.extensionPath;
 
+    // Resolve pi CLI path lazily (deferred from constructor for test-environment safety).
+    // I2: throws if not found — error propagates to daemon.spawnTask() → recordTaskFailed.
+    // Emit spawn_failed before throwing so subscribers (runtime-driver-contract tests) see it.
+    let piCli: string;
+    try {
+      piCli = this.resolvePiCli();
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      this.emit({ type: "spawn_failed", error: errMsg });
+      throw err;
+    }
+
     // Build pi CLI arguments.
     // pi --mode rpc --session-dir <dir> --provider <p> --model <m> [--extension <ext>]
     // We use --session-dir so pi stores the JSONL in a location we know.
     const args = [
-      this.piCliPath,
+      piCli,
       "--mode",
       "rpc",
       "--session-dir",

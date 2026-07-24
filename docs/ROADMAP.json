@@ -609,7 +609,7 @@
         },
         "S75f66b-3": {
           "title": "監査セッション（auditing機構）",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、実行者が完了報告した成果をレビューに回す前に、監査セッションがタスク定義と監査チェックリストに照らして必ず検査するようにしたい。なぜなら、ゲート・監査が「必ず行われる」ことを構造で保証すること（優先原則2）が番頭の存在理由だから。",
@@ -643,27 +643,27 @@
             "S75f66b-3-1": {
               "title": "監査プロンプト資産（層A）",
               "description": "skills/ 配下に監査セッションのシステムプロンプトと監査チェックリスト（principles＋タスク定義＋チェックリストで判定。spec-document-system §「監査」行）を置き、既存の prompt-assets 読込機構で注入する。判定基準はコードに書かない（D2 / ADR-0001）。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-3-2": {
               "title": "audit_reportツール（banto-core）",
               "description": "verdict（pass/fail）と findings を daemon API に送る監査用ツールを banto-core tools.ts に追加し、pi Extension アダプタに登録する。中身はdaemon API呼び出しのみ（D5）。frontmatter/TaskRecord に review.policy（spec-schemas §1既存フィールド）のパース・保持を追加する。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-3-3": {
               "title": "監査spawnオーケストレーション",
               "description": "implementing→auditing 遷移をトリガに、daemonがランタイムドライバ契約経由で監査セッションを対象worktreeにspawnする（監査はランタイム可換の系。spec-daemon-core §3.5）。監査対象コンテキスト＝タスク定義＋diff。audit開始・完了はイベントに記録する。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-3-4": {
               "title": "verdictルーティングとrework",
               "description": "pass時: review.policy による auditing→merging / auditing→review-ready の分岐（state-machine既存遷移）。fail時: audit指摘イベント記録→1回目は遷移表に auditing:implementing（rework）を追加して修正セッションをfindings注入付きでspawn、2回連続failで StateMachine.fail()（I2）。fail回数はイベントログから導出する（D3）。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-3-5": {
               "title": "受け入れテスト",
               "description": "audit-session-spawn / audit-checklist-assets / audit-verdict-routing / audit-fail-rework の4スペック。ドライバ契約レベルで監査spawnを検証し、E2Eは S75f66b-5-4 のパイプラインで実機確認。",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
@@ -1612,6 +1612,13 @@
       "kind": "feature",
       "description": "先行セッションJSONLを注入した短命SDKセッションへの一問一答。spec-daemon-core §3.5(v1.x)・research-orchestrator-survey E 参照",
       "reason": "調査反映。v1.xマーカー付き仕様追記のみ、タスク化はLater"
+    },
+    {
+      "title": "transition APIの権限分離（daemon専用遷移の保護）",
+      "kind": "chore",
+      "description": "auditing→implementing等のdaemon内部遷移が現状の無認証transition APIから誰でも呼べる（rogue executorが自監査を迂回可能）。API認証導入時にdaemon-only遷移として保護する。S75f66b-3レビューで検出",
+      "added_in": "S75f66b",
+      "reason": "spec-daemon-core §8のAPI認証未決に依存するため現Sprintでは対処せず記録のみ（P3）"
     }
   ]
 }

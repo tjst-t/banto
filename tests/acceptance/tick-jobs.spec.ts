@@ -65,7 +65,9 @@ describe("[AC-Scc9152-3-1] Tick jobs: gate re-evaluation drives queued→ready",
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-tick-jobs-"));
     // Short tick interval (200ms) to keep the test fast while still validating
     // that the scheduler fires and drives gate re-evaluation autonomously.
-    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 200 });
+    // disableAuditSpawn: tests tick scheduler and gate re-evaluation autonomy; task transitions
+    // through auditing are state placeholders that must not trigger audit session spawn.
+    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 200, disableAuditSpawn: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
   });

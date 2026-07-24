@@ -1,12 +1,17 @@
 /**
  * AC-S254276-3-2: 実行者がフェーズ報告ツールを呼ぶとdaemonイベント経由で
- * planning → implementing → review-ready と遷移する
+ * planning → implementing → auditing と遷移する
+ *
+ * S75f66b-3 (DEC-S254276-012 resolved):
+ *   report_phase now only supports planning/implementing phases.
+ *   report_done transitions to "auditing" (not review-ready).
+ *   The executor no longer self-transitions through the audit gate.
  *
  * 検証内容:
  *   - 実 daemon を起動し、プロジェクト/タスクを作成
  *   - reportPhaseTool.execute() を直接呼び出し（ライブラリなのでconsumer-style）
  *   - 遷移がイベントログに state_transitioned として記録されることを確認
- *   - reportDoneTool.execute() も同様に検証
+ *   - reportDoneTool.execute() は implementing→auditing のみ (not review-ready)
  */
 
 import { describe, it, before, after } from "node:test";
@@ -28,7 +33,9 @@ describe("[AC-S254276-3-2] Executor phase tools drive daemon state transitions",
 
   before(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-tools-"));
-    daemon = Daemon.create({ port: 0, dataDir: tmpDir });
+    // disableAuditSpawn: this suite tests executor phase tools (implements→auditing transition),
+    // not the audit session spawn side-effect. Avoid pi CLI resolution failure in CI.
+    daemon = Daemon.create({ port: 0, dataDir: tmpDir, disableAuditSpawn: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
     client = new DaemonClient(base);
@@ -108,23 +115,32 @@ describe("[AC-S254276-3-2] Executor phase tools drive daemon state transitions",
     assert.equal(transitioned.length, 1, "Exactly one planning→implementing transition event");
   });
 
-  it("[AC-S254276-3-2] report_phase(review-ready) transitions task to review-ready via auditing", async () => {
-    const result = await reportPhaseTool.execute(client, {
-      phase: "review-ready",
+  it("[AC-S254276-3-2] report_done(summary) transitions task to auditing (S75f66b-3: executor→auditing, not self→review-ready)", async () => {
+    // S75f66b-3 (DEC-S254276-012 resolved): report_done now transitions to "auditing".
+    // The executor must NOT self-transition to review-ready.
+    // Auditing is the structural gate; the daemon spawns an audit session from there.
+    const summary = "Implemented all acceptance criteria";
+    const result = await reportDoneTool.execute(client, {
+      summary,
       projectTag: proj,
       taskId,
     });
 
     assert.ok(Array.isArray(result.content));
     assert.equal(result.content[0]?.type, "text");
+    assert.ok(
+      result.content[0]?.text.includes("audit"),
+      "Done tool result should mention audit (not review-ready)"
+    );
 
+    // Verify task is now in "auditing" (not review-ready)
     const res = await fetch(`${base}/api/v1/projects/${proj}/tasks/${taskId}`);
     assert.equal(res.status, 200);
     const body = await res.json() as { task: { status: string } };
-    assert.equal(body.task.status, "review-ready", "Task must be in review-ready state");
+    assert.equal(body.task.status, "auditing", "Task must be in auditing state after report_done");
   });
 
-  it("[AC-S254276-3-2] implementing→auditing and auditing→review-ready transitions are in event log", async () => {
+  it("[AC-S254276-3-2] implementing→auditing transition is in event log (no auditing→review-ready self-transition)", async () => {
     const res = await fetch(`${base}/api/v1/projects/${proj}/tasks/${taskId}/events`);
     assert.equal(res.status, 200);
     const body = await res.json() as { events: Array<{ type: string; from?: string; to?: string }> };
@@ -134,13 +150,18 @@ describe("[AC-S254276-3-2] Executor phase tools drive daemon state transitions",
     );
     assert.equal(toAuditing.length, 1, "Exactly one implementing→auditing transition event");
 
-    const toReviewReady = body.events.filter(
+    // There must NOT be an auditing→review-ready self-transition (DEC-S254276-012 resolved).
+    const selfTransition = body.events.filter(
       (e) => e.type === "state_transitioned" && e.from === "auditing" && e.to === "review-ready"
     );
-    assert.equal(toReviewReady.length, 1, "Exactly one auditing→review-ready transition event");
+    assert.equal(
+      selfTransition.length,
+      0,
+      "S75f66b-3: executor must NOT self-transition auditing→review-ready (DEC-S254276-012 resolved)"
+    );
   });
 
-  it("[AC-S254276-3-2] report_done(summary) with a separate task transitions to review-ready and records reason", async () => {
+  it("[AC-S254276-3-2] report_done with a separate task: implementing→auditing only", async () => {
     const doneTaskId = "T-done";
 
     // Create second task and advance to implementing
@@ -169,30 +190,31 @@ describe("[AC-S254276-3-2] Executor phase tools drive daemon state transitions",
 
     assert.ok(Array.isArray(result.content));
     assert.equal(result.content[0]?.type, "text");
+    // S75f66b-3: result now says "audit" not "review-ready"
     assert.ok(
-      result.content[0]?.text.includes("review-ready"),
-      "Done tool result should mention review-ready"
+      result.content[0]?.text.includes(doneTaskId) || result.content[0]?.text.includes("audit"),
+      "Done tool result should reference taskId or audit"
     );
 
-    // Verify task status
+    // Verify task status is auditing (not review-ready)
     const res = await fetch(`${base}/api/v1/projects/${proj}/tasks/${doneTaskId}`);
     assert.equal(res.status, 200);
     const body = await res.json() as { task: { status: string } };
-    assert.equal(body.task.status, "review-ready", "Done task must be in review-ready state");
+    assert.equal(body.task.status, "auditing", "Done task must be in auditing state (not review-ready)");
   });
 });
 
 // ── Connection error propagation test ────────────────────────────────────────
 
 describe("[AC-S254276-3-2b] report_phase propagates connection errors (I2 / narrow catch)", () => {
-  it("[AC-S254276-3-2b] report_phase('review-ready') throws DaemonConnectionError when daemon is stopped", async () => {
+  it("[AC-S254276-3-2b] report_phase('implementing') throws DaemonConnectionError when daemon is stopped", async () => {
     // Point client at a port with nothing listening
     const deadClient = new DaemonClient("http://localhost:19999");
 
     await assert.rejects(
       () =>
         reportPhaseTool.execute(deadClient, {
-          phase: "review-ready",
+          phase: "implementing",
           projectTag: "ghost-proj",
           taskId: "T-ghost",
         }),
