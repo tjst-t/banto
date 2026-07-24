@@ -522,24 +522,939 @@
       "status": "pending",
       "description": "監査セッション、直列マージキュー（rebase→マージ前ゲート→マージ）、daemonによるテスト直接実行（I1）、scope.paths違反のdiff機械検査、コンフリクト解消タスクの自動起票",
       "milestone": false,
-      "detail_level": "coarse",
-      "stories": {}
+      "detail_level": "detailed",
+      "stories": {
+        "S75f66b-1": {
+          "title": "watcherのstatus:queuedのみenqueue（imp-0001 fix）",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、work/tasks/に status:draft で置いたタスク定義はenqueueされず、status:queued に書き換えたときに初めて取り込まれるようにしたい。なぜなら、draftはPOレビュー前の意図表明であり、勝手に実行キューへ入るとPOの判断主権（優先原則1）が侵されるから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S75f66b-1-1",
+              "description": "status:draft のタスク定義ファイルを work/tasks/ に置くとスキーマ検証のみ行われ、タスクは作成されない（GET /tasks に現れず、task_created / state_transitioned イベントも積まれない）",
+              "test": "[AC-S75f66b-1-1] in tests/acceptance/watcher-draft-status.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S75f66b-1-2",
+              "description": "同じファイルの status を draft→queued に書き換えて保存すると、watcherがenqueueしてタスクが queued 状態で現れる（回帰: status:queued の新規ファイルも従来どおり取り込まれる）",
+              "test": "[AC-S75f66b-1-2] in tests/acceptance/watcher-draft-status.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S75f66b-1-3",
+              "description": "status:draft でもfrontmatterが不正なファイルは task_ingest_rejected イベントが理由付きで積まれる（draftでも検証フィードバックは受けられる。I2）",
+              "test": "[AC-S75f66b-1-3] in tests/acceptance/watcher-draft-status.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S75f66b-1-1": {
+              "title": "watcherのstatus分岐実装",
+              "description": "task-watcher.ts の ingestFile で frontmatter.status を参照し、queued のみ createTask + draft→queued 遷移を行う。draft は validateTaskFrontmatter による検証のみ（成功時は取り込まずイベントも積まない、失敗時は task_ingest_rejected）。mtimeベースの再処理（draft→queued書き換え検知）が機能するよう fileStates の ingested 判定を維持する。imp-0001 PO判断・案2。",
+              "status": "pending"
+            },
+            "S75f66b-1-2": {
+              "title": "回帰テストと既存テストのdraft前提修正",
+              "description": "tests/acceptance/watcher-draft-status.spec.ts を新設（draft据え置き／draft→queued書き換え／queued直接投入／不正draft拒否）。既存 watcher-ingest / watcher-reject 系テストのフィクスチャが status:draft 前提なら queued に更新する（P1: watcher関連スペックのみ）。",
+              "status": "pending"
+            }
+          }
+        },
+        "S75f66b-2": {
+          "title": "readyタスクの自動spawn（tickジョブ）",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、依存駆動ゲートを通過して ready になったタスクが、私の手動操作なしに自動でspawnされるようにしたい。なぜなら、「spawnをPOが手動で行う必要がない」ことがvisionのsuccess criteriaそのものだから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S75f66b-2-1",
+              "description": "queued→ready に昇格したタスクが、明示的なspawn API呼び出しなしに次のtickで自動spawnされ planning へ遷移する（agent_spawned イベントで観測できる）",
+              "test": "[AC-S75f66b-2-1] in tests/acceptance/auto-spawn-tick.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S75f66b-2-2",
+              "description": "実行中セッション数が設定上限（物理quota、層B設定）に達している間は新規spawnが行われず、枠が空くと後続のreadyタスクが順にspawnされる",
+              "test": "[AC-S75f66b-2-2] in tests/acceptance/auto-spawn-quota.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S75f66b-2-3",
+              "description": "spawn失敗したタスクは task_failed で止まり（I2）、以後のtickで同一タスクへの再spawnループが起きない（イベントログにspawn試行が繰り返し積まれない）",
+              "test": "[AC-S75f66b-2-3] in tests/acceptance/auto-spawn-tick.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S75f66b-2-1": {
+              "title": "auto-spawn tickジョブ",
+              "description": "daemonのSchedulerに auto-spawn ジョブを登録。ready状態のタスクをイベント由来の導出状態から列挙し（spec-daemon-core §6 readyクエリと同一のセマンティクス）、spawnTask() を呼ぶ。spawn済み・実行中・failed の判定はすべてイベントログ導出状態から行う（D3: 別途フラグを保存しない）。",
+              "status": "pending"
+            },
+            "S75f66b-2-2": {
+              "title": "同時実行上限（物理quota）",
+              "description": "DaemonConfig に maxConcurrentSessions（層B、既定値あり）を追加。spawn台帳の実行中エントリ数と比較し、超過中はspawnをスキップ（拒否イベントは積まず次tickで再評価）。数値WIPではなく物理quotaとして扱う（spec-multi-project §3）。",
+              "status": "pending"
+            },
+            "S75f66b-2-3": {
+              "title": "受け入れテスト",
+              "description": "auto-spawn-tick.spec.ts / auto-spawn-quota.spec.ts。ready昇格→自動spawn、上限待機→順次spawn、spawn失敗→failed固定（再spawnなし）をイベント列で検証。",
+              "status": "pending"
+            }
+          }
+        },
+        "S75f66b-3": {
+          "title": "監査セッション（auditing機構）",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、実行者が完了報告した成果をレビューに回す前に、監査セッションがタスク定義と監査チェックリストに照らして必ず検査するようにしたい。なぜなら、ゲート・監査が「必ず行われる」ことを構造で保証すること（優先原則2）が番頭の存在理由だから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S75f66b-3-1",
+              "description": "実行者の完了報告でタスクが auditing へ遷移すると、daemonが監査セッションを自動spawnする（audit用の agent_spawned イベントとspawn台帳エントリで観測できる）",
+              "test": "[AC-S75f66b-3-1] in tests/acceptance/audit-session-spawn.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S75f66b-3-2",
+              "description": "監査セッションのシステムプロンプトと監査チェックリストは層Aプロンプト資産（skills/）ファイルから読み込まれ、基準の変更がgit差分として見える（D2: 機構はコード、基準はテキスト）",
+              "test": "[AC-S75f66b-3-2] in tests/acceptance/audit-checklist-assets.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S75f66b-3-3",
+              "description": "監査セッションが audit_report ツールで pass を報告すると、review.policy が auto のタスクは in-review を経ず merging（マージキュー投入）へ、それ以外は review-ready へ遷移する",
+              "test": "[AC-S75f66b-3-3] in tests/acceptance/audit-verdict-routing.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S75f66b-3-4",
+              "description": "監査 fail の報告では指摘（findings）がイベントに記録され、1回目はタスクが implementing に戻って指摘を注入した修正セッションが起動し、2回連続failで failed になり止まる（I2）",
+              "test": "[AC-S75f66b-3-4] in tests/acceptance/audit-fail-rework.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S75f66b-3-1": {
+              "title": "監査プロンプト資産（層A）",
+              "description": "skills/ 配下に監査セッションのシステムプロンプトと監査チェックリスト（principles＋タスク定義＋チェックリストで判定。spec-document-system §「監査」行）を置き、既存の prompt-assets 読込機構で注入する。判定基準はコードに書かない（D2 / ADR-0001）。",
+              "status": "pending"
+            },
+            "S75f66b-3-2": {
+              "title": "audit_reportツール（banto-core）",
+              "description": "verdict（pass/fail）と findings を daemon API に送る監査用ツールを banto-core tools.ts に追加し、pi Extension アダプタに登録する。中身はdaemon API呼び出しのみ（D5）。frontmatter/TaskRecord に review.policy（spec-schemas §1既存フィールド）のパース・保持を追加する。",
+              "status": "pending"
+            },
+            "S75f66b-3-3": {
+              "title": "監査spawnオーケストレーション",
+              "description": "implementing→auditing 遷移をトリガに、daemonがランタイムドライバ契約経由で監査セッションを対象worktreeにspawnする（監査はランタイム可換の系。spec-daemon-core §3.5）。監査対象コンテキスト＝タスク定義＋diff。audit開始・完了はイベントに記録する。",
+              "status": "pending"
+            },
+            "S75f66b-3-4": {
+              "title": "verdictルーティングとrework",
+              "description": "pass時: review.policy による auditing→merging / auditing→review-ready の分岐（state-machine既存遷移）。fail時: audit指摘イベント記録→1回目は遷移表に auditing:implementing（rework）を追加して修正セッションをfindings注入付きでspawn、2回連続failで StateMachine.fail()（I2）。fail回数はイベントログから導出する（D3）。",
+              "status": "pending"
+            },
+            "S75f66b-3-5": {
+              "title": "受け入れテスト",
+              "description": "audit-session-spawn / audit-checklist-assets / audit-verdict-routing / audit-fail-rework の4スペック。ドライバ契約レベルで監査spawnを検証し、E2Eは S75f66b-5-4 のパイプラインで実機確認。",
+              "status": "pending"
+            }
+          }
+        },
+        "S75f66b-4": {
+          "title": "マージ前ゲート（scope機械検査＋テスト直接実行）",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、マージ可否はエージェントの自己申告ではなく、daemon自身が実行するdiff機械検査とテストで決まるようにしたい。なぜなら、自己申告を信頼する検証は統治を保証せず（I1）、scope執行の最終防衛はランタイム非依存でなければならないから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S75f66b-4-1",
+              "description": "scope.paths 外のファイルを変更したブランチはマージ前ゲートで拒否され、違反ファイルの一覧が理由としてイベントに記録される（P1のランタイム非依存執行。spec-daemon-core §3.5）",
+              "test": "[AC-S75f66b-4-1] in tests/acceptance/merge-gate-scope.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S75f66b-4-2",
+              "description": "acceptance の verify コマンドを daemon がrebase済みworktreeで直接実行し、非ゼロexitでゲートがfailになる。実行ログはタスク別ディレクトリに保存され、イベントにはパス参照のみが載る",
+              "test": "[AC-S75f66b-4-2] in tests/acceptance/merge-gate-verify.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S75f66b-4-3",
+              "description": "ゲートfailしたタスクはメインラインに何もマージされないまま failed になり（I2）、メインラインのHEADが変化しない（常時グリーン保証）",
+              "test": "[AC-S75f66b-4-3] in tests/acceptance/merge-gate-fail.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S75f66b-4-1": {
+              "title": "scope.paths diff機械検査",
+              "description": "git diff --name-only <base>...<branch> の結果を scope.paths のglobと照合し、違反ファイルを列挙する検査器。glob照合は gate-evaluator.ts の既存glob資産を流用（D6）。判定は純粋関数としてテスト可能にする。",
+              "status": "pending"
+            },
+            "S75f66b-4-2": {
+              "title": "verifyコマンド直接実行",
+              "description": "acceptance[].verify（spec-schemas §1）をrebase済みworktreeで child_process 実行（I1: daemon自身が実行、実行者の申告は使わない）。ログは <dataDir>/gate-logs/<taskId>/ に保存し、イベントにはパス参照のみ（spec-daemon-core §2.1と同型）。タイムアウトは層B設定。",
+              "status": "pending"
+            },
+            "S75f66b-4-3": {
+              "title": "ゲート判定イベントとfail処理",
+              "description": "gate通過/拒否を理由付きイベント（既存 gate_evaluated 系の拡張または merge_gate 用イベント）で記録。fail時は StateMachine.fail() で止める（I2）。受け入れテスト3スペックを含む。",
+              "status": "pending"
+            }
+          }
+        },
+        "S75f66b-5": {
+          "title": "直列マージキュー（rebase→ゲート→マージ）",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、approvedになったタスクが直列マージキューで rebase→マージ前ゲート→マージ と自動処理され、メインラインが常にグリーンに保たれるようにしたい。なぜなら、マージ作業と後始末にPOのレビュー帯域を使わないこと（優先原則3）が番頭の目的だから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S75f66b-5-1",
+              "description": "approvedになったタスクはマージキューに積まれ、複数タスクがapprovedでも1件ずつ直列に rebase→ゲート→マージ が実行されて merged になる（並行処理されないことがイベント順序で観測できる）",
+              "test": "[AC-S75f66b-5-1] in tests/acceptance/merge-queue-serial.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S75f66b-5-2",
+              "description": "マージ成功で task_merged が積まれ、worktree・ブランチが冪等に片付けられ、依存ゲート再評価によって後続の依存タスクが ready に昇格する。hypothesis を持たないタスクは closed まで進む",
+              "test": "[AC-S75f66b-5-2] in tests/acceptance/merge-queue-cleanup.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S75f66b-5-3",
+              "description": "マージキューの内容と処理位置はイベントログのリプレイのみから導出され（D3: 導出状態を別途保存しない）、daemon再起動後もキューが復元されて処理が継続する",
+              "test": "[AC-S75f66b-5-3] in tests/acceptance/merge-queue-derive.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S75f66b-5-4",
+              "description": "E2E: work/tasks/へのタスク投入→取り込み→ready→自動spawn→実装→監査→承認→マージまでを実機で一気通貫に通す（モック不可。S254276の歩くスケルトンの延長）",
+              "test": "[AC-S75f66b-5-4] in tests/acceptance/pipeline-merge.e2e.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S75f66b-5-1": {
+              "title": "マージキュー導出",
+              "description": "approved到達順（イベントログのapproval順）のキューをリプレイから導出する純粋関数。処理中（merging）タスクの再開判定も含め、永続化ファイルは持たない（D3）。再起動復元をここで保証。",
+              "status": "pending"
+            },
+            "S75f66b-5-2": {
+              "title": "直列マージプロセッサ",
+              "description": "tickジョブとしてキュー先頭のみ処理: 対象worktreeをメインラインへ rebase → S75f66b-4 のゲート実行 → fast-forward マージ → merged遷移。git操作はdaemonの child_process（標準git CLI、D6）。同時に1件のみ処理する直列性を保証（spec-daemon-core §4.1。Bors型バッチは将来拡張であり実装しない）。",
+              "status": "pending"
+            },
+            "S75f66b-5-3": {
+              "title": "マージ後処理",
+              "description": "worktree・タスクブランチの削除（冪等、I3）、既存 gate-reeval ジョブによる依存タスクの ready 昇格接続、hypothesis無しタスクの merged→closed 遷移（既存遷移表）。",
+              "status": "pending"
+            },
+            "S75f66b-5-4": {
+              "title": "パイプラインE2E",
+              "description": "サンプルプロジェクトで 投入→自動spawn→実装→監査→承認（policy autoは監査後直行）→マージ を実機で通す pipeline-merge.e2e.spec.ts。モック・DRY_RUN不可（S254276-4-2の規律を踏襲）。",
+              "status": "pending"
+            }
+          }
+        },
+        "S75f66b-6": {
+          "title": "コンフリクト解消タスクの自動起票",
+          "status": "pending",
+          "user_review_required": true,
+          "review_reason": "spec-daemon-core §8 未決事項「解消タスク自動起票時のコンテキスト注入内容」と、元タスクの再開セマンティクス（paused→解消タスクmergedで再開）をv1判断で置いたため、PO確認が必要（D1）",
+          "user_story": "POとして、rebaseが失敗したときにdaemonが解消タスクを自動起票してエージェントに解かせたい。なぜなら、コンフリクト処理をPOが手作業で行うのは帯域の浪費であり、解消結果も通常の監査＋マージ前ゲートを通せば品質は機構で保証されるから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S75f66b-6-1",
+              "description": "rebase失敗時、マージは行われず、kind:conflict の解消タスク定義が work/tasks/ に自動生成される（status:queued、refs先頭に元タスクID＝discovered-from規約、scope.pathsはコンフリクト対象ファイル、本文に両ブランチの由来とコンフリクト状況）。元タスクは paused になり、マージキューは後続タスクの処理を継続する",
+              "test": "[AC-S75f66b-6-1] in tests/acceptance/conflict-autofile.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S75f66b-6-2",
+              "description": "解消タスクは特別扱いなしに通常フロー（watcher取り込み→ready→自動spawn→監査→マージ前ゲート→マージ）を通る（spec-daemon-core §4.2）",
+              "test": "[AC-S75f66b-6-2] in tests/acceptance/conflict-normal-flow.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S75f66b-6-3",
+              "description": "解消タスクが merged になると元タスクは再開されて merged になる（resolution参照付き）。解消タスクが failed になると元タスクも failed になって止まる（I2）",
+              "test": "[AC-S75f66b-6-3] in tests/acceptance/conflict-resume.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S75f66b-6-1": {
+              "title": "rebase失敗検出と解消タスク生成",
+              "description": "マージプロセッサのrebase失敗（コンフリクト）を検出し、task-NNNN採番（既存work/tasks/の最大番号+1をツールが採番）で kind:conflict のタスク定義Markdownを work/tasks/ に生成。refs先頭に元タスクID（discovered-from規約、spec-schemas §1）、scope.paths=git status由来のコンフリクトファイル、本文にコンフリクト状況＋両ブランチの由来タスク参照。取り込みはwatcher経由（経路を増やさない、D4）。",
+              "status": "pending"
+            },
+            "S75f66b-6-2": {
+              "title": "元タスクのpausedと再開・連鎖fail",
+              "description": "rebase失敗した元タスクを StateMachine.pause()（suspended_from=merging）で退避し、キューは次のタスクへ。解消タスクの merged イベントで元タスクを resume→merged（reason に解消タスクIDを記録）、解消タスクの failed で元タスクも fail（I2）。対応関係はイベント（refs/reason）から導出する（D3）。",
+              "status": "pending"
+            },
+            "S75f66b-6-3": {
+              "title": "受け入れテスト",
+              "description": "conflict-autofile / conflict-normal-flow / conflict-resume。実git repoで人工コンフリクトを作り、自動起票→通常フロー通過→元タスク再開までを検証。失敗事例の再現E2Eシナリオ蓄積（backlog chore）はスコープ外。",
+              "status": "pending"
+            }
+          }
+        }
+      }
     },
     "S9d7fdb": {
       "title": "評価環境v1",
       "status": "pending",
       "description": "環境プロファイル（meta/environments.yaml）、ドライバ契約（provision〜list）、ビルトインprocess/dockerドライバ、環境台帳・TTL・quota・照合、credentialsのsops分離",
       "milestone": false,
-      "detail_level": "coarse",
-      "stories": {}
+      "detail_level": "detailed",
+      "stories": {
+        "S9d7fdb-1": {
+          "title": "環境プロファイル定義とタスクからの参照",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、プロジェクトのmeta/environments.yamlに環境プロファイルを一度だけ定義し、タスク定義からはenvironment: <profile名>の1行で参照したい。なぜなら、環境の詳細をタスクから切り離し、dev・test・外部VM評価を同じ一つの抽象で扱うためだから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S9d7fdb-1-1",
+              "description": "meta/environments.yamlのprofiles（driver・config・ttl・quota.max_instances・credentials参照名）がdaemonに読み込まれ、GET /api/v1/projects/:proj/environments でプロファイル一覧を確認できる",
+              "test": "[AC-S9d7fdb-1-1] in tests/acceptance/env-profiles.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S9d7fdb-1-2",
+              "description": "不正なプロファイル定義（driver欠落・ttl形式不正・quota型不正）は理由付きで拒否され、エラーイベントとして観測でき、daemonは落ちずに他の正常プロファイルを提供し続ける",
+              "test": "[AC-S9d7fdb-1-2] in tests/acceptance/env-profiles-invalid.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S9d7fdb-1-3",
+              "description": "存在しないプロファイル名をenvironment:で参照するタスクへのprovision要求は、理由付きで失敗として観測できる（環境は作られない）",
+              "test": "[AC-S9d7fdb-1-3] in tests/acceptance/env-profile-unknown.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S9d7fdb-1-1": {
+              "title": "environments.yamlパーサとプロファイルスキーマ検証",
+              "description": "banto-coreにmeta/environments.yamlのパーサとプロファイル型（driver/config/ttl/quota/credentials）の検証を実装する。D6: js-yaml等の依存を追加せず、task-frontmatter.tsの既存ミニマルYAMLパーサをブロックネスト対応に拡張して流用する。ttlは8h/30m形式をmsに正規化。",
+              "status": "pending"
+            },
+            "S9d7fdb-1-2": {
+              "title": "daemonへのプロファイル読込と環境プロファイルAPI",
+              "description": "ProjectRegistryのrepoPath配下のmeta/environments.yamlをdaemonが読み込み、GET /api/v1/projects/:proj/environments で一覧を返す（既存http-server.tsのRouteパターンに追加）。D3: プロファイルはファイルが意図の真実、読込結果は導出値として保存しない。",
+              "status": "pending"
+            },
+            "S9d7fdb-1-3": {
+              "title": "不正プロファイル・不明参照のエラー経路",
+              "description": "検証失敗プロファイルはスキップ＋エラーイベント（watcher-rejectのno-floodパターンに倣い重複抑制）。provision要求時の不明プロファイル参照はI2に従い理由付き失敗で返す。",
+              "status": "pending"
+            }
+          }
+        },
+        "S9d7fdb-2": {
+          "title": "環境ドライバ契約とビルトインprocessドライバ",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、環境の提供・回収がprovision〜listのライフサイクル動詞契約に統一されるようにしたい。なぜなら、環境の中身はプロジェクトの自由にしつつ、提供の仕組みを一本化することが統治の前提だから（汎用CI基盤は作らない）。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S9d7fdb-2-1",
+              "description": "ドライバ契約（動詞サブコマンド・stdin JSON入力・stdout JSON出力・exit 0以外は失敗・handleは不透明JSON）の共通契約テストスイートがあり、ビルトインprocessドライバが全7動詞（provision/deploy/healthcheck/run/collect/teardown/list）で通る",
+              "test": "[AC-S9d7fdb-2-1] in tests/acceptance/env-driver-contract.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S9d7fdb-2-2",
+              "description": "driver: processのプロファイルをprovisionするとローカルプロセスが起動してhealthcheckがok:trueを返し、env_provisionedイベントとAPIで環境を確認できる",
+              "test": "[AC-S9d7fdb-2-2] in tests/acceptance/env-process-provision.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S9d7fdb-2-3",
+              "description": "runで検証コマンドを実行すると{exit, log_path}が返り、ログとcollectの成果物がタスクごとの所定ディレクトリに集約されて読める",
+              "test": "[AC-S9d7fdb-2-3] in tests/acceptance/env-process-run-collect.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S9d7fdb-2-4",
+              "description": "teardownは冪等（対象が既に消えていても成功扱い）であり、listはtaskIDプレフィックス命名の管理下リソースのみを列挙する",
+              "test": "[AC-S9d7fdb-2-4] in tests/acceptance/env-process-teardown-idempotent.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S9d7fdb-2-1": {
+              "title": "ドライバ契約型とドライバ実行ラッパ",
+              "description": "banto-coreに契約型（動詞・入出力JSON形・handle不透明）を定義し、daemonにドライバ実行ラッパ（サブプロセス起動、argv[0]=動詞、stdin JSON、stdout JSONパース、exitコード判定、タイムアウト）を実装する。ドライバを起動するのは常にdaemon（spec-environment §3）。stdinフィールド名はspec §2の表（config / handle / cmd / artifact path / dest）に忠実に固定する。",
+              "status": "pending"
+            },
+            "S9d7fdb-2-2": {
+              "title": "ドライバ契約テストハーネス",
+              "description": "任意のドライバ実行ファイルに対して7動詞の契約（JSON形・exit規約・teardown冪等・listのtaskIDプレフィックス）を検証する共通ハーネス。runtime-driver-contract.spec.tsのパターンに倣う。S7b7ba5の外部ドライバもこのハーネスを通す前提。",
+              "status": "pending"
+            },
+            "S9d7fdb-2-3": {
+              "title": "ビルトインprocessドライバ実装",
+              "description": "config {cmd, port}でローカルプロセスを起動するprocessドライバ。handleにpid・taskIDプレフィックス名を持ち、healthcheckはポート疎通、teardownはSIGTERM→SIGKILL（spawn-ledgerのkillOrphanProcessパターン流用）で冪等。D6: node標準ライブラリのみ。",
+              "status": "pending"
+            },
+            "S9d7fdb-2-4": {
+              "title": "run/collectのタスク別集約パス規約",
+              "description": "runログ・collect成果物のタスクごとの所定ディレクトリ規約をdaemon側で定め、ドライバは渡されたdestに書くのみ（spec-environment §6）。監査・レビューセッションのコンテキスト注入元になるパスとしてAPIから参照可能にする。",
+              "status": "pending"
+            }
+          }
+        },
+        "S9d7fdb-3": {
+          "title": "ビルトインdockerドライバ",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、監査・マージ前ゲート用のテスト環境をdocker composeで隔離提供したい。なぜなら、検証の実行を実装環境から隔離しつつ、同じ動詞契約で回収まで保証するためだから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S9d7fdb-3-1",
+              "description": "driver: dockerのプロファイル（config: {compose: <file>}）をprovisionするとtaskIDプレフィックス名のcomposeプロジェクトが起動し、healthcheckで疎通を確認できる（実docker使用・モック不可）",
+              "test": "[AC-S9d7fdb-3-1] in tests/acceptance/env-docker-provision.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S9d7fdb-3-2",
+              "description": "runがコンテナ内でコマンドを実行して{exit, log_path}を返し、失敗コマンドの非ゼロexitがそのまま観測できる（I2: 握りつぶさない）",
+              "test": "[AC-S9d7fdb-3-2] in tests/acceptance/env-docker-run.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S9d7fdb-3-3",
+              "description": "teardownが冪等（composeプロジェクトが既に削除済みでも成功）で、listがプレフィックス付きcomposeプロジェクトを列挙し、dockerドライバが共通契約テストスイートを通る",
+              "test": "[AC-S9d7fdb-3-3] in tests/acceptance/env-docker-teardown-list.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S9d7fdb-3-1": {
+              "title": "dockerドライバ実装（compose CLIシェルアウト）",
+              "description": "docker compose -p <taskIDプレフィックス名> up/down/exec/lsへのシェルアウトで7動詞を実装する。D6: docker SDK（dockerode等）は追加せず、既にホスト前提のdocker CLIを使う（理由: 依存追加より既存資産、composeファイル互換もCLIが保証）。v1はcompose対応のみ（単一コンテナ対応はspec §8未決のため見送り、追加は後方互換拡張）。",
+              "status": "pending"
+            },
+            "S9d7fdb-3-2": {
+              "title": "契約テストスイートへのdockerドライバ組込み",
+              "description": "S9d7fdb-2-2のハーネスにdockerドライバを載せ、7動詞＋冪等teardown＋listプレフィックス規約を通す。",
+              "status": "pending"
+            },
+            "S9d7fdb-3-3": {
+              "title": "docker実機smoke",
+              "description": "provision→healthcheck→run→collect→teardown（2回目teardownも成功）の一連を実dockerで通すsmoke。docker未導入環境ではテストをskipせずfailさせ、CI/実行ホストにdockerを前提として明記する（I1: 直接実行して確認）。",
+              "status": "pending"
+            }
+          }
+        },
+        "S9d7fdb-4": {
+          "title": "環境台帳とquota執行",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、provisionされたすべての環境が台帳に載り、上限超過のprovisionは拒否されるようにしたい。なぜなら、台帳に載らない外部リソースを作らないこと（I3）がこの仕様で最も優先度の高い統治機構だから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S9d7fdb-4-1",
+              "description": "provision成功時にhandle・プロファイル名・taskId・作成時刻が永続台帳に登録され、env_provisionedイベントとGET APIで稼働中環境の一覧を確認できる",
+              "test": "[AC-S9d7fdb-4-1] in tests/acceptance/env-ledger.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S9d7fdb-4-2",
+              "description": "環境稼働中にdaemonを再起動しても台帳から稼働中環境の追跡が継続する（台帳破損時はエラーイベントを積んで空台帳で継続し、落ちない）",
+              "test": "[AC-S9d7fdb-4-2] in tests/acceptance/env-ledger-restart.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S9d7fdb-4-3",
+              "description": "quota.max_instances到達中のprovision要求は理由付きで拒否され、ゲート条件3（QuotaCheck）によりそのプロファイルを参照するタスクのready昇格が保留され、空きが出ると昇格する",
+              "test": "[AC-S9d7fdb-4-3] in tests/acceptance/env-quota.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S9d7fdb-4-4",
+              "description": "タスクが終端状態（failed / closed / superseded）に達すると、daemonがその環境のteardownを保証し、env_torn_downイベントが積まれて台帳から除去される",
+              "test": "[AC-S9d7fdb-4-4] in tests/acceptance/env-teardown-on-task-end.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S9d7fdb-4-1": {
+              "title": "環境台帳の永続化",
+              "description": "spawn-ledger.tsのパターン（atomic tmp+rename書込・破損時はエラーイベント＋空台帳で継続・D3: 台帳は生きた外部リソースの追跡のみで状態真実はイベント）を流用したEnvLedgerを実装する。エントリ: {projectTag, taskId, profile, driverId, handle(不透明), createdAt, ttlDeadline}。",
+              "status": "pending"
+            },
+            "S9d7fdb-4-2": {
+              "title": "provision経路のquota執行",
+              "description": "provision要求時に台帳の同一プロファイル稼働数をmax_instancesと突合し、超過なら理由付きで拒否する（執行はドライバではなくdaemonの台帳、spec-environment §5）。",
+              "status": "pending"
+            },
+            "S9d7fdb-4-3": {
+              "title": "GateEvaluator QuotaCheck実装差込",
+              "description": "gate-evaluator.tsに用意済みのQuotaCheckフック（AlwaysPassQuota）へ、environment:参照プロファイルのquota空きを台帳から判定する実装を差し込む。判定変化はgate_evaluatedイベントで観測できる（既存の重複抑制規約に従う）。",
+              "status": "pending"
+            },
+            "S9d7fdb-4-4": {
+              "title": "タスク終端でのteardown保証",
+              "description": "終端状態への遷移（state_transitioned）を契機に該当タスクの環境をteardownし、env_torn_downを積んで台帳から除去する。取り漏れはStory 5のTTL・照合が受け止める二重防御とする。",
+              "status": "pending"
+            }
+          }
+        },
+        "S9d7fdb-5": {
+          "title": "TTL執行と照合（reconcile）",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、期限切れ環境の強制回収と、台帳と実リソースの突合が自動で行われるようにしたい。なぜなら、外部リソースの消し忘れは金銭的実害に直結し、環境の後始末をPOが手動で行わないことが成功基準だから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S9d7fdb-5-1",
+              "description": "ttlを超過した環境がtickジョブで強制teardownされ、reason: ttl_expired付きのenv_torn_downイベントとして観測できる",
+              "test": "[AC-S9d7fdb-5-1] in tests/acceptance/env-ttl.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S9d7fdb-5-2",
+              "description": "teardown失敗はリトライされ、リトライ上限後も失敗する環境はケイデンス議題向けカード（card_generated, cardType: cadence）として積まれ、台帳に失敗マーク付きで残る（黙って台帳から消さない）",
+              "test": "[AC-S9d7fdb-5-2] in tests/acceptance/env-teardown-retry.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S9d7fdb-5-3",
+              "description": "照合tickジョブが各ドライバのlistと台帳を突合し、台帳に無い実リソース（daemon停止中に生じた孤児を含む）を検出してケイデンス議題向けカードとして積む（実機シナリオ: daemon停止中にドライバ管理下リソースを残して再起動）",
+              "test": "[AC-S9d7fdb-5-3] in tests/acceptance/env-reconcile.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S9d7fdb-5-1": {
+              "title": "TTL執行tickジョブ",
+              "description": "Scheduler.registerJobでTTLジョブを登録し、台帳のttlDeadline超過エントリを強制teardownする。I2: ジョブ内エラーは既存のtick_job_failedパターンで記録され、schedulerは継続する。",
+              "status": "pending"
+            },
+            "S9d7fdb-5-2": {
+              "title": "teardownリトライと失敗エスカレーション",
+              "description": "teardown失敗をリトライ（上限・間隔は設定値）し、上限到達でcard_generated(cardType: cadence)を積み、台帳エントリにteardown_failedマークを付けて保持する。カード実体ファイルはcardPath参照のみ（D3: ログに本文を複製しない）。",
+              "status": "pending"
+            },
+            "S9d7fdb-5-3": {
+              "title": "照合tickジョブ",
+              "description": "daemon.tsのreconcileLedger（spawn照合）と同じ周期機構で、各ドライバのlist出力と環境台帳を突合する。台帳に無いtaskIDプレフィックスリソース＝孤児として検出しカード化。台帳にあるがlistに無いリソースは台帳から除去してイベント記録。",
+              "status": "pending"
+            },
+            "S9d7fdb-5-4": {
+              "title": "孤児検出の実機smoke",
+              "description": "daemon停止中にprocessドライバ管理下の形式（taskIDプレフィックス命名）でリソースを作り、再起動後の照合が検出することを実機で確認する（モック不可、orphan-recovery.spec.tsのパターンに倣う）。",
+              "status": "pending"
+            }
+          }
+        },
+        "S9d7fdb-6": {
+          "title": "credentialsのsops分離",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、環境の認証情報がエージェントのコンテキストとツール結果に一度も現れないようにしたい。なぜなら、ガバナンスの確実性は「ずるが構造的に不可能」であることを要し、秘密の分離はプロンプト遵守ではなく機構で保証すべきだから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S9d7fdb-6-1",
+              "description": "environments.yamlのcredentialsは参照名のみで、daemonがsops暗号化ファイル（テストはage鍵）から復号した値をドライバプロセスの環境変数として直接渡し、ドライバからは参照できる",
+              "test": "[AC-S9d7fdb-6-1] in tests/acceptance/env-credentials-sops.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S9d7fdb-6-2",
+              "description": "credentialsの実値がイベントログ・API応答・環境台帳・runログ集約・セッションJSONLのいずれにも現れない（実値でのgrep検証）",
+              "test": "[AC-S9d7fdb-6-2] in tests/acceptance/env-credentials-no-leak.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S9d7fdb-6-3",
+              "description": "sops復号の失敗（暗号化ファイル欠落・鍵なし）時はprovisionが理由付きで失敗し、環境は作られない（credentials無しで黙って進まない）",
+              "test": "[AC-S9d7fdb-6-3] in tests/acceptance/env-credentials-failure.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S9d7fdb-6-1": {
+              "title": "sops復号ラッパ",
+              "description": "sopsバイナリへのシェルアウト（sops -d）で参照名→キー/値の復号を行うラッパをdaemonに実装する。D6: sops-js等のnpm依存は追加しない（理由: sopsは運用側で導入済みの外部バイナリであり、暗号実装を自前依存に持ち込まない）。テストフィクスチャはage鍵で暗号化したファイルを用意。",
+              "status": "pending"
+            },
+            "S9d7fdb-6-2": {
+              "title": "ドライバプロセスへの環境変数注入",
+              "description": "復号値をドライバ実行ラッパのspawn envに直接載せる（stdin JSON・引数・ログには一切載せない）。復号値はメモリ上でprovision呼出しの間のみ保持し、永続化しない（D3）。",
+              "status": "pending"
+            },
+            "S9d7fdb-6-3": {
+              "title": "漏えい検査テスト",
+              "description": "既知のテスト実値を使い、イベントログファイル・API全応答・台帳ファイル・ログ集約ディレクトリを実値でgrepして不在を検証する自動テスト。",
+              "status": "pending"
+            }
+          }
+        },
+        "S9d7fdb-7": {
+          "title": "レビューフロー接続（reviewフェーズでの自動provision）",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、タスクがレビューフェーズに入ったら評価環境が自動でprovisionされ、そのタスクのtmuxウィンドウから動くものを確認したい。なぜなら、レビューのための環境準備をPOが手動で行わないことが成功基準だから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S9d7fdb-7-1",
+              "description": "environment:付きタスクがreviewフェーズ（in-review）に遷移すると、daemonが該当プロファイルを自動provisionし、env_provisionedイベントとAPIで環境を確認できる（environment:無しタスクでは何も起きない）",
+              "test": "[AC-S9d7fdb-7-1] in tests/acceptance/env-review-provision.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S9d7fdb-7-2",
+              "description": "該当タスクのtmuxウィンドウにペイン2が追加されて環境（dev serverの出力等）に接続され、POがSSH＋tmuxアタッチで目視できる",
+              "test": "[AC-S9d7fdb-7-2] in tests/acceptance/env-review-tmux-pane.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S9d7fdb-7-1": {
+              "title": "in-review遷移フックでの自動provision",
+              "description": "state_transitioned(in-review)を契機に、タスク定義のenvironmentプロファイルをprovisionする（quota・credentials・台帳の全経路を通る）。provision失敗はイベントで観測でき、レビュー遷移自体は妨げない（I2: 失敗を記録して止まる／握りつぶさない）。",
+              "status": "pending"
+            },
+            "S9d7fdb-7-2": {
+              "title": "tmuxペイン2接続",
+              "description": "S254276のtmuxウィンドウ統合（spawn-ledgerのtmux_window）を流用し、該当タスクのウィンドウにペイン2を追加して環境の出力（processドライバのログtail等）へ接続する。tmux無し構成では接続をスキップしイベントに記録。",
+              "status": "pending"
+            }
+          }
+        }
+      }
     },
     "S30a8fd": {
       "title": "POコックピットv1（アテンションキュー＋tmuxジャンプ）",
       "status": "pending",
       "description": "spec-ui v1範囲: Web GUIの横断アテンションキュー（カード3部構成・滞留日数×ブロック影響度ソート）、カードからtmuxセッションへのドリルダウン、CLIの判断系操作。**PO判断(2026-07-24)によりスコープ追加**: [A] readyクエリのAPI/CLI一級化(work/tasks/task-0001-ready-query.md)と[C] アテンションカード生成のプッシュ通知(work/tasks/task-0003-push-notification.md)を本Sprintの詳細化時に取り込む(spec-daemon-core §6 / spec-ui §6 反映済み)",
       "milestone": true,
-      "detail_level": "coarse",
-      "stories": {}
+      "detail_level": "detailed",
+      "stories": {
+        "S30a8fd-1": {
+          "title": "アテンションキュー導出API（カード3部構成・優先度ソート）",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、いま自分の判断を待っているものを全プロジェクト横断の1本のキューとしてAPIから取得したい。なぜなら、POの注意力（レビュー帯域）の配分はこのキューを唯一の入口にするから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S30a8fd-1-1",
+              "description": "GET /api/v1/attention が全プロジェクト横断の判断待ちカード一覧を返す。カードはイベントログから導出され（レビュー待ち＝review-ready/in-review、failed、blocking/エスカレーション、card_generatedイベント由来）、別途永続化されない。daemonを再起動しても同一のキューがイベントログのみから再導出される",
+              "test": "[AC-S30a8fd-1-1] in tests/acceptance/attention-queue-api.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S30a8fd-1-2",
+              "description": "各カードが3部構成フィールドを持つ: 経緯（originRefから解決した起点のPO指示の引用＋発生イベントへの参照。起点がシステムの場合は生成規則を明示）・起きたこと（その後の経過の要約）・求める判断（問いと、カード種別ごとの有効アクションの機械可読リスト）。カード単体で判断材料が揃う",
+              "test": "[AC-S30a8fd-1-2] in tests/acceptance/attention-card-anatomy.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S30a8fd-1-3",
+              "description": "カードは滞留日数×ブロック影響度（未spawnの後続タスク数）のスコア降順で返り、スコアと内訳（滞留日数・ブロック数）がカードに含まれる。滞留が長くブロックが多いカードほど先頭に来る",
+              "test": "[AC-S30a8fd-1-3] in tests/acceptance/attention-sort.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S30a8fd-1-4",
+              "description": "各カードにprojectTag（プロジェクトバッジ用）が含まれ、実行セッションを持つタスクのカードにはtmuxウィンドウ参照（spawn台帳由来）が含まれる",
+              "test": "[AC-S30a8fd-1-4] in tests/acceptance/attention-card-refs.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S30a8fd-1-1": {
+              "title": "カード導出モジュール",
+              "description": "packages/banto-daemon にイベントログ（EventIndex）からアテンションカードを合成する導出モジュールを実装する。対象: review-ready/in-review滞留・failed・blocking(escalate)・card_generated。D3: カードの永続テーブルは作らない（導出のみ）。ADR-0001 #3: SQL化しない",
+              "status": "pending"
+            },
+            "S30a8fd-1-2": {
+              "title": "優先度スコアリング（滞留日数×ブロック影響度）",
+              "description": "滞留日数（カード起点イベントからの経過日数）×（1＋未spawnの後続タスク数＝依存グラフでこのタスクを待つqueued/draftタスク数）の初期式でスコアを計算する。重みは層B設定で調整可能にする（spec-ui §7の未決事項につき初期値をdecisionとして記録）",
+              "status": "pending"
+            },
+            "S30a8fd-1-3": {
+              "title": "3部構成の合成: originRef解決と有効アクション列挙",
+              "description": "経緯: originRef連鎖を辿ってpo_operation等の起点イベントを引用（無ければ生成規則文字列）。起きたこと: タスクの遷移履歴から要約合成。求める判断: ステートマシンの有効遷移＋カード種別からアクションリスト（id・ラベル・API呼び出し内容）をdaemon側で決定する（D5: SurfaceはこれをそのままレンダリングするだけでよいD7の実装基盤）",
+              "status": "pending"
+            },
+            "S30a8fd-1-4": {
+              "title": "GET /api/v1/attention ルート",
+              "description": "http-server.tsに横断attentionルートを追加（クエリでprojectTagフィルタ可）。カード增減はWS購読の既存イベントで検知できることをテストで確認する（新チャネルは作らない）",
+              "status": "pending"
+            }
+          }
+        },
+        "S30a8fd-2": {
+          "title": "readyクエリのAPI/CLI一級化 [A: task-0001]",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、いま着手可能なタスクの一覧をAPIとCLIから同一のクエリで参照したい。なぜなら、依存駆動ゲートの判定の真実を一箇所に保ち（D3）、検討・ボード・spawnスケジューラの見る世界をずらさないためだから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S30a8fd-2-1",
+              "description": "GET /api/v1/ready が依存グラフ・スコープ重複・quotaを反映した着手可能タスクの横断一覧（projectTag付き）を返し、その内容がGateEvaluatorのゲート判定と一致する",
+              "test": "[AC-S30a8fd-2-1] in tests/acceptance/ready-query-api.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S30a8fd-2-2",
+              "description": "banto ready（CLI）で同一クエリの結果が表示できる。CLI側にready判定ロジックの重複実装がない（DaemonClient経由のHTTP呼び出しのみ）",
+              "test": "[AC-S30a8fd-2-2] in tests/acceptance/ready-query-cli.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S30a8fd-2-3",
+              "description": "ゲート通過でreadyへ昇格したタスクは即座にクエリ結果に現れ、spawnされたタスク（planning以降へ遷移）は結果から消える",
+              "test": "[AC-S30a8fd-2-3] in tests/acceptance/ready-query-freshness.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S30a8fd-2-1": {
+              "title": "daemonのreadyクエリ実装",
+              "description": "Daemonにready一覧の一級クエリを実装する。GateEvaluatorの判定結果（status:readyのタスク列挙＋判定根拠）を再利用し、判定コードを複製しない（D3）。scope: packages/banto-daemon/src/**",
+              "status": "pending"
+            },
+            "S30a8fd-2-2": {
+              "title": "GET /api/v1/ready ルートとDaemonClientメソッド",
+              "description": "http-server.tsに横断readyルートを追加し、banto-core/daemon-client.ts に ready() を追加する",
+              "status": "pending"
+            },
+            "S30a8fd-2-3": {
+              "title": "banto ready サブコマンド",
+              "description": "packages/banto-cli に ready サブコマンドを追加（D5: 表示のみ。判定ロジックなし）。既存 cmd-status.ts の表示規約に合わせる",
+              "status": "pending"
+            }
+          }
+        },
+        "S30a8fd-3": {
+          "title": "アテンションカード生成のプッシュ通知 [C: task-0003]",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、判断待ちカードが生まれた瞬間に携帯へ届く通知が欲しい。なぜなら、アテンションキューは「開けば分かる」が「開くきっかけ」は通知が担うから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S30a8fd-3-1",
+              "description": "カード生成イベント（blocking発生・レビュー待ち・failed・card_generated＝評価/ケイデンス系）の発生時、層B設定のntfy互換チャネルへHTTP POSTで通知が届く。カード生成以外のイベント（通常の状態遷移等）では通知されない",
+              "test": "[AC-S30a8fd-3-1] in tests/acceptance/notify-dispatch.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S30a8fd-3-2",
+              "description": "通知文が「経緯1行＋カード種別」で構成され（D8）、該当カードへ直接遷移できるリンク（GUIのカードURL）を含む",
+              "test": "[AC-S30a8fd-3-2] in tests/acceptance/notify-message-format.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S30a8fd-3-3",
+              "description": "層B設定（meta/config.yaml）で通知対象・チャネル・静穏時間を変更でき、静穏時間中はカードが生成されても通知が抑制される",
+              "test": "[AC-S30a8fd-3-3] in tests/acceptance/notify-quiet-hours.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S30a8fd-3-4",
+              "description": "通知チャネル未設定時は送出をスキップして正常動作し、送出失敗（チャネル到達不能）はエラーとしてログに記録され握りつぶされない（I2）。いずれの場合もカード生成側の処理は失敗しない",
+              "test": "[AC-S30a8fd-3-4] in tests/acceptance/notify-failure-handling.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S30a8fd-3-1": {
+              "title": "層B設定読込（meta/config.yaml）",
+              "description": "meta/config.yaml から通知設定（channel URL・通知対象カード種別・静穏時間帯）を読み込む。YAMLパーサ依存を追加する場合はD6に従い理由1行を記録（または既存資産で足りるか先に確認）",
+              "status": "pending"
+            },
+            "S30a8fd-3-2": {
+              "title": "ntfy互換通知ディスパッチャ",
+              "description": "fetch POSTによるntfy互換チャネル送出（新規npm依存なし・D6）。失敗はログ記録＋リトライなしのベストエフォート（I2: 記録はする、握りつぶさない）",
+              "status": "pending"
+            },
+            "S30a8fd-3-3": {
+              "title": "カード生成イベント→通知の配線と静穏時間抑制",
+              "description": "S30a8fd-1のカード導出と同じイベント判定を購読し、カードを新規に生じさせるイベントのみ通知する（D3: 判定の複製をしない）。静穏時間チェックを通してから送出",
+              "status": "pending"
+            },
+            "S30a8fd-3-4": {
+              "title": "D8通知文の合成",
+              "description": "カードの経緯フィールド先頭1行＋カード種別＋カードへのGUI URLで通知文を合成する（S30a8fd-1-3の3部構成合成を再利用）",
+              "status": "pending"
+            }
+          }
+        },
+        "S30a8fd-4": {
+          "title": "Web GUIアテンションキュー画面",
+          "status": "pending",
+          "user_review_required": true,
+          "review_reason": "初のGUI画面。レビュー帯域の配分装置としてのUX妥当性（優先規則3）とカード3部構成の読みやすさ（D8）は自動テストで確認できず、プロトタイプ承認に加えて実装後のPO目視確認が必要",
+          "user_story": "POとして、ブラウザを開けば判断待ちカードが1本のキューとして優先度順に並び、各カードをそれ単体で判断したい。なぜなら、POの一日は会話2枚とこのキュー1本で回るべきだから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S30a8fd-4-1",
+              "description": "ブラウザでGUI（daemon配信）を開くとアテンションキューが表示され、カードが滞留日数×ブロック影響度の優先度順に並ぶ。各カードにプロジェクトバッジと滞留日数が見える",
+              "test": "[AC-S30a8fd-4-1] in tests/acceptance/gui-attention-queue.e2e.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S30a8fd-4-2",
+              "description": "各カードに経緯（起点のPO指示引用または生成規則）・起きたこと・求める判断の3部が表示され、画面を遡らずカード単体で判断材料が揃う",
+              "test": "[AC-S30a8fd-4-2] in tests/acceptance/gui-card-anatomy.e2e.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S30a8fd-4-3",
+              "description": "求める判断がカード種別ごとのボタンとして提示され（daemonが返す有効アクションの描画のみ・D5/D7）、ボタン押下でdaemon APIの対応操作が実行され、結果がキュー表示に反映される（承認・却下したカードが消える等）",
+              "test": "[AC-S30a8fd-4-3] in tests/acceptance/gui-card-actions.e2e.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S30a8fd-4-4",
+              "description": "新しいカードの発生・既存カードの消滅が、WebSocketイベント購読によりページリロードなしでキューに反映される",
+              "test": "[AC-S30a8fd-4-4] in tests/acceptance/gui-live-update.e2e.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S30a8fd-4-1": {
+              "title": "GUI静的アセットのdaemon配信",
+              "description": "daemonのhttp-serverから静的GUIアセット（/ui）を配信する。v1はビルド不要のvanilla HTML/JS/CSS（フレームワーク・バンドラ依存を追加しない: D6。追加が必要になったらescalate）",
+              "status": "pending"
+            },
+            "S30a8fd-4-2": {
+              "title": "アテンションキュー画面の描画",
+              "description": "GET /api/v1/attention の結果をカードリストとして描画（バッジ・滞留日数・3部構成・スコア順）。ソート・合成ロジックはGUIに置かない（D5: daemonの返却順をそのまま描画）。プロトタイプ承認済みのdata-testidを維持する",
+              "status": "pending"
+            },
+            "S30a8fd-4-3": {
+              "title": "カードアクションボタンのAPI配線",
+              "description": "カードの求める判断（アクションリスト）をボタン描画し、押下でdaemon APIを呼ぶ。操作にはoriginRef（当該カード起点）を付与する（D8）",
+              "status": "pending"
+            },
+            "S30a8fd-4-4": {
+              "title": "WS購読ライブ更新",
+              "description": "既存WS（/ws イベント購読）でカード関連イベントを受け、キューを再取得・再描画する（差分計算をGUIに持たせない）",
+              "status": "pending"
+            },
+            "S30a8fd-4-5": {
+              "title": "Playwright E2E基盤整備",
+              "description": "初のGUIテスト基盤: PlaywrightをdevDependencyに追加（D6理由: GUI ACの受け入れテストに必須・ROADMAP規約でGUIストーリーはPlaywrightシナリオ）。tests/acceptance/*.e2e.spec.ts で実daemon＋実ブラウザで走らせる（I1: モックAPI不可）",
+              "status": "pending"
+            }
+          }
+        },
+        "S30a8fd-5": {
+          "title": "カードからtmuxセッションへのドリルダウン",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、判断に会話の文脈が必要なとき、カードから該当タスクのpiセッション（tmux）へワンアクションで降りたい。なぜなら、どのセッションがどこにあるかという操作の記憶はシステムが持つべきだから（D7）。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S30a8fd-5-1",
+              "description": "GUI: 実行セッションを持つカードに「セッションへ」アクションが表示され、ワンアクションで該当tmuxウィンドウへの接続コマンド（ssh＋tmuxターゲットを含む完全なコマンド）が表示・コピーできる",
+              "test": "[AC-S30a8fd-5-1] in tests/acceptance/gui-tmux-jump.e2e.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S30a8fd-5-2",
+              "description": "CLI: カード選択から該当tmuxウィンドウへ直接ジャンプできる（tmux内から実行時はswitch-client、外からはattach）",
+              "test": "[AC-S30a8fd-5-2] in tests/acceptance/cli-tmux-jump.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S30a8fd-5-3",
+              "description": "実行セッションが存在しない・終了済みのカードにはセッションアクションが提示されない（D7: 有効な操作のみ提示）",
+              "test": "[AC-S30a8fd-5-3] in tests/acceptance/tmux-jump-absent.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S30a8fd-5-1": {
+              "title": "接続ターゲット合成をdaemon側に置く",
+              "description": "spawn台帳のtmuxウィンドウ参照から接続コマンド文字列（sshホスト＋tmuxターゲット）を合成してカードのアクションに含める（D5: Surfaceは表示・実行のみ）。ホスト名は層B設定から",
+              "status": "pending"
+            },
+            "S30a8fd-5-2": {
+              "title": "GUI「セッションへ」アクション",
+              "description": "カードのセッションアクションを描画し、接続コマンドの表示＋クリップボードコピーを実装する（ブラウザから直接attachはできないためコマンド提供方式。プロトタイプレビューで方式をPO確認）",
+              "status": "pending"
+            },
+            "S30a8fd-5-3": {
+              "title": "CLIのtmuxジャンプ実行",
+              "description": "banto attention のカード操作からtmux attach/switch-clientをchild_processで実行する（TMUX環境変数で内外判定）。tmux失敗はエラー表示して終了コード1（I2）",
+              "status": "pending"
+            }
+          }
+        },
+        "S30a8fd-6": {
+          "title": "CLIの対話的判断操作",
+          "status": "pending",
+          "user_review_required": false,
+          "review_reason": null,
+          "user_story": "POとして、端末からもアテンションキューを開き、番号選択だけで判断操作を完了したい。なぜなら、コマンド名や引数の記憶を要求しない判断入口（D7）が、GUIと同格でSSH越しにも必要だから。",
+          "acceptance_criteria": [
+            {
+              "id": "AC-S30a8fd-6-1",
+              "description": "banto attention でカード一覧（優先度順・プロジェクトバッジ・3部構成の要約）が表示され、番号選択でカード詳細を開ける。引数やIDの記憶・入力は不要",
+              "test": "[AC-S30a8fd-6-1] in tests/acceptance/cli-attention-list.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S30a8fd-6-2",
+              "description": "カード詳細でdaemonが返す有効アクションが番号付き選択肢として提示され、選択するとdaemon API経由で操作（承認・却下・セッションへ等）が実行される。CLI側でアクションの可否判断をしない（D5）",
+              "test": "[AC-S30a8fd-6-2] in tests/acceptance/cli-attention-actions.spec.ts",
+              "status": "pending"
+            },
+            {
+              "id": "AC-S30a8fd-6-3",
+              "description": "操作後にキューを再表示すると判断済みカードが消えており、操作はpo_operationイベントとして当該カードへのoriginRef付きで記録されている（D8）",
+              "test": "[AC-S30a8fd-6-3] in tests/acceptance/cli-attention-effects.spec.ts",
+              "status": "pending"
+            }
+          ],
+          "tasks": {
+            "S30a8fd-6-1": {
+              "title": "cmd-attention 一覧・詳細表示",
+              "description": "packages/banto-cli に attention サブコマンドを追加。GET /api/v1/attention の結果を一覧・詳細表示（描画のみ・D5）",
+              "status": "pending"
+            },
+            "S30a8fd-6-2": {
+              "title": "対話的選択とアクション実行",
+              "description": "node標準のreadline（D6: 依存追加なし）で番号選択UIを実装し、カードのアクションリストをそのまま選択肢化してAPI呼び出しする",
+              "status": "pending"
+            },
+            "S30a8fd-6-3": {
+              "title": "po_operationへのoriginRef付与",
+              "description": "判断操作のAPI呼び出しにoriginRef（カード起点イベント参照）を運ばせ、daemonがpo_operationイベントに記録する受け口を確認・追加する（EventBase.originRefは実装済み）",
+              "status": "pending"
+            }
+          }
+        }
+      }
     },
     "S24ddde": {
       "title": "Extension Packと対話セッション面",
@@ -631,20 +1546,6 @@
     }
   },
   "backlog": [
-    {
-      "title": "watcherはstatus:queuedのみenqueue(draftは検証のみ)",
-      "kind": "bug",
-      "description": "imp-0001対処(PO判断: 案2)。watcherがfrontmatter statusを無視して常にdraft→queued遷移させる仕様矛盾の修正。draftファイルはスキーマ検証のみ行い取り込まない。status書き換えでdraft→queuedにするとwatcherが enqueueする。回帰テスト必須",
-      "added_in": "S254276",
-      "reason": "milestone M01後のフォローアップ監査で発見(imp-0001)。S75f66b詳細化時にfix-Storyとして取り込む"
-    },
-    {
-      "title": "readyタスクの自動spawn(tickジョブ)",
-      "kind": "enhancement",
-      "description": "gate通過でreadyになったタスクをschedulerのtickジョブが自動でspawnTaskする。現状は明示API呼び出しのみ",
-      "added_in": "S254276",
-      "reason": "S254276独立検証で未実装が明示化された"
-    },
     {
       "title": "モデルtierルーティングと失敗駆動昇格",
       "kind": "feature",
