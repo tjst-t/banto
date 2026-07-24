@@ -222,8 +222,15 @@ export class StateStore {
       case "audit_started":
       case "audit_verdict":
       case "audit_spawn_disabled":
+      case "daemon_config":
+      case "env_profile_rejected":
+      case "env_provision_failed":
+      case "env_review_tmux_pane_attached":
+      case "env_review_tmux_pane_skipped":
         // These events are recorded for the log's truth value but don't
-        // directly alter the task state machine (handled by daemon logic)
+        // directly alter the task state machine (handled by daemon logic).
+        // D3: profiles are file-intent; rejection facts are events only.
+        // S9d7fdb-7: tmux pane events are observation records only — no state mutation.
         break;
 
       case "task_ingest_rejected":

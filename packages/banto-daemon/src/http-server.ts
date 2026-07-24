@@ -335,6 +335,164 @@ export function createHttpServer(daemon: Daemon): http.Server {
         sendJson(res, 200, { task });
       },
     },
+
+    // S9d7fdb-1 (AC-S9d7fdb-1-1): List environment profiles for a project.
+    // D3: re-read from meta/environments.yaml on every request (not cached).
+    // Returns only validated profiles; invalid entries are recorded as events, not returned.
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/environments$/,
+      handler: async (_req, res, match) => {
+        const proj = match[1];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const result = daemon.getEnvironmentProfiles(proj);
+        sendJson(res, 200, { profiles: result.valid });
+      },
+    },
+
+    // S9d7fdb-2 (AC-S9d7fdb-2-2): Provision environment for a task via driver.
+    // Replaces the Story 1 stub (which returned 202 profile_resolved).
+    // D5: all logic delegated to daemon.provisionEnv; this is pure routing.
+    {
+      method: "POST",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/tasks\/([^/]+)\/environment\/provision$/,
+      handler: async (req, res, match) => {
+        const proj = match[1];
+        const taskId = match[2];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const task = daemon.getTask(proj, taskId);
+        if (!task) {
+          sendJson(res, 404, { error: "task_not_found" });
+          return;
+        }
+        // D3: profile name is resolved SOLELY from the task's `environment` field (single source
+        // of intent). Body-supplied "profile" overrides are NOT accepted — the file is the truth.
+        // If the task has no environment field, return a clear 4xx error.
+        await readBody(req); // consume body (may include metadata for future verbs), but ignore "profile"
+        const profileName =
+          typeof task["environment"] === "string" ? task["environment"] : undefined;
+
+        if (!profileName) {
+          sendJson(res, 400, { error: "task has no environment profile declared" });
+          return;
+        }
+
+        const result = await daemon.provisionEnv(proj, taskId, profileName);
+        if (!result.ok) {
+          sendJson(res, result.httpStatus, { error: result.error });
+          return;
+        }
+        sendJson(res, 201, {
+          envId: result.envId,
+          profileName: result.profileName,
+          healthcheck: result.healthcheck,
+        });
+      },
+    },
+
+    // S9d7fdb-2 (AC-S9d7fdb-2-4): Tear down environment for a task (idempotent).
+    {
+      method: "POST",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/tasks\/([^/]+)\/environment\/teardown$/,
+      handler: async (req, res, match) => {
+        const proj = match[1];
+        const taskId = match[2];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const envId = typeof body["envId"] === "string" ? body["envId"] : undefined;
+        const result = await daemon.teardownEnv(proj, taskId, envId);
+        if (!result.ok) {
+          sendJson(res, result.httpStatus, { error: result.error });
+          return;
+        }
+        sendJson(res, 200, { status: "torn_down" });
+      },
+    },
+
+    // S9d7fdb-2 (AC-S9d7fdb-2-3): Run a command in the provisioned environment.
+    {
+      method: "POST",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/tasks\/([^/]+)\/environment\/run$/,
+      handler: async (req, res, match) => {
+        const proj = match[1];
+        const taskId = match[2];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const cmd = body["cmd"];
+        if (typeof cmd !== "string" || !cmd) {
+          sendJson(res, 400, { error: "cmd is required" });
+          return;
+        }
+        const envId = typeof body["envId"] === "string" ? body["envId"] : undefined;
+        const result = await daemon.runEnvCmd(proj, taskId, cmd, envId);
+        if (!result.ok) {
+          sendJson(res, result.httpStatus, { error: result.error });
+          return;
+        }
+        // I2: non-zero exit is reported faithfully — not treated as HTTP error
+        sendJson(res, 200, { exit: result.exit, log_path: result.log_path });
+      },
+    },
+
+    // S9d7fdb-2 (AC-S9d7fdb-2-3): Collect artifacts from the environment.
+    {
+      method: "POST",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/tasks\/([^/]+)\/environment\/collect$/,
+      handler: async (req, res, match) => {
+        const proj = match[1];
+        const taskId = match[2];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const envId = typeof body["envId"] === "string" ? body["envId"] : undefined;
+        const result = await daemon.collectEnv(proj, taskId, envId);
+        if (!result.ok) {
+          sendJson(res, result.httpStatus, { error: result.error });
+          return;
+        }
+        sendJson(res, 200, { dest: result.dest });
+      },
+    },
+
+    // S9d7fdb-2 (AC-S9d7fdb-2-3): List artifacts for a task.
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/tasks\/([^/]+)\/environment\/artifacts$/,
+      handler: async (_req, res, match) => {
+        const proj = match[1];
+        const taskId = match[2];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const artifacts = daemon.listTaskArtifacts(proj, taskId);
+        sendJson(res, 200, { artifacts });
+      },
+    },
+
+    // S9d7fdb-2 (AC-S9d7fdb-2-2): List all live environments (global).
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/environments$/,
+      handler: async (_req, res) => {
+        const environments = daemon.listAllEnvironments();
+        sendJson(res, 200, { environments });
+      },
+    },
   ];
 
   const server = http.createServer((req, res) => {

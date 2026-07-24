@@ -136,7 +136,15 @@ export interface EnvProvisionedEvent extends EventBase {
   type: "env_provisioned";
   taskId: string;
   envId: string;
-  worktree: string;
+  /** Profile name used to provision (e.g. "dev", "test") — spec-environment §2 */
+  profileName: string;
+  /** Driver name or path used (e.g. "process") */
+  driver: string;
+  /**
+   * Result of the healthcheck after provision.
+   * D3: path reference only — never log bodies (spec-environment §6).
+   */
+  healthcheck: { ok: boolean; detail?: string };
 }
 
 /** Environment torn down */
@@ -144,6 +152,12 @@ export interface EnvTornDownEvent extends EventBase {
   type: "env_torn_down";
   taskId: string;
   envId: string;
+  /**
+   * Reason for teardown. Optional — omitted for user-initiated teardown.
+   * "ttl_expired": TTL enforcement tick forced teardown (Story-5).
+   * "vanished": reconcile detected that the resource is gone from the driver list (Story-5).
+   */
+  reason?: "ttl_expired" | "vanished";
 }
 
 /** Merge completed */
@@ -297,6 +311,99 @@ export interface AuditSpawnDisabledEvent extends EventBase {
   taskId: string;
 }
 
+/**
+ * Daemon started with one or more spawn-suppressing config flags set.
+ *
+ * F2 (governance): emitted once at daemon start when disableAutoSpawn (or similar
+ * spawn-suppressing flags) are set, so the bypass is visible in the event log —
+ * "黙って迂回できる経路を作らない" (priority rule 2). Without this event, a production
+ * daemon started with disableAutoSpawn:true would silently not auto-spawn, invisible
+ * to the PO via GET /events.
+ *
+ * Pattern mirrors audit_spawn_disabled: the suppression fact is the observable artifact.
+ */
+export interface DaemonConfigEvent extends EventBase {
+  type: "daemon_config";
+  /** True when the auto-spawn scheduler job is suppressed by config */
+  autoSpawnDisabled: boolean;
+  /** True when the audit-spawn side-effect is suppressed by config */
+  auditSpawnDisabled: boolean;
+}
+
+/**
+ * An environment profile definition in meta/environments.yaml was rejected
+ * because it failed schema validation (driver missing / ttl format / quota type).
+ *
+ * S9d7fdb-1 (AC-S9d7fdb-1-2): emitted at most once per (project, profile name, mtime)
+ * to avoid event flooding (watcher-reject no-flood pattern).
+ * D3: file is intent; this event records the rejection fact only.
+ * I2: errors not swallowed — recorded here so the audit trail is complete.
+ */
+export interface EnvProfileRejectedEvent extends EventBase {
+  type: "env_profile_rejected";
+  /** Profile name that failed validation */
+  profileName: string;
+  /** Human-readable reason naming the offending field */
+  reason: string;
+}
+
+/**
+ * A provision attempt for a task's environment failed.
+ *
+ * S9d7fdb-1 (AC-S9d7fdb-1-3): emitted when a task references an unknown profile name
+ * (or when provision fails for any other reason at the profile-resolution layer).
+ * D3: no env_provisioned event is emitted on failure.
+ * I2: failure is recorded, not swallowed.
+ */
+export interface EnvProvisionFailedEvent extends EventBase {
+  type: "env_provision_failed";
+  taskId: string;
+  /** The profile name that was requested but not found (or failed) */
+  profileName: string;
+  /** Human-readable failure reason */
+  reason: string;
+}
+
+/**
+ * A tmux pane was successfully added to the task's tmux window for environment output.
+ *
+ * S9d7fdb-7 (AC-S9d7fdb-7-2): emitted after the env pane is attached in the task's
+ * existing tmux window so the PO can observe the provisioned environment on SSH+attach.
+ * D3: pane address is recorded here; no duplicate pane tracking state elsewhere.
+ * I2: not emitted on failure — env_review_tmux_pane_skipped covers failure/no-tmux paths.
+ */
+export interface EnvReviewTmuxPaneAttachedEvent extends EventBase {
+  type: "env_review_tmux_pane_attached";
+  taskId: string;
+  /** Provisioned environment ID */
+  envId: string;
+  /** Tmux window address (e.g. "banto:T-001") from the spawn ledger */
+  windowAddr: string;
+  /** Pane index that was added (2 = the env pane alongside the agent session pane) */
+  paneIndex: number;
+}
+
+/**
+ * Tmux pane attachment was skipped because no tmux session is configured,
+ * no spawn-ledger entry has a tmux window for this task, or tmux returned an error.
+ *
+ * S9d7fdb-7 (AC-S9d7fdb-7-2): I2 — skip must not be silent. This event makes the
+ * skip observable via GET /events so the PO knows no pane is waiting.
+ * "tmux-less config" (daemon.tmuxSession unset or "") → reason "no_tmux_session".
+ * "No window recorded in spawn ledger for this task" → reason "no_tmux_window".
+ * "tmux split-window command failed" → reason "tmux_error".
+ */
+export interface EnvReviewTmuxPaneSkippedEvent extends EventBase {
+  type: "env_review_tmux_pane_skipped";
+  taskId: string;
+  /** Provisioned environment ID (present when provision succeeded before the pane skip) */
+  envId: string;
+  /** Reason code for the skip */
+  reason: "no_tmux_session" | "no_tmux_window" | "tmux_error";
+  /** Optional detail message (e.g. tmux stderr) */
+  detail?: string;
+}
+
 /** Union of all orchestration event types */
 export type OrchestrationEvent =
   | TaskCreatedEvent
@@ -321,4 +428,9 @@ export type OrchestrationEvent =
   | MergeGateEvaluatedEvent
   | AuditStartedEvent
   | AuditVerdictEvent
-  | AuditSpawnDisabledEvent;
+  | AuditSpawnDisabledEvent
+  | DaemonConfigEvent
+  | EnvProfileRejectedEvent
+  | EnvProvisionFailedEvent
+  | EnvReviewTmuxPaneAttachedEvent
+  | EnvReviewTmuxPaneSkippedEvent;

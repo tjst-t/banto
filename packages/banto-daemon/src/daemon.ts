@@ -27,8 +27,9 @@ import {
   EventIndex,
   StateMachine,
   RuntimeDriverRegistry,
+  parseEnvProfiles as _parseEnvProfiles,
 } from "@banto/core";
-import type { OrchestrationEvent, TaskStatus, TaskRecord, TransitionResult, RuntimeDriver, SpawnOptions } from "@banto/core";
+import type { OrchestrationEvent, TaskStatus, TaskRecord, TransitionResult, RuntimeDriver, SpawnOptions, ParseEnvProfilesResult } from "@banto/core";
 import { ProjectRegistry } from "./project-registry.js";
 import type { ProjectEntry } from "./project-registry.js";
 import { WsEventServer } from "./ws-server.js";
@@ -37,6 +38,7 @@ import { TaskWatcher } from "./task-watcher.js";
 import { Scheduler } from "./scheduler.js";
 import type { TickJob } from "./scheduler.js";
 import { GateEvaluator, evaluatePendingGates } from "./gate-evaluator.js";
+import type { QuotaCheck } from "./gate-evaluator.js";
 import { PiRpcDriver, createWorktree } from "./pi-rpc-driver.js";
 import { SpawnLedger, isProcessAlive, killOrphanProcess } from "./spawn-ledger.js";
 import type { LedgerEntry } from "./spawn-ledger.js";
@@ -45,6 +47,16 @@ import {
   fileConflictTask,
   deriveOriginResolutionPairs,
 } from "./conflict-filer.js";
+import { EnvLedger, countLiveByProfile } from "./env-ledger.js";
+import type { EnvLedgerEntry } from "./env-ledger.js";
+import { runDriverVerb, resolveDriverPath, DEFAULT_DRIVER_TIMEOUT_MS } from "./env-driver-runner.js";
+import { decryptSops, resolveCredentialsPath } from "./sops.js";
+import type {
+  ProvisionOutput,
+  HealthcheckOutput,
+  RunOutput,
+  ListOutput,
+} from "@banto/core";
 
 // ── Daemon-local skill asset loader ───────────────────────────────────────────
 //
@@ -143,6 +155,48 @@ export interface DaemonConfig {
    * Default: false (audit sessions are auto-spawned in production).
    */
   disableAuditSpawn?: boolean;
+  /**
+   * When true, disable the auto-spawn tick job (which would spawn pi agents for ready tasks).
+   * Intended for test suites that test gate/quota logic and do not need agent spawn.
+   * Default: false (auto-spawn runs in production).
+   */
+  disableAutoSpawn?: boolean;
+  /**
+   * Timeout in milliseconds for a single driver verb invocation (spec-environment §8 decision).
+   * Planning note: daemon-side uniform configurable default.
+   * Default: 30 000 ms (30 s).
+   */
+  driverTimeoutMs?: number;
+  /**
+   * Maximum number of teardown retry attempts before giving up and filing a cadence card.
+   * Story-5 TTL enforcer: on exhaustion → markTeardownFailed + card_generated(cadence).
+   * Default: 3 retries.
+   */
+  ttlTeardownRetryLimit?: number;
+  /**
+   * Delay in milliseconds between teardown retry attempts.
+   * Default: 1 000 ms (1 s).
+   */
+  ttlTeardownRetryDelayMs?: number;
+  /**
+   * Interval (ms) for the env reconcile tick.
+   * Default: reconcileIntervalMs (shares the spawn-reconcile cadence).
+   * Set to a small value (e.g. 500) in tests for fast detection.
+   */
+  envReconcileIntervalMs?: number;
+  /**
+   * When true, disable the TTL enforcer tick job and the env reconcile tick job.
+   * Intended for test suites that do not need TTL/reconcile.
+   * Default: false.
+   */
+  disableEnvTtlEnforcer?: boolean;
+  /**
+   * Path to the age private key file for sops decryption (spec-environment §4, S9d7fdb-6).
+   * Corresponds to the SOPS_AGE_KEY_FILE convention.
+   * If omitted, the daemon's inherited SOPS_AGE_KEY_FILE environment variable is used.
+   * D6: sops + age are pre-installed infrastructure tools (no npm dep added).
+   */
+  sopsAgeKeyFile?: string;
 }
 
 export class Daemon {
@@ -175,6 +229,13 @@ export class Daemon {
    * Exposed as readonly for tests (e.g. to inspect entries after spawn).
    */
   readonly ledger: SpawnLedger;
+
+  /**
+   * Environment ledger — persistent registry of provisioned environments (spec-environment §5).
+   * Written atomically to <dataDir>/env-ledger.json.
+   * Exposed as readonly for tests (e.g. to inspect entries after provision).
+   */
+  readonly envLedger: EnvLedger;
 
   /**
    * Separate interval handle for the reconcile job, running at reconcileIntervalMs
@@ -210,6 +271,34 @@ export class Daemon {
   private _autoSpawnRunning = false;
 
   /**
+   * Re-entrancy guard for the TTL enforcer tick (Story-5).
+   *
+   * A forced teardown (including retries) can take multiple seconds. If a second tick
+   * fires before the first _runEnvTtlEnforcer() resolves, both would attempt teardown
+   * for the same expired entries simultaneously, causing duplicate retries and duplicate
+   * events. Mirror the _mergeQueueRunning pattern.
+   * Always reset in finally{} so a panicking inner call never permanently locks the enforcer.
+   */
+  private _envTtlEnforcerRunning = false;
+
+  /**
+   * Re-entrancy guard for the env reconcile tick (Story-5).
+   *
+   * Driver `list` calls are I/O operations that can be slow. If a second tick fires
+   * before _runEnvReconcile() resolves, both would compare the same stale ledger snapshot
+   * against the same driver output. Mirror the _mergeQueueRunning pattern.
+   * Always reset in finally{} so a panicking inner call never permanently locks the reconcile.
+   */
+  private _envReconcileRunning = false;
+
+  /**
+   * Separate interval handle for the env reconcile tick (Story-5).
+   * May differ from the main tick (envReconcileIntervalMs).
+   * Null until start() is called.
+   */
+  private envReconcileTimer: NodeJS.Timeout | null = null;
+
+  /**
    * In-flight spawn map: deduplicates concurrent spawnTask() calls for the same task.
    *
    * The spawn-ledger only records COMPLETED spawns (after driver.spawn() resolves
@@ -242,6 +331,15 @@ export class Daemon {
    */
   private readonly _backgroundOps: Set<Promise<void>> = new Set();
 
+  /**
+   * No-flood dedup map for env_profile_rejected events (S9d7fdb-1, AC-S9d7fdb-1-2).
+   * Key: "projectTag/profileName", Value: mtime of meta/environments.yaml at last emit.
+   * An event is only emitted when the file's mtime has changed since the last emission.
+   * Mirrors the TaskWatcher no-flood pattern (mtime unchanged = already processed).
+   * In-memory only; resets on daemon restart (first call after restart always emits).
+   */
+  private readonly _envProfileRejectMtime: Map<string, number> = new Map();
+
   private constructor(config: DaemonConfig) {
     this.config = config;
     this.log = EventLog.open(config.dataDir);
@@ -260,6 +358,18 @@ export class Daemon {
         projectTag: "daemon",
         jobName: "spawn-ledger-open",
         error: corruptionError,
+      });
+    }
+
+    // Open env ledger — same I2 pattern as spawn ledger.
+    const { ledger: envLedger, corruptionError: envLedgerError } = EnvLedger.open(config.dataDir);
+    this.envLedger = envLedger;
+    if (envLedgerError) {
+      this.log.append({
+        type: "tick_job_failed",
+        projectTag: "daemon",
+        jobName: "env-ledger-open",
+        error: envLedgerError,
       });
     }
 
@@ -287,8 +397,31 @@ export class Daemon {
     this.watcher = new TaskWatcher(this, config.watchIntervalMs);
 
     // GateEvaluator: implements spec-multi-project §3 three-condition gate.
-    // AlwaysPassQuota is the default until Sprint S9d7fdb provides real quota.
-    this.gateEvaluator = new GateEvaluator();
+    // S9d7fdb-4: inject real quota check (replaces AlwaysPassQuota stub).
+    // The quota check reads live env-ledger entries (D3: derived, not stored separately).
+    const envLedgerRef = this; // captured reference so the closure sees the current ledger
+    const envQuotaCheck: QuotaCheck = {
+      check(task: import("@banto/core").TaskRecord): boolean {
+        // Get the profile name from the task's environment field.
+        const profileName = typeof task["environment"] === "string" ? task["environment"] : undefined;
+        if (!profileName) {
+          // Task has no environment profile — quota check passes (no env required).
+          return true;
+        }
+        // Look up the profile to get quota.max_instances.
+        // We re-read profiles via the daemon method to stay D3-compliant (no caching).
+        const { valid } = envLedgerRef.getEnvironmentProfiles(task.projectTag);
+        const profile = valid.find((p) => p.name === profileName);
+        if (!profile || !profile.quota) {
+          // Profile not found or no quota configured → no restriction.
+          return true;
+        }
+        // Count live entries for this profile (D3: derived from ledger).
+        const liveCount = countLiveByProfile(envLedgerRef.envLedger.listLive(), profileName);
+        return liveCount < profile.quota.max_instances;
+      },
+    };
+    this.gateEvaluator = new GateEvaluator(envQuotaCheck);
 
     // Scheduler: drives periodic jobs (D6: setInterval only, no external library).
     this.scheduler = new Scheduler(this.log, config.tickIntervalMs);
@@ -316,9 +449,13 @@ export class Daemon {
     // Physical quota (maxConcurrentSessions) is checked against ledger size first;
     // when full, skip silently — no rejection event, re-evaluated on next tick (I2-compliant:
     // quota-skip is not an error; spawn failures still go through recordTaskFailed).
-    this.scheduler.registerJob("auto-spawn", () => {
-      void this.runAutoSpawn();
-    });
+    // disableAutoSpawn: test suites that test gate/quota logic can opt out of auto-spawn
+    // to prevent the pi driver from failing (no pi binary in test envs) and marking tasks failed.
+    if (!config.disableAutoSpawn) {
+      this.scheduler.registerJob("auto-spawn", () => {
+        void this.runAutoSpawn();
+      });
+    }
 
     // Built-in job: serial merge queue (S75f66b-5, spec-daemon-core §4.1).
     // Processes the HEAD of the merge queue only (one task at a time — serial discipline).
@@ -335,6 +472,18 @@ export class Daemon {
     this.scheduler.registerJob("conflict-resolution-check", () => {
       this.runConflictResolutionCheck();
     });
+
+    // Built-in job: env TTL enforcer (Story-5, spec-environment §5).
+    // Scans live ledger entries, force-tears-down any with ttlDeadline < now.
+    // Retries on failure; escalates via card_generated(cadence) on retry exhaustion (I2, D8).
+    // disableEnvTtlEnforcer: opt-out for test suites that do not need TTL/reconcile.
+    //
+    // Note: the job fn RETURNS the Promise (no `void`) so the Scheduler can await it
+    // in runAllJobs() and drain it on stop(). This ensures no events are appended after
+    // log.close() (D3/I2: no events must be silently dropped).
+    if (!config.disableEnvTtlEnforcer) {
+      this.scheduler.registerJob("env-ttl-enforcer", () => this._runEnvTtlEnforcer());
+    }
   }
 
   static create(config: Partial<DaemonConfig> = {}): Daemon {
@@ -357,6 +506,13 @@ export class Daemon {
         // always false (quota silently unenforced) — fall back to the default.
         (Number.parseInt(process.env["BANTO_MAX_CONCURRENT_SESSIONS"] ?? "5", 10) || 5),
       disableAuditSpawn: config.disableAuditSpawn ?? false,
+      disableAutoSpawn: config.disableAutoSpawn ?? false,
+      driverTimeoutMs: config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS,
+      ttlTeardownRetryLimit: config.ttlTeardownRetryLimit ?? 3,
+      ttlTeardownRetryDelayMs: config.ttlTeardownRetryDelayMs ?? 1000,
+      envReconcileIntervalMs: config.envReconcileIntervalMs,
+      disableEnvTtlEnforcer: config.disableEnvTtlEnforcer ?? false,
+      sopsAgeKeyFile: config.sopsAgeKeyFile ?? process.env["SOPS_AGE_KEY_FILE"],
     };
     return new Daemon(resolved);
   }
@@ -391,7 +547,22 @@ export class Daemon {
       });
     });
 
-    // Start the reconcile timer (separate from the main tick so tests can tune it).
+    // F2 (governance): emit daemon_config event when spawn-suppressing flags are set,
+    // so the suppression is visible in the event log (「黙って迂回できる経路を作らない」,
+    // priority rule 2). Without this, a production daemon started with disableAutoSpawn
+    // would silently not auto-spawn — invisible to the PO via GET /events.
+    // Pattern mirrors audit_spawn_disabled.
+    if (this.config.disableAutoSpawn || this.config.disableAuditSpawn) {
+      const configEvent = this.log.append({
+        type: "daemon_config",
+        projectTag: "daemon",
+        autoSpawnDisabled: this.config.disableAutoSpawn === true,
+        auditSpawnDisabled: this.config.disableAuditSpawn === true,
+      });
+      this.applyAndBroadcast(configEvent);
+    }
+
+    // Start the spawn-ledger reconcile timer (separate from the main tick so tests can tune it).
     const reconcileMs =
       this.config.reconcileIntervalMs ?? this.config.tickIntervalMs;
     this.reconcileTimer = setInterval(() => {
@@ -399,6 +570,21 @@ export class Daemon {
     }, reconcileMs);
     // Unref so the timer does not prevent the event loop from exiting in tests.
     if (this.reconcileTimer.unref) this.reconcileTimer.unref();
+
+    // Start the env reconcile timer (Story-5, spec-environment §5).
+    // Compares driver list output against the env ledger.
+    // Uses envReconcileIntervalMs if set, else reconcileMs.
+    //
+    // D3/I2: in-flight reconcile ops are tracked via _backgroundOps so daemon.stop()
+    // can drain them before closing the log (no events must be lost).
+    if (!this.config.disableEnvTtlEnforcer) {
+      const envReconcileMs =
+        this.config.envReconcileIntervalMs ?? reconcileMs;
+      this.envReconcileTimer = setInterval(() => {
+        this._trackBackground(this._runEnvReconcile());
+      }, envReconcileMs);
+      if (this.envReconcileTimer.unref) this.envReconcileTimer.unref();
+    }
   }
 
   /** Stop the daemon gracefully. */
@@ -417,6 +603,10 @@ export class Daemon {
     if (this.reconcileTimer) {
       clearInterval(this.reconcileTimer);
       this.reconcileTimer = null;
+    }
+    if (this.envReconcileTimer) {
+      clearInterval(this.envReconcileTimer);
+      this.envReconcileTimer = null;
     }
     return new Promise((resolve, reject) => {
       this.wsServer.close(() => {
@@ -865,6 +1055,15 @@ export class Daemon {
     // the ledger entries now to keep the ledger accurate (D3: no stale derived state).
     this.ledger.remove(projectTag, `${taskId}:audit`);
     this.ledger.remove(projectTag, `${taskId}:rework`);
+
+    // S9d7fdb-4 (AC-S9d7fdb-4-4): Tear down environments on task failure.
+    // recordTaskFailed() is the cross-cutting "failed" path (used by spawn error paths,
+    // orphan recovery, audit failures). We trigger teardown here too so that ALL
+    // paths to "failed" guarantee env cleanup (not just the HTTP /transition route).
+    // Fire-and-forget (same pattern as transition() hook).
+    this._trackBackground(new Promise<void>((resolve) => {
+      setImmediate(() => void this._teardownTaskEnvs(projectTag, taskId).then(resolve, resolve));
+    }));
   }
 
   /**
@@ -889,14 +1088,33 @@ export class Daemon {
     const fromStatus = task.status as TaskStatus;
     const toStatus = to as TaskStatus;
 
-    const result = StateMachine.transition(
-      this.log,
-      taskId,
-      fromStatus,
-      toStatus,
-      projectTag,
-      reason
-    );
+    // Cross-cutting transitions: failed and superseded are reachable from any non-terminal state.
+    // Route through StateMachine.fail() / StateMachine.supersede() instead of the transition table.
+    let result: TransitionResult;
+    if (toStatus === "failed") {
+      result = StateMachine.fail(
+        this.log,
+        taskId,
+        { currentStatus: fromStatus, reason: reason ?? "transition_to_failed" },
+        projectTag
+      );
+    } else if (toStatus === "superseded") {
+      result = StateMachine.supersede(
+        this.log,
+        taskId,
+        { currentStatus: fromStatus, by: reason ?? "unknown" },
+        projectTag
+      );
+    } else {
+      result = StateMachine.transition(
+        this.log,
+        taskId,
+        fromStatus,
+        toStatus,
+        projectTag,
+        reason
+      );
+    }
 
     // Refresh state + index regardless of result (rejection events are also appended)
     this.refreshState();
@@ -916,6 +1134,19 @@ export class Daemon {
     // We run on any successful transition that changes status so we don't miss edge cases.
     if (result.ok) {
       this.runGateReeval();
+
+      // S9d7fdb-4 (AC-S9d7fdb-4-4): Teardown-on-terminal-state guarantee.
+      // When a task reaches a terminal state (failed / closed / superseded),
+      // tear down its environments so no external resources outlive the task.
+      // Fire-and-forget: teardown failure is surfaced in the event log (I2).
+      // The state transition is committed immediately (D3: events are the truth);
+      // teardown is deferred so the HTTP response for the transition is sent first.
+      const TERMINAL_STATES = new Set(["failed", "closed", "superseded"]);
+      if (TERMINAL_STATES.has(toStatus)) {
+        this._trackBackground(new Promise<void>((resolve) => {
+          setImmediate(() => void this._teardownTaskEnvs(projectTag, taskId).then(resolve, resolve));
+        }));
+      }
 
       // S75f66b-3: Auto-spawn audit session on implementing→auditing transition.
       // The audit session is the structural gate — it always runs before review/merge.
@@ -944,6 +1175,23 @@ export class Daemon {
             setImmediate(() => void this.spawnAuditSession(projectTag, taskId).then(resolve, resolve));
           }));
         }
+      }
+
+      // S9d7fdb-7 (AC-S9d7fdb-7-1, AC-S9d7fdb-7-2): Auto-provision env on review-ready→in-review.
+      // When a task with an `environment` field enters in-review, provision its env automatically
+      // so the PO finds the running artifact attached to the review tmux window.
+      //
+      // Design rules:
+      //   D5: all orchestration logic here; HTTP layer is pure routing.
+      //   I2: provision failure MUST NOT block the transition — it is surfaced as an event.
+      //       The transition to in-review is already committed (D3); this hook is fire-and-forget.
+      //   D3: we read task.environment from the state store (the event-derived record),
+      //       not from disk directly — the event log is the single runtime truth.
+      if (toStatus === "in-review") {
+        // Fire-and-forget: tracked so Daemon.stop() drains before log.close() (D3/I2: no drops).
+        this._trackBackground(new Promise<void>((resolve) => {
+          setImmediate(() => void this._autoProvisionOnReview(projectTag, taskId).then(resolve, resolve));
+        }));
       }
     }
 
@@ -1488,6 +1736,1028 @@ export class Daemon {
     return reworkCount;
   }
 
+  // ── Environment profile API (S9d7fdb-1) ───────────────────────────────────
+
+  /**
+   * Read and validate environment profiles from meta/environments.yaml for the project.
+   *
+   * D3: profiles are file-intent; re-read from disk on every call (not cached/stored).
+   *     Caller (HTTP handler) reads on each request — no stale derived state.
+   * I2: YAML parse errors and per-profile validation failures are returned as `failures`
+   *     (never thrown or swallowed). The daemon does NOT crash on invalid profiles.
+   *
+   * No-flood pattern for env_profile_rejected events (mirrors watcher-reject no-flood):
+   *   - Failures are emitted as events at most once per (projectTag, profileName, mtime)
+   *     so repeated reads of the same malformed file do not flood the event log.
+   *   - The dedup map (_envProfileRejectMtime) is keyed by "projectTag/profileName"
+   *     and stores the file's mtime at the time of the last rejection event.
+   *
+   * @returns parsed valid profiles and any failures (for HTTP response).
+   */
+  getEnvironmentProfiles(projectTag: string): ParseEnvProfilesResult {
+    const proj = this.registry.get(projectTag);
+    if (!proj) {
+      return { valid: [], failures: [] };
+    }
+
+    const envFile = path.join(proj.repoPath, "meta", "environments.yaml");
+    if (!fs.existsSync(envFile)) {
+      return { valid: [], failures: [] };
+    }
+
+    let content: string;
+    let mtimeMs: number;
+    try {
+      const stat = fs.statSync(envFile);
+      mtimeMs = stat.mtimeMs;
+      content = fs.readFileSync(envFile, "utf-8");
+    } catch (err) {
+      // I2: cannot read file — return failures without crashing daemon
+      return {
+        valid: [],
+        failures: [{ name: "<file>", reason: `cannot read meta/environments.yaml: ${String(err)}` }],
+      };
+    }
+
+    // D6: _parseEnvProfiles is from @banto/core (no new dep; aliased import at top of file)
+    const result = _parseEnvProfiles(content);
+
+    // Emit env_profile_rejected events for each failure (no-flood: dedup by mtime)
+    for (const failure of result.failures) {
+      const key = `${projectTag}/${failure.name}`;
+      const lastMtime = this._envProfileRejectMtime.get(key);
+      if (lastMtime !== mtimeMs) {
+        // New or modified failure — emit event and record mtime
+        this._envProfileRejectMtime.set(key, mtimeMs);
+        const event = this.log.append({
+          type: "env_profile_rejected",
+          projectTag,
+          profileName: failure.name,
+          reason: failure.reason,
+        });
+        this.applyAndBroadcast(event);
+      }
+      // If lastMtime === mtimeMs: same mtime = already emitted → skip (no-flood)
+    }
+
+    return result;
+  }
+
+  /**
+   * Attempt to provision an environment for a task by resolving its profile.
+   *
+   * S9d7fdb-1 (AC-S9d7fdb-1-3): Story 1 only covers profile-resolution.
+   * The actual driver invocation lands in Story 2.
+   *
+   * Returns { ok: true } if the profile is found (provision would proceed in Story 2).
+   * Returns { ok: false, httpStatus: 404, error } if the profile is unknown.
+   * Emits env_provision_failed event on failure (I2: not swallowed).
+   *
+   * @param projectTag  Project tag.
+   * @param taskId      Task whose `environment` field names the profile.
+   * @param profileName Profile name to look up (from task frontmatter).
+   */
+  resolveEnvProfile(
+    projectTag: string,
+    taskId: string,
+    profileName: string
+  ): { ok: true; profileName: string } | { ok: false; httpStatus: number; error: string } {
+    const { valid } = this.getEnvironmentProfiles(projectTag);
+    const found = valid.find((p) => p.name === profileName);
+    if (!found) {
+      const reason = `profile_not_found: "${profileName}" is not defined in meta/environments.yaml`;
+      // I2: emit failure event (not swallowed)
+      const event = this.log.append({
+        type: "env_provision_failed",
+        projectTag,
+        taskId,
+        profileName,
+        reason,
+      });
+      this.applyAndBroadcast(event);
+      return { ok: false, httpStatus: 404, error: reason };
+    }
+    return { ok: true, profileName: found.name };
+  }
+
+  // ── Review-flow auto-provision (S9d7fdb-7) ───────────────────────────────
+
+  /**
+   * Auto-provision a task's environment when it enters the in-review state.
+   *
+   * S9d7fdb-7 (AC-S9d7fdb-7-1, AC-S9d7fdb-7-2): integration hook called by transition().
+   *
+   * Behaviour:
+   *   - If the task has no `environment` field → no-op (no events emitted).
+   *   - If the task has an `environment` field → run the full provisionEnv() pipeline
+   *     (profile resolution, quota check, credentials, driver, ledger).
+   *   - Provision failure → env_provision_failed event (emitted inside provisionEnv).
+   *     The transition to in-review is already committed; this method NEVER blocks it.
+   *   - On success → attempt to open env tmux pane in the task's existing window
+   *     (from spawn-ledger tmux_window). Success → env_review_tmux_pane_attached.
+   *     Failure (no tmux session / no window / tmux error) → env_review_tmux_pane_skipped (I2).
+   *
+   * D5: all logic here; HTTP layer is pure routing.
+   * I2: any exception in this method is caught and logged to stderr — it MUST NOT propagate
+   *     (the caller is fire-and-forget and the transition is already committed).
+   * D3: task.environment is read from the state store (event-derived), not disk.
+   */
+  private async _autoProvisionOnReview(projectTag: string, taskId: string): Promise<void> {
+    try {
+      const task = this.store.getTask(taskId, projectTag);
+      if (!task) {
+        // Task not found (shouldn't happen — transition just committed it) — skip silently.
+        return;
+      }
+
+      const profileName = typeof task["environment"] === "string" ? task["environment"] : undefined;
+      if (!profileName) {
+        // No environment field on the task — no-op per spec (D3: environment is optional).
+        return;
+      }
+
+      // Double-provision guard: if this task already has a live environment (e.g. the task
+      // re-enters in-review, or was provisioned explicitly), do not provision a second one.
+      // Profiles without a quota block would otherwise leak an extra environment per re-entry.
+      // The judgment is derived from the ledger (D3), not a separate flag.
+      if (this.envLedger.listByTask(projectTag, taskId).length > 0) {
+        return;
+      }
+
+      // Run the full provision pipeline (profile → quota → credentials → driver → ledger).
+      // provisionEnv() emits env_provisioned or env_provision_failed internally (I2).
+      const result = await this.provisionEnv(projectTag, taskId, profileName);
+      if (!result.ok) {
+        // Failure already recorded by provisionEnv — nothing more to do here.
+        // The transition to in-review stands regardless (spec S9d7fdb-7: non-blocking).
+        return;
+      }
+
+      const { envId } = result;
+
+      // Attempt to attach a tmux pane to the task's existing window (AC-S9d7fdb-7-2).
+      // D6: tmux is a system tool (no npm dep). I2: skip is observable, not silent.
+      const tmuxSession = this.config.tmuxSession;
+      if (!tmuxSession) {
+        // Daemon configured without tmux integration — skip with observable event.
+        const skipEvent = this.log.append({
+          type: "env_review_tmux_pane_skipped",
+          projectTag,
+          taskId,
+          envId,
+          reason: "no_tmux_session",
+        });
+        this.applyAndBroadcast(skipEvent);
+        return;
+      }
+
+      // Look up the task's spawn-ledger entry to find its tmux window.
+      const ledgerEntry = this.ledger.get(projectTag, taskId);
+      const windowAddr = ledgerEntry?.tmux_window;
+      if (!windowAddr) {
+        // Task has no tmux window recorded (e.g. spawned before tmux integration, or
+        // never spawned via the agent path). Skip with observable event.
+        const skipEvent = this.log.append({
+          type: "env_review_tmux_pane_skipped",
+          projectTag,
+          taskId,
+          envId,
+          reason: "no_tmux_window",
+        });
+        this.applyAndBroadcast(skipEvent);
+        return;
+      }
+
+      // Open a second pane in the task's window showing the environment's output.
+      // The pane runs `tail -f --retry <envLogPath>` on the env's log (or a placeholder).
+      // D6: tmux split-window via childProcess.spawnSync (stdlib, no dep).
+      const paneResult = openEnvTmuxPane(windowAddr, taskId, envId);
+      if (!paneResult.ok) {
+        const skipEvent = this.log.append({
+          type: "env_review_tmux_pane_skipped",
+          projectTag,
+          taskId,
+          envId,
+          reason: "tmux_error",
+          detail: paneResult.detail,
+        });
+        this.applyAndBroadcast(skipEvent);
+        return;
+      }
+
+      const attachedEvent = this.log.append({
+        type: "env_review_tmux_pane_attached",
+        projectTag,
+        taskId,
+        envId,
+        windowAddr,
+        paneIndex: paneResult.paneIndex,
+      });
+      this.applyAndBroadcast(attachedEvent);
+    } catch (err) {
+      // I2: catch-all so an unexpected error never leaks back to the fire-and-forget caller.
+      // The transition to in-review is already committed — we only log to stderr.
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(
+        `[banto-daemon] _autoProvisionOnReview(${projectTag}/${taskId}): unexpected error: ${msg}\n`
+      );
+    }
+  }
+
+  // ── Environment driver API (S9d7fdb-2) ────────────────────────────────────
+
+  /**
+   * Provision an environment for a task using its named profile's driver.
+   *
+   * S9d7fdb-2 (AC-S9d7fdb-2-2): This replaces the Story 1 stub that returned 202.
+   *
+   * Steps:
+   *   1. Resolve profile → driver name + config block.
+   *   2. Resolve absolute driver path (builtin or external).
+   *   3. Run `driver provision` with stdin {config, taskId}.
+   *   4. Run `driver healthcheck` with the returned handle.
+   *   5. Record env_provisioned event + ledger entry.
+   *
+   * D1: field names passed to driver are spec §2 FIXED: config, taskId, handle.
+   * I2: any driver failure → ok: false + env_provision_failed event (not swallowed).
+   * I3: taskId is passed to the driver so it can apply the naming prefix.
+   *
+   * Returns the new envId on success.
+   */
+  async provisionEnv(
+    projectTag: string,
+    taskId: string,
+    profileName: string
+  ): Promise<
+    | { ok: true; envId: string; profileName: string; healthcheck: { ok: boolean; detail?: string } }
+    | { ok: false; httpStatus: number; error: string }
+  > {
+    const { valid } = this.getEnvironmentProfiles(projectTag);
+    const profile = valid.find((p) => p.name === profileName);
+    if (!profile) {
+      const reason = `profile_not_found: "${profileName}" is not defined in meta/environments.yaml`;
+      const event = this.log.append({
+        type: "env_provision_failed",
+        projectTag,
+        taskId,
+        profileName,
+        reason,
+      });
+      this.applyAndBroadcast(event);
+      return { ok: false, httpStatus: 404, error: reason };
+    }
+
+    // S9d7fdb-4: quota enforcement (spec-environment §5, D3: derived from ledger).
+    // Count live entries for this profile; reject if max_instances is reached.
+    if (profile.quota && profile.quota.max_instances > 0) {
+      const liveCount = countLiveByProfile(this.envLedger.listLive(), profileName);
+      if (liveCount >= profile.quota.max_instances) {
+        const reason = `quota_exceeded: profile "${profileName}" max_instances=${profile.quota.max_instances} reached (${liveCount} live)`;
+        const event = this.log.append({
+          type: "env_provision_failed",
+          projectTag,
+          taskId,
+          profileName,
+          reason,
+        });
+        this.applyAndBroadcast(event);
+        // Trigger gate re-eval so gate_evaluated events are updated with quota block reason.
+        this.runGateReeval();
+        return { ok: false, httpStatus: 409, error: reason };
+      }
+    }
+
+    const driverPath = resolveDriverPath(profile.driver);
+    const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
+
+    // S9d7fdb-6: credentials decryption (spec-environment §4).
+    // If the profile has a credentials reference, decrypt via sops BEFORE touching the driver.
+    // On failure → provision fails immediately (I2: no partial state, no env created).
+    // SECURITY: decryptedEnv values are ONLY passed to spawn env; never logged/persisted/echoed.
+    let decryptedEnv: Record<string, string> | undefined;
+    if (profile.credentials) {
+      const proj = this.registry.get(projectTag);
+      if (!proj) {
+        const reason = `credentials_resolve_failed: project "${projectTag}" not found`;
+        const event = this.log.append({
+          type: "env_provision_failed",
+          projectTag,
+          taskId,
+          profileName,
+          reason,
+        });
+        this.applyAndBroadcast(event);
+        return { ok: false, httpStatus: 404, error: reason };
+      }
+      const credPath = resolveCredentialsPath(proj.repoPath, profile.credentials);
+      if (!credPath.ok) {
+        const reason = credPath.error;
+        const event = this.log.append({
+          type: "env_provision_failed",
+          projectTag,
+          taskId,
+          profileName,
+          reason,
+        });
+        this.applyAndBroadcast(event);
+        return { ok: false, httpStatus: 502, error: reason };
+      }
+      const decResult = await decryptSops(
+        credPath.filePath,
+        this.config.sopsAgeKeyFile,
+        timeoutMs
+      );
+      if (!decResult.ok) {
+        const reason = decResult.error;
+        const event = this.log.append({
+          type: "env_provision_failed",
+          projectTag,
+          taskId,
+          profileName,
+          reason,
+        });
+        this.applyAndBroadcast(event);
+        return { ok: false, httpStatus: 502, error: reason };
+      }
+      // SECURITY: decResult.secrets is ONLY assigned to decryptedEnv for spawn injection.
+      // It is never written to events, logs, ledger, API responses, or any persisted surface.
+      decryptedEnv = decResult.secrets;
+    }
+
+    // Step 1: provision
+    const provisionResult = await runDriverVerb(
+      driverPath,
+      "provision",
+      { config: profile.config ?? {}, taskId },
+      timeoutMs,
+      decryptedEnv
+    );
+
+    if (!provisionResult.ok) {
+      const reason = `driver_provision_failed: ${provisionResult.error}`;
+      const event = this.log.append({
+        type: "env_provision_failed",
+        projectTag,
+        taskId,
+        profileName,
+        reason,
+      });
+      this.applyAndBroadcast(event);
+      return { ok: false, httpStatus: 502, error: reason };
+    }
+
+    const provOut = provisionResult.output as ProvisionOutput;
+    if (!provOut.handle || typeof provOut.handle !== "object") {
+      const reason = "driver_provision_failed: provision output missing handle";
+      const event = this.log.append({
+        type: "env_provision_failed",
+        projectTag,
+        taskId,
+        profileName,
+        reason,
+      });
+      this.applyAndBroadcast(event);
+      return { ok: false, httpStatus: 502, error: reason };
+    }
+
+    const handle = provOut.handle;
+
+    // Step 2: healthcheck
+    // S9d7fdb-6: pass decryptedEnv to healthcheck as well (driver may need credentials for probe).
+    const hcResult = await runDriverVerb(
+      driverPath,
+      "healthcheck",
+      { handle },
+      timeoutMs,
+      decryptedEnv
+    );
+
+    let healthcheck: { ok: boolean; detail?: string };
+    if (!hcResult.ok) {
+      // Healthcheck driver failure — treat as ok: false with detail
+      healthcheck = { ok: false, detail: hcResult.error };
+    } else {
+      const hcOut = hcResult.output as HealthcheckOutput;
+      healthcheck = { ok: hcOut.ok === true, detail: hcOut.detail };
+    }
+
+    // Step 3: record in ledger + emit event
+    const envId = `${taskId}-${profileName}-${Date.now()}`;
+    const now = new Date();
+    // ttlDeadline: createdAt + profile.ttlMs (Story-5 enforces TTL; we only persist the deadline).
+    const ttlDeadline = new Date(now.getTime() + profile.ttlMs).toISOString();
+    const entry: EnvLedgerEntry = {
+      envId,
+      projectTag,
+      taskId,
+      profileName,
+      driver: profile.driver,
+      handle,
+      createdAt: now.toISOString(),
+      ttlDeadline,
+    };
+    this.envLedger.add(entry);
+
+    const event = this.log.append({
+      type: "env_provisioned",
+      projectTag,
+      taskId,
+      envId,
+      profileName,
+      driver: profile.driver,
+      healthcheck,
+    });
+    this.applyAndBroadcast(event);
+
+    return { ok: true, envId, profileName, healthcheck };
+  }
+
+  /**
+   * Tear down an environment (idempotent — spec-environment §2).
+   *
+   * S9d7fdb-2 (AC-S9d7fdb-2-4): teardown is idempotent; already-torn-down = success.
+   *
+   * I2: driver failure on a NON-idempotent error → ok: false (not swallowed).
+   *     But if the environment was already torn down, return ok: true immediately.
+   * I3: ledger entry marked tornDownAt after teardown.
+   */
+  async teardownEnv(
+    projectTag: string,
+    taskId: string,
+    envId?: string
+  ): Promise<{ ok: true } | { ok: false; httpStatus: number; error: string }> {
+    // Find the env entry — if envId given, use it; else use the latest live entry for task
+    let entry: EnvLedgerEntry | undefined;
+    if (envId) {
+      entry = this.envLedger.get(envId);
+      if (!entry) {
+        // Already torn down or never existed — idempotent success (spec §2: teardown冪等)
+        return { ok: true };
+      }
+    } else {
+      const liveEntries = this.envLedger.listByTask(projectTag, taskId);
+      entry = liveEntries[liveEntries.length - 1];
+      if (!entry) {
+        // No live environment for this task — idempotent success
+        return { ok: true };
+      }
+    }
+
+    if (entry.tornDownAt) {
+      // Already torn down — idempotent success
+      return { ok: true };
+    }
+
+    const driverPath = resolveDriverPath(entry.driver);
+    const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
+
+    // S9d7fdb-6: resolve credentials for teardown (driver may need them to authenticate).
+    const credResult = await this._resolveCredentialsForEntry(entry);
+    if (!credResult.ok) {
+      return { ok: false, httpStatus: 502, error: credResult.error };
+    }
+
+    const result = await runDriverVerb(
+      driverPath,
+      "teardown",
+      { handle: entry.handle },
+      timeoutMs,
+      credResult.secrets
+    );
+
+    if (!result.ok) {
+      // I2: driver non-zero exit is a failure — return it (but note: spec requires
+      // drivers themselves to be idempotent; the daemon surfaces driver failures faithfully).
+      return { ok: false, httpStatus: 502, error: `driver_teardown_failed: ${result.error}` };
+    }
+
+    // Mark as torn down in ledger
+    this.envLedger.markTornDown(entry.envId);
+
+    const event = this.log.append({
+      type: "env_torn_down",
+      projectTag,
+      taskId,
+      envId: entry.envId,
+    });
+    this.applyAndBroadcast(event);
+
+    return { ok: true };
+  }
+
+  /**
+   * Run a command in a provisioned environment.
+   *
+   * S9d7fdb-2 (AC-S9d7fdb-2-3): returns {exit, log_path}; log_path is under the
+   * task's aggregation directory.
+   *
+   * D3: events carry path references only, never log bodies (spec-environment §6).
+   * I2: non-zero exit from the environment command is REPORTED (not swallowed) via
+   *     the log_path and the returned exit field.
+   */
+  async runEnvCmd(
+    projectTag: string,
+    taskId: string,
+    cmd: string,
+    envId?: string
+  ): Promise<
+    | { ok: true; exit: number; log_path: string }
+    | { ok: false; httpStatus: number; error: string }
+  > {
+    const entry = this._resolveEnvEntry(projectTag, taskId, envId);
+    if (!entry) {
+      return { ok: false, httpStatus: 404, error: "env_not_found: no live environment for this task" };
+    }
+
+    const driverPath = resolveDriverPath(entry.driver);
+    const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
+
+    // S9d7fdb-6: resolve credentials for run verb (driver may need them for remote exec).
+    const credResult = await this._resolveCredentialsForEntry(entry);
+    if (!credResult.ok) {
+      return { ok: false, httpStatus: 502, error: credResult.error };
+    }
+
+    const result = await runDriverVerb(
+      driverPath,
+      "run",
+      { handle: entry.handle, cmd },
+      timeoutMs,
+      credResult.secrets
+    );
+
+    if (!result.ok) {
+      // I2: driver failure (e.g. process gone) → error, not swallowed
+      return { ok: false, httpStatus: 502, error: `driver_run_failed: ${result.error}` };
+    }
+
+    const runOut = result.output as RunOutput;
+    if (typeof runOut.exit !== "number" || typeof runOut.log_path !== "string") {
+      return { ok: false, httpStatus: 502, error: "driver_run_failed: invalid output (missing exit or log_path)" };
+    }
+
+    return { ok: true, exit: runOut.exit, log_path: runOut.log_path };
+  }
+
+  /**
+   * Collect artifacts from a provisioned environment into the task's aggregation directory.
+   *
+   * S9d7fdb-2 (AC-S9d7fdb-2-3): spec-environment §6 — daemon defines the dest path.
+   *
+   * D3: events carry path references only, never log bodies.
+   */
+  async collectEnv(
+    projectTag: string,
+    taskId: string,
+    envId?: string
+  ): Promise<
+    | { ok: true; dest: string }
+    | { ok: false; httpStatus: number; error: string }
+  > {
+    const entry = this._resolveEnvEntry(projectTag, taskId, envId);
+    if (!entry) {
+      return { ok: false, httpStatus: 404, error: "env_not_found: no live environment for this task" };
+    }
+
+    // Daemon defines the aggregation directory (spec §6: daemon規約, driver writes to dest)
+    const dest = this._taskArtifactsDir(projectTag, taskId);
+
+    const driverPath = resolveDriverPath(entry.driver);
+    const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
+
+    // S9d7fdb-6: resolve credentials for collect verb.
+    const credResult = await this._resolveCredentialsForEntry(entry);
+    if (!credResult.ok) {
+      return { ok: false, httpStatus: 502, error: credResult.error };
+    }
+
+    const result = await runDriverVerb(
+      driverPath,
+      "collect",
+      { handle: entry.handle, dest },
+      timeoutMs,
+      credResult.secrets
+    );
+
+    if (!result.ok) {
+      return { ok: false, httpStatus: 502, error: `driver_collect_failed: ${result.error}` };
+    }
+
+    return { ok: true, dest };
+  }
+
+  /**
+   * List artifacts for a task (files under the task's aggregation directory).
+   *
+   * S9d7fdb-2 (AC-S9d7fdb-2-3): GET /api/v1/projects/:proj/tasks/:taskId/environment/artifacts
+   */
+  listTaskArtifacts(projectTag: string, taskId: string): string[] {
+    const dir = this._taskArtifactsDir(projectTag, taskId);
+    if (!fs.existsSync(dir)) return [];
+    try {
+      return this._listFilesRecursive(dir);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * List all live environments (from the env ledger).
+   *
+   * S9d7fdb-2 (AC-S9d7fdb-2-2): GET /api/v1/environments.
+   */
+  listAllEnvironments(): EnvLedgerEntry[] {
+    return this.envLedger.listLive();
+  }
+
+  /**
+   * List live environments for a specific task.
+   */
+  listTaskEnvironments(projectTag: string, taskId: string): EnvLedgerEntry[] {
+    return this.envLedger.listByTask(projectTag, taskId);
+  }
+
+  // ── Private env helpers ───────────────────────────────────────────────────
+
+  /**
+   * S9d7fdb-4 (AC-S9d7fdb-4-4): Tear down all live environments for a task.
+   *
+   * Called when a task reaches a terminal state (failed / closed / superseded).
+   * Ensures no external resources outlive the task (spec-environment §5, I3).
+   *
+   * Idempotent: entries already torn down are skipped (teardownEnv is itself idempotent).
+   * I2: teardown failures are logged via stderr; they do NOT swallow silently.
+   *     The Story-5 TTL/reconcile tick acts as a second line of defense.
+   *
+   * Fire-and-forget: caller tracks this via _trackBackground.
+   */
+  private async _teardownTaskEnvs(projectTag: string, taskId: string): Promise<void> {
+    const liveEntries = this.envLedger.listByTask(projectTag, taskId);
+    if (liveEntries.length === 0) return;
+
+    for (const entry of liveEntries) {
+      if (entry.tornDownAt) continue; // already torn down — idempotent skip
+      const result = await this.teardownEnv(projectTag, taskId, entry.envId);
+      if (!result.ok) {
+        // I2: surface teardown failure — not swallowed. Story-5 TTL tick is the backstop.
+        // Write to stderr AND append to event log so the PO can see it via GET /events.
+        const errorMsg = result.error;
+        process.stderr.write(
+          `[banto-daemon] teardown-on-terminal: failed to tear down env ${entry.envId} ` +
+            `for task ${projectTag}/${taskId}: ${errorMsg}\n`
+        );
+        // Append tick_job_failed event so the failure is observable via the event log
+        // (I2 observability: PO can see teardown failure at GET /events, not just stderr).
+        const failEvent = this.log.append({
+          type: "tick_job_failed",
+          projectTag,
+          jobName: "teardown-on-terminal",
+          error: `env ${entry.envId} taskId=${taskId}: ${errorMsg}`,
+        });
+        this.applyAndBroadcast(failEvent);
+      }
+    }
+    // Trigger gate re-eval so quota-blocked tasks can be promoted now that a slot freed.
+    this.runGateReeval();
+  }
+
+  // ── Story-5: TTL enforcer ─────────────────────────────────────────────────
+
+  /**
+   * TTL enforcer tick (Story-5, AC-S9d7fdb-5-1/5-2).
+   *
+   * Scans live ledger entries for any with ttlDeadline < now. For each expired entry:
+   *   1. Attempt forced teardown via the driver.
+   *   2. Retry up to ttlTeardownRetryLimit times (with ttlTeardownRetryDelayMs delay).
+   *   3. On success: mark torn down + emit env_torn_down(reason: ttl_expired).
+   *   4. On retry exhaustion: mark teardownFailed in ledger + emit card_generated(cadence)
+   *      so the PO sees it at the next cadence review. I2: NOT silently dropped.
+   *
+   * Re-entrancy guard: skips the tick if a previous run is still in-flight.
+   * D3: TTL judgments are derived from ledger.ttlDeadline + Date.now() at tick time;
+   *     no additional state is persisted for this judgment.
+   * D8: escalation card carries the envId, taskId, and projectTag as the origin reference.
+   */
+  private async _runEnvTtlEnforcer(): Promise<void> {
+    if (this._envTtlEnforcerRunning) return;
+    this._envTtlEnforcerRunning = true;
+
+    try {
+      const now = Date.now();
+      const liveEntries = this.envLedger.listLive();
+      const expired = liveEntries.filter(
+        (e) => !e.teardownFailed && new Date(e.ttlDeadline).getTime() < now
+      );
+
+      for (const entry of expired) {
+        await this._forceTeardownWithRetry(entry);
+      }
+    } finally {
+      this._envTtlEnforcerRunning = false;
+    }
+  }
+
+  /**
+   * Attempt forced teardown of an expired env entry with bounded retries.
+   * On success: markTornDown + env_torn_down(reason: ttl_expired).
+   * On exhaustion: markTeardownFailed + card_generated(cadence).
+   *
+   * I2: each failure attempt is recorded via tick_job_failed before retry.
+   * I3: teardown is idempotent; already-gone resources succeed immediately.
+   * D8: cadence card carries origin reference (envId, taskId, projectTag).
+   */
+  private async _forceTeardownWithRetry(entry: EnvLedgerEntry): Promise<void> {
+    const retryLimit = this.config.ttlTeardownRetryLimit ?? 3;
+    const retryDelayMs = this.config.ttlTeardownRetryDelayMs ?? 1000;
+    const driverPath = resolveDriverPath(entry.driver);
+    const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
+
+    for (let attempt = 0; attempt <= retryLimit; attempt++) {
+      if (attempt > 0) {
+        await new Promise<void>((r) => setTimeout(r, retryDelayMs));
+      }
+
+      const result = await runDriverVerb(driverPath, "teardown", { handle: entry.handle }, timeoutMs);
+      if (result.ok) {
+        // Success: mark as torn down in ledger and emit event.
+        this.envLedger.markTornDown(entry.envId);
+        const event = this.log.append({
+          type: "env_torn_down",
+          projectTag: entry.projectTag,
+          taskId: entry.taskId,
+          envId: entry.envId,
+          reason: "ttl_expired",
+        });
+        this.applyAndBroadcast(event);
+        // Trigger gate re-eval so quota-blocked tasks can be promoted.
+        this.runGateReeval();
+        return;
+      }
+
+      // Failure: record via tick_job_failed (I2: never silently dropped).
+      const failEvent = this.log.append({
+        type: "tick_job_failed",
+        projectTag: entry.projectTag,
+        jobName: "env-ttl-enforcer",
+        error: `ttl teardown attempt ${attempt + 1}/${retryLimit + 1} failed for env ${entry.envId}: ${result.error}`,
+      });
+      this.applyAndBroadcast(failEvent);
+    }
+
+    // Retry limit exhausted: mark ledger entry as teardown_failed (I2: not removed),
+    // and file a cadence card so the PO sees it at the next cadence review (D8).
+    this.envLedger.markTeardownFailed(entry.envId);
+
+    // Write the cadence card file (D3: event carries only the path reference, not content).
+    const cardId = `env-ttl-failed-${entry.envId}-${Date.now()}`;
+    const cardsDir = path.join(this.config.dataDir, "cards");
+    fs.mkdirSync(cardsDir, { recursive: true });
+    const cardPath = path.join(cardsDir, `${cardId}.json`);
+    const cardContent = {
+      cardId,
+      cardType: "cadence",
+      title: `TTL teardown failed: env ${entry.envId}`,
+      projectTag: entry.projectTag,
+      taskId: entry.taskId,
+      envId: entry.envId,
+      driver: entry.driver,
+      ttlDeadline: entry.ttlDeadline,
+      retryLimit,
+      createdAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(cardPath, JSON.stringify(cardContent, null, 2), "utf8");
+
+    const cardEvent = this.log.append({
+      type: "card_generated",
+      projectTag: entry.projectTag,
+      taskId: entry.taskId,
+      cardId,
+      cardType: "cadence",
+      cardPath,
+    });
+    this.applyAndBroadcast(cardEvent);
+  }
+
+  // ── Story-5: env reconcile ─────────────────────────────────────────────────
+
+  /**
+   * Env reconcile tick (Story-5, AC-S9d7fdb-5-3).
+   *
+   * For each registered driver (derived from live ledger entries), calls `list`
+   * to get the actual resources the driver manages. Compares against the ledger:
+   *
+   *   Orphan (in driver list, NOT in ledger): emit card_generated(cadence).
+   *   Vanished (in ledger, NOT in driver list): remove from ledger + emit env_torn_down(reason: vanished).
+   *
+   * D3: judgments are derived purely from ledger + driver list at tick time.
+   *     No extra mapping file is persisted.
+   * I2: driver `list` failure is recorded via tick_job_failed and the tick continues.
+   * Re-entrancy guard: skips the tick if a previous run is still in-flight.
+   *
+   * Naming convention: driver-managed resources that were created by this daemon are
+   * expected to carry a name that begins with a taskId from the current ledger.
+   * Resources whose names match `<taskId>-*` for any known taskId are ledger-owned.
+   * Resources that do NOT match any known taskId are orphans.
+   */
+  private async _runEnvReconcile(): Promise<void> {
+    if (this._envReconcileRunning) return;
+    this._envReconcileRunning = true;
+
+    try {
+      // Collect all unique drivers from the live env ledger entries.
+      const allEntries = this.envLedger.list();
+      const liveEntries = this.envLedger.listLive();
+
+      // Build a set of unique drivers to query.
+      const driversToQuery = new Set<string>();
+      for (const e of allEntries) {
+        driversToQuery.add(e.driver);
+      }
+
+      for (const driverName of driversToQuery) {
+        const driverPath = resolveDriverPath(driverName);
+        const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
+
+        const listResult = await runDriverVerb(driverPath, "list", {}, timeoutMs);
+        if (!listResult.ok) {
+          // I2: list failure is not swallowed — record and continue to next driver.
+          const failEvent = this.log.append({
+            type: "tick_job_failed",
+            projectTag: "daemon",
+            jobName: "env-reconcile",
+            error: `driver "${driverName}" list failed: ${listResult.error}`,
+          });
+          this.applyAndBroadcast(failEvent);
+          continue;
+        }
+
+        const driverItems = listResult.output as ListOutput;
+        if (!Array.isArray(driverItems)) {
+          const failEvent = this.log.append({
+            type: "tick_job_failed",
+            projectTag: "daemon",
+            jobName: "env-reconcile",
+            error: `driver "${driverName}" list returned non-array`,
+          });
+          this.applyAndBroadcast(failEvent);
+          continue;
+        }
+
+        // Entries in the ledger for this driver (including torn-down / failed — we use
+        // them to correlate names, so we don't raise orphan alerts for entries the daemon
+        // knows about but has already torn down).
+        const ledgerEntriesForDriver = allEntries.filter((e) => e.driver === driverName);
+        const liveEntriesForDriver = liveEntries.filter((e) => e.driver === driverName);
+
+        // Build a set of "known" names (taskId-prefixed names in the ledger for this driver).
+        // A driver item whose name matches a known ledger name is NOT an orphan.
+        const knownNames = new Set<string>(
+          ledgerEntriesForDriver
+            .map((e) => {
+              // The process driver uses "<taskId>-env" as the name; docker uses compose project names.
+              // The handle carries the name field (if any).
+              const handleName = (e.handle as Record<string, unknown>)["name"];
+              return typeof handleName === "string" ? handleName : null;
+            })
+            .filter((n): n is string => n !== null)
+        );
+
+        // Detect orphans: in driver list, NOT in ledger (no matching name).
+        for (const item of driverItems) {
+          if (!knownNames.has(item.name)) {
+            // Orphan detected: file a cadence card.
+            const cardId = `env-orphan-${driverName.replace(/[^a-zA-Z0-9-]/g, "_")}-${item.name.replace(/[^a-zA-Z0-9-]/g, "_")}-${Date.now()}`;
+            const cardsDir = path.join(this.config.dataDir, "cards");
+            fs.mkdirSync(cardsDir, { recursive: true });
+            const cardPath = path.join(cardsDir, `${cardId}.json`);
+            const cardContent = {
+              cardId,
+              cardType: "cadence",
+              title: `Orphan environment detected: ${item.name} (driver: ${driverName})`,
+              driver: driverName,
+              resourceName: item.name,
+              resourceHandle: item.handle,
+              resourceCreated: item.created,
+              createdAt: new Date().toISOString(),
+            };
+            fs.writeFileSync(cardPath, JSON.stringify(cardContent, null, 2), "utf8");
+
+            const cardEvent = this.log.append({
+              type: "card_generated",
+              // Use "daemon" as the projectTag for daemon-internal events that cannot
+              // be scoped to a specific project (the orphan has no known project).
+              projectTag: "daemon",
+              cardId,
+              cardType: "cadence",
+              cardPath,
+            });
+            this.applyAndBroadcast(cardEvent);
+          }
+        }
+
+        // Detect vanished: in ledger (live), NOT in driver list.
+        const driverItemNames = new Set<string>(driverItems.map((i) => i.name));
+        for (const liveEntry of liveEntriesForDriver) {
+          if (liveEntry.teardownFailed) continue; // already escalated — skip
+          const handleName = (liveEntry.handle as Record<string, unknown>)["name"];
+          if (typeof handleName === "string" && !driverItemNames.has(handleName)) {
+            // Vanished: remove from ledger and emit event.
+            this.envLedger.remove(liveEntry.envId);
+            const event = this.log.append({
+              type: "env_torn_down",
+              projectTag: liveEntry.projectTag,
+              taskId: liveEntry.taskId,
+              envId: liveEntry.envId,
+              reason: "vanished",
+            });
+            this.applyAndBroadcast(event);
+            // Trigger gate re-eval so quota-blocked tasks can be promoted.
+            this.runGateReeval();
+          }
+        }
+      }
+    } finally {
+      this._envReconcileRunning = false;
+    }
+  }
+
+  private _resolveEnvEntry(
+    projectTag: string,
+    taskId: string,
+    envId?: string
+  ): EnvLedgerEntry | undefined {
+    if (envId) {
+      const e = this.envLedger.get(envId);
+      return e && !e.tornDownAt ? e : undefined;
+    }
+    const live = this.envLedger.listByTask(projectTag, taskId);
+    return live[live.length - 1];
+  }
+
+  /**
+   * S9d7fdb-6: Resolve and decrypt credentials for a ledger entry's profile.
+   *
+   * Looks up the profile from the current environments.yaml, resolves the
+   * credentials file path, and decrypts via sops.
+   *
+   * Returns undefined if the profile has no credentials (no-op).
+   * Returns { ok: false, error } if decryption fails (caller must surface this).
+   *
+   * SECURITY: the returned secrets record must ONLY be passed to spawn env.
+   * Never log, persist, or echo the decrypted values.
+   */
+  private async _resolveCredentialsForEntry(
+    entry: EnvLedgerEntry
+  ): Promise<{ ok: true; secrets: Record<string, string> | undefined } | { ok: false; error: string }> {
+    const { valid } = this.getEnvironmentProfiles(entry.projectTag);
+    const profile = valid.find((p) => p.name === entry.profileName);
+    if (!profile || !profile.credentials) {
+      return { ok: true, secrets: undefined };
+    }
+    const proj = this.registry.get(entry.projectTag);
+    if (!proj) {
+      return { ok: false, error: `credentials_resolve_failed: project "${entry.projectTag}" not found` };
+    }
+    const credPath = resolveCredentialsPath(proj.repoPath, profile.credentials);
+    if (!credPath.ok) {
+      return { ok: false, error: credPath.error };
+    }
+    const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
+    const decResult = await decryptSops(credPath.filePath, this.config.sopsAgeKeyFile, timeoutMs);
+    if (!decResult.ok) {
+      return { ok: false, error: decResult.error };
+    }
+    return { ok: true, secrets: decResult.secrets };
+  }
+
+  /**
+   * Resolve the task-scoped artifact aggregation directory.
+   * spec-environment §6: "収集先パスの規約はdaemonが定め、ドライバは渡されたdestに書くのみ"
+   *
+   * Path: <dataDir>/env-artifacts/<projectTag>/<taskId>
+   */
+  private _taskArtifactsDir(projectTag: string, taskId: string): string {
+    return path.join(this.config.dataDir, "env-artifacts", projectTag, taskId);
+  }
+
+  /**
+   * Recursively list all files under a directory.
+   * Returns absolute paths.
+   */
+  private _listFilesRecursive(dir: string): string[] {
+    const result: string[] = [];
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        result.push(...this._listFilesRecursive(full));
+      } else {
+        result.push(full);
+      }
+    }
+    return result;
+  }
+
   // ── Internal helpers ───────────────────────────────────────────────────────
 
   /**
@@ -2027,4 +3297,67 @@ function closeTmuxWindow(windowAddr: string): void {
       `[banto-daemon] tmux kill-window ${windowAddr} failed: ${result.stderr ?? ""}\n`
     );
   }
+}
+
+/**
+ * Open a second pane in the task's existing tmux window for environment output.
+ *
+ * S9d7fdb-7 (AC-S9d7fdb-7-2): Called after auto-provision succeeds on the in-review hook.
+ * Adds pane 2 to the window at `windowAddr` (already containing the agent session pane).
+ * The pane shows an echo header + a shell that keeps output visible to the PO on attach.
+ *
+ * Returns { ok: true, paneIndex } on success, { ok: false, detail } on failure.
+ *
+ * D6: uses tmux CLI (childProcess.spawnSync — stdlib only, no npm dep).
+ * I2: failure is returned as { ok: false } so the caller can emit env_review_tmux_pane_skipped.
+ */
+function openEnvTmuxPane(
+  windowAddr: string,
+  taskId: string,
+  envId: string
+): { ok: true; paneIndex: number } | { ok: false; detail: string } {
+  // Split the window horizontally to create pane 2.
+  // `-d` = do not switch focus; `-t <windowAddr>` = target window.
+  // The shell command: echo a header then keep the pane alive so the PO sees it on attach.
+  // `read -r` waits for any key — keeps the pane open until PO dismisses it manually.
+  // Without a long-running command, tmux would kill the pane when echo exits (PO sees nothing).
+  //
+  // SECURITY: taskId/envId are passed as tmux pane env vars via `-e KEY=VALUE` (argv
+  // elements, never shell-interpreted) and the command string is STATIC, referencing
+  // $BANTO_TASK/$BANTO_ENV. This prevents shell injection even if a task id contained
+  // shell metacharacters — the values reach the pane's shell only as literal env values.
+  const cmd =
+    'echo "[banto env] Auto-provisioned environment for review: task=$BANTO_TASK env=$BANTO_ENV"' +
+    ' && echo "Press Enter to close..." && read -r';
+
+  const result = childProcess.spawnSync(
+    "tmux",
+    [
+      "split-window",
+      "-d",
+      "-h",
+      "-e",
+      `BANTO_TASK=${taskId}`,
+      "-e",
+      `BANTO_ENV=${envId}`,
+      "-t",
+      windowAddr,
+      cmd,
+    ],
+    { encoding: "utf8" }
+  );
+
+  if (result.status !== 0) {
+    const detail = (result.stderr ?? "").trim() || `exit code ${result.status ?? "unknown"}`;
+    process.stderr.write(
+      `[banto-daemon] tmux split-window for env pane failed (window=${windowAddr}): ${detail}\n`
+    );
+    return { ok: false, detail };
+  }
+
+  process.stdout.write(
+    `[banto-daemon] tmux env pane opened in window ${windowAddr} for task=${taskId} env=${envId}\n`
+  );
+  // Pane index 2 (1 = existing agent pane, 2 = new env pane).
+  return { ok: true, paneIndex: 2 };
 }
