@@ -192,6 +192,39 @@ export class Daemon {
    */
   private _mergeQueueRunning = false;
 
+  /**
+   * Re-entrancy guard for the auto-spawn tick.
+   *
+   * S75f66b-5 E2E fix: driver.spawn() awaits ~200ms (get_state probe) + up to 3s fallback.
+   * If a second tick fires before the first runAutoSpawn() resolves, both see the same
+   * "ready" task with no ledger entry (the entry is added only after spawn() resolves).
+   * Both then call spawnTask(), causing multiple concurrent sessions for the same task.
+   *
+   * Fix: same pattern as _mergeQueueRunning — skip if already running.
+   * Always reset in finally{} so a panicking inner call never permanently locks spawning.
+   */
+  private _autoSpawnRunning = false;
+
+  /**
+   * In-flight spawn map: deduplicates concurrent spawnTask() calls for the same task.
+   *
+   * The spawn-ledger only records COMPLETED spawns (after driver.spawn() resolves
+   * and the ledger entry is written). During the 200ms–3.2s window of driver.spawn(),
+   * the task is neither in the ledger nor in a non-"ready" status (the transition to
+   * "planning" happens AFTER driver.spawn() returns). Without this guard, concurrent
+   * callers (e.g. auto-spawn tick + explicit test spawn) both see a "ready" task not
+   * in the ledger and both call spawnTask(), spawning two pi processes for one task.
+   *
+   * The map stores the Promise returned by the first call. Subsequent callers for the
+   * same task key join that Promise and get the same result (promise deduplication).
+   * This is safe because the result (worktreePath, sessionPath, pid, sessionId) is
+   * identical for all callers — only one pi process is ever spawned.
+   *
+   * Invariant: key is `${projectTag}/${taskId}`. Removed in finally{} of spawnTask().
+   * D3: this is NOT persisted — it only exists for the lifetime of one spawnTask() call.
+   */
+  private readonly _inFlightSpawns: Map<string, Promise<{ worktreePath: string; sessionPath: string; pid: number; sessionId: string; tmuxWindow?: string }>> = new Map();
+
   private constructor(config: DaemonConfig) {
     this.config = config;
     this.log = EventLog.open(config.dataDir);
@@ -484,6 +517,37 @@ export class Daemon {
     taskId: string,
     driverId = "pi-rpc",
     spawnExtra: Partial<SpawnOptions> = {}
+  ): Promise<{ worktreePath: string; sessionPath: string; pid: number; sessionId: string; tmuxWindow?: string }> {
+    // 0. In-flight deduplication: if a concurrent spawnTask() call is already in progress
+    //    for this task, join the existing Promise and return its result (no second spawn).
+    //    driver.spawn() takes 200ms–3.2s, during which the task is still "ready" (no
+    //    transition yet) and the ledger has no entry yet. Without this guard, concurrent
+    //    callers (e.g. auto-spawn tick + explicit test spawn) both see a "ready" task
+    //    with no ledger entry and both call spawnTask(), creating two pi processes.
+    //
+    //    Promise deduplication: all callers for the same key receive the same result
+    //    (worktreePath, sessionPath, pid, sessionId). Only one pi process is ever spawned.
+    const spawnKey = `${projectTag}/${taskId}`;
+    const existing = this._inFlightSpawns.get(spawnKey);
+    if (existing) {
+      // Join the in-flight spawn — same result, no second pi process.
+      return existing;
+    }
+
+    // Build the promise for this spawn (kept in the map until it settles).
+    const spawnPromise = this._spawnTaskBody(projectTag, taskId, driverId, spawnExtra).finally(() => {
+      this._inFlightSpawns.delete(spawnKey);
+    });
+    this._inFlightSpawns.set(spawnKey, spawnPromise);
+    return spawnPromise;
+  }
+
+  // Inner implementation extracted to allow finally cleanup on all paths.
+  private async _spawnTaskBody(
+    projectTag: string,
+    taskId: string,
+    driverId: string,
+    spawnExtra: Partial<SpawnOptions>
   ): Promise<{ worktreePath: string; sessionPath: string; pid: number; sessionId: string; tmuxWindow?: string }> {
     // 1. Validate task state
     const task = this.store.getTask(taskId, projectTag);
@@ -1001,6 +1065,76 @@ export class Daemon {
     };
     this.ledger.add(ledgerEntry);
 
+    // Inject task-specific audit context into the audit session.
+    // The banto-auditor extension provides the generic audit system prompt + checklist
+    // via before_agent_start hook. Here we inject the SPECIFIC task context:
+    //   - task ID, title, acceptance criteria, worktree path, scope
+    // This gives the audit LLM concrete information to act on (D2: criteria in text,
+    // not hardcoded in extension). Without this inject, the audit LLM only has the
+    // generic checklist and cannot determine WHAT file to look for in the worktree.
+    // I2: inject failure is logged but not fatal — audit session may still succeed
+    // if the LLM infers context from the worktree directory listing.
+    const acceptanceRaw = (task as Record<string, unknown>)["acceptance"];
+    const acceptanceCriteria: Array<{ id: string; text: string; verify?: string }> =
+      Array.isArray(acceptanceRaw)
+        ? (acceptanceRaw as Array<Record<string, string>>).map((a) => ({
+            id: String(a["id"] ?? ""),
+            text: String(a["text"] ?? ""),
+            ...(a["verify"] ? { verify: String(a["verify"]) } : {}),
+          }))
+        : [];
+
+    const scopeRaw = (task as Record<string, unknown>)["scope"] as Record<string, unknown> | undefined;
+    const scopePaths: string[] = Array.isArray(scopeRaw?.["paths"])
+      ? (scopeRaw["paths"] as unknown[]).map(String)
+      : [];
+
+    const auditContextMessage = [
+      `## タスク監査コンテキスト`,
+      ``,
+      `**タスクID**: ${taskId}`,
+      `**プロジェクト**: ${projectTag}`,
+      `**タイトル**: ${String(task["title"] ?? "")}`,
+      ``,
+      `**ワークツリーパス**: ${worktreePath}`,
+      `（このディレクトリに実装者が作成・変更したファイルがあります）`,
+      ``,
+      `**スコープ（変更が期待されるファイル）**:`,
+      scopePaths.length > 0
+        ? scopePaths.map((p) => `- ${p}`).join("\n")
+        : "- (スコープ未指定)",
+      ``,
+      `**受け入れ基準 (acceptance criteria)**:`,
+      acceptanceCriteria.length > 0
+        ? acceptanceCriteria
+            .map(
+              (a) =>
+                `- [${a.id}] ${a.text}` +
+                (a.verify ? ` （検証コマンド: \`${a.verify}\`）` : "")
+            )
+            .join("\n")
+        : "- (基準未指定)",
+      ``,
+      `## 監査手順`,
+      ``,
+      `1. ワークツリーパス (${worktreePath}) に移動して実装内容を確認してください`,
+      `2. scope.paths に指定されたファイルが存在し、acceptance criteria を満たしているか検証してください`,
+      `3. verify コマンドがある場合はそれを実行して結果を確認してください`,
+      `4. すべての基準を満たしていれば \`audit_report\` ツールを呼び出し verdict="pass" を報告してください`,
+      `5. 問題があれば verdict="fail" と具体的な findings を報告してください`,
+      ``,
+      `**重要**: 検査が完了したら必ず \`audit_report\` ツールを呼び出してください。呼び出さないと監査が完了しません。`,
+    ].join("\n");
+
+    try {
+      await driver.inject(handle.sessionId, auditContextMessage);
+    } catch (injectErr) {
+      process.stderr.write(
+        `[banto-daemon] spawnAuditSession: inject context failed for ${projectTag}/${taskId}: ` +
+          `${injectErr instanceof Error ? injectErr.message : String(injectErr)}\n`
+      );
+    }
+
     // Subscribe to driver events: remove from ledger when audit session exits.
     // If audit session exits without verdict, recordTaskFailed (I2: no ghost sessions).
     const unsub = driver.subscribe((event) => {
@@ -1390,44 +1524,57 @@ export class Daemon {
    * D3: "already spawned" check uses the ledger (live-process registry), not a separate flag.
    */
   private async runAutoSpawn(): Promise<void> {
-    const maxSessions = this.config.maxConcurrentSessions ?? 5;
-
-    // Check quota FIRST — if already at limit, skip the whole sweep.
-    if (this.ledger.size >= maxSessions) {
+    // Re-entrancy guard: skip if a previous auto-spawn sweep is still awaiting.
+    // driver.spawn() takes 200ms–3.2s (get_state probe + fallback), so a 500ms tick
+    // can fire before the previous sweep completes, causing double-spawn for the same task.
+    if (this._autoSpawnRunning) {
       return;
     }
+    this._autoSpawnRunning = true;
 
-    // Enumerate ready tasks from derived state (D3: no extra flag).
-    const readyTasks = this.store.getAllTasks().filter((t) => t.status === "ready");
+    try {
+      const maxSessions = this.config.maxConcurrentSessions ?? 5;
 
-    for (const task of readyTasks) {
-      // Re-check quota each iteration — previous spawns in this loop count.
+      // Check quota FIRST — if already at limit, skip the whole sweep.
       if (this.ledger.size >= maxSessions) {
-        break;
+        return;
       }
 
-      // Skip tasks that are already in the ledger (already spawned, session is live).
-      // D3: "spawned" judgment comes from the ledger, which tracks live OS processes.
-      if (this.ledger.get(task.projectTag, task.id)) {
-        continue;
-      }
+      // Enumerate ready tasks from derived state (D3: no extra flag).
+      const readyTasks = this.store.getAllTasks().filter((t) => t.status === "ready");
 
-      // spawnTask() handles all failure paths via recordTaskFailed (I2).
-      // After a successful spawn the task transitions to "planning" (no longer "ready"),
-      // so it won't appear in the next tick's ready list.
-      // After a failed spawn the task transitions to "failed" (also no longer "ready").
-      // Either way, no re-spawn loop is possible.
-      try {
-        await this.spawnTask(task.projectTag, task.id);
-      } catch {
-        // Failure already recorded inside spawnTask() via recordTaskFailed (I2),
-        // unless spawnTask() threw before reaching it (e.g. the status-not-ready
-        // guard) — in that case the task is already in a non-ready state and no
-        // further action is needed.
-        // Do not re-throw — let the scheduler continue with remaining ready tasks.
-        // The Scheduler catches errors from the job function itself; this catch prevents
-        // a single task's failure from aborting the rest of the auto-spawn sweep.
+      for (const task of readyTasks) {
+        // Re-check quota each iteration — previous spawns in this loop count.
+        if (this.ledger.size >= maxSessions) {
+          break;
+        }
+
+        // Skip tasks that are already in the ledger (already spawned, session is live).
+        // D3: "spawned" judgment comes from the ledger, which tracks live OS processes.
+        if (this.ledger.get(task.projectTag, task.id)) {
+          continue;
+        }
+
+        // spawnTask() handles all failure paths via recordTaskFailed (I2).
+        // After a successful spawn the task transitions to "planning" (no longer "ready"),
+        // so it won't appear in the next tick's ready list.
+        // After a failed spawn the task transitions to "failed" (also no longer "ready").
+        // Either way, no re-spawn loop is possible.
+        try {
+          await this.spawnTask(task.projectTag, task.id);
+        } catch {
+          // Failure already recorded inside spawnTask() via recordTaskFailed (I2),
+          // unless spawnTask() threw before reaching it (e.g. the status-not-ready
+          // guard) — in that case the task is already in a non-ready state and no
+          // further action is needed.
+          // Do not re-throw — let the scheduler continue with remaining ready tasks.
+          // The Scheduler catches errors from the job function itself; this catch prevents
+          // a single task's failure from aborting the rest of the auto-spawn sweep.
+        }
       }
+    } finally {
+      // Always reset so the next tick can proceed (I2: no permanent lock).
+      this._autoSpawnRunning = false;
     }
   }
 

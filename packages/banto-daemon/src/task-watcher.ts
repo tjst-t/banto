@@ -175,6 +175,9 @@ export class TaskWatcher {
         ...(fm.environment !== undefined ? { environment: fm.environment } : {}),
         ...(fm.governance !== undefined ? { governance: fm.governance } : {}),
         ...(fm.model_tier !== undefined ? { model_tier: fm.model_tier } : {}),
+        // review.policy controls auto-merge vs manual-review path (spec-daemon-core §1).
+        // Without this, handleAuditVerdict() defaults to "manual" and never auto-merges.
+        ...(fm.review !== undefined ? { review: fm.review } : {}),
       });
     } catch (err) {
       // createTask may throw if there's a duplicate (race); treat as already done
