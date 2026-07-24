@@ -147,24 +147,15 @@ export class EventLog {
    */
   append(payload: EventPayload): OrchestrationEvent {
     if (this.closed) {
-      // Daemon is shutting down: in-flight scheduler tick or async job tried to
-      // append after the log was closed. Drop the write silently (log to stderr
-      // so it's visible in test output but don't throw, which would cause an
-      // unhandled rejection from a background timer).
-      //
-      // I2 note: this is intentional at daemon shutdown, not an error swallow.
-      // The event cannot be persisted (log is closed) but the caller's work
-      // (recordTaskFailed, state transition) has already completed in-memory.
-      // The omission will be recovered on next daemon start via orphan handling.
-      process.stderr.write(
-        `[banto-daemon] EventLog: drop post-close append (type=${String((payload as Record<string, unknown>)["type"])})\n`
+      // I2: appending after close is a programming error. The scheduler drain
+      // (Scheduler.stop() awaits in-flight runAllJobs()) must prevent this.
+      // If we reach here, it means a job escaped the drain — throw so the
+      // contract violation is visible rather than silently dropping data.
+      // D3: the event log is the single runtime truth; silent drops are forbidden.
+      throw new Error(
+        `EventLog: append after close (type=${String((payload as Record<string, unknown>)["type"])}). ` +
+          `Scheduler drain must complete before log.close() is called.`
       );
-      // Return a minimal event so callers that use the return value don't crash.
-      return {
-        ...(payload as Record<string, unknown>),
-        eventId: -1,
-        timestamp: new Date().toISOString(),
-      } as unknown as OrchestrationEvent;
     }
     if (!this.activeSegmentPath) {
       throw new Error("EventLog not initialized");
@@ -296,10 +287,9 @@ export class EventLog {
   /** Read ALL events from all segments in eventId order */
   readAllEvents(): OrchestrationEvent[] {
     if (this.closed) {
-      // Log is closed (daemon shutting down). Return empty array rather than
-      // throwing or reading a deleted directory. In-flight ticks see an empty
-      // log and do nothing useful — which is correct during shutdown.
-      return [];
+      // I2: reading after close is a contract violation. With scheduler drain,
+      // no job should read the log after daemon.stop() closes it.
+      throw new Error("EventLog: readAllEvents after close");
     }
     const segments = this.listSegments();
     const all: OrchestrationEvent[] = [];

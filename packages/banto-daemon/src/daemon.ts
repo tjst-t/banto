@@ -229,6 +229,19 @@ export class Daemon {
    */
   private readonly _inFlightSpawns: Map<string, Promise<{ worktreePath: string; sessionPath: string; pid: number; sessionId: string; tmuxWindow?: string }>> = new Map();
 
+  /**
+   * Set of in-flight background async operations deferred via setImmediate
+   * (e.g. audit session spawn, rework session spawn triggered by handleAuditVerdict).
+   *
+   * Tracked so Daemon.stop() can await all of them before closing the event log.
+   * Each entry is a Promise that resolves when the background operation settles
+   * (success or error — errors are handled internally via recordTaskFailed).
+   * Entries are removed in their own finally{} blocks.
+   *
+   * D3/I2: ensures no events are silently dropped due to log-close-before-write.
+   */
+  private readonly _backgroundOps: Set<Promise<void>> = new Set();
+
   private constructor(config: DaemonConfig) {
     this.config = config;
     this.log = EventLog.open(config.dataDir);
@@ -389,9 +402,18 @@ export class Daemon {
   }
 
   /** Stop the daemon gracefully. */
-  stop(): Promise<void> {
+  async stop(): Promise<void> {
     this.watcher.stop();
-    this.scheduler.stop();
+    // Drain the scheduler FIRST: awaits any in-flight runAllJobs() so no scheduler
+    // job can try to append events after log.close() (D3/I2: log is the single
+    // runtime truth — no writes must be silently dropped).
+    await this.scheduler.stop();
+    // Drain background operations: audit/rework sessions are spawned via setImmediate
+    // for HTTP-response ordering, and their async bodies (driver.spawn → recordTaskFailed)
+    // must complete before we close the event log (D3/I2: no events must be dropped).
+    if (this._backgroundOps.size > 0) {
+      await Promise.allSettled([...this._backgroundOps]);
+    }
     if (this.reconcileTimer) {
       clearInterval(this.reconcileTimer);
       this.reconcileTimer = null;
@@ -916,7 +938,11 @@ export class Daemon {
           // work in spawnAuditSession (e.g. loadPromptAsset, driver lookup) that might
           // call recordTaskFailed, which would mutate task state before the caller sees
           // the 200/auditing response.
-          setImmediate(() => void this.spawnAuditSession(projectTag, taskId));
+          // Tracked in _backgroundOps (registered synchronously before setImmediate fires)
+          // so Daemon.stop() can drain it before log.close() (D3/I2: no events dropped).
+          this._trackBackground(new Promise<void>((resolve) => {
+            setImmediate(() => void this.spawnAuditSession(projectTag, taskId).then(resolve, resolve));
+          }));
         }
       }
     }
@@ -1255,7 +1281,11 @@ export class Daemon {
         // Spawn a new executor session with findings injected (void: fire-and-forget, I2 inside).
         // Deferred to next tick to ensure the HTTP response reflects the implementing state
         // before any sync work in spawnReworkSession mutates the state further.
-        setImmediate(() => void this.spawnReworkSession(projectTag, taskId, findings));
+        // Tracked in _backgroundOps (registered synchronously before setImmediate fires)
+        // so Daemon.stop() can drain it before log.close() (D3/I2: no events dropped).
+        this._trackBackground(new Promise<void>((resolve) => {
+          setImmediate(() => void this.spawnReworkSession(projectTag, taskId, findings).then(resolve, resolve));
+        }));
       }
     }
 
@@ -1467,6 +1497,23 @@ export class Daemon {
   }
 
   // ── Internal helpers ───────────────────────────────────────────────────────
+
+  /**
+   * Register a background async operation for drain tracking.
+   *
+   * Background ops (audit/rework session spawns via setImmediate) are registered
+   * here so Daemon.stop() can await them all before closing the event log.
+   * The promise is removed from the set when it settles (success or error).
+   *
+   * D3/I2: prevents silent event drops when stop() closes the log while a background
+   * op is still in-flight and trying to append (e.g. recordTaskFailed on spawn failure).
+   */
+  private _trackBackground(p: Promise<void>): void {
+    const tracked = p.finally(() => {
+      this._backgroundOps.delete(tracked);
+    });
+    this._backgroundOps.add(tracked);
+  }
 
   /**
    * Apply a freshly-appended event to in-memory state and broadcast via WS.
@@ -1833,11 +1880,17 @@ export class Daemon {
             `[banto-daemon] conflict resolved: origin ${originProjectTag}/${originTaskId} resumed to merging ` +
               `(resolution ${resolutionProjectTag}/${resolutionTaskId} ${resStatus})\n`
           );
-          // Record the resolution reference in the resume reason.
-          // Appended as a separate tick_job_failed is NOT appropriate here —
-          // the resume itself captures the connection via event ordering.
-          // The task_resumed event's position in the log (after the resolution's
-          // task_merged event) provides the D3-compliant proof of correspondence.
+          // AC-S75f66b-6-3: record the origin↔resolution linkage explicitly.
+          // A po_operation event captures the correlation so the audit trail shows
+          // WHICH resolution task caused the resume (D3: derived from events, not
+          // a mapping file; I2: the linkage is in the log, not just ordering).
+          this.log.append({
+            type: "po_operation",
+            projectTag: originProjectTag,
+            operation: "conflict_resolved",
+            taskId: originTaskId,
+            payload: { resolutionTaskId, resolutionProjectTag },
+          });
         } else {
           process.stderr.write(
             `[banto-daemon] conflict-resolution-check: resume failed for ${originProjectTag}/${originTaskId}: ${resumeResult.reason}\n`

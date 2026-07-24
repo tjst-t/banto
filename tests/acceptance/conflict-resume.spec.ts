@@ -269,10 +269,8 @@ describe("[AC-S75f66b-6-3-A] resolution task merged → origin resumed and reach
   });
 
   after(async () => {
-    // Wait for in-flight scheduler tick jobs to complete before stopping.
-    // The scheduler ticks every 200ms; waiting 2 full cycles ensures any running
-    // job has finished and the EventLog can be closed cleanly.
-    await new Promise((r) => setTimeout(r, 500));
+    // Scheduler.stop() drains any in-flight runAllJobs() before returning.
+    // No sleep needed — daemon.stop() awaits the drain before closing the log.
     await daemon.stop();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
@@ -370,6 +368,26 @@ describe("[AC-S75f66b-6-3-A] resolution task merged → origin resumed and reach
       `conflict merged (idx=${conflictMergedIdx}) must precede origin resume (idx=${originResumedIdx})`
     );
 
+    // AC-S75f66b-6-3 fix 1: correlation event must record the resolution task ID
+    // so the origin↔resolution linkage is explicit in the log (not just implied by ordering).
+    const correlationEv = events.find(
+      (e) =>
+        e.type === "po_operation" &&
+        (e as { operation?: string }).operation === "conflict_resolved" &&
+        e.taskId === "task-orig-a" &&
+        typeof (e as { payload?: { resolutionTaskId?: string } }).payload?.resolutionTaskId === "string"
+    );
+    assert.ok(
+      correlationEv !== undefined,
+      "AC-3: po_operation(conflict_resolved) with resolutionTaskId must be emitted after resume"
+    );
+    const corrPayload = (correlationEv as { payload?: { resolutionTaskId?: string } }).payload;
+    assert.equal(
+      corrPayload?.resolutionTaskId,
+      conflictTaskId,
+      `correlation event must reference the resolution task ID (${conflictTaskId})`
+    );
+
     // D3: no mapping file persisted
     assert.ok(
       !fs.existsSync(path.join(tmpDir, "data", "conflict-origin-mapping.json")),
@@ -410,9 +428,8 @@ describe("[AC-S75f66b-6-3-B] resolution task failed → origin chain-fails (I2)"
   });
 
   after(async () => {
-    // Wait for deferred rework-spawn failure (setImmediate from handleAuditVerdict) and
-    // any in-flight scheduler ticks to settle before closing the daemon.
-    await new Promise((r) => setTimeout(r, 500));
+    // Scheduler.stop() drains any in-flight runAllJobs() before returning.
+    // No sleep needed — daemon.stop() awaits the drain before closing the log.
     await daemon.stop();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });

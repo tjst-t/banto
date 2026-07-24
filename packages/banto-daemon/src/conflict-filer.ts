@@ -152,8 +152,10 @@ export function fileConflictTask(spec: ConflictTaskSpec): FiledConflictTask {
   // Title
   const title = `コンフリクト解消: ${originTaskId} vs ${mainline}`;
 
-  // Refs: discovered-from convention — originTaskId is refs[0] (spec-schemas §1)
-  const refsYaml = `[${originTaskId}]`;
+  // Refs: discovered-from convention — originTaskId is refs[0] (spec-schemas §1).
+  // Quoted defensively: task IDs may start with digits or contain special chars
+  // that YAML would misparse without quotes (e.g. "0004" as integer, "a:b" as map).
+  const refsYaml = `["${originTaskId}"]`;
 
   // review.policy: auto — conflict tasks skip hypothesis/evaluation (kind:conflict merged→closed)
   // auto means: audit pass → directly to merging (no manual PO review needed for conflict resolution)

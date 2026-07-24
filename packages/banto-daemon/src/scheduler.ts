@@ -30,6 +30,12 @@ export type TickJob = () => void | Promise<void>;
 export class Scheduler {
   private readonly jobs: Map<string, TickJob> = new Map();
   private timer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Promise for the currently-executing runAllJobs() call, or null when idle.
+   * Used by stop() to await in-flight job completion before the caller closes
+   * the event log (D3/I2: no events must be dropped after log.close()).
+   */
+  private _inFlightRun: Promise<void> | null = null;
 
   constructor(
     private readonly log: EventLog,
@@ -51,7 +57,10 @@ export class Scheduler {
   start(): void {
     if (this.timer !== null) return;
     this.timer = setInterval(() => {
-      void this.runAllJobs();
+      // Track the in-flight run so stop() can await it.
+      this._inFlightRun = this.runAllJobs().finally(() => {
+        this._inFlightRun = null;
+      });
     }, this.intervalMs);
     // Allow the Node.js event loop to exit if the timer is the only pending work.
     // Tests rely on unref() so that the process doesn't hang after daemon.stop().
@@ -61,13 +70,25 @@ export class Scheduler {
   }
 
   /**
-   * Stop the periodic ticker.
+   * Stop the periodic ticker and await any in-flight runAllJobs() completion.
+   *
+   * Drain guarantee: clears the interval first (no new ticks), then awaits the
+   * currently-running job batch (if any). This ensures the EventLog is never
+   * closed while a job is still mid-execution and trying to append events.
+   *
+   * D3/I2: the event log is the single runtime truth — no writes must be lost.
+   * Daemon.stop() must await this before calling log.close().
+   *
    * Calling stop() on an already-stopped scheduler is a no-op.
    */
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.timer !== null) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+    // Await any in-flight runAllJobs() that fired before we cleared the interval.
+    if (this._inFlightRun !== null) {
+      await this._inFlightRun;
     }
   }
 
@@ -77,7 +98,7 @@ export class Scheduler {
   }
 
   /** Run all registered jobs sequentially, catching per-job errors (I2). */
-  private async runAllJobs(): Promise<void> {
+  async runAllJobs(): Promise<void> {
     for (const [name, fn] of this.jobs) {
       try {
         await fn();

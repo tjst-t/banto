@@ -334,16 +334,11 @@ export async function processMergeQueue(
     // I2: not swallowed — hook handles the error (story 6 seam).
     const error = err instanceof Error ? err : new Error(String(err));
 
-    // Derive conflicted files from the error message.
+    // Derive conflicted files from the git rebase error message.
     // git rebase output contains "CONFLICT (content): Merge conflict in <file>" lines.
-    // After rebase --abort the working tree is clean so we cannot use git status.
-    // Best-effort: parse from error message; falls back to [] if no matches.
+    // After rebase --abort the working tree is clean, so parse-from-error is the
+    // only reliable source. Falls back to [] (conflict task filed with scope ["**"]).
     conflictedFiles = parseConflictedFilesFromError(error.message);
-    if (conflictedFiles.length === 0) {
-      // Secondary attempt: inspect the worktree/repo for any lingering conflict markers.
-      // (Typically not present after --abort, but try anyway.)
-      conflictedFiles = await detectConflictedFiles({ repoPath, worktreePath });
-    }
 
     if (opts.onRebaseConflict) {
       await opts.onRebaseConflict(log, taskId, projectTag, error, conflictedFiles);
@@ -582,41 +577,6 @@ function parseConflictedFilesFromError(errorMessage: string): string[] {
     if (file) files.add(file);
   }
   return Array.from(files);
-}
-
-/**
- * Detect conflicted files after a failed rebase attempt.
- *
- * After `git rebase --abort` the worktree is clean again, so we cannot use
- * `git diff --name-only --diff-filter=U`. Instead, we run a dry-run rebase
- * (`git rebase --no-commit`) to surface the conflict, record conflicted file
- * names via `git diff --name-only --diff-filter=U`, then abort again.
- *
- * This is best-effort: returns an empty array on any error (the conflict task
- * will still be filed — scope.paths will be the fallback ["**"]).
- *
- * D6: git CLI (stdlib).
- * I2: never throws — returns [] on failure so conflict filing still proceeds.
- */
-async function detectConflictedFiles(opts: {
-  repoPath: string;
-  worktreePath: string;
-}): Promise<string[]> {
-  // Note: by the time this is called, rebase --abort has already run.
-  // We use `git diff HEAD --name-only --diff-filter=U` which only works
-  // during an active merge/rebase conflict. Since the abort already ran,
-  // we need a different approach.
-  //
-  // Alternative: look at the error output captured in the Error.message.
-  // The rebase error message contains lines like:
-  //   "CONFLICT (content): Merge conflict in <file>"
-  // We parse those from the original err.message in the caller.
-  //
-  // This function is here to attempt an additional parse attempt via
-  // the working directory, but currently returns [] since the abort
-  // already cleaned up. The caller falls back to parsing err.message.
-  void opts; // opts kept for future use (e.g. git log analysis)
-  return [];
 }
 
 /**
