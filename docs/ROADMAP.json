@@ -821,7 +821,7 @@
       "stories": {
         "S9d7fdb-1": {
           "title": "環境プロファイル定義とタスクからの参照",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、プロジェクトのmeta/environments.yamlに環境プロファイルを一度だけ定義し、タスク定義からはenvironment: <profile名>の1行で参照したい。なぜなら、環境の詳細をタスクから切り離し、dev・test・外部VM評価を同じ一つの抽象で扱うためだから。",
@@ -849,17 +849,17 @@
             "S9d7fdb-1-1": {
               "title": "environments.yamlパーサとプロファイルスキーマ検証",
               "description": "banto-coreにmeta/environments.yamlのパーサとプロファイル型（driver/config/ttl/quota/credentials）の検証を実装する。D6: js-yaml等の依存を追加せず、task-frontmatter.tsの既存ミニマルYAMLパーサをブロックネスト対応に拡張して流用する。ttlは8h/30m形式をmsに正規化。",
-              "status": "pending"
+              "status": "done"
             },
             "S9d7fdb-1-2": {
               "title": "daemonへのプロファイル読込と環境プロファイルAPI",
               "description": "ProjectRegistryのrepoPath配下のmeta/environments.yamlをdaemonが読み込み、GET /api/v1/projects/:proj/environments で一覧を返す（既存http-server.tsのRouteパターンに追加）。D3: プロファイルはファイルが意図の真実、読込結果は導出値として保存しない。",
-              "status": "pending"
+              "status": "done"
             },
             "S9d7fdb-1-3": {
               "title": "不正プロファイル・不明参照のエラー経路",
               "description": "検証失敗プロファイルはスキップ＋エラーイベント（watcher-rejectのno-floodパターンに倣い重複抑制）。provision要求時の不明プロファイル参照はI2に従い理由付き失敗で返す。",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
