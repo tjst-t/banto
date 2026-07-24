@@ -185,6 +185,56 @@ export function scopePathsOverlap(setA: string[], setB: string[]): boolean {
   return false;
 }
 
+/**
+ * Test whether a concrete file path is covered by a glob pattern.
+ *
+ * Used by the merge-gate scope checker to determine whether each file in
+ * `git diff --name-only base...branch` falls within the task's scope.paths.
+ *
+ * Strategy (no minimatch, D6):
+ *   - No wildcard:  exact string equality.
+ *   - First segment is a wildcard ("**" or "*"): catch-all → always matches.
+ *   - Wildcard in a non-first segment: use the literal prefix before the wildcard.
+ *     The file must start with that prefix to be considered in scope.
+ *     This is conservative in the safe direction for scope enforcement:
+ *     a false "not in scope" result triggers a gate failure (escalation) rather
+ *     than silently allowing an out-of-scope change through.
+ *
+ * Examples:
+ *   fileMatchesGlob("src/a.ts",  "src/**")   → true  (starts with "src/")
+ *   fileMatchesGlob("src/a.ts",  "src/a.ts") → true  (exact)
+ *   fileMatchesGlob("docs/x.md", "src/**")   → false (different tree)
+ *   fileMatchesGlob("any/path",  "**")        → true  (catch-all)
+ */
+export function fileMatchesGlob(filePath: string, pattern: string): boolean {
+  const p = pattern.replace(/\/+$/, "");
+  const segments = p.split("/");
+  const wildcardIdx = segments.findIndex((seg) => seg.includes("*"));
+
+  if (wildcardIdx === -1) {
+    // No wildcard — exact match only
+    return filePath === p;
+  }
+
+  if (wildcardIdx === 0) {
+    // Wildcard at first segment → catch-all (covers the file)
+    return true;
+  }
+
+  // Wildcard is at a non-first segment.
+  // Use the literal prefix up to (not including) the wildcard segment.
+  const prefix = segments.slice(0, wildcardIdx).join("/") + "/";
+  return filePath.startsWith(prefix);
+}
+
+/**
+ * Check whether a concrete file path is covered by ANY pattern in a scope.paths array.
+ * Returns true if the file is within scope (permitted); false means it is a violation.
+ */
+export function fileMatchesScopePaths(filePath: string, scopePaths: string[]): boolean {
+  return scopePaths.some((pattern) => fileMatchesGlob(filePath, pattern));
+}
+
 // ── Gate evaluation result ─────────────────────────────────────────────────────
 
 export interface GateResult {

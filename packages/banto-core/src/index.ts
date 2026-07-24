@@ -29,6 +29,7 @@ export type {
   TaskSupersededEvent,
   TaskIngestRejectedEvent,
   TickJobFailedEvent,
+  MergeGateEvaluatedEvent,
 } from "./events.js";
 
 // Task frontmatter parser + validator

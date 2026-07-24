@@ -226,6 +226,30 @@ export interface TickJobFailedEvent extends EventBase {
   error: string;
 }
 
+/**
+ * Merge-gate verdict for a task in the 'merging' state.
+ *
+ * Records whether the pre-merge checks (scope diff + verify commands) passed.
+ * On failure, `reasons` lists the violation file paths or verify command failures.
+ * Log paths for verify-command output are carried as path references only (spec §2.1).
+ *
+ * S75f66b-4: appended here to keep the union complete; wiring into the merge
+ * processor happens in S75f66b-5. (D3: gate judgments recorded as events only.)
+ */
+export interface MergeGateEvaluatedEvent extends EventBase {
+  type: "merge_gate_evaluated";
+  taskId: string;
+  passed: boolean;
+  /** Human-readable reasons for gate failure (violation files or failed command ids). */
+  reasons: string[];
+  /**
+   * Path references to execution log directories for verify commands.
+   * Contains log directory paths only — never log content (spec §2.1).
+   * Empty when no verify commands were run or when scope check failed first.
+   */
+  logPaths: string[];
+}
+
 /** Union of all orchestration event types */
 export type OrchestrationEvent =
   | TaskCreatedEvent
@@ -246,4 +270,5 @@ export type OrchestrationEvent =
   | TaskFailedEvent
   | TaskSupersededEvent
   | TaskIngestRejectedEvent
-  | TickJobFailedEvent;
+  | TickJobFailedEvent
+  | MergeGateEvaluatedEvent;
