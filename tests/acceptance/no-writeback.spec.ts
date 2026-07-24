@@ -56,14 +56,15 @@ describe("[AC-Scc9152-1-3] Daemon never writes runtime state back to task file",
     });
     assert.equal(res.status, 201);
 
-    // Write the task file and record original state
+    // Write the task file and record original state.
+    // status: queued — only queued files are ingested by the watcher (imp-0001 PO decision).
     taskFile = path.join(tmpRepoDir, "work", "tasks", "task-0001-nw.md");
     originalContent = `---
 id: task-0001
 type: task
 kind: feature
 title: ノーライトバックテスト
-status: draft
+status: queued
 scope:
   paths: [src/**]
 acceptance:
@@ -77,7 +78,7 @@ acceptance:
     fs.writeFileSync(taskFile, originalContent, "utf-8");
     originalMtimeMs = fs.statSync(taskFile).mtimeMs;
 
-    // Wait for watcher to ingest and task to be registered (any status past draft).
+    // Wait for watcher to ingest and task to be registered (any status past queued).
     // With Scc9152-2, a task with no deps and no overlapping ancestors may be
     // promoted from queued → ready immediately, so we accept 'queued' OR 'ready'.
     const INGESTED_STATUSES = new Set(["queued", "ready", "planning", "implementing",
@@ -101,12 +102,12 @@ acceptance:
     fs.rmSync(tmpRepoDir, { recursive: true, force: true });
   });
 
-  it("[AC-Scc9152-1-3] frontmatter status is still 'draft' after ingest (not written back)", () => {
+  it("[AC-Scc9152-1-3] frontmatter status is still 'queued' after ingest (not written back)", () => {
     const contentAfter = fs.readFileSync(taskFile, "utf-8");
     assert.equal(contentAfter, originalContent, "file content must be byte-for-byte identical");
     assert.ok(
-      contentAfter.includes("status: draft"),
-      "frontmatter status must remain 'draft'"
+      contentAfter.includes("status: queued"),
+      "frontmatter status must remain 'queued' — daemon must not write runtime state back to file"
     );
   });
 

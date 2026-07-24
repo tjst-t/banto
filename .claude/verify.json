@@ -1,6 +1,16 @@
 {
   "commands": [
-    {"name": "acceptance-tests", "cmd": "npm test"},
-    {"name": "typecheck", "cmd": "npm run typecheck"}
+    {
+      "name": "acceptance-tests",
+      "command": "npm test"
+    },
+    {
+      "name": "typecheck",
+      "command": "npm run typecheck"
+    },
+    {
+      "name": "e2e",
+      "command": "npm run test:e2e"
+    }
   ]
 }

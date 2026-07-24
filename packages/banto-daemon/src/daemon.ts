@@ -17,8 +17,10 @@
  */
 
 import * as http from "node:http";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import * as childProcess from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   EventLog,
   StateStore,
@@ -38,6 +40,38 @@ import { GateEvaluator, evaluatePendingGates } from "./gate-evaluator.js";
 import { PiRpcDriver, createWorktree } from "./pi-rpc-driver.js";
 import { SpawnLedger, isProcessAlive, killOrphanProcess } from "./spawn-ledger.js";
 import type { LedgerEntry } from "./spawn-ledger.js";
+import { processMergeQueue } from "./merge-queue.js";
+import {
+  fileConflictTask,
+  deriveOriginResolutionPairs,
+} from "./conflict-filer.js";
+
+// ── Daemon-local skill asset loader ───────────────────────────────────────────
+//
+// Resolves prompt assets (skills/*.md) relative to THIS FILE's location
+// (packages/banto-daemon/src/daemon.ts → ../../../skills/).
+// This is separate from banto-core's loadPromptAsset, which resolves relative
+// to the core package's location (correct for production deployments where
+// @banto/core is installed in the monorepo root, but not when @banto/core is
+// accessed via a node_modules workspace symlink pointing to a different checkout).
+//
+// D2: criteria in text files (skills/), mechanism in code here.
+// I2: throws clearly if the file is missing.
+// D6: uses only node:fs, node:path, node:url (stdlib).
+
+const _daemonDir = path.dirname(fileURLToPath(import.meta.url));
+// daemon.ts lives at packages/banto-daemon/src/; root is 3 levels up.
+const _repoRoot = path.resolve(_daemonDir, "..", "..", "..");
+
+function loadSkillAsset(name: string): string {
+  const assetPath = path.join(_repoRoot, "skills", `${name}.md`);
+  if (!fs.existsSync(assetPath)) {
+    throw new Error(
+      `Skill asset not found: "${name}" (looked at ${assetPath}). Create skills/${name}.md.`
+    );
+  }
+  return fs.readFileSync(assetPath, "utf-8");
+}
 
 export interface DaemonConfig {
   /** Port to listen on. Default: 3000 */
@@ -94,6 +128,21 @@ export interface DaemonConfig {
    * Override via BANTO_PI_MODEL environment variable.
    */
   piModel?: string;
+  /**
+   * Maximum number of concurrently-running agent sessions (physical quota, 層B).
+   * Compared against ledger.size on each auto-spawn tick.
+   * When full, new spawns are silently skipped and re-evaluated on the next tick.
+   * No rejection event is emitted on quota skip — re-evaluation is silent (spec-multi-project §3).
+   *
+   * Default: 5. Override via BANTO_MAX_CONCURRENT_SESSIONS environment variable.
+   */
+  maxConcurrentSessions?: number;
+  /**
+   * When true, skip auto-spawning the audit session on implementing→auditing transition.
+   * Intended for test suites that test gate/tick logic and do not need audit session spawn.
+   * Default: false (audit sessions are auto-spawned in production).
+   */
+  disableAuditSpawn?: boolean;
 }
 
 export class Daemon {
@@ -132,6 +181,66 @@ export class Daemon {
    * (which may differ from the main tick). Null until start() is called.
    */
   private reconcileTimer: NodeJS.Timeout | null = null;
+
+  /**
+   * Re-entrancy guard for the serial merge queue tick.
+   *
+   * S75f66b-5 review fix: the Scheduler drives the "merge-queue" job on every tick.
+   * If a tick fires while a previous processMergeQueue() is still awaiting (e.g. git
+   * rebase on a large repo), two concurrent calls to processMergeQueue() could run,
+   * violating the serial guarantee (spec §4.1) and causing git race conditions.
+   *
+   * Fix: local boolean guard — skip the tick if already running.
+   * Decision: local guard (not a Scheduler-wide change) to minimise scope impact (P1).
+   * Always reset in finally{} so a panicking inner call never permanently locks the queue.
+   */
+  private _mergeQueueRunning = false;
+
+  /**
+   * Re-entrancy guard for the auto-spawn tick.
+   *
+   * S75f66b-5 E2E fix: driver.spawn() awaits ~200ms (get_state probe) + up to 3s fallback.
+   * If a second tick fires before the first runAutoSpawn() resolves, both see the same
+   * "ready" task with no ledger entry (the entry is added only after spawn() resolves).
+   * Both then call spawnTask(), causing multiple concurrent sessions for the same task.
+   *
+   * Fix: same pattern as _mergeQueueRunning — skip if already running.
+   * Always reset in finally{} so a panicking inner call never permanently locks spawning.
+   */
+  private _autoSpawnRunning = false;
+
+  /**
+   * In-flight spawn map: deduplicates concurrent spawnTask() calls for the same task.
+   *
+   * The spawn-ledger only records COMPLETED spawns (after driver.spawn() resolves
+   * and the ledger entry is written). During the 200ms–3.2s window of driver.spawn(),
+   * the task is neither in the ledger nor in a non-"ready" status (the transition to
+   * "planning" happens AFTER driver.spawn() returns). Without this guard, concurrent
+   * callers (e.g. auto-spawn tick + explicit test spawn) both see a "ready" task not
+   * in the ledger and both call spawnTask(), spawning two pi processes for one task.
+   *
+   * The map stores the Promise returned by the first call. Subsequent callers for the
+   * same task key join that Promise and get the same result (promise deduplication).
+   * This is safe because the result (worktreePath, sessionPath, pid, sessionId) is
+   * identical for all callers — only one pi process is ever spawned.
+   *
+   * Invariant: key is `${projectTag}/${taskId}`. Removed in finally{} of spawnTask().
+   * D3: this is NOT persisted — it only exists for the lifetime of one spawnTask() call.
+   */
+  private readonly _inFlightSpawns: Map<string, Promise<{ worktreePath: string; sessionPath: string; pid: number; sessionId: string; tmuxWindow?: string }>> = new Map();
+
+  /**
+   * Set of in-flight background async operations deferred via setImmediate
+   * (e.g. audit session spawn, rework session spawn triggered by handleAuditVerdict).
+   *
+   * Tracked so Daemon.stop() can await all of them before closing the event log.
+   * Each entry is a Promise that resolves when the background operation settles
+   * (success or error — errors are handled internally via recordTaskFailed).
+   * Entries are removed in their own finally{} blocks.
+   *
+   * D3/I2: ensures no events are silently dropped due to log-close-before-write.
+   */
+  private readonly _backgroundOps: Set<Promise<void>> = new Set();
 
   private constructor(config: DaemonConfig) {
     this.config = config;
@@ -200,6 +309,32 @@ export class Daemon {
     this.scheduler.registerJob("gate-reeval", () => {
       this.runGateReeval();
     });
+
+    // Built-in job: auto-spawn (S75f66b-2, spec-daemon-core §6).
+    // Enumerates ready tasks from derived state (D3: no separate bookkeeping) and
+    // calls spawnTask() for any that are not already in the ledger.
+    // Physical quota (maxConcurrentSessions) is checked against ledger size first;
+    // when full, skip silently — no rejection event, re-evaluated on next tick (I2-compliant:
+    // quota-skip is not an error; spawn failures still go through recordTaskFailed).
+    this.scheduler.registerJob("auto-spawn", () => {
+      void this.runAutoSpawn();
+    });
+
+    // Built-in job: serial merge queue (S75f66b-5, spec-daemon-core §4.1).
+    // Processes the HEAD of the merge queue only (one task at a time — serial discipline).
+    // Queue is derived purely from event log replay (D3: no persistence file).
+    // Rebase → merge gate → fast-forward merge → task_merged + merged transition.
+    // Merged tasks without hypothesis are auto-closed.
+    // Rebase conflicts: auto-file conflict task + pause origin (S75f66b-6).
+    this.scheduler.registerJob("merge-queue", () => this.runMergeQueueTick());
+
+    // Built-in job: conflict-resolution outcome check (S75f66b-6, spec-daemon-core §4.2).
+    // On each tick, derive paused-origin↔conflict-resolution pairs (D3: from event log).
+    // If a resolution task reached merged/closed: resume the origin task to merging.
+    // If a resolution task failed: chain-fail the origin task (I2: stop, don't swallow).
+    this.scheduler.registerJob("conflict-resolution-check", () => {
+      this.runConflictResolutionCheck();
+    });
   }
 
   static create(config: Partial<DaemonConfig> = {}): Daemon {
@@ -216,6 +351,12 @@ export class Daemon {
       tmuxSession: config.tmuxSession,
       piProvider: config.piProvider ?? process.env["BANTO_PI_PROVIDER"] ?? "opencode-go",
       piModel: config.piModel ?? process.env["BANTO_PI_MODEL"] ?? "deepseek-v4-flash",
+      maxConcurrentSessions:
+        config.maxConcurrentSessions ??
+        // parseInt of a non-numeric env value yields NaN, and `size >= NaN` is
+        // always false (quota silently unenforced) — fall back to the default.
+        (Number.parseInt(process.env["BANTO_MAX_CONCURRENT_SESSIONS"] ?? "5", 10) || 5),
+      disableAuditSpawn: config.disableAuditSpawn ?? false,
     };
     return new Daemon(resolved);
   }
@@ -261,9 +402,18 @@ export class Daemon {
   }
 
   /** Stop the daemon gracefully. */
-  stop(): Promise<void> {
+  async stop(): Promise<void> {
     this.watcher.stop();
-    this.scheduler.stop();
+    // Drain the scheduler FIRST: awaits any in-flight runAllJobs() so no scheduler
+    // job can try to append events after log.close() (D3/I2: log is the single
+    // runtime truth — no writes must be silently dropped).
+    await this.scheduler.stop();
+    // Drain background operations: audit/rework sessions are spawned via setImmediate
+    // for HTTP-response ordering, and their async bodies (driver.spawn → recordTaskFailed)
+    // must complete before we close the event log (D3/I2: no events must be dropped).
+    if (this._backgroundOps.size > 0) {
+      await Promise.allSettled([...this._backgroundOps]);
+    }
     if (this.reconcileTimer) {
       clearInterval(this.reconcileTimer);
       this.reconcileTimer = null;
@@ -401,6 +551,37 @@ export class Daemon {
     taskId: string,
     driverId = "pi-rpc",
     spawnExtra: Partial<SpawnOptions> = {}
+  ): Promise<{ worktreePath: string; sessionPath: string; pid: number; sessionId: string; tmuxWindow?: string }> {
+    // 0. In-flight deduplication: if a concurrent spawnTask() call is already in progress
+    //    for this task, join the existing Promise and return its result (no second spawn).
+    //    driver.spawn() takes 200ms–3.2s, during which the task is still "ready" (no
+    //    transition yet) and the ledger has no entry yet. Without this guard, concurrent
+    //    callers (e.g. auto-spawn tick + explicit test spawn) both see a "ready" task
+    //    with no ledger entry and both call spawnTask(), creating two pi processes.
+    //
+    //    Promise deduplication: all callers for the same key receive the same result
+    //    (worktreePath, sessionPath, pid, sessionId). Only one pi process is ever spawned.
+    const spawnKey = `${projectTag}/${taskId}`;
+    const existing = this._inFlightSpawns.get(spawnKey);
+    if (existing) {
+      // Join the in-flight spawn — same result, no second pi process.
+      return existing;
+    }
+
+    // Build the promise for this spawn (kept in the map until it settles).
+    const spawnPromise = this._spawnTaskBody(projectTag, taskId, driverId, spawnExtra).finally(() => {
+      this._inFlightSpawns.delete(spawnKey);
+    });
+    this._inFlightSpawns.set(spawnKey, spawnPromise);
+    return spawnPromise;
+  }
+
+  // Inner implementation extracted to allow finally cleanup on all paths.
+  private async _spawnTaskBody(
+    projectTag: string,
+    taskId: string,
+    driverId: string,
+    spawnExtra: Partial<SpawnOptions>
   ): Promise<{ worktreePath: string; sessionPath: string; pid: number; sessionId: string; tmuxWindow?: string }> {
     // 1. Validate task state
     const task = this.store.getTask(taskId, projectTag);
@@ -677,6 +858,13 @@ export class Daemon {
       const lastEvent = allEvents[allEvents.length - 1];
       this.wsServer.broadcast(lastEvent);
     }
+
+    // Clean up spawn-ledger entries for audit and rework sessions.
+    // When a task fails, any associated audit or rework sessions are no longer needed.
+    // Their processes will be cleaned up by the orphan reconcile job, but we remove
+    // the ledger entries now to keep the ledger accurate (D3: no stale derived state).
+    this.ledger.remove(projectTag, `${taskId}:audit`);
+    this.ledger.remove(projectTag, `${taskId}:rework`);
   }
 
   /**
@@ -728,6 +916,35 @@ export class Daemon {
     // We run on any successful transition that changes status so we don't miss edge cases.
     if (result.ok) {
       this.runGateReeval();
+
+      // S75f66b-3: Auto-spawn audit session on implementing→auditing transition.
+      // The audit session is the structural gate — it always runs before review/merge.
+      // D5: all orchestration logic here; HTTP layer is pure routing.
+      // disableAuditSpawn: test suites that test gate/tick logic can opt out of the
+      // side effect to avoid pi CLI resolution errors in CI environments.
+      if (fromStatus === "implementing" && toStatus === "auditing") {
+        if (this.config.disableAuditSpawn) {
+          // F2 (governance): emit observable event so the bypass is visible in the log.
+          // "黙って迂回できる経路を作らない" — suppression must never be silent.
+          const disabledEvent = this.log.append({
+            type: "audit_spawn_disabled",
+            projectTag,
+            taskId,
+          });
+          this.applyAndBroadcast(disabledEvent);
+        } else {
+          // Fire-and-forget: spawn failure recorded via recordTaskFailed (I2).
+          // Deferred to next tick so the HTTP response is sent before any synchronous
+          // work in spawnAuditSession (e.g. loadPromptAsset, driver lookup) that might
+          // call recordTaskFailed, which would mutate task state before the caller sees
+          // the 200/auditing response.
+          // Tracked in _backgroundOps (registered synchronously before setImmediate fires)
+          // so Daemon.stop() can drain it before log.close() (D3/I2: no events dropped).
+          this._trackBackground(new Promise<void>((resolve) => {
+            setImmediate(() => void this.spawnAuditSession(projectTag, taskId).then(resolve, resolve));
+          }));
+        }
+      }
     }
 
     return result;
@@ -749,7 +966,546 @@ export class Daemon {
     this.applyAndBroadcast(event);
   }
 
+  // ── Audit session orchestration ────────────────────────────────────────────
+
+  /**
+   * Spawn an audit session for a task that just entered 'auditing' state.
+   *
+   * S75f66b-3 (AC-S75f66b-3-1, AC-S75f66b-3-2):
+   *   - Spawns via the registered driver (default: "pi-rpc") using the auditor extension.
+   *   - Emits audit_started event with session path reference (spec §2.1).
+   *   - Registers in spawn ledger (spec §3: orphan recovery applies to audit sessions too).
+   *   - Audit session uses banto-auditor pi extension which injects audit-system.md +
+   *     audit-checklist.md from skills/ (D2: criteria in text, mechanism in code).
+   *
+   * I2: spawn failures are routed to recordTaskFailed.
+   */
+  private async spawnAuditSession(
+    projectTag: string,
+    taskId: string,
+    driverId = "pi-rpc"
+  ): Promise<void> {
+    const task = this.store.getTask(taskId, projectTag);
+    if (!task) {
+      process.stderr.write(
+        `[banto-daemon] spawnAuditSession: task ${projectTag}/${taskId} not found\n`
+      );
+      return;
+    }
+
+    // Resolve the audit extension path (sibling of banto-executor.ts).
+    const auditExtensionPath = new URL(
+      "./pi-extension/banto-auditor.ts",
+      import.meta.url
+    ).pathname;
+
+    // Look up the worktree from the spawn ledger (the executor session's worktree).
+    // If not in ledger (executor already exited), fall back to the standard worktree path.
+    const worktreeBase =
+      this.config.worktreeBaseDir ?? path.join(this.config.dataDir, "worktrees");
+    const worktreePath = path.join(worktreeBase, projectTag, taskId);
+    const sessionBase =
+      this.config.sessionBaseDir ?? path.join(this.config.dataDir, "sessions");
+    // Audit sessions get a distinct session file: <taskId>-audit-<n>.jsonl
+    const auditIndex = this.countConsecutiveAuditFails(projectTag, taskId) + 1;
+    const auditSessionPath = path.join(
+      sessionBase,
+      projectTag,
+      `${taskId}-audit-${auditIndex}.jsonl`
+    );
+
+    // Build audit system prompt: loaded from skills/ at spawn time (D2, AC-S75f66b-3-2).
+    let auditSystemPrompt: string;
+    try {
+      const sysPrompt = loadSkillAsset("audit-system");
+      const checklist = loadSkillAsset("audit-checklist");
+      auditSystemPrompt =
+        sysPrompt + "\n\n## 監査チェックリスト\n\n" + checklist;
+    } catch (err) {
+      const reason = `audit prompt assets missing: ${err instanceof Error ? err.message : String(err)}`;
+      this.recordTaskFailed(projectTag, taskId, reason);
+      return;
+    }
+
+    const driver = this.driverRegistry.get(driverId);
+    if (!driver) {
+      const reason = `Audit driver '${driverId}' not registered`;
+      this.recordTaskFailed(projectTag, taskId, reason);
+      return;
+    }
+
+    const daemonUrl = `http://localhost:${this.port}`;
+    const spawnOpts: SpawnOptions = {
+      taskId,
+      worktreePath,
+      sessionPath: auditSessionPath,
+      systemPrompt: auditSystemPrompt,
+      tools: [], // registered by the banto-auditor extension
+      modelTier: "reasoning", // spec §3.5: 監査 = reasoning tier
+      driverOptions: {
+        daemonUrl,
+        projectTag,
+        // Override extension to banto-auditor instead of banto-executor
+        extensionPath: auditExtensionPath,
+      },
+    };
+
+    let handle: { pid: number; sessionId: string; sessionPath: string };
+    try {
+      handle = await driver.spawn(spawnOpts);
+    } catch (err) {
+      const reason = `audit session spawn failed: ${err instanceof Error ? err.message : String(err)}`;
+      this.recordTaskFailed(projectTag, taskId, reason);
+      return;
+    }
+
+    // Emit audit_started event (S75f66b-3, spec §2.1: path reference only).
+    const auditStartedEvent = this.log.append({
+      type: "audit_started",
+      projectTag,
+      taskId,
+      sessionPath: handle.sessionPath,
+      worktree: worktreePath,
+    });
+    this.applyAndBroadcast(auditStartedEvent);
+
+    // Also emit agent_spawned with role marker so it's distinguishable from executor spawns.
+    // The "audit" role is embedded in the sessionPath naming convention and audit_started event.
+    const spawnedEvent = this.log.append({
+      type: "agent_spawned",
+      projectTag,
+      taskId,
+      pid: handle.pid,
+      sessionPath: handle.sessionPath,
+      worktree: worktreePath,
+      modelTier: "reasoning",
+    });
+    this.applyAndBroadcast(spawnedEvent);
+
+    // Register in spawn ledger (spec §3: orphan recovery applies to audit sessions too).
+    const ledgerEntry: LedgerEntry = {
+      pid: handle.pid,
+      projectTag,
+      taskId: `${taskId}:audit`, // distinguish audit session in ledger
+      sessionPath: handle.sessionPath,
+      worktree: worktreePath,
+      driverId,
+      sessionId: handle.sessionId,
+      spawnedAt: new Date().toISOString(),
+    };
+    this.ledger.add(ledgerEntry);
+
+    // Inject task-specific audit context into the audit session.
+    // The banto-auditor extension provides the generic audit system prompt + checklist
+    // via before_agent_start hook. Here we inject the SPECIFIC task context:
+    //   - task ID, title, acceptance criteria, worktree path, scope
+    // This gives the audit LLM concrete information to act on (D2: criteria in text,
+    // not hardcoded in extension). Without this inject, the audit LLM only has the
+    // generic checklist and cannot determine WHAT file to look for in the worktree.
+    // I2: inject failure is logged but not fatal — audit session may still succeed
+    // if the LLM infers context from the worktree directory listing.
+    const acceptanceRaw = (task as Record<string, unknown>)["acceptance"];
+    const acceptanceCriteria: Array<{ id: string; text: string; verify?: string }> =
+      Array.isArray(acceptanceRaw)
+        ? (acceptanceRaw as Array<Record<string, string>>).map((a) => ({
+            id: String(a["id"] ?? ""),
+            text: String(a["text"] ?? ""),
+            ...(a["verify"] ? { verify: String(a["verify"]) } : {}),
+          }))
+        : [];
+
+    const scopeRaw = (task as Record<string, unknown>)["scope"] as Record<string, unknown> | undefined;
+    const scopePaths: string[] = Array.isArray(scopeRaw?.["paths"])
+      ? (scopeRaw["paths"] as unknown[]).map(String)
+      : [];
+
+    const auditContextMessage = [
+      `## タスク監査コンテキスト`,
+      ``,
+      `**タスクID**: ${taskId}`,
+      `**プロジェクト**: ${projectTag}`,
+      `**タイトル**: ${String(task["title"] ?? "")}`,
+      ``,
+      `**ワークツリーパス**: ${worktreePath}`,
+      `（このディレクトリに実装者が作成・変更したファイルがあります）`,
+      ``,
+      `**スコープ（変更が期待されるファイル）**:`,
+      scopePaths.length > 0
+        ? scopePaths.map((p) => `- ${p}`).join("\n")
+        : "- (スコープ未指定)",
+      ``,
+      `**受け入れ基準 (acceptance criteria)**:`,
+      acceptanceCriteria.length > 0
+        ? acceptanceCriteria
+            .map(
+              (a) =>
+                `- [${a.id}] ${a.text}` +
+                (a.verify ? ` （検証コマンド: \`${a.verify}\`）` : "")
+            )
+            .join("\n")
+        : "- (基準未指定)",
+      ``,
+      `## 監査手順`,
+      ``,
+      `1. ワークツリーパス (${worktreePath}) に移動して実装内容を確認してください`,
+      `2. scope.paths に指定されたファイルが存在し、acceptance criteria を満たしているか検証してください`,
+      `3. verify コマンドがある場合はそれを実行して結果を確認してください`,
+      `4. すべての基準を満たしていれば \`audit_report\` ツールを呼び出し verdict="pass" を報告してください`,
+      `5. 問題があれば verdict="fail" と具体的な findings を報告してください`,
+      ``,
+      `**重要**: 検査が完了したら必ず \`audit_report\` ツールを呼び出してください。呼び出さないと監査が完了しません。`,
+    ].join("\n");
+
+    try {
+      await driver.inject(handle.sessionId, auditContextMessage);
+    } catch (injectErr) {
+      process.stderr.write(
+        `[banto-daemon] spawnAuditSession: inject context failed for ${projectTag}/${taskId}: ` +
+          `${injectErr instanceof Error ? injectErr.message : String(injectErr)}\n`
+      );
+    }
+
+    // Subscribe to driver events: remove from ledger when audit session exits.
+    // If audit session exits without verdict, recordTaskFailed (I2: no ghost sessions).
+    const unsub = driver.subscribe((event) => {
+      if (event.type === "process_exited" && event.sessionId === handle.sessionId) {
+        const exitedEvent = this.log.append({
+          type: "agent_exited",
+          projectTag,
+          taskId,
+          pid: event.pid,
+          exitCode: event.exitCode,
+          signal: event.signal,
+        });
+        this.applyAndBroadcast(exitedEvent);
+        this.ledger.remove(projectTag, `${taskId}:audit`);
+
+        // If the task is still in 'auditing' after the session exited, treat as failure (I2).
+        const currentTask = this.store.getTask(taskId, projectTag);
+        if (currentTask && currentTask.status === "auditing") {
+          process.stderr.write(
+            `[banto-daemon] audit session exited without verdict for ${projectTag}/${taskId} — recording failure\n`
+          );
+          this.recordTaskFailed(
+            projectTag,
+            taskId,
+            "audit_session_exited_without_verdict"
+          );
+        }
+        unsub();
+      }
+    });
+  }
+
+  /**
+   * Handle an audit verdict submitted via POST /api/v1/projects/:proj/tasks/:id/audit-report.
+   *
+   * S75f66b-3 (AC-S75f66b-3-3, AC-S75f66b-3-4):
+   *   pass → merging (review.policy=auto) or review-ready (otherwise)
+   *   fail (1st consecutive) → implementing (rework) + new executor session with findings
+   *   fail (2nd consecutive) → failed (I2: stop, don't swallow)
+   *
+   * D3: consecutive fail count is DERIVED from the event log (audit_verdict events).
+   *     No counter stored as a separate field.
+   *
+   * @returns { ok: true } on success, throws on invalid state.
+   */
+  handleAuditVerdict(
+    projectTag: string,
+    taskId: string,
+    verdict: "pass" | "fail",
+    findings: string[]
+  ): { ok: boolean } {
+    const task = this.store.getTask(taskId, projectTag);
+    if (!task) {
+      throw new Error(`task_not_found: ${projectTag}/${taskId}`);
+    }
+    if (task.status !== "auditing") {
+      throw new Error(
+        `task_wrong_state: expected 'auditing', got '${task.status}'`
+      );
+    }
+
+    // Record the verdict event first (D3: event is the truth).
+    const verdictEvent = this.log.append({
+      type: "audit_verdict",
+      projectTag,
+      taskId,
+      verdict,
+      findings,
+    });
+    this.applyAndBroadcast(verdictEvent);
+
+    if (verdict === "pass") {
+      // Determine target status from review.policy (stored in task payload, D3).
+      // review.policy is loaded from the task definition at creation time (watcher ingestion).
+      const reviewPolicy = (task["review"] as { policy?: string } | undefined)?.policy ?? "manual";
+      const targetStatus = reviewPolicy === "auto" ? "merging" : "review-ready";
+
+      this.transition(projectTag, taskId, targetStatus, "audit_passed");
+    } else {
+      // Fail path: count consecutive audit fails from event log (D3: no stored counter).
+      const consecutiveFails = this.countConsecutiveAuditFails(projectTag, taskId);
+
+      if (consecutiveFails >= 2) {
+        // 2nd consecutive fail → failed (I2: stop, record, don't swallow).
+        StateMachine.fail(
+          this.log,
+          taskId,
+          {
+            currentStatus: task.status as TaskStatus,
+            reason: `audit_failed_twice: ${findings.join("; ")}`,
+          },
+          projectTag
+        );
+        this.refreshState();
+        const allEvents = this.log.readAllEvents();
+        if (allEvents.length > 0) {
+          this.wsServer.broadcast(allEvents[allEvents.length - 1]);
+        }
+        // Clean up audit and rework ledger entries (no more sessions should run).
+        // D3: ledger is derived from live processes; failed task has no live sessions.
+        this.ledger.remove(projectTag, `${taskId}:audit`);
+        this.ledger.remove(projectTag, `${taskId}:rework`);
+      } else {
+        // 1st consecutive fail → rework: auditing → implementing + spawn rework session.
+        this.transition(projectTag, taskId, "implementing", "audit_fail_rework");
+        // Spawn a new executor session with findings injected (void: fire-and-forget, I2 inside).
+        // Deferred to next tick to ensure the HTTP response reflects the implementing state
+        // before any sync work in spawnReworkSession mutates the state further.
+        // Tracked in _backgroundOps (registered synchronously before setImmediate fires)
+        // so Daemon.stop() can drain it before log.close() (D3/I2: no events dropped).
+        this._trackBackground(new Promise<void>((resolve) => {
+          setImmediate(() => void this.spawnReworkSession(projectTag, taskId, findings).then(resolve, resolve));
+        }));
+      }
+    }
+
+    return { ok: true };
+  }
+
+  /**
+   * Spawn a rework executor session with audit findings injected into the system prompt.
+   *
+   * S75f66b-3 (AC-S75f66b-3-4): after first audit fail, the task returns to 'implementing'
+   * and a new executor session is spawned with the audit findings in its context.
+   *
+   * The task must be in 'ready' state for spawnTask(). Since we just transitioned it to
+   * 'implementing', we need to set it back to 'ready' first (daemon internal operation).
+   *
+   * I2: spawn failures are routed to recordTaskFailed.
+   * D3: findings injected via system prompt only — not stored as a separate field.
+   */
+  private async spawnReworkSession(
+    projectTag: string,
+    taskId: string,
+    findings: string[]
+  ): Promise<void> {
+    // To use spawnTask(), the task must be in 'ready' state.
+    // Transition: implementing → (need ready). Since implementing→auditing→implementing
+    // leaves us in implementing, we need to go back through the gate.
+    // Design decision: for rework, we bypass the gate and directly spawn via driver.
+    // The rework session uses the same worktree as the original executor session.
+
+    const task = this.store.getTask(taskId, projectTag);
+    if (!task) {
+      process.stderr.write(
+        `[banto-daemon] spawnReworkSession: task ${projectTag}/${taskId} not found\n`
+      );
+      return;
+    }
+
+    const executorExtensionPath = new URL(
+      "./pi-extension/banto-executor.ts",
+      import.meta.url
+    ).pathname;
+
+    const worktreeBase =
+      this.config.worktreeBaseDir ?? path.join(this.config.dataDir, "worktrees");
+    const worktreePath = path.join(worktreeBase, projectTag, taskId);
+    const sessionBase =
+      this.config.sessionBaseDir ?? path.join(this.config.dataDir, "sessions");
+
+    // Count rework sessions so we can give each a distinct session file.
+    const reworkIndex = this.countReworkSessions(projectTag, taskId) + 1;
+    const sessionPath = path.join(
+      sessionBase,
+      projectTag,
+      `${taskId}-rework-${reworkIndex}.jsonl`
+    );
+
+    // Build system prompt from executor-system asset (no findings injected here —
+    // D1: findings are delivered via driver.inject() after spawn, which is the
+    // runtime-driver contract's guaranteed delivery path. PiRpcDriver ignores
+    // systemPrompt at the spawn call but processes inject() as the first RPC message).
+    let executorPrompt: string;
+    try {
+      executorPrompt = loadSkillAsset("executor-system");
+    } catch (err) {
+      const reason = `executor-system asset missing: ${err instanceof Error ? err.message : String(err)}`;
+      this.recordTaskFailed(projectTag, taskId, reason);
+      return;
+    }
+
+    const driver = this.driverRegistry.get("pi-rpc");
+    if (!driver) {
+      this.recordTaskFailed(projectTag, taskId, "pi-rpc driver not registered for rework");
+      return;
+    }
+
+    const daemonUrl = `http://localhost:${this.port}`;
+    const spawnOpts: SpawnOptions = {
+      taskId,
+      worktreePath,
+      sessionPath,
+      systemPrompt: executorPrompt,
+      tools: [],
+      modelTier: "standard",
+      driverOptions: {
+        daemonUrl,
+        projectTag,
+        extensionPath: executorExtensionPath,
+      },
+    };
+
+    let handle: { pid: number; sessionId: string; sessionPath: string };
+    try {
+      handle = await driver.spawn(spawnOpts);
+    } catch (err) {
+      const reason = `rework session spawn failed: ${err instanceof Error ? err.message : String(err)}`;
+      this.recordTaskFailed(projectTag, taskId, reason);
+      return;
+    }
+
+    // D1: deliver findings via inject() — the runtime-driver contract's sanctioned
+    // message path. This is the guaranteed delivery channel; systemPrompt is ignored
+    // by PiRpcDriver (it does not pass it to the pi process). inject() sends the
+    // findings as the first RPC `prompt` message into the running session.
+    // I2: inject failure is logged but not fatal — the session is already spawned and
+    // the executor can still complete (the audit will re-check on the next verdict).
+    const findingsMessage =
+      "## 監査指摘（前回の提出で発見された問題）\n\n" +
+      "以下の指摘を解決してから report_done を呼んでください:\n\n" +
+      findings.map((f) => `- ${f}`).join("\n");
+    try {
+      await driver.inject(handle.sessionId, findingsMessage);
+    } catch (injectErr) {
+      process.stderr.write(
+        `[banto-daemon] spawnReworkSession: inject findings failed for ${projectTag}/${taskId}: ` +
+          `${injectErr instanceof Error ? injectErr.message : String(injectErr)}\n`
+      );
+    }
+
+    // Record agent_spawned for the rework session.
+    const spawnedEvent = this.log.append({
+      type: "agent_spawned",
+      projectTag,
+      taskId,
+      pid: handle.pid,
+      sessionPath: handle.sessionPath,
+      worktree: worktreePath,
+      modelTier: "standard",
+    });
+    this.applyAndBroadcast(spawnedEvent);
+
+    // Register rework session in ledger.
+    const ledgerEntry: LedgerEntry = {
+      pid: handle.pid,
+      projectTag,
+      taskId: `${taskId}:rework`, // distinguish from primary executor in ledger
+      sessionPath: handle.sessionPath,
+      worktree: worktreePath,
+      driverId: "pi-rpc",
+      sessionId: handle.sessionId,
+      spawnedAt: new Date().toISOString(),
+    };
+    this.ledger.add(ledgerEntry);
+
+    // Subscribe to process exit.
+    const unsub = driver.subscribe((event) => {
+      if (event.type === "process_exited" && event.sessionId === handle.sessionId) {
+        const exitedEvent = this.log.append({
+          type: "agent_exited",
+          projectTag,
+          taskId,
+          pid: event.pid,
+          exitCode: event.exitCode,
+          signal: event.signal,
+        });
+        this.applyAndBroadcast(exitedEvent);
+        this.ledger.remove(projectTag, `${taskId}:rework`);
+        unsub();
+      }
+    });
+  }
+
+  /**
+   * Count consecutive audit fails from the event log (D3: derived, not stored).
+   *
+   * Definition of "consecutive": count audit_verdict(fail) events walking backwards
+   * from the most recent, stopping at the first audit_verdict(pass) or
+   * state_transitioned to a non-auditing active state that wasn't a rework.
+   *
+   * S75f66b-3: used by handleAuditVerdict to decide rework vs. fail.
+   */
+  private countConsecutiveAuditFails(projectTag: string, taskId: string): number {
+    const events = this.index.getTaskHistory(taskId, projectTag);
+    // Walk backwards through audit_verdict events.
+    // Count fails until we see a pass (reset) or run out of events.
+    let consecutiveFails = 0;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i];
+      if (ev.type === "audit_verdict") {
+        if (ev.verdict === "fail") {
+          consecutiveFails++;
+        } else {
+          // pass resets the streak
+          break;
+        }
+      }
+      // state_transitioned(auditing→implementing) is a rework — continue counting
+      // audit_started, agent_spawned etc. are intermediate — continue
+    }
+    return consecutiveFails;
+  }
+
+  /**
+   * Count rework sessions (implementing sessions after first audit) for naming.
+   * D3: derived from event log (count agent_spawned events after first audit_started).
+   */
+  private countReworkSessions(projectTag: string, taskId: string): number {
+    const events = this.index.getTaskHistory(taskId, projectTag);
+    let foundFirstAudit = false;
+    let reworkCount = 0;
+    for (const ev of events) {
+      if (ev.type === "audit_started") {
+        foundFirstAudit = true;
+      }
+      if (foundFirstAudit && ev.type === "agent_spawned") {
+        reworkCount++;
+      }
+    }
+    return reworkCount;
+  }
+
   // ── Internal helpers ───────────────────────────────────────────────────────
+
+  /**
+   * Register a background async operation for drain tracking.
+   *
+   * Background ops (audit/rework session spawns via setImmediate) are registered
+   * here so Daemon.stop() can await them all before closing the event log.
+   * The promise is removed from the set when it settles (success or error).
+   *
+   * D3/I2: prevents silent event drops when stop() closes the log while a background
+   * op is still in-flight and trying to append (e.g. recordTaskFailed on spawn failure).
+   */
+  private _trackBackground(p: Promise<void>): void {
+    const tracked = p.finally(() => {
+      this._backgroundOps.delete(tracked);
+    });
+    this._backgroundOps.add(tracked);
+  }
 
   /**
    * Apply a freshly-appended event to in-memory state and broadcast via WS.
@@ -799,6 +1555,373 @@ export class Daemon {
     // D3: state and index are always derived from the log.
     if (queuedCount > 0 || promoted > 0) {
       this.refreshState();
+    }
+  }
+
+  /**
+   * Auto-spawn tick job (S75f66b-2, spec-daemon-core §6).
+   *
+   * On every scheduler tick:
+   *   1. Check physical quota: if ledger.size >= maxConcurrentSessions, skip silently.
+   *      (No rejection event — just re-evaluated on the next tick.)
+   *   2. Enumerate all tasks whose derived state is "ready" AND that are not already
+   *      in the spawn ledger (i.e. not yet spawned). D3: no extra bookkeeping.
+   *   3. Spawn each eligible task via spawnTask(), stopping when the quota is full.
+   *   4. spawn failures are already routed to task_failed via recordTaskFailed inside
+   *      spawnTask() — do NOT re-spawn failed tasks (they will no longer be "ready").
+   *
+   * I2: errors are not swallowed. spawnTask() propagates to recordTaskFailed internally;
+   * errors from the auto-spawn loop are caught by the Scheduler (tick_job_failed).
+   * D3: "already spawned" check uses the ledger (live-process registry), not a separate flag.
+   */
+  private async runAutoSpawn(): Promise<void> {
+    // Re-entrancy guard: skip if a previous auto-spawn sweep is still awaiting.
+    // driver.spawn() takes 200ms–3.2s (get_state probe + fallback), so a 500ms tick
+    // can fire before the previous sweep completes, causing double-spawn for the same task.
+    if (this._autoSpawnRunning) {
+      return;
+    }
+    this._autoSpawnRunning = true;
+
+    try {
+      const maxSessions = this.config.maxConcurrentSessions ?? 5;
+
+      // Check quota FIRST — if already at limit, skip the whole sweep.
+      if (this.ledger.size >= maxSessions) {
+        return;
+      }
+
+      // Enumerate ready tasks from derived state (D3: no extra flag).
+      const readyTasks = this.store.getAllTasks().filter((t) => t.status === "ready");
+
+      for (const task of readyTasks) {
+        // Re-check quota each iteration — previous spawns in this loop count.
+        if (this.ledger.size >= maxSessions) {
+          break;
+        }
+
+        // Skip tasks that are already in the ledger (already spawned, session is live).
+        // D3: "spawned" judgment comes from the ledger, which tracks live OS processes.
+        if (this.ledger.get(task.projectTag, task.id)) {
+          continue;
+        }
+
+        // spawnTask() handles all failure paths via recordTaskFailed (I2).
+        // After a successful spawn the task transitions to "planning" (no longer "ready"),
+        // so it won't appear in the next tick's ready list.
+        // After a failed spawn the task transitions to "failed" (also no longer "ready").
+        // Either way, no re-spawn loop is possible.
+        try {
+          await this.spawnTask(task.projectTag, task.id);
+        } catch {
+          // Failure already recorded inside spawnTask() via recordTaskFailed (I2),
+          // unless spawnTask() threw before reaching it (e.g. the status-not-ready
+          // guard) — in that case the task is already in a non-ready state and no
+          // further action is needed.
+          // Do not re-throw — let the scheduler continue with remaining ready tasks.
+          // The Scheduler catches errors from the job function itself; this catch prevents
+          // a single task's failure from aborting the rest of the auto-spawn sweep.
+        }
+      }
+    } finally {
+      // Always reset so the next tick can proceed (I2: no permanent lock).
+      this._autoSpawnRunning = false;
+    }
+  }
+
+  /**
+   * Serial merge queue tick job (S75f66b-5, spec-daemon-core §4.1).
+   *
+   * Delegates to processMergeQueue() from merge-queue.ts.
+   * Passes:
+   *   - getProjectRepoPath: looks up project repo from ProjectRegistry
+   *   - getAllTasks: delegates to StateStore.getAllTasks()
+   *   - onMergeComplete: triggers gate re-eval for dependent tasks
+   *
+   * Re-entrancy guard (_mergeQueueRunning): skips the tick if a previous call is
+   * still awaiting (e.g. git rebase on a large repo took longer than tickIntervalMs).
+   * This preserves the serial guarantee even when the scheduler fires multiple ticks
+   * before the previous processMergeQueue() completes (review fix S75f66b-5).
+   *
+   * D3: queue is derived from event log replay inside processMergeQueue().
+   * I2: errors propagate to scheduler (recorded as tick_job_failed).
+   */
+  private async runMergeQueueTick(): Promise<void> {
+    // Re-entrancy guard: skip tick if a previous processMergeQueue() is still running.
+    // Preserves serial guarantee (spec §4.1) when tick interval < merge processing time.
+    if (this._mergeQueueRunning) {
+      return;
+    }
+    this._mergeQueueRunning = true;
+
+    const worktreeBase =
+      this.config.worktreeBaseDir ?? path.join(this.config.dataDir, "worktrees");
+
+    try {
+    await processMergeQueue(this.log, {
+      dataDir: this.config.dataDir,
+      worktreeBaseDir: worktreeBase,
+      mainline: "main",
+      getProjectRepoPath: (projectTag: string) => {
+        const proj = this.registry.list().find((p) => p.id === projectTag);
+        return proj?.repoPath;
+      },
+      getAllTasks: () => {
+        // Refresh state before reading tasks so we get the latest derived state.
+        this.refreshState();
+        return this.store.getAllTasks();
+      },
+      onMergeComplete: (taskId: string, projectTag: string) => {
+        // After a merge (or gate fail), trigger gate re-evaluation so any tasks
+        // that depended on this task can be promoted to ready.
+        this.runGateReeval();
+        // Also refresh state + broadcast latest event so HTTP/WS clients are current.
+        this.refreshState();
+        const allEvents = this.log.readAllEvents();
+        if (allEvents.length > 0) {
+          const lastEvent = allEvents[allEvents.length - 1];
+          this.wsServer.broadcast(lastEvent!);
+        }
+        // Suppress unused parameter warning (taskId/projectTag used for future logging)
+        void taskId;
+        void projectTag;
+      },
+      // S75f66b-6: auto-file conflict task + pause origin on rebase failure.
+      onRebaseConflict: async (
+        _log,
+        originTaskId,
+        originProjectTag,
+        error,
+        conflictedFiles
+      ) => {
+        await this.handleRebaseConflict(
+          originTaskId,
+          originProjectTag,
+          error,
+          conflictedFiles
+        );
+      },
+    });
+
+    // After the tick, always refresh state so in-memory store reflects any changes
+    // made by processMergeQueue (transitions appended to the log).
+    this.refreshState();
+    // Broadcast the latest event (if any new ones were appended)
+    const allEvents = this.log.readAllEvents();
+    if (allEvents.length > 0) {
+      const lastEvent = allEvents[allEvents.length - 1];
+      this.wsServer.broadcast(lastEvent!);
+    }
+    } finally {
+      // Always reset the guard so a future tick can proceed (I2: no permanent lock).
+      this._mergeQueueRunning = false;
+    }
+  }
+  /**
+   * Handle a rebase conflict from the merge queue.
+   *
+   * S75f66b-6 (AC-S75f66b-6-1):
+   *   1. Idempotency guard: if the origin task is already paused, skip filing
+   *      (tick may have re-observed the same conflict before the pause settled).
+   *   2. File a kind:conflict task to work/tasks/ (next task-NNNN number).
+   *      status: queued so the watcher ingests it via the normal path (D4).
+   *   3. Pause the origin task (paused, suspended_from=merging).
+   *   4. Refresh state + broadcast so HTTP/WS clients reflect the pause.
+   *
+   * D3: no mapping file written — correspondence is derived from refs[0] in events.
+   * D4: conflict task file goes through work/tasks/ + watcher (not direct createTask).
+   * I2: any error is logged; does not throw (recorded as tick_job_failed by scheduler).
+   */
+  private async handleRebaseConflict(
+    originTaskId: string,
+    originProjectTag: string,
+    error: Error,
+    conflictedFiles: string[]
+  ): Promise<void> {
+    // 1. Idempotency guard: if origin is already paused, don't file again.
+    //    This covers the case where the tick re-fires before the watcher ingests
+    //    the conflict task (the origin stays in merging between the file write and
+    //    the watcher's next poll cycle).
+    // NOTE: The origin task is currently in `merging` (the merge queue put it there).
+    // After we pause it here it becomes `paused`. If the tick fires again before the
+    // watcher injects the conflict task, the origin is already paused → skip.
+    this.refreshState();
+    const originTask = this.store.getTask(originTaskId, originProjectTag);
+    if (!originTask) {
+      process.stderr.write(
+        `[banto-daemon] handleRebaseConflict: origin task ${originProjectTag}/${originTaskId} not found\n`
+      );
+      return;
+    }
+    if (originTask.status === "paused") {
+      // Already paused (idempotent — the tick re-observed the same conflict). Skip.
+      return;
+    }
+
+    // 2. Find the project's repo path to write the conflict task file.
+    const proj = this.registry.list().find((p) => p.id === originProjectTag);
+    if (!proj) {
+      process.stderr.write(
+        `[banto-daemon] handleRebaseConflict: project ${originProjectTag} not in registry\n`
+      );
+      // Record as tick_job_failed (I2: not silent).
+      this.log.append({
+        type: "tick_job_failed",
+        projectTag: "daemon",
+        jobName: "conflict-filer",
+        error: `project ${originProjectTag} not found in registry for conflict task filing`,
+      });
+      return;
+    }
+
+    // 3. File the conflict task (writes to work/tasks/).
+    //    The watcher will ingest it via the normal path on its next poll (D4).
+    let filed: { taskId: string; filePath: string };
+    try {
+      filed = fileConflictTask({
+        projectTag: originProjectTag,
+        originTaskId,
+        originTaskTitle: String(originTask["title"] ?? originTaskId),
+        originTaskBranch: `task/${originTaskId}`,
+        mainline: "main",
+        conflictedFiles,
+        rebaseErrorMessage: error.message,
+        repoPath: proj.repoPath,
+      });
+    } catch (fileErr) {
+      const reason = `conflict task filing failed for ${originProjectTag}/${originTaskId}: ${
+        fileErr instanceof Error ? fileErr.message : String(fileErr)
+      }`;
+      process.stderr.write(`[banto-daemon] ${reason}\n`);
+      this.log.append({
+        type: "tick_job_failed",
+        projectTag: "daemon",
+        jobName: "conflict-filer",
+        error: reason,
+      });
+      return;
+    }
+
+    process.stdout.write(
+      `[banto-daemon] conflict task filed: ${filed.taskId} for origin ${originProjectTag}/${originTaskId} (${filed.filePath})\n`
+    );
+
+    // 4. Pause the origin task (suspended_from=merging).
+    //    StateMachine.pause() emits state_transitioned(merging→paused) + task_paused.
+    const pauseResult = StateMachine.pause(
+      this.log,
+      originTaskId,
+      "merging",
+      originProjectTag
+    );
+    if (!pauseResult.ok) {
+      process.stderr.write(
+        `[banto-daemon] handleRebaseConflict: failed to pause ${originProjectTag}/${originTaskId}: ${pauseResult.reason}\n`
+      );
+      // Still continue: the conflict file was already written.
+    }
+
+    // Refresh state and broadcast.
+    this.refreshState();
+    const allEvents = this.log.readAllEvents();
+    if (allEvents.length > 0) {
+      this.wsServer.broadcast(allEvents[allEvents.length - 1]!);
+    }
+  }
+
+  /**
+   * Conflict resolution outcome check tick job (S75f66b-6, spec-daemon-core §4.2).
+   *
+   * On each tick, derive paused-origin↔conflict-resolution pairs from the task store (D3).
+   * For each pair:
+   *   - Resolution task merged/closed → resume origin to merging (re-enters the queue).
+   *   - Resolution task failed        → chain-fail origin (I2: stop, don't swallow).
+   *
+   * D3: correspondence derived from refs[0] (discovered-from convention) — no mapping file.
+   * I2: chain-fail is used when resolution fails (origin cannot proceed without resolution).
+   */
+  private runConflictResolutionCheck(): void {
+    this.refreshState();
+    const allTasks = this.store.getAllTasks();
+    const pairs = deriveOriginResolutionPairs(allTasks);
+
+    for (const pair of pairs) {
+      const { originTaskId, originProjectTag, resolutionTaskId, resolutionProjectTag } = pair;
+
+      const resolutionTask = this.store.getTask(resolutionTaskId, resolutionProjectTag);
+      if (!resolutionTask) continue;
+
+      const resStatus = resolutionTask.status;
+
+      if (resStatus === "merged" || resStatus === "closed") {
+        // Resolution task succeeded → resume origin back to merging.
+        // The origin will re-enter the merge queue and be processed on the next tick.
+        const originTask = this.store.getTask(originTaskId, originProjectTag);
+        if (!originTask || originTask.status !== "paused") continue;
+
+        const resumeResult = StateMachine.resume(
+          this.log,
+          originTaskId,
+          "paused",
+          "merging",
+          originProjectTag
+        );
+
+        if (resumeResult.ok) {
+          process.stdout.write(
+            `[banto-daemon] conflict resolved: origin ${originProjectTag}/${originTaskId} resumed to merging ` +
+              `(resolution ${resolutionProjectTag}/${resolutionTaskId} ${resStatus})\n`
+          );
+          // AC-S75f66b-6-3: record the origin↔resolution linkage explicitly.
+          // A po_operation event captures the correlation so the audit trail shows
+          // WHICH resolution task caused the resume (D3: derived from events, not
+          // a mapping file; I2: the linkage is in the log, not just ordering).
+          this.log.append({
+            type: "po_operation",
+            projectTag: originProjectTag,
+            operation: "conflict_resolved",
+            taskId: originTaskId,
+            payload: { resolutionTaskId, resolutionProjectTag },
+          });
+        } else {
+          process.stderr.write(
+            `[banto-daemon] conflict-resolution-check: resume failed for ${originProjectTag}/${originTaskId}: ${resumeResult.reason}\n`
+          );
+        }
+
+        this.refreshState();
+        const allEvents = this.log.readAllEvents();
+        if (allEvents.length > 0) {
+          this.wsServer.broadcast(allEvents[allEvents.length - 1]!);
+        }
+
+        // Re-evaluate gates so the resumed (merging) task can be processed.
+        this.runGateReeval();
+      } else if (resStatus === "failed") {
+        // Resolution task failed → chain-fail origin (I2: stop, record, don't swallow).
+        const originTask = this.store.getTask(originTaskId, originProjectTag);
+        if (!originTask || originTask.status !== "paused") continue;
+
+        const failReason = `conflict_resolution_failed: resolution task ${resolutionTaskId} failed`;
+        StateMachine.fail(
+          this.log,
+          originTaskId,
+          { currentStatus: "paused", reason: failReason },
+          originProjectTag
+        );
+
+        process.stdout.write(
+          `[banto-daemon] conflict resolution failed: origin ${originProjectTag}/${originTaskId} chain-failed ` +
+            `(resolution ${resolutionProjectTag}/${resolutionTaskId} failed)\n`
+        );
+
+        this.refreshState();
+        const allEvents = this.log.readAllEvents();
+        if (allEvents.length > 0) {
+          this.wsServer.broadcast(allEvents[allEvents.length - 1]!);
+        }
+      }
+      // If resolution task is still active (not terminal), do nothing on this tick.
     }
   }
 }

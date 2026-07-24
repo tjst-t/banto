@@ -94,6 +94,27 @@ export class DaemonClient {
     return result.task;
   }
 
+  /**
+   * Submit an audit verdict for a task in 'auditing' state.
+   * POST /api/v1/projects/:proj/tasks/:id/audit-report
+   *
+   * Called by the audit_report tool (banto-core tools.ts) from inside an audit session.
+   * D5: no logic here — pure HTTP call. All routing/rework logic lives in daemon.
+   * I2: non-2xx responses throw DaemonApiError.
+   */
+  async auditReport(
+    projectTag: string,
+    taskId: string,
+    verdict: "pass" | "fail",
+    findings: string[]
+  ): Promise<{ ok: boolean }> {
+    const result = await this.post<{ ok: boolean }>(
+      `/api/v1/projects/${encodeURIComponent(projectTag)}/tasks/${encodeURIComponent(taskId)}/audit-report`,
+      { verdict, findings }
+    );
+    return result;
+  }
+
   // ── Internal helpers ──────────────────────────────────────────────────────
 
   private async get<T>(path: string): Promise<T> {

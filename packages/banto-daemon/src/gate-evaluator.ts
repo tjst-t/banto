@@ -185,6 +185,73 @@ export function scopePathsOverlap(setA: string[], setB: string[]): boolean {
   return false;
 }
 
+/**
+ * Test whether a concrete file path is covered by a glob pattern.
+ *
+ * Used by the merge-gate scope checker to determine whether each file in
+ * `git diff --name-only base...branch` falls within the task's scope.paths.
+ *
+ * Strategy (no minimatch, D6):
+ *   - No wildcard:  exact string equality.
+ *   - First segment is "**" or "*": catch-all → always matches.
+ *   - Wildcard "**" in a non-first segment: the file must start with the literal
+ *     prefix before the wildcard segment — it may cross directory separators.
+ *   - Wildcard "*" (single star) in a non-first segment: the file must start
+ *     with the literal prefix AND the remainder after the prefix must NOT contain
+ *     a "/" (single star must not cross a directory separator). If the pattern
+ *     segment following "*" includes a file extension (e.g. "*.ts"), the matched
+ *     portion must also end with that extension.
+ *   Conservative direction: when unsure → not-in-scope → violation (fail-closed).
+ *
+ * Examples:
+ *   fileMatchesGlob("src/a.ts",       "src/**")   → true  (** crosses dirs)
+ *   fileMatchesGlob("src/a/b.ts",     "src/**")   → true  (** crosses dirs)
+ *   fileMatchesGlob("src/a.ts",       "src/*.ts") → true  (single *, same dir, .ts ext)
+ *   fileMatchesGlob("src/a/b.ts",     "src/*.ts") → false (* must not cross /)
+ *   fileMatchesGlob("src/a.js",       "src/*.ts") → false (wrong extension)
+ *   fileMatchesGlob("src/a.ts",       "src/a.ts") → true  (exact)
+ *   fileMatchesGlob("docs/x.md",      "src/**")   → false (different tree)
+ *   fileMatchesGlob("any/path",       "**")        → true  (catch-all)
+ */
+export function fileMatchesGlob(filePath: string, pattern: string): boolean {
+  const p = pattern.replace(/\/+$/, "");
+  const segments = p.split("/");
+  if (!p.includes("*")) {
+    // No wildcard — exact match only
+    return filePath === p;
+  }
+
+  // Compile the glob segment-by-segment into an anchored RegExp:
+  //   "**" as a whole segment → zero or more path segments (".+" when last)
+  //   "*"  within a segment   → any run of non-"/" characters
+  // Every literal character is escaped, so matching is strict (fail-closed):
+  // a stricter matcher yields MORE not-in-scope verdicts, never fewer.
+  const esc = (s: string): string => s.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  let re = "^";
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i]!;
+    const isLast = i === segments.length - 1;
+    if (seg === "**") {
+      // Zero or more whole segments; as the final segment it must cover at
+      // least one character (a bare directory prefix is not a file match).
+      re += isLast ? ".+" : "(?:[^/]+/)*";
+    } else {
+      re += seg.split("*").map(esc).join("[^/]*");
+      if (!isLast) re += "/";
+    }
+  }
+  re += "$";
+  return new RegExp(re).test(filePath);
+}
+
+/**
+ * Check whether a concrete file path is covered by ANY pattern in a scope.paths array.
+ * Returns true if the file is within scope (permitted); false means it is a violation.
+ */
+export function fileMatchesScopePaths(filePath: string, scopePaths: string[]): boolean {
+  return scopePaths.some((pattern) => fileMatchesGlob(filePath, pattern));
+}
+
 // ── Gate evaluation result ─────────────────────────────────────────────────────
 
 export interface GateResult {

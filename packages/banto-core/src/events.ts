@@ -226,6 +226,77 @@ export interface TickJobFailedEvent extends EventBase {
   error: string;
 }
 
+/**
+ * Merge-gate verdict for a task in the 'merging' state.
+ *
+ * Records whether the pre-merge checks (scope diff + verify commands) passed.
+ * On failure, `reasons` lists the violation file paths or verify command failures.
+ * Log paths for verify-command output are carried as path references only (spec §2.1).
+ *
+ * S75f66b-4: appended here to keep the union complete; wiring into the merge
+ * processor happens in S75f66b-5. (D3: gate judgments recorded as events only.)
+ */
+export interface MergeGateEvaluatedEvent extends EventBase {
+  type: "merge_gate_evaluated";
+  taskId: string;
+  passed: boolean;
+  /** Human-readable reasons for gate failure (violation files or failed command ids). */
+  reasons: string[];
+  /**
+   * Path references to execution log directories for verify commands.
+   * Contains log directory paths only — never log content (spec §2.1).
+   * Empty when no verify commands were run or when scope check failed first.
+   */
+  logPaths: string[];
+}
+
+/**
+ * Audit session started for a task in 'auditing' state.
+ *
+ * S75f66b-3: emitted when daemon auto-spawns an audit session.
+ * sessionPath is a path reference only — no content stored (spec §2.1).
+ * role: "audit" distinguishes this from executor agent_spawned events.
+ */
+export interface AuditStartedEvent extends EventBase {
+  type: "audit_started";
+  taskId: string;
+  /** Session JSONL path reference (not transcript content — spec §2.1). */
+  sessionPath: string;
+  /** Absolute path to the task's worktree (read context for the audit agent). */
+  worktree: string;
+}
+
+/**
+ * Audit session reported a verdict via the audit_report tool.
+ *
+ * S75f66b-3: emitted by daemon when it receives the audit verdict.
+ * D3: status change is carried exclusively by state_transitioned events;
+ * this event records only the audit metadata (verdict + findings).
+ * findings: path references or short descriptions — no large content inline (spec §2.1).
+ */
+export interface AuditVerdictEvent extends EventBase {
+  type: "audit_verdict";
+  taskId: string;
+  verdict: "pass" | "fail";
+  /**
+   * Human-readable findings from the audit session (fail case).
+   * Empty array on pass. Short strings only — full transcript is in sessionPath.
+   */
+  findings: string[];
+}
+
+/**
+ * Audit session spawn was suppressed by the disableAuditSpawn config flag.
+ *
+ * F2 (governance): emitted so the bypass is visible in the event log — "黙って迂回できる経路を
+ * 作らない" (priority rule 2). This event is recorded instead of spawning the audit session,
+ * making the suppression auditable without spawning a real session (test-only flag).
+ */
+export interface AuditSpawnDisabledEvent extends EventBase {
+  type: "audit_spawn_disabled";
+  taskId: string;
+}
+
 /** Union of all orchestration event types */
 export type OrchestrationEvent =
   | TaskCreatedEvent
@@ -246,4 +317,8 @@ export type OrchestrationEvent =
   | TaskFailedEvent
   | TaskSupersededEvent
   | TaskIngestRejectedEvent
-  | TickJobFailedEvent;
+  | TickJobFailedEvent
+  | MergeGateEvaluatedEvent
+  | AuditStartedEvent
+  | AuditVerdictEvent
+  | AuditSpawnDisabledEvent;

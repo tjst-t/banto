@@ -30,6 +30,14 @@ export type TickJob = () => void | Promise<void>;
 export class Scheduler {
   private readonly jobs: Map<string, TickJob> = new Map();
   private timer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Promises for ALL currently-executing runAllJobs() calls.
+   * A Set (not a single slot): a long-running tick can still be in flight when
+   * the next interval fires, and a single nullable slot would be overwritten,
+   * leaving the older run un-awaited by stop() — it would then outlive
+   * log.close() and throw on append (D3/I2: no events must be lost).
+   */
+  private readonly _inFlightRuns = new Set<Promise<void>>();
 
   constructor(
     private readonly log: EventLog,
@@ -51,7 +59,11 @@ export class Scheduler {
   start(): void {
     if (this.timer !== null) return;
     this.timer = setInterval(() => {
-      void this.runAllJobs();
+      // Track every in-flight run so stop() can await all of them.
+      const run: Promise<void> = this.runAllJobs().finally(() => {
+        this._inFlightRuns.delete(run);
+      });
+      this._inFlightRuns.add(run);
     }, this.intervalMs);
     // Allow the Node.js event loop to exit if the timer is the only pending work.
     // Tests rely on unref() so that the process doesn't hang after daemon.stop().
@@ -61,13 +73,26 @@ export class Scheduler {
   }
 
   /**
-   * Stop the periodic ticker.
+   * Stop the periodic ticker and await any in-flight runAllJobs() completion.
+   *
+   * Drain guarantee: clears the interval first (no new ticks), then awaits the
+   * currently-running job batch (if any). This ensures the EventLog is never
+   * closed while a job is still mid-execution and trying to append events.
+   *
+   * D3/I2: the event log is the single runtime truth — no writes must be lost.
+   * Daemon.stop() must await this before calling log.close().
+   *
    * Calling stop() on an already-stopped scheduler is a no-op.
    */
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.timer !== null) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+    // Await every in-flight runAllJobs() that fired before we cleared the
+    // interval — overlapping ticks mean there can be more than one.
+    while (this._inFlightRuns.size > 0) {
+      await Promise.allSettled([...this._inFlightRuns]);
     }
   }
 
@@ -77,7 +102,7 @@ export class Scheduler {
   }
 
   /** Run all registered jobs sequentially, catching per-job errors (I2). */
-  private async runAllJobs(): Promise<void> {
+  async runAllJobs(): Promise<void> {
     for (const [name, fn] of this.jobs) {
       try {
         await fn();

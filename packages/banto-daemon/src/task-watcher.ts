@@ -5,8 +5,10 @@
  *   1. For each registered project, scan <repoPath>/work/tasks/*.md
  *   2. Compare file mtime against the last known mtime (in-memory map)
  *   3. On new or modified file: parse + validate frontmatter
- *      - Success: emit task_created → state_transitioned(draft→queued)
- *      - Failure: emit task_ingest_rejected(reason) (I2: not swallowed)
+ *      - Validation failure (any status): emit task_ingest_rejected(reason) (I2: not swallowed)
+ *      - Validation success, status === "queued": emit task_created → state_transitioned(draft→queued)
+ *      - Validation success, status === "draft":  schema-validate only; do NOT enqueue, no events.
+ *        (imp-0001 PO decision option-2: draft is PO-intent-only, not executable)
  *   4. Never write back to the file (D3: file is intent, event log is state)
  *
  * D3: watcher is file→enqueue one-way only. No frontmatter write-back, ever.
@@ -133,13 +135,25 @@ export class TaskWatcher {
 
     const validation = validateTaskFrontmatter(content);
     if (!validation.ok) {
-      // I2: validation failure → task_ingest_rejected with reason
+      // I2: validation failure → task_ingest_rejected with reason (applies to any status, including draft)
       this.emitRejected(projectId, filePath, validation.reason);
       projectStates.set(filePath, { mtimeMs, ingested: false });
       return;
     }
 
     const fm = validation.frontmatter;
+
+    // imp-0001 PO decision option-2: only status:queued triggers enqueue.
+    // Any other valid status (draft, done, failed, superseded, cancelled) =
+    // schema-validate only; record mtime so the file is not re-processed on
+    // each poll, but emit no events and create no task.
+    // When the PO later edits the status to "queued", the mtime changes and the
+    // poll will re-enter this function with the new mtime and ingest it.
+    if (fm.status !== "queued") {
+      // Valid file but status is not queued — record mtime and wait for a status change.
+      projectStates.set(filePath, { mtimeMs, ingested: false });
+      return;
+    }
 
     // Check if task already exists in this project (idempotency on mtime change)
     const existing = this.daemon.getTask(projectId, fm.id);
@@ -161,6 +175,9 @@ export class TaskWatcher {
         ...(fm.environment !== undefined ? { environment: fm.environment } : {}),
         ...(fm.governance !== undefined ? { governance: fm.governance } : {}),
         ...(fm.model_tier !== undefined ? { model_tier: fm.model_tier } : {}),
+        // review.policy controls auto-merge vs manual-review path (spec-daemon-core §1).
+        // Without this, handleAuditVerdict() defaults to "manual" and never auto-merges.
+        ...(fm.review !== undefined ? { review: fm.review } : {}),
       });
     } catch (err) {
       // createTask may throw if there's a duplicate (race); treat as already done

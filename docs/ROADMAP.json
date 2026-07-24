@@ -4,10 +4,10 @@
   "progress": {
     "current_sprint": null,
     "total": 10,
-    "done": 3,
+    "done": 4,
     "in_progress": 0,
-    "remaining": 7,
-    "percentage": 30
+    "remaining": 6,
+    "percentage": 40
   },
   "execution_order": [
     "S654396",
@@ -519,14 +519,14 @@
     },
     "S75f66b": {
       "title": "監査・マージ機構",
-      "status": "pending",
+      "status": "done",
       "description": "監査セッション、直列マージキュー（rebase→マージ前ゲート→マージ）、daemonによるテスト直接実行（I1）、scope.paths違反のdiff機械検査、コンフリクト解消タスクの自動起票",
       "milestone": false,
       "detail_level": "detailed",
       "stories": {
         "S75f66b-1": {
           "title": "watcherのstatus:queuedのみenqueue（imp-0001 fix）",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、work/tasks/に status:draft で置いたタスク定義はenqueueされず、status:queued に書き換えたときに初めて取り込まれるようにしたい。なぜなら、draftはPOレビュー前の意図表明であり、勝手に実行キューへ入るとPOの判断主権（優先原則1）が侵されるから。",
@@ -535,37 +535,37 @@
               "id": "AC-S75f66b-1-1",
               "description": "status:draft のタスク定義ファイルを work/tasks/ に置くとスキーマ検証のみ行われ、タスクは作成されない（GET /tasks に現れず、task_created / state_transitioned イベントも積まれない）",
               "test": "[AC-S75f66b-1-1] in tests/acceptance/watcher-draft-status.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S75f66b-1-2",
               "description": "同じファイルの status を draft→queued に書き換えて保存すると、watcherがenqueueしてタスクが queued 状態で現れる（回帰: status:queued の新規ファイルも従来どおり取り込まれる）",
               "test": "[AC-S75f66b-1-2] in tests/acceptance/watcher-draft-status.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S75f66b-1-3",
               "description": "status:draft でもfrontmatterが不正なファイルは task_ingest_rejected イベントが理由付きで積まれる（draftでも検証フィードバックは受けられる。I2）",
               "test": "[AC-S75f66b-1-3] in tests/acceptance/watcher-draft-status.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
             "S75f66b-1-1": {
               "title": "watcherのstatus分岐実装",
               "description": "task-watcher.ts の ingestFile で frontmatter.status を参照し、queued のみ createTask + draft→queued 遷移を行う。draft は validateTaskFrontmatter による検証のみ（成功時は取り込まずイベントも積まない、失敗時は task_ingest_rejected）。mtimeベースの再処理（draft→queued書き換え検知）が機能するよう fileStates の ingested 判定を維持する。imp-0001 PO判断・案2。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-1-2": {
               "title": "回帰テストと既存テストのdraft前提修正",
               "description": "tests/acceptance/watcher-draft-status.spec.ts を新設（draft据え置き／draft→queued書き換え／queued直接投入／不正draft拒否）。既存 watcher-ingest / watcher-reject 系テストのフィクスチャが status:draft 前提なら queued に更新する（P1: watcher関連スペックのみ）。",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
         "S75f66b-2": {
           "title": "readyタスクの自動spawn（tickジョブ）",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、依存駆動ゲートを通過して ready になったタスクが、私の手動操作なしに自動でspawnされるようにしたい。なぜなら、「spawnをPOが手動で行う必要がない」ことがvisionのsuccess criteriaそのものだから。",
@@ -574,42 +574,42 @@
               "id": "AC-S75f66b-2-1",
               "description": "queued→ready に昇格したタスクが、明示的なspawn API呼び出しなしに次のtickで自動spawnされ planning へ遷移する（agent_spawned イベントで観測できる）",
               "test": "[AC-S75f66b-2-1] in tests/acceptance/auto-spawn-tick.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S75f66b-2-2",
               "description": "実行中セッション数が設定上限（物理quota、層B設定）に達している間は新規spawnが行われず、枠が空くと後続のreadyタスクが順にspawnされる",
               "test": "[AC-S75f66b-2-2] in tests/acceptance/auto-spawn-quota.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S75f66b-2-3",
               "description": "spawn失敗したタスクは task_failed で止まり（I2）、以後のtickで同一タスクへの再spawnループが起きない（イベントログにspawn試行が繰り返し積まれない）",
               "test": "[AC-S75f66b-2-3] in tests/acceptance/auto-spawn-tick.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
             "S75f66b-2-1": {
               "title": "auto-spawn tickジョブ",
               "description": "daemonのSchedulerに auto-spawn ジョブを登録。ready状態のタスクをイベント由来の導出状態から列挙し（spec-daemon-core §6 readyクエリと同一のセマンティクス）、spawnTask() を呼ぶ。spawn済み・実行中・failed の判定はすべてイベントログ導出状態から行う（D3: 別途フラグを保存しない）。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-2-2": {
               "title": "同時実行上限（物理quota）",
               "description": "DaemonConfig に maxConcurrentSessions（層B、既定値あり）を追加。spawn台帳の実行中エントリ数と比較し、超過中はspawnをスキップ（拒否イベントは積まず次tickで再評価）。数値WIPではなく物理quotaとして扱う（spec-multi-project §3）。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-2-3": {
               "title": "受け入れテスト",
               "description": "auto-spawn-tick.spec.ts / auto-spawn-quota.spec.ts。ready昇格→自動spawn、上限待機→順次spawn、spawn失敗→failed固定（再spawnなし）をイベント列で検証。",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
         "S75f66b-3": {
           "title": "監査セッション（auditing機構）",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、実行者が完了報告した成果をレビューに回す前に、監査セッションがタスク定義と監査チェックリストに照らして必ず検査するようにしたい。なぜなら、ゲート・監査が「必ず行われる」ことを構造で保証すること（優先原則2）が番頭の存在理由だから。",
@@ -618,58 +618,58 @@
               "id": "AC-S75f66b-3-1",
               "description": "実行者の完了報告でタスクが auditing へ遷移すると、daemonが監査セッションを自動spawnする（audit用の agent_spawned イベントとspawn台帳エントリで観測できる）",
               "test": "[AC-S75f66b-3-1] in tests/acceptance/audit-session-spawn.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S75f66b-3-2",
               "description": "監査セッションのシステムプロンプトと監査チェックリストは層Aプロンプト資産（skills/）ファイルから読み込まれ、基準の変更がgit差分として見える（D2: 機構はコード、基準はテキスト）",
               "test": "[AC-S75f66b-3-2] in tests/acceptance/audit-checklist-assets.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S75f66b-3-3",
               "description": "監査セッションが audit_report ツールで pass を報告すると、review.policy が auto のタスクは in-review を経ず merging（マージキュー投入）へ、それ以外は review-ready へ遷移する",
               "test": "[AC-S75f66b-3-3] in tests/acceptance/audit-verdict-routing.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S75f66b-3-4",
               "description": "監査 fail の報告では指摘（findings）がイベントに記録され、1回目はタスクが implementing に戻って指摘を注入した修正セッションが起動し、2回連続failで failed になり止まる（I2）",
               "test": "[AC-S75f66b-3-4] in tests/acceptance/audit-fail-rework.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
             "S75f66b-3-1": {
               "title": "監査プロンプト資産（層A）",
               "description": "skills/ 配下に監査セッションのシステムプロンプトと監査チェックリスト（principles＋タスク定義＋チェックリストで判定。spec-document-system §「監査」行）を置き、既存の prompt-assets 読込機構で注入する。判定基準はコードに書かない（D2 / ADR-0001）。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-3-2": {
               "title": "audit_reportツール（banto-core）",
               "description": "verdict（pass/fail）と findings を daemon API に送る監査用ツールを banto-core tools.ts に追加し、pi Extension アダプタに登録する。中身はdaemon API呼び出しのみ（D5）。frontmatter/TaskRecord に review.policy（spec-schemas §1既存フィールド）のパース・保持を追加する。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-3-3": {
               "title": "監査spawnオーケストレーション",
               "description": "implementing→auditing 遷移をトリガに、daemonがランタイムドライバ契約経由で監査セッションを対象worktreeにspawnする（監査はランタイム可換の系。spec-daemon-core §3.5）。監査対象コンテキスト＝タスク定義＋diff。audit開始・完了はイベントに記録する。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-3-4": {
               "title": "verdictルーティングとrework",
               "description": "pass時: review.policy による auditing→merging / auditing→review-ready の分岐（state-machine既存遷移）。fail時: audit指摘イベント記録→1回目は遷移表に auditing:implementing（rework）を追加して修正セッションをfindings注入付きでspawn、2回連続failで StateMachine.fail()（I2）。fail回数はイベントログから導出する（D3）。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-3-5": {
               "title": "受け入れテスト",
               "description": "audit-session-spawn / audit-checklist-assets / audit-verdict-routing / audit-fail-rework の4スペック。ドライバ契約レベルで監査spawnを検証し、E2Eは S75f66b-5-4 のパイプラインで実機確認。",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
         "S75f66b-4": {
           "title": "マージ前ゲート（scope機械検査＋テスト直接実行）",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、マージ可否はエージェントの自己申告ではなく、daemon自身が実行するdiff機械検査とテストで決まるようにしたい。なぜなら、自己申告を信頼する検証は統治を保証せず（I1）、scope執行の最終防衛はランタイム非依存でなければならないから。",
@@ -678,42 +678,42 @@
               "id": "AC-S75f66b-4-1",
               "description": "scope.paths 外のファイルを変更したブランチはマージ前ゲートで拒否され、違反ファイルの一覧が理由としてイベントに記録される（P1のランタイム非依存執行。spec-daemon-core §3.5）",
               "test": "[AC-S75f66b-4-1] in tests/acceptance/merge-gate-scope.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S75f66b-4-2",
               "description": "acceptance の verify コマンドを daemon がrebase済みworktreeで直接実行し、非ゼロexitでゲートがfailになる。実行ログはタスク別ディレクトリに保存され、イベントにはパス参照のみが載る",
               "test": "[AC-S75f66b-4-2] in tests/acceptance/merge-gate-verify.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S75f66b-4-3",
               "description": "ゲートfailしたタスクはメインラインに何もマージされないまま failed になり（I2）、メインラインのHEADが変化しない（常時グリーン保証）",
               "test": "[AC-S75f66b-4-3] in tests/acceptance/merge-gate-fail.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
             "S75f66b-4-1": {
               "title": "scope.paths diff機械検査",
               "description": "git diff --name-only <base>...<branch> の結果を scope.paths のglobと照合し、違反ファイルを列挙する検査器。glob照合は gate-evaluator.ts の既存glob資産を流用（D6）。判定は純粋関数としてテスト可能にする。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-4-2": {
               "title": "verifyコマンド直接実行",
               "description": "acceptance[].verify（spec-schemas §1）をrebase済みworktreeで child_process 実行（I1: daemon自身が実行、実行者の申告は使わない）。ログは <dataDir>/gate-logs/<taskId>/ に保存し、イベントにはパス参照のみ（spec-daemon-core §2.1と同型）。タイムアウトは層B設定。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-4-3": {
               "title": "ゲート判定イベントとfail処理",
               "description": "gate通過/拒否を理由付きイベント（既存 gate_evaluated 系の拡張または merge_gate 用イベント）で記録。fail時は StateMachine.fail() で止める（I2）。受け入れテスト3スペックを含む。",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
         "S75f66b-5": {
           "title": "直列マージキュー（rebase→ゲート→マージ）",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、approvedになったタスクが直列マージキューで rebase→マージ前ゲート→マージ と自動処理され、メインラインが常にグリーンに保たれるようにしたい。なぜなら、マージ作業と後始末にPOのレビュー帯域を使わないこと（優先原則3）が番頭の目的だから。",
@@ -722,53 +722,53 @@
               "id": "AC-S75f66b-5-1",
               "description": "approvedになったタスクはマージキューに積まれ、複数タスクがapprovedでも1件ずつ直列に rebase→ゲート→マージ が実行されて merged になる（並行処理されないことがイベント順序で観測できる）",
               "test": "[AC-S75f66b-5-1] in tests/acceptance/merge-queue-serial.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S75f66b-5-2",
               "description": "マージ成功で task_merged が積まれ、worktree・ブランチが冪等に片付けられ、依存ゲート再評価によって後続の依存タスクが ready に昇格する。hypothesis を持たないタスクは closed まで進む",
               "test": "[AC-S75f66b-5-2] in tests/acceptance/merge-queue-cleanup.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S75f66b-5-3",
               "description": "マージキューの内容と処理位置はイベントログのリプレイのみから導出され（D3: 導出状態を別途保存しない）、daemon再起動後もキューが復元されて処理が継続する",
               "test": "[AC-S75f66b-5-3] in tests/acceptance/merge-queue-derive.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S75f66b-5-4",
               "description": "E2E: work/tasks/へのタスク投入→取り込み→ready→自動spawn→実装→監査→承認→マージまでを実機で一気通貫に通す（モック不可。S254276の歩くスケルトンの延長）",
               "test": "[AC-S75f66b-5-4] in tests/acceptance/pipeline-merge.e2e.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
             "S75f66b-5-1": {
               "title": "マージキュー導出",
               "description": "approved到達順（イベントログのapproval順）のキューをリプレイから導出する純粋関数。処理中（merging）タスクの再開判定も含め、永続化ファイルは持たない（D3）。再起動復元をここで保証。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-5-2": {
               "title": "直列マージプロセッサ",
               "description": "tickジョブとしてキュー先頭のみ処理: 対象worktreeをメインラインへ rebase → S75f66b-4 のゲート実行 → fast-forward マージ → merged遷移。git操作はdaemonの child_process（標準git CLI、D6）。同時に1件のみ処理する直列性を保証（spec-daemon-core §4.1。Bors型バッチは将来拡張であり実装しない）。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-5-3": {
               "title": "マージ後処理",
               "description": "worktree・タスクブランチの削除（冪等、I3）、既存 gate-reeval ジョブによる依存タスクの ready 昇格接続、hypothesis無しタスクの merged→closed 遷移（既存遷移表）。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-5-4": {
               "title": "パイプラインE2E",
               "description": "サンプルプロジェクトで 投入→自動spawn→実装→監査→承認（policy autoは監査後直行）→マージ を実機で通す pipeline-merge.e2e.spec.ts。モック・DRY_RUN不可（S254276-4-2の規律を踏襲）。",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
         "S75f66b-6": {
           "title": "コンフリクト解消タスクの自動起票",
-          "status": "pending",
+          "status": "needs_user_review",
           "user_review_required": true,
           "review_reason": "spec-daemon-core §8 未決事項「解消タスク自動起票時のコンテキスト注入内容」と、元タスクの再開セマンティクス（paused→解消タスクmergedで再開）をv1判断で置いたため、PO確認が必要（D1）",
           "user_story": "POとして、rebaseが失敗したときにdaemonが解消タスクを自動起票してエージェントに解かせたい。なぜなら、コンフリクト処理をPOが手作業で行うのは帯域の浪費であり、解消結果も通常の監査＋マージ前ゲートを通せば品質は機構で保証されるから。",
@@ -777,36 +777,36 @@
               "id": "AC-S75f66b-6-1",
               "description": "rebase失敗時、マージは行われず、kind:conflict の解消タスク定義が work/tasks/ に自動生成される（status:queued、refs先頭に元タスクID＝discovered-from規約、scope.pathsはコンフリクト対象ファイル、本文に両ブランチの由来とコンフリクト状況）。元タスクは paused になり、マージキューは後続タスクの処理を継続する",
               "test": "[AC-S75f66b-6-1] in tests/acceptance/conflict-autofile.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S75f66b-6-2",
               "description": "解消タスクは特別扱いなしに通常フロー（watcher取り込み→ready→自動spawn→監査→マージ前ゲート→マージ）を通る（spec-daemon-core §4.2）",
               "test": "[AC-S75f66b-6-2] in tests/acceptance/conflict-normal-flow.spec.ts",
-              "status": "pending"
+              "status": "pass"
             },
             {
               "id": "AC-S75f66b-6-3",
               "description": "解消タスクが merged になると元タスクは再開されて merged になる（resolution参照付き）。解消タスクが failed になると元タスクも failed になって止まる（I2）",
               "test": "[AC-S75f66b-6-3] in tests/acceptance/conflict-resume.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
             "S75f66b-6-1": {
               "title": "rebase失敗検出と解消タスク生成",
               "description": "マージプロセッサのrebase失敗（コンフリクト）を検出し、task-NNNN採番（既存work/tasks/の最大番号+1をツールが採番）で kind:conflict のタスク定義Markdownを work/tasks/ に生成。refs先頭に元タスクID（discovered-from規約、spec-schemas §1）、scope.paths=git status由来のコンフリクトファイル、本文にコンフリクト状況＋両ブランチの由来タスク参照。取り込みはwatcher経由（経路を増やさない、D4）。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-6-2": {
               "title": "元タスクのpausedと再開・連鎖fail",
               "description": "rebase失敗した元タスクを StateMachine.pause()（suspended_from=merging）で退避し、キューは次のタスクへ。解消タスクの merged イベントで元タスクを resume→merged（reason に解消タスクIDを記録）、解消タスクの failed で元タスクも fail（I2）。対応関係はイベント（refs/reason）から導出する（D3）。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-6-3": {
               "title": "受け入れテスト",
               "description": "conflict-autofile / conflict-normal-flow / conflict-resume。実git repoで人工コンフリクトを作り、自動起票→通常フロー通過→元タスク再開までを検証。失敗事例の再現E2Eシナリオ蓄積（backlog chore）はスコープ外。",
-              "status": "pending"
+              "status": "done"
             }
           }
         }
@@ -1612,6 +1612,41 @@
       "kind": "feature",
       "description": "先行セッションJSONLを注入した短命SDKセッションへの一問一答。spec-daemon-core §3.5(v1.x)・research-orchestrator-survey E 参照",
       "reason": "調査反映。v1.xマーカー付き仕様追記のみ、タスク化はLater"
+    },
+    {
+      "title": "transition APIの権限分離（daemon専用遷移の保護）",
+      "kind": "chore",
+      "description": "auditing→implementing等のdaemon内部遷移が現状の無認証transition APIから誰でも呼べる（rogue executorが自監査を迂回可能）。API認証導入時にdaemon-only遷移として保護する。S75f66b-3レビューで検出",
+      "added_in": "S75f66b",
+      "reason": "spec-daemon-core §8のAPI認証未決に依存するため現Sprintでは対処せず記録のみ（P3）"
+    },
+    {
+      "title": "自動spawnのquota層別化と quota-skip可観測化",
+      "kind": "enhancement",
+      "description": "監査/rework/実行者セッションが単一quotaを共食いし、readyタスクがサイレントに滞留し得る。quota起因スキップのイベント発行と、executor/audit/reworkのサブquota分離を検討",
+      "added_in": "S75f66b",
+      "reason": "S75f66bクロスストーリーレビューで検出。starvationであってdeadlockではないためv1は記録のみ"
+    },
+    {
+      "title": "コンフリクトタスクIDの専用プレフィックス",
+      "kind": "enhancement",
+      "description": "自動起票タスクがtask-NNNN連番を共有しユーザ起票と見分けにくい。conflict-NNNN等の専用プレフィックス化とnextTaskNumberの走査対応",
+      "added_in": "S75f66b",
+      "reason": "S75f66bクロスストーリーレビュー。kind:conflictで導出可能なため機能影響なし、可読性改善"
+    },
+    {
+      "title": "conflict_filedイベントの発行",
+      "kind": "enhancement",
+      "description": "コンフリクト解消タスク起票時の肯定的イベントがなくWS購読者/コックピットからライフサイクル先頭が見えない。conflict_filed{originTaskId,resolutionTaskId}を発行する",
+      "added_in": "S75f66b",
+      "reason": "S75f66bクロスストーリーレビュー。po_operation(conflict_resolved)で末尾は見えるが先頭が不可視"
+    },
+    {
+      "title": "再監査セッションへの前回指摘の注入",
+      "kind": "enhancement",
+      "description": "rework後の再監査(audit-2)セッションに前回のaudit_verdict failのfindingsを文脈注入する。現在は同一プロンプトで再監査。イベントから導出可能(D3)",
+      "added_in": "S75f66b",
+      "reason": "S75f66b verifierレビューでdead codeとして検出した構想の正式バックログ化"
     }
   ]
 }
