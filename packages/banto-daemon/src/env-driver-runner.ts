@@ -72,6 +72,9 @@ export function resolveDriverPath(driver: string): string {
  * @param verb         One of the 7 spec §2 verbs.
  * @param input        Input object for this verb (field names per spec §2 — D1).
  * @param timeoutMs    Maximum milliseconds to wait for the driver (default 30s).
+ * @param extraEnv     Additional environment variables injected into the driver's
+ *                     spawn env (ONLY — never stdin/argv/logs). Used for credentials
+ *                     (spec-environment §4, S9d7fdb-6). Caller must never log these.
  *
  * @returns DriverRunResult<unknown> — callers narrow the output type.
  *
@@ -82,7 +85,8 @@ export async function runDriverVerb(
   driverPath: string,
   verb: string,
   input: Record<string, unknown>,
-  timeoutMs: number = DEFAULT_DRIVER_TIMEOUT_MS
+  timeoutMs: number = DEFAULT_DRIVER_TIMEOUT_MS,
+  extraEnv?: Record<string, string>
 ): Promise<DriverRunResult<unknown>> {
   // Determine if we're running a .ts file (builtin) or a compiled JS / executable
   const isTsFile = driverPath.endsWith(".ts");
@@ -110,8 +114,23 @@ export async function runDriverVerb(
     let stderrBuf = "";
     let settled = false;
 
+    // Build spawn env: inherit process.env, then overlay extraEnv (credentials).
+    // SECURITY (S9d7fdb-6 / spec-environment §4): extraEnv values are ONLY injected here
+    // into the driver subprocess env. They are never written to logs, stdout, stdin, or argv.
+    let spawnEnv: Record<string, string> | undefined;
+    if (extraEnv && Object.keys(extraEnv).length > 0) {
+      // Cast reason (I4): process.env is Record<string, string | undefined>; child_process.spawn
+      // tolerates undefined entries at runtime (they are dropped), so narrowing to
+      // Record<string, string> here is safe for the spawn env option.
+      spawnEnv = { ...(process.env as Record<string, string>) };
+      for (const [k, v] of Object.entries(extraEnv)) {
+        spawnEnv[k] = v;
+      }
+    }
+
     const child = childProcess.spawn(spawnCmd, spawnArgs, {
       stdio: ["pipe", "pipe", "pipe"],
+      ...(spawnEnv ? { env: spawnEnv } : {}),
     });
 
     child.stdout.on("data", (chunk: Buffer) => { stdoutBuf += chunk.toString("utf8"); });
