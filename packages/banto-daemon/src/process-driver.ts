@@ -270,7 +270,9 @@ async function handleRun(input: Record<string, unknown>): Promise<void> {
     process.exit(1);
   }
 
-  // Write output to a temp log file
+  // Write output to a temp log file.
+  // Log file cleanup is deferred to Story S9d7fdb-5 (reconcile/TTL wave) — files accumulate
+  // in os.tmpdir() until that story's TTL reconciler removes them.
   const logDir = path.join(os.tmpdir(), "banto-process-driver-logs");
   fs.mkdirSync(logDir, { recursive: true });
   const logPath = path.join(logDir, `run-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);

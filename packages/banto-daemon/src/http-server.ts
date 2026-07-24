@@ -371,16 +371,15 @@ export function createHttpServer(daemon: Daemon): http.Server {
           sendJson(res, 404, { error: "task_not_found" });
           return;
         }
-        const body = (await readBody(req)) as Record<string, unknown>;
+        // D3: profile name is resolved SOLELY from the task's `environment` field (single source
+        // of intent). Body-supplied "profile" overrides are NOT accepted — the file is the truth.
+        // If the task has no environment field, return a clear 4xx error.
+        await readBody(req); // consume body (may include metadata for future verbs), but ignore "profile"
         const profileName =
-          typeof body["profile"] === "string"
-            ? body["profile"]
-            : typeof task["environment"] === "string"
-            ? task["environment"]
-            : undefined;
+          typeof task["environment"] === "string" ? task["environment"] : undefined;
 
         if (!profileName) {
-          sendJson(res, 400, { error: "no profile name: task has no environment field and no profile in request body" });
+          sendJson(res, 400, { error: "task has no environment profile declared" });
           return;
         }
 

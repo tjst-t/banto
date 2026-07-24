@@ -31,8 +31,8 @@ export interface EnvLedgerEntry {
   driver: string;
   /** Opaque handle returned by the driver (D3: daemon does not interpret fields) */
   handle: EnvHandle;
-  /** ISO-8601 timestamp of provision */
-  provisionedAt: string;
+  /** ISO-8601 timestamp of provision (renamed from provisionedAt for Story-4 schema alignment) */
+  createdAt: string;
   /** ISO-8601 timestamp when environment was torn down (undefined = still live) */
   tornDownAt?: string;
 }
@@ -107,7 +107,7 @@ export class EnvLedger {
         typeof e.profileName === "string" &&
         typeof e.driver === "string" &&
         typeof e.handle === "object" && e.handle !== null &&
-        typeof e.provisionedAt === "string"
+        typeof e.createdAt === "string"
       ) {
         entries.set(e.envId, e);
       } else {

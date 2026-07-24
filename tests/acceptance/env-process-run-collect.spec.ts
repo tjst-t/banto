@@ -107,10 +107,10 @@ describe("[AC-S9d7fdb-2-3] process driver run and collect via API", () => {
       environment: "dev",
     });
 
-    // Provision environment (precondition for this story)
+    // Provision environment — profile resolved from task's environment field (D3, no body override)
     const provResp = await httpPost(
       `${baseUrl}/projects/${projId}/tasks/${taskId}/environment/provision`,
-      { profile: "dev" }
+      {}
     );
     assert.equal(provResp.status, 201, `provision precondition failed: ${JSON.stringify(provResp.body)}`);
     const provBody = provResp.body as Record<string, unknown>;

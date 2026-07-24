@@ -185,9 +185,11 @@ describe("[AC-S9d7fdb-2-2] process driver provision via API", () => {
   // ── Step 1: POST provision ─────────────────────────────────────────────────
 
   it("POST /environment/provision returns 201 with envId, profileName, healthcheck", async () => {
+    // Profile name is resolved from the task's `environment` field (D3: file is the single source
+    // of intent). No body "profile" override — the task was created with environment: dev.
     const resp = await httpPost(
       `${baseUrl}/projects/${projId}/tasks/${taskId}/environment/provision`,
-      { profile: "dev" }
+      {}
     );
     assert.equal(resp.status, 201, `expected 201, got ${resp.status}: ${JSON.stringify(resp.body)}`);
 

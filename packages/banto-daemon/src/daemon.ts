@@ -1746,7 +1746,7 @@ export class Daemon {
       profileName,
       driver: profile.driver,
       handle,
-      provisionedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
     };
     this.envLedger.add(entry);
 
