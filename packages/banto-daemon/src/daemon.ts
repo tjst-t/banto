@@ -178,6 +178,20 @@ export class Daemon {
    */
   private reconcileTimer: NodeJS.Timeout | null = null;
 
+  /**
+   * Re-entrancy guard for the serial merge queue tick.
+   *
+   * S75f66b-5 review fix: the Scheduler drives the "merge-queue" job on every tick.
+   * If a tick fires while a previous processMergeQueue() is still awaiting (e.g. git
+   * rebase on a large repo), two concurrent calls to processMergeQueue() could run,
+   * violating the serial guarantee (spec §4.1) and causing git race conditions.
+   *
+   * Fix: local boolean guard — skip the tick if already running.
+   * Decision: local guard (not a Scheduler-wide change) to minimise scope impact (P1).
+   * Always reset in finally{} so a panicking inner call never permanently locks the queue.
+   */
+  private _mergeQueueRunning = false;
+
   private constructor(config: DaemonConfig) {
     this.config = config;
     this.log = EventLog.open(config.dataDir);
@@ -1426,13 +1440,26 @@ export class Daemon {
    *   - getAllTasks: delegates to StateStore.getAllTasks()
    *   - onMergeComplete: triggers gate re-eval for dependent tasks
    *
+   * Re-entrancy guard (_mergeQueueRunning): skips the tick if a previous call is
+   * still awaiting (e.g. git rebase on a large repo took longer than tickIntervalMs).
+   * This preserves the serial guarantee even when the scheduler fires multiple ticks
+   * before the previous processMergeQueue() completes (review fix S75f66b-5).
+   *
    * D3: queue is derived from event log replay inside processMergeQueue().
    * I2: errors propagate to scheduler (recorded as tick_job_failed).
    */
   private async runMergeQueueTick(): Promise<void> {
+    // Re-entrancy guard: skip tick if a previous processMergeQueue() is still running.
+    // Preserves serial guarantee (spec §4.1) when tick interval < merge processing time.
+    if (this._mergeQueueRunning) {
+      return;
+    }
+    this._mergeQueueRunning = true;
+
     const worktreeBase =
       this.config.worktreeBaseDir ?? path.join(this.config.dataDir, "worktrees");
 
+    try {
     await processMergeQueue(this.log, {
       dataDir: this.config.dataDir,
       worktreeBaseDir: worktreeBase,
@@ -1471,6 +1498,10 @@ export class Daemon {
     if (allEvents.length > 0) {
       const lastEvent = allEvents[allEvents.length - 1];
       this.wsServer.broadcast(lastEvent!);
+    }
+    } finally {
+      // Always reset the guard so a future tick can proceed (I2: no permanent lock).
+      this._mergeQueueRunning = false;
     }
   }
 }

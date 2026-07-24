@@ -132,6 +132,10 @@ describe("[AC-S75f66b-5-3] Queue derived from event log; restart resumes process
     execFileSync("git", ["add", "-A"], { cwd: repoDir, stdio: "pipe" });
     execFileSync("git", ["commit", "-m", "initial"], { cwd: repoDir, stdio: "pipe" });
 
+    // disableAuditSpawn: this suite tests queue derivation and restart-resume logic.
+    // Tasks are driven through implementing→auditing via HTTP transitions (not pi LLM).
+    // audit_spawn_disabled event is emitted for each implementing→auditing transition
+    // (F2 governance: suppression is visible in the event log).
     daemon = Daemon.create({
       port: 0,
       dataDir,
@@ -139,6 +143,7 @@ describe("[AC-S75f66b-5-3] Queue derived from event log; restart resumes process
       tickIntervalMs: 200,
       watchIntervalMs: 999999,
       tmuxSession: "",
+      disableAuditSpawn: true,
     });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
@@ -206,11 +211,12 @@ describe("[AC-S75f66b-5-3] Queue derived from event log; restart resumes process
     // (at least task-D2 should be in approved; task-D1 might be merging or merged by now)
     const queue = deriveQueue(events);
 
-    // Verify: queue entries are ordered by approvedEventId
+    // Verify: queue entries are ordered by mergingEntryEventId (covers both policy paths:
+    // manual approved→merging and auto-audit auditing→merging, S75f66b-5 reconcile)
     for (let i = 0; i < queue.length - 1; i++) {
       assert.ok(
-        queue[i]!.approvedEventId <= queue[i + 1]!.approvedEventId,
-        `queue entries must be ordered by approvedEventId (idx ${i} > ${i + 1})`
+        queue[i]!.mergingEntryEventId <= queue[i + 1]!.mergingEntryEventId,
+        `queue entries must be ordered by mergingEntryEventId (idx ${i} > ${i + 1})`
       );
     }
 
@@ -250,6 +256,8 @@ describe("[AC-S75f66b-5-3] Queue derived from event log; restart resumes process
     await daemon.stop();
 
     // Restart on same dataDir (critical for D3 restart resume test)
+    // disableAuditSpawn must be true on restart as well — tasks in approved/merging
+    // state may be re-processed but should not trigger audit spawns on restart.
     daemon = Daemon.create({
       port: 0,
       dataDir,
@@ -257,6 +265,7 @@ describe("[AC-S75f66b-5-3] Queue derived from event log; restart resumes process
       tickIntervalMs: 200,
       watchIntervalMs: 999999,
       tmuxSession: "",
+      disableAuditSpawn: true,
     });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;

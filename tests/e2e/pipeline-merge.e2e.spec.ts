@@ -1,37 +1,41 @@
 /**
  * [AC-S75f66b-5-4] Pipeline merge E2E: task file drop → ingest → ready →
- * auto-spawn → implement → audit → approved → merge.
+ * auto-spawn → implement → audit (REAL) → merging → merged.
  *
- * Real daemon + real pi + real LLM (policy auto). NO mocks (I1, priority_rule 9).
- * Extension of walking-skeleton.e2e.spec.ts to the `merged` state.
+ * Real daemon + real pi + real LLM (review.policy: auto). NO mocks (I1, priority_rule 9).
+ * S75f66b-5 reconcile with S75f66b-3: the REAL audit session now runs automatically
+ * on implementing→auditing transition (S75f66b-3 disableAuditSpawn is NOT set here).
  *
  * Auth probe: same pattern as walking-skeleton.e2e.spec.ts.
  * If the probe fails, this test MUST FAIL with a clear needs_human message and
  * record the block in failures.json (I2: skip禁止).
  *
- * Flow:
+ * Flow (full pipeline with real audit):
  *   1. Start real daemon + register a temporary git project.
  *   2. Write a task definition file (status: queued, review.policy: auto,
  *      acceptance with a verify command).
  *   3. Watcher ingests → gate promotes to ready → auto-spawn kicks in.
- *   4. pi implements (creates a file), calls report_done → task reaches 'auditing'.
- *   5. audit auto-spawn (S75f66b-3 — NOT yet implemented in this sprint; we simulate
- *      the verdict by calling the daemon's transition API directly since story 3 is
- *      pending. Policy=auto: auditing → approved directly via transition API).
- *   6. Merge queue processes: rebase → gate → fast-forward → merged.
- *   7. Verify: GET events shows full chain task_created→…→task_merged;
+ *   4. pi executor implements (creates a file), calls report_done → task reaches 'auditing'.
+ *   5. Daemon auto-spawns a REAL audit session (S75f66b-3 mechanism):
+ *      audit agent reads skills/audit-system.md + skills/audit-checklist.md,
+ *      then calls audit_report tool with verdict=pass or verdict=fail.
+ *   6a. verdict=pass → review.policy=auto → state_transitioned(auditing→merging).
+ *   6b. verdict=fail (1st) → auditing→implementing (rework) → new executor session runs →
+ *       report_done → auditing → real audit session again. Test allows at most 1 rework cycle.
+ *   7. Merge queue processes: rebase → gate → fast-forward → merged (or closed).
+ *   8. Verify: event chain includes audit_started, audit_verdict, task_merged;
  *      git log main contains the task's commit; implemented file exists on main.
  *
- * Note: Since S75f66b-3 (audit session) is not yet implemented, we drive the
- * auditing → approved transition manually via the daemon HTTP API. This is the
- * correct test discipline per test-discipline.md §2 (story_type=api: drive via
- * HTTP API). The merge queue itself (the subject of this story) is exercised fully.
+ * Rework tolerance: if the first audit verdict is fail (legitimate LLM judgment),
+ * the test runs through the rework cycle and asserts eventual 'merged' or 'closed'
+ * within an extended hard timeout. Asserts eventual merged, NOT that pass happens first.
  *
- * Timeout: 300_000 ms (real LLM latency + merge processing).
+ * Hard overall timeout: 480_000 ms (two LLM sessions × latency + merge processing).
+ * This is higher than walking-skeleton.e2e because we account for the real audit session.
  *
- * IMPORTANT: review.policy=auto means: approved on audit pass.
- * Since the audit session is not yet wired (S75f66b-3 is pending), we approve
- * manually after the agent completes implementing.
+ * I2: auth failure → needs_human escalation, record in failures.json. Skip禁止.
+ * I1: no mocks, no manual API calls after task drop (except auth probe).
+ * D3: queue is derived from event log; no manual approved posting.
  */
 
 import { describe, it, before, after } from "node:test";
@@ -174,7 +178,7 @@ function initRepo(dir: string): void {
   git(["commit", "-m", "init"], dir);
 }
 
-// ── Polling helper ────────────────────────────────────────────────────────────
+// ── Polling helpers ───────────────────────────────────────────────────────────
 
 async function pollUntilFn(
   condition: () => boolean,
@@ -189,21 +193,6 @@ async function pollUntilFn(
   return false;
 }
 
-async function pollStatusFn(
-  getStatus: () => string | undefined,
-  targetStatuses: string[],
-  timeoutMs: number,
-  intervalMs = 500
-): Promise<string | undefined> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const s = getStatus();
-    if (s && targetStatuses.includes(s)) return s;
-    await new Promise<void>((r) => setTimeout(r, intervalMs));
-  }
-  return getStatus();
-}
-
 // ── Task definition ───────────────────────────────────────────────────────────
 
 const TASK_ID = "task-0100";
@@ -213,8 +202,12 @@ const TASK_FILE_NAME = "hello-merge.txt";
  * Task definition that:
  *   - creates hello-merge.txt
  *   - has a verify command so the merge gate can check it
- *   - review.policy: auto (audit pass → approved directly)
+ *   - review.policy: auto (audit pass → merging directly, S75f66b-3)
  *   - no hypothesis (→ auto-closed after merge)
+ *
+ * S75f66b-5 reconcile: review.policy=auto means the REAL audit session
+ * (auto-spawned by daemon on implementing→auditing) posts audit_report verdict;
+ * on pass, the daemon transitions auditing→merging without any manual PO action.
  */
 const TASK_MD = `---
 id: ${TASK_ID}
@@ -247,7 +240,9 @@ Use the banto tools (report_phase, report_done). Use bash to run git commands.
 
 // ── Suite ─────────────────────────────────────────────────────────────────────
 
-describe("[AC-S75f66b-5-4] Pipeline E2E: task drop → auto-spawn → implement → approved → merged", { timeout: 300000 }, () => {
+// Hard overall timeout: 480s to accommodate two real LLM sessions (executor + auditor)
+// plus rework tolerance (one rework cycle: executor again + auditor again).
+describe("[AC-S75f66b-5-4] Pipeline E2E: drop → auto-spawn → implement → REAL audit → merging → merged", { timeout: 480000 }, () => {
   let tmpDir: string;
   let repoDir: string;
   let tasksDir: string;
@@ -281,6 +276,8 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: task drop → auto-spawn → implement 
     initRepo(repoDir);
     fs.mkdirSync(tasksDir, { recursive: true });
 
+    // disableAuditSpawn is NOT set: the REAL audit session auto-spawns on
+    // implementing→auditing (S75f66b-3 mechanism exercised by this E2E).
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
@@ -308,7 +305,7 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: task drop → auto-spawn → implement 
     }
   });
 
-  it("[AC-S75f66b-5-4] Pipeline E2E: task file drop → ingest → ready → auto-spawn → implement → approved → merged", async () => {
+  it("[AC-S75f66b-5-4] Pipeline E2E: drop → auto-spawn → implement → REAL audit → merging → merged", async () => {
     // Auth gate: if auth failed, escalate as needs_human (I2: not skip)
     if (!authResult.ok) {
       throw new Error(
@@ -342,8 +339,7 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: task drop → auto-spawn → implement 
     }, 15000);
     assert.ok(becameReady, "Task must reach 'ready' within 15s (gate evaluation)");
 
-    // ── Step 4: auto-spawn (S75f66b-2 tick job) should kick in ──────────────
-    // Wait for task to start planning (auto-spawn triggered)
+    // ── Step 4: auto-spawn kicks in → planning ──────────────────────────────
     const PLANNING_OR_LATER = new Set([
       "planning", "implementing", "auditing", "review-ready",
       "in-review", "approved", "merging", "merged", "closed",
@@ -355,7 +351,6 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: task drop → auto-spawn → implement 
     assert.ok(autoSpawned, "auto-spawn must trigger and task must reach planning within 30s");
 
     // Record the worktree path for cleanup verification later
-    const taskRecord = daemon.getTask(projectTag, TASK_ID);
     const worktreeBase = path.join(tmpDir, "worktrees");
     worktreePath = path.join(worktreeBase, projectTag, TASK_ID);
 
@@ -377,8 +372,6 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: task drop → auto-spawn → implement 
           `Task ${TASK_ID} not in ledger and status is ${currentStatus} — unexpected state`
         );
       }
-      // The agent may have already run the prompt injection or moved past planning
-      // via automatic tooling. Let it proceed.
     } else {
       // Inject the implementation task prompt
       try {
@@ -404,11 +397,12 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: task drop → auto-spawn → implement 
       }
     }
 
-    // ── Step 6: Wait for implementing → auditing ──────────────────────────
+    // ── Step 6: Wait for implementing → auditing (executor calls report_done) ──
     const AUDIT_OR_LATER = new Set([
       "auditing", "review-ready", "in-review", "approved",
       "merging", "merged", "closed",
     ]);
+    // Allow up to 240s for executor LLM session to complete the task
     const reachedAuditing = await pollUntilFn(() => {
       const t = daemon.getTask(projectTag, TASK_ID);
       return !!t && AUDIT_OR_LATER.has(t.status);
@@ -436,87 +430,101 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: task drop → auto-spawn → implement 
       }
 
       assert.fail(
-        `Task must reach 'auditing' within 240s. Current: ${taskState?.status ?? "unknown"}`
+        `Task must reach 'auditing' (or later) within 240s. Current: ${taskState?.status ?? "unknown"}`
       );
     }
 
-    // ── Step 7: Approve the task (S75f66b-3 audit session is pending; we drive
-    //    the transition manually via HTTP API — valid for story_type=api tests) ───
-    // Since review.policy=auto, we drive: auditing → approved directly.
-    // (In the full system, S75f66b-3 audit session would fire automatically;
-    //  for this story test we exercise the merge queue — the audit→approved step
-    //  is driven via the documented API, same as what S75f66b-3 will wire.)
-    const currentStatus = daemon.getTask(projectTag, TASK_ID)?.status;
-    if (currentStatus === "auditing") {
-      // Transition auditing → approved (allowed by state machine when S75f66b-3 is done
-      // this becomes auditing→merging for policy=auto; for now we use in-review→approved)
-      // The state machine allows auditing→merging for auto policy.
-      // We simulate the audit-pass verdict by transitioning approved.
-      const daemonPort = daemon.port;
-      const base = `http://localhost:${daemonPort}`;
+    // ── Step 7: Real audit session auto-spawns and posts verdict (S75f66b-3) ──
+    //
+    // The daemon auto-spawns an audit session on implementing→auditing.
+    // The audit LLM reads skills/audit-system.md + skills/audit-checklist.md,
+    // then calls audit_report with verdict=pass or verdict=fail.
+    //
+    // review.policy=auto:
+    //   - pass  → state_transitioned(auditing→merging) — no manual approval needed
+    //   - fail  → state_transitioned(auditing→implementing) + rework executor session
+    //            → rework completes → auditing again → second audit session
+    //            → pass → merging   (tolerated: at most 1 rework cycle)
+    //   - fail×2 → failed (I2: two consecutive fails → escalation)
+    //
+    // Wait up to 180s for merging/merged/closed (nominal audit pass path).
+    // If still in auditing/implementing after 180s, one more 120s window for rework.
+    //
+    // Hard constraint: eventually reaches merged/closed within overall 480s suite timeout.
 
-      // auditing → merging (policy=auto path, as defined in state machine)
-      const r = await fetch(`${base}/api/v1/projects/${projectTag}/tasks/${TASK_ID}/transition`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: "approved" }),
-      });
-      if (!r.ok) {
-        // Try direct path: auditing → approved via review-ready → in-review → approved
-        const reviewReadyRes = await fetch(
-          `${base}/api/v1/projects/${projectTag}/tasks/${TASK_ID}/transition`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ to: "review-ready" }),
-          }
-        );
-        if (reviewReadyRes.ok) {
-          await fetch(`${base}/api/v1/projects/${projectTag}/tasks/${TASK_ID}/transition`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ to: "in-review" }),
-          });
-          await fetch(`${base}/api/v1/projects/${projectTag}/tasks/${TASK_ID}/transition`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ to: "approved" }),
-          });
-        }
-      }
-    } else if (currentStatus === "review-ready") {
-      const base = `http://localhost:${daemon.port}`;
-      await fetch(`${base}/api/v1/projects/${projectTag}/tasks/${TASK_ID}/transition`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: "in-review" }),
-      });
-      await fetch(`${base}/api/v1/projects/${projectTag}/tasks/${TASK_ID}/transition`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: "approved" }),
-      });
-    } else if (currentStatus === "in-review") {
-      const base = `http://localhost:${daemon.port}`;
-      await fetch(`${base}/api/v1/projects/${projectTag}/tasks/${TASK_ID}/transition`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: "approved" }),
-      });
-    }
+    const MERGING_OR_TERMINAL = new Set([
+      "merging", "merged", "closed", "failed",
+    ]);
 
-    // ── Step 8: Wait for merge queue to process → merged or closed ───────────
-    const MERGED_OR_CLOSED = new Set(["merged", "closed"]);
-    const reachedMerged = await pollUntilFn(() => {
+    // First wait: nominal audit pass path (180s)
+    const reachedMerging = await pollUntilFn(() => {
       const t = daemon.getTask(projectTag, TASK_ID);
-      return !!t && MERGED_OR_CLOSED.has(t.status);
-    }, 30000, 500);
+      return !!t && MERGING_OR_TERMINAL.has(t.status);
+    }, 180000, 1000);
 
-    if (!reachedMerged) {
-      const taskState = daemon.getTask(projectTag, TASK_ID);
-      assert.fail(
-        `Task must reach 'merged' or 'closed' within 30s. Current: ${taskState?.status ?? "unknown"}`
+    if (!reachedMerging) {
+      // Still in auditing/implementing — may be in rework cycle. Wait one more window.
+      const statusMid = daemon.getTask(projectTag, TASK_ID)?.status ?? "unknown";
+      process.stdout.write(
+        `[pipeline-e2e] Status after 180s: ${statusMid}. ` +
+        `Audit verdict may have been 'fail' (rework cycle). Waiting 120s more.\n`
       );
+
+      const reachedMergingAfterRework = await pollUntilFn(() => {
+        const t = daemon.getTask(projectTag, TASK_ID);
+        return !!t && MERGING_OR_TERMINAL.has(t.status);
+      }, 120000, 1000);
+
+      if (!reachedMergingAfterRework) {
+        const taskState = daemon.getTask(projectTag, TASK_ID);
+        const events = daemon.getAllEvents();
+        const auditVerdicts = events.filter((e) => e.type === "audit_verdict" && "taskId" in e && e.taskId === TASK_ID);
+        assert.fail(
+          `Task must reach merging/merged/closed within 300s (including rework cycle). ` +
+          `Current: ${taskState?.status ?? "unknown"}. ` +
+          `Audit verdicts so far: ${JSON.stringify(auditVerdicts.map((v) => ({ verdict: (v as {verdict?: string}).verdict })))}`
+        );
+      }
+    }
+
+    // ── Step 8: Assert audit session ran (event log must contain audit_started + audit_verdict) ──
+    const events = daemon.getAllEvents();
+    const auditStarted = events.find(
+      (e) => e.type === "audit_started" && "taskId" in e && e.taskId === TASK_ID
+    );
+    assert.ok(
+      auditStarted,
+      "audit_started event must be present — real audit session must have auto-spawned"
+    );
+
+    const auditVerdict = events.find(
+      (e) => e.type === "audit_verdict" && "taskId" in e && e.taskId === TASK_ID
+    );
+    assert.ok(
+      auditVerdict,
+      "audit_verdict event must be present — real audit session must have posted a verdict"
+    );
+
+    const verdictValue = (auditVerdict as { verdict?: string })?.verdict;
+    process.stdout.write(`[pipeline-e2e] Audit verdict: ${verdictValue}\n`);
+
+    // ── Step 9: Wait for merge queue to process → merged or closed ───────────
+    const MERGED_OR_CLOSED = new Set(["merged", "closed"]);
+    const taskBeforeMergeWait = daemon.getTask(projectTag, TASK_ID);
+    // If already merged/closed (fast path from step 8), skip the wait.
+    if (!taskBeforeMergeWait || !MERGED_OR_CLOSED.has(taskBeforeMergeWait.status)) {
+      const reachedMerged = await pollUntilFn(() => {
+        const t = daemon.getTask(projectTag, TASK_ID);
+        return !!t && MERGED_OR_CLOSED.has(t.status);
+      }, 60000, 500);
+
+      if (!reachedMerged) {
+        const taskState = daemon.getTask(projectTag, TASK_ID);
+        assert.fail(
+          `Task must reach 'merged' or 'closed' within 60s after entering merging. ` +
+          `Current: ${taskState?.status ?? "unknown"}`
+        );
+      }
     }
 
     const finalStatus = daemon.getTask(projectTag, TASK_ID)?.status;
@@ -525,23 +533,26 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: task drop → auto-spawn → implement 
       `Task final status must be merged or closed (got ${finalStatus})`
     );
 
-    // ── Step 9: Verify event chain ────────────────────────────────────────
-    const events = daemon.getTaskEvents(projectTag, TASK_ID);
-    const eventTypes = events.map((e) => e.type);
+    // ── Step 10: Verify event chain ──────────────────────────────────────────
+    const taskEvents = daemon.getTaskEvents(projectTag, TASK_ID);
+    const eventTypes = taskEvents.map((e) => e.type);
 
     assert.ok(eventTypes.includes("task_created"), "must have task_created");
 
-    const mergedEvent = events.find((e) => e.type === "task_merged");
+    // audit_started and audit_verdict must be in the task event chain
+    assert.ok(eventTypes.includes("audit_started"), "must have audit_started in task events");
+    assert.ok(eventTypes.includes("audit_verdict"), "must have audit_verdict in task events");
+
+    const mergedEvent = taskEvents.find((e) => e.type === "task_merged");
     assert.ok(mergedEvent, "must have task_merged event");
 
     const commitSha = (mergedEvent as { commitSha?: string })?.commitSha;
     assert.ok(commitSha && commitSha.length >= 7, `commitSha must be a git hash: ${commitSha}`);
 
-    // ── Step 10: Verify implemented file exists on main branch ────────────
+    // ── Step 11: Verify implemented file exists on main branch ───────────────
     const logOutput = git(["log", "main", "--oneline"], repoDir);
     assert.ok(logOutput.length > 0, "main branch must have commits");
 
-    // Check out main and verify the file
     const mainContent = (() => {
       try {
         return git(["show", `main:${TASK_FILE_NAME}`], repoDir);
@@ -558,14 +569,19 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: task drop → auto-spawn → implement 
       `${TASK_FILE_NAME} on main must contain 'Hello merge'; got: ${mainContent!.slice(0, 100)}`
     );
 
-    // ── Step 11: Verify commitSha exists on main ──────────────────────────
+    // ── Step 12: Verify commitSha exists on main ─────────────────────────────
     assert.ok(
       logOutput.includes(commitSha!.slice(0, 7)),
       `commitSha ${commitSha} must appear in git log main`
     );
 
-    // ── Step 12: Verify worktree cleanup ──────────────────────────────────
+    // ── Step 13: Verify worktree cleanup ──────────────────────────────────────
     const worktreeGone = !fs.existsSync(worktreePath!);
     assert.ok(worktreeGone, `Worktree must be removed after merge: ${worktreePath}`);
+
+    process.stdout.write(
+      `[pipeline-e2e] SUCCESS: task=${TASK_ID} final=${finalStatus} ` +
+      `auditVerdict=${verdictValue} commitSha=${commitSha}\n`
+    );
   });
 });

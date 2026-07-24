@@ -29,7 +29,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { execFileSync, execSync } from "node:child_process";
-import { Daemon } from "@banto/daemon";
+import { Daemon, removeWorktree } from "@banto/daemon";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -135,6 +135,11 @@ describe("[AC-S75f66b-5-2] Merge cleanup, dependent unblocking, merged→closed"
     execFileSync("git", ["add", "-A"], { cwd: repoDir, stdio: "pipe" });
     execFileSync("git", ["commit", "-m", "initial"], { cwd: repoDir, stdio: "pipe" });
 
+    // disableAuditSpawn: this suite tests merge cleanup, dependent unblocking, and
+    // merged→closed logic — not the audit session mechanism. Tasks are driven through
+    // implementing→auditing via HTTP transitions (not real pi LLM sessions).
+    // audit_spawn_disabled event is emitted for each implementing→auditing transition
+    // (F2 governance: suppression is visible in the event log).
     const dataDir = path.join(tmpDir, "data");
     daemon = Daemon.create({
       port: 0,
@@ -143,6 +148,7 @@ describe("[AC-S75f66b-5-2] Merge cleanup, dependent unblocking, merged→closed"
       tickIntervalMs: 200,
       watchIntervalMs: 999999,
       tmuxSession: "",
+      disableAuditSpawn: true,
     });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
@@ -248,9 +254,33 @@ describe("[AC-S75f66b-5-2] Merge cleanup, dependent unblocking, merged→closed"
     }
     assert.ok(!branchExists, "task branch task/task-A2 must be deleted after merge");
 
-    // Idempotency: calling removeWorktree again on the same path must not error (I3)
-    // We verify by checking it's gone (already verified above) — calling it would be
-    // the implementation's responsibility. We confirm the cleanup happened once.
+    // I3 idempotency (review fix S75f66b-5): invoke cleanup a SECOND TIME on the
+    // already-removed worktree and assert:
+    //   (a) no error is thrown, and
+    //   (b) state is unchanged (worktree still absent, task still merged/closed).
+    // This exercises the "already gone" path of removeWorktree explicitly.
+    let secondCleanupError: unknown = null;
+    try {
+      await removeWorktree(repoDir, worktreePath);
+    } catch (err) {
+      secondCleanupError = err;
+    }
+    assert.equal(
+      secondCleanupError,
+      null,
+      `removeWorktree called a second time on an already-removed worktree must NOT throw (I3). Got: ${secondCleanupError}`
+    );
+
+    // State must be unchanged: worktree still absent, task still in merged/closed
+    const worktreeStillGone = !fs.existsSync(worktreePath);
+    assert.ok(worktreeStillGone, "worktree must still be absent after second cleanup call (I3 idempotency)");
+
+    // Task state must not have been affected by the second cleanup call
+    const finalStatus = await getStatus(base, PROJ, "task-A2");
+    assert.ok(
+      finalStatus === "merged" || finalStatus === "closed",
+      `task-A2 must remain in merged/closed state after second cleanup call (got: ${finalStatus})`
+    );
   });
 
   it("[AC-S75f66b-5-2c] dependent task-C2 becomes ready after task-A2 merged", async () => {

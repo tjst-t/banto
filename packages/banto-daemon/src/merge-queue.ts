@@ -6,8 +6,13 @@
  * log replay by `deriveQueue()`. Restart-resumable by design: replaying the log
  * after a daemon restart produces the same queue as before (D3 §4.1).
  *
- * Queue ordering: tasks are ordered by the eventId of the state_transitioned
- * event that moved them into `approved` status. Earlier approval = earlier in queue.
+ * Queue ordering: tasks are ordered by the eventId of the FIRST state_transitioned
+ * event that moved them into `merging` status. Earlier entry into merging = earlier
+ * in queue. This covers both paths to merging:
+ *   - manual policy:  approved → merging (merge-queue-serial-processor)
+ *   - auto-audit policy: auditing → merging (audit_passed, S75f66b-3)
+ * Using the merging-entry event (not the approved event) ensures the ordering
+ * guarantee holds under both flows without special-casing per spec §4 (D3).
  * Tasks that are currently `merging` (in-flight when the daemon was stopped) are
  * placed at the HEAD in their original order so they are re-processed on restart.
  *
@@ -55,8 +60,22 @@ export interface MergeQueueEntry {
   projectTag: string;
   /** "approved" for tasks waiting, "merging" for tasks that were in-flight at restart */
   status: "approved" | "merging";
-  /** eventId of the state_transitioned event that put the task into approved (for ordering) */
-  approvedEventId: number;
+  /**
+   * eventId of the FIRST state_transitioned event that put the task into `merging` status.
+   * Used for ordering: earlier entry into merging = earlier in queue.
+   *
+   * S75f66b-5 (reconcile with S75f66b-3): ordering by merging-entry covers both paths:
+   *   - manual policy:  approved → merging (merge-queue-serial-processor)
+   *   - auto-audit:     auditing → merging (audit_passed, S75f66b-3)
+   * Previously named `approvedEventId` and tracked the `approved` transition; changed
+   * to `mergingEntryEventId` so the serial guarantee holds under both flows (spec §4).
+   *
+   * For `approved` tasks (not yet in merging), this field holds the eventId of the
+   * FIRST transition TO `merging` if it has been seen before (re-queue after failure),
+   * or falls back to the first transition TO `approved` to preserve relative ordering
+   * for tasks waiting to enter merging for the first time.
+   */
+  mergingEntryEventId: number;
 }
 
 // ── Queue derivation (D3) ─────────────────────────────────────────────────────
@@ -66,18 +85,32 @@ export interface MergeQueueEntry {
  *
  * Algorithm:
  *   1. Walk all events in chronological order (by eventId).
- *   2. Track each task's FIRST state_transitioned → approved event (for ordering).
+ *   2. Track each task's FIRST state_transitioned → merging event (for ordering).
+ *      For tasks not yet in merging, fall back to the first → approved event
+ *      so their relative ordering is preserved while they wait to be processed.
  *   3. Tasks that are currently in status `approved` or `merging` are queue members.
  *   4. Ordering: tasks in `merging` first (they were already being processed),
- *      then `approved` tasks in ascending order of their approval eventId.
+ *      then `approved` tasks in ascending order of their mergingEntryEventId.
  *   5. Tasks in terminal states (merged, failed, closed, etc.) are excluded.
+ *
+ * S75f66b-5 (reconcile): ordering by FIRST entry into `merging` covers both paths:
+ *   - manual policy:  approved → merging (merge-queue-serial-processor)
+ *   - auto-audit:     auditing → merging (audit_passed verdict, S75f66b-3)
+ * This preserves the serial approval-order guarantee under both paths (spec §4).
  *
  * Pure function of the event log — no side effects.
  */
 export function deriveQueue(events: OrchestrationEvent[]): MergeQueueEntry[] {
-  // Track per-task: current status and first approval event id
+  // Track per-task: current status, first merging-entry eventId, and fallback approved eventId
   const taskStatus = new Map<string, string>(); // "projectTag/taskId" → status
-  const taskApprovedEventId = new Map<string, number>(); // "projectTag/taskId" → first approval eventId
+  /** First time the task entered `merging` — used for ordering (covers both policy paths). */
+  const taskMergingEntryEventId = new Map<string, number>(); // "projectTag/taskId" → first merging eventId
+  /**
+   * Fallback: first time the task entered `approved` (manual policy path).
+   * Used as a proxy ordering key for `approved` tasks that have not yet entered
+   * `merging` — ensures relative ordering is preserved while they wait.
+   */
+  const taskApprovedEventId = new Map<string, number>(); // "projectTag/taskId" → first approved eventId
   const taskProjectTag = new Map<string, string>(); // "projectTag/taskId" → projectTag
 
   for (const event of events) {
@@ -87,9 +120,15 @@ export function deriveQueue(events: OrchestrationEvent[]): MergeQueueEntry[] {
       taskStatus.set(key, stEvent.to);
       taskProjectTag.set(key, stEvent.projectTag);
 
-      // Record the first time the task enters `approved` status.
-      // We use the FIRST such event so that if a task is re-approved after
-      // rework it still keeps its original queue position (rare edge case).
+      // Record the FIRST time the task enters `merging` status (ordering key).
+      // This covers both auto-audit (auditing→merging) and manual (approved→merging) paths.
+      // We use the FIRST occurrence so that re-queued tasks (rare) keep their original order.
+      if (stEvent.to === "merging" && !taskMergingEntryEventId.has(key)) {
+        taskMergingEntryEventId.set(key, stEvent.eventId);
+      }
+
+      // Fallback ordering key: first time the task enters `approved` status.
+      // Used only for tasks that are still `approved` (not yet transitioned to `merging`).
       if (stEvent.to === "approved" && !taskApprovedEventId.has(key)) {
         taskApprovedEventId.set(key, stEvent.eventId);
       }
@@ -104,13 +143,19 @@ export function deriveQueue(events: OrchestrationEvent[]): MergeQueueEntry[] {
     if (status !== "approved" && status !== "merging") continue;
     const projectTag = taskProjectTag.get(key) ?? key.split("/")[0]!;
     const taskId = key.slice(projectTag.length + 1);
-    const approvedEventId = taskApprovedEventId.get(key) ?? 0;
+
+    // Ordering key: prefer the merging-entry eventId (covers both paths).
+    // Fall back to approved eventId for tasks not yet in merging (consistent ordering).
+    const mergingEntryEventId =
+      taskMergingEntryEventId.get(key) ??
+      taskApprovedEventId.get(key) ??
+      0;
 
     const entry: MergeQueueEntry = {
       taskId,
       projectTag,
       status: status as "approved" | "merging",
-      approvedEventId,
+      mergingEntryEventId,
     };
 
     if (status === "merging") {
@@ -120,10 +165,10 @@ export function deriveQueue(events: OrchestrationEvent[]): MergeQueueEntry[] {
     }
   }
 
-  // merging tasks sort by approvedEventId (preserve original order)
-  merging.sort((a, b) => a.approvedEventId - b.approvedEventId);
-  // approved tasks sort by approvedEventId
-  approved.sort((a, b) => a.approvedEventId - b.approvedEventId);
+  // merging tasks sort by mergingEntryEventId (preserve original merge-entry order)
+  merging.sort((a, b) => a.mergingEntryEventId - b.mergingEntryEventId);
+  // approved tasks sort by mergingEntryEventId (or approved fallback for not-yet-merging tasks)
+  approved.sort((a, b) => a.mergingEntryEventId - b.mergingEntryEventId);
 
   return [...merging, ...approved];
 }

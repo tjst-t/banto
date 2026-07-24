@@ -160,6 +160,11 @@ describe("[AC-S75f66b-5-1] Serial merge queue: two tasks merged in approval orde
     execFileSync("git", ["commit", "-m", "initial"], { cwd: repoDir, stdio: "pipe" });
 
     // Start daemon with small tick interval for fast test execution
+    // disableAuditSpawn: this suite tests serial merge-queue logic and drives tasks
+    // through implementing→auditing via HTTP transitions (not real pi LLM sessions).
+    // Disabling audit spawn avoids pi CLI resolution errors in CI environments.
+    // The audit_spawn_disabled event is emitted for each implementing→auditing transition
+    // (F2 governance: suppression is visible in the event log).
     const dataDir = path.join(tmpDir, "data");
     daemon = Daemon.create({
       port: 0,
@@ -168,6 +173,7 @@ describe("[AC-S75f66b-5-1] Serial merge queue: two tasks merged in approval orde
       tickIntervalMs: 200,
       watchIntervalMs: 999999, // disable watcher
       tmuxSession: "",         // disable tmux
+      disableAuditSpawn: true,
     });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
