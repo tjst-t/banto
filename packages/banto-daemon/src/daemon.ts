@@ -96,7 +96,7 @@ export interface DaemonConfig {
   piModel?: string;
   /**
    * Maximum number of concurrently-running agent sessions (physical quota, 層B).
-   * Compared against ledger.list().length on each auto-spawn tick.
+   * Compared against ledger.size on each auto-spawn tick.
    * When full, new spawns are silently skipped and re-evaluated on the next tick.
    * No rejection event is emitted on quota skip — re-evaluation is silent (spec-multi-project §3).
    *
@@ -237,7 +237,9 @@ export class Daemon {
       piModel: config.piModel ?? process.env["BANTO_PI_MODEL"] ?? "deepseek-v4-flash",
       maxConcurrentSessions:
         config.maxConcurrentSessions ??
-        parseInt(process.env["BANTO_MAX_CONCURRENT_SESSIONS"] ?? "5", 10),
+        // parseInt of a non-numeric env value yields NaN, and `size >= NaN` is
+        // always false (quota silently unenforced) — fall back to the default.
+        (Number.parseInt(process.env["BANTO_MAX_CONCURRENT_SESSIONS"] ?? "5", 10) || 5),
     };
     return new Daemon(resolved);
   }
@@ -871,7 +873,10 @@ export class Daemon {
       try {
         await this.spawnTask(task.projectTag, task.id);
       } catch {
-        // Failure already recorded inside spawnTask() via recordTaskFailed (I2).
+        // Failure already recorded inside spawnTask() via recordTaskFailed (I2),
+        // unless spawnTask() threw before reaching it (e.g. the status-not-ready
+        // guard) — in that case the task is already in a non-ready state and no
+        // further action is needed.
         // Do not re-throw — let the scheduler continue with remaining ready tasks.
         // The Scheduler catches errors from the job function itself; this catch prevents
         // a single task's failure from aborting the rest of the auto-spawn sweep.
