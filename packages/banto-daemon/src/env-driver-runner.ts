@@ -119,7 +119,10 @@ export async function runDriverVerb(
     // into the driver subprocess env. They are never written to logs, stdout, stdin, or argv.
     let spawnEnv: Record<string, string> | undefined;
     if (extraEnv && Object.keys(extraEnv).length > 0) {
-      spawnEnv = { ...process.env as Record<string, string | undefined> } as Record<string, string>;
+      // Cast reason (I4): process.env is Record<string, string | undefined>; child_process.spawn
+      // tolerates undefined entries at runtime (they are dropped), so narrowing to
+      // Record<string, string> here is safe for the spawn env option.
+      spawnEnv = { ...(process.env as Record<string, string>) };
       for (const [k, v] of Object.entries(extraEnv)) {
         spawnEnv[k] = v;
       }
