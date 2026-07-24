@@ -94,6 +94,15 @@ export interface DaemonConfig {
    * Override via BANTO_PI_MODEL environment variable.
    */
   piModel?: string;
+  /**
+   * Maximum number of concurrently-running agent sessions (physical quota, 層B).
+   * Compared against ledger.list().length on each auto-spawn tick.
+   * When full, new spawns are silently skipped and re-evaluated on the next tick.
+   * No rejection event is emitted on quota skip — re-evaluation is silent (spec-multi-project §3).
+   *
+   * Default: 5. Override via BANTO_MAX_CONCURRENT_SESSIONS environment variable.
+   */
+  maxConcurrentSessions?: number;
 }
 
 export class Daemon {
@@ -200,6 +209,16 @@ export class Daemon {
     this.scheduler.registerJob("gate-reeval", () => {
       this.runGateReeval();
     });
+
+    // Built-in job: auto-spawn (S75f66b-2, spec-daemon-core §6).
+    // Enumerates ready tasks from derived state (D3: no separate bookkeeping) and
+    // calls spawnTask() for any that are not already in the ledger.
+    // Physical quota (maxConcurrentSessions) is checked against ledger size first;
+    // when full, skip silently — no rejection event, re-evaluated on next tick (I2-compliant:
+    // quota-skip is not an error; spawn failures still go through recordTaskFailed).
+    this.scheduler.registerJob("auto-spawn", () => {
+      void this.runAutoSpawn();
+    });
   }
 
   static create(config: Partial<DaemonConfig> = {}): Daemon {
@@ -216,6 +235,9 @@ export class Daemon {
       tmuxSession: config.tmuxSession,
       piProvider: config.piProvider ?? process.env["BANTO_PI_PROVIDER"] ?? "opencode-go",
       piModel: config.piModel ?? process.env["BANTO_PI_MODEL"] ?? "deepseek-v4-flash",
+      maxConcurrentSessions:
+        config.maxConcurrentSessions ??
+        parseInt(process.env["BANTO_MAX_CONCURRENT_SESSIONS"] ?? "5", 10),
     };
     return new Daemon(resolved);
   }
@@ -799,6 +821,61 @@ export class Daemon {
     // D3: state and index are always derived from the log.
     if (queuedCount > 0 || promoted > 0) {
       this.refreshState();
+    }
+  }
+
+  /**
+   * Auto-spawn tick job (S75f66b-2, spec-daemon-core §6).
+   *
+   * On every scheduler tick:
+   *   1. Check physical quota: if ledger.size >= maxConcurrentSessions, skip silently.
+   *      (No rejection event — just re-evaluated on the next tick.)
+   *   2. Enumerate all tasks whose derived state is "ready" AND that are not already
+   *      in the spawn ledger (i.e. not yet spawned). D3: no extra bookkeeping.
+   *   3. Spawn each eligible task via spawnTask(), stopping when the quota is full.
+   *   4. spawn failures are already routed to task_failed via recordTaskFailed inside
+   *      spawnTask() — do NOT re-spawn failed tasks (they will no longer be "ready").
+   *
+   * I2: errors are not swallowed. spawnTask() propagates to recordTaskFailed internally;
+   * errors from the auto-spawn loop are caught by the Scheduler (tick_job_failed).
+   * D3: "already spawned" check uses the ledger (live-process registry), not a separate flag.
+   */
+  private async runAutoSpawn(): Promise<void> {
+    const maxSessions = this.config.maxConcurrentSessions ?? 5;
+
+    // Check quota FIRST — if already at limit, skip the whole sweep.
+    if (this.ledger.size >= maxSessions) {
+      return;
+    }
+
+    // Enumerate ready tasks from derived state (D3: no extra flag).
+    const readyTasks = this.store.getAllTasks().filter((t) => t.status === "ready");
+
+    for (const task of readyTasks) {
+      // Re-check quota each iteration — previous spawns in this loop count.
+      if (this.ledger.size >= maxSessions) {
+        break;
+      }
+
+      // Skip tasks that are already in the ledger (already spawned, session is live).
+      // D3: "spawned" judgment comes from the ledger, which tracks live OS processes.
+      if (this.ledger.get(task.projectTag, task.id)) {
+        continue;
+      }
+
+      // spawnTask() handles all failure paths via recordTaskFailed (I2).
+      // After a successful spawn the task transitions to "planning" (no longer "ready"),
+      // so it won't appear in the next tick's ready list.
+      // After a failed spawn the task transitions to "failed" (also no longer "ready").
+      // Either way, no re-spawn loop is possible.
+      try {
+        await this.spawnTask(task.projectTag, task.id);
+      } catch {
+        // Failure already recorded inside spawnTask() via recordTaskFailed (I2).
+        // Do not re-throw — let the scheduler continue with remaining ready tasks.
+        // The Scheduler catches errors from the job function itself; this catch prevents
+        // a single task's failure from aborting the rest of the auto-spawn sweep.
+      }
     }
   }
 }
