@@ -72,12 +72,13 @@ describe("[AC-Scc9152-1-1] Watcher ingests valid task definition → draft→que
 
   it("[AC-Scc9152-1-1] places valid task file → task is ingested and reaches at least 'queued'", async () => {
     const taskFile = path.join(tmpRepoDir, "work", "tasks", "task-0001-test-ingest.md");
+    // status: queued — only queued files are ingested by the watcher (imp-0001 PO decision)
     const content = `---
 id: task-0001
 type: task
 kind: feature
 title: テスト取り込みタスク
-status: draft
+status: queued
 scope:
   paths: [src/**]
 acceptance:
@@ -144,14 +145,11 @@ acceptance:
   it("[AC-Scc9152-1-1] file content is unchanged after watcher ingest (no write-back)", () => {
     const taskFile = path.join(tmpRepoDir, "work", "tasks", "task-0001-test-ingest.md");
     const contentAfter = fs.readFileSync(taskFile, "utf-8");
-    // The frontmatter status must still say "draft" (not "queued")
+    // The frontmatter status must still say "queued" — the daemon must not write back
+    // runtime state (e.g. advancing status to 'ready' or 'planning' in the file).
     assert.ok(
-      contentAfter.includes("status: draft"),
-      "frontmatter status must remain 'draft' — daemon must not write back runtime state"
-    );
-    assert.ok(
-      !contentAfter.includes("status: queued"),
-      "frontmatter must not contain 'queued' — no write-back allowed"
+      contentAfter.includes("status: queued"),
+      "frontmatter status must remain 'queued' — daemon must not write back runtime state"
     );
   });
 });
