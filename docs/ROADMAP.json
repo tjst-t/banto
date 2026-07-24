@@ -1019,7 +1019,7 @@
         },
         "S9d7fdb-5": {
           "title": "TTL執行と照合（reconcile）",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、期限切れ環境の強制回収と、台帳と実リソースの突合が自動で行われるようにしたい。なぜなら、外部リソースの消し忘れは金銭的実害に直結し、環境の後始末をPOが手動で行わないことが成功基準だから。",
@@ -1047,28 +1047,28 @@
             "S9d7fdb-5-1": {
               "title": "TTL執行tickジョブ",
               "description": "Scheduler.registerJobでTTLジョブを登録し、台帳のttlDeadline超過エントリを強制teardownする。I2: ジョブ内エラーは既存のtick_job_failedパターンで記録され、schedulerは継続する。",
-              "status": "pending"
+              "status": "done"
             },
             "S9d7fdb-5-2": {
               "title": "teardownリトライと失敗エスカレーション",
               "description": "teardown失敗をリトライ（上限・間隔は設定値）し、上限到達でcard_generated(cardType: cadence)を積み、台帳エントリにteardown_failedマークを付けて保持する。カード実体ファイルはcardPath参照のみ（D3: ログに本文を複製しない）。",
-              "status": "pending"
+              "status": "done"
             },
             "S9d7fdb-5-3": {
               "title": "照合tickジョブ",
               "description": "daemon.tsのreconcileLedger（spawn照合）と同じ周期機構で、各ドライバのlist出力と環境台帳を突合する。台帳に無いtaskIDプレフィックスリソース＝孤児として検出しカード化。台帳にあるがlistに無いリソースは台帳から除去してイベント記録。",
-              "status": "pending"
+              "status": "done"
             },
             "S9d7fdb-5-4": {
               "title": "孤児検出の実機smoke",
               "description": "daemon停止中にprocessドライバ管理下の形式（taskIDプレフィックス命名）でリソースを作り、再起動後の照合が検出することを実機で確認する（モック不可、orphan-recovery.spec.tsのパターンに倣う）。",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
         "S9d7fdb-6": {
           "title": "credentialsのsops分離",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、環境の認証情報がエージェントのコンテキストとツール結果に一度も現れないようにしたい。なぜなら、ガバナンスの確実性は「ずるが構造的に不可能」であることを要し、秘密の分離はプロンプト遵守ではなく機構で保証すべきだから。",
@@ -1096,17 +1096,17 @@
             "S9d7fdb-6-1": {
               "title": "sops復号ラッパ",
               "description": "sopsバイナリへのシェルアウト（sops -d）で参照名→キー/値の復号を行うラッパをdaemonに実装する。D6: sops-js等のnpm依存は追加しない（理由: sopsは運用側で導入済みの外部バイナリであり、暗号実装を自前依存に持ち込まない）。テストフィクスチャはage鍵で暗号化したファイルを用意。",
-              "status": "pending"
+              "status": "done"
             },
             "S9d7fdb-6-2": {
               "title": "ドライバプロセスへの環境変数注入",
               "description": "復号値をドライバ実行ラッパのspawn envに直接載せる（stdin JSON・引数・ログには一切載せない）。復号値はメモリ上でprovision呼出しの間のみ保持し、永続化しない（D3）。",
-              "status": "pending"
+              "status": "done"
             },
             "S9d7fdb-6-3": {
               "title": "漏えい検査テスト",
               "description": "既知のテスト実値を使い、イベントログファイル・API全応答・台帳ファイル・ログ集約ディレクトリを実値でgrepして不在を検証する自動テスト。",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
@@ -1661,6 +1661,13 @@
       "description": "同時provisionリクエストがcount検査とledger.addの間で競合しmax_instancesを超え得る(gate検査は勧告的、provision時検査が権威だがレース非安全)。Node単一プロセスで境界され、Story-5 reconcileが二重防御。必要ならprovision経路の直列化/ロックを検討",
       "added_in": "S9d7fdb",
       "reason": "S9d7fdb-4レビュー。spec §5「取り漏れはStory5照合が受け止める」に沿い当面記録のみ"
+    },
+    {
+      "title": "ドライバのstdout/stderrへのsecret出力禁止をspec明記",
+      "kind": "chore",
+      "description": "daemonは復号済みcredentialをドライバのspawn envにのみ注入し漏洩させないが、悪意ある/バグのあるドライバがstdout/stderrにsecretを書くとdaemonのエラー文字列(driver stderr抜粋)経由で漏れ得る。daemonが構造的に防げないため、spec-environment §4にドライバ契約規約として「ドライバはcredentialをstdout/stderr/argvに出力してはならない」を明記する",
+      "added_in": "S9d7fdb",
+      "reason": "S9d7fdb-6セキュリティレビューのdesign note。コードでなく契約規約で担保する層"
     }
   ]
 }
