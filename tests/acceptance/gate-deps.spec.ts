@@ -72,7 +72,9 @@ describe("[AC-Scc9152-2-1] Gate condition 1: dependency-driven queued→ready", 
 
   before(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-gate-deps-"));
-    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 500 });
+    // disableAuditSpawn: this suite tests gate logic and transitions tasks through
+    // implementing→auditing→merging etc. as state placeholders, not to trigger audit sessions.
+    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 500, disableAuditSpawn: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
 

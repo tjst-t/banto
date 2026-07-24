@@ -50,6 +50,8 @@ const REGULAR_TRANSITIONS: ReadonlySet<string> = new Set<string>([
   // auditing → merging: auto merge-policy path (caller ensures policy condition)
   "auditing:merging",
   "auditing:review-ready",
+  // auditing → implementing: rework path (first audit fail; daemon injects findings into new session)
+  "auditing:implementing",
   "review-ready:in-review",
   "in-review:approved",
   "approved:merging",

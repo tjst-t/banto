@@ -213,7 +213,7 @@ Use the banto tools (report_phase, report_done) — do NOT make raw HTTP calls.
 
 // ── Suite ─────────────────────────────────────────────────────────────────────
 
-describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → review-ready", { timeout: 240000 }, () => {
+describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → auditing (executor done)", { timeout: 240000 }, () => {
   let tmpDir: string;
   let repoDir: string;
   let tasksDir: string;
@@ -279,7 +279,7 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → review-ready",
     }
   });
 
-  it("[AC-S254276-4-2] E2E: task file drop → ingest → ready → spawn → implement → review-ready", async () => {
+  it("[AC-S254276-4-2] E2E: task file drop → ingest → ready → spawn → implement → auditing (S75f66b-3: executor done→audit, not self→review-ready)", async () => {
     // Auth gate: if auth failed, escalate as needs_human (I2: not skip)
     if (!authResult.ok) {
       throw new Error(
@@ -418,15 +418,19 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → review-ready",
 
     await driver.inject(spawnResult.sessionId, taskPrompt);
 
-    // ── Step 8: Wait for review-ready ────────────────────────────────────────
-    // The extension's report_done() calls the daemon transition API which moves
-    // the task to review-ready. Allow 180s for LLM inference + tool execution.
-    const becameReviewReady = await pollUntil(() => {
+    // ── Step 8: Wait for auditing state ─────────────────────────────────────
+    // S75f66b-3 (DEC-S254276-012 resolved): report_done now transitions to 'auditing'
+    // (not directly to review-ready). The executor no longer self-transitions through audit.
+    // In this E2E, the audit session is NOT spawned with a real LLM (no audit agent binary).
+    // The executor's report_done() call transitions implementing→auditing; we verify that.
+    // The full implementing→auditing→(pass/fail)→review-ready/merging/rework pipeline
+    // is verified in the pipeline E2E (S75f66b-5-4) with a scripted audit driver.
+    const becameAuditing = await pollUntil(() => {
       const t = daemon.getTask(projectTag, TASK_ID);
-      return t?.status === "review-ready";
+      return t?.status === "auditing" || t?.status === "failed";
     }, 180000, 1000);
 
-    if (!becameReviewReady) {
+    if (!becameAuditing) {
       // Check if the task failed
       const taskState = daemon.getTask(projectTag, TASK_ID);
       const events = daemon.getAllEvents();
@@ -437,7 +441,7 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → review-ready",
           story: "S254276-4",
           ac: "AC-S254276-4-2",
           type: "needs_human",
-          reason: `エージェントがreview-readyに到達できなかった: ${failedEv.reason}`,
+          reason: `エージェントがauditingに到達できなかった: ${failedEv.reason}`,
           detail: `task.status=${taskState?.status ?? "unknown"}, fail_reason=${failedEv.reason}`,
           timestamp: new Date().toISOString(),
         });
@@ -447,17 +451,18 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → review-ready",
       }
 
       assert.fail(
-        `Task '${TASK_ID}' must reach 'review-ready' within 180s. ` +
+        `Task '${TASK_ID}' must reach 'auditing' within 180s. ` +
         `Current status: ${taskState?.status ?? "unknown"}`
       );
     }
 
-    // ── Step 9: Verify state is review-ready ────────────────────────────────
+    // ── Step 9: Verify state is auditing ────────────────────────────────────
+    // (task_failed is also acceptable if the audit spawn failed due to no real audit binary)
     const taskFinal = daemon.getTask(projectTag, TASK_ID);
-    assert.equal(
-      taskFinal?.status,
-      "review-ready",
-      "task.status must be 'review-ready' after agent completion"
+    assert.ok(
+      taskFinal?.status === "auditing" || taskFinal?.status === "failed",
+      `task.status must be 'auditing' (or 'failed' if audit spawn failed) after agent completion; ` +
+      `got: ${taskFinal?.status ?? "not found"}`
     );
 
     // ── Step 10: Verify event history ───────────────────────────────────────
@@ -487,8 +492,9 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → review-ready",
       `state transitions must include 'planning'; got: [${toStatuses.join(", ")}]`
     );
     assert.ok(
-      toStatuses.includes("review-ready"),
-      `state transitions must include 'review-ready'; got: [${toStatuses.join(", ")}]`
+      toStatuses.includes("auditing"),
+      `state transitions must include 'auditing' (executor report_done → auditing; S75f66b-3); ` +
+      `got: [${toStatuses.join(", ")}]`
     );
 
     assert.ok(
@@ -521,10 +527,10 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → review-ready",
     }
 
     // ── Step 13: Verify extension-driven transitions ─────────────────────────
-    // The implementing→auditing→review-ready transitions must have been driven
-    // by the banto-executor extension (via report_done tool calling daemon API).
-    // We verify that at least "implementing" appeared in the transition chain,
-    // which indicates the extension's report_phase tool was called by the LLM.
+    // The implementing→auditing transition must have been driven by the banto-executor
+    // extension (via report_done tool calling daemon API → implementing→auditing).
+    // S75f66b-3 (DEC-S254276-012 resolved): executor transitions to auditing only.
+    // The audit agent (separate session) decides what happens next.
     assert.ok(
       toStatuses.includes("implementing"),
       `extension-driven transition 'implementing' must be present; got: [${toStatuses.join(", ")}]. ` +

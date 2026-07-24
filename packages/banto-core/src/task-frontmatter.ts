@@ -34,6 +34,12 @@ export interface TaskFrontmatter {
   governance?: boolean;
   hypothesis?: Record<string, unknown>;
   model_tier?: "reasoning" | "standard" | "fast";
+  /**
+   * Merge/audit policy for this task (spec-schemas §1, spec-daemon-core §1).
+   * "auto": audit pass → jump directly to merging (skip review-ready/in-review).
+   * "manual" (default): audit pass → review-ready, awaiting PO review.
+   */
+  review?: { policy?: "auto" | "manual" };
   [key: string]: unknown;
 }
 
@@ -474,6 +480,15 @@ export function validateTaskFrontmatter(fileContent: string): FrontmatterValidat
     const mt = String(parsed["model_tier"]);
     if (mt === "reasoning" || mt === "standard" || mt === "fast") {
       frontmatter.model_tier = mt;
+    }
+  }
+
+  // Parse optional review.policy (spec-schemas §1: "auto" | "manual"; default "manual")
+  if (parsed["review"] !== undefined && typeof parsed["review"] === "object" && parsed["review"] !== null) {
+    const reviewObj = parsed["review"] as Record<string, unknown>;
+    const policy = reviewObj["policy"];
+    if (policy === "auto" || policy === "manual") {
+      frontmatter.review = { policy };
     }
   }
 
