@@ -50,6 +50,7 @@ import {
 import { EnvLedger, countLiveByProfile } from "./env-ledger.js";
 import type { EnvLedgerEntry } from "./env-ledger.js";
 import { runDriverVerb, resolveDriverPath, DEFAULT_DRIVER_TIMEOUT_MS } from "./env-driver-runner.js";
+import { decryptSops, resolveCredentialsPath } from "./sops.js";
 import type {
   ProvisionOutput,
   HealthcheckOutput,
@@ -166,6 +167,13 @@ export interface DaemonConfig {
    * Default: 30 000 ms (30 s).
    */
   driverTimeoutMs?: number;
+  /**
+   * Path to the age private key file for sops decryption (spec-environment §4, S9d7fdb-6).
+   * Corresponds to the SOPS_AGE_KEY_FILE convention.
+   * If omitted, the daemon's inherited SOPS_AGE_KEY_FILE environment variable is used.
+   * D6: sops + age are pre-installed infrastructure tools (no npm dep added).
+   */
+  sopsAgeKeyFile?: string;
 }
 
 export class Daemon {
@@ -437,6 +445,7 @@ export class Daemon {
       disableAuditSpawn: config.disableAuditSpawn ?? false,
       disableAutoSpawn: config.disableAutoSpawn ?? false,
       driverTimeoutMs: config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS,
+      sopsAgeKeyFile: config.sopsAgeKeyFile ?? process.env["SOPS_AGE_KEY_FILE"],
     };
     return new Daemon(resolved);
   }
@@ -1794,12 +1803,67 @@ export class Daemon {
     const driverPath = resolveDriverPath(profile.driver);
     const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
 
+    // S9d7fdb-6: credentials decryption (spec-environment §4).
+    // If the profile has a credentials reference, decrypt via sops BEFORE touching the driver.
+    // On failure → provision fails immediately (I2: no partial state, no env created).
+    // SECURITY: decryptedEnv values are ONLY passed to spawn env; never logged/persisted/echoed.
+    let decryptedEnv: Record<string, string> | undefined;
+    if (profile.credentials) {
+      const proj = this.registry.get(projectTag);
+      if (!proj) {
+        const reason = `credentials_resolve_failed: project "${projectTag}" not found`;
+        const event = this.log.append({
+          type: "env_provision_failed",
+          projectTag,
+          taskId,
+          profileName,
+          reason,
+        });
+        this.applyAndBroadcast(event);
+        return { ok: false, httpStatus: 404, error: reason };
+      }
+      const credPath = resolveCredentialsPath(proj.repoPath, profile.credentials);
+      if (!credPath.ok) {
+        const reason = credPath.error;
+        const event = this.log.append({
+          type: "env_provision_failed",
+          projectTag,
+          taskId,
+          profileName,
+          reason,
+        });
+        this.applyAndBroadcast(event);
+        return { ok: false, httpStatus: 502, error: reason };
+      }
+      const decResult = await decryptSops(
+        credPath.filePath,
+        this.config.sopsAgeKeyFile,
+        timeoutMs
+      );
+      if (!decResult.ok) {
+        const reason = decResult.error;
+        const event = this.log.append({
+          type: "env_provision_failed",
+          projectTag,
+          taskId,
+          profileName,
+          reason,
+        });
+        this.applyAndBroadcast(event);
+        return { ok: false, httpStatus: 502, error: reason };
+      }
+      // SECURITY: decResult.secrets is ONLY assigned to decryptedEnv for spawn injection.
+      // It is never written to events, logs, ledger, API responses, or any persisted surface.
+      decryptedEnv = decResult.secrets;
+    }
+
     // Step 1: provision
     const provisionResult = await runDriverVerb(
       driverPath,
       "provision",
       { config: profile.config ?? {}, taskId },
-      timeoutMs
+      timeoutMs,
+      decryptedEnv
     );
 
     if (!provisionResult.ok) {
@@ -1832,11 +1896,13 @@ export class Daemon {
     const handle = provOut.handle;
 
     // Step 2: healthcheck
+    // S9d7fdb-6: pass decryptedEnv to healthcheck as well (driver may need credentials for probe).
     const hcResult = await runDriverVerb(
       driverPath,
       "healthcheck",
       { handle },
-      timeoutMs
+      timeoutMs,
+      decryptedEnv
     );
 
     let healthcheck: { ok: boolean; detail?: string };
@@ -1918,11 +1984,18 @@ export class Daemon {
     const driverPath = resolveDriverPath(entry.driver);
     const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
 
+    // S9d7fdb-6: resolve credentials for teardown (driver may need them to authenticate).
+    const credResult = await this._resolveCredentialsForEntry(entry);
+    if (!credResult.ok) {
+      return { ok: false, httpStatus: 502, error: credResult.error };
+    }
+
     const result = await runDriverVerb(
       driverPath,
       "teardown",
       { handle: entry.handle },
-      timeoutMs
+      timeoutMs,
+      credResult.secrets
     );
 
     if (!result.ok) {
@@ -1972,11 +2045,18 @@ export class Daemon {
     const driverPath = resolveDriverPath(entry.driver);
     const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
 
+    // S9d7fdb-6: resolve credentials for run verb (driver may need them for remote exec).
+    const credResult = await this._resolveCredentialsForEntry(entry);
+    if (!credResult.ok) {
+      return { ok: false, httpStatus: 502, error: credResult.error };
+    }
+
     const result = await runDriverVerb(
       driverPath,
       "run",
       { handle: entry.handle, cmd },
-      timeoutMs
+      timeoutMs,
+      credResult.secrets
     );
 
     if (!result.ok) {
@@ -2018,11 +2098,18 @@ export class Daemon {
     const driverPath = resolveDriverPath(entry.driver);
     const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
 
+    // S9d7fdb-6: resolve credentials for collect verb.
+    const credResult = await this._resolveCredentialsForEntry(entry);
+    if (!credResult.ok) {
+      return { ok: false, httpStatus: 502, error: credResult.error };
+    }
+
     const result = await runDriverVerb(
       driverPath,
       "collect",
       { handle: entry.handle, dest },
-      timeoutMs
+      timeoutMs,
+      credResult.secrets
     );
 
     if (!result.ok) {
@@ -2118,6 +2205,42 @@ export class Daemon {
     }
     const live = this.envLedger.listByTask(projectTag, taskId);
     return live[live.length - 1];
+  }
+
+  /**
+   * S9d7fdb-6: Resolve and decrypt credentials for a ledger entry's profile.
+   *
+   * Looks up the profile from the current environments.yaml, resolves the
+   * credentials file path, and decrypts via sops.
+   *
+   * Returns undefined if the profile has no credentials (no-op).
+   * Returns { ok: false, error } if decryption fails (caller must surface this).
+   *
+   * SECURITY: the returned secrets record must ONLY be passed to spawn env.
+   * Never log, persist, or echo the decrypted values.
+   */
+  private async _resolveCredentialsForEntry(
+    entry: EnvLedgerEntry
+  ): Promise<{ ok: true; secrets: Record<string, string> | undefined } | { ok: false; error: string }> {
+    const { valid } = this.getEnvironmentProfiles(entry.projectTag);
+    const profile = valid.find((p) => p.name === entry.profileName);
+    if (!profile || !profile.credentials) {
+      return { ok: true, secrets: undefined };
+    }
+    const proj = this.registry.get(entry.projectTag);
+    if (!proj) {
+      return { ok: false, error: `credentials_resolve_failed: project "${entry.projectTag}" not found` };
+    }
+    const credPath = resolveCredentialsPath(proj.repoPath, profile.credentials);
+    if (!credPath.ok) {
+      return { ok: false, error: credPath.error };
+    }
+    const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
+    const decResult = await decryptSops(credPath.filePath, this.config.sopsAgeKeyFile, timeoutMs);
+    if (!decResult.ok) {
+      return { ok: false, error: decResult.error };
+    }
+    return { ok: true, secrets: decResult.secrets };
   }
 
   /**
