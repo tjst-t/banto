@@ -1,11 +1,11 @@
 /**
  * banto-executor: pi Extension adapter for banto executor tools.
  *
- * Thin wrapper (~60 lines) that registers banto-core executor tools with pi.
+ * Thin wrapper that registers banto-core executor tools with pi.
  * All logic lives in banto-core (D5). This file only handles:
  *   1. Reading env vars for DaemonClient configuration
  *   2. Mapping banto-core BantoTool definitions to pi's registerTool format
- *   3. Injecting the system prompt via pi.on("session_start", ...)
+ *   3. Injecting the system prompt via pi.on("before_agent_start", ...)
  *
  * Usage: pi -e ./packages/banto-daemon/src/pi-extension/banto-executor.ts
  *
@@ -61,15 +61,18 @@ export default function (pi: any): void {
     });
   }
 
-  // Inject executor system prompt via session_start hook
+  // Inject executor system prompt via before_agent_start hook.
+  // This fires before each LLM call and injects banto-specific instructions.
+  // We use before_agent_start (not session_start) because it provides a
+  // systemPrompt field that can be appended to. (extensions.md §before_agent_start)
   pi.on(
-    "session_start",
-    async (
-      _event: unknown,
-      ctx: { systemPromptAppend: (text: string) => void }
-    ) => {
+    "before_agent_start",
+    (
+      event: { systemPrompt: string },
+      _ctx: unknown
+    ): { systemPrompt: string } => {
       const prompt = loadPromptAsset("executor-system");
-      ctx.systemPromptAppend(prompt);
+      return { systemPrompt: event.systemPrompt + "\n\n" + prompt };
     }
   );
 }

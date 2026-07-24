@@ -90,11 +90,33 @@ export interface PiRpcDriverOptions {
    * Per spec §2.1 sessions are stored outside the event log.
    */
   sessionBaseDir?: string;
+  /**
+   * Default LLM provider passed to pi via --provider.
+   * Can be overridden per-spawn via SpawnOptions.driverOptions.provider.
+   * Default: "opencode-go"
+   */
+  defaultProvider?: string;
+  /**
+   * Default LLM model passed to pi via --model.
+   * Can be overridden per-spawn via SpawnOptions.driverOptions.model.
+   * Default: "deepseek-v4-flash"
+   */
+  defaultModel?: string;
+  /**
+   * Absolute path to the banto-executor.ts extension file.
+   * When set, passed as --extension <path> on every spawn so that
+   * report_phase/report_done tools are available in the pi session.
+   * Can be overridden per-spawn via SpawnOptions.driverOptions.extensionPath.
+   */
+  extensionPath?: string;
 }
 
 export class PiRpcDriver implements RuntimeDriver {
   private readonly piCliPath: string;
   private readonly sessionBaseDir: string;
+  private readonly defaultProvider: string;
+  private readonly defaultModel: string;
+  private readonly extensionPath: string | undefined;
   private readonly sessions = new Map<string, ActiveSession>();
   private readonly handlers: Set<DriverEventHandler> = new Set();
 
@@ -135,6 +157,9 @@ export class PiRpcDriver implements RuntimeDriver {
     }
 
     this.sessionBaseDir = opts.sessionBaseDir ?? "";
+    this.defaultProvider = opts.defaultProvider ?? "opencode-go";
+    this.defaultModel = opts.defaultModel ?? "deepseek-v4-flash";
+    this.extensionPath = opts.extensionPath;
   }
 
   // ── RuntimeDriver.spawn ─────────────────────────────────────────────────
@@ -147,8 +172,24 @@ export class PiRpcDriver implements RuntimeDriver {
     const sessionDir = path.dirname(sessionPath);
     fs.mkdirSync(sessionDir, { recursive: true });
 
+    // Resolve provider and model: per-spawn driverOptions override constructor defaults.
+    const provider =
+      (opts.driverOptions?.provider && typeof opts.driverOptions.provider === "string"
+        ? opts.driverOptions.provider
+        : null) ?? this.defaultProvider;
+    const model =
+      (opts.driverOptions?.model && typeof opts.driverOptions.model === "string"
+        ? opts.driverOptions.model
+        : null) ?? this.defaultModel;
+
+    // Resolve extension path: per-spawn override → constructor default.
+    const extensionPath =
+      (opts.driverOptions?.extensionPath && typeof opts.driverOptions.extensionPath === "string"
+        ? opts.driverOptions.extensionPath
+        : null) ?? this.extensionPath;
+
     // Build pi CLI arguments.
-    // pi --mode rpc --session-dir <dir> --no-session (let pi pick the session file via --session-dir)
+    // pi --mode rpc --session-dir <dir> --provider <p> --model <m> [--extension <ext>]
     // We use --session-dir so pi stores the JSONL in a location we know.
     const args = [
       this.piCliPath,
@@ -156,19 +197,34 @@ export class PiRpcDriver implements RuntimeDriver {
       "rpc",
       "--session-dir",
       sessionDir,
+      "--provider",
+      provider,
+      "--model",
+      model,
     ];
 
-    if (opts.driverOptions?.provider && typeof opts.driverOptions.provider === "string") {
-      args.push("--provider", opts.driverOptions.provider);
+    if (extensionPath) {
+      args.push("--extension", extensionPath);
     }
-    if (opts.driverOptions?.model && typeof opts.driverOptions.model === "string") {
-      args.push("--model", opts.driverOptions.model);
+
+    // Collect per-spawn environment variables from driverOptions.
+    // BANTO_DAEMON_URL, BANTO_PROJECT, BANTO_TASK_ID are injected here so the
+    // banto-executor extension can reach the daemon and report state transitions.
+    const extraEnv: Record<string, string> = {};
+    if (opts.driverOptions?.daemonUrl && typeof opts.driverOptions.daemonUrl === "string") {
+      extraEnv["BANTO_DAEMON_URL"] = opts.driverOptions.daemonUrl;
+    }
+    if (opts.driverOptions?.projectTag && typeof opts.driverOptions.projectTag === "string") {
+      extraEnv["BANTO_PROJECT"] = opts.driverOptions.projectTag;
+    }
+    if (opts.taskId) {
+      extraEnv["BANTO_TASK_ID"] = opts.taskId;
     }
 
     // Spawn pi as a child process (node CLI entry-point).
     const proc = childProcess.spawn("node", args, {
       cwd: worktreePath,
-      env: { ...process.env },
+      env: { ...process.env, ...extraEnv },
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -248,9 +304,11 @@ export class PiRpcDriver implements RuntimeDriver {
           return; // non-JSON lines (e.g. pi startup messages) are ignored
         }
 
-        // The first response we expect is the get_state response
+        // Accept the get_state response whenever it arrives (before or after timeout).
+        // NOTE: !stateQueried must NOT be included: stateQueried is set to true when
+        // the query is sent (200ms delay), but the response arrives after that.
+        // Including !stateQueried would prevent accepting the response.
         if (
-          !stateQueried &&
           msg["type"] === "response" &&
           msg["command"] === "get_state" &&
           msg["success"] === true
