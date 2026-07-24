@@ -216,49 +216,32 @@ export function scopePathsOverlap(setA: string[], setB: string[]): boolean {
 export function fileMatchesGlob(filePath: string, pattern: string): boolean {
   const p = pattern.replace(/\/+$/, "");
   const segments = p.split("/");
-  const wildcardIdx = segments.findIndex((seg) => seg.includes("*"));
-
-  if (wildcardIdx === -1) {
+  if (!p.includes("*")) {
     // No wildcard — exact match only
     return filePath === p;
   }
 
-  if (wildcardIdx === 0) {
-    // Wildcard at first segment → catch-all (covers the file)
-    return true;
+  // Compile the glob segment-by-segment into an anchored RegExp:
+  //   "**" as a whole segment → zero or more path segments (".+" when last)
+  //   "*"  within a segment   → any run of non-"/" characters
+  // Every literal character is escaped, so matching is strict (fail-closed):
+  // a stricter matcher yields MORE not-in-scope verdicts, never fewer.
+  const esc = (s: string): string => s.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  let re = "^";
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i]!;
+    const isLast = i === segments.length - 1;
+    if (seg === "**") {
+      // Zero or more whole segments; as the final segment it must cover at
+      // least one character (a bare directory prefix is not a file match).
+      re += isLast ? ".+" : "(?:[^/]+/)*";
+    } else {
+      re += seg.split("*").map(esc).join("[^/]*");
+      if (!isLast) re += "/";
+    }
   }
-
-  // Literal prefix before the wildcard segment (with trailing "/")
-  const prefix = segments.slice(0, wildcardIdx).join("/") + "/";
-
-  if (!filePath.startsWith(prefix)) {
-    return false;
-  }
-
-  const wildcardSeg = segments[wildcardIdx]!;
-
-  if (wildcardSeg === "**") {
-    // "**" crosses directory separators — prefix match is sufficient
-    return true;
-  }
-
-  // Single "*" (possibly with extension, e.g. "*.ts") — must NOT cross "/"
-  const remainder = filePath.slice(prefix.length);
-
-  // remainder must be a single path component (no "/" inside it)
-  if (remainder.includes("/")) {
-    return false;
-  }
-
-  // If the wildcard segment has a suffix after "*" (e.g. "*.ts" → suffix ".ts"),
-  // the file's remainder must end with that suffix.
-  const starPos = wildcardSeg.indexOf("*");
-  const suffix = wildcardSeg.slice(starPos + 1); // e.g. ".ts" or ""
-  if (suffix.length > 0 && !remainder.endsWith(suffix)) {
-    return false;
-  }
-
-  return true;
+  re += "$";
+  return new RegExp(re).test(filePath);
 }
 
 /**

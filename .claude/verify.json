@@ -2,15 +2,15 @@
   "commands": [
     {
       "name": "acceptance-tests",
-      "cmd": "npm test"
+      "command": "npm test"
     },
     {
       "name": "typecheck",
-      "cmd": "npm run typecheck"
+      "command": "npm run typecheck"
     },
     {
       "name": "e2e",
-      "cmd": "npm run test:e2e"
+      "command": "npm run test:e2e"
     }
   ]
 }

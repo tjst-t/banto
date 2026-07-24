@@ -983,8 +983,7 @@ export class Daemon {
   private async spawnAuditSession(
     projectTag: string,
     taskId: string,
-    driverId = "pi-rpc",
-    findingsForRework?: string[]
+    driverId = "pi-rpc"
   ): Promise<void> {
     const task = this.store.getTask(taskId, projectTag);
     if (!task) {
@@ -1026,13 +1025,6 @@ export class Daemon {
       const reason = `audit prompt assets missing: ${err instanceof Error ? err.message : String(err)}`;
       this.recordTaskFailed(projectTag, taskId, reason);
       return;
-    }
-
-    // Inject rework findings into the audit session prompt (first-fail rework path).
-    if (findingsForRework && findingsForRework.length > 0) {
-      auditSystemPrompt +=
-        "\n\n## 前回の監査指摘（再実装後の確認事項）\n\n" +
-        findingsForRework.map((f) => `- ${f}`).join("\n");
     }
 
     const driver = this.driverRegistry.get(driverId);

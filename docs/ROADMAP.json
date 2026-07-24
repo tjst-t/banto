@@ -1640,6 +1640,13 @@
       "description": "コンフリクト解消タスク起票時の肯定的イベントがなくWS購読者/コックピットからライフサイクル先頭が見えない。conflict_filed{originTaskId,resolutionTaskId}を発行する",
       "added_in": "S75f66b",
       "reason": "S75f66bクロスストーリーレビュー。po_operation(conflict_resolved)で末尾は見えるが先頭が不可視"
+    },
+    {
+      "title": "再監査セッションへの前回指摘の注入",
+      "kind": "enhancement",
+      "description": "rework後の再監査(audit-2)セッションに前回のaudit_verdict failのfindingsを文脈注入する。現在は同一プロンプトで再監査。イベントから導出可能(D3)",
+      "added_in": "S75f66b",
+      "reason": "S75f66b verifierレビューでdead codeとして検出した構想の正式バックログ化"
     }
   ]
 }

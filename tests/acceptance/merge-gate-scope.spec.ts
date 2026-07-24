@@ -201,6 +201,25 @@ describe("[S75f66b-4-F1] fileMatchesGlob: single * must not cross /", () => {
       "src/** must match src/a/b.ts — ** crosses /"
     );
   });
+
+  it("*.md does NOT match src/deep/evil.ts (first-segment wildcard is not a catch-all)", () => {
+    assert.equal(
+      fileMatchesGlob("src/deep/evil.ts", "*.md"),
+      false,
+      "*.md is root-level .md files only — a first-segment wildcard must not cover the whole tree"
+    );
+    assert.equal(fileMatchesGlob("README.md", "*.md"), true, "*.md must still match root-level .md");
+  });
+
+  it("src/**/*.ts does NOT match src/a.js (segments after ** are enforced)", () => {
+    assert.equal(
+      fileMatchesGlob("src/a.js", "src/**/*.ts"),
+      false,
+      "trailing *.ts after ** must be enforced, not ignored"
+    );
+    assert.equal(fileMatchesGlob("src/a.ts", "src/**/*.ts"), true, "** may span zero segments");
+    assert.equal(fileMatchesGlob("src/a/b/c.ts", "src/**/*.ts"), true, "** spans nested dirs");
+  });
 });
 
 // ── D2: empty scope.paths → explicit fail-closed reason ──────────────────────
