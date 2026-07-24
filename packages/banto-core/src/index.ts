@@ -33,7 +33,17 @@ export type {
   AuditStartedEvent,
   AuditVerdictEvent,
   AuditSpawnDisabledEvent,
+  EnvProfileRejectedEvent,
+  EnvProvisionFailedEvent,
 } from "./events.js";
+
+// Environment profile parser (spec-environment §1)
+export { parseEnvProfiles, validateProfile, parseTtl } from "./env-profile-parser.js";
+export type {
+  EnvProfile,
+  ProfileValidation,
+  ParseEnvProfilesResult,
+} from "./env-profile-parser.js";
 
 // Task frontmatter parser + validator
 export { validateTaskFrontmatter, extractFrontmatter, parseYamlFrontmatter } from "./task-frontmatter.js";

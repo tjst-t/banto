@@ -335,6 +335,68 @@ export function createHttpServer(daemon: Daemon): http.Server {
         sendJson(res, 200, { task });
       },
     },
+
+    // S9d7fdb-1 (AC-S9d7fdb-1-1): List environment profiles for a project.
+    // D3: re-read from meta/environments.yaml on every request (not cached).
+    // Returns only validated profiles; invalid entries are recorded as events, not returned.
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/environments$/,
+      handler: async (_req, res, match) => {
+        const proj = match[1];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const result = daemon.getEnvironmentProfiles(proj);
+        sendJson(res, 200, { profiles: result.valid });
+      },
+    },
+
+    // S9d7fdb-1 (AC-S9d7fdb-1-3): Provision environment for a task.
+    // Story 1 scope: resolve profile name only — 404 if not found + env_provision_failed event.
+    // Actual driver invocation lands in Story 2.
+    // D5: all logic delegated to daemon.resolveEnvProfile; this is pure routing.
+    {
+      method: "POST",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/tasks\/([^/]+)\/environment\/provision$/,
+      handler: async (req, res, match) => {
+        const proj = match[1];
+        const taskId = match[2];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const task = daemon.getTask(proj, taskId);
+        if (!task) {
+          sendJson(res, 404, { error: "task_not_found" });
+          return;
+        }
+        // Resolve profile name from task frontmatter's `environment` field,
+        // or allow caller to override via request body `profile`.
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const profileName =
+          typeof body["profile"] === "string"
+            ? body["profile"]
+            : typeof task["environment"] === "string"
+            ? task["environment"]
+            : undefined;
+
+        if (!profileName) {
+          sendJson(res, 400, { error: "no profile name: task has no environment field and no profile in request body" });
+          return;
+        }
+
+        const result = daemon.resolveEnvProfile(proj, taskId, profileName);
+        if (!result.ok) {
+          sendJson(res, result.httpStatus, { error: result.error });
+          return;
+        }
+        // Profile found: in Story 1, we return 202 Accepted (provision not yet implemented).
+        // Story 2 will replace this with actual driver invocation.
+        sendJson(res, 202, { status: "profile_resolved", profileName: result.profileName });
+      },
+    },
   ];
 
   const server = http.createServer((req, res) => {

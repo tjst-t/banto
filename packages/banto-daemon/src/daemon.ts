@@ -27,8 +27,9 @@ import {
   EventIndex,
   StateMachine,
   RuntimeDriverRegistry,
+  parseEnvProfiles as _parseEnvProfiles,
 } from "@banto/core";
-import type { OrchestrationEvent, TaskStatus, TaskRecord, TransitionResult, RuntimeDriver, SpawnOptions } from "@banto/core";
+import type { OrchestrationEvent, TaskStatus, TaskRecord, TransitionResult, RuntimeDriver, SpawnOptions, ParseEnvProfilesResult } from "@banto/core";
 import { ProjectRegistry } from "./project-registry.js";
 import type { ProjectEntry } from "./project-registry.js";
 import { WsEventServer } from "./ws-server.js";
@@ -241,6 +242,15 @@ export class Daemon {
    * D3/I2: ensures no events are silently dropped due to log-close-before-write.
    */
   private readonly _backgroundOps: Set<Promise<void>> = new Set();
+
+  /**
+   * No-flood dedup map for env_profile_rejected events (S9d7fdb-1, AC-S9d7fdb-1-2).
+   * Key: "projectTag/profileName", Value: mtime of meta/environments.yaml at last emit.
+   * An event is only emitted when the file's mtime has changed since the last emission.
+   * Mirrors the TaskWatcher no-flood pattern (mtime unchanged = already processed).
+   * In-memory only; resets on daemon restart (first call after restart always emits).
+   */
+  private readonly _envProfileRejectMtime: Map<string, number> = new Map();
 
   private constructor(config: DaemonConfig) {
     this.config = config;
@@ -1486,6 +1496,110 @@ export class Daemon {
       }
     }
     return reworkCount;
+  }
+
+  // ── Environment profile API (S9d7fdb-1) ───────────────────────────────────
+
+  /**
+   * Read and validate environment profiles from meta/environments.yaml for the project.
+   *
+   * D3: profiles are file-intent; re-read from disk on every call (not cached/stored).
+   *     Caller (HTTP handler) reads on each request — no stale derived state.
+   * I2: YAML parse errors and per-profile validation failures are returned as `failures`
+   *     (never thrown or swallowed). The daemon does NOT crash on invalid profiles.
+   *
+   * No-flood pattern for env_profile_rejected events (mirrors watcher-reject no-flood):
+   *   - Failures are emitted as events at most once per (projectTag, profileName, mtime)
+   *     so repeated reads of the same malformed file do not flood the event log.
+   *   - The dedup map (_envProfileRejectMtime) is keyed by "projectTag/profileName"
+   *     and stores the file's mtime at the time of the last rejection event.
+   *
+   * @returns parsed valid profiles and any failures (for HTTP response).
+   */
+  getEnvironmentProfiles(projectTag: string): ParseEnvProfilesResult {
+    const proj = this.registry.get(projectTag);
+    if (!proj) {
+      return { valid: [], failures: [] };
+    }
+
+    const envFile = path.join(proj.repoPath, "meta", "environments.yaml");
+    if (!fs.existsSync(envFile)) {
+      return { valid: [], failures: [] };
+    }
+
+    let content: string;
+    let mtimeMs: number;
+    try {
+      const stat = fs.statSync(envFile);
+      mtimeMs = stat.mtimeMs;
+      content = fs.readFileSync(envFile, "utf-8");
+    } catch (err) {
+      // I2: cannot read file — return failures without crashing daemon
+      return {
+        valid: [],
+        failures: [{ name: "<file>", reason: `cannot read meta/environments.yaml: ${String(err)}` }],
+      };
+    }
+
+    // D6: _parseEnvProfiles is from @banto/core (no new dep; aliased import at top of file)
+    const result = _parseEnvProfiles(content);
+
+    // Emit env_profile_rejected events for each failure (no-flood: dedup by mtime)
+    for (const failure of result.failures) {
+      const key = `${projectTag}/${failure.name}`;
+      const lastMtime = this._envProfileRejectMtime.get(key);
+      if (lastMtime !== mtimeMs) {
+        // New or modified failure — emit event and record mtime
+        this._envProfileRejectMtime.set(key, mtimeMs);
+        const event = this.log.append({
+          type: "env_profile_rejected",
+          projectTag,
+          profileName: failure.name,
+          reason: failure.reason,
+        });
+        this.applyAndBroadcast(event);
+      }
+      // If lastMtime === mtimeMs: same mtime = already emitted → skip (no-flood)
+    }
+
+    return result;
+  }
+
+  /**
+   * Attempt to provision an environment for a task by resolving its profile.
+   *
+   * S9d7fdb-1 (AC-S9d7fdb-1-3): Story 1 only covers profile-resolution.
+   * The actual driver invocation lands in Story 2.
+   *
+   * Returns { ok: true } if the profile is found (provision would proceed in Story 2).
+   * Returns { ok: false, httpStatus: 404, error } if the profile is unknown.
+   * Emits env_provision_failed event on failure (I2: not swallowed).
+   *
+   * @param projectTag  Project tag.
+   * @param taskId      Task whose `environment` field names the profile.
+   * @param profileName Profile name to look up (from task frontmatter).
+   */
+  resolveEnvProfile(
+    projectTag: string,
+    taskId: string,
+    profileName: string
+  ): { ok: true; profileName: string } | { ok: false; httpStatus: number; error: string } {
+    const { valid } = this.getEnvironmentProfiles(projectTag);
+    const found = valid.find((p) => p.name === profileName);
+    if (!found) {
+      const reason = `profile_not_found: "${profileName}" is not defined in meta/environments.yaml`;
+      // I2: emit failure event (not swallowed)
+      const event = this.log.append({
+        type: "env_provision_failed",
+        projectTag,
+        taskId,
+        profileName,
+        reason,
+      });
+      this.applyAndBroadcast(event);
+      return { ok: false, httpStatus: 404, error: reason };
+    }
+    return { ok: true, profileName: found.name };
   }
 
   // ── Internal helpers ───────────────────────────────────────────────────────
