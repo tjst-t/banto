@@ -38,6 +38,7 @@ import { GateEvaluator, evaluatePendingGates } from "./gate-evaluator.js";
 import { PiRpcDriver, createWorktree } from "./pi-rpc-driver.js";
 import { SpawnLedger, isProcessAlive, killOrphanProcess } from "./spawn-ledger.js";
 import type { LedgerEntry } from "./spawn-ledger.js";
+import { processMergeQueue } from "./merge-queue.js";
 
 export interface DaemonConfig {
   /** Port to listen on. Default: 3000 */
@@ -219,6 +220,14 @@ export class Daemon {
     this.scheduler.registerJob("auto-spawn", () => {
       void this.runAutoSpawn();
     });
+
+    // Built-in job: serial merge queue (S75f66b-5, spec-daemon-core §4.1).
+    // Processes the HEAD of the merge queue only (one task at a time — serial discipline).
+    // Queue is derived purely from event log replay (D3: no persistence file).
+    // Rebase → merge gate → fast-forward merge → task_merged + merged transition.
+    // Merged tasks without hypothesis are auto-closed.
+    // Rebase conflicts leave the task in `merging` (story-6-seam for conflict auto-filing).
+    this.scheduler.registerJob("merge-queue", () => this.runMergeQueueTick());
   }
 
   static create(config: Partial<DaemonConfig> = {}): Daemon {
@@ -881,6 +890,63 @@ export class Daemon {
         // The Scheduler catches errors from the job function itself; this catch prevents
         // a single task's failure from aborting the rest of the auto-spawn sweep.
       }
+    }
+  }
+
+  /**
+   * Serial merge queue tick job (S75f66b-5, spec-daemon-core §4.1).
+   *
+   * Delegates to processMergeQueue() from merge-queue.ts.
+   * Passes:
+   *   - getProjectRepoPath: looks up project repo from ProjectRegistry
+   *   - getAllTasks: delegates to StateStore.getAllTasks()
+   *   - onMergeComplete: triggers gate re-eval for dependent tasks
+   *
+   * D3: queue is derived from event log replay inside processMergeQueue().
+   * I2: errors propagate to scheduler (recorded as tick_job_failed).
+   */
+  private async runMergeQueueTick(): Promise<void> {
+    const worktreeBase =
+      this.config.worktreeBaseDir ?? path.join(this.config.dataDir, "worktrees");
+
+    await processMergeQueue(this.log, {
+      dataDir: this.config.dataDir,
+      worktreeBaseDir: worktreeBase,
+      mainline: "main",
+      getProjectRepoPath: (projectTag: string) => {
+        const proj = this.registry.list().find((p) => p.id === projectTag);
+        return proj?.repoPath;
+      },
+      getAllTasks: () => {
+        // Refresh state before reading tasks so we get the latest derived state.
+        this.refreshState();
+        return this.store.getAllTasks();
+      },
+      onMergeComplete: (taskId: string, projectTag: string) => {
+        // After a merge (or gate fail), trigger gate re-evaluation so any tasks
+        // that depended on this task can be promoted to ready.
+        this.runGateReeval();
+        // Also refresh state + broadcast latest event so HTTP/WS clients are current.
+        this.refreshState();
+        const allEvents = this.log.readAllEvents();
+        if (allEvents.length > 0) {
+          const lastEvent = allEvents[allEvents.length - 1];
+          this.wsServer.broadcast(lastEvent!);
+        }
+        // Suppress unused parameter warning (taskId/projectTag used for future logging)
+        void taskId;
+        void projectTag;
+      },
+    });
+
+    // After the tick, always refresh state so in-memory store reflects any changes
+    // made by processMergeQueue (transitions appended to the log).
+    this.refreshState();
+    // Broadcast the latest event (if any new ones were appended)
+    const allEvents = this.log.readAllEvents();
+    if (allEvents.length > 0) {
+      const lastEvent = allEvents[allEvents.length - 1];
+      this.wsServer.broadcast(lastEvent!);
     }
   }
 }
