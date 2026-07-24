@@ -1,0 +1,16 @@
+# Test compose fixture for S9d7fdb-3 docker driver acceptance tests.
+#
+# Uses busybox (tiny Alpine-compatible image, always available after hello-world pull).
+# The `app` service runs a long-lived sleep loop so the container stays up for
+# the duration of the test (provision → healthcheck → run → collect → teardown).
+#
+# security_opt: apparmor=unconfined — required on this host because
+# /sys/kernel/security is not mounted, so docker cannot load the default
+# AppArmor profile. Without this, `docker compose up` would fail at container
+# start on this VM.
+services:
+  app:
+    image: busybox:latest
+    command: ["sh", "-c", "while true; do sleep 1; done"]
+    security_opt:
+      - apparmor=unconfined

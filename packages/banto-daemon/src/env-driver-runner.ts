@@ -49,11 +49,15 @@ const _thisDir = path.dirname(fileURLToPath(import.meta.url));
  * driver script in this package's src/ directory.
  * For any other value, treats it as an absolute or project-relative path.
  *
- * D1: the only builtin defined in Story 2 is "process"; docker is Story 3.
+ * D1: builtins defined so far: "process" (Story 2), "docker" (Story 3).
  */
 export function resolveDriverPath(driver: string): string {
   if (driver === "process") {
     return path.join(_thisDir, "process-driver.ts");
+  }
+  if (driver === "docker") {
+    // S9d7fdb-3: builtin docker compose driver (compose CLI shell-out, D6: no SDK dep).
+    return path.join(_thisDir, "docker-driver.ts");
   }
   // External or project-local driver — path as-is
   return driver;
