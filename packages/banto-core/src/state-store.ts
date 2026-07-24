@@ -222,6 +222,7 @@ export class StateStore {
       case "audit_started":
       case "audit_verdict":
       case "audit_spawn_disabled":
+      case "daemon_config":
       case "env_profile_rejected":
       case "env_provision_failed":
         // These events are recorded for the log's truth value but don't

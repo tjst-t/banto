@@ -33,6 +33,7 @@ export type {
   AuditStartedEvent,
   AuditVerdictEvent,
   AuditSpawnDisabledEvent,
+  DaemonConfigEvent,
   EnvProfileRejectedEvent,
   EnvProvisionFailedEvent,
 } from "./events.js";

@@ -38,6 +38,7 @@ import { TaskWatcher } from "./task-watcher.js";
 import { Scheduler } from "./scheduler.js";
 import type { TickJob } from "./scheduler.js";
 import { GateEvaluator, evaluatePendingGates } from "./gate-evaluator.js";
+import type { QuotaCheck } from "./gate-evaluator.js";
 import { PiRpcDriver, createWorktree } from "./pi-rpc-driver.js";
 import { SpawnLedger, isProcessAlive, killOrphanProcess } from "./spawn-ledger.js";
 import type { LedgerEntry } from "./spawn-ledger.js";
@@ -46,7 +47,7 @@ import {
   fileConflictTask,
   deriveOriginResolutionPairs,
 } from "./conflict-filer.js";
-import { EnvLedger } from "./env-ledger.js";
+import { EnvLedger, countLiveByProfile } from "./env-ledger.js";
 import type { EnvLedgerEntry } from "./env-ledger.js";
 import { runDriverVerb, resolveDriverPath, DEFAULT_DRIVER_TIMEOUT_MS } from "./env-driver-runner.js";
 import type {
@@ -153,6 +154,12 @@ export interface DaemonConfig {
    * Default: false (audit sessions are auto-spawned in production).
    */
   disableAuditSpawn?: boolean;
+  /**
+   * When true, disable the auto-spawn tick job (which would spawn pi agents for ready tasks).
+   * Intended for test suites that test gate/quota logic and do not need agent spawn.
+   * Default: false (auto-spawn runs in production).
+   */
+  disableAutoSpawn?: boolean;
   /**
    * Timeout in milliseconds for a single driver verb invocation (spec-environment §8 decision).
    * Planning note: daemon-side uniform configurable default.
@@ -331,8 +338,31 @@ export class Daemon {
     this.watcher = new TaskWatcher(this, config.watchIntervalMs);
 
     // GateEvaluator: implements spec-multi-project §3 three-condition gate.
-    // AlwaysPassQuota is the default until Sprint S9d7fdb provides real quota.
-    this.gateEvaluator = new GateEvaluator();
+    // S9d7fdb-4: inject real quota check (replaces AlwaysPassQuota stub).
+    // The quota check reads live env-ledger entries (D3: derived, not stored separately).
+    const envLedgerRef = this; // captured reference so the closure sees the current ledger
+    const envQuotaCheck: QuotaCheck = {
+      check(task: import("@banto/core").TaskRecord): boolean {
+        // Get the profile name from the task's environment field.
+        const profileName = typeof task["environment"] === "string" ? task["environment"] : undefined;
+        if (!profileName) {
+          // Task has no environment profile — quota check passes (no env required).
+          return true;
+        }
+        // Look up the profile to get quota.max_instances.
+        // We re-read profiles via the daemon method to stay D3-compliant (no caching).
+        const { valid } = envLedgerRef.getEnvironmentProfiles(task.projectTag);
+        const profile = valid.find((p) => p.name === profileName);
+        if (!profile || !profile.quota) {
+          // Profile not found or no quota configured → no restriction.
+          return true;
+        }
+        // Count live entries for this profile (D3: derived from ledger).
+        const liveCount = countLiveByProfile(envLedgerRef.envLedger.listLive(), profileName);
+        return liveCount < profile.quota.max_instances;
+      },
+    };
+    this.gateEvaluator = new GateEvaluator(envQuotaCheck);
 
     // Scheduler: drives periodic jobs (D6: setInterval only, no external library).
     this.scheduler = new Scheduler(this.log, config.tickIntervalMs);
@@ -360,9 +390,13 @@ export class Daemon {
     // Physical quota (maxConcurrentSessions) is checked against ledger size first;
     // when full, skip silently — no rejection event, re-evaluated on next tick (I2-compliant:
     // quota-skip is not an error; spawn failures still go through recordTaskFailed).
-    this.scheduler.registerJob("auto-spawn", () => {
-      void this.runAutoSpawn();
-    });
+    // disableAutoSpawn: test suites that test gate/quota logic can opt out of auto-spawn
+    // to prevent the pi driver from failing (no pi binary in test envs) and marking tasks failed.
+    if (!config.disableAutoSpawn) {
+      this.scheduler.registerJob("auto-spawn", () => {
+        void this.runAutoSpawn();
+      });
+    }
 
     // Built-in job: serial merge queue (S75f66b-5, spec-daemon-core §4.1).
     // Processes the HEAD of the merge queue only (one task at a time — serial discipline).
@@ -401,6 +435,7 @@ export class Daemon {
         // always false (quota silently unenforced) — fall back to the default.
         (Number.parseInt(process.env["BANTO_MAX_CONCURRENT_SESSIONS"] ?? "5", 10) || 5),
       disableAuditSpawn: config.disableAuditSpawn ?? false,
+      disableAutoSpawn: config.disableAutoSpawn ?? false,
       driverTimeoutMs: config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS,
     };
     return new Daemon(resolved);
@@ -435,6 +470,21 @@ export class Daemon {
         resolve();
       });
     });
+
+    // F2 (governance): emit daemon_config event when spawn-suppressing flags are set,
+    // so the suppression is visible in the event log (「黙って迂回できる経路を作らない」,
+    // priority rule 2). Without this, a production daemon started with disableAutoSpawn
+    // would silently not auto-spawn — invisible to the PO via GET /events.
+    // Pattern mirrors audit_spawn_disabled.
+    if (this.config.disableAutoSpawn || this.config.disableAuditSpawn) {
+      const configEvent = this.log.append({
+        type: "daemon_config",
+        projectTag: "daemon",
+        autoSpawnDisabled: this.config.disableAutoSpawn === true,
+        auditSpawnDisabled: this.config.disableAuditSpawn === true,
+      });
+      this.applyAndBroadcast(configEvent);
+    }
 
     // Start the reconcile timer (separate from the main tick so tests can tune it).
     const reconcileMs =
@@ -910,6 +960,15 @@ export class Daemon {
     // the ledger entries now to keep the ledger accurate (D3: no stale derived state).
     this.ledger.remove(projectTag, `${taskId}:audit`);
     this.ledger.remove(projectTag, `${taskId}:rework`);
+
+    // S9d7fdb-4 (AC-S9d7fdb-4-4): Tear down environments on task failure.
+    // recordTaskFailed() is the cross-cutting "failed" path (used by spawn error paths,
+    // orphan recovery, audit failures). We trigger teardown here too so that ALL
+    // paths to "failed" guarantee env cleanup (not just the HTTP /transition route).
+    // Fire-and-forget (same pattern as transition() hook).
+    this._trackBackground(new Promise<void>((resolve) => {
+      setImmediate(() => void this._teardownTaskEnvs(projectTag, taskId).then(resolve, resolve));
+    }));
   }
 
   /**
@@ -934,14 +993,33 @@ export class Daemon {
     const fromStatus = task.status as TaskStatus;
     const toStatus = to as TaskStatus;
 
-    const result = StateMachine.transition(
-      this.log,
-      taskId,
-      fromStatus,
-      toStatus,
-      projectTag,
-      reason
-    );
+    // Cross-cutting transitions: failed and superseded are reachable from any non-terminal state.
+    // Route through StateMachine.fail() / StateMachine.supersede() instead of the transition table.
+    let result: TransitionResult;
+    if (toStatus === "failed") {
+      result = StateMachine.fail(
+        this.log,
+        taskId,
+        { currentStatus: fromStatus, reason: reason ?? "transition_to_failed" },
+        projectTag
+      );
+    } else if (toStatus === "superseded") {
+      result = StateMachine.supersede(
+        this.log,
+        taskId,
+        { currentStatus: fromStatus, by: reason ?? "unknown" },
+        projectTag
+      );
+    } else {
+      result = StateMachine.transition(
+        this.log,
+        taskId,
+        fromStatus,
+        toStatus,
+        projectTag,
+        reason
+      );
+    }
 
     // Refresh state + index regardless of result (rejection events are also appended)
     this.refreshState();
@@ -961,6 +1039,19 @@ export class Daemon {
     // We run on any successful transition that changes status so we don't miss edge cases.
     if (result.ok) {
       this.runGateReeval();
+
+      // S9d7fdb-4 (AC-S9d7fdb-4-4): Teardown-on-terminal-state guarantee.
+      // When a task reaches a terminal state (failed / closed / superseded),
+      // tear down its environments so no external resources outlive the task.
+      // Fire-and-forget: teardown failure is surfaced in the event log (I2).
+      // The state transition is committed immediately (D3: events are the truth);
+      // teardown is deferred so the HTTP response for the transition is sent first.
+      const TERMINAL_STATES = new Set(["failed", "closed", "superseded"]);
+      if (TERMINAL_STATES.has(toStatus)) {
+        this._trackBackground(new Promise<void>((resolve) => {
+          setImmediate(() => void this._teardownTaskEnvs(projectTag, taskId).then(resolve, resolve));
+        }));
+      }
 
       // S75f66b-3: Auto-spawn audit session on implementing→auditing transition.
       // The audit session is the structural gate — it always runs before review/merge.
@@ -1680,6 +1771,26 @@ export class Daemon {
       return { ok: false, httpStatus: 404, error: reason };
     }
 
+    // S9d7fdb-4: quota enforcement (spec-environment §5, D3: derived from ledger).
+    // Count live entries for this profile; reject if max_instances is reached.
+    if (profile.quota && profile.quota.max_instances > 0) {
+      const liveCount = countLiveByProfile(this.envLedger.listLive(), profileName);
+      if (liveCount >= profile.quota.max_instances) {
+        const reason = `quota_exceeded: profile "${profileName}" max_instances=${profile.quota.max_instances} reached (${liveCount} live)`;
+        const event = this.log.append({
+          type: "env_provision_failed",
+          projectTag,
+          taskId,
+          profileName,
+          reason,
+        });
+        this.applyAndBroadcast(event);
+        // Trigger gate re-eval so gate_evaluated events are updated with quota block reason.
+        this.runGateReeval();
+        return { ok: false, httpStatus: 409, error: reason };
+      }
+    }
+
     const driverPath = resolveDriverPath(profile.driver);
     const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
 
@@ -1739,6 +1850,9 @@ export class Daemon {
 
     // Step 3: record in ledger + emit event
     const envId = `${taskId}-${profileName}-${Date.now()}`;
+    const now = new Date();
+    // ttlDeadline: createdAt + profile.ttlMs (Story-5 enforces TTL; we only persist the deadline).
+    const ttlDeadline = new Date(now.getTime() + profile.ttlMs).toISOString();
     const entry: EnvLedgerEntry = {
       envId,
       projectTag,
@@ -1746,7 +1860,8 @@ export class Daemon {
       profileName,
       driver: profile.driver,
       handle,
-      createdAt: new Date().toISOString(),
+      createdAt: now.toISOString(),
+      ttlDeadline,
     };
     this.envLedger.add(entry);
 
@@ -1949,6 +2064,48 @@ export class Daemon {
   }
 
   // ── Private env helpers ───────────────────────────────────────────────────
+
+  /**
+   * S9d7fdb-4 (AC-S9d7fdb-4-4): Tear down all live environments for a task.
+   *
+   * Called when a task reaches a terminal state (failed / closed / superseded).
+   * Ensures no external resources outlive the task (spec-environment §5, I3).
+   *
+   * Idempotent: entries already torn down are skipped (teardownEnv is itself idempotent).
+   * I2: teardown failures are logged via stderr; they do NOT swallow silently.
+   *     The Story-5 TTL/reconcile tick acts as a second line of defense.
+   *
+   * Fire-and-forget: caller tracks this via _trackBackground.
+   */
+  private async _teardownTaskEnvs(projectTag: string, taskId: string): Promise<void> {
+    const liveEntries = this.envLedger.listByTask(projectTag, taskId);
+    if (liveEntries.length === 0) return;
+
+    for (const entry of liveEntries) {
+      if (entry.tornDownAt) continue; // already torn down — idempotent skip
+      const result = await this.teardownEnv(projectTag, taskId, entry.envId);
+      if (!result.ok) {
+        // I2: surface teardown failure — not swallowed. Story-5 TTL tick is the backstop.
+        // Write to stderr AND append to event log so the PO can see it via GET /events.
+        const errorMsg = result.error;
+        process.stderr.write(
+          `[banto-daemon] teardown-on-terminal: failed to tear down env ${entry.envId} ` +
+            `for task ${projectTag}/${taskId}: ${errorMsg}\n`
+        );
+        // Append tick_job_failed event so the failure is observable via the event log
+        // (I2 observability: PO can see teardown failure at GET /events, not just stderr).
+        const failEvent = this.log.append({
+          type: "tick_job_failed",
+          projectTag,
+          jobName: "teardown-on-terminal",
+          error: `env ${entry.envId} taskId=${taskId}: ${errorMsg}`,
+        });
+        this.applyAndBroadcast(failEvent);
+      }
+    }
+    // Trigger gate re-eval so quota-blocked tasks can be promoted now that a slot freed.
+    this.runGateReeval();
+  }
 
   private _resolveEnvEntry(
     projectTag: string,

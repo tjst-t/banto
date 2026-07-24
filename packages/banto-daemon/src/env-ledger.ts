@@ -6,7 +6,8 @@
  *
  * Invariants (mirror spawn-ledger.ts conventions):
  *   D3: the ledger is the single truth for what environments are live.
- *       TTL/quota enforcement is a daemon responsibility (Stories 4/5 — not this story).
+ *       Quota counts are DERIVED from ledger (countLiveByProfile) — no separate counter.
+ *       TTL enforcement tick is Story-5's job; we only persist ttlDeadline here.
  *   I2: ledger corruption → error description returned + empty ledger (never crash).
  *   I3: only environments provisioned via this daemon are in the ledger.
  *   D6: node:fs + node:path only (stdlib).
@@ -31,10 +32,28 @@ export interface EnvLedgerEntry {
   driver: string;
   /** Opaque handle returned by the driver (D3: daemon does not interpret fields) */
   handle: EnvHandle;
-  /** ISO-8601 timestamp of provision (renamed from provisionedAt for Story-4 schema alignment) */
+  /** ISO-8601 timestamp of provision */
   createdAt: string;
+  /**
+   * ISO-8601 deadline for TTL enforcement (computed from profile.ttlMs at provision time).
+   * Story-5 reads this to force-teardown expired environments.
+   * D3: stored in the ledger (single truth for live resources) — no re-read of profile needed.
+   * Note: Story-4 persists this field; Story-5 implements the TTL enforcement tick.
+   */
+  ttlDeadline: string;
   /** ISO-8601 timestamp when environment was torn down (undefined = still live) */
   tornDownAt?: string;
+}
+
+// ── Quota helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Count live (not torn-down) ledger entries for a given profile name.
+ * D3: quota count is DERIVED from ledger — no separate counter persisted.
+ * Used by daemon.provisionEnv() to enforce quota.max_instances (spec-environment §5).
+ */
+export function countLiveByProfile(entries: EnvLedgerEntry[], profileName: string): number {
+  return entries.filter((e) => !e.tornDownAt && e.profileName === profileName).length;
 }
 
 // ── Ledger file format ─────────────────────────────────────────────────────────
@@ -109,7 +128,14 @@ export class EnvLedger {
         typeof e.handle === "object" && e.handle !== null &&
         typeof e.createdAt === "string"
       ) {
-        entries.set(e.envId, e);
+        // Backward-compat: if ttlDeadline is missing (pre-S9d7fdb-4 entries),
+        // assign a sentinel far-future value so Story-5 TTL tick ignores them.
+        // This avoids a schema migration and keeps open() non-destructive (I2).
+        const entry: EnvLedgerEntry = {
+          ...e,
+          ttlDeadline: typeof e.ttlDeadline === "string" ? e.ttlDeadline : "9999-12-31T23:59:59.999Z",
+        };
+        entries.set(entry.envId, entry);
       } else {
         corruptionError =
           corruptionError ??

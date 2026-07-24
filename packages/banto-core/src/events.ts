@@ -306,6 +306,25 @@ export interface AuditSpawnDisabledEvent extends EventBase {
 }
 
 /**
+ * Daemon started with one or more spawn-suppressing config flags set.
+ *
+ * F2 (governance): emitted once at daemon start when disableAutoSpawn (or similar
+ * spawn-suppressing flags) are set, so the bypass is visible in the event log —
+ * "黙って迂回できる経路を作らない" (priority rule 2). Without this event, a production
+ * daemon started with disableAutoSpawn:true would silently not auto-spawn, invisible
+ * to the PO via GET /events.
+ *
+ * Pattern mirrors audit_spawn_disabled: the suppression fact is the observable artifact.
+ */
+export interface DaemonConfigEvent extends EventBase {
+  type: "daemon_config";
+  /** True when the auto-spawn scheduler job is suppressed by config */
+  autoSpawnDisabled: boolean;
+  /** True when the audit-spawn side-effect is suppressed by config */
+  auditSpawnDisabled: boolean;
+}
+
+/**
  * An environment profile definition in meta/environments.yaml was rejected
  * because it failed schema validation (driver missing / ttl format / quota type).
  *
@@ -364,5 +383,6 @@ export type OrchestrationEvent =
   | AuditStartedEvent
   | AuditVerdictEvent
   | AuditSpawnDisabledEvent
+  | DaemonConfigEvent
   | EnvProfileRejectedEvent
   | EnvProvisionFailedEvent;
