@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>セッションへ: task-0009 — banto</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html" data-testid="nav-home">
+      <span class="brand-mark">番</span>
+      <span>
+        <span class="brand-name">banto</span>
+        <span class="brand-sub">POコックピット</span>
+      </span>
+    </a>
+    <span class="queue-count" data-testid="queue-count">判断待ち <strong>5</strong> 件 ・ 2 プロジェクト</span>
+  </div>
+</header>
+
+<main class="page">
+  <!-- 実装ではカード上のモーダルとして開く想定。プロトタイプでは独立ページで提示 -->
+  <div class="drill-panel" data-testid="tmux-drilldown" role="dialog" aria-labelledby="drill-title">
+    <div class="drill-head">
+      <h1 class="drill-title" id="drill-title">セッションへ — task-0009 通知ディスパッチャのチャネル認証方式</h1>
+      <a class="drill-close" href="card-detail.html" data-testid="tmux-drilldown-close" aria-label="閉じる">×</a>
+    </div>
+    <div class="drill-body">
+      <p class="drill-note">
+        ブラウザからは tmux に直接接続できないため、daemon が合成した接続コマンドを提供します。
+        端末に貼り付けて実行すると、このタスクの pi セッションに入ります。
+      </p>
+
+      <table class="kv">
+        <tr><th>ホスト</th><td>banto-vm（自宅サーバ / spawn台帳より）</td></tr>
+        <tr><th>tmuxターゲット</th><td>banto:task-0009</td></tr>
+        <tr><th>セッション状態</th><td>稼働中（最終出力 2026-07-24 07:58）</td></tr>
+      </table>
+
+      <div class="cmd-block">
+        <pre class="cmd-code" data-testid="tmux-attach-command"><span class="prompt-char">$ </span>ssh -t po@banto-vm 'tmux attach -t banto:task-0009'</pre>
+        <button class="btn btn--primary" data-testid="tmux-attach-copy"
+                onclick="navigator.clipboard.writeText(&quot;ssh -t po@banto-vm 'tmux attach -t banto:task-0009'&quot;).then(function(){document.getElementById('copy-fb').classList.add('is-visible');});">
+          コピー
+        </button>
+      </div>
+      <p class="copy-feedback" id="copy-fb" data-testid="tmux-copy-feedback">✓ コピーしました — 端末に貼り付けて実行してください</p>
+
+      <p class="drill-cli-hint">
+        CLIからは直接ジャンプできます: <code>banto attention</code> でこのカードを選び「セッションへ」—
+        tmux内なら switch-client、外なら attach を banto が実行します。
+      </p>
+    </div>
+  </div>
+</main>
+
+</body>
+</html>

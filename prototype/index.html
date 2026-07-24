@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>プロトタイプ目次 — banto POコックピット v1</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html" data-testid="nav-home">
+      <span class="brand-mark">番</span>
+      <span>
+        <span class="brand-name">banto</span>
+        <span class="brand-sub">POコックピット</span>
+      </span>
+    </a>
+  </div>
+</header>
+
+<main class="page">
+  <div class="page-head">
+    <h1 class="page-title">プロトタイプ目次</h1>
+  </div>
+  <p class="proto-banner">
+    Sprint S30a8fd「POコックピットv1」の静的プロトタイプ（PO承認待ち）。
+    対象Story: S30a8fd-4（Web GUIアテンションキュー画面）／ S30a8fd-5（tmuxセッションへのドリルダウン）。
+    データはすべてハードコードのサンプルです。
+  </p>
+
+  <nav class="proto-list" aria-label="画面一覧">
+    <a class="proto-item" href="attention-queue.html" data-testid="proto-link-attention-queue">
+      <span class="proto-item-title">アテンションキュー（通常状態）</span>
+      <span class="proto-item-desc">全プロジェクト横断の判断待ちカード5枚。カード3部構成（経緯／起きたこと／求める判断）・滞留日数×ブロック影響度の降順・全5種別（エスカレーション／監査fail／レビュー待ち／incident／評価カード）</span>
+    </a>
+    <a class="proto-item" href="attention-queue-empty.html" data-testid="proto-link-attention-queue-empty">
+      <span class="proto-item-title">アテンションキュー（空状態）</span>
+      <span class="proto-item-desc">判断待ちなし。「開けば分かる」の空状態 — 通知が開くきっかけを担うことを明記</span>
+    </a>
+    <a class="proto-item" href="card-detail.html" data-testid="proto-link-card-detail">
+      <span class="proto-item-title">カード詳細（展開表示）</span>
+      <span class="proto-item-desc">エスカレーションカードの全文脈: originRef連鎖のタイムライン・選択肢の詳細・理由1行入力（P5）・セッションへのドリルダウン導線</span>
+    </a>
+    <a class="proto-item" href="tmux-drilldown.html" data-testid="proto-link-tmux-drilldown">
+      <span class="proto-item-title">tmuxドリルダウン</span>
+      <span class="proto-item-desc">daemonが合成した ssh＋tmux 接続コマンドの表示とコピー（ブラウザは直接attach不可・CLIは直接ジャンプ）</span>
+    </a>
+  </nav>
+</main>
+
+</body>
+</html>

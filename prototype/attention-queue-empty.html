@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>アテンションキュー（判断待ちなし） — banto</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html" data-testid="nav-home">
+      <span class="brand-mark">番</span>
+      <span>
+        <span class="brand-name">banto</span>
+        <span class="brand-sub">POコックピット</span>
+      </span>
+    </a>
+    <span class="queue-count" data-testid="queue-count">判断待ち <strong>0</strong> 件</span>
+  </div>
+</header>
+
+<main class="page">
+  <div class="page-head">
+    <h1 class="page-title">アテンションキュー</h1>
+  </div>
+  <p class="page-lede">いま、あなたの判断を待っているもの。滞留日数 × ブロック影響度の降順。</p>
+
+  <div class="filter-row" role="group" aria-label="プロジェクトで絞り込み">
+    <span class="filter-label">プロジェクト:</span>
+    <button class="chip is-active" data-testid="project-filter-all">すべて (0)</button>
+    <button class="chip" data-testid="project-filter-banto">banto (0)</button>
+    <button class="chip" data-testid="project-filter-palmux">palmux (0)</button>
+  </div>
+
+  <section class="empty" data-testid="attention-queue-empty" aria-label="判断待ちなし">
+    <div class="empty-mark" aria-hidden="true">✓</div>
+    <h2 class="empty-title">判断待ちなし</h2>
+    <p class="empty-text">
+      いま、あなたの判断を待っているものはありません。<br>
+      エージェントは作業を継続しています。新しいカードが生まれると通知が届き、この画面に自動で現れます。
+    </p>
+  </section>
+</main>
+
+</body>
+</html>
