@@ -17,9 +17,9 @@
 
 1. 作業開始・計画立案時: `report_phase({ phase: "planning", ... })`
 2. 実装・修正作業開始時: `report_phase({ phase: "implementing", ... })`
-3. 実装完了・レビュー待ち時: `report_phase({ phase: "review-ready", ... })`
 
-作業が完全に終了したら `report_done` でサマリを報告してください。
+作業が完全に終了したら `report_done` でサマリを報告してください（`report_phase` で "review-ready" を報告するのではなく、`report_done` を呼ぶこと）。
+`report_done` を呼ぶと daemon が監査セッションを起動し、監査結果に基づいて次のフェーズへ進みます。
 
 ## 規律（抜粋）
 

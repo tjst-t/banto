@@ -248,6 +248,14 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → auditing (exec
     initRepo(repoDir);
     fs.mkdirSync(tasksDir, { recursive: true });
 
+    // disableAuditSpawn: this E2E tests the executor completing implementing→auditing.
+    // The audit session mechanism (S75f66b-3) is tested in pipeline-merge.e2e.spec.ts
+    // (the full pipeline E2E). Here we stop at 'auditing' state to verify executor
+    // behavior. Without this flag, the audit LLM session auto-spawns after auditing
+    // is reached, which causes "asynchronous activity after test ended" warnings when
+    // daemon.stop() is called while the audit LLM is still running.
+    // audit_spawn_disabled event is emitted for the implementing→auditing transition
+    // (F2 governance: suppression is visible in the event log).
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
@@ -260,6 +268,7 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → auditing (exec
       // Use the confirmed banto default provider/model (opencode-go/deepseek-v4-flash)
       piProvider: PI_PROVIDER,
       piModel: PI_MODEL,
+      disableAuditSpawn: true,
     });
 
     // Register the e2e project
