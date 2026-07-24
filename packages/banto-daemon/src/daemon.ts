@@ -2394,9 +2394,6 @@ export class Daemon {
             .filter((n): n is string => n !== null)
         );
 
-        // Also build a set of known envIds (for vanished detection).
-        const liveEnvIds = new Set<string>(liveEntriesForDriver.map((e) => e.envId));
-
         // Detect orphans: in driver list, NOT in ledger (no matching name).
         for (const item of driverItems) {
           if (!knownNames.has(item.name)) {
@@ -2437,7 +2434,6 @@ export class Daemon {
           const handleName = (liveEntry.handle as Record<string, unknown>)["name"];
           if (typeof handleName === "string" && !driverItemNames.has(handleName)) {
             // Vanished: remove from ledger and emit event.
-            void liveEnvIds; // suppress unused var warning
             this.envLedger.remove(liveEntry.envId);
             const event = this.log.append({
               type: "env_torn_down",
