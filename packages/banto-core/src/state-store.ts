@@ -219,6 +219,9 @@ export class StateStore {
       case "env_provisioned":
       case "env_torn_down":
       case "tick_job_failed":
+      case "audit_started":
+      case "audit_verdict":
+      case "audit_spawn_disabled":
         // These events are recorded for the log's truth value but don't
         // directly alter the task state machine (handled by daemon logic)
         break;

@@ -257,6 +257,50 @@ export function createHttpServer(daemon: Daemon): http.Server {
       },
     },
 
+    // Audit verdict report (S75f66b-3)
+    // Called by the audit session's audit_report tool.
+    // D5: all routing/rework logic in daemon.handleAuditVerdict; this is pure routing.
+    {
+      method: "POST",
+      pattern: /^\/api\/v1\/projects\/([^/]+)\/tasks\/([^/]+)\/audit-report$/,
+      handler: async (req, res, match) => {
+        const proj = match[1];
+        const taskId = match[2];
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const task = daemon.getTask(proj, taskId);
+        if (!task) {
+          sendJson(res, 404, { error: "not_found" });
+          return;
+        }
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const verdict = body["verdict"];
+        if (verdict !== "pass" && verdict !== "fail") {
+          sendJson(res, 400, { error: "verdict must be 'pass' or 'fail'" });
+          return;
+        }
+        const rawFindings = body["findings"];
+        const findings = Array.isArray(rawFindings)
+          ? rawFindings.map(String)
+          : [];
+        try {
+          const result = daemon.handleAuditVerdict(proj, taskId, verdict, findings);
+          sendJson(res, 200, result);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.startsWith("task_not_found")) {
+            sendJson(res, 404, { error: msg });
+          } else if (msg.startsWith("task_wrong_state")) {
+            sendJson(res, 400, { error: msg });
+          } else {
+            throw err; // propagate to 500 handler (I2)
+          }
+        }
+      },
+    },
+
     // List all events for a project (includes task_ingest_rejected, etc.)
     {
       method: "GET",

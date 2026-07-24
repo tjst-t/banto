@@ -17,8 +17,10 @@
  */
 
 import * as http from "node:http";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import * as childProcess from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   EventLog,
   StateStore,
@@ -38,6 +40,33 @@ import { GateEvaluator, evaluatePendingGates } from "./gate-evaluator.js";
 import { PiRpcDriver, createWorktree } from "./pi-rpc-driver.js";
 import { SpawnLedger, isProcessAlive, killOrphanProcess } from "./spawn-ledger.js";
 import type { LedgerEntry } from "./spawn-ledger.js";
+
+// ── Daemon-local skill asset loader ───────────────────────────────────────────
+//
+// Resolves prompt assets (skills/*.md) relative to THIS FILE's location
+// (packages/banto-daemon/src/daemon.ts → ../../../skills/).
+// This is separate from banto-core's loadPromptAsset, which resolves relative
+// to the core package's location (correct for production deployments where
+// @banto/core is installed in the monorepo root, but not when @banto/core is
+// accessed via a node_modules workspace symlink pointing to a different checkout).
+//
+// D2: criteria in text files (skills/), mechanism in code here.
+// I2: throws clearly if the file is missing.
+// D6: uses only node:fs, node:path, node:url (stdlib).
+
+const _daemonDir = path.dirname(fileURLToPath(import.meta.url));
+// daemon.ts lives at packages/banto-daemon/src/; root is 3 levels up.
+const _repoRoot = path.resolve(_daemonDir, "..", "..", "..");
+
+function loadSkillAsset(name: string): string {
+  const assetPath = path.join(_repoRoot, "skills", `${name}.md`);
+  if (!fs.existsSync(assetPath)) {
+    throw new Error(
+      `Skill asset not found: "${name}" (looked at ${assetPath}). Create skills/${name}.md.`
+    );
+  }
+  return fs.readFileSync(assetPath, "utf-8");
+}
 
 export interface DaemonConfig {
   /** Port to listen on. Default: 3000 */
@@ -103,6 +132,12 @@ export interface DaemonConfig {
    * Default: 5. Override via BANTO_MAX_CONCURRENT_SESSIONS environment variable.
    */
   maxConcurrentSessions?: number;
+  /**
+   * When true, skip auto-spawning the audit session on implementing→auditing transition.
+   * Intended for test suites that test gate/tick logic and do not need audit session spawn.
+   * Default: false (audit sessions are auto-spawned in production).
+   */
+  disableAuditSpawn?: boolean;
 }
 
 export class Daemon {
@@ -240,6 +275,7 @@ export class Daemon {
         // parseInt of a non-numeric env value yields NaN, and `size >= NaN` is
         // always false (quota silently unenforced) — fall back to the default.
         (Number.parseInt(process.env["BANTO_MAX_CONCURRENT_SESSIONS"] ?? "5", 10) || 5),
+      disableAuditSpawn: config.disableAuditSpawn ?? false,
     };
     return new Daemon(resolved);
   }
@@ -701,6 +737,13 @@ export class Daemon {
       const lastEvent = allEvents[allEvents.length - 1];
       this.wsServer.broadcast(lastEvent);
     }
+
+    // Clean up spawn-ledger entries for audit and rework sessions.
+    // When a task fails, any associated audit or rework sessions are no longer needed.
+    // Their processes will be cleaned up by the orphan reconcile job, but we remove
+    // the ledger entries now to keep the ledger accurate (D3: no stale derived state).
+    this.ledger.remove(projectTag, `${taskId}:audit`);
+    this.ledger.remove(projectTag, `${taskId}:rework`);
   }
 
   /**
@@ -752,6 +795,31 @@ export class Daemon {
     // We run on any successful transition that changes status so we don't miss edge cases.
     if (result.ok) {
       this.runGateReeval();
+
+      // S75f66b-3: Auto-spawn audit session on implementing→auditing transition.
+      // The audit session is the structural gate — it always runs before review/merge.
+      // D5: all orchestration logic here; HTTP layer is pure routing.
+      // disableAuditSpawn: test suites that test gate/tick logic can opt out of the
+      // side effect to avoid pi CLI resolution errors in CI environments.
+      if (fromStatus === "implementing" && toStatus === "auditing") {
+        if (this.config.disableAuditSpawn) {
+          // F2 (governance): emit observable event so the bypass is visible in the log.
+          // "黙って迂回できる経路を作らない" — suppression must never be silent.
+          const disabledEvent = this.log.append({
+            type: "audit_spawn_disabled",
+            projectTag,
+            taskId,
+          });
+          this.applyAndBroadcast(disabledEvent);
+        } else {
+          // Fire-and-forget: spawn failure recorded via recordTaskFailed (I2).
+          // Deferred to next tick so the HTTP response is sent before any synchronous
+          // work in spawnAuditSession (e.g. loadPromptAsset, driver lookup) that might
+          // call recordTaskFailed, which would mutate task state before the caller sees
+          // the 200/auditing response.
+          setImmediate(() => void this.spawnAuditSession(projectTag, taskId));
+        }
+      }
     }
 
     return result;
@@ -771,6 +839,462 @@ export class Daemon {
     });
     // Refresh state (no-op for state, but keeps index current) and broadcast
     this.applyAndBroadcast(event);
+  }
+
+  // ── Audit session orchestration ────────────────────────────────────────────
+
+  /**
+   * Spawn an audit session for a task that just entered 'auditing' state.
+   *
+   * S75f66b-3 (AC-S75f66b-3-1, AC-S75f66b-3-2):
+   *   - Spawns via the registered driver (default: "pi-rpc") using the auditor extension.
+   *   - Emits audit_started event with session path reference (spec §2.1).
+   *   - Registers in spawn ledger (spec §3: orphan recovery applies to audit sessions too).
+   *   - Audit session uses banto-auditor pi extension which injects audit-system.md +
+   *     audit-checklist.md from skills/ (D2: criteria in text, mechanism in code).
+   *
+   * I2: spawn failures are routed to recordTaskFailed.
+   */
+  private async spawnAuditSession(
+    projectTag: string,
+    taskId: string,
+    driverId = "pi-rpc",
+    findingsForRework?: string[]
+  ): Promise<void> {
+    const task = this.store.getTask(taskId, projectTag);
+    if (!task) {
+      process.stderr.write(
+        `[banto-daemon] spawnAuditSession: task ${projectTag}/${taskId} not found\n`
+      );
+      return;
+    }
+
+    // Resolve the audit extension path (sibling of banto-executor.ts).
+    const auditExtensionPath = new URL(
+      "./pi-extension/banto-auditor.ts",
+      import.meta.url
+    ).pathname;
+
+    // Look up the worktree from the spawn ledger (the executor session's worktree).
+    // If not in ledger (executor already exited), fall back to the standard worktree path.
+    const worktreeBase =
+      this.config.worktreeBaseDir ?? path.join(this.config.dataDir, "worktrees");
+    const worktreePath = path.join(worktreeBase, projectTag, taskId);
+    const sessionBase =
+      this.config.sessionBaseDir ?? path.join(this.config.dataDir, "sessions");
+    // Audit sessions get a distinct session file: <taskId>-audit-<n>.jsonl
+    const auditIndex = this.countConsecutiveAuditFails(projectTag, taskId) + 1;
+    const auditSessionPath = path.join(
+      sessionBase,
+      projectTag,
+      `${taskId}-audit-${auditIndex}.jsonl`
+    );
+
+    // Build audit system prompt: loaded from skills/ at spawn time (D2, AC-S75f66b-3-2).
+    let auditSystemPrompt: string;
+    try {
+      const sysPrompt = loadSkillAsset("audit-system");
+      const checklist = loadSkillAsset("audit-checklist");
+      auditSystemPrompt =
+        sysPrompt + "\n\n## 監査チェックリスト\n\n" + checklist;
+    } catch (err) {
+      const reason = `audit prompt assets missing: ${err instanceof Error ? err.message : String(err)}`;
+      this.recordTaskFailed(projectTag, taskId, reason);
+      return;
+    }
+
+    // Inject rework findings into the audit session prompt (first-fail rework path).
+    if (findingsForRework && findingsForRework.length > 0) {
+      auditSystemPrompt +=
+        "\n\n## 前回の監査指摘（再実装後の確認事項）\n\n" +
+        findingsForRework.map((f) => `- ${f}`).join("\n");
+    }
+
+    const driver = this.driverRegistry.get(driverId);
+    if (!driver) {
+      const reason = `Audit driver '${driverId}' not registered`;
+      this.recordTaskFailed(projectTag, taskId, reason);
+      return;
+    }
+
+    const daemonUrl = `http://localhost:${this.port}`;
+    const spawnOpts: SpawnOptions = {
+      taskId,
+      worktreePath,
+      sessionPath: auditSessionPath,
+      systemPrompt: auditSystemPrompt,
+      tools: [], // registered by the banto-auditor extension
+      modelTier: "reasoning", // spec §3.5: 監査 = reasoning tier
+      driverOptions: {
+        daemonUrl,
+        projectTag,
+        // Override extension to banto-auditor instead of banto-executor
+        extensionPath: auditExtensionPath,
+      },
+    };
+
+    let handle: { pid: number; sessionId: string; sessionPath: string };
+    try {
+      handle = await driver.spawn(spawnOpts);
+    } catch (err) {
+      const reason = `audit session spawn failed: ${err instanceof Error ? err.message : String(err)}`;
+      this.recordTaskFailed(projectTag, taskId, reason);
+      return;
+    }
+
+    // Emit audit_started event (S75f66b-3, spec §2.1: path reference only).
+    const auditStartedEvent = this.log.append({
+      type: "audit_started",
+      projectTag,
+      taskId,
+      sessionPath: handle.sessionPath,
+      worktree: worktreePath,
+    });
+    this.applyAndBroadcast(auditStartedEvent);
+
+    // Also emit agent_spawned with role marker so it's distinguishable from executor spawns.
+    // The "audit" role is embedded in the sessionPath naming convention and audit_started event.
+    const spawnedEvent = this.log.append({
+      type: "agent_spawned",
+      projectTag,
+      taskId,
+      pid: handle.pid,
+      sessionPath: handle.sessionPath,
+      worktree: worktreePath,
+      modelTier: "reasoning",
+    });
+    this.applyAndBroadcast(spawnedEvent);
+
+    // Register in spawn ledger (spec §3: orphan recovery applies to audit sessions too).
+    const ledgerEntry: LedgerEntry = {
+      pid: handle.pid,
+      projectTag,
+      taskId: `${taskId}:audit`, // distinguish audit session in ledger
+      sessionPath: handle.sessionPath,
+      worktree: worktreePath,
+      driverId,
+      sessionId: handle.sessionId,
+      spawnedAt: new Date().toISOString(),
+    };
+    this.ledger.add(ledgerEntry);
+
+    // Subscribe to driver events: remove from ledger when audit session exits.
+    // If audit session exits without verdict, recordTaskFailed (I2: no ghost sessions).
+    const unsub = driver.subscribe((event) => {
+      if (event.type === "process_exited" && event.sessionId === handle.sessionId) {
+        const exitedEvent = this.log.append({
+          type: "agent_exited",
+          projectTag,
+          taskId,
+          pid: event.pid,
+          exitCode: event.exitCode,
+          signal: event.signal,
+        });
+        this.applyAndBroadcast(exitedEvent);
+        this.ledger.remove(projectTag, `${taskId}:audit`);
+
+        // If the task is still in 'auditing' after the session exited, treat as failure (I2).
+        const currentTask = this.store.getTask(taskId, projectTag);
+        if (currentTask && currentTask.status === "auditing") {
+          process.stderr.write(
+            `[banto-daemon] audit session exited without verdict for ${projectTag}/${taskId} — recording failure\n`
+          );
+          this.recordTaskFailed(
+            projectTag,
+            taskId,
+            "audit_session_exited_without_verdict"
+          );
+        }
+        unsub();
+      }
+    });
+  }
+
+  /**
+   * Handle an audit verdict submitted via POST /api/v1/projects/:proj/tasks/:id/audit-report.
+   *
+   * S75f66b-3 (AC-S75f66b-3-3, AC-S75f66b-3-4):
+   *   pass → merging (review.policy=auto) or review-ready (otherwise)
+   *   fail (1st consecutive) → implementing (rework) + new executor session with findings
+   *   fail (2nd consecutive) → failed (I2: stop, don't swallow)
+   *
+   * D3: consecutive fail count is DERIVED from the event log (audit_verdict events).
+   *     No counter stored as a separate field.
+   *
+   * @returns { ok: true } on success, throws on invalid state.
+   */
+  handleAuditVerdict(
+    projectTag: string,
+    taskId: string,
+    verdict: "pass" | "fail",
+    findings: string[]
+  ): { ok: boolean } {
+    const task = this.store.getTask(taskId, projectTag);
+    if (!task) {
+      throw new Error(`task_not_found: ${projectTag}/${taskId}`);
+    }
+    if (task.status !== "auditing") {
+      throw new Error(
+        `task_wrong_state: expected 'auditing', got '${task.status}'`
+      );
+    }
+
+    // Record the verdict event first (D3: event is the truth).
+    const verdictEvent = this.log.append({
+      type: "audit_verdict",
+      projectTag,
+      taskId,
+      verdict,
+      findings,
+    });
+    this.applyAndBroadcast(verdictEvent);
+
+    if (verdict === "pass") {
+      // Determine target status from review.policy (stored in task payload, D3).
+      // review.policy is loaded from the task definition at creation time (watcher ingestion).
+      const reviewPolicy = (task["review"] as { policy?: string } | undefined)?.policy ?? "manual";
+      const targetStatus = reviewPolicy === "auto" ? "merging" : "review-ready";
+
+      this.transition(projectTag, taskId, targetStatus, "audit_passed");
+    } else {
+      // Fail path: count consecutive audit fails from event log (D3: no stored counter).
+      const consecutiveFails = this.countConsecutiveAuditFails(projectTag, taskId);
+
+      if (consecutiveFails >= 2) {
+        // 2nd consecutive fail → failed (I2: stop, record, don't swallow).
+        StateMachine.fail(
+          this.log,
+          taskId,
+          {
+            currentStatus: task.status as TaskStatus,
+            reason: `audit_failed_twice: ${findings.join("; ")}`,
+          },
+          projectTag
+        );
+        this.refreshState();
+        const allEvents = this.log.readAllEvents();
+        if (allEvents.length > 0) {
+          this.wsServer.broadcast(allEvents[allEvents.length - 1]);
+        }
+        // Clean up audit and rework ledger entries (no more sessions should run).
+        // D3: ledger is derived from live processes; failed task has no live sessions.
+        this.ledger.remove(projectTag, `${taskId}:audit`);
+        this.ledger.remove(projectTag, `${taskId}:rework`);
+      } else {
+        // 1st consecutive fail → rework: auditing → implementing + spawn rework session.
+        this.transition(projectTag, taskId, "implementing", "audit_fail_rework");
+        // Spawn a new executor session with findings injected (void: fire-and-forget, I2 inside).
+        // Deferred to next tick to ensure the HTTP response reflects the implementing state
+        // before any sync work in spawnReworkSession mutates the state further.
+        setImmediate(() => void this.spawnReworkSession(projectTag, taskId, findings));
+      }
+    }
+
+    return { ok: true };
+  }
+
+  /**
+   * Spawn a rework executor session with audit findings injected into the system prompt.
+   *
+   * S75f66b-3 (AC-S75f66b-3-4): after first audit fail, the task returns to 'implementing'
+   * and a new executor session is spawned with the audit findings in its context.
+   *
+   * The task must be in 'ready' state for spawnTask(). Since we just transitioned it to
+   * 'implementing', we need to set it back to 'ready' first (daemon internal operation).
+   *
+   * I2: spawn failures are routed to recordTaskFailed.
+   * D3: findings injected via system prompt only — not stored as a separate field.
+   */
+  private async spawnReworkSession(
+    projectTag: string,
+    taskId: string,
+    findings: string[]
+  ): Promise<void> {
+    // To use spawnTask(), the task must be in 'ready' state.
+    // Transition: implementing → (need ready). Since implementing→auditing→implementing
+    // leaves us in implementing, we need to go back through the gate.
+    // Design decision: for rework, we bypass the gate and directly spawn via driver.
+    // The rework session uses the same worktree as the original executor session.
+
+    const task = this.store.getTask(taskId, projectTag);
+    if (!task) {
+      process.stderr.write(
+        `[banto-daemon] spawnReworkSession: task ${projectTag}/${taskId} not found\n`
+      );
+      return;
+    }
+
+    const executorExtensionPath = new URL(
+      "./pi-extension/banto-executor.ts",
+      import.meta.url
+    ).pathname;
+
+    const worktreeBase =
+      this.config.worktreeBaseDir ?? path.join(this.config.dataDir, "worktrees");
+    const worktreePath = path.join(worktreeBase, projectTag, taskId);
+    const sessionBase =
+      this.config.sessionBaseDir ?? path.join(this.config.dataDir, "sessions");
+
+    // Count rework sessions so we can give each a distinct session file.
+    const reworkIndex = this.countReworkSessions(projectTag, taskId) + 1;
+    const sessionPath = path.join(
+      sessionBase,
+      projectTag,
+      `${taskId}-rework-${reworkIndex}.jsonl`
+    );
+
+    // Build system prompt from executor-system asset (no findings injected here —
+    // D1: findings are delivered via driver.inject() after spawn, which is the
+    // runtime-driver contract's guaranteed delivery path. PiRpcDriver ignores
+    // systemPrompt at the spawn call but processes inject() as the first RPC message).
+    let executorPrompt: string;
+    try {
+      executorPrompt = loadSkillAsset("executor-system");
+    } catch (err) {
+      const reason = `executor-system asset missing: ${err instanceof Error ? err.message : String(err)}`;
+      this.recordTaskFailed(projectTag, taskId, reason);
+      return;
+    }
+
+    const driver = this.driverRegistry.get("pi-rpc");
+    if (!driver) {
+      this.recordTaskFailed(projectTag, taskId, "pi-rpc driver not registered for rework");
+      return;
+    }
+
+    const daemonUrl = `http://localhost:${this.port}`;
+    const spawnOpts: SpawnOptions = {
+      taskId,
+      worktreePath,
+      sessionPath,
+      systemPrompt: executorPrompt,
+      tools: [],
+      modelTier: "standard",
+      driverOptions: {
+        daemonUrl,
+        projectTag,
+        extensionPath: executorExtensionPath,
+      },
+    };
+
+    let handle: { pid: number; sessionId: string; sessionPath: string };
+    try {
+      handle = await driver.spawn(spawnOpts);
+    } catch (err) {
+      const reason = `rework session spawn failed: ${err instanceof Error ? err.message : String(err)}`;
+      this.recordTaskFailed(projectTag, taskId, reason);
+      return;
+    }
+
+    // D1: deliver findings via inject() — the runtime-driver contract's sanctioned
+    // message path. This is the guaranteed delivery channel; systemPrompt is ignored
+    // by PiRpcDriver (it does not pass it to the pi process). inject() sends the
+    // findings as the first RPC `prompt` message into the running session.
+    // I2: inject failure is logged but not fatal — the session is already spawned and
+    // the executor can still complete (the audit will re-check on the next verdict).
+    const findingsMessage =
+      "## 監査指摘（前回の提出で発見された問題）\n\n" +
+      "以下の指摘を解決してから report_done を呼んでください:\n\n" +
+      findings.map((f) => `- ${f}`).join("\n");
+    try {
+      await driver.inject(handle.sessionId, findingsMessage);
+    } catch (injectErr) {
+      process.stderr.write(
+        `[banto-daemon] spawnReworkSession: inject findings failed for ${projectTag}/${taskId}: ` +
+          `${injectErr instanceof Error ? injectErr.message : String(injectErr)}\n`
+      );
+    }
+
+    // Record agent_spawned for the rework session.
+    const spawnedEvent = this.log.append({
+      type: "agent_spawned",
+      projectTag,
+      taskId,
+      pid: handle.pid,
+      sessionPath: handle.sessionPath,
+      worktree: worktreePath,
+      modelTier: "standard",
+    });
+    this.applyAndBroadcast(spawnedEvent);
+
+    // Register rework session in ledger.
+    const ledgerEntry: LedgerEntry = {
+      pid: handle.pid,
+      projectTag,
+      taskId: `${taskId}:rework`, // distinguish from primary executor in ledger
+      sessionPath: handle.sessionPath,
+      worktree: worktreePath,
+      driverId: "pi-rpc",
+      sessionId: handle.sessionId,
+      spawnedAt: new Date().toISOString(),
+    };
+    this.ledger.add(ledgerEntry);
+
+    // Subscribe to process exit.
+    const unsub = driver.subscribe((event) => {
+      if (event.type === "process_exited" && event.sessionId === handle.sessionId) {
+        const exitedEvent = this.log.append({
+          type: "agent_exited",
+          projectTag,
+          taskId,
+          pid: event.pid,
+          exitCode: event.exitCode,
+          signal: event.signal,
+        });
+        this.applyAndBroadcast(exitedEvent);
+        this.ledger.remove(projectTag, `${taskId}:rework`);
+        unsub();
+      }
+    });
+  }
+
+  /**
+   * Count consecutive audit fails from the event log (D3: derived, not stored).
+   *
+   * Definition of "consecutive": count audit_verdict(fail) events walking backwards
+   * from the most recent, stopping at the first audit_verdict(pass) or
+   * state_transitioned to a non-auditing active state that wasn't a rework.
+   *
+   * S75f66b-3: used by handleAuditVerdict to decide rework vs. fail.
+   */
+  private countConsecutiveAuditFails(projectTag: string, taskId: string): number {
+    const events = this.index.getTaskHistory(taskId, projectTag);
+    // Walk backwards through audit_verdict events.
+    // Count fails until we see a pass (reset) or run out of events.
+    let consecutiveFails = 0;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i];
+      if (ev.type === "audit_verdict") {
+        if (ev.verdict === "fail") {
+          consecutiveFails++;
+        } else {
+          // pass resets the streak
+          break;
+        }
+      }
+      // state_transitioned(auditing→implementing) is a rework — continue counting
+      // audit_started, agent_spawned etc. are intermediate — continue
+    }
+    return consecutiveFails;
+  }
+
+  /**
+   * Count rework sessions (implementing sessions after first audit) for naming.
+   * D3: derived from event log (count agent_spawned events after first audit_started).
+   */
+  private countReworkSessions(projectTag: string, taskId: string): number {
+    const events = this.index.getTaskHistory(taskId, projectTag);
+    let foundFirstAudit = false;
+    let reworkCount = 0;
+    for (const ev of events) {
+      if (ev.type === "audit_started") {
+        foundFirstAudit = true;
+      }
+      if (foundFirstAudit && ev.type === "agent_spawned") {
+        reworkCount++;
+      }
+    }
+    return reworkCount;
   }
 
   // ── Internal helpers ───────────────────────────────────────────────────────

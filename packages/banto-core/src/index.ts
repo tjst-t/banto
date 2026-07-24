@@ -30,6 +30,9 @@ export type {
   TaskIngestRejectedEvent,
   TickJobFailedEvent,
   MergeGateEvaluatedEvent,
+  AuditStartedEvent,
+  AuditVerdictEvent,
+  AuditSpawnDisabledEvent,
 } from "./events.js";
 
 // Task frontmatter parser + validator
@@ -71,8 +74,8 @@ export type {
   DriverId,
 } from "./runtime-driver.js";
 
-// Executor tool definitions (runtime-neutral; no pi/agent-sdk imports)
-export { reportPhaseTool, reportDoneTool, bantoExecutorTools } from "./tools.js";
+// Executor + audit tool definitions (runtime-neutral; no pi/agent-sdk imports)
+export { reportPhaseTool, reportDoneTool, bantoExecutorTools, auditReportTool, bantoAuditTools } from "./tools.js";
 export type { BantoTool, ToolResult, ToolTextContent, ToolParameterSchema } from "./tools.js";
 
 // Prompt asset loader (reads from skills/ directory at repo root)

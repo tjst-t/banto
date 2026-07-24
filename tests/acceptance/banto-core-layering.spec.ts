@@ -113,7 +113,7 @@ describe("[AC-S254276-3-1] banto-core layering: tools, client, prompt assets; ad
     assert.ok(params.required.includes("phase"));
     assert.ok(params.required.includes("projectTag"));
     assert.ok(params.required.includes("taskId"));
-    // phase must be an enum
-    assert.deepEqual(params.properties["phase"]?.enum, ["planning", "implementing", "review-ready"]);
+    // phase must be an enum (DEC-S254276-012 resolved: "review-ready" removed; use report_done)
+    assert.deepEqual(params.properties["phase"]?.enum, ["planning", "implementing"]);
   });
 });
