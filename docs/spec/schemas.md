@@ -39,6 +39,8 @@ refs: [spec-document-system, spec-daemon-core, spec-improvement-loop, spec-envir
 
 本文の必須見出し：`## 背景` `## スコープ外`。任意：`## 実装メモ`。
 
+**discovered-from規約**：エージェントの作業中に生成されるドキュメント（escalateタスク、incident、friction、design-request）は、`refs` の先頭に発見元タスクIDを必ず含める。生成ツールが自動で付与し、手動生成時は検証で警告する（→ research-orchestrator-survey B）。
+
 例：
 
 ```yaml
@@ -102,7 +104,7 @@ order: 3
 | `origin` | enum | ✓ | `system` / `po` / `agent`（→ spec-improvement-loop §2） |
 | `class` | string | ✓ | 失敗クラス語彙（初期語彙は運用で育てる。集計・照合キー） |
 | `status` | enum | ✓ | `open` / `pattern`（同型集約済）/ `tasked` / `resolved` / `rejected` / `reverted` |
-| `refs` | id[] | | 発生元タスク、対処タスク、類似imp |
+| `refs` | id[] | | 発生元タスク、対処タスク、類似imp。**先頭は発見元タスクID**（discovered-from規約 → §1） |
 | `resolution` | string | | 終端時の1行（keep/revert理由、reject理由）。**reverted項目は類似提案の照合対象**（→ spec-improvement-loop §5） |
 
 ## 6. spec / vision / principles / roadmap（docs/散文ゾーン）
@@ -127,3 +129,4 @@ order: 3
 - `class` の初期語彙（運用開始後、最初のケイデンスで最初の版を切る）
 - `verify` コマンドの実行環境（environmentプロファイル内で走らせる規約の明文化）
 - プロジェクト拡張フィールドの名前空間規約（`x-` プレフィックス等）
+- オフライン・daemon不在時のID採番の扱い（必要になればハッシュサフィックス方式）（→ research-orchestrator-survey 参考）
