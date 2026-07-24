@@ -4,7 +4,7 @@ type: improvement
 kind: incident
 origin: agent
 class: spec-impl-mismatch
-status: open
+status: tasked
 refs: [followup-directive-2026-07, spec-schemas, spec-daemon-core]
 ---
 
@@ -19,3 +19,7 @@ watcher(task-watcher.ts)は取り込んだタスクを frontmatter の `status` 
 3. 仕様側を「work/tasks/に置く=enqueue意思表示」と改め、draft置き場を別に定義する
 
 P3に従い、黙ってどちらかに合わせず incident として積む。
+
+## PO判断(2026-07-24)
+
+**案2を採用**: watcherは `status: queued` のファイルのみenqueueし、draftは検証のみ(取り込まない)。仕様の意図(draft=未enqueue)に忠実。S75f66b のfix-Storyとして実装する。

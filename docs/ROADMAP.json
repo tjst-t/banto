@@ -632,6 +632,13 @@
   },
   "backlog": [
     {
+      "title": "watcherはstatus:queuedのみenqueue(draftは検証のみ)",
+      "kind": "bug",
+      "description": "imp-0001対処(PO判断: 案2)。watcherがfrontmatter statusを無視して常にdraft→queued遷移させる仕様矛盾の修正。draftファイルはスキーマ検証のみ行い取り込まない。status書き換えでdraft→queuedにするとwatcherが enqueueする。回帰テスト必須",
+      "added_in": "S254276",
+      "reason": "milestone M01後のフォローアップ監査で発見(imp-0001)。S75f66b詳細化時にfix-Storyとして取り込む"
+    },
+    {
       "title": "readyタスクの自動spawn(tickジョブ)",
       "kind": "enhancement",
       "description": "gate通過でreadyになったタスクをschedulerのtickジョブが自動でspawnTaskする。現状は明示API呼び出しのみ",
