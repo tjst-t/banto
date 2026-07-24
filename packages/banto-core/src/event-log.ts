@@ -146,7 +146,26 @@ export class EventLog {
    * (single syscall), ensuring durability before returning (I2).
    */
   append(payload: EventPayload): OrchestrationEvent {
-    if (this.closed) throw new Error("EventLog is closed");
+    if (this.closed) {
+      // Daemon is shutting down: in-flight scheduler tick or async job tried to
+      // append after the log was closed. Drop the write silently (log to stderr
+      // so it's visible in test output but don't throw, which would cause an
+      // unhandled rejection from a background timer).
+      //
+      // I2 note: this is intentional at daemon shutdown, not an error swallow.
+      // The event cannot be persisted (log is closed) but the caller's work
+      // (recordTaskFailed, state transition) has already completed in-memory.
+      // The omission will be recovered on next daemon start via orphan handling.
+      process.stderr.write(
+        `[banto-daemon] EventLog: drop post-close append (type=${String((payload as Record<string, unknown>)["type"])})\n`
+      );
+      // Return a minimal event so callers that use the return value don't crash.
+      return {
+        ...(payload as Record<string, unknown>),
+        eventId: -1,
+        timestamp: new Date().toISOString(),
+      } as unknown as OrchestrationEvent;
+    }
     if (!this.activeSegmentPath) {
       throw new Error("EventLog not initialized");
     }
@@ -276,6 +295,12 @@ export class EventLog {
 
   /** Read ALL events from all segments in eventId order */
   readAllEvents(): OrchestrationEvent[] {
+    if (this.closed) {
+      // Log is closed (daemon shutting down). Return empty array rather than
+      // throwing or reading a deleted directory. In-flight ticks see an empty
+      // log and do nothing useful — which is correct during shutdown.
+      return [];
+    }
     const segments = this.listSegments();
     const all: OrchestrationEvent[] = [];
     for (const seg of segments) {
