@@ -41,6 +41,10 @@ import { PiRpcDriver, createWorktree } from "./pi-rpc-driver.js";
 import { SpawnLedger, isProcessAlive, killOrphanProcess } from "./spawn-ledger.js";
 import type { LedgerEntry } from "./spawn-ledger.js";
 import { processMergeQueue } from "./merge-queue.js";
+import {
+  fileConflictTask,
+  deriveOriginResolutionPairs,
+} from "./conflict-filer.js";
 
 // ── Daemon-local skill asset loader ───────────────────────────────────────────
 //
@@ -225,6 +229,19 @@ export class Daemon {
    */
   private readonly _inFlightSpawns: Map<string, Promise<{ worktreePath: string; sessionPath: string; pid: number; sessionId: string; tmuxWindow?: string }>> = new Map();
 
+  /**
+   * Set of in-flight background async operations deferred via setImmediate
+   * (e.g. audit session spawn, rework session spawn triggered by handleAuditVerdict).
+   *
+   * Tracked so Daemon.stop() can await all of them before closing the event log.
+   * Each entry is a Promise that resolves when the background operation settles
+   * (success or error — errors are handled internally via recordTaskFailed).
+   * Entries are removed in their own finally{} blocks.
+   *
+   * D3/I2: ensures no events are silently dropped due to log-close-before-write.
+   */
+  private readonly _backgroundOps: Set<Promise<void>> = new Set();
+
   private constructor(config: DaemonConfig) {
     this.config = config;
     this.log = EventLog.open(config.dataDir);
@@ -308,8 +325,16 @@ export class Daemon {
     // Queue is derived purely from event log replay (D3: no persistence file).
     // Rebase → merge gate → fast-forward merge → task_merged + merged transition.
     // Merged tasks without hypothesis are auto-closed.
-    // Rebase conflicts leave the task in `merging` (story-6-seam for conflict auto-filing).
+    // Rebase conflicts: auto-file conflict task + pause origin (S75f66b-6).
     this.scheduler.registerJob("merge-queue", () => this.runMergeQueueTick());
+
+    // Built-in job: conflict-resolution outcome check (S75f66b-6, spec-daemon-core §4.2).
+    // On each tick, derive paused-origin↔conflict-resolution pairs (D3: from event log).
+    // If a resolution task reached merged/closed: resume the origin task to merging.
+    // If a resolution task failed: chain-fail the origin task (I2: stop, don't swallow).
+    this.scheduler.registerJob("conflict-resolution-check", () => {
+      this.runConflictResolutionCheck();
+    });
   }
 
   static create(config: Partial<DaemonConfig> = {}): Daemon {
@@ -377,9 +402,18 @@ export class Daemon {
   }
 
   /** Stop the daemon gracefully. */
-  stop(): Promise<void> {
+  async stop(): Promise<void> {
     this.watcher.stop();
-    this.scheduler.stop();
+    // Drain the scheduler FIRST: awaits any in-flight runAllJobs() so no scheduler
+    // job can try to append events after log.close() (D3/I2: log is the single
+    // runtime truth — no writes must be silently dropped).
+    await this.scheduler.stop();
+    // Drain background operations: audit/rework sessions are spawned via setImmediate
+    // for HTTP-response ordering, and their async bodies (driver.spawn → recordTaskFailed)
+    // must complete before we close the event log (D3/I2: no events must be dropped).
+    if (this._backgroundOps.size > 0) {
+      await Promise.allSettled([...this._backgroundOps]);
+    }
     if (this.reconcileTimer) {
       clearInterval(this.reconcileTimer);
       this.reconcileTimer = null;
@@ -904,7 +938,11 @@ export class Daemon {
           // work in spawnAuditSession (e.g. loadPromptAsset, driver lookup) that might
           // call recordTaskFailed, which would mutate task state before the caller sees
           // the 200/auditing response.
-          setImmediate(() => void this.spawnAuditSession(projectTag, taskId));
+          // Tracked in _backgroundOps (registered synchronously before setImmediate fires)
+          // so Daemon.stop() can drain it before log.close() (D3/I2: no events dropped).
+          this._trackBackground(new Promise<void>((resolve) => {
+            setImmediate(() => void this.spawnAuditSession(projectTag, taskId).then(resolve, resolve));
+          }));
         }
       }
     }
@@ -1243,7 +1281,11 @@ export class Daemon {
         // Spawn a new executor session with findings injected (void: fire-and-forget, I2 inside).
         // Deferred to next tick to ensure the HTTP response reflects the implementing state
         // before any sync work in spawnReworkSession mutates the state further.
-        setImmediate(() => void this.spawnReworkSession(projectTag, taskId, findings));
+        // Tracked in _backgroundOps (registered synchronously before setImmediate fires)
+        // so Daemon.stop() can drain it before log.close() (D3/I2: no events dropped).
+        this._trackBackground(new Promise<void>((resolve) => {
+          setImmediate(() => void this.spawnReworkSession(projectTag, taskId, findings).then(resolve, resolve));
+        }));
       }
     }
 
@@ -1457,6 +1499,23 @@ export class Daemon {
   // ── Internal helpers ───────────────────────────────────────────────────────
 
   /**
+   * Register a background async operation for drain tracking.
+   *
+   * Background ops (audit/rework session spawns via setImmediate) are registered
+   * here so Daemon.stop() can await them all before closing the event log.
+   * The promise is removed from the set when it settles (success or error).
+   *
+   * D3/I2: prevents silent event drops when stop() closes the log while a background
+   * op is still in-flight and trying to append (e.g. recordTaskFailed on spawn failure).
+   */
+  private _trackBackground(p: Promise<void>): void {
+    const tracked = p.finally(() => {
+      this._backgroundOps.delete(tracked);
+    });
+    this._backgroundOps.add(tracked);
+  }
+
+  /**
    * Apply a freshly-appended event to in-memory state and broadcast via WS.
    * D3: StateStore and EventIndex are always derived from the log.
    */
@@ -1635,6 +1694,21 @@ export class Daemon {
         void taskId;
         void projectTag;
       },
+      // S75f66b-6: auto-file conflict task + pause origin on rebase failure.
+      onRebaseConflict: async (
+        _log,
+        originTaskId,
+        originProjectTag,
+        error,
+        conflictedFiles
+      ) => {
+        await this.handleRebaseConflict(
+          originTaskId,
+          originProjectTag,
+          error,
+          conflictedFiles
+        );
+      },
     });
 
     // After the tick, always refresh state so in-memory store reflects any changes
@@ -1649,6 +1723,213 @@ export class Daemon {
     } finally {
       // Always reset the guard so a future tick can proceed (I2: no permanent lock).
       this._mergeQueueRunning = false;
+    }
+  }
+  /**
+   * Handle a rebase conflict from the merge queue.
+   *
+   * S75f66b-6 (AC-S75f66b-6-1):
+   *   1. Idempotency guard: if the origin task is already paused, skip filing
+   *      (tick may have re-observed the same conflict before the pause settled).
+   *   2. File a kind:conflict task to work/tasks/ (next task-NNNN number).
+   *      status: queued so the watcher ingests it via the normal path (D4).
+   *   3. Pause the origin task (paused, suspended_from=merging).
+   *   4. Refresh state + broadcast so HTTP/WS clients reflect the pause.
+   *
+   * D3: no mapping file written — correspondence is derived from refs[0] in events.
+   * D4: conflict task file goes through work/tasks/ + watcher (not direct createTask).
+   * I2: any error is logged; does not throw (recorded as tick_job_failed by scheduler).
+   */
+  private async handleRebaseConflict(
+    originTaskId: string,
+    originProjectTag: string,
+    error: Error,
+    conflictedFiles: string[]
+  ): Promise<void> {
+    // 1. Idempotency guard: if origin is already paused, don't file again.
+    //    This covers the case where the tick re-fires before the watcher ingests
+    //    the conflict task (the origin stays in merging between the file write and
+    //    the watcher's next poll cycle).
+    // NOTE: The origin task is currently in `merging` (the merge queue put it there).
+    // After we pause it here it becomes `paused`. If the tick fires again before the
+    // watcher injects the conflict task, the origin is already paused → skip.
+    this.refreshState();
+    const originTask = this.store.getTask(originTaskId, originProjectTag);
+    if (!originTask) {
+      process.stderr.write(
+        `[banto-daemon] handleRebaseConflict: origin task ${originProjectTag}/${originTaskId} not found\n`
+      );
+      return;
+    }
+    if (originTask.status === "paused") {
+      // Already paused (idempotent — the tick re-observed the same conflict). Skip.
+      return;
+    }
+
+    // 2. Find the project's repo path to write the conflict task file.
+    const proj = this.registry.list().find((p) => p.id === originProjectTag);
+    if (!proj) {
+      process.stderr.write(
+        `[banto-daemon] handleRebaseConflict: project ${originProjectTag} not in registry\n`
+      );
+      // Record as tick_job_failed (I2: not silent).
+      this.log.append({
+        type: "tick_job_failed",
+        projectTag: "daemon",
+        jobName: "conflict-filer",
+        error: `project ${originProjectTag} not found in registry for conflict task filing`,
+      });
+      return;
+    }
+
+    // 3. File the conflict task (writes to work/tasks/).
+    //    The watcher will ingest it via the normal path on its next poll (D4).
+    let filed: { taskId: string; filePath: string };
+    try {
+      filed = fileConflictTask({
+        projectTag: originProjectTag,
+        originTaskId,
+        originTaskTitle: String(originTask["title"] ?? originTaskId),
+        originTaskBranch: `task/${originTaskId}`,
+        mainline: "main",
+        conflictedFiles,
+        rebaseErrorMessage: error.message,
+        repoPath: proj.repoPath,
+      });
+    } catch (fileErr) {
+      const reason = `conflict task filing failed for ${originProjectTag}/${originTaskId}: ${
+        fileErr instanceof Error ? fileErr.message : String(fileErr)
+      }`;
+      process.stderr.write(`[banto-daemon] ${reason}\n`);
+      this.log.append({
+        type: "tick_job_failed",
+        projectTag: "daemon",
+        jobName: "conflict-filer",
+        error: reason,
+      });
+      return;
+    }
+
+    process.stdout.write(
+      `[banto-daemon] conflict task filed: ${filed.taskId} for origin ${originProjectTag}/${originTaskId} (${filed.filePath})\n`
+    );
+
+    // 4. Pause the origin task (suspended_from=merging).
+    //    StateMachine.pause() emits state_transitioned(merging→paused) + task_paused.
+    const pauseResult = StateMachine.pause(
+      this.log,
+      originTaskId,
+      "merging",
+      originProjectTag
+    );
+    if (!pauseResult.ok) {
+      process.stderr.write(
+        `[banto-daemon] handleRebaseConflict: failed to pause ${originProjectTag}/${originTaskId}: ${pauseResult.reason}\n`
+      );
+      // Still continue: the conflict file was already written.
+    }
+
+    // Refresh state and broadcast.
+    this.refreshState();
+    const allEvents = this.log.readAllEvents();
+    if (allEvents.length > 0) {
+      this.wsServer.broadcast(allEvents[allEvents.length - 1]!);
+    }
+  }
+
+  /**
+   * Conflict resolution outcome check tick job (S75f66b-6, spec-daemon-core §4.2).
+   *
+   * On each tick, derive paused-origin↔conflict-resolution pairs from the task store (D3).
+   * For each pair:
+   *   - Resolution task merged/closed → resume origin to merging (re-enters the queue).
+   *   - Resolution task failed        → chain-fail origin (I2: stop, don't swallow).
+   *
+   * D3: correspondence derived from refs[0] (discovered-from convention) — no mapping file.
+   * I2: chain-fail is used when resolution fails (origin cannot proceed without resolution).
+   */
+  private runConflictResolutionCheck(): void {
+    this.refreshState();
+    const allTasks = this.store.getAllTasks();
+    const pairs = deriveOriginResolutionPairs(allTasks);
+
+    for (const pair of pairs) {
+      const { originTaskId, originProjectTag, resolutionTaskId, resolutionProjectTag } = pair;
+
+      const resolutionTask = this.store.getTask(resolutionTaskId, resolutionProjectTag);
+      if (!resolutionTask) continue;
+
+      const resStatus = resolutionTask.status;
+
+      if (resStatus === "merged" || resStatus === "closed") {
+        // Resolution task succeeded → resume origin back to merging.
+        // The origin will re-enter the merge queue and be processed on the next tick.
+        const originTask = this.store.getTask(originTaskId, originProjectTag);
+        if (!originTask || originTask.status !== "paused") continue;
+
+        const resumeResult = StateMachine.resume(
+          this.log,
+          originTaskId,
+          "paused",
+          "merging",
+          originProjectTag
+        );
+
+        if (resumeResult.ok) {
+          process.stdout.write(
+            `[banto-daemon] conflict resolved: origin ${originProjectTag}/${originTaskId} resumed to merging ` +
+              `(resolution ${resolutionProjectTag}/${resolutionTaskId} ${resStatus})\n`
+          );
+          // AC-S75f66b-6-3: record the origin↔resolution linkage explicitly.
+          // A po_operation event captures the correlation so the audit trail shows
+          // WHICH resolution task caused the resume (D3: derived from events, not
+          // a mapping file; I2: the linkage is in the log, not just ordering).
+          this.log.append({
+            type: "po_operation",
+            projectTag: originProjectTag,
+            operation: "conflict_resolved",
+            taskId: originTaskId,
+            payload: { resolutionTaskId, resolutionProjectTag },
+          });
+        } else {
+          process.stderr.write(
+            `[banto-daemon] conflict-resolution-check: resume failed for ${originProjectTag}/${originTaskId}: ${resumeResult.reason}\n`
+          );
+        }
+
+        this.refreshState();
+        const allEvents = this.log.readAllEvents();
+        if (allEvents.length > 0) {
+          this.wsServer.broadcast(allEvents[allEvents.length - 1]!);
+        }
+
+        // Re-evaluate gates so the resumed (merging) task can be processed.
+        this.runGateReeval();
+      } else if (resStatus === "failed") {
+        // Resolution task failed → chain-fail origin (I2: stop, record, don't swallow).
+        const originTask = this.store.getTask(originTaskId, originProjectTag);
+        if (!originTask || originTask.status !== "paused") continue;
+
+        const failReason = `conflict_resolution_failed: resolution task ${resolutionTaskId} failed`;
+        StateMachine.fail(
+          this.log,
+          originTaskId,
+          { currentStatus: "paused", reason: failReason },
+          originProjectTag
+        );
+
+        process.stdout.write(
+          `[banto-daemon] conflict resolution failed: origin ${originProjectTag}/${originTaskId} chain-failed ` +
+            `(resolution ${resolutionProjectTag}/${resolutionTaskId} failed)\n`
+        );
+
+        this.refreshState();
+        const allEvents = this.log.readAllEvents();
+        if (allEvents.length > 0) {
+          this.wsServer.broadcast(allEvents[allEvents.length - 1]!);
+        }
+      }
+      // If resolution task is still active (not terminal), do nothing on this tick.
     }
   }
 }

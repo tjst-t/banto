@@ -194,21 +194,21 @@ export interface MergeProcessorOptions {
    */
   verifyTimeoutMs?: number;
   /**
-   * Hook called when rebase fails (conflict). Story 6 will hook in here to
-   * auto-file a conflict-resolution task. In v1 (story 5), the default
-   * implementation records a tick_job_failed event and leaves the task in
-   * `merging` so it will be retried/handled in the future.
+   * Hook called when rebase fails (conflict). Story 6 hooks in here to
+   * auto-file a conflict-resolution task and pause the origin task.
    *
-   * @param log      EventLog for appending events
-   * @param taskId   Task ID that had the rebase conflict
-   * @param projectTag Project tag
-   * @param error    Error thrown by the rebase operation
+   * @param log             EventLog for appending events
+   * @param taskId          Task ID that had the rebase conflict
+   * @param projectTag      Project tag
+   * @param error           Error thrown by the rebase operation
+   * @param conflictedFiles Files that had conflicts (derived from git status)
    */
   onRebaseConflict?: (
     log: EventLog,
     taskId: string,
     projectTag: string,
-    error: Error
+    error: Error,
+    conflictedFiles: string[]
   ) => void | Promise<void>;
 
   /**
@@ -321,6 +321,7 @@ export async function processMergeQueue(
 
   // ── 1. Rebase task branch onto mainline ──────────────────────────────────
 
+  let conflictedFiles: string[] = [];
   try {
     await rebaseTaskBranch({
       repoPath,
@@ -329,19 +330,25 @@ export async function processMergeQueue(
       mainline,
     });
   } catch (err) {
-    // Rebase conflict: call the hook (story 6 seam) and return.
-    // The task remains in `merging`. I2: not swallowed.
+    // Rebase conflict: collect conflicted files from git status, then call the hook.
+    // I2: not swallowed — hook handles the error (story 6 seam).
     const error = err instanceof Error ? err : new Error(String(err));
+
+    // Derive conflicted files from the git rebase error message.
+    // git rebase output contains "CONFLICT (content): Merge conflict in <file>" lines.
+    // After rebase --abort the working tree is clean, so parse-from-error is the
+    // only reliable source. Falls back to [] (conflict task filed with scope ["**"]).
+    conflictedFiles = parseConflictedFilesFromError(error.message);
+
     if (opts.onRebaseConflict) {
-      await opts.onRebaseConflict(log, taskId, projectTag, error);
+      await opts.onRebaseConflict(log, taskId, projectTag, error, conflictedFiles);
     } else {
       // Default: record as tick_job_failed, leave task in `merging`.
-      // Story 6 will add conflict-task auto-filing here.
       log.append({
         type: "tick_job_failed",
         projectTag: "daemon",
         jobName: "merge-queue",
-        error: `merge-queue: rebase failed for ${projectTag}/${taskId} (${error.message}); task stays in merging (story-6-seam)`,
+        error: `merge-queue: rebase failed for ${projectTag}/${taskId} (${error.message}); task stays in merging`,
       });
     }
     return false;
@@ -486,6 +493,7 @@ export async function processMergeQueue(
  * If the worktree does not exist, we operate in the bare repo directly.
  *
  * I2: throws on rebase failure (caller routes to onRebaseConflict hook).
+ *     The thrown error message includes the conflicted file list (captured before abort).
  * D6: uses git CLI via child_process (stdlib).
  */
 async function rebaseTaskBranch(opts: {
@@ -545,6 +553,30 @@ async function rebaseTaskBranch(opts: {
       );
     }
   }
+}
+
+/**
+ * Parse conflicted file paths from a git rebase error message.
+ *
+ * git rebase writes lines like:
+ *   "CONFLICT (content): Merge conflict in src/foo.ts"
+ * to stderr, which ends up in the caught Error message.
+ *
+ * Returns unique file paths extracted from those lines.
+ * Returns [] if no CONFLICT lines are found.
+ *
+ * D6: regex only (stdlib).
+ */
+function parseConflictedFilesFromError(errorMessage: string): string[] {
+  const files = new Set<string>();
+  // git outputs: "CONFLICT (...): Merge conflict in <path>"
+  const pattern = /CONFLICT\b.*?:\s*Merge conflict in (.+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = pattern.exec(errorMessage)) !== null) {
+    const file = m[1]?.trim();
+    if (file) files.add(file);
+  }
+  return Array.from(files);
 }
 
 /**

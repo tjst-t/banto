@@ -146,7 +146,17 @@ export class EventLog {
    * (single syscall), ensuring durability before returning (I2).
    */
   append(payload: EventPayload): OrchestrationEvent {
-    if (this.closed) throw new Error("EventLog is closed");
+    if (this.closed) {
+      // I2: appending after close is a programming error. The scheduler drain
+      // (Scheduler.stop() awaits in-flight runAllJobs()) must prevent this.
+      // If we reach here, it means a job escaped the drain — throw so the
+      // contract violation is visible rather than silently dropping data.
+      // D3: the event log is the single runtime truth; silent drops are forbidden.
+      throw new Error(
+        `EventLog: append after close (type=${String((payload as Record<string, unknown>)["type"])}). ` +
+          `Scheduler drain must complete before log.close() is called.`
+      );
+    }
     if (!this.activeSegmentPath) {
       throw new Error("EventLog not initialized");
     }
@@ -276,6 +286,11 @@ export class EventLog {
 
   /** Read ALL events from all segments in eventId order */
   readAllEvents(): OrchestrationEvent[] {
+    if (this.closed) {
+      // I2: reading after close is a contract violation. With scheduler drain,
+      // no job should read the log after daemon.stop() closes it.
+      throw new Error("EventLog: readAllEvents after close");
+    }
     const segments = this.listSegments();
     const all: OrchestrationEvent[] = [];
     for (const seg of segments) {
