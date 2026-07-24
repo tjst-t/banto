@@ -33,6 +33,13 @@ export interface EventBase {
   timestamp: string;
   /** Project tag for multi-project support (spec-multi-project §1) */
   projectTag: string;
+  /**
+   * 起点参照 (D8 / spec-ui §3): ID of the PO input or event that triggered this
+   * event, e.g. "event:123" or "po:<eventId of po_operation>". Optional —
+   * writers populate it when the trigger is known; existing events are not
+   * backfilled. Added by v1a data-shape audit (docs/research/v1a-data-shape-audit.md).
+   */
+  originRef?: string;
 }
 
 /** Task created by PO or daemon */
