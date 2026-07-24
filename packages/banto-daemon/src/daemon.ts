@@ -166,6 +166,29 @@ export interface DaemonConfig {
    * Default: 30 000 ms (30 s).
    */
   driverTimeoutMs?: number;
+  /**
+   * Maximum number of teardown retry attempts before giving up and filing a cadence card.
+   * Story-5 TTL enforcer: on exhaustion → markTeardownFailed + card_generated(cadence).
+   * Default: 3 retries.
+   */
+  ttlTeardownRetryLimit?: number;
+  /**
+   * Delay in milliseconds between teardown retry attempts.
+   * Default: 1 000 ms (1 s).
+   */
+  ttlTeardownRetryDelayMs?: number;
+  /**
+   * Interval (ms) for the env reconcile tick.
+   * Default: reconcileIntervalMs (shares the spawn-reconcile cadence).
+   * Set to a small value (e.g. 500) in tests for fast detection.
+   */
+  envReconcileIntervalMs?: number;
+  /**
+   * When true, disable the TTL enforcer tick job and the env reconcile tick job.
+   * Intended for test suites that do not need TTL/reconcile.
+   * Default: false.
+   */
+  disableEnvTtlEnforcer?: boolean;
 }
 
 export class Daemon {
@@ -238,6 +261,34 @@ export class Daemon {
    * Always reset in finally{} so a panicking inner call never permanently locks spawning.
    */
   private _autoSpawnRunning = false;
+
+  /**
+   * Re-entrancy guard for the TTL enforcer tick (Story-5).
+   *
+   * A forced teardown (including retries) can take multiple seconds. If a second tick
+   * fires before the first _runEnvTtlEnforcer() resolves, both would attempt teardown
+   * for the same expired entries simultaneously, causing duplicate retries and duplicate
+   * events. Mirror the _mergeQueueRunning pattern.
+   * Always reset in finally{} so a panicking inner call never permanently locks the enforcer.
+   */
+  private _envTtlEnforcerRunning = false;
+
+  /**
+   * Re-entrancy guard for the env reconcile tick (Story-5).
+   *
+   * Driver `list` calls are I/O operations that can be slow. If a second tick fires
+   * before _runEnvReconcile() resolves, both would compare the same stale ledger snapshot
+   * against the same driver output. Mirror the _mergeQueueRunning pattern.
+   * Always reset in finally{} so a panicking inner call never permanently locks the reconcile.
+   */
+  private _envReconcileRunning = false;
+
+  /**
+   * Separate interval handle for the env reconcile tick (Story-5).
+   * May differ from the main tick (envReconcileIntervalMs).
+   * Null until start() is called.
+   */
+  private envReconcileTimer: NodeJS.Timeout | null = null;
 
   /**
    * In-flight spawn map: deduplicates concurrent spawnTask() calls for the same task.
@@ -413,6 +464,18 @@ export class Daemon {
     this.scheduler.registerJob("conflict-resolution-check", () => {
       this.runConflictResolutionCheck();
     });
+
+    // Built-in job: env TTL enforcer (Story-5, spec-environment §5).
+    // Scans live ledger entries, force-tears-down any with ttlDeadline < now.
+    // Retries on failure; escalates via card_generated(cadence) on retry exhaustion (I2, D8).
+    // disableEnvTtlEnforcer: opt-out for test suites that do not need TTL/reconcile.
+    //
+    // Note: the job fn RETURNS the Promise (no `void`) so the Scheduler can await it
+    // in runAllJobs() and drain it on stop(). This ensures no events are appended after
+    // log.close() (D3/I2: no events must be silently dropped).
+    if (!config.disableEnvTtlEnforcer) {
+      this.scheduler.registerJob("env-ttl-enforcer", () => this._runEnvTtlEnforcer());
+    }
   }
 
   static create(config: Partial<DaemonConfig> = {}): Daemon {
@@ -437,6 +500,10 @@ export class Daemon {
       disableAuditSpawn: config.disableAuditSpawn ?? false,
       disableAutoSpawn: config.disableAutoSpawn ?? false,
       driverTimeoutMs: config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS,
+      ttlTeardownRetryLimit: config.ttlTeardownRetryLimit ?? 3,
+      ttlTeardownRetryDelayMs: config.ttlTeardownRetryDelayMs ?? 1000,
+      envReconcileIntervalMs: config.envReconcileIntervalMs,
+      disableEnvTtlEnforcer: config.disableEnvTtlEnforcer ?? false,
     };
     return new Daemon(resolved);
   }
@@ -486,7 +553,7 @@ export class Daemon {
       this.applyAndBroadcast(configEvent);
     }
 
-    // Start the reconcile timer (separate from the main tick so tests can tune it).
+    // Start the spawn-ledger reconcile timer (separate from the main tick so tests can tune it).
     const reconcileMs =
       this.config.reconcileIntervalMs ?? this.config.tickIntervalMs;
     this.reconcileTimer = setInterval(() => {
@@ -494,6 +561,21 @@ export class Daemon {
     }, reconcileMs);
     // Unref so the timer does not prevent the event loop from exiting in tests.
     if (this.reconcileTimer.unref) this.reconcileTimer.unref();
+
+    // Start the env reconcile timer (Story-5, spec-environment §5).
+    // Compares driver list output against the env ledger.
+    // Uses envReconcileIntervalMs if set, else reconcileMs.
+    //
+    // D3/I2: in-flight reconcile ops are tracked via _backgroundOps so daemon.stop()
+    // can drain them before closing the log (no events must be lost).
+    if (!this.config.disableEnvTtlEnforcer) {
+      const envReconcileMs =
+        this.config.envReconcileIntervalMs ?? reconcileMs;
+      this.envReconcileTimer = setInterval(() => {
+        this._trackBackground(this._runEnvReconcile());
+      }, envReconcileMs);
+      if (this.envReconcileTimer.unref) this.envReconcileTimer.unref();
+    }
   }
 
   /** Stop the daemon gracefully. */
@@ -512,6 +594,10 @@ export class Daemon {
     if (this.reconcileTimer) {
       clearInterval(this.reconcileTimer);
       this.reconcileTimer = null;
+    }
+    if (this.envReconcileTimer) {
+      clearInterval(this.envReconcileTimer);
+      this.envReconcileTimer = null;
     }
     return new Promise((resolve, reject) => {
       this.wsServer.close(() => {
@@ -2105,6 +2191,266 @@ export class Daemon {
     }
     // Trigger gate re-eval so quota-blocked tasks can be promoted now that a slot freed.
     this.runGateReeval();
+  }
+
+  // ── Story-5: TTL enforcer ─────────────────────────────────────────────────
+
+  /**
+   * TTL enforcer tick (Story-5, AC-S9d7fdb-5-1/5-2).
+   *
+   * Scans live ledger entries for any with ttlDeadline < now. For each expired entry:
+   *   1. Attempt forced teardown via the driver.
+   *   2. Retry up to ttlTeardownRetryLimit times (with ttlTeardownRetryDelayMs delay).
+   *   3. On success: mark torn down + emit env_torn_down(reason: ttl_expired).
+   *   4. On retry exhaustion: mark teardownFailed in ledger + emit card_generated(cadence)
+   *      so the PO sees it at the next cadence review. I2: NOT silently dropped.
+   *
+   * Re-entrancy guard: skips the tick if a previous run is still in-flight.
+   * D3: TTL judgments are derived from ledger.ttlDeadline + Date.now() at tick time;
+   *     no additional state is persisted for this judgment.
+   * D8: escalation card carries the envId, taskId, and projectTag as the origin reference.
+   */
+  private async _runEnvTtlEnforcer(): Promise<void> {
+    if (this._envTtlEnforcerRunning) return;
+    this._envTtlEnforcerRunning = true;
+
+    try {
+      const now = Date.now();
+      const liveEntries = this.envLedger.listLive();
+      const expired = liveEntries.filter(
+        (e) => !e.teardownFailed && new Date(e.ttlDeadline).getTime() < now
+      );
+
+      for (const entry of expired) {
+        await this._forceTeardownWithRetry(entry);
+      }
+    } finally {
+      this._envTtlEnforcerRunning = false;
+    }
+  }
+
+  /**
+   * Attempt forced teardown of an expired env entry with bounded retries.
+   * On success: markTornDown + env_torn_down(reason: ttl_expired).
+   * On exhaustion: markTeardownFailed + card_generated(cadence).
+   *
+   * I2: each failure attempt is recorded via tick_job_failed before retry.
+   * I3: teardown is idempotent; already-gone resources succeed immediately.
+   * D8: cadence card carries origin reference (envId, taskId, projectTag).
+   */
+  private async _forceTeardownWithRetry(entry: EnvLedgerEntry): Promise<void> {
+    const retryLimit = this.config.ttlTeardownRetryLimit ?? 3;
+    const retryDelayMs = this.config.ttlTeardownRetryDelayMs ?? 1000;
+    const driverPath = resolveDriverPath(entry.driver);
+    const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
+
+    for (let attempt = 0; attempt <= retryLimit; attempt++) {
+      if (attempt > 0) {
+        await new Promise<void>((r) => setTimeout(r, retryDelayMs));
+      }
+
+      const result = await runDriverVerb(driverPath, "teardown", { handle: entry.handle }, timeoutMs);
+      if (result.ok) {
+        // Success: mark as torn down in ledger and emit event.
+        this.envLedger.markTornDown(entry.envId);
+        const event = this.log.append({
+          type: "env_torn_down",
+          projectTag: entry.projectTag,
+          taskId: entry.taskId,
+          envId: entry.envId,
+          reason: "ttl_expired",
+        });
+        this.applyAndBroadcast(event);
+        // Trigger gate re-eval so quota-blocked tasks can be promoted.
+        this.runGateReeval();
+        return;
+      }
+
+      // Failure: record via tick_job_failed (I2: never silently dropped).
+      const failEvent = this.log.append({
+        type: "tick_job_failed",
+        projectTag: entry.projectTag,
+        jobName: "env-ttl-enforcer",
+        error: `ttl teardown attempt ${attempt + 1}/${retryLimit + 1} failed for env ${entry.envId}: ${result.error}`,
+      });
+      this.applyAndBroadcast(failEvent);
+    }
+
+    // Retry limit exhausted: mark ledger entry as teardown_failed (I2: not removed),
+    // and file a cadence card so the PO sees it at the next cadence review (D8).
+    this.envLedger.markTeardownFailed(entry.envId);
+
+    // Write the cadence card file (D3: event carries only the path reference, not content).
+    const cardId = `env-ttl-failed-${entry.envId}-${Date.now()}`;
+    const cardsDir = path.join(this.config.dataDir, "cards");
+    fs.mkdirSync(cardsDir, { recursive: true });
+    const cardPath = path.join(cardsDir, `${cardId}.json`);
+    const cardContent = {
+      cardId,
+      cardType: "cadence",
+      title: `TTL teardown failed: env ${entry.envId}`,
+      projectTag: entry.projectTag,
+      taskId: entry.taskId,
+      envId: entry.envId,
+      driver: entry.driver,
+      ttlDeadline: entry.ttlDeadline,
+      retryLimit,
+      createdAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(cardPath, JSON.stringify(cardContent, null, 2), "utf8");
+
+    const cardEvent = this.log.append({
+      type: "card_generated",
+      projectTag: entry.projectTag,
+      taskId: entry.taskId,
+      cardId,
+      cardType: "cadence",
+      cardPath,
+    });
+    this.applyAndBroadcast(cardEvent);
+  }
+
+  // ── Story-5: env reconcile ─────────────────────────────────────────────────
+
+  /**
+   * Env reconcile tick (Story-5, AC-S9d7fdb-5-3).
+   *
+   * For each registered driver (derived from live ledger entries), calls `list`
+   * to get the actual resources the driver manages. Compares against the ledger:
+   *
+   *   Orphan (in driver list, NOT in ledger): emit card_generated(cadence).
+   *   Vanished (in ledger, NOT in driver list): remove from ledger + emit env_torn_down(reason: vanished).
+   *
+   * D3: judgments are derived purely from ledger + driver list at tick time.
+   *     No extra mapping file is persisted.
+   * I2: driver `list` failure is recorded via tick_job_failed and the tick continues.
+   * Re-entrancy guard: skips the tick if a previous run is still in-flight.
+   *
+   * Naming convention: driver-managed resources that were created by this daemon are
+   * expected to carry a name that begins with a taskId from the current ledger.
+   * Resources whose names match `<taskId>-*` for any known taskId are ledger-owned.
+   * Resources that do NOT match any known taskId are orphans.
+   */
+  private async _runEnvReconcile(): Promise<void> {
+    if (this._envReconcileRunning) return;
+    this._envReconcileRunning = true;
+
+    try {
+      // Collect all unique drivers from the live env ledger entries.
+      const allEntries = this.envLedger.list();
+      const liveEntries = this.envLedger.listLive();
+
+      // Build a set of unique drivers to query.
+      const driversToQuery = new Set<string>();
+      for (const e of allEntries) {
+        driversToQuery.add(e.driver);
+      }
+
+      for (const driverName of driversToQuery) {
+        const driverPath = resolveDriverPath(driverName);
+        const timeoutMs = this.config.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
+
+        const listResult = await runDriverVerb(driverPath, "list", {}, timeoutMs);
+        if (!listResult.ok) {
+          // I2: list failure is not swallowed — record and continue to next driver.
+          const failEvent = this.log.append({
+            type: "tick_job_failed",
+            projectTag: "daemon",
+            jobName: "env-reconcile",
+            error: `driver "${driverName}" list failed: ${listResult.error}`,
+          });
+          this.applyAndBroadcast(failEvent);
+          continue;
+        }
+
+        const driverItems = listResult.output as ListOutput;
+        if (!Array.isArray(driverItems)) {
+          const failEvent = this.log.append({
+            type: "tick_job_failed",
+            projectTag: "daemon",
+            jobName: "env-reconcile",
+            error: `driver "${driverName}" list returned non-array`,
+          });
+          this.applyAndBroadcast(failEvent);
+          continue;
+        }
+
+        // Entries in the ledger for this driver (including torn-down / failed — we use
+        // them to correlate names, so we don't raise orphan alerts for entries the daemon
+        // knows about but has already torn down).
+        const ledgerEntriesForDriver = allEntries.filter((e) => e.driver === driverName);
+        const liveEntriesForDriver = liveEntries.filter((e) => e.driver === driverName);
+
+        // Build a set of "known" names (taskId-prefixed names in the ledger for this driver).
+        // A driver item whose name matches a known ledger name is NOT an orphan.
+        const knownNames = new Set<string>(
+          ledgerEntriesForDriver
+            .map((e) => {
+              // The process driver uses "<taskId>-env" as the name; docker uses compose project names.
+              // The handle carries the name field (if any).
+              const handleName = (e.handle as Record<string, unknown>)["name"];
+              return typeof handleName === "string" ? handleName : null;
+            })
+            .filter((n): n is string => n !== null)
+        );
+
+        // Detect orphans: in driver list, NOT in ledger (no matching name).
+        for (const item of driverItems) {
+          if (!knownNames.has(item.name)) {
+            // Orphan detected: file a cadence card.
+            const cardId = `env-orphan-${driverName.replace(/[^a-zA-Z0-9-]/g, "_")}-${item.name.replace(/[^a-zA-Z0-9-]/g, "_")}-${Date.now()}`;
+            const cardsDir = path.join(this.config.dataDir, "cards");
+            fs.mkdirSync(cardsDir, { recursive: true });
+            const cardPath = path.join(cardsDir, `${cardId}.json`);
+            const cardContent = {
+              cardId,
+              cardType: "cadence",
+              title: `Orphan environment detected: ${item.name} (driver: ${driverName})`,
+              driver: driverName,
+              resourceName: item.name,
+              resourceHandle: item.handle,
+              resourceCreated: item.created,
+              createdAt: new Date().toISOString(),
+            };
+            fs.writeFileSync(cardPath, JSON.stringify(cardContent, null, 2), "utf8");
+
+            const cardEvent = this.log.append({
+              type: "card_generated",
+              // Use "daemon" as the projectTag for daemon-internal events that cannot
+              // be scoped to a specific project (the orphan has no known project).
+              projectTag: "daemon",
+              cardId,
+              cardType: "cadence",
+              cardPath,
+            });
+            this.applyAndBroadcast(cardEvent);
+          }
+        }
+
+        // Detect vanished: in ledger (live), NOT in driver list.
+        const driverItemNames = new Set<string>(driverItems.map((i) => i.name));
+        for (const liveEntry of liveEntriesForDriver) {
+          if (liveEntry.teardownFailed) continue; // already escalated — skip
+          const handleName = (liveEntry.handle as Record<string, unknown>)["name"];
+          if (typeof handleName === "string" && !driverItemNames.has(handleName)) {
+            // Vanished: remove from ledger and emit event.
+            this.envLedger.remove(liveEntry.envId);
+            const event = this.log.append({
+              type: "env_torn_down",
+              projectTag: liveEntry.projectTag,
+              taskId: liveEntry.taskId,
+              envId: liveEntry.envId,
+              reason: "vanished",
+            });
+            this.applyAndBroadcast(event);
+            // Trigger gate re-eval so quota-blocked tasks can be promoted.
+            this.runGateReeval();
+          }
+        }
+      }
+    } finally {
+      this._envReconcileRunning = false;
+    }
   }
 
   private _resolveEnvEntry(
