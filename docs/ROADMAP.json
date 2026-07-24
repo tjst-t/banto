@@ -768,7 +768,7 @@
         },
         "S75f66b-6": {
           "title": "コンフリクト解消タスクの自動起票",
-          "status": "pending",
+          "status": "needs_user_review",
           "user_review_required": true,
           "review_reason": "spec-daemon-core §8 未決事項「解消タスク自動起票時のコンテキスト注入内容」と、元タスクの再開セマンティクス（paused→解消タスクmergedで再開）をv1判断で置いたため、PO確認が必要（D1）",
           "user_story": "POとして、rebaseが失敗したときにdaemonが解消タスクを自動起票してエージェントに解かせたい。なぜなら、コンフリクト処理をPOが手作業で行うのは帯域の浪費であり、解消結果も通常の監査＋マージ前ゲートを通せば品質は機構で保証されるから。",
@@ -796,17 +796,17 @@
             "S75f66b-6-1": {
               "title": "rebase失敗検出と解消タスク生成",
               "description": "マージプロセッサのrebase失敗（コンフリクト）を検出し、task-NNNN採番（既存work/tasks/の最大番号+1をツールが採番）で kind:conflict のタスク定義Markdownを work/tasks/ に生成。refs先頭に元タスクID（discovered-from規約、spec-schemas §1）、scope.paths=git status由来のコンフリクトファイル、本文にコンフリクト状況＋両ブランチの由来タスク参照。取り込みはwatcher経由（経路を増やさない、D4）。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-6-2": {
               "title": "元タスクのpausedと再開・連鎖fail",
               "description": "rebase失敗した元タスクを StateMachine.pause()（suspended_from=merging）で退避し、キューは次のタスクへ。解消タスクの merged イベントで元タスクを resume→merged（reason に解消タスクIDを記録）、解消タスクの failed で元タスクも fail（I2）。対応関係はイベント（refs/reason）から導出する（D3）。",
-              "status": "pending"
+              "status": "done"
             },
             "S75f66b-6-3": {
               "title": "受け入れテスト",
               "description": "conflict-autofile / conflict-normal-flow / conflict-resume。実git repoで人工コンフリクトを作り、自動起票→通常フロー通過→元タスク再開までを検証。失敗事例の再現E2Eシナリオ蓄積（backlog chore）はスコープ外。",
-              "status": "pending"
+              "status": "done"
             }
           }
         }
