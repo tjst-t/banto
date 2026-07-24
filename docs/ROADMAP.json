@@ -2,12 +2,12 @@
   "project": "banto",
   "description": "一人のPOがAIエージェントのチームを率いて開発するための統治環境（ガバナンスレイヤー＋POコックピット）",
   "progress": {
-    "current_sprint": "S254276",
+    "current_sprint": null,
     "total": 10,
-    "done": 2,
-    "in_progress": 1,
-    "remaining": 8,
-    "percentage": 27
+    "done": 3,
+    "in_progress": 0,
+    "remaining": 7,
+    "percentage": 30
   },
   "execution_order": [
     "S654396",
@@ -336,7 +336,7 @@
     },
     "S254276": {
       "title": "セッション実行（pi-rpc・spawn台帳・banto-core・tmux）",
-      "status": "partial",
+      "status": "done",
       "description": "歩くスケルトンの完成。readyタスクをpi headlessセッションとしてworktreeにspawnし、実行者がdaemon APIツールで状態報告、kill -9からの孤児回復まで実機で通す",
       "milestone": true,
       "stories": {
@@ -484,7 +484,7 @@
         },
         "S254276-4": {
           "title": "tmux接続と歩くスケルトンE2E",
-          "status": "blocked",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、タスク投入からエージェントの実装完了までを端末から一気通貫で確認したい。なぜなら、これが最初のマイルストーン（歩くスケルトン）の受け入れ基準だから。",
@@ -499,7 +499,7 @@
               "id": "AC-S254276-4-2",
               "description": "E2E: work/tasks/へのタスク定義配置→取り込み→ready→spawn→エージェント実装→review-ready までを実機で通す（モック不可）",
               "test": "[AC-S254276-4-2] in tests/acceptance/walking-skeleton.e2e.spec.ts",
-              "status": "pending"
+              "status": "pass"
             }
           ],
           "tasks": {
@@ -511,10 +511,9 @@
             "S254276-4-2": {
               "title": "歩くスケルトンE2Eシナリオ",
               "description": "サンプルプロジェクト＋実タスクでの一気通貫実機テスト",
-              "status": "pending"
+              "status": "done"
             }
-          },
-          "blocked_reason": "needs_human: LLM認証(ANTHROPIC_API_KEY等)がこの環境に無く、歩くスケルトンE2E(AC-S254276-4-2)を実機実行できない。キー設定後に npm run test:e2e で検証する"
+          }
         }
       }
     },
@@ -632,13 +631,6 @@
     }
   },
   "backlog": [
-    {
-      "title": "pi-rpcドライバにbanto-executor Extensionを配線する",
-      "kind": "bug",
-      "description": "spawnTask時にpiへ --extension で banto-executor を渡していないため、実行者ツール(report_phase/report_done)がpiセッション内で使えない。E2Eはプロンプト内の直接HTTP呼び出しで回避している。spawn時のextensionパス受け渡しと環境変数(BANTO_DAEMON_URL/BANTO_PROJECT/BANTO_TASK_ID)注入を実装する",
-      "added_in": "S254276",
-      "reason": "S254276-4実装中に発見。E2E再実行(認証設定後)の前提修正"
-    },
     {
       "title": "readyタスクの自動spawn(tickジョブ)",
       "kind": "enhancement",
