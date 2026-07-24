@@ -920,7 +920,7 @@
         },
         "S9d7fdb-3": {
           "title": "ビルトインdockerドライバ",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、監査・マージ前ゲート用のテスト環境をdocker composeで隔離提供したい。なぜなら、検証の実行を実装環境から隔離しつつ、同じ動詞契約で回収まで保証するためだから。",
@@ -948,23 +948,23 @@
             "S9d7fdb-3-1": {
               "title": "dockerドライバ実装（compose CLIシェルアウト）",
               "description": "docker compose -p <taskIDプレフィックス名> up/down/exec/lsへのシェルアウトで7動詞を実装する。D6: docker SDK（dockerode等）は追加せず、既にホスト前提のdocker CLIを使う（理由: 依存追加より既存資産、composeファイル互換もCLIが保証）。v1はcompose対応のみ（単一コンテナ対応はspec §8未決のため見送り、追加は後方互換拡張）。",
-              "status": "pending"
+              "status": "done"
             },
             "S9d7fdb-3-2": {
               "title": "契約テストスイートへのdockerドライバ組込み",
               "description": "S9d7fdb-2-2のハーネスにdockerドライバを載せ、7動詞＋冪等teardown＋listプレフィックス規約を通す。",
-              "status": "pending"
+              "status": "done"
             },
             "S9d7fdb-3-3": {
               "title": "docker実機smoke",
               "description": "provision→healthcheck→run→collect→teardown（2回目teardownも成功）の一連を実dockerで通すsmoke。docker未導入環境ではテストをskipせずfailさせ、CI/実行ホストにdockerを前提として明記する（I1: 直接実行して確認）。",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
         "S9d7fdb-4": {
           "title": "環境台帳とquota執行",
-          "status": "pending",
+          "status": "done",
           "user_review_required": false,
           "review_reason": null,
           "user_story": "POとして、provisionされたすべての環境が台帳に載り、上限超過のprovisionは拒否されるようにしたい。なぜなら、台帳に載らない外部リソースを作らないこと（I3）がこの仕様で最も優先度の高い統治機構だから。",
@@ -998,22 +998,22 @@
             "S9d7fdb-4-1": {
               "title": "環境台帳の永続化",
               "description": "spawn-ledger.tsのパターン（atomic tmp+rename書込・破損時はエラーイベント＋空台帳で継続・D3: 台帳は生きた外部リソースの追跡のみで状態真実はイベント）を流用したEnvLedgerを実装する。エントリ: {projectTag, taskId, profile, driverId, handle(不透明), createdAt, ttlDeadline}。",
-              "status": "pending"
+              "status": "done"
             },
             "S9d7fdb-4-2": {
               "title": "provision経路のquota執行",
               "description": "provision要求時に台帳の同一プロファイル稼働数をmax_instancesと突合し、超過なら理由付きで拒否する（執行はドライバではなくdaemonの台帳、spec-environment §5）。",
-              "status": "pending"
+              "status": "done"
             },
             "S9d7fdb-4-3": {
               "title": "GateEvaluator QuotaCheck実装差込",
               "description": "gate-evaluator.tsに用意済みのQuotaCheckフック（AlwaysPassQuota）へ、environment:参照プロファイルのquota空きを台帳から判定する実装を差し込む。判定変化はgate_evaluatedイベントで観測できる（既存の重複抑制規約に従う）。",
-              "status": "pending"
+              "status": "done"
             },
             "S9d7fdb-4-4": {
               "title": "タスク終端でのteardown保証",
               "description": "終端状態への遷移（state_transitioned）を契機に該当タスクの環境をteardownし、env_torn_downを積んで台帳から除去する。取り漏れはStory 5のTTL・照合が受け止める二重防御とする。",
-              "status": "pending"
+              "status": "done"
             }
           }
         },
@@ -1647,6 +1647,20 @@
       "description": "rework後の再監査(audit-2)セッションに前回のaudit_verdict failのfindingsを文脈注入する。現在は同一プロンプトで再監査。イベントから導出可能(D3)",
       "added_in": "S75f66b",
       "reason": "S75f66b verifierレビューでdead codeとして検出した構想の正式バックログ化"
+    },
+    {
+      "title": "dockerドライバのrunをcompose execに戻す(AppArmor解消時)",
+      "kind": "enhancement",
+      "description": "現在dev VMがdocker-default AppArmorプロファイルを読めず`compose exec`が失敗するため、runは`compose run --rm`(ワンショット別コンテナ)で代替。これはvolumes+networkは共有するが実行中コンテナのwritable layerを共有しない=provision後にコンテナ内FSへ書いた状態をrunが観測できないというspec §2 runとの意味的乖離。ホストがAppArmorプロファイルを読めるようになったらcompose execへ戻す",
+      "added_in": "S9d7fdb",
+      "reason": "S9d7fdb-3レビュー(P3: spec-実態乖離の記録)。当スプリントのAC範囲ではdeployがno-opのため許容"
+    },
+    {
+      "title": "環境provisionのquota TOCTOU競合",
+      "kind": "chore",
+      "description": "同時provisionリクエストがcount検査とledger.addの間で競合しmax_instancesを超え得る(gate検査は勧告的、provision時検査が権威だがレース非安全)。Node単一プロセスで境界され、Story-5 reconcileが二重防御。必要ならprovision経路の直列化/ロックを検討",
+      "added_in": "S9d7fdb",
+      "reason": "S9d7fdb-4レビュー。spec §5「取り漏れはStory5照合が受け止める」に沿い当面記録のみ"
     }
   ]
 }
