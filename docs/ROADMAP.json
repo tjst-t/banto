@@ -2,7 +2,7 @@
   "project": "banto",
   "description": "一人のPOがAIエージェントのチームを率いて開発するための統治環境（ガバナンスレイヤー＋POコックピット）",
   "progress": {
-    "current_sprint": null,
+    "current_sprint": "S6cfce9",
     "total": 11,
     "done": 5,
     "in_progress": 0,
@@ -15,8 +15,8 @@
     "S254276",
     "S75f66b",
     "S9d7fdb",
-    "S30a8fd",
     "S6cfce9",
+    "S30a8fd",
     "S24ddde",
     "Sfc93b6",
     "S7b7ba5",
@@ -1526,9 +1526,10 @@
     },
     "S30a8fd": {
       "depends_on": [
-        "S75f66b"
+        "S75f66b",
+        "S6cfce9"
       ],
-      "reason": "アテンションキューの主要カード（レビュー待ち）はレビュー・マージフローから生成される"
+      "reason": "アテンションキューの主要カード（レビュー待ち）はレビュー・マージフローから生成される。加えて、v1スコープの是非をS6cfce9（全体像設計プロトタイプ）の検証で確定するため、実装はS6cfce9の後。現在はプロトタイプ承認ゲートで結論待ち＝pending（PO判断 2026-07-25）"
     },
     "S24ddde": {
       "depends_on": [
