@@ -327,7 +327,7 @@ body.show-annot .commit-note { display: flex; }
         <span class="si-ico">◈</span><span class="si-label">Attention Queue</span><span class="si-badge">5</span>
       </button>
       <button class="side-item" data-open="improve" data-label="Improvements" title="Improvements">
-        <span class="si-ico">⟳</span><span class="si-label">Improvements</span><span class="si-tag" style="margin-left:auto;font-size:10px;color:var(--ink-faint);border:1px solid var(--line-strong);border-radius:4px;padding:0 6px;">月次</span>
+        <span class="si-ico">⟳</span><span class="si-label">Improvements</span><span class="si-tag" style="margin-left:auto;font-size:10px;color:var(--ink-faint);border:1px solid var(--line-strong);border-radius:4px;padding:0 6px;">週次</span>
       </button>
 
       <div class="side-group-label">Work</div>
@@ -835,7 +835,7 @@ body.show-annot .commit-note { display: flex; }
         <div class="panel-inner">
           <div class="review-head">
             <span class="type-chip type-chip--eval">メタケイデンス</span>
-            <span class="r-title">2026-07 月次レビュー ─ ループの健康と改善提案</span>
+            <span class="r-title">2026-W30 週次レビュー ─ ループの健康と改善提案</span>
           </div>
 
           <div class="improve-item" id="im-report" style="border-left-color:var(--accent);">
@@ -897,7 +897,7 @@ body.show-annot .commit-note { display: flex; }
           </div>
         </div>
 
-        <div class="annot" data-target="#im-metrics"><span class="an-num">1</span><span class="an-title">ループ自身の健康</span><br>月次で、システムが自分の失敗から改善した形跡を diff で確認・承認（VISION成功基準）。<span class="an-ref">improvement-loop §6</span></div>
+        <div class="annot" data-target="#im-metrics"><span class="an-num">1</span><span class="an-title">ループ自身の健康</span><br>週次で、システムが自分の失敗から改善した形跡を diff で確認・承認（VISION成功基準／既定は週次）。<span class="an-ref">improvement-loop §6</span></div>
         <div class="annot" data-target="#im-a"><span class="an-num">2</span><span class="an-title">3層で処方</span><br>層A(プロンプト)/層B(パラメータ)は直接diff、層C(機構)はタスク化。虚偽・手抜きは層Cへ昇格。<span class="an-ref">§1 / §4</span></div>
         <div class="annot" data-target="#im-eval"><span class="an-num">3</span><span class="an-title">仮説駆動で定着/差戻し</span><br>採択時に仮説を宣言し horizon 後に前後比較で keep/tune/revert。revert済みは類似提案を弾く履歴に。<span class="an-ref">§5</span></div>
       </section>
@@ -1267,7 +1267,7 @@ body.show-annot .commit-note { display: flex; }
               <div class="term" style="min-height:180px;">
 <div class="term-line term-dim"># meta/config.yaml（プロダクト既定）</div>
 <div class="term-line">cadence_days: 2</div>
-<div class="term-line">meta_cadence_days: 30</div>
+<div class="term-line">meta_cadence_days: 7</div>
 <div class="term-line">recap_idle_minutes: 10</div>
 <div class="term-line">escalate_on_reversible: false</div>
 <div class="term-line">merge_policy_default: sampled</div>
