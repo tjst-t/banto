@@ -196,6 +196,45 @@ body.show-annot .annot-hint { display: flex; }
 .sbrowser-cursor { position: absolute; width: 16px; height: 16px; border: 2px solid var(--c-fail); border-radius: 50%; background: rgba(163,58,50,0.15); }
 .sbrowser-cap { text-align: center; font-size: 11.5px; color: var(--ink-faint); margin-top: 14px; }
 
+/* ===== Backlog編集（Epic→Task 構造化エディタ） ===== */
+.commit-note {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 11.5px; color: var(--ink-soft);
+  background: var(--surface-dim); border: 1px dashed var(--line-strong);
+  border-radius: 8px; padding: 7px 14px; margin: 6px 0 18px;
+}
+.commit-note code { font-family: var(--font-mono); font-size: 11px; }
+.epic { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin-bottom: 14px; background: var(--surface); }
+.epic-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--surface-dim); border-bottom: 1px solid var(--line); }
+.epic-title { font-weight: 700; font-size: 14px; }
+.epic-count { font-size: 11.5px; color: var(--ink-faint); }
+.epic-head .btn { margin-left: auto; padding: 3px 11px; font-size: 12px; }
+.epic-tasks { padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 20px; }
+.bl-task {
+  display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+  padding: 9px 12px; box-shadow: 0 1px 2px rgba(39,36,29,0.04);
+}
+.bl-task.dragging { opacity: 0.45; }
+.epic-tasks.drop-hover { background: rgba(43,65,98,0.05); border-radius: 8px; }
+.bl-handle { color: var(--ink-faint); cursor: grab; font-size: 15px; line-height: 1; user-select: none; }
+.bl-handle:active { cursor: grabbing; }
+.bl-main { flex: 1; min-width: 0; }
+.bl-title { font-size: 13.5px; font-weight: 600; }
+.bl-sub { font-size: 11.5px; color: var(--ink-soft); display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+.bl-sub .dep { font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint); }
+.bl-task .btn { padding: 3px 11px; font-size: 12px; }
+
+/* タスク定義エディタ（focus） */
+.tdef { max-width: 640px; }
+.tdef-field { margin-bottom: 12px; }
+.tdef-label { font-size: 11.5px; font-weight: 700; color: var(--ink-faint); letter-spacing: 0.04em; margin-bottom: 5px; }
+.tdef-input { width: 100%; font-family: inherit; font-size: 13.5px; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); color: var(--ink); }
+.tdef-input:focus { outline: 2px solid rgba(43,65,98,0.3); outline-offset: 1px; }
+.tdef-ac { display: flex; flex-direction: column; gap: 6px; }
+.tdef-ac .tdef-input { font-size: 13px; }
+.tdef-meta { font-size: 12px; color: var(--ink-soft); font-family: var(--font-mono); }
+
 /* ===== Planning / History のリスト ===== */
 .list-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
 .list-head .r-title { font-size: 16px; font-weight: 700; }
@@ -266,8 +305,8 @@ body.show-annot .annot-hint { display: flex; }
       <button class="side-item" data-open="history" data-label="History" title="History">
         <span class="si-ico">🕓</span><span class="si-label">History</span>
       </button>
-      <button class="side-item" disabled title="Backlog（準備中）">
-        <span class="si-ico">▦</span><span class="si-label">Backlog</span><span class="si-tag">準備中</span>
+      <button class="side-item" data-open="backlog" data-label="Backlog" title="Backlog">
+        <span class="si-ico">▦</span><span class="si-label">Backlog</span>
       </button>
     </nav>
 
@@ -870,6 +909,76 @@ body.show-annot .annot-hint { display: flex; }
         </div>
       </section>
 
+      <!-- ========== パネル: Backlog編集（Epic→Task 構造化エディタ） ========== -->
+      <section class="panel" id="panel-backlog" data-title="Backlog">
+        <div class="panel-inner panel-inner--wide">
+          <div class="list-head">
+            <span class="r-title">Backlog ─ <span style="color:var(--ink-soft);font-weight:600;">banto</span></span>
+            <button class="btn btn--primary">＋ New Epic</button>
+          </div>
+          <div class="commit-note" id="bl-note">
+            タスク定義ファイル <code>work/tasks/*.md</code> の構造化エディタ（独自DBなし）。Epic→Taskの2段。ドラッグで割当・並べ替え → daemon が<b>ファイルを書き換えてコミット</b>（D3: ファイルは意図の真実）。
+          </div>
+
+          <div class="epic">
+            <div class="epic-head"><span class="epic-title">Epic: 通知基盤</span><span class="epic-count">5 tasks</span><button class="btn">＋ Task</button></div>
+            <div class="epic-tasks" data-epic="notify">
+              <div class="bl-task" draggable="true"><span class="bl-handle">⠿</span><div class="bl-main"><div class="bl-title">task-0003 通知ディスパッチャ</div><div class="bl-sub"><span class="state-chip state--wait">ready</span><span class="dep">deps: —</span></div></div><button class="btn" data-open="taskedit" data-label="タスク定義 · task-0003">編集</button></div>
+              <div class="bl-task" draggable="true"><span class="bl-handle">⠿</span><div class="bl-main"><div class="bl-title">task-0009 チャネル認証方式</div><div class="bl-sub"><span class="state-chip state--fail">blocking</span><span class="dep">deps: task-0003</span></div></div><button class="btn" data-open="taskedit" data-label="タスク定義 · task-0009">編集</button></div>
+              <div class="bl-task" draggable="true"><span class="bl-handle">⠿</span><div class="bl-main"><div class="bl-title">task-0011 通知配線（ディスパッチャ→カード）</div><div class="bl-sub"><span class="state-chip state--wait">draft</span><span class="dep">deps: task-0009</span></div></div><button class="btn" data-open="taskedit" data-label="タスク定義 · task-0011">編集</button></div>
+              <div class="bl-task" draggable="true"><span class="bl-handle">⠿</span><div class="bl-main"><div class="bl-title">task-0022 静穏時間の設定</div><div class="bl-sub"><span class="state-chip state--wait">queued</span><span class="dep">deps: —</span></div></div><button class="btn" data-open="taskedit" data-label="タスク定義 · task-0022">編集</button></div>
+              <div class="bl-task" draggable="true"><span class="bl-handle">⠿</span><div class="bl-main"><div class="bl-title">task-0023 通知文のD8整形</div><div class="bl-sub"><span class="state-chip state--wait">draft</span><span class="dep">deps: task-0021</span></div></div><button class="btn" data-open="taskedit" data-label="タスク定義 · task-0023">編集</button></div>
+            </div>
+          </div>
+
+          <div class="epic">
+            <div class="epic-head"><span class="epic-title">Epic: readyクエリ / スケジューラ</span><span class="epic-count">2 tasks</span><button class="btn">＋ Task</button></div>
+            <div class="epic-tasks" data-epic="ready">
+              <div class="bl-task" draggable="true"><span class="bl-handle">⠿</span><div class="bl-main"><div class="bl-title">task-0007 readyクエリのAPI/CLI一級化</div><div class="bl-sub"><span class="state-chip state--review">review-ready</span><span class="dep">deps: —</span></div></div><button class="btn" data-open="taskedit" data-label="タスク定義 · task-0007">編集</button></div>
+              <div class="bl-task" draggable="true"><span class="bl-handle">⠿</span><div class="bl-main"><div class="bl-title">task-0010 spawnスケジューラ接続</div><div class="bl-sub"><span class="state-chip state--wait">ready</span><span class="dep">deps: task-0007</span></div></div><button class="btn" data-open="taskedit" data-label="タスク定義 · task-0010">編集</button></div>
+            </div>
+          </div>
+
+          <div class="epic">
+            <div class="epic-head"><span class="epic-title">Epic: 評価環境v1</span><span class="epic-count">1 task</span><button class="btn">＋ Task</button></div>
+            <div class="epic-tasks" data-epic="eval">
+              <div class="bl-task" draggable="true"><span class="bl-handle">⠿</span><div class="bl-main"><div class="bl-title">task-0018 台帳リコンサイルのTTL調整</div><div class="bl-sub"><span class="state-chip state--audit">auditing</span><span class="dep">deps: —</span></div></div><button class="btn" data-open="taskedit" data-label="タスク定義 · task-0018">編集</button></div>
+            </div>
+          </div>
+        </div>
+        <div class="annot" data-target="#bl-note"><span class="an-num">1</span><span class="an-title">ファイルが真実・独自DBなし</span><br>編集はタスク定義ファイルを書き換えてコミットするだけ。人が git diff でレビューできる（D3）。階層はEpic→Taskの2段（JIRA化しない）。<span class="an-ref">spec-ui §1.3 / VISION</span></div>
+      </section>
+
+      <!-- ========== パネル: タスク定義エディタ（focus） ========== -->
+      <section class="panel" id="panel-taskedit" data-title="タスク定義">
+        <div class="panel-inner">
+          <div class="review-head" style="margin-bottom:8px;">
+            <span class="type-chip" style="background:var(--ink-soft);">DEF</span>
+            <span class="r-title">task-0009 通知ディスパッチャのチャネル認証方式</span>
+          </div>
+          <div class="commit-note">編集対象: <code>work/tasks/task-0009-channel-auth.md</code> ・ 保存すると<b>このファイルを書き換えてコミット</b>（イベントログではなくファイル＝意図の真実、D3）</div>
+          <div class="tdef">
+            <div class="tdef-field"><div class="tdef-label">TITLE</div><input class="tdef-input" value="通知ディスパッチャのチャネル認証方式"></div>
+            <div class="tdef-field"><div class="tdef-label">EPIC</div><input class="tdef-input" value="通知基盤"></div>
+            <div class="tdef-field"><div class="tdef-label">INTENT</div><input class="tdef-input" value="プッシュ通知(ntfy互換)のチャネル到達経路と認証方式を決めて実装する"></div>
+            <div class="tdef-field"><div class="tdef-label">ACCEPTANCE</div>
+              <div class="tdef-ac">
+                <input class="tdef-input" value="外部からでも携帯に到達する">
+                <input class="tdef-input" value="通知本文の固有名詞ポリシー（プロジェクト名まで）を満たす">
+                <input class="tdef-input" placeholder="＋ 受け入れ条件を追加…">
+              </div>
+            </div>
+            <div class="tdef-field"><div class="tdef-label">DEPENDS_ON</div><input class="tdef-input" value="task-0003"></div>
+            <div class="tdef-meta">status: blocking ・ origin: po_operation#8794 ・ governance: false</div>
+          </div>
+          <div class="footer-actions" style="margin-top:16px;">
+            <button class="btn btn--primary">保存してコミット</button>
+            <button class="btn">差分を見る</button>
+            <button class="btn btn--ghost">破棄</button>
+          </div>
+        </div>
+      </section>
+
     </div>
   </div>
 </div>
@@ -877,8 +986,8 @@ body.show-annot .annot-hint { display: flex; }
 <script>
 (function(){
   // ナビゲーション: 目的地(サイドバー)=通常モード / 会話=フォーカス(全画面＋戻る)
-  var LABELS = { planning:'Planning', queue:'Attention Queue', improve:'Improvements', board:'Board', history:'History', review:'Review', consult:'Consult', deliberation:'Planning', terminal:'Terminal', carddetail:'カード詳細' };
-  var SESSION = { review:1, consult:1, deliberation:1, terminal:1, carddetail:1 };   // フォーカス（メイン置換・左ナビ維持）で開くもの
+  var LABELS = { planning:'Planning', queue:'Attention Queue', improve:'Improvements', board:'Board', history:'History', backlog:'Backlog', review:'Review', consult:'Consult', deliberation:'Planning', terminal:'Terminal', carddetail:'カード詳細', taskedit:'タスク定義' };
+  var SESSION = { review:1, consult:1, deliberation:1, terminal:1, carddetail:1, taskedit:1 };   // フォーカス（メイン置換・左ナビ維持）で開くもの
   var app = document.querySelector('.app');
   var focusBar = document.getElementById('focusBar');
   var focusLabel = document.getElementById('focusLabel');
@@ -1001,6 +1110,33 @@ body.show-annot .annot-hint { display: flex; }
       pane.querySelectorAll('.ctx-view').forEach(function(v){ v.classList.toggle('is-active', v.dataset.ctxView===t.dataset.ctx); });
       setTimeout(layoutAnnots, 0);
     });
+  });
+
+  // Backlog: ドラッグで並べ替え／別Epicへ割当
+  var dragEl = null;
+  document.addEventListener('dragstart', function(e){
+    var t = e.target.closest('.bl-task'); if(!t) return;
+    dragEl = t; t.classList.add('dragging');
+  });
+  document.addEventListener('dragend', function(){
+    if(dragEl) dragEl.classList.remove('dragging');
+    document.querySelectorAll('.epic-tasks.drop-hover').forEach(function(l){ l.classList.remove('drop-hover'); });
+    dragEl = null;
+  });
+  document.addEventListener('dragover', function(e){
+    var lane = e.target.closest('.epic-tasks'); if(!lane || !dragEl) return;
+    e.preventDefault();
+    lane.classList.add('drop-hover');
+    var after = null;
+    lane.querySelectorAll('.bl-task:not(.dragging)').forEach(function(row){
+      var r = row.getBoundingClientRect();
+      if(e.clientY > r.top + r.height/2) after = row;
+    });
+    if(after) after.after(dragEl); else lane.prepend(dragEl);
+  });
+  document.addEventListener('dragleave', function(e){
+    var lane = e.target.closest('.epic-tasks');
+    if(lane && !lane.contains(e.relatedTarget)) lane.classList.remove('drop-hover');
   });
 
   // 初期状態
