@@ -144,6 +144,9 @@ body.show-annot .annot-hint { display: flex; }
       <button class="side-item is-active" data-panel="queue">
         <span class="si-ico">◈</span>アテンションキュー<span class="si-badge">5</span>
       </button>
+      <button class="side-item" data-panel="improve">
+        <span class="si-ico">⟳</span>改善ループ<span class="si-tag" style="margin-left:auto;font-size:10px;color:var(--ink-faint);border:1px solid var(--line-strong);border-radius:4px;padding:0 6px;">月次</span>
+      </button>
 
       <div class="side-group-label">進行</div>
       <button class="side-item" data-panel="board">
@@ -538,6 +541,72 @@ body.show-annot .annot-hint { display: flex; }
 
         <div class="annot" data-target="#rv-diff"><span class="an-num">1</span><span class="an-title">差分を見ながら会話</span><br>レビューは“会話2枚”の1枚。diffと対話が同じ面に並ぶ。<span class="an-ref">spec-ui §1</span></div>
         <div class="annot" data-target="#rv-footer"><span class="an-num">2</span><span class="an-title">承認 or 修正依頼</span><br>指摘は修正タスク化され再実行→再監査へ自動で戻る。ゲートは機械が保証済み。<span class="an-ref">D7 / I1</span></div>
+      </section>
+
+      <!-- ========== パネル: 改善ループのレビュー（月次メタケイデンス） ========== -->
+      <section class="panel" id="panel-improve" data-title="改善ループ（月次）" data-sub="システムが自分の失敗から出した規則・機構の改善を承認する">
+        <div class="panel-inner">
+          <div class="review-head">
+            <span class="type-chip type-chip--eval">メタケイデンス</span>
+            <span class="r-title">2026-07 月次レビュー ─ ループの健康と改善提案</span>
+          </div>
+
+          <div class="metric-strip" id="im-metrics">
+            <div class="metric-tile"><div class="m-label">po起源の比率</div><div class="m-value">12%</div><div class="m-delta up">▼ 18%→12%（改善）</div></div>
+            <div class="metric-tile"><div class="m-label">機構化までの平均</div><div class="m-value">4.2日</div><div class="m-delta up">▼ 5.1→4.2</div></div>
+            <div class="metric-tile"><div class="m-label">escaped defects</div><div class="m-value">2件</div><div class="m-delta up">▼ 4→2</div></div>
+            <div class="metric-tile"><div class="m-label">resolution無しクローズ</div><div class="m-value">0</div><div class="m-delta">±0</div></div>
+          </div>
+
+          <div class="section-label">今月の改善提案（規則・機構の diff）</div>
+
+          <div class="improve-item" id="im-a">
+            <div class="improve-meta"><span class="layer-chip layer-a">層A プロンプト</span><span class="task-badge">origin: system×2 ・ agent×1</span></div>
+            <div class="improve-title">監査チェックリストに「テストは daemon 実測で確認」を追加</div>
+            <div class="part-body" style="font-size:13px;">検出パターン: テスト結果の自己申告と実測の不一致（class=test-skip）同型3件。自己申告を信じない機構化（I1）へ寄せる。</div>
+            <div class="diff-pane" style="margin-top:10px;">
+              <div class="diff-file"><div class="diff-fhead"><span>prompts/auditor-checklist.md</span><span class="add">+2</span><span class="del">−1</span></div>
+                <div class="diff-code">
+<span class="ln ln--del">- [ ] テストが green であることを確認</span>
+<span class="ln ln--add">+ [ ] テストは daemon が実測した結果で確認（自己申告を信じない・I1）</span>
+<span class="ln ln--add">+ [ ] 実測ログの test 件数と PR 記載の件数が一致</span>
+                </div>
+              </div>
+            </div>
+            <div class="hypothesis"><span class="k">hypothesis:</span> expect: test-skip 同型incidentが減る ／ metric: incident.count[class=test-skip] ／ horizon: 21d</div>
+            <div class="actions"><button class="btn btn--primary">採択してマージ</button><button class="btn btn--danger">差し戻す</button><button class="btn btn--ghost" data-goto="consult">相談する</button></div>
+          </div>
+
+          <div class="improve-item" id="im-b">
+            <div class="improve-meta"><span class="layer-chip layer-b">層B パラメータ</span><span class="task-badge">origin: system</span></div>
+            <div class="improve-title">blocking エスカレーション閾値の調整（過剰停止の抑制）</div>
+            <div class="part-body" style="font-size:13px;">検出パターン: 特定クラスで escalate 却下が集中（＝不要な blocking で止まりすぎ）。可逆な層B変更で即revert可。</div>
+            <div class="diff-pane" style="margin-top:10px;">
+              <div class="diff-file"><div class="diff-fhead"><span>meta/config.yaml</span><span class="add">+1</span><span class="del">−1</span></div>
+                <div class="diff-code">
+<span class="ln ln--del">-  escalate_on_reversible: true</span>
+<span class="ln ln--add">+  escalate_on_reversible: false   # 可逆な選択は自律決定し decisions.json に記録</span>
+                </div>
+              </div>
+            </div>
+            <div class="hypothesis"><span class="k">hypothesis:</span> metric: none（測定不能）→ horizon 14d 後に主観1問で評価</div>
+            <div class="actions"><button class="btn btn--primary">採択</button><button class="btn btn--danger">差し戻す</button><button class="btn btn--ghost" data-goto="consult">相談する</button></div>
+          </div>
+
+          <div class="section-label" style="margin-top:20px;">評価（horizon 経過・前回採択の追跡）</div>
+
+          <div class="improve-item" id="im-eval" style="border-left-color: var(--c-review);">
+            <div class="improve-meta"><span class="layer-chip layer-a">層A プロンプト</span><span class="task-badge">21日前に採択</span><span class="gate-badge">勧告: keep</span></div>
+            <div class="improve-title">実行者プロンプトのテスト検証強化の効果</div>
+            <div class="eval-numbers"><span>test-skip incident: <b>週2.1 → 0.4件</b></span><span>監査通過率: <b>84% → 91%</b></span><span>/fix平均: <b>2.1 → 1.4回</b></span></div>
+            <div class="part-body" style="font-size:12.5px; color:var(--ink-soft);">明確な悪化なし・方向性は良好（厳密な因果評価はしない＝spec §5）。revert済み案との照合: 該当なし。</div>
+            <div class="actions"><button class="btn btn--primary">keep</button><button class="btn">tune</button><button class="btn btn--danger">revert</button></div>
+          </div>
+        </div>
+
+        <div class="annot" data-target="#im-metrics"><span class="an-num">1</span><span class="an-title">ループ自身の健康</span><br>月次で、システムが自分の失敗から改善した形跡を diff で確認・承認（VISION成功基準）。<span class="an-ref">improvement-loop §6</span></div>
+        <div class="annot" data-target="#im-a"><span class="an-num">2</span><span class="an-title">3層で処方</span><br>層A(プロンプト)/層B(パラメータ)は直接diff、層C(機構)はタスク化。虚偽・手抜きは層Cへ昇格。<span class="an-ref">§1 / §4</span></div>
+        <div class="annot" data-target="#im-eval"><span class="an-num">3</span><span class="an-title">仮説駆動で定着/差戻し</span><br>採択時に仮説を宣言し horizon 後に前後比較で keep/tune/revert。revert済みは類似提案を弾く履歴に。<span class="an-ref">§5</span></div>
       </section>
 
     </div>
