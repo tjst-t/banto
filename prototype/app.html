@@ -271,6 +271,17 @@ body.show-annot .annot-hint { display: flex; }
 .warn-note { background: rgba(160,90,18,0.06); border: 1px dashed var(--c-escalate); color: var(--c-escalate); border-radius: 8px; padding: 7px 14px; font-size: 11.5px; margin: 6px 0 14px; }
 .warn-note b { font-weight: 700; }
 
+/* レビュー用の解説コメントは「解説を重ねる」ON のときだけ表示（素の状態＝最終形を見せる） */
+.warn-note, .commit-note { display: none; }
+body.show-annot .warn-note { display: block; }
+body.show-annot .commit-note { display: flex; }
+
+/* Environments / Review: アクセス情報を1箇所に集約（そこだけ見ればアクセスできる） */
+.env-access { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; }
+.env-access .ea-label { color: var(--ink-faint); font-weight: 700; }
+.env-access .ea-url { font-family: var(--font-mono); font-size: 11.5px; color: var(--accent); background: var(--surface-dim); border: 1px solid var(--line); border-radius: 5px; padding: 1px 8px; }
+.env-access .btn { padding: 3px 10px; font-size: 12px; }
+
 /* ===== Planning / History のリスト ===== */
 .list-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
 .list-head .r-title { font-size: 16px; font-weight: 700; }
@@ -311,6 +322,14 @@ body.show-annot .annot-hint { display: flex; }
     </div>
 
     <nav class="side-nav">
+      <div class="side-group-label">Decisions</div>
+      <button class="side-item is-active" data-open="queue" data-label="Attention Queue" title="Attention Queue">
+        <span class="si-ico">◈</span><span class="si-label">Attention Queue</span><span class="si-badge">5</span>
+      </button>
+      <button class="side-item" data-open="improve" data-label="Improvements" title="Improvements">
+        <span class="si-ico">⟳</span><span class="si-label">Improvements</span><span class="si-tag" style="margin-left:auto;font-size:10px;color:var(--ink-faint);border:1px solid var(--line-strong);border-radius:4px;padding:0 6px;">月次</span>
+      </button>
+
       <div class="side-group-label">Work</div>
       <button class="side-item" data-open="planning" data-label="Planning" title="Planning">
         <span class="si-ico">✎</span><span class="si-label">Planning</span>
@@ -323,14 +342,6 @@ body.show-annot .annot-hint { display: flex; }
       </button>
       <button class="side-item" data-open="environments" data-label="Environments" title="Environments">
         <span class="si-ico">🖥</span><span class="si-label">Environments</span>
-      </button>
-
-      <div class="side-group-label">Decisions</div>
-      <button class="side-item is-active" data-open="queue" data-label="Attention Queue" title="Attention Queue">
-        <span class="si-ico">◈</span><span class="si-label">Attention Queue</span><span class="si-badge">5</span>
-      </button>
-      <button class="side-item" data-open="improve" data-label="Improvements" title="Improvements">
-        <span class="si-ico">⟳</span><span class="si-label">Improvements</span><span class="si-tag" style="margin-left:auto;font-size:10px;color:var(--ink-faint);border:1px solid var(--line-strong);border-radius:4px;padding:0 6px;">月次</span>
       </button>
 
       <div class="side-group-label">Progress</div>
@@ -726,6 +737,7 @@ body.show-annot .annot-hint { display: flex; }
             <span class="r-title">task-0007 readyクエリのAPI/CLI一級化</span>
             <span class="gate-badge">✓ マージ前ゲート通過: 型検査 pass ・ テスト42件 green（daemon実測）</span>
           </div>
+          <div class="env-access" style="margin-bottom:12px;"><span class="ea-label">レビュー環境</span><span class="ea-url">http://banto-server:5191</span><span class="pc-chip">branch task-0007</span><button class="btn">開く</button><button class="btn">コピー</button></div>
 
           <div class="review-layout">
             <!-- 証拠ペイン: Diff / Terminal / App を切替えながら会話 -->
@@ -779,7 +791,7 @@ body.show-annot .annot-hint { display: flex; }
               <!-- App（共有ブラウザ: GUIを触りながら） -->
               <div class="ctx-view" data-ctx-view="app">
                 <div class="sbrowser-bar">
-                  <span class="sbrowser-url">review-env://banto/task-0007</span>
+                  <span class="sbrowser-url">http://banto-server:5191</span>
                   <span class="sbrowser-live"><span class="dot dot--healthy"></span>共有 LIVE</span>
                 </div>
                 <div class="sbrowser-stage">
@@ -1299,15 +1311,14 @@ body.show-annot .annot-hint { display: flex; }
           <div class="proj-switch" id="env-proj"><span class="filter-label">プロジェクト:</span><button class="chip is-active">banto</button><button class="chip">palmux</button></div>
           <div class="commit-note" id="env-note">実行環境は割り当てた <b>Provider</b> 上で動く。テスト環境の具体情報（エンドポイント/認証/リソース）は<b>gitにコミットせず banto が注入</b>（spec-environment §4）。<code>environments.yaml</code> は参照名のみ。</div>
 
-          <div class="section-label">常設</div>
+          <div class="section-label">常設 ─ main（ここだけ見ればアクセスできる）</div>
           <div class="proj-card">
             <span class="pc-mark" style="background:var(--c-eval);">M</span>
             <div class="pc-main">
               <div class="pc-name">main <span class="pc-status"><span class="dot dot--healthy"></span>常時稼働</span></div>
-              <div class="pc-path">profile: dev ・ provider: process ・ いつでも触れる main の状態</div>
-              <div class="pc-meta"><span class="pc-chip">http://localhost:5173</span><span class="pc-chip">ttl: なし（常設）</span></div>
+              <div class="pc-path">profile: dev ・ provider: Docker（ホストにポート公開）・ 別PCから触れる main の状態</div>
+              <div class="env-access"><span class="ea-label">アクセス</span><span class="ea-url">http://banto-server:5173</span><button class="btn">開く</button><button class="btn">コピー</button></div>
             </div>
-            <button class="btn btn--primary" data-open="review" data-label="Main を触る">開く（App/Terminal）</button>
           </div>
 
           <div class="section-label" style="margin-top:16px;">開発ブランチ / タスク環境（Provider 上・TTL付き）</div>
@@ -1315,19 +1326,17 @@ body.show-annot .annot-hint { display: flex; }
             <span class="pc-mark" style="background:var(--c-review);">7</span>
             <div class="pc-main">
               <div class="pc-name">task-0007 <span class="pc-status"><span class="dot dot--healthy"></span>review用 稼働</span></div>
-              <div class="pc-path">profile: dev ・ provider: process ・ branch: task-0007</div>
-              <div class="pc-meta"><span class="pc-chip">http://localhost:5191</span><span class="pc-chip">ttl: 8h</span></div>
+              <div class="pc-path">profile: dev ・ provider: Docker（ポート公開）・ branch: task-0007 ・ ttl 8h</div>
+              <div class="env-access"><span class="ea-label">アクセス</span><span class="ea-url">http://banto-server:5191</span><button class="btn" data-open="review" data-label="Review · task-0007">レビューで見る</button><button class="btn">コピー</button></div>
             </div>
-            <button class="btn" data-open="review" data-label="Review · task-0007">開く</button>
           </div>
           <div class="proj-card">
             <span class="pc-mark" style="background:var(--ink-faint);">S</span>
             <div class="pc-main">
-              <div class="pc-name">task-0113 staging <span class="pc-status paused">⏸ teardown済</span></div>
-              <div class="pc-path">profile: staging ・ provider: Proxmox VM（pool agents / VMID 90007）</div>
-              <div class="pc-meta"><span class="pc-chip">ttl: 24h 超過→自動回収</span><span class="pc-chip">台帳で照合</span></div>
+              <div class="pc-name">task-0091 staging <span class="pc-status"><span class="dot dot--healthy"></span>外部VM 稼働</span></div>
+              <div class="pc-path">profile: staging ・ provider: Proxmox VM（pool agents / VMID 90007）・ ttl 24h・台帳で照合</div>
+              <div class="env-access"><span class="ea-label">アクセス</span><span class="ea-url">https://10.0.0.57:8443</span><span class="ea-url">ssh 10.0.0.57:22</span><span class="pc-chip">認証: sops(staging-pve)</span><button class="btn">開く</button></div>
             </div>
-            <button class="btn">再provision</button>
           </div>
         </div>
         <div class="annot" data-target="#env-note"><span class="an-num">1</span><span class="an-title">環境の具体情報は注入・非コミット</span><br>Provider はシステム登録、プロジェクトに割り当て。認証/エンドポイントは sops でbantoが注入し、repoには参照名のみ。TTL/quota/照合は daemon 台帳が執行。<span class="an-ref">spec-environment §1/§4/§5</span></div>
