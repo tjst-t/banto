@@ -77,7 +77,7 @@
               <button class="btn btn--primary" data-testid="card-action-choose-a">A: ntfy.sh 公開トピック</button>
               <button class="btn btn--primary" data-testid="card-action-choose-b">B: self-host + Basic認証</button>
               <a class="btn btn--session" href="tmux-drilldown.html" data-testid="card-tmux-jump">セッションへ</a>
-              <button class="btn btn--ghost" data-testid="card-action-consult">相談する</button>
+              <a class="btn btn--ghost" href="consult-session.html" data-testid="card-action-consult">相談する</a>
             </div>
           </div>
         </div>
@@ -85,7 +85,7 @@
     </article>
 
     <!-- カード2: 監査fail。滞留2日 × (1+ブロック2) = 6。セッション終了済み→セッションアクションなし（AC-S30a8fd-5-3） -->
-    <article class="card card--fail" data-testid="attention-card" data-card-id="card-p-0113" data-card-type="audit-fail" data-project="palmux">
+    <article id="audit" class="card card--fail" data-testid="attention-card" data-card-id="card-p-0113" data-card-type="audit-fail" data-project="palmux">
       <div class="card-top">
         <div class="card-top-main">
           <div class="card-meta">
@@ -124,7 +124,7 @@
             <div class="actions">
               <button class="btn btn--primary" data-testid="card-action-respawn">上位tierで再実行</button>
               <button class="btn btn--danger" data-testid="card-action-send-back">タスクを差し戻す</button>
-              <button class="btn btn--ghost" data-testid="card-action-consult">相談する</button>
+              <a class="btn btn--ghost" href="consult-session.html" data-testid="card-action-consult">相談する</a>
             </div>
           </div>
         </div>
@@ -171,7 +171,7 @@
             <div class="actions">
               <button class="btn btn--primary" data-testid="card-action-review-start">レビュー開始</button>
               <a class="btn btn--session" href="tmux-drilldown.html" data-testid="card-tmux-jump">セッションへ</a>
-              <button class="btn btn--ghost" data-testid="card-action-consult">相談する</button>
+              <a class="btn btn--ghost" href="consult-session.html" data-testid="card-action-consult">相談する</a>
             </div>
           </div>
         </div>
@@ -215,7 +215,7 @@
             <div class="actions">
               <button class="btn btn--primary" data-testid="card-action-create-task">修正タスクを起票</button>
               <button class="btn" data-testid="card-action-open-adr">ADRで仕様を改定</button>
-              <button class="btn btn--ghost" data-testid="card-action-consult">相談する</button>
+              <a class="btn btn--ghost" href="consult-session.html" data-testid="card-action-consult">相談する</a>
             </div>
           </div>
         </div>
@@ -223,7 +223,7 @@
     </article>
 
     <!-- カード5: 評価カード（card_generated / 通知系）。滞留1日 × (1+ブロック0) = 1 -->
-    <article class="card card--eval" data-testid="attention-card" data-card-id="card-p-eval-0002" data-card-type="evaluation" data-project="palmux">
+    <article id="eval" class="card card--eval" data-testid="attention-card" data-card-id="card-p-eval-0002" data-card-type="evaluation" data-project="palmux">
       <div class="card-top">
         <div class="card-top-main">
           <div class="card-meta">
@@ -260,7 +260,7 @@
               <button class="btn btn--primary" data-testid="card-action-keep">keep</button>
               <button class="btn" data-testid="card-action-tune">tune</button>
               <button class="btn btn--danger" data-testid="card-action-revert">revert</button>
-              <button class="btn btn--ghost" data-testid="card-action-consult">相談する</button>
+              <a class="btn btn--ghost" href="consult-session.html" data-testid="card-action-consult">相談する</a>
             </div>
           </div>
         </div>

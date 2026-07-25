@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>banto POコックピット（統合UI）</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+/* ===== 統合シェル（app.html 専用） ===== */
+.app { display: flex; min-height: 100vh; }
+
+.sidebar {
+  width: 238px; flex-shrink: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  position: sticky; top: 0; height: 100vh;
+  display: flex; flex-direction: column;
+}
+.sidebar-brand {
+  display: flex; align-items: center; gap: 10px;
+  padding: 15px 18px; border-bottom: 1px solid var(--line);
+}
+.side-proj { padding: 12px 14px 6px; }
+.side-proj-label { font-size: 10.5px; color: var(--ink-faint); letter-spacing: 0.06em; font-weight: 700; margin-bottom: 6px; }
+.side-nav { flex: 1; overflow-y: auto; padding: 6px 10px 14px; }
+.side-group-label {
+  font-size: 10px; color: var(--ink-faint); letter-spacing: 0.1em; font-weight: 700;
+  padding: 13px 10px 5px;
+}
+.side-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-radius: 8px;
+  font-size: 13.5px; color: var(--ink-soft); cursor: pointer;
+  border: none; background: transparent; width: 100%; text-align: left;
+  font-family: inherit;
+}
+.side-item:hover { background: var(--surface-dim); }
+.side-item.is-active { background: rgba(43,65,98,0.10); color: var(--accent); font-weight: 700; }
+.side-item .si-ico { width: 18px; text-align: center; font-size: 14px; flex-shrink: 0; }
+.side-item .si-badge {
+  margin-left: auto; font-size: 11px; font-weight: 700;
+  background: var(--accent); color: #fdfcf7; border-radius: 999px; padding: 0 8px;
+}
+.side-item[disabled] { color: var(--ink-faint); cursor: default; }
+.side-item[disabled] .si-tag { margin-left: auto; font-size: 10px; color: var(--ink-faint); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 6px; }
+.sidebar-foot {
+  border-top: 1px solid var(--line); padding: 11px 16px;
+  font-size: 11.5px; color: var(--ink-faint);
+  display: flex; align-items: center; gap: 8px;
+}
+
+.app-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.app-topbar {
+  position: sticky; top: 0; z-index: 25;
+  background: var(--surface); border-bottom: 1px solid var(--line);
+  padding: 11px 26px; display: flex; align-items: center; gap: 14px;
+}
+.app-view-title { font-size: 16px; font-weight: 700; }
+.app-view-sub { font-size: 12px; color: var(--ink-faint); margin-left: 2px; }
+.topbar-spacer { margin-left: auto; }
+.bell { position: relative; font-size: 17px; color: var(--ink-soft); cursor: pointer; padding: 4px; }
+.bell .bell-badge {
+  position: absolute; top: -2px; right: -4px;
+  background: var(--c-fail); color: #fff; font-size: 9.5px; font-weight: 700;
+  border-radius: 999px; padding: 0 5px;
+}
+.annot-toggle {
+  appearance: none; font-family: inherit; font-size: 12.5px; font-weight: 600;
+  border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink-soft);
+  border-radius: 999px; padding: 5px 14px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.annot-toggle:hover { background: var(--surface-dim); }
+.annot-toggle.is-on { background: #1f3350; border-color: #1f3350; color: #fff; }
+
+.app-content { padding: 24px 26px 80px; width: 100%; }
+.panel { display: none; position: relative; }
+.panel.is-active { display: block; }
+.panel-inner { max-width: 820px; }
+.panel-inner--wide { max-width: 1060px; }
+
+/* フローティング解説（完成UIの上に重ねる注釈） */
+.annot {
+  position: absolute; width: 232px;
+  background: #1f3350; color: #ece8dd;
+  border-radius: 10px; padding: 10px 13px;
+  font-size: 12px; line-height: 1.55;
+  box-shadow: 0 10px 30px rgba(20,25,40,0.28);
+  z-index: 40; display: none;
+}
+body.show-annot .panel.is-active .annot { display: block; }
+.annot .an-num {
+  display: inline-flex; width: 18px; height: 18px; border-radius: 50%;
+  background: #e0a95a; color: #2a1c07; font-weight: 700; font-size: 11px;
+  align-items: center; justify-content: center; margin-right: 7px; vertical-align: 1px;
+}
+.annot .an-title { font-weight: 700; color: #fff; }
+.annot .an-ref { display: block; margin-top: 4px; font-size: 10.5px; color: #a9b6cc; font-family: var(--font-mono); }
+.annot::before {
+  content: ""; position: absolute; top: var(--arrow, 15px); left: -7px;
+  border: 7px solid transparent; border-right-color: #1f3350; border-left: 0;
+}
+.annot-hi { outline: 2px dashed rgba(224,169,90,0.9); outline-offset: 3px; border-radius: 6px; }
+
+.annot-hint {
+  display: none; align-items: center; gap: 8px;
+  background: rgba(31,51,80,0.06); border: 1px dashed var(--line-strong);
+  border-radius: 8px; padding: 8px 14px; margin-bottom: 18px;
+  font-size: 12.5px; color: var(--ink-soft);
+}
+body.show-annot .annot-hint { display: flex; }
+
+@media (max-width: 860px) {
+  .sidebar { position: fixed; z-index: 60; transform: translateX(-100%); transition: transform .2s; }
+  .app-main { margin-left: 0; }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ===== サイドバー（永続ナビ） ===== -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <span class="brand-mark">番</span>
+      <span>
+        <span class="brand-name">banto</span>
+        <span class="brand-sub">POコックピット</span>
+      </span>
+    </div>
+
+    <div class="side-proj">
+      <div class="side-proj-label">プロジェクト</div>
+      <div class="filter-row" style="margin:0; gap:6px;">
+        <button class="chip is-active">すべて</button>
+        <button class="chip">banto</button>
+        <button class="chip">palmux</button>
+      </div>
+    </div>
+
+    <nav class="side-nav">
+      <div class="side-group-label">判断</div>
+      <button class="side-item is-active" data-panel="queue">
+        <span class="si-ico">◈</span>アテンションキュー<span class="si-badge">5</span>
+      </button>
+
+      <div class="side-group-label">進行</div>
+      <button class="side-item" data-panel="board">
+        <span class="si-ico">▤</span>エージェントボード
+      </button>
+
+      <div class="side-group-label">会話</div>
+      <button class="side-item" data-panel="deliberation">
+        <span class="si-ico">✎</span>検討セッション
+      </button>
+      <button class="side-item" data-panel="consult">
+        <span class="si-ico">💬</span>相談セッション
+      </button>
+
+      <div class="side-group-label">編集</div>
+      <button class="side-item" disabled>
+        <span class="si-ico">▦</span>バックログ<span class="si-tag">準備中</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <span class="dot dot--healthy"></span>daemon 接続中 ・ 通知 ON
+    </div>
+  </aside>
+
+  <!-- ===== メイン ===== -->
+  <div class="app-main">
+    <div class="app-topbar">
+      <span class="app-view-title" id="viewTitle">アテンションキュー</span>
+      <span class="app-view-sub" id="viewSub">いま、あなたの判断を待っているもの</span>
+      <span class="topbar-spacer"></span>
+      <span class="bell" title="通知（プッシュ）">🔔<span class="bell-badge">5</span></span>
+      <button class="annot-toggle" id="annotToggle" aria-pressed="false">💡 解説を重ねる</button>
+    </div>
+
+    <div class="app-content">
+
+      <div class="annot-hint">
+        <span>💡 解説レイヤー ON ── 完成UIの上に、各要素の意図と仕様参照をフローティング表示中。もう一度押すと消えます。</span>
+      </div>
+
+      <!-- ========== パネル: アテンションキュー ========== -->
+      <section class="panel is-active" id="panel-queue" data-title="アテンションキュー" data-sub="いま、あなたの判断を待っているもの">
+        <div class="panel-inner">
+
+          <div class="filter-row" id="q-filter" role="group" aria-label="プロジェクトで絞り込み">
+            <span class="filter-label">絞り込み:</span>
+            <button class="chip is-active">すべて (5)</button>
+            <button class="chip">banto (3)</button>
+            <button class="chip">palmux (2)</button>
+          </div>
+
+          <section class="queue" aria-label="判断待ちカード一覧">
+
+            <article class="card card--escalate" data-card-type="escalate">
+              <div class="card-top">
+                <div class="card-top-main">
+                  <div class="card-meta">
+                    <span class="type-chip type-chip--escalate">エスカレーション</span>
+                    <span class="project-badge">banto</span>
+                    <span class="age age--hot">滞留 3日</span>
+                  </div>
+                  <h2 class="card-title"><a href="card-detail.html">task-0009 通知ディスパッチャのチャネル認証方式</a></h2>
+                </div>
+                <div class="score" id="q-score" title="滞留日数 × (1 + 未spawnの後続タスク数)">
+                  <div class="score-value">15</div>
+                  <div class="score-label">スコア</div>
+                  <div class="score-formula">滞留3日 × (1+ブロック4)</div>
+                </div>
+              </div>
+              <div class="anatomy" id="q-anatomy">
+                <div class="part">
+                  <div class="part-label">経緯</div>
+                  <div class="part-body">
+                    <div class="origin-quote">
+                      <q>プッシュ通知はntfy互換で。自宅サーバの外からでも携帯に届くようにして</q>
+                      <span class="origin-ref">— あなたの指示 2026-07-21 09:12 ・ 検討セッション banto</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="part">
+                  <div class="part-label">起きたこと</div>
+                  <div class="part-body">実装中に外部依存の追加（D1）に該当と判定し、実行者が blocking で停止。2案を提示。後続4タスクが未spawnで待機中。</div>
+                </div>
+                <div class="part">
+                  <div class="part-label">求める判断</div>
+                  <div class="part-body">
+                    <p class="ask-question">通知チャネルはどちらの方式で進めますか？</p>
+                    <div class="actions">
+                      <button class="btn btn--primary">A: ntfy.sh 公開トピック</button>
+                      <button class="btn btn--primary">B: self-host + Basic認証</button>
+                      <a class="btn btn--session" href="tmux-drilldown.html">セッションへ</a>
+                      <button class="btn btn--ghost" id="q-consult" data-goto="consult">相談する</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article class="card card--fail" data-card-type="audit-fail">
+              <div class="card-top">
+                <div class="card-top-main">
+                  <div class="card-meta">
+                    <span class="type-chip type-chip--fail">監査fail</span>
+                    <span class="project-badge">palmux</span>
+                    <span class="age">滞留 2日</span>
+                  </div>
+                  <h2 class="card-title"><a href="card-detail.html">task-0113 CDP画像転送の自動再接続</a></h2>
+                </div>
+                <div class="score"><div class="score-value">6</div><div class="score-label">スコア</div><div class="score-formula">滞留2日 × (1+ブロック2)</div></div>
+              </div>
+              <div class="anatomy">
+                <div class="part"><div class="part-label">経緯</div><div class="part-body"><div class="origin-quote"><q>画面が切れたら自動で繋ぎ直して。手動再起動はもう嫌</q><span class="origin-ref">— あなたの指示 2026-07-20 22:40 ・ 検討セッション palmux</span></div></div></div>
+                <div class="part"><div class="part-label">起きたこと</div><div class="part-body">監査2回不通過（I1: 自己申告と実測の不一致、I2: エラー握りつぶし）で failed。機械昇格の閾値に到達。実行セッションは終了済み。</div></div>
+                <div class="part"><div class="part-label">求める判断</div><div class="part-body">
+                  <p class="ask-question">上位tierで再実行しますか？</p>
+                  <div class="actions">
+                    <button class="btn btn--primary">上位tierで再実行</button>
+                    <button class="btn btn--danger">タスクを差し戻す</button>
+                    <button class="btn btn--ghost" data-goto="consult">相談する</button>
+                  </div>
+                </div></div>
+              </div>
+            </article>
+
+            <article class="card card--review" data-card-type="review-ready">
+              <div class="card-top">
+                <div class="card-top-main">
+                  <div class="card-meta">
+                    <span class="type-chip type-chip--review">レビュー待ち</span>
+                    <span class="project-badge">banto</span>
+                    <span class="age">滞留 2日</span>
+                  </div>
+                  <h2 class="card-title"><a href="card-detail.html">task-0007 readyクエリのAPI/CLI一級化</a></h2>
+                </div>
+                <div class="score"><div class="score-value">4</div><div class="score-label">スコア</div><div class="score-formula">滞留2日 × (1+ブロック1)</div></div>
+              </div>
+              <div class="anatomy">
+                <div class="part"><div class="part-label">経緯</div><div class="part-body"><div class="origin-quote"><q>readyの判定は一箇所に。ボードとspawnスケジューラが別の答えを見るのは駄目</q><span class="origin-ref">— あなたの指示 2026-07-22 08:03 ・ 検討セッション banto</span></div></div></div>
+                <div class="part"><div class="part-label">起きたこと</div><div class="part-body">実装完了・マージ前ゲート通過（テスト42件green、daemon実測）。review-ready で2日待機。後続 task-0010 がこのレビューを待機。</div></div>
+                <div class="part"><div class="part-label">求める判断</div><div class="part-body">
+                  <p class="ask-question">レビューを開始しますか？</p>
+                  <div class="actions">
+                    <button class="btn btn--primary">レビュー開始</button>
+                    <a class="btn btn--session" href="tmux-drilldown.html">セッションへ</a>
+                    <button class="btn btn--ghost" data-goto="consult">相談する</button>
+                  </div>
+                </div></div>
+              </div>
+            </article>
+
+          </section>
+        </div>
+
+        <!-- フローティング解説（キュー） -->
+        <div class="annot" data-target="#q-filter"><span class="an-num">1</span><span class="an-title">全プロジェクト横断1本</span><br>POの注意力の唯一の入口。ここを開けば「いま判断すべきこと」が全部ある。<span class="an-ref">spec-ui §1</span></div>
+        <div class="annot" data-target="#q-anatomy"><span class="an-num">2</span><span class="an-title">カードは3部構成</span><br>経緯／起きたこと／求める判断。画面を遡らずカード単体で判断できる。<span class="an-ref">D8</span></div>
+        <div class="annot" data-target="#q-score"><span class="an-num">3</span><span class="an-title">並び順の説明責任</span><br>滞留日数×ブロック影響度でソート。スコアと内訳を必ず表示。<span class="an-ref">spec-ui §1</span></div>
+        <div class="annot" data-target="#q-consult"><span class="an-num">4</span><span class="an-title">どこからでも会話へ</span><br>全判断ポイントに常設。押すと文脈注入した相談セッションが開く。<span class="an-ref">spec-ui §2</span></div>
+      </section>
+
+      <!-- ========== パネル: エージェントボード ========== -->
+      <section class="panel" id="panel-board" data-title="エージェントボード" data-sub="全タスクをフェーズで一望">
+        <div class="panel-inner panel-inner--wide">
+          <div class="board-toolbar">
+            <div class="filter-row" style="margin:0;"><span class="filter-label">プロジェクト:</span><button class="chip is-active">すべて (11)</button><button class="chip">banto (7)</button><button class="chip">palmux (4)</button></div>
+            <div class="filter-row health-filter" id="b-health" style="margin:0;"><span class="filter-label">健康状態:</span><button class="chip is-active">すべて</button><button class="chip"><span class="dot dot--stalled"></span>停滞 (2)</button><button class="chip"><span class="dot dot--zombie"></span>ゾンビ (1)</button></div>
+          </div>
+
+          <div class="board-cols" id="b-cols">
+            <div class="board-col">
+              <div class="board-col-head"><span class="board-col-name">Now</span><span class="board-col-sub">いま動いている</span><span class="board-col-count">5</span></div>
+              <div class="board-lane">
+                <article class="task-card task-card--attention task-card--stalled" id="b-attn">
+                  <div class="task-meta"><span class="state-chip state--fail">blocking</span><span class="task-badge">banto</span><span class="task-attention-tag">判断待ち</span></div>
+                  <div class="task-title"><a href="card-detail.html">task-0009 通知チャネル認証方式</a></div>
+                  <div class="task-sub"><span class="dot dot--stalled"></span>停滞 3日 ・ <span class="who">pi:executor</span> がD1で停止中</div>
+                  <div class="task-actions"><button class="btn btn--primary" data-goto="queue">判断する</button><a class="btn btn--session" href="tmux-drilldown.html">セッション</a></div>
+                  <div class="blocked-note"><b>後続4タスクがこの判断待ち</b>（未spawn）</div>
+                </article>
+                <article class="task-card task-card--attention">
+                  <div class="task-meta"><span class="state-chip state--review">review-ready</span><span class="task-badge">banto</span><span class="task-attention-tag">判断待ち</span></div>
+                  <div class="task-title"><a href="card-detail.html">task-0007 readyクエリのAPI/CLI一級化</a></div>
+                  <div class="task-sub"><span class="dot dot--healthy"></span>ゲート通過（テスト42件green）・2日待機</div>
+                  <div class="task-actions"><button class="btn btn--primary" data-goto="queue">レビュー開始</button></div>
+                </article>
+                <article class="task-card">
+                  <div class="task-meta"><span class="state-chip state--build">implementing</span><span class="task-badge">banto</span></div>
+                  <div class="task-title"><a href="tmux-drilldown.html">task-0021 朝の通知ダイジェスト</a></div>
+                  <div class="task-sub"><span class="dot dot--healthy"></span>順調 ・ <span class="who">pi:executor</span> 実装中（12分前に進捗）</div>
+                </article>
+                <article class="task-card">
+                  <div class="task-meta"><span class="state-chip state--audit">auditing</span><span class="task-badge">banto</span></div>
+                  <div class="task-title"><a href="tmux-drilldown.html">task-0018 台帳リコンサイルのTTL調整</a></div>
+                  <div class="task-sub"><span class="dot dot--healthy"></span>順調 ・ <span class="who">pi:auditor</span> が点検中</div>
+                </article>
+                <article class="task-card task-card--attention task-card--stalled">
+                  <div class="task-meta"><span class="state-chip state--fail">failed</span><span class="task-badge">palmux</span><span class="task-attention-tag">判断待ち</span></div>
+                  <div class="task-title"><a href="card-detail.html">task-0113 CDP画像転送の自動再接続</a></div>
+                  <div class="task-sub"><span class="dot dot--stalled"></span>監査2回不通過・セッション終了済</div>
+                </article>
+              </div>
+            </div>
+            <div class="board-col">
+              <div class="board-col-head"><span class="board-col-name">Next</span><span class="board-col-sub">依存が晴れ次第spawn</span><span class="board-col-count">3</span></div>
+              <div class="board-lane">
+                <article class="task-card"><div class="task-meta"><span class="state-chip state--wait">ready</span><span class="task-badge">banto</span></div><div class="task-title"><a href="#">task-0010 spawnスケジューラ接続</a></div><div class="blocked-note">待機理由: <b>task-0007 のレビュー</b>通過後にspawn</div></article>
+                <article class="task-card"><div class="task-meta"><span class="state-chip state--wait">ready</span><span class="task-badge">palmux</span></div><div class="task-title"><a href="#">task-0114 転送メトリクスの計測</a></div><div class="task-sub"><span class="dot dot--healthy"></span>次サイクルでspawn予定</div></article>
+                <article class="task-card"><div class="task-meta"><span class="state-chip state--wait">queued</span><span class="task-badge">banto</span></div><div class="task-title"><a href="#">task-0022 静穏時間の設定</a></div><div class="task-sub"><span class="dot dot--healthy"></span>依存解決待ち</div></article>
+              </div>
+            </div>
+            <div class="board-col">
+              <div class="board-col-head"><span class="board-col-name">Later</span><span class="board-col-sub">起草・ブロック中</span><span class="board-col-count">3</span></div>
+              <div class="board-lane">
+                <article class="task-card task-card--zombie">
+                  <div class="task-meta"><span class="state-chip state--build">implementing</span><span class="task-badge">palmux</span></div>
+                  <div class="task-title"><a href="tmux-drilldown.html">task-0099 ズーム倍率の永続化</a></div>
+                  <div class="task-sub"><span class="dot dot--zombie"></span>ゾンビ: セッション6時間 無応答</div>
+                  <div class="task-actions"><button class="btn btn--danger">handoff</button><button class="btn">nudge</button></div>
+                </article>
+                <article class="task-card"><div class="task-meta"><span class="state-chip state--wait">draft</span><span class="task-badge">banto</span></div><div class="task-title"><a href="#">task-0011 通知配線</a></div><div class="blocked-note">ブロック元: <b>task-0009 の判断</b></div></article>
+                <article class="task-card"><div class="task-meta"><span class="state-chip state--wait">draft</span><span class="task-badge">banto</span></div><div class="task-title"><a href="#">task-0023 通知文のD8整形</a></div><div class="task-sub"><span class="dot dot--healthy"></span>依存: task-0021</div></article>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="annot" data-target="#b-cols"><span class="an-num">1</span><span class="an-title">ステートマシンのビューア</span><br>daemonの状態をそのまま描くだけ。UI側に独自状態を持たせない。<span class="an-ref">D3 / D5</span></div>
+        <div class="annot" data-target="#b-attn"><span class="an-num">2</span><span class="an-title">藍の縁＝判断待ち</span><br>アテンションキューに出ているものと同一。ボードからも判断へ飛べる。<span class="an-ref">spec-ui §1.2</span></div>
+        <div class="annot" data-target="#b-health"><span class="an-num">3</span><span class="an-title">健康状態→操作</span><br>停滞/ゾンビで絞り、nudge / handoff をボタンで提示（動詞を記憶させない）。<span class="an-ref">D7</span></div>
+      </section>
+
+      <!-- ========== パネル: 検討セッション ========== -->
+      <section class="panel" id="panel-deliberation" data-title="検討セッション" data-sub="相談して仕様を固める">
+        <div class="panel-inner">
+          <div class="session-wrap">
+            <div class="session-head">
+              <span class="s-icon">検</span>
+              <div><div class="session-title">朝の通知ダイジェスト</div><div class="session-sub">banto ・ tmux: banto:deliberation</div></div>
+              <span class="session-live"><span class="dot dot--healthy"></span>対話中</span>
+            </div>
+            <div class="chat">
+              <div class="recap" id="d-recap">── 42分ぶりです。あなたの最後の指示:<b>「朝8時に1回だけまとめて」</b>／その後: 仕様案を1件起草しました ──</div>
+              <div class="msg msg--po"><div class="msg-avatar">PO</div><div class="msg-bubble">レビュー待ちが2日以上たまってるのに気づけない。朝、まとめて教えてほしい</div></div>
+              <div class="msg msg--ai"><div class="msg-avatar">番</div><div class="msg-bubble">「たまってる」の基準と通知の形を決めましょう。まず滞留の閾値は？
+                <ul class="choice-list" id="d-choices">
+                  <li class="choice"><span class="choice-key">1</span><span class="choice-text">2日以上（あなたの言葉どおり）</span></li>
+                  <li class="choice"><span class="choice-key">2</span><span class="choice-text">1営業日以上 <span class="choice-note">週末を挟むと遅くなる</span></span></li>
+                  <li class="choice"><span class="choice-key">3</span><span class="choice-text">スコア上位のみ <span class="choice-note">滞留×ブロック影響度で足切り</span></span></li>
+                </ul>
+                <div class="msg-hint">番号で選ぶか、自由に書いても構いません。</div>
+              </div></div>
+              <div class="msg msg--po"><div class="msg-avatar">PO</div><div class="msg-bubble">1で。あと朝8時に1回だけまとめて。既に見たカードは除いて</div></div>
+              <div class="msg msg--ai"><div class="msg-avatar">番</div><div class="msg-bubble">まとまりました。タスク意図を下記に起草します。承認するとdaemonがTask化し、依存を組んでキューに載せます。
+                <div class="draft-file">
+                  <div class="draft-file-head"><span class="newtag">＋新規</span> work/tasks/task-0021-morning-digest.md</div>
+<div class="draft-body"><span class="k">title:</span> 朝の通知ダイジェスト
+<span class="k">intent:</span> 2日以上滞留かつ未読のアテンションカードを毎朝8時に1通へ束ねる
+<span class="add"><span class="k">acceptance:</span></span>
+<span class="add">  - 滞留 ≥2日 かつ 未読 のカードのみ対象</span>
+<span class="add">  - 配信は 08:00 / 1日1通 / 対象0なら送らない</span>
+<span class="add">  - 本文はプロジェクト名まで（タスク名は載せない）</span>
+<span class="k">origin:</span> po_operation#8840（この会話）</div>
+                </div>
+              </div></div>
+            </div>
+            <div class="session-footer" id="d-footer">
+              <div class="footer-actions-label">いまできること（仕様の起草が揃った状態）</div>
+              <div class="footer-actions"><button class="btn btn--primary">承認してタスク化</button><button class="btn">起草を修正</button><button class="btn btn--ghost">相談を続ける</button></div>
+              <div class="chat-input-row"><input class="chat-input" type="text" placeholder="自由に書く（例: 配信は平日だけにして）"><button class="btn btn--primary">送信</button></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="annot" data-target="#d-recap"><span class="an-num">1</span><span class="an-title">復帰リキャップ</span><br>中断から戻ると、最後の指示とその後の経過を自動で挿入。文脈の記憶はシステムが持つ。<span class="an-ref">spec-ui §4</span></div>
+        <div class="annot" data-target="#d-choices"><span class="an-num">2</span><span class="an-title">番号選択肢＋自由文</span><br>分岐点で選択肢を提示。ショートカットであって入力形式ではない ── 自由な相談も常に受ける。<span class="an-ref">spec-ui §2</span></div>
+        <div class="annot" data-target="#d-footer"><span class="an-num">3</span><span class="an-title">有効操作を常時提示</span><br>現フェーズでできることをフッターに常設。コマンド名・skill名を覚えさせない。<span class="an-ref">D7</span></div>
+      </section>
+
+      <!-- ========== パネル: 相談セッション ========== -->
+      <section class="panel" id="panel-consult" data-title="相談セッション" data-sub="判断ポイントから降りた会話">
+        <div class="panel-inner">
+          <div class="session-wrap">
+            <div class="consult-anchor">
+              <span class="consult-chip">相談</span>
+              <span class="anchor-title">元の判断: <b>task-0009 通知チャネル認証方式</b>（A・B の2択）</span>
+              <button class="back-link" data-goto="queue" style="margin-left:auto; border:none; background:none; cursor:pointer; font-family:inherit;">← カード（判断）に戻る</button>
+            </div>
+            <div class="context-inject" id="c-inject">
+              <span class="ci-label">このカードの文脈を注入しました:</span>
+              <span class="ci-item">タスク定義 <code>task-0009</code></span>
+              <span class="ci-item">実装差分（テスト8件green）</span>
+              <span class="ci-item">経緯 <code>po_operation#8794</code></span>
+              <span class="ci-item">関連原則 D1</span>
+            </div>
+            <div class="chat">
+              <div class="msg msg--po"><div class="msg-avatar">PO</div><div class="msg-bubble">Bのself-hostだと、外出先にちゃんと届くの？ VPN張ってないと届かないなら意味がない</div></div>
+              <div class="msg msg--ai"><div class="msg-avatar">番</div><div class="msg-bubble">注入済みの差分と経緯から答えます。到達性はこう分かれます:
+                <ul class="choice-list" style="cursor:default;">
+                  <li class="choice" style="cursor:default;"><span class="choice-key">A</span><span class="choice-text">ntfy.sh 公開トピック <span class="choice-note">どこでも即到達。本文が公開トピックに載り保護はURL秘匿のみ</span></span></li>
+                  <li class="choice" style="cursor:default;"><span class="choice-key">B</span><span class="choice-text">self-host + Basic認証 <span class="choice-note">本文は外に出ない。外出先は既存VPN依存 ―― <b>VPN未接続だと届かない</b></span></span></li>
+                </ul>
+                ご懸念どおりBは「VPN常時ON」が前提です。あなたの運用は？</div></div>
+              <div class="msg msg--po"><div class="msg-avatar">PO</div><div class="msg-bubble">VPNは常時ON。ただ、通知にタスク名が出るのだけは避けたい</div></div>
+              <div class="msg msg--ai"><div class="msg-avatar">番</div><div class="msg-bubble">判断材料が揃いました。<b>検討で既に決めた仕様</b>（本文はプロジェクト名まで）が効きます ── Aでも本文からタスク名を外せば秘匿は満たせます。選択肢を組み直しました:
+                <ul class="choice-list" id="c-restructured">
+                  <li class="choice"><span class="choice-key">A′</span><span class="choice-text">ntfy.sh 公開＋本文はプロジェクト名まで＋長い乱数トピック <span class="choice-note">追加インフラ0・どこでも即到達</span></span></li>
+                  <li class="choice"><span class="choice-key">B</span><span class="choice-text">self-host + Basic認証（既存VPN） <span class="choice-note">本文が外に出ない・VPN未接続時は不達</span></span></li>
+                </ul>
+              </div></div>
+            </div>
+            <div class="session-footer" id="c-footer">
+              <div class="footer-actions-label">この会話を踏まえて判断する（元のカードの選択肢）</div>
+              <div class="reason-row" style="margin:0 0 10px;"><input class="reason-input" type="text" placeholder="理由（1行・po_operation に記録）例: VPN常時ONなので本文を外に出さないBにする"></div>
+              <div class="footer-actions"><button class="btn btn--primary">A′ で進める</button><button class="btn btn--primary">B で進める</button><button class="btn btn--ghost">相談を続ける</button><button class="btn" data-goto="queue" style="margin-left:auto;">判断せず戻る</button></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="annot" data-target="#c-inject"><span class="an-num">1</span><span class="an-title">カード文脈を注入</span><br>タスク定義・差分・経緯を丸ごと入れて会話が始まる。画面を遡らなくてよい。<span class="an-ref">spec-ui §2</span></div>
+        <div class="annot" data-target="#c-restructured"><span class="an-num">2</span><span class="an-title">選択肢を再構成して再掲</span><br>相談の結果に応じて分岐点に戻る。選択肢は組み直してよい。<span class="an-ref">spec-ui §2</span></div>
+        <div class="annot" data-target="#c-footer"><span class="an-num">3</span><span class="an-title">その場で判断に戻る</span><br>会話から離れずに元カードの選択肢を下せる。理由は1行で記録。<span class="an-ref">D7 / D8</span></div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var titles = {}, subs = {};
+  document.querySelectorAll('.panel').forEach(function(p){
+    titles[p.id.replace('panel-','')] = p.dataset.title;
+    subs[p.id.replace('panel-','')] = p.dataset.sub;
+  });
+  var viewTitle = document.getElementById('viewTitle');
+  var viewSub = document.getElementById('viewSub');
+  var sideItems = document.querySelectorAll('.side-item[data-panel]');
+
+  function clearHi(){ document.querySelectorAll('.annot-hi').forEach(function(e){ e.classList.remove('annot-hi'); }); }
+
+  function layoutAnnots(){
+    clearHi();
+    if(!document.body.classList.contains('show-annot')) return;
+    var panel = document.querySelector('.panel.is-active');
+    if(!panel) return;
+    var pr = panel.getBoundingClientRect();
+    var pw = panel.clientWidth;
+    var aw = 224;
+    var inner = panel.querySelector('.panel-inner');
+    // 右レールのx: コンテンツ列の右外側。入らなければ右端に寄せて重畳
+    var railLeft = inner ? (inner.offsetLeft + inner.offsetWidth + 26) : (pw - aw - 4);
+    if(railLeft + aw > pw) railLeft = pw - aw - 4;
+    if(railLeft < 0) railLeft = 0;
+
+    // ターゲットの縦位置順に並べ、縦の重なりを避けて下へ送る
+    var items = [];
+    panel.querySelectorAll('.annot').forEach(function(an){
+      var t = panel.querySelector(an.dataset.target);
+      if(!t){ an.style.display='none'; return; }
+      var tr = t.getBoundingClientRect();
+      items.push({ an: an, t: t, tTop: tr.top - pr.top, tCenter: tr.top - pr.top + tr.height/2 });
+    });
+    items.sort(function(a,b){ return a.tTop - b.tTop; });
+
+    var lastBottom = -1e9;
+    items.forEach(function(it){
+      var an = it.an;
+      an.style.display = 'block';
+      an.classList.remove('annot--left');
+      an.style.left = railLeft + 'px';
+      var top = Math.max(it.tTop, lastBottom + 12);
+      an.style.top = top + 'px';
+      var h = an.offsetHeight;
+      // 矢印を対象の中心へ向ける
+      var arrow = Math.min(Math.max(it.tCenter - top - 7, 8), h - 16);
+      an.style.setProperty('--arrow', arrow + 'px');
+      lastBottom = top + h;
+      it.t.classList.add('annot-hi');
+    });
+  }
+
+  function activate(id){
+    document.querySelectorAll('.panel').forEach(function(p){ p.classList.toggle('is-active', p.id==='panel-'+id); });
+    sideItems.forEach(function(s){ s.classList.toggle('is-active', s.dataset.panel===id); });
+    if(titles[id]){ viewTitle.textContent = titles[id]; viewSub.textContent = subs[id]||''; }
+    window.scrollTo(0,0);
+    setTimeout(layoutAnnots, 0);
+  }
+
+  sideItems.forEach(function(s){ s.addEventListener('click', function(){ activate(s.dataset.panel); }); });
+  document.querySelectorAll('[data-goto]').forEach(function(b){
+    b.addEventListener('click', function(e){ e.preventDefault(); activate(b.dataset.goto); });
+  });
+
+  var toggle = document.getElementById('annotToggle');
+  toggle.addEventListener('click', function(){
+    var on = document.body.classList.toggle('show-annot');
+    toggle.classList.toggle('is-on', on);
+    toggle.setAttribute('aria-pressed', on ? 'true':'false');
+    toggle.innerHTML = on ? '💡 解説を消す' : '💡 解説を重ねる';
+    layoutAnnots();
+  });
+
+  window.addEventListener('resize', layoutAnnots);
+})();
+</script>
+
+</body>
+</html>

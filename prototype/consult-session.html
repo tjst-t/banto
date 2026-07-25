@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>相談セッション: task-0009 — banto</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html" data-testid="nav-home">
+      <span class="brand-mark">番</span>
+      <span>
+        <span class="brand-name">banto</span>
+        <span class="brand-sub">POコックピット</span>
+      </span>
+    </a>
+    <span class="queue-count">「相談する」の先 ― 判断ポイントから降りた会話</span>
+  </div>
+</header>
+
+<main class="page">
+  <nav class="breadcrumb">
+    <a href="attention-queue.html" data-testid="back-to-queue">← アテンションキュー</a>
+  </nav>
+
+  <div class="page-head">
+    <h1 class="page-title">相談セッション</h1>
+  </div>
+  <p class="page-lede">
+    カードの「相談する」を押すと、<b>そのカードの文脈を丸ごと注入した会話</b>がこの場で開く（spec-ui §2）。
+    迷いを潰したら<b>同じ判断にワンアクションで戻る</b>。会話の結果しだいで、エージェントは選択肢を組み直して再掲する。
+  </p>
+
+  <div class="session-wrap">
+
+    <!-- どの判断から降りたか＝アンカー -->
+    <div class="consult-anchor">
+      <span class="consult-chip">相談</span>
+      <span class="anchor-title">元の判断: <b>task-0009 通知チャネル認証方式</b>（エスカレーション / A・B の2択）</span>
+      <a class="back-link" href="card-detail.html" data-testid="back-to-decision" style="margin-left:auto;">← カード（判断）に戻る</a>
+    </div>
+
+    <!-- 文脈注入（spec-ui §2: カードのコンテキストを注入） -->
+    <div class="context-inject">
+      <span class="ci-label">このカードの文脈を注入しました:</span>
+      <span class="ci-item">タスク定義 <code>task-0009</code></span>
+      <span class="ci-item">実装差分（送出部・テスト8件green）</span>
+      <span class="ci-item">経緯 <code>po_operation#8794</code></span>
+      <span class="ci-item">関連原則 D1</span>
+    </div>
+
+    <div class="chat">
+
+      <div class="recap">── この会話はキューに戻れば残っています。判断はまだ保留のままです ──</div>
+
+      <div class="msg msg--po">
+        <div class="msg-avatar">PO</div>
+        <div class="msg-bubble">Bのself-hostだと、外出先にちゃんと届くの？ VPN張ってないと届かないなら通知の意味がない</div>
+      </div>
+
+      <div class="msg msg--ai">
+        <div class="msg-avatar">番</div>
+        <div class="msg-bubble">
+          注入済みの実装差分と経緯から答えます。到達性はこう分かれます:
+          <ul class="choice-list" style="cursor:default;">
+            <li class="choice" style="cursor:default;"><span class="choice-key">A</span><span class="choice-text">ntfy.sh 公開トピック <span class="choice-note">どこからでも即到達。ただし本文が公開トピックに載り、保護はトピックURLの秘匿のみ</span></span></li>
+            <li class="choice" style="cursor:default;"><span class="choice-key">B</span><span class="choice-text">self-host + Basic認証 <span class="choice-note">本文は自宅網の外に出ない。外出先の到達は既存VPN依存 ―― <b>VPN未接続だと届きません</b></span></span></li>
+          </ul>
+          ご懸念どおり、Bは「VPNを常時張っている」が前提になります。あなたの実際の運用はどちらですか？
+        </div>
+      </div>
+
+      <div class="msg msg--po">
+        <div class="msg-avatar">PO</div>
+        <div class="msg-bubble">VPNは常時ON。ただ、通知にタスク名が出るのだけは避けたい</div>
+      </div>
+
+      <!-- 相談の結果に応じて選択肢を再構成して再掲（spec-ui §2） -->
+      <div class="msg msg--ai">
+        <div class="msg-avatar">番</div>
+        <div class="msg-bubble">
+          判断材料が揃いました。制約は「VPN常時ON」「本文に固有名詞NG」。ここで<b>検討セッションで既に決めた仕様</b>
+          （通知本文はプロジェクト名まで／タスク名は載せない）が効きます ―― Aでも本文からタスク名を外せば秘匿要件は満たせます。
+          残る差は<b>トピックURLの推測耐性</b>だけ。選択肢を組み直しました:
+          <ul class="choice-list">
+            <li class="choice"><span class="choice-key">A′</span><span class="choice-text">ntfy.sh 公開トピック ＋ 本文はプロジェクト名まで ＋ 長い乱数トピック <span class="choice-note">追加インフラ0・どこでも即到達。露出はトピック漏洩時のみ</span></span></li>
+            <li class="choice"><span class="choice-key">B</span><span class="choice-text">self-host + Basic認証（既存VPN） <span class="choice-note">本文が外に出ない。VPN未接続時は不達・systemd unit 1つ追加</span></span></li>
+          </ul>
+          <div class="msg-hint">どちらでも要件は満たせます。運用の手間を取るなら A′、本文を一切外に出さない安心を取るなら B。</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- フッター: 相談から“そのまま元の判断”を下せる（分岐点に戻る） -->
+    <div class="session-footer">
+      <div class="footer-actions-label">この会話を踏まえて判断する（元のカードの選択肢）</div>
+      <div class="reason-row" style="margin:0 0 10px;">
+        <input class="reason-input" type="text" data-testid="decision-reason-input"
+               placeholder="理由（1行・po_operation に記録）例: VPN常時ONなので本文を外に出さないBにする">
+      </div>
+      <div class="footer-actions">
+        <button class="btn btn--primary" data-testid="card-action-choose-a">A′ で進める</button>
+        <button class="btn btn--primary" data-testid="card-action-choose-b">B で進める</button>
+        <button class="btn btn--ghost" data-testid="consult-continue">相談を続ける</button>
+        <a class="btn" href="card-detail.html" data-testid="back-to-decision-2" style="margin-left:auto;">判断せずカードに戻る</a>
+      </div>
+      <div class="chat-input-row">
+        <input class="chat-input" type="text" placeholder="まだ聞きたいことを書く（例: A′のトピック名はどう生成する？）">
+        <button class="btn btn--primary">送信</button>
+      </div>
+    </div>
+  </div>
+
+  <p class="proto-banner" style="margin-top: 22px;">
+    <b>この画面の位置づけ:</b> spec-ui §2「全判断ポイントに『相談する』を常設」。アテンションキュー／カード詳細の各カードの
+    <b>相談する</b>ボタンの遷移先で、<b>どのカードから開いても仕組みは同じ</b>（注入される文脈がそのカードのものに変わるだけ）。
+    実装は対話面と同じく次Sprint S24ddde。ここでは task-0009 のカードから開いた例です。
+  </p>
+</main>
+
+</body>
+</html>

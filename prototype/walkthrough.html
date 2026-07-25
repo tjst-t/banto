@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>開発の全流れ ウォークスルー — banto</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html" data-testid="nav-home">
+      <span class="brand-mark">番</span>
+      <span>
+        <span class="brand-name">banto</span>
+        <span class="brand-sub">POコックピット</span>
+      </span>
+    </a>
+    <span class="queue-count">1つの依頼が最初から最後まで通る様子</span>
+  </div>
+</header>
+
+<main class="page">
+  <div class="page-head">
+    <h1 class="page-title">開発の全流れ ── 1本のウォークスルー</h1>
+  </div>
+  <p class="page-lede">
+    ある依頼が <b>アイデア → 相談 → 仕様確定 → Task化 → 実行 → 監査 → レビュー → 修正 → マージ&amp;Push → デプロイ/評価</b>
+    を通るまで。各駅で「あなた（PO）が触るのか、AIが自律で回すのか」を示します。
+  </p>
+
+  <p class="proto-banner">
+    これは<b>判断材料のためのウォークスルー試作</b>です（実際の画面ではなく、流れを地図化したもの）。
+    Sprintのスコープはまだ変えていません。この地図の思想 ―「POの一日を会話2枚＋キュー1本に圧縮し、残りはAIが回す」(VISION)―
+    が腑に落ちるかを見て、v1スコープを広げるか／VISIONを問い直すかを決めます。
+  </p>
+
+  <div class="flow-legend" aria-label="凡例">
+    <span class="legend-item"><span class="legend-swatch legend-swatch--po"></span><b>あなた（PO）が触る駅</b> — 藍。ここだけに注意を使う</span>
+    <span class="legend-item"><span class="legend-swatch legend-swatch--ai"></span>AIが自律で回す駅 — 触らなくてよい（判断が要るときだけキューに上がる）</span>
+  </div>
+
+  <div class="status-legend" aria-label="実装状態の凡例">
+    実装状態:
+    <span class="status-chip status--done">実装済（エンジン）</span>
+    <span class="status-chip status--current">今Sprint S30a8fd</span>
+    <span class="status-chip status--next">未着手 / 次Sprint</span>
+  </div>
+
+  <!-- 例として通す依頼 -->
+  <div class="talk" style="margin-bottom: 26px;">
+    <div class="talk-line">
+      <span class="talk-who talk-who--po">依頼</span>
+      <q style="quotes:'「' '」'">レビュー待ちが2日以上たまってるのに気づけない。朝、まとめて教えてほしい</q>
+    </div>
+    <div class="talk-free" style="font-style:normal; color:var(--ink-faint);">
+      ↓ この一言が、下の10駅を通って「動いて・検証された機能」になるまでを追います。banto自身をbantoで作る（ドッグフーディング）例です。
+    </div>
+  </div>
+
+  <section class="flow" aria-label="開発フローの各駅">
+
+    <!-- 1. 相談 -->
+    <article class="station station--po">
+      <div class="station-rail">
+        <span class="station-num">1</span><br>
+        <span class="lane-tag lane-tag--po">あなた① 検討会話</span>
+      </div>
+      <div class="station-body">
+        <div class="station-head">
+          <span class="actor actor--po">🧑 あなたが触る</span>
+          <span class="surface-tag">面: 検討セッション（pi対話）</span>
+          <span class="status-chip status--next">次Sprint S24ddde</span>
+        </div>
+        <div class="station-title">1. 相談する ── ふわっとした依頼を持ち込む</div>
+        <div class="station-desc">
+          あなたは検討セッションに一言投げるだけ。エージェントが曖昧さを詰め、<strong>分岐点では番号付きの選択肢</strong>を出します（spec-ui §2）。
+          あなたは番号でも自由文でも答えられ、選択肢の外の相談もいつでもできます。コマンド名やskill名を覚える必要はありません（D7）。
+        </div>
+        <div class="station-detail">
+          <div class="talk">
+            <div class="talk-line"><span class="talk-who talk-who--ai">banto</span>「たまってる」の基準と通知の形を決めましょう。滞留の閾値は？</div>
+            <ul class="talk-opts">
+              <li><span class="k">1</span>2日以上（あなたの言葉どおり）</li>
+              <li><span class="k">2</span>1営業日以上</li>
+              <li><span class="k">3</span>ブロック影響度も加味（スコア上位のみ）</li>
+            </ul>
+            <div class="talk-line"><span class="talk-who talk-who--po">あなた</span>1で。あと朝8時に1回だけまとめて。既に見たカードは除いて</div>
+            <div class="talk-free">→ 自由文で追加条件。エージェントは選択肢を再構成して分岐点に戻る</div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- 2. 仕様確定 -->
+    <article class="station station--po">
+      <div class="station-rail">
+        <span class="station-num">2</span><br>
+        <span class="lane-tag lane-tag--po">あなた① 検討会話（承認）</span>
+      </div>
+      <div class="station-body">
+        <div class="station-head">
+          <span class="actor actor--po">🧑 あなたが触る</span>
+          <span class="surface-tag">面: 検討セッション → <code>work/</code> ファイル</span>
+          <span class="status-chip status--next">対話面=S24ddde / 契約=実装済</span>
+        </div>
+        <div class="station-title">2. 仕様を固める ── 合意をファイルに落とす</div>
+        <div class="station-desc">
+          会話がまとまると、エージェントが<strong>タスク意図をファイルとして起草</strong>します（<code>work/tasks/*.md</code>）。
+          ファイルが「意図」の真実、イベントログが「実行時状態」の真実（D3）。あなたは差分を見て承認するだけ。
+          公開IF・データモデル・外部依存の追加など<strong>不可逆な選択（D1）は自律決定されず</strong>、この場であなたに上がります。
+        </div>
+      </div>
+    </article>
+
+    <!-- 3. Task化 -->
+    <article class="station">
+      <div class="station-rail">
+        <span class="station-num">3</span><br>
+        <span class="lane-tag lane-tag--ai">AI自律 / daemon</span>
+      </div>
+      <div class="station-body">
+        <div class="station-head">
+          <span class="actor actor--ai">🤖 AIが回す</span>
+          <span class="surface-tag">面: daemon 契約層（work-watcher）</span>
+          <span class="status-chip status--done">実装済 Scc9152</span>
+        </div>
+        <div class="station-title">3. Task化 ── ファイルから機械が起票する</div>
+        <div class="station-desc">
+          watcherが <code>work/</code> の変更を拾い、daemonが Task を起票。スキーマ検証を通し、
+          <strong>依存グラフを組んで実行順（Now/Next/Later）を導出</strong>します。ここはあなたの手を借りません。
+          階層はEpic→Taskの2段まで（JIRA化しない ── VISION out_of_scope）。
+        </div>
+      </div>
+    </article>
+
+    <!-- 4. 実行 -->
+    <article class="station">
+      <div class="station-rail">
+        <span class="station-num">4</span><br>
+        <span class="lane-tag lane-tag--ai">AI自律 / piセッション</span>
+      </div>
+      <div class="station-body">
+        <div class="station-head">
+          <span class="actor actor--ai">🤖 AIが回す</span>
+          <span class="surface-tag">面: pi spawn ＋ tmux ＋ git worktree</span>
+          <span class="status-chip status--done">実装済 S254276</span>
+        </div>
+        <div class="station-title">4. 実行 ── 依存が晴れたら自動でspawn</div>
+        <div class="station-desc">
+          依存ゲートを通って <code>ready</code> になったTaskを、daemonが<strong>専用worktreeでpi実行者としてspawn</strong>。
+          あなたはspawnも後始末も手動でやりません（VISION success_criteria）。様子を覗きたいときだけ、カードから
+          tmuxセッションにワンアクションで降りられます。
+        </div>
+        <div class="station-links">
+          <a class="btn btn--session" href="tmux-drilldown.html">実行セッションを覗く</a>
+          <span class="peek-note">↑ 覗くのは任意。実行者が自律で進める</span>
+        </div>
+        <div class="station-detail">
+          <div class="station-desc">
+            <strong>例外だけキューに上がる:</strong> 実行者が不可逆な選択（D1）に突き当たると、自律決定せず
+            <b>blockingで停止</b>してあなたに問います。これがアテンションキューの「エスカレーション」カード。
+          </div>
+          <div class="station-links">
+            <a class="btn" href="card-detail.html">エスカレーションの例（通知チャネルの2択）</a>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- 5. 監査 -->
+    <article class="station">
+      <div class="station-rail">
+        <span class="station-num">5</span><br>
+        <span class="lane-tag lane-tag--ai">AI自律 / 監査役</span>
+      </div>
+      <div class="station-body">
+        <div class="station-head">
+          <span class="actor actor--ai">🤖 AIが回す</span>
+          <span class="surface-tag">面: 監査エージェント ＋ 機械ゲート</span>
+          <span class="status-chip status--done">実装済 S75f66b</span>
+        </div>
+        <div class="station-title">5. 監査 ── 自己申告を信じず、機械が実測する</div>
+        <div class="station-desc">
+          実装が終わると監査役が点検。<strong>型検査・テストはdaemonが直接実行して確認</strong>（自己申告を信じない ── I1）、
+          エラーの握りつぶしを検出（I2）。不通過なら自動で再試行し、閾値を超えたときだけあなたに上げます。
+          ここがゲートの「構造的強制」── プロンプトの遵守期待に頼らない、というbantoの肝（VISION problem）。
+        </div>
+        <div class="station-links">
+          <a class="btn" href="attention-queue.html#audit">監査failカードの例（上位tier再実行の判断）</a>
+        </div>
+      </div>
+    </article>
+
+    <!-- 6. レビュー -->
+    <article class="station station--po">
+      <div class="station-rail">
+        <span class="station-num">6</span><br>
+        <span class="lane-tag lane-tag--po">あなた② アテンションキュー→レビュー会話</span>
+      </div>
+      <div class="station-body">
+        <div class="station-head">
+          <span class="actor actor--po">🧑 あなたが触る</span>
+          <span class="surface-tag">面: アテンションキュー ＋ レビュー会話</span>
+          <span class="status-chip status--current">今Sprint S30a8fd</span>
+        </div>
+        <div class="station-title">6. レビュー ── キューに1枚のカードとして上がる</div>
+        <div class="station-desc">
+          機械ゲートを通ると <code>review-ready</code>。全プロジェクト横断の<strong>アテンションキューに1枚のカード</strong>として現れ、
+          <b>朝、携帯にプッシュ通知</b>が届きます（S30a8fd-3 ── まさに今回の依頼が実装された姿）。
+          カードは<strong>3部構成（経緯／起きたこと／求める判断）</strong>で、画面を遡らず単体で判断できます（D8）。
+          <b>この駅が、あなたが最初に見たプロトタイプの画面です。</b>
+        </div>
+        <div class="station-links">
+          <a class="btn btn--primary" href="attention-queue.html">アテンションキューを見る</a>
+          <a class="btn" href="card-detail.html">カード詳細（経緯の連鎖）</a>
+          <span class="peek-note">判断ポイントにはどこからでも「相談する」で会話に降りられる</span>
+        </div>
+      </div>
+    </article>
+
+    <!-- 7. 修正 -->
+    <article class="station">
+      <div class="station-rail">
+        <span class="station-num">7</span><br>
+        <span class="lane-tag lane-tag--ai">AI自律 / 再実行</span>
+      </div>
+      <div class="station-body">
+        <div class="station-head">
+          <span class="actor actor--ai">🤖 AIが回す</span>
+          <span class="surface-tag">面: daemon（指摘→タスク→再spawn）</span>
+          <span class="status-chip status--done">実装済 S75f66b/S254276</span>
+        </div>
+        <div class="station-title">7. 修正 ── レビュー指摘が自動で回る</div>
+        <div class="station-desc">
+          あなたが会話で出した指摘は、<strong>修正としてタスク化され、再実行→再監査</strong>（駅4・5）へ自動で戻ります。
+          あなたは指摘を言うだけで、直す・確かめる作業は回りません。指摘が解消されれば再びレビュー（駅6）に上がります。
+        </div>
+      </div>
+    </article>
+
+    <!-- 8. マージ&Push -->
+    <article class="station">
+      <div class="station-rail">
+        <span class="station-num">8</span><br>
+        <span class="lane-tag lane-tag--ai">AI自律 / マージ機構</span>
+      </div>
+      <div class="station-body">
+        <div class="station-head">
+          <span class="actor actor--ai">🤖 AIが回す</span>
+          <span class="surface-tag">面: daemon マージ機構</span>
+          <span class="status-chip status--done">実装済 S75f66b</span>
+        </div>
+        <div class="station-title">8. マージ &amp; Push ── 承認済みは機械が通す</div>
+        <div class="station-desc">
+          あなたが承認したら <code>approved → merging → merged</code>。daemonが機械ゲート（型・テスト・監査）を
+          最終確認して<strong>mainへマージ・Push</strong>。ここは承認済みなので、あなたの手は要りません。
+          全遷移がイベントログに残り、再起動してもログのリプレイだけで状態が正確に復元されます（D3）。
+        </div>
+      </div>
+    </article>
+
+    <!-- 9. デプロイ/評価 -->
+    <article class="station station--po">
+      <div class="station-rail">
+        <span class="station-num">9</span><br>
+        <span class="lane-tag lane-tag--po">あなた③ 評価カード（後日）</span>
+      </div>
+      <div class="station-body">
+        <div class="station-head">
+          <span class="actor actor--ai">🤖 AIが回す</span>
+          <span class="actor actor--po">🧑 後日 判断</span>
+          <span class="surface-tag">面: 評価環境 → アテンションキュー</span>
+          <span class="status-chip status--done">env=S9d7fdb / staging=S7b7ba5</span>
+        </div>
+        <div class="station-title">9. デプロイ / 評価 ── 出して終わりにしない</div>
+        <div class="station-desc">
+          評価環境の<strong>ライフサイクル動詞（provision/eval/teardown）</strong>で変更を検証環境に載せて確認、環境は自動で後始末。
+          そして<strong>一定期間後、追跡評価カードがキューに戻ってきます</strong>（システム起点＝生成規則を明示）。
+          あなたは実測を見て <b>keep / tune / revert</b> を選ぶ ── これが「出しっぱなしにしない」統治の閉ループ。
+        </div>
+        <div class="station-links">
+          <a class="btn" href="attention-queue.html#eval">評価カードの例（tier変更の追跡）</a>
+        </div>
+      </div>
+    </article>
+
+  </section>
+
+  <!-- まとめ: あなたが触るのは3回だけ -->
+  <section id="summary" class="flow-summary" aria-label="まとめ">
+    <h2>この1本で、あなたが実際に触ったのは3回だけ</h2>
+    <ul class="touch-list">
+      <li><span class="n">①</span>相談して仕様を固める（駅1–2 / 検討会話）</li>
+      <li><span class="n">②</span>レビューする（駅6 / キュー→レビュー会話）</li>
+      <li><span class="n">③</span>評価を判断する（駅9 / 後日、評価カード）</li>
+    </ul>
+    <p>
+      残りの6駅（Task化・実行・監査・修正・マージ・デプロイ実行）は<b>AIが自律で回し、判断が要るときだけキューに上げます</b>。
+      あなたの一日は <b>会話2枚（検討・レビュー）＋アテンションキュー1本</b> に収まる ── これがVISIONの「POの注意力を判断だけに使う」の意味です。
+      そしてエンジン側（駅3・4・5・7・8・9）は<b>すでに実装済み</b>。薄いのはコックピット面（検討会話=次Sprint、キュー画面=今Sprint）だけ。
+    </p>
+    <div class="caveat">
+      いま最初に見たプロトタイプは、この地図の<b>駅6（レビュー）だけ</b>を描いていました。だから全流れが見えなかった ── のは当然です。
+      この地図で思想が腑に落ちるなら v1 はこのまま進められます。腑に落ちない／触る回数や場所を変えたいなら、そこがVISIONを問い直す論点になります。
+    </div>
+  </section>
+</main>
+
+</body>
+</html>

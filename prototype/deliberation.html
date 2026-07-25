@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>検討セッション — banto</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html" data-testid="nav-home">
+      <span class="brand-mark">番</span>
+      <span>
+        <span class="brand-name">banto</span>
+        <span class="brand-sub">POコックピット</span>
+      </span>
+    </a>
+    <span class="queue-count">検討会話 ―「相談して仕様を固める」面</span>
+  </div>
+</header>
+
+<main class="page">
+  <div class="page-head">
+    <h1 class="page-title">検討セッション</h1>
+  </div>
+  <p class="page-lede">
+    ふわっとした依頼を、対話で仕様に落とす面（pi対話）。分岐点では<b>番号付きの選択肢</b>が出て、番号でも自由文でも答えられる。
+    コマンド名やskill名は覚えない ── フッターが現フェーズの有効操作を常時出す（D7）。
+  </p>
+
+  <div class="session-wrap">
+    <div class="session-head">
+      <span class="s-icon">検</span>
+      <div>
+        <div class="session-title">朝の通知ダイジェスト</div>
+        <div class="session-sub">banto ・ tmux: banto:deliberation</div>
+      </div>
+      <span class="session-live"><span class="dot dot--healthy"></span>対話中</span>
+    </div>
+
+    <div class="chat">
+
+      <!-- §4 復帰リキャップ -->
+      <div class="recap">── 42分ぶりです。あなたの最後の指示:<b>「朝8時に1回だけまとめて」</b>／その後: 仕様案を1件起草しました ──</div>
+
+      <!-- 相談の始まり -->
+      <div class="msg msg--po">
+        <div class="msg-avatar">PO</div>
+        <div class="msg-bubble">レビュー待ちが2日以上たまってるのに気づけない。朝、まとめて教えてほしい</div>
+      </div>
+
+      <div class="msg msg--ai">
+        <div class="msg-avatar">番</div>
+        <div class="msg-bubble">
+          「たまってる」の基準と通知の形を決めましょう。まず滞留の閾値は？
+          <ul class="choice-list">
+            <li class="choice"><span class="choice-key">1</span><span class="choice-text">2日以上（あなたの言葉どおり）</span></li>
+            <li class="choice"><span class="choice-key">2</span><span class="choice-text">1営業日以上 <span class="choice-note">週末を挟むと遅くなる</span></span></li>
+            <li class="choice"><span class="choice-key">3</span><span class="choice-text">スコア上位のみ <span class="choice-note">滞留×ブロック影響度で足切り</span></span></li>
+          </ul>
+          <div class="msg-hint">番号で選ぶか、自由に書いても構いません。</div>
+        </div>
+      </div>
+
+      <div class="msg msg--po">
+        <div class="msg-avatar">PO</div>
+        <div class="msg-bubble">1で。あと朝8時に1回だけまとめて。既に見たカードは除いて</div>
+      </div>
+
+      <div class="msg msg--ai">
+        <div class="msg-avatar">番</div>
+        <div class="msg-bubble">
+          承知。「2日以上滞留＆未読のカードを、毎朝8時に1通へ束ねる」ですね。1点だけ判断が要ります ―
+          <b>束ねた通知の中身</b>はどこまで載せますか？
+          <ul class="choice-list">
+            <li class="choice"><span class="choice-key">1</span><span class="choice-text">件数だけ <span class="choice-note">「判断待ち3件」。中身はキューで見る</span></span></li>
+            <li class="choice"><span class="choice-key">2</span><span class="choice-text">各カードの経緯1行＋種別 <span class="choice-note">D8準拠。本文にタスク名が載る</span></span></li>
+          </ul>
+          <div class="msg-hint">通知本文の固有名詞の扱いは、以前チャネル方式(task-0009)で相談中の論点と重なります。</div>
+        </div>
+      </div>
+
+      <div class="msg msg--po">
+        <div class="msg-avatar">PO</div>
+        <div class="msg-bubble">2で。ただし本文はプロジェクト名までにして、タスク名は載せない</div>
+      </div>
+
+      <!-- 収束 → 仕様の起草 -->
+      <div class="msg msg--ai">
+        <div class="msg-avatar">番</div>
+        <div class="msg-bubble">
+          まとまりました。タスク意図を下記のファイルに起草します。承認するとdaemonがTask化し、依存を組んでキューに載せます。
+          <div class="draft-file">
+            <div class="draft-file-head"><span class="newtag">＋新規</span> work/tasks/task-0021-morning-digest.md</div>
+<div class="draft-body"><span class="k">title:</span> 朝の通知ダイジェスト
+<span class="k">intent:</span> 2日以上滞留かつ未読のアテンションカードを
+        毎朝8時に1通へ束ねてプッシュ通知する
+<span class="add"><span class="k">acceptance:</span></span>
+<span class="add">  - 滞留 ≥2日 かつ 未読 のカードのみ対象</span>
+<span class="add">  - 配信は 08:00 / 1日1通 / 対象0なら送らない</span>
+<span class="add">  - 本文はプロジェクト名まで（タスク名は載せない）</span>
+<span class="k">origin:</span> po_operation#8840（この会話）
+<span class="k">depends_on:</span> [task-0003 通知ディスパッチャ]</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- フッター: 現フェーズの有効操作を常時提示（spec-ui §2.3・D7） -->
+    <div class="session-footer">
+      <div class="footer-actions-label">いまできること（仕様の起草が揃った状態）</div>
+      <div class="footer-actions">
+        <button class="btn btn--primary" data-testid="approve-to-task">承認してタスク化</button>
+        <button class="btn">起草を修正</button>
+        <button class="btn btn--ghost">相談を続ける</button>
+      </div>
+      <div class="chat-input-row">
+        <input class="chat-input" type="text" placeholder="自由に書く（例: 配信は平日だけにして）。選択肢の外の相談もここで。">
+        <button class="btn btn--primary">送信</button>
+      </div>
+    </div>
+  </div>
+
+  <p class="proto-banner" style="margin-top: 22px;">
+    <b>この画面の位置づけ:</b> ウォークスルーの駅1〜2（相談・仕様確定）。spec-ui §2 の会話面で、実装は次Sprint S24ddde（Extension Packと対話セッション面）。
+    ここで固めた仕様がファイル化され、駅3以降（Task化→実行→…）にそのまま流れます。「承認してタスク化」を押すと、この依頼が<a href="board.html">エージェントボード</a>のtask-0021として動き出します。
+  </p>
+</main>
+
+</body>
+</html>

@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>エージェントボード — banto</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html" data-testid="nav-home">
+      <span class="brand-mark">番</span>
+      <span>
+        <span class="brand-name">banto</span>
+        <span class="brand-sub">POコックピット</span>
+      </span>
+    </a>
+    <nav style="display:flex; gap:14px; margin-left:8px; font-size:13.5px;">
+      <a href="attention-queue.html">アテンションキュー</a>
+      <a href="board.html" style="color:var(--ink); font-weight:700;">エージェントボード</a>
+    </nav>
+    <span class="queue-count" data-testid="queue-count">稼働タスク <strong>11</strong> ・ 2 プロジェクト</span>
+  </div>
+</header>
+
+<main class="page" style="max-width: 1100px;">
+  <div class="page-head">
+    <h1 class="page-title">エージェントボード</h1>
+  </div>
+  <p class="page-lede">
+    全プロジェクトの全タスクを、いまどのフェーズにいるかで一望する。daemonのステートマシンをそのまま映すビューアで、
+    ここに独自の状態は持たない（D3/D5）。<b>藍の縁＝あなたの判断待ち（アテンションキューにも出ている）。</b>
+  </p>
+
+  <div class="board-toolbar">
+    <div class="filter-row" role="group" aria-label="プロジェクトで絞り込み">
+      <span class="filter-label">プロジェクト:</span>
+      <button class="chip is-active">すべて (11)</button>
+      <button class="chip">banto (7)</button>
+      <button class="chip">palmux (4)</button>
+    </div>
+    <div class="filter-row health-filter" role="group" aria-label="健康状態で絞り込み">
+      <span class="filter-label">健康状態:</span>
+      <button class="chip is-active">すべて</button>
+      <button class="chip" data-health="stalled"><span class="dot dot--stalled"></span>停滞 (2)</button>
+      <button class="chip" data-health="zombie"><span class="dot dot--zombie"></span>ゾンビ (1)</button>
+    </div>
+  </div>
+
+  <section class="board-cols" aria-label="フェーズ別かんばん">
+
+    <!-- ===== Now ===== -->
+    <div class="board-col">
+      <div class="board-col-head">
+        <span class="board-col-name">Now</span>
+        <span class="board-col-sub">いま動いている</span>
+        <span class="board-col-count">5</span>
+      </div>
+      <div class="board-lane">
+
+        <!-- 判断待ち: エスカレーション（停滞） -->
+        <article class="task-card task-card--attention task-card--stalled">
+          <div class="task-meta">
+            <span class="state-chip state--fail">blocking</span>
+            <span class="task-badge">banto</span>
+            <span class="task-attention-tag">判断待ち</span>
+          </div>
+          <div class="task-title"><a href="card-detail.html">task-0009 通知チャネル認証方式</a></div>
+          <div class="task-sub"><span class="dot dot--stalled"></span>停滞 3日 ・ <span class="who">pi:executor</span> がD1で停止中</div>
+          <div class="task-actions">
+            <a class="btn btn--primary" href="card-detail.html">判断する</a>
+            <a class="btn btn--session" href="tmux-drilldown.html">セッション</a>
+          </div>
+          <div class="blocked-note"><b>後続4タスクがこの判断待ち</b>（未spawn）</div>
+        </article>
+
+        <!-- 判断待ち: レビュー待ち -->
+        <article class="task-card task-card--attention">
+          <div class="task-meta">
+            <span class="state-chip state--review">review-ready</span>
+            <span class="task-badge">banto</span>
+            <span class="task-attention-tag">判断待ち</span>
+          </div>
+          <div class="task-title"><a href="card-detail.html">task-0007 readyクエリのAPI/CLI一級化</a></div>
+          <div class="task-sub"><span class="dot dot--healthy"></span>ゲート通過（テスト42件green）・2日待機</div>
+          <div class="task-actions">
+            <a class="btn btn--primary" href="attention-queue.html">レビュー開始</a>
+            <a class="btn btn--session" href="tmux-drilldown.html">セッション</a>
+          </div>
+        </article>
+
+        <!-- 判断待ち: 監査fail -->
+        <article class="task-card task-card--attention task-card--stalled">
+          <div class="task-meta">
+            <span class="state-chip state--fail">failed</span>
+            <span class="task-badge">palmux</span>
+            <span class="task-attention-tag">判断待ち</span>
+          </div>
+          <div class="task-title"><a href="attention-queue.html#audit">task-0113 CDP画像転送の自動再接続</a></div>
+          <div class="task-sub"><span class="dot dot--stalled"></span>監査2回不通過（I1/I2）・セッション終了済</div>
+          <div class="task-actions">
+            <a class="btn btn--primary" href="attention-queue.html#audit">再実行を判断</a>
+          </div>
+        </article>
+
+        <!-- 健全に実装中: 今回の依頼（ウォークスルーの例） -->
+        <article class="task-card">
+          <div class="task-meta">
+            <span class="state-chip state--build">implementing</span>
+            <span class="task-badge">banto</span>
+          </div>
+          <div class="task-title"><a href="tmux-drilldown.html">task-0021 朝の通知ダイジェスト</a></div>
+          <div class="task-sub"><span class="dot dot--healthy"></span>順調 ・ <span class="who">pi:executor</span> 実装中（12分前に進捗）</div>
+          <div class="task-actions">
+            <a class="btn btn--session" href="tmux-drilldown.html">セッション</a>
+          </div>
+        </article>
+
+        <!-- 監査中 -->
+        <article class="task-card">
+          <div class="task-meta">
+            <span class="state-chip state--audit">auditing</span>
+            <span class="task-badge">banto</span>
+          </div>
+          <div class="task-title"><a href="tmux-drilldown.html">task-0018 台帳リコンサイルのTTL調整</a></div>
+          <div class="task-sub"><span class="dot dot--healthy"></span>順調 ・ <span class="who">pi:auditor</span> が点検中</div>
+          <div class="task-actions">
+            <a class="btn btn--session" href="tmux-drilldown.html">セッション</a>
+          </div>
+        </article>
+
+      </div>
+    </div>
+
+    <!-- ===== Next ===== -->
+    <div class="board-col">
+      <div class="board-col-head">
+        <span class="board-col-name">Next</span>
+        <span class="board-col-sub">依存が晴れ次第spawn</span>
+        <span class="board-col-count">3</span>
+      </div>
+      <div class="board-lane">
+
+        <article class="task-card">
+          <div class="task-meta">
+            <span class="state-chip state--wait">ready</span>
+            <span class="task-badge">banto</span>
+          </div>
+          <div class="task-title"><a href="#">task-0010 spawnスケジューラ接続</a></div>
+          <div class="task-sub"><span class="dot dot--healthy"></span>準備完了</div>
+          <div class="blocked-note">待機理由: <b>task-0007 のレビュー</b>通過後にspawn</div>
+        </article>
+
+        <article class="task-card">
+          <div class="task-meta">
+            <span class="state-chip state--wait">ready</span>
+            <span class="task-badge">palmux</span>
+          </div>
+          <div class="task-title"><a href="#">task-0114 転送メトリクスの計測</a></div>
+          <div class="task-sub"><span class="dot dot--healthy"></span>準備完了 ・ 次サイクルでspawn予定</div>
+        </article>
+
+        <article class="task-card">
+          <div class="task-meta">
+            <span class="state-chip state--wait">queued</span>
+            <span class="task-badge">banto</span>
+          </div>
+          <div class="task-title"><a href="#">task-0022 静穏時間の設定</a></div>
+          <div class="task-sub"><span class="dot dot--healthy"></span>スキーマ検証通過 ・ 依存解決待ち</div>
+        </article>
+
+      </div>
+    </div>
+
+    <!-- ===== Later ===== -->
+    <div class="board-col">
+      <div class="board-col-head">
+        <span class="board-col-name">Later</span>
+        <span class="board-col-sub">起草・ブロック中</span>
+        <span class="board-col-count">3</span>
+      </div>
+      <div class="board-lane">
+
+        <!-- ゾンビ（要 handoff） -->
+        <article class="task-card task-card--zombie">
+          <div class="task-meta">
+            <span class="state-chip state--build">implementing</span>
+            <span class="task-badge">palmux</span>
+          </div>
+          <div class="task-title"><a href="tmux-drilldown.html">task-0099 ズーム倍率の永続化</a></div>
+          <div class="task-sub"><span class="dot dot--zombie"></span>ゾンビ: セッション6時間 無応答</div>
+          <div class="task-actions">
+            <button class="btn btn--danger">handoff（別実行者へ）</button>
+            <button class="btn">nudge</button>
+          </div>
+        </article>
+
+        <article class="task-card">
+          <div class="task-meta">
+            <span class="state-chip state--wait">draft</span>
+            <span class="task-badge">banto</span>
+          </div>
+          <div class="task-title"><a href="#">task-0011 通知配線（ディスパッチャ→カード）</a></div>
+          <div class="task-sub"><span class="dot dot--healthy"></span>起草済</div>
+          <div class="blocked-note">ブロック元: <b>task-0009 の認証方式判断</b></div>
+        </article>
+
+        <article class="task-card">
+          <div class="task-meta">
+            <span class="state-chip state--wait">draft</span>
+            <span class="task-badge">banto</span>
+          </div>
+          <div class="task-title"><a href="#">task-0023 通知文のD8整形（経緯1行＋種別）</a></div>
+          <div class="task-sub"><span class="dot dot--healthy"></span>起草済 ・ 依存: task-0021</div>
+        </article>
+
+      </div>
+    </div>
+
+  </section>
+
+  <p class="proto-banner" style="margin-top: 26px;">
+    <b>この画面の位置づけ:</b> ウォークスルーの駅3〜8（Task化・実行・監査・修正・マージ）を横断で映す「全体を見て動かす」面。
+    spec-ui §1.2 のエージェントボード（v1.x）。今Sprint(S30a8fd)のv1範囲はアテンションキューが先で、このボードは運用開始後に足す位置づけ ── だが「全流れが見えない」への直接の答えなのでモックを起こしました。データはハードコードのサンプルです。
+  </p>
+</main>
+
+</body>
+</html>
