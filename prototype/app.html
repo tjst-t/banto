@@ -321,6 +321,9 @@ body.show-annot .annot-hint { display: flex; }
       <button class="side-item" data-open="projects" data-label="Projects" title="Projects">
         <span class="si-ico">▣</span><span class="si-label">Projects</span>
       </button>
+      <button class="side-item" data-open="environments" data-label="Environments" title="Environments">
+        <span class="si-ico">🖥</span><span class="si-label">Environments</span>
+      </button>
 
       <div class="side-group-label">Decisions</div>
       <button class="side-item is-active" data-open="queue" data-label="Attention Queue" title="Attention Queue">
@@ -338,6 +341,9 @@ body.show-annot .annot-hint { display: flex; }
       <div class="side-group-label">Records</div>
       <button class="side-item" data-open="history" data-label="History" title="History">
         <span class="si-ico">🕓</span><span class="si-label">History</span>
+      </button>
+      <button class="side-item" data-open="memory" data-label="Memory" title="Memory">
+        <span class="si-ico">🧠</span><span class="si-label">Memory</span>
       </button>
 
       <div class="side-group-label">System</div>
@@ -1147,6 +1153,17 @@ body.show-annot .annot-hint { display: flex; }
               <div class="proj-switch" style="margin:0;"><button class="chip">auto</button><button class="chip is-active">sampled</button><button class="chip">mandatory</button></div>
             </div>
             <div class="tdef-field"><div class="tdef-label">CADENCE（日）</div><input class="tdef-input" value="2" style="max-width:120px;"></div>
+
+            <div class="tdef-field">
+              <div class="tdef-label">実行環境の割り当て（システム登録済 Provider から）</div>
+              <div class="repo-list">
+                <div class="repo-row"><span class="rr-role">dev</span><span class="rr-url">provider: process ・ npm run dev ・ ttl 8h</span><button class="btn" style="padding:3px 10px;font-size:12px;">外す</button></div>
+                <div class="repo-row"><span class="rr-role sec">test</span><span class="rr-url">provider: Docker ・ docker/test.yaml ・ ttl 30m</span><button class="btn" style="padding:3px 10px;font-size:12px;">外す</button></div>
+                <div class="repo-row"><span class="rr-role sec">staging</span><span class="rr-url">provider: Proxmox VM ・ quota 2 ・ 認証 sops(staging-pve)</span><button class="btn" style="padding:3px 10px;font-size:12px;">外す</button></div>
+              </div>
+              <button class="chip chip--add" data-open="settings" data-label="Settings">＋ Provider を割り当て（Settings で登録）</button>
+              <div class="tdef-meta" style="margin-top:6px;">割当は <code>environments.yaml</code> にプロファイル参照として記録。<b>具体情報（認証/エンドポイント）はコミットせず banto が注入</b>（spec-environment §4）。</div>
+            </div>
           </div>
           <div class="footer-actions" style="margin-top:16px;">
             <button class="btn btn--primary">プロジェクトを登録</button>
@@ -1164,7 +1181,7 @@ body.show-annot .annot-hint { display: flex; }
               <button class="ctx-tab is-active" data-ctx="git">Git アカウント</button>
               <button class="ctx-tab" data-ctx="llm">LLM エンドポイント</button>
               <button class="ctx-tab" data-ctx="autopick">モデル自動選定</button>
-              <button class="ctx-tab" data-ctx="memory">記憶 (Memory)</button>
+              <button class="ctx-tab" data-ctx="providers">実行環境 (Providers)</button>
               <button class="ctx-tab" data-ctx="notify">通知</button>
               <button class="ctx-tab" data-ctx="advanced">詳細 (層B)</button>
             </div>
@@ -1222,27 +1239,14 @@ body.show-annot .annot-hint { display: flex; }
               </div>
             </div>
 
-            <!-- 記憶（Memory） -->
-            <div class="ctx-view" data-ctx-view="memory">
-              <div class="warn-note">⚠ <b>要ADR/設計</b>: 記憶のデータモデルと「何を横断共有・何をプロジェクトに閉じるか」（D1/D3）。イベントログ＝真実、記憶はそこから<b>蒸留した導出＋編集可</b>とし、競合する隠れ状態にしない。</div>
-              <p class="page-lede" style="margin-top:0;">散らばった会話面（Planning / Review / Consult / Backlog / Terminal）に、<b>共通の記憶を持つ一人のAI</b>が向き合う。記憶は二層で持つ ── これで「継続した一人のAI」に見えつつ、プロジェクト知識は混ざらない。</p>
-
-              <div class="section-label">① あなたの記憶（全プロジェクト横断・共有）</div>
-              <div class="part-body" style="font-size:12.5px;color:var(--ink-soft);margin-bottom:8px;">“人”についての記憶（好み・進め方・常設の指示）。どの面・どのプロジェクトでも効く。</div>
-              <div class="repo-list">
-                <div class="repo-row"><span class="rr-url" style="color:var(--ink);">統合UIで操作可能なモックを好む。説明は埋め込まずフローティングで重ねる</span><button class="btn" style="padding:3px 10px;font-size:12px;">編集</button></div>
-                <div class="repo-row"><span class="rr-url" style="color:var(--ink);">大きなスコープ変更はADR/ROADMAPに計上してから着手（統治を踏む）</span><button class="btn" style="padding:3px 10px;font-size:12px;">編集</button></div>
-                <div class="repo-row"><span class="rr-url" style="color:var(--ink);">用語はIT寄り。1面ずつ見せて逐次ステアする</span><button class="btn" style="padding:3px 10px;font-size:12px;">編集</button></div>
-              </div>
-              <button class="btn" style="margin:6px 0 16px;">＋ 記憶を追加</button>
-
-              <div class="section-label">② プロジェクトの記憶（各リポジトリに閉じる・横断させない）</div>
-              <div class="part-body" style="font-size:12.5px;color:var(--ink-soft);margin-bottom:8px;">“そのプロジェクト”の決定・規約・ドメイン。契約層(ADR/spec)と地続き。統治の単位はプロジェクトなので混ぜない（spec-multi-project §1）。</div>
-              <div class="repo-list">
-                <div class="repo-row"><span class="rr-role">banto</span><span class="rr-url">全体像プロトタイプ進行中 / 非拘束の設計リファレンス(ADR-0002) …</span><button class="btn" style="padding:3px 10px;font-size:12px;">開く</button></div>
-                <div class="repo-row"><span class="rr-role sec">palmux</span><span class="rr-url">CDP画像転送・共有ブラウザの規約 …</span><button class="btn" style="padding:3px 10px;font-size:12px;">開く</button></div>
-              </div>
-              <p class="page-lede" style="margin-top:10px;">各会話面は <b>①あなたの記憶 ＋ ②そのプロジェクトの記憶 ＋ その場の文脈</b> を合成する。復帰リキャップ（会話冒頭の「42分ぶりです…」）はこの記憶の一部を出したもの。</p>
+            <!-- 実行環境（Providers）: システムレベル登録 -->
+            <div class="ctx-view" data-ctx-view="providers">
+              <div class="warn-note">⚠ <b>要ADR</b>: Provider（実行環境ドライバ）の登録モデルと、テスト環境の具体情報（エンドポイント/認証/リソース）を<b>gitにコミットせず banto が注入</b>する仕組み（spec-environment §4・D1）。プロジェクトの <code>environments.yaml</code> は参照名のみ、実体はここ。</div>
+              <p class="page-lede" style="margin-top:0;">実行環境の<b>Provider をシステムレベルで登録</b>し、各プロジェクトには使えるリソースを<b>割り当て</b>る（Projects › 実行環境の割り当て）。ドライバは動詞契約（provision/deploy/healthcheck/run/collect/teardown/list）。</p>
+              <div class="cred-row"><span class="cred-mark">🐳</span><div class="pc-main"><div class="cred-host">Docker（ローカル）</div><div class="pc-path">driver: docker ・ unix:///var/run/docker.sock ・ test/dev 用</div></div><span class="cred-state on">● 稼働</span><button class="btn">設定</button></div>
+              <div class="cred-row"><span class="cred-mark">▤</span><div class="pc-main"><div class="cred-host">process（ローカル）</div><div class="pc-path">driver: process ・ dev server 起動用</div></div><span class="cred-state on">● 稼働</span><button class="btn">設定</button></div>
+              <div class="cred-row"><span class="cred-mark">VM</span><div class="pc-main"><div class="cred-host">Proxmox VM プール</div><div class="pc-path">driver: proxmox-vm ・ node: pve1 ・ pool: agents ・ VMID 90000番台 ・ quota 2 ・ 認証: sops(staging-pve)</div></div><span class="cred-state on">● 接続</span><button class="btn">設定</button></div>
+              <button class="btn">＋ Provider を登録</button>
             </div>
 
             <!-- 詳細（層B） -->
@@ -1260,6 +1264,73 @@ body.show-annot .annot-hint { display: flex; }
             </div>
           </div>
         </div>
+      </section>
+
+      <!-- ========== パネル: Memory（独立メニュー・二層の記憶） ========== -->
+      <section class="panel" id="panel-memory" data-title="Memory">
+        <div class="panel-inner panel-inner--wide">
+          <div class="list-head"><span class="r-title">Memory ─ 継続する記憶</span><button class="btn">＋ 記憶を追加</button></div>
+          <div class="warn-note">⚠ <b>要ADR/設計</b>: 記憶のデータモデルと「何を横断共有・何をプロジェクトに閉じるか」（D1/D3）。イベントログ＝真実、記憶はそこから<b>蒸留した導出＋編集可</b>とし、競合する隠れ状態にしない。<span style="color:var(--ink-faint)">（詳しい工夫は後で相談）</span></div>
+          <p class="page-lede" style="margin-top:0;">散らばった会話面（Planning / Review / Consult / Backlog / Terminal）に、<b>共通の記憶を持つ一人のAI</b>が向き合う。記憶は二層 ── 継続した一人のAIに見えつつ、プロジェクト知識は混ざらない。</p>
+
+          <div class="section-label" id="mem-you">① あなたの記憶（全プロジェクト横断・共有）</div>
+          <div class="part-body" style="font-size:12.5px;color:var(--ink-soft);margin-bottom:8px;">“人”についての記憶（好み・進め方・常設の指示）。どの面・どのプロジェクトでも効く。</div>
+          <div class="repo-list">
+            <div class="repo-row"><span class="rr-url" style="color:var(--ink);">統合UIで操作可能なモックを好む。説明は埋め込まずフローティングで重ねる</span><button class="btn" style="padding:3px 10px;font-size:12px;">編集</button></div>
+            <div class="repo-row"><span class="rr-url" style="color:var(--ink);">大きなスコープ変更はADR/ROADMAPに計上してから着手（統治を踏む）</span><button class="btn" style="padding:3px 10px;font-size:12px;">編集</button></div>
+            <div class="repo-row"><span class="rr-url" style="color:var(--ink);">用語はIT寄り。1面ずつ見せて逐次ステアする</span><button class="btn" style="padding:3px 10px;font-size:12px;">編集</button></div>
+          </div>
+
+          <div class="section-label" style="margin-top:16px;">② プロジェクトの記憶（各リポジトリに閉じる・横断させない）</div>
+          <div class="part-body" style="font-size:12.5px;color:var(--ink-soft);margin-bottom:8px;">“そのプロジェクト”の決定・規約・ドメイン。契約層(ADR/spec)と地続き。統治の単位はプロジェクトなので混ぜない（spec-multi-project §1）。</div>
+          <div class="repo-list">
+            <div class="repo-row"><span class="rr-role">banto</span><span class="rr-url">全体像プロトタイプ進行中 / 非拘束の設計リファレンス(ADR-0002) …</span><button class="btn" style="padding:3px 10px;font-size:12px;">開く</button></div>
+            <div class="repo-row"><span class="rr-role sec">palmux</span><span class="rr-url">CDP画像転送・共有ブラウザの規約 …</span><button class="btn" style="padding:3px 10px;font-size:12px;">開く</button></div>
+          </div>
+          <p class="page-lede" style="margin-top:12px;">各会話面は <b>①あなたの記憶 ＋ ②そのプロジェクトの記憶 ＋ その場の文脈</b> を合成する。復帰リキャップ（会話冒頭の「42分ぶりです…」）はこの記憶の一部を出したもの。</p>
+        </div>
+        <div class="annot" data-target="#mem-you"><span class="an-num">1</span><span class="an-title">文脈の記憶はシステムが持つ</span><br>POの頭は判断だけに使う（D8）。“人”の記憶は横断共有、“プロジェクト”の記憶は各repoに閉じる二層。<span class="an-ref">D8 / spec-multi-project §1</span></div>
+      </section>
+
+      <!-- ========== パネル: Environments（Main/開発ブランチを常に触れる） ========== -->
+      <section class="panel" id="panel-environments" data-title="Environments">
+        <div class="panel-inner panel-inner--wide">
+          <div class="list-head"><span class="r-title">Environments</span></div>
+          <div class="proj-switch" id="env-proj"><span class="filter-label">プロジェクト:</span><button class="chip is-active">banto</button><button class="chip">palmux</button></div>
+          <div class="commit-note" id="env-note">実行環境は割り当てた <b>Provider</b> 上で動く。テスト環境の具体情報（エンドポイント/認証/リソース）は<b>gitにコミットせず banto が注入</b>（spec-environment §4）。<code>environments.yaml</code> は参照名のみ。</div>
+
+          <div class="section-label">常設</div>
+          <div class="proj-card">
+            <span class="pc-mark" style="background:var(--c-eval);">M</span>
+            <div class="pc-main">
+              <div class="pc-name">main <span class="pc-status"><span class="dot dot--healthy"></span>常時稼働</span></div>
+              <div class="pc-path">profile: dev ・ provider: process ・ いつでも触れる main の状態</div>
+              <div class="pc-meta"><span class="pc-chip">http://localhost:5173</span><span class="pc-chip">ttl: なし（常設）</span></div>
+            </div>
+            <button class="btn btn--primary" data-open="review" data-label="Main を触る">開く（App/Terminal）</button>
+          </div>
+
+          <div class="section-label" style="margin-top:16px;">開発ブランチ / タスク環境（Provider 上・TTL付き）</div>
+          <div class="proj-card">
+            <span class="pc-mark" style="background:var(--c-review);">7</span>
+            <div class="pc-main">
+              <div class="pc-name">task-0007 <span class="pc-status"><span class="dot dot--healthy"></span>review用 稼働</span></div>
+              <div class="pc-path">profile: dev ・ provider: process ・ branch: task-0007</div>
+              <div class="pc-meta"><span class="pc-chip">http://localhost:5191</span><span class="pc-chip">ttl: 8h</span></div>
+            </div>
+            <button class="btn" data-open="review" data-label="Review · task-0007">開く</button>
+          </div>
+          <div class="proj-card">
+            <span class="pc-mark" style="background:var(--ink-faint);">S</span>
+            <div class="pc-main">
+              <div class="pc-name">task-0113 staging <span class="pc-status paused">⏸ teardown済</span></div>
+              <div class="pc-path">profile: staging ・ provider: Proxmox VM（pool agents / VMID 90007）</div>
+              <div class="pc-meta"><span class="pc-chip">ttl: 24h 超過→自動回収</span><span class="pc-chip">台帳で照合</span></div>
+            </div>
+            <button class="btn">再provision</button>
+          </div>
+        </div>
+        <div class="annot" data-target="#env-note"><span class="an-num">1</span><span class="an-title">環境の具体情報は注入・非コミット</span><br>Provider はシステム登録、プロジェクトに割り当て。認証/エンドポイントは sops でbantoが注入し、repoには参照名のみ。TTL/quota/照合は daemon 台帳が執行。<span class="an-ref">spec-environment §1/§4/§5</span></div>
       </section>
 
       <!-- ========== パネル: タスク定義エディタ（focus） ========== -->
@@ -1299,7 +1370,7 @@ body.show-annot .annot-hint { display: flex; }
 <script>
 (function(){
   // ナビゲーション: 目的地(サイドバー)=通常モード / 会話=フォーカス(全画面＋戻る)
-  var LABELS = { planning:'Planning', queue:'Attention Queue', improve:'Improvements', board:'Board', history:'History', backlog:'Backlog', projects:'Projects', review:'Review', consult:'Consult', deliberation:'Planning', terminal:'Terminal', carddetail:'カード詳細', taskedit:'タスク定義', projectedit:'プロジェクト登録', settings:'Settings' };
+  var LABELS = { planning:'Planning', queue:'Attention Queue', improve:'Improvements', board:'Board', history:'History', backlog:'Backlog', projects:'Projects', environments:'Environments', memory:'Memory', review:'Review', consult:'Consult', deliberation:'Planning', terminal:'Terminal', carddetail:'カード詳細', taskedit:'タスク定義', projectedit:'プロジェクト登録', settings:'Settings' };
   var SESSION = { review:1, consult:1, deliberation:1, terminal:1, carddetail:1, taskedit:1, projectedit:1 };   // フォーカス（メイン置換・左ナビ維持）で開くもの
   var app = document.querySelector('.app');
   var focusBar = document.getElementById('focusBar');
