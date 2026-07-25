@@ -3,11 +3,11 @@
   "description": "一人のPOがAIエージェントのチームを率いて開発するための統治環境（ガバナンスレイヤー＋POコックピット）",
   "progress": {
     "current_sprint": null,
-    "total": 10,
+    "total": 11,
     "done": 5,
     "in_progress": 0,
-    "remaining": 5,
-    "percentage": 50
+    "remaining": 6,
+    "percentage": 45
   },
   "execution_order": [
     "S654396",
@@ -16,12 +16,22 @@
     "S75f66b",
     "S9d7fdb",
     "S30a8fd",
+    "S6cfce9",
     "S24ddde",
     "Sfc93b6",
     "S7b7ba5",
     "Sbcf9df"
   ],
   "sprints": {
+    "S6cfce9": {
+      "title": "全体像（フルアプリ）設計プロトタイプ",
+      "status": "pending",
+      "kind": "design-prototype",
+      "milestone": false,
+      "adr_ref": "adr-0002",
+      "detail_level": "outline",
+      "description": "非拘束の設計リファレンス（ADR-0002）。prototype/app.html を土台に全PO面をクリック可能な静的モックで網羅し、操作モデル（会話2枚＋キュー1本＋ボード）とVISIONの妥当性を実装前に検証する。設計の真実は docs/spec/ のまま＝正典化しない。S30a8fd とスコープ分離。未着手面: レビュー会話・バックログ編集・改善ループのレビュー・共有ブラウザペイン・通知/設定・マルチプロジェクト横断。"
+    },
     "S654396": {
       "title": "daemonコア基盤（イベントソーシング＋ステートマシン＋API）",
       "status": "done",
