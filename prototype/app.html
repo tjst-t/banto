@@ -235,6 +235,11 @@ body.show-annot .annot-hint { display: flex; }
 .tdef-ac .tdef-input { font-size: 13px; }
 .tdef-meta { font-size: 12px; color: var(--ink-soft); font-family: var(--font-mono); }
 
+/* Backlog: 一覧＋チャット（実装内容・順番を相談） */
+.backlog-layout { display: grid; grid-template-columns: minmax(0,1.5fr) minmax(300px,1fr); gap: 16px; align-items: start; }
+.bl-chat .session-wrap { min-height: 440px; }
+@media (max-width: 1000px) { .backlog-layout { grid-template-columns: 1fr; } }
+
 /* ===== Planning / History のリスト ===== */
 .list-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
 .list-head .r-title { font-size: 16px; font-weight: 700; }
@@ -284,8 +289,12 @@ body.show-annot .annot-hint { display: flex; }
     </div>
 
     <nav class="side-nav">
+      <div class="side-group-label">Work</div>
       <button class="side-item" data-open="planning" data-label="Planning" title="Planning">
         <span class="si-ico">✎</span><span class="si-label">Planning</span><span class="si-badge-proj">banto</span>
+      </button>
+      <button class="side-item" data-open="backlog" data-label="Backlog" title="Backlog">
+        <span class="si-ico">▦</span><span class="si-label">Backlog</span><span class="si-badge-proj">banto</span>
       </button>
 
       <div class="side-group-label">Decisions</div>
@@ -304,9 +313,6 @@ body.show-annot .annot-hint { display: flex; }
       <div class="side-group-label">Records</div>
       <button class="side-item" data-open="history" data-label="History" title="History">
         <span class="si-ico">🕓</span><span class="si-label">History</span>
-      </button>
-      <button class="side-item" data-open="backlog" data-label="Backlog" title="Backlog">
-        <span class="si-ico">▦</span><span class="si-label">Backlog</span>
       </button>
     </nav>
 
@@ -917,9 +923,11 @@ body.show-annot .annot-hint { display: flex; }
             <button class="btn btn--primary">＋ New Epic</button>
           </div>
           <div class="commit-note" id="bl-note">
-            タスク定義ファイル <code>work/tasks/*.md</code> の構造化エディタ（独自DBなし）。Epic→Taskの2段。ドラッグで割当・並べ替え → daemon が<b>ファイルを書き換えてコミット</b>（D3: ファイルは意図の真実）。
+            タスク定義ファイル <code>work/tasks/*.md</code> の構造化エディタ（独自DBなし）。Epic→Taskの2段。ドラッグで割当・並べ替え、または右のチャットで相談 → daemon が<b>ファイルを書き換えてコミット</b>（D3: ファイルは意図の真実）。
           </div>
 
+          <div class="backlog-layout">
+          <div class="bl-epics">
           <div class="epic">
             <div class="epic-head"><span class="epic-title">Epic: 通知基盤</span><span class="epic-count">5 tasks</span><button class="btn">＋ Task</button></div>
             <div class="epic-tasks" data-epic="notify">
@@ -945,7 +953,27 @@ body.show-annot .annot-hint { display: flex; }
               <div class="bl-task" draggable="true"><span class="bl-handle">⠿</span><div class="bl-main"><div class="bl-title">task-0018 台帳リコンサイルのTTL調整</div><div class="bl-sub"><span class="state-chip state--audit">auditing</span><span class="dep">deps: —</span></div></div><button class="btn" data-open="taskedit" data-label="タスク定義 · task-0018">編集</button></div>
             </div>
           </div>
+          </div><!-- /bl-epics -->
+
+          <div class="bl-chat" id="bl-chat">
+            <div class="session-wrap">
+              <div class="session-head"><span class="s-icon">▦</span><div><div class="session-title">Backlog アシスタント</div><div class="session-sub">banto ・ 実装内容と順番を相談</div></div></div>
+              <div class="chat">
+                <div class="msg msg--po"><div class="msg-avatar">PO</div><div class="msg-bubble">通知まわり、実装の順番これで合ってる？</div></div>
+                <div class="msg msg--ai"><div class="msg-avatar">番</div><div class="msg-bubble">依存を見ると 0003 → 0009(判断待ち) → 0011。<b>0009 が blocking</b> なので認証方式が決まるまで 0011 / 0023 は動けません。静穏時間 0022 は独立なので先に出せます。</div></div>
+                <div class="msg msg--po"><div class="msg-avatar">PO</div><div class="msg-bubble">じゃあ 0022 を先に。あと D8整形(0023) は今回のスコープ外にして</div></div>
+                <div class="msg msg--ai"><div class="msg-avatar">番</div><div class="msg-bubble">承知。0022 を優先、0023 は Later に下げて Epic から外しました（左の一覧に反映）。<b>work/tasks/ を書き換えてコミット</b>してよいですか？</div></div>
+              </div>
+              <div class="session-footer">
+                <div class="footer-actions-label">この相談を反映</div>
+                <div class="footer-actions"><button class="btn btn--primary">反映してコミット</button><button class="btn">差分を見る</button></div>
+                <div class="chat-input-row"><input class="chat-input" type="text" placeholder="実装内容・順番を相談（例: 0011 は 0009 承認後に自動 ready に）"><button class="btn btn--primary">送信</button></div>
+              </div>
+            </div>
+          </div>
+          </div><!-- /backlog-layout -->
         </div>
+        <div class="annot" data-target="#bl-chat"><span class="an-num">2</span><span class="an-title">一覧を見ながら相談</span><br>実装内容や順番をチャットで詰めると、左の一覧に反映され work/tasks/ を書き換えてコミット。Planning=会話、Review=証拠＋会話、Backlog=一覧＋会話。<span class="an-ref">spec-ui §1.3 / §2</span></div>
         <div class="annot" data-target="#bl-note"><span class="an-num">1</span><span class="an-title">ファイルが真実・独自DBなし</span><br>編集はタスク定義ファイルを書き換えてコミットするだけ。人が git diff でレビューできる（D3）。階層はEpic→Taskの2段（JIRA化しない）。<span class="an-ref">spec-ui §1.3 / VISION</span></div>
       </section>
 
