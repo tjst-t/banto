@@ -142,6 +142,44 @@ body.show-annot .annot-hint { display: flex; }
 .app.focus-mode .panel-inner { max-width: 980px; margin: 0 auto; }
 .app.focus-mode .panel-inner--wide { max-width: 1180px; }
 
+/* ===== サイドバー: 開閉・リサイズ ===== */
+.sidebar { width: var(--sidebar-w, 238px); }   /* 幅を可変に（既定238） */
+.sidebar-resizer { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 6; }
+.sidebar-resizer:hover, .sidebar-resizer.dragging { background: rgba(43,65,98,0.16); }
+.app.nav-collapsed .sidebar { display: none; }
+.nav-toggle {
+  appearance: none; border: 1px solid var(--line-strong); background: var(--surface);
+  color: var(--ink-soft); border-radius: 7px; width: 32px; height: 30px;
+  cursor: pointer; font-size: 15px; line-height: 1; flex-shrink: 0; margin-right: 4px;
+}
+.nav-toggle:hover { background: var(--surface-dim); }
+
+/* ===== レビューの証拠ペイン切替（Diff / Terminal / App） ===== */
+.ctx-pane { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--surface); display: flex; flex-direction: column; }
+.ctx-switch { display: flex; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--line); background: var(--surface-dim); }
+.ctx-tab {
+  appearance: none; font-family: inherit; font-size: 12px; font-weight: 600;
+  border: 1px solid transparent; background: transparent; color: var(--ink-soft);
+  border-radius: 6px; padding: 4px 13px; cursor: pointer;
+}
+.ctx-tab:hover { background: var(--surface); }
+.ctx-tab.is-active { background: var(--surface); border-color: var(--line); color: var(--ink); }
+.ctx-view { display: none; }
+.ctx-view.is-active { display: block; }
+.ctx-view .diff-file:first-of-type { border-top: none; }
+
+/* 共有ブラウザ（App）モック */
+.sbrowser-bar { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--surface-dim); border-bottom: 1px solid var(--line); }
+.sbrowser-url { flex: 1; font-family: var(--font-mono); font-size: 11.5px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; color: var(--ink-soft); }
+.sbrowser-live { font-size: 10.5px; font-weight: 700; color: var(--c-eval); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.sbrowser-stage { position: relative; padding: 18px; min-height: 240px; background: #eef1f5; }
+.sbrowser-app { background: #fff; border: 1px solid #d7dbe2; border-radius: 8px; padding: 14px 16px; max-width: 360px; margin: 0 auto; box-shadow: 0 2px 10px rgba(20,25,40,0.08); }
+.sbrowser-app h4 { font-size: 13px; margin-bottom: 10px; color: #27241d; }
+.sbrowser-row { height: 12px; background: #eef1f5; border-radius: 4px; margin-bottom: 8px; }
+.sbrowser-row.short { width: 60%; }
+.sbrowser-cursor { position: absolute; width: 16px; height: 16px; border: 2px solid var(--c-fail); border-radius: 50%; background: rgba(163,58,50,0.15); }
+.sbrowser-cap { text-align: center; font-size: 11.5px; color: var(--ink-faint); margin-top: 14px; }
+
 /* ===== Planning / History のリスト ===== */
 .list-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
 .list-head .r-title { font-size: 16px; font-weight: 700; }
@@ -219,11 +257,13 @@ body.show-annot .annot-hint { display: flex; }
     <div class="sidebar-foot">
       <span class="dot dot--healthy"></span>daemon 接続中 ・ 通知 ON
     </div>
+    <div class="sidebar-resizer" id="sidebarResizer" title="ドラッグで幅を変更"></div>
   </aside>
 
   <!-- ===== メイン ===== -->
   <div class="app-main">
     <div class="app-topbar">
+      <button class="nav-toggle" id="navToggle" title="サイドバーの開閉">☰</button>
       <div class="dest-head" id="destHead">
         <span class="app-view-title" id="viewTitle">Attention Queue</span>
       </div>
@@ -585,38 +625,69 @@ body.show-annot .annot-hint { display: flex; }
           </div>
 
           <div class="review-layout">
-            <!-- 差分 -->
-            <div class="diff-pane" id="rv-diff">
-              <div class="diff-topbar"><span class="files-n">3ファイル</span> 変更 ・ <span style="color:var(--c-eval);font-weight:700;">+128</span> <span style="color:var(--c-fail);font-weight:700;">−14</span> ・ worktree <code>banto:task-0007</code></div>
-              <div class="diff-file">
-                <div class="diff-fhead"><span>src/daemon/queries/ready.ts</span><span class="add">+41</span><span class="del">−0</span></div>
-                <div class="diff-code">
+            <!-- 証拠ペイン: Diff / Terminal / App を切替えながら会話 -->
+            <div class="ctx-pane" id="rv-ctx">
+              <div class="ctx-switch">
+                <button class="ctx-tab is-active" data-ctx="diff">Diff</button>
+                <button class="ctx-tab" data-ctx="term">Terminal</button>
+                <button class="ctx-tab" data-ctx="app">App</button>
+              </div>
+
+              <!-- Diff -->
+              <div class="ctx-view is-active" data-ctx-view="diff">
+                <div class="diff-topbar"><span class="files-n">3ファイル</span> 変更 ・ <span style="color:var(--c-eval);font-weight:700;">+128</span> <span style="color:var(--c-fail);font-weight:700;">−14</span> ・ worktree <code>banto:task-0007</code></div>
+                <div class="diff-file">
+                  <div class="diff-fhead"><span>src/daemon/queries/ready.ts</span><span class="add">+41</span><span class="del">−0</span></div>
+                  <div class="diff-code">
 <span class="ln ln--hunk">@@ 新規: ready の唯一の導出元 @@</span>
 <span class="ln ln--add">+export function readyTasks(state: DerivedState): Task[] {</span>
-<span class="ln ln--add">+  // 依存が全て merged かつ 自身が queued のものだけが ready</span>
 <span class="ln ln--add">+  return state.tasks.filter(t =></span>
 <span class="ln ln--add">+    t.status === 'queued' &&</span>
 <span class="ln ln--add">+    t.dependsOn.every(d => state.task(d)?.status === 'merged'));</span>
 <span class="ln ln--add">+}</span>
+                  </div>
                 </div>
-              </div>
-              <div class="diff-file">
-                <div class="diff-fhead"><span>src/daemon/scheduler.ts</span><span class="add">+3</span><span class="del">−12</span></div>
-                <div class="diff-code">
+                <div class="diff-file">
+                  <div class="diff-fhead"><span>src/daemon/scheduler.ts</span><span class="add">+3</span><span class="del">−12</span></div>
+                  <div class="diff-code">
 <span class="ln ln--hunk">@@ -18,14 +18,5 @@ spawn 判定</span>
 <span class="ln ln--del">-  // 旧: スケジューラ内で ready を独自判定（二重定義）</span>
-<span class="ln ln--del">-  const ready = tasks.filter(t => t.deps.every(...));</span>
 <span class="ln ln--ctx"> import { readyTasks } from './queries/ready';</span>
 <span class="ln ln--add">+  const ready = readyTasks(state); // 唯一の導出元を共有（D3）</span>
+                  </div>
                 </div>
               </div>
-              <div class="diff-file">
-                <div class="diff-fhead"><span>src/cli/commands/ready.ts</span><span class="add">+84</span><span class="del">−2</span></div>
-                <div class="diff-code">
-<span class="ln ln--hunk">@@ CLI: banto ready を一級化 @@</span>
-<span class="ln ln--add">+// GET /api/v1/tasks/ready と同じ導出を CLI でも提供</span>
-<span class="ln ln--add">+export const ready = defineCommand({ ... });</span>
-<span class="ln ln--ctx"> // 引数は記憶させず対話選択を既定（D7）</span>
+
+              <!-- Terminal（CLIを動かしながら） -->
+              <div class="ctx-view" data-ctx-view="term">
+                <div class="term" style="border-radius:0; border:none; min-height:300px;">
+<div class="term-line term-dim">$ banto test src/daemon/queries/ready.spec.ts</div>
+<div class="term-line">PASS  ready.spec.ts  <span class="term-dim">(42 tests, 128ms)</span></div>
+<div class="term-line term-dim">$ banto ready --project banto</div>
+<div class="term-line">task-0010  spawnスケジューラ接続  <span class="term-dim">waiting: task-0007 review</span></div>
+<div class="term-line">task-0022  静穏時間の設定</div>
+<div class="term-line term-dim">— 2件 ready（APIと同一導出）—</div>
+<div class="term-line term-role-a">executor</div>
+<div class="term-line">レビュー中の確認用に、ここで任意のコマンドを一緒に実行できます</div>
+<div class="term-line">$ <span class="term-cursor"></span></div>
+                </div>
+              </div>
+
+              <!-- App（共有ブラウザ: GUIを触りながら） -->
+              <div class="ctx-view" data-ctx-view="app">
+                <div class="sbrowser-bar">
+                  <span class="sbrowser-url">review-env://banto/task-0007</span>
+                  <span class="sbrowser-live"><span class="dot dot--healthy"></span>共有 LIVE</span>
+                </div>
+                <div class="sbrowser-stage">
+                  <div class="sbrowser-app">
+                    <h4>banto CLI 出力ビューア（レビュー環境の実アプリ）</h4>
+                    <div class="sbrowser-row"></div>
+                    <div class="sbrowser-row"></div>
+                    <div class="sbrowser-row short"></div>
+                  </div>
+                  <div class="sbrowser-cursor" style="right:64px;bottom:70px;"></div>
+                  <div class="sbrowser-cap">CDP画像転送で、人とエージェントが同一インスタンスを見る（spec-ui §1.5）。<br>※ task-0007 はCLI/APIのためGUI薄め。GUI変更のレビューではここで実アプリを一緒に操作する</div>
                 </div>
               </div>
             </div>
@@ -640,7 +711,7 @@ body.show-annot .annot-hint { display: flex; }
           </div>
         </div>
 
-        <div class="annot" data-target="#rv-diff"><span class="an-num">1</span><span class="an-title">差分を見ながら会話</span><br>レビューは“会話2枚”の1枚。diffと対話が同じ面に並ぶ。<span class="an-ref">spec-ui §1</span></div>
+        <div class="annot" data-target="#rv-ctx"><span class="an-num">1</span><span class="an-title">見ながら話す対象を切替</span><br>レビューは「会話＋証拠ペイン」。Diff（コード）／Terminal（CLI）／App（共有ブラウザ）を切替えながら話す。<span class="an-ref">spec-ui §1 / §1.5</span></div>
         <div class="annot" data-target="#rv-footer"><span class="an-num">2</span><span class="an-title">承認 or 修正依頼</span><br>指摘は修正タスク化され再実行→再監査へ自動で戻る。ゲートは機械が保証済み。<span class="an-ref">D7 / I1</span></div>
       </section>
 
@@ -812,6 +883,31 @@ body.show-annot .annot-hint { display: flex; }
 
   // 戻る → 直前の目的地へ
   document.getElementById('backBtn').addEventListener('click', function(){ goDestination(currentDest); });
+
+  // サイドバー: 開閉トグル
+  document.getElementById('navToggle').addEventListener('click', function(){ app.classList.toggle('nav-collapsed'); });
+
+  // サイドバー: ドラッグでリサイズ
+  var rez = document.getElementById('sidebarResizer');
+  var dragging = false;
+  rez.addEventListener('mousedown', function(e){ dragging = true; rez.classList.add('dragging'); e.preventDefault(); });
+  document.addEventListener('mousemove', function(e){
+    if(!dragging) return;
+    var w = Math.min(360, Math.max(150, e.clientX));
+    app.style.setProperty('--sidebar-w', w + 'px');
+  });
+  document.addEventListener('mouseup', function(){ if(dragging){ dragging = false; rez.classList.remove('dragging'); } });
+
+  // レビューの証拠ペイン切替（Diff / Terminal / App）
+  document.querySelectorAll('.ctx-switch').forEach(function(sw){
+    sw.addEventListener('click', function(e){
+      var t = e.target.closest('.ctx-tab'); if(!t) return;
+      var pane = sw.parentElement;
+      pane.querySelectorAll('.ctx-tab').forEach(function(x){ x.classList.toggle('is-active', x===t); });
+      pane.querySelectorAll('.ctx-view').forEach(function(v){ v.classList.toggle('is-active', v.dataset.ctxView===t.dataset.ctx); });
+      setTimeout(layoutAnnots, 0);
+    });
+  });
 
   goDestination('queue');   // 既定
 
