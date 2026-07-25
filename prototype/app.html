@@ -114,6 +114,43 @@ body.show-annot .annot-hint { display: flex; }
   .sidebar { position: fixed; z-index: 60; transform: translateX(-100%); transition: transform .2s; }
   .app-main { margin-left: 0; }
 }
+
+/* ===== タブバー（一級概念: 開いて作業する対象） ===== */
+.tab-bar { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0; overflow-x: auto; }
+.tab {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 12px; border: 1px solid transparent; border-radius: 7px;
+  background: transparent; color: var(--ink-soft); font-size: 13px; font-family: inherit;
+  cursor: pointer; white-space: nowrap;
+}
+.tab:hover { background: var(--surface-dim); }
+.tab.is-active { background: var(--surface-dim); border-color: var(--line); color: var(--ink); font-weight: 700; }
+.tab-close { font-size: 14px; line-height: 1; color: var(--ink-faint); border-radius: 4px; padding: 0 3px; }
+.tab-close:hover { background: var(--line); color: var(--ink); }
+.tab-pin { font-size: 10px; color: var(--ink-faint); }
+
+/* ===== Planning / History のリスト ===== */
+.list-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+.list-head .r-title { font-size: 16px; font-weight: 700; }
+.list-head .btn { margin-left: auto; }
+.thread-list { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.thread-item {
+  display: block; width: 100%; text-align: left;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--surface);
+  padding: 11px 15px; cursor: pointer; font-family: inherit;
+  box-shadow: 0 1px 2px rgba(39,36,29,0.04);
+}
+.thread-item:hover { border-color: var(--accent); }
+.thread-title { font-size: 14px; font-weight: 700; color: var(--ink); display: flex; align-items: center; gap: 8px; }
+.thread-sub { font-size: 12px; color: var(--ink-soft); margin-top: 3px; }
+.thread-state { font-size: 10.5px; font-weight: 700; border-radius: 4px; padding: 0 7px; }
+.thread-state.ongoing { background: rgba(43,90,160,0.10); color: var(--c-review); }
+.thread-state.done { background: rgba(29,122,99,0.10); color: var(--c-eval); }
+.hist-kind { font-size: 10.5px; font-weight: 700; color: #fff; border-radius: 4px; padding: 0 7px; white-space: nowrap; }
+.kind-review { background: var(--c-review); }
+.kind-consult { background: var(--c-incident); }
+.kind-planning { background: var(--c-escalate); }
+.si-badge-proj { margin-left: auto; font-size: 10.5px; color: var(--ink-soft); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 7px; }
 </style>
 </head>
 <body>
@@ -140,33 +177,29 @@ body.show-annot .annot-hint { display: flex; }
     </div>
 
     <nav class="side-nav">
-      <div class="side-group-label">判断</div>
-      <button class="side-item is-active" data-panel="queue">
-        <span class="si-ico">◈</span>アテンションキュー<span class="si-badge">5</span>
-      </button>
-      <button class="side-item" data-panel="improve">
-        <span class="si-ico">⟳</span>改善ループ<span class="si-tag" style="margin-left:auto;font-size:10px;color:var(--ink-faint);border:1px solid var(--line-strong);border-radius:4px;padding:0 6px;">月次</span>
+      <button class="side-item" data-open="planning" data-label="Planning">
+        <span class="si-ico">✎</span>Planning<span class="si-badge-proj">banto</span>
       </button>
 
-      <div class="side-group-label">進行</div>
-      <button class="side-item" data-panel="board">
-        <span class="si-ico">▤</span>エージェントボード
+      <div class="side-group-label">Decisions</div>
+      <button class="side-item is-active" data-open="queue" data-label="Attention Queue">
+        <span class="si-ico">◈</span>Attention Queue<span class="si-badge">5</span>
+      </button>
+      <button class="side-item" data-open="improve" data-label="Improvements">
+        <span class="si-ico">⟳</span>Improvements<span class="si-tag" style="margin-left:auto;font-size:10px;color:var(--ink-faint);border:1px solid var(--line-strong);border-radius:4px;padding:0 6px;">月次</span>
       </button>
 
-      <div class="side-group-label">会話</div>
-      <button class="side-item" data-panel="deliberation">
-        <span class="si-ico">✎</span>検討セッション
-      </button>
-      <button class="side-item" data-panel="review">
-        <span class="si-ico">⇄</span>レビュー会話
-      </button>
-      <button class="side-item" data-panel="consult">
-        <span class="si-ico">💬</span>相談セッション
+      <div class="side-group-label">Progress</div>
+      <button class="side-item" data-open="board" data-label="Board">
+        <span class="si-ico">▤</span>Board
       </button>
 
-      <div class="side-group-label">編集</div>
+      <div class="side-group-label">Records</div>
+      <button class="side-item" data-open="history" data-label="History">
+        <span class="si-ico">🕓</span>History
+      </button>
       <button class="side-item" disabled>
-        <span class="si-ico">▦</span>バックログ<span class="si-tag">準備中</span>
+        <span class="si-ico">▦</span>Backlog<span class="si-tag">準備中</span>
       </button>
     </nav>
 
@@ -178,8 +211,7 @@ body.show-annot .annot-hint { display: flex; }
   <!-- ===== メイン ===== -->
   <div class="app-main">
     <div class="app-topbar">
-      <span class="app-view-title" id="viewTitle">アテンションキュー</span>
-      <span class="app-view-sub" id="viewSub">いま、あなたの判断を待っているもの</span>
+      <div class="tab-bar" id="tabBar" role="tablist"><!-- タブはJSで描画 --></div>
       <span class="topbar-spacer"></span>
       <span class="bell" title="通知（プッシュ）">🔔<span class="bell-badge">5</span></span>
       <button class="annot-toggle" id="annotToggle" aria-pressed="false">💡 解説を重ねる</button>
@@ -242,7 +274,7 @@ body.show-annot .annot-hint { display: flex; }
                       <button class="btn btn--primary">A: ntfy.sh 公開トピック</button>
                       <button class="btn btn--primary">B: self-host + Basic認証</button>
                       <a class="btn btn--session" href="tmux-drilldown.html">セッションへ</a>
-                      <button class="btn btn--ghost" id="q-consult" data-goto="consult">相談する</button>
+                      <button class="btn btn--ghost" id="q-consult" data-goto="consult" data-label="Consult · task-0009">相談する</button>
                     </div>
                   </div>
                 </div>
@@ -293,9 +325,9 @@ body.show-annot .annot-hint { display: flex; }
                 <div class="part"><div class="part-label">求める判断</div><div class="part-body">
                   <p class="ask-question">レビューを開始しますか？</p>
                   <div class="actions">
-                    <button class="btn btn--primary" data-goto="review">レビュー開始</button>
+                    <button class="btn btn--primary" data-goto="review" data-label="Review · task-0007">レビュー開始</button>
                     <a class="btn btn--session" href="tmux-drilldown.html">セッションへ</a>
-                    <button class="btn btn--ghost" data-goto="consult">相談する</button>
+                    <button class="btn btn--ghost" data-goto="consult" data-label="Consult · task-0007">相談する</button>
                   </div>
                 </div></div>
               </div>
@@ -308,7 +340,57 @@ body.show-annot .annot-hint { display: flex; }
         <div class="annot" data-target="#q-filter"><span class="an-num">1</span><span class="an-title">全プロジェクト横断1本</span><br>POの注意力の唯一の入口。ここを開けば「いま判断すべきこと」が全部ある。<span class="an-ref">spec-ui §1</span></div>
         <div class="annot" data-target="#q-anatomy"><span class="an-num">2</span><span class="an-title">カードは3部構成</span><br>経緯／起きたこと／求める判断。画面を遡らずカード単体で判断できる。<span class="an-ref">D8</span></div>
         <div class="annot" data-target="#q-score"><span class="an-num">3</span><span class="an-title">並び順の説明責任</span><br>滞留日数×ブロック影響度でソート。スコアと内訳を必ず表示。<span class="an-ref">spec-ui §1</span></div>
-        <div class="annot" data-target="#q-consult"><span class="an-num">4</span><span class="an-title">どこからでも会話へ</span><br>全判断ポイントに常設。押すと文脈注入した相談セッションが開く。<span class="an-ref">spec-ui §2</span></div>
+        <div class="annot" data-target="#q-consult"><span class="an-num">4</span><span class="an-title">どこからでも会話へ</span><br>全判断ポイントに常設。押すと文脈注入した相談（Consult）タブが開く。<span class="an-ref">spec-ui §2</span></div>
+      </section>
+
+      <!-- ========== パネル: Planning（一覧・プロジェクト別） ========== -->
+      <section class="panel" id="panel-planning" data-title="Planning">
+        <div class="panel-inner">
+          <div class="list-head">
+            <span class="r-title">Planning ─ <span style="color:var(--ink-soft);font-weight:600;">banto</span></span>
+            <button class="btn btn--primary" data-open="deliberation" data-label="Planning · 新規">＋ New planning</button>
+          </div>
+          <p class="page-lede">アイデア・依頼を対話で仕様に固める起点（プロジェクトごと）。ここから開発が生まれる。開くとタブで対話が始まる。</p>
+          <div class="thread-list" id="pl-threads">
+            <button class="thread-item" data-open="deliberation" data-label="Planning · 朝の通知ダイジェスト">
+              <div class="thread-title">朝の通知ダイジェスト</div>
+              <div class="thread-sub"><span class="thread-state ongoing">対話中</span> ・ 仕様案を起草済 ・ 更新 12分前</div>
+            </button>
+            <button class="thread-item" data-open="deliberation" data-label="Planning · 通知ディスパッチャ">
+              <div class="thread-title">通知ディスパッチャ（ntfy互換）</div>
+              <div class="thread-sub"><span class="thread-state done">確定 → タスク化済</span> ・ task-0009 ほか5件を生成</div>
+            </button>
+            <button class="thread-item" data-open="deliberation" data-label="Planning · readyクエリ一級化">
+              <div class="thread-title">readyクエリの一級化</div>
+              <div class="thread-sub"><span class="thread-state done">確定 → タスク化済</span> ・ task-0007 / task-0010</div>
+            </button>
+          </div>
+        </div>
+        <div class="annot" data-target="#pl-threads"><span class="an-num">1</span><span class="an-title">開発の起点・プロジェクト別</span><br>ここが“会話2枚”の1枚。1プロジェクトに複数スレッドを持て、確定するとdaemonがタスク化する。<span class="an-ref">spec-ui §1 / D3</span></div>
+      </section>
+
+      <!-- ========== パネル: History（振り返り） ========== -->
+      <section class="panel" id="panel-history" data-title="History">
+        <div class="panel-inner">
+          <div class="list-head"><span class="r-title">History ─ 過去の会話</span></div>
+          <p class="page-lede">Planning・Review・Consult はその時だけの文脈だが、すべてイベントログにトランスクリプト参照として残る。後から読み直し・再開できる（D3）。</p>
+          <div class="filter-row" id="hi-filter"><span class="filter-label">種別:</span><button class="chip is-active">すべて</button><button class="chip">Planning</button><button class="chip">Review</button><button class="chip">Consult</button></div>
+          <div class="thread-list" id="hi-threads">
+            <button class="thread-item" data-open="consult" data-label="Consult · task-0009（履歴）">
+              <div class="thread-title"><span class="hist-kind kind-consult">Consult</span> task-0009 通知チャネル認証</div>
+              <div class="thread-sub">2026-07-24 22:10 ・ 判断: B（self-host）・ 注入した文脈: 差分/経緯/D1</div>
+            </button>
+            <button class="thread-item" data-open="review" data-label="Review · task-0006（履歴）">
+              <div class="thread-title"><span class="hist-kind kind-review">Review</span> task-0006 監査ゲートのTTL調整</div>
+              <div class="thread-sub">2026-07-22 09:40 ・ 承認してマージ ・ 指摘1件→修正タスク化</div>
+            </button>
+            <button class="thread-item" data-open="deliberation" data-label="Planning · 評価環境v1（履歴）">
+              <div class="thread-title"><span class="hist-kind kind-planning">Planning</span> 評価環境v1 の要件詰め</div>
+              <div class="thread-sub">2026-07-15 ・ 確定 → 7タスク化 ・ 参照: spec-environment</div>
+            </button>
+          </div>
+        </div>
+        <div class="annot" data-target="#hi-threads"><span class="an-num">1</span><span class="an-title">その時だけの会話を後から辿る</span><br>閉じたタブ＝過去セッションを種別・タスク・日付で一覧。読み直し・再開できる。真実はイベントログのトランスクリプト参照。<span class="an-ref">D3 / D8</span></div>
       </section>
 
       <!-- ========== パネル: エージェントボード ========== -->
@@ -615,14 +697,13 @@ body.show-annot .annot-hint { display: flex; }
 
 <script>
 (function(){
-  var titles = {}, subs = {};
-  document.querySelectorAll('.panel').forEach(function(p){
-    titles[p.id.replace('panel-','')] = p.dataset.title;
-    subs[p.id.replace('panel-','')] = p.dataset.sub;
-  });
-  var viewTitle = document.getElementById('viewTitle');
-  var viewSub = document.getElementById('viewSub');
-  var sideItems = document.querySelectorAll('.side-item[data-panel]');
+  // タブモデル: サイドラインの目的地=pinned、会話=session(閉じられる)
+  var LABELS = { planning:'Planning', queue:'Attention Queue', improve:'Improvements', board:'Board', history:'History', review:'Review', consult:'Consult', deliberation:'Planning' };
+  var SESSION = { review:1, consult:1, deliberation:1 };   // タブで開く・閉じられる会話
+  var TABS = [];         // {id, label}
+  var activeId = null;
+  var tabBar = document.getElementById('tabBar');
+  var sideItems = document.querySelectorAll('.side-item[data-open]');
 
   function clearHi(){ document.querySelectorAll('.annot-hi').forEach(function(e){ e.classList.remove('annot-hi'); }); }
 
@@ -667,18 +748,68 @@ body.show-annot .annot-hint { display: flex; }
     });
   }
 
-  function activate(id){
+  function renderTabs(){
+    tabBar.innerHTML = '';
+    TABS.forEach(function(t){
+      var b = document.createElement('button');
+      b.className = 'tab' + (t.id===activeId ? ' is-active' : '');
+      b.dataset.tab = t.id;
+      var lab = document.createElement('span'); lab.className='tab-label'; lab.textContent = t.label;
+      b.appendChild(lab);
+      if(SESSION[t.id]){
+        var x = document.createElement('span'); x.className='tab-close'; x.textContent='×'; x.dataset.close = t.id;
+        b.appendChild(x);
+      } else {
+        var p = document.createElement('span'); p.className='tab-pin'; p.textContent='◦';
+        b.appendChild(p);
+      }
+      tabBar.appendChild(b);
+    });
+  }
+
+  function activateTab(id){
+    activeId = id;
     document.querySelectorAll('.panel').forEach(function(p){ p.classList.toggle('is-active', p.id==='panel-'+id); });
-    sideItems.forEach(function(s){ s.classList.toggle('is-active', s.dataset.panel===id); });
-    if(titles[id]){ viewTitle.textContent = titles[id]; viewSub.textContent = subs[id]||''; }
+    sideItems.forEach(function(s){ s.classList.toggle('is-active', s.dataset.open===id); });
+    renderTabs();
     window.scrollTo(0,0);
     setTimeout(layoutAnnots, 0);
   }
 
-  sideItems.forEach(function(s){ s.addEventListener('click', function(){ activate(s.dataset.panel); }); });
-  document.querySelectorAll('[data-goto]').forEach(function(b){
-    b.addEventListener('click', function(e){ e.preventDefault(); activate(b.dataset.goto); });
+  function openTab(id, label){
+    if(!TABS.some(function(t){ return t.id===id; })){
+      TABS.push({ id:id, label: label || LABELS[id] || id });
+    }
+    activateTab(id);
+  }
+
+  function closeTab(id){
+    var i = TABS.findIndex(function(t){ return t.id===id; });
+    if(i < 0) return;
+    TABS.splice(i, 1);
+    if(activeId === id){
+      var next = TABS[Math.min(i, TABS.length-1)];
+      if(next) activateTab(next.id); else { activeId=null; document.querySelectorAll('.panel').forEach(function(p){p.classList.remove('is-active');}); renderTabs(); }
+    } else { renderTabs(); }
+  }
+
+  // サイドバー＆カード内ボタン（data-open / 旧data-goto）→ タブを開く
+  document.querySelectorAll('[data-open],[data-goto]').forEach(function(b){
+    b.addEventListener('click', function(e){
+      e.preventDefault();
+      openTab(b.dataset.open || b.dataset.goto, b.dataset.label);
+    });
   });
+
+  // タブバー: クリックで切替、×で閉じる
+  tabBar.addEventListener('click', function(e){
+    var close = e.target.closest('.tab-close');
+    if(close){ e.stopPropagation(); closeTab(close.dataset.close); return; }
+    var tab = e.target.closest('.tab');
+    if(tab) activateTab(tab.dataset.tab);
+  });
+
+  openTab('queue');   // 既定タブ
 
   var toggle = document.getElementById('annotToggle');
   toggle.addEventListener('click', function(){
