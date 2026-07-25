@@ -156,7 +156,8 @@ body.show-annot .annot-hint { display: flex; }
 .app.nav-collapsed .si-tag,
 .app.nav-collapsed .si-badge-proj,
 .app.nav-collapsed .foot-txt { display: none; }
-.app.nav-collapsed .sidebar-brand { flex-direction: column; gap: 8px; padding: 12px 0; }
+.app.nav-collapsed .sidebar-brand { flex-direction: column; align-items: center; gap: 8px; padding: 12px 0; }
+.app.nav-collapsed .sidebar-brand .nav-toggle { margin-left: 0; }
 .app.nav-collapsed .side-nav { padding: 8px 8px 14px; }
 .app.nav-collapsed .side-item { justify-content: center; padding: 9px 0; }
 .app.nav-collapsed .sidebar-foot { justify-content: center; padding: 11px 0; }
@@ -318,7 +319,7 @@ body.show-annot .annot-hint { display: flex; }
                     <span class="project-badge">banto</span>
                     <span class="age age--hot">滞留 3日</span>
                   </div>
-                  <h2 class="card-title"><a href="card-detail.html">task-0009 通知ディスパッチャのチャネル認証方式</a></h2>
+                  <h2 class="card-title"><a data-open="carddetail" data-label="カード詳細">task-0009 通知ディスパッチャのチャネル認証方式</a></h2>
                 </div>
                 <div class="score" id="q-score" title="滞留日数 × (1 + 未spawnの後続タスク数)">
                   <div class="score-value">15</div>
@@ -347,7 +348,7 @@ body.show-annot .annot-hint { display: flex; }
                     <div class="actions">
                       <button class="btn btn--primary">A: ntfy.sh 公開トピック</button>
                       <button class="btn btn--primary">B: self-host + Basic認証</button>
-                      <a class="btn btn--session" href="tmux-drilldown.html">セッションへ</a>
+                      <a class="btn btn--session" data-open="terminal" data-label="Terminal">セッションへ</a>
                       <button class="btn btn--ghost" id="q-consult" data-goto="consult" data-label="Consult · task-0009">相談する</button>
                     </div>
                   </div>
@@ -363,7 +364,7 @@ body.show-annot .annot-hint { display: flex; }
                     <span class="project-badge">palmux</span>
                     <span class="age">滞留 2日</span>
                   </div>
-                  <h2 class="card-title"><a href="card-detail.html">task-0113 CDP画像転送の自動再接続</a></h2>
+                  <h2 class="card-title"><a data-open="carddetail" data-label="カード詳細">task-0113 CDP画像転送の自動再接続</a></h2>
                 </div>
                 <div class="score"><div class="score-value">6</div><div class="score-label">スコア</div><div class="score-formula">滞留2日 × (1+ブロック2)</div></div>
               </div>
@@ -389,7 +390,7 @@ body.show-annot .annot-hint { display: flex; }
                     <span class="project-badge">banto</span>
                     <span class="age">滞留 2日</span>
                   </div>
-                  <h2 class="card-title"><a href="card-detail.html">task-0007 readyクエリのAPI/CLI一級化</a></h2>
+                  <h2 class="card-title"><a data-open="carddetail" data-label="カード詳細">task-0007 readyクエリのAPI/CLI一級化</a></h2>
                 </div>
                 <div class="score"><div class="score-value">4</div><div class="score-label">スコア</div><div class="score-formula">滞留2日 × (1+ブロック1)</div></div>
               </div>
@@ -400,7 +401,7 @@ body.show-annot .annot-hint { display: flex; }
                   <p class="ask-question">レビューを開始しますか？</p>
                   <div class="actions">
                     <button class="btn btn--primary" data-goto="review" data-label="Review · task-0007">レビュー開始</button>
-                    <a class="btn btn--session" href="tmux-drilldown.html">セッションへ</a>
+                    <a class="btn btn--session" data-open="terminal" data-label="Terminal">セッションへ</a>
                     <button class="btn btn--ghost" data-goto="consult" data-label="Consult · task-0007">相談する</button>
                   </div>
                 </div></div>
@@ -481,30 +482,30 @@ body.show-annot .annot-hint { display: flex; }
               <div class="board-lane">
                 <article class="task-card task-card--attention task-card--stalled" id="b-attn">
                   <div class="task-meta"><span class="state-chip state--fail">blocking</span><span class="task-badge">banto</span><span class="task-attention-tag">判断待ち</span></div>
-                  <div class="task-title"><a href="card-detail.html">task-0009 通知チャネル認証方式</a></div>
+                  <div class="task-title"><a data-open="carddetail" data-label="カード詳細">task-0009 通知チャネル認証方式</a></div>
                   <div class="task-sub"><span class="dot dot--stalled"></span>停滞 3日 ・ <span class="who">pi:executor</span> がD1で停止中</div>
-                  <div class="task-actions"><button class="btn btn--primary" data-goto="queue">判断する</button><a class="btn btn--session" href="tmux-drilldown.html">セッション</a></div>
+                  <div class="task-actions"><button class="btn btn--primary" data-goto="queue">判断する</button><a class="btn btn--session" data-open="terminal" data-label="Terminal">セッション</a></div>
                   <div class="blocked-note"><b>後続4タスクがこの判断待ち</b>（未spawn）</div>
                 </article>
                 <article class="task-card task-card--attention">
                   <div class="task-meta"><span class="state-chip state--review">review-ready</span><span class="task-badge">banto</span><span class="task-attention-tag">判断待ち</span></div>
-                  <div class="task-title"><a href="card-detail.html">task-0007 readyクエリのAPI/CLI一級化</a></div>
+                  <div class="task-title"><a data-open="carddetail" data-label="カード詳細">task-0007 readyクエリのAPI/CLI一級化</a></div>
                   <div class="task-sub"><span class="dot dot--healthy"></span>ゲート通過（テスト42件green）・2日待機</div>
                   <div class="task-actions"><button class="btn btn--primary" data-goto="review">レビュー開始</button></div>
                 </article>
                 <article class="task-card">
                   <div class="task-meta"><span class="state-chip state--build">implementing</span><span class="task-badge">banto</span></div>
-                  <div class="task-title"><a href="tmux-drilldown.html">task-0021 朝の通知ダイジェスト</a></div>
+                  <div class="task-title"><a data-open="terminal" data-label="Terminal">task-0021 朝の通知ダイジェスト</a></div>
                   <div class="task-sub"><span class="dot dot--healthy"></span>順調 ・ <span class="who">pi:executor</span> 実装中（12分前に進捗）</div>
                 </article>
                 <article class="task-card">
                   <div class="task-meta"><span class="state-chip state--audit">auditing</span><span class="task-badge">banto</span></div>
-                  <div class="task-title"><a href="tmux-drilldown.html">task-0018 台帳リコンサイルのTTL調整</a></div>
+                  <div class="task-title"><a data-open="terminal" data-label="Terminal">task-0018 台帳リコンサイルのTTL調整</a></div>
                   <div class="task-sub"><span class="dot dot--healthy"></span>順調 ・ <span class="who">pi:auditor</span> が点検中</div>
                 </article>
                 <article class="task-card task-card--attention task-card--stalled">
                   <div class="task-meta"><span class="state-chip state--fail">failed</span><span class="task-badge">palmux</span><span class="task-attention-tag">判断待ち</span></div>
-                  <div class="task-title"><a href="card-detail.html">task-0113 CDP画像転送の自動再接続</a></div>
+                  <div class="task-title"><a data-open="carddetail" data-label="カード詳細">task-0113 CDP画像転送の自動再接続</a></div>
                   <div class="task-sub"><span class="dot dot--stalled"></span>監査2回不通過・セッション終了済</div>
                 </article>
               </div>
@@ -522,7 +523,7 @@ body.show-annot .annot-hint { display: flex; }
               <div class="board-lane">
                 <article class="task-card task-card--zombie">
                   <div class="task-meta"><span class="state-chip state--build">implementing</span><span class="task-badge">palmux</span></div>
-                  <div class="task-title"><a href="tmux-drilldown.html">task-0099 ズーム倍率の永続化</a></div>
+                  <div class="task-title"><a data-open="terminal" data-label="Terminal">task-0099 ズーム倍率の永続化</a></div>
                   <div class="task-sub"><span class="dot dot--zombie"></span>ゾンビ: セッション6時間 無応答</div>
                   <div class="task-actions"><button class="btn btn--danger">handoff</button><button class="btn">nudge</button></div>
                 </article>
@@ -796,6 +797,79 @@ body.show-annot .annot-hint { display: flex; }
         <div class="annot" data-target="#im-eval"><span class="an-num">3</span><span class="an-title">仮説駆動で定着/差戻し</span><br>採択時に仮説を宣言し horizon 後に前後比較で keep/tune/revert。revert済みは類似提案を弾く履歴に。<span class="an-ref">§5</span></div>
       </section>
 
+      <!-- ========== パネル: Terminal（pi実行セッション・アプリ内端末） ========== -->
+      <section class="panel" id="panel-terminal" data-title="Terminal">
+        <div class="panel-inner panel-inner--wide">
+          <div class="review-head">
+            <span class="type-chip" style="background:var(--ink-soft);">SESSION</span>
+            <span class="r-title">pi 実行セッション ・ <span style="font-family:var(--font-mono);font-size:13px;color:var(--ink-soft);">tmux: banto:task-0009</span></span>
+          </div>
+          <p class="page-lede">実行者(pi)のセッションにブラウザ内端末で直結（xterm.js ↔ daemon の PTY↔WebSocket ブリッジ）。人とエージェントが同一セッションを見て、その場で割り込める。</p>
+          <div class="term" id="tm-term" style="min-height:340px;">
+<div class="term-line term-dim">tmux attach -t banto:task-0009  （daemon 経由でブリッジ）</div>
+<div class="term-line">&nbsp;</div>
+<div class="term-line term-role-a">executor</div>
+<div class="term-line">通知ディスパッチャの送出部を実装中。ntfy 互換の POST まで完了（テスト8件 green）。</div>
+<div class="term-line">チャネル方式は外部依存の追加（D1）に当たるため、自律決定せず blocking で停止しています。</div>
+<div class="term-line">&nbsp;</div>
+<div class="term-line term-dim">［1］A: ntfy.sh 公開トピック  ［2］B: self-host + Basic認証</div>
+<div class="term-line">&nbsp;</div>
+<div class="term-line term-role-b">auditor</div>
+<div class="term-line">送出部の監査は通過。チャネル選択の判断待ちのため review 前で保留。</div>
+<div class="term-line">&nbsp;</div>
+            <div class="term-input-row"><span class="term-input-prompt">›</span><input class="term-input" placeholder="ここから会話に割り込める（例: Bで。理由は本文に固有名詞を載せたくない）"></div>
+          </div>
+        </div>
+        <div class="annot" data-target="#tm-term"><span class="an-num">1</span><span class="an-title">同一セッションに直結</span><br>別ページに飛ばず、左ナビを保ったまま端末に降りる。人とエージェントが同じ pi セッションを見て割り込める。<span class="an-ref">spec-ui §1.4 / S254276</span></div>
+      </section>
+
+      <!-- ========== パネル: カード詳細（アプリ内・左ナビ維持） ========== -->
+      <section class="panel" id="panel-carddetail" data-title="カード詳細">
+        <div class="panel-inner">
+          <article class="card card--escalate detail-card">
+            <div class="card-top">
+              <div class="card-top-main">
+                <div class="card-meta">
+                  <span class="type-chip type-chip--escalate">エスカレーション</span>
+                  <span class="project-badge">banto</span>
+                  <span class="age age--hot">滞留 3日（2026-07-21 14:37 起票）</span>
+                </div>
+                <h1 class="card-title">task-0009 通知ディスパッチャのチャネル認証方式</h1>
+              </div>
+              <div class="score"><div class="score-value">15</div><div class="score-label">スコア</div><div class="score-formula">滞留3日 × (1+ブロック4)</div></div>
+            </div>
+            <section class="detail-section">
+              <h2 class="detail-heading">経緯 ─ 起点となったあなたの指示</h2>
+              <div class="origin-quote"><q>プッシュ通知はntfy互換で。自宅サーバの外からでも携帯に届くようにして。通知が来ないコックピットは意味がない</q><span class="origin-ref">— po_operation#8794 ・ 2026-07-21 09:12 ・ 検討セッション banto</span></div>
+              <ul class="timeline" style="margin-top:12px;">
+                <li><span class="t-time">07-21 09:12</span>あなたの指示 → task-0009 起票</li>
+                <li><span class="t-time">07-21 10:05</span>依存ゲート通過で ready 昇格 → spawn（pi / worktree task-0009）</li>
+                <li><span class="t-time">07-21 14:37</span><span class="t-mark">blocking エスカレーション発生</span> → このカードを生成</li>
+              </ul>
+            </section>
+            <section class="detail-section">
+              <h2 class="detail-heading">起きたこと</h2>
+              <div class="part-body">実装者は送出部まで実装済（テスト8件green）。チャネル到達経路の選択が外部依存の追加＝不可逆な選択（D1）に該当と判定し、自律決定せず blocking で停止。後続4タスクが未spawnで待機。</div>
+            </section>
+            <section class="detail-section">
+              <h2 class="detail-heading">求める判断</h2>
+              <p class="ask-question">通知チャネルはどちらの方式で進めますか？</p>
+              <div class="option-list">
+                <div class="option"><span class="option-key">A</span><div class="option-body"><div class="option-title">ntfy.sh 公開トピック</div><div class="option-note">追加インフラなし・今日から届く。本文にタスク名が載る（保護はURL秘匿のみ）</div></div></div>
+                <div class="option"><span class="option-key">B</span><div class="option-body"><div class="option-title">self-host ntfy + Basic認証</div><div class="option-note">本文は自宅網の外に出ない。外出先の到達は既存VPN経由</div></div></div>
+              </div>
+              <div class="reason-row"><input class="reason-input" type="text" placeholder="理由（1行・po_operation に記録）"></div>
+              <div class="actions">
+                <button class="btn btn--primary">A で進める</button>
+                <button class="btn btn--primary">B で進める</button>
+                <button class="btn btn--ghost" data-open="consult" data-label="Consult · task-0009">相談する</button>
+                <button class="btn btn--session" data-open="terminal" data-label="Terminal · task-0009">セッションへ</button>
+              </div>
+            </section>
+          </article>
+        </div>
+      </section>
+
     </div>
   </div>
 </div>
@@ -803,9 +877,8 @@ body.show-annot .annot-hint { display: flex; }
 <script>
 (function(){
   // ナビゲーション: 目的地(サイドバー)=通常モード / 会話=フォーカス(全画面＋戻る)
-  var LABELS = { planning:'Planning', queue:'Attention Queue', improve:'Improvements', board:'Board', history:'History' };
-  var SESSION = { review:1, consult:1, deliberation:1 };   // 全画面フォーカスで開く会話
-  var currentDest = 'queue';
+  var LABELS = { planning:'Planning', queue:'Attention Queue', improve:'Improvements', board:'Board', history:'History', review:'Review', consult:'Consult', deliberation:'Planning', terminal:'Terminal', carddetail:'カード詳細' };
+  var SESSION = { review:1, consult:1, deliberation:1, terminal:1, carddetail:1 };   // フォーカス（メイン置換・左ナビ維持）で開くもの
   var app = document.querySelector('.app');
   var focusBar = document.getElementById('focusBar');
   var focusLabel = document.getElementById('focusLabel');
@@ -860,35 +933,35 @@ body.show-annot .annot-hint { display: flex; }
     document.querySelectorAll('.panel').forEach(function(p){ p.classList.toggle('is-active', p.id==='panel-'+id); });
   }
 
-  // 目的地（サイドバー）：通常モード。サイドバーを出す
-  function goDestination(id){
-    currentDest = id;
-    app.classList.remove('focus-mode');
-    focusBar.style.display = 'none';
-    destHead.style.display = '';
-    viewTitle.textContent = LABELS[id] || id;
-    showPanel(id);
-    sideItems.forEach(function(s){ s.classList.toggle('is-active', s.dataset.open===id); });
-    window.scrollTo(0,0);
+  // 状態を描画（履歴は触らない）。focus=メイン領域を置換・左ナビは維持
+  function render(state){
+    if(!state) state = { id:'queue', mode:'dest' };
+    if(state.mode === 'focus'){
+      app.classList.add('focus-mode');
+      destHead.style.display = 'none';
+      focusBar.style.display = 'flex';
+      focusLabel.textContent = state.label || LABELS[state.id] || state.id;
+      showPanel(state.id);
+    } else {
+      app.classList.remove('focus-mode');
+      focusBar.style.display = 'none';
+      destHead.style.display = '';
+      viewTitle.textContent = LABELS[state.id] || state.id;
+      showPanel(state.id);
+      sideItems.forEach(function(s){ s.classList.toggle('is-active', s.dataset.open===state.id); });
+    }
+    window.scrollTo(0, 0);
     setTimeout(layoutAnnots, 0);
   }
 
-  // 会話：全画面フォーカス。サイドバーを畳み、「戻る」を出す
-  function openFocus(id, label){
-    app.classList.add('focus-mode');
-    destHead.style.display = 'none';
-    focusBar.style.display = 'flex';
-    focusLabel.textContent = label || LABELS[id] || id;
-    showPanel(id);
-    window.scrollTo(0,0);
-    setTimeout(layoutAnnots, 0);
-  }
+  // 履歴にスタックして遷移（ブラウザの戻る/進むが効く）
+  function navigate(state){ history.pushState(state, ''); render(state); }
 
   function openThing(id, label){
-    if(SESSION[id]) openFocus(id, label); else goDestination(id);
+    navigate({ id:id, mode: SESSION[id] ? 'focus' : 'dest', label:label });
   }
 
-  // サイドバー＆カード内ボタン（data-open / 旧data-goto）→ 潜る or 目的地切替
+  // サイドバー＆カード内ボタン（data-open / 旧data-goto）→ 遷移（すべてアプリ内・左ナビ維持）
   document.querySelectorAll('[data-open],[data-goto]').forEach(function(b){
     b.addEventListener('click', function(e){
       e.preventDefault();
@@ -896,8 +969,9 @@ body.show-annot .annot-hint { display: flex; }
     });
   });
 
-  // 戻る → 直前の目的地へ
-  document.getElementById('backBtn').addEventListener('click', function(){ goDestination(currentDest); });
+  // 「← 戻る」＝ ブラウザの戻る。進む/戻るボタンにも連動
+  document.getElementById('backBtn').addEventListener('click', function(){ history.back(); });
+  window.addEventListener('popstate', function(e){ render(e.state); });
 
   // サイドバー: 開閉トグル（畳むとアイコンレール、グリフ反転）
   var navToggle = document.getElementById('navToggle');
@@ -929,7 +1003,9 @@ body.show-annot .annot-hint { display: flex; }
     });
   });
 
-  goDestination('queue');   // 既定
+  // 初期状態
+  history.replaceState({ id:'queue', mode:'dest' }, '');
+  render({ id:'queue', mode:'dest' });
 
   var toggle = document.getElementById('annotToggle');
   toggle.addEventListener('click', function(){
