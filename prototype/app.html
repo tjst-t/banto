@@ -339,6 +339,11 @@ body.show-annot .annot-hint { display: flex; }
       <button class="side-item" data-open="history" data-label="History" title="History">
         <span class="si-ico">🕓</span><span class="si-label">History</span>
       </button>
+
+      <div class="side-group-label">System</div>
+      <button class="side-item" data-open="settings" data-label="Settings" title="Settings">
+        <span class="si-ico">⚙</span><span class="si-label">Settings</span>
+      </button>
     </nav>
 
     <div class="sidebar-foot">
@@ -1030,7 +1035,7 @@ body.show-annot .annot-hint { display: flex; }
             <div class="pc-main">
               <div class="pc-name">banto <span class="pc-status"><span class="dot dot--healthy"></span>active</span></div>
               <div class="pc-path">~/ghq/github.com/tjst-t/banto</div>
-              <div class="pc-meta"><span class="pc-chip">18 tasks</span><span class="pc-chip">model: opus (opencode)</span><span class="pc-chip">review: mandatory / sampled</span><span class="pc-chip">cadence: 2d</span></div>
+              <div class="pc-meta"><span class="pc-chip">1 repo</span><span class="pc-chip">18 tasks</span><span class="pc-chip">via tjst-t</span><span class="pc-chip">review: mandatory / sampled</span><span class="pc-chip">cadence: 2d</span></div>
             </div>
             <button class="btn" data-open="projectedit" data-label="プロジェクト設定 · banto">設定</button>
           </div>
@@ -1040,7 +1045,7 @@ body.show-annot .annot-hint { display: flex; }
             <div class="pc-main">
               <div class="pc-name">palmux <span class="pc-status"><span class="dot dot--healthy"></span>active</span></div>
               <div class="pc-path">~/ghq/github.com/tjst-t/palmux</div>
-              <div class="pc-meta"><span class="pc-chip">6 tasks</span><span class="pc-chip">model: sonnet (opencode)</span><span class="pc-chip">review: sampled</span><span class="pc-chip">cadence: 3d</span></div>
+              <div class="pc-meta"><span class="pc-chip">1 repo</span><span class="pc-chip">6 tasks</span><span class="pc-chip">via tjst-t</span><span class="pc-chip">review: sampled</span><span class="pc-chip">cadence: 3d</span></div>
             </div>
             <button class="btn" data-open="projectedit" data-label="プロジェクト設定 · palmux">設定</button>
           </div>
@@ -1084,24 +1089,24 @@ body.show-annot .annot-hint { display: flex; }
 
                 <!-- Clone -->
                 <div class="ctx-view is-active" data-ctx-view="clone">
-                  <div class="tdef-field"><div class="tdef-label">ホスト</div>
+                  <div class="tdef-field"><div class="tdef-label">アカウント（どの認証情報で取り込むか）</div>
                     <div class="proj-switch" style="margin:0;">
-                      <button class="chip is-active">GitHub <span style="color:var(--c-eval);font-weight:700;">●接続済 tjst-t</span></button>
-                      <button class="chip">GitLab <span style="color:var(--ink-faint);">○未接続</span></button>
-                      <button class="chip chip--add" data-open="credentials" data-label="接続 / 認証情報">接続を管理</button>
+                      <button class="chip is-active">GitHub: tjst-t</button>
+                      <button class="chip">GitHub: tjst-t-work</button>
+                      <button class="chip">GitLab: —</button>
+                      <button class="chip chip--add" data-open="settings" data-label="Settings">アカウントを管理</button>
                     </div>
                   </div>
-                  <div class="tdef-field"><div class="tdef-label">リポジトリ URL または選択</div><input class="tdef-input" placeholder="git@github.com:tjst-t/loamium-web.git  または 一覧から選択"></div>
-                  <div class="tdef-field"><div class="tdef-label">取り込み先パス</div><input class="tdef-input" value="~/ghq/github.com/tjst-t/loamium-web"></div>
-                  <button class="btn btn--primary">クローンして追加</button>
+                  <div class="tdef-field"><div class="tdef-label">リポジトリ（URL / owner-repo / アカウントの一覧から選択）</div><input class="tdef-input" placeholder="tjst-t/loamium-web"></div>
+                  <div class="tdef-meta">配置は <b>ghq</b> 管理（worktree は <b>gwq</b>）。取り込み先パスの指定は不要。</div>
+                  <button class="btn btn--primary" style="margin-top:8px;">ghq get で取り込み → 追加</button>
                 </div>
 
                 <!-- Scratch -->
                 <div class="ctx-view" data-ctx-view="scratch">
-                  <div class="tdef-field"><div class="tdef-label">ローカルパス（新規作成）</div><input class="tdef-input" value="~/ghq/github.com/tjst-t/loamium-web"></div>
                   <div class="tdef-field"><div class="tdef-label">初期化</div>
-                    <label style="display:block;font-size:13px;margin:2px 0;"><input type="checkbox" checked> git init（空リポジトリ）</label>
-                    <label style="display:block;font-size:13px;margin:2px 0;"><input type="checkbox" checked> 契約層の雛形を生成（CLAUDE.md / docs / roadmap）</label>
+                    <label style="display:block;font-size:13px;margin:2px 0;"><input type="checkbox" checked> git init（空リポジトリ・<b>ghq 管理下</b>に作成）</label>
+                    <label style="display:block;font-size:13px;margin:2px 0;"><input type="checkbox" checked> 契約層の雛形を生成（<b>AGENT.md</b> / docs / roadmap）</label>
                   </div>
                   <div class="tdef-field"><div class="tdef-label">リモート公開（あとで可）</div>
                     <div class="proj-switch" style="margin:0;">
@@ -1109,13 +1114,14 @@ body.show-annot .annot-hint { display: flex; }
                       <button class="chip">GitHubに新規作成してPush</button>
                       <button class="chip">GitLabに新規作成してPush</button>
                     </div>
+                    <div class="tdef-meta">公開時は上で選んだアカウントを使用。配置は ghq 管理。</div>
                   </div>
                   <button class="btn btn--primary">作成して追加</button>
                 </div>
 
                 <!-- Local -->
                 <div class="ctx-view" data-ctx-view="local">
-                  <div class="tdef-field"><div class="tdef-label">既存ローカルrepoのパス</div><input class="tdef-input" placeholder="~/ghq/github.com/tjst-t/loamium-web"></div>
+                  <div class="tdef-field"><div class="tdef-label">ghq 管理下の既存リポジトリから選択</div><input class="tdef-input" placeholder="ghq list から選択（例: github.com/tjst-t/loamium-web）"></div>
                   <button class="btn btn--primary">登録して追加</button>
                 </div>
               </div>
@@ -1124,17 +1130,17 @@ body.show-annot .annot-hint { display: flex; }
             <div class="tdef-field">
               <div class="tdef-label">このプロジェクトのリポジトリ（複数可）</div>
               <div class="repo-list">
-                <div class="repo-row"><span class="rr-role">primary</span><span class="rr-url">github.com/tjst-t/loamium-web</span><button class="btn" style="padding:3px 10px;font-size:12px;">外す</button></div>
-                <div class="repo-row"><span class="rr-role sec">repo</span><span class="rr-url">github.com/tjst-t/loamium-api</span><button class="btn" style="padding:3px 10px;font-size:12px;">外す</button></div>
+                <div class="repo-row"><span class="rr-role">primary</span><span class="rr-url">github.com/tjst-t/loamium-web</span><span class="pc-chip">via tjst-t</span><button class="btn" style="padding:3px 10px;font-size:12px;">外す</button></div>
+                <div class="repo-row"><span class="rr-role sec">repo</span><span class="rr-url">github.com/tjst-t/loamium-api</span><span class="pc-chip">via tjst-t-work</span><button class="btn" style="padding:3px 10px;font-size:12px;">外す</button></div>
               </div>
-              <div class="tdef-meta">契約層(vision/spec/tasks)は <b>primary</b> に置く想定（※要ADR）。参照は <code>&lt;project&gt;/&lt;id&gt;</code>、repo跨ぎは repo 名を含む。</div>
+              <div class="tdef-meta">各repoは<b>取り込み時に選んだアカウント</b>とセットで保持。契約層(vision/spec/tasks/<b>AGENT.md</b>)は <b>primary</b> に置く想定（※要ADR）。参照は <code>&lt;project&gt;/&lt;id&gt;</code>、repo跨ぎは repo 名を含む。</div>
             </div>
 
-            <div class="tdef-field"><div class="tdef-label">MODEL ENDPOINT（opencode 経由）</div><input class="tdef-input" value="opus"></div>
-            <div class="tdef-field"><div class="tdef-label">DEFAULT REVIEW POLICY</div>
+            <div class="tdef-meta" style="margin-bottom:12px;">モデルは<b>全体設定＋動的自動選定</b>（Settings › モデル自動選定）。プロジェクト個別には持たない。</div>
+            <div class="tdef-field"><div class="tdef-label">DEFAULT REVIEW POLICY（プロジェクトのオーバーライド）</div>
               <div class="proj-switch" style="margin:0;"><button class="chip">auto</button><button class="chip is-active">sampled</button><button class="chip">mandatory</button></div>
             </div>
-            <div class="tdef-field"><div class="tdef-label">CADENCE（日） / NOTIFY</div><input class="tdef-input" value="2" style="max-width:120px;"></div>
+            <div class="tdef-field"><div class="tdef-label">CADENCE（日）</div><input class="tdef-input" value="2" style="max-width:120px;"></div>
           </div>
           <div class="footer-actions" style="margin-top:16px;">
             <button class="btn btn--primary">プロジェクトを登録</button>
@@ -1143,37 +1149,86 @@ body.show-annot .annot-hint { display: flex; }
         </div>
       </section>
 
-      <!-- ========== パネル: 接続 / 認証情報（focus） ========== -->
-      <section class="panel" id="panel-credentials" data-title="接続 / 認証情報">
-        <div class="panel-inner">
-          <div class="review-head" style="margin-bottom:8px;">
-            <span class="type-chip" style="background:var(--ink-soft);">AUTH</span>
-            <span class="r-title">接続 / 認証情報 ─ git ホスト</span>
-          </div>
-          <div class="warn-note">⚠ <b>設計未確定・要ADR</b>: 秘密情報の保存方式（sops / OS キーチェーン / 暗号化ファイル）とデータモデルは不可逆な選択（D1）。ここはUI探索用のモック。clone / push に使う。</div>
+      <!-- ========== パネル: Settings（アプリ全体設定） ========== -->
+      <section class="panel" id="panel-settings" data-title="Settings">
+        <div class="panel-inner panel-inner--wide">
+          <div class="list-head"><span class="r-title">Settings ─ アプリ全体設定</span></div>
+          <div class="method-pane" style="margin-top:8px;">
+            <div class="ctx-switch">
+              <button class="ctx-tab is-active" data-ctx="git">Git アカウント</button>
+              <button class="ctx-tab" data-ctx="llm">LLM エンドポイント</button>
+              <button class="ctx-tab" data-ctx="autopick">モデル自動選定</button>
+              <button class="ctx-tab" data-ctx="notify">通知</button>
+              <button class="ctx-tab" data-ctx="advanced">詳細 (層B)</button>
+            </div>
 
-          <div class="cred-row">
-            <span class="cred-mark">GH</span>
-            <div><div class="cred-host">GitHub</div><div class="pc-path">tjst-t ・ OAuth（repo, workflow）</div></div>
-            <span class="cred-state on">● 接続済み</span>
-            <button class="btn">再認証</button><button class="btn btn--ghost">解除</button>
-          </div>
+            <!-- Git アカウント（マルチアカウント） -->
+            <div class="ctx-view is-active" data-ctx-view="git">
+              <div class="warn-note">⚠ <b>要ADR</b>: 秘密情報の保存方式（sops / OSキーチェーン / 暗号化ファイル）とデータモデル（D1）。1ホストに複数アカウントを持てる。</div>
+              <div class="section-label">GitHub</div>
+              <div class="cred-row"><span class="cred-mark">GH</span><div class="pc-main"><div class="cred-host">tjst-t <span class="pc-chip">personal</span></div><div class="pc-path">OAuth（repo, workflow）</div></div><span class="cred-state on">● 接続済</span><button class="btn">再認証</button><button class="btn btn--ghost">解除</button></div>
+              <div class="cred-row"><span class="cred-mark">GH</span><div class="pc-main"><div class="cred-host">tjst-t-work <span class="pc-chip">work</span></div><div class="pc-path">Fine-grained token</div></div><span class="cred-state on">● 接続済</span><button class="btn btn--ghost">解除</button></div>
+              <button class="btn" style="margin-bottom:16px;">＋ GitHub アカウントを追加</button>
+              <div class="section-label">GitLab</div>
+              <div class="cred-row"><span class="cred-mark">GL</span><div class="pc-main"><div class="cred-host">アカウントなし</div><div class="pc-path">OAuth / トークンで接続</div></div><button class="btn btn--primary">＋ GitLab アカウントを追加</button></div>
+              <div class="section-label">SSH 鍵</div>
+              <div class="cred-row"><span class="cred-mark">🔑</span><div class="pc-main"><div class="cred-host">id_ed25519</div><div class="pc-path">~/.ssh/id_ed25519（登録済）</div></div><span class="cred-state on">● 登録済</span><button class="btn">鍵を追加</button></div>
+            </div>
 
-          <div class="cred-row">
-            <span class="cred-mark">GL</span>
-            <div><div class="cred-host">GitLab</div><div class="pc-path">未接続</div></div>
-            <span class="cred-state off">○ 未接続</span>
-            <button class="btn btn--primary">OAuthで接続</button><button class="btn">トークンで接続</button>
-          </div>
+            <!-- LLM エンドポイント -->
+            <div class="ctx-view" data-ctx-view="llm">
+              <p class="page-lede" style="margin-top:14px;">banto が使えるLLMを<b>全体設定</b>で登録する（プロジェクト個別には持たない）。opencode 経由で差し替え可。</p>
+              <div class="cred-row"><span class="cred-mark">A</span><div class="pc-main"><div class="cred-host">Anthropic API</div><div class="pc-path">opus 4.8 / sonnet 4.6 / haiku 4.5</div></div><span class="cred-state on">● 接続済</span><button class="btn">設定</button></div>
+              <div class="cred-row"><span class="cred-mark">◎</span><div class="pc-main"><div class="cred-host">opencode endpoint</div><div class="pc-path">http://localhost:4096 ・ モデル差し替えの窓口</div></div><span class="cred-state on">● 接続済</span><button class="btn">設定</button></div>
+              <div class="cred-row"><span class="cred-mark">L</span><div class="pc-main"><div class="cred-host">Local LLM (Ollama)</div><div class="pc-path">http://localhost:11434 ・ qwen2.5-coder, llama3.1</div></div><span class="cred-state on">● 接続済</span><button class="btn">設定</button></div>
+              <button class="btn">＋ サービスを追加</button>
+            </div>
 
-          <div class="cred-row">
-            <span class="cred-mark">🔑</span>
-            <div><div class="cred-host">SSH 鍵</div><div class="pc-path">~/.ssh/id_ed25519（登録済）・汎用 git+ssh</div></div>
-            <span class="cred-state on">● 登録済</span>
-            <button class="btn">鍵を追加</button>
-          </div>
+            <!-- モデル自動選定 -->
+            <div class="ctx-view" data-ctx-view="autopick">
+              <div class="warn-note">⚠ <b>要ADR/設計</b>: 自動選定アルゴリズム（タスク種別×難度×コストからサービス/モデルを選ぶ）。tier変更は改善ループで keep/tune/revert 評価。</div>
+              <p class="page-lede">セッション/タスクごとに、<b>どのサービスのどのモデルを使うかを動的に自動判定</b>する。プロジェクトに固定しない。既定は役割で与え、種別・難度・コスト上限で上書き選定する。</p>
+              <div class="section-label">役割の既定（可変・自動選定の起点）</div>
+              <div class="repo-list">
+                <div class="repo-row"><span class="rr-role">検討</span><span class="rr-url">Anthropic / opus（対話品質重視）</span></div>
+                <div class="repo-row"><span class="rr-role">実行者</span><span class="rr-url">Anthropic / sonnet（難タスクは opus に自動昇格）</span></div>
+                <div class="repo-row"><span class="rr-role">監査</span><span class="rr-url">Anthropic / opus（自己申告を疑う役は上位固定寄り）</span></div>
+                <div class="repo-row"><span class="rr-role sec">status_reporter</span><span class="rr-url">Local / qwen2.5-coder（安価・要約系はローカル優先）</span></div>
+              </div>
+              <div class="section-label" style="margin-top:14px;">ポリシー</div>
+              <label style="display:block;font-size:13px;margin:3px 0;"><input type="checkbox" checked> 安価に済む役割はローカルLLMを優先</label>
+              <label style="display:block;font-size:13px;margin:3px 0;"><input type="checkbox" checked> 難度・失敗で上位モデルへ自動昇格（改善ループで評価）</label>
+              <label style="display:block;font-size:13px;margin:3px 0;"><input type="checkbox"> 月次コスト上限で選定を抑制</label>
+            </div>
 
-          <p class="page-lede" style="margin-top:14px;">この認証情報は clone（取り込み）と Push（ゼロから作ったプロジェクトの公開）で共有される。プロジェクト個別ではなくグローバル（後述の設定にも出る）。</p>
+            <!-- 通知 -->
+            <div class="ctx-view" data-ctx-view="notify">
+              <p class="page-lede" style="margin-top:14px;">アテンションカード生成をプッシュ通知（携帯到達）。通知は「開くきっかけ」を担う（spec-ui §6）。</p>
+              <div class="tdef" style="max-width:640px;">
+                <div class="tdef-field"><div class="tdef-label">プッシュチャネル（ntfy トピック等）</div><input class="tdef-input" value="ntfy://banto-a1b2c3"></div>
+                <div class="tdef-field"><div class="tdef-label">静穏時間</div><input class="tdef-input" value="22:00 – 07:00" style="max-width:200px;"></div>
+                <div class="tdef-field"><div class="tdef-label">通知対象</div>
+                  <label style="display:block;font-size:13px;margin:2px 0;"><input type="checkbox" checked> blocking / エスカレーション</label>
+                  <label style="display:block;font-size:13px;margin:2px 0;"><input type="checkbox" checked> レビュー待ち・failed</label>
+                  <label style="display:block;font-size:13px;margin:2px 0;"><input type="checkbox" checked> 評価カード・定期レビュー</label>
+                </div>
+              </div>
+            </div>
+
+            <!-- 詳細（層B） -->
+            <div class="ctx-view" data-ctx-view="advanced">
+              <p class="page-lede" style="margin-top:14px;">層Bパラメータ（<code style="font-family:var(--font-mono)">meta/config.yaml</code>）。既定はプロダクト側、各プロジェクトはオーバーライドのみ。</p>
+              <div class="term" style="min-height:180px;">
+<div class="term-line term-dim"># meta/config.yaml（プロダクト既定）</div>
+<div class="term-line">cadence_days: 2</div>
+<div class="term-line">meta_cadence_days: 30</div>
+<div class="term-line">recap_idle_minutes: 10</div>
+<div class="term-line">escalate_on_reversible: false</div>
+<div class="term-line">merge_policy_default: sampled</div>
+<div class="term-line">sampled_rate: 0.15</div>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -1214,8 +1269,8 @@ body.show-annot .annot-hint { display: flex; }
 <script>
 (function(){
   // ナビゲーション: 目的地(サイドバー)=通常モード / 会話=フォーカス(全画面＋戻る)
-  var LABELS = { planning:'Planning', queue:'Attention Queue', improve:'Improvements', board:'Board', history:'History', backlog:'Backlog', projects:'Projects', review:'Review', consult:'Consult', deliberation:'Planning', terminal:'Terminal', carddetail:'カード詳細', taskedit:'タスク定義', projectedit:'プロジェクト登録', credentials:'接続 / 認証情報' };
-  var SESSION = { review:1, consult:1, deliberation:1, terminal:1, carddetail:1, taskedit:1, projectedit:1, credentials:1 };   // フォーカス（メイン置換・左ナビ維持）で開くもの
+  var LABELS = { planning:'Planning', queue:'Attention Queue', improve:'Improvements', board:'Board', history:'History', backlog:'Backlog', projects:'Projects', review:'Review', consult:'Consult', deliberation:'Planning', terminal:'Terminal', carddetail:'カード詳細', taskedit:'タスク定義', projectedit:'プロジェクト登録', settings:'Settings' };
+  var SESSION = { review:1, consult:1, deliberation:1, terminal:1, carddetail:1, taskedit:1, projectedit:1 };   // フォーカス（メイン置換・左ナビ維持）で開くもの
   var app = document.querySelector('.app');
   var focusBar = document.getElementById('focusBar');
   var focusLabel = document.getElementById('focusLabel');
