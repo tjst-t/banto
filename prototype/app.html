@@ -244,6 +244,17 @@ body.show-annot .annot-hint { display: flex; }
 .proj-switch { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; flex-wrap: wrap; }
 .proj-switch .chip--add { border-style: dashed; color: var(--ink-faint); }
 
+/* Projects（プロジェクトレジストリ） */
+.proj-card { display: flex; align-items: center; gap: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 13px 16px; margin-bottom: 10px; box-shadow: 0 1px 2px rgba(39,36,29,0.04); }
+.pc-mark { width: 38px; height: 38px; border-radius: 9px; background: var(--accent); color: #fdfcf7; display: grid; place-items: center; font-weight: 700; font-size: 16px; flex-shrink: 0; }
+.pc-main { flex: 1; min-width: 0; }
+.pc-name { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.pc-path { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-faint); margin-top: 1px; }
+.pc-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.pc-chip { font-size: 11px; color: var(--ink-soft); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 8px; background: var(--surface-dim); }
+.pc-status { font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; gap: 5px; }
+.pc-status.paused { color: var(--ink-faint); }
+
 /* ===== Planning / History のリスト ===== */
 .list-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
 .list-head .r-title { font-size: 16px; font-weight: 700; }
@@ -290,6 +301,9 @@ body.show-annot .annot-hint { display: flex; }
       </button>
       <button class="side-item" data-open="backlog" data-label="Backlog" title="Backlog">
         <span class="si-ico">▦</span><span class="si-label">Backlog</span>
+      </button>
+      <button class="side-item" data-open="projects" data-label="Projects" title="Projects">
+        <span class="si-ico">▣</span><span class="si-label">Projects</span>
       </button>
 
       <div class="side-group-label">Decisions</div>
@@ -469,7 +483,7 @@ body.show-annot .annot-hint { display: flex; }
             <span class="filter-label">プロジェクト:</span>
             <button class="chip is-active">banto</button>
             <button class="chip">palmux</button>
-            <button class="chip chip--add">＋ New project</button>
+            <button class="chip chip--add" data-open="projectedit" data-label="プロジェクト登録">＋ New project</button>
           </div>
           <p class="page-lede">アイデア・依頼を対話で仕様に固める起点。ここから開発が生まれる。開くと会話が始まる。</p>
           <div class="thread-list" id="pl-threads">
@@ -927,7 +941,7 @@ body.show-annot .annot-hint { display: flex; }
             <span class="filter-label">プロジェクト:</span>
             <button class="chip is-active">banto</button>
             <button class="chip">palmux</button>
-            <button class="chip chip--add">＋ New project</button>
+            <button class="chip chip--add" data-open="projectedit" data-label="プロジェクト登録">＋ New project</button>
           </div>
           <div class="commit-note" id="bl-note">
             タスク定義ファイル <code>work/tasks/*.md</code> の構造化エディタ（独自DBなし）。Epic→Taskの2段。ドラッグで割当・並べ替え、または右のチャットで相談 → daemon が<b>ファイルを書き換えてコミット</b>（D3: ファイルは意図の真実）。
@@ -984,6 +998,80 @@ body.show-annot .annot-hint { display: flex; }
         <div class="annot" data-target="#bl-note"><span class="an-num">1</span><span class="an-title">ファイルが真実・独自DBなし</span><br>編集はタスク定義ファイルを書き換えてコミットするだけ。人が git diff でレビューできる（D3）。階層はEpic→Taskの2段（JIRA化しない）。<span class="an-ref">spec-ui §1.3 / VISION</span></div>
       </section>
 
+      <!-- ========== パネル: Projects（プロジェクトレジストリ） ========== -->
+      <section class="panel" id="panel-projects" data-title="Projects">
+        <div class="panel-inner">
+          <div class="list-head">
+            <span class="r-title">Projects ─ レジストリ</span>
+            <button class="btn btn--primary" data-open="projectedit" data-label="プロジェクト登録">＋ Register project</button>
+          </div>
+          <div class="commit-note" id="pj-note">
+            daemon の<b>プロジェクトレジストリ</b>（リポジトリパス＋プロファイル）。1つのdaemon・1本のアテンションキューに集約し、<b>統治の単位はプロジェクト</b>＝契約層(vision/principles/spec/ADR/tasks…)は各リポジトリに閉じる。参照は <code>&lt;project&gt;/&lt;id&gt;</code>。<span class="an-ref" style="color:var(--ink-faint)">spec-multi-project §1/§2</span>
+          </div>
+
+          <div class="proj-card">
+            <span class="pc-mark">番</span>
+            <div class="pc-main">
+              <div class="pc-name">banto <span class="pc-status"><span class="dot dot--healthy"></span>active</span></div>
+              <div class="pc-path">~/ghq/github.com/tjst-t/banto</div>
+              <div class="pc-meta"><span class="pc-chip">18 tasks</span><span class="pc-chip">model: opus (opencode)</span><span class="pc-chip">review: mandatory / sampled</span><span class="pc-chip">cadence: 2d</span></div>
+            </div>
+            <button class="btn" data-open="projectedit" data-label="プロジェクト設定 · banto">設定</button>
+          </div>
+
+          <div class="proj-card">
+            <span class="pc-mark" style="background:var(--c-eval);">P</span>
+            <div class="pc-main">
+              <div class="pc-name">palmux <span class="pc-status"><span class="dot dot--healthy"></span>active</span></div>
+              <div class="pc-path">~/ghq/github.com/tjst-t/palmux</div>
+              <div class="pc-meta"><span class="pc-chip">6 tasks</span><span class="pc-chip">model: sonnet (opencode)</span><span class="pc-chip">review: sampled</span><span class="pc-chip">cadence: 3d</span></div>
+            </div>
+            <button class="btn" data-open="projectedit" data-label="プロジェクト設定 · palmux">設定</button>
+          </div>
+
+          <div class="proj-card">
+            <span class="pc-mark" style="background:var(--ink-faint);">L</span>
+            <div class="pc-main">
+              <div class="pc-name">loamium <span class="pc-status paused">⏸ paused</span></div>
+              <div class="pc-path">~/ghq/github.com/tjst-t/loamium</div>
+              <div class="pc-meta"><span class="pc-chip">0 tasks</span><span class="pc-chip">登録のみ・未稼働</span></div>
+            </div>
+            <button class="btn" data-open="projectedit" data-label="プロジェクト設定 · loamium">設定</button>
+          </div>
+
+          <p class="page-lede" style="margin-top:14px;">共有資産（Extension Pack・監査チェックリスト等の層A、層B既定値）は<b>プロダクト側の既定</b>。各プロジェクトは<b>オーバーライドのみ</b>を持つ（1プロジェクトの改善が全体に波及）。</p>
+        </div>
+        <div class="annot" data-target="#pj-note"><span class="an-num">1</span><span class="an-title">単一窓口・統治はプロジェクト単位</span><br>複数リポジトリを1daemon・1キューに集約。実行は依存が無い限り無制限に並行、絞るのはPOの注意力だけ（キューの順序で制御）。<span class="an-ref">spec-multi-project §1/§3/§4</span></div>
+      </section>
+
+      <!-- ========== パネル: プロジェクト登録/設定（focus） ========== -->
+      <section class="panel" id="panel-projectedit" data-title="プロジェクト登録">
+        <div class="panel-inner">
+          <div class="review-head" style="margin-bottom:8px;">
+            <span class="type-chip" style="background:var(--ink-soft);">REGISTRY</span>
+            <span class="r-title">プロジェクトのプロファイル</span>
+          </div>
+          <div class="commit-note">レジストリはリポジトリパス＋プロファイルを持つ。契約層は登録したリポジトリ内に閉じる（混ぜない）。<span style="color:var(--ink-faint)">※プロファイル項目は spec §8 で確定中</span></div>
+          <div class="tdef">
+            <div class="tdef-field"><div class="tdef-label">NAME（プロジェクト名 / ID名前空間）</div><input class="tdef-input" placeholder="例: loamium"></div>
+            <div class="tdef-field"><div class="tdef-label">REPO PATH</div><input class="tdef-input" placeholder="~/ghq/github.com/tjst-t/loamium"></div>
+            <div class="tdef-field"><div class="tdef-label">MODEL ENDPOINT（opencode 経由・差し替え可）</div><input class="tdef-input" value="opus"></div>
+            <div class="tdef-field"><div class="tdef-label">DEFAULT REVIEW POLICY</div>
+              <div class="proj-switch" style="margin:0;">
+                <button class="chip">auto</button><button class="chip is-active">sampled</button><button class="chip">mandatory</button>
+              </div>
+            </div>
+            <div class="tdef-field"><div class="tdef-label">CADENCE（日）</div><input class="tdef-input" value="2" style="max-width:120px;"></div>
+            <div class="tdef-field"><div class="tdef-label">NOTIFY CHANNEL（ntfy トピック等）</div><input class="tdef-input" placeholder="例: ntfy://... または既定を継承"></div>
+            <div class="tdef-meta">overrides のみ保持（共有資産の既定を継承）・イベントログにプロジェクトタグ付与</div>
+          </div>
+          <div class="footer-actions" style="margin-top:16px;">
+            <button class="btn btn--primary">登録する</button>
+            <button class="btn btn--ghost">キャンセル</button>
+          </div>
+        </div>
+      </section>
+
       <!-- ========== パネル: タスク定義エディタ（focus） ========== -->
       <section class="panel" id="panel-taskedit" data-title="タスク定義">
         <div class="panel-inner">
@@ -1021,8 +1109,8 @@ body.show-annot .annot-hint { display: flex; }
 <script>
 (function(){
   // ナビゲーション: 目的地(サイドバー)=通常モード / 会話=フォーカス(全画面＋戻る)
-  var LABELS = { planning:'Planning', queue:'Attention Queue', improve:'Improvements', board:'Board', history:'History', backlog:'Backlog', review:'Review', consult:'Consult', deliberation:'Planning', terminal:'Terminal', carddetail:'カード詳細', taskedit:'タスク定義' };
-  var SESSION = { review:1, consult:1, deliberation:1, terminal:1, carddetail:1, taskedit:1 };   // フォーカス（メイン置換・左ナビ維持）で開くもの
+  var LABELS = { planning:'Planning', queue:'Attention Queue', improve:'Improvements', board:'Board', history:'History', backlog:'Backlog', projects:'Projects', review:'Review', consult:'Consult', deliberation:'Planning', terminal:'Terminal', carddetail:'カード詳細', taskedit:'タスク定義', projectedit:'プロジェクト登録' };
+  var SESSION = { review:1, consult:1, deliberation:1, terminal:1, carddetail:1, taskedit:1, projectedit:1 };   // フォーカス（メイン置換・左ナビ維持）で開くもの
   var app = document.querySelector('.app');
   var focusBar = document.getElementById('focusBar');
   var focusLabel = document.getElementById('focusLabel');
