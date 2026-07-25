@@ -146,13 +146,28 @@ body.show-annot .annot-hint { display: flex; }
 .sidebar { width: var(--sidebar-w, 238px); }   /* 幅を可変に（既定238） */
 .sidebar-resizer { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 6; }
 .sidebar-resizer:hover, .sidebar-resizer.dragging { background: rgba(43,65,98,0.16); }
-.app.nav-collapsed .sidebar { display: none; }
+/* 畳むとアイコンだけの細いレールに縮む */
+.app.nav-collapsed .sidebar { width: 58px; }
+.app.nav-collapsed .brand-txt,
+.app.nav-collapsed .side-proj,
+.app.nav-collapsed .side-group-label,
+.app.nav-collapsed .si-label,
+.app.nav-collapsed .si-badge,
+.app.nav-collapsed .si-tag,
+.app.nav-collapsed .si-badge-proj,
+.app.nav-collapsed .foot-txt { display: none; }
+.app.nav-collapsed .sidebar-brand { flex-direction: column; gap: 8px; padding: 12px 0; }
+.app.nav-collapsed .side-nav { padding: 8px 8px 14px; }
+.app.nav-collapsed .side-item { justify-content: center; padding: 9px 0; }
+.app.nav-collapsed .sidebar-foot { justify-content: center; padding: 11px 0; }
+
+.sidebar-brand .nav-toggle { margin-left: auto; }
 .nav-toggle {
   appearance: none; border: 1px solid var(--line-strong); background: var(--surface);
-  color: var(--ink-soft); border-radius: 7px; width: 32px; height: 30px;
-  cursor: pointer; font-size: 15px; line-height: 1; flex-shrink: 0; margin-right: 4px;
+  color: var(--ink-soft); border-radius: 7px; width: 28px; height: 26px;
+  cursor: pointer; font-size: 15px; line-height: 1; flex-shrink: 0;
 }
-.nav-toggle:hover { background: var(--surface-dim); }
+.nav-toggle:hover { background: var(--surface-dim); color: var(--ink); }
 
 /* ===== レビューの証拠ペイン切替（Diff / Terminal / App） ===== */
 .ctx-pane { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--surface); display: flex; flex-direction: column; }
@@ -212,10 +227,11 @@ body.show-annot .annot-hint { display: flex; }
   <aside class="sidebar">
     <div class="sidebar-brand">
       <span class="brand-mark">番</span>
-      <span>
+      <span class="brand-txt">
         <span class="brand-name">banto</span>
         <span class="brand-sub">POコックピット</span>
       </span>
+      <button class="nav-toggle" id="navToggle" title="サイドバーを畳む">«</button>
     </div>
 
     <div class="side-proj">
@@ -228,34 +244,34 @@ body.show-annot .annot-hint { display: flex; }
     </div>
 
     <nav class="side-nav">
-      <button class="side-item" data-open="planning" data-label="Planning">
-        <span class="si-ico">✎</span>Planning<span class="si-badge-proj">banto</span>
+      <button class="side-item" data-open="planning" data-label="Planning" title="Planning">
+        <span class="si-ico">✎</span><span class="si-label">Planning</span><span class="si-badge-proj">banto</span>
       </button>
 
       <div class="side-group-label">Decisions</div>
-      <button class="side-item is-active" data-open="queue" data-label="Attention Queue">
-        <span class="si-ico">◈</span>Attention Queue<span class="si-badge">5</span>
+      <button class="side-item is-active" data-open="queue" data-label="Attention Queue" title="Attention Queue">
+        <span class="si-ico">◈</span><span class="si-label">Attention Queue</span><span class="si-badge">5</span>
       </button>
-      <button class="side-item" data-open="improve" data-label="Improvements">
-        <span class="si-ico">⟳</span>Improvements<span class="si-tag" style="margin-left:auto;font-size:10px;color:var(--ink-faint);border:1px solid var(--line-strong);border-radius:4px;padding:0 6px;">月次</span>
+      <button class="side-item" data-open="improve" data-label="Improvements" title="Improvements">
+        <span class="si-ico">⟳</span><span class="si-label">Improvements</span><span class="si-tag" style="margin-left:auto;font-size:10px;color:var(--ink-faint);border:1px solid var(--line-strong);border-radius:4px;padding:0 6px;">月次</span>
       </button>
 
       <div class="side-group-label">Progress</div>
-      <button class="side-item" data-open="board" data-label="Board">
-        <span class="si-ico">▤</span>Board
+      <button class="side-item" data-open="board" data-label="Board" title="Board">
+        <span class="si-ico">▤</span><span class="si-label">Board</span>
       </button>
 
       <div class="side-group-label">Records</div>
-      <button class="side-item" data-open="history" data-label="History">
-        <span class="si-ico">🕓</span>History
+      <button class="side-item" data-open="history" data-label="History" title="History">
+        <span class="si-ico">🕓</span><span class="si-label">History</span>
       </button>
-      <button class="side-item" disabled>
-        <span class="si-ico">▦</span>Backlog<span class="si-tag">準備中</span>
+      <button class="side-item" disabled title="Backlog（準備中）">
+        <span class="si-ico">▦</span><span class="si-label">Backlog</span><span class="si-tag">準備中</span>
       </button>
     </nav>
 
     <div class="sidebar-foot">
-      <span class="dot dot--healthy"></span>daemon 接続中 ・ 通知 ON
+      <span class="dot dot--healthy"></span><span class="foot-txt">daemon 接続中 ・ 通知 ON</span>
     </div>
     <div class="sidebar-resizer" id="sidebarResizer" title="ドラッグで幅を変更"></div>
   </aside>
@@ -263,7 +279,6 @@ body.show-annot .annot-hint { display: flex; }
   <!-- ===== メイン ===== -->
   <div class="app-main">
     <div class="app-topbar">
-      <button class="nav-toggle" id="navToggle" title="サイドバーの開閉">☰</button>
       <div class="dest-head" id="destHead">
         <span class="app-view-title" id="viewTitle">Attention Queue</span>
       </div>
@@ -884,8 +899,13 @@ body.show-annot .annot-hint { display: flex; }
   // 戻る → 直前の目的地へ
   document.getElementById('backBtn').addEventListener('click', function(){ goDestination(currentDest); });
 
-  // サイドバー: 開閉トグル
-  document.getElementById('navToggle').addEventListener('click', function(){ app.classList.toggle('nav-collapsed'); });
+  // サイドバー: 開閉トグル（畳むとアイコンレール、グリフ反転）
+  var navToggle = document.getElementById('navToggle');
+  navToggle.addEventListener('click', function(){
+    var collapsed = app.classList.toggle('nav-collapsed');
+    navToggle.textContent = collapsed ? '»' : '«';
+    navToggle.title = collapsed ? 'サイドバーを開く' : 'サイドバーを畳む';
+  });
 
   // サイドバー: ドラッグでリサイズ
   var rez = document.getElementById('sidebarResizer');
