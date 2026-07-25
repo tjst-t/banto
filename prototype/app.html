@@ -129,6 +129,19 @@ body.show-annot .annot-hint { display: flex; }
 .tab-close:hover { background: var(--line); color: var(--ink); }
 .tab-pin { font-size: 10px; color: var(--ink-faint); }
 
+/* ===== フォーカスモード（会話は全画面・潜る/戻る） ===== */
+.focus-bar { display: none; align-items: center; gap: 12px; }
+.back-btn {
+  appearance: none; font-family: inherit; font-size: 13.5px; font-weight: 600;
+  border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink);
+  border-radius: 7px; padding: 6px 14px; cursor: pointer;
+}
+.back-btn:hover { background: var(--surface-dim); border-color: var(--ink-faint); }
+.focus-label { font-size: 14px; font-weight: 700; color: var(--ink); }
+/* 左サイドバーは常に残す。会話はメイン領域を置き換えるだけ（潜る/戻る） */
+.app.focus-mode .panel-inner { max-width: 980px; margin: 0 auto; }
+.app.focus-mode .panel-inner--wide { max-width: 1180px; }
+
 /* ===== Planning / History のリスト ===== */
 .list-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
 .list-head .r-title { font-size: 16px; font-weight: 700; }
@@ -211,7 +224,13 @@ body.show-annot .annot-hint { display: flex; }
   <!-- ===== メイン ===== -->
   <div class="app-main">
     <div class="app-topbar">
-      <div class="tab-bar" id="tabBar" role="tablist"><!-- タブはJSで描画 --></div>
+      <div class="dest-head" id="destHead">
+        <span class="app-view-title" id="viewTitle">Attention Queue</span>
+      </div>
+      <div class="focus-bar" id="focusBar">
+        <button class="back-btn" id="backBtn">← 戻る</button>
+        <span class="focus-label" id="focusLabel"></span>
+      </div>
       <span class="topbar-spacer"></span>
       <span class="bell" title="通知（プッシュ）">🔔<span class="bell-badge">5</span></span>
       <button class="annot-toggle" id="annotToggle" aria-pressed="false">💡 解説を重ねる</button>
@@ -697,12 +716,15 @@ body.show-annot .annot-hint { display: flex; }
 
 <script>
 (function(){
-  // タブモデル: サイドラインの目的地=pinned、会話=session(閉じられる)
-  var LABELS = { planning:'Planning', queue:'Attention Queue', improve:'Improvements', board:'Board', history:'History', review:'Review', consult:'Consult', deliberation:'Planning' };
-  var SESSION = { review:1, consult:1, deliberation:1 };   // タブで開く・閉じられる会話
-  var TABS = [];         // {id, label}
-  var activeId = null;
-  var tabBar = document.getElementById('tabBar');
+  // ナビゲーション: 目的地(サイドバー)=通常モード / 会話=フォーカス(全画面＋戻る)
+  var LABELS = { planning:'Planning', queue:'Attention Queue', improve:'Improvements', board:'Board', history:'History' };
+  var SESSION = { review:1, consult:1, deliberation:1 };   // 全画面フォーカスで開く会話
+  var currentDest = 'queue';
+  var app = document.querySelector('.app');
+  var focusBar = document.getElementById('focusBar');
+  var focusLabel = document.getElementById('focusLabel');
+  var destHead = document.getElementById('destHead');
+  var viewTitle = document.getElementById('viewTitle');
   var sideItems = document.querySelectorAll('.side-item[data-open]');
 
   function clearHi(){ document.querySelectorAll('.annot-hi').forEach(function(e){ e.classList.remove('annot-hi'); }); }
@@ -748,68 +770,50 @@ body.show-annot .annot-hint { display: flex; }
     });
   }
 
-  function renderTabs(){
-    tabBar.innerHTML = '';
-    TABS.forEach(function(t){
-      var b = document.createElement('button');
-      b.className = 'tab' + (t.id===activeId ? ' is-active' : '');
-      b.dataset.tab = t.id;
-      var lab = document.createElement('span'); lab.className='tab-label'; lab.textContent = t.label;
-      b.appendChild(lab);
-      if(SESSION[t.id]){
-        var x = document.createElement('span'); x.className='tab-close'; x.textContent='×'; x.dataset.close = t.id;
-        b.appendChild(x);
-      } else {
-        var p = document.createElement('span'); p.className='tab-pin'; p.textContent='◦';
-        b.appendChild(p);
-      }
-      tabBar.appendChild(b);
-    });
+  function showPanel(id){
+    document.querySelectorAll('.panel').forEach(function(p){ p.classList.toggle('is-active', p.id==='panel-'+id); });
   }
 
-  function activateTab(id){
-    activeId = id;
-    document.querySelectorAll('.panel').forEach(function(p){ p.classList.toggle('is-active', p.id==='panel-'+id); });
+  // 目的地（サイドバー）：通常モード。サイドバーを出す
+  function goDestination(id){
+    currentDest = id;
+    app.classList.remove('focus-mode');
+    focusBar.style.display = 'none';
+    destHead.style.display = '';
+    viewTitle.textContent = LABELS[id] || id;
+    showPanel(id);
     sideItems.forEach(function(s){ s.classList.toggle('is-active', s.dataset.open===id); });
-    renderTabs();
     window.scrollTo(0,0);
     setTimeout(layoutAnnots, 0);
   }
 
-  function openTab(id, label){
-    if(!TABS.some(function(t){ return t.id===id; })){
-      TABS.push({ id:id, label: label || LABELS[id] || id });
-    }
-    activateTab(id);
+  // 会話：全画面フォーカス。サイドバーを畳み、「戻る」を出す
+  function openFocus(id, label){
+    app.classList.add('focus-mode');
+    destHead.style.display = 'none';
+    focusBar.style.display = 'flex';
+    focusLabel.textContent = label || LABELS[id] || id;
+    showPanel(id);
+    window.scrollTo(0,0);
+    setTimeout(layoutAnnots, 0);
   }
 
-  function closeTab(id){
-    var i = TABS.findIndex(function(t){ return t.id===id; });
-    if(i < 0) return;
-    TABS.splice(i, 1);
-    if(activeId === id){
-      var next = TABS[Math.min(i, TABS.length-1)];
-      if(next) activateTab(next.id); else { activeId=null; document.querySelectorAll('.panel').forEach(function(p){p.classList.remove('is-active');}); renderTabs(); }
-    } else { renderTabs(); }
+  function openThing(id, label){
+    if(SESSION[id]) openFocus(id, label); else goDestination(id);
   }
 
-  // サイドバー＆カード内ボタン（data-open / 旧data-goto）→ タブを開く
+  // サイドバー＆カード内ボタン（data-open / 旧data-goto）→ 潜る or 目的地切替
   document.querySelectorAll('[data-open],[data-goto]').forEach(function(b){
     b.addEventListener('click', function(e){
       e.preventDefault();
-      openTab(b.dataset.open || b.dataset.goto, b.dataset.label);
+      openThing(b.dataset.open || b.dataset.goto, b.dataset.label);
     });
   });
 
-  // タブバー: クリックで切替、×で閉じる
-  tabBar.addEventListener('click', function(e){
-    var close = e.target.closest('.tab-close');
-    if(close){ e.stopPropagation(); closeTab(close.dataset.close); return; }
-    var tab = e.target.closest('.tab');
-    if(tab) activateTab(tab.dataset.tab);
-  });
+  // 戻る → 直前の目的地へ
+  document.getElementById('backBtn').addEventListener('click', function(){ goDestination(currentDest); });
 
-  openTab('queue');   // 既定タブ
+  goDestination('queue');   // 既定
 
   var toggle = document.getElementById('annotToggle');
   toggle.addEventListener('click', function(){
