@@ -820,6 +820,12 @@ body.show-annot .annot-hint { display: flex; }
             <span class="r-title">2026-07 月次レビュー ─ ループの健康と改善提案</span>
           </div>
 
+          <div class="improve-item" id="im-report" style="border-left-color:var(--accent);">
+            <div class="improve-title">気づいた改善点・不便を、あなたから指摘する</div>
+            <div class="part-body" style="font-size:13px;">POの指摘は <b>2件として処理</b>（spec §2）: ①指摘そのものへの対処 ②<b>センサー欠落incident</b>＝「なぜシステムは自分で検知できなかったか」。検知の機構化までタスク化し、同じクラスの指摘を二度させない。</div>
+            <div class="chat-input-row" style="margin-top:10px;"><input class="chat-input" type="text" placeholder="例: レビューで同じ種類の指摘を3回している。検知して自動で直すようにして"><button class="btn btn--primary">指摘する</button></div>
+          </div>
+
           <div class="metric-strip" id="im-metrics">
             <div class="metric-tile"><div class="m-label">po起源の比率</div><div class="m-value">12%</div><div class="m-delta up">▼ 18%→12%（改善）</div></div>
             <div class="metric-tile"><div class="m-label">機構化までの平均</div><div class="m-value">4.2日</div><div class="m-delta up">▼ 5.1→4.2</div></div>
@@ -1158,6 +1164,7 @@ body.show-annot .annot-hint { display: flex; }
               <button class="ctx-tab is-active" data-ctx="git">Git アカウント</button>
               <button class="ctx-tab" data-ctx="llm">LLM エンドポイント</button>
               <button class="ctx-tab" data-ctx="autopick">モデル自動選定</button>
+              <button class="ctx-tab" data-ctx="memory">記憶 (Memory)</button>
               <button class="ctx-tab" data-ctx="notify">通知</button>
               <button class="ctx-tab" data-ctx="advanced">詳細 (層B)</button>
             </div>
@@ -1213,6 +1220,29 @@ body.show-annot .annot-hint { display: flex; }
                   <label style="display:block;font-size:13px;margin:2px 0;"><input type="checkbox" checked> 評価カード・定期レビュー</label>
                 </div>
               </div>
+            </div>
+
+            <!-- 記憶（Memory） -->
+            <div class="ctx-view" data-ctx-view="memory">
+              <div class="warn-note">⚠ <b>要ADR/設計</b>: 記憶のデータモデルと「何を横断共有・何をプロジェクトに閉じるか」（D1/D3）。イベントログ＝真実、記憶はそこから<b>蒸留した導出＋編集可</b>とし、競合する隠れ状態にしない。</div>
+              <p class="page-lede" style="margin-top:0;">散らばった会話面（Planning / Review / Consult / Backlog / Terminal）に、<b>共通の記憶を持つ一人のAI</b>が向き合う。記憶は二層で持つ ── これで「継続した一人のAI」に見えつつ、プロジェクト知識は混ざらない。</p>
+
+              <div class="section-label">① あなたの記憶（全プロジェクト横断・共有）</div>
+              <div class="part-body" style="font-size:12.5px;color:var(--ink-soft);margin-bottom:8px;">“人”についての記憶（好み・進め方・常設の指示）。どの面・どのプロジェクトでも効く。</div>
+              <div class="repo-list">
+                <div class="repo-row"><span class="rr-url" style="color:var(--ink);">統合UIで操作可能なモックを好む。説明は埋め込まずフローティングで重ねる</span><button class="btn" style="padding:3px 10px;font-size:12px;">編集</button></div>
+                <div class="repo-row"><span class="rr-url" style="color:var(--ink);">大きなスコープ変更はADR/ROADMAPに計上してから着手（統治を踏む）</span><button class="btn" style="padding:3px 10px;font-size:12px;">編集</button></div>
+                <div class="repo-row"><span class="rr-url" style="color:var(--ink);">用語はIT寄り。1面ずつ見せて逐次ステアする</span><button class="btn" style="padding:3px 10px;font-size:12px;">編集</button></div>
+              </div>
+              <button class="btn" style="margin:6px 0 16px;">＋ 記憶を追加</button>
+
+              <div class="section-label">② プロジェクトの記憶（各リポジトリに閉じる・横断させない）</div>
+              <div class="part-body" style="font-size:12.5px;color:var(--ink-soft);margin-bottom:8px;">“そのプロジェクト”の決定・規約・ドメイン。契約層(ADR/spec)と地続き。統治の単位はプロジェクトなので混ぜない（spec-multi-project §1）。</div>
+              <div class="repo-list">
+                <div class="repo-row"><span class="rr-role">banto</span><span class="rr-url">全体像プロトタイプ進行中 / 非拘束の設計リファレンス(ADR-0002) …</span><button class="btn" style="padding:3px 10px;font-size:12px;">開く</button></div>
+                <div class="repo-row"><span class="rr-role sec">palmux</span><span class="rr-url">CDP画像転送・共有ブラウザの規約 …</span><button class="btn" style="padding:3px 10px;font-size:12px;">開く</button></div>
+              </div>
+              <p class="page-lede" style="margin-top:10px;">各会話面は <b>①あなたの記憶 ＋ ②そのプロジェクトの記憶 ＋ その場の文脈</b> を合成する。復帰リキャップ（会話冒頭の「42分ぶりです…」）はこの記憶の一部を出したもの。</p>
             </div>
 
             <!-- 詳細（層B） -->
