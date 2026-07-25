@@ -1,0 +1,1561 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>banto POコックピット（統合UI）</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+/* ===== 統合シェル（app.html 専用） ===== */
+.app { display: flex; min-height: 100vh; }
+
+.sidebar {
+  width: 238px; flex-shrink: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  position: sticky; top: 0; height: 100vh;
+  display: flex; flex-direction: column;
+}
+.sidebar-brand {
+  display: flex; align-items: center; gap: 10px;
+  padding: 15px 18px; border-bottom: 1px solid var(--line);
+}
+.side-proj { padding: 12px 14px 6px; }
+.side-proj-label { font-size: 10.5px; color: var(--ink-faint); letter-spacing: 0.06em; font-weight: 700; margin-bottom: 6px; }
+.side-nav { flex: 1; overflow-y: auto; padding: 6px 10px 14px; }
+.side-group-label {
+  font-size: 10px; color: var(--ink-faint); letter-spacing: 0.1em; font-weight: 700;
+  padding: 13px 10px 5px;
+}
+.side-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-radius: 8px;
+  font-size: 13.5px; color: var(--ink-soft); cursor: pointer;
+  border: none; background: transparent; width: 100%; text-align: left;
+  font-family: inherit;
+}
+.side-item:hover { background: var(--surface-dim); }
+.side-item.is-active { background: rgba(43,65,98,0.10); color: var(--accent); font-weight: 700; }
+.side-item .si-ico { width: 18px; text-align: center; font-size: 14px; flex-shrink: 0; }
+.side-item .si-badge {
+  margin-left: auto; font-size: 11px; font-weight: 700;
+  background: var(--accent); color: #fdfcf7; border-radius: 999px; padding: 0 8px;
+}
+.side-item[disabled] { color: var(--ink-faint); cursor: default; }
+.side-item[disabled] .si-tag { margin-left: auto; font-size: 10px; color: var(--ink-faint); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 6px; }
+.sidebar-foot {
+  border-top: 1px solid var(--line); padding: 11px 16px;
+  font-size: 11.5px; color: var(--ink-faint);
+  display: flex; align-items: center; gap: 8px;
+}
+
+.app-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.app-topbar {
+  position: sticky; top: 0; z-index: 25;
+  background: var(--surface); border-bottom: 1px solid var(--line);
+  padding: 11px 26px; display: flex; align-items: center; gap: 14px;
+}
+.app-view-title { font-size: 16px; font-weight: 700; }
+.app-view-sub { font-size: 12px; color: var(--ink-faint); margin-left: 2px; }
+.topbar-spacer { margin-left: auto; }
+.bell { position: relative; font-size: 17px; color: var(--ink-soft); cursor: pointer; padding: 4px; }
+.bell .bell-badge {
+  position: absolute; top: -2px; right: -4px;
+  background: var(--c-fail); color: #fff; font-size: 9.5px; font-weight: 700;
+  border-radius: 999px; padding: 0 5px;
+}
+.annot-toggle {
+  appearance: none; font-family: inherit; font-size: 12.5px; font-weight: 600;
+  border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink-soft);
+  border-radius: 999px; padding: 5px 14px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.annot-toggle:hover { background: var(--surface-dim); }
+.annot-toggle.is-on { background: #1f3350; border-color: #1f3350; color: #fff; }
+
+.app-content { padding: 24px 26px 80px; width: 100%; }
+.panel { display: none; position: relative; }
+.panel.is-active { display: block; }
+.panel-inner { max-width: 820px; }
+.panel-inner--wide { max-width: 1060px; }
+
+/* フローティング解説（完成UIの上に重ねる注釈） */
+.annot {
+  position: absolute; width: 232px;
+  background: #1f3350; color: #ece8dd;
+  border-radius: 10px; padding: 10px 13px;
+  font-size: 12px; line-height: 1.55;
+  box-shadow: 0 10px 30px rgba(20,25,40,0.28);
+  z-index: 40; display: none;
+}
+body.show-annot .panel.is-active .annot { display: block; }
+.annot .an-num {
+  display: inline-flex; width: 18px; height: 18px; border-radius: 50%;
+  background: #e0a95a; color: #2a1c07; font-weight: 700; font-size: 11px;
+  align-items: center; justify-content: center; margin-right: 7px; vertical-align: 1px;
+}
+.annot .an-title { font-weight: 700; color: #fff; }
+.annot .an-ref { display: block; margin-top: 4px; font-size: 10.5px; color: #a9b6cc; font-family: var(--font-mono); }
+.annot::before {
+  content: ""; position: absolute; top: var(--arrow, 15px); left: -7px;
+  border: 7px solid transparent; border-right-color: #1f3350; border-left: 0;
+}
+.annot-hi { outline: 2px dashed rgba(224,169,90,0.9); outline-offset: 3px; border-radius: 6px; }
+
+.annot-hint {
+  display: none; align-items: center; gap: 8px;
+  background: rgba(31,51,80,0.06); border: 1px dashed var(--line-strong);
+  border-radius: 8px; padding: 8px 14px; margin-bottom: 18px;
+  font-size: 12.5px; color: var(--ink-soft);
+}
+body.show-annot .annot-hint { display: flex; }
+
+@media (max-width: 860px) {
+  .sidebar { position: fixed; z-index: 60; transform: translateX(-100%); transition: transform .2s; }
+  .app-main { margin-left: 0; }
+}
+
+/* ===== タブバー（一級概念: 開いて作業する対象） ===== */
+.tab-bar { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0; overflow-x: auto; }
+.tab {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 12px; border: 1px solid transparent; border-radius: 7px;
+  background: transparent; color: var(--ink-soft); font-size: 13px; font-family: inherit;
+  cursor: pointer; white-space: nowrap;
+}
+.tab:hover { background: var(--surface-dim); }
+.tab.is-active { background: var(--surface-dim); border-color: var(--line); color: var(--ink); font-weight: 700; }
+.tab-close { font-size: 14px; line-height: 1; color: var(--ink-faint); border-radius: 4px; padding: 0 3px; }
+.tab-close:hover { background: var(--line); color: var(--ink); }
+.tab-pin { font-size: 10px; color: var(--ink-faint); }
+
+/* ===== フォーカスモード（会話は全画面・潜る/戻る） ===== */
+.focus-bar { display: none; align-items: center; gap: 12px; }
+.back-btn {
+  appearance: none; font-family: inherit; font-size: 13.5px; font-weight: 600;
+  border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink);
+  border-radius: 7px; padding: 6px 14px; cursor: pointer;
+}
+.back-btn:hover { background: var(--surface-dim); border-color: var(--ink-faint); }
+.focus-label { font-size: 14px; font-weight: 700; color: var(--ink); }
+/* 左サイドバーは常に残す。会話はメイン領域を置き換えるだけ（潜る/戻る） */
+.app.focus-mode .panel-inner { max-width: 980px; margin: 0 auto; }
+.app.focus-mode .panel-inner--wide { max-width: 1180px; }
+
+/* ===== サイドバー: 開閉・リサイズ ===== */
+.sidebar { width: var(--sidebar-w, 238px); }   /* 幅を可変に（既定238） */
+.sidebar-resizer { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 6; }
+.sidebar-resizer:hover, .sidebar-resizer.dragging { background: rgba(43,65,98,0.16); }
+/* 畳むとアイコンだけの細いレールに縮む */
+.app.nav-collapsed .sidebar { width: 58px; }
+.app.nav-collapsed .brand-txt,
+.app.nav-collapsed .side-proj,
+.app.nav-collapsed .side-group-label,
+.app.nav-collapsed .si-label,
+.app.nav-collapsed .si-badge,
+.app.nav-collapsed .si-tag,
+.app.nav-collapsed .si-badge-proj,
+.app.nav-collapsed .foot-txt { display: none; }
+.app.nav-collapsed .sidebar-brand { flex-direction: column; align-items: center; gap: 8px; padding: 12px 0; }
+.app.nav-collapsed .sidebar-brand .nav-toggle { margin-left: 0; }
+.app.nav-collapsed .side-nav { padding: 8px 8px 14px; }
+.app.nav-collapsed .side-item { justify-content: center; padding: 9px 0; }
+.app.nav-collapsed .sidebar-foot { justify-content: center; padding: 11px 0; }
+
+.sidebar-brand .nav-toggle { margin-left: auto; }
+.nav-toggle {
+  appearance: none; border: 1px solid var(--line-strong); background: var(--surface);
+  color: var(--ink-soft); border-radius: 7px; width: 28px; height: 26px;
+  cursor: pointer; font-size: 15px; line-height: 1; flex-shrink: 0;
+}
+.nav-toggle:hover { background: var(--surface-dim); color: var(--ink); }
+
+/* ===== レビューの証拠ペイン切替（Diff / Terminal / App） ===== */
+.ctx-pane { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--surface); display: flex; flex-direction: column; }
+.ctx-switch { display: flex; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--line); background: var(--surface-dim); }
+.ctx-tab {
+  appearance: none; font-family: inherit; font-size: 12px; font-weight: 600;
+  border: 1px solid transparent; background: transparent; color: var(--ink-soft);
+  border-radius: 6px; padding: 4px 13px; cursor: pointer;
+}
+.ctx-tab:hover { background: var(--surface); }
+.ctx-tab.is-active { background: var(--surface); border-color: var(--line); color: var(--ink); }
+.ctx-view { display: none; }
+.ctx-view.is-active { display: block; }
+.ctx-view .diff-file:first-of-type { border-top: none; }
+
+/* 共有ブラウザ（App）モック */
+.sbrowser-bar { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--surface-dim); border-bottom: 1px solid var(--line); }
+.sbrowser-url { flex: 1; font-family: var(--font-mono); font-size: 11.5px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; color: var(--ink-soft); }
+.sbrowser-live { font-size: 10.5px; font-weight: 700; color: var(--c-eval); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.sbrowser-stage { position: relative; padding: 18px; min-height: 240px; background: #eef1f5; }
+.sbrowser-app { background: #fff; border: 1px solid #d7dbe2; border-radius: 8px; padding: 14px 16px; max-width: 360px; margin: 0 auto; box-shadow: 0 2px 10px rgba(20,25,40,0.08); }
+.sbrowser-app h4 { font-size: 13px; margin-bottom: 10px; color: #27241d; }
+.sbrowser-row { height: 12px; background: #eef1f5; border-radius: 4px; margin-bottom: 8px; }
+.sbrowser-row.short { width: 60%; }
+.sbrowser-cursor { position: absolute; width: 16px; height: 16px; border: 2px solid var(--c-fail); border-radius: 50%; background: rgba(163,58,50,0.15); }
+.sbrowser-cap { text-align: center; font-size: 11.5px; color: var(--ink-faint); margin-top: 14px; }
+
+/* ===== Backlog編集（Epic→Task 構造化エディタ） ===== */
+.commit-note {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 11.5px; color: var(--ink-soft);
+  background: var(--surface-dim); border: 1px dashed var(--line-strong);
+  border-radius: 8px; padding: 7px 14px; margin: 6px 0 18px;
+}
+.commit-note code { font-family: var(--font-mono); font-size: 11px; }
+.epic { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin-bottom: 14px; background: var(--surface); }
+.epic-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--surface-dim); border-bottom: 1px solid var(--line); }
+.epic-title { font-weight: 700; font-size: 14px; }
+.epic-count { font-size: 11.5px; color: var(--ink-faint); }
+.epic-head .btn { margin-left: auto; padding: 3px 11px; font-size: 12px; }
+.epic-tasks { padding: 10px; display: flex; flex-direction: column; gap: 8px; min-height: 20px; }
+.bl-task {
+  display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+  padding: 9px 12px; box-shadow: 0 1px 2px rgba(39,36,29,0.04);
+}
+.bl-task.dragging { opacity: 0.45; }
+.epic-tasks.drop-hover { background: rgba(43,65,98,0.05); border-radius: 8px; }
+.bl-handle { color: var(--ink-faint); cursor: grab; font-size: 15px; line-height: 1; user-select: none; }
+.bl-handle:active { cursor: grabbing; }
+.bl-main { flex: 1; min-width: 0; }
+.bl-title { font-size: 13.5px; font-weight: 600; }
+.bl-sub { font-size: 11.5px; color: var(--ink-soft); display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+.bl-sub .dep { font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint); }
+.bl-task .btn { padding: 3px 11px; font-size: 12px; }
+
+/* タスク定義エディタ（focus） */
+.tdef { max-width: 640px; }
+.tdef-field { margin-bottom: 12px; }
+.tdef-label { font-size: 11.5px; font-weight: 700; color: var(--ink-faint); letter-spacing: 0.04em; margin-bottom: 5px; }
+.tdef-input { width: 100%; font-family: inherit; font-size: 13.5px; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); color: var(--ink); }
+.tdef-input:focus { outline: 2px solid rgba(43,65,98,0.3); outline-offset: 1px; }
+.tdef-ac { display: flex; flex-direction: column; gap: 6px; }
+.tdef-ac .tdef-input { font-size: 13px; }
+.tdef-meta { font-size: 12px; color: var(--ink-soft); font-family: var(--font-mono); }
+
+/* Backlog: 一覧＋チャット（実装内容・順番を相談） */
+.backlog-layout { display: grid; grid-template-columns: minmax(0,1.5fr) minmax(300px,1fr); gap: 16px; align-items: start; }
+.bl-chat .session-wrap { min-height: 440px; }
+@media (max-width: 1000px) { .backlog-layout { grid-template-columns: 1fr; } }
+
+/* プロジェクト面（Planning/Backlog）の画面内プロジェクト切替 */
+.proj-switch { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; flex-wrap: wrap; }
+.proj-switch .chip--add { border-style: dashed; color: var(--ink-faint); }
+
+/* Projects（プロジェクトレジストリ） */
+.proj-card { display: flex; align-items: center; gap: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 13px 16px; margin-bottom: 10px; box-shadow: 0 1px 2px rgba(39,36,29,0.04); }
+.pc-mark { width: 38px; height: 38px; border-radius: 9px; background: var(--accent); color: #fdfcf7; display: grid; place-items: center; font-weight: 700; font-size: 16px; flex-shrink: 0; }
+.pc-main { flex: 1; min-width: 0; }
+.pc-name { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.pc-path { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-faint); margin-top: 1px; }
+.pc-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.pc-chip { font-size: 11px; color: var(--ink-soft); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 8px; background: var(--surface-dim); }
+.pc-status { font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; gap: 5px; }
+.pc-status.paused { color: var(--ink-faint); }
+
+/* リポジトリ構成（1プロジェクト＝複数repo）・認証情報 */
+.repo-list { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 4px; }
+.repo-row { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; background: var(--surface); }
+.rr-role { font-size: 10.5px; font-weight: 700; color: #fff; background: var(--accent); border-radius: 4px; padding: 0 7px; white-space: nowrap; }
+.rr-role.sec { background: var(--ink-faint); }
+.rr-url { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-soft); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.method-pane .ctx-view { padding: 14px 2px 2px; }
+.cred-row { display: flex; align-items: center; gap: 12px; border: 1px solid var(--line); border-radius: 9px; padding: 12px 16px; margin-bottom: 10px; background: var(--surface); }
+.cred-mark { width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center; background: var(--surface-dim); border: 1px solid var(--line-strong); font-weight: 700; font-size: 13px; }
+.cred-host { font-weight: 700; font-size: 14px; flex: 1; }
+.cred-state { font-size: 12px; font-weight: 700; margin-right: 4px; }
+.cred-state.on { color: var(--c-eval); }
+.cred-state.off { color: var(--ink-faint); }
+.warn-note { background: rgba(160,90,18,0.06); border: 1px dashed var(--c-escalate); color: var(--c-escalate); border-radius: 8px; padding: 7px 14px; font-size: 11.5px; margin: 6px 0 14px; }
+.warn-note b { font-weight: 700; }
+
+/* レビュー用の解説コメントは「解説を重ねる」ON のときだけ表示（素の状態＝最終形を見せる） */
+.warn-note, .commit-note { display: none; }
+body.show-annot .warn-note { display: block; }
+body.show-annot .commit-note { display: flex; }
+
+/* Environments / Review: アクセス情報を1箇所に集約（そこだけ見ればアクセスできる） */
+.env-access { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; }
+.env-access .ea-label { color: var(--ink-faint); font-weight: 700; }
+.env-access .ea-url { font-family: var(--font-mono); font-size: 11.5px; color: var(--accent); background: var(--surface-dim); border: 1px solid var(--line); border-radius: 5px; padding: 1px 8px; }
+.env-access .btn { padding: 3px 10px; font-size: 12px; }
+
+/* ===== Planning / History のリスト ===== */
+.list-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+.list-head .r-title { font-size: 16px; font-weight: 700; }
+.list-head .btn { margin-left: auto; }
+.thread-list { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.thread-item {
+  display: block; width: 100%; text-align: left;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--surface);
+  padding: 11px 15px; cursor: pointer; font-family: inherit;
+  box-shadow: 0 1px 2px rgba(39,36,29,0.04);
+}
+.thread-item:hover { border-color: var(--accent); }
+.thread-title { font-size: 14px; font-weight: 700; color: var(--ink); display: flex; align-items: center; gap: 8px; }
+.thread-sub { font-size: 12px; color: var(--ink-soft); margin-top: 3px; }
+.thread-state { font-size: 10.5px; font-weight: 700; border-radius: 4px; padding: 0 7px; }
+.thread-state.ongoing { background: rgba(43,90,160,0.10); color: var(--c-review); }
+.thread-state.done { background: rgba(29,122,99,0.10); color: var(--c-eval); }
+.hist-kind { font-size: 10.5px; font-weight: 700; color: #fff; border-radius: 4px; padding: 0 7px; white-space: nowrap; }
+.kind-review { background: var(--c-review); }
+.kind-consult { background: var(--c-incident); }
+.kind-planning { background: var(--c-escalate); }
+.si-badge-proj { margin-left: auto; font-size: 10.5px; color: var(--ink-soft); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 7px; }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ===== サイドバー（永続ナビ） ===== -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <span class="brand-mark">番</span>
+      <span class="brand-txt">
+        <span class="brand-name">banto</span>
+        <span class="brand-sub">POコックピット</span>
+      </span>
+      <button class="nav-toggle" id="navToggle" title="サイドバーを畳む">«</button>
+    </div>
+
+    <nav class="side-nav">
+      <div class="side-group-label">Decisions</div>
+      <button class="side-item is-active" data-open="queue" data-label="Attention Queue" title="Attention Queue">
+        <span class="si-ico">◈</span><span class="si-label">Attention Queue</span><span class="si-badge">5</span>
+      </button>
+      <button class="side-item" data-open="improve" data-label="Improvements" title="Improvements">
+        <span class="si-ico">⟳</span><span class="si-label">Improvements</span><span class="si-tag" style="margin-left:auto;font-size:10px;color:var(--ink-faint);border:1px solid var(--line-strong);border-radius:4px;padding:0 6px;">週次</span>
+      </button>
+
+      <div class="side-group-label">Work</div>
+      <button class="side-item" data-open="planning" data-label="Planning" title="Planning">
+        <span class="si-ico">✎</span><span class="si-label">Planning</span>
+      </button>
+      <button class="side-item" data-open="backlog" data-label="Backlog" title="Backlog">
+        <span class="si-ico">▦</span><span class="si-label">Backlog</span>
+      </button>
+      <button class="side-item" data-open="projects" data-label="Projects" title="Projects">
+        <span class="si-ico">▣</span><span class="si-label">Projects</span>
+      </button>
+      <button class="side-item" data-open="environments" data-label="Environments" title="Environments">
+        <span class="si-ico">🖥</span><span class="si-label">Environments</span>
+      </button>
+
+      <div class="side-group-label">Progress</div>
+      <button class="side-item" data-open="board" data-label="Board" title="Board">
+        <span class="si-ico">▤</span><span class="si-label">Board</span>
+      </button>
+
+      <div class="side-group-label">Records</div>
+      <button class="side-item" data-open="history" data-label="History" title="History">
+        <span class="si-ico">🕓</span><span class="si-label">History</span>
+      </button>
+      <button class="side-item" data-open="memory" data-label="Memory" title="Memory">
+        <span class="si-ico">🧠</span><span class="si-label">Memory</span>
+      </button>
+
+      <div class="side-group-label">System</div>
+      <button class="side-item" data-open="settings" data-label="Settings" title="Settings">
+        <span class="si-ico">⚙</span><span class="si-label">Settings</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <span class="dot dot--healthy"></span><span class="foot-txt">daemon 接続中 ・ 通知 ON</span>
+    </div>
+    <div class="sidebar-resizer" id="sidebarResizer" title="ドラッグで幅を変更"></div>
+  </aside>
+
+  <!-- ===== メイン ===== -->
+  <div class="app-main">
+    <div class="app-topbar">
+      <div class="dest-head" id="destHead">
+        <span class="app-view-title" id="viewTitle">Attention Queue</span>
+      </div>
+      <div class="focus-bar" id="focusBar">
+        <button class="back-btn" id="backBtn">← 戻る</button>
+        <span class="focus-label" id="focusLabel"></span>
+      </div>
+      <span class="topbar-spacer"></span>
+      <span class="bell" title="通知（プッシュ）">🔔<span class="bell-badge">5</span></span>
+      <button class="annot-toggle" id="annotToggle" aria-pressed="false">💡 解説を重ねる</button>
+    </div>
+
+    <div class="app-content">
+
+      <div class="annot-hint">
+        <span>💡 解説レイヤー ON ── 完成UIの上に、各要素の意図と仕様参照をフローティング表示中。もう一度押すと消えます。</span>
+      </div>
+
+      <!-- ========== パネル: アテンションキュー ========== -->
+      <section class="panel is-active" id="panel-queue" data-title="アテンションキュー" data-sub="いま、あなたの判断を待っているもの">
+        <div class="panel-inner">
+
+          <div class="filter-row" id="q-filter" role="group" aria-label="プロジェクトで絞り込み">
+            <span class="filter-label">絞り込み:</span>
+            <button class="chip is-active">すべて (5)</button>
+            <button class="chip">banto (3)</button>
+            <button class="chip">palmux (2)</button>
+          </div>
+
+          <section class="queue" aria-label="判断待ちカード一覧">
+
+            <article class="card card--escalate" data-card-type="escalate">
+              <div class="card-top">
+                <div class="card-top-main">
+                  <div class="card-meta">
+                    <span class="type-chip type-chip--escalate">エスカレーション</span>
+                    <span class="project-badge">banto</span>
+                    <span class="age age--hot">滞留 3日</span>
+                  </div>
+                  <h2 class="card-title"><a data-open="carddetail" data-label="カード詳細">task-0009 通知ディスパッチャのチャネル認証方式</a></h2>
+                </div>
+                <div class="score" id="q-score" title="滞留日数 × (1 + 未spawnの後続タスク数)">
+                  <div class="score-value">15</div>
+                  <div class="score-label">スコア</div>
+                  <div class="score-formula">滞留3日 × (1+ブロック4)</div>
+                </div>
+              </div>
+              <div class="anatomy" id="q-anatomy">
+                <div class="part">
+                  <div class="part-label">経緯</div>
+                  <div class="part-body">
+                    <div class="origin-quote">
+                      <q>プッシュ通知はntfy互換で。自宅サーバの外からでも携帯に届くようにして</q>
+                      <span class="origin-ref">— あなたの指示 2026-07-21 09:12 ・ 検討セッション banto</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="part">
+                  <div class="part-label">起きたこと</div>
+                  <div class="part-body">実装中に外部依存の追加（D1）に該当と判定し、実行者が blocking で停止。2案を提示。後続4タスクが未spawnで待機中。</div>
+                </div>
+                <div class="part">
+                  <div class="part-label">求める判断</div>
+                  <div class="part-body">
+                    <p class="ask-question">通知チャネルはどちらの方式で進めますか？</p>
+                    <div class="actions">
+                      <button class="btn btn--primary">A: ntfy.sh 公開トピック</button>
+                      <button class="btn btn--primary">B: self-host + Basic認証</button>
+                      <a class="btn btn--session" data-open="terminal" data-label="Terminal">セッションへ</a>
+                      <button class="btn btn--ghost" id="q-consult" data-goto="consult" data-label="Consult · task-0009">相談する</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article class="card card--fail" data-card-type="audit-fail">
+              <div class="card-top">
+                <div class="card-top-main">
+                  <div class="card-meta">
+                    <span class="type-chip type-chip--fail">監査fail</span>
+                    <span class="project-badge">palmux</span>
+                    <span class="age">滞留 2日</span>
+                  </div>
+                  <h2 class="card-title"><a data-open="carddetail" data-label="カード詳細">task-0113 CDP画像転送の自動再接続</a></h2>
+                </div>
+                <div class="score"><div class="score-value">6</div><div class="score-label">スコア</div><div class="score-formula">滞留2日 × (1+ブロック2)</div></div>
+              </div>
+              <div class="anatomy">
+                <div class="part"><div class="part-label">経緯</div><div class="part-body"><div class="origin-quote"><q>画面が切れたら自動で繋ぎ直して。手動再起動はもう嫌</q><span class="origin-ref">— あなたの指示 2026-07-20 22:40 ・ 検討セッション palmux</span></div></div></div>
+                <div class="part"><div class="part-label">起きたこと</div><div class="part-body">監査2回不通過（I1: 自己申告と実測の不一致、I2: エラー握りつぶし）で failed。機械昇格の閾値に到達。実行セッションは終了済み。</div></div>
+                <div class="part"><div class="part-label">求める判断</div><div class="part-body">
+                  <p class="ask-question">上位tierで再実行しますか？</p>
+                  <div class="actions">
+                    <button class="btn btn--primary">上位tierで再実行</button>
+                    <button class="btn btn--danger">タスクを差し戻す</button>
+                    <button class="btn btn--ghost" data-goto="consult">相談する</button>
+                  </div>
+                </div></div>
+              </div>
+            </article>
+
+            <article class="card card--review" data-card-type="review-ready">
+              <div class="card-top">
+                <div class="card-top-main">
+                  <div class="card-meta">
+                    <span class="type-chip type-chip--review">レビュー待ち</span>
+                    <span class="project-badge">banto</span>
+                    <span class="age">滞留 2日</span>
+                  </div>
+                  <h2 class="card-title"><a data-open="carddetail" data-label="カード詳細">task-0007 readyクエリのAPI/CLI一級化</a></h2>
+                </div>
+                <div class="score"><div class="score-value">4</div><div class="score-label">スコア</div><div class="score-formula">滞留2日 × (1+ブロック1)</div></div>
+              </div>
+              <div class="anatomy">
+                <div class="part"><div class="part-label">経緯</div><div class="part-body"><div class="origin-quote"><q>readyの判定は一箇所に。ボードとspawnスケジューラが別の答えを見るのは駄目</q><span class="origin-ref">— あなたの指示 2026-07-22 08:03 ・ 検討セッション banto</span></div></div></div>
+                <div class="part"><div class="part-label">起きたこと</div><div class="part-body">実装完了・マージ前ゲート通過（テスト42件green、daemon実測）。review-ready で2日待機。後続 task-0010 がこのレビューを待機。</div></div>
+                <div class="part"><div class="part-label">求める判断</div><div class="part-body">
+                  <p class="ask-question">レビューを開始しますか？</p>
+                  <div class="actions">
+                    <button class="btn btn--primary" data-goto="review" data-label="Review · task-0007">レビュー開始</button>
+                    <a class="btn btn--session" data-open="terminal" data-label="Terminal">セッションへ</a>
+                    <button class="btn btn--ghost" data-goto="consult" data-label="Consult · task-0007">相談する</button>
+                  </div>
+                </div></div>
+              </div>
+            </article>
+
+          </section>
+        </div>
+
+        <!-- フローティング解説（キュー） -->
+        <div class="annot" data-target="#q-filter"><span class="an-num">1</span><span class="an-title">全プロジェクト横断1本</span><br>POの注意力の唯一の入口。ここを開けば「いま判断すべきこと」が全部ある。<span class="an-ref">spec-ui §1</span></div>
+        <div class="annot" data-target="#q-anatomy"><span class="an-num">2</span><span class="an-title">カードは3部構成</span><br>経緯／起きたこと／求める判断。画面を遡らずカード単体で判断できる。<span class="an-ref">D8</span></div>
+        <div class="annot" data-target="#q-score"><span class="an-num">3</span><span class="an-title">並び順の説明責任</span><br>滞留日数×ブロック影響度でソート。スコアと内訳を必ず表示。<span class="an-ref">spec-ui §1</span></div>
+        <div class="annot" data-target="#q-consult"><span class="an-num">4</span><span class="an-title">どこからでも会話へ</span><br>全判断ポイントに常設。押すと文脈注入した相談（Consult）タブが開く。<span class="an-ref">spec-ui §2</span></div>
+      </section>
+
+      <!-- ========== パネル: Planning（一覧・プロジェクト別） ========== -->
+      <section class="panel" id="panel-planning" data-title="Planning">
+        <div class="panel-inner">
+          <div class="list-head">
+            <span class="r-title">Planning</span>
+            <button class="btn btn--primary" data-open="deliberation" data-label="Planning · 新規">＋ New planning</button>
+          </div>
+          <div class="proj-switch" id="pl-proj">
+            <span class="filter-label">プロジェクト:</span>
+            <button class="chip is-active">banto</button>
+            <button class="chip">palmux</button>
+            <button class="chip chip--add" data-open="projectedit" data-label="プロジェクト登録">＋ New project</button>
+          </div>
+          <p class="page-lede">アイデア・依頼を対話で仕様に固める起点。ここから開発が生まれる。開くと会話が始まる。</p>
+          <div class="thread-list" id="pl-threads">
+            <button class="thread-item" data-open="deliberation" data-label="Planning · 朝の通知ダイジェスト">
+              <div class="thread-title">朝の通知ダイジェスト</div>
+              <div class="thread-sub"><span class="thread-state ongoing">対話中</span> ・ 仕様案を起草済 ・ 更新 12分前</div>
+            </button>
+            <button class="thread-item" data-open="deliberation" data-label="Planning · 通知ディスパッチャ">
+              <div class="thread-title">通知ディスパッチャ（ntfy互換）</div>
+              <div class="thread-sub"><span class="thread-state done">確定 → タスク化済</span> ・ task-0009 ほか5件を生成</div>
+            </button>
+            <button class="thread-item" data-open="deliberation" data-label="Planning · readyクエリ一級化">
+              <div class="thread-title">readyクエリの一級化</div>
+              <div class="thread-sub"><span class="thread-state done">確定 → タスク化済</span> ・ task-0007 / task-0010</div>
+            </button>
+          </div>
+        </div>
+        <div class="annot" data-target="#pl-threads"><span class="an-num">1</span><span class="an-title">開発の起点・プロジェクト別</span><br>ここが“会話2枚”の1枚。1プロジェクトに複数スレッドを持て、確定するとdaemonがタスク化する。<span class="an-ref">spec-ui §1 / D3</span></div>
+      </section>
+
+      <!-- ========== パネル: History（振り返り） ========== -->
+      <section class="panel" id="panel-history" data-title="History">
+        <div class="panel-inner">
+          <div class="list-head"><span class="r-title">History ─ 過去の会話</span></div>
+          <p class="page-lede">Planning・Review・Consult はその時だけの文脈だが、すべてイベントログにトランスクリプト参照として残る。後から読み直し・再開できる（D3）。</p>
+          <div class="filter-row" id="hi-filter"><span class="filter-label">種別:</span><button class="chip is-active">すべて</button><button class="chip">Planning</button><button class="chip">Review</button><button class="chip">Consult</button></div>
+          <div class="thread-list" id="hi-threads">
+            <button class="thread-item" data-open="consult" data-label="Consult · task-0009（履歴）">
+              <div class="thread-title"><span class="hist-kind kind-consult">Consult</span> task-0009 通知チャネル認証</div>
+              <div class="thread-sub">2026-07-24 22:10 ・ 判断: B（self-host）・ 注入した文脈: 差分/経緯/D1</div>
+            </button>
+            <button class="thread-item" data-open="review" data-label="Review · task-0006（履歴）">
+              <div class="thread-title"><span class="hist-kind kind-review">Review</span> task-0006 監査ゲートのTTL調整</div>
+              <div class="thread-sub">2026-07-22 09:40 ・ 承認してマージ ・ 指摘1件→修正タスク化</div>
+            </button>
+            <button class="thread-item" data-open="deliberation" data-label="Planning · 評価環境v1（履歴）">
+              <div class="thread-title"><span class="hist-kind kind-planning">Planning</span> 評価環境v1 の要件詰め</div>
+              <div class="thread-sub">2026-07-15 ・ 確定 → 7タスク化 ・ 参照: spec-environment</div>
+            </button>
+          </div>
+        </div>
+        <div class="annot" data-target="#hi-threads"><span class="an-num">1</span><span class="an-title">その時だけの会話を後から辿る</span><br>閉じたタブ＝過去セッションを種別・タスク・日付で一覧。読み直し・再開できる。真実はイベントログのトランスクリプト参照。<span class="an-ref">D3 / D8</span></div>
+      </section>
+
+      <!-- ========== パネル: エージェントボード ========== -->
+      <section class="panel" id="panel-board" data-title="エージェントボード" data-sub="全タスクをフェーズで一望">
+        <div class="panel-inner panel-inner--wide">
+          <div class="board-toolbar">
+            <div class="filter-row" style="margin:0;"><span class="filter-label">プロジェクト:</span><button class="chip is-active">すべて (11)</button><button class="chip">banto (7)</button><button class="chip">palmux (4)</button></div>
+            <div class="filter-row health-filter" id="b-health" style="margin:0;"><span class="filter-label">健康状態:</span><button class="chip is-active">すべて</button><button class="chip"><span class="dot dot--stalled"></span>停滞 (2)</button><button class="chip"><span class="dot dot--zombie"></span>ゾンビ (1)</button></div>
+          </div>
+
+          <div class="board-cols" id="b-cols">
+            <div class="board-col">
+              <div class="board-col-head"><span class="board-col-name">Now</span><span class="board-col-sub">いま動いている</span><span class="board-col-count">5</span></div>
+              <div class="board-lane">
+                <article class="task-card task-card--attention task-card--stalled" id="b-attn">
+                  <div class="task-meta"><span class="state-chip state--fail">blocking</span><span class="task-badge">banto</span><span class="task-attention-tag">判断待ち</span></div>
+                  <div class="task-title"><a data-open="carddetail" data-label="カード詳細">task-0009 通知チャネル認証方式</a></div>
+                  <div class="task-sub"><span class="dot dot--stalled"></span>停滞 3日 ・ <span class="who">pi:executor</span> がD1で停止中</div>
+                  <div class="task-actions"><button class="btn btn--primary" data-goto="queue">判断する</button><a class="btn btn--session" data-open="terminal" data-label="Terminal">セッション</a></div>
+                  <div class="blocked-note"><b>後続4タスクがこの判断待ち</b>（未spawn）</div>
+                </article>
+                <article class="task-card task-card--attention">
+                  <div class="task-meta"><span class="state-chip state--review">review-ready</span><span class="task-badge">banto</span><span class="task-attention-tag">判断待ち</span></div>
+                  <div class="task-title"><a data-open="carddetail" data-label="カード詳細">task-0007 readyクエリのAPI/CLI一級化</a></div>
+                  <div class="task-sub"><span class="dot dot--healthy"></span>ゲート通過（テスト42件green）・2日待機</div>
+                  <div class="task-actions"><button class="btn btn--primary" data-goto="review">レビュー開始</button></div>
+                </article>
+                <article class="task-card">
+                  <div class="task-meta"><span class="state-chip state--build">implementing</span><span class="task-badge">banto</span></div>
+                  <div class="task-title"><a data-open="terminal" data-label="Terminal">task-0021 朝の通知ダイジェスト</a></div>
+                  <div class="task-sub"><span class="dot dot--healthy"></span>順調 ・ <span class="who">pi:executor</span> 実装中（12分前に進捗）</div>
+                </article>
+                <article class="task-card">
+                  <div class="task-meta"><span class="state-chip state--audit">auditing</span><span class="task-badge">banto</span></div>
+                  <div class="task-title"><a data-open="terminal" data-label="Terminal">task-0018 台帳リコンサイルのTTL調整</a></div>
+                  <div class="task-sub"><span class="dot dot--healthy"></span>順調 ・ <span class="who">pi:auditor</span> が点検中</div>
+                </article>
+                <article class="task-card task-card--attention task-card--stalled">
+                  <div class="task-meta"><span class="state-chip state--fail">failed</span><span class="task-badge">palmux</span><span class="task-attention-tag">判断待ち</span></div>
+                  <div class="task-title"><a data-open="carddetail" data-label="カード詳細">task-0113 CDP画像転送の自動再接続</a></div>
+                  <div class="task-sub"><span class="dot dot--stalled"></span>監査2回不通過・セッション終了済</div>
+                </article>
+              </div>
+            </div>
+            <div class="board-col">
+              <div class="board-col-head"><span class="board-col-name">Next</span><span class="board-col-sub">依存が晴れ次第spawn</span><span class="board-col-count">3</span></div>
+              <div class="board-lane">
+                <article class="task-card"><div class="task-meta"><span class="state-chip state--wait">ready</span><span class="task-badge">banto</span></div><div class="task-title"><a href="#">task-0010 spawnスケジューラ接続</a></div><div class="blocked-note">待機理由: <b>task-0007 のレビュー</b>通過後にspawn</div></article>
+                <article class="task-card"><div class="task-meta"><span class="state-chip state--wait">ready</span><span class="task-badge">palmux</span></div><div class="task-title"><a href="#">task-0114 転送メトリクスの計測</a></div><div class="task-sub"><span class="dot dot--healthy"></span>次サイクルでspawn予定</div></article>
+                <article class="task-card"><div class="task-meta"><span class="state-chip state--wait">queued</span><span class="task-badge">banto</span></div><div class="task-title"><a href="#">task-0022 静穏時間の設定</a></div><div class="task-sub"><span class="dot dot--healthy"></span>依存解決待ち</div></article>
+              </div>
+            </div>
+            <div class="board-col">
+              <div class="board-col-head"><span class="board-col-name">Later</span><span class="board-col-sub">起草・ブロック中</span><span class="board-col-count">3</span></div>
+              <div class="board-lane">
+                <article class="task-card task-card--zombie">
+                  <div class="task-meta"><span class="state-chip state--build">implementing</span><span class="task-badge">palmux</span></div>
+                  <div class="task-title"><a data-open="terminal" data-label="Terminal">task-0099 ズーム倍率の永続化</a></div>
+                  <div class="task-sub"><span class="dot dot--zombie"></span>ゾンビ: セッション6時間 無応答</div>
+                  <div class="task-actions"><button class="btn btn--danger">handoff</button><button class="btn">nudge</button></div>
+                </article>
+                <article class="task-card"><div class="task-meta"><span class="state-chip state--wait">draft</span><span class="task-badge">banto</span></div><div class="task-title"><a href="#">task-0011 通知配線</a></div><div class="blocked-note">ブロック元: <b>task-0009 の判断</b></div></article>
+                <article class="task-card"><div class="task-meta"><span class="state-chip state--wait">draft</span><span class="task-badge">banto</span></div><div class="task-title"><a href="#">task-0023 通知文のD8整形</a></div><div class="task-sub"><span class="dot dot--healthy"></span>依存: task-0021</div></article>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="annot" data-target="#b-cols"><span class="an-num">1</span><span class="an-title">ステートマシンのビューア</span><br>daemonの状態をそのまま描くだけ。UI側に独自状態を持たせない。<span class="an-ref">D3 / D5</span></div>
+        <div class="annot" data-target="#b-attn"><span class="an-num">2</span><span class="an-title">藍の縁＝判断待ち</span><br>アテンションキューに出ているものと同一。ボードからも判断へ飛べる。<span class="an-ref">spec-ui §1.2</span></div>
+        <div class="annot" data-target="#b-health"><span class="an-num">3</span><span class="an-title">健康状態→操作</span><br>停滞/ゾンビで絞り、nudge / handoff をボタンで提示（動詞を記憶させない）。<span class="an-ref">D7</span></div>
+      </section>
+
+      <!-- ========== パネル: 検討セッション ========== -->
+      <section class="panel" id="panel-deliberation" data-title="検討セッション" data-sub="相談して仕様を固める">
+        <div class="panel-inner">
+          <div class="session-wrap">
+            <div class="session-head">
+              <span class="s-icon">検</span>
+              <div><div class="session-title">朝の通知ダイジェスト</div><div class="session-sub">banto ・ tmux: banto:deliberation</div></div>
+              <span class="session-live"><span class="dot dot--healthy"></span>対話中</span>
+            </div>
+            <div class="chat">
+              <div class="recap" id="d-recap">── 42分ぶりです。あなたの最後の指示:<b>「朝8時に1回だけまとめて」</b>／その後: 仕様案を1件起草しました ──</div>
+              <div class="msg msg--po"><div class="msg-avatar">PO</div><div class="msg-bubble">レビュー待ちが2日以上たまってるのに気づけない。朝、まとめて教えてほしい</div></div>
+              <div class="msg msg--ai"><div class="msg-avatar">番</div><div class="msg-bubble">「たまってる」の基準と通知の形を決めましょう。まず滞留の閾値は？
+                <ul class="choice-list" id="d-choices">
+                  <li class="choice"><span class="choice-key">1</span><span class="choice-text">2日以上（あなたの言葉どおり）</span></li>
+                  <li class="choice"><span class="choice-key">2</span><span class="choice-text">1営業日以上 <span class="choice-note">週末を挟むと遅くなる</span></span></li>
+                  <li class="choice"><span class="choice-key">3</span><span class="choice-text">スコア上位のみ <span class="choice-note">滞留×ブロック影響度で足切り</span></span></li>
+                </ul>
+                <div class="msg-hint">番号で選ぶか、自由に書いても構いません。</div>
+              </div></div>
+              <div class="msg msg--po"><div class="msg-avatar">PO</div><div class="msg-bubble">1で。あと朝8時に1回だけまとめて。既に見たカードは除いて</div></div>
+              <div class="msg msg--ai"><div class="msg-avatar">番</div><div class="msg-bubble">まとまりました。タスク意図を下記に起草します。承認するとdaemonがTask化し、依存を組んでキューに載せます。
+                <div class="draft-file">
+                  <div class="draft-file-head"><span class="newtag">＋新規</span> work/tasks/task-0021-morning-digest.md</div>
+<div class="draft-body"><span class="k">title:</span> 朝の通知ダイジェスト
+<span class="k">intent:</span> 2日以上滞留かつ未読のアテンションカードを毎朝8時に1通へ束ねる
+<span class="add"><span class="k">acceptance:</span></span>
+<span class="add">  - 滞留 ≥2日 かつ 未読 のカードのみ対象</span>
+<span class="add">  - 配信は 08:00 / 1日1通 / 対象0なら送らない</span>
+<span class="add">  - 本文はプロジェクト名まで（タスク名は載せない）</span>
+<span class="k">origin:</span> po_operation#8840（この会話）</div>
+                </div>
+              </div></div>
+            </div>
+            <div class="session-footer" id="d-footer">
+              <div class="footer-actions-label">いまできること（仕様の起草が揃った状態）</div>
+              <div class="footer-actions"><button class="btn btn--primary">承認してタスク化</button><button class="btn">起草を修正</button><button class="btn btn--ghost">相談を続ける</button></div>
+              <div class="chat-input-row"><input class="chat-input" type="text" placeholder="自由に書く（例: 配信は平日だけにして）"><button class="btn btn--primary">送信</button></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="annot" data-target="#d-recap"><span class="an-num">1</span><span class="an-title">復帰リキャップ</span><br>中断から戻ると、最後の指示とその後の経過を自動で挿入。文脈の記憶はシステムが持つ。<span class="an-ref">spec-ui §4</span></div>
+        <div class="annot" data-target="#d-choices"><span class="an-num">2</span><span class="an-title">番号選択肢＋自由文</span><br>分岐点で選択肢を提示。ショートカットであって入力形式ではない ── 自由な相談も常に受ける。<span class="an-ref">spec-ui §2</span></div>
+        <div class="annot" data-target="#d-footer"><span class="an-num">3</span><span class="an-title">有効操作を常時提示</span><br>現フェーズでできることをフッターに常設。コマンド名・skill名を覚えさせない。<span class="an-ref">D7</span></div>
+      </section>
+
+      <!-- ========== パネル: 相談セッション ========== -->
+      <section class="panel" id="panel-consult" data-title="相談セッション" data-sub="判断ポイントから降りた会話">
+        <div class="panel-inner">
+          <div class="session-wrap">
+            <div class="consult-anchor">
+              <span class="consult-chip">相談</span>
+              <span class="anchor-title">元の判断: <b>task-0009 通知チャネル認証方式</b>（A・B の2択）</span>
+              <button class="back-link" data-goto="queue" style="margin-left:auto; border:none; background:none; cursor:pointer; font-family:inherit;">← カード（判断）に戻る</button>
+            </div>
+            <div class="context-inject" id="c-inject">
+              <span class="ci-label">このカードの文脈を注入しました:</span>
+              <span class="ci-item">タスク定義 <code>task-0009</code></span>
+              <span class="ci-item">実装差分（テスト8件green）</span>
+              <span class="ci-item">経緯 <code>po_operation#8794</code></span>
+              <span class="ci-item">関連原則 D1</span>
+            </div>
+            <div class="chat">
+              <div class="msg msg--po"><div class="msg-avatar">PO</div><div class="msg-bubble">Bのself-hostだと、外出先にちゃんと届くの？ VPN張ってないと届かないなら意味がない</div></div>
+              <div class="msg msg--ai"><div class="msg-avatar">番</div><div class="msg-bubble">注入済みの差分と経緯から答えます。到達性はこう分かれます:
+                <ul class="choice-list" style="cursor:default;">
+                  <li class="choice" style="cursor:default;"><span class="choice-key">A</span><span class="choice-text">ntfy.sh 公開トピック <span class="choice-note">どこでも即到達。本文が公開トピックに載り保護はURL秘匿のみ</span></span></li>
+                  <li class="choice" style="cursor:default;"><span class="choice-key">B</span><span class="choice-text">self-host + Basic認証 <span class="choice-note">本文は外に出ない。外出先は既存VPN依存 ―― <b>VPN未接続だと届かない</b></span></span></li>
+                </ul>
+                ご懸念どおりBは「VPN常時ON」が前提です。あなたの運用は？</div></div>
+              <div class="msg msg--po"><div class="msg-avatar">PO</div><div class="msg-bubble">VPNは常時ON。ただ、通知にタスク名が出るのだけは避けたい</div></div>
+              <div class="msg msg--ai"><div class="msg-avatar">番</div><div class="msg-bubble">判断材料が揃いました。<b>検討で既に決めた仕様</b>（本文はプロジェクト名まで）が効きます ── Aでも本文からタスク名を外せば秘匿は満たせます。選択肢を組み直しました:
+                <ul class="choice-list" id="c-restructured">
+                  <li class="choice"><span class="choice-key">A′</span><span class="choice-text">ntfy.sh 公開＋本文はプロジェクト名まで＋長い乱数トピック <span class="choice-note">追加インフラ0・どこでも即到達</span></span></li>
+                  <li class="choice"><span class="choice-key">B</span><span class="choice-text">self-host + Basic認証（既存VPN） <span class="choice-note">本文が外に出ない・VPN未接続時は不達</span></span></li>
+                </ul>
+              </div></div>
+            </div>
+            <div class="session-footer" id="c-footer">
+              <div class="footer-actions-label">この会話を踏まえて判断する（元のカードの選択肢）</div>
+              <div class="reason-row" style="margin:0 0 10px;"><input class="reason-input" type="text" placeholder="理由（1行・po_operation に記録）例: VPN常時ONなので本文を外に出さないBにする"></div>
+              <div class="footer-actions"><button class="btn btn--primary">A′ で進める</button><button class="btn btn--primary">B で進める</button><button class="btn btn--ghost">相談を続ける</button><button class="btn" data-goto="queue" style="margin-left:auto;">判断せず戻る</button></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="annot" data-target="#c-inject"><span class="an-num">1</span><span class="an-title">カード文脈を注入</span><br>タスク定義・差分・経緯を丸ごと入れて会話が始まる。画面を遡らなくてよい。<span class="an-ref">spec-ui §2</span></div>
+        <div class="annot" data-target="#c-restructured"><span class="an-num">2</span><span class="an-title">選択肢を再構成して再掲</span><br>相談の結果に応じて分岐点に戻る。選択肢は組み直してよい。<span class="an-ref">spec-ui §2</span></div>
+        <div class="annot" data-target="#c-footer"><span class="an-num">3</span><span class="an-title">その場で判断に戻る</span><br>会話から離れずに元カードの選択肢を下せる。理由は1行で記録。<span class="an-ref">D7 / D8</span></div>
+      </section>
+
+      <!-- ========== パネル: レビュー会話 ========== -->
+      <section class="panel" id="panel-review" data-title="レビュー会話" data-sub="task-0007 の差分を見ながら承認 / 修正依頼">
+        <div class="panel-inner panel-inner--wide">
+          <div class="review-head">
+            <span class="type-chip type-chip--review">レビュー待ち</span>
+            <span class="r-title">task-0007 readyクエリのAPI/CLI一級化</span>
+            <span class="gate-badge">✓ マージ前ゲート通過: 型検査 pass ・ テスト42件 green（daemon実測）</span>
+          </div>
+          <div class="env-access" style="margin-bottom:12px;"><span class="ea-label">レビュー環境</span><span class="ea-url">http://banto-server:5191</span><span class="pc-chip">branch task-0007</span><button class="btn">開く</button><button class="btn">コピー</button></div>
+
+          <div class="review-layout">
+            <!-- 証拠ペイン: Diff / Terminal / App を切替えながら会話 -->
+            <div class="ctx-pane" id="rv-ctx">
+              <div class="ctx-switch">
+                <button class="ctx-tab is-active" data-ctx="diff">Diff</button>
+                <button class="ctx-tab" data-ctx="term">Terminal</button>
+                <button class="ctx-tab" data-ctx="app">App</button>
+              </div>
+
+              <!-- Diff -->
+              <div class="ctx-view is-active" data-ctx-view="diff">
+                <div class="diff-topbar"><span class="files-n">3ファイル</span> 変更 ・ <span style="color:var(--c-eval);font-weight:700;">+128</span> <span style="color:var(--c-fail);font-weight:700;">−14</span> ・ worktree <code>banto:task-0007</code></div>
+                <div class="diff-file">
+                  <div class="diff-fhead"><span>src/daemon/queries/ready.ts</span><span class="add">+41</span><span class="del">−0</span></div>
+                  <div class="diff-code">
+<span class="ln ln--hunk">@@ 新規: ready の唯一の導出元 @@</span>
+<span class="ln ln--add">+export function readyTasks(state: DerivedState): Task[] {</span>
+<span class="ln ln--add">+  return state.tasks.filter(t =></span>
+<span class="ln ln--add">+    t.status === 'queued' &&</span>
+<span class="ln ln--add">+    t.dependsOn.every(d => state.task(d)?.status === 'merged'));</span>
+<span class="ln ln--add">+}</span>
+                  </div>
+                </div>
+                <div class="diff-file">
+                  <div class="diff-fhead"><span>src/daemon/scheduler.ts</span><span class="add">+3</span><span class="del">−12</span></div>
+                  <div class="diff-code">
+<span class="ln ln--hunk">@@ -18,14 +18,5 @@ spawn 判定</span>
+<span class="ln ln--del">-  // 旧: スケジューラ内で ready を独自判定（二重定義）</span>
+<span class="ln ln--ctx"> import { readyTasks } from './queries/ready';</span>
+<span class="ln ln--add">+  const ready = readyTasks(state); // 唯一の導出元を共有（D3）</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Terminal（CLIを動かしながら） -->
+              <div class="ctx-view" data-ctx-view="term">
+                <div class="term" style="border-radius:0; border:none; min-height:300px;">
+<div class="term-line term-dim">$ banto test src/daemon/queries/ready.spec.ts</div>
+<div class="term-line">PASS  ready.spec.ts  <span class="term-dim">(42 tests, 128ms)</span></div>
+<div class="term-line term-dim">$ banto ready --project banto</div>
+<div class="term-line">task-0010  spawnスケジューラ接続  <span class="term-dim">waiting: task-0007 review</span></div>
+<div class="term-line">task-0022  静穏時間の設定</div>
+<div class="term-line term-dim">— 2件 ready（APIと同一導出）—</div>
+<div class="term-line term-role-a">executor</div>
+<div class="term-line">レビュー中の確認用に、ここで任意のコマンドを一緒に実行できます</div>
+<div class="term-line">$ <span class="term-cursor"></span></div>
+                </div>
+              </div>
+
+              <!-- App（共有ブラウザ: GUIを触りながら） -->
+              <div class="ctx-view" data-ctx-view="app">
+                <div class="sbrowser-bar">
+                  <span class="sbrowser-url">http://banto-server:5191</span>
+                  <span class="sbrowser-live"><span class="dot dot--healthy"></span>共有 LIVE</span>
+                </div>
+                <div class="sbrowser-stage">
+                  <div class="sbrowser-app">
+                    <h4>banto CLI 出力ビューア（レビュー環境の実アプリ）</h4>
+                    <div class="sbrowser-row"></div>
+                    <div class="sbrowser-row"></div>
+                    <div class="sbrowser-row short"></div>
+                  </div>
+                  <div class="sbrowser-cursor" style="right:64px;bottom:70px;"></div>
+                  <div class="sbrowser-cap">CDP画像転送で、人とエージェントが同一インスタンスを見る（spec-ui §1.5）。<br>※ task-0007 はCLI/APIのためGUI薄め。GUI変更のレビューではここで実アプリを一緒に操作する</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 会話 -->
+            <div class="session-wrap" id="rv-chat">
+              <div class="chat">
+                <div class="msg msg--ai"><div class="msg-avatar">番</div><div class="msg-bubble">レビューを開始します。要点: <b>ready の判定を1関数 <code>readyTasks()</code> に集約</b>し、API・CLI・スケジューラが同じ導出を共有します。ゲートは通過済み（型・テスト42件、daemon実測）。
+                  <div class="msg-hint">経緯:「readyの判定は一箇所に。ボードとスケジューラが別の答えを見るのは駄目」</div></div></div>
+                <div class="msg msg--po"><div class="msg-avatar">PO</div><div class="msg-bubble">スケジューラも同じ関数を使ってる？ 前は別実装だったよね</div></div>
+                <div class="msg msg--ai"><div class="msg-avatar">番</div><div class="msg-bubble">はい。2つ目の差分 <code>scheduler.ts</code> で旧・独自判定（−12行）を削除し、<code>readyTasks(state)</code> に置換。導出元は1箇所です（D3）。</div></div>
+                <div class="msg msg--po"><div class="msg-avatar">PO</div><div class="msg-bubble">OK。CLIの ready、未spawnの待機理由も出せる？ そこだけ足したい</div></div>
+                <div class="msg msg--ai"><div class="msg-avatar">番</div><div class="msg-bubble">それは差分に無い追加要望ですね。<b>修正を依頼</b>すれば「待機理由の表示」を修正タスク化して再実装→再監査に回します。このまま承認して別タスクにしてもOK。どうしますか？</div></div>
+              </div>
+              <div class="session-footer" id="rv-footer">
+                <div class="footer-actions-label">レビューの判断（ゲート通過済み）</div>
+                <div class="footer-actions"><button class="btn btn--primary">承認してマージ</button><button class="btn">修正を依頼</button><button class="btn btn--ghost">相談を続ける</button></div>
+                <div class="chat-input-row"><input class="chat-input" type="text" placeholder="指摘・質問を書く（例: 待機理由の表示を足して）"><button class="btn btn--primary">送信</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="annot" data-target="#rv-ctx"><span class="an-num">1</span><span class="an-title">見ながら話す対象を切替</span><br>レビューは「会話＋証拠ペイン」。Diff（コード）／Terminal（CLI）／App（共有ブラウザ）を切替えながら話す。<span class="an-ref">spec-ui §1 / §1.5</span></div>
+        <div class="annot" data-target="#rv-footer"><span class="an-num">2</span><span class="an-title">承認 or 修正依頼</span><br>指摘は修正タスク化され再実行→再監査へ自動で戻る。ゲートは機械が保証済み。<span class="an-ref">D7 / I1</span></div>
+      </section>
+
+      <!-- ========== パネル: 改善ループのレビュー（月次メタケイデンス） ========== -->
+      <section class="panel" id="panel-improve" data-title="改善ループ（月次）" data-sub="システムが自分の失敗から出した規則・機構の改善を承認する">
+        <div class="panel-inner">
+          <div class="review-head">
+            <span class="type-chip type-chip--eval">メタケイデンス</span>
+            <span class="r-title">2026-W30 週次レビュー ─ ループの健康と改善提案</span>
+          </div>
+
+          <div class="improve-item" id="im-report" style="border-left-color:var(--accent);">
+            <div class="improve-title">気づいた改善点・不便を、あなたから指摘する</div>
+            <div class="part-body" style="font-size:13px;">POの指摘は <b>2件として処理</b>（spec §2）: ①指摘そのものへの対処 ②<b>センサー欠落incident</b>＝「なぜシステムは自分で検知できなかったか」。検知の機構化までタスク化し、同じクラスの指摘を二度させない。</div>
+            <div class="chat-input-row" style="margin-top:10px;"><input class="chat-input" type="text" placeholder="例: レビューで同じ種類の指摘を3回している。検知して自動で直すようにして"><button class="btn btn--primary">指摘する</button></div>
+          </div>
+
+          <div class="metric-strip" id="im-metrics">
+            <div class="metric-tile"><div class="m-label">po起源の比率</div><div class="m-value">12%</div><div class="m-delta up">▼ 18%→12%（改善）</div></div>
+            <div class="metric-tile"><div class="m-label">機構化までの平均</div><div class="m-value">4.2日</div><div class="m-delta up">▼ 5.1→4.2</div></div>
+            <div class="metric-tile"><div class="m-label">escaped defects</div><div class="m-value">2件</div><div class="m-delta up">▼ 4→2</div></div>
+            <div class="metric-tile"><div class="m-label">resolution無しクローズ</div><div class="m-value">0</div><div class="m-delta">±0</div></div>
+          </div>
+
+          <div class="section-label">今月の改善提案（規則・機構の diff）</div>
+
+          <div class="improve-item" id="im-a">
+            <div class="improve-meta"><span class="layer-chip layer-a">層A プロンプト</span><span class="task-badge">origin: system×2 ・ agent×1</span></div>
+            <div class="improve-title">監査チェックリストに「テストは daemon 実測で確認」を追加</div>
+            <div class="part-body" style="font-size:13px;">検出パターン: テスト結果の自己申告と実測の不一致（class=test-skip）同型3件。自己申告を信じない機構化（I1）へ寄せる。</div>
+            <div class="diff-pane" style="margin-top:10px;">
+              <div class="diff-file"><div class="diff-fhead"><span>prompts/auditor-checklist.md</span><span class="add">+2</span><span class="del">−1</span></div>
+                <div class="diff-code">
+<span class="ln ln--del">- [ ] テストが green であることを確認</span>
+<span class="ln ln--add">+ [ ] テストは daemon が実測した結果で確認（自己申告を信じない・I1）</span>
+<span class="ln ln--add">+ [ ] 実測ログの test 件数と PR 記載の件数が一致</span>
+                </div>
+              </div>
+            </div>
+            <div class="hypothesis"><span class="k">hypothesis:</span> expect: test-skip 同型incidentが減る ／ metric: incident.count[class=test-skip] ／ horizon: 21d</div>
+            <div class="actions"><button class="btn btn--primary">採択してマージ</button><button class="btn btn--danger">差し戻す</button><button class="btn btn--ghost" data-goto="consult">相談する</button></div>
+          </div>
+
+          <div class="improve-item" id="im-b">
+            <div class="improve-meta"><span class="layer-chip layer-b">層B パラメータ</span><span class="task-badge">origin: system</span></div>
+            <div class="improve-title">blocking エスカレーション閾値の調整（過剰停止の抑制）</div>
+            <div class="part-body" style="font-size:13px;">検出パターン: 特定クラスで escalate 却下が集中（＝不要な blocking で止まりすぎ）。可逆な層B変更で即revert可。</div>
+            <div class="diff-pane" style="margin-top:10px;">
+              <div class="diff-file"><div class="diff-fhead"><span>meta/config.yaml</span><span class="add">+1</span><span class="del">−1</span></div>
+                <div class="diff-code">
+<span class="ln ln--del">-  escalate_on_reversible: true</span>
+<span class="ln ln--add">+  escalate_on_reversible: false   # 可逆な選択は自律決定し decisions.json に記録</span>
+                </div>
+              </div>
+            </div>
+            <div class="hypothesis"><span class="k">hypothesis:</span> metric: none（測定不能）→ horizon 14d 後に主観1問で評価</div>
+            <div class="actions"><button class="btn btn--primary">採択</button><button class="btn btn--danger">差し戻す</button><button class="btn btn--ghost" data-goto="consult">相談する</button></div>
+          </div>
+
+          <div class="section-label" style="margin-top:20px;">評価（horizon 経過・前回採択の追跡）</div>
+
+          <div class="improve-item" id="im-eval" style="border-left-color: var(--c-review);">
+            <div class="improve-meta"><span class="layer-chip layer-a">層A プロンプト</span><span class="task-badge">21日前に採択</span><span class="gate-badge">勧告: keep</span></div>
+            <div class="improve-title">実行者プロンプトのテスト検証強化の効果</div>
+            <div class="eval-numbers"><span>test-skip incident: <b>週2.1 → 0.4件</b></span><span>監査通過率: <b>84% → 91%</b></span><span>/fix平均: <b>2.1 → 1.4回</b></span></div>
+            <div class="part-body" style="font-size:12.5px; color:var(--ink-soft);">明確な悪化なし・方向性は良好（厳密な因果評価はしない＝spec §5）。revert済み案との照合: 該当なし。</div>
+            <div class="actions"><button class="btn btn--primary">keep</button><button class="btn">tune</button><button class="btn btn--danger">revert</button></div>
+          </div>
+        </div>
+
+        <div class="annot" data-target="#im-metrics"><span class="an-num">1</span><span class="an-title">ループ自身の健康</span><br>週次で、システムが自分の失敗から改善した形跡を diff で確認・承認（VISION成功基準／既定は週次）。<span class="an-ref">improvement-loop §6</span></div>
+        <div class="annot" data-target="#im-a"><span class="an-num">2</span><span class="an-title">3層で処方</span><br>層A(プロンプト)/層B(パラメータ)は直接diff、層C(機構)はタスク化。虚偽・手抜きは層Cへ昇格。<span class="an-ref">§1 / §4</span></div>
+        <div class="annot" data-target="#im-eval"><span class="an-num">3</span><span class="an-title">仮説駆動で定着/差戻し</span><br>採択時に仮説を宣言し horizon 後に前後比較で keep/tune/revert。revert済みは類似提案を弾く履歴に。<span class="an-ref">§5</span></div>
+      </section>
+
+      <!-- ========== パネル: Terminal（pi実行セッション・アプリ内端末） ========== -->
+      <section class="panel" id="panel-terminal" data-title="Terminal">
+        <div class="panel-inner panel-inner--wide">
+          <div class="review-head">
+            <span class="type-chip" style="background:var(--ink-soft);">SESSION</span>
+            <span class="r-title">pi 実行セッション ・ <span style="font-family:var(--font-mono);font-size:13px;color:var(--ink-soft);">tmux: banto:task-0009</span></span>
+          </div>
+          <p class="page-lede">実行者(pi)のセッションにブラウザ内端末で直結（xterm.js ↔ daemon の PTY↔WebSocket ブリッジ）。人とエージェントが同一セッションを見て、その場で割り込める。</p>
+          <div class="term" id="tm-term" style="min-height:340px;">
+<div class="term-line term-dim">tmux attach -t banto:task-0009  （daemon 経由でブリッジ）</div>
+<div class="term-line">&nbsp;</div>
+<div class="term-line term-role-a">executor</div>
+<div class="term-line">通知ディスパッチャの送出部を実装中。ntfy 互換の POST まで完了（テスト8件 green）。</div>
+<div class="term-line">チャネル方式は外部依存の追加（D1）に当たるため、自律決定せず blocking で停止しています。</div>
+<div class="term-line">&nbsp;</div>
+<div class="term-line term-dim">［1］A: ntfy.sh 公開トピック  ［2］B: self-host + Basic認証</div>
+<div class="term-line">&nbsp;</div>
+<div class="term-line term-role-b">auditor</div>
+<div class="term-line">送出部の監査は通過。チャネル選択の判断待ちのため review 前で保留。</div>
+<div class="term-line">&nbsp;</div>
+            <div class="term-input-row"><span class="term-input-prompt">›</span><input class="term-input" placeholder="ここから会話に割り込める（例: Bで。理由は本文に固有名詞を載せたくない）"></div>
+          </div>
+        </div>
+        <div class="annot" data-target="#tm-term"><span class="an-num">1</span><span class="an-title">同一セッションに直結</span><br>別ページに飛ばず、左ナビを保ったまま端末に降りる。人とエージェントが同じ pi セッションを見て割り込める。<span class="an-ref">spec-ui §1.4 / S254276</span></div>
+      </section>
+
+      <!-- ========== パネル: カード詳細（アプリ内・左ナビ維持） ========== -->
+      <section class="panel" id="panel-carddetail" data-title="カード詳細">
+        <div class="panel-inner">
+          <article class="card card--escalate detail-card">
+            <div class="card-top">
+              <div class="card-top-main">
+                <div class="card-meta">
+                  <span class="type-chip type-chip--escalate">エスカレーション</span>
+                  <span class="project-badge">banto</span>
+                  <span class="age age--hot">滞留 3日（2026-07-21 14:37 起票）</span>
+                </div>
+                <h1 class="card-title">task-0009 通知ディスパッチャのチャネル認証方式</h1>
+              </div>
+              <div class="score"><div class="score-value">15</div><div class="score-label">スコア</div><div class="score-formula">滞留3日 × (1+ブロック4)</div></div>
+            </div>
+            <section class="detail-section">
+              <h2 class="detail-heading">経緯 ─ 起点となったあなたの指示</h2>
+              <div class="origin-quote"><q>プッシュ通知はntfy互換で。自宅サーバの外からでも携帯に届くようにして。通知が来ないコックピットは意味がない</q><span class="origin-ref">— po_operation#8794 ・ 2026-07-21 09:12 ・ 検討セッション banto</span></div>
+              <ul class="timeline" style="margin-top:12px;">
+                <li><span class="t-time">07-21 09:12</span>あなたの指示 → task-0009 起票</li>
+                <li><span class="t-time">07-21 10:05</span>依存ゲート通過で ready 昇格 → spawn（pi / worktree task-0009）</li>
+                <li><span class="t-time">07-21 14:37</span><span class="t-mark">blocking エスカレーション発生</span> → このカードを生成</li>
+              </ul>
+            </section>
+            <section class="detail-section">
+              <h2 class="detail-heading">起きたこと</h2>
+              <div class="part-body">実装者は送出部まで実装済（テスト8件green）。チャネル到達経路の選択が外部依存の追加＝不可逆な選択（D1）に該当と判定し、自律決定せず blocking で停止。後続4タスクが未spawnで待機。</div>
+            </section>
+            <section class="detail-section">
+              <h2 class="detail-heading">求める判断</h2>
+              <p class="ask-question">通知チャネルはどちらの方式で進めますか？</p>
+              <div class="option-list">
+                <div class="option"><span class="option-key">A</span><div class="option-body"><div class="option-title">ntfy.sh 公開トピック</div><div class="option-note">追加インフラなし・今日から届く。本文にタスク名が載る（保護はURL秘匿のみ）</div></div></div>
+                <div class="option"><span class="option-key">B</span><div class="option-body"><div class="option-title">self-host ntfy + Basic認証</div><div class="option-note">本文は自宅網の外に出ない。外出先の到達は既存VPN経由</div></div></div>
+              </div>
+              <div class="reason-row"><input class="reason-input" type="text" placeholder="理由（1行・po_operation に記録）"></div>
+              <div class="actions">
+                <button class="btn btn--primary">A で進める</button>
+                <button class="btn btn--primary">B で進める</button>
+                <button class="btn btn--ghost" data-open="consult" data-label="Consult · task-0009">相談する</button>
+                <button class="btn btn--session" data-open="terminal" data-label="Terminal · task-0009">セッションへ</button>
+              </div>
+            </section>
+          </article>
+        </div>
+      </section>
+
+      <!-- ========== パネル: Backlog編集（Epic→Task 構造化エディタ） ========== -->
+      <section class="panel" id="panel-backlog" data-title="Backlog">
+        <div class="panel-inner panel-inner--wide">
+          <div class="list-head">
+            <span class="r-title">Backlog</span>
+            <button class="btn btn--primary">＋ New Epic</button>
+          </div>
+          <div class="proj-switch" id="bl-proj">
+            <span class="filter-label">プロジェクト:</span>
+            <button class="chip is-active">banto</button>
+            <button class="chip">palmux</button>
+            <button class="chip chip--add" data-open="projectedit" data-label="プロジェクト登録">＋ New project</button>
+          </div>
+          <div class="commit-note" id="bl-note">
+            タスク定義ファイル <code>work/tasks/*.md</code> の構造化エディタ（独自DBなし）。Epic→Taskの2段。ドラッグで割当・並べ替え、または右のチャットで相談 → daemon が<b>ファイルを書き換えてコミット</b>（D3: ファイルは意図の真実）。
+          </div>
+
+          <div class="backlog-layout">
+          <div class="bl-epics">
+          <div class="epic">
+            <div class="epic-head"><span class="epic-title">Epic: 通知基盤</span><span class="epic-count">5 tasks</span><button class="btn">＋ Task</button></div>
+            <div class="epic-tasks" data-epic="notify">
+              <div class="bl-task" draggable="true"><span class="bl-handle">⠿</span><div class="bl-main"><div class="bl-title">task-0003 通知ディスパッチャ</div><div class="bl-sub"><span class="state-chip state--wait">ready</span><span class="dep">deps: —</span></div></div><button class="btn" data-open="taskedit" data-label="タスク定義 · task-0003">編集</button></div>
+              <div class="bl-task" draggable="true"><span class="bl-handle">⠿</span><div class="bl-main"><div class="bl-title">task-0009 チャネル認証方式</div><div class="bl-sub"><span class="state-chip state--fail">blocking</span><span class="dep">deps: task-0003</span></div></div><button class="btn" data-open="taskedit" data-label="タスク定義 · task-0009">編集</button></div>
+              <div class="bl-task" draggable="true"><span class="bl-handle">⠿</span><div class="bl-main"><div class="bl-title">task-0011 通知配線（ディスパッチャ→カード）</div><div class="bl-sub"><span class="state-chip state--wait">draft</span><span class="dep">deps: task-0009</span></div></div><button class="btn" data-open="taskedit" data-label="タスク定義 · task-0011">編集</button></div>
+              <div class="bl-task" draggable="true"><span class="bl-handle">⠿</span><div class="bl-main"><div class="bl-title">task-0022 静穏時間の設定</div><div class="bl-sub"><span class="state-chip state--wait">queued</span><span class="dep">deps: —</span></div></div><button class="btn" data-open="taskedit" data-label="タスク定義 · task-0022">編集</button></div>
+              <div class="bl-task" draggable="true"><span class="bl-handle">⠿</span><div class="bl-main"><div class="bl-title">task-0023 通知文のD8整形</div><div class="bl-sub"><span class="state-chip state--wait">draft</span><span class="dep">deps: task-0021</span></div></div><button class="btn" data-open="taskedit" data-label="タスク定義 · task-0023">編集</button></div>
+            </div>
+          </div>
+
+          <div class="epic">
+            <div class="epic-head"><span class="epic-title">Epic: readyクエリ / スケジューラ</span><span class="epic-count">2 tasks</span><button class="btn">＋ Task</button></div>
+            <div class="epic-tasks" data-epic="ready">
+              <div class="bl-task" draggable="true"><span class="bl-handle">⠿</span><div class="bl-main"><div class="bl-title">task-0007 readyクエリのAPI/CLI一級化</div><div class="bl-sub"><span class="state-chip state--review">review-ready</span><span class="dep">deps: —</span></div></div><button class="btn" data-open="taskedit" data-label="タスク定義 · task-0007">編集</button></div>
+              <div class="bl-task" draggable="true"><span class="bl-handle">⠿</span><div class="bl-main"><div class="bl-title">task-0010 spawnスケジューラ接続</div><div class="bl-sub"><span class="state-chip state--wait">ready</span><span class="dep">deps: task-0007</span></div></div><button class="btn" data-open="taskedit" data-label="タスク定義 · task-0010">編集</button></div>
+            </div>
+          </div>
+
+          <div class="epic">
+            <div class="epic-head"><span class="epic-title">Epic: 評価環境v1</span><span class="epic-count">1 task</span><button class="btn">＋ Task</button></div>
+            <div class="epic-tasks" data-epic="eval">
+              <div class="bl-task" draggable="true"><span class="bl-handle">⠿</span><div class="bl-main"><div class="bl-title">task-0018 台帳リコンサイルのTTL調整</div><div class="bl-sub"><span class="state-chip state--audit">auditing</span><span class="dep">deps: —</span></div></div><button class="btn" data-open="taskedit" data-label="タスク定義 · task-0018">編集</button></div>
+            </div>
+          </div>
+          </div><!-- /bl-epics -->
+
+          <div class="bl-chat" id="bl-chat">
+            <div class="session-wrap">
+              <div class="session-head"><span class="s-icon">▦</span><div><div class="session-title">Backlog アシスタント</div><div class="session-sub">banto ・ 実装内容と順番を相談</div></div></div>
+              <div class="chat">
+                <div class="msg msg--po"><div class="msg-avatar">PO</div><div class="msg-bubble">通知まわり、実装の順番これで合ってる？</div></div>
+                <div class="msg msg--ai"><div class="msg-avatar">番</div><div class="msg-bubble">依存を見ると 0003 → 0009(判断待ち) → 0011。<b>0009 が blocking</b> なので認証方式が決まるまで 0011 / 0023 は動けません。静穏時間 0022 は独立なので先に出せます。</div></div>
+                <div class="msg msg--po"><div class="msg-avatar">PO</div><div class="msg-bubble">じゃあ 0022 を先に。あと D8整形(0023) は今回のスコープ外にして</div></div>
+                <div class="msg msg--ai"><div class="msg-avatar">番</div><div class="msg-bubble">承知。0022 を優先、0023 は Later に下げて Epic から外しました（左の一覧に反映）。<b>work/tasks/ を書き換えてコミット</b>してよいですか？</div></div>
+              </div>
+              <div class="session-footer">
+                <div class="footer-actions-label">この相談を反映</div>
+                <div class="footer-actions"><button class="btn btn--primary">反映してコミット</button><button class="btn">差分を見る</button></div>
+                <div class="chat-input-row"><input class="chat-input" type="text" placeholder="実装内容・順番を相談（例: 0011 は 0009 承認後に自動 ready に）"><button class="btn btn--primary">送信</button></div>
+              </div>
+            </div>
+          </div>
+          </div><!-- /backlog-layout -->
+        </div>
+        <div class="annot" data-target="#bl-chat"><span class="an-num">2</span><span class="an-title">一覧を見ながら相談</span><br>実装内容や順番をチャットで詰めると、左の一覧に反映され work/tasks/ を書き換えてコミット。Planning=会話、Review=証拠＋会話、Backlog=一覧＋会話。<span class="an-ref">spec-ui §1.3 / §2</span></div>
+        <div class="annot" data-target="#bl-note"><span class="an-num">1</span><span class="an-title">ファイルが真実・独自DBなし</span><br>編集はタスク定義ファイルを書き換えてコミットするだけ。人が git diff でレビューできる（D3）。階層はEpic→Taskの2段（JIRA化しない）。<span class="an-ref">spec-ui §1.3 / VISION</span></div>
+      </section>
+
+      <!-- ========== パネル: Projects（プロジェクトレジストリ） ========== -->
+      <section class="panel" id="panel-projects" data-title="Projects">
+        <div class="panel-inner">
+          <div class="list-head">
+            <span class="r-title">Projects ─ レジストリ</span>
+            <button class="btn btn--primary" data-open="projectedit" data-label="プロジェクト登録">＋ Register project</button>
+          </div>
+          <div class="commit-note" id="pj-note">
+            daemon の<b>プロジェクトレジストリ</b>（リポジトリパス＋プロファイル）。1つのdaemon・1本のアテンションキューに集約し、<b>統治の単位はプロジェクト</b>＝契約層(vision/principles/spec/ADR/tasks…)は各リポジトリに閉じる。参照は <code>&lt;project&gt;/&lt;id&gt;</code>。<span class="an-ref" style="color:var(--ink-faint)">spec-multi-project §1/§2</span>
+          </div>
+
+          <div class="proj-card">
+            <span class="pc-mark">番</span>
+            <div class="pc-main">
+              <div class="pc-name">banto <span class="pc-status"><span class="dot dot--healthy"></span>active</span></div>
+              <div class="pc-path">~/ghq/github.com/tjst-t/banto</div>
+              <div class="pc-meta"><span class="pc-chip">1 repo</span><span class="pc-chip">18 tasks</span><span class="pc-chip">via tjst-t</span><span class="pc-chip">review: mandatory / sampled</span><span class="pc-chip">cadence: 2d</span></div>
+            </div>
+            <button class="btn" data-open="projectedit" data-label="プロジェクト設定 · banto">設定</button>
+          </div>
+
+          <div class="proj-card">
+            <span class="pc-mark" style="background:var(--c-eval);">P</span>
+            <div class="pc-main">
+              <div class="pc-name">palmux <span class="pc-status"><span class="dot dot--healthy"></span>active</span></div>
+              <div class="pc-path">~/ghq/github.com/tjst-t/palmux</div>
+              <div class="pc-meta"><span class="pc-chip">1 repo</span><span class="pc-chip">6 tasks</span><span class="pc-chip">via tjst-t</span><span class="pc-chip">review: sampled</span><span class="pc-chip">cadence: 3d</span></div>
+            </div>
+            <button class="btn" data-open="projectedit" data-label="プロジェクト設定 · palmux">設定</button>
+          </div>
+
+          <div class="proj-card">
+            <span class="pc-mark" style="background:var(--ink-faint);">L</span>
+            <div class="pc-main">
+              <div class="pc-name">loamium <span class="pc-status paused">⏸ paused</span></div>
+              <div class="pc-path">web: github.com/tjst-t/loamium-web ・ api: …/loamium-api</div>
+              <div class="pc-meta"><span class="pc-chip">2 repos（web / api）</span><span class="pc-chip">0 tasks</span><span class="pc-chip">登録のみ・未稼働</span></div>
+            </div>
+            <button class="btn" data-open="projectedit" data-label="プロジェクト設定 · loamium">設定</button>
+          </div>
+
+          <p class="page-lede" style="margin-top:14px;">共有資産（Extension Pack・監査チェックリスト等の層A、層B既定値）は<b>プロダクト側の既定</b>。各プロジェクトは<b>オーバーライドのみ</b>を持つ（1プロジェクトの改善が全体に波及）。</p>
+        </div>
+        <div class="annot" data-target="#pj-note"><span class="an-num">1</span><span class="an-title">単一窓口・統治はプロジェクト単位</span><br>複数リポジトリを1daemon・1キューに集約。実行は依存が無い限り無制限に並行、絞るのはPOの注意力だけ（キューの順序で制御）。<span class="an-ref">spec-multi-project §1/§3/§4</span></div>
+      </section>
+
+      <!-- ========== パネル: プロジェクト登録/設定（focus） ========== -->
+      <section class="panel" id="panel-projectedit" data-title="プロジェクト登録">
+        <div class="panel-inner">
+          <div class="review-head" style="margin-bottom:8px;">
+            <span class="type-chip" style="background:var(--ink-soft);">REGISTRY</span>
+            <span class="r-title">プロジェクトのプロファイル</span>
+          </div>
+          <div class="commit-note">bantoのUIだけで完結（事前の <code>git clone</code> は不要）。作成方法を選んで、1プロジェクトに<b>リポジトリを1つ以上</b>ぶら下げる。</div>
+          <div class="warn-note">⚠ <b>設計未確定・要ADR</b>: 認証情報の保存方式（秘密情報のデータモデル=D1）／1プロジェクト＝複数repo時の契約層(vision/spec/tasks)の置き場（primary repo か project-meta か）。ここはUI探索用のモック。</div>
+
+          <div class="tdef" style="max-width:720px;">
+            <div class="tdef-field"><div class="tdef-label">NAME（プロジェクト名 / ID名前空間）</div><input class="tdef-input" placeholder="例: loamium"></div>
+
+            <div class="tdef-field">
+              <div class="tdef-label">リポジトリの取り込み方</div>
+              <div class="method-pane">
+                <div class="ctx-switch">
+                  <button class="ctx-tab is-active" data-ctx="clone">リモートから取り込む</button>
+                  <button class="ctx-tab" data-ctx="scratch">ゼロから作る</button>
+                  <button class="ctx-tab" data-ctx="local">ローカルを登録</button>
+                </div>
+
+                <!-- Clone -->
+                <div class="ctx-view is-active" data-ctx-view="clone">
+                  <div class="tdef-field"><div class="tdef-label">アカウント（どの認証情報で取り込むか）</div>
+                    <div class="proj-switch" style="margin:0;">
+                      <button class="chip is-active">GitHub: tjst-t</button>
+                      <button class="chip">GitHub: tjst-t-work</button>
+                      <button class="chip">GitLab: —</button>
+                      <button class="chip chip--add" data-open="settings" data-label="Settings">アカウントを管理</button>
+                    </div>
+                  </div>
+                  <div class="tdef-field"><div class="tdef-label">リポジトリ（URL / owner-repo / アカウントの一覧から選択）</div><input class="tdef-input" placeholder="tjst-t/loamium-web"></div>
+                  <div class="tdef-meta">配置は <b>ghq</b> 管理（worktree は <b>gwq</b>）。取り込み先パスの指定は不要。</div>
+                  <button class="btn btn--primary" style="margin-top:8px;">ghq get で取り込み → 追加</button>
+                </div>
+
+                <!-- Scratch -->
+                <div class="ctx-view" data-ctx-view="scratch">
+                  <div class="tdef-field"><div class="tdef-label">初期化</div>
+                    <label style="display:block;font-size:13px;margin:2px 0;"><input type="checkbox" checked> git init（空リポジトリ・<b>ghq 管理下</b>に作成）</label>
+                    <label style="display:block;font-size:13px;margin:2px 0;"><input type="checkbox" checked> 契約層の雛形を生成（<b>AGENT.md</b> / docs / roadmap）</label>
+                  </div>
+                  <div class="tdef-field"><div class="tdef-label">リモート公開（あとで可）</div>
+                    <div class="proj-switch" style="margin:0;">
+                      <button class="chip is-active">今は作らない</button>
+                      <button class="chip">GitHubに新規作成してPush</button>
+                      <button class="chip">GitLabに新規作成してPush</button>
+                    </div>
+                    <div class="tdef-meta">公開時は上で選んだアカウントを使用。配置は ghq 管理。</div>
+                  </div>
+                  <button class="btn btn--primary">作成して追加</button>
+                </div>
+
+                <!-- Local -->
+                <div class="ctx-view" data-ctx-view="local">
+                  <div class="tdef-field"><div class="tdef-label">ghq 管理下の既存リポジトリから選択</div><input class="tdef-input" placeholder="ghq list から選択（例: github.com/tjst-t/loamium-web）"></div>
+                  <button class="btn btn--primary">登録して追加</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="tdef-field">
+              <div class="tdef-label">このプロジェクトのリポジトリ（複数可）</div>
+              <div class="repo-list">
+                <div class="repo-row"><span class="rr-role">primary</span><span class="rr-url">github.com/tjst-t/loamium-web</span><span class="pc-chip">via tjst-t</span><button class="btn" style="padding:3px 10px;font-size:12px;">外す</button></div>
+                <div class="repo-row"><span class="rr-role sec">repo</span><span class="rr-url">github.com/tjst-t/loamium-api</span><span class="pc-chip">via tjst-t-work</span><button class="btn" style="padding:3px 10px;font-size:12px;">外す</button></div>
+              </div>
+              <div class="tdef-meta">各repoは<b>取り込み時に選んだアカウント</b>とセットで保持。契約層(vision/spec/tasks/<b>AGENT.md</b>)は <b>primary</b> に置く想定（※要ADR）。参照は <code>&lt;project&gt;/&lt;id&gt;</code>、repo跨ぎは repo 名を含む。</div>
+            </div>
+
+            <div class="tdef-meta" style="margin-bottom:12px;">モデルは<b>全体設定＋動的自動選定</b>（Settings › モデル自動選定）。プロジェクト個別には持たない。</div>
+            <div class="tdef-field"><div class="tdef-label">DEFAULT REVIEW POLICY（プロジェクトのオーバーライド）</div>
+              <div class="proj-switch" style="margin:0;"><button class="chip">auto</button><button class="chip is-active">sampled</button><button class="chip">mandatory</button></div>
+            </div>
+            <div class="tdef-field"><div class="tdef-label">CADENCE（日）</div><input class="tdef-input" value="2" style="max-width:120px;"></div>
+
+            <div class="tdef-field">
+              <div class="tdef-label">実行環境の割り当て（システム登録済 Provider から）</div>
+              <div class="repo-list">
+                <div class="repo-row"><span class="rr-role">dev</span><span class="rr-url">provider: process ・ npm run dev ・ ttl 8h</span><button class="btn" style="padding:3px 10px;font-size:12px;">外す</button></div>
+                <div class="repo-row"><span class="rr-role sec">test</span><span class="rr-url">provider: Docker ・ docker/test.yaml ・ ttl 30m</span><button class="btn" style="padding:3px 10px;font-size:12px;">外す</button></div>
+                <div class="repo-row"><span class="rr-role sec">staging</span><span class="rr-url">provider: Proxmox VM ・ quota 2 ・ 認証 sops(staging-pve)</span><button class="btn" style="padding:3px 10px;font-size:12px;">外す</button></div>
+              </div>
+              <button class="chip chip--add" data-open="settings" data-label="Settings">＋ Provider を割り当て（Settings で登録）</button>
+              <div class="tdef-meta" style="margin-top:6px;">割当は <code>environments.yaml</code> にプロファイル参照として記録。<b>具体情報（認証/エンドポイント）はコミットせず banto が注入</b>（spec-environment §4）。</div>
+            </div>
+          </div>
+          <div class="footer-actions" style="margin-top:16px;">
+            <button class="btn btn--primary">プロジェクトを登録</button>
+            <button class="btn btn--ghost">キャンセル</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== パネル: Settings（アプリ全体設定） ========== -->
+      <section class="panel" id="panel-settings" data-title="Settings">
+        <div class="panel-inner panel-inner--wide">
+          <div class="list-head"><span class="r-title">Settings ─ アプリ全体設定</span></div>
+          <div class="method-pane" style="margin-top:8px;">
+            <div class="ctx-switch">
+              <button class="ctx-tab is-active" data-ctx="git">Git アカウント</button>
+              <button class="ctx-tab" data-ctx="llm">LLM エンドポイント</button>
+              <button class="ctx-tab" data-ctx="autopick">モデル自動選定</button>
+              <button class="ctx-tab" data-ctx="providers">実行環境 (Providers)</button>
+              <button class="ctx-tab" data-ctx="notify">通知</button>
+              <button class="ctx-tab" data-ctx="advanced">詳細 (層B)</button>
+            </div>
+
+            <!-- Git アカウント（マルチアカウント） -->
+            <div class="ctx-view is-active" data-ctx-view="git">
+              <div class="warn-note">⚠ <b>要ADR</b>: 秘密情報の保存方式（sops / OSキーチェーン / 暗号化ファイル）とデータモデル（D1）。1ホストに複数アカウントを持てる。</div>
+              <div class="section-label">GitHub</div>
+              <div class="cred-row"><span class="cred-mark">GH</span><div class="pc-main"><div class="cred-host">tjst-t <span class="pc-chip">personal</span></div><div class="pc-path">OAuth（repo, workflow）</div></div><span class="cred-state on">● 接続済</span><button class="btn">再認証</button><button class="btn btn--ghost">解除</button></div>
+              <div class="cred-row"><span class="cred-mark">GH</span><div class="pc-main"><div class="cred-host">tjst-t-work <span class="pc-chip">work</span></div><div class="pc-path">Fine-grained token</div></div><span class="cred-state on">● 接続済</span><button class="btn btn--ghost">解除</button></div>
+              <button class="btn" style="margin-bottom:16px;">＋ GitHub アカウントを追加</button>
+              <div class="section-label">GitLab</div>
+              <div class="cred-row"><span class="cred-mark">GL</span><div class="pc-main"><div class="cred-host">アカウントなし</div><div class="pc-path">OAuth / トークンで接続</div></div><button class="btn btn--primary">＋ GitLab アカウントを追加</button></div>
+              <div class="section-label">SSH 鍵</div>
+              <div class="cred-row"><span class="cred-mark">🔑</span><div class="pc-main"><div class="cred-host">id_ed25519</div><div class="pc-path">~/.ssh/id_ed25519（登録済）</div></div><span class="cred-state on">● 登録済</span><button class="btn">鍵を追加</button></div>
+            </div>
+
+            <!-- LLM エンドポイント -->
+            <div class="ctx-view" data-ctx-view="llm">
+              <p class="page-lede" style="margin-top:14px;">banto が使えるLLMを<b>全体設定</b>で登録する（プロジェクト個別には持たない）。opencode 経由で差し替え可。</p>
+              <div class="cred-row"><span class="cred-mark">A</span><div class="pc-main"><div class="cred-host">Anthropic API</div><div class="pc-path">opus 4.8 / sonnet 4.6 / haiku 4.5</div></div><span class="cred-state on">● 接続済</span><button class="btn">設定</button></div>
+              <div class="cred-row"><span class="cred-mark">◎</span><div class="pc-main"><div class="cred-host">opencode endpoint</div><div class="pc-path">http://localhost:4096 ・ モデル差し替えの窓口</div></div><span class="cred-state on">● 接続済</span><button class="btn">設定</button></div>
+              <div class="cred-row"><span class="cred-mark">L</span><div class="pc-main"><div class="cred-host">Local LLM (Ollama)</div><div class="pc-path">http://localhost:11434 ・ qwen2.5-coder, llama3.1</div></div><span class="cred-state on">● 接続済</span><button class="btn">設定</button></div>
+              <button class="btn">＋ サービスを追加</button>
+            </div>
+
+            <!-- モデル自動選定 -->
+            <div class="ctx-view" data-ctx-view="autopick">
+              <div class="warn-note">⚠ <b>要ADR/設計</b>: 自動選定アルゴリズム（タスク種別×難度×コストからサービス/モデルを選ぶ）。tier変更は改善ループで keep/tune/revert 評価。</div>
+              <p class="page-lede">セッション/タスクごとに、<b>どのサービスのどのモデルを使うかを動的に自動判定</b>する。プロジェクトに固定しない。既定は役割で与え、種別・難度・コスト上限で上書き選定する。</p>
+              <div class="section-label">役割の既定（可変・自動選定の起点）</div>
+              <div class="repo-list">
+                <div class="repo-row"><span class="rr-role">検討</span><span class="rr-url">Anthropic / opus（対話品質重視）</span></div>
+                <div class="repo-row"><span class="rr-role">実行者</span><span class="rr-url">Anthropic / sonnet（難タスクは opus に自動昇格）</span></div>
+                <div class="repo-row"><span class="rr-role">監査</span><span class="rr-url">Anthropic / opus（自己申告を疑う役は上位固定寄り）</span></div>
+                <div class="repo-row"><span class="rr-role sec">status_reporter</span><span class="rr-url">Local / qwen2.5-coder（安価・要約系はローカル優先）</span></div>
+              </div>
+              <div class="section-label" style="margin-top:14px;">ポリシー</div>
+              <label style="display:block;font-size:13px;margin:3px 0;"><input type="checkbox" checked> 安価に済む役割はローカルLLMを優先</label>
+              <label style="display:block;font-size:13px;margin:3px 0;"><input type="checkbox" checked> 難度・失敗で上位モデルへ自動昇格（改善ループで評価）</label>
+              <label style="display:block;font-size:13px;margin:3px 0;"><input type="checkbox"> 月次コスト上限で選定を抑制</label>
+            </div>
+
+            <!-- 通知 -->
+            <div class="ctx-view" data-ctx-view="notify">
+              <p class="page-lede" style="margin-top:14px;">アテンションカード生成をプッシュ通知（携帯到達）。通知は「開くきっかけ」を担う（spec-ui §6）。</p>
+              <div class="tdef" style="max-width:640px;">
+                <div class="tdef-field"><div class="tdef-label">プッシュチャネル（ntfy トピック等）</div><input class="tdef-input" value="ntfy://banto-a1b2c3"></div>
+                <div class="tdef-field"><div class="tdef-label">静穏時間</div><input class="tdef-input" value="22:00 – 07:00" style="max-width:200px;"></div>
+                <div class="tdef-field"><div class="tdef-label">通知対象</div>
+                  <label style="display:block;font-size:13px;margin:2px 0;"><input type="checkbox" checked> blocking / エスカレーション</label>
+                  <label style="display:block;font-size:13px;margin:2px 0;"><input type="checkbox" checked> レビュー待ち・failed</label>
+                  <label style="display:block;font-size:13px;margin:2px 0;"><input type="checkbox" checked> 評価カード・定期レビュー</label>
+                </div>
+              </div>
+            </div>
+
+            <!-- 実行環境（Providers）: システムレベル登録 -->
+            <div class="ctx-view" data-ctx-view="providers">
+              <div class="warn-note">⚠ <b>要ADR</b>: Provider（実行環境ドライバ）の登録モデルと、テスト環境の具体情報（エンドポイント/認証/リソース）を<b>gitにコミットせず banto が注入</b>する仕組み（spec-environment §4・D1）。プロジェクトの <code>environments.yaml</code> は参照名のみ、実体はここ。</div>
+              <p class="page-lede" style="margin-top:0;">実行環境の<b>Provider をシステムレベルで登録</b>し、各プロジェクトには使えるリソースを<b>割り当て</b>る（Projects › 実行環境の割り当て）。ドライバは動詞契約（provision/deploy/healthcheck/run/collect/teardown/list）。</p>
+              <div class="cred-row"><span class="cred-mark">🐳</span><div class="pc-main"><div class="cred-host">Docker（ローカル）</div><div class="pc-path">driver: docker ・ unix:///var/run/docker.sock ・ test/dev 用</div></div><span class="cred-state on">● 稼働</span><button class="btn">設定</button></div>
+              <div class="cred-row"><span class="cred-mark">▤</span><div class="pc-main"><div class="cred-host">process（ローカル）</div><div class="pc-path">driver: process ・ dev server 起動用</div></div><span class="cred-state on">● 稼働</span><button class="btn">設定</button></div>
+              <div class="cred-row"><span class="cred-mark">VM</span><div class="pc-main"><div class="cred-host">Proxmox VM プール</div><div class="pc-path">driver: proxmox-vm ・ node: pve1 ・ pool: agents ・ VMID 90000番台 ・ quota 2 ・ 認証: sops(staging-pve)</div></div><span class="cred-state on">● 接続</span><button class="btn">設定</button></div>
+              <button class="btn">＋ Provider を登録</button>
+            </div>
+
+            <!-- 詳細（層B） -->
+            <div class="ctx-view" data-ctx-view="advanced">
+              <p class="page-lede" style="margin-top:14px;">層Bパラメータ（<code style="font-family:var(--font-mono)">meta/config.yaml</code>）。既定はプロダクト側、各プロジェクトはオーバーライドのみ。</p>
+              <div class="term" style="min-height:180px;">
+<div class="term-line term-dim"># meta/config.yaml（プロダクト既定）</div>
+<div class="term-line">cadence_days: 2</div>
+<div class="term-line">meta_cadence_days: 7</div>
+<div class="term-line">recap_idle_minutes: 10</div>
+<div class="term-line">escalate_on_reversible: false</div>
+<div class="term-line">merge_policy_default: sampled</div>
+<div class="term-line">sampled_rate: 0.15</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== パネル: Memory（独立メニュー・二層の記憶） ========== -->
+      <section class="panel" id="panel-memory" data-title="Memory">
+        <div class="panel-inner panel-inner--wide">
+          <div class="list-head"><span class="r-title">Memory ─ 継続する記憶</span><button class="btn">＋ 記憶を追加</button></div>
+          <div class="warn-note">⚠ <b>要ADR/設計</b>: 記憶のデータモデルと「何を横断共有・何をプロジェクトに閉じるか」（D1/D3）。イベントログ＝真実、記憶はそこから<b>蒸留した導出＋編集可</b>とし、競合する隠れ状態にしない。<span style="color:var(--ink-faint)">（詳しい工夫は後で相談）</span></div>
+          <p class="page-lede" style="margin-top:0;">散らばった会話面（Planning / Review / Consult / Backlog / Terminal）に、<b>共通の記憶を持つ一人のAI</b>が向き合う。記憶は二層 ── 継続した一人のAIに見えつつ、プロジェクト知識は混ざらない。</p>
+
+          <div class="section-label" id="mem-you">① あなたの記憶（全プロジェクト横断・共有）</div>
+          <div class="part-body" style="font-size:12.5px;color:var(--ink-soft);margin-bottom:8px;">“人”についての記憶（好み・進め方・常設の指示）。どの面・どのプロジェクトでも効く。</div>
+          <div class="repo-list">
+            <div class="repo-row"><span class="rr-url" style="color:var(--ink);">統合UIで操作可能なモックを好む。説明は埋め込まずフローティングで重ねる</span><button class="btn" style="padding:3px 10px;font-size:12px;">編集</button></div>
+            <div class="repo-row"><span class="rr-url" style="color:var(--ink);">大きなスコープ変更はADR/ROADMAPに計上してから着手（統治を踏む）</span><button class="btn" style="padding:3px 10px;font-size:12px;">編集</button></div>
+            <div class="repo-row"><span class="rr-url" style="color:var(--ink);">用語はIT寄り。1面ずつ見せて逐次ステアする</span><button class="btn" style="padding:3px 10px;font-size:12px;">編集</button></div>
+          </div>
+
+          <div class="section-label" style="margin-top:16px;">② プロジェクトの記憶（各リポジトリに閉じる・横断させない）</div>
+          <div class="part-body" style="font-size:12.5px;color:var(--ink-soft);margin-bottom:8px;">“そのプロジェクト”の決定・規約・ドメイン。契約層(ADR/spec)と地続き。統治の単位はプロジェクトなので混ぜない（spec-multi-project §1）。</div>
+          <div class="repo-list">
+            <div class="repo-row"><span class="rr-role">banto</span><span class="rr-url">全体像プロトタイプ進行中 / 非拘束の設計リファレンス(ADR-0002) …</span><button class="btn" style="padding:3px 10px;font-size:12px;">開く</button></div>
+            <div class="repo-row"><span class="rr-role sec">palmux</span><span class="rr-url">CDP画像転送・共有ブラウザの規約 …</span><button class="btn" style="padding:3px 10px;font-size:12px;">開く</button></div>
+          </div>
+          <p class="page-lede" style="margin-top:12px;">各会話面は <b>①あなたの記憶 ＋ ②そのプロジェクトの記憶 ＋ その場の文脈</b> を合成する。復帰リキャップ（会話冒頭の「42分ぶりです…」）はこの記憶の一部を出したもの。</p>
+        </div>
+        <div class="annot" data-target="#mem-you"><span class="an-num">1</span><span class="an-title">文脈の記憶はシステムが持つ</span><br>POの頭は判断だけに使う（D8）。“人”の記憶は横断共有、“プロジェクト”の記憶は各repoに閉じる二層。<span class="an-ref">D8 / spec-multi-project §1</span></div>
+      </section>
+
+      <!-- ========== パネル: Environments（Main/開発ブランチを常に触れる） ========== -->
+      <section class="panel" id="panel-environments" data-title="Environments">
+        <div class="panel-inner panel-inner--wide">
+          <div class="list-head"><span class="r-title">Environments</span></div>
+          <div class="proj-switch" id="env-proj"><span class="filter-label">プロジェクト:</span><button class="chip is-active">banto</button><button class="chip">palmux</button></div>
+          <div class="commit-note" id="env-note">実行環境は割り当てた <b>Provider</b> 上で動く。テスト環境の具体情報（エンドポイント/認証/リソース）は<b>gitにコミットせず banto が注入</b>（spec-environment §4）。<code>environments.yaml</code> は参照名のみ。</div>
+
+          <div class="section-label">常設 ─ main（ここだけ見ればアクセスできる）</div>
+          <div class="proj-card">
+            <span class="pc-mark" style="background:var(--c-eval);">M</span>
+            <div class="pc-main">
+              <div class="pc-name">main <span class="pc-status"><span class="dot dot--healthy"></span>常時稼働</span></div>
+              <div class="pc-path">profile: dev ・ provider: Docker（ホストにポート公開）・ 別PCから触れる main の状態</div>
+              <div class="env-access"><span class="ea-label">アクセス</span><span class="ea-url">http://banto-server:5173</span><button class="btn">開く</button><button class="btn">コピー</button></div>
+            </div>
+          </div>
+
+          <div class="section-label" style="margin-top:16px;">開発ブランチ / タスク環境（Provider 上・TTL付き）</div>
+          <div class="proj-card">
+            <span class="pc-mark" style="background:var(--c-review);">7</span>
+            <div class="pc-main">
+              <div class="pc-name">task-0007 <span class="pc-status"><span class="dot dot--healthy"></span>review用 稼働</span></div>
+              <div class="pc-path">profile: dev ・ provider: Docker（ポート公開）・ branch: task-0007 ・ ttl 8h</div>
+              <div class="env-access"><span class="ea-label">アクセス</span><span class="ea-url">http://banto-server:5191</span><button class="btn" data-open="review" data-label="Review · task-0007">レビューで見る</button><button class="btn">コピー</button></div>
+            </div>
+          </div>
+          <div class="proj-card">
+            <span class="pc-mark" style="background:var(--ink-faint);">S</span>
+            <div class="pc-main">
+              <div class="pc-name">task-0091 staging <span class="pc-status"><span class="dot dot--healthy"></span>外部VM 稼働</span></div>
+              <div class="pc-path">profile: staging ・ provider: Proxmox VM（pool agents / VMID 90007）・ ttl 24h・台帳で照合</div>
+              <div class="env-access"><span class="ea-label">アクセス</span><span class="ea-url">https://10.0.0.57:8443</span><span class="ea-url">ssh 10.0.0.57:22</span><span class="pc-chip">認証: sops(staging-pve)</span><button class="btn">開く</button></div>
+            </div>
+          </div>
+        </div>
+        <div class="annot" data-target="#env-note"><span class="an-num">1</span><span class="an-title">環境の具体情報は注入・非コミット</span><br>Provider はシステム登録、プロジェクトに割り当て。認証/エンドポイントは sops でbantoが注入し、repoには参照名のみ。TTL/quota/照合は daemon 台帳が執行。<span class="an-ref">spec-environment §1/§4/§5</span></div>
+      </section>
+
+      <!-- ========== パネル: タスク定義エディタ（focus） ========== -->
+      <section class="panel" id="panel-taskedit" data-title="タスク定義">
+        <div class="panel-inner">
+          <div class="review-head" style="margin-bottom:8px;">
+            <span class="type-chip" style="background:var(--ink-soft);">DEF</span>
+            <span class="r-title">task-0009 通知ディスパッチャのチャネル認証方式</span>
+          </div>
+          <div class="commit-note">編集対象: <code>work/tasks/task-0009-channel-auth.md</code> ・ 保存すると<b>このファイルを書き換えてコミット</b>（イベントログではなくファイル＝意図の真実、D3）</div>
+          <div class="tdef">
+            <div class="tdef-field"><div class="tdef-label">TITLE</div><input class="tdef-input" value="通知ディスパッチャのチャネル認証方式"></div>
+            <div class="tdef-field"><div class="tdef-label">EPIC</div><input class="tdef-input" value="通知基盤"></div>
+            <div class="tdef-field"><div class="tdef-label">INTENT</div><input class="tdef-input" value="プッシュ通知(ntfy互換)のチャネル到達経路と認証方式を決めて実装する"></div>
+            <div class="tdef-field"><div class="tdef-label">ACCEPTANCE</div>
+              <div class="tdef-ac">
+                <input class="tdef-input" value="外部からでも携帯に到達する">
+                <input class="tdef-input" value="通知本文の固有名詞ポリシー（プロジェクト名まで）を満たす">
+                <input class="tdef-input" placeholder="＋ 受け入れ条件を追加…">
+              </div>
+            </div>
+            <div class="tdef-field"><div class="tdef-label">DEPENDS_ON</div><input class="tdef-input" value="task-0003"></div>
+            <div class="tdef-meta">status: blocking ・ origin: po_operation#8794 ・ governance: false</div>
+          </div>
+          <div class="footer-actions" style="margin-top:16px;">
+            <button class="btn btn--primary">保存してコミット</button>
+            <button class="btn">差分を見る</button>
+            <button class="btn btn--ghost">破棄</button>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  // ナビゲーション: 目的地(サイドバー)=通常モード / 会話=フォーカス(全画面＋戻る)
+  var LABELS = { planning:'Planning', queue:'Attention Queue', improve:'Improvements', board:'Board', history:'History', backlog:'Backlog', projects:'Projects', environments:'Environments', memory:'Memory', review:'Review', consult:'Consult', deliberation:'Planning', terminal:'Terminal', carddetail:'カード詳細', taskedit:'タスク定義', projectedit:'プロジェクト登録', settings:'Settings' };
+  var SESSION = { review:1, consult:1, deliberation:1, terminal:1, carddetail:1, taskedit:1, projectedit:1 };   // フォーカス（メイン置換・左ナビ維持）で開くもの
+  var app = document.querySelector('.app');
+  var focusBar = document.getElementById('focusBar');
+  var focusLabel = document.getElementById('focusLabel');
+  var destHead = document.getElementById('destHead');
+  var viewTitle = document.getElementById('viewTitle');
+  var sideItems = document.querySelectorAll('.side-item[data-open]');
+
+  function clearHi(){ document.querySelectorAll('.annot-hi').forEach(function(e){ e.classList.remove('annot-hi'); }); }
+
+  function layoutAnnots(){
+    clearHi();
+    if(!document.body.classList.contains('show-annot')) return;
+    var panel = document.querySelector('.panel.is-active');
+    if(!panel) return;
+    var pr = panel.getBoundingClientRect();
+    var pw = panel.clientWidth;
+    var aw = 224;
+    var inner = panel.querySelector('.panel-inner');
+    // 右レールのx: コンテンツ列の右外側。入らなければ右端に寄せて重畳
+    var railLeft = inner ? (inner.offsetLeft + inner.offsetWidth + 26) : (pw - aw - 4);
+    if(railLeft + aw > pw) railLeft = pw - aw - 4;
+    if(railLeft < 0) railLeft = 0;
+
+    // ターゲットの縦位置順に並べ、縦の重なりを避けて下へ送る
+    var items = [];
+    panel.querySelectorAll('.annot').forEach(function(an){
+      var t = panel.querySelector(an.dataset.target);
+      if(!t){ an.style.display='none'; return; }
+      var tr = t.getBoundingClientRect();
+      items.push({ an: an, t: t, tTop: tr.top - pr.top, tCenter: tr.top - pr.top + tr.height/2 });
+    });
+    items.sort(function(a,b){ return a.tTop - b.tTop; });
+
+    var lastBottom = -1e9;
+    items.forEach(function(it){
+      var an = it.an;
+      an.style.display = 'block';
+      an.classList.remove('annot--left');
+      an.style.left = railLeft + 'px';
+      var top = Math.max(it.tTop, lastBottom + 12);
+      an.style.top = top + 'px';
+      var h = an.offsetHeight;
+      // 矢印を対象の中心へ向ける
+      var arrow = Math.min(Math.max(it.tCenter - top - 7, 8), h - 16);
+      an.style.setProperty('--arrow', arrow + 'px');
+      lastBottom = top + h;
+      it.t.classList.add('annot-hi');
+    });
+  }
+
+  function showPanel(id){
+    document.querySelectorAll('.panel').forEach(function(p){ p.classList.toggle('is-active', p.id==='panel-'+id); });
+  }
+
+  // 状態を描画（履歴は触らない）。focus=メイン領域を置換・左ナビは維持
+  function render(state){
+    if(!state) state = { id:'queue', mode:'dest' };
+    if(state.mode === 'focus'){
+      app.classList.add('focus-mode');
+      destHead.style.display = 'none';
+      focusBar.style.display = 'flex';
+      focusLabel.textContent = state.label || LABELS[state.id] || state.id;
+      showPanel(state.id);
+    } else {
+      app.classList.remove('focus-mode');
+      focusBar.style.display = 'none';
+      destHead.style.display = '';
+      viewTitle.textContent = LABELS[state.id] || state.id;
+      showPanel(state.id);
+      sideItems.forEach(function(s){ s.classList.toggle('is-active', s.dataset.open===state.id); });
+    }
+    window.scrollTo(0, 0);
+    setTimeout(layoutAnnots, 0);
+  }
+
+  // 履歴にスタックして遷移（ブラウザの戻る/進むが効く）
+  function navigate(state){ history.pushState(state, ''); render(state); }
+
+  function openThing(id, label){
+    navigate({ id:id, mode: SESSION[id] ? 'focus' : 'dest', label:label });
+  }
+
+  // サイドバー＆カード内ボタン（data-open / 旧data-goto）→ 遷移（すべてアプリ内・左ナビ維持）
+  document.querySelectorAll('[data-open],[data-goto]').forEach(function(b){
+    b.addEventListener('click', function(e){
+      e.preventDefault();
+      openThing(b.dataset.open || b.dataset.goto, b.dataset.label);
+    });
+  });
+
+  // 「← 戻る」＝ ブラウザの戻る。進む/戻るボタンにも連動
+  document.getElementById('backBtn').addEventListener('click', function(){ history.back(); });
+  window.addEventListener('popstate', function(e){ render(e.state); });
+
+  // サイドバー: 開閉トグル（畳むとアイコンレール、グリフ反転）
+  var navToggle = document.getElementById('navToggle');
+  navToggle.addEventListener('click', function(){
+    var collapsed = app.classList.toggle('nav-collapsed');
+    navToggle.textContent = collapsed ? '»' : '«';
+    navToggle.title = collapsed ? 'サイドバーを開く' : 'サイドバーを畳む';
+  });
+
+  // サイドバー: ドラッグでリサイズ
+  var rez = document.getElementById('sidebarResizer');
+  var dragging = false;
+  rez.addEventListener('mousedown', function(e){ dragging = true; rez.classList.add('dragging'); e.preventDefault(); });
+  document.addEventListener('mousemove', function(e){
+    if(!dragging) return;
+    var w = Math.min(360, Math.max(150, e.clientX));
+    app.style.setProperty('--sidebar-w', w + 'px');
+  });
+  document.addEventListener('mouseup', function(){ if(dragging){ dragging = false; rez.classList.remove('dragging'); } });
+
+  // レビューの証拠ペイン切替（Diff / Terminal / App）
+  document.querySelectorAll('.ctx-switch').forEach(function(sw){
+    sw.addEventListener('click', function(e){
+      var t = e.target.closest('.ctx-tab'); if(!t) return;
+      var pane = sw.parentElement;
+      pane.querySelectorAll('.ctx-tab').forEach(function(x){ x.classList.toggle('is-active', x===t); });
+      pane.querySelectorAll('.ctx-view').forEach(function(v){ v.classList.toggle('is-active', v.dataset.ctxView===t.dataset.ctx); });
+      setTimeout(layoutAnnots, 0);
+    });
+  });
+
+  // Backlog: ドラッグで並べ替え／別Epicへ割当
+  var dragEl = null;
+  document.addEventListener('dragstart', function(e){
+    var t = e.target.closest('.bl-task'); if(!t) return;
+    dragEl = t; t.classList.add('dragging');
+  });
+  document.addEventListener('dragend', function(){
+    if(dragEl) dragEl.classList.remove('dragging');
+    document.querySelectorAll('.epic-tasks.drop-hover').forEach(function(l){ l.classList.remove('drop-hover'); });
+    dragEl = null;
+  });
+  document.addEventListener('dragover', function(e){
+    var lane = e.target.closest('.epic-tasks'); if(!lane || !dragEl) return;
+    e.preventDefault();
+    lane.classList.add('drop-hover');
+    var after = null;
+    lane.querySelectorAll('.bl-task:not(.dragging)').forEach(function(row){
+      var r = row.getBoundingClientRect();
+      if(e.clientY > r.top + r.height/2) after = row;
+    });
+    if(after) after.after(dragEl); else lane.prepend(dragEl);
+  });
+  document.addEventListener('dragleave', function(e){
+    var lane = e.target.closest('.epic-tasks');
+    if(lane && !lane.contains(e.relatedTarget)) lane.classList.remove('drop-hover');
+  });
+
+  // 画面内プロジェクト切替（Planning/Backlog）
+  document.querySelectorAll('.proj-switch').forEach(function(row){
+    row.addEventListener('click', function(e){
+      var c = e.target.closest('.chip'); if(!c || c.classList.contains('chip--add')) return;
+      row.querySelectorAll('.chip').forEach(function(x){ x.classList.toggle('is-active', x===c); });
+    });
+  });
+
+  // 初期状態
+  history.replaceState({ id:'queue', mode:'dest' }, '');
+  render({ id:'queue', mode:'dest' });
+
+  var toggle = document.getElementById('annotToggle');
+  toggle.addEventListener('click', function(){
+    var on = document.body.classList.toggle('show-annot');
+    toggle.classList.toggle('is-on', on);
+    toggle.setAttribute('aria-pressed', on ? 'true':'false');
+    toggle.innerHTML = on ? '💡 解説を消す' : '💡 解説を重ねる';
+    layoutAnnots();
+  });
+
+  window.addEventListener('resize', layoutAnnots);
+})();
+</script>
+
+</body>
+</html>

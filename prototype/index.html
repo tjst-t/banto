@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>プロトタイプ目次 — banto POコックピット v1</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html" data-testid="nav-home">
+      <span class="brand-mark">番</span>
+      <span>
+        <span class="brand-name">banto</span>
+        <span class="brand-sub">POコックピット</span>
+      </span>
+    </a>
+  </div>
+</header>
+
+<main class="page">
+  <div class="page-head">
+    <h1 class="page-title">プロトタイプ目次</h1>
+  </div>
+  <p class="proto-banner">
+    Sprint S30a8fd「POコックピットv1」の静的プロトタイプ（PO承認待ち）。
+    対象Story: S30a8fd-4（Web GUIアテンションキュー画面）／ S30a8fd-5（tmuxセッションへのドリルダウン）。
+    データはすべてハードコードのサンプルです。
+    <br><b>「全流れが見えない」というPOフィードバックを受け、まず ↓「開発の全流れ ウォークスルー」から見てください。</b>
+    以下のキュー系画面が全流れの「駅6（レビュー）」に当たることが分かります。
+  </p>
+
+  <nav class="proto-list" aria-label="画面一覧">
+    <a class="proto-item" href="app.html" data-testid="proto-link-app"
+       style="border:2px solid var(--accent); background: var(--surface-dim);">
+      <span class="proto-item-title">★ 統合UI（サイドバーで行き来する1つのコックピット） ── まずここ</span>
+      <span class="proto-item-desc">永続サイドバーでアテンションキュー／エージェントボード／検討・相談セッションを1つの製品として行き来。完成画面はクリーンなまま、上部の「💡 解説を重ねる」で各要素の意図と仕様参照をフローティング表示（トグル）。以下の個別ページはこの中に統合済み ── 単体で見たいとき用</span>
+    </a>
+
+    <div class="proto-banner" style="margin-top:18px; margin-bottom:6px; border-style:solid;">
+      <b>個別ページ（統合UIの各パネルの元）</b> ── 単体で確認したいとき用
+    </div>
+
+    <a class="proto-item" href="walkthrough.html" data-testid="proto-link-walkthrough"
+       style="border-color: var(--accent); background: var(--surface-dim);">
+      <span class="proto-item-title">▶ 開発の全流れ ウォークスルー（全体地図）</span>
+      <span class="proto-item-desc">1つの依頼が アイデア→相談→仕様→Task化→実行→監査→レビュー→修正→マージ&amp;Push→デプロイ/評価 を通る全10駅。各駅で「あなた(PO)が触るか／AIが自律で回すか」と実装状態を明示。※これは地図（解説）です。各駅で実際に何をするUIは ↓ の画面モックを見てください</span>
+    </a>
+
+    <div class="proto-banner" style="margin-top:18px; margin-bottom:6px; border-style:solid;">
+      <b>各駅で実際に操作する画面（UIモック）</b> ── 「何をするUIか」を具体化した3枚。全流れのどの駅かを添えています。
+    </div>
+
+    <a class="proto-item" href="deliberation.html" data-testid="proto-link-deliberation"
+       style="border-left:4px solid var(--accent);">
+      <span class="proto-item-title">検討セッション（駅1–2: 相談して仕様を固める）</span>
+      <span class="proto-item-desc">ふわっとした依頼を対話で仕様に落とす会話面。番号付き選択肢・自由文・仕様ファイルの起草プレビュー・フッターの有効操作（承認してタスク化）。復帰リキャップ付き。spec-ui §2/§4</span>
+    </a>
+    <a class="proto-item" href="board.html" data-testid="proto-link-board"
+       style="border-left:4px solid var(--accent);">
+      <span class="proto-item-title">エージェントボード（駅3–8: 全体を見て動かす）</span>
+      <span class="proto-item-desc">全プロジェクトの全タスクをフェーズ（Now/Next/Later）で一望。状態チップ・健康状態フィルタ（停滞/ゾンビ）・nudge/handoff・判断待ちの明示。ステートマシンをそのまま映すビューア。spec-ui §1.2</span>
+    </a>
+    <a class="proto-item" href="consult-session.html" data-testid="proto-link-consult"
+       style="border-left:4px solid var(--accent);">
+      <span class="proto-item-title">相談セッション（各カードの「相談する」の先）</span>
+      <span class="proto-item-desc">判断ポイントからワンアクションで降りる会話。カードの文脈（タスク定義・差分・経緯）を注入し、迷いを潰したら同じ判断に戻る。会話の結果で選択肢を組み直して再掲し、その場で判断も下せる。spec-ui §2</span>
+    </a>
+
+    <div class="proto-banner" style="margin-top:18px; margin-bottom:6px; border-style:solid;">
+      <b>判断まわりの画面（既存）</b> ── 全流れの「駅6（レビュー）」と、そこへ降りる導線
+    </div>
+
+    <a class="proto-item" href="attention-queue.html" data-testid="proto-link-attention-queue">
+      <span class="proto-item-title">アテンションキュー（通常状態）</span>
+      <span class="proto-item-desc">全プロジェクト横断の判断待ちカード5枚。カード3部構成（経緯／起きたこと／求める判断）・滞留日数×ブロック影響度の降順・全5種別（エスカレーション／監査fail／レビュー待ち／incident／評価カード）</span>
+    </a>
+    <a class="proto-item" href="attention-queue-empty.html" data-testid="proto-link-attention-queue-empty">
+      <span class="proto-item-title">アテンションキュー（空状態）</span>
+      <span class="proto-item-desc">判断待ちなし。「開けば分かる」の空状態 — 通知が開くきっかけを担うことを明記</span>
+    </a>
+    <a class="proto-item" href="card-detail.html" data-testid="proto-link-card-detail">
+      <span class="proto-item-title">カード詳細（展開表示）</span>
+      <span class="proto-item-desc">エスカレーションカードの全文脈: originRef連鎖のタイムライン・選択肢の詳細・理由1行入力（P5）・セッションへのドリルダウン導線</span>
+    </a>
+    <a class="proto-item" href="tmux-drilldown.html" data-testid="proto-link-tmux-drilldown">
+      <span class="proto-item-title">tmuxドリルダウン（ブラウザ内端末）</span>
+      <span class="proto-item-desc">xterm.js がdaemonのPTY↔WebSocketブリッジ経由でtmuxセッションに直接つながり、ブラウザから双方向に操作（人とエージェントが同一セッションを見る）。CLIは switch-client / attach で直接ジャンプ</span>
+    </a>
+  </nav>
+</main>
+
+</body>
+</html>

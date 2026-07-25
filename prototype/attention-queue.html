@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>アテンションキュー — banto</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html" data-testid="nav-home">
+      <span class="brand-mark">番</span>
+      <span>
+        <span class="brand-name">banto</span>
+        <span class="brand-sub">POコックピット</span>
+      </span>
+    </a>
+    <span class="queue-count" data-testid="queue-count">判断待ち <strong>5</strong> 件 ・ 2 プロジェクト</span>
+  </div>
+</header>
+
+<main class="page">
+  <div class="page-head">
+    <h1 class="page-title">アテンションキュー</h1>
+  </div>
+  <p class="page-lede">いま、あなたの判断を待っているもの。滞留日数 × ブロック影響度の降順。</p>
+
+  <div class="filter-row" role="group" aria-label="プロジェクトで絞り込み">
+    <span class="filter-label">プロジェクト:</span>
+    <button class="chip is-active" data-testid="project-filter-all">すべて (5)</button>
+    <button class="chip" data-testid="project-filter-banto">banto (3)</button>
+    <button class="chip" data-testid="project-filter-palmux">palmux (2)</button>
+  </div>
+
+  <section class="queue" data-testid="attention-queue" aria-label="判断待ちカード一覧">
+
+    <!-- カード1: escalate（blocking）。滞留3日 × (1+ブロック4) = 15 -->
+    <article class="card card--escalate" data-testid="attention-card" data-card-id="card-b-0009" data-card-type="escalate" data-project="banto">
+      <div class="card-top">
+        <div class="card-top-main">
+          <div class="card-meta">
+            <span class="type-chip type-chip--escalate">エスカレーション</span>
+            <span class="project-badge" data-testid="card-project-badge">banto</span>
+            <span class="age age--hot" data-testid="card-age">滞留 3日</span>
+          </div>
+          <h2 class="card-title">
+            <a href="card-detail.html" data-testid="card-open-detail">task-0009 通知ディスパッチャのチャネル認証方式</a>
+          </h2>
+        </div>
+        <div class="score" data-testid="card-score" title="滞留日数 × (1 + 未spawnの後続タスク数)">
+          <div class="score-value">15</div>
+          <div class="score-label">スコア</div>
+          <div class="score-formula">滞留3日 × (1+ブロック4)</div>
+        </div>
+      </div>
+      <div class="anatomy">
+        <div class="part">
+          <div class="part-label">経緯</div>
+          <div class="part-body">
+            <div class="origin-quote">
+              <q>プッシュ通知はntfy互換で。自宅サーバの外からでも携帯に届くようにして</q>
+              <span class="origin-ref">— あなたの指示 <a href="card-detail.html#origin" data-testid="card-origin-link">2026-07-21 09:12 ・ 検討セッション banto</a></span>
+            </div>
+          </div>
+        </div>
+        <div class="part">
+          <div class="part-label">起きたこと</div>
+          <div class="part-body">実装中に外部依存の追加（D1: 不可逆な選択）に該当と判定し、実行者が blocking で停止。ntfy.sh 公開トピック案と self-host 案の2択を提示しています。後続4タスク（通知配線・静穏時間ほか）が未spawnのまま待機中。</div>
+        </div>
+        <div class="part">
+          <div class="part-label">求める判断</div>
+          <div class="part-body">
+            <p class="ask-question">通知チャネルはどちらの方式で進めますか？</p>
+            <div class="actions">
+              <button class="btn btn--primary" data-testid="card-action-choose-a">A: ntfy.sh 公開トピック</button>
+              <button class="btn btn--primary" data-testid="card-action-choose-b">B: self-host + Basic認証</button>
+              <a class="btn btn--session" href="tmux-drilldown.html" data-testid="card-tmux-jump">セッションへ</a>
+              <a class="btn btn--ghost" href="consult-session.html" data-testid="card-action-consult">相談する</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- カード2: 監査fail。滞留2日 × (1+ブロック2) = 6。セッション終了済み→セッションアクションなし（AC-S30a8fd-5-3） -->
+    <article id="audit" class="card card--fail" data-testid="attention-card" data-card-id="card-p-0113" data-card-type="audit-fail" data-project="palmux">
+      <div class="card-top">
+        <div class="card-top-main">
+          <div class="card-meta">
+            <span class="type-chip type-chip--fail">監査fail</span>
+            <span class="project-badge" data-testid="card-project-badge">palmux</span>
+            <span class="age" data-testid="card-age">滞留 2日</span>
+          </div>
+          <h2 class="card-title">
+            <a href="card-detail.html" data-testid="card-open-detail">task-0113 CDP画像転送の自動再接続</a>
+          </h2>
+        </div>
+        <div class="score" data-testid="card-score" title="滞留日数 × (1 + 未spawnの後続タスク数)">
+          <div class="score-value">6</div>
+          <div class="score-label">スコア</div>
+          <div class="score-formula">滞留2日 × (1+ブロック2)</div>
+        </div>
+      </div>
+      <div class="anatomy">
+        <div class="part">
+          <div class="part-label">経緯</div>
+          <div class="part-body">
+            <div class="origin-quote">
+              <q>共有ブラウザの画面が切れたら自動で繋ぎ直してほしい。手動で再起動するのはもう嫌</q>
+              <span class="origin-ref">— あなたの指示 <a href="card-detail.html#origin" data-testid="card-origin-link">2026-07-20 22:40 ・ 検討セッション palmux</a></span>
+            </div>
+          </div>
+        </div>
+        <div class="part">
+          <div class="part-label">起きたこと</div>
+          <div class="part-body">監査を2回不通過（1回目: テスト結果の自己申告と実測の不一致 I1、2回目: 再接続失敗時のエラー握りつぶし I2）で failed。機械昇格の閾値に到達し、上位tierでの再実行にPOの確認が必要です。実行セッションは終了済み。</div>
+        </div>
+        <div class="part">
+          <div class="part-label">求める判断</div>
+          <div class="part-body">
+            <p class="ask-question">上位tierで再実行しますか？</p>
+            <div class="actions">
+              <button class="btn btn--primary" data-testid="card-action-respawn">上位tierで再実行</button>
+              <button class="btn btn--danger" data-testid="card-action-send-back">タスクを差し戻す</button>
+              <a class="btn btn--ghost" href="consult-session.html" data-testid="card-action-consult">相談する</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- カード3: レビュー待ち。滞留2日 × (1+ブロック1) = 4 -->
+    <article class="card card--review" data-testid="attention-card" data-card-id="card-b-0007" data-card-type="review-ready" data-project="banto">
+      <div class="card-top">
+        <div class="card-top-main">
+          <div class="card-meta">
+            <span class="type-chip type-chip--review">レビュー待ち</span>
+            <span class="project-badge" data-testid="card-project-badge">banto</span>
+            <span class="age" data-testid="card-age">滞留 2日</span>
+          </div>
+          <h2 class="card-title">
+            <a href="card-detail.html" data-testid="card-open-detail">task-0007 readyクエリのAPI/CLI一級化</a>
+          </h2>
+        </div>
+        <div class="score" data-testid="card-score" title="滞留日数 × (1 + 未spawnの後続タスク数)">
+          <div class="score-value">4</div>
+          <div class="score-label">スコア</div>
+          <div class="score-formula">滞留2日 × (1+ブロック1)</div>
+        </div>
+      </div>
+      <div class="anatomy">
+        <div class="part">
+          <div class="part-label">経緯</div>
+          <div class="part-body">
+            <div class="origin-quote">
+              <q>readyの判定は一箇所に。ボードとspawnスケジューラが別の答えを見るのは駄目</q>
+              <span class="origin-ref">— あなたの指示 <a href="card-detail.html#origin" data-testid="card-origin-link">2026-07-22 08:03 ・ 検討セッション banto</a></span>
+            </div>
+          </div>
+        </div>
+        <div class="part">
+          <div class="part-label">起きたこと</div>
+          <div class="part-body">実装完了。マージ前ゲート通過（型検査・テスト42件green、daemonが直接実行して確認済み）。review-ready で2日待機中。後続の task-0010（spawnスケジューラ接続）がこのレビューを待っています。</div>
+        </div>
+        <div class="part">
+          <div class="part-label">求める判断</div>
+          <div class="part-body">
+            <p class="ask-question">レビューを開始しますか？</p>
+            <div class="actions">
+              <button class="btn btn--primary" data-testid="card-action-review-start">レビュー開始</button>
+              <a class="btn btn--session" href="tmux-drilldown.html" data-testid="card-tmux-jump">セッションへ</a>
+              <a class="btn btn--ghost" href="consult-session.html" data-testid="card-action-consult">相談する</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- カード4: incident（システム起点→生成規則を明示）。滞留3日 × (1+ブロック0) = 3 -->
+    <article class="card card--incident" data-testid="attention-card" data-card-id="card-b-inc-0004" data-card-type="incident" data-project="banto">
+      <div class="card-top">
+        <div class="card-top-main">
+          <div class="card-meta">
+            <span class="type-chip type-chip--incident">incident</span>
+            <span class="project-badge" data-testid="card-project-badge">banto</span>
+            <span class="age" data-testid="card-age">滞留 3日</span>
+          </div>
+          <h2 class="card-title">
+            <a href="card-detail.html" data-testid="card-open-detail">incident-0004 spec-ui と実装の矛盾（originRef欠落）</a>
+          </h2>
+        </div>
+        <div class="score" data-testid="card-score" title="滞留日数 × (1 + 未spawnの後続タスク数)">
+          <div class="score-value">3</div>
+          <div class="score-label">スコア</div>
+          <div class="score-formula">滞留3日 × (1+ブロック0)</div>
+        </div>
+      </div>
+      <div class="anatomy">
+        <div class="part">
+          <div class="part-label">経緯</div>
+          <div class="part-body">
+            <div class="origin-rule"><span class="rule-tag">生成規則</span>P3照合: Specと実態の矛盾検知により自動起票（POの直接指示に由来しないカード）</div>
+          </div>
+        </div>
+        <div class="part">
+          <div class="part-label">起きたこと</div>
+          <div class="part-body">spec-ui §3 はカードの経緯に「発言時刻・発生場所へのリンク」を必須とするが、監査エージェントが po_operation イベント2件で originRef の欠落を検出。実装を直すか仕様を改定するかの判断が必要です。</div>
+        </div>
+        <div class="part">
+          <div class="part-label">求める判断</div>
+          <div class="part-body">
+            <p class="ask-question">この矛盾をどう解消しますか？</p>
+            <div class="actions">
+              <button class="btn btn--primary" data-testid="card-action-create-task">修正タスクを起票</button>
+              <button class="btn" data-testid="card-action-open-adr">ADRで仕様を改定</button>
+              <a class="btn btn--ghost" href="consult-session.html" data-testid="card-action-consult">相談する</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- カード5: 評価カード（card_generated / 通知系）。滞留1日 × (1+ブロック0) = 1 -->
+    <article id="eval" class="card card--eval" data-testid="attention-card" data-card-id="card-p-eval-0002" data-card-type="evaluation" data-project="palmux">
+      <div class="card-top">
+        <div class="card-top-main">
+          <div class="card-meta">
+            <span class="type-chip type-chip--eval">評価カード</span>
+            <span class="project-badge" data-testid="card-project-badge">palmux</span>
+            <span class="age" data-testid="card-age">滞留 1日</span>
+          </div>
+          <h2 class="card-title">
+            <a href="card-detail.html" data-testid="card-open-detail">eval-0002 実行者tier変更（sonnet→haiku）の追跡評価</a>
+          </h2>
+        </div>
+        <div class="score" data-testid="card-score" title="滞留日数 × (1 + 未spawnの後続タスク数)">
+          <div class="score-value">1</div>
+          <div class="score-label">スコア</div>
+          <div class="score-formula">滞留1日 × (1+ブロック0)</div>
+        </div>
+      </div>
+      <div class="anatomy">
+        <div class="part">
+          <div class="part-label">経緯</div>
+          <div class="part-body">
+            <div class="origin-rule"><span class="rule-tag">生成規則</span>評価horizon 7日経過により生成（2026-07-16 のtier変更 <a href="card-detail.html#origin" data-testid="card-origin-link">po_operation#8821</a> の追跡評価）</div>
+          </div>
+        </div>
+        <div class="part">
+          <div class="part-label">起きたこと</div>
+          <div class="part-body">7日間の実測: 監査通過率 92% → 84%、/fix 平均 1.2 → 2.1 回、実行コスト −63%。通過率の低下は主にUI系タスク3件に集中しています。</div>
+        </div>
+        <div class="part">
+          <div class="part-label">求める判断</div>
+          <div class="part-body">
+            <p class="ask-question">このtier変更を維持しますか？</p>
+            <div class="actions">
+              <button class="btn btn--primary" data-testid="card-action-keep">keep</button>
+              <button class="btn" data-testid="card-action-tune">tune</button>
+              <button class="btn btn--danger" data-testid="card-action-revert">revert</button>
+              <a class="btn btn--ghost" href="consult-session.html" data-testid="card-action-consult">相談する</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+  </section>
+</main>
+
+</body>
+</html>

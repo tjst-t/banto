@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>カード詳細: task-0009 — banto</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html" data-testid="nav-home">
+      <span class="brand-mark">番</span>
+      <span>
+        <span class="brand-name">banto</span>
+        <span class="brand-sub">POコックピット</span>
+      </span>
+    </a>
+    <span class="queue-count" data-testid="queue-count">判断待ち <strong>5</strong> 件 ・ 2 プロジェクト</span>
+  </div>
+</header>
+
+<main class="page">
+  <nav class="breadcrumb">
+    <a href="attention-queue.html" data-testid="back-to-queue">← アテンションキュー</a>
+  </nav>
+
+  <article class="card card--escalate detail-card" data-testid="attention-card" data-card-id="card-b-0009" data-card-type="escalate" data-project="banto">
+    <div class="card-top">
+      <div class="card-top-main">
+        <div class="card-meta">
+          <span class="type-chip type-chip--escalate">エスカレーション</span>
+          <span class="project-badge" data-testid="card-project-badge">banto</span>
+          <span class="age age--hot" data-testid="card-age">滞留 3日（2026-07-21 14:37 起票）</span>
+        </div>
+        <h1 class="card-title">task-0009 通知ディスパッチャのチャネル認証方式</h1>
+      </div>
+      <div class="score" data-testid="card-score" title="滞留日数 × (1 + 未spawnの後続タスク数)">
+        <div class="score-value">15</div>
+        <div class="score-label">スコア</div>
+        <div class="score-formula">滞留3日 × (1+ブロック4)</div>
+      </div>
+    </div>
+
+    <!-- 経緯（D8: 起点のPO指示の引用＋originRef連鎖） -->
+    <section class="detail-section" id="origin">
+      <h2 class="detail-heading">経緯 — 起点となったあなたの指示</h2>
+      <div class="origin-quote">
+        <q>プッシュ通知はntfy互換で。自宅サーバの外からでも携帯に届くようにして。通知が来ないコックピットは意味がない</q>
+        <span class="origin-ref">— po_operation#8794 <a href="#" data-testid="card-origin-link">2026-07-21 09:12 ・ 検討セッション banto（イベントログを開く）</a></span>
+      </div>
+      <ul class="timeline" style="margin-top: 12px;">
+        <li><span class="t-time">07-21 09:12</span>あなたの指示（po_operation#8794）→ task-0009 起票</li>
+        <li><span class="t-time">07-21 10:05</span>依存ゲート通過で ready 昇格 → spawn（実行者: pi / worktree task-0009）</li>
+        <li><span class="t-time">07-21 14:37</span><span class="t-mark">blocking エスカレーション発生</span>（event#8811）→ このカードを生成</li>
+      </ul>
+    </section>
+
+    <!-- 起きたこと -->
+    <section class="detail-section">
+      <h2 class="detail-heading">起きたこと</h2>
+      <div class="part-body">
+        <p>実装者は fetch POST での送出（依存追加なし）まで実装済み。ただし通知チャネルの到達経路の選択が<strong>外部依存の追加＝不可逆な選択（D1）</strong>に該当すると判定し、自律決定せず blocking で停止しました。</p>
+        <ul class="timeline" style="margin-top: 10px;">
+          <li><span class="t-time">07-21 11:20</span>ntfy互換ディスパッチャの送出部を実装（テスト8件green・daemon実測）</li>
+          <li><span class="t-time">07-21 14:37</span>チャネル方式の2択を提示して停止。理由:「公開トピックはURL秘匿のみの保護で、通知本文にタスク名が載る。POのプライバシー方針は私が決められない」（P5）</li>
+          <li><span class="t-time">07-24 08:00</span>滞留3日到達。後続4タスク（通知配線・静穏時間・D8通知文・GUIリンク）が未spawnで待機</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- 求める判断（D7: daemonが返す有効アクションのみ） -->
+    <section class="detail-section">
+      <h2 class="detail-heading">求める判断</h2>
+      <p class="ask-question">通知チャネルはどちらの方式で進めますか？</p>
+
+      <div class="option-list">
+        <div class="option">
+          <span class="option-key">A</span>
+          <div class="option-body">
+            <div class="option-title">ntfy.sh 公開トピック</div>
+            <div class="option-note">追加インフラなし・今日から届く。トピックURLの秘匿のみが保護。通知本文にタスク名・プロジェクト名が載る</div>
+          </div>
+        </div>
+        <div class="option">
+          <span class="option-key">B</span>
+          <div class="option-body">
+            <div class="option-title">self-host ntfy + Basic認証</div>
+            <div class="option-note">自宅サーバに新規コンテナ1つ（要 systemd unit 追加）。本文は自宅網の外に出ない。外出先への到達には既存のVPN経由</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="reason-row">
+        <label class="reason-label" for="decision-reason">理由（1行・po_operation に記録されます）</label>
+        <input class="reason-input" id="decision-reason" type="text"
+               placeholder="例: 通知本文に固有名詞を載せたくない。VPNは常時張っているのでBで困らない"
+               data-testid="decision-reason-input">
+      </div>
+
+      <div class="actions">
+        <button class="btn btn--primary" data-testid="card-action-choose-a">A で進める</button>
+        <button class="btn btn--primary" data-testid="card-action-choose-b">B で進める</button>
+        <a class="btn btn--ghost" href="consult-session.html" data-testid="card-action-consult">相談する</a>
+      </div>
+    </section>
+
+    <!-- ドリルダウン（実行セッションあり） -->
+    <section class="detail-section">
+      <h2 class="detail-heading">実行セッション</h2>
+      <div class="part-body">
+        <p style="margin-bottom: 10px;">このタスクの pi セッションは稼働中です（tmux: <code style="font-family: var(--font-mono); font-size: 12.5px;">banto:task-0009</code>）。判断の前に会話の文脈を確認でき、必要ならブラウザ内端末からその場で割り込めます。</p>
+        <div class="actions">
+          <a class="btn btn--session" href="tmux-drilldown.html" data-testid="card-tmux-jump">セッションへ（ブラウザで開く）</a>
+        </div>
+      </div>
+    </section>
+  </article>
+</main>
+
+</body>
+</html>

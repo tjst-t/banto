@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>セッションへ: task-0009 — banto</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html" data-testid="nav-home">
+      <span class="brand-mark">番</span>
+      <span>
+        <span class="brand-name">banto</span>
+        <span class="brand-sub">POコックピット</span>
+      </span>
+    </a>
+    <span class="queue-count" data-testid="queue-count">判断待ち <strong>5</strong> 件 ・ 2 プロジェクト</span>
+  </div>
+</header>
+
+<main class="page">
+  <!-- 実装ではカード上のモーダルとして開く想定。プロトタイプでは独立ページで提示 -->
+  <div class="drill-panel drill-panel--term" data-testid="tmux-drilldown" role="dialog" aria-labelledby="drill-title">
+    <div class="drill-head">
+      <h1 class="drill-title" id="drill-title">セッションへ — task-0009 通知ディスパッチャのチャネル認証方式</h1>
+      <a class="drill-close" href="card-detail.html" data-testid="tmux-drilldown-close" aria-label="閉じる">×</a>
+    </div>
+    <div class="drill-body drill-body--term">
+      <div class="term-bar">
+        <div class="term-meta">
+          <span class="term-target" data-testid="tmux-attach-command">banto:task-0009</span>
+          <span class="term-host">po@banto-vm ・ spawn台帳より</span>
+        </div>
+        <div class="term-status" data-testid="terminal-connection-status" data-state="connected">
+          <span class="term-dot"></span>接続中 — ライブ
+        </div>
+      </div>
+
+      <!-- 実装では xterm.js をこの要素にマウントし、daemon の PTY↔WebSocket ブリッジ経由で
+           tmux セッションへ双方向接続する。プロトタイプでは静的な端末画面で意図を提示 -->
+      <div class="term" data-testid="terminal-container" role="group" aria-label="tmuxライブ端末">
+        <div class="term-line"><span class="term-dim">$</span> pi --session task-0009 · auditing フェーズ</div>
+        <div class="term-line term-dim">── 会話ログ（最新）──────────────────────────</div>
+        <div class="term-line"><span class="term-role-a">executor</span> チャネル認証は既存の token 方式を再利用します。webhook 署名検証を追加し…</div>
+        <div class="term-line"><span class="term-role-b">auditor</span> AC-2 の「失敗時リトライ」への言及が実装に見当たりません。tests/notify-retry を確認します。</div>
+        <div class="term-line"><span class="term-dim">$</span> grep -r "retry" src/notify/</div>
+        <div class="term-line term-dim">src/notify/dispatcher.ts:  // TODO: backoff retry (未実装)</div>
+        <div class="term-line"><span class="term-role-b">auditor</span> 監査所見: リトライ未実装のため AC-2 不充足の可能性。差し戻しを検討中…<span class="term-cursor" aria-hidden="true"></span></div>
+      </div>
+
+      <form class="term-input-row" data-testid="terminal-input-form" onsubmit="return false;">
+        <span class="term-input-prompt">›</span>
+        <input class="term-input" type="text" data-testid="terminal-input"
+               placeholder="このセッションに入力（PO も割り込める）… 例: 監査所見の根拠を教えて"
+               aria-label="端末入力">
+        <button class="btn btn--ghost btn--sm" type="button" data-testid="terminal-detach">切断</button>
+      </form>
+
+      <p class="drill-cli-hint">
+        ブラウザ内の端末は daemon の PTY↔WebSocket ブリッジ経由で xterm.js が tmux セッションに直接つながります
+        （人とエージェントが同一セッションを見る）。CLI からは <code>banto attention</code> でこのカードを選び「セッションへ」—
+        tmux内なら switch-client、外なら attach を banto が実行します。
+      </p>
+    </div>
+  </div>
+</main>
+
+</body>
+</html>
