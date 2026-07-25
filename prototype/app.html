@@ -255,6 +255,22 @@ body.show-annot .annot-hint { display: flex; }
 .pc-status { font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; gap: 5px; }
 .pc-status.paused { color: var(--ink-faint); }
 
+/* リポジトリ構成（1プロジェクト＝複数repo）・認証情報 */
+.repo-list { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 4px; }
+.repo-row { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; background: var(--surface); }
+.rr-role { font-size: 10.5px; font-weight: 700; color: #fff; background: var(--accent); border-radius: 4px; padding: 0 7px; white-space: nowrap; }
+.rr-role.sec { background: var(--ink-faint); }
+.rr-url { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-soft); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.method-pane .ctx-view { padding: 14px 2px 2px; }
+.cred-row { display: flex; align-items: center; gap: 12px; border: 1px solid var(--line); border-radius: 9px; padding: 12px 16px; margin-bottom: 10px; background: var(--surface); }
+.cred-mark { width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center; background: var(--surface-dim); border: 1px solid var(--line-strong); font-weight: 700; font-size: 13px; }
+.cred-host { font-weight: 700; font-size: 14px; flex: 1; }
+.cred-state { font-size: 12px; font-weight: 700; margin-right: 4px; }
+.cred-state.on { color: var(--c-eval); }
+.cred-state.off { color: var(--ink-faint); }
+.warn-note { background: rgba(160,90,18,0.06); border: 1px dashed var(--c-escalate); color: var(--c-escalate); border-radius: 8px; padding: 7px 14px; font-size: 11.5px; margin: 6px 0 14px; }
+.warn-note b { font-weight: 700; }
+
 /* ===== Planning / History のリスト ===== */
 .list-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
 .list-head .r-title { font-size: 16px; font-weight: 700; }
@@ -1033,8 +1049,8 @@ body.show-annot .annot-hint { display: flex; }
             <span class="pc-mark" style="background:var(--ink-faint);">L</span>
             <div class="pc-main">
               <div class="pc-name">loamium <span class="pc-status paused">⏸ paused</span></div>
-              <div class="pc-path">~/ghq/github.com/tjst-t/loamium</div>
-              <div class="pc-meta"><span class="pc-chip">0 tasks</span><span class="pc-chip">登録のみ・未稼働</span></div>
+              <div class="pc-path">web: github.com/tjst-t/loamium-web ・ api: …/loamium-api</div>
+              <div class="pc-meta"><span class="pc-chip">2 repos（web / api）</span><span class="pc-chip">0 tasks</span><span class="pc-chip">登録のみ・未稼働</span></div>
             </div>
             <button class="btn" data-open="projectedit" data-label="プロジェクト設定 · loamium">設定</button>
           </div>
@@ -1051,24 +1067,113 @@ body.show-annot .annot-hint { display: flex; }
             <span class="type-chip" style="background:var(--ink-soft);">REGISTRY</span>
             <span class="r-title">プロジェクトのプロファイル</span>
           </div>
-          <div class="commit-note">レジストリはリポジトリパス＋プロファイルを持つ。契約層は登録したリポジトリ内に閉じる（混ぜない）。<span style="color:var(--ink-faint)">※プロファイル項目は spec §8 で確定中</span></div>
-          <div class="tdef">
+          <div class="commit-note">bantoのUIだけで完結（事前の <code>git clone</code> は不要）。作成方法を選んで、1プロジェクトに<b>リポジトリを1つ以上</b>ぶら下げる。</div>
+          <div class="warn-note">⚠ <b>設計未確定・要ADR</b>: 認証情報の保存方式（秘密情報のデータモデル=D1）／1プロジェクト＝複数repo時の契約層(vision/spec/tasks)の置き場（primary repo か project-meta か）。ここはUI探索用のモック。</div>
+
+          <div class="tdef" style="max-width:720px;">
             <div class="tdef-field"><div class="tdef-label">NAME（プロジェクト名 / ID名前空間）</div><input class="tdef-input" placeholder="例: loamium"></div>
-            <div class="tdef-field"><div class="tdef-label">REPO PATH</div><input class="tdef-input" placeholder="~/ghq/github.com/tjst-t/loamium"></div>
-            <div class="tdef-field"><div class="tdef-label">MODEL ENDPOINT（opencode 経由・差し替え可）</div><input class="tdef-input" value="opus"></div>
-            <div class="tdef-field"><div class="tdef-label">DEFAULT REVIEW POLICY</div>
-              <div class="proj-switch" style="margin:0;">
-                <button class="chip">auto</button><button class="chip is-active">sampled</button><button class="chip">mandatory</button>
+
+            <div class="tdef-field">
+              <div class="tdef-label">リポジトリの取り込み方</div>
+              <div class="method-pane">
+                <div class="ctx-switch">
+                  <button class="ctx-tab is-active" data-ctx="clone">リモートから取り込む</button>
+                  <button class="ctx-tab" data-ctx="scratch">ゼロから作る</button>
+                  <button class="ctx-tab" data-ctx="local">ローカルを登録</button>
+                </div>
+
+                <!-- Clone -->
+                <div class="ctx-view is-active" data-ctx-view="clone">
+                  <div class="tdef-field"><div class="tdef-label">ホスト</div>
+                    <div class="proj-switch" style="margin:0;">
+                      <button class="chip is-active">GitHub <span style="color:var(--c-eval);font-weight:700;">●接続済 tjst-t</span></button>
+                      <button class="chip">GitLab <span style="color:var(--ink-faint);">○未接続</span></button>
+                      <button class="chip chip--add" data-open="credentials" data-label="接続 / 認証情報">接続を管理</button>
+                    </div>
+                  </div>
+                  <div class="tdef-field"><div class="tdef-label">リポジトリ URL または選択</div><input class="tdef-input" placeholder="git@github.com:tjst-t/loamium-web.git  または 一覧から選択"></div>
+                  <div class="tdef-field"><div class="tdef-label">取り込み先パス</div><input class="tdef-input" value="~/ghq/github.com/tjst-t/loamium-web"></div>
+                  <button class="btn btn--primary">クローンして追加</button>
+                </div>
+
+                <!-- Scratch -->
+                <div class="ctx-view" data-ctx-view="scratch">
+                  <div class="tdef-field"><div class="tdef-label">ローカルパス（新規作成）</div><input class="tdef-input" value="~/ghq/github.com/tjst-t/loamium-web"></div>
+                  <div class="tdef-field"><div class="tdef-label">初期化</div>
+                    <label style="display:block;font-size:13px;margin:2px 0;"><input type="checkbox" checked> git init（空リポジトリ）</label>
+                    <label style="display:block;font-size:13px;margin:2px 0;"><input type="checkbox" checked> 契約層の雛形を生成（CLAUDE.md / docs / roadmap）</label>
+                  </div>
+                  <div class="tdef-field"><div class="tdef-label">リモート公開（あとで可）</div>
+                    <div class="proj-switch" style="margin:0;">
+                      <button class="chip is-active">今は作らない</button>
+                      <button class="chip">GitHubに新規作成してPush</button>
+                      <button class="chip">GitLabに新規作成してPush</button>
+                    </div>
+                  </div>
+                  <button class="btn btn--primary">作成して追加</button>
+                </div>
+
+                <!-- Local -->
+                <div class="ctx-view" data-ctx-view="local">
+                  <div class="tdef-field"><div class="tdef-label">既存ローカルrepoのパス</div><input class="tdef-input" placeholder="~/ghq/github.com/tjst-t/loamium-web"></div>
+                  <button class="btn btn--primary">登録して追加</button>
+                </div>
               </div>
             </div>
-            <div class="tdef-field"><div class="tdef-label">CADENCE（日）</div><input class="tdef-input" value="2" style="max-width:120px;"></div>
-            <div class="tdef-field"><div class="tdef-label">NOTIFY CHANNEL（ntfy トピック等）</div><input class="tdef-input" placeholder="例: ntfy://... または既定を継承"></div>
-            <div class="tdef-meta">overrides のみ保持（共有資産の既定を継承）・イベントログにプロジェクトタグ付与</div>
+
+            <div class="tdef-field">
+              <div class="tdef-label">このプロジェクトのリポジトリ（複数可）</div>
+              <div class="repo-list">
+                <div class="repo-row"><span class="rr-role">primary</span><span class="rr-url">github.com/tjst-t/loamium-web</span><button class="btn" style="padding:3px 10px;font-size:12px;">外す</button></div>
+                <div class="repo-row"><span class="rr-role sec">repo</span><span class="rr-url">github.com/tjst-t/loamium-api</span><button class="btn" style="padding:3px 10px;font-size:12px;">外す</button></div>
+              </div>
+              <div class="tdef-meta">契約層(vision/spec/tasks)は <b>primary</b> に置く想定（※要ADR）。参照は <code>&lt;project&gt;/&lt;id&gt;</code>、repo跨ぎは repo 名を含む。</div>
+            </div>
+
+            <div class="tdef-field"><div class="tdef-label">MODEL ENDPOINT（opencode 経由）</div><input class="tdef-input" value="opus"></div>
+            <div class="tdef-field"><div class="tdef-label">DEFAULT REVIEW POLICY</div>
+              <div class="proj-switch" style="margin:0;"><button class="chip">auto</button><button class="chip is-active">sampled</button><button class="chip">mandatory</button></div>
+            </div>
+            <div class="tdef-field"><div class="tdef-label">CADENCE（日） / NOTIFY</div><input class="tdef-input" value="2" style="max-width:120px;"></div>
           </div>
           <div class="footer-actions" style="margin-top:16px;">
-            <button class="btn btn--primary">登録する</button>
+            <button class="btn btn--primary">プロジェクトを登録</button>
             <button class="btn btn--ghost">キャンセル</button>
           </div>
+        </div>
+      </section>
+
+      <!-- ========== パネル: 接続 / 認証情報（focus） ========== -->
+      <section class="panel" id="panel-credentials" data-title="接続 / 認証情報">
+        <div class="panel-inner">
+          <div class="review-head" style="margin-bottom:8px;">
+            <span class="type-chip" style="background:var(--ink-soft);">AUTH</span>
+            <span class="r-title">接続 / 認証情報 ─ git ホスト</span>
+          </div>
+          <div class="warn-note">⚠ <b>設計未確定・要ADR</b>: 秘密情報の保存方式（sops / OS キーチェーン / 暗号化ファイル）とデータモデルは不可逆な選択（D1）。ここはUI探索用のモック。clone / push に使う。</div>
+
+          <div class="cred-row">
+            <span class="cred-mark">GH</span>
+            <div><div class="cred-host">GitHub</div><div class="pc-path">tjst-t ・ OAuth（repo, workflow）</div></div>
+            <span class="cred-state on">● 接続済み</span>
+            <button class="btn">再認証</button><button class="btn btn--ghost">解除</button>
+          </div>
+
+          <div class="cred-row">
+            <span class="cred-mark">GL</span>
+            <div><div class="cred-host">GitLab</div><div class="pc-path">未接続</div></div>
+            <span class="cred-state off">○ 未接続</span>
+            <button class="btn btn--primary">OAuthで接続</button><button class="btn">トークンで接続</button>
+          </div>
+
+          <div class="cred-row">
+            <span class="cred-mark">🔑</span>
+            <div><div class="cred-host">SSH 鍵</div><div class="pc-path">~/.ssh/id_ed25519（登録済）・汎用 git+ssh</div></div>
+            <span class="cred-state on">● 登録済</span>
+            <button class="btn">鍵を追加</button>
+          </div>
+
+          <p class="page-lede" style="margin-top:14px;">この認証情報は clone（取り込み）と Push（ゼロから作ったプロジェクトの公開）で共有される。プロジェクト個別ではなくグローバル（後述の設定にも出る）。</p>
         </div>
       </section>
 
@@ -1109,8 +1214,8 @@ body.show-annot .annot-hint { display: flex; }
 <script>
 (function(){
   // ナビゲーション: 目的地(サイドバー)=通常モード / 会話=フォーカス(全画面＋戻る)
-  var LABELS = { planning:'Planning', queue:'Attention Queue', improve:'Improvements', board:'Board', history:'History', backlog:'Backlog', projects:'Projects', review:'Review', consult:'Consult', deliberation:'Planning', terminal:'Terminal', carddetail:'カード詳細', taskedit:'タスク定義', projectedit:'プロジェクト登録' };
-  var SESSION = { review:1, consult:1, deliberation:1, terminal:1, carddetail:1, taskedit:1, projectedit:1 };   // フォーカス（メイン置換・左ナビ維持）で開くもの
+  var LABELS = { planning:'Planning', queue:'Attention Queue', improve:'Improvements', board:'Board', history:'History', backlog:'Backlog', projects:'Projects', review:'Review', consult:'Consult', deliberation:'Planning', terminal:'Terminal', carddetail:'カード詳細', taskedit:'タスク定義', projectedit:'プロジェクト登録', credentials:'接続 / 認証情報' };
+  var SESSION = { review:1, consult:1, deliberation:1, terminal:1, carddetail:1, taskedit:1, projectedit:1, credentials:1 };   // フォーカス（メイン置換・左ナビ維持）で開くもの
   var app = document.querySelector('.app');
   var focusBar = document.getElementById('focusBar');
   var focusLabel = document.getElementById('focusLabel');
