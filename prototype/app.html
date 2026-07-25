@@ -154,6 +154,9 @@ body.show-annot .annot-hint { display: flex; }
       <button class="side-item" data-panel="deliberation">
         <span class="si-ico">✎</span>検討セッション
       </button>
+      <button class="side-item" data-panel="review">
+        <span class="si-ico">⇄</span>レビュー会話
+      </button>
       <button class="side-item" data-panel="consult">
         <span class="si-ico">💬</span>相談セッション
       </button>
@@ -287,7 +290,7 @@ body.show-annot .annot-hint { display: flex; }
                 <div class="part"><div class="part-label">求める判断</div><div class="part-body">
                   <p class="ask-question">レビューを開始しますか？</p>
                   <div class="actions">
-                    <button class="btn btn--primary">レビュー開始</button>
+                    <button class="btn btn--primary" data-goto="review">レビュー開始</button>
                     <a class="btn btn--session" href="tmux-drilldown.html">セッションへ</a>
                     <button class="btn btn--ghost" data-goto="consult">相談する</button>
                   </div>
@@ -328,7 +331,7 @@ body.show-annot .annot-hint { display: flex; }
                   <div class="task-meta"><span class="state-chip state--review">review-ready</span><span class="task-badge">banto</span><span class="task-attention-tag">判断待ち</span></div>
                   <div class="task-title"><a href="card-detail.html">task-0007 readyクエリのAPI/CLI一級化</a></div>
                   <div class="task-sub"><span class="dot dot--healthy"></span>ゲート通過（テスト42件green）・2日待機</div>
-                  <div class="task-actions"><button class="btn btn--primary" data-goto="queue">レビュー開始</button></div>
+                  <div class="task-actions"><button class="btn btn--primary" data-goto="review">レビュー開始</button></div>
                 </article>
                 <article class="task-card">
                   <div class="task-meta"><span class="state-chip state--build">implementing</span><span class="task-badge">banto</span></div>
@@ -466,6 +469,75 @@ body.show-annot .annot-hint { display: flex; }
         <div class="annot" data-target="#c-inject"><span class="an-num">1</span><span class="an-title">カード文脈を注入</span><br>タスク定義・差分・経緯を丸ごと入れて会話が始まる。画面を遡らなくてよい。<span class="an-ref">spec-ui §2</span></div>
         <div class="annot" data-target="#c-restructured"><span class="an-num">2</span><span class="an-title">選択肢を再構成して再掲</span><br>相談の結果に応じて分岐点に戻る。選択肢は組み直してよい。<span class="an-ref">spec-ui §2</span></div>
         <div class="annot" data-target="#c-footer"><span class="an-num">3</span><span class="an-title">その場で判断に戻る</span><br>会話から離れずに元カードの選択肢を下せる。理由は1行で記録。<span class="an-ref">D7 / D8</span></div>
+      </section>
+
+      <!-- ========== パネル: レビュー会話 ========== -->
+      <section class="panel" id="panel-review" data-title="レビュー会話" data-sub="task-0007 の差分を見ながら承認 / 修正依頼">
+        <div class="panel-inner panel-inner--wide">
+          <div class="review-head">
+            <span class="type-chip type-chip--review">レビュー待ち</span>
+            <span class="r-title">task-0007 readyクエリのAPI/CLI一級化</span>
+            <span class="gate-badge">✓ マージ前ゲート通過: 型検査 pass ・ テスト42件 green（daemon実測）</span>
+          </div>
+
+          <div class="review-layout">
+            <!-- 差分 -->
+            <div class="diff-pane" id="rv-diff">
+              <div class="diff-topbar"><span class="files-n">3ファイル</span> 変更 ・ <span style="color:var(--c-eval);font-weight:700;">+128</span> <span style="color:var(--c-fail);font-weight:700;">−14</span> ・ worktree <code>banto:task-0007</code></div>
+              <div class="diff-file">
+                <div class="diff-fhead"><span>src/daemon/queries/ready.ts</span><span class="add">+41</span><span class="del">−0</span></div>
+                <div class="diff-code">
+<span class="ln ln--hunk">@@ 新規: ready の唯一の導出元 @@</span>
+<span class="ln ln--add">+export function readyTasks(state: DerivedState): Task[] {</span>
+<span class="ln ln--add">+  // 依存が全て merged かつ 自身が queued のものだけが ready</span>
+<span class="ln ln--add">+  return state.tasks.filter(t =></span>
+<span class="ln ln--add">+    t.status === 'queued' &&</span>
+<span class="ln ln--add">+    t.dependsOn.every(d => state.task(d)?.status === 'merged'));</span>
+<span class="ln ln--add">+}</span>
+                </div>
+              </div>
+              <div class="diff-file">
+                <div class="diff-fhead"><span>src/daemon/scheduler.ts</span><span class="add">+3</span><span class="del">−12</span></div>
+                <div class="diff-code">
+<span class="ln ln--hunk">@@ -18,14 +18,5 @@ spawn 判定</span>
+<span class="ln ln--del">-  // 旧: スケジューラ内で ready を独自判定（二重定義）</span>
+<span class="ln ln--del">-  const ready = tasks.filter(t => t.deps.every(...));</span>
+<span class="ln ln--ctx"> import { readyTasks } from './queries/ready';</span>
+<span class="ln ln--add">+  const ready = readyTasks(state); // 唯一の導出元を共有（D3）</span>
+                </div>
+              </div>
+              <div class="diff-file">
+                <div class="diff-fhead"><span>src/cli/commands/ready.ts</span><span class="add">+84</span><span class="del">−2</span></div>
+                <div class="diff-code">
+<span class="ln ln--hunk">@@ CLI: banto ready を一級化 @@</span>
+<span class="ln ln--add">+// GET /api/v1/tasks/ready と同じ導出を CLI でも提供</span>
+<span class="ln ln--add">+export const ready = defineCommand({ ... });</span>
+<span class="ln ln--ctx"> // 引数は記憶させず対話選択を既定（D7）</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 会話 -->
+            <div class="session-wrap" id="rv-chat">
+              <div class="chat">
+                <div class="msg msg--ai"><div class="msg-avatar">番</div><div class="msg-bubble">レビューを開始します。要点: <b>ready の判定を1関数 <code>readyTasks()</code> に集約</b>し、API・CLI・スケジューラが同じ導出を共有します。ゲートは通過済み（型・テスト42件、daemon実測）。
+                  <div class="msg-hint">経緯:「readyの判定は一箇所に。ボードとスケジューラが別の答えを見るのは駄目」</div></div></div>
+                <div class="msg msg--po"><div class="msg-avatar">PO</div><div class="msg-bubble">スケジューラも同じ関数を使ってる？ 前は別実装だったよね</div></div>
+                <div class="msg msg--ai"><div class="msg-avatar">番</div><div class="msg-bubble">はい。2つ目の差分 <code>scheduler.ts</code> で旧・独自判定（−12行）を削除し、<code>readyTasks(state)</code> に置換。導出元は1箇所です（D3）。</div></div>
+                <div class="msg msg--po"><div class="msg-avatar">PO</div><div class="msg-bubble">OK。CLIの ready、未spawnの待機理由も出せる？ そこだけ足したい</div></div>
+                <div class="msg msg--ai"><div class="msg-avatar">番</div><div class="msg-bubble">それは差分に無い追加要望ですね。<b>修正を依頼</b>すれば「待機理由の表示」を修正タスク化して再実装→再監査に回します。このまま承認して別タスクにしてもOK。どうしますか？</div></div>
+              </div>
+              <div class="session-footer" id="rv-footer">
+                <div class="footer-actions-label">レビューの判断（ゲート通過済み）</div>
+                <div class="footer-actions"><button class="btn btn--primary">承認してマージ</button><button class="btn">修正を依頼</button><button class="btn btn--ghost">相談を続ける</button></div>
+                <div class="chat-input-row"><input class="chat-input" type="text" placeholder="指摘・質問を書く（例: 待機理由の表示を足して）"><button class="btn btn--primary">送信</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="annot" data-target="#rv-diff"><span class="an-num">1</span><span class="an-title">差分を見ながら会話</span><br>レビューは“会話2枚”の1枚。diffと対話が同じ面に並ぶ。<span class="an-ref">spec-ui §1</span></div>
+        <div class="annot" data-target="#rv-footer"><span class="an-num">2</span><span class="an-title">承認 or 修正依頼</span><br>指摘は修正タスク化され再実行→再監査へ自動で戻る。ゲートは機械が保証済み。<span class="an-ref">D7 / I1</span></div>
       </section>
 
     </div>
