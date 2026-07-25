@@ -240,6 +240,10 @@ body.show-annot .annot-hint { display: flex; }
 .bl-chat .session-wrap { min-height: 440px; }
 @media (max-width: 1000px) { .backlog-layout { grid-template-columns: 1fr; } }
 
+/* プロジェクト面（Planning/Backlog）の画面内プロジェクト切替 */
+.proj-switch { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; flex-wrap: wrap; }
+.proj-switch .chip--add { border-style: dashed; color: var(--ink-faint); }
+
 /* ===== Planning / History のリスト ===== */
 .list-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
 .list-head .r-title { font-size: 16px; font-weight: 700; }
@@ -279,22 +283,13 @@ body.show-annot .annot-hint { display: flex; }
       <button class="nav-toggle" id="navToggle" title="サイドバーを畳む">«</button>
     </div>
 
-    <div class="side-proj">
-      <div class="side-proj-label">プロジェクト</div>
-      <div class="filter-row" style="margin:0; gap:6px;">
-        <button class="chip is-active">すべて</button>
-        <button class="chip">banto</button>
-        <button class="chip">palmux</button>
-      </div>
-    </div>
-
     <nav class="side-nav">
       <div class="side-group-label">Work</div>
       <button class="side-item" data-open="planning" data-label="Planning" title="Planning">
-        <span class="si-ico">✎</span><span class="si-label">Planning</span><span class="si-badge-proj">banto</span>
+        <span class="si-ico">✎</span><span class="si-label">Planning</span>
       </button>
       <button class="side-item" data-open="backlog" data-label="Backlog" title="Backlog">
-        <span class="si-ico">▦</span><span class="si-label">Backlog</span><span class="si-badge-proj">banto</span>
+        <span class="si-ico">▦</span><span class="si-label">Backlog</span>
       </button>
 
       <div class="side-group-label">Decisions</div>
@@ -467,10 +462,16 @@ body.show-annot .annot-hint { display: flex; }
       <section class="panel" id="panel-planning" data-title="Planning">
         <div class="panel-inner">
           <div class="list-head">
-            <span class="r-title">Planning ─ <span style="color:var(--ink-soft);font-weight:600;">banto</span></span>
+            <span class="r-title">Planning</span>
             <button class="btn btn--primary" data-open="deliberation" data-label="Planning · 新規">＋ New planning</button>
           </div>
-          <p class="page-lede">アイデア・依頼を対話で仕様に固める起点（プロジェクトごと）。ここから開発が生まれる。開くとタブで対話が始まる。</p>
+          <div class="proj-switch" id="pl-proj">
+            <span class="filter-label">プロジェクト:</span>
+            <button class="chip is-active">banto</button>
+            <button class="chip">palmux</button>
+            <button class="chip chip--add">＋ New project</button>
+          </div>
+          <p class="page-lede">アイデア・依頼を対話で仕様に固める起点。ここから開発が生まれる。開くと会話が始まる。</p>
           <div class="thread-list" id="pl-threads">
             <button class="thread-item" data-open="deliberation" data-label="Planning · 朝の通知ダイジェスト">
               <div class="thread-title">朝の通知ダイジェスト</div>
@@ -919,8 +920,14 @@ body.show-annot .annot-hint { display: flex; }
       <section class="panel" id="panel-backlog" data-title="Backlog">
         <div class="panel-inner panel-inner--wide">
           <div class="list-head">
-            <span class="r-title">Backlog ─ <span style="color:var(--ink-soft);font-weight:600;">banto</span></span>
+            <span class="r-title">Backlog</span>
             <button class="btn btn--primary">＋ New Epic</button>
+          </div>
+          <div class="proj-switch" id="bl-proj">
+            <span class="filter-label">プロジェクト:</span>
+            <button class="chip is-active">banto</button>
+            <button class="chip">palmux</button>
+            <button class="chip chip--add">＋ New project</button>
           </div>
           <div class="commit-note" id="bl-note">
             タスク定義ファイル <code>work/tasks/*.md</code> の構造化エディタ（独自DBなし）。Epic→Taskの2段。ドラッグで割当・並べ替え、または右のチャットで相談 → daemon が<b>ファイルを書き換えてコミット</b>（D3: ファイルは意図の真実）。
@@ -1165,6 +1172,14 @@ body.show-annot .annot-hint { display: flex; }
   document.addEventListener('dragleave', function(e){
     var lane = e.target.closest('.epic-tasks');
     if(lane && !lane.contains(e.relatedTarget)) lane.classList.remove('drop-hover');
+  });
+
+  // 画面内プロジェクト切替（Planning/Backlog）
+  document.querySelectorAll('.proj-switch').forEach(function(row){
+    row.addEventListener('click', function(e){
+      var c = e.target.closest('.chip'); if(!c || c.classList.contains('chip--add')) return;
+      row.querySelectorAll('.chip').forEach(function(x){ x.classList.toggle('is-active', x===c); });
+    });
   });
 
   // 初期状態
