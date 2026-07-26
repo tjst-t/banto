@@ -3,8 +3,30 @@
 > **ブランチ**: `explore/agent-primary`（main は S6cfce9 プロトタイプ探索で固定＝`57fb669`。旧mainは `prototype-review/S30a8fd` にも保全）。
 > **位置づけ**: この逆転は、[s6cfce9-prototype-review.md](./s6cfce9-prototype-review.md) §5「UIパラダイム未決」を**決着**させる。
 > **保存目的**: このコンテキストが clear されても検討を再開できるよう、これまでの議論を全て残す。
-> **次アクション**: PO が別途設計していた「**永続記憶システムを含むAI Agent**」のドキュメントを新コンテキストで持ち込み → 統合を相談 → その後に `VISION.json` / `principles.md` / 構造逆転ADR を**正式化**する。それまで本ノートと [ADR-0009(proposed)](../adr/adr-0009-agent-primary-inversion.md) が working canon。
-> 日付: 2026-07-25。
+> **次アクション**: Quirefold 持ち込み・統合相談を実施。決定①②・語彙・汎用I/F 決着、残り③＋正式化。**現在地と再開点は §0**。working canon＝本ノート＋[Quirefold](./quirefold-memory-system.md)＋[ADR-0009(proposed)](../adr/adr-0009-agent-primary-inversion.md)。
+> 日付: 2026-07-25（§0 は 2026-07-26 更新）。
+
+---
+
+## 0. 現在地（2026-07-26・次コンテキストはここから）
+
+Quirefold（記憶システム設計）の持ち込み・統合相談を実施。3つの one-way 決定のうち **①②と語彙・汎用I/F を決着**。残るは **③＋正式化**。
+
+**決定台帳**
+
+| # | 論点 | 状態 | 参照 |
+|---|---|---|---|
+| 語彙 | Banto / Quirefold / Kobo(旧daemon) / Worker Pool / 職人 | ✅確定 | §12.1 |
+| I/F | Banto↔サブシステム汎用I/F（kick / query / command / GUI提供、集合は open） | ✅確定 | §12.2 |
+| ① | ログ＝Kobo と Quirefold は**完全分離・ブリッジなし**、結合はI/Fのみ | ✅決着 | §11.6-① |
+| ② | Banto ハーネス**完全自作＋プラガブルLLM層（モデル非依存）**／pi は職人へ／Tool・Skill 形式は既存参照 | ✅決着 | §13 |
+| ③ | **Substrate スキーマ確定**（Quirefold §2 を採用、ADR-0003 を extend/supersede、二層は `context` に載せる） | ⏳未決＝次の議題 | §11.6-③ / §11.2 |
+
+**統合の全体像**：Quirefold は「番頭の核」の詳細設計＝逆転§10 の本丸に回答（§11.0）。詳細は §11〜§13。
+
+**正式化（未着手・③の後）**：ADR で Substrate 確定 → ADR-0009 accepted → VISION.json / principles.md 反映（D5 に「番頭核」追記、番頭境界 §4 の principle 化）→ CLAUDE.md の daemon→Kobo リネーム＋pi固定分割 → `quirefold-memory-system.md` を `docs/spec/memory.md` へ昇格。順序は §11.7。
+
+**次コンテキストの入口**：③ Substrate スキーマの ADR ドラフト起こしから。
 
 ---
 
@@ -110,5 +132,147 @@ bantoが生まれた理由＝「開発手法がプロンプトの遵守期待に
 - **本丸＝記憶システムの同期/マージ設計**：
   - distill（導出記憶）の**照合ルール**：2分身が食い違う学びを持ち帰ったとき（決定はログが裁くが、学びの統合規則は要設計）。
   - **長寿命分身の再同期タイミング**：会話を割り込まない形での pull。
-  - ＝ PO が保留していた「記憶システム」の**本丸**。
-- **次アクション**：PO が別途設計していた「**永続記憶システムを含むAI Agent**」ドキュメントを持ち込み → 統合を相談 → その後に `VISION.json` / `principles.md` / 構造逆転ADR を正式化。
+  - ＝ PO が保留していた「記憶システム」の**本丸**。→ **[Quirefold 設計](./quirefold-memory-system.md) が §18/§19/§12 でここに直接回答している**（§11「統合の見立て」参照）。
+- **次アクション**：[Quirefold](./quirefold-memory-system.md) 持ち込み済み → 統合を相談中 → その後に `VISION.json` / `principles.md` / 構造逆転ADR を正式化。
+
+---
+
+## 11. Quirefold 統合の見立て（2026-07-26）
+
+### 11.0 要旨：これは別物ではなく「番頭の核」の詳細設計
+
+Quirefold は §10 が **本丸＝未確定**と名指しした「記憶の同期/マージ設計」に直接回答している。両文書は噛み合うように設計されている：inversion ノートは *番頭を主体に据える*（構造）、Quirefold は *その番頭の記憶と文脈をどう作るか*（機構）。ADR-0003（記憶二層）を「機能→核へ昇格」させると宣言したが、**その核の中身が Quirefold**。Quirefold §0.3 も明示的にホストを banto に確定している。ドッキング相手として設計されていた。
+
+### 11.1 4層 ↔ Quirefold モジュールの対応
+
+| banto 4層 | Quirefold | 対応の質 |
+|---|---|---|
+| **番頭AI（記憶あり）** | memory（§7 ワーキングセット）＋ self-model（§22）＋ protocol（§23）を載せたセッション | 番頭＝Quirefold を装着した主体。「記憶を持つ」の実体がこれ |
+| **職人＝worker（memoryless）** | Quirefold を**装着しない**素の request/response | I1「記憶なし＝隠れ状態なし＝監査可能」＝ Quirefold を付けるか付けないか、で非対称が実装される。完全一致 |
+| **daemon（決定的統治基盤）** | Substrate のログ統治 ＋ driver（§20-21）の**強制部分** | D2「制御ループにLLMを置かない」＝ Quirefold §0.5 原理2・§24「一次判定はルール/小型モデル」と同一思想。driver の *認知*（自己内省 §20）は daemon 発起の番頭セッションへ |
+| **PO（主人）** | §22 self-model への**承認者**（昇格は人の承認のみ） | エスカレーション＝承認境界。§11.4 参照 |
+
+### 11.2 ADR-0003（記憶二層）↔ Quirefold は直交して合成する
+
+- ADR-0003 ＝ **スコープ軸**（人＝横断共有 / プロジェクト＝閉じる）。
+- Quirefold ＝ **認知種別軸**（episode / semantic / procedural）＋出典。
+- 両者は競合しない。Quirefold の各エントリは既に `context{project, repo}` と `session_id` を持つ（§2）。ADR-0003 の「人 vs プロジェクト」は、その上に載る **scope 属性＝注入時の可視範囲ルール**（§7 入場スコアの文脈一致 §11、横断させる/させないの制御）になる。ADR-0003 の「混ぜない（統治単位＝プロジェクト）」は Quirefold の retrieval ポリシーとして生きる。
+- ADR-0003 が未設計としていた「蒸留規則・鮮度管理」（帰結の (−)）＝ Quirefold §14（蒸留）・§13（減衰）・§18（睡眠バッチ）がそのまま埋める。**ADR-0003 は捨てず、Quirefold で精緻化される。**
+
+### 11.3 フチコマ同期（§5）↔ Quirefold が本丸に回答
+
+§5 の3方向同期は Quirefold の並行モデルにそのまま乗る：
+
+| §5 の同期 | Quirefold の機構 |
+|---|---|
+| **push**（決定→ログ、即時、走る分身が互いを見る） | §2 エピソード追記（session_id 別ストリーム、append-only）＝ §19「エピソードログ 完全並行・追記のみ」 |
+| **pull**（他分身の共有記憶を取り込む、割り込まない） | §19 スナップショット隔離＋WS再構築時に一貫スナップショット。§19 訂正の**緊急無効化チャネル**（ピン留め訂正のみ）が「割り込まないが訂正だけは伝播」を解く |
+| **distill**（学び→導出層へ照合） | §14 蒸留＋§18 **深い睡眠＝単一writer で候補間矛盾を解消**して確定 |
+
+§10 が未決とした2点への回答：
+- **「2分身が食い違う学びを持ち帰ったときの照合ルール」** → §3 版管理（両方が生きた版で並存＝lost update せず**検出可能な矛盾**）＋ §12 矛盾解決（`preference_decision`→最新性が勝つ／`world_fact`→出典数と独立性が勝つ）＋ §18 深い睡眠の単一writer 直列化。
+- **「長寿命分身の再同期タイミング」** → §19 スナップショット隔離を既定に、ピン留め訂正だけ緊急チャネル。
+
+### 11.4 D1 → 番頭境界の置換も Quirefold と整合
+
+§4 で「不可逆か → 体験を変える本物の分岐か」に精緻化したが、Quirefold §22 が承認境界を独立に定義している：*経験から学んだ振る舞いは意味記憶側 → 人が明示承認したものだけ self-model へ昇格 → エージェント自己書換不可*。これは banto の「principles 変更は ADR 経由のみ」「層A 自己改善はエージェント提案・POレビュー」と同型。**番頭の人格ドリフト防止＝principles/ADR の関所が、Quirefold の self-model 保護と同じ機構になる。**
+
+### 11.5 相互補強のキーストーン
+
+Quirefold §0.3「banto はホストであって共同設計者ではない／banto の都合で Substrate を曲げない」＝ 汎用性（付録B）を守る規律。これは inversion §1「番頭核を開発固有の道具から分離すれば将来別領域も載る」と**同じことを反対側から言っている**。banto は Quirefold Substrate を素で採用し、Policy 層だけコーディング向けに調整する（§0.3 が可逆と明言）。番頭が「主体」なのは体験・差配の軸（§3）であって、Substrate を曲げる意味ではない。二つの設計はここで一致する。
+
+### 11.6 本物のトレードオフ＝PO へ上げる決定（§4 の境界に従い escalate）
+
+統合は驚くほど整合するが、番頭が勝手に決めてはいけない one-way な分岐が3つある：
+
+1. **ログの一元化 → 【決着 2026-07-26：完全分離・ブリッジなし】** daemon の実行ログ（A）と Quirefold（B）は同一化しない。**完全に別システム**とし、結合は3つの狭いI/Fのみ：
+   - **daemon → 番頭：kick**（spawn／アテンションカード）。daemon が判断・情報を要るときは AI Agent を起こして聞く。**daemon 側から Quirefold を読む手段は持たない**。
+   - **番頭 → daemon（読）：tool/skill I/F で実行ログをオンデマンド照会**。daemon ログは B に**取り込まない**（ミラーは D3 の二重真実＝drift。真実は A のまま、都度読む）。
+   - **番頭 → daemon（書/命令）：daemon API tool**（approve/enqueue/escalate…）。daemon が検証して A へ追記。
+   - 効果：(a) daemon が memory を知らない＝職人/番頭を同じ扱い（kick＋tool）にでき、記憶あり/なしの非対称が**構造的に**成立、(b) 実行真実の二重化なし（D3）、(c) Quirefold Substrate 非汚染（§0.3）。
+   - 付随ルール：daemon-log の tool 結果は再照会で再現できるので **episode に退避しない**（§10 の例外＝導出値を保存しない D3）。
+   - 残る実装詳細（reversible）：I/F を素の tool にするか skill で高位クエリに包むか。トレードオフでなく明快な分離なので ADR は軽くてよい（daemon-core spec と memory spec に I/F を記載）。
+2. **番頭のハーネス** → 【決着 2026-07-26：完全自作ハーネス＋プラガブル LLM 層。詳細 §13】 Quirefold が context とセッション状態を握る必要があり、既製ハーネス（pi）のループ/履歴と衝突するため Banto は自作。pi は Banto 依存ではなく職人ランタイムへ。
+3. **Substrate スキーマの確定**：Quirefold §0.6/§2 は「Substrate は不可逆、先に確定」。§4「pre-release は壊してよい」の**例外**に当たる（スキーマ後付けは過去記憶に遡及不能）。→ Quirefold §2 を banto の記憶データモデルとして **ADR で確定（ADR-0003 を extend/supersede）** するのが正式化の第一歩。
+
+それ以外（Part II Policy 全部、Part III Loop パラメータ、ADR-0003 のスコープ注入ルール）は**可逆＝番頭が決める**（§4・Quirefold §0.3 と一致）。
+
+### 11.7 正式化の順序（案）
+
+1. §11.6 の3決定を PO と裁く（**①ログ・②ハーネス＝決着済み**。残り ③Substrate スキーマ）。
+2. ADR：Substrate スキーマ確定（ADR-0003 を extend/supersede、fact_type/derived_from/version 等）。
+3. ADR-0009 を accepted へ。VISION.json / principles.md に番頭＋記憶核を反映（§8・§9 のドラフト＋ Quirefold self-model/protocol の分離を principle 化）。
+4. spec 昇格：`docs/notes/quirefold-memory-system.md` → `docs/spec/memory.md`（accepted 化と同時）。§0.9 の未検証6項目は spec に「机上終了条件」として残す。
+
+---
+
+## 12. 確定語彙とサブシステム汎用I/F（2026-07-26 確定）
+
+### 12.1 語彙
+
+| 役割 | 名前 | 種別 |
+|---|---|---|
+| 統べる人 | 主人 / PO | 人 |
+| 全体 ＋ 永続AI Agent（番頭） | **Banto** | ブランド（傘＋主体を兼用） |
+| 記憶システム | **Quirefold** | ブランド（独自性が高い） |
+| 開発ワークフローの決定論的統治（**旧 daemon**） | **Kobo**（工房・plain alphabet, macron なし） | ブランド（店メタファ） |
+| Worker Agent の汎用管理サービス | **Worker Pool** | 素直なIT名（commodity） |
+| memoryless な実働 sub-agent | **職人 / Worker Agent** | — |
+
+- 命名基準：novel な核（Banto / Quirefold / Kobo）はブランド名、commodity（Worker Pool）は素直なIT英語、決定論的機構は*場所/仕組み*の名で人・判断者に見せない（D2）。店メタファで一族が揃う：主人・番頭・工房・職人。
+- 「番頭でも帳簿はごまかせない」の帳簿＝Kobo が握る「何をどう作り・どのゲートを通したか」のイベントログ。
+- "daemon" は現行 docs に残置。**Kobo へのリネームは正式化フェーズでまとめて**（`spec/daemon-core.md`→`spec/kobo-core.md` 等）。
+
+### 12.2 Banto ↔ Kobo は「汎用サブシステムI/F」の第一実装
+
+**決定**：Banto と Kobo のI/Fは Kobo（開発）専用にせず、**Banto ↔ 任意のドメインサブシステム**の汎用契約として定義する。Kobo は「**第一の店＝開発**」＝その最初の実装。将来、開発以外の仕事をするサブシステムを**同じI/Fで Banto に増設**できるようにする。**開発固有の都合をこの汎用契約に漏らさない**（inversion §1／Quirefold §0.3 と同一規律を I/F レベルで実装）。
+
+決定①の3I/Fを汎用3スロットへ昇格：
+
+| 汎用スロット | 向き | Kobo（開発）での実装例 |
+|---|---|---|
+| **kick** | サブシステム → Banto | review-ready / blocking design-request / cadence |
+| **query surface** | Banto → サブシステム（読） | task 状態・diff 照会 |
+| **command surface** | Banto → サブシステム（書、検証付き） | enqueue / approve / escalate / classify_change |
+| **surface provision（GUI）** | サブシステム → Banto | アテンションキュー / ボード / バックログ編集 等の盤面（inversion §6「番頭が差し出す走査可能な盤面」の実装＝盤面はサブシステムが供給し Banto が PO に差し出す） |
+
+- **スロット集合は open**：上記4つが現時点。他は後で足しうる（決めるのは後でよい）。
+- 開発固有の動詞（`enqueue_task` 等）は Kobo の command スロットの*実装*であって汎用契約の語彙ではない。
+- **Worker Pool も汎用**：どのサブシステムも（Banto も直接）職人を発注できる。Kobo は Worker Pool を*利用する*だけ（決定①で確定した完全分離と同じ関係）。
+
+```
+        主人 (PO)
+          │
+        Banto (番頭) ──── Quirefold (記憶)
+          │  汎用 Subsystem I/F（kick / query / command）
+          ├───────────────┬──────────────┐
+          ▼               ▼               ▼
+        Kobo         （将来: 別ドメインの店）  …
+     （開発＝第一の店）
+          │ uses ── Worker Pool（汎用）── spawn ─▶ 職人 / Worker Agent
+        （Banto も直接 Worker Pool に発注可）
+```
+
+---
+
+## 13. 決定②：Banto ハーネス（2026-07-26 決着）
+
+**Banto のハーネスは完全自作**。理由：Quirefold が context 組み立てとセッション状態（WS 滞在テーブル・スナップショット隔離・睡眠 §2/§18/§19）を握る必要があり、既製ハーネス（pi 等）のループ/履歴管理と二重化して衝突する。pi の中心価値（ループ＋context）を Quirefold が置換するので、pi を Banto に使う旨みも無く、無改造で dumb executor 化できる保証も無い。
+
+### 13.1 構成
+
+- **Banto ホスト（自作）**：Quirefold を積み、ターンループと context 組み立てを所有。
+- **プラガブル LLM プロバイダ層**：**モデル非依存**（Anthropic / OpenAI / OpenCode 経由 / 将来ローカルLLM）。banto-core に I/F、アダプタで差し替え。ローカル化＝アダプタ1個追加で済む形。seam は「メッセージ送信＋**ツール形式の正規化**＋**キャッシュ制御ヒント**」を運ぶ（Quirefold §6 のプレフィックスキャッシュ・ポリシーは中立に保ち、効かせる機構はアダプタ）。
+- **pi は Banto の依存ではない**。pi の居場所は **Worker Pool 配下の職人ランタイム**（フル装備：ループ・ツール・TUI 介入・worktree・職人側モデル差し替え）。旧「検討・レビュー対話＝pi固定」の memoryless 実務はここ。
+
+### 13.2 自作の範囲＝ハーネスのみ。Tool/Skill の"形式"は既存を参照（D6）
+
+「完全自作」＝ループ・context・プロバイダ seam を自前で持つ意味であって、規約をゼロから発明する意味ではない。Tool と Skill の**形式/仕組みは既存を参照**する（Quirefold §14「実装はオリジナル、形式は借りる」と一致）：
+
+- **Skill**：**SKILL.md（agentskills.io）形式**を採用（Quirefold §14 で確定済み）。ロード/発見/注入の機構は pi・Claude Code skills・Hermes Agent を参照。banto-core「プロンプト資産読込」に載る。
+- **Tool**：内部は正規化ツールスキーマ、プロバイダ毎の wire 形式（Anthropic tool-use ↔ OpenAI function-calling）はアダプタで吸収。pi の多プロバイダ・ツール正規化を参照。
+- **Hermes Agent**（Nous, MIT）：記憶ベースライン（§16）かつ Tool/Skill 実装の参照先。
+
+### 13.3 波及（正式化で処理）
+
+CLAUDE.md「pi固定」は一律の書き方。→「**pi は職人／memoryless 対話用。Banto は自作ハーネス＋プラガブル LLM 層（モデル非依存）**」に分割して記載。banto-core の I/F に LLM プロバイダ seam を追加。
