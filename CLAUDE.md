@@ -37,6 +37,6 @@
 
 - プロダクト意図: `docs/VISION.json`（原典散文: `docs/vision.md`）
 - 判断規則の全17則: `docs/DESIGN_PRINCIPLES.json`（原典散文: `docs/principles.md`）
-- 仕様（設計の真実）: `docs/spec/` — daemon-core / document-system / schemas / environment / improvement-loop / multi-project / ui
+- 仕様（設計の真実）: `docs/spec/` — daemon-core / document-system / schemas / environment / improvement-loop / multi-project / ui / **memory**（Quirefold＝番頭の記憶。Substrate の正典は ADR-0010）
 - 設計経緯・全体像: `docs/notes/pi-coding-agent-design-v2.md`
 - Sprint管理: `docs/ROADMAP.json`

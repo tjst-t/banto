@@ -8,7 +8,7 @@ branch: explore/agent-primary
 
 # ADR-0009: 番頭主体への構造逆転（AI Agent を主、開発システムを従に）
 
-> status: **proposed**（探索ブランチ `explore/agent-primary` の working canon）。正式化は、PO が別途設計した「永続記憶システムを含む AI Agent」＝ [Quirefold 記憶システム設計](../notes/quirefold-memory-system.md)（持ち込み済み）の統合相談を経てから。詳細は [docs/notes/agent-primary-inversion.md](../notes/agent-primary-inversion.md)。
+> status: **proposed**（探索ブランチ `explore/agent-primary` の working canon）。記憶システムの詳細設計は [Quirefold](../spec/memory.md)（`spec-memory`＝banto の記憶サブシステム）に統合済み。Substrate の確定は [ADR-0010](./adr-0010-memory-substrate-schema.md)。詳細は [docs/notes/agent-primary-inversion.md](../notes/agent-primary-inversion.md)。
 
 ## 文脈
 

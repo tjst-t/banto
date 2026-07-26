@@ -3,7 +3,7 @@
 > **ブランチ**: `explore/agent-primary`（main は S6cfce9 プロトタイプ探索で固定＝`57fb669`。旧mainは `prototype-review/S30a8fd` にも保全）。
 > **位置づけ**: この逆転は、[s6cfce9-prototype-review.md](./s6cfce9-prototype-review.md) §5「UIパラダイム未決」を**決着**させる。
 > **保存目的**: このコンテキストが clear されても検討を再開できるよう、これまでの議論を全て残す。
-> **次アクション**: Quirefold 持ち込み・統合相談を実施。決定①②・語彙・汎用I/F 決着、残り③＋正式化。**現在地と再開点は §0**。working canon＝本ノート＋[Quirefold](./quirefold-memory-system.md)＋[ADR-0009(proposed)](../adr/adr-0009-agent-primary-inversion.md)。
+> **次アクション**: Quirefold 持ち込み・統合相談を実施。決定①②・語彙・汎用I/F 決着、残り③＋正式化。**現在地と再開点は §0**。working canon＝本ノート＋[Quirefold](../spec/memory.md)＋[ADR-0009(proposed)](../adr/adr-0009-agent-primary-inversion.md)。
 > 日付: 2026-07-25（§0 は 2026-07-26 更新）。
 
 ---
@@ -20,13 +20,24 @@ Quirefold（記憶システム設計）の持ち込み・統合相談を実施�
 | I/F | Banto↔サブシステム汎用I/F（kick / query / command / GUI提供、集合は open） | ✅確定 | §12.2 |
 | ① | ログ＝Kobo と Quirefold は**完全分離・ブリッジなし**、結合はI/Fのみ | ✅決着 | §11.6-① |
 | ② | Banto ハーネス**完全自作＋プラガブルLLM層（モデル非依存）**／pi は職人へ／Tool・Skill 形式は既存参照 | ✅決着 | §13 |
-| ③ | **Substrate スキーマ確定**（Quirefold §2 を採用、ADR-0003 を extend/supersede、二層は `context` に載せる） | ⏳未決＝次の議題 | §11.6-③ / §11.2 |
+| ③ | **Substrate スキーマ確定**（Quirefold §2 を採用、ADR-0003 を全面 supersede、二層は `context.scope`） | ✅決着 | [ADR-0010(proposed)](../adr/adr-0010-memory-substrate-schema.md) / §11.6-③ |
+
+**③ の番頭決定（ADR-0010、2026-07-26）**：Quirefold §1「保存技術としては分離する」＝**アクセス経路（索引・書き込み特性・実体の置き場所）を分ける**の意と解釈し、単一ストア内でテーブル/索引を分ける（別ミドルウェアを4つ立てない。理由＝分身の一貫スナップショット §19 がストアを跨ぐと取りにくい／D6）。**embedding はスキーマに持たない**＝content から再生成できる導出物（D3）。→ 埋め込みモデルもベクトル索引も Substrate の外＝可逆。初期は embedding 無しで開始できる。**手続き記憶の実体は SKILL.md ファイル**（版付きパス `skills/<name>/v<N>/SKILL.md`）、エントリは `external_ref` でそれを指すメタデータ行。
+
+**③ の検証と第2版（2026-07-26）**：初版を10シナリオ（Kobo 6・非開発4）で敵対的にシミュレート（Sonnet サブエージェント）。判定＝動く0／動かない2／実質動かない1／条件付き7。**構造的診断：Quirefold は規則を書いているが発火条件を書いていない**（§12 は矛盾の裁き方を定めるが検出を定めず、§13 は減衰を定めるが再浮上を定めず、§4 は出典の全消滅のみ定める）。原因は §0.2「memory はタイマーもループも持たない＝判断は driver 側」の帰結で、**判断を全部移した driver（§20・§21）が2節しかない**こと。10体中9体が「Substrate 変更不要、欠けているのは Policy/Loop の配線」と判定。
+- **初版から改めた点**：閉じた列挙が軒並み破れた（`fact_type` を5シナリオが別カテゴリで破り、`scope` 2値を非開発ドメインが破った）一方、開いた識別子（`external_ref.system`）は破れなかった。→ **`scope` を列挙から閉包識別子へ**（`person` を root、`repo:banto/web` ⊂ `proj:banto` ⊂ `person`。二層は木の root と leaf の特殊ケース）／**`context` は scope 以外を任意特徴量に降格**（不可逆層から開発語彙 project/repo を除去）／**`fact_type` は kind: semantic のみ必須**、`preference_decision` を「規範的言明」に再定義（誰が決めたかは origin が持つ）／**`origin` の判定基準を「呼び出し主体」から「情報の実質的な出所」へ**（職人経由の Web 情報が agent_inferred になり §7/§9/§12 の外部由来防御を丸ごと迂回するため。職人報告に citations[] 必須＋分割記録）／**矛盾解決は origin を先に見る**（user_explicit > agent_inferred。実行層で強制。§12 のままだと番頭が PO の訂正を時刻の新しさだけで上書きする）／**tombstone も新版を作る**（immutable に例外を作らない）／**derived_from は版を pin**（出典が supersede/tombstone されたら再検証キューへ）／**`sensitive: boolean` を追加**（第三者の機微情報。職人への理由非開示・自発言及の禁止・自動横断の対象外）。
+- **Policy/Loop の未定義（ADR 範囲外だが埋めないと機能しない）**：矛盾の検出／訂正・削除の派生記憶への伝播／superseded・tombstone の候補除外／休眠トピックの再浮上（§13 の自己申告は反証された。文脈一致・確信度の経過時間・目標関連性の3経路が独立に休眠を不利にする）／state_fact の観測トリガー／record() に external_ref を渡す引数／職人の失敗を番頭へ返すチャネル。
+- **決定①の代償3つ**：Kobo に送った command の巻き戻し手順なし／「再照会で再現できる」は集計・分類済みの事実には不成立（分類ロジックがどこにも残らない）／Kobo の誤登録削除が append-only と矛盾（**P3 incident 案件**）。
+
+**③ の PO 裁定（2026-07-26）**：(a) 横断（`scope: person`）は**番頭が自動判断**し、PO は事後に可視・訂正できる（事前ゲートを置かない。訂正は `user_explicit` として保護＝番頭が上書き返さない）。(b) Kobo 由来の学びの出典は **`external_ref[]`** で持つ。ただし Kobo 専用にせず `system` を列挙型にしない**汎用の外部参照**とする。(c) `fact_type` は Quirefold を変更してよいとの裁定を受け、**3値へ拡張**（`preference_decision` / `state_fact` / `world_fact`）＝可変な客観的状態を「観測で裁く」ため。`kind` / `origin` は Quirefold のまま。
 
 **統合の全体像**：Quirefold は「番頭の核」の詳細設計＝逆転§10 の本丸に回答（§11.0）。詳細は §11〜§13。
 
-**正式化（未着手・③の後）**：ADR で Substrate 確定 → ADR-0009 accepted → VISION.json / principles.md 反映（D5 に「番頭核」追記、番頭境界 §4 の principle 化）→ CLAUDE.md の daemon→Kobo リネーム＋pi固定分割 → `quirefold-memory-system.md` を `docs/spec/memory.md` へ昇格。順序は §11.7。
+**Quirefold の位置づけ確定（2026-07-26・PO）**：Quirefold は **banto の一部**であり別プロジェクトではない。設計は可変で、banto を作る過程で確定していく。→ 仕様書を `docs/notes/quirefold-memory-system.md` から **`docs/spec/memory.md`（`spec-memory`）へ移設**し、外部プロジェクト前提の記述（§0.2 ハーネス＝別リポジトリ／§0.3「banto はホストであって共同設計者ではない」／§0.4 姉妹プロジェクト／付録B 汎用性）を書き換えた。**規律「Substrate に開発固有の語彙を入れない」は残す**が、理由は「外部プロジェクトの都合を守る」から **inversion §1「番頭核を開発固有の道具から分離すれば将来別領域も載る」**に置き換わった。判定基準は「開発以外の店を増設したときに邪魔しないか」。
 
-**次コンテキストの入口**：③ Substrate スキーマの ADR ドラフト起こしから。
+**正式化（残り）**：ADR-0010 accepted ＋**同時に spec-memory 本文を追随**（§2 スキーマ＝`external_ref`/`sensitive`/`scope`の値域/`fact_type`の適用範囲、§4＝独立性判定に external_ref 一致・部分喪失・版置換、§12＝`state_fact`と origin 優先、§3＝tombstone も新版、§25と§2の物理削除条件の不一致、存在しない「§26」への参照。ADR が正典、spec が追随＝P3）→ ADR-0009 accepted → VISION.json / principles.md 反映（D5 に「番頭核」追記、番頭境界 §4 の principle 化）→ CLAUDE.md の daemon→Kobo リネーム＋pi固定分割。順序は §11.7。
+
+**次コンテキストの入口**：ADR-0010（第2版）を PO が読む → accepted 化 ＋ spec-memory 本文の追随から。3決定は決着済みだが、**Policy/Loop の未定義7点と決定①の代償3点が残っている**（ADR-0010 §6・帰結に一覧）。これらは「他所の宿題」ではなく **banto の未着手設計**であり、厚みが要るのは Substrate でも Policy でもなく **driver（spec-memory Part III、§20・§21 が2節しかない）**。
 
 ---
 
@@ -132,8 +143,8 @@ bantoが生まれた理由＝「開発手法がプロンプトの遵守期待に
 - **本丸＝記憶システムの同期/マージ設計**：
   - distill（導出記憶）の**照合ルール**：2分身が食い違う学びを持ち帰ったとき（決定はログが裁くが、学びの統合規則は要設計）。
   - **長寿命分身の再同期タイミング**：会話を割り込まない形での pull。
-  - ＝ PO が保留していた「記憶システム」の**本丸**。→ **[Quirefold 設計](./quirefold-memory-system.md) が §18/§19/§12 でここに直接回答している**（§11「統合の見立て」参照）。
-- **次アクション**：[Quirefold](./quirefold-memory-system.md) 持ち込み済み → 統合を相談中 → その後に `VISION.json` / `principles.md` / 構造逆転ADR を正式化。
+  - ＝ PO が保留していた「記憶システム」の**本丸**。→ **[Quirefold 設計](../spec/memory.md) が §18/§19/§12 でここに直接回答している**（§11「統合の見立て」参照）。
+- **次アクション**：[Quirefold](../spec/memory.md) 持ち込み済み → 統合を相談中 → その後に `VISION.json` / `principles.md` / 構造逆転ADR を正式化。
 
 ---
 
@@ -179,7 +190,7 @@ Quirefold は §10 が **本丸＝未確定**と名指しした「記憶の同�
 
 ### 11.5 相互補強のキーストーン
 
-Quirefold §0.3「banto はホストであって共同設計者ではない／banto の都合で Substrate を曲げない」＝ 汎用性（付録B）を守る規律。これは inversion §1「番頭核を開発固有の道具から分離すれば将来別領域も載る」と**同じことを反対側から言っている**。banto は Quirefold Substrate を素で採用し、Policy 層だけコーディング向けに調整する（§0.3 が可逆と明言）。番頭が「主体」なのは体験・差配の軸（§3）であって、Substrate を曲げる意味ではない。二つの設計はここで一致する。
+旧 §0.3 は「banto はホストであって共同設計者ではない／banto の都合で Substrate を曲げない」という規律を置いていた。**2026-07-26 に Quirefold を banto の一部と位置づけたため、この文言（外部プロジェクトへの一方向依存）は失効**。ただし規律そのものは残り、理由が inversion §1「番頭核を開発固有の道具から分離すれば将来別領域も載る」に置き換わった＝**同じことを言っていた二つが一本化された**。Policy 層はコーディング向けに調整してよい（可逆）。なお「Substrate を素で採用」は10シナリオ検証で覆り、開発語彙の除去が必要だった（ADR-0010 第2版）。番頭が「主体」なのは体験・差配の軸（§3）であって、Substrate を曲げる意味ではない。二つの設計はここで一致する。
 
 ### 11.6 本物のトレードオフ＝PO へ上げる決定（§4 の境界に従い escalate）
 
@@ -193,16 +204,17 @@ Quirefold §0.3「banto はホストであって共同設計者ではない／ba
    - 付随ルール：daemon-log の tool 結果は再照会で再現できるので **episode に退避しない**（§10 の例外＝導出値を保存しない D3）。
    - 残る実装詳細（reversible）：I/F を素の tool にするか skill で高位クエリに包むか。トレードオフでなく明快な分離なので ADR は軽くてよい（daemon-core spec と memory spec に I/F を記載）。
 2. **番頭のハーネス** → 【決着 2026-07-26：完全自作ハーネス＋プラガブル LLM 層。詳細 §13】 Quirefold が context とセッション状態を握る必要があり、既製ハーネス（pi）のループ/履歴と衝突するため Banto は自作。pi は Banto 依存ではなく職人ランタイムへ。
-3. **Substrate スキーマの確定**：Quirefold §0.6/§2 は「Substrate は不可逆、先に確定」。§4「pre-release は壊してよい」の**例外**に当たる（スキーマ後付けは過去記憶に遡及不能）。→ Quirefold §2 を banto の記憶データモデルとして **ADR で確定（ADR-0003 を extend/supersede）** するのが正式化の第一歩。
+3. **Substrate スキーマの確定 → 【決着 2026-07-26：[ADR-0010](../adr/adr-0010-memory-substrate-schema.md)】** Quirefold §0.6/§2 は「Substrate は不可逆、先に確定」。§4「pre-release は壊してよい」の**例外**に当たる（スキーマ後付けは過去記憶に遡及不能）。Quirefold §2 を採用し ADR-0003 を全面 supersede（部分supersede は spec-schemas §3 で表現できないため、生き残る決定は ADR-0010 に再掲）。Banto 発の変更は3点のみ＝`context.scope`（二層）／`external_ref[]`（汎用外部参照）／`fact_type` 3値化。PO 裁定の要点は §0 を参照。
+   - **不可逆の凍結点は「記憶の蓄積開始時点」**であってリリース時ではない、と ADR-0010 で明示した。実装・評価の間はまだ動かせる。
 
 それ以外（Part II Policy 全部、Part III Loop パラメータ、ADR-0003 のスコープ注入ルール）は**可逆＝番頭が決める**（§4・Quirefold §0.3 と一致）。
 
 ### 11.7 正式化の順序（案）
 
-1. §11.6 の3決定を PO と裁く（**①ログ・②ハーネス＝決着済み**。残り ③Substrate スキーマ）。
-2. ADR：Substrate スキーマ確定（ADR-0003 を extend/supersede、fact_type/derived_from/version 等）。
+1. §11.6 の3決定を PO と裁く（**①ログ・②ハーネス・③Substrate すべて決着済み**）。
+2. ADR-0010（Substrate 確定・ADR-0003 を supersede）を accepted へ。**同時に Quirefold 本体を修正**：§2 に `external_ref[]` 追加、§12 に `state_fact` 追加。汎用性（付録B）を損なわないことを再確認する。
 3. ADR-0009 を accepted へ。VISION.json / principles.md に番頭＋記憶核を反映（§8・§9 のドラフト＋ Quirefold self-model/protocol の分離を principle 化）。
-4. spec 昇格：`docs/notes/quirefold-memory-system.md` → `docs/spec/memory.md`（accepted 化と同時）。§0.9 の未検証6項目は spec に「机上終了条件」として残す。
+4. ~~spec 昇格~~ → **2026-07-26 実施済み**（`docs/spec/memory.md`＝`spec-memory`）。PO が Quirefold を banto の一部と位置づけたため、accepted を待たず先に移した。§0.9 の未検証6項目は spec に「机上終了条件」として残っている。
 
 ---
 
