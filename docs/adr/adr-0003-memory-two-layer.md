@@ -1,11 +1,13 @@
 ---
 id: adr-0003
 type: adr
-status: accepted
+status: superseded
 refs: [spec-ui, spec-multi-project, principles, adr-0002]
 ---
 
 # ADR-0003: 記憶（Memory）の二層モデル
+
+> **status: superseded（2026-07-26）。** [ADR-0010](./adr-0010-memory-substrate-schema.md) が本ADRを**全面 supersede** した（同 §0 に、生き残った決定の再掲がある）。二層は閉包木の root と leaf という特殊ケースとして保たれている。**本ADRを設計の根拠に使わないこと。**
 
 ## 文脈
 
