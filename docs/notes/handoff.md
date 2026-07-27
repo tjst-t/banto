@@ -13,7 +13,7 @@ refs: [adr-0009, adr-0010]
 
 - **正式化フェーズは完了。** ADR-0009（番頭主体への構造逆転）・ADR-0010（ハーネス差し替え可能性、Kobo/WorkerAgent・UIのTool/SKILL I/F、記憶システムの採用方針）はいずれも `accepted`。反映先：`docs/vision.md`・`docs/VISION.json`・`docs/principles.md`・`docs/DESIGN_PRINCIPLES.json`・`CLAUDE.md`・`docs/spec/daemon-core.md`（Kobo改称・§3.5のハーネス方針）。
 - **Kobo（決定的統治基盤・旧称 daemon）は実装済み**（`packages/banto-daemon` 等、`npm test` 331テスト通過）。今回の構造逆転でも変更なし。
-- **番頭核（Banto ホスト）はまだ実装ゼロ。** 次に決めるべきは ADR-0010「未決事項」の4点——Tool/SKILL契約の形状、採用する既存記憶システムの具体名、pi coding agent上でのホスト構成、UI制御Toolの提示範囲。
+- **番頭核（Banto ホスト）はまだ実装ゼロ。** 未決事項は [ADR-0010](../adr/adr-0010-pluggable-harness.md) 末尾にまとめてある（ここでは数えない。D3）。
 
 ## 前身ブランチとの関係
 
@@ -21,4 +21,7 @@ refs: [adr-0009, adr-0010]
 
 ## 次の一手
 
-ADR-0010の未決事項をSprint化する前に、まず「採用する既存記憶システムの具体名」と「pi coding agent上でのホスト構成」の2点は調査タスクとして先に片付けるのが良さそうだが、これは次セッションのPO判断待ち。
+**実装順序（PO裁定・2026-07-27）：まず Banto フレームワーク（チャット＋キャンバス＋GUIプラグイン機構）を単体で動くところまでプロトタイプし、その後に Kobo との統合へ進む。** ADR-0010の未決事項をいきなりSprint化せず、次はプロトタイプで骨格が実際に機能するかを確かめる。
+
+- Koboを別プロセス（現行どおりHTTP API＋WebSocketの常駐サービス。`spec-daemon-core` §7）にするか、番頭主体の構成に合わせて見直すかは**まだ悩んでいる（PO保留）**。Bantoフレームワーク単体のプロトタイプ段階では触らなくてよい。Kobo統合に進むタイミングで改めて判断する。
+- プロトタイプの単位・進め方（`design`/`sprint prototype`等）は次セッションで決める。
