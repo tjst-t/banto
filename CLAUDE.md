@@ -35,6 +35,8 @@
 
 必要になったときに該当ドキュメントを読むこと:
 
+- **作業の引き継ぎ・現在地: `docs/notes/handoff.md`**（セッションを跨ぐときはここから）
+
 - プロダクト意図: `docs/VISION.json`（原典散文: `docs/vision.md`）
 - 判断規則の全17則: `docs/DESIGN_PRINCIPLES.json`（原典散文: `docs/principles.md`）
 - 仕様（設計の真実）: `docs/spec/` — daemon-core / document-system / schemas / environment / improvement-loop / multi-project / ui / **memory**（Quirefold＝番頭の記憶。Substrate の正典は ADR-0010）

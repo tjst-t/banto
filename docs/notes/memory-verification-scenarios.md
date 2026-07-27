@@ -179,6 +179,10 @@ docs/notes/verification-log/r<ラウンド番号>-<シナリオID>.md
 
 **したがって §3 の収束条件は、Substrate については役目を終えた。** Policy/Loop については、以後は机上検証ではなく **§0.9 の行動観測と `spec-improvement-loop`** で測る（`spec-memory` §16.1）。**この文書の役割は「実装前に構造を固める手続き」から「設計変更時のリグレッション資産」へ変わる。**
 
+### 6.0.1 PO の判断待ち（1件）
+
+**ADR-0009（番頭主体への構造逆転）の `status: proposed` が `spec-schemas` §3 の enum（`draft`/`accepted`/`superseded`）に無い。** ADR-0010 は `accepted`、ADR-0003 は `superseded` へ移行済みで、ADR-0009 だけが宙に浮いている。**内容の裁定を伴うので番頭が決めず、PO に上げる。**
+
 ### 6.1 次にやること（実装フェーズ）
 
 **実装前に決めるべきものは全部決めた**（2026-07-26）。判定軸と根拠は `spec-memory` §27「実装前に決めるべきものと、後で直せるもの」。
