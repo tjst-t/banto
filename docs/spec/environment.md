@@ -35,8 +35,8 @@ profiles:
 ```
 
 - `driver`: ビルトイン名（`process` / `docker`）またはプロジェクト内実行ファイルへのパス
-- `ttl`: 生存期限。超過分はdaemonが強制teardownする
-- `quota.max_instances`: プロファイルごとの同時実行上限。執行はdaemon（→ §5）
+- `ttl`: 生存期限。超過分はKoboが強制teardownする
+- `quota.max_instances`: プロファイルごとの同時実行上限。執行はKobo（→ §5）
 - `credentials`: シークレットの参照名。実体はsops管理でこのファイルには書かない
 
 **統一原則**：レビュー用dev server、監査時のテスト実行、自己更新の隔離検証、外部VM評価は、すべてこの同じ抽象の上で行う。環境提供の仕組みを複数作らない（→ D3, D4）。
@@ -47,7 +47,7 @@ profiles:
 
 | 動詞 | 入力 | 出力 | 規約 |
 |---|---|---|---|
-| `provision` | config JSON | `{handle: {...}}` | handleは不透明JSON。daemonは中身を解釈しない |
+| `provision` | config JSON | `{handle: {...}}` | handleは不透明JSON。Koboは中身を解釈しない |
 | `deploy` | handle, artifact path | — | 成果物の配置・反映 |
 | `healthcheck` | handle | `{ok: bool, detail?}` | 起動完了・疎通の判定 |
 | `run` | handle, cmd | `{exit: int, log_path}` | 検証コマンドの実行。ログはファイルで返す |
@@ -58,35 +58,35 @@ profiles:
 - ビルトインドライバは `process`（ローカルプロセス起動）と `docker`（compose）の2本のみ
 - ドライバの追加要件：管理下リソースには**taskIDプレフィックスの命名**を適用すること（例：`task-0042-staging`）
 
-## 3. daemonとの関係・エージェントからの利用
+## 3. Koboとの関係・エージェントからの利用
 
-- ドライバを起動するのは**常にdaemon**。実行者エージェントは `env deploy staging` 等の**動詞ツール**（Extension Pack）を呼び、ツールはdaemonへのリクエストに変換される
+- ドライバを起動するのは**常にKobo**。実行者エージェントは `env deploy staging` 等の**動詞ツール**（Extension Pack）を呼び、ツールはKoboへのリクエストに変換される
 - エージェントプロセスとドライバプロセスは分離される。エージェントがドライバを直接実行する経路、Hypervisor/クラウドAPIを直接叩く経路は提供しない（→ I1、「ずるは不可能にする」）
-- レビューフローとの接続：タスクがreviewフェーズに入ると、daemonはタスク定義の `environment` をprovisionし、tmuxウィンドウのペイン2に接続する
+- レビューフローとの接続：タスクがreviewフェーズに入ると、Koboはタスク定義の `environment` をprovisionし、tmuxウィンドウのペイン2に接続する
 
 ## 4. 認証情報（credentials）
 
 原則：**credentialsはエージェントのコンテキストとツール結果に一度も現れない**。
 
 - 実体はsops等で暗号化管理。`environments.yaml` には参照名のみ
-- daemonが復号し、**ドライバプロセスの環境変数として直接渡す**（例：`PVE_URL` / `PVE_TOKEN_ID` / `PVE_TOKEN_SECRET`）
+- Koboが復号し、**ドライバプロセスの環境変数として直接渡す**（例：`PVE_URL` / `PVE_TOKEN_ID` / `PVE_TOKEN_SECRET`）
 - 外部システム側のアカウントは**スコープ済み**にする：専用リソースプール/プレフィックス内の作成・削除のみ可能な権限に限定し、動詞が乱用されても被害がプール内で止まるようにする（→ §7）
 
 ## 5. 台帳・TTL・quota・照合
 
-制限の執行はドライバではなく**daemonの台帳**が行う。
+制限の執行はドライバではなく**Koboの台帳**が行う。
 
-- **台帳**：provision成功時、handleを台帳（永続化）に登録。タスク終了時にdaemonがteardownを保証する
+- **台帳**：provision成功時、handleを台帳（永続化）に登録。タスク終了時にKoboがteardownを保証する
 - **quota**：provision要求時に台帳を参照し、`max_instances` 超過なら拒否
 - **TTL**：超過した環境は強制teardown
 - **失敗処理**：teardown失敗はリトライし、なお失敗ならケイデンス議題に載せる
-- **照合（reconcile）**：daemonは定期的に各ドライバの `list` と台帳を突合する。台帳に無い実リソース（daemonクラッシュ中に生じた孤児等）を検出し、ケイデンス議題に載せる
+- **照合（reconcile）**：Koboは定期的に各ドライバの `list` と台帳を突合する。台帳に無い実リソース（Koboクラッシュ中に生じた孤児等）を検出し、ケイデンス議題に載せる
 - 外部リソースの消し忘れは金銭的実害が出るため、本節が本仕様で最も優先度の高い機構である（→ I3）
 
 ## 6. ログ・成果物
 
 - `run` のログ、`collect` の成果物はタスクごとの所定ディレクトリに集約し、監査セッション・レビューセッションのコンテキスト注入元とする
-- 収集先パスの規約はdaemonが定め、ドライバは渡された`dest`に書くのみ
+- 収集先パスの規約はKoboが定め、ドライバは渡された`dest`に書くのみ
 
 ## 7. リファレンス実装：Proxmoxドライバ
 
@@ -113,17 +113,17 @@ profiles:
 |---|---|
 | `provision` | clone API（pool=agents, 予約帯からVMID採番, name=taskIDプレフィックス）→ 起動 → handle `{vmid, node}` |
 | `healthcheck` | guest agent ping、またはSSH疎通 |
-| `deploy` / `run` | SSH経由。鍵はcloud-init注入分をdaemon→ドライバの環境変数経路で受け取る |
+| `deploy` / `run` | SSH経由。鍵はcloud-init注入分をKobo→ドライバの環境変数経路で受け取る |
 | `collect` | SSH/scpでdestへ回収 |
 | `teardown` | stop → VM削除。**404は成功扱い**（冪等） |
 | `list` | プール `agents` のメンバー列挙 |
 
 ### 7.4 可視性の保険
 
-provision時、VMのnotesまたはタグに `expires: <timestamp>` を書き込む。daemon停止期間中の孤児も、Proxmox UIを開くだけで期限切れが目視できるようにする。
+provision時、VMのnotesまたはタグに `expires: <timestamp>` を書き込む。Kobo停止期間中の孤児も、Proxmox UIを開くだけで期限切れが目視できるようにする。
 
 ## 8. 未決事項
 
 - ビルトイン `docker` ドライバのcompose以外（単一コンテナ）対応の要否
-- `run` のタイムアウト規約（daemon側で一律か、プロファイルごとか）
+- `run` のタイムアウト規約（Kobo側で一律か、プロファイルごとか）
 - 隔離検証（自己更新パイプライン）用プロファイルの標準名

@@ -10,8 +10,8 @@ refs: [spec-document-system, spec-daemon-core, spec-improvement-loop, spec-envir
 各ドキュメントtypeのfrontmatterフィールドの正式定義。JSON Schemaの実体は `meta/schemas/<type>.json` に置き、本仕様はその規範的な記述とする。
 
 共通規律（→ spec-document-system §2）：
-- フィールドは**daemonが分岐に使うものだけ**。散文で足りる情報は本文へ
-- **statusは遅い状態のみ**。daemonがファイルへ書き戻すのは終端遷移（クローズ時に1回）に限る。実行時状態（フェーズ）はイベントログが持つ
+- フィールドは**Koboが分岐に使うものだけ**。散文で足りる情報は本文へ
+- **statusは遅い状態のみ**。Koboがファイルへ書き戻すのは終端遷移（クローズ時に1回）に限る。実行時状態（フェーズ）はイベントログが持つ
 - IDはtype別プレフィックス＋4桁連番（`task-0042`）。採番はツールが行う。ファイル名は `<id>-<slug>.md`
 
 ## 1. task（実行契約）
@@ -22,13 +22,13 @@ refs: [spec-document-system, spec-daemon-core, spec-improvement-loop, spec-envir
 | `type` | `task` | ✓ | |
 | `kind` | enum | ✓ | `feature` / `fix` / `batch` / `refactor` / `conflict`（解消タスク）/ `improvement` |
 | `title` | string | ✓ | 1行 |
-| `status` | enum | ✓ | `draft` / `queued` / `done` / `failed` / `superseded` / `cancelled`。daemonが書くのは終端3種＋`failed` のみ |
-| `resolution` | string | | 終端時にdaemonが記録する1行（supersede先ID等） |
+| `status` | enum | ✓ | `draft` / `queued` / `done` / `failed` / `superseded` / `cancelled`。Koboが書くのは終端3種＋`failed` のみ |
+| `resolution` | string | | 終端時にKoboが記録する1行（supersede先ID等） |
 | `parent` | id | | 所属Epic |
 | `depends` | id[] | | 明示的依存。依存駆動ゲートの入力 |
 | `refs` | id[] | | 注入されるspec/ADR/改善項目。**実行者のコンテキストはこれで閉じる** |
 | `scope.paths` | glob[] | ✓ | スコープ内パス。①依存ゲートの重複判定 ②P1執行 ③classifyの機械層、の3つに使う |
-| `acceptance` | list | ✓ | `{id, text, verify?}`。`verify` は機械検証コマンド（あればマージ前ゲートでdaemonが実行。→ I1） |
+| `acceptance` | list | ✓ | `{id, text, verify?}`。`verify` は機械検証コマンド（あればマージ前ゲートでKoboが実行。→ I1） |
 | `items` | list | batch時✓ | `{id, text, done}`。バッチの内訳チェックリスト |
 | `environment` | string | | 環境プロファイル名（→ spec-environment §1）。レビュー・ゲートで使用 |
 | `review.policy` | enum | | `auto` / `sampled` / `mandatory`。省略時は kind × governance × 実績から`meta/config.yaml` の規則で導出。明示は上書き |
@@ -91,7 +91,7 @@ order: 3
 |---|---|---|---|
 | `id` / `type` | | ✓ | `dsg-NNNN`、type: `design-request` |
 | `mode` | enum | ✓ | `advisory` / `blocking` |
-| `task` | id | ✓ | 発生元タスク。blockingならdaemonがこれをpausedにする |
+| `task` | id | ✓ | 発生元タスク。blockingならKoboがこれをpausedにする |
 | `status` | enum | ✓ | `open` / `resolved` / `rejected` |
 | `refs` | id[] | | ADRドラフト・同期QAログ等 |
 
@@ -115,7 +115,7 @@ order: 3
 | `status` | enum | ✓ | `draft` / `accepted` / `superseded` |
 | `refs` | id[] | | |
 
-最小限で固定。フィールド追加は「daemonが分岐に使い始めた」証明を要する。
+最小限で固定。フィールド追加は「Koboが分岐に使い始めた」証明を要する。
 
 ## 7. 検証と運用
 
@@ -129,4 +129,4 @@ order: 3
 - `class` の初期語彙（運用開始後、最初のケイデンスで最初の版を切る）
 - `verify` コマンドの実行環境（environmentプロファイル内で走らせる規約の明文化）
 - プロジェクト拡張フィールドの名前空間規約（`x-` プレフィックス等）
-- オフライン・daemon不在時のID採番の扱い（必要になればハッシュサフィックス方式）（→ research-orchestrator-survey 参考）
+- オフライン・Kobo不在時のID採番の扱い（必要になればハッシュサフィックス方式）（→ research-orchestrator-survey 参考）

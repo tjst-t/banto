@@ -14,7 +14,7 @@ refs: [vision, principles]
 ## 1. フォルダ構造
 
 ```
-docs/                      # 散文ゾーン（人とLLMが読む。daemonは監視しない）
+docs/                      # 散文ゾーン（人とLLMが読む。Koboは監視しない）
   vision.md                # 不変層：目的・非目的・価値の優先順位
   principles.md            # 判断規則集（ID付き）
   roadmap.md               # 方向層：Now/Next/Laterの物語版
@@ -22,7 +22,7 @@ docs/                      # 散文ゾーン（人とLLMが読む。daemonは監
     <domain>.md
   adr/
     adr-NNNN-<slug>.md     # 判断記録：追記のみ
-work/                      # 機械ゾーン（daemonが監視し、分岐に使う）
+work/                      # 機械ゾーン（Koboが監視し、分岐に使う）
   epics/epic-NNNN-<slug>.md
   tasks/task-NNNN-<slug>.md
   inbox/design/            # design-inbox
@@ -36,7 +36,7 @@ meta/                      # 層B＋形式定義
   config.yaml              # 閾値・マージポリシー・ケイデンス間隔等
 ```
 
-- `docs/` と `work/` の分離が第一の骨格。daemonがwatchするのは `work/` のみで、散文の編集にオーケストレータは反応しない
+- `docs/` と `work/` の分離が第一の骨格。Koboがwatchするのは `work/` のみで、散文の編集にオーケストレータは反応しない
 - 共有資産（プロダクト既定のskills・スキーマ・config既定値）はプロダクト側にあり、プロジェクトはオーバーライドのみ持つ（→ spec-multi-project §1）
 
 ## 2. フォーマット：YAML frontmatter ＋ Markdown本文
@@ -44,9 +44,9 @@ meta/                      # 層B＋形式定義
 全ドキュメントは frontmatter（機械の契約）＋ Markdown本文（人とLLMの散文）の2層とする。
 
 ### frontmatterの規律
-- **daemonが実際に分岐に使うフィールドだけを置く**。機械的に読まれないフィールドをスキーマに入れない。散文の情報は、コードが必要とし始めた時点で初めてfrontmatterに昇格させる（スキーマの進化は改善ループの対象）
+- **Koboが実際に分岐に使うフィールドだけを置く**。機械的に読まれないフィールドをスキーマに入れない。散文の情報は、コードが必要とし始めた時点で初めてfrontmatterに昇格させる（スキーマの進化は改善ループの対象）
 - frontmatterの重さはゾーンで差をつける：`work/` は検証必須のフル契約、`docs/` は `id / type / status / refs` 程度の最小限
-- **ファイルは意図、イベントログは実行時状態**（→ D3）。daemonが速い状態（フェーズ等）をfrontmatterに書き戻すことを禁止する。frontmatterのstatusは遅い状態のみ（例：draft / accepted / superseded）
+- **ファイルは意図、イベントログは実行時状態**（→ D3）。Koboが速い状態（フェーズ等）をfrontmatterに書き戻すことを禁止する。frontmatterのstatusは遅い状態のみ（例：draft / accepted / superseded）
 
 ### 全体構造化（YAML/JSON化）をしない理由（規範）
 - 機械が読む要素は定義上frontmatterに揃うため、本文の構造化に受益者がいない
