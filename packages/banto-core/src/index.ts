@@ -115,3 +115,13 @@ export type {
   EnvDriverInput,
 } from "./env-driver.js";
 export { ENV_DRIVER_VERBS } from "./env-driver.js";
+
+// 番頭の記憶（第一層：好み・習慣）— ADR-0010 決定10 / D11
+export { JsonlMemoryStore } from "./memory.js";
+export type {
+  MemoryStore,
+  MemoryRecord,
+  MemoryInput,
+  MemoryQuery,
+  MemoryKind,
+} from "./memory.js";
