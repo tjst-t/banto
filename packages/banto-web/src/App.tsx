@@ -7,6 +7,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { TranscriptEntry } from "@banto/host/protocol";
 import { useBantoSession } from "./useBantoSession.js";
 import { resolveCanvasView } from "./views/registry.js";
@@ -32,7 +33,8 @@ function ChatRow({ entry }: { entry: TranscriptEntry }): React.ReactElement {
       // 番頭の応答は Markdown で返るので整形して描く（react-markdown は既定で生HTMLを通さない）
       return (
         <div className="msg msg--banto markdown">
-          <Markdown>{entry.text}</Markdown>
+          {/* remark-gfm: 表・打ち消し線・タスクリスト等。素の react-markdown は CommonMark のみ */}
+          <Markdown remarkPlugins={[remarkGfm]}>{entry.text}</Markdown>
         </div>
       );
     case "tool":

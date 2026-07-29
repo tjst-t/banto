@@ -51,3 +51,6 @@ export { createCanvasTools } from "./canvas-tools.js";
 export type { CanvasStateEvent, CanvasTabView, CatalogEntryView } from "./protocol.js";
 export { demoCanvasViews } from "./demo-views.js";
 export type { TranscriptEntry, HistoryEvent, PoMessageEvent } from "./protocol.js";
+export { createFileTools } from "./file-tools.js";
+export { createGitTools } from "./git-tools.js";
+export { workspaceRoot, resolveInWorkspace, toWorkspaceRelative } from "./workspace.js";

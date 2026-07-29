@@ -24,7 +24,10 @@ import { createBantoHostSession } from "./host-session.js";
 import { BantoHostClient } from "./client.js";
 import { BANTO_DEFAULT_PORT, type ServerEvent } from "./protocol.js";
 import { BantoHostServer } from "./server.js";
+import { createFileTools } from "./file-tools.js";
+import { createGitTools } from "./git-tools.js";
 import { createMemoryTools } from "./memory-tools.js";
+import { workspaceRoot } from "./workspace.js";
 import { createSkillTools } from "./skill-tools.js";
 import { loadBantoSkills } from "./skills.js";
 
@@ -39,6 +42,7 @@ const SYSTEM_PROMPT = [
   "細かい実装作業は自分でせず職人へ委譲し、自分の文脈は記憶と判断に使ってください（D10）。",
   "覚えておくべき好み・習慣が出てきたら memory.save で保存してください。",
   "POに何かを見せたいときは canvas.open でキャンバスに表示できます（何が開けるかは canvas.list_catalog）。",
+  "file.* と git.* でワークスペースの中身と履歴を閲覧できます（いずれも読み取り専用）。",
 ].join("\n");
 
 interface ServeOptions {
@@ -66,16 +70,22 @@ async function serve(options: ServeOptions): Promise<void> {
     if (!model) throw new Error(`unknown model: ${options.provider}/${options.model}`);
   }
 
-  const canvasTools = createCanvasTools(canvas, catalog);
+  const workspace = workspaceRoot();
+  // 記憶・SKILLのToolは createBantoHostSession が内部で足すので、ここでは渡さない
+  const ownTools = [
+    ...createCanvasTools(canvas, catalog),
+    ...createFileTools(workspace),
+    ...createGitTools(workspace),
+  ];
   const { session } = await createBantoHostSession({
     systemPrompt: SYSTEM_PROMPT,
-    tools: canvasTools,
+    tools: ownTools,
     memory,
     ...(model ? { model } : {}),
   });
 
   // server はイベントの wire名→論理名 逆引きに、登録した論理名のToolを必要とする
-  const tools = [...canvasTools, ...createMemoryTools(memory), ...createSkillTools(skills)];
+  const tools = [...ownTools, ...createMemoryTools(memory), ...createSkillTools(skills)];
   const server = await BantoHostServer.start({
     session,
     tools,
@@ -96,6 +106,7 @@ async function serve(options: ServeOptions): Promise<void> {
   console.log(`[banto] memory: ${memoryPath()}`);
   console.log(`[banto] skills: ${skills.map((s) => s.name).join(", ") || "(none)"}`);
   console.log(`[banto] canvas: ${catalog.list().map((c) => c.kind).join(", ") || "(none)"}`);
+  console.log(`[banto] workspace: ${workspace}`);
 
   const shutdown = (): void => {
     void (async () => {
