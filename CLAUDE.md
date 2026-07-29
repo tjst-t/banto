@@ -30,6 +30,10 @@ npm test           # acceptance テスト（tests/acceptance）
 npm run test:e2e   # e2e テスト
 npm run build      # tsc -b
 npm run typecheck  # tsc --project tsconfig.check.json
+
+npm run dev:web        # WebUI（Vite開発サーバ, :4200）。別途 banto serve が要る
+npm run build:web      # WebUIのビルド
+npm run typecheck:web  # WebUIの型検査（.tsx を含む）
 ```
 
 ## Development Rules

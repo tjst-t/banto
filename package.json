@@ -12,7 +12,10 @@
     "test": "node --import tsx --test tests/acceptance/*.spec.ts",
     "build": "tsc -b",
     "typecheck": "tsc --project tsconfig.check.json",
-    "test:e2e": "node --import tsx --test tests/e2e/*.spec.ts"
+    "test:e2e": "node --import tsx --test tests/e2e/*.spec.ts",
+    "build:web": "npm --prefix packages/banto-web run build",
+    "typecheck:web": "tsc --project packages/banto-web/tsconfig.json",
+    "dev:web": "npm --prefix packages/banto-web run dev"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

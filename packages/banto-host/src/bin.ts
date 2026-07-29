@@ -17,6 +17,9 @@ import * as readline from "node:readline";
 import { getModel } from "@mariozechner/pi-ai";
 import { JsonlMemoryStore } from "@banto/core";
 
+import { Canvas, createCanvasCatalog } from "./canvas.js";
+import { createCanvasTools } from "./canvas-tools.js";
+import { demoCanvasViews } from "./demo-views.js";
 import { createBantoHostSession } from "./host-session.js";
 import { BantoHostClient } from "./client.js";
 import { BANTO_DEFAULT_PORT, type ServerEvent } from "./protocol.js";
@@ -35,6 +38,7 @@ const SYSTEM_PROMPT = [
   "あなたは banto（番頭）です。POの代理として店を切り盛りします。",
   "細かい実装作業は自分でせず職人へ委譲し、自分の文脈は記憶と判断に使ってください（D10）。",
   "覚えておくべき好み・習慣が出てきたら memory.save で保存してください。",
+  "POに何かを見せたいときは canvas.open でキャンバスに表示できます（何が開けるかは canvas.list_catalog）。",
 ].join("\n");
 
 interface ServeOptions {
@@ -47,6 +51,9 @@ interface ServeOptions {
 async function serve(options: ServeOptions): Promise<void> {
   const memory = new JsonlMemoryStore(memoryPath());
   const skills = loadBantoSkills();
+  // 当面のカタログはテスト用GUIのみ。基本GUIセット（決定18・24）とKobo由来のGUIは後続。
+  const catalog = createCanvasCatalog(demoCanvasViews);
+  const canvas = new Canvas(catalog);
 
   // I2: 指定されたモデルが見つからないなら黙って別のモデルに落とさず止める。
   //     既定解決に任せると、auth.json に別プロバイダの無効な鍵が残っている場合に
@@ -59,19 +66,22 @@ async function serve(options: ServeOptions): Promise<void> {
     if (!model) throw new Error(`unknown model: ${options.provider}/${options.model}`);
   }
 
+  const canvasTools = createCanvasTools(canvas, catalog);
   const { session } = await createBantoHostSession({
     systemPrompt: SYSTEM_PROMPT,
-    tools: [],
+    tools: canvasTools,
     memory,
     ...(model ? { model } : {}),
   });
 
   // server はイベントの wire名→論理名 逆引きに、登録した論理名のToolを必要とする
-  const tools = [...createMemoryTools(memory), ...createSkillTools(skills)];
+  const tools = [...canvasTools, ...createMemoryTools(memory), ...createSkillTools(skills)];
   const server = await BantoHostServer.start({
     session,
     tools,
     port: options.port,
+    canvas,
+    catalog,
     getLastError: () => session.agent.state.errorMessage,
   });
 
@@ -81,6 +91,7 @@ async function serve(options: ServeOptions): Promise<void> {
   );
   console.log(`[banto] memory: ${memoryPath()}`);
   console.log(`[banto] skills: ${skills.map((s) => s.name).join(", ") || "(none)"}`);
+  console.log(`[banto] canvas: ${catalog.list().map((c) => c.kind).join(", ") || "(none)"}`);
 
   const shutdown = (): void => {
     void (async () => {
