@@ -17,7 +17,8 @@
 - **Banto（番頭）のハーネスは差し替え可能。** 第一実装は pi coding agent。Kobo・WorkerAgent・UI（アテンションキュー／バックログ）とのやりとりはすべて Tool／SKILL の公開 I/F を介し、ハーネスの内部実装に依存しない
 - **LLMプロバイダ層はプラガブル＝モデル非依存**（Anthropic / OpenAI / opencode経由 / 将来ローカルLLM）。banto-core に I/F、アダプタで差し替える
 - **記憶は既存の記憶システムを採用する（自作しない）。** 参照実装は Hermes Agent（Nous, MIT）。手続き記憶は SKILL.md（agentskills.io）形式
-- **pi（badlogic/pi-mono）は Kobo が spawn する職人（Worker Pool）ランタイム、および番頭ハーネスの第一実装として使う**。無改造で扱う
+- **pi（badlogic/pi-mono）は職人（Worker Pool）ランタイム、および番頭ハーネスの第一実装として使う**。無改造で扱う
+- **Worker Pool（職人）は Kobo から独立したモジュールで、Kobo より先に作る**（ADR-0010 決定23）。Kobo のサブシステムではない——番頭は Kobo 無しでも職人に実作業を委譲できる（D10がKoboの完成を待たない）
 - **Kobo**: HTTP API＋WebSocket（イベント購読）。自宅サーバのUbuntu VM上でsystemdサービスとして常駐。GUI/CLIはその同格クライアント
 - banto-core: ランタイム中立の共通ライブラリ（ツール定義・Kobo APIクライアント・プロンプト資産読込・LLMプロバイダseam）
 - Skillは SKILL.md（agentskills.io）形式、Toolは内部で正規化しプロバイダ毎のwire形式をアダプタで吸収する
