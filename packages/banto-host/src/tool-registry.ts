@@ -13,7 +13,12 @@
 
 import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { assertNamespacedToolName, toolDomain, type NamespacedToolName } from "./tool-namespace.js";
+import {
+  assertNamespacedToolName,
+  toWireToolName,
+  toolDomain,
+  type NamespacedToolName,
+} from "./tool-namespace.js";
 
 /** A pi ToolDefinition whose `name` is required to be namespaced (`<domain>.<verb...>`). */
 export type NamespacedToolDefinition<
@@ -44,19 +49,34 @@ export function defineNamespacedTool<TParams extends TSchema, TDetails = unknown
 
 /** Registry of namespaced tools available to the Banto host session. */
 export interface ToolRegistry {
-  /** Registers a tool. Throws if the name is not namespaced or already registered (I2). */
+  /** Registers a tool. Throws if the name is not namespaced, already registered, or collides on its wire name (I2). */
   register(tool: NamespacedToolDefinition): void;
   /** All registered tools, in registration order. */
   list(): NamespacedToolDefinition[];
-  /** Looks up a tool by its full namespaced name. */
+  /** Looks up a tool by its full namespaced (logical) name. */
   get(name: string): NamespacedToolDefinition | undefined;
+  /**
+   * Looks up a tool by the wire name the LLM actually calls (e.g. "kobo__query__ready").
+   * Use this to map provider events (`tool_execution_*`) back to the logical contract (決定22).
+   */
+  getByWireName(wireName: string): NamespacedToolDefinition | undefined;
   /** All registered tools whose domain segment matches (e.g. "kobo", "canvas"). */
   byDomain(domain: string): NamespacedToolDefinition[];
+}
+
+/**
+ * Rewrites a tool's name to its wire form for handing to the agent SDK / LLM (決定22).
+ * Only the `name` changes — parameters, description and `execute` are untouched, so the
+ * logical contract stays the single source of truth on the Banto side.
+ */
+export function toWireTool(tool: NamespacedToolDefinition): ToolDefinition {
+  return { ...tool, name: toWireToolName(tool.name) } as ToolDefinition;
 }
 
 /** Creates an empty tool registry. */
 export function createToolRegistry(): ToolRegistry {
   const tools = new Map<string, NamespacedToolDefinition>();
+  const byWireName = new Map<string, NamespacedToolDefinition>();
 
   return {
     register(tool) {
@@ -64,13 +84,27 @@ export function createToolRegistry(): ToolRegistry {
       if (tools.has(tool.name)) {
         throw new Error(`Tool "${tool.name}" is already registered.`);
       }
+      // 決定22: the wire name is what the provider actually sees. Two distinct logical names
+      // must never collide there — the mapping is injective by construction, so a collision
+      // means the invariant broke; fail loudly rather than silently shadowing a tool (I2).
+      const wireName = toWireToolName(tool.name);
+      const collision = byWireName.get(wireName);
+      if (collision) {
+        throw new Error(
+          `Tool "${tool.name}" collides with "${collision.name}" on wire name "${wireName}".`
+        );
+      }
       tools.set(tool.name, tool);
+      byWireName.set(wireName, tool);
     },
     list() {
       return Array.from(tools.values());
     },
     get(name) {
       return tools.get(name);
+    },
+    getByWireName(wireName) {
+      return byWireName.get(wireName);
     },
     byDomain(domain) {
       return Array.from(tools.values()).filter((tool) => toolDomain(tool.name) === domain);

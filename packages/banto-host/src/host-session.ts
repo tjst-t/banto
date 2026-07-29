@@ -18,7 +18,7 @@ import {
   type CreateAgentSessionOptions,
   type CreateAgentSessionResult,
 } from "@mariozechner/pi-coding-agent";
-import type { NamespacedToolDefinition } from "./tool-registry.js";
+import { toWireTool, type NamespacedToolDefinition } from "./tool-registry.js";
 
 export interface CreateBantoHostSessionOptions {
   /** System prompt for this turn loop. Plain string here — real prompt content is a later task. */
@@ -39,6 +39,10 @@ export interface CreateBantoHostSessionOptions {
  * Creates a minimal Banto host agent session: the given system prompt, the given
  * namespaced tools, and none of pi's built-in coding tools (read/bash/edit/write) —
  * 番頭 delegates file-level work to 職人 (D10), it does not edit files itself here.
+ *
+ * Tools are handed to the SDK under their **wire names** (決定22): the logical dotted
+ * contract (`kobo.query.ready`) is preserved on the Banto side, while the provider sees
+ * `kobo__query__ready`, which openai-completions-compatible providers accept.
  */
 export async function createBantoHostSession(
   options: CreateBantoHostSessionOptions
@@ -61,7 +65,7 @@ export async function createBantoHostSession(
     modelRegistry: options.modelRegistry,
     resourceLoader,
     noTools: "builtin",
-    customTools: options.tools,
+    customTools: options.tools.map(toWireTool),
     sessionManager: options.sessionManager ?? SessionManager.inMemory(),
   });
 }

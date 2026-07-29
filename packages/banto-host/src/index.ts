@@ -1,7 +1,15 @@
-export { isNamespacedToolName, assertNamespacedToolName, toolDomain, type NamespacedToolName } from "./tool-namespace.js";
+export {
+  isNamespacedToolName,
+  assertNamespacedToolName,
+  toolDomain,
+  toWireToolName,
+  fromWireToolName,
+  type NamespacedToolName,
+} from "./tool-namespace.js";
 export {
   defineNamespacedTool,
   createToolRegistry,
+  toWireTool,
   type NamespacedToolDefinition,
   type ToolRegistry,
 } from "./tool-registry.js";
