@@ -32,6 +32,9 @@ npm run build      # tsc -b
 npm run typecheck  # tsc --project tsconfig.check.json
 
 npm run dev:web        # WebUI（Vite開発サーバ, :4200）。別途 banto serve が要る
+                       #   WS(/ws)は番頭ホストへ中継されるため、公開は4200の1ポートで足りる
+                       #   BANTO_WEB_ALLOWED_HOSTS: プロキシ経由のドメイン許可（既定 .ndev.tjstkm.net）
+                       #   BANTO_HOST_URL: 中継先の番頭ホスト（既定 http://localhost:4100）
 npm run build:web      # WebUIのビルド
 npm run typecheck:web  # WebUIの型検査（.tsx を含む）
 ```

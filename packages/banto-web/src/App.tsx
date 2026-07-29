@@ -11,7 +11,18 @@ import { useState } from "react";
 import { useBantoSession, type ChatEntry } from "./useBantoSession.js";
 import { resolveCanvasView } from "./views/registry.js";
 
-const WS_URL = new URLSearchParams(location.search).get("host") ?? "ws://localhost:4100/ws";
+/**
+ * 既定は**同一オリジンの `/ws`**。開発サーバがそれを番頭ホストへ中継するので、
+ * リバースプロキシ（Caddy等）のサブドメイン経由でもそのまま繋がる——`localhost` を
+ * 直書きすると、プロキシ越しに開いたときブラウザ側のマシンを指してしまう。
+ * 別ホストの番頭に繋ぎたいときは `?host=ws://...` で上書きする。
+ */
+function defaultWsUrl(): string {
+  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  return `${scheme}//${location.host}/ws`;
+}
+
+const WS_URL = new URLSearchParams(location.search).get("host") ?? defaultWsUrl();
 
 function ChatRow({ entry }: { entry: ChatEntry }): React.ReactElement {
   switch (entry.kind) {
