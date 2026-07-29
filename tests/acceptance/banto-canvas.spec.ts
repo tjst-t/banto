@@ -326,3 +326,68 @@ describe("[task-0012/a4] キャンバス状態のWS配信", () => {
     clientB.close();
   });
 });
+
+describe("[task-0014] POが直接タブを操作する経路", () => {
+  async function start(): Promise<string> {
+    server = await BantoHostServer.start({
+      session: new FakeSession(),
+      tools: createCanvasTools(canvas, catalog),
+      port: 0,
+      canvas,
+      catalog,
+    });
+    return `ws://localhost:${server.port}${BANTO_WS_PATH}`;
+  }
+
+  it("[task-0014] canvas_switch がホストのCanvasを通り、全クライアントへ反映される", async () => {
+    const first = canvas.open("demo.hello");
+    canvas.open("demo.notes");
+
+    const url = await start();
+    const a: ServerEvent[] = [];
+    const b: ServerEvent[] = [];
+    const clientA = await BantoHostClient.connect(url, (e) => a.push(e));
+    const clientB = await BantoHostClient.connect(url, (e) => b.push(e));
+    await waitFor(a, (e) => e.type === "canvas_state");
+    await waitFor(b, (e) => e.type === "canvas_state");
+
+    clientA.send({ type: "canvas_switch", tabId: first.id });
+
+    const onB = await waitFor(b, (e) => e.type === "canvas_state" && e.activeTabId === first.id);
+    assert.ok(onB.type === "canvas_state" && onB.activeTabId === first.id);
+    // D3: 真実はホスト側のCanvas。UIが勝手に持つ状態ではない
+    assert.equal(canvas.snapshot().activeTabId, first.id);
+
+    clientA.close();
+    clientB.close();
+  });
+
+  it("[task-0014] canvas_close がタブを閉じる", async () => {
+    canvas.open("demo.hello");
+    const second = canvas.open("demo.notes");
+
+    const url = await start();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, (e) => e.type === "canvas_state");
+
+    client.send({ type: "canvas_close", tabId: second.id });
+
+    await waitFor(events, (e) => e.type === "canvas_state" && e.tabs.length === 1);
+    assert.equal(canvas.snapshot().tabs.length, 1);
+    client.close();
+  });
+
+  it("[task-0014] 未知のタブIDは黙って無視せずエラーを返す（I2）", async () => {
+    const url = await start();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, (e) => e.type === "welcome");
+
+    client.send({ type: "canvas_switch", tabId: "no-such-tab" });
+
+    const err = await waitFor(events, (e) => e.type === "error");
+    assert.ok(err.type === "error" && /Unknown canvas tab/.test(err.message));
+    client.close();
+  });
+});

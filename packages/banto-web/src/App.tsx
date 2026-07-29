@@ -1,14 +1,14 @@
 /**
  * Banto の画面：チャット＋キャンバスの2ペイン（ADR-0010 決定2）。
  *
- * D3/D5: キャンバスの表示状態はホストが持つ真実をそのまま描くだけ。UIは判断を持たず、
- *        タブの開閉・切替も「番頭が canvas.* Tool で行う」のが主経路。
- *        （PO が直接触るタブ操作はUI都合の操作なので、ホストへ送らずローカルには持たない——
- *          いまは番頭経由に一本化しておく。必要になったらToolを介して足す）
+ * D3/D5: キャンバスの表示状態も会話履歴もホストが持つ真実をそのまま描く。POのタブ操作も
+ *        ホストへ投げ返すので、番頭が canvas.* を呼んだ場合と結果が一致する。
  */
 
-import { useState } from "react";
-import { useBantoSession, type ChatEntry } from "./useBantoSession.js";
+import { useEffect, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import type { TranscriptEntry } from "@banto/host/protocol";
+import { useBantoSession } from "./useBantoSession.js";
 import { resolveCanvasView } from "./views/registry.js";
 
 /**
@@ -24,12 +24,17 @@ function defaultWsUrl(): string {
 
 const WS_URL = new URLSearchParams(location.search).get("host") ?? defaultWsUrl();
 
-function ChatRow({ entry }: { entry: ChatEntry }): React.ReactElement {
-  switch (entry.kind) {
+function ChatRow({ entry }: { entry: TranscriptEntry }): React.ReactElement {
+  switch (entry.role) {
     case "po":
       return <div className="msg msg--po">{entry.text}</div>;
     case "banto":
-      return <div className="msg msg--banto">{entry.text}</div>;
+      // 番頭の応答は Markdown で返るので整形して描く（react-markdown は既定で生HTMLを通さない）
+      return (
+        <div className="msg msg--banto markdown">
+          <Markdown>{entry.text}</Markdown>
+        </div>
+      );
     case "tool":
       return (
         <div className={`msg msg--tool is-${entry.state}`}>
@@ -46,6 +51,13 @@ function ChatRow({ entry }: { entry: ChatEntry }): React.ReactElement {
 export function App(): React.ReactElement {
   const session = useBantoSession(WS_URL);
   const [draft, setDraft] = useState("");
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // 新しい発話が入ったら末尾へ追従する
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [session.chat]);
 
   const activeTab = session.tabs.find((t) => t.id === session.activeTabId);
   const activeSpec = activeTab
@@ -87,7 +99,20 @@ export function App(): React.ReactElement {
                   key={tab.id}
                   className={`canvas-tab ${tab.id === session.activeTabId ? "is-active" : ""}`}
                 >
-                  {tab.title}
+                  <button
+                    className="canvas-tab-label"
+                    onClick={() => session.switchTab(tab.id)}
+                    title={tab.kind}
+                  >
+                    {tab.title}
+                  </button>
+                  <button
+                    className="canvas-tab-close"
+                    onClick={() => session.closeTab(tab.id)}
+                    aria-label={`${tab.title} を閉じる`}
+                  >
+                    ×
+                  </button>
                 </span>
               ))
             )}
@@ -126,14 +151,28 @@ export function App(): React.ReactElement {
 
         <aside className="chat-pane">
           <div className="chat-head">
-            <div className="chat-title">番頭と相談する</div>
-            <div className="chat-sub">
-              {session.tools.length > 0 ? `${session.tools.length} tools` : "—"}
-              {session.sessionId ? ` · ${session.sessionId.slice(0, 8)}` : ""}
+            <div className="chat-head-main">
+              <div className="chat-title">番頭と相談する</div>
+              <div className="chat-sub">
+                {session.tools.length > 0 ? `${session.tools.length} tools` : "—"}
+                {session.sessionId ? ` · ${session.sessionId.slice(0, 8)}` : ""}
+              </div>
             </div>
+            <button
+              className="btn btn--ghost btn--small"
+              onClick={() => {
+                if (confirm("この会話を消して新しく始めます。記憶（好み・習慣）は残ります。")) {
+                  session.newSession();
+                }
+              }}
+              disabled={session.chat.length === 0}
+              title="会話だけを捨てる。記憶は残る"
+            >
+              新しい会話
+            </button>
           </div>
 
-          <div className="chat-scroll">
+          <div className="chat-scroll" ref={scrollRef}>
             {session.chat.length === 0 && (
               <p className="chat-empty">
                 番頭に話しかけてください。キャンバスに何かを出したいときは「〜を開いて」と頼みます。
@@ -152,11 +191,15 @@ export function App(): React.ReactElement {
               rows={3}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit();
+                // Enter で送信、Shift+Enter で改行。IME変換中の Enter は送信しない
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  submit();
+                }
               }}
             />
             <div className="chat-actions">
-              <span className="chat-hint">⌘/Ctrl + Enter で送信</span>
+              <span className="chat-hint">Enter で送信 · Shift + Enter で改行</span>
               {session.busy ? (
                 <button className="btn btn--ghost" onClick={session.abort}>
                   中断

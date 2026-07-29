@@ -348,3 +348,85 @@ describe("[task-0009/a1] prompt と abort の中継", () => {
     clientB.close();
   });
 });
+
+describe("[task-0014] 会話履歴のホスト保持（リロードで消えない）", () => {
+  it("[task-0014] 接続直後に history が届く（初回は空）", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+
+    const history = await waitFor(events, "history");
+    assert.ok(history.type === "history" && history.entries.length === 0);
+    client.close();
+  });
+
+  it("[task-0014] POの発話は本人以外にも配られ、履歴にも残る", async () => {
+    const { url } = await startHost();
+    const a: ServerEvent[] = [];
+    const b: ServerEvent[] = [];
+    const clientA = await BantoHostClient.connect(url, (e) => a.push(e));
+    const clientB = await BantoHostClient.connect(url, (e) => b.push(e));
+    await waitFor(a, "history");
+    await waitFor(b, "history");
+
+    clientA.send({ type: "prompt", text: "在庫を確認して" });
+    const poOnB = await waitFor(b, "po_message");
+    assert.ok(poOnB.type === "po_message" && poOnB.text === "在庫を確認して");
+    await waitFor(a, "turn_end");
+    clientA.close();
+    clientB.close();
+
+    // 再接続＝リロード相当。履歴が復元される
+    const c: ServerEvent[] = [];
+    const clientC = await BantoHostClient.connect(url, (e) => c.push(e));
+    const history = await waitFor(c, "history");
+    assert.ok(history.type === "history");
+    assert.deepEqual(history.entries, [{ role: "po", text: "在庫を確認して" }]);
+    clientC.close();
+  });
+
+  it("[task-0014] 番頭の発話とTool実行も履歴に残り、再接続で再現される", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "history");
+
+    session.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "はい" } });
+    session.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "、確認します" } });
+    session.emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "memory__save", args: {} });
+    session.emit({ type: "tool_execution_end", toolCallId: "t1", toolName: "memory__save", result: {}, isError: false });
+    await waitFor(events, "tool_end");
+    client.close();
+
+    const c: ServerEvent[] = [];
+    const clientC = await BantoHostClient.connect(url, (e) => c.push(e));
+    const history = await waitFor(c, "history");
+    assert.ok(history.type === "history");
+    assert.deepEqual(history.entries, [
+      { role: "banto", text: "はい、確認します" },
+      { role: "tool", name: "memory.save", state: "ok" },
+    ]);
+    clientC.close();
+  });
+
+  it("[task-0014] new_session で履歴が空になり、全クライアントへ通知される", async () => {
+    const { url } = await startHost();
+    const a: ServerEvent[] = [];
+    const b: ServerEvent[] = [];
+    const clientA = await BantoHostClient.connect(url, (e) => a.push(e));
+    const clientB = await BantoHostClient.connect(url, (e) => b.push(e));
+    await waitFor(a, "history");
+    await waitFor(b, "history");
+
+    clientA.send({ type: "prompt", text: "何か" });
+    await waitFor(a, "turn_end");
+
+    b.length = 0;
+    clientA.send({ type: "new_session" });
+    const cleared = await waitFor(b, "history");
+    assert.ok(cleared.type === "history" && cleared.entries.length === 0);
+
+    clientA.close();
+    clientB.close();
+  });
+});

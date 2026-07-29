@@ -23,7 +23,32 @@ export interface AbortMessage {
   type: "abort";
 }
 
-export type ClientMessage = PromptMessage | AbortMessage;
+/** POが直接タブを切り替える。番頭の canvas.switch と同じ結果になる。 */
+export interface CanvasSwitchMessage {
+  type: "canvas_switch";
+  tabId: string;
+}
+
+/** POが直接タブを閉じる。 */
+export interface CanvasCloseMessage {
+  type: "canvas_close";
+  tabId: string;
+}
+
+/**
+ * 会話を捨てて新しくやり直す。記憶（好み・習慣）は残る——番頭に記憶があるからこそ
+ * 会話は使い捨てにできる（D11）。キャンバスの表示はそのまま維持する。
+ */
+export interface NewSessionMessage {
+  type: "new_session";
+}
+
+export type ClientMessage =
+  | PromptMessage
+  | AbortMessage
+  | CanvasSwitchMessage
+  | CanvasCloseMessage
+  | NewSessionMessage;
 
 // ── Server → Client ──────────────────────────────────────────────────────────
 
@@ -46,6 +71,28 @@ export interface WelcomeEvent {
   tools: string[];
   /** キャンバスに開けるGUIの一覧。 */
   catalog: CatalogEntryView[];
+}
+
+/**
+ * 会話の1行。ホスト側が真実を持ち、接続時に history として丸ごと配る。
+ * これによりリロードしても会話が消えず、途中から繋いだクライアントも履歴を見られる（D3）。
+ */
+export type TranscriptEntry =
+  | { role: "po"; text: string }
+  | { role: "banto"; text: string }
+  | { role: "tool"; name: string; state: "running" | "ok" | "failed" }
+  | { role: "error"; text: string };
+
+/** 接続直後に送られる会話履歴。 */
+export interface HistoryEvent {
+  type: "history";
+  entries: TranscriptEntry[];
+}
+
+/** POの発話。送った本人以外のクライアントにも届く。 */
+export interface PoMessageEvent {
+  type: "po_message";
+  text: string;
 }
 
 /** アシスタント応答のテキスト差分。 */
@@ -102,6 +149,8 @@ export interface ErrorEvent {
 
 export type ServerEvent =
   | WelcomeEvent
+  | HistoryEvent
+  | PoMessageEvent
   | TextDeltaEvent
   | ToolStartEvent
   | ToolEndEvent

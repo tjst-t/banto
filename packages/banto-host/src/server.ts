@@ -19,6 +19,7 @@ import {
   BANTO_WS_PATH,
   type ClientMessage,
   type ServerEvent,
+  type TranscriptEntry,
 } from "./protocol.js";
 import { fromWireToolName } from "./tool-namespace.js";
 import type { NamespacedToolDefinition } from "./tool-registry.js";
@@ -53,6 +54,11 @@ export interface BantoHostServerOptions {
    * pi の場合は `() => session.agent.state.errorMessage`。
    */
   getLastError?: () => string | undefined;
+  /**
+   * 会話履歴を捨てる（new_session）。記憶とキャンバスは触らない。
+   * pi の場合は `() => { session.agent.state.messages = []; }`。
+   */
+  clearHistory?: () => void;
 }
 
 /**
@@ -67,6 +73,9 @@ export class BantoHostServer {
   private readonly session: HostSession;
   private readonly toolNames: string[];
   private readonly getLastError: () => string | undefined;
+  private readonly clearHistory: () => void;
+  /** 会話の真実。接続時にまとめて配り、以後は差分イベントで追随させる（D3）。 */
+  private transcript: TranscriptEntry[] = [];
   private readonly canvas: Canvas | undefined;
   private readonly catalog: CanvasCatalog | undefined;
   private readonly clients = new Set<WebSocket>();
@@ -77,6 +86,7 @@ export class BantoHostServer {
     this.session = options.session;
     this.toolNames = options.tools.map((t) => t.name);
     this.getLastError = options.getLastError ?? ((): string | undefined => undefined);
+    this.clearHistory = options.clearHistory ?? ((): void => undefined);
     this.canvas = options.canvas;
     this.catalog = options.catalog;
     this.httpServer = httpServer;
@@ -155,6 +165,9 @@ export class BantoHostServer {
         ...(spec.icon ? { icon: spec.icon } : {}),
       })),
     });
+    // リロードしても会話が消えず、途中から繋いだクライアントも履歴を見られる
+    this.send(ws, { type: "history", entries: this.transcript });
+
     // 後から繋いだクライアントも即座に現在の表示状態に追いつく
     if (this.canvas) {
       const snapshot = this.canvas.snapshot();
@@ -179,11 +192,39 @@ export class BantoHostServer {
       return;
     }
 
+    // POが直接タブを操作する経路。番頭が canvas.* を呼んだときと同じく Canvas を通すので、
+    // 表示状態の真実は一箇所のまま（D3）——UIが独自のタブ状態を持つことはない。
+    if (message?.type === "canvas_switch" || message?.type === "canvas_close") {
+      if (!this.canvas) {
+        this.send(ws, { type: "error", message: "canvas is not enabled on this host" });
+        return;
+      }
+      try {
+        if (message.type === "canvas_switch") this.canvas.switchTo(message.tabId);
+        else this.canvas.close(message.tabId);
+      } catch (err) {
+        // I2: 未知のタブIDは黙って無視せず理由を返す
+        this.send(ws, { type: "error", message: String(err) });
+      }
+      return;
+    }
+
+    if (message?.type === "new_session") {
+      this.clearHistory();
+      this.transcript = [];
+      this.broadcast({ type: "history", entries: [] });
+      return;
+    }
+
     if (message?.type === "prompt") {
       if (typeof message.text !== "string" || message.text.length === 0) {
         this.send(ws, { type: "error", message: "prompt requires a non-empty text" });
         return;
       }
+      // 発話も履歴の一部。送った本人以外にも配る（複数クライアントで会話が揃う）
+      this.record({ role: "po", text: message.text });
+      this.broadcast({ type: "po_message", text: message.text });
+
       try {
         // ストリーミング中の追加入力は steer として積む（pi の既定では例外になるため）
         await this.session.prompt(message.text, {
@@ -191,15 +232,42 @@ export class BantoHostServer {
         });
       } catch (err) {
         // I2: ターンの失敗はクライアントへ伝える。握りつぶすと会話が無応答に見える
+        this.record({ role: "error", text: String(err) });
         this.broadcast({ type: "turn_end", errorMessage: String(err) });
         return;
       }
       const lastError = this.getLastError();
+      if (lastError) this.record({ role: "error", text: lastError });
       this.broadcast({ type: "turn_end", ...(lastError ? { errorMessage: lastError } : {}) });
       return;
     }
 
     this.send(ws, { type: "error", message: `unknown message type: ${String(receivedType)}` });
+  }
+
+  // ── 会話履歴 ───────────────────────────────────────────────────────────────
+
+  /**
+   * 履歴に1行足す。テキスト差分は直前の番頭発話へ連結し、Tool終了は対応する
+   * 実行中の行を更新する——クライアント側の描画と同じ形に揃えておくことで、
+   * 再接続時に history をそのまま描けば会話が復元される。
+   */
+  private record(entry: TranscriptEntry): void {
+    const last = this.transcript[this.transcript.length - 1];
+    if (entry.role === "banto" && last?.role === "banto") {
+      this.transcript[this.transcript.length - 1] = { role: "banto", text: last.text + entry.text };
+      return;
+    }
+    if (entry.role === "tool" && entry.state !== "running") {
+      const index = this.transcript.findIndex(
+        (e) => e.role === "tool" && e.name === entry.name && e.state === "running"
+      );
+      if (index !== -1) {
+        this.transcript[index] = entry;
+        return;
+      }
+    }
+    this.transcript.push(entry);
   }
 
   // ── セッションイベントの配信 ───────────────────────────────────────────────
@@ -218,7 +286,21 @@ export class BantoHostServer {
 
   private handleSessionEvent(event: unknown): void {
     const translated = this.toServerEvent(event);
-    if (translated) this.broadcast(translated);
+    if (!translated) return;
+
+    // 配信すると同時に履歴へも積む（リロード後に同じ内容が再現される）
+    if (translated.type === "text_delta") {
+      this.record({ role: "banto", text: translated.delta });
+    } else if (translated.type === "tool_start") {
+      this.record({ role: "tool", name: translated.name, state: "running" });
+    } else if (translated.type === "tool_end") {
+      this.record({
+        role: "tool",
+        name: translated.name,
+        state: translated.isError ? "failed" : "ok",
+      });
+    }
+    this.broadcast(translated);
   }
 
   /**

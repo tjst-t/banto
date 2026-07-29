@@ -83,6 +83,10 @@ async function serve(options: ServeOptions): Promise<void> {
     canvas,
     catalog,
     getLastError: () => session.agent.state.errorMessage,
+    // 会話だけ捨てる。記憶はシステムプロンプト側にあるので残る（D11）
+    clearHistory: () => {
+      session.agent.state.messages = [];
+    },
   });
 
   console.log(`[banto] listening on ws://localhost:${server.port}/ws`);
