@@ -15,7 +15,8 @@
   "references": [
     { "path": "./packages/banto-core" },
     { "path": "./packages/banto-daemon" },
-    { "path": "./packages/banto-cli" }
+    { "path": "./packages/banto-cli" },
+    { "path": "./packages/banto-host" }
   ],
   "files": []
 }
