@@ -38,6 +38,7 @@ meta/                      # 層B＋形式定義
 
 - `docs/` と `work/` の分離が第一の骨格。Koboがwatchするのは `work/` のみで、散文の編集にオーケストレータは反応しない
 - 共有資産（プロダクト既定のskills・スキーマ・config既定値）はプロダクト側にあり、プロジェクトはオーバーライドのみ持つ（→ spec-multi-project §1）
+- **`skills/`（トップレベル）と `packages/banto-host/skills/` は役割が異なる。** トップレベル `skills/` は Kobo が spawn する職人・監査セッション向けのプロンプト資産（`loadPromptAsset()` で読む層A）。`packages/banto-host/skills/` は番頭核ホスト自身の手続き記憶（SKILL.md、agentskills.io形式。→ ADR-0010 決定3・9）で、pi Agent SDK がパッケージの `skills/` として発見する。最初のSKILLは `packages/banto-host/skills/work-handoff/SKILL.md`（ADR-0010 決定15：ADR/spec確定時のwork/起票手順＋定期棚卸し）。
 
 ## 2. フォーマット：YAML frontmatter ＋ Markdown本文
 
