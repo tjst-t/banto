@@ -13,6 +13,7 @@
 import * as http from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 
+import type { Canvas, CanvasCatalog } from "./canvas.js";
 import {
   BANTO_DEFAULT_PORT,
   BANTO_WS_PATH,
@@ -43,6 +44,10 @@ export interface BantoHostServerOptions {
   tools: NamespacedToolDefinition[];
   /** 待ち受けポート。0 を渡すと空きポートが割り当てられる（テスト用）。 */
   port?: number;
+  /** キャンバス。渡すと表示状態がクライアントへ配信される。 */
+  canvas?: Canvas;
+  /** GUIカタログ。welcome でクライアントへ渡し、UIがコンポーネントを解決する。 */
+  catalog?: CanvasCatalog;
   /**
    * 直近のターンでプロバイダ側エラーがあれば返す。turn_end に載せる。
    * pi の場合は `() => session.agent.state.errorMessage`。
@@ -62,18 +67,28 @@ export class BantoHostServer {
   private readonly session: HostSession;
   private readonly toolNames: string[];
   private readonly getLastError: () => string | undefined;
+  private readonly canvas: Canvas | undefined;
+  private readonly catalog: CanvasCatalog | undefined;
   private readonly clients = new Set<WebSocket>();
   private readonly unsubscribe: () => void;
+  private readonly unsubscribeCanvas: () => void;
 
   private constructor(options: BantoHostServerOptions, httpServer: http.Server) {
     this.session = options.session;
     this.toolNames = options.tools.map((t) => t.name);
     this.getLastError = options.getLastError ?? ((): string | undefined => undefined);
+    this.canvas = options.canvas;
+    this.catalog = options.catalog;
     this.httpServer = httpServer;
     this.wss = new WebSocketServer({ server: httpServer, path: BANTO_WS_PATH });
 
     this.wss.on("connection", (ws: WebSocket) => this.handleConnection(ws));
     this.unsubscribe = this.session.subscribe((event) => this.handleSessionEvent(event));
+    // D3: キャンバスの真実はホスト側。状態が変わるたび全クライアントへ配る
+    this.unsubscribeCanvas =
+      this.canvas?.subscribe((snapshot) =>
+        this.broadcast({ type: "canvas_state", tabs: snapshot.tabs, activeTabId: snapshot.activeTabId })
+      ) ?? ((): void => undefined);
   }
 
   /** サーバを起動し、待ち受け開始まで待つ。 */
@@ -113,6 +128,7 @@ export class BantoHostServer {
   /** サーバを止める。セッションの後始末は呼び出し側の責務。 */
   async close(): Promise<void> {
     this.unsubscribe();
+    this.unsubscribeCanvas();
     for (const ws of this.clients) ws.close();
     this.clients.clear();
     await new Promise<void>((resolve) => this.wss.close(() => resolve()));
@@ -126,7 +142,24 @@ export class BantoHostServer {
     ws.on("close", () => this.clients.delete(ws));
     ws.on("message", (data: Buffer) => void this.handleClientMessage(ws, data));
 
-    this.send(ws, { type: "welcome", sessionId: this.session.sessionId, tools: this.toolNames });
+    this.send(ws, {
+      type: "welcome",
+      sessionId: this.session.sessionId,
+      tools: this.toolNames,
+      catalog: (this.catalog?.list() ?? []).map((spec) => ({
+        kind: spec.kind,
+        title: spec.title,
+        description: spec.description,
+        component: spec.component,
+        ...(spec.category ? { category: spec.category } : {}),
+        ...(spec.icon ? { icon: spec.icon } : {}),
+      })),
+    });
+    // 後から繋いだクライアントも即座に現在の表示状態に追いつく
+    if (this.canvas) {
+      const snapshot = this.canvas.snapshot();
+      this.send(ws, { type: "canvas_state", tabs: snapshot.tabs, activeTabId: snapshot.activeTabId });
+    }
   }
 
   private async handleClientMessage(ws: WebSocket, data: Buffer): Promise<void> {

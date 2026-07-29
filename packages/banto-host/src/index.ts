@@ -39,3 +39,14 @@ export {
   type TurnEndEvent,
   type ErrorEvent,
 } from "./protocol.js";
+export {
+  Canvas,
+  createCanvasCatalog,
+  type CanvasCatalog,
+  type CanvasViewSpec,
+  type CanvasTab,
+  type CanvasSnapshot,
+} from "./canvas.js";
+export { createCanvasTools } from "./canvas-tools.js";
+export type { CanvasStateEvent, CanvasTabView, CatalogEntryView } from "./protocol.js";
+export { demoCanvasViews } from "./demo-views.js";

@@ -27,12 +27,25 @@ export type ClientMessage = PromptMessage | AbortMessage;
 
 // ── Server → Client ──────────────────────────────────────────────────────────
 
+/** キャンバスに開けるGUIのカタログエントリ（UIがコンポーネントを解決するのに使う）。 */
+export interface CatalogEntryView {
+  kind: string;
+  title: string;
+  description: string;
+  /** 描画する React コンポーネントのエクスポート名（決定17・決定12）。 */
+  component: string;
+  category?: string;
+  icon?: string;
+}
+
 /** 接続直後に1度だけ送られる。現在のセッション情報。 */
 export interface WelcomeEvent {
   type: "welcome";
   sessionId: string;
   /** 番頭が使えるToolの論理名一覧。 */
   tools: string[];
+  /** キャンバスに開けるGUIの一覧。 */
+  catalog: CatalogEntryView[];
 }
 
 /** アシスタント応答のテキスト差分。 */
@@ -63,6 +76,24 @@ export interface TurnEndEvent {
   errorMessage?: string;
 }
 
+/** キャンバスに開かれているタブ（表示状態の配信用）。 */
+export interface CanvasTabView {
+  id: string;
+  kind: string;
+  title: string;
+  params: Record<string, unknown>;
+}
+
+/**
+ * キャンバスの表示状態。接続直後と、状態が変わるたびに送られる。
+ * D3: 真実はホスト側の Canvas が持ち、UIはこれを描くだけで独自状態を持たない。
+ */
+export interface CanvasStateEvent {
+  type: "canvas_state";
+  tabs: CanvasTabView[];
+  activeTabId: string | undefined;
+}
+
 /** プロトコル違反・処理不能。I2: 黙って捨てずクライアントへ返す。 */
 export interface ErrorEvent {
   type: "error";
@@ -75,6 +106,7 @@ export type ServerEvent =
   | ToolStartEvent
   | ToolEndEvent
   | TurnEndEvent
+  | CanvasStateEvent
   | ErrorEvent;
 
 /** WSのパス。Kobo（/ws）と同じ流儀。 */
