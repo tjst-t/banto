@@ -1,0 +1,350 @@
+/**
+ * task-0009: 番頭ホストの常駐サーバとWS API。
+ *
+ * Kobo にも LLM にも接続しない（受け入れ条件 a5）。server が具象の AgentSession ではなく
+ * HostSession 契約に依存しているため、テスト用の FakeSession を挿してターンの進行を
+ * こちらから発火でき、プロバイダを一切呼ばずに配信経路を検証できる。
+ * 実プロバイダとの往復は別途デモで確認する。
+ */
+
+import { describe, it, beforeEach, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
+import { JsonlMemoryStore } from "@banto/core";
+import {
+  BANTO_WS_PATH,
+  BantoHostClient,
+  BantoHostServer,
+  createMemoryTools,
+  type HostSession,
+  type ServerEvent,
+} from "@banto/host";
+
+/**
+ * HostSession を満たすテスト用セッション。プロバイダを一切呼ばずに、ターンの進行だけを
+ * こちらから発火できる。server が具象型ではなく HostSession に依存しているから可能。
+ */
+class FakeSession implements HostSession {
+  readonly sessionId = "test-session";
+  isStreaming = false;
+  prompts: string[] = [];
+  aborted = 0;
+  private listeners = new Set<(event: unknown) => void>();
+
+  subscribe(listener: (event: unknown) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  async prompt(text: string): Promise<void> {
+    this.prompts.push(text);
+  }
+
+  async abort(): Promise<void> {
+    this.aborted++;
+  }
+
+  /** ハーネス側から流れてくるイベントを再現する。 */
+  emit(event: unknown): void {
+    for (const listener of this.listeners) listener(event);
+  }
+}
+
+let dir: string;
+let store: JsonlMemoryStore;
+let server: BantoHostServer | undefined;
+let session: FakeSession;
+
+async function startHost(getLastError?: () => string | undefined): Promise<{ url: string; tools: string[] }> {
+  session = new FakeSession();
+  const tools = createMemoryTools(store);
+  server = await BantoHostServer.start({
+    session,
+    tools,
+    port: 0,
+    ...(getLastError ? { getLastError } : {}),
+  });
+  return { url: `ws://localhost:${server.port}${BANTO_WS_PATH}`, tools: tools.map((t) => t.name) };
+}
+
+/** 指定の型のイベントが来るまで待つ。 */
+function waitFor(events: ServerEvent[], type: ServerEvent["type"], timeoutMs = 2000): Promise<ServerEvent> {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const tick = setInterval(() => {
+      const found = events.find((e) => e.type === type);
+      if (found) {
+        clearInterval(tick);
+        resolve(found);
+      } else if (Date.now() - started > timeoutMs) {
+        clearInterval(tick);
+        reject(new Error(`timed out waiting for "${type}"; got: ${events.map((e) => e.type).join(", ")}`));
+      }
+    }, 10);
+  });
+}
+
+beforeEach(() => {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-host-server-"));
+  store = new JsonlMemoryStore(path.join(dir, "memory.jsonl"));
+});
+
+afterEach(async () => {
+  await server?.close();
+  server = undefined;
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+describe("[task-0009/a1] WS API — 接続と会話の入口", () => {
+  it("[task-0009/a1] 接続すると welcome でセッションIDとTool一覧が届く", async () => {
+    const { url, tools } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+
+    const welcome = await waitFor(events, "welcome");
+    assert.equal(welcome.type, "welcome");
+    assert.ok(welcome.type === "welcome" && welcome.sessionId.length > 0);
+    assert.ok(welcome.type === "welcome" && tools.every((t) => welcome.tools.includes(t)));
+    client.close();
+  });
+
+  it("[task-0009/a2] welcome のTool名は論理名（wire名を漏らさない）", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+
+    const welcome = await waitFor(events, "welcome");
+    assert.ok(welcome.type === "welcome");
+    assert.ok(welcome.tools.includes("memory.save"), `got: ${welcome.tools.join(", ")}`);
+    assert.equal(
+      welcome.tools.some((t) => t.includes("__")),
+      false,
+      "wire名はプロバイダとの境界に閉じる（決定22）"
+    );
+    client.close();
+  });
+
+  it("[task-0009/a1] HTTP の /health が応答する", async () => {
+    await startHost();
+    const res = await fetch(`http://localhost:${server!.port}/health`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true });
+  });
+});
+
+describe("[task-0009/a1] セッションイベントの配信", () => {
+  it("[task-0009/a1] テキスト差分が text_delta として流れる", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "welcome");
+
+    // プロバイダを呼ばずにターンの進行だけ再現する
+    session.emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "こんにちは" },
+    });
+
+    const delta = await waitFor(events, "text_delta");
+    assert.ok(delta.type === "text_delta" && delta.delta === "こんにちは");
+    client.close();
+  });
+
+  it("[task-0009/a2] Tool実行イベントは論理名へ戻して通知される", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "welcome");
+
+    // プロバイダ側は wire 名で呼んでくる
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "call-1",
+      toolName: "memory__save",
+      args: {},
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "call-1",
+      toolName: "memory__save",
+      result: {},
+      isError: false,
+    });
+
+    const start = await waitFor(events, "tool_start");
+    assert.ok(start.type === "tool_start" && start.name === "memory.save", `got ${JSON.stringify(start)}`);
+    const end = await waitFor(events, "tool_end");
+    assert.ok(end.type === "tool_end" && end.name === "memory.save" && end.isError === false);
+    client.close();
+  });
+
+  it("[task-0009/a2] 名前空間規則に従わない名前はそのまま通す", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "welcome");
+
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "call-2",
+      toolName: "read",
+      args: {},
+    });
+
+    const start = await waitFor(events, "tool_start");
+    assert.ok(start.type === "tool_start" && start.name === "read");
+    client.close();
+  });
+});
+
+describe("[task-0009/a3] 複数クライアント", () => {
+  it("[task-0009/a3] 同時接続した全員が同じセッションのイベントを受け取る", async () => {
+    const { url } = await startHost();
+    const a: ServerEvent[] = [];
+    const b: ServerEvent[] = [];
+    const clientA = await BantoHostClient.connect(url, (e) => a.push(e));
+    const clientB = await BantoHostClient.connect(url, (e) => b.push(e));
+    await waitFor(a, "welcome");
+    await waitFor(b, "welcome");
+
+    session.emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "全員に届く" },
+    });
+
+    const fromA = await waitFor(a, "text_delta");
+    const fromB = await waitFor(b, "text_delta");
+    assert.ok(fromA.type === "text_delta" && fromA.delta === "全員に届く");
+    assert.ok(fromB.type === "text_delta" && fromB.delta === "全員に届く");
+
+    clientA.close();
+    clientB.close();
+  });
+
+  it("[task-0009/a3] 片方が切断してももう片方は受け取り続ける", async () => {
+    const { url } = await startHost();
+    const a: ServerEvent[] = [];
+    const b: ServerEvent[] = [];
+    const clientA = await BantoHostClient.connect(url, (e) => a.push(e));
+    const clientB = await BantoHostClient.connect(url, (e) => b.push(e));
+    await waitFor(a, "welcome");
+    await waitFor(b, "welcome");
+
+    clientA.close();
+    await new Promise((r) => setTimeout(r, 50));
+
+    session.emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "残った方へ" },
+    });
+
+    const fromB = await waitFor(b, "text_delta");
+    assert.ok(fromB.type === "text_delta" && fromB.delta === "残った方へ");
+    clientB.close();
+  });
+});
+
+describe("[task-0009] プロトコル違反の扱い（I2）", () => {
+  it("[task-0009] 壊れたJSONは error として返る（黙って捨てない）", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "welcome");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 生のWSへ不正データを流すため (I4)
+    (client as any).ws.send("{ not json");
+
+    const err = await waitFor(events, "error");
+    assert.ok(err.type === "error" && /invalid JSON/.test(err.message));
+    client.close();
+  });
+
+  it("[task-0009] 未知のメッセージ種別は error として返る", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "welcome");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 型に無い種別を送るため (I4)
+    client.send({ type: "nonsense" } as any);
+
+    const err = await waitFor(events, "error");
+    assert.ok(err.type === "error" && /unknown message type: nonsense/.test(err.message));
+    client.close();
+  });
+
+  it("[task-0009] 空文字のpromptは error として返る", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "welcome");
+
+    client.send({ type: "prompt", text: "" });
+
+    const err = await waitFor(events, "error");
+    assert.ok(err.type === "error" && /non-empty/.test(err.message));
+    client.close();
+  });
+});
+
+describe("[task-0009/a1] prompt と abort の中継", () => {
+  it("[task-0009/a1] prompt がセッションへ渡り、turn_end で完了が通知される", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "welcome");
+
+    client.send({ type: "prompt", text: "在庫を確認して" });
+
+    const end = await waitFor(events, "turn_end");
+    assert.ok(end.type === "turn_end" && end.errorMessage === undefined);
+    assert.deepEqual(session.prompts, ["在庫を確認して"]);
+    client.close();
+  });
+
+  it("[task-0009/a1] プロバイダ側エラーは turn_end に載って伝わる（I2）", async () => {
+    const { url } = await startHost(() => "400 Upstream request failed");
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "welcome");
+
+    client.send({ type: "prompt", text: "何か" });
+
+    const end = await waitFor(events, "turn_end");
+    assert.ok(end.type === "turn_end" && end.errorMessage === "400 Upstream request failed");
+    client.close();
+  });
+
+  it("[task-0009/a1] abort がセッションへ中継される", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "welcome");
+
+    client.send({ type: "abort" });
+    await new Promise((r) => setTimeout(r, 50));
+
+    assert.equal(session.aborted, 1);
+    client.close();
+  });
+
+  it("[task-0009/a3] 一方が送った prompt の turn_end を全クライアントが受け取る", async () => {
+    const { url } = await startHost();
+    const a: ServerEvent[] = [];
+    const b: ServerEvent[] = [];
+    const clientA = await BantoHostClient.connect(url, (e) => a.push(e));
+    const clientB = await BantoHostClient.connect(url, (e) => b.push(e));
+    await waitFor(a, "welcome");
+    await waitFor(b, "welcome");
+
+    clientA.send({ type: "prompt", text: "共有される発話" });
+
+    await waitFor(a, "turn_end");
+    await waitFor(b, "turn_end");
+    clientA.close();
+    clientB.close();
+  });
+});

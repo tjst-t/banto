@@ -23,3 +23,19 @@ export {
   readBantoSkill,
   type BantoSkill,
 } from "./skills.js";
+export { BantoHostServer, type BantoHostServerOptions, type HostSession } from "./server.js";
+export { BantoHostClient, type ServerEventHandler } from "./client.js";
+export {
+  BANTO_WS_PATH,
+  BANTO_DEFAULT_PORT,
+  type ClientMessage,
+  type ServerEvent,
+  type PromptMessage,
+  type AbortMessage,
+  type WelcomeEvent,
+  type TextDeltaEvent,
+  type ToolStartEvent,
+  type ToolEndEvent,
+  type TurnEndEvent,
+  type ErrorEvent,
+} from "./protocol.js";
