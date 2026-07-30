@@ -21,7 +21,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
 
-import { PiRpcDriver } from "../../packages/banto-daemon/src/pi-rpc-driver.js";
+import { PiRpcDriver } from "@banto/worker-pool";
 
 // ── Helper: tiny ESM script that writes process.argv to CAPTURE_FILE ─────────
 // argv[0]="node", argv[1]=this script, argv[2..]= args passed by PiRpcDriver

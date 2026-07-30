@@ -1,5 +1,5 @@
 {
-  "name": "@banto/daemon",
+  "name": "@banto/worker-pool",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,17 +10,16 @@
       "default": "./src/index.ts"
     }
   },
+  "bin": {
+    "banto-worker-pool": "./src/bin.ts"
+  },
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --noEmit"
   },
   "dependencies": {
     "@banto/core": "*",
-    "@banto/worker-pool": "*",
     "@mariozechner/pi-coding-agent": "^0.73.1",
-    "ws": "^8.21.1"
-  },
-  "devDependencies": {
-    "@types/ws": "^8.18.1"
+    "typebox": "^1.1.24"
   }
 }

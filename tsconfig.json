@@ -16,7 +16,8 @@
     { "path": "./packages/banto-core" },
     { "path": "./packages/banto-daemon" },
     { "path": "./packages/banto-cli" },
-    { "path": "./packages/banto-host" }
+    { "path": "./packages/banto-host" },
+    { "path": "./packages/banto-worker-pool" }
   ],
   "files": []
 }

@@ -28,7 +28,7 @@ import type {
 } from "../../packages/banto-core/src/index.js";
 
 // PiRpcDriver from banto-daemon
-import { PiRpcDriver } from "../../packages/banto-daemon/src/pi-rpc-driver.js";
+import { PiRpcDriver } from "@banto/worker-pool";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

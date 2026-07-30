@@ -3,7 +3,8 @@
  *
  * Abstracts session lifecycle: spawn / inject / subscribe / kill.
  * banto-core is pi-agnostic; this file contains ONLY types and a registry.
- * The pi-rpc implementation lives in banto-daemon/src/pi-rpc-driver.ts.
+ * The pi-rpc implementation lives in the Worker Pool module
+ * (packages/banto-worker-pool)——Kobo から独立したモジュール（ADR-0010 決定23）。
  *
  * D5: no judgment logic here — drivers are thin adapters.
  * D3: session state is tracked via events, not driver internals.

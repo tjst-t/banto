@@ -49,7 +49,7 @@ import type { EventLog, TaskRecord } from "@banto/core";
 import { StateMachine } from "@banto/core";
 import type { OrchestrationEvent, StateTransitionedEvent } from "@banto/core";
 import { runMergeGate } from "./merge-gate.js";
-import { removeWorktree } from "./pi-rpc-driver.js";
+import { removeWorktree } from "@banto/worker-pool";
 
 const execFileAsync = promisify(execFile);
 

@@ -32,7 +32,7 @@ import { fileURLToPath } from "node:url";
 const _thisDir = path.dirname(fileURLToPath(import.meta.url));
 
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
-import type { LedgerEntry } from "../../packages/banto-daemon/src/spawn-ledger.js";
+import type { LedgerEntry } from "@banto/worker-pool";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

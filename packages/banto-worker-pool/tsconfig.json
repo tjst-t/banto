@@ -6,13 +6,11 @@
     "composite": true,
     "tsBuildInfoFile": "./dist/.tsbuildinfo",
     "paths": {
-      "@banto/core": ["../banto-core/src/index.ts"],
-      "@banto/worker-pool": ["../banto-worker-pool/src/index.ts"]
+      "@banto/core": ["../banto-core/src/index.ts"]
     }
   },
   "references": [
-    { "path": "../banto-core" },
-    { "path": "../banto-worker-pool" }
+    { "path": "../banto-core" }
   ],
   "include": ["src/**/*"],
   "exclude": ["dist", "node_modules"]

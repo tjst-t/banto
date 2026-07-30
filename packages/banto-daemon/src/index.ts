@@ -15,10 +15,10 @@ export { ProjectRegistry } from "./project-registry.js";
 export type { ProjectEntry } from "./project-registry.js";
 export { Scheduler } from "./scheduler.js";
 export type { TickJob } from "./scheduler.js";
-export { PiRpcDriver, createWorktree, removeWorktree } from "./pi-rpc-driver.js";
-export type { PiRpcDriverOptions } from "./pi-rpc-driver.js";
-export { SpawnLedger, isProcessAlive, killOrphanProcess } from "./spawn-ledger.js";
-export type { LedgerEntry } from "./spawn-ledger.js";
+export { PiRpcDriver, createWorktree, removeWorktree } from "@banto/worker-pool";
+export type { PiRpcDriverOptions } from "@banto/worker-pool";
+export { SpawnLedger, isProcessAlive, killOrphanProcess } from "@banto/worker-pool";
+export type { LedgerEntry } from "@banto/worker-pool";
 
 // MergeGate — pre-merge checks (scope violation + verify command execution)
 export {

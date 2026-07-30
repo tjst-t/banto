@@ -39,9 +39,9 @@ import { Scheduler } from "./scheduler.js";
 import type { TickJob } from "./scheduler.js";
 import { GateEvaluator, evaluatePendingGates } from "./gate-evaluator.js";
 import type { QuotaCheck } from "./gate-evaluator.js";
-import { PiRpcDriver, createWorktree } from "./pi-rpc-driver.js";
-import { SpawnLedger, isProcessAlive, killOrphanProcess } from "./spawn-ledger.js";
-import type { LedgerEntry } from "./spawn-ledger.js";
+import { PiRpcDriver, createWorktree } from "@banto/worker-pool";
+import { SpawnLedger, isProcessAlive, killOrphanProcess } from "@banto/worker-pool";
+import type { LedgerEntry } from "@banto/worker-pool";
 import { processMergeQueue } from "./merge-queue.js";
 import {
   fileConflictTask,
