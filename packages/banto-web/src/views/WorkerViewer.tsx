@@ -20,7 +20,17 @@ interface Worker {
   sessionPath: string;
   worktree: string;
   alive: boolean;
+  /** running / waiting / exited（決定29b：質問待ちは稼働中と区別する） */
+  state: "running" | "waiting" | "exited";
   spawnedAt: string;
+  /** 答えを待っている質問（waiting のとき） */
+  question?: string;
+}
+
+/** 状態の表示名。alive だけでは「待ちっぱなし」が見えない（決定29b）。 */
+function stateLabel(w: Worker): string {
+  if (w.state === "waiting") return "質問待ち";
+  return w.alive ? "稼働中" : "終了";
 }
 interface WorkerList {
   workers: Worker[];
@@ -148,11 +158,13 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
                   onClick={() => setSelected(w.sessionId)}
                   title={`${w.worktree}\npid ${w.pid} · ${w.spawnedAt}`}
                 >
-                  <span className={`wv-dot ${w.alive ? "is-alive" : ""}`} />
+                  <span
+                    className={`wv-dot ${w.state === "waiting" ? "is-waiting" : w.alive ? "is-alive" : ""}`}
+                  />
                   <span className="wv-body">
                     <span className="wv-task">{w.taskId}</span>
                     <span className="wv-meta">
-                      {w.projectTag} · pid {w.pid} · {w.alive ? "稼働中" : "終了"}
+                      {w.projectTag} · pid {w.pid} · {stateLabel(w)}
                     </span>
                   </span>
                 </button>
@@ -168,7 +180,7 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
             <>
               <span className="gv3-subject">{selectedWorker.taskId}</span>
               <span className="gv3-date">
-                {selectedWorker.alive ? "稼働中" : "終了"} · pid {selectedWorker.pid}
+                {stateLabel(selectedWorker)} · pid {selectedWorker.pid}
               </span>
             </>
           ) : (
@@ -192,6 +204,13 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
         </div>
 
         {attach.error && <div className="fb-error">読み込めません: {attach.error}</div>}
+
+        {/* 決定29b: 待っている職人は、何を待っているかまで見せないと動かしようがない */}
+        {selectedWorker?.state === "waiting" && selectedWorker.question && (
+          <p className="wv-question">
+            番頭の答え待ち: {selectedWorker.question}
+          </p>
+        )}
 
         {!selected ? (
           <p className="fb-muted">左の一覧から選んでください</p>

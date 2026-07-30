@@ -89,6 +89,11 @@ export class BantoHostServer {
   private readonly clients = new Set<WebSocket>();
   private readonly unsubscribe: () => void;
   private readonly unsubscribeCanvas: () => void;
+  /**
+   * 知らせを1本ずつ順に流すための鎖。
+   * 職人が同時に複数報告してくることはあるので、ターンを重ねて割り込ませない。
+   */
+  private notices: Promise<void> = Promise.resolve();
 
   private constructor(options: BantoHostServerOptions, httpServer: http.Server) {
     this.session = options.session;
@@ -146,6 +151,36 @@ export class BantoHostServer {
       });
     });
     return server;
+  }
+
+  /**
+   * 番頭に外から知らせを入れる（決定29）。職人からの報告・質問がここを通る。
+   *
+   * POの発話ではないので `notice` として配り、UIでも見分けられるようにする。
+   * 知らせを入れたら番頭のターンを回す——**気づかせるのが目的**なので、
+   * ログに積むだけでは足りない。
+   *
+   * 知らせ同士は直列化する。同時に3人の職人が報告してきても、ターンは1本ずつ進む。
+   */
+  notify(text: string): Promise<void> {
+    this.notices = this.notices.then(async () => {
+      this.record({ role: "notice", text });
+      this.broadcast({ type: "notice", text });
+      try {
+        await this.session.prompt(text, {
+          ...(this.session.isStreaming ? { streamingBehavior: "steer" as const } : {}),
+        });
+      } catch (err) {
+        // I2: 知らせが番頭に届かなかったことを黙らせない
+        this.record({ role: "error", text: String(err) });
+        this.broadcast({ type: "turn_end", errorMessage: String(err) });
+        return;
+      }
+      const lastError = this.getLastError();
+      if (lastError) this.record({ role: "error", text: lastError });
+      this.broadcast({ type: "turn_end", ...(lastError ? { errorMessage: lastError } : {}) });
+    });
+    return this.notices;
   }
 
   /** 実際に待ち受けているポート（port: 0 のとき割り当てられた値）。 */

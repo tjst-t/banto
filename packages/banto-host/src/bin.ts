@@ -22,6 +22,7 @@ import {
   WorkerPool,
   createWorkerPoolModule,
 } from "@banto/worker-pool";
+import { BANTO_ORIGIN, renderWorkerNotice } from "./worker-notice.js";
 
 import { Canvas, createCanvasCatalog } from "./canvas.js";
 import { createCanvasTools } from "./canvas-tools.js";
@@ -55,6 +56,7 @@ const SYSTEM_PROMPT = [
   "POに何かを見せたいときは canvas.open でキャンバスに表示できます（何が開けるかは canvas.list_catalog）。",
   "file.* と git.* でワークスペースの中身と履歴を閲覧できます（いずれも読み取り専用）。",
   "調査・実装など手を動かす仕事は worker.delegate で職人へ委譲してください（D10）。手順は skill.read で worker-delegation を確認できます。",
+  "職人からの報告・質問は自動で届きます。報告は主張であって完了の証明ではないので、必要なら成果を自分で確かめてください。質問には worker.steer で答えられます。",
 ].join("\n");
 
 interface ServeOptions {
@@ -75,15 +77,22 @@ async function serve(options: ServeOptions): Promise<void> {
   // Worker Pool は**必須の組み込みモジュール**（決定27c）。無いと番頭は職人へ委譲できず
   // D10 が構造的に満たせない。Banto に同居させる形で立て、到達先は相対パスにする
   // （独立サービスとして別に立てる場合は BANTO_WORKER_POOL_URL で絶対URLを指す）。
+  //
+  // 決定29: 職人が報告・質問を返す先。職人は別プロセスなので絶対URLが要る
+  // （UI 向けの相対パスとは別物——UI は自分のオリジンに解決できるが、子プロセスはできない）。
+  const workerPoolUrl = process.env["BANTO_WORKER_POOL_URL"] ?? "/api/worker-pool";
+  const reportUrl = workerPoolUrl.startsWith("/")
+    ? `http://localhost:${options.port}${workerPoolUrl}`
+    : workerPoolUrl;
+
   const workerPool = new WorkerPool({
     driver: new PiRpcDriver({ sessionBaseDir: path.join(dataDir(), "worker-sessions") }),
     dataDir: path.join(dataDir(), "worker-pool"),
     defaultProjectTag: "banto",
+    defaultOrigin: BANTO_ORIGIN,
+    reportUrl,
   });
-  const workerPoolModule = createWorkerPoolModule(
-    workerPool,
-    process.env["BANTO_WORKER_POOL_URL"] ?? "/api/worker-pool"
-  );
+  const workerPoolModule = createWorkerPoolModule(workerPool, workerPoolUrl);
 
   const modules = createModuleRegistry([
     createWorkspaceModule(workspace),
@@ -134,6 +143,16 @@ async function serve(options: ServeOptions): Promise<void> {
     },
   });
 
+  // 決定29: 番頭が起こした職人のイベントだけを受ける。他の起動元（Kobo 等）の分は届かない。
+  // lastEventId から始めるので、起動前に溜まっていた古い報告を今さら会話へ流し込まない
+  const unsubscribeWorkers = workerPool.subscribe(
+    (event) => {
+      const notice = renderWorkerNotice(event);
+      if (notice) void server.notify(notice);
+    },
+    { origin: BANTO_ORIGIN, afterEventId: workerPool.lastEventId }
+  );
+
   console.log(`[banto] listening on ws://localhost:${server.port}/ws`);
   console.log(
     `[banto] model: ${session.model ? `${session.model.provider}/${session.model.id}` : "(none)"}`
@@ -142,12 +161,15 @@ async function serve(options: ServeOptions): Promise<void> {
   console.log(`[banto] skills: ${skills.map((s) => s.name).join(", ") || "(none)"}`);
   console.log(`[banto] canvas: ${catalog.list().map((c) => c.kind).join(", ") || "(none)"}`);
   console.log(`[banto] workspace: ${workspace}`);
+  console.log(`[banto] worker report url: ${reportUrl}`);
   console.log(
     `[banto] modules: ${modules.list().map((m) => `${m.name}(${m.endpoint.baseUrl})`).join(", ") || "(none)"}`
   );
 
   const shutdown = (): void => {
     void (async () => {
+      unsubscribeWorkers();
+      workerPool.dispose();
       await server.close();
       session.dispose();
       process.exit(0);

@@ -19,6 +19,8 @@ import type { WorkerPool } from "./pool.js";
 
 /** 一覧・アタッチの上限。番頭の文脈を埋め尽くさないため。 */
 const MAX_ATTACH_LINES = 200;
+/** 1回に返すイベントの上限。同上。 */
+const MAX_EVENTS = 100;
 
 export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
   const delegate = defineTool({
@@ -30,6 +32,9 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
       "書き切ること。返り値の sessionId で以後の様子を見たり指示を足したりできる。",
     parameters: Type.Object({
       taskId: Type.String({ description: "仕事の識別子。台帳とログに残る（例: task-0042）" }),
+      origin: Type.Optional(
+        Type.String({ description: "起動元＝報告の宛先（省略時は Worker Pool の既定）" })
+      ),
       worktreePath: Type.String({ description: "作業させるディレクトリの絶対パス" }),
       instruction: Type.String({
         description: "職人への指示。職人は記憶を持たないため、前提・目的・完了条件を書き切る",
@@ -50,6 +55,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
         worktreePath: params.worktreePath,
         instruction: params.instruction,
         ...(params.projectTag ? { projectTag: params.projectTag } : {}),
+        ...(params.origin ? { origin: params.origin } : {}),
         ...(params.tools ? { tools: params.tools } : {}),
         ...(params.modelTier ? { modelTier: params.modelTier } : {}),
       });
@@ -79,10 +85,11 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
         workers.length === 0
           ? "動いている職人はいません"
           : workers
-              .map(
-                (w) =>
-                  `${w.alive ? "●" : "○"} ${w.taskId} [${w.projectTag}] pid=${w.pid} sessionId=${w.sessionId}`
-              )
+              .map((w) => {
+                const mark = w.state === "waiting" ? "⏸" : w.alive ? "●" : "○";
+                const waiting = w.question ? ` 質問待ち: ${w.question}` : "";
+                return `${mark} ${w.taskId} [${w.projectTag}] ${w.state} pid=${w.pid} sessionId=${w.sessionId}${waiting}`;
+              })
               .join("\n");
       return { content: [{ type: "text" as const, text }], details: { workers } };
     },
@@ -92,7 +99,8 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
     name: "worker.steer",
     label: "Worker: Steer",
     description:
-      "稼働中の職人に追加の指示を渡す。方針を変えたいとき・足りない文脈を補うときに使う。",
+      "稼働中の職人に追加の指示を渡す。方針を変えたいとき・足りない文脈を補うときに使う。" +
+      "**職人からの質問に答えるのもこれ**（答えると職人は待ちを解いて動き出す）。",
     parameters: Type.Object({
       sessionId: Type.String({ description: "対象の職人（worker.list で確認できる）" }),
       message: Type.String({ description: "渡す指示" }),
@@ -148,5 +156,132 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
     },
   });
 
-  return [delegate, list, steer, stop, attach];
+  const events = defineTool({
+    name: "worker.events",
+    label: "Worker: Events",
+    description:
+      "職人に起きたことの記録を新しい順ではなく古い順に返す（起動・終了・報告・質問）。" +
+      "**事実（kind=fact）と職人の主張（kind=claim）は分かれている**——" +
+      "「終わったと言っている」は完了の証明ではないので、成果は自分で確かめること。" +
+      "afterEventId を渡すと、その続きだけを取れる。",
+    parameters: Type.Object({
+      afterEventId: Type.Optional(
+        Type.Number({ description: "このID より後だけを返す（省略時は最初から）" })
+      ),
+      sessionId: Type.Optional(Type.String({ description: "特定の職人に絞る" })),
+      origin: Type.Optional(Type.String({ description: "起動元で絞る" })),
+      limit: Type.Optional(Type.Number({ description: `最大件数（既定 ${MAX_EVENTS}）` })),
+    }),
+    async execute(_toolCallId, params) {
+      const limit = Math.max(1, Math.min(params.limit ?? MAX_EVENTS, MAX_EVENTS));
+      const found = pool.events(
+        params.afterEventId ?? 0,
+        {
+          ...(params.sessionId ? { sessionId: params.sessionId } : {}),
+          ...(params.origin ? { origin: params.origin } : {}),
+        },
+        limit
+      );
+      const text =
+        found.length === 0
+          ? "新しい出来事はありません"
+          : found
+              .map(
+                (e) =>
+                  `#${e.id} ${e.at} ${e.type}(${e.kind}) ${e.taskId} ${JSON.stringify(e.data)}`
+              )
+              .join("\n");
+      return {
+        content: [{ type: "text" as const, text }],
+        details: { events: found, lastEventId: pool.lastEventId },
+      };
+    },
+  });
+
+  return [delegate, list, steer, stop, attach, events];
+}
+
+/**
+ * 職人自身が使う Tool（決定29）。**番頭には渡さない**——番頭が自分に報告しても意味がない。
+ *
+ * 職人は別プロセスなので、これらは Worker Pool の HTTP 面越しに呼ばれる（決定27b・29e）。
+ * 職人は自分の sessionId を知らないため、`projectTag` + `taskId`（起動時に環境変数で
+ * 渡っている）で自分を名乗る。
+ */
+export function createWorkerReportTools(pool: WorkerPool): ToolDefinition[] {
+  /** 名乗りから職人を引く。I2: 見つからないなら黙って捨てず理由を返す。 */
+  const resolve = (projectTag: string, taskId: string): { sessionId: string } => {
+    const worker = pool.getByTask(projectTag, taskId);
+    if (!worker) {
+      throw new Error(
+        `No worker registered for "${projectTag}/${taskId}". ` +
+          "BANTO_PROJECT / BANTO_TASK_ID が起動時のものと一致しているか確認してください。"
+      );
+    }
+    return { sessionId: worker.sessionId };
+  };
+
+  const identity = {
+    projectTag: Type.String({ description: "自分の projectTag（環境変数 BANTO_PROJECT）" }),
+    taskId: Type.String({ description: "自分の taskId（環境変数 BANTO_TASK_ID）" }),
+  };
+
+  const report = defineTool({
+    name: "worker.report",
+    label: "Worker: Report",
+    description:
+      "起動元へ報告する。作業が終わったとき・進み具合を伝えたいときに使う。" +
+      "これは**完了の宣言ではなく検証へ回す合図**で、成果は起動元が確かめる。",
+    parameters: Type.Object({
+      ...identity,
+      summary: Type.String({
+        description: "何をしたか・確認した結果・残っている懸念を簡潔に",
+      }),
+      done: Type.Optional(
+        Type.Boolean({ description: "自分としては作業を終えたつもりなら true" })
+      ),
+    }),
+    async execute(_toolCallId, params) {
+      const { sessionId } = resolve(params.projectTag, params.taskId);
+      const event = pool.report(sessionId, params.summary, {
+        ...(params.done !== undefined ? { done: params.done } : {}),
+      });
+      return {
+        content: [{ type: "text" as const, text: `報告しました（#${event.id}）` }],
+        details: { eventId: event.id },
+      };
+    },
+  });
+
+  const ask = defineTool({
+    name: "worker.ask",
+    label: "Worker: Ask",
+    description:
+      "起動元に質問する。指示に無い前提を推測して進めるより、ここで聞く。" +
+      "呼んだあとは答えが来るまで待つ（答えは追加の指示として届く）。",
+    parameters: Type.Object({
+      ...identity,
+      question: Type.String({ description: "聞きたいこと。判断に必要な背景も添える" }),
+      blocking: Type.Optional(
+        Type.Boolean({ description: "答えが無いと先へ進めないなら true（既定 true）" })
+      ),
+    }),
+    async execute(_toolCallId, params) {
+      const { sessionId } = resolve(params.projectTag, params.taskId);
+      const event = pool.ask(sessionId, params.question, {
+        blocking: params.blocking ?? true,
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `質問を届けました（#${event.id}）。答えが届くまで待ってください。`,
+          },
+        ],
+        details: { eventId: event.id },
+      };
+    },
+  });
+
+  return [report, ask];
 }

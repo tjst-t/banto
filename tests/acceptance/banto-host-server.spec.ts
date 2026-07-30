@@ -19,9 +19,12 @@ import {
   BantoHostClient,
   BantoHostServer,
   createMemoryTools,
+  isNoticeworthy,
+  renderWorkerNotice,
   type HostSession,
   type ServerEvent,
 } from "@banto/host";
+import type { WorkerEvent } from "@banto/worker-pool";
 
 /**
  * HostSession を満たすテスト用セッション。プロバイダを一切呼ばずに、ターンの進行だけを
@@ -428,5 +431,97 @@ describe("[task-0014] 会話履歴のホスト保持（リロードで消えな�
 
     clientA.close();
     clientB.close();
+  });
+});
+
+// ── task-0026: 職人からの報告・質問が番頭へ届く（決定29） ───────────────────────
+
+/** テスト用のイベント。Worker Pool を起こさずに翻訳と配信だけを見る。 */
+function workerEvent(partial: Partial<WorkerEvent> & Pick<WorkerEvent, "type">): WorkerEvent {
+  return {
+    id: 1,
+    at: "2026-07-30T00:00:00.000Z",
+    kind: "fact",
+    origin: "banto",
+    projectTag: "banto",
+    taskId: "task-0042",
+    sessionId: "sess-1",
+    data: {},
+    ...partial,
+  };
+}
+
+describe("[task-0026/a6] 番頭が職人の報告・質問に気づく", () => {
+  it("[task-0026/a6] notify で知らせが配信され、番頭のターンが回る", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "welcome");
+
+    await server!.notify("職人から報告が届きました");
+
+    const notice = await waitFor(events, "notice");
+    assert.ok(notice.type === "notice" && notice.text === "職人から報告が届きました");
+    // 会話に積むだけでは気づかない。番頭のターンが実際に回ること
+    assert.deepEqual(session.prompts, ["職人から報告が届きました"]);
+    client.close();
+  });
+
+  it("[task-0026/a6] 知らせは履歴に残る（リロードしても消えない）", async () => {
+    const { url } = await startHost();
+    const first: ServerEvent[] = [];
+    const a = await BantoHostClient.connect(url, (e) => first.push(e));
+    await waitFor(first, "welcome");
+    await server!.notify("職人から質問です");
+    a.close();
+
+    const second: ServerEvent[] = [];
+    const b = await BantoHostClient.connect(url, (e) => second.push(e));
+    const history = await waitFor(second, "history");
+    assert.ok(history.type === "history");
+    assert.deepEqual(history.entries, [{ role: "notice", text: "職人から質問です" }]);
+    b.close();
+  });
+
+  it("[task-0026/a6] 知らせが重なってもターンは1本ずつ進む", async () => {
+    await startHost();
+    await Promise.all([server!.notify("1人目"), server!.notify("2人目"), server!.notify("3人目")]);
+    assert.deepEqual(session.prompts, ["1人目", "2人目", "3人目"]);
+  });
+});
+
+describe("[task-0026/a6] 職人イベントの言い換え（決定29d）", () => {
+  it("[task-0026/a6] 番頭自身がやったことは知らせない（ターンが回り続けるため）", () => {
+    for (const type of ["worker_started", "worker_stopped", "worker_answered"] as const) {
+      assert.equal(isNoticeworthy(workerEvent({ type })), false, type);
+      assert.equal(renderWorkerNotice(workerEvent({ type })), undefined);
+    }
+  });
+
+  it("[task-0026/a2] 報告は主張として伝える（完了と言い換えない。I1）", () => {
+    const text = renderWorkerNotice(
+      workerEvent({ type: "worker_reported", kind: "claim", data: { summary: "直しました", done: true } })
+    );
+    assert.ok(text?.includes("直しました"));
+    assert.ok(text?.includes("主張"), `完了扱いに言い換えていないこと: ${String(text)}`);
+  });
+
+  it("[task-0026/a3] 質問には、答え方（worker.steer）と sessionId を添える", () => {
+    const text = renderWorkerNotice(
+      workerEvent({ type: "worker_asked", kind: "claim", data: { question: "A案とB案どちら？" } })
+    );
+    assert.ok(text?.includes("A案とB案どちら？"));
+    assert.ok(text?.includes("worker.steer"));
+    assert.ok(text?.includes("sess-1"), "どの職人に答えるか分かること");
+  });
+
+  it("[task-0026/a2] 異常終了と正常終了を混同しない", () => {
+    const ok = renderWorkerNotice(workerEvent({ type: "worker_exited", data: { exitCode: 0, signal: null } }));
+    const killed = renderWorkerNotice(
+      workerEvent({ type: "worker_exited", data: { exitCode: null, signal: "SIGKILL" } })
+    );
+    assert.ok(ok?.includes("正常"));
+    assert.ok(killed?.includes("SIGKILL"));
+    assert.equal(killed?.includes("正常"), false);
   });
 });

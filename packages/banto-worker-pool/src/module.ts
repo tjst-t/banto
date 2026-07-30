@@ -12,7 +12,7 @@
 
 import { Type } from "typebox";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
-import { createWorkerTools } from "./worker-tools.js";
+import { createWorkerReportTools, createWorkerTools } from "./worker-tools.js";
 import type { WorkerPool } from "./pool.js";
 
 /** 既定の到達先。Worker Pool は独立サービスなので、通常は絶対URLで設定される。 */
@@ -38,6 +38,7 @@ export function createWorkerPoolModule(
   description: string;
   endpoint: { baseUrl: string };
   tools: ToolDefinition[];
+  internalTools: ToolDefinition[];
   views: Array<{
     kind: string;
     title: string;
@@ -56,6 +57,8 @@ export function createWorkerPoolModule(
       "職人（worker）を起こして実作業を任せる。番頭が細かい仕事をせず委譲するための実行能力（D10）。",
     endpoint: { baseUrl },
     tools: createWorkerTools(pool),
+    // 職人（別プロセス）から呼ばれる口。番頭には渡さない（決定29e）
+    internalTools: createWorkerReportTools(pool),
     views: [
       {
         kind: "worker.viewer",

@@ -73,3 +73,5 @@ export {
 export { createWorkspaceModule, WORKSPACE_BASE_URL } from "./modules/workspace.js";
 export { createDemoModule } from "./modules/demo.js";
 export { createModuleToolHandler } from "./module-serve.js";
+
+export { BANTO_ORIGIN, renderWorkerNotice, isNoticeworthy } from "./worker-notice.js";

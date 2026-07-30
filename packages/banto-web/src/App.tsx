@@ -37,6 +37,14 @@ function ChatRow({ entry }: { entry: TranscriptEntry }): React.ReactElement {
           <Markdown remarkPlugins={[remarkGfm]}>{entry.text}</Markdown>
         </div>
       );
+    case "notice":
+      // 職人からの知らせ（決定29）。番頭の発話と混ざらないよう見た目を分ける
+      return (
+        <div className="msg msg--notice markdown">
+          <span className="notice-tag">職人</span>
+          <Markdown remarkPlugins={[remarkGfm]}>{entry.text}</Markdown>
+        </div>
+      );
     case "tool":
       return (
         <div className={`msg msg--tool is-${entry.state}`}>

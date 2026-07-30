@@ -109,6 +109,8 @@ export interface WelcomeEvent {
 export type TranscriptEntry =
   | { role: "po"; text: string }
   | { role: "banto"; text: string }
+  /** POでも番頭でもない知らせ（職人からの報告・質問など。決定29）。 */
+  | { role: "notice"; text: string }
   | { role: "tool"; name: string; state: "running" | "ok" | "failed" }
   | { role: "error"; text: string };
 
@@ -116,6 +118,16 @@ export type TranscriptEntry =
 export interface HistoryEvent {
   type: "history";
   entries: TranscriptEntry[];
+}
+
+/**
+ * 番頭への知らせが会話に入った（職人からの報告・質問など。決定29）。
+ * POの発話ではないので po_message とは別にする——UIで見分けがつかないと、
+ * 誰が言ったことなのか分からなくなる。
+ */
+export interface NoticeEvent {
+  type: "notice";
+  text: string;
 }
 
 /** POの発話。送った本人以外のクライアントにも届く。 */
@@ -182,6 +194,7 @@ export type ServerEvent =
   | WelcomeEvent
   | HistoryEvent
   | PoMessageEvent
+  | NoticeEvent
   | TextDeltaEvent
   | ToolStartEvent
   | ToolEndEvent

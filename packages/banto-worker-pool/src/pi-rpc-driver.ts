@@ -111,6 +111,9 @@ export interface PiRpcDriverOptions {
   extensionPath?: string;
 }
 
+/** inject の応答を待つ上限。届いたかどうか分からないまま進まないため（I2）。 */
+const INJECT_TIMEOUT_MS = 10_000;
+
 export class PiRpcDriver implements RuntimeDriver {
   /**
    * Resolved pi CLI path. Null means "not yet resolved".
@@ -128,6 +131,17 @@ export class PiRpcDriver implements RuntimeDriver {
   private readonly extensionPath: string | undefined;
   private readonly sessions = new Map<string, ActiveSession>();
   private readonly handlers: Set<DriverEventHandler> = new Set();
+  /**
+   * 送ったコマンドの応答待ち（id で対応づける）。
+   *
+   * これが無いと「書けた＝届いた」と思い込むことになる。実際、職人がターン中に指示を送ると
+   * pi 側は受け付けずエラー応答を返すのに、こちらは成功として扱い**指示が黙って消えていた**。
+   */
+  private readonly pending = new Map<
+    string,
+    { resolve: (msg: Record<string, unknown>) => void; reject: (err: Error) => void; timer: NodeJS.Timeout }
+  >();
+  private requestCounter = 0;
 
   constructor(opts: PiRpcDriverOptions = {}) {
     // Defer pi CLI resolution to spawn() time (lazy). This allows the daemon
@@ -243,6 +257,17 @@ export class PiRpcDriver implements RuntimeDriver {
       args.push("--extension", extensionPath);
     }
 
+    // 決定29e: 職人には起動元の拡張（Kobo の banto-executor 等）と Worker Pool の報告経路の
+    // 両方が要ることがある。pi は --extension を複数回受け付けるので、追加分をここで足す。
+    const extraExtensions = Array.isArray(opts.driverOptions?.extensionPaths)
+      ? (opts.driverOptions.extensionPaths as unknown[]).filter(
+          (p): p is string => typeof p === "string" && p !== extensionPath
+        )
+      : [];
+    for (const extra of extraExtensions) {
+      args.push("--extension", extra);
+    }
+
     // Collect per-spawn environment variables from driverOptions.
     // BANTO_DAEMON_URL, BANTO_PROJECT, BANTO_TASK_ID are injected here so the
     // banto-executor extension can reach the daemon and report state transitions.
@@ -255,6 +280,10 @@ export class PiRpcDriver implements RuntimeDriver {
     }
     if (opts.taskId) {
       extraEnv["BANTO_TASK_ID"] = opts.taskId;
+    }
+    // 決定29: 職人が起動元へ報告・質問するための到達先（worker-report 拡張が読む）
+    if (opts.driverOptions?.workerPoolUrl && typeof opts.driverOptions.workerPoolUrl === "string") {
+      extraEnv["BANTO_WORKER_POOL_URL"] = opts.driverOptions.workerPoolUrl;
     }
 
     // Spawn pi as a child process (node CLI entry-point).
@@ -338,6 +367,11 @@ export class PiRpcDriver implements RuntimeDriver {
           msg = JSON.parse(line) as Record<string, unknown>;
         } catch {
           return; // non-JSON lines (e.g. pi startup messages) are ignored
+        }
+
+        // 応答待ちしているコマンドがあれば渡す（inject 等）
+        if (msg["type"] === "response" && typeof msg["id"] === "string") {
+          this.settlePending(msg["id"], msg);
         }
 
         // Accept the get_state response whenever it arrives (before or after timeout).
@@ -441,13 +475,52 @@ export class PiRpcDriver implements RuntimeDriver {
       throw new Error(`[pi-rpc] inject: session '${sessionId}' not found or already exited.`);
     }
 
-    const cmd = JSON.stringify({ type: "prompt", message }) + "\n";
-    await new Promise<void>((resolve, reject) => {
-      session.proc.stdin?.write(cmd, (err) => {
-        if (err) reject(new Error(`[pi-rpc] inject write error: ${err.message}`));
-        else resolve();
+    const id = `inject-${++this.requestCounter}`;
+    // streamingBehavior が無いと、職人がターン中のとき pi は prompt を受け付けない。
+    // followUp なら「いま忙しければ次のターンとして積む」ので取りこぼさない——
+    // 質問への回答は、職人がその質問のターンを終えた直後に届けばよい。
+    const cmd = JSON.stringify({ id, type: "prompt", message, streamingBehavior: "followUp" }) + "\n";
+
+    // 応答待ちを先に張ってから書く（応答が先に返る競合を避ける）
+    const response = this.awaitResponse(id);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        session.proc.stdin?.write(cmd, (err) => {
+          if (err) reject(new Error(`[pi-rpc] inject write error: ${err.message}`));
+          else resolve();
+        });
       });
+    } catch (err) {
+      this.settlePending(id, { success: false, error: String(err) });
+      throw err;
+    }
+
+    const result = await response;
+    // I2: 受け付けられなかったことを成功に見せない。ここを黙らせると指示が消える
+    if (result["success"] !== true) {
+      throw new Error(`[pi-rpc] inject rejected by pi: ${String(result["error"] ?? "unknown error")}`);
+    }
+  }
+
+  /** id に対応する応答を待つ。応答が来ないまま黙って進まないよう、時間で打ち切る（I2）。 */
+  private awaitResponse(id: string, timeoutMs = INJECT_TIMEOUT_MS): Promise<Record<string, unknown>> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`[pi-rpc] no response for '${id}' within ${timeoutMs}ms`));
+      }, timeoutMs);
+      // タイマーでプロセスを引き留めない（親の終了を妨げない）
+      timer.unref?.();
+      this.pending.set(id, { resolve, reject, timer });
     });
+  }
+
+  private settlePending(id: string, msg: Record<string, unknown>): void {
+    const waiter = this.pending.get(id);
+    if (!waiter) return;
+    clearTimeout(waiter.timer);
+    this.pending.delete(id);
+    waiter.resolve(msg);
   }
 
   // ── RuntimeDriver.subscribe ─────────────────────────────────────────────

@@ -26,12 +26,19 @@ export {
   type WorkerPoolOptions,
   type WorkerInfo,
   type WorkerState,
-  type WorkerExit,
   type WorkerExitDetail,
-  type WorkerExitHandler,
   type DelegateInput,
 } from "./pool.js";
-export { createWorkerTools } from "./worker-tools.js";
+export {
+  WorkerEventLog,
+  type WorkerEvent,
+  type WorkerEventType,
+  type WorkerEventKind,
+  type WorkerEventFilter,
+  type WorkerEventHandler,
+} from "./event-log.js";
+export { workerReportExtensionPath } from "./extension.js";
+export { createWorkerTools, createWorkerReportTools } from "./worker-tools.js";
 export {
   createWorkerPoolModule,
   workerPoolSkillsDir,

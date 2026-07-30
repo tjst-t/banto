@@ -28,7 +28,8 @@ import {
   WorkerPoolService,
   createWorkerPoolModule,
   createWorkerTools,
-  type WorkerExit,
+  createWorkerReportTools,
+  type WorkerEvent,
 } from "@banto/worker-pool";
 
 /** ToolDefinition.execute の第5引数は本Tool群が参照しないためスタブ。 */
@@ -286,14 +287,18 @@ describe("[task-0010] 失敗の扱い（I2）", () => {
 });
 
 describe("[task-0010/a2] worker.* Tool とモジュール定義", () => {
-  it("[task-0010/a2] 名前空間規則に従う5つのToolを提供する", () => {
-    assert.deepEqual(createWorkerTools(pool).map((t) => t.name), [
-      "worker.delegate",
-      "worker.list",
-      "worker.steer",
-      "worker.stop",
-      "worker.attach",
-    ]);
+  it("[task-0010/a2] 提供するToolは全て worker 名前空間に属する", () => {
+    // Tool名の一覧をここに焼くと、Toolを足すたびに無関係なテストが落ちる（実際に2度踏んだ）。
+    // 見たいのは「名前空間規則（決定9）に従っているか」であって、何個あるかではない
+    const names = createWorkerTools(pool).map((t) => t.name);
+    assert.ok(names.length > 0);
+    for (const name of names) {
+      assert.match(name, /^worker\.[a-z_]+$/, `${name} は <domain>.<verb> の形（決定9）`);
+    }
+    // D10 の機構として最低限これは要る
+    for (const required of ["worker.delegate", "worker.list", "worker.attach"]) {
+      assert.ok(names.includes(required), `${required} が無い`);
+    }
   });
 
   it("[task-0010/a2] worker.delegate で職人へ委譲できる（D10の機構）", async () => {
@@ -398,8 +403,8 @@ describe("[task-0027] ドライバのライフサイクルイベントを購読�
 
   it("[task-0027/a2] 終了が「その瞬間」に分かる（覗きに行かなくてよい）", async () => {
     const worker = await pool.delegate(JOB);
-    const seen: WorkerExit[] = [];
-    pool.onExit((e) => seen.push(e));
+    const seen: WorkerEvent[] = [];
+    pool.subscribe((e) => seen.push(e), { type: "worker_exited" });
 
     driver.emit({
       type: "process_exited",
@@ -412,14 +417,14 @@ describe("[task-0027] ドライバのライフサイクルイベントを購読�
     assert.equal(seen.length, 1);
     assert.equal(seen[0]!.sessionId, worker.sessionId);
     assert.equal(seen[0]!.taskId, "task-0042");
-    assert.equal(seen[0]!.projectTag, "test", "誰の仕事かが分かる（起動元へ届けるため）");
-    assert.equal(seen[0]!.exitCode, 0);
+    assert.equal(seen[0]!.projectTag, "test");
+    assert.equal(seen[0]!.data["exitCode"], 0);
   });
 
   it("[task-0027/a2] 異常終了の内訳（終了コード・シグナル）も伝わる", async () => {
     const worker = await pool.delegate(JOB);
-    const seen: WorkerExit[] = [];
-    pool.onExit((e) => seen.push(e));
+    const seen: WorkerEvent[] = [];
+    pool.subscribe((e) => seen.push(e), { type: "worker_exited" });
 
     driver.emit({
       type: "process_exited",
@@ -429,8 +434,8 @@ describe("[task-0027] ドライバのライフサイクルイベントを購読�
       signal: "SIGKILL",
     });
 
-    assert.equal(seen[0]!.exitCode, null);
-    assert.equal(seen[0]!.signal, "SIGKILL");
+    assert.equal(seen[0]!.data["exitCode"], null);
+    assert.equal(seen[0]!.data["signal"], "SIGKILL");
   });
 
   it("[task-0027] 終了の内訳が list にも出る", async () => {
@@ -461,8 +466,8 @@ describe("[task-0027] ドライバのライフサイクルイベントを購読�
   });
 
   it("[task-0027] 台帳に無い職人の終了イベントは無視する（知らせる相手がいない）", async () => {
-    const seen: WorkerExit[] = [];
-    pool.onExit((e) => seen.push(e));
+    const seen: WorkerEvent[] = [];
+    pool.subscribe((e) => seen.push(e), { type: "worker_exited" });
 
     driver.emit({
       type: "process_exited",
@@ -478,10 +483,10 @@ describe("[task-0027] ドライバのライフサイクルイベントを購読�
   it("[task-0027] 購読側の失敗が Worker Pool を止めない", async () => {
     const worker = await pool.delegate(JOB);
     const seen: string[] = [];
-    pool.onExit(() => {
+    pool.subscribe(() => {
       throw new Error("購読側の不具合");
     });
-    pool.onExit((e) => seen.push(e.sessionId));
+    pool.subscribe((e) => seen.push(e.type));
 
     assert.doesNotThrow(() =>
       driver.emit({
@@ -492,7 +497,7 @@ describe("[task-0027] ドライバのライフサイクルイベントを購読�
         signal: null,
       })
     );
-    assert.deepEqual(seen, [worker.sessionId], "他のハンドラは呼ばれる");
+    assert.deepEqual(seen, ["worker_exited"], "他の購読者は呼ばれる");
   });
 
   it("[task-0027] dispose で購読を解除する", () => {
@@ -502,8 +507,12 @@ describe("[task-0027] ドライバのライフサイクルイベントを購読�
     local.dispose();
     assert.equal(driver.subscriberCount, 1);
   });
+});
 
-  it("[task-0027] stop / reap で終了の内訳も片付く", async () => {
+// ── task-0026: 職人から起動元への報告経路（決定29） ─────────────────────────────
+
+describe("[task-0026/a1] イベントログと購読", () => {
+  it("[task-0026/a1] 起動・終了がログに残り、後から追いつける", async () => {
     const worker = await pool.delegate(JOB);
     driver.emit({
       type: "process_exited",
@@ -512,8 +521,273 @@ describe("[task-0027] ドライバのライフサイクルイベントを購読�
       exitCode: 0,
       signal: null,
     });
-    await pool.stop(worker.sessionId);
 
-    assert.deepEqual(pool.list(), []);
+    const all = pool.events();
+    assert.deepEqual(
+      all.map((e) => e.type),
+      ["worker_started", "worker_exited"]
+    );
+    // afterEventId で続きだけ取れる
+    assert.deepEqual(
+      pool.events(all[0]!.id).map((e) => e.type),
+      ["worker_exited"]
+    );
+  });
+
+  it("[task-0026/a1] 落ちていた間の報告を取りこぼさない（afterEventId で再開）", async () => {
+    const worker = await pool.delegate(JOB);
+    // 起動元がいない間に報告が来る
+    pool.report(worker.sessionId, "調べ終えました");
+    pool.ask(worker.sessionId, "どちらの方式にしますか");
+
+    // 後から購読を始めても、最初から受け取れる
+    const seen: WorkerEvent[] = [];
+    pool.subscribe((e) => seen.push(e), { afterEventId: 0 });
+
+    assert.deepEqual(
+      seen.map((e) => e.type),
+      ["worker_started", "worker_reported", "worker_asked"]
+    );
+  });
+
+  it("[task-0026/a1] ログはファイルに残る（Worker Pool を再起動しても消えない）", async () => {
+    const worker = await pool.delegate(JOB);
+    pool.report(worker.sessionId, "終わりました");
+
+    const reopened = new WorkerPool({ driver, dataDir: dir, defaultProjectTag: "test" });
+    assert.deepEqual(
+      reopened.events().map((e) => e.type),
+      ["worker_started", "worker_reported"]
+    );
+    reopened.dispose();
+  });
+});
+
+describe("[task-0026/a2] 事実と主張を分ける（I1）", () => {
+  it("[task-0026/a2] プロセス終了は事実、職人の完了報告は主張", async () => {
+    const worker = await pool.delegate(JOB);
+    pool.report(worker.sessionId, "終わりました", { done: true });
+    driver.emit({
+      type: "process_exited",
+      pid: worker.pid,
+      sessionId: worker.sessionId,
+      exitCode: 0,
+      signal: null,
+    });
+
+    const byType = new Map(pool.events().map((e) => [e.type, e]));
+    assert.equal(byType.get("worker_reported")!.kind, "claim", "職人が言ったことは主張");
+    assert.equal(byType.get("worker_exited")!.kind, "fact", "プロセスの終了は事実");
+    assert.equal(byType.get("worker_started")!.kind, "fact");
+  });
+
+  it("[task-0026/a2] 「終わったと言っている」だけでは終了扱いにならない", async () => {
+    const worker = await pool.delegate(JOB);
+    pool.report(worker.sessionId, "終わりました", { done: true });
+
+    // 主張だけでは状態は変わらない——プロセスはまだ生きている
+    const found = pool.get(worker.sessionId);
+    assert.equal(found?.state, "running");
+    assert.equal(found?.alive, true);
+  });
+});
+
+describe("[task-0026/a3] 質問と waiting", () => {
+  it("[task-0026/a3] 質問した職人は waiting になり、稼働中と区別できる", async () => {
+    const worker = await pool.delegate(JOB);
+    assert.equal(pool.get(worker.sessionId)?.state, "running");
+
+    pool.ask(worker.sessionId, "どちらの方式にしますか");
+
+    const waiting = pool.get(worker.sessionId);
+    assert.equal(waiting?.state, "waiting");
+    assert.equal(waiting?.alive, true, "生きているが止まっている");
+    assert.equal(waiting?.question, "どちらの方式にしますか");
+  });
+
+  it("[task-0026/a3・a6] 答えると待ちが解ける", async () => {
+    const worker = await pool.delegate(JOB);
+    pool.ask(worker.sessionId, "どちらの方式にしますか");
+
+    await pool.steer(worker.sessionId, "A案で進めてください");
+
+    assert.equal(pool.get(worker.sessionId)?.state, "running");
+    assert.equal(pool.get(worker.sessionId)?.question, undefined);
+    // 答えは職人へ実際に届いている
+    assert.equal(driver.injected.at(-1)?.message, "A案で進めてください");
+  });
+
+  it("[task-0026/a3] 2回目の質問でまた待ちになる", async () => {
+    const worker = await pool.delegate(JOB);
+    pool.ask(worker.sessionId, "1つ目");
+    await pool.steer(worker.sessionId, "答え");
+    pool.ask(worker.sessionId, "2つ目");
+
+    assert.equal(pool.get(worker.sessionId)?.state, "waiting");
+    assert.equal(pool.get(worker.sessionId)?.question, "2つ目");
+  });
+
+  it("[task-0026/a3] 終了した職人は waiting のままにしない", async () => {
+    const worker = await pool.delegate(JOB);
+    pool.ask(worker.sessionId, "答えを待ちます");
+    process.kill(worker.pid, "SIGKILL");
+    await new Promise((r) => setTimeout(r, 150));
+
+    assert.equal(pool.get(worker.sessionId)?.state, "exited");
+  });
+});
+
+describe("[task-0026/a4] 起動元は自分の職人の分だけ受け取る", () => {
+  it("[task-0026/a4] origin で絞ると他の起動元の職人は届かない", async () => {
+    const mine = await pool.delegate({ ...JOB, taskId: "task-mine", origin: "banto" });
+    const theirs = await pool.delegate({ ...JOB, taskId: "task-theirs", origin: "kobo" });
+
+    const seen: WorkerEvent[] = [];
+    pool.subscribe((e) => seen.push(e), { origin: "banto" });
+
+    pool.report(mine.sessionId, "私の職人の報告");
+    pool.report(theirs.sessionId, "別の起動元の職人の報告");
+
+    assert.deepEqual(
+      seen.map((e) => e.data["summary"]),
+      ["私の職人の報告"]
+    );
+  });
+
+  it("[task-0026/a4] origin は projectTag とは別（同じ projectTag に別の起動元がいる）", async () => {
+    const a = await pool.delegate({ ...JOB, taskId: "task-a", projectTag: "same", origin: "banto" });
+    const b = await pool.delegate({ ...JOB, taskId: "task-b", projectTag: "same", origin: "kobo" });
+
+    assert.equal(pool.get(a.sessionId)?.origin, "banto");
+    assert.equal(pool.get(b.sessionId)?.origin, "kobo");
+    assert.deepEqual(
+      pool.events(0, { origin: "kobo" }).map((e) => e.taskId),
+      ["task-b"]
+    );
+  });
+
+  it("[task-0026/a4] origin は台帳に残る（再起動しても宛先を見失わない）", async () => {
+    const worker = await pool.delegate({ ...JOB, origin: "kobo" });
+
+    const reopened = new WorkerPool({ driver, dataDir: dir, defaultProjectTag: "test" });
+    assert.equal(reopened.get(worker.sessionId)?.origin, "kobo");
+    reopened.dispose();
+  });
+});
+
+describe("[task-0026/a5] Worker Pool は報告の意味を解釈しない（D5）", () => {
+  it("[task-0026/a5] 報告の中身はそのまま残り、状態遷移も判定もしない", async () => {
+    const worker = await pool.delegate(JOB);
+    pool.report(worker.sessionId, "テストが3件落ちています", { done: false, custom: 1 });
+
+    const event = pool.events().find((e) => e.type === "worker_reported")!;
+    // 中身は素通し。Kobo のステートマシンの語彙も番頭の会話の語彙も混ざらない
+    assert.deepEqual(event.data, { summary: "テストが3件落ちています", done: false, custom: 1 });
+    assert.equal(pool.get(worker.sessionId)?.state, "running", "報告で状態を動かさない");
+  });
+});
+
+describe("[task-0026/a6] 職人自身の Tool（worker.report / worker.ask）", () => {
+  it("[task-0026/a6] 職人は projectTag と taskId で名乗って報告できる", async () => {
+    const worker = await pool.delegate(JOB);
+    const [report] = createWorkerReportTools(pool);
+
+    await report!.execute(
+      "call-1",
+      { projectTag: "test", taskId: "task-0042", summary: "調べ終えました", done: true } as never,
+      undefined,
+      undefined,
+      TOOL_CTX
+    );
+
+    const event = pool.events().find((e) => e.type === "worker_reported")!;
+    assert.equal(event.sessionId, worker.sessionId, "名乗りから職人が引けている");
+    assert.equal(event.data["summary"], "調べ終えました");
+  });
+
+  it("[task-0026/a6] 職人は質問でき、番頭が worker.steer で答えられる", async () => {
+    const worker = await pool.delegate(JOB);
+    const [, ask] = createWorkerReportTools(pool);
+    const steer = createWorkerTools(pool).find((t) => t.name === "worker.steer")!;
+
+    await ask!.execute(
+      "call-1",
+      { projectTag: "test", taskId: "task-0042", question: "A案とB案どちらで？" } as never,
+      undefined,
+      undefined,
+      TOOL_CTX
+    );
+    assert.equal(pool.get(worker.sessionId)?.state, "waiting");
+
+    await steer.execute(
+      "call-2",
+      { sessionId: worker.sessionId, message: "A案で" } as never,
+      undefined,
+      undefined,
+      TOOL_CTX
+    );
+    assert.equal(pool.get(worker.sessionId)?.state, "running");
+  });
+
+  it("[task-0026/a6] 名乗りが台帳に無ければ黙って捨てずエラー（I2）", async () => {
+    const [report] = createWorkerReportTools(pool);
+    await assert.rejects(
+      () =>
+        report!.execute(
+          "call-1",
+          { projectTag: "test", taskId: "no-such-task", summary: "x" } as never,
+          undefined,
+          undefined,
+          TOOL_CTX
+        ),
+      /No worker registered/
+    );
+  });
+
+  it("[task-0026/a6] 番頭には報告用Toolを渡さない（自分に報告しても意味がない）", () => {
+    const bantoTools = createWorkerTools(pool).map((t) => t.name);
+    assert.equal(bantoTools.includes("worker.report"), false);
+    assert.equal(bantoTools.includes("worker.ask"), false);
+    assert.equal(bantoTools.includes("worker.events"), true, "起こったことは番頭も引ける");
+  });
+});
+
+describe("[task-0026/a6] 職人（別プロセス）からHTTPで報告できる（決定27b・29e）", () => {
+  let service: WorkerPoolService | undefined;
+
+  afterEach(async () => {
+    await service?.close();
+    service = undefined;
+  });
+
+  it("[task-0026/a6] worker.report を HTTP 経由で呼べる", async () => {
+    const worker = await pool.delegate(JOB);
+    // 職人向けのToolも公開の口には出す（番頭に渡さないだけ）
+    service = await WorkerPoolService.start({
+      tools: [...createWorkerTools(pool), ...createWorkerReportTools(pool)],
+      port: 0,
+    });
+
+    const res = await fetch(`${service.baseUrl}${MODULE_TOOL_PATH}worker.report`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        args: { projectTag: "test", taskId: "task-0042", summary: "終わりました", done: true },
+      }),
+    });
+
+    assert.equal(res.status, 200);
+    const event = pool.events().find((e) => e.type === "worker_reported")!;
+    assert.equal(event.sessionId, worker.sessionId);
+    assert.equal(event.kind, "claim");
+  });
+
+  it("[task-0026/a6] モジュール定義は報告用Toolを internalTools に置く", () => {
+    const module = createWorkerPoolModule(pool);
+    const banto = module.tools.map((t) => t.name);
+    const internal = module.internalTools.map((t) => t.name);
+
+    assert.equal(banto.includes("worker.report"), false, "番頭には渡らない");
+    assert.deepEqual(internal.sort(), ["worker.ask", "worker.report"]);
   });
 });

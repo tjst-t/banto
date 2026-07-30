@@ -65,10 +65,12 @@ export function createModuleToolHandler(
     }
 
     const toolName = decodeURIComponent(url.slice(target.prefix.length).split("?")[0] ?? "");
-    const tool = target.module.tools.find((t) => t.name === toolName);
+    // internalTools（決定29e）もここには出す。番頭に渡さないだけで、公開の口では一続き
+    const exposed = [...target.module.tools, ...(target.module.internalTools ?? [])];
+    const tool = exposed.find((t) => t.name === toolName);
     if (!tool) {
       // I2: 未知のToolは黙って空を返さず、そのモジュールが持つToolを添えて 404
-      const known = target.module.tools.map((t) => t.name).join(", ");
+      const known = exposed.map((t) => t.name).join(", ");
       sendJson(res, 404, {
         error: `Module "${target.module.name}" has no tool "${toolName}". Available: ${known || "(none)"}`,
       });

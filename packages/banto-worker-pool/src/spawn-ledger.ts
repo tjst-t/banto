@@ -33,6 +33,12 @@ export interface LedgerEntry {
   driverId: string;
   /** Session ID assigned by the driver */
   sessionId: string;
+  /**
+   * 起動元＝報告の宛先（ADR-0010 決定29）。projectTag（作業の名前空間）とは別物で、
+   * Kobo は複数の projectTag を持つため宛先にならない。
+   * 任意なのは、この項目より前に書かれた台帳を読めなくしないため。
+   */
+  origin?: string;
   /** ISO-8601 timestamp of spawn */
   spawnedAt: string;
   /**

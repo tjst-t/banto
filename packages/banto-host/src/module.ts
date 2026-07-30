@@ -51,6 +51,14 @@ export interface BantoModule {
   endpoint: ModuleEndpoint;
   /** 番頭へ提供する Tool */
   tools: NamespacedToolDefinition[];
+  /**
+   * 番頭には渡さず、HTTP 面だけに出す Tool（決定29e）。
+   *
+   * そのモジュールが自分で起こした先（Worker Pool なら職人）から呼ばれる口。
+   * 番頭に渡さないのは、番頭が自分自身へ報告しても意味が無く、Tool 一覧を汚すだけのため。
+   * 衝突検査は `tools` と同じ名前空間で行う——公開の口としては一続きだから。
+   */
+  internalTools?: NamespacedToolDefinition[];
   /** キャンバスへ提供する GUI */
   views: CanvasViewSpec[];
   /** このモジュールが既定として出す SKILL */
@@ -98,7 +106,7 @@ export function createModuleRegistry(modules: BantoModule[] = []): ModuleRegistr
 
       // I2: 衝突は黙って上書きしない。どのモジュールと衝突したかを添える。
       // 先に全件検査してから登録し、途中で失敗しても帳簿が半端に汚れないようにする。
-      for (const tool of module.tools) {
+      for (const tool of [...module.tools, ...(module.internalTools ?? [])]) {
         const owner = toolOwner.get(tool.name);
         if (owner) {
           throw new Error(`Tool "${tool.name}" is already provided by module "${owner}".`);
@@ -118,7 +126,9 @@ export function createModuleRegistry(modules: BantoModule[] = []): ModuleRegistr
       }
 
       byName.set(module.name, module);
-      for (const tool of module.tools) toolOwner.set(tool.name, module.name);
+      for (const tool of [...module.tools, ...(module.internalTools ?? [])]) {
+        toolOwner.set(tool.name, module.name);
+      }
       for (const view of module.views) viewOwner.set(view.kind, module.name);
       for (const skill of module.skills) skillOwner.set(skill.name, module.name);
     },

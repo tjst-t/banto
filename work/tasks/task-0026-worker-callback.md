@@ -8,7 +8,7 @@ parent: epic-0005
 depends: [task-0010]
 refs: [adr-0010]
 scope:
-  paths: ["packages/banto-worker-pool/**", "packages/banto-host/**", "tests/acceptance/**"]
+  paths: ["packages/banto-worker-pool/**", "packages/banto-host/**", "packages/banto-web/**", "tests/acceptance/**"]
 acceptance:
   - { id: a1, text: "Worker Pool が職人のライフサイクルのイベントログを持ち、起動元が購読できる。取りこぼした分を後から追いつける（after_event_id 相当）" }
   - { id: a2, text: "プロセス終了（事実）と職人の完了報告（主張）が別のイベントとして記録され、区別できる（I1）" }
@@ -29,6 +29,11 @@ ADR-0010 決定29 より。職人が「終わった」「これを聞きたい�
 - **届け方は Worker Pool のイベントログ＋購読**。コールバックURL案は不採用（起動元不在時に報告が消える）
 - **Worker Pool は意味を解釈しない**（D5）。Kobo はステートマシンへ、番頭は会話へ、それぞれ写す
 - **Kobo の `report_phase` / `report_done` はそのまま**。あれは Kobo のドメイン語彙で層が違う（決定29e）
+
+## 実装時に広げたスコープ
+
+- **`packages/banto-web/**` を scope.paths に追加した。** 起票時に見落としていた。WS プロトコルに `notice`（職人からの知らせ）を足すため、UI が受け取らないと知らせが画面に出ず、経路として成立しない。「ついで」の修正ではなく本タスクの一部（P1）。
+- **`PiRpcDriver.inject` の不具合を直した。** 実プロセスでの確認中に発見：職人がターン中のとき pi は prompt を受け付けないが、ドライバは stdin に書けたことだけで成功と見なしていたため、**質問への回答が黙って消えていた**（職人は「答えを待っています」のまま停止）。a3・a6 がこの経路に乗るため、直さないと本タスクが成立しない。応答を id で対応づけて待ち、`streamingBehavior: "followUp"` で取りこぼさないようにした（I2）。
 
 ## スコープ外
 
