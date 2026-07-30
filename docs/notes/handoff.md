@@ -205,3 +205,41 @@ epic-0001の下に最初の2タスクを起票（`work/tasks/task-0004`・`task-
 **検証済み**（I1）：`validateTaskFrontmatter`（`packages/banto-core/src/task-frontmatter.ts`）で両タスクファイルを実際に検証し、スキーマ通過を確認。`npm test`（331テスト）も引き続き全通過。
 
 epic-0002〜0004にはまだタスクを起票していない（意図的：D10「細かい仕事をしない」に従い、一度に全部計画せず段階的に積む）。次セッションでどのepicから着手するか、あるいは他のepicにもタスクを足すかを相談する。
+
+---
+
+## セッション更新（2026-07-30、Worker Pool 完成〜Environment Pool 設計）
+
+このセッションで Worker Pool（職人）を実運用できる形まで仕上げ、提案を3本取り込み、Environment Pool の設計を固めた。実装は決定29〜32に対応。**全体で648テスト＋e2e 2件が通る**（最終コミット `3532880`）。
+
+### 完了したこと（コミット済み）
+
+- **職人からの報告経路**（決定29・task-0026）：Worker Pool がイベントログを持ち、番頭が購読。事実（プロセス終了）と主張（職人の報告）を分ける。質問→waiting→番頭が worker.steer で回答。番頭の会話に「知らせ」として届く（`worker-notice.ts`）
+- **職人の店じまい**（決定30・task-0028）：番頭が `worker.close` で畳む（主）／アイドル安全弁（従・既定15分）。閉じても履歴に残る。`worker.wake` で同じセッション再開
+- **一覧の検索・ページ送り**（決定30/提案・task-0030）：`worker.list` に query/limit/offset。起動時の指示も検索対象
+- **studio モジュール**（決定25/提案・task-0031）：記憶ビューア・SKILLビューア（閲覧のみ）。`memory.*`/`skill.*` は中核の持ち物なので studio は Tool を持たず GUI とデータ口だけ
+- **記憶に fact 追加**（決定31・task-0032）：名前・役割など属性情報の置き場。決定29(a) の fact/claim とは同音異義（軸が違う。確からしさは kind でなく出所が担う）
+- **Environment Pool 設計**（決定32・epic-0008・task-0033）：動作検証環境を Kobo から切り出す設計を確定。**未実装**
+
+### 次にやること（POの指示。この順）
+
+1. **imp-0004 を解消**（`work/inbox/improvement/imp-0004-*.md`）。`PiRpcDriver` が `SpawnOptions.systemPrompt` と `tools` を**どちらも読んでいない**。
+   - `WORKER_SYSTEM_PROMPT`（記憶を持たない等）が職人に届いていない
+   - `worker.delegate` の `tools` 指定が黙って無視され、職人は pi 既定の read/write/edit/bash を全部持つ。**「調査だけ」のつもりでもリポジトリを書き換えられる**——PO試用時の事故要因
+   - 直したら「渡したものが効くこと」を**実プロセスで**確認する（偽ドライバでは検出できない。下記の教訓）
+
+2. **Worker の Tool に WebFetch / WebSearch を追加**（POの新規要望）。imp-0004 と密結合——`tools` が効くようにしてから、職人に持たせられる Tool の集合として web 系を用意する。pi 側が web fetch/search を持つか要確認（無ければ拡張で足す。決定29e の `worker-report.ts` が拡張の雛形）。**D1注意**：外部ネットワークアクセスは職人に新しい能力を与える。既定で全職人に付けるか、`tools` で明示指定させるかは設計判断
+
+3. **task-0033（Environment Pool 切り出し）**。決定32。`EnvDriver` の具象（`banto-daemon` の docker/process ドライバ・runner・env-ledger・sops）を新パッケージ `banto-environment-pool` へ。**振る舞いを変えず切り出すだけ**（サービス化と Kobo 差し替えは別タスク。task-0010→task-0024 と同じ2段階）
+
+### 動かし方・確認の作法（次セッションが踏まないように）
+
+- **番頭ホスト起動**：`BANTO_DATA_DIR=$PWD/.banto node --import tsx packages/banto-host/src/bin.ts serve --port 4100 --provider opencode-go --model deepseek-v4-flash`。WebUI は別途 `npm run dev:web`（:4200）。`.banto/` は実行時データで gitignore 済み
+- **職人の作業場所は必ず `/tmp/banto-play`**（用意済みの空 git リポジトリ）。imp-0004 が直るまで職人は書き込み可能なので、このリポジトリを worktree に指定すると本当に書き換わる
+- **実プロセスでの検証を省かない**。このセッションで**3回**、偽ドライバのテストは全通過なのに本物の pi で壊れていた（inject忘れ→inject応答無視で指示消失→再開時の同一sessionId取りこぼし）。偽ドライバが本物の制約を持っていない箇所は、偽ドライバを本物に寄せて再発防止した
+- **`git add -A` を使わない**。このセッションで PO の職人が書いた提案書・記憶データを何度も巻き込んだ。ファイルを明示して add する
+- **実ブラウザ確認**：ブラウザ操作ツールが無いセッションでは Chromium を CDP で叩いた（`--remote-debugging-port=9222` → `Page.captureScreenshot`）。プロセス kill は `ps -eo pid,args | awk '$2=="node" && /bin\.ts serve/'` で厳密に選ぶ（雑な pkill で自分のシェルを3回落とした）
+
+### 未追跡のまま残っているもの（PO判断待ち）
+
+- `docs/proposals/2026-07-30-*.md` 3本。PO の職人が起草。2本（pagination・memory-kind-fact）は採用して採否を追記済み、banto-studio は一部採用。**committed な task/ADR がこれらを refs で指しているので、参照解決のためにコミットした方がよい**が、PO のもの故に勝手にコミットしていない。次セッションで一声もらってから追加する
