@@ -36,7 +36,7 @@ export type DriverRunResult<T> =
 // ── Resolve builtin driver path ───────────────────────────────────────────────
 //
 // The builtin `process` driver lives at
-//   packages/banto-daemon/src/process-driver.ts
+//   packages/banto-environment-pool/src/process-driver.ts
 // relative to this file (env-driver-runner.ts is in the same directory).
 // We invoke it via `node --import tsx <path>`.
 

@@ -221,7 +221,7 @@ epic-0002〜0004にはまだタスクを起票していない（意図的：D10�
 - **記憶に fact 追加**（決定31・task-0032）：名前・役割など属性情報の置き場。決定29(a) の fact/claim とは同音異義（軸が違う。確からしさは kind でなく出所が担う）
 - **Environment Pool 設計**（決定32・epic-0008・task-0033）：動作検証環境を Kobo から切り出す設計を確定。**未実装**
 
-### 次にやること（POの指示。この順）
+### 次にやること（POの指示。この順）※すべて完了（下の 2026-07-30(2) を見る）
 
 1. **imp-0004 を解消**（`work/inbox/improvement/imp-0004-*.md`）。`PiRpcDriver` が `SpawnOptions.systemPrompt` と `tools` を**どちらも読んでいない**。
    - `WORKER_SYSTEM_PROMPT`（記憶を持たない等）が職人に届いていない
@@ -243,3 +243,31 @@ epic-0002〜0004にはまだタスクを起票していない（意図的：D10�
 ### 未追跡のまま残っているもの（PO判断待ち）
 
 - `docs/proposals/2026-07-30-*.md` 3本。PO の職人が起草。2本（pagination・memory-kind-fact）は採用して採否を追記済み、banto-studio は一部採用。**committed な task/ADR がこれらを refs で指しているので、参照解決のためにコミットした方がよい**が、PO のもの故に勝手にコミットしていない。次セッションで一声もらってから追加する
+
+---
+
+## セッション更新（2026-07-30(2)、imp-0004 → 職人の web → Environment Pool 切り出し）
+
+前セッションが積んだ3つを上から片付けた。**全体で 695テスト＋e2e 2件が通る**（前セッション比 +47）。
+
+### 完了したこと（コミット済み）
+
+- **imp-0004 解消**（`e0fceca`）：`PiRpcDriver` が `systemPrompt` を `--append-system-prompt`、`tools` を `--tools` として渡すようになった。**絞っても報告経路は残す**（pi の許可リストは拡張の Tool にも効くので、`["read","grep"]` のつもりで絞ると `worker.report`/`worker.ask` まで消える）。波及として Kobo の監査・rework の systemPrompt も届くようになった
+- **職人の web tools**（`f2699b0`・ADR-0010 決定33）：`web.fetch` / `web.search` を pi 拡張で追加。**既定では渡さない**——`worker.delegate` の `network: true` のときだけ拡張ごと載る（PO裁定）。検索は鍵の要らない DuckDuckGo lite →（駄目なら）Wikipedia の二段（PO裁定）。取得は公開URLのみで、localhost・内側アドレスは門番が弾く
+- **task-0033 Environment Pool 切り出し**：`docker-driver` / `process-driver` / `env-driver-runner` / `env-ledger` / `sops` を `packages/banto-environment-pool` へ移し、Kobo は `@banto/environment-pool` を参照＋再輸出する形にした。**振る舞いは変えていない**（決定32a の1段目）
+
+### 効いた作法（次セッションも踏襲する）
+
+- **本物の pi を起こす受け入れテスト**が2本入った（`pi-rpc-system-prompt-tools.spec.ts` / `worker-web-tools.spec.ts`）。覗き見用の拡張を `--extension` で載せ、`session_start` の時点で pi が確定させた**道具の一覧とシステムプロンプト**をファイルに書き出させる。LLM もネットワークも使わず（`PI_OFFLINE=1`）1本1秒弱。**偽ドライバでは imp-0004 は1件も落ちない**（本物に戻すと8件中5件落ちる）ことを確認済み——「渡したものが効いているか」を見る型としてそのまま使える
+- **テストが実装の穴を2つ見つけた**：(1) `new URL()` は `[::ffff:127.0.0.1]` を `[::ffff:7f00:1]` に正規化するので、埋め込みIPv4を10進で探す SSRF ガードはすり抜ける（参照実装の loamium も同じ穴）。(2) `wake`（起こし直し）が道具立てを引き継いでおらず、絞って起こした職人が全部の道具を持って戻る
+
+### 次にやること（未着手）
+
+- **Environment Pool のサービス化**と、**Kobo をサービス利用へ切り替え**（決定32a の2段目。task-0010 → task-0024 と同じ関係）。task-0033 のスコープ外として明記してある
+- **モジュール HTTP 面の認証**（ADR-0010 未決事項）。Environment Pool は sops の復号鍵を持つため、無認証だと credentials 経路が露出する。Worker Pool の報告経路も同じ面
+- **環境 quota の上限を誰が決めるか**（決定32e）
+
+### 判断が要るもの
+
+- **`work/tasks/*.md` が全部 `status: draft` のまま**。task-0026・0028・0030・0031 など明らかに完了しているものも draft。schemas では終端を書くのは Kobo とされているが、いまタスクを回しているのは人（と番頭）なので、誰がいつ `done` にするのかが宙に浮いている。P3 として起票するか、運用を決めるか
+- `docs/proposals/2026-07-30-file-browser-preview-mode.md` が未追跡のまま（PO の職人が起草したもの。今回も勝手にコミットしていない）

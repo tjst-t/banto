@@ -10,6 +10,7 @@
     "paths": {
       "@banto/core": ["./packages/banto-core/src/index.ts"],
       "@banto/daemon": ["./packages/banto-daemon/src/index.ts"],
+      "@banto/environment-pool": ["./packages/banto-environment-pool/src/index.ts"],
       "@banto/worker-pool": ["./packages/banto-worker-pool/src/index.ts"]
     }
   },

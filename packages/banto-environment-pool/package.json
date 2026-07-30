@@ -1,5 +1,5 @@
 {
-  "name": "@banto/daemon",
+  "name": "@banto/environment-pool",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -15,13 +15,6 @@
     "typecheck": "tsc -b --noEmit"
   },
   "dependencies": {
-    "@banto/core": "*",
-    "@banto/environment-pool": "*",
-    "@banto/worker-pool": "*",
-    "@mariozechner/pi-coding-agent": "^0.73.1",
-    "ws": "^8.21.1"
-  },
-  "devDependencies": {
-    "@types/ws": "^8.18.1"
+    "@banto/core": "*"
   }
 }

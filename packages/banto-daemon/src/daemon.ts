@@ -47,10 +47,18 @@ import {
   fileConflictTask,
   deriveOriginResolutionPairs,
 } from "./conflict-filer.js";
-import { EnvLedger, countLiveByProfile } from "./env-ledger.js";
-import type { EnvLedgerEntry } from "./env-ledger.js";
-import { runDriverVerb, resolveDriverPath, DEFAULT_DRIVER_TIMEOUT_MS } from "./env-driver-runner.js";
-import { decryptSops, resolveCredentialsPath } from "./sops.js";
+// 決定32・task-0033: 動作検証環境の実行能力は Environment Pool（独立モジュール）が持つ。
+// Kobo は当面ライブラリとして参照する（サービス利用への切り替えは別タスク）
+import {
+  EnvLedger,
+  countLiveByProfile,
+  runDriverVerb,
+  resolveDriverPath,
+  DEFAULT_DRIVER_TIMEOUT_MS,
+  decryptSops,
+  resolveCredentialsPath,
+} from "@banto/environment-pool";
+import type { EnvLedgerEntry } from "@banto/environment-pool";
 import type {
   ProvisionOutput,
   HealthcheckOutput,

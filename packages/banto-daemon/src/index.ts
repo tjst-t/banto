@@ -20,6 +20,23 @@ export type { PiRpcDriverOptions } from "@banto/worker-pool";
 export { SpawnLedger, isProcessAlive, killOrphanProcess } from "@banto/worker-pool";
 export type { LedgerEntry } from "@banto/worker-pool";
 
+// Environment Pool（決定32・task-0033）— 動作検証環境の実行能力。実体は独立モジュールで、
+// Kobo は当面ライブラリとして参照する。ここは既存の利用者のための再輸出で、実装は持たない
+export {
+  EnvLedger,
+  countLiveByProfile,
+  runDriverVerb,
+  resolveDriverPath,
+  DEFAULT_DRIVER_TIMEOUT_MS,
+  decryptSops,
+  resolveCredentialsPath,
+} from "@banto/environment-pool";
+export type {
+  EnvLedgerEntry,
+  DriverRunResult,
+  SopsDecryptResult,
+} from "@banto/environment-pool";
+
 // MergeGate — pre-merge checks (scope violation + verify command execution)
 export {
   checkScopeViolations,

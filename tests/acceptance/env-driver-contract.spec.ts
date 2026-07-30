@@ -31,7 +31,7 @@ import type { EnvHandle, ProvisionOutput, HealthcheckOutput, RunOutput, ListOutp
 
 const _thisDir = path.dirname(fileURLToPath(import.meta.url));
 const _repoRoot = path.resolve(_thisDir, "..", "..");
-const PROCESS_DRIVER_PATH = path.join(_repoRoot, "packages", "banto-daemon", "src", "process-driver.ts");
+const PROCESS_DRIVER_PATH = path.join(_repoRoot, "packages", "banto-environment-pool", "src", "process-driver.ts");
 const NODE = process.execPath;
 
 // ── Helper to invoke the driver ───────────────────────────────────────────────
