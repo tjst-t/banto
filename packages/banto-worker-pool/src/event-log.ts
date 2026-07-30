@@ -84,23 +84,6 @@ export type WorkerEventHandler = (event: WorkerEvent) => void;
 /** append に渡す形。id・at・kind はログが付ける。 */
 export type WorkerEventInput = Omit<WorkerEvent, "id" | "at" | "kind">;
 
-/**
- * 旧名の引き取り（pre-release の互換）。
- *
- * `worker_stopped` は決定30e で `worker_closed`（理由つき）に置き換えた。既に手元で
- * 動かした職人の記録が読めなくなると履歴が虫食いになるので、読むときだけ引き取る。
- * 追記側は新しい名前しか書かない。手元のログが入れ替わったら消してよい。
- */
-function adoptLegacy(event: WorkerEvent): WorkerEvent {
-  if ((event.type as string) !== "worker_stopped") return event;
-  return {
-    ...event,
-    type: "worker_closed",
-    kind: "fact",
-    data: { reason: "stopped", ...event.data },
-  };
-}
-
 function matches(event: WorkerEvent, filter: WorkerEventFilter | undefined): boolean {
   if (!filter) return true;
   if (filter.origin !== undefined && event.origin !== filter.origin) return false;
@@ -145,9 +128,7 @@ export class WorkerEventLog {
       if (line.trim().length === 0) continue;
       try {
         const parsed = JSON.parse(line) as WorkerEvent;
-        if (typeof parsed.id === "number" && typeof parsed.type === "string") {
-          events.push(adoptLegacy(parsed));
-        }
+        if (typeof parsed.id === "number" && typeof parsed.type === "string") events.push(parsed);
         else broken++;
       } catch {
         broken++;

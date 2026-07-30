@@ -1052,21 +1052,3 @@ describe("[task-0028/a3] セッションを読めない理由を黙らせない�
   });
 });
 
-describe("[task-0028] 旧名の記録も履歴に出る（pre-release の互換）", () => {
-  it("[task-0028/a3] worker_stopped で残っている記録を worker_closed として読む", async () => {
-    const worker = await pool.delegate(JOB);
-    // 決定30e より前の形式で書かれた記録を再現する
-    const legacy = {
-      id: 999, at: new Date().toISOString(), type: "worker_stopped", kind: "fact",
-      origin: "unknown", projectTag: "test", taskId: "task-0042",
-      sessionId: worker.sessionId, data: { pid: worker.pid },
-    };
-    fs.appendFileSync(path.join(dir, "worker-events.jsonl"), `${JSON.stringify(legacy)}\n`);
-
-    const reopened = new WorkerPool({ driver, dataDir: dir, defaultProjectTag: "test" });
-    const found = reopened.get(worker.sessionId);
-    assert.equal(found?.state, "closed", "古い記録でも履歴から消えない");
-    assert.equal(found?.closeReason, "stopped");
-    reopened.dispose();
-  });
-});
