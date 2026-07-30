@@ -32,8 +32,9 @@ import { BantoHostClient } from "./client.js";
 import { BANTO_DEFAULT_PORT, type ServerEvent } from "./protocol.js";
 import { BantoHostServer } from "./server.js";
 import { createMemoryTools } from "./memory-tools.js";
-import { createModuleRegistry } from "./module.js";
+import { CORE_ORIGIN, createModuleRegistry, resolveSkills, type SkillEntry } from "./module.js";
 import { createDemoModule } from "./modules/demo.js";
+import { createStudioModule } from "./modules/studio.js";
 import { createWorkspaceModule } from "./modules/workspace.js";
 import { workspaceRoot } from "./workspace.js";
 import { createSkillTools } from "./skill-tools.js";
@@ -95,6 +96,9 @@ async function serve(options: ServeOptions): Promise<void> {
   });
   const workerPoolModule = createWorkerPoolModule(workerPool, workerPoolUrl);
 
+  // 決定26 の層を解いた SKILL（番頭核＋モジュール）。studio はこれをそのまま見せる
+  const coreSkills: SkillEntry[] = skills.map((skill) => ({ skill, origin: CORE_ORIGIN }));
+
   const modules = createModuleRegistry([
     createWorkspaceModule(workspace),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Worker Pool は banto-host に
@@ -102,6 +106,14 @@ async function serve(options: ServeOptions): Promise<void> {
     workerPoolModule as any,
     createDemoModule(),
   ]);
+
+  // studio は他モジュールの SKILL も見せるので、レジストリが揃ってから登録する
+  modules.register(
+    createStudioModule({
+      memory,
+      skills: resolveSkills([coreSkills, modules.skills()]),
+    })
+  );
 
   const catalog = createCanvasCatalog(modules.views());
   const canvas = new Canvas(catalog);

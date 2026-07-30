@@ -10,6 +10,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Type } from "typebox";
+import { JsonlMemoryStore } from "@banto/core";
 
 import {
   BANTO_WS_PATH,
@@ -21,6 +22,7 @@ import {
   createModuleRegistry,
   createWorkspaceModule,
   createDemoModule,
+  createStudioModule,
   defineNamespacedTool,
   moduleDomains,
   resolveSkills,
@@ -359,5 +361,110 @@ describe("[task-0015/a3] UI へモジュールの接続情報が渡る", () => {
     assert.ok(welcome?.type === "welcome");
     assert.equal(welcome.catalog[0]!.module, CORE_ORIGIN);
     client.close();
+  });
+});
+
+// ── task-0031: studio モジュール（番頭の中身を見せる。提案 banto-studio-module より） ──
+
+describe("[task-0031] studio モジュール", () => {
+  let dir: string;
+  let memory: JsonlMemoryStore;
+
+  const studio = (): ReturnType<typeof createStudioModule> =>
+    createStudioModule({
+      memory,
+      skills: [
+        {
+          skill: {
+            name: "work-handoff",
+            description: "引き継ぎの手順",
+            filePath: path.join(dir, "handoff.md"),
+          },
+          origin: "core",
+        },
+        {
+          skill: {
+            name: "worker-delegation",
+            description: "委譲の手順",
+            filePath: path.join(dir, "missing.md"),
+          },
+          origin: "worker-pool",
+        },
+      ],
+    });
+
+  const run = async (
+    module: ReturnType<typeof createStudioModule>,
+    name: string,
+    args: Record<string, unknown> = {}
+  ): Promise<Record<string, unknown>> => {
+    const tool = module.internalTools!.find((t) => t.name === name)!;
+    const out = await tool.execute("c1", args as never, undefined, undefined, {} as never);
+    return (out as { details: Record<string, unknown> }).details;
+  };
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-studio-"));
+    memory = new JsonlMemoryStore(path.join(dir, "memory.jsonl"));
+    fs.writeFileSync(path.join(dir, "handoff.md"), "# 引き継ぎ\n\n手順はここ\n");
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("[task-0031] 記憶とSKILLのGUIを提供する", () => {
+    assert.deepEqual(studio().views.map((v) => v.kind).sort(), ["memory.viewer", "skill.viewer"]);
+  });
+
+  it("[task-0031] 番頭には Tool を渡さない（memory.*/skill.* は中核の持ち物）", () => {
+    // 決定27a: ドメインの所有と、GUIのための閲覧口を混ぜない
+    assert.deepEqual(studio().tools, []);
+    assert.deepEqual(
+      studio().internalTools!.map((t) => t.name).sort(),
+      ["studio.memory", "studio.skills"]
+    );
+  });
+
+  it("[task-0031] 記憶を一覧で返す", async () => {
+    memory.save({ kind: "preference", text: "結論から話す" });
+    memory.save({ kind: "habit", text: "毎朝ログを見る" });
+
+    const all = (await run(studio(), "studio.memory"))["records"] as Array<{ text: string }>;
+    assert.equal(all.length, 2);
+
+    const prefs = (await run(studio(), "studio.memory", { kind: "preference" }))["records"] as Array<{
+      text: string;
+    }>;
+    assert.deepEqual(prefs.map((r) => r.text), ["結論から話す"], "種別で絞れる");
+  });
+
+  it("[task-0031] 訂正済みの記憶は既定で隠れ、求めれば履歴として見える", async () => {
+    const first = memory.save({ kind: "preference", text: "簡潔に" });
+    memory.supersede(first.id, { kind: "preference", text: "簡潔に、ただし根拠は添える" });
+
+    const active = (await run(studio(), "studio.memory"))["records"] as Array<{ text: string }>;
+    assert.deepEqual(active.map((r) => r.text), ["簡潔に、ただし根拠は添える"]);
+
+    const withHistory = (await run(studio(), "studio.memory", { includeSuperseded: true }))[
+      "records"
+    ] as Array<{ text: string }>;
+    assert.equal(withHistory.length, 2);
+  });
+
+  it("[task-0031] SKILLの中身と出所を返す", async () => {
+    const skills = (await run(studio(), "studio.skills"))["skills"] as Array<Record<string, string>>;
+
+    const handoff = skills.find((s) => s["name"] === "work-handoff")!;
+    assert.equal(handoff["origin"], "core", "どの層から来たか分かる（決定26）");
+    assert.match(handoff["body"]!, /手順はここ/);
+  });
+
+  it("[task-0031] 読めないSKILLは黙って空にせず理由を返す（I2）", async () => {
+    const skills = (await run(studio(), "studio.skills"))["skills"] as Array<Record<string, string>>;
+    const broken = skills.find((s) => s["name"] === "worker-delegation")!;
+
+    assert.equal(broken["body"], undefined);
+    assert.match(broken["error"]!, /読めません/);
   });
 });

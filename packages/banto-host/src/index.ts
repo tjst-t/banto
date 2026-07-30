@@ -75,3 +75,4 @@ export { createDemoModule } from "./modules/demo.js";
 export { createModuleToolHandler } from "./module-serve.js";
 
 export { BANTO_ORIGIN, renderWorkerNotice, isNoticeworthy } from "./worker-notice.js";
+export { createStudioModule, STUDIO_BASE_URL } from "./modules/studio.js";
