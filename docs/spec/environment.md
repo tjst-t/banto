@@ -2,7 +2,8 @@
 id: spec-environment
 type: spec
 status: draft
-refs: [vision, principles, adr-XXXX-environment-contract]
+decided_by: po
+refs: [vision, principles, adr-0010]
 ---
 
 # Spec: 評価環境（Environment）
@@ -58,29 +59,33 @@ profiles:
 - ビルトインドライバは `process`（ローカルプロセス起動）と `docker`（compose）の2本のみ
 - ドライバの追加要件：管理下リソースには**taskIDプレフィックスの命名**を適用すること（例：`task-0042-staging`）
 
-## 3. Koboとの関係・エージェントからの利用
+## 3. Environment Pool との関係・エージェントからの利用
 
-- ドライバを起動するのは**常にKobo**。実行者エージェントは `env deploy staging` 等の**動詞ツール**（Extension Pack）を呼び、ツールはKoboへのリクエストに変換される
+> **改訂（ADR-0010 決定32、2026-07-30）**：本節は当初「ドライバを起動するのは常にKobo」としていたが、決定32 で `EnvDriver` の実行能力を Kobo から独立した **Environment Pool モジュール**へ切り出すと裁定した（決定23 の Worker Pool と同じ扱い）。守るべき不変条件は「Kobo」という固有名詞ではなく、**ドライバを回して結果を記録するのは依頼者ではない信頼された第三者である**こと（I1）。以下はその読み替え後の記述。
+
+- ドライバを起動するのは **Environment Pool**。依頼者（番頭・Kobo）は `env.deploy` 等の**動詞ツール**（決定9 の `env.*` ドメイン）を呼び、Environment Pool がドライバプロセスを起動して結果を台帳とログに記録する
+- **番頭は `env.*` を直接呼べる**（決定32c）。これにより番頭は Kobo 無しでも、機構が返した事実として検証結果を受け取れる——職人の自己申告に頼らずに済む（→ 決定29(a)）
+- **職人には直接経路を与えない**。職人は「成果を出す側」であり、自分の成果を自分で検証させると I1 が崩れる。検証は依頼元（番頭）が回す
 - エージェントプロセスとドライバプロセスは分離される。エージェントがドライバを直接実行する経路、Hypervisor/クラウドAPIを直接叩く経路は提供しない（→ I1、「ずるは不可能にする」）
-- レビューフローとの接続：タスクがreviewフェーズに入ると、Koboはタスク定義の `environment` をprovisionし、tmuxウィンドウのペイン2に接続する
+- レビューフローとの接続：タスクがreviewフェーズに入ると、Koboはタスク定義の `environment` を Environment Pool 経由でprovisionし、tmuxウィンドウのペイン2に接続する
 
 ## 4. 認証情報（credentials）
 
 原則：**credentialsはエージェントのコンテキストとツール結果に一度も現れない**。
 
 - 実体はsops等で暗号化管理。`environments.yaml` には参照名のみ
-- Koboが復号し、**ドライバプロセスの環境変数として直接渡す**（例：`PVE_URL` / `PVE_TOKEN_ID` / `PVE_TOKEN_SECRET`）
+- **Environment Pool** が復号鍵を持ち（ADR-0010 決定32d）、復号して**ドライバプロセスの環境変数として直接渡す**（例：`PVE_URL` / `PVE_TOKEN_ID` / `PVE_TOKEN_SECRET`）。復号値は Environment Pool のHTTP面の応答にもエージェントの文脈にも一度も現れない
 - 外部システム側のアカウントは**スコープ済み**にする：専用リソースプール/プレフィックス内の作成・削除のみ可能な権限に限定し、動詞が乱用されても被害がプール内で止まるようにする（→ §7）
 
 ## 5. 台帳・TTL・quota・照合
 
-制限の執行はドライバではなく**Koboの台帳**が行う。
+制限の執行はドライバではなく**Environment Pool の台帳**が行う（ADR-0010 決定32e：作った者が片付ける。番頭が Kobo 無しで provision できる以上、台帳と強制 teardown はモジュール側に無いと誰も片付けない）。
 
-- **台帳**：provision成功時、handleを台帳（永続化）に登録。タスク終了時にKoboがteardownを保証する
-- **quota**：provision要求時に台帳を参照し、`max_instances` 超過なら拒否
+- **台帳**：provision成功時、handleを台帳（永続化）に登録。タスク終了時に Environment Pool がteardownを保証する
+- **quota**：provision要求時に台帳を参照し、`max_instances` 超過なら拒否。上限を誰が決めるか（能力側の既定か、Kobo の統治裁定か）は実装時に詰める（→ D9：外部VMコストは one-way な副作用）
 - **TTL**：超過した環境は強制teardown
 - **失敗処理**：teardown失敗はリトライし、なお失敗ならケイデンス議題に載せる
-- **照合（reconcile）**：Koboは定期的に各ドライバの `list` と台帳を突合する。台帳に無い実リソース（Koboクラッシュ中に生じた孤児等）を検出し、ケイデンス議題に載せる
+- **照合（reconcile）**：Environment Pool は定期的に各ドライバの `list` と台帳を突合する。台帳に無い実リソース（クラッシュ中に生じた孤児等）を検出し、ケイデンス議題に載せる
 - 外部リソースの消し忘れは金銭的実害が出るため、本節が本仕様で最も優先度の高い機構である（→ I3）
 
 ## 6. ログ・成果物
