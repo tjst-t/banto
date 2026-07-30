@@ -125,3 +125,22 @@ export type {
   MemoryQuery,
   MemoryKind,
 } from "./memory.js";
+
+// モジュール間呼び出し（ADR-0010 決定27b）。Kobo など banto-host に依存できない側からも使う
+export {
+  moduleRegistryPath,
+  loadModuleRegistryConfig,
+  resolveModuleEndpoint,
+  createModuleClient,
+} from "./module-invocation.js";
+export {
+  MODULE_TOOL_PATH,
+  type ModuleToolRequest,
+  type ModuleToolResult,
+  type ModuleToolError,
+} from "./module-protocol.js";
+export type {
+  ModuleRegistryEntry,
+  ModuleRegistryConfig,
+  ModuleClient,
+} from "./module-invocation.js";

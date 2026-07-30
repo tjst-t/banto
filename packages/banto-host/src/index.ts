@@ -66,3 +66,4 @@ export {
 } from "./module.js";
 export { createWorkspaceModule, WORKSPACE_BASE_URL } from "./modules/workspace.js";
 export { createDemoModule } from "./modules/demo.js";
+export { createModuleToolHandler } from "./module-serve.js";

@@ -7,6 +7,9 @@
  * **すべて閲覧専用**。stage / commit / branch作成などの変更操作は持たない——変更は
  * 職人へ委譲し（D10）、また Kobo のマージキュー・マージゲートと責務が競合するため（決定24）。
  *
+ * 各Toolは `content`（番頭・LLM向けのテキスト）と `details`（UI向けの構造化データ）の
+ * 両方を返す。ロジックは1箇所にあり、その上に口が2つ出る形（D5・決定25）。
+ *
  * D6: node:child_process のみ。git はシェルを介さず引数配列で呼ぶ（注入の余地を作らない）。
  * I2: git の異常終了は握りつぶさず stderr を添えて投げる。
  */
@@ -55,7 +58,15 @@ export function createGitTools(repoRoot: string): NamespacedToolDefinition[] {
     parameters: Type.Object({}),
     async execute() {
       const out = await git(repoRoot, ["status", "--porcelain=v1", "-b"]);
-      return { content: [{ type: "text" as const, text: bounded(out, "変更なし") }], details: {} };
+      const lines = out.trimEnd().split("\n").filter((l) => l.length > 0);
+      const branchLine = lines.find((l) => l.startsWith("##"));
+      const details = {
+        branch: branchLine?.replace(/^##\s*/, "").split(/\.{3}|\s/)[0] ?? "",
+        files: lines
+          .filter((l) => !l.startsWith("##"))
+          .map((l) => ({ status: l.slice(0, 2).trim(), path: l.slice(3) })),
+      };
+      return { content: [{ type: "text" as const, text: bounded(out, "変更なし") }], details };
     },
   });
 
@@ -84,7 +95,10 @@ export function createGitTools(repoRoot: string): NamespacedToolDefinition[] {
       if (params.path) args.push("--", params.path);
 
       const out = await git(repoRoot, args);
-      return { content: [{ type: "text" as const, text: bounded(out, "差分なし") }], details: {} };
+      return {
+        content: [{ type: "text" as const, text: bounded(out, "差分なし") }],
+        details: { diff: out.trimEnd(), stat: params.stat === true, ...(params.path ? { path: params.path } : {}) },
+      };
     },
   });
 
@@ -104,7 +118,20 @@ export function createGitTools(repoRoot: string): NamespacedToolDefinition[] {
       if (params.path) args.push("--", params.path);
 
       const out = await git(repoRoot, args);
-      return { content: [{ type: "text" as const, text: bounded(out, "コミットなし") }], details: {} };
+      const commits = out
+        .trimEnd()
+        .split("\n")
+        .filter((l) => l.length > 0)
+        .map((line) => {
+          const m = /^(\S+) (\S+) (.*?) — (.*)$/.exec(line);
+          return m
+            ? { hash: m[1]!, date: m[2]!, author: m[3]!, subject: m[4]! }
+            : { hash: "", date: "", author: "", subject: line };
+        });
+      return {
+        content: [{ type: "text" as const, text: bounded(out, "コミットなし") }],
+        details: { commits },
+      };
     },
   });
 
@@ -126,14 +153,19 @@ export function createGitTools(repoRoot: string): NamespacedToolDefinition[] {
 
       const out = await git(repoRoot, args);
       const current = (await git(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
-      const text = bounded(out, "ブランチなし")
+      const rows = out
+        .trimEnd()
         .split("\n")
+        .filter((l) => l.length > 0)
         .map((line) => {
           const [name = "", date = "", subject = ""] = line.split("\t");
-          return `${name === current ? "*" : " "} ${name}  ${date}  ${subject}`;
-        })
-        .join("\n");
-      return { content: [{ type: "text" as const, text }], details: {} };
+          return { name, date, subject, current: name === current };
+        });
+      const text =
+        rows.length === 0
+          ? "ブランチなし"
+          : rows.map((r) => `${r.current ? "*" : " "} ${r.name}  ${r.date}  ${r.subject}`).join("\n");
+      return { content: [{ type: "text" as const, text }], details: { current, branches: rows } };
     },
   });
 
@@ -156,7 +188,10 @@ export function createGitTools(repoRoot: string): NamespacedToolDefinition[] {
       args.push("--", params.path);
 
       const out = await git(repoRoot, args);
-      return { content: [{ type: "text" as const, text: bounded(out, "(空)") }], details: {} };
+      return {
+        content: [{ type: "text" as const, text: bounded(out, "(空)") }],
+        details: { path: params.path, blame: out.trimEnd() },
+      };
     },
   });
 

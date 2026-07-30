@@ -9,6 +9,8 @@
 import type { ComponentType } from "react";
 import { DemoHello } from "./DemoHello.js";
 import { DemoClock } from "./DemoClock.js";
+import { FileBrowser } from "./FileBrowser.js";
+import { GitViewer } from "./GitViewer.js";
 
 /** キャンバスビューが受け取る props。params は canvas.open で渡されたもの。 */
 export interface CanvasViewProps {
@@ -30,6 +32,10 @@ export interface CanvasViewProps {
  * Kobo の Extension Pack が提供するコンポーネントも、将来ここに合流する。
  */
 const REGISTRY: Record<string, ComponentType<CanvasViewProps>> = {
+  // 基本GUIセット（workspace モジュール提供。決定18・24）
+  FileBrowser,
+  GitViewer,
+  // テスト用（実物が揃ったら外す）
   DemoHello,
   DemoClock,
 };

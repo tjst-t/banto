@@ -28,10 +28,14 @@ export default defineConfig({
     // コンテナ外へ公開する（リバースプロキシから届くようにする）
     host: true,
     allowedHosts,
-    // WS をこのサーバ経由で番頭ホストへ中継する。UI は同一オリジンの `/ws` に繋げばよく、
-    // プロキシ配下でも公開が1ポートで済む（番頭ホストを別途公開しなくてよい）。
+    // WS と組み込みモジュールのデータAPI（決定25）を番頭ホストへ中継する。UI は同一
+    // オリジンに繋げばよく、リバースプロキシ配下でも公開が1ポートで済む。
+    //
+    // 注意: /api は「組み込みモジュールの提供元が Banto ホスト自身」であるため中継先が
+    // ホストになる（決定25）。外部モジュールのGUIは、そのモジュールの絶対URLへ直接繋ぐ。
     proxy: {
       "/ws": { target: BANTO_HOST, ws: true, changeOrigin: true },
+      "/api": { target: BANTO_HOST, changeOrigin: true },
     },
   },
 });

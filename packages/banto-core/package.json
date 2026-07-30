@@ -8,6 +8,9 @@
   "exports": {
     ".": {
       "default": "./src/index.ts"
+    },
+    "./module-protocol": {
+      "default": "./src/module-protocol.ts"
     }
   },
   "scripts": {

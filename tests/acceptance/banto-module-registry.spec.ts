@@ -254,10 +254,17 @@ describe("[task-0015] 組み込みモジュール", () => {
   });
 
   it("[task-0015] 組み込み2つを同時に登録しても衝突しない", () => {
-    const registry = createModuleRegistry([createWorkspaceModule(root), createDemoModule()]);
+    const workspace = createWorkspaceModule(root);
+    const demo = createDemoModule();
+    const registry = createModuleRegistry([workspace, demo]);
+
     assert.deepEqual(registry.list().map((m) => m.name), ["workspace", "demo"]);
-    assert.equal(registry.views().length, 2);
-    assert.equal(registry.tools().length, 7);
+    // 件数を直書きすると片方が増えたときに意味の無い失敗になるので、内訳から導く
+    assert.equal(registry.views().length, workspace.views.length + demo.views.length);
+    assert.equal(registry.tools().length, workspace.tools.length + demo.tools.length);
+    // kind が重複していないこと（衝突しないことの実体）
+    const kinds = registry.views().map((v) => v.kind);
+    assert.equal(new Set(kinds).size, kinds.length);
   });
 });
 

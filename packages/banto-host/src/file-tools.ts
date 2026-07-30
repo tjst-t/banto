@@ -6,6 +6,9 @@
  *
  * **閲覧専用**。書き込み・削除は持たない。番頭はファイルを変更せず職人へ委譲する（D10）。
  *
+ * 各Toolは `content`（番頭・LLM向けのテキスト）と `details`（UI向けの構造化データ）の
+ * 両方を返す。ロジックは1箇所にあり、その上に口が2つ出る形（D5・決定25）。
+ *
  * D6: node:fs / node:path のみ。
  * I2: 範囲外・不在・バイナリは黙って空を返さずエラーまたは明示的な断りを返す。
  */
@@ -77,7 +80,19 @@ export function createFileTools(root: string): NamespacedToolDefinition[] {
 
       const header = `${toWorkspaceRelative(root, target)} — ${sorted.length} 件`;
       const text = lines.length === 0 ? `${header}\n(空)` : `${header}\n${lines.join("\n")}`;
-      return { content: [{ type: "text" as const, text }], details: {} };
+
+      // details は UI 向けの構造化データ（決定25：人はモジュールのデータAPIから取る）
+      const details = {
+        path: toWorkspaceRelative(root, target),
+        total: sorted.length,
+        truncated: sorted.length > shown.length,
+        entries: shown.map((entry) => ({
+          name: entry.name,
+          type: entry.isDirectory() ? ("dir" as const) : ("file" as const),
+          size: entry.isDirectory() ? undefined : fs.statSync(path.join(target, entry.name)).size,
+        })),
+      };
+      return { content: [{ type: "text" as const, text }], details };
     },
   });
 
@@ -113,7 +128,7 @@ export function createFileTools(root: string): NamespacedToolDefinition[] {
               text: `${params.path} はバイナリのため表示できません（${stat.size} bytes）`,
             },
           ],
-          details: {},
+          details: { path: params.path, binary: true, size: stat.size },
         };
       }
 
@@ -131,7 +146,16 @@ export function createFileTools(root: string): NamespacedToolDefinition[] {
       }
 
       const text = [shown.join("\n"), ...notes].join("\n");
-      return { content: [{ type: "text" as const, text }], details: {} };
+      const details = {
+        path: params.path,
+        binary: false,
+        size: stat.size,
+        content: shown.join("\n"),
+        totalLines: allLines.length,
+        shownLines: shown.length,
+        truncated: notes.length > 0,
+      };
+      return { content: [{ type: "text" as const, text }], details };
     },
   });
 

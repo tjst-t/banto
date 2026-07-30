@@ -15,6 +15,7 @@ import { WebSocketServer, WebSocket } from "ws";
 
 import type { Canvas, CanvasCatalog } from "./canvas.js";
 import { CORE_ORIGIN, type ModuleRegistry } from "./module.js";
+import { createModuleToolHandler } from "./module-serve.js";
 import {
   BANTO_DEFAULT_PORT,
   BANTO_WS_PATH,
@@ -111,16 +112,29 @@ export class BantoHostServer {
 
   /** サーバを起動し、待ち受け開始まで待つ。 */
   static async start(options: BantoHostServerOptions): Promise<BantoHostServer> {
+    // 組み込みモジュールのデータAPI（決定25：組み込みの提供元は Banto ホスト自身）。
+    // UI はここからデータを取る——番頭の Tool 経路は通らない。
+    const serveModuleTool = options.modules ? createModuleToolHandler(options.modules) : undefined;
+
     const httpServer = http.createServer((req, res) => {
-      // 死活確認のみ。番頭との対話はすべて WS 側（プロトコルを1本に保つ）。
-      if (req.method === "GET" && req.url === "/health") {
-        const body = JSON.stringify({ ok: true });
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(body);
-        return;
-      }
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "not found" }));
+      void (async () => {
+        if (req.method === "GET" && req.url === "/health") {
+          const body = JSON.stringify({ ok: true });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(body);
+          return;
+        }
+        if (serveModuleTool && (await serveModuleTool(req, res))) return;
+
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "not found" }));
+      })().catch((err: unknown) => {
+        // I2: ハンドラの例外を黙って落とさず 500 で返す
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: String(err) }));
+        }
+      });
     });
 
     const server = new BantoHostServer(options, httpServer);

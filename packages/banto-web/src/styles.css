@@ -180,3 +180,71 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .markdown hr { border: none; border-top: 1px solid var(--line); margin: 12px 0; }
 
 .catalog-module { color: var(--ink-faint); font-family: var(--font-mono); font-size: 0.85em; }
+
+/* ── 基本GUIセット：ファイル閲覧 ── */
+.fb { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: 10px; }
+.fb-bar { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.fb-up {
+  font: inherit; font-size: 11.5px; padding: 3px 10px; border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--surface);
+}
+.fb-up:disabled { opacity: 0.4; cursor: default; }
+.fb-path { font-size: 12.5px; font-weight: 700; }
+.fb-count { font-size: 11px; color: var(--ink-faint); margin-left: auto; }
+.fb-body { display: flex; gap: 14px; flex: 1; min-height: 0; }
+.fb-list {
+  list-style: none; margin: 0; padding: 6px; width: 290px; flex-shrink: 0;
+  overflow-y: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+}
+.fb-entry {
+  display: flex; align-items: center; gap: 7px; width: 100%; text-align: left;
+  font: inherit; font-size: 12.5px; padding: 4px 7px; border: none; border-radius: 6px;
+  background: none; cursor: pointer; color: var(--ink);
+}
+.fb-entry:hover { background: var(--bg); }
+.fb-entry.is-dir { font-weight: 700; }
+.fb-entry.is-selected { background: var(--accent); color: #fff; }
+.fb-icon { flex-shrink: 0; }
+.fb-size { margin-left: auto; font-size: 10.5px; color: var(--ink-faint); font-family: var(--font-mono); }
+.fb-entry.is-selected .fb-size { color: rgba(255,255,255,0.7); }
+.fb-preview { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.fb-preview-head { font-size: 11.5px; }
+.fb-code {
+  flex: 1; min-height: 0; overflow: auto; margin: 0;
+  background: #16140f; color: #d8d4c4; border-radius: 10px; padding: 12px 14px;
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.65;
+}
+.fb-muted { color: var(--ink-faint); font-size: 12.5px; }
+.fb-error {
+  font-size: 12.5px; color: var(--danger); background: rgba(163,58,42,0.07);
+  border: 1px solid rgba(163,58,42,0.3); padding: 8px 12px; border-radius: 8px;
+}
+
+/* ── 基本GUIセット：Git閲覧 ── */
+.gv { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: 12px; }
+.gv-bar { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.gv-tab {
+  font: inherit; font-size: 12px; padding: 4px 14px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink-faint);
+}
+.gv-tab.is-active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+.gv-branch { margin-left: auto; font-size: 11.5px; color: var(--ink-faint); }
+.gv-table { border-collapse: collapse; font-size: 12px; }
+.gv-table th, .gv-table td { border: 1px solid var(--line); padding: 4px 10px; text-align: left; }
+.gv-table th { background: var(--surface); font-weight: 700; }
+.gv-diff {
+  flex: 1; min-height: 0; overflow: auto; margin: 0;
+  background: #16140f; color: #b9b4a4; border-radius: 10px; padding: 12px 14px;
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.6;
+}
+.gv-add { color: #7fb069; }
+.gv-del { color: #d97b6c; }
+.gv-hunk { color: #7a9cc6; }
+.gv-log { list-style: none; margin: 0; padding: 0; overflow-y: auto; font-size: 12.5px; }
+.gv-log li {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 6px 2px; border-bottom: 1px solid var(--line);
+}
+.gv-hash { font-family: var(--font-mono); font-size: 11.5px; color: var(--accent); flex-shrink: 0; }
+.gv-subject { flex: 1; min-width: 0; }
+.gv-meta { font-size: 10.5px; color: var(--ink-faint); flex-shrink: 0; }
