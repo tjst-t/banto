@@ -1020,3 +1020,53 @@ describe("[task-0028/a4] 起こし直した職人は「畳んだまま」に見�
     assert.equal(pool.events().filter((e) => e.type === "worker_closed").length, 2);
   });
 });
+
+describe("[task-0028/a3] セッションを読めない理由を黙らせない（I2）", () => {
+  it("[task-0028/a3] 在り処が分からない職人は「出力なし」ではなくエラー", async () => {
+    const worker = await pool.delegate(JOB);
+    await pool.close(worker.sessionId);
+    // sessionPath を記録する前に起こされた職人を再現する（起動イベントから落とす）
+    const file = path.join(dir, "worker-events.jsonl");
+    const kept = fs
+      .readFileSync(file, "utf-8")
+      .split("\n")
+      .filter((l) => l.trim().length > 0)
+      .map((l) => {
+        const e = JSON.parse(l) as { type: string; data: Record<string, unknown> };
+        if (e.type === "worker_started") delete e.data["sessionPath"];
+        return JSON.stringify(e);
+      });
+    fs.writeFileSync(file, `${kept.join("\n")}\n`);
+
+    const reopened = new WorkerPool({ driver, dataDir: dir, defaultProjectTag: "test" });
+    assert.throws(() => reopened.attach(worker.sessionId), /在り処が記録されていません/);
+    reopened.dispose();
+  });
+
+  it("[task-0028/a3] 畳んだ職人のセッションは普通に読める", async () => {
+    const worker = await pool.delegate(JOB);
+    fs.writeFileSync(worker.sessionPath, "記録\n");
+    await pool.close(worker.sessionId);
+
+    assert.deepEqual(pool.attach(worker.sessionId).lines, ["記録"]);
+  });
+});
+
+describe("[task-0028] 旧名の記録も履歴に出る（pre-release の互換）", () => {
+  it("[task-0028/a3] worker_stopped で残っている記録を worker_closed として読む", async () => {
+    const worker = await pool.delegate(JOB);
+    // 決定30e より前の形式で書かれた記録を再現する
+    const legacy = {
+      id: 999, at: new Date().toISOString(), type: "worker_stopped", kind: "fact",
+      origin: "unknown", projectTag: "test", taskId: "task-0042",
+      sessionId: worker.sessionId, data: { pid: worker.pid },
+    };
+    fs.appendFileSync(path.join(dir, "worker-events.jsonl"), `${JSON.stringify(legacy)}\n`);
+
+    const reopened = new WorkerPool({ driver, dataDir: dir, defaultProjectTag: "test" });
+    const found = reopened.get(worker.sessionId);
+    assert.equal(found?.state, "closed", "古い記録でも履歴から消えない");
+    assert.equal(found?.closeReason, "stopped");
+    reopened.dispose();
+  });
+});

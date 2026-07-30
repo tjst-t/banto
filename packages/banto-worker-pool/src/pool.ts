@@ -688,9 +688,18 @@ export class WorkerPool {
    */
   attach(sessionId: string, tailLines = 200): { lines: string[]; truncated: boolean } {
     const worker = this.requireWorker(sessionId);
+    // I2: 「まだ何も書かれていない」と「どこにあるか分からない」を混同しない。
+    //     後者を空で返すと、画面には「出力がありません」と出て原因に辿り着けない
+    if (worker.sessionPath.length === 0) {
+      throw new Error(
+        `Worker "${sessionId}" のセッションの在り処が記録されていません。` +
+          "決定30c より前に起こされた職人の可能性があります。"
+      );
+    }
     if (!fs.existsSync(worker.sessionPath)) {
-      // I2: まだ何も書かれていない状態と、ファイルを見失った状態を混同しない
-      return { lines: [], truncated: false };
+      throw new Error(
+        `Worker "${sessionId}" のセッションファイルが見つかりません: ${worker.sessionPath}`
+      );
     }
     const all = fs
       .readFileSync(worker.sessionPath, "utf-8")
