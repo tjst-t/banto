@@ -9,7 +9,7 @@
 import { useState } from "react";
 import type { CanvasViewProps } from "./registry.js";
 
-export function DemoHello({ params, tabId, kind }: CanvasViewProps): React.ReactElement {
+export function DemoHello({ params, tabId, kind, module, endpoint }: CanvasViewProps): React.ReactElement {
   const [count, setCount] = useState(0);
 
   return (
@@ -24,6 +24,10 @@ export function DemoHello({ params, tabId, kind }: CanvasViewProps): React.React
         <dd><code>{kind}</code></dd>
         <dt>tabId</dt>
         <dd><code>{tabId}</code></dd>
+        <dt>module</dt>
+        <dd><code>{module}</code></dd>
+        <dt>endpoint</dt>
+        <dd><code>{endpoint || "(なし)"}</code></dd>
       </dl>
 
       <h3 className="demo-subtitle">受け取った params</h3>

@@ -15,6 +15,14 @@ export interface CanvasViewProps {
   params: Record<string, unknown>;
   tabId: string;
   kind: string;
+  /** このGUIを提供しているモジュール名（決定25・27）。 */
+  module: string;
+  /**
+   * そのモジュールへの到達先（決定25）。コンポーネントはデータをここから取る——
+   * エンドポイントを直書きしない。相対パスなら自分のオリジンに解決される。
+   * データ取得を伴うコンポーネントの実装は task-0016 以降。
+   */
+  endpoint: string;
 }
 
 /**

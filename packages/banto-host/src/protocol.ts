@@ -61,6 +61,14 @@ export interface CatalogEntryView {
   component: string;
   category?: string;
   icon?: string;
+  /** このGUIを提供しているモジュール名（決定25・27）。 */
+  module: string;
+  /**
+   * そのモジュールへの到達先（決定25）。UI はここからデータを取りに行く——
+   * コンポーネント側にエンドポイントを直書きしない。組み込みモジュールは
+   * `/api/...` のような相対パスで、UI が自分のオリジンに解決する。
+   */
+  endpoint: string;
 }
 
 /** 接続直後に1度だけ送られる。現在のセッション情報。 */

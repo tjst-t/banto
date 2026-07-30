@@ -54,3 +54,15 @@ export type { TranscriptEntry, HistoryEvent, PoMessageEvent } from "./protocol.j
 export { createFileTools } from "./file-tools.js";
 export { createGitTools } from "./git-tools.js";
 export { workspaceRoot, resolveInWorkspace, toWorkspaceRelative } from "./workspace.js";
+export {
+  createModuleRegistry,
+  resolveSkills,
+  moduleDomains,
+  CORE_ORIGIN,
+  type BantoModule,
+  type ModuleEndpoint,
+  type ModuleRegistry,
+  type SkillEntry,
+} from "./module.js";
+export { createWorkspaceModule, WORKSPACE_BASE_URL } from "./modules/workspace.js";
+export { createDemoModule } from "./modules/demo.js";

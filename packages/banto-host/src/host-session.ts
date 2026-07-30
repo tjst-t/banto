@@ -20,6 +20,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import type { MemoryStore } from "@banto/core";
 import { createMemoryTools, renderMemoryForPrompt } from "./memory-tools.js";
+import { CORE_ORIGIN, resolveSkills, type SkillEntry } from "./module.js";
 import { createSkillTools } from "./skill-tools.js";
 import { loadBantoSkills, renderSkillsForPrompt } from "./skills.js";
 import { toWireTool, type NamespacedToolDefinition } from "./tool-registry.js";
@@ -36,10 +37,16 @@ export interface CreateBantoHostSessionOptions {
    */
   memory?: MemoryStore;
   /**
-   * 番頭のSKILL（手続き記憶）を読み込むか。既定 true。
+   * 番頭核のSKILL（手続き記憶）を読み込むか。既定 true。
    * false にすると `packages/banto-host/skills/` を読まない（テスト用）。
    */
   loadBantoSkills?: boolean;
+  /**
+   * モジュールが提供するSKILL（決定26の第2層）。由来つきで渡す。
+   * 優先順位は「番頭の学習層 > 既定」だが、学習層は task-0017 で入るため、
+   * ここでは番頭核とモジュールの既定を同列に解決する。
+   */
+  moduleSkills?: SkillEntry[];
   /** Working directory for resource discovery. Default: process.cwd() */
   cwd?: string;
   /** Global pi config directory. Default: ~/.pi/agent */
@@ -70,7 +77,14 @@ export async function createBantoHostSession(
 
   // SKILLは一覧だけをプロンプトに載せ、本体は skill.read で読ませる（progressive disclosure）。
   // pi 側の SKILL 機構は read ツールを前提とするため使わない（理由は skills.ts 冒頭）。
-  const skills = options.loadBantoSkills === false ? [] : loadBantoSkills();
+  //
+  // 決定26: 番頭核の既定とモジュールの既定を、優先順位つきで解決する。学習層（task-0017）は
+  // resolveSkills の先頭に差し込むだけで効くので、ここの形は変わらない。
+  const coreSkills: SkillEntry[] =
+    options.loadBantoSkills === false
+      ? []
+      : loadBantoSkills().map((skill) => ({ skill, origin: CORE_ORIGIN }));
+  const skills = resolveSkills([coreSkills, options.moduleSkills ?? []]).map((e) => e.skill);
 
   // 記憶とSKILL一覧をシステムプロンプトの末尾に足す。
   // 記憶はセッション開始時点の内容を焼き込むので、以後の保存分は memory.recall で読み直す。

@@ -132,13 +132,20 @@ export function App(): React.ReactElement {
                     {session.catalog.map((entry) => (
                       <li key={entry.kind}>
                         <code>{entry.kind}</code> — {entry.title}
+                        <span className="catalog-module"> / {entry.module}</span>
                       </li>
                     ))}
                   </ul>
                 )}
               </div>
             ) : ActiveView ? (
-              <ActiveView params={activeTab.params} tabId={activeTab.id} kind={activeTab.kind} />
+              <ActiveView
+                params={activeTab.params}
+                tabId={activeTab.id}
+                kind={activeTab.kind}
+                module={activeSpec!.module}
+                endpoint={activeSpec!.endpoint}
+              />
             ) : (
               // I2: カタログにあるのにUIが解決できない＝配線漏れ。黙って空にせず理由を出す
               <div className="canvas-empty">

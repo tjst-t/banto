@@ -14,6 +14,7 @@ import * as http from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 
 import type { Canvas, CanvasCatalog } from "./canvas.js";
+import { CORE_ORIGIN, type ModuleRegistry } from "./module.js";
 import {
   BANTO_DEFAULT_PORT,
   BANTO_WS_PATH,
@@ -50,6 +51,11 @@ export interface BantoHostServerOptions {
   /** GUIカタログ。welcome でクライアントへ渡し、UIがコンポーネントを解決する。 */
   catalog?: CanvasCatalog;
   /**
+   * モジュールの帳簿。渡すと welcome のカタログエントリに、各GUIの提供元モジュールと
+   * その接続情報が載る（決定25：UIはコンポーネントに直書きせずここから到達先を得る）。
+   */
+  modules?: ModuleRegistry;
+  /**
    * 直近のターンでプロバイダ側エラーがあれば返す。turn_end に載せる。
    * pi の場合は `() => session.agent.state.errorMessage`。
    */
@@ -78,6 +84,7 @@ export class BantoHostServer {
   private transcript: TranscriptEntry[] = [];
   private readonly canvas: Canvas | undefined;
   private readonly catalog: CanvasCatalog | undefined;
+  private readonly modules: ModuleRegistry | undefined;
   private readonly clients = new Set<WebSocket>();
   private readonly unsubscribe: () => void;
   private readonly unsubscribeCanvas: () => void;
@@ -89,6 +96,7 @@ export class BantoHostServer {
     this.clearHistory = options.clearHistory ?? ((): void => undefined);
     this.canvas = options.canvas;
     this.catalog = options.catalog;
+    this.modules = options.modules;
     this.httpServer = httpServer;
     this.wss = new WebSocketServer({ server: httpServer, path: BANTO_WS_PATH });
 
@@ -156,14 +164,20 @@ export class BantoHostServer {
       type: "welcome",
       sessionId: this.session.sessionId,
       tools: this.toolNames,
-      catalog: (this.catalog?.list() ?? []).map((spec) => ({
-        kind: spec.kind,
-        title: spec.title,
-        description: spec.description,
-        component: spec.component,
-        ...(spec.category ? { category: spec.category } : {}),
-        ...(spec.icon ? { icon: spec.icon } : {}),
-      })),
+      catalog: (this.catalog?.list() ?? []).map((spec) => {
+        const owner = this.modules?.moduleForView(spec.kind);
+        return {
+          kind: spec.kind,
+          title: spec.title,
+          description: spec.description,
+          component: spec.component,
+          ...(spec.category ? { category: spec.category } : {}),
+          ...(spec.icon ? { icon: spec.icon } : {}),
+          // 決定25: UIはここから到達先を得る。モジュール未登録のGUIは中核由来として扱う
+          module: owner?.name ?? CORE_ORIGIN,
+          endpoint: owner?.endpoint.baseUrl ?? "",
+        };
+      }),
     });
     // リロードしても会話が消えず、途中から繋いだクライアントも履歴を見られる
     this.send(ws, { type: "history", entries: this.transcript });

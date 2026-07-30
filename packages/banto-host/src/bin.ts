@@ -24,9 +24,10 @@ import { createBantoHostSession } from "./host-session.js";
 import { BantoHostClient } from "./client.js";
 import { BANTO_DEFAULT_PORT, type ServerEvent } from "./protocol.js";
 import { BantoHostServer } from "./server.js";
-import { createFileTools } from "./file-tools.js";
-import { createGitTools } from "./git-tools.js";
 import { createMemoryTools } from "./memory-tools.js";
+import { createModuleRegistry } from "./module.js";
+import { createDemoModule } from "./modules/demo.js";
+import { createWorkspaceModule } from "./modules/workspace.js";
 import { workspaceRoot } from "./workspace.js";
 import { createSkillTools } from "./skill-tools.js";
 import { loadBantoSkills } from "./skills.js";
@@ -55,8 +56,13 @@ interface ServeOptions {
 async function serve(options: ServeOptions): Promise<void> {
   const memory = new JsonlMemoryStore(memoryPath());
   const skills = loadBantoSkills();
-  // 当面のカタログはテスト用GUIのみ。基本GUIセット（決定18・24）とKobo由来のGUIは後続。
-  const catalog = createCanvasCatalog(demoCanvasViews);
+  const workspace = workspaceRoot();
+
+  // 決定25・27: モジュールを1箇所で登録する。Tool・GUI・SKILL はここから束ねて配る。
+  // Kobo は接続後に、Worker Pool は epic-0005 の後に、同じ口から登録される。
+  const modules = createModuleRegistry([createWorkspaceModule(workspace), createDemoModule()]);
+
+  const catalog = createCanvasCatalog(modules.views());
   const canvas = new Canvas(catalog);
 
   // I2: 指定されたモデルが見つからないなら黙って別のモデルに落とさず止める。
@@ -70,17 +76,14 @@ async function serve(options: ServeOptions): Promise<void> {
     if (!model) throw new Error(`unknown model: ${options.provider}/${options.model}`);
   }
 
-  const workspace = workspaceRoot();
-  // 記憶・SKILLのToolは createBantoHostSession が内部で足すので、ここでは渡さない
-  const ownTools = [
-    ...createCanvasTools(canvas, catalog),
-    ...createFileTools(workspace),
-    ...createGitTools(workspace),
-  ];
+  // 記憶・SKILLのToolは createBantoHostSession が内部で足すので、ここでは渡さない。
+  // canvas.* は Banto 中核自身のドメイン（決定27a）でモジュールではない。
+  const ownTools = [...createCanvasTools(canvas, catalog), ...modules.tools()];
   const { session } = await createBantoHostSession({
     systemPrompt: SYSTEM_PROMPT,
     tools: ownTools,
     memory,
+    moduleSkills: modules.skills(),
     ...(model ? { model } : {}),
   });
 
@@ -92,6 +95,7 @@ async function serve(options: ServeOptions): Promise<void> {
     port: options.port,
     canvas,
     catalog,
+    modules,
     getLastError: () => session.agent.state.errorMessage,
     // 会話だけ捨てる。記憶はシステムプロンプト側にあるので残る（D11）
     clearHistory: () => {
@@ -107,6 +111,9 @@ async function serve(options: ServeOptions): Promise<void> {
   console.log(`[banto] skills: ${skills.map((s) => s.name).join(", ") || "(none)"}`);
   console.log(`[banto] canvas: ${catalog.list().map((c) => c.kind).join(", ") || "(none)"}`);
   console.log(`[banto] workspace: ${workspace}`);
+  console.log(
+    `[banto] modules: ${modules.list().map((m) => `${m.name}(${m.endpoint.baseUrl})`).join(", ") || "(none)"}`
+  );
 
   const shutdown = (): void => {
     void (async () => {
