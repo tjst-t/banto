@@ -14,7 +14,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { RuntimeDriver, SessionHandle, SpawnOptions } from "@banto/core";
+import type { DriverEvent, RuntimeDriver, SessionHandle, SpawnOptions } from "@banto/core";
 import { SpawnLedger, isProcessAlive, killOrphanProcess } from "./spawn-ledger.js";
 
 /**
@@ -30,6 +30,33 @@ export const WORKER_SYSTEM_PROMPT = [
   "作業が終わったら、何をしたか・確認した結果・残っている懸念を簡潔に報告してください。",
 ].join("\n");
 
+/**
+ * 職人の状態。
+ *
+ * `exited` は2つの経路で分かる：ドライバのイベント（終了した瞬間）と、台帳の pid の
+ * 生存確認（後から見ても分かる）。前者だけだと Worker Pool を再起動したときに取りこぼし、
+ * 後者だけだと「終了した瞬間」を捉えられないので、両方を使う。
+ */
+export type WorkerState = "running" | "exited";
+
+/** 終了の内訳。イベントでしか分からない部分。 */
+export interface WorkerExitDetail {
+  exitCode: number | null;
+  signal: string | null;
+  at: string;
+}
+
+/** 職人が終わったときの知らせ。 */
+export interface WorkerExit {
+  projectTag: string;
+  taskId: string;
+  sessionId: string;
+  pid: number;
+  exitCode: number | null;
+  signal: string | null;
+  at: string;
+}
+
 /** 稼働中（または台帳に残っている）1人の職人。 */
 export interface WorkerInfo {
   /** 利用者の名前空間。Worker Pool は複数の利用者（Banto・Kobo・複数プロジェクト）に仕える。 */
@@ -39,9 +66,12 @@ export interface WorkerInfo {
   sessionId: string;
   sessionPath: string;
   worktree: string;
-  /** プロセスがまだ生きているか。台帳とOSの生存確認から導く（D3）。 */
+  /** プロセスがまだ生きているか。ドライバのイベントと台帳のpidの生存確認から導く（D3）。 */
   alive: boolean;
+  state: WorkerState;
   spawnedAt: string;
+  /** 終了していれば、その内訳（分かる場合）。 */
+  exit?: WorkerExitDetail;
 }
 
 export interface WorkerPoolOptions {
@@ -54,6 +84,9 @@ export interface WorkerPoolOptions {
   /** projectTag を省略して呼ばれたときの既定。 */
   defaultProjectTag?: string;
 }
+
+/** 職人の終了を受け取るハンドラ。 */
+export type WorkerExitHandler = (exit: WorkerExit) => void;
 
 /** 職人に仕事を投げるときの指定。SpawnOptions より上位の、呼び出し側に優しい形。 */
 export interface DelegateInput {
@@ -79,6 +112,16 @@ export class WorkerPool {
   private readonly dataDir: string;
   private readonly defaultProjectTag: string;
   private readonly ledger: SpawnLedger;
+  private readonly unsubscribeDriver: () => void;
+  private readonly exitHandlers = new Set<WorkerExitHandler>();
+  /**
+   * ドライバから受けた終了の内訳。sessionId で引く。
+   *
+   * D3: 「終了したかどうか」の真実は台帳の pid の生存確認で導く。ここに持つのは
+   *     イベントでしか分からない追加情報（終了コード・シグナル・時刻）だけで、
+   *     生死の判定をこの表に依存させない——Worker Pool を再起動すると消えるため。
+   */
+  private readonly exits = new Map<string, WorkerExitDetail>();
 
   constructor(options: WorkerPoolOptions) {
     this.driver = options.driver;
@@ -92,6 +135,60 @@ export class WorkerPool {
       throw new Error(`Worker Pool ledger is corrupt: ${corruptionError}`);
     }
     this.ledger = ledger;
+
+    // task-0027: ドライバのライフサイクルイベントを購読する。これが無いと職人が終わった
+    // 瞬間に誰も気づけず、覗きに行くまで分からない（決定29のイベントログの土台にもなる）
+    this.unsubscribeDriver = this.driver.subscribe((event) => this.handleDriverEvent(event));
+  }
+
+  /** 購読を解除する。プロセスを終うときに呼ぶ。 */
+  dispose(): void {
+    this.unsubscribeDriver();
+    this.exitHandlers.clear();
+  }
+
+  /**
+   * 職人が終わったときに呼ばれる。戻り値で購読解除。
+   *
+   * ここで渡すのは**事実**（プロセスが終わった）だけで、成果の良し悪しは含まない。
+   * 職人自身の完了報告（主張）は別経路で、決定29(a) のとおり分けて扱う。
+   */
+  onExit(handler: WorkerExitHandler): () => void {
+    this.exitHandlers.add(handler);
+    return () => this.exitHandlers.delete(handler);
+  }
+
+  private handleDriverEvent(event: DriverEvent): void {
+    if (event.type !== "process_exited") return;
+
+    const entry = this.ledger.list().find((e) => e.sessionId === event.sessionId);
+    // 台帳に無い＝既に stop で片付けた職人。知らせる相手もいないので無視する
+    if (!entry) return;
+
+    const exit: WorkerExitDetail = {
+      exitCode: event.exitCode,
+      signal: event.signal,
+      at: new Date().toISOString(),
+    };
+    this.exits.set(event.sessionId, exit);
+
+    const notice: WorkerExit = {
+      projectTag: entry.projectTag,
+      taskId: entry.taskId,
+      sessionId: event.sessionId,
+      pid: event.pid,
+      exitCode: event.exitCode,
+      signal: event.signal,
+      at: exit.at,
+    };
+    for (const handler of this.exitHandlers) {
+      try {
+        handler(notice);
+      } catch {
+        // I2 の例外: 購読側の失敗で Worker Pool を止めない。ただし握りつぶす範囲は
+        // 「1つのハンドラの失敗が他のハンドラと本体に波及しないこと」に限る
+      }
+    }
   }
 
   /**
@@ -160,6 +257,7 @@ export class WorkerPool {
       sessionPath: handle.sessionPath,
       worktree: input.worktreePath,
       alive: true,
+      state: "running",
       spawnedAt,
     };
   }
@@ -171,16 +269,22 @@ export class WorkerPool {
     return this.ledger
       .list()
       .filter((entry) => projectTag === undefined || entry.projectTag === projectTag)
-      .map((entry) => ({
-        projectTag: entry.projectTag,
-        taskId: entry.taskId,
-        pid: entry.pid,
-        sessionId: entry.sessionId,
-        sessionPath: entry.sessionPath,
-        worktree: entry.worktree,
-        alive: isProcessAlive(entry.pid),
-        spawnedAt: entry.spawnedAt,
-      }));
+      .map((entry) => {
+        const alive = isProcessAlive(entry.pid);
+        const exit = this.exits.get(entry.sessionId);
+        return {
+          projectTag: entry.projectTag,
+          taskId: entry.taskId,
+          pid: entry.pid,
+          sessionId: entry.sessionId,
+          sessionPath: entry.sessionPath,
+          worktree: entry.worktree,
+          alive,
+          state: (alive ? "running" : "exited") as WorkerState,
+          spawnedAt: entry.spawnedAt,
+          ...(exit ? { exit } : {}),
+        };
+      });
   }
 
   /** sessionId で1人引く。 */
@@ -209,6 +313,7 @@ export class WorkerPool {
     // ドライバが取りこぼしたプロセスが残ることがあるので、台帳の pid でも念押しする
     if (isProcessAlive(worker.pid)) await killOrphanProcess(worker.pid);
     this.ledger.remove(worker.projectTag, worker.taskId);
+    this.exits.delete(worker.sessionId);
   }
 
   /**
@@ -236,7 +341,10 @@ export class WorkerPool {
   /** 終了済みの職人を台帳から片付ける。返り値は片付けた数。 */
   reap(): number {
     const dead = this.list().filter((w) => !w.alive);
-    for (const worker of dead) this.ledger.remove(worker.projectTag, worker.taskId);
+    for (const worker of dead) {
+      this.ledger.remove(worker.projectTag, worker.taskId);
+      this.exits.delete(worker.sessionId);
+    }
     return dead.length;
   }
 

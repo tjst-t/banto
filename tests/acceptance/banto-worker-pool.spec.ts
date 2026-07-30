@@ -17,6 +17,7 @@ import * as path from "node:path";
 
 import { MODULE_TOOL_PATH, createModuleClient } from "@banto/core";
 import type {
+  DriverEvent,
   DriverEventHandler,
   RuntimeDriver,
   SessionHandle,
@@ -27,6 +28,7 @@ import {
   WorkerPoolService,
   createWorkerPoolModule,
   createWorkerTools,
+  type WorkerExit,
 } from "@banto/worker-pool";
 
 /** ToolDefinition.execute の第5引数は本Tool群が参照しないためスタブ。 */
@@ -89,8 +91,21 @@ class FakeDriver implements RuntimeDriver {
     if (this.failInject) throw new Error("inject boom");
     this.injected.push({ sessionId, message });
   }
-  subscribe(_handler: DriverEventHandler): () => void {
-    return () => undefined;
+  private handlers = new Set<DriverEventHandler>();
+
+  subscribe(handler: DriverEventHandler): () => void {
+    this.handlers.add(handler);
+    return () => this.handlers.delete(handler);
+  }
+
+  /** 購読者の数（購読解除の検証用）。 */
+  get subscriberCount(): number {
+    return this.handlers.size;
+  }
+
+  /** ドライバがイベントを出したことにする。 */
+  emit(event: DriverEvent): void {
+    for (const handler of this.handlers) handler(event);
   }
   async kill(sessionId: string): Promise<void> {
     this.killed.push(sessionId);
@@ -372,5 +387,133 @@ describe("[task-0010/a3] 独立サービスとしての公開（Bantoを起動�
     service = await WorkerPoolService.start({ tools: createWorkerTools(pool), port: 0 });
     const res = await fetch(`${service.baseUrl}${MODULE_TOOL_PATH}worker.list`);
     assert.equal(res.status, 405);
+  });
+});
+
+describe("[task-0027] ドライバのライフサイクルイベントを購読する", () => {
+  it("[task-0027/a1] WorkerPool はドライバのイベントを購読している", () => {
+    // 構築した時点で購読が始まっている（起動より前のイベントも取りこぼさない）
+    assert.equal(driver.subscriberCount, 1);
+  });
+
+  it("[task-0027/a2] 終了が「その瞬間」に分かる（覗きに行かなくてよい）", async () => {
+    const worker = await pool.delegate(JOB);
+    const seen: WorkerExit[] = [];
+    pool.onExit((e) => seen.push(e));
+
+    driver.emit({
+      type: "process_exited",
+      pid: worker.pid,
+      sessionId: worker.sessionId,
+      exitCode: 0,
+      signal: null,
+    });
+
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]!.sessionId, worker.sessionId);
+    assert.equal(seen[0]!.taskId, "task-0042");
+    assert.equal(seen[0]!.projectTag, "test", "誰の仕事かが分かる（起動元へ届けるため）");
+    assert.equal(seen[0]!.exitCode, 0);
+  });
+
+  it("[task-0027/a2] 異常終了の内訳（終了コード・シグナル）も伝わる", async () => {
+    const worker = await pool.delegate(JOB);
+    const seen: WorkerExit[] = [];
+    pool.onExit((e) => seen.push(e));
+
+    driver.emit({
+      type: "process_exited",
+      pid: worker.pid,
+      sessionId: worker.sessionId,
+      exitCode: null,
+      signal: "SIGKILL",
+    });
+
+    assert.equal(seen[0]!.exitCode, null);
+    assert.equal(seen[0]!.signal, "SIGKILL");
+  });
+
+  it("[task-0027] 終了の内訳が list にも出る", async () => {
+    const worker = await pool.delegate(JOB);
+    driver.emit({
+      type: "process_exited",
+      pid: worker.pid,
+      sessionId: worker.sessionId,
+      exitCode: 2,
+      signal: null,
+    });
+
+    const found = pool.list().find((w) => w.sessionId === worker.sessionId);
+    assert.equal(found?.exit?.exitCode, 2);
+  });
+
+  it("[task-0027] 生死の判定はイベントに依存しない（再起動しても分かる。D3）", async () => {
+    const worker = await pool.delegate(JOB);
+    process.kill(worker.pid, "SIGKILL");
+    await new Promise((r) => setTimeout(r, 150));
+
+    // イベントを一切流していない別インスタンスでも「終了」と分かる
+    const reopened = new WorkerPool({ driver, dataDir: dir, defaultProjectTag: "test" });
+    const found = reopened.list().find((w) => w.sessionId === worker.sessionId);
+    assert.equal(found?.alive, false);
+    assert.equal(found?.state, "exited");
+    reopened.dispose();
+  });
+
+  it("[task-0027] 台帳に無い職人の終了イベントは無視する（知らせる相手がいない）", async () => {
+    const seen: WorkerExit[] = [];
+    pool.onExit((e) => seen.push(e));
+
+    driver.emit({
+      type: "process_exited",
+      pid: 999999,
+      sessionId: "no-such-session",
+      exitCode: 0,
+      signal: null,
+    });
+
+    assert.deepEqual(seen, []);
+  });
+
+  it("[task-0027] 購読側の失敗が Worker Pool を止めない", async () => {
+    const worker = await pool.delegate(JOB);
+    const seen: string[] = [];
+    pool.onExit(() => {
+      throw new Error("購読側の不具合");
+    });
+    pool.onExit((e) => seen.push(e.sessionId));
+
+    assert.doesNotThrow(() =>
+      driver.emit({
+        type: "process_exited",
+        pid: worker.pid,
+        sessionId: worker.sessionId,
+        exitCode: 0,
+        signal: null,
+      })
+    );
+    assert.deepEqual(seen, [worker.sessionId], "他のハンドラは呼ばれる");
+  });
+
+  it("[task-0027] dispose で購読を解除する", () => {
+    const local = new WorkerPool({ driver, dataDir: dir, defaultProjectTag: "test" });
+    assert.equal(driver.subscriberCount, 2, "beforeEach の pool と合わせて2つ");
+
+    local.dispose();
+    assert.equal(driver.subscriberCount, 1);
+  });
+
+  it("[task-0027] stop / reap で終了の内訳も片付く", async () => {
+    const worker = await pool.delegate(JOB);
+    driver.emit({
+      type: "process_exited",
+      pid: worker.pid,
+      sessionId: worker.sessionId,
+      exitCode: 0,
+      signal: null,
+    });
+    await pool.stop(worker.sessionId);
+
+    assert.deepEqual(pool.list(), []);
   });
 });

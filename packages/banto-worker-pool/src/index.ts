@@ -25,6 +25,10 @@ export {
   WORKER_SYSTEM_PROMPT,
   type WorkerPoolOptions,
   type WorkerInfo,
+  type WorkerState,
+  type WorkerExit,
+  type WorkerExitDetail,
+  type WorkerExitHandler,
   type DelegateInput,
 } from "./pool.js";
 export { createWorkerTools } from "./worker-tools.js";
