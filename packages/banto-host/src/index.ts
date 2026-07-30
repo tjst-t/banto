@@ -48,7 +48,13 @@ export {
   type CanvasSnapshot,
 } from "./canvas.js";
 export { createCanvasTools } from "./canvas-tools.js";
-export type { CanvasStateEvent, CanvasTabView, CatalogEntryView } from "./protocol.js";
+export type {
+  CanvasStateEvent,
+  CanvasTabView,
+  CatalogEntryView,
+  CanvasReorderMessage,
+  CanvasOpenMessage,
+} from "./protocol.js";
 export { demoCanvasViews } from "./demo-views.js";
 export type { TranscriptEntry, HistoryEvent, PoMessageEvent } from "./protocol.js";
 export { createFileTools } from "./file-tools.js";

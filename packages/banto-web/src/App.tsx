@@ -54,12 +54,34 @@ export function App(): React.ReactElement {
   const session = useBantoSession(WS_URL);
   const [draft, setDraft] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [dragTabId, setDragTabId] = useState<string>();
+  const [dropIndex, setDropIndex] = useState<number>();
+  const [catalogOpen, setCatalogOpen] = useState(false);
+
+  // カタログは category ごとにまとめて出す（何が開けるか探しやすくするため）
+  const catalogGroups = Object.entries(
+    session.catalog.reduce<Record<string, typeof session.catalog>>((groups, entry) => {
+      const key = entry.category ?? "その他";
+      (groups[key] ??= []).push(entry);
+      return groups;
+    }, {})
+  );
 
   // 新しい発話が入ったら末尾へ追従する
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [session.chat]);
+
+  // カタログメニューは外側をクリックしたら閉じる
+  useEffect(() => {
+    if (!catalogOpen) return;
+    const close = (e: MouseEvent): void => {
+      if (!(e.target as Element | null)?.closest(".canvas-catalog-wrap")) setCatalogOpen(false);
+    };
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [catalogOpen]);
 
   const activeTab = session.tabs.find((t) => t.id === session.activeTabId);
   const activeSpec = activeTab
@@ -96,15 +118,35 @@ export function App(): React.ReactElement {
             {session.tabs.length === 0 ? (
               <span className="canvas-tab-empty">タブなし</span>
             ) : (
-              session.tabs.map((tab) => (
+              session.tabs.map((tab, index) => (
                 <span
                   key={tab.id}
-                  className={`canvas-tab ${tab.id === session.activeTabId ? "is-active" : ""}`}
+                  className={`canvas-tab ${tab.id === session.activeTabId ? "is-active" : ""} ${
+                    dropIndex === index ? "is-drop-target" : ""
+                  }`}
+                  draggable
+                  onDragStart={() => setDragTabId(tab.id)}
+                  onDragEnd={() => {
+                    setDragTabId(undefined);
+                    setDropIndex(undefined);
+                  }}
+                  onDragOver={(e) => {
+                    if (!dragTabId) return;
+                    e.preventDefault();
+                    setDropIndex(index);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    // 並べ替えはホストへ投げる。UIは順序を自前で持たない（D3）
+                    if (dragTabId) session.reorderTab(dragTabId, index);
+                    setDragTabId(undefined);
+                    setDropIndex(undefined);
+                  }}
                 >
                   <button
                     className="canvas-tab-label"
                     onClick={() => session.switchTab(tab.id)}
-                    title={tab.kind}
+                    title={`${tab.kind}（ドラッグで並べ替え）`}
                   >
                     {tab.title}
                   </button>
@@ -117,6 +159,49 @@ export function App(): React.ReactElement {
                   </button>
                 </span>
               ))
+            )}
+
+            {/* POが自分でGUIを開く入口（決定25の人側の経路）。省スペースのため「＋」のみ */}
+            {session.catalog.length > 0 && (
+              <div className="canvas-catalog-wrap">
+                <button
+                  className="canvas-catalog-btn"
+                  onClick={() => setCatalogOpen((v) => !v)}
+                  aria-label="カタログを開く"
+                  aria-expanded={catalogOpen}
+                  title="カタログを開く"
+                >
+                  ＋
+                </button>
+                {catalogOpen && (
+                  <div className="canvas-catalog-menu">
+                    {catalogGroups.map(([category, entries]) => (
+                      <div key={category}>
+                        <div className="catalog-group-label">{category}</div>
+                        {entries.map((entry) => (
+                          <button
+                            key={entry.kind}
+                            className="catalog-item"
+                            onClick={() => {
+                              session.openView(entry.kind);
+                              setCatalogOpen(false);
+                            }}
+                            title={entry.description}
+                          >
+                            <span className="ci-ico">{entry.icon ?? "▫"}</span>
+                            <span className="ci-body">
+                              <span className="ci-name">{entry.title}</span>
+                              <span className="ci-src">
+                                {entry.kind} · {entry.module}
+                              </span>
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
           </div>
 

@@ -30,6 +30,10 @@ export interface BantoSession {
   abort(): void;
   switchTab(tabId: string): void;
   closeTab(tabId: string): void;
+  /** タブをドラッグで並べ替える。順序の真実はホスト側（D3）。 */
+  reorderTab(tabId: string, toIndex: number): void;
+  /** POがカタログから自分でGUIを開く（決定25の人側の経路）。 */
+  openView(kind: string): void;
   newSession(): void;
 }
 
@@ -148,6 +152,11 @@ export function useBantoSession(url: string): BantoSession {
     abort: useCallback(() => post({ type: "abort" }), [post]),
     switchTab: useCallback((tabId: string) => post({ type: "canvas_switch", tabId }), [post]),
     closeTab: useCallback((tabId: string) => post({ type: "canvas_close", tabId }), [post]),
+    reorderTab: useCallback(
+      (tabId: string, toIndex: number) => post({ type: "canvas_reorder", tabId, toIndex }),
+      [post]
+    ),
+    openView: useCallback((kind: string) => post({ type: "canvas_open", kind }), [post]),
     newSession: useCallback(() => post({ type: "new_session" }), [post]),
   };
 }

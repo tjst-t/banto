@@ -35,6 +35,25 @@ export interface CanvasCloseMessage {
   tabId: string;
 }
 
+/** POがタブをドラッグして並べ替える。 */
+export interface CanvasReorderMessage {
+  type: "canvas_reorder";
+  tabId: string;
+  toIndex: number;
+}
+
+/**
+ * POがカタログから自分でGUIを開く。番頭の canvas.open と同じ結果になる。
+ * 決定25「人がGUIでできることは番頭にもできる。ただし経路が異なる」の人側。
+ */
+export interface CanvasOpenMessage {
+  type: "canvas_open";
+  kind: string;
+  params?: Record<string, unknown>;
+  title?: string;
+  newTab?: boolean;
+}
+
 /**
  * 会話を捨てて新しくやり直す。記憶（好み・習慣）は残る——番頭に記憶があるからこそ
  * 会話は使い捨てにできる（D11）。キャンバスの表示はそのまま維持する。
@@ -48,6 +67,8 @@ export type ClientMessage =
   | AbortMessage
   | CanvasSwitchMessage
   | CanvasCloseMessage
+  | CanvasReorderMessage
+  | CanvasOpenMessage
   | NewSessionMessage;
 
 // ── Server → Client ──────────────────────────────────────────────────────────

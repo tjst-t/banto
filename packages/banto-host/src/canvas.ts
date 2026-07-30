@@ -162,6 +162,22 @@ export class Canvas {
     this.notify();
   }
 
+  /**
+   * タブの並び順を変える（POのドラッグ操作）。
+   * D3: 並び順も表示状態の一部なのでホスト側が持つ——UIが独自の順序を持たない。
+   */
+  reorder(tabId: string, toIndex: number): void {
+    const from = this.tabs.findIndex((t) => t.id === tabId);
+    if (from === -1) throw new Error(`Unknown canvas tab "${tabId}".`);
+    // 範囲外は端に寄せる（UIの計算誤差で失敗させない）
+    const to = Math.max(0, Math.min(toIndex, this.tabs.length - 1));
+    if (from === to) return;
+
+    const [moved] = this.tabs.splice(from, 1);
+    this.tabs.splice(to, 0, moved!);
+    this.notify();
+  }
+
   /** 表示するタブを切り替える。 */
   switchTo(tabId: string): void {
     if (!this.tabs.some((t) => t.id === tabId)) {

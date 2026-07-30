@@ -220,18 +220,30 @@ export class BantoHostServer {
       return;
     }
 
-    // POが直接タブを操作する経路。番頭が canvas.* を呼んだときと同じく Canvas を通すので、
-    // 表示状態の真実は一箇所のまま（D3）——UIが独自のタブ状態を持つことはない。
-    if (message?.type === "canvas_switch" || message?.type === "canvas_close") {
+    // POが直接キャンバスを操作する経路。番頭が canvas.* を呼んだときと同じく Canvas を
+    // 通すので、表示状態の真実は一箇所のまま（D3）——UIが独自のタブ状態を持つことはない。
+    // 決定25「人がGUIでできることは番頭にもできる。ただし経路が異なる」の人側。
+    if (
+      message?.type === "canvas_switch" ||
+      message?.type === "canvas_close" ||
+      message?.type === "canvas_reorder" ||
+      message?.type === "canvas_open"
+    ) {
       if (!this.canvas) {
         this.send(ws, { type: "error", message: "canvas is not enabled on this host" });
         return;
       }
       try {
         if (message.type === "canvas_switch") this.canvas.switchTo(message.tabId);
-        else this.canvas.close(message.tabId);
+        else if (message.type === "canvas_close") this.canvas.close(message.tabId);
+        else if (message.type === "canvas_reorder") this.canvas.reorder(message.tabId, message.toIndex);
+        else {
+          this.canvas.open(message.kind, message.params ?? {}, message.title, {
+            ...(message.newTab === true ? { newTab: true } : {}),
+          });
+        }
       } catch (err) {
-        // I2: 未知のタブIDは黙って無視せず理由を返す
+        // I2: 未知のタブID・未知のkindは黙って無視せず理由を返す
         this.send(ws, { type: "error", message: String(err) });
       }
       return;

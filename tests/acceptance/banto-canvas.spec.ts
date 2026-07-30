@@ -188,6 +188,50 @@ describe("[task-0012] キャンバスの表示状態", () => {
     assert.throws(() => canvas.switchTo("no-such-tab"), /Unknown canvas tab/);
   });
 
+  it("[task-0021] reorder でタブの並び順が変わる（順序もホストが持つ・D3）", () => {
+    const a = canvas.open("demo.hello", {}, "A", { newTab: true });
+    canvas.open("demo.hello", {}, "B", { newTab: true });
+    canvas.open("demo.notes", {}, "C");
+
+    canvas.reorder(a.id, 2);
+    assert.deepEqual(canvas.snapshot().tabs.map((t) => t.title), ["B", "C", "A"]);
+
+    canvas.reorder(a.id, 0);
+    assert.deepEqual(canvas.snapshot().tabs.map((t) => t.title), ["A", "B", "C"]);
+  });
+
+  it("[task-0021] reorder は範囲外を端に寄せる（UIの計算誤差で失敗させない）", () => {
+    const a = canvas.open("demo.hello", {}, "A", { newTab: true });
+    canvas.open("demo.hello", {}, "B", { newTab: true });
+
+    canvas.reorder(a.id, 99);
+    assert.deepEqual(canvas.snapshot().tabs.map((t) => t.title), ["B", "A"]);
+    canvas.reorder(a.id, -5);
+    assert.deepEqual(canvas.snapshot().tabs.map((t) => t.title), ["A", "B"]);
+  });
+
+  it("[task-0021] reorder は表示中タブを変えない", () => {
+    const a = canvas.open("demo.hello", {}, "A", { newTab: true });
+    const b = canvas.open("demo.hello", {}, "B", { newTab: true });
+    assert.equal(canvas.snapshot().activeTabId, b.id);
+
+    canvas.reorder(a.id, 1);
+    assert.equal(canvas.snapshot().activeTabId, b.id, "並べ替えは表示の切り替えではない");
+  });
+
+  it("[task-0021] 未知のタブIDの reorder は例外（I2）", () => {
+    assert.throws(() => canvas.reorder("no-such-tab", 0), /Unknown canvas tab/);
+  });
+
+  it("[task-0021] 同じ位置への reorder は通知しない（無駄な再描画を出さない）", () => {
+    const a = canvas.open("demo.hello", {}, "A", { newTab: true });
+    let notified = 0;
+    canvas.subscribe(() => notified++);
+
+    canvas.reorder(a.id, 0);
+    assert.equal(notified, 0);
+  });
+
   it("[task-0012] snapshot は内部状態のコピーを返す（外から壊せない）", () => {
     canvas.open("demo.hello");
     const snapshot = canvas.snapshot();
@@ -421,6 +465,44 @@ describe("[task-0014] POが直接タブを操作する経路", () => {
 
     await waitFor(events, (e) => e.type === "canvas_state" && e.tabs.length === 1);
     assert.equal(canvas.snapshot().tabs.length, 1);
+    client.close();
+  });
+
+  it("[task-0021] canvas_reorder / canvas_open がホストのCanvasを通る", async () => {
+    canvas.open("demo.hello", {}, "A", { newTab: true });
+    const second = canvas.open("demo.hello", {}, "B", { newTab: true });
+
+    const url = await start();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, (e) => e.type === "canvas_state");
+
+    // 並べ替え
+    client.send({ type: "canvas_reorder", tabId: second.id, toIndex: 0 });
+    await waitFor(
+      events,
+      (e) => e.type === "canvas_state" && e.tabs[0]?.title === "B"
+    );
+    assert.deepEqual(canvas.snapshot().tabs.map((t) => t.title), ["B", "A"]);
+
+    // POがカタログから開く（決定25の人側の経路）
+    client.send({ type: "canvas_open", kind: "demo.notes" });
+    await waitFor(events, (e) => e.type === "canvas_state" && e.tabs.length === 3);
+    assert.ok(canvas.snapshot().tabs.some((t) => t.kind === "demo.notes"));
+
+    client.close();
+  });
+
+  it("[task-0021] canvas_open で未知のkindはエラーを返す（I2）", async () => {
+    const url = await start();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, (e) => e.type === "welcome");
+
+    client.send({ type: "canvas_open", kind: "demo.nope" });
+
+    const err = await waitFor(events, (e) => e.type === "error");
+    assert.ok(err.type === "error" && /Unknown canvas view/.test(err.message));
     client.close();
   });
 
