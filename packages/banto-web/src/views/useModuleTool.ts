@@ -28,11 +28,13 @@ export interface ModuleToolState<T> {
  * @param endpoint モジュールへの到達先。相対パスなら自分のオリジンに解決される
  * @param toolName 論理Tool名（例 `file.list`）
  * @param args Tool へ渡す引数。変わるたびに取り直す
+ * @param enabled false のあいだは呼ばない（前段の結果を待つときに使う）
  */
 export function useModuleTool<T>(
   endpoint: string,
   toolName: string,
-  args: Record<string, unknown> = {}
+  args: Record<string, unknown> = {},
+  enabled = true
 ): ModuleToolState<T> {
   const [data, setData] = useState<T>();
   const [error, setError] = useState<string>();
@@ -41,6 +43,7 @@ export function useModuleTool<T>(
   const argsKey = JSON.stringify(args);
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     const url = `${endpoint.replace(/\/$/, "")}${MODULE_TOOL_PATH}${encodeURIComponent(toolName)}`;
 
@@ -76,7 +79,7 @@ export function useModuleTool<T>(
     };
     // argsKey は args の内容。参照ではなく内容で再取得を判定する
     // eslint-disable-next-line react-hooks/exhaustive-deps -- args は argsKey で代表させている
-  }, [endpoint, toolName, argsKey, reloadToken]);
+  }, [endpoint, toolName, argsKey, reloadToken, enabled]);
 
   return {
     data,

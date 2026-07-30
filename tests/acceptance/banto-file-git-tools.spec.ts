@@ -68,8 +68,8 @@ after(() => {
 });
 
 describe("[task-0011/a1] file.* （閲覧専用）", () => {
-  it("[task-0011/a1] file.list / file.read が名前空間規則に従う", () => {
-    assert.deepEqual(fileTools.map((t) => t.name), ["file.list", "file.read"]);
+  it("[task-0011/a1] file.* が名前空間規則に従う", () => {
+    assert.deepEqual(fileTools.map((t) => t.name), ["file.list", "file.read", "file.stat"]);
   });
 
   it("[task-0011/a1] 書き込み系のToolは存在しない（閲覧専用・決定24）", () => {
@@ -283,5 +283,42 @@ describe("[task-0011/a2] git.* （すべて閲覧専用）", () => {
       /failed/
     );
     fs.rmSync(notRepo, { recursive: true, force: true });
+  });
+});
+
+describe("[task-0016] file.stat（パスがファイルかディレクトリかを知る）", () => {
+  it("[task-0016] ディレクトリを判別する", async () => {
+    const out = await tool(fileTools, "file.stat").execute(
+      "c1", { path: "src" }, undefined, undefined, TOOL_CTX
+    );
+    assert.deepEqual(out.details, { path: "src", type: "dir", size: (out.details as { size: number }).size });
+    assert.match(textOf(out), /dir/);
+  });
+
+  it("[task-0016] ファイルを判別し、サイズを返す", async () => {
+    const out = await tool(fileTools, "file.stat").execute(
+      "c1", { path: "README.md" }, undefined, undefined, TOOL_CTX
+    );
+    const details = out.details as { path: string; type: string; size: number };
+    assert.equal(details.type, "file");
+    assert.equal(details.path, "README.md");
+    assert.ok(details.size > 0);
+  });
+
+  it("[task-0016] 不在はエラー（I2）", async () => {
+    await assert.rejects(
+      () => tool(fileTools, "file.stat").execute("c1", { path: "nope" }, undefined, undefined, TOOL_CTX),
+      /No such path/
+    );
+  });
+
+  it("[task-0016] ワークスペース外は拒否される", async () => {
+    await assert.rejects(
+      () =>
+        tool(fileTools, "file.stat").execute(
+          "c1", { path: "../../etc/passwd" }, undefined, undefined, TOOL_CTX
+        ),
+      /outside the workspace/
+    );
   });
 });

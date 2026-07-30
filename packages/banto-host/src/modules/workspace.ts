@@ -28,9 +28,15 @@ const workspaceViews: CanvasViewSpec[] = [
     kind: "file.browser",
     title: "ファイル",
     description:
-      "ワークスペースのディレクトリとファイルを閲覧する。POに構成やファイルの中身を見せたいときに開く。",
+      "ワークスペースのディレクトリとファイルを閲覧する。ツリーを辿れて、ファイルを選ぶと中身も表示される。" +
+      "path にファイルを指定すればそのファイルを開いた状態で始まる。POに構成やファイルの中身を見せたいときに開く。",
     parameters: Type.Object({
-      path: Type.Optional(Type.String({ description: "最初に開くパス（省略時はルート）" })),
+      path: Type.Optional(
+        Type.String({
+          description:
+            "最初に開くパス。ディレクトリならその中身、ファイルならそのファイルを開く（省略時はルート）",
+        })
+      ),
     }),
     component: "FileBrowser",
     category: "workspace",

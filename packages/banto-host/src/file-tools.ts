@@ -159,5 +159,31 @@ export function createFileTools(root: string): NamespacedToolDefinition[] {
     },
   });
 
-  return [list, read];
+  const stat = defineNamespacedTool({
+    name: "file.stat",
+    label: "File: Stat",
+    description:
+      "パスが存在するか、ファイルかディレクトリか、サイズを返す。" +
+      "file.list（ディレクトリ用）と file.read（ファイル用）のどちらを使うか決めるときに引く。",
+    parameters: Type.Object({
+      path: Type.String({ description: "ワークスペースからの相対パス" }),
+    }),
+    async execute(_toolCallId, params) {
+      const target = resolveInWorkspace(root, params.path);
+      if (!fs.existsSync(target)) {
+        throw new Error(`No such path: ${params.path}`);
+      }
+      const info = fs.statSync(target);
+      const type = info.isDirectory() ? ("dir" as const) : ("file" as const);
+      const relative = toWorkspaceRelative(root, target);
+      return {
+        content: [
+          { type: "text" as const, text: `${relative}: ${type}${type === "file" ? ` (${info.size} bytes)` : ""}` },
+        ],
+        details: { path: relative, type, size: info.size },
+      };
+    },
+  });
+
+  return [list, read, stat];
 }
