@@ -18,7 +18,11 @@
 - **LLMプロバイダ層はプラガブル＝モデル非依存**（Anthropic / OpenAI / opencode経由 / 将来ローカルLLM）。banto-core に I/F、アダプタで差し替える
 - **記憶は既存の記憶システムを採用する（自作しない）。** 参照実装は Hermes Agent（Nous, MIT）。手続き記憶は SKILL.md（agentskills.io）形式
 - **pi（badlogic/pi-mono）は職人（Worker Pool）ランタイム、および番頭ハーネスの第一実装として使う**。無改造で扱う
-- **Worker Pool（職人）は Kobo から独立したモジュールで、Kobo より先に作る**（ADR-0010 決定23）。Kobo のサブシステムではない——番頭は Kobo 無しでも職人に実作業を委譲できる（D10がKoboの完成を待たない）
+- **モジュール（Module）＝ Banto への登録単位**（ADR-0010 決定25・27）。①接続情報 ②番頭へのTool ③キャンバスへのGUI ④SKILL を1単位で登録する。Kobo・基本GUIセット・Worker Pool はいずれもモジュール。`Provider` は LLMプロバイダで埋まっているため使わない。コード内は `BantoModule` 等と接頭辞を付ける（`module` はESモジュールと衝突）
+  - **モジュールとドメインの関係**：ドメインは決定9のTool名前空間プレフィックス。各モジュールは1つ以上のドメインを持つが逆は成り立たない（`canvas.*`/`memory.*`/`skill.*` は Banto 中核自身）
+  - 散文で世界観を語るときの「店」（vision.md）は商家の比喩として残す。機構を指すときは「モジュール」
+- **モジュール間呼び出しはライブラリ＋レジストリ方式**（決定27）。フレームワークがレジストリと呼び出し規約を提供し、**実際の呼び出しはモジュール同士が直接**行う。Banto をブローカーにしない（単一障害点化とKobo→Bantoの依存逆転を避ける）
+- **Worker Pool（職人）は Kobo から独立した必須の組み込みモジュールで、Kobo より先に作る**（決定23・27c）。Kobo のサブシステムではない——番頭は Kobo 無しでも職人に実作業を委譲できる（D10がKoboの完成を待たない）
 - **Kobo**: HTTP API＋WebSocket（イベント購読）。自宅サーバのUbuntu VM上でsystemdサービスとして常駐。GUI/CLIはその同格クライアント
 - banto-core: ランタイム中立の共通ライブラリ（ツール定義・Kobo APIクライアント・プロンプト資産読込・LLMプロバイダseam）
 - Skillは SKILL.md（agentskills.io）形式、Toolは内部で正規化しプロバイダ毎のwire形式をアダプタで吸収する
