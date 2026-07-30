@@ -399,7 +399,7 @@ describe("[task-0031] studio モジュール", () => {
     args: Record<string, unknown> = {}
   ): Promise<Record<string, unknown>> => {
     const tool = module.internalTools!.find((t) => t.name === name)!;
-    const out = await tool.execute("c1", args as never, undefined, undefined, {} as never);
+    const out = await tool.execute(args as never);
     return (out as { details: Record<string, unknown> }).details;
   };
 

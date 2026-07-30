@@ -59,7 +59,7 @@ export function createCanvasTools(canvas: Canvas, catalog: CanvasCatalog): Names
         })
       ),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       // I2: 未知の kind は Canvas が利用可能な一覧付きで例外にする（決定20）
       const tab = canvas.open(
         params.kind,
@@ -84,7 +84,7 @@ export function createCanvasTools(canvas: Canvas, catalog: CanvasCatalog): Names
     parameters: Type.Object({
       tabId: Type.String({ description: "閉じるタブのID" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       canvas.close(params.tabId);
       return { content: [{ type: "text" as const, text: `closed ${params.tabId}` }], details: {} };
     },
@@ -97,7 +97,7 @@ export function createCanvasTools(canvas: Canvas, catalog: CanvasCatalog): Names
     parameters: Type.Object({
       tabId: Type.String({ description: "表示に切り替えるタブのID" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       canvas.switchTo(params.tabId);
       return { content: [{ type: "text" as const, text: `switched to ${params.tabId}` }], details: {} };
     },

@@ -84,7 +84,7 @@ function createStudioDataTools(options: StudioModuleOptions): NamespacedToolDefi
         Type.Boolean({ description: "訂正済みの記憶も含める（既定 false）" })
       ),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const records = options.memory.list({
         ...(params.kind ? { kind: params.kind } : {}),
         ...(params.includeSuperseded !== undefined
@@ -105,7 +105,7 @@ function createStudioDataTools(options: StudioModuleOptions): NamespacedToolDefi
     parameters: Type.Object({
       name: Type.Optional(Type.String({ description: "この SKILL の本文だけを返す" })),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const entries = options.skills.map((entry) => {
         const base = {
           name: entry.skill.name,

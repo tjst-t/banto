@@ -23,7 +23,7 @@ import { createMemoryTools, renderMemoryForPrompt } from "./memory-tools.js";
 import { CORE_ORIGIN, resolveSkills, type SkillEntry } from "./module.js";
 import { createSkillTools } from "./skill-tools.js";
 import { loadBantoSkills, renderSkillsForPrompt } from "./skills.js";
-import { toWireTool, type NamespacedToolDefinition } from "./tool-registry.js";
+import { toPiTool, type NamespacedToolDefinition } from "./tool-registry.js";
 
 export interface CreateBantoHostSessionOptions {
   /** System prompt for this turn loop. Plain string here — real prompt content is a later task. */
@@ -116,7 +116,7 @@ export async function createBantoHostSession(
     modelRegistry: options.modelRegistry,
     resourceLoader,
     noTools: "builtin",
-    customTools: tools.map(toWireTool),
+    customTools: tools.map(toPiTool),
     sessionManager: options.sessionManager ?? SessionManager.inMemory(),
   });
 }

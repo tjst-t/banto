@@ -381,7 +381,7 @@ describe("[task-0010/a2] worker.* Tool とモジュール定義", () => {
   it("[task-0010/a2] 提供するToolは全て worker 名前空間に属する", () => {
     // Tool名の一覧をここに焼くと、Toolを足すたびに無関係なテストが落ちる（実際に2度踏んだ）。
     // 見たいのは「名前空間規則（決定9）に従っているか」であって、何個あるかではない
-    const names = createWorkerTools(pool).map((t) => t.name);
+    const names: string[] = createWorkerTools(pool).map((t) => t.name);
     assert.ok(names.length > 0);
     for (const name of names) {
       assert.match(name, /^worker\.[a-z_]+$/, `${name} は <domain>.<verb> の形（決定9）`);
@@ -394,7 +394,7 @@ describe("[task-0010/a2] worker.* Tool とモジュール定義", () => {
 
   it("[task-0010/a2] worker.delegate で職人へ委譲できる（D10の機構）", async () => {
     const [delegate] = createWorkerTools(pool);
-    const out = await delegate!.execute("c1", JOB, undefined, undefined, TOOL_CTX);
+    const out = await delegate!.execute(JOB);
 
     assert.match(textOf(out), /職人を起こしました/);
     assert.equal(pool.list().length, 1);
@@ -408,12 +408,10 @@ describe("[task-0010/a2] worker.* Tool とモジュール定義", () => {
     // Tool を位置で引くと、Toolを足すたびに壊れる（実際に壊れた）。名前で引く
     const byName = (name: string) => tools.find((t) => t.name === name)!;
 
-    const list = await byName("worker.list").execute("c1", {} as never, undefined, undefined, TOOL_CTX);
+    const list = await byName("worker.list").execute({} as never);
     assert.match(textOf(list), /task-0042/);
 
-    const attach = await byName("worker.attach").execute(
-      "c2", { sessionId: worker.sessionId } as never, undefined, undefined, TOOL_CTX
-    );
+    const attach = await byName("worker.attach").execute({ sessionId: worker.sessionId } as never);
     assert.match(textOf(attach), /hello/);
   });
 
@@ -786,13 +784,7 @@ describe("[task-0026/a6] 職人自身の Tool（worker.report / worker.ask）", 
     const worker = await pool.delegate(JOB);
     const [report] = createWorkerReportTools(pool);
 
-    await report!.execute(
-      "call-1",
-      { projectTag: "test", taskId: "task-0042", summary: "調べ終えました", done: true } as never,
-      undefined,
-      undefined,
-      TOOL_CTX
-    );
+    await report!.execute({ projectTag: "test", taskId: "task-0042", summary: "調べ終えました", done: true } as never);
 
     const event = pool.events().find((e) => e.type === "worker_reported")!;
     assert.equal(event.sessionId, worker.sessionId, "名乗りから職人が引けている");
@@ -804,22 +796,10 @@ describe("[task-0026/a6] 職人自身の Tool（worker.report / worker.ask）", 
     const [, ask] = createWorkerReportTools(pool);
     const steer = createWorkerTools(pool).find((t) => t.name === "worker.steer")!;
 
-    await ask!.execute(
-      "call-1",
-      { projectTag: "test", taskId: "task-0042", question: "A案とB案どちらで？" } as never,
-      undefined,
-      undefined,
-      TOOL_CTX
-    );
+    await ask!.execute({ projectTag: "test", taskId: "task-0042", question: "A案とB案どちらで？" } as never);
     assert.equal(pool.get(worker.sessionId)?.state, "waiting");
 
-    await steer.execute(
-      "call-2",
-      { sessionId: worker.sessionId, message: "A案で" } as never,
-      undefined,
-      undefined,
-      TOOL_CTX
-    );
+    await steer.execute({ sessionId: worker.sessionId, message: "A案で" } as never);
     assert.equal(pool.get(worker.sessionId)?.state, "running");
   });
 
@@ -827,13 +807,7 @@ describe("[task-0026/a6] 職人自身の Tool（worker.report / worker.ask）", 
     const [report] = createWorkerReportTools(pool);
     await assert.rejects(
       () =>
-        report!.execute(
-          "call-1",
-          { projectTag: "test", taskId: "no-such-task", summary: "x" } as never,
-          undefined,
-          undefined,
-          TOOL_CTX
-        ),
+        report!.execute({ projectTag: "test", taskId: "no-such-task", summary: "x" } as never),
       /No worker registered/
     );
   });
@@ -1237,9 +1211,7 @@ describe("[task-0030/a2] 検索", () => {
     await pool.delegate({ ...JOB, taskId: "add-search" });
     const list = createWorkerTools(pool).find((t) => t.name === "worker.list")!;
 
-    const out = await list.execute(
-      "c1", { query: "login" } as never, undefined, undefined, TOOL_CTX
-    );
+    const out = await list.execute({ query: "login" } as never);
     assert.match(textOf(out), /fix-login/);
     assert.equal(textOf(out).includes("add-search"), false);
     assert.match(textOf(out), /全 1 件中 1〜1 件/, "どこを見ているか番頭に分かる");
@@ -1248,9 +1220,7 @@ describe("[task-0030/a2] 検索", () => {
   it("[task-0030/a2] 当てはまらないときは、そう言う（空一覧と区別する）", async () => {
     await pool.delegate(JOB);
     const list = createWorkerTools(pool).find((t) => t.name === "worker.list")!;
-    const out = await list.execute(
-      "c1", { query: "存在しない語" } as never, undefined, undefined, TOOL_CTX
-    );
+    const out = await list.execute({ query: "存在しない語" } as never);
     assert.match(textOf(out), /当てはまる職人はいません/);
   });
 });

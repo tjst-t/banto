@@ -12,7 +12,7 @@
 
 import * as http from "node:http";
 import { MODULE_TOOL_PATH } from "@banto/core";
-import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+import type { NamespacedToolDefinition } from "@banto/core";
 
 /** 既定ポート。Kobo(3000) / Banto(4100) と衝突しない値。 */
 export const WORKER_POOL_DEFAULT_PORT = 4300;
@@ -35,7 +35,7 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
 
 export interface WorkerPoolServiceOptions {
   /** 公開するTool（通常は createWorkerTools の戻り値）。 */
-  tools: ToolDefinition[];
+  tools: NamespacedToolDefinition[];
   /** 待ち受けポート。0 を渡すと空きポートが割り当てられる（テスト用）。 */
   port?: number;
   /**
@@ -95,15 +95,9 @@ export class WorkerPoolService {
         }
 
         try {
-          const result = await tool.execute(
-            `http-${Date.now()}`,
-            (body?.args ?? {}) as never,
-            undefined,
-            undefined,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ExtensionContext は
-            // ここで扱う Tool 群が参照しないためスタブを渡す (I4)
-            {} as any
-          );
+          const result = await tool.execute((body?.args ?? {}) as never, {
+            toolCallId: `http-${Date.now()}`,
+          });
           sendJson(res, 200, result);
         } catch (err) {
           // I2: Tool の失敗を 200 で包まない

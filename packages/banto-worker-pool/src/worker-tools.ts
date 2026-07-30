@@ -7,13 +7,12 @@
  * D5: 判断は無い。誰にどの仕事をさせるかを決めるのは番頭で、ここは受け渡しのみ。
  * I2: 起動失敗・不在の職人への操作は WorkerPool が例外にする。ここで握りつぶさない。
  *
- * 型について（imp-0003）：Tool契約の型が pi 依存の `ToolDefinition` になっているのは
- * 既知の不整合。ADR-0010 決定1 はランタイム中立を求めており、統合は task-0025 で行う。
- * ここでは既存のモジュールレジストリに合わせる——Worker Pool だけ別の形にすると
- * レジストリが2つの形を受ける必要が生じ、かえって悪くなるため。
+ * D6: 契約の型は `@banto/core` の中立なもの（task-0025 で統合済み）。**pi は import しない**
+ *     ——Worker Pool は pi をバイナリとしてしか使わないのに、Tool を定義するためだけに
+ *     型依存が要る状態だった（imp-0003 の実害）。
  */
 
-import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { defineNamespacedTool, type NamespacedToolDefinition } from "@banto/core";
 import { Type } from "typebox";
 import { DEFAULT_PAGE_SIZE } from "./pool.js";
 import type { WorkerPool } from "./pool.js";
@@ -23,8 +22,8 @@ const MAX_ATTACH_LINES = 200;
 /** 1回に返すイベントの上限。同上。 */
 const MAX_EVENTS = 100;
 
-export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
-  const delegate = defineTool({
+export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] {
+  const delegate = defineNamespacedTool({
     name: "worker.delegate",
     label: "Worker: Delegate",
     description:
@@ -62,7 +61,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
         })
       ),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const worker = await pool.delegate({
         taskId: params.taskId,
         worktreePath: params.worktreePath,
@@ -85,7 +84,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
     },
   });
 
-  const list = defineTool({
+  const list = defineNamespacedTool({
     name: "worker.list",
     label: "Worker: List",
     description:
@@ -107,7 +106,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
       limit: Type.Optional(Type.Number({ description: `1回に返す件数（既定 ${DEFAULT_PAGE_SIZE}）` })),
       offset: Type.Optional(Type.Number({ description: "先頭から飛ばす件数（続きを見るとき）" })),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const result = pool.find({
         ...(params.projectTag ? { projectTag: params.projectTag } : {}),
         ...(params.includeClosed !== undefined ? { includeClosed: params.includeClosed } : {}),
@@ -138,7 +137,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
     },
   });
 
-  const steer = defineTool({
+  const steer = defineNamespacedTool({
     name: "worker.steer",
     label: "Worker: Steer",
     description:
@@ -148,7 +147,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
       sessionId: Type.String({ description: "対象の職人（worker.list で確認できる）" }),
       message: Type.String({ description: "渡す指示" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       // I2: 不在・終了済みの職人への指示は WorkerPool が例外にする
       await pool.steer(params.sessionId, params.message);
       return {
@@ -158,7 +157,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
     },
   });
 
-  const close = defineTool({
+  const close = defineNamespacedTool({
     name: "worker.close",
     label: "Worker: Close",
     description:
@@ -168,7 +167,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
     parameters: Type.Object({
       sessionId: Type.String({ description: "畳む職人" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       await pool.close(params.sessionId, "done");
       return {
         content: [{ type: "text" as const, text: `畳みました: ${params.sessionId}` }],
@@ -177,7 +176,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
     },
   });
 
-  const wake = defineTool({
+  const wake = defineNamespacedTool({
     name: "worker.wake",
     label: "Worker: Wake",
     description:
@@ -187,7 +186,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
       sessionId: Type.String({ description: "起こし直す職人（worker.list の履歴から選ぶ）" }),
       instruction: Type.String({ description: "続きとして渡す指示" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const worker = await pool.wake(params.sessionId, params.instruction);
       return {
         content: [
@@ -201,7 +200,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
     },
   });
 
-  const stop = defineTool({
+  const stop = defineNamespacedTool({
     name: "worker.stop",
     label: "Worker: Stop",
     description:
@@ -210,7 +209,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
     parameters: Type.Object({
       sessionId: Type.String({ description: "止める職人" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       await pool.stop(params.sessionId);
       return {
         content: [{ type: "text" as const, text: `止めました: ${params.sessionId}` }],
@@ -219,7 +218,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
     },
   });
 
-  const attach = defineTool({
+  const attach = defineNamespacedTool({
     name: "worker.attach",
     label: "Worker: Attach",
     description:
@@ -231,7 +230,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
         Type.Number({ description: `末尾から何行返すか（既定 ${MAX_ATTACH_LINES}）` })
       ),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const limit = Math.max(1, Math.min(params.tailLines ?? MAX_ATTACH_LINES, MAX_ATTACH_LINES));
       const { lines, truncated } = pool.attach(params.sessionId, limit);
       const notes = truncated ? [`… 末尾 ${limit} 行のみ表示`] : [];
@@ -244,7 +243,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
     },
   });
 
-  const events = defineTool({
+  const events = defineNamespacedTool({
     name: "worker.events",
     label: "Worker: Events",
     description:
@@ -260,7 +259,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
       origin: Type.Optional(Type.String({ description: "起動元で絞る" })),
       limit: Type.Optional(Type.Number({ description: `最大件数（既定 ${MAX_EVENTS}）` })),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const limit = Math.max(1, Math.min(params.limit ?? MAX_EVENTS, MAX_EVENTS));
       const found = pool.events(
         params.afterEventId ?? 0,
@@ -296,7 +295,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
  * 職人は自分の sessionId を知らないため、`projectTag` + `taskId`（起動時に環境変数で
  * 渡っている）で自分を名乗る。
  */
-export function createWorkerReportTools(pool: WorkerPool): ToolDefinition[] {
+export function createWorkerReportTools(pool: WorkerPool): NamespacedToolDefinition[] {
   /** 名乗りから職人を引く。I2: 見つからないなら黙って捨てず理由を返す。 */
   const resolve = (projectTag: string, taskId: string): { sessionId: string } => {
     const worker = pool.getByTask(projectTag, taskId);
@@ -314,7 +313,7 @@ export function createWorkerReportTools(pool: WorkerPool): ToolDefinition[] {
     taskId: Type.String({ description: "自分の taskId（環境変数 BANTO_TASK_ID）" }),
   };
 
-  const report = defineTool({
+  const report = defineNamespacedTool({
     name: "worker.report",
     label: "Worker: Report",
     description:
@@ -329,7 +328,7 @@ export function createWorkerReportTools(pool: WorkerPool): ToolDefinition[] {
         Type.Boolean({ description: "自分としては作業を終えたつもりなら true" })
       ),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const { sessionId } = resolve(params.projectTag, params.taskId);
       const event = pool.report(sessionId, params.summary, {
         ...(params.done !== undefined ? { done: params.done } : {}),
@@ -341,7 +340,7 @@ export function createWorkerReportTools(pool: WorkerPool): ToolDefinition[] {
     },
   });
 
-  const ask = defineTool({
+  const ask = defineNamespacedTool({
     name: "worker.ask",
     label: "Worker: Ask",
     description:
@@ -354,7 +353,7 @@ export function createWorkerReportTools(pool: WorkerPool): ToolDefinition[] {
         Type.Boolean({ description: "答えが無いと先へ進めないなら true（既定 true）" })
       ),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const { sessionId } = resolve(params.projectTag, params.taskId);
       const event = pool.ask(sessionId, params.question, {
         blocking: params.blocking ?? true,

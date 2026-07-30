@@ -47,7 +47,7 @@ export function createMemoryTools(store: MemoryStore): NamespacedToolDefinition[
         Type.String({ description: "訂正する場合、置き換える古い記憶のID" })
       ),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       // I2: 存在しないIDの訂正は MemoryStore が例外にする。ここで握りつぶさない。
       const saved = params.supersedes
         ? store.supersede(params.supersedes, {
@@ -78,7 +78,7 @@ export function createMemoryTools(store: MemoryStore): NamespacedToolDefinition[
     parameters: Type.Object({
       kind: Type.Optional(MemoryKindSchema),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const records = store.list(params.kind ? { kind: params.kind } : {});
       const text =
         records.length === 0

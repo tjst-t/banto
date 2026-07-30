@@ -39,7 +39,7 @@ export function createSkillTools(skills: BantoSkill[]): NamespacedToolDefinition
     parameters: Type.Object({
       name: Type.String({ description: "SKILLの名前（例: work-handoff）" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       // I2: 未知のSKILL名は握りつぶさずエラーにする（利用可能な名前を添えて返す）
       const body = readBantoSkill(params.name, skills);
       return { content: [{ type: "text" as const, text: body }], details: {} };

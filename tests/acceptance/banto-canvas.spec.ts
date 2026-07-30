@@ -266,7 +266,7 @@ describe("[task-0012/a2] canvas.* Tool", () => {
 
   it("[task-0012/a2] canvas.list_catalog が開けるGUIを返す", async () => {
     const [listCatalog] = createCanvasTools(canvas, catalog);
-    const out = await listCatalog!.execute("c1", {}, undefined, undefined, TOOL_CTX);
+    const out = await listCatalog!.execute({});
 
     assert.match(textOf(out), /demo\.hello/);
     assert.match(textOf(out), /demo\.notes/);
@@ -274,13 +274,7 @@ describe("[task-0012/a2] canvas.* Tool", () => {
 
   it("[task-0012/a2] canvas.open がタブを開く", async () => {
     const [, open] = createCanvasTools(canvas, catalog);
-    const out = await open!.execute(
-      "c1",
-      { kind: "demo.hello", params: { message: "やあ" } },
-      undefined,
-      undefined,
-      TOOL_CTX
-    );
+    const out = await open!.execute({ kind: "demo.hello", params: { message: "やあ" } });
 
     assert.match(textOf(out), /opened demo\.hello/);
     assert.equal(canvas.snapshot().tabs.length, 1);
@@ -290,7 +284,7 @@ describe("[task-0012/a2] canvas.* Tool", () => {
   it("[task-0012/a3] canvas.open は未知の kind でエラーになる（握りつぶさない）", async () => {
     const [, open] = createCanvasTools(canvas, catalog);
     await assert.rejects(
-      () => open!.execute("c1", { kind: "demo.nope" }, undefined, undefined, TOOL_CTX),
+      () => open!.execute({ kind: "demo.nope" }),
       /Unknown canvas view/
     );
   });
@@ -299,12 +293,12 @@ describe("[task-0012/a2] canvas.* Tool", () => {
     const tools = createCanvasTools(canvas, catalog);
     const queryState = tools[4]!;
 
-    const empty = await queryState.execute("c1", {}, undefined, undefined, TOOL_CTX);
+    const empty = await queryState.execute({});
     assert.match(textOf(empty), /何も開かれていない/);
 
     canvas.open("demo.hello");
     canvas.open("demo.notes");
-    const filled = await queryState.execute("c2", {}, undefined, undefined, TOOL_CTX);
+    const filled = await queryState.execute({});
     assert.match(textOf(filled), /▶.*メモ/, "表示中のタブが分かる");
     assert.match(textOf(filled), /デモ/);
   });
@@ -316,10 +310,10 @@ describe("[task-0012/a2] canvas.* Tool", () => {
     const first = canvas.open("demo.hello");
     const second = canvas.open("demo.notes");
 
-    await switchTool!.execute("c1", { tabId: first.id }, undefined, undefined, TOOL_CTX);
+    await switchTool!.execute({ tabId: first.id });
     assert.equal(canvas.snapshot().activeTabId, first.id);
 
-    await close!.execute("c2", { tabId: second.id }, undefined, undefined, TOOL_CTX);
+    await close!.execute({ tabId: second.id });
     assert.deepEqual(canvas.snapshot().tabs.map((t) => t.id), [first.id]);
   });
 });

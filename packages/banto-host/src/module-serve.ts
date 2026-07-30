@@ -87,15 +87,9 @@ export function createModuleToolHandler(
 
     try {
       // 番頭は経由しない。Tool の実装をそのまま呼ぶ。
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ExtensionContext は
-      // ここで扱う Tool 群が参照しないためスタブを渡す (I4)
-      const result = await tool.execute(
-        `http-${Date.now()}`,
-        (body?.args ?? {}) as never,
-        undefined,
-        undefined,
-        {} as any
-      );
+      const result = await tool.execute((body?.args ?? {}) as never, {
+        toolCallId: `http-${Date.now()}`,
+      });
       sendJson(res, 200, result as unknown as ModuleToolResult);
     } catch (err) {
       // I2: Tool の失敗を 200 で包まない。呼び手が成功と誤認しないようにする

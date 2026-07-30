@@ -231,7 +231,7 @@ describe("[task-0016] workspace モジュールが Tool・GUI・データAPI の
     assert.ok(list);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ExtensionContext スタブ (I4)
-    const result = await list!.execute("c1", {}, undefined, undefined, {} as any);
+    const result = await list!.execute({});
 
     // 番頭・LLM向け
     assert.match(String((result.content[0] as { text: string }).text), /a\.txt/);

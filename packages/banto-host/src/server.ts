@@ -23,7 +23,7 @@ import {
   type ServerEvent,
   type TranscriptEntry,
 } from "./protocol.js";
-import { fromWireToolName } from "./tool-namespace.js";
+import { fromWireToolName } from "@banto/core";
 import type { NamespacedToolDefinition } from "./tool-registry.js";
 
 /**

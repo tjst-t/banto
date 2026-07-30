@@ -101,9 +101,7 @@ async function serve(options: ServeOptions): Promise<void> {
 
   const modules = createModuleRegistry([
     createWorkspaceModule(workspace),
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Worker Pool は banto-host に
-    // 依存しないため BantoModule 型を参照できず、構造的に一致する形を返している（module.ts 参照）
-    workerPoolModule as any,
+    workerPoolModule,
     createDemoModule(),
   ]);
 

@@ -86,7 +86,7 @@ export function createGitTools(repoRoot: string): NamespacedToolDefinition[] {
         Type.Boolean({ description: "本文ではなく変更量の要約だけを見る（全体像の把握用）" })
       ),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const args = ["diff"];
       if (params.staged) args.push("--cached");
       if (params.stat) args.push("--stat");
@@ -111,7 +111,7 @@ export function createGitTools(repoRoot: string): NamespacedToolDefinition[] {
       path: Type.Optional(Type.String({ description: "このパスに触れたコミットだけに絞る" })),
       ref: Type.Optional(Type.String({ description: "起点（例: main, HEAD~10）" })),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const limit = Math.max(1, Math.min(params.limit ?? 20, 200));
       const args = ["log", `-n${limit}`, "--date=short", "--pretty=format:%h %ad %an — %s"];
       if (params.ref) args.push(params.ref);
@@ -142,7 +142,7 @@ export function createGitTools(repoRoot: string): NamespacedToolDefinition[] {
     parameters: Type.Object({
       remote: Type.Optional(Type.Boolean({ description: "リモート追跡ブランチも含める" })),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const args = [
         "for-each-ref",
         "--sort=-committerdate",
@@ -180,7 +180,7 @@ export function createGitTools(repoRoot: string): NamespacedToolDefinition[] {
       from: Type.Optional(Type.Number({ description: "開始行（1始まり）" })),
       to: Type.Optional(Type.Number({ description: "終了行" })),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const args = ["blame", "--date=short"];
       if (params.from !== undefined) {
         args.push("-L", `${params.from},${params.to ?? params.from + 40}`);
@@ -205,7 +205,7 @@ export function createGitTools(repoRoot: string): NamespacedToolDefinition[] {
       ref: Type.String({ description: "コミット（例: a1b2c3, HEAD, HEAD~2）" }),
       path: Type.Optional(Type.String({ description: "差分を1ファイルに絞る" })),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       // メタ情報。%x09 はタブ区切り（件名に空白が入っても壊れない）
       const meta = await git(repoRoot, [
         "show",

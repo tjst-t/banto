@@ -86,8 +86,29 @@ export type {
 } from "./runtime-driver.js";
 
 // Executor + audit tool definitions (runtime-neutral; no pi/agent-sdk imports)
-export { reportPhaseTool, reportDoneTool, bantoExecutorTools, auditReportTool, bantoAuditTools } from "./tools.js";
-export type { BantoTool, ToolResult, ToolTextContent, ToolParameterSchema } from "./tools.js";
+// Tool 契約（ランタイム中立・決定1／task-0025）。契約の型はこの1つだけ
+export { defineBantoTool, defineNamespacedTool } from "./banto-tool.js";
+export type {
+  BantoToolDefinition,
+  NamespacedToolDefinition,
+  AnyBantoTool,
+  BantoToolResult,
+  BantoToolTextContent,
+  BantoToolContext,
+} from "./banto-tool.js";
+
+// Tool 名前空間の規約（決定9・決定22）。モジュールが banto-host 抜きで名乗れるよう core に置く
+export {
+  isNamespacedToolName,
+  assertNamespacedToolName,
+  toolDomain,
+  toWireToolName,
+  fromWireToolName,
+} from "./tool-namespace.js";
+export type { NamespacedToolName } from "./tool-namespace.js";
+
+// 職人・監査セッション向けの Tool。依存（DaemonClient）は引数で受ける
+export { createExecutorTools, createAuditTools } from "./tools.js";
 
 // Prompt asset loader (reads from skills/ directory at repo root)
 export { loadPromptAsset } from "./prompt-assets.js";

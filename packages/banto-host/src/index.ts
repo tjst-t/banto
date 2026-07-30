@@ -1,3 +1,4 @@
+// 名前空間の規約は banto-core が持つ（task-0025）。既存の利用者のために再輸出する
 export {
   isNamespacedToolName,
   assertNamespacedToolName,
@@ -5,11 +6,11 @@ export {
   toWireToolName,
   fromWireToolName,
   type NamespacedToolName,
-} from "./tool-namespace.js";
+} from "@banto/core";
 export {
   defineNamespacedTool,
   createToolRegistry,
-  toWireTool,
+  toPiTool,
   type NamespacedToolDefinition,
   type ToolRegistry,
 } from "./tool-registry.js";

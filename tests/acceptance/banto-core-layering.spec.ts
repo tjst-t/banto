@@ -16,9 +16,7 @@ import { fileURLToPath } from "node:url";
 
 // Consumer-style import from @banto/core
 import {
-  reportPhaseTool,
-  reportDoneTool,
-  bantoExecutorTools,
+  createExecutorTools,
   DaemonClient,
   loadPromptAsset,
 } from "@banto/core";
@@ -27,19 +25,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..", "..");
 
 describe("[AC-S254276-3-1] banto-core layering: tools, client, prompt assets; adapter is thin", () => {
-  it("[AC-S254276-3-1] @banto/core exports reportPhaseTool, reportDoneTool, DaemonClient, loadPromptAsset", () => {
-    assert.ok(reportPhaseTool, "reportPhaseTool should be exported");
-    assert.equal(typeof reportPhaseTool.name, "string");
-    assert.equal(reportPhaseTool.name, "report_phase");
-    assert.equal(typeof reportPhaseTool.execute, "function");
-
-    assert.ok(reportDoneTool, "reportDoneTool should be exported");
-    assert.equal(typeof reportDoneTool.name, "string");
-    assert.equal(reportDoneTool.name, "report_done");
-    assert.equal(typeof reportDoneTool.execute, "function");
-
-    assert.ok(Array.isArray(bantoExecutorTools), "bantoExecutorTools should be an array");
-    assert.equal(bantoExecutorTools.length, 2);
+  it("[AC-S254276-3-1] @banto/core exports createExecutorTools, DaemonClient, loadPromptAsset", () => {
+    // task-0025: 依存（DaemonClient）は Tool を作る関数の引数で受ける。型には現れない
+    const tools = createExecutorTools(new DaemonClient("http://localhost:1"));
+    assert.ok(Array.isArray(tools), "createExecutorTools should return an array");
+    assert.deepEqual(tools.map((t) => t.name), ["report_phase", "report_done"]);
+    for (const tool of tools) {
+      assert.equal(typeof tool.execute, "function");
+      assert.equal(typeof tool.description, "string");
+      assert.equal(tool.parameters.type, "object");
+    }
 
     assert.equal(typeof DaemonClient, "function", "DaemonClient should be a class");
     assert.equal(typeof loadPromptAsset, "function", "loadPromptAsset should be a function");
@@ -86,6 +81,42 @@ describe("[AC-S254276-3-1] banto-core layering: tools, client, prompt assets; ad
     }
   });
 
+  it("[task-0025] モジュールは Tool を定義するのに pi の型を要らない（Worker Pool が証拠）", () => {
+    // imp-0003 の実害そのもの：Worker Pool は pi を**バイナリとしてしか**使わないのに、
+    // Tool を定義するために型依存が要る状態だった。戻ったら気づけるようにしておく。
+    // pi-rpc-driver.ts はバイナリのパス解決でパッケージ名を**文字列として**持つので、
+    // ここで見るのは import 文だけ（コメント・文字列は許す）
+    const srcDir = path.join(repoRoot, "packages", "banto-worker-pool", "src");
+    const files = fs
+      .readdirSync(srcDir, { recursive: true, encoding: "utf-8" })
+      .filter((f) => f.endsWith(".ts"));
+
+    for (const file of files) {
+      const content = fs.readFileSync(path.join(srcDir, file), "utf-8");
+      assert.ok(
+        !/^import\s.*['"]@mariozechner\//m.test(content),
+        `banto-worker-pool/${file} は pi の型を import してはいけない（契約は @banto/core）`
+      );
+    }
+  });
+
+  it("[task-0025] Tool 契約の型は1つだけ（並立していないこと）", () => {
+    // 決定27b「契約体系を2つ持たない」。banto-host が pi の ToolDefinition を
+    // **契約として**再輸出していたら、また2つに割れる
+    const registryPath = path.join(repoRoot, "packages", "banto-host", "src", "tool-registry.ts");
+    const registry = fs.readFileSync(registryPath, "utf-8");
+
+    // pi の型を使ってよいのは「pi へ写す」関数の戻り値だけ。契約は core から来る
+    assert.ok(
+      /from "@banto\/core"/.test(registry),
+      "契約は @banto/core から取ること"
+    );
+    assert.ok(
+      /^import type \{ ToolDefinition \}/m.test(registry),
+      "pi の型は type import に留めること（アダプタの出口の型としてのみ）"
+    );
+  });
+
   it("[AC-S254276-3-1] pi Extension adapter is 60 lines or fewer (thin wrapper constraint)", () => {
     const adapterPath = path.join(
       repoRoot,
@@ -104,16 +135,24 @@ describe("[AC-S254276-3-1] banto-core layering: tools, client, prompt assets; ad
     );
   });
 
-  it("[AC-S254276-3-1] reportPhaseTool parameters conform to JSON Schema shape", () => {
-    const params = reportPhaseTool.parameters;
+  it("[AC-S254276-3-1] report_phase parameters conform to JSON Schema shape", () => {
+    const tool = createExecutorTools(new DaemonClient("http://localhost:1")).find(
+      (t) => t.name === "report_phase"
+    )!;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 生成された JSON Schema を覗く (I4)
+    const params = tool.parameters as any;
+
     assert.equal(params.type, "object");
-    assert.ok("phase" in params.properties);
-    assert.ok("projectTag" in params.properties);
-    assert.ok("taskId" in params.properties);
-    assert.ok(params.required.includes("phase"));
-    assert.ok(params.required.includes("projectTag"));
-    assert.ok(params.required.includes("taskId"));
-    // phase must be an enum (DEC-S254276-012 resolved: "review-ready" removed; use report_done)
-    assert.deepEqual(params.properties["phase"]?.enum, ["planning", "implementing"]);
+    for (const field of ["phase", "projectTag", "taskId"]) {
+      assert.ok(field in params.properties, `${field} が無い`);
+      assert.ok(params.required.includes(field), `${field} が必須になっていない`);
+    }
+
+    // phase の取りうる値（DEC-S254276-012 resolved: "review-ready" は削除。report_done を使う）。
+    // task-0025 で typebox に統一したため、符号化は enum から anyOf/const に変わった
+    // ——見たいのは符号化ではなく**許す値の集合**なので、どちらの形からも取り出して比べる
+    const phase = params.properties["phase"];
+    const allowed: string[] = phase.enum ?? phase.anyOf.map((v: { const: string }) => v.const);
+    assert.deepEqual(allowed, ["planning", "implementing"]);
   });
 });

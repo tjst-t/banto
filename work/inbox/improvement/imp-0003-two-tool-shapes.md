@@ -4,8 +4,9 @@ type: improvement
 kind: incident
 origin: agent
 class: spec-impl-mismatch
-status: open
-refs: [task-0010, adr-0010, task-0004]
+status: resolved
+resolution: 契約をランタイム中立な BantoToolDefinition 1つに統合し、pi への変換は banto-host の toPiTool に閉じた。依存はTool生成関数の引数で受ける（task-0025、2026-07-30）
+refs: [task-0010, adr-0010, task-0004, task-0025]
 ---
 
 ## 内容
@@ -73,3 +74,38 @@ S254276 期の実装で、番頭の作業より前から存在する。
   かえって悪化するため
 - 統合は別タスクとする（→ 起票）。方向としては、契約（名前・JSON Schema・説明・実行）を
   banto-core に置き、pi 向けの型変換はアダプタ（banto-host）に寄せる形が決定1に沿う
+
+## 対処の結果（2026-07-30・resolved / task-0025）
+
+3つの問題（(1) 実装の近道 (2) 決定1と決定11の継ぎ目が未仕様 (3) 既存の「中立な型」が中立でない）
+のうち、(1)(3) を解消した。(2) は下記のとおり形が決まったので ADR への追記を判断できる状態になった。
+
+- **契約は `banto-core/src/banto-tool.ts` の1つだけ**。`BantoToolDefinition` /
+  `NamespacedToolDefinition` / `defineBantoTool` / `defineNamespacedTool`
+- **依存は型に焼き込まない**。旧 `BantoTool.execute(client, args)` をやめ、依存は
+  **Tool を作る関数の引数**で受けてクロージャに閉じ込める形へ統一した
+  （`createExecutorTools(client)` / `createAuditTools(client)` / `createWorkerTools(pool)`）
+- **pi への変換は `banto-host/src/tool-registry.ts` の `toPiTool` だけ**。写すのは
+  name（wire名へ変換）/ label / description / parameters / execute の5つで、残りは pi の既定。
+  決定1 の「薄い皮」が実際に成立した
+- **Tool 名前空間の規約（決定9・決定22）を banto-core へ移した**。名前空間は Banto 全体の
+  契約であって pi アダプタの都合ではなく、モジュールが banto-host 抜きで名乗れる必要がある
+- **`worker.*` から pi の型 import が消えた**。`packages/banto-host/src/bin.ts` にあった
+  `workerPoolModule as any`（Worker Pool が BantoModule 型を参照できないための逃げ）も外れた
+
+### 見立てのとおりだった点
+
+`typebox` が pi から独立しているという見立ては正しく、パラメータは typebox のまま中立化できた。
+アダプタは実際に「5つ写して残りは既定」で済んでいる。
+
+### 変わったもの（振る舞いの範囲内）
+
+`report_phase` の `phase` の符号化が `enum: [...]` から typebox の `anyOf: [{const}...]` に変わった。
+手書き JSON Schema を typebox に寄せた結果で、同じ形は `worker.delegate` の `modelTier` 等で
+既に実プロバイダ相手に動いている。テストは符号化ではなく**許す値の集合**を見るように直した。
+
+### 再発防止
+
+`banto-core-layering.spec.ts` に2本足した。(a) Worker Pool の src が pi の型を import しないこと、
+(b) 契約が `@banto/core` 由来で、pi の型は type import に留まっていること。
+**pi の型 import を1行戻すと実際に落ちることを確認済み**（網が効いていることの確認。I1）。

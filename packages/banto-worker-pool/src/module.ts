@@ -11,7 +11,7 @@
  */
 
 import { Type } from "typebox";
-import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+import type { NamespacedToolDefinition } from "@banto/core";
 import { createWorkerReportTools, createWorkerTools } from "./worker-tools.js";
 import type { WorkerPool } from "./pool.js";
 
@@ -37,8 +37,8 @@ export function createWorkerPoolModule(
   title: string;
   description: string;
   endpoint: { baseUrl: string };
-  tools: ToolDefinition[];
-  internalTools: ToolDefinition[];
+  tools: NamespacedToolDefinition[];
+  internalTools: NamespacedToolDefinition[];
   views: Array<{
     kind: string;
     title: string;

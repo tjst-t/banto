@@ -23,7 +23,7 @@ import {
   fromWireToolName,
   isNamespacedToolName,
   toolDomain,
-  toWireTool,
+  toPiTool,
   toWireToolName,
 } from "@banto/host";
 
@@ -103,13 +103,21 @@ describe("[task-0006] Logical name ↔ wire name adapter (ADR-0010 決定22)", (
     assert.equal(new Set(wire).size, names.length, `wire names must be distinct: ${wire.join(", ")}`);
   });
 
-  it("[task-0006] toWireTool renames only `name`, preserving the rest of the contract", () => {
+  it("[task-0006][task-0025] toPiTool は名前を wire 名にするだけで、契約の中身は変えない", async () => {
     const tool = makeStubTool("kobo.query.ready");
-    const wired = toWireTool(tool);
-    assert.equal(wired.name, "kobo__query__ready");
+    const wired = toPiTool(tool);
+
+    assert.equal(wired.name, "kobo__query__ready", "wire 名へ変換する（決定22）");
+    assert.equal(wired.label, tool.label);
     assert.equal(wired.description, tool.description);
-    assert.equal(wired.parameters, tool.parameters);
-    assert.equal(wired.execute, tool.execute);
+    assert.equal(wired.parameters, tool.parameters, "スキーマはそのまま渡す");
+
+    // task-0025: execute は同一関数ではなく包まれる（中立な結果を pi の形へ写すため）。
+    // 包んでも呼び先と中身が変わらないことを、実際に呼んで確かめる
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pi の ctx はここでは不要 (I4)
+    const result = await wired.execute("call-1", {}, undefined, undefined, {} as any);
+    assert.deepEqual(result.content, [{ type: "text", text: "kobo.query.ready ok" }]);
+    assert.deepEqual(result.details, {}, "details は必須なので既定で埋まる");
   });
 });
 

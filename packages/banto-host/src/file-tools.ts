@@ -116,7 +116,7 @@ export function createFileTools(root: string): NamespacedToolDefinition[] {
         Type.Boolean({ description: "ドット始まりや node_modules 等も含める（既定 false）" })
       ),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const target = resolveInWorkspace(root, params.path ?? ".");
       // I2: 存在しない・ディレクトリでない場合は黙って空一覧を返さずエラーにする
       if (!fs.existsSync(target)) {
@@ -175,7 +175,7 @@ export function createFileTools(root: string): NamespacedToolDefinition[] {
         Type.Number({ description: `読む行数の上限（既定 ${MAX_LINES}）` })
       ),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const target = resolveInWorkspace(root, params.path);
       if (!fs.existsSync(target)) {
         throw new Error(`No such file: ${params.path}`);
@@ -235,7 +235,7 @@ export function createFileTools(root: string): NamespacedToolDefinition[] {
     parameters: Type.Object({
       path: Type.String({ description: "ワークスペースからの相対パス" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const target = resolveInWorkspace(root, params.path);
       if (!fs.existsSync(target)) {
         throw new Error(`No such path: ${params.path}`);
@@ -266,7 +266,7 @@ export function createFileTools(root: string): NamespacedToolDefinition[] {
       ),
       limit: Type.Optional(Type.Number({ description: `件数の上限（既定 ${MAX_FIND_RESULTS}）` })),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const start = params.path ?? ".";
       resolveInWorkspace(root, start);
       const limit = Math.max(1, Math.min(params.limit ?? MAX_FIND_RESULTS, MAX_FIND_RESULTS));
@@ -312,7 +312,7 @@ export function createFileTools(root: string): NamespacedToolDefinition[] {
       ),
       limit: Type.Optional(Type.Number({ description: `一致行の上限（既定 ${MAX_GREP_RESULTS}）` })),
     }),
-    async execute(_toolCallId, params) {
+    async execute(params) {
       const start = params.path ?? ".";
       resolveInWorkspace(root, start);
       const limit = Math.max(1, Math.min(params.limit ?? MAX_GREP_RESULTS, MAX_GREP_RESULTS));

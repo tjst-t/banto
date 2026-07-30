@@ -77,13 +77,7 @@ describe("[task-0008/a1] memory.save / memory.recall Tools", () => {
 
   it("[task-0008/a1] memory.save persists through the MemoryStore", async () => {
     const [saveTool] = createMemoryTools(store);
-    const result = await saveTool!.execute(
-      "call-1",
-      { kind: "preference", text: "POは統合UIのモックを好む" },
-      undefined,
-      undefined,
-      TOOL_CTX
-    );
+    const result = await saveTool!.execute({ kind: "preference", text: "POは統合UIのモックを好む" });
 
     assert.match(textOf(result), /saved memory/);
     assert.deepEqual(store.list().map((r) => r.text), ["POは統合UIのモックを好む"]);
@@ -93,13 +87,7 @@ describe("[task-0008/a1] memory.save / memory.recall Tools", () => {
     const original = store.save({ kind: "preference", text: "古い好み" });
     const [saveTool] = createMemoryTools(store);
 
-    await saveTool!.execute(
-      "call-1",
-      { kind: "preference", text: "新しい好み", supersedes: original.id },
-      undefined,
-      undefined,
-      TOOL_CTX
-    );
+    await saveTool!.execute({ kind: "preference", text: "新しい好み", supersedes: original.id });
 
     assert.deepEqual(store.list().map((r) => r.text), ["新しい好み"]);
   });
@@ -108,13 +96,7 @@ describe("[task-0008/a1] memory.save / memory.recall Tools", () => {
     const [saveTool] = createMemoryTools(store);
     await assert.rejects(
       () =>
-        saveTool!.execute(
-          "call-1",
-          { kind: "preference", text: "訂正", supersedes: "no-such-id" },
-          undefined,
-          undefined,
-          TOOL_CTX
-        ),
+        saveTool!.execute({ kind: "preference", text: "訂正", supersedes: "no-such-id" }),
       /Cannot supersede unknown memory/
     );
   });
@@ -124,11 +106,11 @@ describe("[task-0008/a1] memory.save / memory.recall Tools", () => {
     store.save({ kind: "habit", text: "習慣B" });
     const [, recallTool] = createMemoryTools(store);
 
-    const all = await recallTool!.execute("call-1", {}, undefined, undefined, TOOL_CTX);
+    const all = await recallTool!.execute({});
     assert.match(textOf(all), /好みA/);
     assert.match(textOf(all), /習慣B/);
 
-    const onlyHabits = await recallTool!.execute("call-2", { kind: "habit" }, undefined, undefined, TOOL_CTX);
+    const onlyHabits = await recallTool!.execute({ kind: "habit" });
     assert.doesNotMatch(textOf(onlyHabits), /好みA/);
     assert.match(textOf(onlyHabits), /習慣B/);
   });
@@ -138,14 +120,14 @@ describe("[task-0008/a1] memory.save / memory.recall Tools", () => {
     store.supersede(original.id, { kind: "preference", text: "新しい前提" });
     const [, recallTool] = createMemoryTools(store);
 
-    const out = await recallTool!.execute("call-1", {}, undefined, undefined, TOOL_CTX);
+    const out = await recallTool!.execute({});
     assert.doesNotMatch(textOf(out), /古い前提/);
     assert.match(textOf(out), /新しい前提/);
   });
 
   it("[task-0008/a1] memory.recall on an empty store says so rather than erroring", async () => {
     const [, recallTool] = createMemoryTools(store);
-    const out = await recallTool!.execute("call-1", {}, undefined, undefined, TOOL_CTX);
+    const out = await recallTool!.execute({});
     assert.equal(textOf(out), "記憶なし");
   });
 });
@@ -248,7 +230,7 @@ describe("[task-0008/a2] SKILL loading (自前 progressive disclosure)", () => {
   it("[task-0008/a2] skill.read returns the full SKILL body", async () => {
     const skills = loadBantoSkills();
     const [, readTool] = createSkillTools(skills);
-    const out = await readTool!.execute("call-1", { name: "work-handoff" }, undefined, undefined, TOOL_CTX);
+    const out = await readTool!.execute({ name: "work-handoff" });
 
     assert.match(textOf(out), /## 手順1/);
     assert.match(textOf(out), /## 手順2/);
@@ -256,7 +238,7 @@ describe("[task-0008/a2] SKILL loading (自前 progressive disclosure)", () => {
 
   it("[task-0008/a2] skill.list returns names and descriptions", async () => {
     const [listTool] = createSkillTools(loadBantoSkills());
-    const out = await listTool!.execute("call-1", {}, undefined, undefined, TOOL_CTX);
+    const out = await listTool!.execute({});
 
     assert.match(textOf(out), /work-handoff:/);
   });
@@ -264,7 +246,7 @@ describe("[task-0008/a2] SKILL loading (自前 progressive disclosure)", () => {
   it("[task-0008/a2] skill.read on an unknown SKILL throws with the available names (I2)", async () => {
     const [, readTool] = createSkillTools(loadBantoSkills());
     await assert.rejects(
-      () => readTool!.execute("call-1", { name: "no-such-skill" }, undefined, undefined, TOOL_CTX),
+      () => readTool!.execute({ name: "no-such-skill" }),
       /Unknown SKILL "no-such-skill".*work-handoff/s
     );
   });
@@ -358,13 +340,7 @@ describe("[task-0032] 記憶の種類 fact", () => {
     const store = new JsonlMemoryStore(path.join(dir, "m.jsonl"));
     const save = createMemoryTools(store).find((t) => t.name === "memory.save")!;
 
-    await save.execute(
-      "c1",
-      { kind: "fact", text: "POの役割はプロダクトオーナー" } as never,
-      undefined,
-      undefined,
-      TOOL_CTX
-    );
+    await save.execute({ kind: "fact", text: "POの役割はプロダクトオーナー" } as never);
     assert.equal(store.list({ kind: "fact" }).length, 1);
   });
 

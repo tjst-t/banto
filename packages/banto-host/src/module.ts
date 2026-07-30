@@ -19,7 +19,7 @@
 
 import type { CanvasViewSpec } from "./canvas.js";
 import type { BantoSkill } from "./skills.js";
-import { toolDomain, type NamespacedToolName } from "./tool-namespace.js";
+import { toolDomain, type NamespacedToolName } from "@banto/core";
 import type { NamespacedToolDefinition } from "./tool-registry.js";
 
 /** 番頭核自身が持つ SKILL・Tool の由来を表す予約語。モジュール名には使えない。 */

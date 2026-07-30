@@ -1,5 +1,9 @@
 /**
- * Tool namespace convention for Banto host tools (ADR-0010 決定9).
+ * Tool namespace convention (ADR-0010 決定9).
+ *
+ * task-0025: banto-host から banto-core へ移した。名前空間は**Banto 全体の契約**であって
+ * pi アダプタの都合ではない——モジュール（Worker Pool 等）が banto-host に依存せずに
+ * 名前空間つきの Tool を定義できる必要がある（imp-0003）。
  *
  * 境界線: 単発の状態照会・単発アクション（Kobo状態クエリ、キャンバスのopen/close/switch等）は
  * すべて Tool として定義し、`<domain>.<verb...>` 形式で命名する

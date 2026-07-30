@@ -1,51 +1,27 @@
 /**
- * Tool registration scaffold for the Banto host (ADR-0010 決定9・決定11).
+ * Tool レジストリと pi アダプタ（ADR-0010 決定9・決定11・決定22、task-0025）。
  *
- * Wraps pi's ToolDefinition/defineTool so every tool registered here is required
- * to follow the namespace convention (kobo.*, canvas.*, ...). This module only
- * provides the type + registration mechanism; concrete Kobo/canvas Tool
- * implementations (kobo.query.ready, canvas.open, ...) are out of scope for this
- * task and plug in via later tasks.
+ * **契約は `@banto/core` にある。** ここにあるのは登録の帳簿と、pi へ写す薄い皮だけ。
+ * 以前はこのファイルが pi の `ToolDefinition` を契約そのものに使っており、モジュールが
+ * Tool を定義するのに pi への型依存が要る状態だった（imp-0003）。決定1「アダプタは
+ * 薄い皮に留める」に反していたため、契約を core へ移した。
  *
- * D5: no judgment logic here — pure registration bookkeeping.
- * D6: no dependency beyond pi's own tool types and typebox (already a pi-coding-agent dependency).
+ * D5: 判断は無い。登録の帳簿と型変換のみ。
+ * D6: 依存は @banto/core と pi の型のみ（pi 依存はこの層に閉じる）。
  */
 
-import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
-import type { TSchema } from "typebox";
+import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import {
   assertNamespacedToolName,
   toWireToolName,
   toolDomain,
-  type NamespacedToolName,
-} from "./tool-namespace.js";
+  type AnyBantoTool,
+  type NamespacedToolDefinition,
+} from "@banto/core";
 
-/** A pi ToolDefinition whose `name` is required to be namespaced (`<domain>.<verb...>`). */
-export type NamespacedToolDefinition<
-  TParams extends TSchema = TSchema,
-  TDetails = unknown,
-  // pi's own ToolDefinition defaults TState to `any`; this scaffold has no use for
-  // TState-dependent custom rendering, so the default here is narrowed to `unknown` (I4).
-  TState = unknown,
-> = ToolDefinition<TParams, TDetails, TState> & { name: NamespacedToolName };
-
-// `any` mirrors pi's own `AnyToolDefinition` escape hatch (extensions/types.ts): a concrete
-// tool's `renderCall`/`renderResult` are contravariant in TParams/TState, so widening a
-// concrete NamespacedToolDefinition<TObject<...>, ...> into the bare, param-erased
-// NamespacedToolDefinition used by ToolRegistry needs this intersection to type-check (I4).
-type AnyNamespacedToolDefinition = NamespacedToolDefinition<any, any, any>;
-
-/**
- * Define a namespaced Banto host tool. Thin wrapper around pi's `defineTool()` that
- * additionally asserts the name follows the `<domain>.<verb...>` convention (I2: fails
- * loudly on a naming violation rather than registering a malformed contract).
- */
-export function defineNamespacedTool<TParams extends TSchema, TDetails = unknown, TState = unknown>(
-  tool: NamespacedToolDefinition<TParams, TDetails, TState>
-): NamespacedToolDefinition<TParams, TDetails, TState> & AnyNamespacedToolDefinition {
-  assertNamespacedToolName(tool.name);
-  return defineTool(tool) as NamespacedToolDefinition<TParams, TDetails, TState> & AnyNamespacedToolDefinition;
-}
+export type { NamespacedToolDefinition };
+// 契約と定義関数は banto-core の持ち物。ここは pi への写しだけを持つ（決定1「薄い皮」）
+export { defineNamespacedTool } from "@banto/core";
 
 /** Registry of namespaced tools available to the Banto host session. */
 export interface ToolRegistry {
@@ -65,12 +41,27 @@ export interface ToolRegistry {
 }
 
 /**
- * Rewrites a tool's name to its wire form for handing to the agent SDK / LLM (決定22).
- * Only the `name` changes — parameters, description and `execute` are untouched, so the
- * logical contract stays the single source of truth on the Banto side.
+ * 中立な契約を pi の `ToolDefinition` へ写す（決定22 の wire 名変換もここ）。
+ *
+ * **これが「薄い皮」の実体。** 写すのは name / label / description / parameters / execute の
+ * 5つだけで、残りは pi 側の既定に任せる。契約の側は pi の描画・実行モードの語彙を知らない。
  */
-export function toWireTool(tool: NamespacedToolDefinition): ToolDefinition {
-  return { ...tool, name: toWireToolName(tool.name) } as ToolDefinition;
+export function toPiTool(tool: NamespacedToolDefinition): ToolDefinition {
+  const neutral = tool as AnyBantoTool;
+  return {
+    name: toWireToolName(tool.name),
+    label: neutral.label,
+    description: neutral.description,
+    parameters: neutral.parameters,
+    async execute(toolCallId: string, params: unknown) {
+      const result = await neutral.execute(params, { toolCallId });
+      // pi の AgentToolResult は details が必須。中立側では省略可なので既定で埋める
+      return { content: result.content, details: result.details ?? {} };
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pi の ToolDefinition は
+    // TParams/TState について反変な描画フックを持ち、パラメータ消去した形へ代入するには
+    // これが要る（pi 自身の AnyToolDefinition と同じ逃げ道）。(I4)
+  } as any;
 }
 
 /** Creates an empty tool registry. */
