@@ -139,10 +139,11 @@ export function App(): React.ReactElement {
                 )}
               </div>
             ) : ActiveView ? (
-              // key にタブIDを渡す。同じ種別のタブが複数あるとき、key が無いと React が
-              // コンポーネントを再利用して前のタブの状態が残る（実際にその不具合を踏んだ）
+              // key にタブID＋版を渡す。IDだけだと (a) 同じ種別の別タブで状態が混ざり、
+              // (b) タブを使い回して別のパラメータで開き直しても中身が作り直されない
+              // （どちらも実際に踏んだ）
               <ActiveView
-                key={activeTab.id}
+                key={`${activeTab.id}:${activeTab.rev}`}
                 params={activeTab.params}
                 tabId={activeTab.id}
                 kind={activeTab.kind}

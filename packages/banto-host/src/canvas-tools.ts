@@ -41,7 +41,9 @@ export function createCanvasTools(canvas: Canvas, catalog: CanvasCatalog): Names
     label: "Canvas: Open",
     description:
       "キャンバスにGUIをタブとして開き、アクティブにする。POに何かを見せたいときに使う。" +
-      "開けるkindは canvas.list_catalog で確認できる。表示を変えるだけで、データの取得はしない。",
+      "開けるkindは canvas.list_catalog で確認できる。表示を変えるだけで、データの取得はしない。" +
+      "既定では同じ種別のタブを使い回す（例：ファイルを次々に開いてもタブは増えない）。" +
+      "POが「別のタブで」「並べて見たい」と言ったときだけ newTab: true を渡す。",
     parameters: Type.Object({
       kind: Type.String({ description: "開くGUIの種別（例: demo.hello）" }),
       params: Type.Optional(
@@ -50,17 +52,27 @@ export function createCanvasTools(canvas: Canvas, catalog: CanvasCatalog): Names
         })
       ),
       title: Type.Optional(Type.String({ description: "タブに表示する名前（省略時はカタログの既定）" })),
+      newTab: Type.Optional(
+        Type.Boolean({
+          description:
+            "既存のタブを使い回さず新しいタブで開く。POが明示的に別タブ・並べて見たいと言ったときだけ true",
+        })
+      ),
     }),
     async execute(_toolCallId, params) {
       // I2: 未知の kind は Canvas が利用可能な一覧付きで例外にする（決定20）
       const tab = canvas.open(
         params.kind,
         (params.params as Record<string, unknown> | undefined) ?? {},
-        params.title
+        params.title,
+        { ...(params.newTab === true ? { newTab: true } : {}) }
       );
+      const how = tab.rev === 0 ? "opened" : "reused tab for";
       return {
-        content: [{ type: "text" as const, text: `opened ${tab.kind} as "${tab.title}" (tabId: ${tab.id})` }],
-        details: {},
+        content: [
+          { type: "text" as const, text: `${how} ${tab.kind} as "${tab.title}" (tabId: ${tab.id})` },
+        ],
+        details: { tabId: tab.id, kind: tab.kind, title: tab.title, rev: tab.rev },
       };
     },
   });

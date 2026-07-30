@@ -248,3 +248,73 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .gv-hash { font-family: var(--font-mono); font-size: 11.5px; color: var(--accent); flex-shrink: 0; }
 .gv-subject { flex: 1; min-width: 0; }
 .gv-meta { font-size: 10.5px; color: var(--ink-faint); flex-shrink: 0; }
+
+/* ── Git閲覧：3面構成（コミット一覧・変更ファイル一覧・差分） ── */
+.gv3 { display: flex; gap: 14px; height: 100%; min-height: 0; }
+.gv3-side {
+  width: 330px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px; min-height: 0;
+}
+.gv3-section {
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+}
+.gv3-section:first-child { max-height: 40%; }
+.gv3-history { flex: 1; }
+.gv3-head {
+  display: flex; align-items: center; gap: 8px; margin: 0; flex-shrink: 0;
+  padding: 8px 12px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+  color: var(--ink-faint); border-bottom: 1px solid var(--line); background: var(--bg);
+}
+.gv3-count {
+  margin-left: auto; font-family: var(--font-mono); font-size: 10.5px;
+  background: var(--line); border-radius: 999px; padding: 1px 8px; color: var(--ink);
+}
+.gv3-branch { margin-left: auto; font-size: 10.5px; color: var(--accent); }
+.gv3-empty { padding: 10px 12px; margin: 0; }
+
+.gv3-files, .gv3-log { list-style: none; margin: 0; padding: 4px; overflow-y: auto; min-height: 0; }
+.gv3-file-btn, .gv3-commit {
+  display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: left;
+  font: inherit; font-size: 12px; padding: 4px 8px; border: none; border-radius: 6px;
+  background: none; cursor: pointer; color: var(--ink);
+}
+.gv3-file-btn:hover, .gv3-commit:hover { background: var(--bg); }
+.gv3-file-btn.is-selected, .gv3-commit.is-selected { background: var(--accent); color: #fff; }
+.gv3-status {
+  font-family: var(--font-mono); font-size: 10.5px; width: 18px; flex-shrink: 0; color: var(--accent);
+}
+.gv3-file-btn.is-selected .gv3-status { color: rgba(255,255,255,0.85); }
+.gv3-path {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  direction: rtl; text-align: left;
+}
+.gv3-hash {
+  font-family: var(--font-mono); font-size: 10.5px; flex-shrink: 0; color: var(--accent); width: 52px;
+}
+.gv3-commit.is-selected .gv3-hash { color: rgba(255,255,255,0.85); }
+.gv3-subject { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gv3-date { font-size: 10px; color: var(--ink-faint); flex-shrink: 0; }
+.gv3-commit.is-selected .gv3-date { color: rgba(255,255,255,0.7); }
+.gv3-more {
+  font: inherit; font-size: 11.5px; padding: 6px; cursor: pointer; flex-shrink: 0;
+  border: none; border-top: 1px solid var(--line); background: var(--bg); color: var(--ink-faint);
+}
+.gv3-more:hover { color: var(--accent); }
+
+.gv3-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.gv3-main-head {
+  display: flex; align-items: baseline; gap: 10px; flex-shrink: 0; font-size: 12.5px;
+  padding-bottom: 6px; border-bottom: 1px solid var(--line);
+}
+.gv3-clear {
+  margin-left: auto; font: inherit; font-size: 11px; padding: 3px 10px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink-faint);
+}
+.gv3-clear:hover { border-color: var(--accent); color: var(--accent); }
+.gv3-main .gv-diff { flex: 1; }
+.gv-file { color: #cbb994; font-weight: 700; }
+
+@media (max-width: 980px) {
+  .gv3 { flex-direction: column; }
+  .gv3-side { width: 100%; max-height: 45%; }
+}

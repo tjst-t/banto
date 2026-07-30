@@ -195,5 +195,60 @@ export function createGitTools(repoRoot: string): NamespacedToolDefinition[] {
     },
   });
 
-  return [status, diff, log, branches, blame];
+  const show = defineNamespacedTool({
+    name: "git.show",
+    label: "Git: Show",
+    description:
+      "1つのコミットが入れた変更を返す（メタ情報・変更ファイル一覧・差分）。" +
+      "「このコミットで何が変わったか」を見るときに使う。閲覧専用。",
+    parameters: Type.Object({
+      ref: Type.String({ description: "コミット（例: a1b2c3, HEAD, HEAD~2）" }),
+      path: Type.Optional(Type.String({ description: "差分を1ファイルに絞る" })),
+    }),
+    async execute(_toolCallId, params) {
+      // メタ情報。%x09 はタブ区切り（件名に空白が入っても壊れない）
+      const meta = await git(repoRoot, [
+        "show",
+        "--no-patch",
+        "--date=short",
+        "--format=%H%x09%h%x09%ad%x09%an%x09%s",
+        params.ref,
+      ]);
+      const [hash = "", short = "", date = "", author = "", subject = ""] = meta.trim().split("\t");
+
+      // 変更ファイル一覧。--root を付けると最初のコミットでも動く。
+      // --no-patch は付けない——name-status の出力まで消えてしまう（実測で確認）
+      const nameStatus = await git(repoRoot, [
+        "show",
+        "--name-status",
+        "--root",
+        "--format=",
+        params.ref,
+      ]);
+      const files = nameStatus
+        .trimEnd()
+        .split("\n")
+        .filter((l) => l.length > 0)
+        .map((line) => {
+          const [status = "", ...rest] = line.split("\t");
+          return { status, path: rest.join("\t") };
+        });
+
+      const patchArgs = ["show", "--patch", "--root", "--format=", params.ref];
+      if (params.path) patchArgs.push("--", params.path);
+      const patch = await git(repoRoot, patchArgs);
+
+      const text = [
+        `${short} ${date} ${author} — ${subject}`,
+        ...files.map((f) => `${f.status}\t${f.path}`),
+      ].join("\n");
+
+      return {
+        content: [{ type: "text" as const, text: bounded(text, "(空)") }],
+        details: { hash, short, date, author, subject, files, diff: patch.trimEnd() },
+      };
+    },
+  });
+
+  return [status, diff, log, branches, blame, show];
 }

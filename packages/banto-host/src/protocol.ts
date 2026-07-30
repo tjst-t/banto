@@ -137,6 +137,8 @@ export interface CanvasTabView {
   kind: string;
   title: string;
   params: Record<string, unknown>;
+  /** 内容の版。タブを使い回して開き直すたびに増える（UIの描画キーに含める）。 */
+  rev: number;
 }
 
 /**

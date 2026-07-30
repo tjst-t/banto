@@ -1,114 +1,202 @@
 /**
  * Git 閲覧（基本GUIセット・ADR-0010 決定18・24・25）。
  *
- * 状態・差分・履歴を切り替えて見る。すべて読み取り専用——変更操作は持たない（決定24）。
- * データは workspace モジュールのデータAPIから取る（決定25）。
+ * 一画面で「コミット一覧」「変更ファイル一覧」「ファイルの差分」が見える3面構成
+ * （PO 指定のIF）。左上が変更ファイル一覧、左下がコミット履歴、右が差分。
+ *
+ * **すべて閲覧専用。** 決定24 のとおり commit / stage 等の変更操作は持たない——変更は
+ * 職人へ委譲し（D10）、Kobo のマージキューとも責務が競合するため。
+ *
+ * データは workspace モジュールのデータAPIから取る（決定25）。番頭のToolは呼ばない。
  */
 
 import { useState } from "react";
 import { useModuleTool } from "./useModuleTool.js";
 import type { CanvasViewProps } from "./registry.js";
 
-type Tab = "status" | "diff" | "log";
-
 interface Status {
   branch: string;
   files: Array<{ status: string; path: string }>;
 }
-interface Diff {
-  diff: string;
-}
 interface Log {
   commits: Array<{ hash: string; date: string; author: string; subject: string }>;
 }
+interface Show {
+  short: string;
+  date: string;
+  author: string;
+  subject: string;
+  files: Array<{ status: string; path: string }>;
+  diff: string;
+}
+interface Diff {
+  diff: string;
+}
 
-const TABS: Array<{ id: Tab; label: string }> = [
-  { id: "status", label: "状態" },
-  { id: "diff", label: "差分" },
-  { id: "log", label: "履歴" },
-];
+/** いま何の差分を見ているか。作業ツリーか、あるコミットか。 */
+type Selection =
+  | { source: "working"; path?: string }
+  | { source: "commit"; ref: string; path?: string };
+
+function DiffBody({ diff }: { diff: string }): React.ReactElement {
+  if (diff.length === 0) return <p className="fb-muted">差分なし</p>;
+  return (
+    <pre className="gv-diff">
+      {diff.split("\n").map((line, i) => (
+        <span
+          key={i}
+          className={
+            line.startsWith("+") && !line.startsWith("+++")
+              ? "gv-add"
+              : line.startsWith("-") && !line.startsWith("---")
+                ? "gv-del"
+                : line.startsWith("@@")
+                  ? "gv-hunk"
+                  : line.startsWith("diff --git")
+                    ? "gv-file"
+                    : undefined
+          }
+        >
+          {line}
+          {"\n"}
+        </span>
+      ))}
+    </pre>
+  );
+}
 
 export function GitViewer({ params, endpoint }: CanvasViewProps): React.ReactElement {
-  const initial = TABS.some((t) => t.id === params["tab"]) ? (params["tab"] as Tab) : "status";
-  const [tab, setTab] = useState<Tab>(initial);
+  const initialRef = typeof params["ref"] === "string" ? params["ref"] : undefined;
+  const [selection, setSelection] = useState<Selection>(
+    initialRef ? { source: "commit", ref: initialRef } : { source: "working" }
+  );
+  const [limit, setLimit] = useState(30);
 
   const status = useModuleTool<Status>(endpoint, "git.status");
-  const diff = useModuleTool<Diff>(endpoint, "git.diff");
-  const log = useModuleTool<Log>(endpoint, "git.log", { limit: 30 });
-  const active = tab === "status" ? status : tab === "diff" ? diff : log;
+  const log = useModuleTool<Log>(endpoint, "git.log", { limit });
+
+  // コミットを選んでいるときだけ引く
+  const show = useModuleTool<Show>(
+    endpoint,
+    "git.show",
+    selection.source === "commit"
+      ? { ref: selection.ref, ...(selection.path ? { path: selection.path } : {}) }
+      : {},
+    selection.source === "commit"
+  );
+  // 作業ツリーを見ているときだけ引く
+  const workingDiff = useModuleTool<Diff>(
+    endpoint,
+    "git.diff",
+    selection.path ? { path: selection.path } : {},
+    selection.source === "working"
+  );
+
+  const changedFiles =
+    selection.source === "working" ? (status.data?.files ?? []) : (show.data?.files ?? []);
+  const activePane = selection.source === "commit" ? show : workingDiff;
+  const diffText =
+    selection.source === "commit" ? (show.data?.diff ?? "") : (workingDiff.data?.diff ?? "");
 
   return (
-    <div className="gv">
-      <div className="gv-bar">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            className={`gv-tab ${tab === t.id ? "is-active" : ""}`}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
-        {status.data?.branch && <code className="gv-branch">{status.data.branch}</code>}
+    <div className="gv3">
+      <div className="gv3-side">
+        {/* 変更ファイル一覧：作業ツリー、または選択中コミットの内訳 */}
+        <section className="gv3-section">
+          <h3 className="gv3-head">
+            {selection.source === "working" ? "変更ファイル（未コミット）" : "このコミットの変更"}
+            <span className="gv3-count">{changedFiles.length}</span>
+          </h3>
+          {status.error && <div className="fb-error">{status.error}</div>}
+          {changedFiles.length === 0 ? (
+            <p className="fb-muted gv3-empty">
+              {selection.source === "working" ? "変更なし" : "—"}
+            </p>
+          ) : (
+            <ul className="gv3-files">
+              {changedFiles.map((f) => (
+                <li key={f.path}>
+                  <button
+                    className={`gv3-file-btn ${selection.path === f.path ? "is-selected" : ""}`}
+                    onClick={() => setSelection({ ...selection, path: f.path })}
+                    title={f.path}
+                  >
+                    <code className="gv3-status">{f.status}</code>
+                    <span className="gv3-path">{f.path}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        {/* コミット一覧 */}
+        <section className="gv3-section gv3-history">
+          <h3 className="gv3-head">
+            履歴
+            {status.data?.branch && <code className="gv3-branch">{status.data.branch}</code>}
+          </h3>
+          <ul className="gv3-log">
+            <li>
+              <button
+                className={`gv3-commit ${selection.source === "working" ? "is-selected" : ""}`}
+                onClick={() => setSelection({ source: "working" })}
+              >
+                <code className="gv3-hash">WIP</code>
+                <span className="gv3-subject">未コミットの変更</span>
+              </button>
+            </li>
+            {log.data?.commits.map((c, i) => (
+              <li key={`${c.hash}-${i}`}>
+                <button
+                  className={`gv3-commit ${
+                    selection.source === "commit" && selection.ref === c.hash ? "is-selected" : ""
+                  }`}
+                  onClick={() => setSelection({ source: "commit", ref: c.hash })}
+                  title={`${c.subject}\n${c.date} ${c.author}`}
+                >
+                  <code className="gv3-hash">{c.hash}</code>
+                  <span className="gv3-subject">{c.subject}</span>
+                  <span className="gv3-date">{c.date}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          {log.data && log.data.commits.length >= limit && (
+            <button className="gv3-more" onClick={() => setLimit((n) => n + 30)}>
+              さらに読み込む
+            </button>
+          )}
+        </section>
       </div>
 
-      {active.error && <div className="fb-error">読み込めません: {active.error}</div>}
-      {active.loading && <p className="fb-muted">読み込み中…</p>}
-
-      {tab === "status" && status.data && (
-        status.data.files.length === 0 ? (
-          <p className="fb-muted">変更なし</p>
-        ) : (
-          <table className="gv-table">
-            <thead>
-              <tr><th>状態</th><th>ファイル</th></tr>
-            </thead>
-            <tbody>
-              {status.data.files.map((f) => (
-                <tr key={f.path}>
-                  <td><code>{f.status}</code></td>
-                  <td><code>{f.path}</code></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )
-      )}
-
-      {tab === "diff" && diff.data && (
-        diff.data.diff.length === 0 ? (
-          <p className="fb-muted">差分なし</p>
-        ) : (
-          <pre className="gv-diff">
-            {diff.data.diff.split("\n").map((line, i) => (
-              <span
-                key={i}
-                className={
-                  line.startsWith("+") && !line.startsWith("+++") ? "gv-add"
-                  : line.startsWith("-") && !line.startsWith("---") ? "gv-del"
-                  : line.startsWith("@@") ? "gv-hunk"
-                  : undefined
-                }
-              >
-                {line}
-                {"\n"}
+      {/* 差分 */}
+      <div className="gv3-main">
+        <div className="gv3-main-head">
+          {selection.source === "commit" && show.data ? (
+            <>
+              <code className="gv3-hash">{show.data.short}</code>
+              <span className="gv3-subject">{show.data.subject}</span>
+              <span className="gv3-date">
+                {show.data.date} · {show.data.author}
               </span>
-            ))}
-          </pre>
-        )
-      )}
+            </>
+          ) : (
+            <span className="gv3-subject">未コミットの変更</span>
+          )}
+          {selection.path && (
+            <button
+              className="gv3-clear"
+              onClick={() => setSelection({ ...selection, path: undefined })}
+            >
+              全ファイル表示
+            </button>
+          )}
+        </div>
 
-      {tab === "log" && log.data && (
-        <ul className="gv-log">
-          {log.data.commits.map((c, i) => (
-            <li key={`${c.hash}-${i}`}>
-              <code className="gv-hash">{c.hash}</code>
-              <span className="gv-subject">{c.subject}</span>
-              <span className="gv-meta">{c.date} · {c.author}</span>
-            </li>
-          ))}
-        </ul>
-      )}
+        {activePane.error && <div className="fb-error">読み込めません: {activePane.error}</div>}
+        {activePane.loading ? <p className="fb-muted">読み込み中…</p> : <DiffBody diff={diffText} />}
+      </div>
     </div>
   );
 }

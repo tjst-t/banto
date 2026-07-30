@@ -71,6 +71,12 @@ export interface CanvasTab {
   kind: string;
   title: string;
   params: Record<string, unknown>;
+  /**
+   * 内容の版。同じタブを別のパラメータで開き直すたびに増える。
+   * UI はこれを描画のキーに含めて、再利用されたタブが前の状態を持ち越さないようにする
+   * （タブIDだけをキーにすると、パラメータが変わっても中身が作り直されない）。
+   */
+  rev: number;
 }
 
 /** キャンバス全体の表示状態。UIはこれを描くだけ（D3）。 */
@@ -104,19 +110,45 @@ export class Canvas {
 
   /**
    * タブを開き、アクティブにする。
+   *
+   * **既定は同じ種別のタブを使い回す。** 「このファイルを開いて」と言われるたびにタブが
+   * 増えるのは邪魔なため（PO フィードバック）。使い回す相手は、表示中のタブが同じ種別なら
+   * それ、そうでなければその種別で最後に開いたタブ。別のタブで開きたいときは
+   * `newTab: true` を渡す。
+   *
    * I2: カタログに無い kind は黙って無視せずエラー（決定20のバリデーション方針）。
    */
-  open(kind: string, params: Record<string, unknown> = {}, title?: string): CanvasTab {
+  open(
+    kind: string,
+    params: Record<string, unknown> = {},
+    title?: string,
+    options: { newTab?: boolean } = {}
+  ): CanvasTab {
     const spec = this.catalog.get(kind);
     if (!spec) {
       const known = this.catalog.list().map((s) => s.kind).join(", ");
       throw new Error(`Unknown canvas view "${kind}". Available: ${known || "(none)"}`);
     }
-    const tab: CanvasTab = { id: randomUUID(), kind, title: title ?? spec.title, params };
+
+    if (!options.newTab) {
+      const active = this.tabs.find((t) => t.id === this.activeTabId);
+      const reusable =
+        active?.kind === kind ? active : [...this.tabs].reverse().find((t) => t.kind === kind);
+      if (reusable) {
+        reusable.params = params;
+        reusable.title = title ?? spec.title;
+        reusable.rev += 1;
+        this.activeTabId = reusable.id;
+        this.notify();
+        return { ...reusable };
+      }
+    }
+
+    const tab: CanvasTab = { id: randomUUID(), kind, title: title ?? spec.title, params, rev: 0 };
     this.tabs.push(tab);
     this.activeTabId = tab.id;
     this.notify();
-    return tab;
+    return { ...tab };
   }
 
   /** タブを閉じる。閉じたのがアクティブなら直前のタブへ移る。 */

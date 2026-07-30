@@ -92,6 +92,52 @@ describe("[task-0012] キャンバスの表示状態", () => {
     assert.deepEqual(canvas.snapshot(), { tabs: [], activeTabId: undefined });
   });
 
+  it("[task-0019] 同じ種別なら既定でタブを使い回す（POフィードバック）", () => {
+    const first = canvas.open("demo.hello", { message: "1回目" });
+    const again = canvas.open("demo.hello", { message: "2回目" });
+
+    assert.equal(again.id, first.id, "同じタブを使い回す");
+    assert.equal(canvas.snapshot().tabs.length, 1, "タブは増えない");
+    assert.deepEqual(canvas.snapshot().tabs[0]!.params, { message: "2回目" }, "内容は入れ替わる");
+    assert.equal(canvas.snapshot().tabs[0]!.rev, 1, "版が上がる（UIが中身を作り直せる）");
+  });
+
+  it("[task-0019] newTab を指定したときだけ別タブになる", () => {
+    const first = canvas.open("demo.hello");
+    const second = canvas.open("demo.hello", {}, undefined, { newTab: true });
+
+    assert.notEqual(second.id, first.id);
+    assert.equal(canvas.snapshot().tabs.length, 2);
+    assert.equal(second.rev, 0);
+  });
+
+  it("[task-0019] 種別が違えば別タブになる", () => {
+    canvas.open("demo.hello");
+    canvas.open("demo.notes");
+    assert.equal(canvas.snapshot().tabs.length, 2);
+  });
+
+  it("[task-0019] 使い回す相手は表示中のタブ（同種別のとき）", () => {
+    const a = canvas.open("demo.hello", {}, "A", { newTab: true });
+    const b = canvas.open("demo.hello", {}, "B", { newTab: true });
+    canvas.switchTo(a.id);
+
+    const reused = canvas.open("demo.hello", {}, "C");
+    assert.equal(reused.id, a.id, "表示中のタブを使い回す");
+    assert.deepEqual(canvas.snapshot().tabs.map((t) => t.title), ["C", "B"]);
+  });
+
+  it("[task-0019] 表示中が別種別なら、その種別で最後に開いたタブを使い回す", () => {
+    const hello = canvas.open("demo.hello", {}, "H");
+    canvas.open("demo.notes", {}, "N");
+    // いま表示中は demo.notes。demo.hello を開くと hello タブが使い回される
+    const reused = canvas.open("demo.hello", {}, "H2");
+
+    assert.equal(reused.id, hello.id);
+    assert.equal(canvas.snapshot().activeTabId, hello.id, "使い回したタブが表示される");
+    assert.equal(canvas.snapshot().tabs.length, 2);
+  });
+
   it("[task-0012] open するとタブが増えてアクティブになる", () => {
     const tab = canvas.open("demo.hello", { message: "やあ" });
     const snapshot = canvas.snapshot();
@@ -104,7 +150,7 @@ describe("[task-0012] キャンバスの表示状態", () => {
 
   it("[task-0012] タイトルは省略時カタログの既定、指定すれば上書き", () => {
     canvas.open("demo.hello");
-    canvas.open("demo.hello", {}, "別名");
+    canvas.open("demo.hello", {}, "別名", { newTab: true });
     assert.deepEqual(canvas.snapshot().tabs.map((t) => t.title), ["デモ", "別名"]);
   });
 

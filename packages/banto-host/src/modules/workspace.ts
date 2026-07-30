@@ -46,11 +46,12 @@ const workspaceViews: CanvasViewSpec[] = [
     kind: "git.viewer",
     title: "Git",
     description:
-      "作業ツリーの状態・差分・コミット履歴を閲覧する。レビューや「今どうなっているか」を見せたいときに開く。",
+      "コミット一覧・変更ファイル一覧・差分を一画面で閲覧する。レビューや「今どうなっているか」" +
+      "「このコミットで何が変わったか」を見せたいときに開く。閲覧専用で、commit等の操作はできない。",
     parameters: Type.Object({
-      tab: Type.Optional(
-        Type.Union([Type.Literal("status"), Type.Literal("diff"), Type.Literal("log")], {
-          description: "最初に見せる面（省略時は status）",
+      ref: Type.Optional(
+        Type.String({
+          description: "最初に選ぶコミット（例: HEAD, a1b2c3）。省略時は未コミットの変更を表示",
         })
       ),
     }),

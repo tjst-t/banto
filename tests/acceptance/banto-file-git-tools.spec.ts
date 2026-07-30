@@ -181,13 +181,14 @@ describe("[task-0011] ワークスペース外は読ませない", () => {
 });
 
 describe("[task-0011/a2] git.* （すべて閲覧専用）", () => {
-  it("[task-0011/a2] 5つのToolが名前空間規則に従う", () => {
+  it("[task-0011/a2] git.* が名前空間規則に従う", () => {
     assert.deepEqual(gitTools.map((t) => t.name), [
       "git.status",
       "git.diff",
       "git.log",
       "git.branches",
       "git.blame",
+      "git.show",
     ]);
   });
 
@@ -319,6 +320,57 @@ describe("[task-0016] file.stat（パスがファイルかディレクトリか�
           "c1", { path: "../../etc/passwd" }, undefined, undefined, TOOL_CTX
         ),
       /outside the workspace/
+    );
+  });
+});
+
+describe("[task-0019] git.show（1コミットが入れた変更）", () => {
+  it("[task-0019] メタ情報・変更ファイル一覧・差分を返す", async () => {
+    const out = await tool(gitTools, "git.show").execute(
+      "c1", { ref: "HEAD" }, undefined, undefined, TOOL_CTX
+    );
+    const d = out.details as {
+      short: string; subject: string; author: string;
+      files: Array<{ status: string; path: string }>; diff: string;
+    };
+
+    assert.equal(d.subject, "change a to 2");
+    assert.equal(d.author, "banto-test");
+    assert.deepEqual(d.files, [{ status: "M", path: "src/a.ts" }]);
+    assert.match(d.diff, /-export const a = 1;/);
+    assert.match(d.diff, /\+export const a = 2;/);
+  });
+
+  it("[task-0019] 最初のコミットでも動く（--root）", async () => {
+    const out = await tool(gitTools, "git.show").execute(
+      "c1", { ref: "HEAD~1" }, undefined, undefined, TOOL_CTX
+    );
+    const d = out.details as { subject: string; files: Array<{ path: string }> };
+
+    assert.equal(d.subject, "initial");
+    assert.ok(d.files.length > 0, "初回コミットでも変更ファイルが取れる");
+    assert.ok(d.files.some((f) => f.path === "README.md"));
+  });
+
+  it("[task-0019] path で差分を1ファイルに絞れる", async () => {
+    const all = await tool(gitTools, "git.show").execute(
+      "c1", { ref: "HEAD~1" }, undefined, undefined, TOOL_CTX
+    );
+    const one = await tool(gitTools, "git.show").execute(
+      "c2", { ref: "HEAD~1", path: "README.md" }, undefined, undefined, TOOL_CTX
+    );
+
+    const allDiff = (all.details as { diff: string }).diff;
+    const oneDiff = (one.details as { diff: string }).diff;
+    assert.match(allDiff, /src\/a\.ts/);
+    assert.doesNotMatch(oneDiff, /src\/a\.ts/, "絞ったファイルの差分だけ");
+    assert.match(oneDiff, /README\.md/);
+  });
+
+  it("[task-0019] 存在しないコミットはエラー（I2）", async () => {
+    await assert.rejects(
+      () => tool(gitTools, "git.show").execute("c1", { ref: "no-such-ref" }, undefined, undefined, TOOL_CTX),
+      /failed/
     );
   });
 });
