@@ -5,3 +5,6 @@ node_modules/
 dist/
 *.tsbuildinfo
 data/
+
+# 番頭の実行時データ（記憶・職人の台帳とセッション・イベントログ）。既定の BANTO_DATA_DIR
+.banto/
