@@ -94,6 +94,8 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 
 /* ── チャット ── */
 .chat-pane {
+  /* ↓ボタンをこの中に浮かせるため */
+  position: relative;
   width: 400px; flex-shrink: 0; display: flex; flex-direction: column;
   border-left: 1px solid var(--line); background: var(--surface);
 }
@@ -428,16 +430,43 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 /* 職人からの知らせ（決定29）。番頭の発話ともPOの発話とも見分けがつくようにする */
 .msg--notice {
   align-self: stretch;
+  /* overflow:hidden を付けると flex アイテムの自動最小サイズが効かなくなり、
+     縦に詰まったときに行が潰れる（実際に高さ2pxになった）。縮めさせない */
+  flex: none;
   background: #2a2416;
   border: 1px solid #5c4a1e;
   border-radius: 8px;
-  padding: 8px 12px;
   color: #e8ddc0;
   font-size: 13px;
+  overflow: hidden;
 }
+/* 畳んだ状態の見出し。行ごとクリックできるようにボタンを幅いっぱいに敷く */
+.notice-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.notice-head:hover { background: rgba(255,255,255,0.04); }
+.notice-caret { color: #b7a374; font-size: 11px; }
+.notice-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #cdbf9a;
+}
+.notice-body { padding: 0 12px 10px; }
 .notice-tag {
-  display: inline-block;
-  margin-right: 8px;
+  flex: none;
   padding: 1px 8px;
   border-radius: 999px;
   background: #5c4a1e;
@@ -459,3 +488,54 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
   color: #e8ddc0;
   font-size: 13px;
 }
+
+/* 一番下へ戻るボタン。追従を切っている間だけ出す */
+.chat-to-bottom {
+  position: absolute;
+  right: 18px;
+  bottom: 128px;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+}
+.chat-to-bottom:hover { background: var(--panel-2, var(--panel)); }
+
+/* 職人一覧の絞り込みとページ送り */
+.wv-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
+  cursor: pointer;
+}
+.wv-toggle input { margin: 0; }
+.wv-hidden { color: var(--muted); opacity: 0.8; }
+.wv-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+.wv-pager button {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  border-radius: 6px;
+  width: 26px;
+  height: 24px;
+  cursor: pointer;
+}
+.wv-pager button:disabled { opacity: 0.4; cursor: default; }

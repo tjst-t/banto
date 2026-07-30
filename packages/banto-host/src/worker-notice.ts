@@ -34,46 +34,77 @@ export function isNoticeworthy(event: WorkerEvent): boolean {
   return event.type === "worker_closed" && event.data["reason"] === "idle";
 }
 
-/** イベントを番頭への知らせに言い換える。知らせないイベントなら undefined。 */
+/** 1行目に出す見出し。UI は畳んだ状態でここだけを見せるので、短く・中身が分かるように。 */
+function headline(event: WorkerEvent): string {
+  // UI 側は「職人」の札を別に出すので、ここでは繰り返さない（畳んだ1行は狭い）
+  const who = event.taskId;
+  switch (event.type) {
+    case "worker_asked":
+      return `${who}から質問：${firstLine(String(event.data["question"] ?? ""))}`;
+    case "worker_reported":
+      return `${who}から報告：${firstLine(String(event.data["summary"] ?? ""))}`;
+    case "worker_closed":
+      return `${who}を安全弁が畳みました（しばらく何もしていなかったため）`;
+    default: {
+      const signal = event.data["signal"];
+      const code = event.data["exitCode"];
+      const how =
+        signal !== null && signal !== undefined
+          ? `シグナル ${String(signal)} で落ちました`
+          : code === 0
+            ? "正常に終了しました"
+            : `終了コード ${String(code)} で終わりました`;
+      return `${who}のプロセスが${how}`;
+    }
+  }
+}
+
+/**
+ * 見出し用に1行へ潰す。Markdownの記号は畳んだ表示では邪魔になる。
+ *
+ * 見出し行（`## 完了報告` 等）は中身を語らないので、本文があればそちらを優先する
+ * ——「完了報告」とだけ出ても、何が起きたか分からない。
+ */
+function firstLine(text: string): string {
+  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+  const clean = (l: string): string => l.replace(/^#+\s*/, "").replace(/\*\*/g, "").trim();
+  const body = lines.find((l) => !l.startsWith("#"));
+  return clean(body ?? lines[0] ?? "") || "(内容なし)";
+}
+
+/**
+ * イベントを番頭への知らせに言い換える。知らせないイベントなら undefined。
+ *
+ * **1行目が見出し**で、以降が詳細。UI は畳んだ状態で1行目だけを見せるため、
+ * sessionId のような機械向けの情報は下に置く——畳んだときに中身が見えなくなる。
+ */
 export function renderWorkerNotice(event: WorkerEvent): string | undefined {
   if (!isNoticeworthy(event)) return undefined;
-  const who = `職人「${event.taskId}」(sessionId: ${event.sessionId})`;
+  const lines = [headline(event), "", `sessionId: ${event.sessionId}`];
 
   if (event.type === "worker_asked") {
-    return [
-      `${who} から質問が届きました。答えが来るまでこの職人は待っています。`,
+    lines.push(
       "",
       `> ${String(event.data["question"] ?? "")}`,
       "",
-      "答えられるなら worker.steer で返してください。" +
-        "不可逆な選択や PO の意向が要る話（D1）なら、あなたの判断で PO に上げてください。",
-    ].join("\n");
-  }
-
-  if (event.type === "worker_reported") {
-    return [
-      `${who} から報告が届きました。**これは職人の主張であって完了の証明ではありません**` +
-        "——必要なら成果を自分で確かめてください（I1）。",
+      "答えが来るまでこの職人は待っています。答えられるなら worker.steer で返してください。" +
+        "不可逆な選択や PO の意向が要る話（D1）なら、あなたの判断で PO に上げてください。"
+    );
+  } else if (event.type === "worker_reported") {
+    lines.push(
       "",
       `> ${String(event.data["summary"] ?? "")}`,
-    ].join("\n");
-  }
-
-  if (event.type === "worker_closed") {
-    return (
-      `${who} を、しばらく何もしていなかったので安全弁が畳みました。` +
+      "",
+      "**これは職人の主張であって完了の証明ではありません**——必要なら成果を自分で確かめてください（I1）。" +
+        "確かめて良ければ worker.close で畳んでください。"
+    );
+  } else if (event.type === "worker_closed") {
+    lines.push(
+      "",
       "本来は成果を確かめたうえであなたが畳むところです（決定30a）。" +
-      "続きが要るなら worker.wake で元の会話ごと起こし直せます。"
+        "続きが要るなら worker.wake で元の会話ごと起こし直せます。"
     );
   }
 
-  const code = event.data["exitCode"];
-  const signal = event.data["signal"];
-  const how =
-    signal !== null && signal !== undefined
-      ? `シグナル ${String(signal)} で落ちました`
-      : code === 0
-        ? "正常に終了しました"
-        : `終了コード ${String(code)} で終わりました`;
-  return `${who} のプロセスが${how}。`;
+  return lines.join("\n");
 }

@@ -25,6 +25,82 @@ function defaultWsUrl(): string {
 
 const WS_URL = new URLSearchParams(location.search).get("host") ?? defaultWsUrl();
 
+/** 末尾から何px以内を「一番下にいる」とみなすか。1行分の余裕を持たせる。 */
+const AT_BOTTOM_SLACK_PX = 24;
+
+/**
+ * 末尾追従。**一番下にいるときだけ**追う（PO フィードバック）。
+ *
+ * 上の方を読んでいる最中に番頭が喋り出すと、勝手に下へ飛ばされて読めなくなる。
+ * ライブラリ（use-stick-to-bottom 等）もあるが、この挙動はこれだけで足りるので
+ * 依存を増やさない（D6）。
+ */
+function useStickToBottom(
+  dep: unknown
+): {
+  ref: React.RefObject<HTMLDivElement | null>;
+  atBottom: boolean;
+  toBottom: () => void;
+  onScroll: () => void;
+} {
+  const ref = useRef<HTMLDivElement>(null);
+  const [atBottom, setAtBottom] = useState(true);
+  // 追従の判断は「直前に下にいたか」で決める。描画後に測ると、追加された分だけ
+  // 常に「下にいない」と判定されてしまう
+  const wasAtBottom = useRef(true);
+
+  const measure = (): void => {
+    const el = ref.current;
+    if (!el) return;
+    const bottom = el.scrollHeight - el.scrollTop - el.clientHeight <= AT_BOTTOM_SLACK_PX;
+    wasAtBottom.current = bottom;
+    setAtBottom(bottom);
+  };
+
+  const toBottom = (): void => {
+    const el = ref.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    wasAtBottom.current = true;
+    setAtBottom(true);
+  };
+
+  useEffect(() => {
+    if (wasAtBottom.current) toBottom();
+    else measure();
+    // dep（会話）が変わるたびに判断する
+  }, [dep]);
+
+  return { ref, atBottom, toBottom, onScroll: measure };
+}
+
+/**
+ * 職人からの知らせ（決定29）。**既定は畳んでおく**——番頭の報告と違い長くなりがちで、
+ * 会話を追う邪魔になるため（PO フィードバック）。クリックで開く。
+ */
+function NoticeRow({ text }: { text: string }): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  // 1行目を要約として出す。Markdownの強調記号は畳んだ状態では邪魔なので落とす
+  const summary = (text.split("\n").find((l) => l.trim().length > 0) ?? "")
+    .replace(/\*\*/g, "")
+    .trim();
+
+  return (
+    <div className={`msg msg--notice ${open ? "is-open" : ""}`}>
+      <button className="notice-head" onClick={() => setOpen(!open)} title="クリックで開閉">
+        <span className="notice-tag">職人</span>
+        <span className="notice-caret">{open ? "▾" : "▸"}</span>
+        {!open && <span className="notice-summary">{summary}</span>}
+      </button>
+      {open && (
+        <div className="markdown notice-body">
+          <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ChatRow({ entry }: { entry: TranscriptEntry }): React.ReactElement {
   switch (entry.role) {
     case "po":
@@ -39,12 +115,7 @@ function ChatRow({ entry }: { entry: TranscriptEntry }): React.ReactElement {
       );
     case "notice":
       // 職人からの知らせ（決定29）。番頭の発話と混ざらないよう見た目を分ける
-      return (
-        <div className="msg msg--notice markdown">
-          <span className="notice-tag">職人</span>
-          <Markdown remarkPlugins={[remarkGfm]}>{entry.text}</Markdown>
-        </div>
-      );
+      return <NoticeRow text={entry.text} />;
     case "tool":
       return (
         <div className={`msg msg--tool is-${entry.state}`}>
@@ -61,7 +132,7 @@ function ChatRow({ entry }: { entry: TranscriptEntry }): React.ReactElement {
 export function App(): React.ReactElement {
   const session = useBantoSession(WS_URL);
   const [draft, setDraft] = useState("");
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const chat = useStickToBottom(session.chat);
   const [dragTabId, setDragTabId] = useState<string>();
   const [dropIndex, setDropIndex] = useState<number>();
   const [catalogOpen, setCatalogOpen] = useState(false);
@@ -74,12 +145,6 @@ export function App(): React.ReactElement {
       return groups;
     }, {})
   );
-
-  // 新しい発話が入ったら末尾へ追従する
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [session.chat]);
 
   // カタログメニューは外側をクリックしたら閉じる
   useEffect(() => {
@@ -278,7 +343,7 @@ export function App(): React.ReactElement {
             </button>
           </div>
 
-          <div className="chat-scroll" ref={scrollRef}>
+          <div className="chat-scroll" ref={chat.ref} onScroll={() => chat.onScroll()}>
             {session.chat.length === 0 && (
               <p className="chat-empty">
                 番頭に話しかけてください。キャンバスに何かを出したいときは「〜を開いて」と頼みます。
@@ -288,6 +353,13 @@ export function App(): React.ReactElement {
               <ChatRow key={i} entry={entry} />
             ))}
           </div>
+
+          {/* 一番下にいないときだけ出す。番頭が喋っていることに気づけるようにする */}
+          {!chat.atBottom && session.chat.length > 0 && (
+            <button className="chat-to-bottom" onClick={chat.toBottom} title="一番下へ">
+              ↓
+            </button>
+          )}
 
           <div className="chat-composer">
             <textarea

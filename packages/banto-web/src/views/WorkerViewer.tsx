@@ -113,13 +113,20 @@ function renderLine(line: string): Rendered[] {
   return out;
 }
 
+/** 1ページに出す職人の数。 */
+const PAGE_SIZE = 20;
+
 export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.ReactElement {
   const initialSessionId =
     typeof params["sessionId"] === "string" ? params["sessionId"] : undefined;
   const [selected, setSelected] = useState<string | undefined>(initialSessionId);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  /** 畳んだ職人を出すか。**既定は出さない**——いま動いているものが埋もれるため。 */
+  const [showClosed, setShowClosed] = useState(false);
+  const [page, setPage] = useState(0);
 
-  const list = useModuleTool<WorkerList>(endpoint, "worker.list", {});
+  // 一覧は畳んだ分も含めて取り、表示側で絞る。何件隠しているかを出せるようにするため
+  const list = useModuleTool<WorkerList>(endpoint, "worker.list", { includeClosed: true });
   const attach = useModuleTool<Attach>(
     endpoint,
     "worker.attach",
@@ -127,7 +134,20 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
     selected !== undefined
   );
 
-  const workers = list.data?.workers ?? [];
+  const all = list.data?.workers ?? [];
+  const closedCount = all.filter((w) => w.state === "closed").length;
+  const workers = showClosed ? all : all.filter((w) => w.state !== "closed");
+
+  // 新しいものから見たいので、後ろから並べる
+  const ordered = [...workers].reverse();
+  const pageCount = Math.max(1, Math.ceil(ordered.length / PAGE_SIZE));
+  const current = Math.min(page, pageCount - 1);
+  const shown = ordered.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE);
+
+  // 絞り込みを変えたら先頭のページへ戻す（空ページに取り残されないように）
+  useEffect(() => {
+    setPage(0);
+  }, [showClosed]);
 
   // 何も選ばれていなければ、動いている職人を自動で選ぶ（見たいのは大抵それ）
   useEffect(() => {
@@ -136,7 +156,8 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
   }, [workers, selected]);
 
   // 稼働中は出力が伸びるので定期的に取り直す。止まっている職人では回さない
-  const selectedWorker = workers.find((w) => w.sessionId === selected);
+  // 選択中の職人は、絞り込みで見えなくなっていても中身は見せ続ける
+  const selectedWorker = all.find((w) => w.sessionId === selected);
   useEffect(() => {
     if (!autoRefresh || !selectedWorker?.alive) return;
     const timer = setInterval(() => {
@@ -154,15 +175,29 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
         <h3 className="gv3-head">
           職人
           <span className="gv3-count">{workers.length}</span>
+          {/* 決定30c: 畳んだ職人も記録は残る。既定では隠し、見たいときだけ出す */}
+          <label className="wv-toggle" title="畳んだ職人も表示する">
+            <input
+              type="checkbox"
+              checked={showClosed}
+              onChange={(e) => setShowClosed(e.target.checked)}
+            />
+            完了も
+            {closedCount > 0 && !showClosed && <span className="wv-hidden">+{closedCount}</span>}
+          </label>
         </h3>
         {list.error && <div className="fb-error">読み込めません: {list.error}</div>}
         {workers.length === 0 ? (
           <p className="fb-muted gv3-empty">
-            {list.loading ? "読み込み中…" : "動いている職人はいません"}
+            {list.loading
+              ? "読み込み中…"
+              : closedCount > 0
+                ? `動いている職人はいません（完了 ${closedCount} 件は「完了も」で見られます）`
+                : "動いている職人はいません"}
           </p>
         ) : (
           <ul className="wv-list">
-            {workers.map((w) => (
+            {shown.map((w) => (
               <li key={w.sessionId}>
                 <button
                   className={`wv-item ${w.sessionId === selected ? "is-selected" : ""}`}
@@ -180,6 +215,20 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
               </li>
             ))}
           </ul>
+        )}
+
+        {pageCount > 1 && (
+          <div className="wv-pager">
+            <button disabled={current === 0} onClick={() => setPage(current - 1)}>
+              ‹
+            </button>
+            <span>
+              {current + 1} / {pageCount}
+            </span>
+            <button disabled={current >= pageCount - 1} onClick={() => setPage(current + 1)}>
+              ›
+            </button>
+          </div>
         )}
       </div>
 
