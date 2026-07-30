@@ -188,14 +188,16 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
           職人
           <span className="gv3-count">{total}</span>
           {/* 決定30c: 畳んだ職人も記録は残る。既定では隠し、見たいときだけ出す */}
-          <label className="wv-toggle" title="畳んだ職人も表示する">
+          <label className="wv-toggle" title="畳んだ職人も一覧に出す">
             <input
               type="checkbox"
               checked={showClosed}
               onChange={(e) => setShowClosed(e.target.checked)}
             />
-            完了も
-            {closedCount > 0 && !showClosed && <span className="wv-hidden">+{closedCount}</span>}
+            完了を含む
+            {closedCount > 0 && !showClosed && (
+              <span className="wv-hidden">（{closedCount}）</span>
+            )}
           </label>
         </h3>
         {/* 絞り込み。打つたびに問い合わせず、Enter か虫眼鏡で確定する */}
@@ -226,7 +228,7 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
               : query
                 ? `「${query}」に当てはまる職人はいません`
                 : closedCount > 0
-                  ? `動いている職人はいません（完了 ${closedCount} 件は「完了も」で見られます）`
+                  ? `動いている職人はいません（完了 ${closedCount} 件は「完了を含む」で見られます）`
                   : "動いている職人はいません"}
           </p>
         ) : (

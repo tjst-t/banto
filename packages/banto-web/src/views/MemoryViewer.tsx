@@ -47,13 +47,13 @@ export function MemoryViewer({ params, endpoint }: CanvasViewProps): React.React
           <option value="preference">好みだけ</option>
           <option value="habit">習慣だけ</option>
         </select>
-        <label className="wv-toggle" title="訂正で置き換えられた古い記憶も出す">
+        <label className="wv-toggle" title="訂正で置き換えられた古い記憶も一覧に出す">
           <input
             type="checkbox"
             checked={includeSuperseded}
             onChange={(e) => setIncludeSuperseded(e.target.checked)}
           />
-          訂正済みも
+          訂正済みを含む
         </label>
         <button className="gv3-clear" onClick={() => list.reload()}>
           取り直す
