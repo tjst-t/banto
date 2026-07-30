@@ -20,16 +20,27 @@ interface Worker {
   sessionPath: string;
   worktree: string;
   alive: boolean;
-  /** running / waiting / exited（決定29b：質問待ちは稼働中と区別する） */
-  state: "running" | "waiting" | "exited";
+  /** running / waiting / exited / closed（決定29b・決定30） */
+  state: "running" | "waiting" | "exited" | "closed";
   spawnedAt: string;
   /** 答えを待っている質問（waiting のとき） */
   question?: string;
+  /** 畳んだ理由（closed のとき。決定30e） */
+  closeReason?: "done" | "idle" | "stopped";
+  closedAt?: string;
 }
 
 /** 状態の表示名。alive だけでは「待ちっぱなし」が見えない（決定29b）。 */
 function stateLabel(w: Worker): string {
   if (w.state === "waiting") return "質問待ち";
+  if (w.state === "closed") {
+    // 決定30e: なぜ終わったのかまで見せる。idle が並ぶのは面倒を見ていない兆候
+    return w.closeReason === "idle"
+      ? "放置で終了"
+      : w.closeReason === "stopped"
+        ? "強制停止"
+        : "完了";
+  }
   return w.alive ? "稼働中" : "終了";
 }
 interface WorkerList {
@@ -158,9 +169,7 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
                   onClick={() => setSelected(w.sessionId)}
                   title={`${w.worktree}\npid ${w.pid} · ${w.spawnedAt}`}
                 >
-                  <span
-                    className={`wv-dot ${w.state === "waiting" ? "is-waiting" : w.alive ? "is-alive" : ""}`}
-                  />
+                  <span className={`wv-dot is-${w.state}`} />
                   <span className="wv-body">
                     <span className="wv-task">{w.taskId}</span>
                     <span className="wv-meta">

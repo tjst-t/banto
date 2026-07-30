@@ -22,11 +22,16 @@ export const BANTO_ORIGIN = "banto";
  * 「自分が起こしていないこと」——職人が言ってきたことと、プロセスが終わったこと。
  */
 export function isNoticeworthy(event: WorkerEvent): boolean {
-  return (
+  if (
     event.type === "worker_reported" ||
     event.type === "worker_asked" ||
     event.type === "worker_exited"
-  );
+  ) {
+    return true;
+  }
+  // 決定30b: 安全弁が働いた＝番頭が畳み忘れた、ということ。自分でやった close（done）は
+  // 知らせないが、これは知らせる——気づかないと安全弁が主機構になってしまう
+  return event.type === "worker_closed" && event.data["reason"] === "idle";
 }
 
 /** イベントを番頭への知らせに言い換える。知らせないイベントなら undefined。 */
@@ -52,6 +57,14 @@ export function renderWorkerNotice(event: WorkerEvent): string | undefined {
       "",
       `> ${String(event.data["summary"] ?? "")}`,
     ].join("\n");
+  }
+
+  if (event.type === "worker_closed") {
+    return (
+      `${who} を、しばらく何もしていなかったので安全弁が畳みました。` +
+      "本来は成果を確かめたうえであなたが畳むところです（決定30a）。" +
+      "続きが要るなら worker.wake で元の会話ごと起こし直せます。"
+    );
   }
 
   const code = event.data["exitCode"];

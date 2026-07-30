@@ -56,23 +56,29 @@ class FakeDriver implements RuntimeDriver {
   failNext = false;
   failInject = false;
   private counter = 0;
+  /** sessionPath → sessionId。再開時に同じIDを返すため。 */
+  private sessionIdByPath = new Map<string, string>();
   private children: childProcess.ChildProcess[] = [];
 
   async spawn(opts: SpawnOptions): Promise<SessionHandle> {
     if (this.failNext) throw new Error("boom");
     this.spawned.push(opts);
     this.counter++;
+    // 本物（pi）は --session で再開すると**同じ sessionId** を返す。ここを新しいIDにすると、
+    // 「起こし直した職人が前回の記録に引きずられる」不具合を偽ドライバが隠してしまう
+    const resume = opts.driverOptions?.["resumeSessionPath"];
+    const sessionId =
+      typeof resume === "string"
+        ? (this.sessionIdByPath.get(resume) ?? `fake-${this.counter}`)
+        : `fake-${this.counter}`;
     // セッションファイルを作っておく（attach の検証用）
     fs.mkdirSync(path.dirname(opts.sessionPath), { recursive: true });
     fs.writeFileSync(opts.sessionPath, "");
 
     const child = childProcess.spawn("sleep", ["30"], { stdio: "ignore", detached: false });
     this.children.push(child);
-    return {
-      pid: child.pid!,
-      sessionId: `fake-${this.counter}`,
-      sessionPath: opts.sessionPath,
-    };
+    this.sessionIdByPath.set(opts.sessionPath, sessionId);
+    return { pid: child.pid!, sessionId, sessionPath: opts.sessionPath };
   }
 
   /** テスト終了時に取り残しを掃除する。 */
@@ -179,8 +185,8 @@ describe("[task-0010/a1] 職人の起動・監視・停止", () => {
     await pool.delegate({ ...JOB, projectTag: "kobo", taskId: "k-1" });
     await pool.delegate({ ...JOB, projectTag: "banto", taskId: "b-1" });
 
-    assert.deepEqual(pool.list("kobo").map((w) => w.taskId), ["k-1"]);
-    assert.deepEqual(pool.list("banto").map((w) => w.taskId), ["b-1"]);
+    assert.deepEqual(pool.list({ projectTag: "kobo" }).map((w) => w.taskId), ["k-1"]);
+    assert.deepEqual(pool.list({ projectTag: "banto" }).map((w) => w.taskId), ["b-1"]);
     assert.equal(pool.list().length, 2);
   });
 
@@ -195,12 +201,17 @@ describe("[task-0010/a1] 職人の起動・監視・停止", () => {
     ]);
   });
 
-  it("[task-0010/a1] stop で止まり、台帳から消える", async () => {
+  it("[task-0010/a1・task-0028/a3] stop で止まるが、記録は消えない", async () => {
     const worker = await pool.delegate(JOB);
     await pool.stop(worker.sessionId);
 
     assert.deepEqual(driver.killed, [worker.sessionId]);
-    assert.deepEqual(pool.list(), []);
+    // 決定30c: 台帳（生きているプロセスの帳簿）からは外れるが、履歴には残る
+    assert.deepEqual(pool.list({ includeClosed: false }), []);
+    assert.deepEqual(
+      pool.list().map((w) => [w.taskId, w.state, w.closeReason]),
+      [["task-0042", "closed", "stopped"]]
+    );
   });
 
   it("[task-0010/a1] 台帳はプロセスを跨いで残る（別インスタンスから見える）", async () => {
@@ -314,11 +325,14 @@ describe("[task-0010/a2] worker.* Tool とモジュール定義", () => {
     const worker = await pool.delegate(JOB);
     fs.writeFileSync(worker.sessionPath, "hello");
 
-    const list = await tools[1]!.execute("c1", {}, undefined, undefined, TOOL_CTX);
+    // Tool を位置で引くと、Toolを足すたびに壊れる（実際に壊れた）。名前で引く
+    const byName = (name: string) => tools.find((t) => t.name === name)!;
+
+    const list = await byName("worker.list").execute("c1", {} as never, undefined, undefined, TOOL_CTX);
     assert.match(textOf(list), /task-0042/);
 
-    const attach = await tools[4]!.execute(
-      "c2", { sessionId: worker.sessionId }, undefined, undefined, TOOL_CTX
+    const attach = await byName("worker.attach").execute(
+      "c2", { sessionId: worker.sessionId } as never, undefined, undefined, TOOL_CTX
     );
     assert.match(textOf(attach), /hello/);
   });
@@ -789,5 +803,220 @@ describe("[task-0026/a6] 職人（別プロセス）からHTTPで報告できる
 
     assert.equal(banto.includes("worker.report"), false, "番頭には渡らない");
     assert.deepEqual(internal.sort(), ["worker.ask", "worker.report"]);
+  });
+});
+
+// ── task-0028: 職人の店じまいと履歴（決定30） ───────────────────────────────────
+
+describe("[task-0028/a1] 番頭が畳む・理由が残る", () => {
+  it("[task-0028/a1] close で畳むと done として記録される", async () => {
+    const worker = await pool.delegate(JOB);
+    await pool.close(worker.sessionId);
+
+    const found = pool.get(worker.sessionId);
+    assert.equal(found?.state, "closed");
+    assert.equal(found?.closeReason, "done");
+    assert.ok(found?.closedAt);
+  });
+
+  it("[task-0028/a1] 畳んだ理由を区別する（done / idle / stopped）", async () => {
+    const a = await pool.delegate({ ...JOB, taskId: "t-done" });
+    const b = await pool.delegate({ ...JOB, taskId: "t-stopped" });
+    const c = await pool.delegate({ ...JOB, taskId: "t-idle" });
+
+    await pool.close(a.sessionId, "done");
+    await pool.stop(b.sessionId);
+    await pool.close(c.sessionId, "idle");
+
+    const reasons = new Map(pool.list().map((w) => [w.taskId, w.closeReason]));
+    assert.equal(reasons.get("t-done"), "done");
+    assert.equal(reasons.get("t-stopped"), "stopped", "強制停止は done と混ざらない");
+    assert.equal(reasons.get("t-idle"), "idle", "安全弁が働いたことが後から分かる");
+  });
+
+  it("[task-0028/a1・決定29a] 報告だけでは畳まれない", async () => {
+    const worker = await pool.delegate(JOB);
+    pool.report(worker.sessionId, "終わりました", { done: true });
+
+    // 報告は主張。畳むのは番頭が確かめてから
+    assert.equal(pool.get(worker.sessionId)?.state, "running");
+    assert.deepEqual(driver.killed, []);
+  });
+
+  it("[task-0028/a1] 二度畳んでも壊れない（冪等）", async () => {
+    const worker = await pool.delegate(JOB);
+    await pool.close(worker.sessionId);
+    await pool.close(worker.sessionId);
+
+    assert.equal(pool.events().filter((e) => e.type === "worker_closed").length, 1);
+  });
+
+  it("[task-0028/a1] 質問に答えないまま畳んだことが履歴に残る", async () => {
+    const worker = await pool.delegate(JOB);
+    pool.ask(worker.sessionId, "どちらにしますか");
+    await pool.close(worker.sessionId, "idle");
+
+    const closed = pool.events().find((e) => e.type === "worker_closed")!;
+    assert.equal(closed.data["unansweredQuestion"], "どちらにしますか");
+  });
+});
+
+describe("[task-0028/a2] アイドルの安全弁", () => {
+  it("[task-0028/a2] 何もしていない職人を閉じる", async () => {
+    const local = new WorkerPool({
+      driver, dataDir: dir, defaultProjectTag: "test",
+      idleTimeoutMs: 60_000,
+      idleCheckMs: 3_600_000, // 自動掃除は回さず、手で呼んで確かめる
+    });
+    const worker = await local.delegate(JOB);
+
+    assert.equal(await local.sweepIdle(), 0, "まだ活動したばかりなので閉じない");
+
+    // 期限を過ぎた時点として掃除する
+    const closed = await local.sweepIdle(Date.now() + 120_000);
+    assert.equal(closed, 1);
+    assert.equal(local.get(worker.sessionId)?.closeReason, "idle");
+    local.dispose();
+  });
+
+  it("[task-0028/a2] 安全弁は切れる（0以下で無効）", async () => {
+    const local = new WorkerPool({
+      driver, dataDir: dir, defaultProjectTag: "test", idleTimeoutMs: 0,
+    });
+    await local.delegate(JOB);
+    assert.equal(await local.sweepIdle(Date.now() + 10_000_000), 0);
+    local.dispose();
+  });
+
+  it("[task-0028/a2] 直前に活動していれば閉じない（セッションの更新を見る）", async () => {
+    const local = new WorkerPool({
+      driver, dataDir: dir, defaultProjectTag: "test",
+      idleTimeoutMs: 60_000, idleCheckMs: 3_600_000,
+    });
+    const worker = await local.delegate(JOB);
+    // 職人が書いた＝活動した
+    fs.writeFileSync(worker.sessionPath, "{}\n");
+
+    assert.equal(await local.sweepIdle(Date.now() + 30_000), 0);
+    local.dispose();
+  });
+});
+
+describe("[task-0028/a3] 閉じた職人が見える", () => {
+  it("[task-0028/a3] 畳んだ職人も一覧に出る（既定）", async () => {
+    const worker = await pool.delegate(JOB);
+    await pool.close(worker.sessionId);
+
+    assert.equal(pool.list().length, 1);
+    assert.equal(pool.list({ includeClosed: false }).length, 0, "稼働中だけも見られる");
+  });
+
+  it("[task-0028/a3] 畳んだ職人のセッションを読める（台帳が消えても）", async () => {
+    const worker = await pool.delegate(JOB);
+    fs.writeFileSync(worker.sessionPath, "職人が書いた記録\n");
+    await pool.close(worker.sessionId);
+
+    // 台帳から外れても sessionPath が分かる＝起動イベントに載せてあるから
+    assert.deepEqual(pool.attach(worker.sessionId).lines, ["職人が書いた記録"]);
+  });
+
+  it("[task-0028/a3] Worker Pool を再起動しても履歴は残る", async () => {
+    const worker = await pool.delegate(JOB);
+    await pool.close(worker.sessionId);
+
+    const reopened = new WorkerPool({ driver, dataDir: dir, defaultProjectTag: "test" });
+    const found = reopened.get(worker.sessionId);
+    assert.equal(found?.state, "closed");
+    assert.equal(found?.taskId, "task-0042");
+    assert.equal(found?.origin, "unknown");
+    reopened.dispose();
+  });
+
+  it("[task-0028/a3] 履歴は起動順に並ぶ", async () => {
+    const a = await pool.delegate({ ...JOB, taskId: "t-1" });
+    await pool.close(a.sessionId);
+    await pool.delegate({ ...JOB, taskId: "t-2" });
+
+    assert.deepEqual(pool.list().map((w) => w.taskId), ["t-1", "t-2"]);
+  });
+});
+
+describe("[task-0028/a4] 起こし直し（同じセッションの再開）", () => {
+  it("[task-0028/a4] wake で元のセッションを引き継いで起こす", async () => {
+    const first = await pool.delegate(JOB);
+    const sessionPath = first.sessionPath;
+    await pool.close(first.sessionId);
+
+    const again = await pool.wake(first.sessionId, "さっきの続きをやって");
+
+    // ランタイムに「このセッションから再開せよ」と伝わっている
+    assert.equal(driver.spawned.at(-1)?.driverOptions?.["resumeSessionPath"], sessionPath);
+    assert.equal(again.taskId, first.taskId, "同じ仕事として扱う");
+    assert.equal(again.worktree, first.worktree);
+    assert.equal(driver.injected.at(-1)?.message, "さっきの続きをやって");
+  });
+
+  it("[task-0028/a4] 起こし直したことが履歴に残る", async () => {
+    const first = await pool.delegate(JOB);
+    await pool.close(first.sessionId);
+    await pool.wake(first.sessionId, "続き");
+
+    const started = pool.events().filter((e) => e.type === "worker_started");
+    assert.equal(started.length, 2);
+    assert.equal(started[1]!.data["resumedFrom"], first.sessionPath);
+  });
+
+  it("[task-0028/a4] 起動元を引き継ぐ（宛先を見失わない）", async () => {
+    const first = await pool.delegate({ ...JOB, origin: "kobo" });
+    await pool.close(first.sessionId);
+    const again = await pool.wake(first.sessionId, "続き");
+
+    assert.equal(again.origin, "kobo");
+  });
+
+  it("[task-0028/a4] まだ畳んでいない職人は起こし直せない（I2）", async () => {
+    const worker = await pool.delegate(JOB);
+    await assert.rejects(() => pool.wake(worker.sessionId, "続き"), /まだ畳まれていません/);
+  });
+
+  it("[task-0028/a4] 知らない職人は起こし直せない（I2）", async () => {
+    await assert.rejects(() => pool.wake("no-such-session", "続き"), /Unknown worker/);
+  });
+});
+
+describe("[task-0028/a4] 起こし直した職人は「畳んだまま」に見えない", () => {
+  it("[task-0028/a4] 再開で同じ sessionId が返っても、状態は今の起動を見る", async () => {
+    const first = await pool.delegate(JOB);
+    await pool.close(first.sessionId, "done");
+
+    const again = await pool.wake(first.sessionId, "続き");
+    assert.equal(again.sessionId, first.sessionId, "本物の pi は同じIDを返す");
+
+    const now = pool.get(again.sessionId);
+    assert.equal(now?.state, "running", "前回の worker_closed に引きずられない");
+    assert.equal(now?.closeReason, undefined);
+    assert.equal(now?.alive, true);
+  });
+
+  it("[task-0028/a4] 前回の質問が起こし直した職人に残らない", async () => {
+    const first = await pool.delegate(JOB);
+    pool.ask(first.sessionId, "前回の質問");
+    await pool.close(first.sessionId, "idle");
+
+    await pool.wake(first.sessionId, "続き");
+
+    const now = pool.get(first.sessionId);
+    assert.equal(now?.state, "running");
+    assert.equal(now?.question, undefined, "答え済みでない古い質問を持ち越さない");
+  });
+
+  it("[task-0028/a4] 起こし直した職人も、また畳める", async () => {
+    const first = await pool.delegate(JOB);
+    await pool.close(first.sessionId);
+    await pool.wake(first.sessionId, "続き");
+    await pool.close(first.sessionId, "done");
+
+    assert.equal(pool.get(first.sessionId)?.state, "closed");
+    assert.equal(pool.events().filter((e) => e.type === "worker_closed").length, 2);
   });
 });

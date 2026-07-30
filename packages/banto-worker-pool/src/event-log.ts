@@ -27,8 +27,11 @@ export type WorkerEventType =
   | "worker_started"
   /** プロセスが終わった（事実）。 */
   | "worker_exited"
-  /** 起動元が止めた（事実）。 */
-  | "worker_stopped"
+  /**
+   * 職人を畳んだ（事実）。`data.reason` に done / idle / stopped が入る（決定30e）。
+   * 理由が消えると履歴が「なぜ終わったのか」に答えられない。
+   */
+  | "worker_closed"
   /** 職人が「終わった／こうした」と報告した（主張）。 */
   | "worker_reported"
   /** 職人が質問した（主張）。答えが来るまで職人は待つ。 */
@@ -43,7 +46,7 @@ export type WorkerEventKind = "fact" | "claim";
 const KIND_OF: Record<WorkerEventType, WorkerEventKind> = {
   worker_started: "fact",
   worker_exited: "fact",
-  worker_stopped: "fact",
+  worker_closed: "fact",
   worker_answered: "fact",
   worker_reported: "claim",
   worker_asked: "claim",

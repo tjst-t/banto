@@ -75,20 +75,29 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
     name: "worker.list",
     label: "Worker: List",
     description:
-      "いま動いている職人の一覧を返す（生存確認つき）。誰に何を任せているか把握したいときに使う。",
+      "職人の一覧を返す（生存確認つき）。誰に何を任せているか、さっき頼んだ仕事がどうなったかを" +
+      "把握したいときに使う。**畳んだ職人も既定で含む**——閉じても記録は残る。",
     parameters: Type.Object({
       projectTag: Type.Optional(Type.String({ description: "名前空間で絞る（省略時は全部）" })),
+      includeClosed: Type.Optional(
+        Type.Boolean({ description: "畳んだ職人も含める（既定 true）。稼働中だけ見たいなら false" })
+      ),
     }),
     async execute(_toolCallId, params) {
-      const workers = pool.list(params.projectTag);
+      const workers = pool.list({
+        ...(params.projectTag ? { projectTag: params.projectTag } : {}),
+        ...(params.includeClosed !== undefined ? { includeClosed: params.includeClosed } : {}),
+      });
       const text =
         workers.length === 0
           ? "動いている職人はいません"
           : workers
               .map((w) => {
-                const mark = w.state === "waiting" ? "⏸" : w.alive ? "●" : "○";
+                const mark =
+                  w.state === "waiting" ? "⏸" : w.state === "closed" ? "✓" : w.alive ? "●" : "○";
                 const waiting = w.question ? ` 質問待ち: ${w.question}` : "";
-                return `${mark} ${w.taskId} [${w.projectTag}] ${w.state} pid=${w.pid} sessionId=${w.sessionId}${waiting}`;
+                const closed = w.closeReason ? `(${w.closeReason})` : "";
+                return `${mark} ${w.taskId} [${w.projectTag}] ${w.state}${closed} pid=${w.pid} sessionId=${w.sessionId}${waiting}`;
               })
               .join("\n");
       return { content: [{ type: "text" as const, text }], details: { workers } };
@@ -115,10 +124,55 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
     },
   });
 
+  const close = defineTool({
+    name: "worker.close",
+    label: "Worker: Close",
+    description:
+      "仕事が済んだ職人を畳む。**成果を確かめて良いと判断したら、放置せず畳むこと**——" +
+      "待機中の職人はプロセスとして残り続ける。報告が来ただけでは畳まない（報告は主張であって" +
+      "完了の証明ではない）。畳んでも記録もセッションも残り、worker.wake で起こし直せる。",
+    parameters: Type.Object({
+      sessionId: Type.String({ description: "畳む職人" }),
+    }),
+    async execute(_toolCallId, params) {
+      await pool.close(params.sessionId, "done");
+      return {
+        content: [{ type: "text" as const, text: `畳みました: ${params.sessionId}` }],
+        details: { sessionId: params.sessionId },
+      };
+    },
+  });
+
+  const wake = defineTool({
+    name: "worker.wake",
+    label: "Worker: Wake",
+    description:
+      "畳んだ職人を起こし直す。**元の会話が復元される**ので、前に渡した前提を書き直さなくてよい。" +
+      "同じ仕事の続きを頼むときに使う（まったく別の仕事なら worker.delegate）。",
+    parameters: Type.Object({
+      sessionId: Type.String({ description: "起こし直す職人（worker.list の履歴から選ぶ）" }),
+      instruction: Type.String({ description: "続きとして渡す指示" }),
+    }),
+    async execute(_toolCallId, params) {
+      const worker = await pool.wake(params.sessionId, params.instruction);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `起こし直しました: ${worker.taskId} (sessionId: ${worker.sessionId}, pid: ${worker.pid})`,
+          },
+        ],
+        details: worker,
+      };
+    },
+  });
+
   const stop = defineTool({
     name: "worker.stop",
     label: "Worker: Stop",
-    description: "職人を止める。既に終わっている場合も成功として扱う（冪等）。",
+    description:
+      "職人を強制的に止める。作業中でも止まる。仕事が済んだので畳むときは worker.close を使う" +
+      "——理由を分けておかないと、履歴が「なぜ終わったのか」に答えられない。",
     parameters: Type.Object({
       sessionId: Type.String({ description: "止める職人" }),
     }),
@@ -198,7 +252,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
     },
   });
 
-  return [delegate, list, steer, stop, attach, events];
+  return [delegate, list, steer, close, wake, stop, attach, events];
 }
 
 /**

@@ -57,6 +57,7 @@ const SYSTEM_PROMPT = [
   "file.* と git.* でワークスペースの中身と履歴を閲覧できます（いずれも読み取り専用）。",
   "調査・実装など手を動かす仕事は worker.delegate で職人へ委譲してください（D10）。手順は skill.read で worker-delegation を確認できます。",
   "職人からの報告・質問は自動で届きます。報告は主張であって完了の証明ではないので、必要なら成果を自分で確かめてください。質問には worker.steer で答えられます。",
+  "確かめて良いと判断したら worker.close で職人を畳んでください。待機中の職人はプロセスとして残り続けます。畳んでも記録は残り、続きを頼みたくなったら worker.wake で元の会話ごと起こし直せます。",
 ].join("\n");
 
 interface ServeOptions {

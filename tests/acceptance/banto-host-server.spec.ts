@@ -492,10 +492,21 @@ describe("[task-0026/a6] 番頭が職人の報告・質問に気づく", () => {
 
 describe("[task-0026/a6] 職人イベントの言い換え（決定29d）", () => {
   it("[task-0026/a6] 番頭自身がやったことは知らせない（ターンが回り続けるため）", () => {
-    for (const type of ["worker_started", "worker_stopped", "worker_answered"] as const) {
+    for (const type of ["worker_started", "worker_answered"] as const) {
       assert.equal(isNoticeworthy(workerEvent({ type })), false, type);
       assert.equal(renderWorkerNotice(workerEvent({ type })), undefined);
     }
+    // 自分で畳んだ職人（done）も知らせない
+    const own = workerEvent({ type: "worker_closed", data: { reason: "done" } });
+    assert.equal(isNoticeworthy(own), false);
+  });
+
+  it("[task-0028/a2] 安全弁が働いたことは番頭に知らせる（畳み忘れの兆候）", () => {
+    const swept = workerEvent({ type: "worker_closed", data: { reason: "idle" } });
+    assert.equal(isNoticeworthy(swept), true);
+    const text = renderWorkerNotice(swept);
+    assert.ok(text?.includes("安全弁"));
+    assert.ok(text?.includes("worker.wake"), "起こし直せることを伝える");
   });
 
   it("[task-0026/a2] 報告は主張として伝える（完了と言い換えない。I1）", () => {

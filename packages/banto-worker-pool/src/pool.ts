@@ -24,7 +24,7 @@ import {
   type WorkerEventHandler,
 } from "./event-log.js";
 import { workerReportExtensionPath } from "./extension.js";
-import { SpawnLedger, isProcessAlive, killOrphanProcess } from "./spawn-ledger.js";
+import { SpawnLedger, isProcessAlive, killOrphanProcess, type LedgerEntry } from "./spawn-ledger.js";
 
 /**
  * 職人の既定のシステムプロンプト（立場の伝達）。やることは instruction で渡す。
@@ -49,7 +49,21 @@ export const WORKER_SYSTEM_PROMPT = [
  * `waiting` は決定29(b)。質問して答えを待っている職人は**生きているが止まっている**。
  * `alive` だけでは「動いている」と区別がつかず、待ちっぱなしが溜まっても気づけない。
  */
-export type WorkerState = "running" | "waiting" | "exited";
+export type WorkerState = "running" | "waiting" | "exited" | "closed";
+
+/**
+ * 職人を畳んだ理由（決定30e）。
+ *
+ * `idle` が多いなら、それは番頭が職人の面倒を見ていない兆候として読める——
+ * 安全弁が主機構になっていないかを、あとから確かめられるようにしておく。
+ */
+export type CloseReason =
+  /** 番頭が成果を確かめて良しとした（本筋） */
+  | "done"
+  /** 何もしていない時間が続いたので安全弁が働いた */
+  | "idle"
+  /** 作業中でも強制的に止めた */
+  | "stopped";
 
 /** 終了の内訳。イベントでしか分からない部分。 */
 export interface WorkerExitDetail {
@@ -77,6 +91,10 @@ export interface WorkerInfo {
   exit?: WorkerExitDetail;
   /** 答えを待っている質問（state が waiting のとき）。 */
   question?: string;
+  /** 畳んだ理由（state が closed のとき）。 */
+  closeReason?: CloseReason;
+  /** 畳んだ時刻（state が closed のとき）。 */
+  closedAt?: string;
 }
 
 export interface WorkerPoolOptions {
@@ -98,7 +116,20 @@ export interface WorkerPoolOptions {
    * 作法のプロンプトも載らない（拡張ごと渡らない）。
    */
   reportUrl?: string;
+  /**
+   * 何もしていない職人を閉じるまでの時間（決定30b の**安全弁**）。
+   *
+   * 主たる契機は番頭が畳むこと。これはその取りこぼしを拾うためのもので、
+   * 短くして主機構にしてはいけない——「放っておけば消える」に寄りかかると、
+   * 番頭が職人の面倒を見なくなる。0 以下を渡すと安全弁を切る。
+   */
+  idleTimeoutMs?: number;
+  /** 安全弁の点検間隔。既定は idleTimeoutMs の1/4。 */
+  idleCheckMs?: number;
 }
+
+/** 安全弁の既定。番頭が畳むより十分に長くとる（決定30b）。 */
+export const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 
 /** 職人に仕事を投げるときの指定。SpawnOptions より上位の、呼び出し側に優しい形。 */
 export interface DelegateInput {
@@ -117,6 +148,11 @@ export interface DelegateInput {
   instruction: string;
   /** 職人の立場を伝えるシステムプロンプト。省略時は WORKER_SYSTEM_PROMPT。 */
   systemPrompt?: string;
+  /**
+   * 畳んだ職人を起こし直すときに指定する、元のセッションファイル（決定30d）。
+   * 渡すと元の会話が復元され、番頭が前提を書き直さずに済む。
+   */
+  resumeSessionPath?: string;
   /** 使わせるTool名。省略時はランタイムの既定。 */
   tools?: string[];
   modelTier?: SpawnOptions["modelTier"];
@@ -133,6 +169,8 @@ export class WorkerPool {
   private readonly ledger: SpawnLedger;
   private readonly log: WorkerEventLog;
   private readonly unsubscribeDriver: () => void;
+  private readonly idleTimeoutMs: number;
+  private readonly idleSweeper: NodeJS.Timeout | undefined;
 
   constructor(options: WorkerPoolOptions) {
     this.driver = options.driver;
@@ -160,12 +198,22 @@ export class WorkerPool {
     // task-0027: ドライバのライフサイクルイベントを購読する。これが無いと職人が終わった
     // 瞬間に誰も気づけず、覗きに行くまで分からない
     this.unsubscribeDriver = this.driver.subscribe((event) => this.handleDriverEvent(event));
+
+    // 決定30b: 安全弁。主たる契機は番頭が畳むことで、これは取りこぼしを拾うだけ
+    this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+    if (this.idleTimeoutMs > 0) {
+      const every = options.idleCheckMs ?? Math.max(1000, Math.floor(this.idleTimeoutMs / 4));
+      this.idleSweeper = setInterval(() => void this.sweepIdle(), every);
+      // 安全弁がプロセスの終了を妨げないようにする（番頭を終うときに引き留めない）
+      this.idleSweeper.unref?.();
+    }
   }
 
   /** 購読を解除する。プロセスを終うときに呼ぶ。 */
   dispose(): void {
     this.unsubscribeDriver();
     this.log.clearSubscribers();
+    if (this.idleSweeper) clearInterval(this.idleSweeper);
   }
 
   // ── 起動元への報告経路（決定29） ─────────────────────────────────────────────
@@ -265,12 +313,19 @@ export class WorkerPool {
       `${projectTag}-${input.taskId}-${Date.now()}.jsonl`
     );
 
+    // 決定30d: 起こし直しは同じセッションの再開が既定。元の会話が戻るので、
+    // 番頭が前提を書き直さずに済む
+    const resume = input.resumeSessionPath
+      ? { resumeSessionPath: input.resumeSessionPath }
+      : {};
+
     // 決定29e: 報告先があるときだけ、職人に報告経路（拡張）を載せる。
     // 呼び出し側が自分の拡張を渡していても潰さない——職人は起動元のドメイン Tool と
     // Worker Pool の汎用 Tool の両方を持ちうる（Kobo の report_done と worker.report は層が違う）
     const driverOptions = this.reportUrl
       ? {
           ...input.driverOptions,
+          ...resume,
           projectTag,
           workerPoolUrl: this.reportUrl,
           extensionPaths: [
@@ -280,7 +335,7 @@ export class WorkerPool {
             workerReportExtensionPath(),
           ],
         }
-      : input.driverOptions;
+      : { ...input.driverOptions, ...resume };
 
     let handle: SessionHandle;
     try {
@@ -328,7 +383,15 @@ export class WorkerPool {
       projectTag,
       taskId: input.taskId,
       sessionId: handle.sessionId,
-      data: { pid: handle.pid, worktree: input.worktreePath, instruction: input.instruction },
+      data: {
+        pid: handle.pid,
+        worktree: input.worktreePath,
+        // 決定30c: 履歴をイベントログだけで完結させる。台帳は畳んだ時点で消えるので、
+        // ここに無いと閉じた職人のセッションを読めなくなる
+        sessionPath: handle.sessionPath,
+        instruction: input.instruction,
+        ...(input.resumeSessionPath ? { resumedFrom: input.resumeSessionPath } : {}),
+      },
     });
 
     return {
@@ -346,46 +409,125 @@ export class WorkerPool {
   }
 
   /**
-   * 台帳にある職人を、生存確認つきで返す（D3：導出する。別の状態を持たない）。
+   * 職人の一覧。
    *
-   * 状態はすべて導出：生死は pid、終了の内訳と待ちはイベントログ。
+   * D3: すべて導出する。生死は pid、終了の内訳・待ち・畳んだ理由はイベントログ。
+   * 決定30c: **畳んだ職人も消えない。** 台帳（生きているプロセスの帳簿）からは外れるが、
+   * イベントログから履歴として組み立てる。既定では履歴も含める——「さっき頼んだ仕事が
+   * どうなったか」を見るのに、生きている職人だけでは足りないため。
    */
-  list(projectTag?: string): WorkerInfo[] {
-    return this.ledger
+  list(options: { projectTag?: string; includeClosed?: boolean } = {}): WorkerInfo[] {
+    const { projectTag, includeClosed = true } = options;
+    const live = this.ledger
       .list()
       .filter((entry) => projectTag === undefined || entry.projectTag === projectTag)
-      .map((entry) => {
-        const alive = isProcessAlive(entry.pid);
-        const sessionId = entry.sessionId;
-        const exited = this.log.last({ sessionId, type: "worker_exited" });
-        const exit = exited
-          ? {
-              exitCode: (exited.data["exitCode"] ?? null) as number | null,
-              signal: (exited.data["signal"] ?? null) as string | null,
-              at: exited.at,
-            }
-          : undefined;
+      .map((entry) => this.describe(entry.sessionId, entry))
+      .filter((w): w is WorkerInfo => w !== undefined);
 
-        // 決定29b: 質問して答えが来ていない職人は waiting。生きているが止まっている
-        const asked = this.log.last({ sessionId, type: "worker_asked" });
-        const answered = this.log.last({ sessionId, type: "worker_answered" });
-        const pending = asked && (!answered || answered.id < asked.id) ? asked : undefined;
+    if (!includeClosed) return live;
 
-        return {
+    const liveIds = new Set(live.map((w) => w.sessionId));
+    const closed = this.closedSessionIds()
+      .filter((sessionId) => !liveIds.has(sessionId))
+      .map((sessionId) => this.describe(sessionId))
+      .filter((w): w is WorkerInfo => w !== undefined)
+      .filter((w) => projectTag === undefined || w.projectTag === projectTag);
+
+    // 新しいものが後ろに来るよう、起動順に並べる
+    return [...live, ...closed].sort((a, b) => a.spawnedAt.localeCompare(b.spawnedAt));
+  }
+
+  /** 畳まれた職人の sessionId（起動順）。 */
+  private closedSessionIds(): string[] {
+    const ids: string[] = [];
+    for (const event of this.log.since(0, { type: "worker_closed" })) {
+      if (!ids.includes(event.sessionId)) ids.push(event.sessionId);
+    }
+    return ids;
+  }
+
+  /**
+   * 1人分の姿を組み立てる。台帳に居ればそこから、居なければイベントログから。
+   *
+   * 台帳が無くても組み立てられるのが要点（決定30c）。畳んだ職人のセッションを
+   * 後から読めるよう、起動イベントに sessionPath を載せてある。
+   */
+  private describe(sessionId: string, entry?: LedgerEntry): WorkerInfo | undefined {
+    const started = this.log.last({ sessionId, type: "worker_started" });
+    /**
+     * **最後に起動してから先のイベントだけを見る。**
+     *
+     * pi は再開すると同じ sessionId を返すため、起こし直した職人には前回の
+     * `worker_closed` や質問がそのまま残っている。それを見てしまうと、動いている職人が
+     * 「畳んだまま」に見える（実プロセスで確認して見つけた）。
+     */
+    const sinceStart = started?.id ?? 0;
+    const latest = (type: WorkerEvent["type"]): WorkerEvent | undefined => {
+      const found = this.log.since(sinceStart, { sessionId, type });
+      return found[found.length - 1];
+    };
+    const base = entry
+      ? {
           projectTag: entry.projectTag,
           taskId: entry.taskId,
           origin: entry.origin ?? this.defaultOrigin,
           pid: entry.pid,
-          sessionId,
           sessionPath: entry.sessionPath,
           worktree: entry.worktree,
-          alive,
-          state: (!alive ? "exited" : pending ? "waiting" : "running") as WorkerState,
           spawnedAt: entry.spawnedAt,
-          ...(exit ? { exit } : {}),
-          ...(alive && pending ? { question: String(pending.data["question"] ?? "") } : {}),
-        };
-      });
+        }
+      : started
+        ? {
+            projectTag: started.projectTag,
+            taskId: started.taskId,
+            origin: started.origin,
+            pid: Number(started.data["pid"] ?? 0),
+            sessionPath: String(started.data["sessionPath"] ?? ""),
+            worktree: String(started.data["worktree"] ?? ""),
+            spawnedAt: started.at,
+          }
+        : undefined;
+    // I2: 起動イベントも台帳も無い sessionId は組み立てられない。空の姿を作らない
+    if (!base) return undefined;
+
+    const closedEvent = latest("worker_closed");
+    const exited = latest("worker_exited");
+    const exit = exited
+      ? {
+          exitCode: (exited.data["exitCode"] ?? null) as number | null,
+          signal: (exited.data["signal"] ?? null) as string | null,
+          at: exited.at,
+        }
+      : undefined;
+
+    // 決定29b: 質問して答えが来ていない職人は waiting。生きているが止まっている
+    const asked = latest("worker_asked");
+    const answered = latest("worker_answered");
+    const pending = asked && (!answered || answered.id < asked.id) ? asked : undefined;
+
+    const alive = entry !== undefined && closedEvent === undefined && isProcessAlive(base.pid);
+    const state: WorkerState = closedEvent
+      ? "closed"
+      : !alive
+        ? "exited"
+        : pending
+          ? "waiting"
+          : "running";
+
+    return {
+      ...base,
+      sessionId,
+      alive,
+      state,
+      ...(exit ? { exit } : {}),
+      ...(alive && pending ? { question: String(pending.data["question"] ?? "") } : {}),
+      ...(closedEvent
+        ? {
+            closeReason: (closedEvent.data["reason"] ?? "stopped") as CloseReason,
+            closedAt: closedEvent.at,
+          }
+        : {}),
+    };
   }
 
   /** sessionId で1人引く。 */
@@ -401,7 +543,9 @@ export class WorkerPool {
    * 持っているので、報告経路ではこの組で引く（台帳のキーと同じ組で一意）。
    */
   getByTask(projectTag: string, taskId: string): WorkerInfo | undefined {
-    return this.list().find((w) => w.projectTag === projectTag && w.taskId === taskId);
+    // 畳んだ職人と同じ taskId で起こし直すことがあるので、生きている方を優先して探す
+    const found = this.list().filter((w) => w.projectTag === projectTag && w.taskId === taskId);
+    return found.find((w) => w.state !== "closed") ?? found[found.length - 1];
   }
 
   /**
@@ -426,22 +570,112 @@ export class WorkerPool {
   }
 
   /**
-   * 職人を止める。既に終わっていても成功扱い（冪等）。
+   * 職人を畳む（決定30）。既に終わっていても成功扱い（冪等）。
+   *
+   * **主たる契機は番頭の判断**（決定30a）。報告を受けて成果を確かめ、良ければここで畳む。
+   * 報告そのものは閉じる合図ではない——決定29(a) を崩さない。
+   *
+   * 畳んでも消えない（決定30c）。台帳（生きているプロセスの帳簿）からは外れるが、
+   * イベントログには残るので、履歴として見られるし同じセッションで起こし直せる。
    */
-  async stop(sessionId: string): Promise<void> {
+  async close(sessionId: string, reason: CloseReason = "done"): Promise<void> {
     const worker = this.requireWorker(sessionId);
+    if (worker.state === "closed") return;
+
     await this.driver.kill(sessionId);
     // ドライバが取りこぼしたプロセスが残ることがあるので、台帳の pid でも念押しする
     if (isProcessAlive(worker.pid)) await killOrphanProcess(worker.pid);
     this.ledger.remove(worker.projectTag, worker.taskId);
     this.log.append({
-      type: "worker_stopped",
+      type: "worker_closed",
       origin: worker.origin,
       projectTag: worker.projectTag,
       taskId: worker.taskId,
       sessionId,
-      data: { pid: worker.pid },
+      data: {
+        reason,
+        pid: worker.pid,
+        // 質問に答えないまま畳んだ場合、それが履歴に残るようにしておく
+        ...(worker.question !== undefined ? { unansweredQuestion: worker.question } : {}),
+      },
     });
+  }
+
+  /**
+   * 職人を強制的に止める。作業中でも止まる。
+   * 仕事が済んだので畳むときは `close` を使う——理由が分かれていないと、履歴が
+   * 「なぜ終わったのか」に答えられない（決定30e）。
+   */
+  async stop(sessionId: string): Promise<void> {
+    await this.close(sessionId, "stopped");
+  }
+
+  /**
+   * 畳んだ職人を起こし直す（決定30d）。元のセッションを再開するので会話が戻る。
+   *
+   * D11 と矛盾しない：D11 が禁じているのは**隠れ状態**であって文脈の保存ではない。
+   * セッションファイルは外から読める記録で、再開しても再現可能・監査可能は保たれる。
+   */
+  async wake(sessionId: string, instruction: string): Promise<WorkerInfo> {
+    const past = this.get(sessionId);
+    if (!past) {
+      throw new Error(`Unknown worker "${sessionId}". 履歴に無い職人は起こし直せません。`);
+    }
+    if (past.state !== "closed") {
+      throw new Error(
+        `Worker "${sessionId}" はまだ畳まれていません（${past.state}）。指示を足すなら steer を使ってください。`
+      );
+    }
+    return this.delegate({
+      projectTag: past.projectTag,
+      origin: past.origin,
+      taskId: past.taskId,
+      worktreePath: past.worktree,
+      instruction,
+      resumeSessionPath: past.sessionPath,
+    });
+  }
+
+  /**
+   * 何もしていない職人を畳む（決定30b の**安全弁**）。
+   *
+   * 最終活動時刻は、セッションJSONL の更新時刻とイベントの時刻から導く（D3）——
+   * pi はメッセージのたびにセッションを書くので、別に「最終活動」を持たなくてよい。
+   *
+   * 質問待ちの職人も対象にする。答えてもらえないまま放置された職人はプロセスとして
+   * 残り続けるため。畳む前の質問は `unansweredQuestion` として履歴に残るので、
+   * 「番頭が答えなかった」ことは隠れない。
+   *
+   * @returns 畳んだ数
+   */
+  async sweepIdle(now = Date.now()): Promise<number> {
+    if (this.idleTimeoutMs <= 0) return 0;
+    let closed = 0;
+    for (const worker of this.list()) {
+      if (worker.state === "closed") continue;
+      if (now - this.lastActivityAt(worker) < this.idleTimeoutMs) continue;
+      try {
+        await this.close(worker.sessionId, "idle");
+        closed++;
+      } catch (err) {
+        // I2 の例外: 1人の失敗で残りの掃除を止めない。ただし黙らせない
+        console.error(`[worker-pool] failed to close idle worker ${worker.sessionId}: ${String(err)}`);
+      }
+    }
+    return closed;
+  }
+
+  /** 最終活動時刻（ミリ秒）。セッションファイルの更新とイベントの新しい方を採る。 */
+  private lastActivityAt(worker: WorkerInfo): number {
+    let latest = Date.parse(worker.spawnedAt);
+    const event = this.log.last({ sessionId: worker.sessionId });
+    if (event) latest = Math.max(latest, Date.parse(event.at));
+    try {
+      latest = Math.max(latest, fs.statSync(worker.sessionPath).mtimeMs);
+    } catch {
+      // セッションファイルがまだ無い／消えた場合はイベント側だけで判断する
+    }
+    return latest;
   }
 
   /**
@@ -468,7 +702,7 @@ export class WorkerPool {
 
   /** 終了済みの職人を台帳から片付ける。返り値は片付けた数。 */
   reap(): number {
-    const dead = this.list().filter((w) => !w.alive);
+    const dead = this.list({ includeClosed: false }).filter((w) => !w.alive);
     for (const worker of dead) this.ledger.remove(worker.projectTag, worker.taskId);
     return dead.length;
   }

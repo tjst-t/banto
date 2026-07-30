@@ -253,6 +253,14 @@ export class PiRpcDriver implements RuntimeDriver {
       model,
     ];
 
+    // 決定30d: 起こし直しは同じセッションの再開。元の会話が復元される
+    if (
+      opts.driverOptions?.resumeSessionPath &&
+      typeof opts.driverOptions.resumeSessionPath === "string"
+    ) {
+      args.push("--session", opts.driverOptions.resumeSessionPath);
+    }
+
     if (extensionPath) {
       args.push("--extension", extensionPath);
     }
