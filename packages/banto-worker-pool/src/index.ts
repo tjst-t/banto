@@ -20,7 +20,13 @@ export {
   killOrphanProcess,
   type LedgerEntry,
 } from "./spawn-ledger.js";
-export { WorkerPool, type WorkerPoolOptions, type WorkerInfo, type DelegateInput } from "./pool.js";
+export {
+  WorkerPool,
+  WORKER_SYSTEM_PROMPT,
+  type WorkerPoolOptions,
+  type WorkerInfo,
+  type DelegateInput,
+} from "./pool.js";
 export { createWorkerTools } from "./worker-tools.js";
 export {
   createWorkerPoolModule,

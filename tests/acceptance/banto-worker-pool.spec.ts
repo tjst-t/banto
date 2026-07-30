@@ -51,6 +51,7 @@ class FakeDriver implements RuntimeDriver {
   injected: Array<{ sessionId: string; message: string }> = [];
   killed: string[] = [];
   failNext = false;
+  failInject = false;
   private counter = 0;
   private children: childProcess.ChildProcess[] = [];
 
@@ -85,6 +86,7 @@ class FakeDriver implements RuntimeDriver {
     this.children = [];
   }
   async inject(sessionId: string, message: string): Promise<void> {
+    if (this.failInject) throw new Error("inject boom");
     this.injected.push({ sessionId, message });
   }
   subscribe(_handler: DriverEventHandler): () => void {
@@ -113,15 +115,39 @@ afterEach(() => {
 const JOB = { taskId: "task-0042", worktreePath: "/tmp/wt", instruction: "調べて直して" };
 
 describe("[task-0010/a1] 職人の起動・監視・停止", () => {
-  it("[task-0010/a1] delegate で職人が起き、指示がそのまま渡る", async () => {
+  it("[task-0010/a1] delegate で職人が起き、worktree が渡る", async () => {
     const worker = await pool.delegate(JOB);
 
     assert.equal(worker.taskId, "task-0042");
     assert.equal(worker.projectTag, "test");
     assert.equal(worker.alive, true);
     assert.equal(driver.spawned.length, 1);
-    assert.equal(driver.spawned[0]!.systemPrompt, "調べて直して", "指示が職人へ渡る");
     assert.equal(driver.spawned[0]!.worktreePath, "/tmp/wt");
+  });
+
+  it("[task-0010/a1] spawn だけでなく inject で指示が届く（これが無いと職人は何もしない）", async () => {
+    const worker = await pool.delegate(JOB);
+
+    // RuntimeDriver の契約：spawn はセッションを起こすところまで。実際に働かせるには
+    // inject で prompt を送る必要がある。これを忘れると職人は起動したまま固まる
+    // （実際にその不具合を踏んだ）
+    assert.deepEqual(driver.injected, [
+      { sessionId: worker.sessionId, message: "調べて直して" },
+    ]);
+  });
+
+  it("[task-0010/a1] システムプロンプトは立場の伝達で、やることは instruction で渡す", async () => {
+    await pool.delegate(JOB);
+    const systemPrompt = driver.spawned[0]!.systemPrompt;
+
+    assert.match(systemPrompt, /職人/, "立場を伝える");
+    assert.match(systemPrompt, /記憶を持ちません/, "D11 を職人自身にも伝える");
+    assert.doesNotMatch(systemPrompt, /調べて直して/, "やることは instruction 側");
+  });
+
+  it("[task-0010/a1] システムプロンプトは差し替えられる", async () => {
+    await pool.delegate({ ...JOB, systemPrompt: "あなたは監査役です。" });
+    assert.equal(driver.spawned[0]!.systemPrompt, "あなたは監査役です。");
   });
 
   it("[task-0010/a1] list が生存確認つきで返す（D3：状態を別に持たない）", async () => {
@@ -146,7 +172,11 @@ describe("[task-0010/a1] 職人の起動・監視・停止", () => {
     const worker = await pool.delegate(JOB);
     await pool.steer(worker.sessionId, "方針を変えて");
 
-    assert.deepEqual(driver.injected, [{ sessionId: worker.sessionId, message: "方針を変えて" }]);
+    // 1件目は delegate が送る最初の指示。steer はその後に積まれる
+    assert.deepEqual(driver.injected, [
+      { sessionId: worker.sessionId, message: "調べて直して" },
+      { sessionId: worker.sessionId, message: "方針を変えて" },
+    ]);
   });
 
   it("[task-0010/a1] stop で止まり、台帳から消える", async () => {
@@ -208,6 +238,17 @@ describe("[task-0010] 失敗の扱い（I2）", () => {
     driver.failNext = true;
     await assert.rejects(() => pool.delegate(JOB), /Failed to start worker for "task-0042".*boom/s);
     assert.deepEqual(pool.list(), [], "失敗した職人は台帳に残らない");
+  });
+
+  it("[task-0010] 指示の送信に失敗したら、起こしただけの職人を放置せず止める（I2）", async () => {
+    driver.failInject = true;
+    await assert.rejects(
+      () => pool.delegate(JOB),
+      /Started a worker for "task-0042" but failed to deliver the instruction/
+    );
+
+    assert.equal(driver.killed.length, 1, "起こした職人を止める");
+    assert.deepEqual(pool.list(), [], "台帳にも残さない");
   });
 
   it("[task-0010] 不在の職人への操作はエラー（動いている一覧を添える）", async () => {

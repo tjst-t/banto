@@ -357,3 +357,67 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
   display: block; font-size: 10px; color: var(--ink-faint); font-family: var(--font-mono);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* ── 職人ビューア（セッションビューア） ── */
+.wv { display: flex; gap: 14px; height: 100%; min-height: 0; }
+.wv-side {
+  width: 300px; flex-shrink: 0; display: flex; flex-direction: column; min-height: 0;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+}
+.wv-list { list-style: none; margin: 0; padding: 4px; overflow-y: auto; min-height: 0; }
+.wv-item {
+  display: flex; align-items: flex-start; gap: 8px; width: 100%; text-align: left;
+  font: inherit; font-size: 12.5px; padding: 6px 8px; border: none; border-radius: 6px;
+  background: none; cursor: pointer; color: var(--ink);
+}
+.wv-item:hover { background: var(--bg); }
+.wv-item.is-selected { background: var(--accent); color: #fff; }
+.wv-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; margin-top: 5px;
+  background: var(--ink-faint);
+}
+.wv-dot.is-alive { background: var(--ok); box-shadow: 0 0 0 3px rgba(63,111,79,0.18); }
+.wv-item.is-selected .wv-dot.is-alive { box-shadow: 0 0 0 3px rgba(255,255,255,0.25); }
+.wv-body { min-width: 0; }
+.wv-task { display: block; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wv-meta { display: block; font-size: 10.5px; color: var(--ink-faint); font-family: var(--font-mono); }
+.wv-item.is-selected .wv-meta { color: rgba(255,255,255,0.75); }
+
+.wv-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.wv-auto {
+  margin-left: auto; font-size: 11px; color: var(--ink-faint);
+  display: flex; align-items: center; gap: 4px; cursor: pointer;
+}
+.wv-log {
+  flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+}
+.wv-note { margin: 0 0 4px; font-size: 11px; }
+.wv-entry { font-size: 12.5px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+.wv-entry.is-user {
+  align-self: flex-end; max-width: 88%; background: var(--accent); color: #fff;
+  padding: 6px 11px; border-radius: 11px 11px 3px 11px;
+}
+.wv-entry.is-assistant {
+  align-self: flex-start; max-width: 92%; background: var(--bg);
+  border: 1px solid var(--line); padding: 6px 11px; border-radius: 11px 11px 11px 3px;
+}
+.wv-entry.is-thinking {
+  align-self: flex-start; max-width: 92%; color: var(--ink-faint); font-size: 11.5px;
+  border-left: 2px solid var(--line); padding-left: 10px;
+}
+.wv-entry.is-tool {
+  align-self: flex-start; font-family: var(--font-mono); font-size: 11px; color: var(--ok);
+  display: flex; gap: 7px; max-width: 100%; overflow: hidden;
+}
+.wv-entry.is-tool .wv-entry-label { font-weight: 700; flex-shrink: 0; }
+.wv-entry.is-tool .wv-entry-text {
+  color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wv-entry.is-meta { align-self: center; font-size: 10.5px; color: var(--ink-faint); }
+.wv-entry.is-raw { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-faint); }
+
+@media (max-width: 980px) {
+  .wv { flex-direction: column; }
+  .wv-side { width: 100%; max-height: 40%; }
+}
