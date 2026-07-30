@@ -12,9 +12,16 @@ import type { MemoryKind, MemoryStore } from "@banto/core";
 import { Type } from "typebox";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 
-const MemoryKindSchema = Type.Union([Type.Literal("preference"), Type.Literal("habit")], {
-  description: "preference（好み）または habit（習慣）",
-});
+const MemoryKindSchema = Type.Union(
+  [Type.Literal("preference"), Type.Literal("habit"), Type.Literal("fact")],
+  {
+    description:
+      "preference（好み。文体や見せ方など、そうしてほしいこと。変わってよい）、" +
+      "habit（習慣。手順やチェックのルーティン。変わってよい）、" +
+      "fact（事実。名前・役割・許諾範囲など、導出できず変わらないことが期待される属性）。" +
+      "**事実を好みに入れない**——名前を好みとして覚えると「変えてよいもの」として扱ってしまう",
+  }
+);
 
 /**
  * `memory.save` / `memory.recall` を生成する。
@@ -94,11 +101,14 @@ export function renderMemoryForPrompt(store: MemoryStore): string {
   const byKind = (kind: MemoryKind) =>
     store.list({ kind }).map((r) => `- ${r.text} (id: ${r.id})`);
 
+  const facts = byKind("fact");
   const preferences = byKind("preference");
   const habits = byKind("habit");
-  if (preferences.length === 0 && habits.length === 0) return "";
+  if (facts.length === 0 && preferences.length === 0 && habits.length === 0) return "";
 
+  // 決定31d: 事実が最も安定しているので先に読ませる（事実 → 好み → 習慣）
   const sections = ["# 記憶（前回までに覚えたこと）"];
+  if (facts.length > 0) sections.push("## 事実\n" + facts.join("\n"));
   if (preferences.length > 0) sections.push("## 好み\n" + preferences.join("\n"));
   if (habits.length > 0) sections.push("## 習慣\n" + habits.join("\n"));
   sections.push(

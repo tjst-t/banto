@@ -310,3 +310,89 @@ describe("[task-0008/a2] SKILL loading (自前 progressive disclosure)", () => {
     assert.deepEqual(loadBantoSkills(path.join(dir, "does-not-exist")), []);
   });
 });
+
+// ── task-0032: 記憶に fact（事実）を足す（決定31。提案 memory-kind-fact より） ──────
+
+describe("[task-0032] 記憶の種類 fact", () => {
+  it("[task-0032/a1] 事実として保存・取り出しができる", () => {
+    const store = new JsonlMemoryStore(path.join(dir, "m.jsonl"));
+    store.save({ kind: "fact", text: "POの名前は「たくみ」である" });
+    store.save({ kind: "preference", text: "結論から話す" });
+
+    assert.deepEqual(
+      store.list({ kind: "fact" }).map((r) => r.text),
+      ["POの名前は「たくみ」である"]
+    );
+  });
+
+  it("[task-0032/a1] 事実は好みの一覧に混ざらない（決定31a の眼目）", () => {
+    const store = new JsonlMemoryStore(path.join(dir, "m.jsonl"));
+    store.save({ kind: "fact", text: "POの名前は「たくみ」である" });
+
+    // ここが混ざると、番頭が名前を「変えてよいもの」として扱いうる
+    assert.deepEqual(store.list({ kind: "preference" }), []);
+    assert.equal(store.list().length, 1, "種別を指定しなければ出る");
+  });
+
+  it("[task-0032/a2] プロンプトに「事実」の節が出る。順は 事実 → 好み → 習慣", () => {
+    const store = new JsonlMemoryStore(path.join(dir, "m.jsonl"));
+    store.save({ kind: "habit", text: "習慣X" });
+    store.save({ kind: "preference", text: "好みY" });
+    store.save({ kind: "fact", text: "事実Z" });
+
+    const prompt = renderMemoryForPrompt(store);
+    assert.match(prompt, /## 事実\n- 事実Z/);
+    // 決定31d: 事実が最も安定しているので先に読ませる
+    assert.ok(prompt.indexOf("## 事実") < prompt.indexOf("## 好み"));
+    assert.ok(prompt.indexOf("## 好み") < prompt.indexOf("## 習慣"));
+  });
+
+  it("[task-0032/a2] 事実だけでもプロンプトに出る（好み・習慣が無くても空にしない）", () => {
+    const store = new JsonlMemoryStore(path.join(dir, "m.jsonl"));
+    store.save({ kind: "fact", text: "事実だけ" });
+
+    assert.match(renderMemoryForPrompt(store), /## 事実/);
+  });
+
+  it("[task-0032/a3] memory.save Tool が fact を受ける", async () => {
+    const store = new JsonlMemoryStore(path.join(dir, "m.jsonl"));
+    const save = createMemoryTools(store).find((t) => t.name === "memory.save")!;
+
+    await save.execute(
+      "c1",
+      { kind: "fact", text: "POの役割はプロダクトオーナー" } as never,
+      undefined,
+      undefined,
+      TOOL_CTX
+    );
+    assert.equal(store.list({ kind: "fact" }).length, 1);
+  });
+
+  it("[task-0032/a4] 既存の記憶は影響を受けない（リテラルの追加なので）", () => {
+    const file = path.join(dir, "m.jsonl");
+    // fact を足す前に書かれた記録を再現する
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        id: "old-1",
+        kind: "preference",
+        text: "前からある好み",
+        createdAt: "2026-07-01T00:00:00.000Z",
+      }) + "\n"
+    );
+
+    const store = new JsonlMemoryStore(file);
+    assert.deepEqual(store.list().map((r) => r.text), ["前からある好み"]);
+    store.save({ kind: "fact", text: "後から足した事実" });
+    assert.equal(store.list().length, 2);
+  });
+
+  it("[task-0032] 事実の訂正も supersede で表す（好みと同じ機構）", () => {
+    const store = new JsonlMemoryStore(path.join(dir, "m.jsonl"));
+    const first = store.save({ kind: "fact", text: "POの名前は「たくみ」" });
+    store.supersede(first.id, { kind: "fact", text: "POの名前は「たくみ（辻下）」" });
+
+    assert.deepEqual(store.list({ kind: "fact" }).map((r) => r.text), ["POの名前は「たくみ（辻下）」"]);
+    assert.equal(store.list({ kind: "fact", includeSuperseded: true }).length, 2);
+  });
+});

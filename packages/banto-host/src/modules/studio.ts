@@ -75,9 +75,10 @@ function createStudioDataTools(options: StudioModuleOptions): NamespacedToolDefi
     description: "番頭の記憶を一覧で返す（記憶ビューア用のデータ）。",
     parameters: Type.Object({
       kind: Type.Optional(
-        Type.Union([Type.Literal("preference"), Type.Literal("habit")], {
-          description: "種別で絞る",
-        })
+        Type.Union(
+          [Type.Literal("preference"), Type.Literal("habit"), Type.Literal("fact")],
+          { description: "種別で絞る（決定31）" }
+        )
       ),
       includeSuperseded: Type.Optional(
         Type.Boolean({ description: "訂正済みの記憶も含める（既定 false）" })

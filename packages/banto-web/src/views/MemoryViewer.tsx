@@ -13,7 +13,7 @@ import type { CanvasViewProps } from "./registry.js";
 
 interface MemoryRecord {
   id: string;
-  kind: "preference" | "habit";
+  kind: "preference" | "habit" | "fact";
   text: string;
   createdAt: string;
   refs?: string[];
@@ -23,7 +23,7 @@ interface MemoryList {
   records: MemoryRecord[];
 }
 
-const KIND_LABEL: Record<string, string> = { preference: "好み", habit: "習慣" };
+const KIND_LABEL: Record<string, string> = { fact: "事実", preference: "好み", habit: "習慣" };
 
 export function MemoryViewer({ params, endpoint }: CanvasViewProps): React.ReactElement {
   const initialKind = typeof params["kind"] === "string" ? params["kind"] : "";
@@ -43,7 +43,8 @@ export function MemoryViewer({ params, endpoint }: CanvasViewProps): React.React
         <span className="st-title">記憶</span>
         <span className="gv3-count">{records.length}</span>
         <select value={kind} onChange={(e) => setKind(e.target.value)}>
-          <option value="">好み・習慣</option>
+          <option value="">すべて</option>
+          <option value="fact">事実だけ</option>
           <option value="preference">好みだけ</option>
           <option value="habit">習慣だけ</option>
         </select>

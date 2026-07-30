@@ -583,3 +583,4 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .st-refs { margin-top: 6px; font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); }
 .st-desc { margin: 0; padding: 10px 14px 0; font-size: 12px; color: var(--muted); }
 .st-body { padding: 10px 14px 16px; overflow-y: auto; }
+.st-kind.is-fact { color: #7a5c2e; border-color: #7a5c2e55; }
