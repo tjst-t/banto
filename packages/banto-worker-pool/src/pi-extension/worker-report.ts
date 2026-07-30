@@ -64,6 +64,16 @@ const ASK: ToolSpec = {
   },
 };
 
+/**
+ * この拡張が職人に足す Tool の wire名。
+ *
+ * pi の `--tools`（許可リスト）は組み込みだけでなく**拡張の Tool にも効く**ので、
+ * 委譲時に道具を絞るときは、この2つを必ず残さないと報告経路が黙って消える（imp-0004）。
+ */
+export const WORKER_REPORT_TOOL_NAMES: readonly string[] = [REPORT, ASK].map((spec) =>
+  toWireName(spec.logicalName)
+);
+
 /** 職人に渡す作法。報告先があることを知らせないと、職人は報告のしようがない。 */
 export const WORKER_REPORT_PROMPT = [
   "## 起動元への報告",

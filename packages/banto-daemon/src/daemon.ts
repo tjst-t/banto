@@ -1584,8 +1584,8 @@ export class Daemon {
 
     // Build system prompt from executor-system asset (no findings injected here —
     // D1: findings are delivered via driver.inject() after spawn, which is the
-    // runtime-driver contract's guaranteed delivery path. PiRpcDriver ignores
-    // systemPrompt at the spawn call but processes inject() as the first RPC message).
+    // runtime-driver contract's guaranteed delivery path. systemPrompt carries the
+    // standing role; per-run material belongs in the injected message).
     let executorPrompt: string;
     try {
       executorPrompt = loadSkillAsset("executor-system");
@@ -1626,9 +1626,9 @@ export class Daemon {
     }
 
     // D1: deliver findings via inject() — the runtime-driver contract's sanctioned
-    // message path. This is the guaranteed delivery channel; systemPrompt is ignored
-    // by PiRpcDriver (it does not pass it to the pi process). inject() sends the
-    // findings as the first RPC `prompt` message into the running session.
+    // message path. systemPrompt is the standing role (appended to the runtime's own
+    // prompt at spawn); findings are per-run material, so they go through inject(),
+    // which sends them as the first RPC `prompt` message into the running session.
     // I2: inject failure is logged but not fatal — the session is already spawned and
     // the executor can still complete (the audit will re-check on the next verdict).
     const findingsMessage =

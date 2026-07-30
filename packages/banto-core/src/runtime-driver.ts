@@ -35,11 +35,19 @@ export interface SpawnOptions {
   worktreePath: string;
   /** Absolute path where the session JSONL should be stored. */
   sessionPath: string;
-  /** System prompt injected into the session on first message. */
+  /**
+   * 立場・作法を伝えるシステムプロンプト。空文字なら何も足さない。
+   *
+   * ドライバはこれをランタイムの既定プロンプトに**追記**する（差し替えではない）。
+   * 既定プロンプトには使える道具の一覧と作法が入っており、丸ごと置き換えると
+   * それが失われる——ここで渡したいのは立場であって、道具の説明の削除ではない（imp-0004）。
+   */
   systemPrompt: string;
   /**
-   * Tool names to make available in this session.
-   * Actual tool definitions come from banto-core (S254276-3 scope).
+   * このセッションで使わせる Tool 名の**許可リスト**。空配列は「ランタイムの既定のまま」。
+   *
+   * 絞ると拡張が足した Tool も対象になる（pi の `--tools` の挙動）。報告経路のように
+   * 消えては困る Tool は、呼び出し側がここに含める責任を持つ。
    */
   tools: string[];
   /** Model tier hint (spec §3.5). Driver maps tier → concrete model. */

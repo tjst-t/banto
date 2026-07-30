@@ -42,7 +42,12 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
       }),
       projectTag: Type.Optional(Type.String({ description: "利用者の名前空間（省略可）" })),
       tools: Type.Optional(
-        Type.Array(Type.String(), { description: "職人に使わせるTool名（省略時はランタイムの既定）" })
+        Type.Array(Type.String(), {
+          description:
+            "職人に使わせるTool名の許可リスト。省略すると read/bash/edit/write/grep/find/ls を" +
+            "全部持つ＝**調べるだけのつもりでも書き換えられる**。読むだけで足りる仕事は " +
+            '["read","grep","find","ls"] のように絞ること。報告経路は書かなくても残る',
+        })
       ),
       modelTier: Type.Optional(
         Type.Union([Type.Literal("reasoning"), Type.Literal("standard"), Type.Literal("fast")], {

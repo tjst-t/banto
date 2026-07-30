@@ -172,6 +172,38 @@ describe("[task-0010/a1] 職人の起動・監視・停止", () => {
     assert.equal(driver.spawned[0]!.systemPrompt, "あなたは監査役です。");
   });
 
+  it("[imp-0004] tools を省略したらランタイムの既定（空の許可リスト）", async () => {
+    await pool.delegate(JOB);
+    assert.deepEqual(driver.spawned[0]!.tools, []);
+  });
+
+  it("[imp-0004] tools を絞っても報告経路の Tool は残る", async () => {
+    // pi の許可リストは拡張の Tool にも効く。番頭が「読むだけ」のつもりで絞ると
+    // worker.report / worker.ask まで消え、職人は報告も質問もできなくなる
+    const withReport = new WorkerPool({
+      driver,
+      dataDir: dir,
+      defaultProjectTag: "test",
+      reportUrl: "http://localhost:4110",
+    });
+    try {
+      await withReport.delegate({ ...JOB, tools: ["read", "grep"] });
+      assert.deepEqual(driver.spawned[0]!.tools, [
+        "read",
+        "grep",
+        "worker__report",
+        "worker__ask",
+      ]);
+    } finally {
+      withReport.dispose();
+    }
+  });
+
+  it("[imp-0004] 報告先が無ければ足すものも無い（拡張ごと載らないため）", async () => {
+    await pool.delegate({ ...JOB, tools: ["read"] });
+    assert.deepEqual(driver.spawned[0]!.tools, ["read"]);
+  });
+
   it("[task-0010/a1] list が生存確認つきで返す（D3：状態を別に持たない）", async () => {
     const worker = await pool.delegate(JOB);
     const workers = pool.list();

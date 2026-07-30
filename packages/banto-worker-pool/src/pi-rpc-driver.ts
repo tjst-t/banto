@@ -253,6 +253,24 @@ export class PiRpcDriver implements RuntimeDriver {
       model,
     ];
 
+    // imp-0004: 立場を伝えるシステムプロンプト。**追記**であって差し替えではない。
+    // pi の既定プロンプトには使えるツールの一覧と作法が入っており、`--system-prompt` で
+    // 丸ごと置き換えるとそれが消える——職人に足したいのは立場であって、道具の説明を
+    // 奪うことではない。
+    if (opts.systemPrompt.trim().length > 0) {
+      args.push("--append-system-prompt", opts.systemPrompt);
+    }
+
+    // imp-0004: 使わせる Tool の限定。空配列は「ランタイムの既定のまま」の意味で、
+    // `--tools` を渡さない——空の許可リストを渡すと道具が1つも無い職人になる。
+    //
+    // pi の `--tools` は組み込みだけでなく**拡張の Tool にも効く**（実プロセスで確認済み）。
+    // 絞るときに報告経路の Tool を書き落とすと職人は黙って報告できなくなるので、
+    // 何を残すかは呼び出し側（WorkerPool）が組み立てる。
+    if (opts.tools.length > 0) {
+      args.push("--tools", opts.tools.join(","));
+    }
+
     // 決定30d: 起こし直しは同じセッションの再開。元の会話が復元される
     if (
       opts.driverOptions?.resumeSessionPath &&

@@ -24,6 +24,7 @@ import {
   type WorkerEventHandler,
 } from "./event-log.js";
 import { workerReportExtensionPath } from "./extension.js";
+import { WORKER_REPORT_TOOL_NAMES } from "./pi-extension/worker-report.js";
 import { SpawnLedger, isProcessAlive, killOrphanProcess, type LedgerEntry } from "./spawn-ledger.js";
 
 /**
@@ -156,7 +157,14 @@ export interface DelegateInput {
    * 渡すと元の会話が復元され、番頭が前提を書き直さずに済む。
    */
   resumeSessionPath?: string;
-  /** 使わせるTool名。省略時はランタイムの既定。 */
+  /**
+   * 使わせるTool名（許可リスト）。省略時はランタイムの既定（pi なら read/bash/edit/write/
+   * grep/find/ls の全部）。
+   *
+   * 「調べるだけ」を頼むなら `["read","grep","find","ls"]` のように絞る——絞らない限り
+   * 職人は worktree を書き換えられるし任意のコマンドも打てる（imp-0004）。
+   * 報告経路（`worker.report`/`worker.ask`）はここに書かなくても自動で残る。
+   */
   tools?: string[];
   modelTier?: SpawnOptions["modelTier"];
   driverOptions?: Record<string, unknown>;
@@ -348,7 +356,7 @@ export class WorkerPool {
         sessionPath,
         // 立場（職人であること）はシステムプロンプト、やることは下の inject で渡す
         systemPrompt: input.systemPrompt ?? WORKER_SYSTEM_PROMPT,
-        tools: input.tools ?? [],
+        tools: this.resolveTools(input.tools),
         ...(input.modelTier ? { modelTier: input.modelTier } : {}),
         ...(driverOptions ? { driverOptions } : {}),
       });
@@ -409,6 +417,26 @@ export class WorkerPool {
       state: "running",
       spawnedAt,
     };
+  }
+
+  /**
+   * 委譲時に職人へ渡す Tool 名を組み立てる（imp-0004）。
+   *
+   * 省略時は空配列＝ランタイムの既定のまま。絞るときは**報告経路の Tool を必ず足す**
+   * ——pi の許可リストは拡張の Tool にも効くので、番頭が `["read","grep"]` のつもりで
+   * 絞ると `worker.report` / `worker.ask` まで消え、職人は報告も質問もできないのに
+   * 誰もそれに気づけない（決定29の経路が黙って切れる）。
+   *
+   * 報告先が無い（reportUrl 未設定）ときは拡張自体が載らないので、足すものも無い。
+   */
+  private resolveTools(requested: string[] | undefined): string[] {
+    if (!requested || requested.length === 0) return [];
+    if (!this.reportUrl) return [...requested];
+    const merged = [...requested];
+    for (const name of WORKER_REPORT_TOOL_NAMES) {
+      if (!merged.includes(name)) merged.push(name);
+    }
+    return merged;
   }
 
   /**
