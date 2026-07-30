@@ -23,8 +23,9 @@ import {
   type WorkerEventFilter,
   type WorkerEventHandler,
 } from "./event-log.js";
-import { workerReportExtensionPath } from "./extension.js";
+import { webToolsExtensionPath, workerReportExtensionPath } from "./extension.js";
 import { WORKER_REPORT_TOOL_NAMES } from "./pi-extension/worker-report.js";
+import { WEB_TOOL_NAMES } from "./pi-extension/web-tools.js";
 import { SpawnLedger, isProcessAlive, killOrphanProcess, type LedgerEntry } from "./spawn-ledger.js";
 
 /**
@@ -166,6 +167,13 @@ export interface DelegateInput {
    * 報告経路（`worker.report`/`worker.ask`）はここに書かなくても自動で残る。
    */
   tools?: string[];
+  /**
+   * 外を読む口（`web.fetch` / `web.search`）を渡すか。既定は渡さない（PO裁定 2026-07-30、imp-0005）。
+   *
+   * 渡さなければ拡張ごと載らない＝Tool が存在しない。ただし**遮断の機構ではない**：
+   * `bash` を持った職人は curl で外へ出られる。本当に外を断つなら `tools` から bash を外す。
+   */
+  network?: boolean;
   modelTier?: SpawnOptions["modelTier"];
   driverOptions?: Record<string, unknown>;
 }
@@ -330,23 +338,25 @@ export class WorkerPool {
       ? { resumeSessionPath: input.resumeSessionPath }
       : {};
 
-    // 決定29e: 報告先があるときだけ、職人に報告経路（拡張）を載せる。
-    // 呼び出し側が自分の拡張を渡していても潰さない——職人は起動元のドメイン Tool と
-    // Worker Pool の汎用 Tool の両方を持ちうる（Kobo の report_done と worker.report は層が違う）
-    const driverOptions = this.reportUrl
-      ? {
-          ...input.driverOptions,
-          ...resume,
-          projectTag,
-          workerPoolUrl: this.reportUrl,
-          extensionPaths: [
-            ...(Array.isArray(input.driverOptions?.["extensionPaths"])
-              ? (input.driverOptions["extensionPaths"] as unknown[])
-              : []),
-            workerReportExtensionPath(),
-          ],
-        }
-      : { ...input.driverOptions, ...resume };
+    // 職人に載せる拡張を組み立てる。呼び出し側が自分の拡張を渡していても潰さない
+    // ——職人は起動元のドメイン Tool と Worker Pool の汎用 Tool の両方を持ちうる
+    // （Kobo の report_done と worker.report は層が違う）
+    const extensionPaths: unknown[] = [
+      ...(Array.isArray(input.driverOptions?.["extensionPaths"])
+        ? (input.driverOptions["extensionPaths"] as unknown[])
+        : []),
+    ];
+    // 決定29e: 報告先があるときだけ報告経路を載せる
+    if (this.reportUrl) extensionPaths.push(workerReportExtensionPath());
+    // imp-0005: 外を読む口は許したときだけ。載せなければ Tool 自体が存在しない
+    if (input.network) extensionPaths.push(webToolsExtensionPath());
+
+    const driverOptions = {
+      ...input.driverOptions,
+      ...resume,
+      ...(this.reportUrl ? { projectTag, workerPoolUrl: this.reportUrl } : {}),
+      ...(extensionPaths.length > 0 ? { extensionPaths } : {}),
+    };
 
     let handle: SessionHandle;
     try {
@@ -356,7 +366,7 @@ export class WorkerPool {
         sessionPath,
         // 立場（職人であること）はシステムプロンプト、やることは下の inject で渡す
         systemPrompt: input.systemPrompt ?? WORKER_SYSTEM_PROMPT,
-        tools: this.resolveTools(input.tools),
+        tools: this.resolveTools(input.tools, input.network ?? false),
         ...(input.modelTier ? { modelTier: input.modelTier } : {}),
         ...(driverOptions ? { driverOptions } : {}),
       });
@@ -401,6 +411,10 @@ export class WorkerPool {
         // ここに無いと閉じた職人のセッションを読めなくなる
         sessionPath: handle.sessionPath,
         instruction: input.instruction,
+        // 何を渡して起こしたかを残す。起こし直し（wake）がここから引き継ぐので、
+        // 記録が無いと「調べさせるために web を渡した職人」が web を失って戻ってくる
+        ...(input.tools && input.tools.length > 0 ? { tools: input.tools } : {}),
+        ...(input.network ? { network: true } : {}),
         ...(input.resumeSessionPath ? { resumedFrom: input.resumeSessionPath } : {}),
       },
     });
@@ -428,12 +442,16 @@ export class WorkerPool {
    * 誰もそれに気づけない（決定29の経路が黙って切れる）。
    *
    * 報告先が無い（reportUrl 未設定）ときは拡張自体が載らないので、足すものも無い。
+   * 外を読む口（imp-0005）も同じ理由で、許したときだけ足す。
    */
-  private resolveTools(requested: string[] | undefined): string[] {
+  private resolveTools(requested: string[] | undefined, network = false): string[] {
     if (!requested || requested.length === 0) return [];
-    if (!this.reportUrl) return [...requested];
     const merged = [...requested];
-    for (const name of WORKER_REPORT_TOOL_NAMES) {
+    const keep = [
+      ...(this.reportUrl ? WORKER_REPORT_TOOL_NAMES : []),
+      ...(network ? WEB_TOOL_NAMES : []),
+    ];
+    for (const name of keep) {
       if (!merged.includes(name)) merged.push(name);
     }
     return merged;
@@ -721,6 +739,10 @@ export class WorkerPool {
         `Worker "${sessionId}" はまだ畳まれていません（${past.state}）。指示を足すなら steer を使ってください。`
       );
     }
+    // 起こす前の道具立てを引き継ぐ。ここを落とすと、絞って起こした職人が起こし直しで
+    // 全部の道具を持って戻り、web を渡した職人は web を失う——どちらも黙って起きる
+    const started = this.log.last({ sessionId, type: "worker_started" });
+    const tools = started?.data["tools"];
     return this.delegate({
       projectTag: past.projectTag,
       origin: past.origin,
@@ -728,6 +750,8 @@ export class WorkerPool {
       worktreePath: past.worktree,
       instruction,
       resumeSessionPath: past.sessionPath,
+      ...(Array.isArray(tools) ? { tools: tools as string[] } : {}),
+      ...(started?.data["network"] === true ? { network: true } : {}),
     });
   }
 

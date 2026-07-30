@@ -49,6 +49,13 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
             '["read","grep","find","ls"] のように絞ること。報告経路は書かなくても残る',
         })
       ),
+      network: Type.Optional(
+        Type.Boolean({
+          description:
+            "外を読む口（web.fetch / web.search）を渡すか。**既定は渡さない**。" +
+            "外の資料を自分で当たらせたい調査のときだけ true にする",
+        })
+      ),
       modelTier: Type.Optional(
         Type.Union([Type.Literal("reasoning"), Type.Literal("standard"), Type.Literal("fast")], {
           description: "モデルの等級。難しい仕事だけ reasoning にする（コスト）",
@@ -63,6 +70,7 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
         ...(params.projectTag ? { projectTag: params.projectTag } : {}),
         ...(params.origin ? { origin: params.origin } : {}),
         ...(params.tools ? { tools: params.tools } : {}),
+        ...(params.network !== undefined ? { network: params.network } : {}),
         ...(params.modelTier ? { modelTier: params.modelTier } : {}),
       });
       return {

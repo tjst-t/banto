@@ -40,7 +40,20 @@ export {
   type WorkerEventFilter,
   type WorkerEventHandler,
 } from "./event-log.js";
-export { workerReportExtensionPath } from "./extension.js";
+export { workerReportExtensionPath, webToolsExtensionPath } from "./extension.js";
+export {
+  WEB_TOOL_NAMES,
+  isPublicHttpUrl,
+  htmlToText,
+  parseDuckDuckGoLite,
+  parseWikipedia,
+  keylessSearch,
+  renderSearchHits,
+  fetchPublicUrl,
+  type SearchHit,
+  type UrlVerdict,
+  type FetchOutcome,
+} from "./pi-extension/web-tools.js";
 export { createWorkerTools, createWorkerReportTools } from "./worker-tools.js";
 export {
   createWorkerPoolModule,

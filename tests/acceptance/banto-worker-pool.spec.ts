@@ -136,6 +136,12 @@ afterEach(() => {
 
 const JOB = { taskId: "task-0042", worktreePath: "/tmp/wt", instruction: "調べて直して" };
 
+/** spawn 時に職人へ載せた拡張のパス一覧。 */
+function extensionPathsOf(opts: SpawnOptions): string[] {
+  const paths = opts.driverOptions?.["extensionPaths"];
+  return Array.isArray(paths) ? paths.map((p) => String(p)) : [];
+}
+
 describe("[task-0010/a1] 職人の起動・監視・停止", () => {
   it("[task-0010/a1] delegate で職人が起き、worktree が渡る", async () => {
     const worker = await pool.delegate(JOB);
@@ -202,6 +208,48 @@ describe("[task-0010/a1] 職人の起動・監視・停止", () => {
   it("[imp-0004] 報告先が無ければ足すものも無い（拡張ごと載らないため）", async () => {
     await pool.delegate({ ...JOB, tools: ["read"] });
     assert.deepEqual(driver.spawned[0]!.tools, ["read"]);
+  });
+
+  it("[imp-0005] 外を読む口は既定で渡さない（PO裁定）", async () => {
+    await pool.delegate(JOB);
+    const paths = extensionPathsOf(driver.spawned[0]!);
+    assert.ok(
+      !paths.some((p) => p.includes("web-tools")),
+      `既定で web 拡張が載っている: ${paths.join(", ")}`
+    );
+  });
+
+  it("[imp-0005] network: true のときだけ web 拡張が載る", async () => {
+    await pool.delegate({ ...JOB, network: true });
+    const paths = extensionPathsOf(driver.spawned[0]!);
+    assert.ok(
+      paths.some((p) => p.includes("web-tools")),
+      `web 拡張が載っていない: ${paths.join(", ")}`
+    );
+  });
+
+  it("[imp-0005] tools を絞っても web は残る（許したのに消えない）", async () => {
+    await pool.delegate({ ...JOB, network: true, tools: ["read"] });
+    assert.deepEqual(driver.spawned[0]!.tools, ["read", "web__fetch", "web__search"]);
+  });
+
+  it("[imp-0005] network を許していなければ web の名前は足さない", async () => {
+    await pool.delegate({ ...JOB, tools: ["read"] });
+    assert.deepEqual(driver.spawned[0]!.tools, ["read"]);
+  });
+
+  it("[imp-0005] 起こし直しても道具立てを引き継ぐ", async () => {
+    const worker = await pool.delegate({ ...JOB, network: true, tools: ["read"] });
+    await pool.close(worker.sessionId);
+    await pool.wake(worker.sessionId, "続きをお願いします");
+
+    // ここを落とすと、絞って起こした職人が全部の道具を持って戻り、
+    // web を渡した職人は web を失う——どちらも黙って起きる
+    assert.deepEqual(driver.spawned[1]!.tools, ["read", "web__fetch", "web__search"]);
+    assert.ok(
+      extensionPathsOf(driver.spawned[1]!).some((p) => p.includes("web-tools")),
+      "起こし直しで web 拡張が落ちている"
+    );
   });
 
   it("[task-0010/a1] list が生存確認つきで返す（D3：状態を別に持たない）", async () => {
