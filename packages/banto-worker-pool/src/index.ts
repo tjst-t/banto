@@ -28,6 +28,7 @@ export {
   type WorkerState,
   type CloseReason,
   DEFAULT_IDLE_TIMEOUT_MS,
+  DEFAULT_PAGE_SIZE,
   type WorkerExitDetail,
   type DelegateInput,
 } from "./pool.js";

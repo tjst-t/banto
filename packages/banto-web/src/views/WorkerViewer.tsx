@@ -45,6 +45,12 @@ function stateLabel(w: Worker): string {
 }
 interface WorkerList {
   workers: Worker[];
+  /** 絞り込みに当てはまる総数（ページ数の計算に使う） */
+  total: number;
+  /** うち畳んだ職人の数。隠していることを言うために使う */
+  closedTotal: number;
+  limit: number;
+  offset: number;
 }
 interface Attach {
   sessionId: string;
@@ -124,9 +130,18 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
   /** 畳んだ職人を出すか。**既定は出さない**——いま動いているものが埋もれるため。 */
   const [showClosed, setShowClosed] = useState(false);
   const [page, setPage] = useState(0);
+  /** 入力中の文字。打つたびに問い合わせないよう、確定した query とは分けて持つ */
+  const [draft, setDraft] = useState("");
+  const [query, setQuery] = useState("");
 
-  // 一覧は畳んだ分も含めて取り、表示側で絞る。何件隠しているかを出せるようにするため
-  const list = useModuleTool<WorkerList>(endpoint, "worker.list", { includeClosed: true });
+  // 絞り込みもページ送りも Worker Pool 側で行う（提案 worker-list-pagination の A案）。
+  // 履歴が増えても、UIが全件を受け取らずに済む
+  const list = useModuleTool<WorkerList>(endpoint, "worker.list", {
+    includeClosed: showClosed,
+    query,
+    limit: PAGE_SIZE,
+    offset: page * PAGE_SIZE,
+  });
   const attach = useModuleTool<Attach>(
     endpoint,
     "worker.attach",
@@ -134,20 +149,17 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
     selected !== undefined
   );
 
-  const all = list.data?.workers ?? [];
-  const closedCount = all.filter((w) => w.state === "closed").length;
-  const workers = showClosed ? all : all.filter((w) => w.state !== "closed");
-
-  // 新しいものから見たいので、後ろから並べる
-  const ordered = [...workers].reverse();
-  const pageCount = Math.max(1, Math.ceil(ordered.length / PAGE_SIZE));
+  // 並び順もページ送りも Worker Pool 側の結果をそのまま描く（D3・D5）
+  const workers = list.data?.workers ?? [];
+  const total = list.data?.total ?? 0;
+  const closedCount = list.data?.closedTotal ?? 0;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const current = Math.min(page, pageCount - 1);
-  const shown = ordered.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE);
 
   // 絞り込みを変えたら先頭のページへ戻す（空ページに取り残されないように）
   useEffect(() => {
     setPage(0);
-  }, [showClosed]);
+  }, [showClosed, query]);
 
   // 何も選ばれていなければ、動いている職人を自動で選ぶ（見たいのは大抵それ）
   useEffect(() => {
@@ -156,8 +168,8 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
   }, [workers, selected]);
 
   // 稼働中は出力が伸びるので定期的に取り直す。止まっている職人では回さない
-  // 選択中の職人は、絞り込みで見えなくなっていても中身は見せ続ける
-  const selectedWorker = all.find((w) => w.sessionId === selected);
+  // 絞り込みで一覧から外れても、選んだ職人の中身は見せ続ける
+  const selectedWorker = workers.find((w) => w.sessionId === selected);
   useEffect(() => {
     if (!autoRefresh || !selectedWorker?.alive) return;
     const timer = setInterval(() => {
@@ -174,7 +186,7 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
       <div className="wv-side">
         <h3 className="gv3-head">
           職人
-          <span className="gv3-count">{workers.length}</span>
+          <span className="gv3-count">{total}</span>
           {/* 決定30c: 畳んだ職人も記録は残る。既定では隠し、見たいときだけ出す */}
           <label className="wv-toggle" title="畳んだ職人も表示する">
             <input
@@ -186,18 +198,40 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
             {closedCount > 0 && !showClosed && <span className="wv-hidden">+{closedCount}</span>}
           </label>
         </h3>
+        {/* 絞り込み。打つたびに問い合わせず、Enter か虫眼鏡で確定する */}
+        <div className="wv-search">
+          <input
+            type="search"
+            value={draft}
+            placeholder="taskId・指示の内容などで絞る"
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") setQuery(draft);
+              if (e.key === "Escape") {
+                setDraft("");
+                setQuery("");
+              }
+            }}
+          />
+          <button onClick={() => setQuery(draft)} title="絞り込む">
+            🔍
+          </button>
+        </div>
+
         {list.error && <div className="fb-error">読み込めません: {list.error}</div>}
         {workers.length === 0 ? (
           <p className="fb-muted gv3-empty">
             {list.loading
               ? "読み込み中…"
-              : closedCount > 0
-                ? `動いている職人はいません（完了 ${closedCount} 件は「完了も」で見られます）`
-                : "動いている職人はいません"}
+              : query
+                ? `「${query}」に当てはまる職人はいません`
+                : closedCount > 0
+                  ? `動いている職人はいません（完了 ${closedCount} 件は「完了も」で見られます）`
+                  : "動いている職人はいません"}
           </p>
         ) : (
           <ul className="wv-list">
-            {shown.map((w) => (
+            {workers.map((w) => (
               <li key={w.sessionId}>
                 <button
                   className={`wv-item ${w.sessionId === selected ? "is-selected" : ""}`}

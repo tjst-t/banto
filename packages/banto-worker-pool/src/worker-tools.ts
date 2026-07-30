@@ -15,6 +15,7 @@
 
 import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
+import { DEFAULT_PAGE_SIZE } from "./pool.js";
 import type { WorkerPool } from "./pool.js";
 
 /** 一覧・アタッチの上限。番頭の文脈を埋め尽くさないため。 */
@@ -76,21 +77,41 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
     label: "Worker: List",
     description:
       "職人の一覧を返す（生存確認つき）。誰に何を任せているか、さっき頼んだ仕事がどうなったかを" +
-      "把握したいときに使う。**畳んだ職人も既定で含む**——閉じても記録は残る。",
+      "把握したいときに使う。**新しいものから返す**。**畳んだ職人も既定で含む**" +
+      "——閉じても記録は残る。query で絞り込め、多いときは limit / offset で辿れる。",
     parameters: Type.Object({
       projectTag: Type.Optional(Type.String({ description: "名前空間で絞る（省略時は全部）" })),
       includeClosed: Type.Optional(
         Type.Boolean({ description: "畳んだ職人も含める（既定 true）。稼働中だけ見たいなら false" })
       ),
+      query: Type.Optional(
+        Type.String({
+          description:
+            "絞り込み。taskId・projectTag・起動元・worktree・状態・**起動時の指示**を対象に、" +
+            "空白区切りの語をすべて含むものを返す（大文字小文字は区別しない）",
+        })
+      ),
+      limit: Type.Optional(Type.Number({ description: `1回に返す件数（既定 ${DEFAULT_PAGE_SIZE}）` })),
+      offset: Type.Optional(Type.Number({ description: "先頭から飛ばす件数（続きを見るとき）" })),
     }),
     async execute(_toolCallId, params) {
-      const workers = pool.list({
+      const result = pool.find({
         ...(params.projectTag ? { projectTag: params.projectTag } : {}),
         ...(params.includeClosed !== undefined ? { includeClosed: params.includeClosed } : {}),
+        ...(params.query ? { query: params.query } : {}),
+        ...(params.limit !== undefined ? { limit: params.limit } : {}),
+        ...(params.offset !== undefined ? { offset: params.offset } : {}),
       });
+      const workers = result.workers;
+      const range =
+        result.total === 0
+          ? ""
+          : `\n（全 ${result.total} 件中 ${result.offset + 1}〜${result.offset + workers.length} 件）`;
       const text =
         workers.length === 0
-          ? "動いている職人はいません"
+          ? params.query
+            ? `「${params.query}」に当てはまる職人はいません`
+            : "動いている職人はいません"
           : workers
               .map((w) => {
                 const mark =
@@ -99,8 +120,8 @@ export function createWorkerTools(pool: WorkerPool): ToolDefinition[] {
                 const closed = w.closeReason ? `(${w.closeReason})` : "";
                 return `${mark} ${w.taskId} [${w.projectTag}] ${w.state}${closed} pid=${w.pid} sessionId=${w.sessionId}${waiting}`;
               })
-              .join("\n");
-      return { content: [{ type: "text" as const, text }], details: { workers } };
+              .join("\n") + range;
+      return { content: [{ type: "text" as const, text }], details: result };
     },
   });
 

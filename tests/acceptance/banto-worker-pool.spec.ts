@@ -1052,3 +1052,125 @@ describe("[task-0028/a3] セッションを読めない理由を黙らせない�
   });
 });
 
+
+// ── task-0030: 一覧の絞り込みとページ送り（提案 worker-list-pagination の A案） ────
+
+describe("[task-0030/a1] ページ送り", () => {
+  /** n 人起こす。taskId は t-0, t-1, ... */
+  const spawnMany = async (n: number): Promise<void> => {
+    for (let i = 0; i < n; i++) {
+      await pool.delegate({ ...JOB, taskId: `t-${i}`, instruction: `${i} 番目の仕事` });
+    }
+  };
+
+  it("[task-0030/a1] limit / offset で切り出せる。総数も返る", async () => {
+    await spawnMany(5);
+
+    const first = pool.find({ limit: 2 });
+    assert.equal(first.total, 5, "総数は絞り込み後の全件");
+    assert.equal(first.workers.length, 2);
+    assert.equal(first.offset, 0);
+
+    const second = pool.find({ limit: 2, offset: 2 });
+    assert.equal(second.workers.length, 2);
+    assert.notDeepEqual(
+      second.workers.map((w) => w.taskId),
+      first.workers.map((w) => w.taskId)
+    );
+  });
+
+  it("[task-0030/a1] 新しいものから返す（履歴を辿る用途）", async () => {
+    await spawnMany(3);
+    assert.deepEqual(pool.find().workers.map((w) => w.taskId), ["t-2", "t-1", "t-0"]);
+    // 古い順に見たいときは list（起動順のまま）
+    assert.deepEqual(pool.list().map((w) => w.taskId), ["t-0", "t-1", "t-2"]);
+  });
+
+  it("[task-0030/a1] 範囲を超えた offset は空を返す（落ちない）", async () => {
+    await spawnMany(2);
+    const page = pool.find({ limit: 10, offset: 100 });
+    assert.deepEqual(page.workers, []);
+    assert.equal(page.total, 2, "総数は変わらないのでページ数を出し直せる");
+  });
+
+  it("[task-0030/a1] 畳んだ職人の数も返る（隠していることを言えるように）", async () => {
+    await spawnMany(3);
+    const all = pool.list();
+    await pool.close(all[0]!.sessionId);
+
+    const page = pool.find({ includeClosed: false });
+    assert.equal(page.total, 2, "一覧には出さない");
+    assert.equal(page.closedTotal, 1, "が、隠している数は分かる");
+  });
+});
+
+describe("[task-0030/a2] 検索", () => {
+  it("[task-0030/a2] taskId で絞れる", async () => {
+    await pool.delegate({ ...JOB, taskId: "fix-login" });
+    await pool.delegate({ ...JOB, taskId: "add-search" });
+
+    assert.deepEqual(pool.find({ query: "login" }).workers.map((w) => w.taskId), ["fix-login"]);
+  });
+
+  it("[task-0030/a2] 起動時の指示でも探せる（taskId を覚えていなくても辿れる）", async () => {
+    await pool.delegate({ ...JOB, taskId: "t-1", instruction: "README を書いてください" });
+    await pool.delegate({ ...JOB, taskId: "t-2", instruction: "テストを直してください" });
+
+    assert.deepEqual(pool.find({ query: "readme" }).workers.map((w) => w.taskId), ["t-1"]);
+  });
+
+  it("[task-0030/a2] 大文字小文字を区別しない", async () => {
+    await pool.delegate({ ...JOB, taskId: "Fix-Login" });
+    assert.equal(pool.find({ query: "FIX" }).workers.length, 1);
+    assert.equal(pool.find({ query: "fix" }).workers.length, 1);
+  });
+
+  it("[task-0030/a2] 空白区切りの語は AND", async () => {
+    await pool.delegate({ ...JOB, taskId: "t-1", instruction: "ログイン画面を直す" });
+    await pool.delegate({ ...JOB, taskId: "t-2", instruction: "ログイン処理のテストを足す" });
+
+    assert.deepEqual(pool.find({ query: "ログイン テスト" }).workers.map((w) => w.taskId), ["t-2"]);
+    assert.equal(pool.find({ query: "ログイン" }).workers.length, 2);
+  });
+
+  it("[task-0030/a2] 状態や畳んだ理由でも探せる", async () => {
+    const a = await pool.delegate({ ...JOB, taskId: "t-1" });
+    await pool.delegate({ ...JOB, taskId: "t-2" });
+    await pool.close(a.sessionId, "idle");
+
+    assert.deepEqual(pool.find({ query: "idle" }).workers.map((w) => w.taskId), ["t-1"]);
+  });
+
+  it("[task-0030/a2] 絞り込みとページ送りは併用できる", async () => {
+    for (const i of [1, 2, 3]) {
+      await pool.delegate({ ...JOB, taskId: `keep-${i}`, instruction: "在庫を数える" });
+    }
+    await pool.delegate({ ...JOB, taskId: "other", instruction: "帳簿を締める" });
+
+    const page = pool.find({ query: "在庫", limit: 2 });
+    assert.equal(page.total, 3, "総数は絞り込み後の件数");
+    assert.equal(page.workers.length, 2);
+  });
+
+  it("[task-0030/a2] worker.list Tool から絞り込みとページ送りが使える", async () => {
+    await pool.delegate({ ...JOB, taskId: "fix-login" });
+    await pool.delegate({ ...JOB, taskId: "add-search" });
+    const list = createWorkerTools(pool).find((t) => t.name === "worker.list")!;
+
+    const out = await list.execute(
+      "c1", { query: "login" } as never, undefined, undefined, TOOL_CTX
+    );
+    assert.match(textOf(out), /fix-login/);
+    assert.equal(textOf(out).includes("add-search"), false);
+    assert.match(textOf(out), /全 1 件中 1〜1 件/, "どこを見ているか番頭に分かる");
+  });
+
+  it("[task-0030/a2] 当てはまらないときは、そう言う（空一覧と区別する）", async () => {
+    await pool.delegate(JOB);
+    const list = createWorkerTools(pool).find((t) => t.name === "worker.list")!;
+    const out = await list.execute(
+      "c1", { query: "存在しない語" } as never, undefined, undefined, TOOL_CTX
+    );
+    assert.match(textOf(out), /当てはまる職人はいません/);
+  });
+});

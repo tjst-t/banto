@@ -128,6 +128,9 @@ export interface WorkerPoolOptions {
   idleCheckMs?: number;
 }
 
+/** 一覧のページの既定の大きさ。 */
+export const DEFAULT_PAGE_SIZE = 20;
+
 /** 安全弁の既定。番頭が畳むより十分に長くとる（決定30b）。 */
 export const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 
@@ -416,8 +419,8 @@ export class WorkerPool {
    * イベントログから履歴として組み立てる。既定では履歴も含める——「さっき頼んだ仕事が
    * どうなったか」を見るのに、生きている職人だけでは足りないため。
    */
-  list(options: { projectTag?: string; includeClosed?: boolean } = {}): WorkerInfo[] {
-    const { projectTag, includeClosed = true } = options;
+  list(options: { projectTag?: string; includeClosed?: boolean; query?: string } = {}): WorkerInfo[] {
+    const { projectTag, includeClosed = true, query } = options;
     const live = this.ledger
       .list()
       .filter((entry) => projectTag === undefined || entry.projectTag === projectTag)
@@ -434,7 +437,71 @@ export class WorkerPool {
       .filter((w) => projectTag === undefined || w.projectTag === projectTag);
 
     // 新しいものが後ろに来るよう、起動順に並べる
-    return [...live, ...closed].sort((a, b) => a.spawnedAt.localeCompare(b.spawnedAt));
+    const all = [...live, ...closed].sort((a, b) => a.spawnedAt.localeCompare(b.spawnedAt));
+    return query ? all.filter((w) => this.matchesQuery(w, query)) : all;
+  }
+
+  /**
+   * 検索の当たり判定。空白で区切った語をすべて含むもの（AND）。
+   *
+   * 探す先には**起動時の指示**も含める。「READMEを書かせたやつ」のように、taskId を
+   * 覚えていなくても何をさせたかで辿れるようにするため。セッションの本文までは見ない
+   * ——ファイルを開いて回ることになり、一覧の応答としては重い。
+   */
+  private matchesQuery(worker: WorkerInfo, query: string): boolean {
+    const started = this.log.last({ sessionId: worker.sessionId, type: "worker_started" });
+    const haystack = [
+      worker.taskId,
+      worker.projectTag,
+      worker.origin,
+      worker.sessionId,
+      worker.worktree,
+      worker.state,
+      worker.closeReason ?? "",
+      String(started?.data["instruction"] ?? ""),
+    ]
+      .join("\n")
+      .toLowerCase();
+    return query
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((term) => term.length > 0)
+      .every((term) => haystack.includes(term));
+  }
+
+  /**
+   * 絞り込み＋ページ送り（提案 2026-07-30-worker-list-pagination の A案）。
+   *
+   * **新しいものから返す。** 溜まった履歴を辿る用途なので、直近が先頭に来る方が使いやすい
+   * （古い順に全部見たいときは `list`）。
+   *
+   * `total` は配列の長さなので、返すのに追加の走査は要らない——提案が挙げていた
+   * 「総件数の計算負荷」は、一覧が既にメモリ上にあるこの実装では発生しない。
+   */
+  find(
+    options: {
+      projectTag?: string;
+      includeClosed?: boolean;
+      query?: string;
+      limit?: number;
+      offset?: number;
+    } = {}
+  ): { workers: WorkerInfo[]; total: number; closedTotal: number; limit: number; offset: number } {
+    const { limit = DEFAULT_PAGE_SIZE, offset = 0, ...filter } = options;
+    const matched = this.list(filter).reverse();
+    // 「畳んだ分を隠している」ことを呼び出し側が言えるように、絞り込み後の畳んだ数も返す
+    const closedTotal = this.list({ ...filter, includeClosed: true }).filter(
+      (w) => w.state === "closed"
+    ).length;
+
+    const from = Math.max(0, offset);
+    return {
+      workers: matched.slice(from, from + Math.max(1, limit)),
+      total: matched.length,
+      closedTotal,
+      limit,
+      offset: from,
+    };
   }
 
   /** 畳まれた職人の sessionId（起動順）。 */
