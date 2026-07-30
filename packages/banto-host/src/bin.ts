@@ -17,6 +17,12 @@ import * as readline from "node:readline";
 import { getModel } from "@mariozechner/pi-ai";
 import { JsonlMemoryStore } from "@banto/core";
 
+import {
+  PiRpcDriver,
+  WorkerPool,
+  createWorkerPoolModule,
+} from "@banto/worker-pool";
+
 import { Canvas, createCanvasCatalog } from "./canvas.js";
 import { createCanvasTools } from "./canvas-tools.js";
 import { demoCanvasViews } from "./demo-views.js";
@@ -32,10 +38,14 @@ import { workspaceRoot } from "./workspace.js";
 import { createSkillTools } from "./skill-tools.js";
 import { loadBantoSkills } from "./skills.js";
 
-/** 記憶の既定の置き場所。BANTO_DATA_DIR で差し替えられる。 */
+/** データの置き場所。BANTO_DATA_DIR で差し替えられる。 */
+function dataDir(): string {
+  return process.env["BANTO_DATA_DIR"] ?? path.join(process.cwd(), ".banto");
+}
+
+/** 記憶の既定の置き場所。 */
 function memoryPath(): string {
-  const dataDir = process.env["BANTO_DATA_DIR"] ?? path.join(process.cwd(), ".banto");
-  return path.join(dataDir, "memory.jsonl");
+  return path.join(dataDir(), "memory.jsonl");
 }
 
 const SYSTEM_PROMPT = [
@@ -44,6 +54,7 @@ const SYSTEM_PROMPT = [
   "覚えておくべき好み・習慣が出てきたら memory.save で保存してください。",
   "POに何かを見せたいときは canvas.open でキャンバスに表示できます（何が開けるかは canvas.list_catalog）。",
   "file.* と git.* でワークスペースの中身と履歴を閲覧できます（いずれも読み取り専用）。",
+  "調査・実装など手を動かす仕事は worker.delegate で職人へ委譲してください（D10）。手順は skill.read で worker-delegation を確認できます。",
 ].join("\n");
 
 interface ServeOptions {
@@ -59,8 +70,28 @@ async function serve(options: ServeOptions): Promise<void> {
   const workspace = workspaceRoot();
 
   // 決定25・27: モジュールを1箇所で登録する。Tool・GUI・SKILL はここから束ねて配る。
-  // Kobo は接続後に、Worker Pool は epic-0005 の後に、同じ口から登録される。
-  const modules = createModuleRegistry([createWorkspaceModule(workspace), createDemoModule()]);
+  // Kobo は接続後に、同じ口から登録される。
+  //
+  // Worker Pool は**必須の組み込みモジュール**（決定27c）。無いと番頭は職人へ委譲できず
+  // D10 が構造的に満たせない。Banto に同居させる形で立て、到達先は相対パスにする
+  // （独立サービスとして別に立てる場合は BANTO_WORKER_POOL_URL で絶対URLを指す）。
+  const workerPool = new WorkerPool({
+    driver: new PiRpcDriver({ sessionBaseDir: path.join(dataDir(), "worker-sessions") }),
+    dataDir: path.join(dataDir(), "worker-pool"),
+    defaultProjectTag: "banto",
+  });
+  const workerPoolModule = createWorkerPoolModule(
+    workerPool,
+    process.env["BANTO_WORKER_POOL_URL"] ?? "/api/worker-pool"
+  );
+
+  const modules = createModuleRegistry([
+    createWorkspaceModule(workspace),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Worker Pool は banto-host に
+    // 依存しないため BantoModule 型を参照できず、構造的に一致する形を返している（module.ts 参照）
+    workerPoolModule as any,
+    createDemoModule(),
+  ]);
 
   const catalog = createCanvasCatalog(modules.views());
   const canvas = new Canvas(catalog);

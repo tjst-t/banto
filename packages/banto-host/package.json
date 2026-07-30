@@ -22,7 +22,8 @@
     "@mariozechner/pi-coding-agent": "^0.73.1",
     "@mariozechner/pi-ai": "^0.73.1",
     "typebox": "^1.1.24",
-    "ws": "^8.21.1"
+    "ws": "^8.21.1",
+    "@banto/worker-pool": "*"
   },
   "bin": {
     "banto": "./src/bin.ts"
