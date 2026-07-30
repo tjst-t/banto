@@ -6,9 +6,11 @@
  *
  * `params.path` はディレクトリでもファイルでもよい。どちらかを先に file.stat で確かめて、
  * ファイルなら親ディレクトリを開いてそのファイルを選択した状態で始める。
+ * `params.line`（と `endLine`）を渡すとその行まで自動スクロールして強調する——
+ * file.grep で見つけた箇所をそのまま見せられるように。
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useModuleTool } from "./useModuleTool.js";
 import type { CanvasViewProps } from "./registry.js";
 
@@ -43,8 +45,56 @@ function parentOf(p: string): string {
   return i === -1 ? "." : p.slice(0, i);
 }
 
+/**
+ * ファイル内容を行番号つきで描き、指定範囲を強調して自動スクロールする。
+ * 番頭が「この行を見て」と言えるようにするための面（PO要望）。
+ */
+function CodeBody({
+  content,
+  from,
+  to,
+}: {
+  content: string;
+  from?: number;
+  to?: number;
+}): React.ReactElement {
+  const targetRef = useRef<HTMLSpanElement>(null);
+  const lines = content.split("\n");
+  const start = from ?? 0;
+  const end = to ?? from ?? 0;
+
+  useEffect(() => {
+    // 強調行が画面外にあるときだけ寄せる。中央に置くと前後の文脈が見える
+    targetRef.current?.scrollIntoView({ block: "center" });
+  }, [from, to, content]);
+
+  const width = String(lines.length).length;
+
+  return (
+    <pre className="fb-code">
+      {lines.map((line, i) => {
+        const lineNo = i + 1;
+        const highlighted = lineNo >= start && lineNo <= end;
+        return (
+          <span
+            key={i}
+            className={`fb-line ${highlighted ? "is-highlight" : ""}`}
+            ref={lineNo === start ? targetRef : undefined}
+          >
+            <span className="fb-lineno">{String(lineNo).padStart(width, " ")}</span>
+            {line}
+            {"\n"}
+          </span>
+        );
+      })}
+    </pre>
+  );
+}
+
 export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactElement {
   const initialPath = typeof params["path"] === "string" ? params["path"] : ".";
+  const initialLine = typeof params["line"] === "number" ? params["line"] : undefined;
+  const initialEndLine = typeof params["endLine"] === "number" ? params["endLine"] : undefined;
 
   // 渡されたパスがディレクトリかファイルかを先に確かめる
   const stat = useModuleTool<StatInfo>(endpoint, "file.stat", { path: initialPath });
@@ -66,12 +116,19 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
 
   const dir = nav?.dir ?? ".";
   const file = nav?.file;
+  // 強調は「番頭が指定したファイルを見ているとき」だけ。別のファイルを選んだら外す
+  const highlightFrom = file === initialPath ? initialLine : undefined;
+  const highlightTo = file === initialPath ? (initialEndLine ?? initialLine) : undefined;
 
   const listing = useModuleTool<Listing>(endpoint, "file.list", { path: dir }, nav !== undefined);
   const content = useModuleTool<FileContent>(
     endpoint,
     "file.read",
-    { path: file ?? "" },
+    {
+      path: file ?? "",
+      // 強調したい行が既定の打ち切り範囲より後ろにあると出せないので、届く分だけ広げる
+      ...(highlightTo !== undefined ? { maxLines: Math.max(400, highlightTo + 40) } : {}),
+    },
     file !== undefined
   );
 
@@ -143,7 +200,11 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
                   </span>
                 )}
               </div>
-              <pre className="fb-code">{content.data?.content}</pre>
+              <CodeBody
+                content={content.data?.content ?? ""}
+                {...(highlightFrom !== undefined ? { from: highlightFrom } : {})}
+                {...(highlightTo !== undefined ? { to: highlightTo } : {})}
+              />
             </>
           )}
         </div>

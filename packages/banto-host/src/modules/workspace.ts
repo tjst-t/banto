@@ -29,13 +29,21 @@ const workspaceViews: CanvasViewSpec[] = [
     title: "ファイル",
     description:
       "ワークスペースのディレクトリとファイルを閲覧する。ツリーを辿れて、ファイルを選ぶと中身も表示される。" +
-      "path にファイルを指定すればそのファイルを開いた状態で始まる。POに構成やファイルの中身を見せたいときに開く。",
+      "path にファイルを指定すればそのファイルを開いた状態で始まり、line を渡すとその行まで自動で" +
+      "スクロールして強調表示する（file.grep で見つけた箇所をそのまま見せられる）。" +
+      "POに構成やファイルの中身、特定の箇所を見せたいときに開く。",
     parameters: Type.Object({
       path: Type.Optional(
         Type.String({
           description:
             "最初に開くパス。ディレクトリならその中身、ファイルならそのファイルを開く（省略時はルート）",
         })
+      ),
+      line: Type.Optional(
+        Type.Number({ description: "この行まで自動スクロールして強調する（1始まり）" })
+      ),
+      endLine: Type.Optional(
+        Type.Number({ description: "範囲で強調したいときの終了行（line と併せて使う）" })
       ),
     }),
     component: "FileBrowser",
@@ -47,12 +55,16 @@ const workspaceViews: CanvasViewSpec[] = [
     title: "Git",
     description:
       "コミット一覧・変更ファイル一覧・差分を一画面で閲覧する。レビューや「今どうなっているか」" +
-      "「このコミットで何が変わったか」を見せたいときに開く。閲覧専用で、commit等の操作はできない。",
+      "「このコミットで何が変わったか」を見せたいときに開く。ref で特定のコミット、path で" +
+      "そのコミットの特定ファイルの差分を開いた状態にできる。閲覧専用で、commit等の操作はできない。",
     parameters: Type.Object({
       ref: Type.Optional(
         Type.String({
           description: "最初に選ぶコミット（例: HEAD, a1b2c3）。省略時は未コミットの変更を表示",
         })
+      ),
+      path: Type.Optional(
+        Type.String({ description: "差分を1ファイルに絞る（そのファイルを選択した状態で開く）" })
       ),
     }),
     component: "GitViewer",

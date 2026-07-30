@@ -69,7 +69,13 @@ after(() => {
 
 describe("[task-0011/a1] file.* （閲覧専用）", () => {
   it("[task-0011/a1] file.* が名前空間規則に従う", () => {
-    assert.deepEqual(fileTools.map((t) => t.name), ["file.list", "file.read", "file.stat"]);
+    assert.deepEqual(fileTools.map((t) => t.name), [
+      "file.list",
+      "file.read",
+      "file.stat",
+      "file.find",
+      "file.grep",
+    ]);
   });
 
   it("[task-0011/a1] 書き込み系のToolは存在しない（閲覧専用・決定24）", () => {
@@ -372,5 +378,138 @@ describe("[task-0019] git.show（1コミットが入れた変更）", () => {
       () => tool(gitTools, "git.show").execute("c1", { ref: "no-such-ref" }, undefined, undefined, TOOL_CTX),
       /failed/
     );
+  });
+});
+
+describe("[task-0020] file.find（名前でファイルを探す）", () => {
+  it("[task-0020] glob でファイル名に一致するものを返す", async () => {
+    const out = await tool(fileTools, "file.find").execute(
+      "c1", { pattern: "*.ts" }, undefined, undefined, TOOL_CTX
+    );
+    const d = out.details as { matches: Array<{ path: string }> };
+    assert.deepEqual(d.matches.map((m) => m.path), ["src/a.ts"]);
+  });
+
+  it("[task-0020] / を含むパターンはパス全体に照合する", async () => {
+    const out = await tool(fileTools, "file.find").execute(
+      "c1", { pattern: "src/*.ts" }, undefined, undefined, TOOL_CTX
+    );
+    assert.equal((out.details as { matches: unknown[] }).matches.length, 1);
+
+    const none = await tool(fileTools, "file.find").execute(
+      "c2", { pattern: "other/*.ts" }, undefined, undefined, TOOL_CTX
+    );
+    assert.equal((none.details as { matches: unknown[] }).matches.length, 0);
+  });
+
+  it("[task-0020] 既定で node_modules を探さない、includeHidden で探す", async () => {
+    const hidden = await tool(fileTools, "file.find").execute(
+      "c1", { pattern: "junk.js" }, undefined, undefined, TOOL_CTX
+    );
+    assert.equal((hidden.details as { matches: unknown[] }).matches.length, 0);
+
+    const shown = await tool(fileTools, "file.find").execute(
+      "c2", { pattern: "junk.js", includeHidden: true }, undefined, undefined, TOOL_CTX
+    );
+    assert.equal((shown.details as { matches: unknown[] }).matches.length, 1);
+  });
+
+  it("[task-0020] limit で打ち切り、打ち切ったことを明示する", async () => {
+    const out = await tool(fileTools, "file.find").execute(
+      "c1", { pattern: "*", limit: 1 }, undefined, undefined, TOOL_CTX
+    );
+    const d = out.details as { matches: unknown[]; truncated: boolean };
+    assert.equal(d.matches.length, 1);
+    assert.equal(d.truncated, true);
+    assert.match(textOf(out), /打ち切り/);
+  });
+
+  it("[task-0020] 一致なしはその旨を返す（エラーにしない）", async () => {
+    const out = await tool(fileTools, "file.find").execute(
+      "c1", { pattern: "*.nonexistent" }, undefined, undefined, TOOL_CTX
+    );
+    assert.equal((out.details as { matches: unknown[] }).matches.length, 0);
+    assert.match(textOf(out), /一致するファイルなし/);
+  });
+
+  it("[task-0020] ワークスペース外の起点は拒否される", async () => {
+    await assert.rejects(
+      () =>
+        tool(fileTools, "file.find").execute(
+          "c1", { pattern: "*", path: "../.." }, undefined, undefined, TOOL_CTX
+        ),
+      /outside the workspace/
+    );
+  });
+});
+
+describe("[task-0020] file.grep（中身を検索する）", () => {
+  it("[task-0020] 一致行を行番号つきで返す", async () => {
+    const out = await tool(fileTools, "file.grep").execute(
+      "c1", { pattern: "export const a" }, undefined, undefined, TOOL_CTX
+    );
+    const d = out.details as { hits: Array<{ path: string; line: number; text: string }> };
+
+    assert.equal(d.hits.length, 1);
+    assert.equal(d.hits[0]!.path, "src/a.ts");
+    assert.equal(d.hits[0]!.line, 1);
+    assert.match(textOf(out), /src\/a\.ts:1:/);
+  });
+
+  it("[task-0020] glob で対象ファイルを絞れる", async () => {
+    const md = await tool(fileTools, "file.grep").execute(
+      "c1", { pattern: "テスト", glob: "*.md" }, undefined, undefined, TOOL_CTX
+    );
+    assert.equal((md.details as { hits: unknown[] }).hits.length, 1);
+
+    const ts = await tool(fileTools, "file.grep").execute(
+      "c2", { pattern: "テスト", glob: "*.ts" }, undefined, undefined, TOOL_CTX
+    );
+    assert.equal((ts.details as { hits: unknown[] }).hits.length, 0);
+  });
+
+  it("[task-0020] ignoreCase が効く", async () => {
+    const exact = await tool(fileTools, "file.grep").execute(
+      "c1", { pattern: "EXPORT" }, undefined, undefined, TOOL_CTX
+    );
+    assert.equal((exact.details as { hits: unknown[] }).hits.length, 0);
+
+    const loose = await tool(fileTools, "file.grep").execute(
+      "c2", { pattern: "EXPORT", ignoreCase: true }, undefined, undefined, TOOL_CTX
+    );
+    assert.ok((loose.details as { hits: unknown[] }).hits.length > 0);
+  });
+
+  it("[task-0020] 正規表現として扱われる", async () => {
+    const out = await tool(fileTools, "file.grep").execute(
+      "c1", { pattern: "const (a|b) =" }, undefined, undefined, TOOL_CTX
+    );
+    assert.ok((out.details as { hits: unknown[] }).hits.length > 0);
+  });
+
+  it("[task-0020] 壊れた正規表現は黙って0件にせずエラー（I2）", async () => {
+    await assert.rejects(
+      () => tool(fileTools, "file.grep").execute("c1", { pattern: "[bad(" }, undefined, undefined, TOOL_CTX),
+      /Invalid regular expression/
+    );
+  });
+
+  it("[task-0020] バイナリは検索対象にしない", async () => {
+    fs.writeFileSync(path.join(repo, "bin2.dat"), Buffer.from([0x00, 0x41, 0x42, 0x00]));
+    const out = await tool(fileTools, "file.grep").execute(
+      "c1", { pattern: "AB", includeHidden: true }, undefined, undefined, TOOL_CTX
+    );
+    const d = out.details as { hits: Array<{ path: string }> };
+    assert.equal(d.hits.some((h) => h.path === "bin2.dat"), false);
+  });
+
+  it("[task-0020] limit で打ち切り、打ち切ったことを明示する", async () => {
+    const out = await tool(fileTools, "file.grep").execute(
+      "c1", { pattern: ".", limit: 2 }, undefined, undefined, TOOL_CTX
+    );
+    const d = out.details as { hits: unknown[]; truncated: boolean };
+    assert.equal(d.hits.length, 2);
+    assert.equal(d.truncated, true);
+    assert.match(textOf(out), /打ち切り/);
   });
 });

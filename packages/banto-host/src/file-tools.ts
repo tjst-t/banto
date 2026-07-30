@@ -29,9 +29,76 @@ const MAX_BYTES = 200_000;
 /** よくある除外。番頭が見て意味のないものを既定で隠す。 */
 const HIDDEN = new Set([".git", "node_modules", "dist", ".DS_Store"]);
 
+/** 探索・検索の上限。番頭の文脈を埋め尽くさないため、また巨大なツリーで止まらないため。 */
+const MAX_FIND_RESULTS = 200;
+const MAX_GREP_RESULTS = 200;
+/** 検索で開くファイルサイズの上限。これを超えるものは飛ばす（その旨を返す）。 */
+const MAX_SEARCH_BYTES = 1_000_000;
+
 /** NUL を含むならバイナリとみなす（テキストとして出すと文脈を壊す）。 */
 function looksBinary(buffer: Buffer): boolean {
   return buffer.subarray(0, 8000).includes(0);
+}
+
+/**
+ * glob をアンカー付きの正規表現へ変換する。
+ * `**` は階層をまたぐ、`*` と `?` は階層をまたがない。`/` を含まないパターンは
+ * ファイル名（basename）に対して照合する——`*.ts` が素直に効くように。
+ */
+function globToRegExp(pattern: string): { re: RegExp; matchBasename: boolean } {
+  const matchBasename = !pattern.includes("/");
+  let out = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i]!;
+    if (c === "*") {
+      if (pattern[i + 1] === "*") {
+        out += ".*";
+        i++;
+      } else {
+        out += "[^/]*";
+      }
+    } else if (c === "?") {
+      out += "[^/]";
+    } else {
+      out += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return { re: new RegExp(`^${out}$`), matchBasename };
+}
+
+/**
+ * ルート配下のファイルを走査する。`HIDDEN`（.git / node_modules / dist 等）と
+ * ドット始まりは既定で降りない——番頭の文脈を無駄に埋めないため。
+ *
+ * @param visit false を返すと走査を打ち切る（上限に達したとき）
+ */
+function walkFiles(
+  root: string,
+  startRelative: string,
+  includeHidden: boolean,
+  visit: (relativePath: string, absolutePath: string) => boolean
+): void {
+  const stack: string[] = [startRelative];
+  while (stack.length > 0) {
+    const relative = stack.pop()!;
+    const absolute = path.join(root, relative === "." ? "" : relative);
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(absolute, { withFileTypes: true });
+    } catch {
+      // 読めないディレクトリは飛ばす（権限等）。走査全体を止めない
+      continue;
+    }
+    for (const entry of entries) {
+      if (!includeHidden && (entry.name.startsWith(".") || HIDDEN.has(entry.name))) continue;
+      const childRelative = relative === "." ? entry.name : `${relative}/${entry.name}`;
+      if (entry.isDirectory()) {
+        stack.push(childRelative);
+      } else if (entry.isFile()) {
+        if (!visit(childRelative, path.join(absolute, entry.name))) return;
+      }
+    }
+  }
 }
 
 export function createFileTools(root: string): NamespacedToolDefinition[] {
@@ -185,5 +252,127 @@ export function createFileTools(root: string): NamespacedToolDefinition[] {
     },
   });
 
-  return [list, read, stat];
+  const find = defineNamespacedTool({
+    name: "file.find",
+    label: "File: Find",
+    description:
+      "ファイル名のパターンでファイルを探す。glob が使える（`*.ts` / `**/canvas*` 等）。" +
+      "`/` を含まないパターンはファイル名だけに照合する。閲覧専用で、どこに何があるか探すときに使う。",
+    parameters: Type.Object({
+      pattern: Type.String({ description: "ファイル名のglob（例: *.ts, **/git-*.ts, README*）" }),
+      path: Type.Optional(Type.String({ description: "探索を始めるディレクトリ（省略時はルート）" })),
+      includeHidden: Type.Optional(
+        Type.Boolean({ description: "ドット始まりや node_modules 等も探す（既定 false）" })
+      ),
+      limit: Type.Optional(Type.Number({ description: `件数の上限（既定 ${MAX_FIND_RESULTS}）` })),
+    }),
+    async execute(_toolCallId, params) {
+      const start = params.path ?? ".";
+      resolveInWorkspace(root, start);
+      const limit = Math.max(1, Math.min(params.limit ?? MAX_FIND_RESULTS, MAX_FIND_RESULTS));
+      const { re, matchBasename } = globToRegExp(params.pattern);
+
+      const matches: Array<{ path: string; size: number }> = [];
+      let truncated = false;
+      walkFiles(root, start, params.includeHidden === true, (relative, absolute) => {
+        const subject = matchBasename ? path.basename(relative) : relative;
+        if (!re.test(subject)) return true;
+        if (matches.length >= limit) {
+          truncated = true;
+          return false;
+        }
+        matches.push({ path: relative, size: fs.statSync(absolute).size });
+        return true;
+      });
+
+      const lines = matches.map((m) => `${m.path} (${m.size} bytes)`);
+      if (truncated) lines.push(`… 上限 ${limit} 件で打ち切り`);
+      const text = matches.length === 0 ? `"${params.pattern}" に一致するファイルなし` : lines.join("\n");
+      return {
+        content: [{ type: "text" as const, text }],
+        details: { pattern: params.pattern, matches, truncated },
+      };
+    },
+  });
+
+  const grep = defineNamespacedTool({
+    name: "file.grep",
+    label: "File: Grep",
+    description:
+      "ファイルの中身を正規表現で検索し、一致した行を行番号つきで返す。" +
+      "`glob` でファイルを絞れる。見つけた箇所は file.browser の line 引数でそのまま開ける。" +
+      "閲覧専用で、どこに何が書かれているか探すときに使う。",
+    parameters: Type.Object({
+      pattern: Type.String({ description: "検索する正規表現（例: createModuleRegistry, TODO|FIXME）" }),
+      path: Type.Optional(Type.String({ description: "探索を始めるディレクトリ（省略時はルート）" })),
+      glob: Type.Optional(Type.String({ description: "対象ファイルを絞るglob（例: *.ts）" })),
+      ignoreCase: Type.Optional(Type.Boolean({ description: "大文字小文字を区別しない" })),
+      includeHidden: Type.Optional(
+        Type.Boolean({ description: "ドット始まりや node_modules 等も探す（既定 false）" })
+      ),
+      limit: Type.Optional(Type.Number({ description: `一致行の上限（既定 ${MAX_GREP_RESULTS}）` })),
+    }),
+    async execute(_toolCallId, params) {
+      const start = params.path ?? ".";
+      resolveInWorkspace(root, start);
+      const limit = Math.max(1, Math.min(params.limit ?? MAX_GREP_RESULTS, MAX_GREP_RESULTS));
+
+      // I2: 壊れた正規表現は黙って0件にせず、理由を返す
+      let re: RegExp;
+      try {
+        re = new RegExp(params.pattern, params.ignoreCase ? "i" : "");
+      } catch (err) {
+        throw new Error(`Invalid regular expression "${params.pattern}": ${String(err)}`);
+      }
+      const fileFilter = params.glob ? globToRegExp(params.glob) : undefined;
+
+      const hits: Array<{ path: string; line: number; text: string }> = [];
+      let truncated = false;
+      let skippedLarge = 0;
+
+      walkFiles(root, start, params.includeHidden === true, (relative, absolute) => {
+        if (fileFilter) {
+          const subject = fileFilter.matchBasename ? path.basename(relative) : relative;
+          if (!fileFilter.re.test(subject)) return true;
+        }
+        const size = fs.statSync(absolute).size;
+        if (size > MAX_SEARCH_BYTES) {
+          skippedLarge++;
+          return true;
+        }
+        const buffer = fs.readFileSync(absolute);
+        if (looksBinary(buffer)) return true;
+
+        const lines = buffer.toString("utf-8").split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          if (!re.test(lines[i]!)) continue;
+          if (hits.length >= limit) {
+            truncated = true;
+            return false;
+          }
+          // 長すぎる行はそのまま返すと文脈を食うので切る
+          const raw = lines[i]!;
+          hits.push({ path: relative, line: i + 1, text: raw.length > 300 ? `${raw.slice(0, 300)}…` : raw });
+        }
+        return true;
+      });
+
+      const notes: string[] = [];
+      if (truncated) notes.push(`… 上限 ${limit} 件で打ち切り`);
+      // I2: 飛ばしたファイルがあることを黙って隠さない
+      if (skippedLarge > 0) notes.push(`（${skippedLarge} 件は ${MAX_SEARCH_BYTES} bytes 超のため未検索）`);
+
+      const text =
+        hits.length === 0
+          ? [`"${params.pattern}" に一致する行なし`, ...notes].join("\n")
+          : [...hits.map((h) => `${h.path}:${h.line}: ${h.text.trim()}`), ...notes].join("\n");
+
+      return {
+        content: [{ type: "text" as const, text }],
+        details: { pattern: params.pattern, hits, truncated, skippedLarge },
+      };
+    },
+  });
+
+  return [list, read, stat, find, grep];
 }

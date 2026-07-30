@@ -237,6 +237,10 @@ describe("[task-0015] 組み込みモジュール", () => {
     // 個々のTool名を全部並べるとToolが増えるたび意味の無い失敗になるので、
     // 「file/git の両ドメインを持ち、すべて閲覧専用」という性質で見る
     assert.deepEqual(moduleDomains(module).sort(), ["file", "git"]);
+    // 探索系も揃っていること（番頭がどこに何があるか探せる）
+    for (const expected of ["file.find", "file.grep"]) {
+      assert.ok(module.tools.some((t) => t.name === expected), `${expected} を提供する`);
+    }
     for (const t of module.tools) {
       assert.doesNotMatch(t.name, /write|delete|commit|stage|push|checkout|reset/);
     }

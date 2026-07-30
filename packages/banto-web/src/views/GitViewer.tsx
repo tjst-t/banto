@@ -67,8 +67,11 @@ function DiffBody({ diff }: { diff: string }): React.ReactElement {
 
 export function GitViewer({ params, endpoint }: CanvasViewProps): React.ReactElement {
   const initialRef = typeof params["ref"] === "string" ? params["ref"] : undefined;
+  const initialPath = typeof params["path"] === "string" ? params["path"] : undefined;
   const [selection, setSelection] = useState<Selection>(
-    initialRef ? { source: "commit", ref: initialRef } : { source: "working" }
+    initialRef
+      ? { source: "commit", ref: initialRef, ...(initialPath ? { path: initialPath } : {}) }
+      : { source: "working", ...(initialPath ? { path: initialPath } : {}) }
   );
   const [limit, setLimit] = useState(30);
 

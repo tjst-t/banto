@@ -211,8 +211,14 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .fb-preview-head { font-size: 11.5px; }
 .fb-code {
   flex: 1; min-height: 0; overflow: auto; margin: 0;
-  background: #16140f; color: #d8d4c4; border-radius: 10px; padding: 12px 14px;
+  background: #16140f; color: #d8d4c4; border-radius: 10px; padding: 12px 0;
   font-family: var(--font-mono); font-size: 12px; line-height: 1.65;
+}
+.fb-line { display: block; padding: 0 14px; }
+.fb-line.is-highlight { background: rgba(224,169,90,0.18); box-shadow: inset 3px 0 0 0 #e0a95a; }
+.fb-lineno {
+  display: inline-block; margin-right: 14px; color: #6b6656; user-select: none;
+  text-align: right; white-space: pre;
 }
 .fb-muted { color: var(--ink-faint); font-size: 12.5px; }
 .fb-error {
