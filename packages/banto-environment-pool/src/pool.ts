@@ -64,14 +64,27 @@ export interface ProvisionRequest {
 
 export interface EnvSummary {
   envId: string;
-  profileName: string;
+  /** プロファイル名。アドホックは `adhoc:<driver>`（spec §3.1 の `profile` 列）。 */
+  profile: string;
   driver: string;
   taskId: string;
   projectTag: string;
   workdir?: string;
   createdAt: string;
   ttlDeadline: string;
-  live: boolean;
+  /** spec §5 の状態。`live` = 生きている、`torn-down` = 畳んだ、`teardown-failed` = 畳み損ね。 */
+  state: "live" | "torn-down" | "teardown-failed";
+}
+
+/** `env.provision` の返り（spec §3.1）。立てた直後に使える状態かも併せて返す。 */
+export interface ProvisionResult extends EnvSummary {
+  /**
+   * 立てた直後の疎通確認。
+   *
+   * **provision の一部として回す**（spec §3.1）——立ったが使えない環境を返して、
+   * 次の `run` の失敗で初めて気づく、という順序にしない。
+   */
+  healthcheck: { ok: boolean; detail?: string };
 }
 
 export interface RunResult {
@@ -85,18 +98,26 @@ export interface RunResult {
 
 export interface VerifyResult {
   envId: string;
-  profileName: string;
-  /** healthcheck が通ったか。 */
-  healthy: boolean;
-  healthDetail?: string;
-  /** `cmd` を渡したときだけ入る。 */
-  run?: { exit: number; logPath: string; logTail: string; truncated: boolean };
-  /** 全体として通ったか。healthcheck と run の両方が通ったときだけ true。 */
-  ok: boolean;
+  profile: string;
+  /**
+   * 検証コマンドの終了コード。
+   *
+   * I2: **走らせるところまで到達しなかった場合も 0 にしない**。環境が立たなかった・
+   * healthcheck が通らなかったときは 0 以外になり、`failure` に理由が入る——
+   * 「確かめていない」を「通った」と読ませない。
+   */
+  exit: number;
+  logPath: string;
+  /** ログの末尾。上限行数で切り、切ったことを明示する。 */
+  logTail: string;
+  truncated: boolean;
   /** 畳めたか。**畳めなかったら成功に見せない**（I3）。 */
   tornDown: boolean;
   teardownError?: string;
-  /** 途中で落ちた理由（落ちていなければ無い）。 */
+  /** healthcheck が通ったか。 */
+  healthy: boolean;
+  healthDetail?: string;
+  /** コマンドを走らせるまでに落ちた理由（落ちていなければ無い）。 */
   failure?: string;
 }
 
@@ -138,7 +159,7 @@ export class EnvironmentPool {
    * I2: 上限超過・アドホックの不許可・ドライバ失敗は、いずれも理由つきで投げる。
    *     黙って別の設定に落とすと「頼んだものと違うもので検証された」が起きる。
    */
-  async provision(request: ProvisionRequest): Promise<EnvSummary> {
+  async provision(request: ProvisionRequest): Promise<ProvisionResult> {
     const resolved = this.resolveRequest(request);
     const taskId = request.taskId ?? `env-${shortId()}`;
     const projectTag = request.projectTag ?? "banto";
@@ -183,7 +204,17 @@ export class EnvironmentPool {
       ...(request.workdir ? { workdir: path.resolve(request.workdir) } : {}),
     };
     this.ledger.add(entry);
-    return toSummary(entry);
+
+    // spec §3.1: 立った直後の疎通も返す。立ったが使えない環境を黙って返して、
+    // 次の run の失敗で初めて気づく、という順序にしない
+    let healthcheck: { ok: boolean; detail?: string };
+    try {
+      healthcheck = await this.healthcheck(entry.envId);
+    } catch (err) {
+      // I2: 疎通が確かめられなかったことを ok:true に丸めない
+      healthcheck = { ok: false, detail: err instanceof Error ? err.message : String(err) };
+    }
+    return { ...toSummary(entry), healthcheck };
   }
 
   /** 成果物を配る。ドライバによっては何もしない。 */
@@ -257,11 +288,13 @@ export class EnvironmentPool {
     return { alreadyDone: false };
   }
 
-  /** 台帳の一覧。既定は生きているものだけ。 */
-  list(options: { includeTornDown?: boolean; taskId?: string } = {}): EnvSummary[] {
+  /** 台帳の一覧。既定は生きているものだけ（spec §3.1 の `env.list`）。 */
+  list(options: { includeTornDown?: boolean; projectTag?: string; taskId?: string } = {}): EnvSummary[] {
     const entries = options.includeTornDown ? this.ledger.list() : this.ledger.listLive();
-    const filtered = options.taskId ? entries.filter((e) => e.taskId === options.taskId) : entries;
-    return filtered.map(toSummary);
+    return entries
+      .filter((e) => (options.projectTag ? e.projectTag === options.projectTag : true))
+      .filter((e) => (options.taskId ? e.taskId === options.taskId : true))
+      .map(toSummary);
   }
 
   // ── 高位（決定34a）──────────────────────────────────────────────────────
@@ -274,8 +307,8 @@ export class EnvironmentPool {
    */
   async verify(
     request: ProvisionRequest & {
-      /** 走らせるコマンド。省略すると healthcheck までで判定する。 */
-      cmd?: string;
+      /** 走らせる検証コマンド。 */
+      cmd: string;
       /** 配る成果物。省略すると deploy を飛ばす。 */
       artifactPath?: string;
       /** 回収先。省略すると collect を飛ばす。 */
@@ -284,21 +317,23 @@ export class EnvironmentPool {
     }
   ): Promise<VerifyResult> {
     const summary = await this.provision(request);
-    let healthy = false;
-    let healthDetail: string | undefined;
+    let healthy = summary.healthcheck.ok;
+    const healthDetail = summary.healthcheck.detail;
     let runResult: RunResult | undefined;
     let failure: string | undefined;
 
     try {
       if (request.artifactPath) await this.deploy(summary.envId, request.artifactPath);
 
-      const health = await this.healthcheck(summary.envId);
-      healthy = health.ok;
-      healthDetail = health.detail;
+      // provision で一度見ているが、deploy を挟んだなら見直す（配ってから壊れることがある）
+      if (request.artifactPath) {
+        const health = await this.healthcheck(summary.envId);
+        healthy = health.ok;
+      }
       // I2: 使えない環境で走らせた結果を「テストが落ちた」と読ませない。分けて止める
       if (!healthy) {
-        failure = `healthcheck が通りませんでした${health.detail ? `: ${health.detail}` : ""}`;
-      } else if (request.cmd) {
+        failure = `healthcheck が通りませんでした${healthDetail ? `: ${healthDetail}` : ""}`;
+      } else {
         runResult = await this.run(summary.envId, request.cmd, request.logTailLines);
         if (request.collectTo) await this.collect(summary.envId, request.collectTo);
       }
@@ -316,25 +351,18 @@ export class EnvironmentPool {
       teardownError = err instanceof Error ? err.message : String(err);
     }
 
-    const ok = failure === undefined && healthy && (runResult ? runResult.exit === 0 : true);
     return {
       envId: summary.envId,
-      profileName: summary.profileName,
-      healthy,
-      ...(healthDetail !== undefined ? { healthDetail } : {}),
-      ...(runResult
-        ? {
-            run: {
-              exit: runResult.exit,
-              logPath: runResult.logPath,
-              logTail: runResult.logTail,
-              truncated: runResult.truncated,
-            },
-          }
-        : {}),
-      ok,
+      profile: summary.profile,
+      // I2: 走らせるところまで行かなかったのを 0（通った）にしない
+      exit: runResult ? runResult.exit : 1,
+      logPath: runResult?.logPath ?? "",
+      logTail: runResult?.logTail ?? "",
+      truncated: runResult?.truncated ?? false,
       tornDown,
       ...(teardownError !== undefined ? { teardownError } : {}),
+      healthy,
+      ...(healthDetail !== undefined ? { healthDetail } : {}),
       ...(failure !== undefined ? { failure } : {}),
     };
   }
@@ -457,14 +485,15 @@ export class EnvironmentPool {
 function toSummary(entry: EnvLedgerEntry): EnvSummary {
   return {
     envId: entry.envId,
-    profileName: entry.profileName,
+    profile: entry.profileName,
     driver: entry.driver,
     taskId: entry.taskId,
     projectTag: entry.projectTag,
     ...(entry.workdir ? { workdir: entry.workdir } : {}),
     createdAt: entry.createdAt,
     ttlDeadline: entry.ttlDeadline,
-    live: !entry.tornDownAt,
+    // 畳み損ねを「畳んだ」と同じに見せない（spec §5）
+    state: entry.teardownFailed ? "teardown-failed" : entry.tornDownAt ? "torn-down" : "live",
   };
 }
 

@@ -67,16 +67,17 @@ describe("[task-0034/a1] env.verify は一息で回して必ず畳む", () => {
       taskId: "t-verify",
     });
     const details = result.details as {
-      ok: boolean;
+      exit: number;
+      logTail: string;
       tornDown: boolean;
       healthy: boolean;
-      run?: { exit: number; logTail: string };
+      failure?: string;
     };
 
     assert.equal(details.healthy, true, "環境が使える状態になること");
-    assert.equal(details.run?.exit, 0, "コマンドが通ること");
-    assert.match(details.run!.logTail, /hello-from-env/, "ログの中身が返ること");
-    assert.equal(details.ok, true);
+    assert.equal(details.exit, 0, "コマンドが通ること");
+    assert.match(details.logTail, /hello-from-env/, "ログの中身が返ること");
+    assert.equal(details.failure, undefined);
     assert.equal(details.tornDown, true, "畳まれること");
 
     // 台帳にも生き残りがいない
@@ -94,10 +95,10 @@ describe("[task-0034/a1] env.verify は一息で回して必ず畳む", () => {
       cmd: "exit 3",
       taskId: "t-fail",
     });
-    const details = result.details as { ok: boolean; tornDown: boolean; run?: { exit: number } };
+    const details = result.details as { exit: number; tornDown: boolean; failure?: string };
 
-    assert.equal(details.run?.exit, 3, "落ちた終了コードをそのまま返すこと");
-    assert.equal(details.ok, false, "成功に見せないこと");
+    assert.equal(details.exit, 3, "落ちた終了コードをそのまま返すこと");
+    assert.equal(details.failure, undefined, "コマンドまでは到達していること");
     assert.equal(details.tornDown, true, "失敗しても畳むこと");
     assert.deepEqual(p.list(), [], "環境が残らないこと");
   });
@@ -107,7 +108,7 @@ describe("[task-0034/a1] env.verify は一息で回して必ず畳む", () => {
     const verify = tool(p, "env.verify");
     // 即座に終わるコマンド＝環境として生きていない
     await assert.rejects(
-      () => verify.execute({ driver: "process", config: { cmd: "true" }, taskId: "t-dead" }),
+      () => verify.execute({ driver: "process", config: { cmd: "true" }, cmd: "echo x", taskId: "t-dead" }),
       /環境を用意できませんでした/
     );
     // provision 自体が失敗したので台帳には載らない（載せてから失敗すると幽霊が残る）
@@ -213,8 +214,8 @@ describe("[task-0034/a3] プロファイルの在り処は呼び出し側が渡�
     const p = pool();
 
     const created = await tool(p, "env.provision").execute({ repoPath: repo, profile: "dev" });
-    const details = created.details as { profileName: string; driver: string };
-    assert.equal(details.profileName, "dev");
+    const details = created.details as { profile: string; driver: string };
+    assert.equal(details.profile, "dev");
     assert.equal(details.driver, "process");
     await tool(p, "env.teardown").execute({ envId: (created.details as { envId: string }).envId });
   });
@@ -263,9 +264,9 @@ describe("[task-0034/a4] workdir がドライバへ渡る", () => {
       cmd: "cat marker.txt",
       workdir,
     });
-    const details = result.details as { run?: { exit: number; logTail: string }; tornDown: boolean };
-    assert.equal(details.run?.exit, 0, "workdir で動いていること");
-    assert.match(details.run!.logTail, /ここが作業場所/);
+    const details = result.details as { exit: number; logTail: string; tornDown: boolean };
+    assert.equal(details.exit, 0, "workdir で動いていること");
+    assert.match(details.logTail, /ここが作業場所/);
     assert.equal(details.tornDown, true);
   });
 
@@ -276,8 +277,8 @@ describe("[task-0034/a4] workdir がドライバへ渡る", () => {
       config: { cmd: "sleep 30" },
       cmd: "pwd",
     });
-    const details = result.details as { run?: { exit: number } };
-    assert.equal(details.run?.exit, 0, "workdir 無しでも動くこと");
+    const details = result.details as { exit: number };
+    assert.equal(details.exit, 0, "workdir 無しでも動くこと");
   });
 
   it("workdir は台帳に残る（後続の run に同じ場所を渡せる）", async () => {
@@ -324,8 +325,8 @@ describe("[task-0034/a5] アドホック環境は既定でビルトインのみ"
       driver: "process",
       config: { cmd: "sleep 30" },
     });
-    const details = created.details as { ttlDeadline: string; profileName: string; envId: string };
-    assert.match(details.profileName, /^adhoc:process$/);
+    const details = created.details as { ttlDeadline: string; profile: string; envId: string };
+    assert.match(details.profile, /^adhoc:process$/);
     const remaining = new Date(details.ttlDeadline).getTime() - Date.now();
     assert.ok(remaining > 0 && remaining <= DEFAULT_ENV_LIMITS.defaultTtlMs + 1000);
     await tool(p, "env.teardown").execute({ envId: details.envId });
@@ -407,5 +408,88 @@ describe("[task-0034] 職人には渡さない（決定32c）", () => {
     for (const name of workerSide) {
       assert.doesNotMatch(name, /^env\./);
     }
+  });
+});
+
+describe("[task-0034] spec-environment §3.1 の契約と一致していること（P3）", () => {
+  it("env.provision は立てた直後の疎通も返す（立つ≠使える）", async () => {
+    const p = pool();
+    const created = await tool(p, "env.provision").execute({
+      driver: "process",
+      config: { cmd: "sleep 30" },
+    });
+    const details = created.details as {
+      envId: string;
+      profile: string;
+      driver: string;
+      ttlDeadline: string;
+      healthcheck: { ok: boolean; detail?: string };
+    };
+    assert.equal(details.healthcheck.ok, true);
+    // spec の表にある列がそろっていること
+    for (const key of ["envId", "profile", "driver", "ttlDeadline"] as const) {
+      assert.ok(details[key], `${key} が返ること`);
+    }
+    assert.match(created.content[0]!.text!, /いま使えるか: 使えます/);
+    await tool(p, "env.teardown").execute({ envId: details.envId });
+  });
+
+  it("env.list は state を返し、畳み損ねを畳み済みと同じに見せない", async () => {
+    const p = pool();
+    const created = await tool(p, "env.provision").execute({
+      driver: "process",
+      config: { cmd: "sleep 30" },
+      taskId: "t-state",
+    });
+    const envId = (created.details as { envId: string }).envId;
+
+    const live = (await tool(p, "env.list").execute({})).details as {
+      environments: Array<{ state: string }>;
+    };
+    assert.deepEqual(live.environments.map((e) => e.state), ["live"]);
+
+    await tool(p, "env.teardown").execute({ envId });
+    const all = (await tool(p, "env.list").execute({ includeTornDown: true })).details as {
+      environments: Array<{ state: string }>;
+    };
+    assert.deepEqual(all.environments.map((e) => e.state), ["torn-down"]);
+  });
+
+  it("env.list は projectTag で絞れる", async () => {
+    const p = pool();
+    const a = await tool(p, "env.provision").execute({
+      driver: "process",
+      config: { cmd: "sleep 30" },
+      taskId: "t-a",
+    });
+    const listed = (await tool(p, "env.list").execute({ projectTag: "よそ" })).details as {
+      environments: unknown[];
+    };
+    assert.deepEqual(listed.environments, [], "別のプロジェクトのものは出ないこと");
+    await tool(p, "env.teardown").execute({ envId: (a.details as { envId: string }).envId });
+  });
+
+  it("**確かめていないことを通ったと読ませない**（走らなかったら exit は 0 にしない）", async () => {
+    // healthcheck が通らないドライバ。run まで到達しない
+    const driver = path.join(dir, "sick-driver");
+    fs.writeFileSync(
+      driver,
+      [
+        "#!/usr/bin/env node",
+        "const verb = process.argv[2];",
+        'const out = { provision: { handle: { id: "x" } }, healthcheck: { ok: false, detail: "起動していません" } }[verb] ?? {};',
+        "process.stdout.write(JSON.stringify(out));",
+      ].join("\n"),
+      { mode: 0o755 }
+    );
+    const p = new EnvironmentPool({ dataDir, limits: { adhocDrivers: "all" }, driverTimeoutMs: 10_000 });
+    const result = await tool(p, "env.verify").execute({ driver, config: {}, cmd: "echo x" });
+    const details = result.details as { exit: number; healthy: boolean; failure?: string; tornDown: boolean };
+
+    assert.equal(details.healthy, false);
+    assert.notEqual(details.exit, 0, "走らせていないのに 0 を返さないこと");
+    assert.match(details.failure ?? "", /healthcheck/);
+    assert.match(result.content[0]!.text!, /検証まで到達しませんでした/);
+    assert.equal(details.tornDown, true, "それでも畳むこと");
   });
 });

@@ -70,6 +70,13 @@ function asRequest(params: {
   };
 }
 
+/** 一覧に出す状態の表示。畳み損ねを「畳み済み」と同じに見せない。 */
+const STATE_LABEL: Record<string, string> = {
+  live: "",
+  "torn-down": "（畳み済み）",
+  "teardown-failed": "（**畳み損ね**）",
+};
+
 export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[] {
   const verify = defineNamespacedTool({
     name: "env.verify",
@@ -83,22 +90,22 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
       "環境を残したい（レビュー用のdev serverを立てておく等）ときは、これではなく env.provision を使う。",
     parameters: Type.Object({
       ...targetFields,
-      cmd: Type.Optional(
-        Type.String({ description: "環境の中で走らせるコマンド。省略すると起動確認までで判定する" })
-      ),
+      cmd: Type.String({ description: "環境の中で走らせる検証コマンド" }),
       artifactPath: Type.Optional(Type.String({ description: "配る成果物の絶対パス（省略可）" })),
       collectTo: Type.Optional(Type.String({ description: "成果物の回収先ディレクトリ（省略可）" })),
     }),
     async execute(params) {
-      const result = await pool.verify(asRequest(params));
+      const result = await pool.verify({ ...asRequest(params), cmd: params.cmd });
+      const passed = result.exit === 0 && result.failure === undefined;
       const lines = [
-        `${result.ok ? "通りました" : "通りませんでした"}（${result.profileName} / ${result.envId}）`,
+        `${passed ? "通りました" : "通りませんでした"}（${result.profile} / ${result.envId}）`,
       ];
-      if (result.failure) lines.push(`理由: ${result.failure}`);
-      if (result.run) {
-        lines.push(`コマンドの終了コード: ${result.run.exit}`);
-        if (result.run.logTail) {
-          lines.push(result.run.truncated ? "ログ（末尾のみ）:" : "ログ:", result.run.logTail);
+      // I2: 走らせるところまで行かなかったことを「テストが落ちた」と読ませない
+      if (result.failure) lines.push(`検証まで到達しませんでした: ${result.failure}`);
+      else {
+        lines.push(`コマンドの終了コード: ${result.exit}`);
+        if (result.logTail) {
+          lines.push(result.truncated ? "ログ（末尾のみ）:" : "ログ:", result.logTail);
         }
       }
       // I3: 畳めなかったことを本文に出す。details だけだと番頭が気づかない
@@ -126,7 +133,8 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
           {
             type: "text" as const,
             text:
-              `環境を立てました: ${summary.envId}（${summary.profileName}）\n` +
+              `環境を立てました: ${summary.envId}（${summary.profile}）\n` +
+              `いま使えるか: ${summary.healthcheck.ok ? "使えます" : `使えません（${summary.healthcheck.detail ?? "理由不明"}）`}\n` +
               `期限: ${summary.ttlDeadline}（過ぎると自動で畳まれます）\n` +
               "使い終わったら env.teardown で畳んでください。",
           },
@@ -241,6 +249,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
       includeTornDown: Type.Optional(
         Type.Boolean({ description: "畳んだものも含める（既定 false）" })
       ),
+      projectTag: Type.Optional(Type.String({ description: "このプロジェクトの環境だけに絞る" })),
       taskId: Type.Optional(Type.String({ description: "このラベルの環境だけに絞る" })),
     }),
     async execute(params) {
@@ -252,7 +261,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
           : environments
               .map(
                 (e) =>
-                  `${e.envId} — ${e.profileName}${e.live ? "" : "（畳み済み）"} / ${e.taskId}` +
+                  `${e.envId} — ${e.profile}${STATE_LABEL[e.state]} / ${e.taskId}` +
                   `${e.workdir ? ` @ ${e.workdir}` : ""} / 期限 ${e.ttlDeadline}`
               )
               .join("\n");
