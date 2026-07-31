@@ -93,13 +93,13 @@ export interface PiRpcDriverOptions {
   /**
    * Default LLM provider passed to pi via --provider.
    * Can be overridden per-spawn via SpawnOptions.driverOptions.provider.
-   * Default: "opencode-go"
+   * Default: "opencode"
    */
   defaultProvider?: string;
   /**
    * Default LLM model passed to pi via --model.
    * Can be overridden per-spawn via SpawnOptions.driverOptions.model.
-   * Default: "deepseek-v4-flash"
+   * Default: "deepseek-v4-flash-free"
    */
   defaultModel?: string;
   /**
@@ -152,8 +152,8 @@ export class PiRpcDriver implements RuntimeDriver {
     this.piCliPath = null; // resolved lazily on first spawn
 
     this.sessionBaseDir = opts.sessionBaseDir ?? "";
-    this.defaultProvider = opts.defaultProvider ?? "opencode-go";
-    this.defaultModel = opts.defaultModel ?? "deepseek-v4-flash";
+    this.defaultProvider = opts.defaultProvider ?? "opencode";
+    this.defaultModel = opts.defaultModel ?? "deepseek-v4-flash-free";
     this.extensionPath = opts.extensionPath;
   }
 

@@ -4,19 +4,19 @@
  * This is the milestone acceptance test: end-to-end from PO task file placement to
  * agent reaching review-ready state. Real daemon + real pi agent + real LLM required.
  *
- * IMPORTANT: This test requires a working opencode-go provider with deepseek-v4-flash.
- * Auth is probed by running `pi --provider opencode-go --model deepseek-v4-flash --no-session -p "Reply with exactly: OK"`.
+ * IMPORTANT: This test requires a working opencode provider with deepseek-v4-flash-free.
+ * Auth is probed by running `pi --provider opencode --model deepseek-v4-flash-free --no-session -p "Reply with exactly: OK"`.
  * If the probe fails, this test records the block in docs/sprint-logs/S254276/failures.json
  * and throws (I2: skip禁止).
  *
  * Flow:
- *   1. Start real daemon (piProvider=opencode-go, piModel=deepseek-v4-flash).
+ *   1. Start real daemon (piProvider=opencode, piModel=deepseek-v4-flash-free).
  *   2. Register project pointing to a temporary git repo.
  *   3. Write a minimal task definition file to <repoPath>/work/tasks/e2e-task-001.md.
  *   4. Wait for the watcher to ingest the file → task appears as 'queued'.
  *   5. Wait for gate evaluation → task becomes 'ready'.
  *   6. Call spawnTask() explicitly (auto-spawn is a future sprint feature).
- *      Daemon wires: --extension banto-executor.ts + --provider opencode-go + --model deepseek-v4-flash
+ *      Daemon wires: --extension banto-executor.ts + --provider opencode + --model deepseek-v4-flash-free
  *      + BANTO_DAEMON_URL/BANTO_PROJECT/BANTO_TASK_ID env vars.
  *   7. Inject the task prompt via driver.inject().
  *      The banto-executor extension provides report_phase/report_done tools.
@@ -24,7 +24,7 @@
  *   8. Wait for pi agent to call report_done → task becomes 'review-ready'.
  *   9. Verify event history, hello.txt file, and extension-driven state transitions.
  *
- * Timeout: 240 000 ms (deepseek-v4-flash latency can be 30-60 s per LLM call).
+ * Timeout: 240 000 ms (deepseek-v4-flash-free latency can be 30-60 s per LLM call).
  *
  * Cleanup: kill pi session, remove tmux window, delete temp dir.
  */
@@ -46,14 +46,14 @@ const FAILURES_JSON = path.resolve(
 );
 
 // ── Default provider/model (banto確定モデル) ──────────────────────────────────
-const PI_PROVIDER = "opencode-go";
-const PI_MODEL = "deepseek-v4-flash";
+const PI_PROVIDER = "opencode";
+const PI_MODEL = "deepseek-v4-flash-free";
 
 // ── Auth probe ────────────────────────────────────────────────────────────────
 
 /**
  * Probe whether pi can authenticate to the configured LLM provider.
- * Runs `pi --provider opencode-go --model deepseek-v4-flash --no-session -p "Reply with exactly: OK"`
+ * Runs `pi --provider opencode --model deepseek-v4-flash-free --no-session -p "Reply with exactly: OK"`
  * with a 30 s timeout.
  * Returns { ok: true } if pi exits 0 and stdout contains "OK".
  * Returns { ok: false, reason } otherwise.
@@ -265,7 +265,7 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → auditing (exec
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
       sessionBaseDir: path.join(tmpDir, "sessions"),
       tmuxSession: TMUX_SESSION,
-      // Use the confirmed banto default provider/model (opencode-go/deepseek-v4-flash)
+      // Use the confirmed banto default provider/model (opencode/deepseek-v4-flash-free)
       piProvider: PI_PROVIDER,
       piModel: PI_MODEL,
       disableAuditSpawn: true,
@@ -342,7 +342,7 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → auditing (exec
     // ── Step 4: Spawn the agent ───────────────────────────────────────────────
     // Daemon.spawnTask() automatically:
     //   - passes --extension <banto-executor.ts> to pi
-    //   - passes --provider opencode-go --model deepseek-v4-flash
+    //   - passes --provider opencode --model deepseek-v4-flash-free
     //   - sets BANTO_DAEMON_URL, BANTO_PROJECT, BANTO_TASK_ID env vars in child
     // The extension registers report_phase/report_done tools in the pi session.
     let spawnResult: {

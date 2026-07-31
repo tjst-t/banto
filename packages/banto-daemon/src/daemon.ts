@@ -138,13 +138,13 @@ export interface DaemonConfig {
   tmuxSession?: string;
   /**
    * LLM provider name passed to pi via --provider.
-   * Default: "opencode-go" (VISION: models are interchangeable via opencode).
+   * Default: "opencode" (VISION: models are interchangeable via opencode).
    * Override via BANTO_PI_PROVIDER environment variable.
    */
   piProvider?: string;
   /**
    * LLM model ID passed to pi via --model.
-   * Default: "deepseek-v4-flash" (cheap, fast model for executor tasks).
+   * Default: "deepseek-v4-flash-free" (cheap, fast model for executor tasks).
    * Override via BANTO_PI_MODEL environment variable.
    */
   piModel?: string;
@@ -392,8 +392,8 @@ export class Daemon {
     ).pathname;
     const piDriver = new PiRpcDriver({
       sessionBaseDir: config.sessionBaseDir ?? path.join(config.dataDir, "sessions"),
-      defaultProvider: config.piProvider ?? "opencode-go",
-      defaultModel: config.piModel ?? "deepseek-v4-flash",
+      defaultProvider: config.piProvider ?? "opencode",
+      defaultModel: config.piModel ?? "deepseek-v4-flash-free",
       extensionPath,
     });
     this.driverRegistry.register("pi-rpc", piDriver);
@@ -506,8 +506,8 @@ export class Daemon {
       sessionBaseDir: config.sessionBaseDir,
       reconcileIntervalMs: config.reconcileIntervalMs,
       tmuxSession: config.tmuxSession,
-      piProvider: config.piProvider ?? process.env["BANTO_PI_PROVIDER"] ?? "opencode-go",
-      piModel: config.piModel ?? process.env["BANTO_PI_MODEL"] ?? "deepseek-v4-flash",
+      piProvider: config.piProvider ?? process.env["BANTO_PI_PROVIDER"] ?? "opencode",
+      piModel: config.piModel ?? process.env["BANTO_PI_MODEL"] ?? "deepseek-v4-flash-free",
       maxConcurrentSessions:
         config.maxConcurrentSessions ??
         // parseInt of a non-numeric env value yields NaN, and `size >= NaN` is
