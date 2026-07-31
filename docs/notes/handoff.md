@@ -296,9 +296,12 @@ epic-0009（場所と repo-manager）を task-0038 の続きから片付けた�
 - **実プロセスのホストで叩く**。モジュールの HTTP 面はボディが `{"args":{...}}` 形式（最初これを間違えて全件 `Multiple places` になり、実装の不具合と誤認しかけた）
 - `env -i` で外部コマンドを試すと `HOME` が消え、`gwq` が cwd に `.config/gwq/config.toml` を書く。repo-manager 自体は再現しない（自分の検証手順の副産物だった）
 
+### task-0042 も完了（`ab7de54`）——**epic-0009 は全部済み**
+
+番頭は `place.request_write` で頼めるだけ。承認・拒否・取り消しは `internalTools` で番頭のTool一覧に出ない（決定29e と同じ枠）＝番頭が自分で承認することが機構的に不可能。許可は提供元が返した場所に**重ねる**ので、`ghq` の読み取り専用リポジトリにも提供元を書き換えずに足せる。帳簿は `<dataDir>/place-grants.json`（`file.write` の砦が守っている範囲）。GUI は `place.permissions`（番頭が `canvas.open` で出せる）。実ブラウザでパネルからの承認まで確認済み。
+
 ### 次にやること（未着手）
 
-- **task-0042 書き込み許可の要求・承認UI**（決定38c/e）。いまは設定ファイルを手で書く必要がある。現在の許可の一覧を studio に出すのも同じ画面（決定38e）
 - **task-0034 `env.*` Tool**（決定32・Environment Pool の設定面）。Environment Pool は切り出しただけで**未実装**のまま
 - **task-0036 会話の永続化**。ホストを再起動すると会話が消える
 - **モジュール HTTP 面の認証**（ADR-0010 未決事項）。場所が13箇所に増え、`file.write` も HTTP 面に出たので、無認証で開いている範囲が前より広い
