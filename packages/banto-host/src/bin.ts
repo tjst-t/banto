@@ -44,6 +44,7 @@ import { createStudioModule } from "./modules/studio.js";
 import { createWorkspaceModule } from "./modules/workspace.js";
 import { PlaceGrantStore } from "./place-grants.js";
 import { createRepoManagerModule, createRepoManagerPlaceProvider } from "@banto/repo-manager";
+import { EnvironmentPool, createEnvironmentPoolModule } from "@banto/environment-pool";
 import { workspaceRoot } from "./workspace.js";
 import {
   PlaceRegistry,
@@ -106,6 +107,7 @@ const SYSTEM_PROMPT = [
   "file.write で自分の成果物（決定の記録・起票・メモ）を書けますが、**POが場所ごとに許した範囲だけ**で、既定はどの場所も読み取り専用です。断られたら place.request_write で範囲を頼み、canvas.open で place.permissions を開けばPOがその場で許可できます。頼んだだけでは書けません。コードを変える仕事は自分で書かず職人へ委譲します（D10）。",
   "gitの変更操作（commit・push・branch）は持っていません。頼まれたら職人へ委譲してください——書いたものは未コミットで残り、POのレビューを通ります。",
   "調査・実装など手を動かす仕事は worker.delegate で職人へ委譲してください（D10）。手順は skill.read で worker-delegation を確認できます。",
+  "検証は env.verify で回せます。環境を立ててコマンドを走らせて必ず畳むところまで機構がやるので、結果は職人の主張ではなく確かめた事実として扱えます。レビュー用に環境を残したいときだけ env.provision を使い、使い終わったら env.teardown で畳んでください。",
   "職人からの報告・質問は自動で届きます。報告は主張であって完了の証明ではないので、必要なら成果を自分で確かめてください。質問には worker.steer で答えられます。",
   "確かめて良いと判断したら worker.close で職人を畳んでください。待機中の職人はプロセスとして残り続けます。畳んでも記録は残り、続きを頼みたくなったら worker.wake で元の会話ごと起こし直せます。",
 ].join("\n");
@@ -202,6 +204,11 @@ async function serve(options: ServeOptions): Promise<void> {
     createWorkspaceModule(places, { protectedPaths: [dataDir()] }, grants),
     workerPoolModule,
     createRepoManagerModule(),
+    // 決定32c・34: 番頭は Kobo 無しでも検証を回せる。「テストが通った」を職人の主張ではなく
+    // 機構の返す事実として受け取るための実行能力（決定29a）
+    createEnvironmentPoolModule(
+      new EnvironmentPool({ dataDir: path.join(dataDir(), "environment-pool") })
+    ),
     createDemoModule(),
   ]);
 

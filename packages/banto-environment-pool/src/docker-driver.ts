@@ -46,6 +46,8 @@ interface DockerHandle {
   name: string;         // same as project (I3: named resource identifier)
   taskId: string;
   created: string;      // ISO-8601
+  /** どこで動かすか（決定34d）。compose の相対パス解決と run の cwd に使う */
+  workdir?: string;
 }
 
 // ── Docker compose project naming (I3) ────────────────────────────────────────
@@ -142,10 +144,13 @@ function handleProvision(input: Record<string, unknown>): void {
     process.exit(1);
   }
 
-  // Resolve compose file path (relative to cwd if not absolute)
+  // 決定34d: 相対 compose パスは workdir から解決する。省略時は従来どおり自分の cwd
+  // ——ここが Environment Pool の cwd 固定だったせいで、番頭は「職人が作った worktree で
+  // 検証して」を頼めなかった
+  const workdir = input["workdir"] as string | undefined;
   const composeFile = path.isAbsolute(composePath)
     ? composePath
-    : path.resolve(process.cwd(), composePath);
+    : path.resolve(workdir ?? process.cwd(), composePath);
 
   if (!fs.existsSync(composeFile)) {
     process.stderr.write(`docker-driver provision: compose file not found: ${composeFile}\n`);
@@ -155,7 +160,7 @@ function handleProvision(input: Record<string, unknown>): void {
   const project = projectName(taskId);
 
   // `docker compose up -d` — starts all services in the background
-  const r = runCmd("docker", composeArgs(project, composeFile, ["up", "-d"]));
+  const r = runCmd("docker", composeArgs(project, composeFile, ["up", "-d"]), workdir ? { cwd: workdir } : {});
   if (r.exitCode !== 0) {
     process.stderr.write(
       `docker-driver provision: docker compose up failed (exit ${r.exitCode}):\n${r.stderr}\n`
@@ -170,6 +175,7 @@ function handleProvision(input: Record<string, unknown>): void {
     name: project,
     taskId,
     created,
+    ...(workdir ? { workdir } : {}),
   };
 
   process.stdout.write(JSON.stringify({ handle }) + "\n");
@@ -393,9 +399,13 @@ function handleRun(input: Record<string, unknown>): void {
   // when the host can load AppArmor profiles. Tracked as a backlog item by the
   // sprint. (I2: non-zero exit is not swallowed — it is returned faithfully in
   // the response body.)
+  // 決定34d: compose を解決した場所で回す。handle に残した workdir を既定にするので、
+  // 後続の run が毎回 workdir を渡さなくても provision と同じ場所で動く
+  const runWorkdir = (input["workdir"] as string | undefined) ?? handle.workdir;
   const r = runCmd(
     "docker",
-    composeArgs(project, composeFile, ["run", "--rm", "--no-TTY", serviceName, "sh", "-c", cmd])
+    composeArgs(project, composeFile, ["run", "--rm", "--no-TTY", serviceName, "sh", "-c", cmd]),
+    runWorkdir ? { cwd: runWorkdir } : {}
   );
 
   // Capture combined stdout+stderr as the log

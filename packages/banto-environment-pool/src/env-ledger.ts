@@ -35,6 +35,13 @@ export interface EnvLedgerEntry {
   /** ISO-8601 timestamp of provision */
   createdAt: string;
   /**
+   * どこで動かしたか（ADR-0010 決定34d・task-0034）。
+   *
+   * D3 の例外ではない——これは**導出できない入力**。プロセスが落ちて起き直しても、
+   * 後続の `run` に provision と同じ場所を渡せるように残す。
+   */
+  workdir?: string;
+  /**
    * ISO-8601 deadline for TTL enforcement (computed from profile.ttlMs at provision time).
    * Story-5 reads this to force-teardown expired environments.
    * D3: stored in the ledger (single truth for live resources) — no re-read of profile needed.

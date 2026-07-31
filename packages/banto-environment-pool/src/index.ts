@@ -12,9 +12,41 @@
  * 契約（`EnvDriver` の7動詞）は `@banto/core` にあり、ランタイム中立のまま。
  * このパッケージはその具象——ドライバ2種・runner・環境台帳・credentials の復号。
  *
- * **本タスクは切り出しのみで振る舞いを変えない**（決定32a の1段目）。サービス化
- * （番頭への `env.*` 提供）と Kobo の提供元差し替えは別タスク。
+ * task-0034 で中の契約が入った（決定34）：`envId` を主キーにした `EnvironmentPool` と
+ * `env.*` Tool、`repoPath` からのプロファイル解決、`workdir`、アドホック環境、上限。
+ * **Kobo を経由しない経路がここで成立する**（決定32c）。
+ *
+ * サービス化（HTTP面）と Kobo の提供元差し替えはまだ別タスク（決定32a の2段目）。
  */
+
+// 本体（envId を主キーにした操作一式・決定34b）
+export { EnvironmentPool, ADHOC_PROFILE_PREFIX } from "./pool.js";
+export type {
+  EnvironmentPoolOptions,
+  ProvisionRequest,
+  EnvSummary,
+  RunResult,
+  VerifyResult,
+} from "./pool.js";
+
+// 番頭へ渡す Tool とモジュール定義（決定34a）
+export { createEnvTools } from "./tools.js";
+export { createEnvironmentPoolModule, ENVIRONMENT_POOL_BASE_URL } from "./module.js";
+
+// 既定とハード上限・アドホックの可否（決定34e・f）
+export {
+  DEFAULT_ENV_LIMITS,
+  BUILTIN_DRIVER_NAMES,
+  resolveLimits,
+  checkProfileLimits,
+  checkAdhocDriver,
+  clampTtl,
+} from "./limits.js";
+export type { EnvLimits, AdhocDriverPolicy, BuiltinDriverName, LimitCheck } from "./limits.js";
+
+// プロファイルの解決（決定34c: 在り処は呼び出し側が渡す）
+export { loadProfile, listProfiles, environmentsFilePath } from "./profiles.js";
+export type { ProfileLookup } from "./profiles.js";
 
 // 環境台帳（provision した環境の帳簿。作った者が片付ける責任を負う・決定32e）
 export { EnvLedger, countLiveByProfile } from "./env-ledger.js";

@@ -15,6 +15,7 @@
     "typecheck": "tsc -b --noEmit"
   },
   "dependencies": {
-    "@banto/core": "*"
+    "@banto/core": "*",
+    "typebox": "^1.1.24"
   }
 }

@@ -1,0 +1,411 @@
+/**
+ * task-0034: `env.*` Tool と Environment Pool の設定面。ADR-0010 決定34。
+ *
+ * **Kobo も Banto も起こさない**（a7）。同梱の `process` ドライバを本物の子プロセスとして
+ * 回すので、契約（stdin/stdout の7動詞）が実際に噛み合っているところまで見る。
+ *
+ * 一番見たいのは a1——**途中で失敗しても畳むこと**。外部リソースの消し忘れは金銭的実害で、
+ * 本仕様で最も優先度の高い機構（I3）。
+ */
+
+import { describe, it, beforeEach, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
+import {
+  EnvironmentPool,
+  createEnvTools,
+  DEFAULT_ENV_LIMITS,
+  checkAdhocDriver,
+  checkProfileLimits,
+  loadProfile,
+  resolveLimits,
+  type EnvLimits,
+} from "@banto/environment-pool";
+import type { NamespacedToolDefinition } from "@banto/core";
+
+let dir: string;
+let dataDir: string;
+let repo: string;
+
+beforeEach(() => {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), "env-pool-"));
+  dataDir = path.join(dir, "data");
+  repo = path.join(dir, "repo");
+  fs.mkdirSync(path.join(repo, "meta"), { recursive: true });
+});
+
+afterEach(() => {
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+/** `process` ドライバで動く最小のプロファイル定義を書く。 */
+function writeProfiles(body: string): void {
+  fs.writeFileSync(path.join(repo, "meta", "environments.yaml"), body, "utf-8");
+}
+
+function pool(limits?: Partial<EnvLimits>): EnvironmentPool {
+  return new EnvironmentPool({ dataDir, ...(limits ? { limits } : {}), driverTimeoutMs: 20_000 });
+}
+
+function tool(p: EnvironmentPool, name: string): NamespacedToolDefinition {
+  return createEnvTools(p).find((t) => t.name === name)!;
+}
+
+describe("[task-0034/a1] env.verify は一息で回して必ず畳む", () => {
+  it("provision → healthcheck → run → teardown が通り、環境が残らない", async () => {
+    const p = pool();
+    const verify = tool(p, "env.verify");
+
+    const result = await verify.execute({
+      driver: "process",
+      // 起動しっぱなしになるコマンド。healthcheck は生存を見る
+      config: { cmd: "sleep 30" },
+      cmd: "echo hello-from-env",
+      taskId: "t-verify",
+    });
+    const details = result.details as {
+      ok: boolean;
+      tornDown: boolean;
+      healthy: boolean;
+      run?: { exit: number; logTail: string };
+    };
+
+    assert.equal(details.healthy, true, "環境が使える状態になること");
+    assert.equal(details.run?.exit, 0, "コマンドが通ること");
+    assert.match(details.run!.logTail, /hello-from-env/, "ログの中身が返ること");
+    assert.equal(details.ok, true);
+    assert.equal(details.tornDown, true, "畳まれること");
+
+    // 台帳にも生き残りがいない
+    assert.deepEqual(p.list(), []);
+  });
+
+  it("**途中で失敗しても畳む**（I3: 消し忘れが一番困る）", async () => {
+    const p = pool();
+    const verify = tool(p, "env.verify");
+
+    // 落ちるコマンドを走らせる。verify は失敗として返すが、環境は畳んでいること
+    const result = await verify.execute({
+      driver: "process",
+      config: { cmd: "sleep 30" },
+      cmd: "exit 3",
+      taskId: "t-fail",
+    });
+    const details = result.details as { ok: boolean; tornDown: boolean; run?: { exit: number } };
+
+    assert.equal(details.run?.exit, 3, "落ちた終了コードをそのまま返すこと");
+    assert.equal(details.ok, false, "成功に見せないこと");
+    assert.equal(details.tornDown, true, "失敗しても畳むこと");
+    assert.deepEqual(p.list(), [], "環境が残らないこと");
+  });
+
+  it("環境が立ち上がらなくても畳みまで到達する", async () => {
+    const p = pool();
+    const verify = tool(p, "env.verify");
+    // 即座に終わるコマンド＝環境として生きていない
+    await assert.rejects(
+      () => verify.execute({ driver: "process", config: { cmd: "true" }, taskId: "t-dead" }),
+      /環境を用意できませんでした/
+    );
+    // provision 自体が失敗したので台帳には載らない（載せてから失敗すると幽霊が残る）
+    assert.deepEqual(p.list({ includeTornDown: true }), []);
+  });
+
+  it("畳めなかったら成功に見せない（tornDown:false と理由が返る）", async () => {
+    // **畳めない環境**を本当に作る。provision も healthcheck も run も通るが teardown だけ
+    // 失敗するドライバ——ここが verify の一番きわどい経路で、
+    // 「失敗したのに成功に見える」が起きると外部リソースが黙って残り続ける（I3）
+    const driver = path.join(dir, "stubborn-driver");
+    fs.writeFileSync(
+      driver,
+      [
+        "#!/usr/bin/env node",
+        'const verb = process.argv[2];',
+        'if (verb === "teardown") { process.stderr.write("cannot destroy\\n"); process.exit(1); }',
+        'const out = { provision: { handle: { id: "x" } }, healthcheck: { ok: true },',
+        '  run: { exit: 0, log_path: "" } }[verb] ?? {};',
+        "process.stdout.write(JSON.stringify(out));",
+      ].join("\n"),
+      { mode: 0o755 }
+    );
+
+    // 外部ドライバなので adhocDrivers を開ける（決定34e の設定面がここでも効く）
+    const p = new EnvironmentPool({ dataDir, limits: { adhocDrivers: "all" }, driverTimeoutMs: 10_000 });
+    const result = await tool(p, "env.verify").execute({
+      driver,
+      config: {},
+      cmd: "echo x",
+      taskId: "t-stubborn",
+    });
+    const details = result.details as {
+      envId: string;
+      ok: boolean;
+      tornDown: boolean;
+      teardownError?: string;
+    };
+
+    assert.equal(details.tornDown, false, "畳めなかったことを返すこと");
+    assert.match(details.teardownError ?? "", /cannot destroy/, "理由が分かること");
+    assert.match(result.content[0]!.text!, /環境が畳めていません/, "本文にも出ること（詳細だけだと気づかない）");
+
+    // 台帳には生きたまま残る——残骸を追えるようにするため（黙って消さない）
+    const remaining = p.list();
+    assert.deepEqual(
+      remaining.map((e) => e.envId),
+      [details.envId],
+      "畳めなかった環境は生きたまま台帳に残ること（残骸を追えるようにする）"
+    );
+  });
+});
+
+describe("[task-0034/a2] 低位動詞は envId を鍵に動く", () => {
+  it("provision で得た envId で run / teardown できる。teardown は冪等", async () => {
+    const p = pool();
+    const provision = tool(p, "env.provision");
+    const run = tool(p, "env.run");
+    const teardown = tool(p, "env.teardown");
+    const list = tool(p, "env.list");
+
+    const created = await provision.execute({
+      driver: "process",
+      config: { cmd: "sleep 30" },
+      taskId: "t-low",
+    });
+    const envId = (created.details as { envId: string }).envId;
+    assert.match(envId, /^env-/);
+
+    // 立てたものは残る（居座らせたい環境のための経路）
+    const listed = await list.execute({});
+    assert.equal((listed.details as { environments: unknown[] }).environments.length, 1);
+
+    const ran = await run.execute({ envId, cmd: "echo low-level" });
+    assert.equal((ran.details as { exit: number }).exit, 0);
+
+    const first = await teardown.execute({ envId });
+    assert.equal((first.details as { alreadyDone: boolean }).alreadyDone, false);
+    // 冪等: 2回目は何もせず成功する
+    const second = await teardown.execute({ envId });
+    assert.equal((second.details as { alreadyDone: boolean }).alreadyDone, true);
+
+    assert.deepEqual(p.list(), []);
+  });
+
+  it("畳んだ環境への操作は黙って通さない", async () => {
+    const p = pool();
+    const created = await tool(p, "env.provision").execute({
+      driver: "process",
+      config: { cmd: "sleep 30" },
+    });
+    const envId = (created.details as { envId: string }).envId;
+    await tool(p, "env.teardown").execute({ envId });
+
+    await assert.rejects(() => tool(p, "env.run").execute({ envId, cmd: "echo x" }), /既に畳まれています/);
+    await assert.rejects(() => tool(p, "env.run").execute({ envId: "env-nope", cmd: "x" }), /台帳にありません/);
+  });
+});
+
+describe("[task-0034/a3] プロファイルの在り処は呼び出し側が渡す", () => {
+  it("repoPath の meta/environments.yaml が解決される", async () => {
+    writeProfiles("profiles:\n  dev:\n    driver: process\n    config:\n      cmd: sleep 30\n    ttl: 1h\n");
+    const p = pool();
+
+    const created = await tool(p, "env.provision").execute({ repoPath: repo, profile: "dev" });
+    const details = created.details as { profileName: string; driver: string };
+    assert.equal(details.profileName, "dev");
+    assert.equal(details.driver, "process");
+    await tool(p, "env.teardown").execute({ envId: (created.details as { envId: string }).envId });
+  });
+
+  it("独自のプロジェクト登録簿を持たない（repoPath 無しでは profile を使えない）", async () => {
+    const p = pool();
+    await assert.rejects(
+      () => tool(p, "env.provision").execute({ profile: "dev" }),
+      /repoPath/
+    );
+  });
+
+  it("毎回読み直す（D3: ファイルは意図。キャッシュしない）", () => {
+    writeProfiles("profiles:\n  dev:\n    driver: process\n    ttl: 1h\n");
+    const limits = resolveLimits();
+    assert.equal(loadProfile(repo, "dev", limits).ok, true);
+
+    writeProfiles("profiles:\n  other:\n    driver: process\n    ttl: 1h\n");
+    const after = loadProfile(repo, "dev", limits);
+    assert.equal(after.ok, false, "書き換えたらすぐ反映されること");
+  });
+
+  it("定義が無い・壊れているを区別して返す", () => {
+    const limits = resolveLimits();
+    const noFile = loadProfile(repo, "dev", limits);
+    assert.equal(noFile.ok, false);
+    assert.match((noFile as { reason: string }).reason, /がありません/);
+
+    writeProfiles("profiles:\n  dev:\n    driver: process\n    ttl: 1h\n");
+    const missing = loadProfile(repo, "prod", limits);
+    assert.match((missing as { reason: string }).reason, /定義済み: dev/);
+  });
+});
+
+describe("[task-0034/a4] workdir がドライバへ渡る", () => {
+  it("provision / run がその場所で動く", async () => {
+    const workdir = path.join(dir, "worktree");
+    fs.mkdirSync(workdir, { recursive: true });
+    fs.writeFileSync(path.join(workdir, "marker.txt"), "ここが作業場所\n");
+
+    const p = pool();
+    const result = await tool(p, "env.verify").execute({
+      driver: "process",
+      config: { cmd: "sleep 30" },
+      // cwd が workdir でなければ marker.txt は見えない
+      cmd: "cat marker.txt",
+      workdir,
+    });
+    const details = result.details as { run?: { exit: number; logTail: string }; tornDown: boolean };
+    assert.equal(details.run?.exit, 0, "workdir で動いていること");
+    assert.match(details.run!.logTail, /ここが作業場所/);
+    assert.equal(details.tornDown, true);
+  });
+
+  it("省略時は現状どおりに落ちる（既存プロファイルを壊さない）", async () => {
+    const p = pool();
+    const result = await tool(p, "env.verify").execute({
+      driver: "process",
+      config: { cmd: "sleep 30" },
+      cmd: "pwd",
+    });
+    const details = result.details as { run?: { exit: number } };
+    assert.equal(details.run?.exit, 0, "workdir 無しでも動くこと");
+  });
+
+  it("workdir は台帳に残る（後続の run に同じ場所を渡せる）", async () => {
+    const workdir = path.join(dir, "wt2");
+    fs.mkdirSync(workdir, { recursive: true });
+    fs.writeFileSync(path.join(workdir, "here.txt"), "ok\n");
+
+    const p = pool();
+    const created = await tool(p, "env.provision").execute({
+      driver: "process",
+      config: { cmd: "sleep 30" },
+      workdir,
+    });
+    const envId = (created.details as { envId: string }).envId;
+    assert.equal((created.details as { workdir?: string }).workdir, workdir);
+
+    // run では workdir を渡していないのに、provision と同じ場所で走る
+    const ran = await tool(p, "env.run").execute({ envId, cmd: "cat here.txt" });
+    assert.equal((ran.details as { exit: number }).exit, 0);
+    await tool(p, "env.teardown").execute({ envId });
+  });
+});
+
+describe("[task-0034/a5] アドホック環境は既定でビルトインのみ", () => {
+  it("既定では外部ドライバを拒む。ビルトインは通る", () => {
+    const limits = resolveLimits();
+    assert.equal(checkAdhocDriver("process", limits).ok, true);
+    assert.equal(checkAdhocDriver("docker", limits).ok, true);
+    const external = checkAdhocDriver("/opt/drivers/proxmox", limits);
+    assert.equal(external.ok, false);
+    assert.match((external as { reason: string }).reason, /費用/);
+  });
+
+  it("設定で all / none に切り替わる", () => {
+    assert.equal(checkAdhocDriver("/opt/x", resolveLimits({ adhocDrivers: "all" })).ok, true);
+    const none = checkAdhocDriver("process", resolveLimits({ adhocDrivers: "none" }));
+    assert.equal(none.ok, false);
+    assert.match((none as { reason: string }).reason, /プロファイルを使って/);
+  });
+
+  it("アドホックにも既定TTLが付いて台帳に載る（掃除の扱いを経路で変えない）", async () => {
+    const p = pool();
+    const created = await tool(p, "env.provision").execute({
+      driver: "process",
+      config: { cmd: "sleep 30" },
+    });
+    const details = created.details as { ttlDeadline: string; profileName: string; envId: string };
+    assert.match(details.profileName, /^adhoc:process$/);
+    const remaining = new Date(details.ttlDeadline).getTime() - Date.now();
+    assert.ok(remaining > 0 && remaining <= DEFAULT_ENV_LIMITS.defaultTtlMs + 1000);
+    await tool(p, "env.teardown").execute({ envId: details.envId });
+  });
+
+  it("許していない外部ドライバは黙ってビルトインに差し替えない", async () => {
+    const p = pool();
+    await assert.rejects(
+      () => tool(p, "env.provision").execute({ driver: "/opt/drivers/proxmox", config: {} }),
+      /アドホックで使えるのは/
+    );
+  });
+});
+
+describe("[task-0034/a6] 上限は能力側が持ち、超えたら丸めず拒否する", () => {
+  it("TTL が上限を超えるプロファイルは理由つきで拒否される", () => {
+    const limits = resolveLimits();
+    const check = checkProfileLimits(
+      { name: "long", driver: "process", ttlMs: 720 * 3600 * 1000 },
+      limits
+    );
+    assert.equal(check.ok, false);
+    assert.match((check as { reason: string }).reason, /丸めずに拒否/);
+  });
+
+  it("quota が上限を超えるプロファイルも拒否される", () => {
+    const check = checkProfileLimits(
+      { name: "many", driver: "process", ttlMs: 1000, quota: { max_instances: 99 } },
+      resolveLimits()
+    );
+    assert.equal(check.ok, false);
+    assert.match((check as { reason: string }).reason, /max_instances/);
+  });
+
+  it("拒否されたプロファイルは env.list_profiles に理由つきで出る（黙って隠さない）", async () => {
+    writeProfiles(
+      "profiles:\n" +
+        "  ok:\n    driver: process\n    ttl: 1h\n" +
+        "  toolong:\n    driver: process\n    ttl: 720h\n"
+    );
+    const listed = await tool(pool(), "env.list_profiles").execute({ repoPath: repo });
+    const details = listed.details as {
+      usable: Array<{ name: string }>;
+      rejected: Array<{ name: string; reason: string }>;
+    };
+    assert.deepEqual(details.usable.map((p) => p.name), ["ok"]);
+    assert.deepEqual(details.rejected.map((r) => r.name), ["toolong"]);
+    assert.match(listed.content[0]!.text!, /toolong — 使えません/);
+  });
+
+  it("同時実行の上限を超えると立てられない（台帳から数える・D3）", async () => {
+    const p = pool({ maxInstancesTotal: 1, maxInstancesPerProfile: 1 });
+    const first = await tool(p, "env.provision").execute({
+      driver: "process",
+      config: { cmd: "sleep 30" },
+    });
+    await assert.rejects(
+      () => tool(p, "env.provision").execute({ driver: "process", config: { cmd: "sleep 30" } }),
+      /同時に動かせる環境は 1 個までです/
+    );
+
+    // 畳めばまた立てられる（生きているものだけを数えている）
+    await tool(p, "env.teardown").execute({ envId: (first.details as { envId: string }).envId });
+    const second = await tool(p, "env.provision").execute({
+      driver: "process",
+      config: { cmd: "sleep 30" },
+    });
+    await tool(p, "env.teardown").execute({ envId: (second.details as { envId: string }).envId });
+  });
+});
+
+describe("[task-0034] 職人には渡さない（決定32c）", () => {
+  it("env.* は Worker Pool の職人向け Tool に混ざっていない", async () => {
+    const { createWorkerTools, createWorkerReportTools } = await import("@banto/worker-pool");
+    void createWorkerTools;
+    // 職人が持つのは報告経路だけ。ここに env.* が混ざると、職人が自分の作業を
+    // 自分で検証して「通りました」と言えてしまい、決定29a が崩れる
+    const workerSide = createWorkerReportTools({} as never).map((t) => t.name);
+    for (const name of workerSide) {
+      assert.doesNotMatch(name, /^env\./);
+    }
+  });
+});

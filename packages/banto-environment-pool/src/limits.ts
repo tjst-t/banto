@@ -1,0 +1,124 @@
+/**
+ * 能力側が持つ既定とハード上限（ADR-0010 決定34e・f・task-0034）。
+ *
+ * **なぜ能力側が持つのか。** D9 で外部VMコストは one-way な副作用（D1 に戻る）とされている。
+ * プロファイルに `ttl: 720h` と書けば通る状態では quota が歯止めとして機能しない——
+ * 機構が上限を持たないと誰も止められない。
+ *
+ * **超えるプロファイルは黙って丸めず拒否する**（I2）。丸めると、プロファイルに書いた値と
+ * 実際に効く値が食い違ったまま誰も気づかない。拒否すれば書いた人が直せる。
+ *
+ * アドホックの可否も同じ置き場にする（決定34f）。上限と許可は同じ性質——
+ * 能力側が持つ安全側の既定であり、置き場を割らない。
+ */
+
+import type { EnvProfile } from "@banto/core";
+
+/** 同梱ドライバ。「お金がかからない側」の線引きでもある（決定34e）。 */
+export const BUILTIN_DRIVER_NAMES = ["process", "docker"] as const;
+export type BuiltinDriverName = (typeof BUILTIN_DRIVER_NAMES)[number];
+
+/**
+ * アドホック環境（`driver` + `config` 直指定）でどのドライバを許すか。
+ *
+ * - `builtin`（既定）: `process` / `docker` のみ。線引きが「お金がかかるかどうか」で
+ *   説明でき、I3 を守りつつ手元の検証は軽く回せる
+ * - `all`: 外部ドライバも許す。プロジェクトによっては開けたい場面がある
+ * - `none`: アドホック自体を許さない。プロファイル経由だけにする
+ */
+export type AdhocDriverPolicy = "builtin" | "all" | "none";
+
+export interface EnvLimits {
+  /** TTL を書いていないプロファイル・アドホックに付ける既定。 */
+  defaultTtlMs: number;
+  /** これを超える TTL は拒否する。 */
+  maxTtlMs: number;
+  /** 1プロファイルあたりの同時実行数の上限。プロファイルの quota はこの範囲でのみ指定できる。 */
+  maxInstancesPerProfile: number;
+  /** 全体の同時実行数の上限。プロファイルをまたいで効く。 */
+  maxInstancesTotal: number;
+  /** アドホック環境の可否（決定34e）。 */
+  adhocDrivers: AdhocDriverPolicy;
+}
+
+/**
+ * 既定値。
+ *
+ * 4時間・同時4本は「手元の検証を回すには十分で、忘れて放置しても一晩は越えない」という
+ * 線。数字そのものより、**上限が存在すること**が要点（決定34f）。
+ */
+export const DEFAULT_ENV_LIMITS: EnvLimits = {
+  defaultTtlMs: 4 * 3600 * 1000,
+  maxTtlMs: 24 * 3600 * 1000,
+  maxInstancesPerProfile: 4,
+  maxInstancesTotal: 8,
+  adhocDrivers: "builtin",
+};
+
+/** 設定で一部だけ上書きできるようにする（ホストの起動設定から渡す）。 */
+export function resolveLimits(overrides: Partial<EnvLimits> = {}): EnvLimits {
+  return { ...DEFAULT_ENV_LIMITS, ...overrides };
+}
+
+/** 拒否の理由。`env_profile_rejected` にそのまま載せる。 */
+export type LimitCheck = { ok: true } | { ok: false; reason: string };
+
+/**
+ * プロファイルが上限の範囲に収まっているか。
+ *
+ * I2: 超えていたら丸めずに理由つきで拒否する。
+ */
+export function checkProfileLimits(profile: EnvProfile, limits: EnvLimits): LimitCheck {
+  if (profile.ttlMs > limits.maxTtlMs) {
+    return {
+      ok: false,
+      reason:
+        `profile "${profile.name}": ttl ${formatMs(profile.ttlMs)} は上限 ` +
+        `${formatMs(limits.maxTtlMs)} を超えています（丸めずに拒否します）`,
+    };
+  }
+  const max = profile.quota?.max_instances;
+  if (max !== undefined && max > limits.maxInstancesPerProfile) {
+    return {
+      ok: false,
+      reason:
+        `profile "${profile.name}": quota.max_instances ${max} は上限 ` +
+        `${limits.maxInstancesPerProfile} を超えています（丸めずに拒否します）`,
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * アドホックのドライバ指定が許されているか（決定34e）。
+ *
+ * I2: 許していない指定は黙ってビルトインに差し替えず拒否する——「頼んだものと違うもので
+ * 検証された」が一番困る。
+ */
+export function checkAdhocDriver(driver: string, limits: EnvLimits): LimitCheck {
+  if (limits.adhocDrivers === "none") {
+    return {
+      ok: false,
+      reason: "アドホック環境は許可されていません（adhocDrivers: none）。プロファイルを使ってください",
+    };
+  }
+  if (limits.adhocDrivers === "all") return { ok: true };
+  if ((BUILTIN_DRIVER_NAMES as readonly string[]).includes(driver)) return { ok: true };
+  return {
+    ok: false,
+    reason:
+      `アドホックで使えるのは ${BUILTIN_DRIVER_NAMES.join(" / ")} だけです（adhocDrivers: builtin）。` +
+      `"${driver}" のような外部ドライバは費用が出る側なので、設定で明示的に開ける必要があります`,
+  };
+}
+
+/** 上限の TTL に収める（アドホックの既定TTLを決めるときに使う）。 */
+export function clampTtl(requested: number | undefined, limits: EnvLimits): number {
+  if (requested === undefined) return limits.defaultTtlMs;
+  return Math.min(requested, limits.maxTtlMs);
+}
+
+function formatMs(ms: number): string {
+  const hours = ms / 3600 / 1000;
+  return hours >= 1 ? `${Number(hours.toFixed(2))}h` : `${Math.round(ms / 1000)}s`;
+}

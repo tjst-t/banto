@@ -81,9 +81,11 @@ describe("[task-0033/a1] Kobo に依存しない", () => {
     };
     const deps = Object.keys(pkg.dependencies ?? {});
 
-    // 依存の向きが逆転すると「独立したモジュール」が名前だけになる（決定32a）
-    assert.ok(!deps.includes("@banto/daemon"), `Kobo に依存している: ${deps.join(", ")}`);
-    assert.deepEqual(deps, ["@banto/core"]);
+    // 依存の向きが逆転すると「独立したモジュール」が名前だけになる（決定32a）。
+    // 見るのは**モノレポ内の依存の向き**——外部ライブラリ（Tool定義に使う typebox 等）は
+    // ここの関心ではない。task-0034 で env.* Tool が入り typebox が要るようになった
+    const internal = deps.filter((d) => d.startsWith("@banto/"));
+    assert.deepEqual(internal, ["@banto/core"], `モノレポ内の依存が増えている: ${deps.join(", ")}`);
   });
 
   it("[task-0033/a1] 実装コードが Kobo を import しない", () => {

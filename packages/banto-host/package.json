@@ -24,7 +24,8 @@
     "typebox": "^1.1.24",
     "ws": "^8.21.1",
     "@banto/worker-pool": "*",
-    "@banto/repo-manager": "*"
+    "@banto/repo-manager": "*",
+    "@banto/environment-pool": "*"
   },
   "bin": {
     "banto": "./src/bin.ts"

@@ -40,6 +40,8 @@ interface ProcessEntry {
   cmd: string;
   port?: number;
   created: string;
+  /** どこで動かしたか（決定34d）。プロセスが起き直しても後続の run に同じ場所を渡せる */
+  workdir?: string;
 }
 
 function readState(): ProcessEntry[] {
@@ -165,6 +167,8 @@ async function handleProvision(input: Record<string, unknown>): Promise<void> {
 
   const cmd = config["cmd"] as string | undefined;
   const port = config["port"] as number | undefined;
+  // 決定34d: どこで動かすか。省略時は継承した cwd（従来どおり）
+  const workdir = input["workdir"] as string | undefined;
   if (!cmd) {
     process.stderr.write("process-driver provision: config.cmd is required\n");
     process.exit(1);
@@ -179,6 +183,7 @@ async function handleProvision(input: Record<string, unknown>): Promise<void> {
     shell: true,
     detached: true,  // detach so it outlives this driver invocation
     stdio: ["ignore", "ignore", "ignore"],
+    ...(workdir ? { cwd: workdir } : {}),
   });
 
   // Wait briefly for the process to start and check it hasn't crashed immediately
@@ -199,11 +204,14 @@ async function handleProvision(input: Record<string, unknown>): Promise<void> {
     cmd,
     port,
     created: new Date().toISOString(),
+    ...(workdir ? { workdir } : {}),
   };
   addEntry(entry);
 
   const handle: Record<string, unknown> = { pid: child.pid, name, taskId };
   if (port !== undefined) handle["port"] = port;
+  // handle に残すので、後続の run が workdir を渡さなくても同じ場所で動く
+  if (workdir) handle["workdir"] = workdir;
 
   process.stdout.write(JSON.stringify({ handle }) + "\n");
 }
@@ -262,6 +270,8 @@ async function handleRun(input: Record<string, unknown>): Promise<void> {
     process.stderr.write("process-driver run: missing handle or cmd\n");
     process.exit(1);
   }
+  // 決定34d: provision と同じ場所で走らせられるようにする。省略時は従来どおり
+  const workdir = (input["workdir"] as string | undefined) ?? (handle["workdir"] as string | undefined);
 
   const pid = handle["pid"] as number | undefined;
   if (pid === undefined || !isAlive(pid)) {
@@ -283,6 +293,7 @@ async function handleRun(input: Record<string, unknown>): Promise<void> {
     encoding: "utf8",
     // Large buffer to capture all output
     maxBuffer: 10 * 1024 * 1024,
+    ...(workdir ? { cwd: workdir } : {}),
   });
 
   const output = (result.stdout ?? "") + (result.stderr ?? "");
