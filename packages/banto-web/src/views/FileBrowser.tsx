@@ -12,6 +12,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useModuleTool } from "./useModuleTool.js";
+import { PlacePicker, usePlaceSelection } from "./PlacePicker.js";
 import type { CanvasViewProps } from "./registry.js";
 
 interface Entry {
@@ -96,9 +97,23 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
   const initialLine = typeof params["line"] === "number" ? params["line"] : undefined;
   const initialEndLine = typeof params["endLine"] === "number" ? params["endLine"] : undefined;
 
+  // どの場所を見るか（決定36e）。番頭が指定していなければ先頭に落ちる
+  const selection = usePlaceSelection(endpoint, typeof params["place"] === "string" ? params["place"] : undefined);
+  const place = selection.place;
+
   // 渡されたパスがディレクトリかファイルかを先に確かめる
-  const stat = useModuleTool<StatInfo>(endpoint, "file.stat", { path: initialPath });
+  const stat = useModuleTool<StatInfo>(
+    endpoint,
+    "file.stat",
+    { path: initialPath, ...(place ? { place } : {}) },
+    place !== undefined
+  );
   const [nav, setNav] = useState<{ dir: string; file?: string }>();
+
+  // 場所を変えたら、その場所のルートから見直す（前の場所のパスは意味を持たない）
+  useEffect(() => {
+    setNav(undefined);
+  }, [place]);
 
   useEffect(() => {
     if (nav || !stat.data) return;
@@ -120,16 +135,22 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
   const highlightFrom = file === initialPath ? initialLine : undefined;
   const highlightTo = file === initialPath ? (initialEndLine ?? initialLine) : undefined;
 
-  const listing = useModuleTool<Listing>(endpoint, "file.list", { path: dir }, nav !== undefined);
+  const listing = useModuleTool<Listing>(
+    endpoint,
+    "file.list",
+    { path: dir, ...(place ? { place } : {}) },
+    nav !== undefined && place !== undefined
+  );
   const content = useModuleTool<FileContent>(
     endpoint,
     "file.read",
     {
       path: file ?? "",
+      ...(place ? { place } : {}),
       // 強調したい行が既定の打ち切り範囲より後ろにあると出せないので、届く分だけ広げる
       ...(highlightTo !== undefined ? { maxLines: Math.max(400, highlightTo + 40) } : {}),
     },
-    file !== undefined
+    file !== undefined && place !== undefined
   );
 
   const join = (name: string): string => (dir === "." ? name : `${dir}/${name}`);
@@ -137,6 +158,7 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
   return (
     <div className="fb">
       <div className="fb-bar">
+        <PlacePicker selection={selection} />
         <button
           className="fb-up"
           disabled={dir === "."}

@@ -10,8 +10,9 @@
  * データは workspace モジュールのデータAPIから取る（決定25）。番頭のToolは呼ばない。
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useModuleTool } from "./useModuleTool.js";
+import { PlacePicker, usePlaceSelection } from "./PlacePicker.js";
 import type { CanvasViewProps } from "./registry.js";
 
 interface Status {
@@ -75,24 +76,35 @@ export function GitViewer({ params, endpoint }: CanvasViewProps): React.ReactEle
   );
   const [limit, setLimit] = useState(30);
 
-  const status = useModuleTool<Status>(endpoint, "git.status");
-  const log = useModuleTool<Log>(endpoint, "git.log", { limit });
+  // どのリポジトリを見るか（決定36e）。番頭が指定していなければ先頭に落ちる
+  const selection2 = usePlaceSelection(endpoint, typeof params["place"] === "string" ? params["place"] : undefined);
+  const place = selection2.place;
+  const at = place ? { place } : {};
+  const ready = place !== undefined;
+
+  // リポジトリを変えたら選択を作業ツリーへ戻す（前のリポジトリのコミットは意味を持たない）
+  useEffect(() => {
+    setSelection({ source: "working" });
+  }, [place]);
+
+  const status = useModuleTool<Status>(endpoint, "git.status", at, ready);
+  const log = useModuleTool<Log>(endpoint, "git.log", { limit, ...at }, ready);
 
   // コミットを選んでいるときだけ引く
   const show = useModuleTool<Show>(
     endpoint,
     "git.show",
     selection.source === "commit"
-      ? { ref: selection.ref, ...(selection.path ? { path: selection.path } : {}) }
+      ? { ref: selection.ref, ...(selection.path ? { path: selection.path } : {}), ...at }
       : {},
-    selection.source === "commit"
+    selection.source === "commit" && ready
   );
   // 作業ツリーを見ているときだけ引く
   const workingDiff = useModuleTool<Diff>(
     endpoint,
     "git.diff",
-    selection.path ? { path: selection.path } : {},
-    selection.source === "working"
+    { ...(selection.path ? { path: selection.path } : {}), ...at },
+    selection.source === "working" && ready
   );
 
   const changedFiles =
@@ -104,6 +116,10 @@ export function GitViewer({ params, endpoint }: CanvasViewProps): React.ReactEle
   return (
     <div className="gv3">
       <div className="gv3-side">
+        {/* どのリポジトリを見るか（決定36e）。番頭も同じ引数を Tool に渡している */}
+        <div className="gv3-place">
+          <PlacePicker selection={selection2} title="どのリポジトリを見るか" />
+        </div>
         {/* 変更ファイル一覧：作業ツリー、または選択中コミットの内訳 */}
         <section className="gv3-section">
           <h3 className="gv3-head">

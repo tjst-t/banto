@@ -43,6 +43,12 @@ const workspaceViews: CanvasViewSpec[] = [
       "スクロールして強調表示する（file.grep で見つけた箇所をそのまま見せられる）。" +
       "POに構成やファイルの中身、特定の箇所を見せたいときに開く。",
     parameters: Type.Object({
+      place: Type.Optional(
+        Type.String({
+          description:
+            "どの場所（リポジトリ等）を開くか。place.list の id。省略するとPOが画面で選ぶ",
+        })
+      ),
       path: Type.Optional(
         Type.String({
           description:
@@ -68,6 +74,12 @@ const workspaceViews: CanvasViewSpec[] = [
       "「このコミットで何が変わったか」を見せたいときに開く。ref で特定のコミット、path で" +
       "そのコミットの特定ファイルの差分を開いた状態にできる。閲覧専用で、commit等の操作はできない。",
     parameters: Type.Object({
+      place: Type.Optional(
+        Type.String({
+          description:
+            "どの場所（リポジトリ等）を開くか。place.list の id。省略するとPOが画面で選ぶ",
+        })
+      ),
       ref: Type.Optional(
         Type.String({
           description: "最初に選ぶコミット（例: HEAD, a1b2c3）。省略時は未コミットの変更を表示",
