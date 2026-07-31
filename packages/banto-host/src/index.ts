@@ -28,6 +28,15 @@ export { BantoHostServer, type BantoHostServerOptions, type HostSession } from "
 // 会話スレッド＝番頭の分身（決定2・task-0035）
 export { Thread, ThreadRegistry, type ThreadFactory } from "./threads.js";
 export { createThreadTools, bindToolArgs, type ThreadToolsOptions } from "./thread-tools.js";
+// 場所の帳簿と砦（決定36・38）
+export {
+  PlaceRegistry,
+  createStaticPlaceProvider,
+  resolveInPlace,
+  assertWritable,
+  broadlyWritable,
+  type StaticPlaceConfig,
+} from "./places.js";
 export { BantoHostClient, type ServerEventHandler } from "./client.js";
 export {
   BANTO_WS_PATH,

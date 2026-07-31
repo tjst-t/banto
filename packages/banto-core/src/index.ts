@@ -97,6 +97,9 @@ export type {
   BantoToolContext,
 } from "./banto-tool.js";
 
+// 場所（Place）— 番頭が作業してよい場所の契約（決定36c）
+export type { Place, PlaceProvider } from "./place.js";
+
 // Tool 名前空間の規約（決定9・決定22）。モジュールが banto-host 抜きで名乗れるよう core に置く
 export {
   isNamespacedToolName,
