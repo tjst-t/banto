@@ -13,6 +13,8 @@ import { Type } from "typebox";
 import { JsonlMemoryStore } from "@banto/core";
 
 import {
+  PlaceRegistry,
+  createStaticPlaceProvider,
   ThreadRegistry,
   BANTO_WS_PATH,
   BantoHostClient,
@@ -33,6 +35,11 @@ import {
   type ServerEvent,
   type SkillEntry,
 } from "@banto/host";
+
+/** 場所1つの帳簿。task-0038 で workspace モジュールは場所を受け取るようになった。 */
+function placesOf(root: string): PlaceRegistry {
+  return new PlaceRegistry([createStaticPlaceProvider([{ id: "workspace", path: root }])]);
+}
 
 function stubTool(name: `${string}.${string}`) {
   return defineNamespacedTool({
@@ -234,7 +241,7 @@ describe("[task-0015] 組み込みモジュール", () => {
   });
 
   it("[task-0015] workspace モジュールが file.* / git.* を提供する", () => {
-    const module = createWorkspaceModule(root);
+    const module = createWorkspaceModule(placesOf(root));
 
     assert.equal(module.name, "workspace");
     // 個々のTool名を全部並べるとToolが増えるたび意味の無い失敗になるので、
@@ -258,7 +265,7 @@ describe("[task-0015] 組み込みモジュール", () => {
   });
 
   it("[task-0015] 組み込み2つを同時に登録しても衝突しない", () => {
-    const workspace = createWorkspaceModule(root);
+    const workspace = createWorkspaceModule(placesOf(root));
     const demo = createDemoModule();
     const registry = createModuleRegistry([workspace, demo]);
 

@@ -43,10 +43,47 @@ import { createDemoModule } from "./modules/demo.js";
 import { createStudioModule } from "./modules/studio.js";
 import { createWorkspaceModule } from "./modules/workspace.js";
 import { workspaceRoot } from "./workspace.js";
+import {
+  PlaceRegistry,
+  broadlyWritable,
+  createStaticPlaceProvider,
+  type StaticPlaceConfig,
+} from "./places.js";
+import { guardPathArg } from "./place-scoped.js";
 import { createSkillTools } from "./skill-tools.js";
 import { bindToolArgs, createThreadTools } from "./thread-tools.js";
 import { ThreadRegistry, type ThreadFactory } from "./threads.js";
 import { loadBantoSkills } from "./skills.js";
+
+/**
+ * 番頭が作業してよい場所の設定（決定36d・38b）。
+ *
+ * **番頭が書けない場所に置く**のが要点——リポジトリ内の設定に置くと、番頭がそれ自体を
+ * 書き換えて自分の権限を広げられる（I1：ずるは不可能にする）。
+ *
+ * 形式：`BANTO_PLACES=<id>:<path>[:<書ける範囲をカンマ区切り>];...`
+ * 例：`banto:/home/me/ghq/github.com/me/banto:docs/**,work/**`
+ * 未設定なら、従来どおりワークスペース1つ（読み取り専用）。
+ */
+function readPlaceConfig(fallbackRoot: string): StaticPlaceConfig[] {
+  const raw = process.env["BANTO_PLACES"];
+  if (!raw || raw.trim().length === 0) {
+    return [{ id: "workspace", label: "ワークスペース", path: fallbackRoot }];
+  }
+  const places: StaticPlaceConfig[] = [];
+  for (const entry of raw.split(";").map((e) => e.trim()).filter((e) => e.length > 0)) {
+    const [id, place, writable] = entry.split(":");
+    // I2: 壊れた設定を黙って飛ばさない。場所を1つ失うと番頭が黙って別の場所を触りうる
+    if (!id || !place) throw new Error(`BANTO_PLACES の項目が不正です: "${entry}"`);
+    places.push({
+      id,
+      label: id,
+      path: place,
+      ...(writable ? { writable: writable.split(",").map((w) => w.trim()).filter(Boolean) } : {}),
+    });
+  }
+  return places;
+}
 
 /** データの置き場所。BANTO_DATA_DIR で差し替えられる。 */
 function dataDir(): string {
@@ -81,6 +118,17 @@ async function serve(options: ServeOptions): Promise<void> {
   const skills = loadBantoSkills();
   const workspace = workspaceRoot();
 
+  // 決定36：番頭が作業してよい場所。既定は BANTO_WORKSPACE（従来どおり1つ）。
+  // BANTO_PLACES で複数を与えられる（決定36d：静的な場所はホスト設定。モジュールにしない）。
+  // repo-manager（ghq/gwq から導出する提供元）は task-0039 でここに足す。
+  const places = new PlaceRegistry([createStaticPlaceProvider(readPlaceConfig(workspace))]);
+  for (const place of broadlyWritable(await places.list())) {
+    // 決定38e：広く許したことを黙って通さない
+    console.warn(
+      `[banto] 場所 "${place.id}" は広い書き込み範囲（${(place.writable ?? []).join(", ")}）を許しています`
+    );
+  }
+
   // 決定25・27: モジュールを1箇所で登録する。Tool・GUI・SKILL はここから束ねて配る。
   // Kobo は接続後に、同じ口から登録される。
   //
@@ -108,7 +156,7 @@ async function serve(options: ServeOptions): Promise<void> {
   const coreSkills: SkillEntry[] = skills.map((skill) => ({ skill, origin: CORE_ORIGIN }));
 
   const modules = createModuleRegistry([
-    createWorkspaceModule(workspace),
+    createWorkspaceModule(places),
     workerPoolModule,
     createDemoModule(),
   ]);
@@ -153,9 +201,13 @@ async function serve(options: ServeOptions): Promise<void> {
       }),
       // 決定35a: 職人の報告は**起こしたスレッド**へ返る。番頭に自分の threadId を
       // 書かせず、ここで固定して渡す（番頭は自分がどのスレッドかを知らない）
-      ...modules.tools().map((tool) =>
-        tool.name === "worker.delegate" ? bindToolArgs(tool, { origin: threadOrigin(threadId) }) : tool
-      ),
+      ...modules.tools().map((tool) => {
+        if (tool.name !== "worker.delegate") return tool;
+        const bound = bindToolArgs(tool, { origin: threadOrigin(threadId) });
+        // 決定36g：職人の作業場所を砦に通す。いままで無検査で、番頭が任意の
+        // ディレクトリを職人に書き換えさせられた
+        return guardPathArg(bound, places, "worktreePath");
+      }),
     ];
     const { session } = await createBantoHostSession({
       systemPrompt: SYSTEM_PROMPT,
@@ -165,7 +217,7 @@ async function serve(options: ServeOptions): Promise<void> {
       ...(model ? { model } : {}),
     });
     // server はイベントの wire名→論理名 逆引きに、登録した論理名のToolを必要とする
-    const tools = [...ownTools, ...createMemoryTools(memory), ...createSkillTools(skills)];
+      const tools = [...ownTools, ...createMemoryTools(memory), ...createSkillTools(skills)];
     return {
       session,
       canvas,

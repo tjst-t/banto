@@ -22,10 +22,17 @@ import {
   type ModuleRegistryConfig,
 } from "@banto/core";
 import {
+  PlaceRegistry,
+  createStaticPlaceProvider,
   createModuleRegistry,
   createModuleToolHandler,
   createWorkspaceModule,
 } from "@banto/host";
+
+/** 場所1つの帳簿。task-0038 で workspace モジュールは場所を受け取るようになった。 */
+function placesOf(root: string): PlaceRegistry {
+  return new PlaceRegistry([createStaticPlaceProvider([{ id: "workspace", path: root }])]);
+}
 
 // ── レジストリ（a1）─────────────────────────────────────────────────────────
 
@@ -99,7 +106,7 @@ describe("[task-0018] モジュール同士の直接呼び出し（Bantoも番�
     git("commit", "-m", "initial");
 
     // 「提供する側のモジュール」だけを立てる。Banto ホストは起動しない。
-    const modules = createModuleRegistry([createWorkspaceModule(root)]);
+    const modules = createModuleRegistry([createWorkspaceModule(placesOf(root))]);
     const handler = createModuleToolHandler(modules);
     providerServer = http.createServer((req, res) => {
       void handler(req, res).then((handled) => {
@@ -208,7 +215,7 @@ describe("[task-0016] workspace モジュールが Tool・GUI・データAPI の
   });
 
   it("[task-0016/a1] Tool と GUI が同じモジュールに揃っている", () => {
-    const module = createWorkspaceModule(root);
+    const module = createWorkspaceModule(placesOf(root));
 
     assert.ok(module.tools.length > 0, "番頭向けのTool");
     assert.deepEqual(module.views.map((v) => v.kind), ["file.browser", "git.viewer"]);
@@ -217,7 +224,7 @@ describe("[task-0016] workspace モジュールが Tool・GUI・データAPI の
   });
 
   it("[task-0016/a1] GUIエントリは決定17の形（component参照を持つ）", () => {
-    const views = createWorkspaceModule(root).views;
+    const views = createWorkspaceModule(placesOf(root)).views;
     assert.deepEqual(views.map((v) => v.component), ["FileBrowser", "GitViewer"]);
     for (const view of views) {
       assert.ok(view.description.length > 0);
@@ -227,7 +234,7 @@ describe("[task-0016] workspace モジュールが Tool・GUI・データAPI の
 
   it("[task-0016/a3] 同じTool実装が content と details の両方を返す（口が2つ・ロジックは1箇所）", async () => {
     fs.writeFileSync(path.join(root, "a.txt"), "1\n2\n3\n");
-    const list = createWorkspaceModule(root).tools.find((t) => t.name === "file.list");
+    const list = createWorkspaceModule(placesOf(root)).tools.find((t) => t.name === "file.list");
     assert.ok(list);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ExtensionContext スタブ (I4)

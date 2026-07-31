@@ -14,6 +14,8 @@ import { Type } from "typebox";
 import { createFileTools } from "../file-tools.js";
 import { createGitTools } from "../git-tools.js";
 import type { BantoModule } from "../module.js";
+import type { PlaceRegistry } from "../places.js";
+import { placeScopedTools } from "../place-scoped.js";
 import type { CanvasViewSpec } from "../canvas.js";
 
 /** 組み込みモジュールの到達先は Banto ホスト自身。UIは自分のオリジンに解決する。 */
@@ -73,14 +75,20 @@ const workspaceViews: CanvasViewSpec[] = [
   },
 ];
 
-export function createWorkspaceModule(root: string): BantoModule {
+/**
+ * @param places 場所の帳簿。`file.*` / `git.*` は**呼び出しごとに場所を選ぶ**（決定36e）。
+ *   GUI も同じ Tool 契約を HTTP 経由で呼ぶので、引数が1つ増えるだけで場所の選択UIが
+ *   成り立つ（決定25：人も番頭も同じ契約、経路が違うだけ）。
+ */
+export function createWorkspaceModule(places: PlaceRegistry): BantoModule {
   return {
     name: "workspace",
     title: "ワークスペース",
     description:
-      "作業ディレクトリのファイルとgit履歴を閲覧する組み込みモジュール（すべて読み取り専用）。",
+      "登録された場所（リポジトリ等）のファイルとgit履歴を閲覧する組み込みモジュール" +
+      "（すべて読み取り専用）。どの場所を見るかは place で選ぶ。",
     endpoint: { baseUrl: WORKSPACE_BASE_URL },
-    tools: [...createFileTools(root), ...createGitTools(root)],
+    tools: [...placeScopedTools(places, createFileTools), ...placeScopedTools(places, createGitTools)],
     views: workspaceViews,
     skills: [],
   };

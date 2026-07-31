@@ -37,6 +37,7 @@ export {
   broadlyWritable,
   type StaticPlaceConfig,
 } from "./places.js";
+export { placeScopedTools, guardPathArg, PLACE_PARAM } from "./place-scoped.js";
 export { BantoHostClient, type ServerEventHandler } from "./client.js";
 export {
   BANTO_WS_PATH,
