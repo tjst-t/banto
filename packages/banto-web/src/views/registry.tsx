@@ -12,6 +12,8 @@ import { DemoClock } from "./DemoClock.js";
 import { FileBrowser } from "./FileBrowser.js";
 import { GitViewer } from "./GitViewer.js";
 import { PlacePermissions } from "./PlacePermissions.js";
+import { RepoManager } from "./RepoManager.js";
+import { EnvManager } from "./EnvManager.js";
 import { WorkerViewer } from "./WorkerViewer.js";
 import { MemoryViewer } from "./MemoryViewer.js";
 import { SkillViewer } from "./SkillViewer.js";
@@ -29,6 +31,15 @@ export interface CanvasViewProps {
    * データ取得を伴うコンポーネントの実装は task-0016 以降。
    */
   endpoint: string;
+  /**
+   * **別のモジュール**の到達先をモジュール名で引く（決定27 のレジストリ方式のGUI版）。
+   *
+   * 検証環境の画面が場所の一覧（workspace の `place.list`）を要るような、GUI がまたぐ
+   * 場面のため。**URLを直書きさせないための口**であって、直接呼び合うこと自体は
+   * 決定27 のとおり（Banto をブローカーにしない）。
+   * 未登録のモジュールなら undefined——呼び手はその機能を出さない。
+   */
+  endpointOf(moduleName: string): string | undefined;
 }
 
 /**
@@ -40,6 +51,9 @@ const REGISTRY: Record<string, ComponentType<CanvasViewProps>> = {
   FileBrowser,
   GitViewer,
   PlacePermissions,
+  // リポジトリ／ワークツリー（repo-manager 提供・決定36）と検証環境（environment-pool 提供・決定32）
+  RepoManager,
+  EnvManager,
   // セッションビューア（worker-pool モジュール提供。決定18・23）
   WorkerViewer,
   // 番頭の中身（studio モジュール提供。決定25・26）

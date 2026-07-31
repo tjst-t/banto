@@ -249,3 +249,57 @@ describe("[task-0039] 本物の ghq / gwq（入っていなければ飛ばす）
     }
   });
 });
+
+describe("[task-0043] repo.list（GUI が引く一覧）", () => {
+  it("リポジトリとワークツリーを分けて返し、どのリポジトリのものかも分かる", async () => {
+    const worktreePath = `${os.homedir()}/worktrees/github.com/tjst-t/banto/survey`;
+    const tools = createRepoManagerTools({
+      run: fakeRunner({
+        ...GHQ_RESPONSES,
+        "gwq config get worktree.basedir": "~/worktrees\n",
+        "gwq list -g --json": JSON.stringify([
+          { path: worktreePath, branch: "survey", is_main: false },
+        ]),
+        // 属するリポジトリは git に聞く（gwq の出力には入っていない）
+        [`git -C ${worktreePath} worktree list --porcelain`]:
+          "worktree /home/u/ghq/github.com/tjst-t/banto\nHEAD abc\n",
+      }),
+    });
+    const list = tools.find((t) => t.name === "repo.list")!;
+    const details = (await list.execute({})).details as {
+      repositories: Array<{ id: string }>;
+      worktrees: Array<{ id: string; branch: string; repo: string | null }>;
+    };
+
+    assert.deepEqual(details.repositories.map((r) => r.id), [
+      "github.com/tjst-t/banto",
+      "github.com/oicteam/hydra",
+    ]);
+    assert.deepEqual(details.worktrees.map((w) => [w.branch, w.repo]), [
+      ["survey", "github.com/tjst-t/banto"],
+    ]);
+  });
+
+  it("属するリポジトリが分からなくても一覧から落とさない（畳み忘れが見えなくなる）", async () => {
+    const orphan = `${os.homedir()}/worktrees/どこか/x`;
+    const tools = createRepoManagerTools({
+      run: fakeRunner({
+        ...GHQ_RESPONSES,
+        "gwq config get worktree.basedir": "~/worktrees\n",
+        "gwq list -g --json": JSON.stringify([{ path: orphan, branch: "x", is_main: false }]),
+        // git に聞けない（表に無い＝コマンドが無い扱い）
+      }),
+    });
+    const details = (await tools.find((t) => t.name === "repo.list")!.execute({})).details as {
+      worktrees: Array<{ repo: string | null }>;
+    };
+    assert.deepEqual(details.worktrees.map((w) => w.repo), [null]);
+  });
+
+  it("query で絞れる", async () => {
+    const tools = createRepoManagerTools({ run: fakeRunner(GHQ_RESPONSES) });
+    const details = (await tools.find((t) => t.name === "repo.list")!.execute({ query: "hydra" }))
+      .details as { repositories: Array<{ id: string }> };
+    assert.deepEqual(details.repositories.map((r) => r.id), ["github.com/oicteam/hydra"]);
+  });
+});

@@ -5,7 +5,7 @@
  *        ホストへ投げ返すので、番頭が canvas.* を呼んだ場合と結果が一致する。
  */
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { TranscriptEntry } from "@banto/host/protocol";
@@ -269,6 +269,16 @@ export function App(): React.ReactElement {
     : undefined;
   const ActiveView = activeSpec ? resolveCanvasView(activeSpec.component) : undefined;
 
+  /**
+   * モジュール名 → 到達先。GUI がまたぐとき（検証環境の画面が場所の一覧を要る等）に使う。
+   * カタログが持っている情報をそのまま引くだけで、UI 側にURLを持たせない（決定25）。
+   */
+  const endpointOf = useCallback(
+    (moduleName: string): string | undefined =>
+      session.catalog.find((entry) => entry.module === moduleName)?.endpoint,
+    [session.catalog]
+  );
+
   const submit = (): void => {
     const text = draft.trim();
     if (text.length === 0 || session.busy) return;
@@ -468,6 +478,7 @@ export function App(): React.ReactElement {
                 kind={activeTab.kind}
                 module={activeSpec!.module}
                 endpoint={activeSpec!.endpoint}
+                endpointOf={endpointOf}
               />
             ) : (
               // I2: カタログにあるのにUIが解決できない＝配線漏れ。黙って空にせず理由を出す

@@ -4,14 +4,34 @@
  * Kobo から独立したモジュール（決定32）。番頭は Kobo の完成を待たずに、
  * 「テストが通った」を機構が返した事実として受け取れる。
  *
- * GUI はまだ持たない。環境の一覧は `env.list` で足りており、決定18 の
- * 「将来ニーズを見越した追加はしない」に従って、要る場面が出てから足す。
- *
  * このファイルは banto-host に依存しない（Worker Pool の module.ts と同じ扱い）。
  */
 
+import { Type } from "typebox";
 import type { NamespacedToolDefinition } from "@banto/core";
 import { createEnvTools } from "./tools.js";
+
+/**
+ * 検証環境の管理画面。
+ *
+ * **一番の役目は畳み忘れを見えるようにすること**（I3）。番頭が畳み損ねた環境は
+ * `env.list` に残るが、番頭に聞かないと見えないのでは、費用が出続けていることに
+ * POが気づけない。
+ */
+const envViews = [
+  {
+    kind: "env.manager",
+    title: "検証環境",
+    description:
+      "いま立っている検証環境の一覧と、リポジトリごとの検証プロファイル。" +
+      "環境をその場で畳める。畳み損ねた環境も分かる（放置すると費用がかかり続ける）。" +
+      "「いま何が立っている？」「検証環境を片付けたい」ときに開く。",
+    parameters: Type.Object({}),
+    component: "EnvManager",
+    category: "workspace",
+    icon: "🧫",
+  },
+];
 import type { EnvironmentPool } from "./pool.js";
 
 /** 既定の到達先。独立サービスとして立てるなら絶対URLを渡す。 */
@@ -26,7 +46,7 @@ export function createEnvironmentPoolModule(
   description: string;
   endpoint: { baseUrl: string };
   tools: NamespacedToolDefinition[];
-  views: never[];
+  views: typeof envViews;
   skills: never[];
 } {
   return {
@@ -38,7 +58,7 @@ export function createEnvironmentPoolModule(
       "使い捨てなら env.verify 一本、居座らせたいなら低位動詞を使う。",
     endpoint: { baseUrl },
     tools: createEnvTools(pool),
-    views: [],
+    views: envViews,
     skills: [],
   };
 }

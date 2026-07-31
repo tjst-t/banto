@@ -26,6 +26,60 @@ export interface RepoToolOptions {
 export function createRepoManagerTools(options: RepoToolOptions = {}): BantoToolDefinition[] {
   const run = options.run ?? runCommand;
 
+  const list = defineNamespacedTool({
+    name: "repo.list",
+    label: "Repo: List",
+    description:
+      "ghq が知っているリポジトリと、gwq が知っているワークツリーの一覧。" +
+      "ワークツリーはどのリポジトリのものかも分かる。" +
+      "作業できる場所そのものを知りたいだけなら place.list の方が広い（設定で足した作業領域も出る）。",
+    parameters: Type.Object({
+      query: Type.Optional(Type.String({ description: "id・名前・パスの部分一致で絞る" })),
+    }),
+    async execute(params) {
+      const [repositories, worktrees] = await Promise.all([
+        listGhqRepositories(run),
+        listGwqWorktrees(run),
+      ]);
+
+      // どのリポジトリのワークツリーかを git に聞く（gwq の出力には入っていない）。
+      // D3: 導出できるので持たない。件数は数個なので毎回引いてよい
+      const withOwner = await Promise.all(
+        worktrees.map(async (w) => {
+          let repoPath: string | undefined;
+          try {
+            repoPath = await mainWorktreePath(run, w.path);
+          } catch {
+            // I2 の例外ではない: 紐付けが分からなくても一覧からは落とさない。
+            // 落とすと「見えないワークツリー」ができ、畳み忘れに気づけなくなる
+            repoPath = undefined;
+          }
+          const owner = repoPath ? repositories.find((r) => r.path === repoPath) : undefined;
+          return { ...w, repo: owner?.id ?? null, repoPath: repoPath ?? null };
+        })
+      );
+
+      const needle = params.query?.trim().toLowerCase();
+      const match = (v: { id: string; label: string; path: string }): boolean =>
+        !needle || [v.id, v.label, v.path].some((f) => f.toLowerCase().includes(needle));
+
+      const repos = repositories.filter(match);
+      const trees = withOwner.filter(match);
+      const text =
+        repos.length === 0 && trees.length === 0
+          ? "ghq / gwq が知っているものはありません（未導入か、まだ何も clone していない）"
+          : [
+              ...repos.map((r) => `${r.id}`),
+              ...trees.map((w) => `${w.id} — ワークツリー: ${w.branch}${w.repo ? ` （${w.repo}）` : ""}`),
+            ].join("\n");
+
+      return {
+        content: [{ type: "text" as const, text }],
+        details: { repositories: repos, worktrees: trees },
+      };
+    },
+  });
+
   const add = defineNamespacedTool({
     name: "repo.worktree.add",
     label: "Repo: Worktree Add",
@@ -112,7 +166,7 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
     },
   });
 
-  return [add, remove];
+  return [list, add, remove];
 }
 
 /**

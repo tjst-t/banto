@@ -10,8 +10,30 @@
  * ——Worker Pool（`banto-worker-pool/src/module.ts`）と同じ扱い。
  */
 
+import { Type } from "typebox";
 import type { NamespacedToolDefinition } from "@banto/core";
 import { createRepoManagerTools, type RepoToolOptions } from "./tools.js";
+
+/** POがリポジトリとワークツリーを見て直せる画面（決定18・24 の基本GUIセットと同じ位置づけ）。 */
+const repoViews = [
+  {
+    kind: "repo.manager",
+    title: "リポジトリ",
+    description:
+      "ghq が知っているリポジトリと gwq が知っているワークツリーの一覧。" +
+      "ワークツリーを作る・削除するのもここでできる。" +
+      "「どのリポジトリで作業するか」「別ブランチの作業場所を用意したい」ときに開く。" +
+      "履歴を変える操作（commit・push）は無い。",
+    parameters: Type.Object({
+      repo: Type.Optional(
+        Type.String({ description: "最初に選ぶリポジトリの id（省略時は先頭）" })
+      ),
+    }),
+    component: "RepoManager",
+    category: "workspace",
+    icon: "🗂",
+  },
+];
 
 /** 既定の到達先。Banto に同居させる想定なので相対パス。 */
 export const REPO_MANAGER_BASE_URL = "/api/repo-manager";
@@ -25,7 +47,7 @@ export function createRepoManagerModule(
   description: string;
   endpoint: { baseUrl: string };
   tools: NamespacedToolDefinition[];
-  views: never[];
+  views: typeof repoViews;
   skills: never[];
 } {
   return {
@@ -37,7 +59,7 @@ export function createRepoManagerModule(
       "（作業場所の用意であって、commit・push などの履歴の変更は持たない）。",
     endpoint: { baseUrl },
     tools: createRepoManagerTools(options) as NamespacedToolDefinition[],
-    views: [],
+    views: repoViews,
     skills: [],
   };
 }
