@@ -73,6 +73,7 @@ export { demoCanvasViews } from "./demo-views.js";
 export type { TranscriptEntry, HistoryEvent, PoMessageEvent } from "./protocol.js";
 export { createFileTools } from "./file-tools.js";
 export { createFileWriteTools, type FileWriteToolOptions } from "./file-write-tools.js";
+export { createPlaceTools } from "./place-tools.js";
 export { createGitTools } from "./git-tools.js";
 export { workspaceRoot, resolveInWorkspace, toWorkspaceRelative } from "./workspace.js";
 export {

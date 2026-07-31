@@ -245,7 +245,8 @@ describe("[task-0015] 組み込みモジュール", () => {
 
     assert.equal(module.name, "workspace");
     // 個々のTool名を全部並べるとToolが増えるたび意味の無い失敗になるので、性質で見る
-    assert.deepEqual(moduleDomains(module).sort(), ["file", "git"]);
+    // task-0039: place.* も持つ——場所の id を知る手段が無いと file.* の place 引数を埋められない
+    assert.deepEqual(moduleDomains(module).sort(), ["file", "git", "place"]);
     // 探索系も揃っていること（番頭がどこに何があるか探せる）
     for (const expected of ["file.find", "file.grep"]) {
       assert.ok(module.tools.some((t) => t.name === expected), `${expected} を提供する`);

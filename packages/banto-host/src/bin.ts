@@ -42,6 +42,7 @@ import { CORE_ORIGIN, createModuleRegistry, resolveSkills, type SkillEntry } fro
 import { createDemoModule } from "./modules/demo.js";
 import { createStudioModule } from "./modules/studio.js";
 import { createWorkspaceModule } from "./modules/workspace.js";
+import { createRepoManagerModule, createRepoManagerPlaceProvider } from "@banto/repo-manager";
 import { workspaceRoot } from "./workspace.js";
 import {
   PlaceRegistry,
@@ -100,7 +101,7 @@ const SYSTEM_PROMPT = [
   "細かい実装作業は自分でせず職人へ委譲し、自分の文脈は記憶と判断に使ってください（D10）。",
   "覚えておくべき好み・習慣が出てきたら memory.save で保存してください。",
   "POに何かを見せたいときは canvas.open でキャンバスに表示できます（何が開けるかは canvas.list_catalog）。",
-  "file.* と git.* で登録された場所（リポジトリ等）の中身と履歴を閲覧できます。どの場所かは place で選びます。",
+  "作業できる場所（リポジトリ・ワークツリー・作業領域）は place.list で分かります。file.* と git.* でその中身と履歴を閲覧でき、どの場所かは place で選びます。",
   "file.write で自分の成果物（決定の記録・起票・メモ）を書けますが、**POが場所ごとに許した範囲だけ**で、既定はどの場所も読み取り専用です。許されていなければ断られるので、必要ならPOに範囲を頼んでください。コードを変える仕事は自分で書かず職人へ委譲します（D10）。",
   "gitの変更操作（commit・push・branch）は持っていません。頼まれたら職人へ委譲してください——書いたものは未コミットで残り、POのレビューを通ります。",
   "調査・実装など手を動かす仕事は worker.delegate で職人へ委譲してください（D10）。手順は skill.read で worker-delegation を確認できます。",
@@ -152,8 +153,13 @@ async function serve(options: ServeOptions): Promise<void> {
 
   // 決定36：番頭が作業してよい場所。既定は BANTO_WORKSPACE（従来どおり1つ）。
   // BANTO_PLACES で複数を与えられる（決定36d：静的な場所はホスト設定。モジュールにしない）。
-  // repo-manager（ghq/gwq から導出する提供元）は task-0039 でここに足す。
-  const places = new PlaceRegistry([createStaticPlaceProvider(readPlaceConfig(workspace))]);
+  //
+  // **設定を先に登録する。** 同じ場所が両方から出たとき先勝ちなので、書き込みを許した
+  // 設定側が、repo-manager が返す読み取り専用の同じリポジトリに負けないようにする（決定38a）。
+  const places = new PlaceRegistry([
+    createStaticPlaceProvider(readPlaceConfig(workspace)),
+    createRepoManagerPlaceProvider(),
+  ]);
   for (const place of broadlyWritable(await places.list())) {
     // 決定38e：広く許したことを黙って通さない
     console.warn(
@@ -191,6 +197,7 @@ async function serve(options: ServeOptions): Promise<void> {
     // 決定38b: ホスト自身のデータ置き場は、設定で ** を許しても書かせない（自己昇格を塞ぐ）
     createWorkspaceModule(places, { protectedPaths: [dataDir()] }),
     workerPoolModule,
+    createRepoManagerModule(),
     createDemoModule(),
   ]);
 

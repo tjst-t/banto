@@ -13,6 +13,7 @@
 import { Type } from "typebox";
 import { createFileTools } from "../file-tools.js";
 import { createFileWriteTools, type FileWriteToolOptions } from "../file-write-tools.js";
+import { createPlaceTools } from "../place-tools.js";
 import { createGitTools } from "../git-tools.js";
 import type { BantoModule } from "../module.js";
 import type { PlaceRegistry } from "../places.js";
@@ -91,10 +92,13 @@ export function createWorkspaceModule(
     title: "ワークスペース",
     description:
       "登録された場所（リポジトリ等）のファイルとgit履歴を扱う組み込みモジュール。" +
+      "どこで作業できるかは place.list で分かる。" +
       "閲覧は登録されたどの場所にも届き、書き込みはPOが場所ごとに許した範囲だけ（既定は読み取り専用）。" +
       "gitは閲覧のみで、変更操作は持たない（決定37）。どの場所を見るかは place で選ぶ。",
     endpoint: { baseUrl: WORKSPACE_BASE_URL },
     tools: [
+      // 場所の一覧。file.* の引数を埋めるために要る（決定36e）
+      ...createPlaceTools(places),
       ...placeScopedTools(places, createFileTools),
       ...createFileWriteTools(places, write),
       ...placeScopedTools(places, createGitTools),

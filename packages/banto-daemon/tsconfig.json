@@ -8,13 +8,15 @@
     "paths": {
       "@banto/core": ["../banto-core/src/index.ts"],
       "@banto/worker-pool": ["../banto-worker-pool/src/index.ts"],
-      "@banto/environment-pool": ["../banto-environment-pool/src/index.ts"]
+      "@banto/environment-pool": ["../banto-environment-pool/src/index.ts"],
+      "@banto/repo-manager": ["../banto-repo-manager/src/index.ts"]
     }
   },
   "references": [
     { "path": "../banto-core" },
     { "path": "../banto-worker-pool" },
-    { "path": "../banto-environment-pool" }
+    { "path": "../banto-environment-pool" },
+    { "path": "../banto-repo-manager" }
   ],
   "include": ["src/**/*"],
   "exclude": ["dist", "node_modules"]

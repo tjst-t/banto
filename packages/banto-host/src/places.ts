@@ -73,6 +73,7 @@ export class PlaceRegistry {
   async list(): Promise<Place[]> {
     const all: Place[] = [];
     const seen = new Set<string>();
+    const seenPaths = new Set<string>();
     for (const provider of this.providers) {
       let places: Place[];
       try {
@@ -85,7 +86,13 @@ export class PlaceRegistry {
       for (const place of places) {
         // 先に登録された提供元が勝つ（設定で明示したものが、自動発見より優先される）
         if (seen.has(place.id)) continue;
+        // **同じディレクトリも先勝ち。** 設定で書き込みを許した場所が、repo-manager の返す
+        // 読み取り専用の同じリポジトリと二重に並ぶと、番頭がどちらの id を選ぶかで
+        // 書けたり書けなかったりする（決定38a の許可が id 次第で変わって見える）
+        const key = path.resolve(place.path);
+        if (seenPaths.has(key)) continue;
         seen.add(place.id);
+        seenPaths.add(key);
         all.push(place);
       }
     }

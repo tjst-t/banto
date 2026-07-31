@@ -10,8 +10,6 @@
 
 export {
   PiRpcDriver,
-  createWorktree,
-  removeWorktree,
   type PiRpcDriverOptions,
 } from "./pi-rpc-driver.js";
 export {

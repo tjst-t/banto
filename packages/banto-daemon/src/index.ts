@@ -15,7 +15,10 @@ export { ProjectRegistry } from "./project-registry.js";
 export type { ProjectEntry } from "./project-registry.js";
 export { Scheduler } from "./scheduler.js";
 export type { TickJob } from "./scheduler.js";
-export { PiRpcDriver, createWorktree, removeWorktree } from "@banto/worker-pool";
+export { PiRpcDriver } from "@banto/worker-pool";
+// 決定36h: ワークツリーの作成・削除は repo-manager に寄せた。Kobo は当面ライブラリとして参照する
+// （決定23・32 と同じ2段階の1段目。サービス利用への切替は別タスク）
+export { createWorktree, removeWorktree } from "@banto/repo-manager";
 export type { PiRpcDriverOptions } from "@banto/worker-pool";
 export { SpawnLedger, isProcessAlive, killOrphanProcess } from "@banto/worker-pool";
 export type { LedgerEntry } from "@banto/worker-pool";
