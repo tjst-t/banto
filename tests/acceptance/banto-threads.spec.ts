@@ -147,7 +147,9 @@ describe("[task-0035/a1] 複数のスレッドが並行する", () => {
     // 宛先が無くなると、スレッドを知らないクライアントが話せなくなる
     assert.throws(() => threads.close(first.id), /default thread cannot be closed/);
     threads.close(second.id);
-    assert.deepEqual(threads.list().map((t) => t.id), [first.id]);
+    // 畳んでも消えない（決定30c と同じ扱い）。開いている分だけ見たいなら state で絞る
+    assert.deepEqual(threads.list({ state: "open" }).map((t) => t.id), [first.id]);
+    assert.deepEqual(threads.list().map((t) => t.id), [first.id, second.id]);
   });
 
   it("[task-0035/a1] 知らないIDを既定へ黙って落とさない（I2）", async () => {
@@ -452,6 +454,80 @@ describe("[task-0035/a7] 知らせの宛先（決定35a）", () => {
     await server!.notify("宛先なしの報告");
     assert.deepEqual(made[0]!.session.prompts, ["宛先なしの報告"]);
     assert.deepEqual(made[1]!.session.prompts, []);
+  });
+});
+
+describe("[task-0037] 畳んだ分身は履歴に残り、再開できる", () => {
+  it("[task-0037] 畳んでも会話とキャンバスは消えない", async () => {
+    await threads.open();
+    const second = await threads.open("調査");
+    second.record({ role: "po", text: "調べて" });
+    made[1]!.canvas.open("demo.hello");
+
+    threads.close(second.id);
+
+    assert.equal(second.state, "closed");
+    assert.ok(second.closedAt, "畳んだ時刻が残る");
+    assert.deepEqual(second.transcript, [{ role: "po", text: "調べて" }], "会話は読める");
+    assert.equal(made[1]!.canvas.snapshot().tabs.length, 1, "キャンバスもそのまま");
+  });
+
+  it("[task-0037] 再開すると同じ会話の続きから話せる", async () => {
+    await threads.open();
+    const second = await threads.open();
+    second.record({ role: "po", text: "前の話" });
+    threads.close(second.id);
+
+    const reopened = threads.reopen(second.id);
+    assert.equal(reopened.id, second.id, "新しいスレッドを作らない");
+    assert.equal(reopened.state, "open");
+    assert.equal(reopened.closedAt, undefined);
+    assert.deepEqual(reopened.transcript, [{ role: "po", text: "前の話" }]);
+  });
+
+  it("[task-0037] 畳むのは冪等。未知のIDはエラー（I2）", async () => {
+    await threads.open();
+    const second = await threads.open();
+    threads.close(second.id);
+    threads.close(second.id); // 2度目も落ちない
+    assert.equal(second.state, "closed");
+    assert.throws(() => threads.reopen("thread-999"), /unknown thread/);
+  });
+
+  it("[task-0037] 畳んだスレッドにも知らせは届く（決定35b の足場）", async () => {
+    await start();
+    const second = await threads.open();
+    threads.close(second.id);
+
+    await server!.notify("職人からの報告", second.id);
+    assert.deepEqual(made[1]!.session.prompts, ["職人からの報告"]);
+  });
+
+  it("[task-0037] thread_close / thread_reopen がプロトコルから使える", async () => {
+    const url = await start();
+    const second = await threads.open();
+
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    try {
+      client.send({ type: "thread_close", threadId: second.id });
+      await waitFor(
+        events,
+        (e) =>
+          e.type === "thread_state" &&
+          e.threads.some((t) => t.threadId === second.id && t.state === "closed")
+      );
+
+      client.send({ type: "thread_reopen", threadId: second.id });
+      await waitFor(
+        events,
+        (e) =>
+          e.type === "thread_state" &&
+          e.threads.some((t) => t.threadId === second.id && t.state === "open")
+      );
+    } finally {
+      client.close();
+    }
   });
 });
 

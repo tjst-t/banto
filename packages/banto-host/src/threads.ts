@@ -48,6 +48,12 @@ const DEFAULT_TITLE = "はじめの会話";
 export class Thread {
   readonly id: string;
   title: string;
+  /**
+   * 畳んだスレッドは**消えない**（Worker Pool の決定30c と同じ発想）。
+   * 一覧から外れるだけで、履歴として読めるし同じ会話のまま再開できる。
+   */
+  state: "open" | "closed" = "open";
+  closedAt: string | undefined;
   readonly session: HostSession;
   readonly canvas: Canvas | undefined;
   readonly toolNames: string[];
@@ -92,6 +98,8 @@ export class Thread {
       title: this.title,
       sessionId: this.session.sessionId,
       isDefault: this.isDefault,
+      state: this.state,
+      ...(this.closedAt ? { closedAt: this.closedAt } : {}),
     };
   }
 
@@ -170,19 +178,36 @@ export class ThreadRegistry {
   }
 
   /**
-   * スレッドを閉じる。I2: 既定スレッド・未知のIDは黙って成功にせずエラーにする。
+   * スレッドを畳む。**消さない**——会話もキャンバスもそのまま残り、履歴として読めるし
+   * `reopen` で同じ会話の続きから話せる（決定30c と同じ扱い）。
+   *
+   * 購読も解除しない。再開したときに配信が死んでいると、戻ったのに何も流れてこない。
+   *
+   * I2: 既定スレッド・未知のIDは黙って成功にせずエラーにする。
    */
-  close(threadId: string): void {
+  close(threadId: string, now = new Date()): void {
     const thread = this.threads.get(threadId);
     if (!thread) throw new Error(`unknown thread: ${threadId}`);
     if (thread.isDefault) throw new Error("the default thread cannot be closed");
-    thread.dispose();
-    this.threads.delete(threadId);
+    if (thread.state === "closed") return; // 冪等
+    thread.state = "closed";
+    thread.closedAt = now.toISOString();
     this.emit();
   }
 
+  /** 畳んだスレッドを開き直す。会話はそのまま残っているので続きから話せる。 */
+  reopen(threadId: string): Thread {
+    const thread = this.threads.get(threadId);
+    if (!thread) throw new Error(`unknown thread: ${threadId}`);
+    thread.state = "open";
+    thread.closedAt = undefined;
+    this.emit();
+    return thread;
+  }
+
   /**
-   * 宛先を引く。`threadId` 省略時は既定スレッド（スレッドを知らないクライアント）。
+   * 宛先を引く。畳んだスレッドも引ける——知らせを届けるため（決定35b）。
+   * `threadId` 省略時は既定スレッド（スレッドを知らないクライアント）。
    * I2: 知らないIDを既定へ黙って落とさない——別の会話に発話が紛れ込む。
    */
   resolve(threadId?: string): Thread {
@@ -200,8 +225,13 @@ export class ThreadRegistry {
     return this.threads.get(threadId);
   }
 
-  list(): Thread[] {
-    return [...this.threads.values()];
+  /**
+   * スレッドの一覧。**畳んだ分も既定で含む**——閉じても記録は残る（決定30c）。
+   * 開いているものだけ見たいなら `{ state: "open" }`。
+   */
+  list(filter: { state?: "open" | "closed" } = {}): Thread[] {
+    const all = [...this.threads.values()];
+    return filter.state ? all.filter((t) => t.state === filter.state) : all;
   }
 
   get defaultThreadId(): string {

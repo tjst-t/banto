@@ -304,6 +304,14 @@ export class BantoHostServer {
       }
       return;
     }
+    if (message?.type === "thread_reopen") {
+      try {
+        this.threads.reopen(message.threadId);
+      } catch (err) {
+        this.send(ws, { type: "error", message: String(err) });
+      }
+      return;
+    }
 
     // 以降は宛先スレッドが要る。threadId 省略時は既定スレッド（互換）
     let thread: Thread;

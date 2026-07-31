@@ -11,6 +11,8 @@ import remarkGfm from "remark-gfm";
 import type { TranscriptEntry } from "@banto/host/protocol";
 import { useBantoSession } from "./useBantoSession.js";
 import { resolveCanvasView } from "./views/registry.js";
+import { ThreadTabs } from "./ThreadTabs.js";
+import { ThreadHistory } from "./ThreadHistory.js";
 
 /**
  * 既定は**同一オリジンの `/ws`**。開発サーバがそれを番頭ホストへ中継するので、
@@ -136,6 +138,8 @@ export function App(): React.ReactElement {
   const [dragTabId, setDragTabId] = useState<string>();
   const [dropIndex, setDropIndex] = useState<number>();
   const [catalogOpen, setCatalogOpen] = useState(false);
+  /** 履歴の面を見ているか。プロトタイプ三次改訂の「ピンタブ」に相当する */
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   // カタログは category ごとにまとめて出す（何が開けるか探しやすくするため）
   const catalogGroups = Object.entries(
@@ -179,12 +183,48 @@ export function App(): React.ReactElement {
             <span className="brand-sub">番頭</span>
           </span>
         </div>
-        <div className="topbar-spacer" />
+        <ThreadTabs
+          threads={session.threads}
+          activeThreadId={session.activeThreadId}
+          unreadThreadIds={session.unreadThreadIds}
+          onSwitch={(id) => {
+            session.switchThread(id);
+            setHistoryOpen(false);
+          }}
+          onClose={session.closeThread}
+          onOpen={() => {
+            session.openThread();
+            setHistoryOpen(false);
+          }}
+        />
+        <button
+          className={`pin-tab ${historyOpen ? "is-active" : ""}`}
+          type="button"
+          onClick={() => setHistoryOpen((v) => !v)}
+          title="畳んだ会話の履歴"
+          aria-label="履歴"
+        >
+          🕘
+          {session.closedThreads.length > 0 && (
+            <span className="pin-tab-count">{session.closedThreads.length}</span>
+          )}
+        </button>
         <span className={`conn conn--${session.status}`}>
           {session.status === "open" ? "接続中" : session.status === "connecting" ? "接続しています…" : "切断"}
         </span>
       </header>
 
+      {historyOpen ? (
+        <ThreadHistory
+          closedThreads={session.closedThreads}
+          chatOf={session.chatOf}
+          onReopen={(id) => {
+            session.reopenThread(id);
+            setHistoryOpen(false);
+          }}
+          onBack={() => setHistoryOpen(false)}
+        />
+      ) : (
       <div className="shell-body">
         <main className="canvas-pane">
           <div className="canvas-tabstrip">
@@ -391,6 +431,7 @@ export function App(): React.ReactElement {
           </div>
         </aside>
       </div>
+      )}
     </div>
   );
 }

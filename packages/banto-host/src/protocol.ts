@@ -90,10 +90,17 @@ export interface ThreadOpenMessage {
 }
 
 /**
- * スレッドを閉じる。既定スレッドは閉じられない（会話の宛先が無くなるため）。
+ * スレッドを畳む。**消えない**——タブから外れて履歴へ移るだけ。
+ * 既定スレッドは畳めない（会話の宛先が無くなるため）。
  */
 export interface ThreadCloseMessage {
   type: "thread_close";
+  threadId: string;
+}
+
+/** 畳んだスレッドを開き直す。会話はそのまま残っているので続きから話せる。 */
+export interface ThreadReopenMessage {
+  type: "thread_reopen";
   threadId: string;
 }
 
@@ -106,7 +113,8 @@ export type ClientMessage =
   | CanvasOpenMessage
   | NewSessionMessage
   | ThreadOpenMessage
-  | ThreadCloseMessage;
+  | ThreadCloseMessage
+  | ThreadReopenMessage;
 
 // ── Server → Client ──────────────────────────────────────────────────────────
 
@@ -145,6 +153,13 @@ export interface ThreadView {
   sessionId: string;
   /** 既定スレッド（threadId 省略時の宛先）。閉じられない。 */
   isDefault: boolean;
+  /**
+   * 畳んだスレッドは消えない（決定30c と同じ扱い）。タブから外れて履歴へ移るだけで、
+   * `thread_reopen` で同じ会話の続きから話せる。
+   */
+  state: "open" | "closed";
+  /** 畳んだ時刻（state が closed のとき）。 */
+  closedAt?: string;
 }
 
 /** 接続直後に1度だけ送られる。 */
