@@ -83,7 +83,7 @@ function applyDelta(prev: TranscriptEntry[], event: ServerEvent): TranscriptEntr
 
     // 職人からの報告・質問（決定29）。POの発話ではないので別の行として積む
     case "notice":
-      return [...prev, { role: "notice", text: event.text }];
+      return [...prev, { role: "notice", source: event.source, text: event.text }];
 
     case "text_delta": {
       const last = prev[prev.length - 1];

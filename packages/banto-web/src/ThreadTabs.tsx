@@ -141,18 +141,17 @@ export function ThreadTabs(props: ThreadTabsProps): React.ReactElement {
           <span className="tt-unread" title="新しい知らせがあります" />
         )}
       </button>
-      {!thread.isDefault && (
-        <button
-          className="thread-tab-close"
-          type="button"
-          data-thread-close=""
-          aria-label={`${thread.title} を閉じる`}
-          title="会話を畳む（履歴に残ります）"
-          onClick={() => onClose(thread.threadId)}
-        >
-          ×
-        </button>
-      )}
+      {/* どの会話も畳める（PO要望 2026-07-31）。畳んでも履歴に残るので失われない */}
+      <button
+        className="thread-tab-close"
+        type="button"
+        data-thread-close=""
+        aria-label={`${thread.title} を閉じる`}
+        title="会話を畳む（履歴に残ります）"
+        onClick={() => onClose(thread.threadId)}
+      >
+        ×
+      </button>
     </span>
   );
 

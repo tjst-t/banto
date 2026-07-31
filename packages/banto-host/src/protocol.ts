@@ -168,12 +168,16 @@ export interface WelcomeEvent {
   /**
    * 既定スレッドのセッションID。**スレッドを知らないクライアントとの互換**のために残す
    * ——スレッドを扱うクライアントは `threads` を見ること。
+   * 開いている会話が1本も無ければ undefined（空状態）。
    */
-  sessionId: string;
-  /** 開いているスレッドの一覧（決定2）。 */
+  sessionId?: string;
+  /** スレッドの一覧（畳んだものも含む。決定2）。 */
   threads: ThreadView[];
-  /** 既定スレッドの threadId。 */
-  defaultThreadId: string;
+  /**
+   * `threadId` 省略時の宛先。**固定ではなく開いている先頭**が担う。
+   * 全部畳まれていれば undefined——空状態を隠さない。
+   */
+  defaultThreadId?: string;
   /** 番頭が使えるToolの論理名一覧。 */
   tools: string[];
   /** キャンバスに開けるGUIの一覧。 */
@@ -190,11 +194,29 @@ export interface ThreadStateEvent {
  * 会話の1行。ホスト側が真実を持ち、接続時に history として丸ごと配る。
  * これによりリロードしても会話が消えず、途中から繋いだクライアントも履歴を見られる（D3）。
  */
+/**
+ * 知らせの出所。**POでも番頭でもない誰か**が誰なのかを表す。
+ *
+ * これが無いと、外から入る知らせが全部同じ札で出る——番頭が別の会話を開いたときの
+ * 最初の一言まで「職人」に見えた（PO報告 2026-07-31）。出所を偽らない（I1）。
+ *
+ * 文字列なのは、モジュールが増えるたびに型を広げないため（Kobo 等）。
+ * UI は知らない出所を素通しで表示する。
+ */
+export type NoticeSource =
+  /** 職人（Worker Pool）からの報告・質問（決定29）。 */
+  | "worker"
+  /** 別の会話（分身）から渡された最初の一言（決定2・thread.open）。 */
+  | "thread"
+  /** 出所を名乗れないもの。既定。 */
+  | "system"
+  | (string & {});
+
 export type TranscriptEntry =
   | { role: "po"; text: string }
   | { role: "banto"; text: string }
-  /** POでも番頭でもない知らせ（職人からの報告・質問など。決定29）。 */
-  | { role: "notice"; text: string }
+  /** POでも番頭でもない知らせ（職人からの報告・質問、別の会話からの引き継ぎ等）。 */
+  | { role: "notice"; source: NoticeSource; text: string }
   | { role: "tool"; name: string; state: "running" | "ok" | "failed" }
   | { role: "error"; text: string };
 
@@ -214,6 +236,8 @@ export interface HistoryEvent extends ThreadScope {
  */
 export interface NoticeEvent extends ThreadScope {
   type: "notice";
+  /** 誰からの知らせか。UIの札に出す（出所を偽らない・I1）。 */
+  source: NoticeSource;
   text: string;
 }
 

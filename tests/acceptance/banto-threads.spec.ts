@@ -137,19 +137,36 @@ describe("[task-0035/a1] 複数のスレッドが並行する", () => {
     assert.equal(ids.size, 3, "スレッドごとに別の対話ループが要る");
   });
 
-  it("[task-0035/a1] 最初の1本が既定スレッドで、閉じられない", async () => {
+  it("[task-0035/a1] 既定スレッドは固定ではなく「開いている先頭」が担う", async () => {
     const first = await threads.open();
     const second = await threads.open();
 
     assert.equal(first.isDefault, true);
     assert.equal(second.isDefault, false);
     assert.equal(threads.defaultThreadId, first.id);
-    // 宛先が無くなると、スレッドを知らないクライアントが話せなくなる
-    assert.throws(() => threads.close(first.id), /default thread cannot be closed/);
-    threads.close(second.id);
-    // 畳んでも消えない（決定30c と同じ扱い）。開いている分だけ見たいなら state で絞る
-    assert.deepEqual(threads.list({ state: "open" }).map((t) => t.id), [first.id]);
+
+    // どの会話も畳める（PO要望 2026-07-31）。宛先は次の開いている会話へ移る
+    threads.close(first.id);
+    assert.equal(threads.defaultThreadId, second.id);
+    assert.equal(second.isDefault, true);
+    assert.equal(threads.resolve().id, second.id, "threadId 省略の宛先も移る");
+
+    // 畳んでも消えない（決定30c と同じ扱い）
+    assert.deepEqual(threads.list({ state: "open" }).map((t) => t.id), [second.id]);
     assert.deepEqual(threads.list().map((t) => t.id), [first.id, second.id]);
+  });
+
+  it("[task-0035/a1] 全部畳んだら宛先は無くなる（空状態を隠さない・I2）", async () => {
+    const first = await threads.open();
+    threads.close(first.id);
+
+    assert.equal(threads.defaultThreadId, undefined);
+    assert.throws(() => threads.resolve(), /no open thread/);
+    // 畳んだスレッドは指定すれば引ける（知らせを届けるため・決定35b）
+    assert.equal(threads.resolve(first.id).id, first.id);
+
+    threads.reopen(first.id);
+    assert.equal(threads.defaultThreadId, first.id);
   });
 
   it("[task-0035/a1] 知らないIDを既定へ黙って落とさない（I2）", async () => {
@@ -368,15 +385,23 @@ describe("[task-0035] スレッドの開閉（プロトコル）", () => {
     }
   });
 
-  it("[task-0035] 既定スレッドを閉じようとしたらエラーで返す（I2）", async () => {
+  it("[task-0035] 最初の会話も畳める（PO要望 2026-07-31）", async () => {
     const url = await start();
+    const first = threads.resolve();
+
     const events: ServerEvent[] = [];
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
     try {
-      client.send({ type: "thread_close", threadId: threads.defaultThreadId });
-      const error = await waitFor(events, (e) => e.type === "error");
-      assert.match(error.type === "error" ? error.message : "", /default thread cannot be closed/);
-      assert.equal(threads.list().length, 1);
+      client.send({ type: "thread_close", threadId: first.id });
+      await waitFor(
+        events,
+        (e) =>
+          e.type === "thread_state" &&
+          e.threads.every((t) => t.state === "closed")
+      );
+      // 消えてはいない。履歴から再開できる
+      assert.deepEqual(threads.list().map((t) => t.id), [first.id]);
+      assert.equal(threads.defaultThreadId, undefined);
     } finally {
       client.close();
     }
@@ -433,19 +458,22 @@ describe("[task-0035/a7] 知らせの宛先（決定35a）", () => {
     await start();
     const second = await threads.open();
 
-    await server!.notify("職人からの報告", second.id);
+    await server!.notify("職人からの報告", { threadId: second.id, source: "worker" });
 
     assert.deepEqual(made[1]!.session.prompts, ["職人からの報告"], "宛先のターンが回る");
     assert.deepEqual(made[0]!.session.prompts, [], "別のスレッドには届かない");
     assert.deepEqual(second.transcript.slice(0, 1), [
-      { role: "notice", text: "職人からの報告" },
+      { role: "notice", source: "worker", text: "職人からの報告" },
     ]);
     assert.deepEqual(threads.resolve().transcript, []);
   });
 
   it("[task-0035/a7] 宛先不明の知らせを黙って捨てない（I2）", async () => {
     await start();
-    await assert.rejects(() => server!.notify("迷子の報告", "thread-999"), /unknown thread/);
+    await assert.rejects(
+      () => server!.notify("迷子の報告", { threadId: "thread-999" }),
+      /unknown thread/
+    );
   });
 
   it("[task-0035/a7] threadId 省略時は既定スレッドへ（起動元との互換）", async () => {
@@ -499,7 +527,7 @@ describe("[task-0037] 畳んだ分身は履歴に残り、再開できる", () =
     const second = await threads.open();
     threads.close(second.id);
 
-    await server!.notify("職人からの報告", second.id);
+    await server!.notify("職人からの報告", { threadId: second.id, source: "worker" });
     assert.deepEqual(made[1]!.session.prompts, ["職人からの報告"]);
   });
 

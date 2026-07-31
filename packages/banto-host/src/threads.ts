@@ -57,7 +57,11 @@ export class Thread {
   readonly session: HostSession;
   readonly canvas: Canvas | undefined;
   readonly toolNames: string[];
-  readonly isDefault: boolean;
+  /**
+   * `threadId` 省略時の宛先か。**固定ではない**——開いている先頭が担う（PO要望
+   * 2026-07-31：どの会話も畳めるようにした帰結）。帳簿が開閉のたびに付け替える。
+   */
+  isDefault = false;
   readonly getLastError: () => string | undefined;
   readonly clearHistory: () => void;
   /** 会話の真実。接続時にまとめて配り、以後は差分イベントで追随させる（D3）。 */
@@ -76,7 +80,6 @@ export class Thread {
     session: HostSession;
     canvas?: Canvas;
     tools: NamespacedToolDefinition[];
-    isDefault: boolean;
     getLastError?: () => string | undefined;
     clearHistory?: () => void;
     dispose?: () => void;
@@ -86,7 +89,6 @@ export class Thread {
     this.session = params.session;
     this.canvas = params.canvas;
     this.toolNames = params.tools.map((t) => t.name);
-    this.isDefault = params.isDefault;
     this.getLastError = params.getLastError ?? ((): string | undefined => undefined);
     this.clearHistory = params.clearHistory ?? ((): void => undefined);
     if (params.dispose) this.disposers.push(params.dispose);
@@ -144,7 +146,6 @@ export class ThreadRegistry {
   private readonly factory: ThreadFactory;
   private readonly listeners = new Set<(threads: Thread[]) => void>();
   private counter = 0;
-  private defaultId: string | undefined;
 
   constructor(factory: ThreadFactory) {
     this.factory = factory;
@@ -158,23 +159,35 @@ export class ThreadRegistry {
    */
   async open(title?: string): Promise<Thread> {
     const id = `thread-${++this.counter}`;
-    const isDefault = this.defaultId === undefined;
+    const first = this.threads.size === 0;
     const parts = await this.factory(id);
     const thread = new Thread({
       id,
-      title: title ?? (isDefault ? DEFAULT_TITLE : `会話 ${this.counter}`),
+      title: title ?? (first ? DEFAULT_TITLE : `会話 ${this.counter}`),
       session: parts.session,
       ...(parts.canvas ? { canvas: parts.canvas } : {}),
       tools: parts.tools,
-      isDefault,
       ...(parts.getLastError ? { getLastError: parts.getLastError } : {}),
       ...(parts.clearHistory ? { clearHistory: parts.clearHistory } : {}),
       ...(parts.dispose ? { dispose: parts.dispose } : {}),
     });
     this.threads.set(id, thread);
-    if (isDefault) this.defaultId = id;
+    this.refreshDefault();
     this.emit();
     return thread;
+  }
+
+  /**
+   * 既定スレッド（`threadId` 省略時の宛先）を開いている先頭に付け替える。
+   *
+   * どれか1本を「閉じられない特別な会話」にすると、PO はいちばん最初の会話を
+   * 片付けられない。代わりに宛先を動的にする——**全部畳んだら宛先は無くなる**が、
+   * それは空状態として扱う（プロトタイプにも空状態がある）。
+   */
+  private refreshDefault(): void {
+    const open = this.list({ state: "open" });
+    for (const thread of this.threads.values()) thread.isDefault = false;
+    if (open[0]) open[0].isDefault = true;
   }
 
   /**
@@ -183,15 +196,18 @@ export class ThreadRegistry {
    *
    * 購読も解除しない。再開したときに配信が死んでいると、戻ったのに何も流れてこない。
    *
-   * I2: 既定スレッド・未知のIDは黙って成功にせずエラーにする。
+   * **どの会話も畳める**（PO要望 2026-07-31）。畳んだ結果 `threadId` 省略の宛先が
+   * 無くなることはありうる——それは空状態として扱い、隠さない。
+   *
+   * I2: 未知のIDは黙って成功にせずエラーにする。
    */
   close(threadId: string, now = new Date()): void {
     const thread = this.threads.get(threadId);
     if (!thread) throw new Error(`unknown thread: ${threadId}`);
-    if (thread.isDefault) throw new Error("the default thread cannot be closed");
     if (thread.state === "closed") return; // 冪等
     thread.state = "closed";
     thread.closedAt = now.toISOString();
+    this.refreshDefault();
     this.emit();
   }
 
@@ -201,6 +217,7 @@ export class ThreadRegistry {
     if (!thread) throw new Error(`unknown thread: ${threadId}`);
     thread.state = "open";
     thread.closedAt = undefined;
+    this.refreshDefault();
     this.emit();
     return thread;
   }
@@ -212,8 +229,9 @@ export class ThreadRegistry {
    */
   resolve(threadId?: string): Thread {
     if (threadId === undefined) {
-      const fallback = this.defaultId ? this.threads.get(this.defaultId) : undefined;
-      if (!fallback) throw new Error("no default thread");
+      const fallback = this.list({ state: "open" })[0];
+      // I2: 全部畳まれている状態を黙って作らない。呼び出し側が空状態として扱う
+      if (!fallback) throw new Error("no open thread");
       return fallback;
     }
     const thread = this.threads.get(threadId);
@@ -234,9 +252,9 @@ export class ThreadRegistry {
     return filter.state ? all.filter((t) => t.state === filter.state) : all;
   }
 
-  get defaultThreadId(): string {
-    if (!this.defaultId) throw new Error("no default thread");
-    return this.defaultId;
+  /** `threadId` 省略時の宛先。開いている会話が無ければ undefined（空状態）。 */
+  get defaultThreadId(): string | undefined {
+    return this.list({ state: "open" })[0]?.id;
   }
 
   /** 開閉・改名を購読する。戻り値で解除。 */

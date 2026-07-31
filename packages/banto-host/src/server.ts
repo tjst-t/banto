@@ -23,8 +23,8 @@ import {
   BANTO_DEFAULT_PORT,
   BANTO_WS_PATH,
   type ClientMessage,
+  type NoticeSource,
   type ServerEvent,
-  type TranscriptEntry,
 } from "./protocol.js";
 import { fromWireToolName } from "@banto/core";
 import type { Thread, ThreadRegistry } from "./threads.js";
@@ -41,6 +41,14 @@ export interface HostSession {
   subscribe(listener: (event: unknown) => void): () => void;
   prompt(text: string, options?: { streamingBehavior?: "steer" | "followUp" }): Promise<void>;
   abort(): Promise<void>;
+}
+
+/** `notify` の宛先と出所。 */
+export interface NotifyOptions {
+  /** 宛先のスレッド（決定35a）。省略時は既定スレッド。 */
+  threadId?: string;
+  /** 誰からの知らせか。省略時は `system`。 */
+  source?: NoticeSource;
 }
 
 export interface BantoHostServerOptions {
@@ -166,6 +174,9 @@ export class BantoHostServer {
    * **宛先はその職人を起こしたスレッド**（決定35a）。`threadId` を省略すると既定スレッド
    * ——スレッドを使っていない起動元との互換。
    *
+   * `source` は**誰からの知らせか**。省略すると `system` になる。出所を名乗らないと、
+   * 外から入る知らせが全部同じ札で出る（番頭が開いた分身への一言が職人に見えた）。
+   *
    * POの発話ではないので `notice` として配り、UIでも見分けられるようにする。
    * 知らせを入れたら番頭のターンを回す——**気づかせるのが目的**なので、
    * ログに積むだけでは足りない。
@@ -173,17 +184,18 @@ export class BantoHostServer {
    * 知らせ同士はスレッドごとに直列化する。同時に3人の職人が報告してきても、
    * そのスレッドのターンは1本ずつ進む。
    */
-  notify(text: string, threadId?: string): Promise<void> {
+  notify(text: string, options: NotifyOptions = {}): Promise<void> {
+    const source = options.source ?? "system";
     let thread: Thread;
     try {
-      thread = this.threads.resolve(threadId);
+      thread = this.threads.resolve(options.threadId);
     } catch (err) {
       // I2: 宛先不明の知らせを黙って捨てない
       return Promise.reject(err instanceof Error ? err : new Error(String(err)));
     }
     thread.notices = thread.notices.then(async () => {
-      thread.record({ role: "notice", text });
-      this.broadcast({ type: "notice", threadId: thread.id, text });
+      thread.record({ role: "notice", source, text });
+      this.broadcast({ type: "notice", threadId: thread.id, source, text });
       try {
         await thread.session.prompt(text, {
           ...(thread.session.isStreaming ? { streamingBehavior: "steer" as const } : {}),
@@ -232,15 +244,16 @@ export class BantoHostServer {
     ws.on("message", (data: Buffer) => void this.handleClientMessage(ws, data));
 
     const threads = this.threads.list();
-    const defaultThread = this.threads.resolve();
+    // 全部畳まれていることはありうる（どの会話も畳めるため）。空状態を隠さない
+    const defaultThread = threads.find((t) => t.isDefault);
 
     this.send(ws, {
       type: "welcome",
       // スレッドを知らないクライアントとの互換。扱えるクライアントは threads を見る
-      sessionId: defaultThread.session.sessionId,
+      ...(defaultThread ? { sessionId: defaultThread.session.sessionId } : {}),
       threads: threads.map((t) => t.view()),
-      defaultThreadId: defaultThread.id,
-      tools: defaultThread.toolNames,
+      ...(defaultThread ? { defaultThreadId: defaultThread.id } : {}),
+      tools: defaultThread?.toolNames ?? [],
       catalog: (this.catalog?.list() ?? []).map((spec) => {
         const owner = this.modules?.moduleForView(spec.kind);
         return {

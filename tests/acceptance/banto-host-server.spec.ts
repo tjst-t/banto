@@ -110,7 +110,8 @@ describe("[task-0009/a1] WS API — 接続と会話の入口", () => {
 
     const welcome = await waitFor(events, "welcome");
     assert.equal(welcome.type, "welcome");
-    assert.ok(welcome.type === "welcome" && welcome.sessionId.length > 0);
+    // 開いている会話が1本も無ければ undefined（空状態）。ここでは1本開いている
+    assert.ok(welcome.type === "welcome" && (welcome.sessionId ?? "").length > 0);
     assert.ok(welcome.type === "welcome" && tools.every((t) => welcome.tools.includes(t)));
     client.close();
   });
@@ -473,14 +474,17 @@ describe("[task-0026/a6] 番頭が職人の報告・質問に気づく", () => {
     const first: ServerEvent[] = [];
     const a = await BantoHostClient.connect(url, (e) => first.push(e));
     await waitFor(first, "welcome");
-    await server!.notify("職人から質問です");
+    await server!.notify("職人から質問です", { source: "worker" });
     a.close();
 
     const second: ServerEvent[] = [];
     const b = await BantoHostClient.connect(url, (e) => second.push(e));
     const history = await waitFor(second, "history");
     assert.ok(history.type === "history");
-    assert.deepEqual(history.entries, [{ role: "notice", text: "職人から質問です" }]);
+    // 出所が載る（外からの知らせを全部「職人」で出さないため。PO報告 2026-07-31）
+    assert.deepEqual(history.entries, [
+      { role: "notice", source: "worker", text: "職人から質問です" },
+    ]);
     b.close();
   });
 

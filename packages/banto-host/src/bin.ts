@@ -148,7 +148,8 @@ async function serve(options: ServeOptions): Promise<void> {
       ...createCanvasTools(canvas, catalog),
       ...createThreadTools({
         threads,
-        seed: (threadId, message) => server.notify(message, threadId),
+        // 出所は「別の会話」。職人の報告と同じ札で出さない（PO報告 2026-07-31）
+        seed: (threadId, message) => server.notify(message, { threadId, source: "thread" }),
       }),
       // 決定35a: 職人の報告は**起こしたスレッド**へ返る。番頭に自分の threadId を
       // 書かせず、ここで固定して渡す（番頭は自分がどのスレッドかを知らない）
@@ -200,12 +201,12 @@ async function serve(options: ServeOptions): Promise<void> {
       const notice = renderWorkerNotice(event);
       if (!notice) return;
       const threadId = threadIdOfOrigin(event.origin);
-      void server.notify(notice, threadId).catch((err: unknown) => {
+      void server.notify(notice, { ...(threadId ? { threadId } : {}), source: "worker" }).catch((err: unknown) => {
         // 決定35b: 宛先スレッドが畳まれていたら起こし直して届ける——のが本筋だが、
         // 起こし直せるのは会話が残っている場合（task-0036 の永続化）。いまは既定スレッドへ
         // 逃がし、消えたことにしない（I2：答え手のいない質問を黙って捨てない）
         console.error(`[banto] 知らせの宛先 ${String(threadId)} が見つかりません: ${String(err)}`);
-        void server.notify(notice);
+        void server.notify(notice, { source: "worker" });
       });
     },
     { afterEventId: workerPool.lastEventId }

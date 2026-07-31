@@ -77,10 +77,22 @@ function useStickToBottom(
 }
 
 /**
- * 職人からの知らせ（決定29）。**既定は畳んでおく**——番頭の報告と違い長くなりがちで、
+ * 知らせの出所ごとの札。
+ *
+ * **外から入る知らせを全部「職人」で出さない**（PO報告 2026-07-31）——番頭が別の会話を
+ * 開いたときの最初の一言まで職人に見えていた。知らない出所はそのまま出す（隠さない）。
+ */
+const NOTICE_LABELS: Record<string, string> = {
+  worker: "職人",
+  thread: "別の会話",
+  system: "知らせ",
+};
+
+/**
+ * POでも番頭でもない知らせ（決定29）。**既定は畳んでおく**——番頭の報告と違い長くなりがちで、
  * 会話を追う邪魔になるため（PO フィードバック）。クリックで開く。
  */
-function NoticeRow({ text }: { text: string }): React.ReactElement {
+function NoticeRow({ source, text }: { source: string; text: string }): React.ReactElement {
   const [open, setOpen] = useState(false);
   // 1行目を要約として出す。Markdownの強調記号は畳んだ状態では邪魔なので落とす
   const summary = (text.split("\n").find((l) => l.trim().length > 0) ?? "")
@@ -90,7 +102,7 @@ function NoticeRow({ text }: { text: string }): React.ReactElement {
   return (
     <div className={`msg msg--notice ${open ? "is-open" : ""}`}>
       <button className="notice-head" onClick={() => setOpen(!open)} title="クリックで開閉">
-        <span className="notice-tag">職人</span>
+        <span className="notice-tag">{NOTICE_LABELS[source] ?? source}</span>
         <span className="notice-caret">{open ? "▾" : "▸"}</span>
         {!open && <span className="notice-summary">{summary}</span>}
       </button>
@@ -116,8 +128,8 @@ function ChatRow({ entry }: { entry: TranscriptEntry }): React.ReactElement {
         </div>
       );
     case "notice":
-      // 職人からの知らせ（決定29）。番頭の発話と混ざらないよう見た目を分ける
-      return <NoticeRow text={entry.text} />;
+      // 外からの知らせ（決定29）。番頭の発話と混ざらないよう見た目を分け、出所も出す
+      return <NoticeRow source={entry.source} text={entry.text} />;
     case "tool":
       return (
         <div className={`msg msg--tool is-${entry.state}`}>
@@ -224,6 +236,24 @@ export function App(): React.ReactElement {
           }}
           onBack={() => setHistoryOpen(false)}
         />
+      ) : !session.activeThreadId ? (
+        /* 全部畳んだ空状態（どの会話も畳めるようにした帰結。プロトタイプにも空状態がある） */
+        <div className="threads-empty">
+          <p className="threads-empty-title">開いている会話はありません</p>
+          <p className="threads-empty-sub">
+            新しく始めるか、履歴から畳んだ会話を再開してください。
+          </p>
+          <div className="threads-empty-actions">
+            <button className="btn btn--primary" onClick={() => session.openThread()}>
+              ＋ 新しい会話を始める
+            </button>
+            {session.closedThreads.length > 0 && (
+              <button className="btn" onClick={() => setHistoryOpen(true)}>
+                🕘 履歴を見る（{session.closedThreads.length}）
+              </button>
+            )}
+          </div>
+        </div>
       ) : (
       <div className="shell-body">
         <main className="canvas-pane">
