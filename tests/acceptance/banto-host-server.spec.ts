@@ -414,7 +414,9 @@ describe("[task-0014] 会話履歴のホスト保持（リロードで消えな�
     clientC.close();
   });
 
-  it("[task-0014] new_session で履歴が空になり、全クライアントへ通知される", async () => {
+  it("[task-0037] new_session は畳んで新しく始め、全クライアントへ通知される", async () => {
+    // 以前は会話を捨てていた。畳むだけで消さないので、あとから履歴で読める
+    // （PO要望 2026-07-31）。詳細は banto-threads.spec.ts
     const { url } = await startHost();
     const a: ServerEvent[] = [];
     const b: ServerEvent[] = [];
@@ -428,8 +430,25 @@ describe("[task-0014] 会話履歴のホスト保持（リロードで消えな�
 
     b.length = 0;
     clientA.send({ type: "new_session" });
-    const cleared = await waitFor(b, "history");
-    assert.ok(cleared.type === "history" && cleared.entries.length === 0);
+    // 開くのと畳むので2通来る。**最後の状態**を見る（先に開いてから畳むため）
+    await waitFor(b, "thread_state");
+    const deadline = Date.now() + 2000;
+    let last = b.filter((e) => e.type === "thread_state").pop();
+    while (
+      Date.now() < deadline &&
+      !(last?.type === "thread_state" && last.threads.some((t) => t.state === "closed"))
+    ) {
+      await new Promise<void>((r) => setTimeout(r, 20));
+      last = b.filter((e) => e.type === "thread_state").pop();
+    }
+    assert.ok(last?.type === "thread_state", "thread_state が全クライアントへ届く");
+    if (last?.type === "thread_state") {
+      assert.ok(
+        last.threads.some((t) => t.state === "closed"),
+        "前の会話は畳まれて履歴に残る"
+      );
+      assert.ok(last.threads.some((t) => t.state === "open"), "新しい会話が始まっている");
+    }
 
     clientA.close();
     clientB.close();

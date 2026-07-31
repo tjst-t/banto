@@ -503,14 +503,11 @@ export function App(): React.ReactElement {
               </div>
             </div>
             <button
+              title="いまの会話を畳んで新しく始めます（畳んだ会話は履歴に残ります）"
               className="btn btn--ghost btn--small"
-              onClick={() => {
-                if (confirm("この会話を消して新しく始めます。記憶（好み・習慣）は残ります。")) {
-                  session.newSession();
-                }
-              }}
+              /* 確認を取らない：畳むだけで消えないので、取り返しがつく（PO要望 2026-07-31） */
+              onClick={() => session.newSession()}
               disabled={session.chat.length === 0}
-              title="会話だけを捨てる。記憶は残る"
             >
               新しい会話
             </button>

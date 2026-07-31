@@ -25,8 +25,6 @@ export type ThreadFactory = (threadId: string) => Promise<{
   tools: NamespacedToolDefinition[];
   /** 直近のターンでプロバイダ側エラーがあれば返す。**スレッドごと**に別。 */
   getLastError?: () => string | undefined;
-  /** このスレッドの会話履歴を捨てる（new_session）。記憶とキャンバスは触らない。 */
-  clearHistory?: () => void;
   /**
    * 対話ループの後始末。スレッドを閉じるとき・ホストを終うときに呼ばれる。
    *
@@ -63,7 +61,6 @@ export class Thread {
    */
   isDefault = false;
   readonly getLastError: () => string | undefined;
-  readonly clearHistory: () => void;
   /** 会話の真実。接続時にまとめて配り、以後は差分イベントで追随させる（D3）。 */
   transcript: TranscriptEntry[] = [];
   /**
@@ -81,7 +78,6 @@ export class Thread {
     canvas?: Canvas;
     tools: NamespacedToolDefinition[];
     getLastError?: () => string | undefined;
-    clearHistory?: () => void;
     dispose?: () => void;
   }) {
     this.id = params.id;
@@ -90,7 +86,6 @@ export class Thread {
     this.canvas = params.canvas;
     this.toolNames = params.tools.map((t) => t.name);
     this.getLastError = params.getLastError ?? ((): string | undefined => undefined);
-    this.clearHistory = params.clearHistory ?? ((): void => undefined);
     if (params.dispose) this.disposers.push(params.dispose);
   }
 
@@ -128,12 +123,6 @@ export class Thread {
     this.transcript.push(entry);
   }
 
-  /** 会話を捨ててやり直す。キャンバスと記憶は触らない。 */
-  clear(): void {
-    this.clearHistory();
-    this.transcript = [];
-  }
-
   dispose(): void {
     for (const off of this.disposers) off();
     this.disposers.length = 0;
@@ -168,7 +157,6 @@ export class ThreadRegistry {
       ...(parts.canvas ? { canvas: parts.canvas } : {}),
       tools: parts.tools,
       ...(parts.getLastError ? { getLastError: parts.getLastError } : {}),
-      ...(parts.clearHistory ? { clearHistory: parts.clearHistory } : {}),
       ...(parts.dispose ? { dispose: parts.dispose } : {}),
     });
     this.threads.set(id, thread);

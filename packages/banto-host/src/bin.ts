@@ -171,10 +171,6 @@ async function serve(options: ServeOptions): Promise<void> {
       canvas,
       tools,
       getLastError: () => session.agent.state.errorMessage,
-      // 会話だけ捨てる。記憶はシステムプロンプト側にあるので残る（D11）
-      clearHistory: () => {
-        session.agent.state.messages = [];
-      },
       dispose: () => session.dispose(),
     };
   };

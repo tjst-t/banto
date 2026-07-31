@@ -360,26 +360,50 @@ describe("[task-0035] スレッドの開閉（プロトコル）", () => {
     }
   });
 
-  it("[task-0035] new_session はそのスレッドの会話だけを捨てる（P3：意味を変えない）", async () => {
+  it("[task-0037] new_session は畳んで新しく始める（消さない・PO要望 2026-07-31）", async () => {
     const url = await start();
-    const second = await threads.open();
-    threads.resolve().record({ role: "po", text: "残る" });
-    second.record({ role: "po", text: "消える" });
+    const first = threads.resolve();
+    first.record({ role: "po", text: "前の話" });
 
     const events: ServerEvent[] = [];
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
     try {
-      client.send({ type: "new_session", threadId: second.id });
+      client.send({ type: "new_session", threadId: first.id });
       await waitFor(
         events,
-        (e) => e.type === "history" && e.threadId === second.id && e.entries.length === 0
+        (e) =>
+          e.type === "thread_state" &&
+          e.threads.some((t) => t.threadId === first.id && t.state === "closed") &&
+          e.threads.some((t) => t.state === "open")
       );
-      assert.deepEqual(second.transcript, []);
-      assert.deepEqual(
-        threads.resolve().transcript,
-        [{ role: "po", text: "残る" }],
-        "他のスレッドは触らない"
+
+      // 会話は消えない。履歴から読めるし再開もできる
+      assert.equal(first.state, "closed");
+      assert.deepEqual(first.transcript, [{ role: "po", text: "前の話" }]);
+      // 新しい会話が始まっている（本数は変わらず、置き換わる）
+      assert.equal(threads.list({ state: "open" }).length, 1);
+      assert.notEqual(threads.list({ state: "open" })[0]!.id, first.id);
+    } finally {
+      client.close();
+    }
+  });
+
+  it("[task-0037] new_session は他のスレッドを触らない", async () => {
+    const url = await start();
+    const first = threads.resolve();
+    const second = await threads.open();
+    second.record({ role: "po", text: "別件は残る" });
+
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    try {
+      client.send({ type: "new_session", threadId: first.id });
+      await waitFor(
+        events,
+        (e) => e.type === "thread_state" && e.threads.some((t) => t.state === "closed")
       );
+      assert.equal(second.state, "open");
+      assert.deepEqual(second.transcript, [{ role: "po", text: "別件は残る" }]);
     } finally {
       client.close();
     }

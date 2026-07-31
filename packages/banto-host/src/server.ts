@@ -372,9 +372,14 @@ export class BantoHostServer {
     }
 
     if (message?.type === "new_session") {
-      // そのスレッドの会話だけを捨てる。他のスレッドもキャンバスも記憶も触らない
-      thread.clear();
-      this.broadcast({ type: "history", threadId: thread.id, entries: [] });
+      // いまの会話を畳んで新しく始める。**捨てない**——畳んだ会話は履歴に残り再開できる
+      // （PO要望 2026-07-31）。先に開くのは、宛先が一瞬でも無くならないようにするため
+      try {
+        await this.threads.open();
+        this.threads.close(thread.id);
+      } catch (err) {
+        this.send(ws, { type: "error", message: String(err) });
+      }
       return;
     }
 

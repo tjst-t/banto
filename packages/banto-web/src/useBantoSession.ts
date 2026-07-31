@@ -134,6 +134,16 @@ export function useBantoSession(url: string): BantoSession {
   /** 見ているスレッドを購読ハンドラから参照する（再接続させないため ref で持つ）。 */
   const activeRef = useRef<string>(undefined);
   activeRef.current = activeThreadId;
+  /**
+   * 自分が開いた会話へ自動で移るための印。
+   *
+   * ＋ や「新しい会話」を押したのに元の会話に留まるのは、押した意図と食い違う。
+   * **自分が開いたときだけ**移る——番頭が別の分身を開いたときに画面を奪われないため
+   * （決定2「目の前の話は壊れない」）。
+   */
+  const followNewThread = useRef(false);
+  /** すでに知っているスレッド。新しく現れた1本を見つけるのに使う。 */
+  const knownThreadIds = useRef(new Set<string>());
 
   const update = useCallback(
     (threadId: string, patch: (prev: ThreadState) => ThreadState) => {
@@ -157,17 +167,28 @@ export function useBantoSession(url: string): BantoSession {
           setTools(event.tools);
           setCatalog(event.catalog);
           setAllThreads(event.threads);
+          knownThreadIds.current = new Set(event.threads.map((t) => t.threadId));
           setActiveThreadId((current) => current ?? event.defaultThreadId);
           break;
 
-        case "thread_state":
+        case "thread_state": {
+          const appeared = event.threads.find(
+            (t) => !knownThreadIds.current.has(t.threadId) && t.state === "open"
+          );
+          knownThreadIds.current = new Set(event.threads.map((t) => t.threadId));
           setAllThreads(event.threads);
-          // 見ていたスレッドが畳まれたら、開いている先頭へ移る（空の面を見せない）
           setActiveThreadId((current) => {
+            // 自分が開いた会話へ移る（押した意図に合わせる）
+            if (appeared && followNewThread.current) {
+              followNewThread.current = false;
+              return appeared.threadId;
+            }
+            // 見ていたスレッドが畳まれたら、開いている先頭へ移る（空の面を見せない）
             const still = event.threads.find((t) => t.threadId === current && t.state === "open");
             return still ? current : event.threads.find((t) => t.state === "open")?.threadId;
           });
           break;
+        }
 
         case "history":
           // ホストが持つ会話の真実。リロード時はここで復元される
@@ -285,13 +306,16 @@ export function useBantoSession(url: string): BantoSession {
       (kind: string) => post({ type: "canvas_open", threadId: activeThreadId, kind }),
       [activeThreadId, post]
     ),
-    newSession: useCallback(
-      () => post({ type: "new_session", threadId: activeThreadId }),
-      [activeThreadId, post]
-    ),
+    newSession: useCallback(() => {
+      followNewThread.current = true;
+      post({ type: "new_session", threadId: activeThreadId });
+    }, [activeThreadId, post]),
     switchThread,
     openThread: useCallback(
-      (title?: string) => post({ type: "thread_open", ...(title ? { title } : {}) }),
+      (title?: string) => {
+        followNewThread.current = true;
+        post({ type: "thread_open", ...(title ? { title } : {}) });
+      },
       [post]
     ),
     closeThread: useCallback((threadId: string) => post({ type: "thread_close", threadId }), [post]),
