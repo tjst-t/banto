@@ -42,13 +42,13 @@ export interface EnvLimits {
 }
 
 /**
- * 既定値。
+ * 既定値。**`spec-environment` §5.1 の表がそのまま真実**——ここで別の数字を選ばない。
  *
- * 4時間・同時4本は「手元の検証を回すには十分で、忘れて放置しても一晩は越えない」という
- * 線。数字そのものより、**上限が存在すること**が要点（決定34f）。
+ * 以前このファイルは既定TTLを4時間にしていた（spec は30分）。「手元の検証には十分」と
+ * いう理屈を後から付けただけで、spec を見ていなかった——番頭に指摘されて直した（P3）。
  */
 export const DEFAULT_ENV_LIMITS: EnvLimits = {
-  defaultTtlMs: 4 * 3600 * 1000,
+  defaultTtlMs: 30 * 60 * 1000,
   maxTtlMs: 24 * 3600 * 1000,
   maxInstancesPerProfile: 4,
   maxInstancesTotal: 8,

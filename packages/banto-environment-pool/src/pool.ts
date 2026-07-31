@@ -42,6 +42,10 @@ export interface EnvironmentPoolOptions {
   /** sops の鍵ファイル（credentials の復号に使う。決定32d）。 */
   sopsAgeKeyFile?: string;
   /**
+   * TTL 執行と照合の間隔（既定 60 秒）。`startMaintenance()` を呼んだときだけ回る。
+   */
+  maintenanceIntervalMs?: number;
+  /**
    * 環境を外から見えるようにする口（決定39）。渡さないと `expose` を頼まれても断る。
    * 配置によって手段が変わるので、ここで差し替える。
    */
@@ -148,6 +152,11 @@ export class EnvironmentPool {
   private readonly exposer: EnvExposer | undefined;
   /** 台帳が壊れていた場合の説明。黙って空の台帳で動き出さないため（I2）。 */
   readonly ledgerCorruption: string | null;
+  private maintenanceTimer: NodeJS.Timeout | undefined;
+  private maintenanceRunning = false;
+  private readonly maintenanceIntervalMs: number;
+  /** 照合で見つかった孤児（台帳に無い実リソース）。画面と番頭に見せる。 */
+  private orphanList: Array<{ driver: string; name: string; created: string }> = [];
 
   constructor(options: EnvironmentPoolOptions) {
     const opened = EnvLedger.open(options.dataDir);
@@ -157,6 +166,113 @@ export class EnvironmentPool {
     this.timeoutMs = options.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
     this.sopsAgeKeyFile = options.sopsAgeKeyFile;
     this.exposer = options.exposer;
+    this.maintenanceIntervalMs = options.maintenanceIntervalMs ?? 60_000;
+  }
+
+  // ── TTL 執行と照合（spec-environment §5・決定32e）────────────────────────
+  //
+  // **ここに無いと誰も片付けない。** spec §5 は「制限の執行は Environment Pool の台帳が
+  // 行う」と定めている——番頭が Kobo 無しで provision できる以上、Kobo 側の tick だけでは
+  // 番頭が立てた環境が対象外になる（台帳が別なので実際にそうなっていた。番頭の指摘で発覚）。
+  //
+  // 外部リソースの消し忘れは金銭的実害で、本仕様で最も優先度の高い機構（I3）。
+
+  /**
+   * TTL 執行と照合を回し始める。**呼ばないと期限は効かない**——だから
+   * `env.provision` の返り文も、回っているときだけ「自動で畳まれます」と言う。
+   */
+  startMaintenance(): void {
+    if (this.maintenanceTimer) return;
+    this.maintenanceTimer = setInterval(() => {
+      void this.runMaintenance();
+    }, this.maintenanceIntervalMs);
+    // ホストの終了を妨げない
+    this.maintenanceTimer.unref?.();
+  }
+
+  /** 止める。テストとホストの片付けで使う。 */
+  stopMaintenance(): void {
+    if (!this.maintenanceTimer) return;
+    clearInterval(this.maintenanceTimer);
+    this.maintenanceTimer = undefined;
+  }
+
+  /** TTL 執行と照合が回っているか。番頭に見せる（回っていないなら期限は効かない）。 */
+  isMaintaining(): boolean {
+    return this.maintenanceTimer !== undefined;
+  }
+
+  /** 照合で見つかった孤児。台帳に無いのに実在するリソース。 */
+  orphans(): Array<{ driver: string; name: string; created: string }> {
+    return [...this.orphanList];
+  }
+
+  /**
+   * 期限切れを畳み、実リソースと台帳を突き合わせる。
+   *
+   * I2: 1件の失敗で残りを止めない。畳み損ねは台帳に印が残る（`teardown-failed`）。
+   */
+  async runMaintenance(): Promise<{ tornDown: string[]; failed: string[]; orphans: number }> {
+    // 前の回が終わっていないなら重ねない（畳んでいる最中にもう一度畳もうとしない）
+    if (this.maintenanceRunning) return { tornDown: [], failed: [], orphans: this.orphanList.length };
+    this.maintenanceRunning = true;
+    const tornDown: string[] = [];
+    const failed: string[] = [];
+    try {
+      const now = Date.now();
+      for (const entry of this.ledger.listLive()) {
+        if (new Date(entry.ttlDeadline).getTime() > now) continue;
+        try {
+          await this.teardown(entry.envId);
+          tornDown.push(entry.envId);
+          console.warn(`[env] 期限切れのため畳みました: ${entry.envId}（${entry.profileName}）`);
+        } catch (err) {
+          // I2: 畳み損ねを黙らせない。台帳には teardown-failed が残る
+          failed.push(entry.envId);
+          console.error(`[env] 期限切れの ${entry.envId} を畳めませんでした: ${String(err)}`);
+        }
+      }
+      await this.reconcile();
+    } finally {
+      this.maintenanceRunning = false;
+    }
+    return { tornDown, failed, orphans: this.orphanList.length };
+  }
+
+  /**
+   * 各ドライバの `list` と台帳を突き合わせ、台帳に無い実リソースを見つける（spec §5）。
+   *
+   * クラッシュ中に生じた孤児がここで出る。**消しはしない**——台帳に無いものを機械が
+   * 勝手に消すと、Banto 以外が作ったものまで巻き込む。見えるようにするところまで。
+   */
+  async reconcile(): Promise<Array<{ driver: string; name: string; created: string }>> {
+    const known = new Set(this.ledger.listLive().map((e) => JSON.stringify(e.handle)));
+    const drivers = new Set(this.ledger.list().map((e) => e.driver));
+    const found: Array<{ driver: string; name: string; created: string }> = [];
+
+    for (const driver of drivers) {
+      let result;
+      try {
+        result = await runDriverVerb(resolveDriverPath(driver), "list", {}, this.timeoutMs);
+      } catch (err) {
+        console.error(`[env] ${driver} の照合に失敗しました: ${String(err)}`);
+        continue;
+      }
+      if (!result.ok || !Array.isArray(result.output)) continue;
+      for (const item of result.output as Array<Record<string, unknown>>) {
+        if (known.has(JSON.stringify(item["handle"]))) continue;
+        found.push({
+          driver,
+          name: typeof item["name"] === "string" ? item["name"] : "(名前なし)",
+          created: typeof item["created"] === "string" ? item["created"] : "",
+        });
+      }
+    }
+    if (found.length > 0) {
+      console.warn(`[env] 台帳に無い実リソースが ${found.length} 件あります（照合）`);
+    }
+    this.orphanList = found;
+    return found;
   }
 
   /** 公開の口を持っているか。GUI と番頭に「頼めるかどうか」を伝えるため。 */

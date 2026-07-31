@@ -144,7 +144,12 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
               `環境を立てました: ${summary.envId}（${summary.profile}）\n` +
               (summary.url ? `外から見られます: ${summary.url}\n` : "") +
               `いま使えるか: ${summary.healthcheck.ok ? "使えます" : `使えません（${summary.healthcheck.detail ?? "理由不明"}）`}\n` +
-              `期限: ${summary.ttlDeadline}（過ぎると自動で畳まれます）\n` +
+              // I2: 執行が回っていないのに「自動で畳まれます」と言わない。
+              // 期限だけ記録して誰も畳まない状態を「畳まれる」と読ませるのが一番危ない
+              `期限: ${summary.ttlDeadline}` +
+              (pool.isMaintaining()
+                ? "（過ぎると自動で畳まれます）\n"
+                : "（**自動では畳まれません**。期限の執行が動いていないので、必ず自分で畳んでください）\n") +
               "使い終わったら env.teardown で畳んでください。",
           },
         ],
@@ -264,6 +269,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     async execute(params) {
       const environments = pool.list(params);
       const limits = pool.currentLimits();
+      const orphans = pool.orphans();
       const text =
         environments.length === 0
           ? "立っている環境はありません"
@@ -279,10 +285,14 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
         content: [
           {
             type: "text" as const,
-            text: `${text}\n（同時上限: 全体 ${limits.maxInstancesTotal} / プロファイルごと ${limits.maxInstancesPerProfile}）`,
+            text:
+              `${text}\n（同時上限: 全体 ${limits.maxInstancesTotal} / プロファイルごと ${limits.maxInstancesPerProfile}` +
+              `${pool.isMaintaining() ? "" : " ・**期限の執行が動いていません**"}）` +
+              // spec §5: 台帳に無い実リソースは黙って隠さない。消し忘れの元
+              (orphans.length > 0 ? `\n台帳に無い実リソースが ${orphans.length} 件あります（照合）` : ""),
           },
         ],
-        details: { environments, limits },
+        details: { environments, limits, orphans, maintaining: pool.isMaintaining() },
       };
     },
   });

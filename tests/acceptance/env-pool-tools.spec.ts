@@ -493,3 +493,73 @@ describe("[task-0034] spec-environment §3.1 の契約と一致しているこ�
     assert.equal(details.tornDown, true, "それでも畳むこと");
   });
 });
+
+describe("[spec-environment §5] TTL 執行と照合は Environment Pool 側にある", () => {
+  it("**期限を過ぎた環境は畳まれる**（ここに無いと誰も片付けない）", async () => {
+    // 期限をごく短くして立てる。番頭が Kobo 無しで立てた環境が対象になることを見る
+    const p = pool();
+    const created = await p.provision({
+      driver: "process",
+      config: { cmd: "sleep 60" },
+      ttlMs: 1,
+      taskId: "t-ttl",
+    });
+    assert.deepEqual(p.list().map((e) => e.envId), [created.envId]);
+
+    await new Promise((r) => setTimeout(r, 30));
+    const result = await p.runMaintenance();
+
+    assert.deepEqual(result.tornDown, [created.envId], "期限切れが畳まれること");
+    assert.deepEqual(p.list(), [], "生きた環境が残らないこと");
+  });
+
+  it("期限内の環境は畳まれない", async () => {
+    const p = pool();
+    const created = await p.provision({ driver: "process", config: { cmd: "sleep 60" } });
+    const result = await p.runMaintenance();
+    assert.deepEqual(result.tornDown, []);
+    assert.deepEqual(p.list().map((e) => e.envId), [created.envId]);
+    await p.teardown(created.envId);
+  });
+
+  it("執行を回していないことを number で誤魔化さない（回っていなければそう返る）", async () => {
+    const p = pool();
+    assert.equal(p.isMaintaining(), false);
+    p.startMaintenance();
+    assert.equal(p.isMaintaining(), true);
+    p.stopMaintenance();
+    assert.equal(p.isMaintaining(), false);
+  });
+
+  it("台帳に無い実リソースを照合で見つける（消しはしない）", async () => {
+    const p = pool();
+    const created = await p.provision({ driver: "process", config: { cmd: "sleep 60" }, taskId: "t-orphan" });
+    // 台帳から消して「実物だけある」状態を作る＝クラッシュ中に生じた孤児と同じ形
+    const ledgerFile = path.join(dataDir, "env-ledger.json");
+    const raw = JSON.parse(fs.readFileSync(ledgerFile, "utf-8")) as { entries: unknown[] };
+    raw.entries = [];
+    fs.writeFileSync(ledgerFile, JSON.stringify(raw));
+
+    const fresh = pool();
+    // 台帳が空だと照合するドライバも分からないので、1本立て直してから見る
+    const other = await fresh.provision({ driver: "process", config: { cmd: "sleep 60" } });
+    const found = await fresh.reconcile();
+
+    assert.ok(
+      found.some((o) => o.name.includes("t-orphan")),
+      `孤児が見つかること。見つかったもの: ${JSON.stringify(found)}`
+    );
+    // 消さない——Banto 以外が作ったものを巻き込まないため
+    assert.ok(fresh.orphans().length > 0);
+    await fresh.teardown(other.envId);
+    await p.teardown(created.envId).catch(() => undefined);
+  });
+
+  it("既定TTLは spec §5.1 の 30分（実装が勝手に別の数字を選ばない）", () => {
+    assert.equal(DEFAULT_ENV_LIMITS.defaultTtlMs, 30 * 60 * 1000);
+    assert.equal(DEFAULT_ENV_LIMITS.maxTtlMs, 24 * 3600 * 1000);
+    assert.equal(DEFAULT_ENV_LIMITS.maxInstancesPerProfile, 4);
+    assert.equal(DEFAULT_ENV_LIMITS.maxInstancesTotal, 8);
+    assert.equal(DEFAULT_ENV_LIMITS.adhocDrivers, "builtin");
+  });
+});

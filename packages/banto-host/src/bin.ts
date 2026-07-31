@@ -210,6 +210,9 @@ async function serve(options: ServeOptions): Promise<void> {
     dataDir: path.join(dataDir(), "environment-pool"),
     exposer,
   });
+  // spec-environment §5: 執行は Environment Pool の台帳が行う。**ここで回さないと
+  // 番頭が立てた環境を誰も片付けない**——Kobo 側の tick は台帳が別で対象外（I3）
+  environmentPool.startMaintenance();
 
   const workerPoolUrl = process.env["BANTO_WORKER_POOL_URL"] ?? "/api/worker-pool";
   const reportUrl = workerPoolUrl.startsWith("/")
