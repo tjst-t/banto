@@ -35,6 +35,6 @@ ADR-0010 決定36（a）(b)(h)。提案書は `docs/proposals/2026-07-30-repo-ma
 
 ## スコープ外
 
-- **Git の変更操作**（commit / push / branch / remote / tag）。決定24 を覆す話で別途の裁定が要る
+- **Git の変更操作**（commit / push / branch / remote / tag）。**決定37 で「持たない」と裁定済み**。ワークツリーの作成・削除は作業場所の用意であって履歴の変更ではないので、本タスクに残る
 - Kobo をサービス利用へ切り替える段（2段目）
 - `spec-multi-project` §1 の改訂（task-0040）
