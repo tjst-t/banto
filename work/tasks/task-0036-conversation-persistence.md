@@ -14,7 +14,8 @@ acceptance:
   - { id: a2, text: "過去のスレッドを一覧でき、選んで再開できる。再開したスレッドには元の会話が復元され、続きから話せる" }
   - { id: a3, text: "会話の真実がどこにあるかが一箇所に決まっており、同じ内容を二重に持たない（D3）。派生でしか無いもの（Tool の実行状態など）は保存しない" }
   - { id: a4, text: "保存に失敗したら黙って進まない（I2）。会話が消えているのに残っているように見せない" }
-  - { id: a5, text: "既存の acceptance / e2e が通り、npm run build・typecheck・test が通る" }
+  - { id: a5, text: "ホストを再起動したあとに職人が質問してきても、その職人を起こしたスレッドが復元されて届く（決定35b）。task-0035 の経路が再起動を越えても成立する" }
+  - { id: a6, text: "既存の acceptance / e2e が通り、npm run build・typecheck・test が通る" }
 ---
 
 ## 背景
@@ -33,6 +34,7 @@ acceptance:
 
 - **pi の `SessionManager` がファイル永続化と一覧をすでに持っている**（`SessionManager.create(cwd, sessionDir)` / `.open(path)` / `.list(cwd, sessionDir)`）。いま `createBantoHostSession()` は `SessionManager.inMemory()` を既定にしているだけで、差し替え口は開いている。**自前の会話ストアを作らない**（D6）——職人のセッション（`--session-dir`）と同じ手であり、決定30d「起こし直しは同じセッションの再開」も同じ機構に乗っている
 - **詰めること：`TranscriptEntry` と pi のセッションファイルの関係**。いまホストは会話を `TranscriptEntry[]` として別に持っており、そこには pi のメッセージではないもの（職人からの `notice`・Tool の実行状態）が混ざっている。会話本体は pi のセッションが真実、`notice` 等は Banto 側が持つ——という分け方でよいかを実装時に確定させ、**同じ内容を二重に保存しない**（D3）
+- **a5 は永続化の本当の用途**。再起動後に職人が `worker.ask` で待っていても、宛先スレッドが復元できなければ答え手がいない（決定35b）。`worker_started` イベントの `origin` に残っているスレッドを、セッションファイルから起こし直せること
 - 一覧は「新しいものから」。`worker.list`（決定30/task-0030）で同じ判断をしている——溜まった履歴を辿る用途なので直近が先頭
 
 ## スコープ外
