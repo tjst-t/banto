@@ -42,7 +42,10 @@ function headline(event: WorkerEvent): string {
     case "worker_asked":
       return `${who}から質問：${firstLine(String(event.data["question"] ?? ""))}`;
     case "worker_reported":
-      return `${who}から報告：${firstLine(String(event.data["summary"] ?? ""))}`;
+      // 自動報告は職人が書いたものではない。見出しで区別する（I1：出所を偽らない）
+      return event.data["auto"] === true
+        ? `${who}が報告せずに手を止めました：${firstLine(String(event.data["summary"] ?? ""))}`
+        : `${who}から報告：${firstLine(String(event.data["summary"] ?? ""))}`;
     case "worker_closed":
       return `${who}を安全弁が畳みました（しばらく何もしていなかったため）`;
     default: {
@@ -91,12 +94,14 @@ export function renderWorkerNotice(event: WorkerEvent): string | undefined {
         "不可逆な選択や PO の意向が要る話（D1）なら、あなたの判断で PO に上げてください。"
     );
   } else if (event.type === "worker_reported") {
+    lines.push("", `> ${String(event.data["summary"] ?? "")}`, "");
     lines.push(
-      "",
-      `> ${String(event.data["summary"] ?? "")}`,
-      "",
-      "**これは職人の主張であって完了の証明ではありません**——必要なら成果を自分で確かめてください（I1）。" +
-        "確かめて良ければ worker.close で畳んでください。"
+      event.data["auto"] === true
+        ? "**これは職人が書いた報告ではありません。** 報告しないまま手を止めたので、" +
+            "最後の発話を安全弁が代わりに送っています——作業が本当に終わったのかも含めて" +
+            "自分で確かめてください（I1）。続きが要るなら worker.steer、良ければ worker.close。"
+        : "**これは職人の主張であって完了の証明ではありません**——必要なら成果を自分で確かめてください（I1）。" +
+            "確かめて良ければ worker.close で畳んでください。"
     );
   } else if (event.type === "worker_closed") {
     lines.push(

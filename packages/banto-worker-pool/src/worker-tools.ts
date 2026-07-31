@@ -327,11 +327,20 @@ export function createWorkerReportTools(pool: WorkerPool): NamespacedToolDefinit
       done: Type.Optional(
         Type.Boolean({ description: "自分としては作業を終えたつもりなら true" })
       ),
+      auto: Type.Optional(
+        Type.Boolean({
+          description:
+            "職人が自分で書いた報告ではなく、報告せず手を止めたのを安全弁が拾ったもの。" +
+            "職人自身が指定するものではない（拡張が付ける）",
+        })
+      ),
     }),
     async execute(params) {
       const { sessionId } = resolve(params.projectTag, params.taskId);
       const event = pool.report(sessionId, params.summary, {
         ...(params.done !== undefined ? { done: params.done } : {}),
+        // I1: 出所を偽らない。番頭には「職人が黙って終えた」ことが見えなければならない
+        ...(params.auto ? { auto: true } : {}),
       });
       return {
         content: [{ type: "text" as const, text: `報告しました（#${event.id}）` }],
