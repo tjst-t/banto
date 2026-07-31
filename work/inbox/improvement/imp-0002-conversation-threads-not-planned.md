@@ -5,7 +5,7 @@ kind: incident
 origin: agent
 class: missing-work-handoff
 status: tasked
-refs: [task-0013, vision, adr-0010, epic-0006]
+refs: [task-0013, vision, adr-0010, epic-0006, task-0035, task-0036, task-0037]
 ---
 
 ## 内容
@@ -24,4 +24,5 @@ refs: [task-0013, vision, adr-0010, epic-0006]
 ## 対処
 
 - epic-0006「会話スレッド（番頭の分身）と会話の永続化」を起票した（本incidentの直接の対処）
+- **2026-07-31、epic-0006 の下に task-0035（スレッドを一級市民にする）・task-0036（永続化と一覧・再開）・task-0037（WebUI のスレッド面）を起票した。** 起票までが本incidentの対処で、実装はタスク側で追う
 - 棚卸しを実際に走らせる仕組み（起動時の自動チェック等）は別途検討する。`work-handoff` SKILL の記述だけでは同種の漏れを防げないことが実証された（P4：同種の失敗が繰り返されるならプロンプト層ではなく機構化）
