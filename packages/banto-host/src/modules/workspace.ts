@@ -12,6 +12,7 @@
 
 import { Type } from "typebox";
 import { createFileTools } from "../file-tools.js";
+import { createFileWriteTools, type FileWriteToolOptions } from "../file-write-tools.js";
 import { createGitTools } from "../git-tools.js";
 import type { BantoModule } from "../module.js";
 import type { PlaceRegistry } from "../places.js";
@@ -79,16 +80,25 @@ const workspaceViews: CanvasViewSpec[] = [
  * @param places 場所の帳簿。`file.*` / `git.*` は**呼び出しごとに場所を選ぶ**（決定36e）。
  *   GUI も同じ Tool 契約を HTTP 経由で呼ぶので、引数が1つ増えるだけで場所の選択UIが
  *   成り立つ（決定25：人も番頭も同じ契約、経路が違うだけ）。
+ * @param write 書き込み（`file.write`）の設定。ホスト自身のデータ置き場を渡す（決定38b）
  */
-export function createWorkspaceModule(places: PlaceRegistry): BantoModule {
+export function createWorkspaceModule(
+  places: PlaceRegistry,
+  write: FileWriteToolOptions = {}
+): BantoModule {
   return {
     name: "workspace",
     title: "ワークスペース",
     description:
-      "登録された場所（リポジトリ等）のファイルとgit履歴を閲覧する組み込みモジュール" +
-      "（すべて読み取り専用）。どの場所を見るかは place で選ぶ。",
+      "登録された場所（リポジトリ等）のファイルとgit履歴を扱う組み込みモジュール。" +
+      "閲覧は登録されたどの場所にも届き、書き込みはPOが場所ごとに許した範囲だけ（既定は読み取り専用）。" +
+      "gitは閲覧のみで、変更操作は持たない（決定37）。どの場所を見るかは place で選ぶ。",
     endpoint: { baseUrl: WORKSPACE_BASE_URL },
-    tools: [...placeScopedTools(places, createFileTools), ...placeScopedTools(places, createGitTools)],
+    tools: [
+      ...placeScopedTools(places, createFileTools),
+      ...createFileWriteTools(places, write),
+      ...placeScopedTools(places, createGitTools),
+    ],
     views: workspaceViews,
     skills: [],
   };

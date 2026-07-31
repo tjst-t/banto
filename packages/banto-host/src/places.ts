@@ -172,8 +172,16 @@ export function resolveInPlace(place: Place, relativePath: string): string {
  *
  * 既定は読み取り専用。`writable` に**明示的に許された範囲**だけが書ける。
  * `.git/` 等は `**` を許しても書けない（決定38d：決定37 の抜け道を塞ぐ）。
+ *
+ * @param protectedPaths ホスト自身のデータ置き場（絶対パス）。名前で弾く `NEVER_WRITABLE`
+ *   だけでは足りない——`BANTO_DATA_DIR` は差し替えられるので、`.banto` という名前を
+ *   当てにすると設定を変えた瞬間に穴が開き、決定38(b) の自己昇格が成立する。
  */
-export function assertWritable(place: Place, relativePath: string): string {
+export function assertWritable(
+  place: Place,
+  relativePath: string,
+  protectedPaths: readonly string[] = []
+): string {
   const resolved = resolveInPlace(place, relativePath);
   const rel = path.relative(place.path, resolved);
 
@@ -182,6 +190,16 @@ export function assertWritable(place: Place, relativePath: string): string {
     throw new Error(
       `"${rel}" は書き込めません（${first}/ はどの設定でも書き込み禁止です）。`
     );
+  }
+
+  for (const guarded of protectedPaths) {
+    // 実パスで比べる。リンク越しに入られると名前の比較はすり抜ける
+    const real = fs.existsSync(guarded) ? fs.realpathSync(guarded) : path.resolve(guarded);
+    if (isInside(resolved, real)) {
+      throw new Error(
+        `"${rel}" は書き込めません（Banto 自身のデータ置き場はどの設定でも書き込み禁止です）。`
+      );
+    }
   }
 
   const patterns = place.writable ?? [];

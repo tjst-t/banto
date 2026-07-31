@@ -244,15 +244,22 @@ describe("[task-0015] 組み込みモジュール", () => {
     const module = createWorkspaceModule(placesOf(root));
 
     assert.equal(module.name, "workspace");
-    // 個々のTool名を全部並べるとToolが増えるたび意味の無い失敗になるので、
-    // 「file/git の両ドメインを持ち、すべて閲覧専用」という性質で見る
+    // 個々のTool名を全部並べるとToolが増えるたび意味の無い失敗になるので、性質で見る
     assert.deepEqual(moduleDomains(module).sort(), ["file", "git"]);
     // 探索系も揃っていること（番頭がどこに何があるか探せる）
     for (const expected of ["file.find", "file.grep"]) {
       assert.ok(module.tools.some((t) => t.name === expected), `${expected} を提供する`);
     }
-    for (const t of module.tools) {
-      assert.doesNotMatch(t.name, /write|delete|commit|stage|push|checkout|reset/);
+    // 決定38（task-0041）: file.write はある。ただし**書けるかどうかは実行時の許可**で決まり、
+    // 既定はどの場所も読み取り専用（banto-write-scope.spec.ts で見る）
+    assert.ok(module.tools.some((t) => t.name === "file.write"), "file.write を提供する");
+    // 決定37: git は閲覧のみ。番頭は履歴を変える手段を持たない
+    for (const t of module.tools.filter((t) => t.name.startsWith("git."))) {
+      assert.doesNotMatch(t.name, /commit|stage|push|checkout|reset|write|delete/);
+    }
+    // file 側も、書き込みは file.write ただ1つ（削除・移動は持たせていない）
+    for (const t of module.tools.filter((t) => t.name.startsWith("file."))) {
+      assert.doesNotMatch(t.name, /delete|remove|move|rename|chmod/);
     }
     // 組み込みは Banto ホスト自身が提供元なので、相対パスで指す（決定25）
     assert.match(module.endpoint.baseUrl, /^\//);

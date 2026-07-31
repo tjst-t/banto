@@ -100,7 +100,9 @@ const SYSTEM_PROMPT = [
   "細かい実装作業は自分でせず職人へ委譲し、自分の文脈は記憶と判断に使ってください（D10）。",
   "覚えておくべき好み・習慣が出てきたら memory.save で保存してください。",
   "POに何かを見せたいときは canvas.open でキャンバスに表示できます（何が開けるかは canvas.list_catalog）。",
-  "file.* と git.* でワークスペースの中身と履歴を閲覧できます（いずれも読み取り専用）。",
+  "file.* と git.* で登録された場所（リポジトリ等）の中身と履歴を閲覧できます。どの場所かは place で選びます。",
+  "file.write で自分の成果物（決定の記録・起票・メモ）を書けますが、**POが場所ごとに許した範囲だけ**で、既定はどの場所も読み取り専用です。許されていなければ断られるので、必要ならPOに範囲を頼んでください。コードを変える仕事は自分で書かず職人へ委譲します（D10）。",
+  "gitの変更操作（commit・push・branch）は持っていません。頼まれたら職人へ委譲してください——書いたものは未コミットで残り、POのレビューを通ります。",
   "調査・実装など手を動かす仕事は worker.delegate で職人へ委譲してください（D10）。手順は skill.read で worker-delegation を確認できます。",
   "職人からの報告・質問は自動で届きます。報告は主張であって完了の証明ではないので、必要なら成果を自分で確かめてください。質問には worker.steer で答えられます。",
   "確かめて良いと判断したら worker.close で職人を畳んでください。待機中の職人はプロセスとして残り続けます。畳んでも記録は残り、続きを頼みたくなったら worker.wake で元の会話ごと起こし直せます。",
@@ -186,7 +188,8 @@ async function serve(options: ServeOptions): Promise<void> {
   const coreSkills: SkillEntry[] = skills.map((skill) => ({ skill, origin: CORE_ORIGIN }));
 
   const modules = createModuleRegistry([
-    createWorkspaceModule(places),
+    // 決定38b: ホスト自身のデータ置き場は、設定で ** を許しても書かせない（自己昇格を塞ぐ）
+    createWorkspaceModule(places, { protectedPaths: [dataDir()] }),
     workerPoolModule,
     createDemoModule(),
   ]);
