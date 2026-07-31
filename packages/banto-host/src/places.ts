@@ -52,12 +52,24 @@ export function createStaticPlaceProvider(configs: readonly StaticPlaceConfig[])
   };
 }
 
+/**
+ * 後から与えられた書き込み許可（決定38c・task-0042）。
+ *
+ * 提供元が返した場所に**重ねる**形にしてあるのが要点。`ghq` が返す読み取り専用の
+ * リポジトリにも、提供元を書き換えずに許可を足せる。
+ */
+export interface PlaceGrantSource {
+  writableFor(placeId: string): readonly string[];
+}
+
 /** 場所の帳簿。提供元を束ね、砦の判定に使う。 */
 export class PlaceRegistry {
   private readonly providers: PlaceProvider[];
+  private readonly grants: PlaceGrantSource | undefined;
 
-  constructor(providers: readonly PlaceProvider[] = []) {
+  constructor(providers: readonly PlaceProvider[] = [], grants?: PlaceGrantSource) {
     this.providers = [...providers];
+    this.grants = grants;
   }
 
   add(provider: PlaceProvider): void {
@@ -93,10 +105,24 @@ export class PlaceRegistry {
         if (seenPaths.has(key)) continue;
         seen.add(place.id);
         seenPaths.add(key);
-        all.push(place);
+        all.push(this.withGrants(place));
       }
     }
     return all;
+  }
+
+  /**
+   * POが後から許した範囲を重ねる（決定38c）。
+   *
+   * 設定側の `writable` を**置き換えず足す**。設定で与えた範囲が、承認の取り消しで
+   * 消えてしまわないようにするため（設定を書いたのは PO であって承認の帳簿ではない）。
+   */
+  private withGrants(place: Place): Place {
+    const granted = this.grants?.writableFor(place.id) ?? [];
+    if (granted.length === 0) return place;
+    const merged = [...(place.writable ?? [])];
+    for (const pattern of granted) if (!merged.includes(pattern)) merged.push(pattern);
+    return { ...place, writable: merged };
   }
 
   /** id で1つ引く。I2: 未登録は黙って既定へ落とさずエラーにする。 */

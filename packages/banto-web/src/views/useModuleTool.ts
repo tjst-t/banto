@@ -18,6 +18,36 @@ export interface ModuleToolState<T> {
   reload(): void;
 }
 
+/** Tool の到達先URL。フックも一発呼びも同じ規約を使う（決定27b）。 */
+function toolUrl(endpoint: string, toolName: string): string {
+  return `${endpoint.replace(/\/$/, "")}${MODULE_TOOL_PATH}${encodeURIComponent(toolName)}`;
+}
+
+/**
+ * Tool を1回だけ呼ぶ（押したときに動く操作用）。
+ *
+ * `useModuleTool` は「見えているものを取り直す」ためのフックで、押して初めて起きる操作には
+ * 使えない。承認・拒否のような**副作用のある呼び出し**はこちらを使う。
+ *
+ * I2: 失敗は例外にする。押したのに何も起きなかったように見えるのが一番困る。
+ */
+export async function callModuleTool<T>(
+  endpoint: string,
+  toolName: string,
+  args: Record<string, unknown> = {}
+): Promise<T> {
+  const res = await fetch(toolUrl(endpoint, toolName), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ args }),
+  });
+  const body: unknown = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error((body as { error?: string }).error ?? res.statusText);
+  }
+  return (body as ModuleToolResult).details as T;
+}
+
 /**
  * モジュールのToolを呼び、`details`（構造化データ）を返す。
  *
@@ -45,7 +75,7 @@ export function useModuleTool<T>(
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    const url = `${endpoint.replace(/\/$/, "")}${MODULE_TOOL_PATH}${encodeURIComponent(toolName)}`;
+    const url = toolUrl(endpoint, toolName);
 
     setLoading(true);
     setError(undefined);

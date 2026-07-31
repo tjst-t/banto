@@ -11,6 +11,7 @@ import { DemoHello } from "./DemoHello.js";
 import { DemoClock } from "./DemoClock.js";
 import { FileBrowser } from "./FileBrowser.js";
 import { GitViewer } from "./GitViewer.js";
+import { PlacePermissions } from "./PlacePermissions.js";
 import { WorkerViewer } from "./WorkerViewer.js";
 import { MemoryViewer } from "./MemoryViewer.js";
 import { SkillViewer } from "./SkillViewer.js";
@@ -38,6 +39,7 @@ const REGISTRY: Record<string, ComponentType<CanvasViewProps>> = {
   // 基本GUIセット（workspace モジュール提供。決定18・24）
   FileBrowser,
   GitViewer,
+  PlacePermissions,
   // セッションビューア（worker-pool モジュール提供。決定18・23）
   WorkerViewer,
   // 番頭の中身（studio モジュール提供。決定25・26）

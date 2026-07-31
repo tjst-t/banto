@@ -42,6 +42,7 @@ import { CORE_ORIGIN, createModuleRegistry, resolveSkills, type SkillEntry } fro
 import { createDemoModule } from "./modules/demo.js";
 import { createStudioModule } from "./modules/studio.js";
 import { createWorkspaceModule } from "./modules/workspace.js";
+import { PlaceGrantStore } from "./place-grants.js";
 import { createRepoManagerModule, createRepoManagerPlaceProvider } from "@banto/repo-manager";
 import { workspaceRoot } from "./workspace.js";
 import {
@@ -102,7 +103,7 @@ const SYSTEM_PROMPT = [
   "覚えておくべき好み・習慣が出てきたら memory.save で保存してください。",
   "POに何かを見せたいときは canvas.open でキャンバスに表示できます（何が開けるかは canvas.list_catalog）。",
   "作業できる場所（リポジトリ・ワークツリー・作業領域）は place.list で分かります。file.* と git.* でその中身と履歴を閲覧でき、どの場所かは place で選びます。",
-  "file.write で自分の成果物（決定の記録・起票・メモ）を書けますが、**POが場所ごとに許した範囲だけ**で、既定はどの場所も読み取り専用です。許されていなければ断られるので、必要ならPOに範囲を頼んでください。コードを変える仕事は自分で書かず職人へ委譲します（D10）。",
+  "file.write で自分の成果物（決定の記録・起票・メモ）を書けますが、**POが場所ごとに許した範囲だけ**で、既定はどの場所も読み取り専用です。断られたら place.request_write で範囲を頼み、canvas.open で place.permissions を開けばPOがその場で許可できます。頼んだだけでは書けません。コードを変える仕事は自分で書かず職人へ委譲します（D10）。",
   "gitの変更操作（commit・push・branch）は持っていません。頼まれたら職人へ委譲してください——書いたものは未コミットで残り、POのレビューを通ります。",
   "調査・実装など手を動かす仕事は worker.delegate で職人へ委譲してください（D10）。手順は skill.read で worker-delegation を確認できます。",
   "職人からの報告・質問は自動で届きます。報告は主張であって完了の証明ではないので、必要なら成果を自分で確かめてください。質問には worker.steer で答えられます。",
@@ -156,10 +157,13 @@ async function serve(options: ServeOptions): Promise<void> {
   //
   // **設定を先に登録する。** 同じ場所が両方から出たとき先勝ちなので、書き込みを許した
   // 設定側が、repo-manager が返す読み取り専用の同じリポジトリに負けないようにする（決定38a）。
-  const places = new PlaceRegistry([
-    createStaticPlaceProvider(readPlaceConfig(workspace)),
-    createRepoManagerPlaceProvider(),
-  ]);
+  // 決定38c: POが後から許した範囲。保存先はホストのデータ置き場——リポジトリの中に置くと
+  // 番頭が宣言を書き換えて自分の権限を広げられる（決定38b。file.write の砦がここを守っている）
+  const grants = new PlaceGrantStore(path.join(dataDir(), "place-grants.json"));
+  const places = new PlaceRegistry(
+    [createStaticPlaceProvider(readPlaceConfig(workspace)), createRepoManagerPlaceProvider()],
+    grants
+  );
   for (const place of broadlyWritable(await places.list())) {
     // 決定38e：広く許したことを黙って通さない
     console.warn(
@@ -195,7 +199,7 @@ async function serve(options: ServeOptions): Promise<void> {
 
   const modules = createModuleRegistry([
     // 決定38b: ホスト自身のデータ置き場は、設定で ** を許しても書かせない（自己昇格を塞ぐ）
-    createWorkspaceModule(places, { protectedPaths: [dataDir()] }),
+    createWorkspaceModule(places, { protectedPaths: [dataDir()] }, grants),
     workerPoolModule,
     createRepoManagerModule(),
     createDemoModule(),

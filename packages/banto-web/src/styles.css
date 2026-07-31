@@ -804,3 +804,85 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
   .pane-resizer { display: none; }
   .chat-pane { width: 100% !important; }
 }
+
+/* ── 書き込み許可パネル（task-0042・決定38c/e）──────────────────────────── */
+
+.pp-section { padding: 0 12px 14px; }
+.pp-heading {
+  margin: 12px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+}
+.pp-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.pp-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--surface);
+}
+.pp-place { font-weight: 600; font-size: 13px; }
+.pp-reason { color: var(--ink-faint); font-size: 12px; margin-top: 2px; }
+.pp-field { display: block; margin-top: 8px; font-size: 12px; color: var(--ink-faint); }
+.pp-field input {
+  display: block;
+  width: 100%;
+  margin-top: 3px;
+  padding: 5px 7px;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+/* 広い範囲は押す前に見えるようにする。機構では防げないので見せるのが対策そのもの（決定38e） */
+.pp-warn {
+  margin-top: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  border-radius: 5px;
+  color: var(--danger);
+  background: #fbf3e6;
+}
+.pp-actions { display: flex; gap: 8px; margin-top: 10px; }
+.pp-actions button {
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 12px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  cursor: pointer;
+}
+.pp-actions button:disabled { opacity: 0.5; cursor: default; }
+.pp-approve { border-color: var(--ok) !important; color: var(--ok) !important; }
+.pp-deny { color: var(--ink-faint) !important; }
+.pp-grants { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.pp-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+}
+.pp-tag-broad { border-color: var(--danger); }
+.pp-tag button {
+  border: none;
+  background: none;
+  color: var(--ink-faint);
+  cursor: pointer;
+  padding: 0 3px;
+  font-size: 13px;
+  line-height: 1;
+}
+.pp-tag button:hover { color: var(--danger); }
+.pp-history { list-style: none; margin: 0; padding: 0; font-size: 12px; color: var(--ink-faint); }
+.pp-history li { padding: 2px 0; }
+.pp-ok { color: var(--ok); }
+.pp-ng { color: var(--ink-faint); }

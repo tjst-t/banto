@@ -35,6 +35,7 @@ export {
   resolveInPlace,
   assertWritable,
   broadlyWritable,
+  type PlaceGrantSource,
   type StaticPlaceConfig,
 } from "./places.js";
 export { placeScopedTools, guardPathArg, PLACE_PARAM } from "./place-scoped.js";
@@ -74,6 +75,12 @@ export type { TranscriptEntry, HistoryEvent, PoMessageEvent } from "./protocol.j
 export { createFileTools } from "./file-tools.js";
 export { createFileWriteTools, type FileWriteToolOptions } from "./file-write-tools.js";
 export { createPlaceTools } from "./place-tools.js";
+export {
+  createPlaceRequestTools,
+  createPlaceGrantAdminTools,
+  PLACE_PERMISSIONS_VIEW_KIND,
+} from "./place-grant-tools.js";
+export { PlaceGrantStore, type PlaceGrantRequest, type PlaceGrantState } from "./place-grants.js";
 export { createGitTools } from "./git-tools.js";
 export { workspaceRoot, resolveInWorkspace, toWorkspaceRelative } from "./workspace.js";
 export {

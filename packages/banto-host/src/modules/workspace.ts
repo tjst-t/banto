@@ -14,6 +14,12 @@ import { Type } from "typebox";
 import { createFileTools } from "../file-tools.js";
 import { createFileWriteTools, type FileWriteToolOptions } from "../file-write-tools.js";
 import { createPlaceTools } from "../place-tools.js";
+import {
+  createPlaceGrantAdminTools,
+  createPlaceRequestTools,
+  PLACE_PERMISSIONS_VIEW_KIND,
+} from "../place-grant-tools.js";
+import type { PlaceGrantStore } from "../place-grants.js";
 import { createGitTools } from "../git-tools.js";
 import type { BantoModule } from "../module.js";
 import type { PlaceRegistry } from "../places.js";
@@ -78,6 +84,26 @@ const workspaceViews: CanvasViewSpec[] = [
 ];
 
 /**
+ * 書き込み許可のパネル（決定38c・e）。番頭が canvas.open で出せる（task-0042 a5）ので、
+ * 会話の流れの中で承認が起きる——決定2「その時の相談内容に応じて番頭が出し入れする」通りの形。
+ */
+const permissionsView: CanvasViewSpec = {
+  kind: PLACE_PERMISSIONS_VIEW_KIND,
+  title: "書き込み許可",
+  description:
+    "番頭からの書き込み許可の要求と、いま与えている許可の一覧。その場で許可・拒否・取り消しができる。" +
+    "番頭が「書きたい」と頼んだとき、POにその場で決めてもらうために開く。",
+  parameters: Type.Object({
+    place: Type.Optional(
+      Type.String({ description: "この場所の許可を先頭に表示する（省略時は保留中の要求から）" })
+    ),
+  }),
+  component: "PlacePermissions",
+  category: "workspace",
+  icon: "🔐",
+};
+
+/**
  * @param places 場所の帳簿。`file.*` / `git.*` は**呼び出しごとに場所を選ぶ**（決定36e）。
  *   GUI も同じ Tool 契約を HTTP 経由で呼ぶので、引数が1つ増えるだけで場所の選択UIが
  *   成り立つ（決定25：人も番頭も同じ契約、経路が違うだけ）。
@@ -85,7 +111,8 @@ const workspaceViews: CanvasViewSpec[] = [
  */
 export function createWorkspaceModule(
   places: PlaceRegistry,
-  write: FileWriteToolOptions = {}
+  write: FileWriteToolOptions = {},
+  grants?: PlaceGrantStore
 ): BantoModule {
   return {
     name: "workspace",
@@ -102,8 +129,12 @@ export function createWorkspaceModule(
       ...placeScopedTools(places, createFileTools),
       ...createFileWriteTools(places, write),
       ...placeScopedTools(places, createGitTools),
+      // 決定38c: 番頭は範囲の拡大を「頼める」だけ。承認は internalTools 側にある
+      ...(grants ? createPlaceRequestTools(places, grants) : []),
     ],
-    views: workspaceViews,
+    // 番頭には渡さない口（決定29e と同じ枠）。番頭が自分で承認できないことの機構的な保証
+    internalTools: grants ? createPlaceGrantAdminTools(grants) : [],
+    views: grants ? [...workspaceViews, permissionsView] : workspaceViews,
     skills: [],
   };
 }
