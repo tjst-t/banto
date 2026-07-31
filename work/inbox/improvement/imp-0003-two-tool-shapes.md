@@ -106,6 +106,14 @@ S254276 期の実装で、番頭の作業より前から存在する。
 
 ### 再発防止
 
-`banto-core-layering.spec.ts` に2本足した。(a) Worker Pool の src が pi の型を import しないこと、
-(b) 契約が `@banto/core` 由来で、pi の型は type import に留まっていること。
-**pi の型 import を1行戻すと実際に落ちることを確認済み**（網が効いていることの確認。I1）。
+`banto-core-layering.spec.ts` に2本足した。(a) **pi の import は banto-host（アダプタ層）だけ**——
+全パッケージの src を走査し、他所からの import を見つけたら落とす。(b) 契約が `@banto/core` 由来で、
+pi の型は type import に留まっていること。
+
+網の効きを実際に確かめた（I1）：worker-pool・environment-pool・daemon の3パッケージに
+pi の import を1つずつ差し込み、いずれも検出されることを確認した。
+
+**当初は Worker Pool の src だけを見る形にしていたが、それでは足りなかった**——
+(i) 別パッケージに新しいモジュールを足したときに素通りする、(ii) 1行前提の正規表現では
+複数行の `import {\n ... \n} from "..."` を取りこぼす（実際に `host-session.ts` を
+見落としていた）。走査範囲を全パッケージへ広げ、複数行の import も拾うようにした。

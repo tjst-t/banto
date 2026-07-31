@@ -81,23 +81,43 @@ describe("[AC-S254276-3-1] banto-core layering: tools, client, prompt assets; ad
     }
   });
 
-  it("[task-0025] モジュールは Tool を定義するのに pi の型を要らない（Worker Pool が証拠）", () => {
-    // imp-0003 の実害そのもの：Worker Pool は pi を**バイナリとしてしか**使わないのに、
-    // Tool を定義するために型依存が要る状態だった。戻ったら気づけるようにしておく。
-    // pi-rpc-driver.ts はバイナリのパス解決でパッケージ名を**文字列として**持つので、
-    // ここで見るのは import 文だけ（コメント・文字列は許す）
-    const srcDir = path.join(repoRoot, "packages", "banto-worker-pool", "src");
-    const files = fs
-      .readdirSync(srcDir, { recursive: true, encoding: "utf-8" })
-      .filter((f) => f.endsWith(".ts"));
+  it("[task-0025] pi への依存は banto-host（アダプタ層）だけに閉じている", () => {
+    // ADR-0010 決定3（ハーネスは差し替え可能）・決定1（アダプタは薄い皮）の機械的な網。
+    // imp-0003 の実害は「モジュールを作るたびに pi への型依存が要る」ことだった——
+    // Worker Pool は pi を**バイナリとしてしか**使わないのに型を引き込んでいた。
+    //
+    // 見るのは import 文だけ。pi-rpc-driver.ts はバイナリのパス解決でパッケージ名を
+    // **文字列として**持つので、コメント・文字列は許す。
+    // 複数行の import（`import {\n ... \n} from "..."`）も拾えるようにしている
+    //（1行前提の正規表現では host-session.ts を取りこぼした。実際に踏んだ）。
+    const importPattern = /(^|\n)\s*import\s[\s\S]*?from\s*["'](@mariozechner\/[^"']*)["']/g;
 
-    for (const file of files) {
-      const content = fs.readFileSync(path.join(srcDir, file), "utf-8");
-      assert.ok(
-        !/^import\s.*['"]@mariozechner\//m.test(content),
-        `banto-worker-pool/${file} は pi の型を import してはいけない（契約は @banto/core）`
-      );
+    const offenders: string[] = [];
+    for (const pkg of fs.readdirSync(path.join(repoRoot, "packages"))) {
+      const srcDir = path.join(repoRoot, "packages", pkg, "src");
+      if (!fs.existsSync(srcDir)) continue;
+      const files = fs
+        .readdirSync(srcDir, { recursive: true, encoding: "utf-8" })
+        .filter((f) => f.endsWith(".ts") || f.endsWith(".tsx"));
+
+      for (const file of files) {
+        const content = fs.readFileSync(path.join(srcDir, file), "utf-8");
+        importPattern.lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = importPattern.exec(content)) !== null) {
+          // banto-host が pi 実装（第一実装）を抱える層。ここだけが import してよい
+          if (pkg === "banto-host") continue;
+          offenders.push(`${pkg}/${file} → ${match[2]}`);
+        }
+      }
     }
+
+    assert.deepEqual(
+      offenders,
+      [],
+      "pi を import してよいのは banto-host だけ。他はハーネス差し替えで壊れる:\n" +
+        offenders.join("\n")
+    );
   });
 
   it("[task-0025] Tool 契約の型は1つだけ（並立していないこと）", () => {
