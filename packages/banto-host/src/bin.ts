@@ -14,7 +14,7 @@
 
 import * as path from "node:path";
 import * as readline from "node:readline";
-import { getModel } from "@mariozechner/pi-ai";
+import { getModel, getModels } from "@mariozechner/pi-ai";
 import { JsonlMemoryStore } from "@banto/core";
 
 import {
@@ -106,6 +106,36 @@ const SYSTEM_PROMPT = [
   "確かめて良いと判断したら worker.close で職人を畳んでください。待機中の職人はプロセスとして残り続けます。畳んでも記録は残り、続きを頼みたくなったら worker.wake で元の会話ごと起こし直せます。",
 ].join("\n");
 
+/**
+ * provider/model を pi のモデルに解決する。
+ *
+ * **台帳に無いモデルも通す。** プロバイダは台帳より速く増減する——実際に
+ * `deepseek-v4-flash-free` は pi の台帳に無いが opencode では動く。pi の CLI も
+ * 同じ扱いで、同プロバイダの既知モデルを土台に id だけ差し替えている
+ * （`model-resolver.js` の `buildFallbackModel`）。ホストだけ厳しくすると、
+ * CLI では使えるモデルがホストでは使えないという食い違いになる。
+ *
+ * I2: **プロバイダが台帳に無いときは止まる**。ここまで緩めると、綴り間違いが
+ *     黙って通って別のプロバイダの鍵で 401 になる（既定解決で実際に踏んだ）。
+ */
+function resolveModel(provider: string, modelId: string): ReturnType<typeof getModel> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- getModel/getModels は既知
+  // provider のリテラル型を要求するが、ここは CLI 引数由来の文字列を通す (I4)
+  const known = getModel(provider as any, modelId as any);
+  if (known) return known;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 同上 (I4)
+  const siblings = getModels(provider as any);
+  if (!siblings || siblings.length === 0) {
+    throw new Error(`unknown provider: ${provider}`);
+  }
+  console.warn(
+    `[banto] モデル "${modelId}" は pi の台帳にありません。${provider} の設定を土台に、` +
+      "id をそのまま使います（pi CLI と同じ扱い）"
+  );
+  return { ...siblings[0]!, id: modelId, name: modelId };
+}
+
 interface ServeOptions {
   port: number;
   /** provider/model を明示する。省略時は pi の既定解決（settings→最初に使えるもの）に任せる。 */
@@ -174,13 +204,9 @@ async function serve(options: ServeOptions): Promise<void> {
   // I2: 指定されたモデルが見つからないなら黙って別のモデルに落とさず止める。
   //     既定解決に任せると、auth.json に別プロバイダの無効な鍵が残っている場合に
   //     そちらが選ばれて 401 になる（実際に踏んだ）。
-  let model: ReturnType<typeof getModel> | undefined;
-  if (options.provider && options.model) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- getModel は既知providerの
-    // リテラル型を要求するが、ここはCLI引数由来の文字列を通す (I4)
-    model = getModel(options.provider as any, options.model as any);
-    if (!model) throw new Error(`unknown model: ${options.provider}/${options.model}`);
-  }
+  const model = options.provider && options.model
+    ? resolveModel(options.provider, options.model)
+    : undefined;
 
   // スレッド1本分の器を作る（決定2・task-0035）。**キャンバスはスレッドごと**——
   // ここを共有すると、ある会話で GUI を開いたときに別の会話の表示まで変わる。
