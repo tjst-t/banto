@@ -96,6 +96,7 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .chat-pane {
   /* ↓ボタンをこの中に浮かせるため */
   position: relative;
+  /* 幅は境界のドラッグで変わる（App.tsx が inline style で持つ）。ここは既定値 */
   width: 400px; flex-shrink: 0; display: flex; flex-direction: column;
   border-left: 1px solid var(--line); background: var(--surface);
 }
@@ -108,17 +109,26 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .btn:disabled { opacity: 0.4; cursor: default; }
 .chat-title { font-size: 13.5px; font-weight: 700; }
 .chat-sub { font-size: 11px; color: var(--ink-faint); margin-top: 2px; font-family: var(--font-mono); }
-.chat-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.chat-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 7px; }
 .chat-empty { color: var(--ink-faint); font-size: 12.5px; line-height: 1.8; margin: 0; }
 
-.msg { font-size: 13px; line-height: 1.75; white-space: pre-wrap; word-break: break-word; }
+.msg { font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+/**
+ * Markdown で描くところは pre-wrap を切る（PO報告 2026-07-31）。
+ * ブロック間の改行文字がそのまま**空行として残り**、段落・箇条書きの余白と二重に効いて
+ * 隙間が倍になっていた。素のテキスト（POの発話）だけ pre-wrap のままにする。
+ *
+ * 番頭の発話だけでなく知らせの本文（.notice-body）にも効かせる必要があるので、
+ * `.markdown` そのものに当てる。`pre` は自前の white-space を持つので影響を受けない。
+ */
+.markdown { white-space: normal; }
 .msg--po {
   align-self: flex-end; max-width: 88%; background: var(--accent); color: #fff;
-  padding: 8px 13px; border-radius: 12px 12px 3px 12px;
+  padding: 7px 12px; border-radius: 12px 12px 3px 12px;
 }
 .msg--banto {
   align-self: flex-start; max-width: 92%; background: var(--bg);
-  border: 1px solid var(--line); padding: 8px 13px; border-radius: 12px 12px 12px 3px;
+  border: 1px solid var(--line); padding: 7px 12px; border-radius: 12px 12px 12px 3px;
 }
 .msg--tool {
   align-self: flex-start; font-family: var(--font-mono); font-size: 11.5px;
@@ -135,7 +145,10 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 
 .chat-composer { border-top: 1px solid var(--line); padding: 12px; }
 .chat-input {
+  /* 高さは中身の行数に合わせて JS が決める（チャット欄の1/3まで）。
+     min-height で最初の見た目を保ち、overflow も JS が切り替える */
   width: 100%; resize: none; font: inherit; font-size: 13px; line-height: 1.7;
+  min-height: 56px; display: block;
   border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; background: var(--bg); color: var(--ink);
 }
 .chat-input:focus { outline: none; border-color: var(--accent); }
@@ -154,13 +167,14 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 /* ── 番頭の応答（Markdown） ── */
 .markdown > :first-child { margin-top: 0; }
 .markdown > :last-child { margin-bottom: 0; }
-.markdown p { margin: 0 0 8px; }
+.markdown p { margin: 0 0 6px; }
+.markdown li > ul, .markdown li > ol { margin-bottom: 0; }
 .markdown h1, .markdown h2, .markdown h3, .markdown h4 {
   font-size: 13.5px; font-weight: 700; margin: 14px 0 6px; line-height: 1.5;
 }
 .markdown h1 { font-size: 15px; }
-.markdown ul, .markdown ol { margin: 0 0 8px; padding-left: 20px; }
-.markdown li { margin: 2px 0; }
+.markdown ul, .markdown ol { margin: 0 0 6px; padding-left: 19px; }
+.markdown li { margin: 1px 0; }
 .markdown li > p { margin: 0; }
 .markdown code {
   background: rgba(43,65,98,0.08); padding: 1px 5px; border-radius: 4px;
@@ -179,7 +193,7 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .markdown th, .markdown td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
 .markdown th { background: rgba(43,65,98,0.06); font-weight: 700; }
 .markdown a { color: var(--accent); }
-.markdown hr { border: none; border-top: 1px solid var(--line); margin: 12px 0; }
+.markdown hr { border: none; border-top: 1px solid var(--line); margin: 9px 0; }
 
 .catalog-module { color: var(--ink-faint); font-family: var(--font-mono); font-size: 0.85em; }
 
@@ -742,3 +756,51 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .threads-empty-title { font-size: 15px; font-weight: 700; margin: 0; }
 .threads-empty-sub { font-size: 12.5px; color: var(--ink-faint); margin: 0; }
 .threads-empty-actions { display: flex; gap: 10px; margin-top: 8px; flex-wrap: wrap; justify-content: center; }
+
+/* ===== 番頭が考えている間（PO要望 2026-07-31） ===== */
+.msg--thinking {
+  align-self: flex-start; display: flex; align-items: center; gap: 7px;
+  color: var(--ink-faint); font-size: 12.5px; padding: 2px 2px;
+}
+.thinking-mark {
+  width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0;
+  background: var(--accent); animation: thinking-pulse 1.3s ease-in-out infinite;
+}
+.thinking-label { letter-spacing: 0.02em; }
+.thinking-dots { display: inline-flex; gap: 3px; align-items: flex-end; padding-bottom: 2px; }
+.thinking-dots i {
+  width: 3px; height: 3px; border-radius: 50%; background: currentColor;
+  animation: thinking-bounce 1.2s ease-in-out infinite;
+}
+.thinking-dots i:nth-child(2) { animation-delay: 0.15s; }
+.thinking-dots i:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+@keyframes thinking-bounce {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-3px); }
+}
+/* 動きを減らす設定を尊重する（点滅だけにする） */
+@media (prefers-reduced-motion: reduce) {
+  .thinking-mark, .thinking-dots i { animation-duration: 2.4s; }
+  .thinking-dots i { animation-name: thinking-pulse; }
+}
+
+/* ===== キャンバスとチャットの境界（ドラッグで幅を変える） ===== */
+.pane-resizer {
+  flex: 0 0 5px; cursor: col-resize; background: transparent;
+  position: relative; touch-action: none;
+}
+.pane-resizer::before {
+  content: ""; position: absolute; inset: 0 2px; background: transparent; transition: background 0.12s;
+}
+.pane-resizer:hover::before, .pane-resizer:active::before { background: var(--accent); opacity: 0.35; }
+
+@media (max-width: 860px) {
+  /* 上下に積む幅では境界のドラッグをしない。幅の inline style も打ち消す */
+  .pane-resizer { display: none; }
+  .chat-pane { width: 100% !important; }
+}

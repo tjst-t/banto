@@ -5,7 +5,7 @@
  *        ホストへ投げ返すので、番頭が canvas.* を呼んだ場合と結果が一致する。
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { TranscriptEntry } from "@banto/host/protocol";
@@ -29,6 +29,28 @@ const WS_URL = new URLSearchParams(location.search).get("host") ?? defaultWsUrl(
 
 /** 末尾から何px以内を「一番下にいる」とみなすか。1行分の余裕を持たせる。 */
 const AT_BOTTOM_SLACK_PX = 24;
+
+/** チャット欄の幅の記憶先。 */
+const CHAT_WIDTH_KEY = "banto.chatWidth";
+const CHAT_WIDTH_DEFAULT = 400;
+const CHAT_WIDTH_MIN = 300;
+/** 入力欄の最低の高さ（1/3 の上限がこれを下回らないように）。 */
+const MIN_COMPOSER_HEIGHT_PX = 56;
+
+/** キャンバス側が潰れない範囲に収める。 */
+function clampChatWidth(width: number): number {
+  const max = Math.max(CHAT_WIDTH_MIN, window.innerWidth - 360);
+  return Math.min(Math.max(width, CHAT_WIDTH_MIN), max);
+}
+
+function readStoredChatWidth(): number {
+  try {
+    const stored = Number(localStorage.getItem(CHAT_WIDTH_KEY));
+    return Number.isFinite(stored) && stored > 0 ? clampChatWidth(stored) : CHAT_WIDTH_DEFAULT;
+  } catch {
+    return CHAT_WIDTH_DEFAULT;
+  }
+}
 
 /**
  * 末尾追従。**一番下にいるときだけ**追う（PO フィードバック）。
@@ -115,6 +137,27 @@ function NoticeRow({ source, text }: { source: string; text: string }): React.Re
   );
 }
 
+/**
+ * 番頭が考えている間の表示（PO要望 2026-07-31）。
+ *
+ * 送ったあと何も起きないように見えるのがいちばん不安なので、**言葉と動きの両方**で出す
+ * （Claude・Gemini・ChatGPT も同じ形）。番頭が喋り始めたら消える——本文そのものが
+ * 進んでいる証拠になるため、二重には出さない。
+ */
+function ThinkingRow(): React.ReactElement {
+  return (
+    <div className="msg msg--thinking" role="status" aria-live="polite">
+      <span className="thinking-mark" />
+      <span className="thinking-label">考えています</span>
+      <span className="thinking-dots">
+        <i />
+        <i />
+        <i />
+      </span>
+    </div>
+  );
+}
+
 function ChatRow({ entry }: { entry: TranscriptEntry }): React.ReactElement {
   switch (entry.role) {
     case "po":
@@ -152,6 +195,54 @@ export function App(): React.ReactElement {
   const [catalogOpen, setCatalogOpen] = useState(false);
   /** 履歴の面を見ているか。プロトタイプ三次改訂の「ピンタブ」に相当する */
   const [historyOpen, setHistoryOpen] = useState(false);
+  /** チャット欄の幅。境界のドラッグで変えられる（PO要望 2026-07-31）。 */
+  const [chatWidth, setChatWidth] = useState(readStoredChatWidth);
+  const chatPaneRef = useRef<HTMLElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // 入力欄を中身の行数に合わせて伸ばす。**チャット欄の高さの1/3まで**（PO要望）——
+  // それ以上は会話が見えなくなるので、中でスクロールさせる
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const limit = Math.max(
+      MIN_COMPOSER_HEIGHT_PX,
+      Math.round((chatPaneRef.current?.clientHeight ?? 0) / 3)
+    );
+    const wanted = el.scrollHeight;
+    el.style.height = `${Math.min(wanted, limit)}px`;
+    el.style.overflowY = wanted > limit ? "auto" : "hidden";
+  }, [draft, chatWidth]);
+
+  // 次に開いたときも同じ幅で始める。**状態から書く**——ドラッグの終わりに DOM を読むと、
+  // React がまだ最後の1手を反映しておらず、記憶する幅が1手ぶんずれる（実測で見つけた）
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHAT_WIDTH_KEY, String(chatWidth));
+    } catch {
+      // ストレージが使えない環境でも幅の変更自体は効く
+    }
+  }, [chatWidth]);
+
+  const startResize = (e: React.PointerEvent<HTMLDivElement>): void => {
+    e.preventDefault();
+    const handle = e.currentTarget;
+    handle.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    const startWidth = chatPaneRef.current?.clientWidth ?? chatWidth;
+    const onMove = (move: PointerEvent): void => {
+      // チャットは右側にあるので、左へ動かすほど広くなる
+      setChatWidth(clampChatWidth(startWidth - (move.clientX - startX)));
+    };
+    const onUp = (): void => {
+      handle.releasePointerCapture(e.pointerId);
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+  };
 
   // カタログは category ごとにまとめて出す（何が開けるか探しやすくするため）
   const catalogGroups = Object.entries(
@@ -390,7 +481,19 @@ export function App(): React.ReactElement {
           </div>
         </main>
 
-        <aside className="chat-pane">
+        {/* 境界のドラッグでチャット欄の幅を変える（PO要望 2026-07-31）。
+            狭い画面では上下に積むので出さない（CSS 側で消す） */}
+        <div
+          className="pane-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="チャット欄の幅を変える"
+          onPointerDown={startResize}
+          onDoubleClick={() => setChatWidth(CHAT_WIDTH_DEFAULT)}
+          title="ドラッグで幅を変える（ダブルクリックで既定に戻す）"
+        />
+
+        <aside className="chat-pane" ref={chatPaneRef} style={{ width: chatWidth }}>
           <div className="chat-head">
             <div className="chat-head-main">
               <div className="chat-title">番頭と相談する</div>
@@ -422,6 +525,10 @@ export function App(): React.ReactElement {
             {session.chat.map((entry, i) => (
               <ChatRow key={i} entry={entry} />
             ))}
+            {/* 番頭が喋り始めたら消す——本文そのものが進んでいる証拠になる */}
+            {session.busy && session.chat[session.chat.length - 1]?.role !== "banto" && (
+              <ThinkingRow />
+            )}
           </div>
 
           {/* 一番下にいないときだけ出す。番頭が喋っていることに気づけるようにする */}
@@ -434,9 +541,10 @@ export function App(): React.ReactElement {
           <div className="chat-composer">
             <textarea
               className="chat-input"
+              ref={inputRef}
               value={draft}
               placeholder={session.busy ? "番頭が考えています…" : "番頭に相談する"}
-              rows={3}
+              rows={1}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
                 // Enter で送信、Shift+Enter で改行。IME変換中の Enter は送信しない
