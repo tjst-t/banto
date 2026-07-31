@@ -317,4 +317,5 @@ epic-0009（場所と repo-manager）を task-0038 の続きから片付けた�
 ### 判断が要るもの（前セッションから継続）
 
 - **`work/tasks/*.md` が全部 `status: draft` のまま**。task-0038〜0041 も完了しているが draft。誰がいつ `done` にするのかが宙に浮いている
-- 未追跡のまま残っているもの：`docs/notes/ecosystem-survey-report.md` / `docs/research/browser-module-research.md`（PO の職人が起草）、`.banto-demo/`（実行時データ。gitignore されていない）
+- 未追跡だった職人の調査レポート2本は取り込んだ（`ecosystem-survey-report` / `browser-module-research`）。`.banto-demo/` は gitignore に入れた
+- `docs/proposals/123.txt`（中身は `123` の4バイト）が未追跡で残っている。**PO が `file.write` を試したときの書き込みと思われる**ので消していない。要らなければ消してよい

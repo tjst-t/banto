@@ -6,5 +6,7 @@ dist/
 *.tsbuildinfo
 data/
 
-# 番頭の実行時データ（記憶・職人の台帳とセッション・イベントログ）。既定の BANTO_DATA_DIR
+# 番頭の実行時データ（記憶・職人の台帳とセッション・イベントログ・書き込み許可の帳簿）。
+# .banto/ は既定の BANTO_DATA_DIR、.banto-demo/ は手元確認で使っている置き場
 .banto/
+.banto-demo/
