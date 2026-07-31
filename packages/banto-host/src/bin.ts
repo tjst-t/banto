@@ -12,9 +12,11 @@
  * I2: 失敗は握りつぶさず、終了コードとメッセージで返す。
  */
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import { getModel, getModels } from "@mariozechner/pi-ai";
+import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { JsonlMemoryStore } from "@banto/core";
 
 import {
@@ -43,6 +45,7 @@ import { createDemoModule } from "./modules/demo.js";
 import { createStudioModule } from "./modules/studio.js";
 import { createWorkspaceModule } from "./modules/workspace.js";
 import { PlaceGrantStore } from "./place-grants.js";
+import { ThreadStore } from "./thread-store.js";
 import { createRepoManagerModule, createRepoManagerPlaceProvider } from "@banto/repo-manager";
 import {
   EnvironmentPool,
@@ -266,7 +269,7 @@ async function serve(options: ServeOptions): Promise<void> {
   // 記憶は全スレッドで共有する（D11：番頭は記憶を持つ。分裂させない）。
   let threads: ThreadRegistry;
   let server: BantoHostServer;
-  const threadFactory: ThreadFactory = async (threadId) => {
+  const threadFactory: ThreadFactory = async (threadId, resumeFrom) => {
     const canvas = new Canvas(catalog);
     // 記憶・SKILLのToolは createBantoHostSession が内部で足すので、ここでは渡さない。
     // canvas.* / thread.* は Banto 中核自身のドメイン（決定27a）でモジュールではない。
@@ -287,11 +290,22 @@ async function serve(options: ServeOptions): Promise<void> {
         return guardPathArg(bound, places, "worktreePath");
       }),
     ];
+    // task-0036: 番頭の文脈をディスクへ書く。**ここが inMemory だと再起動で全部消える**
+    // ——画面の記録（ThreadStore）を戻しても、番頭は何も覚えていない状態になる。
+    // 復元のときは元のファイルを開き直し、続きから話せるようにする
+    const sessionDir = path.join(dataDir(), "threads", "sessions");
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const sessionManager =
+      resumeFrom && fs.existsSync(resumeFrom)
+        ? SessionManager.open(resumeFrom, sessionDir, process.cwd())
+        : SessionManager.create(process.cwd(), sessionDir);
+
     const { session } = await createBantoHostSession({
       systemPrompt: SYSTEM_PROMPT,
       tools: ownTools,
       memory,
       moduleSkills: modules.skills(),
+      sessionManager,
       ...(model ? { model } : {}),
     });
     // server はイベントの wire名→論理名 逆引きに、登録した論理名のToolを必要とする
@@ -301,13 +315,21 @@ async function serve(options: ServeOptions): Promise<void> {
       canvas,
       tools,
       getLastError: () => session.agent.state.errorMessage,
+      ...(sessionManager.getSessionFile() ? { sessionFile: sessionManager.getSessionFile()! } : {}),
       dispose: () => session.dispose(),
     };
   };
 
-  threads = new ThreadRegistry(threadFactory);
-  // 既定スレッドを1本開いてからサーバを立てる——宛先が無いと threadId 省略のメッセージを捌けない
-  const defaultThread = await threads.open();
+  // task-0036: 会話はホストの再起動を越えて残る
+  const threadStore = new ThreadStore(path.join(dataDir(), "threads"));
+  threads = new ThreadRegistry(threadFactory, threadStore);
+  await threads.restore();
+  // 残っていた会話が1本も無ければ新しく開く。宛先が無いと threadId 省略のメッセージを捌けない
+  const restored = threads.list({ state: "open" });
+  const defaultThread = restored[0] ?? (await threads.open());
+  if (restored.length > 0) {
+    console.log(`[banto] 会話を ${threads.list().length} 本読み戻しました`);
+  }
 
   server = await BantoHostServer.start({
     threads,

@@ -75,6 +75,7 @@ export type { TranscriptEntry, HistoryEvent, PoMessageEvent } from "./protocol.j
 export { createFileTools } from "./file-tools.js";
 export { createFileWriteTools, type FileWriteToolOptions } from "./file-write-tools.js";
 export { createPlaceTools } from "./place-tools.js";
+export { ThreadStore, type StoredThread } from "./thread-store.js";
 export {
   createPlaceRequestTools,
   createPlaceGrantAdminTools,
