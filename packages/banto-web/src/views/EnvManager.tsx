@@ -22,6 +22,8 @@ interface EnvSummary {
   taskId: string;
   projectTag: string;
   workdir?: string;
+  url?: string;
+  exposedPort?: number;
   createdAt: string;
   ttlDeadline: string;
   state: "live" | "torn-down" | "teardown-failed";
@@ -130,6 +132,13 @@ export function EnvManager({ endpoint, endpointOf }: CanvasViewProps): React.Rea
                   {e.envId} / {e.taskId} / 期限 {formatTime(e.ttlDeadline)}
                 </div>
                 {e.workdir && <div className="rm-path">{e.workdir}</div>}
+                {e.url && e.state === "live" && (
+                  <div className="em-url">
+                    <a href={e.url} target="_blank" rel="noreferrer">
+                      開く（{e.url}）
+                    </a>
+                  </div>
+                )}
                 {e.state !== "torn-down" && (
                   <div className="pp-actions">
                     <button
@@ -189,7 +198,8 @@ export function EnvManager({ endpoint, endpointOf }: CanvasViewProps): React.Rea
           </>
         )}
         <p className="fb-muted">
-          環境を立てるのは番頭に頼んでください（env.verify なら畳むところまで機構がやります）
+          環境を立てるのは番頭に頼んでください（env.verify なら畳むところまで機構がやります）。
+          ブラウザで自分の目で見たいときは「expose にポートを渡して」と頼むと、ここに開くリンクが出ます
         </p>
       </section>
     </div>

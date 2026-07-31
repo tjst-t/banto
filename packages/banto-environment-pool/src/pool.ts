@@ -17,7 +17,7 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { EnvHandle, EnvProfile } from "@banto/core";
+import type { EnvExposer, EnvHandle, EnvProfile } from "@banto/core";
 import { EnvLedger, countLiveByProfile, type EnvLedgerEntry } from "./env-ledger.js";
 import { runDriverVerb, resolveDriverPath, DEFAULT_DRIVER_TIMEOUT_MS } from "./env-driver-runner.js";
 import { decryptSops, resolveCredentialsPath } from "./sops.js";
@@ -41,6 +41,11 @@ export interface EnvironmentPoolOptions {
   driverTimeoutMs?: number;
   /** sops の鍵ファイル（credentials の復号に使う。決定32d）。 */
   sopsAgeKeyFile?: string;
+  /**
+   * 環境を外から見えるようにする口（決定39）。渡さないと `expose` を頼まれても断る。
+   * 配置によって手段が変わるので、ここで差し替える。
+   */
+  exposer?: EnvExposer;
 }
 
 /** 環境を1つ用意するときの指定。プロファイル経由かアドホックかのどちらか。 */
@@ -60,6 +65,13 @@ export interface ProvisionRequest {
   projectTag?: string;
   /** アドホックの TTL。上限に丸められる。プロファイル経由では無視される。 */
   ttlMs?: number;
+  /**
+   * このポートを外から見えるようにする（決定39）。
+   *
+   * **呼び出し側が明示する。** ドライバの handle / config は不透明なので、
+   * Environment Pool が覗いてポートを当てることはしない。
+   */
+  expose?: number;
 }
 
 export interface EnvSummary {
@@ -74,6 +86,10 @@ export interface EnvSummary {
   ttlDeadline: string;
   /** spec §5 の状態。`live` = 生きている、`torn-down` = 畳んだ、`teardown-failed` = 畳み損ね。 */
   state: "live" | "torn-down" | "teardown-failed";
+  /** 外から見られるURL（`expose` を頼んだときだけ）。 */
+  url?: string;
+  /** 公開しているポート。 */
+  exposedPort?: number;
 }
 
 /** `env.provision` の返り（spec §3.1）。立てた直後に使える状態かも併せて返す。 */
@@ -129,6 +145,7 @@ export class EnvironmentPool {
   private readonly limits: EnvLimits;
   private readonly timeoutMs: number;
   private readonly sopsAgeKeyFile: string | undefined;
+  private readonly exposer: EnvExposer | undefined;
   /** 台帳が壊れていた場合の説明。黙って空の台帳で動き出さないため（I2）。 */
   readonly ledgerCorruption: string | null;
 
@@ -139,6 +156,12 @@ export class EnvironmentPool {
     this.limits = resolveLimits(options.limits);
     this.timeoutMs = options.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
     this.sopsAgeKeyFile = options.sopsAgeKeyFile;
+    this.exposer = options.exposer;
+  }
+
+  /** 公開の口を持っているか。GUI と番頭に「頼めるかどうか」を伝えるため。 */
+  canExpose(): boolean {
+    return this.exposer !== undefined;
   }
 
   /** いまの上限。GUI と番頭に見せるため（何が効いているか分からないと直せない）。 */
@@ -204,6 +227,25 @@ export class EnvironmentPool {
       ...(request.workdir ? { workdir: path.resolve(request.workdir) } : {}),
     };
     this.ledger.add(entry);
+
+    // 決定39: 頼まれたら外から見えるようにする。**立ってから公開する**——
+    // 立たなかった環境のURLを配ると、開いて初めて壊れていると分かる
+    if (request.expose !== undefined) {
+      try {
+        const exposed = await this.requireExposer().expose({
+          envId: entry.envId,
+          port: request.expose,
+          label: entry.taskId,
+        });
+        this.ledger.setExposure(entry.envId, exposed.url, exposed.port);
+        entry.url = exposed.url;
+        entry.exposedPort = exposed.port;
+      } catch (err) {
+        // I2: 公開できなかったのに環境だけ残すと、畳み忘れの元になる。畳んでから投げる
+        await this.teardown(entry.envId).catch(() => undefined);
+        throw new Error(`外から見えるようにできませんでした: ${String(err)}`);
+      }
+    }
 
     // spec §3.1: 立った直後の疎通も返す。立ったが使えない環境を黙って返して、
     // 次の run の失敗で初めて気づく、という順序にしない
@@ -280,6 +322,17 @@ export class EnvironmentPool {
       { handle: entry.handle },
       this.timeoutMs
     );
+    // 畳むなら公開も取り下げる。**先に取り下げる**——環境が消えたのにURLだけ生き残ると、
+    // 開いた人は「壊れている」としか分からない（決定39）
+    if (this.exposer) {
+      try {
+        await this.exposer.unexpose(envId);
+      } catch (err) {
+        // I2: 取り下げに失敗したことは黙らせない。ただし環境を畳む方は続ける
+        console.error(`[env] ${envId} の公開を取り下げられませんでした: ${String(err)}`);
+      }
+    }
+
     if (!result.ok) {
       this.ledger.markTeardownFailed(envId);
       throw new Error(`環境 "${envId}" を畳めませんでした: ${result.error}`);
@@ -461,6 +514,16 @@ export class EnvironmentPool {
     return decrypted.secrets;
   }
 
+  /** I2: 公開の口が無いのに「公開しました」と言わない。 */
+  private requireExposer(): EnvExposer {
+    if (!this.exposer) {
+      throw new Error(
+        "この Banto は環境を外から見えるようにする口を持っていません（公開の実装が設定されていない）。"
+      );
+    }
+    return this.exposer;
+  }
+
   private requireLive(envId: string): EnvLedgerEntry {
     const entry = this.ledger.get(envId);
     if (!entry) throw new Error(`環境 "${envId}" は台帳にありません。`);
@@ -492,6 +555,8 @@ function toSummary(entry: EnvLedgerEntry): EnvSummary {
     ...(entry.workdir ? { workdir: entry.workdir } : {}),
     createdAt: entry.createdAt,
     ttlDeadline: entry.ttlDeadline,
+    ...(entry.url ? { url: entry.url } : {}),
+    ...(entry.exposedPort !== undefined ? { exposedPort: entry.exposedPort } : {}),
     // 畳み損ねを「畳んだ」と同じに見せない（spec §5）
     state: entry.teardownFailed ? "teardown-failed" : entry.tornDownAt ? "torn-down" : "live",
   };

@@ -29,6 +29,15 @@ export type {
   VerifyResult,
 } from "./pool.js";
 
+// 外から見えるようにする口（決定39）。中継は Environment Pool の責務——banto-host に置くと
+// Banto がブローカーになり（決定27）、独立サービス化のときに移すことになる
+export { createEnvProxyExposer, ENV_PROXY_PATH } from "./proxy-exposer.js";
+export type { EnvProxy, EnvProxyOptions } from "./proxy-exposer.js";
+
+// 外から見えるようにする口の Caddy 実装（決定39）。既定ではない——banto が Caddy を持つ配置向け
+export { createCaddyExposer } from "./caddy-exposer.js";
+export type { CaddyExposerOptions } from "./caddy-exposer.js";
+
 // 番頭へ渡す Tool とモジュール定義（決定34a）
 export { createEnvTools } from "./tools.js";
 export { createEnvironmentPoolModule, ENVIRONMENT_POOL_BASE_URL } from "./module.js";

@@ -3,7 +3,8 @@ id: imp-0008
 type: improvement
 kind: capability-gap
 origin: po
-status: open
+status: resolved
+resolution: 公開の口を差し替え可能な契約（EnvExposer）にし、既定は番頭ホストが /env/<envId>/ で中継、Caddy 実装は設定で有効化（ADR-0010 決定39、2026-07-31）
 refs: [task-0034, spec-environment, adr-0010]
 ---
 
@@ -46,3 +47,13 @@ Environment Pool が依存し始める——契約を崩す方向なので、裁
 - `env.verify` の `cmd` に検証を書けば、**機械が確かめた事実**としては受け取れる（これは動く）
 - 目で見たい場合は、環境が使うポートに手元から直接届く経路（SSHポートフォワード等）を
   自分で用意すれば見られる。banto は関与しない
+
+## 対応（2026-07-31・resolved）
+
+ADR-0010 決定39。**Caddy 一択にはしなかった**——実測で、いまの配置（Palmux 管理のコンテナ内）からは Caddy の admin API に届かないことが分かったため。公開の口を `EnvExposer` として切り、実装を2つ持つ形にした。
+
+- 既定：番頭ホストが `/env/<envId>/` で中継。どの配置でも動き、**banto を守っている認証をそのまま継承する**
+- 設定で有効化：Caddy の admin API へ route を注入（Palmux と同じ `@id` 冪等 upsert）
+- ポートは `env.provision` の `expose` で呼び出し側が明示する（handle を覗かない）
+
+**この作業中に別の漏れを見つけて直した**：`env.teardown` が成功を返すのに実サーバが生き残っていた。`shell: true` で起こすので記録される pid はシェルのもので、それだけ殺すと本体が PPID=1 で動き続けていた。`detached: true` によりプロセスグループのリーダーになっているので、負の pid へシグナルを送って木ごと落とすようにした（I3）。

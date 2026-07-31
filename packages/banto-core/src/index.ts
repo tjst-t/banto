@@ -40,6 +40,8 @@ export type {
 
 // Environment profile parser (spec-environment §1)
 export { parseEnvProfiles, validateProfile, parseTtl } from "./env-profile-parser.js";
+// 検証環境を外から見えるようにする口（決定39・imp-0008）。配置で手段が変わるので差し替え可能
+export type { EnvExposer, ExposedEnv, ExposeRequest } from "./env-exposer.js";
 export type {
   EnvProfile,
   ProfileValidation,

@@ -94,22 +94,38 @@ function isAlive(pid: number): boolean {
 
 // ── SIGTERM → SIGKILL idempotent teardown (mirrors killOrphanProcess) ────────
 
+/**
+ * プロセスグループごと落とす。落とせなければ単体で落とす。
+ *
+ * **pid だけ殺すと本体が生き残る。** provision は `shell: true` で起こすので、記録される
+ * pid はシェルのもの——シェルを殺しても、その下の実サーバは親を失って（PPID=1）動き続ける。
+ * `env.teardown` は成功を返すのに実物が残る、という一番まずい形になる（I3：外に残った
+ * リソースは費用であり、ここが漏れると仕組み全体の前提が崩れる。実際に踏んだ）。
+ *
+ * `detached: true` で起こしているので子はプロセスグループのリーダーになる。負の pid へ
+ * シグナルを送ればグループ全体に届く。
+ */
+function signalTree(pid: number, signal: NodeJS.Signals): void {
+  try {
+    process.kill(-pid, signal); // グループ全体
+  } catch {
+    try {
+      process.kill(pid, signal); // グループが無いなら単体で
+    } catch { /* already gone */ }
+  }
+}
+
 async function killProcess(pid: number): Promise<void> {
   if (!isAlive(pid)) return; // already gone → idempotent success
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch {
-    return; // gone between check and kill
-  }
+  signalTree(pid, "SIGTERM");
+
   // Wait up to 3 s for SIGTERM, then SIGKILL
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
     await new Promise<void>((r) => setTimeout(r, 50));
     if (!isAlive(pid)) return;
   }
-  try {
-    process.kill(pid, "SIGKILL");
-  } catch { /* already gone */ }
+  signalTree(pid, "SIGKILL");
   await new Promise<void>((r) => setTimeout(r, 200));
 }
 

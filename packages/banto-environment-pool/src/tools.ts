@@ -46,6 +46,13 @@ const targetFields = {
   taskId: Type.Optional(
     Type.String({ description: "何の検証かを台帳とログに残すラベル（Koboのタスクidでも自分で付けた名でもよい）" })
   ),
+  expose: Type.Optional(
+    Type.Number({
+      description:
+        "このポートを外から見えるようにする。POがブラウザで開いて自分の目で確かめたいときに指定する" +
+        "（返り値の url を伝えること）。機械が確かめるだけなら要らない",
+    })
+  ),
 };
 
 /**
@@ -62,6 +69,7 @@ function asRequest(params: {
   config?: object;
   workdir?: string;
   taskId?: string;
+  expose?: number;
 }): ProvisionRequest {
   const { config, ...rest } = params;
   return {
@@ -134,6 +142,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
             type: "text" as const,
             text:
               `環境を立てました: ${summary.envId}（${summary.profile}）\n` +
+              (summary.url ? `外から見られます: ${summary.url}\n` : "") +
               `いま使えるか: ${summary.healthcheck.ok ? "使えます" : `使えません（${summary.healthcheck.detail ?? "理由不明"}）`}\n` +
               `期限: ${summary.ttlDeadline}（過ぎると自動で畳まれます）\n` +
               "使い終わったら env.teardown で畳んでください。",
@@ -262,6 +271,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
               .map(
                 (e) =>
                   `${e.envId} — ${e.profile}${STATE_LABEL[e.state]} / ${e.taskId}` +
+                  `${e.url ? ` / ${e.url}` : ""}` +
                   `${e.workdir ? ` @ ${e.workdir}` : ""} / 期限 ${e.ttlDeadline}`
               )
               .join("\n");

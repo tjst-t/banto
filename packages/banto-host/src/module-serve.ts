@@ -50,6 +50,14 @@ export function createModuleToolHandler(
   return async (req, res) => {
     const url = req.url ?? "";
 
+    // モジュールが自分で捌く面（決定27b・39）。Tool の規約に乗らないパスはここで渡す。
+    // ホストは経路を渡すだけで中身を解釈しない——Banto をブローカーにしない（決定27）
+    for (const module of modules.list()) {
+      if (!module.endpoint.baseUrl.startsWith("/")) continue;
+      if (!url.startsWith(module.endpoint.baseUrl.replace(/\/$/, ""))) continue;
+      if (module.serve?.(req, res)) return true;
+    }
+
     // baseUrl が相対パスのモジュールだけがこのホストで公開される（決定25）
     const target = modules
       .list()

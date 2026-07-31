@@ -44,7 +44,13 @@ import { createStudioModule } from "./modules/studio.js";
 import { createWorkspaceModule } from "./modules/workspace.js";
 import { PlaceGrantStore } from "./place-grants.js";
 import { createRepoManagerModule, createRepoManagerPlaceProvider } from "@banto/repo-manager";
-import { EnvironmentPool, createEnvironmentPoolModule } from "@banto/environment-pool";
+import {
+  EnvironmentPool,
+  ENVIRONMENT_POOL_BASE_URL,
+  createCaddyExposer,
+  createEnvironmentPoolModule,
+  createEnvProxyExposer,
+} from "@banto/environment-pool";
 import { workspaceRoot } from "./workspace.js";
 import {
   PlaceRegistry,
@@ -107,6 +113,7 @@ const SYSTEM_PROMPT = [
   "file.write で自分の成果物（決定の記録・起票・メモ）を書けますが、**POが場所ごとに許した範囲だけ**で、既定はどの場所も読み取り専用です。断られたら place.request_write で範囲を頼み、canvas.open で place.permissions を開けばPOがその場で許可できます。頼んだだけでは書けません。コードを変える仕事は自分で書かず職人へ委譲します（D10）。",
   "gitの変更操作（commit・push・branch）は持っていません。頼まれたら職人へ委譲してください——書いたものは未コミットで残り、POのレビューを通ります。",
   "調査・実装など手を動かす仕事は worker.delegate で職人へ委譲してください（D10）。手順は skill.read で worker-delegation を確認できます。",
+  "検証環境を外から見せたいときは env.provision の expose にポートを渡すと url が返ります。POが自分の目で確かめたいときに使ってください（機械が確かめるだけなら要りません）。",
   "検証は env.verify で回せます。環境を立ててコマンドを走らせて必ず畳むところまで機構がやるので、結果は職人の主張ではなく確かめた事実として扱えます。レビュー用に環境を残したいときだけ env.provision を使い、使い終わったら env.teardown で畳んでください。",
   "職人からの報告・質問は自動で届きます。報告は主張であって完了の証明ではないので、必要なら成果を自分で確かめてください。質問には worker.steer で答えられます。",
   "確かめて良いと判断したら worker.close で職人を畳んでください。待機中の職人はプロセスとして残り続けます。畳んでも記録は残り、続きを頼みたくなったら worker.wake で元の会話ごと起こし直せます。",
@@ -182,6 +189,28 @@ async function serve(options: ServeOptions): Promise<void> {
   //
   // 決定29: 職人が報告・質問を返す先。職人は別プロセスなので絶対URLが要る
   // （UI 向けの相対パスとは別物——UI は自分のオリジンに解決できるが、子プロセスはできない）。
+  // 決定39: 検証環境を外から見えるようにする口。既定は番頭ホスト自身が中継する
+  // ——どこでも動き、banto を守っている認証をそのまま継承する。Caddy を持つ配置では
+  // BANTO_CADDY_ADMIN + BANTO_ENV_DOMAIN でサブドメイン公開へ差し替える
+  const caddyAdmin = process.env["BANTO_CADDY_ADMIN"];
+  const envDomain = process.env["BANTO_ENV_DOMAIN"];
+  const envProxy = createEnvProxyExposer({
+    baseUrl: ENVIRONMENT_POOL_BASE_URL,
+    ...(process.env["BANTO_PUBLIC_URL"] ? { publicBaseUrl: process.env["BANTO_PUBLIC_URL"] } : {}),
+  });
+  const exposer =
+    caddyAdmin && envDomain
+      ? createCaddyExposer({ adminUrl: caddyAdmin, baseDomain: envDomain })
+      : envProxy;
+  if (caddyAdmin && !envDomain) {
+    // I2: 半端な設定を黙って既定へ落とさない（Caddy のつもりで中継されると気づけない）
+    throw new Error("BANTO_CADDY_ADMIN を設定するなら BANTO_ENV_DOMAIN も要ります。");
+  }
+  const environmentPool = new EnvironmentPool({
+    dataDir: path.join(dataDir(), "environment-pool"),
+    exposer,
+  });
+
   const workerPoolUrl = process.env["BANTO_WORKER_POOL_URL"] ?? "/api/worker-pool";
   const reportUrl = workerPoolUrl.startsWith("/")
     ? `http://localhost:${options.port}${workerPoolUrl}`
@@ -206,9 +235,8 @@ async function serve(options: ServeOptions): Promise<void> {
     createRepoManagerModule(),
     // 決定32c・34: 番頭は Kobo 無しでも検証を回せる。「テストが通った」を職人の主張ではなく
     // 機構の返す事実として受け取るための実行能力（決定29a）
-    createEnvironmentPoolModule(
-      new EnvironmentPool({ dataDir: path.join(dataDir(), "environment-pool") })
-    ),
+    // 中継はこのモジュールが自分の到達先の下で捌く（決定27・39）
+    createEnvironmentPoolModule(environmentPool, ENVIRONMENT_POOL_BASE_URL, envProxy),
     createDemoModule(),
   ]);
 

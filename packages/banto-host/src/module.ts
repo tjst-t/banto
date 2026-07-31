@@ -17,6 +17,7 @@
  * 型・変数には `BantoModule` / `ModuleRegistry` のように接頭辞を付ける。
  */
 
+import type * as http from "node:http";
 import type { CanvasViewSpec } from "./canvas.js";
 import type { BantoSkill } from "./skills.js";
 import { toolDomain, type NamespacedToolName } from "@banto/core";
@@ -59,6 +60,19 @@ export interface BantoModule {
    * 衝突検査は `tools` と同じ名前空間で行う——公開の口としては一続きだから。
    */
   internalTools?: NamespacedToolDefinition[];
+  /**
+   * 自分の到達先の下で、Tool 以外のパスを自分で捌く口（決定27b・39）。
+   *
+   * Tool は `{baseUrl}/tools/{名前}` という規約で配れるが、モジュールによっては
+   * **任意のパスを持つ面**が要る——検証環境への中継（`{baseUrl}/env/<envId>/...`）が
+   * それで、パスも中身もモジュール側の都合で決まる。
+   *
+   * ホストは経路を渡すだけで中身を解釈しない。**Banto をブローカーにしない**（決定27）
+   * ——実装も状態もモジュール側にあり、ホストは自分の面に生やしているだけ。
+   *
+   * @returns 捌いたら true。対象外なら false（ホストが次のルートへ回す）
+   */
+  serve?(req: http.IncomingMessage, res: http.ServerResponse): boolean;
   /** キャンバスへ提供する GUI */
   views: CanvasViewSpec[];
   /** このモジュールが既定として出す SKILL */

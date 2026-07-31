@@ -8,8 +8,10 @@
  */
 
 import { Type } from "typebox";
+import type * as http from "node:http";
 import type { NamespacedToolDefinition } from "@banto/core";
 import { createEnvTools } from "./tools.js";
+import type { EnvProxy } from "./proxy-exposer.js";
 
 /**
  * 検証環境の管理画面。
@@ -37,9 +39,14 @@ import type { EnvironmentPool } from "./pool.js";
 /** 既定の到達先。独立サービスとして立てるなら絶対URLを渡す。 */
 export const ENVIRONMENT_POOL_BASE_URL = "/api/environment-pool";
 
+/**
+ * @param proxy 検証環境への中継（決定39）。渡すと `{baseUrl}/env/<envId>/` が生える。
+ *   **中継はこのモジュールの責務**——ホストは経路を渡すだけ（決定27：Banto をブローカーにしない）
+ */
 export function createEnvironmentPoolModule(
   pool: EnvironmentPool,
-  baseUrl: string = ENVIRONMENT_POOL_BASE_URL
+  baseUrl: string = ENVIRONMENT_POOL_BASE_URL,
+  proxy?: EnvProxy
 ): {
   name: string;
   title: string;
@@ -48,6 +55,7 @@ export function createEnvironmentPoolModule(
   tools: NamespacedToolDefinition[];
   views: typeof envViews;
   skills: never[];
+  serve?(req: http.IncomingMessage, res: http.ServerResponse): boolean;
 } {
   return {
     name: "environment-pool",
@@ -58,6 +66,7 @@ export function createEnvironmentPoolModule(
       "使い捨てなら env.verify 一本、居座らせたいなら低位動詞を使う。",
     endpoint: { baseUrl },
     tools: createEnvTools(pool),
+    ...(proxy ? { serve: (req, res) => proxy.handle(req, res) } : {}),
     views: envViews,
     skills: [],
   };

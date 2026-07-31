@@ -41,6 +41,10 @@ export interface EnvLedgerEntry {
    * 後続の `run` に provision と同じ場所を渡せるように残す。
    */
   workdir?: string;
+  /** 外から見られるURL（決定39）。導出できない事実なので持つ。 */
+  url?: string;
+  /** 公開しているポート。 */
+  exposedPort?: number;
   /**
    * ISO-8601 deadline for TTL enforcement (computed from profile.ttlMs at provision time).
    * Story-5 reads this to force-teardown expired environments.
@@ -171,6 +175,15 @@ export class EnvLedger {
    * Mark an environment as torn down (record tornDownAt timestamp).
    * The entry is kept in the ledger for audit trail (D3).
    */
+  /** 公開先を記録する。プロセスが起き直しても、どのURLを取り下げるか分かる。 */
+  setExposure(envId: string, url: string, port: number): void {
+    const entry = this.entries.get(envId);
+    if (!entry) return;
+    entry.url = url;
+    entry.exposedPort = port;
+    this.flush();
+  }
+
   markTornDown(envId: string): void {
     const entry = this.entries.get(envId);
     if (!entry) return; // already removed or never existed — idempotent
