@@ -196,6 +196,8 @@ export class BantoHostServer {
     thread.notices = thread.notices.then(async () => {
       thread.record({ role: "notice", source, text });
       this.broadcast({ type: "notice", threadId: thread.id, source, text });
+      // 職人の報告でも番頭は喋り出す。ここを知らせないと画面から中断する手段が消える
+      this.broadcast({ type: "turn_start", threadId: thread.id });
       try {
         await thread.session.prompt(text, {
           ...(thread.session.isStreaming ? { streamingBehavior: "steer" as const } : {}),
@@ -391,6 +393,7 @@ export class BantoHostServer {
       // 発話も履歴の一部。送った本人以外にも配る（複数クライアントで会話が揃う）
       thread.record({ role: "po", text: message.text });
       this.broadcast({ type: "po_message", threadId: thread.id, text: message.text });
+      this.broadcast({ type: "turn_start", threadId: thread.id });
 
       try {
         // ストリーミング中の追加入力は steer として積む（pi の既定では例外になるため）

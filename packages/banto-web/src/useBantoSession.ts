@@ -152,6 +152,23 @@ export function useBantoSession(url: string): BantoSession {
     []
   );
 
+  /**
+   * ホストが持つ「喋っている最中か」を各スレッドの状態へ反映する（D3）。
+   *
+   * 再接続・再読み込みのときに要る——`turn_start` は接続前に流れているので、
+   * これが無いと**進行中のターンに対して中断ボタンが出ない**まま復帰する。
+   */
+  const syncStreaming = useCallback(
+    (threads: ThreadView[]) => {
+      for (const view of threads) {
+        update(view.threadId, (prev) =>
+          prev.busy === view.streaming ? prev : { ...prev, busy: view.streaming }
+        );
+      }
+    },
+    [update]
+  );
+
   useEffect(() => {
     const socket = new WebSocket(url);
     socketRef.current = socket;
@@ -167,6 +184,7 @@ export function useBantoSession(url: string): BantoSession {
           setTools(event.tools);
           setCatalog(event.catalog);
           setAllThreads(event.threads);
+          syncStreaming(event.threads);
           knownThreadIds.current = new Set(event.threads.map((t) => t.threadId));
           setActiveThreadId((current) => current ?? event.defaultThreadId);
           break;
@@ -177,6 +195,7 @@ export function useBantoSession(url: string): BantoSession {
           );
           knownThreadIds.current = new Set(event.threads.map((t) => t.threadId));
           setAllThreads(event.threads);
+          syncStreaming(event.threads);
           setActiveThreadId((current) => {
             // 自分が開いた会話へ移る（押した意図に合わせる）
             if (appeared && followNewThread.current) {
@@ -201,6 +220,12 @@ export function useBantoSession(url: string): BantoSession {
             tabs: event.tabs,
             activeTabId: event.activeTabId,
           }));
+          break;
+
+        // 忙しさの真実はホストが持つ（D3）。職人の報告で始まったターンもここで拾えるので、
+        // POが送ったときだけ中断ボタンが出る、という取りこぼしが起きない
+        case "turn_start":
+          update(event.threadId, (prev) => ({ ...prev, busy: true }));
           break;
 
         case "turn_end":
@@ -232,7 +257,7 @@ export function useBantoSession(url: string): BantoSession {
     };
 
     return () => socket.close();
-  }, [url, update]);
+  }, [url, update, syncStreaming]);
 
   const post = useCallback((message: Record<string, unknown>) => {
     const socket = socketRef.current;

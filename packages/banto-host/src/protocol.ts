@@ -164,6 +164,14 @@ export interface ThreadView {
   state: "open" | "closed";
   /** 畳んだ時刻（state が closed のとき）。 */
   closedAt?: string;
+  /**
+   * いま番頭が喋っている最中か。
+   *
+   * **忙しさの真実はホストが持つ**（D3）。UI が「自分が送ったから忙しいはず」と推測すると、
+   * 職人の報告で番頭が喋り出したターン（決定29・35）を取りこぼし、中断する手段が
+   * 画面から消える——実際にその不具合を踏んだ。再接続したクライアントもここを見る。
+   */
+  streaming: boolean;
 }
 
 /** 接続直後に1度だけ送られる。 */
@@ -273,6 +281,14 @@ export interface ToolEndEvent extends ThreadScope {
 }
 
 /** ターンの終わり。クライアントは入力可能状態に戻ってよい。 */
+/**
+ * ターンの始まり。**PO の発話で始まったとは限らない**——職人の報告（決定29e）でも
+ * 番頭は喋り出す。UI はこれを見て「中断」を出す。
+ */
+export interface TurnStartEvent extends ThreadScope {
+  type: "turn_start";
+}
+
 export interface TurnEndEvent extends ThreadScope {
   type: "turn_end";
   /** プロバイダ側でエラーが起きた場合の説明。正常時は undefined。 */
@@ -314,6 +330,7 @@ export type ServerEvent =
   | TextDeltaEvent
   | ToolStartEvent
   | ToolEndEvent
+  | TurnStartEvent
   | TurnEndEvent
   | CanvasStateEvent
   | ErrorEvent;

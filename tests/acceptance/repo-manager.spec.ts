@@ -303,3 +303,90 @@ describe("[task-0043] repo.list（GUI が引く一覧）", () => {
     assert.deepEqual(details.repositories.map((r) => r.id), ["github.com/oicteam/hydra"]);
   });
 });
+
+describe("[task-0045] リポジトリを増やす（clone / init）", () => {
+  it("repo.clone は ghq get を呼び、増えたものを ghq に聞き直して返す", async () => {
+    let called: readonly string[] | undefined;
+    const after = "/home/u/ghq/github.com/tjst-t/新しいの";
+    let cloned = false;
+    const run: CommandRunner = async (command, args) => {
+      if (command === "ghq" && args[0] === "get") {
+        called = args;
+        cloned = true;
+        return { ok: true, stdout: "", stderr: "", notFound: false };
+      }
+      if (command === "ghq" && args[0] === "list") {
+        return {
+          ok: true,
+          stdout: GHQ_RESPONSES["ghq list --full-path"] + (cloned ? `${after}\n` : ""),
+          stderr: "",
+          notFound: false,
+        };
+      }
+      return fakeRunner(GHQ_RESPONSES)(command, args);
+    };
+
+    const clone = createRepoManagerTools({ run }).find((t) => t.name === "repo.clone")!;
+    const result = await clone.execute({ repository: "tjst-t/新しいの" });
+    const details = result.details as { repository: { id: string } | null; alreadyPresent: boolean };
+
+    assert.deepEqual(called, ["get", "tjst-t/新しいの"]);
+    assert.equal(details.repository?.id, "github.com/tjst-t/新しいの");
+    assert.equal(details.alreadyPresent, false);
+  });
+
+  it("既にあるものを取っても「増えました」と言わない", async () => {
+    const run: CommandRunner = async (command, args) => {
+      if (command === "ghq" && args[0] === "get") {
+        return { ok: true, stdout: "", stderr: "", notFound: false };
+      }
+      return fakeRunner(GHQ_RESPONSES)(command, args);
+    };
+    const clone = createRepoManagerTools({ run }).find((t) => t.name === "repo.clone")!;
+    const details = (await clone.execute({ repository: "tjst-t/banto" })).details as {
+      alreadyPresent: boolean;
+    };
+    assert.equal(details.alreadyPresent, true);
+  });
+
+  it("失敗したら理由が返る（黙って成功に見せない）", async () => {
+    const run: CommandRunner = async (command, args) => {
+      if (command === "ghq" && args[0] === "get") {
+        return { ok: false, stdout: "", stderr: "repository not found", notFound: false };
+      }
+      return fakeRunner(GHQ_RESPONSES)(command, args);
+    };
+    const clone = createRepoManagerTools({ run }).find((t) => t.name === "repo.clone")!;
+    await assert.rejects(() => clone.execute({ repository: "だれか/無い" }), /repository not found/);
+  });
+
+  it("repo.init は ghq create を呼ぶ。増えていなければ成功に見せない", async () => {
+    const silent: CommandRunner = async (command, args) => {
+      if (command === "ghq" && args[0] === "create") {
+        return { ok: true, stdout: "", stderr: "", notFound: false };
+      }
+      return fakeRunner(GHQ_RESPONSES)(command, args);
+    };
+    const init = createRepoManagerTools({ run: silent }).find((t) => t.name === "repo.init")!;
+    // create は成功したのに一覧が増えない＝何かおかしい。黙って通さない
+    await assert.rejects(() => init.execute({ name: "tjst-t/増えないの" }), /現れませんでした/);
+  });
+
+  it("空の指定は ghq へ渡さない", async () => {
+    const tools = createRepoManagerTools({ run: fakeRunner(GHQ_RESPONSES) });
+    await assert.rejects(
+      () => tools.find((t) => t.name === "repo.clone")!.execute({ repository: "   " }),
+      /空です/
+    );
+    await assert.rejects(
+      () => tools.find((t) => t.name === "repo.init")!.execute({ name: "" }),
+      /空です/
+    );
+  });
+
+  it("Git の変更操作は増えていない（決定37）", () => {
+    for (const tool of createRepoManagerTools()) {
+      assert.doesNotMatch(tool.name, /commit|push|branch\.|remote|tag|merge|reset/);
+    }
+  });
+});

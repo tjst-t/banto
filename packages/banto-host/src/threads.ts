@@ -96,6 +96,8 @@ export class Thread {
       sessionId: this.session.sessionId,
       isDefault: this.isDefault,
       state: this.state,
+      // D3: 忙しさの真実はここ。UI は自分の操作から推測しない
+      streaming: this.session.isStreaming,
       ...(this.closedAt ? { closedAt: this.closedAt } : {}),
     };
   }

@@ -80,6 +80,97 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
     },
   });
 
+
+  const clone = defineNamespacedTool({
+    name: "repo.clone",
+    label: "Repo: Clone",
+    description:
+      "リモートのリポジトリを手元に持ってくる（ghq get）。置き場所は ghq の規約に従うので指定しない。" +
+      "取り込んだリポジトリはそのまま「場所」として選べるようになる。" +
+      "**外に出ていく操作**（ネットワーク越しに取得する）なので、頼まれたときだけ使うこと。",
+    parameters: Type.Object({
+      repository: Type.String({
+        description:
+          "取ってくる対象。URL でも <user>/<project> でも <host>/<user>/<project> でもよい",
+      }),
+      ssh: Type.Optional(Type.Boolean({ description: "SSH で取ってくる（既定 false＝HTTPS）" })),
+      shallow: Type.Optional(Type.Boolean({ description: "履歴を浅く取る（大きいリポジトリ向け）" })),
+    }),
+    async execute(params) {
+      const target = params.repository.trim();
+      // I2: 空や空白だけを ghq に渡すと、何が起きるか分からない引数解釈になる
+      if (target.length === 0) throw new Error("取ってくる対象が空です。");
+
+      const before = new Set((await listGhqRepositories(run)).map((r) => r.path));
+      // --silent は付けない。失敗したときに理由まで消えて「(出力なし)」しか返らなくなる（I2）
+      const args = [
+        "get",
+        ...(params.ssh ? ["-p"] : []),
+        ...(params.shallow ? ["--shallow"] : []),
+        target,
+      ];
+      const result = await run("ghq", args);
+      if (result.notFound) throw new Error("ghq が導入されていません。");
+      if (!result.ok) {
+        throw new Error(
+          `取ってこられませんでした: ${result.stderr.trim() || result.stdout.trim() || "(出力なし)"}`
+        );
+      }
+
+      // 何ができたかは ghq に聞き直す（見込みのパスを組み立てて返さない。D3）
+      const added = (await listGhqRepositories(run)).find((r) => !before.has(r.path));
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: added
+              ? `取り込みました: ${added.id}（${added.path}）`
+              : `${target} は既に手元にあります（新しく増えたものはありません）`,
+          },
+        ],
+        details: { repository: added ?? null, requested: target, alreadyPresent: !added },
+      };
+    },
+  });
+
+  const init = defineNamespacedTool({
+    name: "repo.init",
+    label: "Repo: Init",
+    description:
+      "新しい Git リポジトリを手元に作る（ghq create）。置き場所は ghq の規約に従う。" +
+      "リモートは作らない——手元に空のリポジトリができるだけで、公開はしない。",
+    parameters: Type.Object({
+      name: Type.String({
+        description: "作る名前。<project> / <user>/<project> / <host>/<user>/<project> のいずれか",
+      }),
+    }),
+    async execute(params) {
+      const target = params.name.trim();
+      if (target.length === 0) throw new Error("作る名前が空です。");
+
+      const before = new Set((await listGhqRepositories(run)).map((r) => r.path));
+      const result = await run("ghq", ["create", target]);
+      if (result.notFound) throw new Error("ghq が導入されていません。");
+      if (!result.ok) {
+        throw new Error(
+          `作れませんでした: ${result.stderr.trim() || result.stdout.trim() || "(出力なし)"}`
+        );
+      }
+
+      const added = (await listGhqRepositories(run)).find((r) => !before.has(r.path));
+      // I2: 作ったつもりで増えていないなら、そう言う（成功に見せない）
+      if (!added) {
+        throw new Error(`${target} を作りましたが、ghq の一覧に現れませんでした。`);
+      }
+      return {
+        content: [
+          { type: "text" as const, text: `作りました: ${added.id}（${added.path}）` },
+        ],
+        details: { repository: added },
+      };
+    },
+  });
+
   const add = defineNamespacedTool({
     name: "repo.worktree.add",
     label: "Repo: Worktree Add",
@@ -166,7 +257,7 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
     },
   });
 
-  return [list, add, remove];
+  return [list, clone, init, add, remove];
 }
 
 /**

@@ -34,6 +34,8 @@ export function RepoManager({ params, endpoint }: CanvasViewProps): React.ReactE
   const list = useModuleTool<RepoList>(endpoint, "repo.list", query ? { query } : {});
   const [selected, setSelected] = useState<string | undefined>(initialRepo);
   const [branch, setBranch] = useState("");
+  const [cloneTarget, setCloneTarget] = useState("");
+  const [initName, setInitName] = useState("");
   const [createBranch, setCreateBranch] = useState(true);
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState<string>();
@@ -54,7 +56,12 @@ export function RepoManager({ params, endpoint }: CanvasViewProps): React.ReactE
       const details = await callModuleTool<Record<string, unknown>>(endpoint, tool, args);
       list.reload();
       setBranch("");
+      setCloneTarget("");
+      setInitName("");
       setNotice(summarize(tool, details));
+      // 取り込んだ・作ったものをそのまま選んだ状態にする（次にやることが続く）
+      const added = details["repository"] as { id?: string } | null | undefined;
+      if (added?.id) setSelected(added.id);
     } catch (err) {
       // I2: 押したのに何も起きなかったように見せない
       setError(err instanceof Error ? err.message : String(err));
@@ -103,6 +110,40 @@ export function RepoManager({ params, endpoint }: CanvasViewProps): React.ReactE
             ghq が知っているリポジトリがありません（未導入か、まだ clone していない）
           </p>
         )}
+
+        <div className="rm-add">
+          <h3 className="pp-heading">リポジトリを増やす</h3>
+          <div className="rm-form rm-form-stack">
+            <input
+              placeholder="取ってくる（URL か user/project）"
+              value={cloneTarget}
+              onChange={(e) => setCloneTarget(e.target.value)}
+              spellCheck={false}
+            />
+            <button
+              disabled={busy === "clone" || cloneTarget.trim().length === 0}
+              onClick={() => act("clone", "repo.clone", { repository: cloneTarget.trim() })}
+            >
+              {busy === "clone" ? "取得中…" : "取ってくる"}
+            </button>
+          </div>
+          <div className="rm-form rm-form-stack">
+            <input
+              placeholder="新しく作る（user/project）"
+              value={initName}
+              onChange={(e) => setInitName(e.target.value)}
+              spellCheck={false}
+            />
+            <button
+              disabled={busy === "init" || initName.trim().length === 0}
+              onClick={() => act("init", "repo.init", { name: initName.trim() })}
+            >
+              {busy === "init" ? "作成中…" : "作る"}
+            </button>
+          </div>
+          {error && <div className="fb-error">{error}</div>}
+          {notice && <div className="rm-notice">{notice}</div>}
+        </div>
       </div>
 
       <div className="rm-main">
@@ -112,9 +153,6 @@ export function RepoManager({ params, endpoint }: CanvasViewProps): React.ReactE
           <>
             <h3 className="rm-title">{repo.id}</h3>
             <div className="rm-path rm-path-main">{repo.path}</div>
-
-            {error && <div className="fb-error">{error}</div>}
-            {notice && <div className="rm-notice">{notice}</div>}
 
             <section className="pp-section">
               <h3 className="pp-heading">ワークツリー</h3>
@@ -203,6 +241,11 @@ export function RepoManager({ params, endpoint }: CanvasViewProps): React.ReactE
 
 /** 実行した結果の一言。何が起きたか分からないまま一覧だけ変わるのを避ける。 */
 function summarize(tool: string, details: Record<string, unknown>): string {
+  if (tool === "repo.clone" || tool === "repo.init") {
+    const repo = details["repository"] as { id?: string } | null | undefined;
+    if (!repo) return "既に手元にありました（増えていません）";
+    return tool === "repo.clone" ? `取り込みました: ${repo.id}` : `作りました: ${repo.id}`;
+  }
   if (tool === "repo.worktree.remove") {
     const w = details["worktree"] as { branch?: string } | undefined;
     return `ワークツリーを削除しました${w?.branch ? `（${w.branch}）` : ""}`;

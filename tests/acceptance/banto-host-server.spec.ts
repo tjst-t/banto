@@ -560,3 +560,75 @@ describe("[task-0026/a6] 職人イベントの言い換え（決定29d）", () =
     assert.equal(killed?.includes("正常"), false);
   });
 });
+
+describe("[task-0044] 中断できること（忙しさの真実はホストが持つ）", () => {
+  it("**職人の報告で始まったターンでも turn_start が出る**", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "welcome");
+
+    await server!.notify("職人から報告が届きました");
+
+    // ここが本題。UI は turn_start を見て中断ボタンを出すので、これが無いと
+    // 「番頭が喋っているのに止める手段が画面に無い」状態になる（実際に踏んだ）
+    const started = await waitFor(events, "turn_start");
+    assert.ok(started.type === "turn_start");
+    const notice = events.findIndex((e) => e.type === "notice");
+    const start = events.findIndex((e) => e.type === "turn_start");
+    assert.ok(start > notice, "知らせを配ってからターンが始まること");
+    client.close();
+  });
+
+  it("POの発話で始まったターンでも turn_start が出る", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "welcome");
+
+    client.send({ type: "prompt", text: "こんにちは" });
+    const started = await waitFor(events, "turn_start");
+    assert.ok(started.type === "turn_start");
+    client.close();
+  });
+
+  it("abort がハーネスまで届く", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "welcome");
+
+    client.send({ type: "abort" });
+    // 届いたことはハーネス側の数で見る（ここが増えなければ「中断が効かない」そのもの）
+    const deadline = Date.now() + 2000;
+    while (session.aborted === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(session.aborted, 1);
+    client.close();
+  });
+
+  it("再接続しても進行中のターンが分かる（turn_start は接続前に流れている）", async () => {
+    const { url } = await startHost();
+    const first: ServerEvent[] = [];
+    const a = await BantoHostClient.connect(url, (e) => first.push(e));
+    const welcome = await waitFor(first, "welcome");
+    assert.ok(welcome.type === "welcome");
+    // 接続直後は誰も喋っていない
+    assert.deepEqual(welcome.threads.map((t) => t.streaming), [false]);
+    a.close();
+
+    // ハーネスが喋っている最中に、別のクライアントが繋いでくる
+    session.isStreaming = true;
+    const second: ServerEvent[] = [];
+    const b = await BantoHostClient.connect(url, (e) => second.push(e));
+    const later = await waitFor(second, "welcome");
+    assert.ok(later.type === "welcome");
+    assert.deepEqual(
+      later.threads.map((t) => t.streaming),
+      [true],
+      "進行中だと分かること（分からないと中断ボタンが出ない）"
+    );
+    b.close();
+  });
+});
