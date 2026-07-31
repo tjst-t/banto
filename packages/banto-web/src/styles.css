@@ -10,6 +10,12 @@
   --ok: #3f6f4f;
   --font: "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
   --font-mono: "SFMono-Regular", Menlo, Consolas, monospace;
+  /**
+   * 職人ビューア（.wv-*）と studio（.st-*）が var(--muted) を使っているが、この変数は
+   * 定義されていなかった——薄字のつもりの日付・説明・参照が本文と同じ濃さで出ていた。
+   * 意匠上の意味は --ink-faint（.fb-muted が使っているもの）と同じなので別名にする。
+   */
+  --muted: var(--ink-faint);
 }
 
 * { box-sizing: border-box; }
