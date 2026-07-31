@@ -1,0 +1,229 @@
+/**
+ * 会話スレッド＝番頭の分身（ADR-0010 決定2・task-0035）。
+ *
+ * `docs/vision.md` の「番頭は分身する。関心事ごとにインスタンスへ分かれて並行し…
+ * 割り込みが PO の文脈を壊さない」の機構。**スレッド1本につきキャンバス1つ**を持つ
+ * ——あるスレッドで GUI を開いても、別スレッドの表示は変わらない（決定2）。
+ *
+ * 記憶は**スレッドを越えて共有される**。ここでは持たない——D11「番頭は記憶を持つ」は
+ * スレッド単位ではなく番頭単位で、スレッドごとに記憶を作ると番頭が分裂する。
+ *
+ * D5: 判断は無い。スレッドの帳簿と、1本分の会話の器だけ。
+ *     「いつ分身するか」はここに書かない（epic-0006 のスコープ外）。
+ */
+
+import type { Canvas } from "./canvas.js";
+import type { HostSession } from "./server.js";
+import type { NamespacedToolDefinition } from "./tool-registry.js";
+import type { ThreadView, TranscriptEntry } from "./protocol.js";
+
+/** 1本分の器を組み立てる。呼ぶたびに**新しい対話ループとキャンバス**を作ること。 */
+export type ThreadFactory = (threadId: string) => Promise<{
+  session: HostSession;
+  canvas?: Canvas;
+  /** このスレッドに登録した論理名のTool（wire名の逆引きに使う）。 */
+  tools: NamespacedToolDefinition[];
+  /** 直近のターンでプロバイダ側エラーがあれば返す。**スレッドごと**に別。 */
+  getLastError?: () => string | undefined;
+  /** このスレッドの会話履歴を捨てる（new_session）。記憶とキャンバスは触らない。 */
+  clearHistory?: () => void;
+  /**
+   * 対話ループの後始末。スレッドを閉じるとき・ホストを終うときに呼ばれる。
+   *
+   * `HostSession`（server が要求する最小契約）には入れない——配信に要るものではなく、
+   * 器を作った側が知っている後始末だから（ハーネスを差し替えても server は無変更・決定3）。
+   */
+  dispose?: () => void;
+}>;
+
+/** 既定スレッドの名前。閉じられない。 */
+const DEFAULT_TITLE = "はじめの会話";
+
+/**
+ * 会話スレッド1本。
+ *
+ * トランスクリプトと知らせの鎖を**スレッドごとに持つ**のが要点——ここを共有すると、
+ * 職人からの報告が関係ないスレッドの会話に現れる（決定35a）。
+ */
+export class Thread {
+  readonly id: string;
+  title: string;
+  readonly session: HostSession;
+  readonly canvas: Canvas | undefined;
+  readonly toolNames: string[];
+  readonly isDefault: boolean;
+  readonly getLastError: () => string | undefined;
+  readonly clearHistory: () => void;
+  /** 会話の真実。接続時にまとめて配り、以後は差分イベントで追随させる（D3）。 */
+  transcript: TranscriptEntry[] = [];
+  /**
+   * 知らせを1本ずつ順に流すための鎖。**スレッドごと**に持つ。
+   * 職人が同時に複数報告してきても、そのスレッドのターンは1本ずつ進む。
+   */
+  notices: Promise<void> = Promise.resolve();
+  /** 購読解除と後始末。閉じるときに呼ぶ。 */
+  readonly disposers: Array<() => void> = [];
+
+  constructor(params: {
+    id: string;
+    title: string;
+    session: HostSession;
+    canvas?: Canvas;
+    tools: NamespacedToolDefinition[];
+    isDefault: boolean;
+    getLastError?: () => string | undefined;
+    clearHistory?: () => void;
+    dispose?: () => void;
+  }) {
+    this.id = params.id;
+    this.title = params.title;
+    this.session = params.session;
+    this.canvas = params.canvas;
+    this.toolNames = params.tools.map((t) => t.name);
+    this.isDefault = params.isDefault;
+    this.getLastError = params.getLastError ?? ((): string | undefined => undefined);
+    this.clearHistory = params.clearHistory ?? ((): void => undefined);
+    if (params.dispose) this.disposers.push(params.dispose);
+  }
+
+  view(): ThreadView {
+    return {
+      threadId: this.id,
+      title: this.title,
+      sessionId: this.session.sessionId,
+      isDefault: this.isDefault,
+    };
+  }
+
+  /**
+   * 履歴に1行足す。テキスト差分は直前の番頭発話へ連結し、Tool終了は対応する
+   * 実行中の行を更新する——クライアント側の描画と同じ形に揃えておくことで、
+   * 再接続時に history をそのまま描けば会話が復元される。
+   */
+  record(entry: TranscriptEntry): void {
+    const last = this.transcript[this.transcript.length - 1];
+    if (entry.role === "banto" && last?.role === "banto") {
+      this.transcript[this.transcript.length - 1] = { role: "banto", text: last.text + entry.text };
+      return;
+    }
+    if (entry.role === "tool" && entry.state !== "running") {
+      const index = this.transcript.findIndex(
+        (e) => e.role === "tool" && e.name === entry.name && e.state === "running"
+      );
+      if (index !== -1) {
+        this.transcript[index] = entry;
+        return;
+      }
+    }
+    this.transcript.push(entry);
+  }
+
+  /** 会話を捨ててやり直す。キャンバスと記憶は触らない。 */
+  clear(): void {
+    this.clearHistory();
+    this.transcript = [];
+  }
+
+  dispose(): void {
+    for (const off of this.disposers) off();
+    this.disposers.length = 0;
+  }
+}
+
+/** スレッドの帳簿。開閉の通知だけを外へ出す。 */
+export class ThreadRegistry {
+  private readonly threads = new Map<string, Thread>();
+  private readonly factory: ThreadFactory;
+  private readonly listeners = new Set<(threads: Thread[]) => void>();
+  private counter = 0;
+  private defaultId: string | undefined;
+
+  constructor(factory: ThreadFactory) {
+    this.factory = factory;
+  }
+
+  /**
+   * 新しいスレッドを開く。**既存のスレッドには何も起きない**（決定2）。
+   *
+   * 最初の1本が既定スレッドになる——`threadId` を省略したメッセージの宛先で、
+   * 閉じられない（宛先が無くなると、スレッドを知らないクライアントが話せなくなる）。
+   */
+  async open(title?: string): Promise<Thread> {
+    const id = `thread-${++this.counter}`;
+    const isDefault = this.defaultId === undefined;
+    const parts = await this.factory(id);
+    const thread = new Thread({
+      id,
+      title: title ?? (isDefault ? DEFAULT_TITLE : `会話 ${this.counter}`),
+      session: parts.session,
+      ...(parts.canvas ? { canvas: parts.canvas } : {}),
+      tools: parts.tools,
+      isDefault,
+      ...(parts.getLastError ? { getLastError: parts.getLastError } : {}),
+      ...(parts.clearHistory ? { clearHistory: parts.clearHistory } : {}),
+      ...(parts.dispose ? { dispose: parts.dispose } : {}),
+    });
+    this.threads.set(id, thread);
+    if (isDefault) this.defaultId = id;
+    this.emit();
+    return thread;
+  }
+
+  /**
+   * スレッドを閉じる。I2: 既定スレッド・未知のIDは黙って成功にせずエラーにする。
+   */
+  close(threadId: string): void {
+    const thread = this.threads.get(threadId);
+    if (!thread) throw new Error(`unknown thread: ${threadId}`);
+    if (thread.isDefault) throw new Error("the default thread cannot be closed");
+    thread.dispose();
+    this.threads.delete(threadId);
+    this.emit();
+  }
+
+  /**
+   * 宛先を引く。`threadId` 省略時は既定スレッド（スレッドを知らないクライアント）。
+   * I2: 知らないIDを既定へ黙って落とさない——別の会話に発話が紛れ込む。
+   */
+  resolve(threadId?: string): Thread {
+    if (threadId === undefined) {
+      const fallback = this.defaultId ? this.threads.get(this.defaultId) : undefined;
+      if (!fallback) throw new Error("no default thread");
+      return fallback;
+    }
+    const thread = this.threads.get(threadId);
+    if (!thread) throw new Error(`unknown thread: ${threadId}`);
+    return thread;
+  }
+
+  get(threadId: string): Thread | undefined {
+    return this.threads.get(threadId);
+  }
+
+  list(): Thread[] {
+    return [...this.threads.values()];
+  }
+
+  get defaultThreadId(): string {
+    if (!this.defaultId) throw new Error("no default thread");
+    return this.defaultId;
+  }
+
+  /** 開閉・改名を購読する。戻り値で解除。 */
+  subscribe(listener: (threads: Thread[]) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** 名前が変わったことを知らせる（改名は Thread.title を直接書き換える）。 */
+  emit(): void {
+    const snapshot = this.list();
+    for (const listener of this.listeners) listener(snapshot);
+  }
+
+  dispose(): void {
+    for (const thread of this.threads.values()) thread.dispose();
+    this.threads.clear();
+    this.listeners.clear();
+  }
+}

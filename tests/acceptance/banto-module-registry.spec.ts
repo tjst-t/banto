@@ -13,6 +13,7 @@ import { Type } from "typebox";
 import { JsonlMemoryStore } from "@banto/core";
 
 import {
+  ThreadRegistry,
   BANTO_WS_PATH,
   BantoHostClient,
   BantoHostServer,
@@ -294,14 +295,13 @@ describe("[task-0015/a3] UI へモジュールの接続情報が渡る", () => {
   it("[task-0015/a3] welcome のカタログエントリに提供元モジュールと到達先が載る", async () => {
     const modules = createModuleRegistry([createDemoModule()]);
     const catalog = createCanvasCatalog(modules.views());
-    server = await BantoHostServer.start({
+    const threads = new ThreadRegistry(async () => ({
       session: new FakeSession(),
       tools: [],
-      port: 0,
       canvas: new Canvas(catalog),
-      catalog,
-      modules,
-    });
+    }));
+    await threads.open();
+    server = await BantoHostServer.start({ threads, port: 0, catalog, modules });
 
     const events: ServerEvent[] = [];
     const client = await BantoHostClient.connect(
@@ -341,14 +341,13 @@ describe("[task-0015/a3] UI へモジュールの接続情報が渡る", () => {
         component: "CoreOnly",
       },
     ]);
-    server = await BantoHostServer.start({
+    const threads = new ThreadRegistry(async () => ({
       session: new FakeSession(),
       tools: [],
-      port: 0,
       canvas: new Canvas(catalog),
-      catalog,
-      modules: createModuleRegistry(),
-    });
+    }));
+    await threads.open();
+    server = await BantoHostServer.start({ threads, port: 0, catalog, modules: createModuleRegistry() });
 
     const events: ServerEvent[] = [];
     const client = await BantoHostClient.connect(

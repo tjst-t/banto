@@ -14,6 +14,37 @@ import type { WorkerEvent } from "@banto/worker-pool";
 /** 番頭が起動元として名乗る名前（決定29の宛先）。 */
 export const BANTO_ORIGIN = "banto";
 
+/** スレッド宛の起動元名の区切り。 */
+const ORIGIN_SEPARATOR = ":";
+
+/**
+ * スレッド宛の起動元名（決定35a）。
+ *
+ * 職人の報告は**起こしたスレッド**へ返る必要がある。決定29 の `origin` はもともと
+ * 「起動元＝報告の宛先」なので、そこをスレッド粒度にするだけで機構はそのまま使える
+ * ——Worker Pool 側の改修は要らない。
+ */
+export function threadOrigin(threadId: string): string {
+  return `${BANTO_ORIGIN}${ORIGIN_SEPARATOR}${threadId}`;
+}
+
+/**
+ * 起動元名からスレッドを引く。番頭が起こしたものでなければ undefined。
+ *
+ * `banto`（スレッド以前の名乗り）は既定スレッド宛として扱う——過去に起こした職人の
+ * 報告が宛先不明で消えないようにするため。Kobo 等、別の起動元の分は拾わない。
+ */
+export function threadIdOfOrigin(origin: string): string | undefined {
+  if (origin === BANTO_ORIGIN) return undefined;
+  const prefix = `${BANTO_ORIGIN}${ORIGIN_SEPARATOR}`;
+  return origin.startsWith(prefix) ? origin.slice(prefix.length) : undefined;
+}
+
+/** 番頭が起こした職人か（他の起動元＝Kobo 等の分は番頭の会話に入れない）。 */
+export function isBantoOrigin(origin: string): boolean {
+  return origin === BANTO_ORIGIN || origin.startsWith(`${BANTO_ORIGIN}${ORIGIN_SEPARATOR}`);
+}
+
 /**
  * 番頭に知らせるイベントかどうか。
  *

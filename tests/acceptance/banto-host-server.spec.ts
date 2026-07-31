@@ -15,6 +15,7 @@ import * as path from "node:path";
 
 import { JsonlMemoryStore } from "@banto/core";
 import {
+  ThreadRegistry,
   BANTO_WS_PATH,
   BantoHostClient,
   BantoHostServer,
@@ -62,14 +63,14 @@ let server: BantoHostServer | undefined;
 let session: FakeSession;
 
 async function startHost(getLastError?: () => string | undefined): Promise<{ url: string; tools: string[] }> {
-  session = new FakeSession();
   const tools = createMemoryTools(store);
-  server = await BantoHostServer.start({
-    session,
-    tools,
-    port: 0,
-    ...(getLastError ? { getLastError } : {}),
+  // task-0035: サーバはスレッドの帳簿を受け取る。既定スレッドを1本開いてから立てる
+  const threads = new ThreadRegistry(async () => {
+    session = new FakeSession();
+    return { session, tools, ...(getLastError ? { getLastError } : {}) };
   });
+  await threads.open();
+  server = await BantoHostServer.start({ threads, port: 0 });
   return { url: `ws://localhost:${server.port}${BANTO_WS_PATH}`, tools: tools.map((t) => t.name) };
 }
 

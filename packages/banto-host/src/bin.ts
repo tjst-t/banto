@@ -22,7 +22,13 @@ import {
   WorkerPool,
   createWorkerPoolModule,
 } from "@banto/worker-pool";
-import { BANTO_ORIGIN, renderWorkerNotice } from "./worker-notice.js";
+import {
+  BANTO_ORIGIN,
+  isBantoOrigin,
+  renderWorkerNotice,
+  threadIdOfOrigin,
+  threadOrigin,
+} from "./worker-notice.js";
 
 import { Canvas, createCanvasCatalog } from "./canvas.js";
 import { createCanvasTools } from "./canvas-tools.js";
@@ -38,6 +44,8 @@ import { createStudioModule } from "./modules/studio.js";
 import { createWorkspaceModule } from "./modules/workspace.js";
 import { workspaceRoot } from "./workspace.js";
 import { createSkillTools } from "./skill-tools.js";
+import { bindToolArgs, createThreadTools } from "./thread-tools.js";
+import { ThreadRegistry, type ThreadFactory } from "./threads.js";
 import { loadBantoSkills } from "./skills.js";
 
 /** データの置き場所。BANTO_DATA_DIR で差し替えられる。 */
@@ -114,12 +122,11 @@ async function serve(options: ServeOptions): Promise<void> {
   );
 
   const catalog = createCanvasCatalog(modules.views());
-  const canvas = new Canvas(catalog);
 
   // I2: 指定されたモデルが見つからないなら黙って別のモデルに落とさず止める。
   //     既定解決に任せると、auth.json に別プロバイダの無効な鍵が残っている場合に
   //     そちらが選ばれて 401 になる（実際に踏んだ）。
-  let model;
+  let model: ReturnType<typeof getModel> | undefined;
   if (options.provider && options.model) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- getModel は既知providerの
     // リテラル型を要求するが、ここはCLI引数由来の文字列を通す (I4)
@@ -127,52 +134,93 @@ async function serve(options: ServeOptions): Promise<void> {
     if (!model) throw new Error(`unknown model: ${options.provider}/${options.model}`);
   }
 
-  // 記憶・SKILLのToolは createBantoHostSession が内部で足すので、ここでは渡さない。
-  // canvas.* は Banto 中核自身のドメイン（決定27a）でモジュールではない。
-  const ownTools = [...createCanvasTools(canvas, catalog), ...modules.tools()];
-  const { session } = await createBantoHostSession({
-    systemPrompt: SYSTEM_PROMPT,
-    tools: ownTools,
-    memory,
-    moduleSkills: modules.skills(),
-    ...(model ? { model } : {}),
-  });
+  // スレッド1本分の器を作る（決定2・task-0035）。**キャンバスはスレッドごと**——
+  // ここを共有すると、ある会話で GUI を開いたときに別の会話の表示まで変わる。
+  //
+  // 記憶は全スレッドで共有する（D11：番頭は記憶を持つ。分裂させない）。
+  let threads: ThreadRegistry;
+  let server: BantoHostServer;
+  const threadFactory: ThreadFactory = async (threadId) => {
+    const canvas = new Canvas(catalog);
+    // 記憶・SKILLのToolは createBantoHostSession が内部で足すので、ここでは渡さない。
+    // canvas.* / thread.* は Banto 中核自身のドメイン（決定27a）でモジュールではない。
+    const ownTools = [
+      ...createCanvasTools(canvas, catalog),
+      ...createThreadTools({
+        threads,
+        seed: (threadId, message) => server.notify(message, threadId),
+      }),
+      // 決定35a: 職人の報告は**起こしたスレッド**へ返る。番頭に自分の threadId を
+      // 書かせず、ここで固定して渡す（番頭は自分がどのスレッドかを知らない）
+      ...modules.tools().map((tool) =>
+        tool.name === "worker.delegate" ? bindToolArgs(tool, { origin: threadOrigin(threadId) }) : tool
+      ),
+    ];
+    const { session } = await createBantoHostSession({
+      systemPrompt: SYSTEM_PROMPT,
+      tools: ownTools,
+      memory,
+      moduleSkills: modules.skills(),
+      ...(model ? { model } : {}),
+    });
+    // server はイベントの wire名→論理名 逆引きに、登録した論理名のToolを必要とする
+    const tools = [...ownTools, ...createMemoryTools(memory), ...createSkillTools(skills)];
+    return {
+      session,
+      canvas,
+      tools,
+      getLastError: () => session.agent.state.errorMessage,
+      // 会話だけ捨てる。記憶はシステムプロンプト側にあるので残る（D11）
+      clearHistory: () => {
+        session.agent.state.messages = [];
+      },
+      dispose: () => session.dispose(),
+    };
+  };
 
-  // server はイベントの wire名→論理名 逆引きに、登録した論理名のToolを必要とする
-  const tools = [...ownTools, ...createMemoryTools(memory), ...createSkillTools(skills)];
-  const server = await BantoHostServer.start({
-    session,
-    tools,
+  threads = new ThreadRegistry(threadFactory);
+  // 既定スレッドを1本開いてからサーバを立てる——宛先が無いと threadId 省略のメッセージを捌けない
+  const defaultThread = await threads.open();
+
+  server = await BantoHostServer.start({
+    threads,
     port: options.port,
-    canvas,
     catalog,
     modules,
-    getLastError: () => session.agent.state.errorMessage,
-    // 会話だけ捨てる。記憶はシステムプロンプト側にあるので残る（D11）
-    clearHistory: () => {
-      session.agent.state.messages = [];
-    },
   });
 
   // 決定29: 番頭が起こした職人のイベントだけを受ける。他の起動元（Kobo 等）の分は届かない。
-  // lastEventId から始めるので、起動前に溜まっていた古い報告を今さら会話へ流し込まない
+  // lastEventId から始めるので、起動前に溜まっていた古い報告を今さら会話へ流し込まない。
+  //
+  // 決定35a: 宛先は**起こしたスレッド**。origin を見て振り分ける（Worker Pool 側の
+  // 絞り込みは1つの origin しか取れないため、ここで前置きの一致を見る）。
   const unsubscribeWorkers = workerPool.subscribe(
     (event) => {
+      if (!isBantoOrigin(event.origin)) return;
       const notice = renderWorkerNotice(event);
-      if (notice) void server.notify(notice);
+      if (!notice) return;
+      const threadId = threadIdOfOrigin(event.origin);
+      void server.notify(notice, threadId).catch((err: unknown) => {
+        // 決定35b: 宛先スレッドが畳まれていたら起こし直して届ける——のが本筋だが、
+        // 起こし直せるのは会話が残っている場合（task-0036 の永続化）。いまは既定スレッドへ
+        // 逃がし、消えたことにしない（I2：答え手のいない質問を黙って捨てない）
+        console.error(`[banto] 知らせの宛先 ${String(threadId)} が見つかりません: ${String(err)}`);
+        void server.notify(notice);
+      });
     },
-    { origin: BANTO_ORIGIN, afterEventId: workerPool.lastEventId }
+    { afterEventId: workerPool.lastEventId }
   );
 
   console.log(`[banto] listening on ws://localhost:${server.port}/ws`);
   console.log(
-    `[banto] model: ${session.model ? `${session.model.provider}/${session.model.id}` : "(none)"}`
+    `[banto] model: ${model ? `${model.provider}/${model.id}` : "(pi の既定解決)"}`
   );
   console.log(`[banto] memory: ${memoryPath()}`);
   console.log(`[banto] skills: ${skills.map((s) => s.name).join(", ") || "(none)"}`);
   console.log(`[banto] canvas: ${catalog.list().map((c) => c.kind).join(", ") || "(none)"}`);
   console.log(`[banto] workspace: ${workspace}`);
   console.log(`[banto] worker report url: ${reportUrl}`);
+  console.log(`[banto] default thread: ${defaultThread.title} (${defaultThread.id})`);
   console.log(
     `[banto] modules: ${modules.list().map((m) => `${m.name}(${m.endpoint.baseUrl})`).join(", ") || "(none)"}`
   );
@@ -181,8 +229,9 @@ async function serve(options: ServeOptions): Promise<void> {
     void (async () => {
       unsubscribeWorkers();
       workerPool.dispose();
+      // server.close() が全スレッドの後始末（購読解除＋対話ループの dispose）まで行う
       await server.close();
-      session.dispose();
+      threads.dispose();
       process.exit(0);
     })();
   };

@@ -7,36 +7,49 @@
  * 番頭側は常に**論理名**（`kobo.query.ready` 等）で通知する。wire名（`kobo__query__ready`）は
  * プロバイダとの境界に閉じ、クライアントには漏らさない（ADR-0010 決定22）。
  *
+ * **会話スレッド（番頭の分身。ADR-0010 決定2・task-0035）**：ホストは会話を複数持つ。
+ * クライアント → サーバのメッセージは `threadId` で宛先を指す。**省略時は既定スレッド**
+ * ——スレッドを知らない既存クライアントがそのまま動くようにするため。
+ * サーバ → クライアントのイベントには常に `threadId` が載るので、1つの接続で
+ * 複数スレッドを同時に描ける（タブ表示はこれで成り立つ）。
+ *
  * D6: 型定義のみ。依存なし。
  */
 
 // ── Client → Server ──────────────────────────────────────────────────────────
 
+/**
+ * 宛先のスレッド。**省略時は既定スレッド**（スレッドを知らないクライアントとの互換）。
+ */
+export interface ThreadTarget {
+  threadId?: string;
+}
+
 /** 番頭に発話する。ターンが走り、結果はイベントとして返る。 */
-export interface PromptMessage {
+export interface PromptMessage extends ThreadTarget {
   type: "prompt";
   text: string;
 }
 
 /** 実行中のターンを中断する。 */
-export interface AbortMessage {
+export interface AbortMessage extends ThreadTarget {
   type: "abort";
 }
 
 /** POが直接タブを切り替える。番頭の canvas.switch と同じ結果になる。 */
-export interface CanvasSwitchMessage {
+export interface CanvasSwitchMessage extends ThreadTarget {
   type: "canvas_switch";
   tabId: string;
 }
 
 /** POが直接タブを閉じる。 */
-export interface CanvasCloseMessage {
+export interface CanvasCloseMessage extends ThreadTarget {
   type: "canvas_close";
   tabId: string;
 }
 
 /** POがタブをドラッグして並べ替える。 */
-export interface CanvasReorderMessage {
+export interface CanvasReorderMessage extends ThreadTarget {
   type: "canvas_reorder";
   tabId: string;
   toIndex: number;
@@ -46,7 +59,7 @@ export interface CanvasReorderMessage {
  * POがカタログから自分でGUIを開く。番頭の canvas.open と同じ結果になる。
  * 決定25「人がGUIでできることは番頭にもできる。ただし経路が異なる」の人側。
  */
-export interface CanvasOpenMessage {
+export interface CanvasOpenMessage extends ThreadTarget {
   type: "canvas_open";
   kind: string;
   params?: Record<string, unknown>;
@@ -55,11 +68,33 @@ export interface CanvasOpenMessage {
 }
 
 /**
- * 会話を捨てて新しくやり直す。記憶（好み・習慣）は残る——番頭に記憶があるからこそ
- * 会話は使い捨てにできる（D11）。キャンバスの表示はそのまま維持する。
+ * **そのスレッドの**会話を捨てて新しくやり直す。記憶（好み・習慣）は残る——番頭に記憶が
+ * あるからこそ会話は使い捨てにできる（D11）。キャンバスの表示はそのまま維持する。
+ *
+ * task-0035 で意味は変えていない（P3：黙って挙動を変えない）。「別の話を並行して始める」は
+ * 捨てる操作ではなく `thread_open`——スレッドが増えれば元の会話は残る。
  */
-export interface NewSessionMessage {
+export interface NewSessionMessage extends ThreadTarget {
   type: "new_session";
+}
+
+/**
+ * 新しい会話スレッドを開く（番頭の分身。決定2）。
+ *
+ * **既存のスレッドは何も変わらない**——会話もキャンバスもそのまま残る
+ * （「目の前の話は壊れない」）。
+ */
+export interface ThreadOpenMessage {
+  type: "thread_open";
+  title?: string;
+}
+
+/**
+ * スレッドを閉じる。既定スレッドは閉じられない（会話の宛先が無くなるため）。
+ */
+export interface ThreadCloseMessage {
+  type: "thread_close";
+  threadId: string;
 }
 
 export type ClientMessage =
@@ -69,9 +104,19 @@ export type ClientMessage =
   | CanvasCloseMessage
   | CanvasReorderMessage
   | CanvasOpenMessage
-  | NewSessionMessage;
+  | NewSessionMessage
+  | ThreadOpenMessage
+  | ThreadCloseMessage;
 
 // ── Server → Client ──────────────────────────────────────────────────────────
+
+/**
+ * どのスレッドの出来事か。**サーバ→クライアントでは常に載る**（省略しない）。
+ * クライアントは自分が描いているスレッドの分だけ拾えばよい。
+ */
+export interface ThreadScope {
+  threadId: string;
+}
 
 /** キャンバスに開けるGUIのカタログエントリ（UIがコンポーネントを解決するのに使う）。 */
 export interface CatalogEntryView {
@@ -92,14 +137,38 @@ export interface CatalogEntryView {
   endpoint: string;
 }
 
-/** 接続直後に1度だけ送られる。現在のセッション情報。 */
+/** 会話スレッド1本の姿（タブの1つ）。 */
+export interface ThreadView {
+  threadId: string;
+  title: string;
+  /** ハーネス側のセッションID。デバッグと突き合わせ用。 */
+  sessionId: string;
+  /** 既定スレッド（threadId 省略時の宛先）。閉じられない。 */
+  isDefault: boolean;
+}
+
+/** 接続直後に1度だけ送られる。 */
 export interface WelcomeEvent {
   type: "welcome";
+  /**
+   * 既定スレッドのセッションID。**スレッドを知らないクライアントとの互換**のために残す
+   * ——スレッドを扱うクライアントは `threads` を見ること。
+   */
   sessionId: string;
+  /** 開いているスレッドの一覧（決定2）。 */
+  threads: ThreadView[];
+  /** 既定スレッドの threadId。 */
+  defaultThreadId: string;
   /** 番頭が使えるToolの論理名一覧。 */
   tools: string[];
   /** キャンバスに開けるGUIの一覧。 */
   catalog: CatalogEntryView[];
+}
+
+/** スレッドが増減した・名前が変わった。開閉のたびに全クライアントへ配る。 */
+export interface ThreadStateEvent {
+  type: "thread_state";
+  threads: ThreadView[];
 }
 
 /**
@@ -114,8 +183,11 @@ export type TranscriptEntry =
   | { role: "tool"; name: string; state: "running" | "ok" | "failed" }
   | { role: "error"; text: string };
 
-/** 接続直後に送られる会話履歴。 */
-export interface HistoryEvent {
+/**
+ * 会話履歴。接続直後に**スレッドごとに1通ずつ**送られる。
+ * 1つの接続で複数スレッドを描けるのはこのため（タブ表示）。
+ */
+export interface HistoryEvent extends ThreadScope {
   type: "history";
   entries: TranscriptEntry[];
 }
@@ -125,32 +197,32 @@ export interface HistoryEvent {
  * POの発話ではないので po_message とは別にする——UIで見分けがつかないと、
  * 誰が言ったことなのか分からなくなる。
  */
-export interface NoticeEvent {
+export interface NoticeEvent extends ThreadScope {
   type: "notice";
   text: string;
 }
 
 /** POの発話。送った本人以外のクライアントにも届く。 */
-export interface PoMessageEvent {
+export interface PoMessageEvent extends ThreadScope {
   type: "po_message";
   text: string;
 }
 
 /** アシスタント応答のテキスト差分。 */
-export interface TextDeltaEvent {
+export interface TextDeltaEvent extends ThreadScope {
   type: "text_delta";
   delta: string;
 }
 
 /** Tool実行の開始。name は論理名（決定22）。 */
-export interface ToolStartEvent {
+export interface ToolStartEvent extends ThreadScope {
   type: "tool_start";
   toolCallId: string;
   name: string;
 }
 
 /** Tool実行の終了。name は論理名（決定22）。 */
-export interface ToolEndEvent {
+export interface ToolEndEvent extends ThreadScope {
   type: "tool_end";
   toolCallId: string;
   name: string;
@@ -158,7 +230,7 @@ export interface ToolEndEvent {
 }
 
 /** ターンの終わり。クライアントは入力可能状態に戻ってよい。 */
-export interface TurnEndEvent {
+export interface TurnEndEvent extends ThreadScope {
   type: "turn_end";
   /** プロバイダ側でエラーが起きた場合の説明。正常時は undefined。 */
   errorMessage?: string;
@@ -178,7 +250,7 @@ export interface CanvasTabView {
  * キャンバスの表示状態。接続直後と、状態が変わるたびに送られる。
  * D3: 真実はホスト側の Canvas が持ち、UIはこれを描くだけで独自状態を持たない。
  */
-export interface CanvasStateEvent {
+export interface CanvasStateEvent extends ThreadScope {
   type: "canvas_state";
   tabs: CanvasTabView[];
   activeTabId: string | undefined;
@@ -192,6 +264,7 @@ export interface ErrorEvent {
 
 export type ServerEvent =
   | WelcomeEvent
+  | ThreadStateEvent
   | HistoryEvent
   | PoMessageEvent
   | NoticeEvent

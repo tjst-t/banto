@@ -25,6 +25,9 @@ export {
   type BantoSkill,
 } from "./skills.js";
 export { BantoHostServer, type BantoHostServerOptions, type HostSession } from "./server.js";
+// 会話スレッド＝番頭の分身（決定2・task-0035）
+export { Thread, ThreadRegistry, type ThreadFactory } from "./threads.js";
+export { createThreadTools, bindToolArgs, type ThreadToolsOptions } from "./thread-tools.js";
 export { BantoHostClient, type ServerEventHandler } from "./client.js";
 export {
   BANTO_WS_PATH,
@@ -75,5 +78,12 @@ export { createWorkspaceModule, WORKSPACE_BASE_URL } from "./modules/workspace.j
 export { createDemoModule } from "./modules/demo.js";
 export { createModuleToolHandler } from "./module-serve.js";
 
-export { BANTO_ORIGIN, renderWorkerNotice, isNoticeworthy } from "./worker-notice.js";
+export {
+  BANTO_ORIGIN,
+  threadOrigin,
+  threadIdOfOrigin,
+  isBantoOrigin,
+  renderWorkerNotice,
+  isNoticeworthy,
+} from "./worker-notice.js";
 export { createStudioModule, STUDIO_BASE_URL } from "./modules/studio.js";

@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 
 import {
+  ThreadRegistry,
   BANTO_WS_PATH,
   BantoHostClient,
   BantoHostServer,
@@ -355,13 +356,13 @@ function waitFor(events: ServerEvent[], predicate: (e: ServerEvent) => boolean, 
 
 describe("[task-0012/a4] キャンバス状態のWS配信", () => {
   async function start(): Promise<string> {
-    server = await BantoHostServer.start({
+    const threads = new ThreadRegistry(async () => ({
       session: new FakeSession(),
       tools: createCanvasTools(canvas, catalog),
-      port: 0,
       canvas,
-      catalog,
-    });
+    }));
+    await threads.open();
+    server = await BantoHostServer.start({ threads, port: 0, catalog });
     return `ws://localhost:${server.port}${BANTO_WS_PATH}`;
   }
 
@@ -413,13 +414,13 @@ describe("[task-0012/a4] キャンバス状態のWS配信", () => {
 
 describe("[task-0014] POが直接タブを操作する経路", () => {
   async function start(): Promise<string> {
-    server = await BantoHostServer.start({
+    const threads = new ThreadRegistry(async () => ({
       session: new FakeSession(),
       tools: createCanvasTools(canvas, catalog),
-      port: 0,
       canvas,
-      catalog,
-    });
+    }));
+    await threads.open();
+    server = await BantoHostServer.start({ threads, port: 0, catalog });
     return `ws://localhost:${server.port}${BANTO_WS_PATH}`;
   }
 
