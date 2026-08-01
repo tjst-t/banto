@@ -79,6 +79,13 @@ function asRequest(params: {
   };
 }
 
+/** 人が読む大きさ。 */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
 /** 一覧に出す状態の表示。畳み損ねを「畳み済み」と同じに見せない。 */
 const STATE_LABEL: Record<string, string> = {
   live: "",
@@ -301,6 +308,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
       const environments = pool.list(params);
       const limits = pool.currentLimits();
       const orphans = pool.orphans();
+      const artifacts = pool.artifactUsage();
       const text =
         environments.length === 0
           ? "立っている環境はありません"
@@ -321,11 +329,42 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
               `${pool.isMaintaining() ? "" : " ・**期限の執行が動いていません**"}` +
               ` ・コマンドの制限時間 ${Math.round(limits.defaultRunTimeoutMs / 60000)}分）` +
               // spec §5: 台帳に無い実リソースは黙って隠さない。消し忘れの元
-              (orphans.length > 0 ? `\n台帳に無い実リソースが ${orphans.length} 件あります（照合）` : ""),
+              (orphans.length > 0 ? `\n台帳に無い実リソースが ${orphans.length} 件あります（照合）` : "") +
+              (artifacts.count > 0
+                ? `\n回収した成果物: ${artifacts.count} 件（${formatBytes(artifacts.bytes)}）。要らなければ env.cleanup で捨てられます`
+                : ""),
           },
         ],
-        details: { environments, limits, orphans, maintaining: pool.isMaintaining() },
+        details: { environments, limits, orphans, artifacts, maintaining: pool.isMaintaining() },
       };
+    },
+  });
+
+  const cleanup = defineNamespacedTool({
+    name: "env.cleanup",
+    label: "Env: Cleanup",
+    description:
+      "回収した成果物を捨てる。もう要らないと判断したときに使う（期限が来れば機構も捨てるが、" +
+      "先に判断できるならその方が溜まらない）。" +
+      "**環境の記録（台帳）は消えない**——何を立てたかの記録は残る。" +
+      "どれを捨てるかは必ず指定する。全部捨てるなら olderThanDays: 0。" +
+      "いまどれくらい溜まっているかは env.list の artifacts で分かる。",
+    parameters: Type.Object({
+      envId: Type.Optional(
+        Type.String({ description: "この環境の成果物だけ捨てる" })
+      ),
+      olderThanDays: Type.Optional(
+        Type.Number({ description: "この日数より古い成果物を捨てる（0 なら全部）" })
+      ),
+    }),
+    async execute(params) {
+      const result = pool.cleanupArtifacts(params);
+      const text =
+        result.removed.length === 0
+          ? "捨てるものはありませんでした"
+          : `${result.removed.length} 件の成果物を捨てました（${formatBytes(result.bytesFreed)} 分）\n` +
+            result.removed.map((r) => `${r.envId}（${formatBytes(r.bytes)}）`).join("\n");
+      return { content: [{ type: "text" as const, text }], details: result };
     },
   });
 
@@ -352,5 +391,5 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     },
   });
 
-  return [verify, provision, deploy, healthcheck, run, collect, teardown, list, listProfilesTool];
+  return [verify, provision, deploy, healthcheck, run, collect, teardown, cleanup, list, listProfilesTool];
 }

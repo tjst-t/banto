@@ -303,6 +303,78 @@ export class EnvironmentPool {
   }
 
   /**
+   * 成果物を捨てる（番頭の判断で・PO提案 2026-08-01）。
+   *
+   * **台帳は対象にしない。** 台帳は「番頭が何を立てたか」の記録で、番頭に消させるのは
+   * 自分の監査記録を編集させるのと同じ（I1）。期間で機械的に刈るのは構わないが、
+   * 判断で消す対象にはしない。成果物は中身であって記録ではないので、番頭が捨ててよい。
+   *
+   * **パスは受け取らない。** 環境の id か「何日より古いもの」だけ。任意のパスを受けると
+   * `env.collect` の `dest` で塞いだ穴をまた開けることになる。
+   *
+   * I2: どちらも指定されなければ何もせず断る——「全部消して」を既定にしない。
+   *     全部消したいなら `olderThanDays: 0` と明示する。
+   */
+  cleanupArtifacts(request: { envId?: string; olderThanDays?: number }): {
+    removed: Array<{ envId: string; bytes: number }>;
+    bytesFreed: number;
+  } {
+    const byId = request.envId;
+    const days = request.olderThanDays;
+    if (byId === undefined && days === undefined) {
+      throw new Error(
+        "どれを捨てるか指定してください（envId か olderThanDays）。全部捨てるなら olderThanDays: 0 です。"
+      );
+    }
+
+    const removed: Array<{ envId: string; bytes: number }> = [];
+    if (!fs.existsSync(this.collectRoot)) {
+      // 名指しなら「無い」と言う。まとめて捨てる指定なら、何も無いのは異常ではない
+      if (byId !== undefined) {
+        throw new Error(`環境 "${byId}" の成果物はありません（既に捨てられたか、回収していない）。`);
+      }
+      return { removed, bytesFreed: 0 };
+    }
+
+    const cutoff = days === undefined ? undefined : Date.now() - days * 24 * 3600 * 1000;
+    for (const name of fs.readdirSync(this.collectRoot)) {
+      if (byId !== undefined && name !== byId) continue;
+      const target = path.join(this.collectRoot, name);
+      let stat;
+      try {
+        stat = fs.statSync(target);
+      } catch {
+        continue;
+      }
+      if (cutoff !== undefined && stat.mtimeMs > cutoff) continue;
+
+      const bytes = directorySize(target);
+      try {
+        fs.rmSync(target, { recursive: true, force: true });
+        removed.push({ envId: name, bytes });
+      } catch (err) {
+        // I2: 消せなかったことを「消した」に混ぜない
+        console.error(`[env] ${name} の成果物を捨てられませんでした: ${String(err)}`);
+      }
+    }
+    // I2: 名指しで頼まれたのに無いなら、そう言う（消えたつもりにさせない）
+    if (byId !== undefined && removed.length === 0) {
+      throw new Error(`環境 "${byId}" の成果物はありません（既に捨てられたか、回収していない）。`);
+    }
+    return { removed, bytesFreed: removed.reduce((sum, r) => sum + r.bytes, 0) };
+  }
+
+  /** 回収した成果物の使用量。捨てる前に「どれくらい溜まっているか」を見せるため。 */
+  artifactUsage(): { count: number; bytes: number } {
+    if (!fs.existsSync(this.collectRoot)) return { count: 0, bytes: 0 };
+    const names = fs.readdirSync(this.collectRoot);
+    return {
+      count: names.length,
+      bytes: names.reduce((sum, n) => sum + directorySize(path.join(this.collectRoot, n)), 0),
+    };
+  }
+
+  /**
    * 溜まったものを捨てる（保存期間を過ぎたもの）。
    *
    * **何も捨てないと際限がない。** 回収した成果物は環境を畳んでも残り、台帳は畳んだ分も
@@ -819,6 +891,33 @@ function toSummary(entry: EnvLedgerEntry): EnvSummary {
     // 畳み損ねを「畳んだ」と同じに見せない（spec §5）
     state: entry.teardownFailed ? "teardown-failed" : entry.tornDownAt ? "torn-down" : "live",
   };
+}
+
+/** ディレクトリの大きさ。捨てた効果を見せるために測る。 */
+function directorySize(target: string): number {
+  let total = 0;
+  const walk = (current: string): void => {
+    let entries;
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const child = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(child);
+      else {
+        try {
+          total += fs.statSync(child).size;
+        } catch { /* 消えた */ }
+      }
+    }
+  };
+  try {
+    if (fs.statSync(target).isDirectory()) walk(target);
+    else total = fs.statSync(target).size;
+  } catch { /* 無い */ }
+  return total;
 }
 
 function shortId(): string {

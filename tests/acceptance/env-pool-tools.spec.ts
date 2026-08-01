@@ -703,3 +703,68 @@ describe("[PO指摘] 溜まったものが捨てられる（際限なく増え�
     await p.teardown(created.envId);
   });
 });
+
+describe("[PO提案] env.cleanup（番頭が判断して捨てる）", () => {
+  it("環境を名指しで捨てられる。他は残る", async () => {
+    const p = pool();
+    const a = await p.provision({ driver: "process", config: { cmd: "sleep 60" } });
+    const b = await p.provision({ driver: "process", config: { cmd: "sleep 60" } });
+    const destA = (await p.collect(a.envId)).dest;
+    const destB = (await p.collect(b.envId)).dest;
+    fs.writeFileSync(path.join(destA, "x"), "中身");
+
+    const result = p.cleanupArtifacts({ envId: a.envId });
+    assert.deepEqual(result.removed.map((r) => r.envId), [a.envId]);
+    assert.ok(result.bytesFreed > 0, "捨てた分の大きさが返ること");
+    assert.equal(fs.existsSync(destA), false);
+    assert.equal(fs.existsSync(destB), true, "名指ししていないものは残ること");
+
+    await p.teardown(a.envId);
+    await p.teardown(b.envId);
+  });
+
+  it("**台帳は消えない**（番頭に自分の記録を編集させない・I1）", async () => {
+    const p = pool();
+    const created = await p.provision({ driver: "process", config: { cmd: "sleep 60" } });
+    await p.collect(created.envId);
+    p.cleanupArtifacts({ envId: created.envId });
+
+    const remaining = p.list({ includeTornDown: true }).map((e) => e.envId);
+    assert.ok(remaining.includes(created.envId), "何を立てたかの記録は残ること");
+    await p.teardown(created.envId);
+  });
+
+  it("何を捨てるか指定しなければ何もしない（全部消すを既定にしない）", () => {
+    assert.throws(() => pool().cleanupArtifacts({}), /どれを捨てるか指定/);
+  });
+
+  it("olderThanDays: 0 なら全部捨てられる", async () => {
+    const p = pool();
+    const a = await p.provision({ driver: "process", config: { cmd: "sleep 60" } });
+    const b = await p.provision({ driver: "process", config: { cmd: "sleep 60" } });
+    await p.collect(a.envId);
+    await p.collect(b.envId);
+    assert.equal(p.artifactUsage().count, 2);
+
+    const result = p.cleanupArtifacts({ olderThanDays: 0 });
+    assert.equal(result.removed.length, 2);
+    assert.equal(p.artifactUsage().count, 0);
+
+    await p.teardown(a.envId);
+    await p.teardown(b.envId);
+  });
+
+  it("名指ししたものが無ければ、消えたことにしない", () => {
+    assert.throws(() => pool().cleanupArtifacts({ envId: "env-無い" }), /成果物はありません/);
+  });
+
+  it("パスは受け取らない（塞いだ穴をまた開けない）", () => {
+    const cleanup = createEnvTools(pool()).find((t) => t.name === "env.cleanup")!;
+    const properties = Object.keys(
+      (cleanup.parameters as { properties?: Record<string, unknown> }).properties ?? {}
+    );
+    for (const name of properties) {
+      assert.doesNotMatch(name, /path|dir|dest/i, `${name} がパスを受けている`);
+    }
+  });
+});
