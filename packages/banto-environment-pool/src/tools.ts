@@ -101,9 +101,16 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
       cmd: Type.String({ description: "環境の中で走らせる検証コマンド" }),
       artifactPath: Type.Optional(Type.String({ description: "配る成果物の絶対パス（省略可）" })),
       collectTo: Type.Optional(Type.String({ description: "成果物の回収先ディレクトリ（省略可）" })),
+      timeoutMs: Type.Optional(
+        Type.Number({ description: "検証コマンドの制限時間（ミリ秒）。省略すると既定" })
+      ),
     }),
     async execute(params) {
-      const result = await pool.verify({ ...asRequest(params), cmd: params.cmd });
+      const result = await pool.verify({
+        ...asRequest(params),
+        cmd: params.cmd,
+        ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
+      });
       const passed = result.exit === 0 && result.failure === undefined;
       const lines = [
         `${passed ? "通りました" : "通りませんでした"}（${result.profile} / ${result.envId}）`,
@@ -204,9 +211,16 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
       envId: Type.String({ description: "対象の環境 id" }),
       cmd: Type.String({ description: "走らせるコマンド" }),
       logTailLines: Type.Optional(Type.Number({ description: "返すログの行数（既定 40）" })),
+      timeoutMs: Type.Optional(
+        Type.Number({
+          description:
+            "コマンドの制限時間（ミリ秒）。省略すると既定。**短くはできるが長くはできない**" +
+            "（能力側の上限まで）。env.list_profiles の limits で今の値が分かる",
+        })
+      ),
     }),
     async execute(params) {
-      const result = await pool.run(params.envId, params.cmd, params.logTailLines);
+      const result = await pool.run(params.envId, params.cmd, params.logTailLines, params.timeoutMs);
       const head = `終了コード ${result.exit}${result.truncated ? "（ログは末尾のみ）" : ""}`;
       return {
         content: [{ type: "text" as const, text: [head, result.logTail].filter(Boolean).join("\n") }],
@@ -287,7 +301,8 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
             type: "text" as const,
             text:
               `${text}\n（同時上限: 全体 ${limits.maxInstancesTotal} / プロファイルごと ${limits.maxInstancesPerProfile}` +
-              `${pool.isMaintaining() ? "" : " ・**期限の執行が動いていません**"}）` +
+              `${pool.isMaintaining() ? "" : " ・**期限の執行が動いていません**"}` +
+              ` ・コマンドの制限時間 ${Math.round(limits.defaultRunTimeoutMs / 60000)}分）` +
               // spec §5: 台帳に無い実リソースは黙って隠さない。消し忘れの元
               (orphans.length > 0 ? `\n台帳に無い実リソースが ${orphans.length} 件あります（照合）` : ""),
           },

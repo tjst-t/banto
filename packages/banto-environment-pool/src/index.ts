@@ -50,6 +50,7 @@ export {
   checkProfileLimits,
   checkAdhocDriver,
   clampTtl,
+  resolveRunTimeout,
 } from "./limits.js";
 export type { EnvLimits, AdhocDriverPolicy, BuiltinDriverName, LimitCheck } from "./limits.js";
 

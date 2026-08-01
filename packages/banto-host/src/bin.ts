@@ -154,6 +154,8 @@ function resolveModel(provider: string, modelId: string): ReturnType<typeof getM
 
 interface ServeOptions {
   port: number;
+  /** 待ち受けるアドレス。既定は localhost のみ（決定40）。 */
+  host?: string;
   /** provider/model を明示する。省略時は pi の既定解決（settings→最初に使えるもの）に任せる。 */
   provider?: string;
   model?: string;
@@ -228,6 +230,17 @@ async function serve(options: ServeOptions): Promise<void> {
   // spec-environment §5: 執行は Environment Pool の台帳が行う。**ここで回さないと
   // 番頭が立てた環境を誰も片付けない**——Kobo 側の tick は台帳が別で対象外（I3）
   environmentPool.startMaintenance();
+
+  // 決定40: 既定は localhost。広げるのは明示的な指定だけ
+  const bindHost = options.host ?? process.env["BANTO_HOST_BIND"] ?? "127.0.0.1";
+  if (bindHost !== "127.0.0.1" && bindHost !== "localhost") {
+    // 黙って広い口を開けない（決定36d の場所の警告と同じ考え方）
+    console.warn(
+      `[banto] ${bindHost} で待ち受けます。**Banto は認証を持ちません**——` +
+        "前段（Caddy 等）で守られていない経路から、記憶・書き込み・検証環境の" +
+        "credentials 経路に直接届きます"
+    );
+  }
 
   const workerPoolUrl = process.env["BANTO_WORKER_POOL_URL"] ?? "/api/worker-pool";
   const reportUrl = workerPoolUrl.startsWith("/")
@@ -348,6 +361,9 @@ async function serve(options: ServeOptions): Promise<void> {
     port: options.port,
     catalog,
     modules,
+    // 決定40: 既定は localhost のみ。Banto は認証を持たず、守るのは前段の役目——
+    // 全インターフェースで待つと前段を素通りできてしまい、その裁定が成り立たない
+    host: bindHost,
   });
 
   // 決定29: 番頭が起こした職人のイベントだけを受ける。他の起動元（Kobo 等）の分は届かない。
@@ -466,10 +482,12 @@ async function main(): Promise<void> {
     case "serve": {
       const provider = flag("provider") ?? process.env["BANTO_PROVIDER"];
       const model = flag("model") ?? process.env["BANTO_MODEL"];
+      const host = flag("host") ?? process.env["BANTO_HOST_BIND"];
       await serve({
         port: Number(flag("port") ?? process.env["BANTO_PORT"] ?? BANTO_DEFAULT_PORT),
         ...(provider ? { provider } : {}),
         ...(model ? { model } : {}),
+        ...(host ? { host } : {}),
       });
       break;
     }
@@ -478,7 +496,9 @@ async function main(): Promise<void> {
       break;
     default:
       console.error(
-        "usage: banto <serve|chat> [--port N] [--provider P --model M] [--url ws://host:port]"
+        "usage: banto <serve|chat> [--port N] [--host ADDR] [--provider P --model M] [--url ws://host:port]\n" +
+          "  --host は待ち受けるアドレス（既定 127.0.0.1）。Banto は認証を持たないので、\n" +
+          "  外に出すなら前段（Caddy 等）で守ること"
       );
       process.exit(2);
   }

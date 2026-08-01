@@ -39,6 +39,15 @@ export interface EnvLimits {
   maxInstancesTotal: number;
   /** アドホック環境の可否（決定34e）。 */
   adhocDrivers: AdhocDriverPolicy;
+  /**
+   * `run` の既定の制限時間（spec §8 の裁定・2026-08-01）。
+   *
+   * 以前はドライバの全動詞に一律30秒だった。**`npm test` が30秒で切れる**——検証を
+   * 回すための機構なのに、検証コマンドが最後まで走れないという状態だった。
+   */
+  defaultRunTimeoutMs: number;
+  /** `run` に指定できる制限時間の上限。呼び出し側は**厳しくのみ**できる。 */
+  maxRunTimeoutMs: number;
 }
 
 /**
@@ -53,6 +62,8 @@ export const DEFAULT_ENV_LIMITS: EnvLimits = {
   maxInstancesPerProfile: 4,
   maxInstancesTotal: 8,
   adhocDrivers: "builtin",
+  defaultRunTimeoutMs: 10 * 60 * 1000,
+  maxRunTimeoutMs: 60 * 60 * 1000,
 };
 
 /** 設定で一部だけ上書きできるようにする（ホストの起動設定から渡す）。 */
@@ -110,6 +121,17 @@ export function checkAdhocDriver(driver: string, limits: EnvLimits): LimitCheck 
       `アドホックで使えるのは ${BUILTIN_DRIVER_NAMES.join(" / ")} だけです（adhocDrivers: builtin）。` +
       `"${driver}" のような外部ドライバは費用が出る側なので、設定で明示的に開ける必要があります`,
   };
+}
+
+/**
+ * `run` の制限時間を決める。**呼び出し側は厳しくのみできる**（spec §5.1 と同じ性質）。
+ *
+ * 上限を超える指定は丸める——TTL や quota と違って拒否にしないのは、ここが「待つ長さ」で
+ * あって外に残るものではないから。長く待たせすぎないための歯止めで足りる。
+ */
+export function resolveRunTimeout(requested: number | undefined, limits: EnvLimits): number {
+  if (requested === undefined) return limits.defaultRunTimeoutMs;
+  return Math.min(Math.max(1000, requested), limits.maxRunTimeoutMs);
 }
 
 /** 上限の TTL に収める（アドホックの既定TTLを決めるときに使う）。 */

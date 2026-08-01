@@ -23,6 +23,7 @@ import {
   checkProfileLimits,
   loadProfile,
   resolveLimits,
+  resolveRunTimeout,
   type EnvLimits,
 } from "@banto/environment-pool";
 import type { NamespacedToolDefinition } from "@banto/core";
@@ -605,5 +606,36 @@ describe("[I3] 片付けが他人のプロセスを壊さない（pid の使い�
       if (before !== undefined) fs.writeFileSync(stateFile, before);
       else fs.rmSync(stateFile, { force: true });
     }
+  });
+});
+
+describe("[spec-environment §8 裁定] run の制限時間", () => {
+  it("**検証コマンドは30秒で切れない**（既定は分単位）", () => {
+    assert.ok(
+      DEFAULT_ENV_LIMITS.defaultRunTimeoutMs >= 5 * 60 * 1000,
+      `既定が短すぎる: ${DEFAULT_ENV_LIMITS.defaultRunTimeoutMs}ms。npm test が途中で切れる`
+    );
+    assert.ok(DEFAULT_ENV_LIMITS.maxRunTimeoutMs >= DEFAULT_ENV_LIMITS.defaultRunTimeoutMs);
+  });
+
+  it("呼び出し側は厳しくのみできる（上限を超える指定は丸める）", () => {
+    const limits = resolveLimits();
+    assert.equal(resolveRunTimeout(undefined, limits), limits.defaultRunTimeoutMs);
+    assert.equal(resolveRunTimeout(5_000, limits), 5_000, "短くはできる");
+    assert.equal(
+      resolveRunTimeout(999 * 3600 * 1000, limits),
+      limits.maxRunTimeoutMs,
+      "上限より長くはできない"
+    );
+  });
+
+  it("既定より長くかかるコマンドが、既定の制限時間の中なら通る", async () => {
+    const p = pool();
+    // ドライバの他の動詞は短い制限（20秒）のまま。run だけ別枠であることを見る
+    const created = await p.provision({ driver: "process", config: { cmd: "sleep 60" } });
+    const result = await p.run(created.envId, "sleep 25 && echo 長くかかった");
+    assert.equal(result.exit, 0, "25秒のコマンドが切られないこと");
+    assert.match(result.logTail, /長くかかった/);
+    await p.teardown(created.envId);
   });
 });

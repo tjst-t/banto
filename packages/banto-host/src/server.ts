@@ -66,6 +66,16 @@ export interface BantoHostServerOptions {
    * その接続情報が載る（決定25：UIはコンポーネントに直書きせずここから到達先を得る）。
    */
   modules?: ModuleRegistry;
+  /**
+   * 待ち受けるアドレス（既定 `127.0.0.1`）。
+   *
+   * **Banto は認証を持たない**（決定40）。守るのは前段（Caddy 等）の役目という裁定だが、
+   * ホストが全インターフェースで待っていると**前段を素通りして直に叩ける**——認証が
+   * 飾りになる。既定を localhost に閉じることで、「前段に置く」が本当に効く形にする。
+   *
+   * I1: 運用の心がけではなく機構で担保する。広げるには明示的に指定させ、警告を出す。
+   */
+  host?: string;
 }
 
 /**
@@ -160,7 +170,7 @@ export class BantoHostServer {
     const server = new BantoHostServer(options, httpServer);
     await new Promise<void>((resolve, reject) => {
       httpServer.once("error", reject);
-      httpServer.listen(options.port ?? BANTO_DEFAULT_PORT, () => {
+      httpServer.listen(options.port ?? BANTO_DEFAULT_PORT, options.host ?? "127.0.0.1", () => {
         httpServer.off("error", reject);
         resolve();
       });

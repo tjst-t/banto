@@ -25,6 +25,7 @@ import {
   checkAdhocDriver,
   clampTtl,
   resolveLimits,
+  resolveRunTimeout,
   type EnvLimits,
 } from "./limits.js";
 import { loadProfile, listProfiles } from "./profiles.js";
@@ -453,15 +454,30 @@ export class EnvironmentPool {
     };
   }
 
-  /** 環境の中でコマンドを走らせる。 */
-  async run(envId: string, cmd: string, logTailLines = DEFAULT_LOG_TAIL_LINES): Promise<RunResult> {
+  /**
+   * 環境の中でコマンドを走らせる。
+   *
+   * **制限時間は他の動詞と別**。provision や healthcheck は「すぐ返るはず」のものだが、
+   * `run` は検証コマンドそのもので、テスト一式が何分もかかるのが普通（spec §8 の裁定）。
+   */
+  async run(
+    envId: string,
+    cmd: string,
+    logTailLines = DEFAULT_LOG_TAIL_LINES,
+    timeoutMs?: number
+  ): Promise<RunResult> {
     const entry = this.requireLive(envId);
-    const output = await this.verb(entry, "run", {
-      handle: entry.handle,
-      cmd,
-      // 決定34d: provision と同じ場所で走らせる（台帳に残してある）
-      ...(entry.workdir ? { workdir: entry.workdir } : {}),
-    });
+    const output = await this.verb(
+      entry,
+      "run",
+      {
+        handle: entry.handle,
+        cmd,
+        // 決定34d: provision と同じ場所で走らせる（台帳に残してある）
+        ...(entry.workdir ? { workdir: entry.workdir } : {}),
+      },
+      resolveRunTimeout(timeoutMs, this.limits)
+    );
     const shaped = output as { exit?: unknown; log_path?: unknown };
     const logPath = typeof shaped.log_path === "string" ? shaped.log_path : "";
     const tail = readLogTail(logPath, logTailLines);
@@ -544,6 +560,8 @@ export class EnvironmentPool {
       /** 回収先。省略すると collect を飛ばす。 */
       collectTo?: string;
       logTailLines?: number;
+      /** 検証コマンドの制限時間。既定は能力側の既定、上限まで（厳しくのみ可）。 */
+      timeoutMs?: number;
     }
   ): Promise<VerifyResult> {
     const summary = await this.provision(request);
@@ -564,7 +582,7 @@ export class EnvironmentPool {
       if (!healthy) {
         failure = `healthcheck が通りませんでした${healthDetail ? `: ${healthDetail}` : ""}`;
       } else {
-        runResult = await this.run(summary.envId, request.cmd, request.logTailLines);
+        runResult = await this.run(summary.envId, request.cmd, request.logTailLines, request.timeoutMs);
         if (request.collectTo) await this.collect(summary.envId, request.collectTo);
       }
     } catch (err) {
@@ -711,9 +729,10 @@ export class EnvironmentPool {
   private async verb(
     entry: EnvLedgerEntry,
     verb: string,
-    input: Record<string, unknown>
+    input: Record<string, unknown>,
+    timeoutMs = this.timeoutMs
   ): Promise<unknown> {
-    const result = await runDriverVerb(resolveDriverPath(entry.driver), verb, input, this.timeoutMs);
+    const result = await runDriverVerb(resolveDriverPath(entry.driver), verb, input, timeoutMs);
     // I2: ドライバの失敗を成功に見せない
     if (!result.ok) throw new Error(`${verb} が失敗しました（${entry.envId}）: ${result.error}`);
     return result.output;
