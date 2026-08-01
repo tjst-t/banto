@@ -17,7 +17,7 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 import { getModel, getModels } from "@mariozechner/pi-ai";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
-import { JsonlMemoryStore } from "@banto/core";
+import { JsonlMemoryStore, type PlaceProvider } from "@banto/core";
 
 import {
   PiRpcDriver,
@@ -46,6 +46,9 @@ import { createStudioModule } from "./modules/studio.js";
 import { createWorkspaceModule } from "./modules/workspace.js";
 import { PlaceGrantStore } from "./place-grants.js";
 import { ThreadStore } from "./thread-store.js";
+import { SettingsStore } from "./settings-store.js";
+import { createCoreSettingsSections } from "./core-settings.js";
+import { createSettingsModule, settingsSection } from "./settings-module.js";
 import { createRepoManagerModule, createRepoManagerPlaceProvider } from "@banto/repo-manager";
 import {
   EnvironmentPool,
@@ -163,6 +166,9 @@ interface ServeOptions {
 }
 
 async function serve(options: ServeOptions): Promise<void> {
+  // task-0047: 保存された設定。**番頭が書けない場所**に置く（決定38b）
+  const settings = new SettingsStore(path.join(dataDir(), "settings.json"));
+
   const memory = new JsonlMemoryStore(memoryPath());
   const skills = loadBantoSkills();
   const workspace = workspaceRoot();
@@ -175,10 +181,17 @@ async function serve(options: ServeOptions): Promise<void> {
   // 決定38c: POが後から許した範囲。保存先はホストのデータ置き場——リポジトリの中に置くと
   // 番頭が宣言を書き換えて自分の権限を広げられる（決定38b。file.write の砦がここを守っている）
   const grants = new PlaceGrantStore(path.join(dataDir(), "place-grants.json"));
-  const places = new PlaceRegistry(
-    [createStaticPlaceProvider(readPlaceConfig(workspace)), createRepoManagerPlaceProvider()],
-    grants
-  );
+  // 設定に場所が入っていればそれが真実、無ければ環境変数（決定41）。
+  // **毎回読み直す**ので、設定画面で変えるとその場で効く（D3：ファイルは意図）
+  const staticPlaces: PlaceProvider = {
+    name: "static",
+    list: async () => {
+      const configured = settings.all().places;
+      const source = configured && configured.length > 0 ? configured : readPlaceConfig(workspace);
+      return createStaticPlaceProvider(source).list();
+    },
+  };
+  const places = new PlaceRegistry([staticPlaces, createRepoManagerPlaceProvider()], grants);
   for (const place of broadlyWritable(await places.list())) {
     // 決定38e：広く許したことを黙って通さない
     console.warn(
@@ -198,11 +211,13 @@ async function serve(options: ServeOptions): Promise<void> {
   // 決定39: 検証環境を外から見えるようにする口。既定は番頭ホスト自身が中継する
   // ——どこでも動き、banto を守っている認証をそのまま継承する。Caddy を持つ配置では
   // BANTO_CADDY_ADMIN + BANTO_ENV_DOMAIN でサブドメイン公開へ差し替える
-  const caddyAdmin = process.env["BANTO_CADDY_ADMIN"];
-  const envDomain = process.env["BANTO_ENV_DOMAIN"];
+  const caddyAdmin = settings.all().network?.caddyAdmin ?? process.env["BANTO_CADDY_ADMIN"];
+  const envDomain = settings.all().network?.envDomain ?? process.env["BANTO_ENV_DOMAIN"];
   const envProxy = createEnvProxyExposer({
     baseUrl: ENVIRONMENT_POOL_BASE_URL,
-    ...(process.env["BANTO_PUBLIC_URL"] ? { publicBaseUrl: process.env["BANTO_PUBLIC_URL"] } : {}),
+    ...(settings.all().network?.publicUrl ?? process.env["BANTO_PUBLIC_URL"]
+      ? { publicBaseUrl: (settings.all().network?.publicUrl ?? process.env["BANTO_PUBLIC_URL"])! }
+      : {}),
   });
   const exposer =
     caddyAdmin && envDomain
@@ -230,13 +245,20 @@ async function serve(options: ServeOptions): Promise<void> {
   });
   // spec-environment §5: 執行は Environment Pool の台帳が行う。**ここで回さないと
   // 番頭が立てた環境を誰も片付けない**——Kobo 側の tick は台帳が別で対象外（I3）
+  // 保存された上限を起動時に効かせる（設定画面で変えた値が次の起動でも生きる）
+  environmentPool.applyLimits(
+    (settings.all().modules?.["environment-pool"] ?? {}) as Partial<
+      ReturnType<typeof environmentPool.currentLimits>
+    >
+  );
   environmentPool.startMaintenance();
   // imp-0007 の裁定: 回収した成果物を**読める場所**として出す。置き場所を Pool が決める
   // だけだと、番頭は取り出したものを読めない（砦の外なので file.read が弾く）
   places.add(createCollectedPlaceProvider(environmentPool.collectedRoot()));
 
   // 決定40: 既定は localhost。広げるのは明示的な指定だけ
-  const bindHost = options.host ?? process.env["BANTO_HOST_BIND"] ?? "127.0.0.1";
+  const bindHost =
+    options.host ?? settings.all().network?.bind ?? process.env["BANTO_HOST_BIND"] ?? "127.0.0.1";
   if (bindHost !== "127.0.0.1" && bindHost !== "localhost") {
     // 黙って広い口を開けない（決定36d の場所の警告と同じ考え方）
     console.warn(
@@ -271,9 +293,23 @@ async function serve(options: ServeOptions): Promise<void> {
     // 決定32c・34: 番頭は Kobo 無しでも検証を回せる。「テストが通った」を職人の主張ではなく
     // 機構の返す事実として受け取るための実行能力（決定29a）
     // 中継はこのモジュールが自分の到達先の下で捌く（決定27・39）
-    createEnvironmentPoolModule(environmentPool, ENVIRONMENT_POOL_BASE_URL, envProxy),
+    createEnvironmentPoolModule(
+      environmentPool,
+      ENVIRONMENT_POOL_BASE_URL,
+      envProxy,
+      settingsSection(settings, "environment-pool")
+    ),
     createDemoModule(),
   ]);
+
+  // 設定モジュールは他モジュールの宣言を集めるので、レジストリが揃ってから登録する（決定41）
+  modules.register(
+    createSettingsModule({
+      core: createCoreSettingsSections(settings),
+      modules,
+      store: settings,
+    })
+  );
 
   // studio は他モジュールの SKILL も見せるので、レジストリが揃ってから登録する
   modules.register(
@@ -288,9 +324,10 @@ async function serve(options: ServeOptions): Promise<void> {
   // I2: 指定されたモデルが見つからないなら黙って別のモデルに落とさず止める。
   //     既定解決に任せると、auth.json に別プロバイダの無効な鍵が残っている場合に
   //     そちらが選ばれて 401 になる（実際に踏んだ）。
-  const model = options.provider && options.model
-    ? resolveModel(options.provider, options.model)
-    : undefined;
+  const llm = settings.all().llm ?? {};
+  const provider = options.provider ?? llm.provider;
+  const modelId = options.model ?? llm.model;
+  const model = provider && modelId ? resolveModel(provider, modelId) : undefined;
 
   // スレッド1本分の器を作る（決定2・task-0035）。**キャンバスはスレッドごと**——
   // ここを共有すると、ある会話で GUI を開いたときに別の会話の表示まで変わる。

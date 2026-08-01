@@ -42,6 +42,14 @@ export type {
 export { parseEnvProfiles, validateProfile, parseTtl } from "./env-profile-parser.js";
 // 検証環境を外から見えるようにする口（決定39・imp-0008）。配置で手段が変わるので差し替え可能
 export type { EnvExposer, ExposedEnv, ExposeRequest } from "./env-exposer.js";
+// モジュールが設定画面に自分の設定を出す契約（決定41）。GUI ではなく項目の宣言を渡す
+export type {
+  SettingField,
+  SettingFieldType,
+  ModuleSettingsSpec,
+  SettingsSection,
+  SettingsWriteResult,
+} from "./module-settings.js";
 export type {
   EnvProfile,
   ProfileValidation,

@@ -76,6 +76,14 @@ export { createFileTools } from "./file-tools.js";
 export { createFileWriteTools, type FileWriteToolOptions } from "./file-write-tools.js";
 export { createPlaceTools } from "./place-tools.js";
 export { ThreadStore, type StoredThread } from "./thread-store.js";
+export { SettingsStore, type BantoSettings, type PlaceSetting } from "./settings-store.js";
+export { createCoreSettingsSections } from "./core-settings.js";
+export {
+  createSettingsModule,
+  settingsSection,
+  SETTINGS_BASE_URL,
+  SETTINGS_VIEW_KIND,
+} from "./settings-module.js";
 export {
   createPlaceRequestTools,
   createPlaceGrantAdminTools,

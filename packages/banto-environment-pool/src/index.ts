@@ -41,6 +41,9 @@ export type { CaddyExposerOptions } from "./caddy-exposer.js";
 // 回収した成果物を読める場所として出す（imp-0007 の裁定）
 export { createCollectedPlaceProvider, COLLECTED_PLACE_ID } from "./collected-place.js";
 
+// 設定画面へ出す区画（決定41）
+export { createEnvironmentSettings } from "./settings.js";
+
 // 番頭へ渡す Tool とモジュール定義（決定34a）
 export { createEnvTools } from "./tools.js";
 export { createEnvironmentPoolModule, ENVIRONMENT_POOL_BASE_URL } from "./module.js";

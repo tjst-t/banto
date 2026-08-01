@@ -18,6 +18,7 @@
  */
 
 import type * as http from "node:http";
+import type { ModuleSettingsSpec } from "@banto/core";
 import type { CanvasViewSpec } from "./canvas.js";
 import type { BantoSkill } from "./skills.js";
 import { toolDomain, type NamespacedToolName } from "@banto/core";
@@ -75,6 +76,14 @@ export interface BantoModule {
   serve?(req: http.IncomingMessage, res: http.ServerResponse): boolean;
   /** キャンバスへ提供する GUI */
   views: CanvasViewSpec[];
+  /**
+   * 設定画面に出す設定の区画（決定41）。
+   *
+   * **GUI ではなく項目の宣言を渡す。** 描くのは設定画面の役目で、モジュールが増えても
+   * 画面は変わらない。値の持ち主はモジュール——読むのも効かせるのもモジュールが行い、
+   * 設定画面は宣言を描いて変更を渡すだけ。
+   */
+  settings?: ModuleSettingsSpec;
   /** このモジュールが既定として出す SKILL */
   skills: BantoSkill[];
 }

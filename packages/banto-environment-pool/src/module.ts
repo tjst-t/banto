@@ -12,6 +12,7 @@ import type * as http from "node:http";
 import type { NamespacedToolDefinition } from "@banto/core";
 import { createEnvTools } from "./tools.js";
 import type { EnvProxy } from "./proxy-exposer.js";
+import { createEnvironmentSettings } from "./settings.js";
 
 /**
  * 検証環境の管理画面。
@@ -46,7 +47,8 @@ export const ENVIRONMENT_POOL_BASE_URL = "/api/environment-pool";
 export function createEnvironmentPoolModule(
   pool: EnvironmentPool,
   baseUrl: string = ENVIRONMENT_POOL_BASE_URL,
-  proxy?: EnvProxy
+  proxy?: EnvProxy,
+  settingsSection?: import("@banto/core").SettingsSection
 ): {
   name: string;
   title: string;
@@ -54,6 +56,7 @@ export function createEnvironmentPoolModule(
   endpoint: { baseUrl: string };
   tools: NamespacedToolDefinition[];
   views: typeof envViews;
+  settings: import("@banto/core").ModuleSettingsSpec;
   skills: never[];
   serve?(req: http.IncomingMessage, res: http.ServerResponse): boolean;
 } {
@@ -68,6 +71,8 @@ export function createEnvironmentPoolModule(
     tools: createEnvTools(pool),
     ...(proxy ? { serve: (req, res) => proxy.handle(req, res) } : {}),
     views: envViews,
+    // 決定41: 設定画面に自分の区画を出す。GUI ではなく項目の宣言を渡す
+    settings: createEnvironmentSettings(pool, settingsSection),
     skills: [],
   };
 }

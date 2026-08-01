@@ -170,7 +170,7 @@ export const ADHOC_PROFILE_PREFIX = "adhoc:";
 
 export class EnvironmentPool {
   private readonly ledger: EnvLedger;
-  private readonly limits: EnvLimits;
+  private limits: EnvLimits;
   private readonly timeoutMs: number;
   private readonly sopsAgeKeyFile: string | undefined;
   private readonly exposer: EnvExposer | undefined;
@@ -463,6 +463,17 @@ export class EnvironmentPool {
 
   /** いまの上限。GUI と番頭に見せるため（何が効いているか分からないと直せない）。 */
   currentLimits(): EnvLimits {
+    return { ...this.limits };
+  }
+
+  /**
+   * 上限を差し替える（決定41：設定画面から）。
+   *
+   * **その場で効く。** 上限は呼ぶたびに読んでいるので、次の provision から新しい値になる
+   * ——設定したのに次の起動まで効かない、を避けられる箇所はそうする。
+   */
+  applyLimits(overrides: Partial<EnvLimits>): EnvLimits {
+    this.limits = resolveLimits({ ...this.limits, ...overrides });
     return { ...this.limits };
   }
 

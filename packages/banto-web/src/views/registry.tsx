@@ -14,6 +14,7 @@ import { GitViewer } from "./GitViewer.js";
 import { PlacePermissions } from "./PlacePermissions.js";
 import { RepoManager } from "./RepoManager.js";
 import { EnvManager } from "./EnvManager.js";
+import { SettingsPanel } from "./SettingsPanel.js";
 import { WorkerViewer } from "./WorkerViewer.js";
 import { MemoryViewer } from "./MemoryViewer.js";
 import { SkillViewer } from "./SkillViewer.js";
@@ -54,6 +55,8 @@ const REGISTRY: Record<string, ComponentType<CanvasViewProps>> = {
   // リポジトリ／ワークツリー（repo-manager 提供・決定36）と検証環境（environment-pool 提供・決定32）
   RepoManager,
   EnvManager,
+  // 設定（settings モジュール提供・決定41）。項目の宣言から描くので、増えてもここは変わらない
+  SettingsPanel,
   // セッションビューア（worker-pool モジュール提供。決定18・23）
   WorkerViewer,
   // 番頭の中身（studio モジュール提供。決定25・26）

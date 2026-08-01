@@ -1,0 +1,197 @@
+/**
+ * 設定画面（settings モジュール提供・決定41・prototype の設定面）。
+ *
+ * **このファイルはどの設定も知らない。** 区画の宣言（`fields`）を受け取って描くだけで、
+ * モジュールが設定項目を増やしても、新しいモジュールが加わっても、ここは変わらない
+ * ——それが「GUI ではなく項目の宣言を渡す」ことの意味。
+ *
+ * 左のナビと右の内容は prototype（`banto-shell.html` の設定面）に合わせている。
+ */
+
+import { useEffect, useState } from "react";
+import { callModuleTool, useModuleTool } from "./useModuleTool.js";
+import type { CanvasViewProps } from "./registry.js";
+
+interface SettingField {
+  key: string;
+  label: string;
+  type: "text" | "number" | "boolean" | "select" | "list";
+  description?: string;
+  options?: Array<{ value: string; label: string }>;
+  unit?: string;
+  placeholder?: string;
+  restartRequired?: boolean;
+  secret?: boolean;
+}
+
+interface SettingsSectionView {
+  id: string;
+  title: string;
+  description?: string;
+  origin: string;
+  fields: SettingField[];
+  values: Record<string, unknown>;
+}
+
+interface SettingsDescription {
+  sections: SettingsSectionView[];
+  storedAt: string;
+}
+
+export function SettingsPanel({ endpoint }: CanvasViewProps): React.ReactElement {
+  const description = useModuleTool<SettingsDescription>(endpoint, "settings.describe");
+  const sections = description.data?.sections ?? [];
+  const [activeId, setActiveId] = useState<string>();
+  /** 触った項目だけを送る（触っていない項目まで上書きしないため）。 */
+  const [draft, setDraft] = useState<Record<string, unknown>>({});
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string>();
+  const [error, setError] = useState<string>();
+
+  const active = sections.find((s) => s.id === activeId) ?? sections[0];
+
+  // 区画を切り替えたら、書きかけを持ち越さない
+  useEffect(() => {
+    setDraft({});
+    setNotice(undefined);
+    setError(undefined);
+  }, [active?.id]);
+
+  const valueOf = (field: SettingField): unknown =>
+    field.key in draft ? draft[field.key] : active?.values[field.key];
+
+  const save = async (): Promise<void> => {
+    if (!active || Object.keys(draft).length === 0) return;
+    setBusy(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      const result = await callModuleTool<{ applied: boolean; message?: string }>(
+        endpoint,
+        "settings.update",
+        { section: active.id, values: draft }
+      );
+      setDraft({});
+      description.reload();
+      setNotice(result.message ?? (result.applied ? "変えました。" : "保存しました。"));
+    } catch (err) {
+      // I2: 保存できなかったのに保存したように見せない
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="sp">
+      <nav className="sp-nav">
+        {sections.map((section) => (
+          <button
+            key={section.id}
+            className={section.id === active?.id ? "sp-nav-btn sp-nav-on" : "sp-nav-btn"}
+            onClick={() => setActiveId(section.id)}
+          >
+            {section.title}
+            {section.origin !== "core" && <span className="sp-origin">{section.origin}</span>}
+          </button>
+        ))}
+        {sections.length === 0 && <p className="fb-muted">{description.loading ? "…" : "設定なし"}</p>}
+      </nav>
+
+      <div className="sp-content">
+        {description.error && <div className="fb-error">{description.error}</div>}
+        {!active ? null : (
+          <>
+            <h2 className="sp-title">{active.title}</h2>
+            {active.description && <p className="sp-desc">{active.description}</p>}
+
+            {active.fields.map((field) => (
+              <label key={field.key} className="sp-field">
+                <span className="sp-label">
+                  {field.label}
+                  {field.unit && <span className="sp-unit">（{field.unit}）</span>}
+                  {field.restartRequired && <span className="sp-restart">要再起動</span>}
+                </span>
+                {renderInput(field, valueOf(field), (next) =>
+                  setDraft((prev) => ({ ...prev, [field.key]: next }))
+                )}
+                {field.description && <span className="sp-hint">{field.description}</span>}
+              </label>
+            ))}
+
+            {error && <div className="fb-error">{error}</div>}
+            {notice && <div className="rm-notice">{notice}</div>}
+
+            <div className="sp-actions">
+              <button
+                className="pp-approve"
+                disabled={busy || Object.keys(draft).length === 0}
+                onClick={save}
+              >
+                {busy ? "保存中…" : "保存する"}
+              </button>
+              {Object.keys(draft).length > 0 && (
+                <button className="pp-deny" onClick={() => setDraft({})}>
+                  やめる
+                </button>
+              )}
+            </div>
+
+            <p className="fb-muted sp-where">
+              保存先: <code>{description.data?.storedAt}</code>
+              <br />
+              番頭はこの場所に書けません（設定を書き換えて自分の権限を広げられないように）
+            </p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** 項目の型ごとの入力欄。ここに無い型は宣言側でも使えない。 */
+function renderInput(
+  field: SettingField,
+  value: unknown,
+  onChange: (next: unknown) => void
+): React.ReactElement {
+  if (field.type === "boolean") {
+    return (
+      <input type="checkbox" checked={value === true} onChange={(e) => onChange(e.target.checked)} />
+    );
+  }
+  if (field.type === "select") {
+    return (
+      <select className="sp-input" value={String(value ?? "")} onChange={(e) => onChange(e.target.value)}>
+        {(field.options ?? []).map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  if (field.type === "list") {
+    // 1行1件。表形式にするのは項目が育ってから
+    const lines = Array.isArray(value) ? (value as unknown[]).map(String).join("\n") : "";
+    return (
+      <textarea
+        className="sp-input sp-textarea"
+        value={lines}
+        placeholder={field.placeholder}
+        spellCheck={false}
+        onChange={(e) => onChange(e.target.value.split("\n"))}
+      />
+    );
+  }
+  return (
+    <input
+      className="sp-input"
+      type={field.type === "number" ? "number" : field.secret ? "password" : "text"}
+      value={value === undefined || value === null ? "" : String(value)}
+      placeholder={field.placeholder}
+      spellCheck={false}
+      onChange={(e) => onChange(field.type === "number" ? Number(e.target.value) : e.target.value)}
+    />
+  );
+}
