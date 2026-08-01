@@ -118,10 +118,18 @@ export function guardPathArg(
     async execute(args: unknown, ctx) {
       const params = (args ?? {}) as Record<string, unknown>;
       const target = params[paramName];
-      if (typeof target === "string" && target.length > 0) {
-        // I2: 登録された場所の外なら、ここで止める。黙って動かすと別のリポジトリが壊れる
-        await places.requireInsideSomePlace(target, `${tool.name}.${paramName}`);
+      // **欠けていても弾く。** 省略されると職人はホストの cwd で動く——そこが登録された
+      // 場所とは限らず、書き込みの道具を持った職人が砦の外で動くことになる。
+      // 契約上も必須（`worker.delegate` のスキーマ）なので、通してよい抜け道ではない。
+      if (typeof target !== "string" || target.trim().length === 0) {
+        throw new Error(
+          `${tool.name} には ${paramName}（作業させる場所の絶対パス）が要ります。` +
+            "省略すると番頭の作業ディレクトリで動くことになり、登録された場所の外へ出ます。" +
+            "place.list の path を渡してください"
+        );
       }
+      // I2: 登録された場所の外なら、ここで止める。黙って動かすと別のリポジトリが壊れる
+      await places.requireInsideSomePlace(target, `${tool.name}.${paramName}`);
       return tool.execute(params, ctx);
     },
   } as NamespacedToolDefinition;

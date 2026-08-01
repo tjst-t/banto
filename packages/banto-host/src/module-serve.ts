@@ -18,6 +18,22 @@ import type * as http from "node:http";
 import { MODULE_TOOL_PATH, type ModuleToolRequest, type ModuleToolResult } from "@banto/core";
 import type { ModuleRegistry } from "./module.js";
 
+/**
+ * 宣言された必須の引数のうち、渡されていないものを返す。
+ *
+ * 完全なスキーマ検証はしない——ここで見たいのは「呼び手が名前を間違えた／渡し忘れた」で、
+ * それは必須の欠けとして現れる。型の細部まで見るなら検証器を足すことになるが、
+ * いま要るのは**分かりにくい壊れ方を分かりやすい断りに変える**ことだけ（D6）。
+ */
+function missingRequired(parameters: unknown, args: unknown): string[] {
+  const schema = (parameters ?? {}) as { required?: unknown };
+  if (!Array.isArray(schema.required)) return [];
+  const given = (args ?? {}) as Record<string, unknown>;
+  return schema.required
+    .filter((key): key is string => typeof key === "string")
+    .filter((key) => given[key] === undefined);
+}
+
 /** ボディを読む。空ボディは `{}` として扱う。 */
 async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
@@ -90,6 +106,22 @@ export function createModuleToolHandler(
       body = (await readJsonBody(req)) as ModuleToolRequest;
     } catch (err) {
       sendJson(res, 400, { error: `invalid JSON body: ${String(err)}` });
+      return true;
+    }
+
+    // I2: **必須の引数が欠けていたらここで断る。**
+    //
+    // 素通りさせると、欠けた値が実装の奥まで運ばれて、原因の分からない内部エラーとして
+    // 出る——`worker.delegate` を `instruction` ではなく `instructions` で呼んだとき、
+    // 職人は起きたのに pi が「Cannot read properties of undefined (reading 'startsWith')」
+    // を返した（実際に踏んだ）。呼び手のtypoが、別の層の壊れ方に化けていた。
+    const missing = missingRequired(tool.parameters, body?.args);
+    if (missing.length > 0) {
+      sendJson(res, 400, {
+        error:
+          `Tool "${toolName}" に必須の引数がありません: ${missing.join(", ")}。` +
+          `受け取ったのは: ${Object.keys((body?.args ?? {}) as Record<string, unknown>).join(", ") || "(なし)"}`,
+      });
       return true;
     }
 

@@ -291,3 +291,31 @@ describe("[task-0038/決定36g] worker.delegate の穴を塞ぐ", () => {
     assert.deepEqual(calls, [outside], "無検査なら通ってしまう（これが塞いだ穴）");
   });
 });
+
+describe("[決定36g] 場所の指定が欠けていても弾く", () => {
+  it("**省略は素通りにしない**（番頭の cwd で職人が動くのを防ぐ）", async () => {
+    const places = new PlaceRegistry([
+      createStaticPlaceProvider([{ id: "a", path: repoA }]),
+    ]);
+    let ran = false;
+    const tool = defineNamespacedTool({
+      name: "worker.delegate",
+      label: "delegate",
+      description: "職人を起こす",
+      parameters: Type.Object({ worktreePath: Type.String() }),
+      async execute() {
+        ran = true;
+        return { content: [{ type: "text" as const, text: "ok" }], details: {} };
+      },
+    });
+    const guarded = guardPathArg(tool as NamespacedToolDefinition, places, "worktreePath");
+
+    await assert.rejects(() => guarded.execute({}), /worktreePath/);
+    await assert.rejects(() => guarded.execute({ worktreePath: "" }), /worktreePath/);
+    assert.equal(ran, false, "実行させないこと");
+
+    // 登録された場所なら通る
+    await guarded.execute({ worktreePath: repoA });
+    assert.equal(ran, true);
+  });
+});

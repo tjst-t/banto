@@ -21,6 +21,8 @@ import {
   resolveModuleEndpoint,
   type ModuleRegistryConfig,
 } from "@banto/core";
+import { Type } from "typebox";
+import { defineNamespacedTool } from "@banto/core";
 import {
   PlaceRegistry,
   createStaticPlaceProvider,
@@ -245,5 +247,69 @@ describe("[task-0016] workspace モジュールが Tool・GUI・データAPI の
     // UI向け
     const details = result.details as { entries: Array<{ name: string; type: string }> };
     assert.deepEqual(details.entries, [{ name: "a.txt", type: "file", size: 6 }]);
+  });
+});
+
+describe("[I2] 必須の引数が欠けていたら、呼び手に分かる形で断る", () => {
+  it("**名前を間違えた呼び出しが、別の層の壊れ方に化けない**", async () => {
+    // 実際に踏んだ形：worker.delegate を instruction ではなく instructions で呼ぶと、
+    // 職人は起きたのに pi が「Cannot read properties of undefined (reading 'startsWith')」
+    // を返した。呼び手のtypoが、まったく別の層の内部エラーとして出ていた
+    const tool = defineNamespacedTool({
+      name: "mod.act",
+      label: "act",
+      description: "必須の引数を持つ Tool",
+      parameters: Type.Object({
+        instruction: Type.String(),
+        optional: Type.Optional(Type.String()),
+      }),
+      async execute(params: { instruction: string }) {
+        // ここに undefined が届いてはいけない
+        assert.equal(typeof params.instruction, "string");
+        return { content: [{ type: "text" as const, text: "ok" }], details: {} };
+      },
+    });
+    const modules = createModuleRegistry([
+      {
+        name: "mod",
+        title: "mod",
+        description: "mod",
+        endpoint: { baseUrl: "/api/mod" },
+        tools: [tool],
+        views: [],
+        skills: [],
+      },
+    ]);
+    const handler = createModuleToolHandler(modules);
+    const server = http.createServer((req, res) => {
+      void handler(req, res).then((handled) => {
+        if (!handled) res.writeHead(404).end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, () => resolve()));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("no port");
+    const url = `http://localhost:${address.port}`;
+    try {
+      const bad = await fetch(`${url}/api/mod/tools/mod.act`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ args: { instructions: "名前を間違えた" } }),
+      });
+      assert.equal(bad.status, 400, "実行せずに断ること");
+      const body = (await bad.json()) as { error: string };
+      assert.match(body.error, /instruction/, "何が足りないか言うこと");
+      assert.match(body.error, /instructions/, "何を受け取ったか言うこと");
+
+      // 正しい名前なら通る
+      const good = await fetch(`${url}/api/mod/tools/mod.act`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ args: { instruction: "正しい" } }),
+      });
+      assert.equal(good.status, 200);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
