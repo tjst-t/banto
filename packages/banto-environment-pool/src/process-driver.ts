@@ -442,6 +442,10 @@ async function handleList(_input: Record<string, unknown>): Promise<void> {
   const items = entries.map((e) => {
     const handle: Record<string, unknown> = { pid: e.pid, name: e.name, taskId: e.taskId };
     if (e.port !== undefined) handle["port"] = e.port;
+    // 照合（spec §5）は provision の handle と JSON で突き合わせる。provision は
+    // workdir を handle に残す設計（run が使い回す）なので、list も同じ形で返さないと
+    // workdir 付きで provision した正規環境を「台帳に無い実リソース」と誤検出する
+    if (e.workdir) handle["workdir"] = e.workdir;
     return {
       handle,
       name: e.name,

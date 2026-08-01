@@ -548,24 +548,31 @@ function handleList(_input: Record<string, unknown>): void {
   const items = managed.map((p) => {
     const name = p["Name"] as string;
 
-    // Try to get the creation time from docker ps
+    // Try to get the creation time and working dir from docker ps.
+    // compose は生成したコンテナに com.docker.compose.project.working_dir ラベルで
+    // compose を実行した場所（= provision に渡された workdir）を残す。
     const psResult = runCmd("docker", [
       "ps", "-a",
       "--filter", `label=com.docker.compose.project=${name}`,
-      "--format", "{{.CreatedAt}}",
+      "--format", "{{.CreatedAt}}\t{{.Label \"com.docker.compose.project.working_dir\"}}",
       "--no-trunc",
     ]);
 
     let created = new Date().toISOString(); // fallback
+    let workdir: string | undefined;
     if (psResult.exitCode === 0 && psResult.stdout.trim()) {
       const firstLine = psResult.stdout.trim().split("\n")[0]?.trim();
       if (firstLine) {
-        // Docker CreatedAt format: "2026-07-24 14:00:00 +0000 UTC"
-        // Parse and convert to ISO-8601
-        const parsed = new Date(firstLine);
-        if (!isNaN(parsed.getTime())) {
-          created = parsed.toISOString();
+        const [createdAtRaw, workdirRaw] = firstLine.split("\t").map((s) => s.trim());
+        if (createdAtRaw) {
+          // Docker CreatedAt format: "2026-07-24 14:00:00 +0000 UTC"
+          // Parse and convert to ISO-8601
+          const parsed = new Date(createdAtRaw);
+          if (!isNaN(parsed.getTime())) {
+            created = parsed.toISOString();
+          }
         }
+        if (workdirRaw) workdir = workdirRaw;
       }
     }
 
@@ -577,6 +584,12 @@ function handleList(_input: Record<string, unknown>): void {
       taskId: name.replace(/-docker$/, ""), // reverse-engineer taskId from project name
       created,
     };
+    // 照合（spec §5）は provision の handle と JSON で突き合わせる（spec §2：list の handle は
+    // provision の handle と一致しなければならない）。provision は workdir が渡されたときだけ
+    // handle に残すので、list も同じく渡されたときだけ残す。compose は省略時もラベルに実行時
+    // cwd を残すため、cwd と等しい場合は「渡されなかった」とみなす（provision と list は同じ
+    // Environment Pool が同じ cwd で起動する——runner は cwd を渡さず継承させる）
+    if (workdir && workdir !== process.cwd()) handle["workdir"] = workdir;
 
     return { handle, name, created };
   });
