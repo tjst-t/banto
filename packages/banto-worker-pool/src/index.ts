@@ -53,6 +53,8 @@ export {
   type FetchOutcome,
 } from "./pi-extension/web-tools.js";
 export { createWorkerTools, createWorkerReportTools } from "./worker-tools.js";
+export { createWorkerPoolSettings } from "./settings.js";
+export type { ModelConfigurableDriver } from "./settings.js";
 export {
   createWorkerPoolModule,
   workerPoolSkillsDir,

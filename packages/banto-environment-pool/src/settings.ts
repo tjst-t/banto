@@ -67,6 +67,15 @@ export function createEnvironmentSettings(
         description: "既定7日。過ぎたものは自動で捨てる（要らないと分かれば env.cleanup で先に捨てられる）",
       },
       {
+        key: "sopsAgeKeyFile",
+        label: "credentials の復号鍵（age）",
+        type: "text",
+        placeholder: "/home/ubuntu/.config/sops/age/keys.txt",
+        description:
+          "プロファイルが credentials を使うときの復号鍵のファイル。**鍵そのものはここに書かない**" +
+          "——場所だけ。復号した値はドライバの環境変数にだけ入り、番頭の文脈には出ない（決定32d）",
+      },
+      {
         key: "adhocDrivers",
         label: "アドホック環境で使えるドライバ",
         type: "select",
@@ -89,6 +98,7 @@ export function createEnvironmentSettings(
         defaultRunTimeoutMinutes: Math.round(limits.defaultRunTimeoutMs / MINUTE),
         collectedRetentionDays: Math.round(limits.collectedRetentionMs / (24 * 60 * MINUTE)),
         adhocDrivers: limits.adhocDrivers,
+        sopsAgeKeyFile: pool.currentSopsKeyFile() ?? "",
       };
     },
     write: (values) => {
@@ -121,6 +131,10 @@ export function createEnvironmentSettings(
           : {}),
       });
 
+      if (typeof values["sopsAgeKeyFile"] === "string") {
+        pool.setSopsKeyFile(values["sopsAgeKeyFile"]);
+      }
+
       // 次の起動でも同じ値で立ち上がるように保存する（貸してもらった区画へ）
       section?.write({
         defaultTtlMs: applied.defaultTtlMs,
@@ -130,6 +144,7 @@ export function createEnvironmentSettings(
         defaultRunTimeoutMs: applied.defaultRunTimeoutMs,
         collectedRetentionMs: applied.collectedRetentionMs,
         adhocDrivers: applied.adhocDrivers,
+        ...(pool.currentSopsKeyFile() ? { sopsAgeKeyFile: pool.currentSopsKeyFile() } : {}),
       });
       return { applied: true, message: "上限を変えました（次に立てる環境から効きます）。" };
     },

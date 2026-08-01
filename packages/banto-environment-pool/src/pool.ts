@@ -172,7 +172,7 @@ export class EnvironmentPool {
   private readonly ledger: EnvLedger;
   private limits: EnvLimits;
   private readonly timeoutMs: number;
-  private readonly sopsAgeKeyFile: string | undefined;
+  private sopsAgeKeyFile: string | undefined;
   private readonly exposer: EnvExposer | undefined;
   private readonly collectRoot: string;
   /** 台帳が壊れていた場合の説明。黙って空の台帳で動き出さないため（I2）。 */
@@ -454,6 +454,16 @@ export class EnvironmentPool {
     }
     this.orphanList = found;
     return found;
+  }
+
+  /** いまの sops 鍵ファイル（設定画面に見せる。**鍵の中身は読まない**）。 */
+  currentSopsKeyFile(): string | undefined {
+    return this.sopsAgeKeyFile;
+  }
+
+  /** sops 鍵ファイルを差し替える（決定41）。次の provision から効く。 */
+  setSopsKeyFile(file: string | undefined): void {
+    this.sopsAgeKeyFile = file && file.trim().length > 0 ? file.trim() : undefined;
   }
 
   /** 公開の口を持っているか。GUI と番頭に「頼めるかどうか」を伝えるため。 */

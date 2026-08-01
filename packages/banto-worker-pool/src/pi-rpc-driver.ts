@@ -126,8 +126,8 @@ export class PiRpcDriver implements RuntimeDriver {
   private piCliPath: string | null;
   private readonly piCliPathOverride: string | undefined;
   private readonly sessionBaseDir: string;
-  private readonly defaultProvider: string;
-  private readonly defaultModel: string;
+  private defaultProvider: string;
+  private defaultModel: string;
   private readonly extensionPath: string | undefined;
   private readonly sessions = new Map<string, ActiveSession>();
   private readonly handlers: Set<DriverEventHandler> = new Set();
@@ -155,6 +155,22 @@ export class PiRpcDriver implements RuntimeDriver {
     this.defaultProvider = opts.defaultProvider ?? "opencode";
     this.defaultModel = opts.defaultModel ?? "deepseek-v4-flash-free";
     this.extensionPath = opts.extensionPath;
+  }
+
+  /** いま職人に渡している既定のモデル（設定画面に見せる）。 */
+  currentDefaults(): { provider: string; model: string } {
+    return { provider: this.defaultProvider, model: this.defaultModel };
+  }
+
+  /**
+   * 職人の既定のモデルを差し替える（決定41：設定画面から）。
+   *
+   * **その場で効く**——次に起こす職人から。動いている職人はそのまま
+   * （途中でモデルが変わる方が分かりにくい）。
+   */
+  setDefaults(next: { provider?: string; model?: string }): void {
+    if (next.provider) this.defaultProvider = next.provider;
+    if (next.model) this.defaultModel = next.model;
   }
 
   /**

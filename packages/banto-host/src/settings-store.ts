@@ -48,6 +48,8 @@ export interface BantoSettings {
    */
   modules?: Record<string, Record<string, unknown>>;
   network?: {
+    /** 待ち受けるポート。 */
+    port?: number;
     /** 待ち受けるアドレス（決定40）。既定は localhost のみ。 */
     bind?: string;
     /** 外から見えるときの banto 自身の URL（検証環境のリンクに使う）。 */

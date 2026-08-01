@@ -188,8 +188,8 @@ export class WorkerPool {
   private readonly ledger: SpawnLedger;
   private readonly log: WorkerEventLog;
   private readonly unsubscribeDriver: () => void;
-  private readonly idleTimeoutMs: number;
-  private readonly idleSweeper: NodeJS.Timeout | undefined;
+  private idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
+  private idleSweeper: NodeJS.Timeout | undefined;
 
   constructor(options: WorkerPoolOptions) {
     this.driver = options.driver;
@@ -219,9 +219,28 @@ export class WorkerPool {
     this.unsubscribeDriver = this.driver.subscribe((event) => this.handleDriverEvent(event));
 
     // 決定30b: 安全弁。主たる契機は番頭が畳むことで、これは取りこぼしを拾うだけ
-    this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+    this.setIdleTimeout(options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, options.idleCheckMs);
+  }
+
+  /** いまの安全弁の時間（設定画面に見せる）。 */
+  currentIdleTimeoutMs(): number {
+    return this.idleTimeoutMs;
+  }
+
+  /**
+   * 安全弁の時間を差し替える（決定41：設定画面から）。**その場で効く。**
+   *
+   * 0 以下で安全弁を切る。決定30b のとおり主たる契機は番頭が畳むことなので、
+   * 切っても仕組みとしては成り立つ——ただし番頭が畳み忘れた職人は残り続ける。
+   */
+  setIdleTimeout(ms: number, checkMs?: number): void {
+    if (this.idleSweeper) {
+      clearInterval(this.idleSweeper);
+      this.idleSweeper = undefined;
+    }
+    this.idleTimeoutMs = ms;
     if (this.idleTimeoutMs > 0) {
-      const every = options.idleCheckMs ?? Math.max(1000, Math.floor(this.idleTimeoutMs / 4));
+      const every = checkMs ?? Math.max(1000, Math.floor(this.idleTimeoutMs / 4));
       this.idleSweeper = setInterval(() => void this.sweepIdle(), every);
       // 安全弁がプロセスの終了を妨げないようにする（番頭を終うときに引き留めない）
       this.idleSweeper.unref?.();

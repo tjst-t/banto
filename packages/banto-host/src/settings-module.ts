@@ -25,6 +25,8 @@ interface SettingsSectionView {
   description?: string;
   /** どこから来た区画か。`core` は Banto 自身、それ以外はモジュール名。 */
   origin: string;
+  /** 由来の表示名（モジュールの `title`）。画面が「どこが公開しているか」を出すため。 */
+  originTitle: string;
   fields: ModuleSettingsSpec["fields"];
   values: Record<string, unknown>;
 }
@@ -54,13 +56,23 @@ export function settingsSection(store: SettingsStore, name: string): SettingsSec
 }
 
 export function createSettingsModule(options: SettingsModuleOptions): BantoModule {
-  const sections = (): Array<{ id: string; origin: string; spec: ModuleSettingsSpec }> => [
-    ...options.core.map((c) => ({ id: c.id, origin: "core", spec: c.spec })),
+  const sections = (): Array<{
+    id: string;
+    origin: string;
+    originTitle: string;
+    spec: ModuleSettingsSpec;
+  }> => [
+    ...options.core.map((c) => ({
+      id: c.id,
+      origin: "core",
+      originTitle: "Banto 本体",
+      spec: c.spec,
+    })),
     // モジュールが宣言した区画。宣言していないモジュールは出ない
     ...options.modules
       .list()
       .filter((m) => m.settings)
-      .map((m) => ({ id: m.name, origin: m.name, spec: m.settings! })),
+      .map((m) => ({ id: m.name, origin: m.name, originTitle: m.title, spec: m.settings! })),
   ];
 
   const describe = defineNamespacedTool({
@@ -70,7 +82,7 @@ export function createSettingsModule(options: SettingsModuleOptions): BantoModul
     parameters: Type.Object({}),
     async execute() {
       const views: SettingsSectionView[] = [];
-      for (const { id, origin, spec } of sections()) {
+      for (const { id, origin, originTitle, spec } of sections()) {
         let values: Record<string, unknown> = {};
         try {
           values = await spec.read();
@@ -83,6 +95,7 @@ export function createSettingsModule(options: SettingsModuleOptions): BantoModul
           title: spec.title,
           ...(spec.description ? { description: spec.description } : {}),
           origin,
+          originTitle,
           fields: spec.fields,
           values,
         });

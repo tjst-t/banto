@@ -14,6 +14,7 @@ import { Type } from "typebox";
 import type { NamespacedToolDefinition } from "@banto/core";
 import { createWorkerReportTools, createWorkerTools } from "./worker-tools.js";
 import type { WorkerPool } from "./pool.js";
+import { createWorkerPoolSettings, type ModelConfigurableDriver } from "./settings.js";
 
 /** 既定の到達先。Worker Pool は独立サービスなので、通常は絶対URLで設定される。 */
 export const WORKER_POOL_BASE_URL = "/api/worker-pool";
@@ -31,7 +32,10 @@ export function workerPoolSkillsDir(): string {
  */
 export function createWorkerPoolModule(
   pool: WorkerPool,
-  baseUrl: string = WORKER_POOL_BASE_URL
+  baseUrl: string = WORKER_POOL_BASE_URL,
+  /** 設定画面から職人のモデルを差し替えるための口（PiRpcDriver が満たす）。 */
+  driver?: ModelConfigurableDriver,
+  settingsSection?: import("@banto/core").SettingsSection
 ): {
   name: string;
   title: string;
@@ -49,6 +53,7 @@ export function createWorkerPoolModule(
     icon?: string;
   }>;
   skills: Array<{ name: string; description: string; filePath: string }>;
+  settings: import("@banto/core").ModuleSettingsSpec;
 } {
   return {
     name: "worker-pool",
@@ -86,5 +91,7 @@ export function createWorkerPoolModule(
         filePath: `${workerPoolSkillsDir()}/worker-delegation/SKILL.md`,
       },
     ],
+    // 決定41: 設定画面に自分の区画を出す。GUI ではなく項目の宣言
+    settings: createWorkerPoolSettings(pool, driver, settingsSection),
   };
 }

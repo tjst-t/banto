@@ -273,14 +273,32 @@ async function serve(options: ServeOptions): Promise<void> {
     ? `http://localhost:${options.port}${workerPoolUrl}`
     : workerPoolUrl;
 
+  const workerDriver = new PiRpcDriver({
+    sessionBaseDir: path.join(dataDir(), "worker-sessions"),
+    // 保存された設定があればそれで立ち上げる（決定41）
+    ...(settings.all().modules?.["worker-pool"]?.["provider"]
+      ? { defaultProvider: String(settings.all().modules!["worker-pool"]!["provider"]) }
+      : {}),
+    ...(settings.all().modules?.["worker-pool"]?.["model"]
+      ? { defaultModel: String(settings.all().modules!["worker-pool"]!["model"]) }
+      : {}),
+  });
   const workerPool = new WorkerPool({
-    driver: new PiRpcDriver({ sessionBaseDir: path.join(dataDir(), "worker-sessions") }),
+    driver: workerDriver,
     dataDir: path.join(dataDir(), "worker-pool"),
     defaultProjectTag: "banto",
     defaultOrigin: BANTO_ORIGIN,
     reportUrl,
+    ...(typeof settings.all().modules?.["worker-pool"]?.["idleTimeoutMs"] === "number"
+      ? { idleTimeoutMs: settings.all().modules!["worker-pool"]!["idleTimeoutMs"] as number }
+      : {}),
   });
-  const workerPoolModule = createWorkerPoolModule(workerPool, workerPoolUrl);
+  const workerPoolModule = createWorkerPoolModule(
+    workerPool,
+    workerPoolUrl,
+    workerDriver,
+    settingsSection(settings, "worker-pool")
+  );
 
   // 決定26 の層を解いた SKILL（番頭核＋モジュール）。studio はこれをそのまま見せる
   const coreSkills: SkillEntry[] = skills.map((skill) => ({ skill, origin: CORE_ORIGIN }));
@@ -407,7 +425,7 @@ async function serve(options: ServeOptions): Promise<void> {
 
   server = await BantoHostServer.start({
     threads,
-    port: options.port,
+    port: settings.all().network?.port ?? options.port,
     catalog,
     modules,
     // 決定40: 既定は localhost のみ。Banto は認証を持たず、守るのは前段の役目——

@@ -38,10 +38,14 @@ afterEach(() => {
 });
 
 /** 設定を宣言するだけの試験用モジュール。 */
-function moduleWithSettings(name: string, spec: ModuleSettingsSpec): BantoModule {
+function moduleWithSettings(
+  name: string,
+  spec: ModuleSettingsSpec,
+  title = name
+): BantoModule {
   return {
     name,
-    title: name,
+    title,
     description: name,
     endpoint: { baseUrl: `/api/${name}` },
     tools: [],
@@ -239,5 +243,54 @@ describe("[決定41] 画面が実態を映す", () => {
     // 保存すると、そちらが真実になる
     await places.spec.write({ places: ["保存した場所:/tmp/y"] });
     assert.deepEqual(await places.spec.read(), { places: ["保存した場所:/tmp/y"] });
+  });
+});
+
+describe("[決定41] どのモジュールの設定か分かる", () => {
+  it("区画に由来と表示名が付く（画面が「誰の設定か」を出せる）", async () => {
+    const modules = createModuleRegistry([
+      moduleWithSettings(
+        "worker-pool",
+        { title: "職人", fields: [], read: () => ({}), write: () => ({ applied: true }) },
+        "職人"
+      ),
+    ]);
+    const { describe: tool } = settingsToolsOf(modules);
+    const details = (await tool.execute({})).details as {
+      sections: Array<{ id: string; origin: string; originTitle: string }>;
+    };
+
+    const core = details.sections.find((s) => s.id === "llm")!;
+    assert.equal(core.origin, "core");
+    assert.equal(core.originTitle, "Banto 本体");
+
+    const module = details.sections.find((s) => s.id === "worker-pool")!;
+    assert.equal(module.origin, "worker-pool");
+    assert.equal(module.originTitle, "職人", "モジュールの表示名が出ること");
+  });
+});
+
+describe("[決定41] 設定に入れたもの（VM設置に要るもの）", () => {
+  it("Banto 本体：LLM・場所・接続（ポート／待ち受け／公開／Caddy）", async () => {
+    const { describe: tool } = settingsToolsOf(createModuleRegistry([]));
+    const details = (await tool.execute({})).details as {
+      sections: Array<{ id: string; fields: Array<{ key: string }> }>;
+    };
+    const keys = (id: string): string[] =>
+      details.sections.find((s) => s.id === id)!.fields.map((f) => f.key);
+
+    assert.deepEqual(keys("llm"), ["provider", "model"]);
+    assert.deepEqual(keys("network"), ["port", "bind", "publicUrl", "caddyAdmin", "envDomain"]);
+    assert.deepEqual(keys("places"), ["places"]);
+  });
+
+  it("ポートは範囲を確かめる（起動して初めて分かる、を避ける）", async () => {
+    const { update } = settingsToolsOf(createModuleRegistry([]));
+    await assert.rejects(
+      () => update.execute({ section: "network", values: { port: 99999 } }),
+      /1〜65535/
+    );
+    await update.execute({ section: "network", values: { port: 4200 } });
+    assert.equal(store.all().network?.port, 4200);
   });
 });

@@ -140,6 +140,14 @@ export function createCoreSettingsSections(
           "既定では localhost だけを待ち受けるので、前段を素通りされることはない。",
         fields: [
           {
+            key: "port",
+            label: "待ち受けるポート",
+            type: "number",
+            placeholder: "4100",
+            description: "既定 4100。WebUI（開発サーバ）もここへ中継するので、変えたら両方を直す",
+            restartRequired: true,
+          },
+          {
             key: "bind",
             label: "待ち受けるアドレス",
             type: "text",
@@ -179,6 +187,14 @@ export function createCoreSettingsSections(
         read: () => ({ ...(store.all().network ?? {}) }),
         write: (values) => {
           const current = store.all().network ?? {};
+          const port = values["port"];
+          // I2: ポートでない値を黙って既定に落とさない（起動して初めて分かるのを避ける）
+          if (port !== undefined && port !== null && port !== "") {
+            const parsed = Number(port);
+            if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+              throw new Error(`ポートは1〜65535の整数で指定してください（受け取った値: ${String(port)}）`);
+            }
+          }
           const next = { ...current, ...values } as NonNullable<
             ReturnType<SettingsStore["all"]>["network"]
           >;

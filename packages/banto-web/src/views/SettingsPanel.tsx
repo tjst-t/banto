@@ -29,6 +29,7 @@ interface SettingsSectionView {
   title: string;
   description?: string;
   origin: string;
+  originTitle: string;
   fields: SettingField[];
   values: Record<string, unknown>;
 }
@@ -92,6 +93,7 @@ export function SettingsPanel({ endpoint }: CanvasViewProps): React.ReactElement
             onClick={() => setActiveId(section.id)}
           >
             {section.title}
+            {/* どのモジュールが公開している設定かを、一覧でも分かるようにする */}
             {section.origin !== "core" && <span className="sp-origin">{section.origin}</span>}
           </button>
         ))}
@@ -102,7 +104,16 @@ export function SettingsPanel({ endpoint }: CanvasViewProps): React.ReactElement
         {description.error && <div className="fb-error">{description.error}</div>}
         {!active ? null : (
           <>
-            <h2 className="sp-title">{active.title}</h2>
+            <h2 className="sp-title">
+              {active.title}
+              {/* 「これは誰の設定か」を内容側にも出す。モジュールが増えたとき、
+                  どの機能を触っているのか分からないまま値を変えるのを避ける */}
+              <span className={active.origin === "core" ? "sp-badge sp-badge-core" : "sp-badge"}>
+                {active.origin === "core"
+                  ? "Banto 本体"
+                  : `モジュール: ${active.originTitle}（${active.origin}）`}
+              </span>
+            </h2>
             {active.description && <p className="sp-desc">{active.description}</p>}
 
             {active.fields.map((field) => (
