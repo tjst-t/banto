@@ -119,6 +119,28 @@ function isAlive(pid: number): boolean {
 
 // ── SIGTERM → SIGKILL idempotent teardown (mirrors killOrphanProcess) ────────
 
+/** ログを残す期間。過ぎたものは自分で捨てる（放っておくと際限なく溜まる）。 */
+const LOG_RETENTION_MS = 7 * 24 * 3600 * 1000;
+
+/**
+ * 自分が書いたログのうち、保存期間を過ぎたものを捨てる。
+ *
+ * **ここでやるのが自然。** ログを置いた場所を知っているのはドライバだけで、
+ * 呼び出し側はパスを受け取るだけ（`run` の `log_path`）。以前は「掃除は別ストーリー」と
+ * 書かれたまま実装されず、1,600ファイル以上溜まっていた。
+ */
+function pruneOldLogs(dir: string): void {
+  try {
+    const now = Date.now();
+    for (const name of fs.readdirSync(dir)) {
+      const file = path.join(dir, name);
+      try {
+        if (now - fs.statSync(file).mtimeMs > LOG_RETENTION_MS) fs.rmSync(file, { force: true });
+      } catch { /* 消せなくても検証は続ける（best-effort） */ }
+    }
+  } catch { /* ディレクトリがまだ無い */ }
+}
+
 /**
  * プロセスグループごと落とす。落とせなければ単体で落とす。
  *
@@ -326,6 +348,7 @@ async function handleRun(input: Record<string, unknown>): Promise<void> {
   // in os.tmpdir() until that story's TTL reconciler removes them.
   const logDir = path.join(os.tmpdir(), "banto-process-driver-logs");
   fs.mkdirSync(logDir, { recursive: true });
+  pruneOldLogs(logDir);
   const logPath = path.join(logDir, `run-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
 
   // Run the command and capture stdout+stderr

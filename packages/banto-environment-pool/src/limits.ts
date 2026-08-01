@@ -48,6 +48,21 @@ export interface EnvLimits {
   defaultRunTimeoutMs: number;
   /** `run` に指定できる制限時間の上限。呼び出し側は**厳しくのみ**できる。 */
   maxRunTimeoutMs: number;
+  /**
+   * 回収した成果物を残す期間（既定7日）。
+   *
+   * **放っておくと増え続ける。** `collect` のたびに環境ごとのディレクトリができ、
+   * 環境を畳んでも残る。番頭は検証のたびに回収できるので、Kobo が task 単位で回して
+   * いた頃より速く溜まる。
+   */
+  collectedRetentionMs: number;
+  /**
+   * 畳んだ環境を台帳に残す期間（既定30日）。
+   *
+   * 台帳は監査のために畳んだ分も残す（spec §5）が、無期限だと際限がない。
+   * 生きている環境は期間に関係なく残る。
+   */
+  ledgerRetentionMs: number;
 }
 
 /**
@@ -64,6 +79,8 @@ export const DEFAULT_ENV_LIMITS: EnvLimits = {
   adhocDrivers: "builtin",
   defaultRunTimeoutMs: 10 * 60 * 1000,
   maxRunTimeoutMs: 60 * 60 * 1000,
+  collectedRetentionMs: 7 * 24 * 3600 * 1000,
+  ledgerRetentionMs: 30 * 24 * 3600 * 1000,
 };
 
 /** 設定で一部だけ上書きできるようにする（ホストの起動設定から渡す）。 */

@@ -639,3 +639,67 @@ describe("[spec-environment §8 裁定] run の制限時間", () => {
     await p.teardown(created.envId);
   });
 });
+
+describe("[PO指摘] 溜まったものが捨てられる（際限なく増えない）", () => {
+  it("保存期間を過ぎた成果物は捨てられ、新しいものは残る", async () => {
+    const p = pool({ collectedRetentionMs: 1000 });
+    const created = await p.provision({ driver: "process", config: { cmd: "sleep 60" } });
+    const { dest } = await p.collect(created.envId);
+    fs.writeFileSync(path.join(dest, "old.txt"), "古い");
+
+    // 古く見せる（保存期間より前に触られたことにする）
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(dest, past, past);
+
+    // 新しい方も1つ作る
+    const fresh = path.join(p.collectedRoot(), "env-新しい");
+    fs.mkdirSync(fresh, { recursive: true });
+
+    await p.runMaintenance();
+
+    assert.equal(fs.existsSync(dest), false, "期間を過ぎた成果物は捨てられること");
+    assert.equal(fs.existsSync(fresh), true, "新しいものは残ること");
+    await p.teardown(created.envId).catch(() => undefined);
+  });
+
+  it("台帳の古い記録は捨てられるが、**生きている環境は期間に関係なく残る**", async () => {
+    const p = pool({ ledgerRetentionMs: 1000 });
+    const live = await p.provision({ driver: "process", config: { cmd: "sleep 60" } });
+    const gone = await p.provision({ driver: "process", config: { cmd: "sleep 60" } });
+    await p.teardown(gone.envId);
+
+    // 畳んだ記録を古く見せる
+    const file = path.join(dataDir, "env-ledger.json");
+    const raw = JSON.parse(fs.readFileSync(file, "utf-8")) as {
+      entries: Array<{ envId: string; tornDownAt?: string }>;
+    };
+    for (const e of raw.entries) {
+      if (e.envId === gone.envId) e.tornDownAt = new Date(Date.now() - 60_000).toISOString();
+    }
+    fs.writeFileSync(file, JSON.stringify(raw));
+
+    const fresh = pool({ ledgerRetentionMs: 1000 });
+    await fresh.runMaintenance();
+
+    const remaining = fresh.list({ includeTornDown: true }).map((e) => e.envId);
+    assert.ok(!remaining.includes(gone.envId), "古い畳んだ記録は捨てられること");
+    assert.ok(remaining.includes(live.envId), "生きている環境は残ること");
+    await fresh.teardown(live.envId).catch(() => undefined);
+  });
+
+  it("ドライバは自分の古いログを捨てる", async () => {
+    const logDir = path.join(os.tmpdir(), "banto-process-driver-logs");
+    fs.mkdirSync(logDir, { recursive: true });
+    const old = path.join(logDir, "run-とても古い.log");
+    fs.writeFileSync(old, "古いログ");
+    const past = new Date(Date.now() - 30 * 24 * 3600 * 1000);
+    fs.utimesSync(old, past, past);
+
+    const p = pool();
+    const created = await p.provision({ driver: "process", config: { cmd: "sleep 60" } });
+    await p.run(created.envId, "echo ログを1つ書く");
+
+    assert.equal(fs.existsSync(old), false, "保存期間を過ぎたログが捨てられること");
+    await p.teardown(created.envId);
+  });
+});

@@ -286,6 +286,7 @@ export class EnvironmentPool {
           );
         }
       }
+      this.sweep();
       const orphans = await this.reconcile();
       if (orphans.length > 0) {
         this.attention(
@@ -299,6 +300,40 @@ export class EnvironmentPool {
       this.maintenanceRunning = false;
     }
     return { tornDown, failed, orphans: this.orphanList.length };
+  }
+
+  /**
+   * 溜まったものを捨てる（保存期間を過ぎたもの）。
+   *
+   * **何も捨てないと際限がない。** 回収した成果物は環境を畳んでも残り、台帳は畳んだ分も
+   * 残る。番頭は検証のたびにこれを増やすので、放っておくとディスクが埋まる。
+   *
+   * I2: 消せなかったことは黙らせない。ただし1件の失敗で残りを止めない。
+   */
+  private sweep(): void {
+    const now = Date.now();
+
+    // 1. 回収した成果物
+    try {
+      if (fs.existsSync(this.collectRoot)) {
+        for (const name of fs.readdirSync(this.collectRoot)) {
+          const target = path.join(this.collectRoot, name);
+          const stat = fs.statSync(target);
+          if (now - stat.mtimeMs <= this.limits.collectedRetentionMs) continue;
+          fs.rmSync(target, { recursive: true, force: true });
+          console.warn(`[env] 保存期間を過ぎた成果物を捨てました: ${name}`);
+        }
+      }
+    } catch (err) {
+      console.error(`[env] 成果物を片付けられませんでした: ${String(err)}`);
+    }
+
+    // 2. 台帳の古い記録（**生きているものは期間に関係なく残す**）
+    for (const entry of this.ledger.list()) {
+      if (!entry.tornDownAt) continue;
+      if (now - new Date(entry.tornDownAt).getTime() <= this.limits.ledgerRetentionMs) continue;
+      this.ledger.remove(entry.envId);
+    }
   }
 
   /**
