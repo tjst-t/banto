@@ -265,6 +265,13 @@ export class BantoHostServer {
   private handleConnection(ws: WebSocket): void {
     this.clients.add(ws);
     ws.on("close", () => this.clients.delete(ws));
+    // I2: 接続エラー（不正フレーム等）を握りつぶさずログに出し、この接続だけ閉じる。
+    //     ここで受けないと unhandled 'error' で Node プロセス全体が死ぬ（WS_ERR_EXPECTED_MASK 等）。
+    //     terminate() は socket を即破棄し、続けて 'close' が発火して clients から外れる
+    ws.on("error", (err) => {
+      console.error(`[banto-host] WebSocket connection error: ${String(err)}`, err);
+      ws.terminate();
+    });
     ws.on("message", (data: Buffer) => void this.handleClientMessage(ws, data));
 
     const threads = this.threads.list();
