@@ -16,6 +16,7 @@
 import { Type } from "typebox";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "@banto/core";
 import type { EnvironmentPool, ProvisionRequest } from "./pool.js";
+import { COLLECTED_PLACE_ID } from "./collected-place.js";
 
 /** プロファイル経由・アドホックの共通引数。どちらか一方を使う（決定34c・e）。 */
 const targetFields = {
@@ -100,7 +101,12 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
       ...targetFields,
       cmd: Type.String({ description: "環境の中で走らせる検証コマンド" }),
       artifactPath: Type.Optional(Type.String({ description: "配る成果物の絶対パス（省略可）" })),
-      collectTo: Type.Optional(Type.String({ description: "成果物の回収先ディレクトリ（省略可）" })),
+      collect: Type.Optional(
+        Type.Boolean({
+          description:
+            "成果物を取り出すか（既定 false）。置き場所は機構が決め、返り値の collected に入る",
+        })
+      ),
       timeoutMs: Type.Optional(
         Type.Number({ description: "検証コマンドの制限時間（ミリ秒）。省略すると既定" })
       ),
@@ -110,6 +116,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
         ...asRequest(params),
         cmd: params.cmd,
         ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
+        ...(params.collect ? { collect: true } : {}),
       });
       const passed = result.exit === 0 && result.failure === undefined;
       const lines = [
@@ -124,6 +131,9 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
         }
       }
       // I3: 畳めなかったことを本文に出す。details だけだと番頭が気づかない
+      if (result.collected) {
+        lines.push(`成果物: ${result.collected}（場所「${COLLECTED_PLACE_ID}」で読めます）`);
+      }
       lines.push(
         result.tornDown
           ? "環境は畳みました。"
@@ -232,16 +242,23 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
   const collect = defineNamespacedTool({
     name: "env.collect",
     label: "Env: Collect",
-    description: "環境から成果物（ログ・カバレッジ等）を回収する。",
+    description:
+      "環境から成果物（ログ・カバレッジ等）を取り出す。環境を畳むと中身は消えるので、" +
+      "残したいものは畳む前に取り出す。**置き場所は指定しない**——機構が決めて返す。" +
+      "返ってきた場所は読み取り専用の場所として登録されているので、file.* でそのまま読める。",
     parameters: Type.Object({
       envId: Type.String({ description: "対象の環境 id" }),
-      dest: Type.String({ description: "回収先ディレクトリの絶対パス" }),
     }),
     async execute(params) {
-      await pool.collect(params.envId, params.dest);
+      const { dest } = await pool.collect(params.envId);
       return {
-        content: [{ type: "text" as const, text: `回収しました: ${params.envId} → ${params.dest}` }],
-        details: { envId: params.envId, dest: params.dest },
+        content: [
+          {
+            type: "text" as const,
+            text: `取り出しました: ${dest}\n（場所「${COLLECTED_PLACE_ID}」として file.* で読めます）`,
+          },
+        ],
+        details: { envId: params.envId, dest, place: COLLECTED_PLACE_ID },
       };
     },
   });

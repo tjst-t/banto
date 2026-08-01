@@ -64,6 +64,14 @@ export interface EnvironmentPoolOptions {
    * 配置によって手段が変わるので、ここで差し替える。
    */
   exposer?: EnvExposer;
+  /**
+   * `collect` の回収先の親（既定 `<dataDir>/collected`）。
+   *
+   * **置き場所は Pool が決める**（spec §3.1・imp-0007 の裁定）。呼び出し側にパスを
+   * 書かせると、番頭が任意の絶対パスを指定でき、場所の砦（決定36g）を通らない穴になる
+   * ——`worker.delegate` の `worktreePath` と同じ形の穴を、もう1つ作ることになる。
+   */
+  collectRoot?: string;
 }
 
 /** 環境を1つ用意するときの指定。プロファイル経由かアドホックかのどちらか。 */
@@ -151,6 +159,8 @@ export interface VerifyResult {
   /** healthcheck が通ったか。 */
   healthy: boolean;
   healthDetail?: string;
+  /** 成果物の置き場（`collect: true` のときだけ）。読み取り専用の場所として登録されている。 */
+  collected?: string;
   /** コマンドを走らせるまでに落ちた理由（落ちていなければ無い）。 */
   failure?: string;
 }
@@ -164,6 +174,7 @@ export class EnvironmentPool {
   private readonly timeoutMs: number;
   private readonly sopsAgeKeyFile: string | undefined;
   private readonly exposer: EnvExposer | undefined;
+  private readonly collectRoot: string;
   /** 台帳が壊れていた場合の説明。黙って空の台帳で動き出さないため（I2）。 */
   readonly ledgerCorruption: string | null;
   private maintenanceTimer: NodeJS.Timeout | undefined;
@@ -184,6 +195,7 @@ export class EnvironmentPool {
     this.timeoutMs = options.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
     this.sopsAgeKeyFile = options.sopsAgeKeyFile;
     this.exposer = options.exposer;
+    this.collectRoot = options.collectRoot ?? path.join(options.dataDir, "collected");
     this.maintenanceIntervalMs = options.maintenanceIntervalMs ?? 60_000;
     this.teardownRetryLimit = Math.max(1, options.teardownRetryLimit ?? 3);
     this.onAttention = options.onAttention;
@@ -491,10 +503,23 @@ export class EnvironmentPool {
     };
   }
 
-  /** 成果物を回収する。 */
-  async collect(envId: string, dest: string): Promise<void> {
+  /**
+   * 成果物を回収する。**置き場所は Pool が決めて教える**（spec §3.1）。
+   *
+   * 回収先は読み取り専用の場所として登録されるので（`createCollectedPlaceProvider`）、
+   * 番頭は返ってきたパスをそのまま `file.*` で読める。書き込みは開かない。
+   */
+  async collect(envId: string): Promise<{ dest: string }> {
     const entry = this.requireLive(envId);
+    const dest = path.join(this.collectRoot, envId);
+    fs.mkdirSync(dest, { recursive: true });
     await this.verb(entry, "collect", { handle: entry.handle, dest });
+    return { dest };
+  }
+
+  /** 回収先の親。場所として登録するために外へ出す。 */
+  collectedRoot(): string {
+    return this.collectRoot;
   }
 
   /**
@@ -557,8 +582,8 @@ export class EnvironmentPool {
       cmd: string;
       /** 配る成果物。省略すると deploy を飛ばす。 */
       artifactPath?: string;
-      /** 回収先。省略すると collect を飛ばす。 */
-      collectTo?: string;
+      /** 成果物を取り出すか。置き場所は Pool が決める（返り値の `collected`）。 */
+      collect?: boolean;
       logTailLines?: number;
       /** 検証コマンドの制限時間。既定は能力側の既定、上限まで（厳しくのみ可）。 */
       timeoutMs?: number;
@@ -569,6 +594,7 @@ export class EnvironmentPool {
     const healthDetail = summary.healthcheck.detail;
     let runResult: RunResult | undefined;
     let failure: string | undefined;
+    let collected: string | undefined;
 
     try {
       if (request.artifactPath) await this.deploy(summary.envId, request.artifactPath);
@@ -583,7 +609,8 @@ export class EnvironmentPool {
         failure = `healthcheck が通りませんでした${healthDetail ? `: ${healthDetail}` : ""}`;
       } else {
         runResult = await this.run(summary.envId, request.cmd, request.logTailLines, request.timeoutMs);
-        if (request.collectTo) await this.collect(summary.envId, request.collectTo);
+        // 畳む前に取り出す（環境ごと消えるので、ここを逃すと取れない）
+        if (request.collect) collected = (await this.collect(summary.envId)).dest;
       }
     } catch (err) {
       failure = err instanceof Error ? err.message : String(err);
@@ -611,6 +638,7 @@ export class EnvironmentPool {
       ...(teardownError !== undefined ? { teardownError } : {}),
       healthy,
       ...(healthDetail !== undefined ? { healthDetail } : {}),
+      ...(collected !== undefined ? { collected } : {}),
       ...(failure !== undefined ? { failure } : {}),
     };
   }

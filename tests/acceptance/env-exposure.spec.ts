@@ -16,10 +16,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import {
+  COLLECTED_PLACE_ID,
   EnvironmentPool,
   createCaddyExposer,
+  createCollectedPlaceProvider,
   createEnvProxyExposer,
 } from "@banto/environment-pool";
+import { PlaceRegistry, assertWritable, resolveInPlace } from "@banto/host";
 import type { EnvExposer } from "@banto/core";
 
 /** モジュールの到達先。中継はこの下に生える（決定27・39）。 */
@@ -223,5 +226,53 @@ describe("[決定39/c] Caddy 実装（admin API を差し替えて見る）", ()
       fetchImpl: failing,
     });
     await assert.rejects(() => exposer.expose({ envId: "env-x", port: 80 }), /Caddy admin API/);
+  });
+});
+
+describe("[imp-0007 裁定] 回収した成果物は番頭が読める（が書けない）", () => {
+  it("置き場所は機構が決め、番頭はパスを指定しない", async () => {
+    const pool = new EnvironmentPool({ dataDir: dir, driverTimeoutMs: 20_000 });
+    const created = await pool.provision({ driver: "process", config: { cmd: "sleep 30" } });
+
+    const { dest } = await pool.collect(created.envId);
+    // 呼び出し側は dest を渡していない——任意の絶対パスへ書ける穴を作らないため
+    assert.ok(dest.startsWith(pool.collectedRoot()), "機構の管理下に置かれること");
+    assert.ok(dest.includes(created.envId), "環境ごとに分かれること");
+    assert.ok(fs.existsSync(dest));
+
+    await pool.teardown(created.envId);
+  });
+
+  it("**回収先が読み取り専用の場所として出る**（読めないと回収の意味がない）", async () => {
+    const pool = new EnvironmentPool({ dataDir: dir, driverTimeoutMs: 20_000 });
+    const provider = createCollectedPlaceProvider(pool.collectedRoot());
+
+    // まだ何も回収していないうちは場所として出さない（空の場所を並べない）
+    assert.deepEqual(await provider.list(), []);
+
+    const created = await pool.provision({ driver: "process", config: { cmd: "sleep 30" } });
+    const { dest } = await pool.collect(created.envId);
+    fs.writeFileSync(path.join(dest, "result.txt"), "検証の結果\n");
+
+    const places = await provider.list();
+    assert.equal(places.length, 1);
+    assert.equal(places[0]!.id, COLLECTED_PLACE_ID);
+    // 読めること：砦（PlaceRegistry）越しに実際に引く
+    const registry = new PlaceRegistry([provider]);
+    const place = await registry.require(COLLECTED_PLACE_ID);
+    const read = fs.readFileSync(
+      resolveInPlace(place, path.join(created.envId, "result.txt")),
+      "utf-8"
+    );
+    assert.equal(read, "検証の結果\n");
+
+    // 書けないこと：読み取り専用（writable を持たない）
+    assert.equal(place.writable, undefined);
+    assert.throws(
+      () => assertWritable(place, path.join(created.envId, "勝手に書く.txt")),
+      /読み取り専用/
+    );
+
+    await pool.teardown(created.envId);
   });
 });

@@ -51,6 +51,7 @@ import {
   EnvironmentPool,
   ENVIRONMENT_POOL_BASE_URL,
   createCaddyExposer,
+  createCollectedPlaceProvider,
   createEnvironmentPoolModule,
   createEnvProxyExposer,
 } from "@banto/environment-pool";
@@ -230,6 +231,9 @@ async function serve(options: ServeOptions): Promise<void> {
   // spec-environment §5: 執行は Environment Pool の台帳が行う。**ここで回さないと
   // 番頭が立てた環境を誰も片付けない**——Kobo 側の tick は台帳が別で対象外（I3）
   environmentPool.startMaintenance();
+  // imp-0007 の裁定: 回収した成果物を**読める場所**として出す。置き場所を Pool が決める
+  // だけだと、番頭は取り出したものを読めない（砦の外なので file.read が弾く）
+  places.add(createCollectedPlaceProvider(environmentPool.collectedRoot()));
 
   // 決定40: 既定は localhost。広げるのは明示的な指定だけ
   const bindHost = options.host ?? process.env["BANTO_HOST_BIND"] ?? "127.0.0.1";
