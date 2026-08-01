@@ -81,6 +81,31 @@ function removeEntry(name: string): void {
 
 // ── Process liveness (mirrors spawn-ledger's isProcessAlive) ─────────────────
 
+/**
+ * その pid が**まだ自分が起こしたもの**か。
+ *
+ * **pid だけでは同一性にならない。** 記録は再起動を越えて残るのに pid は使い回されるので、
+ * 古い記録の pid が今は無関係なプロセスを指していることがある（実際に7月の記録2件が
+ * 生きているように見えていた）。そのまま teardown すると**他人のプロセスを殺す**——
+ * しかもグループごと落とすので巻き込む範囲が広い。
+ *
+ * 起こしたときのコマンドと突き合わせて確かめる。/proc が読めない環境では pid だけの
+ * 判定に落ちる（従来どおり）——そこは踏み込まない。
+ */
+function isOurs(pid: number, cmd: string | undefined): boolean {
+  if (!isAlive(pid)) return false;
+  if (!cmd) return true; // 記録にコマンドが無いなら確かめようがない
+  try {
+    const raw = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim();
+    if (raw.length === 0) return true; // 読めたが空（カーネルスレッド等）。判断材料にしない
+    // シェル越しに起こすので、記録したコマンドの先頭語が現れていれば自分のものとみなす
+    const head = cmd.trim().split(/\s+/)[0] ?? "";
+    return raw.includes(cmd.trim()) || (head.length > 0 && raw.includes(head));
+  } catch {
+    return true; // /proc が無い環境。従来どおり pid だけで判断する
+  }
+}
+
 function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -358,8 +383,19 @@ async function handleTeardown(input: Record<string, unknown>): Promise<void> {
   const name = handle["name"] as string | undefined;
 
   // Idempotent: if pid is undefined or process is already gone, still succeed (I3)
+  //
+  // **殺す前に自分のものか確かめる。** pid は使い回されるので、古い記録の pid が今は
+  // 無関係なプロセスを指していることがある。グループごと落とすため、取り違えると
+  // 巻き込む範囲が広い（I3 の裏返し：片付けが他人を壊してはいけない）
   if (pid !== undefined) {
-    await killProcess(pid);
+    const recorded = readState().find((e) => e.pid === pid && (!name || e.name === name));
+    if (isOurs(pid, recorded?.cmd)) {
+      await killProcess(pid);
+    } else {
+      process.stderr.write(
+        `process-driver teardown: pid ${pid} は既に別のプロセスです。殺さず記録だけ片付けます\n`
+      );
+    }
   }
 
   // Remove from state file (idempotent — removeEntry handles missing entries)
@@ -373,10 +409,13 @@ async function handleTeardown(input: Record<string, unknown>): Promise<void> {
 async function handleList(_input: Record<string, unknown>): Promise<void> {
   const entries = readState();
 
-  // Filter to only entries for alive processes (prune stale ones)
-  // Note: we do NOT prune here — list returns ALL tracked entries, alive or not.
-  // Reconciliation is daemon's responsibility (spec §5).
-  // However, we do annotate each entry with its handle shape.
+  // **一覧からは落とさず、生死を添える。** 全部返すと照合（spec §5）が死んだ記録まで
+  // 「台帳に無い実リソース」と数え、本物の孤児が誤報に埋もれる（実際に136件出た）。
+  // かといって落とすと、Kobo の照合が「消えた」と判定する経路の前提が変わる。
+  // **足すだけなら誰の判定も壊さない**——見る側が自分で決められる。
+  //
+  // 記録は書き換えない。list は読み取りで provision / teardown と同時に走るため、
+  // 全体を書き戻すと互いの更新を消し合う。掃除は teardown が自分の分だけ行う。
   const items = entries.map((e) => {
     const handle: Record<string, unknown> = { pid: e.pid, name: e.name, taskId: e.taskId };
     if (e.port !== undefined) handle["port"] = e.port;
@@ -384,6 +423,8 @@ async function handleList(_input: Record<string, unknown>): Promise<void> {
       handle,
       name: e.name,
       created: e.created,
+      // まだ自分が起こしたものとして生きているか（pid は使い回されるので突き合わせる）
+      alive: isOurs(e.pid, e.cmd),
     };
   });
 

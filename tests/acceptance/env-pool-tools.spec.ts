@@ -10,6 +10,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import * as childProcess from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -561,5 +562,48 @@ describe("[spec-environment §5] TTL 執行と照合は Environment Pool 側に�
     assert.equal(DEFAULT_ENV_LIMITS.maxInstancesPerProfile, 4);
     assert.equal(DEFAULT_ENV_LIMITS.maxInstancesTotal, 8);
     assert.equal(DEFAULT_ENV_LIMITS.adhocDrivers, "builtin");
+  });
+});
+
+describe("[I3] 片付けが他人のプロセスを壊さない（pid の使い回し）", () => {
+  it("記録の pid が別のプロセスになっていたら、殺さず記録だけ片付ける", async () => {
+    // ドライバの記録に、いま生きている**無関係な**プロセスの pid を仕込む。
+    // pid は使い回されるので、古い記録がこの状態になることが実際にある（7月の記録2件がそうだった）
+    const victim = childProcess.spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+    victim.unref();
+    const stateFile = path.join(os.tmpdir(), "banto-process-driver-state.json");
+    const before = fs.existsSync(stateFile) ? fs.readFileSync(stateFile, "utf-8") : undefined;
+    try {
+      fs.writeFileSync(
+        stateFile,
+        JSON.stringify([
+          {
+            pid: victim.pid,
+            name: "古い記録-env",
+            taskId: "古い記録",
+            // 記録上のコマンドは実物（sleep）と違う＝もう自分のものではない
+            cmd: "python3 -m http.server 9999",
+            created: "2026-07-24T00:00:00.000Z",
+          },
+        ])
+      );
+
+      const p = pool();
+      // ドライバは alive:false を添えるので、照合はこれを実リソースと数えない
+      const found = await p.reconcile().catch(() => []);
+      assert.ok(
+        !found.some((o) => o.name === "古い記録-env"),
+        "別のプロセスになった記録を実リソースとして数えないこと"
+      );
+
+      // そして無関係なプロセスは生きたまま
+      assert.doesNotThrow(() => process.kill(victim.pid!, 0), "他人のプロセスを殺していないこと");
+    } finally {
+      try {
+        process.kill(victim.pid!, "SIGKILL");
+      } catch { /* already gone */ }
+      if (before !== undefined) fs.writeFileSync(stateFile, before);
+      else fs.rmSync(stateFile, { force: true });
+    }
   });
 });

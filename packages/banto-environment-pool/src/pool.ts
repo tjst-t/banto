@@ -261,6 +261,9 @@ export class EnvironmentPool {
       if (!result.ok || !Array.isArray(result.output)) continue;
       for (const item of result.output as Array<Record<string, unknown>>) {
         if (known.has(JSON.stringify(item["handle"]))) continue;
+        // ドライバが生死を添えているなら、死んだものは実リソースではない。
+        // 添えていないドライバでは判断材料が無いので数える（黙って見逃すより良い）
+        if (item["alive"] === false) continue;
         found.push({
           driver,
           name: typeof item["name"] === "string" ? item["name"] : "(名前なし)",

@@ -323,7 +323,13 @@ export function App(): React.ReactElement {
           )}
         </button>
         <span className={`conn conn--${session.status}`}>
-          {session.status === "open" ? "接続中" : session.status === "connecting" ? "接続しています…" : "切断"}
+          {session.status === "open"
+            ? "接続中"
+            : session.status === "connecting"
+              ? "接続しています…"
+              : session.status === "reconnecting"
+                ? "繋ぎ直しています…"
+                : "切断"}
         </span>
       </header>
 

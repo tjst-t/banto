@@ -20,7 +20,8 @@ import type {
   TranscriptEntry,
 } from "@banto/host/protocol";
 
-export type ConnectionStatus = "connecting" | "open" | "closed";
+/** 接続の状態。`reconnecting` は切れて繋ぎ直している最中——画面はそのまま使える。 */
+export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "closed";
 
 /** スレッド1本分の見えている状態。 */
 interface ThreadState {
@@ -170,11 +171,32 @@ export function useBantoSession(url: string): BantoSession {
   );
 
   useEffect(() => {
-    const socket = new WebSocket(url);
-    socketRef.current = socket;
+    // 繋ぎ直しのために、この効果の中で1本ずつ張り替える。
+    // **切れたら勝手に繋ぎ直す**——ホストを入れ直すたびにPOが手で再読み込みするのは、
+    // 会話が残るようになった（task-0036）いま、ただの手間でしかない
+    let closedByUs = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let attempt = 0;
 
-    socket.onopen = () => setStatus("open");
-    socket.onclose = () => setStatus("closed");
+    const connect = (): void => {
+      const socket = new WebSocket(url);
+      socketRef.current = socket;
+      setStatus(attempt === 0 ? "connecting" : "reconnecting");
+
+    socket.onopen = () => {
+      attempt = 0;
+      setStatus("open");
+    };
+    socket.onclose = () => {
+      if (closedByUs) return;
+      setStatus("reconnecting");
+      // 待ち時間を伸ばしていく（上限5秒）。ホストが落ちている間、毎秒叩き続けない
+      const wait = Math.min(500 * 2 ** attempt, 5000);
+      attempt += 1;
+      retryTimer = setTimeout(connect, wait);
+    };
+    // I2: 失敗を握りつぶさない。onclose が続けて呼ばれるので繋ぎ直しはそちらに任せる
+    socket.onerror = () => setStatus("reconnecting");
 
     socket.onmessage = (raw: MessageEvent<string>) => {
       const event = JSON.parse(raw.data) as ServerEvent;
@@ -256,7 +278,14 @@ export function useBantoSession(url: string): BantoSession {
       }
     };
 
-    return () => socket.close();
+    };
+
+    connect();
+    return () => {
+      closedByUs = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      socketRef.current?.close();
+    };
   }, [url, update, syncStreaming]);
 
   const post = useCallback((message: Record<string, unknown>) => {
