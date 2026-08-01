@@ -1,0 +1,47 @@
+# 番頭ホスト（Banto）を常駐させる。
+#
+# 前提:
+#   - リポジトリを /opt/banto に clone し、npm install と npm run build:web を済ませてある
+#   - banto ユーザが存在し、/opt/banto と /var/lib/banto を読み書きできる
+#   - ~banto/.pi/agent/auth.json に LLM の認証がある（chmod 600）
+#
+# **既定では 127.0.0.1 しか待ち受けない**（Banto は認証を持たないため）。
+# 外に出すときは前段（Caddy 等）から 127.0.0.1:4100 へ中継すること。
+# 前段を置かずに直接公開したい場合だけ BANTO_HOST_BIND を広げる（自己責任）。
+
+[Unit]
+Description=banto (番頭) host
+Documentation=https://github.com/tjst-t/banto
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=banto
+Group=banto
+WorkingDirectory=/opt/banto
+
+Environment=NODE_ENV=production
+Environment=BANTO_DATA_DIR=/var/lib/banto
+Environment=BANTO_PROVIDER=opencode
+Environment=BANTO_MODEL=deepseek-v4-flash-free
+# 番頭が作業できる場所。読み取り専用なら id:/path、書かせるなら id:/path:glob,glob
+Environment=BANTO_PLACES=banto:/opt/banto:docs/**,work/**
+# 検証環境の credentials を使うなら
+# Environment=SOPS_AGE_KEY_FILE=/var/lib/banto/age.key
+
+ExecStart=/usr/bin/node --import tsx packages/banto-host/src/bin.ts serve --port 4100
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# 触ってよい範囲を絞る（職人と検証環境が動くので緩めすぎず、狭めすぎず）
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=full
+ReadWritePaths=/var/lib/banto /opt/banto
+
+[Install]
+WantedBy=multi-user.target

@@ -19,6 +19,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import type { CanvasCatalog } from "./canvas.js";
 import { CORE_ORIGIN, type ModuleRegistry } from "./module.js";
 import { createModuleToolHandler } from "./module-serve.js";
+import { createWebAssetHandler } from "./web-assets.js";
 import {
   BANTO_DEFAULT_PORT,
   BANTO_WS_PATH,
@@ -76,6 +77,13 @@ export interface BantoHostServerOptions {
    * I1: 運用の心がけではなく機構で担保する。広げるには明示的に指定させ、警告を出す。
    */
   host?: string;
+  /**
+   * ビルド済み WebUI の置き場（task-0048）。渡すと UI も同じポートで配る。
+   *
+   * 常駐させるときに要る——開発中は vite が出すが、サービスでは開発サーバを動かし
+   * 続けたくない。1プロセス・1ポートにすると、前段で守るのもそのポート1つで済む。
+   */
+  webDir?: string;
 }
 
 /**
@@ -145,6 +153,8 @@ export class BantoHostServer {
     // 組み込みモジュールのデータAPI（決定25：組み込みの提供元は Banto ホスト自身）。
     // UI はここからデータを取る——番頭の Tool 経路は通らない。
     const serveModuleTool = options.modules ? createModuleToolHandler(options.modules) : undefined;
+    // ビルド済み資産があれば UI も配る。無ければ何もしない（vite が出す）
+    const serveWebAsset = createWebAssetHandler(options.webDir);
 
     const httpServer = http.createServer((req, res) => {
       void (async () => {
@@ -155,6 +165,8 @@ export class BantoHostServer {
           return;
         }
         if (serveModuleTool && (await serveModuleTool(req, res))) return;
+        // 最後に UI。API より後に見るので、/api を資産で覆い隠すことはない
+        if (serveWebAsset(req, res)) return;
 
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "not found" }));

@@ -15,6 +15,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
+import { fileURLToPath } from "node:url";
 import { getModel, getModels } from "@mariozechner/pi-ai";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { JsonlMemoryStore, type PlaceProvider } from "@banto/core";
@@ -256,6 +257,11 @@ async function serve(options: ServeOptions): Promise<void> {
   // だけだと、番頭は取り出したものを読めない（砦の外なので file.read が弾く）
   places.add(createCollectedPlaceProvider(environmentPool.collectedRoot()));
 
+  // task-0048: 常駐時は UI も自分で配る。既定は packages/banto-web/dist（ビルドしていれば）
+  const webDir =
+    process.env["BANTO_WEB_DIST"] ??
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "banto-web", "dist");
+
   // 決定40: 既定は localhost。広げるのは明示的な指定だけ
   const bindHost =
     options.host ?? settings.all().network?.bind ?? process.env["BANTO_HOST_BIND"] ?? "127.0.0.1";
@@ -428,6 +434,8 @@ async function serve(options: ServeOptions): Promise<void> {
     port: settings.all().network?.port ?? options.port,
     catalog,
     modules,
+    // task-0048: ビルド済み UI があれば同じポートで配る（常駐させるときの形）
+    ...(webDir ? { webDir } : {}),
     // 決定40: 既定は localhost のみ。Banto は認証を持たず、守るのは前段の役目——
     // 全インターフェースで待つと前段を素通りできてしまい、その裁定が成り立たない
     host: bindHost,

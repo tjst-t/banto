@@ -62,15 +62,20 @@ let store: JsonlMemoryStore;
 let server: BantoHostServer | undefined;
 let session: FakeSession;
 
-async function startHost(getLastError?: () => string | undefined): Promise<{ url: string; tools: string[] }> {
+async function startHost(
+  getLastError?: (() => string | undefined) | { webDir: string }
+): Promise<{ url: string; tools: string[] }> {
+  // 第2引数を取らずに済むよう、オブジェクトを渡したら設定として扱う（既存の呼び出しはそのまま）
+  const extra = typeof getLastError === "object" ? getLastError : undefined;
+  const lastError = typeof getLastError === "function" ? getLastError : undefined;
   const tools = createMemoryTools(store);
   // task-0035: サーバはスレッドの帳簿を受け取る。既定スレッドを1本開いてから立てる
   const threads = new ThreadRegistry(async () => {
     session = new FakeSession();
-    return { session, tools, ...(getLastError ? { getLastError } : {}) };
+    return { session, tools, ...(lastError ? { getLastError: lastError } : {}) };
   });
   await threads.open();
-  server = await BantoHostServer.start({ threads, port: 0 });
+  server = await BantoHostServer.start({ threads, port: 0, ...(extra ?? {}) });
   return { url: `ws://localhost:${server.port}${BANTO_WS_PATH}`, tools: tools.map((t) => t.name) };
 }
 
@@ -630,5 +635,50 @@ describe("[task-0044] 中断できること（忙しさの真実はホストが�
       "進行中だと分かること（分からないと中断ボタンが出ない）"
     );
     b.close();
+  });
+});
+
+describe("[task-0048] 常駐のためにビルド済み UI を配る", () => {
+  it("資産があれば同じポートで UI が出る。API は覆い隠されない", async () => {
+    const webDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-web-"));
+    fs.mkdirSync(path.join(webDir, "assets"), { recursive: true });
+    fs.writeFileSync(path.join(webDir, "index.html"), "<!doctype html><title>banto</title>");
+    fs.writeFileSync(path.join(webDir, "assets", "app.js"), "console.log(1)");
+    try {
+      const { url } = await startHost({ webDir });
+      const base = url.replace(/^ws/, "http").replace(/\/ws$/, "");
+
+      const page = await fetch(`${base}/`);
+      assert.equal(page.status, 200);
+      assert.match(await page.text(), /banto/);
+
+      const asset = await fetch(`${base}/assets/app.js`);
+      assert.equal(asset.status, 200);
+      assert.equal(asset.headers.get("content-type"), "text/javascript; charset=utf-8");
+
+      // 画面の中の遷移は index.html を返す（1ページのアプリ）
+      const deep = await fetch(`${base}/どこか/深い/道`);
+      assert.equal(deep.status, 200);
+      assert.match(await deep.text(), /banto/);
+
+      // API は資産より先に見る（覆い隠さない）
+      const health = await fetch(`${base}/health`);
+      assert.equal(health.status, 200);
+      assert.deepEqual(await health.json(), { ok: true });
+
+      // 資産の外は読ませない（.. で外へ出ない）
+      const escape = await fetch(`${base}/../../etc/passwd`);
+      assert.equal(escape.status, 200);
+      assert.match(await escape.text(), /banto/, "外のファイルではなく index.html を返すこと");
+    } finally {
+      fs.rmSync(webDir, { recursive: true, force: true });
+    }
+  });
+
+  it("資産が無ければ何も配らない（開発中は vite が出す）", async () => {
+    const { url } = await startHost();
+    const base = url.replace(/^ws/, "http").replace(/\/ws$/, "");
+    const page = await fetch(`${base}/`);
+    assert.equal(page.status, 404, "配るものが無いことを黙って隠さない");
   });
 });
