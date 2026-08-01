@@ -55,8 +55,8 @@ const FAILURES_JSON = path.resolve(
 
 // ── LLM provider config ───────────────────────────────────────────────────────
 
-const PI_PROVIDER = "opencode-go";
-const PI_MODEL = "deepseek-v4-flash";
+const PI_PROVIDER = "opencode";
+const PI_MODEL = "deepseek-v4-flash-free";
 
 // ── Auth probe (same pattern as walking-skeleton) ─────────────────────────────
 

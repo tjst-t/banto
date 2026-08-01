@@ -59,6 +59,17 @@ export interface ProvisionInput {
    * the taskID prefix so they can be identified and cleaned up later).
    */
   taskId: string;
+  /**
+   * どこで動かすか（絶対パス）。ADR-0010 決定34(d)・task-0034 で足した。
+   *
+   * **仕様の穴だった。** ここが無いと、番頭は「職人が作った worktree で検証して」を
+   * 頼めない——`process` ドライバは継承した cwd でコマンドを起こし、`docker` ドライバは
+   * 相対 compose パスを Environment Pool 自身の cwd で解決してしまう。
+   *
+   * ドライバはここを cwd としてコマンドを起こし、`config` 内の相対パスもここから解決する。
+   * **省略時は現状どおり**（ドライバ自身の cwd）に落とし、既存プロファイルを壊さない。
+   */
+  workdir?: string;
 }
 
 /** stdin for `deploy`: handle + artifact path */
@@ -78,6 +89,8 @@ export interface RunInput {
   handle: EnvHandle;
   /** The command to run inside the environment (shell string). */
   cmd: string;
+  /** どこで動かすか（絶対パス）。`provision` と同じ扱い（決定34d）。省略時はドライバの cwd。 */
+  workdir?: string;
 }
 
 /** stdin for `collect`: handle + destination directory */

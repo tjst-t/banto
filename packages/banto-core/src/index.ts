@@ -40,6 +40,16 @@ export type {
 
 // Environment profile parser (spec-environment §1)
 export { parseEnvProfiles, validateProfile, parseTtl } from "./env-profile-parser.js";
+// 検証環境を外から見えるようにする口（決定39・imp-0008）。配置で手段が変わるので差し替え可能
+export type { EnvExposer, ExposedEnv, ExposeRequest } from "./env-exposer.js";
+// モジュールが設定画面に自分の設定を出す契約（決定41）。GUI ではなく項目の宣言を渡す
+export type {
+  SettingField,
+  SettingFieldType,
+  ModuleSettingsSpec,
+  SettingsSection,
+  SettingsWriteResult,
+} from "./module-settings.js";
 export type {
   EnvProfile,
   ProfileValidation,
@@ -86,8 +96,32 @@ export type {
 } from "./runtime-driver.js";
 
 // Executor + audit tool definitions (runtime-neutral; no pi/agent-sdk imports)
-export { reportPhaseTool, reportDoneTool, bantoExecutorTools, auditReportTool, bantoAuditTools } from "./tools.js";
-export type { BantoTool, ToolResult, ToolTextContent, ToolParameterSchema } from "./tools.js";
+// Tool 契約（ランタイム中立・決定1／task-0025）。契約の型はこの1つだけ
+export { defineBantoTool, defineNamespacedTool } from "./banto-tool.js";
+export type {
+  BantoToolDefinition,
+  NamespacedToolDefinition,
+  AnyBantoTool,
+  BantoToolResult,
+  BantoToolTextContent,
+  BantoToolContext,
+} from "./banto-tool.js";
+
+// 場所（Place）— 番頭が作業してよい場所の契約（決定36c）
+export type { Place, PlaceProvider } from "./place.js";
+
+// Tool 名前空間の規約（決定9・決定22）。モジュールが banto-host 抜きで名乗れるよう core に置く
+export {
+  isNamespacedToolName,
+  assertNamespacedToolName,
+  toolDomain,
+  toWireToolName,
+  fromWireToolName,
+} from "./tool-namespace.js";
+export type { NamespacedToolName } from "./tool-namespace.js";
+
+// 職人・監査セッション向けの Tool。依存（DaemonClient）は引数で受ける
+export { createExecutorTools, createAuditTools } from "./tools.js";
 
 // Prompt asset loader (reads from skills/ directory at repo root)
 export { loadPromptAsset } from "./prompt-assets.js";
@@ -115,3 +149,32 @@ export type {
   EnvDriverInput,
 } from "./env-driver.js";
 export { ENV_DRIVER_VERBS } from "./env-driver.js";
+
+// 番頭の記憶（第一層：好み・習慣）— ADR-0010 決定10 / D11
+export { JsonlMemoryStore } from "./memory.js";
+export type {
+  MemoryStore,
+  MemoryRecord,
+  MemoryInput,
+  MemoryQuery,
+  MemoryKind,
+} from "./memory.js";
+
+// モジュール間呼び出し（ADR-0010 決定27b）。Kobo など banto-host に依存できない側からも使う
+export {
+  moduleRegistryPath,
+  loadModuleRegistryConfig,
+  resolveModuleEndpoint,
+  createModuleClient,
+} from "./module-invocation.js";
+export {
+  MODULE_TOOL_PATH,
+  type ModuleToolRequest,
+  type ModuleToolResult,
+  type ModuleToolError,
+} from "./module-protocol.js";
+export type {
+  ModuleRegistryEntry,
+  ModuleRegistryConfig,
+  ModuleClient,
+} from "./module-invocation.js";

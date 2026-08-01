@@ -20,7 +20,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { Daemon } from "@banto/daemon";
-import { DaemonClient, DaemonConnectionError, reportPhaseTool, reportDoneTool } from "@banto/core";
+import { DaemonClient, DaemonConnectionError, createExecutorTools } from "@banto/core";
+
+/** task-0025: 依存は Tool を作る関数の引数で受ける。名前で1本引く */
+function executorTool(client: DaemonClient, name: string) {
+  const tool = createExecutorTools(client).find((t) => t.name === name);
+  if (!tool) throw new Error(`unknown executor tool: ${name}`);
+  return tool;
+}
 
 describe("[AC-S254276-3-2] Executor phase tools drive daemon state transitions", () => {
   let tmpDir: string;
@@ -83,7 +90,7 @@ describe("[AC-S254276-3-2] Executor phase tools drive daemon state transitions",
   });
 
   it("[AC-S254276-3-2] report_phase(implementing) transitions task to implementing", async () => {
-    const result = await reportPhaseTool.execute(client, {
+    const result = await executorTool(client, "report_phase").execute({
       phase: "implementing",
       projectTag: proj,
       taskId,
@@ -120,7 +127,7 @@ describe("[AC-S254276-3-2] Executor phase tools drive daemon state transitions",
     // The executor must NOT self-transition to review-ready.
     // Auditing is the structural gate; the daemon spawns an audit session from there.
     const summary = "Implemented all acceptance criteria";
-    const result = await reportDoneTool.execute(client, {
+    const result = await executorTool(client, "report_done").execute({
       summary,
       projectTag: proj,
       taskId,
@@ -182,7 +189,7 @@ describe("[AC-S254276-3-2] Executor phase tools drive daemon state transitions",
     }
 
     const summary = "Implemented all acceptance criteria";
-    const result = await reportDoneTool.execute(client, {
+    const result = await executorTool(client, "report_done").execute({
       summary,
       projectTag: proj,
       taskId: doneTaskId,
@@ -213,7 +220,7 @@ describe("[AC-S254276-3-2b] report_phase propagates connection errors (I2 / narr
 
     await assert.rejects(
       () =>
-        reportPhaseTool.execute(deadClient, {
+        executorTool(deadClient, "report_phase").execute({
           phase: "implementing",
           projectTag: "ghost-proj",
           taskId: "T-ghost",

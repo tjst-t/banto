@@ -17,7 +17,7 @@ refs: [vision, principles, spec-document-system]
 |---|---|---|
 | **A** | プロンプト資産（システムプロンプト、監査チェックリスト、classify判定プロンプト、skills） | エージェントが直接編集提案。コミット＝POレビュー対象 |
 | **B** | ポリシーパラメータ（閾値、ケイデンス間隔、マージポリシー、スコープ規則。`meta/config.yaml`） | 同上 |
-| **C** | 機構コード（daemon、Extension Pack、ドライバ） | エージェントは提案まで。タスク化して正規フロー（実装→監査→POレビュー→自動更新パイプライン） |
+| **C** | 機構コード（Kobo、Extension Pack、ドライバ） | エージェントは提案まで。タスク化して正規フロー（実装→監査→POレビュー→自動更新パイプライン） |
 
 原則：機構は「実施の保証」だけを担い、判断基準は層A/Bに置く（→ D2）。層Cは壊れると止まり、層A/Bは壊れると静かに劣化する——この性質差を配置判断の基準とする。
 
@@ -26,7 +26,7 @@ refs: [vision, principles, spec-document-system]
 すべてのincident/improvementは `origin: system | po | agent` を持つ。
 
 ### system起源（テレメトリからの自動検出）
-daemonが構造化ログ（監査指摘、escalate勧告と却下、force類の操作、/fix回数、reopen、escaped defects、テスト結果）から機械的に検出する。
+Koboが構造化ログ（監査指摘、escalate勧告と却下、force類の操作、/fix回数、reopen、escaped defects、テスト結果）から機械的に検出する。
 
 ### po起源（POの指摘）— 二重処理の規約
 POが構造的問題を指摘した場合、**必ず2件として処理する**：
@@ -44,7 +44,7 @@ po起源の割合はループの成熟度メトリクスであり、メタケイ
 ## 3. 蓄積と集計
 
 - 置き場：`work/inbox/improvement/`（frontmatter: id, origin, class, refs, status, resolution）
-- ケイデンスごとにdaemonが集計し、同型パターン・件数・傾向を議題として合成カードに載せる。1件ずつではなくパターンで扱う
+- ケイデンスごとにKoboが集計し、同型パターン・件数・傾向を議題として合成カードに載せる。1件ずつではなくパターンで扱う
 
 ## 4. 処方の原則
 
@@ -60,11 +60,11 @@ po起源の割合はループの成熟度メトリクスであり、メタケイ
 ```yaml
 hypothesis:
   expect: "テスト検証まわりの同型incidentが減る"
-  metric: incident.count[class=test-skip]   # daemonが計測できる値。測定不能なら none
+  metric: incident.count[class=test-skip]   # Koboが計測できる値。測定不能なら none
   horizon: 21d
 ```
 
-- daemonはマージ時にベースラインを記録し、horizon経過後に**評価カード**を合成キューアイテムとして生成
+- Koboはマージ時にベースラインを記録し、horizon経過後に**評価カード**を合成キューアイテムとして生成
 - 評価セッション（SDK単発）が前後比較＋期間中のfriction/escaped defectsから `keep / tune / revert` を勧告。判断はPO（実績によりautoクラス化可）
 - 結果は改善ファイルのstatusに書き戻す。**revert済み改善は履歴として照合対象になり**、類似提案のenqueue時に「同案revert済（理由付き）」として弾く
 - 割り切り：厳密な因果評価は行わない。目的は「方向性の確認」と特に「**明確な悪化の検出**」。不明ならkeep
@@ -118,7 +118,7 @@ hypothesis:
 - アーキテクチャ変更は常にmandatory。判断はケイデンスでPOが行う
 - 診断が出た領域には**検疫（quarantine）マーク**：該当スコープへの新規パッチタスクのspawn時に保留勧告を出す（禁止ではなく勧告。→ 判断主権）。判断前にパッチの積み増しを止める
 - 診断の的中/外れも評価対象とし、検出閾値・診断プロンプトを改善ループで育てる
-- 発火規則：同一スコープで修正が2回定着しなかったら、3回目のパッチ前に根本原因分析を要求（→ P6。reopen計数によりdaemonが勧告を機械発火）
+- 発火規則：同一スコープで修正が2回定着しなかったら、3回目のパッチ前に根本原因分析を要求（→ P6。reopen計数によりKoboが勧告を機械発火）
 
 ## 9. 追加されるprinciples（採択時にprinciples.mdへ）
 

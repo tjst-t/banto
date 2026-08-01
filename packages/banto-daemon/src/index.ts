@@ -15,10 +15,30 @@ export { ProjectRegistry } from "./project-registry.js";
 export type { ProjectEntry } from "./project-registry.js";
 export { Scheduler } from "./scheduler.js";
 export type { TickJob } from "./scheduler.js";
-export { PiRpcDriver, createWorktree, removeWorktree } from "./pi-rpc-driver.js";
-export type { PiRpcDriverOptions } from "./pi-rpc-driver.js";
-export { SpawnLedger, isProcessAlive, killOrphanProcess } from "./spawn-ledger.js";
-export type { LedgerEntry } from "./spawn-ledger.js";
+export { PiRpcDriver } from "@banto/worker-pool";
+// 決定36h: ワークツリーの作成・削除は repo-manager に寄せた。Kobo は当面ライブラリとして参照する
+// （決定23・32 と同じ2段階の1段目。サービス利用への切替は別タスク）
+export { createWorktree, removeWorktree } from "@banto/repo-manager";
+export type { PiRpcDriverOptions } from "@banto/worker-pool";
+export { SpawnLedger, isProcessAlive, killOrphanProcess } from "@banto/worker-pool";
+export type { LedgerEntry } from "@banto/worker-pool";
+
+// Environment Pool（決定32・task-0033）— 動作検証環境の実行能力。実体は独立モジュールで、
+// Kobo は当面ライブラリとして参照する。ここは既存の利用者のための再輸出で、実装は持たない
+export {
+  EnvLedger,
+  countLiveByProfile,
+  runDriverVerb,
+  resolveDriverPath,
+  DEFAULT_DRIVER_TIMEOUT_MS,
+  decryptSops,
+  resolveCredentialsPath,
+} from "@banto/environment-pool";
+export type {
+  EnvLedgerEntry,
+  DriverRunResult,
+  SopsDecryptResult,
+} from "@banto/environment-pool";
 
 // MergeGate — pre-merge checks (scope violation + verify command execution)
 export {

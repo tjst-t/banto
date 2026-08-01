@@ -14,8 +14,12 @@
   },
   "references": [
     { "path": "./packages/banto-core" },
+    { "path": "./packages/banto-environment-pool" },
     { "path": "./packages/banto-daemon" },
-    { "path": "./packages/banto-cli" }
+    { "path": "./packages/banto-cli" },
+    { "path": "./packages/banto-host" },
+    { "path": "./packages/banto-worker-pool" },
+    { "path": "./packages/banto-repo-manager" }
   ],
   "files": []
 }

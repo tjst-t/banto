@@ -21,7 +21,7 @@
  *     and the adapter is always loaded by pi at runtime, which provides the API. (I4)
  */
 
-import { DaemonClient, bantoAuditTools, loadPromptAsset } from "@banto/core";
+import { DaemonClient, createAuditTools, loadPromptAsset } from "@banto/core";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pi API is runtime-provided; see module doc (I4)
 export default function (pi: any): void {
@@ -40,10 +40,10 @@ export default function (pi: any): void {
   const client = new DaemonClient(daemonUrl);
 
   // Register all banto audit tools
-  for (const tool of bantoAuditTools) {
+  for (const tool of createAuditTools(client)) {
     pi.registerTool({
       name: tool.name,
-      label: tool.name,
+      label: tool.label,
       description: tool.description,
       // Inline JSON Schema as-is; pi accepts plain schema objects at runtime
       parameters: tool.parameters,
@@ -58,8 +58,8 @@ export default function (pi: any): void {
         if (!Array.isArray(args["findings"])) {
           args["findings"] = args["findings"] ? [String(args["findings"])] : [];
         }
-        const result = await tool.execute(client, args);
-        return { ...result, details: {} };
+        const result = await tool.execute(args, { toolCallId: _toolCallId });
+        return { content: result.content, details: result.details ?? {} };
       },
     });
   }

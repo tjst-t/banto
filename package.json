@@ -9,9 +9,14 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --import tsx --test tests/acceptance/*.spec.ts",
+    "dev": "npm run dev:host & npm run dev:web",
+    "dev:host": "node --import tsx packages/banto-host/src/bin.ts serve",
+    "dev:web": "npm --prefix packages/banto-web run dev",
     "build": "tsc -b",
+    "build:web": "npm --prefix packages/banto-web run build",
     "typecheck": "tsc --project tsconfig.check.json",
+    "typecheck:web": "tsc --project packages/banto-web/tsconfig.json",
+    "test": "node --import tsx --test tests/acceptance/*.spec.ts",
     "test:e2e": "node --import tsx --test tests/e2e/*.spec.ts"
   },
   "devDependencies": {

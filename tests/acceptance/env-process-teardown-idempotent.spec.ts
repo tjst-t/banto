@@ -29,7 +29,7 @@ import type { ListOutput } from "../../packages/banto-core/src/index.js";
 
 const _thisDir = path.dirname(fileURLToPath(import.meta.url));
 const _repoRoot = path.resolve(_thisDir, "..", "..");
-const PROCESS_DRIVER_PATH = path.join(_repoRoot, "packages", "banto-daemon", "src", "process-driver.ts");
+const PROCESS_DRIVER_PATH = path.join(_repoRoot, "packages", "banto-environment-pool", "src", "process-driver.ts");
 const NODE = process.execPath;
 
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";

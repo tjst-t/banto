@@ -8,10 +8,16 @@
   "exports": {
     ".": {
       "default": "./src/index.ts"
+    },
+    "./module-protocol": {
+      "default": "./src/module-protocol.ts"
     }
   },
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "typebox": "^1.1.24"
   }
 }

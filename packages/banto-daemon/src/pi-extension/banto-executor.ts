@@ -21,7 +21,7 @@
  *     and the adapter is always loaded by pi at runtime, which provides the API. (I4)
  */
 
-import { DaemonClient, bantoExecutorTools, loadPromptAsset } from "@banto/core";
+import { DaemonClient, createExecutorTools, loadPromptAsset } from "@banto/core";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pi API is runtime-provided; see module doc (I4)
 export default function (pi: any): void {
@@ -40,10 +40,10 @@ export default function (pi: any): void {
   const client = new DaemonClient(daemonUrl);
 
   // Register all banto executor tools
-  for (const tool of bantoExecutorTools) {
+  for (const tool of createExecutorTools(client)) {
     pi.registerTool({
       name: tool.name,
-      label: tool.name,
+      label: tool.label,
       description: tool.description,
       // Inline JSON Schema as-is; pi accepts plain schema objects at runtime
       parameters: tool.parameters,
@@ -55,8 +55,8 @@ export default function (pi: any): void {
         // Note: schema descriptions for projectTag/taskId state that in pi adapter context
         // these are always overridden by BANTO_PROJECT/BANTO_TASK_ID env vars.
         const args = { ...params, projectTag, taskId };
-        const result = await tool.execute(client, args);
-        return { ...result, details: {} };
+        const result = await tool.execute(args, { toolCallId: _toolCallId });
+        return { content: result.content, details: result.details ?? {} };
       },
     });
   }

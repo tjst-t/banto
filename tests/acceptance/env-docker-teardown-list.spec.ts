@@ -36,7 +36,7 @@ const _repoRoot = path.resolve(_thisDir, "..", "..");
 const DOCKER_DRIVER_PATH = path.join(
   _repoRoot,
   "packages",
-  "banto-daemon",
+  "banto-environment-pool",
   "src",
   "docker-driver.ts"
 );

@@ -39,18 +39,27 @@ import { Scheduler } from "./scheduler.js";
 import type { TickJob } from "./scheduler.js";
 import { GateEvaluator, evaluatePendingGates } from "./gate-evaluator.js";
 import type { QuotaCheck } from "./gate-evaluator.js";
-import { PiRpcDriver, createWorktree } from "./pi-rpc-driver.js";
-import { SpawnLedger, isProcessAlive, killOrphanProcess } from "./spawn-ledger.js";
-import type { LedgerEntry } from "./spawn-ledger.js";
+import { PiRpcDriver } from "@banto/worker-pool";
+import { createWorktree } from "@banto/repo-manager";
+import { SpawnLedger, isProcessAlive, killOrphanProcess } from "@banto/worker-pool";
+import type { LedgerEntry } from "@banto/worker-pool";
 import { processMergeQueue } from "./merge-queue.js";
 import {
   fileConflictTask,
   deriveOriginResolutionPairs,
 } from "./conflict-filer.js";
-import { EnvLedger, countLiveByProfile } from "./env-ledger.js";
-import type { EnvLedgerEntry } from "./env-ledger.js";
-import { runDriverVerb, resolveDriverPath, DEFAULT_DRIVER_TIMEOUT_MS } from "./env-driver-runner.js";
-import { decryptSops, resolveCredentialsPath } from "./sops.js";
+// 決定32・task-0033: 動作検証環境の実行能力は Environment Pool（独立モジュール）が持つ。
+// Kobo は当面ライブラリとして参照する（サービス利用への切り替えは別タスク）
+import {
+  EnvLedger,
+  countLiveByProfile,
+  runDriverVerb,
+  resolveDriverPath,
+  DEFAULT_DRIVER_TIMEOUT_MS,
+  decryptSops,
+  resolveCredentialsPath,
+} from "@banto/environment-pool";
+import type { EnvLedgerEntry } from "@banto/environment-pool";
 import type {
   ProvisionOutput,
   HealthcheckOutput,
@@ -130,13 +139,13 @@ export interface DaemonConfig {
   tmuxSession?: string;
   /**
    * LLM provider name passed to pi via --provider.
-   * Default: "opencode-go" (VISION: models are interchangeable via opencode).
+   * Default: "opencode" (VISION: models are interchangeable via opencode).
    * Override via BANTO_PI_PROVIDER environment variable.
    */
   piProvider?: string;
   /**
    * LLM model ID passed to pi via --model.
-   * Default: "deepseek-v4-flash" (cheap, fast model for executor tasks).
+   * Default: "deepseek-v4-flash-free" (cheap, fast model for executor tasks).
    * Override via BANTO_PI_MODEL environment variable.
    */
   piModel?: string;
@@ -384,8 +393,8 @@ export class Daemon {
     ).pathname;
     const piDriver = new PiRpcDriver({
       sessionBaseDir: config.sessionBaseDir ?? path.join(config.dataDir, "sessions"),
-      defaultProvider: config.piProvider ?? "opencode-go",
-      defaultModel: config.piModel ?? "deepseek-v4-flash",
+      defaultProvider: config.piProvider ?? "opencode",
+      defaultModel: config.piModel ?? "deepseek-v4-flash-free",
       extensionPath,
     });
     this.driverRegistry.register("pi-rpc", piDriver);
@@ -498,8 +507,8 @@ export class Daemon {
       sessionBaseDir: config.sessionBaseDir,
       reconcileIntervalMs: config.reconcileIntervalMs,
       tmuxSession: config.tmuxSession,
-      piProvider: config.piProvider ?? process.env["BANTO_PI_PROVIDER"] ?? "opencode-go",
-      piModel: config.piModel ?? process.env["BANTO_PI_MODEL"] ?? "deepseek-v4-flash",
+      piProvider: config.piProvider ?? process.env["BANTO_PI_PROVIDER"] ?? "opencode",
+      piModel: config.piModel ?? process.env["BANTO_PI_MODEL"] ?? "deepseek-v4-flash-free",
       maxConcurrentSessions:
         config.maxConcurrentSessions ??
         // parseInt of a non-numeric env value yields NaN, and `size >= NaN` is
@@ -1584,8 +1593,8 @@ export class Daemon {
 
     // Build system prompt from executor-system asset (no findings injected here —
     // D1: findings are delivered via driver.inject() after spawn, which is the
-    // runtime-driver contract's guaranteed delivery path. PiRpcDriver ignores
-    // systemPrompt at the spawn call but processes inject() as the first RPC message).
+    // runtime-driver contract's guaranteed delivery path. systemPrompt carries the
+    // standing role; per-run material belongs in the injected message).
     let executorPrompt: string;
     try {
       executorPrompt = loadSkillAsset("executor-system");
@@ -1626,9 +1635,9 @@ export class Daemon {
     }
 
     // D1: deliver findings via inject() — the runtime-driver contract's sanctioned
-    // message path. This is the guaranteed delivery channel; systemPrompt is ignored
-    // by PiRpcDriver (it does not pass it to the pi process). inject() sends the
-    // findings as the first RPC `prompt` message into the running session.
+    // message path. systemPrompt is the standing role (appended to the runtime's own
+    // prompt at spawn); findings are per-run material, so they go through inject(),
+    // which sends them as the first RPC `prompt` message into the running session.
     // I2: inject failure is logged but not fatal — the session is already spawned and
     // the executor can still complete (the audit will re-check on the next verdict).
     const findingsMessage =
