@@ -55,6 +55,11 @@ export function EnvManager({ endpoint, endpointOf }: CanvasViewProps): React.Rea
   const list = useModuleTool<EnvList>(endpoint, "env.list", { includeTornDown });
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState<string>();
+  /** 環境ごとの健康状態（押したときだけ確かめる。一覧の表示で毎回叩かない）。 */
+  const [health, setHealth] = useState<Record<string, { ok: boolean; detail?: string }>>({});
+  /** 環境ごとに走らせたコマンドと、その結果のログ。 */
+  const [command, setCommand] = useState<Record<string, string>>({});
+  const [output, setOutput] = useState<Record<string, { exit: number; logTail: string; truncated: boolean }>>({});
 
   // 場所の一覧は workspace が持っている（決定25：URLは直書きしない）
   const workspace = endpointOf("workspace");
@@ -71,6 +76,43 @@ export function EnvManager({ endpoint, endpointOf }: CanvasViewProps): React.Rea
   const limits = list.data?.limits;
   const live = environments.filter((e) => e.state === "live");
   const stuck = environments.filter((e) => e.state === "teardown-failed");
+
+  const checkHealth = async (envId: string): Promise<void> => {
+    setBusy(`health:${envId}`);
+    setError(undefined);
+    try {
+      const result = await callModuleTool<{ ok: boolean; detail?: string }>(
+        endpoint,
+        "env.healthcheck",
+        { envId }
+      );
+      setHealth((prev) => ({ ...prev, [envId]: result }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(undefined);
+    }
+  };
+
+  const run = async (envId: string): Promise<void> => {
+    const cmd = (command[envId] ?? "").trim();
+    if (cmd.length === 0) return;
+    setBusy(`run:${envId}`);
+    setError(undefined);
+    try {
+      const result = await callModuleTool<{ exit: number; logTail: string; truncated: boolean }>(
+        endpoint,
+        "env.run",
+        { envId, cmd }
+      );
+      setOutput((prev) => ({ ...prev, [envId]: result }));
+    } catch (err) {
+      // I2: 走らせたのに何も起きなかったように見せない
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(undefined);
+    }
+  };
 
   const teardown = async (envId: string): Promise<void> => {
     setBusy(envId);
@@ -140,15 +182,55 @@ export function EnvManager({ endpoint, endpointOf }: CanvasViewProps): React.Rea
                   </div>
                 )}
                 {e.state !== "torn-down" && (
-                  <div className="pp-actions">
-                    <button
-                      className="pp-deny"
-                      disabled={busy === e.envId}
-                      onClick={() => teardown(e.envId)}
-                    >
-                      畳む
-                    </button>
-                  </div>
+                  <>
+                    <div className="pp-actions">
+                      <button
+                        disabled={busy === `health:${e.envId}`}
+                        onClick={() => checkHealth(e.envId)}
+                      >
+                        状態を確かめる
+                      </button>
+                      {health[e.envId] && (
+                        <span className={health[e.envId]!.ok ? "em-ok" : "em-ng"}>
+                          {health[e.envId]!.ok ? "使えます" : "使えません"}
+                          {health[e.envId]!.detail ? `（${health[e.envId]!.detail}）` : ""}
+                        </span>
+                      )}
+                      <button
+                        className="pp-deny"
+                        disabled={busy === e.envId}
+                        onClick={() => teardown(e.envId)}
+                      >
+                        畳む
+                      </button>
+                    </div>
+                    {/* ログ：この環境の中でコマンドを走らせて、その出力を見る（spec §6） */}
+                    <div className="rm-form em-run">
+                      <input
+                        placeholder="この環境で走らせるコマンド（例: npm test）"
+                        value={command[e.envId] ?? ""}
+                        onChange={(ev) =>
+                          setCommand((prev) => ({ ...prev, [e.envId]: ev.target.value }))
+                        }
+                        spellCheck={false}
+                      />
+                      <button
+                        disabled={busy === `run:${e.envId}` || (command[e.envId] ?? "").trim() === ""}
+                        onClick={() => run(e.envId)}
+                      >
+                        {busy === `run:${e.envId}` ? "実行中…" : "走らせる"}
+                      </button>
+                    </div>
+                    {output[e.envId] && (
+                      <div className="em-output">
+                        <div className={output[e.envId]!.exit === 0 ? "em-ok" : "em-ng"}>
+                          終了コード {output[e.envId]!.exit}
+                          {output[e.envId]!.truncated ? "（ログは末尾のみ）" : ""}
+                        </div>
+                        <pre>{output[e.envId]!.logTail || "（出力なし）"}</pre>
+                      </div>
+                    )}
+                  </>
                 )}
               </li>
             ))}

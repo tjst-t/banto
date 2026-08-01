@@ -212,6 +212,18 @@ async function serve(options: ServeOptions): Promise<void> {
   const environmentPool = new EnvironmentPool({
     dataDir: path.join(dataDir(), "environment-pool"),
     exposer,
+    // 決定32d: 復号鍵は Environment Pool が持つ。sops の標準の環境変数から取る
+    // ——これを渡さないと credentials 付きのプロファイルが使えない
+    ...(process.env["SOPS_AGE_KEY_FILE"]
+      ? { sopsAgeKeyFile: process.env["SOPS_AGE_KEY_FILE"] }
+      : {}),
+    // spec §5: 畳み損ね・孤児はPOへ知らせる。Kobo のケイデンスはまだ配線されていないので
+    // 番頭の会話へ流す——ログと画面だけでは、開くまで気づけない（I3）
+    onAttention: (message) => {
+      void server?.notify(`【検証環境】${message}`, { source: "system" }).catch((err: unknown) => {
+        console.error(`[env] 知らせを届けられませんでした: ${String(err)}`);
+      });
+    },
   });
   // spec-environment §5: 執行は Environment Pool の台帳が行う。**ここで回さないと
   // 番頭が立てた環境を誰も片付けない**——Kobo 側の tick は台帳が別で対象外（I3）

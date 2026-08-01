@@ -46,6 +46,19 @@ export interface EnvironmentPoolOptions {
    */
   maintenanceIntervalMs?: number;
   /**
+   * 期限切れを畳むときの試行回数（既定 3・spec §5「teardown失敗はリトライし」）。
+   * 一度の失敗で諦めると、一時的な失敗が「畳み損ね」として確定してしまう。
+   */
+  teardownRetryLimit?: number;
+  /**
+   * POへ知らせる口（spec §5「なお失敗ならケイデンス議題に載せる」）。
+   *
+   * Kobo のケイデンスは Banto にまだ配線されていないので、**番頭の会話へ流す**のが
+   * いまの等価物。ログと `env.list` に出すだけでは、POが画面を開くまで気づけない
+   * ——外に残ったものは費用なので、気づかないことがそのまま損失になる（I3）。
+   */
+  onAttention?: (message: string) => void;
+  /**
    * 環境を外から見えるようにする口（決定39）。渡さないと `expose` を頼まれても断る。
    * 配置によって手段が変わるので、ここで差し替える。
    */
@@ -155,6 +168,10 @@ export class EnvironmentPool {
   private maintenanceTimer: NodeJS.Timeout | undefined;
   private maintenanceRunning = false;
   private readonly maintenanceIntervalMs: number;
+  private readonly teardownRetryLimit: number;
+  private readonly onAttention: ((message: string) => void) | undefined;
+  /** 同じことを何度も知らせないための記録（毎分の tick で繰り返さない）。 */
+  private readonly notified = new Set<string>();
   /** 照合で見つかった孤児（台帳に無い実リソース）。画面と番頭に見せる。 */
   private orphanList: Array<{ driver: string; name: string; created: string }> = [];
 
@@ -167,6 +184,8 @@ export class EnvironmentPool {
     this.sopsAgeKeyFile = options.sopsAgeKeyFile;
     this.exposer = options.exposer;
     this.maintenanceIntervalMs = options.maintenanceIntervalMs ?? 60_000;
+    this.teardownRetryLimit = Math.max(1, options.teardownRetryLimit ?? 3);
+    this.onAttention = options.onAttention;
   }
 
   // ── TTL 執行と照合（spec-environment §5・決定32e）────────────────────────
@@ -222,21 +241,60 @@ export class EnvironmentPool {
       const now = Date.now();
       for (const entry of this.ledger.listLive()) {
         if (new Date(entry.ttlDeadline).getTime() > now) continue;
-        try {
-          await this.teardown(entry.envId);
+
+        // spec §5: 一度の失敗で諦めない。畳めないのが一時的なことはある
+        let lastError: string | undefined;
+        let done = false;
+        for (let attempt = 1; attempt <= this.teardownRetryLimit && !done; attempt += 1) {
+          try {
+            await this.teardown(entry.envId);
+            done = true;
+          } catch (err) {
+            lastError = err instanceof Error ? err.message : String(err);
+            if (attempt < this.teardownRetryLimit) {
+              await new Promise((r) => setTimeout(r, 200 * attempt));
+            }
+          }
+        }
+
+        if (done) {
           tornDown.push(entry.envId);
           console.warn(`[env] 期限切れのため畳みました: ${entry.envId}（${entry.profileName}）`);
-        } catch (err) {
-          // I2: 畳み損ねを黙らせない。台帳には teardown-failed が残る
+        } else {
+          // I2: 畳み損ねを黙らせない。台帳には teardown-failed が残り、POへも知らせる
           failed.push(entry.envId);
-          console.error(`[env] 期限切れの ${entry.envId} を畳めませんでした: ${String(err)}`);
+          console.error(
+            `[env] 期限切れの ${entry.envId} を ${this.teardownRetryLimit} 回試しても畳めませんでした: ${String(lastError)}`
+          );
+          this.attention(
+            `teardown-failed:${entry.envId}`,
+            `検証環境 ${entry.envId}（${entry.profileName}）を${this.teardownRetryLimit}回試しても畳めませんでした。` +
+              `外にリソースが残っている可能性があります。理由: ${String(lastError)}`
+          );
         }
       }
-      await this.reconcile();
+      const orphans = await this.reconcile();
+      if (orphans.length > 0) {
+        this.attention(
+          `orphans:${orphans.length}:${orphans.map((o) => o.name).join(",")}`,
+          `台帳に無い検証環境のリソースが ${orphans.length} 件あります（${orphans
+            .map((o) => o.name)
+            .join(", ")}）。Banto が把握していないものなので、消してよいか確かめてください`
+        );
+      }
     } finally {
       this.maintenanceRunning = false;
     }
     return { tornDown, failed, orphans: this.orphanList.length };
+  }
+
+  /**
+   * POへ知らせる。**同じことは1度だけ**——毎分の tick で同じ文面を流し続けない。
+   */
+  private attention(key: string, message: string): void {
+    if (!this.onAttention || this.notified.has(key)) return;
+    this.notified.add(key);
+    this.onAttention(message);
   }
 
   /**
