@@ -38,13 +38,24 @@ function linesToPlaces(lines: readonly unknown[]): PlaceSetting[] {
   return places;
 }
 
+export interface CoreSettingsOptions {
+  /** 場所が変わったときに呼ぶ（その場で効かせるため）。 */
+  onPlacesChanged?: () => void;
+  /**
+   * 設定に場所が保存されていないときに、**いま効いている場所**を返す。
+   *
+   * これが無いと、起動時の指定（`BANTO_PLACES`）で動いているとき画面が空に見える
+   * ——実際には効いているのに「1件も無い」と読めてしまう（I2：画面と実態を食い違わせない）。
+   */
+  effectivePlaces?: () => PlaceSetting[];
+}
+
 /**
  * @param store 設定の保存先
- * @param onPlacesChanged 場所が変わったときに呼ぶ（その場で効かせるため）
  */
 export function createCoreSettingsSections(
   store: SettingsStore,
-  onPlacesChanged?: () => void
+  options: CoreSettingsOptions = {}
 ): Array<{ id: string; spec: ModuleSettingsSpec }> {
   return [
     {
@@ -99,15 +110,22 @@ export function createCoreSettingsSections(
             type: "list",
             placeholder: "banto:/home/ubuntu/ghq/github.com/tjst-t/banto:docs/**,work/**",
             description:
-              "1行1件。`id:/絶対パス` で読み取り専用、`id:/絶対パス:glob,glob` で" +
-              "その範囲だけ書き込み可。`.git/` と Banto のデータ置き場はどう書いても書けない",
+              "1件1行。`id:/絶対パス` で読み取り専用、`id:/絶対パス:glob,glob` で" +
+              "その範囲だけ書き込み可。`.git/` と Banto のデータ置き場はどう書いても書けない。" +
+              "まだ保存していないときは**起動時の指定（BANTO_PLACES）がそのまま出る**ので、" +
+              "保存するとその内容が設定として残る",
           },
         ],
-        read: () => ({ places: placesToLines(store.all().places ?? []) }),
+        read: () => {
+          // 保存が無ければ、いま効いている場所を出す（画面と実態を食い違わせない）
+          const saved = store.all().places;
+          const effective = saved && saved.length > 0 ? saved : (options.effectivePlaces?.() ?? []);
+          return { places: placesToLines(effective) };
+        },
         write: (values) => {
           const lines = Array.isArray(values["places"]) ? values["places"] : [];
           store.update("places", linesToPlaces(lines));
-          onPlacesChanged?.();
+          options.onPlacesChanged?.();
           // 場所は毎回帳簿に聞き直す（D3）ので、その場で効く
           return { applied: true, message: "場所を変えました（すぐ効きます）。" };
         },

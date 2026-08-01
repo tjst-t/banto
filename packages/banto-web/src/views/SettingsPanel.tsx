@@ -172,16 +172,35 @@ function renderInput(
     );
   }
   if (field.type === "list") {
-    // 1行1件。表形式にするのは項目が育ってから
-    const lines = Array.isArray(value) ? (value as unknown[]).map(String).join("\n") : "";
+    // **1件1行のカード**（prototype の設定面に合わせる）。テキスト塊にすると、
+    // 1件足す・1件消すのに行の編集が要り、消したつもりで残る事故が起きる
+    const items = Array.isArray(value) ? (value as unknown[]).map(String) : [];
+    const replace = (next: string[]): void => onChange(next);
     return (
-      <textarea
-        className="sp-input sp-textarea"
-        value={lines}
-        placeholder={field.placeholder}
-        spellCheck={false}
-        onChange={(e) => onChange(e.target.value.split("\n"))}
-      />
+      <div className="sp-rows">
+        {items.map((item, index) => (
+          <div className="sp-row" key={index}>
+            <input
+              className="sp-input sp-row-input"
+              value={item}
+              placeholder={field.placeholder}
+              spellCheck={false}
+              onChange={(e) => replace(items.map((v, i) => (i === index ? e.target.value : v)))}
+            />
+            <button
+              className="sp-row-remove"
+              type="button"
+              title="この行を消す"
+              onClick={() => replace(items.filter((_, i) => i !== index))}
+            >
+              ✕
+            </button>
+          </div>
+        ))}
+        <button className="sp-row-add" type="button" onClick={() => replace([...items, ""])}>
+          ＋ 追加
+        </button>
+      </div>
     );
   }
   return (

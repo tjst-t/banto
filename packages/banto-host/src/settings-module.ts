@@ -17,7 +17,6 @@ import type { BantoModule, ModuleRegistry } from "./module.js";
 import type { SettingsStore } from "./settings-store.js";
 
 export const SETTINGS_BASE_URL = "/api/settings";
-export const SETTINGS_VIEW_KIND = "settings.panel";
 
 /** 区画1つ分（画面へ渡す形）。`fields` は宣言、`values` はいまの値。 */
 interface SettingsSectionView {
@@ -138,19 +137,10 @@ export function createSettingsModule(options: SettingsModuleOptions): BantoModul
     // 番頭には1本も渡さない（決定38b の自己昇格を機構で塞ぐ）
     tools: [],
     internalTools: [describe, update] as NamespacedToolDefinition[],
-    views: [
-      {
-        kind: SETTINGS_VIEW_KIND,
-        title: "設定",
-        description:
-          "Banto とモジュールの設定を見て変える。LLM・場所・検証環境・接続など。" +
-          "POが自分で開く画面で、番頭はここを変えられない。",
-        parameters: Type.Object({}),
-        component: "SettingsPanel",
-        category: "core",
-        icon: "⚙️",
-      },
-    ],
+    // **キャンバスの面にはしない**（PO要望 2026-08-01）。設定は Banto の一級の機能で、
+    // 会話と同じヘッダーの右端から開く独立した面（prototype の3面構成：
+    // セッション面／履歴面／設定面）。番頭が canvas.open で出すものでもない
+    views: [],
     skills: [],
   };
 }

@@ -225,3 +225,19 @@ describe("[決定41/c] 番頭は設定を変えられない（決定38b の自�
     assert.throws(() => new SettingsStore(path.join(dir, "settings.json")), /設定が壊れています/);
   });
 });
+
+describe("[決定41] 画面が実態を映す", () => {
+  it("保存が無いときは、いま効いている場所を出す（空に見せない）", async () => {
+    const core = createCoreSettingsSections(store, {
+      effectivePlaces: () => [{ id: "起動時の指定", path: "/tmp/x", writable: ["docs/**"] }],
+    });
+    const places = core.find((c) => c.id === "places")!;
+
+    // まだ保存していない＝起動時の指定が効いている状態
+    assert.deepEqual(await places.spec.read(), { places: ["起動時の指定:/tmp/x:docs/**"] });
+
+    // 保存すると、そちらが真実になる
+    await places.spec.write({ places: ["保存した場所:/tmp/y"] });
+    assert.deepEqual(await places.spec.read(), { places: ["保存した場所:/tmp/y"] });
+  });
+});

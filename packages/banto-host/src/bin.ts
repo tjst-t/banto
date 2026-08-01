@@ -305,7 +305,15 @@ async function serve(options: ServeOptions): Promise<void> {
   // 設定モジュールは他モジュールの宣言を集めるので、レジストリが揃ってから登録する（決定41）
   modules.register(
     createSettingsModule({
-      core: createCoreSettingsSections(settings),
+      core: createCoreSettingsSections(settings, {
+        // 保存が無いときは起動時の指定を映す（画面が空に見えると、効いていないと読める）
+        effectivePlaces: () =>
+          readPlaceConfig(workspace).map((c) => ({
+            id: c.id,
+            path: c.path,
+            ...(c.writable ? { writable: [...c.writable] } : {}),
+          })),
+      }),
       modules,
       store: settings,
     })

@@ -82,7 +82,6 @@ export {
   createSettingsModule,
   settingsSection,
   SETTINGS_BASE_URL,
-  SETTINGS_VIEW_KIND,
 } from "./settings-module.js";
 export {
   createPlaceRequestTools,

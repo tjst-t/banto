@@ -17,6 +17,7 @@ import type {
   CatalogEntryView,
   ServerEvent,
   ThreadView,
+  ModuleEndpointView,
   TranscriptEntry,
 } from "@banto/host/protocol";
 
@@ -48,6 +49,8 @@ export interface BantoSession {
   catalog: CatalogEntryView[];
   /** 開いている分身（タブに並ぶ）。 */
   threads: ThreadView[];
+  /** 登録されているモジュールと到達先（GUI を持たないものも含む）。 */
+  modules: ModuleEndpointView[];
   /** 畳んだ分身（履歴に並ぶ）。新しく畳んだものが先頭。 */
   closedThreads: ThreadView[];
   activeThreadId: string | undefined;
@@ -129,6 +132,7 @@ export function useBantoSession(url: string): BantoSession {
   const [tools, setTools] = useState<string[]>([]);
   const [catalog, setCatalog] = useState<CatalogEntryView[]>([]);
   const [allThreads, setAllThreads] = useState<ThreadView[]>([]);
+  const [modules, setModules] = useState<ModuleEndpointView[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string>();
   const [byThread, setByThread] = useState<Record<string, ThreadState>>({});
   const socketRef = useRef<WebSocket>(null);
@@ -205,6 +209,7 @@ export function useBantoSession(url: string): BantoSession {
           setSessionId(event.sessionId);
           setTools(event.tools);
           setCatalog(event.catalog);
+          setModules(event.modules ?? []);
           setAllThreads(event.threads);
           syncStreaming(event.threads);
           knownThreadIds.current = new Set(event.threads.map((t) => t.threadId));
@@ -321,6 +326,7 @@ export function useBantoSession(url: string): BantoSession {
     sessionId,
     tools,
     catalog,
+    modules,
     threads,
     closedThreads,
     activeThreadId,

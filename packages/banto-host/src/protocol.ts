@@ -194,6 +194,22 @@ export interface WelcomeEvent {
   tools: string[];
   /** キャンバスに開けるGUIの一覧。 */
   catalog: CatalogEntryView[];
+  /**
+   * 登録されているモジュールと到達先。
+   *
+   * **GUI を持たないモジュールにも届くようにするため**（決定41）。カタログは面の一覧なので、
+   * キャンバスに出ないモジュール（設定など）はそこに現れない——UI が「モジュール名から
+   * 到達先を引く」ための表がここ。URL を UI に直書きしないという点は決定25 のまま。
+   */
+  modules: ModuleEndpointView[];
+}
+
+/** モジュール1つの到達先（GUI の有無によらず全部載る）。 */
+export interface ModuleEndpointView {
+  name: string;
+  title: string;
+  description: string;
+  baseUrl: string;
 }
 
 /** スレッドが増減した・名前が変わった。開閉のたびに全クライアントへ配る。 */

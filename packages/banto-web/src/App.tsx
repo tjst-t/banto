@@ -13,6 +13,7 @@ import { useBantoSession } from "./useBantoSession.js";
 import { resolveCanvasView } from "./views/registry.js";
 import { ThreadTabs } from "./ThreadTabs.js";
 import { ThreadHistory } from "./ThreadHistory.js";
+import { SettingsPanel } from "./views/SettingsPanel.js";
 
 /**
  * 既定は**同一オリジンの `/ws`**。開発サーバがそれを番頭ホストへ中継するので、
@@ -195,6 +196,13 @@ export function App(): React.ReactElement {
   const [catalogOpen, setCatalogOpen] = useState(false);
   /** 履歴の面を見ているか。プロトタイプ三次改訂の「ピンタブ」に相当する */
   const [historyOpen, setHistoryOpen] = useState(false);
+  /**
+   * 設定面（決定41・prototype の3面構成）。
+   *
+   * **キャンバスのタブではなく独立した面**。設定は Banto の一級の機能で、会話と同じ
+   * ヘッダーの右端から開く。履歴面と同じ扱いで、同時にはどちらか一方しか出さない。
+   */
+  const [settingsOpen, setSettingsOpen] = useState(false);
   /** チャット欄の幅。境界のドラッグで変えられる（PO要望 2026-07-31）。 */
   const [chatWidth, setChatWidth] = useState(readStoredChatWidth);
   const chatPaneRef = useRef<HTMLElement>(null);
@@ -268,6 +276,7 @@ export function App(): React.ReactElement {
     ? session.catalog.find((c) => c.kind === activeTab.kind)
     : undefined;
   const ActiveView = activeSpec ? resolveCanvasView(activeSpec.component) : undefined;
+  const settingsEndpoint = session.modules.find((m) => m.name === "settings")?.baseUrl;
 
   /**
    * モジュール名 → 到達先。GUI がまたぐとき（検証環境の画面が場所の一覧を要る等）に使う。
@@ -275,8 +284,10 @@ export function App(): React.ReactElement {
    */
   const endpointOf = useCallback(
     (moduleName: string): string | undefined =>
+      // GUI を持たないモジュール（設定など）はカタログに出ないので、モジュールの表を先に見る
+      session.modules.find((m) => m.name === moduleName)?.baseUrl ??
       session.catalog.find((entry) => entry.module === moduleName)?.endpoint,
-    [session.catalog]
+    [session.modules, session.catalog]
   );
 
   const submit = (): void => {
@@ -313,7 +324,10 @@ export function App(): React.ReactElement {
         <button
           className={`pin-tab ${historyOpen ? "is-active" : ""}`}
           type="button"
-          onClick={() => setHistoryOpen((v) => !v)}
+          onClick={() => {
+            setHistoryOpen((v) => !v);
+            setSettingsOpen(false);
+          }}
           title="畳んだ会話の履歴"
           aria-label="履歴"
         >
@@ -321,6 +335,19 @@ export function App(): React.ReactElement {
           {session.closedThreads.length > 0 && (
             <span className="pin-tab-count">{session.closedThreads.length}</span>
           )}
+        </button>
+        {/* 設定は一級の面（決定41）。会話タブの列とは混ざらないよう、右端に固定する */}
+        <button
+          className={`pin-tab ${settingsOpen ? "is-active" : ""}`}
+          type="button"
+          onClick={() => {
+            setSettingsOpen((v) => !v);
+            setHistoryOpen(false);
+          }}
+          title="設定"
+          aria-label="設定"
+        >
+          ⚙️
         </button>
         <span className={`conn conn--${session.status}`}>
           {session.status === "open"
@@ -333,7 +360,25 @@ export function App(): React.ReactElement {
         </span>
       </header>
 
-      {historyOpen ? (
+      {settingsOpen ? (
+        settingsEndpoint ? (
+          <SettingsPanel
+            params={{}}
+            tabId="settings"
+            kind="settings"
+            module="settings"
+            endpoint={settingsEndpoint}
+            endpointOf={endpointOf}
+          />
+        ) : (
+          <div className="threads-empty">
+            <p className="threads-empty-title">設定を開けません</p>
+            <p className="threads-empty-sub">
+              設定モジュールが登録されていません（ホストの構成を確認してください）
+            </p>
+          </div>
+        )
+      ) : historyOpen ? (
         <ThreadHistory
           closedThreads={session.closedThreads}
           chatOf={session.chatOf}

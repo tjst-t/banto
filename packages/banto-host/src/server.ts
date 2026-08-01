@@ -280,6 +280,13 @@ export class BantoHostServer {
           endpoint: owner?.endpoint.baseUrl ?? "",
         };
       }),
+      // GUI を持たないモジュール（設定など）にも UI が到達できるように（決定41）
+      modules: (this.modules?.list() ?? []).map((m) => ({
+        name: m.name,
+        title: m.title,
+        description: m.description,
+        baseUrl: m.endpoint.baseUrl,
+      })),
     });
 
     // 開いている全スレッドぶん配る。リロードしても会話が消えず、途中から繋いだ
