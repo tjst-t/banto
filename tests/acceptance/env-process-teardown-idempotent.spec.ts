@@ -34,6 +34,13 @@ const NODE = process.execPath;
 
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
 
+// imp-0012: テスト用の一時 state に隔離（本番の /tmp/banto-process-driver-state.json を汚さない）
+const TEST_DRIVER_STATE = path.join(
+  os.tmpdir(),
+  "banto-process-driver-state-acceptance-env-process-teardown-idempotent.json"
+);
+process.env["BANTO_PROCESS_DRIVER_STATE"] = TEST_DRIVER_STATE;
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function getFreePort(): Promise<number> {
@@ -170,6 +177,7 @@ describe("[AC-S9d7fdb-2-4] teardown idempotency and list taskID-prefix filtering
     await daemon.stop();
     fs.rmSync(dataDir, { recursive: true, force: true });
     fs.rmSync(projectDir, { recursive: true, force: true });
+    fs.rmSync(TEST_DRIVER_STATE, { force: true });
   });
 
   // ── Step 1: list contains taskID-prefixed resource, NOT unrelated process ──

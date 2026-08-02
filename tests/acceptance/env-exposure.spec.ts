@@ -8,7 +8,7 @@
  * (b)(c) はどちらも I3——外に残ったものは費用であり、「畳んだつもり」が一番危ない。
  */
 
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as http from "node:http";
@@ -24,6 +24,17 @@ import {
 } from "@banto/environment-pool";
 import { PlaceRegistry, assertWritable, resolveInPlace } from "@banto/host";
 import type { EnvExposer } from "@banto/core";
+
+// imp-0012: テスト用の一時 state に隔離（本番の /tmp/banto-process-driver-state.json を汚さない）
+const TEST_DRIVER_STATE = path.join(
+  os.tmpdir(),
+  "banto-process-driver-state-acceptance-env-exposure.json"
+);
+process.env["BANTO_PROCESS_DRIVER_STATE"] = TEST_DRIVER_STATE;
+
+after(() => {
+  fs.rmSync(TEST_DRIVER_STATE, { force: true });
+});
 
 /** モジュールの到達先。中継はこの下に生える（決定27・39）。 */
 const BASE = "/api/environment-pool";

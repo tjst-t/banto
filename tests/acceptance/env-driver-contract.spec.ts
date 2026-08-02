@@ -34,6 +34,13 @@ const _repoRoot = path.resolve(_thisDir, "..", "..");
 const PROCESS_DRIVER_PATH = path.join(_repoRoot, "packages", "banto-environment-pool", "src", "process-driver.ts");
 const NODE = process.execPath;
 
+// imp-0012: テスト用の一時 state に隔離（本番の /tmp/banto-process-driver-state.json を汚さない）
+const TEST_DRIVER_STATE = path.join(
+  os.tmpdir(),
+  "banto-process-driver-state-acceptance-env-driver-contract.json"
+);
+process.env["BANTO_PROCESS_DRIVER_STATE"] = TEST_DRIVER_STATE;
+
 // ── Helper to invoke the driver ───────────────────────────────────────────────
 
 /**
@@ -110,6 +117,7 @@ describe("[AC-S9d7fdb-2-1] environment driver contract — process driver", () =
     if (handle) {
       invokeDriver("teardown", { handle });
     }
+    fs.rmSync(TEST_DRIVER_STATE, { force: true });
   });
 
   // ── 1. provision ────────────────────────────────────────────────────────────

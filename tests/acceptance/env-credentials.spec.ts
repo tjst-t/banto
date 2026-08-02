@@ -20,6 +20,13 @@ import * as path from "node:path";
 
 import { EnvironmentPool } from "@banto/environment-pool";
 
+// imp-0012: テスト用の一時 state に隔離（本番の /tmp/banto-process-driver-state.json を汚さない）
+const TEST_DRIVER_STATE = path.join(
+  os.tmpdir(),
+  "banto-process-driver-state-acceptance-env-credentials.json"
+);
+process.env["BANTO_PROCESS_DRIVER_STATE"] = TEST_DRIVER_STATE;
+
 const SECRET = "とても秘密の値-9f3a2b";
 
 let dir: string;
@@ -82,6 +89,7 @@ before(() => {
 
 after(() => {
   if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(TEST_DRIVER_STATE, { force: true });
 });
 
 describe("[spec-environment §4] credentials がドライバへ届く", () => {
