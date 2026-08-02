@@ -827,7 +827,15 @@ export function App(): React.ReactElement {
             )}
             {attachError && (
               <div className="attach-error" role="alert">
-                {attachError}
+                <span className="attach-error-text">{attachError}</span>
+                <button
+                  className="attach-error-close"
+                  type="button"
+                  onClick={() => setAttachError(undefined)}
+                  aria-label="このエラーを閉じる"
+                >
+                  ×
+                </button>
               </div>
             )}
             <textarea
