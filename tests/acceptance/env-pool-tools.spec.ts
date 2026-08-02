@@ -8,7 +8,7 @@
  * 本仕様で最も優先度の高い機構（I3）。
  */
 
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import * as childProcess from "node:child_process";
 import * as fs from "node:fs";
@@ -27,6 +27,17 @@ import {
   type EnvLimits,
 } from "@banto/environment-pool";
 import type { NamespacedToolDefinition } from "@banto/core";
+
+// imp-0012: テスト用の一時 state に隔離（本番の /tmp/banto-process-driver-state.json を汚さない）
+const TEST_DRIVER_STATE = path.join(
+  os.tmpdir(),
+  "banto-process-driver-state-acceptance-env-pool-tools.json"
+);
+process.env["BANTO_PROCESS_DRIVER_STATE"] = TEST_DRIVER_STATE;
+
+after(() => {
+  fs.rmSync(TEST_DRIVER_STATE, { force: true });
+});
 
 let dir: string;
 let dataDir: string;
@@ -572,7 +583,7 @@ describe("[I3] 片付けが他人のプロセスを壊さない（pid の使い�
     // pid は使い回されるので、古い記録がこの状態になることが実際にある（7月の記録2件がそうだった）
     const victim = childProcess.spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
     victim.unref();
-    const stateFile = path.join(os.tmpdir(), "banto-process-driver-state.json");
+    const stateFile = TEST_DRIVER_STATE;
     const before = fs.existsSync(stateFile) ? fs.readFileSync(stateFile, "utf-8") : undefined;
     try {
       fs.writeFileSync(

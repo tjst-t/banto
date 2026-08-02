@@ -47,7 +47,12 @@ import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
 // The process driver uses this file as its single truth for managed resources.
 // We plant orphan entries here directly while the daemon is stopped.
 
-const PROCESS_DRIVER_STATE_FILE = path.join(os.tmpdir(), "banto-process-driver-state.json");
+// imp-0012: テスト用の一時 state に隔離（本番の /tmp/banto-process-driver-state.json を汚さない）
+const PROCESS_DRIVER_STATE_FILE = path.join(
+  os.tmpdir(),
+  "banto-process-driver-state-acceptance-env-reconcile.json"
+);
+process.env["BANTO_PROCESS_DRIVER_STATE"] = PROCESS_DRIVER_STATE_FILE;
 
 interface ProcessEntry {
   pid: number;
@@ -216,6 +221,7 @@ describe("[AC-S9d7fdb-5-3] reconcile: orphan detection + vanished detection (rea
     try { await daemon2?.stop(); } catch { /* best-effort */ }
     fs.rmSync(dataDir, { recursive: true, force: true });
     fs.rmSync(projectDir, { recursive: true, force: true });
+    fs.rmSync(PROCESS_DRIVER_STATE_FILE, { force: true });
   });
 
   it("PART A step 1: while daemon is down, plant an orphan in the process driver state file", () => {

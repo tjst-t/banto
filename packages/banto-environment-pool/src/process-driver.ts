@@ -30,8 +30,13 @@ import * as os from "node:os";
 // All managed processes are tracked in a JSON file under the system temp dir.
 // This allows `list` to enumerate them across separate driver invocations.
 // D3: the state file is the single truth for what the process driver manages.
+//
+// The path is overridable via BANTO_PROCESS_DRIVER_STATE (added option; the
+// default path is unchanged). Acceptance tests set it to an isolated file so
+// `npm test` never writes to the production state (imp-0012).
 
-const STATE_FILE = path.join(os.tmpdir(), "banto-process-driver-state.json");
+const STATE_FILE = process.env["BANTO_PROCESS_DRIVER_STATE"]
+  ?? path.join(os.tmpdir(), "banto-process-driver-state.json");
 
 interface ProcessEntry {
   pid: number;

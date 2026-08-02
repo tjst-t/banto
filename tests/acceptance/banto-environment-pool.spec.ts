@@ -30,6 +30,13 @@ import {
 import type { EnvLedgerEntry } from "@banto/environment-pool";
 import type { EnvHandle, ProvisionOutput, HealthcheckOutput } from "@banto/core";
 
+// imp-0012: テスト用の一時 state に隔離（本番の /tmp/banto-process-driver-state.json を汚さない）
+const TEST_DRIVER_STATE = path.join(
+  os.tmpdir(),
+  "banto-process-driver-state-acceptance-banto-environment-pool.json"
+);
+process.env["BANTO_PROCESS_DRIVER_STATE"] = TEST_DRIVER_STATE;
+
 let dir: string;
 
 before(() => {
@@ -38,6 +45,7 @@ before(() => {
 
 after(() => {
   if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(TEST_DRIVER_STATE, { force: true });
 });
 
 function entry(overrides: Partial<EnvLedgerEntry> = {}): EnvLedgerEntry {

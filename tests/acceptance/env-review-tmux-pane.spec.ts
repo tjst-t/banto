@@ -34,6 +34,17 @@ const _thisDir = path.dirname(fileURLToPath(import.meta.url));
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
 import type { LedgerEntry } from "@banto/worker-pool";
 
+// imp-0012: テスト用の一時 state に隔離（本番の /tmp/banto-process-driver-state.json を汚さない）
+const TEST_DRIVER_STATE = path.join(
+  os.tmpdir(),
+  "banto-process-driver-state-acceptance-env-review-tmux-pane.json"
+);
+process.env["BANTO_PROCESS_DRIVER_STATE"] = TEST_DRIVER_STATE;
+
+after(() => {
+  fs.rmSync(TEST_DRIVER_STATE, { force: true });
+});
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function getFreePort(): Promise<number> {
@@ -227,6 +238,7 @@ describe("[AC-S9d7fdb-7-2] tmux pane added to task window on in-review", () => {
     tmuxCmd(["kill-session", "-t", tmuxSession]);
     fs.rmSync(dataDir, { recursive: true, force: true });
     fs.rmSync(projectDir, { recursive: true, force: true });
+    fs.rmSync(TEST_DRIVER_STATE, { force: true });
   });
 
   it("transition to in-review succeeds", async () => {

@@ -27,6 +27,13 @@ const _thisDir = path.dirname(fileURLToPath(import.meta.url));
 
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
 
+// imp-0012: テスト用の一時 state に隔離（本番の /tmp/banto-process-driver-state.json を汚さない）
+const TEST_DRIVER_STATE = path.join(
+  os.tmpdir(),
+  "banto-process-driver-state-acceptance-env-quota.json"
+);
+process.env["BANTO_PROCESS_DRIVER_STATE"] = TEST_DRIVER_STATE;
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function getFreePort(): Promise<number> {
@@ -176,6 +183,7 @@ describe("[AC-S9d7fdb-4-3] quota enforcement and QuotaCheck gate hold", () => {
     await daemon.stop();
     fs.rmSync(dataDir, { recursive: true, force: true });
     fs.rmSync(projectDir, { recursive: true, force: true });
+    fs.rmSync(TEST_DRIVER_STATE, { force: true });
   });
 
   it("Step 1: POST provision for second task → 409 with quota reason", async () => {

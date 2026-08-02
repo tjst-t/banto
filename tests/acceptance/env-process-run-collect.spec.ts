@@ -30,6 +30,13 @@ const _repoRoot = path.resolve(_thisDir, "..", "..");
 
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
 
+// imp-0012: テスト用の一時 state に隔離（本番の /tmp/banto-process-driver-state.json を汚さない）
+const TEST_DRIVER_STATE = path.join(
+  os.tmpdir(),
+  "banto-process-driver-state-acceptance-env-process-run-collect.json"
+);
+process.env["BANTO_PROCESS_DRIVER_STATE"] = TEST_DRIVER_STATE;
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function getFreePort(): Promise<number> {
@@ -131,6 +138,7 @@ describe("[AC-S9d7fdb-2-3] process driver run and collect via API", () => {
     await daemon.stop();
     fs.rmSync(dataDir, { recursive: true, force: true });
     fs.rmSync(projectDir, { recursive: true, force: true });
+    fs.rmSync(TEST_DRIVER_STATE, { force: true });
   });
 
   // ── Step 1: run with successful command ────────────────────────────────────
