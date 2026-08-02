@@ -814,7 +814,7 @@ export function App(): React.ReactElement {
                 title="画像・テキストファイルを添付"
                 aria-label="添付"
               >
-                📎
+                ＋
               </button>
               <span className="chat-hint">Enter で送信 · Shift + Enter で改行</span>
               {session.busy ? (
