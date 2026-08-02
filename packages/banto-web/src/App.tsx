@@ -194,7 +194,14 @@ function ThinkingRow(): React.ReactElement {
   );
 }
 
-function ChatRow({ entry }: { entry: TranscriptEntry }): React.ReactElement {
+function ChatRow({
+  entry,
+  onDismissError,
+}: {
+  entry: TranscriptEntry;
+  /** error 行の × が押されたとき（error 以外には渡さない）。 */
+  onDismissError?: () => void;
+}): React.ReactElement {
   switch (entry.role) {
     case "po":
       return <div className="msg msg--po">{entry.text}</div>;
@@ -218,7 +225,21 @@ function ChatRow({ entry }: { entry: TranscriptEntry }): React.ReactElement {
         </div>
       );
     case "error":
-      return <div className="msg msg--error">{entry.text}</div>;
+      return (
+        <div className="msg msg--error">
+          <span className="msg-error-text">{entry.text}</span>
+          {onDismissError && (
+            <button
+              className="msg-error-close"
+              type="button"
+              onClick={onDismissError}
+              aria-label="このエラーを閉じる"
+            >
+              ×
+            </button>
+          )}
+        </div>
+      );
   }
 }
 
@@ -246,6 +267,21 @@ export function App(): React.ReactElement {
   const [pending, setPending] = useState<PendingFile[]>([]);
   /** 添付のクライアント側エラー（サイズ超過・画像非対応など）。 */
   const [attachError, setAttachError] = useState<string>();
+  /**
+   * × で閉じたエラー行の位置（スレッドごと）。会話はスレッドごとに独立して積まれるので、
+   * 位置だけの記憶だと別のスレッドのエラーを誤って隠してしまう——スレッドIDで分ける。
+   * エラー行に id が無い（protocol の TranscriptEntry）ため、チャット配列の index で特定する
+   * （会話は追記のみで並びが変わらない）。
+   */
+  const [dismissedErrors, setDismissedErrors] = useState<Record<string, ReadonlySet<number>>>({});
+
+  /** エラー行を1件だけ非表示にする（全部は消さない）。 */
+  const dismissError = useCallback((threadId: string, i: number) => {
+    setDismissedErrors((prev) => ({
+      ...prev,
+      [threadId]: new Set(prev[threadId] ?? []).add(i),
+    }));
+  }, []);
   /** 現在のモデル情報（/api/model）。画像添付の可否を選択時点で判定する。 */
   const [modelInfo, setModelInfo] = useState<{ id: string; vision: boolean }>();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -738,9 +774,21 @@ export function App(): React.ReactElement {
                 番頭に話しかけてください。キャンバスに何かを出したいときは「〜を開いて」と頼みます。
               </p>
             )}
-            {session.chat.map((entry, i) => (
-              <ChatRow key={i} entry={entry} />
-            ))}
+            {session.chat.map((entry, i) => {
+              const threadId = session.activeThreadId;
+              if (entry.role === "error" && threadId && dismissedErrors[threadId]?.has(i)) {
+                return null;
+              }
+              return (
+                <ChatRow
+                  key={i}
+                  entry={entry}
+                  onDismissError={
+                    entry.role === "error" && threadId ? () => dismissError(threadId, i) : undefined
+                  }
+                />
+              );
+            })}
             {/* 番頭が喋り始めたら消す——本文そのものが進んでいる証拠になる */}
             {session.busy && session.chat[session.chat.length - 1]?.role !== "banto" && (
               <ThinkingRow />
