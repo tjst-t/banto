@@ -69,6 +69,8 @@ import {
 import { guardPathArg } from "./place-scoped.js";
 import { createSkillTools } from "./skill-tools.js";
 import { bindToolArgs, createThreadTools } from "./thread-tools.js";
+import { defineNamespacedTool } from "./tool-registry.js";
+import { Type } from "typebox";
 import { ThreadRegistry, type ThreadFactory } from "./threads.js";
 import { loadBantoSkills } from "./skills.js";
 
@@ -396,6 +398,32 @@ async function serve(options: ServeOptions): Promise<void> {
         threads,
         // 出所は「別の会話」。職人の報告と同じ札で出さない（PO報告 2026-07-31）
         seed: (threadId, message) => server.notify(message, { threadId, source: "thread" }),
+      }),
+      // レベル1（PO裁定）: banto 自身の再起動。exit(0) で終わり、systemd の Restart=always が
+      // 起動し直す。職人・検証環境の始末は KillMode=control-group の cgroup 巻き添えで成立する
+      // （ユニットの Restart=always への変更は PO が実施する——ここでは exit(0) するだけでよい）
+      defineNamespacedTool({
+        name: "system.restart",
+        label: "System: Restart",
+        description:
+          "banto ホスト自身を再起動する。全クライアントに通知してから graceful に終了し、" +
+          "systemd（Restart=always）が起動し直す。会話は保存済みで、再起動後に続きから話せる。" +
+          "稼働中の職人は中断されるが、記録は残り worker.wake で再開できる。" +
+          "検証環境は cgroup の巻き添えで落ちるので、事前に env.list で確認すること",
+        parameters: Type.Object({}),
+        async execute() {
+          // 通知を必ず届けてから終わる——送信が終わる前に死なない（I2）
+          await server.notify(
+            "これから再起動します。会話は保存済みで、再起動後に続きから話せます。",
+            { source: "system" }
+          );
+          // notify は broadcast を直ちに流すが、クライアントに届く猶予を少し残す
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          // graceful に閉じる（全スレッドの後始末＋WS/HTTPのclose。SIGTERM の shutdown と同じ）
+          await server.close();
+          // Restart=always なら systemd が起動し直す。テスト環境では単に終了する
+          process.exit(0);
+        },
       }),
       // 決定35a: 職人の報告は**起こしたスレッド**へ返る。番頭に自分の threadId を
       // 書かせず、ここで固定して渡す（番頭は自分がどのスレッドかを知らない）
