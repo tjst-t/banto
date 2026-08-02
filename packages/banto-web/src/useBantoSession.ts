@@ -13,6 +13,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  Attachment,
   CanvasTabView,
   CatalogEntryView,
   ServerEvent,
@@ -63,7 +64,7 @@ export interface BantoSession {
   unreadThreadIds: string[];
   /** 特定スレッドの会話を読む（履歴の読み取り用）。 */
   chatOf(threadId: string): TranscriptEntry[];
-  send(text: string): void;
+  send(text: string, attachments?: Attachment[]): void;
   abort(): void;
   switchTab(tabId: string): void;
   closeTab(tabId: string): void;
@@ -337,11 +338,16 @@ export function useBantoSession(url: string): BantoSession {
     unreadThreadIds,
     chatOf: (threadId) => byThread[threadId]?.chat ?? [],
     send: useCallback(
-      (text: string) => {
+      (text: string, attachments?: Attachment[]) => {
         const threadId = activeThreadId;
         if (!threadId) return;
         update(threadId, (prev) => ({ ...prev, busy: true }));
-        post({ type: "prompt", threadId, text });
+        post({
+          type: "prompt",
+          threadId,
+          text,
+          ...(attachments && attachments.length > 0 ? { attachments } : {}),
+        });
       },
       [activeThreadId, post, update]
     ),

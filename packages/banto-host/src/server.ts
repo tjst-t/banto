@@ -14,8 +14,11 @@
  */
 
 import * as http from "node:http";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
+import type { ImageContent } from "@mariozechner/pi-ai";
 
 import type { CanvasCatalog } from "./canvas.js";
 import { CORE_ORIGIN, type ModuleRegistry } from "./module.js";
@@ -24,12 +27,21 @@ import { createWebAssetHandler } from "./web-assets.js";
 import {
   BANTO_DEFAULT_PORT,
   BANTO_WS_PATH,
+  type Attachment,
   type ClientMessage,
   type NoticeSource,
   type ServerEvent,
 } from "./protocol.js";
 import { fromWireToolName } from "@banto/core";
 import type { Thread, ThreadRegistry } from "./threads.js";
+import { workspaceRoot } from "./workspace.js";
+
+/**
+ * 添付（テキストファイル）の保存先。ワークスペースのルート配下の `work/attachments/`。
+ * BANTO_PLACES で `work/**` が読み書きできる場所として登録されている想定。
+ * プロンプト注釈にもそのまま使うので、区切りは常に `/`。
+ */
+const ATTACHMENT_DIR_REL = "work/attachments";
 
 /**
  * サーバが必要とするセッションの最小契約。pi の `AgentSession` はこれを構造的に満たす。
@@ -41,8 +53,18 @@ export interface HostSession {
   readonly sessionId: string;
   readonly isStreaming: boolean;
   subscribe(listener: (event: unknown) => void): () => void;
-  prompt(text: string, options?: { streamingBehavior?: "steer" | "followUp" }): Promise<void>;
+  prompt(
+    text: string,
+    options?: { streamingBehavior?: "steer" | "followUp"; images?: ImageContent[] }
+  ): Promise<void>;
   abort(): Promise<void>;
+}
+
+/** モデル情報。WebUI が画像添付の可否を判定するための最小形。 */
+export interface ModelInfo {
+  id: string;
+  /** vision 対応（モデルの input が image を受け付ける）か。 */
+  vision: boolean;
 }
 
 /** `notify` の宛先と出所。 */
@@ -85,6 +107,11 @@ export interface BantoHostServerOptions {
    * 続けたくない。1プロセス・1ポートにすると、前段で守るのもそのポート1つで済む。
    */
   webDir?: string;
+  /**
+   * 現在のモデル。WebUI が画像添付の可否を判定するために使う（`GET /api/model`）。
+   * 未指定（pi の既定解決に任せている）ときは undefined——画像は受け付けない。
+   */
+  model?: ModelInfo;
 }
 
 /**
@@ -101,6 +128,8 @@ export class BantoHostServer {
   private readonly modules: ModuleRegistry | undefined;
   private readonly clients = new Set<WebSocket>();
   private readonly unsubscribeThreads: () => void;
+  /** 現在のモデル情報。画像添付の可否判定に使う。 */
+  private readonly modelInfo: ModelInfo | undefined;
   /** 購読を張り終えたスレッド。開くたびに増える。 */
   private readonly attached = new Set<string>();
 
@@ -108,6 +137,7 @@ export class BantoHostServer {
     this.threads = options.threads;
     this.catalog = options.catalog;
     this.modules = options.modules;
+    this.modelInfo = options.model;
     this.httpServer = httpServer;
     this.wss = new WebSocketServer({ noServer: true });
 
@@ -161,10 +191,20 @@ export class BantoHostServer {
     // ビルド済み資産があれば UI も配る。無ければ何もしない（vite が出す）
     const serveWebAsset = createWebAssetHandler(options.webDir);
 
+    // 現在のモデル情報。WebUI が画像添付の可否を選択時点で判定するために使う。
+    // モデル未指定（pi の既定解決に任せている）ときは、対応を名乗れないので
+    // 非対応として返す（I1: 知らないことを対応と偽らない）
+    const modelInfo = options.model;
     const httpServer = http.createServer((req, res) => {
       void (async () => {
         if (req.method === "GET" && req.url === "/health") {
           const body = JSON.stringify({ ok: true });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(body);
+          return;
+        }
+        if (req.method === "GET" && req.url === "/api/model") {
+          const body = JSON.stringify(modelInfo ?? { id: "(未設定)", vision: false });
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(body);
           return;
@@ -461,18 +501,60 @@ export class BantoHostServer {
     }
 
     if (message?.type === "prompt") {
-      if (typeof message.text !== "string" || message.text.length === 0) {
-        this.send(ws, { type: "error", message: "prompt requires a non-empty text" });
+      if (
+        typeof message.text !== "string" ||
+        (message.text.length === 0 && (!message.attachments || message.attachments.length === 0))
+      ) {
+        this.send(ws, {
+          type: "error",
+          message: "prompt requires a non-empty text or an attachment",
+        });
         return;
       }
-      // 発話も履歴の一部。送った本人以外にも配る（複数クライアントで会話が揃う）
-      thread.record({ role: "po", text: message.text });
-      this.broadcast({ type: "po_message", threadId: thread.id, text: message.text });
+
+      // 添付の扱い。画像はモデルへ直接渡し、テキストファイルは work/attachments/ に
+      // 保存して file.read で読めるようにする（パス注釈をプロンプトに追記）。
+      // I2: 非対応モデルへの画像は握りつぶさず、理由を返して prompt 自体を処理しない
+      let text = message.text;
+      const images: ImageContent[] = [];
+      if (message.attachments && message.attachments.length > 0) {
+        for (const attachment of message.attachments) {
+          if (attachment.kind === "image") {
+            if (!this.modelInfo?.vision) {
+              this.send(ws, {
+                type: "error",
+                message: `${this.modelInfo?.id ?? "現在のモデル"} は画像非対応です`,
+              });
+              return;
+            }
+            images.push({
+              type: "image",
+              data: attachment.dataBase64,
+              mimeType: attachment.mimeType,
+            });
+          } else {
+            const savedName = this.saveAttachment(attachment.name, attachment.content);
+            text += `\n\n[添付] ${ATTACHMENT_DIR_REL}/${savedName}（file.read で参照可）`;
+          }
+        }
+      }
+
+      // 発話も履歴の一部。送った本人以外にも配る（複数クライアントで会話が揃う）。
+      // 添付のみで本文が空のときは、空バブルでなく何を添付したか分かる文言で載せる
+      const displayText =
+        message.text.length > 0
+          ? message.text
+          : `[${message.attachments
+              ?.map((a) => (a.kind === "image" ? "画像" : "ファイル"))
+              .join("・") ?? "添付"}を添付]`;
+      thread.record({ role: "po", text: displayText });
+      this.broadcast({ type: "po_message", threadId: thread.id, text: displayText });
       this.broadcast({ type: "turn_start", threadId: thread.id });
 
       try {
         // ストリーミング中の追加入力は steer として積む（pi の既定では例外になるため）
-        await thread.session.prompt(message.text, {
+        await thread.session.prompt(text, {
+          ...(images.length > 0 ? { images } : {}),
           ...(thread.session.isStreaming ? { streamingBehavior: "steer" as const } : {}),
         });
       } catch (err) {
@@ -494,7 +576,24 @@ export class BantoHostServer {
     this.send(ws, { type: "error", message: `unknown message type: ${String(receivedType)}` });
   }
 
-  // ── セッションイベントの配信 ───────────────────────────────────────────────
+  /**
+   * テキスト添付を `work/attachments/` に保存し、保存名を返す。
+   *
+   * **ファイル名はクライアント由来なので信頼しない**——パス区切りや `..` を剥がして
+   * ベース名だけにし、タイムスタンプを前置きして衝突を避ける（I1：ずるは不可能にする）。
+   * 既存の file.read と同じワークスペースのルート配下に置くので、番頭が読める。
+   */
+  private saveAttachment(originalName: string, content: string): string {
+    const base = path
+      .basename(originalName)
+      .replace(/[^\w.()\-\u3000-\u9fff\uff00-\uffef]/g, "_")
+      .slice(0, 120);
+    const name = `${Date.now()}-${base.length > 0 ? base : "attachment"}`;
+    const dir = path.join(workspaceRoot(), ATTACHMENT_DIR_REL);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, name), content, "utf-8");
+    return name;
+  }
 
   /**
    * wire名を論理名へ戻す（決定22）。番頭・クライアント側は常に論理名で扱う。

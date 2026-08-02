@@ -160,6 +160,31 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .chat-input:focus { outline: none; border-color: var(--accent); }
 .chat-actions { display: flex; align-items: center; margin-top: 8px; }
 .chat-hint { font-size: 10.5px; color: var(--ink-faint); margin-right: auto; }
+/* 添付の一覧とエラー（チャット入力欄の上） */
+.attach-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.attach-chip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+  font-size: 11.5px; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 999px; padding: 3px 4px 3px 6px;
+}
+.attach-chip img { width: 22px; height: 22px; object-fit: cover; border-radius: 4px; }
+.attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 190px; }
+.attach-remove {
+  border: none; background: none; cursor: pointer; color: var(--ink-faint);
+  font-size: 14px; line-height: 1; padding: 0 3px; border-radius: 4px;
+}
+.attach-remove:hover { color: var(--danger); }
+.attach-error {
+  font-size: 12px; color: var(--danger); margin-bottom: 8px;
+  background: rgba(163,58,42,0.07); border: 1px solid rgba(163,58,42,0.3);
+  padding: 6px 10px; border-radius: 8px;
+}
+.attach-btn {
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink-faint);
+  font-size: 15px; line-height: 1; padding: 5px 8px; border-radius: 8px; cursor: pointer;
+  margin-right: 8px;
+}
+.attach-btn:hover { border-color: var(--accent); color: var(--ink); }
 .btn { font: inherit; font-size: 12.5px; padding: 6px 16px; border-radius: 8px; cursor: pointer; border: 1px solid var(--line); background: var(--surface); }
 .btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
 .btn--primary:disabled { opacity: 0.4; cursor: default; }

@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { TranscriptEntry } from "@banto/host/protocol";
+import type { Attachment, TranscriptEntry } from "@banto/host/protocol";
 import { useBantoSession } from "./useBantoSession.js";
 import { resolveCanvasView } from "./views/registry.js";
 import { ThreadTabs } from "./ThreadTabs.js";
@@ -47,6 +47,31 @@ const CHAT_WIDTH_DEFAULT = 400;
 const CHAT_WIDTH_MIN = 300;
 /** 入力欄の最低の高さ（1/3 の上限がこれを下回らないように）。 */
 const MIN_COMPOSER_HEIGHT_PX = 56;
+
+/** テキスト添付の上限。これを超えたら添付せずエラー表示する。 */
+const MAX_FILE_BYTES = 100 * 1024;
+/**
+ * 画像の上限。WS の maxPayload 既定（100MiB）を base64（+33%）込みで割らない安全な値。
+ * 会話履歴（JSONL）に残る分の肥大化は許容（スコープ外）。
+ */
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+/** ファイル選択ダイアログで選べるもの。画像と、テキストとして読めるファイル。 */
+const ACCEPT_TYPES =
+  "image/*,.txt,.md,.log,.json,.jsonl,.csv,.tsv,.yml,.yaml,.toml,.xml,.html,.css," +
+  ".js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.rb,.go,.rs,.java,.c,.h,.cpp,.hpp,.cs,.php," +
+  ".sh,.bash,.sql,.ini,.cfg,.env,.diff,.patch,.gitignore";
+
+/** 添付待ちの1ファイル。送信時に FileReader で読み取る。 */
+interface PendingFile {
+  kind: "image" | "file";
+  name: string;
+  size: number;
+  /** 画像の MIME。送信時に載せる。 */
+  mimeType?: string;
+  file: File;
+  /** 画像のプレビュー用の objectURL。取り消すときに revoke する。 */
+  previewUrl?: string;
+}
 
 /** キャンバス側が潰れない範囲に収める。 */
 function clampChatWidth(width: number): number {
@@ -217,6 +242,13 @@ export function App(): React.ReactElement {
   const [chatWidth, setChatWidth] = useState(readStoredChatWidth);
   const chatPaneRef = useRef<HTMLElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  /** 添付待ちのファイル（送信時に読み取る）。 */
+  const [pending, setPending] = useState<PendingFile[]>([]);
+  /** 添付のクライアント側エラー（サイズ超過・画像非対応など）。 */
+  const [attachError, setAttachError] = useState<string>();
+  /** 現在のモデル情報（/api/model）。画像添付の可否を選択時点で判定する。 */
+  const [modelInfo, setModelInfo] = useState<{ id: string; vision: boolean }>();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 入力欄を中身の行数に合わせて伸ばす。**チャット欄の高さの1/3まで**（PO要望）——
   // それ以上は会話が見えなくなるので、中でスクロールさせる
@@ -281,6 +313,24 @@ export function App(): React.ReactElement {
     return () => document.removeEventListener("click", close);
   }, [catalogOpen]);
 
+  // 画像添付の可否はモデルの vision 対応で決まる。サーバーが真実を持ち（/api/model）、
+  // ここは選択時点で添付させないための事前確認。取れなくても黙らない——
+  // 判定できない間はサーバー側の断りに任せる（サーバーも同じ理由で断る）
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/model")
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((info: { id: string; vision: boolean }) => {
+        if (!cancelled) setModelInfo(info);
+      })
+      .catch((err: unknown) => {
+        console.warn("[banto] モデル情報を取得できません:", err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const activeTab = session.tabs.find((t) => t.id === session.activeTabId);
   const activeSpec = activeTab
     ? session.catalog.find((c) => c.kind === activeTab.kind)
@@ -300,11 +350,108 @@ export function App(): React.ReactElement {
     [session.modules, session.catalog]
   );
 
-  const submit = (): void => {
+  /** 選択されたファイルを添付待ちに加える。画像は vision 対応を確認してから。 */
+  const addFiles = (files: FileList | null): void => {
+    if (!files) return;
+    setAttachError(undefined);
+    const accepted: PendingFile[] = [];
+    for (const file of Array.from(files)) {
+      if (file.type.startsWith("image/")) {
+        if (!modelInfo?.vision) {
+          // 非対応モデルには選択時点で添付させない（サーバー側でももう一度断る）
+          setAttachError(`${modelInfo?.id ?? "現在のモデル"}は画像非対応です`);
+          continue;
+        }
+        if (file.size > MAX_IMAGE_BYTES) {
+          setAttachError(
+            `画像「${file.name}」は大きすぎます（上限 ${MAX_IMAGE_BYTES / 1024 / 1024}MB）`
+          );
+          continue;
+        }
+        accepted.push({
+          kind: "image",
+          name: file.name,
+          size: file.size,
+          mimeType: file.type,
+          file,
+          previewUrl: URL.createObjectURL(file),
+        });
+      } else {
+        if (file.size > MAX_FILE_BYTES) {
+          setAttachError(`テキストファイル「${file.name}」は大きすぎます（上限 100KB）`);
+          continue;
+        }
+        accepted.push({ kind: "file", name: file.name, size: file.size, file });
+      }
+    }
+    if (accepted.length > 0) setPending((prev) => [...prev, ...accepted]);
+    // 同じファイルをもう一度選べるようにする
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const removePending = (index: number): void => {
+    setPending((prev) => {
+      const target = prev[index];
+      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
+  const readFileAsText = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result ?? ""));
+      reader.onerror = () => reject(new Error(`${file.name} を読み込めません`));
+      reader.readAsText(file);
+    });
+
+  const readImageAsBase64 = (file: File): Promise<{ dataBase64: string; mimeType: string }> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = String(reader.result ?? "");
+        const comma = dataUrl.indexOf(",");
+        if (comma === -1) {
+          reject(new Error(`${file.name} を読み込めません`));
+          return;
+        }
+        resolve({
+          dataBase64: dataUrl.slice(comma + 1),
+          mimeType: file.type || "application/octet-stream",
+        });
+      };
+      reader.onerror = () => reject(new Error(`${file.name} を読み込めません`));
+      reader.readAsDataURL(file);
+    });
+
+  const submit = async (): Promise<void> => {
     const text = draft.trim();
-    if (text.length === 0 || session.busy) return;
-    session.send(text);
-    setDraft("");
+    if ((text.length === 0 && pending.length === 0) || session.busy) return;
+    setAttachError(undefined);
+    try {
+      // 添付は送信時に読む（画像は base64、テキストファイルは内容そのまま）
+      const attachments: Attachment[] = [];
+      for (const att of pending) {
+        if (att.kind === "image") {
+          const { dataBase64, mimeType } = await readImageAsBase64(att.file);
+          attachments.push({ kind: "image", name: att.name, mimeType, dataBase64 });
+        } else {
+          const content = await readFileAsText(att.file);
+          // NUL を含むものはバイナリ——テキストとして添付すると文脈を壊す（I2）
+          if (content.includes("\u0000")) {
+            setAttachError(`「${att.name}」はテキストとして読めないため添付できません`);
+            return;
+          }
+          attachments.push({ kind: "file", name: att.name, content });
+        }
+      }
+      session.send(text, attachments);
+      setDraft("");
+      for (const att of pending) if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
+      setPending([]);
+    } catch (err) {
+      setAttachError(err instanceof Error ? err.message : String(err));
+    }
   };
 
   return (
@@ -608,6 +755,33 @@ export function App(): React.ReactElement {
           )}
 
           <div className="chat-composer">
+            {pending.length > 0 && (
+              <div className="attach-list">
+                {pending.map((att, i) => (
+                  <span className="attach-chip" key={`${att.name}:${i}`}>
+                    {att.kind === "image" && att.previewUrl && (
+                      <img className="attach-thumb" src={att.previewUrl} alt={att.name} />
+                    )}
+                    <span className="attach-name" title={att.name}>
+                      {att.kind === "image" ? "🖼" : "📄"} {att.name}
+                    </span>
+                    <button
+                      className="attach-remove"
+                      type="button"
+                      onClick={() => removePending(i)}
+                      aria-label={`${att.name} を取り消す`}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            {attachError && (
+              <div className="attach-error" role="alert">
+                {attachError}
+              </div>
+            )}
             <textarea
               className="chat-input"
               ref={inputRef}
@@ -619,18 +793,40 @@ export function App(): React.ReactElement {
                 // Enter で送信、Shift+Enter で改行。IME変換中の Enter は送信しない
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
-                  submit();
+                  void submit();
                 }
               }}
             />
+            {/* 画像とテキストファイルの選択。添付の可否は選択時に判定する */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              hidden
+              accept={ACCEPT_TYPES}
+              onChange={(e) => addFiles(e.target.files)}
+            />
             <div className="chat-actions">
+              <button
+                className="attach-btn"
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                title="画像・テキストファイルを添付"
+                aria-label="添付"
+              >
+                📎
+              </button>
               <span className="chat-hint">Enter で送信 · Shift + Enter で改行</span>
               {session.busy ? (
                 <button className="btn btn--ghost" onClick={session.abort}>
                   中断
                 </button>
               ) : (
-                <button className="btn btn--primary" onClick={submit} disabled={draft.trim().length === 0}>
+                <button
+                  className="btn btn--primary"
+                  onClick={() => void submit()}
+                  disabled={draft.trim().length === 0 && pending.length === 0}
+                >
                   送る
                 </button>
               )}

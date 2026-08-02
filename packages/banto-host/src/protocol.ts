@@ -25,10 +25,23 @@ export interface ThreadTarget {
   threadId?: string;
 }
 
+/**
+ * チャットに添付されたファイル。
+ *
+ * - `image`: モデルへ直接渡す（vision 対応モデルのみ。base64 は `data:` を除いた実データ）。
+ * - `file`: テキストファイル。内容をそのまま載せ、ホストが `work/attachments/` に保存して
+ *   `file.read` で読めるようにする。
+ */
+export type Attachment =
+  | { kind: "image"; name: string; mimeType: string; dataBase64: string }
+  | { kind: "file"; name: string; content: string };
+
 /** 番頭に発話する。ターンが走り、結果はイベントとして返る。 */
 export interface PromptMessage extends ThreadTarget {
   type: "prompt";
   text: string;
+  /** 添付ファイル。省略時は無し（添付を知らないクライアントとの互換）。 */
+  attachments?: Attachment[];
 }
 
 /** 実行中のターンを中断する。 */

@@ -10,3 +10,6 @@ data/
 # .banto/ は既定の BANTO_DATA_DIR、.banto-demo/ は手元確認で使っている置き場
 .banto/
 .banto-demo/
+
+# チャットに添付されたテキストファイル（ホストが work/attachments/ に保存する）
+work/attachments/

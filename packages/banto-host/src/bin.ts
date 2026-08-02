@@ -128,6 +128,19 @@ const SYSTEM_PROMPT = [
 ].join("\n");
 
 /**
+ * 台帳に無いモデルを、実体のプロバイダ/モデルへ紐付ける最小の定義（D6）。
+ *
+ * pi は API リクエストに `model.id` をそのまま使うため、id は API が受け付ける値で
+ * なければならない。`Mimo V2.5 Free` という名前で動く実体は opencode-go の `mimo-v2.5`
+ * （input に image を含む）——指定文字列のまま解決すると opencode が 401 を返す
+ * （実際に踏んだ）。表示用の id/name は BANTO_MODEL の指定文字列のままにする
+ * （bin.ts で ModelInfo へは modelId を渡す）。台帳に登録されたらここから外すこと。
+ */
+const MODEL_ALIASES: Record<string, { provider: string; id: string }> = {
+  "Mimo V2.5 Free": { provider: "opencode-go", id: "mimo-v2.5" },
+};
+
+/**
  * provider/model を pi のモデルに解決する。
  *
  * **台帳に無いモデルも通す。** プロバイダは台帳より速く増減する——実際に
@@ -136,25 +149,32 @@ const SYSTEM_PROMPT = [
  * （`model-resolver.js` の `buildFallbackModel`）。ホストだけ厳しくすると、
  * CLI では使えるモデルがホストでは使えないという食い違いになる。
  *
+ * `MODEL_ALIASES` に紐付けがあるモデルは、実体のプロバイダ/モデルで解決する
+ * （能力 input 等も実体の定義がそのまま効く）。
+ *
  * I2: **プロバイダが台帳に無いときは止まる**。ここまで緩めると、綴り間違いが
  *     黙って通って別のプロバイダの鍵で 401 になる（既定解決で実際に踏んだ）。
  */
 function resolveModel(provider: string, modelId: string): ReturnType<typeof getModel> {
+  const alias = MODEL_ALIASES[modelId];
+  const actualProvider = alias?.provider ?? provider;
+  const actualId = alias?.id ?? modelId;
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- getModel/getModels は既知
   // provider のリテラル型を要求するが、ここは CLI 引数由来の文字列を通す (I4)
-  const known = getModel(provider as any, modelId as any);
+  const known = getModel(actualProvider as any, actualId as any);
   if (known) return known;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 同上 (I4)
-  const siblings = getModels(provider as any);
+  const siblings = getModels(actualProvider as any);
   if (!siblings || siblings.length === 0) {
-    throw new Error(`unknown provider: ${provider}`);
+    throw new Error(`unknown provider: ${actualProvider}`);
   }
   console.warn(
-    `[banto] モデル "${modelId}" は pi の台帳にありません。${provider} の設定を土台に、` +
+    `[banto] モデル "${modelId}" は pi の台帳にありません。${actualProvider} の設定を土台に、` +
       "id をそのまま使います（pi CLI と同じ扱い）"
   );
-  return { ...siblings[0]!, id: modelId, name: modelId };
+  return { ...siblings[0]!, id: actualId, name: modelId };
 }
 
 interface ServeOptions {
@@ -435,6 +455,12 @@ async function serve(options: ServeOptions): Promise<void> {
     modules,
     // task-0048: ビルド済み UI があれば同じポートで配る（常駐させるときの形）
     ...(webDir ? { webDir } : {}),
+    // 画像添付の可否判定（/api/model）。id は指定されたモデル名のまま
+    // （解決で API 送信用 id に変わる場合があるため——MODEL_ALIASES）。vision は
+    // 解決されたモデルの能力（input に image があるか）から求める
+    ...(model && modelId
+      ? { model: { id: modelId, vision: model.input.includes("image") } }
+      : {}),
     // 決定40: 既定は localhost のみ。Banto は認証を持たず、守るのは前段の役目——
     // 全インターフェースで待つと前段を素通りできてしまい、その裁定が成り立たない
     host: bindHost,
