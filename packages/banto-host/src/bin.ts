@@ -17,7 +17,7 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { getModel, getModels } from "@mariozechner/pi-ai";
-import { SessionManager } from "@mariozechner/pi-coding-agent";
+import { AuthStorage, getAgentDir, ModelRegistry, SessionManager } from "@mariozechner/pi-coding-agent";
 import { JsonlMemoryStore, type PlaceProvider } from "@banto/core";
 
 import {
@@ -37,6 +37,7 @@ import { Canvas, createCanvasCatalog } from "./canvas.js";
 import { createCanvasTools } from "./canvas-tools.js";
 import { demoCanvasViews } from "./demo-views.js";
 import { createBantoHostSession } from "./host-session.js";
+import { resumeInterruptedTurn, withEmptyResponseGuard } from "./turn-guard.js";
 import { BantoHostClient } from "./client.js";
 import { BANTO_DEFAULT_PORT, type ServerEvent } from "./protocol.js";
 import { BantoHostServer } from "./server.js";
@@ -157,16 +158,26 @@ const MODEL_ALIASES: Record<string, { provider: string; id: string }> = {
  * I2: **プロバイダが台帳に無いときは止まる**。ここまで緩めると、綴り間違いが
  *     黙って通って別のプロバイダの鍵で 401 になる（既定解決で実際に踏んだ）。
  */
-function resolveModel(provider: string, modelId: string): ReturnType<typeof getModel> {
+function resolveModel(
+  registry: ModelRegistry,
+  provider: string,
+  modelId: string
+): ReturnType<typeof getModel> {
   const alias = MODEL_ALIASES[modelId];
   const actualProvider = alias?.provider ?? provider;
   const actualId = alias?.id ?? modelId;
 
+  // 1. pi-coding-agent の ModelRegistry（models.json 含む）を試す
+  const custom = registry.find(actualProvider, actualId);
+  if (custom) return custom as ReturnType<typeof getModel>;
+
+  // 2. pi-ai の組み込み台帳を試す
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- getModel/getModels は既知
   // provider のリテラル型を要求するが、ここは CLI 引数由来の文字列を通す (I4)
   const known = getModel(actualProvider as any, actualId as any);
   if (known) return known;
 
+  // 3. 組み込み provider の unknown model fallback
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 同上 (I4)
   const siblings = getModels(actualProvider as any);
   if (!siblings || siblings.length === 0) {
@@ -377,10 +388,18 @@ async function serve(options: ServeOptions): Promise<void> {
   // I2: 指定されたモデルが見つからないなら黙って別のモデルに落とさず止める。
   //     既定解決に任せると、auth.json に別プロバイダの無効な鍵が残っている場合に
   //     そちらが選ばれて 401 になる（実際に踏んだ）。
+  //
+  // pi-coding-agent の ModelRegistry を使うと、models.json で定義したカスタムプロバイダ
+  // （ローカル LLM 等）も解決できる。職人（PiRpcDriver）と同じ設定を共有する。
+  const agentDir = getAgentDir();
+  const authStorage = AuthStorage.create(path.join(agentDir, "auth.json"));
+  const modelRegistry = ModelRegistry.create(authStorage, path.join(agentDir, "models.json"));
+  modelRegistry.refresh();
+
   const llm = settings.all().llm ?? {};
   const provider = options.provider ?? llm.provider;
   const modelId = options.model ?? llm.model;
-  const model = provider && modelId ? resolveModel(provider, modelId) : undefined;
+  const model = provider && modelId ? resolveModel(modelRegistry, provider, modelId) : undefined;
 
   // スレッド1本分の器を作る（決定2・task-0035）。**キャンバスはスレッドごと**——
   // ここを共有すると、ある会話で GUI を開いたときに別の会話の表示まで変わる。
@@ -451,16 +470,28 @@ async function serve(options: ServeOptions): Promise<void> {
       memory,
       moduleSkills: modules.skills(),
       sessionManager,
+      modelRegistry,
       ...(model ? { model } : {}),
     });
+    // imp-0016: ツールコール（git status / file.read など）の後、次の LLM 応答が空
+    // （text/toolCall なし・stopReason "stop"）だと pi が正常終了としてターンを閉じ、
+    // 応答が止まる。withEmptyResponseGuard が空応答を continue() で再試行する。
+    // 再試行はガードの中で完結するので、server は HostSession 契約のまま無変更（決定3）
+    const guardedSession = withEmptyResponseGuard(session);
     // server はイベントの wire名→論理名 逆引きに、登録した論理名のToolを必要とする
       const tools = [...ownTools, ...createMemoryTools(memory), ...createSkillTools(skills)];
     return {
-      session,
+      session: guardedSession,
       canvas,
       tools,
       getLastError: () => session.agent.state.errorMessage,
       ...(sessionManager.getSessionFile() ? { sessionFile: sessionManager.getSessionFile()! } : {}),
+      // imp-0016 主対策: 再起動で進行中ターンが失われたスレッド（最後が toolResult）を
+      // 復元時に再開する。resumeInterruptedTurn は「最後が toolResult のときだけ continue()
+      // する」ので、新規スレッド（履歴なし）では何もしない
+      resumePendingTurn: async () => {
+        void resumeInterruptedTurn(session);
+      },
       dispose: () => session.dispose(),
     };
   };
@@ -493,6 +524,12 @@ async function serve(options: ServeOptions): Promise<void> {
     // 全インターフェースで待つと前段を素通りできてしまい、その裁定が成り立たない
     host: bindHost,
   });
+
+  // 決定36g: 再起動で中断したターンを復元——server.start() 後に配信が始まるので、
+  // 購読を張る前に resumePendingTurn を済ませておく
+  for (const thread of threads.list()) {
+    await thread.resumePendingTurn?.();
+  }
 
   // 決定29: 番頭が起こした職人のイベントだけを受ける。他の起動元（Kobo 等）の分は届かない。
   // lastEventId から始めるので、起動前に溜まっていた古い報告を今さら会話へ流し込まない。

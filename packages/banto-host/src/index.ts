@@ -114,3 +114,13 @@ export {
   isNoticeworthy,
 } from "./worker-notice.js";
 export { createStudioModule, STUDIO_BASE_URL } from "./modules/studio.js";
+// 空応答ガード（imp-0016 再発防止）。ツール実行後の継続ターンが空応答で停止する事象への防御
+// （判断ロジックは turn-guard.ts にあり、server.ts は HostSession 契約のまま無変更）
+export {
+  EMPTY_RESPONSE_MAX_RETRIES,
+  isEmptyResponse,
+  isRetryableEmptyResponse,
+  findLastEmptyAssistantIndex,
+  withEmptyResponseGuard,
+  type GuardableSession,
+} from "./turn-guard.js";

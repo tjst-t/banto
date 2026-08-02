@@ -36,6 +36,12 @@ export type ThreadFactory = (
   /** この器が書き出している pi セッションファイル。次回の復元に使う（task-0036）。 */
   sessionFile?: string;
   /**
+   * 復元されたセッションが「ツール結果で終わっていた」（＝ツール結果後の継続応答が
+   * 生成されずに中断。imp-0016 主対策）とき、ターンを再開する処理。
+   * **サーバが購読を張ってから**呼ばれる——配信が始まってから再開するため。
+   */
+  resumePendingTurn?: () => Promise<void>;
+  /**
    * 対話ループの後始末。スレッドを閉じるとき・ホストを終うときに呼ばれる。
    *
    * `HostSession`（server が要求する最小契約）には入れない——配信に要るものではなく、
@@ -75,6 +81,11 @@ export class Thread {
   readonly getLastError: () => string | undefined;
   /** 番頭の文脈が書かれている pi セッションファイル（task-0036）。 */
   readonly sessionFile: string | undefined;
+  /**
+   * 復元された中断ターンを再開する処理（imp-0016 主対策）。
+   * サーバ起動後に open スレッドだけ呼ばれる（畳んだスレッドは開き直すまで話さない）。
+   */
+  readonly resumePendingTurn: (() => Promise<void>) | undefined;
   /** 会話の真実。接続時にまとめて配り、以後は差分イベントで追随させる（D3）。 */
   transcript: TranscriptEntry[] = [];
   /**
@@ -100,6 +111,7 @@ export class Thread {
     tools: NamespacedToolDefinition[];
     getLastError?: () => string | undefined;
     sessionFile?: string;
+    resumePendingTurn?: () => Promise<void>;
     dispose?: () => void;
   }) {
     this.id = params.id;
@@ -109,6 +121,7 @@ export class Thread {
     this.toolNames = params.tools.map((t) => t.name);
     this.getLastError = params.getLastError ?? ((): string | undefined => undefined);
     this.sessionFile = params.sessionFile;
+    this.resumePendingTurn = params.resumePendingTurn;
     if (params.dispose) this.disposers.push(params.dispose);
   }
 
@@ -201,6 +214,7 @@ export class ThreadRegistry {
           tools: parts.tools,
           ...(parts.getLastError ? { getLastError: parts.getLastError } : {}),
           ...(parts.sessionFile ? { sessionFile: parts.sessionFile } : {}),
+          ...(parts.resumePendingTurn ? { resumePendingTurn: parts.resumePendingTurn } : {}),
           ...(parts.dispose ? { dispose: parts.dispose } : {}),
         });
         thread.transcript = this.store.transcript(saved.id);
@@ -310,6 +324,7 @@ export class ThreadRegistry {
       tools: parts.tools,
       ...(parts.getLastError ? { getLastError: parts.getLastError } : {}),
       ...(parts.sessionFile ? { sessionFile: parts.sessionFile } : {}),
+      ...(parts.resumePendingTurn ? { resumePendingTurn: parts.resumePendingTurn } : {}),
       ...(parts.dispose ? { dispose: parts.dispose } : {}),
     });
     this.attach(thread);
