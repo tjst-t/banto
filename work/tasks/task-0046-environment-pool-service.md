@@ -4,7 +4,7 @@ type: task
 kind: refactor
 title: Environment Pool をサービス化し、Kobo を利用側へ回す（台帳を1つにする）
 status: draft
-parent: epic-0008
+parent: epic-0010
 depends: [task-0034]
 refs: [adr-0010, spec-environment]
 scope:

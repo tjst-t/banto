@@ -2,7 +2,7 @@
 id: epic-0007
 type: epic
 title: モジュールフレームワーク（登録・解決・モジュール間呼び出し）
-status: draft
+status: done
 refs: [adr-0010, vision]
 ---
 

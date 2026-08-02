@@ -3,7 +3,7 @@ id: task-0033
 type: task
 kind: refactor
 title: Environment Pool を独立モジュールとして切り出す（Kobo非依存で単体で動く）
-status: draft
+status: done
 parent: epic-0008
 refs: [adr-0010]
 scope:

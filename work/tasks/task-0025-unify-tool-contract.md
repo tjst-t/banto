@@ -3,7 +3,7 @@ id: task-0025
 type: task
 kind: refactor
 title: Tool契約の型を1つに統合する（依存を注入する中立な型を新設し、pi向けはアダプタに寄せる）
-status: draft
+status: done
 parent: epic-0007
 refs: [imp-0003, adr-0010]
 scope:

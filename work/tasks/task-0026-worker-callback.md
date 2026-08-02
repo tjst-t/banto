@@ -3,7 +3,7 @@ id: task-0026
 type: task
 kind: feature
 title: 職人から起動元への報告経路（イベントログ＋購読・完了と質問）
-status: draft
+status: done
 parent: epic-0005
 depends: [task-0010]
 refs: [adr-0010]

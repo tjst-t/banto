@@ -3,7 +3,7 @@ id: task-0005
 type: task
 kind: feature
 title: ADR/spec確定時のwork/起票をSKILL化する（決定15）
-status: draft
+status: done
 parent: epic-0001
 depends: [task-0004]
 refs: [adr-0010]

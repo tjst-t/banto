@@ -3,7 +3,7 @@ id: task-0008
 type: task
 kind: feature
 title: 記憶Toolの公開とSKILL読み込みの配線（番頭が記憶とSKILLを使えるようにする）
-status: draft
+status: done
 parent: epic-0001
 depends: [task-0006, task-0007]
 refs: [adr-0010]

@@ -3,7 +3,7 @@ id: task-0027
 type: task
 kind: fix
 title: Worker Poolがドライバのライフサイクルイベントを購読していない
-status: draft
+status: done
 parent: epic-0005
 refs: [task-0010, adr-0010]
 scope:

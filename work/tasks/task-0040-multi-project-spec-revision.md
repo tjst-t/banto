@@ -3,7 +3,7 @@ id: task-0040
 type: task
 kind: refactor
 title: spec-multi-project §1「検討エージェントは横断させない」を決定36 に合わせて改訂する
-status: draft
+status: done
 parent: epic-0009
 refs: [adr-0010, spec-multi-project]
 scope:

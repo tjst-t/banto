@@ -3,7 +3,7 @@ id: task-0030
 type: task
 kind: feature
 title: 職人一覧の絞り込みとページ送り（Worker Pool 側で行う）
-status: draft
+status: done
 parent: epic-0005
 depends: [task-0028]
 refs: [adr-0010]

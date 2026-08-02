@@ -319,3 +319,58 @@ epic-0009（場所と repo-manager）を task-0038 の続きから片付けた�
 - **`work/tasks/*.md` が全部 `status: draft` のまま**。task-0038〜0041 も完了しているが draft。誰がいつ `done` にするのかが宙に浮いている
 - 未追跡だった職人の調査レポート2本は取り込んだ（`ecosystem-survey-report` / `browser-module-research`）。`.banto-demo/` は gitignore に入れた
 - `docs/proposals/123.txt`（中身は `123` の4バイト）が未追跡で残っている。**PO が `file.write` を試したときの書き込みと思われる**ので消していない。要らなければ消してよい
+
+---
+
+## セッション更新（2026-08-01、task status の棚卸し）
+
+`work/tasks/`・`work/epics/` が全部 `status: draft` のままだった問題の第一回棚卸しを実行した。status の書き換えは下記のとおり（git add / commit / push はしていない。PO レビュー用に作業ツリーの未コミットのまま）。
+
+### 今回の決定（PO 裁定 A）
+
+**Kobo 統合までは番頭が acceptance と実装を照合して `done` に更新する**暫定運用。`spec-schemas` §1 の「status の終端は Kobo が書く」は統合後の話として温存する。今回がその第一回の適用。
+
+### 棚卸し結果（2026-08-01）
+
+**`done` に更新したタスク（31件）**: task-0004, task-0005, task-0006, task-0007, task-0008, task-0009, task-0010, task-0011, task-0012, task-0013, task-0015, task-0016, task-0018, task-0025, task-0026, task-0027, task-0028, task-0029, task-0030, task-0031, task-0032, task-0033, task-0034, task-0035, task-0036, task-0037, task-0038, task-0039, task-0040, task-0041, task-0042
+
+根拠: 対応コミットのメッセージに「task-XXXX」言及（例: 48eae88→task-0004、0b5df5f→task-0009、f3264b8→task-0010、9003828→task-0013、691da1e→task-0026、e735d4c→task-0028、ad7947e→task-0031、7848c91→task-0033、f26c6f3→task-0034、3838fc1→task-0035、545080c→task-0036、8dbb41a→task-0037、3c0dc4d→task-0038、3575099→task-0039、953bc59→task-0040、b428a3d→task-0041、ab7de54→task-0042）、handoff の完了記録、受け入れテスト2バッチ（121件＋199件）全通過。
+
+**`draft` のまま残したタスク（8件）**:
+
+- **task-0001**（ready クエリ）: `/api/v1/ready` エンドポイント無し・`banto ready` CLI 無し
+- **task-0002**（discovered-from）: 検証警告・生成ツール無し
+- **task-0003**（プッシュ通知）: 実装無し
+- **task-0017**（SKILL 学習層）: 実装無し
+- **task-0022**（記憶の自動抽出・forget）: 実装無し
+- **task-0023**（記憶ビューア）: 閲覧専用のみ。削除・出所の可視化が無い
+- **task-0024**（Kobo の Worker Pool サービス利用）: Kobo はライブラリ参照のまま
+- **task-0046**（Environment Pool サービス化）: 環境台帳が2つのまま。TTL 執行・照合も2箇所
+
+**epic**: 配下タスクが全て `done` になった **epic-0006（会話スレッド: task-0035〜0037）・epic-0007（モジュールフレームワーク: task-0015/0018/0025）・epic-0009（場所と repo-manager: task-0038〜0042）の3件を `done`** に更新。他は `draft` のまま: epic-0001（task-0017/0022 が未実装）・epic-0002（task-0023 が未実装）・epic-0005（task-0024 が未実装）・epic-0008（task-0046 が未実装）、および epic-0003・epic-0004（配下タスク未起票＝未着手。タスクの起票自体がこれから）。※最初の棚卸し指示では「epic-0009 のみ」としていたが、番頭の steer（2026-08-01）で parent フィールド分析を正として epic-0006/0007 も done に訂正した
+
+### task-0047 の調査結果（起票漏れ）
+
+コミット `c9d0a5b`（設定画面・module-settings。決定41）がコミットメッセージで「task-0047」に言及しているが、`work/tasks/` に task-0047 のファイルは存在しない（`git log --all` でも無い）＝**起票漏れ**。設定画面の実装はされているので、task-0047 として起票するかは番頭が判断する。
+
+### 次にやること
+
+- **残タスク8件の実装判断**。特に Kobo 配線（task-0001 / task-0024 / task-0046）と Kobo GUI は「Kobo を Module として配線する」epic に束ねる案が PO と検討中
+- **task-0047 の起票判断**（設定画面の実装は済んでいる）
+- **Kobo 統合後に status 遷移を Kobo へ移す**（PO 裁定 A の終端条件）
+
+---
+
+## セッション更新（2026-08-02、Kobo 配線 epic 新設と task-0047 起票）
+
+### 今回の決定（PO 裁定 2026-07-28 の反映）
+
+**Kobo は独立プロセスのまま**（in-process のプラグイン化はしない）。Kobo を ADR-0010 決定25・27 の Module として Banto に配線する。Module の接続情報が独立プロセスの URL を指す（Worker Pool の service.ts と同じパターン）。
+
+### 起票・変更したタスク・epic（git add / commit / push はしていない。作業ツリーの未コミットのまま）
+
+- **task-0047**（設定画面・決定41）を起票漏れ補填として起票（実装済み・status: done）。コミット `c9d0a5b` が「task-0047」に言及していたのに `work/tasks/` にファイルが無かったため
+- **epic-0010「Kobo を Module として配線する」を新設**。task-0001・task-0024・task-0046 を束ね、新タスク task-0048（Kobo Module 登録）・task-0049（Kobo GUI カタログ登録）を起票
+- **task-0001 / task-0024 / task-0046 の parent を epic-0010 へ変更**（task-0001 は parent 追加、task-0024 は epic-0005 →、task-0046 は epic-0008 →）
+- **epic-0005（Worker Pool）・epic-0008（Environment Pool）は Kobo 側統合タスクを epic-0010 へ移管したため配下タスクが全て done になり、done に更新**
+- **epic-0004（セッション開始リクエスト）は別 epic のまま**（Kobo 配線完了後に合流検討）

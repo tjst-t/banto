@@ -3,7 +3,7 @@ id: task-0013
 type: task
 kind: feature
 title: WebUI（チャット＋キャンバスの2ペイン）とテスト用GUI部品
-status: draft
+status: done
 parent: epic-0002
 depends: [task-0012]
 refs: [adr-0010, spec-ui]

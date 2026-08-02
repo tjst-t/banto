@@ -3,7 +3,7 @@ id: task-0029
 type: task
 kind: feature
 title: チャットの追従と職人一覧の見せ方（POフィードバック）
-status: draft
+status: done
 parent: epic-0002
 refs: [adr-0010]
 scope:

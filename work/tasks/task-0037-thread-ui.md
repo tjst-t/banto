@@ -3,7 +3,7 @@ id: task-0037
 type: task
 kind: feature
 title: WebUI のスレッド面（会話タブ・履歴・再開）
-status: draft
+status: done
 parent: epic-0006
 depends: [task-0035, task-0036]
 refs: [adr-0010, imp-0002, spec-ui]

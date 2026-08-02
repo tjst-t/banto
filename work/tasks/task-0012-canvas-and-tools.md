@@ -3,7 +3,7 @@ id: task-0012
 type: task
 kind: feature
 title: キャンバス機構・GUIカタログ・canvas.* Tool（ホスト側）
-status: draft
+status: done
 parent: epic-0002
 depends: [task-0009]
 refs: [adr-0010]

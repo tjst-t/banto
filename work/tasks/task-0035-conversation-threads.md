@@ -3,7 +3,7 @@ id: task-0035
 type: task
 kind: feature
 title: 会話スレッドをホストの一級市民にする（複数スレッド並行・スレッドごとのキャンバス）
-status: draft
+status: done
 parent: epic-0006
 refs: [adr-0010, imp-0002, vision, spec-ui]
 scope:

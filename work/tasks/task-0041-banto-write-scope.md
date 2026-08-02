@@ -3,7 +3,7 @@ id: task-0041
 type: task
 kind: feature
 title: 番頭の書き込み（場所ごとに PO が許した範囲だけ）
-status: draft
+status: done
 parent: epic-0009
 depends: [task-0038]
 refs: [adr-0010, spec-document-system]

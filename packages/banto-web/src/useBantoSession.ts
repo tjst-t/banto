@@ -80,7 +80,8 @@ export interface BantoSession {
   reopenThread(threadId: string): void;
 }
 
-/** 差分イベントを履歴へ畳み込む。ホスト側の record() と同じ規則。 */
+/** 差分イベントを履歴へ畳み込む。ホスト側の record() と同じ規則。
+ * text_delta と tool_end はオブジェクト参照を維持（React.memo の最適化）。 */
 function applyDelta(prev: TranscriptEntry[], event: ServerEvent): TranscriptEntry[] {
   switch (event.type) {
     case "po_message":
@@ -93,7 +94,9 @@ function applyDelta(prev: TranscriptEntry[], event: ServerEvent): TranscriptEntr
     case "text_delta": {
       const last = prev[prev.length - 1];
       if (last?.role === "banto") {
-        return [...prev.slice(0, -1), { role: "banto", text: last.text + event.delta }];
+        // 既存オブジェクトを in-place 更新して参照を維持
+        last.text += event.delta;
+        return [...prev];
       }
       return [...prev, { role: "banto", text: event.delta }];
     }
@@ -106,9 +109,10 @@ function applyDelta(prev: TranscriptEntry[], event: ServerEvent): TranscriptEntr
         (e) => e.role === "tool" && e.name === event.name && e.state === "running"
       );
       if (index === -1) return prev;
-      const next = [...prev];
-      next[index] = { role: "tool", name: event.name, state: event.isError ? "failed" : "ok" };
-      return next;
+      // in-place mutation: 同一参照を維持して ChatRow の再描画を抑制
+      const tool = prev[index] as { role: "tool"; name: string; state: string };
+      tool.state = event.isError ? "failed" : "ok";
+      return [...prev];
     }
 
     case "turn_end":
@@ -307,7 +311,28 @@ export function useBantoSession(url: string): BantoSession {
         .sort((a, b) => (b.closedAt ?? "").localeCompare(a.closedAt ?? "")),
     [allThreads]
   );
-  const active = (activeThreadId ? byThread[activeThreadId] : undefined) ?? EMPTY_THREAD;
+  // memoized: byThread または activeThreadId が変わったときのみ参照が変わる
+  // （active_delta で text_delta が連続しても active が作り直されない）
+  const active = useMemo<ThreadState>(
+    () => (activeThreadId ? byThread[activeThreadId] : undefined) ?? EMPTY_THREAD,
+    [activeThreadId, byThread]
+  );
+  const activeTabs = useMemo(
+    () => active.tabs,
+    [active.tabs]
+  );
+  const activeTabId = useMemo(
+    () => active.activeTabId,
+    [active.activeTabId]
+  );
+  const activeChat = useMemo(
+    () => active.chat,
+    [active.chat]
+  );
+  const activeBusy = useMemo(
+    () => active.busy,
+    [active.busy]
+  );
   const unreadThreadIds = useMemo(
     () => Object.entries(byThread).filter(([, s]) => s.unread).map(([id]) => id),
     [byThread]
@@ -322,75 +347,135 @@ export function useBantoSession(url: string): BantoSession {
     [update]
   );
 
-  return {
-    status,
-    sessionId,
-    tools,
-    catalog,
-    modules,
-    threads,
-    closedThreads,
-    activeThreadId,
-    tabs: active.tabs,
-    activeTabId: active.activeTabId,
-    chat: active.chat,
-    busy: active.busy,
-    unreadThreadIds,
-    chatOf: (threadId) => byThread[threadId]?.chat ?? [],
-    send: useCallback(
-      (text: string, attachments?: Attachment[]) => {
-        const threadId = activeThreadId;
-        if (!threadId) return;
-        update(threadId, (prev) => ({ ...prev, busy: true }));
-        post({
-          type: "prompt",
-          threadId,
-          text,
-          ...(attachments && attachments.length > 0 ? { attachments } : {}),
-        });
-      },
-      [activeThreadId, post, update]
-    ),
-    abort: useCallback(
-      () => post({ type: "abort", threadId: activeThreadId }),
-      [activeThreadId, post]
-    ),
-    switchTab: useCallback(
-      (tabId: string) => post({ type: "canvas_switch", threadId: activeThreadId, tabId }),
-      [activeThreadId, post]
-    ),
-    closeTab: useCallback(
-      (tabId: string) => post({ type: "canvas_close", threadId: activeThreadId, tabId }),
-      [activeThreadId, post]
-    ),
-    reorderTab: useCallback(
-      (tabId: string, toIndex: number) =>
-        post({ type: "canvas_reorder", threadId: activeThreadId, tabId, toIndex }),
-      [activeThreadId, post]
-    ),
-    openView: useCallback(
-      (kind: string) => post({ type: "canvas_open", threadId: activeThreadId, kind }),
-      [activeThreadId, post]
-    ),
-    newSession: useCallback(() => {
+  const chatOf = (threadId: string): TranscriptEntry[] => byThread[threadId]?.chat ?? [];
+
+  // React.memo on ChatRow 側の再描画を抑えるため、session オブジェクトの参照を安定させる。
+  // 内部 state が変わらなくても毎回 new object だと App が無駄に再描画される。
+  // コールバックを const 変数として定義し、useMemo deps で安定参照を保証。
+  const send = useCallback(
+    (text: string, attachments?: Attachment[]) => {
+      const threadId = activeThreadId;
+      if (!threadId) return;
+      update(threadId, (prev) => ({ ...prev, busy: true }));
+      post({
+        type: "prompt",
+        threadId,
+        text,
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      });
+    },
+    [activeThreadId, post, update]
+  );
+
+  const abort = useCallback(
+    () => post({ type: "abort", threadId: activeThreadId }),
+    [activeThreadId, post]
+  );
+
+  const switchTab = useCallback(
+    (tabId: string) => post({ type: "canvas_switch", threadId: activeThreadId, tabId }),
+    [activeThreadId, post]
+  );
+
+  const closeTab = useCallback(
+    (tabId: string) => post({ type: "canvas_close", threadId: activeThreadId, tabId }),
+    [activeThreadId, post]
+  );
+
+  const reorderTab = useCallback(
+    (tabId: string, toIndex: number) =>
+      post({ type: "canvas_reorder", threadId: activeThreadId, tabId, toIndex }),
+    [activeThreadId, post]
+  );
+
+  const openView = useCallback(
+    (kind: string) => post({ type: "canvas_open", threadId: activeThreadId, kind }),
+    [activeThreadId, post]
+  );
+
+  const newSession = useCallback(() => {
+    followNewThread.current = true;
+    post({ type: "new_session", threadId: activeThreadId });
+  }, [activeThreadId, post]);
+
+  const openThread = useCallback(
+    (title?: string) => {
       followNewThread.current = true;
-      post({ type: "new_session", threadId: activeThreadId });
-    }, [activeThreadId, post]),
-    switchThread,
-    openThread: useCallback(
-      (title?: string) => {
-        followNewThread.current = true;
-        post({ type: "thread_open", ...(title ? { title } : {}) });
-      },
-      [post]
-    ),
-    closeThread: useCallback((threadId: string) => post({ type: "thread_close", threadId }), [post]),
-    reopenThread: useCallback(
-      (threadId: string) => {
-        post({ type: "thread_reopen", threadId });
-        switchThread(threadId);
-      },
-      [post, switchThread]
-    ),
-  };
+      post({ type: "thread_open", ...(title ? { title } : {}) });
+    },
+    [post]
+  );
+
+  const closeThread = useCallback(
+    (threadId: string) => post({ type: "thread_close", threadId }),
+    [post]
+  );
+
+  const reopenThread = useCallback(
+    (threadId: string) => {
+      post({ type: "thread_reopen", threadId });
+      switchThread(threadId);
+    },
+    [post, switchThread]
+  );
+
+  const session = useMemo<BantoSession>(
+    () => ({
+      status,
+      sessionId,
+      tools,
+      catalog,
+      modules,
+      threads,
+      closedThreads,
+      activeThreadId,
+      tabs: active.tabs,
+      activeTabId: active.activeTabId,
+      chat: active.chat,
+      busy: active.busy,
+      unreadThreadIds,
+      chatOf,
+      send,
+      abort,
+      switchTab,
+      closeTab,
+      reorderTab,
+      openView,
+      newSession,
+      switchThread,
+      openThread,
+      closeThread,
+      reopenThread,
+    }),
+    [
+      status,
+      sessionId,
+      tools,
+      catalog,
+      modules,
+      threads,
+      closedThreads,
+      activeThreadId,
+      activeTabs,
+      activeTabId,
+      activeChat,
+      activeBusy,
+      unreadThreadIds,
+      byThread,
+      send,
+      abort,
+      switchTab,
+      closeTab,
+      reorderTab,
+      openView,
+      newSession,
+      switchThread,
+      openThread,
+      closeThread,
+      reopenThread,
+      chatOf,
+    ]
+  );
+
+  return session;
 }

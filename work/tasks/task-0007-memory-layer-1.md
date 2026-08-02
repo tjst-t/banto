@@ -3,7 +3,7 @@ id: task-0007
 type: task
 kind: feature
 title: 記憶システム第一層（好み・習慣）のMemoryStoreとJSONL実装
-status: draft
+status: done
 parent: epic-0001
 depends: [task-0004]
 refs: [adr-0010]

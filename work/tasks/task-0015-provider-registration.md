@@ -3,7 +3,7 @@ id: task-0015
 type: task
 kind: feature
 title: モジュール登録機構——接続情報・Tool・GUI・SKILLを1単位で登録する
-status: draft
+status: done
 parent: epic-0007
 depends: [task-0012]
 refs: [adr-0010]

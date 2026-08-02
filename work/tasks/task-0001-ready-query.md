@@ -4,6 +4,7 @@ type: task
 kind: feature
 title: readyクエリのAPI/CLI実装
 status: draft
+parent: epic-0010
 refs: [followup-directive-2026-07, research-orchestrator-survey]
 scope:
   paths: ["packages/banto-daemon/src/**", "packages/banto-cli/src/**", "packages/banto-core/src/daemon-client.ts", "tests/acceptance/**"]

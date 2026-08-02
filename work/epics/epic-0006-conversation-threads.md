@@ -2,7 +2,7 @@
 id: epic-0006
 type: epic
 title: 会話スレッド（番頭の分身）と会話の永続化
-status: draft
+status: done
 refs: [vision, adr-0009, adr-0010, spec-ui]
 ---
 

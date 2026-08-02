@@ -3,7 +3,7 @@ id: task-0016
 type: task
 kind: refactor
 title: 基本GUIセットを組み込みモジュールとして再配置し、データAPIとGUIを揃える
-status: draft
+status: done
 parent: epic-0002
 depends: [task-0015]
 refs: [adr-0010]

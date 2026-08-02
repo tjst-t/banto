@@ -4,7 +4,7 @@ type: task
 kind: refactor
 title: KoboがWorker Poolをサービスとして利用する形へ切り替える
 status: draft
-parent: epic-0005
+parent: epic-0010
 depends: [task-0010, task-0018]
 refs: [adr-0010]
 scope:

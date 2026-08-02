@@ -3,7 +3,7 @@ id: task-0042
 type: task
 kind: feature
 title: 書き込み許可の要求と承認（番頭が頼み、POが画面で許す）
-status: draft
+status: done
 parent: epic-0009
 depends: [task-0041]
 refs: [adr-0010]

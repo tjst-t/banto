@@ -3,7 +3,7 @@ id: task-0032
 type: task
 kind: feature
 title: 記憶の分類に fact（事実）を追加する
-status: draft
+status: done
 parent: epic-0001
 refs: [adr-0010]
 scope:

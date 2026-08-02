@@ -3,7 +3,7 @@ id: task-0034
 type: task
 kind: feature
 title: env.* Tool と Environment Pool の設定面を実装する（番頭が Kobo 無しで検証を回せる）
-status: draft
+status: done
 parent: epic-0008
 depends: [task-0033]
 refs: [adr-0010, spec-environment]

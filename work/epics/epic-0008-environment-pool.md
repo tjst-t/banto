@@ -2,7 +2,7 @@
 id: epic-0008
 type: epic
 title: Environment Pool（動作検証環境）— Koboから独立したモジュール
-status: draft
+status: done
 refs: [adr-0010, adr-0009]
 ---
 

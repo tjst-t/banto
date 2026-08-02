@@ -2,7 +2,7 @@
 id: epic-0005
 type: epic
 title: Worker Pool（職人ランタイム）— Koboから独立したモジュール
-status: draft
+status: done
 refs: [adr-0010, adr-0009]
 ---
 

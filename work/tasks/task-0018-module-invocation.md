@@ -3,7 +3,7 @@ id: task-0018
 type: task
 kind: feature
 title: モジュール間呼び出しの規約とクライアント（ライブラリ＋レジストリ方式）
-status: draft
+status: done
 parent: epic-0007
 depends: [task-0015]
 refs: [adr-0010]

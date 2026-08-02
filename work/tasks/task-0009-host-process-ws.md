@@ -3,7 +3,7 @@ id: task-0009
 type: task
 kind: feature
 title: 番頭ホストプロセス（常駐）とWS API・CLIクライアント
-status: draft
+status: done
 parent: epic-0001
 depends: [task-0008]
 refs: [adr-0010]

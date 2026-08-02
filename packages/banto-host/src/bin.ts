@@ -24,6 +24,7 @@ import {
   PiRpcDriver,
   WorkerPool,
   createWorkerPoolModule,
+  type WorkerInfo,
 } from "@banto/worker-pool";
 import {
   BANTO_ORIGIN,
@@ -45,6 +46,7 @@ import { createMemoryTools } from "./memory-tools.js";
 import { CORE_ORIGIN, createModuleRegistry, resolveSkills, type SkillEntry } from "./module.js";
 import { createDemoModule } from "./modules/demo.js";
 import { createStudioModule } from "./modules/studio.js";
+import { createPiAgentModule } from "./modules/pi-agent.js";
 import { createWorkspaceModule } from "./modules/workspace.js";
 import { PlaceGrantStore } from "./place-grants.js";
 import { ThreadStore } from "./thread-store.js";
@@ -129,6 +131,42 @@ const SYSTEM_PROMPT = [
   "職人からの報告・質問は自動で届きます。報告は主張であって完了の証明ではないので、必要なら成果を自分で確かめてください。質問には worker.steer で答えられます。",
   "確かめて良いと判断したら worker.close で職人を畳んでください。待機中の職人はプロセスとして残り続けます。畳んでも記録は残り、続きを頼みたくなったら worker.wake で元の会話ごと起こし直せます。",
 ].join("\n");
+
+/**
+ * 再起動後に中断していた職人を自動で起こす（task-0050）。
+ *
+ * banto が `system.restart` や SIGTERM で終了したとき、職人のセッション JSONL は
+ * Worker Pool のデータディレクトリに残っている。`WorkerPool.wake()` は元のセッションを
+ * 再開し、pi に `--session` を渡して同じ会話から続けられる。
+ *
+ * 一覧（`WorkerPool.list({ includeClosed: true })`）から `state` が `"closed"` の職人を
+ * 全て探し、`wake()` で起こし直す。
+ */
+async function resumeWorkers(
+  workerPool: WorkerPool
+): Promise<Record<string, { ok: boolean; instruction: string }>> {
+  const results: Record<string, { ok: boolean; instruction: string }> = {};
+  const closed = workerPool.list({ includeClosed: true }).filter((w) => w.state === "closed");
+
+  for (const worker of closed) {
+    const instruction = `再開します (task: ${worker.taskId})`;
+    try {
+      await workerPool.wake(worker.sessionId, instruction);
+      results[worker.sessionId] = { ok: true, instruction };
+      console.log(`[banto] resumed worker: ${worker.taskId} (${worker.sessionId})`);
+    } catch (err) {
+      results[worker.sessionId] = { ok: false, instruction };
+      console.error(
+        `[banto] failed to resume worker ${worker.taskId} (${worker.sessionId}): ${String(err)}`
+      );
+    }
+  }
+
+  const total = Object.keys(results).length;
+  const ok = Object.values(results).filter((r) => r.ok).length;
+  console.log(`[banto] resumed ${ok}/${total} workers`);
+  return results;
+}
 
 /**
  * 台帳に無いモデルを、実体のプロバイダ/モデルへ紐付ける最小の定義（D6）。
@@ -338,6 +376,9 @@ async function serve(options: ServeOptions): Promise<void> {
     settingsSection(settings, "worker-pool")
   );
 
+  // task-0050: 再起動後に中断していた職人を自動で起こす
+  const resumedWorkers = await resumeWorkers(workerPool);
+
   // 決定26 の層を解いた SKILL（番頭核＋モジュール）。studio はこれをそのまま見せる
   const coreSkills: SkillEntry[] = skills.map((skill) => ({ skill, origin: CORE_ORIGIN }));
 
@@ -356,6 +397,8 @@ async function serve(options: ServeOptions): Promise<void> {
       settingsSection(settings, "environment-pool")
     ),
     createDemoModule(),
+    // task-0050: pi coding agent の接続設定
+    createPiAgentModule({ settingsStore: settings }),
   ]);
 
   // 設定モジュールは他モジュールの宣言を集めるので、レジストリが揃ってから登録する（決定41）

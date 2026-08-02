@@ -210,7 +210,9 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 
 @media (max-width: 860px) {
   .shell-body { flex-direction: column; }
-  .chat-pane { width: 100%; border-left: none; border-top: 1px solid var(--line); max-height: 55%; }
+  .mobile-footer { display: flex; }
+  .chat-pane.is-mobile { width: 100%; border-left: none; border-top: 1px solid var(--line); height: auto; }
+  .shell.split-mode { padding-bottom: 56px; }
 }
 
 /* ── 番頭の応答（Markdown） ── */
@@ -273,7 +275,62 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .fb-size { margin-left: auto; font-size: 10.5px; color: var(--ink-faint); font-family: var(--font-mono); }
 .fb-entry.is-selected .fb-size { color: rgba(255,255,255,0.7); }
 .fb-preview { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-.fb-preview-head { font-size: 11.5px; }
+.fb-preview-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11.5px;
+}
+.fb-preview-head code {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fb-preview-controls {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 10px; flex-shrink: 0;
+}
+/* preview/source のセグメントトグル（task-0051） */
+.fb-seg {
+  display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden;
+  background: var(--surface);
+}
+.fb-seg-btn {
+  font: inherit; font-size: 11px; padding: 3px 10px; border: none; cursor: pointer;
+  background: none; color: var(--ink-faint);
+}
+.fb-seg-btn:hover:not(:disabled) { color: var(--ink); }
+.fb-seg-btn.is-active { background: var(--accent); color: #fff; font-weight: 700; }
+.fb-seg-btn:disabled { opacity: 0.4; cursor: default; }
+/* source モードの折り返しトグル（task-0051 a3） */
+.fb-wrap-toggle {
+  font-size: 11px; color: var(--ink-faint); display: inline-flex; align-items: center; gap: 4px;
+  cursor: pointer; user-select: none;
+}
+.fb-wrap-toggle input { margin: 0; cursor: pointer; }
+/* preview モードの内容領域。source は .fb-code 自身がスクロールする */
+.fb-preview-scroll { flex: 1; min-height: 0; overflow: auto; }
+.fb-code.is-wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* ハイライト読み込み中の素のコード表示（行番号なし） */
+.fb-code-plain {
+  margin: 0; padding: 12px 14px; border-radius: 10px; overflow: auto;
+  background: #16140f; color: #d8d4c4;
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.65;
+}
+/* shiki の出力（pre.shiki）を包む。テーマの背景色は shiki が inline style で付ける */
+.fb-code-html pre {
+  margin: 0; padding: 12px 14px; border-radius: 10px;
+  font-size: 12px; line-height: 1.65;
+}
+/* Mermaid（task-0053） */
+.fb-mermaid { min-height: 40px; }
+.fb-mermaid svg { max-width: 100%; height: auto; display: block; }
+.fb-mermaid .fb-error { margin-bottom: 8px; }
+/* CSV/TSV テーブル（task-0054） */
+.fb-csv { border-collapse: collapse; font-size: 12px; min-width: 100%; }
+.fb-csv th, .fb-csv td {
+  border: 1px solid var(--line); padding: 4px 8px; text-align: left;
+  white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: top;
+}
+.fb-csv th { background: var(--surface); font-weight: 700; position: sticky; top: 0; }
+.fb-csv td { background: var(--bg); }
+.fb-csv tbody tr:nth-child(even) td { background: var(--surface); }
+/* diff プレビュー（task-0055）。行の色分けは既存の gv-add/gv-del/gv-hunk を流用 */
+.fb-preview-scroll .gv-diff { overflow: visible; }
 .fb-code {
   flex: 1; min-height: 0; overflow: auto; margin: 0;
   background: #16140f; color: #d8d4c4; border-radius: 10px; padding: 12px 0;
@@ -853,6 +910,57 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
   /* 上下に積む幅では境界のドラッグをしない。幅の inline style も打ち消す */
   .pane-resizer { display: none; }
   .chat-pane { width: 100% !important; }
+}
+
+/* ── スマホ用フッター ── */
+.mobile-footer {
+  display: none;
+  left: 0;
+  right: 0;
+  height: 56px;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  z-index: 100;
+  box-shadow: 0 -2px 8px rgba(0,0,0,0.06);
+}
+
+.mobile-footer.hidden {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
+.mobile-footer-btn {
+  flex: 1;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.mobile-footer-btn:hover {
+  background: var(--bg);
+}
+
+.mobile-footer-btn.is-active {
+  color: var(--accent);
+  font-weight: 700;
+  background: rgba(43,65,98,0.06);
+}
+
+.mobile-footer-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.shell.split-mode {
+  padding-bottom: 0;
 }
 
 /* ── 書き込み許可パネル（task-0042・決定38c/e）──────────────────────────── */

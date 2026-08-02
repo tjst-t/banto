@@ -3,7 +3,7 @@ id: task-0031
 type: task
 kind: feature
 title: studio モジュール（番頭の記憶とSKILLを見せる。閲覧のみ）
-status: draft
+status: done
 parent: epic-0002
 refs: [adr-0010]
 scope:

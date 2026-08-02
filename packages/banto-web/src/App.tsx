@@ -5,7 +5,7 @@
  *        ホストへ投げ返すので、番頭が canvas.* を呼んだ場合と結果が一致する。
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Attachment, TranscriptEntry } from "@banto/host/protocol";
@@ -194,14 +194,16 @@ function ThinkingRow(): React.ReactElement {
   );
 }
 
-function ChatRow({
-  entry,
-  onDismissError,
-}: {
-  entry: TranscriptEntry;
-  /** error 行の × が押されたとき（error 以外には渡さない）。 */
-  onDismissError?: () => void;
-}): React.ReactElement {
+/** React.memo: text_delta で session.chat が入れ替わっても、変更無しの行は再描画をスキップ。 */
+const ChatRow = React.memo(
+  ({
+    entry,
+    onDismissError,
+  }: {
+    entry: TranscriptEntry;
+    /** error 行の × が押されたとき（error 以外には渡さない）。 */
+    onDismissError?: () => void;
+  }): React.ReactElement => {
   switch (entry.role) {
     case "po":
       return <div className="msg msg--po">{entry.text}</div>;
@@ -241,7 +243,7 @@ function ChatRow({
         </div>
       );
   }
-}
+});
 
 export function App(): React.ReactElement {
   const session = useBantoSession(WS_URL);
@@ -274,6 +276,9 @@ export function App(): React.ReactElement {
    * （会話は追記のみで並びが変わらない）。
    */
   const [dismissedErrors, setDismissedErrors] = useState<Record<string, ReadonlySet<number>>>({});
+
+  /** スマホ表示：チャットかキャンバスか。既定は両方表示（split）。 */
+  const [mobileView, setMobileView] = useState<"chat" | "canvas" | "split">("split");
 
   /** エラー行を1件だけ非表示にする（全部は消さない）。 */
   const dismissError = useCallback((threadId: string, i: number) => {
@@ -491,7 +496,7 @@ export function App(): React.ReactElement {
   };
 
   return (
-    <div className="shell">
+    <div className={`shell ${mobileView === "split" ? "split-mode" : ""}`}>
       <header className="shell-topbar">
         <div className="brand">
           <span className="brand-mark">番</span>
@@ -781,7 +786,7 @@ export function App(): React.ReactElement {
               }
               return (
                 <ChatRow
-                  key={i}
+                  key={(entry as { id?: string }).id ?? i}
                   entry={entry}
                   onDismissError={
                     entry.role === "error" && threadId ? () => dismissError(threadId, i) : undefined
@@ -889,6 +894,24 @@ export function App(): React.ReactElement {
             </div>
           </div>
         </aside>
+
+        {/* スマホ用フッター */}
+        <div className={`mobile-footer ${session.status === "open" ? "" : "hidden"}`}>
+          <button
+            className={`mobile-footer-btn ${mobileView === "chat" || mobileView === "split" ? "is-active" : ""}`}
+            onClick={() => setMobileView(mobileView === "split" ? "chat" : "split")}
+            title="チャット"
+          >
+            💬 チャット
+          </button>
+          <button
+            className={`mobile-footer-btn ${mobileView === "canvas" || mobileView === "split" ? "is-active" : ""}`}
+            onClick={() => setMobileView(mobileView === "split" ? "canvas" : "split")}
+            title="キャンバス"
+          >
+            📄 キャンバス
+          </button>
+        </div>
       </div>
       )}
     </div>

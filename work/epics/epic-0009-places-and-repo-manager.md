@@ -2,7 +2,7 @@
 id: epic-0009
 type: epic
 title: 場所（Place）の共通契約と repo-manager モジュール
-status: draft
+status: done
 refs: [adr-0010, spec-multi-project]
 ---
 

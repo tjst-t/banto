@@ -17,6 +17,7 @@ import { EnvManager } from "./EnvManager.js";
 import { WorkerViewer } from "./WorkerViewer.js";
 import { MemoryViewer } from "./MemoryViewer.js";
 import { SkillViewer } from "./SkillViewer.js";
+import { PiAgentViewer } from "./PiAgentViewer.js";
 
 /** キャンバスビューが受け取る props。params は canvas.open で渡されたもの。 */
 export interface CanvasViewProps {
@@ -59,6 +60,8 @@ const REGISTRY: Record<string, ComponentType<CanvasViewProps>> = {
   // 番頭の中身（studio モジュール提供。決定25・26）
   MemoryViewer,
   SkillViewer,
+  // pi agent 設定（pi-agent モジュール提供・task-0050）
+  PiAgentViewer,
   // テスト用（実物が揃ったら外す）
   DemoHello,
   DemoClock,

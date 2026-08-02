@@ -3,7 +3,7 @@ id: task-0036
 type: task
 kind: feature
 title: 会話の永続化と一覧・再開（ホストの再起動を越えて残る）
-status: draft
+status: done
 parent: epic-0006
 depends: [task-0035]
 refs: [adr-0010, imp-0002, vision]

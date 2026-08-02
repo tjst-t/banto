@@ -3,7 +3,7 @@ id: task-0010
 type: task
 kind: refactor
 title: Worker Poolを独立モジュールとして切り出す（Kobo非依存で単体で動く）
-status: draft
+status: done
 parent: epic-0005
 refs: [adr-0010]
 scope:

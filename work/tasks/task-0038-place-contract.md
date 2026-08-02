@@ -3,7 +3,7 @@ id: task-0038
 type: task
 kind: feature
 title: 場所（Place）の共通契約と範囲チェックの一般化
-status: draft
+status: done
 parent: epic-0009
 refs: [adr-0010, imp-0004]
 scope:

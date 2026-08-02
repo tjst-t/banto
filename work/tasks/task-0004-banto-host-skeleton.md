@@ -3,7 +3,7 @@ id: task-0004
 type: task
 kind: feature
 title: banto-hostパッケージの雛形立ち上げ（pi Agent SDK埋め込み・Tool契約名前空間規則）
-status: draft
+status: done
 parent: epic-0001
 refs: [adr-0009, adr-0010]
 scope:

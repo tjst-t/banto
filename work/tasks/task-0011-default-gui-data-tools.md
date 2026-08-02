@@ -3,7 +3,7 @@ id: task-0011
 type: task
 kind: feature
 title: 基本GUIセットのデータ側Tool（ファイル・Git閲覧）をBanto既定として実装
-status: draft
+status: done
 parent: epic-0002
 depends: [task-0006]
 refs: [adr-0010]

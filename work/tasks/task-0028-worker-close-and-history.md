@@ -3,7 +3,7 @@ id: task-0028
 type: task
 kind: feature
 title: 職人の店じまいと履歴（番頭が畳む・アイドル安全弁・閉じた職人の可視化・同一セッション再開）
-status: draft
+status: done
 parent: epic-0005
 depends: [task-0026]
 refs: [adr-0010]

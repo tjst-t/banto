@@ -3,7 +3,7 @@ id: task-0039
 type: task
 kind: feature
 title: repo-manager モジュール（ghq / gwq を状態を持たずに提供する）
-status: draft
+status: done
 parent: epic-0009
 depends: [task-0038]
 refs: [adr-0010, spec-multi-project]

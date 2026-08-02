@@ -3,7 +3,7 @@ id: task-0006
 type: task
 kind: feature
 title: Tool論理名↔wire名アダプタ（決定22。プロバイダ制約の吸収）
-status: draft
+status: done
 parent: epic-0001
 depends: [task-0004]
 refs: [adr-0010]
