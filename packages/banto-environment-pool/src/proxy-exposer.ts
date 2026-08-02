@@ -22,6 +22,8 @@
  */
 
 import * as http from "node:http";
+import * as net from "node:net";
+import type { Duplex } from "node:stream";
 import type { EnvExposer, ExposeRequest, ExposedEnv } from "@banto/core";
 
 /** モジュールの到達先の下の入口。`{baseUrl}/env/<envId>/...` を受ける。 */
@@ -52,6 +54,15 @@ export interface EnvProxy extends EnvExposer {
    * HTTP リクエストを捌く。対象外のパスなら false を返す（呼び出し側が次のルートへ回す）。
    */
   handle(req: http.IncomingMessage, res: http.ServerResponse): boolean;
+  /**
+   * HTTP Upgrade（WebSocket）を捌く（案A）。対象外のパスなら false を返す。
+   *
+   * 中継 URL（`{baseUrl}/env/<envId>/ws`）への upgrade を、公開した環境の
+   * `/ws`（BANTO_WS_PATH）へ**パスを書き換えて**転送する。HTTP 中継と同じく
+   * banto を守っている認証をそのまま継承する——検証環境の WebUI の会話が
+   * 中継 URL でも成立するのはこの経路による。
+   */
+  handleUpgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer): boolean;
 }
 
 export function createEnvProxyExposer(options: EnvProxyOptions): EnvProxy {
@@ -132,5 +143,76 @@ export function createEnvProxyExposer(options: EnvProxyOptions): EnvProxy {
       req.pipe(upstream);
       return true;
     },
+
+    handleUpgrade(req, socket, head): boolean {
+      const url = req.url ?? "";
+      if (!url.startsWith(prefix)) return false;
+
+      const rest = url.slice(prefix.length);
+      const slash = rest.indexOf("/");
+      const envId = slash === -1 ? rest : rest.slice(0, slash);
+      const target = exposures.get(envId);
+      if (!target) {
+        // I2: 知らない環境へ upgrade を流さない。はっきり拒否して破棄する
+        socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return true;
+      }
+
+      // `/env/<id>/ws` は `/ws`（BANTO_WS_PATH）へ書き換えて転送する。
+      // HTTP 中継と同じパス書き換え——中継 URL は `<base>/env/<id>/...` の形で、
+      // 検証環境の WebUI は自分のオリジン（＝その下）に `/ws` を持つ
+      const path = slash === -1 ? "/" : rest.slice(slash) || "/";
+      relayUpgrade(req, socket, head, targetHost, target.port, path);
+      return true;
+    },
   };
+}
+
+// 中継先のホストへ HTTP Upgrade を転送する。
+//
+// `http.request` の 'upgrade' を使うと、クライアントが request と同時に送った
+// head（最初の WebSocket フレーム等）をリクエスト本体より前に書いてしまう
+// 罠がある（実測で確認）。ここでは **raw ヘッダを再構築して net ソケットへ順に
+// 書く**ことで、リクエスト本体 → head → 以降のストリーム、の順序を保証する。
+function relayUpgrade(
+  req: http.IncomingMessage,
+  clientSocket: Duplex,
+  head: Buffer,
+  host: string,
+  port: number,
+  path: string
+): void {
+  const upstream = net.connect(port, host, () => {
+    // パス・Host を書き換えたリクエストヘッドを再構築する（HTTP 中継と同じ方針）
+    const lines = [`${req.method ?? "GET"} ${path} HTTP/${req.httpVersion}`];
+    const raw = req.rawHeaders;
+    for (let i = 0; i < raw.length; i += 2) {
+      const name = raw[i];
+      if (name.toLowerCase() === "host") {
+        lines.push(`host: ${host}:${port}`);
+      } else {
+        lines.push(`${name}: ${raw[i + 1]}`);
+      }
+    }
+    upstream.write(Buffer.from(lines.join("\r\n") + "\r\n\r\n", "latin1"));
+    // head はリクエスト本体の直後に書く（順序が前後するとハンドシェイクが壊れる）
+    if (head.length > 0) upstream.write(head);
+    clientSocket.pipe(upstream);
+    upstream.pipe(clientSocket);
+  });
+
+  upstream.on("error", (err) => {
+    // I2: 中継先が居ないことを 200 で包まない。壊れているとすぐ分かる形で返す
+    clientSocket.write(
+      `HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n` +
+        `検証環境へ中継できません（${port}）: ${err.message}\r\n`
+    );
+    clientSocket.destroy();
+  });
+
+  // どちらかが閉じたら両方畳む（WebSocket の切断を相手側へ伝える）
+  clientSocket.on("error", () => upstream.destroy());
+  clientSocket.on("close", () => upstream.destroy());
+  upstream.on("close", () => clientSocket.destroy());
 }

@@ -220,17 +220,16 @@ async function serve(options: ServeOptions): Promise<void> {
       ? { publicBaseUrl: (settings.all().network?.publicUrl ?? process.env["BANTO_PUBLIC_URL"])! }
       : {}),
   });
-  const exposer =
-    caddyAdmin && envDomain
-      ? createCaddyExposer({ adminUrl: caddyAdmin, baseDomain: envDomain })
-      : envProxy;
+  // G9 (b): 公開方式は env.provision の exposeMode で選べる。auto は
+  // 「caddy の口が設定されていれば caddy、無ければ proxy」——設定はここで分かっている
+  const caddy = caddyAdmin && envDomain ? createCaddyExposer({ adminUrl: caddyAdmin, baseDomain: envDomain }) : undefined;
   if (caddyAdmin && !envDomain) {
     // I2: 半端な設定を黙って既定へ落とさない（Caddy のつもりで中継されると気づけない）
     throw new Error("BANTO_CADDY_ADMIN を設定するなら BANTO_ENV_DOMAIN も要ります。");
   }
   const environmentPool = new EnvironmentPool({
     dataDir: path.join(dataDir(), "environment-pool"),
-    exposer,
+    exposers: { proxy: envProxy, ...(caddy ? { caddy } : {}) },
     // 決定32d: 復号鍵は Environment Pool が持つ。sops の標準の環境変数から取る
     // ——これを渡さないと credentials 付きのプロファイルが使えない
     ...(process.env["SOPS_AGE_KEY_FILE"]

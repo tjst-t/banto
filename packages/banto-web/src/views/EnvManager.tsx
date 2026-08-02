@@ -24,6 +24,7 @@ interface EnvSummary {
   workdir?: string;
   url?: string;
   exposedPort?: number;
+  exposer?: string;
   createdAt: string;
   ttlDeadline: string;
   state: "live" | "torn-down" | "teardown-failed";
@@ -179,6 +180,7 @@ export function EnvManager({ endpoint, endpointOf }: CanvasViewProps): React.Rea
                     <a href={e.url} target="_blank" rel="noreferrer">
                       開く（{e.url}）
                     </a>
+                    {e.exposer && <span className="em-mode">公開方式: {e.exposer === "caddy" ? "caddy" : "proxy"}</span>}
                   </div>
                 )}
                 {e.state !== "torn-down" && (

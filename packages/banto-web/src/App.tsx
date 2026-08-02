@@ -20,9 +20,19 @@ import { SettingsPanel } from "./views/SettingsPanel.js";
  * リバースプロキシ（Caddy等）のサブドメイン経由でもそのまま繋がる——`localhost` を
  * 直書きすると、プロキシ越しに開いたときブラウザ側のマシンを指してしまう。
  * 別ホストの番頭に繋ぎたいときは `?host=ws://...` で上書きする。
+ *
+ * **中継 URL（`{baseUrl}/env/<envId>/`）で開かれたときは、WS も同じ中継パスへ繋ぐ**
+ * （案A）。この画面は検証環境のホストが banto の中継を通して出ているもので、
+ * 同一オリジンの `/ws` は検証環境ではなく**中継元（banto 本体）**を指してしまう。
+ * `/env/<envId>/` の下に開いたことがパスで分かるので、そこへ `ws` を足す。
  */
 function defaultWsUrl(): string {
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  const relay = location.pathname.match(/(\/env\/[^/]+)(?:\/|$)/);
+  if (relay) {
+    const prefix = location.pathname.slice(0, relay.index! + relay[1].length);
+    return `${scheme}//${location.host}${prefix}/ws`;
+  }
   return `${scheme}//${location.host}/ws`;
 }
 

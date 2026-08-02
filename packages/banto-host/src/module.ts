@@ -18,6 +18,7 @@
  */
 
 import type * as http from "node:http";
+import type { Duplex } from "node:stream";
 import type { ModuleSettingsSpec } from "@banto/core";
 import type { CanvasViewSpec } from "./canvas.js";
 import type { BantoSkill } from "./skills.js";
@@ -74,6 +75,15 @@ export interface BantoModule {
    * @returns 捌いたら true。対象外なら false（ホストが次のルートへ回す）
    */
   serve?(req: http.IncomingMessage, res: http.ServerResponse): boolean;
+  /**
+   * 自分の到達先の下で HTTP Upgrade（WebSocket）を自分で捌く口（案A）。
+   *
+   * `serve` と同じく**ホストは経路を渡すだけで中身を解釈しない**（決定27：
+   * Banto をブローカーにしない）。proxy exposer の WS 中継がここに乗る。
+   *
+   * @returns 捌いたら true。対象外なら false（ホストが次のルートへ回す）
+   */
+  handleUpgrade?(req: http.IncomingMessage, socket: Duplex, head: Buffer): boolean;
   /** キャンバスへ提供する GUI */
   views: CanvasViewSpec[];
   /**

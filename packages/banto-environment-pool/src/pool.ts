@@ -65,6 +65,15 @@ export interface EnvironmentPoolOptions {
    */
   exposer?: EnvExposer;
   /**
+   * 公開方式ごとの口（G9 (b)）。
+   *
+   * `exposeMode` による選択を Environment Pool が行う。`proxy` は必ず、
+   * `caddy` は設定が揃っているとき（settings の network に caddyAdmin +
+   * envDomain）だけ渡す——auto は「caddy があれば caddy、無ければ proxy」。
+   * 従来の単一の `exposer` と同時には渡さない。
+   */
+  exposers?: { proxy: EnvExposer; caddy?: EnvExposer };
+  /**
    * `collect` の回収先の親（既定 `<dataDir>/collected`）。
    *
    * **置き場所は Pool が決める**（spec §3.1・imp-0007 の裁定）。呼び出し側にパスを
@@ -98,6 +107,14 @@ export interface ProvisionRequest {
    * Environment Pool が覗いてポートを当てることはしない。
    */
   expose?: number;
+  /**
+   * 公開方式（G9 (b)）。既定 `auto`。
+   *
+   * - `auto`: caddy の口が設定されていれば caddy、無ければ proxy
+   * - `proxy` / `caddy`: 明示指定（auto より優先）。設定されていない方式を
+   *   指定すると理由つきで断る
+   */
+  exposeMode?: ExposeMode;
 }
 
 export interface EnvSummary {
@@ -116,6 +133,8 @@ export interface EnvSummary {
   url?: string;
   /** 公開しているポート。 */
   exposedPort?: number;
+  /** 公開方式（`banto-proxy` / `caddy`。G9 (b)）。 */
+  exposer?: string;
 }
 
 /** `env.provision` の返り（spec §3.1）。立てた直後に使える状態かも併せて返す。 */
@@ -168,12 +187,16 @@ export interface VerifyResult {
 /** アドホック環境の台帳上のプロファイル名。プロファイル経由と区別できるようにする。 */
 export const ADHOC_PROFILE_PREFIX = "adhoc:";
 
+/** 公開方式（G9 (b)）。既定 `auto` は「caddy の口があれば caddy、無ければ proxy」。 */
+export type ExposeMode = "auto" | "proxy" | "caddy";
+
 export class EnvironmentPool {
   private readonly ledger: EnvLedger;
   private limits: EnvLimits;
   private readonly timeoutMs: number;
   private sopsAgeKeyFile: string | undefined;
-  private readonly exposer: EnvExposer | undefined;
+  /** 公開方式ごとの口（G9 (b)）。従来の単一 `exposer` は proxy としてここへ畳む。 */
+  private readonly exposers: { proxy?: EnvExposer; caddy?: EnvExposer };
   private readonly collectRoot: string;
   /** 台帳が壊れていた場合の説明。黙って空の台帳で動き出さないため（I2）。 */
   readonly ledgerCorruption: string | null;
@@ -194,7 +217,11 @@ export class EnvironmentPool {
     this.limits = resolveLimits(options.limits);
     this.timeoutMs = options.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
     this.sopsAgeKeyFile = options.sopsAgeKeyFile;
-    this.exposer = options.exposer;
+    // I2: どちらも渡すのは曖昧——黙って片方を優先しない
+    if (options.exposer && options.exposers) {
+      throw new Error("exposer と exposers は同時に指定できません（どちらか一方）。");
+    }
+    this.exposers = options.exposers ?? (options.exposer ? { proxy: options.exposer } : {});
     this.collectRoot = options.collectRoot ?? path.join(options.dataDir, "collected");
     this.maintenanceIntervalMs = options.maintenanceIntervalMs ?? 60_000;
     this.teardownRetryLimit = Math.max(1, options.teardownRetryLimit ?? 3);
@@ -468,7 +495,7 @@ export class EnvironmentPool {
 
   /** 公開の口を持っているか。GUI と番頭に「頼めるかどうか」を伝えるため。 */
   canExpose(): boolean {
-    return this.exposer !== undefined;
+    return this.exposers.proxy !== undefined || this.exposers.caddy !== undefined;
   }
 
   /** いまの上限。GUI と番頭に見せるため（何が効いているか分からないと直せない）。 */
@@ -546,18 +573,24 @@ export class EnvironmentPool {
     };
     this.ledger.add(entry);
 
+    // I2: 方式だけ指定して公開自体を頼んでいないのを黙って通さない（公開されずに終わる）
+    if (request.expose === undefined && request.exposeMode !== undefined) {
+      throw new Error("exposeMode は expose（公開するポート）と一緒に指定してください。");
+    }
+
     // 決定39: 頼まれたら外から見えるようにする。**立ってから公開する**——
     // 立たなかった環境のURLを配ると、開いて初めて壊れていると分かる
     if (request.expose !== undefined) {
       try {
-        const exposed = await this.requireExposer().expose({
+        const exposed = await this.resolveExposer(request.exposeMode).expose({
           envId: entry.envId,
           port: request.expose,
           label: entry.taskId,
         });
-        this.ledger.setExposure(entry.envId, exposed.url, exposed.port);
+        this.ledger.setExposure(entry.envId, exposed.url, exposed.port, exposed.exposer);
         entry.url = exposed.url;
         entry.exposedPort = exposed.port;
+        entry.exposer = exposed.exposer;
       } catch (err) {
         // I2: 公開できなかったのに環境だけ残すと、畳み忘れの元になる。畳んでから投げる
         await this.teardown(entry.envId).catch(() => undefined);
@@ -670,9 +703,10 @@ export class EnvironmentPool {
     );
     // 畳むなら公開も取り下げる。**先に取り下げる**——環境が消えたのにURLだけ生き残ると、
     // 開いた人は「壊れている」としか分からない（決定39）
-    if (this.exposer) {
+    for (const exposer of [this.exposers.proxy, this.exposers.caddy]) {
+      if (!exposer) continue;
       try {
-        await this.exposer.unexpose(envId);
+        await exposer.unexpose(envId);
       } catch (err) {
         // I2: 取り下げに失敗したことは黙らせない。ただし環境を畳む方は続ける
         console.error(`[env] ${envId} の公開を取り下げられませんでした: ${String(err)}`);
@@ -866,13 +900,29 @@ export class EnvironmentPool {
   }
 
   /** I2: 公開の口が無いのに「公開しました」と言わない。 */
-  private requireExposer(): EnvExposer {
-    if (!this.exposer) {
+  private resolveExposer(mode: ExposeMode | undefined): EnvExposer {
+    if (!this.exposers.proxy && !this.exposers.caddy) {
       throw new Error(
         "この Banto は環境を外から見えるようにする口を持っていません（公開の実装が設定されていない）。"
       );
     }
-    return this.exposer;
+    switch (mode ?? "auto") {
+      case "proxy":
+        if (!this.exposers.proxy) {
+          throw new Error("proxy での公開が設定されていません。");
+        }
+        return this.exposers.proxy;
+      case "caddy":
+        if (!this.exposers.caddy) {
+          throw new Error(
+            "caddy での公開が設定されていません（settings の network に caddyAdmin と envDomain が必要です）。"
+          );
+        }
+        return this.exposers.caddy;
+      case "auto":
+        // G9 (b): caddy の口が設定されていれば caddy、無ければ proxy
+        return this.exposers.caddy ?? this.exposers.proxy!;
+    }
   }
 
   private requireLive(envId: string): EnvLedgerEntry {
@@ -909,6 +959,7 @@ function toSummary(entry: EnvLedgerEntry): EnvSummary {
     ttlDeadline: entry.ttlDeadline,
     ...(entry.url ? { url: entry.url } : {}),
     ...(entry.exposedPort !== undefined ? { exposedPort: entry.exposedPort } : {}),
+    ...(entry.exposer ? { exposer: entry.exposer } : {}),
     // 畳み損ねを「畳んだ」と同じに見せない（spec §5）
     state: entry.teardownFailed ? "teardown-failed" : entry.tornDownAt ? "torn-down" : "live",
   };

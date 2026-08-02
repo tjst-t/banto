@@ -27,6 +27,7 @@ export type {
   EnvSummary,
   RunResult,
   VerifyResult,
+  ExposeMode,
 } from "./pool.js";
 
 // 外から見えるようにする口（決定39）。中継は Environment Pool の責務——banto-host に置くと

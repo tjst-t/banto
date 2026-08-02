@@ -9,6 +9,7 @@
 
 import { Type } from "typebox";
 import type * as http from "node:http";
+import type { Duplex } from "node:stream";
 import type { NamespacedToolDefinition } from "@banto/core";
 import { createEnvTools } from "./tools.js";
 import type { EnvProxy } from "./proxy-exposer.js";
@@ -59,6 +60,7 @@ export function createEnvironmentPoolModule(
   settings: import("@banto/core").ModuleSettingsSpec;
   skills: never[];
   serve?(req: http.IncomingMessage, res: http.ServerResponse): boolean;
+  handleUpgrade?(req: http.IncomingMessage, socket: Duplex, head: Buffer): boolean;
 } {
   return {
     name: "environment-pool",
@@ -69,7 +71,12 @@ export function createEnvironmentPoolModule(
       "使い捨てなら env.verify 一本、居座らせたいなら低位動詞を使う。",
     endpoint: { baseUrl },
     tools: createEnvTools(pool),
-    ...(proxy ? { serve: (req, res) => proxy.handle(req, res) } : {}),
+    ...(proxy
+      ? {
+          serve: (req, res) => proxy.handle(req, res),
+          handleUpgrade: (req, socket, head) => proxy.handleUpgrade(req, socket, head),
+        }
+      : {}),
     views: envViews,
     // 決定41: 設定画面に自分の区画を出す。GUI ではなく項目の宣言を渡す
     settings: createEnvironmentSettings(pool, settingsSection),

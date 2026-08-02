@@ -54,6 +54,13 @@ const targetFields = {
         "（返り値の url を伝えること）。機械が確かめるだけなら要らない",
     })
   ),
+  exposeMode: Type.Optional(
+    Type.Union([
+      Type.Literal("auto", { description: "caddy が設定されていれば caddy、無ければ proxy（既定）" }),
+      Type.Literal("proxy", { description: "banto の中継で公開する（強制）" }),
+      Type.Literal("caddy", { description: "Caddy のサブドメインで公開する（強制。設定が無いと断る）" }),
+    ], { description: "公開方式（G9）。expose と一緒に指定する。既定 auto" })
+  ),
 };
 
 /**
@@ -71,6 +78,7 @@ function asRequest(params: {
   workdir?: string;
   taskId?: string;
   expose?: number;
+  exposeMode?: "auto" | "proxy" | "caddy";
 }): ProvisionRequest {
   const { config, ...rest } = params;
   return {
@@ -84,6 +92,13 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** 公開方式の表示。exp は `banto-proxy` / `caddy`（G9 (b) では proxy / caddy と呼ぶ）。 */
+function exposeModeLabel(exposer: string | undefined): string {
+  if (exposer === "caddy") return "caddy";
+  if (exposer) return "proxy";
+  return "";
 }
 
 /** 一覧に出す状態の表示。畳み損ねを「畳み済み」と同じに見せない。 */
@@ -166,7 +181,9 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
             type: "text" as const,
             text:
               `環境を立てました: ${summary.envId}（${summary.profile}）\n` +
-              (summary.url ? `外から見られます: ${summary.url}\n` : "") +
+              (summary.url
+                ? `外から見られます: ${summary.url}（公開方式: ${exposeModeLabel(summary.exposer)}）\n`
+                : "") +
               `いま使えるか: ${summary.healthcheck.ok ? "使えます" : `使えません（${summary.healthcheck.detail ?? "理由不明"}）`}\n` +
               // I2: 執行が回っていないのに「自動で畳まれます」と言わない。
               // 期限だけ記録して誰も畳まない状態を「畳まれる」と読ませるのが一番危ない
@@ -316,7 +333,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
               .map(
                 (e) =>
                   `${e.envId} — ${e.profile}${STATE_LABEL[e.state]} / ${e.taskId}` +
-                  `${e.url ? ` / ${e.url}` : ""}` +
+                  `${e.url ? ` / ${e.url}${exposeModeLabel(e.exposer) ? `（${exposeModeLabel(e.exposer)}）` : ""}` : ""}` +
                   `${e.workdir ? ` @ ${e.workdir}` : ""} / 期限 ${e.ttlDeadline}`
               )
               .join("\n");

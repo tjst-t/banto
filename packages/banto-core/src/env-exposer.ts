@@ -47,4 +47,20 @@ export interface EnvExposer {
   unexpose(envId: string): Promise<void>;
   /** いま公開しているもの。畳み損ねた公開を見つけるために使う。 */
   list(): Promise<ExposedEnv[]>;
+  /**
+   * HTTP Upgrade（WebSocket）を中継できる実装だけが持つ口（案A）。
+   *
+   * 公開した環境の面に HTTP だけでなく WS も生やすための入り口。中継できる
+   * 実装（proxy exposer）だけが実装し、できない実装（Caddy）は持たない。
+   * `handle` と同じく、捌いたら true、対象外なら false を返す。
+   *
+   * @param req    解析済みの HTTP リクエスト（ヘッダのみ。本体は無い）
+   * @param socket クライアント側の生ソケット。upgrade 応答の書き込みと双方向 pipe に使う
+   * @param head   リクエストヘッダと一緒に届いた先行バイト（空でないこともある）
+   */
+  handleUpgrade?(
+    req: import("node:http").IncomingMessage,
+    socket: import("node:stream").Duplex,
+    head: Buffer
+  ): boolean;
 }

@@ -14,6 +14,7 @@
  */
 
 import * as http from "node:http";
+import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
 
 import type { CanvasCatalog } from "./canvas.js";
@@ -108,9 +109,13 @@ export class BantoHostServer {
     this.catalog = options.catalog;
     this.modules = options.modules;
     this.httpServer = httpServer;
-    this.wss = new WebSocketServer({ server: httpServer, path: BANTO_WS_PATH });
+    this.wss = new WebSocketServer({ noServer: true });
 
     this.wss.on("connection", (ws: WebSocket) => this.handleConnection(ws));
+    // upgrade はここで一手に受け、パスで振り分ける（案A：proxy exposer の WS 中継）。
+    // ws に server を持たせると /ws 以外の upgrade を全部 400 で蹴るため、noServer にして
+    // 自分の面（/ws）とモジュールの面（中継 URL）をここで分ける
+    httpServer.on("upgrade", (req, socket, head) => this.handleUpgrade(req, socket, head));
     // スレッドが開くたびに購読を張り、増減を全クライアントへ配る
     for (const thread of this.threads.list()) this.attach(thread);
     this.unsubscribeThreads = this.threads.subscribe((threads) => {
@@ -261,6 +266,40 @@ export class BantoHostServer {
   }
 
   // ── 接続とクライアントメッセージ ───────────────────────────────────────────
+
+  /**
+   * HTTP Upgrade（WebSocket）の入口を捌く。
+   *
+   * - `/ws`（BANTO_WS_PATH）→ wss（Banto 自身の配信）
+   * - モジュールの到達先の下 → そのモジュール（proxy exposer の中継 URL）
+   * - それ以外 → 拒否して破棄。知らない upgrade を生かし続けない
+   */
+  private handleUpgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer): void {
+    const pathname = (req.url ?? "").split("?")[0] ?? "";
+
+    // Banto 自身の配信面。ws の `path` オプションと同じ判定（クエリを外して照合する）
+    if (pathname === BANTO_WS_PATH) {
+      this.wss.handleUpgrade(req, socket, head, (ws) => {
+        this.wss.emit("connection", ws, req);
+      });
+      return;
+    }
+
+    // モジュールが自分の到達先の下で upgrade を捌く（決定27・案A）。
+    // HTTP の `serve` と同じく、ホストは経路を渡すだけで中身を解釈しない
+    if (this.modules) {
+      for (const module of this.modules.list()) {
+        if (!module.endpoint.baseUrl.startsWith("/")) continue;
+        const base = module.endpoint.baseUrl.replace(/\/$/, "");
+        if (!(req.url ?? "").startsWith(base)) continue;
+        if (module.handleUpgrade?.(req, socket, head)) return;
+      }
+    }
+
+    // I2: 誰のものでもない upgrade を黙って生かし続けない。はっきり拒否して破棄する
+    socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+    socket.destroy();
+  }
 
   private handleConnection(ws: WebSocket): void {
     this.clients.add(ws);

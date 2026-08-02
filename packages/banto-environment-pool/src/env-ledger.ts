@@ -45,6 +45,8 @@ export interface EnvLedgerEntry {
   url?: string;
   /** 公開しているポート。 */
   exposedPort?: number;
+  /** 公開方式（`banto-proxy` / `caddy`。G9 (b)）。 */
+  exposer?: string;
   /**
    * ISO-8601 deadline for TTL enforcement (computed from profile.ttlMs at provision time).
    * Story-5 reads this to force-teardown expired environments.
@@ -176,11 +178,12 @@ export class EnvLedger {
    * The entry is kept in the ledger for audit trail (D3).
    */
   /** 公開先を記録する。プロセスが起き直しても、どのURLを取り下げるか分かる。 */
-  setExposure(envId: string, url: string, port: number): void {
+  setExposure(envId: string, url: string, port: number, exposer?: string): void {
     const entry = this.entries.get(envId);
     if (!entry) return;
     entry.url = url;
     entry.exposedPort = port;
+    if (exposer !== undefined) entry.exposer = exposer;
     this.flush();
   }
 
