@@ -38,6 +38,11 @@ const repoViews = [
 /** 既定の到達先。Banto に同居させる想定なので相対パス。 */
 export const REPO_MANAGER_BASE_URL = "/api/repo-manager";
 
+/** SKILL の置き場所（`packages/banto-repo-manager/skills`）。 */
+export function repoManagerSkillsDir(): string {
+  return new URL("../skills", import.meta.url).pathname;
+}
+
 export function createRepoManagerModule(
   options: RepoToolOptions = {},
   baseUrl: string = REPO_MANAGER_BASE_URL
@@ -48,7 +53,7 @@ export function createRepoManagerModule(
   endpoint: { baseUrl: string };
   tools: NamespacedToolDefinition[];
   views: typeof repoViews;
-  skills: never[];
+  skills: Array<{ name: string; description: string; filePath: string }>;
 } {
   return {
     name: "repo-manager",
@@ -60,6 +65,18 @@ export function createRepoManagerModule(
     endpoint: { baseUrl },
     tools: createRepoManagerTools(options) as NamespacedToolDefinition[],
     views: repoViews,
-    skills: [],
+    // SKILL は decision 26 の第2層（モジュールが出す既定）。frontmatter はパースせず
+    // コードで name / description を持ち、本体は `skills/repository/SKILL.md` に置く
+    skills: [
+      {
+        name: "repository",
+        description:
+          "リポジトリとワークツリーの扱い。どこで作業できるかを把握するとき、" +
+          "別ブランチの作業場所（ワークツリー）を用意・削除するとき、リポジトリを" +
+          "手元に取り込むときに使う。git の履歴変更（commit・push・branch）は持たず、" +
+          "必要なときは職人へ委譲する。",
+        filePath: `${repoManagerSkillsDir()}/repository/SKILL.md`,
+      },
+    ],
   };
 }

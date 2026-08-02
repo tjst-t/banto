@@ -41,6 +41,11 @@ import type { EnvironmentPool } from "./pool.js";
 /** 既定の到達先。独立サービスとして立てるなら絶対URLを渡す。 */
 export const ENVIRONMENT_POOL_BASE_URL = "/api/environment-pool";
 
+/** SKILL の置き場所（`packages/banto-environment-pool/skills`）。 */
+export function environmentPoolSkillsDir(): string {
+  return new URL("../skills", import.meta.url).pathname;
+}
+
 /**
  * @param proxy 検証環境への中継（決定39）。渡すと `{baseUrl}/env/<envId>/` が生える。
  *   **中継はこのモジュールの責務**——ホストは経路を渡すだけ（決定27：Banto をブローカーにしない）
@@ -58,7 +63,7 @@ export function createEnvironmentPoolModule(
   tools: NamespacedToolDefinition[];
   views: typeof envViews;
   settings: import("@banto/core").ModuleSettingsSpec;
-  skills: never[];
+  skills: Array<{ name: string; description: string; filePath: string }>;
   serve?(req: http.IncomingMessage, res: http.ServerResponse): boolean;
   handleUpgrade?(req: http.IncomingMessage, socket: Duplex, head: Buffer): boolean;
 } {
@@ -80,6 +85,17 @@ export function createEnvironmentPoolModule(
     views: envViews,
     // 決定41: 設定画面に自分の区画を出す。GUI ではなく項目の宣言を渡す
     settings: createEnvironmentSettings(pool, settingsSection),
-    skills: [],
+    // SKILL は decision 26 の第2層（モジュールが出す既定）。frontmatter はパースせず
+    // コードで name / description を持ち、本体は `skills/environment/SKILL.md` に置く
+    skills: [
+      {
+        name: "environment",
+        description:
+          "検証環境を立てて検証し、必ず畳む手順。「このブランチでテストが通るか」を" +
+          "機構が返す事実として確かめたいとき（I1）、およびレビュー用に環境を残したいときに使う。" +
+          "使い捨ては env.verify 一本、残すなら低位動詞。畳み忘れ・公開・成果物の取り出しもここに書いてある。",
+        filePath: `${environmentPoolSkillsDir()}/environment/SKILL.md`,
+      },
+    ],
   };
 }

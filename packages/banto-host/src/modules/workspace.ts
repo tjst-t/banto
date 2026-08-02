@@ -147,6 +147,19 @@ export function createWorkspaceModule(
     // 番頭には渡さない口（決定29e と同じ枠）。番頭が自分で承認できないことの機構的な保証
     internalTools: grants ? createPlaceGrantAdminTools(grants) : [],
     views: grants ? [...workspaceViews, permissionsView] : workspaceViews,
-    skills: [],
+    // このモジュールが既定として出す SKILL（決定26 の第2層）。
+    // 置き場所は banto-host パッケージ直下の module-skills/（core 用の skills/ とは混ぜない）。
+    // src/modules/workspace.ts も dist/modules/workspace.js も深さが同じなので、
+    // どちらからでも `../../module-skills` で packages/banto-host/module-skills に着く
+    skills: [
+      {
+        name: "workspace",
+        description:
+          "場所（place）の選び方と、ファイル・git の閲覧、書き込み許可の手順。" +
+          "どこで作業できるかを見るとき、書いてよい範囲をPOに頼むときに使う。" +
+          "既定は読み取り専用で、書けるのはPOが場所ごとに許した範囲だけ。",
+        filePath: `${new URL("../../module-skills", import.meta.url).pathname}/workspace/SKILL.md`,
+      },
+    ],
   };
 }
