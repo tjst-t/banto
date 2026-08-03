@@ -33,6 +33,17 @@
   </p>
 
   <nav class="proto-list" aria-label="画面一覧">
+    <a class="proto-item" href="llm-settings-app.html" data-testid="proto-link-llm-settings-app"
+       style="border:2px solid var(--accent); background: var(--surface-dim);">
+      <span class="proto-item-title">★★ 設定 › LLM・モデル（アプリ内の姿） — まずここ</span>
+      <span class="proto-item-desc">シェルの設定面に実際に置いたときの見え方。左ナビの「LLM エンドポイント」と「モデル自動選定」を1項目に統合。役割の既定（番頭は具体モデル・職人はtier）、tierごとの判断基準、制約つきの解決確認、プロバイダとキーの優先順。⚙️と左のセッションタブで面を行き来でき、チャット側のモデル切替も見られる。</span>
+    </a>
+
+    <a class="proto-item" href="llm-settings.html" data-testid="proto-link-llm-settings">
+      <span class="proto-item-title">LLM・pi 統合管理（設計の説明つき） — 同じ内容を仕様として並べたもの</span>
+      <span class="proto-item-desc">上のアプリ内版と中身は同じだが、なぜこの形かの説明を各節に添えた版。tierと制約を分けた理由、キーの並び順と実行時状態を分ける理由（D3）などを読みたいときはこちら。</span>
+    </a>
+
     <a class="proto-item" href="banto-shell.html" data-testid="proto-link-banto-shell"
        style="border:2px solid var(--accent); background: var(--surface-dim);">
       <span class="proto-item-title">★★ banto シェル（チャット＋キャンバス） ── ADR-0009/0010・まずここ</span>
