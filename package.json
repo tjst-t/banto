@@ -20,6 +20,7 @@
     "test:e2e": "node --import tsx --test tests/e2e/*.spec.ts"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/node": "^26.1.1",
     "tsx": "^4.15.0",
     "typescript": "^5.5.0"

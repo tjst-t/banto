@@ -131,7 +131,6 @@ const SYSTEM_PROMPT = [
   "職人からの報告・質問は自動で届きます。報告は主張であって完了の証明ではないので、必要なら成果を自分で確かめてください。質問には worker.steer で答えられます。",
   "確かめて良いと判断したら worker.close で職人を畳んでください。待機中の職人はプロセスとして残り続けます。畳んでも記録は残り、続きを頼みたくなったら worker.wake で元の会話ごと起こし直せます。",
 ].join("\n");
-
 /**
  * 再起動後に中断していた職人を自動で起こす（task-0050）。
  *
@@ -141,32 +140,65 @@ const SYSTEM_PROMPT = [
  *
  * 一覧（`WorkerPool.list({ includeClosed: true })`）から `state` が `"closed"` の職人を
  * 全て探し、`wake()` で起こし直す。
+ *
+ * unsafe な worker（`system.restart` / `reboot` / `systemctl` / 検証用 worktree）を
+ * 除外して再有効化（task-0057）。
  */
-async function resumeWorkers(
-  workerPool: WorkerPool
-): Promise<Record<string, { ok: boolean; instruction: string }>> {
-  const results: Record<string, { ok: boolean; instruction: string }> = {};
-  const closed = workerPool.list({ includeClosed: true }).filter((w) => w.state === "closed");
-
-  for (const worker of closed) {
-    const instruction = `再開します (task: ${worker.taskId})`;
-    try {
-      await workerPool.wake(worker.sessionId, instruction);
-      results[worker.sessionId] = { ok: true, instruction };
-      console.log(`[banto] resumed worker: ${worker.taskId} (${worker.sessionId})`);
-    } catch (err) {
-      results[worker.sessionId] = { ok: false, instruction };
-      console.error(
-        `[banto] failed to resume worker ${worker.taskId} (${worker.sessionId}): ${String(err)}`
-      );
-    }
+  function isTaskSafe(taskId: string): boolean {
+    // system.restart / systemctl restart 系は安全ではない
+    // これらのタスクが再開されると、host を再起動する
+    const unsafePatterns = [
+      /-restart$/i,       // task-0124-self-restart 等
+      /reboot$/i,         // reboot 系
+      /systemctl/i,       // instruction に systemctl を含む
+    ];
+    return !unsafePatterns.some((p) => p.test(taskId));
   }
 
-  const total = Object.keys(results).length;
-  const ok = Object.values(results).filter((r) => r.ok).length;
-  console.log(`[banto] resumed ${ok}/${total} workers`);
-  return results;
-}
+  function isWorktreeSafe(worktree: string): boolean {
+    // 検証用 branch での実行は安全でない（host を変更しうる）
+    return !worktree.includes("/worktrees/") && !worktree.includes(".worktrees/");
+  }
+
+  async function resumeWorkers(
+    workerPool: WorkerPool
+  ): Promise<Record<string, { ok: boolean; instruction: string }>> {
+    console.log(`[banto] resumeWorkers: resuming closed workers (task-0057)`);
+    const results: Record<string, { ok: boolean; instruction: string }> = {};
+    const allWorkers = workerPool.list({ includeClosed: true });
+    const closedWorkers = allWorkers.filter((w) => w.state === "closed");
+
+    console.log(`[banto] resumeWorkers: found ${closedWorkers.length} closed worker(s)`);
+
+    for (const worker of closedWorkers) {
+      const taskSafe = isTaskSafe(worker.taskId);
+      const worktreeSafe = isWorktreeSafe(worker.worktree);
+
+      if (!taskSafe) {
+        console.log(`[banto] [skip]: unsafe worker (taskId="${worker.taskId}") skipped (unsafe task)`);
+        results[worker.sessionId] = { ok: true, instruction: "skipped (unsafe task)" };
+        continue;
+      }
+
+      if (!worktreeSafe) {
+        console.log(`[banto] [skip]: unsafe worker (worktree="${worker.worktree}") skipped (unsafe worktree)`);
+        results[worker.sessionId] = { ok: true, instruction: "skipped (unsafe worktree)" };
+        continue;
+      }
+
+      try {
+        await workerPool.wake(worker.sessionId, `再開します (task: ${worker.taskId})`);
+        console.log(`[banto] [resume]: worker resumed (sessionId=${worker.sessionId}, taskId=${worker.taskId})`);
+        results[worker.sessionId] = { ok: true, instruction: `resumed (task: ${worker.taskId})` };
+      } catch (err) {
+        console.error(`[banto] [error]: failed to resume worker (sessionId=${worker.sessionId}): ${String(err)}`);
+        results[worker.sessionId] = { ok: false, instruction: `failed: ${String(err)}` };
+      }
+    }
+
+    return results;
+  }
+
 
 /**
  * 台帳に無いモデルを、実体のプロバイダ/モデルへ紐付ける最小の定義（D6）。

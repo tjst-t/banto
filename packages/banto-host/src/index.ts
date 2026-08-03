@@ -122,6 +122,7 @@ export {
   isEmptyResponse,
   isRetryableEmptyResponse,
   findLastEmptyAssistantIndex,
+  resumeInterruptedTurn,
   withEmptyResponseGuard,
   type GuardableSession,
 } from "./turn-guard.js";

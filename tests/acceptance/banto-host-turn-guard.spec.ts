@@ -18,6 +18,7 @@ import {
   findLastEmptyAssistantIndex,
   isEmptyResponse,
   isRetryableEmptyResponse,
+  resumeInterruptedTurn,
   withEmptyResponseGuard,
   type GuardableSession,
 } from "@banto/host";
@@ -303,5 +304,54 @@ describe("turn-guard: 再試行（withEmptyResponseGuard）", () => {
     assert.deepEqual(types, ["turn_end"]);
 
     await guarded.abort();
+  });
+});
+
+// ── imp-0016 主対策: 復元時ターン再開 ──────────────────────────────────────────
+
+describe("turn-guard: 復元時ターン再開（resumeInterruptedTurn）", () => {
+  it("最後が toolResult なら continue() で再開し true を返す", async () => {
+    const session = new FakeGuardedSession();
+    // toolCall assistant → toolResult の順に積む（pi と同じ順序）
+    session.agent.state.messages.push(
+      assistantMessage([{ type: "toolCall", id: "c1", name: "read", arguments: {} }]),
+      toolResultMessage("c1")
+    );
+
+    const resumed = await resumeInterruptedTurn(session);
+
+    assert.equal(resumed, true, "ツール結果で終わっているので再開する");
+    assert.equal(session.continueCalls, 1, "continue() が呼ばれる");
+  });
+
+  it("最後が assistant なら再開せず false を返す（応答生成済み）", async () => {
+    const session = new FakeGuardedSession();
+    session.agent.state.messages.push(assistantMessage([{ type: "text", text: "答えました" }]));
+
+    const resumed = await resumeInterruptedTurn(session);
+
+    assert.equal(resumed, false, "assistant で終わっているので再開不要");
+    assert.equal(session.continueCalls, 0, "continue() は呼ばれない");
+  });
+
+  it("最後が user なら再開せず false を返す", async () => {
+    const session = new FakeGuardedSession();
+    session.agent.state.messages.push({ role: "user", content: "こんにちは", timestamp: 0 });
+
+    const resumed = await resumeInterruptedTurn(session);
+
+    assert.equal(resumed, false, "user で終わっているので再開不要");
+    assert.equal(session.continueCalls, 0);
+  });
+
+  it("messages が空なら再開せず false を返す", async () => {
+    const session = new FakeGuardedSession();
+    // messages を空にする
+    session.agent.state.messages = [];
+
+    const resumed = await resumeInterruptedTurn(session);
+
+    assert.equal(resumed, false, "履歴が空なので再開不要");
+    assert.equal(session.continueCalls, 0);
   });
 });

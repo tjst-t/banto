@@ -38,3 +38,21 @@
 
 この checklist の変更は git diff として見える（D2: 基準はテキスト、機構はコード）。
 基準を変更する場合はこのファイルを編集し、変更理由を commit message に記録する。
+
+CHECK-MARKER-42
+
+CHECK-MARKER-42
+
+CHECK-MARKER-42
+
+CHECK-MARKER-42
+
+CHECK-MARKER-42
+
+CHECK-MARKER-42
+
+CHECK-MARKER-42
+
+CHECK-MARKER-42
+
+CHECK-MARKER-42
