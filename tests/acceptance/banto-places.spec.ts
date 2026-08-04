@@ -106,6 +106,53 @@ describe("[task-0038] 場所の帳簿", () => {
     await assert.rejects(() => registry.require("repo-x"), /Unknown place/);
   });
 
+  /**
+   * 重い導出（`gwq list` は 400ms 超）を持つ提供元は、少し古い写しを返してよい。
+   * そのぶん**「見つからない」ときは取り直させてから断る**——さもないと、たった今
+   * 作ったワークツリーが「そんな場所は無い」と言われる。
+   */
+  it("[task-0038] 写しを返す提供元でも、知らない場所は取り直してから断る", async () => {
+    let visible = [{ id: "repo-a", label: "Repo A", path: repoA }];
+    let stale = [...visible];
+    let refreshed = 0;
+    const cached: PlaceProvider = {
+      name: "cached",
+      // 写しを返す（取り直すまで中身が変わらない）
+      list: async () => [...stale],
+      refresh: () => {
+        refreshed++;
+        stale = [...visible];
+      },
+    };
+    const registry = new PlaceRegistry([cached]);
+    assert.deepEqual((await registry.list()).map((p) => p.id), ["repo-a"]);
+
+    // 写しの外で場所が増えた（別の経路でワークツリーが作られた、等）
+    visible = [...visible, { id: "repo-b", label: "Repo B", path: repoB }];
+
+    const found = await registry.require("repo-b");
+    assert.equal(found.path, repoB, "取り直して見つけること");
+    assert.equal(refreshed, 1, "見つからなかったときだけ取り直すこと");
+
+    // 見つかるものは取り直さない（普段の呼び出しで遅くならない）
+    await registry.require("repo-a");
+    assert.equal(refreshed, 1, "見つかる場所では取り直さないこと");
+
+    // 砦（決定36g）も同じ：写しの古さで「場所の外」と誤判定しない
+    const inside = await registry.placeContaining(path.join(repoB, "docs"));
+    assert.equal(inside?.id, "repo-b");
+  });
+
+  it("[task-0038] 取り直しても無いものは、これまでどおり断る（I2）", async () => {
+    const cached: PlaceProvider = {
+      name: "cached",
+      list: async () => [{ id: "repo-a", label: "Repo A", path: repoA }],
+      refresh: () => {},
+    };
+    const registry = new PlaceRegistry([cached]);
+    await assert.rejects(() => registry.require("repo-x"), /Unknown place/);
+  });
+
   it("[task-0038] 複数あるのに省略されたら決めない（聞き返させる・I2）", async () => {
     const one = new PlaceRegistry([createStaticPlaceProvider([{ id: "repo-a", path: repoA }])]);
     assert.equal((await one.resolve()).id, "repo-a", "1つしか無ければそれ");

@@ -16,7 +16,7 @@ import * as path from "node:path";
 import { Type } from "typebox";
 import { defineNamespacedTool, type BantoToolDefinition } from "@banto/core";
 import { output, runCommand, type CommandRunner } from "./command.js";
-import { listGhqRepositories, listGwqWorktrees } from "./discovery.js";
+import { listGhqRepositories, listGwqWorktrees, repoDiscoveryFor } from "./discovery.js";
 import { removeWorktree } from "./worktree.js";
 
 export interface RepoToolOptions {
@@ -25,6 +25,14 @@ export interface RepoToolOptions {
 
 export function createRepoManagerTools(options: RepoToolOptions = {}): BantoToolDefinition[] {
   const run = options.run ?? runCommand;
+  /**
+   * 一覧の写し（`place.list` と共有する）。
+   *
+   * **使うのは読み取りの一覧だけ。** 作る・消す道具は `listGhq*` / `listGwq*` を直接呼ぶ
+   * ——「実行の前後を比べて増えたものを見つける」やり方は、写し越しに見ると前後が同じに
+   * 見えてしまう。そのかわり、変えたら最後に写しを捨てる（次に聞かれたら導出し直す）。
+   */
+  const discovery = repoDiscoveryFor(run);
 
   const list = defineNamespacedTool({
     name: "repo.list",
@@ -38,8 +46,8 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
     }),
     async execute(params) {
       const [repositories, worktrees] = await Promise.all([
-        listGhqRepositories(run),
-        listGwqWorktrees(run),
+        discovery.repositories(),
+        discovery.worktrees(),
       ]);
 
       // どのリポジトリのワークツリーかを git に聞く（gwq の出力には入っていない）。
@@ -119,6 +127,8 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
 
       // 何ができたかは ghq に聞き直す（見込みのパスを組み立てて返さない。D3）
       const added = (await listGhqRepositories(run)).find((r) => !before.has(r.path));
+      // 場所が増えた。写しを捨てて、次に聞かれたら導出し直させる
+      discovery.invalidate();
       return {
         content: [
           {
@@ -158,6 +168,8 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
       }
 
       const added = (await listGhqRepositories(run)).find((r) => !before.has(r.path));
+      // 場所が増えた。作れていなくても写しは捨てる（増減の判断はこの下でする）
+      discovery.invalidate();
       // I2: 作ったつもりで増えていないなら、そう言う（成功に見せない）
       if (!added) {
         throw new Error(`${target} を作りましたが、ghq の一覧に現れませんでした。`);
@@ -212,6 +224,8 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
 
       // 作った結果を gwq に聞き直す（自分で組み立てた見込みのパスを返さない。D3）
       const created = (await listGwqWorktrees(run)).find((w) => !before.has(w.path));
+      // 場所が増えた。**ここで捨てないと、作った直後の場所が使えない**（写しに無いため）
+      discovery.invalidate();
       const where = created ? `${created.id}（${created.path}）` : "(gwq の一覧に見当たりません)";
       return {
         content: [
@@ -247,6 +261,8 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
 
       const repoPath = await mainWorktreePath(run, target.path);
       await removeWorktree(repoPath, target.path);
+      // 場所が減った。消えたものを次の一覧に出さない
+      discovery.invalidate();
 
       return {
         content: [

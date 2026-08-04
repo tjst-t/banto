@@ -1,11 +1,19 @@
 /**
  * リポジトリとワークツリーの一覧（ADR-0010 決定36b・task-0039）。
  *
- * **独自の台帳を作らない。** `ghq` の配置と `gwq list` から毎回導出する（D3：導出できる値は
+ * **独自の台帳を作らない。** `ghq` の配置と `gwq list` から導出する（D3：導出できる値は
  * 保存しない）。Worker Pool が `SpawnLedger` を持つのとは対照的——あちらは「起こしたプロセス」
  * という導出できない事実が要るが、こちらは要らない。
  *
  * **未導入なら何も返さない**（決定36b）。`ghq` / `gwq` の導入を強制せず、静的な場所だけで動く。
+ *
+ * **導出の結果は短い間だけ手元に置く**（`RepoDiscovery`）。`gwq list` は1回 400ms 以上かかり、
+ * `place.*` / `file.*` / `git.*` はどれも呼び出しのたびに場所を解決するので、GUIを1つ開くだけで
+ * これが4回積み上がっていた（実測：ファイルの中身が出るまで1.4秒のうち1.35秒がこれ）。
+ * 台帳ではない——**いつでも捨てられる写し**であり、次の3つで正しさを保つ：
+ *   - 一定時間で裏から取り直す（返すのは手元の写し。待たせない）
+ *   - ワークツリーを作った・消した直後は自分で捨てる（`invalidate`）
+ *   - 探している場所が写しに無ければ、呼び手が取り直せる（`PlaceProvider.refresh`）
  *
  * D6: node:os / node:path のみ（外部コマンドは command.ts 経由）。
  * I2: コマンドがあるのに失敗したら例外。未導入（`notFound`）とは分ける。
@@ -14,7 +22,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Place } from "@banto/core";
-import { output, type CommandRunner } from "./command.js";
+import { output, runCommand, type CommandRunner } from "./command.js";
 
 /** ワークツリーとして見つかった場所（ブランチ名を添える）。 */
 export interface WorktreePlace extends Place {
@@ -103,6 +111,102 @@ export async function worktreeBaseDir(run: CommandRunner): Promise<string | unde
   if (!value) return undefined;
   // gwq は表示上 `~` に畳む（ui.tilde_home）。そのままではパスとして使えない
   return path.resolve(value.startsWith("~") ? path.join(os.homedir(), value.slice(1)) : value);
+}
+
+// ── 導出の写し ──────────────────────────────────────────────────────────────
+
+/**
+ * これを過ぎたら、次に聞かれたときに裏で取り直す。
+ *
+ * リポジトリやワークツリーが増減するのは PO か番頭が明示的に何かしたときで、
+ * 秒単位で勝手に変わるものではない。**待たせないことを優先し**、変化には
+ * `invalidate` と `refresh` で追いつく。
+ */
+const REVALIDATE_AFTER_MS = 10_000;
+
+/** 導出した一覧の手元の写し。 */
+export interface RepoDiscovery {
+  /** `ghq` が知っているリポジトリ。 */
+  repositories(): Promise<Place[]>;
+  /** `gwq` が知っているワークツリー。 */
+  worktrees(): Promise<WorktreePlace[]>;
+  /** 次に聞かれたら取り直す（ワークツリーを作った・消した直後に呼ぶ）。 */
+  invalidate(): void;
+}
+
+/** 1種類の導出を「待たせずに、古くなったら取り直す」形で包む。 */
+function memo<T>(derive: () => Promise<T>, label: string): { get(): Promise<T>; clear(): void } {
+  let value: T | undefined;
+  let at = 0;
+  let inFlight: Promise<T> | undefined;
+
+  // 同時に何本来ても導出は1回。GUI は place.list と file.list をほぼ同時に投げる
+  const run = (): Promise<T> => {
+    inFlight ??= derive().finally(() => {
+      inFlight = undefined;
+    });
+    return inFlight;
+  };
+
+  return {
+    async get(): Promise<T> {
+      if (value === undefined) {
+        // 初回は待つ。失敗は呼び手へそのまま伝える（I2：空を返して「無い」と偽らない）
+        value = await run();
+        at = Date.now();
+        return value;
+      }
+      if (Date.now() - at > REVALIDATE_AFTER_MS) {
+        // 古くなっていたら裏で取り直す。**返すのは手元の写し**——待たせない
+        at = Date.now();
+        void run().then(
+          (fresh) => {
+            value = fresh;
+          },
+          (err: unknown) => {
+            // I2: 黙って古い写しを使い続けない。ただし直前まで動いていたものは捨てない
+            //（捨てると、gwq が一時的に失敗しただけで場所が全部消える）
+            console.error(`[banto] ${label} の取り直しに失敗しました: ${String(err)}`);
+          }
+        );
+      }
+      return value;
+    },
+    clear(): void {
+      value = undefined;
+      at = 0;
+    },
+  };
+}
+
+/** 実行口を1つ与えて、リポジトリ／ワークツリーの導出をまとめて包む。 */
+export function createRepoDiscovery(run: CommandRunner): RepoDiscovery {
+  const repositories = memo(() => listGhqRepositories(run), "リポジトリの一覧（ghq）");
+  const worktrees = memo(() => listGwqWorktrees(run), "ワークツリーの一覧（gwq）");
+  return {
+    // 写しを配る。呼び手が並べ替えても互いに影響しないように
+    repositories: async () => [...(await repositories.get())],
+    worktrees: async () => [...(await worktrees.get())],
+    invalidate(): void {
+      repositories.clear();
+      worktrees.clear();
+    },
+  };
+}
+
+/**
+ * 実行口ごとの写し。
+ *
+ * **既定の実行口（本物の `ghq`/`gwq`）を使うときだけプロセス内で1つを共有する**——
+ * 場所の提供元（`place.list`）と `repo.list` は同じものを見ているので、別々に導出する
+ * 理由がない。テストが `run` を差し替えたときはその場限りの写しを作る：共有すると
+ * テスト同士が互いの写しを見てしまう（偽の実行口の結果が別のテストに漏れる）。
+ */
+let sharedDiscovery: RepoDiscovery | undefined;
+
+export function repoDiscoveryFor(run: CommandRunner): RepoDiscovery {
+  if (run !== runCommand) return createRepoDiscovery(run);
+  return (sharedDiscovery ??= createRepoDiscovery(run));
 }
 
 // ── 小道具 ──────────────────────────────────────────────────────────────────
