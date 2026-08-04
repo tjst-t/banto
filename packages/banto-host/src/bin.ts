@@ -166,8 +166,35 @@ const SYSTEM_PROMPT = [
   ): Promise<Record<string, { ok: boolean; instruction: string }>> {
     console.log(`[banto] resumeWorkers: resuming closed workers (task-0057)`);
     const results: Record<string, { ok: boolean; instruction: string }> = {};
+    const now = Date.now();
+    // 直前に閉じた職人は復帰させない（imp-0017 案3）。
+    //
+    // 復帰した職人が `system.restart` を呼ぶと、ホストが exit(0) → systemd が起こす →
+    // また復帰する、で無限ループになる（inc-0018）。閉じた直後のものを外せば、
+    // その1周を断てる。
+    //
+    // ⚠ **これだけでは足りない。** inc-0018 では 44 件の worker_closed が
+    // すべて30秒より古く、この関門を素通りした。溜まった履歴からの一斉復帰は
+    // 依然として起こりうる（inc-0019 で継続）。
+    const THRESHOLD_MS = 30_000;
     const allWorkers = workerPool.list({ includeClosed: true });
-    const closedWorkers = allWorkers.filter((w) => w.state === "closed");
+
+    const closedWorkers = allWorkers.filter((w) => {
+      if (w.state !== "closed") return false;
+      if (w.closedAt) {
+        const closeTime = new Date(w.closedAt).getTime();
+        if (now - closeTime < THRESHOLD_MS) return false;
+      }
+      return true;
+    });
+    const skipped = allWorkers.filter((w) => {
+      if (w.state !== "closed") return false;
+      if (w.closedAt) {
+        const closeTime = new Date(w.closedAt).getTime();
+        if (now - closeTime < THRESHOLD_MS) return true;
+      }
+      return false;
+    });
 
     console.log(`[banto] resumeWorkers: found ${closedWorkers.length} closed worker(s)`);
 
@@ -194,6 +221,15 @@ const SYSTEM_PROMPT = [
       } catch (err) {
         console.error(`[banto] [error]: failed to resume worker (sessionId=${worker.sessionId}): ${String(err)}`);
         results[worker.sessionId] = { ok: false, instruction: `failed: ${String(err)}` };
+      }
+    }
+
+    // 外した職人も results に載せる。呼び出し側が「復帰した数」だけを見ると、
+    // 黙って落としたのか対象が無かったのかを区別できない（I2）
+    for (const worker of skipped) {
+      if (!(worker.sessionId in results)) {
+        results[worker.sessionId] = { ok: true, instruction: "skipped (recently closed)" };
+        console.log(`[banto] [skip]: recently closed worker (sessionId=${worker.sessionId}, taskId=${worker.taskId}) skipped`);
       }
     }
 
