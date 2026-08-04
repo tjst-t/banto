@@ -54,6 +54,8 @@ export {
 } from "./pi-extension/web-tools.js";
 export { createWorkerTools, createWorkerReportTools } from "./worker-tools.js";
 export { createWorkerPoolSettings } from "./settings.js";
+export { resumeWorkers } from "./resume.js";
+export type { ResumeOptions, ResumeOutcome } from "./resume.js";
 export {
   createWorkerPoolModule,
   workerPoolSkillsDir,

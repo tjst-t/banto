@@ -14,6 +14,7 @@ import { Type } from "typebox";
 import type { NamespacedToolDefinition } from "@banto/core";
 import { createWorkerReportTools, createWorkerTools } from "./worker-tools.js";
 import type { WorkerPool } from "./pool.js";
+import { resumeWorkers } from "./resume.js";
 import { createWorkerPoolSettings } from "./settings.js";
 
 /** 既定の到達先。Worker Pool は独立サービスなので、通常は絶対URLで設定される。 */
@@ -32,7 +33,9 @@ export function workerPoolSkillsDir(): string {
  */
 export function createWorkerPoolModule(
   pool: WorkerPool,
-  baseUrl: string = WORKER_POOL_BASE_URL
+  baseUrl: string = WORKER_POOL_BASE_URL,
+  /** 職人の復帰に使う状態の置き場（前回の起動時刻）。省略すると復帰しない。 */
+  resumeStateDir?: string
 ): {
   name: string;
   title: string;
@@ -40,6 +43,7 @@ export function createWorkerPoolModule(
   endpoint: { baseUrl: string };
   tools: NamespacedToolDefinition[];
   internalTools: NamespacedToolDefinition[];
+  init(ctx: { log(message: string): void }): Promise<void>;
   views: Array<{
     kind: string;
     title: string;
@@ -58,6 +62,25 @@ export function createWorkerPoolModule(
     description:
       "職人（worker）を起こして実作業を任せる。番頭が細かい仕事をせず委譲するための実行能力（D10）。",
     endpoint: { baseUrl },
+    /**
+     * 起動のたびに、落ちる前に生きていた職人を起こし直す（決定44）。
+     *
+     * 中核ではなくここに置くのは、これが Worker Pool の都合だから——番頭核は
+     * 「職人がどう畳まれ、どう起き直るか」を知らなくてよい（決定27）。
+     */
+    async init(ctx) {
+      if (!resumeStateDir) {
+        ctx.log("復帰の状態置き場が渡されていないため、職人の復帰は行いません");
+        return;
+      }
+      const results = await resumeWorkers({
+        pool,
+        stateDir: resumeStateDir,
+        log: (m) => ctx.log(m),
+      });
+      const resumed = results.filter((r) => r.detail === "復帰").length;
+      ctx.log(`職人の復帰: ${resumed} 件（対象 ${results.length} 件）`);
+    },
     tools: createWorkerTools(pool),
     // 職人（別プロセス）から呼ばれる口。番頭には渡さない（決定29e）
     internalTools: createWorkerReportTools(pool),

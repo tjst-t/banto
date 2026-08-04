@@ -145,96 +145,6 @@ const SYSTEM_PROMPT = [
  * unsafe な worker（`system.restart` / `reboot` / `systemctl` / 検証用 worktree）を
  * 除外して再有効化（task-0057）。
  */
-  function isTaskSafe(taskId: string): boolean {
-    // system.restart / systemctl restart 系は安全ではない
-    // これらのタスクが再開されると、host を再起動する
-    const unsafePatterns = [
-      /-restart$/i,       // task-0124-self-restart 等
-      /reboot$/i,         // reboot 系
-      /systemctl/i,       // instruction に systemctl を含む
-    ];
-    return !unsafePatterns.some((p) => p.test(taskId));
-  }
-
-  function isWorktreeSafe(worktree: string): boolean {
-    // 検証用 branch での実行は安全でない（host を変更しうる）
-    return !worktree.includes("/worktrees/") && !worktree.includes(".worktrees/");
-  }
-
-  async function resumeWorkers(
-    workerPool: WorkerPool
-  ): Promise<Record<string, { ok: boolean; instruction: string }>> {
-    console.log(`[banto] resumeWorkers: resuming closed workers (task-0057)`);
-    const results: Record<string, { ok: boolean; instruction: string }> = {};
-    const now = Date.now();
-    // 直前に閉じた職人は復帰させない（imp-0017 案3）。
-    //
-    // 復帰した職人が `system.restart` を呼ぶと、ホストが exit(0) → systemd が起こす →
-    // また復帰する、で無限ループになる（inc-0018）。閉じた直後のものを外せば、
-    // その1周を断てる。
-    //
-    // ⚠ **これだけでは足りない。** inc-0018 では 44 件の worker_closed が
-    // すべて30秒より古く、この関門を素通りした。溜まった履歴からの一斉復帰は
-    // 依然として起こりうる（inc-0019 で継続）。
-    const THRESHOLD_MS = 30_000;
-    const allWorkers = workerPool.list({ includeClosed: true });
-
-    const closedWorkers = allWorkers.filter((w) => {
-      if (w.state !== "closed") return false;
-      if (w.closedAt) {
-        const closeTime = new Date(w.closedAt).getTime();
-        if (now - closeTime < THRESHOLD_MS) return false;
-      }
-      return true;
-    });
-    const skipped = allWorkers.filter((w) => {
-      if (w.state !== "closed") return false;
-      if (w.closedAt) {
-        const closeTime = new Date(w.closedAt).getTime();
-        if (now - closeTime < THRESHOLD_MS) return true;
-      }
-      return false;
-    });
-
-    console.log(`[banto] resumeWorkers: found ${closedWorkers.length} closed worker(s)`);
-
-    for (const worker of closedWorkers) {
-      const taskSafe = isTaskSafe(worker.taskId);
-      const worktreeSafe = isWorktreeSafe(worker.worktree);
-
-      if (!taskSafe) {
-        console.log(`[banto] [skip]: unsafe worker (taskId="${worker.taskId}") skipped (unsafe task)`);
-        results[worker.sessionId] = { ok: true, instruction: "skipped (unsafe task)" };
-        continue;
-      }
-
-      if (!worktreeSafe) {
-        console.log(`[banto] [skip]: unsafe worker (worktree="${worker.worktree}") skipped (unsafe worktree)`);
-        results[worker.sessionId] = { ok: true, instruction: "skipped (unsafe worktree)" };
-        continue;
-      }
-
-      try {
-        await workerPool.wake(worker.sessionId, `再開します (task: ${worker.taskId})`);
-        console.log(`[banto] [resume]: worker resumed (sessionId=${worker.sessionId}, taskId=${worker.taskId})`);
-        results[worker.sessionId] = { ok: true, instruction: `resumed (task: ${worker.taskId})` };
-      } catch (err) {
-        console.error(`[banto] [error]: failed to resume worker (sessionId=${worker.sessionId}): ${String(err)}`);
-        results[worker.sessionId] = { ok: false, instruction: `failed: ${String(err)}` };
-      }
-    }
-
-    // 外した職人も results に載せる。呼び出し側が「復帰した数」だけを見ると、
-    // 黙って落としたのか対象が無かったのかを区別できない（I2）
-    for (const worker of skipped) {
-      if (!(worker.sessionId in results)) {
-        results[worker.sessionId] = { ok: true, instruction: "skipped (recently closed)" };
-        console.log(`[banto] [skip]: recently closed worker (sessionId=${worker.sessionId}, taskId=${worker.taskId}) skipped`);
-      }
-    }
-
-    return results;
-  }
 
 
 /**
@@ -452,10 +362,12 @@ async function serve(options: ServeOptions): Promise<void> {
       ? { idleTimeoutMs: settings.all().modules!["worker-pool"]!["idleTimeoutMs"] as number }
       : {}),
   });
-  const workerPoolModule = createWorkerPoolModule(workerPool, workerPoolUrl);
-
-  // task-0050: 再起動後に中断していた職人を自動で起こす
-  const resumedWorkers = await resumeWorkers(workerPool);
+  // 職人の復帰は Worker Pool 自身が起動時にやる（決定44）。前回の起動時刻の置き場を渡す
+  const workerPoolModule = createWorkerPoolModule(
+    workerPool,
+    workerPoolUrl,
+    path.join(dataDir(), "worker-pool")
+  );
 
   // 決定26 の層を解いた SKILL（番頭核＋モジュール）。studio はこれをそのまま見せる
   const coreSkills: SkillEntry[] = skills.map((skill) => ({ skill, origin: CORE_ORIGIN }));
@@ -516,6 +428,13 @@ async function serve(options: ServeOptions): Promise<void> {
       skills: resolveSkills([coreSkills, modules.skills()]),
     })
   );
+
+  // 決定44: モジュールの起動時処理。レジストリが揃ってから、待ち受ける前に一度だけ。
+  // 中核は「何をするか」を知らない——職人の復帰も Worker Pool が自分で決める
+  const initFailures = await modules.init();
+  for (const f of initFailures) {
+    console.error(`[banto] モジュール "${f.module}" の起動処理が失敗しました: ${f.error}`);
+  }
 
   const catalog = createCanvasCatalog(modules.views());
 

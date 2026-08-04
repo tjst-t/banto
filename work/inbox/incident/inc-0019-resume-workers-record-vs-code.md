@@ -4,8 +4,9 @@ type: incident
 kind: incident
 origin: agent
 class: spec-drift
-status: open
-refs: [inc-0018, imp-0017, task-0057, bin-ts-resumeWorkers]
+status: resolved
+refs: [inc-0018, imp-0017, task-0057, adr-0011]
+resolution: 復帰の対象を closed から exited へ直し、worker-pool モジュールの init へ移した（2026-08-04）
 ---
 
 ## 内容
@@ -46,3 +47,22 @@ refs: [inc-0018, imp-0017, task-0057, bin-ts-resumeWorkers]
 ## 備考
 
 30 秒フィルタ自体は無害なので、コードはそのままコミットした（`bin.ts` に上記の限界をコメントで明記）。この incident はどちらへ寄せるかの裁定待ち。
+
+## 対応（2026-08-04）
+
+矛盾の原因は**復帰の対象そのものが逆だったこと**だった。`wake()` が `closed` の
+職人しか受け付けなかったため、復帰処理も `closed` を起こす形になっていた。
+本来起こしたいのは「ホストが落ちたときに生きていた職人」で、それは再起動後に
+`exited`（畳んだ記録が無く、プロセスも居ない）として現れる。
+
+- `WorkerPool.wake()` のガードを「畳んだものだけ」から「動いていないもの」へ。
+  `running` / `waiting` は従来どおり断る（意図は変えていない）
+- 復帰の対象を `state === "exited"` に変更。畳んだ職人は畳んだまま。
+  自力で終わったもの（終了コード0・シグナル無し）も除く
+- 30秒フィルタは廃止。代わりに**前回の起動から60秒以内なら復帰を丸ごと見送る**。
+  ループの周期はホストの起動間隔に出るので、そこで断つのが確実。taskId の
+  パターンでは、テストの中から `system.restart` が呼ばれる経路を捕まえられない
+- 実装を中核（`bin.ts`）から `worker-pool` モジュールの `init` へ移した（決定44）
+
+`inc-0018` の resolution にある「`resumeWorkers()` を無効化」は**行っていない**。
+無効化ではなく、対象を正す形で解決した。
