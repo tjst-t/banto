@@ -89,7 +89,7 @@ describe("[決定41/a] モジュールが宣言した区画が設定画面に集
     };
 
     const ids = details.sections.map((s) => s.id);
-    assert.deepEqual(ids, ["llm", "places", "network", "よそのモジュール"]);
+    assert.deepEqual(ids, ["places", "network", "よそのモジュール"]);
     // 由来が分かること（画面が「どのモジュールの設定か」を出せる）
     assert.equal(details.sections.find((s) => s.id === "よそのモジュール")!.origin, "よそのモジュール");
     // いまの値も一緒に来る（画面は宣言と値の両方が要る）
@@ -128,7 +128,7 @@ describe("[決定41/a] モジュールが宣言した区画が設定画面に集
     ]);
     const { describe: tool } = settingsToolsOf(modules);
     const details = (await tool.execute({})).details as { sections: Array<{ id: string }> };
-    assert.equal(details.sections.length, 4, "他の区画は出ること");
+    assert.equal(details.sections.length, 3, "他の区画は出ること");
   });
 });
 
@@ -176,7 +176,7 @@ describe("[決定41/b] 画面で変えた値がモジュールへ届く", () => 
     await assert.rejects(() => update.execute({ section: "無い区画", values: {} }), /はありません/);
   });
 
-  it("場所はその場で効き、LLM は次の起動から（正直に返す）", async () => {
+  it("場所はその場で効く（LLM は LLM Registry モジュールが管理）", async () => {
     const { update } = settingsToolsOf(createModuleRegistry([]));
 
     const places = (await update.execute({
@@ -185,10 +185,6 @@ describe("[決定41/b] 画面で変えた値がモジュールへ届く", () => 
     })).details as { applied: boolean };
     assert.equal(places.applied, true);
     assert.deepEqual(store.all().places, [{ id: "banto", path: "/tmp/x", writable: ["docs/**"] }]);
-
-    const llm = (await update.execute({ section: "llm", values: { model: "新しいモデル" } }))
-      .details as { applied: boolean };
-    assert.equal(llm.applied, false, "効いていないのに効いたと言わないこと");
   });
 
   it("場所の行が壊れていたら断る（場所が黙って消えない）", async () => {
@@ -260,7 +256,7 @@ describe("[決定41] どのモジュールの設定か分かる", () => {
       sections: Array<{ id: string; origin: string; originTitle: string }>;
     };
 
-    const core = details.sections.find((s) => s.id === "llm")!;
+    const core = details.sections.find((s) => s.id === "places")!;
     assert.equal(core.origin, "core");
     assert.equal(core.originTitle, "Banto 本体");
 
@@ -271,7 +267,7 @@ describe("[決定41] どのモジュールの設定か分かる", () => {
 });
 
 describe("[決定41] 設定に入れたもの（VM設置に要るもの）", () => {
-  it("Banto 本体：LLM・場所・接続（ポート／待ち受け／公開／Caddy）", async () => {
+  it("Banto 本体：場所・接続（ポート／待ち受け／公開／Caddy）", async () => {
     const { describe: tool } = settingsToolsOf(createModuleRegistry([]));
     const details = (await tool.execute({})).details as {
       sections: Array<{ id: string; fields: Array<{ key: string }> }>;
@@ -279,7 +275,6 @@ describe("[決定41] 設定に入れたもの（VM設置に要るもの）", () 
     const keys = (id: string): string[] =>
       details.sections.find((s) => s.id === id)!.fields.map((f) => f.key);
 
-    assert.deepEqual(keys("llm"), ["provider", "model"]);
     assert.deepEqual(keys("network"), ["port", "bind", "publicUrl", "caddyAdmin", "envDomain"]);
     assert.deepEqual(keys("places"), ["places"]);
   });
