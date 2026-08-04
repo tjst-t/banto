@@ -17,6 +17,17 @@
 import type * as http from "node:http";
 import { MODULE_TOOL_PATH, type ModuleToolRequest, type ModuleToolResult } from "@banto/core";
 import type { ModuleRegistry } from "./module.js";
+import type { NamespacedToolDefinition } from "./tool-registry.js";
+
+/**
+ * 中核の Tool を公開する到達先（ADR-0011 決定42）。
+ *
+ * モジュールが `{baseUrl}/tools/{名前}` を持つのと同じ規約を、中核のドメイン
+ * （`llm.*` 等）にも与える。これが無いと、中核由来のキャンバスGUIは到達先が
+ * 空文字のままでデータを取れない——モジュールでなければ GUI を持てない、という
+ * 意図しない縛りになっていた。
+ */
+export const CORE_TOOL_BASE_URL = "/api/core";
 
 /**
  * 宣言された必須の引数のうち、渡されていないものを返す。
@@ -133,6 +144,66 @@ export function createModuleToolHandler(
       sendJson(res, 200, result as unknown as ModuleToolResult);
     } catch (err) {
       // I2: Tool の失敗を 200 で包まない。呼び手が成功と誤認しないようにする
+      sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+    }
+    return true;
+  };
+}
+
+/**
+ * 中核の Tool を公開するリクエストハンドラを作る。
+ *
+ * 受けるパスは `/api/core/tools/{論理Tool名}`。モジュール版と同じ規約・同じ返し方で、
+ * 引く先が ModuleRegistry ではなく渡された Tool 群になるだけ。
+ */
+export function createCoreToolHandler(
+  tools: readonly NamespacedToolDefinition[]
+): (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean> {
+  const prefix = `${CORE_TOOL_BASE_URL}${MODULE_TOOL_PATH}`;
+  return async (req, res) => {
+    const url = req.url ?? "";
+    if (!url.startsWith(prefix)) return false;
+
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: `use POST to invoke a tool (got ${req.method ?? "?"})` });
+      return true;
+    }
+
+    const toolName = decodeURIComponent(url.slice(prefix.length).split("?")[0] ?? "");
+    const tool = tools.find((t) => t.name === toolName);
+    if (!tool) {
+      // I2: 未知のToolは黙って空を返さず、中核が持つToolを添えて 404
+      sendJson(res, 404, {
+        error: `Banto core has no tool "${toolName}". Available: ${tools.map((t) => t.name).join(", ") || "(none)"}`,
+      });
+      return true;
+    }
+
+    let body: ModuleToolRequest;
+    try {
+      body = (await readJsonBody(req)) as ModuleToolRequest;
+    } catch (err) {
+      sendJson(res, 400, { error: `invalid JSON body: ${String(err)}` });
+      return true;
+    }
+
+    const missing = missingRequired(tool.parameters, body?.args);
+    if (missing.length > 0) {
+      sendJson(res, 400, {
+        error:
+          `Tool "${toolName}" に必須の引数がありません: ${missing.join(", ")}。` +
+          `受け取ったのは: ${Object.keys((body?.args ?? {}) as Record<string, unknown>).join(", ") || "(なし)"}`,
+      });
+      return true;
+    }
+
+    try {
+      const result = await tool.execute((body?.args ?? {}) as never, {
+        toolCallId: `http-${Date.now()}`,
+      });
+      sendJson(res, 200, result as unknown as ModuleToolResult);
+    } catch (err) {
+      // I2: Tool の失敗を 200 で包まない
       sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
     }
     return true;

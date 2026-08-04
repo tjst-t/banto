@@ -22,7 +22,8 @@ import type { ImageContent } from "@mariozechner/pi-ai";
 
 import type { CanvasCatalog } from "./canvas.js";
 import { CORE_ORIGIN, type ModuleRegistry } from "./module.js";
-import { createModuleToolHandler } from "./module-serve.js";
+import { CORE_TOOL_BASE_URL, createCoreToolHandler, createModuleToolHandler } from "./module-serve.js";
+import type { NamespacedToolDefinition } from "./tool-registry.js";
 import { createWebAssetHandler } from "./web-assets.js";
 import {
   BANTO_DEFAULT_PORT,
@@ -90,6 +91,11 @@ export interface BantoHostServerOptions {
    * その接続情報が載る（決定25：UIはコンポーネントに直書きせずここから到達先を得る）。
    */
   modules?: ModuleRegistry;
+  /**
+   * 中核の Tool（`llm.*` 等）。渡すと `/api/core/tools/{名前}` で公開され、
+   * 中核由来のキャンバスGUIがここからデータを取れる（ADR-0011 決定42）。
+   */
+  coreTools?: readonly NamespacedToolDefinition[];
   /**
    * 待ち受けるアドレス（既定 `127.0.0.1`）。
    *
@@ -188,6 +194,8 @@ export class BantoHostServer {
     // 組み込みモジュールのデータAPI（決定25：組み込みの提供元は Banto ホスト自身）。
     // UI はここからデータを取る——番頭の Tool 経路は通らない。
     const serveModuleTool = options.modules ? createModuleToolHandler(options.modules) : undefined;
+    // 中核のドメイン（`llm.*` 等）も同じ規約で公開する（ADR-0011 決定42）
+    const serveCoreTool = options.coreTools ? createCoreToolHandler(options.coreTools) : undefined;
     // ビルド済み資産があれば UI も配る。無ければ何もしない（vite が出す）
     const serveWebAsset = createWebAssetHandler(options.webDir);
 
@@ -209,6 +217,7 @@ export class BantoHostServer {
           res.end(body);
           return;
         }
+        if (serveCoreTool && (await serveCoreTool(req, res))) return;
         if (serveModuleTool && (await serveModuleTool(req, res))) return;
         // 最後に UI。API より後に見るので、/api を資産で覆い隠すことはない
         if (serveWebAsset(req, res)) return;
@@ -375,7 +384,8 @@ export class BantoHostServer {
           ...(spec.icon ? { icon: spec.icon } : {}),
           // 決定25: UIはここから到達先を得る。モジュール未登録のGUIは中核由来として扱う
           module: owner?.name ?? CORE_ORIGIN,
-          endpoint: owner?.endpoint.baseUrl ?? "",
+          // 中核由来のGUIは中核の Tool 面へ向ける（ADR-0011 決定42）
+          endpoint: owner?.endpoint.baseUrl ?? CORE_TOOL_BASE_URL,
         };
       }),
       // GUI を持たないモジュール（設定など）にも UI が到達できるように（決定41）

@@ -57,6 +57,17 @@ export interface ModuleSettingsSpec {
   /** 区画の説明。何を決める場所かを1〜2文で。 */
   description?: string;
   fields: SettingField[];
+  /**
+   * 項目の宣言では表せない区画が、描くコンポーネントの名前を宣言する口
+   * （ADR-0011 決定43）。**中核の区画専用**。
+   *
+   * モジュールには決定41（GUI は渡さない）がそのまま効く——逃げ道を全モジュールに
+   * 配ると、決定41 が防ごうとした「設定画面の中で書式がばらばらになる」が起きる。
+   * 中核は固定の小さな既知集合（場所／接続と公開／LLM）なので、そこだけに許す。
+   *
+   * 指定すると `fields` は描かれない。
+   */
+  view?: string;
   /** いまの値。`secret` の項目は中身を返さない。 */
   read(): Record<string, unknown> | Promise<Record<string, unknown>>;
   /**

@@ -1,0 +1,936 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>設定 › LLM・モデル — プロトタイプ</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+/* ===== シェル枠（banto-shell.html から流用） ===== */
+html, body { height: 100%; }
+body { overflow: hidden; display: flex; flex-direction: column; }
+
+.shell-topbar {
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+  padding: 10px 18px; background: var(--surface); border-bottom: 1px solid var(--line);
+  position: relative; z-index: 30;
+}
+.shell-brand { display: flex; align-items: center; gap: 9px; flex-shrink: 0; text-decoration: none; color: inherit; }
+.shell-brand .brand-mark { width: 30px; height: 30px; font-size: 15px; }
+.shell-brand .brand-name { font-weight: 700; font-size: 14.5px; }
+.shell-brand .brand-sub { font-size: 10.5px; color: var(--ink-faint); display: block; margin-top: -2px; }
+
+.session-tabs { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1 1 auto; overflow: hidden; }
+.session-tab-wrap {
+  display: inline-flex; align-items: center; flex-shrink: 0;
+  border-radius: 999px; border: 1px solid var(--line-strong); background: var(--surface); overflow: hidden;
+}
+.session-tab-wrap.is-active { border-color: #1f3350; }
+.session-tab {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: none; background: transparent;
+  font-size: 12.5px; color: var(--ink-soft); cursor: pointer; white-space: nowrap; font-family: inherit;
+}
+.session-tab-wrap.is-active .session-tab { background: #1f3350; color: #fff; font-weight: 700; }
+.session-new-btn {
+  appearance: none; font-family: inherit; font-size: 12.5px; font-weight: 700;
+  border: 1px dashed var(--line-strong); background: transparent; color: var(--ink-faint);
+  border-radius: 999px; padding: 6px 13px; cursor: pointer; white-space: nowrap; flex-shrink: 0;
+}
+.pinned-tabs { display: flex; align-items: center; gap: 4px; flex-shrink: 0; border-left: 1px solid var(--line); padding-left: 10px; margin-left: 6px; }
+.pinned-tab {
+  width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: 8px; background: transparent; font-size: 15px; cursor: pointer; font-family: inherit;
+}
+.pinned-tab:hover { background: var(--surface-dim); }
+.pinned-tab.is-active { background: #1f3350; border-color: #1f3350; }
+
+.shell-body { display: flex; flex: 1; min-height: 0; }
+.view { display: none; flex: 1; min-width: 0; min-height: 0; }
+.view.is-active { display: flex; }
+
+/* ---- 設定面 ---- */
+.settings-body { display: flex; flex: 1; min-height: 0; width: 100%; }
+.settings-nav {
+  width: 200px; flex-shrink: 0; border-right: 1px solid var(--line); padding: 10px;
+  display: flex; flex-direction: column; gap: 2px; background: var(--surface-dim); overflow-y: auto;
+}
+.settings-nav-btn {
+  text-align: left; border: none; background: transparent; padding: 8px 11px; border-radius: 8px;
+  font-size: 12.5px; color: var(--ink-soft); cursor: pointer; font-family: inherit;
+}
+.settings-nav-btn.is-active { background: #1f3350; color: #fff; font-weight: 700; }
+.settings-nav-btn:hover:not(.is-active) { background: var(--surface); }
+.settings-content { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding: 18px 24px 40px; }
+.settings-pane { display: none; }
+.settings-pane.is-active { display: block; }
+.settings-title { font-size: 17px; font-weight: 700; margin: 0 0 3px; }
+
+/* 外部変更の通知 */
+.ext-banner {
+  display: flex; align-items: center; gap: 12px; margin: 14px 0 4px;
+  border: 1px solid #e0a95a; background: rgba(224,169,90,.10); border-radius: 9px; padding: 11px 14px;
+}
+.eb-ico { width: 28px; height: 28px; flex-shrink: 0; border-radius: 7px; display: grid; place-items: center; background: #e0a95a; color: #2a1c07; font-size: 15px; font-weight: 700; }
+.eb-main { flex: 1; min-width: 0; }
+.eb-title { font-weight: 700; font-size: 13px; color: #7a4a10; }
+.eb-sub { font-size: 11.5px; color: #a05a12; margin-top: 2px; line-height: 1.55; }
+.eb-sub code { font-family: var(--font-mono); font-size: 11px; }
+.replay-link { font-size: 11px; color: var(--ink-faint); text-decoration: underline; cursor: pointer; background: none; border: none; font-family: inherit; padding: 0; }
+.replay-link:hover { color: var(--ink-soft); }
+.add-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+.warn-note { background: rgba(160,90,18,0.06); border: 1px dashed var(--c-escalate); color: var(--c-escalate); border-radius: 8px; padding: 7px 14px; font-size: 11.5px; margin: 12px 0 16px; }
+.warn-note b { font-weight: 700; }
+.section-label { font-size: 12px; color: var(--ink-faint); letter-spacing: 0.08em; font-weight: 700; margin: 22px 0 6px; }
+.section-label:first-of-type { margin-top: 14px; }
+.set-hint { font-size: 12px; color: var(--ink-faint); line-height: 1.65; margin: 0 0 10px; max-width: 780px; }
+
+.cred-row { display: flex; align-items: center; gap: 12px; border: 1px solid var(--line); border-radius: 9px; padding: 11px 14px; margin-bottom: 8px; background: var(--surface); }
+.cred-mark { width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center; background: var(--surface-dim); border: 1px solid var(--line-strong); font-weight: 700; font-size: 13px; flex-shrink: 0; }
+.cred-host { font-weight: 700; font-size: 14px; }
+.cred-state { font-size: 12px; font-weight: 700; white-space: nowrap; }
+.cred-state.on { color: var(--c-eval); }
+.pc-main { flex: 1; min-width: 0; }
+.pc-path { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-faint); margin-top: 2px; }
+.pc-chip { font-size: 11px; color: var(--ink-soft); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 8px; background: var(--surface-dim); }
+
+.set-select {
+  font-family: inherit; font-size: 12.5px; padding: 6px 10px; border-radius: 7px;
+  border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); cursor: pointer;
+  flex-shrink: 0; min-width: 190px;
+}
+.set-select:focus { outline: 2px solid rgba(43,65,98,.3); outline-offset: 1px; }
+
+/* ---- tier ---- */
+.tier { font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 999px; border: 1px solid; white-space: nowrap; }
+.tier.reasoning { color: #7c3aed; border-color: #c084fc; background: rgba(192,132,252,.08); }
+.tier.standard  { color: #1d4ed8; border-color: #60a5fa; background: rgba(96,165,250,.08); }
+.tier.fast      { color: #047857; border-color: #34d399; background: rgba(52,211,153,.08); }
+.tier.cap       { color: #a05a12; border-color: #e0a95a; background: rgba(224,169,90,.08); }
+
+.tier-cards { display: flex; gap: 10px; flex-wrap: wrap; }
+.tier-card { flex: 1; min-width: 245px; border: 1px solid var(--line); border-radius: 9px; padding: 11px 13px; background: var(--surface); }
+.tc-head { display: flex; align-items: center; gap: 8px; }
+.tc-name { font-size: 13px; font-weight: 700; }
+.tc-def { font-size: 10px; font-weight: 700; color: #fff; background: #1d7a63; border-radius: 999px; padding: 2px 8px; }
+.tier-card textarea {
+  width: 100%; margin-top: 8px; box-sizing: border-box; font-family: inherit; font-size: 12px; line-height: 1.55;
+  padding: 6px 9px; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--surface-dim); color: var(--ink-soft); min-height: 56px; resize: vertical;
+}
+.tier-card textarea:focus { outline: 2px solid rgba(43,65,98,.25); outline-offset: 1px; background: var(--surface); color: var(--ink); }
+.tc-pick { font-size: 11px; color: var(--ink-faint); margin-top: 7px; }
+.tc-pick b { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-soft); }
+
+/* ---- 解決の確認 ---- */
+.resolver { border: 1px solid var(--line); border-radius: 9px; background: var(--surface); padding: 12px 14px; max-width: 780px; }
+.resolver-row { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 7px; }
+.rs-label { font-size: 11px; font-weight: 700; color: var(--ink-faint); width: 34px; flex-shrink: 0; padding-top: 5px; }
+.rs-opts { display: flex; gap: 6px; flex-wrap: wrap; }
+.rs-opt {
+  font-family: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer;
+  border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink-soft);
+  padding: 4px 11px; border-radius: 999px;
+}
+.rs-opt:hover:not(.on) { background: var(--surface-dim); }
+.rs-opt.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.resolver-out { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: var(--surface-dim); border: 1px solid var(--line); font-size: 12.5px; }
+.ro-model { font-family: var(--font-mono); font-weight: 700; font-size: 13.5px; }
+.ro-line { font-size: 11.5px; color: var(--ink-faint); margin-top: 4px; }
+.ro-line b { color: var(--ink-soft); font-family: var(--font-mono); font-weight: 700; }
+.resolver-out.none { color: var(--c-fail); font-weight: 700; }
+.ro-drop { color: var(--c-escalate); }
+
+/* ---- プロバイダ（開閉） ---- */
+.prov { border: 1px solid var(--line); border-radius: 9px; background: var(--surface); margin-bottom: 8px; }
+.prov-head { display: flex; align-items: center; gap: 12px; padding: 11px 14px; cursor: pointer; }
+.prov-head:hover { background: var(--surface-dim); border-radius: 9px; }
+.prov-caret { color: var(--ink-faint); font-size: 11px; flex-shrink: 0; }
+.prov-body { display: none; padding: 4px 14px 14px; border-top: 1px solid var(--line); }
+.prov-body.is-open { display: block; }
+.sub-label { font-size: 11px; font-weight: 700; letter-spacing: .06em; color: var(--ink-faint); margin: 14px 0 7px; display: flex; align-items: center; gap: 8px; }
+.sub-label .count { font-weight: 700; color: var(--ink-soft); background: var(--surface-dim); border: 1px solid var(--line); padding: 0 6px; border-radius: 999px; font-size: 9.5px; }
+
+/* キー行 */
+.key-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; margin-bottom: 6px; background: var(--surface); }
+.key-row.is-limited { background: rgba(190,120,40,.05); border-color: #e0a95a; }
+.key-rank { font-size: 11px; font-weight: 800; color: var(--ink-faint); width: 13px; text-align: center; flex-shrink: 0; }
+.key-move { display: flex; flex-direction: column; gap: 1px; flex-shrink: 0; }
+.key-move button {
+  appearance: none; font-family: inherit; font-size: 8px; line-height: 1; cursor: pointer;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink-faint);
+  width: 18px; height: 12px; border-radius: 3px; padding: 0;
+}
+.key-move button:hover:not(:disabled) { background: var(--surface-dim); color: var(--ink); }
+.key-move button:disabled { opacity: .3; cursor: default; }
+.key-name { font-size: 12.5px; font-weight: 700; flex-shrink: 0; min-width: 92px; }
+.key-tag { font-size: 10px; color: var(--ink-soft); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 6px; background: var(--surface-dim); }
+.key-scope { display: flex; gap: 3px; flex-shrink: 0; }
+.key-scope span {
+  font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--line); color: var(--ink-faint); background: var(--surface); user-select: none;
+}
+.key-scope span.on { border-color: var(--accent); color: var(--accent); background: rgba(43,65,98,.08); }
+.key-scope span.on.w { border-color: #1d7a63; color: #1d7a63; background: rgba(29,122,99,.08); }
+.key-val { font-family: var(--font-mono); font-size: 12px; color: var(--ink-soft); flex: 1; min-width: 90px; cursor: pointer; user-select: none; }
+.key-val.masked { letter-spacing: .08em; color: var(--ink-faint); }
+.key-status { font-size: 11px; font-weight: 700; flex-shrink: 0; }
+.key-status.ok { color: var(--c-eval); }
+.key-status.untested { color: var(--c-escalate); }
+.key-status.limited { color: #a05a12; }
+.key-status .ks-sub { font-weight: 400; color: var(--ink-faint); }
+.key-note { font-size: 11px; color: var(--ink-faint); line-height: 1.6; margin: 2px 0 6px 2px; }
+.key-note b { color: var(--ink-soft); font-family: var(--font-mono); font-size: 11.5px; }
+.icon-btn { appearance: none; font-family: inherit; border: 1px solid transparent; background: transparent; color: var(--ink-faint); font-size: 12px; padding: 3px 7px; border-radius: 6px; cursor: pointer; flex-shrink: 0; }
+.icon-btn:hover { background: var(--surface-dim); color: var(--ink); border-color: var(--line); }
+.icon-btn.danger:hover { color: var(--c-fail); border-color: var(--c-fail); }
+
+/* モデル行 */
+.model-row { border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; margin-bottom: 8px; background: var(--surface); }
+.model-top { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+.model-main { flex: 1; min-width: 190px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.model-id { font-family: var(--font-mono); font-size: 13px; font-weight: 700; }
+.model-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; flex-wrap: wrap; }
+.role-toggle { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line-strong); border-radius: 999px; padding: 3px 9px; cursor: pointer; font-size: 11.5px; font-weight: 700; color: var(--ink-soft); background: var(--surface); user-select: none; }
+.role-toggle .rt-led { width: 8px; height: 8px; border-radius: 999px; background: var(--line-strong); }
+.role-toggle.on { background: rgba(43,65,98,.08); border-color: var(--accent); color: var(--accent); }
+.role-toggle.on .rt-led { background: var(--accent); }
+.role-toggle.worker.on { background: rgba(29,122,99,.08); border-color: #1d7a63; color: #1d7a63; }
+.role-toggle.worker.on .rt-led { background: #1d7a63; }
+.tier-select { min-width: 88px; font-size: 11.5px; font-weight: 700; padding: 4px 6px; }
+.tier-select.tier-reasoning { color: #7c3aed; border-color: #c084fc; background: rgba(192,132,252,.08); }
+.tier-select.tier-standard  { color: #1d4ed8; border-color: #60a5fa; background: rgba(96,165,250,.08); }
+.tier-select.tier-fast      { color: #047857; border-color: #34d399; background: rgba(52,211,153,.08); }
+.role-default { font-family: inherit; font-size: 10.5px; font-weight: 700; padding: 3px 9px; border-radius: 999px; border: 1px solid; cursor: pointer; }
+.set-h { border-color: var(--accent); color: var(--accent); background: var(--surface-dim); }
+.set-h.is-on { background: var(--accent); color: #fff; }
+.set-w { border-color: #1d7a63; color: #1d7a63; background: var(--surface-dim); }
+.set-w.is-on { background: #1d7a63; color: #fff; }
+.model-desc { margin-top: 8px; display: flex; gap: 8px; align-items: flex-start; }
+.model-desc-label { font-size: 10.5px; font-weight: 700; color: var(--ink-faint); flex-shrink: 0; padding-top: 5px; width: 62px; }
+.model-desc textarea {
+  flex: 1; font-family: inherit; font-size: 12px; line-height: 1.55; padding: 5px 9px;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--surface-dim); color: var(--ink-soft);
+  min-height: 36px; resize: vertical; width: 100%;
+}
+.model-desc textarea:focus { outline: 2px solid rgba(43,65,98,.25); outline-offset: 1px; background: var(--surface); color: var(--ink); }
+.add-btn { appearance: none; font-family: inherit; font-size: 12px; font-weight: 700; border: 1px dashed var(--line-strong); background: transparent; color: var(--ink-faint); padding: 6px 12px; border-radius: 7px; cursor: pointer; }
+.add-btn:hover { background: var(--surface-dim); color: var(--ink-soft); }
+
+/* ---- セッション面（モデル切替の位置を見せるだけの最小構成） ---- */
+.session-view { flex-direction: column; align-items: center; justify-content: flex-end; overflow-y: auto; padding: 26px 18px; }
+.chat-col { width: 100%; max-width: 640px; }
+.cm-msg { font-size: 13.5px; margin-bottom: 12px; max-width: 88%; }
+.cm-msg.you { margin-left: auto; background: var(--surface); border-radius: 10px; padding: 9px 13px; border: 1px solid var(--line); }
+.cm-ai { display: flex; gap: 9px; margin-bottom: 16px; }
+.cm-ai-mark { width: 26px; height: 26px; flex-shrink: 0; border-radius: 7px; background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 13px; }
+.cm-ai-name { font-size: 11px; color: var(--ink-faint); margin-bottom: 3px; }
+.cm-ai-body { font-size: 13.5px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 9px 13px; }
+
+.oc-composer {
+  display: flex; flex-direction: column; border: 1px solid var(--line-strong); border-radius: 16px;
+  background: var(--surface); box-shadow: 0 1px 4px rgba(39,36,29,.06); position: relative; padding: 10px 12px 8px;
+}
+.oc-composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(43,65,98,.12); }
+.oc-input {
+  width: 100%; border: none; background: transparent; padding: 2px 2px 10px; font-family: inherit;
+  font-size: 14px; color: var(--ink); outline: none; resize: none; line-height: 1.6; min-height: 44px;
+}
+.oc-input::placeholder { color: var(--ink-faint); }
+.oc-bar { display: flex; align-items: center; gap: 2px; }
+.oc-plus {
+  width: 30px; height: 30px; display: grid; place-items: center; border: none; background: transparent;
+  color: var(--ink-faint); font-size: 17px; cursor: pointer; font-family: inherit; border-radius: 8px; line-height: 1;
+}
+.oc-plus:hover { color: var(--ink-soft); background: var(--surface-dim); }
+.oc-model-btn {
+  display: inline-flex; align-items: center; gap: 7px; border: none; background: transparent; font-family: inherit;
+  font-size: 13px; font-weight: 600; color: var(--ink-soft); padding: 5px 9px; cursor: pointer; border-radius: 8px; white-space: nowrap;
+}
+.oc-model-btn:hover { background: var(--surface-dim); }
+.oc-model-icon { width: 20px; height: 20px; border-radius: 5px; display: grid; place-items: center; font-size: 11px; font-weight: 800; color: #fff; flex-shrink: 0; line-height: 1; }
+.oc-model-icon.opencode { background: var(--accent); }
+.oc-model-icon.anthropic { background: #d97706; }
+.oc-model-icon.ollama { background: #6d4a9e; }
+.oc-model-name { font-weight: 600; color: var(--ink); }
+.oc-model-arrow { font-size: 9px; color: var(--ink-faint); }
+.oc-send {
+  margin-left: auto; width: 34px; height: 34px; border-radius: 50%; border: none; background: var(--ink);
+  color: var(--surface); display: grid; place-items: center; cursor: pointer; font-size: 15px; font-family: inherit; line-height: 1;
+}
+.oc-send:hover { opacity: .85; }
+
+.picker {
+  position: absolute; bottom: calc(100% + 6px); left: 44px; width: 400px; max-height: 340px;
+  background: var(--surface); border: 1px solid var(--line-strong); border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(39,36,29,.16); z-index: 50; display: none; overflow: hidden;
+}
+.picker.is-open { display: flex; flex-direction: column; }
+.picker-search { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.picker-search input { width: 100%; box-sizing: border-box; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; font-family: inherit; background: var(--surface-dim); color: var(--ink); }
+.picker-body { overflow-y: auto; padding: 4px 0 8px; }
+.picker-group { font-size: 10px; font-weight: 700; color: var(--ink-faint); letter-spacing: .06em; padding: 8px 12px 3px; text-transform: uppercase; }
+.picker-row { display: block; width: 100%; text-align: left; background: transparent; border: none; font-family: inherit; padding: 6px 12px; cursor: pointer; }
+.picker-row:hover { background: var(--surface-dim); }
+.picker-row.is-active { background: rgba(43,65,98,.08); }
+.pr-top { display: flex; align-items: center; gap: 7px; }
+.pr-name { font-weight: 600; font-size: 12.5px; color: var(--ink); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-marks { display: flex; gap: 4px; flex-shrink: 0; }
+.pr-mark { font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--ink-soft); }
+.pr-mark.def { background: var(--accent); color: #fff; border-color: var(--accent); }
+.pr-desc { font-size: 11px; color: var(--ink-faint); margin-top: 1px; padding-right: 12px; line-height: 1.45; }
+.composer-hint { font-size: 11px; color: var(--ink-faint); margin: 8px 0 0 6px; }
+
+@media (max-width: 860px) {
+  .settings-body { flex-direction: column; }
+  .settings-nav { width: 100%; flex-direction: row; overflow-x: auto; border-right: none; border-bottom: 1px solid var(--line); }
+  .settings-nav-btn { flex-shrink: 0; white-space: nowrap; }
+  .settings-content { padding: 16px 16px 30px; }
+}
+</style>
+</head>
+<body>
+
+<header class="shell-topbar">
+  <a class="shell-brand" href="index.html">
+    <span class="brand-mark">番</span>
+    <span><span class="brand-name">banto</span><span class="brand-sub">チャット＋キャンバス</span></span>
+  </a>
+  <div class="session-tabs">
+    <span class="session-tab-wrap" id="sessTab"><button class="session-tab">D9の判断待ち3件</button></span>
+    <span class="session-tab-wrap"><button class="session-tab">imp-0017 の切り分け</button></span>
+  </div>
+  <button class="session-new-btn">＋ 新しいセッション</button>
+  <div class="pinned-tabs">
+    <button class="pinned-tab" title="セッション開始リクエスト">📥</button>
+    <button class="pinned-tab" title="履歴">🕘</button>
+    <button class="pinned-tab is-active" id="settingsTab" title="設定">⚙️</button>
+  </div>
+</header>
+
+<div class="shell-body">
+
+  <!-- ===== 設定面 ===== -->
+  <div class="view is-active" id="settingsView">
+    <div class="settings-body">
+      <nav class="settings-nav" id="settingsNav">
+        <button class="settings-nav-btn" data-pane="kobo">Kobo接続</button>
+        <button class="settings-nav-btn" data-pane="git">Git アカウント</button>
+        <button class="settings-nav-btn is-active" data-pane="llm">LLM・モデル</button>
+        <button class="settings-nav-btn" data-pane="providers">実行環境（Providers）</button>
+        <button class="settings-nav-btn" data-pane="notify">通知</button>
+      </nav>
+
+      <div class="settings-content">
+
+        <!-- ---------- LLM・モデル ---------- -->
+        <div class="settings-pane is-active" data-pane="llm">
+          <h1 class="settings-title">LLM・モデル</h1>
+          <p class="set-hint">番頭と職人が使うモデルを全体設定で登録する（プロジェクト個別には持たない）。従来の「LLM エンドポイント」と「モデル自動選定」をここに統合。</p>
+          <div id="extBanner"></div>
+          <div class="warn-note">⚠ <b>設計未決</b>: キーの保存方式（sops / OSキーチェーン / 暗号化ファイル）は ADR 待ち（D1）。この画面からは pi の auth.json に書き込む。</div>
+
+          <div class="section-label">役割の既定</div>
+          <div id="roleRows"></div>
+
+          <div class="section-label">tier</div>
+          <p class="set-hint">番頭が職人へ仕事を振るときは、モデル名ではなく tier と制約を出す。ここの説明文がその判断基準になる。モデルを入れ替えても番頭の判断はそのまま使える。</p>
+          <div class="tier-cards" id="tierCards"></div>
+
+          <div class="section-label">解決の確認</div>
+          <p class="set-hint">番頭が職人へ仕事を振るときの解決。条件を選ぶと、実際に動くモデルとキーが分かる。（番頭自身は上で選んだ具体モデルを使うので、この解決は通らない）</p>
+          <div class="resolver">
+            <div class="resolver-row"><span class="rs-label">tier</span><div class="rs-opts" id="rsTiers"></div></div>
+            <div class="resolver-row"><span class="rs-label">制約</span><div class="rs-opts" id="rsCons"></div></div>
+            <div class="resolver-out" id="rsOut"></div>
+          </div>
+
+          <div class="section-label">プロバイダとキー</div>
+          <p class="set-hint">キーは上から順に消費し、上限に来たら次のキーへ落ちる。並び順と役割の許可は設定として保存し、上限かどうかは実行時の状態として扱う。</p>
+          <div id="providers"></div>
+          <button class="add-btn" style="margin-top:4px;">＋ プロバイダを追加</button>
+
+          <div class="section-label">設定の保存先</div>
+          <p class="set-hint">
+            この画面の内容は2つに分けて保存する。<b>どのモデル・どの鍵が存在するか</b>は pi の設定ファイルへ、
+            <b>tier・既定・使用可・キーの並び順</b>は banto 側へ。pi は<b>設定ファイル経由でのみ</b>扱い、pi 本体のコードには手を入れない。
+          </p>
+          <div id="sourceRows"></div>
+          <p class="set-hint" style="margin-top:8px;">
+            pi の設定ファイルは人が直接編集することもあるので、banto は変更を監視して通知し、読み直すまで書き込みを保留する。
+            読み込み時のハッシュは書き込み直前にも照合するので、監視が取りこぼしても人の編集を上書きしない。
+          </p>
+        </div>
+
+        <!-- ---------- 他ペイン（枠を見せるための静的表示） ---------- -->
+        <div class="settings-pane" data-pane="kobo">
+          <h1 class="settings-title">Kobo接続</h1>
+          <p class="set-hint">Koboは独立したシステムとして自前のGUI・APIを持つ。番頭はこのAPIを叩くクライアントの一つ。</p>
+          <div class="cred-row"><span class="cred-mark">API</span><div class="pc-main"><div class="cred-host">Kobo API（HTTP）</div><div class="pc-path">http://localhost:7420</div></div><span class="cred-state on">● 接続済</span><button class="btn">設定</button></div>
+          <div class="cred-row"><span class="cred-mark">WS</span><div class="pc-main"><div class="cred-host">イベント購読（WebSocket）</div><div class="pc-path">ws://localhost:7420/events</div></div><span class="cred-state on">● 接続済</span><button class="btn">設定</button></div>
+        </div>
+
+        <div class="settings-pane" data-pane="git">
+          <h1 class="settings-title">Git アカウント</h1>
+          <div class="warn-note">⚠ <b>要ADR</b>: 秘密情報の保存方式とデータモデル（D1）。1ホストに複数アカウントを持てる。</div>
+          <div class="cred-row"><span class="cred-mark">GH</span><div class="pc-main"><div class="cred-host">tjst-t <span class="pc-chip">personal</span></div><div class="pc-path">OAuth（repo, workflow）</div></div><span class="cred-state on">● 接続済</span><button class="btn">再認証</button></div>
+          <div class="cred-row"><span class="cred-mark">GH</span><div class="pc-main"><div class="cred-host">tjst-t-work <span class="pc-chip">work</span></div><div class="pc-path">Fine-grained token</div></div><span class="cred-state on">● 接続済</span><button class="btn btn--ghost">解除</button></div>
+        </div>
+
+        <div class="settings-pane" data-pane="providers">
+          <h1 class="settings-title">実行環境（Providers）</h1>
+          <p class="set-hint">実行環境の Provider をシステムレベルで登録し、各プロジェクトに使えるリソースを割り当てる。</p>
+          <div class="cred-row"><span class="cred-mark">🐳</span><div class="pc-main"><div class="cred-host">Docker（ローカル）</div><div class="pc-path">driver: docker ・ test/dev 用</div></div><span class="cred-state on">● 稼働</span><button class="btn">設定</button></div>
+          <div class="cred-row"><span class="cred-mark">VM</span><div class="pc-main"><div class="cred-host">Proxmox VM プール</div><div class="pc-path">driver: proxmox-vm ・ node: pve1 ・ quota 2</div></div><span class="cred-state on">● 接続</span><button class="btn">設定</button></div>
+        </div>
+
+        <div class="settings-pane" data-pane="notify">
+          <h1 class="settings-title">通知</h1>
+          <p class="set-hint">POに上げる判断待ちの通知先と静穏時間。</p>
+          <div class="cred-row"><span class="cred-mark">🔔</span><div class="pc-main"><div class="cred-host">静穏時間</div><div class="pc-path">23:00 – 07:00 は緊急のみ</div></div><button class="btn">設定</button></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== セッション面（モデル切替がどこに出るかを見るための最小構成） ===== -->
+  <div class="view session-view" id="sessionView">
+    <div class="chat-col">
+      <div class="cm-msg you">この画面、職人に任せていい？or自分で深掘りするか判断して。</div>
+      <div class="cm-ai">
+        <div class="cm-ai-mark">番</div>
+        <div>
+          <div class="cm-ai-name">番頭 · <span id="chatModelName">opencode-go / opus</span></div>
+          <div class="cm-ai-body">判断待ちカード3件のうち、2件は方針選択（D9で私が裁ける）・1件は外部依存の壁です（こちらはあなたに上げます）。</div>
+        </div>
+      </div>
+      <div class="oc-composer" id="ocComposer">
+        <textarea class="oc-input" rows="2" placeholder="Ask anything, / for commands, @ for context..."></textarea>
+        <div class="oc-bar">
+          <button class="oc-plus" title="ファイルを追加">＋</button>
+          <button class="oc-model-btn" id="pickerTrigger">
+            <span class="oc-model-icon opencode" id="modelIcon">◎</span>
+            <span class="oc-model-name" id="pickerCurName">opus</span>
+            <span class="oc-model-arrow">▾</span>
+          </button>
+          <button class="oc-send" title="送る">↑</button>
+        </div>
+        <div class="picker" id="picker">
+          <div class="picker-search"><input type="text" placeholder="モデルを検索" id="pickerSearch" /></div>
+          <div class="picker-body" id="pickerBody"></div>
+        </div>
+      </div>
+      <p class="composer-hint">番頭が使ってよいモデルだけが並ぶ。切替は次の発言から効く。</p>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ===== 設定データ =====
+const TIERS = {
+  reasoning: { label: "高精度", cls: "reasoning",
+    desc: "設計判断・仕様の壁・外に出す文面。読み違えると後戻りが大きいもの。コスト高。" },
+  standard: { label: "通常", cls: "standard",
+    desc: "調査から実装まで一貫して任せる通常作業。迷ったらここ。" },
+  fast: { label: "高速", cls: "fast",
+    desc: "要約・分類・カード選別など、間違えても安く作り直せるもの。長文は不得意。" },
+};
+
+const CONSTRAINTS = {
+  vision: { label: "画像を読む", hint: "スクショ・図をそのまま渡す" },
+  local:  { label: "外に出さない", hint: "ローカル実行のみ。機密を含む" },
+  free:   { label: "有料キーを使わない", hint: "無料枠・ローカルのみ" },
+};
+
+// pi の設定ファイルの状態。読み込み時のハッシュと今のハッシュが違えば「外部で変更あり」。
+// 監視で気づいた場合も、書き込み直前の照合で気づいた場合も、同じこの状態に落ちる。
+const piFile = {
+  changed: true,            // プロトタイプでは最初から通知が出た状態にしてある
+  at: "12:47",
+  which: "~/.pi/agent/models.json",
+  loadedAt: "12:31",
+  loadedHash: "sha256:9f3c…",
+  currentHash: "sha256:41ab…",
+};
+
+const data = {
+  defaults: { host: { p: "opencode-go", m: "opus" }, workerTier: "standard" },
+  picks: {
+    reasoning: { p: "opencode-go", m: "opus" },
+    standard:  { p: "opencode-go", m: "sonnet" },
+    fast:      { p: "opencode-go", m: "haiku" },
+  },
+  providers: [
+    {
+      id: "opencode-go", cls: "opencode", mark: "◎", name: "opencode endpoint", url: "http://localhost:4096",
+      state: "on", local: false,
+      keys: [
+        { name: "opencode°default", tag: "endpoint", val: "http://localhost:4096", masked: "••••••:4096", host: true, worker: true, state: "ok" },
+      ],
+      models: [
+        { id: "opus", tier: "reasoning", vision: true, free: false, hostUsable: true, workerUsable: true, desc: "重い設計判断・仕様の壁・POへの提案文面。コスト高・品質最大。" },
+        { id: "sonnet", tier: "standard", vision: true, free: false, hostUsable: true, workerUsable: true, desc: "通常作業の主軸。調査〜実装を一貫して任せられる。" },
+        { id: "haiku", tier: "fast", vision: false, free: false, hostUsable: true, workerUsable: true, desc: "軽量・要約・分類・カード選別。コスト最小。長文は不得意。" },
+        { id: "deepseek-v4-flash-free", tier: "fast", vision: false, free: true, hostUsable: true, workerUsable: false, desc: "無料の高速モデル。拾い読み・雑務用。職人には渡さない（品質ブレ）。" },
+      ]
+    },
+    {
+      id: "anthropic", cls: "anthropic", mark: "A", name: "Anthropic API（直）", url: "https://api.anthropic.com",
+      state: "on", local: false,
+      keys: [
+        { name: "anthropic°work", tag: "work", val: "sk-ant-yyyyy …work", masked: "sk-ant-•••••-••••-work", host: true, worker: false, state: "limited", until: "12:40" },
+        { name: "anthropic°personal", tag: "personal", val: "sk-ant-xxxxx …tjst", masked: "sk-ant-•••••-••••-tjst", host: false, worker: true, state: "ok" },
+        { name: "anthropic°backup", tag: "backup", val: "sk-ant-zzz …old", masked: "sk-ant-•••••-••••-old", host: true, worker: true, state: "untested" },
+      ],
+      models: [
+        { id: "claude-opus-5", tier: "reasoning", vision: true, free: false, hostUsable: true, workerUsable: false, desc: "Anthropic直のopus。opencode経由と別鍵で並行運用。" },
+        { id: "claude-sonnet-5", tier: "standard", vision: true, free: false, hostUsable: false, workerUsable: true, desc: "直叩きsonnet。opencode経由が不調のとき職人の退避先。" },
+      ]
+    },
+    {
+      id: "ollama", cls: "ollama", mark: "L", name: "Local LLM (Ollama)", url: "http://localhost:11434",
+      state: "on", local: true,
+      keys: [
+        { name: "ollama°local", tag: "no-key", val: "（認証不要）", masked: "（認証不要）", host: true, worker: true, state: "ok" },
+      ],
+      models: [
+        { id: "qwen2.5-coder", tier: "fast", vision: false, free: true, hostUsable: false, workerUsable: true, desc: "ローカル・オフライン。コード補完と職人の安い繰り返し作業。外に出ない。" },
+        { id: "llama3.1", tier: "fast", vision: false, free: true, hostUsable: false, workerUsable: true, desc: "ローカル要約系。コストゼロ。品質は劣るが失敗が外に洩れない。" },
+      ]
+    },
+  ]
+};
+
+// ===== 解決 =====
+function satisfies(p, m, cons){
+  if(cons.vision && !m.vision) return false;
+  if(cons.local  && !p.local)  return false;
+  if(cons.free   && !m.free)   return false;
+  return true;
+}
+function resolveModel(tier, cons, scope){
+  const usable = scope==='host' ? 'hostUsable' : 'workerUsable';
+  const cands = [];
+  data.providers.forEach(p => p.models.forEach(m => {
+    if(!m[usable] || m.tier!==tier) return;
+    if(!satisfies(p, m, cons)) return;
+    cands.push({ p, m });
+  }));
+  if(!cands.length) return null;
+  const pick = data.picks[tier];
+  return cands.find(c => c.p.id===pick.p && c.m.id===pick.m) || cands[0];
+}
+function resolveKey(p, scope){
+  return p.keys.find(k => k[scope] && k.state!=='limited') || null;
+}
+
+// ===== 役割の既定 =====
+function renderRoles(){
+  const hp = data.providers.find(x=>x.id===data.defaults.host.p);
+  const hm = hp && hp.models.find(x=>x.id===data.defaults.host.m);
+  const hostOpts = [];
+  data.providers.forEach(p => p.models.forEach(m => {
+    if(!m.hostUsable) return;
+    const sel = (p.id===data.defaults.host.p && m.id===data.defaults.host.m) ? 'selected' : '';
+    hostOpts.push(`<option value="${p.id}|${m.id}" ${sel}>${p.id} / ${m.id}</option>`);
+  }));
+  const wt = data.defaults.workerTier;
+  const r = resolveModel(wt, {}, 'worker');
+
+  document.getElementById('roleRows').innerHTML = `
+    <div class="cred-row">
+      <span class="cred-mark">番</span>
+      <div class="pc-main">
+        <div class="cred-host">番頭 <span class="pc-chip">具体モデル</span></div>
+        <div class="pc-path">${hm ? TIERS[hm.tier].label : '-'} ・ キー ${hp ? ((resolveKey(hp,'host')||{}).name || '該当なし') : '-'}</div>
+      </div>
+      <select class="set-select" id="hostSel" onchange="setHostDefault(this.value)">${hostOpts.join('')}</select>
+    </div>
+    <div class="cred-row">
+      <span class="cred-mark">職</span>
+      <div class="pc-main">
+        <div class="cred-host">職人 <span class="pc-chip">tier で指定</span></div>
+        <div class="pc-path">${r
+          ? `制約なしのとき ${r.p.id} / ${r.m.id} ・ キー ${(resolveKey(r.p,'worker')||{}).name || '該当なし'}`
+          : '<span style="color:var(--c-fail)">解決できるモデルがありません</span>'}</div>
+      </div>
+      <select class="set-select" id="workerSel" onchange="setWorkerTier(this.value)">
+        ${Object.keys(TIERS).map(t=>`<option value="${t}" ${wt===t?'selected':''}>${TIERS[t].label}</option>`).join('')}
+      </select>
+    </div>`;
+}
+function setHostDefault(v){
+  const [p,m] = v.split('|');
+  data.providers.find(x=>x.id===p).models.find(x=>x.id===m).hostUsable = true;
+  data.defaults.host = { p, m };
+  renderAll();
+}
+function setWorkerTier(t){ data.defaults.workerTier = t; renderAll(); }
+
+// ===== tier =====
+function tierBadge(t){ return `<span class="tier ${TIERS[t].cls}">${TIERS[t].label}</span>`; }
+function renderTiers(){
+  document.getElementById('tierCards').innerHTML = Object.keys(TIERS).map(t=>{
+    const pick = data.picks[t];
+    return `
+    <div class="tier-card">
+      <div class="tc-head">
+        ${tierBadge(t)}<span class="tc-name">${TIERS[t].label}</span>
+        ${data.defaults.workerTier===t ? '<span class="tc-def" style="margin-left:auto;">職人の既定</span>' : ''}
+      </div>
+      <textarea onchange="setTierDesc('${t}',this.value)" placeholder="番頭がタスクをこのtierに入れる基準">${TIERS[t].desc}</textarea>
+      <div class="tc-pick">第一候補: <b>${pick.p} / ${pick.m}</b></div>
+    </div>`;
+  }).join('');
+}
+function setTierDesc(t,v){ TIERS[t].desc = v; }
+
+// ===== 解決の確認 =====
+// 解決は職人へ振るときにしか起きない（番頭は具体モデルで固定）ので、役割の選択は無い。
+const rsState = { tier: 'standard', cons: {} };
+function rsSetTier(t){ rsState.tier = t; renderResolver(); }
+function rsToggleCon(c){ rsState.cons[c] = !rsState.cons[c]; renderResolver(); }
+
+function renderResolver(){
+  document.getElementById('rsTiers').innerHTML = Object.keys(TIERS)
+    .map(t=>`<button class="rs-opt ${rsState.tier===t?'on':''}" onclick="rsSetTier('${t}')">${TIERS[t].label}</button>`).join('');
+  document.getElementById('rsCons').innerHTML = Object.keys(CONSTRAINTS)
+    .map(c=>`<button class="rs-opt ${rsState.cons[c]?'on':''}" onclick="rsToggleCon('${c}')" title="${CONSTRAINTS[c].hint}">${CONSTRAINTS[c].label}</button>`).join('');
+
+  const out = document.getElementById('rsOut');
+  const r = resolveModel(rsState.tier, rsState.cons, 'worker');
+  if(!r){
+    out.className = 'resolver-out none';
+    out.textContent = `この条件で使えるモデルがありません。制約を緩めるか、${TIERS[rsState.tier].label}に条件を満たすモデルを足してください。`;
+    return;
+  }
+  const pick = data.picks[rsState.tier];
+  const dropped = !(r.p.id===pick.p && r.m.id===pick.m);
+  const key = resolveKey(r.p, 'worker');
+  out.className = 'resolver-out';
+  out.innerHTML = `
+    <div class="ro-model">${r.p.id} / ${r.m.id}</div>
+    <div class="ro-line">キー: <b>${key ? key.name : '該当なし'}</b>${key ? '' : '（このプロバイダに職人が使える生きたキーがありません）'}</div>
+    <div class="ro-line">${dropped
+      ? `<span class="ro-drop">第一候補の ${pick.p} / ${pick.m} は制約で落ちたため、同じtierの次の候補に降りました。</span>`
+      : `${TIERS[rsState.tier].label}の第一候補がそのまま条件を満たしました。`}</div>`;
+}
+
+// ===== プロバイダ =====
+function keyStatus(k){
+  if(k.state==='limited')  return `<span class="key-status limited">上限 <span class="ks-sub">${k.until}まで</span></span>`;
+  if(k.state==='untested') return `<span class="key-status untested">未検証</span>`;
+  return `<span class="key-status ok">有効</span>`;
+}
+function capBadge(t){ return `<span class="tier cap">${t}</span>`; }
+
+function renderProviders(){
+  const open = data.providers.map((p,pi)=>{
+    const el = document.getElementById('pb-'+pi);
+    return el ? el.classList.contains('is-open') : (pi===0);
+  });
+  document.getElementById('providers').innerHTML = data.providers.map((p, pi) => `
+    <div class="prov">
+      <div class="prov-head" onclick="toggleProv(${pi})">
+        <span class="cred-mark">${p.mark}</span>
+        <div class="pc-main">
+          <div class="cred-host">${p.name}</div>
+          <div class="pc-path">${p.url} ・ キー ${p.keys.length} ・ モデル ${p.models.length}${p.local?' ・ ローカル':''}</div>
+        </div>
+        <span class="cred-state on">● 接続済</span>
+        <span class="prov-caret" id="pc-${pi}">▶</span>
+      </div>
+      <div class="prov-body" id="pb-${pi}">
+        <div class="sub-label">API キー <span class="count">${p.keys.length}</span>
+          <button class="add-btn" style="margin-left:auto;font-size:11px;padding:4px 10px;" onclick="addKey(${pi})"
+            ${(piFile.changed||piFile.dismissed)?'disabled':''}
+            title="${(piFile.changed||piFile.dismissed)?'auth.json が外部で変更されています。読み直してから':'~/.pi/agent/auth.json に書き込む'}">＋ キーを追加</button></div>
+        ${p.keys.map((k, ki) => `
+          <div class="key-row ${k.state==='limited'?'is-limited':''}">
+            <span class="key-rank">${ki+1}</span>
+            <span class="key-move">
+              <button title="上へ" onclick="moveKey(${pi},${ki},-1)" ${ki===0?'disabled':''}>▲</button>
+              <button title="下へ" onclick="moveKey(${pi},${ki},1)" ${ki===p.keys.length-1?'disabled':''}>▼</button>
+            </span>
+            <span class="key-name">${k.name}</span>
+            <span class="key-tag">${k.tag}</span>
+            <span class="key-scope">
+              <span class="${k.host?'on':''}" onclick="toggleKeyScope(${pi},${ki},'host')" title="番頭がこのキーを使ってよい">番頭</span>
+              <span class="w ${k.worker?'on':''}" onclick="toggleKeyScope(${pi},${ki},'worker')" title="職人がこのキーを使ってよい">職人</span>
+            </span>
+            <span class="key-val masked" id="kv-${pi}-${ki}" onclick="toggleKeyVal(${pi},${ki})">${k.masked}</span>
+            ${keyStatus(k)}
+            <button class="icon-btn" onclick="testKey(${pi},${ki})">テスト</button>
+            <button class="icon-btn danger" onclick="delKey(${pi},${ki})">✕</button>
+          </div>`).join('')}
+        <div class="key-note">上から順に消費。役割が許されていて上限に来ていない最初のキーを使う。
+          いま番頭は <b>${(resolveKey(p,'host')||{}).name || '該当なし'}</b>、職人は <b>${(resolveKey(p,'worker')||{}).name || '該当なし'}</b>。</div>
+
+        <div class="sub-label">モデル <span class="count">${p.models.length}</span></div>
+        ${p.models.map((m, mi) => renderModel(p, m, pi, mi)).join('')}
+        <button class="add-btn" onclick="addModel(${pi})" ${(piFile.changed||piFile.dismissed)?'disabled':''}
+          title="${(piFile.changed||piFile.dismissed)?'models.json が外部で変更されています。読み直してから':'~/.pi/agent/models.json に書き込む'}">＋ カスタムモデルを追加</button>
+      </div>
+    </div>`).join('');
+
+  open.forEach((o,pi)=>{ if(o) openProv(pi); });
+}
+
+function renderModel(p, m, pi, mi){
+  const isHostDef = data.defaults.host.p===p.id && data.defaults.host.m===m.id;
+  const isPick = data.picks[m.tier].p===p.id && data.picks[m.tier].m===m.id;
+  return `
+  <div class="model-row">
+    <div class="model-top">
+      <div class="model-main">
+        <span class="model-id">${m.id}</span>
+        ${m.vision ? capBadge('vision') : ''}
+        ${p.local ? capBadge('ローカル') : ''}
+        ${m.free ? capBadge('無料') : ''}
+      </div>
+      <div class="model-actions">
+        <select class="set-select tier-select tier-${TIERS[m.tier].cls}" onchange="setModelTier(${pi},${mi},this.value)" title="このモデルをどのtierに置くか">
+          ${Object.keys(TIERS).map(t=>`<option value="${t}" ${m.tier===t?'selected':''}>${TIERS[t].label}</option>`).join('')}
+        </select>
+        <span class="role-toggle ${m.hostUsable?'on':''}" onclick="toggleUsable('host',${pi},${mi})" title="番頭が使ってよい"><span class="rt-led"></span>番頭</span>
+        <span class="role-toggle worker ${m.workerUsable?'on':''}" onclick="toggleUsable('worker',${pi},${mi})" title="職人が使ってよい"><span class="rt-led"></span>職人OK</span>
+        <button class="role-default set-h ${isHostDef?'is-on':''}" onclick="setDefHost(${pi},${mi})">番頭既定</button>
+        <button class="role-default set-w ${isPick?'is-on':''}" onclick="setPick(${pi},${mi})">${TIERS[m.tier].label}の第一候補</button>
+      </div>
+    </div>
+    <div class="model-desc">
+      <span class="model-desc-label">メモ</span>
+      <textarea onchange="setDesc(${pi},${mi},this.value)"
+        placeholder="このモデルの得手不得手（tierを決めた理由など）。番頭が読むのは上のtier説明で、こちらは人間用。">${m.desc}</textarea>
+    </div>
+  </div>`;
+}
+
+function openProv(pi){
+  document.getElementById('pb-'+pi).classList.add('is-open');
+  document.getElementById('pc-'+pi).textContent = '▼';
+}
+function toggleProv(pi){
+  const b = document.getElementById('pb-'+pi);
+  const open = b.classList.toggle('is-open');
+  document.getElementById('pc-'+pi).textContent = open ? '▼' : '▶';
+}
+function toggleKeyVal(pi,ki){
+  const el = document.getElementById(`kv-${pi}-${ki}`), k = data.providers[pi].keys[ki];
+  el.classList.toggle('masked');
+  el.textContent = el.classList.contains('masked') ? k.masked : k.val;
+}
+function testKey(pi,ki){
+  const k = data.providers[pi].keys[ki];
+  k.state = 'ok'; delete k.until;
+  renderAll();
+}
+function moveKey(pi,ki,dir){
+  const ks = data.providers[pi].keys, j = ki + dir;
+  if(j < 0 || j >= ks.length) return;
+  [ks[ki], ks[j]] = [ks[j], ks[ki]];
+  renderAll();
+}
+function toggleKeyScope(pi,ki,scope){
+  const ks = data.providers[pi].keys, k = ks[ki];
+  if(k[scope] && !ks.some((o,i)=>i!==ki && o[scope])){
+    alert(`このプロバイダで${scope==='host'?'番頭':'職人'}が使えるキーが無くなります。先に別のキーを許可してください。`);
+    return;
+  }
+  k[scope] = !k[scope];
+  renderAll();
+}
+function delKey(pi,ki){
+  if(piWriteBlocked()) return; // auth.json への書き込み
+  if(data.providers[pi].keys.length<=1){ alert('プロバイダに最低1つのキーは必要です'); return; }
+  data.providers[pi].keys.splice(ki,1);
+  renderAll();
+}
+function addKey(pi){
+  if(piWriteBlocked()) return; // auth.json への書き込み
+  const name = prompt('キー名（例: anthropic°work）'); if(!name) return;
+  data.providers[pi].keys.push({ name, tag:'new', val:'sk-new-••••', masked:'sk-••••-new', host:true, worker:true, state:'untested' });
+  renderAll();
+}
+function toggleUsable(scope,pi,mi){
+  const p = data.providers[pi], m = p.models[mi];
+  const key = scope==='host' ? 'hostUsable' : 'workerUsable';
+  if(m[key]){
+    if(scope==='host' && data.defaults.host.p===p.id && data.defaults.host.m===m.id){
+      alert(`${m.id} は番頭の既定モデルです。先に別のモデルを既定にしてください。`); return;
+    }
+    if(scope==='worker' && data.picks[m.tier].p===p.id && data.picks[m.tier].m===m.id){
+      alert(`${m.id} は「${TIERS[m.tier].label}」の第一候補です。先に別のモデルを第一候補にしてください。`); return;
+    }
+  }
+  m[key] = !m[key];
+  if(scope==='host') syncCurSel();
+  renderAll();
+}
+function setDefHost(pi,mi){
+  const p = data.providers[pi], m = p.models[mi];
+  m.hostUsable = true;
+  data.defaults.host = { p: p.id, m: m.id };
+  renderAll();
+}
+function setPick(pi,mi){
+  const p = data.providers[pi], m = p.models[mi];
+  m.workerUsable = true;
+  data.picks[m.tier] = { p: p.id, m: m.id };
+  renderAll();
+}
+// tierを移すと、元のtierの第一候補が空くので、先に付け替えてもらう。
+function setModelTier(pi,mi,t){
+  const p = data.providers[pi], m = p.models[mi];
+  if(m.tier === t) return;
+  if(data.picks[m.tier].p===p.id && data.picks[m.tier].m===m.id){
+    alert(`${m.id} は「${TIERS[m.tier].label}」の第一候補です。先に別のモデルを第一候補にしてから、tierを変えてください。`);
+    renderAll();
+    return;
+  }
+  m.tier = t;
+  renderAll();
+}
+function setDesc(pi,mi,v){ data.providers[pi].models[mi].desc = v; refreshPicker(); }
+function addModel(pi){
+  if(piWriteBlocked()) return; // models.json への書き込み
+  const id = prompt('モデル id'); if(!id) return;
+  data.providers[pi].models.push({ id, tier:'standard', vision:false, free:false, hostUsable:true, workerUsable:false, desc:'' });
+  renderAll();
+}
+
+// ===== セッション面のモデルピッカー =====
+let curSel = { p:'opencode-go', m:'opus' };
+function refreshPicker(){
+  const q = (document.getElementById('pickerSearch').value || '').toLowerCase().trim();
+  document.getElementById('pickerBody').innerHTML = data.providers.map(p=>{
+    const rows = p.models.filter(m=>m.hostUsable).filter(m=>{
+      if(!q) return true;
+      return m.id.toLowerCase().includes(q) || (m.desc||'').toLowerCase().includes(q) || p.name.toLowerCase().includes(q);
+    });
+    if(!rows.length) return '';
+    return `<div class="picker-group">${p.name}</div>` + rows.map(m=>{
+      const isCur = curSel.p===p.id && curSel.m===m.id;
+      const marks = [];
+      if(data.defaults.host.p===p.id && data.defaults.host.m===m.id) marks.push('<span class="pr-mark def">番頭既定</span>');
+      if(m.workerUsable) marks.push('<span class="pr-mark">職人OK</span>');
+      return `<button class="picker-row ${isCur?'is-active':''}" onclick="pickModel('${p.id}','${m.id}')">
+        <div class="pr-top"><span class="pr-name">${m.id}</span>${tierBadge(m.tier)}<span class="pr-marks">${marks.join('')}</span></div>
+        <div class="pr-desc">${m.desc || '（説明文なし）'}</div>
+      </button>`;
+    }).join('');
+  }).join('') || '<div style="padding:10px 12px;color:var(--ink-faint);font-size:12px;">該当なし</div>';
+}
+function pickModel(pid,mid){
+  curSel = { p:pid, m:mid };
+  const p = data.providers.find(x=>x.id===pid), m = p.models.find(x=>x.id===mid);
+  document.getElementById('pickerCurName').textContent = m.id;
+  document.getElementById('chatModelName').textContent = `${p.id} / ${m.id}`;
+  const icon = document.getElementById('modelIcon');
+  icon.textContent = p.mark;
+  icon.className = 'oc-model-icon ' + p.cls;
+  document.getElementById('picker').classList.remove('is-open');
+  refreshPicker();
+}
+function syncCurSel(){
+  const p = data.providers.find(x=>x.id===curSel.p);
+  const m = p && p.models.find(x=>x.id===curSel.m);
+  if(m && m.hostUsable) return;
+  pickModel(data.defaults.host.p, data.defaults.host.m);
+}
+
+// ===== 外部変更の通知 / 設定の保存先 =====
+function renderExt(){
+  const el = document.getElementById('extBanner');
+  if(!piFile.changed){ el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <div class="ext-banner">
+      <span class="eb-ico">⟳</span>
+      <div class="eb-main">
+        <div class="eb-title">${piFile.which} が banto の外で変更されました</div>
+        <div class="eb-sub">${piFile.at} 検知 ・ 読み込み時 <code>${piFile.loadedHash}</code> → 現在 <code>${piFile.currentHash}</code>。
+          読み直すまで、この画面からの追加・削除は保留します。</div>
+      </div>
+      <button class="btn" onclick="reloadPi()">読み直す</button>
+      <button class="btn btn--ghost" onclick="dismissPi()">あとで</button>
+    </div>`;
+}
+function reloadPi(){ piFile.changed = false; renderAll(); }
+function dismissPi(){ piFile.changed = false; piFile.dismissed = true; renderAll(); }
+function replayPi(){ piFile.changed = true; piFile.dismissed = false; renderAll(); }
+
+function renderSource(){
+  const stale = piFile.changed || piFile.dismissed;
+  document.getElementById('sourceRows').innerHTML = `
+    <div class="cred-row">
+      <span class="cred-mark">pi</span>
+      <div class="pc-main">
+        <div class="cred-host">モデルと鍵の一覧 <span class="pc-chip">banto が読み書き</span></div>
+        <div class="pc-path">~/.pi/agent/models.json ・ ~/.pi/agent/auth.json</div>
+      </div>
+      <span class="cred-state ${stale?'':'on'}" style="${stale?'color:#a05a12':''}">
+        ${stale ? `● 外部で変更あり ${piFile.at}` : `● 同期済 ${piFile.loadedAt}`}
+      </span>
+      <button class="btn" onclick="reloadPi()">再読込</button>
+    </div>
+    <div class="cred-row">
+      <span class="cred-mark">番</span>
+      <div class="pc-main">
+        <div class="cred-host">tier・既定・使用可・キーの並び順 <span class="pc-chip">banto が保存</span></div>
+        <div class="pc-path">llm-registry.json</div>
+      </div>
+      <span class="cred-state on">● 保存済</span>
+    </div>
+    ${stale ? '' : '<button class="replay-link" onclick="replayPi()">（プロトタイプ用）外部変更をもう一度起こす</button>'}`;
+}
+
+// pi のファイルが古いあいだは、そこへ書く操作を止める。
+function piWriteBlocked(){
+  if(piFile.changed || piFile.dismissed){
+    alert(`${piFile.which} が外部で変更されています。読み直してから操作してください。`);
+    return true;
+  }
+  return false;
+}
+
+// ===== 全体再描画 =====
+function renderAll(){
+  renderExt(); renderSource(); renderRoles(); renderTiers(); renderResolver(); renderProviders(); refreshPicker();
+}
+
+// ===== 面の切替 =====
+function showView(id){
+  document.querySelectorAll('.view').forEach(v=>v.classList.toggle('is-active', v.id===id));
+  document.getElementById('settingsTab').classList.toggle('is-active', id==='settingsView');
+  document.getElementById('sessTab').classList.toggle('is-active', id==='sessionView');
+}
+document.getElementById('settingsTab').addEventListener('click', ()=>showView('settingsView'));
+document.getElementById('sessTab').addEventListener('click', ()=>showView('sessionView'));
+
+document.querySelectorAll('.settings-nav-btn').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    const pane = btn.dataset.pane;
+    document.querySelectorAll('.settings-nav-btn').forEach(b=>b.classList.toggle('is-active', b===btn));
+    document.querySelectorAll('.settings-pane').forEach(p=>p.classList.toggle('is-active', p.dataset.pane===pane));
+  });
+});
+
+document.getElementById('pickerTrigger').addEventListener('click', e=>{
+  e.stopPropagation();
+  document.getElementById('picker').classList.toggle('is-open');
+});
+document.addEventListener('click', e=>{
+  if(!e.target.closest('#picker') && !e.target.closest('#pickerTrigger')){
+    document.getElementById('picker').classList.remove('is-open');
+  }
+});
+document.getElementById('pickerSearch').addEventListener('input', refreshPicker);
+
+renderAll();
+openProv(0);
+</script>
+
+</body>
+</html>

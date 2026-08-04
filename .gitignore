@@ -13,3 +13,7 @@ data/
 
 # チャットに添付されたテキストファイル（ホストが work/attachments/ に保存する）
 work/attachments/
+
+# Playwright の実行結果（生成物）
+test-results/
+playwright-report/

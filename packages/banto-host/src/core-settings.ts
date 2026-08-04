@@ -4,10 +4,14 @@
  * モジュールと**同じ契約で自分の分も出す**——中核だけ特別扱いにすると、設定画面が
  * 「中核用の描画」と「モジュール用の描画」を2つ持つことになる。
  *
- * ここが持つのは、モジュールに属さないもの：LLM・場所・接続。
+ * ここが持つのは、モジュールに属さないもの：場所・接続・LLM。
+ *
+ * LLM だけは項目の宣言で表しきれないため、設定画面が専用の面を描く
+ * （ADR-0011 決定43。中核の区画にだけ許した例外で、モジュールには決定41 がそのまま効く）。
+ * その面が使う `llm.*` は中核の Tool なので、区画は `view` で描き先だけを宣言する。
  */
 
-import type { ModuleSettingsSpec } from "@banto/core";
+import type { LlmCatalog, ModelTier, ModuleSettingsSpec } from "@banto/core";
 import type { PlaceSetting, SettingsStore } from "./settings-store.js";
 
 /** 場所は1行1件のテキストで扱う（`id:/path:glob,glob`）。表形式は画面が育ってから。 */
@@ -48,6 +52,10 @@ export interface CoreSettingsOptions {
    * ——実際には効いているのに「1件も無い」と読めてしまう（I2：画面と実態を食い違わせない）。
    */
   effectivePlaces?: () => PlaceSetting[];
+  /** LLM の区画を出すためのカタログ。渡さなければ区画ごと出ない。 */
+  llmCatalog?: LlmCatalog;
+  /** 職人の既定 tier が変わったときに Worker Pool へ伝える口。 */
+  onWorkerTierChanged?: (tier: ModelTier) => void;
 }
 
 /**
@@ -58,43 +66,6 @@ export function createCoreSettingsSections(
   options: CoreSettingsOptions = {}
 ): Array<{ id: string; spec: ModuleSettingsSpec }> {
   return [
-    {
-      id: "llm",
-      spec: {
-        title: "LLM",
-        description:
-          "番頭が使うモデル。プロバイダは pi の設定（~/.pi/agent/auth.json）で認証しておくこと。",
-        fields: [
-          {
-            key: "provider",
-            label: "プロバイダ",
-            type: "text",
-            placeholder: "opencode / anthropic など",
-            description: "pi が知っているプロバイダ名。認証はプロバイダ側の設定に従う",
-            restartRequired: true,
-          },
-          {
-            key: "model",
-            label: "モデル",
-            type: "text",
-            placeholder: "deepseek-v4-flash-free など",
-            description:
-              "pi の台帳に無いモデル id も使える（同じプロバイダの設定を土台にする）。" +
-              "プロバイダ名が台帳に無い場合は起動時に止まる",
-            restartRequired: true,
-          },
-        ],
-        read: () => ({ ...(store.all().llm ?? {}) }),
-        write: (values) => {
-          const current = store.all().llm ?? {};
-          store.update("llm", { ...current, ...(values as { provider?: string; model?: string }) });
-          return {
-            applied: false,
-            message: "保存しました。**次の起動から効きます**（会話中のセッションは作り直せません）",
-          };
-        },
-      },
-    },
     {
       id: "places",
       spec: {
@@ -207,5 +178,24 @@ export function createCoreSettingsSections(
         },
       },
     },
+    // ADR-0011 決定42・43: LLM は中核。項目では表しきれないので専用の面を宣言する
+    ...(options.llmCatalog
+      ? [
+          {
+            id: "llm",
+            spec: {
+              title: "LLM・モデル",
+              description:
+                "番頭と職人が使うモデル。番頭は具体モデル、職人は tier で指定し、" +
+                "具体モデルは登録から解決する。",
+              // 項目の宣言では表せないため、描き先だけを宣言する（決定43）
+              view: "LlmRegistryViewer",
+              fields: [],
+              read: () => ({}),
+              write: () => ({ applied: true }),
+            } as ModuleSettingsSpec,
+          },
+        ]
+      : []),
   ];
 }

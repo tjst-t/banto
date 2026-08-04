@@ -24,6 +24,22 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { RuntimeDriver, SpawnOptions, SessionHandle, DriverEvent, DriverEventHandler } from "@banto/core";
+import type { LlmCatalog, ModelConstraints, ModelTier } from "@banto/core";
+
+/**
+ * spawn 時の driverOptions から制約（vision / local / free）を読む。
+ * 番頭が職人へ振るときに「画像を読む」「外に出さない」を付けられるようにするための口。
+ */
+function readConstraints(driverOptions: Record<string, unknown> | undefined): ModelConstraints {
+  const raw = driverOptions?.["constraints"];
+  if (!raw || typeof raw !== "object") return {};
+  const src = raw as Record<string, unknown>;
+  const out: ModelConstraints = {};
+  if (src["vision"] === true) out.vision = true;
+  if (src["local"] === true) out.local = true;
+  if (src["free"] === true) out.free = true;
+  return out;
+}
 
 // ── JSONL framing (spec: rpc.md §Framing) ──────────────────────────────────
 // Split on LF only. Do NOT use readline (also splits on U+2028/U+2029).
@@ -103,12 +119,18 @@ export interface PiRpcDriverOptions {
    */
   defaultModel?: string;
   /**
-   * Absolute path to the banto-executor.ts extension file.
-   * When set, passed as --extension <path> on every spawn so that
-   * report_phase/report_done tools are available in the pi session.
-   * Can be overridden per-spawn via SpawnOptions.driverOptions.extensionPath.
-   */
+    * Absolute path to the banto-executor.ts extension file.
+    * When set, passed as --extension <path> on every spawn so that
+    * report_phase/report_done tools are available in the pi session.
+    * Can be overridden per-spawn via SpawnOptions.driverOptions.extensionPath.
+    */
   extensionPath?: string;
+  /**
+   * LLM Catalog for tier-based model resolution (ADR-0004).
+   * When set, modelTier in SpawnOptions is resolved through the catalog.
+   * Falls back to defaultProvider/defaultModel if catalog is not set.
+   */
+  catalog?: LlmCatalog;
 }
 
 /** inject の応答を待つ上限。届いたかどうか分からないまま進まないため（I2）。 */
@@ -129,6 +151,7 @@ export class PiRpcDriver implements RuntimeDriver {
   private defaultProvider: string;
   private defaultModel: string;
   private readonly extensionPath: string | undefined;
+  private readonly catalog: LlmCatalog | undefined;
   private readonly sessions = new Map<string, ActiveSession>();
   private readonly handlers: Set<DriverEventHandler> = new Set();
   /**
@@ -155,6 +178,7 @@ export class PiRpcDriver implements RuntimeDriver {
     this.defaultProvider = opts.defaultProvider ?? "opencode";
     this.defaultModel = opts.defaultModel ?? "deepseek-v4-flash-free";
     this.extensionPath = opts.extensionPath;
+    this.catalog = opts.catalog;
   }
 
   /** いま職人に渡している既定のモデル（設定画面に見せる）。 */
@@ -226,15 +250,51 @@ export class PiRpcDriver implements RuntimeDriver {
     const sessionDir = path.dirname(sessionPath);
     fs.mkdirSync(sessionDir, { recursive: true });
 
-    // Resolve provider and model: per-spawn driverOptions override constructor defaults.
-    const provider =
-      (opts.driverOptions?.provider && typeof opts.driverOptions.provider === "string"
+    // Resolve provider and model:
+    // 1. per-spawn driverOptions override
+    // 2. catalog resolution from (tier, constraints) — ADR-0004
+    // 3. constructor defaults
+    //
+    // Constraints are never relaxed: if the caller asked for a local-only model and
+    // none satisfies it, we must not silently fall back to one that leaves the host.
+    const providerOverride =
+      opts.driverOptions?.provider && typeof opts.driverOptions.provider === "string"
         ? opts.driverOptions.provider
-        : null) ?? this.defaultProvider;
-    const model =
-      (opts.driverOptions?.model && typeof opts.driverOptions.model === "string"
+        : null;
+    const modelOverride =
+      opts.driverOptions?.model && typeof opts.driverOptions.model === "string"
         ? opts.driverOptions.model
-        : null) ?? this.defaultModel;
+        : null;
+
+    let provider: string;
+    let model: string;
+
+    if (providerOverride && modelOverride) {
+      provider = providerOverride;
+      model = modelOverride;
+    } else if (this.catalog && !providerOverride && !modelOverride) {
+      const constraints = readConstraints(opts.driverOptions);
+      const resolved = this.catalog.resolveForWorker(opts.modelTier as ModelTier | undefined, constraints);
+      if (resolved) {
+        provider = resolved.model.provider;
+        model = resolved.model.id;
+      } else if (Object.keys(constraints).length > 0) {
+        // I2: 制約を満たせないまま黙って別のモデルで動かさない
+        const named = Object.entries(constraints)
+          .filter(([, v]) => v)
+          .map(([k]) => k)
+          .join(", ");
+        const errMsg = `条件を満たすモデルがありません（tier: ${opts.modelTier ?? "既定"}, 制約: ${named}）`;
+        this.emit({ type: "spawn_failed", error: errMsg });
+        throw new Error(errMsg);
+      } else {
+        provider = this.defaultProvider;
+        model = this.defaultModel;
+      }
+    } else {
+      provider = providerOverride ?? this.defaultProvider;
+      model = modelOverride ?? this.defaultModel;
+    }
 
     // Resolve extension path: per-spawn override → constructor default.
     const extensionPath =

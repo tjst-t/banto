@@ -107,6 +107,33 @@ export type {
   BantoToolContext,
 } from "./banto-tool.js";
 
+// LLM Catalog — プロバイダ・モデル・キーの一元管理（ADR-0004 / spec §3.5）
+export {
+  LlmCatalog,
+  MODEL_TIERS,
+  TIER_LABELS,
+  DEFAULT_TIER_DESCRIPTIONS,
+  CONSTRAINT_KEYS,
+  isModelTier,
+} from "./llm-registry.js";
+export type {
+  ModelTier,
+  ModelConstraints,
+  KeyScope,
+  KeyState,
+  LlmKeyInfo,
+  LlmProviderInfo,
+  LlmModelInfo,
+  LlmTierInfo,
+  LlmDefaults,
+  LlmFileState,
+  LlmResolution,
+  LlmCatalogData,
+  LlmCatalogOptions,
+  LlmModelResolver,
+  ResolvedModel,
+} from "./llm-registry.js";
+
 // 場所（Place）— 番頭が作業してよい場所の契約（決定36c）
 export type { Place, PlaceProvider } from "./place.js";
 

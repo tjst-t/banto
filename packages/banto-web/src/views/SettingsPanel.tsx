@@ -10,7 +10,10 @@
 
 import { useEffect, useState } from "react";
 import { callModuleTool, useModuleTool } from "./useModuleTool.js";
-import type { CanvasViewProps } from "./registry.js";
+import { resolveCanvasView, type CanvasViewProps } from "./registry.js";
+
+/** 中核の Tool 面（ADR-0011 決定42）。中核の区画が描くビューはここからデータを取る。 */
+const CORE_TOOL_BASE_URL = "/api/core";
 
 interface SettingField {
   key: string;
@@ -31,6 +34,8 @@ interface SettingsSectionView {
   origin: string;
   originTitle: string;
   fields: SettingField[];
+  /** 項目で表せない中核の区画が指定する描き先（ADR-0011 決定43）。 */
+  view?: string;
   values: Record<string, unknown>;
 }
 
@@ -101,6 +106,7 @@ export function SettingsPanel({ endpoint }: CanvasViewProps): React.ReactElement
       </nav>
 
       <div className="sp-content">
+        <div className={`sp-inner${active?.view ? " sp-inner-wide" : ""}`}>
         {description.error && <div className="fb-error">{description.error}</div>}
         {!active ? null : (
           <>
@@ -116,6 +122,12 @@ export function SettingsPanel({ endpoint }: CanvasViewProps): React.ReactElement
             </h2>
             {active.description && <p className="sp-desc">{active.description}</p>}
 
+            {/* 項目で表せない中核の区画は、宣言された名前のビューを描く（決定43）。
+                モジュールには決定41 がそのまま効く——ここへは来ない */}
+            {active.view ? (
+              <SectionView name={active.view} origin={active.origin} />
+            ) : (
+              <>
             {active.fields.map((field) => (
               <label key={field.key} className="sp-field">
                 <span className="sp-label">
@@ -153,8 +165,11 @@ export function SettingsPanel({ endpoint }: CanvasViewProps): React.ReactElement
               <br />
               番頭はこの場所に書けません（設定を書き換えて自分の権限を広げられないように）
             </p>
+              </>
+            )}
           </>
         )}
+        </div>
       </div>
     </div>
   );
@@ -224,4 +239,20 @@ function renderInput(
       onChange={(e) => onChange(field.type === "number" ? Number(e.target.value) : e.target.value)}
     />
   );
+}
+
+/**
+ * 中核の区画が宣言したビューを描く（決定43）。
+ *
+ * I2: 名前が解決できないときは黙って空白にしない——設定が消えたように見えるため。
+ */
+function SectionView({ name, origin }: { name: string; origin: string }): React.ReactElement {
+  if (origin !== "core") {
+    return <div className="fb-error">モジュールの区画は項目の宣言だけを出せます（決定41）。</div>;
+  }
+  const Component = resolveCanvasView(name);
+  if (!Component) {
+    return <div className="fb-error">この設定を描くビュー「{name}」が見つかりません。</div>;
+  }
+  return <Component endpoint={CORE_TOOL_BASE_URL} />;
 }

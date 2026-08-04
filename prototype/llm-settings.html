@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM・pi 統合管理 — プロトタイプ</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+  /* ===== 当面だけのスタイル ===== */
+  html, body { height: 100%; }
+  body { overflow-y: auto; }
+
+  .ms-page { max-width: 980px; margin: 0 auto; padding: 26px 28px 80px; }
+
+  .ms-head { margin-bottom: 6px; }
+  .ms-title { font-size: 22px; font-weight: 700; letter-spacing: .02em; }
+  .ms-sub { font-size: 13px; color: var(--ink-faint); margin-top: 3px; }
+  .proto-banner { margin-top: 14px; }
+
+  .ms-sec { margin-top: 30px; }
+  .ms-sec-label { font-size: 11px; font-weight: 700; letter-spacing: .08em; color: var(--ink-faint); margin-bottom: 6px; }
+  .ms-sec-title { font-size: 17px; font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+  .ms-sec-lede { font-size: 13px; color: var(--ink-soft); margin: 2px 0 14px; }
+
+  /* --- モック: チャット中のモデル切替（OpenCode風） --- */
+  .chat-mock {
+    max-width: 600px; background: var(--bg); border-radius: 16px;
+    border: 1px solid var(--line); box-shadow: 0 2px 12px rgba(39,36,29,.07);
+  }
+  .chat-mock-stream { padding: 16px 18px; min-height: 80px; }
+  .cm-msg { font-size: 13.5px; margin-bottom: 10px; max-width: 88%; }
+  .cm-msg.you { margin-left: auto; background: var(--surface-dim); border-radius: 10px; padding: 8px 12px; border: 1px solid var(--line); }
+  .cm-ai { display: flex; gap: 9px; }
+  .cm-ai .cm-ai-mark { width: 26px; height: 26px; flex-shrink: 0; border-radius: 7px; background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 13px; }
+  .cm-ai .cm-ai-name { font-size: 11px; color: var(--ink-faint); margin-bottom: 2px; }
+  .cm-ai .cm-ai-body { font-size: 13.5px; background: var(--surface-dim); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+
+  /* コンポーザ（縦積み: 添付 → 入力 → 操作バー） */
+  .oc-composer {
+    display: flex; flex-direction: column; margin: 0 14px 14px;
+    border: 1px solid var(--line-strong); border-radius: 16px;
+    background: var(--surface); box-shadow: 0 1px 4px rgba(39,36,29,.06);
+    position: relative; padding: 10px 12px 8px;
+  }
+  .oc-composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(43,65,98,.12); }
+
+  /* 添付ファイル（サムネイル） */
+  .oc-attachments { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .oc-attachment {
+    width: 92px; height: 70px; flex-shrink: 0; overflow: hidden; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--surface-dim);
+    padding: 8px 9px; display: flex; flex-direction: column; gap: 4px;
+  }
+  .oc-attachment:hover { border-color: var(--line-strong); }
+  .oc-attachment i { display: block; height: 3px; border-radius: 2px; background: var(--ink-faint); opacity: .38; }
+  .oc-attachment i:nth-child(2) { width: 78%; }
+  .oc-attachment i:nth-child(4) { width: 62%; }
+  .oc-attachment i:nth-child(6) { width: 84%; }
+
+  .oc-input {
+    width: 100%; border: none; background: transparent; padding: 2px 2px 10px;
+    font-family: inherit; font-size: 14px; color: var(--ink); outline: none; resize: none;
+    line-height: 1.6; min-height: 44px;
+  }
+  .oc-input::placeholder { color: var(--ink-faint); }
+
+  /* 操作バー */
+  .oc-bar { display: flex; align-items: center; gap: 2px; }
+  .oc-plus {
+    width: 30px; height: 30px; display: grid; place-items: center; border: none; background: transparent;
+    color: var(--ink-faint); font-size: 17px; cursor: pointer; font-family: inherit; flex-shrink: 0;
+    border-radius: 8px; line-height: 1;
+  }
+  .oc-plus:hover { color: var(--ink-soft); background: var(--surface-dim); }
+  .oc-model-btn {
+    display: inline-flex; align-items: center; gap: 7px; border: none; background: transparent;
+    font-family: inherit; font-size: 13px; font-weight: 600; color: var(--ink-soft);
+    padding: 5px 9px; cursor: pointer; white-space: nowrap; flex-shrink: 0; border-radius: 8px;
+  }
+  .oc-model-btn:hover { background: var(--surface-dim); }
+  .oc-model-icon {
+    width: 20px; height: 20px; border-radius: 5px; display: grid; place-items: center;
+    font-size: 11px; font-weight: 800; color: #fff; flex-shrink: 0; line-height: 1;
+  }
+  .oc-model-icon.opencode { background: var(--accent); }
+  .oc-model-icon.anthropic { background: #d97706; }
+  .oc-model-icon.ollama { background: #6d4a9e; }
+  .oc-model-name { font-weight: 600; color: var(--ink); }
+  .oc-model-arrow { font-size: 9px; color: var(--ink-faint); }
+  .oc-send {
+    margin-left: auto; width: 34px; height: 34px; border-radius: 50%; border: none;
+    background: var(--ink); color: var(--surface); display: grid; place-items: center;
+    cursor: pointer; flex-shrink: 0; font-size: 15px; font-family: inherit; line-height: 1;
+  }
+  .oc-send:hover { opacity: .85; }
+  .composer-hint { font-size: 11px; color: var(--ink-faint); margin: 6px 0 0 18px; }
+  .composer-hint b { color: var(--ink-soft); }
+
+  /* --- ピッカー（OpenCode風ドロップダウン） --- */
+  .picker {
+    position: absolute; bottom: calc(100% + 6px); left: 44px; width: 400px; max-height: 380px;
+    background: var(--surface); border: 1px solid var(--line-strong); border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(39,36,29,.16); z-index: 50; display: none; overflow: hidden;
+  }
+  .picker.is-open { display: flex; flex-direction: column; }
+  .picker-search {
+    padding: 8px 10px; border-bottom: 1px solid var(--line); display: flex; gap: 6px; align-items: center;
+  }
+  .picker-search input {
+    flex: 1; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
+    font-size: 12.5px; font-family: inherit; background: var(--surface-dim); color: var(--ink);
+  }
+  .picker-search input:focus { outline: 1px solid var(--accent); }
+  .picker-body { overflow-y: auto; padding: 4px 0 8px; }
+  .picker-group {
+    font-size: 10px; font-weight: 700; color: var(--ink-faint); letter-spacing: .06em;
+    padding: 8px 12px 3px; text-transform: uppercase;
+  }
+  .picker-row {
+    display: block; width: 100%; text-align: left; background: transparent; border: none;
+    font-family: inherit; padding: 6px 12px; cursor: pointer; position: relative;
+  }
+  .picker-row:hover { background: var(--surface-dim); }
+  .picker-row.is-active { background: rgba(43,65,98,.08); }
+  .picker-row .pr-top { display: flex; align-items: center; gap: 7px; }
+  .pr-name { font-weight: 600; font-size: 12.5px; color: var(--ink); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pr-marks { display: flex; gap: 4px; flex-shrink: 0; }
+  .pr-mark { font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--ink-soft); }
+  .pr-mark.def { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .pr-mark.ok-w { background: rgba(29,122,99,.10); color: #1d7a63; border-color: #1d7a63; }
+  .pr-desc { font-size: 11px; color: var(--ink-faint); margin-top: 1px; padding-right: 12px; line-height: 1.45; }
+
+  .tier { font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 999px; border: 1px solid; }
+  .tier.reasoning { color: #7c3aed; border-color: #c084fc; background: rgba(192,132,252,.08); }
+  .tier.standard  { color: #1d4ed8; border-color: #60a5fa; background: rgba(96,165,250,.08); }
+  .tier.fast      { color: #047857; border-color: #34d399; background: rgba(52,211,153,.08); }
+
+  /* --- 既定モデル --- */
+  .defaults-row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .default-card { flex: 1; min-width: 220px; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--surface); }
+  .default-card .dc-role { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; color: #fff; background: var(--accent); padding: 2px 9px; border-radius: 999px; }
+  .default-card.worker .dc-role { background: #6d6354; }
+  .default-card .dc-model { font-family: var(--font-mono); font-size: 13.5px; font-weight: 700; margin: 8px 0 2px; }
+  .default-card .dc-via { font-size: 11.5px; color: var(--ink-faint); }
+
+  /* --- tier定義（番頭が読む判断基準） --- */
+  .tier-cards { display: flex; gap: 10px; flex-wrap: wrap; }
+  .tier-card { flex: 1; min-width: 240px; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--surface); }
+  .tc-head { display: flex; align-items: center; gap: 8px; }
+  .tc-head .tc-name { font-size: 13px; font-weight: 700; }
+  .tier-card textarea {
+    width: 100%; margin-top: 8px; font-family: inherit; font-size: 12px; line-height: 1.55;
+    padding: 5px 9px; border: 1px solid var(--line); border-radius: 7px; box-sizing: border-box;
+    background: var(--surface-dim); color: var(--ink-soft); min-height: 54px; resize: vertical; }
+  .tier-card textarea:focus { outline: 2px solid rgba(43,65,98,.25); outline-offset: 1px; background: var(--surface); color: var(--ink); }
+  .tc-pick { font-size: 11px; color: var(--ink-faint); margin-top: 7px; }
+  .tc-pick b { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-soft); font-weight: 700; }
+
+  /* --- 解決シミュレータ --- */
+  .resolver { margin-top: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 12px 14px; }
+  .resolver-head { font-size: 11px; font-weight: 700; letter-spacing: .06em; color: var(--ink-faint); margin-bottom: 10px; }
+  .resolver-row { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 7px; }
+  .rs-label { font-size: 11px; font-weight: 700; color: var(--ink-faint); width: 34px; flex-shrink: 0; padding-top: 5px; }
+  .rs-opts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .rs-opt {
+    font-family: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer;
+    border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink-soft);
+    padding: 4px 11px; border-radius: 999px; }
+  .rs-opt:hover:not(.on) { background: var(--surface-dim); }
+  .rs-opt.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .resolver-out { margin-top: 11px; padding: 10px 12px; border-radius: 8px; background: var(--surface-dim); border: 1px solid var(--line); font-size: 12.5px; }
+  .ro-model { font-family: var(--font-mono); font-weight: 700; font-size: 13.5px; }
+  .ro-line { font-size: 11.5px; color: var(--ink-faint); margin-top: 4px; }
+  .ro-line b { color: var(--ink-soft); font-family: var(--font-mono); font-weight: 700; }
+  .resolver-out.none { color: var(--c-fail); font-weight: 700; }
+  .ro-drop { color: var(--c-escalate); }
+
+  /* --- 職人が使えるモデル（列挙） --- */
+  .worker-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .worker-chip {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+    border: 1px solid var(--line-strong); border-radius: 999px; padding: 4px 11px;
+    background: var(--surface); color: var(--ink-soft); }
+  .worker-chip .tier { margin-right: 2px; }
+  .worker-empty { font-size: 12.5px; color: var(--ink-faint); }
+
+  /* --- プロバイダ --- */
+  .provider-card { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); margin-bottom: 12px; overflow: hidden; }
+  .provider-head { display: flex; align-items: center; gap: 12px; padding: 14px 16px; cursor: pointer; }
+  .provider-head:hover { background: var(--surface-dim); }
+  .provider-mark { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; background: var(--surface-dim); border: 1px solid var(--line-strong); font-weight: 700; font-size: 14px; flex-shrink: 0; }
+  .provider-name { font-size: 15px; font-weight: 700; }
+  .provider-url { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-faint); margin-top: 1px; }
+  .provider-meta { margin-left: auto; display: flex; align-items: center; gap: 14px; font-size: 11.5px; color: var(--ink-soft); }
+  .provider-toggle { color: var(--ink-faint); font-size: 12px; }
+  .state-dot { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 700; }
+  .state-dot::before { content: ""; width: 8px; height: 8px; border-radius: 999px; background: var(--c-eval); }
+  .state-dot.off::before { background: var(--ink-faint); }
+
+  .provider-body { display: none; padding: 0 16px 14px; border-top: 1px solid var(--line); }
+  .provider-body.is-open { display: block; }
+
+  .sub-label { font-size: 11px; font-weight: 700; letter-spacing: .06em; color: var(--ink-faint); margin: 14px 0 7px; display: flex; align-items: center; gap: 8px; }
+  .sub-label .count { font-weight: 700; color: var(--ink-soft); background: var(--surface-dim); border: 1px solid var(--line); padding: 0 6px; border-radius: 999px; font-size: 9.5px; }
+
+  /* キー行 */
+  .key-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; background: var(--surface); }
+  .key-row.is-limited { background: rgba(190,120,40,.05); border-color: #e0a95a; }
+  .key-rank { font-size: 11px; font-weight: 800; color: var(--ink-faint); width: 13px; text-align: center; flex-shrink: 0; }
+  .key-move { display: flex; flex-direction: column; gap: 1px; flex-shrink: 0; }
+  .key-move button {
+    appearance: none; font-family: inherit; font-size: 8px; line-height: 1; cursor: pointer;
+    border: 1px solid var(--line); background: var(--surface); color: var(--ink-faint);
+    width: 18px; height: 12px; border-radius: 3px; padding: 0; }
+  .key-move button:hover:not(:disabled) { background: var(--surface-dim); color: var(--ink); }
+  .key-move button:disabled { opacity: .3; cursor: default; }
+  .key-scope { display: flex; gap: 3px; flex-shrink: 0; }
+  .key-scope span {
+    font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--line); color: var(--ink-faint); background: var(--surface); user-select: none; }
+  .key-scope span.on { border-color: var(--accent); color: var(--accent); background: rgba(43,65,98,.08); }
+  .key-scope span.on.w { border-color: #1d7a63; color: #1d7a63; background: rgba(29,122,99,.08); }
+  .key-name { font-size: 12.5px; font-weight: 700; flex-shrink: 0; min-width: 88px; }
+  .key-tag { font-size: 10px; color: var(--ink-soft); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 6px; background: var(--surface-dim); }
+  .key-val { font-family: var(--font-mono); font-size: 12px; color: var(--ink-soft); flex: 1; cursor: pointer; user-select: none; }
+  .key-val.masked { letter-spacing: .08em; color: var(--ink-faint); }
+  .key-status { font-size: 11px; font-weight: 700; flex-shrink: 0; }
+  .key-status.ok { color: var(--c-eval); }
+  .key-status.untested { color: var(--c-escalate); }
+  .key-status.limited { color: #a05a12; }
+  .key-status .ks-sub { font-weight: 400; color: var(--ink-faint); }
+  .key-actions { display: flex; gap: 4px; }
+  .icon-btn { appearance: none; font-family: inherit; border: 1px solid transparent; background: transparent; color: var(--ink-faint); font-size: 12px; padding: 3px 7px; border-radius: 6px; cursor: pointer; }
+  .icon-btn:hover { background: var(--surface-dim); color: var(--ink); border-color: var(--line); }
+  .icon-btn.danger:hover { color: var(--c-fail); border-color: var(--c-fail); }
+  .key-note { font-size: 11px; color: var(--ink-faint); line-height: 1.6; margin: 2px 0 4px 2px; }
+  .key-note b { color: var(--ink-soft); font-family: var(--font-mono); font-size: 11.5px; }
+  .add-key-btn { appearance: none; font-family: inherit; font-size: 12px; font-weight: 700; border: 1px dashed var(--line-strong); background: transparent; color: var(--ink-faint); padding: 6px 12px; border-radius: 7px; cursor: pointer; }
+  .add-key-btn:hover { background: var(--surface-dim); color: var(--ink-soft); }
+
+  /* モデル行 */
+  .model-row { border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; margin-bottom: 8px; background: var(--surface); }
+  .model-top { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+  .model-id { font-family: var(--font-mono); font-size: 13px; font-weight: 700; }
+  .model-flags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .model-main { flex: 1; min-width: 200px; }
+  .model-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+
+  .role-toggle { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line-strong); border-radius: 999px; padding: 3px 9px; cursor: pointer; font-size: 11.5px; font-weight: 700; color: var(--ink-soft); background: var(--surface); user-select: none; }
+  .role-toggle .rt-led { width: 8px; height: 8px; border-radius: 999px; background: var(--line-strong); }
+  .role-toggle.on { background: rgba(43,65,98,.08); border-color: var(--accent); color: var(--accent); }
+  .role-toggle.on .rt-led { background: var(--accent); }
+  .role-toggle.worker.on { background: rgba(29,122,99,.08); border-color: #1d7a63; color: #1d7a63; }
+  .role-toggle.worker.on .rt-led { background: #1d7a63; }
+
+  .role-default { font-size: 10.5px; font-weight: 700; padding: 3px 9px; border-radius: 999px; border: 1px solid; cursor: pointer; }
+  .set-h { border-color: var(--accent); color: var(--accent); background: var(--surface-dim); }
+  .set-h.is-on { background: var(--accent); color: #fff; }
+  .set-w { border-color: #1d7a63; color: #1d7a63; background: var(--surface-dim); }
+  .set-w.is-on { background: #1d7a63; color: #fff; }
+
+  .usable-badge { font-size: 9.5px; font-weight: 700; padding: 1px 6px; border-radius: 999px; }
+  .usable-badge.host { background: var(--accent); color: #fff; }
+  .usable-badge.worker { background: #1d7a63; color: #fff; }
+
+  .model-desc { margin-top: 8px; display: flex; gap: 8px; align-items: flex-start; }
+  .model-desc-label { font-size: 10.5px; font-weight: 700; color: var(--ink-faint); letter-spacing: .04em; flex-shrink: 0; padding-top: 5px; width: 64px; }
+  .model-desc textarea {
+    flex: 1; font-family: inherit; font-size: 12px; line-height: 1.55; padding: 5px 9px;
+    border: 1px solid var(--line); border-radius: 7px; background: var(--surface-dim); color: var(--ink-soft); min-height: 38px; resize: vertical; width: 100%; }
+  .model-desc textarea:focus { outline: 2px solid rgba(43,65,98,.25); outline-offset: 1px; background: var(--surface); color: var(--ink); }
+
+  .add-model-btn { appearance: none; font-family: inherit; font-size: 12px; font-weight: 700; border: 1px dashed var(--line-strong); background: transparent; color: var(--ink-faint); padding: 7px 12px; border-radius: 7px; cursor: pointer; margin-top: 4px; }
+  .add-model-btn:hover { background: var(--surface-dim); color: var(--ink-soft); }
+
+  /* --- pi coding agent 接続（同一画面の裏側・分離しない） --- */
+  .pi-card { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 14px 16px; }
+  .pi-grid { display: grid; grid-template-columns: 140px 1fr; gap: 10px 18px; font-size: 12.5px; }
+  .pi-k { color: var(--ink-faint); font-weight: 700; align-self: center; }
+  .pi-v { font-family: var(--font-mono); font-size: 12px; color: var(--ink-soft); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .pi-v .key-link { color: var(--accent); cursor: pointer; }
+
+  .btn { font-family: inherit; font-size: 12.5px; }
+  .warn-note { margin-bottom: 14px; }
+
+  @media (max-width: 720px) {
+    .ms-page { padding: 18px 16px 60px; }
+    .pi-grid { grid-template-columns: 1fr; gap: 3px 0; }
+    .pi-k { margin-top: 8px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark">番</span>
+      <span>
+        <span class="brand-name">banto</span>
+        <span class="brand-sub">LLM・pi 統合管理（プロトタイプ）</span>
+      </span>
+    </a>
+  </div>
+</header>
+
+<main class="ms-page">
+
+  <div class="ms-head">
+    <h1 class="ms-title">LLM・pi 統合管理</h1>
+    <p class="ms-sub">プロバイダ・キー・モデル・既定・pi coding agent 接続を1画面で。LLM管理とpi管理は分けない。</p>
+  </div>
+  <div class="proto-banner">
+    プロトタイプ（ハードコード・mock）。表示位置は設定面の「LLMエンドポイント」「モデル自動選定」を統合した想定。
+    <b>話の途中でもモデルを選べる</b>部分を上部に、<b>職人が使えるモデルの列挙</b>を中部に置いている。
+  </div>
+
+  <!-- ===== 1. チャット中のモデル切替（preview） ===== -->
+  <section class="ms-sec">
+    <div class="ms-sec-label">① チャットの途中でモデルを変える</div>
+    <h2 class="ms-sec-title">話しながらモデルを選べる</h2>
+    <p class="ms-sec-lede">下の <code>🤖 …</code> チップを押すと、モデル一覧（説明文付き）が出て、その場で切り替えられます。番頭は「どういうときに使うか」を見て選べます。</p>
+
+    <div class="chat-mock">
+      <div class="chat-mock-stream">
+        <div class="cm-msg you">この画面、職人に任せていい？or自分で深掘りするか判断して。</div>
+        <div class="cm-ai">
+          <div class="cm-ai-mark">番</div>
+          <div>
+            <div class="cm-ai-name">番頭 · opencode / opus</div>
+            <div class="cm-ai-body">判断待ちカード3件のうち、2件は方針選択（D9で私が裁ける）・1件は外部依存の壁です（こちらはあなたに上げます）。</div>
+          </div>
+        </div>
+      </div>
+      <div class="oc-composer" id="ocComposer">
+        <div class="oc-attachments">
+          <div class="oc-attachment" title="添付: 判断待ちカード一覧.md">
+            <i></i><i></i><i></i><i></i><i></i><i></i>
+          </div>
+        </div>
+        <textarea class="oc-input" rows="2" placeholder="Ask anything, / for commands, @ for context..."></textarea>
+        <div class="oc-bar">
+          <button class="oc-plus" title="ファイルを追加">＋</button>
+          <button class="oc-model-btn" id="pickerTrigger">
+            <span class="oc-model-icon opencode" id="modelIcon">◎</span>
+            <span class="oc-model-name" id="pickerCurName">opus</span>
+            <span class="oc-model-arrow">▾</span>
+          </button>
+          <button class="oc-send" title="送る">↑</button>
+        </div>
+        <div class="picker" id="picker">
+          <div class="picker-search">
+            <input type="text" placeholder="モデルを検索" id="pickerSearch" />
+          </div>
+          <div class="picker-body" id="pickerBody"></div>
+        </div>
+      </div>
+      <p class="composer-hint">
+        <b>切替は次の発言から効く。</b> 途中の会話履歴はそのまま。職人に渡すモデルは <a href="#worker-list" style="color:var(--accent)">職人が使えるモデル</a> で絞った一覧からも選べる。
+      </p>
+    </div>
+  </section>
+
+  <!-- ===== 2. 既定 ===== -->
+  <section class="ms-sec">
+    <div class="ms-sec-label">② 既定</div>
+    <h2 class="ms-sec-title">既定</h2>
+    <p class="ms-sec-lede">番頭は連続した会話なので<b>具体モデル</b>を持つ。職人はタスクごとに起動するので<b>tierで指定</b>し、具体モデルは下の登録から解決する。</p>
+    <div class="defaults-row" id="defaultsRow"></div>
+  </section>
+
+  <!-- ===== 3. tier と 制約 ===== -->
+  <section class="ms-sec" id="tiers">
+    <div class="ms-sec-label">③ 番頭が職人へ振るときの判断基準</div>
+    <h2 class="ms-sec-title">tier と 制約</h2>
+    <p class="ms-sec-lede">
+      番頭が出すのはモデル名ではなく <b>(tier, 制約)</b>。tierは難度の軸、制約は候補を絞る条件で、互いに直交する。
+      モデルが入れ替わっても番頭の判断はそのまま使え、「なぜこれが選ばれたか」を後から追える。
+    </p>
+    <div class="tier-cards" id="tierCards"></div>
+
+    <div class="resolver">
+      <div class="resolver-head">解決の確認（番頭の出力 → 実際に動くモデルとキー）</div>
+      <div class="resolver-row"><span class="rs-label">tier</span><div class="rs-opts" id="rsTiers"></div></div>
+      <div class="resolver-row"><span class="rs-label">制約</span><div class="rs-opts" id="rsCons"></div></div>
+      <div class="resolver-row"><span class="rs-label">役割</span><div class="rs-opts" id="rsScope"></div></div>
+      <div class="resolver-out" id="rsOut"></div>
+    </div>
+  </section>
+
+  <!-- ===== 4. 職人が使えるモデル（列挙） ===== -->
+  <section class="ms-sec" id="worker-list">
+    <div class="ms-sec-label">④ 職人が使ってよいモデル</div>
+    <h2 class="ms-sec-title">職人に許したモデル一覧</h2>
+    <p class="ms-sec-lede">下のプロバイダ各モデルの「職人OK」をonにしたものがここに集まります。★は各tierの第一候補。制約が付くと、同じtierの中でここから落ちることがあります。</p>
+    <div class="worker-list" id="workerChips"></div>
+  </section>
+
+  <!-- ===== 5. プロバイダ + キー + モデル ===== -->
+  <section class="ms-sec">
+    <div class="ms-sec-label">⑤ プロバイダ・キー・モデル</div>
+    <h2 class="ms-sec-title">プロバイダ</h2>
+    <p class="ms-sec-lede">
+      キーは<b>上から順に消費</b>し、上限に来たら次へ落ちる。並び順と役割の許可は<b>設定</b>、上限かどうかは<b>実行時状態</b>なので保存しない（D3）。
+      モデル側の説明文は、番頭が読むものではなく<b>どのtierに置くかを人間が決める手がかり</b>。
+    </p>
+    <div id="providers"></div>
+  </section>
+
+  <!-- ===== 6. pi coding agent 接続（分離しない） ===== -->
+  <section class="ms-sec">
+    <div class="ms-sec-label">⑥ pi coding agent 接続（この画面の裏側）</div>
+    <h2 class="ms-sec-title">pi coding agent 接続</h2>
+    <p class="ms-sec-lede" style="color:var(--ink-soft)">別画面ではなく、モデル管理と同じ場所に置く。上のプロバイダ・モデルは pi の auth.json / models.json と接続口（opencode endpoint 等）の上に乗る。</p>
+    <div class="pi-card">
+      <div class="pi-grid">
+        <div class="pi-k">opencode endpoint</div>
+        <div class="pi-v">http://localhost:4096 <span class="state-dot">接続済</span> <button class="btn btn--ghost" style="font-size:11px;padding:3px 9px;">再接続</button></div>
+        <div class="pi-k">auth.json</div>
+        <div class="pi-v">~/.pi/agent/auth.json <button class="btn btn--ghost" style="font-size:11px;padding:3px 9px;">鍵を追加</button></div>
+        <div class="pi-k">models.json</div>
+        <div class="pi-v">~/.pi/agent/models.json <button class="btn btn--ghost" style="font-size:11px;padding:3px 9px;">再読込</button></div>
+        <div class="pi-k">settings.json</div>
+        <div class="pi-v"><span class="key-link">provider: opencode-go</span> · <span class="key-link">model: opus</span> <span style="color:var(--ink-faint)">（←は②の番頭既定と同期）</span></div>
+        <div class="pi-k">pi プロセス</div>
+        <div class="pi-v">badlogic/pi-mono · v0.3.x <span class="state-dot">稼働</span></div>
+      </div>
+      <div class="warn-note" style="margin-top:14px;margin-bottom:0;">⚠ <b>設計未決</b>: キーの保存方式（sops / OSキーチェーン / 暗号化ファイル）は ADR 待ち（D1）。この画面は既存 pi の auth.json と整合。</div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+// ===== mock data =====
+
+// tier の説明文 ＝ 番頭が「このタスクはどこか」を決めるときに読む判断基準。
+// モデルごとの説明文（desc）とは役割が違う。あちらは人間が「どのtierに置くか」を決める手がかり。
+const TIERS = {
+  reasoning: { label: "高精度", cls: "reasoning",
+    desc: "設計判断・仕様の壁・外に出す文面。読み違えると後戻りが大きいもの。コスト高。" },
+  standard: { label: "通常", cls: "standard",
+    desc: "調査から実装まで一貫して任せる通常作業。迷ったらここ。" },
+  fast: { label: "高速", cls: "fast",
+    desc: "要約・分類・カード選別など、間違えても安く作り直せるもの。長文は不得意。" },
+};
+
+// 制約 ＝ 難度の軸ではなく、候補を絞り込む条件。tierと直交する。
+const CONSTRAINTS = {
+  vision: { label: "画像を読む", hint: "スクショ・図をそのまま渡す" },
+  local:  { label: "外に出さない", hint: "ローカル実行のみ。機密を含む" },
+  free:   { label: "有料キーを使わない", hint: "無料枠・ローカルのみ" },
+};
+
+const data = {
+  defaults: {
+    host: { p: "opencode-go", m: "opus" }, // 番頭は連続した会話なので具体モデルで持つ
+    workerTier: "standard",                // 職人は tier で指定し、registry が解決する
+  },
+  // tierごとの第一候補。制約で外れたら同tierの他モデルに落ちる。
+  picks: {
+    reasoning: { p: "opencode-go", m: "opus" },
+    standard:  { p: "opencode-go", m: "sonnet" },
+    fast:      { p: "opencode-go", m: "haiku" },
+  },
+  providers: [
+    {
+      id: "opencode-go", cls: "opencode", mark: "◎", name: "opencode endpoint", url: "http://localhost:4096",
+      state: "on", local: false,
+      // keys[] の並び順が消費順（上から）。host/worker はそのキーを使ってよい役割。
+      // state は実行時状態（設定ではない）: ok / limited（上限, untilまで待機） / untested
+      keys: [
+        { name: "opencode°default", tag: "endpoint", val: "http://localhost:4096", masked: "••••••:4096", host: true, worker: true, state: "ok" },
+      ],
+      models: [
+        { id: "opus", tier: "reasoning", vision: true, free: false, hostUsable: true, workerUsable: true, desc: "重い設計判断・仕様の壁・POへの提案文面。コスト高・品質最大。番頭の難所はここ。" },
+        { id: "sonnet", tier: "standard", vision: true, free: false, hostUsable: true, workerUsable: true, desc: "通常作業の主軸。調査〜実装を一貫して任せられる。" },
+        { id: "haiku", tier: "fast", vision: false, free: false, hostUsable: true, workerUsable: true, desc: "軽量・要約・分類・カード選別。コスト最小。長文は不得意。" },
+        { id: "deepseek-v4-flash-free", tier: "fast", vision: false, free: true, hostUsable: true, workerUsable: false, desc: "無料の高速モデル。拾い読み・雑務用。職人には渡さない（品質ブレ）。" },
+      ]
+    },
+    {
+      id: "anthropic", cls: "anthropic", mark: "A", name: "Anthropic API（直）", url: "https://api.anthropic.com",
+      state: "on", local: false,
+      keys: [
+        { name: "anthropic°work", tag: "work", val: "sk-ant-yyyyy …work", masked: "sk-ant-•••••-••••-work", host: true, worker: false, state: "limited", until: "12:40" },
+        { name: "anthropic°personal", tag: "personal", val: "sk-ant-xxxxx …tjst", masked: "sk-ant-•••••-••••-tjst", host: false, worker: true, state: "ok" },
+        { name: "anthropic°backup", tag: "backup", val: "sk-ant-zzz …old", masked: "sk-ant-•••••-••••-old", host: true, worker: true, state: "untested" },
+      ],
+      models: [
+        { id: "claude-opus-5", tier: "reasoning", vision: true, free: false, hostUsable: true, workerUsable: false, desc: "Anthropic直のopus。opencode経由と別鍵で並行運用。番頭用。" },
+        { id: "claude-sonnet-5", tier: "standard", vision: true, free: false, hostUsable: false, workerUsable: true, desc: "直叩きsonnet。opencode経由が不調のとき職人の退避先。" },
+      ]
+    },
+    {
+      id: "ollama", cls: "ollama", mark: "L", name: "Local LLM (Ollama)", url: "http://localhost:11434",
+      state: "on", local: true,
+      keys: [
+        { name: "ollama°local", tag: "no-key", val: "（認証不要）", masked: "（認証不要）", host: true, worker: true, state: "ok" },
+      ],
+      models: [
+        { id: "qwen2.5-coder", tier: "fast", vision: false, free: true, hostUsable: false, workerUsable: true, desc: "ローカル・オフライン。コード補完と職人の安い繰り返し作業。外に出ない。" },
+        { id: "llama3.1", tier: "fast", vision: false, free: true, hostUsable: false, workerUsable: true, desc: "ローカル要約系。コストゼロ。品質は劣るが失敗が外に洩れない。" },
+      ]
+    },
+  ]
+};
+
+// ===== 解決（registry の中核） =====
+// 番頭は「モデル名」ではなく (tier, 制約) を出す。ここが具体モデルとキーに落とす。
+function satisfies(p, m, cons){
+  if(cons.vision && !m.vision) return false;
+  if(cons.local  && !p.local)  return false;
+  if(cons.free   && !m.free)   return false;
+  return true;
+}
+
+// (tier, 制約, 役割) → { p, m } | null
+function resolveModel(tier, cons, scope){
+  const usable = scope==='host' ? 'hostUsable' : 'workerUsable';
+  const cands = [];
+  data.providers.forEach(p => p.models.forEach(m => {
+    if(!m[usable] || m.tier!==tier) return;
+    if(!satisfies(p, m, cons)) return;
+    cands.push({ p, m });
+  }));
+  if(!cands.length) return null;
+  const pick = data.picks[tier];
+  return cands.find(c => c.p.id===pick.p && c.m.id===pick.m) || cands[0];
+}
+
+// プロバイダの鍵列を上から見て、役割が許され、いま生きている最初のキー
+function resolveKey(p, scope){
+  return p.keys.find(k => k[scope] && k.state!=='limited') || null;
+}
+
+// ===== render providers =====
+function tierBadge(t){ const t_=TIERS[t]; return `<span class="tier ${t_.cls}">${t_.label}</span>`; }
+function keyStatus(k){
+  if(k.state==='limited') return `<span class="key-status limited">上限 <span class="ks-sub">${k.until}まで</span></span>`;
+  if(k.state==='untested') return `<span class="key-status untested">未検証</span>`;
+  return `<span class="key-status ok">有効</span>`;
+}
+
+function renderProviders(){
+  const root = document.getElementById('providers');
+  root.innerHTML = data.providers.map((p, pi) => {
+    const workerCount = p.models.filter(m=>m.workerUsable).length;
+    return `
+    <div class="provider-card">
+      <div class="provider-head" onclick="toggleProvider(${pi})">
+        <div class="provider-mark">${p.mark}</div>
+        <div>
+          <div class="provider-name">${p.name}</div>
+          <div class="provider-url">${p.url}</div>
+        </div>
+        <div class="provider-meta">
+          <span>${p.models.length} モデル</span>
+          <span>職人OK ${workerCount}</span>
+          <span class="state-dot ${p.state==='on'?'':'off'}">${p.state==='on'?'接続済':'未接続'}</span>
+          <span class="provider-toggle" id="pt-${pi}">▶</span>
+        </div>
+      </div>
+      <div class="provider-body" id="pb-${pi}">
+        <div class="sub-label">API キー <span class="count">${p.keys.length}</span> <button class="add-key-btn" style="margin-left:auto;" onclick="addKey(${pi})">＋ キーを追加</button></div>
+        ${p.keys.map((k, ki) => `
+          <div class="key-row ${k.state==='limited'?'is-limited':''}">
+            <span class="key-rank">${ki+1}</span>
+            <span class="key-move">
+              <button title="上へ" onclick="moveKey(${pi},${ki},-1)" ${ki===0?'disabled':''}>▲</button>
+              <button title="下へ" onclick="moveKey(${pi},${ki},1)" ${ki===p.keys.length-1?'disabled':''}>▼</button>
+            </span>
+            <span class="key-name">${k.name}</span>
+            <span class="key-tag">${k.tag}</span>
+            <span class="key-scope">
+              <span class="${k.host?'on':''}" onclick="toggleKeyScope(${pi},${ki},'host')" title="番頭がこのキーを使ってよい">番頭</span>
+              <span class="w ${k.worker?'on':''}" onclick="toggleKeyScope(${pi},${ki},'worker')" title="職人がこのキーを使ってよい">職人</span>
+            </span>
+            <span class="key-val masked" id="kv-${pi}-${ki}" onclick="toggleKey(${pi},${ki})">${k.masked}</span>
+            ${keyStatus(k)}
+            <span class="key-actions">
+              <button class="icon-btn" title="接続テスト" onclick="testKey(${pi},${ki})">テスト</button>
+              <button class="icon-btn danger" title="削除" onclick="delKey(${pi},${ki})">✕</button>
+            </span>
+          </div>
+        `).join('')}
+        <div class="key-note">上から順に消費。役割が許されていて上限に来ていない最初のキーを使う。
+          いま番頭は <b>${(resolveKey(p,'host')||{}).name || '該当なし'}</b>、職人は <b>${(resolveKey(p,'worker')||{}).name || '該当なし'}</b>。</div>
+
+        <div class="sub-label">モデル <span class="count">${p.models.length}</span></div>
+        ${p.models.map((m, mi) => renderModel(p, m, pi, mi)).join('')}
+        <button class="add-model-btn" onclick="addModel(${pi})">＋ カスタムモデルを追加（id・tier・説明文を入力）</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function capBadge(txt){
+  return `<span class="tier" style="color:#a05a12;border-color:#e0a95a;background:rgba(224,169,90,.08);">${txt}</span>`;
+}
+
+function renderModel(p, m, pi, mi){
+  const isHostDef = data.defaults.host.p===p.id && data.defaults.host.m===m.id;
+  const isPick = data.picks[m.tier].p===p.id && data.picks[m.tier].m===m.id;
+  return `
+  <div class="model-row">
+    <div class="model-top">
+      <div class="model-main">
+        <span class="model-id">${m.id}</span>
+        ${tierBadge(m.tier)}
+        ${m.vision ? capBadge('vision') : ''}
+        ${p.local ? capBadge('ローカル') : ''}
+        ${m.free ? capBadge('無料') : ''}
+      </div>
+      <div class="model-actions">
+        <span class="role-toggle ${m.hostUsable?'on':''}" onclick="toggleHost(${pi},${mi})" title="番頭が使ってよい"><span class="rt-led"></span>番頭</span>
+        <span class="role-toggle worker ${m.workerUsable?'on':''}" onclick="toggleWorker(${pi},${mi})" title="職人が使ってよい"><span class="rt-led"></span>職人OK</span>
+        <button class="role-default set-h ${isHostDef?'is-on':''}" onclick="setDef('host',${pi},${mi})" title="番頭の既定モデルにする">番頭既定</button>
+        <button class="role-default set-w ${isPick?'is-on':''}" onclick="setPick(${pi},${mi})" title="${TIERS[m.tier].label}tierの第一候補にする">${TIERS[m.tier].label}の第一候補</button>
+      </div>
+    </div>
+    <div class="model-desc">
+      <span class="model-desc-label">どのtierか</span>
+      <textarea placeholder="このモデルをどのtierに置くかを人間が決めるための手がかり（番頭が読むのは③のtier説明）" onchange="setDesc(${pi},${mi},this.value)">${m.desc}</textarea>
+    </div>
+  </div>`;
+}
+
+function toggleProvider(pi){
+  const b=document.getElementById('pb-'+pi), t=document.getElementById('pt-'+pi);
+  const open=b.classList.toggle('is-open');
+  t.textContent = open ? '▼' : '▶';
+}
+function toggleKey(pi,ki){
+  const el=document.getElementById(`kv-${pi}-${ki}`);
+  const k=data.providers[pi].keys[ki];
+  el.classList.toggle('masked');
+  el.textContent = el.classList.contains('masked') ? k.masked : k.val;
+}
+// 上限は実行時状態。テストは「いま生きているか」の確認であって設定変更ではない。
+function testKey(pi,ki){
+  data.providers[pi].keys[ki].state='ok';
+  delete data.providers[pi].keys[ki].until;
+  rerenderAll(pi);
+}
+function moveKey(pi,d,dir){
+  const ks=data.providers[pi].keys, j=d+dir;
+  if(j<0 || j>=ks.length) return;
+  [ks[d], ks[j]] = [ks[j], ks[d]];
+  rerenderAll(pi);
+}
+function toggleKeyScope(pi,ki,scope){
+  const ks=data.providers[pi].keys, k=ks[ki];
+  if(k[scope] && !ks.some((o,i)=>i!==ki && o[scope])){
+    alert(`このプロバイダで${scope==='host'?'番頭':'職人'}が使えるキーが無くなります。先に別のキーを許可してください。`);
+    return;
+  }
+  k[scope] = !k[scope];
+  rerenderAll(pi);
+}
+function delKey(pi,ki){
+  if(data.providers[pi].keys.length<=1) { alert('プロバイダに最低1つのキーは必要です'); return; }
+  data.providers[pi].keys.splice(ki,1);
+  rerenderAll(pi);
+}
+function addKey(pi){
+  const name = prompt('キー名（例: anthropic°work）');
+  if(!name) return;
+  data.providers[pi].keys.push({ name, tag:'new', val:'sk-new-••••', masked:'sk-••••-new', host:true, worker:true, state:'untested' });
+  rerenderAll(pi);
+}
+
+// 番頭既定 / tierの第一候補になっているモデルは「使用可」から外せない。
+function toggleUsable(scope,pi,mi){
+  const p=data.providers[pi], m=p.models[mi];
+  const key = scope==='host' ? 'hostUsable' : 'workerUsable';
+  if(m[key]){
+    if(scope==='host' && data.defaults.host.p===p.id && data.defaults.host.m===m.id){
+      alert(`${m.id} は番頭の既定モデルです。先に別のモデルを既定にしてください。`); return;
+    }
+    if(scope==='worker' && data.picks[m.tier].p===p.id && data.picks[m.tier].m===m.id){
+      alert(`${m.id} は「${TIERS[m.tier].label}」tierの第一候補です。先に別のモデルを第一候補にしてください。`); return;
+    }
+  }
+  m[key] = !m[key];
+  if(scope==='host') syncCurSel();
+  rerenderAll(pi);
+}
+function toggleHost(pi,mi){ toggleUsable('host',pi,mi); }
+function toggleWorker(pi,mi){ toggleUsable('worker',pi,mi); }
+
+// チャットで選択中のモデルが番頭で使えなくなったら、番頭の既定に戻す。
+function syncCurSel(){
+  const p=data.providers.find(x=>x.id===curSel.p);
+  const m=p && p.models.find(x=>x.id===curSel.m);
+  if(m && m.hostUsable) return;
+  pickModel(data.defaults.host.p, data.defaults.host.m);
+}
+function setDef(scope,pi,mi){
+  const p=data.providers[pi], m=p.models[mi];
+  m.hostUsable = true;
+  data.defaults.host = { p:p.id, m:m.id };
+  rerenderAll(pi);
+}
+function setPick(pi,mi){
+  const p=data.providers[pi], m=p.models[mi];
+  m.workerUsable = true;
+  data.picks[m.tier] = { p:p.id, m:m.id };
+  rerenderAll(pi);
+}
+function setDesc(pi,mi,v){ data.providers[pi].models[mi].desc=v; refreshPicker(); }
+function setTierDesc(t,v){ TIERS[t].desc=v; }
+function addModel(pi){
+  const id = prompt('モデル id（例: claude-haiku-4-5）'); if(!id) return;
+  data.providers[pi].models.push({ id, tier:'standard', vision:false, free:false, hostUsable:true, workerUsable:false, desc:'' });
+  rerenderAll(pi);
+}
+function rerenderAll(pi){
+  renderProviders();
+  if(pi!=null){
+    document.getElementById('pb-'+pi).classList.add('is-open');
+    document.getElementById('pt-'+pi).textContent='▼';
+  }
+  renderDefaults(); renderTiers(); renderResolver(); refreshWorkerChips(); refreshPicker();
+}
+
+// ===== ② 既定 =====
+function renderDefaults(){
+  const hp = data.providers.find(x=>x.id===data.defaults.host.p);
+  const hm = hp && hp.models.find(x=>x.id===data.defaults.host.m);
+  const wt = data.defaults.workerTier;
+  const r  = resolveModel(wt, {}, 'worker');
+  document.getElementById('defaultsRow').innerHTML = `
+    <div class="default-card host">
+      <span class="dc-role">番頭</span>
+      <div class="dc-model">${hp?hp.id:'?'} / ${hm?hm.id:'?'}</div>
+      <div class="dc-via">具体モデルで固定 · tier: ${hm?TIERS[hm.tier].label:'-'} · キー: ${hp?((resolveKey(hp,'host')||{}).name||'該当なし'):'-'}</div>
+    </div>
+    <div class="default-card worker">
+      <span class="dc-role">職人</span>
+      <div class="dc-model">tier: ${TIERS[wt].label}</div>
+      <div class="dc-via">${r ? `制約なしのとき → ${r.p.id} / ${r.m.id} · キー: ${(resolveKey(r.p,'worker')||{}).name||'該当なし'}` : '<span style="color:var(--c-fail)">解決できるモデルがありません</span>'}</div>
+    </div>`;
+}
+
+// ===== ③ tier定義 + 解決シミュレータ =====
+function renderTiers(){
+  document.getElementById('tierCards').innerHTML = Object.keys(TIERS).map(t=>{
+    const pick = data.picks[t];
+    const isWorkerDefault = data.defaults.workerTier===t;
+    return `
+    <div class="tier-card">
+      <div class="tc-head">
+        ${tierBadge(t)}
+        <span class="tc-name">${TIERS[t].label}</span>
+        <button class="role-default set-w ${isWorkerDefault?'is-on':''}" style="margin-left:auto;"
+          onclick="setWorkerTier('${t}')" title="職人の既定tierにする">職人の既定</button>
+      </div>
+      <textarea onchange="setTierDesc('${t}',this.value)"
+        placeholder="番頭がタスクをこのtierに入れる基準">${TIERS[t].desc}</textarea>
+      <div class="tc-pick">第一候補: <b>${pick.p} / ${pick.m}</b></div>
+    </div>`;
+  }).join('');
+}
+function setWorkerTier(t){ data.defaults.workerTier=t; renderDefaults(); renderTiers(); }
+
+const rsState = { tier: 'standard', cons: {}, scope: 'worker' };
+function rsToggleCon(c){ rsState.cons[c] = !rsState.cons[c]; renderResolver(); }
+function rsSetTier(t){ rsState.tier = t; renderResolver(); }
+function rsSetScope(s){ rsState.scope = s; renderResolver(); }
+
+function renderResolver(){
+  document.getElementById('rsTiers').innerHTML = Object.keys(TIERS)
+    .map(t=>`<button class="rs-opt ${rsState.tier===t?'on':''}" onclick="rsSetTier('${t}')">${TIERS[t].label}</button>`).join('');
+  document.getElementById('rsCons').innerHTML = Object.keys(CONSTRAINTS)
+    .map(c=>`<button class="rs-opt ${rsState.cons[c]?'on':''}" onclick="rsToggleCon('${c}')" title="${CONSTRAINTS[c].hint}">${CONSTRAINTS[c].label}</button>`).join('');
+  document.getElementById('rsScope').innerHTML = ['host','worker']
+    .map(s=>`<button class="rs-opt ${rsState.scope===s?'on':''}" onclick="rsSetScope('${s}')">${s==='host'?'番頭':'職人'}</button>`).join('');
+
+  const out = document.getElementById('rsOut');
+  const r = resolveModel(rsState.tier, rsState.cons, rsState.scope);
+  if(!r){
+    out.className = 'resolver-out none';
+    out.innerHTML = `この条件で使えるモデルがありません。制約を緩めるか、${TIERS[rsState.tier].label}tierに条件を満たすモデルを足してください。`;
+    return;
+  }
+  const pick = data.picks[rsState.tier];
+  const droppedPick = !(r.p.id===pick.p && r.m.id===pick.m);
+  const key = resolveKey(r.p, rsState.scope);
+  out.className = 'resolver-out';
+  out.innerHTML = `
+    <div class="ro-model">${r.p.id} / ${r.m.id}</div>
+    <div class="ro-line">キー: <b>${key ? key.name : '該当なし'}</b>${key ? '' : '（このプロバイダに'+(rsState.scope==='host'?'番頭':'職人')+'が使える生きたキーがありません）'}</div>
+    <div class="ro-line">${droppedPick
+      ? `<span class="ro-drop">第一候補の ${pick.p} / ${pick.m} は制約で落ちたため、同じtierの次の候補に降りました。</span>`
+      : `${TIERS[rsState.tier].label}tierの第一候補がそのまま条件を満たしました。`}</div>`;
+}
+
+// ===== ④ 職人が使えるモデル一覧 =====
+function refreshWorkerChips(){
+  const root=document.getElementById('workerChips');
+  const items=[];
+  data.providers.forEach(p=>p.models.forEach(m=>{ if(m.workerUsable) items.push({p,m}); }));
+  if(items.length===0){ root.innerHTML='<span class="worker-empty">職人に許したモデルがありません（下のプロバイダ各モデルで「職人OK」をonにしてください）</span>'; return; }
+  root.innerHTML = items.map(({p,m})=>{
+    const isPick = data.picks[m.tier].p===p.id && data.picks[m.tier].m===m.id;
+    const star = isPick ? '<span style="color:var(--accent);font-weight:700;">★第一候補</span>' : '';
+    return `<span class="worker-chip">${tierBadge(m.tier)}${p.mark} ${m.id} ${star}</span>`;
+  }).join('');
+}
+
+// ===== ピッカー（話の途中でモデルを選ぶ） =====
+let curSel = { p:'opencode-go', m:'opus' };
+function refreshPicker(){
+  const body=document.getElementById('pickerBody');
+  const q=(document.getElementById('pickerSearch').value||'').toLowerCase().trim();
+  body.innerHTML = data.providers.map(p=>{
+    // ①は番頭のチャット。職人専用モデル（番頭で使用不可）はここに出さない。
+    const rows = p.models.filter(m=>m.hostUsable).filter(m=>{
+      if(!q) return true;
+      return (m.id.toLowerCase().includes(q) || (m.desc||'').toLowerCase().includes(q) || p.name.toLowerCase().includes(q));
+    });
+    if(rows.length===0) return '';
+    return `<div class="picker-group">${p.name}</div>` + rows.map(m=>{
+      const isCur = curSel.p===p.id && curSel.m===m.id;
+      const marks = [];
+      if(data.defaults.host.p===p.id && data.defaults.host.m===m.id) marks.push('<span class="pr-mark def">番頭既定</span>');
+      if(data.picks[m.tier].p===p.id && data.picks[m.tier].m===m.id) marks.push(`<span class="pr-mark def">${TIERS[m.tier].label}の第一候補</span>`);
+      if(m.workerUsable) marks.push('<span class="pr-mark ok-w">職人OK</span>');
+      return `<button class="picker-row ${isCur?'is-active':''}" onclick="pickModel('${p.id}','${m.id}')">
+        <div class="pr-top">
+          <span class="pr-name">${m.id}</span>
+          ${tierBadge(m.tier)}
+          <span class="pr-marks">${marks.join('')}</span>
+        </div>
+        <div class="pr-desc">${m.desc || '（説明文なし — 下で登録するとここに表示）'}</div>
+      </button>`;
+    }).join('');
+  }).join('') || '<div style="padding:10px 12px;color:var(--ink-faint);font-size:12px;">該当なし</div>';
+}
+function pickModel(pid,mid){
+  curSel={p:pid,m:mid};
+  const p=data.providers.find(x=>x.id===pid);
+  const m=p.models.find(x=>x.id===mid);
+  document.getElementById('pickerCurName').textContent = m.id;
+  const icon = document.getElementById('modelIcon');
+  icon.textContent = p.mark;
+  icon.className = 'oc-model-icon ' + p.cls;
+  document.getElementById('picker').classList.remove('is-open');
+  refreshPicker();
+}
+
+// ===== init =====
+rerenderAll(null);
+
+document.getElementById('pickerTrigger').addEventListener('click',(e)=>{
+  e.stopPropagation();
+  document.getElementById('picker').classList.toggle('is-open');
+});
+document.addEventListener('click',(e)=>{
+  if(!e.target.closest('#picker') && !e.target.closest('#pickerTrigger')){
+    document.getElementById('picker').classList.remove('is-open');
+  }
+});
+document.getElementById('pickerSearch').addEventListener('input', refreshPicker);
+
+// 既定で最初のプロバイダを開いておく
+toggleProvider(0);
+</script>
+
+</body>
+</html>

@@ -277,8 +277,13 @@ export function App(): React.ReactElement {
    */
   const [dismissedErrors, setDismissedErrors] = useState<Record<string, ReadonlySet<number>>>({});
 
-  /** スマホ表示：チャットかキャンバスか。既定は両方表示（split）。 */
-  const [mobileView, setMobileView] = useState<"chat" | "canvas" | "split">("split");
+  /**
+   * スマホ表示：チャットかキャンバスか（排他）。既定はチャット。
+   *
+   * 以前は両方を同時に出す split があったが、スマホ幅では二段組にすると
+   * どちらも読めない高さになる。番頭との対話が主なので、既定はチャット。
+   */
+  const [mobileView, setMobileView] = useState<"chat" | "canvas">("chat");
 
   /** エラー行を1件だけ非表示にする（全部は消さない）。 */
   const dismissError = useCallback((threadId: string, i: number) => {
@@ -438,6 +443,36 @@ export function App(): React.ReactElement {
     });
   };
 
+  /**
+   * クリップボードからの画像ペースト。
+   *
+   * スクショを撮って貼るのが一番短い経路なのに、これまではファイル選択を
+   * 経由する必要があった。画像だけを取り出して添付に回し、**テキストには触らない**
+   * ——preventDefault しないので、文字のペーストは既定のまま動く。
+   */
+  const handlePaste = useCallback(
+    (event: React.ClipboardEvent): void => {
+      const items = event.clipboardData?.items;
+      if (!items) return;
+      const transfer = new DataTransfer();
+      let foundImage = false;
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith("image/")) {
+          const file = items[i].getAsFile();
+          if (file) {
+            transfer.items.add(file);
+            foundImage = true;
+          }
+        }
+      }
+      if (foundImage) {
+        addFiles(transfer.files);
+        return;
+      }
+    },
+    [addFiles],
+  );
+
   const readFileAsText = (file: File): Promise<string> =>
     new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -496,7 +531,7 @@ export function App(): React.ReactElement {
   };
 
   return (
-    <div className={`shell ${mobileView === "split" ? "split-mode" : ""}`}>
+    <div className={`shell mobile-view-${mobileView}`}>
       <header className="shell-topbar">
         <div className="brand">
           <span className="brand-mark">番</span>
@@ -850,6 +885,7 @@ export function App(): React.ReactElement {
               placeholder={session.busy ? "番頭が考えています…" : "番頭に相談する"}
               rows={1}
               onChange={(e) => setDraft(e.target.value)}
+              onPaste={handlePaste}
               onKeyDown={(e) => {
                 // Enter で送信、Shift+Enter で改行。IME変換中の Enter は送信しない
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -898,15 +934,15 @@ export function App(): React.ReactElement {
         {/* スマホ用フッター */}
         <div className={`mobile-footer ${session.status === "open" ? "" : "hidden"}`}>
           <button
-            className={`mobile-footer-btn ${mobileView === "chat" || mobileView === "split" ? "is-active" : ""}`}
-            onClick={() => setMobileView(mobileView === "split" ? "chat" : "split")}
+            className={`mobile-footer-btn ${mobileView === "chat" ? "is-active" : ""}`}
+            onClick={() => setMobileView("chat")}
             title="チャット"
           >
             💬 チャット
           </button>
           <button
-            className={`mobile-footer-btn ${mobileView === "canvas" || mobileView === "split" ? "is-active" : ""}`}
-            onClick={() => setMobileView(mobileView === "split" ? "canvas" : "split")}
+            className={`mobile-footer-btn ${mobileView === "canvas" ? "is-active" : ""}`}
+            onClick={() => setMobileView("canvas")}
             title="キャンバス"
           >
             📄 キャンバス

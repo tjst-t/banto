@@ -3,46 +3,22 @@
  *
  * **GUI は持たない。項目の宣言だけ渡す。** 描くのは Banto の設定画面。
  *
- * ここに出すのは「POが決めること」だけ。到達先や台帳の置き場のような**配線**は
- * 設定ではない——動かすために必要な値で、画面から変えるものではない。
+ * 職人のモデルは LLM Registry（ADR-0004）が管理するため、ここでは
+ * アイドルタイムアウトの安全弁だけを出す。
  */
 
-import type { ModuleSettingsSpec, SettingsSection } from "@banto/core";
+import type { ModuleSettingsSpec } from "@banto/core";
 import type { WorkerPool } from "./pool.js";
 
 const MINUTE = 60_000;
 
-/** 職人のモデルを差し替えられるドライバ（PiRpcDriver が満たす）。 */
-export interface ModelConfigurableDriver {
-  currentDefaults(): { provider: string; model: string };
-  setDefaults(next: { provider?: string; model?: string }): void;
-}
-
-export function createWorkerPoolSettings(
-  pool: WorkerPool,
-  driver?: ModelConfigurableDriver,
-  section?: SettingsSection
-): ModuleSettingsSpec {
+export function createWorkerPoolSettings(pool: WorkerPool): ModuleSettingsSpec {
   return {
     title: "職人",
     description:
-      "職人（worker）に渡すモデルと、畳み忘れの安全弁。" +
-      "**番頭とは別のモデルを使える**——職人は手を動かす側なので、番頭より安い・速いモデルで足りることが多い。",
+      "畳み忘れの安全弁。職人のモデルは LLM Registry で管理する" +
+      "（番頭とは別のモデルを使える——職人は手を動かす側なので、安い・速いモデルで足りることが多い）。",
     fields: [
-      {
-        key: "provider",
-        label: "プロバイダ",
-        type: "text",
-        placeholder: "opencode",
-        description: "職人に渡すプロバイダ。番頭の設定とは別（次に起こす職人から効く）",
-      },
-      {
-        key: "model",
-        label: "モデル",
-        type: "text",
-        placeholder: "deepseek-v4-flash-free",
-        description: "職人に渡すモデル。動いている職人は途中で変えない（分かりにくいため）",
-      },
       {
         key: "idleTimeoutMinutes",
         label: "アイドルの安全弁",
@@ -55,20 +31,11 @@ export function createWorkerPoolSettings(
       },
     ],
     read: () => {
-      const defaults = driver?.currentDefaults();
       return {
-        ...(defaults ? { provider: defaults.provider, model: defaults.model } : {}),
         idleTimeoutMinutes: Math.round(pool.currentIdleTimeoutMs() / MINUTE),
       };
     },
     write: (values) => {
-      if (driver && (values["provider"] || values["model"])) {
-        driver.setDefaults({
-          ...(typeof values["provider"] === "string" ? { provider: values["provider"] } : {}),
-          ...(typeof values["model"] === "string" ? { model: values["model"] } : {}),
-        });
-      }
-
       const raw = values["idleTimeoutMinutes"];
       if (raw !== undefined && raw !== null && raw !== "") {
         const minutes = Number(raw);
@@ -79,12 +46,7 @@ export function createWorkerPoolSettings(
         pool.setIdleTimeout(minutes * MINUTE);
       }
 
-      const defaults = driver?.currentDefaults();
-      section?.write({
-        ...(defaults ? { provider: defaults.provider, model: defaults.model } : {}),
-        idleTimeoutMs: pool.currentIdleTimeoutMs(),
-      });
-      return { applied: true, message: "変えました（次に起こす職人から効きます）。" };
+      return { applied: true, message: "変えました（すぐ効きます）。" };
     },
   };
 }
