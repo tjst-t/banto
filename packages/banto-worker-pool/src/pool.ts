@@ -743,7 +743,13 @@ export class WorkerPool {
   }
 
   /**
-   * 畳んだ職人を起こし直す（決定30d）。元のセッションを再開するので会話が戻る。
+   * 動いていない職人を起こし直す（決定30d）。元のセッションを再開するので会話が戻る。
+   *
+   * 対象は**プロセスが居ないもの**——畳んだ職人（closed）と、ホストごと落ちた職人
+   * （exited）の両方。以前は closed だけを受けていたが、それだと「ホスト再起動後に
+   * 生きていた職人を戻す」ができず、復帰処理が closed を起こす側に倒れていた（inc-0019）。
+   *
+   * 生きている職人（running / waiting）は対象外。指示を足したいだけなら steer を使う。
    *
    * D11 と矛盾しない：D11 が禁じているのは**隠れ状態**であって文脈の保存ではない。
    * セッションファイルは外から読める記録で、再開しても再現可能・監査可能は保たれる。
@@ -753,9 +759,9 @@ export class WorkerPool {
     if (!past) {
       throw new Error(`Unknown worker "${sessionId}". 履歴に無い職人は起こし直せません。`);
     }
-    if (past.state !== "closed") {
+    if (past.state === "running" || past.state === "waiting") {
       throw new Error(
-        `Worker "${sessionId}" はまだ畳まれていません（${past.state}）。指示を足すなら steer を使ってください。`
+        `Worker "${sessionId}" はまだ動いています（${past.state}）。指示を足すなら steer を使ってください。`
       );
     }
     // 起こす前の道具立てを引き継ぐ。ここを落とすと、絞って起こした職人が起こし直しで

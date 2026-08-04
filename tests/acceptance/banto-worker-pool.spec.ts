@@ -1028,9 +1028,11 @@ describe("[task-0028/a4] 起こし直し（同じセッションの再開）", (
     assert.equal(again.origin, "kobo");
   });
 
-  it("[task-0028/a4] まだ畳んでいない職人は起こし直せない（I2）", async () => {
+  it("[task-0028/a4] まだ動いている職人は起こし直せない（I2）", async () => {
+    // 対象は「プロセスが居ないもの」。畳んだ職人だけでなく、ホストごと落ちた職人
+    // （exited）も起こし直せる（inc-0019）。動いているものだけを断る
     const worker = await pool.delegate(JOB);
-    await assert.rejects(() => pool.wake(worker.sessionId, "続き"), /まだ畳まれていません/);
+    await assert.rejects(() => pool.wake(worker.sessionId, "続き"), /まだ動いています/);
   });
 
   it("[task-0028/a4] 知らない職人は起こし直せない（I2）", async () => {
