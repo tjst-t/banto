@@ -9,7 +9,6 @@
  * 「残ること・戻れること」から。
  */
 
-import { useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ThreadView, TranscriptEntry } from "@banto/host/protocol";
@@ -17,6 +16,12 @@ import type { ThreadView, TranscriptEntry } from "@banto/host/protocol";
 export interface ThreadHistoryProps {
   closedThreads: ThreadView[];
   chatOf(threadId: string): TranscriptEntry[];
+  /**
+   * 右で読んでいる会話。**真実は URL**（`viewLocation.ts`）——自分で持つと、
+   * リロードや戻る／進むで一覧に戻ってしまう。
+   */
+  selectedId?: string;
+  onSelect(threadId: string | undefined): void;
   onReopen(threadId: string): void;
   onBack(): void;
 }
@@ -36,8 +41,7 @@ function formatClosedAt(iso: string | undefined): string {
 }
 
 export function ThreadHistory(props: ThreadHistoryProps): React.ReactElement {
-  const { closedThreads, chatOf, onReopen, onBack } = props;
-  const [selectedId, setSelectedId] = useState<string>();
+  const { closedThreads, chatOf, selectedId, onSelect, onReopen, onBack } = props;
   const selected = closedThreads.find((t) => t.threadId === selectedId);
   const entries = selected ? chatOf(selected.threadId) : [];
 
@@ -60,7 +64,7 @@ export function ThreadHistory(props: ThreadHistoryProps): React.ReactElement {
               <div
                 key={thread.threadId}
                 className={`history-row ${thread.threadId === selectedId ? "is-selected" : ""}`}
-                onClick={() => setSelectedId(thread.threadId)}
+                onClick={() => onSelect(thread.threadId)}
               >
                 <div className="history-row-head">
                   <span className="history-row-title">{thread.title}</span>
@@ -96,7 +100,7 @@ export function ThreadHistory(props: ThreadHistoryProps): React.ReactElement {
               <button
                 className="history-read-back"
                 type="button"
-                onClick={() => setSelectedId(undefined)}
+                onClick={() => onSelect(undefined)}
               >
                 ← 一覧
               </button>

@@ -44,17 +44,26 @@ interface SettingsDescription {
   storedAt: string;
 }
 
-export function SettingsPanel({ endpoint }: CanvasViewProps): React.ReactElement {
+export interface SettingsPanelProps extends CanvasViewProps {
+  /**
+   * 開いている区画。**真実は URL**（`viewLocation.ts`）——自分で持つと、リロードや
+   * 戻る／進むで先頭の区画に戻ってしまう。未指定なら先頭の区画を出す。
+   */
+  section?: string;
+  onSection(sectionId: string): void;
+}
+
+export function SettingsPanel(props: SettingsPanelProps): React.ReactElement {
+  const { endpoint, section: openSectionId, onSection } = props;
   const description = useModuleTool<SettingsDescription>(endpoint, "settings.describe");
   const sections = description.data?.sections ?? [];
-  const [activeId, setActiveId] = useState<string>();
   /** 触った項目だけを送る（触っていない項目まで上書きしないため）。 */
   const [draft, setDraft] = useState<Record<string, unknown>>({});
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string>();
   const [error, setError] = useState<string>();
 
-  const active = sections.find((s) => s.id === activeId) ?? sections[0];
+  const active = sections.find((s) => s.id === openSectionId) ?? sections[0];
 
   // 区画を切り替えたら、書きかけを持ち越さない
   useEffect(() => {
@@ -95,7 +104,7 @@ export function SettingsPanel({ endpoint }: CanvasViewProps): React.ReactElement
           <button
             key={section.id}
             className={section.id === active?.id ? "sp-nav-btn sp-nav-on" : "sp-nav-btn"}
-            onClick={() => setActiveId(section.id)}
+            onClick={() => onSection(section.id)}
           >
             {section.title}
             {/* どのモジュールが公開している設定かを、一覧でも分かるようにする */}

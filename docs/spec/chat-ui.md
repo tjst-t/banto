@@ -21,18 +21,18 @@ refs: [vision, principles, spec-ui, spec-daemon-core, spec-improvement-loop]
 │       │  │                                     │     │
 │       │  │  [Canvas tabs]                       │     │
 │       │  │  ─────────                             │     │
-│       │  │  ▼ ChatArea                          │     │
-│       │  │  - 送り主のメッセージ (po)            │     │
+│       │  │  ▼ ChatArea (.chat-scroll-content)   │     │
+│       │  │  - 送り主のメッセージ (po) ＋添付      │     │
 │       │  │  - 推論/思考 (reasoning)             │     │
 │       │  │  - 番頭のメッセージ (banto)          │     │
 │       │  │  - ツールの状態 (tool)               │     │
 │       │  │  - 知らせ (notice)                   │     │
 │       │  │  - エラー (error)                    │     │
-│       │  │  [自動追従: 最下部にいてストリーミング中]│     │
+│       │  │  [自動追従: 最下部にいる間]           │     │
 │       │  └───────────────────────────────────────┘     │
 │       │  [↓ ボタン: 最下部にいないとき]                │
 │       │  ┌────── Composer ────────────────────┐      │
-│       │  │ 入力欄 + 添付 + 送る/中断            │      │
+│       │  │ 添付 + 入力欄 + 送る/待つ/中断        │      │
 │       │  └─────────────────────────────────────┘      │
 │       └──────────────────────────────────────────────┘
 │  Canvas（表示状態）    Chat（会話）                     │
@@ -47,18 +47,28 @@ refs: [vision, principles, spec-ui, spec-daemon-core, spec-improvement-loop]
 
 | role | 説明 | 表示 | 追記 |
 |---|---|---|---|
-| `po` | POの発話 | 右寄せテキスト行 | × |
-| `reasoning` | 番頭の思考/推論（streaming中はShimmer、「Thought for Xseconds」） | Collapsible（自動開閉） | **あり（streaming中）** |
-| `banto` | 番頭の発話（Markdown） | 左寄せMarkdownレンダリング | **あり（streaming中）** |
-| `tool` | ツール呼び出し状態 | Collapsible（名前＋ステータスバッジ＋引数JSON＋結果JSON） | **あり（state更新）** |
-| `notice` | 外からの知らせ（職人・別の会話） | タグ付き、デフォルト畳み | × |
+| `po` | POの発話（`attachments?` に送った添付の参照） | 右寄せの吹き出し。添付は96pxのサムネイル | × |
+| `reasoning` | 番頭の思考（`durationMs?`） | Collapsible（考えている間は開き、終わって1秒で畳む） | **あり（streaming中）** |
+| `banto` | 番頭の発話（Markdown） | 左寄せ・**地の文**（吹き出しにしない） | **あり（streaming中）** |
+| `tool` | ツール呼び出し（`input?` / `output?`） | Collapsible（名前＋状態の札＋引数＋結果） | **あり（state更新）** |
+| `notice` | 外からの知らせ（職人・別の会話）と**文脈のまとめ直し**（compaction） | タグ付き、デフォルト畳み | × |
 | `error` | エラー行 | 赤背景、×ボタンで消せる | × |
 
 ### 2.2 エントリのマッピング（WS → 表示）
 
-`text_delta` → `reasoning` または `banto` エントリに追記（streamingモード）。
-`tool_start` → `tool` エントリ新規作成（`state: 'running'` / `'input-streaming'`）。
-`tool_end` → 対応する `tool` エントリの state を更新（`'output-available'` / `'output-error'`）。
+`po_message` → `po` エントリ（`attachments` があれば一緒に持つ）。
+`text_delta` → `banto` エントリに追記。
+`reasoning_delta` → `reasoning` エントリに追記。`reasoning_end` → そのエントリに `durationMs` を入れる。
+`tool_start` → `tool` エントリ新規作成（`state: 'running'`、`input` があれば持つ）。
+`tool_end` → 対応する `tool` エントリの state を更新（`'ok'` / `'failed'`）し、`output` を入れる。
+**引数は開始のときにしか来ない**ので、終了で上書きしない（ホスト側 `recordInner` も同じ規則）。
+
+### 2.2.1 添付の持ち方
+
+会話に残すのは**参照だけ**（`TranscriptAttachment`：`kind` / `name` / `url` / `mimeType?`）。
+画像を base64 のまま履歴（JSONL）に積むと肥大化し、再読み込みのたびに同じ塊が流れる。
+実体はホストが `work/attachments/` に保存し、`GET /api/attachments/{name}` で返す
+（名前はベース名に落として、保存先の外へ出られないようにする）。
 
 ### 2.3 追記ルール (applyDelta)
 
@@ -83,62 +93,58 @@ applyDelta(prev, event):
 
 ## 3. スクロール追従 (StickToBottom)
 
-Vercel AI Elements (`use-stick-to-bottom`) の準拠仕様。
+**`use-stick-to-bottom`（v1.1.6・MIT・依存ゼロ）をそのまま使う**（D6：自前だと
+ResizeObserver 追従・spring・選択中の扱いを全部書くことになり、体験を合わせきれない）。
+AI Elements の `<Conversation>` と同じく `initial="smooth" resize="smooth"` で使う。
+`StickToBottom` コンポーネントは採らず、**フックだけ**（`useStickToBottom`）を使って
+DOM と CSS は banto のものを維持する。
 
-### 3.1 定数
-
-| 定数 | 値 | 用途 |
-|---|---|---|
-| `AT_BOTTOM_SLACK_PX` | 70 | "最下部付近"の閾値。scrollDiff <= 70px を locked と判定 |
-
-### 3.2 状態遷移
+### 3.1 DOM の形
 
 ```
-┌────────────────────────────────────────────────────┐
-│  INITIAL: wasAtBottom=true                           │ ← マウント時
-│  ↓ スクロール（最下部保持）                           │
-│  LOCKED (auto-follow)                                 │
-│  - atBottom=true                                      │
-│  - scrollDiff <= 70px にて自動追従                   │
-│  - smooth scroll (spring animation)                  │
-│  ↓ スクロールUP かつ 70px超過 かつ 選択中でない       │
-│  UNLOCKED (user)                                      │
-│  - atBottom=false                                     │
-│  - ↓ ボタン表示                                       │
-│  ↓ スクロールDOWN かつ 70px内 OR 送信 or チャンネル切替│
-│  LOCKED (re-lock: smooth scroll)                     │
-└────────────────────────────────────────────────────┘
+.chat-scroll          ← scrollRef。overflow-y: auto / scrollbar-gutter: stable both-edges
+  .chat-scroll-content ← contentRef。padding と gap はこちら側に置く
 ```
 
-### 3.3 Lock 解除条件（すべて）
+**器と中身を分ける**のは、追従が「中身の高さの変化」を ResizeObserver で見て決まるため。
+padding を器に置くと高さの変化として観測できない。
 
-1. スクロール UP（`scrollDifference < 0`）
-2. 閾値超過（`scrollDifference < -70px`）
-3. テキスト選択中でない（`isSelecting() === false`）
+### 3.2 観測できる振る舞い（受け入れ基準）
 
-### 3.4 Re-lock 条件（いずれか）
+これがこの節の本体。内部の状態遷移ではなく、**画面がどう振る舞うか**で決める。
+検証は `tests/chat-ux.spec.ts`（Playwright・偽ホストでイベントを発火）。
 
-1. スクロール DOWN かつ最下部付近（`0 < scrollDifference <= 70px`）
-2. PO がメッセージを送信
-3. PO がスレッド切替 → 該当スレッドを選択
-4. ストリーミング中、番頭が応答を開始（`busy=true`）
-5. ↓ ボタンクリック
+| 状況 | 振る舞い |
+|---|---|
+| 最下部にいる間に応答が届く | 届いた分だけ spring で追いかける |
+| **自分が発話を送った** | **最下部へ戻り、そこから応答を追いかける**（上を読んでいた途中でも） |
+| 上へ動かした（1px でも） | その場で追従が止まる。以降は届いても位置が動かない |
+| 上へ動かして最下部から離れた | ↓ ボタンが出る |
+| 下へ戻して最下部付近（70px 以内） | また追いかけ始める |
+| ↓ ボタンを押した | spring で滑り降り、また追いかけ始める |
+| 文字を選択している間 | 追従が止まる（選択範囲がずれない） |
+| マウント時（面から会話へ戻ったときも） | **滑らずに**最下部から始まる |
+| スレッドを切り替えた | 最新の位置から読み始める（前のスレッドの解除状態を持ち越さない） |
 
-### 3.5 spring animation 定数
+**70px は「解除」ではなく「再ロック」の閾値**。上へ動いた時点で追従は切れる——
+閾値を超えるまで追い続けると、少し上げて読もうとしたときに引き戻される。
+
+**送信したら最下部へ戻す**（PO要望。AI Elements の `useChat` はここだけ何もしない）。
+上を読んでいる途中でも、自分が話しかけたなら見たいのは自分の発話とその返事だから。
+
+**最初の貼り付きは `initial: "instant"`**（AI Elements は `"smooth"`）。向こうは空の会話から
+始まるので滑っても一瞬だが、banto は**保存された会話を丸ごと復元してから貼り付く**ので、
+spring だと先頭から最下部まで延々と滑る。設定・履歴の面から会話へ戻るたびにこれが起きていた
+（PO報告 2026-08-04）——チャット面はそのとき作り直され、`initial` が効くため。
+応答を追うとき（`resize`）は spring のまま。そちらは「いま伸びた分だけ」動く。
+
+### 3.3 spring animation 定数（ライブラリの既定のまま）
 
 | パラメータ | 値 | 用途 |
 |---|---|---|
 | `damping` | 0.7 | 減衰率 |
 | `stiffness` | 0.05 | 加速度 |
 | `mass` | 1.25 | 慣性 |
-
-### 3.6 イベント順序ガード
-
-```
-ResizeObserver → content 変更を検知
-  ↓ (setTimeout 1ms)
-scroll event → ignore (animation 由来) または user action として処理
-```
 
 ## 4. ストリーミング表示
 
@@ -148,10 +154,15 @@ scroll event → ignore (animation 由来) または user action として処理
 
 ### 4.2 Markdown レンダリング
 
-各 `text_delta` 到着時に全文を再レンダリング。プラグイン:
-- `remark-gfm`（表、打ち消し線、タスクリスト）– banto 独自拡張
-- CJKテキストセグメンテーション – ai-elements から
-- コードハイライト（Shiki）– banto 維持
+各 `text_delta` 到着時に全文を再レンダリング（`React.memo` で変更の無い行は飛ばす）。
+
+- **`remend` で未完の Markdown を補ってから描く**（`StreamingMarkdown`）。`**強調` の途中や
+  閉じていないコードフェンスをそのまま渡すと、記号が生で見えたり段落が崩れたりして、
+  文字が届くたびに画面がちらつく。AI Elements（Streamdown）が同じ関数を使っている
+- `remark-gfm`（表、打ち消し線、タスクリスト）
+- コードブロックは `<pre>` を差し替え、shiki のハイライトと**コピーボタン**を付ける
+  （AI Elements の `CodeBlock` 相当）。ハイライトは非同期なので、届くまでは素のまま出す
+  ——ストリーミング中は未完のコードが来るのが普通で、出せるまで待つと文字が消えて見える
 
 ### 4.3 途切れ防止（Partial Response）
 
@@ -161,68 +172,33 @@ scroll event → ignore (animation 由来) または user action として処理
 
 Vercel AI Elements の `<Reasoning>` コンポーネントに相当する仕様。
 
+思考は `reasoning_delta` / `reasoning_end` で届く（本文とは別の経路）。
+**考えていた時間はホストが測る**（D3）——クライアントは途中から繋ぐことがあり、
+最初の差分を見ていないと時間を出せない。
+
 ### 5.1 表示パターン
 
-| ストリーミング中 | 表示内容 |
+| 状態 | 表示内容 |
 |---|---|
-| `isStreaming=true` | Shimmer（脈打つインジケータ）+ "Thinking..."（日本語: "考えています"） |
-| `isStreaming=false`, `duration=0` | 「X秒間考えました」 |
-| `isStreaming=false`, `duration>0` | 「X秒間考えました」 |
-| `isStreaming=false`, `duration=null` | 「考えました」 |
+| 届いている最中 | Shimmer（文字の上を光が流れる）＋「考えています」 |
+| 終わり・`durationMs > 0` | 「X秒間考えました」（`Math.ceil(ms/1000)`） |
+| 終わり・`durationMs` が無い／0 | 「数秒間考えました」——測れていない秒数を騙らない（I1） |
+
+AI Elements は `duration === 0` のとき Shimmer を出し続けるが、banto では 0 は
+「開始を観測できなかった」印なので、終わった思考が光り続けないよう文言側へ倒す。
 
 ### 5.2 開閉自動制御
 
 | 状態 | 動作 |
 |---|---|
-| **ストリーミング開始** | Collapsible **自動開く**（`defaultOpen=false` で明示的に閉じていない場合） |
-| **ストリーミング終了、初回** | **1秒後に自動閉じる**（`AUTO_CLOSE_DELAY=1000ms`） |
-| **ユーザーが手動操作** | 自動開閉無効（`isOpen` は user 制御） |
+| **最初** | 開いた状態で始まる（`defaultOpen` 相当） |
+| **考え終わり** | **1秒後に一度だけ畳む**（`REASONING_AUTO_CLOSE_MS = 1000`） |
+| **自分で開け閉めした後** | 自動では動かさない（読んでいる途中で消えない） |
 
-### 5.3 実装（React context）
+### 5.3 判定
 
-`ReasoningContext` を Collapsible 内で提供：
-- `isStreaming: boolean` – ストリーミング状態
-- `isOpen: boolean` – Collapsible 開閉状態
-- `isExplicitlyClosed: boolean` – 明示的に閉じられたか
-- `hasEverStreamed: boolean` – 過去にストリーミングしたか
-- `startTimeMs: number | null` – ストリーミング開始時刻
-
-### 5.4 banto での実装例
-
-```tsx
-function ReasoningRow({ text, isStreaming }) {
-  const [isOpen, setIsOpen] = useControllableState({
-    defaultProp: isStreaming,  // streaming 中 → 開く
-    prop: undefined,
-  });
-
-  // streaming 開始 → 自動開く
-  useEffect(() => {
-    if (isStreaming && !isOpen) setIsOpen(true);
-  }, [isStreaming, isOpen]);
-
-  // streaming 終了 → 1秒後に自動閉じる
-  useEffect(() => {
-    if (!isStreaming && isOpen && hasEverStreamed) {
-      const t = setTimeout(() => setIsOpen(false), 1000);
-      return () => clearTimeout(t);
-    }
-  }, [isStreaming, isOpen]);
-
-  return (
-    <Collapsible open={isOpen}>
-      <CollapsibleTrigger>
-        {isStreaming ? <Shimmer>"考えています"</Shimmer> : (
-          `考えました (${duration}秒)`
-        )}
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <Markdown>{text}</Markdown>
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
-```
+「届いている最中か」は**末尾の行かどうか**で決める（`chatStatus === "streaming"` かつ
+最後のエントリ）。ホストは busy しか持たないので、行ごとの streaming 状態は UI 側で導く。
 
 ## 6. ツール呼び出し表示 (ToolCall)
 
@@ -230,72 +206,40 @@ Vercel AI Elements の `<Tool>` コンポーネントに相当する仕様。
 
 ### 6.1 ツール状態遷移
 
-Vercel AI の `ToolUIPart` / `DynamicToolUIPart` におけるツール状態は以下の5状態:
+| banto の状態 | いつ | 表示 | AI Elements の対応 |
+|---|---|---|---|
+| `running` | `tool_start` | 名前＋「実行中」（点が脈打つ） | `input-available`（Running） |
+| `ok` | `tool_end {isError:false}` | 名前＋「完了」（緑） | `output-available`（Completed） |
+| `failed` | `tool_end {isError:true}` | 名前＋「失敗」（赤） | `output-error`（Error） |
 
-| 状態 | banto でのマッピング | 表示 |
-|---|---|---|
-| `input-streaming` | `tool_start` 直後 | `ツール名 ・ ・ ・` （Pending / 待機中） |
-| `input-available` | ツール実行中 | `ツール名 ・ ・ ・` （Running / 実行中、pulse icon） |
-| `approval-requested` | 未使用 | 将来対応（Awaiting Approval） |
-| `output-available` | `tool_end {success}` | `ツール名 ✓` （Completed） |
-| `output-error` | `tool_end {error}` | `ツール名 ✗` （Error / Error表示） |
-| `output-denied` | 未使用 | 将来対応（Denied） |
-| `approval-responded` | 未使用 | 将来対応（Responded） |
+**`input-streaming`（Pending）は出せない**——ハーネス（pi）は引数が揃うまでツール名を
+出さないので、名前の無い行を出すことになる。承認まわり（`approval-requested` /
+`output-denied` / `approval-responded`）は AI SDK v6 専用で、banto にも承認の概念が無い。
 
 ### 6.2 ツール表示UI
 
 ```
 ┌────────────────────────────────┐
-│ 🔧 ファイル読込          Running ▸│  ← header（開ける）
-│                                │
-│  Parameters                   │
-│  ```                        │  ← CollapsibleContent 内の引数表示
-│  { "path": "/", "glob":  │        （jsonコード）
-│   }                         │
-│                                │
-│  Result                       │
-│  ```                        │  ← 結果表示
-│  [file content...]          │        （jsonコード）
-│  ```                        │
+│ ● file.read              完了 ▸│  ← 見出し（押すと開く）
+├────────────────────────────────┤
+│  引数                           │
+│  { "path": "docs/vision.md" }  │
+│  結果                           │
+│  { "lines": 42 }               │
 └────────────────────────────────┘
 ```
 
-### 6.3 ステータスバッジ
+**既定では畳んでおく**——ツールは1ターンに何度も走るので、開いたままだと会話が
+引数の羅列で埋まる。引数も結果も無いときは開けない（押しても何も無い、を作らない）。
 
-| 状態 | バッジ | アイコン | 色 |
-|---|---|---|---|
-| `input-streaming` | Pending | ○ | – |
-| `input-available` | Running | ● | 青（pulse） |
-| `output-available` | Completed | ○ | 緑 |
-| `output-error` | Error | × | 赤 |
-| `approval-requested` | Awaiting Approval | ● | 黄 |
-| `approval-responded` | Responded | ○ | 青 |
+長い引数・結果は中でスクロールさせる（`max-height: 260px`）。会話ごと横に伸びない。
 
-### 6.4 banto での簡易実装
+### 6.3 引数・結果の大きさ
 
-```tsx
-function ToolRow({ entry }) {
-  const [isOpen, setIsOpen] = useState(false);
-  const stateLabel = entry.state === 'running' ? '' :
-                     entry.state === 'ok' ? ' ✓' : ' ✗';
-
-  return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-      <CollapsibleTrigger>
-        <span className="tool-dot" />
-        {entry.name}{stateLabel}
-        <ChevronDownIcon className={isOpen ? 'rotate-180' : ''} />
-      </CollapsibleTrigger>
-      {isOpen && (
-        <CollapsibleContent>
-          <pre>{entry.input && JSON.stringify(entry.input, null, 2)}</pre>
-          <pre>{entry.output && JSON.stringify(entry.output, null, 2)}</pre>
-        </CollapsibleContent>
-      )}
-    </Collapsible>
-  );
-}
-```
+ホスト側で `TOOL_PAYLOAD_MAX_CHARS = 4000` 文字に切り詰める。ファイル読込のように結果が
+数MBになるツールがあり、そのまま積むと会話履歴（JSONL）が肥大化する。
+**切ったことは隠さず**、末尾に「（N 文字のうち先頭のみ）」と書く（I1）。
+空の `{}` は「無かった」として扱う——開いても何も分からない行を増やさない。
 
 ## 7. コンポーザ (Composer)
 
@@ -303,34 +247,80 @@ function ToolRow({ entry }) {
 
 | 項目 | 仕様 |
 |---|---|
-| 高さ | 自動伸長（`scrollHeight` 基準）、最大キャップあり |
-| 自動リサイズ | `draft` 変更時に `scrollHeight` を基準に再計測 |
-| キャップ | `chatPaneRef.clientHeight / 3`（コンポーザーが会話の 1/3 を超えない）|
-| 最低高 | 56px（`MIN_COMPOSER_HEIGHT_PX`） |
-| placeholder | `busy=true` のとき「番頭が考えています...」、otherwise「番頭に相談する」 |
-| 背景色 | `busy=true` のとき入力不可（`disabled`） |
+| 高さ | 自動伸長（`scrollHeight` 基準） |
+| 最大高 | **192px**（`MAX_COMPOSER_HEIGHT_PX`。AI Elements の `max-h-48`）。超えたら中でスクロール |
+| 最低高 | **64px**（CSS の `min-height`。AI Elements の `min-h-16`） |
+| placeholder | `busy=true` のとき「番頭が考えています…」、otherwise「番頭に相談する」 |
 
-### 7.2 キーボード
+高さを JS で測るのは、CSS の `field-sizing: content` を Firefox・Safari がまだ持たないため。
+どのブラウザでも同じ高さにする。
+
+### 7.2 送信ボタン（AI Elements の `PromptInputSubmit`）
+
+**状態で姿だけが変わる1つのボタン**。押す場所が動くと目で追い直すことになるので、
+中断ボタンを別に生やさない。
+
+| 状態 | 姿 | 押すと |
+|---|---|---|
+| `ready` | ↵ | 送る（空のときは押せない） |
+| `submitted`（送ったが返事はまだ） | 独楽（Loader） | 送る |
+| `streaming`（喋っている最中） | ■ | 中断（`abort`） |
+| `error`（直前が失敗） | × | 送る |
+
+状態は `busy` と履歴の末尾から導く（ホストは busy しか持たない）。
+
+### 7.3 文脈の使用量
+
+モデル名の隣に、その会話が文脈をどれだけ使っているかを円弧つきの％で出す
+（AI Elements の `Context`）。数え方は **入力＋キャッシュ＋出力**（次のターンで運ぶ量の
+目安）で、ハーネスが返した実測をそのまま使う。
+
+**分からないときは出さない**（I1）——ターンが1度も回っていない会話と、再起動直後がそれ。
+0% と出すと「まだ空だ」と読めるが、実際は分からないだけ。70% で橙、90% で赤。
+
+文脈があふれる前にハーネスが会話を要約する（compaction）。**要約が走ったら知らせ行として
+会話に残す**——古いやり取りが実際に置き換わるので、黙って進めると「番頭が急に前の話を
+忘れた」としか見えない（ADR-0011 決定46）。
+
+### 7.4 モデル選択（AI Elements の `PromptInputModelSelect`）
+
+道具立ての中に置く。一覧は中核の `llm.list`（`/api/core/tools/llm.list`）から開いたときに取り、
+**採用しているモデルだけ**（`adopted: true`）をプロバイダごとにまとめて出す
+——プロバイダによっては数百あり、並べた時点で選べなくなる（ADR-0011 決定47）。
+文脈長・値段・画像可否を札で出す：どれも「どれを選ぶか」に直結し、選ぶ前に見えている必要がある。
+採用は設定の「LLM・モデル」で行う。
+
+| 決めごと | 理由 |
+|---|---|
+| 切替は `set_model` でホストへ送るだけ。UI は自分で切り替えたことにしない | 真実はホスト側（D3）。失敗したら表示は前のモデルのまま |
+| **スレッド単位ではない**。開いている全会話に効く | 番頭は連続した一人（ADR-0004） |
+| 既定としても保存する（`llm.set_host_default` と同じ場所） | 次に開く会話も、再起動後も同じモデルで始まる |
+| 走っているセッションにも即座に効く（ハーネスの `setModel`） | 「次のセッションから」だと、選んだのに変わらないように見える |
+
+対応していないハーネス・解決できないモデルは **`error` を返して切り替えない**（I2）。
+
+### 7.5 キーボード
 
 | キー | 動作 |
 |---|---|
 | `Enter` | 送信（IME 変換中は送信しない：`isComposing` チェック） |
 | `Shift+Enter` | 改行（IME 変換中でも可） |
-| `Ctrl+Enter` | 送信（IME 中も可） |
-| `Backspace` | 未実装（次回以降） |
+| `Backspace`（入力欄が空） | 最後の添付を取り消す（AI Elements と同じ） |
 
-### 7.3 添付ファイル
+### 7.6 添付ファイル
 
 | ファイル種別 | 扱いは | 上限 |
 |---|---|---|
 | 画像 | base64 に変換、`vision` 対応モデルのみ | 20MB |
 | テキスト | 内容そのまま WS ペイロードに | 100KB |
 
-### 7.4 クリップボード画像
+送ったあとは**吹き出しに残る**（§2.2.1）。画像は96pxのサムネイル、押すと原寸で開く。
 
-`onPaste` で画像をキャプチャ → `FileUIPart` として `pending` 状態に加える。テキストのみの貼り付けは textarea に渡す。
+### 7.7 クリップボード画像
 
-### 7.5 ドラッグ&ドロップ
+`onPaste` で画像をキャプチャ → `pending` に加える。テキストのみの貼り付けは textarea に渡す。
+
+### 7.8 ドラッグ&ドロップ
 
 `onDrop` でファイルを受け付ける。画像の場合は base64 に変換、テキストの場合は内容読み取り。
 
@@ -348,33 +338,90 @@ function ToolRow({ entry }) {
 - `new_session` → **自分**のみ自動的に新スレッドへ移行（`followNewThread` flag）。番頭が別の分身を開いたときは移らない（決定2「目の前の話は壊れない」）
 - スレッド畳む → 開いている先頭のタブへ自動移行
 - スレッド再オープン → 即座に切替 + 未読解除
+- どの経路で移っても、見ている会話の未読は落ちる（戻る／進む・リロードで開いた会話も同じ）
+- 「どの会話を見ているか」は URL が持つ（§9）。UI 側の state には持たない
 
-## 9. スクロール位置のリバウンド（Reflow）
+## 9. 画面の位置（URL）と復元
 
-### 9.1 問題
+**「いま自分がどこを見ているか」の真実は URL が持つ**（`packages/banto-web/src/viewLocation.ts`）。
+画面の側（React の state・localStorage）に持たせない——ブラウザの戻る／進むとリロードが
+同じ仕組みで効くようにするため（D3：状態の真実は一箇所）。
 
-画像/テキストファイルの読込（`FileReader`/`readAsBase64`）の完了で `pending` 配列が増え、Composer の高さが変わる → コンテナの高さが変わり、スクロール位置が変化。
+### 9.1 URL に載るもの
 
-### 9.2 対策
+| クエリ | 何を指すか | 属する範囲 |
+|---|---|---|
+| `view` | 面（`history` / `settings`。会話面は既定なので載せない） | 全体 |
+| `thread` | 見ている会話（分身） | 全体 |
+| `tab` | その会話のキャンバスで見ているタブ | 会話 |
+| `section` | 設定面で開いている区画 | 設定面 |
+| `read` | 履歴面で読んでいる会話 | 履歴面 |
 
-`useLayoutEffect` で composer 高さを計測 → `requestAnimationFrame` 後に `scrollToBottom()` を呼ばない（re-lock 条件を満たすなら呼び出す）。
+- パスではなくクエリを使う。この画面は中継 URL（`{baseUrl}/env/<envId>/`）の下にも出るため、
+  パスに意味を持たせると中継のプレフィックスと混ざる
+- `host=`（接続先の上書き）など、位置と関係ないクエリは触らない
+- **範囲が変わったら、その範囲に属するものは落とす**。会話を移れば `tab` を、面を離れれば
+  `section` / `read` を落とす（前の会話のタブを次の会話に持ち越さない）
 
-## 10. Edge Cases
+### 9.2 誰が動かしたかで、積むか差し替えるかを分ける
+
+| 動かした人 | 例 | 履歴 |
+|---|---|---|
+| PO | 会話タブ・キャンバスのタブ・ピンタブ（履歴/設定）・設定の区画を押した／カタログからGUIを開いた | `pushState`（戻るで帰れる） |
+| ホスト | 番頭がGUIを開いた・見ていた会話が畳まれた・既定の会話へ落ちた | `replaceState`（積まない） |
+
+ホスト起点の移動を積むと、戻るが**もう無い場所**へ帰ろうとする。逆に、番頭が開いたGUIを
+URL 側から押し戻してはいけない（決定2「目の前の話は壊れない」）。
+
+### 9.3 キャンバスのタブ：URL とホストの合わせ方
+
+タブの集合と活性の**真実はホスト**（`canvas_state`）。URL は「どのタブを見たいか」の意図で、
+**動いた側に合わせて片方を直す**：
+
+- URL が動いた（戻る／進む・リロードでの復元・タブを押した）→ ホストへ `canvas_switch` を投げる
+  ——押したときと戻ったときで経路を1本にする
+- ホストが動いた（番頭がGUIを開いた・タブが閉じた）→ URL を差し替える
+- どちらが動いたかは、最後に合わせた値との差で見分ける
+- **その会話の `canvas_state` が届く前は、URL の指すタブを消さない**（接続直後は会話ごとに
+  1通ずつ後から届く。届く前に「タブなし」と決めつけると、復元したいタブを自分で捨てる）
+
+### 9.4 復元（リロード・再接続）
+
+1. `welcome` の時点で URL の `thread` がまだ開いていれば、そこへ帰る。畳まれている／もう
+   無いときだけ `defaultThreadId` へ落ちる（差し替えであって、履歴には積まない）
+2. 会話の中身は `history`、キャンバスは `canvas_state` でホストから届く（従来どおり）
+3. URL の `tab` が届いたタブの中にあれば `canvas_switch` を投げて合わせる
+4. `view` / `section` / `read` はそのまま面に渡る
+
+**残らないもの**（意図的）：書きかけ（`draft`）・添付待ちのファイル・スクロール位置・
+スマホのチャット／キャンバス切替。いずれも画面を離れると意味を失うか、ホストに預けて
+いないもの。
+
+## 10. 高さが動くとき（添付の読込・画面サイズ変更）
+
+添付の読込完了や画面幅の変更で、コンポーザや会話の高さが動く。**ここは自前で面倒を見ない**
+——`use-stick-to-bottom` の ResizeObserver が中身の高さの変化を拾い、追従が生きていれば
+そのまま追いかける。旧仕様にあった `useLayoutEffect` での再計測は不要になった。
+
+## 11. Edge Cases
 
 | ケース | 振る舞い |
 |---|---|
-| WebSocket 再接続 | 全 `chat` を `history` で復元。`wasAtBottom` は復元後の測定で再計算 |
+| WebSocket 再接続 | 全 `chat` を `history` で復元。追従は復元後の高さから判定し直される |
 | 同時接続 | 各スレッドの状態はスレッド毎に独立。delta 混線なし |
-| 大きな画像添付 | base64 変換中、Composer 高さが動的に変動。re-lock 判定に支障なし（measure は直前で再実行） |
-| メッセージ送信中 | `send()` → 即座に `busy=true` + `turn_start`。送信完了まで UI は入力不可 |
-| 画面サイズ変更 | `ResizeObserver` にて検知 → re-lock 判定。`atBottom` が `true` なら smooth scroll で追随 |
-| ストリーリング折り返し | ツール呼び出しが長文の場合、CollapsibleContent が折り返す。overflow-x: auto が有効に働く |
-| 空の会話 | 空状態メッセージ（「番頭に話しかけてください...」）を表示 |
+| 大きな画像添付 | base64 変換の完了で高さが動くが、ResizeObserver が拾って追いかける |
+| メッセージ送信中 | `send()` → `turn_start` で `busy=true`。送信ボタンは独楽→■へ変わる |
+| 画面サイズ変更 | 同上（追従が生きていれば spring で追随） |
+| 長いツール引数・結果 | `tool-detail pre` の中でスクロール（会話ごと横に伸びない） |
+| 空の会話 | 空状態メッセージ（「番頭に話しかけてください…」）を表示 |
+| URL の会話・タブがもう無い | 既定の会話／ホストの活性タブへ落ち、URL を差し替える（空の面を見せない） |
 
-## 11. 未決事項
+## 12. 未決事項
 
-- 70px 閾値の妥当性（実際の UX で微調整必要なら `docs/notes/` で記録）
-- スクロールアニメーションの spring 定数の最適化（damping/stiffness/mass は Vercel と同じ値で十分か）
-- `text_delta` のバッチ処理閾値（一度の delta から UI 更新まで、何 ms あるいは何文字ごとにバッチするか）
-- `reasoning` データの送信方法（`text_delta` とは別 `reasoning_delta` 事件として送信するか、テキストの一部として含めるか）
-- ツールの引数・結果表示の詳細（banto のツールは引数・結果を現在保持していないが、今後追加するかどうか）
+- `text_delta` のバッチ処理閾値（一度の delta から UI 更新まで、何 ms あるいは何文字ごとにバッチするか）。
+  AI SDK の `useChat` は `throttle` オプションで同じことをしているが、既定は間引き無し
+- ツールの `input-streaming`（Pending）を出せるようにするか（ハーネスが引数の揃う前に
+  ツール名を出さないため、いまは出せない。§6.1）
+- AI Elements にあって banto にまだ無いもの：メッセージのホバー操作（コピー・再生成）、
+  ブランチ切替（`1 of 3`）、出典（Sources / InlineCitation）、コンテキスト使用量（Context）。
+  いずれもホスト側の材料（再生成API・出典・使用量）が要る
