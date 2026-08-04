@@ -56,7 +56,7 @@ proc.unref(); proc.stdout.unref(); proc.stderr.unref(); proc.stdin.unref();
 // → "startup delay 経過" のあと process.on(exit): code=0
 ```
 
-## 対応（暫定）
+## 対応1: 起動中はイベントループを掴む（一般の守り）
 
 `serve()` の入口で ref されたタイマーを1本掴み、待ち受けを始めたら放す。
 
@@ -100,8 +100,39 @@ Error: Started a worker for "repro-0020" but failed to deliver the instruction:
 次へ進む。セッションの肥大そのものは別の課題（`worker_reported` を4回繰り返しており、
 畳まれないまま復帰を重ねた結果と思われる）。
 
-## 根の問題（未対応）
+## 対応2: 待つあいだだけ handle を掴み直す（根の対策）
 
-**unref した handle からの応答を待つ、という矛盾自体は残っている。** 掴みを足したのは対症で、`spawn()` / `inject()` は依然として「自分が unref したもの」を待っている。起動以外の場面（例：他に ref された handle が無い状態で職人を起こす経路）で同じことが起きうる。
+矛盾そのもの——**自分が `unref` したものからの応答を待つ**——を解いた。
 
-筋としては、待っている間だけ `ref()` し直し、settle 後に `unref()` する方が正しい。ただし `delegate()` は spawn のあとに `inject()` も待つので、範囲の見極めが要る。
+`PiRpcDriver` に `HandleGrip` を入れ、「普段は放す・待つ間だけ掴む」を1か所にまとめた。
+掴んだ数を数えているので、待ちが重なっても内側が終わっただけで放すことはない。
+
+包んだのは2か所。どちらも unref した stdio の上で応答を待っていた。
+
+- `spawn()` の起動ハンドシェイク（get_state の応答待ち）
+- `inject()` の書き込みと応答待ち。**`awaitResponse` のタイムアウトも `unref` されている**
+  ため、待っている間 ref された handle が文字通り1つも無い状態だった
+
+職人のプロセスが落ちたら `grip.release()` で必ず放す。掴んだまま残すと、今度は
+ホストが抜けられなくなる。
+
+### 確認
+
+対応1（bin.ts の掴み）を使わない条件で、2.5MB のセッションを起こして確認した。
+
+```
+[repro] エラーが表に出た: Started a worker for "repro-0020" but failed to deliver
+        the instruction: Error: [pi-rpc] no response for 'inject-1' within 10000ms
+[repro] 最後まで到達（code=0）
+```
+
+**根の修正だけで、消える代わりに本当のエラーが出て最後まで進む。**
+
+掴みの数え方が壊れないよう、回帰テストを置いた（`tests/acceptance/pi-rpc-handle-grip.spec.ts`）。
+待ちの重なり・例外時の解放・`release()` の強制解放を固定している。
+
+### 対応1 は残す
+
+根が直ったので対応1 は不要になったが、**起動中の非同期処理すべてに効く一般の守り**
+として残す。ドライバに限らず、ref された handle が何も無い瞬間があれば同じことが
+起きるため。

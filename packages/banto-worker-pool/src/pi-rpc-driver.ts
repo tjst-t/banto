@@ -83,12 +83,61 @@ function attachJsonlReader(
 
 // ── Session record ──────────────────────────────────────────────────────────
 
+/**
+ * 待っている間だけ handle を掴む仕組み（inc-0020）。
+ *
+ * 子プロセスと stdio は普段 `unref` してある——職人が残っていてもホストやテストが
+ * 抜けられるようにするため。だが**その handle からの応答を待つあいだ**まで unref の
+ * ままだと、他に ref された handle が無いとき Node が「やることが無い」と判断し、
+ * `await` の途中でプロセスを畳む。ログもエラーも残らない。
+ *
+ * 「普段は放す・待つ間だけ掴む」を1か所にまとめる。待ちが重なっても数えているので、
+ * 内側の待ちが終わっただけで放してしまうことはない。
+ */
+export interface HandleGrip {
+  /** fn を待つあいだ handle を掴む。 */
+  hold<T>(fn: () => Promise<T>): Promise<T>;
+  /** 掴みを全部放す（プロセスが終わったとき）。 */
+  release(): void;
+}
+
+export function createHandleGrip(proc: childProcess.ChildProcess): HandleGrip {
+  let held = 0;
+  const setRef = (on: boolean): void => {
+    // 既に閉じた handle への ref/unref は無視される（例外にはならない）
+    if (on) proc.ref();
+    else proc.unref();
+    for (const stream of [proc.stdout, proc.stderr, proc.stdin]) {
+      if (!stream) continue;
+      const socket = stream as unknown as net.Socket;
+      if (on) socket.ref?.();
+      else socket.unref?.();
+    }
+  };
+  return {
+    async hold<T>(fn: () => Promise<T>): Promise<T> {
+      if (held++ === 0) setRef(true);
+      try {
+        return await fn();
+      } finally {
+        if (--held === 0) setRef(false);
+      }
+    },
+    release(): void {
+      held = 0;
+      setRef(false);
+    },
+  };
+}
+
 interface ActiveSession {
   pid: number;
   sessionId: string;
   sessionPath: string;
   proc: childProcess.ChildProcess;
   stopReader: () => void;
+  /** 応答を待つあいだだけ handle を掴む（inc-0020）。 */
+  grip: HandleGrip;
 }
 
 // ── PiRpcDriver ─────────────────────────────────────────────────────────────
@@ -406,6 +455,10 @@ export class PiRpcDriver implements RuntimeDriver {
     if (proc.stderr) (proc.stderr as unknown as net.Socket).unref();
     if (proc.stdin) (proc.stdin as unknown as net.Socket).unref();
 
+    // 応答を待つあいだだけ掴み直す（inc-0020）。unref したものを待つと、他に
+    // ref された handle が無いとき await の途中で親プロセスが黙って畳まれる
+    const grip = createHandleGrip(proc);
+
     const pid = proc.pid;
     if (pid === undefined) {
       throw new Error(`[pi-rpc] Failed to spawn pi process (pid undefined).`);
@@ -423,7 +476,7 @@ export class PiRpcDriver implements RuntimeDriver {
 
     // We need to wait briefly for the process to start before reading state.
     // If the process exits immediately (no API key etc.), we handle it below.
-    const startResult = await new Promise<
+    const startResult = await grip.hold(() => new Promise<
       | { ok: true; sessionId: string; sessionPath: string; stopReader: () => void }
       | { ok: false; error: string }
     >((resolve) => {
@@ -519,7 +572,7 @@ export class PiRpcDriver implements RuntimeDriver {
           }
         }, 3000);
       }, 200);
-    });
+    }));
 
     if (!startResult.ok) {
       // I2: spawn failure is surfaced — emit spawn_failed and reject.
@@ -538,11 +591,14 @@ export class PiRpcDriver implements RuntimeDriver {
       sessionPath: resolvedSessionPath,
       proc,
       stopReader,
+      grip,
     };
     this.sessions.set(sessionId, session);
 
     // Watch for process exit after spawn completes (once — cleans itself up)
     proc.once("exit", (code, signal) => {
+      // 終わった職人の掴みは必ず放す。残すとホストが抜けられなくなる（inc-0020）
+      grip.release();
       this.emit({
         type: "process_exited",
         pid,
@@ -585,19 +641,22 @@ export class PiRpcDriver implements RuntimeDriver {
 
     // 応答待ちを先に張ってから書く（応答が先に返る競合を避ける）
     const response = this.awaitResponse(id);
-    try {
-      await new Promise<void>((resolve, reject) => {
-        session.proc.stdin?.write(cmd, (err) => {
-          if (err) reject(new Error(`[pi-rpc] inject write error: ${err.message}`));
-          else resolve();
+    // 書き込みも応答待ちも、unref した stdio の上で起きる。待つあいだは掴んでおく
+    // ——放したままだと、他に ref された handle が無いとき親が黙って畳まれる（inc-0020）
+    const result = await session.grip.hold(async () => {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          session.proc.stdin?.write(cmd, (err) => {
+            if (err) reject(new Error(`[pi-rpc] inject write error: ${err.message}`));
+            else resolve();
+          });
         });
-      });
-    } catch (err) {
-      this.settlePending(id, { success: false, error: String(err) });
-      throw err;
-    }
-
-    const result = await response;
+      } catch (err) {
+        this.settlePending(id, { success: false, error: String(err) });
+        throw err;
+      }
+      return response;
+    });
     // I2: 受け付けられなかったことを成功に見せない。ここを黙らせると指示が消える
     if (result["success"] !== true) {
       throw new Error(`[pi-rpc] inject rejected by pi: ${String(result["error"] ?? "unknown error")}`);
