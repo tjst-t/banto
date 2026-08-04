@@ -4,7 +4,7 @@ type: incident
 kind: incident
 origin: agent
 class: bug
-status: mitigated
+status: resolved
 refs: [inc-0018, inc-0019, imp-0017, adr-0011]
 ---
 
@@ -69,13 +69,36 @@ clearInterval(startupKeepAlive);
 
 起動中に走る非同期処理が unref された handle だけを待っていても、ホストが途中で抜けなくなる。職人の復帰に限らず、起動中の非同期処理すべてに効く。
 
-## 残っている疑問
+## 再現（確定）
 
-**実機での再現には至っていない。** 小さいセッション（117KB）の職人で A/B を取ったところ、修正前でも復帰は2秒で完了し、ブートは生き延びた。
+**タイミング依存だった。** 落ちるかどうかは、pi のハンドシェイクがドライバ側の ref されたタイマーより早く返るかで決まる。
 
-タイミング依存だと考えている——pi のハンドシェイクがドライバ側のタイマーより早く返れば落ちない。実際に落ちた職人（`task-0116-chat-attachment-survey`）は復帰を3回繰り返した長いセッションを持っており、読み込みに時間がかかったと推測している。
+- 小さいセッション（117KB）だと復帰が2秒で終わり、**修正前でも落ちない**
+- 実際に落ちた `task-0116-chat-attachment-survey` のセッションは **2.5MB** で、システム内で最大だった
 
-確証を取るには、**数MBのセッションを持つ職人を `exited` の状態にして起動する**必要がある。いまは全て `closed` なので、そのままでは作れない。
+そのセッションを複製し、起動中と同じ条件（他に ref された handle が無い状態）で
+`pool.delegate({ resumeSessionPath })` を呼んで再現した。
+
+```
+=== 修正前（keepAlive なし）===
+await pool.delegate({
+^
+[repro] ★ 途中で落ちた（code=13）── 到達していない
+
+=== 修正後（keepAlive あり）===
+Error: Started a worker for "repro-0020" but failed to deliver the instruction:
+       Error: [pi-rpc] no response for 'inject-1' within 10000ms
+```
+
+**掴みを足すと、消える代わりに本当のエラーが表に出る。** 起動時はこれを
+`resumeWorkers` が捕まえて「失敗」として記録し、起動は続く（I2）。
+
+### 併せて分かったこと
+
+この職人は**修正後も復帰できない**。2.5MB のセッションが pi の inject タイムアウト
+（10秒）内に読み終わらないため。ただし黙って消えるのではなく、失敗として記録されて
+次へ進む。セッションの肥大そのものは別の課題（`worker_reported` を4回繰り返しており、
+畳まれないまま復帰を重ねた結果と思われる）。
 
 ## 根の問題（未対応）
 
