@@ -108,6 +108,8 @@ export interface GuardableSession {
   subscribe(listener: (event: unknown) => void): () => void;
   prompt(text: string, options?: Parameters<HostSession["prompt"]>[1]): Promise<void>;
   abort(): Promise<void>;
+  /** モデルの差し替え（対応するハーネスだけ）。ガードは素通しする。 */
+  setModel?(model: unknown): Promise<void>;
   readonly agent: {
     readonly state: { messages: AgentMessage[] };
     continue(): Promise<void>;
@@ -185,6 +187,11 @@ export function withEmptyResponseGuard(session: GuardableSession): HostSession {
       }
     },
     abort: () => session.abort(),
+    // **包むと消える口を作らない**——ここは手で組み立てた object なので、
+    // 足した契約を書き写さないと、ガードを通した瞬間に「対応していない」ことになる
+    ...(session.setModel
+      ? { setModel: (model: unknown): Promise<void> => session.setModel!(model) }
+      : {}),
   };
 }
 

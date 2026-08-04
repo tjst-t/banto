@@ -26,10 +26,6 @@ export interface PlaceSetting {
 }
 
 export interface BantoSettings {
-  llm?: {
-    provider?: string;
-    model?: string;
-  };
   /** 番頭が作業できる場所。設定するとここが真実になり、`BANTO_PLACES` は使われない。 */
   places?: PlaceSetting[];
   environment?: {

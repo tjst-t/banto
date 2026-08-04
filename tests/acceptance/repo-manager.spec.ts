@@ -120,7 +120,42 @@ describe("[task-0039/a2] 独自の台帳を持たない（D3）", () => {
     }
   });
 
-  it("一覧は呼ぶたびに導出される（結果を溜め込まない）", async () => {
+  /**
+   * 台帳（保存される状態）と、手元の写し（いつでも捨てられるもの）は別物。
+   *
+   * `gwq list` は 400ms 以上かかり、場所の解決は Tool 呼び出しのたびに起きるので、
+   * 毎回起こすと GUI が目に見えて遅くなる（PO報告 2026-08-04：ファイルの中身が出るまで
+   * 1.4秒。うち1.35秒がこれ）。**待たせないために写しを返し、取り直せることで正しさを保つ。**
+   */
+  it("同じ一覧を続けて聞かれても導出は1回（待たせない）", async () => {
+    let calls = 0;
+    const run: CommandRunner = async (command, args) => {
+      calls += 1;
+      return fakeRunner({ ...GHQ_RESPONSES, ...GWQ_RESPONSES })(command, args);
+    };
+    const provider = createRepoManagerPlaceProvider({ run });
+    const first = await provider.list();
+    const derived = calls;
+    assert.ok(derived > 0, "1回目は導出すること");
+
+    const second = await provider.list();
+    assert.equal(calls, derived, "2回目は引き直さないこと（写しを返す）");
+    assert.deepEqual(second, first, "写しでも中身は同じこと");
+  });
+
+  it("同時に聞かれても導出は1回（GUIは place.list と file.list をほぼ同時に投げる）", async () => {
+    let calls = 0;
+    const run: CommandRunner = async (command, args) => {
+      calls += 1;
+      return fakeRunner({ ...GHQ_RESPONSES, ...GWQ_RESPONSES })(command, args);
+    };
+    const provider = createRepoManagerPlaceProvider({ run });
+    await Promise.all([provider.list(), provider.list(), provider.list()]);
+    // ghq root / ghq list / gwq list / gwq config の4回。3並列でも増えない
+    assert.equal(calls, 4, `同時の3本で ${calls} 回コマンドを起こしている`);
+  });
+
+  it("取り直させれば導出し直す（外で作られたワークツリーにも追いつける）", async () => {
     let calls = 0;
     const run: CommandRunner = async (command, args) => {
       calls += 1;
@@ -128,9 +163,19 @@ describe("[task-0039/a2] 独自の台帳を持たない（D3）", () => {
     };
     const provider = createRepoManagerPlaceProvider({ run });
     await provider.list();
-    const first = calls;
+    const derived = calls;
+
+    await provider.refresh?.();
     await provider.list();
-    assert.equal(calls, first * 2, "2回目もコマンドを引き直すこと");
+    assert.equal(calls, derived * 2, "refresh のあとは引き直すこと");
+  });
+
+  it("写しは共有しない：偽の実行口を渡したら、その場限りの導出になる", async () => {
+    // テスト同士（と本物の ghq/gwq）が互いの写しを見ないことの保証
+    const one = createRepoManagerPlaceProvider({ run: fakeRunner(GHQ_RESPONSES) });
+    const other = createRepoManagerPlaceProvider({ run: fakeRunner({}) });
+    assert.equal((await one.list()).length, 2);
+    assert.deepEqual(await other.list(), [], "別の提供元の写しが漏れていないこと");
   });
 });
 

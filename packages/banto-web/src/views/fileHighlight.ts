@@ -14,9 +14,28 @@
  *   prefers-color-scheme（ライト／ダーク）で決める（task-0052 a4）。
  */
 
+import { useEffect, useState } from "react";
 import type { HighlighterCore, ThemedToken } from "shiki/core";
 
 export type Scheme = "light" | "dark";
+
+/** システムのライト／ダーク設定（prefers-color-scheme）。shiki のテーマ切替に使う（task-0052 a4）。 */
+export function useColorScheme(): Scheme {
+  const [scheme, setScheme] = useState<Scheme>(() =>
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light"
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = (e: MediaQueryListEvent): void => setScheme(e.matches ? "dark" : "light");
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return scheme;
+}
 
 export interface HighlightedLine {
   content: string;

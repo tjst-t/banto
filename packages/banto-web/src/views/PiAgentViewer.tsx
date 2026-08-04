@@ -1,19 +1,18 @@
 /**
  * pi.agent 設定ビューア（task-0050）。
  *
- * pi coding agent の接続情報を表示・編集するキャンバスビュー。
+ * pi coding agent の接続情報を**表示するだけ**のキャンバスビュー。
  *
  * 表示内容：
  *   - auth.json: API キー（マスク表示）
  *   - models.json: providers の一覧（名前、baseUrl、models）
- *   - settings.json: llm.provider / llm.model（編集可能）
  *
- * 編集：
- *   - provider, model の変更を GUI 上で行い、settings.json に保存
+ * **モデルの選択はここに置かない**（PO裁定 2026-08-04）。置き場所は「LLM・モデル」
+ * ひとつだけ——同じものを2箇所から決められると、どちらが効いているのか分からなくなる。
  */
 
-import { useEffect, useState } from "react";
-import { callModuleTool, useModuleTool } from "./useModuleTool.js";
+import { useState } from "react";
+import { useModuleTool } from "./useModuleTool.js";
 import type { CanvasViewProps } from "./registry.js";
 
 /** auth.json のキーエントリ */
@@ -36,7 +35,6 @@ interface ProviderEntry {
 interface PiAgentData {
   auth: AuthKey[];
   providers: ProviderEntry[];
-  llm: { provider?: string; model?: string };
 }
 
 /** キーの表示状態（マスク/展開） */
@@ -46,22 +44,8 @@ export function PiAgentViewer({ endpoint }: CanvasViewProps): React.ReactElement
   const describe = useModuleTool<PiAgentData>(endpoint, "pi.agent.describe");
   const data = describe.data;
 
-  // 入力中のドラフト状態
-  const [provider, setProvider] = useState("");
-  const [model, setModel] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string>();
-  const [error, setError] = useState<string>();
   // キーの表示切替
   const [keyVisibility, setKeyVisibility] = useState<KeyVisibility>({});
-
-  // データ取得時に入力を初期化
-  useEffect(() => {
-    if (data) {
-      setProvider(data.llm?.provider ?? "");
-      setModel(data.llm?.model ?? "");
-    }
-  }, [data?.llm?.provider, data?.llm?.model]);
 
   // 全キーの表示/非表示を切り替え
   const toggleAllKeys = (): void => {
@@ -78,26 +62,6 @@ export function PiAgentViewer({ endpoint }: CanvasViewProps): React.ReactElement
     setKeyVisibility((prev) => ({ ...prev, [name]: !prev[name] }));
   };
 
-  // 保存実行
-  const save = async (): Promise<void> => {
-    setBusy(true);
-    setError(undefined);
-    setNotice(undefined);
-    try {
-      const result = await callModuleTool<{ llm: { provider?: string; model?: string } }>(
-        endpoint,
-        "pi.agent.update",
-        { provider: provider || undefined, model: model || undefined }
-      );
-      setNotice(`保存しました: ${result.llm.provider ?? "?"}/${result.llm.model ?? "?"}`);
-      describe.reload();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   if (describe.loading && !data) {
     return <div className="pa-loading">読み込み中…</div>;
   }
@@ -107,7 +71,7 @@ export function PiAgentViewer({ endpoint }: CanvasViewProps): React.ReactElement
   }
 
   // data が undefined なら空配列で描画（ガード済みだが型アサーション）
-  const safeData = data ?? { auth: [], providers: [], llm: {} };
+  const safeData = data ?? { auth: [], providers: [] };
 
   return (
     <div className="pa">
@@ -181,58 +145,18 @@ export function PiAgentViewer({ endpoint }: CanvasViewProps): React.ReactElement
         )}
       </section>
 
-      {/* 設定値セクション（編集可能） */}
-      <section className="pa-section pa-edit">
+      {/*
+        モデルの指定はここには置かない（PO裁定 2026-08-04）。
+        **置き場所は「LLM・モデル」ひとつだけ**——同じものを2箇所から決められると、
+        どちらが効いているのか分からなくなる。ここは接続情報の表示に徹する。
+      */}
+      <section className="pa-section">
         <h3 className="pa-title">
-          <span className="pa-icon">⚙️</span> 設定値
-          <span className="pa-badge">settings.json</span>
+          <span className="pa-icon">⚙️</span> モデルの選択
         </h3>
-
-        <div className="pa-fields">
-          <label className="pa-field">
-            <span className="pa-label">プロバイダ</span>
-            <input
-              className="pa-input"
-              type="text"
-              value={provider}
-              placeholder="opencode"
-              onChange={(e) => setProvider(e.target.value)}
-            />
-          </label>
-
-          <label className="pa-field">
-            <span className="pa-label">モデル</span>
-            <input
-              className="pa-input"
-              type="text"
-              value={model}
-              placeholder="deepseek-v4-flash-free"
-              onChange={(e) => setModel(e.target.value)}
-            />
-          </label>
-        </div>
-
-        {/* 現在値のプレビュー */}
-        {safeData.llm && (
-          <div className="pa-preview">
-            現在: <code>{safeData.llm.provider ?? "—"}</code> /{" "}
-            <code>{safeData.llm.model ?? "—"}</code>
-          </div>
-        )}
-
-        {/* 入力中のドラフト値のプレビュー */}
-        <div className="pa-preview pa-draft">
-          変更後: <code>{provider || "—"}</code> / <code>{model || "—"}</code>
-        </div>
-
-        {notice && <div className="rm-notice">{notice}</div>}
-        {error && <div className="fb-error">{error}</div>}
-
-        <div className="pa-actions">
-          <button className="pp-approve" disabled={busy} onClick={save}>
-            {busy ? "保存中…" : "保存する"}
-          </button>
-        </div>
+        <p className="pa-empty">
+          番頭が使うモデルは「LLM・モデル」で選びます（会話ごとの切替はチャットの入力欄から）。
+        </p>
       </section>
     </div>
   );

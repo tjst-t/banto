@@ -19,8 +19,12 @@ interface KeyInfo {
   name: string;
   host: boolean;
   worker: boolean;
-  state: "ok" | "limited" | "untested";
+  state: "ok" | "limited" | "invalid" | "untested";
   limitedUntil?: string;
+  /** 最後に確かめた時刻。 */
+  checkedAt?: string;
+  /** どの鍵が入っているかの手がかり（末尾4文字）。値そのものは来ない。 */
+  hint?: string;
 }
 
 interface ProviderInfo {
@@ -29,6 +33,8 @@ interface ProviderInfo {
   baseUrl: string;
   hasAuth: boolean;
   modelCount: number;
+  /** モデルを取り込めるか（到達先があるか、ハーネスが定義を内蔵しているか）。 */
+  canFetchModels: boolean;
   local: boolean;
   keys: KeyInfo[];
 }
@@ -39,6 +45,10 @@ interface ModelInfo {
   name: string;
   tier: Tier;
   vision: boolean;
+  /** 文脈に入る最大トークン数（分かるときだけ）。 */
+  contextWindow?: number;
+  /** 100万トークンあたりの値段（分かるときだけ）。 */
+  cost?: { input: number; output: number };
   free: boolean;
   hostUsable: boolean;
   workerUsable: boolean;
@@ -75,6 +85,30 @@ interface Resolution {
   key?: KeyInfo;
 }
 
+/** 「探して採用」の絞り込み。プロバイダごとに持つ。 */
+interface SearchState {
+  query: string;
+  vision: boolean;
+  free: boolean;
+  minContext: number;
+  sort: "name" | "context" | "price";
+}
+
+const EMPTY_SEARCH: SearchState = { query: "", vision: false, free: false, minContext: 0, sort: "name" };
+
+/** 100万トークンあたりの値段を短く。 */
+function priceOf(cost: { input: number; output: number } | undefined): string | undefined {
+  if (!cost) return undefined;
+  if (cost.input === 0 && cost.output === 0) return "無料";
+  return `$${cost.input}/$${cost.output}`;
+}
+
+/** 文脈長を短く（200000 → 200k）。 */
+function contextOf(tokens: number | undefined): string | undefined {
+  if (!tokens) return undefined;
+  return tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(tokens);
+}
+
 const TIERS: readonly Tier[] = ["reasoning", "standard", "fast"];
 
 const CONSTRAINTS: ReadonlyArray<{ key: ConstraintKey; label: string; hint: string }> = [
@@ -98,7 +132,11 @@ function timeOf(iso: string): string {
 }
 
 export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactElement {
-  const catalog = useModuleTool<CatalogData>(endpoint, "llm.list");
+  /**
+   * 採用しているモデルだけを取る。**全件は取りに行かない**——プロバイダによっては
+   * 数百あり、開くたびに数十KBを運んだうえ、並べても選べない（ADR-0011 決定47）。
+   */
+  const catalog = useModuleTool<CatalogData>(endpoint, "llm.list", { adopted: true, limit: 200 });
   const data = catalog.data ?? EMPTY;
 
   const [busy, setBusy] = useState(false);
@@ -111,6 +149,18 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
     free: false,
   });
   const [probe, setProbe] = useState<{ ok: true; value: Resolution } | { ok: false; message: string }>();
+  /** プロバイダ追加の入力。開いている間だけ持つ。 */
+  const [adding, setAdding] = useState<{ id: string; baseUrl: string; apiKey: string }>();
+  /** キーの入力欄（プロバイダごと）。**打ち終わるまでしか持たない**——送ったら消す。 */
+  const [keyDraft, setKeyDraft] = useState<Record<string, string>>({});
+  /** キーの確認結果（どのプロバイダに何が起きたか）。 */
+  const [checked, setChecked] = useState<{ provider: string; text: string }>();
+  /** モデル取り込みの結果（どのプロバイダに何が起きたか）。 */
+  const [fetched, setFetched] = useState<{ provider: string; text: string }>();
+  /** 「探して採用」の入力（プロバイダごと）。 */
+  const [search, setSearch] = useState<Record<string, SearchState>>({});
+  /** 検索の結果（プロバイダごと）。 */
+  const [found, setFound] = useState<Record<string, { models: ModelInfo[]; matched: number }>>({});
 
   const run = async (tool: string, args: Record<string, unknown>): Promise<void> => {
     setBusy(true);
@@ -122,6 +172,101 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+    }
+  };
+
+  /**
+   * モデルの取り込み。**何が起きたかを文言で出す**——「押したけど何も変わらない」
+   * （＝新しいモデルが無かった）のか、届かなかったのかが区別できないと困る。
+   */
+  const fetchModels = async (provider: string): Promise<void> => {
+    setBusy(true);
+    setError(undefined);
+    setFetched(undefined);
+    try {
+      const result = await callModuleTool<{
+        added: string[];
+        removed: string[];
+        repaired: Array<{ role: string; from: string; to?: string }>;
+      }>(endpoint, "llm.fetch_models", { provider });
+      const parts = [
+        result.added.length > 0 ? `${result.added.length} 件を取り込みました` : "新しいモデルはありません",
+      ];
+      if (result.removed.length > 0) {
+        parts.push(`無くなった ${result.removed.length} 件を消しました: ${result.removed.join(", ")}`);
+      }
+      // 既定が消えていたら選び直している。**何をどう変えたかを必ず出す**
+      for (const change of result.repaired ?? []) {
+        parts.push(
+          change.to
+            ? `⚠ ${change.role}（${change.from}）が無くなったので ${change.to} にしました`
+            : `⚠ ${change.role}（${change.from}）が無くなり、代わりが見つかりません`
+        );
+      }
+      setFetched({ provider, text: parts.join("。") });
+      catalog.reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * キーが通るか確かめる。**結果を文言で残す**——状態の札だけだと、押したのに
+   * 何も起きなかったのか、届かなかったのかが分からない。
+   */
+  const checkKey = async (provider: string): Promise<void> => {
+    setBusy(true);
+    setError(undefined);
+    setChecked(undefined);
+    try {
+      const result = await callModuleTool<{ state: string; status: number }>(
+        endpoint,
+        "llm.check_key",
+        { provider }
+      );
+      setChecked({
+        provider,
+        text:
+          result.state === "ok"
+            ? "キーは有効です。"
+            : result.state === "invalid"
+              ? `キーが受け付けられませんでした（${result.status}）。入れ直してください。`
+              : `上限に当たっています（${result.status}）。しばらく待つと戻ります。`,
+      });
+      catalog.reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * モデルを探す。**ホストに絞り込ませる**——全件を持ってきて画面で絞ると、
+   * 運ぶ量も並べる量も減らない。
+   */
+  const runSearch = async (provider: string, state: SearchState): Promise<void> => {
+    setSearch((prev) => ({ ...prev, [provider]: state }));
+    try {
+      const result = await callModuleTool<{ models: ModelInfo[]; matched: number }>(
+        endpoint,
+        "llm.list",
+        {
+          adopted: false,
+          provider,
+          ...(state.query.trim().length > 0 ? { query: state.query.trim() } : {}),
+          ...(state.vision ? { vision: true } : {}),
+          ...(state.free ? { free: true } : {}),
+          ...(state.minContext ? { minContext: state.minContext } : {}),
+          sort: state.sort,
+          limit: 30,
+        }
+      );
+      setFound((prev) => ({ ...prev, [provider]: { models: result.models, matched: result.matched } }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -321,7 +466,65 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
       </section>
 
       <section className="llm-sec">
-        <div className="llm-sec-label">プロバイダとキー</div>
+        <div className="llm-sec-head">
+          <span className="llm-sec-label">プロバイダとキー</span>
+          <button
+            className="llm-btn"
+            disabled={busy}
+            onClick={() => setAdding(adding ? undefined : { id: "", baseUrl: "", apiKey: "" })}
+          >
+            {adding ? "やめる" : "＋ プロバイダを追加"}
+          </button>
+        </div>
+        {adding && (
+          <div className="llm-add">
+            <label className="llm-add-row">
+              <span>名前</span>
+              <input
+                value={adding.id}
+                placeholder="例: ollama"
+                onChange={(e) => setAdding({ ...adding, id: e.target.value })}
+              />
+            </label>
+            <label className="llm-add-row">
+              <span>到達先</span>
+              <input
+                value={adding.baseUrl}
+                placeholder="例: http://10.0.0.2:11434/v1"
+                onChange={(e) => setAdding({ ...adding, baseUrl: e.target.value })}
+              />
+            </label>
+            <label className="llm-add-row">
+              <span>APIキー</span>
+              <input
+                type="password"
+                value={adding.apiKey}
+                placeholder="不要なら空のまま"
+                onChange={(e) => setAdding({ ...adding, apiKey: e.target.value })}
+              />
+            </label>
+            <div className="llm-add-actions">
+              {/* Banto は認証を持たない。鍵を入れる操作だけは、それを承知でやってもらう */}
+              <span className="llm-add-note">
+                キーはこのホストの <code>auth.json</code>（本人のみ読める）に保存されます。
+                画面には二度と出ません。
+              </span>
+              <button
+                className="llm-btn llm-btn-primary"
+                disabled={busy || adding.id.trim().length === 0 || adding.baseUrl.trim().length === 0}
+                onClick={() => {
+                  void run("llm.add_provider", {
+                    id: adding.id.trim(),
+                    baseUrl: adding.baseUrl.trim(),
+                    ...(adding.apiKey ? { apiKey: adding.apiKey } : {}),
+                  }).then(() => setAdding(undefined));
+                }}
+              >
+                追加する
+              </button>
+            </div>
+          </div>
+        )}
         {data.providers.length === 0 ? (
           <p className="llm-empty">プロバイダが見つかりません</p>
         ) : (
@@ -357,69 +560,104 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                       外に出ない（ローカル実行）
                     </label>
 
-                    <div className="llm-sub-label">API キー {p.keys.length}</div>
-                    {p.keys.map((k, i) => (
-                      <div key={k.name} className={`llm-key ${k.state === "limited" ? "is-limited" : ""}`}>
-                        <span className="llm-key-rank">{i + 1}</span>
-                        <span className="llm-key-move">
-                          <button
-                            disabled={busy || i === 0}
-                            title="上へ"
-                            onClick={() => {
-                              const order = p.keys.map((x) => x.name);
-                              [order[i - 1], order[i]] = [order[i]!, order[i - 1]!];
-                              void run("llm.set_key_order", { provider: p.id, order });
-                            }}
-                          >
-                            ▲
-                          </button>
-                          <button
-                            disabled={busy || i === p.keys.length - 1}
-                            title="下へ"
-                            onClick={() => {
-                              const order = p.keys.map((x) => x.name);
-                              [order[i], order[i + 1]] = [order[i + 1]!, order[i]!];
-                              void run("llm.set_key_order", { provider: p.id, order });
-                            }}
-                          >
-                            ▼
-                          </button>
-                        </span>
-                        <span className="llm-key-name">{k.name}</span>
-                        <span className="llm-key-scope">
-                          {(["host", "worker"] as const).map((scope) => (
-                            <button
-                              key={scope}
-                              className={`llm-key-role ${k[scope] ? "is-on" : ""} ${scope === "worker" ? "is-w" : ""}`}
-                              disabled={busy}
-                              onClick={() =>
-                                void run("llm.set_key_scope", {
-                                  provider: p.id,
-                                  key: k.name,
-                                  scope,
-                                  allowed: !k[scope],
-                                })
-                              }
-                            >
-                              {scope === "host" ? "番頭" : "職人"}
-                            </button>
-                          ))}
+                    {/*
+                      **1プロバイダ1鍵**（auth.json が「プロバイダ名→鍵」の形）。
+                      以前は順位と並べ替えを出していたが、常に1本しか無いので何の意味も
+                      持っていなかった。複数鍵は auth.json のデータモデル変更（D1）で、
+                      必要になったときに作り直す。
+                    */}
+                    <div className="llm-sub-label">API キー</div>
+                    {p.keys.map((k) => (
+                      <div key={k.name} className={`llm-key is-${k.state}`}>
+                        <span className="llm-key-name">
+                          設定済み {k.hint && <code className="llm-key-hint">{k.hint}</code>}
                         </span>
                         <span className={`llm-key-state is-${k.state}`}>
                           {k.state === "limited"
                             ? `上限 ${timeOf(k.limitedUntil ?? "")}まで`
-                            : k.state === "untested"
-                              ? "未検証"
-                              : "有効"}
+                            : k.state === "invalid"
+                              ? "受け付けられません"
+                              : k.state === "ok"
+                                ? `有効${k.checkedAt ? `（${timeOf(k.checkedAt)} 確認）` : ""}`
+                                : "未確認"}
                         </span>
+                        {/* 入れただけでは効いているか分からない。ここで確かめられるようにする */}
+                        <button
+                          className="llm-btn"
+                          disabled={busy || !p.baseUrl}
+                          title={
+                            p.baseUrl
+                              ? "到達先へ1回問い合わせて、キーが通るか確かめます"
+                              : "到達先（baseUrl）が無いので確かめられません"
+                          }
+                          onClick={() => void checkKey(p.id)}
+                        >
+                          確認する
+                        </button>
+                        {/* 消すのは取り返しがつかないので、右端に控えめに置く */}
+                        <button
+                          className="llm-key-remove"
+                          type="button"
+                          disabled={busy}
+                          aria-label="キーを消す"
+                          title="キーを消す"
+                          onClick={() => {
+                            if (!confirm(`${p.id} のAPIキーを消します。よろしいですか。`)) return;
+                            void run("llm.remove_key", { provider: p.id });
+                          }}
+                        >
+                          ×
+                        </button>
                       </div>
                     ))}
-                    <div className="llm-key-note">
-                      上から順に消費。いま番頭は <code>{hostKey?.name ?? "該当なし"}</code>、職人は{" "}
-                      <code>{workerKey?.name ?? "該当なし"}</code>。
+                    {checked?.provider === p.id && <div className="llm-fetched">{checked.text}</div>}
+
+                    {/* キーの出し入れ。**入れた値は画面に戻らない**（保存したら欄を空にする） */}
+                    <div className="llm-key-edit">
+                      <input
+                        type="password"
+                        placeholder={p.hasAuth ? "入れ直す（新しいキー）" : "APIキーを入れる"}
+                        value={keyDraft[p.id] ?? ""}
+                        disabled={busy}
+                        onChange={(e) => setKeyDraft({ ...keyDraft, [p.id]: e.target.value })}
+                      />
+                      <button
+                        className="llm-btn"
+                        disabled={busy || (keyDraft[p.id] ?? "").trim().length === 0}
+                        onClick={() => {
+                          void run("llm.set_key", { provider: p.id, key: keyDraft[p.id] }).then(() =>
+                            setKeyDraft({ ...keyDraft, [p.id]: "" })
+                          );
+                        }}
+                      >
+                        {p.hasAuth ? "差し替える" : "入れる"}
+                      </button>
                     </div>
 
-                    <div className="llm-sub-label">モデル {models.length}</div>
+                    <div className="llm-sub-head">
+                      <span className="llm-sub-label">採用中のモデル {models.length}</span>
+                      {/* プロバイダが出すモデルは変わる。押して取り直せるようにする */}
+                      <button
+                        className="llm-btn"
+                        disabled={busy || !p.canFetchModels}
+                        title={
+                          p.canFetchModels
+                            ? p.baseUrl
+                              ? "プロバイダに問い合わせて一覧を取り込む"
+                              : "ハーネスが知っている定義から取り込む（到達先は登録されていない）"
+                            : "到達先も組み込みの定義も無いので取り込めません"
+                        }
+                        onClick={() => void fetchModels(p.id)}
+                      >
+                        ⟳ モデルを取り込む
+                      </button>
+                    </div>
+                    {fetched?.provider === p.id && <div className="llm-fetched">{fetched.text}</div>}
+                    {models.length === 0 && (
+                      <p className="llm-empty">
+                        まだ1つも採用していません。下の「探して採用」から選んでください。
+                      </p>
+                    )}
                     {models.map((m) => {
                       const isHostDef =
                         data.defaults.host?.provider === m.providerId && data.defaults.host?.model === m.id;
@@ -429,28 +667,59 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                       return (
                         <div key={`${m.providerId}/${m.id}`} className="llm-model">
                           <span className="llm-model-id">{m.id}</span>
+                          {/* 文脈の長さ。取り込み元が教えてくれたものだけ出す（推測しない） */}
+                          {m.contextWindow ? (
+                            <span className="llm-cap" title={`${m.contextWindow.toLocaleString()} トークン`}>
+                              {contextOf(m.contextWindow)}
+                            </span>
+                          ) : (
+                            <span
+                              className="llm-cap llm-cap-unknown"
+                              title="文脈の長さが分かりません。ハーネスは 0 として扱うため、毎ターン要約が走る可能性があります"
+                            >
+                              長さ不明
+                            </span>
+                          )}
+                          {/* 値段は「どれを選ぶか」の実際の軸。100万トークンあたり */}
+                          {m.cost && (
+                            <span className="llm-cap" title="100万トークンあたりの入力/出力">
+                              {priceOf(m.cost)}
+                            </span>
+                          )}
                           {m.vision && <span className="llm-cap">vision</span>}
-                          {m.free && <span className="llm-cap">無料</span>}
+                          {m.free && !m.cost && <span className="llm-cap">無料</span>}
                           <span className="llm-model-spacer" />
-                          <select
-                            className={`llm-select llm-select-tier llm-tier-${m.tier}`}
-                            disabled={busy}
-                            value={m.tier}
-                            title="このモデルをどの tier に置くか"
-                            onChange={(e) =>
-                              void run("llm.set_tier", {
-                                provider: m.providerId,
-                                model: m.id,
-                                tier: e.target.value,
-                              })
-                            }
+                          {/*
+                            tier は3つしかない。**開いてから選ぶより、並べて押す**——
+                            いまどこに置かれているかが一覧のまま読め、隣へ移すのも一手で済む
+                          */}
+                          <span
+                            className="llm-tier-switch"
+                            role="radiogroup"
+                            aria-label={`${m.id} の tier`}
                           >
                             {data.tiers.map((t) => (
-                              <option key={t.tier} value={t.tier}>
+                              <button
+                                key={t.tier}
+                                type="button"
+                                role="radio"
+                                aria-checked={m.tier === t.tier}
+                                className={`llm-tier-opt ${m.tier === t.tier ? `is-on llm-tier-${t.tier}` : ""}`}
+                                disabled={busy}
+                                title={t.description}
+                                onClick={() => {
+                                  if (m.tier === t.tier) return;
+                                  void run("llm.set_tier", {
+                                    provider: m.providerId,
+                                    model: m.id,
+                                    tier: t.tier,
+                                  });
+                                }}
+                              >
                                 {t.label}
-                              </option>
+                              </button>
                             ))}
-                          </select>
+                          </span>
                           {(["host", "worker"] as const).map((scope) => (
                             <button
                               key={scope}
@@ -487,9 +756,187 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                           >
                             {tierInfo?.label ?? m.tier}の第一候補
                           </button>
+                          {/* 採用をやめる＝番頭も職人も使わない。一覧から消えるだけで台帳には残る */}
+                          <button
+                            className="llm-pill llm-pill-drop"
+                            disabled={busy}
+                            title="この一覧から外す（台帳には残るので、また探して採用できます）"
+                            onClick={() => {
+                              void run("llm.set_usable", {
+                                provider: m.providerId,
+                                model: m.id,
+                                scope: "host",
+                                usable: false,
+                              }).then(() =>
+                                run("llm.set_usable", {
+                                  provider: m.providerId,
+                                  model: m.id,
+                                  scope: "worker",
+                                  usable: false,
+                                })
+                              );
+                            }}
+                          >
+                            採用をやめる
+                          </button>
                         </div>
                       );
                     })}
+
+                    {/*
+                      探して採用。**一覧を全部並べない**——数百あるプロバイダでは、
+                      並べた時点で選べなくなる。絞ってから採用する（ADR-0011 決定47）
+                    */}
+                    <div className="llm-sub-head">
+                      <span className="llm-sub-label">探して採用</span>
+                    </div>
+                    <div className="llm-search">
+                      <span className="llm-search-box">
+                        <input
+                          className="llm-search-input"
+                          placeholder="モデル名で探す（例: opus, gpt, llama）"
+                          value={(search[p.id] ?? EMPTY_SEARCH).query}
+                          onChange={(e) =>
+                            setSearch((prev) => ({
+                              ...prev,
+                              [p.id]: { ...(prev[p.id] ?? EMPTY_SEARCH), query: e.target.value },
+                            }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                              void runSearch(p.id, search[p.id] ?? EMPTY_SEARCH);
+                            }
+                          }}
+                        />
+                        {/* 探した結果を片付ける。**採用中の一覧に戻りたいだけ**のときに、
+                            結果が居座ると邪魔になる（消せるものがあるときだけ出す） */}
+                        {((search[p.id] ?? EMPTY_SEARCH).query.length > 0 || found[p.id]) && (
+                          <button
+                            className="llm-search-clear"
+                            type="button"
+                            title="検索結果を消す"
+                            aria-label="検索結果を消す"
+                            onClick={() => {
+                              setSearch((prev) => ({
+                                ...prev,
+                                [p.id]: { ...(prev[p.id] ?? EMPTY_SEARCH), query: "" },
+                              }));
+                              setFound((prev) => {
+                                const next = { ...prev };
+                                delete next[p.id];
+                                return next;
+                              });
+                            }}
+                          >
+                            ×
+                          </button>
+                        )}
+                      </span>
+                      <button
+                        className="llm-btn"
+                        disabled={busy}
+                        onClick={() => void runSearch(p.id, search[p.id] ?? EMPTY_SEARCH)}
+                      >
+                        探す
+                      </button>
+                    </div>
+                    <div className="llm-search-filters">
+                      {([
+                        { key: "vision", label: "画像可" },
+                        { key: "free", label: "無料" },
+                      ] as const).map((f) => (
+                        <button
+                          key={f.key}
+                          className={`llm-chip ${(search[p.id] ?? EMPTY_SEARCH)[f.key] ? "is-on" : ""}`}
+                          disabled={busy}
+                          onClick={() => {
+                            const next = {
+                              ...(search[p.id] ?? EMPTY_SEARCH),
+                              [f.key]: !(search[p.id] ?? EMPTY_SEARCH)[f.key],
+                            };
+                            void runSearch(p.id, next);
+                          }}
+                        >
+                          {f.label}
+                        </button>
+                      ))}
+                      <select
+                        className="llm-select llm-select-sort"
+                        value={(search[p.id] ?? EMPTY_SEARCH).sort}
+                        disabled={busy}
+                        onChange={(e) => {
+                          const next = {
+                            ...(search[p.id] ?? EMPTY_SEARCH),
+                            sort: e.target.value as SearchState["sort"],
+                          };
+                          void runSearch(p.id, next);
+                        }}
+                      >
+                        <option value="name">名前順</option>
+                        <option value="context">文脈が長い順</option>
+                        <option value="price">安い順</option>
+                      </select>
+                    </div>
+                    {found[p.id] && (
+                      <div className="llm-found">
+                        {/* I1: 何件のうち何件を出しているかを言う */}
+                        <div className="llm-found-count">
+                          {found[p.id]!.matched} 件中 {found[p.id]!.models.length} 件
+                        </div>
+                        {found[p.id]!.models.map((m) => (
+                          <div key={`found/${m.providerId}/${m.id}`} className="llm-model">
+                            <span className="llm-model-id">{m.id}</span>
+                            {m.contextWindow ? (
+                              <span className="llm-cap">{contextOf(m.contextWindow)}</span>
+                            ) : (
+                              <span className="llm-cap llm-cap-unknown">長さ不明</span>
+                            )}
+                            {m.cost && <span className="llm-cap">{priceOf(m.cost)}</span>}
+                            {m.vision && <span className="llm-cap">vision</span>}
+                            <span className="llm-model-spacer" />
+                            <button
+                              className="llm-pill"
+                              disabled={busy || m.hostUsable}
+                              onClick={() => {
+                                void run("llm.set_usable", {
+                                  provider: m.providerId,
+                                  model: m.id,
+                                  scope: "host",
+                                  usable: true,
+                                }).then(() => void runSearch(p.id, search[p.id] ?? EMPTY_SEARCH));
+                              }}
+                            >
+                              {m.hostUsable ? "採用済み" : "採用する"}
+                            </button>
+                          </div>
+                        ))}
+                        {found[p.id]!.models.length === 0 && (
+                          <div className="llm-empty">見つかりません</div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* プロバイダごと消す。取り返しがつかないので、何が消えるかを言ってから聞く */}
+                    <div className="llm-prov-danger">
+                      <button
+                        className="llm-btn llm-btn-danger"
+                        disabled={busy}
+                        onClick={() => {
+                          const detail = [
+                            `${p.id} を消します。`,
+                            `モデル ${models.length} 件の設定`,
+                            p.hasAuth ? "APIキー" : undefined,
+                            "並び順・使用可の設定",
+                          ]
+                            .filter(Boolean)
+                            .join(" / ");
+                          if (!confirm(`${detail} も一緒に消えます。よろしいですか。`)) return;
+                          void run("llm.remove_provider", { id: p.id });
+                        }}
+                      >
+                        このプロバイダを消す
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>

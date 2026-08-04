@@ -9,6 +9,11 @@
  * イベントには常に `threadId` が載る。ここではスレッドごとに会話とキャンバスを分けて
  * 持ち、**どれを見ているか（activeThreadId）だけが UI 側の状態**になる。
  * 混ぜて持つと、あるスレッドの発話が別のスレッドのチャットに流れ込む。
+ *
+ * **その「どれを見ているか」は自分では持たない**——真実は URL（`viewLocation.ts`）に
+ * 置き、ここは渡されたものを見る（D3）。持ってしまうと、戻る／進むとリロードで
+ * 画面の記憶と URL が食い違う。ホストの都合で移らざるを得ないとき（見ていた会話が
+ * 畳まれた等）は `onActiveThread` で呼び手へ返す。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -30,18 +35,42 @@ interface ThreadState {
   chat: TranscriptEntry[];
   tabs: CanvasTabView[];
   activeTabId: string | undefined;
+  /**
+   * この会話のキャンバスの状態が届いたか。**「タブが無い」と「まだ分からない」を
+   * 分ける**——届く前に空だと決めつけると、URL から復元しようとしているタブを
+   * 自分で捨ててしまう（接続直後は `canvas_state` が会話ごとに1通ずつ後から届く）。
+   */
+  canvasKnown: boolean;
   busy: boolean;
   /** 見ていない間に届いた知らせ・発話があるか（決定35c：見えていない≠届いていない）。 */
   unread: boolean;
+  /** この会話で使っているモデル。**会話ごと**に持つ（PO裁定 2026-08-04）。 */
+  model?: CurrentModel;
+  /** 直近のターンで運んだトークン数。分かるまでは undefined（0 と偽らない）。 */
+  contextTokens?: number;
+  /** 書きかけの下書き。会話を移っても混ざらないよう、ここに置く。 */
+  draft: string;
 }
 
 const EMPTY_THREAD: ThreadState = {
   chat: [],
   tabs: [],
   activeTabId: undefined,
+  canvasKnown: false,
   busy: false,
   unread: false,
+  draft: "",
 };
+
+/** いま番頭が使っているモデル（`model_state` の写し）。 */
+export interface CurrentModel {
+  provider: string;
+  id: string;
+  /** 画像を読めるか。添付の可否判定に使う。 */
+  vision: boolean;
+  /** 文脈に入る最大トークン数（分かるときだけ）。使用率の分母。 */
+  contextWindow?: number;
+}
 
 export interface BantoSession {
   status: ConnectionStatus;
@@ -60,6 +89,8 @@ export interface BantoSession {
   activeTabId: string | undefined;
   chat: TranscriptEntry[];
   busy: boolean;
+  /** 見ている会話のキャンバスの状態が届いたか（空なのか、まだ分からないのか）。 */
+  canvasKnown: boolean;
   /** 未読の印がついているスレッドID。 */
   unreadThreadIds: string[];
   /** 特定スレッドの会話を読む（履歴の読み取り用）。 */
@@ -78,6 +109,31 @@ export interface BantoSession {
   openThread(title?: string): void;
   closeThread(threadId: string): void;
   reopenThread(threadId: string): void;
+  /** いま見ている会話が使っているモデル（届くまでは undefined）。 */
+  model: CurrentModel | undefined;
+  /** いま見ている会話のモデルを変える。効いたかは `model` が入れ替わることで分かる。 */
+  setModel(provider: string, model: string): void;
+  /** いま見ている会話の書きかけ。 */
+  draft: string;
+  setDraft(text: string): void;
+  /** いま見ている会話が直近のターンで運んだトークン数（分かるまでは undefined）。 */
+  contextTokens: number | undefined;
+}
+
+/** 見る先が変わったことの伝え方。 */
+export interface ActiveThreadChange {
+  /**
+   * 履歴に積むか。**POが自分で選んだ移動だけ積む**——番頭が別の分身を開いた・見ていた
+   * 会話が畳まれた、を積むと、戻るがもう無い場所へ帰ろうとする。
+   */
+  push: boolean;
+}
+
+export interface BantoSessionOptions {
+  /** いま見ている会話（真実は URL）。 */
+  activeThreadId: string | undefined;
+  /** 見る先を変えたい／変えざるを得ないとき。呼び手（＝URL）が受けて動かす。 */
+  onActiveThread(threadId: string | undefined, change: ActiveThreadChange): void;
 }
 
 /** 差分イベントを履歴へ畳み込む。ホスト側の record() と同じ規則。
@@ -85,7 +141,14 @@ export interface BantoSession {
 function applyDelta(prev: TranscriptEntry[], event: ServerEvent): TranscriptEntry[] {
   switch (event.type) {
     case "po_message":
-      return [...prev, { role: "po", text: event.text }];
+      return [
+        ...prev,
+        {
+          role: "po",
+          text: event.text,
+          ...(event.attachments ? { attachments: event.attachments } : {}),
+        },
+      ];
 
     // 職人からの報告・質問（決定29）。POの発話ではないので別の行として積む
     case "notice":
@@ -101,8 +164,34 @@ function applyDelta(prev: TranscriptEntry[], event: ServerEvent): TranscriptEntr
       return [...prev, { role: "banto", text: event.delta }];
     }
 
+    // 思考の差分。本文と同じく、最後の思考へ足して参照を維持する
+    case "reasoning_delta": {
+      const last = prev[prev.length - 1];
+      if (last?.role === "reasoning") {
+        last.text += event.delta;
+        return [...prev];
+      }
+      return [...prev, { role: "reasoning", text: event.delta }];
+    }
+
+    // 考え終わり。時間だけを入れる（本文はもう入っている）
+    case "reasoning_end": {
+      const last = prev[prev.length - 1];
+      if (last?.role !== "reasoning") return prev;
+      last.durationMs = event.durationMs;
+      return [...prev];
+    }
+
     case "tool_start":
-      return [...prev, { role: "tool", name: event.name, state: "running" }];
+      return [
+        ...prev,
+        {
+          role: "tool",
+          name: event.name,
+          state: "running",
+          ...(event.input !== undefined ? { input: event.input } : {}),
+        },
+      ];
 
     case "tool_end": {
       const index = prev.findIndex(
@@ -110,8 +199,9 @@ function applyDelta(prev: TranscriptEntry[], event: ServerEvent): TranscriptEntr
       );
       if (index === -1) return prev;
       // in-place mutation: 同一参照を維持して ChatRow の再描画を抑制
-      const tool = prev[index] as { role: "tool"; name: string; state: string };
+      const tool = prev[index] as { role: "tool"; state: string; output?: unknown };
       tool.state = event.isError ? "failed" : "ok";
+      if (event.output !== undefined) tool.output = event.output;
       return [...prev];
     }
 
@@ -128,22 +218,26 @@ function applyDelta(prev: TranscriptEntry[], event: ServerEvent): TranscriptEntr
 
 /** 未読の印をつけるイベントか。自分の発話では立てない（決定35c）。 */
 function marksUnread(event: ServerEvent): boolean {
-  return event.type === "notice" || event.type === "text_delta";
+  // 思考も「動き出した」印。本文より先に届くので、これを見落とすと気づくのが遅れる
+  return event.type === "notice" || event.type === "text_delta" || event.type === "reasoning_delta";
 }
 
-export function useBantoSession(url: string): BantoSession {
+export function useBantoSession(url: string, options: BantoSessionOptions): BantoSession {
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [sessionId, setSessionId] = useState<string>();
   const [tools, setTools] = useState<string[]>([]);
   const [catalog, setCatalog] = useState<CatalogEntryView[]>([]);
   const [allThreads, setAllThreads] = useState<ThreadView[]>([]);
   const [modules, setModules] = useState<ModuleEndpointView[]>([]);
-  const [activeThreadId, setActiveThreadId] = useState<string>();
   const [byThread, setByThread] = useState<Record<string, ThreadState>>({});
+  const activeThreadId = options.activeThreadId;
   const socketRef = useRef<WebSocket>(null);
   /** 見ているスレッドを購読ハンドラから参照する（再接続させないため ref で持つ）。 */
   const activeRef = useRef<string>(undefined);
   activeRef.current = activeThreadId;
+  /** 見る先の変更の伝え先。**接続を張り直させないため ref 越しに呼ぶ**（下の効果の deps に入れない）。 */
+  const onActiveThreadRef = useRef(options.onActiveThread);
+  onActiveThreadRef.current = options.onActiveThread;
   /**
    * 自分が開いた会話へ自動で移るための印。
    *
@@ -173,6 +267,27 @@ export function useBantoSession(url: string): BantoSession {
       for (const view of threads) {
         update(view.threadId, (prev) =>
           prev.busy === view.streaming ? prev : { ...prev, busy: view.streaming }
+        );
+      }
+    },
+    [update]
+  );
+
+  /**
+   * 各会話が使っているモデルを一覧から取り込む（D3：真実はホスト側）。
+   *
+   * **新しく開いた会話にも要る**——`model_state` は接続直後と切替のときにしか流れないので、
+   * 一覧の更新（`thread_state`）でしか存在を知らない会話はモデルが空のままになる
+   * （PO報告 2026-08-04：新規作成した会話でモデルが表示されなかった）。
+   */
+  const syncModels = useCallback(
+    (threads: ThreadView[]) => {
+      for (const view of threads) {
+        if (!view.model) continue;
+        update(view.threadId, (prev) =>
+          prev.model?.provider === view.model?.provider && prev.model?.id === view.model?.id
+            ? prev
+            : { ...prev, model: view.model }
         );
       }
     },
@@ -217,8 +332,14 @@ export function useBantoSession(url: string): BantoSession {
           setModules(event.modules ?? []);
           setAllThreads(event.threads);
           syncStreaming(event.threads);
+          syncModels(event.threads);
           knownThreadIds.current = new Set(event.threads.map((t) => t.threadId));
-          setActiveThreadId((current) => current ?? event.defaultThreadId);
+          // 前に見ていた会話（URL に残っている）がまだ開いていれば、そこへ帰る。
+          // 畳まれていた／もう無いときだけ既定へ落とす——**位置を差し替えるだけ**なので
+          // 履歴には積まない（戻ると消えた会話へ帰ろうとするため）
+          if (!event.threads.some((t) => t.threadId === activeRef.current && t.state === "open")) {
+            onActiveThreadRef.current(event.defaultThreadId, { push: false });
+          }
           break;
 
         case "thread_state": {
@@ -228,16 +349,20 @@ export function useBantoSession(url: string): BantoSession {
           knownThreadIds.current = new Set(event.threads.map((t) => t.threadId));
           setAllThreads(event.threads);
           syncStreaming(event.threads);
-          setActiveThreadId((current) => {
-            // 自分が開いた会話へ移る（押した意図に合わせる）
-            if (appeared && followNewThread.current) {
-              followNewThread.current = false;
-              return appeared.threadId;
-            }
-            // 見ていたスレッドが畳まれたら、開いている先頭へ移る（空の面を見せない）
-            const still = event.threads.find((t) => t.threadId === current && t.state === "open");
-            return still ? current : event.threads.find((t) => t.state === "open")?.threadId;
-          });
+          syncModels(event.threads);
+          // 自分が開いた会話へ移る（押した意図に合わせる）。**自分で開いたものは履歴に積む**
+          if (appeared && followNewThread.current) {
+            followNewThread.current = false;
+            onActiveThreadRef.current(appeared.threadId, { push: true });
+            break;
+          }
+          // 見ていたスレッドが畳まれたら、開いている先頭へ移る（空の面を見せない）。
+          // こちらは自分で選んだ移動ではないので積まない
+          if (!event.threads.some((t) => t.threadId === activeRef.current && t.state === "open")) {
+            onActiveThreadRef.current(event.threads.find((t) => t.state === "open")?.threadId, {
+              push: false,
+            });
+          }
           break;
         }
 
@@ -251,6 +376,7 @@ export function useBantoSession(url: string): BantoSession {
             ...prev,
             tabs: event.tabs,
             activeTabId: event.activeTabId,
+            canvasKnown: true,
           }));
           break;
 
@@ -278,6 +404,24 @@ export function useBantoSession(url: string): BantoSession {
           break;
         }
 
+        // その会話が使っているモデル。会話ごとに持つ（切り替えても他の会話は変わらない）
+        case "model_state":
+          update(event.threadId, (prev) => ({
+            ...prev,
+            model: {
+              provider: event.provider,
+              id: event.id,
+              vision: event.vision,
+              ...(event.contextWindow ? { contextWindow: event.contextWindow } : {}),
+            },
+          }));
+          break;
+
+        // その会話が文脈をどれだけ使っているか（実測）
+        case "context_state":
+          update(event.threadId, (prev) => ({ ...prev, contextTokens: event.tokens }));
+          break;
+
         default:
           update(event.threadId, (prev) => ({
             ...prev,
@@ -296,7 +440,7 @@ export function useBantoSession(url: string): BantoSession {
       if (retryTimer) clearTimeout(retryTimer);
       socketRef.current?.close();
     };
-  }, [url, update, syncStreaming]);
+  }, [url, update, syncStreaming, syncModels]);
 
   const post = useCallback((message: Record<string, unknown>) => {
     const socket = socketRef.current;
@@ -333,19 +477,31 @@ export function useBantoSession(url: string): BantoSession {
     () => active.busy,
     [active.busy]
   );
+  const activeModel = useMemo(() => active.model, [active.model]);
+  const activeDraft = useMemo(() => active.draft, [active.draft]);
+  const activeTokens = useMemo(() => active.contextTokens, [active.contextTokens]);
   const unreadThreadIds = useMemo(
     () => Object.entries(byThread).filter(([, s]) => s.unread).map(([id]) => id),
     [byThread]
   );
 
-  const switchThread = useCallback(
-    (threadId: string) => {
-      setActiveThreadId(threadId);
-      // 見たら未読を落とす
-      update(threadId, (prev) => ({ ...prev, unread: false }));
-    },
-    [update]
-  );
+  const switchThread = useCallback((threadId: string) => {
+    // POが自分で選んだ移動なので履歴に積む（戻るで前の会話へ帰れる）。
+    // 未読を落とすのは下の効果——戻る／進むで移ったときも同じように落ちる必要がある
+    onActiveThreadRef.current(threadId, { push: true });
+  }, []);
+
+  // 見ている会話の未読は落とす。**移った経路を問わない**——タブを押したときだけ落とすと、
+  // 戻る／進むやリロードで開いた会話に印が残ったままになる
+  useEffect(() => {
+    if (!activeThreadId) return;
+    setByThread((prev) => {
+      const state = prev[activeThreadId];
+      // 参照を変えない（無駄な再描画を起こさない）
+      if (!state?.unread) return prev;
+      return { ...prev, [activeThreadId]: { ...state, unread: false } };
+    });
+  }, [activeThreadId]);
 
   const chatOf = (threadId: string): TranscriptEntry[] => byThread[threadId]?.chat ?? [];
 
@@ -370,6 +526,26 @@ export function useBantoSession(url: string): BantoSession {
   const abort = useCallback(
     () => post({ type: "abort", threadId: activeThreadId }),
     [activeThreadId, post]
+  );
+
+  // モデルは会話ごと。**いま見ている会話にだけ**効かせる
+  const setModel = useCallback(
+    (provider: string, model: string) =>
+      post({ type: "set_model", threadId: activeThreadId, provider, model }),
+    [activeThreadId, post]
+  );
+
+  /**
+   * 書きかけを覚える。**会話ごと**に持つ——移った先に前の会話の書きかけが出ると、
+   * そのまま送ってしまう（PO報告 2026-08-04）。
+   */
+  const setDraft = useCallback(
+    (text: string) => {
+      const threadId = activeThreadId;
+      if (!threadId) return;
+      update(threadId, (prev) => (prev.draft === text ? prev : { ...prev, draft: text }));
+    },
+    [activeThreadId, update]
   );
 
   const switchTab = useCallback(
@@ -431,6 +607,7 @@ export function useBantoSession(url: string): BantoSession {
       activeThreadId,
       tabs: active.tabs,
       activeTabId: active.activeTabId,
+      canvasKnown: active.canvasKnown,
       chat: active.chat,
       busy: active.busy,
       unreadThreadIds,
@@ -446,6 +623,11 @@ export function useBantoSession(url: string): BantoSession {
       openThread,
       closeThread,
       reopenThread,
+      model: active.model,
+      setModel,
+      draft: active.draft,
+      setDraft,
+      contextTokens: active.contextTokens,
     }),
     [
       status,
@@ -474,6 +656,11 @@ export function useBantoSession(url: string): BantoSession {
       closeThread,
       reopenThread,
       chatOf,
+      setModel,
+      setDraft,
+      activeModel,
+      activeDraft,
+      activeTokens,
     ]
   );
 

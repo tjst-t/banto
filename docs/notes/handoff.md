@@ -234,7 +234,7 @@ epic-0002〜0004にはまだタスクを起票していない（意図的：D10�
 
 ### 動かし方・確認の作法（次セッションが踏まないように）
 
-- **番頭ホスト起動**：`BANTO_DATA_DIR=$PWD/.banto node --import tsx packages/banto-host/src/bin.ts serve --port 4100 --provider opencode --model deepseek-v4-flash-free`。WebUI は別途 `npm run dev:web`（:4200）。`.banto/` は実行時データで gitignore 済み
+- **番頭ホスト起動**：`BANTO_DATA_DIR=$PWD/.banto node --import tsx packages/banto-host/src/bin.ts serve --port 4100`（**モデルは起動時に指定しない**。設定画面「LLM・モデル」の番頭の標準が唯一の置き場所。2026-08-04）。WebUI は別途 `npm run dev:web`（:4200）。`.banto/` は実行時データで gitignore 済み
 - **職人の作業場所は必ず `/tmp/banto-play`**（用意済みの空 git リポジトリ）。imp-0004 が直るまで職人は書き込み可能なので、このリポジトリを worktree に指定すると本当に書き換わる
 - **実プロセスでの検証を省かない**。このセッションで**3回**、偽ドライバのテストは全通過なのに本物の pi で壊れていた（inject忘れ→inject応答無視で指示消失→再開時の同一sessionId取りこぼし）。偽ドライバが本物の制約を持っていない箇所は、偽ドライバを本物に寄せて再発防止した
 - **`git add -A` を使わない**。このセッションで PO の職人が書いた提案書・記憶データを何度も巻き込んだ。ファイルを明示して add する

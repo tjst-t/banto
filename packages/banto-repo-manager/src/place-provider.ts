@@ -12,7 +12,7 @@
 
 import type { Place, PlaceProvider } from "@banto/core";
 import { runCommand, type CommandRunner } from "./command.js";
-import { listGhqRepositories, listGwqWorktrees } from "./discovery.js";
+import { repoDiscoveryFor } from "./discovery.js";
 
 export interface RepoManagerOptions {
   /** 外部コマンドの呼び出し口。既定は実際に `ghq` / `gwq` を起こす。 */
@@ -30,16 +30,27 @@ export const REPO_MANAGER_PROVIDER_NAME = "repo-manager";
  */
 export function createRepoManagerPlaceProvider(options: RepoManagerOptions = {}): PlaceProvider {
   const run = options.run ?? runCommand;
+  const discovery = repoDiscoveryFor(run);
   return {
     name: REPO_MANAGER_PROVIDER_NAME,
-    // D3: 毎回導出する。ここにキャッシュを置かない（リポジトリは番頭の外でも増減する）
+    /**
+     * D3: 台帳は持たない。`ghq`/`gwq` から導出したものをそのまま渡す——ただし
+     * **導出は待たせない写し越し**に行う（`RepoDiscovery`）。`gwq list` は 400ms 以上
+     * かかり、場所の解決は Tool 呼び出しのたびに起きるので、毎回起こすと GUI が
+     * 目に見えて遅くなる。写しが古いときの追いつき方は discovery.ts に書いてある。
+     */
     list: async (): Promise<Place[]> => {
       const [repositories, worktrees] = await Promise.all([
-        listGhqRepositories(run),
-        listGwqWorktrees(run),
+        discovery.repositories(),
+        discovery.worktrees(),
       ]);
       // ワークツリーは branch を持つが、共通契約は Place だけなので落として渡す（決定36c）
       return [...repositories, ...worktrees.map(({ id, label, path }) => ({ id, label, path }))];
+    },
+    // 探している場所が写しに無いときの逃げ道（決定36c）。呼び手（PlaceRegistry）が
+    // 「知らない場所だ」と断る前にこれを呼ぶので、外で作られたワークツリーにも追いつく
+    refresh: () => {
+      discovery.invalidate();
     },
   };
 }

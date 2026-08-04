@@ -49,6 +49,19 @@ export interface AbortMessage extends ThreadTarget {
   type: "abort";
 }
 
+/**
+ * この会話で使うモデルを変える。
+ *
+ * **会話ごとに持つ**（PO裁定 2026-08-04）。同じ番頭でも、話題ごとに向いたモデルが違う
+ * ——重い設計の相談と軽い調べ物を同じモデルで続ける必要はない。選んだモデルはその会話に
+ * 残り、再起動しても続く。**新しい会話は設定の「番頭の標準」から始まる**。
+ */
+export interface SetModelMessage extends ThreadTarget {
+  type: "set_model";
+  provider: string;
+  model: string;
+}
+
 /** POが直接タブを切り替える。番頭の canvas.switch と同じ結果になる。 */
 export interface CanvasSwitchMessage extends ThreadTarget {
   type: "canvas_switch";
@@ -131,7 +144,8 @@ export type ClientMessage =
   | NewSessionMessage
   | ThreadOpenMessage
   | ThreadCloseMessage
-  | ThreadReopenMessage;
+  | ThreadReopenMessage
+  | SetModelMessage;
 
 // ── Server → Client ──────────────────────────────────────────────────────────
 
@@ -177,6 +191,8 @@ export interface ThreadView {
   state: "open" | "closed";
   /** 畳んだ時刻（state が closed のとき）。 */
   closedAt?: string;
+  /** この会話で使っているモデル。会話ごとに持つ（未設定なら番頭の標準）。 */
+  model?: { provider: string; id: string; vision: boolean; contextWindow?: number };
   /**
    * いま番頭が喋っている最中か。
    *
@@ -253,12 +269,44 @@ export type NoticeSource =
   | "system"
   | (string & {});
 
+/**
+ * 会話に残る添付。**中身そのものは持たない**（D3）。
+ *
+ * 画像を base64 のまま履歴に積むと JSONL が肥大化し、再読み込みのたびに同じ塊が
+ * 流れる。保存先への URL だけを持ち、実体は `GET /api/attachments/{name}` で取る。
+ */
+export interface TranscriptAttachment {
+  kind: "image" | "file";
+  /** POが選んだときのファイル名（表示用）。 */
+  name: string;
+  /** ホストが保存した先。`/api/attachments/...`。 */
+  url: string;
+  /** 画像の MIME。表示側が img で出すかの判断に使う。 */
+  mimeType?: string;
+}
+
 export type TranscriptEntry =
-  | { role: "po"; text: string }
+  | { role: "po"; text: string; attachments?: TranscriptAttachment[] }
   | { role: "banto"; text: string }
+  /**
+   * 番頭の思考（ハーネスの thinking）。本文とは別に積む——応答と混ぜると、
+   * どこまでが考えでどこからが答えなのか読めなくなる。
+   * `durationMs` は考え終わったときに入る（「X秒間考えました」の表示に使う）。
+   */
+  | { role: "reasoning"; text: string; durationMs?: number }
   /** POでも番頭でもない知らせ（職人からの報告・質問、別の会話からの引き継ぎ等）。 */
   | { role: "notice"; source: NoticeSource; text: string }
-  | { role: "tool"; name: string; state: "running" | "ok" | "failed" }
+  /**
+   * ツールの呼び出し。`input`／`output` は**ハーネスが出したものをそのまま**載せる
+   * （大きすぎるものは切り詰める。`TOOL_PAYLOAD_MAX_CHARS`）。
+   */
+  | {
+      role: "tool";
+      name: string;
+      state: "running" | "ok" | "failed";
+      input?: unknown;
+      output?: unknown;
+    }
   | { role: "error"; text: string };
 
 /**
@@ -286,6 +334,8 @@ export interface NoticeEvent extends ThreadScope {
 export interface PoMessageEvent extends ThreadScope {
   type: "po_message";
   text: string;
+  /** 一緒に送られた添付（表示用の参照。実体は URL の先）。 */
+  attachments?: TranscriptAttachment[];
 }
 
 /** アシスタント応答のテキスト差分。 */
@@ -294,11 +344,31 @@ export interface TextDeltaEvent extends ThreadScope {
   delta: string;
 }
 
+/**
+ * 番頭の思考の差分（ハーネスの thinking_delta）。
+ * 本文の差分と分けて送る——混ぜると、受け取った側で分けられなくなる。
+ */
+export interface ReasoningDeltaEvent extends ThreadScope {
+  type: "reasoning_delta";
+  delta: string;
+}
+
+/**
+ * 思考の終わり。**考えていた時間はホストが測る**（D3）——クライアントは
+ * 途中から繋ぐことがあり、最初の差分を見ていないと時間を出せない。
+ */
+export interface ReasoningEndEvent extends ThreadScope {
+  type: "reasoning_end";
+  durationMs: number;
+}
+
 /** Tool実行の開始。name は論理名（決定22）。 */
 export interface ToolStartEvent extends ThreadScope {
   type: "tool_start";
   toolCallId: string;
   name: string;
+  /** 呼び出しの引数。ハーネスが出したものをそのまま（大きすぎるものは切り詰め）。 */
+  input?: unknown;
 }
 
 /** Tool実行の終了。name は論理名（決定22）。 */
@@ -307,6 +377,8 @@ export interface ToolEndEvent extends ThreadScope {
   toolCallId: string;
   name: string;
   isError: boolean;
+  /** 実行の結果。ハーネスが出したものをそのまま（大きすぎるものは切り詰め）。 */
+  output?: unknown;
 }
 
 /** ターンの終わり。クライアントは入力可能状態に戻ってよい。 */
@@ -344,6 +416,36 @@ export interface CanvasStateEvent extends ThreadScope {
   activeTabId: string | undefined;
 }
 
+/**
+ * その会話で使っているモデル。接続直後（会話ごとに1通）と、切り替わるたびに配る。
+ *
+ * D3: どのモデルで喋っているかの真実はホストが持つ。UI は選ばせるだけで、
+ * 「選んだつもり」の状態を自分で覚えない（切替に失敗したら画面は前のまま）。
+ */
+export interface ModelStateEvent extends ThreadScope {
+  type: "model_state";
+  provider: string;
+  /** モデル ID（表示にも使う）。 */
+  id: string;
+  /** 画像を読めるか。添付の可否判定に使う。 */
+  vision: boolean;
+  /** 文脈に入る最大トークン数。分かるときだけ載る（使用量の分母になる）。 */
+  contextWindow?: number;
+}
+
+/**
+ * その会話がいま文脈をどれだけ使っているか。
+ *
+ * **実測だけを出す**（I1）——ハーネスが返したトークン数をそのまま配り、こちらで
+ * 推定しない。ターンが1度も回っていない会話や、再起動直後はまだ分からないので
+ * 何も配らない（「0%」と偽らない）。
+ */
+export interface ContextStateEvent extends ThreadScope {
+  type: "context_state";
+  /** 直近のターンで運んだトークン数（入力＋キャッシュ＋出力）。 */
+  tokens: number;
+}
+
 /** プロトコル違反・処理不能。I2: 黙って捨てずクライアントへ返す。 */
 export interface ErrorEvent {
   type: "error";
@@ -357,6 +459,10 @@ export type ServerEvent =
   | PoMessageEvent
   | NoticeEvent
   | TextDeltaEvent
+  | ReasoningDeltaEvent
+  | ReasoningEndEvent
+  | ModelStateEvent
+  | ContextStateEvent
   | ToolStartEvent
   | ToolEndEvent
   | TurnStartEvent

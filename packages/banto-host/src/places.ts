@@ -9,7 +9,9 @@
  *
  * **引数は消さない。場所の外を指したときに弾く**——既存の Tool 契約を壊さないため。
  *
- * D3: 場所の一覧は提供元が毎回導出する。ここでキャッシュしない。
+ * D3: 場所の一覧は提供元が導出する。ここに台帳を持たない——提供元が重い導出を
+ *     写し越しに返すことはあるが（repo-manager の `gwq`）、**探している場所が無いときは
+ *     取り直させてから断る**ので、「あるのに無いと言われる」は起きない。
  * I2: 範囲外・未登録は黙って既定へ落とさずエラーにする。別の場所を触るより止まる方がよい。
  */
 
@@ -125,15 +127,47 @@ export class PlaceRegistry {
     return { ...place, writable: merged };
   }
 
+  /**
+   * 提供元に導出し直させてから一覧を引く。
+   *
+   * 探しているものが見つからなかったときだけ通る道。**普段は通らない**——毎回通すと、
+   * 提供元が写しを持つ意味（＝速さ）が無くなる。
+   */
+  private async listFresh(): Promise<Place[]> {
+    await this.invalidate();
+    return this.list();
+  }
+
+  /** 提供元の写しを捨てさせる。写しを持たない提供元では何も起きない。 */
+  async invalidate(): Promise<void> {
+    await Promise.all(
+      this.providers.map(async (provider) => {
+        try {
+          await provider.refresh?.();
+        } catch (err) {
+          // 取り直しの失敗で止めない。手元の一覧で答えられるならそれでよい
+          console.error(
+            `[banto] 場所の提供元 "${provider.name}" の取り直しに失敗しました: ${String(err)}`
+          );
+        }
+      })
+    );
+  }
+
   /** id で1つ引く。I2: 未登録は黙って既定へ落とさずエラーにする。 */
   async require(id: string): Promise<Place> {
-    const places = await this.list();
-    const found = places.find((p) => p.id === id);
-    if (!found) {
+    const found = (await this.list()).find((p) => p.id === id);
+    if (found) return found;
+
+    // 手元の一覧に無いだけかもしれない（たった今作られたワークツリー等）。
+    // **断る前に取り直す**——「作った直後に使えない」を起こさないため
+    const places = await this.listFresh();
+    const fresh = places.find((p) => p.id === id);
+    if (!fresh) {
       const known = places.map((p) => p.id).join(", ");
       throw new Error(`Unknown place "${id}". Registered: ${known || "(none)"}`);
     }
-    return found;
+    return fresh;
   }
 
   /**
@@ -155,10 +189,11 @@ export class PlaceRegistry {
   /** 登録されている場所のうち、与えられた絶対パスを含むものを返す。 */
   async placeContaining(absolutePath: string): Promise<Place | undefined> {
     const real = realPathOfNearestExisting(absolutePath);
-    for (const place of await this.list()) {
-      if (isInside(real, place.path)) return place;
-    }
-    return undefined;
+    const inside = (places: readonly Place[]): Place | undefined =>
+      places.find((place) => isInside(real, place.path));
+    // 見つからないときだけ取り直す。砦の判定（決定36g）が、写しの古さで
+    // 「登録された場所の外」と誤判定しないようにする
+    return inside(await this.list()) ?? inside(await this.listFresh());
   }
 
   /**

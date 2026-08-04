@@ -89,6 +89,12 @@ class FakeGuardedSession implements GuardableSession {
 
   async abort(): Promise<void> {}
 
+  /** 差し替えられたモデル（ガードが素通しできているかを見る）。 */
+  models: unknown[] = [];
+  async setModel(model: unknown): Promise<void> {
+    this.models.push(model);
+  }
+
   /** turn_end を流し、pi と同じく assistant とツール結果を state.messages へ積む。 */
   emitTurnEnd(spec: TurnEndSpec): void {
     this.agent.state.messages.push(spec.message);
@@ -190,6 +196,26 @@ describe("turn-guard: 空応答の判定（純関数）", () => {
 });
 
 describe("turn-guard: 再試行（withEmptyResponseGuard）", () => {
+  it("包んでもモデル切替の口が消えない", async () => {
+    // ガードは手で組み立てた object を返すので、**書き写し忘れると口が消える**。
+    // 実際に消していて、画面から「対応していません」と言われた
+    const session = new FakeGuardedSession();
+    const guarded = withEmptyResponseGuard(session);
+
+    assert.equal(typeof guarded.setModel, "function");
+    await guarded.setModel?.({ id: "next-model" });
+    assert.deepEqual(session.models, [{ id: "next-model" }]);
+  });
+
+  it("元のセッションが切替に対応しないなら、包んだ側も名乗らない", async () => {
+    const session = new FakeGuardedSession();
+    // 対応しないハーネスを再現する
+    (session as { setModel?: unknown }).setModel = undefined;
+    const guarded = withEmptyResponseGuard(session);
+
+    assert.equal(guarded.setModel, undefined);
+  });
+
   it("正常応答（ツールなし）なら prompt 1回で終わり、再試行しない", async () => {
     const session = new FakeGuardedSession();
     session.promptTurns = [[{ toolResults: 0, message: assistantMessage([{ type: "text", text: "答え" }]) }]];

@@ -31,6 +31,7 @@ import {
 import {
   highlightCode,
   highlightToHtml,
+  useColorScheme,
   type HighlightedLine,
   type HighlightResult,
   type Scheme,
@@ -67,23 +68,6 @@ function parentOf(p: string): string {
   return i === -1 ? "." : p.slice(0, i);
 }
 
-/** システムのライト／ダーク設定（prefers-color-scheme）。shiki のテーマ切替に使う（task-0052 a4）。 */
-function useColorScheme(): Scheme {
-  const [scheme, setScheme] = useState<Scheme>(() =>
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "dark"
-      : "light"
-  );
-  useEffect(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = (e: MediaQueryListEvent): void => setScheme(e.matches ? "dark" : "light");
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
-  return scheme;
-}
 
 /** shiki トークンの装飾（TextMate の fontStyle ビットマスク: 1=italic 2=bold 4=underline）。 */
 function tokenStyle(t: HighlightedLine): React.CSSProperties {
