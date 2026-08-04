@@ -36,6 +36,8 @@ class FakeSession implements HostSession {
   isStreaming = false;
   prompts: string[] = [];
   aborted = 0;
+  /** モデル切替に対応するハーネスの再現（対応しない場合は未設定のまま）。 */
+  setModel?: (model: unknown) => Promise<void>;
   private listeners = new Set<(event: unknown) => void>();
 
   subscribe(listener: (event: unknown) => void): () => void {
@@ -63,7 +65,9 @@ let server: BantoHostServer | undefined;
 let session: FakeSession;
 
 async function startHost(
-  getLastError?: (() => string | undefined) | { webDir: string }
+  getLastError?:
+    | (() => string | undefined)
+    | { webDir?: string; model?: { id: string; vision: boolean } }
 ): Promise<{ url: string; tools: string[] }> {
   // 第2引数を取らずに済むよう、オブジェクトを渡したら設定として扱う（既存の呼び出しはそのまま）
   const extra = typeof getLastError === "object" ? getLastError : undefined;
@@ -417,6 +421,385 @@ describe("[task-0014] 会話履歴のホスト保持（リロードで消えな�
       { role: "tool", name: "memory.save", state: "ok" },
     ]);
     clientC.close();
+  });
+});
+
+/**
+ * チャット面を AI Elements と同じ体験にするために足した配信（思考・ツールの中身・添付）。
+ * どれも「表示できる材料がホストから届くか」を見る。
+ */
+describe("会話面が要る材料の配信", () => {
+  it("思考は reasoning として流れ、考えていた時間つきで履歴に残る", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "history");
+
+    session.emit({ type: "message_update", assistantMessageEvent: { type: "thinking_start" } });
+    session.emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", delta: "まず前提を" },
+    });
+    session.emit({
+      type: "message_update",
+      assistantMessageEvent: { type: "thinking_delta", delta: "確かめる" },
+    });
+    session.emit({ type: "message_update", assistantMessageEvent: { type: "thinking_end" } });
+
+    const delta = await waitFor(events, "reasoning_delta");
+    assert.ok(delta.type === "reasoning_delta" && delta.delta === "まず前提を");
+    const end = await waitFor(events, "reasoning_end");
+    assert.ok(end.type === "reasoning_end");
+    // 時間はホストが測る（クライアントは途中から繋ぐことがある）
+    assert.ok(end.type === "reasoning_end" && end.durationMs >= 0);
+    client.close();
+
+    // 繋ぎ直しても同じものが読める。本文は1本にまとまる
+    const c: ServerEvent[] = [];
+    const clientC = await BantoHostClient.connect(url, (e) => c.push(e));
+    const history = await waitFor(c, "history");
+    assert.ok(history.type === "history");
+    const reasoning = history.entries.find((e) => e.role === "reasoning");
+    assert.ok(reasoning?.role === "reasoning");
+    assert.equal(reasoning.text, "まず前提を確かめる");
+    assert.equal(typeof reasoning.durationMs, "number");
+    clientC.close();
+  });
+
+  it("ツールの引数と結果が届き、履歴にも残る（開いて中身が見られる）", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "history");
+
+    session.emit({
+      type: "tool_execution_start",
+      toolCallId: "t1",
+      toolName: "memory__save",
+      args: { text: "覚えること" },
+    });
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "t1",
+      toolName: "memory__save",
+      result: { saved: true },
+      isError: false,
+    });
+
+    const start = await waitFor(events, "tool_start");
+    assert.ok(start.type === "tool_start");
+    assert.deepEqual(start.input, { text: "覚えること" });
+    const end = await waitFor(events, "tool_end");
+    assert.ok(end.type === "tool_end");
+    assert.deepEqual(end.output, { saved: true });
+    client.close();
+
+    const c: ServerEvent[] = [];
+    const clientC = await BantoHostClient.connect(url, (e) => c.push(e));
+    const history = await waitFor(c, "history");
+    assert.ok(history.type === "history");
+    // 引数は開始のときにしか来ない。終わりで上書きされていないこと
+    assert.deepEqual(history.entries, [
+      {
+        role: "tool",
+        name: "memory.save",
+        state: "ok",
+        input: { text: "覚えること" },
+        output: { saved: true },
+      },
+    ]);
+    clientC.close();
+  });
+
+  it("文脈の使用量は実測だけを配る（分からないうちは黙る）", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "history");
+    // ターンが回っていないので、まだ何も届いていない
+    assert.equal(events.some((e) => e.type === "context_state"), false);
+
+    session.emit({
+      type: "turn_end",
+      message: {
+        role: "assistant",
+        usage: { input: 1200, output: 300, cacheRead: 500, cacheWrite: 0, totalTokens: 2000 },
+      },
+    });
+
+    const state = await waitFor(events, "context_state");
+    assert.ok(state.type === "context_state");
+    // 入力＋キャッシュ＋出力（次のターンで運ぶ量の目安）
+    assert.equal(state.tokens, 2000);
+    client.close();
+
+    // 繋ぎ直した画面にも、いまの使用量が届く
+    const c: ServerEvent[] = [];
+    const clientC = await BantoHostClient.connect(url, (e) => c.push(e));
+    const again = await waitFor(c, "context_state");
+    assert.ok(again.type === "context_state" && again.tokens === 2000);
+    clientC.close();
+  });
+
+  it("使用量が取れないターンでは何も配らない（0 と偽らない）", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "history");
+
+    session.emit({ type: "turn_end", message: { role: "assistant" } });
+    await new Promise((r) => setTimeout(r, 80));
+
+    assert.equal(events.some((e) => e.type === "context_state"), false);
+    client.close();
+  });
+
+  it("文脈のまとめ直しは会話に残る（黙って話が削られない）", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "history");
+
+    session.emit({
+      type: "compaction_end",
+      reason: "threshold",
+      aborted: false,
+      result: { summary: "…", firstKeptEntryId: "x", tokensBefore: 180000 },
+    });
+
+    const notice = await waitFor(events, "notice");
+    assert.ok(notice.type === "notice" && notice.source === "system");
+    assert.ok(notice.text.includes("まとめ直しました"), notice.text);
+    assert.ok(notice.text.includes("180,000"), "どれだけの量をまとめたか出す");
+    client.close();
+
+    // 再読み込みしても残る（番頭が細部を覚えていない理由が後から分かる）
+    const c: ServerEvent[] = [];
+    const clientC = await BantoHostClient.connect(url, (e) => c.push(e));
+    const history = await waitFor(c, "history");
+    assert.ok(history.type === "history");
+    assert.ok(history.entries.some((e) => e.role === "notice" && e.text.includes("まとめ直しました")));
+    clientC.close();
+  });
+
+  it("まとめ直しが中断されたときは何も出さない／失敗は出す（I2）", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "history");
+
+    session.emit({ type: "compaction_end", reason: "threshold", aborted: true });
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(events.some((e) => e.type === "notice"), false, "中断は知らせない");
+
+    session.emit({
+      type: "compaction_end",
+      reason: "overflow",
+      aborted: false,
+      errorMessage: "要約に失敗",
+    });
+    const failed = await waitFor(events, "notice");
+    assert.ok(failed.type === "notice" && failed.text.includes("失敗"));
+    client.close();
+  });
+
+  it("大きすぎる結果は切り詰めて載せる（切ったことを隠さない）", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "history");
+
+    session.emit({
+      type: "tool_execution_end",
+      toolCallId: "t2",
+      toolName: "file__read",
+      result: "あ".repeat(20000),
+      isError: false,
+    });
+
+    const end = await waitFor(events, "tool_end");
+    assert.ok(end.type === "tool_end" && typeof end.output === "string");
+    const output = end.output as string;
+    assert.ok(output.length < 20000, "そのままは載せない");
+    assert.ok(output.includes("先頭のみ"), `切ったことを書く: ${output.slice(-40)}`);
+    client.close();
+  });
+
+  it("送った添付は保存され、会話には参照だけが残る（HTTP で取り出せる）", async () => {
+    const previousWorkspace = process.env["BANTO_WORKSPACE"];
+    process.env["BANTO_WORKSPACE"] = dir;
+    try {
+      const { url } = await startHost();
+      const events: ServerEvent[] = [];
+      const client = await BantoHostClient.connect(url, (e) => events.push(e));
+      await waitFor(events, "history");
+
+      client.send({
+        type: "prompt",
+        text: "これを読んで",
+        attachments: [{ kind: "file", name: "note.md", content: "# 覚書" }],
+      });
+
+      const po = await waitFor(events, "po_message");
+      assert.ok(po.type === "po_message" && po.attachments?.length === 1);
+      const attachment = po.attachments![0]!;
+      assert.equal(attachment.kind, "file");
+      assert.equal(attachment.name, "note.md");
+      assert.ok(attachment.url.startsWith("/api/attachments/"));
+
+      // 中身そのものは会話に載せない（JSONL が肥大化しない）
+      const raw = JSON.stringify(po);
+      assert.equal(raw.includes("# 覚書"), false, "中身は参照の先に置く");
+
+      const res = await fetch(`http://localhost:${server!.port}${attachment.url}`);
+      assert.equal(res.status, 200);
+      assert.equal(await res.text(), "# 覚書");
+      client.close();
+    } finally {
+      if (previousWorkspace === undefined) delete process.env["BANTO_WORKSPACE"];
+      else process.env["BANTO_WORKSPACE"] = previousWorkspace;
+    }
+  });
+
+  it("モデルは会話ごと。変えても他の会話は変わらない", async () => {
+    const applied: unknown[] = [];
+    const tools = createMemoryTools(store);
+    const sessions: FakeSession[] = [];
+    const threads = new ThreadRegistry(async () => {
+      const s = new FakeSession();
+      // ハーネス側の差し替えを記録する（実際に走っているセッションへ効いたか）
+      s.setModel = async (model: unknown) => {
+        applied.push(model);
+      };
+      sessions.push(s);
+      return { session: s, tools };
+    });
+    await threads.open();
+    await threads.open();
+    server = await BantoHostServer.start({
+      threads,
+      port: 0,
+      model: { id: "before", vision: false },
+      modelProvider: "p1",
+      onSelectModel: async (thread, provider, model) => {
+        // 宛先の会話にだけ効かせる（bin.ts と同じ規則）
+        await thread.session.setModel?.({ provider, id: model });
+        return { id: model, vision: true };
+      },
+    });
+    const url = `ws://localhost:${server.port}${BANTO_WS_PATH}`;
+
+    // 2つの画面で同じ番頭を見ている状態を作る
+    const a: ServerEvent[] = [];
+    const b: ServerEvent[] = [];
+    const clientA = await BantoHostClient.connect(url, (e) => a.push(e));
+    const clientB = await BantoHostClient.connect(url, (e) => b.push(e));
+    // 接続直後に会話ごとのモデルが届く（後から繋いだ画面も選択中が分かる）
+    const initial = await waitFor(a, "model_state");
+    assert.ok(initial.type === "model_state" && initial.id === "before");
+    const first = threads.list()[0]!;
+    const second = threads.list()[1]!;
+
+    a.length = 0;
+    b.length = 0;
+    clientA.send({ type: "set_model", threadId: first.id, provider: "p2", model: "after" });
+
+    const changed = await waitFor(a, "model_state");
+    assert.ok(changed.type === "model_state");
+    assert.equal(changed.threadId, first.id, "変えた会話の話として届く");
+    assert.equal(changed.provider, "p2");
+    assert.equal(changed.id, "after");
+    assert.equal(changed.vision, true);
+    // 選んでいない方の画面にも届く（D3: 真実はホスト側）
+    const echoed = await waitFor(b, "model_state");
+    assert.ok(echoed.type === "model_state" && echoed.id === "after");
+
+    // **効くのは宛先の会話だけ**。もう1本は自分のモデルのまま
+    assert.equal(applied.length, 1);
+    assert.deepEqual(first.model, { provider: "p2", id: "after", vision: true });
+    assert.equal(second.model, undefined, "他の会話は変わらない");
+
+    clientA.close();
+    clientB.close();
+  });
+
+  it("新しい会話は、器を作る側が決めたモデルで始まる（＝設定の標準が効く）", async () => {
+    const tools = createMemoryTools(store);
+    // 「番頭の標準」を持っている側（本物では LlmCatalog）。**開くたびに引き直す**
+    let hostDefault = { provider: "p1", id: "standard-1" };
+    const threads = new ThreadRegistry(async (_id, _resume, wanted) => {
+      session = new FakeSession();
+      const used = wanted ?? hostDefault;
+      return { session, tools, model: { ...used, vision: false } };
+    });
+    await threads.open();
+    server = await BantoHostServer.start({ threads, port: 0 });
+    const url = `ws://localhost:${server.port}${BANTO_WS_PATH}`;
+
+    // 標準を変えてから開いた会話には、新しい標準が効く
+    hostDefault = { provider: "p2", id: "standard-2" };
+    await threads.open();
+
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "welcome");
+    await new Promise((r) => setTimeout(r, 60));
+
+    const states = events.filter((e) => e.type === "model_state");
+    assert.equal(states.length, 2, "会話ごとに1通ずつ届く");
+    const list = threads.list();
+    assert.deepEqual(list[0]?.model, { provider: "p1", id: "standard-1", vision: false });
+    assert.deepEqual(list[1]?.model, { provider: "p2", id: "standard-2", vision: false });
+    client.close();
+  });
+
+  it("切り替えられないときは黙らず、モデルも変わらない（I2）", async () => {
+    const tools = createMemoryTools(store);
+    const threads = new ThreadRegistry(async () => {
+      session = new FakeSession();
+      return { session, tools };
+    });
+    await threads.open();
+    server = await BantoHostServer.start({
+      threads,
+      port: 0,
+      model: { id: "before", vision: false },
+      modelProvider: "p1",
+      onSelectModel: async () => {
+        throw new Error("そのモデルは使えません");
+      },
+    });
+    const url = `ws://localhost:${server.port}${BANTO_WS_PATH}`;
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "model_state");
+    events.length = 0;
+
+    client.send({ type: "set_model", provider: "p2", model: "無い" });
+
+    const error = await waitFor(events, "error");
+    assert.ok(error.type === "error" && error.message.includes("そのモデルは使えません"));
+    // 失敗したのに切り替わったことにしない
+    assert.equal(
+      events.some((e) => e.type === "model_state"),
+      false
+    );
+    client.close();
+  });
+
+  it("添付の取り出しは保存先の外へ出られない", async () => {
+    const previousWorkspace = process.env["BANTO_WORKSPACE"];
+    process.env["BANTO_WORKSPACE"] = dir;
+    try {
+      await startHost();
+      const res = await fetch(
+        `http://localhost:${server!.port}/api/attachments/${encodeURIComponent("../../memory.jsonl")}`
+      );
+      assert.equal(res.status, 404);
+    } finally {
+      if (previousWorkspace === undefined) delete process.env["BANTO_WORKSPACE"];
+      else process.env["BANTO_WORKSPACE"] = previousWorkspace;
+    }
   });
 
   it("[task-0037] new_session は畳んで新しく始め、全クライアントへ通知される", async () => {

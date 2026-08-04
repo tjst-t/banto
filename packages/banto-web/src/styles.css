@@ -115,7 +115,22 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .btn:disabled { opacity: 0.4; cursor: default; }
 .chat-title { font-size: 13.5px; font-weight: 700; }
 .chat-sub { font-size: 11px; color: var(--ink-faint); margin-top: 2px; font-family: var(--font-mono); }
-.chat-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 7px; }
+/**
+ * 器（スクロールする箱）と中身を分ける。use-stick-to-bottom は**中身の高さの変化**を
+ * ResizeObserver で見て追従するので、padding や gap は中身側に置く（器に置くと
+ * 高さの変化として観測できない）。
+ *
+ * scrollbar-gutter: スクロールバーの出入りで幅が跳ねないよう場所を先に空けておく
+ * （AI Elements の StickToBottom.Content と同じ）。
+ */
+.chat-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable both-edges; }
+.chat-scroll-content { display: flex; flex-direction: column; gap: 8px; padding: 16px; }
+/**
+ * 発話と発話の間だけ大きく空ける（AI Elements の `gap-8`）。ツール行・思考行・知らせは
+ * 直前の発話に属する部品なので、8px のまま寄せておく——全部を等間隔にすると、
+ * どこまでが一続きの応答なのか読み取れなくなる。
+ */
+.msg--po:not(:first-child), .msg--banto:not(:first-child) { margin-top: 24px; }
 .chat-empty { color: var(--ink-faint); font-size: 12.5px; line-height: 1.8; margin: 0; }
 
 .msg { font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
@@ -128,21 +143,86 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
  * `.markdown` そのものに当てる。`pre` は自前の white-space を持つので影響を受けない。
  */
 .markdown { white-space: normal; }
+/**
+ * POの発話だけ吹き出しにする（AI Elements の `Message`／`MessageContent`）。
+ *
+ * **番頭の応答は地の文で置く**——枠と背景を付けると、コードブロックや表を含む長い応答が
+ * 二重の箱に見えて読みにくい。誰の発話かは位置（右／左）と背景の有無で足りる。
+ */
 .msg--po {
-  align-self: flex-end; max-width: 88%; background: var(--accent); color: #fff;
-  padding: 7px 12px; border-radius: 12px 12px 3px 12px;
+  align-self: flex-end; max-width: 95%; background: var(--surface); color: var(--ink);
+  padding: 12px 16px; border-radius: 8px;
 }
-.msg--banto {
-  align-self: flex-start; max-width: 92%; background: var(--bg);
-  border: 1px solid var(--line); padding: 7px 12px; border-radius: 12px 12px 12px 3px;
-}
+.msg--banto { align-self: flex-start; max-width: 95%; }
+/* ===== ツールの呼び出し（AI Elements の Tool） ===== */
 .msg--tool {
-  align-self: flex-start; font-family: var(--font-mono); font-size: 11.5px;
-  color: var(--ink-faint); display: flex; align-items: center; gap: 6px;
+  align-self: stretch; max-width: 95%; font-size: 11.5px; color: var(--ink-faint);
+  border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
 }
+.tool-head {
+  width: 100%; display: flex; align-items: center; gap: 7px;
+  border: none; background: none; cursor: pointer; padding: 7px 10px;
+  font: inherit; font-family: var(--font-mono); color: inherit; text-align: left;
+}
+.tool-head:disabled { cursor: default; }
+.tool-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-badge {
+  margin-left: auto; flex: none; font-family: var(--font-sans, inherit); font-size: 10.5px;
+  border-radius: 999px; padding: 1px 8px; background: var(--surface); color: var(--ink-faint);
+}
+.tool-caret { flex: none; }
+.msg--tool.is-running .tool-dot { animation: tool-pulse 1.2s ease-in-out infinite; }
 .msg--tool.is-ok { color: var(--ok); }
 .msg--tool.is-failed { color: var(--danger); }
-.tool-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.tool-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex: none; }
+@keyframes tool-pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+.tool-detail { border-top: 1px solid var(--line); padding: 8px 10px; color: var(--ink); }
+.tool-detail-label { font-size: 10.5px; color: var(--ink-faint); margin: 4px 0 3px; }
+.tool-detail-label:first-child { margin-top: 0; }
+/* 長い引数・結果で会話ごと横に伸びないよう、中で流す */
+.tool-detail pre {
+  margin: 0; padding: 7px 9px; border-radius: 6px; background: var(--surface);
+  font-family: var(--font-mono); font-size: 11px; line-height: 1.55;
+  max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+}
+
+/* ===== 番頭の思考（AI Elements の Reasoning） ===== */
+.msg--reasoning { align-self: stretch; max-width: 95%; color: var(--ink-faint); font-size: 12px; }
+.reasoning-head {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  border: none; background: none; cursor: pointer; padding: 2px 0;
+  font: inherit; font-size: 12px; color: inherit; text-align: left;
+}
+.reasoning-head:hover { color: var(--ink); }
+.reasoning-mark { flex: none; }
+.reasoning-caret { margin-left: auto; flex: none; }
+.reasoning-body {
+  margin: 4px 0 0; padding-left: 10px; border-left: 2px solid var(--line);
+  font-size: 12px; color: var(--ink-faint);
+}
+/* 考えている間だけ、文字の上を光が流れる（AI Elements の Shimmer） */
+.shimmer {
+  background: linear-gradient(90deg, var(--ink-faint) 40%, var(--ink) 50%, var(--ink-faint) 60%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: shimmer-sweep 1.6s linear infinite;
+}
+@keyframes shimmer-sweep { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .shimmer { animation: none; color: var(--ink-faint); background: none; -webkit-text-fill-color: currentColor; }
+}
+
+/* ===== 送った添付（AI Elements の MessageAttachment） ===== */
+.msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.msg-attachment { display: inline-flex; text-decoration: none; color: inherit; }
+.msg-attachment img {
+  width: 96px; height: 96px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line);
+  display: block;
+}
+.msg-attachment-file {
+  font-size: 11.5px; border: 1px solid var(--line); border-radius: 999px;
+  padding: 3px 9px; background: var(--bg);
+}
 .msg--error {
   align-self: stretch; font-size: 12px; color: var(--danger);
   background: rgba(163,58,42,0.07); border: 1px solid rgba(163,58,42,0.3);
@@ -159,15 +239,35 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .msg-error-close:hover { opacity: 1; background: rgba(163,58,42,0.12); }
 
 .chat-composer { border-top: 1px solid var(--line); padding: 12px; }
+/**
+ * 入力欄と道具立てを1つの枠に収める（AI Elements の PromptInput）。
+ * 枠が入力欄と道具を束ねているので、どこまでが「送るもの」なのかが一目で分かる。
+ */
+.composer-box {
+  border: 1px solid var(--line); border-radius: 12px; background: var(--bg);
+  padding: 4px 4px 6px; transition: border-color 0.12s;
+}
+.composer-box:focus-within { border-color: var(--accent); }
 .chat-input {
-  /* 高さは中身の行数に合わせて JS が決める（チャット欄の1/3まで）。
+  /* 高さは中身の行数に合わせて JS が決める（192px まで）。
      min-height で最初の見た目を保ち、overflow も JS が切り替える */
   width: 100%; resize: none; font: inherit; font-size: 13px; line-height: 1.7;
-  min-height: 56px; display: block;
-  border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; background: var(--bg); color: var(--ink);
+  min-height: 64px; display: block;
+  border: none; background: none; padding: 8px 9px; color: var(--ink);
 }
-.chat-input:focus { outline: none; border-color: var(--accent); }
-.chat-actions { display: flex; align-items: center; margin-top: 8px; }
+.chat-input:focus { outline: none; }
+.chat-actions { display: flex; align-items: center; gap: 6px; padding: 0 4px; }
+/* 送る／待つ／中断／失敗を1つで担うボタン（姿だけが変わる） */
+.composer-submit {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 8px; cursor: pointer;
+  border: 1px solid transparent; background: var(--accent); color: #fff;
+  font-size: 14px; line-height: 1; font-family: inherit;
+}
+.composer-submit:disabled { opacity: 0.4; cursor: default; }
+.composer-submit.is-error { background: var(--danger); }
+/* 中断は四角（AI Elements の SquareIcon）。丸だと「録画中」に見えて意味がずれる */
+.composer-submit-stop { width: 10px; height: 10px; background: currentColor; border-radius: 1px; }
 .chat-hint { font-size: 10.5px; color: var(--ink-faint); margin-right: auto; }
 /* 添付の一覧とエラー（チャット入力欄の上） */
 .attach-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
@@ -199,10 +299,67 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .attach-error-close:hover { opacity: 1; background: rgba(163,58,42,0.12); }
 .attach-btn {
   border: 1px solid var(--line); background: var(--surface); color: var(--ink-faint);
-  font-size: 17px; line-height: 1; padding: 4px 9px; border-radius: 8px; cursor: pointer;
-  margin-right: 8px;
+  font-size: 15px; line-height: 1; padding: 4px 8px; border-radius: 8px; cursor: pointer;
+  flex: none;
 }
 .attach-btn:hover { border-color: var(--accent); color: var(--ink); }
+
+/* ===== 文脈の使用量（AI Elements の Context） ===== */
+.context-meter {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  font-size: 11px; color: var(--ink-faint); cursor: default;
+}
+.context-meter-ring { flex: none; }
+/* 逼迫してきたら色で知らせる（数字を読まなくても気づける） */
+.context-meter.is-warn { color: #b45309; }
+.context-meter.is-full { color: var(--danger); }
+
+/* ===== モデル選択（AI Elements の PromptInputModelSelect） ===== */
+.model-select { position: relative; flex: none; min-width: 0; }
+.model-select-trigger {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 190px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink-faint);
+  border-radius: 8px; padding: 5px 8px; cursor: pointer; font: inherit; font-size: 11.5px;
+}
+.model-select-trigger:hover { border-color: var(--accent); color: var(--ink); }
+.model-select-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-select-caret { flex: none; }
+/* 一覧の外側を押したら閉じる。透明だが、下の要素へは届かせない */
+.model-select-backdrop { position: fixed; inset: 0; z-index: 40; }
+.model-select-menu {
+  position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 41;
+  width: min(320px, 78vw); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 10px; box-shadow: 0 8px 24px rgba(39,36,29,0.13); overflow: hidden;
+}
+.model-select-search {
+  width: 100%; border: none; border-bottom: 1px solid var(--line); background: none;
+  font: inherit; font-size: 12.5px; padding: 9px 11px; color: var(--ink);
+}
+.model-select-search:focus { outline: none; }
+.model-select-list { max-height: 300px; overflow-y: auto; padding: 4px; }
+.model-select-group {
+  font-size: 10.5px; color: var(--ink-faint); padding: 6px 8px 3px; letter-spacing: 0.03em;
+}
+.model-select-item {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  border: none; background: none; cursor: pointer; text-align: left;
+  font: inherit; font-size: 12.5px; color: var(--ink);
+  padding: 6px 8px; border-radius: 7px;
+}
+.model-select-item:hover { background: var(--surface); }
+.model-select-item.is-current { color: var(--accent); }
+.model-select-item-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-select-badge {
+  flex: none; font-size: 10px; color: var(--ink-faint);
+  border: 1px solid var(--line); border-radius: 999px; padding: 0 6px;
+}
+.model-select-check { flex: none; width: 12px; }
+/* 文脈の長さが分からないものは目立たせる（選ぶと毎ターン要約が走りうる） */
+.model-select-badge.is-unknown { color: #b45309; border-color: #f0c48a; }
+.model-select-empty, .model-select-error {
+  font-size: 12px; color: var(--ink-faint); padding: 10px 8px;
+}
+.model-select-error { color: var(--danger); }
 .btn { font: inherit; font-size: 12.5px; padding: 6px 16px; border-radius: 8px; cursor: pointer; border: 1px solid var(--line); background: var(--surface); }
 .btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
 .btn--primary:disabled { opacity: 0.4; cursor: default; }
@@ -236,6 +393,20 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
   overflow-x: auto; margin: 0 0 8px;
 }
 .markdown pre code { background: none; padding: 0; color: inherit; font-size: 12px; }
+/* コードブロック（AI Elements の CodeBlock）。コピーは hover で出す——常に出しておくと
+   コードの1行目に重なって読めなくなる */
+.codeblock { position: relative; }
+.codeblock-copy {
+  position: absolute; top: 6px; right: 6px; z-index: 1;
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink-faint);
+  border-radius: 6px; padding: 2px 6px; font-size: 12px; line-height: 1.4; cursor: pointer;
+  opacity: 0; transition: opacity 0.12s;
+}
+.codeblock:hover .codeblock-copy, .codeblock-copy:focus-visible { opacity: 1; }
+.codeblock-shiki pre {
+  margin: 0 0 8px; padding: 9px 11px; border-radius: 7px; overflow-x: auto;
+  border: 1px solid var(--line); font-size: 12px; line-height: 1.6;
+}
 .markdown blockquote {
   margin: 0 0 8px; padding: 2px 0 2px 12px;
   border-left: 3px solid var(--line); color: var(--ink-faint);
@@ -618,14 +789,15 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
   height: 32px;
   border-radius: 999px;
   border: 1px solid var(--line);
-  background: var(--panel);
+  /* --panel は定義されていない（透明になる）。ボタンは中身が透けないよう surface で塗る */
+  background: var(--surface);
   color: var(--ink);
   font-size: 15px;
   line-height: 1;
   cursor: pointer;
   box-shadow: 0 2px 8px rgba(0,0,0,0.18);
 }
-.chat-to-bottom:hover { background: var(--panel-2, var(--panel)); }
+.chat-to-bottom:hover { background: var(--bg); }
 
 /* 職人一覧の絞り込みとページ送り */
 .wv-toggle {
@@ -749,7 +921,8 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .thread-new-btn {
   flex-shrink: 0; border: 1px solid var(--line); background: var(--surface); color: var(--ink-faint);
   border-radius: 999px; width: 26px; height: 26px; cursor: pointer; font-family: inherit; font-size: 13px;
-  line-height: 1;
+  /* ＋も同じ理由で flex 中央寄せ（全角＋は字面が中心からずれやすい） */
+  display: inline-flex; align-items: center; justify-content: center; padding: 0; line-height: 1;
 }
 .thread-new-btn:hover { color: var(--accent); border-color: var(--accent); }
 
@@ -790,14 +963,13 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .pin-tab {
   position: relative; flex-shrink: 0; margin-left: 6px;
   border: 1px solid var(--line); background: var(--surface);
-  border-radius: 8px; width: 30px; height: 28px; cursor: pointer; font-size: 14px; line-height: 1;
+  border-radius: 8px; width: 30px; height: 28px; cursor: pointer; font-size: 14px;
+  /* 絵文字はベースラインで置かれるので、line-height では中心に来ない。
+     flex で縦横とも真ん中に置く（padding: 0 も要る——既定の余白が中心をずらす） */
+  display: inline-flex; align-items: center; justify-content: center; padding: 0; line-height: 1;
 }
 /* プロトタイプに合わせて塗りつぶし。開いている面がひと目で分かる */
 .pin-tab.is-active { border-color: var(--accent); background: var(--accent); }
-.pin-tab-count {
-  position: absolute; top: -6px; right: -6px; background: var(--accent); color: #fff;
-  border-radius: 999px; padding: 0 5px; font-size: 10px; line-height: 15px; min-width: 15px;
-}
 
 /* ===== 履歴の面（畳んだ分身。三次改訂：一覧＋読む の2カラム） ===== */
 .history-view { flex: 1; min-height: 0; display: flex; }
@@ -864,36 +1036,22 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .threads-empty-sub { font-size: 12.5px; color: var(--ink-faint); margin: 0; }
 .threads-empty-actions { display: flex; gap: 10px; margin-top: 8px; flex-wrap: wrap; justify-content: center; }
 
-/* ===== 番頭が考えている間（PO要望 2026-07-31） ===== */
+/* ===== 返事を待っている間（AI Elements の Loader） ===== */
 .msg--thinking {
-  align-self: flex-start; display: flex; align-items: center; gap: 7px;
-  color: var(--ink-faint); font-size: 12.5px; padding: 2px 2px;
+  align-self: flex-start; display: flex; align-items: center;
+  color: var(--ink-faint); padding: 2px;
 }
-.thinking-mark {
-  width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0;
-  background: var(--accent); animation: thinking-pulse 1.3s ease-in-out infinite;
-}
-.thinking-label { letter-spacing: 0.02em; }
-.thinking-dots { display: inline-flex; gap: 3px; align-items: flex-end; padding-bottom: 2px; }
-.thinking-dots i {
-  width: 3px; height: 3px; border-radius: 50%; background: currentColor;
-  animation: thinking-bounce 1.2s ease-in-out infinite;
-}
-.thinking-dots i:nth-child(2) { animation-delay: 0.15s; }
-.thinking-dots i:nth-child(3) { animation-delay: 0.3s; }
-
-@keyframes thinking-pulse {
-  0%, 100% { opacity: 0.35; transform: scale(0.8); }
-  50% { opacity: 1; transform: scale(1.1); }
-}
-@keyframes thinking-bounce {
-  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
-  30% { opacity: 1; transform: translateY(-3px); }
-}
-/* 動きを減らす設定を尊重する（点滅だけにする） */
+.loader { animation: loader-spin 1s steps(10, end) infinite; }
+@keyframes loader-spin { to { transform: rotate(360deg); } }
+/* 動きを減らす設定を尊重する（回さずに点滅させる） */
 @media (prefers-reduced-motion: reduce) {
-  .thinking-mark, .thinking-dots i { animation-duration: 2.4s; }
-  .thinking-dots i { animation-name: thinking-pulse; }
+  .loader { animation: loader-fade 1.6s ease-in-out infinite; }
+  @keyframes loader-fade { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+}
+/* 読み上げにだけ渡す文言（画面には出さない） */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
 
 /* ===== キャンバスとチャットの境界（ドラッグで幅を変える） ===== */
@@ -1359,22 +1517,94 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .llm-local { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-soft); margin: 10px 0 4px; }
 .llm-sub-label { font-size: 10.5px; font-weight: 700; letter-spacing: .06em; color: var(--ink-faint); margin: 12px 0 6px; }
 
+.llm-cap-unknown { color: #b45309; border-color: #f0c48a; }
+
+/* ===== 探して採用（数百のモデルから選ぶ。ADR-0011 決定47） ===== */
+/* ===== API キー（1プロバイダ1鍵） ===== */
+.llm-key-hint {
+  font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint);
+  background: var(--surface); border-radius: 4px; padding: 1px 5px; margin-left: 6px;
+}
+.llm-key-state.is-invalid { color: var(--danger); font-weight: 700; }
+.llm-key-state.is-ok { color: var(--ok); }
+.llm-key-remove {
+  flex: none; border: none; background: none; cursor: pointer; color: var(--ink-faint);
+  font-size: 14px; line-height: 1; padding: 4px 6px; border-radius: 6px; margin-left: 4px;
+}
+.llm-key-remove:hover:not(:disabled) { color: var(--danger); background: rgba(163,58,42,0.1); }
+
+.llm-search { display: flex; gap: 8px; margin: 6px 0; }
+/* × を入力欄の中に置くための入れ物 */
+.llm-search-box { position: relative; flex: 1; min-width: 0; display: flex; }
+.llm-search-input {
+  flex: 1; min-width: 0; font: inherit; font-size: 12.5px; padding: 6px 30px 6px 9px;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--ink);
+}
+.llm-search-clear {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  border: none; background: none; cursor: pointer; color: var(--ink-faint);
+  font-size: 14px; line-height: 1; padding: 4px 6px; border-radius: 6px;
+}
+.llm-search-clear:hover { color: var(--ink); background: var(--surface); }
+.llm-search-input:focus { outline: none; border-color: var(--accent); }
+.llm-search-filters { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+.llm-chip {
+  font-family: inherit; font-size: 10.5px; font-weight: 700; padding: 3px 10px; border-radius: 999px;
+  cursor: pointer; border: 1px solid var(--line-strong); color: var(--ink-faint); background: var(--surface);
+}
+.llm-chip.is-on { border-color: var(--accent); color: var(--accent); }
+.llm-select-sort { font-size: 11px; padding: 3px 6px; margin-left: auto; }
+.llm-found { border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; background: var(--bg); }
+.llm-found-count { font-size: 10.5px; color: var(--ink-faint); padding: 4px 2px; }
+.llm-pill-drop { color: var(--ink-faint); }
+.llm-pill-drop:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
+
+/* ===== プロバイダ・キー・モデルの編集（PO要望 2026-08-04） ===== */
+.llm-sec-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.llm-sec-head .llm-sec-label { margin-bottom: 0; }
+.llm-sec-head .llm-btn { margin-left: auto; }
+.llm-btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.llm-btn-primary:hover:not(:disabled) { color: #fff; }
+.llm-btn-danger { color: var(--danger); }
+.llm-btn-danger:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+/* プロバイダの追加フォーム */
+.llm-add {
+  border: 1px solid var(--line); border-radius: 10px; padding: 12px;
+  background: var(--surface); margin-bottom: 10px; display: flex; flex-direction: column; gap: 8px;
+}
+.llm-add-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.llm-add-row span { width: 68px; flex: none; color: var(--ink-faint); }
+.llm-add-row input {
+  flex: 1; min-width: 0; font: inherit; font-size: 12.5px; padding: 6px 9px;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--ink);
+}
+.llm-add-row input:focus { outline: none; border-color: var(--accent); }
+.llm-add-actions { display: flex; align-items: center; gap: 10px; }
+.llm-add-note { font-size: 10.5px; color: var(--ink-faint); line-height: 1.6; flex: 1; }
+/* キーの出し入れ */
+.llm-key-edit { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; }
+.llm-key-edit input {
+  flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 5px 9px;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--ink);
+}
+.llm-key-edit input:focus { outline: none; border-color: var(--accent); }
+/* モデルの取り込み */
+.llm-sub-head { display: flex; align-items: center; gap: 10px; margin: 12px 0 6px; }
+.llm-sub-head .llm-sub-label { margin: 0; }
+.llm-sub-head .llm-btn { margin-left: auto; }
+.llm-fetched {
+  font-size: 11.5px; color: var(--ink-faint); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; margin-bottom: 6px;
+}
+.llm-prov-danger { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+
 /* キー */
 .llm-key {
   display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
   border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; margin-bottom: 5px; background: var(--surface);
 }
 .llm-key.is-limited { border-color: #e0a95a; background: color-mix(in srgb, #e0a95a 7%, transparent); }
-.llm-key-rank { font-size: 10.5px; font-weight: 800; color: var(--ink-faint); width: 12px; text-align: center; }
-.llm-key-move { display: flex; flex-direction: column; gap: 1px; }
-.llm-key-move button {
-  font-family: inherit; font-size: 7px; line-height: 1; cursor: pointer; padding: 0;
-  border: 1px solid var(--line); background: var(--surface); color: var(--ink-faint);
-  width: 17px; height: 11px; border-radius: 3px;
-}
-.llm-key-move button:disabled { opacity: .3; cursor: default; }
 .llm-key-name { font-size: 12px; font-weight: 700; flex: 1; min-width: 90px; font-family: var(--font-mono); }
-.llm-key-scope { display: flex; gap: 3px; }
 .llm-key-role {
   font-family: inherit; font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 999px;
   cursor: pointer; border: 1px solid var(--line); color: var(--ink-faint); background: var(--surface);
@@ -1385,8 +1615,6 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .llm-key-state.is-ok { color: #1d7a63; }
 .llm-key-state.is-untested { color: #a05a12; }
 .llm-key-state.is-limited { color: #a05a12; }
-.llm-key-note { font-size: 10.5px; color: var(--ink-faint); line-height: 1.6; margin: 2px 0 4px; }
-.llm-key-note code { font-family: var(--font-mono); }
 
 /* モデル */
 .llm-model {
@@ -1400,6 +1628,23 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
   color: #a05a12; border: 1px solid #e0a95a;
 }
 .llm-select-tier { font-size: 11px; font-weight: 700; padding: 3px 5px; min-width: 74px; }
+/**
+ * tier の切り替え（高精度／通常／高速）。**3つを並べて、選ばれているものを塗る**——
+ * 選択肢が少なく、しかも一覧で横並びに比べたいので、開いて選ぶ形にしない。
+ */
+.llm-tier-switch {
+  display: inline-flex; flex: none; gap: 2px; padding: 2px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 999px;
+}
+.llm-tier-opt {
+  font-family: inherit; font-size: 10.5px; font-weight: 700; line-height: 1;
+  padding: 4px 10px; border-radius: 999px; cursor: pointer;
+  border: 1px solid transparent; background: transparent; color: var(--ink-faint);
+}
+.llm-tier-opt:hover:not(:disabled):not(.is-on) { color: var(--ink); }
+.llm-tier-opt:disabled { cursor: default; }
+/* 選ばれているものだけ塗る。色は tier ごとの既存の色をそのまま使う */
+.llm-tier-opt.is-on { background: var(--surface); border-color: currentColor; }
 .llm-role-toggle {
   font-family: inherit; font-size: 10.5px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
   cursor: pointer; border: 1px solid var(--line-strong); color: var(--ink-faint); background: var(--surface);

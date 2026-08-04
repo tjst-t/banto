@@ -19,6 +19,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { LlmCatalog, type LlmModelResolver, type ResolvedModel } from "@banto/core";
+import { contextWindowFromCatalog } from "@banto/host";
 
 /** models.json の1モデル分。input に "image" があると vision 扱いになる。 */
 interface SeedModel {
@@ -31,6 +32,11 @@ interface SeedProvider {
   models?: SeedModel[];
   /** auth.json にこのプロバイダの鍵を書くか。無い＝無料扱いの既定になる */
   auth?: boolean;
+  /**
+   * ハーネスが組み込みで知っている定義（models.json には出さない）。
+   * 鍵だけがあるプロバイダ（opencode 等）の再現に使う。
+   */
+  builtin?: Array<{ id: string; input?: string[]; baseUrl?: string; api?: string }>;
 }
 
 let dir: string;
@@ -38,10 +44,10 @@ let dir: string;
 function seed(providers: Record<string, SeedProvider>): LlmCatalog {
   const modelsJson = {
     providers: Object.fromEntries(
-      Object.entries(providers).map(([id, p]) => [
-        id,
-        { name: id, baseUrl: p.baseUrl ?? "", models: p.models ?? [] },
-      ])
+      Object.entries(providers)
+        // 組み込み定義しか無いプロバイダは models.json に載っていない
+        .filter(([, p]) => !p.builtin)
+        .map(([id, p]) => [id, { name: id, baseUrl: p.baseUrl ?? "", models: p.models ?? [] }])
     ),
   };
   const authJson = Object.fromEntries(
@@ -60,6 +66,9 @@ function seed(providers: Record<string, SeedProvider>): LlmCatalog {
       return m ? { provider, id: m.id, name: m.id, input: m.input ?? [] } : undefined;
     },
     getKnownModels(provider) {
+      // pi は主要プロバイダの到達先とモデルを内蔵している。その再現
+      const builtin = providers[provider]?.builtin;
+      if (builtin) return builtin;
       return providers[provider]?.models;
     },
   };
@@ -285,5 +294,333 @@ describe("LLM Registry — pi の設定ファイル", () => {
 
     const saved = JSON.parse(fs.readFileSync(path.join(dir, "llm-registry.json"), "utf-8"));
     assert.equal(saved.defaults.worker, undefined, "旧形式は残さない");
+  });
+});
+
+/**
+ * 画面からプロバイダ・キー・モデルを足せるようにするための書き込み（PO要望 2026-08-04）。
+ *
+ * ここまで pi の設定ファイルは**読むだけ**だった。書くようになったので、
+ * (a) 手で入れた設定を壊さない、(b) キーを読み出せる口を作らない、
+ * (c) 消えたモデルを黙って消さない、の3つを守る。
+ */
+describe("プロバイダ・キー・モデルの編集", () => {
+  it("プロバイダを足せる。既にあるものは上書きしない（手入れした設定を壊さない）", () => {
+    const c = seed({ cloud: { auth: true, models: [{ id: "mid" }] } });
+
+    c.addProvider({ id: "新規", baseUrl: "http://例.invalid/v1" });
+    c.reload();
+
+    const added = c.providers().find((p) => p.id === "新規");
+    assert.ok(added, "足したプロバイダが一覧に出る");
+    assert.equal(added.baseUrl, "http://例.invalid/v1");
+    assert.equal(added.modelCount, 0, "モデルはまだ無い（取り込みは別の操作）");
+
+    assert.throws(() => c.addProvider({ id: "cloud", baseUrl: "http://別.invalid" }), /既にあります/);
+    const kept = JSON.parse(fs.readFileSync(path.join(dir, "models.json"), "utf-8"));
+    assert.equal(kept.providers.cloud.models.length, 1, "既存のモデル定義は残る");
+  });
+
+  it("キーを入れ直せて、消せる。ファイルは本人しか読めないまま", () => {
+    const c = seed({ cloud: { models: [{ id: "mid" }] } });
+    assert.equal(c.providers().find((p) => p.id === "cloud")?.hasAuth, false);
+
+    c.setKey("cloud", "sk-新しい鍵");
+    c.reload();
+    assert.equal(c.providers().find((p) => p.id === "cloud")?.hasAuth, true);
+    // 0600（本人だけ読み書き）
+    assert.equal(fs.statSync(path.join(dir, "auth.json")).mode & 0o777, 0o600);
+
+    // 一覧にキーの値は出ない（名前と状態だけ）
+    assert.equal(JSON.stringify(c.catalog()).includes("sk-新しい鍵"), false, "キーの値は外へ出さない");
+
+    c.removeKey("cloud");
+    c.reload();
+    assert.equal(c.providers().find((p) => p.id === "cloud")?.hasAuth, false);
+  });
+
+  it("キーは末尾だけを手がかりに出す（値そのものは出さない）", () => {
+    const c = seed({ cloud: { models: [{ id: "mid" }] } });
+    c.setKey("cloud", "sk-very-secret-f3a2");
+    c.reload();
+
+    const key = c.providers().find((p) => p.id === "cloud")?.keys[0];
+    assert.equal(key?.hint, "…f3a2", "どの鍵が入っているかが分かる最小限");
+    // 値は決して出さない
+    assert.equal(JSON.stringify(c.catalog()).includes("sk-very-secret"), false);
+  });
+
+  it("キーの状態は確かめるまで未確認のまま。確かめた時刻も持つ", () => {
+    const c = seed({ cloud: { auth: true, models: [{ id: "mid" }] } });
+    assert.equal(c.providers().find((p) => p.id === "cloud")?.keys[0]?.state, "untested");
+
+    c.markKeyOk("cloud", "cloud");
+    const ok = c.providers().find((p) => p.id === "cloud")?.keys[0];
+    assert.equal(ok?.state, "ok");
+    assert.ok(ok?.checkedAt, "いつ確かめたかを持つ");
+
+    // 受け付けられなかった鍵は、そうと分かる形で残る（黙って候補に残さない）
+    c.markKeyInvalid("cloud", "cloud");
+    assert.equal(c.providers().find((p) => p.id === "cloud")?.keys[0]?.state, "invalid");
+  });
+
+  it("プロバイダを消すと、キーと設定も一緒に消える", () => {
+    const c = seed({ cloud: { auth: true, models: [{ id: "mid" }] } });
+    c.setProviderLocal("cloud", true);
+    c.setTier("cloud", "mid", "fast");
+
+    c.removeProvider("cloud");
+    c.reload();
+
+    assert.equal(c.providers().find((p) => p.id === "cloud"), undefined);
+    const auth = JSON.parse(fs.readFileSync(path.join(dir, "auth.json"), "utf-8"));
+    assert.equal(auth.cloud, undefined, "鍵も残さない（同名で足し直したとき蘇らない）");
+    const overlay = JSON.parse(fs.readFileSync(path.join(dir, "llm-registry.json"), "utf-8"));
+    assert.equal(overlay.providers?.cloud, undefined);
+  });
+
+  it("取り込んだモデルは足すだけ。既存の設定は据え置き、消えたものは消す", () => {
+    const c = seed({ cloud: { auth: true, models: [{ id: "mid", input: ["text", "image"] }] } });
+
+    const result = c.mergeModels("cloud", [
+      { id: "新モデル", contextWindow: 128000, maxTokens: 4096 },
+      { id: "mid" },
+    ]);
+    c.reload();
+
+    assert.deepEqual(result.added, ["新モデル"]);
+    assert.deepEqual(result.removed, [], "取得結果に含まれているものは消さない");
+
+    const models = c.models().filter((m) => m.providerId === "cloud");
+    assert.equal(models.length, 2);
+    // 手で入れた画像可の設定が消えていない
+    assert.equal(models.find((m) => m.id === "mid")?.vision, true);
+    // 取得では画像可否が分からないので、名乗らない（I1）
+    assert.equal(models.find((m) => m.id === "新モデル")?.vision, false);
+
+    // プロバイダ側から消えたものは、こちらからも消す（残しても選べば必ず失敗する）
+    const second = c.mergeModels("cloud", [{ id: "新モデル" }]);
+    assert.deepEqual(second.removed, ["mid"]);
+    const left = c.models().filter((m) => m.providerId === "cloud");
+    assert.deepEqual(left.map((m) => m.id), ["新モデル"]);
+  });
+
+  it("消えたモデルを指していた既定は、警告を返しつつ選び直される", () => {
+    const c = seed({
+      cloud: { auth: true, models: [{ id: "消える" }, { id: "残る" }] },
+    });
+    c.setTier("cloud", "消える", "standard");
+    c.setTier("cloud", "残る", "standard");
+    c.setHostDefault("cloud", "消える");
+    c.setPick("cloud", "消える");
+
+    c.mergeModels("cloud", [{ id: "残る" }]);
+    c.reload();
+    const changes = c.repairDefaults();
+    c.reload();
+
+    // 何をどう変えたかを返す（黙って別のモデルに変えない）
+    assert.equal(changes.length, 2, `got: ${JSON.stringify(changes)}`);
+    assert.ok(changes.every((x) => x.from === "cloud/消える" && x.to === "cloud/残る"));
+    assert.deepEqual(c.defaults().host, { provider: "cloud", model: "残る" });
+    assert.deepEqual(c.tiers().find((t) => t.tier === "standard")?.pick, {
+      provider: "cloud",
+      model: "残る",
+    });
+  });
+
+  it("採用しているものが無ければ、採用していないものを採用してでも付け替える", () => {
+    const c = seed({ cloud: { auth: true, models: [{ id: "唯一" }] } });
+    c.setHostDefault("cloud", "唯一");
+
+    // 新しく来た「別物」は採用されていない（既定は false）
+    c.mergeModels("cloud", [{ id: "別物" }]);
+    c.reload();
+    assert.equal(c.models().find((m) => m.id === "別物")?.hostUsable, false);
+
+    // それでも番頭が動かないよりましなので、採用した上で付け替える
+    const changes = c.repairDefaults();
+    c.reload();
+    assert.deepEqual(changes, [{ role: "番頭の標準", from: "cloud/唯一", to: "cloud/別物" }]);
+    assert.deepEqual(c.defaults().host, { provider: "cloud", model: "別物" });
+    assert.equal(c.models().find((m) => m.id === "別物")?.hostUsable, true, "選んだものは採用済みにする");
+  });
+
+  it("新しく取り込んだモデルは採用されない（選択肢が勝手に増えない）", () => {
+    const c = seed({ cloud: { auth: true, models: [{ id: "はじめから" }] } });
+    // 既存のものは移行で採用済み
+    assert.equal(c.models().find((m) => m.id === "はじめから")?.hostUsable, true);
+
+    c.mergeModels("cloud", [{ id: "はじめから" }, { id: "あとから" }]);
+    c.reload();
+    assert.equal(c.models().find((m) => m.id === "あとから")?.hostUsable, false);
+    assert.equal(c.models().find((m) => m.id === "はじめから")?.hostUsable, true);
+  });
+
+  it("欠けている能力（画像可否・文脈長）は後から埋まる", () => {
+    const c = seed({ cloud: { auth: true, models: [{ id: "mid" }] } });
+    // 1回目：到達先からは ID しか分からない（能力は空のまま）
+    c.mergeModels("cloud", [{ id: "mid" }, { id: "new" }]);
+    c.reload();
+    assert.equal(c.models().find((m) => m.id === "new")?.contextWindow, undefined);
+
+    // 2回目：組み込み定義から補完する（信頼できる出どころなので既存も直す）
+    c.mergeModels(
+      "cloud",
+      [
+        { id: "mid", input: ["text", "image"], contextWindow: 200000 },
+        { id: "new", input: ["text"], contextWindow: 32000 },
+      ],
+      undefined,
+      true
+    );
+    c.reload();
+
+    const models = c.models();
+    assert.equal(models.find((m) => m.id === "mid")?.contextWindow, 200000);
+    assert.equal(models.find((m) => m.id === "mid")?.vision, true, "text だけと記録していたものを直せる");
+    assert.equal(models.find((m) => m.id === "new")?.contextWindow, 32000);
+  });
+
+  it("信頼できない出どころは、埋まっているところを壊さない", () => {
+    const c = seed({ cloud: { auth: true, models: [{ id: "mid", input: ["text", "image"] }] } });
+    c.mergeModels("cloud", [{ id: "mid", input: ["text"] }]);
+    c.reload();
+    assert.equal(c.models().find((m) => m.id === "mid")?.vision, true, "手で入れた画像可を消さない");
+  });
+
+  it("壊れた models.json を黙って上書きしない（手で書いた設定を消さない）", () => {
+    const c = seed({ cloud: { models: [{ id: "mid" }] } });
+    fs.writeFileSync(path.join(dir, "models.json"), "{壊れている");
+
+    assert.throws(() => c.addProvider({ id: "新規", baseUrl: "http://例.invalid" }), /壊れた JSON/);
+    assert.equal(fs.readFileSync(path.join(dir, "models.json"), "utf-8"), "{壊れている");
+  });
+});
+
+/**
+ * 鍵だけがあるプロバイダ（opencode 等）。**pi は到達先とモデルを内蔵している**ので、
+ * models.json に何も無くてもモデルを取り込める——ここを塞ぐと、画面では
+ * 「キー 1・モデル 0」のまま取り込みボタンが押せず、理由も分からない（実際にそうなっていた）。
+ */
+describe("鍵だけがあるプロバイダ（到達先は pi が知っている）", () => {
+  function seedBuiltinOnly(): LlmCatalog {
+    const c = seed({
+      cloud: { baseUrl: "https://example.invalid", auth: true, models: [{ id: "mid" }] },
+      zen: {
+        auth: true,
+        builtin: [
+          { id: "zen-big", input: ["text", "image"], baseUrl: "https://zen.invalid/v1", api: "openai-completions" },
+          { id: "zen-small", input: ["text"], baseUrl: "https://zen.invalid/v1" },
+        ],
+      },
+    });
+    return c;
+  }
+
+  it("到達先が無くても、組み込みの定義があるなら取り込める", () => {
+    const c = seedBuiltinOnly();
+    const zen = c.providers().find((p) => p.id === "zen");
+    assert.ok(zen);
+    assert.equal(zen.baseUrl, "", "models.json には居ない");
+    assert.equal(zen.modelCount, 0);
+    assert.equal(zen.canFetchModels, true, "組み込み定義があるので取り込める");
+
+    const known = c.knownModels("zen");
+    const result = c.mergeModels(
+      "zen",
+      known.map((m) => ({ id: m.id, ...(m.input ? { input: m.input } : {}) })),
+      { baseUrl: known[0]?.baseUrl, api: known[0]?.api }
+    );
+    c.reload();
+
+    assert.deepEqual(result.added.sort(), ["zen-big", "zen-small"]);
+    const models = c.models().filter((m) => m.providerId === "zen");
+    assert.equal(models.length, 2);
+    // 組み込み定義は画像可否まで分かっているので、text と偽らない
+    assert.equal(models.find((m) => m.id === "zen-big")?.vision, true);
+    assert.equal(models.find((m) => m.id === "zen-small")?.vision, false);
+    // 取り込みのときに到達先も一緒に登録される
+    assert.equal(c.providers().find((p) => p.id === "zen")?.baseUrl, "https://zen.invalid/v1");
+  });
+
+  it("到達先も組み込み定義も無いなら、取り込めないと名乗る", () => {
+    const c = seed({ 謎: { auth: true } });
+    assert.equal(c.providers().find((p) => p.id === "謎")?.canFetchModels, false);
+  });
+});
+
+/**
+ * 数百のモデルを持つプロバイダ（OpenRouter は337件）でも成り立つか。
+ *
+ * **列挙ではなく採用と検索**に変えたのが要点（ADR-0011 決定47）。
+ */
+describe("数百のモデルがあるプロバイダ", () => {
+  function bigSeed(): LlmCatalog {
+    const models = Array.from({ length: 337 }, (_, i) => ({
+      id: `model-${String(i).padStart(3, "0")}`,
+      input: i % 3 === 0 ? ["text", "image"] : ["text"],
+    }));
+    return seed({ big: { auth: true, baseUrl: "https://big.invalid/v1", models } });
+  }
+
+  it("移行では全部採用済みになる（いま使えているものを取り上げない）", () => {
+    const c = bigSeed();
+    assert.equal(c.models().filter((m) => m.hostUsable).length, 337);
+  });
+
+  it("移行後に増えたモデルは採用されない（選択肢が勝手に337件にならない）", () => {
+    const c = seed({ big: { auth: true, models: [{ id: "はじめ" }] } });
+    const many = Array.from({ length: 300 }, (_, i) => ({ id: `新-${i}` }));
+    c.mergeModels("big", [{ id: "はじめ" }, ...many]);
+    c.reload();
+
+    assert.equal(c.models().length, 301, "台帳には全部載る");
+    assert.deepEqual(
+      c.models().filter((m) => m.hostUsable).map((m) => m.id),
+      ["はじめ"],
+      "選べるのは採用したものだけ"
+    );
+  });
+
+  it("職人の解決も採用したものからしか選ばない", () => {
+    const c = seed({ big: { auth: true, models: [{ id: "採用" }, { id: "未採用" }] } });
+    // 「未採用」を落とし、「採用」だけ残す
+    c.setUsable("big", "未採用", "worker", false);
+    c.setUsable("big", "未採用", "host", false);
+    const r = c.resolveForWorker("standard", {});
+    assert.equal(r?.model.id, "採用");
+  });
+});
+
+/**
+ * 公開台帳（models.dev）からの文脈長の引き当て。
+ *
+ * 文脈長が空のままだと pi は 0 として扱い、`shouldCompact` が常に真になって
+ * **毎ターン自動要約が走る**（実測で確認）。推測値を置くのではなく、公開されている
+ * 実際の値を引く——ここはその引き当ての規則だけを見る（通信はしない）。
+ */
+describe("公開台帳からの文脈長の引き当て", () => {
+  const catalog = {
+    opencode: { models: { "claude-opus-5": { limit: { context: 1000000, output: 128000 } } } },
+    anthropic: { models: { "claude-opus-5": { limit: { context: 200000, output: 64000 } } } },
+    other: { models: { "solo-model": { limit: { context: 32000 } } } },
+  };
+
+  it("同じプロバイダのものを先に採る", () => {
+    assert.deepEqual(contextWindowFromCatalog(catalog, "opencode", "claude-opus-5"), {
+      context: 1000000,
+      output: 128000,
+    });
+  });
+
+  it("そのプロバイダに無ければ、同じ ID を横断で探す", () => {
+    // 経路（opencode 経由等）が違っても同じモデルなら文脈長は引ける
+    assert.equal(contextWindowFromCatalog(catalog, "知らないプロバイダ", "solo-model")?.context, 32000);
+  });
+
+  it("台帳が無い・載っていないなら undefined（推測しない）", () => {
+    assert.equal(contextWindowFromCatalog(undefined, "opencode", "claude-opus-5"), undefined);
+    assert.equal(contextWindowFromCatalog(catalog, "opencode", "知らないモデル"), undefined);
   });
 });

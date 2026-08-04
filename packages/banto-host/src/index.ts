@@ -17,6 +17,8 @@ export {
 export { createBantoHostSession, type CreateBantoHostSessionOptions } from "./host-session.js";
 export { createMemoryTools, renderMemoryForPrompt } from "./memory-tools.js";
 export { createSkillTools } from "./skill-tools.js";
+// 文脈長の引き当て規則。取り込みの中核なのでテストから直接見る
+export { contextWindowFromCatalog } from "./llm-tools.js";
 export {
   bantoSkillsDir,
   loadBantoSkills,

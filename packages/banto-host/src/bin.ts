@@ -153,7 +153,7 @@ const SYSTEM_PROMPT = [
  * pi は API リクエストに `model.id` をそのまま使うため、id は API が受け付ける値で
  * なければならない。`Mimo V2.5 Free` という名前で動く実体は opencode-go の `mimo-v2.5`
  * （input に image を含む）——指定文字列のまま解決すると opencode が 401 を返す
- * （実際に踏んだ）。表示用の id/name は BANTO_MODEL の指定文字列のままにする
+ * （実際に踏んだ）。表示用の id/name は設定で選んだ文字列のままにする
  * （bin.ts で ModelInfo へは modelId を渡す）。台帳に登録されたらここから外すこと。
  */
 const MODEL_ALIASES: Record<string, { provider: string; id: string }> = {
@@ -201,9 +201,6 @@ interface ServeOptions {
   port: number;
   /** 待ち受けるアドレス。既定は localhost のみ（決定40）。 */
   host?: string;
-  /** provider/model を明示する。省略時は pi の既定解決（settings→最初に使えるもの）に任せる。 */
-  provider?: string;
-  model?: string;
 }
 
 async function serve(options: ServeOptions): Promise<void> {
@@ -337,7 +334,6 @@ async function serve(options: ServeOptions): Promise<void> {
   const modelRegistry = ModelRegistry.create(authStorage, path.join(agentDir, "models.json"));
   modelRegistry.refresh();
 
-  const llmSettings = settings.all().llm ?? {};
   const workerPoolSettings = (settings.all().modules?.["worker-pool"] ?? {}) as Record<string, unknown>;
   const llmCatalog = new LlmCatalog({
     authJsonPath: path.join(agentDir, "auth.json"),
@@ -345,8 +341,6 @@ async function serve(options: ServeOptions): Promise<void> {
     overlayPath: path.join(dataDir(), "llm-registry.json"),
     resolver: createModelResolver(modelRegistry),
     migration: {
-      hostProvider: options.provider ?? llmSettings.provider,
-      hostModel: options.model ?? llmSettings.model,
       workerProvider: workerPoolSettings["provider"] as string | undefined,
       workerModel: workerPoolSettings["model"] as string | undefined,
     },
@@ -451,18 +445,50 @@ async function serve(options: ServeOptions): Promise<void> {
 
   const catalog = createCanvasCatalog(modules.views());
 
-  // モデル解決は LlmCatalog に一元化（ADR-0004）。
-  // 起動時の指定 > 設定 > catalog の host default の順で解決
+  /**
+   * モデルの出どころは**「番頭の標準」ひとつだけ**（PO裁定 2026-08-04）。
+   *
+   * 以前は起動時の指定（`--model` / `BANTO_MODEL` / 設定ファイル）が標準より優先していた。
+   * 設定画面で標準を変えても起動のたびに元へ戻り、画面の表示と実際が食い違う——
+   * 置き場所を1つにして、設定画面が唯一の入口になるようにした（D3）。
+   */
   const hostDefault = llmCatalog.defaults().host;
-  const provider = options.provider ?? llmSettings.provider ?? hostDefault?.provider;
-  const modelId = options.model ?? llmSettings.model ?? hostDefault?.model;
-  const resolvedModel = provider && modelId
-    ? llmCatalog.resolveExact(provider, modelId)
-    : llmCatalog.resolveHostDefault();
+  const provider = hostDefault?.provider;
+  const modelId = hostDefault?.model;
+  const resolvedModel = llmCatalog.resolveHostDefault();
   // createBantoHostSession は pi-ai の Model 型を要求するため、modelRegistry から取得
   const model = resolvedModel
     ? modelRegistry.find(resolvedModel.provider, resolvedModel.id) ?? getModel(resolvedModel.provider as any, resolvedModel.id as any)
     : undefined;
+  const currentModelId = modelId;
+  const currentProvider = provider;
+
+  /**
+   * プロバイダ／モデル名からハーネスのモデル実体へ。使えない組み合わせは undefined。
+   * 戻り値は pi の `Model`（セッションの組み立てと差し替えにそのまま渡す）。
+   */
+  function resolveModel(wantProvider: string, wantId: string): typeof model {
+    const found = llmCatalog.resolveExact(wantProvider, wantId);
+    if (!found) return undefined;
+    return (
+      modelRegistry.find(found.provider, found.id) ??
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      getModel(found.provider as any, found.id as any)
+    );
+  }
+
+  /**
+   * 新しい会話が使うモデル。**毎回カタログの「番頭の標準」を引き直す**——
+   * 設定画面で標準を変えたら、次に開く会話からその場で効く（PO報告 2026-08-04：
+   * 以前は起動時に解決した1つを使い回していて、設定が配線されていなかった）。
+   */
+  function defaultModelForNewThread(): { provider: string; id: string } | undefined {
+    const fromCatalog = llmCatalog.defaults().host;
+    if (fromCatalog) return { provider: fromCatalog.provider, id: fromCatalog.model };
+    // カタログに標準が無ければ、起動時に解決したもので始める
+    if (currentProvider && currentModelId) return { provider: currentProvider, id: currentModelId };
+    return undefined;
+  }
 
   // スレッド1本分の器を作る（決定2・task-0035）。**キャンバスはスレッドごと**——
   // ここを共有すると、ある会話で GUI を開いたときに別の会話の表示まで変わる。
@@ -470,7 +496,7 @@ async function serve(options: ServeOptions): Promise<void> {
   // 記憶は全スレッドで共有する（D11：番頭は記憶を持つ。分裂させない）。
   let threads: ThreadRegistry;
   let server: BantoHostServer;
-  const threadFactory: ThreadFactory = async (threadId, resumeFrom) => {
+  const threadFactory: ThreadFactory = async (threadId, resumeFrom, wantedModel) => {
     const canvas = new Canvas(catalog);
     // 記憶・SKILLのToolは createBantoHostSession が内部で足すので、ここでは渡さない。
     // canvas.* / thread.* / llm.* は Banto 中核自身のドメイン（決定27a・ADR-0011 決定42）で
@@ -529,6 +555,21 @@ async function serve(options: ServeOptions): Promise<void> {
         ? SessionManager.open(resumeFrom, sessionDir, process.cwd())
         : SessionManager.create(process.cwd(), sessionDir);
 
+    /**
+     * この会話のモデル。**保存されていたもの > 番頭の標準**の順で決める。
+     * 標準はカタログから毎回引き直すので、設定を変えれば次の会話から効く。
+     */
+    const wanted = wantedModel ?? defaultModelForNewThread();
+    const threadModel = wanted ? resolveModel(wanted.provider, wanted.id) : undefined;
+    // I2: 保存されていたモデルが使えなくなっていたら黙って別のモデルで開かない
+    if (wanted && !threadModel) {
+      console.warn(
+        `[banto] ${threadId}: ${wanted.provider}/${wanted.id} を解決できないため、` +
+          "起動時のモデルで開きます"
+      );
+    }
+    const sessionModel = threadModel ?? model;
+
     const { session } = await createBantoHostSession({
       systemPrompt: SYSTEM_PROMPT,
       tools: ownTools,
@@ -536,7 +577,7 @@ async function serve(options: ServeOptions): Promise<void> {
       moduleSkills: modules.skills(),
       sessionManager,
       modelRegistry,
-      ...(model ? { model } : {}),
+      ...(sessionModel ? { model: sessionModel } : {}),
     });
     // imp-0016: ツールコール（git status / file.read など）の後、次の LLM 応答が空
     // （text/toolCall なし・stopReason "stop"）だと pi が正常終了としてターンを閉じ、
@@ -549,6 +590,17 @@ async function serve(options: ServeOptions): Promise<void> {
       session: guardedSession,
       canvas,
       tools,
+      // この会話が実際に使っているモデル。画面と索引へ出す（会話ごとに持つ）
+      ...(threadModel && wanted
+        ? {
+            model: {
+              provider: wanted.provider,
+              id: wanted.id,
+              vision: threadModel.input.includes("image"),
+              ...(threadModel.contextWindow ? { contextWindow: threadModel.contextWindow } : {}),
+            },
+          }
+        : {}),
       getLastError: () => session.agent.state.errorMessage,
       ...(sessionManager.getSessionFile() ? { sessionFile: sessionManager.getSessionFile()! } : {}),
       // imp-0016 主対策: 再起動で進行中ターンが失われたスレッド（最後が toolResult）を
@@ -584,9 +636,38 @@ async function serve(options: ServeOptions): Promise<void> {
     // 画像添付の可否判定（/api/model）。id は指定されたモデル名のまま
     // （解決で API 送信用 id に変わる場合があるため——MODEL_ALIASES）。vision は
     // 解決されたモデルの能力（input に image があるか）から求める
-    ...(model && modelId
-      ? { model: { id: modelId, vision: model.input.includes("image") } }
+    ...(model && currentModelId
+      ? {
+          model: {
+            id: currentModelId,
+            vision: model.input.includes("image"),
+            ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+          },
+        }
       : {}),
+    ...(currentProvider ? { modelProvider: currentProvider } : {}),
+    /**
+     * 画面からモデルを変える口（決定：番頭は具体モデルを持つ／ADR-0004）。
+     *
+     * **開いている会話すべてに効かせて、既定としても保存する**——番頭は連続した一人で、
+     * 会話ごとに別の頭になったりしないし、再起動で選び直させるのも筋が悪い。
+     * I2: 解決できない・ハーネスが対応していないときは throw して、画面を前のままにする。
+     */
+    onSelectModel: async (thread, nextProvider: string, nextId: string) => {
+      const next = resolveModel(nextProvider, nextId);
+      if (!next) throw new Error(`${nextProvider}/${nextId} は使えるモデルの一覧にありません`);
+      if (!thread.session.setModel) {
+        throw new Error("このハーネスは動作中のモデル切替に対応していません");
+      }
+      // **その会話だけ**に効かせる。他の会話は自分のモデルのまま（PO裁定 2026-08-04）
+      await thread.session.setModel(next);
+      console.log(`[banto] model(${thread.id}): ${nextProvider}/${nextId}`);
+      return {
+        id: nextId,
+        vision: next.input.includes("image"),
+        ...(next.contextWindow ? { contextWindow: next.contextWindow } : {}),
+      };
+    },
     // 決定40: 既定は localhost のみ。Banto は認証を持たず、守るのは前段の役目——
     // 全インターフェースで待つと前段を素通りできてしまい、その裁定が成り立たない
     host: bindHost,
@@ -715,13 +796,9 @@ async function main(): Promise<void> {
 
   switch (command) {
     case "serve": {
-      const provider = flag("provider") ?? process.env["BANTO_PROVIDER"];
-      const model = flag("model") ?? process.env["BANTO_MODEL"];
       const host = flag("host") ?? process.env["BANTO_HOST_BIND"];
       await serve({
         port: Number(flag("port") ?? process.env["BANTO_PORT"] ?? BANTO_DEFAULT_PORT),
-        ...(provider ? { provider } : {}),
-        ...(model ? { model } : {}),
         ...(host ? { host } : {}),
       });
       break;
@@ -731,7 +808,8 @@ async function main(): Promise<void> {
       break;
     default:
       console.error(
-        "usage: banto <serve|chat> [--port N] [--host ADDR] [--provider P --model M] [--url ws://host:port]\n" +
+        "usage: banto <serve|chat> [--port N] [--host ADDR] [--url ws://host:port]\n" +
+          "  モデルは設定画面（LLM・モデル）で選ぶ。起動時には指定しない。\n" +
           "  --host は待ち受けるアドレス（既定 127.0.0.1）。Banto は認証を持たないので、\n" +
           "  外に出すなら前段（Caddy 等）で守ること"
       );

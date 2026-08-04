@@ -2,6 +2,16 @@
 > Extracted from Vercel AI SDK `@ai-sdk/react` and `ai-elements` package, plus the underlying
 > `use-stick-to-bottom` library (v1.1.6, copyright StackBlitz).
 
+> **2026-08-04：実物のソースと突き合わせて訂正済み**（`use-stick-to-bottom@1.1.6` の dist、
+> ai-elements レジストリ 1.9.0、`@ai-sdk/react` の型定義）。突き合わせで見つかった誤りは
+> 本文に反映した（選択中の扱い・ホイールの向き・初期状態・↓ボタンのアニメーション・
+> `MessageResponse` の memo 比較）。
+>
+> **この文書は「参考にした実装の記録」であって、banto の仕様ではない。** §3（Streaming
+> Content Rendering）・§5.3-5.5（PromptInput の内部）・§6.1（`useChat`）は AI SDK の
+> transport 前提で、banto は独自 WS のため採らない。banto 側の仕様は
+> [`docs/spec/chat-ui.md`](../spec/chat-ui.md) を見ること。
+
 ---
 
 ## 1. Architecture Overview
@@ -43,8 +53,8 @@ The velocity update per frame:
 
 ```
 velocity = (damping * velocity + stiffness * scrollDifference) / mass
-scrollTop += accumulated_accumulated
-accumulated = velocity * (frameDelta / 16.67)
+accumulated += velocity * (frameDelta / 16.67)
+scrollTop += accumulated
 if scrollTop changed this frame: accumulated = 0
 ```
 
@@ -71,9 +81,11 @@ The hook maintains these boolean flags:
 **User scroll DOWN** → `escapedFromLock = false` (re-lock if `isNearBottom`)
 
 **User scroll UP** → `escapedFromLock = true`, `isAtBottom = false`
+*(閾値は無い。1px でも上へ動けばその場で外れる。70px は**再ロック**側の条件)*
 
-**Mouse wheel DOWN** (inside scroll container) → `escapedFromLock = true`, `isAtBottom = false`
-*(deliberately: browser-wheel up cancels stickiness even if logically scrolling down)*
+**Mouse wheel UP** (`deltaY < 0`, inside scroll container) → `escapedFromLock = true`, `isAtBottom = false`
+*(アニメーション中にホイールを上へ回すと、ブラウザ側がスクロールを取り消すことがあるため、
+先に追従を外す。下へ回したときは何もしない)*
 
 **Programmatic scroll** → Sets `ignoreScrollToTop` to prevent false "user scroll" detection
 
@@ -100,7 +112,12 @@ between ResizeObserver and scroll events per WICG/resize-observer#25).
 1. `mouseDown` is `true` (set on `mousedown` / cleared on `mouseup` / `click`)
 2. A text selection exists that intersects the scroll element
 
-When selecting, the scroll lock is **not broken**. This prevents the auto-scroll from fighting text selection.
+選択中の扱いは**経路によって違う**（訂正）:
+
+- **スクロールイベント側**（`handleScroll`）: 選択中なら `escapedFromLock = true`, `isAtBottom = false`
+  ——つまり**ロックは切れる**。選択しようとしているのに文字が流れ続けると、選択範囲がずれる
+- **アニメーション側**（`scrollToBottom` の tick）: 選択中はスクロールを進めず次フレームへ回す
+  （`if (isSelecting()) return next()`）。走っている追従が選択と喧嘩しない
 
 ### 2.7 `scrollToBottom()` Options
 
@@ -135,28 +152,26 @@ Returns `Promise<boolean>` — resolves `true` if scroll completed, `false` if c
 ### 3.1 `MessageResponse` (ai-elements)
 
 ```tsx
-// From: packages/elements/src/message.tsx
+// From: registry/default/ai-elements/message.tsx（1.9.0 の実物）
 export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
     <Streamdown
       className={cn("size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0", className)}
-      plugins={streamdownPlugins}
       {...props}
     />
   ),
-  (prevProps, nextProps) =>
-    prevProps.children === nextProps.children &&
-    nextProps.isAnimating === prevProps.isAnimating
+  (prevProps, nextProps) => prevProps.children === nextProps.children
 );
 ```
 
 - Wraps the **Streamdown** markdown renderer
 - Renders **every text part** from `useChat.messages` (incremental `part.text` chunks on each SSE arrival)
-- Memoization compares: `(prev.children === next.children) && (next.isAnimating === prev.isAnimating)`
-  - The `isAnimating` flag comes from Streamdown and tracks whether streaming is in progress
-  - During streaming, memoization is bypassed because `isAnimating` changes every frame/tick
-- Plugins: `cjk` (CJK text segmentation), `code` (syntax highlighting), `math` (KaTeX), `mermaid` (diagrams)
-- Renders **complete markdown** on each tick (includes `parseIncompleteMarkdown: true` by default)
+- 比較は `prevProps.children === nextProps.children` **だけ**（訂正。`isAnimating` の比較も
+  `plugins` の指定も実物には無い）。文字が増えれば children が変わるので、そのときだけ再描画される
+- Streamdown 側の依存に `remend`（未完 Markdown の補完）と `marked`（ブロック分割）が入っており、
+  **ストリーミング中に記号が生で見えたり段落が崩れたりしない**のはこの2つによる
+- Tailwind v4 前提（`tailwind-merge` / `clsx`）。banto は素の CSS なので Streamdown 本体は採らず、
+  `remend` だけを react-markdown の前段に置いた
 
 ### 3.2 Text Wrapping
 
@@ -213,14 +228,14 @@ Each SSE token → text part update → full re-render of message content includ
 ```
                     ┌────────────────────┐
                     │  initialized       │
-                    │  locked=false      │ ← initial state per `options.initial`
-                    └────────┬───────────┘
-                             │ user scrolls up
-                    ┌────────▼───────────┐
+                    │  isAtBottom=true   │ ← 既定でロック済み
+                    └────────┬───────────┘   (`useState(options.initial !== false)`。
+                             │                `initial` はアニメーション種別で、
+                    ┌────────▼───────────┐    false を渡したときだけ初期追従を切る)
                     │  LOCKED (auto)     │
                     │  isAtBottom=true   │
                     └────────┬───────────┘
-                    ▲        │ user scrolls UP (past 70px)
+                    ▲        │ user scrolls UP（閾値なし。上へ動いた時点で）
                     │        ▼
                     │    ┌────────────────────┐
                     │    │  UNLOCKED (user)   │
@@ -245,7 +260,7 @@ Each SSE token → text part update → full re-render of message content includ
 ```
 
 Calling `scrollToBottom()` from the button:
-- Defaults to `animation: "instant"` (the button calls without params, which uses the default merged animation, typically instant)
+- **引数なしで呼ぶので、既定の spring アニメーション**（instant ではない。訂正）。0.3秒ほどかけて滑り降りる
 - Sets `isAtBottom = true` (overrides preserved position)
 - Does NOT set `preserveScrollPosition` (unlike resize handling)
 
@@ -284,8 +299,8 @@ Scroll event arrives → checks:
 ```
 
 - Uses CSS `field-sizing-content` (expands naturally)
-- Max 3rem (48 × 4px = 192px) → ~10 rows
-- Min 4rem (48px ≈ 64px) → 2 rows initially
+- `max-h-48` = 12rem = **192px**（訂正）
+- `min-h-16` = 4rem = **64px**（訂正）
 
 ### 5.2 Keyboard Behavior
 

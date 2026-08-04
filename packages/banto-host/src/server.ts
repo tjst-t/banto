@@ -32,6 +32,7 @@ import {
   type ClientMessage,
   type NoticeSource,
   type ServerEvent,
+  type TranscriptAttachment,
 } from "./protocol.js";
 import { fromWireToolName } from "@banto/core";
 import type { Thread, ThreadRegistry } from "./threads.js";
@@ -43,6 +44,57 @@ import { workspaceRoot } from "./workspace.js";
  * プロンプト注釈にもそのまま使うので、区切りは常に `/`。
  */
 const ATTACHMENT_DIR_REL = "work/attachments";
+
+/** 保存した添付を UI へ配る入口。vite の開発サーバは `/api` をホストへ中継する。 */
+const ATTACHMENT_URL_BASE = "/api/attachments/";
+
+/**
+ * ツールの引数・結果として履歴に載せる最大の長さ。
+ *
+ * **丸ごと載せない**——ファイル読込のように結果が数MBになるツールがあり、そのまま積むと
+ * 会話履歴（JSONL）が肥大化し、再読み込みのたびに同じ塊が流れる。切ったことは
+ * 隠さず、末尾に印を付けて返す（I1）。
+ */
+const TOOL_PAYLOAD_MAX_CHARS = 4000;
+
+/**
+ * ツールの引数・結果を履歴に載せられる大きさへ収める。
+ * 長すぎるときは文字列に落として切り詰める（構造を保ったまま部分的に消すと、
+ * 何が欠けたのか読み取れなくなる）。
+ */
+function clampToolPayload(value: unknown): unknown {
+  if (value === undefined || value === null) return undefined;
+  // 中身の無いものは「無かった」として扱う。空の `{}` を引数として見せても、
+  // 開いた側には何も分からない——行が増えるだけ
+  if (typeof value === "string" && value.length === 0) return undefined;
+  if (Array.isArray(value) && value.length === 0) return undefined;
+  if (typeof value === "object" && Object.keys(value as object).length === 0) return undefined;
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value) ?? "";
+  } catch {
+    // 循環参照など JSON にできないもの。捨てずに姿だけ残す（I2）
+    return "(表示できない値)";
+  }
+  if (serialized.length <= TOOL_PAYLOAD_MAX_CHARS) return value;
+  return `${serialized.slice(0, TOOL_PAYLOAD_MAX_CHARS)}…（${serialized.length} 文字のうち先頭のみ）`;
+}
+
+/** ハーネスが返した数値をそのまま足せる形に。数でなければ 0（推測しない）。 */
+function numberOf(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/** 添付ファイル名から Content-Type を当てる。分からないものは汎用で返す。 */
+function contentTypeOf(name: string): string {
+  const ext = path.extname(name).toLowerCase();
+  if (ext === ".png") return "image/png";
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".gif") return "image/gif";
+  if (ext === ".webp") return "image/webp";
+  if (ext === ".svg") return "image/svg+xml";
+  return "application/octet-stream";
+}
 
 /**
  * サーバが必要とするセッションの最小契約。pi の `AgentSession` はこれを構造的に満たす。
@@ -59,6 +111,13 @@ export interface HostSession {
     options?: { streamingBehavior?: "steer" | "followUp"; images?: ImageContent[] }
   ): Promise<void>;
   abort(): Promise<void>;
+  /**
+   * 走っているセッションのモデルを差し替える（対応するハーネスだけ）。
+   *
+   * 型を `unknown` にしているのは、モデルの実体がハーネスのものだから——server は
+   * 中身を知らないまま、解決した実体を bin.ts から受け取って渡すだけ（ADR-0010 決定3）。
+   */
+  setModel?(model: unknown): Promise<void>;
 }
 
 /** モデル情報。WebUI が画像添付の可否を判定するための最小形。 */
@@ -66,6 +125,8 @@ export interface ModelInfo {
   id: string;
   /** vision 対応（モデルの input が image を受け付ける）か。 */
   vision: boolean;
+  /** 文脈に入る最大トークン数（分かるときだけ）。 */
+  contextWindow?: number;
 }
 
 /** `notify` の宛先と出所。 */
@@ -118,6 +179,16 @@ export interface BantoHostServerOptions {
    * 未指定（pi の既定解決に任せている）ときは undefined——画像は受け付けない。
    */
   model?: ModelInfo;
+  /**
+   * 番頭のモデルを切り替える口。**渡されなければ切替はできない**（UIからは選べない）。
+   *
+   * 解決（プロバイダ／モデル名 → 実体）も、**その会話のセッションへの適用**も、
+   * 保存も、ここを渡す側（bin.ts）の責任。server は結果を配るだけ（D5）。
+   * I2: 切り替えられないときは throw すること——黙って前のモデルのまま続けない。
+   */
+  onSelectModel?: (thread: Thread, provider: string, model: string) => Promise<ModelInfo>;
+  /** いま使っているモデルのプロバイダ。`model_state` に載せる。 */
+  modelProvider?: string;
 }
 
 /**
@@ -134,16 +205,45 @@ export class BantoHostServer {
   private readonly modules: ModuleRegistry | undefined;
   private readonly clients = new Set<WebSocket>();
   private readonly unsubscribeThreads: () => void;
-  /** 現在のモデル情報。画像添付の可否判定に使う。 */
-  private readonly modelInfo: ModelInfo | undefined;
+  /** 現在のモデル情報。画像添付の可否判定に使う。切替で入れ替わる。 */
+  private modelInfo: ModelInfo | undefined;
+  /** 現在のモデルのプロバイダ。切替で入れ替わる。 */
+  private modelProvider: string | undefined;
+  /** モデルを切り替える口（無ければ切替不可）。 */
+  private readonly selectModel: BantoHostServerOptions["onSelectModel"];
   /** 購読を張り終えたスレッド。開くたびに増える。 */
   private readonly attached = new Set<string>();
+
+  /**
+   * 番頭の標準モデル（会話がまだ自分のモデルを持たないときに使う）。
+   * 起動時に解決されたものをそのまま持つ。
+   */
+  private hostDefaultModel():
+    | { provider: string; id: string; vision: boolean; contextWindow?: number }
+    | undefined {
+    if (!this.modelInfo) return undefined;
+    return {
+      provider: this.modelProvider ?? "",
+      id: this.modelInfo.id,
+      vision: this.modelInfo.vision,
+      ...(this.modelInfo.contextWindow ? { contextWindow: this.modelInfo.contextWindow } : {}),
+    };
+  }
+  /** 思考が始まった時刻（スレッド毎）。「X秒間考えました」を測るために持つ。 */
+  private readonly thinkingStartedAt = new Map<string, number>();
+  /**
+   * 直近のターンで運んだトークン数（スレッド毎）。**実行時状態なので保存しない**（D3）
+   * ——再起動したら次のターンまで分からない。推定で埋めるより黙るほうがよい（I1）。
+   */
+  private readonly contextTokens = new Map<string, number>();
 
   private constructor(options: BantoHostServerOptions, httpServer: http.Server) {
     this.threads = options.threads;
     this.catalog = options.catalog;
     this.modules = options.modules;
     this.modelInfo = options.model;
+    this.modelProvider = options.modelProvider;
+    this.selectModel = options.onSelectModel;
     this.httpServer = httpServer;
     this.wss = new WebSocketServer({ noServer: true });
 
@@ -215,6 +315,22 @@ export class BantoHostServer {
           const body = JSON.stringify(modelInfo ?? { id: "(未設定)", vision: false });
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(body);
+          return;
+        }
+        // 会話に残っている添付を返す（吹き出しのサムネイル）。
+        // **パスはクライアント由来なので信頼しない**——ベース名だけに落として、
+        // 保存先の外へ出られないようにする（`..` や絶対パスを弾く）
+        if (req.method === "GET" && req.url?.startsWith(ATTACHMENT_URL_BASE)) {
+          const requested = decodeURIComponent(req.url.slice(ATTACHMENT_URL_BASE.length).split("?")[0] ?? "");
+          const name = path.basename(requested);
+          const file = path.join(workspaceRoot(), ATTACHMENT_DIR_REL, name);
+          if (name.length === 0 || !fs.existsSync(file)) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "not found" }));
+            return;
+          }
+          res.writeHead(200, { "Content-Type": contentTypeOf(name) });
+          res.end(fs.readFileSync(file));
           return;
         }
         if (serveCoreTool && (await serveCoreTool(req, res))) return;
@@ -401,6 +517,23 @@ export class BantoHostServer {
     // クライアントも履歴を見られる——1接続で複数スレッドを描けるのはこのため
     for (const thread of threads) {
       this.send(ws, { type: "history", threadId: thread.id, entries: thread.transcript });
+      // その会話が使っているモデル。**会話ごと**なので history と同じく1本ずつ配る（D3）
+      const model = thread.model ?? this.hostDefaultModel();
+      if (model) {
+        this.send(ws, {
+          type: "model_state",
+          threadId: thread.id,
+          provider: model.provider,
+          id: model.id,
+          vision: model.vision,
+          ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+        });
+      }
+      // 分かっている会話だけ。まだターンが回っていなければ配らない
+      const tokens = this.contextTokens.get(thread.id);
+      if (tokens !== undefined) {
+        this.send(ws, { type: "context_state", threadId: thread.id, tokens });
+      }
       // 後から繋いだクライアントも即座に現在の表示状態に追いつく
       if (thread.canvas) {
         const snapshot = thread.canvas.snapshot();
@@ -460,6 +593,37 @@ export class BantoHostServer {
     } catch (err) {
       // I2: 知らないIDを既定へ黙って落とさない——別の会話に発話が紛れ込む
       this.send(ws, { type: "error", message: String(err) });
+      return;
+    }
+
+    // その会話で使うモデルを変える。**会話ごと**なので、他の会話は変わらない
+    if (message?.type === "set_model") {
+      if (!this.selectModel) {
+        this.send(ws, { type: "error", message: "このホストはモデルの切替に対応していません" });
+        return;
+      }
+      try {
+        const next = await this.selectModel(thread, message.provider, message.model);
+        thread.model = {
+          provider: message.provider,
+          id: next.id,
+          vision: next.vision,
+          ...(next.contextWindow ? { contextWindow: next.contextWindow } : {}),
+        };
+        this.threads.persistIndex(thread);
+        // 選んだ本人だけでなく全員へ。複数の画面で同じ会話を見ている（D3）
+        this.broadcast({
+          type: "model_state",
+          threadId: thread.id,
+          provider: message.provider,
+          id: next.id,
+          vision: next.vision,
+          ...(next.contextWindow ? { contextWindow: next.contextWindow } : {}),
+        });
+      } catch (err) {
+        // I2: 切り替わらなかったことを黙らない。画面は前のモデルのままになる
+        this.send(ws, { type: "error", message: `モデルを変えられません: ${String(err)}` });
+      }
       return;
     }
 
@@ -527,13 +691,17 @@ export class BantoHostServer {
       // I2: 非対応モデルへの画像は握りつぶさず、理由を返して prompt 自体を処理しない
       let text = message.text;
       const images: ImageContent[] = [];
+      // 会話に残す添付。**中身ではなく保存先だけ**を持つ（TranscriptAttachment）
+      const recorded: TranscriptAttachment[] = [];
       if (message.attachments && message.attachments.length > 0) {
         for (const attachment of message.attachments) {
           if (attachment.kind === "image") {
-            if (!this.modelInfo?.vision) {
+            // **その会話のモデル**で判定する（会話ごとに違う。未設定なら番頭の標準）
+            const active = thread.model ?? this.hostDefaultModel();
+            if (!active?.vision) {
               this.send(ws, {
                 type: "error",
-                message: `${this.modelInfo?.id ?? "現在のモデル"} は画像非対応です`,
+                message: `${active?.id ?? "現在のモデル"} は画像非対応です`,
               });
               return;
             }
@@ -542,9 +710,25 @@ export class BantoHostServer {
               data: attachment.dataBase64,
               mimeType: attachment.mimeType,
             });
+            // 送った画像は吹き出しに残す。base64 を履歴に積まないよう、ここで保存して参照にする
+            const savedName = this.saveAttachment(
+              attachment.name,
+              Buffer.from(attachment.dataBase64, "base64")
+            );
+            recorded.push({
+              kind: "image",
+              name: attachment.name,
+              url: ATTACHMENT_URL_BASE + savedName,
+              mimeType: attachment.mimeType,
+            });
           } else {
             const savedName = this.saveAttachment(attachment.name, attachment.content);
             text += `\n\n[添付] ${ATTACHMENT_DIR_REL}/${savedName}（file.read で参照可）`;
+            recorded.push({
+              kind: "file",
+              name: attachment.name,
+              url: ATTACHMENT_URL_BASE + savedName,
+            });
           }
         }
       }
@@ -557,8 +741,14 @@ export class BantoHostServer {
           : `[${message.attachments
               ?.map((a) => (a.kind === "image" ? "画像" : "ファイル"))
               .join("・") ?? "添付"}を添付]`;
-      thread.record({ role: "po", text: displayText });
-      this.broadcast({ type: "po_message", threadId: thread.id, text: displayText });
+      const withAttachments = recorded.length > 0 ? { attachments: recorded } : {};
+      thread.record({ role: "po", text: displayText, ...withAttachments });
+      this.broadcast({
+        type: "po_message",
+        threadId: thread.id,
+        text: displayText,
+        ...withAttachments,
+      });
       this.broadcast({ type: "turn_start", threadId: thread.id });
 
       try {
@@ -587,13 +777,14 @@ export class BantoHostServer {
   }
 
   /**
-   * テキスト添付を `work/attachments/` に保存し、保存名を返す。
+   * 添付を `work/attachments/` に保存し、保存名を返す。テキストは文字列、画像は
+   * バイト列（base64 を戻したもの）で渡す。
    *
    * **ファイル名はクライアント由来なので信頼しない**——パス区切りや `..` を剥がして
    * ベース名だけにし、タイムスタンプを前置きして衝突を避ける（I1：ずるは不可能にする）。
    * 既存の file.read と同じワークスペースのルート配下に置くので、番頭が読める。
    */
-  private saveAttachment(originalName: string, content: string): string {
+  private saveAttachment(originalName: string, content: string | Buffer): string {
     const base = path
       .basename(originalName)
       .replace(/[^\w.()\-\u3000-\u9fff\uff00-\uffef]/g, "_")
@@ -622,15 +813,30 @@ export class BantoHostServer {
     if (!translated) return;
 
     // 配信すると同時に**そのスレッドの**履歴へ積む（リロード後に同じ内容が再現される）
-    if (translated.type === "text_delta") {
+    if (translated.type === "notice") {
+      // まとめ直しの知らせ。**履歴にも残す**——再読み込みしたときに「なぜ番頭が
+      // 前の話を覚えていないのか」が分からなくなる
+      thread.record({ role: "notice", source: translated.source, text: translated.text });
+    } else if (translated.type === "text_delta") {
       thread.record({ role: "banto", text: translated.delta });
+    } else if (translated.type === "reasoning_delta") {
+      thread.record({ role: "reasoning", text: translated.delta });
+    } else if (translated.type === "reasoning_end") {
+      // 本文は足さず、考えていた時間だけを最後の思考へ入れる
+      thread.record({ role: "reasoning", text: "", durationMs: translated.durationMs });
     } else if (translated.type === "tool_start") {
-      thread.record({ role: "tool", name: translated.name, state: "running" });
+      thread.record({
+        role: "tool",
+        name: translated.name,
+        state: "running",
+        ...(translated.input !== undefined ? { input: translated.input } : {}),
+      });
     } else if (translated.type === "tool_end") {
       thread.record({
         role: "tool",
         name: translated.name,
         state: translated.isError ? "failed" : "ok",
+        ...(translated.output !== undefined ? { output: translated.output } : {}),
       });
     }
     this.broadcast(translated);
@@ -646,27 +852,113 @@ export class BantoHostServer {
       toolCallId?: string;
       toolName?: string;
       isError?: boolean;
+      args?: unknown;
+      result?: unknown;
       assistantMessageEvent?: { type?: string; delta?: string };
     } | null;
 
     if (e?.type === "message_update" && e.assistantMessageEvent?.type === "text_delta") {
       return { type: "text_delta", threadId: thread.id, delta: String(e.assistantMessageEvent.delta) };
     }
+    // 思考（thinking）。ハーネスは text とは別のイベントで出す
+    if (e?.type === "message_update" && e.assistantMessageEvent?.type === "thinking_start") {
+      this.thinkingStartedAt.set(thread.id, Date.now());
+      return undefined;
+    }
+    if (e?.type === "message_update" && e.assistantMessageEvent?.type === "thinking_delta") {
+      return {
+        type: "reasoning_delta",
+        threadId: thread.id,
+        delta: String(e.assistantMessageEvent.delta),
+      };
+    }
+    if (e?.type === "message_update" && e.assistantMessageEvent?.type === "thinking_end") {
+      const startedAt = this.thinkingStartedAt.get(thread.id);
+      this.thinkingStartedAt.delete(thread.id);
+      // 開始を見ていない（途中で繋がった等）ときは 0。時間を推測して名乗らない（I1）
+      return {
+        type: "reasoning_end",
+        threadId: thread.id,
+        durationMs: startedAt === undefined ? 0 : Date.now() - startedAt,
+      };
+    }
+    /**
+     * 文脈のまとめ直し（compaction）。**黙って進めない**——ハーネスは文脈が長くなると
+     * 自動で会話を要約して置き換える。話した内容が実際に削られるので、起きたことは
+     * 会話に残す（PO要望 2026-08-04：それまで画面には何も出ていなかった）。
+     */
+    if (e?.type === "compaction_end") {
+      const done = e as {
+        reason?: string;
+        aborted?: boolean;
+        errorMessage?: string;
+        result?: { tokensBefore?: number };
+      };
+      if (done.aborted) return undefined;
+      // I2: 失敗したことも隠さない（要約できないまま長い文脈で走り続ける）
+      if (done.errorMessage) {
+        return {
+          type: "notice",
+          threadId: thread.id,
+          source: "system",
+          text: `文脈のまとめ直しに失敗しました：${done.errorMessage}`,
+        };
+      }
+      const before = done.result?.tokensBefore;
+      const why =
+        done.reason === "overflow"
+          ? "文脈があふれたため"
+          : done.reason === "manual"
+            ? "指示により"
+            : "文脈が長くなったため";
+      return {
+        type: "notice",
+        threadId: thread.id,
+        source: "system",
+        text:
+          `${why}、ここまでの会話をまとめ直しました` +
+          (before ? `（まとめる前 ${before.toLocaleString()} トークン）` : "") +
+          "。**古いやり取りは要約に置き換わっています**——番頭が細部を覚えていないときは、" +
+          "必要な前提をもう一度伝えてください。",
+      };
+    }
+
+    // ターンの終わりに、そのターンで運んだトークン数が分かる。
+    // **入力＋キャッシュ＋出力**＝次のターンで運ぶ量の目安（文脈の使用量として出す）
+    if (e?.type === "turn_end") {
+      const usage = (e as { message?: { usage?: Record<string, unknown> } }).message?.usage;
+      if (usage) {
+        const tokens =
+          numberOf(usage["input"]) +
+          numberOf(usage["cacheRead"]) +
+          numberOf(usage["cacheWrite"]) +
+          numberOf(usage["output"]);
+        if (tokens > 0) {
+          this.contextTokens.set(thread.id, tokens);
+          return { type: "context_state", threadId: thread.id, tokens };
+        }
+      }
+      return undefined;
+    }
     if (e?.type === "tool_execution_start") {
+      const input = clampToolPayload(e.args);
       return {
         type: "tool_start",
         threadId: thread.id,
         toolCallId: String(e.toolCallId),
         name: this.toLogicalName(String(e.toolName)),
+        ...(input !== undefined ? { input } : {}),
       };
     }
     if (e?.type === "tool_execution_end") {
+      const output = clampToolPayload(e.result);
       return {
         type: "tool_end",
         threadId: thread.id,
         toolCallId: String(e.toolCallId),
         name: this.toLogicalName(String(e.toolName)),
         isError: Boolean(e.isError),
+        ...(output !== undefined ? { output } : {}),
       };
     }
     return undefined;

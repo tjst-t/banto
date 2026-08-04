@@ -58,8 +58,13 @@ export const CONSTRAINT_KEYS: readonly (keyof ModelConstraints)[] = [
 
 export type KeyScope = "host" | "worker";
 
-/** キーの実行時状態。設定ではないのでオーバーレイには保存しない。 */
-export type KeyState = "ok" | "limited" | "untested";
+/**
+ * キーの実行時状態。設定ではないのでオーバーレイには保存しない（D3）。
+ *
+ * `untested` は「まだ確かめていない」。**放っておいても変わらない**ので、
+ * 画面から確かめられるようにしてある（`llm.check_key`）。
+ */
+export type KeyState = "ok" | "limited" | "invalid" | "untested";
 
 export interface LlmKeyInfo {
   /** auth.json 上のプロバイダ名 = キー名 */
@@ -71,6 +76,13 @@ export interface LlmKeyInfo {
   state: KeyState;
   /** state === "limited" のとき、いつまで待つか（ISO 8601） */
   limitedUntil?: string;
+  /** 最後に確かめた時刻（ISO 8601）。確かめていなければ無い。 */
+  checkedAt?: string;
+  /**
+   * どの鍵が入っているかを見分けるための**末尾だけ**（`…f3a2`）。
+   * 値そのものは決して返さない——差し替える前に「どれが入っているか」が分かればよい。
+   */
+  hint?: string;
 }
 
 export interface LlmProviderInfo {
@@ -79,6 +91,14 @@ export interface LlmProviderInfo {
   baseUrl: string;
   hasAuth: boolean;
   modelCount: number;
+  /**
+   * モデル一覧を取り込めるか。
+   *
+   * 取り込み元は2つある——**到達先（baseUrl）に問い合わせる**か、
+   * **ハーネスが組み込みで知っている定義から写す**か。auth.json に鍵だけがある
+   * プロバイダ（pi が baseUrl を内蔵しているもの）は前者が使えないが後者は使える。
+   */
+  canFetchModels: boolean;
   /** 外に出ない（ローカル実行）。URL からは判別できないので設定で持つ */
   local: boolean;
   /** 上から順に消費する。並び順そのものが優先順位 */
@@ -91,11 +111,18 @@ export interface LlmModelInfo {
   name: string;
   tier: ModelTier;
   vision: boolean;
+  /**
+   * 文脈に入る最大トークン数。**分かるときだけ入る**——プロバイダの `/models` は
+   * 返さないことがあり、推測で埋めない（I1）。ハーネスの組み込み定義からは取れる。
+   */
+  contextWindow?: number;
+  /** 100万トークンあたりの値段（分かるときだけ）。選ぶときの軸になる。 */
+  cost?: { input: number; output: number };
   /** 有料キーを使わない */
   free: boolean;
-  /** 番頭が使ってよい */
+  /** 番頭が使ってよい（＝採用している） */
   hostUsable: boolean;
-  /** 職人が使ってよい */
+  /** 職人が使ってよい（＝採用している） */
   workerUsable: boolean;
 }
 
@@ -136,7 +163,25 @@ export interface LlmCatalogData {
  */
 export interface LlmModelResolver {
   find(provider: string, modelId: string): ResolvedModel | undefined;
-  getKnownModels(provider: string): Array<{ id: string; name?: string; input?: string[] }> | undefined;
+  /**
+   * ハーネスが組み込みで知っているモデル。
+   * `baseUrl` / `api` も持っている（pi は主要プロバイダの到達先を内蔵している）ので、
+   * models.json に何も無いプロバイダの登録元としても使える。
+   */
+  getKnownModels(
+    provider: string
+  ):
+    | Array<{
+        id: string;
+        name?: string;
+        input?: string[];
+        baseUrl?: string;
+        api?: string;
+        contextWindow?: number;
+        maxTokens?: number;
+        cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+      }>
+    | undefined;
 }
 
 export interface ResolvedModel {
@@ -181,7 +226,19 @@ interface ModelsJson {
     {
       name?: string;
       baseUrl?: string;
-      models?: Array<{ id: string; name?: string; input?: string[] }>;
+      /** pi の API 種別（`openai-completions` 等）。 */
+      api?: string;
+      /** 互換エンドポイント用にファイルへ直接書かれることがある。 */
+      apiKey?: string;
+      models?: Array<{
+        id: string;
+        name?: string;
+        input?: string[];
+        contextWindow?: number;
+        maxTokens?: number;
+        /** 100万トークンあたりの値段。pi も課金計算に使う形。 */
+        cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+      }>;
     }
   >;
 }
@@ -200,6 +257,11 @@ interface ProviderOverlay {
 }
 
 interface Overlay {
+  /**
+   * 「採用していないものは使えない」へ反転したときの移行印（2026-08-04）。
+   * これが無いオーバーレイは、そのとき見えていたモデルを全部採用済みにしてから付ける。
+   */
+  adoptionMigratedAt?: string;
   tiers?: Record<string, Record<string, ModelTier>>;
   tierDescriptions?: Partial<Record<ModelTier, string>>;
   picks?: Partial<Record<ModelTier, { provider: string; model: string }>>;
@@ -226,7 +288,10 @@ export class LlmCatalog {
   private overlay: Overlay | null = null;
 
   /** キーの上限は実行時状態。プロセスが落ちれば消えてよい（D3） */
-  private readonly keyRuntime = new Map<string, { state: KeyState; limitedUntil?: string }>();
+  private readonly keyRuntime = new Map<
+    string,
+    { state: KeyState; limitedUntil?: string; checkedAt?: string }
+  >();
 
   /** 読み込んだ時点の pi 設定ファイルのハッシュ。外部変更の検知に使う */
   private loadedHash = "";
@@ -258,6 +323,7 @@ export class LlmCatalog {
         baseUrl: value.baseUrl ?? "",
         hasAuth: auth.has(id),
         modelCount: Array.isArray(value.models) ? value.models.length : 0,
+        canFetchModels: (value.baseUrl ?? "").length > 0 || this.knownModels(id).length > 0,
         local: this.overlay!.providers?.[id]?.local ?? false,
         keys: this.keysOf(id, auth.names),
       });
@@ -272,6 +338,9 @@ export class LlmCatalog {
         baseUrl: "",
         hasAuth: true,
         modelCount: 0,
+        // 鍵だけがあるプロバイダ（pi が到達先を内蔵しているもの）。
+        // 到達先は分からないが、組み込みの定義からなら取り込める
+        canFetchModels: this.knownModels(name).length > 0,
         local: this.overlay!.providers?.[name]?.local ?? false,
         keys: this.keysOf(name, auth.names),
       });
@@ -292,16 +361,27 @@ export class LlmCatalog {
       const hasAuth = auth.has(providerId);
       for (const m of value.models) {
         const ov = this.overlay!.models?.[providerId]?.[m.id];
+        // 値段が分かっているなら、それで無料かどうかを言う。分からないときだけ
+        // 「鍵が要らない＝有料キーを消費しない」という粗い判定に落ちる
+        const priced = m.cost && (m.cost.input > 0 || m.cost.output > 0);
         result.push({
           providerId,
           id: m.id,
           name: m.name ?? m.id,
           tier: this.getTier(providerId, m.id),
           vision: Array.isArray(m.input) && m.input.includes("image"),
-          // 鍵が要らないなら有料キーは消費しない
-          free: ov?.free ?? !hasAuth,
-          hostUsable: ov?.hostUsable ?? true,
-          workerUsable: ov?.workerUsable ?? true,
+          ...(typeof m.contextWindow === "number" ? { contextWindow: m.contextWindow } : {}),
+          ...(m.cost ? { cost: { input: m.cost.input, output: m.cost.output } } : {}),
+          free: ov?.free ?? (m.cost ? !priced : !hasAuth),
+          /**
+           * **採用していないものは使えない**（PO裁定 2026-08-04）。
+           *
+           * 既定を「全部使ってよい」にしていたのは、モデルが10件程度の前提だったから。
+           * OpenRouter のように337件あるプロバイダでは、選択肢が全部並んで選べなくなる。
+           * 使うものを明示的に採用する形へ反転した（既存環境は移行で全採用にする）。
+           */
+          hostUsable: ov?.hostUsable ?? false,
+          workerUsable: ov?.workerUsable ?? false,
         });
       }
     }
@@ -481,7 +561,18 @@ export class LlmCatalog {
   }
 
   markKeyOk(providerId: string, keyName: string): void {
-    this.keyRuntime.set(`${providerId}/${keyName}`, { state: "ok" });
+    this.keyRuntime.set(`${providerId}/${keyName}`, {
+      state: "ok",
+      checkedAt: new Date().toISOString(),
+    });
+  }
+
+  /** 鍵が受け付けられなかった（401/403）。**黙って候補に残さない**。 */
+  markKeyInvalid(providerId: string, keyName: string): void {
+    this.keyRuntime.set(`${providerId}/${keyName}`, {
+      state: "invalid",
+      checkedAt: new Date().toISOString(),
+    });
   }
 
   /**
@@ -519,11 +610,15 @@ export class LlmCatalog {
         state = "ok";
         limitedUntil = undefined;
       }
+      const value = this.rawKeyValue(providerId, name);
       return {
         name,
         host: scopes?.host ?? true,
         worker: scopes?.worker ?? true,
         state,
+        ...(runtime?.checkedAt ? { checkedAt: runtime.checkedAt } : {}),
+        // 末尾だけ。差し替える前に「どれが入っているか」が分かればよい
+        ...(value && value.length >= 4 ? { hint: `…${value.slice(-4)}` } : {}),
         ...(limitedUntil ? { limitedUntil } : {}),
       };
     });
@@ -640,6 +735,7 @@ export class LlmCatalog {
     this.loadedHash = this.hashPiFiles();
     this.loadedAt = new Date().toISOString();
     this.migrateWorkerDefault();
+    this.migrateAdoption();
     if (this.migration) this.migrateOnce();
   }
 
@@ -661,6 +757,34 @@ export class LlmCatalog {
     this.overlay!.models ??= {};
     this.overlay!.models[provider] ??= {};
     this.overlay!.models[provider]![model] = { ...this.overlay!.models[provider]![model], ...patch };
+  }
+
+  /**
+   * 「全部使ってよい」→「採用したものだけ使える」への移行（2026-08-04）。
+   *
+   * **いま使えているものを黙って使えなくしない**——反転した瞬間に全モデルが選べなくなり、
+   * 番頭が起動できなくなる。移行印が無いオーバーレイは、そのとき載っているモデルを
+   * 全部採用済みにしてから印を付ける。以後に足されたモデルは採用されない（それが狙い）。
+   */
+  private migrateAdoption(): void {
+    if (this.overlay!.adoptionMigratedAt) return;
+    const modelsJson = this.readModelsJson();
+    this.overlay!.models ??= {};
+    for (const [rawProvider, value] of Object.entries(modelsJson.providers)) {
+      const providerId = rawProvider.replace(/_/g, "-");
+      if (!Array.isArray(value.models)) continue;
+      for (const m of value.models) {
+        this.overlay!.models[providerId] ??= {};
+        const current = this.overlay!.models[providerId]![m.id];
+        this.overlay!.models[providerId]![m.id] = {
+          ...current,
+          hostUsable: current?.hostUsable ?? true,
+          workerUsable: current?.workerUsable ?? true,
+        };
+      }
+    }
+    this.overlay!.adoptionMigratedAt = new Date().toISOString();
+    this.saveOverlay();
   }
 
   /**
@@ -710,6 +834,354 @@ export class LlmCatalog {
 
     if (changed) this.saveOverlay();
     this.migration = undefined;
+  }
+
+  // ── 書き込み（pi の設定ファイル） ────────────────────────────────────────
+  //
+  // ここまで pi の auth.json / models.json は**読むだけ**だった（書くのは overlay のみ）。
+  // 画面からプロバイダとキーを足せるようにするため、この2ファイルも banto が書く。
+  // pi 本体は無改造のまま（CLAUDE.md）——触るのは設定ファイルだけで、pi はそれを読む。
+  //
+  // I2: 壊れた JSON を黙って上書きしない。読めないファイルはエラーにして止める
+  // （握りつぶすと、手で書いた設定が消える）。
+
+  /** プロバイダを足す。既にあるものは上書きしない（消えては困る設定が入っている）。 */
+  addProvider(params: {
+    id: string;
+    baseUrl: string;
+    /** pi の API 種別。OpenAI 互換が既定。 */
+    api?: string;
+    /** 省略時は名前＝ID。 */
+    name?: string;
+  }): void {
+    this.ensureLoaded();
+    const models = this.readModelsJsonStrict();
+    if (this.rawProviderKey(models, params.id)) {
+      throw new Error(`${params.id} は既にあります`);
+    }
+    models.providers[params.id] = {
+      name: params.name ?? params.id,
+      baseUrl: params.baseUrl,
+      api: params.api ?? "openai-completions",
+      models: [],
+    };
+    this.writeModelsJson(models);
+  }
+
+  /**
+   * プロバイダを消す。**キーと overlay も一緒に消す**——プロバイダが無いのに鍵や
+   * 並び順だけ残ると、次に同じ名前を足したとき前の設定が蘇って驚く。
+   */
+  removeProvider(id: string): void {
+    this.ensureLoaded();
+    const models = this.readModelsJsonStrict();
+    const rawKey = this.rawProviderKey(models, id);
+    if (rawKey) {
+      delete models.providers[rawKey];
+      this.writeModelsJson(models);
+    }
+    this.removeKey(id);
+    if (this.overlay!.providers?.[id]) {
+      delete this.overlay!.providers[id];
+      this.saveOverlay();
+    }
+    if (this.overlay!.models?.[id]) {
+      delete this.overlay!.models[id];
+      this.saveOverlay();
+    }
+  }
+
+  /** API キーを入れる（同じプロバイダに入れ直すと差し替え）。 */
+  setKey(provider: string, key: string): void {
+    this.ensureLoaded();
+    if (key.trim().length === 0) throw new Error("キーが空です");
+    const auth = this.readAuthStrict();
+    const rawKey = Object.keys(auth).find((k) => k.replace(/_/g, "-") === provider) ?? provider;
+    auth[rawKey] = { type: "api_key", key };
+    this.writeAuthJson(auth);
+  }
+
+  /** API キーを消す。無ければ何もしない（消えている状態が欲しいだけなので）。 */
+  removeKey(provider: string): void {
+    this.ensureLoaded();
+    const auth = this.readAuthStrict();
+    const rawKey = Object.keys(auth).find((k) => k.replace(/_/g, "-") === provider);
+    if (!rawKey) return;
+    delete auth[rawKey];
+    this.writeAuthJson(auth);
+  }
+
+  /** auth.json の生の値。**外へ出さない**（末尾のヒントを作るためだけに読む）。 */
+  private rawKeyValue(providerId: string, keyName: string): string | undefined {
+    try {
+      const auth = this.readAuthStrict();
+      const rawKey = Object.keys(auth).find((k) => k.replace(/_/g, "-") === keyName);
+      return rawKey ? auth[rawKey]?.key : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * プロバイダのキー（実体）。**外へ出さない**——モデル一覧を取りに行くときに
+   * Authorization に載せるためだけに使う。`catalog()` はキーの値を返さない。
+   */
+  apiKeyFor(provider: string): string | undefined {
+    this.ensureLoaded();
+    const auth = this.readAuthStrict();
+    const rawKey = Object.keys(auth).find((k) => k.replace(/_/g, "-") === provider);
+    const fromAuth = rawKey ? auth[rawKey]?.key : undefined;
+    if (fromAuth) return fromAuth;
+    // models.json 側に直接書かれている場合もある（ローカルの互換エンドポイント等）
+    const models = this.readModelsJson();
+    const modelsKey = this.rawProviderKey(models as ModelsJson, provider);
+    return modelsKey ? models.providers[modelsKey]?.apiKey : undefined;
+  }
+
+  /**
+   * ハーネスが組み込みで知っているモデル定義。
+   *
+   * pi は主要なプロバイダ（opencode 等）の到達先とモデル一覧を内蔵しているので、
+   * models.json に何も書かれていなくても取り込み元になる。**画像可否まで分かる**ので、
+   * `/models` に問い合わせるより情報が多い。
+   */
+  knownModels(
+    provider: string
+  ): Array<{
+    id: string;
+    name?: string;
+    input?: string[];
+    baseUrl?: string;
+    api?: string;
+    contextWindow?: number;
+    maxTokens?: number;
+    cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  }> {
+    return this.resolver.getKnownModels(provider) ?? [];
+  }
+
+  /** プロバイダの baseUrl。モデル一覧の取得先を組み立てるのに使う。 */
+  baseUrlOf(provider: string): string | undefined {
+    this.ensureLoaded();
+    const models = this.readModelsJson();
+    const rawKey = this.rawProviderKey(models, provider);
+    return rawKey ? models.providers[rawKey]?.baseUrl : undefined;
+  }
+
+  /**
+   * 取得したモデル一覧を models.json へ反映する。
+   *
+   * **既にある設定は消さない**——input（画像を読めるか）や contextWindow は
+   * プロバイダの `/models` からは分からず、手で直した値が入っていることがある。
+   * 同じ ID は据え置き（欠けているところだけ埋める）、新しい ID だけを足す。
+   *
+   * **プロバイダ側から消えたモデルは、こちらからも消す**（PO裁定 2026-08-04）。
+   * 残しても選べるだけで、選べば必ず失敗する。消したものは名前を返す（黙って消さない）。
+   */
+  mergeModels(
+    provider: string,
+    fetched: Array<{
+      id: string;
+      name?: string;
+      /** 分かっている場合だけ渡す（組み込み定義から写すとき）。省略時は text のみ。 */
+      input?: string[];
+      contextWindow?: number;
+      maxTokens?: number;
+      /** 100万トークンあたりの値段（分かるときだけ）。 */
+      cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+    }>,
+    /** models.json に無いプロバイダを作るときの到達先。鍵だけがあるプロバイダで使う。 */
+    ensure?: { baseUrl?: string; api?: string },
+    /**
+     * 能力（画像可否・文脈長）の出どころが信頼できるか。
+     *
+     * `true` なら**既にある項目も更新する**——ハーネスの組み込み定義は能力を正しく
+     * 知っているので、以前 `text` だけと記録したものを直せる。`/models` から来た
+     * 一覧は能力を知らないので `false`（欠けているところだけ埋める）。
+     */
+    trustCapabilities?: boolean
+  ): { added: string[]; kept: string[]; removed: string[] } {
+    this.ensureLoaded();
+    const models = this.readModelsJsonStrict();
+    let rawKey = this.rawProviderKey(models, provider);
+    if (!rawKey) {
+      // auth.json に鍵だけがあるプロバイダ（pi が到達先を内蔵しているもの）は
+      // models.json に居ない。取り込みのタイミングで居場所を作る
+      if (!ensure) throw new Error(`${provider} が models.json にありません`);
+      rawKey = provider;
+      models.providers[rawKey] = {
+        name: provider,
+        baseUrl: ensure.baseUrl ?? "",
+        api: ensure.api ?? "openai-completions",
+        models: [],
+      };
+    }
+    const entry = models.providers[rawKey]!;
+    const existing = Array.isArray(entry.models) ? entry.models : [];
+    const existingIds = new Set(existing.map((m) => m.id));
+    const fetchedIds = new Set(fetched.map((m) => m.id));
+
+    const added: string[] = [];
+    for (const model of fetched) {
+      if (existingIds.has(model.id)) {
+        // **欠けているところは埋める**（能力の出どころが信頼できるなら上書きもする）。
+        // 手で直した値を消さないのが前提だが、空欄のまま放置もしない
+        const at = existing.find((m) => m.id === model.id);
+        if (!at) continue;
+        if (model.contextWindow && (trustCapabilities || !at.contextWindow)) {
+          at.contextWindow = model.contextWindow;
+        }
+        if (model.maxTokens && (trustCapabilities || !at.maxTokens)) at.maxTokens = model.maxTokens;
+        if (model.input && (trustCapabilities || !at.input)) at.input = model.input;
+        if (model.cost && (trustCapabilities || !at.cost)) at.cost = model.cost;
+        continue;
+      }
+      added.push(model.id);
+      existing.push({
+        id: model.id,
+        name: model.name ?? model.id,
+        // `/models` は画像を読めるかを教えてくれない。分からないときは
+        // **text と名乗って様子を見る**——読めないものを読めると偽るより、
+        // 読めるものを後から直すほうが安全（I1）。組み込み定義から写すときは分かる
+        input: model.input ?? ["text"],
+        ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+        ...(model.maxTokens ? { maxTokens: model.maxTokens } : {}),
+        ...(model.cost ? { cost: model.cost } : {}),
+      });
+    }
+    // プロバイダ側から消えたものを落とす。設定（tier・使用可）も一緒に片付ける
+    const removed = [...existingIds].filter((id) => !fetchedIds.has(id));
+    entry.models = existing.filter((m) => !removed.includes(m.id));
+    this.writeModelsJson(models);
+    if (removed.length > 0) {
+      let overlayChanged = false;
+      for (const id of removed) {
+        if (this.overlay!.models?.[provider]?.[id]) {
+          delete this.overlay!.models[provider]![id];
+          overlayChanged = true;
+        }
+        if (this.overlay!.tiers?.[provider]?.[id]) {
+          delete this.overlay!.tiers[provider]![id];
+          overlayChanged = true;
+        }
+      }
+      if (overlayChanged) this.saveOverlay();
+    }
+    return { added, kept: [...existingIds].filter((id) => !removed.includes(id)), removed };
+  }
+
+  /**
+   * 既定（番頭の標準・tier の第一候補）が、いま存在しないモデルを指していないか直す。
+   *
+   * **指したまま放置しない**（PO裁定 2026-08-04）——モデルが消えると番頭は起動も会話も
+   * できなくなる。同じプロバイダ → 同じ tier → 残っているもの、の順で選び直し、
+   * **何を何に付け替えたかを返す**（黙って別のモデルに変えない・I1）。
+   */
+  repairDefaults(): Array<{ role: string; from: string; to: string | undefined }> {
+    this.ensureLoaded();
+    const available = this.models();
+    const changes: Array<{ role: string; from: string; to: string | undefined }> = [];
+    const exists = (provider: string, id: string): boolean =>
+      available.some((m) => m.providerId === provider && m.id === id);
+
+    /**
+     * 近いものを選ぶ：同じプロバイダ → 同じ tier → 残っているもの。
+     *
+     * **採用しているものから探し、1つも無ければ採用していないものからでも選ぶ**
+     * ——動かない番頭より、採用の線引きを1つ広げるほうがましだから。その場合は
+     * 選んだものを採用済みにして、状態が食い違わないようにする（変更は必ず返す）。
+     */
+    const replacement = (provider: string, tier: ModelTier, usable: "host" | "worker") => {
+      const pick = (pool: LlmModelInfo[]): LlmModelInfo | undefined =>
+        pool.find((m) => m.providerId === provider && m.tier === tier) ??
+        pool.find((m) => m.providerId === provider) ??
+        pool.find((m) => m.tier === tier) ??
+        pool[0];
+      const adopted = available.filter((m) => (usable === "host" ? m.hostUsable : m.workerUsable));
+      const found = pick(adopted);
+      if (found) return found;
+      const fallback = pick(available);
+      if (fallback) {
+        this.setUsable(fallback.providerId, fallback.id, usable, true);
+      }
+      return fallback;
+    };
+
+    const host = this.overlay!.defaults?.host;
+    if (host && !exists(host.provider, host.model)) {
+      const tier = this.getTier(host.provider, host.model);
+      const next = replacement(host.provider, tier, "host");
+      changes.push({
+        role: "番頭の標準",
+        from: `${host.provider}/${host.model}`,
+        to: next ? `${next.providerId}/${next.id}` : undefined,
+      });
+      if (next) this.overlay!.defaults!.host = { provider: next.providerId, model: next.id };
+      else delete this.overlay!.defaults!.host;
+      this.saveOverlay();
+    }
+
+    for (const [tier, pick] of Object.entries(this.overlay!.picks ?? {})) {
+      if (!pick || exists(pick.provider, pick.model)) continue;
+      const next = replacement(pick.provider, tier as ModelTier, "worker");
+      changes.push({
+        role: `${TIER_LABELS[tier as ModelTier] ?? tier}の第一候補`,
+        from: `${pick.provider}/${pick.model}`,
+        to: next ? `${next.providerId}/${next.id}` : undefined,
+      });
+      if (next) this.overlay!.picks![tier as ModelTier] = { provider: next.providerId, model: next.id };
+      else delete this.overlay!.picks![tier as ModelTier];
+      this.saveOverlay();
+    }
+
+    return changes;
+  }
+
+  /** models.json の生キー（`_` 表記のことがある）を、正規化した ID から引く。 */
+  private rawProviderKey(models: ModelsJson, id: string): string | undefined {
+    return Object.keys(models.providers).find((k) => k.replace(/_/g, "-") === id);
+  }
+
+  private readModelsJsonStrict(): ModelsJson {
+    if (!fs.existsSync(this.modelsJsonPath)) return { providers: {} };
+    const raw = fs.readFileSync(this.modelsJsonPath, "utf-8");
+    let parsed: ModelsJson;
+    try {
+      parsed = JSON.parse(raw) as ModelsJson;
+    } catch (err) {
+      throw new Error(`${this.modelsJsonPath} を読めません（壊れた JSON）: ${String(err)}`);
+    }
+    parsed.providers ??= {};
+    return parsed;
+  }
+
+  private readAuthStrict(): AuthJson {
+    if (!fs.existsSync(this.authJsonPath)) return {};
+    const raw = fs.readFileSync(this.authJsonPath, "utf-8");
+    try {
+      return JSON.parse(raw) as AuthJson;
+    } catch (err) {
+      throw new Error(`${this.authJsonPath} を読めません（壊れた JSON）: ${String(err)}`);
+    }
+  }
+
+  private writeModelsJson(models: ModelsJson): void {
+    fs.mkdirSync(path.dirname(this.modelsJsonPath), { recursive: true });
+    fs.writeFileSync(this.modelsJsonPath, JSON.stringify(models, null, 2) + "\n", "utf-8");
+    // 書いた直後は「外部で変更された」ではない。読み込み済みの印を更新する
+    this.loadedHash = this.hashPiFiles();
+  }
+
+  /** キーのファイルは**本人だけが読める**まま保つ（0600）。 */
+  private writeAuthJson(auth: AuthJson): void {
+    fs.mkdirSync(path.dirname(this.authJsonPath), { recursive: true });
+    fs.writeFileSync(this.authJsonPath, JSON.stringify(auth, null, 2) + "\n", {
+      encoding: "utf-8",
+      mode: 0o600,
+    });
+    // 既にあったファイルには mode が効かないので、明示的に絞り直す
+    fs.chmodSync(this.authJsonPath, 0o600);
+    this.loadedHash = this.hashPiFiles();
   }
 
   private readAuth(): { has(name: string): boolean; names: string[] } {

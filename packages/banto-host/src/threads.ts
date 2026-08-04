@@ -25,10 +25,17 @@ export type ThreadFactory = (
    * 復元するときに渡る、そのスレッドの pi セッションファイル（task-0036）。
    * これを開き直さないと、画面には会話が戻るのに**番頭は何も覚えていない**状態になる。
    */
-  resumeFrom?: string
+  resumeFrom?: string,
+  /**
+   * この会話で使いたいモデル。**復元では保存されていたもの**、新規では省略（＝番頭の標準）。
+   * 会話ごとにモデルを持つため、器を作る側がここを見て組み立てる。
+   */
+  model?: { provider: string; id: string }
 ) => Promise<{
   session: HostSession;
   canvas?: Canvas;
+  /** この器が実際に使っているモデル。会話ごとに持ち、画面と索引へ出す。 */
+  model?: { provider: string; id: string; vision: boolean; contextWindow?: number };
   /** このスレッドに登録した論理名のTool（wire名の逆引きに使う）。 */
   tools: NamespacedToolDefinition[];
   /** 直近のターンでプロバイダ側エラーがあれば返す。**スレッドごと**に別。 */
@@ -82,6 +89,13 @@ export class Thread {
   /** 番頭の文脈が書かれている pi セッションファイル（task-0036）。 */
   readonly sessionFile: string | undefined;
   /**
+   * この会話で使っているモデル（PO裁定 2026-08-04）。
+   *
+   * **会話ごとに持つ**——話題ごとに向いたモデルが違うので、切り替えても他の会話は変わらない。
+   * 索引に保存され、再起動しても同じモデルで再開する。
+   */
+  model: { provider: string; id: string; vision: boolean; contextWindow?: number } | undefined;
+  /**
    * 復元された中断ターンを再開する処理（imp-0016 主対策）。
    * サーバ起動後に open スレッドだけ呼ばれる（畳んだスレッドは開き直すまで話さない）。
    */
@@ -111,6 +125,7 @@ export class Thread {
     tools: NamespacedToolDefinition[];
     getLastError?: () => string | undefined;
     sessionFile?: string;
+    model?: { provider: string; id: string; vision: boolean; contextWindow?: number };
     resumePendingTurn?: () => Promise<void>;
     dispose?: () => void;
   }) {
@@ -121,6 +136,7 @@ export class Thread {
     this.toolNames = params.tools.map((t) => t.name);
     this.getLastError = params.getLastError ?? ((): string | undefined => undefined);
     this.sessionFile = params.sessionFile;
+    this.model = params.model;
     this.resumePendingTurn = params.resumePendingTurn;
     if (params.dispose) this.disposers.push(params.dispose);
   }
@@ -135,6 +151,7 @@ export class Thread {
       // D3: 忙しさの真実はここ。UI は自分の操作から推測しない
       streaming: this.session.isStreaming,
       ...(this.closedAt ? { closedAt: this.closedAt } : {}),
+      ...(this.model ? { model: this.model } : {}),
     };
   }
 
@@ -154,12 +171,26 @@ export class Thread {
       this.transcript[this.transcript.length - 1] = { role: "banto", text: last.text + entry.text };
       return;
     }
+    // 思考も差分で届く。**考えていた時間は後から来る**ので、既に入っていれば消さない
+    if (entry.role === "reasoning" && last?.role === "reasoning") {
+      const durationMs = entry.durationMs ?? last.durationMs;
+      this.transcript[this.transcript.length - 1] = {
+        role: "reasoning",
+        text: last.text + entry.text,
+        ...(durationMs !== undefined ? { durationMs } : {}),
+      };
+      return;
+    }
     if (entry.role === "tool" && entry.state !== "running") {
       const index = this.transcript.findIndex(
         (e) => e.role === "tool" && e.name === entry.name && e.state === "running"
       );
+      const running = index === -1 ? undefined : this.transcript[index];
       if (index !== -1) {
-        this.transcript[index] = entry;
+        // 引数は開始のときにしか来ない。終わりで上書きすると、開いても何を渡したか分からなくなる
+        const input =
+          entry.input ?? (running?.role === "tool" ? running.input : undefined);
+        this.transcript[index] = { ...entry, ...(input !== undefined ? { input } : {}) };
         return;
       }
     }
@@ -205,11 +236,12 @@ export class ThreadRegistry {
     if (!this.store) return;
     for (const saved of this.store.threads()) {
       try {
-        const parts = await this.factory(saved.id, saved.sessionFile);
+        const parts = await this.factory(saved.id, saved.sessionFile, saved.model);
         const thread = new Thread({
           id: saved.id,
           title: saved.title,
           session: parts.session,
+          ...(parts.model ? { model: parts.model } : {}),
           ...(parts.canvas ? { canvas: parts.canvas } : {}),
           tools: parts.tools,
           ...(parts.getLastError ? { getLastError: parts.getLastError } : {}),
@@ -296,6 +328,7 @@ export class ThreadRegistry {
       createdAt: thread.createdAt,
       ...(thread.closedAt ? { closedAt: thread.closedAt } : {}),
       ...(thread.sessionFile ? { sessionFile: thread.sessionFile } : {}),
+      ...(thread.model ? { model: { provider: thread.model.provider, id: thread.model.id } } : {}),
       ...(thread.canvas
         ? {
             canvasTabs: thread.canvas
@@ -320,6 +353,7 @@ export class ThreadRegistry {
       id,
       title: title ?? (first ? DEFAULT_TITLE : `会話 ${this.counter}`),
       session: parts.session,
+      ...(parts.model ? { model: parts.model } : {}),
       ...(parts.canvas ? { canvas: parts.canvas } : {}),
       tools: parts.tools,
       ...(parts.getLastError ? { getLastError: parts.getLastError } : {}),
