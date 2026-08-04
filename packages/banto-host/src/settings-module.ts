@@ -28,6 +28,8 @@ interface SettingsSectionView {
   /** 由来の表示名（モジュールの `title`）。画面が「どこが公開しているか」を出すため。 */
   originTitle: string;
   fields: ModuleSettingsSpec["fields"];
+  /** 項目で表せない中核の区画が指定する描き先（ADR-0011 決定43）。 */
+  view?: string;
   values: Record<string, unknown>;
 }
 
@@ -97,6 +99,7 @@ export function createSettingsModule(options: SettingsModuleOptions): BantoModul
           origin,
           originTitle,
           fields: spec.fields,
+          ...(spec.view ? { view: spec.view } : {}),
           values,
         });
       }

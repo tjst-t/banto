@@ -18,7 +18,7 @@ import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { getModel, getModels } from "@mariozechner/pi-ai";
 import { AuthStorage, getAgentDir, ModelRegistry, SessionManager } from "@mariozechner/pi-coding-agent";
-import { JsonlMemoryStore, type PlaceProvider } from "@banto/core";
+import { JsonlMemoryStore, LlmCatalog, type PlaceProvider, type ResolvedModel } from "@banto/core";
 
 import {
   PiRpcDriver,
@@ -47,6 +47,7 @@ import { CORE_ORIGIN, createModuleRegistry, resolveSkills, type SkillEntry } fro
 import { createDemoModule } from "./modules/demo.js";
 import { createStudioModule } from "./modules/studio.js";
 import { createPiAgentModule } from "./modules/pi-agent.js";
+import { createLlmTools } from "./llm-tools.js";
 import { createWorkspaceModule } from "./modules/workspace.js";
 import { PlaceGrantStore } from "./place-grants.js";
 import { ThreadStore } from "./thread-store.js";
@@ -214,50 +215,40 @@ const MODEL_ALIASES: Record<string, { provider: string; id: string }> = {
 };
 
 /**
- * provider/model を pi のモデルに解決する。
- *
- * **台帳に無いモデルも通す。** プロバイダは台帳より速く増減する——実際に
- * `deepseek-v4-flash-free` は pi の台帳に無いが opencode では動く。pi の CLI も
- * 同じ扱いで、同プロバイダの既知モデルを土台に id だけ差し替えている
- * （`model-resolver.js` の `buildFallbackModel`）。ホストだけ厳しくすると、
- * CLI では使えるモデルがホストでは使えないという食い違いになる。
- *
- * `MODEL_ALIASES` に紐付けがあるモデルは、実体のプロバイダ/モデルで解決する
- * （能力 input 等も実体の定義がそのまま効く）。
- *
- * I2: **プロバイダが台帳に無いときは止まる**。ここまで緩めると、綴り間違いが
- *     黙って通って別のプロバイダの鍵で 401 になる（既定解決で実際に踏んだ）。
+ * LlmCatalog 用のモデル解決器を作る。
+ * pi の ModelRegistry / getModel / getModels を LlmCatalog に渡す。
  */
-function resolveModel(
-  registry: ModelRegistry,
-  provider: string,
-  modelId: string
-): ReturnType<typeof getModel> {
-  const alias = MODEL_ALIASES[modelId];
-  const actualProvider = alias?.provider ?? provider;
-  const actualId = alias?.id ?? modelId;
+function createModelResolver(registry: ModelRegistry) {
+  return {
+    find(provider: string, modelId: string): ResolvedModel | undefined {
+      const alias = MODEL_ALIASES[modelId];
+      const actualProvider = alias?.provider ?? provider;
+      const actualId = alias?.id ?? modelId;
 
-  // 1. pi-coding-agent の ModelRegistry（models.json 含む）を試す
-  const custom = registry.find(actualProvider, actualId);
-  if (custom) return custom as ReturnType<typeof getModel>;
+      const custom = registry.find(actualProvider, actualId);
+      if (custom) {
+        const m = custom as { provider: string; id: string; name?: string; input?: string[] };
+        return { provider: m.provider, id: m.id, name: m.name ?? m.id, input: m.input ?? [] };
+      }
 
-  // 2. pi-ai の組み込み台帳を試す
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- getModel/getModels は既知
-  // provider のリテラル型を要求するが、ここは CLI 引数由来の文字列を通す (I4)
-  const known = getModel(actualProvider as any, actualId as any);
-  if (known) return known;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const known = getModel(actualProvider as any, actualId as any);
+      if (known) {
+        return { provider: known.provider, id: known.id, name: known.name ?? known.id, input: known.input ?? [] };
+      }
 
-  // 3. 組み込み provider の unknown model fallback
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 同上 (I4)
-  const siblings = getModels(actualProvider as any);
-  if (!siblings || siblings.length === 0) {
-    throw new Error(`unknown provider: ${actualProvider}`);
-  }
-  console.warn(
-    `[banto] モデル "${modelId}" は pi の台帳にありません。${actualProvider} の設定を土台に、` +
-      "id をそのまま使います（pi CLI と同じ扱い）"
-  );
-  return { ...siblings[0]!, id: actualId, name: modelId };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const siblings = getModels(actualProvider as any);
+      if (!siblings || siblings.length === 0) return undefined;
+
+      return { ...siblings[0]!, id: actualId, name: modelId };
+    },
+    getKnownModels(provider: string): Array<{ id: string; name?: string; input?: string[] }> | undefined {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const models = getModels(provider as any);
+      return models;
+    },
+  };
 }
 
 interface ServeOptions {
@@ -381,14 +372,38 @@ async function serve(options: ServeOptions): Promise<void> {
     ? `http://localhost:${options.port}${workerPoolUrl}`
     : workerPoolUrl;
 
+  // LLM Catalog の初期化（ADR-0004）。pi の設定を読み、banto のオーバーレイと統合する
+  const agentDir = getAgentDir();
+  const authStorage = AuthStorage.create(path.join(agentDir, "auth.json"));
+  const modelRegistry = ModelRegistry.create(authStorage, path.join(agentDir, "models.json"));
+  modelRegistry.refresh();
+
+  const llmSettings = settings.all().llm ?? {};
+  const workerPoolSettings = (settings.all().modules?.["worker-pool"] ?? {}) as Record<string, unknown>;
+  const llmCatalog = new LlmCatalog({
+    authJsonPath: path.join(agentDir, "auth.json"),
+    modelsJsonPath: path.join(agentDir, "models.json"),
+    overlayPath: path.join(dataDir(), "llm-registry.json"),
+    resolver: createModelResolver(modelRegistry),
+    migration: {
+      hostProvider: options.provider ?? llmSettings.provider,
+      hostModel: options.model ?? llmSettings.model,
+      workerProvider: workerPoolSettings["provider"] as string | undefined,
+      workerModel: workerPoolSettings["model"] as string | undefined,
+    },
+  });
+
+  // 職人の既定は tier で持つ（ADR-0004）。具体モデルは catalog が解決する。
+  // driver の defaultProvider/defaultModel は catalog が解決できないときの最後の受け皿。
+  const workerFallback = llmCatalog.resolveForWorker();
   const workerDriver = new PiRpcDriver({
     sessionBaseDir: path.join(dataDir(), "worker-sessions"),
-    // 保存された設定があればそれで立ち上げる（決定41）
-    ...(settings.all().modules?.["worker-pool"]?.["provider"]
-      ? { defaultProvider: String(settings.all().modules!["worker-pool"]!["provider"]) }
-      : {}),
-    ...(settings.all().modules?.["worker-pool"]?.["model"]
-      ? { defaultModel: String(settings.all().modules!["worker-pool"]!["model"]) }
+    catalog: llmCatalog,
+    ...(workerFallback
+      ? {
+          defaultProvider: workerFallback.model.provider,
+          defaultModel: workerFallback.model.id,
+        }
       : {}),
   });
   const workerPool = new WorkerPool({
@@ -414,6 +429,18 @@ async function serve(options: ServeOptions): Promise<void> {
   // 決定26 の層を解いた SKILL（番頭核＋モジュール）。studio はこれをそのまま見せる
   const coreSkills: SkillEntry[] = skills.map((skill) => ({ skill, origin: CORE_ORIGIN }));
 
+  // ADR-0011 決定42: LLM は中核のドメイン。モジュールではなく中核の Tool として持つ
+  const llmTools = createLlmTools({
+    catalog: llmCatalog,
+    onWorkerTierChanged: () => {
+      // 既定 tier が変われば、解決の受け皿も新しい tier のものに揃える
+      const next = llmCatalog.resolveForWorker();
+      if (next) {
+        workerDriver.setDefaults({ provider: next.model.provider, model: next.model.id });
+      }
+    },
+  });
+
   const modules = createModuleRegistry([
     // 決定38b: ホスト自身のデータ置き場は、設定で ** を許しても書かせない（自己昇格を塞ぐ）
     createWorkspaceModule(places, { protectedPaths: [dataDir()] }, grants),
@@ -429,14 +456,15 @@ async function serve(options: ServeOptions): Promise<void> {
       settingsSection(settings, "environment-pool")
     ),
     createDemoModule(),
-    // task-0050: pi coding agent の接続設定
-    createPiAgentModule({ settingsStore: settings }),
+    // task-0050: pi coding agent の接続情報表示（LLM 管理は llm-registry が担当）
+    createPiAgentModule(),
   ]);
 
   // 設定モジュールは他モジュールの宣言を集めるので、レジストリが揃ってから登録する（決定41）
   modules.register(
     createSettingsModule({
       core: createCoreSettingsSections(settings, {
+        llmCatalog,
         // 保存が無いときは起動時の指定を映す（画面が空に見えると、効いていないと読める）
         effectivePlaces: () =>
           readPlaceConfig(workspace).map((c) => ({
@@ -460,21 +488,18 @@ async function serve(options: ServeOptions): Promise<void> {
 
   const catalog = createCanvasCatalog(modules.views());
 
-  // I2: 指定されたモデルが見つからないなら黙って別のモデルに落とさず止める。
-  //     既定解決に任せると、auth.json に別プロバイダの無効な鍵が残っている場合に
-  //     そちらが選ばれて 401 になる（実際に踏んだ）。
-  //
-  // pi-coding-agent の ModelRegistry を使うと、models.json で定義したカスタムプロバイダ
-  // （ローカル LLM 等）も解決できる。職人（PiRpcDriver）と同じ設定を共有する。
-  const agentDir = getAgentDir();
-  const authStorage = AuthStorage.create(path.join(agentDir, "auth.json"));
-  const modelRegistry = ModelRegistry.create(authStorage, path.join(agentDir, "models.json"));
-  modelRegistry.refresh();
-
-  const llm = settings.all().llm ?? {};
-  const provider = options.provider ?? llm.provider;
-  const modelId = options.model ?? llm.model;
-  const model = provider && modelId ? resolveModel(modelRegistry, provider, modelId) : undefined;
+  // モデル解決は LlmCatalog に一元化（ADR-0004）。
+  // 起動時の指定 > 設定 > catalog の host default の順で解決
+  const hostDefault = llmCatalog.defaults().host;
+  const provider = options.provider ?? llmSettings.provider ?? hostDefault?.provider;
+  const modelId = options.model ?? llmSettings.model ?? hostDefault?.model;
+  const resolvedModel = provider && modelId
+    ? llmCatalog.resolveExact(provider, modelId)
+    : llmCatalog.resolveHostDefault();
+  // createBantoHostSession は pi-ai の Model 型を要求するため、modelRegistry から取得
+  const model = resolvedModel
+    ? modelRegistry.find(resolvedModel.provider, resolvedModel.id) ?? getModel(resolvedModel.provider as any, resolvedModel.id as any)
+    : undefined;
 
   // スレッド1本分の器を作る（決定2・task-0035）。**キャンバスはスレッドごと**——
   // ここを共有すると、ある会話で GUI を開いたときに別の会話の表示まで変わる。
@@ -485,9 +510,11 @@ async function serve(options: ServeOptions): Promise<void> {
   const threadFactory: ThreadFactory = async (threadId, resumeFrom) => {
     const canvas = new Canvas(catalog);
     // 記憶・SKILLのToolは createBantoHostSession が内部で足すので、ここでは渡さない。
-    // canvas.* / thread.* は Banto 中核自身のドメイン（決定27a）でモジュールではない。
+    // canvas.* / thread.* / llm.* は Banto 中核自身のドメイン（決定27a・ADR-0011 決定42）で
+    // モジュールではない。番頭は常にこれらを持つ。
     const ownTools = [
       ...createCanvasTools(canvas, catalog),
+      ...llmTools,
       ...createThreadTools({
         threads,
         // 出所は「別の会話」。職人の報告と同じ札で出さない（PO報告 2026-07-31）
@@ -587,6 +614,8 @@ async function serve(options: ServeOptions): Promise<void> {
     port: settings.all().network?.port ?? options.port,
     catalog,
     modules,
+    // ADR-0011 決定42: 中核の Tool も HTTP に出す（中核由来のGUIの到達先）
+    coreTools: llmTools,
     // task-0048: ビルド済み UI があれば同じポートで配る（常駐させるときの形）
     ...(webDir ? { webDir } : {}),
     // 画像添付の可否判定（/api/model）。id は指定されたモデル名のまま
