@@ -416,12 +416,7 @@ async function serve(options: ServeOptions): Promise<void> {
       ? { idleTimeoutMs: settings.all().modules!["worker-pool"]!["idleTimeoutMs"] as number }
       : {}),
   });
-  const workerPoolModule = createWorkerPoolModule(
-    workerPool,
-    workerPoolUrl,
-    workerDriver,
-    settingsSection(settings, "worker-pool")
-  );
+  const workerPoolModule = createWorkerPoolModule(workerPool, workerPoolUrl);
 
   // task-0050: 再起動後に中断していた職人を自動で起こす
   const resumedWorkers = await resumeWorkers(workerPool);
