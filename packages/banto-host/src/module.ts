@@ -84,6 +84,20 @@ export interface BantoModule {
    * @returns 捌いたら true。対象外なら false（ホストが次のルートへ回す）
    */
   handleUpgrade?(req: http.IncomingMessage, socket: Duplex, head: Buffer): boolean;
+  /**
+   * ホストの起動時に一度だけ呼ばれる（ADR-0011 決定44）。
+   *
+   * モジュールが「起動のたびにやること」を持てるようにする口。Worker Pool の
+   * 職人の復帰がこれにあたる——**中核が個々のモジュールの都合を知らずに済む**
+   * （決定27：Banto をブローカーにしない）。
+   *
+   * 呼ばれるのは登録順。**HTTP を待ち受ける前**なので、ここで時間のかかる処理を
+   * すると起動が遅れる。長くかかるものは自分で後回しにすること。
+   *
+   * I2: 例外は握りつぶさない。ただし1つのモジュールの失敗でホスト全体は落とさず、
+   *     ログに出して次へ進む——設定の区画を1つ読めないときと同じ扱い。
+   */
+  init?(ctx: ModuleInitContext): void | Promise<void>;
   /** キャンバスへ提供する GUI */
   views: CanvasViewSpec[];
   /**
@@ -104,6 +118,12 @@ export interface SkillEntry {
   origin: string;
 }
 
+/** `init` に渡す文脈。いまはログだけ。増やすときは「中核の都合」を渡さないこと。 */
+export interface ModuleInitContext {
+  /** モジュール名を添えてホストのログへ出す。 */
+  log(message: string): void;
+}
+
 export interface ModuleRegistry {
   /** モジュールを登録する。名前・Tool名・kind・SKILL名の衝突は例外（I2）。 */
   register(module: BantoModule): void;
@@ -120,6 +140,12 @@ export interface ModuleRegistry {
   moduleForView(kind: string): BantoModule | undefined;
   /** ある Tool を提供しているモジュール。 */
   moduleForTool(toolName: string): BantoModule | undefined;
+  /**
+   * 全モジュールの `init` を登録順に呼ぶ（決定44）。ホストが起動時に一度だけ呼ぶ。
+   *
+   * @returns 失敗したモジュール名とその理由。呼び出し側が起動ログに出せるように返す
+   */
+  init(): Promise<Array<{ module: string; error: string }>>;
 }
 
 export function createModuleRegistry(modules: BantoModule[] = []): ModuleRegistry {
@@ -181,6 +207,26 @@ export function createModuleRegistry(modules: BantoModule[] = []): ModuleRegistr
     moduleForTool: (toolName) => {
       const owner = toolOwner.get(toolName);
       return owner === undefined ? undefined : byName.get(owner);
+    },
+
+    async init() {
+      const failures: Array<{ module: string; error: string }> = [];
+      // 登録順に、直列で。並行にすると起動ログが混ざって、どのモジュールの
+      // 出力か追えなくなる
+      for (const module of byName.values()) {
+        if (!module.init) continue;
+        try {
+          await module.init({
+            log: (message) => console.log(`[banto] [${module.name}] ${message}`),
+          });
+        } catch (err) {
+          // I2: 握りつぶさない。ただし1つの失敗でホストを落とさず、次へ進む
+          const error = err instanceof Error ? err.message : String(err);
+          console.error(`[banto] [${module.name}] init に失敗: ${error}`);
+          failures.push({ module: module.name, error });
+        }
+      }
+      return failures;
     },
   };
 
