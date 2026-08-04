@@ -207,6 +207,19 @@ interface ServeOptions {
 }
 
 async function serve(options: ServeOptions): Promise<void> {
+  /**
+   * 起動が終わるまでイベントループを掴んでおく（inc-0020）。
+   *
+   * 起動中に走る非同期処理——職人の復帰（決定44）がそれ——は、pi のドライバが
+   * **unref した子プロセスと stdio** からの応答を待つ。待ち受けを始める前は
+   * ref された handle が他に無いので、ドライバ側のタイマーが尽きた瞬間に
+   * Node が「やることが無い」と判断し、**await の途中で黙って exit 0 する**。
+   *
+   * ログにもエラーにも何も残らないので、掴んでおく方が確実。待ち受け始めれば
+   * サーバのソケットがループを保つので、そこで放す。
+   */
+  const startupKeepAlive = setInterval(() => {}, 1 << 30);
+
   // task-0047: 保存された設定。**番頭が書けない場所**に置く（決定38b）
   const settings = new SettingsStore(path.join(dataDir(), "settings.json"));
 
@@ -578,6 +591,9 @@ async function serve(options: ServeOptions): Promise<void> {
     // 全インターフェースで待つと前段を素通りできてしまい、その裁定が成り立たない
     host: bindHost,
   });
+
+  // 待ち受け始めた＝サーバのソケットがイベントループを保つので、掴みを放す（inc-0020）
+  clearInterval(startupKeepAlive);
 
   // 決定36g: 再起動で中断したターンを復元——server.start() 後に配信が始まるので、
   // 購読を張る前に resumePendingTurn を済ませておく
