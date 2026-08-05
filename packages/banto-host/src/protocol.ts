@@ -134,6 +134,19 @@ export interface ThreadReopenMessage {
   threadId: string;
 }
 
+/**
+ * 会話に名前を付け直す（PO要望 2026-08-05）。番頭の `thread.rename` と同じ結果になる
+ * ——決定25「人がGUIでできることは番頭にもできる。ただし経路が異なる」の人側。
+ *
+ * **番頭と違い、どの会話でも指せる**。POはタブを右クリックして選ぶので、
+ * 「いま見ている会話」とは限らない。
+ */
+export interface ThreadRenameMessage {
+  type: "thread_rename";
+  threadId: string;
+  title: string;
+}
+
 export type ClientMessage =
   | PromptMessage
   | AbortMessage
@@ -145,6 +158,7 @@ export type ClientMessage =
   | ThreadOpenMessage
   | ThreadCloseMessage
   | ThreadReopenMessage
+  | ThreadRenameMessage
   | SetModelMessage;
 
 // ── Server → Client ──────────────────────────────────────────────────────────

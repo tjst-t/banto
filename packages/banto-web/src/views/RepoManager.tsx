@@ -12,6 +12,25 @@
 import { useState } from "react";
 import { callModuleTool, useModuleTool } from "./useModuleTool.js";
 import type { CanvasViewProps } from "./registry.js";
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  ErrorNote,
+  Loading,
+  Note,
+  Scroll,
+  SearchField,
+  SectionHead,
+  SplitView,
+  TextInput,
+  Toggle,
+  ViewBar,
+  ViewShell,
+  ViewTitle,
+  useAction,
+} from "./ui.js";
 
 interface Repository {
   id: string;
@@ -33,13 +52,12 @@ export function RepoManager({ params, endpoint }: CanvasViewProps): React.ReactE
   const [query, setQuery] = useState("");
   const list = useModuleTool<RepoList>(endpoint, "repo.list", query ? { query } : {});
   const [selected, setSelected] = useState<string | undefined>(initialRepo);
+  const [showDetail, setShowDetail] = useState(initialRepo !== undefined);
   const [branch, setBranch] = useState("");
   const [cloneTarget, setCloneTarget] = useState("");
   const [initName, setInitName] = useState("");
   const [createBranch, setCreateBranch] = useState(true);
-  const [busy, setBusy] = useState<string>();
-  const [error, setError] = useState<string>();
-  const [notice, setNotice] = useState<string>();
+  const action = useAction();
 
   const repositories = list.data?.repositories ?? [];
   const worktrees = list.data?.worktrees ?? [];
@@ -48,194 +66,227 @@ export function RepoManager({ params, endpoint }: CanvasViewProps): React.ReactE
   const mine = worktrees.filter((w) => (repo ? w.repo === repo.id : false));
   const orphans = worktrees.filter((w) => w.repo === null);
 
-  const act = async (key: string, tool: string, args: Record<string, unknown>): Promise<void> => {
-    setBusy(key);
-    setError(undefined);
-    setNotice(undefined);
-    try {
-      const details = await callModuleTool<Record<string, unknown>>(endpoint, tool, args);
-      list.reload();
-      setBranch("");
-      setCloneTarget("");
-      setInitName("");
-      setNotice(summarize(tool, details));
-      // 取り込んだ・作ったものをそのまま選んだ状態にする（次にやることが続く）
-      const added = details["repository"] as { id?: string } | null | undefined;
-      if (added?.id) setSelected(added.id);
-    } catch (err) {
-      // I2: 押したのに何も起きなかったように見せない
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(undefined);
-    }
+  const act = (key: string, tool: string, args: Record<string, unknown>): void => {
+    void action.run(
+      key,
+      () => callModuleTool<Record<string, unknown>>(endpoint, tool, args),
+      (result) => {
+        const details = result as Record<string, unknown>;
+        list.reload();
+        setBranch("");
+        setCloneTarget("");
+        setInitName("");
+        // 取り込んだ・作ったものをそのまま選んだ状態にする（次にやることが続く）
+        const added = details["repository"] as { id?: string } | null | undefined;
+        if (added?.id) {
+          setSelected(added.id);
+          setShowDetail(true);
+        }
+        return summarize(tool, details);
+      }
+    );
   };
 
-  return (
-    <div className="rm">
-      <div className="rm-side">
-        <div className="st-head">
-          <span className="st-title">リポジトリ</span>
-          <span className="gv3-count">{repositories.length}</span>
-          <button className="gv3-clear" onClick={() => list.reload()}>
-            取り直す
-          </button>
-        </div>
-        <input
-          className="rm-search"
-          placeholder="名前・パスで絞る"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          spellCheck={false}
-        />
-        {list.error && <div className="fb-error">{list.error}</div>}
-        <ul className="rm-list">
-          {repositories.map((r) => {
-            const count = worktrees.filter((w) => w.repo === r.id).length;
-            return (
-              <li key={r.id}>
-                <button
-                  className={r.id === repo?.id ? "rm-item rm-item-on" : "rm-item"}
-                  onClick={() => setSelected(r.id)}
-                >
-                  <span className="rm-name">{r.label}</span>
-                  {count > 0 && <span className="gv3-count">{count}</span>}
-                  <span className="rm-path">{r.path}</span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-        {repositories.length === 0 && !list.loading && (
-          <p className="fb-muted st-empty">
-            ghq が知っているリポジトリがありません（未導入か、まだ clone していない）
-          </p>
+  const listPane = (
+    <>
+      <ViewBar>
+        <ViewTitle icon="🗂" count={repositories.length}>
+          リポジトリ
+        </ViewTitle>
+        <span className="cv-spacer" />
+        <Button small variant="ghost" onClick={() => list.reload()} title="取り直す">
+          ⟳
+        </Button>
+      </ViewBar>
+      <ViewBar>
+        <SearchField value={query} onChange={setQuery} placeholder="名前・パスで絞る" />
+      </ViewBar>
+
+      {list.error && <ErrorNote onRetry={list.reload}>{list.error}</ErrorNote>}
+
+      <Scroll pad={false}>
+        {list.loading && !list.data ? (
+          <Loading rows={5} />
+        ) : repositories.length === 0 ? (
+          <EmptyState icon="🗂" title={query ? "当てはまるリポジトリがありません" : "リポジトリがありません"}>
+            {query
+              ? "絞り込みを外すと全部出ます。"
+              : "ghq が知っているリポジトリがありません（未導入か、まだ clone していない）。下から取ってこられます。"}
+          </EmptyState>
+        ) : (
+          <ul className="cv-list">
+            {repositories.map((r) => {
+              const count = worktrees.filter((w) => w.repo === r.id).length;
+              return (
+                <li key={r.id}>
+                  <button
+                    className={`cv-row ${r.id === repo?.id ? "is-selected" : ""}`}
+                    onClick={() => {
+                      setSelected(r.id);
+                      setShowDetail(true);
+                    }}
+                    title={r.path}
+                  >
+                    <span className="cv-row-main">
+                      <span className="cv-row-name">{r.label}</span>
+                      <span className="rm-path">{r.path}</span>
+                    </span>
+                    {count > 0 && <span className="cv-count" title={`ワークツリー ${count} 件`}>{count}</span>}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
         )}
+      </Scroll>
 
-        <div className="rm-add">
-          <h3 className="pp-heading">リポジトリを増やす</h3>
-          <div className="rm-form rm-form-stack">
-            <input
-              placeholder="取ってくる（URL か user/project）"
-              value={cloneTarget}
-              onChange={(e) => setCloneTarget(e.target.value)}
-              spellCheck={false}
-            />
-            <button
-              disabled={busy === "clone" || cloneTarget.trim().length === 0}
-              onClick={() => act("clone", "repo.clone", { repository: cloneTarget.trim() })}
-            >
-              {busy === "clone" ? "取得中…" : "取ってくる"}
-            </button>
-          </div>
-          <div className="rm-form rm-form-stack">
-            <input
-              placeholder="新しく作る（user/project）"
-              value={initName}
-              onChange={(e) => setInitName(e.target.value)}
-              spellCheck={false}
-            />
-            <button
-              disabled={busy === "init" || initName.trim().length === 0}
-              onClick={() => act("init", "repo.init", { name: initName.trim() })}
-            >
-              {busy === "init" ? "作成中…" : "作る"}
-            </button>
-          </div>
-          {error && <div className="fb-error">{error}</div>}
-          {notice && <div className="rm-notice">{notice}</div>}
+      {/* 増やす操作は一覧の下。**取ってくると作るを分けて置く**——押し間違えると外へ出る */}
+      <div className="rm-add">
+        <SectionHead>リポジトリを増やす</SectionHead>
+        <div className="rm-form">
+          <TextInput
+            placeholder="取ってくる（URL か user/project）"
+            value={cloneTarget}
+            onChange={(e) => setCloneTarget(e.target.value)}
+          />
+          <Button
+            disabled={action.busy === "clone" || cloneTarget.trim().length === 0}
+            onClick={() => act("clone", "repo.clone", { repository: cloneTarget.trim() })}
+          >
+            {action.busy === "clone" ? "取得中…" : "取ってくる"}
+          </Button>
         </div>
+        <div className="rm-form">
+          <TextInput
+            placeholder="新しく作る（user/project）"
+            value={initName}
+            onChange={(e) => setInitName(e.target.value)}
+          />
+          <Button
+            disabled={action.busy === "init" || initName.trim().length === 0}
+            onClick={() => act("init", "repo.init", { name: initName.trim() })}
+          >
+            {action.busy === "init" ? "作成中…" : "作る"}
+          </Button>
+        </div>
+        {action.error && <ErrorNote onRetry={action.clearError}>{action.error}</ErrorNote>}
+        {action.notice && <Note tone="ok" icon="✓">{action.notice}</Note>}
       </div>
+    </>
+  );
 
-      <div className="rm-main">
-        {!repo ? (
-          <p className="fb-muted st-empty">{list.loading ? "読み込み中…" : "リポジトリを選ぶと中身が出ます"}</p>
+  const detailPane = !repo ? (
+    <EmptyState icon="🗂" title="リポジトリを選ぶと中身が出ます">
+      ワークツリーの用意・削除ができます（履歴を変える操作はありません）。
+    </EmptyState>
+  ) : (
+    <>
+      <div className="cv-head">
+        <span className="cv-head-title">{repo.id}</span>
+        <span className="cv-spacer" />
+        <Badge>{mine.length} ワークツリー</Badge>
+      </div>
+      <Scroll>
+        <div className="rm-path" style={{ marginBottom: 14 }}>
+          {repo.path}
+        </div>
+
+        <SectionHead count={mine.length}>ワークツリー</SectionHead>
+        {mine.length === 0 ? (
+          <p className="cv-muted" style={{ padding: "0 2px 10px" }}>
+            このリポジトリのワークツリーはありません。
+          </p>
         ) : (
           <>
-            <h3 className="rm-title">{repo.id}</h3>
-            <div className="rm-path rm-path-main">{repo.path}</div>
-
-            <section className="pp-section">
-              <h3 className="pp-heading">ワークツリー</h3>
-              {mine.length === 0 ? (
-                <p className="fb-muted st-empty">このリポジトリのワークツリーはありません</p>
-              ) : (
-                <ul className="pp-list">
-                  {mine.map((w) => (
-                    <li key={w.id} className="pp-item">
-                      <div className="pp-place">{w.branch}</div>
-                      <div className="rm-path">{w.path}</div>
-                      <div className="pp-actions">
-                        <button
-                          className="pp-deny"
-                          disabled={busy === w.id}
-                          onClick={() => act(w.id, "repo.worktree.remove", { worktree: w.id })}
-                        >
-                          削除
-                        </button>
-                        <span className="fb-muted">
-                          消えるのは作業ディレクトリだけ。コミットとブランチは残ります
-                        </span>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <section className="pp-section">
-              <h3 className="pp-heading">ワークツリーを作る</h3>
-              <div className="rm-form">
-                <input
-                  placeholder="ブランチ名（例: feature/x）"
-                  value={branch}
-                  onChange={(e) => setBranch(e.target.value)}
-                  spellCheck={false}
-                />
-                <label className="wv-toggle" title="既存のブランチを使うなら外す">
-                  <input
-                    type="checkbox"
-                    checked={createBranch}
-                    onChange={(e) => setCreateBranch(e.target.checked)}
-                  />
-                  新しいブランチを切る
-                </label>
-                <button
-                  className="pp-approve"
-                  disabled={busy === "add" || branch.trim().length === 0}
-                  onClick={() =>
-                    act("add", "repo.worktree.add", {
-                      repo: repo.id,
-                      branch: branch.trim(),
-                      createBranch,
-                    })
-                  }
-                >
-                  作る
-                </button>
-              </div>
-              <p className="fb-muted">
-                置き場所は gwq の設定に従います（ここでは指定しません）。作ったワークツリーは
-                そのまま「場所」として選べるようになります
-              </p>
-            </section>
-
-            {orphans.length > 0 && (
-              <section className="pp-section">
-                <h3 className="pp-heading">どのリポジトリのものか分からないワークツリー</h3>
-                <ul className="pp-list">
-                  {orphans.map((w) => (
-                    <li key={w.id} className="pp-item">
-                      <div className="pp-place">{w.branch}</div>
-                      <div className="rm-path">{w.path}</div>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
+            <div className="cv-cards">
+              {mine.map((w) => (
+                <Card key={w.id}>
+                  <div className="st-card-head">
+                    <Badge tone="accent">{w.branch}</Badge>
+                    <span className="cv-spacer" />
+                    <Button
+                      small
+                      variant="danger"
+                      disabled={action.busy === w.id}
+                      onClick={() => act(w.id, "repo.worktree.remove", { worktree: w.id })}
+                    >
+                      {action.busy === w.id ? "…" : "削除"}
+                    </Button>
+                  </div>
+                  <div className="rm-path">{w.path}</div>
+                </Card>
+              ))}
+            </div>
+            {/* 1件ごとに同じ但し書きを繰り返さない。効くのは一覧全体に対して同じ */}
+            <p className="cv-muted" style={{ margin: "8px 2px 0" }}>
+              削除で消えるのは作業ディレクトリだけ。コミットとブランチは残ります。
+            </p>
           </>
         )}
-      </div>
-    </div>
+
+        <SectionHead>ワークツリーを作る</SectionHead>
+        <Card>
+          <div className="rm-form">
+            <TextInput
+              placeholder="ブランチ名（例: feature/x）"
+              value={branch}
+              onChange={(e) => setBranch(e.target.value)}
+            />
+            <Button
+              variant="primary"
+              disabled={action.busy === "add" || branch.trim().length === 0}
+              onClick={() =>
+                act("add", "repo.worktree.add", {
+                  repo: repo.id,
+                  branch: branch.trim(),
+                  createBranch,
+                })
+              }
+            >
+              {action.busy === "add" ? "作成中…" : "作る"}
+            </Button>
+          </div>
+          <div style={{ marginTop: 9 }}>
+            <Toggle checked={createBranch} onChange={setCreateBranch} title="既存のブランチを使うなら外す">
+              新しいブランチを切る
+            </Toggle>
+          </div>
+          <p className="cv-muted" style={{ margin: "9px 0 0", lineHeight: 1.7 }}>
+            置き場所は gwq の設定に従います（ここでは指定しません）。作ったワークツリーは、
+            そのまま「場所」として選べるようになります。
+          </p>
+        </Card>
+
+        {orphans.length > 0 && (
+          <>
+            <SectionHead count={orphans.length}>どのリポジトリのものか分からないワークツリー</SectionHead>
+            <div className="cv-cards">
+              {orphans.map((w) => (
+                <Card key={w.id} tone="warn">
+                  <div className="st-card-head">
+                    <Badge tone="warn">{w.branch}</Badge>
+                  </div>
+                  <div className="rm-path">{w.path}</div>
+                </Card>
+              ))}
+            </div>
+          </>
+        )}
+      </Scroll>
+    </>
+  );
+
+  return (
+    <ViewShell className="rm">
+      <SplitView
+        size="md"
+        list={listPane}
+        detail={detailPane}
+        showDetail={showDetail}
+        onBack={() => setShowDetail(false)}
+        backLabel="リポジトリ一覧"
+      />
+    </ViewShell>
   );
 }
 
@@ -251,7 +302,5 @@ function summarize(tool: string, details: Record<string, unknown>): string {
     return `ワークツリーを削除しました${w?.branch ? `（${w.branch}）` : ""}`;
   }
   const created = details["worktree"] as { path?: string } | null | undefined;
-  return created?.path
-    ? `ワークツリーを作りました: ${created.path}`
-    : "ワークツリーを作りました";
+  return created?.path ? `ワークツリーを作りました: ${created.path}` : "ワークツリーを作りました";
 }

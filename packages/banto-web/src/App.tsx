@@ -11,24 +11,22 @@
  */
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 // D6: 末尾追従は Vercel AI Elements と同じ use-stick-to-bottom に任せる。自前だと
 // ResizeObserver 追従・spring・選択中の扱いを全部書くことになり、体験を合わせきれない
 import { useStickToBottom } from "use-stick-to-bottom";
-// D6: ストリーミング途中の未完 Markdown を補って描く（AI Elements の Streamdown 同等）。
-// Streamdown 本体は Tailwind 前提で入らないが、補正の核はこの純関数だけで足りる
-import remend from "remend";
 import type { Attachment, TranscriptAttachment, TranscriptEntry } from "@banto/host/protocol";
 import { useBantoSession, type CurrentModel } from "./useBantoSession.js";
-import { highlightToHtml, useColorScheme } from "./views/fileHighlight.js";
+// 発話の描き方はチャットと職人ビューアで共通（messages.tsx）
+import { Loader, ReasoningRow, StreamingMarkdown, ToolRow } from "./messages.js";
 import { callModuleTool } from "./views/useModuleTool.js";
 import type { LlmModelInfo } from "@banto/core";
 import { resolveCanvasView } from "./views/registry.js";
 import { ThreadTabs } from "./ThreadTabs.js";
 import { ThreadHistory } from "./ThreadHistory.js";
 import { SettingsPanel } from "./views/SettingsPanel.js";
+import { Modal, SearchField } from "./views/ui.js";
 import { useViewLocation } from "./viewLocation.js";
+import { useTabOverflow } from "./useTabOverflow.js";
 
 /**
  * 既定は**同一オリジンの `/ws`**。開発サーバがそれを番頭ホストへ中継するので、
@@ -60,8 +58,6 @@ const CHAT_WIDTH_MIN = 300;
 /** 入力欄の最大の高さ（AI Elements の `max-h-48`）。最低の高さは CSS の min-height。 */
 const MAX_COMPOSER_HEIGHT_PX = 192;
 
-/** 考え終わってから思考を畳むまで（AI Elements の `AUTO_CLOSE_DELAY`）。 */
-const REASONING_AUTO_CLOSE_MS = 1000;
 
 /**
  * 中核の Tool の到達先（ADR-0011 決定42）。`llm.*` はモジュールではなく中核のドメイン。
@@ -113,113 +109,6 @@ function readStoredChatWidth(): number {
 }
 
 /**
- * 応答待ちの独楽（AI Elements の `Loader`）。
- *
- * 8本の線の濃さをずらして回す。**点滅ではなく回転**にするのは、止まったのか進んで
- * いるのかが一目で分かるため。
- */
-function Loader({ size = 16 }: { size?: number }): React.ReactElement {
-  const spokes = [
-    { d: "M8 0V4", opacity: 1 },
-    { d: "M8 16V12", opacity: 0.5 },
-    { d: "M3.29773 1.52783L5.64887 4.7639", opacity: 0.9 },
-    { d: "M12.7023 1.52783L10.3511 4.7639", opacity: 0.1 },
-    { d: "M12.7023 14.472L10.3511 11.2361", opacity: 0.4 },
-    { d: "M3.29773 14.472L5.64887 11.2361", opacity: 0.6 },
-    { d: "M15.6085 5.52783L11.8043 6.7639", opacity: 0.2 },
-    { d: "M0.391602 10.472L4.19583 9.23598", opacity: 0.7 },
-    { d: "M15.6085 10.4722L11.8043 9.23615", opacity: 0.3 },
-    { d: "M0.391602 5.52783L4.19583 6.7639", opacity: 0.8 },
-  ];
-  return (
-    <svg className="loader" width={size} height={size} viewBox="0 0 16 16" aria-hidden="true">
-      {spokes.map((s) => (
-        <path key={s.d} d={s.d} stroke="currentColor" strokeWidth="1.5" opacity={s.opacity} />
-      ))}
-    </svg>
-  );
-}
-
-/** `<pre><code>` の中身を文字列として集める（react-markdown は配列で渡すことがある）。 */
-function textOf(node: React.ReactNode): string {
-  if (typeof node === "string") return node;
-  if (Array.isArray(node)) return node.map(textOf).join("");
-  if (React.isValidElement<{ children?: React.ReactNode }>(node)) return textOf(node.props.children);
-  return "";
-}
-
-/**
- * Markdown 内のコードブロック（AI Elements の `CodeBlock`）。
- *
- * shiki のハイライトと**コピーボタン**を付ける。ハイライトは非同期で降ってくるので、
- * 届くまでは素のまま出す——ストリーミング中は未完のコードが来るのが普通で、
- * 出せるまで待つと文字が消えたように見える。
- */
-const CodeBlock = React.memo(({ children }: React.ComponentProps<"pre">): React.ReactElement => {
-  const scheme = useColorScheme();
-  const child = React.Children.toArray(children)[0];
-  const className = React.isValidElement<{ className?: string }>(child)
-    ? (child.props.className ?? "")
-    : "";
-  const lang = /language-([\w-]+)/.exec(className)?.[1] ?? "";
-  const code = textOf(children);
-  const [html, setHtml] = useState<string>();
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    let live = true;
-    if (lang.length === 0) {
-      setHtml(undefined);
-      return;
-    }
-    void highlightToHtml(code, lang, scheme).then((out) => {
-      if (live) setHtml(out);
-    });
-    return () => {
-      live = false;
-    };
-  }, [code, lang, scheme]);
-
-  const copy = (): void => {
-    void navigator.clipboard.writeText(code).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
-
-  return (
-    <div className="codeblock">
-      <button className="codeblock-copy" type="button" onClick={copy} title="コピー">
-        {copied ? "✓" : "⧉"}
-      </button>
-      {html === undefined ? (
-        <pre>{children}</pre>
-      ) : (
-        // shiki の出力は自前で組み立てた HTML（外部入力をそのまま流していない）
-        <div className="codeblock-shiki" dangerouslySetInnerHTML={{ __html: html }} />
-      )}
-    </div>
-  );
-});
-
-/** コードブロックだけ差し替える。他の要素は react-markdown の既定のまま。 */
-const MARKDOWN_COMPONENTS = { pre: CodeBlock };
-
-/**
- * ストリーミング中の Markdown。
- *
- * **未完のまま描かない**——`**強調` の途中や閉じていないコードフェンスをそのまま
- * react-markdown に渡すと、記号が生で見えたり段落が崩れたりして、文字が届くたびに
- * 画面がちらつく。remend が未完のトークンを閉じてから描く（AI Elements と同じ挙動）。
- */
-const StreamingMarkdown = React.memo(({ text }: { text: string }): React.ReactElement => (
-  // remark-gfm: 表・打ち消し線・タスクリスト等。素の react-markdown は CommonMark のみ
-  <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
-    {remend(text)}
-  </Markdown>
-));
-
-/**
  * 知らせの出所ごとの札。
  *
  * **外から入る知らせを全部「職人」で出さない**（PO報告 2026-07-31）——番頭が別の会話を
@@ -269,72 +158,6 @@ function ThinkingRow(): React.ReactElement {
     <div className="msg msg--thinking" role="status" aria-live="polite">
       <Loader />
       <span className="sr-only">考えています</span>
-    </div>
-  );
-}
-
-/** 考えている間の見出し（AI Elements の `Shimmer`）。文字の上を光が流れる。 */
-function Shimmer({ children }: { children: React.ReactNode }): React.ReactElement {
-  return <span className="shimmer">{children}</span>;
-}
-
-/** 考えていた時間の文言。測れていないときは秒数を騙らない（I1）。 */
-function thoughtLabel(durationMs: number | undefined): string {
-  if (durationMs === undefined || durationMs <= 0) return "数秒間考えました";
-  return `${Math.ceil(durationMs / 1000)}秒間考えました`;
-}
-
-/**
- * 番頭の思考（AI Elements の `<Reasoning>`）。
- *
- * **考えている間は開いておき、終わったら1秒後に一度だけ畳む**——進んでいることが
- * 見えるのが大事で、読み終わる頃には本文の邪魔になるため。畳んだあとは自分で開ける。
- * 一度でも自分で開け閉めしたら、そこから先は自動で動かさない（勝手に閉じられると
- * 読んでいる途中で消える）。
- */
-function ReasoningRow({
-  text,
-  durationMs,
-  isStreaming,
-}: {
-  text: string;
-  durationMs?: number;
-  isStreaming: boolean;
-}): React.ReactElement {
-  const [open, setOpen] = useState(true);
-  const [touched, setTouched] = useState(false);
-  const [autoClosed, setAutoClosed] = useState(false);
-
-  useEffect(() => {
-    if (isStreaming || touched || autoClosed || !open) return;
-    const timer = setTimeout(() => {
-      setOpen(false);
-      setAutoClosed(true);
-    }, REASONING_AUTO_CLOSE_MS);
-    return () => clearTimeout(timer);
-  }, [isStreaming, touched, autoClosed, open]);
-
-  return (
-    <div className={`msg msg--reasoning ${open ? "is-open" : ""}`}>
-      <button
-        className="reasoning-head"
-        type="button"
-        onClick={() => {
-          setTouched(true);
-          setOpen(!open);
-        }}
-      >
-        <span className="reasoning-mark" aria-hidden="true">
-          ✻
-        </span>
-        {isStreaming ? <Shimmer>考えています</Shimmer> : <span>{thoughtLabel(durationMs)}</span>}
-        <span className="reasoning-caret">{open ? "▾" : "▸"}</span>
-      </button>
-      {open && (
-        <div className="markdown reasoning-body">
-          <StreamingMarkdown text={text} />
-        </div>
-      )}
     </div>
   );
 }
@@ -394,77 +217,6 @@ function ContextMeter({
       </svg>
       {percent}%
     </span>
-  );
-}
-
-/** ツールの状態の見せ方（AI Elements の `ToolUIPart` の札に合わせる）。 */
-const TOOL_BADGE: Record<string, string> = {
-  running: "実行中",
-  ok: "完了",
-  failed: "失敗",
-};
-
-/** 引数・結果を読める形にする。文字列はそのまま、構造は JSON にして出す。 */
-function formatPayload(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
-/**
- * ツールの呼び出し（AI Elements の `<Tool>`）。
- *
- * 見出しに名前と状態の札、開くと引数と結果。**既定では畳んでおく**——ツールは
- * 1ターンに何度も走るので、開いたままだと会話が引数の羅列で埋まる。
- */
-function ToolRow({
-  name,
-  state,
-  input,
-  output,
-}: {
-  name: string;
-  state: "running" | "ok" | "failed";
-  input?: unknown;
-  output?: unknown;
-}): React.ReactElement {
-  const [open, setOpen] = useState(false);
-  const hasDetail = input !== undefined || output !== undefined;
-
-  return (
-    <div className={`msg msg--tool is-${state} ${open ? "is-open" : ""}`}>
-      <button
-        className="tool-head"
-        type="button"
-        onClick={() => setOpen(!open)}
-        disabled={!hasDetail}
-        title={hasDetail ? "クリックで引数と結果を見る" : "引数と結果は残っていません"}
-      >
-        <span className="tool-dot" />
-        <span className="tool-name">{name}</span>
-        <span className="tool-badge">{TOOL_BADGE[state] ?? state}</span>
-        {hasDetail && <span className="tool-caret">{open ? "▾" : "▸"}</span>}
-      </button>
-      {open && hasDetail && (
-        <div className="tool-detail">
-          {input !== undefined && (
-            <>
-              <div className="tool-detail-label">引数</div>
-              <pre>{formatPayload(input)}</pre>
-            </>
-          )}
-          {output !== undefined && (
-            <>
-              <div className="tool-detail-label">結果</div>
-              <pre>{formatPayload(output)}</pre>
-            </>
-          )}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -654,7 +406,10 @@ const ChatRow = React.memo(
         <ReasoningRow
           text={entry.text}
           durationMs={entry.durationMs}
-          isStreaming={isStreaming === true}
+          /* **考え終わりは durationMs が決める**——ターンが続いていても、思考そのものは
+             `reasoning_end` で終わっている。busy だけで見ると、本文を喋り出すまで
+             「考えています」と言い続ける */
+          isStreaming={isStreaming === true && entry.durationMs === undefined}
         />
       );
     case "banto":
@@ -773,6 +528,9 @@ export function App(): React.ReactElement {
   const [dragTabId, setDragTabId] = useState<string>();
   const [dropIndex, setDropIndex] = useState<number>();
   const [catalogOpen, setCatalogOpen] = useState(false);
+  const [catalogQuery, setCatalogQuery] = useState("");
+  /** 収まらないタブをまとめる ▾ の開閉。 */
+  const [tabMenuOpen, setTabMenuOpen] = useState(false);
   /**
    * 見ている面（決定41・prototype の3面構成）。履歴と設定はプロトタイプ三次改訂の
    * 「ピンタブ」に相当し、**キャンバスのタブではなく独立した面**。同時に出るのは1つ。
@@ -906,24 +664,54 @@ export function App(): React.ReactElement {
     handle.addEventListener("pointerup", onUp);
   };
 
-  // カタログは category ごとにまとめて出す（何が開けるか探しやすくするため）
-  const catalogGroups = Object.entries(
-    session.catalog.reduce<Record<string, typeof session.catalog>>((groups, entry) => {
-      const key = entry.category ?? "その他";
-      (groups[key] ??= []).push(entry);
-      return groups;
-    }, {})
+  /**
+   * **この画面で描ける面だけを「開けるもの」として扱う**（決定12・17）。
+   *
+   * カタログを配るのはホスト、描けるかを知っているのはUI——`component` は文字列で渡るので、
+   * **両者は食い違いうる**。実体の無い面を一覧に出すと、押した先が「描けません」になる
+   * （PO報告 2026-08-05：畳んだはずのテスト用GUIが、古いまま動いているホストの言い分で
+   * 一覧に残っていた）。offer する側で濾すのが正しい層——UI ごとに描けるものは違う。
+   *
+   * I2: 黙って消さない。食い違いは配線漏れなので、カタログの面に件数と kind を出す。
+   */
+  const openableCatalog = useMemo(
+    () => session.catalog.filter((entry) => resolveCanvasView(entry.component) !== undefined),
+    [session.catalog]
+  );
+  const unresolvedCatalog = useMemo(
+    () => session.catalog.filter((entry) => resolveCanvasView(entry.component) === undefined),
+    [session.catalog]
   );
 
-  // カタログメニューは外側をクリックしたら閉じる
+  /**
+   * カタログは category ごとにまとめて出す（何が開けるか探しやすくするため）。
+   * モジュールが増えるほど縦に伸びるので、名前と説明で絞れるようにする。
+   */
+  const catalogGroups = useMemo(() => {
+    const q = catalogQuery.trim().toLowerCase();
+    const matched = openableCatalog.filter((entry) =>
+      q.length === 0
+        ? true
+        : `${entry.title} ${entry.description} ${entry.kind} ${entry.module}`.toLowerCase().includes(q)
+    );
+    return Object.entries(
+      matched.reduce<Record<string, typeof session.catalog>>((groups, entry) => {
+        const key = entry.category ?? "その他";
+        (groups[key] ??= []).push(entry);
+        return groups;
+      }, {})
+    );
+  }, [openableCatalog, catalogQuery]);
+
+  // 収納メニューは外側を押したら閉じる
   useEffect(() => {
-    if (!catalogOpen) return;
+    if (!tabMenuOpen) return;
     const close = (e: MouseEvent): void => {
-      if (!(e.target as Element | null)?.closest(".canvas-catalog-wrap")) setCatalogOpen(false);
+      if (!(e.target as Element | null)?.closest(".canvas-more-wrap")) setTabMenuOpen(false);
     };
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
-  }, [catalogOpen]);
+  }, [tabMenuOpen]);
 
   // Esc で被さっている面（設定・履歴）を閉じて会話へ戻る。
   // **入力中の Esc は IME の変換取り消しに使われる**ので、変換中は何もしない
@@ -1000,6 +788,37 @@ export function App(): React.ReactElement {
       session.catalog.find((entry) => entry.module === moduleName)?.endpoint,
     [session.modules, session.catalog]
   );
+
+  /**
+   * 収まらないタブの収納（プロトタイプ六次改訂と同じ計算）。**いま見ているタブは隠さない**
+   * ——見えている中身の名前が消えると、何を見ているのか分からなくなる。
+   */
+  const tabOverflow = useTabOverflow(
+    session.tabs.map((t) => t.id),
+    { reservePx: 52, gapPx: 3, ...(session.activeTabId ? { pinnedId: session.activeTabId } : {}) }
+  );
+  const hiddenTabIds = tabOverflow.hiddenIds;
+  const hiddenTabs = session.tabs.filter((t) => hiddenTabIds.has(t.id));
+
+  /** タブに出す絵。カタログが持っているものをそのまま引く（UI側に表を作らない）。 */
+  const iconOfKind = useCallback(
+    (kind: string): string => session.catalog.find((entry) => entry.kind === kind)?.icon ?? "▫",
+    [session.catalog]
+  );
+
+  /**
+   * スマホ表示：**キャンバスのタブが動いたらキャンバス側へ移る**（プロトタイプ四次改訂）。
+   * 番頭が「開きました」と言っているのに何も見えないのが一番困る。最初の描画では動かさない
+   * ——復元して開いた会話でいきなりチャットから飛ばされるのを避ける。
+   */
+  const mobileMounted = useRef(false);
+  useEffect(() => {
+    if (!mobileMounted.current) {
+      mobileMounted.current = true;
+      return;
+    }
+    if (session.activeTabId) setMobileView("canvas");
+  }, [session.activeTabId]);
 
   /** 選択されたファイルを添付待ちに加える。画像は vision 対応を確認してから。 */
   const addFiles = (files: FileList | null): void => {
@@ -1138,6 +957,71 @@ export function App(): React.ReactElement {
     }
   };
 
+  /**
+   * タブ1つ分。**タブ列と ▾ の中で同じものを描く**——収納されたときだけ別の見た目に
+   * すると、同じものが2通りに見える。
+   */
+  const canvasTab = (
+    tab: (typeof session.tabs)[number],
+    index: number,
+    inMenu: boolean
+  ): React.ReactElement => (
+    <span
+      key={tab.id}
+      data-tab-id={tab.id}
+      className={[
+        inMenu ? "canvas-menu-row" : "canvas-tab",
+        tab.id === session.activeTabId ? "is-active" : "",
+        !inMenu && dropIndex === index ? "is-drop-target" : "",
+        !inMenu && hiddenTabIds.has(tab.id) ? "is-hidden" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      draggable={!inMenu}
+      onDragStart={() => setDragTabId(tab.id)}
+      onDragEnd={() => {
+        setDragTabId(undefined);
+        setDropIndex(undefined);
+      }}
+      onDragOver={(e) => {
+        if (inMenu || !dragTabId) return;
+        e.preventDefault();
+        setDropIndex(index);
+      }}
+      onDrop={(e) => {
+        if (inMenu) return;
+        e.preventDefault();
+        // 並べ替えはホストへ投げる。UIは順序を自前で持たない（D3）
+        if (dragTabId) session.reorderTab(dragTabId, index);
+        setDragTabId(undefined);
+        setDropIndex(undefined);
+      }}
+    >
+      <button
+        className="canvas-tab-label"
+        /* ホストへ直接投げず URL を動かす。押した経路と戻るの経路を1本にする */
+        onClick={() => {
+          navigate((prev) => ({ ...prev, tabId: tab.id }));
+          setTabMenuOpen(false);
+        }}
+        title={inMenu ? tab.kind : `${tab.kind}（ドラッグで並べ替え）`}
+      >
+        {/* カタログの絵をタブにも出す。狭い画面では字が切れても、これで見分けがつく */}
+        <span className="canvas-tab-icon" aria-hidden="true">
+          {iconOfKind(tab.kind)}
+        </span>
+        <span className="canvas-tab-text">{tab.title}</span>
+      </button>
+      <button
+        className="canvas-tab-close"
+        onClick={() => session.closeTab(tab.id)}
+        aria-label={`${tab.title} を閉じる`}
+      >
+        ×
+      </button>
+    </span>
+  );
+
   return (
     <div className={`shell mobile-view-${mobileView}`}>
       <header className="shell-topbar">
@@ -1159,6 +1043,7 @@ export function App(): React.ReactElement {
             session.switchThread(id);
           }}
           onClose={session.closeThread}
+          onRename={session.renameThread}
           onOpen={() => {
             // 開いた会話へ移るのはホストの返事を受けてから（followNewThread）。
             // 面だけは押した時点で戻す——待っている間、設定を見せ続けない
@@ -1206,6 +1091,7 @@ export function App(): React.ReactElement {
             endpoint={settingsEndpoint}
             endpointOf={endpointOf}
             section={view.section}
+            /* undefined を渡すと区画から出る（狭い画面の「一覧へ戻る」） */
             onSection={(id) => navigate((prev) => ({ ...prev, section: id }))}
           />
         ) : (
@@ -1247,117 +1133,84 @@ export function App(): React.ReactElement {
       ) : (
       <div className="shell-body">
         <main className="canvas-pane">
-          <div className="canvas-tabstrip">
-            {session.tabs.length === 0 ? (
-              <span className="canvas-tab-empty">タブなし</span>
-            ) : (
-              session.tabs.map((tab, index) => (
-                <span
-                  key={tab.id}
-                  className={`canvas-tab ${tab.id === session.activeTabId ? "is-active" : ""} ${
-                    dropIndex === index ? "is-drop-target" : ""
-                  }`}
-                  draggable
-                  onDragStart={() => setDragTabId(tab.id)}
-                  onDragEnd={() => {
-                    setDragTabId(undefined);
-                    setDropIndex(undefined);
-                  }}
-                  onDragOver={(e) => {
-                    if (!dragTabId) return;
-                    e.preventDefault();
-                    setDropIndex(index);
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    // 並べ替えはホストへ投げる。UIは順序を自前で持たない（D3）
-                    if (dragTabId) session.reorderTab(dragTabId, index);
-                    setDragTabId(undefined);
-                    setDropIndex(undefined);
-                  }}
-                >
-                  <button
-                    className="canvas-tab-label"
-                    /* ホストへ直接投げず URL を動かす。押した経路と戻るの経路を1本にする */
-                    onClick={() => navigate((prev) => ({ ...prev, tabId: tab.id }))}
-                    title={`${tab.kind}（ドラッグで並べ替え）`}
-                  >
-                    {tab.title}
-                  </button>
-                  <button
-                    className="canvas-tab-close"
-                    onClick={() => session.closeTab(tab.id)}
-                    aria-label={`${tab.title} を閉じる`}
-                  >
-                    ×
-                  </button>
-                </span>
-              ))
-            )}
+          {/* タブ列と、収納の ▾ ・「開く」は別の器に置く。**メニューは器の外**に出さないと、
+              タブ列の幅で切り取られる（実際に踏んだ） */}
+          <div className="canvas-tabbar">
+            <div className="canvas-tabstrip" ref={tabOverflow.stripRef}>
+              {session.tabs.length === 0 ? (
+                <span className="canvas-tab-empty">タブなし</span>
+              ) : (
+                session.tabs.map((tab, index) => canvasTab(tab, index, false))
+              )}
+            </div>
 
-            {/* POが自分でGUIを開く入口（決定25の人側の経路）。省スペースのため「＋」のみ */}
-            {session.catalog.length > 0 && (
-              <div className="canvas-catalog-wrap">
+            {/* 収まらないタブは ▾ にまとめる。**横に流さない**——端に隠れたタブは、
+                在ることも数も見えないまま指で探すことになる */}
+            {hiddenTabs.length > 0 && (
+              <div className="canvas-more-wrap">
                 <button
-                  className="canvas-catalog-btn"
-                  onClick={() => setCatalogOpen((v) => !v)}
-                  aria-label="カタログを開く"
-                  aria-expanded={catalogOpen}
-                  title="カタログを開く"
+                  className="canvas-more-btn"
+                  type="button"
+                  aria-expanded={tabMenuOpen}
+                  title={`表示しきれないタブ（${hiddenTabs.length}）`}
+                  onClick={() => setTabMenuOpen((v) => !v)}
                 >
-                  ＋
+                  <span className="canvas-more-count">{hiddenTabs.length}</span>
+                  <span aria-hidden="true">▾</span>
                 </button>
-                {catalogOpen && (
-                  <div className="canvas-catalog-menu">
-                    {catalogGroups.map(([category, entries]) => (
-                      <div key={category}>
-                        <div className="catalog-group-label">{category}</div>
-                        {entries.map((entry) => (
-                          <button
-                            key={entry.kind}
-                            className="catalog-item"
-                            onClick={() => {
-                              // POが自分で開いたGUIなので、戻るで前のタブへ帰れるようにする
-                              followOpenedTab.current = true;
-                              session.openView(entry.kind);
-                              setCatalogOpen(false);
-                            }}
-                            title={entry.description}
-                          >
-                            <span className="ci-ico">{entry.icon ?? "▫"}</span>
-                            <span className="ci-body">
-                              <span className="ci-name">{entry.title}</span>
-                              <span className="ci-src">
-                                {entry.kind} · {entry.module}
-                              </span>
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    ))}
+                {tabMenuOpen && (
+                  <div className="canvas-more-menu">
+                    {hiddenTabs.map((tab) => canvasTab(tab, session.tabs.indexOf(tab), true))}
                   </div>
                 )}
               </div>
+            )}
+
+            {/* POが自分でGUIを開く入口（決定25の人側の経路）。省スペースのため「＋」のみ */}
+            {openableCatalog.length > 0 && (
+              <button
+                className="canvas-catalog-btn"
+                onClick={() => setCatalogOpen(true)}
+                aria-label="開くものを選ぶ"
+                aria-expanded={catalogOpen}
+                title="開くものを選ぶ"
+              >
+                ＋
+              </button>
             )}
           </div>
 
           <div className="canvas-body">
             {!activeTab ? (
               <div className="canvas-empty">
-                <p className="canvas-empty-title">キャンバスには何も開かれていません</p>
-                <p className="canvas-empty-sub">
-                  番頭に「テスト用のGUIを開いて」と頼むと、ここに表示されます。
-                </p>
-                {session.catalog.length > 0 && (
-                  <ul className="canvas-empty-catalog">
-                    {session.catalog.map((entry) => (
-                      <li key={entry.kind}>
-                        <code>{entry.kind}</code> — {entry.title}
-                        <span className="catalog-module"> / {entry.module}</span>
-                      </li>
+                <div className="canvas-empty-inner">
+                  <div className="canvas-empty-mark" aria-hidden="true">
+                    ▤
+                  </div>
+                  <p className="canvas-empty-title">キャンバスには何も開かれていません</p>
+                  <p className="canvas-empty-sub">
+                    番頭に「〜を開いて」と頼むとここに出ます。自分で開くこともできます。
+                  </p>
+                  {/* 一覧を読ませるのではなく、そのまま押せるようにする（決定25の人側の経路） */}
+                  <div className="canvas-empty-grid">
+                    {openableCatalog.map((entry) => (
+                      <button
+                        key={entry.kind}
+                        className="canvas-empty-card"
+                        title={entry.description}
+                        onClick={() => {
+                          followOpenedTab.current = true;
+                          session.openView(entry.kind);
+                        }}
+                      >
+                        <span className="ci-ico" aria-hidden="true">
+                          {entry.icon ?? "▫"}
+                        </span>
+                        <span className="canvas-empty-card-name">{entry.title}</span>
+                      </button>
                     ))}
-                  </ul>
-                )}
+                  </div>
+                </div>
               </div>
             ) : ActiveView ? (
               // key にタブID＋版を渡す。IDだけだと (a) 同じ種別の別タブで状態が混ざり、
@@ -1375,13 +1228,79 @@ export function App(): React.ReactElement {
             ) : (
               // I2: カタログにあるのにUIが解決できない＝配線漏れ。黙って空にせず理由を出す
               <div className="canvas-empty">
-                <p className="canvas-empty-title">描画できません</p>
-                <p className="canvas-empty-sub">
-                  コンポーネント <code>{activeSpec?.component ?? "(不明)"}</code> がUI側の解決表にありません。
-                </p>
+                <div className="canvas-empty-inner">
+                  <div className="canvas-empty-mark" aria-hidden="true">
+                    ⚠
+                  </div>
+                  <p className="canvas-empty-title">この面を描けません</p>
+                  <p className="canvas-empty-sub">
+                    コンポーネント <code>{activeSpec?.component ?? "(不明)"}</code>{" "}
+                    がUI側の解決表にありません（配線漏れです）。
+                  </p>
+                </div>
               </div>
             )}
           </div>
+          {catalogOpen && (
+            <Modal
+              title="キャンバスに開く"
+              onClose={() => setCatalogOpen(false)}
+              footer={
+                /* I2: 描けない面があることを黙らない。出所（kind）まで出す——直せるのは
+                   「UIの解決表に足す」か「モジュールの登録を外す」のどちらかなので */
+                unresolvedCatalog.length > 0 ? (
+                  <span className="catalog-unresolved">
+                    この画面で描けない面が {unresolvedCatalog.length} 件あります（配線漏れ）:{" "}
+                    {unresolvedCatalog.map((e) => e.kind).join(", ")}
+                  </span>
+                ) : undefined
+              }
+            >
+              <div className="catalog-search">
+                <SearchField
+                  value={catalogQuery}
+                  onChange={setCatalogQuery}
+                  placeholder="名前・説明で絞る"
+                  autoFocus
+                />
+              </div>
+              {catalogGroups.length === 0 ? (
+                <p className="catalog-empty">「{catalogQuery}」に当てはまる面はありません。</p>
+              ) : (
+                catalogGroups.map(([category, entries]) => (
+                  <div key={category}>
+                    <div className="catalog-group-label">{category}</div>
+                    {entries.map((entry) => {
+                      const opened = session.tabs.some((t) => t.kind === entry.kind);
+                      return (
+                        <button
+                          key={entry.kind}
+                          className="catalog-item"
+                          onClick={() => {
+                            // POが自分で開いたGUIなので、戻るで前のタブへ帰れるようにする
+                            followOpenedTab.current = true;
+                            session.openView(entry.kind);
+                            setCatalogOpen(false);
+                            setCatalogQuery("");
+                          }}
+                          title={`${entry.kind} · ${entry.module}`}
+                        >
+                          <span className="ci-ico">{entry.icon ?? "▫"}</span>
+                          <span className="ci-body">
+                            <span className="ci-name">{entry.title}</span>
+                            {/* 何のための面かを一行で。名前だけでは開くまで分からない */}
+                            <span className="ci-desc">{entry.description}</span>
+                          </span>
+                          {/* 既に開いているものは、増やすのではなくそこへ移ると分かるようにする */}
+                          {opened && <span className="ci-open">開いています</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))
+              )}
+            </Modal>
+          )}
         </main>
 
         {/* 境界のドラッグでチャット欄の幅を変える（PO要望 2026-07-31）。

@@ -34,13 +34,16 @@ const thread = (threadId: string, title: string, isDefault: boolean): Record<str
   model: { provider: "huihui", id: "qwen3.6-35b", vision: false, contextWindow: 200000 },
 });
 
-/** キャンバスに出せるGUI（カタログ）。中身は見ないので、素朴な2つで足りる。 */
+/**
+ * キャンバスに出せるGUI（カタログ）。**見ているのはタブの出し入れだけ**なので、
+ * 実体は解決表にある適当な2つで足りる（データ取得は 404 になるが、この試験は中身を見ない）。
+ */
 const CATALOG = [
   {
     kind: "demo.hello",
     title: "デモ",
     description: "テスト用",
-    component: "DemoHello",
+    component: "MemoryViewer",
     category: "テスト",
     module: "demo",
     endpoint: "/api/demo",
@@ -49,7 +52,7 @@ const CATALOG = [
     kind: "demo.clock",
     title: "時計",
     description: "テスト用",
-    component: "DemoClock",
+    component: "SkillViewer",
     category: "テスト",
     module: "demo",
     endpoint: "/api/demo",

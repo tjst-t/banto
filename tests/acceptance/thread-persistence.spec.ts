@@ -139,3 +139,47 @@ describe("[task-0036] 壊れた保存で黙って会話を失わない（I2）",
     assert.deepEqual(new ThreadStore(dir).transcript("thread-999"), []);
   });
 });
+
+describe("[task-0059] 何も無いまま閉じた会話は保存先にも残さない（PO要望 2026-08-05）", () => {
+  it("索引・記録・番頭の文脈のどれも残らない", async () => {
+    const store = new ThreadStore(dir);
+    const registry = new ThreadRegistry(factoryRecording([]), store);
+    const keep = await registry.open("残る会話");
+    keep.record({ role: "po", text: "ひとこと" });
+    const empty = await registry.open();
+    registry.flushAll();
+    const sessionFile = path.join(dir, `${empty.id}-session.jsonl`);
+    fs.writeFileSync(sessionFile, "番頭の文脈\n");
+
+    registry.close(empty.id);
+
+    const saved = new ThreadStore(dir).threads();
+    assert.deepEqual(saved.map((t) => t.id), [keep.id], "索引から消える");
+    assert.equal(fs.existsSync(path.join(dir, `${empty.id}.jsonl`)), false, "記録も消える");
+    assert.equal(fs.existsSync(sessionFile), false, "番頭の文脈も消える");
+  });
+
+  it("捨てた会話は再起動後にも出てこない", async () => {
+    const registry = new ThreadRegistry(factoryRecording([]), new ThreadStore(dir));
+    const keep = await registry.open("残る会話");
+    keep.record({ role: "po", text: "ひとこと" });
+    const empty = await registry.open();
+    registry.close(empty.id);
+    registry.flushAll();
+
+    const restarted = new ThreadRegistry(factoryRecording([]), new ThreadStore(dir));
+    await restarted.restore();
+    assert.deepEqual(restarted.list().map((t) => t.id), [keep.id]);
+  });
+
+  it("id の番号は使い回さない（捨てても次は続きから振る）", async () => {
+    const registry = new ThreadRegistry(factoryRecording([]), new ThreadStore(dir));
+    const first = await registry.open();
+    first.record({ role: "po", text: "ひとこと" });
+    const empty = await registry.open();
+    registry.close(empty.id);
+
+    const next = await registry.open();
+    assert.equal(next.id, "thread-3", "捨てた番号を再利用すると、過去の記録と混ざる");
+  });
+});

@@ -7,11 +7,23 @@
  * **閲覧専用。** SKILL の書き込みは決定26 の学習層（task-0017）に属する。
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useModuleTool } from "./useModuleTool.js";
 import type { CanvasViewProps } from "./registry.js";
+import {
+  Badge,
+  EmptyState,
+  ErrorNote,
+  Loading,
+  Scroll,
+  SearchField,
+  SplitView,
+  ViewBar,
+  ViewShell,
+  ViewTitle,
+} from "./ui.js";
 
 interface SkillEntry {
   name: string;
@@ -25,61 +37,117 @@ interface SkillList {
   skills: SkillEntry[];
 }
 
+function originLabel(origin: string): string {
+  return origin === "core" ? "番頭核" : origin;
+}
+
+/**
+ * 先頭の frontmatter を落とす。
+ *
+ * SKILL.md（agentskills.io 形式）は `---` で囲んだ name / description を持つ。Markdown と
+ * しては意味を持たないので、そのまま描くと**見出しに化けて本文の頭に居座る**——しかも
+ * 中身は上の説明と同じものを繰り返している。
+ */
+function withoutFrontmatter(body: string): string {
+  const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(body);
+  return match ? body.slice(match[0].length) : body;
+}
+
 export function SkillViewer({ params, endpoint }: CanvasViewProps): React.ReactElement {
   const initial = typeof params["name"] === "string" ? params["name"] : undefined;
   const [selected, setSelected] = useState<string | undefined>(initial);
+  const [showBody, setShowBody] = useState(initial !== undefined);
+  const [filter, setFilter] = useState("");
 
   const list = useModuleTool<SkillList>(endpoint, "studio.skills", {});
   const skills = list.data?.skills ?? [];
   const current = skills.find((s) => s.name === selected) ?? skills[0];
 
-  return (
-    <div className="wv">
-      <div className="wv-side">
-        <h3 className="gv3-head">
+  const shown = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (q.length === 0) return skills;
+    return skills.filter((s) => `${s.name} ${s.description} ${s.origin}`.toLowerCase().includes(q));
+  }, [skills, filter]);
+
+  const listPane = (
+    <>
+      <ViewBar>
+        <ViewTitle icon="📘" count={skills.length}>
           SKILL
-          <span className="gv3-count">{skills.length}</span>
-        </h3>
-        {list.error && <div className="fb-error">読み込めません: {list.error}</div>}
-        {skills.length === 0 ? (
-          <p className="fb-muted gv3-empty">
-            {list.loading ? "読み込み中…" : "SKILL はありません"}
-          </p>
+        </ViewTitle>
+      </ViewBar>
+      <ViewBar>
+        <SearchField value={filter} onChange={setFilter} placeholder="名前・説明で絞る" />
+      </ViewBar>
+
+      {list.error && <ErrorNote onRetry={list.reload}>{list.error}</ErrorNote>}
+
+      <Scroll pad={false}>
+        {list.loading && !list.data ? (
+          <Loading rows={4} />
+        ) : shown.length === 0 ? (
+          <EmptyState icon="📘" title={filter ? "当てはまる SKILL はありません" : "SKILL はありません"}>
+            {filter ? "絞り込みを外すと全部出ます。" : "番頭核とモジュールが出す手順がここに並びます。"}
+          </EmptyState>
         ) : (
-          <ul className="wv-list">
-            {skills.map((s) => (
+          <ul className="cv-list">
+            {shown.map((s) => (
               <li key={s.name}>
                 <button
-                  className={`wv-item ${s.name === current?.name ? "is-selected" : ""}`}
-                  onClick={() => setSelected(s.name)}
+                  className={`cv-row ${s.name === current?.name ? "is-selected" : ""}`}
+                  onClick={() => {
+                    setSelected(s.name);
+                    setShowBody(true);
+                  }}
                   title={s.description}
                 >
-                  <span className="wv-body">
-                    <span className="wv-task">{s.name}</span>
-                    <span className="wv-meta">{s.origin === "core" ? "番頭核" : s.origin}</span>
+                  <span className="cv-row-main">
+                    <span className="cv-row-name">{s.name}</span>
+                    <span className="cv-row-sub">{originLabel(s.origin)}</span>
                   </span>
                 </button>
               </li>
             ))}
           </ul>
         )}
-      </div>
+      </Scroll>
+    </>
+  );
 
-      <div className="wv-main">
-        <div className="gv3-main-head">
-          <span className="gv3-subject">{current?.name ?? "SKILL を選ぶと中身が見えます"}</span>
-          {current && (
-            <span className="gv3-date">{current.origin === "core" ? "番頭核" : current.origin}</span>
-          )}
-        </div>
-        {current?.description && <p className="st-desc">{current.description}</p>}
-        {current?.error && <div className="fb-error">{current.error}</div>}
-        {current?.body !== undefined && (
-          <div className="markdown st-body">
-            <Markdown remarkPlugins={[remarkGfm]}>{current.body}</Markdown>
-          </div>
-        )}
+  const detailPane = !current ? (
+    <EmptyState icon="📘" title="SKILL を選ぶと中身が見えます">
+      番頭がどんな手順を知っているかを、そのまま読めます。
+    </EmptyState>
+  ) : (
+    <>
+      <div className="cv-head">
+        <span className="cv-head-title">{current.name}</span>
+        <Badge tone={current.origin === "core" ? "accent" : "neutral"}>
+          {originLabel(current.origin)}
+        </Badge>
       </div>
-    </div>
+      {current.description && <p className="st-desc">{current.description}</p>}
+      {current.error && <ErrorNote title="この SKILL を読めません">{current.error}</ErrorNote>}
+      {current.body !== undefined && (
+        <div className="cv-scroll st-body">
+          <div className="markdown">
+            <Markdown remarkPlugins={[remarkGfm]}>{withoutFrontmatter(current.body)}</Markdown>
+          </div>
+        </div>
+      )}
+    </>
+  );
+
+  return (
+    <ViewShell className="st">
+      <SplitView
+        size="md"
+        list={listPane}
+        detail={detailPane}
+        showDetail={showBody}
+        onBack={() => setShowBody(false)}
+        backLabel="SKILL 一覧"
+      />
+    </ViewShell>
   );
 }

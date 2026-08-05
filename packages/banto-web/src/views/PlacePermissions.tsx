@@ -11,9 +11,28 @@
  * 機構では防げないので、**見えるようにする**のが対策そのもの。
  */
 
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import { callModuleTool, useModuleTool } from "./useModuleTool.js";
 import type { CanvasViewProps } from "./registry.js";
+import {
+  Badge,
+  Button,
+  Card,
+  Disclosure,
+  EmptyState,
+  ErrorNote,
+  Loading,
+  Note,
+  Scroll,
+  SectionHead,
+  TextInput,
+  ViewBar,
+  ViewShell,
+  ViewTitle,
+  formatRelative,
+  useAction,
+  useTicker,
+} from "./ui.js";
 
 interface GrantRequest {
   id: string;
@@ -39,27 +58,17 @@ const BROAD = new Set(["**", "**/*", "*"]);
 export function PlacePermissions({ params, endpoint }: CanvasViewProps): React.ReactElement {
   const focusPlace = typeof params["place"] === "string" ? params["place"] : undefined;
   const list = useModuleTool<RequestList>(endpoint, "place.list_requests");
-  const [busy, setBusy] = useState<string>();
-  const [error, setError] = useState<string>();
+  const action = useAction();
   /** 要求ごとに、POが範囲を狭めて許すための編集欄。 */
   const [edited, setEdited] = useState<Record<string, string>>({});
+  const now = useTicker(30_000);
 
-  const act = useCallback(
-    async (key: string, tool: string, args: Record<string, unknown>) => {
-      setBusy(key);
-      setError(undefined);
-      try {
-        await callModuleTool(endpoint, tool, args);
-        list.reload();
-      } catch (err) {
-        // I2: 押したのに何も起きなかったように見せない
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setBusy(undefined);
-      }
-    },
-    [endpoint, list]
-  );
+  const act = (key: string, tool: string, args: Record<string, unknown>): void => {
+    void action.run(key, async () => {
+      await callModuleTool(endpoint, tool, args);
+      list.reload();
+    });
+  };
 
   const pending = list.data?.pending ?? [];
   const grants = Object.entries(list.data?.grants ?? {}).sort(([a], [b]) =>
@@ -68,87 +77,124 @@ export function PlacePermissions({ params, endpoint }: CanvasViewProps): React.R
   const decided = (list.data?.requests ?? []).filter((r) => r.state !== "pending");
 
   return (
-    <div className="st">
-      <div className="st-head">
-        <span className="st-title">書き込み許可</span>
-        <span className="gv3-count">{pending.length}</span>
-        <button className="gv3-clear" onClick={() => list.reload()}>
-          取り直す
-        </button>
-      </div>
+    <ViewShell className="pp">
+      <ViewBar>
+        <ViewTitle icon="🔐" count={pending.length}>
+          書き込み許可
+        </ViewTitle>
+        <span className="cv-spacer" />
+        <Button small variant="ghost" onClick={() => list.reload()} title="取り直す">
+          ⟳
+        </Button>
+      </ViewBar>
 
-      {(list.error || error) && <div className="fb-error">{list.error ?? error}</div>}
+      {list.error && <ErrorNote onRetry={list.reload}>{list.error}</ErrorNote>}
+      {action.error && <ErrorNote onRetry={action.clearError}>{action.error}</ErrorNote>}
 
-      <section className="pp-section">
-        <h3 className="pp-heading">番頭からの要求</h3>
-        {pending.length === 0 ? (
-          <p className="fb-muted st-empty">{list.loading ? "読み込み中…" : "保留中の要求はありません"}</p>
+      <Scroll>
+        <SectionHead count={pending.length}>番頭からの要求</SectionHead>
+        {list.loading && !list.data ? (
+          <Loading rows={3} />
+        ) : pending.length === 0 ? (
+          <EmptyState icon="✓" title="待っている要求はありません">
+            番頭が書きたい場所を見つけると、ここに要求が積まれます。
+          </EmptyState>
         ) : (
-          <ul className="pp-list">
+          <div className="cv-cards">
             {pending.map((request) => {
               const value = edited[request.id] ?? request.patterns.join(", ");
-              const patterns = value.split(",").map((p) => p.trim()).filter(Boolean);
+              const patterns = value
+                .split(",")
+                .map((p) => p.trim())
+                .filter(Boolean);
               const broad = patterns.some((p) => BROAD.has(p));
               return (
-                <li key={request.id} className="pp-item">
-                  <div className="pp-place">{request.placeId}</div>
-                  <div className="pp-reason">{request.reason}</div>
+                <Card key={request.id} tone={broad ? "warn" : undefined}>
+                  <div className="st-card-head">
+                    <Badge tone="accent">{request.placeId}</Badge>
+                    <span className="cv-spacer" />
+                    <span className="cv-muted">{formatRelative(request.requestedAt, now)}</span>
+                  </div>
+                  <div className="st-text">{request.reason}</div>
+
                   <label className="pp-field">
-                    許す範囲
-                    <input
+                    許す範囲（コンマ区切りの glob。狭めてから許してよい）
+                    <TextInput
                       value={value}
-                      onChange={(e) => setEdited((prev) => ({ ...prev, [request.id]: e.target.value }))}
-                      spellCheck={false}
+                      onChange={(e) =>
+                        setEdited((prev) => ({ ...prev, [request.id]: e.target.value }))
+                      }
                     />
                   </label>
-                  {broad && (
-                    <div className="pp-warn">
-                      この範囲はリポジトリ全体に及びます（.git/ とBanto自身のデータ置き場は除く）
+                  {/* 番頭が頼んだ形へ戻せるようにする（狭めすぎて分からなくなったとき） */}
+                  {value !== request.patterns.join(", ") && (
+                    <div className="pp-patterns">
+                      <Button
+                        small
+                        variant="ghost"
+                        onClick={() =>
+                          setEdited((prev) => ({ ...prev, [request.id]: request.patterns.join(", ") }))
+                        }
+                      >
+                        頼まれた範囲に戻す（{request.patterns.join(", ")}）
+                      </Button>
                     </div>
                   )}
+                  {broad && (
+                    <Note tone="warn" icon="⚠">
+                      この範囲はリポジトリ全体に及びます（.git/ と Banto 自身のデータ置き場は除く）。
+                    </Note>
+                  )}
+
                   <div className="pp-actions">
-                    <button
-                      className="pp-approve"
-                      disabled={busy === request.id || patterns.length === 0}
-                      onClick={() => act(request.id, "place.approve_write", { requestId: request.id, patterns })}
+                    <Button
+                      variant="ok"
+                      disabled={action.busy === request.id || patterns.length === 0}
+                      onClick={() =>
+                        act(request.id, "place.approve_write", { requestId: request.id, patterns })
+                      }
                     >
-                      許可する
-                    </button>
-                    <button
-                      className="pp-deny"
-                      disabled={busy === request.id}
+                      {action.busy === request.id ? "…" : "この範囲で許す"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      disabled={action.busy === request.id}
                       onClick={() => act(request.id, "place.deny_write", { requestId: request.id })}
                     >
                       断る
-                    </button>
+                    </Button>
                   </div>
-                </li>
+                </Card>
               );
             })}
-          </ul>
+          </div>
         )}
-      </section>
 
-      <section className="pp-section">
-        <h3 className="pp-heading">いま許している範囲</h3>
+        <SectionHead count={grants.length}>いま許している範囲</SectionHead>
         {grants.length === 0 ? (
-          <p className="fb-muted st-empty">
-            承認で与えた許可はありません（起動時の設定で与えた範囲はここには出ません）
+          <p className="cv-muted" style={{ padding: "0 2px 8px" }}>
+            承認で与えた許可はありません（起動時の設定で与えた範囲はここには出ません）。
           </p>
         ) : (
-          <ul className="pp-list">
+          <div className="cv-cards">
             {grants.map(([placeId, patterns]) => (
-              <li key={placeId} className="pp-item">
-                <div className="pp-place">{placeId}</div>
-                <div className="pp-grants">
+              <Card key={placeId} tone={patterns.some((p) => BROAD.has(p)) ? "warn" : undefined}>
+                <div className="st-card-head">
+                  <strong>{placeId}</strong>
+                </div>
+                <div className="pp-patterns">
                   {patterns.map((pattern) => (
-                    <span key={pattern} className={BROAD.has(pattern) ? "pp-tag pp-tag-broad" : "pp-tag"}>
+                    <span key={pattern} className={`pp-tag ${BROAD.has(pattern) ? "is-broad" : ""}`}>
                       <code>{pattern}</code>
                       <button
                         title="この許可を取り消す"
-                        disabled={busy === `${placeId}:${pattern}`}
+                        aria-label={`${placeId} の ${pattern} を取り消す`}
+                        disabled={action.busy === `${placeId}:${pattern}`}
                         onClick={() =>
-                          act(`${placeId}:${pattern}`, "place.revoke_write", { place: placeId, pattern })
+                          act(`${placeId}:${pattern}`, "place.revoke_write", {
+                            place: placeId,
+                            pattern,
+                          })
                         }
                       >
                         ×
@@ -156,28 +202,35 @@ export function PlacePermissions({ params, endpoint }: CanvasViewProps): React.R
                     </span>
                   ))}
                 </div>
-              </li>
+              </Card>
             ))}
-          </ul>
+          </div>
         )}
-      </section>
 
-      {decided.length > 0 && (
-        <section className="pp-section">
-          <h3 className="pp-heading">これまでの判断</h3>
-          <ul className="pp-history">
-            {decided.map((request) => (
-              <li key={request.id}>
-                <span className={request.state === "approved" ? "pp-ok" : "pp-ng"}>
-                  {request.state === "approved" ? "許可" : "却下"}
-                </span>{" "}
-                {request.placeId} — <code>{(request.grantedPatterns ?? request.patterns).join(", ")}</code>
-                {request.note && <span className="fb-muted"> {request.note}</span>}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-    </div>
+        {decided.length > 0 && (
+          <>
+            <SectionHead count={decided.length}>これまでの判断</SectionHead>
+            <Disclosure summary="許可・却下の履歴を見る">
+              <ul className="pp-history">
+                {decided.map((request) => (
+                  <li key={request.id}>
+                    <Badge tone={request.state === "approved" ? "ok" : "neutral"}>
+                      {request.state === "approved" ? "許可" : "却下"}
+                    </Badge>
+                    <span>{request.placeId}</span>
+                    <code className="cv-mono">
+                      {(request.grantedPatterns ?? request.patterns).join(", ")}
+                    </code>
+                    {request.note && <span className="cv-muted">{request.note}</span>}
+                    <span className="cv-spacer" />
+                    <span className="cv-muted">{formatRelative(request.decidedAt, now)}</span>
+                  </li>
+                ))}
+              </ul>
+            </Disclosure>
+          </>
+        )}
+      </Scroll>
+    </ViewShell>
   );
 }

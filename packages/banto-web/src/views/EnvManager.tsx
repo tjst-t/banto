@@ -14,6 +14,26 @@ import { useState } from "react";
 import { callModuleTool, useModuleTool } from "./useModuleTool.js";
 import { PlacePicker, usePlaceSelection } from "./PlacePicker.js";
 import type { CanvasViewProps } from "./registry.js";
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  ErrorNote,
+  Loading,
+  Note,
+  Scroll,
+  SectionHead,
+  TextInput,
+  Toggle,
+  ViewBar,
+  ViewShell,
+  ViewTitle,
+  formatTime,
+  useAction,
+  useTicker,
+  type Tone,
+} from "./ui.js";
 
 interface EnvSummary {
   envId: string;
@@ -45,27 +65,46 @@ interface ProfileList {
   rejected: Array<{ name: string; reason: string }>;
 }
 
-const STATE_LABEL: Record<EnvSummary["state"], string> = {
-  live: "動いている",
-  "torn-down": "畳み済み",
-  "teardown-failed": "畳み損ね",
+const STATE: Record<EnvSummary["state"], { label: string; tone: Tone }> = {
+  live: { label: "動いている", tone: "ok" },
+  "torn-down": { label: "畳み済み", tone: "neutral" },
+  "teardown-failed": { label: "畳み損ね", tone: "danger" },
 };
+
+/** 期限までの残り。**過ぎているものは過ぎたと言う**（I1：黙って0にしない）。 */
+function ttlOf(deadline: string, now: number): { text: string; className: string } {
+  const at = new Date(deadline).getTime();
+  if (Number.isNaN(at)) return { text: deadline, className: "" };
+  const left = at - now;
+  if (left <= 0) return { text: "期限切れ", className: "is-over" };
+  const minutes = Math.round(left / 60_000);
+  if (minutes < 60) return { text: `あと${minutes}分`, className: minutes <= 15 ? "is-soon" : "" };
+  const hours = left / 3_600_000;
+  return { text: `あと${hours < 10 ? hours.toFixed(1) : Math.round(hours)}時間`, className: "" };
+}
+
+function formatMs(ms: number): string {
+  const hours = ms / 3600_000;
+  return hours >= 1 ? `${Number(hours.toFixed(1))}時間` : `${Math.round(ms / 60_000)}分`;
+}
 
 export function EnvManager({ endpoint, endpointOf }: CanvasViewProps): React.ReactElement {
   const [includeTornDown, setIncludeTornDown] = useState(false);
   const list = useModuleTool<EnvList>(endpoint, "env.list", { includeTornDown });
-  const [busy, setBusy] = useState<string>();
-  const [error, setError] = useState<string>();
+  const action = useAction();
+  const now = useTicker(15_000);
   /** 環境ごとの健康状態（押したときだけ確かめる。一覧の表示で毎回叩かない）。 */
   const [health, setHealth] = useState<Record<string, { ok: boolean; detail?: string }>>({});
   /** 環境ごとに走らせたコマンドと、その結果のログ。 */
   const [command, setCommand] = useState<Record<string, string>>({});
-  const [output, setOutput] = useState<Record<string, { exit: number; logTail: string; truncated: boolean }>>({});
+  const [output, setOutput] = useState<
+    Record<string, { exit: number; logTail: string; truncated: boolean }>
+  >({});
 
   // 場所の一覧は workspace が持っている（決定25：URLは直書きしない）
   const workspace = endpointOf("workspace");
   const selection = usePlaceSelection(workspace ?? endpoint);
-  const chosen = selection.places.find((p) => p.id === selection.place);
+  const chosen = selection.current;
   const profiles = useModuleTool<ProfileList>(
     endpoint,
     "env.list_profiles",
@@ -78,224 +117,240 @@ export function EnvManager({ endpoint, endpointOf }: CanvasViewProps): React.Rea
   const live = environments.filter((e) => e.state === "live");
   const stuck = environments.filter((e) => e.state === "teardown-failed");
 
-  const checkHealth = async (envId: string): Promise<void> => {
-    setBusy(`health:${envId}`);
-    setError(undefined);
-    try {
-      const result = await callModuleTool<{ ok: boolean; detail?: string }>(
-        endpoint,
-        "env.healthcheck",
-        { envId }
-      );
-      setHealth((prev) => ({ ...prev, [envId]: result }));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(undefined);
-    }
+  const checkHealth = (envId: string): void => {
+    void action.run(
+      `health:${envId}`,
+      () => callModuleTool<{ ok: boolean; detail?: string }>(endpoint, "env.healthcheck", { envId }),
+      (result) => {
+        setHealth((prev) => ({ ...prev, [envId]: result as { ok: boolean; detail?: string } }));
+      }
+    );
   };
 
-  const run = async (envId: string): Promise<void> => {
+  const run = (envId: string): void => {
     const cmd = (command[envId] ?? "").trim();
     if (cmd.length === 0) return;
-    setBusy(`run:${envId}`);
-    setError(undefined);
-    try {
-      const result = await callModuleTool<{ exit: number; logTail: string; truncated: boolean }>(
-        endpoint,
-        "env.run",
-        { envId, cmd }
-      );
-      setOutput((prev) => ({ ...prev, [envId]: result }));
-    } catch (err) {
-      // I2: 走らせたのに何も起きなかったように見せない
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(undefined);
-    }
+    void action.run(
+      `run:${envId}`,
+      () =>
+        callModuleTool<{ exit: number; logTail: string; truncated: boolean }>(endpoint, "env.run", {
+          envId,
+          cmd,
+        }),
+      (result) => {
+        setOutput((prev) => ({
+          ...prev,
+          [envId]: result as { exit: number; logTail: string; truncated: boolean },
+        }));
+      }
+    );
   };
 
-  const teardown = async (envId: string): Promise<void> => {
-    setBusy(envId);
-    setError(undefined);
-    try {
-      await callModuleTool(endpoint, "env.teardown", { envId });
-      list.reload();
-    } catch (err) {
-      // I2: 畳めなかったことを黙って一覧の更新だけで済ませない
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(undefined);
-    }
+  const teardown = (envId: string): void => {
+    void action.run(
+      envId,
+      async () => {
+        await callModuleTool(endpoint, "env.teardown", { envId });
+        list.reload();
+      },
+      () => "畳みました。"
+    );
   };
 
   return (
-    <div className="st">
-      <div className="st-head">
-        <span className="st-title">検証環境</span>
-        <span className="gv3-count">{live.length}</span>
-        <label className="wv-toggle" title="畳んだものも一覧に出す">
-          <input
-            type="checkbox"
-            checked={includeTornDown}
-            onChange={(e) => setIncludeTornDown(e.target.checked)}
-          />
-          畳んだものも含む
-        </label>
-        <button className="gv3-clear" onClick={() => list.reload()}>
-          取り直す
-        </button>
-      </div>
+    <ViewShell className="em">
+      <ViewBar>
+        <ViewTitle icon="🧫" count={live.length}>
+          検証環境
+        </ViewTitle>
+        <span className="cv-spacer" />
+        <Toggle
+          checked={includeTornDown}
+          onChange={setIncludeTornDown}
+          title="畳み終わった環境も一覧に出す"
+        >
+          畳んだ環境も表示
+        </Toggle>
+        <Button small variant="ghost" onClick={() => list.reload()} title="取り直す">
+          ⟳
+        </Button>
+      </ViewBar>
 
-      {(list.error || error) && <div className="fb-error">{list.error ?? error}</div>}
+      {list.error && <ErrorNote onRetry={list.reload}>{list.error}</ErrorNote>}
+      {action.error && <ErrorNote onRetry={action.clearError}>{action.error}</ErrorNote>}
 
-      {/* 畳み損ねは一番上に出す。放っておくと費用がかかり続ける（I3） */}
-      {stuck.length > 0 && (
-        <div className="pp-warn em-stuck">
-          畳めなかった環境が {stuck.length} 件あります。外にリソースが残っている可能性が
-          あるので、畳み直すか手元で確認してください
-        </div>
-      )}
+      <Scroll>
+        {/* 畳み損ねは一番上に出す。放っておくと費用がかかり続ける（I3） */}
+        {stuck.length > 0 && (
+          <Note tone="danger" icon="⚠">
+            畳めなかった環境が {stuck.length} 件あります。外にリソースが残っている可能性が
+            あるので、畳み直すか手元で確認してください。
+          </Note>
+        )}
 
-      <section className="pp-section">
-        <h3 className="pp-heading">いま立っている環境</h3>
-        {environments.length === 0 ? (
-          <p className="fb-muted st-empty">
-            {list.loading ? "読み込み中…" : "立っている環境はありません"}
-          </p>
+        <SectionHead count={environments.length}>いま立っている環境</SectionHead>
+        {list.loading && !list.data ? (
+          <Loading rows={3} />
+        ) : environments.length === 0 ? (
+          <EmptyState icon="🧫" title="立っている環境はありません">
+            番頭に「テストが通るか確かめて」と頼むと、機構が立てて走らせ、必ず畳みます。
+          </EmptyState>
         ) : (
-          <ul className="pp-list">
-            {environments.map((e) => (
-              <li key={e.envId} className="pp-item">
-                <div className="pp-place">
-                  {e.profile}
-                  <span className={`em-state em-${e.state}`}>{STATE_LABEL[e.state]}</span>
-                </div>
-                <div className="pp-reason">
-                  {e.envId} / {e.taskId} / 期限 {formatTime(e.ttlDeadline)}
-                </div>
-                {e.workdir && <div className="rm-path">{e.workdir}</div>}
-                {e.url && e.state === "live" && (
-                  <div className="em-url">
-                    <a href={e.url} target="_blank" rel="noreferrer">
-                      開く（{e.url}）
-                    </a>
-                    {e.exposer && <span className="em-mode">公開方式: {e.exposer === "caddy" ? "caddy" : "proxy"}</span>}
-                  </div>
-                )}
-                {e.state !== "torn-down" && (
-                  <>
-                    <div className="pp-actions">
-                      <button
-                        disabled={busy === `health:${e.envId}`}
-                        onClick={() => checkHealth(e.envId)}
-                      >
-                        状態を確かめる
-                      </button>
-                      {health[e.envId] && (
-                        <span className={health[e.envId]!.ok ? "em-ok" : "em-ng"}>
-                          {health[e.envId]!.ok ? "使えます" : "使えません"}
-                          {health[e.envId]!.detail ? `（${health[e.envId]!.detail}）` : ""}
-                        </span>
-                      )}
-                      <button
-                        className="pp-deny"
-                        disabled={busy === e.envId}
-                        onClick={() => teardown(e.envId)}
-                      >
-                        畳む
-                      </button>
-                    </div>
-                    {/* ログ：この環境の中でコマンドを走らせて、その出力を見る（spec §6） */}
-                    <div className="rm-form em-run">
-                      <input
-                        placeholder="この環境で走らせるコマンド（例: npm test）"
-                        value={command[e.envId] ?? ""}
-                        onChange={(ev) =>
-                          setCommand((prev) => ({ ...prev, [e.envId]: ev.target.value }))
-                        }
-                        spellCheck={false}
-                      />
-                      <button
-                        disabled={busy === `run:${e.envId}` || (command[e.envId] ?? "").trim() === ""}
-                        onClick={() => run(e.envId)}
-                      >
-                        {busy === `run:${e.envId}` ? "実行中…" : "走らせる"}
-                      </button>
-                    </div>
-                    {output[e.envId] && (
-                      <div className="em-output">
-                        <div className={output[e.envId]!.exit === 0 ? "em-ok" : "em-ng"}>
-                          終了コード {output[e.envId]!.exit}
-                          {output[e.envId]!.truncated ? "（ログは末尾のみ）" : ""}
-                        </div>
-                        <pre>{output[e.envId]!.logTail || "（出力なし）"}</pre>
-                      </div>
+          <div className="cv-cards">
+            {environments.map((e) => {
+              const state = STATE[e.state];
+              const ttl = ttlOf(e.ttlDeadline, now);
+              const isLive = e.state !== "torn-down";
+              return (
+                <Card key={e.envId} tone={e.state === "teardown-failed" ? "danger" : undefined}>
+                  <div className="em-head">
+                    <span className="em-profile">{e.profile}</span>
+                    <Badge tone={state.tone}>{state.label}</Badge>
+                    <Badge>{e.driver}</Badge>
+                    <span className="cv-spacer" />
+                    {isLive && (
+                      <span className={`em-ttl ${ttl.className}`} title={`期限 ${formatTime(e.ttlDeadline)}`}>
+                        ⏱ {ttl.text}
+                      </span>
                     )}
-                  </>
-                )}
-              </li>
-            ))}
-          </ul>
+                  </div>
+                  <div className="cv-muted">
+                    {e.taskId} · {e.projectTag} · <code className="cv-mono">{e.envId}</code>
+                  </div>
+                  {e.workdir && <div className="rm-path">{e.workdir}</div>}
+
+                  {e.url && e.state === "live" && (
+                    <div className="em-url">
+                      <a href={e.url} target="_blank" rel="noreferrer">
+                        ↗ ブラウザで開く
+                      </a>
+                      <span className="cv-muted">
+                        {e.url}
+                        {e.exposer ? `（${e.exposer === "caddy" ? "caddy" : "proxy"}）` : ""}
+                      </span>
+                    </div>
+                  )}
+
+                  {isLive && (
+                    <>
+                      <div className="em-actions">
+                        <Button
+                          small
+                          disabled={action.busy === `health:${e.envId}`}
+                          onClick={() => checkHealth(e.envId)}
+                        >
+                          {action.busy === `health:${e.envId}` ? "確認中…" : "状態を確かめる"}
+                        </Button>
+                        {health[e.envId] && (
+                          <Badge tone={health[e.envId]!.ok ? "ok" : "danger"}>
+                            {health[e.envId]!.ok ? "使えます" : "使えません"}
+                            {health[e.envId]!.detail ? `（${health[e.envId]!.detail}）` : ""}
+                          </Badge>
+                        )}
+                        <span className="cv-spacer" />
+                        <Button
+                          small
+                          variant="danger"
+                          disabled={action.busy === e.envId}
+                          onClick={() => teardown(e.envId)}
+                        >
+                          {action.busy === e.envId ? "畳んでいます…" : "畳む"}
+                        </Button>
+                      </div>
+
+                      {/* この環境の中でコマンドを走らせて、その出力を見る（spec §6） */}
+                      <div className="em-run">
+                        <TextInput
+                          placeholder="この環境で走らせるコマンド（例: npm test）"
+                          value={command[e.envId] ?? ""}
+                          onChange={(ev) =>
+                            setCommand((prev) => ({ ...prev, [e.envId]: ev.target.value }))
+                          }
+                          onKeyDown={(ev) => {
+                            if (ev.key === "Enter" && !ev.nativeEvent.isComposing) run(e.envId);
+                          }}
+                        />
+                        <Button
+                          disabled={
+                            action.busy === `run:${e.envId}` || (command[e.envId] ?? "").trim() === ""
+                          }
+                          onClick={() => run(e.envId)}
+                        >
+                          {action.busy === `run:${e.envId}` ? "実行中…" : "走らせる"}
+                        </Button>
+                      </div>
+                      {output[e.envId] && (
+                        <div className="em-output">
+                          <Badge tone={output[e.envId]!.exit === 0 ? "ok" : "danger"}>
+                            終了コード {output[e.envId]!.exit}
+                            {output[e.envId]!.truncated ? "（ログは末尾のみ）" : ""}
+                          </Badge>
+                          <pre className="cv-pre" style={{ marginTop: 6 }}>
+                            {output[e.envId]!.logTail || "（出力なし）"}
+                          </pre>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </Card>
+              );
+            })}
+          </div>
         )}
+
         {limits && (
-          <p className="fb-muted">
-            同時上限: 全体 {limits.maxInstancesTotal} / プロファイルごと{" "}
-            {limits.maxInstancesPerProfile} ・ 既定TTL {formatMs(limits.defaultTtlMs)}（最大{" "}
-            {formatMs(limits.maxTtlMs)}） ・ アドホック: {limits.adhocDrivers}
+          <p className="cv-muted" style={{ marginTop: 10, lineHeight: 1.8 }}>
+            同時上限: 全体 {limits.maxInstancesTotal} / プロファイルごと {limits.maxInstancesPerProfile}
+            ・ 既定TTL {formatMs(limits.defaultTtlMs)}（最大 {formatMs(limits.maxTtlMs)}）
+            ・ アドホック: {limits.adhocDrivers}
           </p>
         )}
-      </section>
 
-      <section className="pp-section">
-        <h3 className="pp-heading">
+        <SectionHead
+          count={profiles.data?.usable.length}
+          actions={workspace ? <PlacePicker selection={selection} title="どのリポジトリの定義を見るか" /> : undefined}
+        >
           プロファイル
-          {workspace && <PlacePicker selection={selection} title="どのリポジトリの定義を見るか" />}
-        </h3>
+        </SectionHead>
         {!workspace ? (
-          <p className="fb-muted st-empty">場所の一覧を出せません（workspace モジュールが居ません）</p>
+          <p className="cv-muted">場所の一覧を出せません（workspace モジュールが居ません）。</p>
         ) : profiles.error ? (
-          <div className="fb-error">{profiles.error}</div>
+          <ErrorNote onRetry={profiles.reload}>{profiles.error}</ErrorNote>
         ) : (
           <>
-            {(profiles.data?.usable ?? []).length === 0 && (
-              <p className="fb-muted st-empty">
-                この場所には検証環境の定義がありません（meta/environments.yaml）
+            {(profiles.data?.usable ?? []).length === 0 ? (
+              <p className="cv-muted">
+                この場所には検証環境の定義がありません（<code className="cv-mono">meta/environments.yaml</code>）。
               </p>
+            ) : (
+              <div className="cv-cards">
+                {(profiles.data?.usable ?? []).map((p) => (
+                  <Card key={p.name}>
+                    <div className="em-head">
+                      <span className="em-profile">{p.name}</span>
+                      <Badge>{p.driver}</Badge>
+                      <span className="cv-spacer" />
+                      <span className="cv-muted">TTL {formatMs(p.ttlMs)}</span>
+                    </div>
+                  </Card>
+                ))}
+              </div>
             )}
-            <ul className="pp-list">
-              {(profiles.data?.usable ?? []).map((p) => (
-                <li key={p.name} className="pp-item">
-                  <div className="pp-place">{p.name}</div>
-                  <div className="pp-reason">
-                    {p.driver} / TTL {formatMs(p.ttlMs)}
-                  </div>
-                </li>
-              ))}
-            </ul>
             {/* 上限で弾かれたものを黙って隠さない。書いた人が直せるように理由ごと出す（I2） */}
             {(profiles.data?.rejected ?? []).map((r) => (
-              <div key={r.name} className="pp-warn">
+              <Note key={r.name} tone="warn" icon="⚠">
                 <strong>{r.name}</strong> は使えません: {r.reason}
-              </div>
+              </Note>
             ))}
           </>
         )}
-        <p className="fb-muted">
-          環境を立てるのは番頭に頼んでください（env.verify なら畳むところまで機構がやります）。
-          ブラウザで自分の目で見たいときは「expose にポートを渡して」と頼むと、ここに開くリンクが出ます
+
+        <p className="cv-muted" style={{ marginTop: 14, lineHeight: 1.8 }}>
+          環境を立てるのは番頭に頼んでください（<code className="cv-mono">env.verify</code> なら畳むところまで
+          機構がやります）。ブラウザで自分の目で見たいときは「expose にポートを渡して」と頼むと、
+          ここに開くリンクが出ます。
         </p>
-      </section>
-    </div>
+      </Scroll>
+    </ViewShell>
   );
-}
-
-function formatMs(ms: number): string {
-  const hours = ms / 3600_000;
-  return hours >= 1 ? `${Number(hours.toFixed(1))}時間` : `${Math.round(ms / 60_000)}分`;
-}
-
-function formatTime(iso: string): string {
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString("ja-JP", { hour12: false });
 }

@@ -7,7 +7,11 @@
  * 番頭が分身できることが要件なのは、「番頭は分身する」（vision）の主語が番頭だから。
  * PO しか新しい会話を作れないなら、それは分身ではなく画面の操作でしかない。
  *
- * D5: 判断は無い。スレッドを起こして名前を返すだけ。
+ * **会話に名前を付け直す口（`thread.rename`）もここ**（PO要望 2026-08-05）。開くときに
+ * 付けた名前は仮のもので、話が進めば合わなくなる——名付けの主語も番頭にする。
+ * 「いつ付け直すか」の促しだけは例外的にプロンプトへ置く（分身と違い、これは要件）。
+ *
+ * D5: 判断は無い。スレッドを起こす・名前を書き換える・並べるだけ。
  */
 
 import { Type } from "typebox";
@@ -16,6 +20,11 @@ import type { ThreadRegistry } from "./threads.js";
 
 export interface ThreadToolsOptions {
   threads: ThreadRegistry;
+  /**
+   * この Tool を渡す先のスレッド。**番頭には書かせない**（決定35a と同じ理由——
+   * 番頭は自分の threadId を知らないし、書かせれば別の会話に名前を付けてしまう）。
+   */
+  threadId: string;
   /**
    * 新しいスレッドへ最初の一言を届ける。ターンが回り、分身が話し始める。
    * 省略すると、開くだけで何も起きない（PO が話しかけるまで待つ）。
@@ -84,11 +93,43 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     },
   });
 
+  /**
+   * 会話に名前を付け直す口（PO要望 2026-08-05）。
+   *
+   * **判断はここに無い**（D5）。「いつ付け直すか」——話が変わったかどうか——は番頭が決め、
+   * その促しはシステムプロンプトに置く。ここは名前を書き換えて知らせるだけ。
+   *
+   * 宛先は**自分の会話に固定**する。番頭に threadId を書かせると、隣の会話に別の話題の
+   * 名前が付く（`thread.open` で開いた分身の id は返しているので、書けてしまう）。
+   */
+  const rename = defineNamespacedTool({
+    name: "thread.rename",
+    label: "Thread: Rename",
+    description:
+      "**いまのこの会話**に名前を付け直す。タブと履歴の表示がその場で変わり、次に開いたときも残る。" +
+      "何の話か決まったとき、また**話が別のことへ移ったとき**に付け直すと、" +
+      "POがタブを見ただけでどの会話か分かる。他の会話の名前は変えられない。",
+    parameters: Type.Object({
+      title: Type.String({
+        description:
+          "新しい名前。何の話かが一目で分かる短い語にする（15文字程度。長い分は切り詰められる）",
+      }),
+    }),
+    async execute(params) {
+      const thread = options.threads.rename(options.threadId, params.title);
+      return {
+        content: [{ type: "text" as const, text: `この会話の名前を「${thread.title}」にしました` }],
+        details: thread.view(),
+      };
+    },
+  });
+
   const list = defineNamespacedTool({
     name: "thread.list",
     label: "Thread: List",
     description:
-      "開いている会話（分身）の一覧を返す。いま何本の話が並行しているかを確かめたいときに使う。",
+      "開いている会話（分身）の一覧を返す。いま何本の話が並行しているかを確かめたいときに使う。" +
+      "「＊」が付いているのが**いまのこの会話**。",
     parameters: Type.Object({}),
     async execute() {
       const threads = options.threads.list();
@@ -96,7 +137,11 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
         threads.length === 0
           ? "開いている会話はありません"
           : threads
-              .map((t) => `${t.isDefault ? "◎" : "○"} ${t.title} (threadId: ${t.id})`)
+              .map(
+                (t) =>
+                  `${t.isDefault ? "◎" : "○"} ${t.title} (threadId: ${t.id})` +
+                  `${t.id === options.threadId ? " ＊いまのこの会話" : ""}`
+              )
               .join("\n");
       return {
         content: [{ type: "text" as const, text }],
@@ -105,5 +150,5 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     },
   });
 
-  return [open, list];
+  return [open, rename, list];
 }

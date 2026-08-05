@@ -47,9 +47,9 @@ refs: [vision, principles, spec-ui, spec-daemon-core, spec-improvement-loop]
 
 | role | 説明 | 表示 | 追記 |
 |---|---|---|---|
-| `po` | POの発話（`attachments?` に送った添付の参照） | 右寄せの吹き出し。添付は96pxのサムネイル | × |
+| `po` | POの発話（`attachments?` に送った添付の参照） | 右寄せのカード。添付は96pxのサムネイル | × |
 | `reasoning` | 番頭の思考（`durationMs?`） | Collapsible（考えている間は開き、終わって1秒で畳む） | **あり（streaming中）** |
-| `banto` | 番頭の発話（Markdown） | 左寄せ・**地の文**（吹き出しにしない） | **あり（streaming中）** |
+| `banto` | 番頭の発話（Markdown） | 左寄せのカード（§9.5） | **あり（streaming中）** |
 | `tool` | ツール呼び出し（`input?` / `output?`） | Collapsible（名前＋状態の札＋引数＋結果） | **あり（state更新）** |
 | `notice` | 外からの知らせ（職人・別の会話）と**文脈のまとめ直し**（compaction） | タグ付き、デフォルト畳み | × |
 | `error` | エラー行 | 赤背景、×ボタンで消せる | × |
@@ -72,20 +72,31 @@ refs: [vision, principles, spec-ui, spec-daemon-core, spec-improvement-loop]
 
 ### 2.3 追記ルール (applyDelta)
 
-- 新行（`po_message`, `notice`）→ 配列末尾へ追加
-- `text_delta` → 既存の最終 `banto` エントリに in-place 追記（参照維持、`React.memo` 最適化）
-- `tool_end` → matching な `tool` エントリの state を in-place 変更（`'running'` → `'ok'` / `'failed'`）
+**変わった行は必ず新しいオブジェクトにする。行を書き換えない。**
+行を描くのは `React.memo` でくるんだ `ChatRow` で、props の浅い比較で描き直すかを決める。
+同じ参照のまま中身だけ書き換えると「props は変わっていない」と判定され、**描き直しが
+飛ぶ**——届いた分が画面に出ず、数文字で止まって見える（inc-0021。リロードで直るのは
+`history` から作り直されるため）。参照の維持は最適化ではなく描画の抑止だった。
+
+- 新行（`po_message`, `notice`, `tool_start`）→ 配列末尾へ追加
+- `text_delta` / `reasoning_delta` → 末尾の行を**差し替える**（`{ ...last, text: last.text + delta }`）
+- `reasoning_end` → 末尾の思考を差し替えて `durationMs` を入れる
+- `tool_end` → matching な `tool` エントリを差し替えて state を変える（`'running'` → `'ok'` / `'failed'`）。
+  引数は開始のときにしか来ないので、終了で消さない
 
 ```
 applyDelta(prev, event):
   po_message    → [...prev, { role: "po", text }]
   notice        → [...prev, { role: "notice", source, text }]
-  text_delta    → last.banto.text += delta; return [...prev]
+  text_delta    → replaceLast(prev, { ...last, text: last.text + delta })
   tool_start    → [...prev, { role: "tool", name, state: "running" }]
-  tool_end      → prev[n].state = event.isError ? "failed" : "ok"; return [...prev]
+  tool_end      → next[n] = { ...tool, state: isError ? "failed" : "ok", output? }
   turn_end      → errorMessage なら [...prev, { role: "error", text }]
   error         → [...prev, { role: "error", text: event.message }]
 ```
+
+**受け入れ基準**（`tests/chat-ux.spec.ts`「届いた分がそのまま出る」）：次の行も `turn_end` も
+足さずに、差分だけで本文・思考・ツールの札が伸びる／切り替わること。
 
 ### 2.4 未読 (unread)
 
@@ -199,6 +210,9 @@ AI Elements は `duration === 0` のとき Shimmer を出し続けるが、banto
 
 「届いている最中か」は**末尾の行かどうか**で決める（`chatStatus === "streaming"` かつ
 最後のエントリ）。ホストは busy しか持たないので、行ごとの streaming 状態は UI 側で導く。
+
+ただし**思考の終わりは `durationMs` が決める**。`reasoning_end` で思考は終わっているのに、
+busy だけで見ると本文を喋り出すまで「考えています」と光り続ける（inc-0021 で併せて修正）。
 
 ## 6. ツール呼び出し表示 (ToolCall)
 
@@ -333,6 +347,13 @@ Vercel AI Elements の `<Tool>` コンポーネントに相当する仕様。
 | `open` | 現在アクティブまたは複数開ける | 表示（`ThreadTabs`） | 表示 |
 | `closed` | 畳まれた | 非表示 | `ThreadHistory` 表示 |
 
+**何も無いまま閉じた会話は残さない**（PO要望 2026-08-05）。閉じる時点で記録が1行も無い
+会話は `closed` にせず、帳簿からも保存先からも**消す**（索引・記録の JSONL・pi のセッション
+ファイルをまとめて）。開いてすぐ閉じただけの空の器が履歴に並ぶと、読みたい会話がその分
+遠くなる——「畳んでも消えない」（決定30c）は**中身を失わない**という約束であって、中身の
+無い器まで残す約束ではない。記録が1行でもあれば（POの発話に限らず、職人の報告だけでも）
+畳んで残す。`new_session` で置き換えたときも同じ規則が効く。
+
 ### 8.2 切替ルール
 
 - `new_session` → **自分**のみ自動的に新スレッドへ移行（`followNewThread` flag）。番頭が別の分身を開いたときは移らない（決定2「目の前の話は壊れない」）
@@ -340,6 +361,33 @@ Vercel AI Elements の `<Tool>` コンポーネントに相当する仕様。
 - スレッド再オープン → 即座に切替 + 未読解除
 - どの経路で移っても、見ている会話の未読は落ちる（戻る／進む・リロードで開いた会話も同じ）
 - 「どの会話を見ているか」は URL が持つ（§9）。UI 側の state には持たない
+
+### 8.3 会話の名前（PO要望 2026-08-05）
+
+タブに出る名前（`ThreadView.title`）は**番頭とPOのどちらからでも付け直せる**。開いたときの
+名前（「はじめの会話」「会話 3」、`thread.open` の title）は仮のもので、話が進めば合わなくなる
+——POはタブの名前で会話を選ぶので、始めの話題のままの名前が並ぶと中身が分からない。
+
+決定25「人がGUIでできることは番頭にもできる。ただし経路が異なる」の両側：
+
+| | 番頭の経路 | POの経路 |
+|---|---|---|
+| 口 | Tool `thread.rename` | WS `thread_rename`（タブを**右クリック → 名前を変える**） |
+| 宛先 | **自分の会話に固定**。隣の会話は変えられない（決定35a と同じ扱い） | どの会話でもよい。右クリックしたタブが宛先で、見ている会話とは限らない |
+| いつ | 何の話か決まったとき／**話の途中で別のことへ移ったとき**。判断は番頭（促しはシステムプロンプト、機構は Tool。D5） | POが決めたとき |
+
+どちらも同じ帳簿（`ThreadRegistry.rename`）を通り、以下は共通：
+
+| | |
+|---|---|
+| 画面への出方 | `thread_state` で全クライアントへ配る。タブ・履歴の名前がその場で変わる。**UI は楽観更新しない**——名前の真実はホスト（D3） |
+| 残り方 | 索引に即書く（間引かない）。畳んだ会話も改名でき、履歴に残る |
+| 会話への影響 | **無い**。記録もキャンバスも動かず、ターンも回らない（決定2「目の前の話は壊れない」） |
+| 長さ | 40文字で切り詰め、改行と前後の空白は落とす（タブは1行しかない）。空の名前は拒む（I2） |
+
+右クリックのメニューは「名前を変える」と「会話を畳む（履歴に残ります）」の2つ。書き換えは
+**タブの字がその場で入力欄に変わる**形で、Enter で確定・Esc でやめる・欄の外を押しても確定。
+空にして確定しても名前は変わらない（**消す操作ではない**）。
 
 ## 9. 画面の位置（URL）と復元
 
@@ -396,6 +444,19 @@ URL 側から押し戻してはいけない（決定2「目の前の話は壊れ
 **残らないもの**（意図的）：書きかけ（`draft`）・添付待ちのファイル・スクロール位置・
 スマホのチャット／キャンバス切替。いずれも画面を離れると意味を失うか、ホストに預けて
 いないもの。
+
+スマホの切替は残らないが、**キャンバスのタブが動いたらキャンバス側へ移る**（`spec-canvas-ui` §6）
+——番頭が「開きました」と言っているのに何も見えないのが一番困る。最初の描画では動かさない
+（復元して開いた会話で、いきなりチャットから飛ばされないように）。
+
+## 9.5 発話の見た目
+
+**POの発話も番頭の応答も、枠のあるカード**で置く（地は和紙色、発話は白）。以前は発話の背景も
+地も `--surface` で、吹き出しがあるのに見えていなかった（PO報告 2026-08-05）。
+
+描く部品（`StreamingMarkdown` / `ReasoningRow` / `ToolRow` / `Loader`）は `messages.tsx` に置き、
+**職人ビューアと共有する**（`spec-canvas-ui` §9）——同じ構造のものが2通りに見えると、読む側は
+毎回読み替えることになる。
 
 ## 10. 高さが動くとき（添付の読込・画面サイズ変更）
 

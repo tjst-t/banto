@@ -24,6 +24,12 @@ const OTHER_THREAD_ID = "t-2";
 const MODEL_A = { provider: "huihui", id: "qwen3.6-35b", vision: false, contextWindow: 200000 };
 const MODEL_B = { provider: "anthropic", id: "claude-opus-5", vision: true };
 
+/**
+ * 会話の名前。**真実はホスト側**なので、ここに置いて `thread_rename` で書き換える
+ * （UI は投げるだけで楽観更新しない＝返ってきた `thread_state` で初めて字が変わる）。
+ */
+const titles: Record<string, string> = { [THREAD_ID]: "会話", [OTHER_THREAD_ID]: "別の会話" };
+
 /** 会話1本分の姿（ThreadView）。 */
 const thread = (
   threadId: string,
@@ -129,13 +135,24 @@ class FakeHost {
           host.broadcast({
             type: "thread_state",
             threads: [
-              { ...thread(THREAD_ID, "会話", true), model: MODEL_A },
-              { ...thread(OTHER_THREAD_ID, "別の会話", false), model: MODEL_B },
+              { ...thread(THREAD_ID, titles[THREAD_ID]!, true), model: MODEL_A },
+              { ...thread(OTHER_THREAD_ID, titles[OTHER_THREAD_ID]!, false), model: MODEL_B },
               { ...thread(id, "新しい会話", false), model: MODEL_A },
             ],
           });
           host.broadcast({ type: "history", threadId: id, entries: [] });
           host.broadcast({ type: "canvas_state", threadId: id, tabs: [], activeTabId: undefined });
+        }
+        // 名前を付け直す経路（PO要望 2026-08-05）。本物と同じく一覧を配り直して知らせる
+        if (message["type"] === "thread_rename") {
+          titles[String(message["threadId"])] = String(message["title"]);
+          host.broadcast({
+            type: "thread_state",
+            threads: [
+              { ...thread(THREAD_ID, titles[THREAD_ID]!, true), model: MODEL_A },
+              { ...thread(OTHER_THREAD_ID, titles[OTHER_THREAD_ID]!, false), model: MODEL_B },
+            ],
+          });
         }
       });
       // 接続直後に流れるもの（UIが会話面を描き始めるのに要る最小限）
@@ -143,8 +160,8 @@ class FakeHost {
         type: "welcome",
         sessionId: "fake",
         threads: [
-          { ...thread(THREAD_ID, "会話", true), model: MODEL_A },
-          { ...thread(OTHER_THREAD_ID, "別の会話", false), model: MODEL_B },
+          { ...thread(THREAD_ID, titles[THREAD_ID]!, true), model: MODEL_A },
+          { ...thread(OTHER_THREAD_ID, titles[OTHER_THREAD_ID]!, false), model: MODEL_B },
         ],
         defaultThreadId: THREAD_ID,
         tools: [],
@@ -231,6 +248,9 @@ test.afterAll(async () => {
 
 test.beforeEach(async ({ page }) => {
   host.received.length = 0;
+  // 名前は次のテストへ持ち越さない（改名のテストが他の検証の前提を壊す）
+  titles[THREAD_ID] = "会話";
+  titles[OTHER_THREAD_ID] = "別の会話";
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.goto(`http://127.0.0.1:${host.port}/`);
   await page.waitForSelector(".chat-scroll");
@@ -472,6 +492,82 @@ test.describe("新しい会話", () => {
   });
 });
 
+/**
+ * タブを右クリックして名前を変える（PO要望 2026-08-05）。
+ *
+ * 見たいのは「右クリック → 名前を変える → 打って Enter」でホストへ `thread_rename` が
+ * 飛び、**返ってきた一覧で**タブの字が変わること。UI 側で先に書き換えていないことも
+ * 併せて見る（名前の真実はホスト。D3）。
+ */
+test.describe("会話の名前を変える", () => {
+  /** 対象のタブを右クリックして、メニューを出す。 */
+  async function openTabMenu(
+    page: import("@playwright/test").Page,
+    title: string
+  ): Promise<void> {
+    await page.locator(".thread-tab-wrap", { hasText: title }).click({ button: "right" });
+    await expect(page.locator(".thread-ctx-menu")).toBeVisible();
+  }
+
+  test("右クリック → 名前を変える → Enter でホストへ届き、タブの字が変わる", async ({ page }) => {
+    await openTabMenu(page, "別の会話");
+    await page.locator(".thread-ctx-menu button", { hasText: "名前を変える" }).click();
+
+    const input = page.locator(".tt-rename");
+    await expect(input).toBeVisible();
+    await expect(input).toHaveValue("別の会話");
+    await input.fill("認証の設計");
+    await input.press("Enter");
+
+    await expect
+      .poll(() => host.received.find((m) => m["type"] === "thread_rename"))
+      .toEqual({ type: "thread_rename", threadId: OTHER_THREAD_ID, title: "認証の設計" });
+    await expect(page.locator(".thread-tab", { hasText: "認証の設計" })).toBeVisible();
+  });
+
+  test("Esc でやめると、名前は変わらずホストへも投げない", async ({ page }) => {
+    await openTabMenu(page, "別の会話");
+    await page.locator(".thread-ctx-menu button", { hasText: "名前を変える" }).click();
+    await page.locator(".tt-rename").fill("書きかけ");
+    await page.locator(".tt-rename").press("Escape");
+
+    await expect(page.locator(".tt-rename")).toHaveCount(0);
+    await expect(page.locator(".thread-tab", { hasText: "別の会話" })).toBeVisible();
+    await page.waitForTimeout(200);
+    expect(host.received.find((m) => m["type"] === "thread_rename")).toBeUndefined();
+  });
+
+  test("空にして確定しても、名前は消えない（消す操作ではない）", async ({ page }) => {
+    await openTabMenu(page, "別の会話");
+    await page.locator(".thread-ctx-menu button", { hasText: "名前を変える" }).click();
+    await page.locator(".tt-rename").fill("   ");
+    await page.locator(".tt-rename").press("Enter");
+
+    await expect(page.locator(".thread-tab", { hasText: "別の会話" })).toBeVisible();
+    await page.waitForTimeout(200);
+    expect(host.received.find((m) => m["type"] === "thread_rename")).toBeUndefined();
+  });
+
+  test("書き換えている間は、押しても会話が切り替わらない", async ({ page }) => {
+    // いま見ているのは既定の会話。隣のタブを右クリックしても、見る先は動かない
+    await openTabMenu(page, "別の会話");
+    await page.locator(".thread-ctx-menu button", { hasText: "名前を変える" }).click();
+    await page.locator(".tt-rename").click();
+
+    await expect(page.locator(".thread-tab-wrap.is-active")).toContainText("会話");
+    await expect(page.locator(".tt-rename")).toBeFocused();
+  });
+
+  test("右クリックからそのまま畳める", async ({ page }) => {
+    await openTabMenu(page, "別の会話");
+    await page.locator(".thread-ctx-menu button", { hasText: "畳む" }).click();
+
+    await expect
+      .poll(() => host.received.find((m) => m["type"] === "thread_close"))
+      .toEqual({ type: "thread_close", threadId: OTHER_THREAD_ID });
+  });
+});
+
 test.describe("送信したら最下部へ戻って応答を追う", () => {
   test("上を読んでいる途中でも、自分が送ったら下へ戻る", async ({ page }) => {
     await fillConversation(page);
@@ -576,6 +672,61 @@ test.describe("ツールの表示（AI Elements の Tool）", () => {
     await page.locator(".tool-head").click();
     await expect(page.locator(".tool-detail")).toContainText("docs/vision.md");
     await expect(page.locator(".tool-detail")).toContainText("42");
+  });
+});
+
+/**
+ * 届いた分がそのまま画面に出ること。
+ *
+ * PO報告 2026-08-05：**会話の途中で数文字だけ出て止まり、リロードすると全文が出る**。
+ * 差分を既存の行に in-place で書き足していたため、`React.memo` の `ChatRow` が
+ * 「props は変わっていない」と判断して描き直しを飛ばしていた——止まったのは通信ではなく
+ * 描画の方で、リロードすると history から新しい行として作り直されるので全文が出ていた。
+ *
+ * ここでは**次の行も turn_end も足さずに**、差分だけで伸びることを見る（それが再現条件）。
+ */
+test.describe("届いた分がそのまま出る", () => {
+  test("本文は差分が届くたびに伸びる", async ({ page }) => {
+    host.emit({ type: "turn_start" });
+    host.emit({ type: "text_delta", delta: "ブラ" });
+    await expect(page.locator(".msg--banto")).toHaveText("ブラ");
+
+    host.emit({ type: "text_delta", delta: "ンチ一覧に " });
+    host.emit({ type: "text_delta", delta: "feature/test はありません。" });
+    // turn_end を送らないまま確かめる（送ると別の理由で描き直されてしまい、再現しない）
+    await expect(page.locator(".msg--banto")).toHaveText(
+      "ブランチ一覧に feature/test はありません。"
+    );
+    host.emit({ type: "turn_end" });
+  });
+
+  test("思考も差分が届くたびに伸びる", async ({ page }) => {
+    host.emit({ type: "turn_start" });
+    host.emit({ type: "reasoning_delta", delta: "まず" });
+    await expect(page.locator(".reasoning-body")).toHaveText("まず");
+    host.emit({ type: "reasoning_delta", delta: "前提を確かめる。" });
+    await expect(page.locator(".reasoning-body")).toHaveText("まず前提を確かめる。");
+    host.emit({ type: "turn_end" });
+  });
+
+  test("ツールの札は tool_end で切り替わる（次の行を待たない）", async ({ page }) => {
+    host.emit({ type: "turn_start" });
+    host.emit({ type: "tool_start", toolCallId: "c1", name: "worker.close", input: {} });
+    await expect(page.locator(".tool-badge")).toHaveText("実行中");
+
+    host.emit({ type: "tool_end", toolCallId: "c1", name: "worker.close", isError: false, output: "ok" });
+    // turn_end も次の行も無しに、札だけで切り替わること
+    await expect(page.locator(".tool-badge")).toHaveText("完了");
+    host.emit({ type: "turn_end" });
+  });
+
+  test("考え終わった時間も、その場で出る", async ({ page }) => {
+    host.emit({ type: "turn_start" });
+    host.emit({ type: "reasoning_delta", delta: "考える" });
+    await expect(page.locator(".msg--reasoning")).toBeVisible();
+    host.emit({ type: "reasoning_end", durationMs: 3200 });
+    await expect(page.locator(".reasoning-head")).toContainText("4秒間考えました");
+    host.emit({ type: "turn_end" });
   });
 });
 

@@ -11,17 +11,29 @@
  * - **狭い画面ではタブ列を出さず**、現在の会話名＋▾のドロップダウンに統一する。
  *   「＋新しい会話」も ▾ の先頭に入れる（六次改訂）
  * - × と切替の**入れ子のクリック判定は close を先に**（四次・六次改訂で2度踏んだ）
+ * - **右クリックで名前を変えられる**（PO要望 2026-08-05）。番頭の `thread.rename` と
+ *   同じ結果になる人側の経路（決定25）。名前の真実はホストなので、ここでは投げるだけで
+ *   楽観更新しない——`thread_state` が返って初めてタブの字が変わる（D3）
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ThreadView } from "@banto/host/protocol";
+import { useTabOverflow } from "./useTabOverflow.js";
 
 /** 六次改訂の裁定でモバイル扱いにする幅。プロトタイプと同じ。 */
 const MOBILE_MAX_WIDTH = 780;
-/** ▾ ボタンのぶんとして空けておく幅。 */
-const MORE_BUTTON_RESERVE_PX = 44;
-/** タブ同士の間隔（CSS の gap と合わせる）。 */
-const TAB_GAP_PX = 6;
+
+/**
+ * 入力欄で受ける名前の長さ。ホスト側の `MAX_THREAD_TITLE_LENGTH` と同じ値を置く
+ * ——値そのものは**ホストが真実**（超えた分は向こうで切り詰められる）。ここは
+ * 打っている最中に「入るのか入らないのか」を見せるためだけの写し。
+ * 実行時の値を持ち込むと、UI のバンドルにホスト側（Node向け）が丸ごと入る。
+ */
+const MAX_TITLE_LENGTH = 40;
+
+/** 右クリックメニューの見た目の大きさ（画面の外へはみ出させないための寄せ幅）。 */
+const CTX_MENU_WIDTH = 220;
+const CTX_MENU_HEIGHT = 88;
 
 export interface ThreadTabsProps {
   threads: ThreadView[];
@@ -30,6 +42,15 @@ export interface ThreadTabsProps {
   onSwitch(threadId: string): void;
   onClose(threadId: string): void;
   onOpen(): void;
+  /** 名前を付け直す（右クリック → 名前を変える）。ホストへ投げるだけ。 */
+  onRename(threadId: string, title: string): void;
+}
+
+/** 右クリックで出す小さなメニューの位置と対象。 */
+interface TabMenu {
+  threadId: string;
+  x: number;
+  y: number;
 }
 
 /** 画面幅がモバイル扱いか。 */
@@ -44,61 +65,20 @@ function useIsMobile(): boolean {
 }
 
 export function ThreadTabs(props: ThreadTabsProps): React.ReactElement {
-  const { threads, activeThreadId, unreadThreadIds, onSwitch, onClose, onOpen } = props;
+  const { threads, activeThreadId, unreadThreadIds, onSwitch, onClose, onOpen, onRename } = props;
   const mobile = useIsMobile();
   const [menuOpen, setMenuOpen] = useState(false);
-  const [hiddenIds, setHiddenIds] = useState<string[]>([]);
-  const stripRef = useRef<HTMLDivElement>(null);
-  /**
-   * タブ1つ分の幅。**隠す前に測った値を覚えておく**——隠したあとに測ると 0 になり、
-   * 「隠したから入る、入るから出す」の往復になる（プロトタイプが `computeOverflow` で
-   * 実測しているのと同じ問題を、React では再描画のたびに踏む）。
-   */
-  const widths = useRef(new Map<string, number>());
-
-  const measure = useCallback(() => {
-    const strip = stripRef.current;
-    if (!strip) return;
-    for (const el of strip.querySelectorAll<HTMLElement>("[data-thread-id]")) {
-      const id = el.dataset["threadId"];
-      if (id && el.offsetWidth > 0) widths.current.set(id, el.offsetWidth);
-    }
-
-    if (mobile) {
-      // 狭い画面ではタブ列を出さない（六次改訂）
-      setHiddenIds(threads.map((t) => t.threadId));
-      return;
-    }
-
-    const fit = (available: number): string[] => {
-      let used = 0;
-      const hidden: string[] = [];
-      for (const thread of threads) {
-        const width = widths.current.get(thread.threadId) ?? 0;
-        const next = used + width + (used > 0 ? TAB_GAP_PX : 0);
-        if (next > available) hidden.push(thread.threadId);
-        else used = next;
-      }
-      return hidden;
-    };
-
-    const full = strip.clientWidth;
-    const first = fit(full);
-    // ▾ を出すなら、その分だけ狭くなる。出すか出さないかで幅が変わるので2度測る
-    setHiddenIds(first.length === 0 ? [] : fit(full - MORE_BUTTON_RESERVE_PX));
-  }, [mobile, threads]);
-
-  useLayoutEffect(() => {
-    measure();
-  }, [measure]);
-
-  useEffect(() => {
-    const strip = stripRef.current;
-    if (!strip) return;
-    const observer = new ResizeObserver(() => measure());
-    observer.observe(strip);
-    return () => observer.disconnect();
-  }, [measure]);
+  /** 右クリックで出したメニュー（対象の会話と位置）。 */
+  const [tabMenu, setTabMenu] = useState<TabMenu | undefined>(undefined);
+  /** いま名前を書き換えている会話。タブの字が入力欄に変わる。 */
+  const [editing, setEditing] = useState<string | undefined>(undefined);
+  /** 確定を1回にする——Enter で確定したあとの blur で二重に投げない。 */
+  const committed = useRef(false);
+  // 収まらない分だけ ▾ に収納する（計測は useTabOverflow）。狭い画面では全部そちらへ
+  const { stripRef, hiddenIds: hidden } = useTabOverflow(
+    threads.map((t) => t.threadId),
+    { hideAll: mobile }
+  );
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -109,7 +89,33 @@ export function ThreadTabs(props: ThreadTabsProps): React.ReactElement {
     return () => document.removeEventListener("click", close);
   }, [menuOpen]);
 
-  const hidden = new Set(hiddenIds);
+  // 右クリックメニューは、次のクリック・Esc・スクロールで消す（開きっぱなしにしない）
+  useEffect(() => {
+    if (!tabMenu) return;
+    const dismiss = (): void => setTabMenu(undefined);
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") setTabMenu(undefined);
+    };
+    document.addEventListener("click", dismiss);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("resize", dismiss);
+    return () => {
+      document.removeEventListener("click", dismiss);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("resize", dismiss);
+    };
+  }, [tabMenu]);
+
+  /** 書き換えを確定する。空にしたときは**名前を変えない**（消す操作ではない）。 */
+  const commitRename = (threadId: string, value: string): void => {
+    if (committed.current) return;
+    committed.current = true;
+    setEditing(undefined);
+    const title = value.trim();
+    const before = threads.find((t) => t.threadId === threadId)?.title;
+    if (title !== "" && title !== before) onRename(threadId, title);
+  };
+
   const unread = new Set(unreadThreadIds);
   const active = threads.find((t) => t.threadId === activeThreadId);
   const overflowing = threads.filter((t) => hidden.has(t.threadId));
@@ -119,7 +125,7 @@ export function ThreadTabs(props: ThreadTabsProps): React.ReactElement {
   const tab = (thread: ThreadView, inMenu: boolean): React.ReactElement => (
     <span
       key={thread.threadId}
-      data-thread-id={thread.threadId}
+      data-tab-id={thread.threadId}
       className={[
         inMenu ? "thread-menu-row" : "thread-tab-wrap",
         thread.threadId === activeThreadId ? "is-active" : "",
@@ -130,13 +136,42 @@ export function ThreadTabs(props: ThreadTabsProps): React.ReactElement {
       // 入れ子のクリック判定は close を先に（四次・六次改訂）
       onClick={(e) => {
         if ((e.target as Element).closest("[data-thread-close]")) return;
+        if (editing === thread.threadId) return; // 書き換え中は切替に取られない
         onSwitch(thread.threadId);
         setMenuOpen(false);
+      }}
+      // 右クリックで名前を変える／畳む（PO要望 2026-08-05）
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setMenuOpen(false);
+        setTabMenu({ threadId: thread.threadId, x: e.clientX, y: e.clientY });
       }}
     >
       <button className="thread-tab" type="button">
         <span className="tt-ico">💬</span>
-        <span className="tt-title">{thread.title}</span>
+        {editing === thread.threadId ? (
+          <input
+            className="tt-rename"
+            defaultValue={thread.title}
+            autoFocus
+            maxLength={MAX_TITLE_LENGTH}
+            aria-label="会話の名前"
+            onFocus={(e) => e.currentTarget.select()}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              e.stopPropagation(); // 入力中のキーを画面側のショートカットに拾わせない
+              if (e.key === "Enter") commitRename(thread.threadId, e.currentTarget.value);
+              // Esc は**やめる**。書きかけを捨てて元の名前のまま戻す
+              if (e.key === "Escape") {
+                committed.current = true;
+                setEditing(undefined);
+              }
+            }}
+            onBlur={(e) => commitRename(thread.threadId, e.currentTarget.value)}
+          />
+        ) : (
+          <span className="tt-title">{thread.title}</span>
+        )}
         {unread.has(thread.threadId) && thread.threadId !== activeThreadId && (
           <span className="tt-unread" title="新しい知らせがあります" />
         )}
@@ -199,6 +234,38 @@ export function ThreadTabs(props: ThreadTabsProps): React.ReactElement {
               {overflowing.map((t) => tab(t, true))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* 右クリックのメニュー。画面の隅で切れないよう、位置は幅・高さの分だけ内側へ寄せる */}
+      {tabMenu && (
+        <div
+          className="thread-ctx-menu"
+          style={{
+            left: Math.min(tabMenu.x, window.innerWidth - CTX_MENU_WIDTH),
+            top: Math.min(tabMenu.y, window.innerHeight - CTX_MENU_HEIGHT),
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              committed.current = false;
+              setEditing(tabMenu.threadId);
+              setTabMenu(undefined);
+            }}
+          >
+            ✎ 名前を変える
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onClose(tabMenu.threadId);
+              setTabMenu(undefined);
+            }}
+          >
+            × 会話を畳む（履歴に残ります）
+          </button>
         </div>
       )}
     </div>

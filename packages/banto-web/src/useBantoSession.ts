@@ -109,6 +109,8 @@ export interface BantoSession {
   openThread(title?: string): void;
   closeThread(threadId: string): void;
   reopenThread(threadId: string): void;
+  /** 会話に名前を付け直す（番頭の `thread.rename` と同じ結果。決定25の人側）。 */
+  renameThread(threadId: string, title: string): void;
   /** いま見ている会話が使っているモデル（届くまでは undefined）。 */
   model: CurrentModel | undefined;
   /** いま見ている会話のモデルを変える。効いたかは `model` が入れ替わることで分かる。 */
@@ -136,8 +138,17 @@ export interface BantoSessionOptions {
   onActiveThread(threadId: string | undefined, change: ActiveThreadChange): void;
 }
 
-/** 差分イベントを履歴へ畳み込む。ホスト側の record() と同じ規則。
- * text_delta と tool_end はオブジェクト参照を維持（React.memo の最適化）。 */
+/**
+ * 差分イベントを履歴へ畳み込む。ホスト側の record() と同じ規則。
+ *
+ * **変わった行は必ず新しいオブジェクトにする。**
+ * 以前は「参照を維持すれば `React.memo` の最適化になる」として既存の行を in-place で
+ * 書き換えていたが、これは逆——`ChatRow` は `React.memo` なので、参照が同じなら
+ * 「props は変わっていない」と判断して**描き直しを飛ばす**。結果、届いた分が画面に出ず、
+ * 数文字で止まって見えた（PO報告 2026-08-05：リロードすると全文が出る＝止まっていたのは
+ * 通信ではなく描画の側）。差し替えれば、変わった行だけが描き直される——それが memo の
+ * 効かせ方。1差分につきオブジェクト1つの割り当ては、描画を1回飛ばす損失より遥かに軽い。
+ */
 function applyDelta(prev: TranscriptEntry[], event: ServerEvent): TranscriptEntry[] {
   switch (event.type) {
     case "po_message":
@@ -157,19 +168,16 @@ function applyDelta(prev: TranscriptEntry[], event: ServerEvent): TranscriptEntr
     case "text_delta": {
       const last = prev[prev.length - 1];
       if (last?.role === "banto") {
-        // 既存オブジェクトを in-place 更新して参照を維持
-        last.text += event.delta;
-        return [...prev];
+        return replaceLast(prev, { ...last, text: last.text + event.delta });
       }
       return [...prev, { role: "banto", text: event.delta }];
     }
 
-    // 思考の差分。本文と同じく、最後の思考へ足して参照を維持する
+    // 思考の差分。本文と同じく、最後の思考へ足す
     case "reasoning_delta": {
       const last = prev[prev.length - 1];
       if (last?.role === "reasoning") {
-        last.text += event.delta;
-        return [...prev];
+        return replaceLast(prev, { ...last, text: last.text + event.delta });
       }
       return [...prev, { role: "reasoning", text: event.delta }];
     }
@@ -178,8 +186,7 @@ function applyDelta(prev: TranscriptEntry[], event: ServerEvent): TranscriptEntr
     case "reasoning_end": {
       const last = prev[prev.length - 1];
       if (last?.role !== "reasoning") return prev;
-      last.durationMs = event.durationMs;
-      return [...prev];
+      return replaceLast(prev, { ...last, durationMs: event.durationMs });
     }
 
     case "tool_start":
@@ -197,12 +204,16 @@ function applyDelta(prev: TranscriptEntry[], event: ServerEvent): TranscriptEntr
       const index = prev.findIndex(
         (e) => e.role === "tool" && e.name === event.name && e.state === "running"
       );
-      if (index === -1) return prev;
-      // in-place mutation: 同一参照を維持して ChatRow の再描画を抑制
-      const tool = prev[index] as { role: "tool"; state: string; output?: unknown };
-      tool.state = event.isError ? "failed" : "ok";
-      if (event.output !== undefined) tool.output = event.output;
-      return [...prev];
+      const tool = prev[index];
+      if (tool === undefined || tool.role !== "tool") return prev;
+      const next = [...prev];
+      next[index] = {
+        ...tool,
+        state: event.isError ? "failed" : "ok",
+        // 引数は開始のときにしか来ない。終了で消さない
+        ...(event.output !== undefined ? { output: event.output } : {}),
+      };
+      return next;
     }
 
     case "turn_end":
@@ -214,6 +225,13 @@ function applyDelta(prev: TranscriptEntry[], event: ServerEvent): TranscriptEntr
     default:
       return prev;
   }
+}
+
+/** 末尾の行を差し替える（他の行の参照はそのまま＝描き直されない）。 */
+function replaceLast(prev: TranscriptEntry[], entry: TranscriptEntry): TranscriptEntry[] {
+  const next = [...prev];
+  next[next.length - 1] = entry;
+  return next;
 }
 
 /** 未読の印をつけるイベントか。自分の発話では立てない（決定35c）。 */
@@ -595,6 +613,16 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
     [post, switchThread]
   );
 
+  /**
+   * 会話に名前を付け直す（PO要望 2026-08-05）。**名前の真実はホスト**（D3）——
+   * ここでは楽観的に画面を書き換えず、`thread_state` が返ってくるのを待つ。
+   * 番頭が同じ会話を付け直したときと1本の経路にするため。
+   */
+  const renameThread = useCallback(
+    (threadId: string, title: string) => post({ type: "thread_rename", threadId, title }),
+    [post]
+  );
+
   const session = useMemo<BantoSession>(
     () => ({
       status,
@@ -623,6 +651,7 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
       openThread,
       closeThread,
       reopenThread,
+      renameThread,
       model: active.model,
       setModel,
       draft: active.draft,
@@ -655,6 +684,7 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
       openThread,
       closeThread,
       reopenThread,
+      renameThread,
       chatOf,
       setModel,
       setDraft,

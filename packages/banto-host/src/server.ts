@@ -585,6 +585,16 @@ export class BantoHostServer {
       }
       return;
     }
+    // POがタブから名前を付け直す（決定25 の人側）。番頭の thread.rename と同じ帳簿を通る
+    if (message?.type === "thread_rename") {
+      try {
+        this.threads.rename(message.threadId, message.title);
+      } catch (err) {
+        // I2: 空の題・未知のIDを黙って成功にしない（画面は変わったつもりのまま残る）
+        this.send(ws, { type: "error", message: String(err) });
+      }
+      return;
+    }
 
     // 以降は宛先スレッドが要る。threadId 省略時は既定スレッド（互換）
     let thread: Thread;

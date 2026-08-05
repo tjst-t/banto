@@ -61,6 +61,24 @@ export type ThreadFactory = (
 const DEFAULT_TITLE = "はじめの会話";
 
 /**
+ * 題の長さの上限。**切り詰めるだけで拒まない**——名前が長いのは会話を止める理由にならない。
+ * タブは1行に収まる幅しか無く（`ThreadTabs`）、長い題は省略記号で消えて読めなくなる。
+ */
+export const MAX_THREAD_TITLE_LENGTH = 40;
+
+/**
+ * 題を整える。前後の空白と改行を落とし、長すぎるものは切り詰める。
+ * 空になるものは題として使えない（I2: 黙って既定名に落とさず、呼び出し側でエラーにする）。
+ */
+export function normalizeThreadTitle(title: string): string | undefined {
+  const flattened = title.replace(/\s+/gu, " ").trim();
+  if (flattened === "") return undefined;
+  return flattened.length > MAX_THREAD_TITLE_LENGTH
+    ? flattened.slice(0, MAX_THREAD_TITLE_LENGTH)
+    : flattened;
+}
+
+/**
  * 会話スレッド1本。
  *
  * トランスクリプトと知らせの鎖を**スレッドごとに持つ**のが要点——ここを共有すると、
@@ -349,9 +367,10 @@ export class ThreadRegistry {
     const id = `thread-${++this.counter}`;
     const first = this.threads.size === 0;
     const parts = await this.factory(id);
+    const wantedTitle = title === undefined ? undefined : normalizeThreadTitle(title);
     const thread = new Thread({
       id,
-      title: title ?? (first ? DEFAULT_TITLE : `会話 ${this.counter}`),
+      title: wantedTitle ?? (first ? DEFAULT_TITLE : `会話 ${this.counter}`),
       session: parts.session,
       ...(parts.model ? { model: parts.model } : {}),
       ...(parts.canvas ? { canvas: parts.canvas } : {}),
@@ -397,12 +416,66 @@ export class ThreadRegistry {
     const thread = this.threads.get(threadId);
     if (!thread) throw new Error(`unknown thread: ${threadId}`);
     if (thread.state === "closed") return; // 冪等
+    // **何も無いまま閉じた会話は残さない**（PO要望 2026-08-05）。開いてすぐ閉じただけの
+    // 空の器が履歴に並ぶと、読みたい会話がその分だけ遠くなる。畳んで残す値打ちがあるのは
+    // 中身のある会話——「畳んでも消えない」（決定30c）は**中身を失わない**という約束で、
+    // 中身の無い器まで残す約束ではない。
+    if (thread.transcript.length === 0) {
+      this.discard(thread);
+      return;
+    }
     thread.state = "closed";
     thread.closedAt = now.toISOString();
     // 畳むときは間引かず今すぐ書く（畳んだ直後に落ちても会話が残るように）
     this.flush(thread);
     this.refreshDefault();
     this.emit();
+  }
+
+  /**
+   * 何も無い会話を捨てる（`close` から呼ばれる。PO要望 2026-08-05）。
+   *
+   * **失うものが無いことが前提**——記録が空なのを確かめてから来ること。器（対話ループ・
+   * キャンバス）を後始末し、帳簿と保存先の両方から消す。片方に残すと、次の起動で
+   * 「画面に出ないのにファイルだけある」会話が増える。
+   */
+  private discard(thread: Thread): void {
+    // 間引いていた保存が後から走ると、消したはずの記録が書き戻る
+    const pending = this.pendingSaves.get(thread.id);
+    if (pending) {
+      clearTimeout(pending);
+      this.pendingSaves.delete(thread.id);
+    }
+    thread.onRecord = undefined;
+    thread.dispose();
+    this.threads.delete(thread.id);
+    this.store?.remove(thread.id);
+    this.refreshDefault();
+    this.emit();
+  }
+
+  /**
+   * 会話に名前を付け直す（PO要望 2026-08-05）。
+   *
+   * **話が変われば題も変わる**——会話は最初に付けた名前のまま続くとは限らず、
+   * 「会話 3」や、始めの話題のままの題が並ぶとタブから中身が分からなくなる。
+   *
+   * 畳んだ会話も改名できる。履歴に並ぶのは畳んだ会話で、そちらこそ名前で探すため。
+   *
+   * I2: 知らないIDと空の題はエラーにする。黙って既定名へ落とすと、番頭は名付けたつもりで
+   *     画面には別の名前が出る。
+   */
+  rename(threadId: string, title: string): Thread {
+    const thread = this.threads.get(threadId);
+    if (!thread) throw new Error(`unknown thread: ${threadId}`);
+    const normalized = normalizeThreadTitle(title);
+    if (!normalized) throw new Error("title must not be empty");
+    if (normalized === thread.title) return thread; // 冪等（保存も通知もしない）
+    thread.title = normalized;
+    // 題は索引にある。間引くと、名付けた直後に落ちたときだけ元の名前で戻る
+    this.persistIndex(thread);
+    this.emit();
+    return thread;
   }
 
   /** 畳んだスレッドを開き直す。会話はそのまま残っているので続きから話せる。 */
@@ -457,7 +530,7 @@ export class ThreadRegistry {
     return () => this.listeners.delete(listener);
   }
 
-  /** 名前が変わったことを知らせる（改名は Thread.title を直接書き換える）。 */
+  /** 増減・改名を知らせる（改名は `rename` が呼ぶ）。 */
   emit(): void {
     const snapshot = this.list();
     for (const listener of this.listeners) listener(snapshot);

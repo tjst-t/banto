@@ -28,7 +28,13 @@ export {
 } from "./skills.js";
 export { BantoHostServer, type BantoHostServerOptions, type HostSession } from "./server.js";
 // 会話スレッド＝番頭の分身（決定2・task-0035）
-export { Thread, ThreadRegistry, type ThreadFactory } from "./threads.js";
+export {
+  Thread,
+  ThreadRegistry,
+  MAX_THREAD_TITLE_LENGTH,
+  normalizeThreadTitle,
+  type ThreadFactory,
+} from "./threads.js";
 export { createThreadTools, bindToolArgs, type ThreadToolsOptions } from "./thread-tools.js";
 // 場所の帳簿と砦（決定36・38）
 export {
@@ -72,7 +78,6 @@ export type {
   CanvasReorderMessage,
   CanvasOpenMessage,
 } from "./protocol.js";
-export { demoCanvasViews } from "./demo-views.js";
 export type { TranscriptEntry, HistoryEvent, PoMessageEvent } from "./protocol.js";
 export { createFileTools } from "./file-tools.js";
 export { createFileWriteTools, type FileWriteToolOptions } from "./file-write-tools.js";
@@ -104,7 +109,6 @@ export {
   type SkillEntry,
 } from "./module.js";
 export { createWorkspaceModule, WORKSPACE_BASE_URL } from "./modules/workspace.js";
-export { createDemoModule } from "./modules/demo.js";
 export { createModuleToolHandler } from "./module-serve.js";
 
 export {

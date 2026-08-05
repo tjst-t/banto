@@ -1,26 +1,40 @@
 /**
- * ファイル／ディレクトリ表示（基本GUIセット・ADR-0010 決定18・24・25）。
+ * ファイル閲覧（基本GUIセット・ADR-0010 決定18・24・25）。
  *
  * データは自分を提供しているモジュール（workspace）のデータAPIから取る。番頭のToolは
  * 呼ばない——同じTool契約だが経路が違う（決定25）。到達先は props の endpoint。
  *
- * `params.path` はディレクトリでもファイルでもよい。どちらかを先に file.stat で確かめて、
- * ファイルなら親ディレクトリを開いてそのファイルを選択した状態で始める。
- * `params.line`（と `endLine`）を渡すとその行まで自動スクロールして強調する——
- * file.grep で見つけた箇所をそのまま見せられるように。
+ * **一覧と中身を1枚で扱う。** 狭いときは一覧→中身のドリルダウンになる（§8）。
  *
- * プレビューモード（epic-0011）: 種別に応じてレンダリング表示する。preview/source の
- * トグルはローカル state（ファイル切替でリセット）。preview では行番号を出さず、
- * 行強調（from/to）は source モードでのみ有効。2000行超のファイルは preview を無効化して
- * source に落とす（task-0050 a4）。
+ * 開く位置は `params` が決める：
+ *   - `path` … ディレクトリならその中身、ファイルならそのファイル
+ *   - `line` / `endLine` … その行まで自動スクロールして強調（file.grep の結果をそのまま見せる）
+ *
+ * 探す口も持つ（`file.find` / `file.grep`）。番頭に頼まずPOが自分で辿れるようにするため——
+ * 「どこにあるか」が分からないままツリーを掘るのが、この面で一番時間を食う。
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useModuleTool } from "./useModuleTool.js";
+import { useModuleTool, callModuleTool } from "./useModuleTool.js";
 import { PlacePicker, usePlaceSelection } from "./PlacePicker.js";
 import type { CanvasViewProps } from "./registry.js";
+import {
+  Button,
+  CopyButton,
+  EmptyState,
+  ErrorNote,
+  Loading,
+  Scroll,
+  SearchField,
+  Segmented,
+  SplitView,
+  Toggle,
+  ViewBar,
+  ViewShell,
+  formatBytes,
+} from "./ui.js";
 import {
   classifyDiffLine,
   codeLangOfPath,
@@ -62,12 +76,35 @@ interface StatInfo {
   type: "dir" | "file";
   size: number;
 }
+/** file.grep の1件。file.find は line を持たない。 */
+interface Hit {
+  path: string;
+  line?: number;
+  text?: string;
+  size?: number;
+}
+
+type SearchMode = "name" | "content";
 
 function parentOf(p: string): string {
   const i = p.lastIndexOf("/");
   return i === -1 ? "." : p.slice(0, i);
 }
 
+/** 拡張子でそれらしい絵を選ぶ。中身を開く前の見当がつくだけでよい。 */
+function iconOf(entry: Entry): string {
+  if (entry.type === "dir") return "📁";
+  const ext = extOfPath(entry.name);
+  if (["md", "txt", "rst"].includes(ext)) return "📝";
+  if (["png", "jpg", "jpeg", "gif", "svg", "webp", "ico"].includes(ext)) return "🖼";
+  if (["json", "yaml", "yml", "toml", "ini", "cfg", "env"].includes(ext)) return "⚙️";
+  if (["csv", "tsv"].includes(ext)) return "📊";
+  if (["diff", "patch"].includes(ext)) return "±";
+  if (["mmd", "mermaid"].includes(ext)) return "🔀";
+  if (["zip", "gz", "tar", "tgz", "7z"].includes(ext)) return "📦";
+  if (codeLangOfPath(entry.name)) return "📄";
+  return "📄";
+}
 
 /** shiki トークンの装飾（TextMate の fontStyle ビットマスク: 1=italic 2=bold 4=underline）。 */
 function tokenStyle(t: HighlightedLine): React.CSSProperties {
@@ -133,16 +170,14 @@ function MermaidBlock({
   if (error) {
     return (
       <div className="fb-mermaid">
-        <div className="fb-error">Mermaid を描けませんでした: {error}</div>
+        <ErrorNote title="図を描けませんでした">{error}</ErrorNote>
         <pre className="fb-code-plain">
           <code>{code}</code>
         </pre>
       </div>
     );
   }
-  if (!svg) {
-    return <p className="fb-muted">図を描画中…</p>;
-  }
+  if (!svg) return <Loading label="図を描いています…" rows={2} />;
   return <div className="fb-mermaid" ref={ref} dangerouslySetInnerHTML={{ __html: svg }} />;
 }
 
@@ -168,11 +203,11 @@ function CsvTable({
     };
   }, [content, delimiter]);
 
-  if (!rows) return <p className="fb-muted">テーブルをパースしています…</p>;
-  if (rows.length === 0) return <p className="fb-muted">空のファイルです</p>;
+  if (!rows) return <Loading label="表を読んでいます…" rows={2} />;
+  if (rows.length === 0) return <p className="cv-muted">空のファイルです</p>;
 
   // 1行目をヘッダとして強調する（task-0054 a2）。列数は全行の最大に揃える
-  const header = rows[0];
+  const header = rows[0]!;
   const cols = Math.max(header.length, ...rows.map((r) => r.length));
   return (
     <table className="fb-csv">
@@ -198,12 +233,12 @@ function CsvTable({
   );
 }
 
-/** diff/patch の unified 色分け（task-0055）。既存の gv-add / gv-del / gv-hunk を流用。 */
+/** diff/patch の unified 色分け（task-0055）。GitViewer と同じ語彙を使う。 */
 function DiffPreview({ content }: { content: string }): React.ReactElement {
   return (
     <pre className="gv-diff">
       {content.split("\n").map((line, i) => (
-        <span key={i} className={classifyDiffLine(line)}>
+        <span key={i} className={`gv-diff-line ${classifyDiffLine(line) ?? ""}`}>
           {line}
           {"\n"}
         </span>
@@ -212,7 +247,7 @@ function DiffPreview({ content }: { content: string }): React.ReactElement {
   );
 }
 
-/** コードのハイライト表示（行番号なし）。Markdown 内コードブロック（task-0052 a2）と preview モードのコードファイルに使う。 */
+/** コードのハイライト表示（行番号なし）。Markdown 内コードブロックと preview に使う。 */
 function ShikiBlock({
   code,
   lang,
@@ -244,7 +279,7 @@ function ShikiBlock({
     );
   }
   if (html === "") return <pre />;
-  return <div dangerouslySetInnerHTML={{ __html: html }} />;
+  return <div className="fb-code-html" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 /**
@@ -259,7 +294,6 @@ function MarkdownCode({
   onMermaidReady,
   ...rest
 }: React.JSX.IntrinsicElements["code"] & {
-  /** react-markdown が渡すノード情報（ここでは使わない）。 */
   node?: unknown;
   scheme: Scheme;
   onMermaidReady: () => void;
@@ -320,10 +354,7 @@ function CodePreview({
 
 /**
  * ファイル内容を行番号つきで描き、指定範囲を強調して自動スクロールする。
- * 番頭が「この行を見て」と言えるようにするための面（PO要望）。
- *
- * コード種別ファイルは shiki で色分けする（task-0052 a1）。行番号・行強調（from/to）は
- * 論理行（\n 区切り）基準で、折り返し（wrap）は表示だけの問題——どちらも既存機能を保つ。
+ * 番頭が「この行を見て」と言えるようにするための面。
  */
 function CodeBody({
   content,
@@ -338,7 +369,6 @@ function CodeBody({
   from?: number;
   to?: number;
   wrap?: boolean;
-  /** shiki の言語ID。無ければ素の表示（行番号は常に出る）。 */
   lang?: string;
   scheme: Scheme;
   scrollRef: React.RefObject<HTMLPreElement | null>;
@@ -376,11 +406,7 @@ function CodeBody({
     <pre
       className={`fb-code ${wrap ? "is-wrap" : ""}`}
       ref={scrollRef}
-      style={
-        useHighlight
-          ? { backgroundColor: highlight.bg, color: highlight.fg }
-          : undefined
-      }
+      style={useHighlight ? { backgroundColor: highlight.bg, color: highlight.fg } : undefined}
     >
       {lines.map((line, i) => {
         const lineNo = i + 1;
@@ -408,13 +434,57 @@ function CodeBody({
   );
 }
 
+/** パンくず。**どこにいるかと、どこへ戻れるかを同時に出す**（「↑ 上へ」だけだと辿り直せない）。 */
+function Breadcrumbs({
+  dir,
+  onGo,
+}: {
+  dir: string;
+  onGo: (path: string) => void;
+}): React.ReactElement {
+  const parts = dir === "." ? [] : dir.split("/").filter((p) => p.length > 0);
+  const crumbs = [{ name: "🏠", path: "." }, ...parts.map((name, i) => ({
+    name,
+    path: parts.slice(0, i + 1).join("/"),
+  }))];
+  return (
+    <nav className="fb-crumbs" aria-label="いま開いている場所">
+      {crumbs.map((crumb, i) => {
+        const last = i === crumbs.length - 1;
+        return (
+          <span key={crumb.path} style={{ display: "contents" }}>
+            {i > 0 && (
+              <span className="fb-crumb-sep" aria-hidden="true">
+                /
+              </span>
+            )}
+            <button
+              type="button"
+              className={`fb-crumb ${last ? "is-last" : ""} ${i === 0 ? "is-home" : ""}`}
+              disabled={last}
+              title={crumb.path === "." ? "この場所のいちばん上へ" : crumb.path}
+              aria-label={crumb.path === "." ? "この場所のいちばん上へ" : crumb.name}
+              onClick={() => onGo(crumb.path)}
+            >
+              {crumb.name}
+            </button>
+          </span>
+        );
+      })}
+    </nav>
+  );
+}
+
 export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactElement {
   const initialPath = typeof params["path"] === "string" ? params["path"] : ".";
   const initialLine = typeof params["line"] === "number" ? params["line"] : undefined;
   const initialEndLine = typeof params["endLine"] === "number" ? params["endLine"] : undefined;
 
   // どの場所を見るか（決定36e）。番頭が指定していなければ先頭に落ちる
-  const selection = usePlaceSelection(endpoint, typeof params["place"] === "string" ? params["place"] : undefined);
+  const selection = usePlaceSelection(
+    endpoint,
+    typeof params["place"] === "string" ? params["place"] : undefined
+  );
   const place = selection.place;
 
   // 渡されたパスがディレクトリかファイルかを先に確かめる
@@ -425,16 +495,37 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
     place !== undefined
   );
   const [nav, setNav] = useState<{ dir: string; file?: string }>();
+  /**
+   * 狭いときにどちらを見ているか。**選んだファイルを閉じずに一覧へ戻れる**ようにするため、
+   * 「開いているファイル」とは別に持つ——探し直すときも、前に見ていたファイルは残す。
+   */
+  const [pane, setPane] = useState<"list" | "file">("list");
+  const [includeHidden, setIncludeHidden] = useState(false);
+  /** その場で一覧を絞る（打つたびに効く。サーバへは投げない）。 */
+  const [filter, setFilter] = useState("");
+
+  /** 探す（サーバへ投げる）。名前は file.find、中身は file.grep。 */
+  const [searchMode, setSearchMode] = useState<SearchMode>("content");
+  const [searchDraft, setSearchDraft] = useState("");
+  const [search, setSearch] = useState<{
+    query: string;
+    mode: SearchMode;
+    hits: Hit[];
+    truncated: boolean;
+    error?: string;
+    loading: boolean;
+  }>();
+  const [searchOpen, setSearchOpen] = useState(false);
 
   // preview/source トグルと折り返しはローカル state（task-0051 a4）。ファイル切替でリセット
   const [mode, setMode] = useState<"preview" | "source">("preview");
-  const [wrap, setWrap] = useState(false);
-  /** プレビューの内容（Mermaid 等）の描画が終わるたびに増える。スクロール復元の再実行に使う */
+  /** 原文表示の折り返し。**既定は折り返す**——横に流れると、読むのに二方向へ動かすことになる */
+  const [wrap, setWrap] = useState(true);
+  /** プレビューの描画が終わるたびに増える。スクロール復元の再実行に使う */
   const [previewReadyTick, setPreviewReadyTick] = useState(0);
   const bumpPreviewReady = useCallback(() => setPreviewReadyTick((n) => n + 1), []);
-  /** モード切替前のスクロール位置（割合）。preview と source で行数が違うため割合で復元する（a5） */
+  /** モード切替前のスクロール位置（割合）。preview と source で行数が違うため割合で復元する */
   const scrollFrac = useRef(0);
-  /** モード切替直後に1回だけ復元するためのフラグ（非同期描画完了で何度も巻き戻さない） */
   const restorePending = useRef(false);
   const codeScrollRef = useRef<HTMLPreElement>(null);
   const previewScrollRef = useRef<HTMLDivElement>(null);
@@ -443,32 +534,41 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
   // 場所を変えたら、その場所のルートから見直す（前の場所のパスは意味を持たない）
   useEffect(() => {
     setNav(undefined);
+    setSearch(undefined);
+    setFilter("");
   }, [place]);
 
   useEffect(() => {
     if (nav || !stat.data) return;
-    setNav(
-      stat.data.type === "dir"
-        ? { dir: stat.data.path }
-        : { dir: parentOf(stat.data.path), file: stat.data.path }
-    );
+    if (stat.data.type === "dir") {
+      setNav({ dir: stat.data.path });
+      return;
+    }
+    // 番頭がファイルを指して開いたなら、狭い画面でもそのファイルから見せる
+    setNav({ dir: parentOf(stat.data.path), file: stat.data.path });
+    setPane("file");
   }, [stat.data, nav]);
 
-  // stat が失敗（存在しない等）したらルートから始める。理由は下のバナーで出す
+  // stat が失敗（存在しない等）したらルートから始める。理由は下の帯で出す
   useEffect(() => {
     if (!nav && stat.error) setNav({ dir: "." });
   }, [stat.error, nav]);
 
   const dir = nav?.dir ?? ".";
   const file = nav?.file;
-  // 強調は「番頭が指定したファイルを見ているとき」だけ。別のファイルを選んだら外す
+  /** 番頭が指定した行の強調は、そのファイルを見ている間だけ。別のファイルを選んだら外す。 */
   const highlightFrom = file === initialPath ? initialLine : undefined;
-  const highlightTo = file === initialPath ? (initialEndLine ?? initialLine) : undefined;
+  const highlightTo = file === initialPath ? initialEndLine ?? initialLine : undefined;
+  /** 検索結果から開いたときの行。 */
+  const [hitLine, setHitLine] = useState<{ path: string; line: number }>();
+  const hitHere = hitLine !== undefined && hitLine.path === file ? hitLine.line : undefined;
+  const lineFrom = hitHere ?? highlightFrom;
+  const lineTo = hitHere ?? highlightTo;
 
   const listing = useModuleTool<Listing>(
     endpoint,
     "file.list",
-    { path: dir, ...(place ? { place } : {}) },
+    { path: dir, includeHidden, ...(place ? { place } : {}) },
     nav !== undefined && place !== undefined
   );
   const content = useModuleTool<FileContent>(
@@ -478,7 +578,7 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
       path: file ?? "",
       ...(place ? { place } : {}),
       // 強調したい行が既定の打ち切り範囲より後ろにあると出せないので、届く分だけ広げる
-      ...(highlightTo !== undefined ? { maxLines: Math.max(400, highlightTo + 40) } : {}),
+      ...(lineTo !== undefined ? { maxLines: Math.max(400, lineTo + 40) } : {}),
     },
     file !== undefined && place !== undefined
   );
@@ -486,15 +586,15 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
   // ファイル切替でトグル状態をリセットする（task-0051 a4）
   useEffect(() => {
     setMode("preview");
-    setWrap(false);
+    setWrap(true);
     scrollFrac.current = 0;
   }, [file]);
 
   // ---- プレビュー種別と表示モード ----
   const kind = file ? kindOfPath(file) : "plain";
   const previewable = kind !== "plain";
-  // 2000行超のファイルは preview を無効化して source に落とす（task-0050 a4）
   const totalLines = content.data?.totalLines ?? content.data?.content?.split("\n").length ?? 0;
+  // 2000行超のファイルは preview を無効化して source に落とす（task-0050 a4）
   const previewAllowed = previewable && totalLines <= PREVIEW_MAX_LINES;
   const effectiveMode = previewAllowed ? mode : "source";
   const contentText = content.data?.content ?? "";
@@ -515,9 +615,8 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
     setMode(next);
   };
 
-  // モード切替直後に、スクロール位置を割合で復元する（a5）。
-  // 復元は切替のたびに1回だけ——Mermaid 等の非同期描画完了（previewReadyTick）で
-  // 何度も実行すると、切替後に手動でスクロールした位置を巻き戻してしまう
+  // モード切替直後に、スクロール位置を割合で復元する。切替のたびに1回だけ——
+  // Mermaid 等の非同期描画完了で何度も実行すると、手動でスクロールした位置を巻き戻す
   useEffect(() => {
     if (!restorePending.current) return;
     restorePending.current = false;
@@ -529,153 +628,330 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
 
   const join = (name: string): string => (dir === "." ? name : `${dir}/${name}`);
 
-  return (
-    <div className="fb">
-      <div className="fb-bar">
-        <PlacePicker selection={selection} />
-        <button
-          className="fb-up"
-          disabled={dir === "."}
-          onClick={() => setNav({ dir: parentOf(dir) })}
+  /** 探す。**ホストに探させる**——一覧を全部運んで画面で絞ると、大きい木で破綻する。 */
+  const runSearch = async (query: string, searchIn: SearchMode): Promise<void> => {
+    const q = query.trim();
+    // 狭いときは結果が一覧側に出る。開いていたファイルの裏に隠さない
+    setPane("list");
+    if (q.length === 0) {
+      setSearch(undefined);
+      return;
+    }
+    setSearch({ query: q, mode: searchIn, hits: [], truncated: false, loading: true });
+    try {
+      const at = place ? { place } : {};
+      if (searchIn === "name") {
+        const res = await callModuleTool<{ matches: Hit[]; truncated: boolean }>(
+          endpoint,
+          "file.find",
+          { pattern: q.includes("*") ? q : `*${q}*`, path: dir, includeHidden, ...at }
+        );
+        setSearch({ query: q, mode: searchIn, hits: res.matches, truncated: res.truncated, loading: false });
+      } else {
+        const res = await callModuleTool<{ hits: Hit[]; truncated: boolean }>(endpoint, "file.grep", {
+          pattern: q,
+          path: dir,
+          ignoreCase: true,
+          includeHidden,
+          ...at,
+        });
+        setSearch({ query: q, mode: searchIn, hits: res.hits, truncated: res.truncated, loading: false });
+      }
+    } catch (err) {
+      // I2: 探したのに何も起きなかったように見せない
+      setSearch({
+        query: q,
+        mode: searchIn,
+        hits: [],
+        truncated: false,
+        loading: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const entries = useMemo(() => {
+    const all = listing.data?.entries ?? [];
+    const q = filter.trim().toLowerCase();
+    return q.length === 0 ? all : all.filter((e) => e.name.toLowerCase().includes(q));
+  }, [listing.data, filter]);
+
+  const listPane = (
+    <>
+      <ViewBar>
+        <SearchField value={filter} onChange={setFilter} placeholder="この一覧を絞る" />
+        <Toggle
+          checked={includeHidden}
+          onChange={setIncludeHidden}
+          title="ドット始まりのファイルや node_modules 等も一覧に出す"
         >
-          ↑ 上へ
-        </button>
-        <code className="fb-path">{listing.data?.path ?? dir}</code>
-        {listing.data && <span className="fb-count">{listing.data.total} 件</span>}
+          隠しファイルも表示
+        </Toggle>
+      </ViewBar>
+
+      {stat.error && (
+        <ErrorNote title={`「${initialPath}」を開けませんでした`}>
+          {stat.error}（いちばん上から表示しています）
+        </ErrorNote>
+      )}
+      {listing.error && <ErrorNote onRetry={listing.reload}>{listing.error}</ErrorNote>}
+
+      {/* 探した結果は一覧の代わりに出す。片付けると元の一覧へ戻る */}
+      {search ? (
+        <Scroll pad={false}>
+          <div className="cv-sechead">
+            <h3 className="cv-sechead-title">
+              「{search.query}」{search.mode === "name" ? "（名前）" : "（中身）"}
+              <span className="cv-count">{search.hits.length}</span>
+            </h3>
+            <div className="cv-sechead-actions">
+              <Button small variant="ghost" onClick={() => setSearch(undefined)}>
+                × やめる
+              </Button>
+            </div>
+          </div>
+          {search.error && <ErrorNote>{search.error}</ErrorNote>}
+          {search.loading ? (
+            <Loading label="探しています…" />
+          ) : search.hits.length === 0 && !search.error ? (
+            <EmptyState icon="🔍" title="見つかりませんでした">
+              {dir === "." ? "この場所" : `${dir} の下`}には当てはまるものがありません。
+            </EmptyState>
+          ) : (
+            <ul className="cv-list">
+              {search.hits.map((hit, i) => (
+                <li key={`${hit.path}:${hit.line ?? i}`}>
+                  <button
+                    className={`cv-row ${file === hit.path ? "is-selected" : ""}`}
+                    onClick={() => {
+                      setNav({ dir: parentOf(hit.path), file: hit.path });
+                      if (hit.line !== undefined) setHitLine({ path: hit.path, line: hit.line });
+                      setPane("file");
+                    }}
+                    title={hit.path}
+                  >
+                    <span className="fb-hit">
+                      <span className="fb-hit-path">
+                        {hit.path}
+                        {hit.line !== undefined ? `:${hit.line}` : ""}
+                      </span>
+                      {hit.text !== undefined && <span className="fb-hit-text">{hit.text.trim()}</span>}
+                      {hit.size !== undefined && <span className="fb-hit-path">{formatBytes(hit.size)}</span>}
+                    </span>
+                  </button>
+                </li>
+              ))}
+              {search.truncated && (
+                <li className="cv-muted" style={{ padding: "8px 10px" }}>
+                  … 上限に達したため一部のみ
+                </li>
+              )}
+            </ul>
+          )}
+        </Scroll>
+      ) : (
+        <Scroll pad={false}>
+          {listing.loading && !listing.data ? (
+            <Loading rows={6} />
+          ) : entries.length === 0 ? (
+            <EmptyState icon="📁" title={filter ? "当てはまるものがありません" : "空のディレクトリです"}>
+              {filter ? "絞り込みを外すと全部出ます。" : "ここには何もありません。"}
+            </EmptyState>
+          ) : (
+            <ul className="cv-list">
+              {entries.map((entry) => (
+                <li key={entry.name}>
+                  <button
+                    className={`fb-entry ${entry.type === "dir" ? "is-dir" : ""} ${
+                      file === join(entry.name) ? "is-selected" : ""
+                    }`}
+                    onClick={() => {
+                      if (entry.type === "dir") {
+                        setNav({ dir: join(entry.name) });
+                        setFilter("");
+                      } else {
+                        setNav({ dir, file: join(entry.name) });
+                        setPane("file");
+                      }
+                    }}
+                    title={join(entry.name)}
+                  >
+                    <span className="fb-icon" aria-hidden="true">
+                      {iconOf(entry)}
+                    </span>
+                    <span className="fb-entry-name">{entry.name}</span>
+                    {entry.type === "dir" ? (
+                      <span className="fb-size">›</span>
+                    ) : (
+                      <span className="fb-size">{formatBytes(entry.size)}</span>
+                    )}
+                  </button>
+                </li>
+              ))}
+              {listing.data?.truncated && (
+                <li className="cv-muted" style={{ padding: "8px 10px" }}>
+                  … 件数の上限を超えたため一部のみ（全 {listing.data.total} 件）
+                </li>
+              )}
+            </ul>
+          )}
+        </Scroll>
+      )}
+    </>
+  );
+
+  const detailPane = !file ? (
+    <EmptyState icon="📄" title="ファイルを選ぶと中身が出ます">
+      左の一覧から選ぶか、「探す」で中身を検索できます。
+    </EmptyState>
+  ) : (
+    <div className="fb-file">
+      <div className="fb-file-head">
+        <code className="fb-file-path" title={content.data?.path ?? file}>
+          {content.data?.path ?? file}
+        </code>
+        <span className="cv-spacer" />
+        {previewable && (
+          <Segmented
+            label="表示"
+            value={effectiveMode}
+            onChange={switchMode}
+            options={[
+              {
+                value: "preview",
+                label: "整形",
+                disabled: !previewAllowed,
+                title: previewAllowed ? undefined : `${totalLines} 行と大きいため整形表示は使えません`,
+              },
+              { value: "source", label: "原文" },
+            ]}
+          />
+        )}
+        {effectiveMode === "source" && (
+          <Toggle checked={wrap} onChange={setWrap} title="長い行を折り返す">
+            折り返し
+          </Toggle>
+        )}
+        {contentText.length > 0 && <CopyButton text={contentText} label="本文をコピー" />}
       </div>
 
-      {/* I2: 指定パスが解決できなかったことを黙って隠さない */}
-      {stat.error && (
-        <div className="fb-error">
-          「{initialPath}」を開けなかったためルートを表示しています: {stat.error}
+      {(content.data?.truncated || (previewable && !previewAllowed)) && (
+        <div className="cv-note is-warn" style={{ margin: "8px 12px 0" }}>
+          {content.data?.truncated
+            ? `大きいファイルのため ${content.data.shownLines} / ${content.data.totalLines} 行だけ読んでいます。`
+            : `${totalLines} 行と大きいため、整形表示ではなく原文で出しています。`}
         </div>
       )}
-      {listing.error && <div className="fb-error">読み込めません: {listing.error}</div>}
 
-      <div className="fb-body">
-        <ul className="fb-list">
-          {(listing.loading || nav === undefined) && <li className="fb-muted">読み込み中…</li>}
-          {listing.data?.entries.map((entry) => (
-            <li key={entry.name}>
-              <button
-                className={`fb-entry ${entry.type === "dir" ? "is-dir" : ""} ${
-                  file === join(entry.name) ? "is-selected" : ""
-                }`}
-                onClick={() =>
-                  setNav(
-                    entry.type === "dir" ? { dir: join(entry.name) } : { dir, file: join(entry.name) }
-                  )
-                }
-              >
-                <span className="fb-icon">{entry.type === "dir" ? "📁" : "📄"}</span>
-                {entry.name}
-                {entry.size !== undefined && <span className="fb-size">{entry.size}</span>}
-              </button>
-            </li>
-          ))}
-          {listing.data?.truncated && <li className="fb-muted">… 上限を超えたため一部のみ表示</li>}
-        </ul>
-
-        <div className="fb-preview">
-          {!file ? (
-            <p className="fb-muted">ファイルを選ぶと中身が出ます</p>
-          ) : content.error ? (
-            <div className="fb-error">読み込めません: {content.error}</div>
-          ) : content.loading ? (
-            <p className="fb-muted">読み込み中…</p>
-          ) : content.data?.binary ? (
-            <p className="fb-muted">バイナリのため表示できません（{content.data.size} bytes）</p>
-          ) : (
-            <>
-              <div className="fb-preview-head">
-                <code>{content.data?.path}</code>
-                {content.data?.truncated && (
-                  <span className="fb-muted">
-                    （{content.data.shownLines} / {content.data.totalLines} 行のみ表示）
-                  </span>
-                )}
-                {previewable && !previewAllowed && (
-                  <span className="fb-muted">
-                    大きいファイルのためプレビューを無効にしました（{totalLines} 行）
-                  </span>
-                )}
-                <span className="fb-preview-controls">
-                  {previewable && (
-                    <span className="fb-seg" role="group" aria-label="表示モード">
-                      <button
-                        type="button"
-                        className={`fb-seg-btn ${effectiveMode === "preview" ? "is-active" : ""}`}
-                        disabled={!previewAllowed}
-                        onClick={() => switchMode("preview")}
-                      >
-                        preview
-                      </button>
-                      <button
-                        type="button"
-                        className={`fb-seg-btn ${effectiveMode === "source" ? "is-active" : ""}`}
-                        onClick={() => switchMode("source")}
-                      >
-                        source
-                      </button>
-                    </span>
-                  )}
-                  {effectiveMode === "source" && (
-                    <label className="fb-wrap-toggle">
-                      <input
-                        type="checkbox"
-                        checked={wrap}
-                        onChange={(e) => setWrap(e.target.checked)}
-                      />
-                      折り返し
-                    </label>
-                  )}
-                </span>
-              </div>
-
-              {effectiveMode === "preview" ? (
-                <div className="fb-preview-scroll" ref={previewScrollRef}>
-                  {kind === "markdown" && (
-                    <div className="markdown">
-                      <Markdown
-                        remarkPlugins={[remarkGfm]}
-                        components={{
-                          code: (props) => (
-                            <MarkdownCode
-                              {...props}
-                              scheme={scheme}
-                              onMermaidReady={bumpPreviewReady}
-                            />
-                          ),
-                        }}
-                      >
-                        {contentText}
-                      </Markdown>
-                    </div>
-                  )}
-                  {kind === "mermaid" && (
-                    <MermaidBlock code={contentText} scheme={scheme} onReady={bumpPreviewReady} />
-                  )}
-                  {kind === "csv" && <CsvTable content={contentText} delimiter={csvDelimiter} />}
-                  {kind === "diff" && <DiffPreview content={contentText} />}
-                  {kind === "code" && (
-                    <CodePreview content={contentText} lang={codeLang} scheme={scheme} />
-                  )}
+      {content.error ? (
+        <ErrorNote onRetry={content.reload}>{content.error}</ErrorNote>
+      ) : content.loading && !content.data ? (
+        <Loading rows={5} />
+      ) : content.data?.binary ? (
+        <EmptyState icon="⬛" title="バイナリのため表示できません">
+          {formatBytes(content.data.size)} のファイルです。
+        </EmptyState>
+      ) : (
+        <div className="fb-body">
+          {effectiveMode === "preview" ? (
+            <div className="fb-preview-scroll" ref={previewScrollRef}>
+              {kind === "markdown" && (
+                <div className="markdown">
+                  <Markdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      code: (props) => (
+                        <MarkdownCode {...props} scheme={scheme} onMermaidReady={bumpPreviewReady} />
+                      ),
+                    }}
+                  >
+                    {contentText}
+                  </Markdown>
                 </div>
-              ) : (
-                <CodeBody
-                  content={contentText}
-                  {...(highlightFrom !== undefined ? { from: highlightFrom } : {})}
-                  {...(highlightTo !== undefined ? { to: highlightTo } : {})}
-                  wrap={wrap}
-                  lang={kind === "code" ? codeLang : undefined}
-                  scheme={scheme}
-                  scrollRef={codeScrollRef}
-                />
               )}
-            </>
+              {kind === "mermaid" && (
+                <MermaidBlock code={contentText} scheme={scheme} onReady={bumpPreviewReady} />
+              )}
+              {kind === "csv" && <CsvTable content={contentText} delimiter={csvDelimiter} />}
+              {kind === "diff" && <DiffPreview content={contentText} />}
+              {kind === "code" && <CodePreview content={contentText} lang={codeLang} scheme={scheme} />}
+            </div>
+          ) : (
+            <CodeBody
+              content={contentText}
+              {...(lineFrom !== undefined ? { from: lineFrom } : {})}
+              {...(lineTo !== undefined ? { to: lineTo } : {})}
+              wrap={wrap}
+              lang={kind === "code" ? codeLang : undefined}
+              scheme={scheme}
+              scrollRef={codeScrollRef}
+            />
           )}
         </div>
-      </div>
+      )}
     </div>
+  );
+
+  return (
+    <ViewShell className="fb">
+      {/* どこを見ているか・どこへ戻れるかは、一覧と中身のどちらを見ていても要る */}
+      <ViewBar>
+        <PlacePicker selection={selection} />
+        <Breadcrumbs
+          dir={dir}
+          onGo={(path) => {
+            setNav({ dir: path });
+            setSearch(undefined);
+            setPane("list");
+          }}
+        />
+        <Button
+          small
+          variant={searchOpen ? "primary" : "ghost"}
+          title="名前・中身から探す"
+          aria-pressed={searchOpen}
+          onClick={() => setSearchOpen((v) => !v)}
+        >
+          🔍 探す
+        </Button>
+      </ViewBar>
+
+      {searchOpen && (
+        <ViewBar>
+          <Segmented
+            label="探し方"
+            value={searchMode}
+            onChange={(next) => {
+              setSearchMode(next);
+              if (searchDraft.trim().length > 0) void runSearch(searchDraft, next);
+            }}
+            options={[
+              { value: "content", label: "中身", title: "ファイルの中身を正規表現で探す（file.grep）" },
+              { value: "name", label: "名前", title: "ファイル名で探す（file.find）" },
+            ]}
+          />
+          <SearchField
+            value={searchDraft}
+            onChange={setSearchDraft}
+            onSubmit={(value) => void runSearch(value, searchMode)}
+            placeholder={
+              searchMode === "content"
+                ? `${dir === "." ? "この場所" : dir} の下を探す（Enter）`
+                : "ファイル名の一部（Enter）"
+            }
+            autoFocus
+          />
+        </ViewBar>
+      )}
+
+      <SplitView
+        size="md"
+        list={listPane}
+        detail={detailPane}
+        showDetail={pane === "file" && file !== undefined}
+        onBack={() => setPane("list")}
+        backLabel="ファイル一覧"
+      />
+    </ViewShell>
   );
 }

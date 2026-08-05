@@ -36,7 +36,6 @@ import {
 
 import { Canvas, createCanvasCatalog } from "./canvas.js";
 import { createCanvasTools } from "./canvas-tools.js";
-import { demoCanvasViews } from "./demo-views.js";
 import { createBantoHostSession } from "./host-session.js";
 import { resumeInterruptedTurn, withEmptyResponseGuard } from "./turn-guard.js";
 import { BantoHostClient } from "./client.js";
@@ -44,7 +43,6 @@ import { BANTO_DEFAULT_PORT, type ServerEvent } from "./protocol.js";
 import { BantoHostServer } from "./server.js";
 import { createMemoryTools } from "./memory-tools.js";
 import { CORE_ORIGIN, createModuleRegistry, resolveSkills, type SkillEntry } from "./module.js";
-import { createDemoModule } from "./modules/demo.js";
 import { createStudioModule } from "./modules/studio.js";
 import { createPiAgentModule } from "./modules/pi-agent.js";
 import { createLlmTools } from "./llm-tools.js";
@@ -123,6 +121,8 @@ const SYSTEM_PROMPT = [
   "細かい実装作業は自分でせず職人へ委譲し、自分の文脈は記憶と判断に使ってください（D10）。",
   "覚えておくべき好み・習慣が出てきたら memory.save で保存してください。",
   "POに何かを見せたいときは canvas.open でキャンバスに表示できます（何が開けるかは canvas.list_catalog）。",
+  // 会話の名付け（PO要望 2026-08-05）。機構は thread.rename、いつ呼ぶかの判断はここ
+  "この会話が何の話か分かったら thread.rename で名前を付けてください。話の途中で別のことへ移ったら、そのつど付け直します——POはタブの名前で会話を選ぶので、始めの話題の名前や「会話 3」のままだと中身が分かりません。名前は15文字程度の短い語にし、少し脱線しただけ・同じ話の続きなら変えないでください。",
   "作業できる場所（リポジトリ・ワークツリー・作業領域）は place.list で分かります。file.* と git.* でその中身と履歴を閲覧でき、どの場所かは place で選びます。",
   "file.write で自分の成果物（決定の記録・起票・メモ）を書けますが、**POが場所ごとに許した範囲だけ**で、既定はどの場所も読み取り専用です。断られたら place.request_write で範囲を頼み、canvas.open で place.permissions を開けばPOがその場で許可できます。頼んだだけでは書けません。コードを変える仕事は自分で書かず職人へ委譲します（D10）。",
   "gitの変更操作（commit・push・branch）は持っていません。頼まれたら職人へ委譲してください——書いたものは未コミットで残り、POのレビューを通ります。",
@@ -405,7 +405,6 @@ async function serve(options: ServeOptions): Promise<void> {
       envProxy,
       settingsSection(settings, "environment-pool")
     ),
-    createDemoModule(),
     // task-0050: pi coding agent の接続情報表示（LLM 管理は llm-registry が担当）
     createPiAgentModule(),
   ]);
@@ -506,6 +505,8 @@ async function serve(options: ServeOptions): Promise<void> {
       ...llmTools,
       ...createThreadTools({
         threads,
+        // 名前を付け直す宛先は**この会話**に固定する（番頭に threadId を書かせない）
+        threadId,
         // 出所は「別の会話」。職人の報告と同じ札で出さない（PO報告 2026-07-31）
         seed: (threadId, message) => server.notify(message, { threadId, source: "thread" }),
       }),

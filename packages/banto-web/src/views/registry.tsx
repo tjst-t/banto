@@ -4,11 +4,14 @@
  * カタログのエントリは `component` にエクスポート名を文字列で持つ。ホスト側は React に
  * 依存しないため文字列のまま扱い、実体への解決はここ（UI側）が行う。
  * iframe は使わず、コンポーネントをそのまま描画する（決定12）。
+ *
+ * **ここに載るのは、どこかのモジュールが登録している面だけ。** 誰も登録していない
+ * コンポーネントを置いておくと、直せない・気づけない死んだ画面になる
+ * （`tests/acceptance/canvas-view-components.spec.ts` は逆向き——登録された面が
+ * ここに在ることを見る）。
  */
 
 import type { ComponentType } from "react";
-import { DemoHello } from "./DemoHello.js";
-import { DemoClock } from "./DemoClock.js";
 import { FileBrowser } from "./FileBrowser.js";
 import { GitViewer } from "./GitViewer.js";
 import { PlacePermissions } from "./PlacePermissions.js";
@@ -17,7 +20,6 @@ import { EnvManager } from "./EnvManager.js";
 import { WorkerViewer } from "./WorkerViewer.js";
 import { MemoryViewer } from "./MemoryViewer.js";
 import { SkillViewer } from "./SkillViewer.js";
-import { PiAgentViewer } from "./PiAgentViewer.js";
 import { LlmRegistryViewer } from "./LlmRegistryViewer.js";
 
 /** キャンバスビューが受け取る props。params は canvas.open で渡されたもの。 */
@@ -30,7 +32,6 @@ export interface CanvasViewProps {
   /**
    * そのモジュールへの到達先（決定25）。コンポーネントはデータをここから取る——
    * エンドポイントを直書きしない。相対パスなら自分のオリジンに解決される。
-   * データ取得を伴うコンポーネントの実装は task-0016 以降。
    */
   endpoint: string;
   /**
@@ -61,13 +62,8 @@ const REGISTRY: Record<string, ComponentType<CanvasViewProps>> = {
   // 番頭の中身（studio モジュール提供。決定25・26）
   MemoryViewer,
   SkillViewer,
-  // pi agent 設定（pi-agent モジュール提供・task-0050）
-  PiAgentViewer,
-  // LLM 管理（llm-registry モジュール提供・ADR-0004）
+  // LLM 管理（中核の設定区画が名指しで描く。ADR-0011 決定43）
   LlmRegistryViewer,
-  // テスト用（実物が揃ったら外す）
-  DemoHello,
-  DemoClock,
 };
 
 export function resolveCanvasView(component: string): ComponentType<CanvasViewProps> | undefined {

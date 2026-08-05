@@ -18,7 +18,6 @@ import {
   PlaceRegistry,
   createStaticPlaceProvider,
   createWorkspaceModule,
-  createDemoModule,
   PlaceGrantStore,
 } from "@banto/host";
 import { createRepoManagerModule } from "@banto/repo-manager";
@@ -28,6 +27,29 @@ import { EnvironmentPool, createEnvironmentPoolModule } from "@banto/environment
 function registrySource(): string {
   const file = new URL("../../packages/banto-web/src/views/registry.tsx", import.meta.url).pathname;
   return fs.readFileSync(file, "utf-8");
+}
+
+/** 各パッケージの src 配下の .ts を全部たどる（banto-web は解決表そのものなので除く）。 */
+function hostSources(): string[] {
+  const root = new URL("../../packages", import.meta.url).pathname;
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules" || entry.name === "dist") continue;
+        walk(full);
+        continue;
+      }
+      if (entry.name.endsWith(".ts")) files.push(full);
+    }
+  };
+  for (const pkg of fs.readdirSync(root)) {
+    if (pkg === "banto-web") continue;
+    const src = path.join(root, pkg, "src");
+    if (fs.existsSync(src)) walk(src);
+  }
+  return files;
 }
 
 describe("[task-0043] 登録されたGUIは全部 UI 側で解決できる", () => {
@@ -40,7 +62,6 @@ describe("[task-0043] 登録されたGUIは全部 UI 側で解決できる", () 
         createWorkspaceModule(places, {}, grants),
         createRepoManagerModule(),
         createEnvironmentPoolModule(new EnvironmentPool({ dataDir: dir })),
-        createDemoModule(),
       ];
 
       const source = registrySource();
@@ -57,6 +78,30 @@ describe("[task-0043] 登録されたGUIは全部 UI 側で解決できる", () 
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  /**
+   * 上のテストは「このテストが組み立てたモジュール」しか見ない——**モジュールを増やした人が
+   * ここに足し忘れると、抜けたまま通る**。ソース中の `component:` 宣言を機械で拾えば、
+   * どのモジュールに足しても漏れない（P4：覚えておくのではなく機械で見る）。
+   *
+   * 抜けたときに起きること：カタログには出るのに、開くと「この面を描けません」になる。
+   * 画面側は開ける一覧からそれを外すが（決定12・17）、**外して済ませる話ではない**——
+   * 出所が分かるうちに直せるよう、ここで落とす。
+   */
+  it("ソースにある component 宣言が全部 UI 側で解決できる", () => {
+    const source = registrySource();
+    const missing: string[] = [];
+    for (const file of hostSources()) {
+      const text = fs.readFileSync(file, "utf-8");
+      for (const match of text.matchAll(/component:\s*"([A-Za-z0-9_$]+)"/g)) {
+        const component = match[1]!;
+        if (!new RegExp(`\\b${component}\\b`).test(source)) {
+          missing.push(`${path.relative(process.cwd(), file)}: ${component}`);
+        }
+      }
+    }
+    assert.deepEqual(missing, [], `UI の解決表に無いコンポーネントがある:\n${missing.join("\n")}`);
   });
 
   it("リポジトリと検証環境のGUIが登録されている（POが自分で開ける）", () => {

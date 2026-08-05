@@ -1,15 +1,34 @@
 /**
  * 記憶ビューア（studio モジュール提供・ADR-0010 決定25）。
  *
- * 番頭が覚えている好み・習慣を見せる。番頭に記憶があること（D11）が banto の核なので、
+ * 番頭が覚えている事実・好み・習慣を見せる。番頭に記憶があること（D11）が banto の核なので、
  * POが「何を覚えている？」を確かめられる場所が要る。
  *
  * **閲覧専用。** 削除は追記で表す設計（task-0023・D3）に属するので、ここからは行わない。
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useModuleTool } from "./useModuleTool.js";
 import type { CanvasViewProps } from "./registry.js";
+import {
+  Badge,
+  Button,
+  Card,
+  Chip,
+  EmptyState,
+  ErrorNote,
+  Loading,
+  Scroll,
+  SearchField,
+  Toggle,
+  ViewBar,
+  ViewShell,
+  ViewTitle,
+  formatRelative,
+  formatTime,
+  useTicker,
+  type Tone,
+} from "./ui.js";
 
 interface MemoryRecord {
   id: string;
@@ -23,13 +42,28 @@ interface MemoryList {
   records: MemoryRecord[];
 }
 
-const KIND_LABEL: Record<string, string> = { fact: "事実", preference: "好み", habit: "習慣" };
+const KINDS: ReadonlyArray<{ key: "" | MemoryRecord["kind"]; label: string; tone: Tone }> = [
+  { key: "", label: "すべて", tone: "neutral" },
+  { key: "fact", label: "事実", tone: "accent" },
+  { key: "preference", label: "好み", tone: "ok" },
+  { key: "habit", label: "習慣", tone: "warn" },
+];
+
+function toneOf(kind: string): Tone {
+  return KINDS.find((k) => k.key === kind)?.tone ?? "neutral";
+}
+function labelOf(kind: string): string {
+  return KINDS.find((k) => k.key === kind)?.label ?? kind;
+}
 
 export function MemoryViewer({ params, endpoint }: CanvasViewProps): React.ReactElement {
   const initialKind = typeof params["kind"] === "string" ? params["kind"] : "";
   const [kind, setKind] = useState(initialKind);
   /** 訂正済みも見るか。既定は今有効な記憶だけ（履歴を見たいときだけ出す） */
   const [includeSuperseded, setIncludeSuperseded] = useState(false);
+  /** 手元にある一覧を絞るだけなので、打つたびに効かせる。 */
+  const [filter, setFilter] = useState("");
+  const now = useTicker(60_000);
 
   const list = useModuleTool<MemoryList>(endpoint, "studio.memory", {
     ...(kind ? { kind } : {}),
@@ -37,54 +71,77 @@ export function MemoryViewer({ params, endpoint }: CanvasViewProps): React.React
   });
   const records = list.data?.records ?? [];
 
+  const shown = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (q.length === 0) return records;
+    return records.filter((r) => r.text.toLowerCase().includes(q) || (r.refs ?? []).join(" ").toLowerCase().includes(q));
+  }, [records, filter]);
+
   return (
-    <div className="st">
-      <div className="st-head">
-        <span className="st-title">記憶</span>
-        <span className="gv3-count">{records.length}</span>
-        <select value={kind} onChange={(e) => setKind(e.target.value)}>
-          <option value="">すべて</option>
-          <option value="fact">事実だけ</option>
-          <option value="preference">好みだけ</option>
-          <option value="habit">習慣だけ</option>
-        </select>
-        <label className="wv-toggle" title="訂正で置き換えられた古い記憶も一覧に出す">
-          <input
-            type="checkbox"
-            checked={includeSuperseded}
-            onChange={(e) => setIncludeSuperseded(e.target.checked)}
-          />
-          訂正済みを含む
-        </label>
-        <button className="gv3-clear" onClick={() => list.reload()}>
-          取り直す
-        </button>
-      </div>
+    <ViewShell className="st">
+      <ViewBar>
+        <ViewTitle icon="🧠" count={shown.length}>
+          記憶
+        </ViewTitle>
+        <span className="cv-spacer" />
+        <Button small variant="ghost" onClick={() => list.reload()} title="取り直す">
+          ⟳
+        </Button>
+      </ViewBar>
+      <ViewBar>
+        {KINDS.map((k) => (
+          <Chip key={k.key} on={kind === k.key} onClick={() => setKind(k.key)}>
+            {k.label}
+          </Chip>
+        ))}
+        <span className="cv-spacer" />
+        <Toggle
+          checked={includeSuperseded}
+          onChange={setIncludeSuperseded}
+          title="訂正で置き換えられた古い記憶も一覧に出す"
+        >
+          訂正前の記憶も表示
+        </Toggle>
+      </ViewBar>
+      <ViewBar>
+        <SearchField value={filter} onChange={setFilter} placeholder="覚えている内容で絞る" />
+      </ViewBar>
 
-      {list.error && <div className="fb-error">読み込めません: {list.error}</div>}
+      {list.error && <ErrorNote onRetry={list.reload}>{list.error}</ErrorNote>}
 
-      {records.length === 0 ? (
-        <p className="fb-muted st-empty">
-          {list.loading ? "読み込み中…" : "まだ何も覚えていません"}
-        </p>
-      ) : (
-        <ul className="st-list">
-          {records.map((r) => (
-            <li key={r.id} className="st-item">
-              <div className="st-item-head">
-                <span className={`st-kind is-${r.kind}`}>{KIND_LABEL[r.kind] ?? r.kind}</span>
-                <span className="st-date">{r.createdAt.slice(0, 16).replace("T", " ")}</span>
-                {/* 訂正で置き換えた記憶があることを示す（何を直したのか辿れるように） */}
-                {r.supersedes && <span className="st-badge">訂正</span>}
-              </div>
-              <div className="st-text">{r.text}</div>
-              {r.refs && r.refs.length > 0 && (
-                <div className="st-refs">{r.refs.join(" · ")}</div>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+      <Scroll>
+        {list.loading && !list.data ? (
+          <Loading rows={4} />
+        ) : shown.length === 0 ? (
+          <EmptyState icon="🧠" title={filter ? "当てはまる記憶はありません" : "まだ何も覚えていません"}>
+            {filter
+              ? "絞り込みを外すと全部出ます。"
+              : "話しているうちに、番頭が覚えたことがここに並びます。"}
+          </EmptyState>
+        ) : (
+          <div className="cv-cards">
+            {shown.map((r) => (
+              <Card key={r.id}>
+                <div className="st-card-head">
+                  <Badge tone={toneOf(r.kind)}>{labelOf(r.kind)}</Badge>
+                  {/* 訂正で置き換えた記憶があることを示す（何を直したのか辿れるように） */}
+                  {r.supersedes && (
+                    <Badge tone="warn" title={`置き換えた記憶: ${r.supersedes}`}>
+                      訂正
+                    </Badge>
+                  )}
+                  <span className="cv-spacer" />
+                  <span className="cv-muted" title={formatTime(r.createdAt)}>
+                    {formatRelative(r.createdAt, now) || formatTime(r.createdAt)}
+                  </span>
+                </div>
+                <div className="st-text">{r.text}</div>
+                {r.refs && r.refs.length > 0 && <div className="st-refs">{r.refs.join(" · ")}</div>}
+              </Card>
+            ))}
+          </div>
+        )}
+      </Scroll>
+    </ViewShell>
   );
 }

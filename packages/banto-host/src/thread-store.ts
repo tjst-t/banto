@@ -91,6 +91,29 @@ export class ThreadStore {
   }
 
   /**
+   * スレッドを保存先から消す（PO要望 2026-08-05：何も無いまま閉じた会話は残さない）。
+   *
+   * **索引・記録・番頭の文脈をまとめて消す。** 索引だけ消すと、記録の JSONL と pi の
+   * セッションファイルが誰にも参照されないまま溜まり続ける。
+   *
+   * I2 の例外ではない: ファイルが既に無いのは失敗ではない（冪等）。消せなかったときは
+   * 黙らず知らせるが、索引からは外す——参照が残っているほうが困る。
+   */
+  remove(threadId: string): void {
+    const stored = this.index.threads.find((t) => t.id === threadId);
+    this.index.threads = this.index.threads.filter((t) => t.id !== threadId);
+    this.writeIndex();
+    for (const file of [this.transcriptPath(threadId), stored?.sessionFile]) {
+      if (!file) continue;
+      try {
+        fs.rmSync(file, { force: true });
+      } catch (err) {
+        console.error(`[banto] ${file} を消せませんでした: ${String(err)}`);
+      }
+    }
+  }
+
+  /**
    * 発言を1行足す。
    *
    * **追記だけ**にしてあるのが要点——1発話ごとに全文を書き直すと、長い会話ほど重くなり、

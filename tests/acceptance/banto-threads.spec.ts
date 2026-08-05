@@ -16,6 +16,7 @@ import {
   BantoHostClient,
   BantoHostServer,
   Canvas,
+  MAX_THREAD_TITLE_LENGTH,
   ThreadRegistry,
   createCanvasCatalog,
   createCanvasTools,
@@ -87,7 +88,7 @@ beforeEach(() => {
       canvas,
       tools: [
         ...createCanvasTools(canvas, catalog),
-        ...createThreadTools({ threads }),
+        ...createThreadTools({ threads, threadId }),
       ],
     };
   });
@@ -140,6 +141,8 @@ describe("[task-0035/a1] 複数のスレッドが並行する", () => {
   it("[task-0035/a1] 既定スレッドは固定ではなく「開いている先頭」が担う", async () => {
     const first = await threads.open();
     const second = await threads.open();
+    // 中身のある会話で見る（空の会話は畳まずに捨てられる＝task-0059）
+    first.record({ role: "po", text: "中身のある会話" });
 
     assert.equal(first.isDefault, true);
     assert.equal(second.isDefault, false);
@@ -158,6 +161,7 @@ describe("[task-0035/a1] 複数のスレッドが並行する", () => {
 
   it("[task-0035/a1] 全部畳んだら宛先は無くなる（空状態を隠さない・I2）", async () => {
     const first = await threads.open();
+    first.record({ role: "po", text: "中身のある会話" });
     threads.close(first.id);
 
     assert.equal(threads.defaultThreadId, undefined);
@@ -360,6 +364,45 @@ describe("[task-0035] スレッドの開閉（プロトコル）", () => {
     }
   });
 
+  it("[task-0058] thread_rename でPOも名前を付け直せる（決定25 の人側）", async () => {
+    const url = await start();
+    const second = await threads.open("会話 2");
+    second.record({ role: "po", text: "元の話" });
+
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    try {
+      // **見ている会話とは限らない**（POはタブを右クリックして選ぶ）
+      client.send({ type: "thread_rename", threadId: second.id, title: "認証の設計" });
+      const state = await waitFor(
+        events,
+        (e) =>
+          e.type === "thread_state" &&
+          e.threads.some((t) => t.threadId === second.id && t.title === "認証の設計")
+      );
+      assert.equal(state.type, "thread_state");
+      assert.deepEqual(second.transcript, [{ role: "po", text: "元の話" }], "会話は変わらない");
+    } finally {
+      client.close();
+    }
+  });
+
+  it("[task-0058] 空の題・未知のIDは黙って成功にしない（I2）", async () => {
+    const url = await start();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    try {
+      client.send({ type: "thread_rename", threadId: "thread-999", title: "迷子" });
+      await waitFor(events, (e) => e.type === "error" && /unknown thread/.test(e.message));
+
+      client.send({ type: "thread_rename", threadId: threads.resolve().id, title: "  " });
+      await waitFor(events, (e) => e.type === "error" && /empty/.test(e.message));
+      assert.equal(threads.resolve().title, "はじめの会話");
+    } finally {
+      client.close();
+    }
+  });
+
   it("[task-0037] new_session は畳んで新しく始める（消さない・PO要望 2026-07-31）", async () => {
     const url = await start();
     const first = threads.resolve();
@@ -391,6 +434,8 @@ describe("[task-0035] スレッドの開閉（プロトコル）", () => {
   it("[task-0037] new_session は他のスレッドを触らない", async () => {
     const url = await start();
     const first = threads.resolve();
+    // 空だと畳まずに捨てられる（task-0059）。ここで見たいのは「他は触られない」ことなので中身を持たせる
+    first.record({ role: "po", text: "こちらの話" });
     const second = await threads.open();
     second.record({ role: "po", text: "別件は残る" });
 
@@ -412,6 +457,7 @@ describe("[task-0035] スレッドの開閉（プロトコル）", () => {
   it("[task-0035] 最初の会話も畳める（PO要望 2026-07-31）", async () => {
     const url = await start();
     const first = threads.resolve();
+    first.record({ role: "po", text: "中身のある会話" });
 
     const events: ServerEvent[] = [];
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
@@ -434,8 +480,8 @@ describe("[task-0035] スレッドの開閉（プロトコル）", () => {
 
 describe("[task-0035/a4] 番頭自身が分身する口", () => {
   it("[task-0035/a4] thread.open で新しいスレッドが増える", async () => {
-    await threads.open();
-    const tools = createThreadTools({ threads });
+    const first = await threads.open();
+    const tools = createThreadTools({ threads, threadId: first.id });
     const open = tools.find((t) => t.name === "thread.open")!;
 
     const result = await open.execute({ title: "調査" });
@@ -450,10 +496,11 @@ describe("[task-0035/a4] 番頭自身が分身する口", () => {
   });
 
   it("[task-0035/a4] message を渡すと新しい分身に最初の一言が届く", async () => {
-    await threads.open();
+    const first = await threads.open();
     const seeded: Array<{ threadId: string; message: string }> = [];
     const tools = createThreadTools({
       threads,
+      threadId: first.id,
       seed: async (threadId, message) => {
         seeded.push({ threadId, message });
       },
@@ -466,14 +513,108 @@ describe("[task-0035/a4] 番頭自身が分身する口", () => {
   });
 
   it("[task-0035/a4] thread.list で並行している会話が分かる", async () => {
-    await threads.open();
+    const first = await threads.open();
     await threads.open("別件");
-    const tools = createThreadTools({ threads });
+    const tools = createThreadTools({ threads, threadId: first.id });
     const list = tools.find((t) => t.name === "thread.list")!;
 
     const text = (await list.execute({})).content.map((c) => c.text).join("");
     assert.match(text, /別件/);
     assert.equal((text.match(/threadId:/g) ?? []).length, 2);
+  });
+
+  it("[task-0058] thread.list で「どれが自分か」が分かる（自分の名前を見て付け直せる）", async () => {
+    await threads.open();
+    const second = await threads.open("別件");
+    const tools = createThreadTools({ threads, threadId: second.id });
+    const list = tools.find((t) => t.name === "thread.list")!;
+
+    const lines = (await list.execute({})).content
+      .map((c) => c.text)
+      .join("")
+      .split("\n");
+    assert.match(lines.find((l) => l.includes(second.id))!, /いまのこの会話/);
+    assert.doesNotMatch(lines.find((l) => l.includes("はじめの会話"))!, /いまのこの会話/);
+  });
+});
+
+describe("[task-0058] 番頭が会話に名前を付け直す（PO要望 2026-08-05）", () => {
+  it("[task-0058] thread.rename で名前が変わり、購読者へ流れる", async () => {
+    const thread = await threads.open();
+    const seen: string[][] = [];
+    threads.subscribe((list) => seen.push(list.map((t) => t.title)));
+    const rename = createThreadTools({ threads, threadId: thread.id }).find(
+      (t) => t.name === "thread.rename"
+    )!;
+
+    const result = await rename.execute({ title: "認証の設計" });
+
+    assert.equal(thread.title, "認証の設計");
+    assert.deepEqual(seen, [["認証の設計"]], "画面へ配るために帳簿が知らせる");
+    assert.match(result.content.map((c) => c.text).join(""), /認証の設計/);
+  });
+
+  it("[task-0058] 名前を変えても会話とキャンバスは何も変わらない（決定2）", async () => {
+    const thread = await threads.open();
+    thread.record({ role: "po", text: "認証の話" });
+    made[0]!.canvas.open("demo.hello");
+
+    threads.rename(thread.id, "認証の設計");
+
+    assert.equal(thread.transcript.length, 1);
+    assert.equal(made[0]!.canvas.snapshot().tabs.length, 1);
+    assert.equal(made[0]!.session.prompts.length, 0, "名付けでターンは回らない");
+  });
+
+  it("[task-0058] 隣の会話の名前は変えられない（決定35a：宛先は自分に固定）", async () => {
+    const mine = await threads.open();
+    const other = await threads.open("別件");
+    const rename = createThreadTools({ threads, threadId: mine.id }).find(
+      (t) => t.name === "thread.rename"
+    )!;
+
+    // 番頭が threadId を書こうとしても、宛先は自分の会話のまま
+    await rename.execute({ title: "横取り", threadId: other.id } as { title: string });
+
+    assert.equal(mine.title, "横取り");
+    assert.equal(other.title, "別件");
+  });
+
+  it("[task-0058] 畳んだ会話も名前を付け直せる（履歴こそ名前で探す）", async () => {
+    const thread = await threads.open();
+    thread.record({ role: "po", text: "終わった調査の話" });
+    threads.close(thread.id);
+
+    threads.rename(thread.id, "終わった調査");
+
+    assert.equal(thread.title, "終わった調査");
+    assert.equal(thread.state, "closed");
+  });
+
+  it("[task-0058] 空の名前と知らないIDはエラーにする（I2）", async () => {
+    const thread = await threads.open();
+    assert.throws(() => threads.rename(thread.id, "   "), /empty/);
+    assert.throws(() => threads.rename("thread-999", "迷子"), /unknown thread/);
+    assert.equal(thread.title, "はじめの会話", "失敗しても名前は元のまま");
+  });
+
+  it("[task-0058] 長すぎる名前と改行は整えて受ける（タブは1行しかない）", async () => {
+    const thread = await threads.open();
+    threads.rename(thread.id, `  認証の\n設計  `);
+    assert.equal(thread.title, "認証の 設計");
+
+    threads.rename(thread.id, "あ".repeat(MAX_THREAD_TITLE_LENGTH + 10));
+    assert.equal(thread.title.length, MAX_THREAD_TITLE_LENGTH);
+  });
+
+  it("[task-0058] 同じ名前を付け直しても、画面へは知らせない（無駄な再描画を起こさない）", async () => {
+    const thread = await threads.open("認証の設計");
+    let emitted = 0;
+    threads.subscribe(() => emitted++);
+
+    threads.rename(thread.id, "認証の設計");
+
+    assert.equal(emitted, 0);
   });
 });
 
@@ -509,6 +650,75 @@ describe("[task-0035/a7] 知らせの宛先（決定35a）", () => {
   });
 });
 
+describe("[task-0059] 何も無いまま閉じた会話は残さない（PO要望 2026-08-05）", () => {
+  it("[task-0059] 一度も何も入らずに畳んだ会話は、履歴にも帳簿にも残らない", async () => {
+    const first = await threads.open();
+    first.record({ role: "po", text: "こちらは残る" });
+    const empty = await threads.open();
+
+    threads.close(empty.id);
+
+    assert.deepEqual(threads.list().map((t) => t.id), [first.id], "空の器は消える");
+    assert.throws(() => threads.resolve(empty.id), /unknown thread/);
+  });
+
+  it("[task-0059] 中身が1行でもあれば畳んで残す（決定30c はそのまま）", async () => {
+    await threads.open();
+    const second = await threads.open();
+    second.record({ role: "po", text: "ひとこと" });
+
+    threads.close(second.id);
+
+    assert.equal(second.state, "closed");
+    assert.deepEqual(threads.list({ state: "closed" }).map((t) => t.id), [second.id]);
+  });
+
+  it("[task-0059] POの発話でなくても、届いていれば残す（職人の報告だけの会話）", async () => {
+    await threads.open();
+    const second = await threads.open();
+    second.record({ role: "notice", source: "worker", text: "職人からの報告" });
+
+    threads.close(second.id);
+
+    assert.equal(second.state, "closed", "見るべきものがある会話は畳んで残す");
+  });
+
+  it("[task-0059] 捨てた会話の器は後始末される（対話ループが残らない）", async () => {
+    await threads.open();
+    const empty = await threads.open();
+    let disposed = false;
+    empty.disposers.push(() => {
+      disposed = true;
+    });
+
+    threads.close(empty.id);
+
+    assert.equal(disposed, true);
+  });
+
+  it("[task-0059] 捨てたら一覧の知らせが飛ぶ（画面から消える）", async () => {
+    const first = await threads.open();
+    first.record({ role: "po", text: "こちらは残る" });
+    const empty = await threads.open();
+    const seen: string[][] = [];
+    threads.subscribe((list) => seen.push(list.map((t) => t.id)));
+
+    threads.close(empty.id);
+
+    assert.deepEqual(seen, [[first.id]]);
+  });
+
+  it("[task-0059] 空の会話を畳むと、宛先は開いている先頭へ移る", async () => {
+    const first = await threads.open();
+    first.record({ role: "po", text: "こちらは残る" });
+    const empty = await threads.open();
+
+    threads.close(empty.id);
+
+    assert.equal(threads.defaultThreadId, first.id);
+  });
+});
+
 describe("[task-0037] 畳んだ分身は履歴に残り、再開できる", () => {
   it("[task-0037] 畳んでも会話とキャンバスは消えない", async () => {
     await threads.open();
@@ -540,6 +750,8 @@ describe("[task-0037] 畳んだ分身は履歴に残り、再開できる", () =
   it("[task-0037] 畳むのは冪等。未知のIDはエラー（I2）", async () => {
     await threads.open();
     const second = await threads.open();
+    // 中身がある会話で見る（空だと畳まずに捨てるので、閉じたままかを見られない＝task-0059）
+    second.record({ role: "po", text: "中身のある会話" });
     threads.close(second.id);
     threads.close(second.id); // 2度目も落ちない
     assert.equal(second.state, "closed");
@@ -549,6 +761,7 @@ describe("[task-0037] 畳んだ分身は履歴に残り、再開できる", () =
   it("[task-0037] 畳んだスレッドにも知らせは届く（決定35b の足場）", async () => {
     await start();
     const second = await threads.open();
+    second.record({ role: "po", text: "中身のある会話" });
     threads.close(second.id);
 
     await server!.notify("職人からの報告", { threadId: second.id, source: "worker" });
@@ -558,6 +771,7 @@ describe("[task-0037] 畳んだ分身は履歴に残り、再開できる", () =
   it("[task-0037] thread_close / thread_reopen がプロトコルから使える", async () => {
     const url = await start();
     const second = await threads.open();
+    second.record({ role: "po", text: "中身のある会話" });
 
     const events: ServerEvent[] = [];
     const client = await BantoHostClient.connect(url, (e) => events.push(e));

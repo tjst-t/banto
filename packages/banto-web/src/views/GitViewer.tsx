@@ -1,8 +1,8 @@
 /**
  * Git 閲覧（基本GUIセット・ADR-0010 決定18・24・25）。
  *
- * 一画面で「コミット一覧」「変更ファイル一覧」「ファイルの差分」が見える3面構成
- * （PO 指定のIF）。左上が変更ファイル一覧、左下がコミット履歴、右が差分。
+ * 一画面で「変更ファイル」「コミット履歴」「差分」が見える（PO 指定のIF）。
+ * 左に一覧（未コミットの変更＋履歴）、右に差分。狭いときは一覧→差分のドリルダウン（§8）。
  *
  * **すべて閲覧専用。** 決定24 のとおり commit / stage 等の変更操作は持たない——変更は
  * 職人へ委譲し（D10）、Kobo のマージキューとも責務が競合するため。
@@ -10,10 +10,22 @@
  * データは workspace モジュールのデータAPIから取る（決定25）。番頭のToolは呼ばない。
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useModuleTool } from "./useModuleTool.js";
 import { PlacePicker, usePlaceSelection } from "./PlacePicker.js";
 import type { CanvasViewProps } from "./registry.js";
+import {
+  Badge,
+  Button,
+  CopyButton,
+  EmptyState,
+  ErrorNote,
+  Loading,
+  Scroll,
+  SplitView,
+  ViewBar,
+  ViewShell,
+} from "./ui.js";
 
 interface Status {
   branch: string;
@@ -39,15 +51,62 @@ type Selection =
   | { source: "working"; path?: string }
   | { source: "commit"; ref: string; path?: string };
 
-function DiffBody({ diff }: { diff: string }): React.ReactElement {
-  if (diff.length === 0) return <p className="fb-muted">差分なし</p>;
+/** git status の2文字コードを読める言葉に。分からないものはそのまま出す（I2）。 */
+const STATUS_LABEL: Record<string, string> = {
+  M: "変更",
+  A: "追加",
+  D: "削除",
+  R: "改名",
+  C: "複製",
+  U: "衝突",
+  "??": "未追跡",
+};
+
+function statusTone(status: string): string {
+  if (status.startsWith("A") || status === "??") return "is-new";
+  if (status.startsWith("D")) return "is-del";
+  return "";
+}
+
+/** 差分の増減行数。全体像を数字で1つ持たせる（本文を追わずに規模が分かる）。 */
+function diffStat(diff: string): { add: number; del: number; files: number } {
+  let add = 0;
+  let del = 0;
+  let files = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git")) files++;
+    else if (line.startsWith("+") && !line.startsWith("+++")) add++;
+    else if (line.startsWith("-") && !line.startsWith("---")) del++;
+  }
+  return { add, del, files };
+}
+
+function DiffBody({
+  diff,
+  scope,
+}: {
+  diff: string;
+  /** 空だったときの言い分けを変えるため。作業ツリーとコミットでは意味が違う。 */
+  scope: "working" | "commit";
+}): React.ReactElement {
+  const lines = useMemo(() => diff.split("\n"), [diff]);
+  if (diff.length === 0) {
+    return (
+      <EmptyState icon="＝" title="差分はありません">
+        {scope === "working"
+          ? "作業ツリーに未コミットの変更はありません。"
+          : "このコミットは差分を持ちません（マージコミットは既定で中身を出しません）。"}
+      </EmptyState>
+    );
+  }
   return (
     <pre className="gv-diff">
-      {diff.split("\n").map((line, i) => (
+      {lines.map((line, i) => (
         <span
           key={i}
           className={
-            line.startsWith("+") && !line.startsWith("+++")
+            "gv-diff-line " +
+            (line.startsWith("+") && !line.startsWith("+++")
               ? "gv-add"
               : line.startsWith("-") && !line.startsWith("---")
                 ? "gv-del"
@@ -55,7 +114,7 @@ function DiffBody({ diff }: { diff: string }): React.ReactElement {
                   ? "gv-hunk"
                   : line.startsWith("diff --git")
                     ? "gv-file"
-                    : undefined
+                    : "")
           }
         >
           {line}
@@ -75,16 +134,22 @@ export function GitViewer({ params, endpoint }: CanvasViewProps): React.ReactEle
       : { source: "working", ...(initialPath ? { path: initialPath } : {}) }
   );
   const [limit, setLimit] = useState(30);
+  /** 狭いときに差分側を見ているか。**番頭が ref/path を指定して開いたら差分から見せる。** */
+  const [showDiff, setShowDiff] = useState(initialRef !== undefined || initialPath !== undefined);
 
   // どのリポジトリを見るか（決定36e）。番頭が指定していなければ先頭に落ちる
-  const selection2 = usePlaceSelection(endpoint, typeof params["place"] === "string" ? params["place"] : undefined);
-  const place = selection2.place;
+  const placeSelection = usePlaceSelection(
+    endpoint,
+    typeof params["place"] === "string" ? params["place"] : undefined
+  );
+  const place = placeSelection.place;
   const at = place ? { place } : {};
   const ready = place !== undefined;
 
   // リポジトリを変えたら選択を作業ツリーへ戻す（前のリポジトリのコミットは意味を持たない）
   useEffect(() => {
     setSelection({ source: "working" });
+    setShowDiff(false);
   }, [place]);
 
   const status = useModuleTool<Status>(endpoint, "git.status", at, ready);
@@ -108,114 +173,185 @@ export function GitViewer({ params, endpoint }: CanvasViewProps): React.ReactEle
   );
 
   const changedFiles =
-    selection.source === "working" ? (status.data?.files ?? []) : (show.data?.files ?? []);
+    selection.source === "working" ? status.data?.files ?? [] : show.data?.files ?? [];
   const activePane = selection.source === "commit" ? show : workingDiff;
   const diffText =
-    selection.source === "commit" ? (show.data?.diff ?? "") : (workingDiff.data?.diff ?? "");
+    selection.source === "commit" ? show.data?.diff ?? "" : workingDiff.data?.diff ?? "";
+  const stat = useMemo(() => diffStat(diffText), [diffText]);
 
-  return (
-    <div className="gv3">
-      <div className="gv3-side">
-        {/* どのリポジトリを見るか（決定36e）。番頭も同じ引数を Tool に渡している */}
-        <div className="gv3-place">
-          <PlacePicker selection={selection2} title="どのリポジトリを見るか" />
-        </div>
-        {/* 変更ファイル一覧：作業ツリー、または選択中コミットの内訳 */}
-        <section className="gv3-section">
-          <h3 className="gv3-head">
-            {selection.source === "working" ? "変更ファイル（未コミット）" : "このコミットの変更"}
-            <span className="gv3-count">{changedFiles.length}</span>
+  const pick = (next: Selection): void => {
+    setSelection(next);
+    setShowDiff(true);
+  };
+
+  const listPane = (
+    <>
+      {/* 未コミットの変更。**いちばん上に置く**——「いま何をいじっているか」が最初に要る */}
+      <section className="gv-side-section is-changes">
+        <div className="cv-sechead">
+          <h3 className="cv-sechead-title">
+            {selection.source === "working" ? "未コミットの変更" : "このコミットの変更"}
+            <span className="cv-count">{changedFiles.length}</span>
           </h3>
-          {status.error && <div className="fb-error">{status.error}</div>}
+          {selection.path && (
+            <div className="cv-sechead-actions">
+              <Button small variant="ghost" onClick={() => pick({ ...selection, path: undefined })}>
+                絞り込みを外す
+              </Button>
+            </div>
+          )}
+        </div>
+        {status.error && <ErrorNote onRetry={status.reload}>{status.error}</ErrorNote>}
+        <div className="gv-side-scroll">
           {changedFiles.length === 0 ? (
-            <p className="fb-muted gv3-empty">
-              {selection.source === "working" ? "変更なし" : "—"}
+            <p className="cv-muted" style={{ padding: "4px 14px 12px" }}>
+              {selection.source === "working"
+                ? status.loading
+                  ? "読み込んでいます…"
+                  : "変更はありません"
+                : "—"}
             </p>
           ) : (
-            <ul className="gv3-files">
+            <ul className="cv-list">
               {changedFiles.map((f) => (
                 <li key={f.path}>
                   <button
-                    className={`gv3-file-btn ${selection.path === f.path ? "is-selected" : ""}`}
-                    onClick={() => setSelection({ ...selection, path: f.path })}
-                    title={f.path}
+                    className={`cv-row ${selection.path === f.path ? "is-selected" : ""}`}
+                    onClick={() => pick({ ...selection, path: f.path })}
+                    title={`${STATUS_LABEL[f.status] ?? f.status} — ${f.path}`}
                   >
-                    <code className="gv3-status">{f.status}</code>
-                    <span className="gv3-path">{f.path}</span>
+                    <code className={`gv-status ${statusTone(f.status)}`}>{f.status}</code>
+                    <span className="gv-path">{f.path}</span>
                   </button>
                 </li>
               ))}
             </ul>
           )}
-        </section>
+        </div>
+      </section>
 
-        {/* コミット一覧 */}
-        <section className="gv3-section gv3-history">
-          <h3 className="gv3-head">
-            履歴
-            {status.data?.branch && <code className="gv3-branch">{status.data.branch}</code>}
-          </h3>
-          <ul className="gv3-log">
+      {/* コミット履歴 */}
+      <section className="gv-side-section is-log">
+        <div className="cv-sechead">
+          <h3 className="cv-sechead-title">履歴</h3>
+          <div className="cv-sechead-actions">
+            {status.data?.branch && <Badge tone="accent">{status.data.branch}</Badge>}
+          </div>
+        </div>
+        <div className="gv-side-scroll">
+          <ul className="cv-list">
             <li>
               <button
-                className={`gv3-commit ${selection.source === "working" ? "is-selected" : ""}`}
-                onClick={() => setSelection({ source: "working" })}
+                className={`cv-row ${selection.source === "working" ? "is-selected" : ""}`}
+                onClick={() => pick({ source: "working" })}
               >
-                <code className="gv3-hash">WIP</code>
-                <span className="gv3-subject">未コミットの変更</span>
+                <code className="gv-hash">WIP</code>
+                <span className="cv-row-main">
+                  <span className="cv-row-name">未コミットの変更</span>
+                </span>
               </button>
             </li>
             {log.data?.commits.map((c, i) => (
               <li key={`${c.hash}-${i}`}>
                 <button
-                  className={`gv3-commit ${
+                  className={`cv-row ${
                     selection.source === "commit" && selection.ref === c.hash ? "is-selected" : ""
                   }`}
-                  onClick={() => setSelection({ source: "commit", ref: c.hash })}
+                  onClick={() => pick({ source: "commit", ref: c.hash })}
                   title={`${c.subject}\n${c.date} ${c.author}`}
                 >
-                  <code className="gv3-hash">{c.hash}</code>
-                  <span className="gv3-subject">{c.subject}</span>
-                  <span className="gv3-date">{c.date}</span>
+                  <code className="gv-hash">{c.hash}</code>
+                  <span className="cv-row-main">
+                    <span className="cv-row-name">{c.subject}</span>
+                    <span className="cv-row-sub">
+                      {c.date} · {c.author}
+                    </span>
+                  </span>
                 </button>
               </li>
             ))}
           </ul>
+          {log.loading && !log.data && <Loading rows={4} />}
+          {log.error && <ErrorNote onRetry={log.reload}>{log.error}</ErrorNote>}
           {log.data && log.data.commits.length >= limit && (
-            <button className="gv3-more" onClick={() => setLimit((n) => n + 30)}>
-              さらに読み込む
-            </button>
-          )}
-        </section>
-      </div>
-
-      {/* 差分 */}
-      <div className="gv3-main">
-        <div className="gv3-main-head">
-          {selection.source === "commit" && show.data ? (
-            <>
-              <code className="gv3-hash">{show.data.short}</code>
-              <span className="gv3-subject">{show.data.subject}</span>
-              <span className="gv3-date">
-                {show.data.date} · {show.data.author}
-              </span>
-            </>
-          ) : (
-            <span className="gv3-subject">未コミットの変更</span>
-          )}
-          {selection.path && (
-            <button
-              className="gv3-clear"
-              onClick={() => setSelection({ ...selection, path: undefined })}
-            >
-              全ファイル表示
-            </button>
+            <div style={{ padding: "4px 10px 12px" }}>
+              <Button small variant="ghost" onClick={() => setLimit((n) => n + 30)}>
+                さらに読み込む
+              </Button>
+            </div>
           )}
         </div>
+      </section>
+    </>
+  );
 
-        {activePane.error && <div className="fb-error">読み込めません: {activePane.error}</div>}
-        {activePane.loading ? <p className="fb-muted">読み込み中…</p> : <DiffBody diff={diffText} />}
+  const detailPane = (
+    <>
+      <div className="cv-head">
+        {selection.source === "commit" && show.data ? (
+          <>
+            <code className="gv-hash">{show.data.short}</code>
+            <span className="cv-head-title">{show.data.subject}</span>
+            <span className="cv-head-sub">
+              {show.data.date} · {show.data.author}
+            </span>
+          </>
+        ) : (
+          <span className="cv-head-title">未コミットの変更</span>
+        )}
+        {selection.path && <Badge tone="accent" title={selection.path}>1ファイルに絞り込み中</Badge>}
+        <span className="cv-spacer" />
+        {diffText.length > 0 && (
+          <>
+            <span className="gv-stat" title={`${stat.files} ファイル`}>
+              <span className="gv-stat-add">+{stat.add}</span>
+              <span className="gv-stat-del">−{stat.del}</span>
+            </span>
+            <CopyButton text={diffText} label="差分をコピー" />
+          </>
+        )}
+        {selection.path && (
+          <Button small variant="ghost" onClick={() => setSelection({ ...selection, path: undefined })}>
+            全ファイル
+          </Button>
+        )}
       </div>
-    </div>
+
+      {activePane.error && <ErrorNote onRetry={activePane.reload}>{activePane.error}</ErrorNote>}
+      {activePane.loading && diffText.length === 0 ? (
+        <Loading rows={6} />
+      ) : (
+        <DiffBody diff={diffText} scope={selection.source} />
+      )}
+    </>
+  );
+
+  return (
+    <ViewShell className="gv">
+      <ViewBar>
+        <PlacePicker selection={placeSelection} title="どのリポジトリを見るか" />
+        <span className="cv-spacer" />
+        <Button
+          small
+          variant="ghost"
+          title="いまの状態を取り直す"
+          onClick={() => {
+            status.reload();
+            log.reload();
+            activePane.reload();
+          }}
+        >
+          ⟳ 取り直す
+        </Button>
+      </ViewBar>
+      <SplitView
+        size="lg"
+        list={listPane}
+        detail={detailPane}
+        showDetail={showDiff}
+        onBack={() => setShowDiff(false)}
+        backLabel="変更と履歴"
+      />
+    </ViewShell>
   );
 }

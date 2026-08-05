@@ -24,12 +24,12 @@ import {
   createCanvasCatalog,
   createModuleRegistry,
   createWorkspaceModule,
-  createDemoModule,
   createStudioModule,
   defineNamespacedTool,
   moduleDomains,
   resolveSkills,
   type BantoModule,
+  type CanvasViewSpec,
   type BantoSkill,
   type HostSession,
   type ServerEvent,
@@ -67,6 +67,17 @@ function stubModule(name: string, overrides: Partial<BantoModule> = {}): BantoMo
     views: [],
     skills: [],
     ...overrides,
+  };
+}
+
+/** GUI 1つ分のひな型。中身は見ないので最小で足りる。 */
+function stubView(kind: string): CanvasViewSpec {
+  return {
+    kind,
+    title: kind,
+    description: `stub view ${kind}`,
+    parameters: Type.Object({}),
+    component: "StubView",
   };
 }
 
@@ -266,18 +277,12 @@ describe("[task-0015] 組み込みモジュール", () => {
     assert.match(module.endpoint.baseUrl, /^\//);
   });
 
-  it("[task-0015] demo モジュールがテスト用GUIを提供する", () => {
-    const module = createDemoModule();
-    assert.equal(module.name, "demo");
-    assert.deepEqual(module.views.map((v) => v.kind), ["demo.hello", "demo.clock"]);
-  });
-
   it("[task-0015] 組み込み2つを同時に登録しても衝突しない", () => {
     const workspace = createWorkspaceModule(placesOf(root));
-    const demo = createDemoModule();
+    const demo = stubModule("shop", { views: [stubView("shop.board")], tools: [stubTool("shop.query")] });
     const registry = createModuleRegistry([workspace, demo]);
 
-    assert.deepEqual(registry.list().map((m) => m.name), ["workspace", "demo"]);
+    assert.deepEqual(registry.list().map((m) => m.name), ["workspace", "shop"]);
     // 件数を直書きすると片方が増えたときに意味の無い失敗になるので、内訳から導く
     assert.equal(registry.views().length, workspace.views.length + demo.views.length);
     assert.equal(registry.tools().length, workspace.tools.length + demo.tools.length);
@@ -308,7 +313,9 @@ describe("[task-0015/a3] UI へモジュールの接続情報が渡る", () => {
   });
 
   it("[task-0015/a3] welcome のカタログエントリに提供元モジュールと到達先が載る", async () => {
-    const modules = createModuleRegistry([createDemoModule()]);
+    const modules = createModuleRegistry([
+      stubModule("shop", { views: [stubView("shop.board")] }),
+    ]);
     const catalog = createCanvasCatalog(modules.views());
     const threads = new ThreadRegistry(async () => ({
       session: new FakeSession(),
@@ -339,10 +346,10 @@ describe("[task-0015/a3] UI へモジュールの接続情報が渡る", () => {
     });
 
     assert.ok(welcome.type === "welcome");
-    const hello = welcome.catalog.find((c) => c.kind === "demo.hello");
-    assert.ok(hello, `demo.hello must be in the catalog: ${JSON.stringify(welcome.catalog)}`);
-    assert.equal(hello!.module, "demo");
-    assert.equal(hello!.endpoint, "/api/demo");
+    const board = welcome.catalog.find((c) => c.kind === "shop.board");
+    assert.ok(board, `shop.board must be in the catalog: ${JSON.stringify(welcome.catalog)}`);
+    assert.equal(board!.module, "shop");
+    assert.equal(board!.endpoint, "/api/shop");
     client.close();
   });
 
