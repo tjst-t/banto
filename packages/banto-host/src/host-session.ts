@@ -18,9 +18,12 @@ import {
   type CreateAgentSessionOptions,
   type CreateAgentSessionResult,
 } from "@mariozechner/pi-coding-agent";
-import type { MemoryStore } from "@banto/core";
+import type { ScopedMemory } from "@banto/core";
+import { createArtifactTools } from "./artifact-tools.js";
+import { withArtifactOffload, type ArtifactStore } from "./artifacts.js";
 import { createMemoryTools, renderMemoryForPrompt } from "./memory-tools.js";
 import { CORE_ORIGIN, resolveSkills, type SkillEntry } from "./module.js";
+import { LEARNED_ORIGIN, type LearnedSkillStore } from "./skill-learning.js";
 import { createSkillTools } from "./skill-tools.js";
 import { loadBantoSkills, renderSkillsForPrompt } from "./skills.js";
 import { toPiTool, type NamespacedToolDefinition } from "./tool-registry.js";
@@ -31,11 +34,27 @@ export interface CreateBantoHostSessionOptions {
   /** Namespaced tools (kobo.*, canvas.*, ...) available to the session. */
   tools: NamespacedToolDefinition[];
   /**
-   * 番頭の記憶（D11）。渡すと `memory.save` / `memory.recall` が自動で登録され、
-   * 保存済みの好み・習慣がシステムプロンプトへ注入される。
+   * 番頭の記憶（D11）。渡すと `memory.*` が自動で登録され、保存済みの記憶が
+   * **予算のぶんだけ**システムプロンプトへ注入される（提案3.3）。
    * 省略すると記憶なしのセッションになる（テスト・使い捨て用途）。
    */
-  memory?: MemoryStore;
+  memory?: ScopedMemory;
+  /**
+   * この会話で効くプロジェクト（ADR-0003 の第二層）。渡した場所の記憶だけが注入され、
+   * 他のプロジェクトの記憶は**横断しない**。省略すると人の記憶だけ。
+   */
+  memoryPlaces?: readonly { id: string; label?: string }[];
+  /** 記憶の注入に使うトークン予算。省略すると banto-core の既定。 */
+  memoryTokenBudget?: number;
+  /** `scope: "project"` の place を検算するための、登録済みの場所ID。 */
+  knownPlaceIds?: () => readonly string[];
+  /**
+   * ツール出力の退避先（提案§3.1）。渡すと `artifact.read` が自動で登録され、
+   * 大きなツール結果は栞に置き換わる。省略すると退避しない（テスト・使い捨て用途）。
+   */
+  artifacts?: ArtifactStore;
+  /** 退避に回す大きさ（文字数）。省略すると `DEFAULT_ARTIFACT_THRESHOLD_CHARS`。 */
+  artifactThresholdChars?: number;
   /**
    * 番頭核のSKILL（手続き記憶）を読み込むか。既定 true。
    * false にすると `packages/banto-host/skills/` を読まない（テスト用）。
@@ -43,10 +62,14 @@ export interface CreateBantoHostSessionOptions {
   loadBantoSkills?: boolean;
   /**
    * モジュールが提供するSKILL（決定26の第2層）。由来つきで渡す。
-   * 優先順位は「番頭の学習層 > 既定」だが、学習層は task-0017 で入るため、
-   * ここでは番頭核とモジュールの既定を同列に解決する。
+   * 優先順位は「番頭の学習層 > 既定」。学習層は `learnedSkills` で渡す。
    */
   moduleSkills?: SkillEntry[];
+  /**
+   * 番頭の学習層（決定26 の最上層・task-0017）。渡すと同名の既定を上書きし、
+   * `skill.learn` / `skill.unlearn` が登録される。
+   */
+  learnedSkills?: LearnedSkillStore;
   /** Working directory for resource discovery. Default: process.cwd() */
   cwd?: string;
   /** Global pi config directory. Default: ~/.pi/agent */
@@ -84,13 +107,31 @@ export async function createBantoHostSession(
     options.loadBantoSkills === false
       ? []
       : loadBantoSkills().map((skill) => ({ skill, origin: CORE_ORIGIN }));
-  const skills = resolveSkills([coreSkills, options.moduleSkills ?? []]).map((e) => e.skill);
+  // 既定＝番頭核とモジュール。学習層はこの上に載る（決定26）
+  const defaults = resolveSkills([coreSkills, options.moduleSkills ?? []]).map((e) => e.skill);
+  // task-0017 a2: 学習層を**先頭**に置く。resolveSkills は先勝ちなので、これで既定を上書きする
+  const learnedEntries: SkillEntry[] = (options.learnedSkills?.list() ?? []).map((entry) => ({
+    skill: entry.skill,
+    origin: LEARNED_ORIGIN,
+  }));
+  const skills = resolveSkills([
+    learnedEntries,
+    coreSkills,
+    options.moduleSkills ?? [],
+  ]).map((e) => e.skill);
 
   // 記憶とSKILL一覧をシステムプロンプトの末尾に足す。
   // 記憶はセッション開始時点の内容を焼き込むので、以後の保存分は memory.recall で読み直す。
   const sections = [
     options.systemPrompt,
-    options.memory ? renderMemoryForPrompt(options.memory) : "",
+    options.memory
+      ? renderMemoryForPrompt(options.memory, {
+          ...(options.memoryPlaces ? { places: options.memoryPlaces } : {}),
+          ...(options.memoryTokenBudget !== undefined
+            ? { tokenBudget: options.memoryTokenBudget }
+            : {}),
+        })
+      : "",
     renderSkillsForPrompt(skills),
   ].filter((s) => s.length > 0);
   const systemPrompt = sections.join("\n\n");
@@ -104,9 +145,32 @@ export async function createBantoHostSession(
 
   const tools = [
     ...options.tools,
-    ...(options.memory ? createMemoryTools(options.memory) : []),
-    ...(skills.length > 0 ? createSkillTools(skills) : []),
+    ...(options.memory
+      ? createMemoryTools(
+          options.memory,
+          options.knownPlaceIds ? { knownPlaceIds: options.knownPlaceIds } : {}
+        )
+      : []),
+    ...(skills.length > 0 || options.learnedSkills
+      ? createSkillTools(skills, {
+          ...(options.learnedSkills ? { learned: options.learnedSkills } : {}),
+          defaults,
+        })
+      : []),
+    ...(options.artifacts ? createArtifactTools(options.artifacts) : []),
   ];
+
+  // 提案§3.1: 大きなツール結果は文脈に載せず、栞に置き換える。
+  // **皮をかぶせるのは pi へ渡す直前**——挿入時に決めることでプレフィックスキャッシュを守る
+  const offloaded = options.artifacts
+    ? withArtifactOffload(
+        tools,
+        options.artifacts,
+        options.artifactThresholdChars !== undefined
+          ? { thresholdChars: options.artifactThresholdChars }
+          : {}
+      )
+    : tools;
 
   return createAgentSession({
     cwd,
@@ -116,7 +180,7 @@ export async function createBantoHostSession(
     modelRegistry: options.modelRegistry,
     resourceLoader,
     noTools: "builtin",
-    customTools: tools.map(toPiTool),
+    customTools: offloaded.map(toPiTool),
     sessionManager: options.sessionManager ?? SessionManager.inMemory(),
   });
 }

@@ -135,7 +135,10 @@ export type {
 } from "./llm-registry.js";
 
 // 場所（Place）— 番頭が作業してよい場所の契約（決定36c）
+// 親子関係（PO裁定 2026-08-05）：ワークツリーは親リポジトリを指し、記憶の層は親で決まる
 export type { Place, PlaceProvider } from "./place.js";
+export { projectIdOf, projectScopesOf, resolveProjects } from "./place.js";
+export type { ProjectResolution } from "./place.js";
 
 // Tool 名前空間の規約（決定9・決定22）。モジュールが banto-host 抜きで名乗れるよう core に置く
 export {
@@ -178,13 +181,24 @@ export type {
 export { ENV_DRIVER_VERBS } from "./env-driver.js";
 
 // 番頭の記憶（第一層：好み・習慣）— ADR-0010 決定10 / D11
-export { JsonlMemoryStore } from "./memory.js";
+// 注入の予算（提案3.3）と二層（ADR-0003）もここから出す
+export {
+  JsonlMemoryStore,
+  ScopedMemory,
+  selectMemoriesForBudget,
+  estimateMemoryTokens,
+  DEFAULT_MEMORY_TOKEN_BUDGET,
+} from "./memory.js";
 export type {
   MemoryStore,
   MemoryRecord,
   MemoryInput,
   MemoryQuery,
+  MemorySearchQuery,
   MemoryKind,
+  MemoryOrigin,
+  MemoryScope,
+  MemoryBudgetResult,
 } from "./memory.js";
 
 // モジュール間呼び出し（ADR-0010 決定27b）。Kobo など banto-host に依存できない側からも使う

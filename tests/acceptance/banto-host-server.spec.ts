@@ -13,7 +13,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { JsonlMemoryStore } from "@banto/core";
+import { JsonlMemoryStore, ScopedMemory } from "@banto/core";
 import {
   ThreadRegistry,
   BANTO_WS_PATH,
@@ -72,7 +72,7 @@ async function startHost(
   // 第2引数を取らずに済むよう、オブジェクトを渡したら設定として扱う（既存の呼び出しはそのまま）
   const extra = typeof getLastError === "object" ? getLastError : undefined;
   const lastError = typeof getLastError === "function" ? getLastError : undefined;
-  const tools = createMemoryTools(store);
+  const tools = createMemoryTools(new ScopedMemory(store));
   // task-0035: サーバはスレッドの帳簿を受け取る。既定スレッドを1本開いてから立てる
   const threads = new ThreadRegistry(async () => {
     session = new FakeSession();
@@ -663,7 +663,7 @@ describe("会話面が要る材料の配信", () => {
 
   it("モデルは会話ごと。変えても他の会話は変わらない", async () => {
     const applied: unknown[] = [];
-    const tools = createMemoryTools(store);
+    const tools = createMemoryTools(new ScopedMemory(store));
     const sessions: FakeSession[] = [];
     const threads = new ThreadRegistry(async () => {
       const s = new FakeSession();
@@ -724,7 +724,7 @@ describe("会話面が要る材料の配信", () => {
   });
 
   it("新しい会話は、器を作る側が決めたモデルで始まる（＝設定の標準が効く）", async () => {
-    const tools = createMemoryTools(store);
+    const tools = createMemoryTools(new ScopedMemory(store));
     // 「番頭の標準」を持っている側（本物では LlmCatalog）。**開くたびに引き直す**
     let hostDefault = { provider: "p1", id: "standard-1" };
     const threads = new ThreadRegistry(async (_id, _resume, wanted) => {
@@ -754,7 +754,7 @@ describe("会話面が要る材料の配信", () => {
   });
 
   it("切り替えられないときは黙らず、モデルも変わらない（I2）", async () => {
-    const tools = createMemoryTools(store);
+    const tools = createMemoryTools(new ScopedMemory(store));
     const threads = new ThreadRegistry(async () => {
       session = new FakeSession();
       return { session, tools };
@@ -1053,6 +1053,76 @@ describe("[task-0048] 常駐のためにビルド済み UI を配る", () => {
       const escape = await fetch(`${base}/../../etc/passwd`);
       assert.equal(escape.status, 200);
       assert.match(await escape.text(), /banto/, "外のファイルではなく index.html を返すこと");
+    } finally {
+      fs.rmSync(webDir, { recursive: true, force: true });
+    }
+  });
+
+  it("大きな資産は圧縮して配る（PO報告 2026-08-05：モバイル回線で開くのが遅い）", async () => {
+    const webDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-web-gz-"));
+    fs.mkdirSync(path.join(webDir, "assets"), { recursive: true });
+    fs.writeFileSync(path.join(webDir, "index.html"), "<!doctype html><title>banto</title>");
+    // よく縮む中身。素で配ると回線がそのまま待ち時間になる
+    const big = `console.log(${JSON.stringify("あ".repeat(50_000))});`;
+    fs.writeFileSync(path.join(webDir, "assets", "big.js"), big);
+    fs.writeFileSync(path.join(webDir, "assets", "tiny.js"), "console.log(1)");
+    try {
+      const { url } = await startHost({ webDir });
+      const base = url.replace(/^ws/, "http").replace(/\/ws$/, "");
+
+      const gz = await fetch(`${base}/assets/big.js`, { headers: { "Accept-Encoding": "gzip" } });
+      assert.equal(gz.headers.get("content-encoding"), "gzip", "gzip で返っていない");
+      assert.equal(gz.headers.get("vary"), "Accept-Encoding", "中継のキャッシュが取り違える");
+      assert.ok(
+        Number(gz.headers.get("content-length")) < big.length / 2,
+        "圧縮が効いていない"
+      );
+      // 中身は変わらない（fetch が解いた結果が元と一致する）
+      assert.equal(await gz.text(), big);
+
+      // brotli を受けるならそちらを優先する（gzip よりさらに縮む）
+      const br = await fetch(`${base}/assets/big.js`, {
+        headers: { "Accept-Encoding": "br, gzip" },
+      });
+      assert.equal(br.headers.get("content-encoding"), "br");
+
+      // 圧縮を受け付けない相手には素で返す
+      const plain = await fetch(`${base}/assets/big.js`, { headers: { "Accept-Encoding": "" } });
+      assert.equal(plain.headers.get("content-encoding"), null);
+      assert.equal(await plain.text(), big);
+
+      // 小さいものは圧縮しない（ヘッダの分で損をする）
+      const tiny = await fetch(`${base}/assets/tiny.js`, { headers: { "Accept-Encoding": "gzip" } });
+      assert.equal(tiny.headers.get("content-encoding"), null);
+    } finally {
+      fs.rmSync(webDir, { recursive: true, force: true });
+    }
+  });
+
+  it("内容ハッシュ付きの資産は長く持たせ、index.html は毎回確かめる", async () => {
+    const webDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-web-cache-"));
+    fs.mkdirSync(path.join(webDir, "assets"), { recursive: true });
+    fs.writeFileSync(path.join(webDir, "index.html"), "<!doctype html><title>banto</title>");
+    fs.writeFileSync(path.join(webDir, "assets", "app-abc123.js"), "console.log(1)");
+    try {
+      const { url } = await startHost({ webDir });
+      const base = url.replace(/^ws/, "http").replace(/\/ws$/, "");
+
+      // 名前が変われば別物なので、掴み続けても事故にならない
+      const asset = await fetch(`${base}/assets/app-abc123.js`);
+      assert.match(asset.headers.get("cache-control") ?? "", /immutable/);
+      assert.match(asset.headers.get("cache-control") ?? "", /max-age=31536000/);
+
+      // ここが更新の入口。新しいビルドに気づけなくなるのが一番困る
+      const page = await fetch(`${base}/`);
+      assert.equal(page.headers.get("cache-control"), "no-cache");
+      const etag = page.headers.get("etag");
+      assert.ok(etag, "ETag が無いと再訪で毎回まるごと落ちてくる");
+
+      // 中身が同じなら本体を送らない
+      const again = await fetch(`${base}/`, { headers: { "If-None-Match": etag } });
+      assert.equal(again.status, 304);
+      assert.equal((await again.text()).length, 0);
     } finally {
       fs.rmSync(webDir, { recursive: true, force: true });
     }

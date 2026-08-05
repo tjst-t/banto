@@ -15,8 +15,80 @@ export {
   type ToolRegistry,
 } from "./tool-registry.js";
 export { createBantoHostSession, type CreateBantoHostSessionOptions } from "./host-session.js";
-export { createMemoryTools, renderMemoryForPrompt } from "./memory-tools.js";
-export { createSkillTools } from "./skill-tools.js";
+export {
+  createMemoryTools,
+  renderMemoryForPrompt,
+  type MemoryToolsOptions,
+  type RenderMemoryOptions,
+} from "./memory-tools.js";
+// ツール出力の退避（提案§3.1）。要約せず参照に置き換えるので情報を失わない
+export {
+  ArtifactStore,
+  withArtifactOffload,
+  outlineOf,
+  renderStub,
+  renderArtifactIndex,
+  DEFAULT_ARTIFACT_THRESHOLD_CHARS,
+  type ArtifactRef,
+  type ArtifactSlice,
+  type ArtifactSummary,
+  type ArtifactOffloadOptions,
+} from "./artifacts.js";
+export { createArtifactTools } from "./artifact-tools.js";
+// 章立て（提案§3.2）。コンパクションの代わりに、区切りで畳んで引き継ぐ
+export {
+  HandoffStore,
+  renderSummary,
+  renderChapterOpening,
+  type HandoffSummary,
+  type HandoffRecord,
+} from "./handoffs.js";
+export {
+  ChapterKeeper,
+  renderTranscript,
+  DEFAULT_CHAPTER_THRESHOLD_RATIO,
+  DEFAULT_MIN_MESSAGES,
+  type ChapterKeeperOptions,
+  type ChapterInput,
+  type ChapterHandoff,
+} from "./chapters.js";
+export { createHandoffTools } from "./handoff-tools.js";
+export {
+  createLlmChapterSummarizer,
+  parseHandoff,
+  type ChapterSummarizerOptions,
+} from "./chapter-summarizer.js";
+// 記憶の評価セット（提案§3.6）。測らなければ静かに腐る
+export {
+  runMemoryEval,
+  DEFAULT_MEMORY_EVAL,
+  type MemoryEvalCase,
+  type MemoryEvalCategory,
+  type MemoryEvalResult,
+  type MemoryEvalReport,
+} from "./memory-eval.js";
+// 記憶の自動抽出（提案§3.4・決定28）。差分だけを受け取り、既存の記憶を書き直させない
+export {
+  createLlmMemoryExtractor,
+  parseDeltas,
+  applyMemoryDeltas,
+  type MemoryDelta,
+  type MemoryExtractorOptions,
+  type MemoryExtractionInput,
+  type MemoryApplyResult,
+} from "./memory-extraction.js";
+export { createSkillTools, type SkillToolsOptions } from "./skill-tools.js";
+// SKILL の学習層（決定26・task-0017）。既定を上書きし、既定が変わったら黙って隠さない
+export {
+  LearnedSkillStore,
+  LEARNED_ORIGIN,
+  skillHash,
+  detectStaleOverrides,
+  renderStaleOverrides,
+  type LearnedSkill,
+  type SkillBaseline,
+  type StaleOverride,
+} from "./skill-learning.js";
 // 文脈長の引き当て規則。取り込みの中核なのでテストから直接見る
 export { contextWindowFromCatalog } from "./llm-tools.js";
 export {
@@ -43,6 +115,10 @@ export {
   resolveInPlace,
   assertWritable,
   broadlyWritable,
+  DESK_PLACE_ID,
+  defaultDeskPlace,
+  withDefaultDesk,
+  ensureDeskDir,
   type PlaceGrantSource,
   type StaticPlaceConfig,
 } from "./places.js";

@@ -15,12 +15,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import {
+  DESK_PLACE_ID,
   SettingsStore,
   createCoreSettingsSections,
   createModuleRegistry,
   createSettingsModule,
   settingsSection,
+  withDefaultDesk,
   type BantoModule,
+  type PlaceSetting,
 } from "@banto/host";
 import { EnvironmentPool, createEnvironmentPoolModule } from "@banto/environment-pool";
 import type { ModuleSettingsSpec } from "@banto/core";
@@ -227,18 +230,60 @@ describe("[決定41/c] 番頭は設定を変えられない（決定38b の自�
 });
 
 describe("[決定41] 画面が実態を映す", () => {
+  /**
+   * 呼び手（`bin.ts`）と同じ形の「いま効いている場所」。設定があればそれ、無ければ
+   * 起動時の指定。どちらにも既定の書斎が足される。
+   *
+   * **画面は自分で判断せず、これをそのまま映す**——判断を両側に置くと、片方を直した
+   * ときにもう片方が古いまま残る。
+   */
+  const effectivePlaces = (): PlaceSetting[] => {
+    const saved = store.all().places;
+    const source =
+      saved && saved.length > 0 ? saved : [{ id: "起動時の指定", path: "/tmp/x", writable: ["docs/**"] }];
+    return withDefaultDesk(source).map((c) => ({
+      id: c.id,
+      path: c.path,
+      ...(c.writable ? { writable: [...c.writable] } : {}),
+    }));
+  };
+
   it("保存が無いときは、いま効いている場所を出す（空に見せない）", async () => {
-    const core = createCoreSettingsSections(store, {
-      effectivePlaces: () => [{ id: "起動時の指定", path: "/tmp/x", writable: ["docs/**"] }],
-    });
+    const core = createCoreSettingsSections(store, { effectivePlaces });
     const places = core.find((c) => c.id === "places")!;
+    const deskLine = `${DESK_PLACE_ID}:${path.join(os.homedir(), "banto-desk")}`;
 
     // まだ保存していない＝起動時の指定が効いている状態
-    assert.deepEqual(await places.spec.read(), { places: ["起動時の指定:/tmp/x:docs/**"] });
+    assert.deepEqual(await places.spec.read(), {
+      places: ["起動時の指定:/tmp/x:docs/**", deskLine],
+    });
 
     // 保存すると、そちらが真実になる
     await places.spec.write({ places: ["保存した場所:/tmp/y"] });
-    assert.deepEqual(await places.spec.read(), { places: ["保存した場所:/tmp/y"] });
+    assert.deepEqual(await places.spec.read(), { places: ["保存した場所:/tmp/y", deskLine] });
+  });
+
+  it("[desk] 既定の書斎は、保存した後も画面から消えない", async () => {
+    const core = createCoreSettingsSections(store, { effectivePlaces });
+    const places = core.find((c) => c.id === "places")!;
+
+    // 書斎の行を消して保存しても、効いている実態には残る（画面と食い違わせない）
+    await places.spec.write({ places: ["保存した場所:/tmp/y"] });
+    const lines = (await places.spec.read())["places"] as string[];
+    assert.ok(
+      lines.some((l) => l.startsWith(`${DESK_PLACE_ID}:`)),
+      "消しても既定に戻ることが画面に出ること"
+    );
+  });
+
+  it("[desk] 書斎の行を書けば上書きできる", async () => {
+    const core = createCoreSettingsSections(store, { effectivePlaces });
+    const places = core.find((c) => c.id === "places")!;
+
+    await places.spec.write({ places: [`${DESK_PLACE_ID}:/tmp/my-desk:reports/**`] });
+    assert.deepEqual(await places.spec.read(), {
+      places: [`${DESK_PLACE_ID}:/tmp/my-desk:reports/**`],
+    });
   });
 });
 

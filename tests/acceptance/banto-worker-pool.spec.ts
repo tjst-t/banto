@@ -168,8 +168,12 @@ describe("[task-0010/a1] 職人の起動・監視・停止", () => {
     await pool.delegate(JOB);
     const systemPrompt = driver.spawned[0]!.systemPrompt;
 
-    assert.match(systemPrompt, /職人/, "立場を伝える");
-    assert.match(systemPrompt, /記憶を持ちません/, "D11 を職人自身にも伝える");
+    // プロンプト本文は英語で、出力言語だけを別に指示する（WORKER_SYSTEM_PROMPT の
+    // doc コメント）。確かめたいのは語彙ではなく「立場と D11 が伝わっているか」なので、
+    // 本文は英語の語で見て、日本語で報告させる指示があることを別に見る
+    assert.match(systemPrompt, /worker/, "立場を伝える");
+    assert.match(systemPrompt, /no memory/, "D11 を worker 自身にも伝える");
+    assert.match(systemPrompt, /Japanese/, "出力言語を指示する");
     assert.doesNotMatch(systemPrompt, /調べて直して/, "やることは instruction 側");
   });
 

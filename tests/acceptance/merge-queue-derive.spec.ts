@@ -334,10 +334,16 @@ describe("[AC-S75f66b-5-3] Queue derived from event log; restart resumes process
       `task-D2 must reach merged/closed after restart (got ${d2FinalStatus})`
     );
 
-    // Verify no double-merge: git log main should contain d2.ts exactly once
-    const logOutput = execSync("git log main --oneline", { cwd: repoDir }).toString();
-    const d2Lines = logOutput.split("\n").filter((l) => l.includes("task-D2") || l.includes("d2"));
+    // Verify no double-merge: git log main should contain task-D2's commit exactly once.
+    //
+    // **Match subjects only, not `--oneline`.** The old check also accepted `l.includes("d2")`
+    // against `--oneline` output, which includes the abbreviated hash — so any unrelated
+    // commit whose hash happened to contain "d2" was counted as a second merge.
+    // It fired for real (2026-08-05): `39c6d28 feat: task-D1 — d1.ts` matched on its hash
+    // and failed the run. The flake is in the check, not in the merge queue.
+    const subjects = execSync("git log main --format=%s", { cwd: repoDir }).toString();
     // The commit message from setupTaskBranch is "feat: task-D2 — d2.ts"
+    const d2Lines = subjects.split("\n").filter((l) => l.includes("task-D2"));
     // There should be exactly one such commit
     assert.equal(
       d2Lines.length,

@@ -147,6 +147,25 @@ describe("[task-0018] モジュール同士の直接呼び出し（Bantoも番�
     assert.match(details.content, /やあ/);
   });
 
+  it("[task-0018/a2] offset / maxLines も渡る（画面の「続きを読む」が通る経路）", async () => {
+    fs.writeFileSync(
+      path.join(root, "many.txt"),
+      Array.from({ length: 30 }, (_, i) => `行${i + 1}`).join("\n")
+    );
+    const head = await client().invoke("workspace", "file.read", { path: "many.txt", maxLines: 10 });
+    const d1 = head.details as { to: number; totalLines: number };
+    assert.deepEqual([d1.to, d1.totalLines], [10, 30]);
+
+    const rest = await client().invoke("workspace", "file.read", {
+      path: "many.txt",
+      offset: d1.to + 1,
+      maxLines: 10,
+    });
+    const d2 = rest.details as { from: number; content: string };
+    assert.equal(d2.from, 11);
+    assert.match(d2.content, /^行11\n/, "続きは前の続きから始まる");
+  });
+
   it("[task-0018/a2] git系のToolも同じ規約で呼べる", async () => {
     const result = await client().invoke("workspace", "git.log");
     const details = result.details as { commits: Array<{ subject: string }> };

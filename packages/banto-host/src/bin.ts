@@ -18,7 +18,15 @@ import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { getModel, getModels } from "@mariozechner/pi-ai";
 import { AuthStorage, getAgentDir, ModelRegistry, SessionManager } from "@mariozechner/pi-coding-agent";
-import { JsonlMemoryStore, LlmCatalog, type PlaceProvider, type ResolvedModel } from "@banto/core";
+import {
+  JsonlMemoryStore,
+  LlmCatalog,
+  ScopedMemory,
+  resolveProjects,
+  type Place,
+  type PlaceProvider,
+  type ResolvedModel,
+} from "@banto/core";
 
 import {
   PiRpcDriver,
@@ -41,7 +49,21 @@ import { resumeInterruptedTurn, withEmptyResponseGuard } from "./turn-guard.js";
 import { BantoHostClient } from "./client.js";
 import { BANTO_DEFAULT_PORT, type ServerEvent } from "./protocol.js";
 import { BantoHostServer } from "./server.js";
+import { createArtifactTools } from "./artifact-tools.js";
+import { ArtifactStore } from "./artifacts.js";
+import { createLlmChapterSummarizer } from "./chapter-summarizer.js";
+import { ChapterKeeper } from "./chapters.js";
+import { createHandoffTools } from "./handoff-tools.js";
+import { HandoffStore } from "./handoffs.js";
+import { applyMemoryDeltas, createLlmMemoryExtractor } from "./memory-extraction.js";
 import { createMemoryTools } from "./memory-tools.js";
+import {
+  LEARNED_ORIGIN,
+  LearnedSkillStore,
+  detectStaleOverrides,
+  renderStaleOverrides,
+  type StaleOverride,
+} from "./skill-learning.js";
 import { CORE_ORIGIN, createModuleRegistry, resolveSkills, type SkillEntry } from "./module.js";
 import { createStudioModule } from "./modules/studio.js";
 import { createPiAgentModule } from "./modules/pi-agent.js";
@@ -66,6 +88,8 @@ import {
   PlaceRegistry,
   broadlyWritable,
   createStaticPlaceProvider,
+  ensureDeskDir,
+  withDefaultDesk,
   type StaticPlaceConfig,
 } from "./places.js";
 import { guardPathArg } from "./place-scoped.js";
@@ -106,32 +130,230 @@ function readPlaceConfig(fallbackRoot: string): StaticPlaceConfig[] {
   return places;
 }
 
+/**
+ * いま効いている静的な場所（設定 > 環境変数）に、既定の書斎を足したもの。
+ *
+ * **「どれが効いているか」の判断はここ1箇所**。設定画面もこれを映すので、画面と実態が
+ * 食い違わない（以前は core-settings 側にも同じ分岐があった）。
+ */
+function effectiveStaticPlaces(settings: SettingsStore, fallbackRoot: string): StaticPlaceConfig[] {
+  const configured = settings.all().places;
+  const source = configured && configured.length > 0 ? configured : readPlaceConfig(fallbackRoot);
+  return withDefaultDesk(source);
+}
+
+/** 書斎の実体が無ければ作る。I2: 作ったときだけ、どこに作ったかを言う。 */
+function ensureDesk(settings: SettingsStore, fallbackRoot: string): void {
+  const created = ensureDeskDir(effectiveStaticPlaces(settings, fallbackRoot));
+  if (created !== undefined) {
+    console.log(`[banto] 書斎（成果物の置き場所）を作りました: ${created}`);
+  }
+}
+
 /** データの置き場所。BANTO_DATA_DIR で差し替えられる。 */
 function dataDir(): string {
   return process.env["BANTO_DATA_DIR"] ?? path.join(process.cwd(), ".banto");
 }
 
-/** 記憶の既定の置き場所。 */
+/** 人の記憶の置き場所（ADR-0003 第一層。全プロジェクト横断）。 */
 function memoryPath(): string {
   return path.join(dataDir(), "memory.jsonl");
 }
 
-const SYSTEM_PROMPT = [
-  "あなたは banto（番頭）です。POの代理として店を切り盛りします。",
-  "細かい実装作業は自分でせず職人へ委譲し、自分の文脈は記憶と判断に使ってください（D10）。",
-  "覚えておくべき好み・習慣が出てきたら memory.save で保存してください。",
-  "POに何かを見せたいときは canvas.open でキャンバスに表示できます（何が開けるかは canvas.list_catalog）。",
-  // 会話の名付け（PO要望 2026-08-05）。機構は thread.rename、いつ呼ぶかの判断はここ
-  "この会話が何の話か分かったら thread.rename で名前を付けてください。話の途中で別のことへ移ったら、そのつど付け直します——POはタブの名前で会話を選ぶので、始めの話題の名前や「会話 3」のままだと中身が分かりません。名前は15文字程度の短い語にし、少し脱線しただけ・同じ話の続きなら変えないでください。",
-  "作業できる場所（リポジトリ・ワークツリー・作業領域）は place.list で分かります。file.* と git.* でその中身と履歴を閲覧でき、どの場所かは place で選びます。",
-  "file.write で自分の成果物（決定の記録・起票・メモ）を書けますが、**POが場所ごとに許した範囲だけ**で、既定はどの場所も読み取り専用です。断られたら place.request_write で範囲を頼み、canvas.open で place.permissions を開けばPOがその場で許可できます。頼んだだけでは書けません。コードを変える仕事は自分で書かず職人へ委譲します（D10）。",
-  "gitの変更操作（commit・push・branch）は持っていません。頼まれたら職人へ委譲してください——書いたものは未コミットで残り、POのレビューを通ります。",
-  "調査・実装など手を動かす仕事は worker.delegate で職人へ委譲してください（D10）。手順は skill.read で worker-delegation を確認できます。",
-  "検証環境を外から見せたいときは env.provision の expose にポートを渡すと url が返ります。POが自分の目で確かめたいときに使ってください（機械が確かめるだけなら要りません）。",
-  "検証は env.verify で回せます。環境を立ててコマンドを走らせて必ず畳むところまで機構がやるので、結果は職人の主張ではなく確かめた事実として扱えます。レビュー用に環境を残したいときだけ env.provision を使い、使い終わったら env.teardown で畳んでください。",
-  "職人からの報告・質問は自動で届きます。報告は主張であって完了の証明ではないので、必要なら成果を自分で確かめてください。質問には worker.steer で答えられます。",
-  "確かめて良いと判断したら worker.close で職人を畳んでください。待機中の職人はプロセスとして残り続けます。畳んでも記録は残り、続きを頼みたくなったら worker.wake で元の会話ごと起こし直せます。",
-].join("\n");
+/**
+ * プロジェクトの記憶の置き場所（ADR-0003 第二層。**横断させない**）。
+ *
+ * 場所ごとに別ファイルにする——同じファイルに `scope` で同居させると、絞り込みを
+ * 1箇所書き忘れた時点で混ざる。ここでは混ぜようとしても混ざらない。
+ *
+ * 場所IDはスラッシュを含む（`github.com/tjst-t/banto`）ので、そのままではファイル名に
+ * できない。`encodeURIComponent` で1階層に潰す——可逆なので、ファイルを見れば
+ * どの場所のものか分かる。
+ *
+ * 置き場は**リポジトリの中ではなくホストのデータ置き場**。リポジトリに置くと、
+ * 番頭が自分の記憶を書き換えられてしまう（決定38b と同じ理由）。
+ */
+function projectMemoryPath(placeId: string): string {
+  return path.join(dataDir(), "projects", encodeURIComponent(placeId), "memory.jsonl");
+}
+
+/**
+ * 場所の同一性を見るための実パス（PO裁定 2026-08-05：同じ場所は1プロジェクト）。
+ *
+ * リンクを解決してから比べる——`BANTO_PLACES` の静的な場所と repo-manager が出す
+ * 同じリポジトリが、片方だけリンク越しだと別物に見える。
+ *
+ * 解決できないパス（まだ無い等）はそのまま返す。**畳まないだけ**で害は無い。
+ */
+function realPathOrSelf(target: string): string {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+/**
+ * 章を閉じる閾値（文脈長に対する割合）。`BANTO_CHAPTER_THRESHOLD` で変えられる。
+ *
+ * 既定は `DEFAULT_CHAPTER_THRESHOLD_RATIO`（0.6）。低すぎると章が増えて資料のコストが
+ * 嵩み、高すぎると閉じる余力が無くなる——そこがコンパクションの失敗そのもの（提案§6 論点2）。
+ *
+ * I2: 読めない値・範囲外は黙って既定に落とさず知らせる。
+ */
+function chapterThresholdRatio(): number | undefined {
+  const raw = process.env["BANTO_CHAPTER_THRESHOLD"];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed >= 1) {
+    console.warn(
+      `[banto] BANTO_CHAPTER_THRESHOLD は 0 と 1 の間の割合です（${raw}）。既定を使います`
+    );
+    return undefined;
+  }
+  return parsed;
+}
+
+/**
+ * 章の引き継ぎ資料を書くモデル（決定28：抽出には安いモデルを使う）。
+ *
+ * `BANTO_CHAPTER_MODEL="provider/model-id"` で会話とは別のモデルを指定できる。
+ * **指定が無ければ undefined**——呼び出し側が会話のモデルへ落とす。カタログの
+ * 職人向け標準は tier（具体モデルではない）なので、ここでは当てにしない。
+ *
+ * I2: 指定したのに解決できないときは、黙って会話のモデルへ落とさず知らせる。
+ */
+function chapterSummarizerModelSpec(): { provider: string; id: string } | undefined {
+  const raw = process.env["BANTO_CHAPTER_MODEL"];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const at = raw.indexOf("/");
+  if (at <= 0 || at === raw.length - 1) {
+    console.warn(`[banto] BANTO_CHAPTER_MODEL は "provider/model-id" の形です（${raw}）`);
+    return undefined;
+  }
+  return { provider: raw.slice(0, at), id: raw.slice(at + 1) };
+}
+
+/**
+ * 陳腐化した学習層について incident を積む（P3・決定26・task-0017 a4）。
+ *
+ * **ホストのデータ置き場に書く。** リポジトリの `work/inbox/incident/` に書きたくなるが、
+ * 番頭はそこへ書けない（決定38b：自分の統制下のファイルを書き換えられないため）。
+ * PO が取り込むまでの置き場としてここに残し、ログにパスを出す。
+ */
+function writeStaleSkillIncident(stale: readonly StaleOverride[]): string {
+  const dir = path.join(dataDir(), "incidents");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `stale-skill-overrides-${stale.length}.md`);
+  const body = [
+    "---",
+    "type: incident",
+    "kind: incident",
+    "origin: agent",
+    "class: bug",
+    "status: open",
+    "refs: [adr-0010, task-0017]",
+    "---",
+    "",
+    "## 内容",
+    "",
+    "番頭の学習層（SKILL）が、元にした既定より古くなっている。",
+    "このまま使うと、既定側の改良が番頭に届かない（決定26 が名指しした事故）。",
+    "",
+    renderStaleOverrides(stale),
+    "",
+    "## どうするか",
+    "",
+    "既定の変更を読み、学習層を書き直す（`skill.learn`）か、学びが不要になっていれば",
+    "捨てる（`skill.unlearn`）。**放置すると静かに劣化し続ける。**",
+    "",
+  ].join("\n");
+  fs.writeFileSync(file, body, "utf-8");
+  return file;
+}
+
+/**
+ * ツール出力を退避に回す大きさ（文字数）。`BANTO_ARTIFACT_THRESHOLD` で変えられる。
+ *
+ * 小さすぎると番頭が毎回 `artifact.read` を叩いて往復が増え、大きすぎると退避が効かない。
+ * 既定は banto-host の `DEFAULT_ARTIFACT_THRESHOLD_CHARS`（提案§6 論点4）。
+ *
+ * I2: 数として読めない値が入っていたら黙って既定に落とさず知らせる。
+ */
+function artifactThresholdChars(): number | undefined {
+  const raw = process.env["BANTO_ARTIFACT_THRESHOLD"];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    console.warn(`[banto] BANTO_ARTIFACT_THRESHOLD が読めません（${raw}）。既定を使います`);
+    return undefined;
+  }
+  return parsed;
+}
+
+/**
+ * ユーザーに見せる出力の言語。
+ *
+ * プロンプト本文は英語で固定し、**言語だけをここで可変にする**。マルチ言語対応は
+ * この定数の差し替えで届く範囲から始められる（PO裁定 2026-08-05）。
+ */
+const RESPONSE_LANGUAGE = "Japanese";
+
+/**
+ * 番頭のシステムプロンプト。
+ *
+ * **本文は英語、出力は RESPONSE_LANGUAGE。** LLMプロバイダ層はプラガブル＝モデル非依存
+ * （CLAUDE.md）なので、日本語の指示追従が弱いモデルでも役割が崩れないほうを採る。
+ * 出力言語は独立した指示にしてあるので、英語で書いても応答は日本語のままになる。
+ *
+ * 商家の比喩（店・番頭・職人）は banto の世界観だが、**プロンプトでは比喩に寄りかからない**。
+ * vision.md「番頭を『もう一人の人格』として演出することは目的ではない」とも整合する。
+ * 役割語は Terms で一度定義してから使い、以降は機構の名前（worker / place / canvas）で書く。
+ *
+ * 依頼主は "user" と呼ぶ。"PO"（product owner）は本人の心持ちであって製品として定義する
+ * ものではない、というPO裁定（2026-08-05）。略語のまま渡すと purchase order とも読める。
+ *
+ * 会話の名付け（PO要望 2026-08-05）：機構は thread.rename、いつ呼ぶかの判断はここ。
+ */
+const SYSTEM_PROMPT = `# Role
+
+You are banto, an agent that runs software development work on behalf of the user.
+You are not the one who writes the code. Delegate hands-on work — investigation, implementation, review — to workers, and spend your own context on remembering how things got here and on deciding what to do next (D10).
+
+# Language
+
+Write everything the user sees in ${RESPONSE_LANGUAGE}: chat replies, thread names, and any notes or records you write to files.
+
+# Terms
+
+- **user** — the person you are talking to. They own this product and hold final decision authority.
+- **worker** — a separate agent process you start with worker.delegate. A worker has no memory, so every piece of context it needs must be written into the instruction you give it.
+- **place** — a directory you can work against: a repository, a worktree, or a scratch area. List them with place.list; tools take a \`place\` argument saying which one you mean.
+- **canvas** — a display area you can open on the user's screen, for things that are hard to convey in text.
+
+# Memory and conversation
+
+- When something worth remembering across conversations comes up — the user's preferences, habits, standing decisions — save it with memory.save.
+- To show the user something, open it with canvas.open (canvas.list_catalog tells you what can be opened).
+- Once you know what this conversation is about, name it with thread.rename. Rename it again whenever the topic moves on: the user picks conversations by tab name, so a stale first-topic name — or "会話 3" — tells them nothing about the contents. Keep the name short, around 15 characters. Do not rename for a brief digression or for a continuation of the same topic.
+
+# Delegating to workers
+
+- Delegate hands-on work — investigation, implementation — with worker.delegate (D10). skill.read gives you worker-delegation, which covers how to write the instruction.
+- Reports and questions from workers reach you automatically. **A report is the worker's own claim, not proof that the work is done.** Verify the result yourself when it matters. Answer questions with worker.steer.
+- Once you are satisfied, end the worker with worker.close. A worker waiting for an answer stays alive as a process. Closing keeps the record, and worker.wake resumes the original session if you want to continue.
+
+# Files and git
+
+- file.* and git.* let you read the contents and history of a place.
+- file.write lets you write your own output — decision records, tickets, notes — but **only within the scope the user has granted for that place**, and every place is read-only by default. If a write is refused, ask for the scope with place.request_write, and open place.permissions with canvas.open so the user can grant it on the spot. Asking alone does not grant it.
+- Work that changes code goes to a worker. Do not write it yourself (D10).
+- You do not have git write operations (commit, push, branch). Delegate them to a worker — what gets written stays uncommitted and goes through the user's review.
+
+# Verification
+
+- Run verification with env.verify. The mechanism brings the environment up, runs the command, and always tears it down, so the result counts as **a verified fact** rather than a worker's claim.
+- When you want the user to see something with their own eyes, pass ports to env.provision's expose and it returns a url. You do not need this when only a machine has to check. Use env.provision only when the environment must stay up for review, and tear it down with env.teardown when you are done.`;
 /**
  * 再起動後に中断していた職人を自動で起こす（task-0050）。
  *
@@ -220,8 +442,50 @@ async function serve(options: ServeOptions): Promise<void> {
   // task-0047: 保存された設定。**番頭が書けない場所**に置く（決定38b）
   const settings = new SettingsStore(path.join(dataDir(), "settings.json"));
 
-  const memory = new JsonlMemoryStore(memoryPath());
+  // 提案§3.2: 章の引き継ぎ資料。会話データとして置く（リポジトリは汚さない）
+  const handoffs = new HandoffStore(path.join(dataDir(), "handoffs"));
+
+  /**
+   * 場所ID → プロジェクトID の写し（PO裁定 2026-08-05）。
+   *
+   * ワークツリーの記憶は親リポジトリのものとして扱う。**写しで持つ**のは、
+   * 記憶のストアを開くのが同期の経路（`ScopedMemory.forProject`）で、場所の導出は
+   * 非同期（`gwq` を叩く）だから。場所を一覧するたびに更新する（`rememberProjectIds`）。
+   */
+  const projectIds = new Map<string, string>();
+  /** 別名で同じ場所を指していた組（警告を1度だけ出すために覚える）。 */
+  const warnedAliases = new Set<string>();
+  const rememberProjectIds = (list: readonly Place[]): { scopes: Array<{ id: string; label: string }> } => {
+    // シンボリックリンクを解決してから同一性を見る（リンク越しの別名も同じ場所）
+    const resolved = resolveProjects(list, (place) => realPathOrSelf(place.path));
+    for (const [placeId, projectId] of resolved.idByPlace) projectIds.set(placeId, projectId);
+    // I2: 別名を畳んだことは黙っていない——別名側のファイルに記憶が残っていると、
+    //     覚えたはずのことが消えて見える
+    for (const [canonical, others] of resolved.aliases) {
+      const stranded = others.filter((id) => fs.existsSync(projectMemoryPath(id)));
+      if (stranded.length === 0) continue;
+      const key = `${canonical}:${stranded.join(",")}`;
+      if (warnedAliases.has(key)) continue;
+      warnedAliases.add(key);
+      console.warn(
+        `[banto] 場所 ${stranded.join(" / ")} は ${canonical} と同じ場所です。` +
+          `プロジェクトの記憶は ${canonical} に一本化されますが、` +
+          `${stranded.map((id) => projectMemoryPath(id)).join(" / ")} に古い記憶が残っています`
+      );
+    }
+    return { scopes: resolved.scopes };
+  };
+  /** 写しに無ければ自分自身を返す。**推測で親を作らない**（別プロジェクトに混ぜない） */
+  const projectIdFor = (placeId: string): string => projectIds.get(placeId) ?? placeId;
+
+  // ADR-0003 の二層。人の記憶は1つ、プロジェクトの記憶は**プロジェクトごと**（横断させない）
+  const memory = new ScopedMemory(
+    new JsonlMemoryStore(memoryPath()),
+    (placeId) => new JsonlMemoryStore(projectMemoryPath(projectIdFor(placeId)))
+  );
   const skills = loadBantoSkills();
+  // 決定26・task-0017: SKILL の学習層。番頭が書けない場所に置く（決定38b と同じ理由）
+  const learnedSkills = new LearnedSkillStore(path.join(dataDir(), "skills"));
   const workspace = workspaceRoot();
 
   // 決定36：番頭が作業してよい場所。既定は BANTO_WORKSPACE（従来どおり1つ）。
@@ -236,13 +500,10 @@ async function serve(options: ServeOptions): Promise<void> {
   // **毎回読み直す**ので、設定画面で変えるとその場で効く（D3：ファイルは意図）
   const staticPlaces: PlaceProvider = {
     name: "static",
-    list: async () => {
-      const configured = settings.all().places;
-      const source = configured && configured.length > 0 ? configured : readPlaceConfig(workspace);
-      return createStaticPlaceProvider(source).list();
-    },
+    list: async () => createStaticPlaceProvider(effectiveStaticPlaces(settings, workspace)).list(),
   };
   const places = new PlaceRegistry([staticPlaces, createRepoManagerPlaceProvider()], grants);
+  ensureDesk(settings, workspace);
   for (const place of broadlyWritable(await places.list())) {
     // 決定38e：広く許したことを黙って通さない
     console.warn(
@@ -414,13 +675,15 @@ async function serve(options: ServeOptions): Promise<void> {
     createSettingsModule({
       core: createCoreSettingsSections(settings, {
         llmCatalog,
-        // 保存が無いときは起動時の指定を映す（画面が空に見えると、効いていないと読める）
+        // いま効いている場所をそのまま映す（画面と実態を食い違わせない）。
+        // 保存が無いときの起動時指定も、既定の書斎も、ここに含まれる
         effectivePlaces: () =>
-          readPlaceConfig(workspace).map((c) => ({
+          effectiveStaticPlaces(settings, workspace).map((c) => ({
             id: c.id,
             path: c.path,
             ...(c.writable ? { writable: [...c.writable] } : {}),
           })),
+        onPlacesChanged: () => ensureDesk(settings, workspace),
       }),
       modules,
       store: settings,
@@ -431,7 +694,18 @@ async function serve(options: ServeOptions): Promise<void> {
   modules.register(
     createStudioModule({
       memory,
-      skills: resolveSkills([coreSkills, modules.skills()]),
+      // **毎回解き直す**（学習層を含む3層。決定26）。起動時に1回解いた配列を渡すと、
+      // 番頭が `skill.learn` で学んだ手順が再起動まで画面に出ず、番頭と PO で見え方が割れる
+      skills: () =>
+        resolveSkills([
+          learnedSkills.list().map((e) => ({ skill: e.skill, origin: LEARNED_ORIGIN })),
+          coreSkills,
+          modules.skills(),
+        ]),
+      // ADR-0003 の第二層をビューアが切り替えられるようにする。
+      // **プロジェクト単位に畳む**——ワークツリーごとにチップが並ぶと、同じリポジトリの
+      // 記憶が5つに分かれているように見えてしまう（実際には1つ）
+      places: async () => rememberProjectIds(await places.list()).scopes,
     })
   );
 
@@ -440,6 +714,21 @@ async function serve(options: ServeOptions): Promise<void> {
   const initFailures = await modules.init();
   for (const f of initFailures) {
     console.error(`[banto] モジュール "${f.module}" の起動処理が失敗しました: ${f.error}`);
+  }
+
+  // 決定26・task-0017 a4: 既定が変わったオーバーライドを見つける。
+  //
+  // **黙って古いまま使わない**（P3）。学習層が既定の改良を隠したまま効き続けると、
+  // モジュールを直しても番頭には永久に届かない——層A資産が「静かに劣化する」典型。
+  // 起動時に一度だけ検査し、見つかったら incident を積む。
+  const staleOverrides = detectStaleOverrides(learnedSkills.list(), skills);
+  if (staleOverrides.length > 0) {
+    const incident = writeStaleSkillIncident(staleOverrides);
+    console.error(
+      `[banto] 学習層の SKILL が既定より古くなっています（${staleOverrides.length} 件）:\n` +
+        `${renderStaleOverrides(staleOverrides)}\n` +
+        `[banto] incident を積みました: ${incident}`
+    );
   }
 
   const catalog = createCanvasCatalog(modules.views());
@@ -571,11 +860,31 @@ async function serve(options: ServeOptions): Promise<void> {
     }
     const sessionModel = threadModel ?? model;
 
+    // ADR-0003: この会話で効くプロジェクト。登録されている場所の記憶だけが注入され、
+    // それぞれ見出しの下に分かれて載る（どのプロジェクトの話かが混ざらない）。
+    //
+    // **ワークツリーは親リポジトリに畳む**（PO裁定 2026-08-05）。畳まないと、同じ
+    // リポジトリのブランチの数だけ見出しが増え、記憶もその数だけ分かれる
+    const registered = await places.list();
+    const memoryPlaces = rememberProjectIds(registered).scopes;
+
+    // 提案§3.1: ツール出力の退避先。**会話ごと**——別の会話の観測を引けると、
+    // スレッドごとに文脈を分けている意味（決定35a）が崩れる
+    const artifacts = new ArtifactStore(path.join(dataDir(), "artifacts", threadId));
+
     const { session } = await createBantoHostSession({
       systemPrompt: SYSTEM_PROMPT,
       tools: ownTools,
       memory,
+      memoryPlaces,
+      // ワークツリーのIDで指されても断らない——記憶は親に畳まれる（projectIdFor）
+      knownPlaceIds: () => [...memoryPlaces.map((p) => p.id), ...registered.map((p) => p.id)],
+      artifacts,
+      ...(artifactThresholdChars() !== undefined
+        ? { artifactThresholdChars: artifactThresholdChars()! }
+        : {}),
       moduleSkills: modules.skills(),
+      learnedSkills,
       sessionManager,
       modelRegistry,
       ...(sessionModel ? { model: sessionModel } : {}),
@@ -585,8 +894,88 @@ async function serve(options: ServeOptions): Promise<void> {
     // 応答が止まる。withEmptyResponseGuard が空応答を continue() で再試行する。
     // 再試行はガードの中で完結するので、server は HostSession 契約のまま無変更（決定3）
     const guardedSession = withEmptyResponseGuard(session);
+
+    // 提案§3.2: pi の自動コンパクションを切り、章立てに置き換える。
+    //
+    // **要約器は本セッションと別の呼び出し**（決定28）。安いモデルがカタログにあれば
+    // それを使い、無ければこの会話のモデルで書く。要約器を用意できないときは
+    // 章立てを始めない——引き継ぎ無しで文脈だけ畳むのが最悪だから（I2）。
+    const wantedSummarizer = chapterSummarizerModelSpec();
+    const summarizerModel = wantedSummarizer
+      ? resolveModel(wantedSummarizer.provider, wantedSummarizer.id)
+      : undefined;
+    // I2: 指定したのに解決できないときは黙って落とさず知らせる
+    if (wantedSummarizer && !summarizerModel) {
+      console.warn(
+        `[banto] BANTO_CHAPTER_MODEL（${wantedSummarizer.provider}/${wantedSummarizer.id}）を` +
+          "解決できません。会話のモデルで引き継ぎ資料を書きます"
+      );
+    }
+    const writerModel = summarizerModel ?? sessionModel;
+    let chapters: ChapterKeeper | undefined;
+    if (writerModel) {
+      chapters = new ChapterKeeper({
+        session,
+        store: handoffs,
+        threadId,
+        summarize: createLlmChapterSummarizer({
+          model: writerModel,
+          auth: (m) => modelRegistry.getApiKeyAndHeaders(m),
+        }),
+        // 閾値は**会話のモデル**の文脈長で測る（要約器の文脈長ではない）
+        ...(sessionModel?.contextWindow ? { contextWindow: sessionModel.contextWindow } : {}),
+        // PO指摘 2026-08-05: 退避した観測の索引を引き継ぎ資料へ書く。
+        // 渡さないと、畳んだ番頭は栞（artifact のID）を見失う
+        artifacts,
+        // 決定28: 記憶の抽出は章の境界だけで走る（explicit gate）。人の記憶へ入れる
+        // ——プロジェクト固有の話は場所が特定できないので、ここでは横断層に入れない
+        extractMemories: async (transcript) => {
+          const person = memory.forPerson();
+          const deltas = await createLlmMemoryExtractor({
+            model: writerModel,
+            auth: (m) => modelRegistry.getApiKeyAndHeaders(m),
+          })({ transcript, existing: person.list() });
+          const applied = applyMemoryDeltas(person, deltas);
+          for (const { delta, reason } of applied.skipped) {
+            console.warn(`[banto] 記憶を足しませんでした（${reason}）: ${JSON.stringify(delta)}`);
+          }
+          if (applied.added.length + applied.corrected.length > 0) {
+            console.log(
+              `[banto] ${threadId}: 記憶を ${applied.added.length} 件追加・` +
+                `${applied.corrected.length} 件訂正しました（次の章から効きます）`
+            );
+          }
+        },
+        ...(chapterThresholdRatio() !== undefined
+          ? { thresholdRatio: chapterThresholdRatio()! }
+          : {}),
+        onChapterClosed: (record) => {
+          // 畳んだことは隠さない。番頭が細部を覚えていないときに PO が気づける
+          server.notify(
+            `ここまでを第${record.chapter}章として畳みました（${record.summary.topic}）。` +
+              "前のやり取りは失われていません——詳細が要るときは番頭が引き継ぎ資料を読みます。",
+            { threadId, source: "system" }
+          );
+        },
+      });
+      chapters.start();
+    } else {
+      console.warn(
+        `[banto] ${threadId}: 要約に使えるモデルが無いため章立てを始めません` +
+          "（文脈は pi の自動コンパクションのままです）"
+      );
+    }
+
     // server はイベントの wire名→論理名 逆引きに、登録した論理名のToolを必要とする
-      const tools = [...ownTools, ...createMemoryTools(memory), ...createSkillTools(skills)];
+      const tools = [
+        ...ownTools,
+        ...createMemoryTools(memory, {
+          knownPlaceIds: () => [...memoryPlaces.map((p) => p.id), ...registered.map((p) => p.id)],
+        }),
+        ...createSkillTools(skills, { learned: learnedSkills, defaults: skills }),
+        ...createArtifactTools(artifacts),
+        ...createHandoffTools(handoffs, threadId),
+      ];
     return {
       session: guardedSession,
       canvas,
@@ -610,7 +999,10 @@ async function serve(options: ServeOptions): Promise<void> {
       resumePendingTurn: async () => {
         void resumeInterruptedTurn(session);
       },
-      dispose: () => session.dispose(),
+      dispose: () => {
+        chapters?.stop();
+        session.dispose();
+      },
     };
   };
 

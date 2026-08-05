@@ -41,6 +41,33 @@ function looksBinary(buffer: Buffer): boolean {
 }
 
 /**
+ * 各行の開始バイト位置を返す（1始まりの L 行目は `starts[L - 1]`）。
+ *
+ * **全文を文字列にしない。** `toString()` してから split すると、返さない部分まで
+ * 文字列にすることになり、大きいファイルで無駄に膨らむ。改行（0x0A）は多バイト文字の
+ * 途中に現れないので、バイトのまま数えて切って良い。
+ */
+function lineStarts(buffer: Buffer): number[] {
+  const starts = [0];
+  let at = buffer.indexOf(0x0a);
+  while (at !== -1) {
+    starts.push(at + 1);
+    at = buffer.indexOf(0x0a, at + 1);
+  }
+  return starts;
+}
+
+/**
+ * バイト位置を UTF-8 の文字境界まで戻す。
+ * 継続バイト（`10xxxxxx`）の上で切ると文字が割れて壊れた字が出る。
+ */
+function backToCharBoundary(buffer: Buffer, at: number): number {
+  let i = Math.min(at, buffer.length);
+  while (i > 0 && (buffer[i]! & 0b1100_0000) === 0b1000_0000) i--;
+  return i;
+}
+
+/**
  * glob をアンカー付きの正規表現へ変換する。
  * `**` は階層をまたぐ、`*` と `?` は階層をまたがない。`/` を含まないパターンは
  * ファイル名（basename）に対して照合する——`*.ts` が素直に効くように。
@@ -168,9 +195,13 @@ export function createFileTools(root: string): NamespacedToolDefinition[] {
     label: "File: Read",
     description:
       "ワークスペース内のファイルを読む。閲覧専用で、書き込みはできない。" +
-      "長いファイルは先頭から一定行で打ち切られ、その旨が示される。",
+      "長いファイルは一定行で打ち切られ、その旨と続きの読み方が示される。" +
+      "続きは offset に次の行番号を渡して読む。",
     parameters: Type.Object({
       path: Type.String({ description: "ワークスペースからの相対パス" }),
+      offset: Type.Optional(
+        Type.Number({ description: "読み始める行（1始まり。既定1）" })
+      ),
       maxLines: Type.Optional(
         Type.Number({ description: `読む行数の上限（既定 ${MAX_LINES}）` })
       ),
@@ -199,28 +230,71 @@ export function createFileTools(root: string): NamespacedToolDefinition[] {
         };
       }
 
-      const truncatedBytes = buffer.length > MAX_BYTES;
-      const source = truncatedBytes ? buffer.subarray(0, MAX_BYTES) : buffer;
-      const allLines = source.toString("utf-8").split("\n");
-      const limit = Math.max(1, params.maxLines ?? MAX_LINES);
-      const shown = allLines.slice(0, limit);
+      // 行の切れ目はファイル全体から取る。**切った後の残りから数えない**——
+      // そうすると総行数を過少に申告し、画面も番頭も「これで全部だ」と誤る
+      const starts = lineStarts(buffer);
+      const totalLines = starts.length;
 
-      const notes: string[] = [];
-      if (allLines.length > shown.length) {
-        notes.push(`… 以降 ${allLines.length - shown.length} 行を省略（上限 ${limit} 行）`);
-      } else if (truncatedBytes) {
-        notes.push(`… サイズ上限 ${MAX_BYTES} bytes で打ち切り`);
+      const from = Math.max(1, Math.trunc(params.offset ?? 1));
+      // I2: 範囲外の offset は黙って空を返さず、全体の大きさを添えて断る
+      if (from > totalLines) {
+        throw new Error(`offset ${from} is past the end of ${params.path} (全 ${totalLines} 行)`);
+      }
+      const limit = Math.max(1, Math.trunc(params.maxLines ?? MAX_LINES));
+
+      /** L 行目の終わり（改行を含まない、排他的なバイト位置）。 */
+      const endByteOf = (line: number): number =>
+        line < totalLines ? starts[line]! - 1 : buffer.length;
+
+      const startByte = starts[from - 1]!;
+      let to = Math.min(totalLines, from + limit - 1);
+      // サイズ上限は「返す分」にかける。行の切れ目まで下げてから、それでも入らなければ字で切る
+      let cutMidLine = false;
+      while (to > from && endByteOf(to) - startByte > MAX_BYTES) to--;
+      let endByte = endByteOf(to);
+      if (endByte - startByte > MAX_BYTES) {
+        endByte = backToCharBoundary(buffer, startByte + MAX_BYTES);
+        cutMidLine = true;
       }
 
-      const text = [shown.join("\n"), ...notes].join("\n");
+      const content = buffer.subarray(startByte, endByte).toString("utf-8");
+      const truncated = from > 1 || to < totalLines || cutMidLine;
+
+      // I2: 切った理由を並べる。行で切ったこととサイズで切ったことは同時に起こる——
+      // どちらかだけ出すと、offset を進めれば全部読めるはずの所で読み落とす
+      const notes: string[] = [];
+      if (to < totalLines || cutMidLine) {
+        const shownTo = cutMidLine ? `${to} 行目の途中` : `${to} 行目`;
+        const rest =
+          to < totalLines
+            ? `以降 ${totalLines - to} 行を省略。` +
+              `続きは file.read({ path: "${params.path}", offset: ${to + 1} }) で読める`
+            : "";
+        notes.push(`… ${from}〜${shownTo}まで（全 ${totalLines} 行）。${rest}`);
+      }
+      if (cutMidLine) {
+        // offset は行単位なので、この行の残りへは進めない。**進めないことを言う**——
+        // 「offset を上げれば続きが取れる」と誤らせない（中身を追うなら file.grep）
+        notes.push(
+          `（${to} 行目だけで ${MAX_BYTES} bytes を超える。この行の残りは file.read では読めない）`
+        );
+      } else if (to < Math.min(totalLines, from + limit - 1)) {
+        notes.push(`（1回に返せるのは ${MAX_BYTES} bytes まで。maxLines より手前で打ち切った）`);
+      }
+
+      const text = [content, ...notes].join("\n");
       const details = {
         path: params.path,
         binary: false,
         size: stat.size,
-        content: shown.join("\n"),
-        totalLines: allLines.length,
-        shownLines: shown.length,
-        truncated: notes.length > 0,
+        content,
+        totalLines,
+        from,
+        to,
+        shownLines: to - from + 1,
+        /** 最後の行を途中で切ったか（1行がサイズ上限より大きいとき）。 */
+        partialLine: cutMidLine,
+        truncated,
       };
       return { content: [{ type: "text" as const, text }], details };
     },

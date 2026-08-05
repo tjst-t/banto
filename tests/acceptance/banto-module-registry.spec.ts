@@ -10,7 +10,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Type } from "typebox";
-import { JsonlMemoryStore } from "@banto/core";
+import { JsonlMemoryStore, ScopedMemory } from "@banto/core";
 
 import {
   PlaceRegistry,
@@ -393,8 +393,8 @@ describe("[task-0031] studio モジュール", () => {
 
   const studio = (): ReturnType<typeof createStudioModule> =>
     createStudioModule({
-      memory,
-      skills: [
+      memory: new ScopedMemory(memory),
+      skills: () => [
         {
           skill: {
             name: "work-handoff",
@@ -443,7 +443,7 @@ describe("[task-0031] studio モジュール", () => {
     assert.deepEqual(studio().tools, []);
     assert.deepEqual(
       studio().internalTools!.map((t) => t.name).sort(),
-      ["studio.memory", "studio.skills"]
+      ["studio.memory", "studio.memory.forget", "studio.memory.scopes", "studio.skills"]
     );
   });
 

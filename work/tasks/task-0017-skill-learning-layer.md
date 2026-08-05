@@ -3,10 +3,10 @@ id: task-0017
 type: task
 kind: feature
 title: SKILLの学習層（記憶の第二層）とオーバーライドの陳腐化検出
-status: draft
+status: done
 parent: epic-0001
 depends: [task-0015]
-refs: [adr-0010]
+refs: [adr-0010, proposal-2026-08-05-context-strategy]
 scope:
   paths: ["packages/banto-core/src/**", "packages/banto-host/**", "tests/acceptance/**"]
 acceptance:
@@ -30,3 +30,17 @@ ADR-0010 決定26 より。SKILLは「番頭核の既定・モジュールの既
 - 蒸留の自動化（どのタイミングで何を蒸留するかの判断）。まず手動で学習層に書ける状態を作り、自動化はその後
 - 記憶の第三層（FTS5全文検索＋セッション横断検索）
 - 既定側へのフィードバック（改善提案）の自動生成。`spec-improvement-loop` 層Aの流れに乗せるが、本タスクは検出までとする
+
+## 実装（2026-08-05）
+
+ADR-0010 決定47 の一部として実装。提案 `docs/proposals/2026-08-05-context-strategy.md` §5 の6番目。
+
+- `packages/banto-host/src/skill-learning.ts`: `LearnedSkillStore`（保存先は `BANTO_DATA_DIR/skills/`。**リポジトリ内には置かない**——決定38b と同じ理由）、`detectStaleOverrides`、`skillHash`
+- `skill-tools.ts`: `skill.learn` / `skill.unlearn` を追加（学習層を渡したときだけ登録される）
+- `host-session.ts`: `resolveSkills` の**先頭**に学習層を置く（先勝ちなので既定を上書きする＝a2）
+- `bin.ts`: 起動時に一度 `detectStaleOverrides` を回し、見つかれば `BANTO_DATA_DIR/incidents/` へ incident を書いてログに出す（a4・P3）
+- 検証: `tests/acceptance/skill-learning.spec.ts`（23件）
+
+**a3 の記録方法**: 元にした既定の本文の sha256（先頭16桁）と由来を `baseline.json` に持つ。壊れていたら黙って無視せずエラーにする（I2）——ここを飛ばすと陳腐化の検出が静かに止まる。
+
+**スコープ外のまま残したもの**: 蒸留の自動化（いつ何を学習層へ書くかの判断）。番頭が `skill.learn` を明示的に呼ぶ形までを実装した。

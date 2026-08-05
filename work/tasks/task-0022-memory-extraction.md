@@ -3,10 +3,10 @@ id: task-0022
 type: task
 kind: feature
 title: 記憶の自動抽出（背後のLLMで会話から記憶すべきことを取り出す）
-status: draft
+status: done
 parent: epic-0001
 depends: [task-0007]
-refs: [adr-0010]
+refs: [adr-0010, proposal-2026-08-05-context-strategy]
 scope:
   paths: ["packages/banto-core/src/**", "packages/banto-host/**", "tests/acceptance/**"]
 acceptance:
@@ -36,3 +36,26 @@ ADR-0010 決定10 (b)(c) と決定28 より。現状の記憶は「覚えて」�
 - SKILL の自動蒸留（手続き記憶側。task-0017）
 - 記憶の第三層（FTS5全文検索によるセッション横断検索）
 - 抽出プロンプトの精度改善（まず動く形を作り、改善は改善ループで扱う）
+
+## 実装（2026-08-05）
+
+ADR-0010 決定47(c)(d) として、決定28 の設計に**2つの制約を足して**実装した。
+
+### 足した制約（決定47(d)）
+
+「Useful Memories Become Faulty When Continuously Updated by LLMs」（arXiv 2605.12978）が、LLM による記憶の反復統合が**記憶なしのベースラインを下回る**ところまで劣化することを示している。決定28 の骨格（区切りで抽出・安いモデル・注入は次のセッション）は正しいが、そのまま「会話から記憶をまとめ直す」形で作るとこの劣化に突っ込む。
+
+1. **抽出器の出力は差分だけ**（`ADD` / `FIX`）。記憶全体をまとめ直すプロンプトは作らない
+2. **発火は章の境界だけ**（explicit gate）。決定28 の「圧縮境界」は、自動コンパクションを切った（決定47b）ため章の境界と読み替える
+
+### 受け入れ条件の対応
+
+- a1: `ChapterKeeper` が章を閉じるときに `extractMemories` を呼ぶ（`chapters.ts`）
+- a2: `origin: "extracted"` で保存（`memory.ts` の `MemoryOrigin`）。プロンプトでは `[抽出]` の印が付く
+- a3: 材料は `renderTranscript` が絞った PO の発言と番頭の発話だけ。ツール結果は入らない（検証あり）
+- a4: 独立した `completeSimple` 呼び出し。本セッションのプレフィックスに触らない。注入は次のセッション開始時のみ
+- a5: 抽出は `await` しない。失敗はログに残すが会話は続く（`chapters.ts`）
+- a6: `applyMemoryDeltas` が本文の正規化（空白・大小文字）で重複を弾く
+- a7: `MemoryStore.forget` を追加。削除は追記で表し、有効な記憶は読み出しで導く（D3）
+
+検証: `tests/acceptance/memory-extraction.spec.ts`（13件）

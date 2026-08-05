@@ -48,9 +48,12 @@ BANTO_PROVIDER=opencode BANTO_MODEL=deepseek-v4-flash-free npm run dev
 |---|---|---|
 | `BANTO_PROVIDER` / `BANTO_MODEL` | （pi の既定解決） | 番頭が使うLLM。**明示するのを勧める**——省略すると `auth.json` 側の解決に委ねられ、意図しないプロバイダが選ばれることがある |
 | `BANTO_DATA_DIR` | `./.banto` | 記憶・会話・台帳・設定の置き場。**番頭はここに書けない** |
-| `BANTO_PLACES` | `workspace:<cwd>` | 番頭が作業できる場所。`id:/絶対パス` は読み取り専用、`id:/絶対パス:docs/**,work/**` はその範囲だけ書き込み可。`;` 区切りで複数 |
+| `BANTO_PLACES` | `workspace:<cwd>` | 番頭が作業できる場所。`id:/絶対パス` は読み取り専用、`id:/絶対パス:docs/**,work/**` はその範囲だけ書き込み可。`;` 区切りで複数。**`desk`（成果物の置き場所）は指定しなくても必ずある**——既定は `~/banto-desk`（読み取り専用）で、同じ id を書けば場所も書き込み範囲も上書きできる |
 | `BANTO_HOST_BIND` | `127.0.0.1` | 待ち受けるアドレス。**広げる前に下の「外に出すとき」を読むこと** |
 | `SOPS_AGE_KEY_FILE` | （なし） | 検証環境の credentials を復号する鍵の場所 |
+| `BANTO_CHAPTER_THRESHOLD` | `0.6` | 会話を「章」で区切る閾値（文脈長に対する割合）。番頭はここに達したターンの終わりで引き継ぎ資料を書き、文脈を畳む |
+| `BANTO_CHAPTER_MODEL` | （会話と同じモデル） | 引き継ぎ資料と記憶の抽出に使うモデル。`provider/model-id`。**安いモデルを指定してよい**——会話とは別の呼び出しなので、本編のキャッシュに触らない |
+| `BANTO_ARTIFACT_THRESHOLD` | `2000` | ツール出力を退避に回す大きさ（文字数）。これを超えた出力は文脈に載せず、栞だけ返して `artifact.read` で読ませる |
 
 自分自身（このリポジトリ）を番頭に触らせる例：
 

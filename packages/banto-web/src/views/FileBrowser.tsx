@@ -51,6 +51,9 @@ import {
   type Scheme,
 } from "./fileHighlight.js";
 
+/** 「続きを読む」1回で足す行数。ホスト側のサイズ上限に当たればそこで止まる。 */
+const READ_MORE_LINES = 2000;
+
 interface Entry {
   name: string;
   type: "dir" | "file";
@@ -69,6 +72,11 @@ interface FileContent {
   content?: string;
   totalLines?: number;
   shownLines?: number;
+  /** 返ってきた範囲（1始まり）。続きを読むときの起点になる。 */
+  from?: number;
+  to?: number;
+  /** 最後の行を途中で切ったか（1行がホストのサイズ上限より大きいとき）。 */
+  partialLine?: boolean;
   truncated?: boolean;
 }
 interface StatInfo {
@@ -583,12 +591,65 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
     file !== undefined && place !== undefined
   );
 
+  /**
+   * 「続きを読む」で継ぎ足した分。file.read は1回に一定量しか返さないので、
+   * 続きは offset を進めて取り、画面では前の分に繋げる。
+   */
+  const [more, setMore] = useState<{
+    path: string;
+    text: string;
+    to: number;
+    partialLine: boolean;
+    loading: boolean;
+    error?: string;
+  }>();
+  const moreHere = more?.path === file ? more : undefined;
+  /** ここまで読めている行。継ぎ足していればその末尾。 */
+  const readTo = moreHere?.to ?? content.data?.to;
+  const fileTotalLines = content.data?.totalLines;
+  const partialLine = moreHere?.partialLine ?? content.data?.partialLine === true;
+  // 途中で切った行の残りへは進めない（offset は行単位）。ボタンは次の行があるときだけ
+  const hasMore =
+    content.data?.binary === false &&
+    readTo !== undefined &&
+    fileTotalLines !== undefined &&
+    readTo < fileTotalLines;
+
+  const readMore = async (): Promise<void> => {
+    if (file === undefined || place === undefined || readTo === undefined) return;
+    const base = moreHere?.text ?? "";
+    setMore({ path: file, text: base, to: readTo, partialLine, loading: true });
+    try {
+      const next = await callModuleTool<FileContent>(endpoint, "file.read", {
+        path: file,
+        place,
+        offset: readTo + 1,
+        maxLines: READ_MORE_LINES,
+      });
+      setMore({
+        path: file,
+        text: `${base}\n${next.content ?? ""}`,
+        to: next.to ?? readTo,
+        partialLine: next.partialLine === true,
+        loading: false,
+      });
+    } catch (err) {
+      // I2: 読めなかったことを黙って飲まない。継ぎ足し済みの分は残す
+      setMore({ path: file, text: base, to: readTo, partialLine, loading: false, error: String(err) });
+    }
+  };
+
   // ファイル切替でトグル状態をリセットする（task-0051 a4）
   useEffect(() => {
     setMode("preview");
     setWrap(true);
     scrollFrac.current = 0;
   }, [file]);
+
+  // 基点を取り直したら継ぎ足しは捨てる。前の基点に繋げた文が残ると行がずれる
+  useEffect(() => {
+    setMore(undefined);
+  }, [file, lineTo]);
 
   // ---- プレビュー種別と表示モード ----
   const kind = file ? kindOfPath(file) : "plain";
@@ -597,7 +658,23 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
   // 2000行超のファイルは preview を無効化して source に落とす（task-0050 a4）
   const previewAllowed = previewable && totalLines <= PREVIEW_MAX_LINES;
   const effectiveMode = previewAllowed ? mode : "source";
-  const contentText = content.data?.content ?? "";
+  const contentText = `${content.data?.content ?? ""}${moreHere?.text ?? ""}`;
+  /**
+   * 帯の文言。**どこまで読めているかを言い切る**——「すべて読み込みました」と
+   * 「途中で切れています」を混ぜると、見えていないものが有るのか無いのか分からなくなる。
+   */
+  const readNote = ((): string => {
+    if (content.data?.truncated !== true) {
+      return `${totalLines} 行と大きいため、整形表示ではなく原文で出しています。`;
+    }
+    if (hasMore) {
+      const cut = partialLine ? ` ${readTo} 行目は1行が大きすぎるため、途中までしか出せません。` : "";
+      return `大きいファイルのため ${readTo} / ${fileTotalLines} 行まで読んでいます。${cut}`;
+    }
+    return partialLine
+      ? `最後の ${readTo} 行目まで届きましたが、1行が大きすぎるため途中までしか出せません。`
+      : `${fileTotalLines} 行すべて読み込みました。`;
+  })();
   const codeLang = kind === "code" ? codeLangOfPath(file ?? "") : undefined;
   const csvDelimiter: "," | "\t" = extOfPath(file ?? "") === "tsv" ? "\t" : ",";
 
@@ -836,10 +913,25 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
       </div>
 
       {(content.data?.truncated || (previewable && !previewAllowed)) && (
-        <div className="cv-note is-warn" style={{ margin: "8px 12px 0" }}>
-          {content.data?.truncated
-            ? `大きいファイルのため ${content.data.shownLines} / ${content.data.totalLines} 行だけ読んでいます。`
-            : `${totalLines} 行と大きいため、整形表示ではなく原文で出しています。`}
+        // 読み切ったら警告色をやめる。見えていないものが無いのに注意を引き続けない
+        <div
+          className={`cv-note${content.data?.truncated === true && !hasMore && !partialLine ? "" : " is-warn"}`}
+          style={{ margin: "8px 12px 0" }}
+        >
+          <span style={{ flex: 1 }}>
+            {readNote}
+            {moreHere?.error !== undefined && ` 続きが読めませんでした: ${moreHere.error}`}
+          </span>
+          {hasMore && (
+            <button
+              type="button"
+              className="cv-btn is-small"
+              onClick={() => void readMore()}
+              disabled={moreHere?.loading === true}
+            >
+              {moreHere?.loading === true ? "読んでいます…" : "続きを読む"}
+            </button>
+          )}
         </div>
       )}
 

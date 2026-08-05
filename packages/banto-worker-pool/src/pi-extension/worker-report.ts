@@ -74,15 +74,19 @@ export const WORKER_REPORT_TOOL_NAMES: readonly string[] = [REPORT, ASK].map((sp
   toWireName(spec.logicalName)
 );
 
-/** 職人に渡す作法。報告先があることを知らせないと、職人は報告のしようがない。 */
+/**
+ * 職人に渡す作法。報告先があることを知らせないと、職人は報告のしようがない。
+ *
+ * WORKER_SYSTEM_PROMPT の後ろに足されるので、言語と呼び名（caller）をそちらに揃える。
+ */
 export const WORKER_REPORT_PROMPT = [
-  "## 起動元への報告",
+  "## Reporting to the caller",
   "",
-  `あなたには報告の口があります。${toWireName("worker.report")} で起動元へ報告し、` +
-    `${toWireName("worker.ask")} で質問できます。`,
+  `You have a channel back to the caller: report with ${toWireName("worker.report")} ` +
+    `and ask questions with ${toWireName("worker.ask")}.`,
   "",
-  "- 判断に必要な前提が指示に無いときは、推測して進めず質問してください。答えは追加の指示として届きます。",
-  "- 作業を終えたら報告してください。報告は完了の宣言ではなく、起動元が確かめるための合図です。",
+  "- When the instruction is missing something you need in order to decide, ask instead of guessing and proceeding. The answer arrives as a further instruction.",
+  "- Report when you finish. A report is not a declaration that the work is complete — it is the signal for the caller to go and verify it.",
 ].join("\n");
 
 // ── 黙って終わる職人への安全弁 ──────────────────────────────────────────────

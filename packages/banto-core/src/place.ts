@@ -35,6 +35,136 @@ export interface Place {
    * それ自体を書き換えて自分の権限を広げられる（決定38b・I1）。
    */
   writable?: readonly string[];
+  /**
+   * この場所が属する親の場所のID（任意。PO裁定 2026-08-05）。
+   *
+   * **ワークツリーは親リポジトリを指す。** 場所としては別（パスが違い、書き込み範囲も別に
+   * 決まる）だが、**統治の単位＝プロジェクトとしては同じ**——`spec-multi-project` §1 の
+   * 「統治の単位はプロジェクト」に照らすと、同じリポジトリのブランチを切り替えただけで
+   * プロジェクトの記憶（ADR-0003）が見えなくなるのは筋が通らない。
+   *
+   * **砦には効かない。** 書き込み許可・範囲チェックは場所ごとのままで、親を持つことで
+   * 権限が広がることはない（決定38：許可は場所ごとに PO が明示する）。
+   */
+  parent?: string;
+}
+
+/**
+ * その場所が属するプロジェクトのID（ADR-0003 の第二層の単位）。
+ *
+ * 親があれば親、無ければ自分。**記憶の層を決めるのはここ1箇所**——呼び出し側が
+ * それぞれ `parent ?? id` と書くと、1箇所書き忘れた時点でワークツリーが別の
+ * プロジェクトとして記憶を持ち始める。
+ */
+export function projectIdOf(place: Pick<Place, "id" | "parent">): string {
+  return place.parent ?? place.id;
+}
+
+/**
+ * 場所の一覧を、プロジェクト（統治の単位）の一覧に畳む。
+ *
+ * ワークツリーが5本あっても、記憶の上では親リポジトリ1つとして現れる。
+ * 並び順は入力のまま（先に出てきた親の位置を保つ）。
+ */
+export function projectScopesOf(
+  places: readonly Place[]
+): Array<{ id: string; label: string }> {
+  return resolveProjects(places).scopes;
+}
+
+/** 場所の一覧をプロジェクトへ畳んだ結果。 */
+export interface ProjectResolution {
+  /** 場所ID → プロジェクトID。記憶の層はこれで決まる。 */
+  idByPlace: Map<string, string>;
+  /** プロジェクトの一覧（表示用）。入力の並び順を保つ。 */
+  scopes: Array<{ id: string; label: string }>;
+  /**
+   * 畳んだ別名（プロジェクトID → 同じ場所を指す別のID）。
+   *
+   * **空でないことは異常ではない**が、記憶のファイルが別名側にも残っていないかは
+   * 呼び出し側が確かめること（黙って片方だけ読むと、覚えたはずのことが消えて見える）。
+   */
+  aliases: Map<string, string[]>;
+}
+
+/**
+ * 場所をプロジェクト（統治の単位）へ畳む。**2段階**（PO裁定 2026-08-05）:
+ *
+ * 1. **親子**——ワークツリーは親リポジトリへ（`parent`）
+ * 2. **同じパス**——`BANTO_PLACES` の静的な場所と repo-manager が出す同じリポジトリのように、
+ *    **別名で同じディレクトリを指しているもの**は1つのプロジェクトへ
+ *
+ * 2 が要る理由：同じ場所なのに名前が2つあると、どちらの名前で覚えたかで記憶が見えなくなる。
+ * **畳むのは記憶の層だけで、砦は場所ごとのまま**——書き込み許可は場所ごとに PO が明示する
+ * （決定38）ので、畳んだことで権限が広がることはない。
+ *
+ * 代表IDは**辞書順で最小のもの**を採る。並び順や登録の仕方に依らず決まる規則にしておかないと、
+ * 設定を触ったときに代表が入れ替わり、過去の記憶が別のIDの下に取り残される。
+ *
+ * @param pathKey 場所の同一性を判定する鍵。既定は `place.path` の文字列一致。
+ *   **シンボリックリンクを解決したいときは呼び出し側が渡す**（ここは fs に依存しない・D6）
+ */
+export function resolveProjects(
+  places: readonly Place[],
+  pathKey: (place: Place) => string = (place) => place.path
+): ProjectResolution {
+  // ① 親子。親が一覧に無くても、宣言された親IDをそのまま使う
+  const declaredOf = new Map<string, string>();
+  for (const place of places) declaredOf.set(place.id, projectIdOf(place));
+
+  // ② 同じパス。畳む相手は「宣言された親ID」として一覧に**実在する**場所だけ
+  //    （親が一覧に無いものはパスが分からないので畳めない）
+  const byId = new Map(places.map((p) => [p.id, p]));
+  const groupByPath = new Map<string, string[]>();
+  for (const declared of new Set(declaredOf.values())) {
+    const place = byId.get(declared);
+    if (!place) continue;
+    const key = pathKey(place);
+    const group = groupByPath.get(key) ?? [];
+    group.push(declared);
+    groupByPath.set(key, group);
+  }
+  /** 代表ID。辞書順で最小＝並び順に依らない */
+  const canonicalOf = new Map<string, string>();
+  const aliases = new Map<string, string[]>();
+  for (const group of groupByPath.values()) {
+    const sorted = [...group].sort();
+    const canonical = sorted[0]!;
+    for (const id of group) canonicalOf.set(id, canonical);
+    const others = sorted.slice(1);
+    if (others.length > 0) aliases.set(canonical, others);
+  }
+
+  const idByPlace = new Map<string, string>();
+  for (const [placeId, declared] of declaredOf) {
+    idByPlace.set(placeId, canonicalOf.get(declared) ?? declared);
+  }
+
+  // 表示用の一覧。入力の並び順を保つ（PO が見慣れた順が変わらない）
+  const scopes: Array<{ id: string; label: string }> = [];
+  const seen = new Set<string>();
+  for (const place of places) {
+    const id = idByPlace.get(place.id)!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    // 代表そのものが一覧にあれば、その label を使う。
+    //
+    // 無ければ**IDから作る**——子の label をそのまま流用すると、親の枠に
+    // 「…（ワークツリー: feat/x）」と出て、あたかもそのブランチの記憶であるかのように読める。
+    // 実際には親リポジトリ全体の記憶なので、名乗りが中身と食い違う。
+    scopes.push({ id, label: byId.get(id)?.label ?? labelFromId(id) });
+  }
+
+  return { idByPlace, scopes, aliases };
+}
+
+/**
+ * IDから表示名を作る。ホスト名の段を落とす（`github.com/tjst-t/banto` → `tjst-t/banto`）。
+ * 段が足りないものはそのまま——短くして取り違えるより読みにくい方がよい。
+ */
+function labelFromId(id: string): string {
+  const segments = id.split("/");
+  return segments.length >= 3 ? segments.slice(1).join("/") : id;
 }
 
 /**

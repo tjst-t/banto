@@ -100,6 +100,31 @@ describe("[task-0039/a1] ghq のリポジトリと gwq のワークツリーが�
     );
     assert.deepEqual(worktrees.map((w) => w.branch), ["feat"]);
   });
+
+  it("[imp] ワークツリー0件は正常として扱う（gwq は --json でも JSON を返さない）", async () => {
+    const worktrees = await listGwqWorktrees(
+      fakeRunner({
+        "gwq config get worktree.basedir": "~/worktrees\n",
+        // 実測（2026-08-05）：0件のとき人向けの1行を標準出力に出し、終了コードは 0
+        "gwq list -g --json": "No worktrees found in /home/u/worktrees\n",
+      })
+    );
+    assert.deepEqual(worktrees, [], "例外にせず0件を返すこと");
+  });
+
+  it("[imp] 0件以外の非JSONは、黙って0件にせず例外のまま（I2）", async () => {
+    await assert.rejects(
+      () =>
+        listGwqWorktrees(
+          fakeRunner({
+            "gwq config get worktree.basedir": "~/worktrees\n",
+            "gwq list -g --json": "worktrees:\n  - path: /home/u/worktrees/a\n",
+          })
+        ),
+      /解釈できません/,
+      "形が変わったことには気づけること"
+    );
+  });
 });
 
 describe("[task-0039/a2] 独自の台帳を持たない（D3）", () => {

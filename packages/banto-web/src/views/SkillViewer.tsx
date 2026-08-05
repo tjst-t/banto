@@ -1,10 +1,14 @@
 /**
  * SKILLビューア（studio モジュール提供・ADR-0010 決定25・26）。
  *
- * 番頭の手続き記憶を見せる。どんな手順を知っていて、それがどこから来たか（番頭核か、
- * どのモジュールか＝決定26 の層）が分かる。
+ * 番頭の手続き記憶を見せる。どんな手順を知っていて、それがどこから来たか（**番頭が学んだ
+ * ものか**、番頭核か、どのモジュールか＝決定26 の3層）が分かる。
  *
- * **閲覧専用。** SKILL の書き込みは決定26 の学習層（task-0017）に属する。
+ * **学習層は同名の既定を上書きする**（決定26）。ここに出るのが実際に効いている版で、
+ * 隠れている既定があることも分かるようにする——オーバーライドが既定の改良を黙って隠すのが
+ * 決定26 の名指しした事故なので、画面がそれを見えなくしてはいけない。
+ *
+ * **閲覧専用。** 学習層への書き込みは番頭の `skill.learn` が行う（task-0017）。
  */
 
 import { useMemo, useState } from "react";
@@ -28,7 +32,7 @@ import {
 interface SkillEntry {
   name: string;
   description: string;
-  /** 決定26 の層。番頭核なら core、モジュール提供ならモジュール名 */
+  /** 決定26 の層。番頭が学んだものなら learned、番頭核なら core、モジュール提供ならモジュール名 */
   origin: string;
   body?: string;
   error?: string;
@@ -38,7 +42,14 @@ interface SkillList {
 }
 
 function originLabel(origin: string): string {
+  if (origin === "learned") return "番頭が学んだ";
   return origin === "core" ? "番頭核" : origin;
+}
+
+/** 学んだものを目立たせる。既定と同じ見え方だと、上書きされていることに気づけない。 */
+function originTone(origin: string): "accent" | "ok" | "neutral" {
+  if (origin === "learned") return "ok";
+  return origin === "core" ? "accent" : "neutral";
 }
 
 /**
@@ -87,7 +98,9 @@ export function SkillViewer({ params, endpoint }: CanvasViewProps): React.ReactE
           <Loading rows={4} />
         ) : shown.length === 0 ? (
           <EmptyState icon="📘" title={filter ? "当てはまる SKILL はありません" : "SKILL はありません"}>
-            {filter ? "絞り込みを外すと全部出ます。" : "番頭核とモジュールが出す手順がここに並びます。"}
+            {filter
+              ? "絞り込みを外すと全部出ます。"
+              : "番頭核とモジュールが出す手順、番頭が学んだ手順がここに並びます。"}
           </EmptyState>
         ) : (
           <ul className="cv-list">
@@ -122,7 +135,14 @@ export function SkillViewer({ params, endpoint }: CanvasViewProps): React.ReactE
     <>
       <div className="cv-head">
         <span className="cv-head-title">{current.name}</span>
-        <Badge tone={current.origin === "core" ? "accent" : "neutral"}>
+        <Badge
+          tone={originTone(current.origin)}
+          title={
+            current.origin === "learned"
+              ? "番頭が実務の中で学んだ版。同名の既定があれば、それを上書きしている（決定26）"
+              : undefined
+          }
+        >
           {originLabel(current.origin)}
         </Badge>
       </div>

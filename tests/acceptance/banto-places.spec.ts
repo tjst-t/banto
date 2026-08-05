@@ -16,11 +16,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import {
+  DESK_PLACE_ID,
   PlaceRegistry,
   assertWritable,
   broadlyWritable,
   createFileTools,
   createStaticPlaceProvider,
+  defaultDeskPlace,
+  ensureDeskDir,
+  withDefaultDesk,
   guardPathArg,
   placeScopedTools,
   resolveInPlace,
@@ -364,5 +368,49 @@ describe("[決定36g] 場所の指定が欠けていても弾く", () => {
     // 登録された場所なら通る
     await guarded.execute({ worktreePath: repoA });
     assert.equal(ran, true);
+  });
+});
+
+/**
+ * 成果物置き場（書斎）の既定（PO裁定 2026-08-05）。
+ *
+ * **id が必ずあること**が値打ち。番頭の SKILL は配布物に入るので、実体のパスを書くと
+ * 人やデプロイ先が変わるたびに書き換えが要る——SKILL は `desk` だけを指す。
+ */
+describe("[desk] 成果物置き場の既定", () => {
+  it("[desk] 設定に無ければ既定の書斎が足される", () => {
+    const result = withDefaultDesk([{ id: "workspace", path: "/tmp/ws" }]);
+    const desk = result.find((c) => c.id === DESK_PLACE_ID);
+    assert.ok(desk, "desk が足されること");
+    assert.equal(desk!.path, path.join(os.homedir(), "banto-desk"));
+  });
+
+  it("[desk] 既定は読み取り専用（決定38a：場所があることと書けることは別）", async () => {
+    assert.equal(defaultDeskPlace().writable, undefined);
+    const [desk] = await createStaticPlaceProvider([defaultDeskPlace()]).list();
+    assert.equal(desk?.writable, undefined, "既定で書ける場所を作らない");
+  });
+
+  it("[desk] 同じ id が設定にあれば上書きが勝つ（パスも書き込み範囲も）", () => {
+    const configured = { id: DESK_PLACE_ID, path: "/tmp/my-desk", writable: ["reports/**"] };
+    const result = withDefaultDesk([configured]);
+    assert.equal(result.filter((c) => c.id === DESK_PLACE_ID).length, 1, "二重にしない");
+    assert.deepEqual(result.find((c) => c.id === DESK_PLACE_ID), configured);
+  });
+
+  it("[desk] 実体が無ければ作る。あるときは触らず undefined を返す", () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "banto-desk-"));
+    const target = path.join(base, "nested", "desk");
+    const configs = [{ id: DESK_PLACE_ID, path: target }];
+
+    assert.equal(ensureDeskDir(configs), path.resolve(target), "作ったパスを返す");
+    assert.ok(fs.statSync(target).isDirectory());
+    assert.equal(ensureDeskDir(configs), undefined, "既にあれば黙って何もしない");
+
+    fs.rmSync(base, { recursive: true, force: true });
+  });
+
+  it("[desk] 書斎が無い設定なら何も作らない", () => {
+    assert.equal(ensureDeskDir([{ id: "workspace", path: "/tmp/ws" }]), undefined);
   });
 });

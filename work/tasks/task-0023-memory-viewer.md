@@ -3,10 +3,10 @@ id: task-0023
 type: task
 kind: feature
 title: 記憶ビューア（キャンバスGUI。一覧・出所の可視化・削除）
-status: draft
+status: done
 parent: epic-0002
 depends: [task-0022]
-refs: [adr-0010]
+refs: [adr-0010, proposal-2026-08-05-context-strategy]
 scope:
   paths: ["packages/banto-host/**", "packages/banto-web/**", "tests/acceptance/**"]
 acceptance:
@@ -27,3 +27,29 @@ ADR-0010 決定28 より。抽出した記憶を自動で有効にする代わ�
 
 - 記憶の編集（削除と訂正で足りるか使って判断する）
 - 第三層の検索面
+
+## 実装（2026-08-05）
+
+task-0022（自動抽出）を実装したことで、この面が**決定28 の条件そのもの**になった——「自動で有効にする。ただし出所を残し、POが消せるようにする」の後半がここ。抽出が動いている状態でこの面が無いのは決定28 を満たさないため、同時に実装した。
+
+### 受け入れ条件の対応
+
+- a1: `MemoryViewer` が `origin`（explicit / extracted）を「抽出」バッジで見せる。種別は事実／好み／習慣の3つ（決定31）。`validFrom` も出る
+- a2: 各カードの「忘れる」ボタン →`studio.memory.forget` →`MemoryStore.forget`。削除は追記で表され、有効な記憶は読み出しで導く（D3）。押す前に確認を挟む
+- a3: 既定は有効な記憶だけ。トグルで訂正済み・忘れた記憶も出る。**有効かどうかはサーバが `active` として付ける**——同じ規則を画面で再実装すると割れる（D3/D5）
+- a4: `useModuleTool` / `callModuleTool` 経由（決定25）。番頭の `memory.*` Tool は呼ばない
+- a5: 通る
+
+### 併せて入れたもの（ADR-0003）
+
+二層を実装したので、ビューアに**層の切り替え**（あなた（人）／各プロジェクト）を足した。`studio.memory.scopes` が切り替え先を返す。人とプロジェクトの記憶を1つの一覧に混ぜない——混ぜた時点で「横断させない」が形骸化する。
+
+### task-0031 の「閲覧専用」から一歩出た
+
+studio モジュールは閲覧専用として起票されていた（task-0031）が、決定28 が削除の面を要求しているため `studio.memory.forget` を足した。SKILL 側は閲覧専用のまま（書き込みは番頭の `skill.learn`）。
+
+検証: `tests/acceptance/studio-memory-gui.spec.ts`（15件）
+
+### 残り
+
+- **実ブラウザでの確認は未実施。** データ側は受け入れテストで検証済みだが、画面の見え方・「忘れる」の操作感は確かめていない

@@ -14,7 +14,7 @@ import * as path from "node:path";
 import { getModel } from "@mariozechner/pi-ai";
 import { AuthStorage, ModelRegistry, SessionManager } from "@mariozechner/pi-coding-agent";
 
-import { JsonlMemoryStore } from "@banto/core";
+import { JsonlMemoryStore, ScopedMemory } from "@banto/core";
 import {
   bantoSkillsDir,
   createBantoHostSession,
@@ -41,10 +41,13 @@ function textOf(result: { content: ReadonlyArray<{ type: string }> }): string {
 
 let dir: string;
 let store: JsonlMemoryStore;
+/** ADR-0003 の二層。この検証は人の記憶だけを使う（プロジェクトの記憶は別の describe） */
+let memory: ScopedMemory;
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-host-memory-"));
   store = new JsonlMemoryStore(path.join(dir, "memory.jsonl"));
+  memory = new ScopedMemory(store);
 });
 
 afterEach(() => {
@@ -59,7 +62,7 @@ async function makeSession(overrides: Record<string, unknown> = {}) {
   return createBantoHostSession({
     systemPrompt: "あなたは番頭です。",
     tools: [],
-    memory: store,
+    memory,
     cwd: process.cwd(),
     model,
     authStorage,
@@ -71,12 +74,12 @@ async function makeSession(overrides: Record<string, unknown> = {}) {
 
 describe("[task-0008/a1] memory.save / memory.recall Tools", () => {
   it("[task-0008/a1] follow the namespace convention (決定9)", () => {
-    const names = createMemoryTools(store).map((t) => t.name);
-    assert.deepEqual(names, ["memory.save", "memory.recall"]);
+    const names = createMemoryTools(memory).map((t) => t.name);
+    assert.deepEqual(names, ["memory.save", "memory.recall", "memory.search", "memory.forget"]);
   });
 
   it("[task-0008/a1] memory.save persists through the MemoryStore", async () => {
-    const [saveTool] = createMemoryTools(store);
+    const [saveTool] = createMemoryTools(memory);
     const result = await saveTool!.execute({ kind: "preference", text: "POは統合UIのモックを好む" });
 
     assert.match(textOf(result), /saved memory/);
@@ -85,7 +88,7 @@ describe("[task-0008/a1] memory.save / memory.recall Tools", () => {
 
   it("[task-0008/a1] memory.save with supersedes corrects an existing memory", async () => {
     const original = store.save({ kind: "preference", text: "古い好み" });
-    const [saveTool] = createMemoryTools(store);
+    const [saveTool] = createMemoryTools(memory);
 
     await saveTool!.execute({ kind: "preference", text: "新しい好み", supersedes: original.id });
 
@@ -93,7 +96,7 @@ describe("[task-0008/a1] memory.save / memory.recall Tools", () => {
   });
 
   it("[task-0008/a1] memory.save on an unknown supersedes id propagates the error (I2)", async () => {
-    const [saveTool] = createMemoryTools(store);
+    const [saveTool] = createMemoryTools(memory);
     await assert.rejects(
       () =>
         saveTool!.execute({ kind: "preference", text: "訂正", supersedes: "no-such-id" }),
@@ -104,7 +107,7 @@ describe("[task-0008/a1] memory.save / memory.recall Tools", () => {
   it("[task-0008/a1] memory.recall returns active memories and filters by kind", async () => {
     store.save({ kind: "preference", text: "好みA" });
     store.save({ kind: "habit", text: "習慣B" });
-    const [, recallTool] = createMemoryTools(store);
+    const [, recallTool] = createMemoryTools(memory);
 
     const all = await recallTool!.execute({});
     assert.match(textOf(all), /好みA/);
@@ -118,7 +121,7 @@ describe("[task-0008/a1] memory.save / memory.recall Tools", () => {
   it("[task-0008/a1] memory.recall excludes superseded memories", async () => {
     const original = store.save({ kind: "preference", text: "古い前提" });
     store.supersede(original.id, { kind: "preference", text: "新しい前提" });
-    const [, recallTool] = createMemoryTools(store);
+    const [, recallTool] = createMemoryTools(memory);
 
     const out = await recallTool!.execute({});
     assert.doesNotMatch(textOf(out), /古い前提/);
@@ -126,7 +129,7 @@ describe("[task-0008/a1] memory.save / memory.recall Tools", () => {
   });
 
   it("[task-0008/a1] memory.recall on an empty store says so rather than erroring", async () => {
-    const [, recallTool] = createMemoryTools(store);
+    const [, recallTool] = createMemoryTools(memory);
     const out = await recallTool!.execute({});
     assert.equal(textOf(out), "記憶なし");
   });
@@ -134,7 +137,7 @@ describe("[task-0008/a1] memory.save / memory.recall Tools", () => {
 
 describe("[task-0008/a3] memory injection into the system prompt", () => {
   it("[task-0008/a3] renderMemoryForPrompt is empty when there is nothing remembered", () => {
-    assert.equal(renderMemoryForPrompt(store), "");
+    assert.equal(renderMemoryForPrompt(memory), "");
   });
 
   it("[task-0008/a3] renderMemoryForPrompt groups by kind and omits superseded", () => {
@@ -143,9 +146,9 @@ describe("[task-0008/a3] memory injection into the system prompt", () => {
     const stale = store.save({ kind: "preference", text: "古い好み" });
     store.supersede(stale.id, { kind: "preference", text: "訂正後の好み" });
 
-    const rendered = renderMemoryForPrompt(store);
-    assert.match(rendered, /## 好み/);
-    assert.match(rendered, /## 習慣/);
+    const rendered = renderMemoryForPrompt(memory);
+    assert.match(rendered, /### 好み/);
+    assert.match(rendered, /### 習慣/);
     assert.match(rendered, /好みA/);
     assert.match(rendered, /習慣B/);
     assert.match(rendered, /訂正後の好み/);
@@ -177,7 +180,7 @@ describe("[task-0008/a3] memory injection into the system prompt", () => {
 
     // セッション2：同じ保存先を指す新しいストア = 再起動した番頭
     const reopened = new JsonlMemoryStore(path.join(dir, "memory.jsonl"));
-    const { session: second } = await makeSession({ memory: reopened });
+    const { session: second } = await makeSession({ memory: new ScopedMemory(reopened) });
     assert.match(second.agent.state.systemPrompt, /テスト結果は直接実行して確かめる/);
     second.dispose();
   });
@@ -322,23 +325,23 @@ describe("[task-0032] 記憶の種類 fact", () => {
     store.save({ kind: "preference", text: "好みY" });
     store.save({ kind: "fact", text: "事実Z" });
 
-    const prompt = renderMemoryForPrompt(store);
-    assert.match(prompt, /## 事実\n- 事実Z/);
+    const prompt = renderMemoryForPrompt(new ScopedMemory(store));
+    assert.match(prompt, /### 事実\n- 事実Z/);
     // 決定31d: 事実が最も安定しているので先に読ませる
-    assert.ok(prompt.indexOf("## 事実") < prompt.indexOf("## 好み"));
-    assert.ok(prompt.indexOf("## 好み") < prompt.indexOf("## 習慣"));
+    assert.ok(prompt.indexOf("### 事実") < prompt.indexOf("### 好み"));
+    assert.ok(prompt.indexOf("### 好み") < prompt.indexOf("### 習慣"));
   });
 
   it("[task-0032/a2] 事実だけでもプロンプトに出る（好み・習慣が無くても空にしない）", () => {
     const store = new JsonlMemoryStore(path.join(dir, "m.jsonl"));
     store.save({ kind: "fact", text: "事実だけ" });
 
-    assert.match(renderMemoryForPrompt(store), /## 事実/);
+    assert.match(renderMemoryForPrompt(new ScopedMemory(store)), /### 事実/);
   });
 
   it("[task-0032/a3] memory.save Tool が fact を受ける", async () => {
     const store = new JsonlMemoryStore(path.join(dir, "m.jsonl"));
-    const save = createMemoryTools(store).find((t) => t.name === "memory.save")!;
+    const save = createMemoryTools(new ScopedMemory(store)).find((t) => t.name === "memory.save")!;
 
     await save.execute({ kind: "fact", text: "POの役割はプロダクトオーナー" } as never);
     assert.equal(store.list({ kind: "fact" }).length, 1);

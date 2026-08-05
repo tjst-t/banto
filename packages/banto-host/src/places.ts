@@ -16,6 +16,7 @@
  */
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { Place, PlaceProvider } from "@banto/core";
 
@@ -55,6 +56,54 @@ export function createStaticPlaceProvider(configs: readonly StaticPlaceConfig[])
 }
 
 /**
+ * 成果物置き場（書斎）の場所ID（PO裁定 2026-08-05）。
+ *
+ * リポジトリに紐づかない成果物——調査レポート・比較検討——の置き場所。**id が既定で必ず
+ * 存在すること**に意味がある：番頭の SKILL は配布物（`packages/banto-host/skills/`）に入るので、
+ * そこへ個人の実体パスを書くと、人やデプロイ先が変わるたびに SKILL を書き換えることになる。
+ * SKILL は `desk` という id だけを指し、**実体は環境の設定が与える**。
+ */
+export const DESK_PLACE_ID = "desk";
+
+/**
+ * 既定の書斎。実体は `~/banto-desk`。パスは環境変数・設定画面から上書きできる。
+ *
+ * **書ける範囲は付けない**（決定38a：既定はどの場所も読み取り専用）。場所があることと
+ * 書けることは別で、範囲は PO が `place.request_write` の承認で与える。`reports/` のような
+ * パス構成を既定に埋めないのは決定38f（フレームワークはパス構成を知らない）でもある。
+ */
+export function defaultDeskPlace(): StaticPlaceConfig {
+  return { id: DESK_PLACE_ID, label: "書斎（成果物）", path: path.join(os.homedir(), "banto-desk") };
+}
+
+/**
+ * 既定の書斎を足す。**同じ id が与えられていれば何もしない**——パスも書ける範囲も
+ * 環境変数と設定画面から上書きできる。消しても既定に戻る：置き場所が消えると、番頭は
+ * リポジトリに属さない成果物をどこにも残せなくなる。
+ */
+export function withDefaultDesk(configs: readonly StaticPlaceConfig[]): StaticPlaceConfig[] {
+  if (configs.some((c) => c.id === DESK_PLACE_ID)) return [...configs];
+  return [...configs, defaultDeskPlace()];
+}
+
+/**
+ * 書斎の実体が無ければ作る。**「必ずある」ことがこの場所の値打ち**なので、設定漏れや
+ * 初回起動で「場所はあるのに開けない」を作らない。
+ *
+ * I2: 黙って作らない——作ったときだけ、どこに作ったかを呼び手に返す（呼び手が知らせる）。
+ *
+ * @returns 作ったパス。既にあった・書斎が無いなら undefined
+ */
+export function ensureDeskDir(configs: readonly StaticPlaceConfig[]): string | undefined {
+  const desk = configs.find((c) => c.id === DESK_PLACE_ID);
+  if (!desk) return undefined;
+  const target = path.resolve(desk.path);
+  if (fs.existsSync(target)) return undefined;
+  fs.mkdirSync(target, { recursive: true });
+  return target;
+}
+
+/**
  * 後から与えられた書き込み許可（決定38c・task-0042）。
  *
  * 提供元が返した場所に**重ねる**形にしてあるのが要点。`ghq` が返す読み取り専用の
@@ -88,6 +137,11 @@ export class PlaceRegistry {
     const all: Place[] = [];
     const seen = new Set<string>();
     const seenPaths = new Set<string>();
+    /** 見かけた全ての場所の id → パス。**落としたものも覚える**（下の親の付け替えに要る） */
+    const pathById = new Map<string, string>();
+    /** 残った場所の パス → id。 */
+    const idByPath = new Map<string, string>();
+
     for (const provider of this.providers) {
       let places: Place[];
       try {
@@ -98,19 +152,34 @@ export class PlaceRegistry {
         continue;
       }
       for (const place of places) {
+        const key = path.resolve(place.path);
+        pathById.set(place.id, key);
         // 先に登録された提供元が勝つ（設定で明示したものが、自動発見より優先される）
         if (seen.has(place.id)) continue;
         // **同じディレクトリも先勝ち。** 設定で書き込みを許した場所が、repo-manager の返す
         // 読み取り専用の同じリポジトリと二重に並ぶと、番頭がどちらの id を選ぶかで
         // 書けたり書けなかったりする（決定38a の許可が id 次第で変わって見える）
-        const key = path.resolve(place.path);
         if (seenPaths.has(key)) continue;
         seen.add(place.id);
         seenPaths.add(key);
+        idByPath.set(key, place.id);
         all.push(this.withGrants(place));
       }
     }
-    return all;
+
+    // **落とした場所を親として指しているものを付け替える**（PO裁定 2026-08-05）。
+    //
+    // ワークツリーは親リポジトリを id で指すが（`repo-manager`）、その親が上の
+    // 「同じディレクトリは先勝ち」で落とされていることがある——`BANTO_PLACES` で
+    // 同じリポジトリを別名（`banto`）で登録している場合がまさにそれ。
+    // 付け替えないと、親が**どの場所でもない id** を指したまま残り、プロジェクトの記憶
+    // （ADR-0003）が実在しない親の下に分かれる。
+    return all.map((place) => {
+      if (place.parent === undefined || seen.has(place.parent)) return place;
+      const parentPath = pathById.get(place.parent);
+      const kept = parentPath === undefined ? undefined : idByPath.get(parentPath);
+      return kept === undefined ? place : { ...place, parent: kept };
+    });
   }
 
   /**

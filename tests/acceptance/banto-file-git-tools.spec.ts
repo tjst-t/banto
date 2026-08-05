@@ -121,6 +121,78 @@ describe("[task-0011/a1] file.* （閲覧専用）", () => {
     assert.match(out, /省略/, "打ち切ったことを黙って隠さない");
   });
 
+  it("[task-0011/a1] offset で続きから読める", async () => {
+    fs.writeFileSync(
+      path.join(repo, "long.txt"),
+      Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n")
+    );
+    const first = await tool(fileTools, "file.read").execute({ path: "long.txt", maxLines: 5 }, TOOL_CTX);
+    const d1 = first.details as { from: number; to: number; totalLines: number };
+    assert.deepEqual([d1.from, d1.to, d1.totalLines], [1, 5, 50]);
+    assert.match(textOf(first), /offset: 6/, "続きの読み方を示す");
+
+    const next = await tool(fileTools, "file.read").execute(
+      { path: "long.txt", offset: 6, maxLines: 5 },
+      TOOL_CTX
+    );
+    const out = textOf(next);
+    assert.match(out, /line 5\b/, "6行目から始まる");
+    assert.doesNotMatch(out, /line 4\b/, "前の分は繰り返さない");
+    assert.equal((next.details as { from: number }).from, 6);
+  });
+
+  it("[task-0011/a1] 総行数はファイル全体から数える（サイズ上限で切っても過少に言わない）", async () => {
+    // サイズ上限（200,000 bytes）を超える大きさにする
+    const line = "x".repeat(400);
+    fs.writeFileSync(
+      path.join(repo, "huge.txt"),
+      Array.from({ length: 800 }, (_, i) => `L${i + 1} ${line}`).join("\n")
+    );
+    const r = await tool(fileTools, "file.read").execute(
+      { path: "huge.txt", maxLines: 100_000 },
+      TOOL_CTX
+    );
+    const d = r.details as { totalLines: number; to: number };
+    assert.equal(d.totalLines, 800, "切った後の残りから数えない");
+    assert.ok(d.to < 800, "1回では返しきらない");
+    assert.match(textOf(r), /bytes まで/, "サイズで切ったことを黙って隠さない（I2）");
+
+    // 続きを辿れば末尾まで届く
+    let at = d.to + 1;
+    let reachedLast = false;
+    for (let i = 0; i < 20 && at <= 800; i++) {
+      const more = await tool(fileTools, "file.read").execute(
+        { path: "huge.txt", offset: at, maxLines: 100_000 },
+        TOOL_CTX
+      );
+      const md = more.details as { to: number; content: string };
+      if (md.content.includes("L800 ")) reachedLast = true;
+      at = md.to + 1;
+    }
+    assert.ok(reachedLast, "offset を進めれば最終行まで読める");
+  });
+
+  it("[task-0011/a1] 1行がサイズ上限より大きいときは途中で切り、進めないことを言う（I2）", async () => {
+    // 多バイト文字で埋める。境界で切ると壊れた字が出るので、そこも一緒に見る
+    fs.writeFileSync(path.join(repo, "oneline.txt"), `${"あ".repeat(120_000)}\nlast\n`);
+    const r = await tool(fileTools, "file.read").execute({ path: "oneline.txt" }, TOOL_CTX);
+    const d = r.details as { to: number; partialLine: boolean; content: string };
+    assert.equal(d.partialLine, true);
+    assert.equal(d.to, 1);
+    assert.doesNotMatch(d.content, /�/, "文字の途中で切らない");
+
+    const out = textOf(r);
+    assert.match(out, /この行の残りは/, "進めないことを言う");
+    assert.match(out, /offset: 2/, "次の行へは進める");
+  });
+
+  it("[task-0011/a4] 範囲外の offset は黙って空を返さない（I2）", async () => {
+    await assert.rejects(
+      () => tool(fileTools, "file.read").execute({ path: "README.md", offset: 999 }, TOOL_CTX),
+      /past the end/
+    );
+  });
+
   it("[task-0011/a4] 不在・種別違いはエラーになる（I2）", async () => {
     await assert.rejects(
       () => tool(fileTools, "file.read").execute({ path: "nope.txt" }),

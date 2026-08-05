@@ -19,6 +19,7 @@ import {
   type MemoryInput,
   type MemoryQuery,
   type MemoryRecord,
+  type MemorySearchQuery,
   type MemoryStore,
 } from "@banto/core";
 
@@ -167,6 +168,8 @@ class InMemoryStore implements MemoryStore {
       kind: input.kind,
       text: input.text,
       createdAt: new Date().toISOString(),
+      ...(input.origin ? { origin: input.origin } : {}),
+      ...(input.validFrom ? { validFrom: input.validFrom } : {}),
       ...(input.refs ? { refs: input.refs } : {}),
       ...(input.supersedes ? { supersedes: input.supersedes } : {}),
     };
@@ -182,9 +185,14 @@ class InMemoryStore implements MemoryStore {
     const superseded = new Set(
       this.records.map((r) => r.supersedes).filter((id): id is string => typeof id === "string")
     );
+    const forgotten = new Set(
+      this.records.map((r) => r.forgets).filter((id): id is string => typeof id === "string")
+    );
     return this.records.filter((r) => {
+      if (typeof r.forgets === "string") return false;
       if (query.kind && r.kind !== query.kind) return false;
-      if (!query.includeSuperseded && superseded.has(r.id)) return false;
+      if (query.origin && (r.origin ?? "explicit") !== query.origin) return false;
+      if (!query.includeSuperseded && (superseded.has(r.id) || forgotten.has(r.id))) return false;
       return true;
     });
   }
@@ -192,6 +200,33 @@ class InMemoryStore implements MemoryStore {
   supersede(id: string, replacement: Omit<MemoryInput, "supersedes">): MemoryRecord {
     if (!this.get(id)) throw new Error(`Cannot supersede unknown memory "${id}".`);
     return this.save({ ...replacement, supersedes: id });
+  }
+
+  forget(id: string, reason?: string): MemoryRecord {
+    const target = this.get(id);
+    if (!target) throw new Error(`Cannot forget unknown memory "${id}".`);
+    const record: MemoryRecord = {
+      id: `mem-${this.records.length + 1}`,
+      kind: target.kind,
+      text: target.text,
+      createdAt: new Date().toISOString(),
+      forgets: id,
+      ...(reason ? { reason } : {}),
+    };
+    this.records.push(record);
+    return record;
+  }
+
+  search(query: MemorySearchQuery): MemoryRecord[] {
+    const terms = query.text
+      .split(/\s+/u)
+      .map((t) => t.trim().toLowerCase())
+      .filter((t) => t.length > 0);
+    const { text: _text, limit, ...rest } = query;
+    const hits = this.list(rest).filter((r) =>
+      terms.every((t) => r.text.toLowerCase().includes(t))
+    );
+    return hits.reverse().slice(0, limit ?? 20);
   }
 }
 

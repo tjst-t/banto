@@ -59,6 +59,21 @@ export async function listGhqRepositories(run: CommandRunner): Promise<Place[]> 
 }
 
 /**
+ * ワークツリーが1つも無いときの `gwq` の返事かどうか。
+ *
+ * **`--json` を付けても JSON を返さない**——`No worktrees found in <置き場>` という人向けの
+ * 1行を標準出力に出し、終了コードは 0 になる（gwq 実測 2026-08-05）。これを「解釈できない」
+ * として扱うと、ワークツリーを1つも作っていない環境で**場所を引くたびに例外が上がる**
+ * （実際、新しい環境で `place.list` のたびに提供元の失敗が記録されていた）。
+ *
+ * **0件は正常なので0件として返す。** それ以外の非JSONは、下の I2 のとおり例外のままにする
+ * ——文言が変わればここが外れて例外に戻る。**黙って消えるより、うるさい方に倒す。**
+ */
+function looksLikeNoWorktrees(text: string): boolean {
+  return /^no worktrees?\b/i.test(text);
+}
+
+/**
  * `gwq` が知っているワークツリーを場所として返す。
  *
  * `-g` を付けて**置き場のワークツリーだけ**を見る。付けないとリポジトリ本体（`is_main`）も
@@ -69,6 +84,7 @@ export async function listGwqWorktrees(run: CommandRunner): Promise<WorktreePlac
   if (raw === undefined) return []; // 未導入
   const trimmed = raw.trim();
   if (trimmed.length === 0) return [];
+  if (looksLikeNoWorktrees(trimmed)) return []; // 0件（JSON では返ってこない）
 
   let parsed: unknown;
   try {

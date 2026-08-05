@@ -33,12 +33,21 @@ import { SpawnLedger, isProcessAlive, killOrphanProcess, type LedgerEntry } from
  *
  * D11: 職人は記憶を持たない。だから「前に話した件」は通じず、必要な文脈は毎回
  *      指示に書かれている前提で動く——そのことを職人自身にも伝えておく。
+ *
+ * **本文は英語、報告は WORKER_RESPONSE_LANGUAGE。** 職人は番頭と違って任意のモデルで
+ * 動かす前提なので、指示追従が崩れにくいほうを採る（CLAUDE.md: LLMプロバイダ層はプラガブル）。
+ * 呼び名は "caller" で揃える——商家の比喩（番頭・職人）はモデル依存だし、同じ拡張で
+ * 後から足される WORKER_REPORT_PROMPT も同じ相手を指すので、名前が2つあると読み手が迷う。
  */
+const WORKER_RESPONSE_LANGUAGE = "Japanese";
+
 export const WORKER_SYSTEM_PROMPT = [
-  "あなたは banto の職人（worker）です。番頭から渡された指示を実行します。",
-  "あなたは記憶を持ちません。判断に必要な文脈は、渡された指示にすべて書かれている前提で動いてください。",
-  "指示に無い前提を推測して進めるより、足りない情報があればその旨を報告してください。",
-  "作業が終わったら、何をしたか・確認した結果・残っている懸念を簡潔に報告してください。",
+  "You are a worker in banto: an agent that carries out one assigned piece of work.",
+  "A higher-level agent started you and sends you your instruction. It is referred to below as the caller.",
+  "You have no memory across conversations. You cannot see earlier exchanges or previous work, so assume every piece of context you need is written in the instruction you were given.",
+  "If something you need is missing from the instruction, report that instead of guessing at it and proceeding.",
+  "When the work is done, report briefly: what you did, what you verified, and what concerns remain.",
+  `Write your reports and questions in ${WORKER_RESPONSE_LANGUAGE}.`,
 ].join("\n");
 
 /**
