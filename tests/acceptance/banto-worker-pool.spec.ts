@@ -29,6 +29,7 @@ import {
   createWorkerPoolModule,
   createWorkerTools,
   createWorkerReportTools,
+  createWorkerModuleTools,
   type WorkerEvent,
 } from "@banto/worker-pool";
 
@@ -860,7 +861,8 @@ describe("[task-0026/a6] 職人（別プロセス）からHTTPで報告できる
     const internal = module.internalTools.map((t) => t.name);
 
     assert.equal(banto.includes("worker.report"), false, "番頭には渡らない");
-    assert.deepEqual(internal.sort(), ["worker.ask", "worker.report"]);
+    // task-0060: 起動元が自分の道具立てを載せる口も internalTools（番頭には渡さない）
+    assert.deepEqual(internal.sort(), ["worker.ask", "worker.delegate_toolkit", "worker.report"]);
   });
 });
 
@@ -1228,5 +1230,61 @@ describe("[task-0030/a2] 検索", () => {
     const list = createWorkerTools(pool).find((t) => t.name === "worker.list")!;
     const out = await list.execute({ query: "存在しない語" } as never);
     assert.match(textOf(out), /当てはまる職人はいません/);
+  });
+});
+
+describe("[task-0060] 起動元が自分の道具立てを載せる口は、番頭に渡さない（決定29e・60）", () => {
+  it("worker.delegate_toolkit は internalTools にだけ出る", () => {
+    const module = createWorkerPoolModule(pool);
+    const forBanto = module.tools.map((t) => t.name);
+    const internal = module.internalTools.map((t) => t.name);
+
+    assert.ok(!forBanto.includes("worker.delegate_toolkit"), "番頭の道具一覧には出ない");
+    assert.ok(internal.includes("worker.delegate_toolkit"), "HTTP 面には出る（モジュールが呼ぶ）");
+    assert.ok(forBanto.includes("worker.delegate"), "番頭は通常の delegate を持つ");
+  });
+
+  it("番頭向けの worker.delegate は driverOptions を受け取らない（任意のコードを載せさせない）", () => {
+    const delegate = createWorkerTools(pool).find((t) => t.name === "worker.delegate")!;
+    const props = (delegate.parameters as { properties?: Record<string, unknown> }).properties ?? {};
+    assert.ok(!("driverOptions" in props), "番頭からは拡張のパスを渡せない");
+  });
+
+  it("起動元の拡張が職人に載り、Worker Pool 自身の道具立ても消えない（層が違う）", async () => {
+    const withReport = new WorkerPool({
+      driver,
+      dataDir: dir,
+      defaultProjectTag: "test",
+      reportUrl: "http://localhost:4110",
+    });
+    const tool = createWorkerModuleTools(withReport).find(
+      (t) => t.name === "worker.delegate_toolkit"
+    )!;
+
+    await tool.execute(
+      {
+        ...JOB,
+        origin: "kobo:proj/task-0042",
+        driverOptions: { extensionPaths: ["/tmp/kobo-executor.ts"], daemonUrl: "http://localhost:3000" },
+      },
+      { toolCallId: "t1" }
+    );
+
+    const loaded = extensionPathsOf(driver.spawned[driver.spawned.length - 1]!);
+    assert.ok(
+      loaded.some((p) => p.endsWith("/tmp/kobo-executor.ts")),
+      "起動元のドメイン Tool が載る（Kobo の report_done 等）"
+    );
+    assert.ok(
+      loaded.some((p) => p.includes("worker-report")),
+      "Worker Pool の汎用の報告経路も残る（決定29e：層が違う）"
+    );
+  });
+
+  it("モデルは等級だけを受け取る（起動元はモデル名を知らない・決定60a）", () => {
+    const tool = createWorkerModuleTools(pool).find((t) => t.name === "worker.delegate_toolkit")!;
+    const props = (tool.parameters as { properties?: Record<string, unknown> }).properties ?? {};
+    assert.ok("modelTier" in props, "tier は渡せる");
+    assert.ok(!("model" in props) && !("provider" in props), "モデル名・プロバイダは渡せない");
   });
 });

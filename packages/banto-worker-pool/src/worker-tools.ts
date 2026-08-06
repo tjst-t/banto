@@ -381,3 +381,77 @@ export function createWorkerReportTools(pool: WorkerPool): NamespacedToolDefinit
 
   return [report, ask];
 }
+
+/**
+ * **モジュールだけが使う口**（ADR-0013 決定60・決定29e の延長）。番頭には渡さない。
+ *
+ * 職人は「起動元のドメイン Tool」と「Worker Pool の汎用 Tool」の両方を持ちうる
+ * （Kobo の `report_phase` / `report_done` と `worker.report` は層が違う・決定29e）。
+ * 起動元が自分の拡張を職人へ載せる経路がこれ。
+ *
+ * **なぜ番頭に渡さないか**：`driverOptions` は職人プロセスに**任意のコードを読み込ませられる**
+ * （`extensionPaths`）。番頭は LLM なので、指示次第で任意のパスを渡しうる——`internalTools`
+ * （決定29e と同じ枠）に置いて、機構として届かないようにする。呼ぶのは決定的コードである
+ * モジュールだけ。
+ */
+export function createWorkerModuleTools(pool: WorkerPool): NamespacedToolDefinition[] {
+  const delegateWithToolkit = defineNamespacedTool({
+    name: "worker.delegate_toolkit",
+    label: "Worker: Delegate (module)",
+    description:
+      "起動元（モジュール）が自分の道具立てを載せて職人を起こす。番頭は使わない。" +
+      "`worker.delegate` との違いは driverOptions を渡せる点だけで、他は同じ。",
+    parameters: Type.Object({
+      taskId: Type.String({ description: "仕事の識別子。台帳とログに残る" }),
+      origin: Type.Optional(Type.String({ description: "起動元＝報告の宛先" })),
+      worktreePath: Type.String({ description: "作業させるディレクトリの絶対パス" }),
+      instruction: Type.String({ description: "職人への指示" }),
+      projectTag: Type.Optional(Type.String({ description: "利用者の名前空間" })),
+      tools: Type.Optional(Type.Array(Type.String(), { description: "道具の許可リスト" })),
+      network: Type.Optional(Type.Boolean({ description: "外を読む口を渡すか（既定 false）" })),
+      modelTier: Type.Optional(
+        Type.Union([Type.Literal("reasoning"), Type.Literal("standard"), Type.Literal("fast")], {
+          description:
+            "モデルの等級。**起動元はモデル名を知らない**（決定60a）——解決は Worker Pool が行う",
+        })
+      ),
+      driverOptions: Type.Optional(
+        Type.Object(
+          {},
+          {
+            additionalProperties: true,
+            description:
+              "ドライバへ渡す不透明な設定（`extensionPaths`・その拡張が読む値）。" +
+              "中身は解釈しない（spec-environment §2 の handle / config と同じ扱い）",
+          }
+        )
+      ),
+    }),
+    async execute(params) {
+      const worker = await pool.delegate({
+        taskId: params.taskId,
+        worktreePath: params.worktreePath,
+        instruction: params.instruction,
+        ...(params.projectTag ? { projectTag: params.projectTag } : {}),
+        ...(params.origin ? { origin: params.origin } : {}),
+        ...(params.tools ? { tools: params.tools } : {}),
+        ...(params.network !== undefined ? { network: params.network } : {}),
+        ...(params.modelTier ? { modelTier: params.modelTier } : {}),
+        ...(params.driverOptions
+          ? { driverOptions: params.driverOptions as Record<string, unknown> }
+          : {}),
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `職人を起こしました: ${worker.taskId} (sessionId: ${worker.sessionId}, pid: ${worker.pid})`,
+          },
+        ],
+        details: worker,
+      };
+    },
+  });
+
+  return [delegateWithToolkit];
+}

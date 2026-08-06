@@ -12,7 +12,7 @@
 
 import { Type } from "typebox";
 import type { NamespacedToolDefinition } from "@banto/core";
-import { createWorkerReportTools, createWorkerTools } from "./worker-tools.js";
+import { createWorkerReportTools, createWorkerModuleTools, createWorkerTools } from "./worker-tools.js";
 import type { WorkerPool } from "./pool.js";
 import { resumeWorkers } from "./resume.js";
 import { createWorkerPoolSettings } from "./settings.js";
@@ -83,7 +83,7 @@ export function createWorkerPoolModule(
     },
     tools: createWorkerTools(pool),
     // 職人（別プロセス）から呼ばれる口。番頭には渡さない（決定29e）
-    internalTools: createWorkerReportTools(pool),
+    internalTools: [...createWorkerReportTools(pool), ...createWorkerModuleTools(pool)],
     views: [
       {
         kind: "worker.viewer",

@@ -52,7 +52,7 @@ export {
   type UrlVerdict,
   type FetchOutcome,
 } from "./pi-extension/web-tools.js";
-export { createWorkerTools, createWorkerReportTools } from "./worker-tools.js";
+export { createWorkerTools, createWorkerReportTools, createWorkerModuleTools } from "./worker-tools.js";
 export { createWorkerPoolSettings } from "./settings.js";
 export { resumeWorkers } from "./resume.js";
 export { createHandleGrip } from "./pi-rpc-driver.js";
