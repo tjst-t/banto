@@ -374,3 +374,76 @@ epic-0009（場所と repo-manager）を task-0038 の続きから片付けた�
 - **task-0001 / task-0024 / task-0046 の parent を epic-0010 へ変更**（task-0001 は parent 追加、task-0024 は epic-0005 →、task-0046 は epic-0008 →）
 - **epic-0005（Worker Pool）・epic-0008（Environment Pool）は Kobo 側統合タスクを epic-0010 へ移管したため配下タスクが全て done になり、done に更新**
 - **epic-0004（セッション開始リクエスト）は別 epic のまま**（Kobo 配線完了後に合流検討）
+
+---
+
+## セッション更新（2026-08-06、Kobo の見直しと配線の1段目）
+
+ブランチ **`feat/kobo-uses-modules`**（`main` から分岐、3コミット）。PO の問い「そもそも
+Kobo は何をするんだっけ。今の banto になじむのか」から始まり、**ADR-0013** の裁定と
+Phase 1（掃除）の前半まで進んだ。
+
+### 結論（ADR-0013）
+
+**Kobo のコンセプトは変えない。工場のまま。** 番頭がタスクを積み、Kobo が職人を使って
+自動でさばき、状態遷移で完了まで運ぶ。測ったところ**その工場は7割方すでに動いていた**
+——`tests/e2e/pipeline-merge.e2e.spec.ts` が実 pi・実 LLM で「投入→ready→自動着手→実装
+→実監査→マージ」を通しで検証している。足りないのは入口・出口・面と、独自台帳の後始末。
+
+**番頭の誤読を記録として残してある**（ADR-0013 §文脈）：初版は「構造逆転で工場は失効した」
+と読んで縮小案を推した。観測（3週間触られていない・番頭が手で回している）から意図を
+推論した飛躍で、実際は配線されていなかっただけ。**I1 は自分の推論にも掛かる。**
+
+### 決定（56〜63。詳細は ADR-0013）
+
+- **57** レビューは3段（`auto` / `banto` / `po`）。番頭が一次受けし、捌けないものだけ PO へ
+- **58** 判断待ちは**番頭のスレッド**へ届く（決定35 の `origin` を再利用）。取次は番頭が積む
+- **59** レビューには**触れる環境**を添える。tmux ペインは廃止しブラウザ面へ
+- **60** モジュールがあるものは Kobo 独自を使わない。基準は「**台帳を持つか**」
+  - **60a（重要）Kobo が読んでよいのは他モジュールの公開 API だけ。** 設定ファイルの相乗りも
+    しない。モデルは **tier だけ**を渡し、解決は Worker Pool（PO裁定で訂正した箇所）
+- **61** Environment Pool を独立プロセスに
+- **62** 分界：コミットされるものは Kobo のタスク／番頭は**進められるが飛ばせない**／
+  Kobo は記憶ではなく**帳簿**を持つ／`status` は意図であって進捗ではない
+- **63**（番頭裁定）Kobo の職人は番頭が畳めない／砦の非対称の明文化／帳簿の保護
+
+### 済んだこと
+
+- **task-0058**（done）Environment Pool の独立サービス化。`service.ts` / `bin.ts` / systemd。
+  **既定 127.0.0.1**（sops の鍵を持つため決定40a を厳しく適用）。中継と WS upgrade も動く
+- **task-0059**（done）Kobo の env を Environment Pool へ。`daemon.ts` 3,372→2,525行、
+  **@banto/environment-pool への依存を package.json・tsconfig ごと削除**（機構的に触れない）。
+  env の REST 面と tmux ペインも廃止。受け入れテスト16本を移設（Env Pool 側8件・Kobo 側6件）
+- **task-0060 の1段目** `worker.delegate_toolkit`（internalTools）。起動元が自分の拡張を
+  職人へ載せる口。**番頭には渡さない**（LLM に任意のコードを載せさせない）
+
+**全体 1,136件 green**（削除した19本ぶん総数が減っている）。typecheck・build も通る。
+
+### 次にやること（task-0060 の残り）
+
+1. **Kobo の spawn を `worker.delegate_toolkit` 呼び出しへ**。`SpawnLedger`・`PiRpcDriver`
+   直呼び・孤児回収・tmux 窓を削除する（`daemon.ts` の `_spawnTaskBody` 周辺）
+2. **職人のイベントを購読する**。いまは `driver.subscribe` で `process_exited` を見ているが、
+   Worker Pool 経由になると `worker.events`（`afterEventId` で追いつける）を tick で引く形になる
+3. **監査・rework のセッション起動**も同じ経路へ（`spawnAuditSession` / `spawnReworkSession`）
+4. **モデルは tier だけ渡す**（`BANTO_PI_PROVIDER` / `BANTO_PI_MODEL` の直指定を廃止・決定60a）
+5. **worktree を `gwq` 配下に**（repo-manager 経由。いまは `<dataDir>/worktrees/` で番頭から見えない）
+6. **番頭は自分が起こしていない職人を畳めない**（決定63）。
+   **task-0060 の本文には「Worker Pool 側に置く」と書いたが、これは誤り**——Worker Pool は
+   呼び出し元を区別できない。**banto-host の Tool 束ね層**（`guardPathArg` と同じ場所）で
+   「`origin` が自分のスレッドでない職人は畳めない」とするのが正しい
+
+### 私（番頭）が回せなかった検証
+
+**`tests/e2e/pipeline-merge.e2e.spec.ts`**（実 pi・実 LLM、1回8分、鍵が要る）。env の内部
+API に触れていないことは確認済みだが、**通しの確認は未実施**。task-0060 の受け入れでもある。
+
+### 作法（このセッションで効いた）
+
+- **`git add -A` を使わない**を徹底した。作業ツリーには PO の未コミット作業が54件あり、
+  ファイルを明示して積んだ（`git add -u tests/` が1件拾ったので外した）
+- **砦のテストが空振りしていないか確かめる**：127.0.0.1 で外部アドレスから拒否されること
+  だけでなく、**`0.0.0.0` にすると繋がること**まで確認した
+- **テストが実装の穴を2つ見つけた**：物理quota の写しが遷移直後の即時再評価に効いておらず
+  上限超過で ready へ上げていた（**昇格は戻せない**）／Environment Pool へ到達できないとき
+  事前の `env.list` 失敗でログだけになり記録が残らなかった（I2）
