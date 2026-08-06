@@ -123,6 +123,8 @@ export {
   type StaticPlaceConfig,
 } from "./places.js";
 export { placeScopedTools, guardPathArg, PLACE_PARAM } from "./place-scoped.js";
+// 決定63: 起こしていない職人は畳めない（Tool を束ねる層の砦）
+export { guardWorkerOrigin } from "./worker-guard.js";
 export { BantoHostClient, type ServerEventHandler } from "./client.js";
 export {
   BANTO_WS_PATH,

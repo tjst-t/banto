@@ -98,7 +98,7 @@ describe("[Scc9152-2-fix1] Temporal ancestor ordering prevents deadlock", () => 
     // Long tick interval: we want to confirm gate fires on transition, not periodic tick.
     // disableAuditSpawn: tests gate deferred-review logic; transitions pass through auditing
     // as state placeholders without needing actual audit session spawning.
-    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 60000, disableAuditSpawn: true });
+    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 60000, disableAuditSpawn: true, disableAutoSpawn: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
 
@@ -198,7 +198,7 @@ describe("[Scc9152-2-fix2] gate_evaluated events are deduplicated", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-fix2-"));
     // Short tick interval to drive multiple gate evaluations
     // disableAuditSpawn: tests gate deduplication logic; same reasoning as above.
-    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 200, disableAuditSpawn: true });
+    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 200, disableAuditSpawn: true, disableAutoSpawn: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
 

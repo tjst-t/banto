@@ -71,6 +71,12 @@ draft → queued → ready → planning → implementing → auditing
 
 ## 3. spawn管理と回復
 
+> **失効（2026-08-06・ADR-0013 決定60、task-0060 で実装）。** 職人の台帳・生存確認・回復は
+> **Worker Pool が持つ**（検証環境は Environment Pool）。Kobo は `worker.*` を呼ぶ側になり、
+> spawn 台帳も照合ループも持たない——二重に持つと真実が割れる（D3・inc-0027）。
+> Kobo 再起動時に職人を畳むこともしない（決定63）。落ちている間の出来事は
+> `worker.events`（`afterEventId`）で追いつく。以下は改訂までの記録として残す。
+
 - **spawn台帳**（永続化）：起動した子プロセス（pid、タスクID、セッションパス、worktree）を登録。Kobo再起動時は台帳から孤児を引き取り再接続する（→ 自動更新の前提条件）
 - **照合ループ**：spawn台帳・環境台帳と実態（プロセス、ドライバ `list`）を定期突合し、差分をケイデンス議題に載せる（→ spec-environment §5）
 - **健康状態taxonomy（v1.x）**：照合ループはエージェント健康状態を導出する：`working` / `stalled`（進捗低下）/ `no-progress`（一定期間無進捗）/ `zombie`（セッション死亡）/ `idle`。判定はイベント間隔とdiff変化から機械的に行う。介入動詞として `nudge`（注意喚起メッセージ注入）と `handoff`（新セッションへのコンテキスト再注入）をKobo APIに持つ（→ research-orchestrator-survey D）
@@ -87,7 +93,13 @@ draft → queued → ready → planning → implementing → auditing
 - ランタイム間の品質差の検出：E2Eシナリオはドライバごとに実行し、テレメトリ（監査通過率・/fix回数等）にランタイム軸を持たせてロールアップする。差はケイデンスで評価し、割に合わないドライバの撤退はconfig変更のみで行える
 
 ### モデルtier（層B）
-コードとタスクはモデル名を知らず、**tier**（`reasoning` / `standard` / `fast`）のみを参照する。`meta/config.yaml` にルーティング表を置く：
+コードとタスクはモデル名を知らず、**tier**（`reasoning` / `standard` / `fast`）のみを参照する。
+
+> **ルーティング表の置き場が変わった（2026-08-06・ADR-0013 決定60a、task-0060 で実装）。**
+> tier からモデルへの解決は **Worker Pool（と番頭核の `LlmCatalog`）が持つ**。Kobo は
+> tier の文字列を渡すだけで、モデル名も provider も鍵も知らない——公開の口を通らない経路が
+> 1本でもあると、その口の変更が黙って Kobo を壊す。以下の `meta/config.yaml` の表は
+> 改訂までの記録（ADR-0011 決定42 で `LlmCatalog` に一本化済み）。
 
 ```yaml
 models:

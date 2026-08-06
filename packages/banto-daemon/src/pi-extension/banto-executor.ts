@@ -12,7 +12,8 @@
  * Environment variables:
  *   BANTO_DAEMON_URL  - daemon base URL (default: http://localhost:3000)
  *   BANTO_PROJECT     - project tag to report events against (required)
- *   BANTO_TASK_ID     - task ID being executed (required)
+ *   BANTO_TASK_ID     - task ID（rework は `task-0001:rework`。ADR-0013 決定60 で職人の
+ *                       台帳の鍵を役目ごとに分けたため。報告は接尾辞を外して返す）
  *
  * D6: no dependencies beyond banto-core and node built-ins.
  *     pi itself is the runtime; we do not import its modules here so that
@@ -28,7 +29,7 @@ export default function (pi: any): void {
   // Read configuration from environment
   const daemonUrl = process.env["BANTO_DAEMON_URL"];
   const projectTag = process.env["BANTO_PROJECT"];
-  const taskId = process.env["BANTO_TASK_ID"];
+  const taskId = process.env["BANTO_TASK_ID"]?.split(":")[0]; // 役目の接尾辞を外す
 
   if (!projectTag || !taskId) {
     // I2: missing required config → surface error, do not silently proceed

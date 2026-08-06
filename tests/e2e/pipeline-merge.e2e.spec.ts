@@ -45,6 +45,13 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as childProcess from "node:child_process";
 import { Daemon } from "@banto/daemon";
+import {
+  PiRpcDriver,
+  WorkerPool,
+  WorkerPoolService,
+  createWorkerModuleTools,
+  createWorkerTools,
+} from "@banto/worker-pool";
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -247,9 +254,10 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: drop → auto-spawn → implement → R
   let repoDir: string;
   let tasksDir: string;
   let daemon: Daemon;
+  let workerPool: WorkerPool;
+  let workerService: WorkerPoolService;
   let worktreePath: string | undefined;
   const projectTag = "e2e-merge-project";
-  const TMUX_SESSION = "banto-e2e-merge";
 
   const authResult = probeAuth();
 
@@ -276,6 +284,24 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: drop → auto-spawn → implement → R
     initRepo(repoDir);
     fs.mkdirSync(tasksDir, { recursive: true });
 
+    // task-0060（ADR-0013 決定60）: 実装者も監査人も **Worker Pool** が起こす。
+    // Kobo は tier だけを渡し、モデルの解決はここ（Worker Pool 側）で行う（決定60a）
+    workerPool = new WorkerPool({
+      driver: new PiRpcDriver({
+        sessionBaseDir: path.join(tmpDir, "sessions"),
+        defaultProvider: PI_PROVIDER,
+        defaultModel: PI_MODEL,
+      }),
+      dataDir: path.join(tmpDir, "worker-pool"),
+      defaultProjectTag: "kobo",
+      defaultOrigin: "kobo",
+      idleTimeoutMs: 0,
+    });
+    workerService = await WorkerPoolService.start({
+      tools: [...createWorkerTools(workerPool), ...createWorkerModuleTools(workerPool)],
+      port: 0,
+    });
+
     // disableAuditSpawn is NOT set: the REAL audit session auto-spawns on
     // implementing→auditing (S75f66b-3 mechanism exercised by this E2E).
     daemon = Daemon.create({
@@ -283,12 +309,8 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: drop → auto-spawn → implement → R
       dataDir: path.join(tmpDir, "data"),
       watchIntervalMs: 500,
       tickIntervalMs: 500,
-      reconcileIntervalMs: 99999,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
-      sessionBaseDir: path.join(tmpDir, "sessions"),
-      tmuxSession: TMUX_SESSION,
-      piProvider: PI_PROVIDER,
-      piModel: PI_MODEL,
+      workerPoolUrl: workerService.baseUrl,
     });
 
     daemon.registerProject(projectTag, repoDir);
@@ -299,7 +321,14 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: drop → auto-spawn → implement → R
     if (daemon) {
       try { await daemon.stop(); } catch { /* ignore */ }
     }
-    childProcess.spawnSync("tmux", ["kill-session", "-t", TMUX_SESSION], { encoding: "utf8" });
+    if (workerPool) {
+      // 起こした職人は畳む（I3・決定63）
+      for (const worker of workerPool.list({ includeClosed: false })) {
+        await workerPool.close(worker.sessionId, "stopped").catch(() => undefined);
+      }
+      workerPool.dispose();
+    }
+    if (workerService) await workerService.close();
     if (tmpDir) {
       try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
@@ -350,50 +379,29 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: drop → auto-spawn → implement → R
     }, 30000);
     assert.ok(autoSpawned, "auto-spawn must trigger and task must reach planning within 30s");
 
-    // Record the worktree path for cleanup verification later
-    const worktreeBase = path.join(tmpDir, "worktrees");
-    worktreePath = path.join(worktreeBase, projectTag, TASK_ID);
+    // Record the worktree path for cleanup verification later.
+    // **帳簿から引く**（決定60・a6：置き場所を決めるのは Kobo ではない）
+    const spawnedEv = daemon
+      .getTaskEvents(projectTag, TASK_ID)
+      .find((e) => e.type === "agent_spawned") as { worktree?: string } | undefined;
+    worktreePath = spawnedEv?.worktree ?? path.join(tmpDir, "worktrees", projectTag, TASK_ID);
 
-    // ── Step 5: Inject task prompt via driver ──────────────────────────────
-    // The agent has been spawned in planning state. Inject the task prompt.
-    const piDriver = daemon.driverRegistry.get("pi-rpc");
-    if (!piDriver) throw new Error("pi-rpc driver not registered");
-
-    // Find the session ID from the ledger
-    const ledgerEntries = daemon.getLedgerEntries();
-    const entry = ledgerEntries.find(
-      (e) => e.taskId === TASK_ID && e.projectTag === projectTag
-    );
+    // ── Step 5: 職人には Kobo が指示を渡している（PO は何もしない）─────────────
+    // task-0060（ADR-0013 決定60）: Kobo が起動時に**依頼の本文と契約**（スコープ・
+    // 受け入れ基準・コミット先ブランチ）を指示として渡す。以前はこのE2Eが外から
+    // タスク本文を注入しており、**本番には無い経路で辻褄が合っていた**（工場は
+    // 「投げ込めば回る」のが要件なので、テストが手を貸したら検証にならない）。
+    // ここで確かめるのは、頼んだ相手が実在し、Kobo 由来だと分かることだけ。
+    const entry = workerPool
+      .list({ includeClosed: false })
+      .find((w) => w.taskId === TASK_ID && w.origin === "kobo");
     if (!entry) {
       // The task may have already progressed (fast runner). Check status.
       const currentStatus = daemon.getTask(projectTag, TASK_ID)?.status;
       if (currentStatus && !PLANNING_OR_LATER.has(currentStatus)) {
         throw new Error(
-          `Task ${TASK_ID} not in ledger and status is ${currentStatus} — unexpected state`
+          `Task ${TASK_ID} が Worker Pool の台帳に無く、状態は ${currentStatus} — 想定外`
         );
-      }
-    } else {
-      // Inject the implementation task prompt
-      try {
-        await piDriver.inject(entry.sessionId, TASK_MD);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (
-          msg.toLowerCase().includes("api key") ||
-          msg.toLowerCase().includes("auth") ||
-          msg.toLowerCase().includes("unauthorized")
-        ) {
-          recordFailure({
-            story: "S75f66b-5",
-            ac: "AC-S75f66b-5-4",
-            type: "needs_human",
-            reason: `プロンプト注入失敗: LLM認証エラー — ${msg}`,
-            detail: msg,
-            timestamp: new Date().toISOString(),
-          });
-          throw new Error(`needs_human: プロンプト注入時にLLM認証エラー — ${msg}`);
-        }
-        throw err;
       }
     }
 

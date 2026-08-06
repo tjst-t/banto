@@ -184,8 +184,9 @@ describe("[AC-S75f66b-6-1] Conflict auto-filing", () => {
       worktreeBaseDir,
       tickIntervalMs: 200,
       watchIntervalMs: 200, // fast watcher to pick up conflict task file quickly
-      tmuxSession: "",
       disableAuditSpawn: true,
+      // task-0060: 職人を要らないので Worker Pool に頼まない
+      disableAutoSpawn: true,
     });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;

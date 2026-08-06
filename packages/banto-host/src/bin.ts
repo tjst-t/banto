@@ -41,6 +41,7 @@ import {
   threadIdOfOrigin,
   threadOrigin,
 } from "./worker-notice.js";
+import { guardWorkerOrigin } from "./worker-guard.js";
 
 import { Canvas, createCanvasCatalog } from "./canvas.js";
 import { createCanvasTools } from "./canvas-tools.js";
@@ -828,11 +829,21 @@ async function serve(options: ServeOptions): Promise<void> {
       // 決定35a: 職人の報告は**起こしたスレッド**へ返る。番頭に自分の threadId を
       // 書かせず、ここで固定して渡す（番頭は自分がどのスレッドかを知らない）
       ...modules.tools().map((tool) => {
-        if (tool.name !== "worker.delegate") return tool;
-        const bound = bindToolArgs(tool, { origin: threadOrigin(threadId) });
-        // 決定36g：職人の作業場所を砦に通す。いままで無検査で、番頭が任意の
-        // ディレクトリを職人に書き換えさせられた
-        return guardPathArg(bound, places, "worktreePath");
+        if (tool.name === "worker.delegate") {
+          const bound = bindToolArgs(tool, { origin: threadOrigin(threadId) });
+          // 決定36g：職人の作業場所を砦に通す。いままで無検査で、番頭が任意の
+          // ディレクトリを職人に書き換えさせられた
+          return guardPathArg(bound, places, "worktreePath");
+        }
+        // 決定63：**自分が起こしていない職人は畳めない。** Kobo の職人を番頭が畳むと、
+        // Kobo は動いているつもりのまま実体が消える（Worker Pool 側には置けない——
+        // 呼び出し元を区別できるのは束ねているこの層だけ）
+        if (tool.name === "worker.close" || tool.name === "worker.stop") {
+          return guardWorkerOrigin(tool, threadOrigin(threadId), async (sessionId) =>
+            workerPool.get(sessionId)
+          );
+        }
+        return tool;
       }),
     ];
     // task-0036: 番頭の文脈をディスクへ書く。**ここが inMemory だと再起動で全部消える**

@@ -23,6 +23,25 @@ import * as path from "node:path";
 import type { Daemon } from "./daemon.js";
 import { validateTaskFrontmatter } from "@banto/core";
 
+/**
+ * frontmatter の後ろの本文＝**依頼そのもの**（task-0060・ADR-0013 決定60）。
+ *
+ * frontmatter が契約（スコープ・受け入れ基準）なら、本文は「何をしてほしいか」であり、
+ * **職人へ渡さなければ工場は動かない**——Kobo は職人を起こすとき、これを指示に書き切る
+ * （職人は記憶を持たない・D11）。以前は Kobo が指示を渡していなかったため、E2E が
+ * 外から本文を注入して辻褄を合わせていた。
+ *
+ * D3: 取り込み時点の写しで固まる（決定62c：積んだ後にファイルを直しても変わらない）。
+ */
+function extractTaskBody(content: string): string {
+  const trimmed = content.trimStart();
+  if (!trimmed.startsWith("---")) return "";
+  const afterFirst = trimmed.slice(3);
+  const closeIdx = afterFirst.search(/^---\s*$/m);
+  if (closeIdx === -1) return "";
+  return afterFirst.slice(closeIdx).replace(/^---\s*/, "").trim();
+}
+
 interface FileState {
   /** mtime from last successful ingest attempt */
   mtimeMs: number;
@@ -165,8 +184,11 @@ export class TaskWatcher {
 
     // Create the task (task_created → draft)
     try {
+      const body = extractTaskBody(content);
       this.daemon.createTask(projectId, fm.id, fm.title, {
         kind: fm.kind,
+        // 本文＝依頼。職人への指示に書き切るために持つ（task-0060）
+        ...(body.length > 0 ? { body } : {}),
         scope: fm.scope,
         acceptance: fm.acceptance,
         ...(fm.parent !== undefined ? { parent: fm.parent } : {}),

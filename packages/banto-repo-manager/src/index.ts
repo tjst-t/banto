@@ -23,4 +23,4 @@ export {
 } from "./place-provider.js";
 export { createRepoManagerTools, type RepoToolOptions } from "./tools.js";
 export { createRepoManagerModule, REPO_MANAGER_BASE_URL } from "./module.js";
-export { createWorktree, removeWorktree } from "./worktree.js";
+export { addTaskWorktree, createWorktree, removeWorktree } from "./worktree.js";

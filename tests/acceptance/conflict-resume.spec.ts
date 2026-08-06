@@ -262,7 +262,9 @@ describe("[AC-S75f66b-6-3-A] resolution task merged → origin resumed and reach
     daemon = Daemon.create({
       port: 0, dataDir: path.join(tmpDir, "data"), worktreeBaseDir,
       tickIntervalMs: 200, watchIntervalMs: 200,
-      tmuxSession: "", disableAuditSpawn: true, maxConcurrentSessions: 0,
+      disableAuditSpawn: true, maxConcurrentSessions: 0,
+      // task-0060: 職人を要らないので Worker Pool に頼まない
+      disableAutoSpawn: true,
     });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
@@ -421,7 +423,9 @@ describe("[AC-S75f66b-6-3-B] resolution task failed → origin chain-fails (I2)"
     daemon = Daemon.create({
       port: 0, dataDir: path.join(tmpDir, "data"), worktreeBaseDir,
       tickIntervalMs: 200, watchIntervalMs: 200,
-      tmuxSession: "", disableAuditSpawn: true, maxConcurrentSessions: 0,
+      disableAuditSpawn: true, maxConcurrentSessions: 0,
+      // task-0060: 職人を要らないので Worker Pool に頼まない
+      disableAutoSpawn: true,
     });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;

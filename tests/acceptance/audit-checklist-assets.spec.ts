@@ -171,123 +171,78 @@ describe("[AC-S75f66b-3-2] Audit prompt assets are layer-A text files (skills/ d
 });
 
 // ── Suite 2: CHECK-MARKER-42 propagation test ──────────────────────────────────
+//
+// **経路が変わった**（task-0060・ADR-0013 決定60）。以前は Kobo が skills/ を読んで
+// `systemPrompt` に載せ、それが spawn の引数として渡っていた。いまは Kobo は監査の
+// プロンプトを組み立てない——監査人を起こすのは Worker Pool で、監査の観点は
+// **banto-auditor 拡張**が pi の `before_agent_start` で自分から読む。
+//
+// 検査するのはその実物：拡張を読み込んで、フックが返すシステムプロンプトに
+// チェックリストの中身が入っていることを確かめる。**偽の pi ではなく本物の拡張**を
+// 呼ぶので、「Kobo が渡したつもりの文字列」ではなく実際に効く経路を見ている。
 
-describe("[AC-S75f66b-3-2] Checklist edit propagates to spawned audit session system prompt", () => {
-  let tmpDir: string;
-  let repoDir: string;
-  let daemon: Daemon;
-  let base: string;
-  let driver: CaptureDriver;
+describe("[AC-S75f66b-3-2] Checklist edit propagates to the audit agent's system prompt", () => {
   let originalChecklist: string;
-  const proj = "proj-checklist-marker";
-  const taskId = "task-checklist-1";
 
-  before(async () => {
-    // F3 (robustness): save original checklist content BEFORE any mutation, then
-    // register unconditional SIGTERM/SIGINT handlers so a killed test run cannot
-    // leave the repo dirty (the in-process after() hook does not run on SIGKILL,
-    // but SIGTERM is sent by node:test on timeout — we catch it here).
+  before(() => {
     originalChecklist = fs.readFileSync(checklistPath, "utf-8");
-
     function restoreChecklist(): void {
       try { fs.writeFileSync(checklistPath, originalChecklist); } catch { /* best-effort */ }
     }
-    // Register unconditional restore on exit signals (idempotent: safe to call multiple times).
     process.once("exit", restoreChecklist);
     process.once("SIGTERM", () => { restoreChecklist(); process.exit(143); });
     process.once("SIGINT", () => { restoreChecklist(); process.exit(130); });
 
-    // Add marker line to checklist (scenario-2-api step-1)
     fs.writeFileSync(checklistPath, originalChecklist + "\nCHECK-MARKER-42\n");
-
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-audit-checklist-"));
-    repoDir = path.join(tmpDir, "repo");
-    initRepo(repoDir);
-
-    daemon = Daemon.create({
-      port: 0,
-      dataDir: path.join(tmpDir, "data"),
-      watchIntervalMs: 99999,
-      tickIntervalMs: 99999,
-      reconcileIntervalMs: 99999,
-      worktreeBaseDir: path.join(tmpDir, "worktrees"),
-      sessionBaseDir: path.join(tmpDir, "sessions"),
-      tmuxSession: "",
-    });
-
-    driver = new CaptureDriver();
-    daemon.driverRegistry.register("pi-rpc", driver);
-
-    await daemon.start();
-    base = `http://localhost:${daemon.port}`;
-
-    const projRes = await fetch(`${base}/api/v1/projects`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: proj, repoPath: repoDir }),
-    });
-    assert.equal(projRes.status, 201, "project must register");
   });
 
-  after(async () => {
-    // Unconditional restore: always rewrite the checklist before any other cleanup.
-    // This is safe even if the test threw — originalChecklist is the pre-test content.
+  after(() => {
     fs.writeFileSync(checklistPath, originalChecklist);
-
-    await driver.killAll();
-    await daemon.stop();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("[AC-S75f66b-3-2] scenario-2-api step-1: CHECK-MARKER-42 appears in spawned audit session systemPrompt", async () => {
-    // Create task and advance to auditing via HTTP (real daemon, real HTTP — Rule 2)
-    const createRes = await fetch(`${base}/api/v1/projects/${proj}/tasks`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: taskId, title: "Checklist marker test" }),
-    });
-    assert.equal(createRes.status, 201, "task must be created");
+  it("[AC-S75f66b-3-2] scenario-2-api step-1: CHECK-MARKER-42 appears in the audit agent's system prompt", async () => {
+    // 拡張は環境変数から自分の宛先を読む。読めないと I2 で投げる
+    const savedProject = process.env["BANTO_PROJECT"];
+    const savedTask = process.env["BANTO_TASK_ID"];
+    process.env["BANTO_PROJECT"] = "proj-checklist-marker";
+    // 職人の識別子には役目の接尾辞が付く（決定60）。拡張はここを外して Kobo に返す
+    process.env["BANTO_TASK_ID"] = "task-checklist-1:audit";
 
-    for (const to of ["queued", "planning", "implementing"]) {
-      const r = await fetch(
-        `${base}/api/v1/projects/${proj}/tasks/${taskId}/transition`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ to }),
-        }
+    try {
+      const { default: auditorExtension } = await import(
+        "../../packages/banto-daemon/src/pi-extension/banto-auditor.js"
       );
-      assert.equal(r.status, 200, `transition to ${to} must succeed`);
+
+      const hooks = new Map<string, (event: { systemPrompt: string }, ctx: unknown) => { systemPrompt: string }>();
+      const registered: Array<{ name: string }> = [];
+      auditorExtension({
+        registerTool(tool: { name: string }) { registered.push(tool); },
+        on(name: string, handler: (event: { systemPrompt: string }, ctx: unknown) => { systemPrompt: string }) {
+          hooks.set(name, handler);
+        },
+      });
+
+      // 監査人は audit_report を持つ（これが無いと判定を返せない）
+      assert.ok(
+        registered.some((t) => t.name === "audit_report"),
+        `audit_report が登録されること。登録されたのは: ${JSON.stringify(registered.map((t) => t.name))}`
+      );
+
+      const hook = hooks.get("before_agent_start");
+      assert.ok(hook, "before_agent_start フックが登録されること（ここで観点を載せる）");
+
+      const { systemPrompt } = hook!({ systemPrompt: "（ランタイムの既定）" }, undefined);
+      assert.ok(
+        systemPrompt.includes("CHECK-MARKER-42"),
+        "監査人のシステムプロンプトに skills/audit-checklist.md の中身が入ること" +
+          `（起動時にファイルから読む——D2）。冒頭: ${systemPrompt.slice(0, 200)}`
+      );
+    } finally {
+      if (savedProject === undefined) delete process.env["BANTO_PROJECT"];
+      else process.env["BANTO_PROJECT"] = savedProject;
+      if (savedTask === undefined) delete process.env["BANTO_TASK_ID"];
+      else process.env["BANTO_TASK_ID"] = savedTask;
     }
-
-    // Transition to auditing → daemon spawns audit session reading skills/ files
-    const auditRes = await fetch(
-      `${base}/api/v1/projects/${proj}/tasks/${taskId}/transition`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: "auditing" }),
-      }
-    );
-    assert.equal(auditRes.status, 200, "implementing→auditing must succeed");
-
-    // Wait for spawn to be recorded
-    const spawnSeen = await pollUntil(
-      () => driver.spawned.length >= 1,
-      (seen) => seen,
-      5000
-    );
-    assert.ok(spawnSeen, "CaptureDriver must have recorded an audit session spawn");
-
-    // Verify the spawned audit session's systemPrompt contains CHECK-MARKER-42
-    // (read from the file at spawn time, not compiled into code — D2)
-    const auditSpawn = driver.spawned[driver.spawned.length - 1];
-    assert.ok(auditSpawn, "audit spawn record must exist");
-    assert.ok(
-      auditSpawn.opts.systemPrompt.includes("CHECK-MARKER-42"),
-      `spawned audit session systemPrompt must contain 'CHECK-MARKER-42' (read from skills/audit-checklist.md at spawn time). ` +
-      `Prompt preview: ${auditSpawn.opts.systemPrompt.slice(0, 200)}`
-    );
 
     // Also verify checklist file is a plain text file (git-trackable — D2)
     const stat = fs.statSync(checklistPath);

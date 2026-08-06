@@ -3,7 +3,7 @@ id: task-0060
 type: task
 kind: refactor
 title: Kobo の職人を Worker Pool へ寄せ、独自の spawn と tmux を消す（決定60・63）
-status: draft
+status: done
 parent: epic-0010
 refs: [adr-0013, adr-0010, task-0024]
 scope:
@@ -30,7 +30,7 @@ ADR-0013 決定60。`SpawnLedger.open()` が `banto-daemon` と `banto-worker-po
 ## 注意（決定63）
 
 - **場所の砦は Kobo には掛からない。** `worker.delegate` の `worktreePath` を検査しているのは番頭ホストが Tool を束ねる層であり、Kobo が直接呼ぶ経路には無い。砦が縛るのは「LLM が自由なパス引数を渡すこと」で、決定的コードである Kobo は対象外——**これは穴ではなく設計**なので、二重に検査を足さない
-- **`worker.close` の制限は Worker Pool 側に置く**（呼び出し元の層ではなく）。番頭ホスト経由でも Kobo 経由でも同じ判定が効くようにする
+- ~~**`worker.close` の制限は Worker Pool 側に置く**（呼び出し元の層ではなく）~~ → **誤り。訂正（2026-08-06、実装時）**：Worker Pool は**呼び出し元を区別できない**（`worker.close` を叩いているのが番頭なのか Kobo 自身なのか、あちらからは同じに見える）。置き場所は**番頭ホストの Tool を束ねる層**（`bin.ts` の `guardPathArg` と同じ場所）で、判定は「`origin` が自分のスレッドでなければ拒む」。こうすると中核がモジュール名（"kobo"）を知る必要もなくなる
 
 ## モデルの扱い（決定60a）
 

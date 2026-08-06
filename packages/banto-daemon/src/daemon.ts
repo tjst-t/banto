@@ -17,19 +17,15 @@
  */
 
 import * as http from "node:http";
-import * as fs from "node:fs";
 import * as path from "node:path";
-import * as childProcess from "node:child_process";
-import { fileURLToPath } from "node:url";
 import {
   EventLog,
   StateStore,
   EventIndex,
   StateMachine,
-  RuntimeDriverRegistry,
   parseEnvProfiles as _parseEnvProfiles,
 } from "@banto/core";
-import type { OrchestrationEvent, TaskStatus, TaskRecord, TransitionResult, RuntimeDriver, SpawnOptions } from "@banto/core";
+import type { OrchestrationEvent, TaskStatus, TaskRecord, TransitionResult } from "@banto/core";
 import { ProjectRegistry } from "./project-registry.js";
 import type { ProjectEntry } from "./project-registry.js";
 import { WsEventServer } from "./ws-server.js";
@@ -39,46 +35,17 @@ import { Scheduler } from "./scheduler.js";
 import type { TickJob } from "./scheduler.js";
 import { GateEvaluator, evaluatePendingGates } from "./gate-evaluator.js";
 import type { QuotaCheck } from "./gate-evaluator.js";
-import { PiRpcDriver } from "@banto/worker-pool";
-import { createWorktree } from "@banto/repo-manager";
-import { SpawnLedger, isProcessAlive, killOrphanProcess } from "@banto/worker-pool";
-import type { LedgerEntry } from "@banto/worker-pool";
+import { addTaskWorktree, createWorktree } from "@banto/repo-manager";
 import { processMergeQueue } from "./merge-queue.js";
 import {
   fileConflictTask,
   deriveOriginResolutionPairs,
 } from "./conflict-filer.js";
-// ADR-0013 決定60: 検証環境の実装は Environment Pool が持つ。Kobo は `env.*` を
-// **モジュール経由で呼ぶ側**になり、台帳・ドライバ・sops をここに持たない
+// ADR-0013 決定60: 台帳を持つ能力（職人・検証環境）は**モジュールが持つ**。Kobo は
+// `worker.*` / `env.*` を**モジュール経由で呼ぶ側**になり、台帳・ドライバ・sops・
+// pi の起動をここに持たない
 import { createModuleClient } from "@banto/core";
 import type { ModuleClient } from "@banto/core";
-
-// ── Daemon-local skill asset loader ───────────────────────────────────────────
-//
-// Resolves prompt assets (skills/*.md) relative to THIS FILE's location
-// (packages/banto-daemon/src/daemon.ts → ../../../skills/).
-// This is separate from banto-core's loadPromptAsset, which resolves relative
-// to the core package's location (correct for production deployments where
-// @banto/core is installed in the monorepo root, but not when @banto/core is
-// accessed via a node_modules workspace symlink pointing to a different checkout).
-//
-// D2: criteria in text files (skills/), mechanism in code here.
-// I2: throws clearly if the file is missing.
-// D6: uses only node:fs, node:path, node:url (stdlib).
-
-const _daemonDir = path.dirname(fileURLToPath(import.meta.url));
-// daemon.ts lives at packages/banto-daemon/src/; root is 3 levels up.
-const _repoRoot = path.resolve(_daemonDir, "..", "..", "..");
-
-function loadSkillAsset(name: string): string {
-  const assetPath = path.join(_repoRoot, "skills", `${name}.md`);
-  if (!fs.existsSync(assetPath)) {
-    throw new Error(
-      `Skill asset not found: "${name}" (looked at ${assetPath}). Create skills/${name}.md.`
-    );
-  }
-  return fs.readFileSync(assetPath, "utf-8");
-}
 
 /**
  * Environment Pool から返る環境の**見え方**（ADR-0013 決定60）。
@@ -103,6 +70,95 @@ interface EnvProfileView {
   quota?: { max_instances: number };
 }
 
+/**
+ * Kobo が職人を起こすときの名乗り（決定29 の `origin`＝報告の宛先）。
+ *
+ * 番頭はスレッドごとの `banto:<threadId>` を名乗る。**Kobo 由来の職人がこれで見分けられる**
+ * ことが要点で、番頭の職人ビューアにも Kobo の職人が並び（決定18 のドリルダウン）、
+ * 番頭からは畳めない（決定63）。
+ */
+export const KOBO_ORIGIN = "kobo";
+
+/** 職人の役目。Worker Pool 上の taskId の接尾辞になる（`task-0001:audit`）。 */
+type WorkerRole = "executor" | "audit" | "rework";
+
+/**
+ * Worker Pool 側の taskId。
+ *
+ * 同じタスクに実装者と監査人が同時に居るので、台帳の鍵（projectTag + taskId）を
+ * 分けないと片方が上書きされる。**接尾辞は pi の子プロセスにも `BANTO_TASK_ID` として
+ * 渡る**ので、Kobo の拡張（banto-executor / banto-auditor）は `:` の手前だけを使う。
+ */
+function poolTaskId(taskId: string, role: WorkerRole): string {
+  return role === "executor" ? taskId : `${taskId}:${role}`;
+}
+
+/** Worker Pool 側の taskId を、タスクと役目に戻す。 */
+function splitPoolTaskId(id: string): { taskId: string; role: WorkerRole } {
+  const at = id.indexOf(":");
+  if (at < 0) return { taskId: id, role: "executor" };
+  const suffix = id.slice(at + 1);
+  return {
+    taskId: id.slice(0, at),
+    role: suffix === "audit" || suffix === "rework" ? suffix : "executor",
+  };
+}
+
+/** モデルの等級。Kobo が知ってよいのはここまで（決定60a）。 */
+type ModelTier = "reasoning" | "standard" | "fast";
+
+const TIER_ORDER: ModelTier[] = ["fast", "standard", "reasoning"];
+
+/** タスクが指定した等級。無効な値は既定（standard）に落とす。 */
+function taskModelTier(task: TaskRecord): ModelTier {
+  const raw = task["model_tier"];
+  return TIER_ORDER.includes(raw as ModelTier) ? (raw as ModelTier) : "standard";
+}
+
+/**
+ * 失敗駆動の昇格（spec-daemon-core §3.5）。監査に落ちた回数だけ一段ずつ上げる。
+ *
+ * **Kobo がするのは文字列を1つ選ぶことだけ**で、どのモデルになるかは Worker Pool が
+ * 決める（決定60a）。
+ */
+function escalateTier(tier: ModelTier, steps: number): ModelTier {
+  const index = Math.min(TIER_ORDER.indexOf(tier) + Math.max(0, steps), TIER_ORDER.length - 1);
+  return TIER_ORDER[index]!;
+}
+
+/** Worker Pool から返る職人の**見え方**（要るところだけ。決定27b）。 */
+interface WorkerView {
+  projectTag: string;
+  taskId: string;
+  origin: string;
+  sessionId: string;
+  sessionPath: string;
+  worktree: string;
+  pid: number;
+  alive: boolean;
+  state: "running" | "waiting" | "exited" | "closed";
+}
+
+/** 起こした職人1人分（Kobo が帳簿に残す最小限）。 */
+export interface SpawnedSession {
+  sessionId: string;
+  pid: number;
+  /** セッションJSONL の場所（中身ではなく参照だけ。spec §2.1）。 */
+  sessionPath: string;
+  worktreePath: string;
+}
+
+/** 同上、職人に起きたことの見え方（`worker.events`）。 */
+interface WorkerEventView {
+  id: number;
+  type: string;
+  origin: string;
+  projectTag: string;
+  taskId: string;
+  sessionId: string;
+  data: Record<string, unknown>;
+}
+
 export interface DaemonConfig {
   /** Port to listen on. Default: 3000 */
   port: number;
@@ -120,47 +176,18 @@ export interface DaemonConfig {
    */
   tickIntervalMs: number;
   /**
-   * Base directory for git worktrees created for spawned tasks.
-   * Default: <dataDir>/worktrees
+   * ワークツリーの置き場を**明示するときだけ**指定する。
+   *
+   * 既定（未指定）では `gwq` に作らせる（決定60・a6）——置き場所は gwq の設定に従い、
+   * そのまま `gwq list` に載る＝番頭と PO が場所として中を読める。ここを指定すると
+   * `<worktreeBaseDir>/<projectTag>/<taskId>` に素の `git worktree` で作る。
+   * リモートの無いテスト用リポジトリなど、gwq が置き場所を決められない場合の逃げ道。
    */
   worktreeBaseDir?: string;
   /**
-   * Base directory for session JSONL files.
-   * Default: <dataDir>/sessions
-   */
-  sessionBaseDir?: string;
-  /**
-   * Interval (ms) for the spawn-ledger reconcile job.
-   * Default: tickIntervalMs (shares the tick cadence).
-   * Set to a small value (e.g. 500) in tests for fast detection.
-   */
-  reconcileIntervalMs?: number;
-  /**
-   * tmux session name for PO observation windows.
-   * When set, spawnTask() opens a tmux window named <taskId> in this session
-   * showing `tail -f <sessionPath>` for live agent transcript visibility.
-   * Default: "banto". Set to "" to disable tmux integration.
-   *
-   * Spec-ui §1.4: POはtmuxアタッチで対話内容を目視できる.
-   * D6: uses tmux CLI (stdlib-equivalent; no new npm dependency).
-   * Best-effort: tmux failure does NOT fail the task spawn.
-   */
-  tmuxSession?: string;
-  /**
-   * LLM provider name passed to pi via --provider.
-   * Default: "opencode" (VISION: models are interchangeable via opencode).
-   * Override via BANTO_PI_PROVIDER environment variable.
-   */
-  piProvider?: string;
-  /**
-   * LLM model ID passed to pi via --model.
-   * Default: "deepseek-v4-flash-free" (cheap, fast model for executor tasks).
-   * Override via BANTO_PI_MODEL environment variable.
-   */
-  piModel?: string;
-  /**
    * Maximum number of concurrently-running agent sessions (physical quota, 層B).
-   * Compared against ledger.size on each auto-spawn tick.
+   *
+   * 数える相手は **Worker Pool に居る Kobo 由来の職人**（決定60：職人の真実は一箇所）。
    * When full, new spawns are silently skipped and re-evaluated on the next tick.
    * No rejection event is emitted on quota skip — re-evaluation is silent (spec-multi-project §3).
    *
@@ -186,6 +213,14 @@ export interface DaemonConfig {
    * **どこで動かすかは配置の問題**で、Kobo は URL を1つ知っていればよい（決定27b）。
    */
   environmentPoolUrl?: string;
+  /**
+   * Worker Pool の到達先（ADR-0013 決定60）。
+   *
+   * 既定は `BANTO_WORKER_POOL_URL`、それも無ければ番頭ホストに同居している既定の口。
+   * Kobo は職人を自分で起こさない——`worker.delegate_toolkit` を呼ぶだけで、
+   * pi の起動・台帳・モデルの解決はすべて Worker Pool の仕事。
+   */
+  workerPoolUrl?: string;
 }
 
 export class Daemon {
@@ -205,22 +240,24 @@ export class Daemon {
    * See evaluatePendingGates for dedup logic.
    */
   private readonly lastGateKey: Map<string, string> = new Map();
-  /**
-   * RuntimeDriver registry — maps driver IDs to RuntimeDriver implementations.
-   * Spec §3.5: pi-rpc is the reference implementation; additional drivers can be
-   * registered by callers (e.g. in tests, or when claude-agent-sdk is added).
-   */
-  readonly driverRegistry: RuntimeDriverRegistry;
-
-  /**
-   * Spawn ledger — persistent registry of active child processes (spec §3).
-   * Written atomically to <dataDir>/spawn-ledger.json.
-   * Exposed as readonly for tests (e.g. to inspect entries after spawn).
-   */
-  readonly ledger: SpawnLedger;
 
   /** Environment Pool（別プロセス）を呼ぶ口。台帳は持たない（決定60）。 */
   private readonly envClient: ModuleClient;
+
+  /** Worker Pool（別プロセス）を呼ぶ口。職人の台帳もセッションも持たない（決定60）。 */
+  private readonly workerClient: ModuleClient;
+
+  /**
+   * 職人のイベントをどこまで読んだか（`worker.events` の `afterEventId`）。
+   *
+   * **台帳ではない。** 起動のたびに 0 から読み直し、自分の帳簿に既に `agent_exited` が
+   * あるものは飛ばす（D3：写しを永続化せず、帳簿から導く）。落ちている間に終わった職人も
+   * これで拾える——Kobo が居ない間の出来事を取りこぼさないのが決定29c の要点。
+   */
+  private _workerCursor = 0;
+
+  /** 職人のイベントを引く tick の再入防止。 */
+  private _workerEventsRunning = false;
 
   /**
    * 依存ゲートの物理quota 用の**短命の写し**（決定36j と同じ扱い）。
@@ -230,12 +267,6 @@ export class Daemon {
     perProfile: Map<string, number>;
     profileQuota: Map<string, number>;
   } = { perProfile: new Map(), profileQuota: new Map() };
-
-  /**
-   * Separate interval handle for the reconcile job, running at reconcileIntervalMs
-   * (which may differ from the main tick). Null until start() is called.
-   */
-  private reconcileTimer: NodeJS.Timeout | null = null;
 
   /**
    * Re-entrancy guard for the serial merge queue tick.
@@ -254,37 +285,25 @@ export class Daemon {
   /**
    * Re-entrancy guard for the auto-spawn tick.
    *
-   * S75f66b-5 E2E fix: driver.spawn() awaits ~200ms (get_state probe) + up to 3s fallback.
-   * If a second tick fires before the first runAutoSpawn() resolves, both see the same
-   * "ready" task with no ledger entry (the entry is added only after spawn() resolves).
-   * Both then call spawnTask(), causing multiple concurrent sessions for the same task.
+   * S75f66b-5 E2E fix: 職人の起動は数百ミリ秒かかる。次の tick が先に走ると、同じ
+   * 「ready のまま・まだ職人が居ない」タスクを2つの tick が見て二重に起こしてしまう。
    *
    * Fix: same pattern as _mergeQueueRunning — skip if already running.
    * Always reset in finally{} so a panicking inner call never permanently locks spawning.
    */
   private _autoSpawnRunning = false;
 
-
-
   /**
    * In-flight spawn map: deduplicates concurrent spawnTask() calls for the same task.
    *
-   * The spawn-ledger only records COMPLETED spawns (after driver.spawn() resolves
-   * and the ledger entry is written). During the 200ms–3.2s window of driver.spawn(),
-   * the task is neither in the ledger nor in a non-"ready" status (the transition to
-   * "planning" happens AFTER driver.spawn() returns). Without this guard, concurrent
-   * callers (e.g. auto-spawn tick + explicit test spawn) both see a "ready" task not
-   * in the ledger and both call spawnTask(), spawning two pi processes for one task.
-   *
-   * The map stores the Promise returned by the first call. Subsequent callers for the
-   * same task key join that Promise and get the same result (promise deduplication).
-   * This is safe because the result (worktreePath, sessionPath, pid, sessionId) is
-   * identical for all callers — only one pi process is ever spawned.
+   * 職人が Worker Pool の台帳に載るのは起動が終わったあとで、その間タスクは "ready" のまま
+   * ——待っている間に別の呼び出し（auto-spawn の tick と明示の spawnTask）が来ると、
+   * 1つのタスクに職人が2人つく。最初の呼び出しの Promise を共有して1人に保つ。
    *
    * Invariant: key is `${projectTag}/${taskId}`. Removed in finally{} of spawnTask().
    * D3: this is NOT persisted — it only exists for the lifetime of one spawnTask() call.
    */
-  private readonly _inFlightSpawns: Map<string, Promise<{ worktreePath: string; sessionPath: string; pid: number; sessionId: string; tmuxWindow?: string }>> = new Map();
+  private readonly _inFlightSpawns: Map<string, Promise<SpawnedSession>> = new Map();
 
   /**
    * Set of in-flight background async operations deferred via setImmediate
@@ -307,20 +326,6 @@ export class Daemon {
     this.index = EventIndex.build(this.log);
     this.registry = ProjectRegistry.open(config.dataDir);
 
-    // Open spawn ledger — I2: corruption → error event + empty ledger (never crash).
-    const { ledger, corruptionError } = SpawnLedger.open(config.dataDir);
-    this.ledger = ledger;
-    if (corruptionError) {
-      // Record the corruption as a daemon-internal event (I2: don't swallow).
-      // We record it during construction (before start()) so it's in the log.
-      this.log.append({
-        type: "tick_job_failed",
-        projectTag: "daemon",
-        jobName: "spawn-ledger-open",
-        error: corruptionError,
-      });
-    }
-
     // ADR-0013 決定60: 検証環境の台帳は Environment Pool が持つ。Kobo は呼ぶ側になり、
     // 到達先を1つ知っているだけでよい（決定27b：呼び出しは当事者間で直接）
     this.envClient = createModuleClient({
@@ -334,22 +339,18 @@ export class Daemon {
       },
     });
 
-    // Initialize driver registry with the pi-rpc reference implementation.
-    // D6: PiRpcDriver uses only child_process (stdlib) + the pi binary.
-    this.driverRegistry = new RuntimeDriverRegistry();
-    // Resolve banto-executor extension path relative to this file (daemon.ts lives in
-    // packages/banto-daemon/src/; the extension is in pi-extension/ sibling dir).
-    const extensionPath = new URL(
-      "./pi-extension/banto-executor.ts",
-      import.meta.url
-    ).pathname;
-    const piDriver = new PiRpcDriver({
-      sessionBaseDir: config.sessionBaseDir ?? path.join(config.dataDir, "sessions"),
-      defaultProvider: config.piProvider ?? "opencode",
-      defaultModel: config.piModel ?? "deepseek-v4-flash-free",
-      extensionPath,
+    // ADR-0013 決定60: 職人の台帳・セッション・**モデルの解決**は Worker Pool が持つ。
+    // Kobo は「誰に何をさせるか」を渡すだけで、pi も provider も model も知らない（決定60a）
+    this.workerClient = createModuleClient({
+      modules: {
+        "worker-pool": {
+          baseUrl:
+            config.workerPoolUrl ??
+            process.env["BANTO_WORKER_POOL_URL"] ??
+            "http://127.0.0.1:4100/api/worker-pool",
+        },
+      },
     });
-    this.driverRegistry.register("pi-rpc", piDriver);
 
     this.httpServer = createHttpServer(this);
     this.wsServer = new WsEventServer(this.httpServer, (projectTag) =>
@@ -406,17 +407,22 @@ export class Daemon {
 
     // Built-in job: auto-spawn (S75f66b-2, spec-daemon-core §6).
     // Enumerates ready tasks from derived state (D3: no separate bookkeeping) and
-    // calls spawnTask() for any that are not already in the ledger.
-    // Physical quota (maxConcurrentSessions) is checked against ledger size first;
-    // when full, skip silently — no rejection event, re-evaluated on next tick (I2-compliant:
-    // quota-skip is not an error; spawn failures still go through recordTaskFailed).
-    // disableAutoSpawn: test suites that test gate/quota logic can opt out of auto-spawn
-    // to prevent the pi driver from failing (no pi binary in test envs) and marking tasks failed.
+    // asks the Worker Pool for a worker for any that has none yet.
+    // Physical quota (maxConcurrentSessions) is checked against the Worker Pool's live
+    // workers first; when full, skip silently — no rejection event, re-evaluated on next
+    // tick (I2-compliant: quota-skip is not an error; spawn failures go to recordTaskFailed).
+    // disableAutoSpawn: test suites that test gate/quota logic can opt out of auto-spawn.
     if (!config.disableAutoSpawn) {
       this.scheduler.registerJob("auto-spawn", () => {
         void this.runAutoSpawn();
       });
     }
+
+    // Built-in job: 職人に起きたことを引き取る（ADR-0013 決定60・決定29c）。
+    // 以前は `driver.subscribe` で自分が起こしたプロセスの終了を直に見ていたが、職人を
+    // 起こすのが Worker Pool になったので、**イベントログを追いかける**形に変わる。
+    // `afterEventId` があるので、Kobo が落ちている間に終わった職人も取りこぼさない。
+    this.scheduler.registerJob("worker-events", () => this.runWorkerEventsTick());
 
     // Built-in job: serial merge queue (S75f66b-5, spec-daemon-core §4.1).
     // Processes the HEAD of the merge queue only (one task at a time — serial discipline).
@@ -448,11 +454,6 @@ export class Daemon {
         config.tickIntervalMs ??
         parseInt(process.env["BANTO_TICK_INTERVAL_MS"] ?? "60000", 10),
       worktreeBaseDir: config.worktreeBaseDir,
-      sessionBaseDir: config.sessionBaseDir,
-      reconcileIntervalMs: config.reconcileIntervalMs,
-      tmuxSession: config.tmuxSession,
-      piProvider: config.piProvider ?? process.env["BANTO_PI_PROVIDER"] ?? "opencode",
-      piModel: config.piModel ?? process.env["BANTO_PI_MODEL"] ?? "deepseek-v4-flash-free",
       maxConcurrentSessions:
         config.maxConcurrentSessions ??
         // parseInt of a non-numeric env value yields NaN, and `size >= NaN` is
@@ -463,6 +464,7 @@ export class Daemon {
       ...(config.environmentPoolUrl !== undefined
         ? { environmentPoolUrl: config.environmentPoolUrl }
         : {}),
+      ...(config.workerPoolUrl !== undefined ? { workerPoolUrl: config.workerPoolUrl } : {}),
     };
     return new Daemon(resolved);
   }
@@ -479,12 +481,15 @@ export class Daemon {
     this.scheduler.registerJob(name, fn);
   }
 
-  /** Start listening. Returns a promise that resolves when the server is bound. */
+  /**
+   * Start listening. Returns a promise that resolves when the server is bound.
+   *
+   * **再起動時に職人を畳まない**（ADR-0013 決定60・63）。以前はここで spawn 台帳から
+   * 孤児を引き取り、生きているプロセスを SIGTERM で落として task_failed にしていた。
+   * 職人の面倒を見るのは Worker Pool の仕事になったので、Kobo は**帳簿に追いつくだけ**
+   * ——`worker-events` の tick が、落ちている間に終わった職人を拾う。
+   */
   async start(): Promise<void> {
-    // Recover orphans from the ledger BEFORE accepting new requests.
-    // Spec §3: "daemon再起動時は台帳から孤児を引き取り再接続する"
-    await this.recoverOrphans();
-
     await new Promise<void>((resolve, reject) => {
       this.httpServer.once("error", reject);
       this.httpServer.listen(this.config.port, "0.0.0.0", () => {
@@ -512,17 +517,8 @@ export class Daemon {
       this.applyAndBroadcast(configEvent);
     }
 
-    // Start the spawn-ledger reconcile timer (separate from the main tick so tests can tune it).
-    const reconcileMs =
-      this.config.reconcileIntervalMs ?? this.config.tickIntervalMs;
-    this.reconcileTimer = setInterval(() => {
-      void this.reconcileLedger();
-    }, reconcileMs);
-    // Unref so the timer does not prevent the event loop from exiting in tests.
-    if (this.reconcileTimer.unref) this.reconcileTimer.unref();
-
-    // 検証環境の照合（台帳と実リソースの突き合わせ）は Environment Pool が持つ
-    // （ADR-0013 決定60）。Kobo は自分の spawn 台帳の照合だけを回す。
+    // 照合（台帳と実物の突き合わせ）は、職人も検証環境も**持ち主が回す**
+    // （ADR-0013 決定60）。Kobo に照合の tick は無い。
   }
 
   /** Stop the daemon gracefully. */
@@ -537,10 +533,6 @@ export class Daemon {
     // must complete before we close the event log (D3/I2: no events must be dropped).
     if (this._backgroundOps.size > 0) {
       await Promise.allSettled([...this._backgroundOps]);
-    }
-    if (this.reconcileTimer) {
-      clearInterval(this.reconcileTimer);
-      this.reconcileTimer = null;
     }
     return new Promise((resolve, reject) => {
       this.wsServer.close(() => {
@@ -649,51 +641,198 @@ export class Daemon {
     return task;
   }
 
-  // ── Session spawn ──────────────────────────────────────────────────────────
+  // ── 職人（Worker Pool 経由・ADR-0013 決定60）─────────────────────────────────
+  //
+  // **Kobo は職人を自分で起こさない。** 起動・台帳・セッションファイル・モデルの解決・
+  // 生存確認・畳みは、すべて Worker Pool が持つ（決定29c：職人の真実は一箇所）。
+  // 以前はここに SpawnLedger・PiRpcDriver の直呼び・孤児回収・tmux 窓があり、
+  // **Kobo が起こした職人は番頭の worker.list にも職人ビューアにも出なかった**（inc-0027 と同型）。
+  //
+  // ここに残るのは統治の都合だけ：
+  //   - 誰に何をさせるか（実装・監査・rework の指示文と等級）
+  //   - 起きたことを自分の帳簿へ写す（agent_spawned / agent_exited / audit_started）
+  //   - 済んだ職人を畳む（I3：起こした者が片付ける。番頭には畳めない・決定63）
+  //
+  // **モデル名は知らない**（決定60a）。渡すのは tier だけで、解決は Worker Pool。
+
+  /** Worker Pool の Tool を呼ぶ。到達できなければ投げる（I2）。 */
+  private async workerInvoke(
+    tool: string,
+    args: Record<string, unknown> = {}
+  ): Promise<Record<string, unknown>> {
+    const result = await this.workerClient.invoke("worker-pool", tool, args);
+    return (result.details ?? {}) as Record<string, unknown>;
+  }
 
   /**
-   * Spawn a pi-rpc session for a task that is in "ready" status.
+   * いま Worker Pool に居る **Kobo 由来の**職人。
+   *
+   * D3: 数えるための写しを持たない。物理quota も「もう職人が居るか」も、毎回ここから導く
+   * ——Kobo が落ちて戻ってきても、実態と食い違わない。
+   */
+  private async liveKoboWorkers(): Promise<WorkerView[]> {
+    const details = await this.workerInvoke("worker.list", {
+      includeClosed: false,
+      // 既定のページは 20 件。物理quota（既定5）より十分に大きく取る
+      limit: 200,
+    });
+    const workers = (details["workers"] ?? []) as WorkerView[];
+    return workers.filter((w) => w.origin === KOBO_ORIGIN && w.alive);
+  }
+
+  /**
+   * 指定の役目の職人が居れば畳む（起こす前・役目を終えたあと）。
+   *
+   * Worker Pool の台帳は projectTag + taskId で1人なので、前の職人が生きたまま同じ鍵で
+   * 起こすと**台帳から溢れてプロセスだけが残る**。畳んでから起こす。
+   *
+   * I2: 畳めなかったことは記録に残すが、統治は止めない（安全弁が後で拾う）。
+   */
+  private async closeWorkerFor(projectTag: string, poolId: string): Promise<void> {
+    let workers: WorkerView[];
+    try {
+      workers = await this.liveKoboWorkers();
+    } catch (err) {
+      process.stderr.write(
+        `[banto-daemon] 職人の一覧を引けませんでした（${projectTag}/${poolId}）: ${String(err)}\n`
+      );
+      return;
+    }
+    for (const worker of workers) {
+      if (worker.projectTag !== projectTag || worker.taskId !== poolId) continue;
+      try {
+        await this.workerInvoke("worker.close", { sessionId: worker.sessionId });
+      } catch (err) {
+        process.stderr.write(
+          `[banto-daemon] 職人を畳めませんでした（${worker.sessionId}）: ${String(err)}\n`
+        );
+      }
+    }
+  }
+
+  /**
+   * 職人を1人起こす（`worker.delegate_toolkit`）。
+   *
+   * `driverOptions` を渡せる内部の口を使うのは、**Kobo が自分の拡張を載せる**ため
+   * （banto-executor / banto-auditor が `report_phase` / `audit_report` を提供する。決定29e）。
+   * 番頭にこの口は渡らない——LLM に任意のコードを載せさせないため。
+   */
+  private async delegateWorker(opts: {
+    projectTag: string;
+    taskId: string;
+    role: WorkerRole;
+    worktreePath: string;
+    instruction: string;
+    modelTier: ModelTier;
+    extension: "banto-executor" | "banto-auditor";
+  }): Promise<SpawnedSession> {
+    const poolId = poolTaskId(opts.taskId, opts.role);
+    // 同じ鍵の職人が残っていたら畳んでから起こす（台帳の鍵は1つ）
+    await this.closeWorkerFor(opts.projectTag, poolId);
+
+    const details = await this.workerInvoke("worker.delegate_toolkit", {
+      taskId: poolId,
+      projectTag: opts.projectTag,
+      origin: KOBO_ORIGIN,
+      worktreePath: opts.worktreePath,
+      instruction: opts.instruction,
+      modelTier: opts.modelTier,
+      driverOptions: {
+        // 職人が Kobo の口を叩くための到達先（拡張が環境変数で受け取る）
+        daemonUrl: `http://localhost:${this.port}`,
+        projectTag: opts.projectTag,
+        extensionPaths: [
+          new URL(`./pi-extension/${opts.extension}.ts`, import.meta.url).pathname,
+        ],
+      },
+    });
+
+    const sessionId = String(details["sessionId"] ?? "");
+    // I2: 「起こした」と返ってきたのに誰なのか分からない状態を、成功として先へ進めない
+    // ——sessionId が無ければ、以後この職人を見ることも畳むこともできなくなる
+    if (sessionId.length === 0) {
+      throw new Error(
+        `Worker Pool が職人の識別子を返しませんでした（${opts.projectTag}/${poolId}）: ` +
+          JSON.stringify(details)
+      );
+    }
+    return {
+      sessionId,
+      pid: Number(details["pid"] ?? 0),
+      sessionPath: String(details["sessionPath"] ?? ""),
+      worktreePath: opts.worktreePath,
+    };
+  }
+
+  /**
+   * タスクのワークツリーを用意する（決定60・a6）。
+   *
+   * 既定では **gwq に作らせる**——置き場所は gwq の設定に従い、そのまま場所として
+   * 番頭にも PO にも見える。`worktreeBaseDir` を明示した構成（リモートの無いテスト用
+   * リポジトリなど）だけ、素の `git worktree` でそこに作る。
+   *
+   * 冪等：監査・rework は実装者と同じワークツリーを見る必要がある。
+   */
+  private async ensureWorktree(projectTag: string, taskId: string): Promise<string> {
+    const repoPath = this.registry.list().find((p) => p.id === projectTag)?.repoPath ?? "";
+    const base = this.config.worktreeBaseDir;
+    if (base || repoPath.length === 0) {
+      const worktreePath = path.join(
+        base ?? path.join(this.config.dataDir, "worktrees"),
+        projectTag,
+        taskId
+      );
+      if (repoPath) await createWorktree(repoPath, worktreePath);
+      return worktreePath;
+    }
+    const { path: worktreePath } = await addTaskWorktree({
+      repoPath,
+      branch: `task/${taskId}`,
+    });
+    return worktreePath;
+  }
+
+  /**
+   * そのタスクのワークツリー（帳簿から引く。D3）。
+   *
+   * 置き場所を決めるのは gwq なので、**Kobo は組み立てられない**——起こしたときに
+   * `agent_spawned.worktree` に残してあるものを読む。まだ職人を起こしていないタスクは
+   * 明示の置き場（または既定）の見込みのパスを返す（マージキューの後始末が使う）。
+   */
+  private worktreeOf(projectTag: string, taskId: string): string {
+    const events = this.index.getTaskHistory(taskId, projectTag);
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i]!;
+      if (ev.type === "agent_spawned" && ev.worktree) return ev.worktree;
+      if (ev.type === "audit_started" && ev.worktree) return ev.worktree;
+    }
+    return path.join(
+      this.config.worktreeBaseDir ?? path.join(this.config.dataDir, "worktrees"),
+      projectTag,
+      taskId
+    );
+  }
+
+  /**
+   * 実装の職人を1人つける（タスクは "ready" であること）。
    *
    * Workflow:
    *   1. Validate the task is in "ready" state.
-   *   2. Look up the project repo path.
-   *   3. Create a git worktree at <worktreeBaseDir>/<projectTag>/<taskId>.
-   *   4. Spawn pi via the registered driver (default: "pi-rpc").
-   *   5. Append agent_spawned event — sessionPath only, not transcript content (spec §2.1).
-   *   6. Transition task → "planning" (state machine enforces the guard).
-   *   7. Subscribe to driver events; when process exits, append agent_exited event.
+   *   2. ワークツリーを用意する（gwq、または明示の置き場）。
+   *   3. Worker Pool に職人を起こしてもらう（指示・等級つき）。
+   *   4. Append agent_spawned event — session path reference only (spec §2.1).
+   *   5. Transition task → "planning" (state machine enforces the guard).
    *
-   * I2: any failure (worktree, spawn) appends task_failed + task never transitions.
-   *
-   * @param projectTag  Project tag.
-   * @param taskId      Task ID (must be in "ready" state).
-   * @param driverId    Driver to use (default: "pi-rpc").
-   * @param spawnExtra  Additional SpawnOptions fields (tools, systemPrompt, etc.).
+   * I2: any failure (worktree, delegate) appends task_failed + task never transitions.
    */
-  async spawnTask(
-    projectTag: string,
-    taskId: string,
-    driverId = "pi-rpc",
-    spawnExtra: Partial<SpawnOptions> = {}
-  ): Promise<{ worktreePath: string; sessionPath: string; pid: number; sessionId: string; tmuxWindow?: string }> {
-    // 0. In-flight deduplication: if a concurrent spawnTask() call is already in progress
-    //    for this task, join the existing Promise and return its result (no second spawn).
-    //    driver.spawn() takes 200ms–3.2s, during which the task is still "ready" (no
-    //    transition yet) and the ledger has no entry yet. Without this guard, concurrent
-    //    callers (e.g. auto-spawn tick + explicit test spawn) both see a "ready" task
-    //    with no ledger entry and both call spawnTask(), creating two pi processes.
-    //
-    //    Promise deduplication: all callers for the same key receive the same result
-    //    (worktreePath, sessionPath, pid, sessionId). Only one pi process is ever spawned.
+  async spawnTask(projectTag: string, taskId: string): Promise<SpawnedSession> {
+    // 0. In-flight deduplication: 起動には時間がかかり、その間タスクは "ready" のまま
+    //    ——待っている間に来た2つ目の呼び出しは、同じ Promise に相乗りさせる
     const spawnKey = `${projectTag}/${taskId}`;
     const existing = this._inFlightSpawns.get(spawnKey);
-    if (existing) {
-      // Join the in-flight spawn — same result, no second pi process.
-      return existing;
-    }
+    if (existing) return existing;
 
-    // Build the promise for this spawn (kept in the map until it settles).
-    const spawnPromise = this._spawnTaskBody(projectTag, taskId, driverId, spawnExtra).finally(() => {
+    const spawnPromise = this._spawnTaskBody(projectTag, taskId).finally(() => {
       this._inFlightSpawns.delete(spawnKey);
     });
     this._inFlightSpawns.set(spawnKey, spawnPromise);
@@ -701,12 +840,7 @@ export class Daemon {
   }
 
   // Inner implementation extracted to allow finally cleanup on all paths.
-  private async _spawnTaskBody(
-    projectTag: string,
-    taskId: string,
-    driverId: string,
-    spawnExtra: Partial<SpawnOptions>
-  ): Promise<{ worktreePath: string; sessionPath: string; pid: number; sessionId: string; tmuxWindow?: string }> {
+  private async _spawnTaskBody(projectTag: string, taskId: string): Promise<SpawnedSession> {
     // 1. Validate task state
     const task = this.store.getTask(taskId, projectTag);
     if (!task) throw new Error(`Task '${taskId}' not found in project '${projectTag}'`);
@@ -716,224 +850,153 @@ export class Daemon {
       );
     }
 
-    // 2. Look up project repo path (for worktree creation)
-    const project = this.registry.list().find((p) => p.id === projectTag);
-    const repoPath = project?.repoPath ?? "";
-
-    // 3. Resolve paths
-    const worktreeBase =
-      this.config.worktreeBaseDir ?? path.join(this.config.dataDir, "worktrees");
-    const worktreePath = path.join(worktreeBase, projectTag, taskId);
-    const sessionBase =
-      this.config.sessionBaseDir ?? path.join(this.config.dataDir, "sessions");
-    const sessionPath = path.join(sessionBase, projectTag, `${taskId}.jsonl`);
-
-    // 4. Create git worktree (if repo is available)
-    if (repoPath) {
-      try {
-        await createWorktree(repoPath, worktreePath);
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
-        this.recordTaskFailed(projectTag, taskId, `worktree creation failed: ${reason}`);
-        throw err;
-      }
-    }
-
-    // 5. Look up driver
-    const driver = this.driverRegistry.get(driverId);
-    if (!driver) {
-      const reason = `Driver '${driverId}' not registered`;
-      this.recordTaskFailed(projectTag, taskId, reason);
-      throw new Error(reason);
-    }
-
-    // 6. Spawn session
-    let handle: { pid: number; sessionId: string; sessionPath: string };
+    // 2. ワークツリー（無ければ作る）
+    let worktreePath: string;
     try {
-      // Inject daemon URL, projectTag, taskId into driverOptions so the pi driver
-      // can pass them as BANTO_DAEMON_URL/BANTO_PROJECT/BANTO_TASK_ID to the child
-      // process env. The banto-executor extension reads these to call the daemon API.
-      const daemonUrl = `http://localhost:${this.port}`;
-      const mergedDriverOptions: Record<string, unknown> = {
-        ...spawnExtra.driverOptions,
-        daemonUrl,
+      worktreePath = await this.ensureWorktree(projectTag, taskId);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.recordTaskFailed(projectTag, taskId, `worktree creation failed: ${reason}`);
+      throw err;
+    }
+
+    // 3. 職人を起こす。等級はタスクの `model_tier`（既定 standard）
+    const modelTier = taskModelTier(task);
+    let session: SpawnedSession;
+    try {
+      session = await this.delegateWorker({
         projectTag,
-      };
-      const opts: SpawnOptions = {
         taskId,
+        role: "executor",
         worktreePath,
-        sessionPath,
-        systemPrompt: spawnExtra.systemPrompt ?? "",
-        tools: spawnExtra.tools ?? [],
-        modelTier: spawnExtra.modelTier,
-        driverOptions: mergedDriverOptions,
-      };
-      handle = await driver.spawn(opts);
+        instruction: buildExecutorInstruction(task, worktreePath),
+        modelTier,
+        extension: "banto-executor",
+      });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       this.recordTaskFailed(projectTag, taskId, `spawn failed: ${reason}`);
       throw err;
     }
 
-    // 7. Append agent_spawned event — session path reference ONLY (spec §2.1)
+    // 4. Append agent_spawned event — session path reference ONLY (spec §2.1)
     const spawnedEvent = this.log.append({
       type: "agent_spawned",
       projectTag,
       taskId,
-      pid: handle.pid,
-      sessionPath: handle.sessionPath,
+      pid: session.pid,
+      sessionPath: session.sessionPath,
       worktree: worktreePath,
-      modelTier: spawnExtra.modelTier ?? "standard",
+      modelTier,
+      sessionId: session.sessionId,
     });
     this.applyAndBroadcast(spawnedEvent);
 
-    // 8. Transition to "planning"
+    // 5. Transition to "planning"
     this.transition(projectTag, taskId, "planning", "agent spawned");
 
-    // 9. Open a tmux window for PO observation (spec-ui §1.4, DEC-S254276-004).
-    // Best-effort: failure does NOT fail the task spawn.
-    // The window displays a tail of the session JSONL so POが tmux attach -t banto で
-    // エージェントの進行を目視できる.
-    let tmuxWindow: string | undefined;
-    const tmuxSession = this.config.tmuxSession ?? "banto";
-    if (tmuxSession) {
-      tmuxWindow = openTmuxWindow(tmuxSession, taskId, handle.sessionPath);
-    }
+    return session;
+  }
 
-    // 10. Register in spawn ledger (spec §3: persistent process registry).
-    // I3: only processes we spawned are in the ledger.
-    const ledgerEntry: LedgerEntry = {
-      pid: handle.pid,
+  /**
+   * 職人に起きたことを引き取る（決定29c・決定60）。
+   *
+   * `worker.events` を `afterEventId` で辿り、**自分が起こした職人の分だけ**を写す。
+   * 起動時は 0 から読み直し、既に `agent_exited` を書いてあるセッションは飛ばす
+   * （D3：どこまで読んだかを別に保存しない。帳簿から導く）。
+   *
+   * I2: Worker Pool へ届かないことを「何も起きていない」と混同しない——理由を残して
+   *     次の tick に賭ける（写しを進めない）。
+   */
+  private async runWorkerEventsTick(): Promise<void> {
+    if (this._workerEventsRunning) return;
+    this._workerEventsRunning = true;
+    try {
+      // 1回の tick で辿るページ数の上限。溜まっていても次の tick で続きを読む
+      for (let page = 0; page < 10; page++) {
+        let events: WorkerEventView[];
+        try {
+          const details = await this.workerInvoke("worker.events", {
+            afterEventId: this._workerCursor,
+            origin: KOBO_ORIGIN,
+            limit: 100,
+          });
+          events = (details["events"] ?? []) as WorkerEventView[];
+        } catch (err) {
+          process.stderr.write(
+            `[banto-daemon] 職人のイベントを引けませんでした: ${String(err)}\n`
+          );
+          return;
+        }
+        if (events.length === 0) return;
+        for (const event of events) {
+          this.applyWorkerEvent(event);
+          this._workerCursor = Math.max(this._workerCursor, event.id);
+        }
+        if (events.length < 100) return;
+      }
+    } finally {
+      this._workerEventsRunning = false;
+    }
+  }
+
+  /**
+   * 職人の1件の出来事を、Kobo の帳簿とステートマシンへ写す。
+   *
+   * **意味を与えるのは起動元**（決定29d）。Worker Pool は中立な事実を並べるだけで、
+   * 「監査人が判定を出さずに終わった＝失敗」という読みは Kobo の統治の話。
+   */
+  private applyWorkerEvent(event: WorkerEventView): void {
+    // 終わった（exited）か畳まれた（closed）ものだけを見る。報告・質問は Kobo の
+    // 経路（report_done / audit_report）に来るので、ここでは二重に読まない
+    if (event.type !== "worker_exited" && event.type !== "worker_closed") return;
+
+    const { taskId, role } = splitPoolTaskId(event.taskId);
+    const projectTag = event.projectTag;
+    const history = this.index.getTaskHistory(taskId, projectTag);
+
+    // 自分が起こした職人か（帳簿に起動の記録があるか）
+    const spawned = history.some(
+      (e) => e.type === "agent_spawned" && e.sessionId === event.sessionId
+    );
+    if (!spawned) return;
+    // 既に書いてあるものは飛ばす（起動時に 0 から読み直すので、必ず通る道）
+    const already = history.some(
+      (e) => e.type === "agent_exited" && e.sessionId === event.sessionId
+    );
+    if (already) return;
+
+    const exitedEvent = this.log.append({
+      type: "agent_exited",
       projectTag,
       taskId,
-      sessionPath: handle.sessionPath,
-      worktree: worktreePath,
-      driverId,
-      sessionId: handle.sessionId,
-      spawnedAt: new Date().toISOString(),
-      ...(tmuxWindow ? { tmux_window: tmuxWindow } : {}),
-    };
-    this.ledger.add(ledgerEntry);
-
-    // 11. Subscribe to driver events for this session → agent_exited + ledger removal
-    const unsub = driver.subscribe((event) => {
-      if (event.type === "process_exited" && event.sessionId === handle.sessionId) {
-        const exitedEvent = this.log.append({
-          type: "agent_exited",
-          projectTag,
-          taskId,
-          pid: event.pid,
-          exitCode: event.exitCode,
-          signal: event.signal,
-        });
-        this.applyAndBroadcast(exitedEvent);
-        // Remove from ledger: process is gone, no longer needs recovery.
-        this.ledger.remove(projectTag, taskId);
-        // Best-effort: kill the tmux window when the session exits.
-        if (tmuxWindow) {
-          closeTmuxWindow(tmuxWindow);
-        }
-        unsub();
-      }
+      pid: Number(event.data["pid"] ?? 0),
+      exitCode: (event.data["exitCode"] ?? null) as number | null,
+      signal: (event.data["signal"] ?? null) as string | null,
+      sessionId: event.sessionId,
     });
+    this.applyAndBroadcast(exitedEvent);
 
-    return {
-      worktreePath,
-      sessionPath: handle.sessionPath,
-      pid: handle.pid,
-      sessionId: handle.sessionId,
-      ...(tmuxWindow ? { tmuxWindow } : {}),
-    };
-  }
-
-  // ── Spawn ledger public API ────────────────────────────────────────────────
-
-  /**
-   * Return all current ledger entries (active spawned sessions).
-   * Used by tests and the HTTP API to inspect spawn state.
-   */
-  getLedgerEntries(): ReturnType<SpawnLedger["list"]> {
-    return this.ledger.list();
-  }
-
-  // ── Orphan recovery ────────────────────────────────────────────────────────
-
-  /**
-   * On daemon (re)start: read the ledger and handle surviving orphan processes.
-   *
-   * Spec §3 confirmed decision: pi-rpc stdin/stdout pipes are gone after daemon
-   * restart → full re-attach is not possible. Strategy:
-   *   (a) pid still alive → SIGTERM + SIGKILL, then emit task_failed
-   *       (reason: daemon_restart_orphaned). This ensures no ghost pi processes
-   *       linger and the task state is unambiguous.
-   *   (b) pid already dead → emit task_failed (reason: orphan_pid_not_found).
-   * Either way: ledger entry is removed after handling.
-   */
-  private async recoverOrphans(): Promise<void> {
-    const entries = this.ledger.list();
-    if (entries.length === 0) return;
-
-    process.stdout.write(
-      `[banto-daemon] recovering ${entries.length} orphan(s) from spawn ledger\n`
-    );
-
-    for (const entry of entries) {
-      const { pid, projectTag, taskId } = entry;
-
-      if (isProcessAlive(pid)) {
-        process.stdout.write(
-          `[banto-daemon] orphan pid=${pid} task=${projectTag}/${taskId} alive → terminating\n`
-        );
-        try {
-          await killOrphanProcess(pid);
-        } catch {
-          // Best-effort: if kill fails, record and continue
-        }
-        const reason = "daemon_restart_orphaned";
-        this.recordTaskFailed(projectTag, taskId, reason);
-      } else {
-        process.stdout.write(
-          `[banto-daemon] orphan pid=${pid} task=${projectTag}/${taskId} already dead → recording failure\n`
-        );
-        this.recordTaskFailed(projectTag, taskId, "orphan_pid_not_found");
-      }
-
-      // Remove from ledger regardless of pid state (I3: ledger = live processes only)
-      this.ledger.remove(projectTag, taskId);
+    // I2: 判定・報告を出さずに終わった職人を「まだ動いている」ことにしない。
+    // 以前は spawn 台帳の照合 tick が pid の死を見て task_failed にしていた——
+    // 職人を持たなくなっても、**止まったことに気づく責任は Kobo に残る**
+    const current = this.store.getTask(taskId, projectTag);
+    if (!current) return;
+    if (role === "audit" && current.status === "auditing") {
+      process.stderr.write(
+        `[banto-daemon] 監査が判定を出さずに終わりました（${projectTag}/${taskId}）\n`
+      );
+      this.recordTaskFailed(projectTag, taskId, "audit_session_exited_without_verdict");
+      return;
     }
-  }
-
-  /**
-   * Reconcile job: compare ledger entries against live OS processes.
-   * Detects processes that died without triggering the normal exit path
-   * (e.g. SIGKILL from outside the daemon).
-   *
-   * For each dead entry:
-   *   - emit task_failed event (reason: "process_not_found")
-   *   - remove from ledger
-   *
-   * Orphan worktrees are logged (not deleted per spec §3 task 4).
-   *
-   * Called by the reconcile timer (reconcileIntervalMs cadence).
-   */
-  private async reconcileLedger(): Promise<void> {
-    const entries = this.ledger.list();
-    for (const entry of entries) {
-      const { pid, projectTag, taskId, worktree } = entry;
-      if (!isProcessAlive(pid)) {
-        process.stdout.write(
-          `[banto-daemon] reconcile: pid=${pid} task=${projectTag}/${taskId} is dead → task_failed\n`
-        );
-        this.recordTaskFailed(projectTag, taskId, "process_not_found");
-        this.ledger.remove(projectTag, taskId);
-
-        // Log orphan worktree (spec §3 task 4: detect, do not delete)
-        if (worktree) {
-          process.stdout.write(
-            `[banto-daemon] orphan worktree detected (not deleted): ${worktree}\n`
-          );
-        }
-      }
+    if (
+      (role === "executor" || role === "rework") &&
+      (current.status === "planning" || current.status === "implementing")
+    ) {
+      process.stderr.write(
+        `[banto-daemon] 実装の職人が報告せずに終わりました（${projectTag}/${taskId}）\n`
+      );
+      this.recordTaskFailed(projectTag, taskId, "agent_exited_without_report");
     }
   }
 
@@ -947,7 +1010,7 @@ export class Daemon {
    * If the task does not exist or is already terminal, only task_failed is appended
    * (the state machine handles the already-terminal guard internally).
    *
-   * Private helper used by spawnTask error paths and orphan recovery.
+   * Private helper used by spawnTask error paths and the worker-event tick.
    */
   // NOTE(review S254276-2 F2): StateMachine.fail() appends state_transitioned +
   // task_failed, but only the last appended event is broadcast to WS subscribers
@@ -983,12 +1046,16 @@ export class Daemon {
       this.wsServer.broadcast(lastEvent);
     }
 
-    // Clean up spawn-ledger entries for audit and rework sessions.
-    // When a task fails, any associated audit or rework sessions are no longer needed.
-    // Their processes will be cleaned up by the orphan reconcile job, but we remove
-    // the ledger entries now to keep the ledger accurate (D3: no stale derived state).
-    this.ledger.remove(projectTag, `${taskId}:audit`);
-    this.ledger.remove(projectTag, `${taskId}:rework`);
+    // 失敗したタスクの職人を畳む（I3：起こした者が片付ける）。
+    // 番頭には畳めない（決定63）ので、放っておくと Worker Pool の安全弁（既定15分）まで
+    // プロセスが残る。**畳むのは非同期**なので、他の後始末と同じく背景の仕事として追う
+    this._trackBackground(
+      (async () => {
+        for (const role of ["executor", "audit", "rework"] as const) {
+          await this.closeWorkerFor(projectTag, poolTaskId(taskId, role));
+        }
+      })()
+    );
 
     // S9d7fdb-4 (AC-S9d7fdb-4-4): Tear down environments on task failure.
     // recordTaskFailed() is the cross-cutting "failed" path (used by spawn error paths,
@@ -1119,7 +1186,7 @@ export class Daemon {
 
       // S9d7fdb-7 (AC-S9d7fdb-7-1, AC-S9d7fdb-7-2): Auto-provision env on review-ready→in-review.
       // When a task with an `environment` field enters in-review, provision its env automatically
-      // so the PO finds the running artifact attached to the review tmux window.
+      // so the PO gets something they can actually touch（決定59。tmux ペインは廃止した）.
       //
       // Design rules:
       //   D5: all orchestration logic here; HTTP layer is pure routing.
@@ -1157,22 +1224,18 @@ export class Daemon {
   // ── Audit session orchestration ────────────────────────────────────────────
 
   /**
-   * Spawn an audit session for a task that just entered 'auditing' state.
+   * `auditing` に入ったタスクに監査人を1人つける。
    *
    * S75f66b-3 (AC-S75f66b-3-1, AC-S75f66b-3-2):
-   *   - Spawns via the registered driver (default: "pi-rpc") using the auditor extension.
+   *   - 起こすのは Worker Pool（決定60）。載せる拡張は banto-auditor で、
+   *     監査のシステムプロンプトとチェックリスト（skills/audit-*.md）は拡張が自分で読む
+   *     （D2: 判断基準はテキスト、機構はコード）。
    *   - Emits audit_started event with session path reference (spec §2.1).
-   *   - Registers in spawn ledger (spec §3: orphan recovery applies to audit sessions too).
-   *   - Audit session uses banto-auditor pi extension which injects audit-system.md +
-   *     audit-checklist.md from skills/ (D2: criteria in text, mechanism in code).
+   *   - 等級は reasoning（spec §3.5：監査は一段上）。**モデル名は Kobo が知らない**（決定60a）。
    *
-   * I2: spawn failures are routed to recordTaskFailed.
+   * I2: 起こせなかったら task_failed にして止まる。
    */
-  private async spawnAuditSession(
-    projectTag: string,
-    taskId: string,
-    driverId = "pi-rpc"
-  ): Promise<void> {
+  private async spawnAuditSession(projectTag: string, taskId: string): Promise<void> {
     const task = this.store.getTask(taskId, projectTag);
     if (!task) {
       process.stderr.write(
@@ -1181,66 +1244,25 @@ export class Daemon {
       return;
     }
 
-    // Resolve the audit extension path (sibling of banto-executor.ts).
-    const auditExtensionPath = new URL(
-      "./pi-extension/banto-auditor.ts",
-      import.meta.url
-    ).pathname;
+    // 実装者と同じワークツリーを見る（帳簿から引く。組み立てない）
+    const worktreePath = this.worktreeOf(projectTag, taskId);
 
-    // Look up the worktree from the spawn ledger (the executor session's worktree).
-    // If not in ledger (executor already exited), fall back to the standard worktree path.
-    const worktreeBase =
-      this.config.worktreeBaseDir ?? path.join(this.config.dataDir, "worktrees");
-    const worktreePath = path.join(worktreeBase, projectTag, taskId);
-    const sessionBase =
-      this.config.sessionBaseDir ?? path.join(this.config.dataDir, "sessions");
-    // Audit sessions get a distinct session file: <taskId>-audit-<n>.jsonl
-    const auditIndex = this.countConsecutiveAuditFails(projectTag, taskId) + 1;
-    const auditSessionPath = path.join(
-      sessionBase,
-      projectTag,
-      `${taskId}-audit-${auditIndex}.jsonl`
-    );
+    // 実装の職人はもう用済み（報告を出して auditing に入っている）。畳んでから監査を起こす
+    // ——放っておくと安全弁の時間までプロセスが残る（I3）
+    await this.closeWorkerFor(projectTag, poolTaskId(taskId, "executor"));
+    await this.closeWorkerFor(projectTag, poolTaskId(taskId, "rework"));
 
-    // Build audit system prompt: loaded from skills/ at spawn time (D2, AC-S75f66b-3-2).
-    let auditSystemPrompt: string;
+    let session: SpawnedSession;
     try {
-      const sysPrompt = loadSkillAsset("audit-system");
-      const checklist = loadSkillAsset("audit-checklist");
-      auditSystemPrompt =
-        sysPrompt + "\n\n## 監査チェックリスト\n\n" + checklist;
-    } catch (err) {
-      const reason = `audit prompt assets missing: ${err instanceof Error ? err.message : String(err)}`;
-      this.recordTaskFailed(projectTag, taskId, reason);
-      return;
-    }
-
-    const driver = this.driverRegistry.get(driverId);
-    if (!driver) {
-      const reason = `Audit driver '${driverId}' not registered`;
-      this.recordTaskFailed(projectTag, taskId, reason);
-      return;
-    }
-
-    const daemonUrl = `http://localhost:${this.port}`;
-    const spawnOpts: SpawnOptions = {
-      taskId,
-      worktreePath,
-      sessionPath: auditSessionPath,
-      systemPrompt: auditSystemPrompt,
-      tools: [], // registered by the banto-auditor extension
-      modelTier: "reasoning", // spec §3.5: 監査 = reasoning tier
-      driverOptions: {
-        daemonUrl,
+      session = await this.delegateWorker({
         projectTag,
-        // Override extension to banto-auditor instead of banto-executor
-        extensionPath: auditExtensionPath,
-      },
-    };
-
-    let handle: { pid: number; sessionId: string; sessionPath: string };
-    try {
-      handle = await driver.spawn(spawnOpts);
+        taskId,
+        role: "audit",
+        worktreePath,
+        instruction: buildAuditInstruction(task, projectTag, taskId, worktreePath),
+        modelTier: "reasoning",
+        extension: "banto-auditor",
+      });
     } catch (err) {
       const reason = `audit session spawn failed: ${err instanceof Error ? err.message : String(err)}`;
       this.recordTaskFailed(projectTag, taskId, reason);
@@ -1252,137 +1274,24 @@ export class Daemon {
       type: "audit_started",
       projectTag,
       taskId,
-      sessionPath: handle.sessionPath,
+      sessionPath: session.sessionPath,
       worktree: worktreePath,
     });
     this.applyAndBroadcast(auditStartedEvent);
 
-    // Also emit agent_spawned with role marker so it's distinguishable from executor spawns.
-    // The "audit" role is embedded in the sessionPath naming convention and audit_started event.
+    // Also emit agent_spawned so the session is in the ledgerless bookkeeping too
+    // （どの職人を起こしたかは帳簿にだけ残る。ここから職人ビューアへ辿れる）
     const spawnedEvent = this.log.append({
       type: "agent_spawned",
       projectTag,
       taskId,
-      pid: handle.pid,
-      sessionPath: handle.sessionPath,
+      pid: session.pid,
+      sessionPath: session.sessionPath,
       worktree: worktreePath,
       modelTier: "reasoning",
+      sessionId: session.sessionId,
     });
     this.applyAndBroadcast(spawnedEvent);
-
-    // Register in spawn ledger (spec §3: orphan recovery applies to audit sessions too).
-    const ledgerEntry: LedgerEntry = {
-      pid: handle.pid,
-      projectTag,
-      taskId: `${taskId}:audit`, // distinguish audit session in ledger
-      sessionPath: handle.sessionPath,
-      worktree: worktreePath,
-      driverId,
-      sessionId: handle.sessionId,
-      spawnedAt: new Date().toISOString(),
-    };
-    this.ledger.add(ledgerEntry);
-
-    // Inject task-specific audit context into the audit session.
-    // The banto-auditor extension provides the generic audit system prompt + checklist
-    // via before_agent_start hook. Here we inject the SPECIFIC task context:
-    //   - task ID, title, acceptance criteria, worktree path, scope
-    // This gives the audit LLM concrete information to act on (D2: criteria in text,
-    // not hardcoded in extension). Without this inject, the audit LLM only has the
-    // generic checklist and cannot determine WHAT file to look for in the worktree.
-    // I2: inject failure is logged but not fatal — audit session may still succeed
-    // if the LLM infers context from the worktree directory listing.
-    const acceptanceRaw = (task as Record<string, unknown>)["acceptance"];
-    const acceptanceCriteria: Array<{ id: string; text: string; verify?: string }> =
-      Array.isArray(acceptanceRaw)
-        ? (acceptanceRaw as Array<Record<string, string>>).map((a) => ({
-            id: String(a["id"] ?? ""),
-            text: String(a["text"] ?? ""),
-            ...(a["verify"] ? { verify: String(a["verify"]) } : {}),
-          }))
-        : [];
-
-    const scopeRaw = (task as Record<string, unknown>)["scope"] as Record<string, unknown> | undefined;
-    const scopePaths: string[] = Array.isArray(scopeRaw?.["paths"])
-      ? (scopeRaw["paths"] as unknown[]).map(String)
-      : [];
-
-    const auditContextMessage = [
-      `## タスク監査コンテキスト`,
-      ``,
-      `**タスクID**: ${taskId}`,
-      `**プロジェクト**: ${projectTag}`,
-      `**タイトル**: ${String(task["title"] ?? "")}`,
-      ``,
-      `**ワークツリーパス**: ${worktreePath}`,
-      `（このディレクトリに実装者が作成・変更したファイルがあります）`,
-      ``,
-      `**スコープ（変更が期待されるファイル）**:`,
-      scopePaths.length > 0
-        ? scopePaths.map((p) => `- ${p}`).join("\n")
-        : "- (スコープ未指定)",
-      ``,
-      `**受け入れ基準 (acceptance criteria)**:`,
-      acceptanceCriteria.length > 0
-        ? acceptanceCriteria
-            .map(
-              (a) =>
-                `- [${a.id}] ${a.text}` +
-                (a.verify ? ` （検証コマンド: \`${a.verify}\`）` : "")
-            )
-            .join("\n")
-        : "- (基準未指定)",
-      ``,
-      `## 監査手順`,
-      ``,
-      `1. ワークツリーパス (${worktreePath}) に移動して実装内容を確認してください`,
-      `2. scope.paths に指定されたファイルが存在し、acceptance criteria を満たしているか検証してください`,
-      `3. verify コマンドがある場合はそれを実行して結果を確認してください`,
-      `4. すべての基準を満たしていれば \`audit_report\` ツールを呼び出し verdict="pass" を報告してください`,
-      `5. 問題があれば verdict="fail" と具体的な findings を報告してください`,
-      ``,
-      `**重要**: 検査が完了したら必ず \`audit_report\` ツールを呼び出してください。呼び出さないと監査が完了しません。`,
-    ].join("\n");
-
-    try {
-      await driver.inject(handle.sessionId, auditContextMessage);
-    } catch (injectErr) {
-      process.stderr.write(
-        `[banto-daemon] spawnAuditSession: inject context failed for ${projectTag}/${taskId}: ` +
-          `${injectErr instanceof Error ? injectErr.message : String(injectErr)}\n`
-      );
-    }
-
-    // Subscribe to driver events: remove from ledger when audit session exits.
-    // If audit session exits without verdict, recordTaskFailed (I2: no ghost sessions).
-    const unsub = driver.subscribe((event) => {
-      if (event.type === "process_exited" && event.sessionId === handle.sessionId) {
-        const exitedEvent = this.log.append({
-          type: "agent_exited",
-          projectTag,
-          taskId,
-          pid: event.pid,
-          exitCode: event.exitCode,
-          signal: event.signal,
-        });
-        this.applyAndBroadcast(exitedEvent);
-        this.ledger.remove(projectTag, `${taskId}:audit`);
-
-        // If the task is still in 'auditing' after the session exited, treat as failure (I2).
-        const currentTask = this.store.getTask(taskId, projectTag);
-        if (currentTask && currentTask.status === "auditing") {
-          process.stderr.write(
-            `[banto-daemon] audit session exited without verdict for ${projectTag}/${taskId} — recording failure\n`
-          );
-          this.recordTaskFailed(
-            projectTag,
-            taskId,
-            "audit_session_exited_without_verdict"
-          );
-        }
-        unsub();
-      }
-    });
   }
 
   /**
@@ -1431,6 +1340,8 @@ export class Daemon {
       const targetStatus = reviewPolicy === "auto" ? "merging" : "review-ready";
 
       this.transition(projectTag, taskId, targetStatus, "audit_passed");
+      // 監査人の役目は終わり。畳む（I3：起こした者が片付ける・決定63）
+      this._trackBackground(this.closeWorkerFor(projectTag, poolTaskId(taskId, "audit")));
     } else {
       // Fail path: count consecutive audit fails from event log (D3: no stored counter).
       const consecutiveFails = this.countConsecutiveAuditFails(projectTag, taskId);
@@ -1451,10 +1362,14 @@ export class Daemon {
         if (allEvents.length > 0) {
           this.wsServer.broadcast(allEvents[allEvents.length - 1]);
         }
-        // Clean up audit and rework ledger entries (no more sessions should run).
-        // D3: ledger is derived from live processes; failed task has no live sessions.
-        this.ledger.remove(projectTag, `${taskId}:audit`);
-        this.ledger.remove(projectTag, `${taskId}:rework`);
+        // これ以上動かす職人は居ない。畳む（recordTaskFailed を通らない経路なのでここでも）
+        this._trackBackground(
+          (async () => {
+            for (const role of ["executor", "audit", "rework"] as const) {
+              await this.closeWorkerFor(projectTag, poolTaskId(taskId, role));
+            }
+          })()
+        );
       } else {
         // 1st consecutive fail → rework: auditing → implementing + spawn rework session.
         this.transition(projectTag, taskId, "implementing", "audit_fail_rework");
@@ -1473,28 +1388,21 @@ export class Daemon {
   }
 
   /**
-   * Spawn a rework executor session with audit findings injected into the system prompt.
+   * 監査に落ちたタスクへ、指摘を渡した実装の職人をもう1人つける。
    *
-   * S75f66b-3 (AC-S75f66b-3-4): after first audit fail, the task returns to 'implementing'
-   * and a new executor session is spawned with the audit findings in its context.
+   * S75f66b-3 (AC-S75f66b-3-4): 1回目の不通過で `implementing` に戻り、監査の指摘を
+   * **指示文に書き切って**新しい職人へ渡す（職人は記憶を持たない・D11）。
    *
-   * The task must be in 'ready' state for spawnTask(). Since we just transitioned it to
-   * 'implementing', we need to set it back to 'ready' first (daemon internal operation).
+   * **等級を一段上げる**（spec-daemon-core §3.5 の失敗駆動の昇格）。Kobo がするのは
+   * 渡す tier の文字列を変えることだけで、どのモデルになるかは Worker Pool が決める（決定60a）。
    *
-   * I2: spawn failures are routed to recordTaskFailed.
-   * D3: findings injected via system prompt only — not stored as a separate field.
+   * I2: 起こせなかったら task_failed にして止まる。
    */
   private async spawnReworkSession(
     projectTag: string,
     taskId: string,
     findings: string[]
   ): Promise<void> {
-    // To use spawnTask(), the task must be in 'ready' state.
-    // Transition: implementing → (need ready). Since implementing→auditing→implementing
-    // leaves us in implementing, we need to go back through the gate.
-    // Design decision: for rework, we bypass the gate and directly spawn via driver.
-    // The rework session uses the same worktree as the original executor session.
-
     const task = this.store.getTask(taskId, projectTag);
     if (!task) {
       process.stderr.write(
@@ -1503,128 +1411,44 @@ export class Daemon {
       return;
     }
 
-    const executorExtensionPath = new URL(
-      "./pi-extension/banto-executor.ts",
-      import.meta.url
-    ).pathname;
+    // 実装者と同じワークツリーで直す（作り直すと、直す対象が消える）
+    const worktreePath = this.worktreeOf(projectTag, taskId);
 
-    const worktreeBase =
-      this.config.worktreeBaseDir ?? path.join(this.config.dataDir, "worktrees");
-    const worktreePath = path.join(worktreeBase, projectTag, taskId);
-    const sessionBase =
-      this.config.sessionBaseDir ?? path.join(this.config.dataDir, "sessions");
+    // 監査人はもう役目を終えている。畳んでから rework を起こす
+    await this.closeWorkerFor(projectTag, poolTaskId(taskId, "audit"));
 
-    // Count rework sessions so we can give each a distinct session file.
-    const reworkIndex = this.countReworkSessions(projectTag, taskId) + 1;
-    const sessionPath = path.join(
-      sessionBase,
-      projectTag,
-      `${taskId}-rework-${reworkIndex}.jsonl`
-    );
+    // 落ちた回数だけ等級を上げる（1回目の不通過 → 一段上で直させる）
+    const fails = this.countConsecutiveAuditFails(projectTag, taskId);
+    const modelTier = escalateTier(taskModelTier(task), fails);
 
-    // Build system prompt from executor-system asset (no findings injected here —
-    // D1: findings are delivered via driver.inject() after spawn, which is the
-    // runtime-driver contract's guaranteed delivery path. systemPrompt carries the
-    // standing role; per-run material belongs in the injected message).
-    let executorPrompt: string;
+    let session: SpawnedSession;
     try {
-      executorPrompt = loadSkillAsset("executor-system");
-    } catch (err) {
-      const reason = `executor-system asset missing: ${err instanceof Error ? err.message : String(err)}`;
-      this.recordTaskFailed(projectTag, taskId, reason);
-      return;
-    }
-
-    const driver = this.driverRegistry.get("pi-rpc");
-    if (!driver) {
-      this.recordTaskFailed(projectTag, taskId, "pi-rpc driver not registered for rework");
-      return;
-    }
-
-    const daemonUrl = `http://localhost:${this.port}`;
-    const spawnOpts: SpawnOptions = {
-      taskId,
-      worktreePath,
-      sessionPath,
-      systemPrompt: executorPrompt,
-      tools: [],
-      modelTier: "standard",
-      driverOptions: {
-        daemonUrl,
+      session = await this.delegateWorker({
         projectTag,
-        extensionPath: executorExtensionPath,
-      },
-    };
-
-    let handle: { pid: number; sessionId: string; sessionPath: string };
-    try {
-      handle = await driver.spawn(spawnOpts);
+        taskId,
+        role: "rework",
+        worktreePath,
+        instruction: buildExecutorInstruction(task, worktreePath, findings),
+        modelTier,
+        extension: "banto-executor",
+      });
     } catch (err) {
       const reason = `rework session spawn failed: ${err instanceof Error ? err.message : String(err)}`;
       this.recordTaskFailed(projectTag, taskId, reason);
       return;
     }
 
-    // D1: deliver findings via inject() — the runtime-driver contract's sanctioned
-    // message path. systemPrompt is the standing role (appended to the runtime's own
-    // prompt at spawn); findings are per-run material, so they go through inject(),
-    // which sends them as the first RPC `prompt` message into the running session.
-    // I2: inject failure is logged but not fatal — the session is already spawned and
-    // the executor can still complete (the audit will re-check on the next verdict).
-    const findingsMessage =
-      "## 監査指摘（前回の提出で発見された問題）\n\n" +
-      "以下の指摘を解決してから report_done を呼んでください:\n\n" +
-      findings.map((f) => `- ${f}`).join("\n");
-    try {
-      await driver.inject(handle.sessionId, findingsMessage);
-    } catch (injectErr) {
-      process.stderr.write(
-        `[banto-daemon] spawnReworkSession: inject findings failed for ${projectTag}/${taskId}: ` +
-          `${injectErr instanceof Error ? injectErr.message : String(injectErr)}\n`
-      );
-    }
-
-    // Record agent_spawned for the rework session.
     const spawnedEvent = this.log.append({
       type: "agent_spawned",
       projectTag,
       taskId,
-      pid: handle.pid,
-      sessionPath: handle.sessionPath,
+      pid: session.pid,
+      sessionPath: session.sessionPath,
       worktree: worktreePath,
-      modelTier: "standard",
+      modelTier,
+      sessionId: session.sessionId,
     });
     this.applyAndBroadcast(spawnedEvent);
-
-    // Register rework session in ledger.
-    const ledgerEntry: LedgerEntry = {
-      pid: handle.pid,
-      projectTag,
-      taskId: `${taskId}:rework`, // distinguish from primary executor in ledger
-      sessionPath: handle.sessionPath,
-      worktree: worktreePath,
-      driverId: "pi-rpc",
-      sessionId: handle.sessionId,
-      spawnedAt: new Date().toISOString(),
-    };
-    this.ledger.add(ledgerEntry);
-
-    // Subscribe to process exit.
-    const unsub = driver.subscribe((event) => {
-      if (event.type === "process_exited" && event.sessionId === handle.sessionId) {
-        const exitedEvent = this.log.append({
-          type: "agent_exited",
-          projectTag,
-          taskId,
-          pid: event.pid,
-          exitCode: event.exitCode,
-          signal: event.signal,
-        });
-        this.applyAndBroadcast(exitedEvent);
-        this.ledger.remove(projectTag, `${taskId}:rework`);
-        unsub();
-      }
-    });
   }
 
   /**
@@ -1655,25 +1479,6 @@ export class Daemon {
       // audit_started, agent_spawned etc. are intermediate — continue
     }
     return consecutiveFails;
-  }
-
-  /**
-   * Count rework sessions (implementing sessions after first audit) for naming.
-   * D3: derived from event log (count agent_spawned events after first audit_started).
-   */
-  private countReworkSessions(projectTag: string, taskId: string): number {
-    const events = this.index.getTaskHistory(taskId, projectTag);
-    let foundFirstAudit = false;
-    let reworkCount = 0;
-    for (const ev of events) {
-      if (ev.type === "audit_started") {
-        foundFirstAudit = true;
-      }
-      if (foundFirstAudit && ev.type === "agent_spawned") {
-        reworkCount++;
-      }
-    }
-    return reworkCount;
   }
 
   // ── 検証環境（Environment Pool 経由・ADR-0013 決定60）───────────────────────
@@ -2018,8 +1823,22 @@ export class Daemon {
     try {
       const maxSessions = this.config.maxConcurrentSessions ?? 5;
 
+      // 「いま何人動いているか」は Worker Pool に聞く（決定60：職人の真実は一箇所）。
+      // I2: 聞けないときは起こさない——数えられないまま起こすと、上限が効かない
+      let workers: WorkerView[];
+      try {
+        workers = await this.liveKoboWorkers();
+      } catch (err) {
+        process.stderr.write(
+          `[banto-daemon] 職人の一覧を引けないので auto-spawn を見送ります: ${String(err)}\n`
+        );
+        return;
+      }
+      let live = workers.length;
+      const busy = new Set(workers.map((w) => `${w.projectTag}/${w.taskId}`));
+
       // Check quota FIRST — if already at limit, skip the whole sweep.
-      if (this.ledger.size >= maxSessions) {
+      if (live >= maxSessions) {
         return;
       }
 
@@ -2028,15 +1847,15 @@ export class Daemon {
 
       for (const task of readyTasks) {
         // Re-check quota each iteration — previous spawns in this loop count.
-        if (this.ledger.size >= maxSessions) {
+        if (live >= maxSessions) {
           break;
         }
 
-        // Skip tasks that are already in the ledger (already spawned, session is live).
-        // D3: "spawned" judgment comes from the ledger, which tracks live OS processes.
-        if (this.ledger.get(task.projectTag, task.id)) {
+        // 既に職人が付いているタスクは飛ばす（起動の途中で ready のまま見えるため）
+        if (busy.has(`${task.projectTag}/${task.id}`)) {
           continue;
         }
+        live++;
 
         // spawnTask() handles all failure paths via recordTaskFailed (I2).
         // After a successful spawn the task transitions to "planning" (no longer "ready"),
@@ -2086,13 +1905,13 @@ export class Daemon {
     }
     this._mergeQueueRunning = true;
 
-    const worktreeBase =
-      this.config.worktreeBaseDir ?? path.join(this.config.dataDir, "worktrees");
-
     try {
     await processMergeQueue(this.log, {
       dataDir: this.config.dataDir,
-      worktreeBaseDir: worktreeBase,
+      // 置き場所を決めるのは gwq なので、**組み立てずに帳簿から引く**（決定60・a6）。
+      // 職人が付いたことがないタスク（テストが手で作ったワークツリー）は既定の置き場
+      getWorktreePath: (projectTag: string, taskId: string) =>
+        this.worktreeOf(projectTag, taskId),
       mainline: "main",
       getProjectRepoPath: (projectTag: string) => {
         const proj = this.registry.list().find((p) => p.id === projectTag);
@@ -2358,168 +2177,132 @@ export class Daemon {
   }
 }
 
-// ── tmux integration helpers ───────────────────────────────────────────────────
+// ── 職人へ渡す指示（ADR-0013 決定60）───────────────────────────────────────────
 //
-// Spec-ui §1.4: POはtmux attach -t banto でエージェントの進行を目視できる.
-// DEC-S254276-004: tmux new-window でビューウィンドウを開き、セッションJSONLを tail -f する.
+// **職人は記憶を持たない**（D11）。前提・目的・完了条件は毎回ここに書き切る。
+// 立場（実装者・監査人であること）と作法は pi 拡張が載せるので、ここに書くのは
+// **このタスク固有のこと**だけ（D2: 判断基準はテキスト、機構はコード）。
 //
-// Implementation choice (v1): option (b) — the tmux window shows `tail -f <sessionPath>`
-// so PO can see the raw session transcript in real-time.
-// Rationale: pi RPC driver controls pi via stdin/stdout pipes (this daemon's process).
-// Opening pi as a TUI inside tmux (option c) would require a separate pi process with
-// a separate prompt — creating confusion about which pi is authoritative.
-// `tail -f` lets PO observe the actual RPC session transcript without bifurcating control.
-// tmux_window is recorded in the spawn ledger (DEC-S254276-004) so PO can look it up.
-//
-// D6: tmux is a system tool (no npm dependency added).
-// I2: tmux errors are logged to stderr but do NOT fail the spawn.
+// tmux は使わない（決定59）。職人の様子を覗くのはセッションビューア（決定18）で、
+// Kobo から tmux 依存は消えている。
 
-/**
- * Ensure the tmux session `sessionName` exists (create if absent).
- * Returns true if the session is usable after this call.
- */
-function ensureTmuxSession(sessionName: string): boolean {
-  // Check if session exists
-  const check = childProcess.spawnSync(
-    "tmux",
-    ["has-session", "-t", sessionName],
-    { encoding: "utf8" }
-  );
-  if (check.status === 0) return true; // already exists
+/** 受け入れ基準を読める形に並べる。 */
+function formatAcceptance(task: TaskRecord): string[] {
+  const raw = (task as Record<string, unknown>)["acceptance"];
+  if (!Array.isArray(raw)) return ["- (基準未指定)"];
+  const rows = (raw as Array<Record<string, unknown>>).map((a) => {
+    const id = String(a["id"] ?? "");
+    const text = String(a["text"] ?? "");
+    const verify = a["verify"] ? ` （検証コマンド: \`${String(a["verify"])}\`）` : "";
+    return `- [${id}] ${text}${verify}`;
+  });
+  return rows.length > 0 ? rows : ["- (基準未指定)"];
+}
 
-  // Create detached session
-  const create = childProcess.spawnSync(
-    "tmux",
-    ["new-session", "-d", "-s", sessionName],
-    { encoding: "utf8" }
-  );
-  if (create.status !== 0) {
-    process.stderr.write(
-      `[banto-daemon] tmux new-session failed: ${create.stderr ?? ""}\n`
-    );
-    return false;
-  }
-  return true;
+/** スコープ（変更してよいパス）を並べる。 */
+function formatScope(task: TaskRecord): string[] {
+  const scope = (task as Record<string, unknown>)["scope"] as Record<string, unknown> | undefined;
+  const paths = Array.isArray(scope?.["paths"]) ? (scope["paths"] as unknown[]).map(String) : [];
+  return paths.length > 0 ? paths.map((p) => `- ${p}`) : ["- (スコープ未指定)"];
 }
 
 /**
- * Open a new tmux window in `sessionName` named `windowName`.
- * The window runs `tail -f <sessionPath>` with a startup echo so the pane is
- * immediately non-empty (PO visual feedback before the agent writes its first line).
+ * 実装（と rework）の職人への指示。
  *
- * Returns the window address "sessionName:windowName" on success, undefined on failure.
- *
- * D6: uses tmux CLI (stdlib-equivalent).
- * I2: failure is logged to stderr; caller receives undefined and continues.
+ * **コミットまでが仕事**（決定62a）。コミットが無いとマージキューが持っていくものが無く、
+ * 「実装したのに何も起きない」で止まる——ここを書き落とすと通しで壊れる。
  */
-function openTmuxWindow(
-  sessionName: string,
-  windowName: string,
-  sessionPath: string
-): string | undefined {
-  if (!ensureTmuxSession(sessionName)) return undefined;
+export function buildExecutorInstruction(
+  task: TaskRecord,
+  worktreePath: string,
+  findings: string[] = []
+): string {
+  const taskId = task.id;
+  const body = typeof task["body"] === "string" ? task["body"].trim() : "";
+  const lines = [
+    `## 実装タスク ${taskId}`,
+    ``,
+    `**タイトル**: ${String(task["title"] ?? taskId)}`,
+    `**種別**: ${String(task["kind"] ?? "task")}`,
+    `**作業ディレクトリ**: ${worktreePath}`,
+    `**ブランチ**: task/${taskId}（このブランチにコミットする）`,
+    ``,
+    `**スコープ（変更してよいパス）**:`,
+    ...formatScope(task),
+    ``,
+    `**受け入れ基準**:`,
+    ...formatAcceptance(task),
+  ];
 
-  // The shell command shown in the window:
-  //   1. Echo a header line so capture-pane is immediately non-empty.
-  //   2. tail -f the session JSONL once it appears (--retry waits for file to appear).
-  const cmd = `echo "[banto] Agent session started: ${windowName}" && tail -f --retry "${sessionPath}"`;
-
-  const result = childProcess.spawnSync(
-    "tmux",
-    ["new-window", "-d", "-t", sessionName, "-n", windowName, cmd],
-    { encoding: "utf8" }
-  );
-
-  if (result.status !== 0) {
-    process.stderr.write(
-      `[banto-daemon] tmux new-window failed for ${windowName}: ${result.stderr ?? ""}\n`
-    );
-    return undefined;
+  // 依頼そのもの（タスク定義の本文）。**ここが本題**で、上は契約
+  if (body.length > 0) {
+    lines.push(``, `## 依頼`, ``, body);
   }
 
-  const windowAddr = `${sessionName}:${windowName}`;
-  process.stdout.write(
-    `[banto-daemon] tmux window opened: ${windowAddr} (tail ${sessionPath})\n`
+  if (findings.length > 0) {
+    lines.push(
+      ``,
+      `## 監査の指摘（前回の提出で見つかった問題）`,
+      ``,
+      `以下を解決してから report_done を呼んでください:`,
+      ...findings.map((f) => `- ${f}`)
+    );
+  }
+
+  lines.push(
+    ``,
+    `## 手順`,
+    ``,
+    `1. \`report_phase\` を phase="implementing" で呼び、着手を知らせる`,
+    `2. 受け入れ基準を満たす実装を、**スコープ内のパスだけ**で行う`,
+    `3. 検証コマンドがあれば自分で実行して、通ることを確かめる（I1：通ったつもりで出さない）`,
+    `4. \`git add\` して \`task/${taskId}\` ブランチにコミットする`,
+    `   （必要なら \`git config user.email\` / \`user.name\` を先に設定する）`,
+    ``,
+    `**コミットが無いとマージできません。** 変更を残さずに終えないでください。`,
+    `5. \`report_done\` を summary つきで呼ぶ`,
+    ``,
+    `**重要**: 終わったら必ず \`report_done\` を呼んでください。呼ばないと監査へ進みません。`
   );
-  return windowAddr;
+  return lines.join("\n");
 }
 
 /**
- * Close a tmux window by its address (e.g. "banto:T-001").
- * Best-effort: errors are logged, not thrown.
+ * 監査人への指示。
+ *
+ * 監査の観点そのもの（チェックリスト）は拡張が `skills/audit-*.md` から載せる。
+ * ここに書くのは**このタスクを見るために要る事実**——どこに何があり、何を満たすべきか。
  */
-function closeTmuxWindow(windowAddr: string): void {
-  const result = childProcess.spawnSync(
-    "tmux",
-    ["kill-window", "-t", windowAddr],
-    { encoding: "utf8" }
-  );
-  if (result.status !== 0) {
-    process.stderr.write(
-      `[banto-daemon] tmux kill-window ${windowAddr} failed: ${result.stderr ?? ""}\n`
-    );
-  }
-}
-
-/**
- * Open a second pane in the task's existing tmux window for environment output.
- *
- * S9d7fdb-7 (AC-S9d7fdb-7-2): Called after auto-provision succeeds on the in-review hook.
- * Adds pane 2 to the window at `windowAddr` (already containing the agent session pane).
- * The pane shows an echo header + a shell that keeps output visible to the PO on attach.
- *
- * Returns { ok: true, paneIndex } on success, { ok: false, detail } on failure.
- *
- * D6: uses tmux CLI (childProcess.spawnSync — stdlib only, no npm dep).
- * I2: failure is returned as { ok: false } so the caller can emit env_review_tmux_pane_skipped.
- */
-function openEnvTmuxPane(
-  windowAddr: string,
+export function buildAuditInstruction(
+  task: TaskRecord,
+  projectTag: string,
   taskId: string,
-  envId: string
-): { ok: true; paneIndex: number } | { ok: false; detail: string } {
-  // Split the window horizontally to create pane 2.
-  // `-d` = do not switch focus; `-t <windowAddr>` = target window.
-  // The shell command: echo a header then keep the pane alive so the PO sees it on attach.
-  // `read -r` waits for any key — keeps the pane open until PO dismisses it manually.
-  // Without a long-running command, tmux would kill the pane when echo exits (PO sees nothing).
-  //
-  // SECURITY: taskId/envId are passed as tmux pane env vars via `-e KEY=VALUE` (argv
-  // elements, never shell-interpreted) and the command string is STATIC, referencing
-  // $BANTO_TASK/$BANTO_ENV. This prevents shell injection even if a task id contained
-  // shell metacharacters — the values reach the pane's shell only as literal env values.
-  const cmd =
-    'echo "[banto env] Auto-provisioned environment for review: task=$BANTO_TASK env=$BANTO_ENV"' +
-    ' && echo "Press Enter to close..." && read -r';
-
-  const result = childProcess.spawnSync(
-    "tmux",
-    [
-      "split-window",
-      "-d",
-      "-h",
-      "-e",
-      `BANTO_TASK=${taskId}`,
-      "-e",
-      `BANTO_ENV=${envId}`,
-      "-t",
-      windowAddr,
-      cmd,
-    ],
-    { encoding: "utf8" }
-  );
-
-  if (result.status !== 0) {
-    const detail = (result.stderr ?? "").trim() || `exit code ${result.status ?? "unknown"}`;
-    process.stderr.write(
-      `[banto-daemon] tmux split-window for env pane failed (window=${windowAddr}): ${detail}\n`
-    );
-    return { ok: false, detail };
-  }
-
-  process.stdout.write(
-    `[banto-daemon] tmux env pane opened in window ${windowAddr} for task=${taskId} env=${envId}\n`
-  );
-  // Pane index 2 (1 = existing agent pane, 2 = new env pane).
-  return { ok: true, paneIndex: 2 };
+  worktreePath: string
+): string {
+  return [
+    `## タスク監査コンテキスト`,
+    ``,
+    `**タスクID**: ${taskId}`,
+    `**プロジェクト**: ${projectTag}`,
+    `**タイトル**: ${String(task["title"] ?? "")}`,
+    ``,
+    `**ワークツリーパス**: ${worktreePath}`,
+    `（このディレクトリに実装者が作成・変更したファイルがあります）`,
+    ``,
+    `**スコープ（変更が期待されるファイル）**:`,
+    ...formatScope(task),
+    ``,
+    `**受け入れ基準 (acceptance criteria)**:`,
+    ...formatAcceptance(task),
+    ``,
+    `## 監査手順`,
+    ``,
+    `1. ワークツリーパス (${worktreePath}) に移動して実装内容を確認してください`,
+    `2. scope.paths に指定されたファイルが存在し、acceptance criteria を満たしているか検証してください`,
+    `3. verify コマンドがある場合はそれを実行して結果を確認してください`,
+    `4. すべての基準を満たしていれば \`audit_report\` ツールを呼び出し verdict="pass" を報告してください`,
+    `5. 問題があれば verdict="fail" と具体的な findings を報告してください`,
+    ``,
+    `**重要**: 検査が完了したら必ず \`audit_report\` ツールを呼び出してください。呼び出さないと監査が完了しません。`,
+  ].join("\n");
 }

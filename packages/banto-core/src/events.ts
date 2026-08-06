@@ -71,6 +71,13 @@ export interface AgentSpawnedEvent extends EventBase {
   sessionPath: string;
   worktree: string;
   modelTier: "reasoning" | "standard" | "fast";
+  /**
+   * 職人のセッション（ADR-0013 決定60）。Kobo は自分の spawn 台帳を持たなくなり、
+   * 「どの職人を起こしたか」はこの帳簿に残る——ここから職人ビューアへ辿れる（決定18）。
+   *
+   * 任意なのは、この項目より前に書かれた帳簿を読めなくしないため。
+   */
+  sessionId?: string;
 }
 
 /** Agent session exited */
@@ -80,6 +87,8 @@ export interface AgentExitedEvent extends EventBase {
   pid: number;
   exitCode: number | null;
   signal: string | null;
+  /** 終わった職人のセッション（`agent_spawned.sessionId` と対になる）。 */
+  sessionId?: string;
 }
 
 /** Dependency gate evaluated (queued → ready gate) */

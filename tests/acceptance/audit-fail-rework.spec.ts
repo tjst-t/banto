@@ -32,6 +32,7 @@ import * as os from "node:os";
 import * as childProcess from "node:child_process";
 
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
+import { startWorkerPool, type WorkerPoolHarness } from "./worker-pool-harness.js";
 import type {
   RuntimeDriver,
   SpawnOptions,
@@ -168,6 +169,7 @@ describe("[AC-S75f66b-3-4] 1st audit fail: task back to implementing, rework ses
   let daemon: Daemon;
   let base: string;
   let driver: CaptureDriver;
+  let workers: WorkerPoolHarness;
 
   const proj = "proj-audit-fail-rework";
   const taskId = "task-fail-rework-1";
@@ -181,19 +183,18 @@ describe("[AC-S75f66b-3-4] 1st audit fail: task back to implementing, rework ses
     repoDir = path.join(tmpDir, "repo");
     initRepo(repoDir);
 
+    // rework の職人も Worker Pool が起こす（決定60）。差し替えるのはランタイムだけ
+    driver = new CaptureDriver();
+    workers = await startWorkerPool(driver);
+
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
       watchIntervalMs: 99999,
       tickIntervalMs: 99999,
-      reconcileIntervalMs: 99999,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
-      sessionBaseDir: path.join(tmpDir, "sessions"),
-      tmuxSession: "",
+      workerPoolUrl: workers.url,
     });
-
-    driver = new CaptureDriver();
-    daemon.driverRegistry.register("pi-rpc", driver);
 
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
@@ -209,8 +210,9 @@ describe("[AC-S75f66b-3-4] 1st audit fail: task back to implementing, rework ses
   });
 
   after(async () => {
-    await driver.killAll();
     await daemon.stop();
+    await workers.close();
+    await driver.killAll();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -240,16 +242,14 @@ describe("[AC-S75f66b-3-4] 1st audit fail: task back to implementing, rework ses
 
   it("[AC-S75f66b-3-4] scenario-4-api step-2: rework session is spawned after 1st fail, findings delivered via inject()", async () => {
     // Wait for rework session spawn (async fire-and-forget in daemon)
-    const spawnCount = await pollUntil(
-      () => driver.spawned.length,
-      (count) => count >= 2, // audit session (1st spawn) + rework session (2nd spawn)
+    // 役目は Worker Pool 側の taskId で分かる（`<taskId>:rework`）——並び順では見ない。
+    // 監査人と rework は別々の背景処理として起こされるので、届く順は前後しうる
+    const reworkSpawn = await pollUntil(
+      () => driver.spawned.find((r) => r.opts.taskId === `${taskId}:rework`),
+      (found) => found !== undefined,
       6000
     );
-    assert.ok(spawnCount >= 2, `Expected at least 2 spawns (audit + rework), got ${spawnCount}`);
-
-    // Rework session is the 2nd spawn (after the initial audit session spawn)
-    const reworkSpawn = driver.spawned[driver.spawned.length - 1];
-    assert.ok(reworkSpawn, "rework spawn record must exist");
+    assert.ok(reworkSpawn, `rework の職人が起こされること。起こされたのは: ${JSON.stringify(driver.spawned.map((r) => r.opts.taskId))}`);
 
     // D1: findings must be delivered via driver.inject(), NOT systemPrompt.
     // PiRpcDriver ignores systemPrompt at spawn time; inject() is the guaranteed
@@ -263,7 +263,7 @@ describe("[AC-S75f66b-3-4] 1st audit fail: task back to implementing, rework ses
     assert.ok(injectSeen >= 1, `driver.inject() must have been called with findings (got ${injectSeen} inject calls)`);
 
     // Find the inject call targeted at the rework session
-    const reworkInject = driver.injected.find((r) => r.sessionId === reworkSpawn.sessionId);
+    const reworkInject = driver.injected.find((r) => r.sessionId === reworkSpawn!.sessionId);
     assert.ok(
       reworkInject,
       `inject() must be called with the rework session's sessionId. ` +
@@ -280,16 +280,15 @@ describe("[AC-S75f66b-3-4] 1st audit fail: task back to implementing, rework ses
     }
   });
 
-  it("[AC-S75f66b-3-4] scenario-4-api step-3: rework ledger entry recorded with ':rework' key", async () => {
-    const ledgerEntries = daemon.getLedgerEntries();
-    const reworkEntry = ledgerEntries.find(
-      (e) => e.taskId.includes("rework") && e.taskId.startsWith(taskId)
-    );
+  it("[AC-S75f66b-3-4] scenario-4-api step-3: rework worker is in the Worker Pool ledger as ':rework'", async () => {
+    // 台帳は Worker Pool に1つ（決定29c）。Kobo 側には帳簿（agent_spawned）が残る
+    const poolWorkers = workers.pool.list();
+    const reworkWorker = poolWorkers.find((w) => w.taskId === `${taskId}:rework`);
     assert.ok(
-      reworkEntry,
-      `Spawn ledger must have a ':rework' entry for task ${taskId}. ` +
-      `Ledger: ${JSON.stringify(ledgerEntries.map(e => e.taskId))}`
+      reworkWorker,
+      `Worker Pool の台帳に rework の職人が居ること。居るのは: ${JSON.stringify(poolWorkers.map((w) => w.taskId))}`
     );
+    assert.equal(reworkWorker.origin, "kobo", "起動元が Kobo だと分かる");
   });
 
   it("[AC-S75f66b-3-4] scenario-4-api step-4: audit_verdict(fail) and state_transitioned(auditing→implementing) in event log", async () => {
@@ -325,6 +324,7 @@ describe("[AC-S75f66b-3-4] 2nd consecutive audit fail: task becomes 'failed'", (
   let daemon: Daemon;
   let base: string;
   let driver: CaptureDriver;
+  let workers: WorkerPoolHarness;
 
   const proj = "proj-audit-double-fail";
   const taskId = "task-double-fail-1";
@@ -336,19 +336,18 @@ describe("[AC-S75f66b-3-4] 2nd consecutive audit fail: task becomes 'failed'", (
     repoDir = path.join(tmpDir, "repo");
     initRepo(repoDir);
 
+    // rework の職人も Worker Pool が起こす（決定60）。差し替えるのはランタイムだけ
+    driver = new CaptureDriver();
+    workers = await startWorkerPool(driver);
+
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
       watchIntervalMs: 99999,
       tickIntervalMs: 99999,
-      reconcileIntervalMs: 99999,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
-      sessionBaseDir: path.join(tmpDir, "sessions"),
-      tmuxSession: "",
+      workerPoolUrl: workers.url,
     });
-
-    driver = new CaptureDriver();
-    daemon.driverRegistry.register("pi-rpc", driver);
 
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
@@ -364,8 +363,9 @@ describe("[AC-S75f66b-3-4] 2nd consecutive audit fail: task becomes 'failed'", (
   });
 
   after(async () => {
-    await driver.killAll();
     await daemon.stop();
+    await workers.close();
+    await driver.killAll();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -431,12 +431,19 @@ describe("[AC-S75f66b-3-4] 2nd consecutive audit fail: task becomes 'failed'", (
     // Wait a brief moment to let any async spawn fire (it should NOT)
     await new Promise((r) => setTimeout(r, 500));
 
-    const ledgerEntries = daemon.getLedgerEntries();
-    // The failed task should NOT have a rework entry that spawned after 2nd fail
-    // (the 1st rework entry may have been killed/removed already; we check there's no NEW spawn)
-    const activeRework = ledgerEntries.filter(
-      (e) => e.taskId.startsWith(taskId) && e.taskId.includes("rework")
-    );
+    // 落ちたタスクに生きている rework の職人が残っていないこと。
+    // **畳むのは Kobo の仕事**（決定63：番頭には畳めない）——起こした者が片付ける（I3）。
+    // 畳むのは背景の仕事なので、固定の待ちではなく状態を待つ（混んでいると遅れる）
+    const liveRework = () =>
+      workers.pool
+        .list({ includeClosed: false })
+        .filter((w) => w.taskId === `${taskId}:rework` && w.state !== "closed");
+    let activeRework = liveRework();
+    const deadline = Date.now() + 5000;
+    while (activeRework.length > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+      activeRework = liveRework();
+    }
 
     // At this point the task is 'failed', so no new rework should be in the ledger.
     // (The 1st rework may have been registered; after task goes to 'failed', no 2nd rework.)
@@ -470,11 +477,11 @@ describe("[AC-S75f66b-3-4] 2nd consecutive audit fail: task becomes 'failed'", (
       `There must be exactly 2 audit_verdict(fail) events in the log (D3: consecutive count derived here). Got ${verdictFails.length}`
     );
 
-    // Verify no spurious rework entry in ledger for failed task
+    // Verify no live rework worker for the failed task
     assert.equal(
       activeRework.length,
       0,
-      `Failed task must not have active rework ledger entry. Got: ${JSON.stringify(activeRework)}`
+      `落ちたタスクの rework の職人は畳まれていること。残っている: ${JSON.stringify(activeRework.map((w) => w.sessionId))}`
     );
   });
 });
@@ -497,8 +504,6 @@ describe("[F2-governance] disableAuditSpawn flag emits audit_spawn_disabled even
       dataDir: path.join(tmpDir, "data"),
       watchIntervalMs: 99999,
       tickIntervalMs: 99999,
-      reconcileIntervalMs: 99999,
-      tmuxSession: "",
       // F2 test: disableAuditSpawn must emit observable event, not silently skip.
       disableAuditSpawn: true,
     });

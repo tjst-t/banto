@@ -181,8 +181,18 @@ export interface MergeProcessorOptions {
   /**
    * Base directory for git worktrees.
    * Default: <dataDir>/worktrees
+   *
+   * `getWorktreePath` を渡した場合は使われない。
    */
   worktreeBaseDir?: string;
+  /**
+   * タスクのワークツリーを引く（ADR-0013 決定60・a6）。
+   *
+   * 置き場所を決めるのは `gwq` になったので、**呼び出し側が知っている場所を渡す**
+   * ——`<base>/<projectTag>/<taskId>` を組み立てると、gwq の命名では見つからない。
+   * 省略時は従来どおり `worktreeBaseDir` から組み立てる。
+   */
+  getWorktreePath?: (projectTag: string, taskId: string) => string;
   /**
    * Mainline branch name (fast-forward merge target).
    * Default: "main"
@@ -301,7 +311,8 @@ export async function processMergeQueue(
   // At this point the task is `merging` (either was already, or just transitioned).
   // Resolve paths
   const worktreeBase = opts.worktreeBaseDir ?? path.join(opts.dataDir, "worktrees");
-  const worktreePath = path.join(worktreeBase, projectTag, taskId);
+  const worktreePath =
+    opts.getWorktreePath?.(projectTag, taskId) ?? path.join(worktreeBase, projectTag, taskId);
   const repoPath = opts.getProjectRepoPath(projectTag);
   const mainline = opts.mainline ?? "main";
 

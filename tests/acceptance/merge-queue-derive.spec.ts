@@ -142,8 +142,9 @@ describe("[AC-S75f66b-5-3] Queue derived from event log; restart resumes process
       worktreeBaseDir,
       tickIntervalMs: 200,
       watchIntervalMs: 999999,
-      tmuxSession: "",
       disableAuditSpawn: true,
+      // task-0060: 職人を要らないので Worker Pool に頼まない
+      disableAutoSpawn: true,
     });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
@@ -264,8 +265,9 @@ describe("[AC-S75f66b-5-3] Queue derived from event log; restart resumes process
       worktreeBaseDir,
       tickIntervalMs: 200,
       watchIntervalMs: 999999,
-      tmuxSession: "",
       disableAuditSpawn: true,
+      // task-0060: 職人を要らないので Worker Pool に頼まない
+      disableAutoSpawn: true,
     });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;

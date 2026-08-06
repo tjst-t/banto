@@ -80,7 +80,7 @@ describe("[AC-Scc9152-2-2] Gate condition 2: scope.paths overlap with unreviewed
     // Large tick interval to confirm promotion is transition-driven, not tick-driven.
     // disableAuditSpawn: tests scope-overlap gate logic; transitions through auditing
     // are state placeholders and must not trigger audit session spawn.
-    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 60000, disableAuditSpawn: true });
+    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 60000, disableAuditSpawn: true, disableAutoSpawn: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
 

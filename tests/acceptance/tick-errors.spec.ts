@@ -23,7 +23,7 @@ describe("[AC-Scc9152-3-2] Tick errors: failed jobs recorded as events, daemon s
 
   before(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-tick-err-"));
-    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 200 });
+    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 200, disableAutoSpawn: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
 

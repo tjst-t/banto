@@ -8,6 +8,10 @@
  * Test driver: SleepDriver (real OS process, satisfies RuntimeDriver contract).
  * No pi binary, no LLM calls required.
  *
+ * task-0060（ADR-0013 決定60）: Kobo は職人を自分で起こさない。差し替えるのは
+ * **Worker Pool のランタイム**（pi の代わり）で、Worker Pool 自体は本物を独立サービスとして
+ * 立てる——決定27b の呼び出し経路がテストのたびに実際に通る。
+ *
  * Scenario coverage:
  *   scenario-1 (AC-S75f66b-2-1): PO drops a task file → gate promotes queued→ready →
  *     auto-spawn tick picks it up → agent_spawned + state_transitioned(ready→planning)
@@ -24,6 +28,7 @@ import * as os from "node:os";
 import * as childProcess from "node:child_process";
 
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
+import { startWorkerPool, type WorkerPoolHarness } from "./worker-pool-harness.js";
 import type {
   RuntimeDriver,
   SpawnOptions,
@@ -219,6 +224,7 @@ describe("[AC-S75f66b-2-1] ready task is auto-spawned on next tick (no manual sp
   let daemon: Daemon;
   let base: string;
   let driver: SleepDriver;
+  let workers: WorkerPoolHarness;
   const proj = "proj-autospawn";
   const taskId = "task-autospawn-1";
 
@@ -227,21 +233,19 @@ describe("[AC-S75f66b-2-1] ready task is auto-spawned on next tick (no manual sp
     repoDir = path.join(tmpDir, "repo");
     initRepo(repoDir);
 
+    // 職人を起こすのは Worker Pool。ランタイムだけ SleepDriver に差し替える
+    driver = new SleepDriver();
+    workers = await startWorkerPool(driver);
+
     // Short tick so auto-spawn fires within the test budget.
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
       watchIntervalMs: 99999,
       tickIntervalMs: 300,
-      reconcileIntervalMs: 99999,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
-      sessionBaseDir: path.join(tmpDir, "sessions"),
-      tmuxSession: "", // disable tmux integration in tests
+      workerPoolUrl: workers.url,
     });
-
-    // Register SleepDriver as default; this replaces pi-rpc for spawning.
-    driver = new SleepDriver();
-    daemon.driverRegistry.register("pi-rpc", driver);
 
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
@@ -256,8 +260,9 @@ describe("[AC-S75f66b-2-1] ready task is auto-spawned on next tick (no manual sp
   });
 
   after(async () => {
-    await driver.killAll();
     await daemon.stop();
+    await workers.close();
+    await driver.killAll();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -346,24 +351,24 @@ describe("[AC-S75f66b-2-3] spawn failure results in task_failed; no re-spawn loo
   let tmpDir: string;
   let daemon: Daemon;
   let base: string;
+  let workers: WorkerPoolHarness;
   const proj = "proj-fail";
   const taskId = "task-fail-1";
 
   before(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-autospawn-fail-"));
 
+    // 起動が必ず失敗するランタイムを Worker Pool に載せる
+    workers = await startWorkerPool(new FailDriver());
+
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
       watchIntervalMs: 99999,
       tickIntervalMs: 300,
-      reconcileIntervalMs: 99999,
-      tmuxSession: "", // disable tmux integration in tests
+      workerPoolUrl: workers.url,
       // No worktreeBaseDir / repoPath needed: FailDriver throws before worktree creation
     });
-
-    // Register FailDriver — every spawn attempt throws.
-    daemon.driverRegistry.register("pi-rpc", new FailDriver());
 
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
@@ -379,6 +384,7 @@ describe("[AC-S75f66b-2-3] spawn failure results in task_failed; no re-spawn loo
 
   after(async () => {
     await daemon.stop();
+    await workers.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 

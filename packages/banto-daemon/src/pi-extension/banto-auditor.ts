@@ -14,6 +14,10 @@
  *   BANTO_PROJECT     - project tag to report events against (required)
  *   BANTO_TASK_ID     - task ID being audited (required)
  *
+ * BANTO_TASK_ID は Worker Pool 側の識別子なので、監査人には `task-0001:audit` のように
+ * **役目の接尾辞**が付く（同じタスクに実装者と監査人が同時に居るため、職人の台帳の鍵を
+ * 分ける必要がある。ADR-0013 決定60）。Kobo へ判定を返すのは接尾辞を外した素のタスクID。
+ *
  * D6: no dependencies beyond banto-core and node built-ins.
  *     pi itself is the runtime; we do not import its modules here so that
  *     banto-core can remain pi-free. The pi parameter is typed `any` because
@@ -28,7 +32,8 @@ export default function (pi: any): void {
   // Read configuration from environment
   const daemonUrl = process.env["BANTO_DAEMON_URL"];
   const projectTag = process.env["BANTO_PROJECT"];
-  const taskId = process.env["BANTO_TASK_ID"];
+  // 役目の接尾辞（`:audit`）を外す。Kobo のタスクは `:` を含まない
+  const taskId = process.env["BANTO_TASK_ID"]?.split(":")[0];
 
   if (!projectTag || !taskId) {
     // I2: missing required config → surface error, do not silently proceed

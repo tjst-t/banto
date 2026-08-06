@@ -223,12 +223,13 @@ describe("[AC-S75f66b-6-2] Conflict task flows through normal pipeline", () => {
       worktreeBaseDir,
       tickIntervalMs: 200,
       watchIntervalMs: 200, // fast watcher
-      tmuxSession: "",
       disableAuditSpawn: true,
       // Prevent auto-spawn: we drive the conflict task manually via HTTP transitions.
       // This avoids pi CLI resolution failures in CI environments.
       // The test explicitly exercises the pipeline via HTTP (same entry point as the PO).
       maxConcurrentSessions: 0,
+      // task-0060: 職人を要らないので Worker Pool に頼まない
+      disableAutoSpawn: true,
     });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;

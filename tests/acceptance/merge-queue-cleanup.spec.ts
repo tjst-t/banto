@@ -147,8 +147,9 @@ describe("[AC-S75f66b-5-2] Merge cleanup, dependent unblocking, merged→closed"
       worktreeBaseDir,
       tickIntervalMs: 200,
       watchIntervalMs: 999999,
-      tmuxSession: "",
       disableAuditSpawn: true,
+      // task-0060: 職人を要らないので Worker Pool に頼まない
+      disableAutoSpawn: true,
     });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;

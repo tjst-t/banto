@@ -20,7 +20,7 @@ describe("[AC-S654396-3-1] REST API: projects, tasks, events", () => {
 
   before(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-rest-"));
-    daemon = Daemon.create({ port: 0, dataDir: tmpDir });
+    daemon = Daemon.create({ port: 0, dataDir: tmpDir, disableAutoSpawn: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
   });

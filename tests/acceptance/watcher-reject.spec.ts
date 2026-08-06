@@ -43,7 +43,7 @@ describe("[AC-Scc9152-1-2] Watcher rejects invalid task frontmatter with reason 
 
     fs.mkdirSync(path.join(tmpRepoDir, "work", "tasks"), { recursive: true });
 
-    daemon = Daemon.create({ port: 0, dataDir: tmpDataDir, watchIntervalMs: 500 });
+    daemon = Daemon.create({ port: 0, dataDir: tmpDataDir, watchIntervalMs: 500, disableAutoSpawn: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
 

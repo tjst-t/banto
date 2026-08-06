@@ -74,7 +74,7 @@ describe("[AC-S654396-3-2] WebSocket real-time subscription + resume", () => {
 
   before(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-ws-"));
-    daemon = Daemon.create({ port: 0, dataDir: tmpDir });
+    daemon = Daemon.create({ port: 0, dataDir: tmpDir, disableAutoSpawn: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
     wsUrl = `ws://localhost:${daemon.port}/ws`;

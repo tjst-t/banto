@@ -37,6 +37,13 @@ import * as fs from "node:fs";
 import * as childProcess from "node:child_process";
 
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
+import { PiRpcDriver } from "../../packages/banto-worker-pool/src/pi-rpc-driver.js";
+import { WorkerPool } from "../../packages/banto-worker-pool/src/pool.js";
+import { WorkerPoolService } from "../../packages/banto-worker-pool/src/service.js";
+import {
+  createWorkerModuleTools,
+  createWorkerTools,
+} from "../../packages/banto-worker-pool/src/worker-tools.js";
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -218,8 +225,10 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → auditing (exec
   let repoDir: string;
   let tasksDir: string;
   let daemon: Daemon;
+  let workerDriver: PiRpcDriver;
+  let workerPool: WorkerPool;
+  let workerService: WorkerPoolService;
   const projectTag = "e2e-project";
-  const TMUX_SESSION = "banto-e2e-test";
 
   // Auth check is done synchronously before the suite body runs.
   const authResult = probeAuth();
@@ -256,18 +265,32 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → auditing (exec
     // daemon.stop() is called while the audit LLM is still running.
     // audit_spawn_disabled event is emitted for the implementing→auditing transition
     // (F2 governance: suppression is visible in the event log).
+    // task-0060（ADR-0013 決定60）: 職人を起こすのは **Worker Pool**。Kobo は頼むだけで、
+    // pi も provider も model も知らない——モデルを決めるのは Worker Pool 側になる
+    workerDriver = new PiRpcDriver({
+      sessionBaseDir: path.join(tmpDir, "sessions"),
+      defaultProvider: PI_PROVIDER,
+      defaultModel: PI_MODEL,
+    });
+    workerPool = new WorkerPool({
+      driver: workerDriver,
+      dataDir: path.join(tmpDir, "worker-pool"),
+      defaultProjectTag: "kobo",
+      defaultOrigin: "kobo",
+      idleTimeoutMs: 0,
+    });
+    workerService = await WorkerPoolService.start({
+      tools: [...createWorkerTools(workerPool), ...createWorkerModuleTools(workerPool)],
+      port: 0,
+    });
+
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
       watchIntervalMs: 500,
       tickIntervalMs: 500,
-      reconcileIntervalMs: 99999,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
-      sessionBaseDir: path.join(tmpDir, "sessions"),
-      tmuxSession: TMUX_SESSION,
-      // Use the confirmed banto default provider/model (opencode/deepseek-v4-flash-free)
-      piProvider: PI_PROVIDER,
-      piModel: PI_MODEL,
+      workerPoolUrl: workerService.baseUrl,
       disableAuditSpawn: true,
     });
 
@@ -281,8 +304,14 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → auditing (exec
     if (daemon) {
       await daemon.stop();
     }
-    // Kill tmux session if it was created
-    childProcess.spawnSync("tmux", ["kill-session", "-t", TMUX_SESSION], { encoding: "utf8" });
+    if (workerPool) {
+      // 起こした職人は畳む（決定63：番頭には畳めないので、起こした側が片付ける）
+      for (const worker of workerPool.list({ includeClosed: false })) {
+        await workerPool.close(worker.sessionId, "stopped").catch(() => undefined);
+      }
+      workerPool.dispose();
+    }
+    if (workerService) await workerService.close();
     if (tmpDir) {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -350,11 +379,10 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → auditing (exec
       sessionPath: string;
       pid: number;
       sessionId: string;
-      tmuxWindow?: string;
     };
 
     try {
-      spawnResult = await daemon.spawnTask(projectTag, TASK_ID, "pi-rpc");
+      spawnResult = await daemon.spawnTask(projectTag, TASK_ID);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // If spawn fails due to auth → record and escalate (I2)
@@ -388,44 +416,16 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → auditing (exec
       "Task must reach 'planning' within 15s after spawn"
     );
 
-    // ── Step 6: Verify tmux window exists ────────────────────────────────────
-    if (spawnResult.tmuxWindow) {
-      // Give tmux 500ms to render
-      await new Promise<void>((r) => setTimeout(r, 500));
-      const checkResult = childProcess.spawnSync(
-        "tmux",
-        ["list-windows", "-t", TMUX_SESSION, "-F", "#{window_name}"],
-        { encoding: "utf8" }
-      );
-      assert.ok(
-        checkResult.stdout.includes(TASK_ID),
-        `tmux window '${TASK_ID}' must exist in session '${TMUX_SESSION}'`
-      );
-    }
+    // ── Step 6: 職人は Worker Pool の台帳に載る（決定29c：真実は一箇所）──────────
+    const poolWorker = workerPool.get(spawnResult.sessionId);
+    assert.ok(poolWorker, "起こした職人が Worker Pool の台帳に居ること");
+    assert.equal(poolWorker!.origin, "kobo", "起動元が Kobo だと分かる（決定63）");
 
-    // ── Step 7: Inject task prompt via pi RPC ───────────────────────────────
-    // The pi process is waiting in RPC mode with the banto-executor extension loaded.
-    // The extension has registered report_phase/report_done tools.
-    // We inject the task prompt and let the LLM use the registered tools.
-    const driver = daemon.driverRegistry.get("pi-rpc");
-    if (!driver) throw new Error("pi-rpc driver not found");
-
-    // Simple, direct prompt. The extension system prompt provides context about
-    // available tools. We just describe the concrete task.
-    const taskPrompt = [
-      `Your task: create a file called hello.txt in the current directory with content "Hello banto".`,
-      ``,
-      `Steps to follow:`,
-      `1. Call report_phase with phase="implementing" to signal you have started work.`,
-      `2. Create hello.txt with the exact content: Hello banto`,
-      `   Use the write tool or bash to create the file.`,
-      `3. Call report_done with summary="hello.txt created with Hello banto".`,
-      ``,
-      `Important: use the report_phase and report_done tools (they are registered in this session).`,
-      `Do not make HTTP API calls directly.`,
-    ].join("\n");
-
-    await driver.inject(spawnResult.sessionId, taskPrompt);
+    // ── Step 7: 指示は Kobo が渡している（PO は何もしない）─────────────────────
+    // task-0060（ADR-0013 決定60）: タスク定義の本文＝依頼と、契約（スコープ・受け入れ
+    // 基準・コミット先）を、Kobo が起動時の指示として渡す。以前はこのE2Eが外から
+    // 本文を注入していたが、それは**本番には無い経路**だった——投げ込めば回ることを
+    // 見たいのに、テストが手を貸したら何も検証していない。
 
     // ── Step 8: Wait for auditing state ─────────────────────────────────────
     // S75f66b-3 (DEC-S254276-012 resolved): report_done now transitions to 'auditing'

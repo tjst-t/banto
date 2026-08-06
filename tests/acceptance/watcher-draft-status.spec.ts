@@ -56,7 +56,7 @@ describe("[AC-S75f66b-1-1] [AC-S75f66b-1-2] scenario-1: draft→queued flip and 
     fs.mkdirSync(path.join(tmpRepoDir, "work", "tasks"), { recursive: true });
 
     // Precondition: Daemon running with small watchIntervalMs for test speed
-    daemon = Daemon.create({ port: 0, dataDir: tmpDataDir, watchIntervalMs: INTERVAL_MS });
+    daemon = Daemon.create({ port: 0, dataDir: tmpDataDir, watchIntervalMs: INTERVAL_MS, disableAutoSpawn: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
 
@@ -250,7 +250,7 @@ describe("[AC-S75f66b-1-3] scenario-2: invalid draft file emits task_ingest_reje
     tmpRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-ds2-repo-"));
     fs.mkdirSync(path.join(tmpRepoDir, "work", "tasks"), { recursive: true });
 
-    daemon = Daemon.create({ port: 0, dataDir: tmpDataDir, watchIntervalMs: INTERVAL_MS });
+    daemon = Daemon.create({ port: 0, dataDir: tmpDataDir, watchIntervalMs: INTERVAL_MS, disableAutoSpawn: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
 

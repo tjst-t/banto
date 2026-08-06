@@ -83,7 +83,7 @@ describe("[AC-Scc9152-2-3] Gate evaluation is recorded as gate_evaluated events"
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-gate-events-"));
     // disableAuditSpawn: tests gate_evaluated events; transitions pass through auditing as a state
     // placeholder without needing actual audit session spawning.
-    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 500, disableAuditSpawn: true });
+    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 500, disableAuditSpawn: true, disableAutoSpawn: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
 

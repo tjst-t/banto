@@ -447,3 +447,81 @@ API に触れていないことは確認済みだが、**通しの確認は未�
 - **テストが実装の穴を2つ見つけた**：物理quota の写しが遷移直後の即時再評価に効いておらず
   上限超過で ready へ上げていた（**昇格は戻せない**）／Environment Pool へ到達できないとき
   事前の `env.list` 失敗でログだけになり記録が残らなかった（I2）
+
+---
+
+## セッション更新（2026-08-06、Kobo の職人を Worker Pool へ寄せた／task-0060 完了）
+
+ブランチ **`feat/kobo-uses-modules`**（`main` から分岐、5コミット）。ADR-0013 決定60・63 の
+2つめ——**Kobo が職人を自分で起こすのをやめた**。task-0059（検証環境）と同じ手順で、
+台帳を持つ能力をモジュールへ寄せる作業の続き。
+
+### 済んだこと（task-0060、done）
+
+- **`daemon.ts` から spawn の実装が消えた**（2,525→2,293行）。`SpawnLedger` を開かない・
+  `PiRpcDriver` を直に呼ばない・孤児回収をしない・tmux 窓を開かない。職人は
+  `worker.delegate_toolkit` で頼み、**@banto/worker-pool への依存を package.json・
+  tsconfig ごと外した**（機構的に相手の内部へ手を伸ばせない。task-0059 と同じ形）
+- **職人の台帳が1つになった**（決定29c）。Kobo が起こした職人も番頭の `worker.list` と
+  職人ビューアに並び、`origin: "kobo"` で由来が分かる。Kobo 側に残るのは**帳簿**——
+  `agent_spawned` に `sessionId` を足したので、そこから職人ビューアへ辿れる（決定18）
+- **職人の生死は `worker.events` を tick で引いて写す**（`afterEventId`）。**どこまで読んだかを
+  保存しない**——起動のたびに 0 から読み直し、帳簿に `agent_exited` があるものを飛ばす（D3）。
+  これで**Kobo が落ちている間に終わった職人も拾える**。旧・照合 tick が持っていた
+  「黙って止まった職人に気づく」責任は、`agent_exited_without_report` として残した（I2）
+- **モデルは tier だけ**（決定60a）。`BANTO_PI_PROVIDER` / `BANTO_PI_MODEL` を廃止し、
+  provider も model も Kobo から消えた。監査は `reasoning`、rework は**落ちた回数だけ一段上**
+  （spec-daemon-core §3.5 の失敗駆動の昇格が「渡す文字列を変えるだけ」で成立した）
+- **worktree は gwq の配下へ**（a6）。`repo-manager.addTaskWorktree` が `gwq add` に作らせ、
+  出来上がりの場所は**git に聞く**（gwq の出力を解釈しない）。実物で確認済み：
+  `~/worktrees/github.com/tjst-t/banto/...` にでき、`gwq list` に出る＝番頭と PO が場所として
+  中を読める。**gwq が使えないときは黙って別の場所に作らず止まる**（I2）。テスト用の
+  リモート無しリポジトリ向けに `worktreeBaseDir` を明示の逃げ道として残した
+- **番頭は自分が起こしていない職人を畳めない**（決定63・a4）。砦は `banto-host` の Tool を
+  束ねる層（`worker-guard.ts`）。**task-0060 本文の「Worker Pool 側に置く」は誤りで、
+  ファイルに訂正を書いた**——Worker Pool は呼び出し元を区別できない
+- **Kobo が職人に指示を渡すようになった**。以前は spawn するだけで**何も渡していなかった**
+  ——本番では職人が起きたまま何もせず、E2E だけが外からタスク本文を注入して辻褄を
+  合わせていた（テストが手を貸すと工場の検証にならない）。タスク定義の**本文＝依頼**を
+  watcher が取り込み、契約（スコープ・受け入れ基準・コミット先ブランチ）と一緒に
+  指示へ書き切る（職人は記憶を持たない・D11）
+
+### テスト
+
+- **全体 1,147件 green**（typecheck・build も通る）。旧 `spawn-pi` / `spawn-ledger` /
+  `spawn-reconcile` / `tmux-attach` / `orphan-recovery` を廃し、
+  **`kobo-worker-integration.spec.ts`（14件）・`worker-close-guard.spec.ts`（4件）**へ移した
+- **偽物にするのを1段深くした**：Kobo に偽ドライバを差し込む形は取れなくなったので、
+  `worker-pool-harness.ts` が**本物の Worker Pool を独立サービスとして立て**、pi の代わりの
+  ランタイムだけを差し替える。決定27b の経路（HTTP・Tool 契約・台帳・イベントログ）が
+  テストのたびに実際に通る。**最後の1本は本物の pi** を起こして台帳と帳簿の一致まで見る
+- **受け入れテストが PO の稼働中の banto（:4100）へ繋ぎに行っていた**（実害：番頭ホストの
+  Worker Pool に本物の職人が立ちうる）。職人を要らないテストには `disableAutoSpawn: true` を
+  明示した——既定の到達先は本番の口なので、テストが黙って本番へ届く形を残さない
+
+### 私（番頭）が確かめたこと・確かめられなかったこと
+
+- **`tests/e2e/pipeline-merge.e2e.spec.ts`（実 pi・実 LLM）は通した**——投入から
+  `merged`→`closed` まで **35秒**、監査は `pass`、`hello-merge.txt` が main に載っている。
+  `walking-skeleton.e2e.spec.ts` も通した（26秒）。**どちらも外からの注入を外してある**ので、
+  「投げ込めば回る」を本当に見ている。task-0059 で残していた未検証もこれで解消
+- **1回目の実行は落ちた**（240秒で `implementing` のまま）。原因は上記のとおり
+  **Kobo が職人に何も渡していなかった**こと——テストの注入を外した瞬間に露呈した。
+  E2E が本番に無い経路で辻褄を合わせていると、壊れていることに気づけない（I1）
+- gwq の実物での確認（作成・冪等・`gwq list` への反映・後始末）は済み
+
+### 次の一手
+
+1. **task-0061 を起票して Phase 2「入口と出口」へ**。Kobo は配線が済んで工場として回るが、
+   **番頭から積む口（`kobo.*` Tool）と、判断を取次へ出す経路がまだ無い**（epic-0010 の2段目）。
+   決定57・58 の実装がここに入る
+2. **Worker Pool を独立サービスにする**（決定61 の Worker Pool 版）。いまは番頭ホストに
+   同居しているので、**Kobo が番頭の稼働に依存している**——決定27b が避けた形が1つ残っている
+3. `spec-daemon-core` の改訂。§3・§3.5 には失効の断りを入れたが、§5・§6・§7 と `spec-ui` §1 は
+   ADR-0013 の帰結表のまま未改訂
+
+### Phase 2 に入る前に PO 裁定が要るもの（ADR-0013 の未決事項・変わらず）
+
+①積んだ後の訂正の表し方（番頭の推しは「新タスク＋superseded」）②task ファイルの `status` を
+番頭が書くのをやめる ③`po_required_paths` の置き場（層B の `meta/config.yaml`）④費用の上限
+（同時実行数・tier の上限を Kobo が持ち、超過は拒否）

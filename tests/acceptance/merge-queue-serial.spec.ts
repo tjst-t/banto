@@ -172,8 +172,9 @@ describe("[AC-S75f66b-5-1] Serial merge queue: two tasks merged in approval orde
       worktreeBaseDir,
       tickIntervalMs: 200,
       watchIntervalMs: 999999, // disable watcher
-      tmuxSession: "",         // disable tmux
       disableAuditSpawn: true,
+      // task-0060: 職人を要らないので Worker Pool に頼まない
+      disableAutoSpawn: true,
     });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;

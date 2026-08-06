@@ -26,6 +26,7 @@ import * as os from "node:os";
 import * as childProcess from "node:child_process";
 
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
+import { startWorkerPool, type WorkerPoolHarness } from "./worker-pool-harness.js";
 import type {
   RuntimeDriver,
   SpawnOptions,
@@ -193,6 +194,7 @@ describe("[AC-S75f66b-2-2] Physical quota caps concurrent spawns; freed slot unb
   let daemon: Daemon;
   let base: string;
   let driver: SleepDriver;
+  let workers: WorkerPoolHarness;
   const proj = "proj-quota";
   const taskA = "task-quota-a";
   const taskB = "task-quota-b";
@@ -202,22 +204,20 @@ describe("[AC-S75f66b-2-2] Physical quota caps concurrent spawns; freed slot unb
     repoDir = path.join(tmpDir, "repo");
     initRepo(repoDir);
 
+    // 職人を起こすのは Worker Pool（決定60）。数える相手も Worker Pool の職人になる
+    driver = new SleepDriver();
+    workers = await startWorkerPool(driver);
+
     // maxConcurrentSessions=1 enforces the quota at 1 concurrent session.
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
       watchIntervalMs: 99999,
       tickIntervalMs: 300,
-      reconcileIntervalMs: 99999,
       maxConcurrentSessions: 1,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
-      sessionBaseDir: path.join(tmpDir, "sessions"),
-      tmuxSession: "", // disable tmux integration in tests
+      workerPoolUrl: workers.url,
     });
-
-    driver = new SleepDriver();
-    // Replace pi-rpc with SleepDriver so spawns use real OS processes.
-    daemon.driverRegistry.register("pi-rpc", driver);
 
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
@@ -231,8 +231,9 @@ describe("[AC-S75f66b-2-2] Physical quota caps concurrent spawns; freed slot unb
   });
 
   after(async () => {
-    await driver.killAll();
     await daemon.stop();
+    await workers.close();
+    await driver.killAll();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -396,8 +397,8 @@ describe("[AC-S75f66b-2-2] Physical quota caps concurrent spawns; freed slot unb
       );
 
       // Kill the spawned task's session to free the quota slot.
-      // SleepDriver.kill() sends SIGTERM → proc.once("exit") fires → process_exited emitted
-      // → daemon.subscribe handler appends agent_exited + removes ledger entry.
+      // SleepDriver.kill() が SIGTERM を送ると、Worker Pool の職人が「生きていない」に変わる
+      // ——Kobo は毎 tick そこを数え直すので、空いた枠が次の tick で効く（決定60）
       const sessionsBefore = driver.listSessions();
       assert.equal(
         sessionsBefore.length,

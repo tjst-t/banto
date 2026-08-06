@@ -42,7 +42,7 @@ describe("[AC-S254276-3-2] Executor phase tools drive daemon state transitions",
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-tools-"));
     // disableAuditSpawn: this suite tests executor phase tools (implements→auditing transition),
     // not the audit session spawn side-effect. Avoid pi CLI resolution failure in CI.
-    daemon = Daemon.create({ port: 0, dataDir: tmpDir, disableAuditSpawn: true });
+    daemon = Daemon.create({ port: 0, dataDir: tmpDir, disableAuditSpawn: true, disableAutoSpawn: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
     client = new DaemonClient(base);

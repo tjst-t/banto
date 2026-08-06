@@ -15,6 +15,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import {
+  addTaskWorktree,
   createRepoManagerPlaceProvider,
   createRepoManagerTools,
   createWorktree,
@@ -295,6 +296,62 @@ describe("[task-0039/a4] ワークツリーの作成・削除（本物の git �
         );
       }
     }
+  });
+
+  /**
+   * task-0060 a6（ADR-0013 決定60）: Kobo のワークツリーを **gwq の配下**に作る。
+   *
+   * 以前は Kobo が `<dataDir>/worktrees/` に自分で作っていたため、**実装中の中身を
+   * 番頭も PO も読めなかった**（場所として登録されていない）。置き場所を決めるのは gwq で、
+   * repo-manager は「作れ」と言って、**出来上がりを git に聞く**。
+   *
+   * `gwq` だけを偽物にしてある（本物は origin リモートが要る）。**git は本物**なので、
+   * ワークツリーが本当にできたか・冪等かはディレクトリで確かめられる。
+   */
+  it("[task-0060/a6] gwq に作らせ、出来上がりは git に聞く（冪等）", async () => {
+    const gwqBase = path.join(dir, "gwq-base");
+    // 偽の gwq：置き場所を決めて git に作らせる（本物の gwq がしていることと同じ）
+    const run: CommandRunner = async (command, args, options) => {
+      if (command === "gwq") {
+        const branch = args[args.length - 1]!;
+        const target = path.join(gwqBase, "local", "repo", branch.replace(/\//g, "-"));
+        const create = args.includes("-b") ? ["-b", branch] : [branch];
+        childProcess.execFileSync("git", ["worktree", "add", ...create, target], {
+          cwd: options?.cwd ?? repo,
+          stdio: "pipe",
+        });
+        return { ok: true, stdout: `Created worktree at ${target}\n`, stderr: "", notFound: false };
+      }
+      return runCommand(command, args, options);
+    };
+
+    const first = await addTaskWorktree({ repoPath: repo, branch: "task/task-0060", run });
+    assert.ok(first.created, "1回目は作る");
+    assert.ok(
+      first.path.startsWith(gwqBase),
+      `gwq が決めた置き場の中にできること: ${first.path}`
+    );
+    assert.ok(fs.existsSync(first.path), "実際にディレクトリができていること");
+
+    // 冪等：監査と rework は実装者と同じワークツリーを見る必要がある
+    const again = await addTaskWorktree({ repoPath: repo, branch: "task/task-0060", run });
+    assert.equal(again.created, false, "2回目は作らない");
+    assert.equal(again.path, first.path, "同じ場所を返す（作り直すと直す対象が消える）");
+
+    await removeWorktree(repo, first.path);
+  });
+
+  it("[task-0060/a6] gwq が無ければ、別の場所に黙って作らない（I2）", async () => {
+    const run: CommandRunner = async (command, args, options) =>
+      command === "gwq"
+        ? { ok: false, stdout: "", stderr: "not found", notFound: true }
+        : runCommand(command, args, options);
+
+    await assert.rejects(
+      () => addTaskWorktree({ repoPath: repo, branch: "task/task-9999", run }),
+      /gwq が導入されていない/,
+      "置き場所を自分で決めない——理由を添えて止まる"
+    );
   });
 
   it("Git の変更操作は持たない（決定37）", () => {

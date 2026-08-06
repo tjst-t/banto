@@ -73,7 +73,7 @@ describe("[AC-S654396-4-1] banto status", () => {
 
   before(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-cli-status-"));
-    daemon = Daemon.create({ port: 0, dataDir: tmpDir });
+    daemon = Daemon.create({ port: 0, dataDir: tmpDir, disableAutoSpawn: true });
     await daemon.start();
     daemonUrl = `http://localhost:${daemon.port}`;
 

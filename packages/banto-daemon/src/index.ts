@@ -15,16 +15,14 @@ export { ProjectRegistry } from "./project-registry.js";
 export type { ProjectEntry } from "./project-registry.js";
 export { Scheduler } from "./scheduler.js";
 export type { TickJob } from "./scheduler.js";
-export { PiRpcDriver } from "@banto/worker-pool";
-// 決定36h: ワークツリーの作成・削除は repo-manager に寄せた。Kobo は当面ライブラリとして参照する
-// （決定23・32 と同じ2段階の1段目。サービス利用への切替は別タスク）
-export { createWorktree, removeWorktree } from "@banto/repo-manager";
-export type { PiRpcDriverOptions } from "@banto/worker-pool";
-export { SpawnLedger, isProcessAlive, killOrphanProcess } from "@banto/worker-pool";
-export type { LedgerEntry } from "@banto/worker-pool";
+export { KOBO_ORIGIN } from "./daemon.js";
+export type { SpawnedSession } from "./daemon.js";
+// 決定36h: ワークツリーの作成・削除は repo-manager に寄せた。状態を持たない導出なので
+// ライブラリ参照でよい（決定60 の判断基準：台帳を持つ能力だけがモジュール経由）
+export { addTaskWorktree, createWorktree, removeWorktree } from "@banto/repo-manager";
 
-// 検証環境は **Environment Pool（独立サービス）** が持つ（ADR-0013 決定60・61）。
-// Kobo は `env.*` を呼ぶ側なので、実装も型も再輸出しない——ここから輸出していると
+// 職人は **Worker Pool** が、検証環境は **Environment Pool** が持つ（ADR-0013 決定60・61）。
+// Kobo はどちらも「呼ぶ側」なので、実装も型も再輸出しない——ここから輸出していると
 // 「Kobo が持っているもの」に見え、また誰かが Kobo 経由で使い始める
 
 // MergeGate — pre-merge checks (scope violation + verify command execution)

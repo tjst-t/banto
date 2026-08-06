@@ -67,7 +67,7 @@ describe("[AC-Scc9152-3-1] Tick jobs: gate re-evaluation drives queued→ready",
     // that the scheduler fires and drives gate re-evaluation autonomously.
     // disableAuditSpawn: tests tick scheduler and gate re-evaluation autonomy; task transitions
     // through auditing are state placeholders that must not trigger audit session spawn.
-    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 200, disableAuditSpawn: true });
+    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 200, disableAuditSpawn: true, disableAutoSpawn: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
   });

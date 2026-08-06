@@ -23,6 +23,7 @@ import * as os from "node:os";
 import * as childProcess from "node:child_process";
 
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
+import { startWorkerPool, type WorkerPoolHarness } from "./worker-pool-harness.js";
 import type {
   RuntimeDriver,
   SpawnOptions,
@@ -98,6 +99,7 @@ describe("[AC-S75f66b-3-3] audit pass routes: auto→merging, manual→review-re
   let daemon: Daemon;
   let base: string;
   let driver: SleepDriver;
+  let workers: WorkerPoolHarness;
 
   const proj = "proj-verdict-routing";
   // taskManual: created via HTTP without review.policy → should go to review-ready on pass
@@ -110,19 +112,18 @@ describe("[AC-S75f66b-3-3] audit pass routes: auto→merging, manual→review-re
     repoDir = path.join(tmpDir, "repo");
     initRepo(repoDir);
 
+    // 監査人を起こすのは Worker Pool（決定60）。ランタイムだけ差し替える
+    driver = new SleepDriver();
+    workers = await startWorkerPool(driver);
+
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
       watchIntervalMs: 99999,
       tickIntervalMs: 99999,
-      reconcileIntervalMs: 99999,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
-      sessionBaseDir: path.join(tmpDir, "sessions"),
-      tmuxSession: "",
+      workerPoolUrl: workers.url,
     });
-
-    driver = new SleepDriver();
-    daemon.driverRegistry.register("pi-rpc", driver);
 
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
@@ -173,8 +174,9 @@ describe("[AC-S75f66b-3-3] audit pass routes: auto→merging, manual→review-re
   });
 
   after(async () => {
-    await driver.killAll();
     await daemon.stop();
+    await workers.close();
+    await driver.killAll();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 

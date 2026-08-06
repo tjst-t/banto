@@ -23,7 +23,7 @@ describe("[AC-S654396-3-3] Project registry: multi-project, global reference res
 
   before(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-registry-"));
-    daemon = Daemon.create({ port: 0, dataDir: tmpDir });
+    daemon = Daemon.create({ port: 0, dataDir: tmpDir, disableAutoSpawn: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
   });

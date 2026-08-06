@@ -5,8 +5,9 @@
  * 検証内容:
  *   - implementing→auditing 遷移後に agent_spawned イベントが出る（audit marker付き）
  *   - audit_started イベントが出る（monitoring auditing status）
- *   - spawn台帳エントリが作成される
- *   - 実 daemon + CaptureDriver（実 OS プロセス、spawn を記録する）
+ *   - 監査人が **Worker Pool の職人として**台帳に載る（task-0060・ADR-0013 決定60。
+ *     以前は Kobo が自分の spawn 台帳に書いていた——番頭からは見えなかった）
+ *   - 実 daemon + 実 Worker Pool（サービス）+ CaptureDriver（実 OS プロセス、spawn を記録）
  *
  * Entry point: HTTP API (story_type=api, Rule 2).
  * Test driver: CaptureDriver — real process that records what was spawned.
@@ -22,6 +23,7 @@ import * as os from "node:os";
 import * as childProcess from "node:child_process";
 
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
+import { startWorkerPool, type WorkerPoolHarness } from "./worker-pool-harness.js";
 import type {
   RuntimeDriver,
   SpawnOptions,
@@ -150,6 +152,7 @@ describe("[AC-S75f66b-3-1] executor completion triggers audit session spawn", ()
   let daemon: Daemon;
   let base: string;
   let driver: CaptureDriver;
+  let workers: WorkerPoolHarness;
   const proj = "proj-audit-spawn";
   const taskId = "task-audit-1";
 
@@ -158,19 +161,18 @@ describe("[AC-S75f66b-3-1] executor completion triggers audit session spawn", ()
     repoDir = path.join(tmpDir, "repo");
     initRepo(repoDir);
 
+    // 監査人を起こすのも Worker Pool。差し替えるのはランタイムだけ
+    driver = new CaptureDriver();
+    workers = await startWorkerPool(driver);
+
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
       watchIntervalMs: 99999,
       tickIntervalMs: 99999,
-      reconcileIntervalMs: 99999,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
-      sessionBaseDir: path.join(tmpDir, "sessions"),
-      tmuxSession: "", // disable tmux in tests
+      workerPoolUrl: workers.url,
     });
-
-    driver = new CaptureDriver();
-    daemon.driverRegistry.register("pi-rpc", driver);
 
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
@@ -185,8 +187,9 @@ describe("[AC-S75f66b-3-1] executor completion triggers audit session spawn", ()
   });
 
   after(async () => {
-    await driver.killAll();
     await daemon.stop();
+    await workers.close();
+    await driver.killAll();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -255,15 +258,15 @@ describe("[AC-S75f66b-3-1] executor completion triggers audit session spawn", ()
       `At least one agent_spawned event must be present. Events: ${JSON.stringify(events.map(e => e.type))}`
     );
 
-    // Verify spawn-ledger entry for the audit session
-    const ledgerEntries = daemon.getLedgerEntries();
-    const auditLedgerEntry = ledgerEntries.find(
-      (e) => e.taskId.startsWith(taskId) && e.taskId.includes("audit")
-    );
+    // 監査人は **Worker Pool の台帳**に載る（決定29c：職人の真実は一箇所）。
+    // 起動元が kobo なので、番頭の worker.list と職人ビューアにも同じものが並ぶ（a3）
+    const poolWorkers = workers.pool.list();
+    const auditWorker = poolWorkers.find((w) => w.taskId === `${taskId}:audit`);
     assert.ok(
-      auditLedgerEntry,
-      `Spawn ledger must have an audit entry for task ${taskId}. Ledger: ${JSON.stringify(ledgerEntries.map(e => e.taskId))}`
+      auditWorker,
+      `Worker Pool の台帳に監査人が居ること。居るのは: ${JSON.stringify(poolWorkers.map((w) => w.taskId))}`
     );
+    assert.equal(auditWorker.origin, "kobo", "起動元が Kobo だと分かる（決定63 の判定材料）");
 
     // Verify audit_started references the worktree path (spec §2.1: path ref only)
     if (auditStarted) {

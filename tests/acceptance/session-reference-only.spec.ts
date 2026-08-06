@@ -21,6 +21,7 @@ import * as fs from "node:fs";
 import * as childProcess from "node:child_process";
 
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
+import { FakeRuntimeDriver, startWorkerPool, type WorkerPoolHarness } from "./worker-pool-harness.js";
 import type { AgentSpawnedEvent } from "../../packages/banto-core/src/index.js";
 
 // ── Git helpers ──────────────────────────────────────────────────────────────
@@ -55,11 +56,16 @@ describe("[AC-S254276-1-3] Session path reference only — no transcript in even
   let tmpDir: string;
   let repoDir: string;
   let daemon: Daemon;
+  let workers: WorkerPoolHarness;
 
   before(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-sref-"));
     repoDir = path.join(tmpDir, "repo");
     initRepo(repoDir);
+
+    // セッションファイルの置き場も Worker Pool が持つ（決定60）。Kobo が帳簿に残すのは
+    // **参照だけ**——中身を持たないことがここでの検査対象
+    workers = await startWorkerPool(new FakeRuntimeDriver());
 
     daemon = Daemon.create({
       port: 0,
@@ -67,13 +73,14 @@ describe("[AC-S254276-1-3] Session path reference only — no transcript in even
       watchIntervalMs: 99999,
       tickIntervalMs: 99999,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
-      sessionBaseDir: path.join(tmpDir, "sessions"),
+      workerPoolUrl: workers.url,
     });
     await daemon.start();
   });
 
   after(async () => {
     await daemon.stop();
+    await workers.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -182,12 +189,9 @@ describe("[AC-S254276-1-3] Session path reference only — no transcript in even
         }
       }
     } finally {
-      // Always kill the spawned session to release resources
+      // 起こした職人は畳む（起こした者が片付ける。番頭には畳めない・決定63）
       if (spawnResult?.sessionId) {
-        const piDriver = daemon.driverRegistry.get("pi-rpc");
-        if (piDriver) {
-          await piDriver.kill(spawnResult.sessionId);
-        }
+        await workers.pool.close(spawnResult.sessionId, "done").catch(() => undefined);
       }
     }
   });
