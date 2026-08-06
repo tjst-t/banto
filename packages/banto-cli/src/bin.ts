@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 /**
- * banto CLI entry point.
+ * kobo CLI entry point（Kobo＝統治基盤のクライアント）。
+ *
+ * **bin 名は `kobo`**（task-0061 a4）。以前は `banto` で、番頭ホスト（`@banto/host`）と
+ * 衝突しており、どちらが起動するかが導入順に依存していた。`banto` は番頭のもの——
+ * PO が打つのは番頭で、これは Kobo の帳簿を覗くための道具である。
  *
  * Subcommands:
- *   banto status              - Show daemon health, registered projects, task summary
- *   banto events --follow     - Stream events via WebSocket (SIGINT → exit 0)
- *   banto events --follow --after <id>  - Resume from after_event_id
+ *   kobo status              - Show daemon health, registered projects, task summary
+ *   kobo events --follow     - Stream events via WebSocket (SIGINT → exit 0)
+ *   kobo events --follow --after <id>  - Resume from after_event_id
  *
  * D5: no logic here; delegates to DaemonClient (HTTP) and WsEventFollower (WS).
  * I2: connection errors exit with code 1 + stderr message.
@@ -31,7 +35,7 @@ async function main(): Promise<void> {
     case "events": {
       const followIdx = args.indexOf("--follow");
       if (followIdx === -1) {
-        process.stderr.write("Usage: banto events --follow [--after <event_id>]\n");
+        process.stderr.write("Usage: kobo events --follow [--after <event_id>]\n");
         process.exit(1);
       }
       const afterIdx = args.indexOf("--after");
@@ -48,8 +52,8 @@ async function main(): Promise<void> {
       process.stderr.write(
         `banto: unknown subcommand '${subcommand ?? ""}'\n` +
           "Usage:\n" +
-          "  banto status\n" +
-          "  banto events --follow [--after <event_id>]\n"
+          "  kobo status\n" +
+          "  kobo events --follow [--after <event_id>]\n"
       );
       process.exit(1);
     }

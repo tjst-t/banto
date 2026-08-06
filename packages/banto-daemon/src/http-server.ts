@@ -13,7 +13,11 @@
  *   GET  /api/v1/tasks/:proj/:id                       → global reference (spec §2)
  *
  * Error responses: JSON { "error": "..." }
- * Authentication: none (local network, spec §8 open item, DEC-S654396-006)
+ *
+ * **認証は持たない。守るのは前段と待ち受けアドレス**（ADR-0010 決定40、task-0061）。
+ * この口は帳簿を書き換えられる（状態遷移・監査判定）ので、**既定では 127.0.0.1 だけ**が
+ * 届く（`DaemonConfig.bindHost`）。広げるのは明示のときだけで、そのときは起動ログに
+ * 警告が出る——番頭側を 127.0.0.1 に閉じた隣で、無認証の口が黙って開いている状態を作らない。
  *
  * D5: all logic delegated to Daemon class; this file is pure routing.
  * D6: node:http (no framework dependency).

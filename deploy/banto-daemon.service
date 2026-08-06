@@ -18,6 +18,10 @@ Environment=BANTO_PORT=3000
 # BANTO_DATA_DIR defaults to ./data
 Environment=BANTO_DATA_DIR=/var/lib/banto/data
 
+# 待ち受けアドレス（決定40・task-0061）。**既定は 127.0.0.1**——この口は認証を持たず、
+# 状態遷移も監査判定も受ける。広げるなら前段（Caddy 等）で守ること。
+#   Environment=BANTO_DAEMON_BIND=0.0.0.0   # 広げるときだけ。起動ログに警告が出る
+
 # 能力はモジュールから借りる（ADR-0013 決定60）。Kobo は職人も検証環境も自分で持たず、
 # それぞれの到達先を1つ知っているだけでよい（決定27b：呼び出しは当事者間で直接）。
 #   BANTO_WORKER_POOL_URL 既定 http://127.0.0.1:4100/api/worker-pool

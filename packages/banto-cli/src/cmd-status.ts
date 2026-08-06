@@ -1,5 +1,5 @@
 /**
- * banto status: show daemon health, registered projects, and task summary.
+ * kobo status: show daemon health, registered projects, and task summary.
  *
  * Output format (stdout, human-readable):
  *   daemon : running (http://localhost:3000)

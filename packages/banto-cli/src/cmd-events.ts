@@ -1,5 +1,5 @@
 /**
- * banto events --follow: stream events from all projects via WebSocket.
+ * kobo events --follow: stream events from all projects via WebSocket.
  *
  * Protocol (mirrors ws-server.ts):
  *   Client → { type: "subscribe", projectTag: string, after_event_id?: number }
@@ -77,7 +77,7 @@ export async function cmdEvents(client: DaemonClient, afterEventId?: number): Pr
         msg = JSON.parse(data.toString("utf-8")) as WsMessage;
       } catch {
         // I2: malformed message logged to stderr, not swallowed
-        process.stderr.write(`[banto events] malformed message from server\n`);
+        process.stderr.write(`[kobo events] malformed message from server\n`);
         return;
       }
 
@@ -99,13 +99,13 @@ export async function cmdEvents(client: DaemonClient, afterEventId?: number): Pr
 
     ws.on("error", (err: Error) => {
       // I2: log to stderr, do not swallow
-      process.stderr.write(`[banto events] WebSocket error: ${err.message}\n`);
+      process.stderr.write(`[kobo events] WebSocket error: ${err.message}\n`);
     });
 
     ws.on("close", (_code: number, reason: Buffer) => {
       const reasonStr = reason.toString("utf-8");
       if (reasonStr) {
-        process.stderr.write(`[banto events] connection closed: ${reasonStr}\n`);
+        process.stderr.write(`[kobo events] connection closed: ${reasonStr}\n`);
       }
     });
   }

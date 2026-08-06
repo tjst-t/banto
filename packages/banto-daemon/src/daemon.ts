@@ -162,6 +162,15 @@ interface WorkerEventView {
 export interface DaemonConfig {
   /** Port to listen on. Default: 3000 */
   port: number;
+  /**
+   * 待ち受けるアドレス（ADR-0010 決定40・task-0061）。**既定は 127.0.0.1**。
+   *
+   * この口は**帳簿を書き換えられる**——状態遷移も監査判定も認証なしで受ける。番頭側を
+   * 127.0.0.1 に閉じた隣で、無認証の口が全インターフェースに出ていた（`0.0.0.0`）。
+   * 広げるのは明示のときだけで、そのときは起動ログに警告を出す（黙って広がらない）。
+   * 外から使うなら前段（Caddy 等）で守る。`BANTO_DAEMON_BIND` で差し替えられる。
+   */
+  bindHost?: string;
   /** Root data directory (event log + registry). Default: ./data */
   dataDir: string;
   /**
@@ -448,6 +457,8 @@ export class Daemon {
   static create(config: Partial<DaemonConfig> = {}): Daemon {
     const resolved: DaemonConfig = {
       port: config.port ?? parseInt(process.env["BANTO_PORT"] ?? "3000", 10),
+      // 決定40: 既定は 127.0.0.1。広げるのは明示だけ（この口は帳簿を書き換えられる）
+      bindHost: config.bindHost ?? process.env["BANTO_DAEMON_BIND"] ?? "127.0.0.1",
       dataDir: config.dataDir ?? process.env["BANTO_DATA_DIR"] ?? "./data",
       watchIntervalMs: config.watchIntervalMs ?? 2000,
       tickIntervalMs:
@@ -490,11 +501,21 @@ export class Daemon {
    * ——`worker-events` の tick が、落ちている間に終わった職人を拾う。
    */
   async start(): Promise<void> {
+    const bindHost = this.config.bindHost ?? "127.0.0.1";
+    if (bindHost !== "127.0.0.1" && bindHost !== "localhost") {
+      // 決定40: 黙って広い口を開けない。**Kobo は認証を持たない**——前段で守られて
+      // いない経路から、状態遷移も監査判定も直接受ける
+      process.stderr.write(
+        `[banto-daemon] ${bindHost} で待ち受けます。**Kobo は認証を持ちません**——` +
+          "前段（Caddy 等）で守られていない経路から、帳簿を書き換える口に直接届きます\n"
+      );
+    }
+
     await new Promise<void>((resolve, reject) => {
       this.httpServer.once("error", reject);
-      this.httpServer.listen(this.config.port, "0.0.0.0", () => {
+      this.httpServer.listen(this.config.port, bindHost, () => {
         process.stdout.write(
-          `[banto-daemon] listening on port ${this.config.port} (dataDir=${this.config.dataDir})\n`
+          `[banto-daemon] listening on ${bindHost}:${this.config.port} (dataDir=${this.config.dataDir})\n`
         );
         this.watcher.start();
         this.scheduler.start();

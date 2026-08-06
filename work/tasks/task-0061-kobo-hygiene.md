@@ -3,7 +3,7 @@ id: task-0061
 type: task
 kind: fix
 title: Kobo の衛生（モデル・待ち受け・帳簿の保護・bin 衝突）
-status: draft
+status: done
 parent: epic-0010
 refs: [adr-0013, adr-0011, adr-0010]
 scope:
@@ -32,4 +32,9 @@ Worker Pool が行う**ため、この項目は task-0060 へ移した。
 
 ## 補足
 
-費用の上限（同時実行数・model tier の上限を Kobo が持ち、超過は黙って丸めず拒否する）は **ADR-0013 の未決事項**であり、PO 裁定後に別タスクとして起票する。
+費用の上限は **ADR-0013 決定67**（PO裁定 2026-08-06）で「Kobo が持ち、積む時点で拒否」と
+決まり、**task-0063** として起票した。
+
+`bin` の衝突は `@banto/cli` を **`kobo`** へ改名して解いた（`banto` は番頭のもの——PO が打つのは
+番頭で、こちらは Kobo の帳簿を覗く道具）。実測では `node_modules/.bin/banto` が
+`@banto/cli` を指しており、**衝突は番頭にとって不利な向きで解決していた**。

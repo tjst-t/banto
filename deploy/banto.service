@@ -28,6 +28,9 @@ Environment=BANTO_PROVIDER=opencode
 Environment=BANTO_MODEL=deepseek-v4-flash-free
 # 番頭が書けるのはこのチェックアウトの docs/** と work/** のみ
 Environment=BANTO_PLACES=banto:/home/ubuntu/ghq/github.com/tjst-t/banto:docs/**,work/**
+# Kobo の帳簿（決定63）。**どの設定でも番頭に書かせない**——場所として登録されても届かない。
+# banto-daemon.service の BANTO_DATA_DIR と同じ値にすること（起動ログで守れているか分かる）
+Environment=BANTO_KOBO_DATA_DIR=/var/lib/banto/data
 
 ExecStart=/usr/local/bin/node --import tsx packages/banto-host/src/bin.ts serve --port 4100
 

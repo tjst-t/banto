@@ -156,6 +156,17 @@ function dataDir(): string {
   return process.env["BANTO_DATA_DIR"] ?? path.join(process.cwd(), ".banto");
 }
 
+/**
+ * Kobo の帳簿の置き場所（決定63）。番頭には**どの設定でも書かせない**。
+ *
+ * 別プロセスなので、ここから導けない——Kobo 自身は `BANTO_DATA_DIR` を見るが、既定が
+ * 違う（番頭は `./.banto`、Kobo は `./data`）ため当てにすると外す。教えてもらう。
+ */
+function koboDataDir(): string | undefined {
+  const configured = process.env["BANTO_KOBO_DATA_DIR"];
+  return configured && configured.trim().length > 0 ? path.resolve(configured) : undefined;
+}
+
 /** 人の記憶の置き場所（ADR-0003 第一層。全プロジェクト横断）。 */
 function memoryPath(): string {
   return path.join(dataDir(), "memory.jsonl");
@@ -653,9 +664,22 @@ async function serve(options: ServeOptions): Promise<void> {
     },
   });
 
+  // 決定38b・63: どの設定でも書かせない置き場。**自分の分だけでは足りない**——
+  // Kobo の帳簿（イベントログ・登録簿）も番頭には触れないことが機構で担保されている
+  // 必要がある。いまは「場所として登録していないから書けない」という配置任せだった。
+  // Kobo は別プロセスで置き場所は配置の問題なので、教えてもらう（`BANTO_KOBO_DATA_DIR`）。
+  // **守れているかは起動ログに出す**——設定し忘れが黙って穴になるのを避ける
+  const protectedPaths = [dataDir(), ...(koboDataDir() ? [koboDataDir()!] : [])];
+  console.log(`[banto] 書き込み禁止の置き場: ${protectedPaths.join(", ")}`);
+  if (!koboDataDir()) {
+    console.warn(
+      "[banto] Kobo の帳簿の置き場が分かりません（BANTO_KOBO_DATA_DIR 未設定）。" +
+        "その置き場が「場所」として登録されると、番頭が帳簿を書き換えられます（決定63）"
+    );
+  }
+
   const modules = createModuleRegistry([
-    // 決定38b: ホスト自身のデータ置き場は、設定で ** を許しても書かせない（自己昇格を塞ぐ）
-    createWorkspaceModule(places, { protectedPaths: [dataDir()] }, grants),
+    createWorkspaceModule(places, { protectedPaths }, grants),
     workerPoolModule,
     createRepoManagerModule(),
     // 決定32c・34: 番頭は Kobo 無しでも検証を回せる。「テストが通った」を職人の主張ではなく
