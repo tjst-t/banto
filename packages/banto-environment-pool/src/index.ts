@@ -39,6 +39,15 @@ export type { EnvProxy, EnvProxyOptions } from "./proxy-exposer.js";
 export { createCaddyExposer } from "./caddy-exposer.js";
 export type { CaddyExposerOptions } from "./caddy-exposer.js";
 
+// 独立サービス（決定61）。Banto の中に置いたまま Kobo から叩くと、Kobo が番頭の稼働に
+// 依存する——決定27b が避けた依存の逆転になるため、単体で立てられるようにしてある
+export {
+  EnvironmentPoolService,
+  ENVIRONMENT_POOL_DEFAULT_PORT,
+  ENVIRONMENT_POOL_DEFAULT_BIND,
+} from "./service.js";
+export type { EnvironmentPoolServiceOptions } from "./service.js";
+
 // 回収した成果物を読める場所として出す（imp-0007 の裁定）
 export { createCollectedPlaceProvider, COLLECTED_PLACE_ID } from "./collected-place.js";
 

@@ -47,6 +47,13 @@ const targetFields = {
   taskId: Type.Optional(
     Type.String({ description: "何の検証かを台帳とログに残すラベル（Koboのタスクidでも自分で付けた名でもよい）" })
   ),
+  projectTag: Type.Optional(
+    Type.String({
+      description:
+        "どの統治単位の環境かを台帳に残すラベル（省略時 banto）。" +
+        "Kobo は自分のプロジェクトを入れ、env.list をこれで絞る（ADR-0013 決定60）",
+    })
+  ),
   expose: Type.Optional(
     Type.Number({
       description:
@@ -77,6 +84,7 @@ function asRequest(params: {
   config?: object;
   workdir?: string;
   taskId?: string;
+  projectTag?: string;
   expose?: number;
   exposeMode?: "auto" | "proxy" | "caddy";
 }): ProvisionRequest {

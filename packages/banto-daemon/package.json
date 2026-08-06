@@ -16,7 +16,6 @@
   },
   "dependencies": {
     "@banto/core": "*",
-    "@banto/environment-pool": "*",
     "@banto/worker-pool": "*",
     "@mariozechner/pi-coding-agent": "^0.73.1",
     "ws": "^8.21.1",

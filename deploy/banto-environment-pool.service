@@ -1,0 +1,49 @@
+# 検証環境（Environment Pool）を独立プロセスとして常駐させる（ADR-0013 決定61）。
+#
+# なぜ番頭ホストと分けるか:
+#   Kobo も番頭も、このサービスのクライアントになる（決定27b）。番頭ホストの中に
+#   置いたまま Kobo から叩くと、**Kobo が番頭の稼働に依存する**——決定27b が
+#   「Banto が単一障害点になり、依存の向きが逆転する」として避けた状態そのもの。
+#
+# **既定では 127.0.0.1 しか待ち受けない**（決定40a）。このサービスは sops の復号鍵を
+# 持つため、無認証の面を外に出すと credentials 経路が露出する。外から届かせたい場合は
+# 前段（Caddy 等）から 127.0.0.1:4400 へ中継すること。
+#
+# 前提:
+#   - ubuntu ユーザの ghq チェックアウトで npm install を済ませてある
+#   - /var/lib/banto-environment-pool を ubuntu が読み書きできる
+#   - credentials 付きプロファイルを使うなら SOPS_AGE_KEY_FILE の鍵が読める
+
+[Unit]
+Description=banto environment pool — 検証環境の台帳と実行
+Documentation=https://github.com/tjst-t/banto
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/ghq/github.com/tjst-t/banto
+
+Environment=NODE_ENV=production
+Environment=BANTO_ENV_POOL_DATA=/var/lib/banto-environment-pool
+Environment=BANTO_ENV_POOL_PORT=4400
+# 復号鍵を持つのはこのサービスだけ（決定32d）。番頭にも Kobo にも渡さない
+# Environment=SOPS_AGE_KEY_FILE=/home/ubuntu/.config/sops/age/keys.txt
+
+ExecStart=/usr/local/bin/node --import tsx packages/banto-environment-pool/src/bin.ts serve
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+# 検証環境のドライバ（docker / process）が /tmp を使うので PrivateTmp は無効のまま
+PrivateTmp=false
+ProtectSystem=full
+ReadWritePaths=/var/lib/banto-environment-pool /home/ubuntu/ghq/github.com/tjst-t/banto
+
+[Install]
+WantedBy=multi-user.target
