@@ -107,6 +107,18 @@ function splitPoolTaskId(id: string): { taskId: string; role: WorkerRole } {
   };
 }
 
+/**
+ * 監査人を起こし直す上限（1回の auditing につき。PO報告 2026-08-07）。
+ *
+ * **判定を出さずに落ちるのは「判断」ではなく「事故」**なので、やり直させる。監査が
+ * fail の判定を出したときは1回やり直させる（`countConsecutiveAuditFails`）のに、
+ * 監査人が落ちたときは0回で failed にしていた——粘る回数が逆になっていた。
+ *
+ * 2 なのは、事故なら2回目で通ることが多く、通らないなら**中身の問題**（監査の指示が
+ * 大きすぎる・文脈が入り切らない等）なので、回数を増やしても同じ壁に当たるため。
+ */
+const AUDIT_ATTEMPT_LIMIT = 2;
+
 /** モデルの等級。Kobo が知ってよいのはここまで（決定60a）。 */
 type ModelTier = "reasoning" | "standard" | "fast";
 
@@ -1295,10 +1307,40 @@ export class Daemon {
     const current = this.store.getTask(taskId, projectTag);
     if (!current) return;
     if (role === "audit" && current.status === "auditing") {
+      // **判定を出さずに落ちたのは「判断」ではなく「事故」**（PO報告 2026-08-07）。
+      // 監査が fail の判定を出したときは1回やり直させる（countConsecutiveAuditFails）のに、
+      // 監査人が落ちたときは0回で failed にしていた——**逆**である。落ちた側こそ、
+      // もう一度起こせば通ることが多い（モデルの一時的な失敗・プロセスの事故）。
+      // **いま動いている監査人の分だけ数える。** 置き換えられた古い監査人の終了も
+      // ここへ来る（同じ taskId で起こし直すと、工房が前の1人を畳む）——それで数えると
+      // 1回の事故で2人起こしてしまう。実際そうなった（試験で捕まえた）
+      if (event.sessionId !== this.currentAuditSessionId(projectTag, taskId)) return;
+      const attempts = this.countAuditAttempts(projectTag, taskId);
+      if (attempts < AUDIT_ATTEMPT_LIMIT) {
+        process.stderr.write(
+          `[banto-daemon] 監査が判定を出さずに終わりました（${projectTag}/${taskId}）。` +
+            `${attempts}/${AUDIT_ATTEMPT_LIMIT} 回目——もう一度起こします\n`
+        );
+        // 状態は auditing のまま。**もう一度 audit_started が積まれる**ので、
+        // 何回試したかは帳簿から数えられる（新しいイベント種を増やさない）
+        this._trackBackground(
+          new Promise<void>((resolve) => {
+            setImmediate(() =>
+              void this.spawnAuditSession(projectTag, taskId).then(resolve, resolve)
+            );
+          })
+        );
+        return;
+      }
       process.stderr.write(
-        `[banto-daemon] 監査が判定を出さずに終わりました（${projectTag}/${taskId}）\n`
+        `[banto-daemon] 監査が ${attempts} 回とも判定を出さずに終わりました（${projectTag}/${taskId}）\n`
       );
-      this.recordTaskFailed(projectTag, taskId, "audit_session_exited_without_verdict");
+      // I2: 何回試したのかを理由に残す。「1回で諦めた」と「粘って駄目だった」は別の話
+      this.recordTaskFailed(
+        projectTag,
+        taskId,
+        `audit_session_exited_without_verdict (${attempts}回試行)`
+      );
       return;
     }
     if (
@@ -1787,6 +1829,47 @@ export class Daemon {
    *
    * S75f66b-3: used by handleAuditVerdict to decide rework vs. fail.
    */
+  /**
+   * いまの auditing の回で、監査人を何回起こしたか（PO報告 2026-08-07）。
+   *
+   * **新しいイベント種を増やさずに数える。** 監査を起こすたびに `audit_started` が積まれる
+   * ので、直近の「→ auditing」の遷移から後ろを数えれば試行回数になる。イベントログの形は
+   * 外に累積する副作用（D9 は one-way として D1 に戻す）なので、既にあるもので足りるなら
+   * 増やさない。
+   *
+   * `implementing → auditing`（やり直し後の再監査）で数え直すのが要点——別の回の事故を
+   * 持ち越すと、2回目の監査が1回も試されずに failed になる。
+   */
+  /**
+   * いま動いている監査人の sessionId（帳簿から引く）。
+   *
+   * `spawnAuditSession` は `audit_started` の直後に `agent_spawned` を積むので、
+   * **最後の `audit_started` より後の `agent_spawned`** がいまの監査人。
+   * 置き換えられた古い監査人と区別するために要る。
+   */
+  private currentAuditSessionId(projectTag: string, taskId: string): string | undefined {
+    const events = this.index.getTaskHistory(taskId, projectTag);
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i];
+      if (ev?.type === "agent_spawned" && ev.sessionId) return ev.sessionId;
+      // agent_spawned に出会う前に audit_started まで戻ったなら、まだ起き切っていない
+      if (ev?.type === "audit_started") return undefined;
+    }
+    return undefined;
+  }
+
+  private countAuditAttempts(projectTag: string, taskId: string): number {
+    const events = this.index.getTaskHistory(taskId, projectTag);
+    let attempts = 0;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i];
+      if (ev?.type === "audit_started") attempts++;
+      // この回の始まりまで来たら止める（前の回の試行を持ち越さない）
+      if (ev?.type === "state_transitioned" && ev.to === "auditing") break;
+    }
+    return attempts;
+  }
+
   private countConsecutiveAuditFails(projectTag: string, taskId: string): number {
     const events = this.index.getTaskHistory(taskId, projectTag);
     // Walk backwards through audit_verdict events.

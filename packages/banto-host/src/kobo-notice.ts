@@ -154,9 +154,18 @@ async function renderNotice(
   const taskId = event.taskId;
   if (!taskId) return undefined;
 
-  const origin = origins[`${event.projectTag}/${taskId}`];
-  // 番頭が積んだものだけを会話へ返す。PO が直にファイルを置いたものは宛先が無い
-  if (!origin) return undefined;
+  /**
+   * 宛先。**無くても捨てない**（PO報告 2026-08-07）。
+   *
+   * もとは「番頭が積んだものだけを会話へ返す。PO が直にファイルを置いたものは宛先が無い」
+   * として `undefined` を返していた。だが `origin` が付くのは `kobo.enqueue` を通ったものだけで、
+   * **タスク定義ファイルを watcher が取り込んだもの（決定64 の正規の入口）には付かない**。
+   * 結果、そのタスクの知らせは**1通残らず捨てられていた**——loamium/task-0001 は監査が
+   * 判定を出さずに落ちて failed になったのに、番頭は最後まで知らなかった。
+   *
+   * 宛先が分からないことは、知らせなくてよい理由にならない（I2）。既定のスレッドへ返す。
+   */
+  const origin = origins[`${event.projectTag}/${taskId}`] ?? "";
 
   let task: KoboTaskView | undefined;
   // **レビューの段は工場に聞く**（決定57・66）。判定表はプロジェクトのリポジトリにあり、

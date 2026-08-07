@@ -503,9 +503,19 @@ describe("[task-0065] 判断待ちは積んだスレッドへ返る（決定58�
     }
   });
 
-  it("番頭が積んでいないタスク（PO がファイルを置いたもの）は会話へ流さない", async () => {
+  /**
+   * **この検査は逆を見ていた**（PO報告 2026-08-07・inc-0030）。
+   *
+   * もとは「宛先の無いものを既定スレッドへ流し込まない」と書いてあり、そのとおり
+   * 捨てていた。だが `origin` が付くのは `kobo.enqueue` 経由だけで、**タスク定義ファイルを
+   * watcher が取り込んだもの（決定64 の正規の入口）には付かない**——実機の loamium は
+   * 2本ともファイル経由で、監査で落ちたことも判断待ちも1通残らず捨てられていた。
+   *
+   * 宛先が分からないことは、知らせなくてよい理由にならない（I2）。
+   */
+  it("宛先が無いタスクの知らせも、既定のスレッドへ届く（捨てない）", async () => {
     const h = await harness();
-    const delivered: string[] = [];
+    const delivered: Array<{ message: string; threadId?: string }> = [];
     let stop: (() => void) | undefined;
     try {
       h.writeTask("task-0023", TASK_FM("task-0023"));
@@ -513,8 +523,8 @@ describe("[task-0065] 判断待ちは積んだスレッドへ返る（決定58�
       await h.call("kobo.enqueue", { projectTag: h.proj, taskId: "task-0023" });
       stop = startKoboNotices({
         tools: h.tools,
-        notify: async (message) => {
-          delivered.push(message);
+        notify: async (message, target) => {
+          delivered.push({ message, ...(target.threadId ? { threadId: target.threadId } : {}) });
         },
         cursorPath: path.join(h.tmpDir, "kobo-cursor.json"),
         intervalMs: 100,
@@ -522,8 +532,11 @@ describe("[task-0065] 判断待ちは積んだスレッドへ返る（決定58�
       });
       await until(() => h.daemon.getTask(h.proj, "task-0023")?.status === "ready");
       h.daemon.transition(h.proj, "task-0023", "failed", "テスト");
-      await new Promise((r) => setTimeout(r, 400));
-      assert.deepEqual(delivered, [], "宛先の無いものを既定スレッドへ流し込まない");
+
+      await until(() => delivered.some((d) => /止まりました/.test(d.message)));
+      const notice = delivered.find((d) => /止まりました/.test(d.message))!;
+      assert.equal(notice.threadId, undefined, "宛先が無いものは既定のスレッドへ");
+      assert.match(notice.message, /task-0023/);
     } finally {
       stop?.();
       await teardown(h);
