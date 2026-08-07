@@ -28,8 +28,15 @@ import { promisify } from "node:util";
 import type { EventLog, TaskRecord, TaskStatus } from "@banto/core";
 import { StateMachine } from "@banto/core";
 import { fileMatchesScopePaths } from "./gate-evaluator.js";
+import {
+  DEFAULT_VERIFY_TIMEOUT_MINUTES,
+  MAX_VERIFY_TIMEOUT_MINUTES,
+} from "./review-policy.js";
 
 const execFileAsync = promisify(execFile);
+
+/** 時間切れの終了コード（`timeout(1)` と同じ）。 */
+export const VERIFY_TIMEOUT_EXIT = 124;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -88,10 +95,20 @@ export interface MergeGateOptions {
   /** Absolute path to the worktree where verify commands are executed. */
   worktreePath: string;
   /**
-   * Timeout in milliseconds for each verify command.
-   * Default: 60_000 (1 minute). Callers may configure per environment profile.
+   * 検証コマンド1本あたりの制限時間。既定は `DEFAULT_VERIFY_TIMEOUT_MINUTES`。
+   *
+   * **既定は 60 秒だった**（task-0071 で直した）。検証コマンドはテスト一式そのものなので
+   * 分の単位で要る——同じことを検証環境側は 2026-08-01 に裁定済みだったが、
+   * ゲート側だけ取り残されていた（spec-environment §5.1）。
    */
   verifyTimeoutMs?: number;
+  /**
+   * 時間切れで延ばすときの上限。既定は `MAX_VERIFY_TIMEOUT_MINUTES`。
+   *
+   * 時間切れは「判断」ではなく「事故」なので、上限まで倍にして1回やり直す。
+   * 上限があるのは、マージキューが直列で1本の居座りが後ろを全部止めるため。
+   */
+  maxVerifyTimeoutMs?: number;
 }
 
 // ── Scope violation check ─────────────────────────────────────────────────────
@@ -209,7 +226,7 @@ async function runSingleVerifyCommand(opts: {
       // Timed out
       stderrContent +=
         `\n[banto-gate] verify command timed out after ${timeoutMs}ms: ${command}`;
-      exitCode = 124; // Standard timeout exit code (same as `timeout(1)`)
+      exitCode = VERIFY_TIMEOUT_EXIT;
     } else if (typeof execErr.code === "number") {
       exitCode = execErr.code;
     } else if (typeof execErr.code === "string" && /^\d+$/.test(execErr.code)) {
@@ -258,8 +275,12 @@ export async function runMergeGate(
     base,
     branch,
     worktreePath,
-    verifyTimeoutMs = 60_000,
+    verifyTimeoutMs = DEFAULT_VERIFY_TIMEOUT_MINUTES * 60_000,
+    maxVerifyTimeoutMs = MAX_VERIFY_TIMEOUT_MINUTES * 60_000,
   } = opts;
+
+  /** 時間切れで延ばしたときの、実際に使った一番長い制限時間（0 なら延ばしていない）。 */
+  let stretchedTo = 0;
 
   const taskId = task.id;
   const projectTag = task.projectTag;
@@ -311,13 +332,41 @@ export async function runMergeGate(
     }
 
     try {
-      const { exitCode, logDirPath } = await runSingleVerifyCommand({
+      let { exitCode, logDirPath } = await runSingleVerifyCommand({
         acId: ac.id,
         command: ac.verify,
         worktreePath,
         logBaseDir,
         timeoutMs: verifyTimeoutMs,
       });
+
+      // **時間切れは「判断」ではなく「事故」**（PO裁定 2026-08-07・task-0071）。
+      // 監査人が落ちたときと同じ扱い——落ちた側にこそやり直す価値がある。
+      // ただし**同じ長さで叩き直しても無意味**なので、上限まで倍にして1回だけ試す。
+      //
+      // テストが本当に落ちた（exit≠0 かつ≠124）ものはやり直さない。それは検証が
+      // 出した**判定**であって、二度走らせても同じことを二度言われるだけ。
+      if (exitCode === VERIFY_TIMEOUT_EXIT && verifyTimeoutMs < maxVerifyTimeoutMs) {
+        // **倍ではなく上限まで一気に延ばす。** やり直しは1回きりなので、倍にして
+        // また足りなければ、時間を使ったうえで何も分からない。上限まで出したうえで
+        // 駄目なら「**この検証は許された範囲で終わらない**」という確かな答えになる
+        // ——それが番頭に渡したい signal（検証が長すぎる）。
+        // 最悪の待ち時間は「既定＋上限」で、マージキューは直列なので上限が歯止め。
+        const stretched = maxVerifyTimeoutMs;
+        process.stderr.write(
+          `[banto-gate] ${taskId}/${ac.id} が ${Math.round(verifyTimeoutMs / 60000)} 分で時間切れ。` +
+            `${Math.round(stretched / 60000)} 分に延ばしてもう一度試します\n`
+        );
+        stretchedTo = Math.max(stretchedTo, stretched);
+        ({ exitCode, logDirPath } = await runSingleVerifyCommand({
+          acId: ac.id,
+          command: ac.verify,
+          worktreePath,
+          logBaseDir,
+          timeoutMs: stretched,
+        }));
+      }
+
       verifyResults.push({
         acId: ac.id,
         command: ac.verify,
@@ -366,7 +415,18 @@ export async function runMergeGate(
   // Verify command failures
   for (const vr of verifyResults) {
     if (vr.exitCode !== null && vr.exitCode !== 0) {
-      reasons.push(`verify_failed:${vr.acId}(exit=${vr.exitCode})`);
+      // **時間切れは他の失敗と区別する**（task-0071）。テストが落ちたのか、
+      // 待ち切れなかったのかで、次にやることが違う——番頭が読んで判断できるように、
+      // 「何分まで延ばして駄目だったのか」まで理由に入れる（I2）
+      if (vr.exitCode === VERIFY_TIMEOUT_EXIT) {
+        const waited = Math.round((stretchedTo > 0 ? stretchedTo : verifyTimeoutMs) / 60_000);
+        reasons.push(
+          `verify_timeout:${vr.acId}(${waited}分待っても終わらず` +
+            `${stretchedTo > 0 ? "・延長済み" : ""}）`
+        );
+      } else {
+        reasons.push(`verify_failed:${vr.acId}(exit=${vr.exitCode})`);
+      }
     }
     if (vr.logDirPath !== undefined) {
       logPaths.push(vr.logDirPath);

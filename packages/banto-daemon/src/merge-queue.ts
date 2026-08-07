@@ -199,10 +199,12 @@ export interface MergeProcessorOptions {
    */
   mainline?: string;
   /**
-   * Timeout for verify commands in the merge gate (ms).
-   * Default: 60_000
+   * 検証コマンドの制限時間（ms）を、プロジェクトごとに解く（task-0071）。
+   *
+   * **タスクごとに違いうる**（層B設定はリポジトリの `meta/config.yaml`）ので、
+   * 固定値ではなく引く形にしてある。省略時はゲート側の既定。
    */
-  verifyTimeoutMs?: number;
+  getVerifyTimeoutMs?: (projectTag: string) => number | undefined;
   /**
    * Hook called when rebase fails (conflict). Story 6 hooks in here to
    * auto-file a conflict-resolution task and pause the origin task.
@@ -380,13 +382,14 @@ export async function processMergeQueue(
     return false;
   }
 
+  const verifyTimeoutMs = opts.getVerifyTimeoutMs?.(projectTag);
   const gateResult = await runMergeGate(log, updatedTask, {
     dataDir: opts.dataDir,
     repoPath,
     base: mainline,
     branch: taskBranch,
     worktreePath,
-    verifyTimeoutMs: opts.verifyTimeoutMs,
+    ...(verifyTimeoutMs !== undefined ? { verifyTimeoutMs } : {}),
   });
 
   if (!gateResult.passed) {

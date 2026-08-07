@@ -54,8 +54,27 @@ export interface ProjectConfig {
     maxModelTier?: "fast" | "standard" | "reasoning";
     /** 同時に動かせる職人の数。省略時は Kobo の既定（5）。 */
     maxConcurrentSessions?: number;
+    /**
+     * マージ前ゲートの検証コマンド1本あたりの制限時間（分。task-0071）。
+     *
+     * 省略時 `DEFAULT_VERIFY_TIMEOUT_MINUTES`、上限 `MAX_VERIFY_TIMEOUT_MINUTES`。
+     * **検証コマンドはテスト一式そのもの**なので、分の単位で要る——同じことを
+     * 検証環境側は 2026-08-01 に裁定済み（spec-environment §5.1：既定10分・上限60分。
+     * 「既定30秒では npm test が途中で切れていた」）。ゲート側だけ 60 秒のままだった。
+     */
+    verifyTimeoutMinutes?: number;
   };
 }
+
+/**
+ * マージ前ゲートの検証コマンドの制限時間（task-0071）。
+ *
+ * **数字は spec-environment §5.1 と揃える。** 同じ問い（テスト一式を何分待つか）に
+ * 2つの答えを作らない。上限があるのは、待つ長さは外に残るものではないが、
+ * マージキューは直列なので1本が居座ると後ろが全部止まるため。
+ */
+export const DEFAULT_VERIFY_TIMEOUT_MINUTES = 10;
+export const MAX_VERIFY_TIMEOUT_MINUTES = 60;
 
 const EMPTY_CONFIG: ProjectConfig = { review: { poRequiredPaths: [] }, limits: {} };
 
@@ -102,11 +121,31 @@ export function loadProjectConfig(repoPath: string): ProjectConfig {
     }
   }
 
+  const rawVerify = limits["verify_timeout_minutes"];
+  let verifyMinutes: number | undefined;
+  if (rawVerify !== undefined) {
+    verifyMinutes = typeof rawVerify === "number" ? rawVerify : Number(String(rawVerify));
+    if (!Number.isFinite(verifyMinutes) || verifyMinutes <= 0) {
+      throw new Error(
+        `${PROJECT_CONFIG_PATH}: limits.verify_timeout_minutes は正の数で書いてください（got "${String(rawVerify)}"）`
+      );
+    }
+    // I2: 上限を超える指定は黙って丸めず断る。丸めると「30分待つ設定にした」と
+    //     思い込んだまま、実際は上限で切られていることに気づけない
+    if (verifyMinutes > MAX_VERIFY_TIMEOUT_MINUTES) {
+      throw new Error(
+        `${PROJECT_CONFIG_PATH}: limits.verify_timeout_minutes の上限は ${MAX_VERIFY_TIMEOUT_MINUTES} 分です（got ${verifyMinutes}）。` +
+          "これ以上かかる検証は、マージキューが直列なので後ろを全部止めます——検証を分けることを考えてください"
+      );
+    }
+  }
+
   return {
     review: { poRequiredPaths: Array.isArray(rawPaths) ? rawPaths.map(String) : [] },
     limits: {
       ...(tier !== undefined ? { maxModelTier: tier as ProjectConfig["limits"]["maxModelTier"] } : {}),
       ...(concurrent !== undefined ? { maxConcurrentSessions: concurrent } : {}),
+      ...(verifyMinutes !== undefined ? { verifyTimeoutMinutes: verifyMinutes } : {}),
     },
   };
 }

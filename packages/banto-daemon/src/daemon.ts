@@ -2336,6 +2336,19 @@ export class Daemon {
         const proj = this.registry.list().find((p) => p.id === projectTag);
         return proj?.repoPath;
       },
+      // task-0071: 検証コマンドの制限時間は層B設定（`meta/config.yaml`）。
+      // 読めなければゲートの既定に任せる——1つの設定でマージキュー全体を止めない（I2）
+      getVerifyTimeoutMs: (projectTag: string) => {
+        try {
+          const minutes = this.projectConfig(projectTag).limits.verifyTimeoutMinutes;
+          return typeof minutes === "number" ? minutes * 60_000 : undefined;
+        } catch (err) {
+          process.stderr.write(
+            `[banto-daemon] ${projectTag} の層B設定を読めません: ${String(err)}\n`
+          );
+          return undefined;
+        }
+      },
       getAllTasks: () => {
         // Refresh state before reading tasks so we get the latest derived state.
         this.refreshState();

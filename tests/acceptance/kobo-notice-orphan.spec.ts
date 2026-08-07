@@ -206,6 +206,53 @@ describe("[task-0070] ファイルから取り込んだタスクの知らせも�
     }
   });
 
+  /**
+   * task-0071: **止まり方によって、次にやることが違う。** 一番違うのが時間切れ——
+   * テストが落ちたのではなく待ち切れなかったので、「直して積み直せ」とだけ言うと、
+   * 番頭は落ちてもいないテストを直そうとする。
+   */
+  it("時間切れで止まったときは、時間切れ向けの手を示す", async () => {
+    const h = await harness();
+    const delivered: string[] = [];
+    let stop: (() => void) | undefined;
+    try {
+      h.writeTask("task-0104");
+      await until(() => h.daemon.getTask(h.proj, "task-0104") !== undefined);
+
+      stop = startKoboNotices({
+        tools: h.tools,
+        notify: async (message) => {
+          delivered.push(message);
+        },
+        cursorPath: path.join(h.tmpDir, "kobo-cursor.json"),
+        intervalMs: 100,
+        log: () => undefined,
+      });
+
+      await until(() => h.daemon.getTask(h.proj, "task-0104")?.status === "ready");
+      h.daemon.transition(
+        h.proj,
+        "task-0104",
+        "failed",
+        "merge_gate_failed: verify_timeout:a3(20分待っても終わらず・延長済み）"
+      );
+
+      await until(() => delivered.some((m) => /止まりました/.test(m)));
+      const notice = delivered.find((m) => /止まりました/.test(m))!;
+      assert.match(
+        notice,
+        /テストが落ちたのではなく/,
+        "時間切れをテストの失敗と読ませない"
+      );
+      assert.match(notice, /verify_timeout_minutes/, "延ばす手が名指しで書いてある");
+      assert.match(notice, /直列/, "長い1本が後ろを止めることが書いてある");
+      assert.match(notice, /D9/, "自分で決めてよいことが書いてある");
+    } finally {
+      stop?.();
+      await teardown(h);
+    }
+  });
+
   it("番頭が積んだものは、いままでどおり積んだスレッドへ返る（取り違えない）", async () => {
     const h = await harness();
     const delivered: Array<{ message: string; threadId?: string }> = [];
