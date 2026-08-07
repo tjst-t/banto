@@ -20,6 +20,8 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
 import type { ImageContent } from "@mariozechner/pi-ai";
 
+import type { Inbox } from "./inbox.js";
+import { THEME_URL_BASE, type UserThemes } from "./user-themes.js";
 import type { CanvasCatalog } from "./canvas.js";
 import { CORE_ORIGIN, type ModuleRegistry } from "./module.js";
 import { CORE_TOOL_BASE_URL, createCoreToolHandler, createModuleToolHandler } from "./module-serve.js";
@@ -158,6 +160,16 @@ export interface BantoHostServerOptions {
    */
   coreTools?: readonly NamespacedToolDefinition[];
   /**
+   * 取次（受け口）。渡すと上段の札と面が動き、番頭は `inbox.*` で積める。
+   * 渡さないと画面は取次を出さない（空ではなく、無い）。
+   */
+  inbox?: Inbox;
+  /**
+   * 持ち込みのテーマ置き場（spec-design §6.4）。渡すと `/api/themes` で台帳を、
+   * `/api/themes/<name>.css` で中身を配る。作り直さずにテーマを足せる。
+   */
+  userThemes?: UserThemes;
+  /**
    * 待ち受けるアドレス（既定 `127.0.0.1`）。
    *
    * **Banto は認証を持たない**（決定40）。守るのは前段（Caddy 等）の役目という裁定だが、
@@ -203,6 +215,8 @@ export class BantoHostServer {
   private readonly threads: ThreadRegistry;
   private readonly catalog: CanvasCatalog | undefined;
   private readonly modules: ModuleRegistry | undefined;
+  /** 取次。会話に紐づかない唯一の状態（POを待たせているもの）。 */
+  private readonly inbox: Inbox | undefined;
   private readonly clients = new Set<WebSocket>();
   private readonly unsubscribeThreads: () => void;
   /** 現在のモデル情報。画像添付の可否判定に使う。切替で入れ替わる。 */
@@ -241,6 +255,12 @@ export class BantoHostServer {
     this.threads = options.threads;
     this.catalog = options.catalog;
     this.modules = options.modules;
+    this.inbox = options.inbox;
+    // 積まれた／答えが出たら全員へ配り直す（D3：真実は Inbox 側の一箇所）
+    if (this.inbox) {
+      const inbox = this.inbox;
+      inbox.onChange(() => this.broadcast({ type: "inbox_state", items: inbox.list() }));
+    }
     this.modelInfo = options.model;
     this.modelProvider = options.modelProvider;
     this.selectModel = options.onSelectModel;
@@ -309,6 +329,25 @@ export class BantoHostServer {
           const body = JSON.stringify({ ok: true });
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(body);
+          return;
+        }
+        // 持ち込みのテーマ。台帳と CSS を配るだけで、解釈は画面側（D5）
+        if (req.method === "GET" && req.url === "/api/themes") {
+          const body = JSON.stringify(options.userThemes?.manifest() ?? { families: [] });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(body);
+          return;
+        }
+        if (req.method === "GET" && req.url?.startsWith(THEME_URL_BASE)) {
+          const name = decodeURIComponent(req.url.slice(THEME_URL_BASE.length).split("?")[0] ?? "");
+          const css = options.userThemes?.css(name);
+          if (css === undefined) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "not found" }));
+            return;
+          }
+          res.writeHead(200, { "Content-Type": "text/css; charset=utf-8" });
+          res.end(css);
           return;
         }
         if (req.method === "GET" && req.url === "/api/model") {
@@ -482,6 +521,9 @@ export class BantoHostServer {
     // 全部畳まれていることはありうる（どの会話も畳めるため）。空状態を隠さない
     const defaultThread = threads.find((t) => t.isDefault);
 
+    // 取次は会話に紐づかないので、welcome とは別に1通で配る
+    if (this.inbox) this.send(ws, { type: "inbox_state", items: this.inbox.list() });
+
     this.send(ws, {
       type: "welcome",
       // スレッドを知らないクライアントとの互換。扱えるクライアントは threads を見る
@@ -603,6 +645,12 @@ export class BantoHostServer {
     } catch (err) {
       // I2: 知らないIDを既定へ黙って落とさない——別の会話に発話が紛れ込む
       this.send(ws, { type: "error", message: String(err) });
+      return;
+    }
+
+    // ── 取次。**会話に紐づかない**ので、スレッドの解決より先に捌く ──────────
+    if (message?.type === "inbox_answer" || message?.type === "inbox_open") {
+      await this.handleInbox(ws, message, thread);
       return;
     }
 
@@ -976,6 +1024,66 @@ export class BantoHostServer {
 
   private send(ws: WebSocket, event: ServerEvent): void {
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(event));
+  }
+
+  /**
+   * 取次の一通を開く／答える。
+   *
+   * **会話と面を同時に動かす**のが取次の要点なので、両方ここで動かす——画面が2回に
+   * 分けて操作すると、片方だけ動いた状態が一瞬見える。
+   *
+   * 答えたことは**番頭にも伝える**（会話へ知らせを差し込む）。伝えないと、番頭は
+   * 自分が積んだ判断がまだ待っていると思い込んで、同じことをもう一度訊いてくる。
+   */
+  private async handleInbox(
+    ws: WebSocket,
+    message: { type: "inbox_answer" | "inbox_open"; itemId: string; actionId?: string },
+    fallbackThread: Thread
+  ): Promise<void> {
+    if (!this.inbox) {
+      this.send(ws, { type: "error", message: "このホストは取次を持っていません" });
+      return;
+    }
+    const item = this.inbox.get(message.itemId);
+    // I2: 知らない id を黙って捨てない
+    if (!item) {
+      this.send(ws, { type: "error", message: `取次に "${message.itemId}" という一通はありません` });
+      return;
+    }
+
+    // 開く先。会話が指定されていればそこへ、面が指定されていればその会話のキャンバスへ
+    const target = item.opens?.threadId ? this.threads.get(item.opens.threadId) : undefined;
+    const thread = target ?? fallbackThread;
+    if (item.opens?.canvas) {
+      try {
+        thread.canvas?.open(
+          item.opens.canvas.kind,
+          item.opens.canvas.params ?? {},
+          item.opens.canvas.title
+        );
+      } catch (err) {
+        // I2: 面が開けなかったことは伝える。ただし答えそのものは通す
+        this.send(ws, { type: "error", message: `面を開けません: ${String(err)}` });
+      }
+    }
+
+    if (message.type === "inbox_open") return;
+
+    try {
+      const answered = this.inbox.resolve(item.id, message.actionId ?? "");
+      const label = answered.actions.find((a) => a.id === answered.resolution)?.label ?? answered.resolution;
+      // 番頭へ。**POが決めたという事実**だけを渡し、解釈は番頭に任せる（D5）
+      this.broadcast({
+        type: "notice",
+        threadId: thread.id,
+        source: "system",
+        text:
+          `取次「${answered.title}」に PO が答えました：**${label}**\n` +
+          `（求めていた判断：${answered.ask}）`,
+      });
+    } catch (err) {
+      this.send(ws, { type: "error", message: String(err) });
+    }
   }
 
   private broadcast(event: ServerEvent): void {

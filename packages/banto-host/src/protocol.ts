@@ -147,7 +147,30 @@ export interface ThreadRenameMessage {
   title: string;
 }
 
+/**
+ * 取次の一通に答える（spec-design §0④）。
+ *
+ * **答えは番頭にも伝わる**——POが画面のボタンで決めたことを番頭が知らないと、
+ * 同じことをもう一度訊いてくる。ホストが会話へ知らせを差し込む。
+ */
+export interface InboxAnswerMessage {
+  type: "inbox_answer";
+  itemId: string;
+  actionId: string;
+}
+
+/**
+ * 取次の一通を開く。**会話と面が同時に動く**のが取次の要点なので、
+ * どちらもホスト側で動かす（画面が2回に分けて操作すると、片方だけ動いた状態が見える）。
+ */
+export interface InboxOpenMessage {
+  type: "inbox_open";
+  itemId: string;
+}
+
 export type ClientMessage =
+  | InboxAnswerMessage
+  | InboxOpenMessage
   | PromptMessage
   | AbortMessage
   | CanvasSwitchMessage
@@ -460,6 +483,39 @@ export interface ContextStateEvent extends ThreadScope {
   tokens: number;
 }
 
+/** 取次の一通（画面へ配る形）。三部構成は spec-ui §3。 */
+export interface InboxItemView {
+  id: string;
+  source: { id: string; label: string };
+  kind: string;
+  rule?: string;
+  title: string;
+  why?: string;
+  what: string;
+  ask: string;
+  actions: Array<{ id: string; label: string; tone?: "call" | "plain" | "quiet" }>;
+  opens?: {
+    threadId?: string;
+    canvas?: { kind: string; params?: Record<string, unknown>; title?: string };
+  };
+  blocking?: number;
+  createdAt: string;
+  resolvedAt?: string;
+  resolution?: string;
+}
+
+/**
+ * 取次の中身。接続直後と、積まれた／答えが出たたびに配る。
+ *
+ * **会話に紐づかない**（ThreadScope を継がない）——どの会話を見ていても、
+ * POを待たせているものは同じ1つの列にある。
+ * D3: 件数や滞留時間は `createdAt` から導出できるので載せない。
+ */
+export interface InboxStateEvent {
+  type: "inbox_state";
+  items: InboxItemView[];
+}
+
 /** プロトコル違反・処理不能。I2: 黙って捨てずクライアントへ返す。 */
 export interface ErrorEvent {
   type: "error";
@@ -467,6 +523,7 @@ export interface ErrorEvent {
 }
 
 export type ServerEvent =
+  | InboxStateEvent
   | WelcomeEvent
   | ThreadStateEvent
   | HistoryEvent

@@ -47,6 +47,9 @@ import { startKoboNotices } from "./kobo-notice.js";
 
 import { Canvas, createCanvasCatalog } from "./canvas.js";
 import { createCanvasTools } from "./canvas-tools.js";
+import { Inbox } from "./inbox.js";
+import { createInboxTools } from "./inbox-tools.js";
+import { UserThemes } from "./user-themes.js";
 import { createBantoHostSession } from "./host-session.js";
 import { resumeInterruptedTurn, withEmptyResponseGuard } from "./turn-guard.js";
 import { BantoHostClient } from "./client.js";
@@ -769,6 +772,15 @@ async function serve(options: ServeOptions): Promise<void> {
   const catalog = createCanvasCatalog(modules.views());
 
   /**
+   * 取次（受け口）。**会話に紐づかない**——どの会話を見ていても、POを待たせている
+   * ものは同じ1つの列にある。記録は追記だけのイベントログで、起動時に読み直す。
+   */
+  const inbox = new Inbox(path.join(dataDir(), "inbox.jsonl"));
+
+  /** 持ち込みのテーマ。置くだけで足せる（作り直しが要らない）。 */
+  const userThemes = new UserThemes(path.join(dataDir(), "themes"));
+
+  /**
    * モデルの出どころは**「番頭の標準」ひとつだけ**（PO裁定 2026-08-04）。
    *
    * 以前は起動時の指定（`--model` / `BANTO_MODEL` / 設定ファイル）が標準より優先していた。
@@ -826,6 +838,8 @@ async function serve(options: ServeOptions): Promise<void> {
     // モジュールではない。番頭は常にこれらを持つ。
     const ownTools = [
       ...createCanvasTools(canvas, catalog),
+      // 取次は会話に紐づかないが、積むのは会話の中の番頭なので Tool は各会話に配る
+      ...createInboxTools(inbox),
       ...llmTools,
       ...createThreadTools({
         threads,
@@ -1069,6 +1083,8 @@ async function serve(options: ServeOptions): Promise<void> {
 
   server = await BantoHostServer.start({
     threads,
+    inbox,
+    userThemes,
     port: settings.all().network?.port ?? options.port,
     catalog,
     modules,
