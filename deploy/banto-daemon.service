@@ -1,41 +1,55 @@
+# Kobo（統治基盤）を常駐させる。番頭ホスト（banto.service）と同じ checkout から動かす。
+#
+# **既定では 127.0.0.1 しか待ち受けない**（決定40・task-0061）。この口は認証を持たず、
+# 状態遷移も監査判定も受ける——外に出すなら前段（Caddy 等）で守ること。
+#
+# 前提:
+#   - ubuntu ユーザの ghq チェックアウトで npm install を済ませてある
+#   - /var/lib/banto/data を ubuntu が読み書きできる
+
 [Unit]
-Description=banto daemon — HTTP API + WebSocket orchestration server
+Description=banto daemon (Kobo) — 統治基盤
 Documentation=https://github.com/tjst-t/banto
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=banto
-Group=banto
-WorkingDirectory=/opt/banto/current
-ExecStart=/usr/bin/node --import tsx packages/banto-daemon/src/index.ts
-Restart=on-failure
-RestartSec=5s
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/ghq/github.com/tjst-t/banto
 
-# Configuration via environment variables
-# BANTO_PORT defaults to 3000
+Environment=NODE_ENV=production
 Environment=BANTO_PORT=3000
-# BANTO_DATA_DIR defaults to ./data
 Environment=BANTO_DATA_DIR=/var/lib/banto/data
-
-# 待ち受けアドレス（決定40・task-0061）。**既定は 127.0.0.1**——この口は認証を持たず、
-# 状態遷移も監査判定も受ける。広げるなら前段（Caddy 等）で守ること。
-#   Environment=BANTO_DAEMON_BIND=0.0.0.0   # 広げるときだけ。起動ログに警告が出る
+# 待ち受けは既定（127.0.0.1）のまま。広げるときだけ次を足す（起動ログに警告が出る）
+#   Environment=BANTO_DAEMON_BIND=0.0.0.0
 
 # 能力はモジュールから借りる（ADR-0013 決定60）。Kobo は職人も検証環境も自分で持たず、
 # それぞれの到達先を1つ知っているだけでよい（決定27b：呼び出しは当事者間で直接）。
-#   BANTO_WORKER_POOL_URL 既定 http://127.0.0.1:4100/api/worker-pool
-#     ——Worker Pool はいまのところ番頭ホスト（banto.service）に同居している。
-#       独立サービスにするまでは、Kobo は banto.service が動いていないと職人を起こせない
-#   BANTO_ENV_POOL_URL    既定 http://127.0.0.1:4400/api/environment-pool（別ユニット）
+#
+# **いまは番頭ホスト（:4100）の口を指す。** 独立サービス（banto-worker-pool /
+# banto-environment-pool）も用意してあるが、**番頭ホストがまだ自分の中に両方を作る**ため、
+# そちらへ向けると台帳が2つに割れる（inc-0027 と同じ形）。番頭ホストが独立サービスの
+# 利用者になったら、この2行を 4300 / 4400 へ差し替える。
+Environment=BANTO_WORKER_POOL_URL=http://127.0.0.1:4100/api/worker-pool
+Environment=BANTO_ENV_POOL_URL=http://127.0.0.1:4100/api/environment-pool
 
-# Graceful shutdown: systemd sends SIGTERM, daemon handles it
+ExecStart=/usr/local/bin/node --import tsx packages/banto-daemon/src/index.ts
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# **KillMode は control-group にしない。** 職人は Worker Pool 側の子プロセスなので
+# Kobo の巻き添えでは畳まないが、Kobo 自身の後始末（イベントログの書き切り）に猶予がいる
+KillMode=mixed
 TimeoutStopSec=30
 
-# Security hardening (local server, no internet exposure)
-NoNewPrivileges=yes
-ProtectSystem=strict
-ReadWritePaths=/var/lib/banto
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/banto /home/ubuntu/ghq /home/ubuntu/worktrees
 
 [Install]
 WantedBy=multi-user.target

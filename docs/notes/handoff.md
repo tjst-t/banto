@@ -706,3 +706,41 @@ UI の経路（ブラウザ→ホスト→Kobo）も実物で確認済み。
   相乗りさせると2つの流れが1本の口に混ざる。**見て判断する面が8秒遅れて困ることは無い**
 - **取次（inbox）への接続は番頭自身の runtime の仕事**のまま（取次の実装は PO の作業ツリー）
 - `spec-daemon-core` の §5〜§7 と `spec-ui` §1 は未改訂（ADR-0013 の帰結表のまま）
+
+---
+
+## 実機へ適用した（2026-08-07）
+
+PO 裁定「常駐まで（systemd に3ユニット追加）／loamium を積んで」。**Kobo を常駐させ、
+番頭ホストを新しいコードで起動し直した。**
+
+### いま動いているもの
+
+| | 状態 |
+|---|---|
+| 番頭ホスト（`banto.service`） | 0.0.0.0:4100。**再起動して今回のコードを読み込んだ**（`kobo.*` Tool・ボード・レビュー面・工場の知らせ） |
+| Kobo（`banto-daemon.service`） | **127.0.0.1:3000 で常駐**（enable 済み）。データは `/var/lib/banto/data` |
+| Environment Pool / Worker Pool（独立） | **ユニットは入れたが起動していない**（下記の理由） |
+| 受け持ち | **loamium**（`/home/ubuntu/ghq/github.com/tjst-t/loamium`）を登録 |
+
+確認したこと：番頭の起動ログに `kobo(/api/kobo)` と `kobo.board / kobo.review` が並ぶ・
+`kobo: 応答あり`・**書き込み禁止の置き場に `/var/lib/banto/data` が入った**（決定63）・
+UI の経路（ブラウザ→ホスト→Kobo）で `kobo.projects` / `kobo.list` / `kobo.enqueue` が通る。
+
+### 独立サービス2つを**起動しなかった**理由
+
+**番頭ホストはいまも自分の中に Worker Pool と Environment Pool を作る**（`bin.ts:558,640`）。
+独立サービスを立てて Kobo をそちらへ向けると、**番頭と Kobo で台帳が2つに割れる**
+——task-0060 で潰した inc-0027 の形に戻る（Kobo の職人が番頭の `worker.list` に出ない）。
+
+そこで **Kobo は番頭ホストの口を向けてある**（`BANTO_WORKER_POOL_URL` /
+`BANTO_ENV_POOL_URL` は :4100）。台帳は1つのまま。崩れているのは決定27b の依存の向きだけで、
+**番頭ホストが落ちると Kobo が職人を起こせない**。これを直すのが **task-0066**（起票済み）。
+
+### 使い始める前に要るもの（PO の操作）
+
+1. **loamium に `work/tasks/` が無い。** 番頭が `file.write` で書けば作られる
+2. **loamium は書き込みが許されていない。** 番頭が場所の許可を求めてくるので、
+   `work/**` を許すと積めるようになる（`place-grants.json` は banto と desk のみ）
+3. **触れる環境（Phase 3）は loamium の `meta/environments.yaml` 次第。** 既にファイルはある
+   （未コミット）ので、`config.port` を持つプロファイルがあれば公開URLが札に載る

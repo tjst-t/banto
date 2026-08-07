@@ -14,6 +14,10 @@
 #   - /var/lib/banto-environment-pool を ubuntu が読み書きできる
 #   - credentials 付きプロファイルを使うなら SOPS_AGE_KEY_FILE の鍵が読める
 
+#
+# **いまは起動しない（2026-08-07）。** 番頭ホストがまだ自分の中に Environment Pool を作るため、
+# こちらを立てて Kobo を向けると**環境の台帳が2つに割れる**（inc-0027 と同じ形）。
+# 番頭ホストが独立サービスの利用者になったら enable する。
 [Unit]
 Description=banto environment pool — 検証環境の台帳と実行
 Documentation=https://github.com/tjst-t/banto
