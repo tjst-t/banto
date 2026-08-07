@@ -91,3 +91,8 @@
   .kb-history li { grid-template-columns: 4.5em 1fr; }
   .kb-history-type { display: none; }
 }
+
+/* 受け持たせる面。**入力は縦に積む**——狭い画面で横に並べると、入れる欄が潰れる */
+.kb-field { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; }
+.kb-field > span { font-size: var(--t-meta); color: var(--sumi-2); }
+.kb-known { font-size: var(--t-note); color: var(--sumi-3); margin: 8px 0 0; }

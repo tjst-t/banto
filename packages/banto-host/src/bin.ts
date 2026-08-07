@@ -896,6 +896,11 @@ async function serve(options: ServeOptions): Promise<void> {
         if (tool.name === "kobo.enqueue") {
           return bindToolArgs(tool, { origin: threadOrigin(threadId) });
         }
+        // 決定36g：**番頭が任意のパスを渡せる口は砦に通す。** 受け持たせるリポジトリも同じ
+        // ——登録すると工場がそこで職人を動かし、ブランチを切ってマージする
+        if (tool.name === "kobo.register_project") {
+          return guardPathArg(tool, places, "repoPath");
+        }
         return tool;
       }),
     ];

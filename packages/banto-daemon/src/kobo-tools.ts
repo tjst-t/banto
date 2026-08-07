@@ -218,12 +218,66 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     },
   });
 
+  const registerProject = defineNamespacedTool({
+    name: "kobo.register_project",
+    label: "Kobo: Register Project",
+    description:
+      "リポジトリを工場に受け持たせる（統治単位の登録）。**最初に1回だけ**——以後そのリポジトリの" +
+      "仕事は積む→ゲート→職人→監査→レビュー→マージの流れに乗る。" +
+      "**id は後から変えられない**（帳簿のイベントが全部この名前で残る）ので、短く安定した名前にすること。" +
+      "載せる前の確認事項と最初の1本の通し方は SKILL kobo-onboarding にある。",
+    parameters: Type.Object({
+      projectTag: Type.String({
+        description: "統治単位の名前（短く・安定したもの。例: loamium）。後から変えられない",
+      }),
+      repoPath: Type.String({ description: "リポジトリの絶対パス（登録された場所の中であること）" }),
+    }),
+    async execute(params) {
+      const known = daemon.listProjects().find((p) => p.id === params.projectTag);
+      // I2: 既にあるものを黙って上書きしない（置き場所だけ差し替わると帳簿と実体がずれる）
+      if (known) {
+        if (path.resolve(known.repoPath) === path.resolve(params.repoPath)) {
+          return {
+            content: [
+              { type: "text" as const, text: `${params.projectTag} は既に受け持っています（${known.repoPath}）` },
+            ],
+            details: { projectTag: known.id, repoPath: known.repoPath, alreadyRegistered: true },
+          };
+        }
+        throw new Error(
+          `${params.projectTag} は既に別の場所で登録されています（${known.repoPath}）。` +
+            "id は後から変えられません——別の名前を使ってください"
+        );
+      }
+      // I2: 無い場所を受け持たせない。watcher が黙って何も見つけない状態になる
+      if (!fs.existsSync(path.join(params.repoPath, ".git"))) {
+        throw new Error(
+          `${params.repoPath} は Git リポジトリに見えません（.git がありません）。` +
+            "工場はブランチを切ってマージするので、Git リポジトリであることが要ります"
+        );
+      }
+      const entry = daemon.registerProject(params.projectTag, params.repoPath);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `受け持ちました: ${entry.id}（${entry.repoPath}）。\n` +
+              "次は work/tasks/ にタスク定義を書いて kobo.enqueue で積みます（SKILL kobo-onboarding）。",
+          },
+        ],
+        details: { projectTag: entry.id, repoPath: entry.repoPath, alreadyRegistered: false },
+      };
+    },
+  });
+
   const projects = defineNamespacedTool({
     name: "kobo.projects",
     label: "Kobo: Projects",
     description:
       "工場が受け持っているプロジェクト（統治単位）の一覧。タスクを積む前に、" +
-      "そのリポジトリが登録されているかを確かめるのに使う。",
+      "そのリポジトリが登録されているかを確かめるのに使う。" +
+      "載っていなければ kobo.register_project で受け持たせる。",
     parameters: Type.Object({}),
     async execute() {
       const rows = daemon.listProjects();
@@ -353,7 +407,7 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     },
   });
 
-  return [enqueue, list, task, projects, events, approve, supersede];
+  return [enqueue, list, task, projects, events, approve, supersede, registerProject];
 }
 
 /**

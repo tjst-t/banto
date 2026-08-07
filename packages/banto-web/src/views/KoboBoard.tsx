@@ -12,18 +12,21 @@
 
 import { useEffect, useMemo, useState } from "react";
 import "./kobo.css";
-import { useModuleTool } from "./useModuleTool.js";
+import { callModuleTool, useModuleTool } from "./useModuleTool.js";
 import type { CanvasViewProps } from "./registry.js";
 import {
   Badge,
+  Button,
   Card,
   EmptyState,
   ErrorNote,
   Loading,
   MetaList,
+  Modal,
   Scroll,
   SearchField,
   SplitView,
+  TextInput,
   ViewBar,
   ViewShell,
   formatRelative,
@@ -43,6 +46,11 @@ interface HistoryRow {
   type: string;
   at: string;
   detail: string;
+}
+
+interface ProjectRow {
+  id: string;
+  repoPath: string;
 }
 
 interface TaskDetail {
@@ -98,6 +106,7 @@ export function KoboBoard({ params, endpoint }: CanvasViewProps): React.ReactEle
     initialProject && initialTask ? { projectTag: initialProject, taskId: initialTask } : undefined
   );
   const [query, setQuery] = useState("");
+  const [registering, setRegistering] = useState(false);
   useTicker(15_000);
 
   // 終わったものも含めて全部引く。ボードは「何が終わったか」も読む場所（決定62e）
@@ -106,6 +115,8 @@ export function KoboBoard({ params, endpoint }: CanvasViewProps): React.ReactEle
     limit: 100,
     ...(initialProject ? { projectTag: initialProject } : {}),
   });
+  // 受け持ち（統治単位）。**空なら、まずここから**——タスクを積む先が無い状態
+  const projects = useModuleTool<{ projects: ProjectRow[] }>(endpoint, "kobo.projects", {});
   const detail = useModuleTool<TaskDetail>(
     endpoint,
     "kobo.task",
@@ -143,6 +154,12 @@ export function KoboBoard({ params, endpoint }: CanvasViewProps): React.ReactEle
       <ViewBar>
         <SearchField value={query} onChange={setQuery} placeholder="タスクを絞る" />
         <Badge tone="neutral">{tasks.length} 件</Badge>
+        <Badge tone="neutral">
+          受け持ち {projects.data?.projects.length ?? 0}
+        </Badge>
+        <Button small variant="ghost" onClick={() => setRegistering(true)}>
+          ＋ 受け持たせる
+        </Button>
       </ViewBar>
       {list.loading && !list.data ? (
         <Loading label="工場に聞いています…" />
@@ -152,9 +169,25 @@ export function KoboBoard({ params, endpoint }: CanvasViewProps): React.ReactEle
           {list.error}（banto-daemon が動いているか確かめてください）
         </ErrorNote>
       ) : tasks.length === 0 ? (
-        <EmptyState icon="inbox" title="タスクがありません">
-          番頭に仕事を頼むと、ここに並びます。
-        </EmptyState>
+        (projects.data?.projects.length ?? 0) === 0 ? (
+          // **受け持ちが無いと、積む先が無い。** 最初にやることをここで言う
+          <EmptyState
+            icon="repo"
+            title="受け持っているリポジトリがありません"
+            action={
+              <Button variant="primary" onClick={() => setRegistering(true)}>
+                受け持たせる
+              </Button>
+            }
+          >
+            工場はリポジトリ単位で受け持ちます。登録すると、そのリポジトリの仕事が
+            「積む→ゲート→職人→監査→レビュー→マージ」の流れに乗ります。
+          </EmptyState>
+        ) : (
+          <EmptyState icon="inbox" title="タスクがありません">
+            番頭に仕事を頼むと、ここに並びます。
+          </EmptyState>
+        )
       ) : (
         <Scroll className="kb-board">
           {columns.map((column) => (
@@ -193,6 +226,19 @@ export function KoboBoard({ params, endpoint }: CanvasViewProps): React.ReactEle
       )}
     </ViewShell>
   );
+
+  const registerPane = registering ? (
+    <RegisterProject
+      endpoint={endpoint}
+      known={projects.data?.projects ?? []}
+      onClose={() => setRegistering(false)}
+      onDone={() => {
+        setRegistering(false);
+        projects.reload();
+        list.reload();
+      }}
+    />
+  ) : null;
 
   const task = detail.data?.task as Record<string, unknown> | undefined;
   const scope = (task?.["scope"] as { paths?: string[] } | undefined)?.paths ?? [];
@@ -268,13 +314,105 @@ export function KoboBoard({ params, endpoint }: CanvasViewProps): React.ReactEle
   );
 
   return (
-    <SplitView
-      size="lg"
-      list={board}
-      detail={detailPane}
-      showDetail={selected !== undefined}
-      onBack={() => setSelected(undefined)}
-      backLabel="ボードへ"
-    />
+    <>
+      {registerPane}
+      <SplitView
+        size="lg"
+        list={board}
+        detail={detailPane}
+        showDetail={selected !== undefined}
+        onBack={() => setSelected(undefined)}
+        backLabel="ボードへ"
+      />
+    </>
+  );
+}
+
+/**
+ * リポジトリを受け持たせる面。
+ *
+ * **PO が自分で登録できるようにする**（決定25：人はGUI、番頭は Tool。契約は1つ）。
+ * ここから呼ぶのも番頭が呼ぶのも同じ `kobo.register_project` で、判断は工場側にある（D5）。
+ */
+function RegisterProject({
+  endpoint,
+  known,
+  onClose,
+  onDone,
+}: {
+  endpoint: string;
+  known: ProjectRow[];
+  onClose: () => void;
+  onDone: () => void;
+}): React.ReactElement {
+  const [projectTag, setProjectTag] = useState("");
+  const [repoPath, setRepoPath] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+
+  const submit = async (): Promise<void> => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await callModuleTool(endpoint, "kobo.register_project", {
+        projectTag: projectTag.trim(),
+        repoPath: repoPath.trim(),
+      });
+      onDone();
+    } catch (err) {
+      // I2: 押したのに何も起きなかったように見せない
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="リポジトリを受け持たせる"
+      onClose={onClose}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose}>
+            やめる
+          </Button>
+          <Button
+            variant="primary"
+            disabled={busy || projectTag.trim() === "" || repoPath.trim() === ""}
+            onClick={() => void submit()}
+          >
+            {busy ? "登録しています…" : "受け持たせる"}
+          </Button>
+        </>
+      }
+    >
+      <p className="kb-para">
+        登録すると、そのリポジトリの仕事は「積む→ゲート→職人→監査→レビュー→マージ」の
+        流れに乗ります。<strong>名前は後から変えられません</strong>——帳簿のイベントが
+        全部この名前で残ります。
+      </p>
+      <label className="kb-field">
+        <span>名前（統治単位）</span>
+        <TextInput
+          value={projectTag}
+          onChange={(e) => setProjectTag(e.target.value)}
+          placeholder="loamium"
+        />
+      </label>
+      <label className="kb-field">
+        <span>リポジトリの絶対パス</span>
+        <TextInput
+          value={repoPath}
+          onChange={(e) => setRepoPath(e.target.value)}
+          placeholder="/home/you/ghq/github.com/you/loamium"
+        />
+      </label>
+      {known.length > 0 && (
+        <p className="kb-known">
+          いま受け持っているもの：{known.map((p) => p.id).join(", ")}
+        </p>
+      )}
+      {error && <ErrorNote title="受け持たせられません">{error}</ErrorNote>}
+    </Modal>
   );
 }
