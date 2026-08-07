@@ -1341,10 +1341,37 @@ Kobo 4500** の並びになった。
 - 実機：Kobo を 4500 で常駐、番頭ホストから `kobo.projects` が通ること、3000番が空いたこと
 - **loamium の実測**（4分・1943件 green）
 
+### loamium/task-0003 は review-ready まで来た（実機・そのまま置いてある）
+
+```
+10:51:14  draft → queued（watcher-ingest）→ ready（gate_passed）
+10:51:45  agent_spawned → planning → implementing
+11:10:38  implementing → auditing（task/task-0002 の成果 7b16143 を cherry-pick）
+11:17:37  audit_verdict — pass → review-ready
+```
+
+**task-0001 が死んだ段（監査）を越えた。** 判断待ちの知らせも番頭のスレッド（thread-49）へ
+**実際に届いている**——task-0070 で直した「宛先が無くても捨てない」がそのまま効いた
+（ファイル取り込みなので origin は無い）。
+
+**承認はしていない。** レビューの段は `banto`（番頭が一次受け）で、知らせは番頭に届いて
+いる——**他プロダクトの main へ入れる判断は番頭か PO のもの**なので、こちらでは押さない。
+
+**ただしゲートの2条件は直接確かめてある**（押せば通る）：
+
+| ゲートの検査 | 実測 |
+|---|---|
+| スコープ違反 | 差分は `docs/ROADMAP.json` と `packages/app-tauri/src-tauri/tauri.conf.json` の2ファイル・6行。契約どおりで違反なし |
+| 検証コマンド a3 | `npm test` が exit 0 / 1943件 green / **4分**。制限時間10分に収まる |
+
+差分の中身も見た：ROADMAP の AC-1-2/1-3 を pass・S4a8d2f-1-1 を done、
+tauri.conf.json に devUrl を1行。**AC-1-1（cargo tauri build）は pending のまま**で、
+Rust ツールチェインが機械に無いことが理由として残っている（通ったことにしていない・I1）。
+
 ### 次の一手
 
-1. **loamium/task-0003 の行方を見る**（積む→ゲート→着手→監査→レビュー→マージが実機で
-   通り切るか）。**これが epic-0010 の最後の一区間**
+1. **task-0003 を通すかどうか**（番頭 or PO）。押せばマージ前ゲート→マージまで行く見込み
+   ——**これが epic-0010 の最後の一区間**
 2. inc-0032 の残りの問い：ポートを避け続けるのはいたちごっこ。**受け持つプロジェクトの検証を
    banto の常駐から隔離する**（コンテナ等）かは PO 判断
 3. inc-0031 の残りの問い：P6（同じ試験に2回パッチを当てて定着しなかったら根本原因分析）は
