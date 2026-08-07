@@ -366,7 +366,7 @@ test.describe("キャンバスの開いているGUI", () => {
 
 test.describe("設定・履歴の面", () => {
   test("開いていた区画までリロードで戻ってくる", async ({ page }) => {
-    await page.locator(".pin-tab").last().click();
+    await page.locator(".pin-tab[data-key='s']").click();
     await expect(page.locator(".sp-nav")).toBeVisible();
     expect(query(page).get("view")).toBe("settings");
 
@@ -379,7 +379,7 @@ test.describe("設定・履歴の面", () => {
   });
 
   test("戻るで設定から会話へ帰り、進むでまた設定へ", async ({ page }) => {
-    await page.locator(".pin-tab").last().click();
+    await page.locator(".pin-tab[data-key='s']").click();
     await expect(page.locator(".sp-nav")).toBeVisible();
 
     await page.goBack();
@@ -390,7 +390,7 @@ test.describe("設定・履歴の面", () => {
   });
 
   test("Esc で会話へ戻る（面は履歴に積まれているので進むで開き直せる）", async ({ page }) => {
-    await page.locator(".pin-tab").last().click();
+    await page.locator(".pin-tab[data-key='s']").click();
     await expect(page.locator(".sp-nav")).toBeVisible();
 
     await page.keyboard.press("Escape");
@@ -402,7 +402,7 @@ test.describe("設定・履歴の面", () => {
   });
 
   test("履歴の面もリロードで戻ってくる", async ({ page }) => {
-    await page.locator(".pin-tab").first().click();
+    await page.locator(".pin-tab[data-key='h']").click();
     await expect(page.locator(".history-view")).toBeVisible();
     expect(query(page).get("view")).toBe("history");
 

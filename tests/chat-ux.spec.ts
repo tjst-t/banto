@@ -386,7 +386,8 @@ test.describe("会話の切り替え", () => {
     await fillConversation(page);
     // 面を開くとチャットは作り直される。戻ったときが `initial` の出番——
     // ここが spring だと、保存された会話を復元してから最下部まで延々と滑る
-    await page.locator(".pin-tab").last().click();
+    // 設定を名指しで開く（右端の pin-tab は明暗の切替になった。位置で取ると別のものを押す）
+    await page.locator(".pin-tab[data-key='s']").click();
     await expect(page.locator(".chat-scroll")).toBeHidden();
 
     const samples = await samplePositions(page, () =>
@@ -429,7 +430,7 @@ test.describe("会話ごとの状態", () => {
   test("モデルの切替は、いま見ている会話を宛先にする", async ({ page }) => {
     await page.locator(".thread-tab", { hasText: "別の会話" }).click();
     await page.locator(".model-select-trigger").click();
-    await page.locator(".model-select-search").fill("Qwen");
+    await page.locator(".model-select-search input").fill("Qwen");
     await page.locator(".model-select-item").click();
 
     await expect
@@ -605,7 +606,7 @@ test.describe("モデル選択（AI Elements の PromptInputModelSelect）", () 
     // いま使っているものに印が付く
     await expect(page.locator(".model-select-item.is-current")).toContainText("Qwen 3.6 35B");
 
-    await page.locator(".model-select-search").fill("opus");
+    await page.locator(".model-select-search input").fill("opus");
     await expect(page.locator(".model-select-item")).toHaveCount(1);
     await page.locator(".model-select-item").click();
 
@@ -623,6 +624,236 @@ test.describe("モデル選択（AI Elements の PromptInputModelSelect）", () 
     // ホストが認めて配り直したら、そこで表示が変わる
     host.emit({ type: "model_state", provider: "anthropic", id: "claude-opus-5", vision: true });
     await expect(trigger).toHaveText(/claude-opus-5/);
+  });
+
+  /**
+   * 一覧を出しても画面がずれない（PO報告 2026-08-06）。
+   *
+   * 押した脇に開いていたころは、チャット欄が右端にあるせいで一覧が画面からはみ出し、
+   * 横スクロールが生えて**画面全体が横へずれて**いた。狭い画面ほど確実に踏むので、
+   * スマホ幅で確かめる。
+   */
+  test("一覧を出しても横スクロールが生えない（画面がずれない）", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 780 });
+    const overflow = async (): Promise<number> =>
+      page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    expect(await overflow()).toBeLessThanOrEqual(0);
+
+    await page.locator(".model-select-trigger").click();
+    await expect(page.locator(".model-select-menu")).toBeVisible();
+    expect(await overflow()).toBeLessThanOrEqual(0);
+  });
+
+  /**
+   * 絞ってから、上下と Enter で確定できる（PO要望 2026-08-06）。
+   * ⌘K・場所選び・キャンバスに開くものと同じ作法（`listNav.ts`）。
+   */
+  test("絞り込んだあと、上下と Enter で確定できる", async ({ page }) => {
+    await page.locator(".model-select-trigger").click();
+    const search = page.locator(".model-select-search input");
+    // 開いたらそのまま打ち始められる
+    await expect(search).toBeFocused();
+
+    // 何も打っていなくても先頭に当たっている（そのまま Enter で決められる）
+    await expect(page.locator(".model-select-item.is-on")).toContainText("Qwen 3.6 35B");
+
+    // 下へ動かすと当たりが移る
+    await search.press("ArrowDown");
+    await expect(page.locator(".model-select-item.is-on")).toContainText("Claude Opus 5");
+    await search.press("ArrowUp");
+    await expect(page.locator(".model-select-item.is-on")).toContainText("Qwen 3.6 35B");
+
+    // 絞ると先頭へ戻る（前の位置を覚えていると、打つたびに関係ない行が当たる）
+    await search.fill("opus");
+    await expect(page.locator(".model-select-item.is-on")).toContainText("Claude Opus 5");
+
+    await search.press("Enter");
+    await expect
+      .poll(() => host.received.find((m) => m["type"] === "set_model"))
+      .toEqual({
+        type: "set_model",
+        threadId: THREAD_ID,
+        provider: "anthropic",
+        model: "claude-opus-5",
+      });
+    // 決めたら閉じる
+    await expect(page.locator(".model-select-menu")).toHaveCount(0);
+  });
+});
+
+/**
+ * 履歴で読み返す会話は、チャット欄と同じ姿で出る（PO報告 2026-08-06）。
+ *
+ * ここだけ素の Markdown を並べ直していたので、番頭の落款も、思考も、道具の呼び出しも
+ * 出ていなかった。**同じ会話を2通りの姿で見せない**。
+ */
+/**
+ * 外に出るリンクは別のタブで開く（PO要望 2026-08-06）。
+ *
+ * Banto は開きっぱなしで使う面（会話・下書き・スクロール位置）を持っているので、
+ * 同じタブで外へ出るとそれが丸ごと消える。**同じ面の中の行き先はそのまま**——
+ * 押すたびに同じ画面が増えても困る。
+ */
+test.describe("外部リンク", () => {
+  test("番頭の応答の中の外部リンクは別タブ、面の中の行き先はそのまま", async ({ page }) => {
+    host.emit({ type: "turn_start" });
+    host.emit({
+      type: "text_delta",
+      delta: "[外](https://example.com/a) と [中](/env/1/) と [印](#見出し)",
+    });
+    host.emit({ type: "turn_end" });
+
+    const links = page.locator(".msg--banto a");
+    await expect(links).toHaveCount(3);
+    await expect(links.nth(0)).toHaveAttribute("target", "_blank");
+    await expect(links.nth(0)).toHaveAttribute("rel", /noreferrer/);
+    // 同じオリジンの行き先は別タブにしない
+    await expect(links.nth(1)).not.toHaveAttribute("target", "_blank");
+    await expect(links.nth(2)).not.toHaveAttribute("target", "_blank");
+  });
+});
+
+/**
+ * 符牒（spec-design §8.1）と ⌘K から会話へ飛んだら、そのまま話しかけられる
+ * （PO要望 2026-08-06）——キーで開いたのに、話しかけるのにマウスへ持ち替えるのでは
+ * 近道にならない。
+ */
+test.describe("キーだけで会話へ入る", () => {
+  test("f で符牒が出て、もう一度 f で消える", async ({ page }) => {
+    const html = page.locator("html");
+    await expect(html).not.toHaveClass(/is-alt/);
+
+    await page.keyboard.press("f");
+    await expect(html).toHaveClass(/is-alt/);
+
+    // 出したキーで畳める（Esc や画面のどこかを押すために指を置き直さない）
+    await page.keyboard.press("f");
+    await expect(html).not.toHaveClass(/is-alt/);
+  });
+
+  /**
+   * 札は**どの家でも器の内側**に描く（PO報告 2026-08-06）。
+   *
+   * 器の外へ吊っていたころは、密度の高い家（符牒＝上段が 52px から 44px へ詰まる）で
+   * 札の上端が画面の外へ出て切れていた。**外へ吊る限り、家ごとに切れるかどうかが変わる**
+   * ——持ち込みの家（spec-design §6.3）はこちらが高さを決められないので、位置で凌げない。
+   */
+  for (const family of ["washi", "fucho"]) {
+    test(`札が器から食み出さない：${family}`, async ({ page }) => {
+      await page.evaluate((f) => localStorage.setItem("banto.theme", `${f}:light`), family);
+      await page.reload();
+      await page.waitForSelector(".shell");
+      await page.keyboard.press("f");
+      await expect(page.locator("html")).toHaveClass(/is-alt/);
+      /* 札は出るときに跳ねる（`key-pop` .12s）。**跳ねている最中は transform が動いている**
+         ので、収まったのを待ってから測る——待たないと、途中の姿を測って嘘の答えが出る */
+      await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== "running"));
+
+      /**
+       * 札は `::after` なので `getBoundingClientRect` が取れない。**描かれる矩形を組み立てて**
+       * 測る——オフセットの符号だけを見ると、縦の真ん中に置く家（transform を使う）で
+       * 嘘の答えが出る（`bottom` が負になるが、実際は器の中にいる）。
+       */
+      const spilled = await page.evaluate(() => {
+        const out: Array<{ key: string; why: string }> = [];
+        for (const el of document.querySelectorAll("[data-key]")) {
+          const box = el.getBoundingClientRect();
+          if (box.width === 0) continue; // 描かれていないもの（狭い画面で畳んだ分）
+          const cs = getComputedStyle(el, "::after");
+          if (cs.content === "none" || cs.content === "") continue; // 札が出ていない
+          const key = el.getAttribute("data-key") ?? "?";
+          const shift = new DOMMatrixReadOnly(cs.transform === "none" ? undefined : cs.transform);
+          const w = parseFloat(cs.width);
+          const h = parseFloat(cs.height);
+
+          const top = box.top + parseFloat(cs.top) + shift.f;
+          const left = Number.isNaN(parseFloat(cs.left))
+            ? box.right - parseFloat(cs.right) - w + shift.e
+            : box.left + parseFloat(cs.left) + shift.e;
+
+          const slack = 0.5;
+          if (top < box.top - slack) out.push({ key, why: `上へ食み出す（${top} < ${box.top}）` });
+          if (top + h > box.bottom + slack) out.push({ key, why: "下へ食み出す" });
+          if (left < box.left - slack) out.push({ key, why: "左へ食み出す" });
+          if (left + w > box.right + slack) out.push({ key, why: "右へ食み出す" });
+          if (top < 0) out.push({ key, why: "画面の外へ出ている" });
+        }
+        return out;
+      });
+      expect(spilled, `器の外へ出ている札: ${JSON.stringify(spilled)}`).toEqual([]);
+    });
+  }
+
+  test("符牒で会話へ飛ぶと、番頭への入力に移っている", async ({ page }) => {
+    await page.keyboard.press("f");
+    await page.keyboard.press("2");
+
+    await expect(page.locator(".thread-tab-wrap.is-active")).toContainText("別の会話");
+    await expect(page.locator(".chat-input")).toBeFocused();
+    // 符牒は畳まれている（押したら消える）
+    await expect(page.locator("html")).not.toHaveClass(/is-alt/);
+  });
+
+  test("⌘K から会話を開いても、番頭への入力に移っている", async ({ page }) => {
+    await page.keyboard.press("ControlOrMeta+k");
+    await expect(page.locator(".cp")).toBeVisible();
+
+    await page.locator(".cp-input").fill("別の会話");
+    await page.locator(".cp-input").press("Enter");
+
+    await expect(page.locator(".cp")).toHaveCount(0);
+    await expect(page.locator(".thread-tab-wrap.is-active")).toContainText("別の会話");
+    await expect(page.locator(".chat-input")).toBeFocused();
+  });
+
+  test("面を見に行くときは入力へ移さない（話しかけに行ったのではない）", async ({ page }) => {
+    await page.keyboard.press("ControlOrMeta+k");
+    await page.locator(".cp-input").fill("設定を開く");
+    await page.locator(".cp-input").press("Enter");
+
+    await expect(page.locator(".chat-input")).toHaveCount(0);
+  });
+});
+
+test.describe("履歴の会話ログ", () => {
+  test("チャット欄と同じ部品（落款・思考・道具）で描く", async ({ page }) => {
+    // 中身を入れてから、ホストが「畳んだ」と配り直す（畳むのはホストの仕事。D3）
+    host.emit({
+      type: "history",
+      threadId: OTHER_THREAD_ID,
+      entries: [
+        { role: "po", text: "これを調べてください" },
+        { role: "reasoning", text: "まず場所を確かめる", durationMs: 2000 },
+        { role: "tool", name: "file.read", state: "ok", input: { path: "a.ts" }, output: "中身" },
+        { role: "banto", text: "**調べました**。" },
+      ],
+    });
+    host.broadcast({
+      type: "thread_state",
+      threads: [
+        { ...thread(THREAD_ID, titles[THREAD_ID]!, true), model: MODEL_A },
+        {
+          ...thread(OTHER_THREAD_ID, titles[OTHER_THREAD_ID]!, false),
+          model: MODEL_B,
+          state: "closed",
+          closedAt: "2026-08-06T00:00:00.000Z",
+        },
+      ],
+    });
+    await page.locator(".pin-tab[data-key='h']").click();
+    await page.locator(".history-row", { hasText: "別の会話" }).click();
+
+    const log = page.locator(".history-read-scroll");
+    // 番頭の発話は落款つき（.msg--banto）。素の Markdown ではない
+    await expect(log.locator(".msg--banto")).toContainText("調べました");
+    await expect(log.locator(".msg--banto strong")).toHaveText("調べました");
+    await expect(log.locator(".msg--po")).toContainText("これを調べてください");
+    // 思考と道具の呼び出しも、チャット欄と同じ畳んだ姿で出る
+    await expect(log.locator(".msg--reasoning")).toContainText("2秒間考えました");
+    await expect(log.locator(".msg--tool .tool-name")).toHaveText("file.read");
+    // 畳んである道具を開くと、引数と結果まで読める
+    await log.locator(".tool-head").click();
+    await expect(log.locator(".tool-detail")).toContainText("a.ts");
   });
 });
 
@@ -735,7 +966,8 @@ test.describe("コンポーザ（AI Elements の PromptInput）", () => {
     const submit = page.locator(".composer-submit");
     // 何も書いていなければ押せない
     await expect(submit).toBeDisabled();
-    await expect(submit).toHaveText("↵");
+    // 送るの姿。絵文字をやめて線の絵にした（spec-design §4）ので、字ではなく絵で見る
+    await expect(submit.locator("svg.ico")).toBeVisible();
 
     await page.locator(".chat-input").fill("お願いします");
     await expect(submit).toBeEnabled();
@@ -749,7 +981,8 @@ test.describe("コンポーザ（AI Elements の PromptInput）", () => {
     await expect(submit.locator(".composer-submit-stop")).toBeVisible();
 
     host.emit({ type: "turn_end" });
-    await expect(submit).toHaveText("↵");
+    await expect(submit.locator(".composer-submit-stop")).toHaveCount(0);
+    await expect(submit.locator("svg.ico")).toBeVisible();
   });
 
   test("入力欄は 192px までしか伸びない", async ({ page }) => {
