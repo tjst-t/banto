@@ -24,6 +24,7 @@ import type {
   ServerEvent,
   ThreadView,
   ModuleEndpointView,
+  InboxItemView,
   TranscriptEntry,
 } from "@banto/host/protocol";
 
@@ -120,6 +121,14 @@ export interface BantoSession {
   setDraft(text: string): void;
   /** いま見ている会話が直近のターンで運んだトークン数（分かるまでは undefined）。 */
   contextTokens: number | undefined;
+  /** 取次に積まれているもの（答えの出たものも含む）。会話に紐づかない。 */
+  inbox: InboxItemView[];
+  /** まだ答えの出ていない数。上段の札に出る唯一の数字。 */
+  inboxPending: number;
+  /** 一通に答える。会話と面はホストが同時に開く。 */
+  answerInbox(itemId: string, actionId: string): void;
+  /** 答えずに、その件の会話と面だけ開く。 */
+  openInbox(itemId: string): void;
 }
 
 /** 見る先が変わったことの伝え方。 */
@@ -247,6 +256,11 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
   const [catalog, setCatalog] = useState<CatalogEntryView[]>([]);
   const [allThreads, setAllThreads] = useState<ThreadView[]>([]);
   const [modules, setModules] = useState<ModuleEndpointView[]>([]);
+  /**
+   * 取次（POを待たせているもの）。**会話に紐づかない唯一の状態**なので、
+   * スレッド単位の byThread ではなくここが持つ。真実はホスト（D3）。
+   */
+  const [inbox, setInbox] = useState<InboxItemView[]>([]);
   const [byThread, setByThread] = useState<Record<string, ThreadState>>({});
   const activeThreadId = options.activeThreadId;
   const socketRef = useRef<WebSocket>(null);
@@ -440,6 +454,11 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
           update(event.threadId, (prev) => ({ ...prev, contextTokens: event.tokens }));
           break;
 
+        // 取次は会話に紐づかない。ここだけスレッド単位の更新を通さない
+        case "inbox_state":
+          setInbox(event.items);
+          break;
+
         default:
           update(event.threadId, (prev) => ({
             ...prev,
@@ -545,6 +564,17 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
     () => post({ type: "abort", threadId: activeThreadId }),
     [activeThreadId, post]
   );
+
+  /**
+   * 取次の一通に答える。**会話と面はホストが動かす**——画面が別々に操作すると、
+   * 片方だけ動いた状態が一瞬見える。
+   */
+  const answerInbox = useCallback(
+    (itemId: string, actionId: string) => post({ type: "inbox_answer", itemId, actionId }),
+    [post]
+  );
+  /** 答えずに、その件の会話と面だけ開く。 */
+  const openInbox = useCallback((itemId: string) => post({ type: "inbox_open", itemId }), [post]);
 
   // モデルは会話ごと。**いま見ている会話にだけ**効かせる
   const setModel = useCallback(
@@ -657,6 +687,11 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
       draft: active.draft,
       setDraft,
       contextTokens: active.contextTokens,
+      inbox,
+      /** まだ答えの出ていない数。上段の札に出る唯一の数字（導出なので持たない） */
+      inboxPending: inbox.filter((i) => !i.resolvedAt).length,
+      answerInbox,
+      openInbox,
     }),
     [
       status,
@@ -691,6 +726,9 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
       activeModel,
       activeDraft,
       activeTokens,
+      inbox,
+      answerInbox,
+      openInbox,
     ]
   );
 

@@ -19,6 +19,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ThreadView } from "@banto/host/protocol";
 import { useTabOverflow } from "./useTabOverflow.js";
+import { Icon } from "./icons.js";
 
 /** 六次改訂の裁定でモバイル扱いにする幅。プロトタイプと同じ。 */
 const MOBILE_MAX_WIDTH = 780;
@@ -122,7 +123,7 @@ export function ThreadTabs(props: ThreadTabsProps): React.ReactElement {
   // ▾ は収まらないときだけ出す（六次改訂）。モバイルでは常に出す
   const showMore = mobile || overflowing.length > 0;
 
-  const tab = (thread: ThreadView, inMenu: boolean): React.ReactElement => (
+  const tab = (thread: ThreadView, inMenu: boolean, index = -1): React.ReactElement => (
     <span
       key={thread.threadId}
       data-tab-id={thread.threadId}
@@ -147,8 +148,15 @@ export function ThreadTabs(props: ThreadTabsProps): React.ReactElement {
         setTabMenu({ threadId: thread.threadId, x: e.clientX, y: e.clientY });
       }}
     >
-      <button className="thread-tab" type="button">
-        <span className="tt-ico">💬</span>
+      {/* 符牒。会話は 1〜9（並びの通り）。⌥ の間だけ浮く。
+          開いたらそのまま話しかけられるよう、番頭への入力（符牒 c）へ続ける */}
+      <button
+        className="thread-tab"
+        type="button"
+        {...(!inMenu && index >= 0 && index < 9
+          ? { "data-key": String(index + 1), "data-key-then": "c" }
+          : {})}
+      >
         {editing === thread.threadId ? (
           <input
             className="tt-rename"
@@ -193,12 +201,20 @@ export function ThreadTabs(props: ThreadTabsProps): React.ReactElement {
   return (
     <div className="thread-tabs-wrap">
       <div className={`thread-tabs ${mobile ? "is-mobile" : ""}`} ref={stripRef}>
-        {threads.map((t) => tab(t, false))}
+        {threads.map((t, i) => tab(t, false, i))}
       </div>
 
+      {/* 開いた新しい会話は、話しかけるために開いている。入力へ続ける（符牒 c） */}
       {!mobile && (
-        <button className="thread-new-btn" type="button" onClick={onOpen} title="新しい会話を始める">
-          ＋
+        <button
+          className="thread-new-btn"
+          data-key="n"
+          data-key-then="c"
+          type="button"
+          onClick={onOpen}
+          title="新しい会話を始める"
+        >
+          <Icon name="plus" size={16} />
         </button>
       )}
 
@@ -211,7 +227,7 @@ export function ThreadTabs(props: ThreadTabsProps): React.ReactElement {
             onClick={() => setMenuOpen((v) => !v)}
           >
             <span className="tmb-title">{mobile ? (active?.title ?? "会話なし") : ""}</span>
-            <span className="tmb-caret">▾</span>
+            <Icon name="chevron-down" size={14} className="tmb-caret" />
             {overflowing.length > 0 && !mobile && (
               <span className="tmb-count">{overflowing.length}</span>
             )}
@@ -226,7 +242,7 @@ export function ThreadTabs(props: ThreadTabsProps): React.ReactElement {
                   setMenuOpen(false);
                 }}
               >
-                ＋ 新しい会話を始める
+                <Icon name="plus" size={14} /> 新しい会話を始める
               </button>
               {/* 中身は「全部」ではなく**はみ出している分だけ**（六次改訂）。
                   モバイルではタブ列そのものを出さないので全部がここに来る */}
@@ -255,7 +271,7 @@ export function ThreadTabs(props: ThreadTabsProps): React.ReactElement {
               setTabMenu(undefined);
             }}
           >
-            ✎ 名前を変える
+            <Icon name="pencil" size={14} /> 名前を変える
           </button>
           <button
             type="button"

@@ -5,13 +5,17 @@
  * プロトタイプの裁定に従い**一覧を崩さない**（読むのは右カラム、狭い画面では
  * 一覧→詳細のドリルダウン）。
  *
+ * 読む側は**チャット欄と同じ姿で描く**（`ChatRow`・PO報告 2026-08-06）——ここだけ素の
+ * Markdown を並べていたので、落款も、思考も、道具の呼び出しも、添付も出ていなかった。
+ * 畳んだあとに読み返すのは、たった今まで見ていたものと同じ会話なので、姿を分けない。
+ *
  * 検索・グルーピングはまだ入れない（task-0036/0037 のスコープ外）。まず
  * 「残ること・戻れること」から。
  */
 
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import type { ThreadView, TranscriptEntry } from "@banto/host/protocol";
+import { Icon } from "./icons.js";
+import { ChatRow } from "./messages.js";
 
 export interface ThreadHistoryProps {
   closedThreads: ThreadView[];
@@ -102,7 +106,7 @@ export function ThreadHistory(props: ThreadHistoryProps): React.ReactElement {
                 type="button"
                 onClick={() => onSelect(undefined)}
               >
-                ← 一覧
+                <Icon name="chevron-left" size={14} /> 一覧
               </button>
               <h3>{selected.title}</h3>
               <span className="history-read-at">{formatClosedAt(selected.closedAt)} に畳みました</span>
@@ -114,23 +118,12 @@ export function ThreadHistory(props: ThreadHistoryProps): React.ReactElement {
                 再開する
               </button>
             </div>
+            {/* チャット欄と同じ器（縦に積んで、発話ごとに間を空ける）に同じ部品を並べる */}
             <div className="history-read-scroll">
               {entries.length === 0 ? (
                 <p className="history-read-empty">この会話には発言がありません。</p>
               ) : (
-                entries.map((entry, i) => (
-                  <div key={i} className={`msg msg--${entry.role}`}>
-                    {entry.role === "tool" ? (
-                      <span className="msg-tool">
-                        {entry.name} · {entry.state}
-                      </span>
-                    ) : (
-                      <div className="msg-body">
-                        <Markdown remarkPlugins={[remarkGfm]}>{entry.text}</Markdown>
-                      </div>
-                    )}
-                  </div>
-                ))
+                entries.map((entry, i) => <ChatRow key={i} entry={entry} />)
               )}
             </div>
           </>

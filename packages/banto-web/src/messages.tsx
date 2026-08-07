@@ -13,7 +13,10 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 // D6: ストリーミング途中の未完 Markdown を補って描く（AI Elements の Streamdown 同等）
 import remend from "remend";
+import type { TranscriptAttachment, TranscriptEntry } from "@banto/host/protocol";
 import { highlightToHtml, useColorScheme } from "./views/fileHighlight.js";
+import { Icon } from "./icons.js";
+import { MarkdownLink } from "./links.js";
 
 /** 考え終わってから思考を畳むまで（AI Elements の `AUTO_CLOSE_DELAY`）。 */
 const REASONING_AUTO_CLOSE_MS = 1000;
@@ -101,7 +104,7 @@ const CodeBlock = React.memo(({ children }: React.ComponentProps<"pre">): React.
   return (
     <div className="codeblock">
       <button className="codeblock-copy" type="button" onClick={copy} title="コピー">
-        {copied ? "✓" : "⧉"}
+        <Icon name={copied ? "check" : "copy"} size={14} />
       </button>
       {html === undefined ? (
         <pre>{children}</pre>
@@ -113,8 +116,11 @@ const CodeBlock = React.memo(({ children }: React.ComponentProps<"pre">): React.
   );
 });
 
-/** コードブロックだけ差し替える。他の要素は react-markdown の既定のまま。 */
-const MARKDOWN_COMPONENTS = { pre: CodeBlock };
+/**
+ * コードブロックとリンクだけ差し替える。他の要素は react-markdown の既定のまま。
+ * リンクは外に出るものを別タブへ（`links.tsx`）——会話ごと差し替わると書きかけが消える。
+ */
+const MARKDOWN_COMPONENTS = { pre: CodeBlock, a: MarkdownLink };
 
 /**
  * ストリーミング中の Markdown。
@@ -180,10 +186,10 @@ export function ReasoningRow({
         }}
       >
         <span className="reasoning-mark" aria-hidden="true">
-          ✻
+          <Icon name="sparkle" size={13} />
         </span>
         {isStreaming ? <Shimmer>考えています</Shimmer> : <span>{thoughtLabel(durationMs)}</span>}
-        <span className="reasoning-caret">{open ? "▾" : "▸"}</span>
+        <Icon name={open ? "chevron-down" : "chevron-right"} size={14} className="reasoning-caret" />
       </button>
       {open && (
         <div className="markdown reasoning-body">
@@ -243,7 +249,7 @@ export function ToolRow({
         <span className="tool-dot" />
         <span className="tool-name">{name}</span>
         <span className="tool-badge">{TOOL_BADGE[state] ?? state}</span>
-        {hasDetail && <span className="tool-caret">{open ? "▾" : "▸"}</span>}
+        {hasDetail && <Icon name={open ? "chevron-down" : "chevron-right"} size={14} className="tool-caret" />}
       </button>
       {open && hasDetail && (
         <div className="tool-detail">
@@ -264,3 +270,150 @@ export function ToolRow({
     </div>
   );
 }
+
+/**
+ * 知らせの出所ごとの札。
+ *
+ * **外から入る知らせを全部「職人」で出さない**（PO報告 2026-07-31）——番頭が別の会話を
+ * 開いたときの最初の一言まで職人に見えていた。知らない出所はそのまま出す（隠さない）。
+ */
+const NOTICE_LABELS: Record<string, string> = {
+  worker: "職人",
+  thread: "別の会話",
+  system: "知らせ",
+};
+
+/**
+ * POでも番頭でもない知らせ（決定29）。**既定は畳んでおく**——番頭の報告と違い長くなりがちで、
+ * 会話を追う邪魔になるため（PO フィードバック）。クリックで開く。
+ */
+function NoticeRow({ source, text }: { source: string; text: string }): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  // 1行目を要約として出す。Markdownの強調記号は畳んだ状態では邪魔なので落とす
+  const summary = (text.split("\n").find((l) => l.trim().length > 0) ?? "")
+    .replace(/\*\*/g, "")
+    .trim();
+
+  return (
+    <div className={`msg msg--notice ${open ? "is-open" : ""}`}>
+      <button className="notice-head" onClick={() => setOpen(!open)} title="クリックで開閉">
+        <span className="notice-tag">{NOTICE_LABELS[source] ?? source}</span>
+        <span className="notice-caret">{open ? "▾" : "▸"}</span>
+        {!open && <span className="notice-summary">{summary}</span>}
+      </button>
+      {open && (
+        <div className="markdown notice-body">
+          <StreamingMarkdown text={text} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 送った添付（AI Elements の `MessageAttachment`）。画像は小さく出し、押すと原寸で開く。 */
+function AttachmentChips({ items }: { items: TranscriptAttachment[] }): React.ReactElement {
+  return (
+    <div className="msg-attachments">
+      {items.map((item) => (
+        <a
+          key={item.url}
+          className="msg-attachment"
+          href={item.url}
+          target="_blank"
+          rel="noreferrer"
+          title={item.name}
+        >
+          {item.kind === "image" ? (
+            <img src={item.url} alt={item.name} />
+          ) : (
+            <span className="msg-attachment-file"><Icon name="file" size={14} />{item.name}</span>
+          )}
+        </a>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * 会話の1行（発話・思考・道具・知らせ・失敗）。
+ *
+ * **チャット欄と履歴で同じものを使う**（PO報告 2026-08-06）——履歴は同じ会話を素の
+ * Markdown で並べ直しており、落款も思考も道具の呼び出しも出ていなかった。畳んだあとに
+ * 読み返すのは、たった今まで見ていたものと同じ会話なので、2通りの姿を持たせない。
+ *
+ * React.memo: text_delta で session.chat が入れ替わっても、変更無しの行は再描画をスキップ。
+ */
+export const ChatRow = React.memo(
+  ({
+    entry,
+    isStreaming,
+    onDismissError,
+  }: {
+    entry: TranscriptEntry;
+    /** いま届いている最中の行か（思考の見出しを切り替えるのに使う）。 */
+    isStreaming?: boolean;
+    /** error 行の × が押されたとき（error 以外には渡さない）。 */
+    onDismissError?: () => void;
+  }): React.ReactElement => {
+    switch (entry.role) {
+      case "po":
+        return (
+          <div className="msg msg--po">
+            {entry.attachments && entry.attachments.length > 0 && (
+              <AttachmentChips items={entry.attachments} />
+            )}
+            {entry.text}
+          </div>
+        );
+      case "reasoning":
+        return (
+          <ReasoningRow
+            text={entry.text}
+            durationMs={entry.durationMs}
+            /* **考え終わりは durationMs が決める**——ターンが続いていても、思考そのものは
+               `reasoning_end` で終わっている。busy だけで見ると、本文を喋り出すまで
+               「考えています」と言い続ける */
+            isStreaming={isStreaming === true && entry.durationMs === undefined}
+            /* 済んだ記録（履歴）は畳んで始める。読み返したいのは本文のほう */
+            defaultOpen={isStreaming === true || entry.durationMs === undefined}
+          />
+        );
+      case "banto":
+        // 番頭の応答は Markdown で返るので整形して描く（react-markdown は既定で生HTMLを通さない）
+        return (
+          <div className="msg msg--banto markdown">
+            <StreamingMarkdown text={entry.text} />
+          </div>
+        );
+      case "notice":
+        // 外からの知らせ（決定29）。番頭の発話と混ざらないよう見た目を分け、出所も出す
+        return <NoticeRow source={entry.source} text={entry.text} />;
+      case "tool":
+        return (
+          <ToolRow
+            name={entry.name}
+            state={entry.state}
+            input={entry.input}
+            output={entry.output}
+          />
+        );
+      case "error":
+        return (
+          <div className="msg msg--error">
+            <Icon name="error" size={14} />
+            <span className="msg-error-text">{entry.text}</span>
+            {onDismissError && (
+              <button
+                className="msg-error-close"
+                type="button"
+                onClick={onDismissError}
+                aria-label="このエラーを閉じる"
+              >
+                <Icon name="close" size={14} />
+              </button>
+            )}
+          </div>
+        );
+    }
+  }
+);

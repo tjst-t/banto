@@ -14,10 +14,10 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 // D6: 末尾追従は Vercel AI Elements と同じ use-stick-to-bottom に任せる。自前だと
 // ResizeObserver 追従・spring・選択中の扱いを全部書くことになり、体験を合わせきれない
 import { useStickToBottom } from "use-stick-to-bottom";
-import type { Attachment, TranscriptAttachment, TranscriptEntry } from "@banto/host/protocol";
+import type { Attachment } from "@banto/host/protocol";
 import { useBantoSession, type CurrentModel } from "./useBantoSession.js";
-// 発話の描き方はチャットと職人ビューアで共通（messages.tsx）
-import { Loader, ReasoningRow, StreamingMarkdown, ToolRow } from "./messages.js";
+// 発話の描き方はチャット・履歴・職人ビューアで共通（messages.tsx）
+import { ChatRow, Loader } from "./messages.js";
 import { callModuleTool } from "./views/useModuleTool.js";
 import type { LlmModelInfo } from "@banto/core";
 import { resolveCanvasView } from "./views/registry.js";
@@ -27,6 +27,12 @@ import { SettingsPanel } from "./views/SettingsPanel.js";
 import { Modal, SearchField } from "./views/ui.js";
 import { useViewLocation } from "./viewLocation.js";
 import { useTabOverflow } from "./useTabOverflow.js";
+import { Icon, iconOfKind } from "./icons.js";
+import { InboxFace, PendingDecisions } from "./Inbox.js";
+import { CommandPalette, useCommandPalette } from "./CommandPalette.js";
+import { useKeyHints } from "./keyHints.js";
+import { useListNav } from "./listNav.js";
+import { useThemeState } from "./theme/ThemeProvider.js";
 
 /**
  * 既定は**同一オリジンの `/ws`**。開発サーバがそれを番頭ホストへ中継するので、
@@ -106,45 +112,6 @@ function readStoredChatWidth(): number {
   } catch {
     return CHAT_WIDTH_DEFAULT;
   }
-}
-
-/**
- * 知らせの出所ごとの札。
- *
- * **外から入る知らせを全部「職人」で出さない**（PO報告 2026-07-31）——番頭が別の会話を
- * 開いたときの最初の一言まで職人に見えていた。知らない出所はそのまま出す（隠さない）。
- */
-const NOTICE_LABELS: Record<string, string> = {
-  worker: "職人",
-  thread: "別の会話",
-  system: "知らせ",
-};
-
-/**
- * POでも番頭でもない知らせ（決定29）。**既定は畳んでおく**——番頭の報告と違い長くなりがちで、
- * 会話を追う邪魔になるため（PO フィードバック）。クリックで開く。
- */
-function NoticeRow({ source, text }: { source: string; text: string }): React.ReactElement {
-  const [open, setOpen] = useState(false);
-  // 1行目を要約として出す。Markdownの強調記号は畳んだ状態では邪魔なので落とす
-  const summary = (text.split("\n").find((l) => l.trim().length > 0) ?? "")
-    .replace(/\*\*/g, "")
-    .trim();
-
-  return (
-    <div className={`msg msg--notice ${open ? "is-open" : ""}`}>
-      <button className="notice-head" onClick={() => setOpen(!open)} title="クリックで開閉">
-        <span className="notice-tag">{NOTICE_LABELS[source] ?? source}</span>
-        <span className="notice-caret">{open ? "▾" : "▸"}</span>
-        {!open && <span className="notice-summary">{summary}</span>}
-      </button>
-      {open && (
-        <div className="markdown notice-body">
-          <StreamingMarkdown text={text} />
-        </div>
-      )}
-    </div>
-  );
 }
 
 /**
@@ -229,6 +196,11 @@ function ContextMeter({
  *
  * 選んだ結果は自分で覚えない。ホストが `model_state` を配り直したときに変わる（D3）——
  * 切替に失敗したら表示は前のモデルのまま、が正しい。
+ *
+ * **押した脇に開くドロップダウンをやめた**（PO報告 2026-08-06）——チャット欄は右端に
+ * 寄っていて幅も可変なので、脇に開いた瞬間に画面からはみ出し、横スクロールが生えて
+ * 画面全体が横へずれていた。`Modal` に同じ裁定が既に書いてある（`views/ui.tsx`）：
+ * 画面に対して置けば、広さに関係なく収まる。場所選び・キャンバスに開くものと同じ形になる。
  */
 function ModelSelect({
   current,
@@ -261,6 +233,20 @@ function ModelSelect({
     return `${m.providerId} ${m.name} ${m.id}`.toLowerCase().includes(q);
   });
   const providers = [...new Set(matched.map((m) => m.providerId))];
+  /** 描く順に均した並び。キーで動かす通し番号は、目に見えている順と一致していないと読めない */
+  const ordered = providers.flatMap((providerId) =>
+    matched.filter((m) => m.providerId === providerId)
+  );
+
+  const close = (): void => {
+    setOpen(false);
+    setQuery("");
+  };
+  const pick = (m: LlmModelInfo): void => {
+    onSelect(m.providerId, m.id);
+    close();
+  };
+  const nav = useListNav(ordered, { onChoose: pick, resetKey: query });
 
   return (
     <div className="model-select">
@@ -274,18 +260,22 @@ function ModelSelect({
         <span className="model-select-caret">▾</span>
       </button>
       {open && (
-        <>
-          {/* 外側を押したら閉じる。押した先には届かせない */}
-          <div className="model-select-backdrop" onClick={() => setOpen(false)} />
-          <div className="model-select-menu" role="listbox">
-            <input
-              className="model-select-search"
-              placeholder="モデルを探す…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              autoFocus
-            />
-            <div className="model-select-list">
+        <Modal
+          title="モデルを選ぶ"
+          onClose={close}
+          footer={<span className="picker-hint">↑↓ で選ぶ · Enter で決める · Esc で閉じる</span>}
+        >
+          <div className="model-select-menu">
+            <div className="model-select-search">
+              <SearchField
+                value={query}
+                onChange={setQuery}
+                onKeyDown={nav.onKeyDown}
+                placeholder="モデルを探す…"
+                autoFocus
+              />
+            </div>
+            <div className="model-select-list" role="listbox" ref={nav.listRef}>
               {error !== undefined && <div className="model-select-error">{error}</div>}
               {error === undefined && models === undefined && (
                 <div className="model-select-empty">読み込んでいます…</div>
@@ -305,18 +295,18 @@ function ModelSelect({
                     .map((m) => {
                       const isCurrent =
                         current?.provider === m.providerId && current.id === m.id;
+                      const index = ordered.indexOf(m);
                       return (
                         <button
                           key={`${m.providerId}/${m.id}`}
-                          className={`model-select-item ${isCurrent ? "is-current" : ""}`}
+                          className={`model-select-item ${isCurrent ? "is-current" : ""} ${
+                            nav.isOn(index) ? "is-on" : ""
+                          }`}
                           type="button"
                           role="option"
                           aria-selected={isCurrent}
-                          onClick={() => {
-                            onSelect(m.providerId, m.id);
-                            setOpen(false);
-                            setQuery("");
-                          }}
+                          onClick={() => pick(m)}
+                          {...nav.rowProps(index)}
                         >
                           <span className="model-select-item-name">{m.name}</span>
                           {/* 文脈の長さは「どれだけ話を続けられるか」に直結する。
@@ -340,7 +330,7 @@ function ModelSelect({
                           )}
                           {/* 画像を読めるかは添付の可否に直結するので、選ぶ前に見せる */}
                           {m.vision && <span className="model-select-badge">画像可</span>}
-                          <span className="model-select-check">{isCurrent ? "✓" : ""}</span>
+                          <span className="model-select-check">{isCurrent && <Icon name="check" size={14} />}</span>
                         </button>
                       );
                     })}
@@ -348,109 +338,19 @@ function ModelSelect({
               ))}
             </div>
           </div>
-        </>
+        </Modal>
       )}
     </div>
   );
 }
 
-/** 送った添付（AI Elements の `MessageAttachment`）。画像は小さく出し、押すと原寸で開く。 */
-function AttachmentChips({ items }: { items: TranscriptAttachment[] }): React.ReactElement {
-  return (
-    <div className="msg-attachments">
-      {items.map((item) => (
-        <a
-          key={item.url}
-          className="msg-attachment"
-          href={item.url}
-          target="_blank"
-          rel="noreferrer"
-          title={item.name}
-        >
-          {item.kind === "image" ? (
-            <img src={item.url} alt={item.name} />
-          ) : (
-            <span className="msg-attachment-file">📄 {item.name}</span>
-          )}
-        </a>
-      ))}
-    </div>
-  );
-}
-
-/** React.memo: text_delta で session.chat が入れ替わっても、変更無しの行は再描画をスキップ。 */
-const ChatRow = React.memo(
-  ({
-    entry,
-    isStreaming,
-    onDismissError,
-  }: {
-    entry: TranscriptEntry;
-    /** いま届いている最中の行か（思考の見出しを切り替えるのに使う）。 */
-    isStreaming?: boolean;
-    /** error 行の × が押されたとき（error 以外には渡さない）。 */
-    onDismissError?: () => void;
-  }): React.ReactElement => {
-  switch (entry.role) {
-    case "po":
-      return (
-        <div className="msg msg--po">
-          {entry.attachments && entry.attachments.length > 0 && (
-            <AttachmentChips items={entry.attachments} />
-          )}
-          {entry.text}
-        </div>
-      );
-    case "reasoning":
-      return (
-        <ReasoningRow
-          text={entry.text}
-          durationMs={entry.durationMs}
-          /* **考え終わりは durationMs が決める**——ターンが続いていても、思考そのものは
-             `reasoning_end` で終わっている。busy だけで見ると、本文を喋り出すまで
-             「考えています」と言い続ける */
-          isStreaming={isStreaming === true && entry.durationMs === undefined}
-        />
-      );
-    case "banto":
-      // 番頭の応答は Markdown で返るので整形して描く（react-markdown は既定で生HTMLを通さない）
-      return (
-        <div className="msg msg--banto markdown">
-          <StreamingMarkdown text={entry.text} />
-        </div>
-      );
-    case "notice":
-      // 外からの知らせ（決定29）。番頭の発話と混ざらないよう見た目を分け、出所も出す
-      return <NoticeRow source={entry.source} text={entry.text} />;
-    case "tool":
-      return (
-        <ToolRow
-          name={entry.name}
-          state={entry.state}
-          input={entry.input}
-          output={entry.output}
-        />
-      );
-    case "error":
-      return (
-        <div className="msg msg--error">
-          <span className="msg-error-text">{entry.text}</span>
-          {onDismissError && (
-            <button
-              className="msg-error-close"
-              type="button"
-              onClick={onDismissError}
-              aria-label="このエラーを閉じる"
-            >
-              ×
-            </button>
-          )}
-        </div>
-      );
-  }
-});
-
 export function App(): React.ReactElement {
+  const theme = useThemeState();
+  // ⌘K：既にある場所への近道。ここから新しい状態は生まれない
+  const palette = useCommandPalette();
+  // 符牒：⌥ を押している間だけ、押せるものにキーが浮く。
+  // **帯は出さない**——符牒そのものが説明で、上に言葉を足すと画面がずれる（PO報告 2026-08-06）
+  useKeyHints();
   const [view, navigate] = useViewLocation();
   /**
    * ホストの都合で見る先が決まったとき（既定の会話・畳まれた会話からの退避・自分が
@@ -540,6 +440,7 @@ export function App(): React.ReactElement {
    */
   const historyOpen = view.face === "history";
   const settingsOpen = view.face === "settings";
+  const inboxOpen = view.face === "inbox";
   /**
    * 面を切り替える（POが押した移動なので履歴に積む）。同じ面をもう一度押したら会話へ戻る。
    *
@@ -555,7 +456,7 @@ export function App(): React.ReactElement {
     }));
   }, [navigate]);
   const showFace = useCallback(
-    (face: "chat" | "history" | "settings") => {
+    (face: "chat" | "history" | "settings" | "inbox") => {
       navigate((prev) => {
         const next = prev.face === face ? "chat" : face;
         return {
@@ -645,6 +546,25 @@ export function App(): React.ReactElement {
     }
   }, [chatWidth]);
 
+  /**
+   * 番頭への入力へ移る（PO要望 2026-08-06）。
+   *
+   * **いま掴めなければ、掴めるまで待つ。** 会話へ飛ぶと、被さっていた面が外れて
+   * チャット欄が描き直されることがあり、押した瞬間には入力欄がまだ無い。旗を立てて
+   * おいて、描き直しのたびに掴みにいく（掴めたら旗を下ろす）。
+   */
+  const wantComposer = useRef(false);
+  const focusComposer = useCallback(() => {
+    wantComposer.current = true;
+  }, []);
+  useEffect(() => {
+    if (!wantComposer.current) return;
+    const el = inputRef.current;
+    if (!el) return;
+    wantComposer.current = false;
+    el.focus();
+  });
+
   const startResize = (e: React.PointerEvent<HTMLDivElement>): void => {
     e.preventDefault();
     const handle = e.currentTarget;
@@ -702,6 +622,11 @@ export function App(): React.ReactElement {
       }, {})
     );
   }, [openableCatalog, catalogQuery]);
+  /** 束ねる前の並び。キーで動かす通し番号は、目に見えている順と一致させる */
+  const catalogOrdered = useMemo(
+    () => catalogGroups.flatMap(([, entries]) => entries),
+    [catalogGroups]
+  );
 
   // 収納メニューは外側を押したら閉じる
   useEffect(() => {
@@ -716,14 +641,14 @@ export function App(): React.ReactElement {
   // Esc で被さっている面（設定・履歴）を閉じて会話へ戻る。
   // **入力中の Esc は IME の変換取り消しに使われる**ので、変換中は何もしない
   useEffect(() => {
-    if (!settingsOpen && !historyOpen) return;
+    if (!settingsOpen && !historyOpen && !inboxOpen) return;
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== "Escape" || e.isComposing) return;
       backToChat();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [settingsOpen, historyOpen, backToChat]);
+  }, [settingsOpen, historyOpen, inboxOpen, backToChat]);
 
   // 画像添付の可否はモデルの vision 対応で決まる。真実はホストが持ち（`model_state`）、
   // ここは選択時点で添付させないための事前確認。**モデルを切り替えたら即座に効く**——
@@ -744,6 +669,20 @@ export function App(): React.ReactElement {
   const syncedTabRef = useRef<string>(undefined);
   /** POがカタログから開いた1回だけ履歴に積む（番頭が開いた分は積まない）。 */
   const followOpenedTab = useRef(false);
+
+  /** カタログから1つ開く（押しても、絞ってEnterでも同じ経路を通る）。 */
+  const openFromCatalog = (kind: string): void => {
+    // POが自分で開いたGUIなので、戻るで前のタブへ帰れるようにする
+    followOpenedTab.current = true;
+    session.openView(kind);
+    setCatalogOpen(false);
+    setCatalogQuery("");
+  };
+  const catalogNav = useListNav(catalogOrdered, {
+    onChoose: (entry) => openFromCatalog(entry.kind),
+    resetKey: catalogQuery,
+  });
+
   const { activeThreadId, activeTabId, tabs: canvasTabs, canvasKnown, switchTab } = session;
   useEffect(() => {
     if (!activeThreadId) return;
@@ -799,12 +738,6 @@ export function App(): React.ReactElement {
   );
   const hiddenTabIds = tabOverflow.hiddenIds;
   const hiddenTabs = session.tabs.filter((t) => hiddenTabIds.has(t.id));
-
-  /** タブに出す絵。カタログが持っているものをそのまま引く（UI側に表を作らない）。 */
-  const iconOfKind = useCallback(
-    (kind: string): string => session.catalog.find((entry) => entry.kind === kind)?.icon ?? "▫",
-    [session.catalog]
-  );
 
   /**
    * スマホ表示：**キャンバスのタブが動いたらキャンバス側へ移る**（プロトタイプ四次改訂）。
@@ -999,6 +932,9 @@ export function App(): React.ReactElement {
     >
       <button
         className="canvas-tab-label"
+        /* 符牒。上段の列から、他で取られていない字だけを左から振る
+           （i=取次 h=履歴 s=設定 t=明暗 k=⌘K n=新会話 o=開く f=符牒 c=入力 は避ける） */
+        {...(inMenu ? {} : { "data-key": "qweryupa"[index] })}
         /* ホストへ直接投げず URL を動かす。押した経路と戻るの経路を1本にする */
         onClick={() => {
           navigate((prev) => ({ ...prev, tabId: tab.id }));
@@ -1007,9 +943,7 @@ export function App(): React.ReactElement {
         title={inMenu ? tab.kind : `${tab.kind}（ドラッグで並べ替え）`}
       >
         {/* カタログの絵をタブにも出す。狭い画面では字が切れても、これで見分けがつく */}
-        <span className="canvas-tab-icon" aria-hidden="true">
-          {iconOfKind(tab.kind)}
-        </span>
+        <Icon name={iconOfKind(tab.kind)} size={14} className="canvas-tab-icon" />
         <span className="canvas-tab-text">{tab.title}</span>
       </button>
       <button
@@ -1017,20 +951,54 @@ export function App(): React.ReactElement {
         onClick={() => session.closeTab(tab.id)}
         aria-label={`${tab.title} を閉じる`}
       >
-        ×
+        <Icon name="close" size={13} />
       </button>
     </span>
   );
 
   return (
     <div className={`shell mobile-view-${mobileView}`}>
+      <CommandPalette
+        open={palette.open}
+        onClose={() => palette.setOpen(false)}
+        threads={session.threads}
+        closedThreads={session.closedThreads}
+        catalog={openableCatalog}
+        inbox={session.inbox}
+        /* 会話へ飛んだらそのまま話しかけられるようにする（PO要望 2026-08-06）——
+           キーで開いたのに、話しかけるのにマウスへ持ち替えるのでは近道にならない。
+           面（キャンバスのGUI・取次・設定）へ飛んだときは移さない：見に行ったのであって、
+           話しかけに行ったのではない */
+        onOpenThread={(id) => {
+          session.switchThread(id);
+          focusComposer();
+        }}
+        onReopenThread={(id) => {
+          session.reopenThread(id);
+          focusComposer();
+        }}
+        onOpenView={(kind) => {
+          followOpenedTab.current = true;
+          backToChat();
+          session.openView(kind);
+        }}
+        onOpenInbox={(id) => {
+          session.openInbox(id);
+          backToChat();
+        }}
+        onFace={showFace}
+        onNewThread={() => {
+          backToChat();
+          session.openThread();
+          focusComposer();
+        }}
+        onToggleTheme={theme.toggle}
+      />
       <header className="shell-topbar">
+        {/* 屋号。明朝の「番頭」と、その下に読みを敷く（spec-design §2.1） */}
         <div className="brand">
-          <span className="brand-mark">番</span>
-          <span>
-            <span className="brand-name">banto</span>
-            <span className="brand-sub">番頭</span>
-          </span>
+          <span className="brand-name">番頭</span>
+          <span className="brand-sub">banto</span>
         </div>
         <ThreadTabs
           threads={session.threads}
@@ -1051,14 +1019,27 @@ export function App(): React.ReactElement {
             session.openThread();
           }}
         />
+        {/* 取次（spec-design §0④）。常に見えているのはこのボタンと数字だけ */}
+        <button
+          className={`inbox-tab ${inboxOpen ? "is-active" : ""} ${session.inboxPending === 0 ? "is-empty" : ""}`}
+          type="button"
+          onClick={() => showFace("inbox")}
+          title="取次（番頭に用があるもの）"
+          data-key="i"
+        >
+          <Icon name="inbox" size={17} />
+          <span className="inbox-tab-label">取次</span>
+          <span className="inbox-n">{session.inboxPending}</span>
+        </button>
         <button
           className={`pin-tab ${historyOpen ? "is-active" : ""}`}
           type="button"
           onClick={() => showFace("history")}
           title="畳んだ会話の履歴"
           aria-label="履歴"
+          data-key="h"
         >
-          🕘
+          <Icon name="history" size={17} />
         </button>
         {/* 設定は一級の面（決定41）。会話タブの列とは混ざらないよう、右端に固定する */}
         <button
@@ -1067,8 +1048,31 @@ export function App(): React.ReactElement {
           onClick={() => showFace("settings")}
           title="設定"
           aria-label="設定"
+          data-key="s"
         >
-          ⚙️
+          <Icon name="settings" size={17} />
+        </button>
+        {/* 明暗の切替。同じトークンの裏返しなので、押しても色の役は動かない（spec-design ③） */}
+        <button
+          className="pin-tab cmdk-tab"
+          type="button"
+          onClick={() => palette.setOpen(true)}
+          title="横断して引く（⌘K）"
+          aria-label="横断して引く"
+          data-key="k"
+        >
+          <Icon name="search" size={16} />
+          <kbd className="cmdk-key">⌘K</kbd>
+        </button>
+        <button
+          className="pin-tab"
+          type="button"
+          onClick={theme.toggle}
+          title={`${theme.family.name}：${theme.mode === "dark" ? "明かりを点ける" : "明かりを落とす"}`}
+          aria-label="明るさを切り替える"
+          data-key="t"
+        >
+          <Icon name={theme.mode === "dark" ? "sun" : "moon"} size={17} />
         </button>
         <span className={`conn conn--${session.status}`}>
           {session.status === "open"
@@ -1102,6 +1106,17 @@ export function App(): React.ReactElement {
             </p>
           </div>
         )
+      ) : inboxOpen ? (
+        <InboxFace
+          items={session.inbox}
+          onAnswer={session.answerInbox}
+          /* 開く先はホストが動かす。動いたら会話へ戻す（面が被さったままだと見えない） */
+          onOpen={(id) => {
+            session.openInbox(id);
+            backToChat();
+          }}
+          onBack={backToChat}
+        />
       ) : historyOpen ? (
         <ThreadHistory
           closedThreads={session.closedThreads}
@@ -1121,11 +1136,11 @@ export function App(): React.ReactElement {
           </p>
           <div className="threads-empty-actions">
             <button className="btn btn--primary" onClick={() => session.openThread()}>
-              ＋ 新しい会話を始める
+              <Icon name="plus" size={15} /> 新しい会話を始める
             </button>
             {session.closedThreads.length > 0 && (
               <button className="btn" onClick={() => showFace("history")}>
-                🕘 履歴を見る（{session.closedThreads.length}）
+                <Icon name="history" size={15} /> 履歴を見る（{session.closedThreads.length}）
               </button>
             )}
           </div>
@@ -1156,7 +1171,7 @@ export function App(): React.ReactElement {
                   onClick={() => setTabMenuOpen((v) => !v)}
                 >
                   <span className="canvas-more-count">{hiddenTabs.length}</span>
-                  <span aria-hidden="true">▾</span>
+                  <Icon name="chevron-down" size={14} />
                 </button>
                 {tabMenuOpen && (
                   <div className="canvas-more-menu">
@@ -1174,19 +1189,29 @@ export function App(): React.ReactElement {
                 aria-label="開くものを選ぶ"
                 aria-expanded={catalogOpen}
                 title="開くものを選ぶ"
+                data-key="o"
               >
-                ＋
+                <Icon name="plus" size={16} />
               </button>
             )}
           </div>
 
           <div className="canvas-body">
+            {/* **この面に関わる判断待ち**を面の中にも出す（spec-design §1.1）。
+                取次を開かないと気づけない、では判断が滞る。器の側で出すので、
+                個々の面は取次を知らなくてよい（D5） */}
+            {activeTab && (
+              <PendingDecisions
+                items={session.inbox.filter(
+                  (i) => !i.resolvedAt && i.opens?.canvas?.kind === activeTab.kind
+                )}
+                onAnswer={session.answerInbox}
+              />
+            )}
             {!activeTab ? (
               <div className="canvas-empty">
                 <div className="canvas-empty-inner">
-                  <div className="canvas-empty-mark" aria-hidden="true">
-                    ▤
-                  </div>
+                  <Icon name="canvas" size={30} stroke={1.2} className="canvas-empty-mark" />
                   <p className="canvas-empty-title">キャンバスには何も開かれていません</p>
                   <p className="canvas-empty-sub">
                     番頭に「〜を開いて」と頼むとここに出ます。自分で開くこともできます。
@@ -1203,9 +1228,7 @@ export function App(): React.ReactElement {
                           session.openView(entry.kind);
                         }}
                       >
-                        <span className="ci-ico" aria-hidden="true">
-                          {entry.icon ?? "▫"}
-                        </span>
+                        <Icon name={iconOfKind(entry.kind)} size={17} className="ci-ico" />
                         <span className="canvas-empty-card-name">{entry.title}</span>
                       </button>
                     ))}
@@ -1229,9 +1252,7 @@ export function App(): React.ReactElement {
               // I2: カタログにあるのにUIが解決できない＝配線漏れ。黙って空にせず理由を出す
               <div className="canvas-empty">
                 <div className="canvas-empty-inner">
-                  <div className="canvas-empty-mark" aria-hidden="true">
-                    ⚠
-                  </div>
+                  <Icon name="warn" size={30} stroke={1.2} className="canvas-empty-mark" />
                   <p className="canvas-empty-title">この面を描けません</p>
                   <p className="canvas-empty-sub">
                     コンポーネント <code>{activeSpec?.component ?? "(不明)"}</code>{" "}
@@ -1246,59 +1267,61 @@ export function App(): React.ReactElement {
               title="キャンバスに開く"
               onClose={() => setCatalogOpen(false)}
               footer={
-                /* I2: 描けない面があることを黙らない。出所（kind）まで出す——直せるのは
-                   「UIの解決表に足す」か「モジュールの登録を外す」のどちらかなので */
-                unresolvedCatalog.length > 0 ? (
-                  <span className="catalog-unresolved">
-                    この画面で描けない面が {unresolvedCatalog.length} 件あります（配線漏れ）:{" "}
-                    {unresolvedCatalog.map((e) => e.kind).join(", ")}
-                  </span>
-                ) : undefined
+                <>
+                  <span className="picker-hint">↑↓ で選ぶ · Enter で開く · Esc で閉じる</span>
+                  {/* I2: 描けない面があることを黙らない。出所（kind）まで出す——直せるのは
+                      「UIの解決表に足す」か「モジュールの登録を外す」のどちらかなので */}
+                  {unresolvedCatalog.length > 0 && (
+                    <span className="catalog-unresolved">
+                      この画面で描けない面が {unresolvedCatalog.length} 件あります（配線漏れ）:{" "}
+                      {unresolvedCatalog.map((e) => e.kind).join(", ")}
+                    </span>
+                  )}
+                </>
               }
             >
               <div className="catalog-search">
                 <SearchField
                   value={catalogQuery}
                   onChange={setCatalogQuery}
+                  onKeyDown={catalogNav.onKeyDown}
                   placeholder="名前・説明で絞る"
                   autoFocus
                 />
               </div>
-              {catalogGroups.length === 0 ? (
-                <p className="catalog-empty">「{catalogQuery}」に当てはまる面はありません。</p>
-              ) : (
-                catalogGroups.map(([category, entries]) => (
-                  <div key={category}>
-                    <div className="catalog-group-label">{category}</div>
-                    {entries.map((entry) => {
-                      const opened = session.tabs.some((t) => t.kind === entry.kind);
-                      return (
-                        <button
-                          key={entry.kind}
-                          className="catalog-item"
-                          onClick={() => {
-                            // POが自分で開いたGUIなので、戻るで前のタブへ帰れるようにする
-                            followOpenedTab.current = true;
-                            session.openView(entry.kind);
-                            setCatalogOpen(false);
-                            setCatalogQuery("");
-                          }}
-                          title={`${entry.kind} · ${entry.module}`}
-                        >
-                          <span className="ci-ico">{entry.icon ?? "▫"}</span>
-                          <span className="ci-body">
-                            <span className="ci-name">{entry.title}</span>
-                            {/* 何のための面かを一行で。名前だけでは開くまで分からない */}
-                            <span className="ci-desc">{entry.description}</span>
-                          </span>
-                          {/* 既に開いているものは、増やすのではなくそこへ移ると分かるようにする */}
-                          {opened && <span className="ci-open">開いています</span>}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ))
-              )}
+              <div ref={catalogNav.listRef}>
+                {catalogGroups.length === 0 ? (
+                  <p className="catalog-empty">「{catalogQuery}」に当てはまる面はありません。</p>
+                ) : (
+                  catalogGroups.map(([category, entries]) => (
+                    <div key={category}>
+                      <div className="catalog-group-label">{category}</div>
+                      {entries.map((entry) => {
+                        const opened = session.tabs.some((t) => t.kind === entry.kind);
+                        const index = catalogOrdered.indexOf(entry);
+                        return (
+                          <button
+                            key={entry.kind}
+                            className={`catalog-item ${catalogNav.isOn(index) ? "is-on" : ""}`}
+                            onClick={() => openFromCatalog(entry.kind)}
+                            title={`${entry.kind} · ${entry.module}`}
+                            {...catalogNav.rowProps(index)}
+                          >
+                            <Icon name={iconOfKind(entry.kind)} size={17} className="ci-ico" />
+                            <span className="ci-body">
+                              <span className="ci-name">{entry.title}</span>
+                              {/* 何のための面かを一行で。名前だけでは開くまで分からない */}
+                              <span className="ci-desc">{entry.description}</span>
+                            </span>
+                            {/* 既に開いているものは、増やすのではなくそこへ移ると分かるようにする */}
+                            {opened && <span className="ci-open">開いています</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))
+                )}
+              </div>
             </Modal>
           )}
         </main>
@@ -1318,10 +1341,10 @@ export function App(): React.ReactElement {
         <aside className="chat-pane" ref={chatPaneRef} style={{ width: chatWidth }}>
           <div className="chat-head">
             <div className="chat-head-main">
-              <div className="chat-title">番頭と相談する</div>
-              <div className="chat-sub">
-                {session.tools.length > 0 ? `${session.tools.length} tools` : "—"}
-                {session.sessionId ? ` · ${session.sessionId.slice(0, 8)}` : ""}
+              {/* **いま何の話をしているか**を出す（診断06）。道具の数と接続IDは、
+                  どの会話を見ていても同じ値で、見出しの役に立っていなかった */}
+              <div className="chat-title">
+                {session.threads.find((t) => t.threadId === session.activeThreadId)?.title ?? "番頭と相談する"}
               </div>
             </div>
             <button
@@ -1373,13 +1396,15 @@ export function App(): React.ReactElement {
               onClick={() => void chat.scrollToBottom()}
               title="一番下へ"
             >
-              ↓
+              <Icon name="arrow-down" size={16} />
             </button>
           )}
 
           {/* AI Elements の PromptInput：添付・入力欄・道具立てを1つの枠に収める */}
           <div className="chat-composer">
-            <div className="composer-box">
+            {/* 符牒 c で番頭に話しかけにいける。器のどこを押しても入力へ移る
+                （余白を押しても入力が始まる、という当たり前の挙動も同時に入る） */}
+            <div className="composer-box" data-key="c" onClick={() => inputRef.current?.focus()}>
             {pending.length > 0 && (
               <div className="attach-list">
                 {pending.map((att, i) => (
@@ -1388,7 +1413,7 @@ export function App(): React.ReactElement {
                       <img className="attach-thumb" src={att.previewUrl} alt={att.name} />
                     )}
                     <span className="attach-name" title={att.name}>
-                      {att.kind === "image" ? "🖼" : "📄"} {att.name}
+                      <Icon name={att.kind === "image" ? "image" : "file"} size={13} /> {att.name}
                     </span>
                     <button
                       className="attach-remove"
@@ -1396,7 +1421,7 @@ export function App(): React.ReactElement {
                       onClick={() => removePending(i)}
                       aria-label={`${att.name} を取り消す`}
                     >
-                      ×
+                      <Icon name="close" size={13} />
                     </button>
                   </span>
                 ))}
@@ -1404,6 +1429,7 @@ export function App(): React.ReactElement {
             )}
             {attachError && (
               <div className="attach-error" role="alert">
+                <Icon name="error" size={14} />
                 <span className="attach-error-text">{attachError}</span>
                 <button
                   className="attach-error-close"
@@ -1411,7 +1437,7 @@ export function App(): React.ReactElement {
                   onClick={() => setAttachError(undefined)}
                   aria-label="このエラーを閉じる"
                 >
-                  ×
+                  <Icon name="close" size={14} />
                 </button>
               </div>
             )}
@@ -1454,7 +1480,7 @@ export function App(): React.ReactElement {
                 title="画像・テキストファイルを添付（貼り付け・ドラッグ＆ドロップも可）"
                 aria-label="添付"
               >
-                ＋
+                <Icon name="plus" size={16} />
               </button>
               {/* モデルは道具立ての中に置く（AI Elements と同じ位置）。切替はホストが握る */}
               <ModelSelect current={session.model} onSelect={session.setModel} />
@@ -1483,9 +1509,9 @@ export function App(): React.ReactElement {
                 ) : chatStatus === "streaming" ? (
                   <span className="composer-submit-stop" />
                 ) : chatStatus === "error" ? (
-                  "×"
+                  <Icon name="close" size={15} />
                 ) : (
-                  "↵"
+                  <Icon name="enter" size={15} />
                 )}
               </button>
             </div>
@@ -1500,14 +1526,14 @@ export function App(): React.ReactElement {
             onClick={() => setMobileView("chat")}
             title="チャット"
           >
-            💬 チャット
+            <Icon name="chat" size={16} /> チャット
           </button>
           <button
             className={`mobile-footer-btn ${mobileView === "canvas" ? "is-active" : ""}`}
             onClick={() => setMobileView("canvas")}
             title="キャンバス"
           >
-            📄 キャンバス
+            <Icon name="canvas" size={16} /> キャンバス
           </button>
         </div>
       </div>

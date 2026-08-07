@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /** 会話・履歴・設定の3面（決定41・プロトタイプ三次改訂）。同時に出るのは1つ。 */
-export type ViewFace = "chat" | "history" | "settings";
+export type ViewFace = "chat" | "history" | "settings" | "inbox";
 
 /** 画面の位置。**ここに無いものは履歴に積まない**（＝戻るで戻らない）。 */
 export interface ViewLocation {
@@ -40,7 +40,7 @@ export function parseViewLocation(search: string): ViewLocation {
   const params = new URLSearchParams(search);
   const view = params.get("view");
   return {
-    face: view === "history" || view === "settings" ? view : "chat",
+    face: view === "history" || view === "settings" || view === "inbox" ? view : "chat",
     ...optional("threadId", params.get("thread")),
     ...optional("tabId", params.get("tab")),
     ...optional("section", params.get("section")),
