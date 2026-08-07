@@ -45,6 +45,13 @@ export interface CanvasViewProps {
    * 未登録のモジュールなら undefined——呼び手はその機能を出さない。
    */
   endpointOf(moduleName: string): string | undefined;
+  /**
+   * **別の面を開く**（PO要望 2026-08-07：タスクの詳細から担当の職人へ飛びたい）。
+   *
+   * 面同士を直に繋ぐのではなく、キャンバスに「この種類をこの引数で開いて」と頼む形
+   * ——開き方（新しいタブか・どこに置くか）はキャンバスの持ち物で、面は知らなくてよい。
+   */
+  openCanvas(kind: string, params?: Record<string, unknown>): void;
 }
 
 /**

@@ -127,13 +127,17 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
         ? [requireProject(params.projectTag).id]
         : daemon.listProjects().map((p) => p.id);
 
-      const rows = projects
+      const matched = projects
         .flatMap((projectTag) => daemon.getTasksByProject(projectTag))
         .filter((task) => {
           if (params.state === "all") return true;
           if (params.state) return task.status === params.state;
           return ACTIVE_STATES.has(task.status);
-        })
+        });
+      // I2: **切ったことを黙らせない**（task-0068 と同じ形）。終わったタスクは
+      // 積み上がる一方（保持期間による削除は未実装）なので、いずれ必ずここに当たる
+      const total = matched.length;
+      const rows = matched
         .slice(0, limit)
         .map((task) => ({
           taskId: task.id,
@@ -147,8 +151,16 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
           ? params.state
             ? `状態 "${params.state}" のタスクはありません`
             : "動いているタスクはありません"
-          : rows.map((r) => `${r.status.padEnd(12)} ${r.taskId} ${r.title}`).join("\n");
-      return { content: [{ type: "text" as const, text }], details: { tasks: rows } };
+          : [
+              ...rows.map((r) => `${r.status.padEnd(12)} ${r.taskId} ${r.title}`),
+              ...(total > rows.length
+                ? [`… 全 ${total} 件のうち ${rows.length} 件（limit を上げれば ${MAX_ROWS} 件まで）`]
+                : []),
+            ].join("\n");
+      return {
+        content: [{ type: "text" as const, text }],
+        details: { tasks: rows, total, truncated: total > rows.length },
+      };
     },
   });
 
@@ -180,6 +192,11 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
         .map((e) => ({
           type: e.type,
           at: e.timestamp,
+          // 担当の職人へ飛べるように（PO要望 2026-08-07）。**画面が組み立てない**
+          // ——どのセッションが誰かを知っているのは帳簿だけ
+          ...("sessionId" in e && typeof e.sessionId === "string"
+            ? { sessionId: e.sessionId }
+            : {}),
           detail:
             e.type === "state_transitioned"
               ? `${e.from} → ${e.to}${e.reason ? `（${e.reason}）` : ""}`

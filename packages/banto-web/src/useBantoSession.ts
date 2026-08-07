@@ -103,7 +103,7 @@ export interface BantoSession {
   /** タブをドラッグで並べ替える。順序の真実はホスト側（D3）。 */
   reorderTab(tabId: string, toIndex: number): void;
   /** POがカタログから自分でGUIを開く（決定25の人側の経路）。 */
-  openView(kind: string): void;
+  openView(kind: string, params?: Record<string, unknown>): void;
   newSession(): void;
   /** 分身を切り替える。UI側だけの状態（ホストは全スレッドを同時に進めている）。 */
   switchThread(threadId: string): void;
@@ -613,7 +613,13 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
   );
 
   const openView = useCallback(
-    (kind: string) => post({ type: "canvas_open", threadId: activeThreadId, kind }),
+    (kind: string, params?: Record<string, unknown>) =>
+      post({
+        type: "canvas_open",
+        threadId: activeThreadId,
+        kind,
+        ...(params ? { params } : {}),
+      }),
     [activeThreadId, post]
   );
 

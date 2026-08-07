@@ -165,3 +165,54 @@ test.describe("レビューの面", () => {
     }
   });
 });
+
+test.describe("工場のボード（PO要望 2026-08-07 第2報）", () => {
+  let host: KoboHost;
+  test.beforeAll(async () => {
+    host = await startKoboHost();
+  });
+  test.afterAll(async () => {
+    await host.close();
+  });
+
+  test("詳細は面いっぱいを使い、戻る導線がある", async ({ page }) => {
+    await open(page, host);
+    await page.waitForSelector(".kb-board");
+    await page.locator(".cv-card").first().click();
+
+    const detail = (await page.locator(".cv-work-detail").boundingBox())!;
+    const canvas = (await page.locator(".cv-work").boundingBox())!;
+    expect(detail.width / canvas.width, "詳細が面いっぱいを使っていない").toBeGreaterThan(0.98);
+
+    // 被せている以上、戻れないと出られない
+    const back = page.locator(".cv-work-detail .cv-back");
+    await expect(back).toBeVisible();
+    await back.click();
+    await expect(page.locator(".cv-work-detail")).toHaveCount(0);
+  });
+
+  test("横スクロールの掴み手が面の下端にある", async ({ page }) => {
+    await open(page, host);
+    const board = (await page.locator(".kb-board").boundingBox())!;
+    const shell = (await page.locator(".cv-work-main").boundingBox())!;
+    // ボードが面の高さいっぱいに伸びていれば、掴み手も下端に出る
+    expect(
+      board.y + board.height,
+      "ボードが中身の高さしか無い（掴み手が札のすぐ下に浮く）"
+    ).toBeGreaterThan(shell.y + shell.height - 40);
+  });
+
+  test("担当の職人へ飛べる", async ({ page }) => {
+    await open(page, host);
+    await page.waitForSelector(".kb-board");
+    await page.locator(".cv-card").first().click();
+    await expect(page.locator(".kb-goto-worker").first()).toBeVisible();
+  });
+
+  test("受け持ちで絞れる（2つ以上のときだけ出す）", async ({ page }) => {
+    await open(page, host);
+    await page.waitForSelector(".kb-board");
+    // この検体は受け持ち1つなので、絞りは出さない（要らない口を出さない）
+    await expect(page.locator('select[aria-label="受け持ちで絞る"]')).toHaveCount(0);
+  });
+});

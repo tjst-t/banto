@@ -46,7 +46,7 @@ const HISTORY = [
   { at: "2026-08-07T02:40:46.998Z", type: "task_created" },
   { at: "2026-08-07T02:40:46.999Z", type: "state_transitioned", detail: "draft → queued（watcher-ingest）" },
   { at: "2026-08-07T02:40:47.006Z", type: "gate_evaluated", detail: "通過" },
-  { at: "2026-08-07T02:40:58.773Z", type: "agent_spawned" },
+  { at: "2026-08-07T02:40:58.773Z", type: "agent_spawned", sessionId: "sess-abc123" },
   { at: "2026-08-07T03:01:56.016Z", type: "state_transitioned", detail: "implementing → auditing" },
   { at: "2026-08-07T03:19:47.171Z", type: "audit_verdict", detail: "pass" },
 ];

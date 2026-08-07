@@ -9,14 +9,17 @@
    ボードは**流れの順に横へ並べる**。列は状態の集約であって別の状態ではないので、
    見出しは短く、数だけを添える。狭い画面では横に流す——縦に積むと、隣の列との
    関係（流れ）が読めなくなる。                                              */
+/* **横スクロールの手掛かりは面の下端に置く**（PO要望 2026-08-07 第2報）。
+   ボードが中身の高さしか持たないと、掴み手が札のすぐ下に浮いて見つけにくい
+   ——面いっぱいに伸ばして、下端に置く */
 .kb-board {
   display: flex;
   gap: 10px;
   align-items: stretch;
   overflow-x: auto;
-  padding: 4px 2px 10px;
-  /* 列の高さを揃える。伸ばさないと空の列の見出しだけが浮いて、流れが読めない */
-  min-height: 100%;
+  padding: 4px 2px 0;
+  height: 100%;
+  min-height: 0;
 }
 /* **中身のある列が幅を取る。** 空の列は見出しだけに畳む——工場のボードはたいてい
    まばらで、空の列に等分の幅を与えると、見たいものが押し出される（PO報告 2026-08-07） */
@@ -114,6 +117,21 @@
 .kb-history-at { color: var(--sumi-3); }
 .kb-history-type { color: var(--sumi-2); font-family: var(--mono); }
 .kb-history-detail { color: var(--sumi); }
+
+/* 経緯の行から担当の職人へ。**行の一部**として置く（別の欄を作ると経緯が読みにくくなる） */
+.kb-goto-worker {
+  margin-left: 8px;
+  padding: 0 6px;
+  font: inherit;
+  font-size: var(--t-note);
+  color: var(--ai);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-ctl);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.kb-goto-worker:hover { background: var(--paper-2); }
 
 .kb-acceptance { margin: 0; padding-left: 1.1em; display: flex; flex-direction: column; gap: 6px; }
 .kb-acceptance li { font-size: var(--t-read); line-height: 1.6; }

@@ -1094,6 +1094,7 @@ export function App(): React.ReactElement {
             module="settings"
             endpoint={settingsEndpoint}
             endpointOf={endpointOf}
+            openCanvas={session.openView}
             section={view.section}
             /* undefined を渡すと区画から出る（狭い画面の「一覧へ戻る」） */
             onSection={(id) => navigate((prev) => ({ ...prev, section: id }))}
@@ -1247,6 +1248,7 @@ export function App(): React.ReactElement {
                 module={activeSpec!.module}
                 endpoint={activeSpec!.endpoint}
                 endpointOf={endpointOf}
+                openCanvas={session.openView}
               />
             ) : (
               // I2: カタログにあるのにUIが解決できない＝配線漏れ。黙って空にせず理由を出す

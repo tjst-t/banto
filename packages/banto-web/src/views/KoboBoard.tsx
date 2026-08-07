@@ -25,6 +25,7 @@ import {
   Modal,
   Scroll,
   SearchField,
+  Select,
   WorkView,
   TextInput,
   ViewBar,
@@ -43,6 +44,8 @@ interface TaskRow {
 }
 
 interface HistoryRow {
+  /** 起こした職人（`agent_spawned` にだけ付く）。ここから職人ビューアへ飛ぶ。 */
+  sessionId?: string;
   type: string;
   at: string;
   detail: string;
@@ -98,7 +101,11 @@ function toneOf(status: string): Tone {
   return COLUMNS.find((c) => c.states.includes(status))?.tone ?? "neutral";
 }
 
-export function KoboBoard({ params, endpoint }: CanvasViewProps): React.ReactElement {
+export function KoboBoard({
+  params,
+  endpoint,
+  openCanvas,
+}: CanvasViewProps): React.ReactElement {
   const initialProject = typeof params["projectTag"] === "string" ? params["projectTag"] : undefined;
   const initialTask = typeof params["taskId"] === "string" ? params["taskId"] : undefined;
 
@@ -110,10 +117,12 @@ export function KoboBoard({ params, endpoint }: CanvasViewProps): React.ReactEle
   useTicker(15_000);
 
   // 終わったものも含めて全部引く。ボードは「何が終わったか」も読む場所（決定62e）
-  const list = useModuleTool<{ tasks: TaskRow[] }>(endpoint, "kobo.list", {
+  /** 受け持ちで絞る（PO要望 2026-08-07）。空文字＝全部。 */
+  const [project, setProject] = useState<string>(initialProject ?? "");
+  const list = useModuleTool<{ tasks: TaskRow[]; total?: number; truncated?: boolean }>(endpoint, "kobo.list", {
     state: "all",
     limit: 100,
-    ...(initialProject ? { projectTag: initialProject } : {}),
+    ...(project ? { projectTag: project } : {}),
   });
   // 受け持ち（統治単位）。**空なら、まずここから**——タスクを積む先が無い状態
   const projects = useModuleTool<{ projects: ProjectRow[] }>(endpoint, "kobo.projects", {});
@@ -153,7 +162,26 @@ export function KoboBoard({ params, endpoint }: CanvasViewProps): React.ReactEle
     <ViewShell>
       <ViewBar>
         <SearchField value={query} onChange={setQuery} placeholder="タスクを絞る" />
-        <Badge tone="neutral">{tasks.length} 件</Badge>
+        {(projects.data?.projects.length ?? 0) > 1 && (
+          <Select
+            value={project}
+            onChange={(e) => setProject(e.target.value)}
+            aria-label="受け持ちで絞る"
+          >
+            <option value="">受け持ち：すべて</option>
+            {(projects.data?.projects ?? []).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.id}
+              </option>
+            ))}
+          </Select>
+        )}
+        {/* I2: 切ったことを黙らせない。終わったタスクは積み上がる一方なので、いずれ必ず当たる */}
+        <Badge tone={list.data?.truncated ? "warn" : "neutral"}>
+          {list.data?.truncated
+            ? `${tasks.length} / ${list.data.total} 件`
+            : `${tasks.length} 件`}
+        </Badge>
         <Badge tone="neutral">
           受け持ち {projects.data?.projects.length ?? 0}
         </Badge>
@@ -306,7 +334,23 @@ export function KoboBoard({ params, endpoint }: CanvasViewProps): React.ReactEle
                 {formatRelative(row.at)}
               </span>
               <span className="kb-history-type">{row.type}</span>
-              {row.detail && <span className="kb-history-detail">{row.detail}</span>}
+              <span className="kb-history-detail">
+                {row.detail}
+                {/* **担当の職人へ飛べる**（PO要望 2026-08-07）。
+                    セッションを知っているのは帳簿だけなので、そこから渡ってきた分だけ出す */}
+                {row.sessionId && (
+                  <button
+                    type="button"
+                    className="kb-goto-worker"
+                    onClick={() =>
+                      openCanvas("worker.viewer", { sessionId: row.sessionId })
+                    }
+                    title={`職人 ${row.sessionId} を開く`}
+                  >
+                    職人を見る
+                  </button>
+                )}
+              </span>
             </li>
           ))}
         </ol>

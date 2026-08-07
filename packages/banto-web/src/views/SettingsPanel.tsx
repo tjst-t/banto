@@ -313,6 +313,8 @@ function SectionView({ name, origin }: { name: string; origin: string }): React.
       module="core"
       endpoint={CORE_TOOL_BASE_URL}
       endpointOf={() => undefined}
+      // 設定の区画から別の面は開かない（キャンバスのタブではないので開き先が無い）
+      openCanvas={() => undefined}
     />
   );
 }
