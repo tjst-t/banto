@@ -198,10 +198,13 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
       // 判定表（プロジェクトの meta/config.yaml）を読めない側が推測することになり、
       // PO 直行のタスクを「あなたが通してよい」と見せてしまう
       const stage = daemon.reviewStageOf(project.id, found);
+      // 決定59: 判断が要るものは**触れる状態**で差し出す。生きている公開URLだけを出す
+      const envUrl = daemon.reviewEnvUrl(project.id, params.taskId);
       const scope = (found["scope"] as { paths?: string[] } | undefined)?.paths ?? [];
       const text = [
         `${params.taskId} [${found.status}] ${String(found["title"] ?? "")}`,
         `レビュー: ${stage}${stage === "po" ? "（PO の判断が要る）" : stage === "auto" ? "（人も番頭も見ない）" : "（あなたが一次受け）"}`,
+        ...(envUrl ? [`触れる場所: ${envUrl}`] : []),
         scope.length > 0 ? `スコープ: ${scope.join(", ")}` : "",
         "",
         ...history.map((h) => `${h.at} ${h.type}${h.detail ? ` — ${h.detail}` : ""}`),
@@ -210,7 +213,7 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
         .join("\n");
       return {
         content: [{ type: "text" as const, text }],
-        details: { task: found, reviewStage: stage, history },
+        details: { task: found, reviewStage: stage, ...(envUrl ? { envUrl } : {}), history },
       };
     },
   });

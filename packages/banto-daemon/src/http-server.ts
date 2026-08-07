@@ -108,6 +108,22 @@ export function createHttpServer(daemon: Daemon): http.Server {
       },
     },
 
+    // いま着手できる仕事（task-0001・spec-daemon-core §6）。
+    // **判定の真実は1つ**（D3）：番頭も CLI も自動着手も同じ導出を見る
+    {
+      method: "GET",
+      pattern: /^\/api\/v1\/ready$/,
+      handler: async (req, res) => {
+        const url = new URL(req.url ?? "/", "http://localhost");
+        const projectTag = url.searchParams.get("project") ?? undefined;
+        if (projectTag && !daemon.projectExists(projectTag)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        sendJson(res, 200, { tasks: daemon.readyTasks(projectTag) });
+      },
+    },
+
     // List projects
     {
       method: "GET",

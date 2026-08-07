@@ -108,6 +108,17 @@ export interface ProvisionRequest {
    */
   expose?: number;
   /**
+   * **プロファイルがポートを持つなら公開する**（決定59）。
+   *
+   * レビューのために立てる環境は「PO が触れること」が目的で、どのポートかは
+   * プロファイルの都合——**呼び出し側（Kobo）に番号を知らせない**ための口。
+   * Kobo が `config.port` を読む形にすると、決定60a（他モジュールの内部を読まない）が崩れる。
+   *
+   * ポートを持たないプロファイル（監査用のテスト環境など、触る面が無いもの）では、
+   * **公開せずに立てる**——環境ごと失敗にはしない。公開しなかったことはログに出る。
+   */
+  exposeProfilePort?: boolean;
+  /**
    * 公開方式（G9 (b)）。既定 `auto`。
    *
    * - `auto`: caddy の口が設定されていれば caddy、無ければ proxy
@@ -573,18 +584,37 @@ export class EnvironmentPool {
     };
     this.ledger.add(entry);
 
+    // 決定59: プロファイルのポートを公開する頼まれ方。**番号は呼び出し側に知らせない**
+    // ——「レビューのために人が触れるようにする」という意図だけを受け取る
+    let exposePort = request.expose;
+    if (exposePort === undefined && request.exposeProfilePort === true) {
+      const configured = (resolved.config as { port?: unknown })?.port;
+      const port = typeof configured === "number" ? configured : Number(configured);
+      if (Number.isFinite(port) && port > 0) {
+        exposePort = port;
+      } else {
+        // **ポートを持たないプロファイルもある**（監査用のテスト環境など、触る面が無いもの）。
+        // 環境ごと失敗にはしない——立てること自体は正しいので。ただし「公開したつもり」に
+        // ならないよう、公開しなかったことは言う（返り値に url が無いことでも分かる）
+        console.warn(
+          `[environment-pool] プロファイル "${resolved.profileName}" は config.port を持たないので、` +
+            "外から触れるようにはしません（立てること自体は続けます）"
+        );
+      }
+    }
+
     // I2: 方式だけ指定して公開自体を頼んでいないのを黙って通さない（公開されずに終わる）
-    if (request.expose === undefined && request.exposeMode !== undefined) {
+    if (exposePort === undefined && request.exposeMode !== undefined) {
       throw new Error("exposeMode は expose（公開するポート）と一緒に指定してください。");
     }
 
     // 決定39: 頼まれたら外から見えるようにする。**立ってから公開する**——
     // 立たなかった環境のURLを配ると、開いて初めて壊れていると分かる
-    if (request.expose !== undefined) {
+    if (exposePort !== undefined) {
       try {
         const exposed = await this.resolveExposer(request.exposeMode).expose({
           envId: entry.envId,
-          port: request.expose,
+          port: exposePort,
           label: entry.taskId,
         });
         this.ledger.setExposure(entry.envId, exposed.url, exposed.port, exposed.exposer);

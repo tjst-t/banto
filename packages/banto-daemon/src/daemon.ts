@@ -878,6 +878,39 @@ export class Daemon {
   }
 
   /**
+   * そのタスクの**触れる場所**（決定59）。判断待ちの札に添えるためのもの。
+   *
+   * D3: 別に持たない。`env_provisioned` / `env_torn_down` を突き合わせて、いま生きている
+   * 公開URLだけを返す——畳んだ環境の URL を札に載せると、開いて初めて壊れていると分かる。
+   */
+  reviewEnvUrl(projectTag: string, taskId: string): string | undefined {
+    const history = this.index.getTaskHistory(taskId, projectTag);
+    const live = new Map<string, string>();
+    for (const event of history) {
+      if (event.type === "env_provisioned" && event.url) live.set(event.envId, event.url);
+      if (event.type === "env_torn_down") live.delete(event.envId);
+    }
+    return [...live.values()].pop();
+  }
+
+  /**
+   * いま着手できる仕事（task-0001。spec-daemon-core §6）。
+   *
+   * **判定の真実を一箇所に保つ**（D3）。番頭の `kobo.list`・CLI の `kobo ready`・
+   * 自動着手の tick・（将来の）ボードの Next は、**すべてこの1つの導出**を見る
+   * ——別々に数え始めると、画面と実際の着手がずれる。
+   *
+   * `ready` はゲート（依存・スコープ重複・物理quota）を通ったものだけが載る状態なので、
+   * ここは状態を読むだけでよい。ゲートの判定そのものは `GateEvaluator` にある。
+   */
+  readyTasks(projectTag?: string): TaskRecord[] {
+    const tasks = projectTag
+      ? this.store.getTasksByProject(projectTag)
+      : this.store.getAllTasks();
+    return tasks.filter((task) => task.status === "ready");
+  }
+
+  /**
    * そのタスクを積んだ宛先（決定58）。積まれ方によっては無い（PO がファイルを置いた等）。
    *
    * D3: 別に持たない。取り込み時に契約と一緒に固めた値を読む。
@@ -1427,7 +1460,10 @@ export class Daemon {
       // Fire-and-forget: teardown failure is surfaced in the event log (I2).
       // The state transition is committed immediately (D3: events are the truth);
       // teardown is deferred so the HTTP response for the transition is sent first.
-      const TERMINAL_STATES = new Set(["failed", "closed", "superseded"]);
+      // 決定59: **判断が付いた瞬間に畳む。** 終端（failed/closed/superseded）に加えて、
+      // レビューを抜けたとき（approved）も畳む——判断待ちの間だけ生かすのが決定59 の
+      // 「環境の寿命は判断に紐づける」。放置された札の分は TTL が落とす
+      const TERMINAL_STATES = new Set(["failed", "closed", "superseded", "approved"]);
       if (TERMINAL_STATES.has(toStatus)) {
         this._trackBackground(new Promise<void>((resolve) => {
           setImmediate(() => void this._teardownTaskEnvs(projectTag, taskId).then(resolve, resolve));
@@ -1834,8 +1870,9 @@ export class Daemon {
   async provisionEnv(
     projectTag: string,
     taskId: string,
-    profileName: string
-  ): Promise<{ ok: true; envId: string } | { ok: false; reason: string }> {
+    profileName: string,
+    options: { forReview?: boolean } = {}
+  ): Promise<{ ok: true; envId: string; url?: string } | { ok: false; reason: string }> {
     const proj = this.registry.get(projectTag);
     if (!proj) {
       return { ok: false, reason: `project_not_found: ${projectTag}` };
@@ -1848,6 +1885,9 @@ export class Daemon {
         profile: profileName,
         taskId,
         projectTag,
+        // 決定59: **触れる状態で差し出す**。ポート番号は知らなくてよい——「人が触る」という
+        // 意図だけを渡し、どのポートかは Environment Pool がプロファイルから決める（決定60a）
+        ...(options.forReview ? { exposeProfilePort: true } : {}),
       })) as unknown as EnvView & {
         driver?: string;
         healthcheck?: { ok: boolean; detail?: string };
@@ -1873,9 +1913,11 @@ export class Daemon {
       profileName: summary.profile ?? profileName,
       driver: summary.driver ?? "",
       healthcheck: summary.healthcheck ?? { ok: true },
+      // 決定59: 触れる場所を帳簿に残す。判断待ちの札はここから URL を取る
+      ...(summary.url ? { url: summary.url } : {}),
     });
     this.applyAndBroadcast(event);
-    return { ok: true, envId: summary.envId };
+    return { ok: true, envId: summary.envId, ...(summary.url ? { url: summary.url } : {}) };
   }
 
   /**
@@ -1952,7 +1994,8 @@ export class Daemon {
       }
       if (live.length > 0) return;
 
-      await this.provisionEnv(projectTag, taskId, profileName);
+      // 決定59: レビューのための環境は**触れる状態**で差し出す（公開URLつき）
+      await this.provisionEnv(projectTag, taskId, profileName, { forReview: true });
     } catch (err) {
       // I2: ここで落としても遷移は既に成立している。理由をログに出して続ける
       const msg = err instanceof Error ? err.message : String(err);

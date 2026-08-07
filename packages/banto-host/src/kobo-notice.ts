@@ -162,10 +162,13 @@ async function renderNotice(
   // **レビューの段は工場に聞く**（決定57・66）。判定表はプロジェクトのリポジトリにあり、
   // ここからは読めない——推測すると、PO 直行のタスクを「通してよい」と見せてしまう
   let stage = "banto";
+  let envUrl: string | undefined;
   try {
     const details = await invoke("kobo.task", { projectTag: event.projectTag, taskId });
     task = details["task"] as KoboTaskView | undefined;
     if (typeof details["reviewStage"] === "string") stage = details["reviewStage"];
+    // 決定59: 触れる場所があるなら札に添える（「見て決めて」ではなく「触って決めて」）
+    if (typeof details["envUrl"] === "string") envUrl = details["envUrl"];
   } catch {
     // 詳細が引けなくても知らせは出す（届かないより粗い方がまし）
   }
@@ -244,6 +247,10 @@ async function renderNotice(
       "実装が終わり、**別セッションの監査を通りました**（実装者とは別の目で見ています）。" +
         (task?.scope?.paths?.length ? `\n変更の範囲: ${task.scope.paths.join(", ")}` : ""),
       "",
+      // 決定59: 見るだけでなく触れる状態で差し出す。**押せば会話と面が同時に開く**
+      ...(envUrl
+        ? [`**触れる場所**`, `${envUrl}（判断が付くと畳まれます）`, ""]
+        : []),
       "**求める判断**",
       forPo
         ? "これは **PO の判断が要る**もの（統治コード、または PO 必須の面に触る）です。" +

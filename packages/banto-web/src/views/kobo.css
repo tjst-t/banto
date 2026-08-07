@@ -1,0 +1,93 @@
+/* 工場の面（KoboBoard / KoboReview。ADR-0013 決定56・57・59、task-0049）。
+ *
+ * **別ファイルにしてある。** `views.css` は面が増えるたびに全員が触る場所で、
+ * 育つほど衝突する——モジュールが出す面の見た目は、そのモジュールの持ち物として置く
+ * （決定25 の「1単位で登録する」に見た目も揃える）。
+ */
+
+/* ══ 工場（KoboBoard / KoboReview。ADR-0013 決定56・57・59）════════════════
+   ボードは**流れの順に横へ並べる**。列は状態の集約であって別の状態ではないので、
+   見出しは短く、数だけを添える。狭い画面では横に流す——縦に積むと、隣の列との
+   関係（流れ）が読めなくなる。                                              */
+.kb-board {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  overflow-x: auto;
+  padding: 4px 2px 10px;
+}
+.kb-col {
+  flex: 0 0 min(230px, 72vw);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.kb-col-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: var(--t-meta);
+  color: var(--sumi-2);
+  padding: 2px 2px 4px;
+  border-bottom: 1px solid var(--rule);
+  position: sticky;
+  top: 0;
+  background: var(--paper);
+}
+.kb-col-empty { color: var(--sumi-3); font-size: var(--t-note); padding: 2px 4px; margin: 0; }
+
+.kb-card-title { font-size: var(--t-body); line-height: 1.4; }
+.kb-card-meta {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: var(--t-note);
+  color: var(--sumi-3);
+  margin-top: 3px;
+}
+.kb-card-meta .is-mono { font-family: var(--mono); }
+
+.kb-h {
+  font-size: var(--t-meta);
+  color: var(--sumi-2);
+  margin: 14px 0 6px;
+  font-weight: 600;
+}
+.kb-para { font-size: var(--t-read); line-height: 1.7; margin: 0 0 8px; }
+
+/* 経緯は**時系列の細い列**。読み飛ばせるように、時刻と種類は小さく置く */
+.kb-history { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.kb-history li {
+  display: grid;
+  grid-template-columns: 5.5em 10em 1fr;
+  gap: 8px;
+  font-size: var(--t-note);
+  align-items: baseline;
+}
+.kb-history-at { color: var(--sumi-3); }
+.kb-history-type { color: var(--sumi-2); font-family: var(--mono); }
+.kb-history-detail { color: var(--sumi); }
+
+.kb-acceptance { margin: 0; padding-left: 1.1em; display: flex; flex-direction: column; gap: 6px; }
+.kb-acceptance li { font-size: var(--t-read); line-height: 1.6; }
+.kb-verify {
+  display: inline-block;
+  margin-left: 6px;
+  font-family: var(--mono);
+  font-size: var(--t-note);
+  background: var(--code-bg);
+  color: var(--code-ink);
+  padding: 1px 5px;
+  border-radius: var(--r-ctl);
+}
+
+/* 通すところ。**入力と押しボタンを並べる**——理由を書かせてから押させる */
+.kb-actions { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.kb-actions .cv-input { flex: 1 1 220px; }
+
+@container canvas (max-width: 760px) {
+  .kb-col { flex-basis: min(210px, 78vw); }
+  .kb-history li { grid-template-columns: 4.5em 1fr; }
+  .kb-history-type { display: none; }
+}

@@ -8,6 +8,7 @@
  *
  * Subcommands:
  *   kobo status              - Show daemon health, registered projects, task summary
+ *   kobo ready               - いま着手できる仕事（依存・スコープ重複・quota を通ったもの）
  *   kobo events --follow     - Stream events via WebSocket (SIGINT → exit 0)
  *   kobo events --follow --after <id>  - Resume from after_event_id
  *
@@ -20,6 +21,7 @@
 import { DaemonClient, DaemonConnectionError, DaemonApiError } from "@banto/core";
 import { cmdStatus } from "./cmd-status.js";
 import { cmdEvents } from "./cmd-events.js";
+import { cmdReady } from "./cmd-ready.js";
 
 const args = process.argv.slice(2);
 
@@ -30,6 +32,18 @@ async function main(): Promise<void> {
     case "status": {
       const client = new DaemonClient();
       await cmdStatus(client);
+      break;
+    }
+    case "ready": {
+      // いま着手できる仕事（task-0001）。`--project` で絞れる
+      const projectIdx = args.indexOf("--project");
+      const projectTag = projectIdx !== -1 ? args[projectIdx + 1] : undefined;
+      if (projectIdx !== -1 && (!projectTag || projectTag.startsWith("--"))) {
+        process.stderr.write("--project には名前が要ります\n");
+        process.exit(1);
+      }
+      const client = new DaemonClient();
+      await cmdReady(client, projectTag);
       break;
     }
     case "events": {
@@ -53,6 +67,7 @@ async function main(): Promise<void> {
         `banto: unknown subcommand '${subcommand ?? ""}'\n` +
           "Usage:\n" +
           "  kobo status\n" +
+          "  kobo ready [--project <name>]\n" +
           "  kobo events --follow [--after <event_id>]\n"
       );
       process.exit(1);

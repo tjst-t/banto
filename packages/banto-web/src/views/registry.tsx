@@ -21,6 +21,8 @@ import { WorkerViewer } from "./WorkerViewer.js";
 import { MemoryViewer } from "./MemoryViewer.js";
 import { SkillViewer } from "./SkillViewer.js";
 import { LlmRegistryViewer } from "./LlmRegistryViewer.js";
+import { KoboBoard } from "./KoboBoard.js";
+import { KoboReview } from "./KoboReview.js";
 
 /** キャンバスビューが受け取る props。params は canvas.open で渡されたもの。 */
 export interface CanvasViewProps {
@@ -64,6 +66,9 @@ const REGISTRY: Record<string, ComponentType<CanvasViewProps>> = {
   SkillViewer,
   // LLM 管理（中核の設定区画が名指しで描く。ADR-0011 決定43）
   LlmRegistryViewer,
+  // 工場（kobo モジュール提供。ADR-0013 決定56・57・59）
+  KoboBoard,
+  KoboReview,
 };
 
 export function resolveCanvasView(component: string): ComponentType<CanvasViewProps> | undefined {

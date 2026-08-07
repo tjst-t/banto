@@ -61,6 +61,13 @@ const targetFields = {
         "（返り値の url を伝えること）。機械が確かめるだけなら要らない",
     })
   ),
+  exposeProfilePort: Type.Optional(
+    Type.Boolean({
+      description:
+        "プロファイルが持つポートを公開する（決定59）。**ポート番号を知らなくてよい**——" +
+        "レビューのために人が触れるようにしたいときは、番号ではなくこれを渡す",
+    })
+  ),
   exposeMode: Type.Optional(
     Type.Union([
       Type.Literal("auto", { description: "caddy が設定されていれば caddy、無ければ proxy（既定）" }),
@@ -86,6 +93,7 @@ function asRequest(params: {
   taskId?: string;
   projectTag?: string;
   expose?: number;
+  exposeProfilePort?: boolean;
   exposeMode?: "auto" | "proxy" | "caddy";
 }): ProvisionRequest {
   const { config, ...rest } = params;

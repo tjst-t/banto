@@ -74,6 +74,18 @@ export class DaemonClient {
   }
 
   /**
+   * いま着手できる仕事（task-0001・spec-daemon-core §6）。
+   *
+   * **判定は Kobo の1つの導出**（D3）。CLI もボードも自分では数えない——数え始めた瞬間に
+   * 「画面では着手できるのに実際は上がらない」がありうる状態になる。
+   */
+  async listReady(projectTag?: string): Promise<TaskRecord[]> {
+    const query = projectTag ? `?project=${encodeURIComponent(projectTag)}` : "";
+    const body = await this.get<{ tasks: TaskRecord[] }>(`/api/v1/ready${query}`);
+    return body.tasks;
+  }
+
+  /**
    * Transition a task's state.
    * POST /api/v1/projects/:proj/tasks/:id/transition
    * D5: no logic here — pure HTTP call construction and response parsing.

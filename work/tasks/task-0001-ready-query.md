@@ -3,7 +3,7 @@ id: task-0001
 type: task
 kind: feature
 title: readyクエリのAPI/CLI実装
-status: draft
+status: done
 parent: epic-0010
 refs: [followup-directive-2026-07, research-orchestrator-survey]
 scope:

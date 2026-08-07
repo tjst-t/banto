@@ -75,11 +75,18 @@ export function createKoboProxyTools(
 /**
  * Kobo のモジュール定義を返す（番頭ホストが登録する）。
  *
- * @param baseUrl 到達先（既定は `BANTO_KOBO_URL`）
+ * **到達先が2つある。** Kobo は独立プロセスで、しかも 127.0.0.1 にしか出ていない（決定40）：
+ *
+ *   - `remoteUrl` — 番頭ホストのプロセスが Tool を呼ぶ先（絶対URL）
+ *   - `endpoint.baseUrl` — **UI が見る先**（同一オリジンの相対パス）。ブラウザは別の機械で
+ *     動くので Kobo へ直接は届かない。ホストが自分の面に生やして中継する（決定25・39b と
+ *     同じ形——Banto をブローカーにしないのは**モジュール間**の話で、UI の経路は別）
+ *
+ * @param remoteUrl Kobo への到達先（既定は `BANTO_KOBO_URL`）
  * @param fetchImpl テストで差し替える口
  */
 export function createKoboModule(
-  baseUrl: string = defaultKoboUrl(),
+  remoteUrl: string = defaultKoboUrl(),
   fetchImpl: typeof fetch = fetch
 ): {
   name: string;
@@ -99,7 +106,7 @@ export function createKoboModule(
   skills: Array<{ name: string; description: string; filePath: string }>;
 } {
   const client = createModuleClient(
-    { modules: { [KOBO_MODULE_NAME]: { baseUrl } } },
+    { modules: { [KOBO_MODULE_NAME]: { baseUrl: remoteUrl } } },
     fetchImpl
   );
   // 契約は Kobo 側の定義そのもの。`execute` だけを HTTP 越しに差し替える
@@ -111,10 +118,39 @@ export function createKoboModule(
     description:
       "タスクを積むと、依存ゲート・職人の差配・監査・直列マージまでを自動で運ぶ統治基盤。" +
       "コードを変える仕事はここへ積む（決定62a）。",
-    endpoint: { baseUrl },
+    // UI から見える先。ホストが `/api/kobo/tools/*` を受けて写しを実行し、Kobo へ中継する
+    endpoint: { baseUrl: KOBO_MODULE_PATH },
     tools: createKoboProxyTools(specs, client),
-    // ボード（状態機械のビューア）とレビュー面は Phase 4（task-0049）
-    views: [],
+    views: [
+      {
+        kind: "kobo.board",
+        title: "工場",
+        description:
+          "タスクの状態機械のビューア。いま何が動いていて、何が待っていて、何で止まっているかを" +
+          "一目で見せたいときに開く。かんばんの Now / Next / Later は状態の集約であって別の状態ではない。",
+        parameters: Type.Object({
+          projectTag: Type.Optional(Type.String({ description: "最初に選ぶプロジェクト" })),
+          taskId: Type.Optional(Type.String({ description: "最初に開くタスク" })),
+        }),
+        component: "KoboBoard",
+        category: "kobo",
+        icon: "🏭",
+      },
+      {
+        kind: "kobo.review",
+        title: "レビュー",
+        description:
+          "判断待ちのタスクを見て決める面（決定57・59）。経緯・変更の範囲・受け入れ基準・" +
+          "監査の判定が並び、**触れる環境があれば開ける**。PO の判断が要るものはその旨が出る。",
+        parameters: Type.Object({
+          projectTag: Type.Optional(Type.String({ description: "最初に選ぶプロジェクト" })),
+          taskId: Type.Optional(Type.String({ description: "最初に開くタスク" })),
+        }),
+        component: "KoboReview",
+        category: "kobo",
+        icon: "⚖️",
+      },
+    ],
     skills: [
       {
         name: "kobo-enqueue",

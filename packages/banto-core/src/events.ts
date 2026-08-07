@@ -157,6 +157,13 @@ export interface EnvProvisionedEvent extends EventBase {
    * D3: path reference only — never log bodies (spec-environment §6).
    */
   healthcheck: { ok: boolean; detail?: string };
+  /**
+   * 外から触れる URL（ADR-0013 決定59）。レビューのために立てた環境だけが持つ。
+   *
+   * **判断待ちの札に添える**ためにここへ残す——「見て決めてください」ではなく
+   * 「触って決めてください」にするのが決定59 の要点。
+   */
+  url?: string;
 }
 
 /** Environment torn down */

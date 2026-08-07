@@ -1,0 +1,50 @@
+# 職人（Worker Pool）を独立プロセスとして常駐させる（ADR-0010 決定27b・ADR-0013 決定61 の同型）。
+#
+# **なぜ独立させるか。** 同居していると Kobo が職人を起こすのに番頭ホストの稼働を必要とし、
+# 決定27b が避けた「Banto が単一障害点／依存の向きが逆転する」形になる。
+#
+# 前提:
+#   - /var/lib/banto は ubuntu が読み書きできる
+#   - ~ubuntu/.pi/agent/auth.json に LLM の認証がある（職人は pi で動く）
+#
+# **既定では 127.0.0.1 しか待ち受けない**（決定40）。この口は**任意のディレクトリで
+# 任意のコマンドを実行できる職人**を起こせるので、外に出さないこと。
+
+[Unit]
+Description=banto worker pool (職人)
+Documentation=https://github.com/tjst-t/banto
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/ghq/github.com/tjst-t/banto
+
+Environment=NODE_ENV=production
+Environment=BANTO_WORKER_POOL_PORT=4300
+Environment=BANTO_WORKER_POOL_DATA=/var/lib/banto/worker-pool
+# 職人の既定モデル（省略すると pi の既定解決）。等級の解決はここが持つ（決定60a）
+# Environment=BANTO_WORKER_PROVIDER=opencode
+# Environment=BANTO_WORKER_MODEL=deepseek-v4-flash-free
+
+ExecStart=/usr/local/bin/node --import tsx packages/banto-worker-pool/src/bin.ts serve
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# **KillMode は control-group にしない。** 職人は子プロセスとして生きており、
+# 決定44 で「落ちる前に生きていた職人は起こし直す」と決めている——巻き添えで畳むと
+# 再起動のたびに実作業が消える
+KillMode=mixed
+TimeoutStopSec=30
+
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/banto /home/ubuntu/ghq /home/ubuntu/worktrees
+
+[Install]
+WantedBy=multi-user.target

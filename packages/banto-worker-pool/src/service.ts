@@ -39,6 +39,13 @@ export interface WorkerPoolServiceOptions {
   /** 待ち受けポート。0 を渡すと空きポートが割り当てられる（テスト用）。 */
   port?: number;
   /**
+   * 待ち受けるアドレス（決定40）。**既定は 127.0.0.1**。
+   *
+   * この面は**任意のディレクトリで任意のコマンドを実行できる職人**を起こせるので、
+   * 認証を持たないまま外へ出さない。広げるのは明示のときだけ。
+   */
+  host?: string;
+  /**
    * 公開パスの接頭辞。`{prefix}/tools/{Tool名}` を受ける。
    * 既定は `/api/worker-pool`（モジュール定義の baseUrl と揃える）。
    */
@@ -110,7 +117,7 @@ export class WorkerPoolService {
 
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(options.port ?? WORKER_POOL_DEFAULT_PORT, () => {
+      server.listen(options.port ?? WORKER_POOL_DEFAULT_PORT, options.host ?? "127.0.0.1", () => {
         server.off("error", reject);
         resolve();
       });
