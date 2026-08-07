@@ -34,12 +34,23 @@ profiles:
     driver: docker
     config:
       compose: docker/test.yaml
+    setup: "npm ci --ignore-scripts"   # 立てたあと一度だけ
     ttl: 30m
 ```
 
 - **名前を変えるなら** `<repo>/meta/config.yaml` の `verify.profile` にも書く
 - **道具立ては Dockerfile に書く**。ホストに `apt` するのではなく、イメージに入れる
   ——そこが「このプロジェクトの検証に何が要るか」の契約
+- **依存の取得は `setup` に書く**（`npm ci` 等）。**受け入れ条件の `verify` に書かない**。
+  立てただけでは node_modules は空（名前付きボリュームに隔離してあるため）なので、
+  ここが抜けると検証コマンドが `command not found` で落ちます。`verify` 側に書くと
+  ①受け入れ条件ごとに繰り返す②タスクを書く人が用意の仕方を当てさせられる
+  ③**用意でこけたのに「テストが落ちた」と表示される**——実際に3つとも起きました（inc-0034）
+  - `setup` がこけたら**環境は畳まれ、受け持ちも検証も進みません**（黙って使えない環境で
+    検証したことにしない）
+  - **成果が次に渡るのは名前付きボリュームのぶんだけ**。検証は毎回まっさらな
+    one-off コンテナで走るので、`npm ci` の置き先（`/app/node_modules`）は
+    compose でボリュームにしておくこと
 - 書き方は SKILL `environment-profiles`、立てて使う手順は SKILL `environment`
 - **`config.port` を持つ**プロファイルを別に用意すると、判断待ちの札に公開URLが載って
   PO が触れるようになる（決定59）。検証用（`test`）とレビュー用は分けてよい

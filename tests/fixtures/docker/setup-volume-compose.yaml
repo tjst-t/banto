@@ -1,0 +1,20 @@
+# `setup` の永続を確かめるための compose（task-0080）。
+#
+# **docker ドライバの `run` は毎回まっさらな one-off コンテナ**（`compose run --rm`）。
+# 本体の書き込み層は共有されないので、`setup` が書いたものは
+# **名前付きボリュームに落ちたぶんだけ**次の run から見える。
+#
+# 実プロジェクトが `setup: npm ci` で置く node_modules がまさにこの形
+# （`- <名前付き>:/app/node_modules`）なので、その前提を検体で押さえる。
+services:
+  app:
+    image: busybox:latest
+    command: ["sh", "-c", "while true; do sleep 1; done"]
+    security_opt:
+      - apparmor=unconfined
+    working_dir: /work
+    volumes:
+      # setup がここに書いたものは次の run から見える
+      - setup-persisted:/work/persisted
+volumes:
+  setup-persisted:

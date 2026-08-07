@@ -49,6 +49,15 @@ export interface EnvLimits {
   /** `run` に指定できる制限時間の上限。呼び出し側は**厳しくのみ**できる。 */
   maxRunTimeoutMs: number;
   /**
+   * プロファイルの `setup` に与える制限時間（task-0080）。
+   *
+   * **`run` とは別に持つ。** setup は依存の取得（`npm ci` 等）が主で、検証コマンドより
+   * 長くなりがちな一方、**1環境につき1回**しか走らない。実測：loamium の
+   * `npm ci --ignore-scripts` が1分。ここが短いと、受け持ったばかりのプロジェクトが
+   * 「用意の途中で切れる」形で必ず落ちる（task-0075 の provision で同じ踏み方をした）。
+   */
+  defaultSetupTimeoutMs: number;
+  /**
    * 回収した成果物を残す期間（既定7日）。
    *
    * **放っておくと増え続ける。** `collect` のたびに環境ごとのディレクトリができ、
@@ -79,6 +88,7 @@ export const DEFAULT_ENV_LIMITS: EnvLimits = {
   adhocDrivers: "builtin",
   defaultRunTimeoutMs: 10 * 60 * 1000,
   maxRunTimeoutMs: 60 * 60 * 1000,
+  defaultSetupTimeoutMs: 15 * 60 * 1000,
   collectedRetentionMs: 7 * 24 * 3600 * 1000,
   ledgerRetentionMs: 30 * 24 * 3600 * 1000,
 };

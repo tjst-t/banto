@@ -26,6 +26,7 @@ profiles:
   test:               # 監査・マージ前ゲート用
     driver: docker
     config: { compose: docker/test.yaml }
+    setup: "npm ci --ignore-scripts"   # 立てたあと一度だけ（→ 下記）
     ttl: 30m
   staging:            # 外部VM評価用
     driver: ./meta/drivers/proxmox-vm
@@ -39,6 +40,7 @@ profiles:
 - `ttl`: 生存期限。超過分は Environment Pool が強制teardownする。**能力側のハード上限を超える値は拒否される**（→ §5）
 - `quota.max_instances`: プロファイルごとの同時実行上限。執行は Environment Pool（→ §5）
 - `credentials`: シークレットの参照名。実体はsops管理でこのファイルには書かない
+- `setup`: **立てたあと・検証を回す前に一度だけ**走らせるコマンド（任意・task-0080。→ §1.3）
 
 **統一原則**：レビュー用dev server、監査時のテスト実行、自己更新の隔離検証、外部VM評価は、すべてこの同じ抽象の上で行う。環境提供の仕組みを複数作らない（→ D3, D4）。
 
@@ -47,6 +49,19 @@ profiles:
 **呼び出し側が `repoPath` を渡し、Environment Pool が `<repoPath>/meta/environments.yaml` を都度読む**（D3：ファイルは意図。キャッシュしない）。
 
 Environment Pool は独自のプロジェクト登録簿を持たない。Kobo は自分の `ProjectRegistry` から、番頭は自分が知っている作業場所から `repoPath` を渡す。モジュール側にも登録簿を置くと Kobo のそれと二重管理になり、食い違ったときにどちらが正か決められなくなる。
+
+### 1.3 `setup`：「立った」と「使える」は別（task-0080）
+
+**`provision` が返っても、検証コマンドが走る状態とは限らない。** docker のプロファイルは node_modules を名前付きボリュームに隔離するのが普通で、`compose up -d` が返っても中は空。`setup` はその差を埋める場所。
+
+- **走らせるのは Environment Pool、`provision` の一部として**。呼び出し側から見て「provision が成功した」＝「検証コマンドを走らせられる」になる。段を分けて呼ばせると、呼び忘れた経路（番頭のアドホック・`env.verify`・マージ前ゲート）ごとに同じ穴が開く
+- **1環境につき1回**。受け入れ条件ごとではない
+- **失敗したら provision が失敗し、環境は畳まれる**（I2・I3）。呼び出し側には「用意できなかった」として届き、マージ前ゲートは `verify_env_unavailable` と言う——**`verify_failed` と同じ言葉にしない**。用意でこけたのにテストが落ちたと読める形が、実際に一番困った（inc-0034）
+- 制限時間は能力側が持つ（`defaultSetupTimeoutMs`・→ §5.1）。依存の取得は検証コマンドより長くなりがちだが、1環境に1回しか走らない
+
+**なぜ `verify` 側に書かせないか。** 書かせると①受け入れ条件ごとに繰り返す②タスクを書く側が用意の仕方を当てさせられる③失敗の言葉が間違う——の3つが同時に起きる。実機で踏んだ（loamium/task-0004 は node_modules が無く exit 127、task-0005 は各 `verify` の頭に `npm ci --include=dev` を足して postinstall で落ちた。正解は `--ignore-scripts` で、それはリポジトリの `Dockerfile` のコメントに書いてあった）。
+
+**docker では、`setup` の成果が次の `run` へ渡るのは名前付きボリュームのぶんだけ。** `run` は `compose run --rm` のまっさらな one-off で動き、本体の書き込み層は共有されない（→ §2）。`npm ci` が置く node_modules はボリュームなので渡る。
 
 ### 1.2 アドホック環境（ADR-0010 決定34e）
 
@@ -168,6 +183,7 @@ D9 で外部VMコストは one-way な副作用（D1 に戻る）とされてい
 | `adhocDrivers` | アドホック環境で使えるドライバ（→ §1.2） | `builtin`（他に `all` / `none`） |
 | `defaultRunTimeoutMs` | `run` の既定の制限時間 | 10分 |
 | `maxRunTimeoutMs` | `run` に指定できる制限時間の上限 | 60分 |
+| `defaultSetupTimeoutMs` | プロファイルの `setup` に与える制限時間（→ §1.3） | 15分 |
 | `collectedRetentionMs` | 回収した成果物を残す期間 | 7日 |
 | `ledgerRetentionMs` | 畳んだ環境を台帳に残す期間（生存中は対象外） | 30日 |
 

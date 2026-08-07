@@ -10,5 +10,8 @@ profiles:
     driver: docker
     config:
       compose: docker/test.yaml
+    # 立てたあと一度だけ（task-0080）。node_modules は名前付きボリュームに隔離して
+    # あるので、立てただけでは中が空——ここで用意しないと検証コマンドが走らない
+    setup: "npm ci"
     # マージ前ゲートは直列なので、居座らせない。検証が終われば畳まれる
     ttl: 45m

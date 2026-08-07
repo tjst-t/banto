@@ -29,6 +29,17 @@ export interface EnvProfile {
   quota?: { max_instances: number };
   /** Credentials reference name only (never the secret value) — spec §4 */
   credentials?: string;
+  /**
+   * 立てたあと・検証を回す前に**一度だけ**走らせるコマンド（task-0080）。
+   *
+   * **「立った」と「使える」は別**。docker のプロファイルは node_modules を
+   * 名前付きボリュームに隔離するのが普通で、`compose up -d` が返っても中は空。
+   * ここが無いと受け入れ条件の `verify` が自分で `npm ci` する羽目になり、
+   * ①受け入れ条件ごとに繰り返す ②タスクを書く側が用意の仕方を当てさせられる
+   * ③**失敗の言葉が間違う**（用意でこけたのに `verify_failed` と出て、
+   * テストが落ちたように読める）——という3つが同時に起きる（inc-0034）。
+   */
+  setup?: string;
 }
 
 /** Validation result for a single profile entry */
@@ -164,6 +175,19 @@ export function validateProfile(name: string, raw: unknown): ProfileValidation {
     credentials = obj["credentials"];
   }
 
+  // setup: 立てたあと一度だけ走らせるコマンド（任意）。文字列以外は受け取らない
+  let setup: string | undefined;
+  if (obj["setup"] !== undefined && obj["setup"] !== null) {
+    if (typeof obj["setup"] !== "string" || !obj["setup"].trim()) {
+      return {
+        ok: false,
+        name,
+        reason: `profile "${name}": setup must be a non-empty command string`,
+      };
+    }
+    setup = obj["setup"].trim();
+  }
+
   const profile: EnvProfile = {
     name,
     driver,
@@ -171,6 +195,7 @@ export function validateProfile(name: string, raw: unknown): ProfileValidation {
     ...(config !== undefined ? { config } : {}),
     ...(quota !== undefined ? { quota } : {}),
     ...(credentials !== undefined ? { credentials } : {}),
+    ...(setup !== undefined ? { setup } : {}),
   };
   return { ok: true, profile };
 }

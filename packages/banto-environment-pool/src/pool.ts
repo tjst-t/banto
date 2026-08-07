@@ -705,6 +705,44 @@ export class EnvironmentPool {
       // I2: 疎通が確かめられなかったことを ok:true に丸めない
       healthcheck = { ok: false, detail: err instanceof Error ? err.message : String(err) };
     }
+
+    // **プロファイルの `setup` を、立てるうちに済ませる**（task-0080）。
+    //
+    // 「立った」と「使える」は別。docker のプロファイルは node_modules を名前付き
+    // ボリュームに隔離するのが普通で、`compose up -d` が返っても中は空。ここで
+    // 用意しないと、受け入れ条件の `verify` が自分で `npm ci` する羽目になる（inc-0034）。
+    //
+    // **provision の一部にするのが要点**。呼び出し側から見て「provision が成功した」＝
+    // 「検証コマンドを走らせられる」になる。段を分けて呼ばせると、呼び忘れた経路
+    // （番頭のアドホック・`env.verify`・ゲート）ごとに同じ穴が開く。
+    if (resolved.profile?.setup) {
+      const setupCmd = resolved.profile.setup;
+      try {
+        const outcome = await this.run(
+          entry.envId,
+          setupCmd,
+          DEFAULT_LOG_TAIL_LINES,
+          this.limits.defaultSetupTimeoutMs
+        );
+        if (outcome.exit !== 0) {
+          // I2: **用意でこけたことを「検証が落ちた」に見せない。** ここで throw すると
+          // 呼び出し側には provision の失敗として届き、ゲートは `verify_env_unavailable`
+          // と言う——「確かめていない」と「落ちた」を別の言葉にする（task-0075）
+          throw new Error(
+            `setup が失敗しました（exit ${outcome.exit}）: ${setupCmd}\n` +
+              `ログ: ${outcome.logPath}\n${outcome.logTail}`
+          );
+        }
+      } catch (err) {
+        // I3: 用意できなかった環境を残さない。畳んでから投げる（expose の失敗と同じ扱い）
+        await this.teardown(entry.envId).catch(() => undefined);
+        throw new Error(
+          `環境は立ちましたが使える状態にできませんでした（profile: ${resolved.profileName}）: ` +
+            `${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+
     return { ...toSummary(entry), healthcheck };
   }
 
