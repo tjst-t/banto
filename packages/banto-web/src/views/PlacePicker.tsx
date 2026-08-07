@@ -12,6 +12,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useModuleTool } from "./useModuleTool.js";
 import { Modal, SearchField } from "./ui.js";
+import { Icon } from "../icons.js";
+import { useListNav, type ListNav } from "../listNav.js";
 
 export interface PlaceInfo {
   id: string;
@@ -191,6 +193,18 @@ export function PlacePicker({
         : places.filter((p) => `${p.id} ${p.label} ${p.path}`.toLowerCase().includes(q));
     return groupPlaces(matched);
   }, [places, query]);
+  /** 束ねる前の並び。キーで動かす通し番号は、目に見えている順と一致させる */
+  const ordered = useMemo(
+    () => groups.flatMap((g) => (g.head ? [g.head, ...g.items] : g.items)),
+    [groups]
+  );
+
+  const pick = (id: string): void => {
+    setPlace(id);
+    setOpen(false);
+    setQuery("");
+  };
+  const nav = useListNav(ordered, { onChoose: (place) => pick(place.id), resetKey: query });
 
   if (places.length === 0) {
     return (
@@ -220,16 +234,14 @@ export function PlacePicker({
         }
       >
         <span className="place-btn-icon" aria-hidden="true">
-          {current && branchOf(current) ? "⑂" : "▤"}
+          <Icon name={current && branchOf(current) ? "branch" : "place"} size={15} />
         </span>
         <span className="place-btn-label">{shown?.name ?? "場所を選ぶ"}</span>
         {current && current.writable.length > 0 && (
-          <span className="place-btn-write" title="書き込みが許された範囲があります">
-            ✎
-          </span>
+          <Icon name="pencil" size={13} className="place-btn-write" title="書き込みが許された範囲があります" />
         )}
         <span className="place-btn-caret" aria-hidden="true">
-          ▾
+          <Icon name="chevron-down" size={14} />
         </span>
       </button>
 
@@ -240,57 +252,57 @@ export function PlacePicker({
             setOpen(false);
             setQuery("");
           }}
+          footer={<span className="picker-hint">↑↓ で選ぶ · Enter で決める · Esc で閉じる</span>}
         >
           <div className="place-search">
             <SearchField
               value={query}
               onChange={setQuery}
+              onKeyDown={nav.onKeyDown}
               placeholder="リポジトリ名・枝名・パスで絞る"
               autoFocus
             />
           </div>
-          {groups.length === 0 ? (
-            <p className="catalog-empty">「{query}」に当てはまる場所はありません。</p>
-          ) : (
-            groups.map((group) => (
-              <div
-                key={group.head?.id ?? group.title}
-                className={`place-group ${group.items.length > 0 ? "is-nested" : ""}`}
-              >
-                <div className="place-group-head">
-                  {group.head ? (
+          <div ref={nav.listRef}>
+            {groups.length === 0 ? (
+              <p className="catalog-empty">「{query}」に当てはまる場所はありません。</p>
+            ) : (
+              groups.map((group) => (
+                <div
+                  key={group.head?.id ?? group.title}
+                  className={`place-group ${group.items.length > 0 ? "is-nested" : ""}`}
+                >
+                  <div className="place-group-head">
+                    {group.head ? (
+                      <PlaceRow
+                        place={group.head}
+                        current={current?.id === group.head.id}
+                        /* 「本体」と言えるのは、下に枝がぶら下がっているときだけ——
+                           枝の無い場所に付けると、リポジトリでないものまで本体に見える */
+                        isHead={group.items.length > 0}
+                        nav={nav}
+                        index={ordered.indexOf(group.head)}
+                        onPick={pick}
+                      />
+                    ) : (
+                      <div className="catalog-group-label">{group.title}</div>
+                    )}
+                  </div>
+                  {group.items.map((place) => (
                     <PlaceRow
-                      place={group.head}
-                      current={current?.id === group.head.id}
-                      /* 「本体」と言えるのは、下に枝がぶら下がっているときだけ——
-                         枝の無い場所に付けると、リポジトリでないものまで本体に見える */
-                      isHead={group.items.length > 0}
-                      onPick={(id) => {
-                        setPlace(id);
-                        setOpen(false);
-                        setQuery("");
-                      }}
+                      key={place.id}
+                      place={place}
+                      current={current?.id === place.id}
+                      indented={group.head !== undefined}
+                      nav={nav}
+                      index={ordered.indexOf(place)}
+                      onPick={pick}
                     />
-                  ) : (
-                    <div className="catalog-group-label">{group.title}</div>
-                  )}
+                  ))}
                 </div>
-                {group.items.map((place) => (
-                  <PlaceRow
-                    key={place.id}
-                    place={place}
-                    current={current?.id === place.id}
-                    indented={group.head !== undefined}
-                    onPick={(id) => {
-                      setPlace(id);
-                      setOpen(false);
-                      setQuery("");
-                    }}
-                  />
-                ))}
-              </div>
-            ))
-          )}
+              ))
+            )}
+          </div>
         </Modal>
       )}
     </>
@@ -302,6 +314,8 @@ function PlaceRow({
   current,
   isHead = false,
   indented = false,
+  nav,
+  index,
   onPick,
 }: {
   place: PlaceInfo;
@@ -309,6 +323,10 @@ function PlaceRow({
   /** 下に枝を持つリポジトリ本体か（札を出すかどうか）。 */
   isHead?: boolean;
   indented?: boolean;
+  /** キーで動かす当たり（`useListNav`）。 */
+  nav: ListNav;
+  /** 束ねる前の並びでの通し番号。 */
+  index: number;
   onPick: (id: string) => void;
 }): React.ReactElement {
   const shown = displayOf(place);
@@ -318,12 +336,13 @@ function PlaceRow({
       type="button"
       className={`place-row ${current ? "is-current" : ""} ${isHead ? "is-head" : ""} ${
         indented ? "is-child" : ""
-      }`}
+      } ${nav.isOn(index) ? "is-on" : ""}`}
       onClick={() => onPick(place.id)}
       title={place.path}
+      {...nav.rowProps(index)}
     >
       <span className="place-row-mark" aria-hidden="true">
-        {branch ? "⑂" : "▤"}
+        <Icon name={branch ? "branch" : "place"} size={15} />
       </span>
       <span className="place-row-main">
         <span className="place-row-name">
@@ -334,12 +353,12 @@ function PlaceRow({
       </span>
       {place.writable.length > 0 ? (
         <span className="place-row-write" title={`書込可: ${place.writable.join(", ")}`}>
-          ✎ 書ける
+          <Icon name="pencil" size={13} /> 書ける
         </span>
       ) : (
         <span className="place-row-ro">読み取り専用</span>
       )}
-      {current && <span className="place-row-check">✓</span>}
+      {current && <Icon name="check" size={14} className="place-row-check" />}
     </button>
   );
 }

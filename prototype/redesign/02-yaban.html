@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>案2 夜番 — banto 意匠案</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=M+PLUS+1:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ══════════════════════════════════════════════════════════════════════════
+   案2「夜番」— 灯りが仕事を示す
+
+   主張：番頭は夜も回っている。POは端末の隣にこの画面を置いたまま、
+   「いま何が生きているか」を横目で見る。だから暗い地を既定にし、
+   **色ではなく光の温度で状態を出す**。
+
+   ・走っているものは温かい灯（#E9A23B）を持ち、まわりに滲む
+   ・終わったものは灯が冷え、青灰（#4B5563）に落ちる
+   ・止まっているもの・失敗は灯が消える（線だけが残る）
+   ・POの判断待ちだけは赤（#E4674F）。灯とは別の色で、混ざらない
+
+   署名：窓の最上端を横切る 2px の灯り線。職人が一人でも動いていれば温かく灯り、
+        全員が手を止めると冷えて消える。画面を見ずとも端で分かる
+   ══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --void:   #101216;   /* 地 */
+  --panel:  #171A20;   /* 面 */
+  --raise:  #1F232B;   /* 立つ面 */
+  --well:   #0B0D10;   /* 沈む面（入力・コード） */
+  --edge:   #262B34;   /* 境目 */
+
+  --ink:    #E9E7E2;
+  --ink-2:  #99A0AB;
+  --ink-3:  #626976;
+
+  --lamp:   #E9A23B;   /* 灯：いま動いている */
+  --lamp-w: rgba(233,162,59,.13);
+  --cold:   #4B5563;   /* 冷えた灯：終わった */
+  --ai:     #8FB0D9;   /* 藍を夜に持ち上げた色 */
+  --alert:  #E4674F;   /* POの判断待ち */
+  --ok:     #6FA678;
+
+  --ui:   "M PLUS 1", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: var(--ui); background: var(--void); color: var(--ink);
+  font-size: 13px; line-height: 1.8; font-weight: 300;
+  -webkit-font-smoothing: antialiased;
+}
+button, input, textarea { font: inherit; color: inherit; }
+button { background: none; border: 0; cursor: pointer; }
+::selection { background: rgba(143,176,217,.28); }
+:focus-visible { outline: 1px solid var(--ai); outline-offset: 2px; }
+
+.shell { height: 100%; display: flex; flex-direction: column; }
+
+/* 署名：灯り線。職人が動いている間だけ温かい */
+.lamp-line {
+  flex: none; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--lamp) 12%, #F0C173 50%, var(--lamp) 88%, transparent);
+  box-shadow: 0 0 14px rgba(233,162,59,.5);
+  animation: breathe 4.5s ease-in-out infinite;
+}
+@keyframes breathe { 0%,100% { opacity: .55 } 50% { opacity: 1 } }
+@media (prefers-reduced-motion: reduce) { .lamp-line { animation: none; opacity: .8 } }
+
+/* ── 上段 ─────────────────────────────────────────────────────────────── */
+.top { flex: none; display: flex; align-items: center; height: 50px; padding: 0 8px 0 18px; gap: 18px; background: var(--panel); }
+.mark { display: flex; align-items: baseline; gap: 8px; flex: none; }
+.mark b { font-size: 15px; font-weight: 500; letter-spacing: .14em; }
+.mark span { font-family: var(--mono); font-size: 10px; color: var(--ink-3); letter-spacing: .16em; }
+
+.threads { display: flex; align-items: center; gap: 3px; flex: 1; min-width: 0; }
+.thread {
+  display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px 0 13px;
+  border-radius: 4px; color: var(--ink-3); font-size: 12.5px; white-space: nowrap;
+}
+.thread:hover { background: var(--raise); color: var(--ink-2); }
+.thread.on { background: var(--raise); color: var(--ink); box-shadow: inset 2px 0 0 var(--ai); }
+.thread .x { font-size: 14px; line-height: 1; opacity: 0; }
+.thread:hover .x { opacity: .45; }
+.thread .bell { width: 5px; height: 5px; border-radius: 50%; background: var(--alert); box-shadow: 0 0 6px var(--alert); }
+.thread-add { width: 28px; height: 28px; border-radius: 4px; color: var(--ink-3); font-size: 16px; line-height: 1; }
+.thread-add:hover { background: var(--raise); color: var(--ink); }
+
+.top-r { display: flex; align-items: center; gap: 2px; flex: none; }
+.icon { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 5px; color: var(--ink-3); }
+.icon:hover { background: var(--raise); color: var(--ink); }
+.icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+/* 判断待ちの数は、この画面で唯一の赤い塗り */
+.alert-pill {
+  display: flex; align-items: center; gap: 7px; height: 26px; padding: 0 11px 0 9px;
+  margin-left: 6px; border-radius: 4px; background: rgba(228,103,79,.13); color: var(--alert);
+  font-size: 11.5px; font-weight: 500;
+}
+.alert-pill i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.state { margin-left: 8px; padding-right: 8px; font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+
+.body { flex: 1; min-height: 0; display: flex; gap: 1px; background: var(--edge); }
+
+/* ── キャンバス ────────────────────────────────────────────────────────── */
+.canvas { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--void); }
+.ctabs { flex: none; display: flex; align-items: center; height: 38px; padding: 0 10px; background: var(--panel); gap: 2px; }
+.ctab { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px; font-size: 12px; color: var(--ink-3); box-shadow: inset 0 -1px 0 transparent; }
+.ctab:hover { color: var(--ink-2); }
+.ctab.on { color: var(--ink); box-shadow: inset 0 -1px 0 var(--ai); }
+.ctab svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; opacity: .8; }
+.ctab .x { font-size: 13px; opacity: 0; line-height: 1; }
+.ctab:hover .x, .ctab.on .x { opacity: .4; }
+
+.pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.pane-head { flex: none; display: flex; align-items: baseline; gap: 14px; padding: 22px 24px 14px; }
+.pane-head h1 { font-size: 18px; font-weight: 400; letter-spacing: .03em; }
+.pane-head .n { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.pane-head .sp { flex: 1; }
+.btn { height: 28px; padding: 0 13px; border-radius: 4px; font-size: 11.5px; color: var(--ink-2); background: var(--raise); }
+.btn:hover { background: #2A2F39; color: var(--ink); }
+.btn.alert { background: var(--alert); color: #17120F; font-weight: 500; }
+.btn.alert:hover { background: #EE7A63; }
+
+.split { flex: 1; min-height: 0; display: flex; }
+.list { width: 300px; flex: none; overflow-y: auto; padding: 0 10px 16px 16px; display: flex; flex-direction: column; gap: 2px; }
+.detail { flex: 1; min-width: 0; overflow-y: auto; padding: 0 26px 26px; }
+
+/* 一覧の行：状態＝灯の温度。走っているものだけが滲む */
+.row { display: flex; align-items: flex-start; gap: 12px; text-align: left; padding: 11px 13px; border-radius: 6px; }
+.row:hover { background: var(--panel); }
+.row.on { background: var(--raise); }
+.row .st { flex: none; width: 7px; height: 7px; border-radius: 50%; margin-top: 8px; background: var(--cold); }
+.row.run .st { background: var(--lamp); box-shadow: 0 0 0 4px var(--lamp-w), 0 0 12px rgba(233,162,59,.75); }
+.row.wait .st { background: var(--alert); box-shadow: 0 0 0 4px rgba(228,103,79,.14); }
+.row.done .st { background: var(--ok); opacity: .6; }
+.row.fail .st { background: transparent; box-shadow: inset 0 0 0 1px var(--ink-3); }
+.row b { display: block; font-size: 13px; font-weight: 400; }
+.row s { display: block; text-decoration: none; font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); margin-top: 1px; }
+.row.run b { color: var(--ink); }
+.row.run s { color: var(--lamp); }
+.row.wait s { color: var(--alert); }
+.row.done b, .row.fail b { color: var(--ink-2); }
+
+/* 判断を求める札：この画面で唯一の赤い面 */
+.ask { margin: 2px 0 24px; padding: 16px 18px; border-radius: 8px; background: rgba(228,103,79,.08); box-shadow: inset 2px 0 0 var(--alert); }
+.ask-h { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 11px; font-weight: 500; letter-spacing: .12em; color: var(--alert); }
+.ask-h i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.ask p { font-size: 13.5px; line-height: 1.85; color: var(--ink); }
+.ask-a { display: flex; gap: 8px; margin-top: 14px; }
+code { font-family: var(--mono); font-size: 11.5px; background: var(--well); padding: 2px 6px; border-radius: 3px; color: var(--ai); }
+
+.log { display: flex; flex-direction: column; gap: 20px; }
+
+.po { align-self: flex-end; max-width: 84%; background: var(--raise); padding: 10px 14px; border-radius: 8px 8px 2px 8px; font-size: 13px; }
+.banto { position: relative; padding-left: 30px; font-size: 13.5px; line-height: 1.95; font-weight: 300; }
+.banto::before {
+  content: ""; position: absolute; left: 8px; top: 8px; bottom: 4px; width: 1px;
+  background: linear-gradient(180deg, var(--ai), transparent);
+}
+.banto p + p, .banto ul { margin-top: 11px; }
+.banto ul { padding-left: 17px; }
+.banto li { margin: 4px 0; }
+.banto strong { font-weight: 500; color: #fff; }
+
+.tool { display: flex; align-items: center; gap: 10px; padding-left: 30px; font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.tool i { width: 4px; height: 4px; border-radius: 50%; background: var(--ok); flex: none; }
+.tool .arg { color: var(--ink-2); }
+.tool .sp { flex: 1; }
+/* 走っている最中の道具だけ灯る */
+.tool.run i { background: var(--lamp); box-shadow: 0 0 8px var(--lamp); animation: breathe 1.6s ease-in-out infinite; }
+.tool.run .arg { color: var(--lamp); }
+
+.think { display: flex; align-items: center; gap: 10px; padding-left: 30px; font-size: 11.5px; color: var(--ink-3); }
+.think .bar { flex: 1; height: 1px; background: var(--edge); }
+
+.notice { padding-left: 30px; }
+.notice-in { padding: 2px 0 2px 12px; box-shadow: inset 1px 0 0 var(--edge); }
+.notice-in em { display: block; font-style: normal; font-family: var(--mono); font-size: 10px; letter-spacing: .1em; color: var(--lamp); }
+.notice-in span { font-size: 12px; color: var(--ink-2); }
+
+/* ── 会話 ─────────────────────────────────────────────────────────────── */
+.chat { width: 428px; flex: none; display: flex; flex-direction: column; background: var(--panel); }
+.chat-head { flex: none; display: flex; align-items: center; gap: 10px; padding: 16px 18px 10px; }
+.chat-head h2 { font-size: 14px; font-weight: 500; }
+.chat-head .sp { flex: 1; }
+.chat-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 18px 18px; }
+
+.composer { flex: none; padding: 0 14px 14px; }
+.composer-in { background: var(--well); border-radius: 8px; padding: 12px 14px 8px; box-shadow: inset 0 0 0 1px var(--edge); transition: box-shadow .14s; }
+.composer-in:focus-within { box-shadow: inset 0 0 0 1px var(--ai); }
+.composer textarea { width: 100%; height: 54px; resize: none; border: 0; background: none; font-size: 13px; line-height: 1.7; }
+.composer textarea:focus { outline: none; }
+.composer textarea::placeholder { color: var(--ink-3); }
+.tools { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.tools .sp { flex: 1; }
+.tool-btn { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 4px; color: var(--ink-3); }
+.tool-btn:hover { background: var(--raise); color: var(--ink); }
+.tool-btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.pick { display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px; border-radius: 4px; font-family: var(--mono); font-size: 11px; color: var(--ink-2); }
+.pick:hover { background: var(--raise); }
+.gauge { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+.gauge .track { width: 32px; height: 2px; background: var(--edge); border-radius: 2px; overflow: hidden; }
+.gauge .fill { display: block; height: 100%; width: 42%; background: var(--ink-3); }
+.send { width: 28px; height: 28px; border-radius: 4px; background: var(--ai); color: #101216; display: grid; place-items: center; }
+.send:hover { background: #A6C2E4; }
+.send svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+
+.foot { flex: none; height: 24px; display: flex; align-items: center; gap: 14px; padding: 0 18px; background: var(--panel); font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+.foot .lamp { color: var(--lamp); }
+.foot .al { color: var(--alert); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="lamp-line" title="職人が動いている間だけ灯る"></div>
+
+  <header class="top">
+    <div class="mark"><b>番頭</b><span>BANTO</span></div>
+    <nav class="threads">
+      <button class="thread on">意匠の作り直し<span class="x">×</span></button>
+      <button class="thread"><span class="bell"></span>Kobo 依存ゲート<span class="x">×</span></button>
+      <button class="thread">LLM 台帳の整理<span class="x">×</span></button>
+      <button class="thread-add">＋</button>
+    </nav>
+    <div class="top-r">
+      <span class="alert-pill"><i></i>判断待ち 1</span>
+      <button class="icon" title="履歴"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></button>
+      <button class="icon" title="設定"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.6 1.6 0 00-2.7 1.1V21a2 2 0 11-4 0v-.1A1.6 1.6 0 006.5 19.4l-.1.1a2 2 0 11-2.8-2.8l.1-.1A1.6 1.6 0 003 14.6H3a2 2 0 010-4h.1A1.6 1.6 0 004.6 8.5l-.1-.1a2 2 0 112.8-2.8l.1.1A1.6 1.6 0 009.4 4.6V4a2 2 0 014 0v.1a1.6 1.6 0 002.7 1.1l.1-.1a2 2 0 112.8 2.8l-.1.1a1.6 1.6 0 001.1 2.7H21a2 2 0 010 4h-.1a1.6 1.6 0 00-1.5 1z"/></svg></button>
+      <span class="state">ws · 接続中</span>
+    </div>
+  </header>
+
+  <div class="body">
+    <main class="canvas">
+      <div class="ctabs">
+        <button class="ctab on"><svg viewBox="0 0 24 24"><path d="M4 20v-2a4 4 0 014-4h8a4 4 0 014 4v2"/><circle cx="12" cy="8" r="4"/></svg>職人の手元<span class="x">×</span></button>
+        <button class="ctab"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>packages/banto-web<span class="x">×</span></button>
+        <button class="ctab"><svg viewBox="0 0 24 24"><path d="M12 4a4 4 0 00-4 4 3 3 0 000 6 4 4 0 008 0 3 3 0 000-6 4 4 0 00-4-4z"/></svg>記憶<span class="x">×</span></button>
+      </div>
+
+      <section class="pane">
+        <div class="pane-head">
+          <h1>職人の手元</h1><span class="n">4 人 / 1 稼働</span>
+          <span class="sp"></span><button class="btn">更新</button>
+        </div>
+
+        <div class="split">
+          <div class="list">
+            <button class="row run"><span class="st"></span><span><b>意匠トークンの棚卸し</b><s>w-31 · 04:12 稼働中</s></span></button>
+            <button class="row wait on"><span class="st"></span><span><b>views.css の分割</b><s>w-30 · 判断待ち 06:41</s></span></button>
+            <button class="row done"><span class="st"></span><span><b>依存ゲートの再実装</b><s>w-29 · 終わりました</s></span></button>
+            <button class="row fail"><span class="st"></span><span><b>WS 再接続の取りこぼし</b><s>w-28 · 失敗</s></span></button>
+          </div>
+
+          <div class="detail">
+            <div class="pane-head" style="padding-left:0;padding-right:0">
+              <h1>views.css の分割</h1><span class="n">w-30 · claude-sonnet-5</span>
+              <span class="sp"></span><button class="btn">中断</button>
+            </div>
+
+            <div class="ask">
+              <div class="ask-h"><i></i>あなたの判断を待っています</div>
+              <p>1770 行を 5 ファイルに割ります。ただし <code>.cv-*</code> の CSS 名は外向けの契約です。名前を変えてよいか決めてください。</p>
+              <div class="ask-a"><button class="btn alert">名前ごと変える</button><button class="btn">名前は据え置く</button><button class="btn">番頭に相談する</button></div>
+            </div>
+
+            <div class="log">
+              <div class="po">views.css を役割ごとに分けて</div>
+              <div class="tool"><i></i><span class="arg">file.read</span> packages/banto-web/src/views/views.css<span class="sp"></span>1770 行</div>
+              <div class="banto">
+                <p>1770 行の内訳を数えました。器（<code>.cv-bar</code> / <code>.cv-split</code>）が 420 行、部品が 700 行、面ごとの上書きが 650 行です。</p>
+                <ul><li>器と部品は共通なので 2 ファイルに残す</li><li>面ごとの上書きは各面へ寄せる</li></ul>
+              </div>
+              <div class="tool run"><i></i><span class="arg">file.write</span> views/parts.css<span class="sp"></span>書いています</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <aside class="chat">
+      <div class="chat-head"><h2>意匠の作り直し</h2><span class="sp"></span><button class="btn">新しい会話</button></div>
+      <div class="chat-scroll">
+        <div class="log">
+          <div class="po">画面の意匠がプロダクトらしくない。何が効いているか教えて</div>
+          <div class="think"><span>12秒 考えました</span><span class="bar"></span></div>
+          <div class="tool"><i></i><span class="arg">memory.search</span> 意匠 PO 指摘<span class="sp"></span>3件</div>
+          <div class="banto">
+            <p>効いているのは三つです。</p>
+            <ul>
+              <li><strong>字の大きさが 10.5〜13.5px に潰れている。</strong>見出しと注記の差が 3px しかなく、どこを先に読むか目が決められません。</li>
+              <li><strong>ほぼ全部の器に 1px の枠がある。</strong>入れ子の四角が画面を埋めていて、管理画面に見えます。</li>
+              <li><strong>絵文字を道具の絵に使っている。</strong>環境で字面が変わり、色も地から浮きます。</li>
+            </ul>
+            <p>職人を一人立てて、色と字の棚卸しをさせています。</p>
+          </div>
+          <div class="notice"><div class="notice-in"><em>職人 w-31</em><span>色 14 種・字の大きさ 11 段を検出しました</span></div></div>
+          <div class="po">枠を減らす方向で見本を作って</div>
+          <div class="think"><span>考えています</span><span class="bar"></span></div>
+        </div>
+      </div>
+      <div class="composer">
+        <div class="composer-in">
+          <textarea placeholder="番頭に相談する"></textarea>
+          <div class="tools">
+            <button class="tool-btn" title="添付"><svg viewBox="0 0 24 24"><path d="M21 11l-8.5 8.5a5 5 0 01-7-7L14 4a3.5 3.5 0 015 5l-8.5 8.5a2 2 0 01-3-3L15 6"/></svg></button>
+            <button class="pick">claude-opus-5 <span style="opacity:.5">▾</span></button>
+            <span class="gauge"><span class="track"><span class="fill"></span></span>42%</span>
+            <span class="sp"></span>
+            <button class="send"><svg viewBox="0 0 24 24"><path d="M5 12h13M12 5l7 7-7 7"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="foot">
+    <span>案2 夜番 — 灯りが仕事を示す</span>
+    <span style="flex:1"></span>
+    <span class="lamp">● 稼働 1</span><span class="al">● 判断待ち 1</span><span>済 1</span><span>失敗 1</span>
+  </div>
+</div>
+</body>
+</html>

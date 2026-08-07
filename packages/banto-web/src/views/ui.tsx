@@ -12,6 +12,7 @@
  */
 
 import React, { useEffect, useRef, useState } from "react";
+import { Icon, type IconName } from "../icons.js";
 
 // ── 骨格 ─────────────────────────────────────────────────────────────────────
 
@@ -48,11 +49,11 @@ export function ViewTitle({
 }: {
   children: React.ReactNode;
   count?: number;
-  icon?: string;
+  icon?: IconName;
 }): React.ReactElement {
   return (
     <span className="cv-title">
-      {icon && <span className="cv-title-icon" aria-hidden="true">{icon}</span>}
+      {icon && <Icon name={icon} size={17} className="cv-title-icon" />}
       <span className="cv-title-text">{children}</span>
       {count !== undefined && <span className="cv-count">{count}</span>}
     </span>
@@ -128,7 +129,7 @@ export function SplitView({
       <div className="cv-pane cv-pane-detail">
         {onBack && (
           <button className="cv-back" type="button" onClick={onBack}>
-            ‹ {backLabel}
+            <Icon name="chevron-left" size={14} /> {backLabel}
           </button>
         )}
         {detail}
@@ -211,7 +212,8 @@ export function CopyButton({
         void navigator.clipboard?.writeText(text).then(() => setDone(true));
       }}
     >
-      {done ? "✓ 写しました" : `⧉ ${label}`}
+      <Icon name={done ? "check" : "copy"} size={14} />
+      {done ? "写しました" : label}
     </Button>
   );
 }
@@ -320,11 +322,16 @@ export function TextInput({
  * **その場で絞るもの（onChange）と、投げて探すもの（onSubmit）を分ける**——
  * 手元にある一覧はキーを打つたびに絞れるが、サーバへ問い合わせるものを毎打鍵で
  * 投げると、打ち終わる前に何度も走る。
+ *
+ * 絞った先を上下と Enter で選ぶ一覧（`useListNav`）は、その鍵さばきを `onKeyDown` で
+ * 差し込む。**先に見るのは差し込まれた側**——Enter を一覧の確定に使う欄では、
+ * ここの onSubmit を二重に走らせない（`preventDefault` したかどうかで見分ける）。
  */
 export function SearchField({
   value,
   onChange,
   onSubmit,
+  onKeyDown,
   placeholder,
   autoFocus,
   className = "",
@@ -332,15 +339,14 @@ export function SearchField({
   value: string;
   onChange: (next: string) => void;
   onSubmit?: (value: string) => void;
+  onKeyDown?: (event: React.KeyboardEvent<HTMLInputElement>) => void;
   placeholder?: string;
   autoFocus?: boolean;
   className?: string;
 }): React.ReactElement {
   return (
     <span className={`cv-search ${className}`}>
-      <span className="cv-search-icon" aria-hidden="true">
-        🔍
-      </span>
+      <Icon name="search" size={15} className="cv-search-icon" />
       <input
         type="search"
         className="cv-search-input"
@@ -350,6 +356,8 @@ export function SearchField({
         spellCheck={false}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
+          onKeyDown?.(e);
+          if (e.defaultPrevented) return;
           if (e.key === "Enter" && !e.nativeEvent.isComposing) onSubmit?.(value);
           // Esc は「絞り込みをやめる」。IME の変換取り消しとは競合しない（変換中は無視）
           if (e.key === "Escape" && !e.nativeEvent.isComposing) {
@@ -369,7 +377,7 @@ export function SearchField({
             onSubmit?.("");
           }}
         >
-          ×
+          <Icon name="close" size={13} />
         </button>
       )}
     </span>
@@ -414,21 +422,19 @@ export function StatusDot({
 
 /** 何も無いときの面。**次の一手まで書く**——空白だけだと、壊れているのか空なのか分からない。 */
 export function EmptyState({
-  icon = "◦",
+  icon = "canvas",
   title,
   children,
   action,
 }: {
-  icon?: string;
+  icon?: IconName;
   title: string;
   children?: React.ReactNode;
   action?: React.ReactNode;
 }): React.ReactElement {
   return (
     <div className="cv-empty">
-      <div className="cv-empty-icon" aria-hidden="true">
-        {icon}
-      </div>
+      <Icon name={icon} size={26} stroke={1.3} className="cv-empty-icon" />
       <p className="cv-empty-title">{title}</p>
       {children && <p className="cv-empty-sub">{children}</p>}
       {action && <div className="cv-empty-actions">{action}</div>}
@@ -490,15 +496,13 @@ export function Note({
 }: {
   tone?: Tone;
   children: React.ReactNode;
-  icon?: string;
+  icon?: IconName;
 }): React.ReactElement {
+  // 絵を渡されなければ、色の役から決める（警告＝気をつける、失敗＝止まった）
+  const mark: IconName = icon ?? (tone === "ok" ? "check" : tone === "danger" ? "error" : "warn");
   return (
     <div className={`cv-note is-${tone}`}>
-      {icon && (
-        <span className="cv-note-icon" aria-hidden="true">
-          {icon}
-        </span>
-      )}
+      <Icon name={mark} size={15} className="cv-note-icon" />
       <span>{children}</span>
     </div>
   );
@@ -568,7 +572,7 @@ export function Modal({
         <div className="cv-modal-head">
           <span className="cv-modal-title">{title}</span>
           <IconButton label="閉じる" onClick={onClose}>
-            ×
+            <Icon name="close" size={15} />
           </IconButton>
         </div>
         <div className="cv-modal-body">{children}</div>
@@ -617,9 +621,7 @@ export function Disclosure({
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
-        <span className="cv-disc-caret" aria-hidden="true">
-          {open ? "▾" : "▸"}
-        </span>
+        <Icon name={open ? "chevron-down" : "chevron-right"} size={14} className="cv-disc-caret" />
         <span className="cv-disc-summary">{summary}</span>
       </button>
       {open && <div className="cv-disc-body">{children}</div>}

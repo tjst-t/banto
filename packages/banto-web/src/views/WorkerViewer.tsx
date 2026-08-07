@@ -12,6 +12,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useModuleTool } from "./useModuleTool.js";
 import type { CanvasViewProps } from "./registry.js";
 import { ReasoningRow, StreamingMarkdown, ToolRow, formatPayload } from "../messages.js";
+import { Icon } from "../icons.js";
 import {
   Badge,
   Button,
@@ -309,7 +310,7 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
           <Loading rows={5} />
         ) : workers.length === 0 ? (
           <EmptyState
-            icon="🛠"
+            icon="worker"
             title={query ? `「${query}」に当てはまる職人はいません` : "動いている職人はいません"}
           >
             {closedCount > 0 && !showClosed
@@ -359,7 +360,7 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
             disabled={current >= pageCount - 1}
             onClick={() => setPage(current + 1)}
           >
-            次 ›
+            次 <Icon name="chevron-right" size={13} />
           </Button>
         </div>
       )}
@@ -368,7 +369,7 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
 
   const state = selectedWorker ? stateOf(selectedWorker) : undefined;
   const detailPane = !selectedWorker ? (
-    <EmptyState icon="🛠" title="職人を選ぶと出力が見えます">
+    <EmptyState icon="worker" title="職人を選ぶと出力が見えます">
       稼働中でも覗けます（読むだけで、職人の邪魔はしません）。
     </EmptyState>
   ) : (
@@ -409,7 +410,7 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
         attach.loading ? (
           <Loading rows={5} />
         ) : (
-          <EmptyState icon="…" title="まだ出力がありません">
+          <EmptyState icon="worker" title="まだ出力がありません">
             職人が動き出すと、ここにやり取りが流れます。
           </EmptyState>
         )

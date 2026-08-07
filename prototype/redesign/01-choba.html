@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>案1 帳場 — banto 意匠案</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Shippori+Mincho:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ══════════════════════════════════════════════════════════════════════════
+   案1「帳場」— 素性は変えず、仕立てだけ直す
+
+   主張：和紙×藍の素性は正しい。壊れているのは仕立て（字の段・余白の刻み・枠の乱発）。
+   ・字は 6 段だけ。11 / 12 / 13 / 15 / 19 / 26。中間は作らない
+   ・余白は 4 の倍数だけ
+   ・枠（1px）は**実際の境目にだけ**引く。ふだんの区切りは紙の濃さの差で出す
+   ・朱（#B03A26）は「POの判断を待っているもの」だけに使う。他はどこにも出さない
+   ・番頭の言葉は明朝、こちらの言葉と道具立ては角ゴシック。声の主が書体で分かる
+
+   署名：落款。番頭の発言には朱の小さな印が捺され、判断待ちの行にも同じ印が立つ
+   ══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* 紙は3段。濃さの差だけで面を分ける（枠を引かないための土台） */
+  --paper:   #EFEBE1;   /* 地 */
+  --paper-1: #F8F6F0;   /* 立っている面 */
+  --paper-2: #E4DFD2;   /* 沈んだ面（入力・溝） */
+
+  --sumi:    #191712;   /* 墨 */
+  --sumi-2:  #4A463D;
+  --sumi-3:  #8A8474;
+
+  --ai:      #1E3A5F;   /* 藍：番頭側の主色 */
+  --ai-tint: #E3E7EE;
+
+  --shu:     #B03A26;   /* 朱：POの判断を待つものだけ */
+  --shu-tint:#F5E4DF;
+
+  --koke:    #4A6B45;   /* 苔：済んだもの */
+
+  --rule:    #DCD6C7;   /* 実際の境目にだけ引く線 */
+
+  --ui:   "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  --sho:  "Shippori Mincho", "Hiragino Mincho ProN", "Yu Mincho", serif;
+  --mono: "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: var(--ui); background: var(--paper); color: var(--sumi);
+  font-size: 13px; line-height: 1.75; -webkit-font-smoothing: antialiased;
+}
+button, input, textarea { font: inherit; color: inherit; }
+button { background: none; border: 0; cursor: pointer; }
+::selection { background: var(--ai-tint); }
+:focus-visible { outline: 2px solid var(--ai); outline-offset: 2px; }
+
+.shell { height: 100%; display: flex; flex-direction: column; }
+
+/* ── 上段：屋号・会話・状態 ─────────────────────────────────────────────── */
+.top {
+  flex: none; display: flex; align-items: center; gap: 20px;
+  height: 52px; padding: 0 20px; background: var(--paper-1);
+  border-bottom: 1px solid var(--rule);
+}
+.mark {
+  font-family: var(--sho); font-size: 19px; font-weight: 600; letter-spacing: 0.24em;
+  color: var(--ai); flex: none;
+}
+.mark small {
+  display: block; font-family: var(--ui); font-size: 10px; font-weight: 500;
+  letter-spacing: 0.3em; color: var(--sumi-3); margin-top: -6px;
+}
+
+/* 会話タブ：丸ボタンをやめ、下線で立てる。塗りは使わない（塗りは朱と藍に取っておく） */
+.threads { display: flex; align-items: stretch; gap: 0; height: 100%; min-width: 0; flex: 1; }
+.thread {
+  display: flex; align-items: center; gap: 8px; padding: 0 16px;
+  color: var(--sumi-3); font-size: 13px; white-space: nowrap;
+  box-shadow: inset 0 -2px 0 transparent; transition: color .12s, box-shadow .12s;
+}
+.thread:hover { color: var(--sumi); }
+.thread.on { color: var(--sumi); font-weight: 500; box-shadow: inset 0 -2px 0 var(--ai); }
+.thread .x { color: var(--sumi-3); font-size: 15px; line-height: 1; opacity: 0; }
+.thread:hover .x, .thread.on .x { opacity: .5; }
+.thread .x:hover { opacity: 1; color: var(--shu); }
+/* 見ていない会話に届いた知らせ＝判断を呼ぶかもしれない。だから朱 */
+.thread .bell { width: 5px; height: 5px; border-radius: 50%; background: var(--shu); flex: none; }
+.thread-add { padding: 0 12px; color: var(--sumi-3); font-size: 17px; line-height: 1; }
+.thread-add:hover { color: var(--ai); }
+
+.top-r { display: flex; align-items: center; gap: 4px; flex: none; }
+.icon { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 6px; color: var(--sumi-3); }
+.icon:hover { background: var(--paper-2); color: var(--sumi); }
+.icon svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.link {
+  display: flex; align-items: center; gap: 7px; margin-left: 10px;
+  font-size: 11px; color: var(--sumi-3); font-family: var(--mono);
+}
+.link i { width: 6px; height: 6px; border-radius: 50%; background: var(--koke); display: block; }
+
+.body { flex: 1; min-height: 0; display: flex; }
+
+/* ── 左：キャンバス ──────────────────────────────────────────────────────── */
+.canvas { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--paper); }
+
+.ctabs {
+  flex: none; display: flex; align-items: center; gap: 2px;
+  padding: 8px 12px 0; height: 40px;
+}
+.ctab {
+  display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px 0 12px;
+  font-size: 12px; color: var(--sumi-3); border-radius: 6px 6px 0 0;
+}
+.ctab:hover { color: var(--sumi); background: rgba(255,255,255,.5); }
+.ctab.on { color: var(--sumi); background: var(--paper-1); font-weight: 500; }
+.ctab svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; flex: none; opacity: .7; }
+.ctab .x { font-size: 14px; line-height: 1; opacity: 0; }
+.ctab:hover .x, .ctab.on .x { opacity: .45; }
+
+.pane {
+  flex: 1; min-height: 0; margin: 0 12px 12px; background: var(--paper-1);
+  border-radius: 0 8px 8px 8px; display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* 面の見出し：19px。ここではじめて「大きい字」が出る */
+.pane-head {
+  flex: none; display: flex; align-items: baseline; gap: 12px; padding: 20px 24px 16px;
+}
+.pane-head h1 { font-size: 19px; font-weight: 700; letter-spacing: .02em; }
+.pane-head .n { font-family: var(--mono); font-size: 12px; color: var(--sumi-3); }
+.pane-head .sp { flex: 1; }
+.btn {
+  height: 30px; padding: 0 14px; border-radius: 6px; font-size: 12px; font-weight: 500;
+  color: var(--sumi-2); background: var(--paper-2);
+}
+.btn:hover { background: #DAD4C4; }
+.btn.pri { background: var(--ai); color: #fff; }
+.btn.pri:hover { background: #16294A; }
+.btn.shu { background: var(--shu); color: #fff; }
+.btn.shu:hover { background: #8F2D1C; }
+
+.split { flex: 1; min-height: 0; display: flex; }
+.list { width: 290px; flex: none; overflow-y: auto; padding: 0 8px 12px 12px; }
+.detail { flex: 1; min-width: 0; overflow-y: auto; padding: 0 24px 24px; border-left: 1px solid var(--rule); }
+
+/* 一覧の行：枠を持たない。状態は左の細い罫と字の濃さで出す */
+.row {
+  display: flex; align-items: flex-start; gap: 10px; width: 100%; text-align: left;
+  padding: 10px 12px; border-radius: 6px; border-left: 2px solid transparent;
+}
+.row:hover { background: var(--paper-2); }
+.row.on { background: var(--paper-2); }
+.row .st { flex: none; width: 8px; height: 8px; border-radius: 50%; margin-top: 7px; }
+.row .st.run  { background: var(--ai); box-shadow: 0 0 0 3px var(--ai-tint); }
+.row .st.wait { background: var(--shu); box-shadow: 0 0 0 3px var(--shu-tint); }
+.row .st.done { background: var(--koke); opacity: .55; }
+.row .st.fail { background: var(--sumi-3); }
+.row b { display: block; font-size: 13px; font-weight: 500; line-height: 1.5; }
+.row s  { display: block; font-family: var(--mono); font-size: 11px; color: var(--sumi-3); text-decoration: none; margin-top: 2px; }
+/* 判断待ちだけ朱の罫が立つ。一覧を上から舐めれば、朱の位置だけ見ればよい */
+.row.wait { border-left-color: var(--shu); }
+.row.done b { color: var(--sumi-2); font-weight: 400; }
+.row.fail b { color: var(--sumi-2); font-weight: 400; }
+
+/* 落款：POの判断を待っているものに捺す */
+.seal {
+  flex: none; display: inline-grid; place-items: center; width: 20px; height: 20px;
+  background: var(--shu); color: #fff; font-family: var(--sho); font-size: 12px;
+  font-weight: 600; border-radius: 2px; letter-spacing: 0;
+}
+
+/* 判断を求める札：カードではなく、朱の罫が付いた地の文 */
+.ask { margin: 4px 0 20px; padding: 14px 0 14px 18px; border-left: 3px solid var(--shu); }
+.ask-h { display: flex; align-items: center; gap: 9px; margin-bottom: 6px; }
+.ask-h b { font-size: 13px; font-weight: 700; color: var(--shu); letter-spacing: .04em; }
+.ask p { font-family: var(--sho); font-size: 14px; line-height: 1.85; }
+.ask-a { display: flex; gap: 8px; margin-top: 14px; }
+
+.log { display: flex; flex-direction: column; gap: 18px; padding-top: 4px; }
+
+/* ── 発話 ──────────────────────────────────────────────────────────────── */
+/* POの言葉：角ゴシック、沈んだ紙。自分が打ったものだと分かればよい */
+.po {
+  align-self: flex-end; max-width: 84%; background: var(--paper-2);
+  padding: 10px 14px; border-radius: 8px 8px 2px 8px; font-size: 13px;
+}
+/* 番頭の言葉：明朝。落款が左の余白に立つ。器は無い（地の文として置く） */
+.banto { position: relative; padding-left: 32px; font-family: var(--sho); font-size: 14px; line-height: 1.95; }
+.banto::before {
+  content: "番"; position: absolute; left: 0; top: 3px;
+  width: 20px; height: 20px; display: grid; place-items: center;
+  background: var(--ai); color: #fff; font-size: 12px; font-weight: 600; border-radius: 2px;
+}
+.banto p + p, .banto ul { margin-top: 10px; }
+.banto ul { padding-left: 18px; }
+.banto li { margin: 3px 0; }
+.banto strong { font-weight: 600; }
+.banto code {
+  font-family: var(--mono); font-size: 11.5px; background: var(--paper-2);
+  padding: 1px 5px; border-radius: 3px;
+}
+
+/* 道具の呼び出し：会話の下敷き。字は小さく、色は持たない */
+.tool {
+  display: flex; align-items: center; gap: 9px; font-family: var(--mono);
+  font-size: 11px; color: var(--sumi-3); padding-left: 32px;
+}
+.tool i { width: 5px; height: 5px; border-radius: 50%; background: var(--koke); flex: none; }
+.tool .arg { color: var(--sumi-2); }
+.tool .sp { flex: 1; }
+
+/* 思考：畳んだまま、行として置く */
+.think { padding-left: 32px; font-size: 12px; color: var(--sumi-3); display: flex; gap: 8px; align-items: center; }
+.think .bar { flex: 1; height: 1px; background: var(--rule); }
+
+/* 職人からの知らせ：黒い箱をやめ、藍の細罫の引用にする */
+.notice { padding-left: 32px; }
+.notice-in { border-left: 2px solid var(--ai-tint); padding: 2px 0 2px 12px; }
+.notice-in em { font-style: normal; font-size: 10.5px; font-weight: 700; letter-spacing: .1em; color: var(--ai); display: block; }
+.notice-in span { font-size: 12px; color: var(--sumi-2); }
+
+/* ── 右：番頭との会話 ────────────────────────────────────────────────────── */
+.chat { width: 428px; flex: none; display: flex; flex-direction: column; background: var(--paper-1); border-left: 1px solid var(--rule); }
+.chat-head { flex: none; padding: 18px 22px 12px; display: flex; align-items: baseline; gap: 10px; }
+.chat-head h2 { font-size: 15px; font-weight: 700; }
+.chat-head .sp { flex: 1; }
+.chat-head .thin { font-size: 11.5px; color: var(--sumi-3); }
+.chat-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 22px 20px; }
+
+/* 入力：枠で囲わない。沈めるだけ */
+.composer { flex: none; padding: 0 16px 16px; }
+.composer-in { background: var(--paper-2); border-radius: 10px; padding: 12px 14px 8px; transition: box-shadow .12s; }
+.composer-in:focus-within { box-shadow: 0 0 0 2px var(--ai); }
+.composer textarea { width: 100%; height: 56px; resize: none; border: 0; background: none; font-size: 13px; line-height: 1.7; }
+.composer textarea:focus { outline: none; }
+.composer textarea::placeholder { color: var(--sumi-3); }
+.tools { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.tools .sp { flex: 1; }
+.tool-btn { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 6px; color: var(--sumi-3); }
+.tool-btn:hover { background: rgba(0,0,0,.05); color: var(--sumi); }
+.tool-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.pick { display: flex; align-items: center; gap: 5px; height: 28px; padding: 0 9px; border-radius: 6px; font-family: var(--mono); font-size: 11.5px; color: var(--sumi-2); }
+.pick:hover { background: rgba(0,0,0,.05); }
+.gauge { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11px; color: var(--sumi-3); }
+.gauge .track { width: 34px; height: 3px; border-radius: 2px; background: rgba(0,0,0,.1); overflow: hidden; }
+.gauge .fill { display: block; height: 100%; width: 42%; background: var(--sumi-3); }
+.send { width: 30px; height: 30px; border-radius: 6px; background: var(--ai); color: #fff; display: grid; place-items: center; }
+.send:hover { background: #16294A; }
+.send svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+.foot {
+  flex: none; height: 26px; display: flex; align-items: center; padding: 0 20px;
+  background: var(--sumi); color: var(--paper); font-size: 11px; font-family: var(--mono); gap: 10px;
+}
+.foot b { color: var(--shu); font-weight: 500; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="top">
+    <div class="mark">番頭<small>BANTO</small></div>
+    <nav class="threads">
+      <button class="thread on">意匠の作り直し<span class="x">×</span></button>
+      <button class="thread"><span class="bell"></span>Kobo 依存ゲート<span class="x">×</span></button>
+      <button class="thread">LLM 台帳の整理<span class="x">×</span></button>
+      <button class="thread-add">＋</button>
+    </nav>
+    <div class="top-r">
+      <button class="icon" title="履歴"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></button>
+      <button class="icon" title="設定"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 12h4M12 12h8M4 17h10M18 17h2"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="16" cy="17" r="2"/></svg></button>
+      <span class="link"><i></i>接続中</span>
+    </div>
+  </header>
+
+  <div class="body">
+    <main class="canvas">
+      <div class="ctabs">
+        <button class="ctab on"><svg viewBox="0 0 24 24"><path d="M4 20v-2a4 4 0 014-4h8a4 4 0 014 4v2"/><circle cx="12" cy="8" r="4"/></svg>職人の手元<span class="x">×</span></button>
+        <button class="ctab"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>packages/banto-web<span class="x">×</span></button>
+        <button class="ctab"><svg viewBox="0 0 24 24"><path d="M12 4a4 4 0 00-4 4 3 3 0 000 6 4 4 0 008 0 3 3 0 000-6 4 4 0 00-4-4z"/></svg>記憶<span class="x">×</span></button>
+      </div>
+
+      <section class="pane">
+        <div class="pane-head">
+          <h1>職人の手元</h1>
+          <span class="n">4 人</span>
+          <span class="sp"></span>
+          <button class="btn">更新</button>
+        </div>
+
+        <div class="split">
+          <div class="list">
+            <button class="row"><span class="st run"></span><span><b>意匠トークンの棚卸し</b><s>w-31 · 4分12秒</s></span></button>
+            <button class="row on wait"><span class="st wait"></span><span><b>views.css の分割</b><s>w-30 · 判断待ち</s></span></button>
+            <button class="row done"><span class="st done"></span><span><b>依存ゲートの再実装</b><s>w-29 · 終わりました</s></span></button>
+            <button class="row fail"><span class="st fail"></span><span><b>WS 再接続の取りこぼし</b><s>w-28 · 失敗</s></span></button>
+          </div>
+
+          <div class="detail">
+            <div class="pane-head" style="padding-left:0;padding-right:0">
+              <h1>views.css の分割</h1>
+              <span class="n">w-30 · claude-sonnet-5</span>
+              <span class="sp"></span>
+              <button class="btn">中断</button>
+            </div>
+
+            <div class="ask">
+              <div class="ask-h"><span class="seal">断</span><b>あなたの判断を待っています</b></div>
+              <p>1770 行を 5 ファイルに割ります。ただし <code style="font-family:var(--mono);font-size:12px">.cv-*</code> の CSS 名は外向けの契約です。名前を変えてよいか決めてください。</p>
+              <div class="ask-a"><button class="btn shu">名前ごと変える</button><button class="btn">名前は据え置く</button><button class="btn">番頭に相談する</button></div>
+            </div>
+
+            <div class="log">
+              <div class="po">views.css を役割ごとに分けて</div>
+              <div class="tool"><i></i><span class="arg">file.read</span> packages/banto-web/src/views/views.css<span class="sp"></span>1770 行</div>
+              <div class="banto">
+                <p>1770 行の内訳を数えました。器（<code>.cv-bar</code> / <code>.cv-split</code>）が 420 行、部品が 700 行、面ごとの上書きが 650 行です。</p>
+                <ul><li>器と部品は共通なので 2 ファイルに残す</li><li>面ごとの上書きは各面へ寄せる</li></ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <aside class="chat">
+      <div class="chat-head">
+        <h2>意匠の作り直し</h2>
+        <span class="sp"></span>
+        <button class="btn">新しい会話</button>
+      </div>
+
+      <div class="chat-scroll">
+        <div class="log">
+          <div class="po">画面の意匠がプロダクトらしくない。何が効いているか教えて</div>
+
+          <div class="think"><span>12秒 考えました</span><span class="bar"></span></div>
+          <div class="tool"><i></i><span class="arg">memory.search</span> 意匠 PO 指摘<span class="sp"></span>3件</div>
+
+          <div class="banto">
+            <p>効いているのは三つです。</p>
+            <ul>
+              <li><strong>字の大きさが 10.5〜13.5px に潰れている。</strong>見出しと注記の差が 3px しかなく、どこを先に読むか目が決められません。</li>
+              <li><strong>ほぼ全部の器に 1px の枠がある。</strong>入れ子の四角が画面を埋めていて、管理画面に見えます。</li>
+              <li><strong>絵文字を道具の絵に使っている。</strong>環境で字面が変わり、色も和紙の地から浮きます。</li>
+            </ul>
+            <p>職人を一人立てて、色と字の棚卸しをさせています。</p>
+          </div>
+
+          <div class="notice"><div class="notice-in"><em>職人 w-31</em><span>色 14 種・字の大きさ 11 段を検出しました</span></div></div>
+
+          <div class="po">枠を減らす方向で見本を作って</div>
+
+          <div class="think"><span>考えています</span><span class="bar"></span></div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <div class="composer-in">
+          <textarea placeholder="番頭に相談する"></textarea>
+          <div class="tools">
+            <button class="tool-btn" title="添付"><svg viewBox="0 0 24 24"><path d="M21 11l-8.5 8.5a5 5 0 01-7-7L14 4a3.5 3.5 0 015 5l-8.5 8.5a2 2 0 01-3-3L15 6"/></svg></button>
+            <button class="pick">claude-opus-5 <span style="opacity:.5">▾</span></button>
+            <span class="gauge" title="文脈 42%"><span class="track"><span class="fill"></span></span>42%</span>
+            <span class="sp"></span>
+            <button class="send" title="送る"><svg viewBox="0 0 24 24"><path d="M5 12h13M12 5l7 7-7 7"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="foot">案1 帳場 — 素性は変えず、仕立てだけ直す<span style="flex:1"></span><b>判断待ち 1</b><span>職人 4</span></div>
+</div>
+</body>
+</html>

@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>決定版 — banto の画面</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Shippori+Mincho:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* ══════════════════════════════════════════════════════════════════════════
+   決定版の画面 — PO 裁定（2026-08-05）をすべて反映
+
+   ①番頭の言葉は明朝  ②朱は判断待ち専用・エラーは紫  ③明が主・暗が従
+   ④取次は一本化      ⑤会話とキャンバスの主従は据え置き（2ペインのまま）
+
+   意匠の値は tokens.css だけから引く。ここには**組み方**しか書かない。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: var(--ui); background: var(--paper); color: var(--sumi);
+  font-size: var(--t-body); line-height: 1.75; -webkit-font-smoothing: antialiased;
+}
+button, input, textarea { font: inherit; color: inherit; }
+button { background: none; border: 0; cursor: pointer; }
+::selection { background: var(--ai-t); }
+:focus-visible { outline: 2px solid var(--ai); outline-offset: 2px; }
+code { font-family: var(--mono); font-size: var(--t-note); background: var(--paper-2); padding: 1px 5px; border-radius: 3px; }
+
+.shell { height: 100%; display: flex; flex-direction: column; padding-bottom: 26px; }
+
+/* ── 上段 ─────────────────────────────────────────────────────────────── */
+.top {
+  flex: none; display: flex; align-items: center; gap: var(--s5);
+  height: 52px; padding: 0 var(--s5); background: var(--paper-1); border-bottom: 1px solid var(--rule);
+}
+.mark { font-family: var(--sho); font-size: var(--t-head); font-weight: 600; letter-spacing: .24em; color: var(--ai); flex: none; }
+.mark small { display: block; font-family: var(--ui); font-size: 10px; font-weight: 500; letter-spacing: .3em; color: var(--sumi-3); margin-top: -6px; }
+
+.threads { display: flex; align-items: stretch; height: 100%; min-width: 0; flex: 1; }
+.thread {
+  display: flex; align-items: center; gap: var(--s2); padding: 0 var(--s4);
+  color: var(--sumi-3); font-size: var(--t-body); white-space: nowrap;
+  box-shadow: inset 0 -2px 0 transparent; transition: color .12s, box-shadow .12s;
+}
+.thread:hover { color: var(--sumi); }
+.thread.on { color: var(--sumi); font-weight: 500; box-shadow: inset 0 -2px 0 var(--ai); }
+/* 見ていない会話に届いた知らせ＝判断を呼びうる。だから朱 */
+.thread .bell { width: 5px; height: 5px; border-radius: 50%; background: var(--shu); flex: none; }
+.thread-add { padding: 0 var(--s3); color: var(--sumi-3); font-size: 17px; line-height: 1; }
+.thread-add:hover { color: var(--ai); }
+
+.top-r { display: flex; align-items: center; gap: var(--s1); flex: none; }
+.icon { width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--r-ctl); color: var(--sumi-3); }
+.icon:hover { background: var(--paper-2); color: var(--sumi); }
+.icon svg, .inbox-btn svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+/* ④ 取次：常設はこのボタンだけ。押すまで画面を取らない */
+.inbox-btn { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 11px 0 9px; border-radius: var(--r-ctl); color: var(--sumi-2); }
+.inbox-btn:hover { background: var(--paper-2); color: var(--sumi); }
+.inbox-btn.on { background: var(--ai); color: var(--paper-1); }
+/* ② 朱は「あなたの判断待ち」専用。塗ってよい唯一の色 */
+.inbox-n { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--shu); color: var(--on-shu); font-family: var(--mono); font-size: var(--t-note); display: grid; place-items: center; line-height: 1; }
+.inbox-btn.on .inbox-n { background: var(--paper-1); color: var(--ai); }
+.is-empty .inbox-n { background: var(--paper-2); color: var(--sumi-3); }
+
+.link { display: flex; align-items: center; gap: 7px; margin-left: var(--s2); font-size: var(--t-note); color: var(--sumi-3); font-family: var(--mono); }
+.link i { width: 6px; height: 6px; border-radius: 50%; background: var(--koke); display: block; }
+
+.body { flex: 1; min-height: 0; display: flex; position: relative; }
+
+/* ── キャンバス（⑤ 2ペインのまま据え置き） ──────────────────────────── */
+.canvas { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.ctabs { flex: none; display: flex; align-items: center; gap: 2px; padding: var(--s2) var(--s3) 0; height: 40px; }
+.ctab { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 var(--s3); font-size: var(--t-meta); color: var(--sumi-3); border-radius: var(--r-ctl) var(--r-ctl) 0 0; }
+.ctab:hover { color: var(--sumi); }
+.ctab.on { color: var(--sumi); background: var(--paper-1); font-weight: 500; }
+.ctab svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; opacity: .75; }
+
+.pane { flex: 1; min-height: 0; margin: 0 var(--s3) var(--s3); background: var(--paper-1); border-radius: 0 var(--r-face) var(--r-face) var(--r-face); overflow: hidden; display: flex; flex-direction: column; }
+.pane-head { flex: none; display: flex; align-items: baseline; gap: var(--s3); padding: var(--s5) var(--s6) var(--s4); }
+.pane-head h1 { font-size: var(--t-head); font-weight: 700; letter-spacing: .02em; }
+.pane-head .n { font-family: var(--mono); font-size: var(--t-meta); color: var(--sumi-3); }
+.pane-head .sp { flex: 1; }
+
+.btn { height: 30px; padding: 0 14px; border-radius: var(--r-ctl); font-size: var(--t-meta); font-weight: 500; color: var(--sumi-2); background: var(--paper-2); white-space: nowrap; flex: none; }
+.btn:hover { color: var(--sumi); filter: brightness(.96); }
+.btn.shu { background: var(--shu); color: var(--on-shu); }  /* 塗ってよいのは朱だけ */
+.btn.shu:hover { filter: brightness(1.08); }
+.btn.flat { background: none; color: var(--sumi-3); }
+.btn.flat:hover { background: var(--paper-2); color: var(--sumi); }
+
+.split { flex: 1; min-height: 0; display: flex; }
+.list { width: 290px; flex: none; overflow-y: auto; padding: 0 var(--s2) var(--s3) var(--s3); }
+.detail { flex: 1; min-width: 0; overflow-y: auto; padding: 0 var(--s6) var(--s6); border-left: 1px solid var(--rule); }
+
+/* 一覧の行：枠を持たない。状態は点と左罫だけで出す */
+.row { display: flex; align-items: flex-start; gap: var(--s3); width: 100%; text-align: left; padding: 10px var(--s3); border-radius: var(--r-ctl); border-left: 2px solid transparent; }
+.row:hover { background: var(--paper-2); }
+.row.on { background: var(--paper-2); }
+.row b { display: block; font-size: var(--t-body); font-weight: 500; line-height: 1.5; }
+.row s { display: block; text-decoration: none; font-family: var(--mono); font-size: var(--t-note); color: var(--sumi-3); margin-top: 2px; }
+.row.wait { border-left-color: var(--shu); }
+.row.stop { border-left-color: var(--murasaki); }
+
+/* ══ 状態の点：5役ぶん。色だけでなく形も変える（色が見えない人にも通る）══ */
+.st { flex: none; width: 9px; height: 9px; margin-top: 6px; border-radius: 50%; }
+.st.run  { background: var(--ai);  box-shadow: 0 0 0 3px var(--ai-t); }          /* ● 進んでいる */
+.st.wait { background: var(--shu); box-shadow: 0 0 0 3px var(--shu-t); }         /* ● あなたの番 */
+.st.stop { background: none; box-shadow: inset 0 0 0 2px var(--murasaki); border-radius: 2px; transform: rotate(45deg); } /* ◆ 止まった */
+.st.warn { background: none; box-shadow: inset 0 0 0 2px var(--kohaku); border-radius: 1px; } /* ■ 気をつける */
+.st.done { background: none; box-shadow: inset 0 0 0 2px var(--koke); }          /* ○ 済んだ */
+.row.wait s { color: var(--shu); }
+.row.stop s { color: var(--murasaki); }
+.row.done b { color: var(--sumi-2); font-weight: 400; }
+
+/* ② エラーの札：紫。朱と違って**塗らない**——面は淡い地、罫と字だけが紫 */
+.stop-note { margin: var(--s1) 0 var(--s5); padding: var(--s4) var(--s5); border-radius: var(--r-face); background: var(--mur-t); box-shadow: inset 3px 0 0 var(--murasaki); }
+.stop-h { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-note); font-weight: 700; letter-spacing: .08em; color: var(--murasaki); margin-bottom: var(--s1); }
+.stop-h svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.stop-note p { font-size: var(--t-body); line-height: 1.85; }
+.stop-note pre { margin-top: var(--s2); padding: var(--s2) var(--s3); border-radius: var(--r-ctl); background: var(--paper-1); font-family: var(--mono); font-size: var(--t-note); line-height: 1.7; overflow-x: auto; color: var(--sumi-2); }
+.stop-a { display: flex; gap: var(--s2); margin-top: var(--s3); }
+
+/* 判断を求める札：朱。落款が捺してある */
+/* 判断の札。**止まった札（紫）より必ず重い**——朱が最上位という規則を、
+   地の濃さ・落款・塗りボタンの三点で絵にも守らせる */
+.ask { margin: var(--s1) 0 var(--s5); padding: var(--s4) var(--s5); border-radius: var(--r-face);
+       background: var(--shu-t); box-shadow: inset 3px 0 0 var(--shu); }
+.ask-h { display: flex; align-items: center; gap: 9px; margin-bottom: 6px; }
+.ask-h b { font-size: var(--t-body); font-weight: 700; color: var(--shu); letter-spacing: .04em; }
+.seal { flex: none; display: inline-grid; place-items: center; width: 20px; height: 20px; background: var(--shu); color: var(--on-shu); font-family: var(--sho); font-size: var(--t-meta); font-weight: 600; border-radius: var(--r-seal); }
+.ask p { font-family: var(--sho); font-size: 14px; line-height: 1.85; }
+.ask-a { display: flex; gap: var(--s2); margin-top: var(--s3); }
+
+/* ── 会話 ─────────────────────────────────────────────────────────────── */
+.chat { width: 420px; flex: none; display: flex; flex-direction: column; background: var(--paper-1); border-left: 1px solid var(--rule); }
+.chat-head { flex: none; display: flex; align-items: baseline; gap: var(--s3); padding: 18px var(--s6) var(--s3); }
+.chat-head h2 { font-size: var(--t-read); font-weight: 700; }
+.chat-head .sp { flex: 1; }
+.chat-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: var(--s2) var(--s6) var(--s5); }
+.log { display: flex; flex-direction: column; gap: 18px; }
+
+.po { align-self: flex-end; max-width: 84%; background: var(--paper-2); padding: 10px 14px; border-radius: var(--r-face) var(--r-face) 2px var(--r-face); font-size: var(--t-body); }
+/* ① 番頭の言葉は明朝。落款が左の余白に立つ。器は持たせない */
+.banto { position: relative; padding-left: var(--s8); font-family: var(--sho); font-size: 14px; line-height: 1.95; }
+.banto::before { content: "番"; position: absolute; left: 0; top: 3px; width: 20px; height: 20px; display: grid; place-items: center; background: var(--ai); color: var(--paper-1); font-size: var(--t-meta); font-weight: 600; border-radius: var(--r-seal); }
+.banto p + p, .banto ul { margin-top: 10px; }
+.banto ul { padding-left: 18px; }
+.banto strong { font-weight: 600; }
+
+.tool { display: flex; align-items: center; gap: 9px; padding-left: var(--s8); font-family: var(--mono); font-size: var(--t-note); color: var(--sumi-3); }
+.tool i { width: 5px; height: 5px; border-radius: 50%; background: var(--koke); flex: none; }
+.tool .arg { color: var(--sumi-2); }
+.tool .sp { flex: 1; }
+/* 失敗した道具も紫。会話の中でも、面の中でも、止まったものは同じ色 */
+.tool.stop i { background: none; box-shadow: inset 0 0 0 2px var(--murasaki); border-radius: 1px; transform: rotate(45deg); }
+.tool.stop, .tool.stop .arg { color: var(--murasaki); }
+
+.think { display: flex; align-items: center; gap: var(--s2); padding-left: var(--s8); font-size: var(--t-meta); color: var(--sumi-3); }
+.think .bar { flex: 1; height: 1px; background: var(--rule); }
+
+/* 会話の中のエラー行：紫。閉じられる */
+.err { display: flex; align-items: flex-start; gap: var(--s2); padding: 10px var(--s3); border-radius: var(--r-ctl); background: var(--mur-t); box-shadow: inset 2px 0 0 var(--murasaki); font-size: var(--t-meta); color: var(--sumi); }
+.err svg { width: 14px; height: 14px; flex: none; margin-top: 3px; fill: none; stroke: var(--murasaki); stroke-width: 1.8; stroke-linecap: round; }
+.err .sp { flex: 1; }
+.err button { color: var(--sumi-3); font-size: 14px; line-height: 1; padding: 0 2px; }
+.err button:hover { color: var(--murasaki); }
+
+.composer { flex: none; padding: 0 var(--s4) var(--s4); }
+.composer-in { background: var(--paper-2); border-radius: var(--r-face); padding: var(--s3) 14px var(--s2); transition: box-shadow .12s; }
+.composer-in:focus-within { box-shadow: 0 0 0 2px var(--ai); }
+.composer textarea { width: 100%; height: 54px; resize: none; border: 0; background: none; font-size: var(--t-body); line-height: 1.7; }
+.composer textarea:focus { outline: none; }
+.composer textarea::placeholder { color: var(--sumi-3); }
+.tools { display: flex; align-items: center; gap: var(--s2); margin-top: var(--s1); }
+.tools .sp { flex: 1; }
+.pick { display: flex; align-items: center; gap: 5px; height: 28px; padding: 0 9px; border-radius: var(--r-ctl); font-family: var(--mono); font-size: var(--t-note); color: var(--sumi-2); }
+.pick:hover { background: var(--paper-1); }
+/* 琥珀＝気をつける。文脈が逼迫してきたことを、数字を読まずに知らせる */
+.gauge { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: var(--t-note); color: var(--kohaku); }
+.gauge .track { width: 34px; height: 3px; border-radius: 2px; background: var(--koh-t); overflow: hidden; }
+.gauge .fill { display: block; height: 100%; width: 78%; background: var(--kohaku); }
+.send { width: 30px; height: 30px; border-radius: var(--r-ctl); background: var(--ai); color: var(--paper-1); display: grid; place-items: center; }
+.send svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ── ④ 取次の面：履歴・設定と同じ一級の面。会話に被さる ────────────────── */
+.face { position: absolute; inset: 0; z-index: 20; background: var(--paper); display: none; flex-direction: column; }
+.is-open .face { display: flex; }
+.face-head { flex: none; padding: 22px var(--s8) 14px; }
+.face-inner { max-width: 780px; margin: 0 auto; }
+.face-head h1 { font-family: var(--sho); font-size: var(--t-title); font-weight: 600; }
+.face-head p { font-size: var(--t-meta); color: var(--sumi-2); line-height: 1.9; margin-top: var(--s1); }
+.face-head p b { font-weight: 700; color: var(--sumi); }
+.face-bar { display: flex; align-items: center; gap: 6px; margin-top: 14px; flex-wrap: wrap; }
+.chip { height: 27px; padding: 0 var(--s3); border-radius: 999px; font-size: var(--t-note); color: var(--sumi-2); background: var(--paper-2); }
+.chip:hover { color: var(--sumi); filter: brightness(.96); }
+.chip.on { background: var(--ai); color: var(--paper-1); font-weight: 500; }
+.chip .c { opacity: .6; margin-left: 5px; font-family: var(--mono); font-size: 10.5px; }
+.face-bar .sp { flex: 1; }
+.face-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 6px var(--s8) var(--s8); }
+
+/* 一通の文：spec-ui §3 の三部構成（経緯／起きたこと／求める判断） */
+.letter { background: var(--paper-1); border-radius: var(--r-face); padding: var(--s4) 18px 14px; margin-bottom: 10px; width: 100%; text-align: left; box-shadow: var(--shadow-rest); border-left: 3px solid var(--shu); }
+.letter.warn { border-left-color: var(--kohaku); }
+.letter.later { border-left-color: var(--rule); }
+.letter.is-read { opacity: .6; }
+.lt-top { display: flex; align-items: center; gap: 9px; margin-bottom: var(--s2); flex-wrap: wrap; }
+.lt-from { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-note); font-weight: 700; letter-spacing: .04em; color: var(--sumi-2); }
+.lt-from svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.lt-kind { font-size: 10.5px; font-weight: 700; letter-spacing: .06em; color: var(--shu); }
+.letter.warn .lt-kind { color: var(--kohaku); }
+.letter.later .lt-kind { color: var(--sumi-3); }
+.lt-rule { padding: 0 5px; border-radius: 3px; background: var(--paper-2); color: var(--sumi-3); font-family: var(--mono); font-size: 9.5px; }
+.lt-top .sp { flex: 1; }
+.lt-age { font-family: var(--mono); font-size: 10.5px; color: var(--sumi-3); }
+.letter h2 { font-size: var(--t-read); font-weight: 700; line-height: 1.6; margin-bottom: var(--s2); }
+.letter dl { display: grid; grid-template-columns: 74px 1fr; gap: 2px var(--s3); font-size: var(--t-meta); line-height: 1.8; }
+.letter dt { font-size: var(--t-note); color: var(--sumi-3); }
+.letter dd { color: var(--sumi-2); }
+.letter dd q { color: var(--sumi); font-style: normal; }
+.lt-a { display: flex; gap: 7px; margin-top: var(--s3); flex-wrap: wrap; }
+.lt-go { margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--rule); font-size: var(--t-note); color: var(--sumi-3); display: flex; align-items: center; gap: 7px; }
+.lt-go svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.face-sep { display: flex; align-items: center; gap: var(--s3); margin: 22px 0 var(--s3); font-size: var(--t-note); color: var(--sumi-3); }
+.face-sep::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+
+/* 見本の札（製品の一部ではない）。明暗どちらでも静かに置く */
+.foot { position: fixed; left: 0; right: 0; bottom: 0; height: 26px; display: flex; align-items: center; gap: var(--s3);
+        padding: 0 var(--s5); background: var(--paper-2); color: var(--sumi-2); border-top: 1px solid var(--rule);
+        font-family: var(--mono); font-size: var(--t-note); z-index: 40; }
+.foot b { color: var(--shu); font-weight: 500; }
+.foot .m { color: var(--murasaki); }
+</style>
+</head>
+<body>
+<div class="shell" id="shell">
+  <header class="top">
+    <div class="mark">番頭<small>BANTO</small></div>
+    <nav class="threads">
+      <button class="thread on">意匠の作り直し</button>
+      <button class="thread"><span class="bell"></span>Kobo 依存ゲート</button>
+      <button class="thread">LLM 台帳の整理</button>
+      <button class="thread-add">＋</button>
+    </nav>
+    <div class="top-r">
+      <button class="inbox-btn" id="inboxBtn" title="取次（番頭に用があるもの）">
+        <svg viewBox="0 0 24 24"><path d="M3 13h4l2 3h6l2-3h4"/><path d="M5 5h14l2 8v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4z"/></svg>
+        取次<span class="inbox-n">4</span>
+      </button>
+      <button class="icon" title="履歴"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></button>
+      <button class="icon" title="設定"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 12h4M12 12h8M4 17h10M18 17h2"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="16" cy="17" r="2"/></svg></button>
+      <!-- ③ 明が主、暗が従。同じトークンの裏返しなので、切り替えても意味は変わらない -->
+      <button class="icon" id="themeBtn" title="明かりを落とす">
+        <svg id="themeIcon" viewBox="0 0 24 24"><path d="M20 14a8 8 0 01-10-10 8 8 0 1010 10z"/></svg>
+      </button>
+      <span class="link"><i></i>接続中</span>
+    </div>
+  </header>
+
+  <div class="body">
+    <main class="canvas">
+      <div class="ctabs">
+        <button class="ctab on"><svg viewBox="0 0 24 24"><path d="M4 20v-2a4 4 0 014-4h8a4 4 0 014 4v2"/><circle cx="12" cy="8" r="4"/></svg>職人の手元</button>
+        <button class="ctab"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>packages/banto-web</button>
+        <button class="ctab"><svg viewBox="0 0 24 24"><path d="M12 4a4 4 0 00-4 4 3 3 0 000 6 4 4 0 008 0 3 3 0 000-6 4 4 0 00-4-4z"/></svg>記憶</button>
+      </div>
+
+      <section class="pane">
+        <div class="pane-head"><h1>職人の手元</h1><span class="n">4 人</span><span class="sp"></span><button class="btn">更新</button></div>
+
+        <div class="split">
+          <div class="list">
+            <button class="row"><span class="st run"></span><span><b>意匠トークンの棚卸し</b><s>w-31 · 4分12秒</s></span></button>
+            <button class="row wait"><span class="st wait"></span><span><b>views.css の分割</b><s>w-30 · 判断待ち</s></span></button>
+            <button class="row stop on"><span class="st stop"></span><span><b>WS 再接続の取りこぼし</b><s>w-28 · 止まりました</s></span></button>
+            <button class="row done"><span class="st done"></span><span><b>依存ゲートの再実装</b><s>w-29 · 終わりました</s></span></button>
+          </div>
+
+          <div class="detail">
+            <div class="pane-head" style="padding-left:0;padding-right:0">
+              <h1>WS 再接続の取りこぼし</h1><span class="n">w-28 · claude-sonnet-5</span>
+              <span class="sp"></span><button class="btn">やり直す</button>
+            </div>
+
+            <!-- ② エラーは紫。朱（判断待ち）とは別の色で、一目で見分く -->
+            <div class="stop-note">
+              <div class="stop-h"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg>止まりました — 3 回とも同じ所</div>
+              <p>繋ぎ直した直後に送る会話の復元が、いずれも <code>maxPayload</code>（既定 100MiB）を超えて切断されました。画像添付を含む回だけ超えています。</p>
+              <pre>ws.reconnect  attempt 3/3
+  → RangeError: Max payload size exceeded (104,857,600)
+     at WebSocket.send (banto-host/ws.ts:214)</pre>
+              <div class="stop-a"><button class="btn">もう一度やらせる</button><button class="btn flat">記録を全部読む</button></div>
+            </div>
+
+            <!-- 朱：POの判断待ち。塗ってよい唯一の色 -->
+            <div class="ask">
+              <div class="ask-h"><span class="seal">断</span><b>あなたの判断を待っています</b></div>
+              <p>直し方が二通りあり、挙動が変わります。上限を上げれば一度で通りますが実メモリを踏みます。送る側を分割すれば遅くなりますが上限に依存しません。</p>
+              <div class="ask-a"><button class="btn shu">上限を上げる</button><button class="btn">分割して送る</button><button class="btn flat">番頭に相談する</button></div>
+            </div>
+
+            <div class="log">
+              <div class="po">切断したら勝手に繋ぎ直して</div>
+              <div class="tool"><i></i><span class="arg">worker.spawn</span> w-28<span class="sp"></span>立てました</div>
+              <div class="tool stop"><i></i><span class="arg">ws.reconnect</span> 試行 3 回<span class="sp"></span>いずれも失敗</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <aside class="chat">
+      <div class="chat-head"><h2>意匠の作り直し</h2><span class="sp"></span><button class="btn flat">新しい会話</button></div>
+      <div class="chat-scroll">
+        <div class="log">
+          <div class="po">画面の意匠がプロダクトらしくない。何が効いているか教えて</div>
+          <div class="think"><span>12秒 考えました</span><span class="bar"></span></div>
+          <div class="tool"><i></i><span class="arg">memory.search</span> 意匠 PO 指摘<span class="sp"></span>3件</div>
+          <div class="banto">
+            <p>効いているのは三つです。<strong>字の大きさが 10.5〜13.5px に潰れている</strong>こと、<strong>ほぼ全部の器に 1px の枠がある</strong>こと、<strong>道具の絵に絵文字を使っている</strong>こと。</p>
+            <p>職人を四人立てました。判断が要るものは取次に積んでいます——いま 4 通です。</p>
+          </div>
+          <div class="tool stop"><i></i><span class="arg">file.write</span> views/parts.css<span class="sp"></span>書けません</div>
+          <div class="err">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
+            <span class="sp">書き込みが拒まれました（読み取り専用の場所です）。置き場所を変えるか、権限を open してください。</span>
+            <button aria-label="このエラーを閉じる">×</button>
+          </div>
+          <div class="po">枠を減らす方向で見本を作って</div>
+          <div class="think"><span>考えています</span><span class="bar"></span></div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <div class="composer-in">
+          <textarea placeholder="番頭に相談する"></textarea>
+          <div class="tools">
+            <button class="pick">claude-opus-5 <span style="opacity:.5">▾</span></button>
+            <!-- 琥珀＝気をつける。逼迫してきたことを数字を読まずに知らせる -->
+            <span class="gauge" title="文脈の使用量 78%"><span class="track"><span class="fill"></span></span>78%</span>
+            <span class="sp"></span>
+            <button class="send"><svg viewBox="0 0 24 24"><path d="M5 12h13M12 5l7 7-7 7"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ④ 取次：既存のセッション開始リクエストと一本化した唯一の受け口 -->
+    <section class="face" aria-label="取次">
+      <div class="face-head">
+        <div class="face-inner">
+          <h1>取次</h1>
+          <p>番頭に用があるものが、出所を問わずここに集まります。Kobo だけでなく <b>番頭自身・職人・検証環境・外の道具</b> も同じ口へ積みます。<b>押すと、その文脈を入れた会話が始まり、関係する面がキャンバスに開きます。</b></p>
+          <div class="face-bar">
+            <button class="chip on">すべて<span class="c">4</span></button>
+            <button class="chip">Kobo<span class="c">1</span></button>
+            <button class="chip">番頭<span class="c">1</span></button>
+            <button class="chip">職人<span class="c">1</span></button>
+            <button class="chip">環境<span class="c">1</span></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="face-scroll">
+        <div class="face-inner">
+          <article class="letter">
+            <div class="lt-top">
+              <span class="lt-from"><svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/></svg>Kobo（開発）</span>
+              <span class="lt-kind">エスカレーション<span class="lt-rule">D1</span></span>
+              <span class="sp"></span><span class="lt-age">3日 · 後続4件</span>
+            </div>
+            <h2>task-0009 通知チャネル認証方式</h2>
+            <dl>
+              <dt>経緯</dt><dd><q>通知を携帯に飛ばしたい</q> — 8/2 11:40</dd>
+              <dt>起きたこと</dt><dd>停滞3日。D1（不可逆な選択）で停止中で、後続4タスクが未 spawn のまま止まっています。</dd>
+              <dt>求める判断</dt><dd>認証方式をどれにするか。</dd>
+            </dl>
+            <div class="lt-a"><button class="btn shu">選択肢を見る</button><button class="btn">相談する</button><button class="btn flat">後で</button></div>
+            <div class="lt-go"><svg viewBox="0 0 24 24"><path d="M5 12h13M12 5l7 7-7 7"/></svg>会話「task-0009 の相談」を開始 ／ キャンバスに Kobo のアテンションキューを開く</div>
+          </article>
+
+          <article class="letter">
+            <div class="lt-top">
+              <span class="lt-from"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 12h6"/></svg>番頭</span>
+              <span class="lt-kind">後戻りできない<span class="lt-rule">D1</span></span>
+              <span class="sp"></span><span class="lt-age">6分 · 後続2件</span>
+            </div>
+            <h2>.cv-* の CSS 名を変えてよいか</h2>
+            <dl>
+              <dt>経緯</dt><dd><q>views.css を役割ごとに分けて</q> — 14:02</dd>
+              <dt>起きたこと</dt><dd>1770 行を 5 ファイルに割る形は固まりました。ただし <code>.cv-*</code> は他モジュールのGUIも使っています。</dd>
+              <dt>求める判断</dt><dd>公開している名前を変えてよいか。</dd>
+            </dl>
+            <div class="lt-a"><button class="btn shu">変えてよい</button><button class="btn">据え置く</button><button class="btn flat">相談する</button></div>
+            <div class="lt-go"><svg viewBox="0 0 24 24"><path d="M5 12h13M12 5l7 7-7 7"/></svg>いまの会話に戻る ／ キャンバスに職人 w-30 を開く</div>
+          </article>
+
+          <article class="letter">
+            <div class="lt-top">
+              <span class="lt-from"><svg viewBox="0 0 24 24"><path d="M4 20v-2a4 4 0 014-4h8a4 4 0 014 4v2"/><circle cx="12" cy="8" r="4"/></svg>職人 w-28</span>
+              <span class="lt-kind">番頭では決められない<span class="lt-rule">D9</span></span>
+              <span class="sp"></span><span class="lt-age">41分</span>
+            </div>
+            <h2>WS 再接続が 3 回とも同じ所で止まる</h2>
+            <dl>
+              <dt>経緯</dt><dd><q>切断したら勝手に繋ぎ直して</q> — 13:20</dd>
+              <dt>起きたこと</dt><dd>3 度試し、いずれも <code>maxPayload</code> 超過で切断。上限を上げるか、送る側を分割するかで挙動が変わります。</dd>
+              <dt>求める判断</dt><dd>どちらで直すか。</dd>
+            </dl>
+            <div class="lt-a"><button class="btn shu">上限を上げる</button><button class="btn">分割して送る</button><button class="btn flat">相談する</button></div>
+            <div class="lt-go"><svg viewBox="0 0 24 24"><path d="M5 12h13M12 5l7 7-7 7"/></svg>会話「Kobo 依存ゲート」を開く ／ キャンバスに w-28 の記録を開く</div>
+          </article>
+
+          <article class="letter warn">
+            <div class="lt-top">
+              <span class="lt-from"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg>検証環境</span>
+              <span class="lt-kind">まもなく消えます</span>
+              <span class="sp"></span><span class="lt-age">残り 2時間</span>
+            </div>
+            <h2>env-14（task-0047 の確認用）の期限が切れます</h2>
+            <dl>
+              <dt>起きたこと</dt><dd>3 日間の貸出期限が来ます。まだ確認済みの印が付いていません。</dd>
+              <dt>求める判断</dt><dd>延ばすか、畳んでよいか。</dd>
+            </dl>
+            <div class="lt-a"><button class="btn">3日 延ばす</button><button class="btn">畳んでよい</button><button class="btn flat">先に見る</button></div>
+            <div class="lt-go"><svg viewBox="0 0 24 24"><path d="M5 12h13M12 5l7 7-7 7"/></svg>キャンバスに検証環境の一覧を開く（会話は始めない）</div>
+          </article>
+
+          <div class="face-sep">これより下は、番頭が自分で決めて進めています</div>
+
+          <article class="letter is-read later">
+            <div class="lt-top">
+              <span class="lt-from"><svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/></svg>Kobo（開発）</span>
+              <span class="lt-kind">評価カード</span>
+              <span class="sp"></span><span class="lt-age">きのう · 済</span>
+            </div>
+            <h2>週次ケイデンス: CDP転送の安定化 — tune で進めました</h2>
+            <dl><dt>起きたこと</dt><dd>keep / tune / revert のうち tune を番頭が選び、フレームバッファの取りこぼしに手を入れました。戻したいときはここから。</dd></dl>
+            <div class="lt-a"><button class="btn flat">やり直す</button><button class="btn flat">経緯を読む</button></div>
+          </article>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="foot">
+    決定版 — 裁定 ①明朝 ②朱＝判断待ち／紫＝止まった ③明が主 ④取次は一本化 ⑤主従は据え置き
+    <span style="flex:1"></span><b>取次 4</b><span class="m">止まった 1</span><span>職人 4</span>
+  </div>
+</div>
+
+<script>
+  /* ④ 取次は一級の面。押すまで画面を取らない */
+  const shell = document.getElementById("shell");
+  const inbox = document.getElementById("inboxBtn");
+  const open = (v) => { shell.classList.toggle("is-open", v); inbox.classList.toggle("on", v); };
+  inbox.addEventListener("click", () => open(!shell.classList.contains("is-open")));
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") open(false); });
+
+  /* ③ 明が主、暗が従。**同じトークンの裏返し**なので、切り替えても色の役は動かない
+     （朱＝判断待ち、紫＝止まった、が明暗どちらでも同じ） */
+  const MOON = '<path d="M20 14a8 8 0 01-10-10 8 8 0 1010 10z"/>';
+  const SUN  = '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.5 1.5M17.6 17.6l1.5 1.5M19.1 4.9l-1.5 1.5M6.4 17.6l-1.5 1.5"/>';
+  document.getElementById("themeBtn").addEventListener("click", (e) => {
+    const dark = document.documentElement.getAttribute("data-theme") === "dark";
+    document.documentElement.setAttribute("data-theme", dark ? "light" : "dark");
+    document.getElementById("themeIcon").innerHTML = dark ? MOON : SUN;
+    e.currentTarget.title = dark ? "明かりを落とす" : "明かりを点ける";
+  });
+</script>
+</body>
+</html>

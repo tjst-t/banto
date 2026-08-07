@@ -12,6 +12,12 @@ import { useEffect, useState } from "react";
 import { callModuleTool, useModuleTool } from "./useModuleTool.js";
 import { resolveCanvasView, type CanvasViewProps } from "./registry.js";
 import { Button, ErrorNote, Note } from "./ui.js";
+import { Icon } from "../icons.js";
+import type { ModeChoice } from "../theme/themes.js";
+import { useThemeState } from "../theme/ThemeProvider.js";
+
+/** 画面側の区画の ID。ホストが同じ ID を配ってきたら、こちらが先に出る。 */
+const APPEARANCE_ID = "appearance";
 
 /** 中核の Tool 面（ADR-0011 決定42）。中核の区画が描くビューはここからデータを取る。 */
 const CORE_TOOL_BASE_URL = "/api/core";
@@ -61,7 +67,24 @@ export interface SettingsPanelProps extends CanvasViewProps {
 export function SettingsPanel(props: SettingsPanelProps): React.ReactElement {
   const { endpoint, section: openSectionId, onSection } = props;
   const description = useModuleTool<SettingsDescription>(endpoint, "settings.describe");
-  const sections = description.data?.sections ?? [];
+  const theme = useThemeState();
+  /**
+   * **見た目だけは画面側の区画**（spec-design §6.2）。他の区画はホストが宣言を配るが、
+   * テーマはホストが持たない状態なので、ここに1つだけ足す。ホスト由来の区画と
+   * 混ざらないよう、出所を `surface` として区別する。
+   */
+  const sections: SettingsSectionView[] = [
+    {
+      id: APPEARANCE_ID,
+      title: "見た目",
+      description: "この画面の地の明暗。端末ごとに覚えます（他の人や他の端末には移りません）。",
+      origin: "surface",
+      originTitle: "この画面",
+      fields: [],
+      values: {},
+    },
+    ...(description.data?.sections ?? []),
+  ];
   /** 触った項目だけを送る（触っていない項目まで上書きしないため）。 */
   const [draft, setDraft] = useState<Record<string, unknown>>({});
   const [busy, setBusy] = useState(false);
@@ -115,11 +138,11 @@ export function SettingsPanel(props: SettingsPanelProps): React.ReactElement {
             <span className="sp-nav-main">
               {section.title}
               {/* どのモジュールが公開している設定かを、一覧でも分かるようにする */}
-              {section.origin !== "core" && <span className="sp-origin">{section.origin}</span>}
+              {section.origin !== "core" && section.origin !== "surface" && (
+                <span className="sp-origin">{section.origin}</span>
+              )}
             </span>
-            <span className="sp-nav-caret" aria-hidden="true">
-              ›
-            </span>
+            <Icon name="chevron-right" size={15} className="sp-nav-caret" />
           </button>
         ))}
         {sections.length === 0 && <p className="cv-muted">{description.loading ? "…" : "設定なし"}</p>}
@@ -137,17 +160,21 @@ export function SettingsPanel(props: SettingsPanelProps): React.ReactElement {
               {active.title}
               {/* 「これは誰の設定か」を内容側にも出す。モジュールが増えたとき、
                   どの機能を触っているのか分からないまま値を変えるのを避ける */}
-              <span className={active.origin === "core" ? "sp-badge sp-badge-core" : "sp-badge"}>
+              <span className={active.origin === "core" || active.origin === "surface" ? "sp-badge sp-badge-core" : "sp-badge"}>
                 {active.origin === "core"
                   ? "Banto 本体"
-                  : `モジュール: ${active.originTitle}（${active.origin}）`}
+                  : active.origin === "surface"
+                    ? "この画面"
+                    : `モジュール: ${active.originTitle}（${active.origin}）`}
               </span>
             </h2>
             {active.description && <p className="sp-desc">{active.description}</p>}
 
             {/* 項目で表せない中核の区画は、宣言された名前のビューを描く（決定43）。
                 モジュールには決定41 がそのまま効く——ここへは来ない */}
-            {active.view ? (
+            {active.id === APPEARANCE_ID ? (
+              <ThemePicker theme={theme} />
+            ) : active.view ? (
               <SectionView name={active.view} origin={active.origin} />
             ) : (
               <>
@@ -166,7 +193,7 @@ export function SettingsPanel(props: SettingsPanelProps): React.ReactElement {
             ))}
 
             {error && <ErrorNote onRetry={() => setError(undefined)}>{error}</ErrorNote>}
-            {notice && <Note tone="ok" icon="✓">{notice}</Note>}
+            {notice && <Note tone="ok">{notice}</Note>}
 
             <div className="sp-actions">
               <Button
@@ -242,12 +269,12 @@ function renderInput(
               title="この行を消す"
               onClick={() => replace(items.filter((_, i) => i !== index))}
             >
-              ✕
+              <Icon name="close" size={15} />
             </button>
           </div>
         ))}
         <button className="sp-row-add" type="button" onClick={() => replace([...items, ""])}>
-          ＋ 追加
+          <Icon name="plus" size={14} /> 追加
         </button>
       </div>
     );
@@ -287,5 +314,69 @@ function SectionView({ name, origin }: { name: string; origin: string }): React.
       endpoint={CORE_TOOL_BASE_URL}
       endpointOf={() => undefined}
     />
+  );
+}
+
+/**
+ * 見た目を選ぶ（spec-design §6）。
+ *
+ * **テーマは家、明暗はその中の別**として別々に選ばせる（PO報告 2026-08-06）。
+ * 一緒にすると、明暗ボタンを押しただけで家が戻ってしまう。
+ */
+function ThemePicker({ theme }: { theme: ReturnType<typeof useThemeState> }): React.ReactElement {
+  const modes: Array<{ id: ModeChoice; label: string }> = [
+    { id: "system", label: "端末に合わせる" },
+    { id: "light", label: "明" },
+    { id: "dark", label: "暗" },
+  ];
+  return (
+    <>
+      <h3 className="sp-sub">意匠</h3>
+      <div className="sp-themes">
+        {theme.families.map((f) => {
+          const on = theme.choice.family === f.id;
+          // 見本は**いま当たっている明暗**で出す。選んだ結果がそのまま見える
+          const [bg, shu, ai] = f.swatch[theme.mode];
+          return (
+            <button
+              key={f.id}
+              type="button"
+              className={`sp-theme ${on ? "is-on" : ""}`}
+              onClick={() => theme.setFamily(f.id)}
+            >
+              <span className="sp-theme-swatch">
+                <i style={{ background: bg, flex: 2 }} />
+                <i style={{ background: shu }} />
+                <i style={{ background: ai }} />
+              </span>
+              <span className="sp-theme-main">
+                <span className="sp-theme-name">{f.name}</span>
+                <span className="sp-theme-desc">{f.description}</span>
+              </span>
+              <span className="sp-theme-changes">{f.changes}が変わります</span>
+              {on && <Icon name="check" size={16} className="sp-theme-check" />}
+            </button>
+          );
+        })}
+      </div>
+
+      <h3 className="sp-sub">明るさ</h3>
+      <div className="cv-seg" role="group" aria-label="明るさ">
+        {modes.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            className={`cv-seg-opt ${theme.choice.mode === m.id ? "is-on" : ""}`}
+            onClick={() => theme.setMode(m.id)}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+      <p className="sp-hint">
+        いま当たっているのは <b>{theme.family.name}（{theme.mode === "dark" ? "暗" : "明"}）</b> です。
+        上段の明暗ボタンは<b>選んだ意匠の中で</b>切り替わります。
+      </p>
+    </>
   );
 }

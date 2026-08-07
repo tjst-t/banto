@@ -14,6 +14,7 @@ import { useState } from "react";
 import { callModuleTool, useModuleTool } from "./useModuleTool.js";
 import { PlacePicker, usePlaceSelection } from "./PlacePicker.js";
 import type { CanvasViewProps } from "./registry.js";
+import { Icon } from "../icons.js";
 import {
   Badge,
   Button,
@@ -160,7 +161,7 @@ export function EnvManager({ endpoint, endpointOf }: CanvasViewProps): React.Rea
   return (
     <ViewShell className="em">
       <ViewBar>
-        <ViewTitle icon="🧫" count={live.length}>
+        <ViewTitle icon="environment" count={live.length}>
           検証環境
         </ViewTitle>
         <span className="cv-spacer" />
@@ -182,7 +183,7 @@ export function EnvManager({ endpoint, endpointOf }: CanvasViewProps): React.Rea
       <Scroll>
         {/* 畳み損ねは一番上に出す。放っておくと費用がかかり続ける（I3） */}
         {stuck.length > 0 && (
-          <Note tone="danger" icon="⚠">
+          <Note tone="danger">
             畳めなかった環境が {stuck.length} 件あります。外にリソースが残っている可能性が
             あるので、畳み直すか手元で確認してください。
           </Note>
@@ -192,7 +193,7 @@ export function EnvManager({ endpoint, endpointOf }: CanvasViewProps): React.Rea
         {list.loading && !list.data ? (
           <Loading rows={3} />
         ) : environments.length === 0 ? (
-          <EmptyState icon="🧫" title="立っている環境はありません">
+          <EmptyState icon="environment" title="立っている環境はありません">
             番頭に「テストが通るか確かめて」と頼むと、機構が立てて走らせ、必ず畳みます。
           </EmptyState>
         ) : (
@@ -222,7 +223,7 @@ export function EnvManager({ endpoint, endpointOf }: CanvasViewProps): React.Rea
                   {e.url && e.state === "live" && (
                     <div className="em-url">
                       <a href={e.url} target="_blank" rel="noreferrer">
-                        ↗ ブラウザで開く
+                        <Icon name="external" size={14} /> ブラウザで開く
                       </a>
                       <span className="cv-muted">
                         {e.url}
@@ -338,7 +339,7 @@ export function EnvManager({ endpoint, endpointOf }: CanvasViewProps): React.Rea
             )}
             {/* 上限で弾かれたものを黙って隠さない。書いた人が直せるように理由ごと出す（I2） */}
             {(profiles.data?.rejected ?? []).map((r) => (
-              <Note key={r.name} tone="warn" icon="⚠">
+              <Note key={r.name} tone="warn">
                 <strong>{r.name}</strong> は使えません: {r.reason}
               </Note>
             ))}

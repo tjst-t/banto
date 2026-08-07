@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>案5 符牒 — banto 意匠案</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=M+PLUS+1+Code:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ══════════════════════════════════════════════════════════════════════════
+   案5「符牒」— 手が覚える
+
+   主張：POは端末の隣でこの画面を使う。マウスは遅い経路で、番頭に一言投げるのに
+   ポインタを動かしたくない。**画面のすべてに符牒（キー）を振る**。
+
+   ・全面が等幅（M PLUS 1 Code）。行が機械的に揃うので、目が「舐める」だけで読める
+   ・上端は状態行（tmux のステータスラインと同じ役目）、下端はコマンド行
+   ・⌥ を押している間、押せるものすべてに符牒が浮く。覚えなくても、押せば見える
+   ・⌘K で単一の入口（会話・面・職人・設定を横断して引く）
+   ・暗色ではなく**明るい地の等幅**にする。端末の隣に置いたとき、
+     もう一枚の黒い窓が増えるのではなく、紙の側に立つ
+
+   署名：符牒の層。この見本は ⌥ を押している状態を描いている
+   ══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --bg:    #F5F4F0;
+  --face:  #FCFBF8;
+  --sunk:  #E9E7E0;
+  --ink:   #17171A;
+  --ink-2: #55545A;
+  --ink-3: #8B8A90;
+  --line:  #DEDBD2;
+  --ai:    #1B4B8F;   /* 藍：選ばれているもの・符牒 */
+  --ai-t:  #E4EAF3;
+  --shu:   #C1341C;   /* 朱：判断待ち */
+  --shu-t: #F8E5E1;
+  --ok:    #2F6B4F;
+
+  --mono: "M PLUS 1 Code", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body { font-family: var(--mono); background: var(--bg); color: var(--ink); font-size: 13px; line-height: 1.75; -webkit-font-smoothing: antialiased; }
+button, input, textarea { font: inherit; color: inherit; }
+button { background: none; border: 0; cursor: pointer; }
+::selection { background: var(--ai-t); }
+:focus-visible { outline: 2px solid var(--ai); outline-offset: 1px; }
+
+.shell { height: 100%; display: flex; flex-direction: column; }
+
+/* ── 上端：状態行 ────────────────────────────────────────────────────── */
+.statusline {
+  flex: none; display: flex; align-items: center; height: 30px; padding: 0 12px;
+  background: var(--ink); color: #E7E5DE; font-size: 12px; gap: 0; white-space: nowrap; overflow: hidden;
+}
+.sl-mark { background: var(--ai); color: #fff; padding: 0 10px; height: 30px; display: flex; align-items: center; font-weight: 700; letter-spacing: .06em; }
+.sl-t { padding: 0 11px; height: 30px; display: flex; align-items: center; gap: 6px; color: #9C9A94; }
+.sl-t:hover { color: #E7E5DE; }
+.sl-t.on { background: #2B2B2F; color: #fff; }
+.sl-t u { text-decoration: none; color: var(--ai); background: #fff; border-radius: 2px; padding: 0 4px; font-size: 11px; font-weight: 700; }
+.sl-t.on u { color: #fff; background: var(--ai); }
+.sl-t i { width: 5px; height: 5px; border-radius: 50%; background: #E4674F; display: block; }
+.sl-sp { flex: 1; }
+.sl-i { padding: 0 10px; color: #9C9A94; }
+.sl-i.call { color: #F09070; font-weight: 700; }
+
+.body { flex: 1; min-height: 0; display: flex; }
+
+/* ── 符牒（キーの札）───────────────────────────────────────────────── */
+.k {
+  display: inline-grid; place-items: center; min-width: 16px; height: 16px; padding: 0 3px;
+  background: var(--ai); color: #fff; border-radius: 3px;
+  font-size: 10px; font-weight: 700; line-height: 1; letter-spacing: 0; flex: none;
+}
+.k.g { background: var(--sunk); color: var(--ink-2); }
+/* 行に浮く符牒は、行の左の余白に置く（本文の位置をずらさない） */
+.kf { position: absolute; left: -22px; top: 50%; transform: translateY(-50%); }
+
+/* ── 左：面（バッファ）──────────────────────────────────────────────── */
+.buf { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--face); border-right: 1px solid var(--line); }
+.buf-tabs { flex: none; display: flex; align-items: stretch; height: 32px; border-bottom: 1px solid var(--line); }
+.bt { display: flex; align-items: center; gap: 7px; padding: 0 12px; font-size: 12px; color: var(--ink-3); border-right: 1px solid var(--line); }
+.bt:hover { color: var(--ink); background: var(--bg); }
+.bt.on { color: var(--ink); background: var(--bg); box-shadow: inset 0 -2px 0 var(--ai); font-weight: 500; }
+.bt .x { opacity: 0; font-size: 12px; }
+.bt:hover .x, .bt.on .x { opacity: .4; }
+.bt-add { padding: 0 12px; color: var(--ink-3); display: flex; align-items: center; gap: 6px; }
+
+.buf-head { flex: none; display: flex; align-items: center; gap: 12px; padding: 14px 18px 10px; }
+.buf-head h1 { font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
+.buf-head .n { font-size: 11.5px; color: var(--ink-3); }
+.buf-head .sp { flex: 1; }
+.btn { position: relative; display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 11px; border-radius: 3px; font-size: 12px; background: var(--sunk); color: var(--ink-2); }
+.btn:hover { background: #DDDAD1; color: var(--ink); }
+.btn.shu { background: var(--shu); color: #fff; font-weight: 500; }
+.btn.shu:hover { background: #A32A15; }
+.btn.shu .k { background: rgba(0,0,0,.28); }
+.btn.flat { background: none; color: var(--ink-3); }
+.btn.flat:hover { background: var(--sunk); color: var(--ink); }
+
+.buf-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 18px 20px 34px; }
+
+/* 職人の一覧：等幅で桁が揃うので、状態の列を目で追える */
+.rows { display: flex; flex-direction: column; }
+.r { position: relative; display: flex; align-items: center; gap: 12px; height: 34px; padding: 0 10px; border-radius: 3px; text-align: left; width: 100%; }
+.r:hover { background: var(--bg); }
+.r.on { background: var(--ai-t); }
+.r .id { color: var(--ink-3); font-size: 11.5px; flex: none; width: 42px; }
+.r .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.r .stt { flex: none; width: 96px; font-size: 11.5px; color: var(--ink-2); }
+.r .el { flex: none; width: 52px; text-align: right; font-size: 11.5px; color: var(--ink-3); }
+.r.wait .stt { color: var(--shu); font-weight: 700; }
+.r.wait { box-shadow: inset 2px 0 0 var(--shu); }
+.r.run .stt { color: var(--ai); }
+.r.done .nm, .r.fail .nm { color: var(--ink-2); }
+
+/* 判断を求める札 */
+.ask { position: relative; margin: 16px 0 18px; padding: 13px 16px; border-radius: 4px; background: var(--shu-t); box-shadow: inset 2px 0 0 var(--shu); }
+.ask-h { font-size: 11px; font-weight: 700; letter-spacing: .1em; color: var(--shu); margin-bottom: 5px; }
+.ask p { font-size: 13px; line-height: 1.85; }
+.ask-a { display: flex; gap: 7px; margin-top: 11px; }
+
+.sec { font-size: 11px; color: var(--ink-3); letter-spacing: .06em; margin: 20px 0 8px; }
+.log { display: flex; flex-direction: column; gap: 13px; }
+.po { align-self: flex-end; max-width: 82%; background: var(--sunk); padding: 8px 12px; border-radius: 4px; font-size: 12.5px; }
+.banto { padding-left: 24px; position: relative; font-size: 12.5px; line-height: 1.9; }
+.banto::before { content: "»"; position: absolute; left: 6px; top: 0; color: var(--ai); font-weight: 700; }
+.banto p + p, .banto ul { margin-top: 8px; }
+.banto ul { padding-left: 17px; }
+.tool { display: flex; align-items: center; gap: 9px; padding-left: 24px; font-size: 11.5px; color: var(--ink-3); }
+.tool i { width: 4px; height: 4px; border-radius: 50%; background: var(--ok); flex: none; }
+.tool .arg { color: var(--ink-2); }
+.tool .sp { flex: 1; }
+.think { display: flex; align-items: center; gap: 10px; padding-left: 24px; font-size: 11.5px; color: var(--ink-3); }
+.think .bar { flex: 1; height: 1px; background: var(--line); }
+code { background: var(--sunk); padding: 1px 5px; border-radius: 2px; font-size: 12px; }
+
+/* ── 右：会話 ────────────────────────────────────────────────────────── */
+.chat { width: 400px; flex: none; display: flex; flex-direction: column; background: var(--bg); }
+.chat-head { flex: none; display: flex; align-items: center; gap: 10px; padding: 13px 16px 6px; }
+.chat-head h2 { font-size: 13px; font-weight: 700; }
+.chat-head .sp { flex: 1; }
+.chat-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 16px 14px 34px; }
+.composer { flex: none; padding: 0 12px 12px; }
+.composer-in { position: relative; background: var(--face); border-radius: 4px; padding: 10px 12px 6px; box-shadow: inset 0 0 0 1px var(--line); transition: box-shadow .12s; }
+.composer-in:focus-within { box-shadow: inset 0 0 0 2px var(--ai); }
+.composer textarea { width: 100%; height: 46px; resize: none; border: 0; background: none; font-size: 12.5px; line-height: 1.7; }
+.composer textarea:focus { outline: none; }
+.composer textarea::placeholder { color: var(--ink-3); }
+.tools { display: flex; align-items: center; gap: 5px; }
+.tools .sp { flex: 1; }
+.tb { position: relative; display: inline-flex; align-items: center; gap: 6px; height: 25px; padding: 0 8px; border-radius: 3px; font-size: 11.5px; color: var(--ink-2); }
+.tb:hover { background: var(--sunk); }
+.gauge { font-size: 11px; color: var(--ink-3); padding: 0 6px; }
+.send { position: relative; display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 3px; background: var(--ai); color: #fff; font-size: 11.5px; font-weight: 500; }
+.send:hover { background: #143A70; }
+.send .k { background: rgba(255,255,255,.25); }
+
+/* ── 下端：コマンド行 ────────────────────────────────────────────────── */
+.cmdline { flex: none; display: flex; align-items: center; gap: 10px; height: 28px; padding: 0 12px; background: var(--ink); color: #C9C7C0; font-size: 12px; }
+.cmdline .mode { background: var(--ok); color: #fff; padding: 0 9px; height: 28px; display: flex; align-items: center; font-weight: 700; font-size: 11px; letter-spacing: .08em; }
+.cmdline .prompt { color: var(--ai-t); }
+.cmdline .caret { width: 7px; height: 15px; background: #C9C7C0; display: inline-block; animation: blink 1.1s steps(2,end) infinite; }
+@keyframes blink { 50% { opacity: 0 } }
+@media (prefers-reduced-motion: reduce) { .cmdline .caret { animation: none } }
+.cmdline .sp { flex: 1; }
+.cmdline .hint { color: #7E7C77; }
+.cmdline .hint b { color: #C9C7C0; font-weight: 500; }
+
+/* ⌥ を押している間だけ出る帯 */
+.altbar {
+  flex: none; display: flex; align-items: center; gap: 10px; height: 26px; padding: 0 12px;
+  background: var(--ai-t); color: var(--ai); font-size: 11.5px;
+}
+.altbar b { font-weight: 700; }
+/* ⌥ ⌘ は等幅日本語フォントに無い。記号だけ別の面から借りる */
+.altbar b, .cmdline .hint b, .send .k { font-family: ui-monospace, "SF Mono", "DejaVu Sans Mono", var(--mono); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <!-- 上端：状態行 -->
+  <div class="statusline">
+    <span class="sl-mark">番頭</span>
+    <button class="sl-t on"><u>1</u>意匠の作り直し</button>
+    <button class="sl-t"><u>2</u><i></i>Kobo 依存ゲート</button>
+    <button class="sl-t"><u>3</u>LLM 台帳の整理</button>
+    <span class="sl-sp"></span>
+    <span class="sl-i call">判断待ち 1</span>
+    <span class="sl-i">職人 4 / 稼働 1</span>
+    <span class="sl-i">opus-5 42%</span>
+    <span class="sl-i">ws:接続中</span>
+  </div>
+
+  <!-- 署名：⌥ を押している間だけ、押せるものすべてに符牒が浮く -->
+  <div class="altbar"><b>⌥</b> を押しています — 押せるものに符牒が浮きます。<b>⌘K</b> で横断して引く、<b>:</b> でコマンド行</div>
+
+  <div class="body">
+    <main class="buf">
+      <div class="buf-tabs">
+        <button class="bt on"><span class="k">q</span>職人の手元<span class="x">×</span></button>
+        <button class="bt"><span class="k">w</span>packages/banto-web<span class="x">×</span></button>
+        <button class="bt"><span class="k">e</span>記憶<span class="x">×</span></button>
+        <button class="bt-add"><span class="k">t</span>開く</button>
+      </div>
+
+      <div class="buf-head">
+        <h1>職人の手元</h1><span class="n">4 人 / 稼働 1</span>
+        <span class="sp"></span>
+        <button class="btn"><span class="k">r</span>更新</button>
+      </div>
+
+      <div class="buf-scroll">
+        <div class="rows">
+          <button class="r run"><span class="k kf">a</span><span class="id">w-31</span><span class="nm">意匠トークンの棚卸し</span><span class="stt">動いています</span><span class="el">04:12</span></button>
+          <button class="r wait on"><span class="k kf">s</span><span class="id">w-30</span><span class="nm">views.css の分割</span><span class="stt">判断待ち</span><span class="el">06:41</span></button>
+          <button class="r done"><span class="k kf">d</span><span class="id">w-29</span><span class="nm">依存ゲートの再実装</span><span class="stt">終わりました</span><span class="el">22:08</span></button>
+          <button class="r fail"><span class="k kf">f</span><span class="id">w-28</span><span class="nm">WS 再接続の取りこぼし</span><span class="stt">失敗</span><span class="el">41:57</span></button>
+        </div>
+
+        <div class="ask">
+          <div class="ask-h">あなたの判断を待っています — w-30</div>
+          <p>1770 行を 5 ファイルに割ります。ただし <code>.cv-*</code> の CSS 名は外向けの契約です。名前を変えてよいか決めてください。</p>
+          <div class="ask-a">
+            <button class="btn shu"><span class="k">1</span>名前ごと変える</button>
+            <button class="btn"><span class="k">2</span>名前は据え置く</button>
+            <button class="btn flat"><span class="k">3</span>相談する</button>
+          </div>
+        </div>
+
+        <div class="sec">— w-30 のやりとり</div>
+        <div class="log">
+          <div class="po">views.css を役割ごとに分けて</div>
+          <div class="tool"><i></i><span class="arg">file.read</span> views/views.css<span class="sp"></span>1770 行</div>
+          <div class="banto">
+            <p>1770 行の内訳を数えました。器（<code>.cv-bar</code> / <code>.cv-split</code>）が 420 行、部品が 700 行、面ごとの上書きが 650 行です。</p>
+            <ul><li>器と部品は共通なので 2 ファイルに残す</li><li>面ごとの上書きは各面へ寄せる</li></ul>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <aside class="chat">
+      <div class="chat-head"><h2>意匠の作り直し</h2><span class="sp"></span><button class="btn flat"><span class="k">n</span>新しい会話</button></div>
+      <div class="chat-scroll">
+        <div class="log">
+          <div class="po">画面の意匠がプロダクトらしくない。何が効いているか教えて</div>
+          <div class="think"><span>12秒 考えました</span><span class="bar"></span></div>
+          <div class="tool"><i></i><span class="arg">memory.search</span> 意匠 PO 指摘<span class="sp"></span>3件</div>
+          <div class="banto">
+            <p>効いているのは三つです。</p>
+            <ul>
+              <li><strong>字の大きさが 10.5〜13.5px に潰れている。</strong>見出しと注記の差が 3px しかありません。</li>
+              <li><strong>ほぼ全部の器に 1px の枠がある。</strong>入れ子の四角が画面を埋めています。</li>
+              <li><strong>絵文字を道具の絵に使っている。</strong>環境で字面が変わります。</li>
+            </ul>
+            <p>職人を四人立てました。</p>
+          </div>
+          <div class="po">枠を減らす方向で見本を作って</div>
+          <div class="think"><span>考えています</span><span class="bar"></span></div>
+        </div>
+      </div>
+      <div class="composer">
+        <div class="composer-in">
+          <textarea placeholder="番頭に相談する（i で入力へ）"></textarea>
+          <div class="tools">
+            <button class="tb"><span class="k">u</span>添付</button>
+            <button class="tb"><span class="k">m</span>opus-5</button>
+            <span class="gauge">42%</span>
+            <span class="sp"></span>
+            <button class="send"><span class="k">↵</span>送る</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- 下端：コマンド行 -->
+  <div class="cmdline">
+    <span class="mode">操作</span>
+    <span class="prompt">:</span><span class="caret"></span>
+    <span class="sp"></span>
+    <span class="hint"><b>⌘K</b> 横断して引く</span>
+    <span class="hint"><b>g w</b> 職人へ</span>
+    <span class="hint"><b>[ ]</b> 会話を送る</span>
+    <span class="hint"><b>?</b> 符牒の一覧</span>
+  </div>
+</div>
+<script>
+  const sc = document.querySelector(".chat-scroll");
+  sc.scrollTop = sc.scrollHeight;
+</script>
+</body>
+</html>

@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>番頭の画面 — 意匠の提案（5案）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Shippori+Mincho:wght@600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* 値は tokens.css から引く。この頁だけ別の色や字を持たない */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--ui); background: var(--paper); color: var(--sumi); font-size: 14px; line-height: 1.95; -webkit-font-smoothing: antialiased; }
+a { color: var(--ai); }
+code { font-family: var(--mono); font-size: .86em; background: var(--paper-2); padding: 1px 5px; border-radius: 3px; }
+
+.wrap { max-width: 1000px; margin: 0 auto; padding: 0 28px 100px; }
+
+header { padding: 72px 0 40px; }
+.eyebrow { font-family: var(--mono); font-size: 11.5px; letter-spacing: .16em; color: var(--sumi-3); }
+h1 { font-family: var(--sho); font-size: 40px; font-weight: 600; line-height: 1.35; letter-spacing: .01em; margin: 10px 0 16px; }
+.lede { font-size: 16px; line-height: 1.9; max-width: 68ch; color: var(--sumi-2); }
+.lede strong { color: var(--sumi); font-weight: 700; }
+
+h2 { font-family: var(--sho); font-size: 26px; font-weight: 600; margin: 68px 0 6px; letter-spacing: .01em; }
+h2 + .sub { font-size: 13px; color: var(--sumi-3); margin-bottom: 26px; }
+h3 { font-size: 16px; font-weight: 700; margin: 34px 0 8px; }
+
+/* ── 診断 ── */
+.findings { display: flex; flex-direction: column; gap: 2px; }
+.f { display: grid; grid-template-columns: 34px 1fr; gap: 16px; padding: 18px 0; border-top: 1px solid var(--rule); }
+.f:last-child { border-bottom: 1px solid var(--rule); }
+.f-n { font-family: var(--mono); font-size: 12px; color: var(--shu); padding-top: 4px; }
+.f b { display: block; font-size: 15.5px; font-weight: 700; line-height: 1.7; }
+.f p { font-size: 13.5px; color: var(--sumi-2); margin-top: 3px; }
+.f .ev { display: block; margin-top: 6px; font-family: var(--mono); font-size: 11.5px; color: var(--sumi-3); }
+
+/* ── 案の一覧 ── */
+.settled { margin-top: var(--s6); background: var(--paper-1); border-radius: 10px; padding: 20px 24px; box-shadow: inset 3px 0 0 var(--shu), 0 1px 2px rgba(25,23,18,.05); }
+.settled-h { font-size: 12px; font-weight: 700; letter-spacing: .1em; color: var(--shu); margin-bottom: 4px; }
+.settled p { font-size: 14px; line-height: 1.95; max-width: 62ch; }
+.settled p b { font-weight: 700; }
+.settled-a { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.settled-a .ghost { background: var(--paper-2); color: var(--sumi-2); }
+.settled-a .ghost:hover { background: #DAD4C4; }
+.settled-l { list-style: none; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rule); font-size: 12.5px; color: var(--sumi-2); line-height: 1.9; }
+.settled-l b { font-weight: 700; color: var(--sumi); }
+.q .ans { display: block; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--rule); font-size: 12px; color: var(--sumi-2); line-height: 1.8; }
+.q .ans::before { content: "裁定 "; font-family: var(--mono); font-size: 10.5px; color: var(--shu); }
+.poread {
+  background: var(--paper-1); border-radius: 8px; padding: 15px 18px; margin-bottom: 20px;
+  font-size: 13px; line-height: 1.95; box-shadow: inset 3px 0 0 var(--ai);
+}
+.poread b { font-weight: 700; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, 456px); gap: 24px; justify-content: center; margin-top: 8px; }
+.card { background: var(--paper-1); border-radius: 10px; overflow: hidden; box-shadow: 0 1px 2px rgba(25,23,18,.05), 0 8px 22px rgba(25,23,18,.06); display: flex; flex-direction: column; }
+.card.wide { grid-column: 1 / -1; }
+.shot { position: relative; width: 456px; height: 285px; overflow: hidden; background: var(--paper-2); border-bottom: 1px solid var(--rule); flex: none; }
+.shot iframe { position: absolute; top: 0; left: 0; width: 1440px; height: 900px; border: 0; transform: scale(.31667); transform-origin: 0 0; pointer-events: none; }
+.shot a { position: absolute; inset: 0; display: block; }
+.card-b { padding: 18px 20px 20px; display: flex; flex-direction: column; flex: 1; }
+.card-t { display: flex; align-items: baseline; gap: 10px; }
+.card-t .no { font-family: var(--mono); font-size: 12px; color: var(--sumi-3); }
+.card-t h3 { font-family: var(--sho); font-size: 21px; font-weight: 600; margin: 0; }
+.card-t .en { font-family: var(--mono); font-size: 11px; color: var(--sumi-3); letter-spacing: .1em; }
+.claim { font-size: 14px; line-height: 1.9; margin: 8px 0 14px; }
+.sig { font-size: 12.5px; color: var(--sumi-2); background: var(--paper-2); border-radius: 6px; padding: 9px 12px; line-height: 1.75; }
+.sig em { font-style: normal; font-weight: 700; color: var(--sumi); }
+dl.gl { margin-top: 14px; display: grid; grid-template-columns: 68px 1fr; gap: 3px 12px; font-size: 12.5px; line-height: 1.75; }
+dl.gl dt { color: var(--sumi-3); }
+dl.gl dd { color: var(--sumi-2); }
+.card-f { margin-top: auto; padding-top: 14px; display: flex; align-items: center; gap: 10px; }
+.open { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 15px; border-radius: 7px; background: var(--ai); color: #fff; font-size: 13px; font-weight: 500; text-decoration: none; }
+.open:hover { background: #16294A; }
+.cost { margin-left: auto; font-family: var(--mono); font-size: 11.5px; color: var(--sumi-3); }
+
+/* ── 推薦 ── */
+.rec { background: var(--paper-1); border-radius: 10px; padding: 26px 28px; box-shadow: inset 3px 0 0 var(--shu); }
+.rec p { font-size: 14.5px; line-height: 2.05; max-width: 66ch; }
+.rec p + p { margin-top: 12px; }
+.steps { margin-top: 20px; display: flex; flex-direction: column; gap: 14px; }
+.step { display: grid; grid-template-columns: 82px 1fr; gap: 16px; }
+.step b { font-family: var(--mono); font-size: 11.5px; color: var(--shu); letter-spacing: .06em; padding-top: 3px; }
+.step span { font-size: 13.5px; line-height: 1.85; }
+.step em { font-style: normal; font-weight: 700; }
+
+/* ── 決めてほしいこと ── */
+.asks { display: flex; flex-direction: column; gap: 12px; }
+.q { background: var(--paper-1); border-radius: 8px; padding: 16px 18px; }
+.q b { display: block; font-size: 14.5px; font-weight: 700; margin-bottom: 3px; }
+.q p { font-size: 13px; color: var(--sumi-2); line-height: 1.85; }
+.q .why { display: block; margin-top: 5px; font-family: var(--mono); font-size: 11px; color: var(--sumi-3); }
+
+footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--rule); font-family: var(--mono); font-size: 11.5px; color: var(--sumi-3); line-height: 2; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">PROTOTYPE / REDESIGN · 2026-08-05</div>
+  <h1>番頭の画面をつくり直す</h1>
+  <p class="lede">
+    いまの画面は<strong>動くが、まだ製品に見えない</strong>。原因は好みではなく、<strong>意匠に体系が無いこと</strong>にある。
+    字の段・余白の刻み・枠の使い方・色の意味づけが、その場ごとに決まっている。
+    まず何が効いているかを数え、そのうえで<strong>方向の違う5案</strong>を作った。
+    5案はどれも同じ場面（会話 1 本・職人 4 人・判断待ち 1 件）を描いているので、並べて比べられる。
+  </p>
+  <div class="settled">
+    <div class="settled-h">決まりました — 2026-08-05</div>
+    <p>
+      5案の探索は終わり、PO の裁定でひとつに畳んだ。<b>この頁はそこに至った経緯</b>で、
+      決まった中身は次の2枚にある。
+    </p>
+    <div class="settled-a">
+      <a class="open" href="design.html">意匠の決定（色・字・余白）→</a>
+      <a class="open ghost" href="10-kettei.html">決定版の画面（明／暗）→</a>
+    </div>
+    <ul class="settled-l">
+      <li><b>①明朝でよい</b>／<b>②朱は判断待ち専用・エラーは紫</b>／<b>③明が主・暗が従</b>／<b>④取次は一本化</b>／<b>⑤主従は後で</b></li>
+    </ul>
+  </div>
+
+</header>
+
+<h2>いま効いていること</h2>
+<p class="sub">好みの話を混ぜないよう、数えられるものだけを挙げる。出所は実装の CSS。</p>
+
+<div class="findings">
+  <div class="f"><span class="f-n">01</span><span>
+    <b>字が 10.5〜13.5px の 3px 幅に潰れている</b>
+    <p>見出し・本文・注記が同じ濃さで並ぶので、どこから読むかを目が決められない。半端な 0.5px 刻みが 11 段あり、段として機能していない。</p>
+    <span class="ev">styles.css / views.css — font-size の値 11 種</span>
+  </span></div>
+
+  <div class="f"><span class="f-n">02</span><span>
+    <b>ほとんどの器に 1px の枠が引いてある</b>
+    <p>上段・チャット欄・入力枠・発話・ツール行・タブ・ボタンが全部囲われ、入れ子の四角が画面を埋める。これが「管理画面に見える」正体。</p>
+    <span class="ev">styles.css — border: 1px solid var(--line) が 20 箇所以上</span>
+  </span></div>
+
+  <div class="f"><span class="f-n">03</span><span>
+    <b>道具の絵に絵文字を使っている</b>
+    <p>🕘 ⚙️ 💬 📄 は環境ごとに字面と色が変わり、和紙の地から浮く。ベースラインもずれるので、CSS 側で中心合わせの手当てが要っている。</p>
+    <span class="ev">App.tsx — pin-tab / mobile-footer / canvas-tab-icon</span>
+  </span></div>
+
+  <div class="f"><span class="f-n">04</span><span>
+    <b>藍（--accent）が全部の役を兼ねている</b>
+    <p>屋号・選択中のタブ・主ボタン・リンク・フォーカス枠・インラインコードの地。全部が同じ色だと、色が何も意味しなくなる。<strong>「POの判断を待っている」ことを示す色が無い</strong>のが一番効いている。</p>
+    <span class="ev">styles.css — var(--accent) の用途 6 種</span>
+  </span></div>
+
+  <div class="f"><span class="f-n">05</span><span>
+    <b>知らせとコードブロックだけ別世界の色になっている</b>
+    <p>和紙色の画面に <code>#2a2416</code> の黒い箱と <code>#16140f</code> のコード欄が落ちている。地の体系に属していないので、異物に見える。</p>
+    <span class="ev">styles.css — .msg--notice / .markdown pre</span>
+  </span></div>
+
+  <div class="f"><span class="f-n">06</span><span>
+    <b>会話が主役なのに、幅 400px の脇に置かれている</b>
+    <p>ADR-0009 では番頭が主体で、POは番頭と話す。それなのに画面の主面はキャンバスで、会話は右の細い列。しかも見出しは常に「番頭と相談する」＋<code>37 tools · 8c0250ad</code> で、いま何の話をしているかが出ていない。</p>
+    <span class="ev">App.tsx — .chat-pane 既定 400px / .chat-title 固定文字列</span>
+  </span></div>
+
+  <div class="f"><span class="f-n">07</span><span>
+    <b>「いま自分の判断を待っているものは何か」がどこにも出ていない</b>
+    <p>spec-ui の第一原理だが、判断待ちは職人ビューアを自分で開き、一覧を舐めて初めて見つかる。画面の入口が原理と逆を向いている。</p>
+    <span class="ev">docs/spec/ui.md §1 — アテンションキュー（未実装）</span>
+  </span></div>
+</div>
+
+<h2>5つの方向</h2>
+<p class="sub">絵柄の違いではなく、<b>何を賭けるか</b>の違いで分けた。縮小表示は生きた画面（クリックで原寸）。</p>
+<p class="poread">
+  <b>5案はここで役目を終えた。</b>案1と案2は一つの体系の明暗として <a href="10-kettei.html">決定版</a> に入り、
+  案4は「番台（左の常設一列）」から「取次（上段の受け口）」へ作り直したうえで決定版に入った。
+  案5は⌘Kだけを第三段で採る。<b>案3だけが未決</b>のまま <code>03-zashiki.html</code> に残っている。
+</p>
+
+<div class="grid">
+
+  <div class="card">
+    <div class="shot"><iframe src="01-choba.html" title="案1 帳場" loading="lazy" scrolling="no"></iframe><a href="01-choba.html" aria-label="案1 帳場をひらく"></a></div>
+    <div class="card-b">
+      <div class="card-t"><span class="no">案1</span><h3>帳場</h3><span class="en">CHŌBA</span></div>
+      <p class="claim">素性は変えず、仕立てだけ直す。和紙×藍は正しかった。壊れていたのは字の段・余白の刻み・枠の乱発のほう。<b>案2 と対の関係</b>で、こちらが明色版。</p>
+      <div class="sig"><em>署名：落款。</em>朱はただ一つ「POの判断を待っているもの」にだけ使う。番頭の言葉は明朝、こちらの言葉と道具立ては角ゴシックで、声の主が書体で分かる。</div>
+      <dl class="gl">
+        <dt>得るもの</dt><dd>いまの画面と地続き。学び直しが要らない</dd>
+        <dt>失うもの</dt><dd>構造の問題（06・07）は残る</dd>
+      </dl>
+      <div class="card-f"><a class="open" href="01-choba.html">ひらく →</a><span class="cost">実装：小（CSS 中心）</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="shot"><iframe src="02-yaban.html" title="案2 夜番" loading="lazy" scrolling="no"></iframe><a href="02-yaban.html" aria-label="案2 夜番をひらく"></a></div>
+    <div class="card-b">
+      <div class="card-t"><span class="no">案2</span><h3>夜番</h3><span class="en">YABAN</span></div>
+      <p class="claim">灯りが仕事を示す。番頭は夜も回っている。暗い地を既定にし、色ではなく<b>光の温度</b>で状態を出す。<b>案1 の暗色版</b>として扱う（別案ではなく明暗の対）。</p>
+      <div class="sig"><em>署名：灯り線。</em>窓の最上端の 2px。職人が一人でも動いていれば温かく灯り、全員が手を止めると冷えて消える。横目でも分かる。</div>
+      <dl class="gl">
+        <dt>得るもの</dt><dd>端末の隣で長時間見ていられる。05 が自然に解ける</dd>
+        <dt>失うもの</dt><dd>灯りの考え方は明色版にも移せる。暗色を原典にするかは別の判断</dd>
+      </dl>
+      <div class="card-f"><a class="open" href="02-yaban.html">ひらく →</a><span class="cost">実装：中（2 テーマ運用）</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="shot"><iframe src="03-zashiki.html" title="案3 座敷" loading="lazy" scrolling="no"></iframe><a href="03-zashiki.html" aria-label="案3 座敷をひらく"></a></div>
+    <div class="card-b">
+      <div class="card-t"><span class="no">案3</span><h3>座敷</h3><span class="en">ZASHIKI</span></div>
+      <p class="claim">会話が本体、キャンバスは差し出し物。番頭が主体なら、会話が画面そのものであるべきで、脇の 400px ではない。</p>
+      <div class="sig"><em>署名：差し出し物の札。</em>番頭がGUIを開くと、その瞬間の会話に札が挿さり、中身が生きたまま動く。開いた物が会話の記録の一部になり、後から遡れる。<br>
+<b>「大きく開く」を押すと</b>右から引き出しが出て、キャンバスが原寸で開く。<b>会話は消えず狭くなるだけ</b>なので、見ながら番頭に話しかけられる。閉じても札は会話に残る。</div>
+      <dl class="gl">
+        <dt>得るもの</dt><dd>06 が直る。タブ列が消え、会話が何本でも幅が変わらない</dd>
+        <dt>失うもの</dt><dd>広い面での作業（ファイル閲覧・差分）は一手増える</dd>
+      </dl>
+      <div class="card-f"><a class="open" href="03-zashiki.html">ひらいて「大きく開く」を押す →</a><span class="cost">実装：大（骨格の入れ替え）</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="shot"><iframe src="04-toritsugi.html" title="案4 取次" loading="lazy" scrolling="no"></iframe><a href="04-toritsugi.html" aria-label="案4 取次をひらく"></a></div>
+    <div class="card-b">
+      <div class="card-t"><span class="no">案4</span><h3>取次</h3><span class="en">TORITSUGI</span></div>
+      <p class="claim">番頭に用があるものを、<b>出所を問わず</b>受ける。Kobo だけでなく番頭自身・職人・検証環境・外の道具が同じ口へ積む。取次とは、商家で来客と文を受けて主に取り次ぐ役。<br>
+<b>意匠は案1「帳場」のまま</b>——この案は別世界ではなく、<b>案1 の上に足す一枚</b>。</p>
+      <div class="sig"><em>署名：上段の数字。</em><b>常に見えているのはこのボタンだけ</b>で、画面は取らない。押すと面が開き（履歴・設定と同じ一級の面）、閉じれば会話に戻る。<br>
+朱は画面じゅうでこの数字と札の縁にしか出ない。<b>0 になると朱が消える。</b><br>
+出所は札の一番上。押すと <code>banto-shell.html</code> と同じ挙動で、<b>その文脈を入れた会話が始まり、関係する面がキャンバスに開く</b>。</div>
+      <dl class="gl">
+        <dt>得るもの</dt><dd>07 が直る。札は spec-ui §3 の三部構成。既存のセッション開始リクエストと一本化できる</dd>
+        <dt>失うもの</dt><dd>開くまで中身が見えない。数字だけで足りるかは使ってみないと分からない</dd>
+      </dl>
+      <div class="card-f"><a class="open" href="04-toritsugi.html">ひらいて取次を開閉する →</a><span class="cost">実装：中（ホスト側に受け口が要る）</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="shot"><iframe src="05-fucho.html" title="案5 符牒" loading="lazy" scrolling="no"></iframe><a href="05-fucho.html" aria-label="案5 符牒をひらく"></a></div>
+    <div class="card-b">
+      <div class="card-t"><span class="no">案5</span><h3>符牒</h3><span class="en">FUCHŌ</span></div>
+      <p class="claim">手が覚える。POは端末の隣でこれを使う。マウスは遅い経路なので、画面のすべてに符牒（キー）を振る。</p>
+      <div class="sig"><em>署名：符牒の層。</em>⌥ を押している間だけ、押せるものすべてにキーが浮く。覚えなくても押せば見える。上端は状態行、下端はコマンド行。<b>暗色ではなく明るい地の等幅</b>にして、端末の隣で「もう一枚の黒い窓」にならないようにする。</div>
+      <dl class="gl">
+        <dt>得るもの</dt><dd>操作が速い。等幅で桁が揃い、一覧が舐めるだけで読める</dd>
+        <dt>失うもの</dt><dd>PO以外には固い。日本語の等幅は字面が硬い。<b>意匠は採らず操作だけ採る</b>手もある</dd>
+      </dl>
+      <div class="card-f"><a class="open" href="05-fucho.html">ひらく →</a><span class="cost">実装：中（キー層＋⌘K）</span></div>
+    </div>
+  </div>
+
+  <div class="card wide">
+    <div class="card-b" style="flex-direction:row;gap:24px;align-items:center">
+      <div style="flex:1">
+        <div class="card-t"><span class="no">基準</span><h3>現状</h3><span class="en">CURRENT</span></div>
+        <p class="claim" style="margin-bottom:0">比較用。<code>packages/banto-web/src/styles.css</code> と <code>views/views.css</code> を直接読み込んでいるので、ここに出ているのは<b>いま動いている画面そのもの</b>。写し違いで議論がずれない。</p>
+      </div>
+      <a class="open" href="00-current.html" style="flex:none">ひらく →</a>
+    </div>
+  </div>
+
+</div>
+
+<h2>番頭の見立て（当時）</h2>
+<p class="sub">この見立てを PO に上げ、下の「裁定」で全件に答えが出た。記録として残す。</p>
+
+<div class="rec">
+  <p><strong>案1「帳場」を土台に据え、案4「番台」の待ち行列を第二段で足す</strong>——これを勧める。</p>
+  <p>
+    診断 01〜05 は<b>体系が無いこと</b>の帰結で、案1 がそのまま解く。素性を変えないので、いまの画面を知っている人が学び直さずに済み、
+    移行も CSS の入れ替えで足りる。ここで<b>朱を「POの判断待ち」専用に空ける</b>のが要で、これをやっておくと第二段が無料で効く。
+  </p>
+  <p>
+    残る 06・07 は意匠ではなく骨格の話で、CSS では直らない。より重い 07（判断待ちが画面に無い）を先に取る。
+    案4 の取次は<b>案1 の上にそのまま載る</b>——常設の場所を取らず、上段にボタンを 1 つ足すだけで、
+    色の規律は案1 で決めたものを使い回せる。既存プロトタイプの 📥 と一本化するので、新しい語彙も増えない。
+  </p>
+  <p>
+    案3「座敷」は正しい問いを立てているが、いま入れると意匠と骨格を同時に動かすことになる。<b>案4 の後に、独立して測る</b>のがよい。
+    案2「夜番」は案1 が色の体系を持てば<b>その暗色版として後から出せる</b>ので、いま選ぶ必要はない。
+    案5「符牒」は全面採用ではなく、<b>⌘K と会話の切替キーだけ</b>を案1 に移植するのが取り分が大きい。
+  </p>
+
+  <div class="steps">
+    <div class="step"><b>第一段</b><span><em>案1 で意匠の体系を敷く。</em>字の段を 6 段に、余白を 4 の倍数に、枠を実際の境目だけに、絵文字を線の絵に。朱は判断待ち専用に空けておく。既存の画面は動いたまま。</span></div>
+    <div class="step"><b>第二段</b><span><em>案4 の取次を上段に足す。</em>札は spec-ui §3 の三部構成。ホスト側に「出所を問わない受け口」が要るので、そこは番頭核の仕事になる（Kobo 固有にしない）。既存の <code>requestsTab</code> はこれに畳む。</span></div>
+    <div class="step"><b>第三段</b><span><em>案5 から ⌘K だけ持ってくる。</em>会話・面・職人・設定を横断して引く単一の入口。骨格は変えない。</span></div>
+    <div class="step"><b>測ってから</b><span><em>案3 の骨格入れ替えと案2 の暗色版。</em>第二段まで使ってみて、会話が脇にあることが実際に効いているかを見てから決める。</span></div>
+  </div>
+</div>
+
+<h2>裁定</h2>
+<p class="sub">2026-08-05、5 件すべてに答えが出た。中身と、それをどう絵にしたかは <a href="design.html">意匠の決定</a> にある。</p>
+
+<div class="asks">
+  <div class="q">
+    <b>1. 番頭の言葉を明朝にしてよいか</b>
+    <p>案1 では、番頭の発言だけ明朝で組んでいる。声の主が書体で分かるのが狙いだが、画面上の明朝は好みが割れる。角ゴシックに揃える選択もある（そのときは落款の印だけで見分ける）。</p>
+    <span class="ans">明朝でよい。使ってみてから戻したい場合は言う</span>
+  </div>
+  <div class="q">
+    <b>2. 朱を「判断待ち」専用に空けてよいか</b>
+    <p>いま朱系（--danger）はエラー表示にも使っている。専用にするなら、エラーは無彩色＋字で出すことになる。<b>画面でいちばん強い色を何に使うか</b>の選択で、後から変えると意味づけが崩れる。</p>
+    <span class="ans">朱は判断待ち専用でよい。ただしエラーも一目で分かる色にすること → <b>紫（#6D4A9E）</b>にした</span>
+  </div>
+  <div class="q">
+    <b>3. 暗色を「後から」でよいか</b>
+    <p>案2 を後回しにすると、当面は明るい画面だけになる。端末の隣で長時間見るなら暗色が先、という判断もありうる。</p>
+    <span class="ans">明るいのが主、暗いのが従で OK</span>
+  </div>
+  <div class="q">
+    <b>4. 取次を、既存の「セッション開始リクエスト」と一本化してよいか</b>
+    <p>いま <code>banto-shell.html</code> の 📥 は「セッションを開始してほしい」の受け口として設計されている。取次はそこに「判断してほしい」「期限が来る」「外から届いた」も混ぜる。<b>受けるものの範囲が広がる</b>ので、Tool／API の形（誰が何を積めるか）を決める必要がある。分けたままにする手もある。</p>
+    <span class="ans">一本化しよう。分ける理由がない → 第二段で ADR を起こす</span>
+  </div>
+  <div class="q">
+    <b>5. 会話とキャンバスの主従（案3）を、いま測るか後で測るか</b>
+    <p>番頭が主体という ADR-0009 の建て付けからすると、会話が脇にあるのは構造の食い違いかもしれない。ただし、これを先に動かすと意匠の評価と混ざる。</p>
+    <span class="ans">これは後でやりましょう → 未決。後回しにする間は incident を積む（P3）</span>
+  </div>
+</div>
+
+<footer>
+  prototype/redesign/ — 00-current（基準）/ 01-choba / 02-yaban / 03-zashiki / 04-bandai / 05-fucho<br>
+  いずれも静止した見本。Kobo・番頭ホストには繋がっていない。仕様の真実は docs/spec/。<br>
+  <b>広い画面（1280px 以上）だけを描いている。</b>狭い画面での畳み方は方向が決まってから起こす——
+  いま 5 案ぶん作ると、比べたい軸（意匠・骨格）と畳み方の巧拙が混ざる。<br>
+  書体は見本を揃えるため Web フォントで読み込んでいる。採用時は端末のフォント（Hiragino 等）で組み直す。
+</footer>
+
+</div>
+</body>
+</html>

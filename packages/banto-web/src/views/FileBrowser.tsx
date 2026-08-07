@@ -20,6 +20,8 @@ import remarkGfm from "remark-gfm";
 import { useModuleTool, callModuleTool } from "./useModuleTool.js";
 import { PlacePicker, usePlaceSelection } from "./PlacePicker.js";
 import type { CanvasViewProps } from "./registry.js";
+import { Icon, iconOfFile, type IconName } from "../icons.js";
+import { MarkdownLink } from "../links.js";
 import {
   Button,
   CopyButton,
@@ -99,19 +101,9 @@ function parentOf(p: string): string {
   return i === -1 ? "." : p.slice(0, i);
 }
 
-/** 拡張子でそれらしい絵を選ぶ。中身を開く前の見当がつくだけでよい。 */
-function iconOf(entry: Entry): string {
-  if (entry.type === "dir") return "📁";
-  const ext = extOfPath(entry.name);
-  if (["md", "txt", "rst"].includes(ext)) return "📝";
-  if (["png", "jpg", "jpeg", "gif", "svg", "webp", "ico"].includes(ext)) return "🖼";
-  if (["json", "yaml", "yml", "toml", "ini", "cfg", "env"].includes(ext)) return "⚙️";
-  if (["csv", "tsv"].includes(ext)) return "📊";
-  if (["diff", "patch"].includes(ext)) return "±";
-  if (["mmd", "mermaid"].includes(ext)) return "🔀";
-  if (["zip", "gz", "tar", "tgz", "7z"].includes(ext)) return "📦";
-  if (codeLangOfPath(entry.name)) return "📄";
-  return "📄";
+/** 拡張子でそれらしい絵を選ぶ。中身を開く前の見当がつくだけでよい。対応は icons.tsx。 */
+function iconOf(entry: Entry): IconName {
+  return iconOfFile(entry.name, entry.type === "dir");
 }
 
 /** shiki トークンの装飾（TextMate の fontStyle ビットマスク: 1=italic 2=bold 4=underline）。 */
@@ -451,7 +443,7 @@ function Breadcrumbs({
   onGo: (path: string) => void;
 }): React.ReactElement {
   const parts = dir === "." ? [] : dir.split("/").filter((p) => p.length > 0);
-  const crumbs = [{ name: "🏠", path: "." }, ...parts.map((name, i) => ({
+  const crumbs = [{ name: "", path: "." }, ...parts.map((name, i) => ({
     name,
     path: parts.slice(0, i + 1).join("/"),
   }))];
@@ -474,7 +466,7 @@ function Breadcrumbs({
               aria-label={crumb.path === "." ? "この場所のいちばん上へ" : crumb.name}
               onClick={() => onGo(crumb.path)}
             >
-              {crumb.name}
+              {i === 0 ? <Icon name="home" size={14} /> : crumb.name}
             </button>
           </span>
         );
@@ -791,7 +783,7 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
           {search.loading ? (
             <Loading label="探しています…" />
           ) : search.hits.length === 0 && !search.error ? (
-            <EmptyState icon="🔍" title="見つかりませんでした">
+            <EmptyState icon="search" title="見つかりませんでした">
               {dir === "." ? "この場所" : `${dir} の下`}には当てはまるものがありません。
             </EmptyState>
           ) : (
@@ -831,7 +823,7 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
           {listing.loading && !listing.data ? (
             <Loading rows={6} />
           ) : entries.length === 0 ? (
-            <EmptyState icon="📁" title={filter ? "当てはまるものがありません" : "空のディレクトリです"}>
+            <EmptyState icon="folder" title={filter ? "当てはまるものがありません" : "空のディレクトリです"}>
               {filter ? "絞り込みを外すと全部出ます。" : "ここには何もありません。"}
             </EmptyState>
           ) : (
@@ -853,12 +845,10 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
                     }}
                     title={join(entry.name)}
                   >
-                    <span className="fb-icon" aria-hidden="true">
-                      {iconOf(entry)}
-                    </span>
+                    <Icon name={iconOf(entry)} size={15} className="fb-icon" />
                     <span className="fb-entry-name">{entry.name}</span>
                     {entry.type === "dir" ? (
-                      <span className="fb-size">›</span>
+                      <Icon name="chevron-right" size={13} className="fb-size" />
                     ) : (
                       <span className="fb-size">{formatBytes(entry.size)}</span>
                     )}
@@ -878,7 +868,7 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
   );
 
   const detailPane = !file ? (
-    <EmptyState icon="📄" title="ファイルを選ぶと中身が出ます">
+    <EmptyState icon="file" title="ファイルを選ぶと中身が出ます">
       左の一覧から選ぶか、「探す」で中身を検索できます。
     </EmptyState>
   ) : (
@@ -940,7 +930,7 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
       ) : content.loading && !content.data ? (
         <Loading rows={5} />
       ) : content.data?.binary ? (
-        <EmptyState icon="⬛" title="バイナリのため表示できません">
+        <EmptyState icon="binary" title="バイナリのため表示できません">
           {formatBytes(content.data.size)} のファイルです。
         </EmptyState>
       ) : (
@@ -955,6 +945,8 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
                       code: (props) => (
                         <MarkdownCode {...props} scheme={scheme} onMermaidReady={bumpPreviewReady} />
                       ),
+                      // 外に出るリンクは別タブへ（links.tsx）。読んでいる面ごと差し替わらない
+                      a: MarkdownLink,
                     }}
                   >
                     {contentText}
@@ -1004,7 +996,7 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
           aria-pressed={searchOpen}
           onClick={() => setSearchOpen((v) => !v)}
         >
-          🔍 探す
+          <Icon name="search" size={14} /> 探す
         </Button>
       </ViewBar>
 

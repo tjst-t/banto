@@ -1,0 +1,314 @@
+/**
+ * 意匠トークン — 色・字・余白の唯一の出どころ（spec-design）
+ *
+ * **ここに無い値を面が持つことを禁止する。** 画面ごとに新しい色や字の大きさを
+ * 作ると、17 段の字と 107 箇所の枠に戻る（それが「製品に見えない」の正体だった）。
+ *
+ * テーマは `<html data-theme="...">` の 1 属性だけで切り替わる。面ごとの CSS には
+ * 分岐を書かない（D5：Surface に判断を持たせない）。色だけでなく**書体・余白・角も変数**
+ * なので、密度や書体ごと変わる家も、この仕組みのまま足せる。
+ *
+ * **組み方まで変える家は、ここに加えて「形の層」を1枚持つ**（ADR-0012 決定51）。
+ * 値はここ、組み方は `theme/<家>.css`——値を層に書かない。
+ */
+
+/* ══ 明（原典）══════════════════════════════════════════════════════════ */
+:root,
+:root[data-theme="washi-light"] {
+  /* ── 紙：3段。枠を引かず、濃さの差で面を分ける ─────────────────────── */
+  --paper:    #EFEBE1;   /* 地 */
+  --paper-1:  #F8F6F0;   /* 立つ面（上段・カード・会話の器） */
+  --paper-2:  #E4DFD2;   /* 沈む面（入力・溝・二次ボタン） */
+  --rule:     #DCD6C7;   /* 実際の境目にだけ引く線 */
+
+  /* ── 墨：3段 ────────────────────────────────────────────────────── */
+  --sumi:     #191712;   /* 本文 */
+  --sumi-2:   #4A463D;   /* 副次 */
+  --sumi-3:   #8A8474;   /* 注記 */
+
+  /* ── 色は 5 役。「誰の番か・どう止まっているか」だけを言う ──────────────
+     規則：**塗り（面を埋める・ボタンを塗る）を許すのは朱だけ。**
+     他は点・左罫・字にしか出さない。だから朱が常にいちばん強い。          */
+  --ai:       #1E3A5F;   /* 藍   番頭が動いている・選ばれている */
+  --ai-t:     #E3E7EE;
+  --shu:      #B03A26;   /* 朱   あなたの判断待ち。唯一、塗ってよい色 */
+  --shu-t:    #F5E4DF;
+  --on-shu:   #FFFFFF;   /* 朱の上に載せる字。明暗で反転する */
+  --murasaki: #5A3E63;   /* 紫   止まった（失敗・エラー・incident）。朱より必ず弱く */
+  --mur-t:    #E4DDDF;   /* 淡い地は**白からでなく紙から**作る（白から作ると地から浮く） */
+  --kohaku:   #A05A12;   /* 琥珀 気をつける（期限が近い・文脈が逼迫） */
+  --koh-t:    #F7EDDD;
+  --koke:     #4A6B45;   /* 苔   済んだ・繋がっている */
+  --koke-t:   #E7EDE5;
+
+  /* コードの地。地の体系に属させる（以前は #16140f が単独で落ちていた） */
+  --code-bg:  #26221A;
+  --code-ink: #E4DFD2;
+
+  /* ── 影は 2 段だけ ────────────────────────────────────────────────── */
+  --shadow-rest: 0 1px 2px rgba(25,23,18,.06);    /* 置いてある（カード） */
+  --shadow-pop:  0 8px 24px rgba(25,23,18,.14);   /* 浮いている（メニュー・被さる面） */
+
+  /* ── 字は 6 段だけ。中間を作らない ────────────────────────────────── */
+  --t-note:  11px;
+  --t-meta:  12px;
+  --t-body:  13px;
+  --t-read:  15px;
+  --t-head:  19px;
+  --t-title: 26px;
+
+  /* 声の主が書体で分かる。明朝は**番頭の発話にだけ**使う */
+  --ui:   "Zen Kaku Gothic New", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", system-ui, sans-serif;
+  --sho:  "Shippori Mincho", "Hiragino Mincho ProN", "Yu Mincho", YuMincho, serif;
+  --mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+  /* 行間も役。密度ごと変わるテーマ（等幅・高密度など）はここを上書きする */
+  --lh-body: 1.75;
+  --lh-sho:  1.95;   /* 番頭の発話。明朝は詰めると読めない */
+
+  /* 高さも役。上段と部品の背丈を変えれば、画面全体の密度が変わる */
+  --h-bar:    52px;  /* 上段 */
+  --h-tab:    32px;  /* 上段に並ぶ押しもの（取次・履歴・設定・明暗） */
+  --h-tabbar: 40px;  /* キャンバスのタブの帯 */
+  --h-ctl:    30px;  /* ふつうの部品（ボタン・入力） */
+  --h-ctl-sm: 28px;  /* 小さい部品（札・道具立ての中） */
+
+  /**
+   * ── 部品の役（家ごとに組み方が変わるところ）─────────────────────────
+   *
+   * 面の CSS が家を名指しせずに済むよう、**家ごとに変わる「形」も役として名付ける**。
+   * これを増やすほど「形の層」（ADR-0012）が薄くなり、家がクラス名に縛られなくなる
+   * ——世の中のテーマ機構が通ってきた道と同じ（`docs/notes/theme-system-comparison.md`）。
+   */
+  /* 面の置き方：浮いた紙（余白と角丸を持つ） */
+  --face-margin: 0 var(--s3) var(--s3);
+  --face-radius: 0 var(--r-face) var(--r-face) var(--r-face);
+  /* POの吹き出し。右下だけ角を落として向きを示す */
+  --bubble-radius: var(--r-face) var(--r-face) var(--r-seal) var(--r-face);
+  /* 番頭の印：藍の落款 */
+  --banto-mark:      "番";
+  --banto-mark-bg:   var(--ai);
+  --banto-mark-ink:  var(--paper-1);
+  --banto-mark-size: 20px;
+  --banto-mark-t:    var(--t-meta);
+  --banto-indent:    var(--s8);
+  /**
+   * 符牒の札の一辺。**出すのは ⌥・f のときだけ**で、これはどの家でも変わらない
+   * （PO裁定 2026-08-06）——常置すると、押せるものを探していないときにも
+   * 画面が記号で埋まる。
+   */
+  --key-size: 16px;
+
+  /* ── 余白は 4 の倍数だけ ─────────────────────────────────────────── */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 20px; --s6: 24px; --s8: 32px;
+
+  /* ── 角は 3 つだけ。丸ボタン（999px）はやめる ────────────────────────
+     例外は数の札だけ（丸が数字の器として働くとき）。                     */
+  --r-seal: 2px;
+  --r-ctl:  6px;
+  --r-face: 10px;
+
+  /* ── ブラウザが描くもの（スクロールバー・入力欄の中身・選択の枠）──────
+     これを宣言しないと、暗色にしてもブラウザは明色のまま描き、そこだけ白く浮く。 */
+  color-scheme: light;
+  --scroll-thumb: #CEC7B4;
+}
+
+/* ══ 暗（従）— 同じ役を裏返しただけ。役は増えも減りもしない ═══════════════ */
+:root[data-theme="washi-dark"] {
+  --paper:    #14161A;
+  --paper-1:  #1B1E24;
+  --paper-2:  #262B33;
+  --rule:     #2E333C;
+
+  --sumi:     #E9E7E2;
+  --sumi-2:   #A7ACB5;
+  --sumi-3:   #6E747E;
+
+  --ai:       #8FB0D9;  --ai-t:   rgba(143,176,217,.15);
+  --shu:      #E4674F;  --shu-t:  rgba(228,103,79,.15);
+  --on-shu:   #23100B;  /* 暗色の朱は明るいので、白を載せると読めない */
+  --murasaki: #A98CB4;  --mur-t:  rgba(169,140,180,.15);
+  --kohaku:   #E0A24B;  --koh-t:  rgba(224,162,75,.15);
+  --koke:     #7FB08A;  --koke-t: rgba(127,176,138,.15);
+
+  --code-bg:  #0F1114;
+  --code-ink: #D5D2CB;
+
+  --shadow-rest: 0 1px 2px rgba(0,0,0,.30);
+  --shadow-pop:  0 8px 24px rgba(0,0,0,.45);
+
+  color-scheme: dark;
+  --scroll-thumb: #39404B;
+}
+
+/**
+ * つまみの色も紙から作る。溝は透かして地をそのまま使う。
+ *
+ * **`::-webkit-scrollbar` は使わない**——あれを 1 つでも書くと、macOS の重ねて出る
+ * スクロールバー（触ったときだけ現れるもの）が、常時場所を取る古い形に変わる。
+ * `color-scheme` があれば OS 側が地の明暗に合った色で描いてくれる。
+ */
+:root {
+  scrollbar-color: var(--scroll-thumb) transparent;
+  scrollbar-width: thin;
+}
+
+/**
+ * ══ 符牒（等幅・高密度）════════════════════════════════════════════════════
+ *
+ * **色だけでなく書体・密度・角ごと変わるテーマ**。案5「符牒」の**値**をここに置く。
+ * 組み方（黒い状態行・平らなタブ・1本の罫の境目・`»` の印）は `theme/fucho.css` が持つ
+ * ——トークンだけでは和紙と見分けが付かなかった（ADR-0012・PO報告 2026-08-06）。
+ *
+ * 狙いは「手が覚える」。端末の隣に置いたとき、もう一枚の黒い窓が増えるのではなく
+ * 紙の側に立つよう、暗色ではなく**明るい地の等幅**にしてある。
+ */
+:root[data-theme="fucho-light"] {
+  --paper:    #F5F4F0;
+  --paper-1:  #FCFBF8;
+  --paper-2:  #E9E7E0;
+  --rule:     #DEDBD2;
+
+  --sumi:     #17171A;
+  --sumi-2:   #55545A;
+  --sumi-3:   #8B8A90;
+
+  --ai:       #1B4B8F;  --ai-t:   #E4EAF3;
+  --shu:      #C1341C;  --shu-t:  #F8E5E1;
+  --on-shu:   #FFFFFF;
+  --murasaki: #5A3E63;  --mur-t:  #E4DDDF;
+  --kohaku:   #8F5210;  --koh-t:  #F5EBDC;
+  --koke:     #2F6B4F;  --koke-t: #E4EDE7;
+
+  --code-bg:  #1B1B1E;
+  --code-ink: #DEDCD5;
+
+  /**
+   * 状態行（形の層 `fucho.css` が使う）。
+   *
+   * **明暗で裏返らない。** 上段は明でも暗でも黒地の帯なので、`--sumi`（明では黒、暗では白）
+   * から作ると暗色で白い帯になってしまう。役として別に持つ。
+   */
+  --bar-bg:    #17171A;   /* 帯の地 */
+  --bar-ink:   #9C9A94;   /* 帯の上の字（ふだん） */
+  --bar-on:    #F2F1EC;   /* 帯の上の字（立っているもの）。紙の色は使えない——暗で沈むため */
+  --bar-raise: #2B2B2F;   /* 帯の上で1段持ち上げた升（選ばれているタブ） */
+
+  /* 全部が等幅。行が機械的に揃うので、一覧は目で舐めるだけで読める */
+  --ui:   "M PLUS 1 Code", "SFMono-Regular", Menlo, Consolas, monospace;
+  --sho:  "M PLUS 1 Code", "SFMono-Regular", Menlo, Consolas, monospace;
+  --mono: "M PLUS 1 Code", "SFMono-Regular", Menlo, Consolas, monospace;
+
+  /* 密度を上げる。字は一段ずつ小さく、行間も詰める */
+  --t-note:  10px;
+  --t-meta:  11px;
+  --t-body:  12px;
+  --t-read:  13px;
+  --t-head:  16px;
+  --t-title: 22px;
+  --lh-body: 1.6;
+  --lh-sho:  1.7;
+
+  --s1: 3px; --s2: 6px; --s3: 9px; --s4: 12px; --s5: 15px; --s6: 18px; --s8: 24px;
+
+  /* 角は落とす。端末の隣に置く道具は、丸くない */
+  --r-seal: 2px;
+  --r-ctl:  3px;
+  --r-face: 4px;
+
+  /* 上段は案5の状態行（30px）。帯に高さを使わない */
+  --h-bar:    30px;
+  --h-tab:    30px;
+  --h-tabbar: 32px;
+  --h-ctl:    26px;
+  --h-ctl-sm: 24px;
+
+  /* 面は枠に嵌まったバッファ。余白も角も取らない */
+  --face-margin: 0;
+  --face-radius: 0;
+  --bubble-radius: var(--r-ctl);
+  /* 番頭の印は記号。案5は「機械の出力」の顔をしているので落款を使わない */
+  --banto-mark:      "»";
+  --banto-mark-bg:   transparent;
+  --banto-mark-ink:  var(--ai);
+  --banto-mark-size: auto;
+  --banto-mark-t:    var(--t-read);
+  --banto-indent:    var(--s5);
+  --key-size: 16px;
+
+  --shadow-rest: 0 1px 2px rgba(23,23,26,.07);
+  --shadow-pop:  0 6px 20px rgba(23,23,26,.16);
+
+  color-scheme: light;
+  --scroll-thumb: #CFCCC2;
+}
+
+/* ── 符牒（暗）。同じ家の裏返し。役は増えも減りもしない ─────────────────── */
+:root[data-theme="fucho-dark"] {
+  --paper:    #121316;
+  --paper-1:  #191B1F;
+  --paper-2:  #24272C;
+  --rule:     #2C3036;
+
+  --sumi:     #E4E2DD;
+  --sumi-2:   #A2A5AB;
+  --sumi-3:   #6B6E75;
+
+  --ai:       #7FA8DC;  --ai-t:   rgba(127,168,220,.15);
+  --shu:      #E0644C;  --shu-t:  rgba(224,100,76,.15);
+  --on-shu:   #1E0C08;
+  --murasaki: #A98CB4;  --mur-t:  rgba(169,140,180,.15);
+  --kohaku:   #DFA24E;  --koh-t:  rgba(223,162,78,.15);
+  --koke:     #77AB84;  --koke-t: rgba(119,171,132,.15);
+
+  --code-bg:  #0C0D0F;
+  --code-ink: #D5D3CC;
+
+  /* 状態行。暗のほうが地が沈むので、帯は**さらに沈める**（帯が浮くと画面の頭が光る） */
+  --bar-bg:    #0A0B0D;
+  --bar-ink:   #7E818A;
+  --bar-on:    #E4E2DD;
+  --bar-raise: #22252A;
+
+  --ui:   "M PLUS 1 Code", "SFMono-Regular", Menlo, Consolas, monospace;
+  --sho:  "M PLUS 1 Code", "SFMono-Regular", Menlo, Consolas, monospace;
+  --mono: "M PLUS 1 Code", "SFMono-Regular", Menlo, Consolas, monospace;
+
+  --t-note:  10px;
+  --t-meta:  11px;
+  --t-body:  12px;
+  --t-read:  13px;
+  --t-head:  16px;
+  --t-title: 22px;
+  --lh-body: 1.6;
+  --lh-sho:  1.7;
+
+  --s1: 3px; --s2: 6px; --s3: 9px; --s4: 12px; --s5: 15px; --s6: 18px; --s8: 24px;
+
+  --r-seal: 2px;
+  --r-ctl:  3px;
+  --r-face: 4px;
+
+  --h-bar:    30px;
+  --h-tab:    30px;
+  --h-tabbar: 32px;
+  --h-ctl:    26px;
+  --h-ctl-sm: 24px;
+
+  --face-margin: 0;
+  --face-radius: 0;
+  --bubble-radius: var(--r-ctl);
+  --banto-mark:      "»";
+  --banto-mark-bg:   transparent;
+  --banto-mark-ink:  var(--ai);
+  --banto-mark-size: auto;
+  --banto-mark-t:    var(--t-read);
+  --banto-indent:    var(--s5);
+  --key-size: 16px;
+
+  --shadow-rest: 0 1px 2px rgba(0,0,0,.30);
+  --shadow-pop:  0 6px 20px rgba(0,0,0,.48);
+
+  color-scheme: dark;
+  --scroll-thumb: #343941;
+}

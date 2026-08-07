@@ -149,7 +149,7 @@ export function MemoryViewer({ params, endpoint }: CanvasViewProps): React.React
   return (
     <ViewShell className="st">
       <ViewBar>
-        <ViewTitle icon="🧠" count={shown.length}>
+        <ViewTitle icon="memory" count={shown.length}>
           記憶
         </ViewTitle>
         <span className="cv-spacer" />
@@ -204,7 +204,7 @@ export function MemoryViewer({ params, endpoint }: CanvasViewProps): React.React
           <Loading rows={4} />
         ) : shown.length === 0 ? (
           <EmptyState
-            icon="🧠"
+            icon="memory"
             title={filter ? "当てはまる記憶はありません" : `${scopeLabel}について、まだ何も覚えていません`}
           >
             {filter

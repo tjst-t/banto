@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>「止まった」の色を選ぶ — banto 意匠</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Shippori+Mincho:wght@600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<style>
+/* ══════════════════════════════════════════════════════════════════════════
+   「止まった（失敗・エラー）」の色を選ぶ
+
+   PO：紫が悪目立ちする。効いているのは二つ。
+   ① 色が彩度・明度とも高く、和紙の地（暖色）に対して唯一の寒色の高彩度になっている
+   ② 淡い地（#EFE9F6）が**寒色のラベンダー**で、地の色味に属していない
+
+   候補はどれも②を直してある——**淡い地を紙から作る**（color-mix で紙に色を混ぜる）ので、
+   どの候補でも面は和紙のまま。違うのは色そのもの。
+
+   確かめる観点：
+   ・朱（あなたの判断待ち）より弱いか。朱が最上位という規則を絵でも守れているか
+   ・藍（進んでいる）と点の大きさで見分けがつくか
+   ・「止まった」に見えるか（「新しい」「特別」に見えないか）
+   ══════════════════════════════════════════════════════════════════════════ */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--ui); background: var(--paper); color: var(--sumi); font-size: 14px; line-height: 1.9; -webkit-font-smoothing: antialiased; }
+code { font-family: var(--mono); font-size: .86em; background: var(--paper-2); padding: 1px 5px; border-radius: 3px; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--ai); outline-offset: 2px; }
+a { color: var(--ai); }
+
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 var(--s6) 90px; }
+.bar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: var(--s3); height: 48px; margin: 0 calc(var(--s6)*-1) var(--s6); padding: 0 var(--s6); background: var(--paper-1); border-bottom: 1px solid var(--rule); }
+.bar .mark { font-family: var(--sho); font-size: var(--t-read); font-weight: 600; letter-spacing: .2em; color: var(--ai); }
+.bar .sp { flex: 1; }
+.bar a { font-size: var(--t-meta); color: var(--sumi-3); text-decoration: none; }
+.bar a:hover { color: var(--sumi); }
+.tbtn { width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--r-ctl); color: var(--sumi-3); }
+.tbtn:hover { background: var(--paper-2); color: var(--sumi); }
+.tbtn svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+header { padding: var(--s6) 0 var(--s5); }
+.eyebrow { font-family: var(--mono); font-size: var(--t-note); letter-spacing: .16em; color: var(--sumi-3); }
+h1 { font-family: var(--sho); font-size: 34px; font-weight: 600; line-height: 1.4; margin: var(--s2) 0 var(--s3); }
+.lede { font-size: 14.5px; max-width: 66ch; color: var(--sumi-2); }
+.lede b { color: var(--sumi); font-weight: 700; }
+
+h2 { font-family: var(--sho); font-size: 22px; font-weight: 600; margin: var(--s8) 0 var(--s1); }
+h2 + .sub { font-size: var(--t-meta); color: var(--sumi-3); margin-bottom: var(--s4); }
+
+/* ── 候補：それぞれが自分の --m と --m-t を持つ ─────────────────────────── */
+.cands { display: flex; flex-direction: column; gap: var(--s4); }
+.cand { background: var(--paper-1); border-radius: var(--r-face); padding: var(--s5); box-shadow: var(--shadow-rest); }
+.cand.pick { box-shadow: 0 0 0 2px var(--ai), var(--shadow-rest); }
+.cand-h { display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s4); flex-wrap: wrap; }
+.chipc { width: 30px; height: 30px; border-radius: var(--r-ctl); flex: none; background: var(--m); }
+.cand-h b { font-size: var(--t-read); font-weight: 700; }
+.cand-h .hex { font-family: var(--mono); font-size: var(--t-note); color: var(--sumi-3); }
+.cand-h .sp { flex: 1; }
+.tag { font-size: var(--t-note); font-weight: 700; letter-spacing: .06em; padding: 2px 9px; border-radius: 999px; background: var(--ai); color: var(--paper-1); }
+.tag.now { background: var(--paper-2); color: var(--sumi-3); }
+.cand-note { font-size: var(--t-meta); color: var(--sumi-2); margin-bottom: var(--s4); line-height: 1.85; }
+
+/* 見え方の見本：止まった帯・一覧の行・道具の行・朱との並び */
+.demos { display: grid; grid-template-columns: 1.15fr 1fr; gap: var(--s4); align-items: start; }
+.stopband { padding: var(--s4) var(--s5); border-radius: var(--r-face); background: var(--m-t); box-shadow: inset 3px 0 0 var(--m); }
+.stop-h { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-body); font-weight: 700; color: var(--m); margin-bottom: var(--s1); }
+.stop-h svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; flex: none; }
+.stopband p { font-size: var(--t-body); }
+.stopband pre { margin-top: var(--s2); padding: var(--s2) var(--s3); border-radius: var(--r-ctl); background: var(--paper-1); font-family: var(--mono); font-size: var(--t-note); line-height: 1.7; overflow-x: auto; color: var(--sumi-2); }
+.stop-a { display: flex; gap: 7px; margin-top: var(--s3); }
+.b { height: 30px; padding: 0 14px; border-radius: var(--r-ctl); font-size: var(--t-meta); font-weight: 500; background: var(--paper-2); color: var(--sumi-2); }
+.b.shu { background: var(--shu); color: var(--on-shu); }
+
+.side { display: flex; flex-direction: column; gap: var(--s3); }
+.rows { background: var(--paper); border-radius: var(--r-face); padding: var(--s2); }
+.r { display: flex; align-items: flex-start; gap: var(--s3); padding: 9px var(--s3); border-radius: var(--r-ctl); border-left: 2px solid transparent; }
+.r.stop { border-left-color: var(--m); }
+.r.wait { border-left-color: var(--shu); }
+.r b { display: block; font-size: var(--t-body); font-weight: 500; line-height: 1.5; }
+.r s { display: block; text-decoration: none; font-family: var(--mono); font-size: var(--t-note); color: var(--sumi-3); }
+.r.stop s { color: var(--m); }
+.r.wait s { color: var(--shu); }
+.st { flex: none; width: 9px; height: 9px; margin-top: 6px; border-radius: 50%; }
+.st.run  { background: var(--ai);  box-shadow: 0 0 0 3px var(--ai-t); }
+.st.wait { background: var(--shu); box-shadow: 0 0 0 3px var(--shu-t); }
+.st.stop { background: none; box-shadow: inset 0 0 0 2px var(--m); border-radius: 2px; transform: rotate(45deg); }
+.st.done { background: none; box-shadow: inset 0 0 0 2px var(--koke); }
+.toolrow { display: flex; align-items: center; gap: 9px; padding: 0 var(--s3); font-family: var(--mono); font-size: var(--t-note); color: var(--m); }
+.toolrow i { width: 5px; height: 5px; flex: none; background: none; box-shadow: inset 0 0 0 2px var(--m); border-radius: 1px; transform: rotate(45deg); }
+.toolrow .sp { flex: 1; }
+
+/* 朱との競り合いを見る（朱がいちばん強いか） */
+.askband { padding: var(--s4) var(--s5); border-radius: var(--r-face); background: var(--shu-t); box-shadow: inset 3px 0 0 var(--shu); }
+.ask-h { display: flex; align-items: center; gap: 9px; font-size: var(--t-body); font-weight: 700; color: var(--shu); margin-bottom: var(--s1); }
+.seal { display: inline-grid; place-items: center; width: 20px; height: 20px; background: var(--shu); color: var(--on-shu); font-family: var(--sho); font-size: var(--t-meta); font-weight: 600; border-radius: var(--r-seal); flex: none; }
+.askband p { font-size: var(--t-body); }
+
+.judge { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s3); margin-top: var(--s4); padding-top: var(--s3); border-top: 1px solid var(--rule); font-size: var(--t-note); line-height: 1.75; color: var(--sumi-2); }
+.judge b { display: block; color: var(--sumi-3); font-weight: 400; font-size: 10.5px; letter-spacing: .06em; }
+
+.why { margin-top: var(--s8); padding: var(--s5); background: var(--paper-1); border-radius: var(--r-face); box-shadow: inset 3px 0 0 var(--ai); }
+.why h3 { font-size: var(--t-read); font-weight: 700; margin-bottom: var(--s2); }
+.why p { font-size: var(--t-body); line-height: 1.95; max-width: 68ch; }
+.why p + p { margin-top: var(--s2); }
+
+footer { margin-top: var(--s8); padding-top: var(--s4); border-top: 1px solid var(--rule); font-family: var(--mono); font-size: var(--t-note); color: var(--sumi-3); line-height: 2; }
+
+@media (max-width: 900px) { .demos { grid-template-columns: 1fr; } .judge { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="bar">
+  <span class="mark">番頭</span>
+  <span style="font-size:var(--t-meta);color:var(--sumi-3)">「止まった」の色</span>
+  <span class="sp"></span>
+  <a href="design.html">意匠の決定</a>
+  <a href="10-kettei.html">決定版の画面</a>
+  <button class="tbtn" id="themeBtn" title="明かりを落とす"><svg id="themeIcon" viewBox="0 0 24 24"><path d="M20 14a8 8 0 01-10-10 8 8 0 1010 10z"/></svg></button>
+</div>
+
+<header>
+  <div class="eyebrow">色の選び直し · 止まった（失敗・エラー）</div>
+  <h1>紫が悪目立ちする件</h1>
+  <p class="lede">
+    効いているのは二つ。<b>①色そのものが明るく彩度が高い</b>——和紙の地は全部が暖色の低彩度なのに、紫だけが寒色の高彩度で、そこだけ別の絵の具に見える。
+    <b>②淡い地が寒色のラベンダー（#EFE9F6）で、紙に属していない</b>。
+    候補はどれも②を直してある——<b>淡い地を紙から作る</b>（紙に色を少し混ぜる）ので、面は和紙のまま。違うのは色そのものだけ。
+  </p>
+</header>
+
+<h2>候補</h2>
+<p class="sub">見るところは3つ。<b>朱より弱いか</b>／<b>藍と点で見分けがつくか</b>／<b>「止まった」に見えるか（「特別」に見えないか）</b>。暗色でも確かめられます（右上）。</p>
+
+<div class="cands">
+
+  <!-- ── 現状 ── -->
+  <div class="cand" style="--m:#6D4A9E; --m-t:#EFE9F6">
+    <div class="cand-h">
+      <span class="chipc"></span><b>いまの紫</b><span class="hex">#6D4A9E ／ 地 #EFE9F6</span>
+      <span class="sp"></span><span class="tag now">現状</span>
+    </div>
+    <p class="cand-note">江戸紫をそのまま持ってきたもの。彩度も明度も高く、淡い地も寒色。<b>これが悪目立ちの正体。</b></p>
+    <div class="demos">
+      <div class="stopband">
+        <div class="stop-h"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg>止まりました — 3 回とも同じ所</div>
+        <p>繋ぎ直した直後に送る会話の復元が、いずれも <code>maxPayload</code> を超えて切断されました。</p>
+        <pre>→ RangeError: Max payload size exceeded (104,857,600)</pre>
+        <div class="stop-a"><button class="b">もう一度やらせる</button><button class="b">記録を全部読む</button></div>
+      </div>
+      <div class="side">
+        <div class="rows">
+          <div class="r"><span class="st run"></span><span><b>意匠トークンの棚卸し</b><s>w-31 · 04:12</s></span></div>
+          <div class="r wait"><span class="st wait"></span><span><b>views.css の分割</b><s>w-30 · 判断待ち</s></span></div>
+          <div class="r stop"><span class="st stop"></span><span><b>WS 再接続の取りこぼし</b><s>w-28 · 止まりました</s></span></div>
+          <div class="r"><span class="st done"></span><span><b>依存ゲートの再実装</b><s>w-29 · 終わりました</s></span></div>
+        </div>
+        <div class="toolrow"><i></i>ws.reconnect 試行 3 回<span class="sp"></span>いずれも失敗</div>
+        <div class="askband">
+          <div class="ask-h"><span class="seal">断</span>あなたの判断を待っています</div>
+          <p>どちらで直すか決めてください。</p>
+        </div>
+      </div>
+    </div>
+    <div class="judge">
+      <span><b>朱より弱いか</b>いいえ。紫の帯のほうが先に目に入る</span>
+      <span><b>藍と見分くか</b>つく</span>
+      <span><b>止まって見えるか</b>「特別」「新機能」に見える</span>
+    </div>
+  </div>
+
+  <!-- ── 候補A：暗く落とす ── -->
+  <div class="cand pick" style="--m:#5A3E63; --m-t:#E4DDDF">
+    <div class="cand-h">
+      <span class="chipc"></span><b>A｜暗く落とした紫（古代紫を沈めたもの）</b><span class="hex">#5A3E63 ／ 地は紙から作る</span>
+      <span class="sp"></span><span class="tag">番頭の推し</span>
+    </div>
+    <p class="cand-note">同じ紫のまま、<b>明度と彩度だけ下げた</b>。止まったものは騒がず、ただ沈んでいてほしい——「あなたの番です」と違って、急がせる色ではないため。藍（#1E3A5F）とは点の色味で見分きがつく。</p>
+    <div class="demos">
+      <div class="stopband">
+        <div class="stop-h"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg>止まりました — 3 回とも同じ所</div>
+        <p>繋ぎ直した直後に送る会話の復元が、いずれも <code>maxPayload</code> を超えて切断されました。</p>
+        <pre>→ RangeError: Max payload size exceeded (104,857,600)</pre>
+        <div class="stop-a"><button class="b">もう一度やらせる</button><button class="b">記録を全部読む</button></div>
+      </div>
+      <div class="side">
+        <div class="rows">
+          <div class="r"><span class="st run"></span><span><b>意匠トークンの棚卸し</b><s>w-31 · 04:12</s></span></div>
+          <div class="r wait"><span class="st wait"></span><span><b>views.css の分割</b><s>w-30 · 判断待ち</s></span></div>
+          <div class="r stop"><span class="st stop"></span><span><b>WS 再接続の取りこぼし</b><s>w-28 · 止まりました</s></span></div>
+          <div class="r"><span class="st done"></span><span><b>依存ゲートの再実装</b><s>w-29 · 終わりました</s></span></div>
+        </div>
+        <div class="toolrow"><i></i>ws.reconnect 試行 3 回<span class="sp"></span>いずれも失敗</div>
+        <div class="askband">
+          <div class="ask-h"><span class="seal">断</span>あなたの判断を待っています</div>
+          <p>どちらで直すか決めてください。</p>
+        </div>
+      </div>
+    </div>
+    <div class="judge">
+      <span><b>朱より弱いか</b>はい。朱が先に目に入る</span>
+      <span><b>藍と見分くか</b>つく（紫みが残っている）</span>
+      <span><b>止まって見えるか</b>沈んで見える</span>
+    </div>
+  </div>
+
+  <!-- ── 候補B：葡萄鼠（暖色寄り） ── -->
+  <div class="cand" style="--m:#6B5162; --m-t:#E6DEDD">
+    <div class="cand-h">
+      <span class="chipc"></span><b>B｜葡萄鼠（暖色に寄せた紫鼠）</b><span class="hex">#6B5162 ／ 地は紙から作る</span>
+      <span class="sp"></span>
+    </div>
+    <p class="cand-note">紫を<b>紙の側へ寄せた</b>もの。和紙にいちばん馴染むが、その分だけ墨（#4A463D）と近く、<b>止まったことに気づきにくい</b>おそれがある。</p>
+    <div class="demos">
+      <div class="stopband">
+        <div class="stop-h"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg>止まりました — 3 回とも同じ所</div>
+        <p>繋ぎ直した直後に送る会話の復元が、いずれも <code>maxPayload</code> を超えて切断されました。</p>
+        <pre>→ RangeError: Max payload size exceeded (104,857,600)</pre>
+        <div class="stop-a"><button class="b">もう一度やらせる</button><button class="b">記録を全部読む</button></div>
+      </div>
+      <div class="side">
+        <div class="rows">
+          <div class="r"><span class="st run"></span><span><b>意匠トークンの棚卸し</b><s>w-31 · 04:12</s></span></div>
+          <div class="r wait"><span class="st wait"></span><span><b>views.css の分割</b><s>w-30 · 判断待ち</s></span></div>
+          <div class="r stop"><span class="st stop"></span><span><b>WS 再接続の取りこぼし</b><s>w-28 · 止まりました</s></span></div>
+          <div class="r"><span class="st done"></span><span><b>依存ゲートの再実装</b><s>w-29 · 終わりました</s></span></div>
+        </div>
+        <div class="toolrow"><i></i>ws.reconnect 試行 3 回<span class="sp"></span>いずれも失敗</div>
+        <div class="askband">
+          <div class="ask-h"><span class="seal">断</span>あなたの判断を待っています</div>
+          <p>どちらで直すか決めてください。</p>
+        </div>
+      </div>
+    </div>
+    <div class="judge">
+      <span><b>朱より弱いか</b>はい。かなり弱い</span>
+      <span><b>藍と見分くか</b>つく</span>
+      <span><b>止まって見えるか</b>静かすぎるかもしれない</span>
+    </div>
+  </div>
+
+  <!-- ── 候補C：紫紺（もっと暗い） ── -->
+  <div class="cand" style="--m:#453055; --m-t:#E2DBDE">
+    <div class="cand-h">
+      <span class="chipc"></span><b>C｜紫紺（さらに沈めたもの）</b><span class="hex">#453055 ／ 地は紙から作る</span>
+      <span class="sp"></span>
+    </div>
+    <p class="cand-note">ほとんど墨に近い紫。<b>字としていちばん読みやすい</b>が、点（◆）にしたときは色の手がかりが薄く、形だけが頼りになる。</p>
+    <div class="demos">
+      <div class="stopband">
+        <div class="stop-h"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg>止まりました — 3 回とも同じ所</div>
+        <p>繋ぎ直した直後に送る会話の復元が、いずれも <code>maxPayload</code> を超えて切断されました。</p>
+        <pre>→ RangeError: Max payload size exceeded (104,857,600)</pre>
+        <div class="stop-a"><button class="b">もう一度やらせる</button><button class="b">記録を全部読む</button></div>
+      </div>
+      <div class="side">
+        <div class="rows">
+          <div class="r"><span class="st run"></span><span><b>意匠トークンの棚卸し</b><s>w-31 · 04:12</s></span></div>
+          <div class="r wait"><span class="st wait"></span><span><b>views.css の分割</b><s>w-30 · 判断待ち</s></span></div>
+          <div class="r stop"><span class="st stop"></span><span><b>WS 再接続の取りこぼし</b><s>w-28 · 止まりました</s></span></div>
+          <div class="r"><span class="st done"></span><span><b>依存ゲートの再実装</b><s>w-29 · 終わりました</s></span></div>
+        </div>
+        <div class="toolrow"><i></i>ws.reconnect 試行 3 回<span class="sp"></span>いずれも失敗</div>
+        <div class="askband">
+          <div class="ask-h"><span class="seal">断</span>あなたの判断を待っています</div>
+          <p>どちらで直すか決めてください。</p>
+        </div>
+      </div>
+    </div>
+    <div class="judge">
+      <span><b>朱より弱いか</b>はい</span>
+      <span><b>藍と見分くか</b>やや紛れる（どちらも暗い）</span>
+      <span><b>止まって見えるか</b>見える。ただし気づくのは遅い</span>
+    </div>
+  </div>
+
+</div>
+
+<div class="why">
+  <h3>A を当てました</h3>
+  <p>
+    <b>「止まった」は急がせる色ではない</b>——職人が失敗したことは知らせなければならないが、
+    POを呼び立てる用件ではありません（呼び立てるのは朱の役目）。だから、<b>気づける程度に色を残しつつ、沈んでいる</b>のが正しい強さです。
+    B は馴染みすぎて墨と紛れ、C は暗すぎて点にしたときの手がかりが形しか残りません。
+  </p>
+  <p>
+    あわせて<b>淡い地の作り方を決めました</b>。<b>白からではなく紙から作る</b>——旧 #EFE9F6 は寒色のラベンダーで、
+    和紙の地に属していませんでした。今回の悪目立ちの半分はここが原因です。
+    <b>いま直したのは紫だけ</b>で、他の色の淡い地はそのままにしてあります（藍は主色なので寒いままでよい、という判断もあるため）。
+    第一段で実装の CSS を寄せるときに、一色ずつ地の上で確かめます。
+  </p>
+  <p>
+    <b>いまは A を当てて公開してあります。</b>B・C に変えたい、あるいは元の紫に戻したいときは言ってください——
+    <code>tokens.css</code> の <code>--murasaki</code> 1 行で切り替わります。
+  </p>
+</div>
+
+<footer>
+  tokens.css — --murasaki / --mur-t（暗色は --murasaki #A98CB4）<br>
+  この頁は色を選ぶための見本。決まったら畳んで、design.html に結果だけ残します。
+</footer>
+
+</div>
+
+<script>
+  const MOON = '<path d="M20 14a8 8 0 01-10-10 8 8 0 1010 10z"/>';
+  const SUN  = '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.5 1.5M17.6 17.6l1.5 1.5M19.1 4.9l-1.5 1.5M6.4 17.6l-1.5 1.5"/>';
+  /* 暗色では候補も裏返す（明るく・彩度は低いまま）。役の対応は明と一対一 */
+  const DARK = {
+    '#6D4A9E': ['#B48CE0', 'rgba(180,140,224,.15)'],
+    '#5A3E63': ['#A98CB4', 'rgba(169,140,180,.15)'],
+    '#6B5162': ['#B39BA8', 'rgba(179,155,168,.15)'],
+    '#453055': ['#9784A6', 'rgba(151,132,166,.15)'],
+  };
+  const LIGHT = {
+    '#6D4A9E': ['#6D4A9E', '#EFE9F6'],
+    '#5A3E63': ['#5A3E63', '#E4DDDF'],
+    '#6B5162': ['#6B5162', '#E6DEDD'],
+    '#453055': ['#453055', '#E2DBDE'],
+  };
+  const cands = [...document.querySelectorAll(".cand")];
+  cands.forEach((c) => { c.dataset.base = c.style.getPropertyValue("--m").trim(); });
+  document.getElementById("themeBtn").addEventListener("click", (e) => {
+    const dark = document.documentElement.getAttribute("data-theme") === "dark";
+    document.documentElement.setAttribute("data-theme", dark ? "light" : "dark");
+    document.getElementById("themeIcon").innerHTML = dark ? MOON : SUN;
+    e.currentTarget.title = dark ? "明かりを落とす" : "明かりを点ける";
+    const map = dark ? LIGHT : DARK;
+    cands.forEach((c) => {
+      const [m, t] = map[c.dataset.base];
+      c.style.setProperty("--m", m);
+      c.style.setProperty("--m-t", t);
+    });
+  });
+</script>
+</body>
+</html>

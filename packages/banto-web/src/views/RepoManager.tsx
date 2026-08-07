@@ -90,7 +90,7 @@ export function RepoManager({ params, endpoint }: CanvasViewProps): React.ReactE
   const listPane = (
     <>
       <ViewBar>
-        <ViewTitle icon="🗂" count={repositories.length}>
+        <ViewTitle icon="repo" count={repositories.length}>
           リポジトリ
         </ViewTitle>
         <span className="cv-spacer" />
@@ -108,7 +108,7 @@ export function RepoManager({ params, endpoint }: CanvasViewProps): React.ReactE
         {list.loading && !list.data ? (
           <Loading rows={5} />
         ) : repositories.length === 0 ? (
-          <EmptyState icon="🗂" title={query ? "当てはまるリポジトリがありません" : "リポジトリがありません"}>
+          <EmptyState icon="repo" title={query ? "当てはまるリポジトリがありません" : "リポジトリがありません"}>
             {query
               ? "絞り込みを外すと全部出ます。"
               : "ghq が知っているリポジトリがありません（未導入か、まだ clone していない）。下から取ってこられます。"}
@@ -170,13 +170,13 @@ export function RepoManager({ params, endpoint }: CanvasViewProps): React.ReactE
           </Button>
         </div>
         {action.error && <ErrorNote onRetry={action.clearError}>{action.error}</ErrorNote>}
-        {action.notice && <Note tone="ok" icon="✓">{action.notice}</Note>}
+        {action.notice && <Note tone="ok">{action.notice}</Note>}
       </div>
     </>
   );
 
   const detailPane = !repo ? (
-    <EmptyState icon="🗂" title="リポジトリを選ぶと中身が出ます">
+    <EmptyState icon="repo" title="リポジトリを選ぶと中身が出ます">
       ワークツリーの用意・削除ができます（履歴を変える操作はありません）。
     </EmptyState>
   ) : (

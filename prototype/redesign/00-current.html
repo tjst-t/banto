@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>現状 — banto の画面（実装の CSS をそのまま読む）</title>
+<!-- 意図：意匠案と並べるための基準。**実装の CSS を直接読む**ので、ここに写した見た目は
+     いま動いている画面と一致する（写し違いで議論がずれない）。DOM は App.tsx に合わせた。
+
+     impl/ は packages/banto-web/src/ への symlink。手元では実物を読み、公開時は
+     publish.sh が実体をコピーする（そのときの写しなので、公開版は publish した時点の姿）。 -->
+<link rel="stylesheet" href="impl/styles.css">
+<link rel="stylesheet" href="impl/views.css">
+<style>
+  /* 実装では JS が測る箇所だけ、静止画として成り立つよう固定する */
+  .chat-input { height: 64px; }
+  .proto-note {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 999;
+    background: #27241d; color: #f4f2ec; font-size: 11px; padding: 5px 14px;
+    font-family: var(--font);
+  }
+  .shell { padding-bottom: 26px; }
+</style>
+</head>
+<body>
+<div class="shell mobile-view-chat">
+  <header class="shell-topbar">
+    <div class="brand">
+      <span class="brand-mark">番</span>
+      <span><span class="brand-name">banto</span><span class="brand-sub">番頭</span></span>
+    </div>
+    <div class="thread-tabs-wrap">
+      <div class="thread-tabs">
+        <span class="thread-tab-wrap is-active">
+          <button class="thread-tab"><span class="tt-title">意匠の作り直し</span></button>
+          <button class="thread-tab-close">×</button>
+        </span>
+        <span class="thread-tab-wrap">
+          <button class="thread-tab"><span class="tt-unread"></span><span class="tt-title">Kobo 依存ゲート</span></button>
+          <button class="thread-tab-close">×</button>
+        </span>
+        <span class="thread-tab-wrap">
+          <button class="thread-tab"><span class="tt-title">LLM 台帳の整理</span></button>
+          <button class="thread-tab-close">×</button>
+        </span>
+      </div>
+      <button class="thread-new-btn">＋</button>
+    </div>
+    <button class="pin-tab">🕘</button>
+    <button class="pin-tab">⚙️</button>
+    <span class="conn conn--open">接続中</span>
+  </header>
+
+  <div class="shell-body">
+    <main class="canvas-pane">
+      <div class="canvas-tabbar">
+        <div class="canvas-tabstrip">
+          <span class="canvas-tab is-active">
+            <button class="canvas-tab-label"><span class="canvas-tab-icon">🧑‍🏭</span><span class="canvas-tab-text">職人の手元</span></button>
+            <button class="canvas-tab-close">×</button>
+          </span>
+          <span class="canvas-tab">
+            <button class="canvas-tab-label"><span class="canvas-tab-icon">📁</span><span class="canvas-tab-text">packages/banto-web</span></button>
+            <button class="canvas-tab-close">×</button>
+          </span>
+          <span class="canvas-tab">
+            <button class="canvas-tab-label"><span class="canvas-tab-icon">🧠</span><span class="canvas-tab-text">記憶</span></button>
+            <button class="canvas-tab-close">×</button>
+          </span>
+        </div>
+        <button class="canvas-catalog-btn">＋</button>
+      </div>
+
+      <div class="canvas-body">
+        <div class="cv">
+          <div class="cv-bar">
+            <span class="cv-title">職人の手元</span>
+            <span class="cv-count">4</span>
+            <label class="cv-search"><span class="cv-search-icon">🔍</span><input class="cv-search-input" placeholder="名前で絞る"></label>
+            <span class="cv-spacer"></span>
+            <button class="cv-btn is-small">更新</button>
+          </div>
+          <div class="cv-split">
+            <div class="cv-pane cv-pane-list">
+              <div class="cv-scroll">
+                <ul class="cv-list">
+                  <li><button class="cv-row"><span class="cv-dot is-accent is-pulse"></span><span class="cv-row-main"><span class="cv-row-name">意匠トークンの棚卸し</span><span class="cv-row-sub">w-31 · 4分12秒</span></span></button></li>
+                  <li><button class="cv-row is-on"><span class="cv-dot is-warn"></span><span class="cv-row-main"><span class="cv-row-name">views.css の分割</span><span class="cv-row-sub">w-30 · 判断待ち</span></span></button></li>
+                  <li><button class="cv-row"><span class="cv-dot is-ok"></span><span class="cv-row-main"><span class="cv-row-name">依存ゲートの再実装</span><span class="cv-row-sub">w-29 · 終わりました</span></span></button></li>
+                  <li><button class="cv-row"><span class="cv-dot is-danger"></span><span class="cv-row-main"><span class="cv-row-name">WS 再接続の取りこぼし</span><span class="cv-row-sub">w-28 · 失敗</span></span></button></li>
+                </ul>
+              </div>
+            </div>
+            <div class="cv-pane cv-pane-detail">
+              <div class="cv-head">
+                <span class="cv-head-title">views.css の分割</span>
+                <span class="cv-badge is-warn">判断待ち</span>
+                <span class="cv-head-sub">w-30 · claude-sonnet-5</span>
+                <span class="cv-spacer"></span>
+                <button class="cv-btn is-small">中断</button>
+              </div>
+              <div class="cv-note is-warn">
+                <span class="cv-note-icon">⚠</span>
+                1770 行を 5 ファイルに割りますが、`.cv-*` の公開 CSS 名は外向けの契約です。名前を変えてよいか判断をください（D1）。
+              </div>
+              <div class="cv-scroll" style="padding:12px 14px">
+                <div class="msg msg--po">views.css を役割ごとに分けて</div>
+                <div class="msg msg--banto markdown"><p>1770 行の内訳を数えました。器（<code>.cv-bar</code>／<code>.cv-split</code>）が 420 行、部品が 700 行、面ごとの上書きが 650 行です。</p><ul><li>器と部品は共通なので 2 ファイルに残す</li><li>面ごとの上書きは各面へ寄せる</li></ul></div>
+                <div class="msg msg--tool is-ok">
+                  <button class="tool-head"><span class="tool-dot"></span><span class="tool-name">file.read packages/banto-web/src/views/views.css</span><span class="tool-badge">1770 行</span><span class="tool-caret">▸</span></button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <div class="pane-resizer"></div>
+
+    <aside class="chat-pane" style="width:400px">
+      <div class="chat-head">
+        <div class="chat-head-main">
+          <div class="chat-title">番頭と相談する</div>
+          <div class="chat-sub">37 tools · 8c0250ad</div>
+        </div>
+        <button class="btn btn--ghost btn--small">新しい会話</button>
+      </div>
+      <div class="chat-scroll">
+        <div class="chat-scroll-content">
+          <div class="msg msg--po">画面の意匠がプロダクトらしくない。何が効いているか教えて</div>
+          <div class="msg msg--reasoning">
+            <button class="reasoning-head"><span class="reasoning-mark">✳</span><span>12秒間考えました</span><span class="reasoning-caret">▸</span></button>
+          </div>
+          <div class="msg msg--tool is-ok">
+            <button class="tool-head"><span class="tool-dot"></span><span class="tool-name">memory.search 意匠 PO 指摘</span><span class="tool-badge">3件</span><span class="tool-caret">▸</span></button>
+          </div>
+          <div class="msg msg--banto markdown">
+            <p>効いているのは 3 つです。</p>
+            <ul>
+              <li><strong>字の大きさが 10.5〜13.5px に潰れている</strong>。見出しと注記の差が 3px しかなく、どこを先に読むか目が決められません。</li>
+              <li><strong>ほぼ全部の器に 1px の枠がある</strong>。入れ子の四角が画面を埋めていて、管理画面に見えます。</li>
+              <li><strong>絵文字を道具の絵に使っている</strong>。環境で字面が変わり、色も和紙の地から浮きます。</li>
+            </ul>
+            <p>職人を 1 人立てて、まず色と字の棚卸しをさせています。</p>
+          </div>
+          <div class="msg msg--notice">
+            <button class="notice-head"><span class="notice-tag">職人</span><span class="notice-caret">▸</span><span class="notice-summary">意匠トークンの棚卸し：色 14 種・字の大きさ 11 段を検出しました</span></button>
+          </div>
+          <div class="msg msg--po">枠を減らす方向で見本を作って</div>
+          <div class="msg msg--thinking"><span class="loader">✳</span></div>
+        </div>
+      </div>
+      <div class="chat-composer">
+        <div class="composer-box">
+          <textarea class="chat-input" placeholder="番頭に相談する"></textarea>
+          <div class="chat-actions">
+            <button class="attach-btn">＋</button>
+            <div class="model-select"><button class="model-select-trigger"><span class="model-select-name">claude-opus-5</span><span class="model-select-caret">▾</span></button></div>
+            <span class="context-meter">
+              <svg class="context-meter-ring" width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" stroke-width="2" opacity="0.2"></circle><circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="15.8 37.7" transform="rotate(-90 7 7)"></circle></svg>42%
+            </span>
+            <span class="chat-hint">Enter で送信</span>
+            <button class="composer-submit is-ready">↵</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+</div>
+<div class="proto-note">現状（基準）— 実装の <code>styles.css</code> と <code>views/views.css</code> をそのまま読み込んでいます（公開版は publish した時点の写し）</div>
+</body>
+</html>

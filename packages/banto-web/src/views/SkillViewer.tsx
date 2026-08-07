@@ -14,6 +14,7 @@
 import { useMemo, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { MarkdownLink } from "../links.js";
 import { useModuleTool } from "./useModuleTool.js";
 import type { CanvasViewProps } from "./registry.js";
 import {
@@ -83,7 +84,7 @@ export function SkillViewer({ params, endpoint }: CanvasViewProps): React.ReactE
   const listPane = (
     <>
       <ViewBar>
-        <ViewTitle icon="📘" count={skills.length}>
+        <ViewTitle icon="skill" count={skills.length}>
           SKILL
         </ViewTitle>
       </ViewBar>
@@ -97,7 +98,7 @@ export function SkillViewer({ params, endpoint }: CanvasViewProps): React.ReactE
         {list.loading && !list.data ? (
           <Loading rows={4} />
         ) : shown.length === 0 ? (
-          <EmptyState icon="📘" title={filter ? "当てはまる SKILL はありません" : "SKILL はありません"}>
+          <EmptyState icon="skill" title={filter ? "当てはまる SKILL はありません" : "SKILL はありません"}>
             {filter
               ? "絞り込みを外すと全部出ます。"
               : "番頭核とモジュールが出す手順、番頭が学んだ手順がここに並びます。"}
@@ -128,7 +129,7 @@ export function SkillViewer({ params, endpoint }: CanvasViewProps): React.ReactE
   );
 
   const detailPane = !current ? (
-    <EmptyState icon="📘" title="SKILL を選ぶと中身が見えます">
+    <EmptyState icon="skill" title="SKILL を選ぶと中身が見えます">
       番頭がどんな手順を知っているかを、そのまま読めます。
     </EmptyState>
   ) : (
@@ -151,7 +152,10 @@ export function SkillViewer({ params, endpoint }: CanvasViewProps): React.ReactE
       {current.body !== undefined && (
         <div className="cv-scroll st-body">
           <div className="markdown">
-            <Markdown remarkPlugins={[remarkGfm]}>{withoutFrontmatter(current.body)}</Markdown>
+            {/* 外に出るリンクは別タブへ（links.tsx）。SKILL.md は参照リンクを持つ */}
+            <Markdown remarkPlugins={[remarkGfm]} components={{ a: MarkdownLink }}>
+              {withoutFrontmatter(current.body)}
+            </Markdown>
           </div>
         </div>
       )}

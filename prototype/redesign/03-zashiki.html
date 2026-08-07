@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>案3 座敷 — banto 意匠案</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+Antique:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ══════════════════════════════════════════════════════════════════════════
+   案3「座敷」— 会話が本体、キャンバスは差し出し物
+
+   主張：番頭が主体なのに、いまは会話が幅 400px の脇差しに追いやられている。
+   構造を入れ替える。**会話が画面そのもの**。キャンバスは番頭が話の途中で
+   差し出す物で、差し出された場所（会話の中）にそのまま残る。
+
+   ・会話は 760px の読み物として画面の真ん中に置く。字は 15px、行間 2.0
+   ・番頭がGUIを開くと、その瞬間の会話に「差し出し物」の札が挿さる。
+     札の中で中身が動き、押すと右から引き出しが開いて全画面になる
+   ・開いている物は右端の 52px の細帯に積む。タブ列は無くなる
+   ・会話の切替は左端の細帯。会話が3本でも30本でも幅が変わらない
+
+   署名：差し出し物の札。「開いた物」が会話の記録の一部になり、
+        後から遡っても「あのとき番頭は何を見せたか」が消えない
+   ══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --paper:  #F7F4EE;
+  --paper-1:#FFFDFA;
+  --paper-2:#EDE8DE;
+  --ink:    #23201B;
+  --ink-2:  #58534A;
+  --ink-3:  #918B7E;
+  --rule:   #E2DCD0;
+  --matsu:  #2F5D4A;   /* 松葉：番頭側の主色 */
+  --matsu-t:#E4EDE8;
+  --kaki:   #B4551F;   /* 柿：POの判断を待つもの */
+  --kaki-t: #F7E9DE;
+
+  --ui:   "Zen Kaku Gothic Antique", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body { font-family: var(--ui); background: var(--paper); color: var(--ink); font-size: 15px; line-height: 2; -webkit-font-smoothing: antialiased; }
+button, input, textarea { font: inherit; color: inherit; }
+button { background: none; border: 0; cursor: pointer; }
+::selection { background: var(--matsu-t); }
+:focus-visible { outline: 2px solid var(--matsu); outline-offset: 2px; }
+
+.shell { height: 100%; display: flex; }
+
+/* ── 左端：会話の帯。増えても幅が変わらない ────────────────────────────── */
+.rail { width: 60px; flex: none; background: #E9E3D7; box-shadow: inset -1px 0 0 rgba(0,0,0,.04); display: flex; flex-direction: column; align-items: center; padding: 12px 0; gap: 4px; }
+.rail .mark { width: 32px; height: 32px; display: grid; place-items: center; background: var(--matsu); color: #fff; border-radius: 8px; font-size: 15px; font-weight: 700; margin-bottom: 14px; }
+.rail-sp { flex: 1; }
+.rt { position: relative; width: 38px; height: 38px; display: grid; place-items: center; border-radius: 9px; color: var(--ink-3); font-size: 15px; font-weight: 500; }
+.rt:hover { background: rgba(0,0,0,.05); color: var(--ink); }
+.rt.on { background: var(--paper-1); color: var(--matsu); box-shadow: 0 1px 3px rgba(35,32,27,.09); }
+.rt.on::before { content: ""; position: absolute; left: -11px; top: 9px; bottom: 9px; width: 3px; border-radius: 0 2px 2px 0; background: var(--matsu); }
+.rt .bell { position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--kaki); }
+/* 名前は帯の外に出す（帯を太らせない） */
+.rt .tip {
+  position: absolute; left: 46px; top: 50%; transform: translateY(-50%);
+  padding: 4px 11px; border-radius: 6px; background: var(--ink); color: var(--paper);
+  font-size: 12px; line-height: 1.6; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity .12s; z-index: 5;
+}
+.rt:hover .tip { opacity: 1; }
+.rt svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ── 中央：会話 ──────────────────────────────────────────────────────── */
+.room { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
+.room-head { flex: none; display: flex; align-items: baseline; gap: 12px; padding: 22px 40px 6px; }
+.room-head h1 { font-size: 22px; font-weight: 700; letter-spacing: .01em; line-height: 1.5; }
+.room-head .n { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); }
+.room-head .sp { flex: 1; }
+
+.scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 40px; }
+.column { max-width: 760px; margin: 0 auto; padding: 14px 0 28px; display: flex; flex-direction: column; gap: 26px; }
+
+.po { align-self: flex-end; max-width: 78%; background: var(--paper-2); padding: 12px 18px; border-radius: 12px 12px 3px 12px; font-size: 15px; line-height: 1.85; }
+.banto { position: relative; padding-left: 42px; }
+.banto::before {
+  content: "番"; position: absolute; left: 0; top: 5px; width: 28px; height: 28px;
+  display: grid; place-items: center; background: var(--matsu); color: #fff;
+  font-size: 13px; font-weight: 700; border-radius: 8px;
+}
+.banto p + p, .banto ul { margin-top: 12px; }
+.banto ul { padding-left: 20px; }
+.banto li { margin: 4px 0; }
+code { font-family: var(--mono); font-size: 12.5px; background: var(--paper-2); padding: 2px 6px; border-radius: 4px; }
+
+.tool { display: flex; align-items: center; gap: 11px; padding-left: 42px; font-family: var(--mono); font-size: 12px; line-height: 1.7; color: var(--ink-3); }
+.tool i { width: 5px; height: 5px; border-radius: 50%; background: var(--matsu); flex: none; }
+.tool .arg { color: var(--ink-2); }
+.tool .sp { flex: 1; }
+.think { display: flex; align-items: center; gap: 12px; padding-left: 42px; font-size: 13px; color: var(--ink-3); }
+.think .bar { flex: 1; height: 1px; background: var(--rule); }
+
+/* ══ 署名：差し出し物 ══════════════════════════════════════════════════
+   番頭がGUIを開いた瞬間の会話に挿さる札。中身は生きたまま動く            */
+.offer { margin-left: 42px; background: var(--paper-1); border-radius: 12px; box-shadow: 0 1px 2px rgba(35,32,27,.05), 0 8px 22px rgba(35,32,27,.07); overflow: hidden; }
+.offer-head { display: flex; align-items: center; gap: 10px; padding: 13px 16px 11px; }
+.offer-head svg { width: 16px; height: 16px; fill: none; stroke: var(--matsu); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.offer-head b { font-size: 14px; font-weight: 700; }
+.offer-head .n { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.offer-head .sp { flex: 1; }
+.offer-open { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border-radius: 7px; background: var(--matsu); color: #fff; font-size: 12px; font-weight: 500; }
+.offer-open:hover { background: #24483A; }
+.offer-body { padding: 0 8px 8px; }
+.orow { display: flex; align-items: center; gap: 11px; padding: 9px 12px; border-radius: 8px; font-size: 13.5px; line-height: 1.6; }
+.orow:hover { background: var(--paper); }
+.orow .st { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); }
+.orow.run .st { background: var(--matsu); box-shadow: 0 0 0 3px var(--matsu-t); }
+.orow.wait .st { background: var(--kaki); box-shadow: 0 0 0 3px var(--kaki-t); }
+.orow.done .st { background: #9BB3A6; }
+.orow.fail .st { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-3); }
+.orow .sp { flex: 1; }
+.orow em { font-style: normal; font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.orow.wait em { color: var(--kaki); font-weight: 500; }
+
+/* 判断を求める札：会話の中に、柿色の帯として立つ */
+.ask { margin-left: 42px; padding: 16px 20px; border-radius: 12px; background: var(--kaki-t); box-shadow: inset 3px 0 0 var(--kaki); }
+.ask-h { display: flex; align-items: center; gap: 9px; font-size: 12px; font-weight: 700; letter-spacing: .08em; color: var(--kaki); margin-bottom: 4px; }
+.ask-h svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.ask p { font-size: 14.5px; line-height: 1.9; }
+.ask-a { display: flex; gap: 8px; margin-top: 12px; }
+.btn { height: 32px; padding: 0 15px; border-radius: 7px; font-size: 13px; color: var(--ink-2); background: var(--paper-1); box-shadow: 0 1px 2px rgba(35,32,27,.07); }
+.btn:hover { color: var(--ink); }
+.btn.kaki { background: var(--kaki); color: #fff; font-weight: 500; }
+.btn.kaki:hover { background: #97460F; }
+.btn.flat { background: none; box-shadow: none; color: var(--ink-3); }
+.btn.flat:hover { background: var(--paper-2); color: var(--ink); }
+
+.notice { padding-left: 42px; }
+.notice-in { padding: 0 0 0 14px; box-shadow: inset 2px 0 0 var(--rule); }
+.notice-in em { display: block; font-style: normal; font-family: var(--mono); font-size: 11px; color: var(--matsu); }
+.notice-in span { font-size: 13.5px; color: var(--ink-2); }
+
+/* ── 入力：読み物と同じ幅で、下に浮かせる ────────────────────────────── */
+.composer { flex: none; padding: 4px 40px 22px; position: relative; }
+/* 会話は入力欄の裏へ流れていく。切り口を見せずに地へ溶かす */
+.composer::before {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 100%; height: 32px;
+  background: linear-gradient(to top, var(--paper), transparent); pointer-events: none;
+}
+.composer-in {
+  max-width: 760px; margin: 0 auto; background: var(--paper-1); border-radius: 14px;
+  padding: 14px 18px 10px; box-shadow: 0 1px 2px rgba(35,32,27,.06), 0 10px 26px rgba(35,32,27,.09);
+  transition: box-shadow .14s;
+}
+.composer-in:focus-within { box-shadow: 0 0 0 2px var(--matsu), 0 10px 26px rgba(35,32,27,.1); }
+.composer textarea { width: 100%; height: 46px; resize: none; border: 0; background: none; font-size: 15px; line-height: 1.75; }
+.composer textarea:focus { outline: none; }
+.composer textarea::placeholder { color: var(--ink-3); }
+.tools { display: flex; align-items: center; gap: 6px; }
+.tools .sp { flex: 1; }
+.tool-btn { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 7px; color: var(--ink-3); }
+.tool-btn:hover { background: var(--paper-2); color: var(--ink); }
+.tool-btn svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.pick { display: flex; align-items: center; gap: 5px; height: 30px; padding: 0 10px; border-radius: 7px; font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+.pick:hover { background: var(--paper-2); }
+.gauge { display: flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); }
+.gauge .track { width: 36px; height: 3px; background: var(--paper-2); border-radius: 2px; overflow: hidden; }
+.gauge .fill { display: block; height: 100%; width: 42%; background: var(--ink-3); }
+.send { width: 32px; height: 32px; border-radius: 8px; background: var(--matsu); color: #fff; display: grid; place-items: center; }
+.send:hover { background: #24483A; }
+.send svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ── 右端：いま開いている物。押すと引き出しが開く ────────────────────── */
+.shelf { width: 56px; flex: none; background: #E9E3D7; box-shadow: inset 1px 0 0 rgba(0,0,0,.04); display: flex; flex-direction: column; align-items: center; padding: 14px 0; gap: 6px; }
+.shelf-label { font-size: 10px; color: var(--ink-3); letter-spacing: .1em; writing-mode: vertical-rl; margin-bottom: 6px; line-height: 1; }
+.sh { position: relative; width: 38px; height: 38px; display: grid; place-items: center; border-radius: 9px; color: var(--ink-2); }
+.sh:hover { background: rgba(0,0,0,.05); }
+.sh.on { background: var(--paper-1); box-shadow: 0 1px 3px rgba(35,32,27,.09); color: var(--matsu); }
+.sh svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.sh .tip { position: absolute; right: 46px; top: 50%; transform: translateY(-50%); padding: 4px 11px; border-radius: 6px; background: var(--ink); color: var(--paper); font-size: 12px; line-height: 1.6; white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity .12s; z-index: 5; }
+.sh:hover .tip { opacity: 1; }
+.sh .dot { position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--kaki); }
+
+.foot { position: fixed; left: 0; right: 0; bottom: 0; height: 24px; display: flex; align-items: center; gap: 12px; padding: 0 16px; background: var(--ink); color: var(--paper); font-family: var(--mono); font-size: 10.5px; z-index: 9; }
+.shell { padding-bottom: 24px; }
+
+/* ══ 引き出し（キャンバス）════════════════════════════════════════════════
+   「大きく開く」を押すと、会話の右から引き出しが出る。**会話は消えない**——
+   狭くなるだけで、番頭に続けて話しかけられる。閉じれば差し出し物の札は
+   会話に残ったまま。POが同じ物を何度でも開き直せる。                        */
+.drawer {
+  flex: 0 0 0; min-width: 0; overflow: hidden; background: var(--paper-1);
+  display: flex; flex-direction: column;
+  box-shadow: -1px 0 0 var(--rule), -12px 0 30px rgba(35,32,27,.06);
+  transition: flex-basis .26s cubic-bezier(.32,.72,0,1);
+}
+.shell.is-open .drawer { flex-basis: clamp(560px, 56%, 900px); }
+@media (prefers-reduced-motion: reduce) { .drawer { transition: none; } }
+/* 引き出しが出ている間、会話は読み物としての幅を捨てて詰める */
+.shell.is-open .column { max-width: 620px; }
+.shell.is-open .scroll, .shell.is-open .composer { padding-left: 28px; padding-right: 28px; }
+.shell.is-open .room-head { padding-left: 28px; padding-right: 28px; }
+
+.dw-head { flex: none; display: flex; align-items: center; gap: 11px; padding: 18px 24px 12px; }
+.dw-head svg.ic { width: 18px; height: 18px; fill: none; stroke: var(--matsu); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.dw-head h2 { font-size: 19px; font-weight: 700; white-space: nowrap; }
+.dw-head .n { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
+.dw-head .sp { flex: 1; }
+.dw-close { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; color: var(--ink-3); flex: none; }
+.dw-close:hover { background: var(--paper-2); color: var(--ink); }
+.dw-close svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+
+.dw-split { flex: 1; min-height: 0; display: flex; }
+.dw-list { width: 264px; flex: none; overflow-y: auto; padding: 0 8px 20px 14px; }
+.dw-detail { flex: 1; min-width: 0; overflow-y: auto; padding: 0 24px 24px; box-shadow: inset 1px 0 0 var(--rule); }
+.dr { display: flex; align-items: flex-start; gap: 11px; width: 100%; text-align: left; padding: 10px 12px; border-radius: 8px; }
+.dr:hover { background: var(--paper); }
+.dr.on { background: var(--matsu-t); }
+.dr.wait.on { background: var(--kaki-t); }
+.dr .st { flex: none; width: 7px; height: 7px; border-radius: 50%; margin-top: 8px; background: var(--ink-3); }
+.dr.run .st { background: var(--matsu); box-shadow: 0 0 0 3px var(--matsu-t); }
+.dr.wait .st { background: var(--kaki); box-shadow: 0 0 0 3px var(--kaki-t); }
+.dr.done .st { background: #9BB3A6; }
+.dr.fail .st { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-3); }
+.dr b { display: block; font-size: 13.5px; font-weight: 500; line-height: 1.6; }
+.dr s { display: block; text-decoration: none; font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.dr.wait s { color: var(--kaki); }
+.dw-sec { font-size: 11px; letter-spacing: .1em; color: var(--ink-3); margin: 22px 0 10px; }
+.dw-log { display: flex; flex-direction: column; gap: 16px; }
+.dw-log .po { max-width: 88%; font-size: 14px; }
+.dw-log .banto { font-size: 14px; line-height: 1.9; padding-left: 38px; }
+.dw-log .banto::before { width: 24px; height: 24px; font-size: 12px; border-radius: 7px; }
+.dw-log .tool { padding-left: 38px; }
+/* 引き出しの中でも判断の札は同じ姿。会話に出ていたものと同じ物だと分かる */
+.dw-detail .ask { margin-left: 0; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <!-- 会話の帯 -->
+  <nav class="rail">
+    <div class="mark">番</div>
+    <button class="rt on">意<span class="tip">意匠の作り直し</span></button>
+    <button class="rt">K<span class="bell"></span><span class="tip">Kobo 依存ゲート — 知らせ 1</span></button>
+    <button class="rt">L<span class="tip">LLM 台帳の整理</span></button>
+    <button class="rt"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="tip">新しい会話</span></button>
+    <span class="rail-sp"></span>
+    <button class="rt"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span class="tip">履歴</span></button>
+    <button class="rt"><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 12h4M12 12h8M4 17h10M18 17h2"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="16" cy="17" r="2"/></svg><span class="tip">設定</span></button>
+  </nav>
+
+  <!-- 会話 -->
+  <main class="room">
+    <div class="room-head">
+      <h1>意匠の作り直し</h1>
+      <span class="n">claude-opus-5 · 42%</span>
+      <span class="sp"></span>
+      <button class="btn flat">新しい会話</button>
+    </div>
+
+    <div class="scroll">
+      <div class="column">
+        <div class="po">画面の意匠がプロダクトらしくない。何が効いているか教えて</div>
+
+        <div class="think"><span>12秒 考えました</span><span class="bar"></span></div>
+        <div class="tool"><i></i><span class="arg">memory.search</span> 意匠 PO 指摘<span class="sp"></span>3件</div>
+
+        <div class="banto">
+          <p>効いているのは三つです。</p>
+          <ul>
+            <li><strong>字の大きさが 10.5〜13.5px に潰れている。</strong>見出しと注記の差が 3px しかなく、どこを先に読むか目が決められません。</li>
+            <li><strong>ほぼ全部の器に 1px の枠がある。</strong>入れ子の四角が画面を埋めていて、管理画面に見えます。</li>
+            <li><strong>絵文字を道具の絵に使っている。</strong>環境で字面が変わり、色も和紙の地から浮きます。</li>
+          </ul>
+          <p>職人を四人立てました。手元をここに出しておきます。</p>
+        </div>
+
+        <!-- 署名：差し出し物 -->
+        <div class="offer">
+          <div class="offer-head">
+            <svg viewBox="0 0 24 24"><path d="M4 20v-2a4 4 0 014-4h8a4 4 0 014 4v2"/><circle cx="12" cy="8" r="4"/></svg>
+            <b>職人の手元</b><span class="n">4 人 · 生きています</span>
+            <span class="sp"></span>
+            <button class="offer-open" id="offerOpen">大きく開く<svg viewBox="0 0 24 24" style="width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2"><path d="M9 6l6 6-6 6"/></svg></button>
+          </div>
+          <div class="offer-body">
+            <div class="orow run"><span class="st"></span>意匠トークンの棚卸し<span class="sp"></span><em>w-31 · 04:12</em></div>
+            <div class="orow wait"><span class="st"></span>views.css の分割<span class="sp"></span><em>判断待ち</em></div>
+            <div class="orow done"><span class="st"></span>依存ゲートの再実装<span class="sp"></span><em>終わりました</em></div>
+            <div class="orow fail"><span class="st"></span>WS 再接続の取りこぼし<span class="sp"></span><em>失敗</em></div>
+          </div>
+        </div>
+
+        <div class="notice"><div class="notice-in"><em>職人 w-31</em><span>色 14 種・字の大きさ 11 段を検出しました</span></div></div>
+
+        <div class="ask">
+          <div class="ask-h"><svg viewBox="0 0 24 24"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17v.5"/></svg>あなたの判断を待っています — w-30</div>
+          <p>1770 行を 5 ファイルに割ります。ただし <code>.cv-*</code> の CSS 名は外向けの契約です。名前を変えてよいか決めてください。</p>
+          <div class="ask-a"><button class="btn kaki">名前ごと変える</button><button class="btn">名前は据え置く</button><button class="btn flat">くわしく聞く</button></div>
+        </div>
+
+        <div class="po">枠を減らす方向で見本を作って</div>
+        <div class="think"><span>考えています</span><span class="bar"></span></div>
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="composer-in">
+        <textarea placeholder="番頭に相談する"></textarea>
+        <div class="tools">
+          <button class="tool-btn" title="添付"><svg viewBox="0 0 24 24"><path d="M21 11l-8.5 8.5a5 5 0 01-7-7L14 4a3.5 3.5 0 015 5l-8.5 8.5a2 2 0 01-3-3L15 6"/></svg></button>
+          <button class="pick">claude-opus-5 <span style="opacity:.5">▾</span></button>
+          <span class="gauge"><span class="track"><span class="fill"></span></span>42%</span>
+          <span class="sp"></span>
+          <button class="send"><svg viewBox="0 0 24 24"><path d="M5 12h13M12 5l7 7-7 7"/></svg></button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- 引き出し：会話の右から出る。会話は消えず、狭くなるだけ -->
+  <section class="drawer" aria-label="キャンバス">
+    <div class="dw-head">
+      <svg class="ic" viewBox="0 0 24 24"><path d="M4 20v-2a4 4 0 014-4h8a4 4 0 014 4v2"/><circle cx="12" cy="8" r="4"/></svg>
+      <h2>職人の手元</h2><span class="n">4 人 · 生きています</span>
+      <span class="sp"></span>
+      <button class="btn flat">更新</button>
+      <button class="dw-close" id="dwClose" aria-label="閉じて会話に戻す" title="閉じて会話に戻す">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+
+    <div class="dw-split">
+      <div class="dw-list">
+        <button class="dr run"><span class="st"></span><span><b>意匠トークンの棚卸し</b><s>w-31 · 04:12</s></span></button>
+        <button class="dr wait on"><span class="st"></span><span><b>views.css の分割</b><s>w-30 · 判断待ち</s></span></button>
+        <button class="dr done"><span class="st"></span><span><b>依存ゲートの再実装</b><s>w-29 · 終わりました</s></span></button>
+        <button class="dr fail"><span class="st"></span><span><b>WS 再接続の取りこぼし</b><s>w-28 · 失敗</s></span></button>
+      </div>
+
+      <div class="dw-detail">
+        <div class="dw-head" style="padding-left:0;padding-right:0">
+          <h2 style="font-size:17px">views.css の分割</h2><span class="n">w-30 · claude-sonnet-5</span>
+          <span class="sp"></span><button class="btn flat">中断</button>
+        </div>
+
+        <div class="ask">
+          <div class="ask-h"><svg viewBox="0 0 24 24"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17v.5"/></svg>あなたの判断を待っています</div>
+          <p>1770 行を 5 ファイルに割ります。ただし <code>.cv-*</code> の CSS 名は外向けの契約です。名前を変えてよいか決めてください。</p>
+          <div class="ask-a"><button class="btn kaki">名前ごと変える</button><button class="btn">名前は据え置く</button><button class="btn flat">くわしく聞く</button></div>
+        </div>
+
+        <div class="dw-sec">— w-30 のやりとり</div>
+        <div class="dw-log">
+          <div class="po">views.css を役割ごとに分けて</div>
+          <div class="tool"><i></i><span class="arg">file.read</span> views/views.css<span class="sp"></span>1770 行</div>
+          <div class="banto">
+            <p>1770 行の内訳を数えました。器（<code>.cv-bar</code> / <code>.cv-split</code>）が 420 行、部品が 700 行、面ごとの上書きが 650 行です。</p>
+            <ul><li>器と部品は共通なので 2 ファイルに残す</li><li>面ごとの上書きは各面へ寄せる</li></ul>
+          </div>
+          <div class="tool"><i></i><span class="arg">file.write</span> views/parts.css<span class="sp"></span>待っています</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 開いている物の棚 -->
+  <aside class="shelf">
+    <span class="shelf-label">開いている物</span>
+    <button class="sh on" id="shelfWorker"><svg viewBox="0 0 24 24"><path d="M4 20v-2a4 4 0 014-4h8a4 4 0 014 4v2"/><circle cx="12" cy="8" r="4"/></svg><span class="dot"></span><span class="tip">職人の手元 — 判断待ち 1</span></button>
+    <button class="sh"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><span class="tip">packages/banto-web</span></button>
+    <button class="sh"><svg viewBox="0 0 24 24"><path d="M12 4a4 4 0 00-4 4 3 3 0 000 6 4 4 0 008 0 3 3 0 000-6 4 4 0 00-4-4z"/></svg><span class="tip">記憶</span></button>
+    <button class="sh"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span class="tip">キャンバスに開く</span></button>
+  </aside>
+</div>
+
+<div class="foot">案3 座敷 — 会話が本体、キャンバスは差し出し物<span style="flex:1"></span><span>ws · 接続中</span></div>
+<script>
+  // 会話は末尾に貼り付いている状態が既定（実装の use-stick-to-bottom と同じ）
+  const sc = document.querySelector(".scroll");
+  const stick = () => { sc.scrollTop = sc.scrollHeight; };
+  stick();
+
+  /* 引き出しの開閉。**閉じても差し出し物の札は会話に残る**——札は「番頭が
+     いつ何を出したか」の記録なので、閉じたら消える箱にはしない。
+     幅が変わると会話の折り返しも変わるので、開閉のたびに末尾へ貼り直す。 */
+  const shell = document.querySelector(".shell");
+  const open = (v) => {
+    shell.classList.toggle("is-open", v);
+    setTimeout(stick, 280);
+  };
+  document.getElementById("offerOpen").addEventListener("click", () => open(true));
+  document.getElementById("shelfWorker").addEventListener("click", () => open(!shell.classList.contains("is-open")));
+  document.getElementById("dwClose").addEventListener("click", () => open(false));
+  // Esc で会話へ戻す（実装の「被さっている面を閉じる」と同じ手つき）
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") open(false); });
+</script>
+</body>
+</html>

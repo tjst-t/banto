@@ -92,7 +92,7 @@ function DiffBody({
   const lines = useMemo(() => diff.split("\n"), [diff]);
   if (diff.length === 0) {
     return (
-      <EmptyState icon="＝" title="差分はありません">
+      <EmptyState icon="check" title="差分はありません">
         {scope === "working"
           ? "作業ツリーに未コミットの変更はありません。"
           : "このコミットは差分を持ちません（マージコミットは既定で中身を出しません）。"}

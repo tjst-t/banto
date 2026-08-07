@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>banto 意匠の決定 — 色・字・余白の唯一の出どころ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Shippori+Mincho:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--ui); background: var(--paper); color: var(--sumi); font-size: 14px; line-height: 1.95; -webkit-font-smoothing: antialiased; }
+a { color: var(--ai); }
+code { font-family: var(--mono); font-size: .86em; background: var(--paper-2); padding: 1px 5px; border-radius: 3px; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--ai); outline-offset: 2px; }
+
+.wrap { max-width: 940px; margin: 0 auto; padding: 0 var(--s6) 100px; }
+
+.bar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: var(--s3); height: 48px; margin: 0 calc(var(--s6) * -1) var(--s8); padding: 0 var(--s6); background: var(--paper-1); border-bottom: 1px solid var(--rule); }
+.bar .mark { font-family: var(--sho); font-size: var(--t-read); font-weight: 600; letter-spacing: .2em; color: var(--ai); }
+.bar .sp { flex: 1; }
+.bar a { font-size: var(--t-meta); color: var(--sumi-3); text-decoration: none; }
+.bar a:hover { color: var(--sumi); }
+.tbtn { width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--r-ctl); color: var(--sumi-3); }
+.tbtn:hover { background: var(--paper-2); color: var(--sumi); }
+.tbtn svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+header { padding: var(--s8) 0 var(--s6); }
+.eyebrow { font-family: var(--mono); font-size: var(--t-note); letter-spacing: .16em; color: var(--sumi-3); }
+h1 { font-family: var(--sho); font-size: 38px; font-weight: 600; line-height: 1.35; margin: var(--s2) 0 var(--s4); }
+.lede { font-size: 15px; line-height: 1.95; max-width: 64ch; color: var(--sumi-2); }
+.lede b { color: var(--sumi); font-weight: 700; }
+
+h2 { font-family: var(--sho); font-size: var(--t-title); font-weight: 600; margin: 62px 0 var(--s1); }
+h2 + .sub { font-size: var(--t-meta); color: var(--sumi-3); margin-bottom: var(--s5); }
+h3 { font-size: var(--t-read); font-weight: 700; margin: var(--s8) 0 var(--s3); }
+
+/* 裁定 */
+.rulings { display: flex; flex-direction: column; }
+.ruling { display: grid; grid-template-columns: 26px 1fr; gap: var(--s4); padding: var(--s4) 0; border-top: 1px solid var(--rule); }
+.ruling:last-child { border-bottom: 1px solid var(--rule); }
+.ruling .n { font-family: var(--mono); font-size: var(--t-meta); color: var(--shu); padding-top: 3px; }
+.ruling b { display: block; font-size: 15px; font-weight: 700; }
+.ruling p { font-size: var(--t-body); color: var(--sumi-2); margin-top: 2px; }
+.ruling .did { display: block; margin-top: 5px; font-size: var(--t-meta); color: var(--sumi-3); }
+.ruling .did::before { content: "→ "; color: var(--koke); }
+
+/* 色 */
+.roles { display: flex; flex-direction: column; gap: var(--s2); }
+.role { display: grid; grid-template-columns: 56px 84px 1fr auto; gap: var(--s4); align-items: center; background: var(--paper-1); border-radius: var(--r-face); padding: var(--s3) var(--s4); }
+.sw { height: 40px; border-radius: var(--r-ctl); }
+.role .nm { font-size: 15px; font-weight: 700; }
+.role .nm em { display: block; font-style: normal; font-family: var(--mono); font-size: 10.5px; font-weight: 400; color: var(--sumi-3); }
+.role .use { font-size: var(--t-body); color: var(--sumi-2); line-height: 1.7; }
+.role .hex { font-family: var(--mono); font-size: var(--t-note); color: var(--sumi-3); text-align: right; white-space: nowrap; }
+
+.rulebox { margin-top: var(--s5); padding: var(--s4) var(--s5); background: var(--shu-t); border-radius: var(--r-face); box-shadow: inset 3px 0 0 var(--shu); }
+.rulebox b { color: var(--shu); }
+.rulebox p { font-size: var(--t-body); line-height: 1.9; }
+
+/* 比べる：朱と紫 */
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s4); margin-top: var(--s4); }
+.demo-ask { padding: var(--s4) var(--s5); border-radius: var(--r-face); background: var(--shu-t); box-shadow: inset 3px 0 0 var(--shu); }
+.demo-stop { padding: var(--s4) var(--s5); border-radius: var(--r-face); background: var(--mur-t); box-shadow: inset 3px 0 0 var(--murasaki); }
+.demo-h { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-body); font-weight: 700; margin-bottom: var(--s1); }
+.demo-ask .demo-h { color: var(--shu); }
+.demo-stop .demo-h { color: var(--murasaki); }
+.seal { display: inline-grid; place-items: center; width: 20px; height: 20px; background: var(--shu); color: var(--on-shu); font-family: var(--sho); font-size: var(--t-meta); font-weight: 600; border-radius: var(--r-seal); flex: none; }
+.demo-stop .demo-h svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.demo p { font-size: var(--t-body); }
+.demo-a { display: flex; gap: 7px; margin-top: var(--s3); }
+.b { height: 30px; padding: 0 14px; border-radius: var(--r-ctl); font-size: var(--t-meta); font-weight: 500; background: var(--paper-2); color: var(--sumi-2); }
+.b.shu { background: var(--shu); color: var(--on-shu); }
+
+/* 状態の点 */
+.states { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: var(--s2); }
+.state { display: flex; align-items: center; gap: var(--s3); background: var(--paper-1); border-radius: var(--r-face); padding: var(--s3) var(--s4); }
+.st { flex: none; width: 10px; height: 10px; border-radius: 50%; }
+.st.run  { background: var(--ai); box-shadow: 0 0 0 3px var(--ai-t); }
+.st.wait { background: var(--shu); box-shadow: 0 0 0 3px var(--shu-t); }
+.st.stop { background: none; box-shadow: inset 0 0 0 2px var(--murasaki); border-radius: 2px; transform: rotate(45deg); }
+.st.warn { background: none; box-shadow: inset 0 0 0 2px var(--kohaku); border-radius: 1px; }
+.st.done { background: none; box-shadow: inset 0 0 0 2px var(--koke); }
+.state b { display: block; font-size: var(--t-body); font-weight: 700; }
+.state span { display: block; font-size: var(--t-note); color: var(--sumi-3); }
+
+/* 字 */
+.scale { display: flex; flex-direction: column; }
+.step { display: grid; grid-template-columns: 108px 1fr; gap: var(--s4); align-items: baseline; padding: var(--s3) 0; border-top: 1px solid var(--rule); }
+.step:last-child { border-bottom: 1px solid var(--rule); }
+.step .k { font-family: var(--mono); font-size: var(--t-note); color: var(--sumi-3); }
+.s-note { font-size: var(--t-note); } .s-meta { font-size: var(--t-meta); } .s-body { font-size: var(--t-body); }
+.s-read { font-size: var(--t-read); } .s-head { font-size: var(--t-head); font-weight: 700; } .s-title { font-family: var(--sho); font-size: var(--t-title); font-weight: 600; }
+
+.voice { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s4); margin-top: var(--s4); }
+.voice > div { background: var(--paper-1); border-radius: var(--r-face); padding: var(--s4) var(--s5); }
+.voice em { display: block; font-style: normal; font-size: var(--t-note); color: var(--sumi-3); margin-bottom: var(--s2); }
+.voice .sho { font-family: var(--sho); font-size: 14px; line-height: 1.95; position: relative; padding-left: var(--s8); }
+.voice .sho::before { content: "番"; position: absolute; left: 0; top: 2px; width: 20px; height: 20px; display: grid; place-items: center; background: var(--ai); color: var(--paper-1); font-size: var(--t-meta); font-weight: 600; border-radius: var(--r-seal); }
+.voice .ui { font-size: var(--t-body); }
+
+/* 余白・角・絵 */
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s4); }
+.card { background: var(--paper-1); border-radius: var(--r-face); padding: var(--s4) var(--s5); }
+.card h4 { font-size: var(--t-body); font-weight: 700; margin-bottom: var(--s2); }
+.card p { font-size: var(--t-meta); color: var(--sumi-2); line-height: 1.85; }
+.spacers { display: flex; align-items: flex-end; gap: 6px; margin-top: var(--s3); }
+.spacers i { display: block; background: var(--ai-t); border-radius: 2px; }
+.spacers i span { display: block; font-family: var(--mono); font-size: 9px; color: var(--sumi-3); text-align: center; margin-top: 3px; }
+.radii { display: flex; align-items: center; gap: var(--s3); margin-top: var(--s3); }
+.radii i { display: grid; place-items: center; width: 46px; height: 46px; background: var(--paper-2); font-family: var(--mono); font-size: 10px; color: var(--sumi-3); }
+.icons { display: flex; gap: var(--s3); margin-top: var(--s3); flex-wrap: wrap; }
+.icons svg { width: 22px; height: 22px; fill: none; stroke: var(--sumi-2); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.no { color: var(--murasaki); }
+
+/* 明暗 */
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s4); margin-top: var(--s4); }
+.pair > div { border-radius: var(--r-face); overflow: hidden; box-shadow: var(--shadow-rest); }
+.pair .h { padding: var(--s2) var(--s4); font-size: var(--t-note); font-family: var(--mono); }
+.pv { padding: var(--s4); display: flex; flex-direction: column; gap: 7px; }
+.pv .r { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-meta); }
+.pv .d { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.lightbox { background: #EFEBE1; color: #191712; } .lightbox .h { background: #F8F6F0; color: #8A8474; }
+.darkbox  { background: #14161A; color: #E9E7E2; } .darkbox .h  { background: #1B1E24; color: #6E747E; }
+
+/* 段取り・宿題 */
+.steps { display: flex; flex-direction: column; gap: var(--s3); }
+.stepline { display: grid; grid-template-columns: 92px 1fr; gap: var(--s4); }
+.stepline b { font-family: var(--mono); font-size: var(--t-note); color: var(--shu); padding-top: 3px; }
+.stepline.done b { color: var(--koke); }
+.stepline span { font-size: var(--t-body); line-height: 1.85; }
+.stepline em { font-style: normal; font-weight: 700; }
+
+footer { margin-top: 62px; padding-top: var(--s5); border-top: 1px solid var(--rule); font-family: var(--mono); font-size: var(--t-note); color: var(--sumi-3); line-height: 2; }
+
+@media (max-width: 760px) {
+  .compare, .voice, .grid2, .pair { grid-template-columns: 1fr; }
+  .role { grid-template-columns: 44px 1fr; }
+  .role .hex { grid-column: 1 / -1; text-align: left; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="bar">
+  <span class="mark">番頭</span>
+  <span style="font-size:var(--t-meta);color:var(--sumi-3)">意匠の決定</span>
+  <span class="sp"></span>
+  <a href="10-kettei.html">決定版の画面 →</a>
+  <a href="index.html">経緯（5案）</a>
+  <button class="tbtn" id="themeBtn" title="明かりを落とす"><svg id="themeIcon" viewBox="0 0 24 24"><path d="M20 14a8 8 0 01-10-10 8 8 0 1010 10z"/></svg></button>
+</div>
+
+<header>
+  <div class="eyebrow">DESIGN TOKENS · 決定 2026-08-05</div>
+  <h1>色・字・余白の<br>唯一の出どころ</h1>
+  <p class="lede">
+    5案の探索は終わり、<b>PO の裁定でひとつに畳んだ</b>。ここに書いてあるものが唯一の出どころで、
+    <b>画面ごとに新しい値を作らない</b>——いま効いている不具合（字の段が 11 種、枠が 20 箇所、色の用途が 6 種）は、
+    どれも「その場で決めた」ことの帰結だった。実体は <code>tokens.css</code>。
+  </p>
+</header>
+
+<h2>裁定</h2>
+<p class="sub">2026-08-05。番頭が上げた 5 件すべてに答えが出ている。</p>
+
+<div class="rulings">
+  <div class="ruling"><span class="n">①</span><span>
+    <b>番頭の言葉は明朝でよい</b>
+    <p>「使ってみてから戻したい場合は言う」——つまり試して決める。</p>
+    <span class="did">番頭の発言だけ明朝で組み、落款を捺した。POの言葉と道具立ては角ゴシックのまま</span>
+  </span></div>
+  <div class="ruling"><span class="n">②</span><span>
+    <b>朱は判断待ち専用でよい。ただしエラーも一目で分かる色にすること</b>
+    <p>朱を空けるのは決まったが、エラーが無彩色になるのは困る、という条件つき。</p>
+    <span class="did">エラー＝<b style="color:var(--murasaki)">紫（#5A3E63）</b>。既存プロトタイプが incident に使っていた江戸紫（#6D4A9E）を引き継いだが、<b>悪目立ちする</b>と差し戻され、明度と彩度を落として沈めた（<a href="color-stop.html">選び直しの見本</a>）</span>
+  </span></div>
+  <div class="ruling"><span class="n">③</span><span>
+    <b>明るいのが主、暗いのが従</b>
+    <p>暗色は要るが、原典は明色。</p>
+    <span class="did">明を先に決め、暗は<b>同じ役から導いた</b>。役は増えも減りもしない</span>
+  </span></div>
+  <div class="ruling"><span class="n">④</span><span>
+    <b>取次は既存のセッション開始リクエストと一本化する。分ける理由がない</b>
+    <p>受け口を 2 つ持たない。</p>
+    <span class="did">上段のボタン 1 つ＋開いたときだけ出る面にした。出所（Kobo・番頭・職人・環境・外）は札の一番上に出す</span>
+  </span></div>
+  <div class="ruling"><span class="n">⑤</span><span>
+    <b>会話とキャンバスの主従（案3）は後でやる</b>
+    <p>いまは意匠の話に集中する。</p>
+    <span class="did">2ペインのまま据え置き。案3 は <code>03-zashiki.html</code> に残してある</span>
+  </span></div>
+</div>
+
+<h2>色は 5 役しかない</h2>
+<p class="sub">色は飾りではなく「誰の番か・どう止まっているか」を言う。役を増やすときは ADR を起こす。</p>
+
+<div class="roles">
+  <div class="role">
+    <span class="sw" style="background:var(--ai)"></span>
+    <span class="nm">藍<em>ai</em></span>
+    <span class="use">番頭が動いている。選ばれている。番頭の落款。</span>
+    <span class="hex">#1E3A5F<br>#8FB0D9</span>
+  </div>
+  <div class="role">
+    <span class="sw" style="background:var(--shu)"></span>
+    <span class="nm">朱<em>shu</em></span>
+    <span class="use"><b>あなたの判断待ち。これだけ。</b>他の意味には一切使わない。</span>
+    <span class="hex">#B03A26<br>#E4674F</span>
+  </div>
+  <div class="role">
+    <span class="sw" style="background:var(--murasaki)"></span>
+    <span class="nm">紫<em>murasaki</em></span>
+    <span class="use">止まった。失敗・エラー・incident。<b>②の答え。</b>朱より必ず弱く——止まったものは急がせない。</span>
+    <span class="hex">#5A3E63<br>#A98CB4</span>
+  </div>
+  <div class="role">
+    <span class="sw" style="background:var(--kohaku)"></span>
+    <span class="nm">琥珀<em>kohaku</em></span>
+    <span class="use">気をつける。期限が近い、文脈が逼迫している。</span>
+    <span class="hex">#A05A12<br>#E0A24B</span>
+  </div>
+  <div class="role">
+    <span class="sw" style="background:var(--koke)"></span>
+    <span class="nm">苔<em>koke</em></span>
+    <span class="use">済んだ。繋がっている。</span>
+    <span class="hex">#4A6B45<br>#7FB08A</span>
+  </div>
+</div>
+
+<div class="rulebox">
+  <p><b>塗り（面を埋める・ボタンを塗る）を許すのは朱だけ。</b>
+  他の 4 色は点・左罫・字にしか出さない。こうしておけば、色が 5 つあっても
+  <b>いちばん強いのは常に「あなたの番です」</b>になる。朱が画面から消えたら、番頭が全部引き受けたということ。</p>
+</div>
+
+<h3>朱と紫を並べる（②が効いているかの確認）</h3>
+<p class="sub" style="margin-bottom:var(--s3)">紫は<b>朱より必ず弱い</b>。止まったことは知らせるが、POを呼び立てるのは朱の役目なので、急がせる強さを持たせない。<a href="color-stop.html">→ 選び直しの経緯</a></p>
+<div class="compare">
+  <div class="demo demo-ask">
+    <div class="demo-h"><span class="seal">断</span>あなたの判断を待っています</div>
+    <p>名前を変えてよいか決めてください。</p>
+    <div class="demo-a"><button class="b shu">変えてよい</button><button class="b">据え置く</button></div>
+  </div>
+  <div class="demo demo-stop">
+    <div class="demo-h"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/></svg>止まりました — 3 回とも同じ所</div>
+    <p><code>maxPayload</code> を超えて切断されました。</p>
+    <div class="demo-a"><button class="b">もう一度やらせる</button><button class="b">記録を読む</button></div>
+  </div>
+</div>
+
+<h3>状態は色と形の両方で出す</h3>
+<p class="sub" style="margin-bottom:var(--s3)">色だけに預けない。色が見えない人にも、白黒に印刷しても通る。</p>
+<div class="states">
+  <div class="state"><span class="st run"></span><span><b>進んでいる</b><span>● 藍</span></span></div>
+  <div class="state"><span class="st wait"></span><span><b>あなたの番</b><span>● 朱</span></span></div>
+  <div class="state"><span class="st stop"></span><span><b>止まった</b><span>◆ 紫</span></span></div>
+  <div class="state"><span class="st warn"></span><span><b>気をつける</b><span>■ 琥珀</span></span></div>
+  <div class="state"><span class="st done"></span><span><b>済んだ</b><span>○ 苔</span></span></div>
+</div>
+
+<h2>字は 6 段しかない</h2>
+<p class="sub">いまは 10.5〜13.5px に 11 種が詰まっていて、段として働いていない。中間を作らない。</p>
+
+<div class="scale">
+  <div class="step"><span class="k">--t-note 11</span><span class="s-note">注記・札・道具の脇に添える字</span></div>
+  <div class="step"><span class="k">--t-meta 12</span><span class="s-meta">道具立て・副次の説明</span></div>
+  <div class="step"><span class="k">--t-body 13</span><span class="s-body">本文。一覧の行、POの発言</span></div>
+  <div class="step"><span class="k">--t-read 15</span><span class="s-read">読ませる本文。番頭の言葉、札の見出し</span></div>
+  <div class="step"><span class="k">--t-head 19</span><span class="s-head">面の見出し</span></div>
+  <div class="step"><span class="k">--t-title 26</span><span class="s-title">面の題</span></div>
+</div>
+
+<h3>①の答え：声の主が書体で分かる</h3>
+<div class="voice">
+  <div>
+    <em>番頭の言葉 — 明朝（Shippori Mincho）</em>
+    <p class="sho">1770 行の内訳を数えました。器が 420 行、部品が 700 行、面ごとの上書きが 650 行です。</p>
+  </div>
+  <div>
+    <em>POの言葉・道具立て — 角ゴシック（Zen Kaku Gothic New）</em>
+    <p class="ui">views.css を役割ごとに分けて</p>
+    <p class="ui" style="color:var(--sumi-3);font-size:var(--t-note);font-family:var(--mono);margin-top:var(--s2)">file.read views/views.css · 1770 行</p>
+  </div>
+</div>
+
+<h2>余白・角・絵</h2>
+<div class="grid2" style="margin-top:var(--s4)">
+  <div class="card">
+    <h4>余白は 4 の倍数だけ</h4>
+    <p>7px も 9px も 11px も作らない。器と器の間が揃うだけで、画面は静かになる。</p>
+    <div class="spacers">
+      <i style="width:4px;height:16px"><span>4</span></i>
+      <i style="width:8px;height:24px"><span>8</span></i>
+      <i style="width:12px;height:32px"><span>12</span></i>
+      <i style="width:16px;height:40px"><span>16</span></i>
+      <i style="width:20px;height:48px"><span>20</span></i>
+      <i style="width:24px;height:56px"><span>24</span></i>
+      <i style="width:32px;height:64px"><span>32</span></i>
+    </div>
+  </div>
+  <div class="card">
+    <h4>角は 3 つだけ</h4>
+    <p>落款は 2px、部品は 6px、面は 10px。丸ボタン（999px）はやめる——タブもボタンも全部が丸いと、押せるものの区別が消える。</p>
+    <div class="radii">
+      <i style="border-radius:2px">2</i><i style="border-radius:6px">6</i><i style="border-radius:10px">10</i>
+    </div>
+  </div>
+  <div class="card">
+    <h4>淡い地は紙から作る</h4>
+    <p>白に色を溶いて作ると、寒色の面が和紙の地から浮く（旧 <code>--mur-t: #EFE9F6</code> がそれだった）。<b>紙に色を混ぜて作る</b>と、どの色の淡い地も地の色味を持つ。</p>
+  </div>
+  <div class="card">
+    <h4>枠は実際の境目にだけ</h4>
+    <p>いまは 20 箇所以上に 1px の枠がある。ふだんの区切りは<b>紙の濃さの差</b>で出し、線は面と面が本当に接するところにしか引かない。</p>
+  </div>
+  <div class="card">
+    <h4>絵は線で描く。絵文字は使わない</h4>
+    <p>環境で字面と色が変わり、ベースラインもずれる。24 の升目に 1.5px の線、色は継承（<code>currentColor</code>）。</p>
+    <div class="icons">
+      <svg viewBox="0 0 24 24"><path d="M3 13h4l2 3h6l2-3h4"/><path d="M5 5h14l2 8v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4z"/></svg>
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+      <svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 12h4M12 12h8M4 17h10M18 17h2"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="16" cy="17" r="2"/></svg>
+      <svg viewBox="0 0 24 24"><path d="M4 20v-2a4 4 0 014-4h8a4 4 0 014 4v2"/><circle cx="12" cy="8" r="4"/></svg>
+      <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+      <svg viewBox="0 0 24 24"><path d="M12 4a4 4 0 00-4 4 3 3 0 000 6 4 4 0 008 0 3 3 0 000-6 4 4 0 00-4-4z"/></svg>
+      <span class="no" style="font-size:var(--t-meta);align-self:center">✕ 🕘 ⚙️ 💬 📄 は使わない</span>
+    </div>
+  </div>
+</div>
+
+<h2>③の答え：明が主、暗が従</h2>
+<p class="sub">暗色は別の意匠ではなく、<b>同じ役を裏返しただけ</b>。切り替えても色の意味は動かない。</p>
+
+<div class="pair">
+  <div class="lightbox">
+    <div class="h">明（主）— 原典</div>
+    <div class="pv">
+      <span class="r"><i class="d" style="background:#1E3A5F"></i>進んでいる</span>
+      <span class="r"><i class="d" style="background:#B03A26"></i>あなたの番</span>
+      <span class="r"><i class="d" style="background:none;box-shadow:inset 0 0 0 2px #6D4A9E;border-radius:2px;transform:rotate(45deg)"></i>止まった</span>
+      <span class="r"><i class="d" style="background:none;box-shadow:inset 0 0 0 2px #A05A12;border-radius:1px"></i>気をつける</span>
+      <span class="r"><i class="d" style="background:none;box-shadow:inset 0 0 0 2px #4A6B45"></i>済んだ</span>
+    </div>
+  </div>
+  <div class="darkbox">
+    <div class="h">暗（従）— 同じ役から導く</div>
+    <div class="pv">
+      <span class="r"><i class="d" style="background:#8FB0D9"></i>進んでいる</span>
+      <span class="r"><i class="d" style="background:#E4674F"></i>あなたの番</span>
+      <span class="r"><i class="d" style="background:none;box-shadow:inset 0 0 0 2px #B48CE0;border-radius:2px;transform:rotate(45deg)"></i>止まった</span>
+      <span class="r"><i class="d" style="background:none;box-shadow:inset 0 0 0 2px #E0A24B;border-radius:1px"></i>気をつける</span>
+      <span class="r"><i class="d" style="background:none;box-shadow:inset 0 0 0 2px #7FB08A"></i>済んだ</span>
+    </div>
+  </div>
+</div>
+<p class="sub" style="margin-top:var(--s3)">
+  朱の上に載せる字だけは明暗で反転する（<code>--on-shu</code>）——暗色の朱は明るいので、白を載せると読めない。
+  案2「夜番」の灯り（稼働中を暖色で示す）は<b>採らなかった</b>：状態はすでに 5 役で言えており、光の温度を足すと役が二重になる。
+</p>
+
+<h2>この先の段取り</h2>
+<p class="sub">意匠は決まった。ここから先は実装の順序で、⑤だけが未決のまま残っている。</p>
+
+<div class="steps">
+  <div class="stepline done"><b>済</b><span><em>意匠を決める。</em>色 5 役・字 6 段・余白 4 の倍数・角 3 つ・線の絵。<code>tokens.css</code> が唯一の出どころ。</span></div>
+  <div class="stepline"><b>第一段</b><span><em>実装の CSS を tokens.css に寄せる。</em><code>packages/banto-web/src/styles.css</code> と <code>views/views.css</code> の値を置き換える。画面の骨格は動かさないので、既存の面はそのまま動く。</span></div>
+  <div class="stepline"><b>第二段</b><span><em>取次を足す（④）。</em>上段にボタン 1 つと、面 1 枚。ホスト側に<b>出所を問わない受け口</b>が要る——ここは番頭核の仕事で、Kobo 固有にしない。既存の <code>requestsTab</code> はこれに畳む。<b>公開I/Fが決まるので ADR を起こす。</b></span></div>
+  <div class="stepline"><b>第三段</b><span><em>⌘K を足す（案5 の取り分）。</em>会話・面・職人・設定を横断して引く単一の入口。骨格は変えない。</span></div>
+  <div class="stepline"><b>未決</b><span><em>⑤ 会話とキャンバスの主従（案3）。</em>第二段まで使ってみて、会話が脇にあることが実際に効いているかを見てから決める。ADR-0009（番頭主体）との食い違いかもしれないので、<b>後回しにする間は incident を積んでおく（P3）</b>。</span></div>
+  <div class="stepline"><b>未決</b><span><em>狭い画面の畳み方。</em>今回はどの見本も広い画面（1280px 以上）しか描いていない。方向が決まってから起こす。</span></div>
+</div>
+
+<footer>
+  tokens.css — 色・字・余白の実体<br>
+  10-kettei.html — 決定版の画面（明／暗の切替つき）<br>
+  index.html — 5案の探索と、そこに至った経緯<br>
+  いずれも静止した見本。Kobo・番頭ホストには繋がっていない。仕様の真実は docs/spec/。
+</footer>
+
+</div>
+
+<script>
+  const MOON = '<path d="M20 14a8 8 0 01-10-10 8 8 0 1010 10z"/>';
+  const SUN  = '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.5 1.5M17.6 17.6l1.5 1.5M19.1 4.9l-1.5 1.5M6.4 17.6l-1.5 1.5"/>';
+  document.getElementById("themeBtn").addEventListener("click", (e) => {
+    const dark = document.documentElement.getAttribute("data-theme") === "dark";
+    document.documentElement.setAttribute("data-theme", dark ? "light" : "dark");
+    document.getElementById("themeIcon").innerHTML = dark ? MOON : SUN;
+    e.currentTarget.title = dark ? "明かりを落とす" : "明かりを点ける";
+  });
+</script>
+</body>
+</html>

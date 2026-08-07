@@ -1,0 +1,194 @@
+/**
+ * 符牒の「形」の層（ADR-0012 決定51・spec-design §6.5）。
+ *
+ * **これは色ではなく組み方を替える層。** トークン（`tokens.css` の `fucho-*` ブロック）で
+ * 届くのは色・書体・字の段・余白・角・高さまでで、案5を案5たらしめているもの
+ * ——黒い状態行・平らなタブ・1本の罫の境目・`»` の印——は**形**なので届かない。
+ * トークンだけの符牒は「和紙とちょっと色が違うだけ」に見えていた（PO報告 2026-08-06）。
+ *
+ * 決め：
+ * - 全部 `:root[data-theme^="fucho"]` の下に閉じる。**他の家には一切漏らさない**
+ * - 面ごとの CSS には分岐を書かない（D5）。分岐ではなく、家の層が上から被せる
+ * - **層に書くのは実際に変えるものだけ。** 既定と同じ値を言い直さない
+ *   ——書いた分だけ面のクラス名に縛られる（決定52：クラス名は家に対する契約）
+ * - **器（DOM）が無いものは作らない**（決定53）。案5の下端のコマンド行は置かない
+ *
+ * ここが名指ししているクラス名は `tests/theme-shape.spec.ts` が見張る。
+ * 面を組み替えて名前が消えたら、その試験が名指しで落ちる。
+ *
+ * 出典：`prototype/redesign/05-fucho.html`
+ */
+
+/* ══ 上段＝状態行。黒地に白字、屋号は藍のチップ ════════════════════════════ */
+:root[data-theme^="fucho"] .shell-topbar {
+  padding: 0;
+  gap: 0;
+  background: var(--bar-bg);
+  border-bottom: 0;
+}
+:root[data-theme^="fucho"] .brand {
+  flex-direction: row;
+  align-items: center;
+  gap: 0;
+  height: 100%;
+  padding: 0 var(--s3);
+  background: var(--ai);
+}
+:root[data-theme^="fucho"] .brand-name {
+  font-family: var(--mono);
+  font-size: var(--t-meta);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--bar-on);
+}
+/* 読み（BANTO）は状態行に収まらない。屋号だけを残す */
+:root[data-theme^="fucho"] .brand-sub { display: none; }
+
+/* 会話タブ：平らな矩形。右罫で区切り、選んでいるものだけ地を上げる */
+:root[data-theme^="fucho"] .thread-tabs-wrap { margin-left: 0; }
+:root[data-theme^="fucho"] .thread-tab-wrap {
+  border-right: 1px solid var(--bar-raise);
+  box-shadow: none;
+}
+:root[data-theme^="fucho"] .thread-tab-wrap.is-active {
+  background: var(--bar-raise);
+  box-shadow: none;
+}
+:root[data-theme^="fucho"] .thread-tab { color: var(--bar-ink); padding: 0 var(--s3); }
+:root[data-theme^="fucho"] .thread-tab-wrap:hover .thread-tab,
+:root[data-theme^="fucho"] .thread-tab-wrap.is-active .thread-tab { color: var(--bar-on); }
+:root[data-theme^="fucho"] .thread-tab-close { color: var(--bar-ink); }
+
+/* 右端の道具立ても状態行の住人にする */
+:root[data-theme^="fucho"] .pin-tab,
+:root[data-theme^="fucho"] .inbox-tab {
+  border-radius: 0;
+  color: var(--bar-ink);
+}
+:root[data-theme^="fucho"] .pin-tab:hover,
+:root[data-theme^="fucho"] .inbox-tab:hover { background: var(--bar-raise); color: var(--bar-on); }
+:root[data-theme^="fucho"] .cmdk-key { background: var(--bar-raise); color: var(--bar-ink); }
+:root[data-theme^="fucho"] .conn { color: var(--bar-ink); padding-right: var(--s3); }
+:root[data-theme^="fucho"] .thread-new-btn { color: var(--bar-ink); border-radius: 0; }
+:root[data-theme^="fucho"] .thread-new-btn:hover { background: var(--bar-raise); color: var(--bar-on); }
+
+/**
+ * 符牒の札は**⌥・f のときだけ**浮く（PO裁定 2026-08-06）。
+ *
+ * 案5の見本では札が常に出ているが、あれは ⌥ を押している最中の姿。**常置はしない**
+ * ——押せるものを探していないときに画面が記号で埋まるうえ、行の中に置くとタブの幅が
+ * 変わり、`useTabOverflow` の勘定まで動いて、押そうとしたタブが収納へ落ちる。
+ *
+ * 姿は面の側（`styles.css`）に1つだけ。ここで持つのは帯の上での置き方だけ：
+ * ①輪を墨の色にする（既定は紙の色で、黒地の上では白く縁取られる）
+ * ②縦の真ん中に置く（帯が 30px しかないので、上へ寄せると天地が詰まって見える）
+ */
+:root[data-theme^="fucho"].is-alt .shell-topbar [data-key]::after {
+  top: 50%;
+  transform: translateY(-50%);
+  box-shadow: 0 0 0 1px var(--bar-bg);
+}
+
+/* ══ キャンバスのタブも平らに ═══════════════════════════════════════════
+   **帯の中は全部が同じ背丈の升**にする。角丸の札を浮かせない——タブだけ平らに
+   しても、右端の「開く」や収納の ▾ が丸いままだと、そこだけ浮いて見える。
+
+   背丈は案5に合わせて 32px（`.buf-tabs`）。和紙の 40px より一段低い——
+   符牒は「端末の隣に置く道具」なので、帯に高さを使わない。                    */
+:root[data-theme^="fucho"] .canvas-tabbar {
+  padding: 0;
+  gap: 0;
+  align-items: stretch;
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper-1);
+}
+/* 升の中身は帯の高さで決まる。上下の余白は持たせない */
+:root[data-theme^="fucho"] .canvas-tab-label { padding: 0 var(--s2) 0 var(--s3); }
+:root[data-theme^="fucho"] .canvas-tab-close { padding: 0 var(--s2) 0 var(--s1); }
+
+/* 面を器いっぱいに敷くのは `--face-margin` / `--face-radius`（トークン）の役。
+   右端に余白が残ると、スクロールバーとチャットの間に空きが出る（PO報告 2026-08-06） */
+:root[data-theme^="fucho"] .canvas-tab {
+  border-radius: 0;
+  border-right: 1px solid var(--rule);
+  background: none;
+}
+:root[data-theme^="fucho"] .canvas-tab.is-active {
+  background: var(--paper);
+  box-shadow: inset 0 -2px 0 var(--ai);
+}
+/* 「開く」と収納の ▾ は帯の右端の升。丸い札ではなく、タブと同じ高さで並ぶ。
+   （「開く」は器を持たず帯の直下にいるので、升にするのはボタン自身） */
+:root[data-theme^="fucho"] .canvas-more-wrap {
+  align-self: stretch;
+  margin: 0;
+  display: flex;
+}
+:root[data-theme^="fucho"] .canvas-catalog-btn,
+:root[data-theme^="fucho"] .canvas-more-btn {
+  width: auto;
+  height: auto;
+  padding: 0 var(--s3);
+  border: 0;
+  border-left: 1px solid var(--rule);
+  border-radius: 0;
+  background: none;
+}
+:root[data-theme^="fucho"] .canvas-catalog-btn:hover,
+:root[data-theme^="fucho"] .canvas-catalog-btn[aria-expanded="true"],
+:root[data-theme^="fucho"] .canvas-more-btn:hover,
+:root[data-theme^="fucho"] .canvas-more-btn[aria-expanded="true"] {
+  background: var(--paper);
+  color: var(--ai);
+}
+:root[data-theme^="fucho"] .canvas-more-count { border-radius: var(--r-seal); padding: 0 var(--s1); }
+/* タブが1枚も無いときの字も、升の高さに揃えて置く */
+:root[data-theme^="fucho"] .canvas-tab-empty { display: flex; align-items: center; padding: 0 var(--s3); }
+
+/* ══ 面と面の境目は1本の罫 ═══════════════════════════════════════════════
+   掴み手（`.pane-resizer`）は 5px の空きで、和紙では地に沈んで見えない。
+   符牒は**面を罫で仕切る**組みなので、そこだけ地の色が抜けて溝に見えていた
+   （PO報告 2026-08-06）。掴める幅は残したまま、真ん中に罫を1本立てる。       */
+:root[data-theme^="fucho"] .pane-resizer {
+  /**
+   * **場所は 1px、当たりは 9px。**
+   *
+   * 見た目だけを罫にしたいが、器ごと 1px にすると掴めなくなる（実測：掴めなかった）。
+   * 幅は 9px のまま持たせ、左右へ負の余白で食い込ませて**取る場所を 1px に畳む**。
+   * 描くのは真ん中の 1px だけなので、見えるのは1本の罫。
+   */
+  flex: 0 0 9px;
+  margin: 0 -4px;
+  z-index: 1;
+  background: linear-gradient(
+    to right,
+    transparent 4px,
+    var(--rule) 4px,
+    var(--rule) 5px,
+    transparent 5px
+  );
+}
+:root[data-theme^="fucho"] .pane-resizer::before { inset: 0 3px; }
+:root[data-theme^="fucho"] .pane-resizer:hover::before,
+:root[data-theme^="fucho"] .pane-resizer:active::before { opacity: .5; }
+/* 罫は掴み手が持つ。チャット側の border と二重に引かない */
+:root[data-theme^="fucho"] .chat-pane { border-left: 0; }
+
+/* 番頭の印（`»`）とPOの吹き出しの角は `--banto-mark*` / `--bubble-radius`（トークン）。
+   印の**位置**だけは組み方なので、ここで上へ揃える */
+:root[data-theme^="fucho"] .msg--banto::before { top: 0; }
+
+/* ══ 入力：角を落とし、送るは藍の塗り ═══════════════════════════════════ */
+:root[data-theme^="fucho"] .composer-box {
+  border-radius: var(--r-ctl);
+  border: 1px solid var(--rule);
+  background: var(--paper-1);
+}
+/* 送るボタンは元から藍の塗り＋`--r-ctl`。ここで言い直さない
+   ——**層に書いた分だけ面のクラス名に縛られる**ので、変えないものは書かない */
+
+/*
+ * 案5には下端のコマンド行があるが、**置かない**（PO裁定 2026-08-06）。
+ * この画面にその器は無く、CSS で形だけ置いても押せない飾りにしかならない。
+ * 実のない帯は、あるだけで「押せそうなのに押せないもの」を1つ増やす。
+ */

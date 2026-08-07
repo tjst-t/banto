@@ -79,7 +79,7 @@ export function PlacePermissions({ params, endpoint }: CanvasViewProps): React.R
   return (
     <ViewShell className="pp">
       <ViewBar>
-        <ViewTitle icon="🔐" count={pending.length}>
+        <ViewTitle icon="lock" count={pending.length}>
           書き込み許可
         </ViewTitle>
         <span className="cv-spacer" />
@@ -96,7 +96,7 @@ export function PlacePermissions({ params, endpoint }: CanvasViewProps): React.R
         {list.loading && !list.data ? (
           <Loading rows={3} />
         ) : pending.length === 0 ? (
-          <EmptyState icon="✓" title="待っている要求はありません">
+          <EmptyState icon="check" title="待っている要求はありません">
             番頭が書きたい場所を見つけると、ここに要求が積まれます。
           </EmptyState>
         ) : (
@@ -141,7 +141,7 @@ export function PlacePermissions({ params, endpoint }: CanvasViewProps): React.R
                     </div>
                   )}
                   {broad && (
-                    <Note tone="warn" icon="⚠">
+                    <Note tone="warn">
                       この範囲はリポジトリ全体に及びます（.git/ と Banto 自身のデータ置き場は除く）。
                     </Note>
                   )}

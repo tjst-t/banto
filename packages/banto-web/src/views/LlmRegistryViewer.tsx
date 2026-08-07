@@ -13,6 +13,7 @@
 import { useState } from "react";
 import { callModuleTool, useModuleTool } from "./useModuleTool.js";
 import type { CanvasViewProps } from "./registry.js";
+import { Icon } from "../icons.js";
 import {
   Badge,
   Button,
@@ -253,8 +254,8 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
       for (const change of result.repaired ?? []) {
         parts.push(
           change.to
-            ? `⚠ ${change.role}（${change.from}）が無くなったので ${change.to} にしました`
-            : `⚠ ${change.role}（${change.from}）が無くなり、代わりが見つかりません`
+            ? `${change.role}（${change.from}）が無くなったので ${change.to} にしました`
+            : `${change.role}（${change.from}）が無くなり、代わりが見つかりません`
         );
       }
       setFetched({ provider, text: parts.join("。") });
@@ -375,7 +376,7 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
       <Scroll pad={false}>
         <div className="llm">
           {data.files.changed && (
-            <Note tone="warn" icon="⟳">
+            <Note tone="warn">
               pi の設定ファイルが banto の外で変更されました（読み込み時{" "}
               <code className="cv-mono">{data.files.loadedHash}</code> → 現在{" "}
               <code className="cv-mono">{data.files.currentHash}</code>）。上の「読み直す」で取り込みます。
@@ -548,7 +549,7 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                 disabled={busy}
                 onClick={() => setAdding(adding ? undefined : { id: "", baseUrl: "", apiKey: "" })}
               >
-                {adding ? "やめる" : "＋ プロバイダを追加"}
+                {adding ? "やめる" : <><Icon name="plus" size={14} /> プロバイダを追加</>}
               </Button>
             </div>
 
@@ -605,8 +606,8 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
             )}
 
             {data.providers.length === 0 ? (
-              <EmptyState icon="◐" title="プロバイダが見つかりません">
-                「＋ プロバイダを追加」から、到達先とキーを入れてください。
+              <EmptyState icon="model" title="プロバイダが見つかりません">
+                「プロバイダを追加」から、到達先とキーを入れてください。
               </EmptyState>
             ) : (
               data.providers.map((p) => {
@@ -636,7 +637,7 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                         </Badge>
                       )}
                       <span className="llm-prov-caret" aria-hidden="true">
-                        {open ? "▾" : "▸"}
+                        <Icon name={open ? "chevron-down" : "chevron-right"} size={14} />
                       </span>
                     </button>
 
@@ -695,7 +696,7 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                                   void run("llm.remove_key", { provider: p.id });
                                 }}
                               >
-                                ×
+                                <Icon name="close" size={13} />
                               </Button>
                             </div>
                           );
