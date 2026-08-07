@@ -24,6 +24,7 @@ import * as path from "node:path";
 import * as net from "node:net";
 import * as childProcess from "node:child_process";
 import * as os from "node:os";
+import { DRIVER_TIMEOUT_EXIT, innerBudgetMs } from "./driver-budget.js";
 
 // ── Process state file (for list/idempotent teardown) ────────────────────────
 //
@@ -356,17 +357,32 @@ async function handleRun(input: Record<string, unknown>): Promise<void> {
   pruneOldLogs(logDir);
   const logPath = path.join(logDir, `run-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
 
-  // Run the command and capture stdout+stderr
+  // Run the command and capture stdout+stderr.
+  // **持ち時間は呼び出し側の予算から**（task-0079）。以前はここに制限が無く、
+  // 外側（`runDriverVerb` の subprocess timeout）に殺されるまで走っていた——
+  // 殺されるとログも exit も返らず、Pool は `run が失敗しました` と投げるだけで、
+  // **時間切れだったことが誰にも分からない**（inc-0034）。
+  const budget = innerBudgetMs(input);
   const result = childProcess.spawnSync(cmd, [], {
     shell: true,
     encoding: "utf8",
     // Large buffer to capture all output
     maxBuffer: 10 * 1024 * 1024,
+    ...(budget !== undefined ? { timeout: budget } : {}),
     ...(workdir ? { cwd: workdir } : {}),
   });
 
   const output = (result.stdout ?? "") + (result.stderr ?? "");
   fs.writeFileSync(logPath, output, "utf8");
+
+  // I2: 殺したことを「コマンドがそう終わった」に見せない。
+  // 時間切れは 124 で返す——マージ前ゲートの「延ばして再試行」が見ている値（task-0071）
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
+    process.stdout.write(
+      JSON.stringify({ exit: DRIVER_TIMEOUT_EXIT, log_path: logPath }) + "\n"
+    );
+    return;
+  }
 
   const exitCode = result.status ?? 1;
   process.stdout.write(JSON.stringify({ exit: exitCode, log_path: logPath }) + "\n");

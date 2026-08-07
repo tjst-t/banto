@@ -123,7 +123,18 @@ export async function runDriverVerb(
     spawnArgs = [verb];
   }
 
-  const inputJson = JSON.stringify(input);
+  // **持ち時間をドライバへ渡す**（task-0079）。ここが唯一の合流点なので、
+  // 動詞ごと・ドライバごとに渡し忘れる形にならない。
+  //
+  // ドライバは内側のコマンド（`docker compose run` 等）にこの予算から取り分を引いた
+  // 値を掛け、**外側に殺される前に**自分で時間切れを報告できる。渡さなかった頃は
+  // 同梱の docker ドライバが自前の 120 秒で切っており、`resolveRunTimeout` が
+  // 決めた 10 分／上限 60 分が一度も効いていなかった（実測・inc-0034）。
+  //
+  // 呼び出し側が `timeoutMs` を入れていたらそれを尊重する（試験が直接指定する経路）。
+  const inputJson = JSON.stringify(
+    input["timeoutMs"] === undefined ? { ...input, timeoutMs } : input
+  );
 
   return new Promise<DriverRunResult<unknown>>((resolve) => {
     let stdoutBuf = "";

@@ -62,10 +62,10 @@ Environment Pool は独自のプロジェクト登録簿を持たない。Kobo �
 
 | 動詞 | 入力 | 出力 | 規約 |
 |---|---|---|---|
-| `provision` | config JSON, taskId, **workdir** | `{handle: {...}}` | handleは不透明JSON。呼び出し側は中身を解釈しない |
+| `provision` | config JSON, taskId, **workdir**, **timeoutMs** | `{handle: {...}}` | handleは不透明JSON。呼び出し側は中身を解釈しない |
 | `deploy` | handle, artifact path | — | 成果物の配置・反映 |
 | `healthcheck` | handle | `{ok: bool, detail?}` | 起動完了・疎通の判定 |
-| `run` | handle, cmd, **workdir** | `{exit: int, log_path}` | 検証コマンドの実行。ログはファイルで返す |
+| `run` | handle, cmd, **workdir**, **timeoutMs** | `{exit: int, log_path}` | 検証コマンドの実行。ログはファイルで返す。**時間切れは `exit: 124`**（→ 後述） |
 | `collect` | handle, dest dir | — | ログ・成果物の回収 |
 | `teardown` | handle | — | **冪等必須**。対象が既に無い場合は成功扱い |
 | `list` | — | `[{handle, name, created}]` | ドライバが管理下に持つ全リソースの列挙。照合(→ §5)に使う |
@@ -73,6 +73,13 @@ Environment Pool は独自のプロジェクト登録簿を持たない。Kobo �
 - ビルトインドライバは `process`（ローカルプロセス起動）と `docker`（compose）の2本のみ
 - ドライバの追加要件：管理下リソースには**taskIDプレフィックスの命名**を適用すること（例：`task-0042-staging`）
 - **list が返す handle は、同一リソースについて provision が返した handle と一致しなければならない（フィールドの有無・値とも）**。照合（→ §5）は両者を `JSON.stringify` で突き合わせるため、`workdir` のように「渡されたときだけ含める」フィールドは省略の有無まで揃えていないと、正規に provision した環境を「台帳に無い実リソース」と誤検出する（2026-08-01 PO裁定）
+
+**`timeoutMs`（task-0079 / inc-0034）**：**全ての動詞の入力に、呼び出し側の持ち時間が載る。** Environment Pool が §5.1 の設定から決めた値をそのまま渡す。
+
+- **ドライバは自分で持ち時間を決めない。** 決めるのは能力側（§5.1・§8 の裁定）であり、ドライバが独自の既定を持つと同じ「持ち時間」に2つの真実ができる（D3）
+- ドライバは**報告のための取り分を引いた値**を内側のコマンドに掛ける。予算をそのまま掛けると、ログを書いて出力を返す前に呼び出し側の subprocess timeout に殺され、**何が起きたか分からない失敗**になる
+- **時間切れは `exit: 124` で返す**（`timeout(1)` の慣習）。マージ前ゲートの「時間切れなら延ばして再試行」はこの値を見ている。ここを外すと直しが黙って効かなくなる
+- **入力に `timeoutMs` が無いときは内側で縛らない。** 短い既定へ落とすと、呼び出し側の指定を無効化する形に戻る（実際に踏んだ：同梱の docker ドライバが自前の120秒で全ての検証を切っており、`defaultRunTimeoutMs` の10分が一度も効いていなかった。しかも `docker` は SIGTERM を捕まえて 255 で終わるので、時間切れが「コマンドが 255 で落ちた」に化けていた——inc-0034）
 
 **`workdir`（ADR-0010 決定34d）**：どこで動かすかは呼び出しごとに変わる（職人が作った worktree 等）ので、プロファイルの `config`（静的）ではなく動詞の入力として渡す。
 

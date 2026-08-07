@@ -37,6 +37,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as childProcess from "node:child_process";
 import * as os from "node:os";
+import { DRIVER_TIMEOUT_EXIT, QUERY_TIMEOUT_MS, innerBudgetMs } from "./driver-budget.js";
 
 // ── Handle shape ──────────────────────────────────────────────────────────────
 
@@ -68,31 +69,49 @@ interface CmdResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  /**
+   * 内側の持ち時間で殺したか。**exit だけでは分からない**——`docker` は SIGTERM を
+   * 捕まえて 255 で終わるので、時間切れが「コマンドが 255 で落ちた」に化ける（inc-0034）。
+   */
+  timedOut: boolean;
 }
 
+/**
+ * compose コマンドを起こす。
+ *
+ * `timeoutMs` は**必須**（`undefined` を渡すなら明示する）。既定値を持たせていたせいで、
+ * 全ての呼び出し箇所が黙って 120 秒に落ちていた（inc-0034）。省略できない形にして、
+ * 「渡し忘れ」を型で塞ぐ。`undefined` ＝ 内側では縛らない（外側の subprocess timeout が governs）。
+ */
 function runCmd(
   cmd: string,
   args: string[],
   opts: {
+    timeoutMs: number | undefined;
     input?: string;
     cwd?: string;
-    timeoutMs?: number;
     env?: NodeJS.ProcessEnv;
-  } = {}
+  }
 ): CmdResult {
   const result = childProcess.spawnSync(cmd, args, {
     encoding: "utf8",
     input: opts.input,
     cwd: opts.cwd,
-    timeout: opts.timeoutMs ?? 120_000, // compose pulls can take time
+    ...(opts.timeoutMs !== undefined ? { timeout: opts.timeoutMs } : {}),
     maxBuffer: 10 * 1024 * 1024,
     env: opts.env ?? { ...process.env },
   });
+
+  // spawnSync は時間切れのとき error.code === "ETIMEDOUT" を立てる。
+  // I2: 殺したことを「コマンドがそう終わった」に見せない
+  const timedOut =
+    (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
 
   return {
     exitCode: result.status ?? -1,
     stdout: (result.stdout as string) ?? "",
     stderr: (result.stderr as string) ?? "",
+    timedOut,
   };
 }
 
@@ -190,8 +209,22 @@ function handleProvision(input: Record<string, unknown>): void {
 
   const project = projectName(taskId);
 
-  // `docker compose up -d` — starts all services in the background
-  const r = runCmd("docker", composeArgs(project, composeFile, ["up", "-d"]), workdir ? { cwd: workdir } : {});
+  // `docker compose up -d` — starts all services in the background.
+  // **イメージのビルドを含みうる**ので、呼び出し側の予算（task-0075 の 10 分）を使う。
+  // 自前の 120 秒で切っていた頃は、重いイメージの初回ビルドが必ず落ちていた（inc-0034）。
+  const budget = innerBudgetMs(input);
+  const r = runCmd("docker", composeArgs(project, composeFile, ["up", "-d"]), {
+    timeoutMs: budget,
+    ...(workdir ? { cwd: workdir } : {}),
+  });
+  if (r.timedOut) {
+    // I2: 時間切れを「compose が落ちた」と混同しない。何分で切ったかまで言う
+    process.stderr.write(
+      `docker-driver provision: docker compose up が ${Math.round((budget ?? 0) / 1000)} 秒で時間切れ ` +
+        `（イメージのビルドが長い可能性があります）:\n${r.stderr}\n`
+    );
+    process.exit(1);
+  }
   if (r.exitCode !== 0) {
     process.stderr.write(
       `docker-driver provision: docker compose up failed (exit ${r.exitCode}):\n${r.stderr}\n`
@@ -236,7 +269,9 @@ function handleHealthcheck(input: Record<string, unknown>): void {
   // Use `docker compose ps --format json` to check container states.
   // If all containers are in a running/healthy state → ok: true.
   // If no containers or any is not running → ok: false.
-  const r = runCmd("docker", composeArgs(project, composeFile, ["ps", "--format", "json"]));
+  const r = runCmd("docker", composeArgs(project, composeFile, ["ps", "--format", "json"]), {
+    timeoutMs: QUERY_TIMEOUT_MS,
+  });
   if (r.exitCode !== 0) {
     process.stdout.write(
       JSON.stringify({
@@ -326,7 +361,9 @@ function handleRun(input: Record<string, unknown>): void {
   // I2: if the project is torn down (no running containers), run must fail with
   // a non-zero exit — not silently succeed by spinning up new containers.
   // This mirrors the process driver's liveness check (isAlive(pid)) before run.
-  const psCheck = runCmd("docker", composeArgs(project, composeFile, ["ps", "--format", "json"]));
+  const psCheck = runCmd("docker", composeArgs(project, composeFile, ["ps", "--format", "json"]), {
+    timeoutMs: QUERY_TIMEOUT_MS,
+  });
   if (psCheck.exitCode !== 0) {
     process.stderr.write(
       `docker-driver run: compose project "${project}" not accessible ` +
@@ -394,7 +431,7 @@ function handleRun(input: Record<string, unknown>): void {
       "ps",
       "--filter", `label=com.docker.compose.project=${project}`,
       "--format", "{{.Label \"com.docker.compose.service\"}}",
-    ]);
+    ], { timeoutMs: QUERY_TIMEOUT_MS });
     if (psResult.exitCode === 0 && psResult.stdout.trim()) {
       serviceName = psResult.stdout.trim().split("\n")[0]?.trim();
     }
@@ -434,18 +471,72 @@ function handleRun(input: Record<string, unknown>): void {
   // 決定34d: compose を解決した場所で回す。handle に残した workdir を既定にするので、
   // 後続の run が毎回 workdir を渡さなくても provision と同じ場所で動く
   const runWorkdir = (input["workdir"] as string | undefined) ?? handle.workdir;
+  // **持ち時間は呼び出し側の予算から**（task-0079）。ここが自前の 120 秒だったせいで、
+  // 2分を超える検証コマンドは全て「exit 255」で落ちていた（inc-0034）。
+  const budget = innerBudgetMs(input);
   const r = runCmd(
     "docker",
     composeArgs(project, composeFile, ["run", "--rm", "--no-TTY", serviceName, "sh", "-c", cmd]),
-    runWorkdir ? { cwd: runWorkdir } : {}
+    { timeoutMs: budget, ...(runWorkdir ? { cwd: runWorkdir } : {}) }
   );
 
   // Capture combined stdout+stderr as the log
   const output = (r.stdout) + (r.stderr ? `\n--- stderr ---\n${r.stderr}` : "");
   fs.writeFileSync(logPath, output, "utf8");
 
+  if (r.timedOut) {
+    // **時間切れは時間切れとして返す**（exit 124）。`docker` は SIGTERM を捕まえて 255 で
+    // 終わるので、そのまま渡すと「検証コマンドが 255 で落ちた」に化ける——マージ前ゲートの
+    // 「時間切れなら延ばして再試行」（task-0071）は 124 を見ているので、化けると発火しない。
+    //
+    // **殺したクライアントは one-off コンテナを片付けない**（task-0074）。`--rm` を消すのは
+    // クライアント側なので、ここで消さないと延長して再試行する間ずっと走り続ける。
+    // teardown のラベル掃除は環境を畳むときまで来ないので、それでは遅い。
+    removeOneOffContainers(project, budget);
+    process.stdout.write(
+      JSON.stringify({ exit: DRIVER_TIMEOUT_EXIT, log_path: logPath }) + "\n"
+    );
+    return;
+  }
+
   // I2: exit code is reported as-is, never normalized to 0 on failure
   process.stdout.write(JSON.stringify({ exit: r.exitCode, log_path: logPath }) + "\n");
+}
+
+/**
+ * この compose プロジェクトに残っている one-off コンテナを消す。
+ *
+ * `docker compose run --rm` の `--rm` はクライアント側の後始末なので、クライアントを
+ * 殺すとコンテナだけが残る（task-0074 で実測）。teardown も同じ掃除をするが、
+ * **時間切れの直後に消しておかないと、延長して再試行する間ずっと二重に走る**。
+ *
+ * **`oneoff=True` で必ず絞る。** プロジェクト名だけで消すと、`sleep infinity` で
+ * 生かしてある本体のコンテナまで巻き込む——環境が死に、延長して再試行しても
+ * 「no running containers found」で落ちる。teardown 側が絞らずに消してよいのは、
+ * その時点で `compose down` が本体を落とした後だから。
+ *
+ * I2: 消せなかったことは黙らせない。ただし run 自体の結果（時間切れ）は返す
+ * ——掃除の失敗で「時間切れだった」という事実を落とさない。
+ */
+function removeOneOffContainers(project: string, timeoutMs: number | undefined): void {
+  const leftovers = runCmd(
+    "docker",
+    [
+      "ps", "-aq",
+      "--filter", `label=com.docker.compose.project=${project}`,
+      "--filter", "label=com.docker.compose.oneoff=True",
+    ],
+    { timeoutMs }
+  );
+  const ids = leftovers.stdout.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+  if (ids.length === 0) return;
+  const rm = runCmd("docker", ["rm", "-f", ...ids], { timeoutMs });
+  if (rm.exitCode !== 0) {
+    process.stderr.write(
+      `docker-driver run: 時間切れのあと残った one-off コンテナを消せませんでした` +
+        `（exit ${rm.exitCode}）:\n${rm.stderr}\n`
+    );
+  }
 }
 
 function handleCollect(input: Record<string, unknown>): void {
@@ -489,13 +580,15 @@ function handleTeardown(input: Record<string, unknown>): void {
   // `docker compose down -v` stops and removes containers, networks, and volumes.
   // Idempotent: exits 0 even if the project no longer exists (I3).
   // We first try with the compose file; if that's gone, fall back to project-only.
+  // 畳むのも呼び出し側の予算で。ボリューム削除は大きいと時間がかかる
+  const budget = innerBudgetMs(input);
   let r: CmdResult;
   if (composeFile && fs.existsSync(composeFile)) {
-    r = runCmd("docker", composeArgs(project, composeFile, ["down", "-v"]));
+    r = runCmd("docker", composeArgs(project, composeFile, ["down", "-v"]), { timeoutMs: budget });
   } else {
     // Compose file may be gone or was never known — use project name only.
     // `docker compose -p <proj> down -v` without -f still works for teardown.
-    r = runCmd("docker", composeArgs(project, undefined, ["down", "-v"]));
+    r = runCmd("docker", composeArgs(project, undefined, ["down", "-v"]), { timeoutMs: budget });
   }
 
   if (r.exitCode !== 0) {
@@ -514,13 +607,15 @@ function handleTeardown(input: Record<string, unknown>): void {
   // **畳んだつもりでコンテナが走り続ける**——`tornDown: true` を返しながら外で動いている、
   // という I3 の不変条件がいちばん破れてはいけない形で破れる。
   //
-  // 実測：`env.verify` が run の10分上限で切られたあと、one-off が9分以上走り続けていた。
+  // 実測：`env.verify` の run が切られたあと、one-off が9分以上走り続けていた。
+  //（task-0074 は「run の10分上限で切られた」と書いたが、実際に切っていたのは
+  //  ドライバ自前の 120 秒だった——inc-0034 で判明。掃除が要ることは変わらない）
   const leftovers = runCmd("docker", [
     "ps", "-aq", "--filter", `label=com.docker.compose.project=${project}`,
-  ]);
+  ], { timeoutMs: QUERY_TIMEOUT_MS });
   const ids = leftovers.stdout.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
   if (ids.length > 0) {
-    const rm = runCmd("docker", ["rm", "-f", ...ids]);
+    const rm = runCmd("docker", ["rm", "-f", ...ids], { timeoutMs: budget });
     if (rm.exitCode !== 0) {
       // I2: 消せなかったことを成功に見せない
       process.stderr.write(
@@ -542,7 +637,9 @@ function handleList(_input: Record<string, unknown>): void {
   // Instead, we return ALL `<*>-docker` projects — the daemon reconciles against
   // its ledger to identify which belong to which task.
 
-  const r = runCmd("docker", ["compose", "ls", "--format", "json"]);
+  const r = runCmd("docker", ["compose", "ls", "--format", "json"], {
+    timeoutMs: QUERY_TIMEOUT_MS,
+  });
   if (r.exitCode !== 0) {
     process.stderr.write(
       `docker-driver list: docker compose ls failed (exit ${r.exitCode}):\n${r.stderr}\n`
@@ -589,7 +686,7 @@ function handleList(_input: Record<string, unknown>): void {
       "--filter", `label=com.docker.compose.project=${name}`,
       "--format", "{{.CreatedAt}}\t{{.Label \"com.docker.compose.project.working_dir\"}}",
       "--no-trunc",
-    ]);
+    ], { timeoutMs: QUERY_TIMEOUT_MS });
 
     let created = new Date().toISOString(); // fallback
     let workdir: string | undefined;
