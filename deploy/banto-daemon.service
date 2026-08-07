@@ -32,8 +32,10 @@ Environment=BANTO_DATA_DIR=/var/lib/banto/data
 # banto-environment-pool）も用意してあるが、**番頭ホストがまだ自分の中に両方を作る**ため、
 # そちらへ向けると台帳が2つに割れる（inc-0027 と同じ形）。番頭ホストが独立サービスの
 # 利用者になったら、この2行を 4300 / 4400 へ差し替える。
-Environment=BANTO_WORKER_POOL_URL=http://127.0.0.1:4100/api/worker-pool
-Environment=BANTO_ENV_POOL_URL=http://127.0.0.1:4100/api/environment-pool
+# **直に叩く**（決定27：Banto をブローカーにしない）。番頭ホスト経由だと、
+# Kobo が職人を起こすのに番頭の稼働が要る——決定27b が避けた依存の逆転そのもの
+Environment=BANTO_WORKER_POOL_URL=http://127.0.0.1:4300/api/worker-pool
+Environment=BANTO_ENV_POOL_URL=http://127.0.0.1:4400/api/environment-pool
 
 ExecStart=/usr/local/bin/node --import tsx packages/banto-daemon/src/index.ts
 

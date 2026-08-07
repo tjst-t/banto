@@ -10,10 +10,9 @@
 # **既定では 127.0.0.1 しか待ち受けない**（決定40）。この口は**任意のディレクトリで
 # 任意のコマンドを実行できる職人**を起こせるので、外に出さないこと。
 
-#
-# **いまは起動しない（2026-08-07）。** 番頭ホストがまだ自分の中に Worker Pool を作るため、
-# こちらを立てて Kobo を向けると**職人の台帳が2つに割れる**（task-0060 で潰した inc-0027 の形）。
-# 番頭ホストが独立サービスの利用者になったら enable する。
+# **番頭も Kobo もこのサービスの利用者**（task-0066 で番頭ホストの同居をやめた）。
+# 台帳（/var/lib/banto/worker-pool）は番頭ホストが使っていたものをそのまま引き継ぐ
+# ——落ちる前に生きていた職人は、このサービスが起こし直す（決定44）。
 [Unit]
 Description=banto worker pool (職人)
 Documentation=https://github.com/tjst-t/banto
@@ -29,6 +28,9 @@ WorkingDirectory=/home/ubuntu/ghq/github.com/tjst-t/banto
 Environment=NODE_ENV=production
 Environment=BANTO_WORKER_POOL_PORT=4300
 Environment=BANTO_WORKER_POOL_DATA=/var/lib/banto/worker-pool
+# **番頭ホストと同じ値にすること**（ADR-0004）。tier→モデルの台帳
+# （<BANTO_DATA_DIR>/llm-registry.json）を共有しないと、画面で選んだモデルが職人に効かない
+Environment=BANTO_DATA_DIR=/var/lib/banto
 # 職人の既定モデル（省略すると pi の既定解決）。等級の解決はここが持つ（決定60a）
 # Environment=BANTO_WORKER_PROVIDER=opencode
 # Environment=BANTO_WORKER_MODEL=deepseek-v4-flash-free

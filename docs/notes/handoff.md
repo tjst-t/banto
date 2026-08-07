@@ -844,3 +844,67 @@ Kobo は**REST が先にあり**（元は単体のデーモン）、モジュー
 悪い（通っているので直ったと読める）。
 
 **1,213件 green**。実機は番頭ホストと Kobo の両方を再起動して確認済み。
+
+## セッション更新（2026-08-07、番頭ホストを Pool の「利用者」にした・task-0066）
+
+**epic-0010 の最後の一片。** 番頭ホストが自分の中に工房（Worker Pool）と検証環境
+（Environment Pool）を作るのをやめ、**独立サービスの利用者**になった。これで
+`banto-worker-pool.service` / `banto-environment-pool.service` を実機で常駐させられる
+（4ユニット構成になった）。
+
+### 何がどう変わったか
+
+- `packages/banto-host/src/remote-module.ts`（新）＝ **Kobo で踏んだ形の一般化**。契約は
+  持ち主のパッケージから取り、`execute` だけを HTTP 越しに差し替える。Tool の規約に
+  乗らない面（`/env/<id>/`）は素通し中継（HTTP・**WebSocket とも**）
+- `remote-pools.ts`（新）＝ 工房と検証環境の到達先モジュール。`bin.ts` の
+  `new WorkerPool` / `new EnvironmentPool` は消えた
+- 職人の報告・質問は `pool.subscribe` から **`worker.events` を引く形**へ
+  （`startWorkerNotices`）。起動時に今の位置まで進めるので、古い報告は流れない
+- Kobo は**直に** :4300 / :4400 を叩く（それまでは番頭ホスト経由＝依存の逆転）
+
+### 引っかかったところ（次に同じ道を通る人へ）
+
+- **工房が tier→モデルを引けないと、全部 pi の既定モデルに落ちる。** 決定60a で Kobo は
+  tier までしか渡さないので、これは誰も気づけない壊れ方。ただし決定3 の網
+  （`banto-core-layering.spec.ts`：モジュールは pi を import しない）があるので、
+  pi のモデル表は持ち込めない——**models.json だけを見る解決器**を banto-core に足した
+  （`createFileModelResolver`）。最後の解決は職人を起こす pi の CLI が行うので、
+  provider と id が同じなら同じ職人が起きる。**実機の3 tier で pi 版と一致を確認**
+- **設定（決定41）は「同じプロセスに実装がある」前提だった。** 別プロセスへ出すと
+  項目の宣言は写せても読み書きが届かない——`createSettingsTools`（`<domain>.settings_read`
+  / `settings_write`）で橋を架け、保存先は `createFileSettingsSection` で各サービスが持つ
+- **Caddy の設定（画面の「接続と公開」）は番頭ホストでは効かなくなった。** 公開方式は
+  検証環境サービスの持ち物になったので、実機では drop-in
+  （`/etc/systemd/system/banto-environment-pool.service.d/caddy.conf`）へ移した。
+  番頭ホストは設定が残っていると起動時に警告を出す
+- **検証環境の知らせ（畳み忘れ・孤児）が会話へ返らなくなった。** いまはサービスのログだけ
+  （`env.list` には残る）。職人と同じく引きに行くには Environment Pool 側にイベントの口が
+  要る——**次の一手の候補**（spec-environment §5 に実態として書いた）
+
+### 常駐させた途端にテストが落ちた（記録）
+
+:4300 / :4400 を実機で常駐させると、**Kobo の受け入れテストが落ちた**。テストが立てた
+Kobo が**実機の検証環境**へ問い合わせ、ゲートの tick が遅くなって「積んだ直後に
+`ready` になっている」前提が崩れていた（`audit-*.spec.ts` の 400）。
+
+落ちたのはまだ幸運で、悪くすれば**テストが実機に本物の環境を立てる**。`npm test` で
+到達先を届かない先（`127.0.0.1:1`）に固定し、**固定が外れたら落ちる試験**を足した。
+自分のプールが要るテストはハーネスを立てて URL を明示する（既にそうなっている）。
+
+**残る弱さ**：あの受け入れテストは「ゲートが先に回っている」ことに暗黙に頼っている。
+いまは到達先を固定したので通るが、`ready` を待つ形に直す方が本筋（別タスク）。
+
+### 確かめたこと（I1）
+
+- `npm run typecheck` / `npm test`（**1,226件 green**）
+- **本物の pi の職人**を独立サービスから起こし、`/tmp/banto-play` にファイルを作らせて
+  `worker.report` が返るまで（偽ドライバだけで済ませない）
+- 実機で4ユニット常駐。番頭の `worker.list` に Kobo の職人が並び、設定画面に両サービスの
+  値が出て、`/api/environment-pool/env/<id>/` の中継（HTTP・WS）が通る
+
+### 次の一手
+
+1. **検証環境の知らせを会話へ戻す**（Environment Pool にイベントの口＋番頭側で引く）
+2. loamium の受け持ちを回す：`work/tasks/` を作り、場所の書き込み許可（`work/**`）を PO が出す
+3. `spec-improvement-loop` / `spec-multi-project` の改訂は手つかず

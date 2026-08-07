@@ -7,12 +7,19 @@
  * アイドルタイムアウトの安全弁だけを出す。
  */
 
-import type { ModuleSettingsSpec } from "@banto/core";
+import type { ModuleSettingsSpec, SettingsSection } from "@banto/core";
 import type { WorkerPool } from "./pool.js";
 
 const MINUTE = 60_000;
 
-export function createWorkerPoolSettings(pool: WorkerPool): ModuleSettingsSpec {
+/**
+ * @param section 保存先（省略可）。渡すと**次の起動でも効く**——独立サービスとして立つと
+ *   借りる相手がいないので、自分のデータ置き場のファイルを渡す（task-0066）
+ */
+export function createWorkerPoolSettings(
+  pool: WorkerPool,
+  section?: SettingsSection
+): ModuleSettingsSpec {
   return {
     title: "職人",
     description:
@@ -44,6 +51,8 @@ export function createWorkerPoolSettings(pool: WorkerPool): ModuleSettingsSpec {
           throw new Error(`アイドルの安全弁は0以上の数で指定してください（受け取った値: ${String(raw)}）`);
         }
         pool.setIdleTimeout(minutes * MINUTE);
+        // 次の起動でも同じ値で立ち上がる（渡されていれば）
+        section?.write({ idleTimeoutMs: minutes * MINUTE });
       }
 
       return { applied: true, message: "変えました（すぐ効きます）。" };

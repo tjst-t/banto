@@ -14,7 +14,9 @@
  *   BANTO_WORKER_POOL_BIND   待ち受けアドレス（既定 127.0.0.1。決定40）
  *   BANTO_WORKER_POOL_DATA   台帳・セッション・イベントログの置き場
  *                            （既定 <BANTO_DATA_DIR>/worker-pool）
- *   BANTO_DATA_DIR           上の既定を組み立てる元（既定 ./.banto）
+ *   BANTO_DATA_DIR           上の既定を組み立てる元（既定 ./.banto）。**番頭ホストと
+ *                            同じ値にすること**——tier→モデルの台帳（llm-registry.json）を
+ *                            共有しないと、画面で選んだモデルが職人に効かない（D3）
  *   BANTO_WORKER_PROVIDER    職人の既定 provider（省略時は pi の既定解決）
  *   BANTO_WORKER_MODEL       職人の既定モデル
  *   BANTO_WORKER_IDLE_MS     安全弁（何もしていない職人を畳むまで。既定15分。0 で切る）
@@ -32,7 +34,15 @@ import { PiRpcDriver } from "./pi-rpc-driver.js";
 import { WorkerPool, DEFAULT_IDLE_TIMEOUT_MS } from "./pool.js";
 import { createWorkerModuleTools, createWorkerReportTools, createWorkerTools } from "./worker-tools.js";
 import { WorkerPoolService, WORKER_POOL_DEFAULT_PORT } from "./service.js";
+import { createWorkerPoolSettings } from "./settings.js";
 import { WORKER_POOL_BASE_URL } from "./module.js";
+import {
+  LlmCatalog,
+  createFileModelResolver,
+  createFileSettingsSection,
+  createSettingsTools,
+  piAgentDir,
+} from "@banto/core";
 import { resumeWorkers } from "./resume.js";
 
 /** 既定の待ち受けアドレス（決定40：広げるのは明示のときだけ）。 */
@@ -86,18 +96,49 @@ async function main(): Promise<void> {
   // 職人が報告・質問を返す先（決定29e）。子プロセスから叩くので絶対URL
   const reportUrl = `http://127.0.0.1:${port}${WORKER_POOL_BASE_URL}`;
 
+  // ADR-0004: 職人のモデルは tier で頼まれる（決定60a：Kobo は tier までしか渡さない）。
+  // **台帳が無いと tier が効かず、全部 pi の既定モデルに落ちる**——番頭ホストに同居して
+  // いたときはホストの台帳が解決していたので、独立して立てるならここで持つ（task-0066）
+  // **pi は import しない**（決定3：モジュールはハーネスに依存しない）。models.json だけを
+  // 見る解決器で足りる——結果のうち実際に使われるのは provider と id で、最後の解決は
+  // 職人を起こす pi の CLI が行う
+  const agentDir = piAgentDir();
+  const catalog = new LlmCatalog({
+    authJsonPath: path.join(agentDir, "auth.json"),
+    modelsJsonPath: path.join(agentDir, "models.json"),
+    // **番頭ホストと同じオーバーレイ**（画面で選んだ tier・採用したモデルがそのまま効く）
+    overlayPath: path.join(
+      process.env["BANTO_DATA_DIR"] ?? path.join(process.cwd(), ".banto"),
+      "llm-registry.json"
+    ),
+    resolver: createFileModelResolver(path.join(agentDir, "models.json")),
+  });
+  const fallback = catalog.resolveForWorker();
+
   const driver = new PiRpcDriver({
     sessionBaseDir: path.join(dataDir, "sessions"),
+    catalog,
+    // 環境変数の指定が最優先。次に台帳の既定 tier の解決結果（catalog が解決できない
+    // ときの最後の受け皿）
     ...(process.env["BANTO_WORKER_PROVIDER"]
       ? { defaultProvider: process.env["BANTO_WORKER_PROVIDER"] }
-      : {}),
-    ...(process.env["BANTO_WORKER_MODEL"] ? { defaultModel: process.env["BANTO_WORKER_MODEL"] } : {}),
+      : fallback
+        ? { defaultProvider: fallback.model.provider }
+        : {}),
+    ...(process.env["BANTO_WORKER_MODEL"]
+      ? { defaultModel: process.env["BANTO_WORKER_MODEL"] }
+      : fallback
+        ? { defaultModel: fallback.model.id }
+        : {}),
   });
 
-  const idleTimeoutMs = Number.parseInt(
-    process.env["BANTO_WORKER_IDLE_MS"] ?? String(DEFAULT_IDLE_TIMEOUT_MS),
-    10
-  );
+  // 設定画面で決めた値 > 環境変数 > 既定。保存先は自分のデータ置き場（task-0066）
+  const settings = createFileSettingsSection(path.join(dataDir, "settings.json"));
+  const savedIdleMs = settings.read()["idleTimeoutMs"];
+  const idleTimeoutMs =
+    typeof savedIdleMs === "number"
+      ? savedIdleMs
+      : Number.parseInt(process.env["BANTO_WORKER_IDLE_MS"] ?? String(DEFAULT_IDLE_TIMEOUT_MS), 10);
 
   const pool = new WorkerPool({
     driver,
@@ -127,11 +168,16 @@ async function main(): Promise<void> {
       ...createWorkerTools(pool),
       ...createWorkerReportTools(pool),
       ...createWorkerModuleTools(pool),
+      // 設定画面（決定41）は番頭ホスト側に出る。別プロセスなので読み書きを口で受ける
+      ...createSettingsTools("worker", createWorkerPoolSettings(pool, settings)),
     ],
     port,
     host,
   });
 
+  console.log(
+    `[worker-pool] 職人の既定モデル: ${fallback ? `${fallback.model.provider}/${fallback.model.id}（${fallback.tier}）` : "(pi の既定解決)"}`
+  );
   console.log(
     `[worker-pool] ${service.baseUrl} で待ち受けています（台帳: ${dataDir}）\n` +
       "[worker-pool] Kobo には BANTO_WORKER_POOL_URL、番頭には同じ URL を登録してください"

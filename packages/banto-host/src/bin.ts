@@ -21,6 +21,7 @@ import { AuthStorage, getAgentDir, ModelRegistry, SessionManager } from "@marioz
 import {
   JsonlMemoryStore,
   LlmCatalog,
+  MODEL_ALIASES,
   ScopedMemory,
   resolveProjects,
   type Place,
@@ -28,20 +29,9 @@ import {
   type ResolvedModel,
 } from "@banto/core";
 
-import {
-  PiRpcDriver,
-  WorkerPool,
-  createWorkerPoolModule,
-  type WorkerInfo,
-} from "@banto/worker-pool";
+import type { WorkerInfo } from "@banto/worker-pool";
 import { createKoboModule, defaultKoboUrl } from "@banto/daemon";
-import {
-  BANTO_ORIGIN,
-  isBantoOrigin,
-  renderWorkerNotice,
-  threadIdOfOrigin,
-  threadOrigin,
-} from "./worker-notice.js";
+import { BANTO_ORIGIN, startWorkerNotices, threadOrigin } from "./worker-notice.js";
 import { guardWorkerOrigin } from "./worker-guard.js";
 import { startKoboNotices } from "./kobo-notice.js";
 
@@ -81,14 +71,13 @@ import { SettingsStore } from "./settings-store.js";
 import { createCoreSettingsSections } from "./core-settings.js";
 import { createSettingsModule, settingsSection } from "./settings-module.js";
 import { createRepoManagerModule, createRepoManagerPlaceProvider } from "@banto/repo-manager";
+import { createCollectedPlaceProvider } from "@banto/environment-pool";
 import {
-  EnvironmentPool,
-  ENVIRONMENT_POOL_BASE_URL,
-  createCaddyExposer,
-  createCollectedPlaceProvider,
-  createEnvironmentPoolModule,
-  createEnvProxyExposer,
-} from "@banto/environment-pool";
+  createRemoteEnvironmentPoolModule,
+  createRemoteWorkerPoolModule,
+  defaultEnvironmentPoolUrl,
+  defaultWorkerPoolUrl,
+} from "./remote-pools.js";
 import { workspaceRoot } from "./workspace.js";
 import {
   PlaceRegistry,
@@ -101,7 +90,7 @@ import {
 import { guardPathArg } from "./place-scoped.js";
 import { createSkillTools } from "./skill-tools.js";
 import { bindToolArgs, createThreadTools } from "./thread-tools.js";
-import { defineNamespacedTool } from "./tool-registry.js";
+import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 import { Type } from "typebox";
 import { ThreadRegistry, type ThreadFactory } from "./threads.js";
 import { loadBantoSkills } from "./skills.js";
@@ -159,6 +148,37 @@ function ensureDesk(settings: SettingsStore, fallbackRoot: string): void {
 /** データの置き場所。BANTO_DATA_DIR で差し替えられる。 */
 function dataDir(): string {
   return process.env["BANTO_DATA_DIR"] ?? path.join(process.cwd(), ".banto");
+}
+
+/**
+ * 検証環境サービスのデータ置き場（task-0066）。
+ *
+ * **回収した成果物を番頭が読めるようにする**ために要る。別プロセスなので導けない——
+ * サービスと同じ既定（`BANTO_ENV_POOL_DATA` ?? `<BANTO_DATA_DIR>/environment-pool`）を
+ * ここでも組み立てる。配置で変えるなら両方に同じ値を渡すこと。
+ */
+function envPoolDataDir(): string {
+  return process.env["BANTO_ENV_POOL_DATA"] ?? path.join(dataDir(), "environment-pool");
+}
+
+/**
+ * sessionId から職人を引く（決定63 の砦のため）。
+ *
+ * 工房が別プロセスになったので、台帳を直に見ずに `worker.list` で聞く。
+ * I2: 引けなかったことを「見つからない」にしない——理由を添えて投げる
+ * （黙って undefined を返すと、他人の職人を畳めてしまう）。
+ */
+async function lookupWorker(
+  tools: NamespacedToolDefinition[],
+  sessionId: string
+): Promise<WorkerInfo | undefined> {
+  const list = tools.find((t) => t.name === "worker.list");
+  if (!list) throw new Error("worker.list が登録されていません（Worker Pool モジュールが未配線）");
+  const result = await list.execute({ query: sessionId, includeClosed: true } as never, {
+    toolCallId: `worker-lookup-${Date.now()}`,
+  });
+  const workers = ((result.details ?? {}) as { workers?: WorkerInfo[] }).workers ?? [];
+  return workers.find((w) => w.sessionId === sessionId);
 }
 
 /**
@@ -387,21 +407,14 @@ Write everything the user sees in ${RESPONSE_LANGUAGE}: chat replies, thread nam
 
 
 /**
- * 台帳に無いモデルを、実体のプロバイダ/モデルへ紐付ける最小の定義（D6）。
- *
- * pi は API リクエストに `model.id` をそのまま使うため、id は API が受け付ける値で
- * なければならない。`Mimo V2.5 Free` という名前で動く実体は opencode-go の `mimo-v2.5`
- * （input に image を含む）——指定文字列のまま解決すると opencode が 401 を返す
- * （実際に踏んだ）。表示用の id/name は設定で選んだ文字列のままにする
- * （bin.ts で ModelInfo へは modelId を渡す）。台帳に登録されたらここから外すこと。
- */
-const MODEL_ALIASES: Record<string, { provider: string; id: string }> = {
-  "Mimo V2.5 Free": { provider: "opencode-go", id: "mimo-v2.5" },
-};
-
-/**
  * LlmCatalog 用のモデル解決器を作る。
  * pi の ModelRegistry / getModel / getModels を LlmCatalog に渡す。
+ *
+ * **pi を import してよいのはこの層だけ**（決定3・`banto-core-layering.spec.ts`）。
+ * 独立サービスとして立つ工房（Worker Pool）は、pi を持ち込まない解決器
+ * （`createFileModelResolver`）を使う——最後の解決は pi の CLI が行うので、
+ * provider と id さえ渡れば同じ職人が起きる（task-0066）。
+ * 台帳に無いモデルの紐付け（MODEL_ALIASES）は両方が使うので banto-core にある。
  */
 function createModelResolver(registry: ModelRegistry) {
   return {
@@ -529,60 +542,31 @@ async function serve(options: ServeOptions): Promise<void> {
   }
 
   // 決定25・27: モジュールを1箇所で登録する。Tool・GUI・SKILL はここから束ねて配る。
-  // Kobo は接続後に、同じ口から登録される。
   //
-  // Worker Pool は**必須の組み込みモジュール**（決定27c）。無いと番頭は職人へ委譲できず
-  // D10 が構造的に満たせない。Banto に同居させる形で立て、到達先は相対パスにする
-  // （独立サービスとして別に立てる場合は BANTO_WORKER_POOL_URL で絶対URLを指す）。
-  //
-  // 決定29: 職人が報告・質問を返す先。職人は別プロセスなので絶対URLが要る
-  // （UI 向けの相対パスとは別物——UI は自分のオリジンに解決できるが、子プロセスはできない）。
-  // 決定39: 検証環境を外から見えるようにする口。既定は番頭ホスト自身が中継する
-  // ——どこでも動き、banto を守っている認証をそのまま継承する。Caddy を持つ配置では
-  // BANTO_CADDY_ADMIN + BANTO_ENV_DOMAIN でサブドメイン公開へ差し替える
-  const caddyAdmin = settings.all().network?.caddyAdmin ?? process.env["BANTO_CADDY_ADMIN"];
-  const envDomain = settings.all().network?.envDomain ?? process.env["BANTO_ENV_DOMAIN"];
-  const envProxy = createEnvProxyExposer({
-    baseUrl: ENVIRONMENT_POOL_BASE_URL,
-    ...(settings.all().network?.publicUrl ?? process.env["BANTO_PUBLIC_URL"]
-      ? { publicBaseUrl: (settings.all().network?.publicUrl ?? process.env["BANTO_PUBLIC_URL"])! }
-      : {}),
-  });
-  // G9 (b): 公開方式は env.provision の exposeMode で選べる。auto は
-  // 「caddy の口が設定されていれば caddy、無ければ proxy」——設定はここで分かっている
-  const caddy = caddyAdmin && envDomain ? createCaddyExposer({ adminUrl: caddyAdmin, baseDomain: envDomain }) : undefined;
-  if (caddyAdmin && !envDomain) {
-    // I2: 半端な設定を黙って既定へ落とさない（Caddy のつもりで中継されると気づけない）
-    throw new Error("BANTO_CADDY_ADMIN を設定するなら BANTO_ENV_DOMAIN も要ります。");
+  // **番頭ホストは工房も検証環境も自分の中に作らない**（task-0066・決定61）。作っていた頃は
+  // (a) Kobo が職人を起こすのに番頭の稼働が要り（決定27b が避けた依存の逆転）、
+  // (b) 番頭が立てた環境と Kobo が立てた環境で台帳が2つに割れていた（inc-0027）。
+  // いまはどちらも独立サービスで、番頭はその**利用者**——Kobo と同じ載せ方（到達先＋写し）。
+  const workerPoolUrl = defaultWorkerPoolUrl();
+  const envPoolUrl = defaultEnvironmentPoolUrl();
+
+  // 決定39: 検証環境の公開は Environment Pool の責務（中継も Caddy もサービス側にある）。
+  // 画面の「接続と公開」で Caddy を設定しても、**別プロセスには届かない**——
+  // 黙って効かないことにしないで、どこに置くべきかを言う（I2）
+  const caddyAdmin = settings.all().network?.caddyAdmin;
+  const envDomain = settings.all().network?.envDomain;
+  if (caddyAdmin ?? envDomain) {
+    console.warn(
+      "[banto] Caddy の設定（接続と公開）は検証環境のサービス側で読みます。" +
+        "banto-environment-pool.service に BANTO_CADDY_ADMIN / BANTO_ENV_DOMAIN を渡してください" +
+        "——ここでの設定は効きません"
+    );
   }
-  const environmentPool = new EnvironmentPool({
-    dataDir: path.join(dataDir(), "environment-pool"),
-    exposers: { proxy: envProxy, ...(caddy ? { caddy } : {}) },
-    // 決定32d: 復号鍵は Environment Pool が持つ。sops の標準の環境変数から取る
-    // ——これを渡さないと credentials 付きのプロファイルが使えない
-    ...(process.env["SOPS_AGE_KEY_FILE"]
-      ? { sopsAgeKeyFile: process.env["SOPS_AGE_KEY_FILE"] }
-      : {}),
-    // spec §5: 畳み損ね・孤児はPOへ知らせる。Kobo のケイデンスはまだ配線されていないので
-    // 番頭の会話へ流す——ログと画面だけでは、開くまで気づけない（I3）
-    onAttention: (message) => {
-      void server?.notify(`【検証環境】${message}`, { source: "system" }).catch((err: unknown) => {
-        console.error(`[env] 知らせを届けられませんでした: ${String(err)}`);
-      });
-    },
-  });
-  // spec-environment §5: 執行は Environment Pool の台帳が行う。**ここで回さないと
-  // 番頭が立てた環境を誰も片付けない**——Kobo 側の tick は台帳が別で対象外（I3）
-  // 保存された上限を起動時に効かせる（設定画面で変えた値が次の起動でも生きる）
-  environmentPool.applyLimits(
-    (settings.all().modules?.["environment-pool"] ?? {}) as Partial<
-      ReturnType<typeof environmentPool.currentLimits>
-    >
-  );
-  environmentPool.startMaintenance();
+
   // imp-0007 の裁定: 回収した成果物を**読める場所**として出す。置き場所を Pool が決める
-  // だけだと、番頭は取り出したものを読めない（砦の外なので file.read が弾く）
-  places.add(createCollectedPlaceProvider(environmentPool.collectedRoot()));
+  // だけだと、番頭は取り出したものを読めない（砦の外なので file.read が弾く）。
+  // 別プロセスになったので、置き場は同じ規則（`<データ置き場>/collected`）で組み立てる
+  places.add(createCollectedPlaceProvider(path.join(envPoolDataDir(), "collected")));
 
   // task-0048: 常駐時は UI も自分で配る。既定は packages/banto-web/dist（ビルドしていれば）
   const webDir =
@@ -600,11 +584,6 @@ async function serve(options: ServeOptions): Promise<void> {
         "credentials 経路に直接届きます"
     );
   }
-
-  const workerPoolUrl = process.env["BANTO_WORKER_POOL_URL"] ?? "/api/worker-pool";
-  const reportUrl = workerPoolUrl.startsWith("/")
-    ? `http://localhost:${options.port}${workerPoolUrl}`
-    : workerPoolUrl;
 
   // LLM Catalog の初期化（ADR-0004）。pi の設定を読み、banto のオーバーレイと統合する
   const agentDir = getAgentDir();
@@ -624,50 +603,15 @@ async function serve(options: ServeOptions): Promise<void> {
     },
   });
 
-  // 職人の既定は tier で持つ（ADR-0004）。具体モデルは catalog が解決する。
-  // driver の defaultProvider/defaultModel は catalog が解決できないときの最後の受け皿。
-  const workerFallback = llmCatalog.resolveForWorker();
-  const workerDriver = new PiRpcDriver({
-    sessionBaseDir: path.join(dataDir(), "worker-sessions"),
-    catalog: llmCatalog,
-    ...(workerFallback
-      ? {
-          defaultProvider: workerFallback.model.provider,
-          defaultModel: workerFallback.model.id,
-        }
-      : {}),
-  });
-  const workerPool = new WorkerPool({
-    driver: workerDriver,
-    dataDir: path.join(dataDir(), "worker-pool"),
-    defaultProjectTag: "banto",
-    defaultOrigin: BANTO_ORIGIN,
-    reportUrl,
-    ...(typeof settings.all().modules?.["worker-pool"]?.["idleTimeoutMs"] === "number"
-      ? { idleTimeoutMs: settings.all().modules!["worker-pool"]!["idleTimeoutMs"] as number }
-      : {}),
-  });
-  // 職人の復帰は Worker Pool 自身が起動時にやる（決定44）。前回の起動時刻の置き場を渡す
-  const workerPoolModule = createWorkerPoolModule(
-    workerPool,
-    workerPoolUrl,
-    path.join(dataDir(), "worker-pool")
-  );
+  // 職人のモデル解決（tier→実モデル）は**工房が自分で持つ**（task-0066）。番頭ホストは
+  // 台帳（オーバーレイ）を書くだけで、職人を起こすのは別プロセス——オーバーレイは
+  // 更新時刻で読み直されるので、画面で選んだ tier は次の委譲から効く（D3）。
 
   // 決定26 の層を解いた SKILL（番頭核＋モジュール）。studio はこれをそのまま見せる
   const coreSkills: SkillEntry[] = skills.map((skill) => ({ skill, origin: CORE_ORIGIN }));
 
   // ADR-0011 決定42: LLM は中核のドメイン。モジュールではなく中核の Tool として持つ
-  const llmTools = createLlmTools({
-    catalog: llmCatalog,
-    onWorkerTierChanged: () => {
-      // 既定 tier が変われば、解決の受け皿も新しい tier のものに揃える
-      const next = llmCatalog.resolveForWorker();
-      if (next) {
-        workerDriver.setDefaults({ provider: next.model.provider, model: next.model.id });
-      }
-    },
-  });
+  const llmTools = createLlmTools({ catalog: llmCatalog });
 
   // 決定38b・63: どの設定でも書かせない置き場。**自分の分だけでは足りない**——
   // Kobo の帳簿（イベントログ・登録簿）も番頭には触れないことが機構で担保されている
@@ -692,18 +636,17 @@ async function serve(options: ServeOptions): Promise<void> {
 
   const modules = createModuleRegistry([
     createWorkspaceModule(places, { protectedPaths }, grants),
-    workerPoolModule,
+    // Worker Pool は**必須の組み込みモジュール**（決定27c）。無いと番頭は職人へ委譲できず
+    // D10 が構造的に満たせない。立っていなくても登録はする——`worker.*` が消えると、
+    // 番頭は「工房が無い」ではなく「委譲の仕方を知らない」状態になり、自分で手を動かし始める
+    createRemoteWorkerPoolModule(workerPoolUrl),
     koboModule,
     createRepoManagerModule(),
     // 決定32c・34: 番頭は Kobo 無しでも検証を回せる。「テストが通った」を職人の主張ではなく
-    // 機構の返す事実として受け取るための実行能力（決定29a）
-    // 中継はこのモジュールが自分の到達先の下で捌く（決定27・39）
-    createEnvironmentPoolModule(
-      environmentPool,
-      ENVIRONMENT_POOL_BASE_URL,
-      envProxy,
-      settingsSection(settings, "environment-pool")
-    ),
+    // 機構の返す事実として受け取るための実行能力（決定29a）。
+    // **中継はホストが素通しする**（決定39）——公開された環境の URL は
+    // `/api/environment-pool/env/<id>/` で、ブラウザは 127.0.0.1 のサービスへ届かない
+    createRemoteEnvironmentPoolModule(envPoolUrl),
     // task-0050: pi coding agent の接続情報表示（LLM 管理は llm-registry が担当）
     createPiAgentModule(),
   ]);
@@ -887,8 +830,9 @@ async function serve(options: ServeOptions): Promise<void> {
         // Kobo は動いているつもりのまま実体が消える（Worker Pool 側には置けない——
         // 呼び出し元を区別できるのは束ねているこの層だけ）
         if (tool.name === "worker.close" || tool.name === "worker.stop") {
-          return guardWorkerOrigin(tool, threadOrigin(threadId), async (sessionId) =>
-            workerPool.get(sessionId)
+          // 工房は別プロセスなので、誰が起こしたかは Tool で引く（task-0066）
+          return guardWorkerOrigin(tool, threadOrigin(threadId), (sessionId) =>
+            lookupWorker(modules.tools(), sessionId)
           );
         }
         // 決定58: 工場に積んだ仕事の知らせも**積んだスレッド**へ返る。職人と同じ機構で、
@@ -1147,26 +1091,16 @@ async function serve(options: ServeOptions): Promise<void> {
   }
 
   // 決定29: 番頭が起こした職人のイベントだけを受ける。他の起動元（Kobo 等）の分は届かない。
-  // lastEventId から始めるので、起動前に溜まっていた古い報告を今さら会話へ流し込まない。
+  // 起動前に溜まっていた古い報告は今さら流さない（最初の1回で今の位置まで進める）。
   //
-  // 決定35a: 宛先は**起こしたスレッド**。origin を見て振り分ける（Worker Pool 側の
-  // 絞り込みは1つの origin しか取れないため、ここで前置きの一致を見る）。
-  const unsubscribeWorkers = workerPool.subscribe(
-    (event) => {
-      if (!isBantoOrigin(event.origin)) return;
-      const notice = renderWorkerNotice(event);
-      if (!notice) return;
-      const threadId = threadIdOfOrigin(event.origin);
-      void server.notify(notice, { ...(threadId ? { threadId } : {}), source: "worker" }).catch((err: unknown) => {
-        // 決定35b: 宛先スレッドが畳まれていたら起こし直して届ける——のが本筋だが、
-        // 起こし直せるのは会話が残っている場合（task-0036 の永続化）。いまは既定スレッドへ
-        // 逃がし、消えたことにしない（I2：答え手のいない質問を黙って捨てない）
-        console.error(`[banto] 知らせの宛先 ${String(threadId)} が見つかりません: ${String(err)}`);
-        void server.notify(notice, { source: "worker" });
-      });
-    },
-    { afterEventId: workerPool.lastEventId }
-  );
+  // **引きに行く形**（task-0066）。工房が別プロセスになったので同一プロセスの購読は使えない
+  // ——Kobo と同じく `worker.events` を `afterEventId` で追う。
+  //
+  // 決定35a: 宛先は**起こしたスレッド**。origin を見て振り分ける。
+  const stopWorkerNotices = startWorkerNotices({
+    tools: modules.tools(),
+    notify: (message, target) => server.notify(message, { ...target, source: "worker" }),
+  });
 
   // 決定58: 工場の判断待ちは**積んだスレッド**へ返る。別プロセスなので引きに行く形
   // （`afterEventId` で、落ちている間に起きたことも取りこぼさない）
@@ -1188,6 +1122,28 @@ async function serve(options: ServeOptions): Promise<void> {
       );
     });
 
+  // 工房と検証環境も同じく別プロセス（task-0066）。**立っていないと委譲も検証もできない**
+  // ——番頭は Tool の失敗で気づくが、起動時に分かる方が早い（I2）
+  const probe = (label: string, url: string, hint: string): void => {
+    void fetch(`${new URL(url).origin}/health`)
+      .then((res) => {
+        console.log(`[banto] ${label}: ${url}（${res.ok ? "応答あり" : `応答 ${res.status}`}）`);
+      })
+      .catch(() => {
+        console.warn(`[banto] ${label}: ${url} へ届きません。${hint}`);
+      });
+  };
+  probe(
+    "worker pool",
+    workerPoolUrl,
+    "職人への委譲（worker.*）は失敗します——banto-worker-pool.service を起動してください"
+  );
+  probe(
+    "environment pool",
+    envPoolUrl,
+    "検証（env.*）は失敗します——banto-environment-pool.service を起動してください"
+  );
+
   console.log(`[banto] listening on ws://localhost:${server.port}/ws`);
   console.log(
     `[banto] model: ${model ? `${model.provider}/${model.id}` : "(pi の既定解決)"}`
@@ -1196,7 +1152,8 @@ async function serve(options: ServeOptions): Promise<void> {
   console.log(`[banto] skills: ${skills.map((s) => s.name).join(", ") || "(none)"}`);
   console.log(`[banto] canvas: ${catalog.list().map((c) => c.kind).join(", ") || "(none)"}`);
   console.log(`[banto] workspace: ${workspace}`);
-  console.log(`[banto] worker report url: ${reportUrl}`);
+  console.log(`[banto] worker pool: ${workerPoolUrl}`);
+  console.log(`[banto] environment pool: ${envPoolUrl}`);
   console.log(`[banto] default thread: ${defaultThread.title} (${defaultThread.id})`);
   console.log(
     `[banto] modules: ${modules.list().map((m) => `${m.name}(${m.endpoint.baseUrl})`).join(", ") || "(none)"}`
@@ -1204,9 +1161,8 @@ async function serve(options: ServeOptions): Promise<void> {
 
   const shutdown = (): void => {
     void (async () => {
-      unsubscribeWorkers();
+      stopWorkerNotices();
       stopKoboNotices();
-      workerPool.dispose();
       // server.close() が全スレッドの後始末（購読解除＋対話ループの dispose）まで行う
       await server.close();
       threads.dispose();

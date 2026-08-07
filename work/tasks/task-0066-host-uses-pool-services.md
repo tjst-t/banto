@@ -3,7 +3,7 @@ id: task-0066
 type: task
 kind: refactor
 title: 番頭ホストを Worker Pool / Environment Pool の「利用者」にする（決定61 の残り）
-status: draft
+status: done
 parent: epic-0010
 refs: [adr-0013, adr-0010, task-0058, task-0060, inc-0027]
 scope:
@@ -40,3 +40,52 @@ inc-0027 の形に戻る**（Kobo の職人が番頭の worker.list に出ない
 いまの配置（1プロセスに1つずつ、Kobo が客）でも**台帳は1つ**で、決定29c は守られている。
 崩れているのは決定27b の依存の向きだけ——**番頭ホストが落ちると Kobo が職人を起こせない**。
 工場が止まるのは困るが、番頭が落ちている間に工場だけ回っても判断は返せないので、実害は小さい。
+
+## やったこと（2026-08-07）
+
+- **番頭ホストは工房も検証環境も作らない**（a1）。`bin.ts` の `new WorkerPool` /
+  `new EnvironmentPool` を落とし、`remote-pools.ts` の**到達先モジュール**に置き換えた。
+  契約（Tool の名前・説明・引数）は持ち主のパッケージからそのまま取り、`execute` だけを
+  HTTP 越しに差し替える（Kobo で先に踏んだ形の一般化＝`remote-module.ts`）。
+  到達先は `BANTO_WORKER_POOL_URL` / `BANTO_ENV_POOL_URL`（既定 127.0.0.1:4300 / :4400）
+- **台帳は1つ**（a2）。工房・検証環境の置き場は、番頭ホストが使っていたものをそのまま
+  サービスへ引き継ぐ（`/var/lib/banto/worker-pool`・`/var/lib/banto/environment-pool`）。
+  Kobo は**直に**サービスを叩く（決定27：Banto をブローカーにしない）
+- **UI から届く**（a3）。`endpoint.baseUrl` は相対パスのままで、Tool は写しが呼ぶ。
+  Tool の規約に乗らない面（`/env/<id>/` の中継）だけホストが素通しする（HTTP・WS とも）
+- **報告と質問は引きに行く形へ**（a4）。`pool.subscribe` を `startWorkerNotices`
+  （`worker.events` を `afterEventId` で追う）に置き換えた。最初の1回で今の位置まで
+  進めるので、落ちている間の古い報告を今さら流し込まない
+- **2ユニットを enable**（a5）。deploy の「いまは起動しない」を外し、実機で起動した
+
+### ついでに要ったこと（無いと黙って壊れる）
+
+- **工房が tier→モデルを引けるようにした**。決定60a で Kobo は tier までしか渡さないので、
+  台帳が無いと**全部 pi の既定モデルに落ちる**（誰も気づけない）。ただし決定3 の網
+  （モジュールは pi を import しない）があるため、pi のモデル表は使わず
+  `createFileModelResolver`（models.json だけを見る）を banto-core に足した。
+  **実機の3つの tier で pi 版と同じ解決になることを確かめた**（reasoning/standard/fast）
+- **設定（決定41）が別プロセスへ届く口**。`createSettingsTools` で `<domain>.settings_read`
+  / `settings_write` を出し、写し側の区画がそれを呼ぶ。番頭には渡さない（`internalTools`）
+- **設定の保存先**。同居していたときはホストの設定ファイルの一区画を借りていたので、
+  独立サービスは `createFileSettingsSection`（`<データ置き場>/settings.json`）で自分で持つ
+- **LLM オーバーレイの読み直し**。番頭ホストが書いたものを工房が読むので、
+  `LlmCatalog` を更新時刻で読み直すようにした（再起動しないと効かない、を避ける）
+
+## 確かめたこと（I1）
+
+- `npm run typecheck` / `npm test`（1224 テスト）
+- **本物の pi の職人**を独立サービスから起こし、/tmp/banto-play にファイルを作らせて
+  `worker.report` が返るところまで（偽ドライバのテストだけで済ませない）
+- 番頭ホストを客として立て、`worker.list`・`env.list`・`settings.describe`（職人と検証環境の
+  区画が実サービスの値で出る）・`/api/environment-pool/env/<id>/` の中継を確認
+
+## 残していること（正直に）
+
+- **検証環境の「知らせ」が会話へ返らない。** 畳み損ね・孤児は、同居していたときは
+  `onAttention` で番頭の会話へ流れていたが、いまはサービスのログに出るだけ
+  （`env.list` には残るので画面からは見える）。工房と同じく引きに行く形にするなら
+  Environment Pool 側にイベントの口が要る——**別タスク**
+- **Caddy の設定（接続と公開）はサービス側で読む。** 番頭の画面で設定しても効かないので、
+  起動時に警告を出すようにした。画面から設定できるようにするなら、上の設定の口を
+  Environment Pool にも通す（口はもうある）

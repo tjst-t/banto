@@ -31,6 +31,14 @@ Environment=BANTO_PLACES=banto:/home/ubuntu/ghq/github.com/tjst-t/banto:docs/**,
 # Kobo の帳簿（決定63）。**どの設定でも番頭に書かせない**——場所として登録されても届かない。
 # banto-daemon.service の BANTO_DATA_DIR と同じ値にすること（起動ログで守れているか分かる）
 Environment=BANTO_KOBO_DATA_DIR=/var/lib/banto/data
+# 工房と検証環境は**独立サービス**（task-0066・決定61）。番頭はその利用者で、
+# 自分の中には作らない——既定と同じ値だが、どこを見ているかを明示しておく。
+# 立っていないと委譲（worker.*）と検証（env.*）が失敗する（起動ログに出る）
+Environment=BANTO_WORKER_POOL_URL=http://127.0.0.1:4300/api/worker-pool
+Environment=BANTO_ENV_POOL_URL=http://127.0.0.1:4400/api/environment-pool
+# 回収した成果物を番頭が読めるように、検証環境サービスと同じ置き場を教える
+# （banto-environment-pool.service の BANTO_ENV_POOL_DATA と同じ値にすること）
+Environment=BANTO_ENV_POOL_DATA=/var/lib/banto/environment-pool
 
 ExecStart=/usr/local/bin/node --import tsx packages/banto-host/src/bin.ts serve --port 4100
 

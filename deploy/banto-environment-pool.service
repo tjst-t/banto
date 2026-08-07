@@ -11,13 +11,12 @@
 #
 # 前提:
 #   - ubuntu ユーザの ghq チェックアウトで npm install を済ませてある
-#   - /var/lib/banto-environment-pool を ubuntu が読み書きできる
+#   - /var/lib/banto を ubuntu が読み書きできる（番頭ホストと同じ置き場を使う）
 #   - credentials 付きプロファイルを使うなら SOPS_AGE_KEY_FILE の鍵が読める
 
-#
-# **いまは起動しない（2026-08-07）。** 番頭ホストがまだ自分の中に Environment Pool を作るため、
-# こちらを立てて Kobo を向けると**環境の台帳が2つに割れる**（inc-0027 と同じ形）。
-# 番頭ホストが独立サービスの利用者になったら enable する。
+# **番頭も Kobo もこのサービスの利用者**（task-0066 で番頭ホストの同居をやめた）。
+# 台帳と回収した成果物（/var/lib/banto/environment-pool）は番頭ホストが使っていたものを
+# そのまま引き継ぐ——番頭は `collected` を場所として読むので、置き場をずらさないこと。
 [Unit]
 Description=banto environment pool — 検証環境の台帳と実行
 Documentation=https://github.com/tjst-t/banto
@@ -31,7 +30,7 @@ Group=ubuntu
 WorkingDirectory=/home/ubuntu/ghq/github.com/tjst-t/banto
 
 Environment=NODE_ENV=production
-Environment=BANTO_ENV_POOL_DATA=/var/lib/banto-environment-pool
+Environment=BANTO_ENV_POOL_DATA=/var/lib/banto/environment-pool
 Environment=BANTO_ENV_POOL_PORT=4400
 # 復号鍵を持つのはこのサービスだけ（決定32d）。番頭にも Kobo にも渡さない
 # Environment=SOPS_AGE_KEY_FILE=/home/ubuntu/.config/sops/age/keys.txt
@@ -47,7 +46,7 @@ NoNewPrivileges=true
 # 検証環境のドライバ（docker / process）が /tmp を使うので PrivateTmp は無効のまま
 PrivateTmp=false
 ProtectSystem=full
-ReadWritePaths=/var/lib/banto-environment-pool /home/ubuntu/ghq/github.com/tjst-t/banto
+ReadWritePaths=/var/lib/banto /home/ubuntu/ghq/github.com/tjst-t/banto
 
 [Install]
 WantedBy=multi-user.target

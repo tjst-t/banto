@@ -18,6 +18,7 @@
 
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 export type ModelTier = "reasoning" | "standard" | "fast";
@@ -296,6 +297,8 @@ export class LlmCatalog {
   /** 読み込んだ時点の pi 設定ファイルのハッシュ。外部変更の検知に使う */
   private loadedHash = "";
   private loadedAt = "";
+  /** 読み込んだオーバーレイの更新時刻。別プロセスの書き込みを拾うために持つ */
+  private overlayMtimeMs = -1;
 
   constructor(options: LlmCatalogOptions) {
     this.authJsonPath = options.authJsonPath;
@@ -730,13 +733,27 @@ export class LlmCatalog {
   // ── オーバーレイの読み書き ────────────────────────────────────────────
 
   private ensureLoaded(): void {
-    if (this.overlay !== null) return;
+    // **同じオーバーレイを複数のプロセスが読む**（task-0066）。番頭ホストが画面から
+    // 書き、職人の工房（Worker Pool サービス）が読む——一度読んで抱え込むと、
+    // 「登録したモデルで職人が動かない、再起動するまで」という分かりにくい壊れ方になる。
+    // 書き手は必ず保存してから返す（下の saveOverlay）ので、更新時刻で読み直せば足りる
+    if (this.overlay !== null && this.overlayMtimeMs === this.overlayStamp()) return;
     this.overlay = this.loadOverlay();
+    this.overlayMtimeMs = this.overlayStamp();
     this.loadedHash = this.hashPiFiles();
     this.loadedAt = new Date().toISOString();
     this.migrateWorkerDefault();
     this.migrateAdoption();
     if (this.migration) this.migrateOnce();
+  }
+
+  /** オーバーレイの更新時刻（無ければ -1）。 */
+  private overlayStamp(): number {
+    try {
+      return fs.statSync(this.overlayPath).mtimeMs;
+    } catch {
+      return -1;
+    }
   }
 
   private loadOverlay(): Overlay {
@@ -751,6 +768,8 @@ export class LlmCatalog {
   private saveOverlay(): void {
     fs.mkdirSync(path.dirname(this.overlayPath), { recursive: true });
     fs.writeFileSync(this.overlayPath, JSON.stringify(this.overlay, null, 2) + "\n", "utf-8");
+    // 自分の書き込みで読み直しが起きないよう、更新時刻を持ち直す
+    this.overlayMtimeMs = this.overlayStamp();
   }
 
   private setModelOverlay(provider: string, model: string, patch: ModelOverlay): void {
@@ -1210,3 +1229,84 @@ export class LlmCatalog {
 }
 
 export { isModelTier };
+
+// ── ハーネスに依存しないモデル解決（task-0066）────────────────────────────────
+
+/**
+ * 台帳に無いモデルを、実体のプロバイダ/モデルへ紐付ける最小の定義（D6）。
+ *
+ * pi は API リクエストに `model.id` をそのまま使うため、id は API が受け付ける値で
+ * なければならない。`Mimo V2.5 Free` という名前で動く実体は opencode-go の `mimo-v2.5`
+ * ——指定文字列のまま解決すると opencode が 401 を返す（実際に踏んだ）。
+ * 台帳に登録されたらここから外すこと。
+ *
+ * **番頭ホストと工房の両方が使う**ので core に置く（それぞれで持つと片方だけ直る）。
+ */
+export const MODEL_ALIASES: Record<string, { provider: string; id: string }> = {
+  "Mimo V2.5 Free": { provider: "opencode-go", id: "mimo-v2.5" },
+};
+
+/**
+ * pi の設定置き場（`~/.pi/agent`）。**pi を import せずに**同じ規則で組み立てる。
+ *
+ * 決定3（ハーネスは差し替え可能）の網（`banto-core-layering.spec.ts`）があるため、
+ * banto-host 以外は pi の関数を呼べない。ここで見るのはファイルの置き場所だけで、
+ * pi の型にも実装にも触らない——ファイルの形は ADR-0004 が既に前提にしている。
+ */
+export function piAgentDir(): string {
+  const configured = process.env["PI_CODING_AGENT_DIR"];
+  if (configured && configured.length > 0) {
+    return configured.startsWith("~")
+      ? path.join(os.homedir(), configured.slice(1))
+      : configured;
+  }
+  return path.join(os.homedir(), ".pi", "agent");
+}
+
+/**
+ * `models.json` だけを見るモデル解決器（ハーネス非依存）。
+ *
+ * **何のためにあるか。** 独立サービスとして立つ工房（Worker Pool）も tier→モデルを
+ * 引く必要がある（決定60a：Kobo は tier までしか渡さない）。番頭ホストの解決器は pi の
+ * モデル表（`@mariozechner/pi-ai`）を引くが、それを工房へ持ち込むと決定3 の
+ * 「モジュールはハーネスに依存しない」が崩れる。
+ *
+ * **持ち込まなくても足りる**：解決の結果で実際に使われるのは provider と id だけで、
+ * それは職人を起こすときに pi の CLI へ渡され、**最後の解決は pi 自身が行う**。
+ * `models.json` に無いモデルは、指定された id をそのまま実体とみなす。
+ *
+ * 画面のためのモデル一覧（`getKnownModels`）は返さない——それが要るのは番頭ホストの
+ * LLM 台帳の画面で、そちらは pi の表を持っている。
+ */
+export function createFileModelResolver(modelsJsonPath: string): LlmModelResolver {
+  return {
+    find(provider: string, modelId: string): ResolvedModel | undefined {
+      const alias = MODEL_ALIASES[modelId];
+      const actualProvider = alias?.provider ?? provider;
+      const actualId = alias?.id ?? modelId;
+
+      let parsed: { providers?: Record<string, { models?: Array<Record<string, unknown>> }> } = {};
+      try {
+        parsed = JSON.parse(fs.readFileSync(modelsJsonPath, "utf-8")) as typeof parsed;
+      } catch {
+        // ファイルが無い・壊れている：id をそのまま実体とみなす（pi 側が最後に解決する）
+      }
+      for (const [rawProvider, value] of Object.entries(parsed.providers ?? {})) {
+        if (rawProvider.replace(/_/g, "-") !== actualProvider) continue;
+        for (const m of value.models ?? []) {
+          if (m["id"] !== actualId) continue;
+          return {
+            provider: actualProvider,
+            id: actualId,
+            name: (m["name"] as string | undefined) ?? actualId,
+            input: (m["input"] as string[] | undefined) ?? [],
+          };
+        }
+      }
+      return { provider: actualProvider, id: actualId, name: modelId, input: [] };
+    },
+    getKnownModels(): undefined {
+      return undefined;
+    },
+  };
+}

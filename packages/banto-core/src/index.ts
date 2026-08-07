@@ -50,6 +50,8 @@ export type {
   SettingsSection,
   SettingsWriteResult,
 } from "./module-settings.js";
+// 別プロセスのモジュールが設定を届けるための橋（task-0066）
+export { createSettingsTools, createFileSettingsSection } from "./module-settings.js";
 export type {
   EnvProfile,
   ProfileValidation,
@@ -115,6 +117,10 @@ export {
   DEFAULT_TIER_DESCRIPTIONS,
   CONSTRAINT_KEYS,
   isModelTier,
+  // ハーネスに依存しないモデル解決（task-0066）。工房が独立サービスとして立つのに要る
+  MODEL_ALIASES,
+  createFileModelResolver,
+  piAgentDir,
 } from "./llm-registry.js";
 export type {
   ModelTier,

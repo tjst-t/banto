@@ -33,6 +33,8 @@ import {
   ENVIRONMENT_POOL_DEFAULT_PORT,
 } from "./service.js";
 import { ENVIRONMENT_POOL_BASE_URL } from "./module.js";
+import { createEnvironmentSettings } from "./settings.js";
+import { createFileSettingsSection, createSettingsTools } from "@banto/core";
 
 const args = process.argv.slice(2);
 
@@ -107,6 +109,11 @@ async function main(): Promise<void> {
     },
   });
 
+  // 決定41: PO が画面で決めた上限は**次の起動でも効く**必要がある。同居していたときは
+  // 番頭ホストの設定ファイルの一区画を借りていたので、独立して立てるなら自分で持つ
+  const settings = createFileSettingsSection(path.join(dataDir, "settings.json"));
+  pool.applyLimits(settings.read() as Partial<ReturnType<typeof pool.currentLimits>>);
+
   if (pool.ledgerCorruption) {
     // I2: 壊れた台帳で黙って動き出さない
     console.error(`[environment-pool] 台帳を読めませんでした: ${pool.ledgerCorruption}`);
@@ -116,7 +123,11 @@ async function main(): Promise<void> {
   pool.startMaintenance();
 
   const service = await EnvironmentPoolService.start({
-    tools: createEnvTools(pool),
+    // 設定画面（決定41）は番頭ホスト側に出る。別プロセスなので読み書きを口で受ける
+    tools: [
+      ...createEnvTools(pool),
+      ...createSettingsTools("env", createEnvironmentSettings(pool, settings)),
+    ],
     port,
     host,
     proxy,

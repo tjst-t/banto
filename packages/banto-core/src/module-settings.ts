@@ -11,6 +11,12 @@
  * 保存先を持ちたくないモジュールのために、ホストは `SettingsSection` を渡せる。
  */
 
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { Type } from "typebox";
+import { defineNamespacedTool } from "./banto-tool.js";
+import type { NamespacedToolDefinition } from "./banto-tool.js";
+
 /** 設定項目の型。増やすときは設定画面の描画も合わせて足す。 */
 export type SettingFieldType = "text" | "number" | "boolean" | "select" | "list";
 
@@ -87,4 +93,86 @@ export interface ModuleSettingsSpec {
 export interface SettingsSection {
   read(): Record<string, unknown>;
   write(values: Record<string, unknown>): void;
+}
+
+// ── 別プロセスのモジュールの設定（task-0066）────────────────────────────────
+
+/**
+ * 設定の区画を Tool 2本として公開する（`<domain>.settings_read` / `<domain>.settings_write`）。
+ *
+ * **独立サービスとして立つモジュールのための橋**。決定41 で設定は「項目の宣言」だけを渡す
+ * 形にしたが、その宣言は同じプロセスに実装がある前提で書かれていた——Worker Pool と
+ * Environment Pool を別プロセスへ出すと、宣言（画面に出る項目）は写せても
+ * **読み書きが届かない**。値の持ち主はモジュール（決定41）のままにしたいので、
+ * 呼び出し規約はモジュール間と同じ Tool にする（決定9・27b：契約体系を2つ持たない）。
+ *
+ * **番頭には渡さない**（`internalTools` に入れる）。設定を変えるのは PO の画面であって、
+ * 番頭が自分で上限を緩められる口ではない（決定63 と同じ考え方）。
+ */
+export function createSettingsTools(
+  domain: string,
+  spec: ModuleSettingsSpec
+): NamespacedToolDefinition[] {
+  const read = defineNamespacedTool({
+    name: `${domain}.settings_read` as `${string}.${string}`,
+    label: `${spec.title}: 設定を読む`,
+    description:
+      "このモジュールの設定のいまの値を返す。**設定画面のための口**——番頭には渡らない。",
+    parameters: Type.Object({}),
+    async execute() {
+      const values = await spec.read();
+      return { content: [{ type: "text" as const, text: JSON.stringify(values) }], details: { values } };
+    },
+  });
+
+  const write = defineNamespacedTool({
+    name: `${domain}.settings_write` as `${string}.${string}`,
+    label: `${spec.title}: 設定を変える`,
+    description:
+      "このモジュールの設定を変える。**画面から来た項目だけ**を渡すこと（触っていない項目は渡さない）。",
+    parameters: Type.Object({
+      values: Type.Record(Type.String(), Type.Unknown(), {
+        description: "変える項目だけを入れたオブジェクト",
+      }),
+    }),
+    async execute(args) {
+      // I2: 受け付けられない値はモジュールが投げる。ここで包み隠さずそのまま外へ出す
+      const result = await spec.write((args.values ?? {}) as Record<string, unknown>);
+      return {
+        content: [{ type: "text" as const, text: result.message ?? "変えました。" }],
+        details: result,
+      };
+    },
+  });
+
+  return [read, write] as NamespacedToolDefinition[];
+}
+
+/**
+ * 設定の保存先をファイル1つで持つ区画（task-0066）。
+ *
+ * 独立サービスとして立つモジュール用。番頭ホストに同居していたときはホストの設定ファイルの
+ * 一区画を借りていた（`settingsSection`）が、別プロセスでは借りる相手がいない——
+ * **保存されないと、PO が画面で決めた上限が次の起動で消える**（決定41 の「値の持ち主は
+ * モジュール」を、持ち場が変わっても保つ）。
+ *
+ * D6: node:fs のみ。I2: 壊れたファイルは黙って空にせず、読み手に投げる。
+ */
+export function createFileSettingsSection(filePath: string): SettingsSection {
+  return {
+    read(): Record<string, unknown> {
+      if (!fs.existsSync(filePath)) return {};
+      const raw = fs.readFileSync(filePath, "utf-8").trim();
+      if (raw.length === 0) return {};
+      try {
+        return JSON.parse(raw) as Record<string, unknown>;
+      } catch (err) {
+        throw new Error(`設定ファイルを読めません（${filePath}）: ${String(err)}`);
+      }
+    },
+    write(values: Record<string, unknown>): void {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, JSON.stringify(values, null, 2) + "\n", "utf-8");
+    },
+  };
 }

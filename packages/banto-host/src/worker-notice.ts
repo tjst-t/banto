@@ -139,3 +139,93 @@ export function renderWorkerNotice(event: WorkerEvent): string | undefined {
 
   return lines.join("\n");
 }
+
+// ── 引きに行く形（task-0066）──────────────────────────────────────────────────
+
+/** 職人のイベントを引く口（`worker.events` を持つ Tool 群）。 */
+export interface WorkerNoticeOptions {
+  /** `worker.*` Tool（モジュールから束ねたもの）。 */
+  tools: Array<{ name: string; execute(args: never, ctx?: { toolCallId: string }): Promise<unknown> }>;
+  /** 会話へ知らせる（宛先スレッドつき）。 */
+  notify(message: string, target: { threadId?: string }): Promise<void>;
+  /** 引く間隔（ms）。既定 1500——職人の質問を待たせすぎない値 */
+  intervalMs?: number;
+  log?(message: string): void;
+}
+
+/**
+ * 職人の知らせを引き始める。返り値で止める。
+ *
+ * **購読ではなく引きに行く**（task-0066）。工房（Worker Pool）が独立サービスになったので、
+ * 同一プロセスの `subscribe` は使えない——Kobo と同じ形（`kobo-notice.ts`）で
+ * `worker.events` を `afterEventId` 付きで追う。
+ *
+ * **起動より前の分は流さない。** 最初の1回で今の位置（`lastEventId`）まで進めてから
+ * 追い始める——落ちている間に溜まった古い報告を、今さら会話へ流し込まない
+ * （同居していた頃の `afterEventId: pool.lastEventId` と同じ振る舞い）。
+ *
+ * 宛先は決定35a のとおり**起こしたスレッド**。他の起動元（Kobo 等）の分は届かない。
+ */
+export function startWorkerNotices(options: WorkerNoticeOptions): () => void {
+  const interval = options.intervalMs ?? 1500;
+  const log = options.log ?? ((m: string) => console.error(m));
+  const invoke = async (
+    name: string,
+    args: Record<string, unknown>
+  ): Promise<Record<string, unknown>> => {
+    const tool = options.tools.find((t) => t.name === name);
+    // I2: 配線されていないことを「結果なし」にしない
+    if (!tool) throw new Error(`${name} が登録されていません（Worker Pool モジュールが未配線）`);
+    const result = (await tool.execute(args as never, { toolCallId: `worker-notice-${Date.now()}` })) as {
+      details?: Record<string, unknown>;
+    };
+    return (result.details ?? {}) as Record<string, unknown>;
+  };
+
+  /** 未設定。最初の tick で今の位置まで進める（起動前の分を流さないため） */
+  let cursor: number | undefined;
+  let running = false;
+  let stopped = false;
+
+  const tick = async (): Promise<void> => {
+    if (running || stopped) return;
+    running = true;
+    try {
+      if (cursor === undefined) {
+        const details = await invoke("worker.events", { limit: 1 });
+        cursor = Number(details["lastEventId"] ?? 0);
+        return;
+      }
+      const details = await invoke("worker.events", { afterEventId: cursor, limit: 100 });
+      const events = (details["events"] ?? []) as WorkerEvent[];
+      for (const event of events) {
+        cursor = Math.max(cursor, event.id ?? 0);
+        if (!isBantoOrigin(event.origin)) continue;
+        const notice = renderWorkerNotice(event);
+        if (!notice) continue;
+        const threadId = threadIdOfOrigin(event.origin);
+        try {
+          await options.notify(notice, threadId ? { threadId } : {});
+        } catch (err) {
+          // 決定35b: 宛先スレッドが畳まれていたら既定へ逃がす。**消えたことにしない**（I2）
+          log(`[banto] 知らせの宛先 ${String(threadId)} が見つかりません: ${String(err)}`);
+          await options.notify(notice, {}).catch(() => undefined);
+        }
+      }
+    } catch (err) {
+      // I2: 引けなかったことを黙って握らない。写しを進めないので次の tick で取り直す
+      log(`[banto] 職人の知らせを引けませんでした: ${String(err)}`);
+    } finally {
+      running = false;
+    }
+  };
+
+  const timer = setInterval(() => void tick(), interval);
+  timer.unref?.();
+  void tick();
+
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}
