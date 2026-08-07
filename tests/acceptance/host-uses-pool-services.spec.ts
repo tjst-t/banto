@@ -105,13 +105,15 @@ describe("[task-0066] テストは実機のサービスを叩かない", () => {
     const pkg = JSON.parse(
       fs.readFileSync(new URL("../../package.json", import.meta.url).pathname, "utf-8")
     ) as { scripts: Record<string, string> };
-    const script = pkg.scripts["test"] ?? "";
-    for (const name of ["BANTO_WORKER_POOL_URL", "BANTO_ENV_POOL_URL"]) {
-      assert.match(
-        script,
-        new RegExp(`${name}=http://127\\.0\\.0\\.1:1/`),
-        `${name} を届かない先に固定すること——実機のサービスがテストの相手になる`
-      );
+    // e2e も同じ（実機の職人と環境を巻き込む余地を残さない）
+    for (const script of [pkg.scripts["test"] ?? "", pkg.scripts["test:e2e"] ?? ""]) {
+      for (const name of ["BANTO_WORKER_POOL_URL", "BANTO_ENV_POOL_URL"]) {
+        assert.match(
+          script,
+          new RegExp(`${name}=http://127\\.0\\.0\\.1:1/`),
+          `${name} を届かない先に固定すること——実機のサービスがテストの相手になる`
+        );
+      }
     }
   });
 });
