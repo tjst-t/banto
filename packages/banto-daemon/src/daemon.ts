@@ -1034,6 +1034,56 @@ export class Daemon {
     }
   }
 
+  /** その役目の職人を要る状態（起こした仕事がまだ意味を持つ状態）。 */
+  private static readonly ROLE_WANTED_IN: Record<WorkerRole, ReadonlySet<string>> = {
+    executor: new Set(["planning", "implementing"]),
+    rework: new Set(["implementing"]),
+    audit: new Set(["auditing"]),
+  };
+
+  /**
+   * 起こした職人が**まだ要るか**を確かめ、要らなければその場で畳む（task-0072）。
+   *
+   * **起こすのは非同期**で、`closeWorkerFor` と `worker.delegate_toolkit` の HTTP 往復を
+   * 挟む。その間にタスクが先へ進む（あるいは失敗して終端に着く）ことがあり、そうなると
+   * **出来上がった職人を誰も畳まない**——終端に着いたときの後始末は「いま居る職人」を
+   * 畳むので、まだ生まれていなかった職人は取りこぼす。
+   *
+   * 実際に起きていた：2回目の監査不通過でタスクが failed になったあと、1回目の不通過で
+   * 頼んでいた rework の職人が**遅れて生まれ**、工房の安全弁（既定15分）まで走り続けていた。
+   * 混んでいるときだけ出るので、受け入れテストでは「まれに落ちる」という形で見えていた。
+   *
+   * I3: 放っておくと外で走り続ける。**気づけない壊れ方**なので、機構で塞ぐ。
+   *
+   * @returns まだ要るなら true。畳んだなら false（呼び出し側は帳簿に書かずに戻る）
+   */
+  private async keepWorkerIfStillWanted(opts: {
+    projectTag: string;
+    taskId: string;
+    role: WorkerRole;
+    sessionId: string;
+  }): Promise<boolean> {
+    const { projectTag, taskId, role, sessionId } = opts;
+    // 起こしている間に帳簿が進んでいる。**読み直す**（起こす前の写しで判断しない）
+    this.refreshState();
+    const status = this.store.getTask(taskId, projectTag)?.status;
+    if (status !== undefined && Daemon.ROLE_WANTED_IN[role].has(status)) return true;
+
+    process.stderr.write(
+      `[banto-daemon] ${projectTag}/${taskId} は ${role} を起こしている間に ` +
+        `${status ?? "(消えた)"} へ移りました。生まれたばかりの職人を畳みます（${sessionId}）\n`
+    );
+    try {
+      await this.workerInvoke("worker.close", { sessionId });
+    } catch (err) {
+      // I2: 畳めなかったことは残す。工房の安全弁が後で拾う
+      process.stderr.write(
+        `[banto-daemon] 遅れて生まれた職人を畳めませんでした（${sessionId}）: ${String(err)}\n`
+      );
+    }
+    return false;
+  }
+
   /**
    * 職人を1人起こす（`worker.delegate_toolkit`）。
    *
@@ -1626,6 +1676,20 @@ export class Daemon {
       return;
     }
 
+    // task-0072: 起こしている間にタスクが先へ進んでいたら、生まれたての職人を畳んで戻る。
+    // **audit_started を積む前に**確かめる——積むと `countAuditAttempts` が数えてしまい、
+    // 誰も使っていない職人の分だけ、やり直しの回数が減る
+    if (
+      !(await this.keepWorkerIfStillWanted({
+        projectTag,
+        taskId,
+        role: "audit",
+        sessionId: session.sessionId,
+      }))
+    ) {
+      return;
+    }
+
     // Emit audit_started event (S75f66b-3, spec §2.1: path reference only).
     const auditStartedEvent = this.log.append({
       type: "audit_started",
@@ -1804,6 +1868,18 @@ export class Daemon {
     } catch (err) {
       const reason = `rework session spawn failed: ${err instanceof Error ? err.message : String(err)}`;
       this.recordTaskFailed(projectTag, taskId, reason);
+      return;
+    }
+
+    // task-0072: 起こしている間にタスクが先へ進んでいたら、生まれたての職人を畳んで戻る
+    if (
+      !(await this.keepWorkerIfStillWanted({
+        projectTag,
+        taskId,
+        role: "rework",
+        sessionId: session.sessionId,
+      }))
+    ) {
       return;
     }
 
@@ -2079,6 +2155,20 @@ export class Daemon {
 
       // 決定59: レビューのための環境は**触れる状態**で差し出す（公開URLつき）
       await this.provisionEnv(projectTag, taskId, profileName, { forReview: true });
+
+      // task-0072: **立てている間にレビューが終わっていたら畳む。** 職人で踏んだのと
+      // 同じ形——終端に着いたときの後始末は「いま立っている環境」を畳むので、まだ
+      // 立ち上がっていなかったものを取りこぼす。環境は期限で必ず畳まれるとはいえ、
+      // 最長24時間は外で動く（I3：消し忘れは金銭的実害）
+      this.refreshState();
+      const after = this.store.getTask(taskId, projectTag)?.status;
+      if (after !== "in-review") {
+        process.stderr.write(
+          `[banto-daemon] ${projectTag}/${taskId} は環境を立てている間に ` +
+            `${after ?? "(消えた)"} へ移りました。立てたばかりの環境を畳みます\n`
+        );
+        await this._teardownTaskEnvs(projectTag, taskId);
+      }
     } catch (err) {
       // I2: ここで落としても遷移は既に成立している。理由をログに出して続ける
       const msg = err instanceof Error ? err.message : String(err);

@@ -101,7 +101,18 @@ export class FakeRuntimeDriver implements RuntimeDriver {
   private readonly processes = new Map<string, number>();
   private counter = 0;
 
+  /**
+   * 起こすのにかかる時間（ms）。既定 0。
+   *
+   * task-0072: 職人が生まれるまでの間にタスクが先へ進む競りを、**時間ではなく仕掛けで**
+   * 再現するための口。混んでいるときだけ出る壊れ方なので、これが無いと検体にならない。
+   */
+  spawnDelayMs = 0;
+
   async spawn(opts: SpawnOptions): Promise<SessionHandle> {
+    if (this.spawnDelayMs > 0) {
+      await new Promise((r) => setTimeout(r, this.spawnDelayMs));
+    }
     this.counter += 1;
     const sessionId = `fake-${this.counter}`;
     const sessionPath = path.join(opts.worktreePath, `.fake-session-${this.counter}.jsonl`);
