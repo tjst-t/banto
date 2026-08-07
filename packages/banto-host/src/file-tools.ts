@@ -18,27 +18,37 @@ import * as path from "node:path";
 import { Type } from "typebox";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 import { resolveInWorkspace, toWorkspaceRelative } from "./workspace.js";
+import {
+  HIDDEN_NAMES,
+  MAX_BUILTIN_SEARCH_BYTES,
+  grepTree,
+  listTree,
+  looksBinary,
+  type SearchOverrides,
+} from "./file-search.js";
 
-/** 一覧の上限。番頭の文脈を埋め尽くさないため。 */
+/**
+ * 既定の件数と、頼めば返せる天井（task-0068）。
+ *
+ * **既定を上げないのは番頭の文脈を埋めないため**で、「それ以上は取れない」ためではない。
+ * 元は既定と天井が同じ 200 で、`limit: 1000` と書いても 200 で返っていた——
+ * しかも**あと何件あるかを言わなかった**ので、少なく返っていることに気づけなかった。
+ */
 const MAX_ENTRIES = 200;
+const ENTRIES_CEILING = 5_000;
 /** 読み取りの上限（行）。超える分は切り、切ったことを明示する。 */
 const MAX_LINES = 400;
 /** 読み取りの上限（バイト）。 */
 const MAX_BYTES = 200_000;
 
 /** よくある除外。番頭が見て意味のないものを既定で隠す。 */
-const HIDDEN = new Set([".git", "node_modules", "dist", ".DS_Store"]);
+const HIDDEN = new Set<string>(HIDDEN_NAMES);
 
-/** 探索・検索の上限。番頭の文脈を埋め尽くさないため、また巨大なツリーで止まらないため。 */
+/** 探索・検索の既定と天井。 */
 const MAX_FIND_RESULTS = 200;
+const FIND_CEILING = 5_000;
 const MAX_GREP_RESULTS = 200;
-/** 検索で開くファイルサイズの上限。これを超えるものは飛ばす（その旨を返す）。 */
-const MAX_SEARCH_BYTES = 1_000_000;
-
-/** NUL を含むならバイナリとみなす（テキストとして出すと文脈を壊す）。 */
-function looksBinary(buffer: Buffer): boolean {
-  return buffer.subarray(0, 8000).includes(0);
-}
+const GREP_CEILING = 2_000;
 
 /**
  * 各行の開始バイト位置を返す（1始まりの L 行目は `starts[L - 1]`）。
@@ -93,42 +103,15 @@ function globToRegExp(pattern: string): { re: RegExp; matchBasename: boolean } {
   return { re: new RegExp(`^${out}$`), matchBasename };
 }
 
-/**
- * ルート配下のファイルを走査する。`HIDDEN`（.git / node_modules / dist 等）と
- * ドット始まりは既定で降りない——番頭の文脈を無駄に埋めないため。
- *
- * @param visit false を返すと走査を打ち切る（上限に達したとき）
- */
-function walkFiles(
-  root: string,
-  startRelative: string,
-  includeHidden: boolean,
-  visit: (relativePath: string, absolutePath: string) => boolean
-): void {
-  const stack: string[] = [startRelative];
-  while (stack.length > 0) {
-    const relative = stack.pop()!;
-    const absolute = path.join(root, relative === "." ? "" : relative);
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(absolute, { withFileTypes: true });
-    } catch {
-      // 読めないディレクトリは飛ばす（権限等）。走査全体を止めない
-      continue;
-    }
-    for (const entry of entries) {
-      if (!includeHidden && (entry.name.startsWith(".") || HIDDEN.has(entry.name))) continue;
-      const childRelative = relative === "." ? entry.name : `${relative}/${entry.name}`;
-      if (entry.isDirectory()) {
-        stack.push(childRelative);
-      } else if (entry.isFile()) {
-        if (!visit(childRelative, path.join(absolute, entry.name))) return;
-      }
-    }
-  }
-}
 
-export function createFileTools(root: string): NamespacedToolDefinition[] {
+/**
+ * @param overrides 探す道具を1つに固定する（task-0068）。**試験が3経路を突き合わせる**ための口で、
+ *   本番では渡さない——渡さなければ rg → grep → 自前の順で使えるものが選ばれる。
+ */
+export function createFileTools(
+  root: string,
+  overrides: SearchOverrides = {}
+): NamespacedToolDefinition[] {
   const list = defineNamespacedTool({
     name: "file.list",
     label: "File: List",
@@ -142,6 +125,9 @@ export function createFileTools(root: string): NamespacedToolDefinition[] {
       includeHidden: Type.Optional(
         Type.Boolean({ description: "ドット始まりや node_modules 等も含める（既定 false）" })
       ),
+      limit: Type.Optional(
+        Type.Number({ description: `返す件数の上限（既定 ${MAX_ENTRIES}・最大 ${ENTRIES_CEILING}）` })
+      ),
     }),
     async execute(params) {
       const target = resolveInWorkspace(root, params.path ?? ".");
@@ -152,6 +138,7 @@ export function createFileTools(root: string): NamespacedToolDefinition[] {
       if (!fs.statSync(target).isDirectory()) {
         throw new Error(`Not a directory: ${params.path ?? "."} (use file.read for files)`);
       }
+      const limit = Math.max(1, Math.min(params.limit ?? MAX_ENTRIES, ENTRIES_CEILING));
 
       const all = fs.readdirSync(target, { withFileTypes: true });
       const visible = params.includeHidden
@@ -162,14 +149,18 @@ export function createFileTools(root: string): NamespacedToolDefinition[] {
         return a.name.localeCompare(b.name);
       });
 
-      const shown = sorted.slice(0, MAX_ENTRIES);
+      const shown = sorted.slice(0, limit);
       const lines = shown.map((entry) => {
         if (entry.isDirectory()) return `d ${entry.name}/`;
         const size = fs.statSync(path.join(target, entry.name)).size;
         return `f ${entry.name} (${size} bytes)`;
       });
       if (sorted.length > shown.length) {
-        lines.push(`… 他 ${sorted.length - shown.length} 件（上限 ${MAX_ENTRIES}）`);
+        // task-0068: **あと何件あるかを言う。** 「打ち切り」だけだと全部に見える
+        lines.push(
+          `… 他 ${sorted.length - shown.length} 件（${shown.length} 件だけ出した。` +
+            `limit を上げれば ${ENTRIES_CEILING} 件まで取れる）`
+        );
       }
 
       const header = `${toWorkspaceRelative(root, target)} — ${sorted.length} 件`;
@@ -338,33 +329,52 @@ export function createFileTools(root: string): NamespacedToolDefinition[] {
       includeHidden: Type.Optional(
         Type.Boolean({ description: "ドット始まりや node_modules 等も探す（既定 false）" })
       ),
-      limit: Type.Optional(Type.Number({ description: `件数の上限（既定 ${MAX_FIND_RESULTS}）` })),
+      limit: Type.Optional(
+        Type.Number({ description: `件数の上限（既定 ${MAX_FIND_RESULTS}・最大 ${FIND_CEILING}）` })
+      ),
     }),
     async execute(params) {
       const start = params.path ?? ".";
       resolveInWorkspace(root, start);
-      const limit = Math.max(1, Math.min(params.limit ?? MAX_FIND_RESULTS, MAX_FIND_RESULTS));
+      const limit = Math.max(1, Math.min(params.limit ?? MAX_FIND_RESULTS, FIND_CEILING));
       const { re, matchBasename } = globToRegExp(params.pattern);
 
+      // task-0068: **数え上げは最後まで進める。** 上限で走査ごと打ち切っていたので、
+      // 結果がツリーの一角に偏るうえ、あと何件あるかも言えなかった
+      const { paths, engine } = await listTree(
+        root,
+        start,
+        params.includeHidden === true,
+        overrides
+      );
       const matches: Array<{ path: string; size: number }> = [];
-      let truncated = false;
-      walkFiles(root, start, params.includeHidden === true, (relative, absolute) => {
+      let total = 0;
+      for (const relative of paths) {
         const subject = matchBasename ? path.basename(relative) : relative;
-        if (!re.test(subject)) return true;
-        if (matches.length >= limit) {
-          truncated = true;
-          return false;
+        if (!re.test(subject)) continue;
+        total++;
+        if (matches.length >= limit) continue;
+        try {
+          matches.push({ path: relative, size: fs.statSync(path.join(root, relative)).size });
+        } catch {
+          // 走査中に消えたファイル。数には入っているので黙って減らさない
+          matches.push({ path: relative, size: -1 });
         }
-        matches.push({ path: relative, size: fs.statSync(absolute).size });
-        return true;
-      });
+      }
 
-      const lines = matches.map((m) => `${m.path} (${m.size} bytes)`);
-      if (truncated) lines.push(`… 上限 ${limit} 件で打ち切り`);
-      const text = matches.length === 0 ? `"${params.pattern}" に一致するファイルなし` : lines.join("\n");
+      const lines = matches.map((m) => `${m.path} (${m.size < 0 ? "読めず" : `${m.size} bytes`})`);
+      const truncated = total > matches.length;
+      if (truncated) {
+        lines.push(
+          `… 全 ${total} 件のうち ${matches.length} 件だけ出した` +
+            `（limit を上げれば ${FIND_CEILING} 件まで取れる）`
+        );
+      }
+      const text =
+        matches.length === 0 ? `"${params.pattern}" に一致するファイルなし` : lines.join("\n");
       return {
         content: [{ type: "text" as const, text }],
-        details: { pattern: params.pattern, matches, truncated },
+        details: { pattern: params.pattern, matches, total, truncated, engine },
       };
     },
   });
@@ -375,6 +385,7 @@ export function createFileTools(root: string): NamespacedToolDefinition[] {
     description:
       "ファイルの中身を正規表現で検索し、一致した行を行番号つきで返す。" +
       "`glob` でファイルを絞れる。見つけた箇所は file.browser の line 引数でそのまま開ける。" +
+      "**上限で切ったときは総数も返る**ので、取りこぼしていないかはそこで分かる（多ければ limit を上げる）。" +
       "閲覧専用で、どこに何が書かれているか探すときに使う。",
     parameters: Type.Object({
       pattern: Type.String({ description: "検索する正規表現（例: createModuleRegistry, TODO|FIXME）" }),
@@ -384,66 +395,69 @@ export function createFileTools(root: string): NamespacedToolDefinition[] {
       includeHidden: Type.Optional(
         Type.Boolean({ description: "ドット始まりや node_modules 等も探す（既定 false）" })
       ),
-      limit: Type.Optional(Type.Number({ description: `一致行の上限（既定 ${MAX_GREP_RESULTS}）` })),
+      limit: Type.Optional(
+        Type.Number({ description: `一致行の上限（既定 ${MAX_GREP_RESULTS}・最大 ${GREP_CEILING}）` })
+      ),
     }),
     async execute(params) {
       const start = params.path ?? ".";
       resolveInWorkspace(root, start);
-      const limit = Math.max(1, Math.min(params.limit ?? MAX_GREP_RESULTS, MAX_GREP_RESULTS));
+      const limit = Math.max(1, Math.min(params.limit ?? MAX_GREP_RESULTS, GREP_CEILING));
 
-      // I2: 壊れた正規表現は黙って0件にせず、理由を返す
-      let re: RegExp;
-      try {
-        re = new RegExp(params.pattern, params.ignoreCase ? "i" : "");
-      } catch (err) {
-        throw new Error(`Invalid regular expression "${params.pattern}": ${String(err)}`);
-      }
+      // 自前の走査に落ちたときだけ使う glob（rg / grep へは指定をそのまま渡す）
       const fileFilter = params.glob ? globToRegExp(params.glob) : undefined;
+      const matchesGlob = fileFilter
+        ? (relative: string): boolean =>
+            fileFilter.re.test(fileFilter.matchBasename ? path.basename(relative) : relative)
+        : undefined;
 
-      const hits: Array<{ path: string; line: number; text: string }> = [];
-      let truncated = false;
-      let skippedLarge = 0;
-
-      walkFiles(root, start, params.includeHidden === true, (relative, absolute) => {
-        if (fileFilter) {
-          const subject = fileFilter.matchBasename ? path.basename(relative) : relative;
-          if (!fileFilter.re.test(subject)) return true;
-        }
-        const size = fs.statSync(absolute).size;
-        if (size > MAX_SEARCH_BYTES) {
-          skippedLarge++;
-          return true;
-        }
-        const buffer = fs.readFileSync(absolute);
-        if (looksBinary(buffer)) return true;
-
-        const lines = buffer.toString("utf-8").split("\n");
-        for (let i = 0; i < lines.length; i++) {
-          if (!re.test(lines[i]!)) continue;
-          if (hits.length >= limit) {
-            truncated = true;
-            return false;
-          }
-          // 長すぎる行はそのまま返すと文脈を食うので切る
-          const raw = lines[i]!;
-          hits.push({ path: relative, line: i + 1, text: raw.length > 300 ? `${raw.slice(0, 300)}…` : raw });
-        }
-        return true;
-      });
+      const outcome = await grepTree(
+        root,
+        {
+          pattern: params.pattern,
+          start,
+          ...(params.glob ? { glob: params.glob } : {}),
+          ...(params.ignoreCase ? { ignoreCase: true } : {}),
+          ...(params.includeHidden ? { includeHidden: true } : {}),
+          limit,
+        },
+        matchesGlob,
+        overrides
+      );
 
       const notes: string[] = [];
-      if (truncated) notes.push(`… 上限 ${limit} 件で打ち切り`);
-      // I2: 飛ばしたファイルがあることを黙って隠さない
-      if (skippedLarge > 0) notes.push(`（${skippedLarge} 件は ${MAX_SEARCH_BYTES} bytes 超のため未検索）`);
+      // task-0068: **あと何件あるかを言う。** 「打ち切り」だけだと、少なく返っていることに
+      // 気づけない（返り値だけ見ると全部に見える）
+      if (outcome.truncated) {
+        notes.push(
+          `… 全 ${outcome.totalExact ? outcome.total : `${outcome.total}+`} 件のうち ` +
+            `${outcome.hits.length} 件だけ出した（limit を上げれば ${GREP_CEILING} 件まで取れる）`
+        );
+      }
+      // I2: 開かなかったファイルがあることを黙って隠さない（自前の走査のときだけ起きる）
+      if (outcome.skippedLarge > 0) {
+        notes.push(
+          `（${outcome.skippedLarge} 件は ${MAX_BUILTIN_SEARCH_BYTES} bytes 超のため未検索）`
+        );
+      }
 
       const text =
-        hits.length === 0
+        outcome.hits.length === 0
           ? [`"${params.pattern}" に一致する行なし`, ...notes].join("\n")
-          : [...hits.map((h) => `${h.path}:${h.line}: ${h.text.trim()}`), ...notes].join("\n");
+          : [...outcome.hits.map((h) => `${h.path}:${h.line}: ${h.text.trim()}`), ...notes].join("\n");
 
       return {
         content: [{ type: "text" as const, text }],
-        details: { pattern: params.pattern, hits, truncated, skippedLarge },
+        details: {
+          pattern: params.pattern,
+          hits: outcome.hits,
+          total: outcome.total,
+          totalExact: outcome.totalExact,
+          truncated: outcome.truncated,
+          skippedLarge: outcome.skippedLarge,
+          // どの道具で探したか。方言が揃わなかったときに追える
+          engine: outcome.engine,
+        },
       };
     },
   });

@@ -438,12 +438,15 @@ describe("[task-0020] file.find（名前でファイルを探す）", () => {
     assert.equal((shown.details as { matches: unknown[] }).matches.length, 1);
   });
 
-  it("[task-0020] limit で打ち切り、打ち切ったことを明示する", async () => {
+  // task-0068: 「打ち切り」とだけ言うのをやめ、**全何件のうち何件か**を返すようにした。
+  // 件数を言わないと、少なく返っていることに気づけない（返り値だけ見ると全部に見える）
+  it("[task-0020/task-0068] limit で切っても、全体で何件あったかが分かる", async () => {
     const out = await tool(fileTools, "file.find").execute({ pattern: "*", limit: 1 });
-    const d = out.details as { matches: unknown[]; truncated: boolean };
+    const d = out.details as { matches: unknown[]; total: number; truncated: boolean };
     assert.equal(d.matches.length, 1);
     assert.equal(d.truncated, true);
-    assert.match(textOf(out), /打ち切り/);
+    assert.ok(d.total > 1, "総数が返っていない");
+    assert.match(textOf(out), new RegExp(`全 ${d.total} 件のうち 1 件`));
   });
 
   it("[task-0020] 一致なしはその旨を返す（エラーにしない）", async () => {
@@ -507,11 +510,22 @@ describe("[task-0020] file.grep（中身を検索する）", () => {
     assert.equal(d.hits.some((h) => h.path === "bin2.dat"), false);
   });
 
-  it("[task-0020] limit で打ち切り、打ち切ったことを明示する", async () => {
+  it("[task-0020/task-0068] limit で切っても、全体で何件あったかが分かる", async () => {
     const out = await tool(fileTools, "file.grep").execute({ pattern: ".", limit: 2 });
-    const d = out.details as { hits: unknown[]; truncated: boolean };
+    const d = out.details as { hits: unknown[]; total: number; totalExact: boolean; truncated: boolean };
     assert.equal(d.hits.length, 2);
     assert.equal(d.truncated, true);
-    assert.match(textOf(out), /打ち切り/);
+    assert.ok(d.total > 2, "総数が返っていない（見落とした数が分からない）");
+    assert.equal(d.totalExact, true);
+    assert.match(textOf(out), new RegExp(`全 ${d.total} 件のうち 2 件`));
+  });
+
+  it("[task-0068] どの道具で探したかが返る（方言が揃わないときに追える）", async () => {
+    const out = await tool(fileTools, "file.grep").execute({ pattern: "export const a" });
+    const d = out.details as { engine: string };
+    assert.ok(
+      ["ripgrep", "grep", "builtin"].includes(d.engine),
+      `知らない到達先: ${d.engine}`
+    );
   });
 });

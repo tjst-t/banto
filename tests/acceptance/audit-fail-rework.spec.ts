@@ -33,6 +33,7 @@ import * as childProcess from "node:child_process";
 
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
 import { startWorkerPool, type WorkerPoolHarness } from "./worker-pool-harness.js";
+import { advanceTask, createAndAdvance } from "./task-flow.js";
 import type {
   RuntimeDriver,
   SpawnOptions,
@@ -135,30 +136,21 @@ async function pollUntil<T>(
   return last;
 }
 
+// task-0069: `queued → planning` は状態機械の表に無い（間に ready がある）。
+// **ゲートが上げるのを待ってから**進める——待たないと tick が遅れたときに 400 で落ちる
 async function advanceToAuditing(base: string, proj: string, taskId: string): Promise<void> {
-  for (const to of ["queued", "planning", "implementing", "auditing"]) {
-    const r = await fetch(
-      `${base}/api/v1/projects/${proj}/tasks/${taskId}/transition`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to }),
-      }
-    );
-    assert.equal(r.status, 200, `${taskId}: transition to ${to} must succeed`);
-  }
+  await advanceTask(base, proj, taskId, ["queued", "planning", "implementing", "auditing"]);
 }
 
 async function createAndAdvanceToAuditing(
   base: string, proj: string, taskId: string
 ): Promise<void> {
-  const createRes = await fetch(`${base}/api/v1/projects/${proj}/tasks`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: taskId, title: `Task ${taskId}` }),
-  });
-  assert.equal(createRes.status, 201, `task ${taskId} must be created`);
-  await advanceToAuditing(base, proj, taskId);
+  await createAndAdvance(base, proj, taskId, [
+    "queued",
+    "planning",
+    "implementing",
+    "auditing",
+  ]);
 }
 
 // ── Suite A: 1st audit fail triggers rework ───────────────────────────────────
@@ -535,13 +527,7 @@ describe("[F2-governance] disableAuditSpawn flag emits audit_spawn_disabled even
     });
     assert.equal(createRes.status, 201, "task must be created");
 
-    for (const to of ["queued", "planning", "implementing"]) {
-      const r = await fetch(
-        `${base}/api/v1/projects/${proj}/tasks/${taskId}/transition`,
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to }) }
-      );
-      assert.equal(r.status, 200, `transition to ${to} must succeed`);
-    }
+    await advanceTask(base, proj, taskId, ["queued", "planning", "implementing"]);
 
     // Trigger implementing→auditing: audit spawn is suppressed by flag
     const auditRes = await fetch(

@@ -24,6 +24,7 @@ import * as childProcess from "node:child_process";
 
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
 import { startWorkerPool, type WorkerPoolHarness } from "./worker-pool-harness.js";
+import { advanceTask } from "./task-flow.js";
 import type {
   RuntimeDriver,
   SpawnOptions,
@@ -142,17 +143,8 @@ describe("[AC-S75f66b-3-3] audit pass routes: auto→merging, manual→review-re
       body: JSON.stringify({ id: taskManual, title: "Manual review policy task" }),
     });
     assert.equal(createManual.status, 201, "taskManual must be created");
-    for (const to of ["queued", "planning", "implementing", "auditing"]) {
-      const r = await fetch(
-        `${base}/api/v1/projects/${proj}/tasks/${taskManual}/transition`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ to }),
-        }
-      );
-      assert.equal(r.status, 200, `taskManual: transition to ${to} must succeed`);
-    }
+    // task-0069: ready を待ってから進める（queued→planning は表に無い）
+    await advanceTask(base, proj, taskManual, ["queued", "planning", "implementing", "auditing"]);
 
     // taskAutoPolicy: create via daemon.createTask() with review.policy=auto in payload.
     // This simulates the task watcher ingesting a task file with `review: { policy: auto }` frontmatter.
@@ -160,17 +152,8 @@ describe("[AC-S75f66b-3-3] audit pass routes: auto→merging, manual→review-re
     daemon.createTask(proj, taskAutoPolicy, "Auto Policy Task", {
       review: { policy: "auto" },
     });
-    for (const to of ["queued", "planning", "implementing", "auditing"]) {
-      const r = await fetch(
-        `${base}/api/v1/projects/${proj}/tasks/${taskAutoPolicy}/transition`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ to }),
-        }
-      );
-      assert.equal(r.status, 200, `taskAutoPolicy: transition to ${to} must succeed`);
-    }
+    // task-0069: ready を待ってから進める（queued→planning は表に無い）
+    await advanceTask(base, proj, taskAutoPolicy, ["queued", "planning", "implementing", "auditing"]);
   });
 
   after(async () => {

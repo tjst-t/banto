@@ -24,6 +24,7 @@ import * as childProcess from "node:child_process";
 
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
 import { startWorkerPool, type WorkerPoolHarness } from "./worker-pool-harness.js";
+import { advanceTask } from "./task-flow.js";
 import type {
   RuntimeDriver,
   SpawnOptions,
@@ -202,17 +203,8 @@ describe("[AC-S75f66b-3-1] executor completion triggers audit session spawn", ()
     });
     assert.equal(createRes.status, 201, "task must be created");
 
-    for (const to of ["queued", "planning", "implementing"]) {
-      const r = await fetch(
-        `${base}/api/v1/projects/${proj}/tasks/${taskId}/transition`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ to }),
-        }
-      );
-      assert.equal(r.status, 200, `transition to ${to} must succeed`);
-    }
+    // task-0069: ready を待ってから進める（queued→planning は表に無い）
+    await advanceTask(base, proj, taskId, ["queued", "planning", "implementing"]);
 
     // Executor reports completion: POST implementing→auditing
     const auditRes = await fetch(

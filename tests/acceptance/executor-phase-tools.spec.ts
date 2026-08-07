@@ -21,6 +21,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { Daemon } from "@banto/daemon";
 import { DaemonClient, DaemonConnectionError, createExecutorTools } from "@banto/core";
+import { advanceTask } from "./task-flow.js";
 
 /** task-0025: 依存は Tool を作る関数の引数で受ける。名前で1本引く */
 function executorTool(client: DaemonClient, name: string) {
@@ -63,18 +64,9 @@ describe("[AC-S254276-3-2] Executor phase tools drive daemon state transitions",
     });
     assert.equal(r2.status, 201, "Task creation must succeed");
 
-    // Advance task to planning state.
-    // Note: daemon's GateEvaluator auto-promotes queued→ready when no gate blocks exist.
-    // So after draft→queued the task is already in "ready". We just need queued→planning.
-    for (const to of ["queued", "planning"]) {
-      const r = await fetch(`${base}/api/v1/projects/${proj}/tasks/${taskId}/transition`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to }),
-      });
-      const body = await r.json() as { task?: { status: string }; error?: string };
-      assert.equal(r.status, 200, `Transition to ${to} must succeed (got: ${JSON.stringify(body)})`);
-    }
+    // task-0069: ゲートが queued→ready に上げるのを**待ってから** planning へ進める。
+    // 「積んだ直後にはもう ready」に頼っていたので、tick が遅れると 400 で落ちていた
+    await advanceTask(base, proj, taskId, ["queued", "planning"]);
   });
 
   after(async () => {
@@ -177,16 +169,8 @@ describe("[AC-S254276-3-2] Executor phase tools drive daemon state transitions",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: doneTaskId, title: "Done test task" }),
     });
-    // auto-promoted queued→ready by gate evaluator, so skip "ready" manually
-    for (const to of ["queued", "planning", "implementing"]) {
-      const r = await fetch(`${base}/api/v1/projects/${proj}/tasks/${doneTaskId}/transition`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to }),
-      });
-      const body = await r.json() as { task?: { status: string }; error?: string };
-      assert.equal(r.status, 200, `Transition to ${to} must succeed for T-done (got: ${JSON.stringify(body)})`);
-    }
+    // task-0069: ready に上がるのを待つ（ゲートが上げる。テストが上げるのではない）
+    await advanceTask(base, proj, doneTaskId, ["queued", "planning", "implementing"]);
 
     const summary = "Implemented all acceptance criteria";
     const result = await executorTool(client, "report_done").execute({
