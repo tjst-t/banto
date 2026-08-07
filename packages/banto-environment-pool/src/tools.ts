@@ -117,6 +117,9 @@ function exposeModeLabel(exposer: string | undefined): string {
   return "";
 }
 
+/** `env.events` が一度に返す上限。 */
+const MAX_EVENTS = 100;
+
 /** 一覧に出す状態の表示。畳み損ねを「畳み済み」と同じに見せない。 */
 const STATE_LABEL: Record<string, string> = {
   live: "",
@@ -424,5 +427,47 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     },
   });
 
-  return [verify, provision, deploy, healthcheck, run, collect, teardown, cleanup, list, listProfilesTool];
+  const events = defineNamespacedTool({
+    name: "env.events",
+    label: "Env: Events",
+    description:
+      "検証環境の衛生に関わる出来事を古い順に返す（期限切れで畳んだ・畳み損ねた・" +
+      "台帳に無い実リソースが出た）。**立てた・畳んだの実況は入らない**——" +
+      "いま何が立っているかは env.list を見ること。" +
+      "afterEventId を渡すと、その続きだけを取れる。",
+    parameters: Type.Object({
+      afterEventId: Type.Optional(
+        Type.Number({ description: "このID より後だけを返す（省略時は最初から）" })
+      ),
+      limit: Type.Optional(Type.Number({ description: `最大件数（既定 ${MAX_EVENTS}）` })),
+    }),
+    async execute(params) {
+      const limit = Math.max(1, Math.min(params.limit ?? MAX_EVENTS, MAX_EVENTS));
+      const found = pool.events(params.afterEventId ?? 0, limit);
+      const text =
+        found.length === 0
+          ? "新しい出来事はありません"
+          : found
+              .map((e) => `#${e.id} ${e.at} ${e.type} ${String(e.data["message"] ?? "")}`)
+              .join("\n");
+      return {
+        content: [{ type: "text" as const, text }],
+        details: { events: found, lastEventId: pool.lastEventId },
+      };
+    },
+  });
+
+  return [
+    verify,
+    provision,
+    deploy,
+    healthcheck,
+    run,
+    collect,
+    teardown,
+    cleanup,
+    list,
+    listProfilesTool,
+    events,
+  ];
 }

@@ -281,6 +281,8 @@ const NOTICE_LABELS: Record<string, string> = {
   worker: "職人",
   thread: "別の会話",
   system: "知らせ",
+  // 検証環境の衛生（畳み忘れ・畳み損ね・孤児。task-0067）
+  env: "検証環境",
 };
 
 /**

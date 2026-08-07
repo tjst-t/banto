@@ -102,8 +102,8 @@ async function main(): Promise<void> {
     ...(process.env["SOPS_AGE_KEY_FILE"]
       ? { sopsAgeKeyFile: process.env["SOPS_AGE_KEY_FILE"] }
       : {}),
-    // 単体で立てているときは知らせの届け先が無い。ログに出す——`env.list` にも残るので
-    // 番頭と画面からは見えるが、気づく契機はログになる（I3）
+    // サービスのログにも出す。**会話への経路はこれではない**（task-0067）——番頭は
+    // `env.events` を引きに来る。ここは実機のログだけを見ている人のために残す
     onAttention: (message) => {
       console.warn(`[environment-pool] ${message}`);
     },
@@ -117,6 +117,10 @@ async function main(): Promise<void> {
   if (pool.ledgerCorruption) {
     // I2: 壊れた台帳で黙って動き出さない
     console.error(`[environment-pool] 台帳を読めませんでした: ${pool.ledgerCorruption}`);
+  }
+  if (pool.eventLogCorruption) {
+    // I2: 読めなかった行があることを黙らせない。番頭が引く知らせに抜けが出る
+    console.error(`[environment-pool] 出来事のログを読めませんでした: ${pool.eventLogCorruption}`);
   }
 
   // spec-environment §5: **ここで回さないと期限が効かない**。外に残った環境は費用（I3）

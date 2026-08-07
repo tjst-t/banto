@@ -908,3 +908,64 @@ Kobo が**実機の検証環境**へ問い合わせ、ゲートの tick が遅�
 1. **検証環境の知らせを会話へ戻す**（Environment Pool にイベントの口＋番頭側で引く）
 2. loamium の受け持ちを回す：`work/tasks/` を作り、場所の書き込み許可（`work/**`）を PO が出す
 3. `spec-improvement-loop` / `spec-multi-project` の改訂は手つかず
+
+## セッション更新（2026-08-07、検証環境の知らせを会話へ戻した・task-0067）
+
+task-0066 の残り。Environment Pool が独立サービスになったとき、畳み忘れ・畳み損ね・孤児の
+知らせが**サービスのログに落ちるだけ**になっていた（会話へ返らない）。職人と同じく
+**引きに行く形**へ戻した。
+
+### 何を足したか
+
+- `banto-environment-pool/src/event-log.ts`（新）＝追記専用の `EnvEventLog`
+  （`<台帳>/env-events.jsonl`）。`attention()` を「ログへ積む」が主・`onAttention` が従に
+  組み替えた。**ログは `onAttention` が無くても積む**——独立サービスでは繋ぎ先が無いので、
+  そこで止めると何も残らない
+- `env.events`（Tool）。`afterEventId` で続きだけを取れる（`worker.events` と同じ形）
+- `banto-host/src/env-notice.ts`（新）＝ `startEnvNotices`
+
+### 残す出来事は3つだけ
+
+`env_expired`（期限切れで機構が畳んだ＝呼び出し側の畳み忘れ）・`env_teardown_failed`・
+`env_orphans_found`。**立てた・畳んだの実況は残さない**——番頭の会話が検証環境の中継に
+なる。いま何が立っているかは `env.list`、Kobo は自分の帳簿の `env_provisioned` を見る。
+
+**`env_expired` は今回はじめて知らせに載った。** それまで `console.warn` だけで、
+`onAttention` にも載っていなかった——同居していた頃も会話へ返っていない。
+
+### 決めたこと（次に同じ道を通る人へ）
+
+- **読み位置はファイルに持つ**（`<データ置き場>/env-cursor.json`）。職人は「起動時の位置から」
+  でよかったが、こちらは**外に残ったリソース＝費用**（I3）。番頭が落ちている間に漏れた分が
+  消えると、気づく契機がサービスのログしか無くなる。Pool 側が同じ出来事を1度しか積まないので、
+  追いついても同じ文面は並ばない
+- **宛先は既定のスレッド。** `env.provision` は `origin`（決定35a）を受けておらず、
+  畳み忘れ・孤児は環境1つの話ではなく置き場全体の衛生。スレッド宛にするなら origin を
+  provision の呼び出し側（Kobo を含む）まで通す必要があり、別の話になる。
+  **実機で番頭は「この会話では立てていないので対応不要」と正しく読んだ**——狙いどおり
+
+### 途中で分かったこと（記録）
+
+**畳み損ねは孤児ではない。** 最初「畳めなかった実リソースは照合で孤児として出る」と思って
+テストを書いたが出なかった——台帳の `teardown-failed` は `tornDownAt` を持たないので
+`listLive` に残り、照合の既知側に入る。**機構の方が正しかった**（台帳に載っている）。
+孤児の検査は、ドライバの管理下に台帳が知らないリソースを置く形へ直した。
+
+### 確かめたこと（I1）
+
+- `npm run typecheck` / `typecheck:web` / `build` / `build:web`
+- `npm test`（**1,240件 green**。新規 `env-notices.spec.ts` が14件）。畳み損ねと孤児は
+  **本物のドライバ**（`failing-teardown-driver`）で見ている
+- **実機で通した**（偽ドライバだけで済ませない）：`:4400` を再起動して 5秒 TTL の環境を
+  実際に立て、TTL 執行が `env_expired` を積み、番頭ホスト（再起動後）がそれを引いて
+  既定スレッドへ知らせ、`env-cursor.json` が 1 まで進むところまで。実機は
+  `banto-environment-pool.service` と `banto.service` を再起動済み
+
+### 次の一手
+
+1. **loamium の受け持ちを実際に回す**（PO の作業が要る）。`<loamium>/work/tasks/` の作成と
+   場所の書き込み許可（`work/**`）。そのうえでタスクを1本通し、積む→ゲート→着手→監査→
+   レビュー→マージが実機で通るかを見る（SKILL `kobo-onboarding` 手順5）
+2. **`audit-*.spec.ts` の暗黙の前提を直す**。「積んだ直後に ready になっている」に頼っており、
+   ゲートの tick が遅いと落ちる。`ready` を待つ形へ（いまは到達先固定で通っているだけ）
+3. `spec-improvement-loop` / `spec-multi-project` の改訂は手つかず

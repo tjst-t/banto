@@ -19,6 +19,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { EnvExposer, EnvHandle, EnvProfile } from "@banto/core";
 import { EnvLedger, countLiveByProfile, type EnvLedgerEntry } from "./env-ledger.js";
+import { EnvEventLog, type EnvEvent, type EnvEventInput, type EnvEventType } from "./event-log.js";
 import { runDriverVerb, resolveDriverPath, DEFAULT_DRIVER_TIMEOUT_MS } from "./env-driver-runner.js";
 import { decryptSops, resolveCredentialsPath } from "./sops.js";
 import {
@@ -52,11 +53,12 @@ export interface EnvironmentPoolOptions {
    */
   teardownRetryLimit?: number;
   /**
-   * POへ知らせる口（spec §5「なお失敗ならケイデンス議題に載せる」）。
+   * 同じプロセスで知らせを受ける口（サービスのログへ出すために `bin.ts` が使う）。
    *
-   * Kobo のケイデンスは Banto にまだ配線されていないので、**番頭の会話へ流す**のが
-   * いまの等価物。ログと `env.list` に出すだけでは、POが画面を開くまで気づけない
-   * ——外に残ったものは費用なので、気づかないことがそのまま損失になる（I3）。
+   * **会話への経路はこれではない**（task-0067）。独立サービスになってからは、番頭は
+   * `env.events` を引きに行く——別プロセスのコールバックは張れず、張れたとしても
+   * 番頭が落ちている間の知らせが消える（決定29c が職人で不採用にしたのと同じ理由）。
+   * ここに残っているのは、単体で立てたときにサービスのログへ出すための口。
    */
   onAttention?: (message: string) => void;
   /**
@@ -220,11 +222,18 @@ export class EnvironmentPool {
   private readonly notified = new Set<string>();
   /** 照合で見つかった孤児（台帳に無い実リソース）。画面と番頭に見せる。 */
   private orphanList: Array<{ driver: string; name: string; created: string }> = [];
+  /** 衛生に関わる出来事の追記専用ログ（task-0067）。番頭はここを引きに来る。 */
+  private readonly eventLog: EnvEventLog;
+  /** イベントログが壊れていた場合の説明（I2）。 */
+  readonly eventLogCorruption: string | null;
 
   constructor(options: EnvironmentPoolOptions) {
     const opened = EnvLedger.open(options.dataDir);
     this.ledger = opened.ledger;
     this.ledgerCorruption = opened.corruptionError;
+    const openedEvents = EnvEventLog.open(options.dataDir);
+    this.eventLog = openedEvents.log;
+    this.eventLogCorruption = openedEvents.corruptionError;
     this.limits = resolveLimits(options.limits);
     this.timeoutMs = options.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
     this.sopsAgeKeyFile = options.sopsAgeKeyFile;
@@ -310,17 +319,35 @@ export class EnvironmentPool {
 
         if (done) {
           tornDown.push(entry.envId);
-          console.warn(`[env] 期限切れのため畳みました: ${entry.envId}（${entry.profileName}）`);
+          // task-0067: **畳んだのは呼び出し側ではない**＝畳み忘れ。console.warn だけだと
+          // サービスのログに沈むので、番頭が引ける出来事として残す
+          this.attention(
+            `expired:${entry.envId}`,
+            "env_expired",
+            `検証環境 ${entry.envId}（${entry.profileName}）を期限切れで畳みました。` +
+              "使い終わったら env.teardown で畳んでください——期限まで残ると、その分は動き続けます。",
+            { envId: entry.envId, profile: entry.profileName, data: { driver: entry.driver } }
+          );
         } else {
-          // I2: 畳み損ねを黙らせない。台帳には teardown-failed が残り、POへも知らせる
+          // I2: 畳み損ねを黙らせない。台帳には teardown-failed が残り、番頭へも知らせる
           failed.push(entry.envId);
           console.error(
             `[env] 期限切れの ${entry.envId} を ${this.teardownRetryLimit} 回試しても畳めませんでした: ${String(lastError)}`
           );
           this.attention(
             `teardown-failed:${entry.envId}`,
+            "env_teardown_failed",
             `検証環境 ${entry.envId}（${entry.profileName}）を${this.teardownRetryLimit}回試しても畳めませんでした。` +
-              `外にリソースが残っている可能性があります。理由: ${String(lastError)}`
+              `外にリソースが残っている可能性があります。理由: ${String(lastError)}`,
+            {
+              envId: entry.envId,
+              profile: entry.profileName,
+              data: {
+                driver: entry.driver,
+                attempts: this.teardownRetryLimit,
+                error: String(lastError),
+              },
+            }
           );
         }
       }
@@ -329,9 +356,11 @@ export class EnvironmentPool {
       if (orphans.length > 0) {
         this.attention(
           `orphans:${orphans.length}:${orphans.map((o) => o.name).join(",")}`,
+          "env_orphans_found",
           `台帳に無い検証環境のリソースが ${orphans.length} 件あります（${orphans
             .map((o) => o.name)
-            .join(", ")}）。Banto が把握していないものなので、消してよいか確かめてください`
+            .join(", ")}）。Banto が把握していないものなので、消してよいか確かめてください`,
+          { data: { orphans } }
         );
       }
     } finally {
@@ -447,12 +476,33 @@ export class EnvironmentPool {
   }
 
   /**
-   * POへ知らせる。**同じことは1度だけ**——毎分の tick で同じ文面を流し続けない。
+   * 衛生の出来事を残す（task-0067）。**同じことは1度だけ**——毎分の tick で
+   * 同じ出来事を積み続けない（畳み損ねは畳めるまで毎回検出されるため）。
+   *
+   * ログへの追記が主で、`onAttention` は同じプロセスで受けたいとき（サービスのログ）の従。
+   * **ログは `onAttention` が無くても積む**——番頭は `env.events` を引きに来るので、
+   * ここで止めると独立サービスのときに何も残らない。
    */
-  private attention(key: string, message: string): void {
-    if (!this.onAttention || this.notified.has(key)) return;
+  private attention(key: string, type: EnvEventType, message: string, event: Omit<EnvEventInput, "type">): void {
+    if (this.notified.has(key)) return;
     this.notified.add(key);
-    this.onAttention(message);
+    this.eventLog.append({ type, ...event, data: { ...event.data, message } });
+    this.onAttention?.(message);
+  }
+
+  /**
+   * 衛生の出来事を古い順に返す（`afterEventId` より後だけ）。
+   *
+   * 番頭ホストはこれを引いて会話へ知らせる（`banto-host/src/env-notice.ts`）。
+   * **意味を与えるのは引いた側**（D5）——ここは中立な事実を並べるだけ。
+   */
+  events(afterEventId = 0, limit?: number): EnvEvent[] {
+    return this.eventLog.since(afterEventId, limit);
+  }
+
+  /** 最後に振ったイベント id。引く側が「ここから先」を決めるのに使う。 */
+  get lastEventId(): number {
+    return this.eventLog.lastEventId;
   }
 
   /**

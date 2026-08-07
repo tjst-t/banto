@@ -34,6 +34,7 @@ import { createKoboModule, defaultKoboUrl } from "@banto/daemon";
 import { BANTO_ORIGIN, startWorkerNotices, threadOrigin } from "./worker-notice.js";
 import { guardWorkerOrigin } from "./worker-guard.js";
 import { startKoboNotices } from "./kobo-notice.js";
+import { startEnvNotices } from "./env-notice.js";
 
 import { Canvas, createCanvasCatalog } from "./canvas.js";
 import { createCanvasTools } from "./canvas-tools.js";
@@ -1110,6 +1111,15 @@ async function serve(options: ServeOptions): Promise<void> {
       server.notify(message, { ...target, source: "kobo" }),
     cursorPath: path.join(dataDir(), "kobo-cursor.json"),
   });
+
+  // task-0067: 検証環境の衛生（畳み忘れ・畳み損ね・孤児）も引きに行く。**外に残ったものは
+  // 費用**（I3）なので、番頭が落ちている間の分も届くように読み位置をファイルに持つ。
+  // 宛先は既定スレッド——置き場全体の話で、特定の会話のものではない
+  const stopEnvNotices = startEnvNotices({
+    tools: modules.tools(),
+    notify: (message) => server.notify(message, { source: "env" }),
+    cursorPath: path.join(dataDir(), "env-cursor.json"),
+  });
   // 立っているかを一度だけ確かめる。I2: 届かない相手を「何も無い」と混同しない
   void fetch(`${koboUrl.replace(/\/api\/kobo$/, "")}/api/v1/health`)
     .then((res) => {
@@ -1163,6 +1173,7 @@ async function serve(options: ServeOptions): Promise<void> {
     void (async () => {
       stopWorkerNotices();
       stopKoboNotices();
+      stopEnvNotices();
       // server.close() が全スレッドの後始末（購読解除＋対話ループの dispose）まで行う
       await server.close();
       threads.dispose();
