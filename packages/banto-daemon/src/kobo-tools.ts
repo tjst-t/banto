@@ -256,6 +256,39 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
             "工場はブランチを切ってマージするので、Git リポジトリであることが要ります"
         );
       }
+      // **検証環境が無いリポジトリは受け持たない**（task-0076・PO裁定 2026-08-07）。
+      //
+      // Kobo は検証をホストで走らせない（task-0075）ので、プロファイルが無いリポジトリは
+      // **最初のマージで必ず落ちる**。登録できてしまうと、そこまで気づけない
+      // ——受け持った時点で言う方が、10タスク積んだあとに言うより親切。
+      //
+      // **確かめるのは検証環境に聞いて**。Kobo がプロファイルの定義を自分で読むと、
+      // 同じ定義に2つの解釈ができる（「Kobo は使えると言うのに立たない」・決定60a）
+      const wanted = daemon.projectConfigAt(params.repoPath).verify.profile;
+      let profiles: { usable: Array<{ name: string }>; rejected: Array<{ name: string; reason: string }> };
+      try {
+        profiles = await daemon.environmentProfilesAt(params.repoPath);
+      } catch (err) {
+        // I2: 確かめられなかったことを「確かめた」にしない
+        throw new Error(
+          `検証環境へ届かないので、${params.projectTag} の検証プロファイルを確かめられません` +
+            `（${err instanceof Error ? err.message : String(err)}）。` +
+            "banto-environment-pool が起動しているか確かめてください"
+        );
+      }
+      if (!profiles.usable.some((p) => p.name === wanted)) {
+        const rejected = profiles.rejected.find((r) => r.name === wanted);
+        const others = profiles.usable.map((p) => p.name).join(", ");
+        throw new Error(
+          `${params.repoPath} に検証プロファイル "${wanted}" がありません。` +
+            (rejected ? `（あるが使えない: ${rejected.reason}）` : "") +
+            (others ? `\n使えるもの: ${others}` : "") +
+            "\n**Kobo は検証をホストで走らせません**（決定：environment pool 必須）。" +
+            "meta/environments.yaml にプロファイルを1つ書いてください——" +
+            "名前を変えるなら meta/config.yaml の verify.profile も。書き方は SKILL environment-profiles。"
+        );
+      }
+
       const entry = daemon.registerProject(params.projectTag, params.repoPath);
       return {
         content: [

@@ -856,6 +856,11 @@ export class Daemon {
    * 設定ファイルは PO が git で直すもので、書き換えたら次の判定から効いてほしい。
    * 読めないときは投げる——I2 のとおり「無い」と「壊れている」を混同しない。
    */
+  /** 場所を指定して層B設定を読む（まだ受け持っていないリポジトリにも使える）。 */
+  projectConfigAt(repoPath: string): ProjectConfig {
+    return loadProjectConfig(repoPath);
+  }
+
   projectConfig(projectTag: string): ProjectConfig {
     const project = this.registry.list().find((p) => p.id === projectTag);
     if (!project) return { verify: { profile: DEFAULT_VERIFY_PROFILE }, review: { poRequiredPaths: [] }, limits: {} };
@@ -2052,7 +2057,21 @@ export class Daemon {
   ): Promise<{ usable: EnvProfileView[]; rejected: Array<{ name: string; reason: string }> }> {
     const proj = this.registry.get(projectTag);
     if (!proj) return { usable: [], rejected: [] };
-    const details = await this.envInvoke("env.list_profiles", { repoPath: proj.repoPath });
+    return this.environmentProfilesAt(proj.repoPath);
+  }
+
+  /**
+   * 場所を指定してプロファイルを引く（まだ受け持っていないリポジトリにも使える）。
+   *
+   * **Kobo はプロファイルの定義ファイルを自分で読まない**（決定60a・task-0076）。
+   * プロファイルの意味は検証環境の持ち物で、読み方を2箇所に置くと**同じ定義に2つの解釈**が
+   * できる——「Kobo は使えると言うのに立たない」が起きる。
+   * 受け持たせるときの検査（task-0076）もここを通す。
+   */
+  async environmentProfilesAt(
+    repoPath: string
+  ): Promise<{ usable: EnvProfileView[]; rejected: Array<{ name: string; reason: string }> }> {
+    const details = await this.envInvoke("env.list_profiles", { repoPath });
     return {
       usable: (details["usable"] ?? []) as EnvProfileView[],
       rejected: (details["rejected"] ?? []) as Array<{ name: string; reason: string }>,

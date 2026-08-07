@@ -1498,3 +1498,79 @@ docker を毎回立てていられないため。**`tests/` に置いてある�
 2. **loamium の `meta/` が未コミット**なので、職人の worktree に profile が無い。
    コミットは loamium 側の作業（PO）。**これが済むまで loamium はマージまで行けない**
 3. loamium/task-0003 は review-ready のまま（承認は番頭 or PO）
+
+## セッション更新（2026-08-07、原理原則の徹底・task-0076／**epic-0010 が実機で通り切った**）
+
+**PO 指示**：「テスト環境の立ち上げが environment として共通の IF で定義されているのが
+かなり素晴らしいところです。その原理原則を徹底してください。」＋「1はイエス。2は meta を
+コミットして、worktree はリベースしよう」
+
+### 1. 受け持たせるときに検証プロファイルを要求する（task-0076）
+
+task-0075 で Kobo は検証をホストで走らせなくなったが、**プロファイルの無いリポジトリを
+受け持てたまま**だった——登録できてしまうと**最初のマージで初めて落ちる**。
+
+`kobo.register_project` が断るようにし、**何をどこに書けばよいか**まで返す。
+**確かめるのは検証環境に聞いて**（`env.list_profiles`）——Kobo がプロファイルの定義を
+自分で読むと、同じ定義に2つの解釈ができる（決定60a）。届かないときは
+「確かめられない」と言って**受け持たない**（I2）。
+
+SKILL `kobo-onboarding` は**手順1が検証環境**になった（以前は手順4「要るなら」）。
+「受け持たせる前に」「コミットすること」まで書いた。
+
+### 「徹底」の下見（どこまで共通IFに乗っているか）
+
+コマンドを起こしている箇所を全部洗った。**検証はもう全部 environment 経由**で、
+残っているホスト実行は `git`（Kobo 自身の統治：rebase・merge・worktree・diff）だけ。
+
+**職人だけは別**で、これは意図どおり：職人に `env.*` は渡さない（spec-environment §3）
+——自分の成果を自分で検証させると I1 が崩れる。職人が回すテストは**主張**であって
+証明ではなく、証明はゲートが出す。
+
+**プロファイルの解釈も1箇所**（`banto-core/src/env-profile-parser.ts` を検証環境だけが使う）。
+
+### 2. loamium の `meta/` をコミットし、worktree をリベースした
+
+`meta/`（プロファイル・層B設定）・`docker/`（compose・Dockerfile）・`work/tasks/` を
+コミット。**未追跡のままだと職人の worktree からもゲートからも見えない**。
+
+**loamium の Dockerfile に `make` を足した。** 自分のテスト（`make samples`）が使うのに
+入っていなかった——今日ホストへ `apt` したものを、**正しい場所（イメージ）へ移した**。
+これが「道具立ての契約はイメージ」の実物。
+
+worktree（task-0001 / 0002）は main へリベース。**commit は落ちた**——中身が既に main に
+在るため（下記）。
+
+### ★ epic-0010 の最後の一区間が実機で通り切った
+
+**loamium/task-0003 が `closed` まで到達していた**（私が task-0075 を書いている間に）：
+
+```
+10:51:14  queued → ready（gate_passed）
+10:51:45  agent_spawned → planning → implementing
+11:10:38  implementing → auditing
+11:17:37  audit_verdict — pass → review-ready
+11:18:30  task_approved（**approved_by:banto**）→ approved
+11:18:44  approved → merging
+11:22:39  merge_gate_evaluated → **task_merged** → merged
+11:22:40  merged → closed（no-hypothesis-auto-close）
+```
+
+**承認したのは番頭**（自分の会話で判断した）。私は押していない——task-0070 で直した
+「宛先が無くても捨てない」で知らせが番頭へ届き、番頭が決めた。設計どおりの動き方。
+
+main の `56bd3c0` は**工場のコミット**（作者 `banto-executor`）。マージ前ゲートを通って
+入っている。**積む→ゲート→着手→監査→レビュー→マージが、実機で通った。**
+
+### 確かめたこと（I1）
+
+- `npm test` **1,298件 green**（新規5件）・typecheck
+- loamium：コミットとリベースを実施、`meta/environments.yaml` が両 worktree に見えること
+
+### 次の一手
+
+1. **loamium で次の1本を通す。** ただし今度は **task-0075 の検証環境必須**が効く
+   ——コンテナの中で `npm test` が回る。所要時間（ホストで4分＋`npm ci`）と
+   10分の既定が噛み合うかは**まだ見ていない**
+2. inc-0033（テスト fixture のコンテナ後始末）
+3. `spec-improvement-loop` のケイデンス・仮説の評価は未実装のまま
