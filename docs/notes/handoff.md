@@ -744,3 +744,60 @@ UI の経路（ブラウザ→ホスト→Kobo）で `kobo.projects` / `kobo.lis
    `work/**` を許すと積めるようになる（`place-grants.json` は banto と desk のみ）
 3. **触れる環境（Phase 3）は loamium の `meta/environments.yaml` 次第。** 既にファイルはある
    （未コミット）ので、`config.port` を持つプロファイルがあれば公開URLが札に載る
+
+---
+
+## セッション更新（2026-08-07、spec の改訂と Kobo の SKILL 一式）
+
+PO 指示：「spec-daemon-core §5〜§7 と spec-ui §1 の改訂／取次への接続／Kobo の使い方を
+番頭が理解するための SKILL・既存リポジトリを Kobo 開発へ移行する SKILL・検証環境の設定
+ファイルを使う SKILL」。**まとめて実施した。**
+
+### 1. spec の改訂（ADR-0013 の帰結表を消化した）
+
+`spec-daemon-core`：
+
+- **§5 定期処理**：TTL執行・照合を落とし（持ち主＝各Pool へ移った）、**自動着手**・
+  **職人イベントの引き取り**・マージキュー・コンフリクト解消の確認を書いた。
+  「Kobo が持たなくなったもの」を表で明示（inc-0027 の再発防止）
+- **§6 API**：**2つの口**として書き直した。モジュールの口（`{baseUrl}/tools/*`＝番頭と UI）と
+  REST（`/api/v1/*`＝CLI と職人の拡張）。`ready` は実装済みの一級クエリ。
+  **通知は取次経由**（決定58）——通知系を2つ作らない
+- **§7 稼働形態**：**既定 127.0.0.1**・tmux 廃止・worktree は gwq 配下・4ユニットの分かれ方と
+  「後ろ2つはまだ起動しない」理由（task-0066）
+- **§8 未決事項**：API の認証方式を**決着済み**へ（決定40）
+
+`spec-ui` §1：**アテンションキューを取次に一本化**し、ボード・レビュー面・職人ビューアを
+実装済みとして書き直した。tmux の記述は会話の再開（§4）だけに残し、面はブラウザ一本と明記。
+
+### 2. 取次への接続（言葉として繋いだ）
+
+`po` と判定された札で、工場の知らせが**どの道具でどう上げるか**を名指しするようにした
+（`inbox.post`・`canvasKind: "kobo.review"`・手順は SKILL `kobo-review`）。
+**機構ではなく作法として繋いである**——上げる判断そのものは番頭がする（決定58 の一次受け）。
+
+### 3. SKILL を5本（3本新規・2本改訂）
+
+| SKILL | いつ読む |
+|---|---|
+| `kobo-enqueue`（改訂） | コードを変える仕事を積むとき。`environment` / `model_tier` の書き方を追記 |
+| **`kobo-review`**（新） | 判断待ちが会話へ返ってきたとき。通す／取次へ上げるの分かれ目と、札の埋め方 |
+| **`kobo-onboarding`**（新） | 既存リポジトリを工場に載せるとき。登録・置き場・層B設定・許可・最初の1本 |
+| `environment`（既存） | 検証環境を立てて使うとき |
+| **`environment-profiles`**（新） | `meta/environments.yaml` を書くとき。**触れる環境には `config.port` が要る** |
+
+**機械で見張る**（`module-skills.spec.ts`）：宣言と本体の `name` がずれていないか・ファイルが
+在るか・description に「いつ使うか」があるか・**知らせから取次までの言葉が繋がっているか**。
+宣言と本体のずれは型では落ちず、番頭が読もうとして初めて分かるため（P4）。
+
+### 検証
+
+**1,207件 green**、typecheck も通る。**実機の番頭ホストを再起動して SKILL が届くことを確認**
+（`studio.skills` に kobo-enqueue / kobo-review / kobo-onboarding / environment /
+environment-profiles が並ぶ）。
+
+### 残っているもの
+
+- **task-0066**：番頭ホストを両Poolの利用者にする（独立ユニット2つを起動できるようにする）
+- `spec-improvement-loop` / `spec-multi-project` は今回触っていない（ADR-0013 の帰結表の対象外）
+- loamium は登録済みだが、**`work/tasks/` と書き込みの許可**がまだ（PO の操作待ち）

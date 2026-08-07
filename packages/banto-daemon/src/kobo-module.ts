@@ -151,6 +151,8 @@ export function createKoboModule(
         icon: "⚖️",
       },
     ],
+    // SKILL は決定26 の第2層（モジュールが出す既定）。**3本に分けてある**——
+    // 積む／捌く／載せるは使う場面が違い、1本にすると読む側が自分に関係ない節を跨ぐ
     skills: [
       {
         name: "kobo-enqueue",
@@ -158,6 +160,22 @@ export function createKoboModule(
           "工場（Kobo）へ仕事を積むときの手順。何をタスクにし、定義に何を書き、" +
           "積んだあと何が返ってくるか。コードを変える依頼を受けたときに使う。",
         filePath: `${koboSkillsDir()}/kobo-enqueue/SKILL.md`,
+      },
+      {
+        name: "kobo-review",
+        description:
+          "工場から返ってきた判断待ちを捌く手順。通すか、取次でPOへ上げるか。" +
+          "「レビュー待ちです」という知らせが会話に届いたとき、" +
+          "および kobo.list に判断待ちが溜まっているときに使う。",
+        filePath: `${koboSkillsDir()}/kobo-review/SKILL.md`,
+      },
+      {
+        name: "kobo-onboarding",
+        description:
+          "既にあるリポジトリを工場（Kobo）に載せる手順。プロジェクトの登録・タスクの置き場・" +
+          "層B設定・書き込みの許可・最初の1本の通し方。POから「このリポジトリも Kobo で" +
+          "開発したい」と言われたとき、および新しいプロジェクトを受け持つときに使う。",
+        filePath: `${koboSkillsDir()}/kobo-onboarding/SKILL.md`,
       },
     ],
   };

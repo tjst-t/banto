@@ -96,6 +96,14 @@ export function createEnvironmentPoolModule(
           "使い捨ては env.verify 一本、残すなら低位動詞。畳み忘れ・公開・成果物の取り出しもここに書いてある。",
         filePath: `${environmentPoolSkillsDir()}/environment/SKILL.md`,
       },
+      {
+        name: "environment-profiles",
+        description:
+          "検証環境の設定ファイル（meta/environments.yaml）の書き方。プロファイルを新しく" +
+          "作る・直す・なぜ使えないのかを調べるときに使う。レビューで PO に触ってもらう環境を" +
+          "用意したいとき、および env.verify に渡すプロファイルが無いときの最初の一歩。",
+        filePath: `${environmentPoolSkillsDir()}/environment-profiles/SKILL.md`,
+      },
     ],
   };
 }
