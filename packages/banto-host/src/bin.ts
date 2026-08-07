@@ -34,6 +34,7 @@ import {
   createWorkerPoolModule,
   type WorkerInfo,
 } from "@banto/worker-pool";
+import { createKoboModule, defaultKoboUrl } from "@banto/daemon";
 import {
   BANTO_ORIGIN,
   isBantoOrigin,
@@ -42,6 +43,7 @@ import {
   threadOrigin,
 } from "./worker-notice.js";
 import { guardWorkerOrigin } from "./worker-guard.js";
+import { startKoboNotices } from "./kobo-notice.js";
 
 import { Canvas, createCanvasCatalog } from "./canvas.js";
 import { createCanvasTools } from "./canvas-tools.js";
@@ -678,9 +680,17 @@ async function serve(options: ServeOptions): Promise<void> {
     );
   }
 
+  // 決定25・27b: Kobo は**独立プロセス**なので、載るのは実装ではなく到達先。
+  // 立っていなくても登録はする——`kobo.*` が消えると番頭は「工場が無い」ではなく
+  // 「積み方を知らない」状態になり、自分で実装を始めてしまう（D10 が崩れる）。
+  // 立っているかは起動時に一度だけ確かめてログに出す（黙って届かない状態を作らない）
+  const koboUrl = defaultKoboUrl();
+  const koboModule = createKoboModule(koboUrl);
+
   const modules = createModuleRegistry([
     createWorkspaceModule(places, { protectedPaths }, grants),
     workerPoolModule,
+    koboModule,
     createRepoManagerModule(),
     // 決定32c・34: 番頭は Kobo 無しでも検証を回せる。「テストが通った」を職人の主張ではなく
     // 機構の返す事実として受け取るための実行能力（決定29a）
@@ -866,6 +876,11 @@ async function serve(options: ServeOptions): Promise<void> {
           return guardWorkerOrigin(tool, threadOrigin(threadId), async (sessionId) =>
             workerPool.get(sessionId)
           );
+        }
+        // 決定58: 工場に積んだ仕事の知らせも**積んだスレッド**へ返る。職人と同じ機構で、
+        // 宛先は番頭に書かせずここで固定する（番頭は自分がどのスレッドかを知らない）
+        if (tool.name === "kobo.enqueue") {
+          return bindToolArgs(tool, { origin: threadOrigin(threadId) });
         }
         return tool;
       }),
@@ -1132,6 +1147,26 @@ async function serve(options: ServeOptions): Promise<void> {
     { afterEventId: workerPool.lastEventId }
   );
 
+  // 決定58: 工場の判断待ちは**積んだスレッド**へ返る。別プロセスなので引きに行く形
+  // （`afterEventId` で、落ちている間に起きたことも取りこぼさない）
+  const stopKoboNotices = startKoboNotices({
+    tools: koboModule.tools,
+    notify: (message, target) =>
+      server.notify(message, { ...target, source: "kobo" }),
+    cursorPath: path.join(dataDir(), "kobo-cursor.json"),
+  });
+  // 立っているかを一度だけ確かめる。I2: 届かない相手を「何も無い」と混同しない
+  void fetch(`${koboUrl.replace(/\/api\/kobo$/, "")}/api/v1/health`)
+    .then((res) => {
+      console.log(`[banto] kobo: ${koboUrl}（${res.ok ? "応答あり" : `応答 ${res.status}`}）`);
+    })
+    .catch(() => {
+      console.warn(
+        `[banto] kobo: ${koboUrl} へ届きません。積む・読む（kobo.*）は失敗します——` +
+          "工場を使うなら banto-daemon を起動してください"
+      );
+    });
+
   console.log(`[banto] listening on ws://localhost:${server.port}/ws`);
   console.log(
     `[banto] model: ${model ? `${model.provider}/${model.id}` : "(pi の既定解決)"}`
@@ -1149,6 +1184,7 @@ async function serve(options: ServeOptions): Promise<void> {
   const shutdown = (): void => {
     void (async () => {
       unsubscribeWorkers();
+      stopKoboNotices();
       workerPool.dispose();
       // server.close() が全スレッドの後始末（購読解除＋対話ループの dispose）まで行う
       await server.close();

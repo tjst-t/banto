@@ -3,7 +3,7 @@ id: task-0048
 type: task
 kind: feature
 title: Kobo の Module 登録（接続情報・kobo.* Tool・GUI・SKILL を1単位で登録。決定25/27a）
-status: draft
+status: done
 parent: epic-0010
 refs: [adr-0010, adr-0009]
 scope:
@@ -22,6 +22,15 @@ acceptance:
 ADR-0010 決定25・27（a）より。Kobo は「①接続情報 ②番頭へのTool ③キャンバスへのGUI ④SKILL」を1単位で登録する Module であり、Banto 中核はモジュール登録機構だけを持つ（D5）。epic-0010 の配線の中核を担うタスクで、task-0001（ready クエリ）・task-0024（Worker Pool サービス利用）・task-0046（Environment Pool サービス利用）と合わせて、番頭が Kobo の情報を `kobo.*` Tool 契約で読み、Kobo が各モジュールをサービス利用する経路を成立させる。
 
 PO 裁定（2026-07-28）により Kobo は独立プロセスのまま。接続情報は Worker Pool の service.ts と同じパターンで独立プロセスの URL を指す。
+
+## 実装（2026-08-06・task-0064 と同時）
+
+読む側は入った：`createKoboModule(baseUrl)` が番頭ホストへ**到達先と契約**を渡し、Tool は
+`{baseUrl}/tools/{名前}` を叩く写しになる（決定27b）。Kobo 側は `createKoboTools(daemon)` を
+`/api/kobo/tools/*` で公開する。**契約は Kobo の定義そのもの**を使い、写しは `execute` だけを
+差し替える——2箇所に書くと、番頭が読む説明と実際の振る舞いが静かにずれる。
+
+`kobo.list` が ready を含む状態で絞れるので、task-0001（ready クエリ）はこれで足りる。
 
 ## ADR-0013 による絞り込み（2026-08-06）
 

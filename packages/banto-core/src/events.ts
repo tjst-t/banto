@@ -107,7 +107,10 @@ export interface GateEvaluatedEvent extends EventBase {
 export interface TaskApprovedEvent extends EventBase {
   type: "task_approved";
   taskId: string;
+  /** 誰が通したか。`banto`（一次受け）／`po`（決定57 の3段）。 */
   approvedBy: string;
+  /** 何を見て良しとしたか（ADR-0013 決定57：判断の理由を帳簿に残す）。 */
+  note?: string;
 }
 
 /**

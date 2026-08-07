@@ -22,6 +22,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Daemon } from "./daemon.js";
 import { validateTaskFrontmatter } from "@banto/core";
+import type { TaskFrontmatter } from "@banto/core";
 
 /**
  * frontmatter の後ろの本文＝**依頼そのもの**（task-0060・ADR-0013 決定60）。
@@ -40,6 +41,32 @@ function extractTaskBody(content: string): string {
   const closeIdx = afterFirst.search(/^---\s*$/m);
   if (closeIdx === -1) return "";
   return afterFirst.slice(closeIdx).replace(/^---\s*/, "").trim();
+}
+
+/**
+ * タスク定義から、Kobo が持つ**契約**を組み立てる（決定62c：取り込み時点で固まる）。
+ *
+ * 明示の `kobo.enqueue`（決定58）と watcher の取り込みで**同じものを使う**——2箇所で
+ * 組み立てると、入口によって契約が変わる（片方だけ本文が落ちる、等）。
+ */
+export function taskPayload(fm: TaskFrontmatter, content: string): Record<string, unknown> {
+  const body = extractTaskBody(content);
+  return {
+    kind: fm.kind,
+    // 本文＝依頼。職人への指示に書き切るために持つ（task-0060）
+    ...(body.length > 0 ? { body } : {}),
+    scope: fm.scope,
+    acceptance: fm.acceptance,
+    ...(fm.parent !== undefined ? { parent: fm.parent } : {}),
+    ...(fm.depends !== undefined ? { depends: fm.depends } : {}),
+    ...(fm.refs !== undefined ? { refs: fm.refs } : {}),
+    ...(fm.environment !== undefined ? { environment: fm.environment } : {}),
+    ...(fm.governance !== undefined ? { governance: fm.governance } : {}),
+    ...(fm.model_tier !== undefined ? { model_tier: fm.model_tier } : {}),
+    // review.policy controls auto-merge vs manual-review path (spec-daemon-core §1).
+    // Without this, handleAuditVerdict() defaults to "manual" and never auto-merges.
+    ...(fm.review !== undefined ? { review: fm.review } : {}),
+  };
 }
 
 interface FileState {
@@ -142,6 +169,8 @@ export class TaskWatcher {
     mtimeMs: number,
     projectStates: Map<string, FileState>
   ): Promise<void> {
+    // 直前に観測した mtime（初回は undefined）。「初めて見た」と「書き換えられた」を分ける
+    const prevState = projectStates.get(filePath);
     let content: string;
     try {
       content = fs.readFileSync(filePath, "utf-8");
@@ -177,6 +206,20 @@ export class TaskWatcher {
     // Check if task already exists in this project (idempotency on mtime change)
     const existing = this.daemon.getTask(projectId, fm.id);
     if (existing) {
+      const known = prevState?.mtimeMs;
+      // **書き換えても反映されないことを、黙って通さない**（決定64・inc-0028）。
+      // 取り込み済みの契約は凍結されている（決定62c）ので、ここで読み飛ばすのは正しい
+      // ——正しくないのは、直した本人が「直したのに何も起きない」に気づけないことだった。
+      // 初回の観測（`known === undefined`）は「書き換え」ではないので黙って通す
+      if (known !== undefined && known !== mtimeMs) {
+        this.daemon.emitIngestRejected(
+          projectId,
+          filePath,
+          `already_ingested: ${fm.id} は取り込み済み（いまの状態: ${existing.status}）なので、` +
+            "ファイルの変更は反映されません。契約は取り込み時点で固まります（決定62c）——" +
+            "訂正するなら新しいタスクを積み、元を superseded にしてください（決定64）"
+        );
+      }
       // Already ingested; mark as ingested at this mtime to suppress re-processing
       projectStates.set(filePath, { mtimeMs, ingested: true });
       return;
@@ -184,23 +227,7 @@ export class TaskWatcher {
 
     // Create the task (task_created → draft)
     try {
-      const body = extractTaskBody(content);
-      this.daemon.createTask(projectId, fm.id, fm.title, {
-        kind: fm.kind,
-        // 本文＝依頼。職人への指示に書き切るために持つ（task-0060）
-        ...(body.length > 0 ? { body } : {}),
-        scope: fm.scope,
-        acceptance: fm.acceptance,
-        ...(fm.parent !== undefined ? { parent: fm.parent } : {}),
-        ...(fm.depends !== undefined ? { depends: fm.depends } : {}),
-        ...(fm.refs !== undefined ? { refs: fm.refs } : {}),
-        ...(fm.environment !== undefined ? { environment: fm.environment } : {}),
-        ...(fm.governance !== undefined ? { governance: fm.governance } : {}),
-        ...(fm.model_tier !== undefined ? { model_tier: fm.model_tier } : {}),
-        // review.policy controls auto-merge vs manual-review path (spec-daemon-core §1).
-        // Without this, handleAuditVerdict() defaults to "manual" and never auto-merges.
-        ...(fm.review !== undefined ? { review: fm.review } : {}),
-      });
+      this.daemon.createTask(projectId, fm.id, fm.title, taskPayload(fm, content));
     } catch (err) {
       // createTask may throw if there's a duplicate (race); treat as already done
       const alreadyExists = this.daemon.getTask(projectId, fm.id);

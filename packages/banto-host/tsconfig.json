@@ -7,6 +7,7 @@
     "tsBuildInfoFile": "./dist/.tsbuildinfo",
     "paths": {
       "@banto/core": ["../banto-core/src/index.ts"],
+      "@banto/daemon": ["../banto-daemon/src/index.ts"],
       "@banto/worker-pool": ["../banto-worker-pool/src/index.ts"],
       "@banto/repo-manager": ["../banto-repo-manager/src/index.ts"],
       "@banto/environment-pool": ["../banto-environment-pool/src/index.ts"]
@@ -14,6 +15,7 @@
   },
   "references": [
     { "path": "../banto-core" },
+    { "path": "../banto-daemon" },
     { "path": "../banto-worker-pool" },
     { "path": "../banto-repo-manager" },
     { "path": "../banto-environment-pool" }

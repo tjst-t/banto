@@ -25,7 +25,12 @@
  */
 
 import * as http from "node:http";
+import { MODULE_TOOL_PATH } from "@banto/core";
 import type { Daemon } from "./daemon.js";
+import { createKoboTools } from "./kobo-tools.js";
+
+/** モジュールとしての到達先（`{baseUrl}/tools/{名前}`）。決定27b。 */
+export const KOBO_MODULE_PATH = "/api/kobo";
 
 type Handler = (
   req: http.IncomingMessage,
@@ -80,6 +85,9 @@ async function readBody(req: http.IncomingMessage): Promise<unknown> {
 }
 
 export function createHttpServer(daemon: Daemon): http.Server {
+  // 決定27b の呼び出し規約で公開する Tool（番頭ホストはここへ繋ぐ）
+  const koboTools = createKoboTools(daemon);
+
   const routes: Route[] = [
     // Health check
     {
@@ -337,6 +345,36 @@ export function createHttpServer(daemon: Daemon): http.Server {
           return;
         }
         sendJson(res, 200, { task });
+      },
+    },
+
+    // モジュール規約の口（決定27b・ADR-0013 の帰結）。`{baseUrl}/tools/{名前}` への POST で
+    // `kobo.*` を公開する。番頭ホストはここへ繋いで積む・読む——REST を継ぎ足すのではなく、
+    // **他のモジュールと同じ契約**（Tool）で話す。REST の /api/v1/* は既存の利用者
+    // （kobo CLI・pi 拡張）のために残す
+    {
+      method: "POST",
+      pattern: new RegExp(`^${KOBO_MODULE_PATH}${MODULE_TOOL_PATH}(.+)$`),
+      handler: async (req, res, match) => {
+        const toolName = decodeURIComponent(match[1] ?? "");
+        const tool = koboTools.find((t) => t.name === toolName);
+        if (!tool) {
+          // I2: 知らない Tool を黙って空で返さない。持っているものを添える
+          sendJson(res, 404, {
+            error: `Kobo has no tool "${toolName}". Available: ${koboTools.map((t) => t.name).join(", ")}`,
+          });
+          return;
+        }
+        const body = (await readBody(req)) as { args?: Record<string, unknown> };
+        try {
+          const result = await tool.execute((body?.args ?? {}) as never, {
+            toolCallId: `http-${Date.now()}`,
+          });
+          sendJson(res, 200, result);
+        } catch (err) {
+          // I2: Tool の失敗を 200 で包まない
+          sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+        }
       },
     },
 

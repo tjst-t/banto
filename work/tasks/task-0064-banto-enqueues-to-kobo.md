@@ -3,7 +3,7 @@ id: task-0064
 type: task
 kind: feature
 title: 番頭が Kobo にタスクを積む（入口。origin と起点参照つき・決定58/62a）
-status: draft
+status: done
 parent: epic-0010
 depends: [task-0048]
 refs: [adr-0013, adr-0010]

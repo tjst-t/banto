@@ -439,7 +439,9 @@ describe("[AC-S75f66b-3-4] 2nd consecutive audit fail: task becomes 'failed'", (
         .list({ includeClosed: false })
         .filter((w) => w.taskId === `${taskId}:rework` && w.state !== "closed");
     let activeRework = liveRework();
-    const deadline = Date.now() + 5000;
+    // 畳むのは背景の仕事で、HTTP を2往復する（一覧→close）。テストを並列に走らせると
+    // ここが数秒かかることがあるので、固定の待ちではなく状態を長めに待つ
+    const deadline = Date.now() + 20000;
     while (activeRework.length > 0 && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 100));
       activeRework = liveRework();

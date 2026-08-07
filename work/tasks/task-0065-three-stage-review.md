@@ -3,7 +3,7 @@ id: task-0065
 type: task
 kind: feature
 title: レビューを3段にし、判断を番頭へ届ける（出口。決定57/58/66/68）
-status: draft
+status: done
 parent: epic-0010
 depends: [task-0064]
 refs: [adr-0013, adr-0010]

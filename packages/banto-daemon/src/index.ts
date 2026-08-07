@@ -16,6 +16,25 @@ export type { ProjectEntry } from "./project-registry.js";
 export { Scheduler } from "./scheduler.js";
 export type { TickJob } from "./scheduler.js";
 export { KOBO_ORIGIN } from "./daemon.js";
+// 決定25・27b: Kobo をモジュールとして番頭ホストへ登録するための定義（task-0064）。
+// **実装ではなく契約と到達先**を渡す——Kobo は独立プロセスで、Tool は HTTP 越しに呼ばれる
+export {
+  createKoboModule,
+  createKoboProxyTools,
+  defaultKoboUrl,
+  koboSkillsDir,
+  KOBO_MODULE_NAME,
+} from "./kobo-module.js";
+export { createKoboTools, taskFilePath, readTaskDefinition } from "./kobo-tools.js";
+export { KOBO_MODULE_PATH } from "./http-server.js";
+export {
+  loadProjectConfig,
+  resolveReviewStage,
+  PROJECT_CONFIG_PATH,
+  DEFAULT_REVIEW_STAGE,
+  type ProjectConfig,
+  type ReviewStage,
+} from "./review-policy.js";
 export type { SpawnedSession } from "./daemon.js";
 // 決定36h: ワークツリーの作成・削除は repo-manager に寄せた。状態を持たない導出なので
 // ライブラリ参照でよい（決定60 の判断基準：台帳を持つ能力だけがモジュール経由）

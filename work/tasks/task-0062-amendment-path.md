@@ -3,7 +3,7 @@ id: task-0062
 type: task
 kind: feature
 title: 積んだ後の訂正を表せるようにする（新タスク＋superseded・決定64）
-status: draft
+status: done
 parent: epic-0010
 refs: [adr-0013, inc-0028]
 scope:

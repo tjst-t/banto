@@ -37,6 +37,9 @@ import { GateEvaluator, evaluatePendingGates } from "./gate-evaluator.js";
 import type { QuotaCheck } from "./gate-evaluator.js";
 import { addTaskWorktree, createWorktree } from "@banto/repo-manager";
 import { processMergeQueue } from "./merge-queue.js";
+import { readTaskDefinition } from "./kobo-tools.js";
+import { loadProjectConfig, resolveReviewStage, type ProjectConfig, type ReviewStage } from "./review-policy.js";
+import { taskPayload } from "./task-watcher.js";
 import {
   fileConflictTask,
   deriveOriginResolutionPairs,
@@ -538,6 +541,9 @@ export class Daemon {
       this.applyAndBroadcast(configEvent);
     }
 
+    // 決定67: 上限と監査の関係を起動時に言う（設定の誤りが黙って効かない形にしない）
+    this.warnAboutTierCeiling();
+
     // 照合（台帳と実物の突き合わせ）は、職人も検証環境も**持ち主が回す**
     // （ADR-0013 決定60）。Kobo に照合の tick は無い。
   }
@@ -660,6 +666,258 @@ export class Daemon {
     const task = this.store.getTask(taskId, projectTag);
     if (!task) throw new Error("Invariant: task not found after creation"); // I2
     return task;
+  }
+
+  // ── 入口（番頭が積む・ADR-0013 決定58、task-0064）───────────────────────────
+
+  /**
+   * タスク定義ファイルを積む（`kobo.enqueue` の実体）。
+   *
+   * **定義はファイル**（D4）。契約（`scope.paths`・受け入れ基準）は取り込み時点で固まり、
+   * 以後ファイルを直しても変わらない（決定62c・64）。ここが受け取るのは「どれを積むか」と、
+   * **誰の求めで積んだか**（`origin`＝返す宛先、`originRef`＝経緯）だけ。
+   *
+   * watcher の取り込みと**同じ組み立て**を使う（`taskPayload`）——入口によって契約が
+   * 変わってはいけない。違うのは「明示的に積まれた」ことと origin が残る点。
+   *
+   * I2: 積めない理由（ファイルが無い・形が違う・draft・既にある）をそれぞれ返す。
+   *     黙って何も起きない経路を作らない。
+   */
+  enqueueTaskFile(
+    projectTag: string,
+    taskId: string,
+    options: { origin?: string; originRef?: string } = {}
+  ): { ok: true; status: string } | { ok: false; reason: string } {
+    const project = this.registry.list().find((p) => p.id === projectTag);
+    if (!project) return { ok: false, reason: `project_not_found: ${projectTag}` };
+
+    const existing = this.store.getTask(taskId, projectTag);
+    if (existing) {
+      // 決定62c・64: 取り込み済みの契約は凍結。訂正は新しいタスクを積み、元を superseded に
+      return {
+        ok: false,
+        reason:
+          `${taskId} は既に積まれています（いまの状態: ${existing.status}）。` +
+          "取り込み済みのタスクの契約は変えられません——訂正するなら新しいタスクを積み、" +
+          "元を superseded にしてください（決定64）",
+      };
+    }
+
+    const definition = readTaskDefinition(project.repoPath, taskId);
+    if (!definition.ok) return { ok: false, reason: definition.reason };
+    const validation = definition.frontmatter;
+    if (!validation.ok) return { ok: false, reason: validation.reason };
+    const fm = validation.frontmatter;
+    if (fm.id !== taskId) {
+      return { ok: false, reason: `ファイルの id (${fm.id}) と積もうとした id (${taskId}) が違います` };
+    }
+    // 決定62e: `draft` は「まだ積まないでほしい」の意思表示。明示の enqueue でも越えない
+    if (fm.status === "draft") {
+      return {
+        ok: false,
+        reason:
+          `${taskId} は draft です（「まだ積まないでほしい」の意思表示）。` +
+          "積むなら status: queued にしてから呼んでください",
+      };
+    }
+
+    // 決定67: 費用の上限は**積む時点で拒否**する。黙って下の等級へ丸めない
+    // ——丸めると PO は「安く速く終わった」と読み、要求水準を満たさない成果を受け取る
+    const ceiling = this.projectConfig(projectTag).limits.maxModelTier;
+    const requested = fm.model_tier;
+    if (ceiling && requested && TIER_ORDER.indexOf(requested) > TIER_ORDER.indexOf(ceiling)) {
+      return {
+        ok: false,
+        reason:
+          `${taskId} は model_tier: ${requested} を求めていますが、このプロジェクトの上限は ` +
+          `${ceiling} です（meta/config.yaml の limits.max_model_tier）。` +
+          "等級を下げるか、上限を上げるかを決めてから積んでください——黙って丸めません（決定67）",
+      };
+    }
+
+    try {
+      this.createTask(projectTag, taskId, fm.title, {
+        ...taskPayload(fm, definition.content),
+        // 決定58: 宛先（積んだスレッド）と経緯。**Kobo は経緯を知らない**ので、
+        // 積むときに受け取っておかないと、判断を求める札が「起きたこと」しか書けない
+        ...(options.origin ? { origin: options.origin } : {}),
+        ...(options.originRef ? { originRef: options.originRef } : {}),
+        enqueuedBy: options.origin ? "banto" : "api",
+      });
+    } catch (err) {
+      return { ok: false, reason: `task_created failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+
+    const result = this.transition(projectTag, taskId, "queued", "kobo.enqueue");
+    if (!result.ok) return { ok: false, reason: `queued へ進められません: ${result.reason}` };
+    return { ok: true, status: this.store.getTask(taskId, projectTag)?.status ?? "queued" };
+  }
+
+  /**
+   * いま許されている同時実行数（決定67）。
+   *
+   * 層B設定（プロジェクトの `meta/config.yaml`）が絞っていればそれを採る。複数プロジェクトを
+   * 受け持つので**いちばん厳しいものに合わせる**——1つでも絞っているなら、その意図を守る。
+   */
+  maxConcurrentSessions(): number {
+    const koboDefault = this.config.maxConcurrentSessions ?? 5;
+    let limit = koboDefault;
+    for (const project of this.registry.list()) {
+      try {
+        const configured = this.projectConfig(project.id).limits.maxConcurrentSessions;
+        if (typeof configured === "number" && configured >= 0) limit = Math.min(limit, configured);
+      } catch (err) {
+        // I2: 壊れた設定を黙って無視しない。ただし1つの設定で工場全体を止めない
+        process.stderr.write(
+          `[banto-daemon] ${project.id} の層B設定を読めません: ${String(err)}\n`
+        );
+      }
+    }
+    return limit;
+  }
+
+  /**
+   * 上限と監査の関係を起動時に確かめる（決定67・task-0063 a4）。
+   *
+   * **監査は上限の対象外**（常に `reasoning`）。監査は費用のつまみではなく検査であり、
+   * 上限で省ける形にすると「安くするために検査を外す」ができてしまう（決定57 が禁じた形）。
+   * 上限が `reasoning` より下のときは、そのことを起動時に言う——黙って例外扱いしない。
+   */
+  private warnAboutTierCeiling(): void {
+    for (const project of this.registry.list()) {
+      let ceiling: string | undefined;
+      try {
+        ceiling = this.projectConfig(project.id).limits.maxModelTier;
+      } catch (err) {
+        process.stderr.write(
+          `[banto-daemon] ${project.id} の層B設定を読めません: ${String(err)}\n`
+        );
+        continue;
+      }
+      if (ceiling && TIER_ORDER.indexOf(ceiling as ModelTier) < TIER_ORDER.indexOf("reasoning")) {
+        process.stdout.write(
+          `[banto-daemon] ${project.id}: 等級の上限は ${ceiling} です。` +
+            "**監査は上限の対象外で常に reasoning で回ります**——監査は費用のつまみではなく" +
+            "検査だからです（決定57・67）。上限が効くのは着手する仕事の等級と、失敗駆動の昇格です\n"
+        );
+      }
+    }
+  }
+
+  /**
+   * そのタスクのレビューの段（決定57・66）。
+   *
+   * 判定表はプロジェクトのリポジトリにある（`meta/config.yaml`）。**読めなければ止まる**
+   * ——設定を書いたのに効いていない状態を、緩い方（`banto`）へ倒して隠さない（I2）。
+   */
+  reviewStageOf(projectTag: string, task: TaskRecord): ReviewStage {
+    return resolveReviewStage(task, this.projectConfig(projectTag));
+  }
+
+  /**
+   * プロジェクトの層B設定。**毎回読む**（D3：写しを持たない）。
+   *
+   * 設定ファイルは PO が git で直すもので、書き換えたら次の判定から効いてほしい。
+   * 読めないときは投げる——I2 のとおり「無い」と「壊れている」を混同しない。
+   */
+  projectConfig(projectTag: string): ProjectConfig {
+    const project = this.registry.list().find((p) => p.id === projectTag);
+    if (!project) return { review: { poRequiredPaths: [] }, limits: {} };
+    return loadProjectConfig(project.repoPath);
+  }
+
+  /**
+   * レビューを通す（`kobo.approve` の実体・決定57）。
+   *
+   * **番頭が通しても関所は飛ばない。** ここがするのは `approved` まで進めることだけで、
+   * その後マージキューがマージ前ゲート（スコープ違反の検査と検証コマンド）を回す。
+   *
+   * `po` と判定されたタスクは番頭には通せない（I2：黙って通さず、理由を返す）。
+   */
+  approveTask(
+    projectTag: string,
+    taskId: string,
+    options: { by: "banto" | "po"; note?: string }
+  ): { ok: true; status: string } | { ok: false; reason: string } {
+    const task = this.store.getTask(taskId, projectTag);
+    if (!task) return { ok: false, reason: `task_not_found: ${projectTag}/${taskId}` };
+
+    const stage = this.reviewStageOf(projectTag, task);
+    if (stage === "po" && options.by !== "po") {
+      return {
+        ok: false,
+        reason:
+          `${taskId} は PO の判断が要ります（${task["governance"] === true ? "統治コード" : "PO 必須の面に触る"}）。` +
+          "番頭は通せません——取次へ上げてください（決定57）",
+      };
+    }
+    if (task.status !== "review-ready" && task.status !== "in-review") {
+      return {
+        ok: false,
+        reason: `いまの状態は ${task.status} で、レビュー待ちではありません`,
+      };
+    }
+
+    // review-ready → in-review → approved。**判断したことを帳簿に残す**（誰が・何を見て）
+    if (task.status === "review-ready") {
+      const opened = this.transition(projectTag, taskId, "in-review", `review_opened:${options.by}`);
+      if (!opened.ok) return { ok: false, reason: opened.reason ?? "in-review へ進められません" };
+    }
+    const approved = this.log.append({
+      type: "task_approved",
+      projectTag,
+      taskId,
+      approvedBy: options.by,
+      ...(options.note ? { note: options.note } : {}),
+    });
+    this.applyAndBroadcast(approved);
+
+    const result = this.transition(projectTag, taskId, "approved", `approved_by:${options.by}`);
+    if (!result.ok) return { ok: false, reason: result.reason ?? "approved へ進められません" };
+    return { ok: true, status: this.store.getTask(taskId, projectTag)?.status ?? "approved" };
+  }
+
+  /**
+   * そのタスクを積んだ宛先（決定58）。積まれ方によっては無い（PO がファイルを置いた等）。
+   *
+   * D3: 別に持たない。取り込み時に契約と一緒に固めた値を読む。
+   */
+  originOfTask(projectTag: string, taskId: string): string | undefined {
+    const task = this.store.getTask(taskId, projectTag);
+    const origin = task?.["origin"];
+    return typeof origin === "string" && origin.length > 0 ? origin : undefined;
+  }
+
+  /** 最後に振られたイベントID。ここを起点に読むと重複なく続けられる。 */
+  get lastEventId(): number {
+    const all = this.log.readAllEvents();
+    return all.length > 0 ? (all[all.length - 1]!.eventId ?? 0) : 0;
+  }
+
+  /**
+   * イベントを古い順に読む（`kobo.events` の実体）。
+   *
+   * `origin` で絞れるのが要点——番頭ホストは**自分のスレッドが積んだタスクの分だけ**を
+   * 拾って会話へ返す（決定58。職人の `worker.events` と同じ形）。
+   */
+  readEvents(
+    filter: { afterEventId?: number; projectTag?: string; origin?: string; limit?: number } = {}
+  ): OrchestrationEvent[] {
+    const after = filter.afterEventId ?? 0;
+    const limit = Math.max(1, filter.limit ?? 100);
+    const found: OrchestrationEvent[] = [];
+    for (const event of this.log.readAllEvents()) {
+      if ((event.eventId ?? 0) <= after) continue;
+      if (filter.projectTag && event.projectTag !== filter.projectTag) continue;
+      if (filter.origin) {
+        const taskId = "taskId" in event ? (event.taskId as string | undefined) : undefined;
+        if (!taskId) continue;
+        if (this.originOfTask(event.projectTag, taskId) !== filter.origin) continue;
+      }
+      found.push(event);
+      if (found.length >= limit) break;
+    }
+    return found;
   }
 
   // ── 職人（Worker Pool 経由・ADR-0013 決定60）─────────────────────────────────
@@ -1355,12 +1613,13 @@ export class Daemon {
     this.applyAndBroadcast(verdictEvent);
 
     if (verdict === "pass") {
-      // Determine target status from review.policy (stored in task payload, D3).
-      // review.policy is loaded from the task definition at creation time (watcher ingestion).
-      const reviewPolicy = (task["review"] as { policy?: string } | undefined)?.policy ?? "manual";
-      const targetStatus = reviewPolicy === "auto" ? "merging" : "review-ready";
+      // レビューは3段（決定57）。`auto` だけが人も番頭も見ずにマージへ進む。
+      // **`po` は機械的に判定される**ので、タスクが auto を名乗っていても統治コードや
+      // PO 必須の面に触るなら止まる——緩い方へは倒れない
+      const stage = this.reviewStageOf(projectTag, task);
+      const targetStatus = stage === "auto" ? "merging" : "review-ready";
 
-      this.transition(projectTag, taskId, targetStatus, "audit_passed");
+      this.transition(projectTag, taskId, targetStatus, `audit_passed:${stage}`);
       // 監査人の役目は終わり。畳む（I3：起こした者が片付ける・決定63）
       this._trackBackground(this.closeWorkerFor(projectTag, poolTaskId(taskId, "audit")));
     } else {
@@ -1438,9 +1697,20 @@ export class Daemon {
     // 監査人はもう役目を終えている。畳んでから rework を起こす
     await this.closeWorkerFor(projectTag, poolTaskId(taskId, "audit"));
 
-    // 落ちた回数だけ等級を上げる（1回目の不通過 → 一段上で直させる）
+    // 落ちた回数だけ等級を上げる（1回目の不通過 → 一段上で直させる）。
+    // **昇格も上限に掛かる**（決定67）——上限を超える分は上げない。ここで拒否にしないのは、
+    // 積む時点では上限内だったタスクを途中で止めることになるため。据え置いたことは記録に残す
     const fails = this.countConsecutiveAuditFails(projectTag, taskId);
-    const modelTier = escalateTier(taskModelTier(task), fails);
+    const wanted = escalateTier(taskModelTier(task), fails);
+    const ceiling = this.projectConfig(projectTag).limits.maxModelTier;
+    const modelTier =
+      ceiling && TIER_ORDER.indexOf(wanted) > TIER_ORDER.indexOf(ceiling) ? ceiling : wanted;
+    if (modelTier !== wanted) {
+      process.stdout.write(
+        `[banto-daemon] ${projectTag}/${taskId}: 昇格 ${wanted} は上限 ${ceiling} を超えるので ` +
+          `${modelTier} に据え置きます（決定67）\n`
+      );
+    }
 
     let session: SpawnedSession;
     try {
@@ -1842,7 +2112,9 @@ export class Daemon {
     this._autoSpawnRunning = true;
 
     try {
-      const maxSessions = this.config.maxConcurrentSessions ?? 5;
+      // 上限は層B設定（プロジェクト）＞ Kobo の既定。**低い方を採る**——プロジェクトが
+      // 絞っているのに Kobo の既定で回すと、設定した意味が無い（決定67）
+      const maxSessions = this.maxConcurrentSessions();
 
       // 「いま何人動いているか」は Worker Pool に聞く（決定60：職人の真実は一箇所）。
       // I2: 聞けないときは起こさない——数えられないまま起こすと、上限が効かない
