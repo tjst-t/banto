@@ -138,6 +138,45 @@ export function SplitView({
   );
 }
 
+/**
+ * **主が広く、詳細は選んだときだけ**の2枚組（PO報告 2026-08-07）。
+ *
+ * `SplitView` は「一覧（狭い）＋詳細（広い）」の形で、一覧が主役でないものに使うと逆になる。
+ * 工場のボードは**横に流すカンバン**——狭い方に入れると列がほとんど見えず、
+ * 隣に空の「選んでください」が広く居座る。実際そうなっていた（PO報告のスクリーンショット）。
+ *
+ * ここでは主（ボード）が残り全部を取り、詳細は**選んだときだけ**決まった幅で右に出る。
+ * 狭いときは詳細が全面に被さる（`SplitView` と同じドリルダウン）。
+ */
+export function WorkView({
+  main,
+  detail,
+  onBack,
+  backLabel = "ボードへ",
+}: {
+  main: React.ReactNode;
+  /** 選ばれていなければ `null`。**空の詳細ペインを描かない**のが要点。 */
+  detail: React.ReactNode | null;
+  onBack?: () => void;
+  backLabel?: string;
+}): React.ReactElement {
+  return (
+    <div className={`cv-work ${detail ? "is-detail" : "is-main"}`}>
+      <div className="cv-pane cv-work-main">{main}</div>
+      {detail && (
+        <div className="cv-pane cv-work-detail">
+          {onBack && (
+            <button className="cv-back" type="button" onClick={onBack}>
+              <Icon name="chevron-left" size={14} /> {backLabel}
+            </button>
+          )}
+          {detail}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── 押すもの ─────────────────────────────────────────────────────────────────
 
 type ButtonVariant = "default" | "primary" | "ghost" | "danger" | "ok";

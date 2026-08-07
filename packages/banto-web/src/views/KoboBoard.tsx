@@ -25,7 +25,7 @@ import {
   Modal,
   Scroll,
   SearchField,
-  SplitView,
+  WorkView,
   TextInput,
   ViewBar,
   ViewShell,
@@ -191,13 +191,17 @@ export function KoboBoard({ params, endpoint }: CanvasViewProps): React.ReactEle
       ) : (
         <Scroll className="kb-board">
           {columns.map((column) => (
-            <section key={column.key} className="kb-col">
+            <section
+              key={column.key}
+              className={`kb-col${column.rows.length === 0 ? " is-empty" : ""}`}
+            >
               <header className="kb-col-head">
                 <span>{column.label}</span>
                 <Badge tone={column.rows.length > 0 ? column.tone ?? "neutral" : "neutral"}>
                   {column.rows.length}
                 </Badge>
               </header>
+              <div className="kb-col-body">
               {column.rows.length === 0 ? (
                 <p className="kb-col-empty">—</p>
               ) : (
@@ -220,6 +224,7 @@ export function KoboBoard({ params, endpoint }: CanvasViewProps): React.ReactEle
                   </Card>
                 ))
               )}
+              </div>
             </section>
           ))}
         </Scroll>
@@ -242,11 +247,7 @@ export function KoboBoard({ params, endpoint }: CanvasViewProps): React.ReactEle
 
   const task = detail.data?.task as Record<string, unknown> | undefined;
   const scope = (task?.["scope"] as { paths?: string[] } | undefined)?.paths ?? [];
-  const detailPane = !selected ? (
-    <EmptyState icon="canvas" title="タスクを選ぶ">
-      経緯（何が起きてきたか）が読めます。
-    </EmptyState>
-  ) : detail.loading && !detail.data ? (
+  const detailPane = !selected ? null : detail.loading && !detail.data ? (
     <Loading label="経緯を読んでいます…" />
   ) : detail.error ? (
     <ErrorNote title="読めません" onRetry={detail.reload}>
@@ -316,11 +317,10 @@ export function KoboBoard({ params, endpoint }: CanvasViewProps): React.ReactEle
   return (
     <>
       {registerPane}
-      <SplitView
-        size="lg"
-        list={board}
+      {/* ボードは**横に流すカンバン**。狭い方に入れると列がほとんど見えない（PO報告） */}
+      <WorkView
+        main={board}
         detail={detailPane}
-        showDetail={selected !== undefined}
         onBack={() => setSelected(undefined)}
         backLabel="ボードへ"
       />

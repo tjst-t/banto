@@ -217,8 +217,31 @@
   background: transparent;
 }
 .cv-pane-detail { flex: 1; background: transparent; }
+
+/* 主が広く、詳細は選んだときだけ（PO報告 2026-08-07）。工場のボード用 */
+.cv-work { flex: 1; min-height: 0; display: flex; }
+.cv-work-main { flex: 1; min-width: 0; }
+.cv-work-detail {
+  width: 380px;
+  flex: none;
+  border-left: 1px solid var(--rule);
+  background: transparent;
+}
 /* 広いときは戻る導線が要らない（両方見えている） */
 .cv-back { display: none; }
+
+@container canvas (max-width: 1000px) {
+  /* 詳細を出すと主が潰れる幅では、詳細を被せる（主は裏で生きたまま） */
+  .cv-work { position: relative; }
+  .cv-work-detail {
+    position: absolute;
+    inset: 0;
+    width: auto;
+    border-left: none;
+    background: var(--paper);
+    z-index: 2;
+  }
+}
 
 @container canvas (max-width: 760px) {
   .cv-split { display: block; position: relative; }

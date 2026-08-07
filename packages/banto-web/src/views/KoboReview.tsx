@@ -93,6 +93,23 @@ export function KoboReview({ params, endpoint }: CanvasViewProps): React.ReactEl
     [list.data]
   );
 
+  /**
+   * **先頭を自動で開く**（PO報告 2026-08-07）。
+   *
+   * ここは決めるために来る面で、着いた先が「選んでください」の空白では一往復無駄になる。
+   * 判断待ちが1件でもあれば、その1件を開いた状態で差し出す。
+   * **選び直しは自由**——選んだものが列から消えたら（通した・取次へ上げた）また先頭へ。
+   */
+  useEffect(() => {
+    if (waiting.length === 0) return;
+    const stillThere =
+      selected &&
+      waiting.some((t) => t.taskId === selected.taskId && t.projectTag === selected.projectTag);
+    if (stillThere) return;
+    const head = waiting[0]!;
+    setSelected({ projectTag: head.projectTag, taskId: head.taskId });
+  }, [waiting, selected]);
+
   const approve = async (): Promise<void> => {
     if (!selected) return;
     setBusy(true);
@@ -281,7 +298,7 @@ export function KoboReview({ params, endpoint }: CanvasViewProps): React.ReactEl
     </ViewShell>
   );
 
-  return (
+  const split = (
     <SplitView
       size="md"
       list={listPane}
@@ -291,4 +308,22 @@ export function KoboReview({ params, endpoint }: CanvasViewProps): React.ReactEl
       backLabel="一覧へ"
     />
   );
+
+  // **判断待ちが無いときに2枚は要らない**（PO報告 2026-08-07）。
+  // 「ありません」と「選んでください」が並んで、面の全部が空白になっていた
+  if (!list.loading && !list.error && waiting.length === 0) {
+    return (
+      <ViewShell>
+        <ViewBar>
+          <strong>判断待ち</strong>
+          <Badge tone="neutral">0</Badge>
+        </ViewBar>
+        <EmptyState icon="check" title="判断待ちはありません">
+          監査を通ったものがここに並びます。工場のボードで流れ全体が見られます。
+        </EmptyState>
+      </ViewShell>
+    );
+  }
+
+  return split;
 }
