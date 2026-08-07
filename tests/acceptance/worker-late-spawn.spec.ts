@@ -171,6 +171,33 @@ describe("[task-0072] 起こしている間にタスクが先へ進んだら、�
     );
   });
 
+  it("ready を抜けたあとに生まれた実装者も畳む（遷移が弾かれて宙に浮く）", async () => {
+    const taskId = "task-late-executor";
+    daemon.createTask(proj, taskId, "遅れて生まれる実装者", {
+      kind: "feature",
+      scope: { paths: ["src/**"] },
+      acceptance: [{ id: "a1", text: "動くこと" }],
+    });
+    daemon.transition(proj, taskId, "queued", "test");
+    daemon.transition(proj, taskId, "ready", "test");
+
+    driver.spawnDelayMs = 1500;
+    // 起こしている間に終端へ着く（依存が倒れた・PO が畳んだ、等）
+    const spawning = daemon.spawnTask(proj, taskId).catch((err: unknown) => err);
+    await new Promise((r) => setTimeout(r, 300));
+    daemon.transition(proj, taskId, "failed", "test: 先に終端へ着く");
+    await spawning;
+    await new Promise((r) => setTimeout(r, 1500));
+    driver.spawnDelayMs = 0;
+
+    await until(() => liveWorkers(taskId, "executor").length === 0, 8000);
+    assert.equal(
+      daemon.getTaskEvents(proj, taskId).filter((e) => e.type === "agent_spawned").length,
+      0,
+      "使わずに畳んだ職人を帳簿へ載せている"
+    );
+  });
+
   it("先へ進んでいなければ、いままでどおり職人は残る（畳みすぎない）", async () => {
     const taskId = "task-normal";
     daemon.createTask(proj, taskId, "普通に進む検体", {

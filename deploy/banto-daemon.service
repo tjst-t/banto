@@ -20,7 +20,7 @@ Group=ubuntu
 WorkingDirectory=/home/ubuntu/ghq/github.com/tjst-t/banto
 
 Environment=NODE_ENV=production
-Environment=BANTO_PORT=3000
+Environment=BANTO_PORT=4500
 Environment=BANTO_DATA_DIR=/var/lib/banto/data
 # 待ち受けは既定（127.0.0.1）のまま。広げるときだけ次を足す（起動ログに警告が出る）
 #   Environment=BANTO_DAEMON_BIND=0.0.0.0

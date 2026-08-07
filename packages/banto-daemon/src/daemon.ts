@@ -175,7 +175,14 @@ interface WorkerEventView {
 }
 
 export interface DaemonConfig {
-  /** Port to listen on. Default: 3000 */
+  /**
+   * Port to listen on. Default: 4500.
+   *
+   * **3000 は使わない**（2026-08-07・inc-0032）。最も一般的な dev サーバの既定で、
+   * **受け持つプロジェクトの検証がそこを使う**。実際に loamium のテストが
+   * 「3000 に何も居ないこと」を確かめており、Kobo が居るせいで永久に落ちていた。
+   * 他人のテストを走らせるのが仕事の機構が、いちばん混む番地に居てはいけない。
+   */
   port: number;
   /**
    * 待ち受けるアドレス（ADR-0010 決定40・task-0061）。**既定は 127.0.0.1**。
@@ -471,7 +478,7 @@ export class Daemon {
 
   static create(config: Partial<DaemonConfig> = {}): Daemon {
     const resolved: DaemonConfig = {
-      port: config.port ?? parseInt(process.env["BANTO_PORT"] ?? "3000", 10),
+      port: config.port ?? parseInt(process.env["BANTO_PORT"] ?? "4500", 10),
       // 決定40: 既定は 127.0.0.1。広げるのは明示だけ（この口は帳簿を書き換えられる）
       bindHost: config.bindHost ?? process.env["BANTO_DAEMON_BIND"] ?? "127.0.0.1",
       dataDir: config.dataDir ?? process.env["BANTO_DATA_DIR"] ?? "./data",
@@ -1034,13 +1041,6 @@ export class Daemon {
     }
   }
 
-  /** その役目の職人を要る状態（起こした仕事がまだ意味を持つ状態）。 */
-  private static readonly ROLE_WANTED_IN: Record<WorkerRole, ReadonlySet<string>> = {
-    executor: new Set(["planning", "implementing"]),
-    rework: new Set(["implementing"]),
-    audit: new Set(["auditing"]),
-  };
-
   /**
    * 起こした職人が**まだ要るか**を確かめ、要らなければその場で畳む（task-0072）。
    *
@@ -1062,16 +1062,19 @@ export class Daemon {
     taskId: string;
     role: WorkerRole;
     sessionId: string;
+    /** この状態のどれかなら、その職人はまだ要る。 */
+    wantedIn: readonly string[];
   }): Promise<boolean> {
-    const { projectTag, taskId, role, sessionId } = opts;
+    const { projectTag, taskId, role, sessionId, wantedIn } = opts;
     // 起こしている間に帳簿が進んでいる。**読み直す**（起こす前の写しで判断しない）
     this.refreshState();
     const status = this.store.getTask(taskId, projectTag)?.status;
-    if (status !== undefined && Daemon.ROLE_WANTED_IN[role].has(status)) return true;
+    if (status !== undefined && wantedIn.includes(status)) return true;
 
     process.stderr.write(
       `[banto-daemon] ${projectTag}/${taskId} は ${role} を起こしている間に ` +
-        `${status ?? "(消えた)"} へ移りました。生まれたばかりの職人を畳みます（${sessionId}）\n`
+        `${status ?? "(消えた)"} へ移りました（${wantedIn.join(" / ")} のはず）。` +
+        `生まれたばかりの職人を畳みます（${sessionId}）\n`
     );
     try {
       await this.workerInvoke("worker.close", { sessionId });
@@ -1251,6 +1254,23 @@ export class Daemon {
       const reason = err instanceof Error ? err.message : String(err);
       this.recordTaskFailed(projectTag, taskId, `spawn failed: ${reason}`);
       throw err;
+    }
+
+    // task-0072: 起こしている間にタスクが先へ進んでいたら、生まれたての職人を畳んで戻る。
+    // ここは `ready` のはず——終端へ着いていると次の `planning` への遷移が弾かれ、
+    // **職人だけが宙に浮く**（帳簿には載るのに、誰も面倒を見ない）
+    if (
+      !(await this.keepWorkerIfStillWanted({
+        projectTag,
+        taskId,
+        role: "executor",
+        sessionId: session.sessionId,
+        wantedIn: ["ready"],
+      }))
+    ) {
+      throw new Error(
+        `Task '${taskId}' left 'ready' while the worker was starting; the worker was closed`
+      );
     }
 
     // 4. Append agent_spawned event — session path reference ONLY (spec §2.1)
@@ -1685,6 +1705,7 @@ export class Daemon {
         taskId,
         role: "audit",
         sessionId: session.sessionId,
+        wantedIn: ["auditing"],
       }))
     ) {
       return;
@@ -1878,6 +1899,7 @@ export class Daemon {
         taskId,
         role: "rework",
         sessionId: session.sessionId,
+        wantedIn: ["implementing"],
       }))
     ) {
       return;

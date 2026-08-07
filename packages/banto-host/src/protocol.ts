@@ -544,5 +544,5 @@ export type ServerEvent =
 /** WSのパス。Kobo（/ws）と同じ流儀。 */
 export const BANTO_WS_PATH = "/ws";
 
-/** 既定ポート。Kobo の 3000 と衝突しない値。 */
+/** 既定ポート。Kobo の 4500 と衝突しない値。 */
 export const BANTO_DEFAULT_PORT = 4100;

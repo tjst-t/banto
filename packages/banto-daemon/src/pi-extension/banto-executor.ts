@@ -10,7 +10,7 @@
  * Usage: pi -e ./packages/banto-daemon/src/pi-extension/banto-executor.ts
  *
  * Environment variables:
- *   BANTO_DAEMON_URL  - daemon base URL (default: http://localhost:3000)
+ *   BANTO_DAEMON_URL  - daemon base URL (default: http://localhost:4500)
  *   BANTO_PROJECT     - project tag to report events against (required)
  *   BANTO_TASK_ID     - task ID（rework は `task-0001:rework`。ADR-0013 決定60 で職人の
  *                       台帳の鍵を役目ごとに分けたため。報告は接尾辞を外して返す）

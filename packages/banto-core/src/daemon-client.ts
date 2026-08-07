@@ -2,7 +2,7 @@
  * DaemonClient: fetch-based HTTP client for the banto-daemon REST API.
  *
  * Runtime-neutral (Node.js >= 18 global fetch). Used by banto-cli and future GUIs.
- * BANTO_DAEMON_URL env var sets the base URL (default: http://localhost:3000).
+ * BANTO_DAEMON_URL env var sets the base URL (default: http://localhost:4500).
  *
  * D5: no logic here beyond HTTP request construction and response parsing.
  * D6: uses global fetch (Node >=18 built-in); no additional dependencies.
@@ -51,7 +51,7 @@ export class DaemonClient {
     this.baseUrl =
       baseUrl ??
       process.env["BANTO_DAEMON_URL"] ??
-      "http://localhost:3000";
+      "http://localhost:4500";
   }
 
   /** Check daemon health. Throws DaemonConnectionError on connection failure. */

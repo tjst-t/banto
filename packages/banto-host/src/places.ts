@@ -372,14 +372,14 @@ function matchesGlob(relativePath: string, pattern: string): boolean {
     .split("/")
     .map((segment) =>
       segment === "**"
-        ? " DEEP "
+        ? "\x00DEEP\x00"
         : segment.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*")
     )
     .join("/");
   // `a/**` は a 自身にも a 配下にも当てる
   const source = escaped
-    .replace(/\/ DEEP /g, "(?:/.*)?")
-    .replace(/ DEEP /g, ".*");
+    .replace(/\/\x00DEEP\x00/g, "(?:/.*)?")
+    .replace(/\x00DEEP\x00/g, ".*");
   return new RegExp(`^${source}$`).test(normalized);
 }
 

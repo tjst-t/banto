@@ -5,7 +5,7 @@
  * Also exports Daemon for use in tests.
  *
  * Configuration (environment variables or command line):
- *   BANTO_PORT     - HTTP port (default: 3000)
+ *   BANTO_PORT     - HTTP port (default: 4500)
  *   BANTO_DATA_DIR - data directory for event log + registry (default: ./data)
  */
 

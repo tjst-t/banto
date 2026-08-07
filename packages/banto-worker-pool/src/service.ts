@@ -14,7 +14,7 @@ import * as http from "node:http";
 import { MODULE_TOOL_PATH } from "@banto/core";
 import type { NamespacedToolDefinition } from "@banto/core";
 
-/** 既定ポート。Kobo(3000) / Banto(4100) と衝突しない値。 */
+/** 既定ポート。Kobo(4500) / Banto(4100) と衝突しない値。 */
 export const WORKER_POOL_DEFAULT_PORT = 4300;
 
 async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {

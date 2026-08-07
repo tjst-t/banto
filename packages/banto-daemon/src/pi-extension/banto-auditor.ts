@@ -10,7 +10,7 @@
  * Usage: pi -e ./packages/banto-daemon/src/pi-extension/banto-auditor.ts
  *
  * Environment variables:
- *   BANTO_DAEMON_URL  - daemon base URL (default: http://localhost:3000)
+ *   BANTO_DAEMON_URL  - daemon base URL (default: http://localhost:4500)
  *   BANTO_PROJECT     - project tag to report events against (required)
  *   BANTO_TASK_ID     - task ID being audited (required)
  *

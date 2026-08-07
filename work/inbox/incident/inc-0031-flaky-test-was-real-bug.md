@@ -4,7 +4,7 @@ type: incident
 kind: incident
 origin: agent
 class: silent-failure
-status: open
+status: resolved
 refs: [task-0072]
 ---
 
@@ -40,11 +40,21 @@ const deadline = Date.now() + 20000;
 task-0072。職人が出来上がった直後に帳簿を読み直し、その役目を要る状態でなければ
 その場で畳む。競りは `FakeRuntimeDriver.spawnDelayMs` で時間に依らず再現する。
 
+## 同じ形を全部探した（2026-08-07・PO指示）
+
+「非同期で作ったものを、作り終える前に状態が変わると誰も片付けない」を Kobo の中で洗った。
+**3箇所あった**（最初に見つけたのは1箇所目だけ）：
+
+| どこ | 何を取りこぼすか |
+|---|---|
+| `spawnReworkSession` | 終端に着いたあとに生まれた rework の職人（最初に見つけたもの） |
+| `spawnAuditSession` | auditing を抜けたあとに生まれた監査人 |
+| `spawnTask`（実装者） | **ready を抜けたあとに生まれた実装者**。次の `planning` への遷移が弾かれ、職人だけが宙に浮く |
+| `_autoProvisionOnReview` | レビューが終わったあとに立ち上がった検証環境（最長24時間動く・I3） |
+
+いずれも同じ判定（作り終えた直後に帳簿を読み直し、要らなければその場で片付ける）で塞いだ。
+
 ## 残っている問い（PO判断）
 
-- **他にも同じ形の取りこぼしが無いか。** 「非同期で作ったものを、作り終える前に状態が
-  変わると誰も片付けない」は、検証環境の provision にも同じ構造がある
-  （`_autoProvisionOnReview` は fire-and-forget で、立て終わる前にタスクが終端へ着きうる）。
-  環境は TTL で必ず畳まれるので実害は小さいが、**同じ形**であることは記録しておく
 - **P6 の適用**：同じ試験に2回パッチを当てて定着しなかった時点で、根本原因分析を
   積むべきだった。いまの機構は reopen 計数を持たないので、機械では発火しない

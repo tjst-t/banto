@@ -24,7 +24,7 @@ export const KOBO_MODULE_NAME = "kobo";
 export function defaultKoboUrl(): string {
   return (
     process.env["BANTO_KOBO_URL"] ??
-    `http://127.0.0.1:${process.env["BANTO_KOBO_PORT"] ?? "3000"}${KOBO_MODULE_PATH}`
+    `http://127.0.0.1:${process.env["BANTO_KOBO_PORT"] ?? "4500"}${KOBO_MODULE_PATH}`
   );
 }
 

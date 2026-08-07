@@ -25,7 +25,7 @@ import { MODULE_TOOL_PATH } from "@banto/core";
 import type { NamespacedToolDefinition } from "@banto/core";
 import type { EnvProxy } from "./proxy-exposer.js";
 
-/** 既定ポート。Kobo(3000) / Banto(4100) / Worker Pool(4300) と衝突しない値。 */
+/** 既定ポート。Kobo(4500) / Banto(4100) / Worker Pool(4300) と衝突しない値。 */
 export const ENVIRONMENT_POOL_DEFAULT_PORT = 4400;
 
 /** 既定の待ち受けアドレス（決定40a：認証を持たないので既定は閉じる）。 */
