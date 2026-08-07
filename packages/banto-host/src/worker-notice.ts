@@ -51,18 +51,21 @@ export function isBantoOrigin(origin: string): boolean {
  * 起動・停止・回答は**番頭自身がやったこと**なので知らせない。知らせると、番頭の操作が
  * そのまま番頭への入力に戻り、ターンが際限なく回る。番頭が知りたいのは
  * 「自分が起こしていないこと」——職人が言ってきたことと、プロセスが終わったこと。
+ *
+ * **畳んだこと（`worker_closed`）は知らせない**（PO裁定 2026-08-06）。職人が1人終わるたびに
+ * 「畳みました」と「プロセスが終わりました」の2通が並んで届いていた——同じ出来事を2度
+ * 読ませている。プロセスが終わったことは `worker_exited` で届くので、番頭が取り落とすものは無い。
+ *
+ * 決定30b（安全弁が働いたことに気づけるように）は**イベントログ側で保つ**——`reason` は
+ * 今までどおり記録され、`worker.list` / `worker.events` と職人ビューアから引ける（決定30e）。
+ * 会話へ押し込まないだけで、見えなくはしない。
  */
 export function isNoticeworthy(event: WorkerEvent): boolean {
-  if (
+  return (
     event.type === "worker_reported" ||
     event.type === "worker_asked" ||
     event.type === "worker_exited"
-  ) {
-    return true;
-  }
-  // 決定30b: 安全弁が働いた＝番頭が畳み忘れた、ということ。自分でやった close（done）は
-  // 知らせないが、これは知らせる——気づかないと安全弁が主機構になってしまう
-  return event.type === "worker_closed" && event.data["reason"] === "idle";
+  );
 }
 
 /** 1行目に出す見出し。UI は畳んだ状態でここだけを見せるので、短く・中身が分かるように。 */
@@ -77,8 +80,6 @@ function headline(event: WorkerEvent): string {
       return event.data["auto"] === true
         ? `${who}が報告せずに手を止めました：${firstLine(String(event.data["summary"] ?? ""))}`
         : `${who}から報告：${firstLine(String(event.data["summary"] ?? ""))}`;
-    case "worker_closed":
-      return `${who}を安全弁が畳みました（しばらく何もしていなかったため）`;
     default: {
       const signal = event.data["signal"];
       const code = event.data["exitCode"];
@@ -133,12 +134,6 @@ export function renderWorkerNotice(event: WorkerEvent): string | undefined {
             "自分で確かめてください（I1）。続きが要るなら worker.steer、良ければ worker.close。"
         : "**これは職人の主張であって完了の証明ではありません**——必要なら成果を自分で確かめてください（I1）。" +
             "確かめて良ければ worker.close で畳んでください。"
-    );
-  } else if (event.type === "worker_closed") {
-    lines.push(
-      "",
-      "本来は成果を確かめたうえであなたが畳むところです（決定30a）。" +
-        "続きが要るなら worker.wake で元の会話ごと起こし直せます。"
     );
   }
 

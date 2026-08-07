@@ -913,12 +913,25 @@ describe("[task-0026/a6] 職人イベントの言い換え（決定29d）", () =
     assert.equal(isNoticeworthy(own), false);
   });
 
-  it("[task-0028/a2] 安全弁が働いたことは番頭に知らせる（畳み忘れの兆候）", () => {
-    const swept = workerEvent({ type: "worker_closed", data: { reason: "idle" } });
-    assert.equal(isNoticeworthy(swept), true);
-    const text = renderWorkerNotice(swept);
-    assert.ok(text?.includes("安全弁"));
-    assert.ok(text?.includes("worker.wake"), "起こし直せることを伝える");
+  /**
+   * PO裁定 2026-08-06：職人が1人終わるたびに「畳みました」と「プロセスが終わりました」の
+   * 2通が並んで届いていた。同じ出来事を2度読ませない——プロセスが終わったことは
+   * `worker_exited` で届くので、畳んだこと自体は会話へ流さない。
+   *
+   * 決定30b（安全弁が働いたことに気づけるように）は**イベントログ側で保つ**：
+   * `reason` は記録され続け、`worker.list` / `worker.events` から引ける（決定30e）。
+   */
+  it("[PO裁定 2026-08-06] 畳んだことは知らせない（終了通知と二重になる）", () => {
+    for (const reason of ["done", "idle", "stopped"]) {
+      const closed = workerEvent({ type: "worker_closed", data: { reason } });
+      assert.equal(isNoticeworthy(closed), false, reason);
+      assert.equal(renderWorkerNotice(closed), undefined, reason);
+    }
+  });
+
+  it("[task-0026/a6] プロセスが終わったことは知らせる（番頭が起こしていない出来事）", () => {
+    const text = renderWorkerNotice(workerEvent({ type: "worker_exited", data: { exitCode: 0 } }));
+    assert.ok(text?.includes("終了"), text ?? "(知らせが出ていない)");
   });
 
   it("[task-0026/a2] 報告は主張として伝える（完了と言い換えない。I1）", () => {
