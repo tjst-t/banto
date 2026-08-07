@@ -606,6 +606,9 @@ export class EnvironmentPool {
         config: resolved.config,
         taskId,
         ...(request.workdir ? { workdir: path.resolve(request.workdir) } : {}),
+        // task-0074: プロファイルを読んだ場所。ドライバは `config` の中の相対パスを
+        // これを基点に解ける（`config` の中身は Pool が解釈しない・spec §2 のまま）
+        ...(request.repoPath ? { repoPath: path.resolve(request.repoPath) } : {}),
       },
       this.timeoutMs,
       extraEnv

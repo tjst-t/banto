@@ -166,13 +166,22 @@ function handleProvision(input: Record<string, unknown>): void {
     process.exit(1);
   }
 
-  // 決定34d: 相対 compose パスは workdir から解決する。省略時は従来どおり自分の cwd
+  // 決定34d: 相対 compose パスは workdir から解決する
   // ——ここが Environment Pool の cwd 固定だったせいで、番頭は「職人が作った worktree で
-  // 検証して」を頼めなかった
+  // 検証して」を頼めなかった。
+  //
+  // **workdir が無いときの落ち先は repoPath**（task-0074）。自分の cwd に落とすと、
+  // Environment Pool を独立サービスにした時点で「banto のリポジトリ」を指すようになり、
+  // **受け持つプロジェクトとは何の関係もない場所**で compose を探すことになる。
+  // プロファイルは `<repoPath>/meta/environments.yaml` から読んだのだから、
+  // そこに書かれた相対パスの基点は repoPath。実測で踏んだ：
+  //   env.verify(repoPath=<loamium>, profile="test") が
+  //   `<banto>/docker/test.yaml がありません` で落ちた
   const workdir = input["workdir"] as string | undefined;
+  const repoPath = input["repoPath"] as string | undefined;
   const composeFile = path.isAbsolute(composePath)
     ? composePath
-    : path.resolve(workdir ?? process.cwd(), composePath);
+    : path.resolve(workdir ?? repoPath ?? process.cwd(), composePath);
 
   if (!fs.existsSync(composeFile)) {
     process.stderr.write(`docker-driver provision: compose file not found: ${composeFile}\n`);
@@ -495,6 +504,30 @@ function handleTeardown(input: Record<string, unknown>): void {
       `docker-driver teardown: docker compose down failed (exit ${r.exitCode}):\n${r.stderr}\n`
     );
     process.exit(1);
+  }
+
+  // **`down` は one-off コンテナを消さない**（task-0074・実測）。
+  //
+  // `run` は `docker compose run --rm` の一時コンテナ（ラベル `oneoff=True`）で動く。
+  // `--rm` を消すのは**クライアント側**なので、run が制限時間で殺されるとクライアントごと
+  // 落ち、コンテナだけが残る。`compose down` は oneoff を対象にしないため、
+  // **畳んだつもりでコンテナが走り続ける**——`tornDown: true` を返しながら外で動いている、
+  // という I3 の不変条件がいちばん破れてはいけない形で破れる。
+  //
+  // 実測：`env.verify` が run の10分上限で切られたあと、one-off が9分以上走り続けていた。
+  const leftovers = runCmd("docker", [
+    "ps", "-aq", "--filter", `label=com.docker.compose.project=${project}`,
+  ]);
+  const ids = leftovers.stdout.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+  if (ids.length > 0) {
+    const rm = runCmd("docker", ["rm", "-f", ...ids]);
+    if (rm.exitCode !== 0) {
+      // I2: 消せなかったことを成功に見せない
+      process.stderr.write(
+        `docker-driver teardown: 残った one-off コンテナを消せませんでした（exit ${rm.exitCode}）:\n${rm.stderr}\n`
+      );
+      process.exit(1);
+    }
   }
 
   process.stdout.write(JSON.stringify({}) + "\n");

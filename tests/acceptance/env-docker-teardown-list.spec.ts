@@ -473,3 +473,120 @@ describe("[AC-S9d7fdb-3-3] docker driver full contract suite (7 verbs, real dock
     );
   });
 });
+
+/**
+ * task-0074: **相対 compose パスの落ち先は repoPath**。
+ *
+ * 決定34d は「相対 compose パスは workdir から解決する」と定めた。正しいが、**workdir が
+ * 無いときの落ち先が Environment Pool 自身の cwd**だった。独立サービスになってからは
+ * それは「banto のリポジトリ」を指し、**受け持つプロジェクトとは何の関係もない場所**で
+ * compose を探すことになる。
+ *
+ * 実測で踏んだ：`env.verify(repoPath=<loamium>, profile="test")` が
+ * `<banto>/docker/test.yaml がありません` で落ちた。プロファイルは
+ * `<repoPath>/meta/environments.yaml` から読んだのだから、相対パスの基点は repoPath。
+ */
+describe("[task-0074] 相対 compose パスの解決", () => {
+  it("workdir が無ければ repoPath から解く（Pool の cwd に落とさない）", () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-compose-base-"));
+    try {
+      fs.mkdirSync(path.join(repoDir, "docker"), { recursive: true });
+      fs.writeFileSync(
+        path.join(repoDir, "docker", "probe.yaml"),
+        [
+          "services:",
+          "  svc:",
+          '    image: busybox:latest',
+          '    command: ["sh", "-c", "while true; do sleep 1; done"]',
+          "    security_opt:",
+          "      - apparmor=unconfined",
+        ].join("\n") + "\n",
+        "utf8"
+      );
+
+      // **repoPath だけ渡す**（workdir は渡さない）。直す前はここで
+      // 「<banto>/docker/probe.yaml がありません」で落ちていた
+      const taskId = `task-compose-base-${Date.now()}`;
+      const r = invokeDriver(
+        "provision",
+        { config: { compose: "docker/probe.yaml" }, taskId, repoPath: repoDir },
+        120_000
+      );
+      try {
+        assert.equal(
+          r.exitCode,
+          0,
+          `repoPath から compose を解けていない（exit ${r.exitCode}）: ${r.stderr}`
+        );
+        const handle = (JSON.parse(r.stdout) as { handle: { composeFile: string } }).handle;
+        assert.equal(
+          handle.composeFile,
+          path.join(repoDir, "docker", "probe.yaml"),
+          "repoPath 配下の compose を指していない"
+        );
+      } finally {
+        // I3: 立てたものは必ず畳む
+        try {
+          const handle = (JSON.parse(r.stdout) as { handle: unknown }).handle;
+          if (handle) invokeDriver("teardown", { handle }, 30_000);
+        } catch {
+          /* provision に失敗していれば畳むものは無い */
+        }
+      }
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * task-0074: **`compose down` は one-off コンテナを消さない。**
+ *
+ * `run` は `docker compose run --rm` の一時コンテナ（ラベル `oneoff=True`）で動く。
+ * `--rm` を消すのはクライアント側なので、run が制限時間で殺されるとクライアントごと落ち、
+ * **コンテナだけが残る**。`compose down` は oneoff を対象にしない。
+ *
+ * 結果、`env.verify` が `tornDown: true` を返しながら**外でコンテナが走り続ける**——
+ * I3 の不変条件（畳めなかったら成功に見せない）が、いちばん破れてはいけない形で破れる。
+ * 実測で踏んだ：run の10分上限で切られたあと、one-off が9分以上走っていた。
+ */
+describe("[task-0074] teardown は one-off コンテナも消す（I3）", () => {
+  it("run のあとに teardown すると、oneoff ラベルのコンテナも残らない", () => {
+    assertDockerAvailable();
+    const taskId = `task-oneoff-${Date.now()}`;
+    const r = invokeDriver("provision", { config: { compose: COMPOSE_FIXTURE }, taskId }, 120_000);
+    assert.equal(r.exitCode, 0, `provision failed: ${r.stderr}`);
+    const handle = (JSON.parse(r.stdout) as { handle: { project: string } }).handle;
+
+    try {
+      // **run を途中で殺す**（制限時間で切られたのと同じ形）。正常に終わる run では
+      // `--rm` が効いてコンテナが消えるので、**この検体は成立しない**
+      // ——最初そう書いて、直しを無効にしても通ってしまった（空振りする検査）
+      invokeDriver("run", { handle, cmd: "sleep 120" }, 4000);
+
+      // 殺したあと、one-off が残っていることを確かめる（前提の確認）
+      const during = runShell("docker", [
+        "ps", "-aq", "--filter", `label=com.docker.compose.project=${handle.project}`,
+        "--filter", "label=com.docker.compose.oneoff=True",
+      ]);
+      assert.notEqual(
+        during.stdout.trim(),
+        "",
+        "run を殺しても one-off が残らない——この検体は元の壊れ方を再現していない"
+      );
+    } finally {
+      const td = invokeDriver("teardown", { handle }, 60_000);
+      assert.equal(td.exitCode, 0, `teardown failed: ${td.stderr}`);
+    }
+
+    // **この project のコンテナが1つも残っていないこと**（oneoff を含めて）
+    const left = runShell("docker", [
+      "ps", "-aq", "--filter", `label=com.docker.compose.project=${handle.project}`,
+    ]);
+    assert.equal(
+      left.stdout.trim(),
+      "",
+      `畳んだのにコンテナが残っている（tornDown を成功に見せてはいけない）: ${left.stdout}`
+    );
+  });
+});
