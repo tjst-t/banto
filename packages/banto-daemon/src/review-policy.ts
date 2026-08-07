@@ -37,6 +37,16 @@ export const PROJECT_CONFIG_PATH = path.join("meta", "config.yaml");
 
 /** 層B設定のうち、Kobo が読むもの。 */
 export interface ProjectConfig {
+  verify: {
+    /**
+     * マージ前ゲートの検証を回す検証環境プロファイル名（task-0075）。
+     *
+     * `<repoPath>/meta/environments.yaml` に定義したもの。**既定 `test`**。
+     * Kobo は検証をホストで走らせない（PO裁定 2026-08-07）ので、**これが解決できないと
+     * ゲートは通らない**——受け持たせるリポジトリには必ず1つ要る。
+     */
+    profile: string;
+  };
   review: {
     /**
      * ここに触るタスクは必ず PO まで上げる（決定57・66）。
@@ -76,7 +86,14 @@ export interface ProjectConfig {
 export const DEFAULT_VERIFY_TIMEOUT_MINUTES = 10;
 export const MAX_VERIFY_TIMEOUT_MINUTES = 60;
 
-const EMPTY_CONFIG: ProjectConfig = { review: { poRequiredPaths: [] }, limits: {} };
+/** 検証環境プロファイルの既定名。 */
+export const DEFAULT_VERIFY_PROFILE = "test";
+
+const EMPTY_CONFIG: ProjectConfig = {
+  verify: { profile: DEFAULT_VERIFY_PROFILE },
+  review: { poRequiredPaths: [] },
+  limits: {},
+};
 
 /**
  * プロジェクトの層B設定を読む。**無ければ空**（設定ファイルを必須にしない）。
@@ -95,6 +112,11 @@ export function loadProjectConfig(repoPath: string): ProjectConfig {
     throw new Error(`${PROJECT_CONFIG_PATH} を解釈できません: ${String(err)}`);
   }
 
+  const verify = (parsed["verify"] ?? {}) as Record<string, unknown>;
+  const verifyProfile = verify["profile"];
+  if (verifyProfile !== undefined && typeof verifyProfile !== "string") {
+    throw new Error(`${PROJECT_CONFIG_PATH}: verify.profile はプロファイル名（文字列）で書いてください`);
+  }
   const review = (parsed["review"] ?? {}) as Record<string, unknown>;
   const limits = (parsed["limits"] ?? {}) as Record<string, unknown>;
   const rawPaths = review["po_required_paths"];
@@ -141,6 +163,7 @@ export function loadProjectConfig(repoPath: string): ProjectConfig {
   }
 
   return {
+    verify: { profile: (verifyProfile as string | undefined) ?? DEFAULT_VERIFY_PROFILE },
     review: { poRequiredPaths: Array.isArray(rawPaths) ? rawPaths.map(String) : [] },
     limits: {
       ...(tier !== undefined ? { maxModelTier: tier as ProjectConfig["limits"]["maxModelTier"] } : {}),

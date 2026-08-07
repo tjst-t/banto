@@ -27,6 +27,7 @@ import { execFileSync } from "node:child_process";
 import { runMergeGate } from "@banto/daemon";
 import { EventLog, StateStore } from "@banto/core";
 import type { MergeGateEvaluatedEvent } from "@banto/core";
+import { hostVerifyRunner } from "./gate-verify-runner.js";
 
 // ── Git fixture helpers ────────────────────────────────────────────────────────
 
@@ -104,6 +105,8 @@ describe("[AC-S75f66b-4-2] Merge gate verify command execution (library)", () =>
       base,
       branch,
       worktreePath: repoPass, // use the repo itself as the worktree
+      verifyRunner: hostVerifyRunner(),
+      repoPathForProfile: repoPass,
     });
 
     // step 1 expected: gate passes
@@ -174,6 +177,8 @@ describe("[AC-S75f66b-4-2] Merge gate verify command execution (library)", () =>
       base,
       branch,
       worktreePath: repoFail,
+      verifyRunner: hostVerifyRunner(),
+      repoPathForProfile: repoFail,
     });
 
     // step 2 expected: gate fails due to non-zero exit (I1: daemon executed it directly)

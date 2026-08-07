@@ -27,6 +27,22 @@ import { fileURLToPath } from "node:url";
 
 export const DEFAULT_DRIVER_TIMEOUT_MS = 30_000;
 
+/**
+ * `provision` だけは長く待つ（task-0075・実測）。
+ *
+ * spec-environment §5.1 は「他の動詞（provision / healthcheck 等）はすぐ返るはず」として
+ * 短い既定のままにしていた。**その前提が崩れる場合がある**——プロファイルが
+ * `build:` を持つと、`docker compose up -d` は**イメージのビルド**を含む。
+ *
+ * 実測：banto 自身のプロファイル（`node:22-alpine` + apk 4本）で初回が 30 秒を超え、
+ * `driver timeout after 30000ms (verb=provision)` で落ちた。**Kobo が検証環境を必須に
+ * した以上、これは「新しいプロジェクトの初回ゲートが必ず落ちる」ことを意味する。**
+ *
+ * 立てるのは1タスクにつき1回なので、長く待っても後ろは詰まらない（走らせる方の
+ * 上限は `run` が別に持つ）。
+ */
+export const DEFAULT_PROVISION_TIMEOUT_MS = 10 * 60_000;
+
 // ── Driver runner result ───────────────────────────────────────────────────────
 
 export type DriverRunResult<T> =

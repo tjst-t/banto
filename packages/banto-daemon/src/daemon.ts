@@ -37,8 +37,15 @@ import { GateEvaluator, evaluatePendingGates } from "./gate-evaluator.js";
 import type { QuotaCheck } from "./gate-evaluator.js";
 import { addTaskWorktree, createWorktree } from "@banto/repo-manager";
 import { processMergeQueue } from "./merge-queue.js";
+import type { GateVerifyRunner } from "./merge-gate.js";
 import { readTaskDefinition } from "./kobo-tools.js";
-import { loadProjectConfig, resolveReviewStage, type ProjectConfig, type ReviewStage } from "./review-policy.js";
+import {
+  DEFAULT_VERIFY_PROFILE,
+  loadProjectConfig,
+  resolveReviewStage,
+  type ProjectConfig,
+  type ReviewStage,
+} from "./review-policy.js";
 import { taskPayload } from "./task-watcher.js";
 import {
   fileConflictTask,
@@ -244,6 +251,15 @@ export interface DaemonConfig {
    * **どこで動かすかは配置の問題**で、Kobo は URL を1つ知っていればよい（決定27b）。
    */
   environmentPoolUrl?: string;
+  /**
+   * 検証を回す場所の差し替え（task-0075）。**試験のためだけの口**。
+   *
+   * 省略時は `gateVerifyRunner()`＝Environment Pool 経由。本番でここを渡すと
+   * 「ホストで検証する」に戻せてしまうので、**設定ファイルからは渡せない**
+   * （コンストラクタ引数だけ）。マージキューの筋道を見る受け入れテストが、
+   * docker を毎回立てずに済ませるために使う。
+   */
+  verifyRunner?: GateVerifyRunner;
   /**
    * Worker Pool の到達先（ADR-0013 決定60）。
    *
@@ -498,6 +514,7 @@ export class Daemon {
         ? { environmentPoolUrl: config.environmentPoolUrl }
         : {}),
       ...(config.workerPoolUrl !== undefined ? { workerPoolUrl: config.workerPoolUrl } : {}),
+      ...(config.verifyRunner !== undefined ? { verifyRunner: config.verifyRunner } : {}),
     };
     return new Daemon(resolved);
   }
@@ -841,7 +858,7 @@ export class Daemon {
    */
   projectConfig(projectTag: string): ProjectConfig {
     const project = this.registry.list().find((p) => p.id === projectTag);
-    if (!project) return { review: { poRequiredPaths: [] }, limits: {} };
+    if (!project) return { verify: { profile: DEFAULT_VERIFY_PROFILE }, review: { poRequiredPaths: [] }, limits: {} };
     return loadProjectConfig(project.repoPath);
   }
 
@@ -2048,6 +2065,53 @@ export class Daemon {
    * 立てるのは Environment Pool。Kobo が残すのは「どのタスクのために頼んだか」だけ
    * （台帳は持たない）。失敗は黙って握らず `env_provision_failed` に理由を残す（I2）。
    */
+  /**
+   * マージ前ゲートが検証を回す場所（task-0075・PO裁定 2026-08-07）。
+   *
+   * **Kobo はホストで検証を走らせない。** 受け持つプロジェクトのテストは、そのプロジェクトが
+   * 宣言した検証環境の中で回す——ホストで走らせると、ホストの状態（入っている道具・空いて
+   * いるポート）が検証結果に混ざる。実際に混ざった（inc-0032）。
+   *
+   * レビュー用の環境（`provisionEnv`）とは別物：**公開しない**（人は触らない）し、
+   * 帳簿にも載せない（ゲートの中で立てて畳む一時のもの。台帳は Environment Pool が持つ）。
+   */
+  gateVerifyRunner(): GateVerifyRunner {
+    return {
+      provision: async (opts) => {
+        const details = await this.envInvoke("env.provision", {
+          repoPath: opts.repoPath,
+          profile: opts.profile,
+          workdir: opts.workdir,
+          taskId: opts.taskId,
+          projectTag: opts.projectTag,
+        });
+        const envId = details["envId"];
+        // I2: envId が無いのに成功扱いにすると、畳む先を失う
+        if (typeof envId !== "string") {
+          throw new Error(`env.provision が envId を返しませんでした（profile: ${opts.profile}）`);
+        }
+        return { envId };
+      },
+      run: async (opts) => {
+        const details = await this.envInvoke("env.run", {
+          envId: opts.envId,
+          cmd: opts.cmd,
+          timeoutMs: opts.timeoutMs,
+          // ゲートのログへ写す分。畳むと環境の中身は消えるので、判断の材料は手元に残す
+          logTailLines: 200,
+        });
+        return {
+          exit: typeof details["exit"] === "number" ? (details["exit"] as number) : 1,
+          ...(typeof details["logPath"] === "string" ? { logPath: details["logPath"] as string } : {}),
+          ...(typeof details["logTail"] === "string" ? { logTail: details["logTail"] as string } : {}),
+        };
+      },
+      teardown: async (envId) => {
+        await this.envInvoke("env.teardown", { envId });
+      },
+    };
+  }
+
   async provisionEnv(
     projectTag: string,
     taskId: string,
@@ -2450,6 +2514,16 @@ export class Daemon {
       },
       // task-0071: 検証コマンドの制限時間は層B設定（`meta/config.yaml`）。
       // 読めなければゲートの既定に任せる——1つの設定でマージキュー全体を止めない（I2）
+      // task-0075: 検証は検証環境の中で回す。**ホストへは落とさない**
+      verifyRunner: this.config.verifyRunner ?? this.gateVerifyRunner(),
+      getVerifyProfile: (projectTag: string) => {
+        try {
+          return this.projectConfig(projectTag).verify.profile;
+        } catch {
+          // 設定が壊れているなら既定で試す。壊れていること自体は他の経路が言う
+          return DEFAULT_VERIFY_PROFILE;
+        }
+      },
       getVerifyTimeoutMs: (projectTag: string) => {
         try {
           const minutes = this.projectConfig(projectTag).limits.verifyTimeoutMinutes;

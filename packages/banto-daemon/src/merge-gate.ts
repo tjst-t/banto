@@ -29,6 +29,7 @@ import type { EventLog, TaskRecord, TaskStatus } from "@banto/core";
 import { StateMachine } from "@banto/core";
 import { fileMatchesScopePaths } from "./gate-evaluator.js";
 import {
+  DEFAULT_VERIFY_PROFILE,
   DEFAULT_VERIFY_TIMEOUT_MINUTES,
   MAX_VERIFY_TIMEOUT_MINUTES,
 } from "./review-policy.js";
@@ -109,6 +110,46 @@ export interface MergeGateOptions {
    * 上限があるのは、マージキューが直列で1本の居座りが後ろを全部止めるため。
    */
   maxVerifyTimeoutMs?: number;
+  /**
+   * 検証を回す場所（PO裁定 2026-08-07・task-0075）。**必須**。
+   *
+   * **Kobo はホストで検証を走らせない。** 受け持つプロジェクトのテストは、そのプロジェクトが
+   * 宣言した検証環境の中で回す——ホストで走らせると、ホストの状態（入っている道具・空いている
+   * ポート）が検証結果に混ざる。実際に混ざった（inc-0032）：banto の Kobo が 3000番に
+   * 居座っていたせいで loamium のテストが1件、永久に落ちていた。
+   *
+   * 渡されないときは**ゲートを通さない**。ホストへ落とすと、いちばん静かに壊れる形
+   * （「たまたま通った」）に戻る。
+   */
+  verifyRunner?: GateVerifyRunner;
+  /** 検証環境のプロファイル名（`meta/config.yaml` の `verify.profile`）。 */
+  verifyProfile?: string;
+  /** プロファイルの在り処。 */
+  repoPathForProfile?: string;
+}
+
+/**
+ * 検証を回す場所（task-0075）。Kobo は Environment Pool 経由でしか検証しない。
+ *
+ * ここを口にしているのは、**ゲートが Environment Pool の実装を知らないため**——
+ * Kobo は `env.*` Tool を呼ぶだけで、立てる・回す・畳むの中身は持ち主のもの（決定32）。
+ * 試験は偽の runner を差せる。
+ */
+export interface GateVerifyRunner {
+  /** 立てる。**畳むのは呼び出し側の責任**（`runMergeGate` が finally で畳む）。 */
+  provision(opts: {
+    repoPath: string;
+    workdir: string;
+    profile: string;
+    taskId: string;
+    projectTag: string;
+  }): Promise<{ envId: string }>;
+  run(opts: {
+    envId: string;
+    cmd: string;
+    timeoutMs: number;
+  }): Promise<{ exit: number; logPath?: string; logTail?: string }>;
+  teardown(envId: string): Promise<void>;
 }
 
 // ── Scope violation check ─────────────────────────────────────────────────────
@@ -167,83 +208,76 @@ export async function checkScopeViolations(input: ScopeCheckInput): Promise<Scop
 // ── Verify command execution ──────────────────────────────────────────────────
 
 /**
- * Run a single acceptance verify command in the rebased worktree.
+ * 受け入れ条件1本を**検証環境の中で**走らせ、結果をゲートのログへ写す（task-0075）。
  *
- * Executes via child_process (I1: daemon runs it directly, no agent self-report).
- * stdout and stderr are captured and written to <logDir>/stdout.txt and stderr.txt.
- * The log directory path is returned as a path reference (never the content, spec §2.1).
+ * ログは2箇所にある：検証環境が書いた全文（`logPath`）と、ここが書く写し
+ * （`<dataDir>/gate-logs/<taskId>/<acId>/`）。**写しを残すのは、環境を畳むと中身が
+ * 消えるから**——判断の材料が畳んだ瞬間に無くなるのでは、後から辿れない（spec §6）。
  *
- * A non-zero exit code is a gate failure — NOT a skip (I2).
- * A command that fails to EXECUTE (spawn error) is also a gate failure (I2).
- *
- * Returns the exitCode (0 = pass, non-zero = fail) and the log directory path.
+ * **時間切れは「判断」ではなく「事故」**（task-0071）。上限まで一気に延ばして1回だけ
+ * やり直す。テストが本当に落ちた（exit≠0 かつ≠124）ものはやり直さない——それは検証が
+ * 出した判定であって、二度走らせても同じことを二度言われるだけ。
  */
-async function runSingleVerifyCommand(opts: {
+async function runVerifyInEnv(opts: {
+  runner: GateVerifyRunner;
+  envId: string;
   acId: string;
   command: string;
-  worktreePath: string;
   logBaseDir: string;
   timeoutMs: number;
-}): Promise<{ exitCode: number; logDirPath: string }> {
-  const { acId, command, worktreePath, logBaseDir, timeoutMs } = opts;
+  maxTimeoutMs: number;
+  taskId: string;
+}): Promise<{ exitCode: number; logDirPath: string; stretchedTo: number }> {
+  const { runner, envId, acId, command, logBaseDir, timeoutMs, maxTimeoutMs, taskId } = opts;
 
-  // Sanitize acId for use as a directory name (replace slashes and other special chars)
   const safeDirName = acId.replace(/[^a-zA-Z0-9_-]/g, "_");
   const logDirPath = path.join(logBaseDir, safeDirName);
   fs.mkdirSync(logDirPath, { recursive: true });
 
-  const stdoutPath = path.join(logDirPath, "stdout.txt");
-  const stderrPath = path.join(logDirPath, "stderr.txt");
+  const writeFailure = (message: string): void => {
+    fs.writeFileSync(path.join(logDirPath, "stdout.txt"), "", "utf-8");
+    fs.writeFileSync(path.join(logDirPath, "stderr.txt"), `${message}\n`, "utf-8");
+  };
 
-  let exitCode: number;
-  let stdoutContent = "";
-  let stderrContent = "";
-
+  let stretchedTo = 0;
+  let result: { exit: number; logPath?: string; logTail?: string };
   try {
-    // Run the command via sh -c so the verify string can be a shell expression.
-    // (D6: sh is already required by spec; no additional dependency.)
-    const result = await execFileAsync("sh", ["-c", command], {
-      cwd: worktreePath,
-      timeout: timeoutMs,
-      maxBuffer: 10 * 1024 * 1024, // 10 MB max for captured output
-    });
-    stdoutContent = result.stdout;
-    stderrContent = result.stderr;
-    exitCode = 0;
+    result = await runner.run({ envId, cmd: command, timeoutMs });
   } catch (err) {
-    // I2: execution failure or non-zero exit are both gate failures.
-    // Extract stdout/stderr from the error object if available.
-    const execErr = err as NodeJS.ErrnoException & {
-      stdout?: string;
-      stderr?: string;
-      code?: number | string;
-      killed?: boolean;
-    };
-    stdoutContent = execErr.stdout ?? "";
-    stderrContent = execErr.stderr ?? "";
+    // I2: 走らせられなかったことを「テストが落ちた」と混同しない。理由を残して失敗にする
+    writeFailure(
+      `[banto-gate] 検証環境でコマンドを走らせられませんでした: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return { exitCode: 1, logDirPath, stretchedTo };
+  }
 
-    if (execErr.killed) {
-      // Timed out
-      stderrContent +=
-        `\n[banto-gate] verify command timed out after ${timeoutMs}ms: ${command}`;
-      exitCode = VERIFY_TIMEOUT_EXIT;
-    } else if (typeof execErr.code === "number") {
-      exitCode = execErr.code;
-    } else if (typeof execErr.code === "string" && /^\d+$/.test(execErr.code)) {
-      exitCode = parseInt(execErr.code, 10);
-    } else {
-      // Spawn error (command not found, permission denied, etc.)
-      stderrContent +=
-        `\n[banto-gate] failed to execute verify command: ${String(err)}`;
-      exitCode = 1; // Non-zero: gate fail (I2)
+  if (result.exit === VERIFY_TIMEOUT_EXIT && timeoutMs < maxTimeoutMs) {
+    process.stderr.write(
+      `[banto-gate] ${taskId}/${acId} が ${Math.round(timeoutMs / 60000)} 分で時間切れ。` +
+        `${Math.round(maxTimeoutMs / 60000)} 分に延ばしてもう一度試します\n`
+    );
+    stretchedTo = maxTimeoutMs;
+    try {
+      result = await runner.run({ envId, cmd: command, timeoutMs: maxTimeoutMs });
+    } catch (err) {
+      writeFailure(
+        `[banto-gate] 延長して走らせられませんでした: ${err instanceof Error ? err.message : String(err)}`
+      );
+      return { exitCode: 1, logDirPath, stretchedTo };
     }
   }
 
-  // Write log files (path references only in events — spec §2.1)
-  fs.writeFileSync(stdoutPath, stdoutContent, "utf-8");
-  fs.writeFileSync(stderrPath, stderrContent, "utf-8");
-
-  return { exitCode, logDirPath };
+  fs.writeFileSync(
+    path.join(logDirPath, "stdout.txt"),
+    [`[banto-gate] 検証環境 ${envId} で実行: ${command}`, result.logTail ?? "(ログなし)"].join("\n"),
+    "utf-8"
+  );
+  fs.writeFileSync(
+    path.join(logDirPath, "stderr.txt"),
+    result.logPath ? `検証環境の全文ログ: ${result.logPath}\n` : "",
+    "utf-8"
+  );
+  return { exitCode: result.exit, logDirPath, stretchedTo };
 }
 
 // ── Main gate function ────────────────────────────────────────────────────────
@@ -277,6 +311,9 @@ export async function runMergeGate(
     worktreePath,
     verifyTimeoutMs = DEFAULT_VERIFY_TIMEOUT_MINUTES * 60_000,
     maxVerifyTimeoutMs = MAX_VERIFY_TIMEOUT_MINUTES * 60_000,
+    verifyRunner,
+    verifyProfile = DEFAULT_VERIFY_PROFILE,
+    repoPathForProfile,
   } = opts;
 
   /** 時間切れで延ばしたときの、実際に使った一番長い制限時間（0 なら延ばしていない）。 */
@@ -315,90 +352,84 @@ export async function runMergeGate(
   }
 
   // ── 2. Verify command execution ───────────────────────────────────────────
+  //
+  // **検証は検証環境の中で回す**（PO裁定 2026-08-07・task-0075）。ホストでは走らせない
+  // ——ホストの状態（入っている道具・空いているポート）が検証結果に混ざるため。
+  // 実際に混ざった（inc-0032）：banto の Kobo が 3000番に居座っていたせいで、
+  // loamium のテストが1件、永久に落ちていた。`make` が入っていないせいで3件落ちてもいた。
+  //
+  // **立てるのは1回**。受け入れ条件ごとに立て直すと、テスト一式を何度も用意することになる。
+  // 畳むのは finally——途中で落ちても畳む（I3）。
   const acceptance = getAcceptance(task);
   const logBaseDir = path.join(dataDir, "gate-logs", taskId);
   const verifyResults: VerifyResult[] = [];
+  const withCommands = acceptance.filter((ac) => ac.verify);
 
-  for (const ac of acceptance) {
-    if (!ac.verify) {
-      // No verify command for this AC — skip (not a gate failure)
-      verifyResults.push({
-        acId: ac.id,
-        command: undefined,
-        exitCode: null,
-        logDirPath: undefined,
-      });
-      continue;
-    }
+  /** 検証に到達できなかった理由（環境が用意できない等）。空なら到達した。 */
+  let verifyBlocked: string | undefined;
 
-    try {
-      let { exitCode, logDirPath } = await runSingleVerifyCommand({
-        acId: ac.id,
-        command: ac.verify,
-        worktreePath,
-        logBaseDir,
-        timeoutMs: verifyTimeoutMs,
-      });
-
-      // **時間切れは「判断」ではなく「事故」**（PO裁定 2026-08-07・task-0071）。
-      // 監査人が落ちたときと同じ扱い——落ちた側にこそやり直す価値がある。
-      // ただし**同じ長さで叩き直しても無意味**なので、上限まで倍にして1回だけ試す。
-      //
-      // テストが本当に落ちた（exit≠0 かつ≠124）ものはやり直さない。それは検証が
-      // 出した**判定**であって、二度走らせても同じことを二度言われるだけ。
-      if (exitCode === VERIFY_TIMEOUT_EXIT && verifyTimeoutMs < maxVerifyTimeoutMs) {
-        // **倍ではなく上限まで一気に延ばす。** やり直しは1回きりなので、倍にして
-        // また足りなければ、時間を使ったうえで何も分からない。上限まで出したうえで
-        // 駄目なら「**この検証は許された範囲で終わらない**」という確かな答えになる
-        // ——それが番頭に渡したい signal（検証が長すぎる）。
-        // 最悪の待ち時間は「既定＋上限」で、マージキューは直列なので上限が歯止め。
-        const stretched = maxVerifyTimeoutMs;
-        process.stderr.write(
-          `[banto-gate] ${taskId}/${ac.id} が ${Math.round(verifyTimeoutMs / 60000)} 分で時間切れ。` +
-            `${Math.round(stretched / 60000)} 分に延ばしてもう一度試します\n`
-        );
-        stretchedTo = Math.max(stretchedTo, stretched);
-        ({ exitCode, logDirPath } = await runSingleVerifyCommand({
-          acId: ac.id,
-          command: ac.verify,
-          worktreePath,
-          logBaseDir,
-          timeoutMs: stretched,
-        }));
-      }
-
-      verifyResults.push({
-        acId: ac.id,
-        command: ac.verify,
-        exitCode,
-        logDirPath,
-      });
-    } catch (err) {
-      // I2: unexpected execution error (e.g. logDir creation failure) → gate fail
-      verifyResults.push({
-        acId: ac.id,
-        command: ac.verify,
-        exitCode: 1,
-        logDirPath: undefined,
-      });
-      // Append to stderrPath if logBaseDir was partially created
+  if (withCommands.length > 0) {
+    if (!verifyRunner) {
+      // I2: **ホストへ落とさない。** 落とすと「たまたま通った」が戻る
+      verifyBlocked = "verify_runner_missing（Kobo に検証環境が配線されていない）";
+    } else if (!repoPathForProfile) {
+      verifyBlocked = "verify_repo_unknown（プロファイルの在り処が分からない）";
+    } else {
+      let envId: string | undefined;
       try {
-        const safeDirName = ac.id.replace(/[^a-zA-Z0-9_-]/g, "_");
-        const logDirPath = path.join(logBaseDir, safeDirName);
-        fs.mkdirSync(logDirPath, { recursive: true });
-        fs.appendFileSync(
-          path.join(logDirPath, "stderr.txt"),
-          `[banto-gate] unexpected error running verify: ${String(err)}\n`,
-          "utf-8"
-        );
-        verifyResults[verifyResults.length - 1]!.logDirPath = logDirPath;
-      } catch {
-        // Secondary log write failure — I2 warning to stderr only
-        process.stderr.write(
-          `[banto-gate] WARNING: could not write error log for ${taskId}/${ac.id}: ${String(err)}\n`
-        );
+        ({ envId } = await verifyRunner.provision({
+          repoPath: repoPathForProfile,
+          workdir: worktreePath,
+          profile: verifyProfile,
+          taskId,
+          projectTag,
+        }));
+      } catch (err) {
+        // I2: 立てられないことを「検証が落ちた」と混同しない。**確かめていない**と言う
+        verifyBlocked =
+          `verify_env_unavailable:${verifyProfile}` +
+          `（${err instanceof Error ? err.message : String(err)}）`;
+      }
+
+      if (envId !== undefined) {
+        try {
+          for (const ac of withCommands) {
+            const outcome = await runVerifyInEnv({
+              runner: verifyRunner,
+              envId,
+              acId: ac.id,
+              command: ac.verify!,
+              logBaseDir,
+              timeoutMs: verifyTimeoutMs,
+              maxTimeoutMs: maxVerifyTimeoutMs,
+              taskId,
+            });
+            if (outcome.stretchedTo > 0) stretchedTo = Math.max(stretchedTo, outcome.stretchedTo);
+            verifyResults.push({
+              acId: ac.id,
+              command: ac.verify,
+              exitCode: outcome.exitCode,
+              logDirPath: outcome.logDirPath,
+            });
+          }
+        } finally {
+          // I3: 途中で落ちても畳む。畳めなかったことは黙らせない
+          try {
+            await verifyRunner.teardown(envId);
+          } catch (err) {
+            process.stderr.write(
+              `[banto-gate] ${taskId}: 検証環境 ${envId} を畳めませんでした: ${String(err)}\n`
+            );
+          }
+        }
       }
     }
+  }
+
+  // verify を持たない受け入れ条件は、そのまま「走らせるものが無い」として並べる
+  for (const ac of acceptance) {
+    if (ac.verify) continue;
+    verifyResults.push({ acId: ac.id, command: undefined, exitCode: null, logDirPath: undefined });
   }
 
   // ── 3. Aggregate result ───────────────────────────────────────────────────
@@ -410,6 +441,12 @@ export async function runMergeGate(
     for (const v of scopeResult.violations) {
       reasons.push(`scope_violation:${v}`);
     }
+  }
+
+  // I2: **検証に到達できなかったことを「通った」にしない。** 確かめていないのだから、
+  // 通してはいけない——ホストへ落とす道を残すと、ここが静かに緩む
+  if (verifyBlocked) {
+    reasons.push(verifyBlocked);
   }
 
   // Verify command failures

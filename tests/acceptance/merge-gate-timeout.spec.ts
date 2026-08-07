@@ -38,6 +38,7 @@ import {
   loadProjectConfig,
 } from "../../packages/banto-daemon/src/review-policy.js";
 import { EventLog } from "../../packages/banto-core/src/index.js";
+import { hostVerifyRunner } from "./gate-verify-runner.js";
 
 let repoDir: string;
 let dataDir: string;
@@ -95,6 +96,10 @@ describe("[task-0071] 時間切れは事故として扱う（やり直す）", (
       base,
       branch,
       worktreePath: repoDir,
+
+      verifyRunner: hostVerifyRunner(),
+
+      repoPathForProfile: repoDir,
       verifyTimeoutMs: 200,
       maxVerifyTimeoutMs: 60_000,
     });
@@ -114,6 +119,10 @@ describe("[task-0071] 時間切れは事故として扱う（やり直す）", (
       base,
       branch,
       worktreePath: repoDir,
+
+      verifyRunner: hostVerifyRunner(),
+
+      repoPathForProfile: repoDir,
       verifyTimeoutMs: 300,
       maxVerifyTimeoutMs: 600,
     });
@@ -140,6 +149,10 @@ describe("[task-0071] 時間切れは事故として扱う（やり直す）", (
         base,
         branch,
         worktreePath: repoDir,
+
+        verifyRunner: hostVerifyRunner(),
+
+        repoPathForProfile: repoDir,
         verifyTimeoutMs: 5000,
         maxVerifyTimeoutMs: 60_000,
       }
@@ -167,6 +180,10 @@ describe("[task-0071] 時間切れは事故として扱う（やり直す）", (
         base,
         branch,
         worktreePath: repoDir,
+
+        verifyRunner: hostVerifyRunner(),
+
+        repoPathForProfile: repoDir,
         verifyTimeoutMs: 300,
         maxVerifyTimeoutMs: 300,
       }

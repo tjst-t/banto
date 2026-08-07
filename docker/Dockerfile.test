@@ -1,0 +1,11 @@
+# banto のテスト環境イメージ。
+#
+# **道具立ての契約はここ**（task-0075）。ホストに何が入っているかに検証結果を
+# 左右させないための場所——実際に `make` がホストに無いせいで loamium のテストが
+# 3件落ちていた（inc-0032）。足りない道具はホストに apt するのではなく、ここに書く。
+FROM node:22-alpine
+
+# git: テストが実物の git リポジトリを作って検査するため（受け入れテストの多く）
+# make / g++ / python3: ネイティブ依存のビルドに要ることがある
+# docker-cli: 検証環境の docker ドライバ自身の受け入れテストが docker を呼ぶ
+RUN apk add --no-cache git make g++ python3 docker-cli

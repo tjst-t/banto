@@ -31,6 +31,7 @@ import * as os from "node:os";
 import { execFileSync, execSync } from "node:child_process";
 import { Daemon } from "@banto/daemon";
 import { deriveQueue } from "@banto/daemon";
+import { hostVerifyRunner } from "./gate-verify-runner.js";
 import { EventLog } from "@banto/core";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -137,6 +138,8 @@ describe("[AC-S75f66b-5-3] Queue derived from event log; restart resumes process
     // audit_spawn_disabled event is emitted for each implementing→auditing transition
     // (F2 governance: suppression is visible in the event log).
     daemon = Daemon.create({
+      // task-0075: 検証環境は必須。マージキューの筋道を見るのが本題なので偽物を差す
+      verifyRunner: hostVerifyRunner(),
       port: 0,
       dataDir,
       worktreeBaseDir,
@@ -260,6 +263,8 @@ describe("[AC-S75f66b-5-3] Queue derived from event log; restart resumes process
     // disableAuditSpawn must be true on restart as well — tasks in approved/merging
     // state may be re-processed but should not trigger audit spawns on restart.
     daemon = Daemon.create({
+      // task-0075: 検証環境は必須。マージキューの筋道を見るのが本題なので偽物を差す
+      verifyRunner: hostVerifyRunner(),
       port: 0,
       dataDir,
       worktreeBaseDir,

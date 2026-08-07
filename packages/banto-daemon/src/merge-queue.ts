@@ -48,7 +48,7 @@ import { promisify } from "node:util";
 import type { EventLog, TaskRecord } from "@banto/core";
 import { StateMachine } from "@banto/core";
 import type { OrchestrationEvent, StateTransitionedEvent } from "@banto/core";
-import { runMergeGate } from "./merge-gate.js";
+import { runMergeGate, type GateVerifyRunner } from "./merge-gate.js";
 import { removeWorktree } from "@banto/repo-manager";
 
 const execFileAsync = promisify(execFile);
@@ -205,6 +205,13 @@ export interface MergeProcessorOptions {
    * 固定値ではなく引く形にしてある。省略時はゲート側の既定。
    */
   getVerifyTimeoutMs?: (projectTag: string) => number | undefined;
+  /**
+   * 検証環境のプロファイル名を解く（`meta/config.yaml` の `verify.profile`）。
+   * task-0075: Kobo はホストで検証しないので、これが解けないとゲートは通らない。
+   */
+  getVerifyProfile?: (projectTag: string) => string | undefined;
+  /** 検証を回す場所（Environment Pool 経由）。**必須**——渡さないとゲートは通らない。 */
+  verifyRunner?: GateVerifyRunner;
   /**
    * Hook called when rebase fails (conflict). Story 6 hooks in here to
    * auto-file a conflict-resolution task and pause the origin task.
@@ -383,6 +390,7 @@ export async function processMergeQueue(
   }
 
   const verifyTimeoutMs = opts.getVerifyTimeoutMs?.(projectTag);
+  const verifyProfile = opts.getVerifyProfile?.(projectTag);
   const gateResult = await runMergeGate(log, updatedTask, {
     dataDir: opts.dataDir,
     repoPath,
@@ -390,6 +398,10 @@ export async function processMergeQueue(
     branch: taskBranch,
     worktreePath,
     ...(verifyTimeoutMs !== undefined ? { verifyTimeoutMs } : {}),
+    // task-0075: 検証は検証環境の中で回す（ホストでは走らせない）
+    ...(opts.verifyRunner ? { verifyRunner: opts.verifyRunner } : {}),
+    ...(verifyProfile !== undefined ? { verifyProfile } : {}),
+    repoPathForProfile: repoPath,
   });
 
   if (!gateResult.passed) {

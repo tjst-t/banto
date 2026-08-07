@@ -1,0 +1,25 @@
+# banto のテスト環境（Environment Pool の docker ドライバ用）。
+#
+# ドライバは provision で `docker compose up -d`、run で
+# `docker compose run --rm <先頭サービス> sh -c <cmd>` を実行する。
+#
+# この機械の制約（loamium 側で先に踏んだもの）:
+# - docker-default の AppArmor プロファイルをロードできないので
+#   `security_opt: [apparmor=unconfined]` が要る
+# - provision 後もコンテナが running を保つ必要があるので command は sleep infinity
+# - run は one-shot の sibling で動く。ソースは bind mount で共有し、node_modules は
+#   名前付きボリュームに隔離してホストの作業ツリーを汚さない
+services:
+  test:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.test
+    security_opt:
+      - apparmor=unconfined
+    working_dir: /app
+    volumes:
+      - ..:/app
+      - banto-node-modules:/app/node_modules
+    command: ["sleep", "infinity"]
+volumes:
+  banto-node-modules:

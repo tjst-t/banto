@@ -1439,3 +1439,62 @@ task-0068・0072 に続いて3度目。**空振りする検査は、無い検査
    ゲートの意味が変わる・全プロジェクトに profile が要る・検証時間が伸びる（直列なので効く）
 2. **loamium/task-0003 を通すか**（番頭 or PO）。ゲートの2条件は確認済み
 3. inc-0033（テスト fixture の後始末）
+
+## セッション更新（2026-08-07、Kobo の検証を検証環境の中でだけ回す・task-0075）
+
+**PO 裁定「Kobo では environment pool を必須にします」。** inc-0032 の根本策を入れた。
+
+### 何が変わったか
+
+`merge-gate.ts` から **`sh -c` のホスト実行を消した**。代わりに口（`GateVerifyRunner`）を
+取り、Kobo が `env.provision` → `env.run` × N → `env.teardown` で実装する。
+
+- **届かないならゲートを通さない**（`verify_runner_missing` / `verify_env_unavailable`）。
+  **ホストへ落とす道を残さない**——残すと、いちばん静かに壊れる形（「たまたま通った」）に戻る
+- **「確かめていない」と「落ちた」を別の言葉にする**。環境の不備を `verify_failed` と
+  同じ言葉で返すと、テストの失敗として読んでしまう（I2）
+- **立てるのは1タスクにつき1回**（受け入れ条件ごとではない）。畳むのは finally（I3）
+- プロファイル名は層B設定（`meta/config.yaml` の `verify.profile`・既定 `test`）
+
+### banto 自身にも検証環境を作った
+
+`meta/environments.yaml` ＋ `docker/test.yaml` ＋ `docker/Dockerfile.test`。
+**自分を受け持たせるのだから例外にしない。**
+
+**Dockerfile が道具立ての契約になる**（git / make / g++ / python3 / docker-cli）。
+今日ホストに `apt` した `make` は、これで正しい場所へ移った。
+
+### 必須化しなければ表に出なかった穴（実測）
+
+**`provision` が30秒で切られる。** プロファイルが `build:` を持つと
+`docker compose up -d` は**イメージのビルド**を含む。spec-environment §5.1 は
+「他の動詞はすぐ返るはず」として短い既定のままにしていたが、その前提が崩れる。
+
+banto のプロファイルで初回が30秒を超え、`driver timeout after 30000ms (verb=provision)`。
+**必須にした以上、これは「新しいプロジェクトの初回ゲートが必ず落ちる」ことを意味する。**
+`DEFAULT_PROVISION_TIMEOUT_MS`（10分）を足した。
+
+### 確かめたこと（I1）
+
+- `npm test` **1,293件 green**（新規6件）・typecheck・build
+- **イメージとビルドキャッシュを消したまっさらな状態**から `env.verify` を実機で回し、
+  コンテナの中で `node v22.23.2` / `git 2.54.0` / **`GNU Make 4.4.1`** / exit 0 /
+  `tornDown: true`——**ホストに無い道具がイメージにあることを実物で見た**
+- テスト後にコンテナが1つも残らないこと
+
+### 試験専用の口（正直に）
+
+`tests/acceptance/gate-verify-runner.ts` はホストで走らせる偽物。ゲートの筋道を見るのに
+docker を毎回立てていられないため。**`tests/` に置いてあるので `packages/` から import
+できない。** `Daemon.create({ verifyRunner })` も試験のための口で、**設定ファイルからは
+渡せない**（渡せるようにすると「ホストで検証する」に戻せてしまう）。
+
+不変条件そのものは `merge-gate-env-required.spec.ts` が**偽物を渡さずに**見ている。
+
+### 次の一手
+
+1. **受け持たせるときに profile を要求する。** `kobo-onboarding` の手順に足す（未着手）
+   ——いまは登録できてしまい、最初のマージで初めて気づく
+2. **loamium の `meta/` が未コミット**なので、職人の worktree に profile が無い。
+   コミットは loamium 側の作業（PO）。**これが済むまで loamium はマージまで行けない**
+3. loamium/task-0003 は review-ready のまま（承認は番頭 or PO）

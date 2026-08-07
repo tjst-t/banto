@@ -30,6 +30,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { execFileSync, execSync } from "node:child_process";
 import { Daemon, removeWorktree } from "@banto/daemon";
+import { hostVerifyRunner } from "./gate-verify-runner.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -142,6 +143,8 @@ describe("[AC-S75f66b-5-2] Merge cleanup, dependent unblocking, merged→closed"
     // (F2 governance: suppression is visible in the event log).
     const dataDir = path.join(tmpDir, "data");
     daemon = Daemon.create({
+      // task-0075: 検証環境は必須。マージキューの筋道を見るのが本題なので偽物を差す
+      verifyRunner: hostVerifyRunner(),
       port: 0,
       dataDir,
       worktreeBaseDir,

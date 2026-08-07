@@ -1,0 +1,14 @@
+# banto 自身の検証環境プロファイル（Environment Pool の docker ドライバ用）。
+#
+# **Kobo は検証をホストで走らせない**（PO裁定 2026-08-07・task-0075）。受け持たせる
+# リポジトリには必ず1つ要る——banto 自身も例外ではない（自分を受け持たせるのだから）。
+#
+# 名前が `test` なのは `meta/config.yaml` の `verify.profile` の既定だから。
+# 変えるならそちらにも書くこと。
+profiles:
+  test:
+    driver: docker
+    config:
+      compose: docker/test.yaml
+    # マージ前ゲートは直列なので、居座らせない。検証が終われば畳まれる
+    ttl: 45m

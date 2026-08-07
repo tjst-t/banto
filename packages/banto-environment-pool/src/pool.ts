@@ -20,7 +20,12 @@ import * as path from "node:path";
 import type { EnvExposer, EnvHandle, EnvProfile } from "@banto/core";
 import { EnvLedger, countLiveByProfile, type EnvLedgerEntry } from "./env-ledger.js";
 import { EnvEventLog, type EnvEvent, type EnvEventInput, type EnvEventType } from "./event-log.js";
-import { runDriverVerb, resolveDriverPath, DEFAULT_DRIVER_TIMEOUT_MS } from "./env-driver-runner.js";
+import {
+  runDriverVerb,
+  resolveDriverPath,
+  DEFAULT_DRIVER_TIMEOUT_MS,
+  DEFAULT_PROVISION_TIMEOUT_MS,
+} from "./env-driver-runner.js";
 import { decryptSops, resolveCredentialsPath } from "./sops.js";
 import {
   checkAdhocDriver,
@@ -41,6 +46,11 @@ export interface EnvironmentPoolOptions {
   limits?: Partial<EnvLimits>;
   /** ドライバ1動詞あたりの制限時間。 */
   driverTimeoutMs?: number;
+  /**
+   * `provision` だけの制限時間（既定 `DEFAULT_PROVISION_TIMEOUT_MS`）。
+   * プロファイルが `build:` を持つとイメージのビルドを含むため、他の動詞より長く待つ。
+   */
+  provisionTimeoutMs?: number;
   /** sops の鍵ファイル（credentials の復号に使う。決定32d）。 */
   sopsAgeKeyFile?: string;
   /**
@@ -207,6 +217,8 @@ export class EnvironmentPool {
   private readonly ledger: EnvLedger;
   private limits: EnvLimits;
   private readonly timeoutMs: number;
+  /** 立てるときだけの制限時間（イメージのビルドを含みうる。task-0075）。 */
+  private readonly provisionTimeoutMs: number;
   private sopsAgeKeyFile: string | undefined;
   /** 公開方式ごとの口（G9 (b)）。従来の単一 `exposer` は proxy としてここへ畳む。 */
   private readonly exposers: { proxy?: EnvExposer; caddy?: EnvExposer };
@@ -236,6 +248,8 @@ export class EnvironmentPool {
     this.eventLogCorruption = openedEvents.corruptionError;
     this.limits = resolveLimits(options.limits);
     this.timeoutMs = options.driverTimeoutMs ?? DEFAULT_DRIVER_TIMEOUT_MS;
+    this.provisionTimeoutMs =
+      options.provisionTimeoutMs ?? Math.max(this.timeoutMs, DEFAULT_PROVISION_TIMEOUT_MS);
     this.sopsAgeKeyFile = options.sopsAgeKeyFile;
     // I2: どちらも渡すのは曖昧——黙って片方を優先しない
     if (options.exposer && options.exposers) {
@@ -610,7 +624,8 @@ export class EnvironmentPool {
         // これを基点に解ける（`config` の中身は Pool が解釈しない・spec §2 のまま）
         ...(request.repoPath ? { repoPath: path.resolve(request.repoPath) } : {}),
       },
-      this.timeoutMs,
+      // 立てるのはイメージのビルドを含みうる（task-0075）。他の動詞より長く待つ
+      this.provisionTimeoutMs,
       extraEnv
     );
     if (!result.ok) {
