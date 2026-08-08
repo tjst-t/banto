@@ -194,17 +194,18 @@ describe("[task-0064] 番頭が工場に積む（入口）", () => {
     assert.equal(h.daemon.getTask(h.proj, "task-0002"), undefined, "積まれていないこと");
   });
 
-  it("[決定64] 積んだ後の訂正は効かない。理由に「新しいタスクを積め」と書いてある", async () => {
+  it("[決定64 改訂] 積み直しでは訂正できない。理由に kobo.amend と書いてある", async () => {
     // 契約を書き換えて積み直そうとする（scope を広げる典型）
     h.writeTask("task-0001", TASK_FM("task-0001").replace("    - src/**", "    - '**'"));
     await assert.rejects(
       () => h.call("kobo.enqueue", { projectTag: h.proj, taskId: "task-0001" }),
-      /既に積まれています[\s\S]*superseded/
+      /既に積まれています[\s\S]*kobo\.amend/,
+      "訂正の道（kobo.amend）を案内すること——以前は「新しいタスクを積め」だった"
     );
     assert.deepEqual(
       (h.daemon.getTask(h.proj, "task-0001")!["scope"] as { paths: string[] }).paths,
       ["src/**"],
-      "取り込み時点の契約が固まったまま（決定62c）"
+      "積み直しで契約が動いてはいけない（改訂は kobo.amend でだけ起きる）"
     );
   });
 

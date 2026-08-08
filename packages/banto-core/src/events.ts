@@ -236,6 +236,36 @@ export interface TaskSupersededEvent extends EventBase {
 }
 
 /**
+ * 契約を改訂した（task-0082・決定64 改訂）。
+ *
+ * **凍結をやめた代わりに、改訂を必ずここに残す。** 「何に対して監査したのか」は、
+ * 凍結ではなく**版で**答える——`kobo.task` の経緯にこのイベントが並ぶので、
+ * 「版 V の契約に対して時刻 T に監査した」が読める。
+ *
+ * `auditInvalidated` は、この改訂で監査がやり直しになったか。`verify` だけの訂正
+ * （＝「どう確かめるか」だけを直した）なら基準は変わっていないので `false`。
+ */
+export interface TaskContractAmendedEvent extends EventBase {
+  type: "task_contract_amended";
+  taskId: string;
+  /** 誰が改訂したか。緩める方向は PO だけ（→ daemon.amendTask） */
+  amendedBy: "banto" | "po";
+  /** なぜ改訂したか。帳簿に残る */
+  reason: string;
+  /** 何が変わったか（人が読む要約。1変更1行） */
+  changes: string[];
+  /** この改訂で監査が無効になったか */
+  auditInvalidated: boolean;
+  /**
+   * **改訂後の契約そのもの**（`acceptance` / `scope` / `title` / `body` …）。
+   *
+   * D3: 状態はイベントログから作り直せなければならない。要約（`changes`）だけ載せると、
+   * リプレイしたときに契約が古いまま復元される——**帳簿と実物が食い違う**。
+   */
+  contract: Record<string, unknown>;
+}
+
+/**
  * Task definition file was rejected during watcher ingest (I2: rejection recorded, not swallowed).
  * The file is NOT added to the task registry. reason describes the validation failure.
  */
@@ -442,6 +472,7 @@ export type OrchestrationEvent =
   | TaskResumedEvent
   | TaskFailedEvent
   | TaskSupersededEvent
+  | TaskContractAmendedEvent
   | TaskIngestRejectedEvent
   | TickJobFailedEvent
   | MergeGateEvaluatedEvent

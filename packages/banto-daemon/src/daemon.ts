@@ -735,8 +735,9 @@ export class Daemon {
         ok: false,
         reason:
           `${taskId} は既に積まれています（いまの状態: ${existing.status}）。` +
-          "取り込み済みのタスクの契約は変えられません——訂正するなら新しいタスクを積み、" +
-          "元を superseded にしてください（決定64）",
+          "契約を訂正するなら、定義ファイルを直して kobo.amend を呼んでください（決定64 改訂）" +
+          "——検証コマンドの訂正だけなら監査はやり直しになりません。" +
+          "**別のものを作りたい**なら新しいタスクを積み、元を kobo.supersede で置き換えてください",
       };
     }
 
@@ -842,6 +843,174 @@ export class Daemon {
   }
 
   /**
+   * 契約の改訂を分類する（task-0082・決定64 改訂）。
+   *
+   * **危ないのは「変えること」ではなく「緩めること」。** 何を変えたかで、
+   * ①誰が変えてよいか ②監査をやり直すか が変わる。
+   *
+   * - `verify` **だけ**：「どう確かめるか」の訂正。基準は動いていないので**監査は有効**。
+   *   ゲートは元々毎回回るので、直した検証はそこで実際に走る
+   * - `acceptance` の増減・`text` の変更：**何をもって完了とするか**が動く。監査は無効
+   * - `scope.paths`：**エントリを取り除くのは番頭でよい**（触れる範囲が確実に減る）。
+   *   **新しいパス文字列を足すのは PO**——範囲外の変更を事後に正当化できてしまう
+   *
+   * **glob の包含関係は文字列では解けない。** `src/narrow/**` は `src/**` より狭いが、
+   * それを機械に判定させると必ずどこかで取り違える。**間違えてよい方向は「厳しすぎる」側**
+   * なので、いまの一覧に無い文字列が1つでも増えたら PO に上げる。意味としては狭くても、
+   * PO が見れば1秒で通る話であって、緩い側に倒して事故るより安い。
+   */
+  private classifyAmendment(
+    current: TaskRecord,
+    next: Record<string, unknown>
+  ): {
+    changes: string[];
+    auditInvalidated: boolean;
+    /** 緩める方向（PO の判断が要る）か */
+    loosens: boolean;
+  } {
+    const changes: string[] = [];
+    let auditInvalidated = false;
+    let loosens = false;
+
+    const curAcc = (current["acceptance"] as Array<Record<string, unknown>> | undefined) ?? [];
+    const nextAcc = (next["acceptance"] as Array<Record<string, unknown>> | undefined) ?? [];
+    const curById = new Map(curAcc.map((a) => [String(a["id"]), a]));
+    const nextById = new Map(nextAcc.map((a) => [String(a["id"]), a]));
+
+    for (const [id, a] of curById) {
+      const b = nextById.get(id);
+      if (!b) {
+        // 受け入れ条件を消すのは、できていないものを通す方向
+        changes.push(`受け入れ条件 ${id} を削除`);
+        auditInvalidated = true;
+        loosens = true;
+        continue;
+      }
+      if (String(a["text"] ?? "") !== String(b["text"] ?? "")) {
+        changes.push(`受け入れ条件 ${id} の基準を変更`);
+        auditInvalidated = true;
+        loosens = true; // 厳しくしたのか緩めたのかは機械では読めない。安全側に倒す
+      }
+      if (String(a["verify"] ?? "") !== String(b["verify"] ?? "")) {
+        // **ここが本命**。基準は同じで、確かめ方だけ直す
+        changes.push(
+          `受け入れ条件 ${id} の検証コマンドを変更: ${String(a["verify"] ?? "(なし)")} → ${String(b["verify"] ?? "(なし)")}`
+        );
+      }
+    }
+    for (const [id] of nextById) {
+      if (!curById.has(id)) {
+        // 増やすのは厳しくする方向だが、**監査はそれを見ていない**
+        changes.push(`受け入れ条件 ${id} を追加`);
+        auditInvalidated = true;
+      }
+    }
+
+    const curScope = ((current["scope"] as { paths?: string[] } | undefined)?.paths ?? []).slice();
+    const nextScope = ((next["scope"] as { paths?: string[] } | undefined)?.paths ?? []).slice();
+    if (JSON.stringify(curScope) !== JSON.stringify(nextScope)) {
+      const widened = nextScope.some((p) => !curScope.includes(p));
+      changes.push(`スコープを変更: [${curScope.join(", ")}] → [${nextScope.join(", ")}]`);
+      auditInvalidated = true;
+      if (widened) loosens = true;
+    }
+
+    for (const key of ["title", "body"]) {
+      if (String(current[key] ?? "") !== String(next[key] ?? "")) {
+        // 判断の材料であって監査の対象ではない
+        changes.push(`${key === "title" ? "タイトル" : "本文"}を変更`);
+      }
+    }
+
+    return { changes, auditInvalidated, loosens };
+  }
+
+  /**
+   * 契約を改訂する（task-0082・**決定64 の改訂**・PO 裁定 2026-08-08）。
+   *
+   * **凍結をやめた。** 凍結は「何に対して監査したのか」を守るためのものだったが、
+   * 間違いが直せないので運用が「新しいタスクを立てる」に逃げ、**経緯が別 id に
+   * 分かれて追跡性がむしろ落ちていた**（実機の loamium task-0004 → 0005）。
+   *
+   * 代わりに3つを守る：
+   *   1. **黙って起きない**——ファイルを読み直すのはこれを呼んだときだけ
+   *      （watcher は今までどおり読み飛ばす。inc-0028 の直しはそのまま）
+   *   2. **記録に残る**——変更前後・誰が・なぜが `task_contract_amended` に載る
+   *   3. **依存するものが差し戻る**——基準が動いたら監査は無効になり implementing へ
+   *
+   * I2: 緩める方向（スコープを広げる・基準を変える・条件を消す）は番頭では通らない。
+   */
+  amendTask(
+    projectTag: string,
+    taskId: string,
+    options: { reason: string; by: "banto" | "po" }
+  ): { ok: true; changes: string[]; auditInvalidated: boolean } | { ok: false; reason: string } {
+    const task = this.store.getTask(taskId, projectTag);
+    if (!task) return { ok: false, reason: `${taskId} は ${projectTag} の工場にありません` };
+    if (task.status === "closed" || task.status === "merged" || task.status === "superseded") {
+      return { ok: false, reason: `${taskId} は ${task.status} なので、もう改訂できません` };
+    }
+
+    const project = this.registry.list().find((p) => p.id === projectTag);
+    if (!project) return { ok: false, reason: `project_not_found: ${projectTag}` };
+    const definition = readTaskDefinition(project.repoPath, taskId);
+    if (!definition.ok) return { ok: false, reason: `定義ファイルが読めません: ${definition.reason}` };
+    const validation = definition.frontmatter;
+    if (!validation.ok) return { ok: false, reason: `定義ファイルの形が違います: ${validation.reason}` };
+    // **`title` は `taskPayload` に入らない**（`createTask` が別引数で受け、payload からは
+    // 落とされる）。足さずに比べると、中身が同じでも毎回「タイトルを変更」が出る
+    // ——実際に踏んだ。帳簿に嘘の改訂が残るところだった
+    const next = { ...taskPayload(validation.frontmatter, definition.content), title: validation.frontmatter.title };
+
+    const { changes, auditInvalidated, loosens } = this.classifyAmendment(task, next);
+    // I2: 何も変わっていないのに「改訂した」と記録しない（帳簿が嘘になる）
+    if (changes.length === 0) {
+      return { ok: false, reason: `${taskId} の定義ファイルは、いまの契約と同じです（改訂するものがありません）` };
+    }
+    if (loosens && options.by !== "po") {
+      return {
+        ok: false,
+        reason:
+          `${taskId} の改訂は**緩める方向**なので PO の判断が要ります: ${changes.join(" / ")}。` +
+          "番頭が通せるのは、検証コマンドの訂正・スコープからパスを取り除く・受け入れ条件を増やす方向だけです" +
+          "（できていないものを通せてしまうため）——取次へ上げてください",
+      };
+    }
+
+    const event = this.log.append({
+      type: "task_contract_amended",
+      projectTag,
+      taskId,
+      amendedBy: options.by,
+      reason: options.reason,
+      changes,
+      auditInvalidated,
+      contract: next,
+    });
+    this.applyAndBroadcast(event);
+
+    // **基準が動いたら監査は無効。** 通ってしまう前に implementing へ戻す。
+    // 終端（failed）にいるものは動かさない——戻し方は `kobo.reopen` が決める
+    const active = task.status !== "failed";
+    if (auditInvalidated && active && task.status !== "implementing" && task.status !== "planning") {
+      const back = this.transition(
+        projectTag,
+        taskId,
+        "implementing",
+        `contract_amended:${options.by}（基準が変わったので監査からやり直し）`
+      );
+      if (!back.ok) {
+        // I2: 戻せないことを黙らせない。改訂は残っているので、状態と記録が食い違う
+        process.stderr.write(
+          `[banto-daemon] ${projectTag}/${taskId}: 契約を改訂しましたが implementing へ戻せませんでした: ${back.reason}\n`
+        );
+      }
+    }
+
+    return { ok: true, changes, auditInvalidated };
+  }
+
+  /**
    * **なぜ落ちたか**（task-0081）。番頭が直す前に読む材料。
    *
    * 落ちた理由の要約（`task_failed` の reason）だけでは直しようがない——
@@ -938,15 +1107,32 @@ export class Daemon {
 
     if (options.mode === "reverify") {
       // I2: 監査を飛ばさせない。承認まで行った実績が要る
-      const reached = this.getTaskEvents(projectTag, taskId).some(
-        (e) => e.type === "state_transitioned" && e.to === "approved"
-      );
-      if (!reached) {
+      const events = this.getTaskEvents(projectTag, taskId);
+      let approvedAt = -1;
+      for (let i = events.length - 1; i >= 0; i--) {
+        const e = events[i]!;
+        if (e.type === "state_transitioned" && e.to === "approved") { approvedAt = i; break; }
+      }
+      if (approvedAt < 0) {
         return {
           ok: false,
           reason:
             `${taskId} は承認まで行っていないので「検証しなおし」はできません` +
             "（監査を飛ばしてマージ待ちに置くことになります）。中身から直すなら mode: \"rework\" を使ってください",
+        };
+      }
+      // **承認のあとに基準が動いていたら、その承認はもう使えない**（task-0082）。
+      // 契約を改訂できるようにした以上、「承認まで行った実績」だけでは足りない
+      // ——改訂で監査が無効になったあとに reverify を通すと、**変わった基準を誰も見ていない**
+      const invalidatedAfter = events
+        .slice(approvedAt)
+        .some((e) => e.type === "task_contract_amended" && e.auditInvalidated);
+      if (invalidatedAfter) {
+        return {
+          ok: false,
+          reason:
+            `${taskId} は承認のあとに**基準が変わっています**（契約の改訂で監査が無効になりました）。` +
+            "変わった基準を誰も見ていない状態でマージ待ちに置けません——mode: \"rework\" で監査からやり直してください",
         };
       }
     }

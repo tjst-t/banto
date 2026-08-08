@@ -1,12 +1,15 @@
 /**
  * task-0062: 積んだ後の訂正（ADR-0013 決定64・inc-0028）。
  *
- * **取り込み済みタスクの契約は凍結されている**（決定62c）。これは砦として正しく効いている
- * ——番頭は `work/tasks/*.md` を書けるので、後から `scope.paths` を広げてマージ前ゲートを
- * 緩められては困る。**正しくなかったのは、直した本人が「直したのに何も起きない」ことに
- * 気づけない**点だった（I2 の黙って失敗する経路）。
+ * **改訂（2026-08-08・task-0082・prop-0002）。** もとの裁定は「訂正は新しいタスクを積み、
+ * 元を `superseded` にする」だった。守ろうとしたもの（「何に対して監査したのか」）は
+ * 本物だが、**間違いが直せないので運用が「新しいタスクを立てる」に逃げ、経緯が別 id に
+ * 分かれて追跡性がむしろ落ちた**（実機の loamium task-0004 → 0005）。
  *
- * 裁定（決定64）：訂正は**新しいタスクを積み、元を `superseded` にする**。
+ * いまの裁定：**契約は改訂できる。ただし黙っては起きず、依存するものが差し戻る**。
+ *
+ * ここで見るのは**据え置いた側**（`kobo.amend` を呼ばない限り、ファイルの書き換えは
+ * 反映されない）。改訂そのものは `kobo-contract-amend.spec.ts`。
  */
 
 import { describe, it, before, after } from "node:test";
@@ -129,15 +132,17 @@ describe("[task-0062] 積んだ後にファイルを直しても反映されな�
       .getProjectEvents(proj)
       .find((e) => e.type === "task_ingest_rejected") as { reason: string };
     assert.match(rejected.reason, /反映されません/, "何が起きなかったのかが書いてある");
-    assert.match(rejected.reason, /superseded/, "どうすればよいかが書いてある（決定64）");
+    // **どうすればよいかが書いてある**。決定64 改訂でここが変わった
+    // ——以前は「新しいタスクを積め」だったが、いまは「kobo.amend を呼べ」
+    assert.match(rejected.reason, /kobo\.amend/, "訂正の道が書いてある（決定64 改訂）");
   });
 
-  it("[a2] 契約は取り込み時点のまま（砦は維持される）", () => {
+  it("[a2] `kobo.amend` を呼ばない限り、契約は取り込み時点のまま（黙って改訂されない）", () => {
     const task = daemon.getTask(proj, "task-0100")!;
     assert.deepEqual(
       (task["scope"] as { paths: string[] }).paths,
       ["src/narrow/**"],
-      "書き換えても scope は広がらない（決定62c）"
+      "ファイルを書き換えただけで scope が広がってはいけない（改訂は明示的にだけ起きる）"
     );
   });
 

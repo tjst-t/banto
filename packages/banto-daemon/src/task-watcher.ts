@@ -207,17 +207,19 @@ export class TaskWatcher {
     const existing = this.daemon.getTask(projectId, fm.id);
     if (existing) {
       const known = prevState?.mtimeMs;
-      // **書き換えても反映されないことを、黙って通さない**（決定64・inc-0028）。
-      // 取り込み済みの契約は凍結されている（決定62c）ので、ここで読み飛ばすのは正しい
-      // ——正しくないのは、直した本人が「直したのに何も起きない」に気づけないことだった。
+      // **書き換えても反映されないことを、黙って通さない**（inc-0028）。
+      // ここで読み飛ばすのは今も正しい——**改訂は黙って起きてはいけない**（task-0082）。
+      // ただし言うことは変わった：以前は「訂正するなら新しいタスクを積め」だったが、
+      // **契約は改訂できる**ようになった（決定64 改訂）。`kobo.amend` を呼べば取り込まれる。
       // 初回の観測（`known === undefined`）は「書き換え」ではないので黙って通す
       if (known !== undefined && known !== mtimeMs) {
         this.daemon.emitIngestRejected(
           projectId,
           filePath,
           `already_ingested: ${fm.id} は取り込み済み（いまの状態: ${existing.status}）なので、` +
-            "ファイルの変更は反映されません。契約は取り込み時点で固まります（決定62c）——" +
-            "訂正するなら新しいタスクを積み、元を superseded にしてください（決定64）"
+            "ファイルの変更は**黙っては**反映されません（改訂を記録に残すため）。" +
+            "この変更を採るなら kobo.amend を呼んでください——検証コマンドの訂正なら監査は" +
+            "やり直しになりません。基準やスコープを変えたなら監査からやり直しになります（決定64 改訂）"
         );
       }
       // Already ingested; mark as ingested at this mtime to suppress re-processing

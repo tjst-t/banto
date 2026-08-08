@@ -77,6 +77,16 @@ const REGULAR_TRANSITIONS: ReadonlySet<string> = new Set<string>([
   "failed:implementing",
   "failed:approved",
   "failed:closed",
+
+  // ── 契約の改訂による差し戻し（task-0082・決定64 改訂）────────────────────
+  //
+  // **基準が動いたら、その基準を見ていない審査は無効**。監査を通ったあとの状態から
+  // `implementing` へ戻して、監査からやり直す。前へ飛ぶ道は増やしていない
+  // ——増えたのは**後ろへ戻る**道だけ（番頭は進められるが飛ばせない・決定62c）。
+  "auditing:planning",
+  "review-ready:implementing",
+  "in-review:implementing",
+  "approved:implementing",
 ]);
 
 /**

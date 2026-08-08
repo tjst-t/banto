@@ -210,6 +210,23 @@ export class StateStore {
         break;
       }
 
+      case "task_contract_amended": {
+        // **契約を差し替える**（task-0082・決定64 改訂）。D3: 状態はイベントから導出される
+        // ので、改訂もイベントとして適用する——ここを飛ばすと、記録だけ残って中身が
+        // 古いままになる（リプレイのたびに食い違う）。
+        // 状態（status）は動かさない——それは state_transitioned の仕事（D3）。
+        const key = StateStore.taskKey(event.projectTag, event.taskId);
+        const task = this.tasks.get(key);
+        if (task) {
+          for (const [k, v] of Object.entries(event.contract)) {
+            // id / status / projectTag は契約ではない。改訂で動かさない
+            if (k === "id" || k === "status" || k === "projectTag") continue;
+            (task as Record<string, unknown>)[k] = v;
+          }
+        }
+        break;
+      }
+
       case "agent_spawned":
       case "agent_exited":
       case "gate_evaluated":

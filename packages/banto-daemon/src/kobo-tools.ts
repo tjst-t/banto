@@ -226,7 +226,11 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
                     ? e.passed
                       ? "通過"
                       : `待ち: ${e.blockedBy.join(", ")}`
-                    : e.type === "merge_gate_evaluated"
+                    : e.type === "task_contract_amended"
+                      // **版が読めないと「何に対して監査したか」が答えられない**（task-0082）
+                      ? `契約を改訂（${e.amendedBy}）: ${e.changes.join(" / ")}` +
+                        (e.auditInvalidated ? "【監査は無効】" : "【監査は有効のまま】")
+                      : e.type === "merge_gate_evaluated"
                       // **なぜ落ちたかが読めないと直せない**（task-0081）。
                       // ここが空文字だったので、経緯を見ても番号すら出なかった
                       ? e.passed
@@ -591,7 +595,64 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     },
   });
 
-  return [enqueue, list, task, projects, events, approve, supersede, registerProject, reopen, abandon];
+  /**
+   * 契約を改訂する（task-0082・**決定64 の改訂**・PO 裁定 2026-08-08）。
+   */
+  const amend = defineNamespacedTool({
+    name: "kobo.amend",
+    label: "Kobo: Amend",
+    description:
+      "積んだあとの契約を**訂正する**。定義ファイルを直してから呼ぶ——**呼ばないと反映されない**" +
+      "（watcher は取り込み済みのファイルを読み飛ばす）。" +
+      "**いちばん効くのは検証コマンドの訂正**：受け入れ基準そのものは正しいのに `verify` の" +
+      "書き方だけ間違っていた、という場合、基準は動いていないので**監査はやり直しになりません**。" +
+      "基準（`acceptance[].text`）やスコープを変えると監査は無効になり implementing へ戻ります。" +
+      "**緩める方向（スコープにパスを足す・基準を変える・条件を消す）は PO の判断**なので、" +
+      "あなたには通せません——取次へ上げてください。**意味としては狭いスコープでも、" +
+      "いまの一覧に無い文字列を足すなら PO 扱い**です（glob の広い／狭いは文字列では解けないので、" +
+      "厳しすぎる側に倒しています）。",
+    parameters: Type.Object({
+      projectTag: Type.String({ description: "どのプロジェクトか" }),
+      taskId: Type.String({ description: "訂正するタスクの id" }),
+      reason: Type.String({
+        description: "**なぜ訂正するのか**。帳簿に残り、あとから「何に対して監査したか」を辿る材料になる",
+      }),
+    }),
+    async execute(params) {
+      requireProject(params.projectTag);
+      const r = daemon.amendTask(params.projectTag, params.taskId, {
+        reason: params.reason,
+        by: "banto",
+      });
+      // I2: 通せなかったことを成功に見せない
+      if (!r.ok) throw new Error(r.reason);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: [
+              `${params.taskId} の契約を改訂しました:`,
+              ...r.changes.map((c) => `・${c}`),
+              r.auditInvalidated
+                ? "**基準が変わったので監査はやり直し**です（implementing へ戻しました）"
+                : "基準は変わっていないので**監査はそのまま有効**です（マージ前ゲートで新しい検証が走ります）",
+            ].join("\n"),
+          },
+        ],
+        details: {
+          taskId: params.taskId,
+          projectTag: params.projectTag,
+          changes: r.changes,
+          auditInvalidated: r.auditInvalidated,
+        },
+      };
+    },
+  });
+
+  return [
+    enqueue, list, task, projects, events, approve, supersede, registerProject,
+    reopen, abandon, amend,
+  ];
 }
 
 /**
