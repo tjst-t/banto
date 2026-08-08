@@ -174,19 +174,37 @@
 .kb-counter {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
-  gap: var(--s6, 24px);
-  height: 100%;
-  min-height: 0;
-  align-items: start;
+  gap: 0;
+  /* **面いっぱいまで伸ばす。** 中身の高さしか持たないと、下に意味のない余白が残る
+     ——「片付いている」ことは件数が言えばよく、余白に言わせる必要はない */
+  min-height: 100%;
+  align-items: stretch;
 }
-.kb-zone { display: flex; flex-direction: column; gap: var(--s2, 8px); min-height: 0; min-width: 0; }
+.kb-zone {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2, 8px);
+  min-width: 0;
+  padding: 0 var(--s5, 20px) var(--s5, 20px) 0;
+}
+/* **流れは沈む面**（spec-design §1.5：ふだんの区切りは紙の濃さの差で出す）。
+   従であることが地の濃さで分かり、同時に面の下端まで伸びる */
+.kb-zone.is-quiet {
+  background: var(--paper-2);
+  padding: 0 var(--s4, 16px) var(--s5, 20px);
+  border-radius: var(--r-face, 10px);
+}
 .kb-zone-head {
   display: flex;
   align-items: baseline;
   gap: var(--s2, 8px);
-  padding-bottom: var(--s1, 4px);
+  padding: var(--s3, 12px) 0 var(--s1, 4px);
   border-bottom: 1px solid var(--rule);
+  position: sticky;
+  top: 0;
+  background: inherit;
 }
+.kb-zone:not(.is-quiet) .kb-zone-head { background: var(--paper); }
 .kb-zone-head h2 { font-size: var(--t-head); font-weight: 600; margin: 0; color: var(--sumi); }
 .kb-zone-head .kb-zone-sub { font-size: var(--t-note); color: var(--sumi-3); }
 /* 「流れ」は従。見出しを一段落とす——同じ大きさだと2つの主役になる */

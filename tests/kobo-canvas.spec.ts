@@ -213,11 +213,17 @@ test.describe("工場のボード（PO要望 2026-08-07 第2報）", () => {
     await expect(page.locator(".kb-goto-worker").first()).toBeVisible();
   });
 
-  test("受け持ちで絞れる（2つ以上のときだけ出す）", async ({ page }) => {
+  test("受け持ちで絞れる（1つでも出す・PO要望 2026-08-08）", async ({ page }) => {
     await open(page, host);
     await page.waitForSelector(".kb-counter");
-    // この検体は受け持ち1つなので、絞りは出さない（要らない口を出さない）
-    await expect(page.locator('select[aria-label="受け持ちで絞る"]')).toHaveCount(0);
+    // **1つでも出す。** 以前は「2つ以上のときだけ」にしていたが、受け持ちが増える前提の
+    // 道具なので、居ないと探しに行けない
+    const select = page.locator('select[aria-label="受け持ちで絞る"]');
+    await expect(select).toBeVisible();
+
+    // 絞ると、その受け持ちのものだけになる
+    await select.selectOption("loamium");
+    await expect(page.locator(".kb-slip").first()).toBeVisible();
   });
 });
 

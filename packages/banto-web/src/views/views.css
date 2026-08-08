@@ -34,6 +34,12 @@
   min-height: 0;
   container-type: inline-size;
   container-name: canvas;
+  /* **面は器の高さいっぱいを使う。** ここが block だったので、中の面が宣言している
+     `flex: 1` が効かず、どの面も**中身の高さで止まっていた**——工場のボードで
+     下半分が意味のない余白になっていたのはこれ（PO指摘 2026-08-08）。
+     面の側はどれも「器いっぱいに伸びる」つもりで書いてあるので、器をそう作る */
+  display: flex;
+  flex-direction: column;
   padding: 0;
   overflow: hidden;
 }

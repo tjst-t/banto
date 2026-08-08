@@ -252,7 +252,7 @@ export function KoboBoard({
     <ViewShell>
       <ViewBar>
         <SearchField value={query} onChange={setQuery} placeholder="タスクを絞る" />
-        {(projects.data?.projects.length ?? 0) > 1 && (
+        {(projects.data?.projects.length ?? 0) > 0 && (
           <Select
             value={project}
             onChange={(e) => setProject(e.target.value)}
@@ -385,7 +385,7 @@ export function KoboBoard({
                       <span className="kb-stage-name">{stage.label}</span>
                       <span className="kb-stage-n">{stage.rows.length}</span>
                     </div>
-                    {stage.rows.slice(0, 4).map((task) => (
+                    {stage.rows.map((task) => (
                       <button
                         type="button"
                         key={`${task.projectTag}/${task.taskId}`}
@@ -398,10 +398,6 @@ export function KoboBoard({
                         {task.title || task.taskId}
                       </button>
                     ))}
-                    {/* I2: 切ったことを黙らせない */}
-                    {stage.rows.length > 4 && (
-                      <span className="kb-stage-n">ほか {stage.rows.length - 4} 件</span>
-                    )}
                   </div>
                 ))}
               </div>
