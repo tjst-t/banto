@@ -71,6 +71,24 @@ function taskDetail(taskId: string, rows: typeof TASKS): Record<string, unknown>
     },
     reviewStage: "banto",
     history: HISTORY,
+    // **落ちているなら理由が付く**（task-0081）。番号だけでは直せないので、
+    // 検証ログの末尾まで返るのが本物の形——偽ホストもそこを真似る
+    ...(row.status === "failed"
+      ? {
+          failure: {
+            reason: "merge_gate_failed: verify_failed:a4(exit=1)",
+            gateReasons: ["verify_failed:a4(exit=1)"],
+            logs: [
+              {
+                acId: "a4",
+                dir: "/var/lib/banto/data/gate-logs/task-0110/a4",
+                tail: "FAIL tests/acceptance/export.spec.ts\nError: 期待した値と違います\nexit 1",
+              },
+            ],
+            reopenCount: 2,
+          },
+        }
+      : {}),
     envUrl: row.status === "in-review" ? "https://env-abc123.ndev.example.net/" : undefined,
     audit: { verdict: "pass", findings: [] },
   };

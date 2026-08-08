@@ -56,11 +56,20 @@ interface ProjectRow {
   repoPath: string;
 }
 
+/** 落ちた理由（`kobo.task` が failed のときだけ返す・task-0081） */
+interface TaskFailure {
+  reason?: string;
+  gateReasons: string[];
+  logs: Array<{ acId: string; dir: string; tail: string }>;
+  reopenCount: number;
+}
+
 interface TaskDetail {
   task: Record<string, unknown>;
   reviewStage?: string;
   envUrl?: string;
   history: HistoryRow[];
+  failure?: TaskFailure;
 }
 
 /**
@@ -69,6 +78,27 @@ interface TaskDetail {
  * 列にまとめるのは「見るとき人が知りたい粒度」であって、状態そのものは畳まない
  * ——詳細には生の状態を出す。
  */
+/**
+ * **あなたを待っているもの**（帳場の主）。
+ *
+ * 判断待ちが先、止まっているが後——どちらも PO の手が要るが、
+ * 「決める」の方が「直す」より軽くて速い。軽い方から片付く順に並べる。
+ */
+const MINE: ReadonlyArray<{ key: string; label: string; states: string[]; kind: "mine" | "stuck" }> = [
+  { key: "judge", label: "決めてほしい", states: ["review-ready", "in-review"], kind: "mine" },
+  { key: "stuck", label: "止まっている", states: ["failed", "paused"], kind: "stuck" },
+];
+
+/** **流れ**（従）。番頭と職人が回している工程。読み飛ばして良い */
+const FLOW: ReadonlyArray<{ key: string; label: string; states: string[] }> = [
+  { key: "waiting", label: "待ち", states: ["queued"] },
+  { key: "next", label: "着手できる", states: ["ready"] },
+  { key: "now", label: "動いている", states: ["planning", "implementing", "auditing"] },
+  { key: "merging", label: "マージ", states: ["approved", "merging"] },
+  { key: "done", label: "片が付いた", states: ["merged", "evaluating", "closed", "superseded"] },
+];
+
+/** 面の検体と経緯の色分けが同じ表を見るように、全部の列をまとめて持つ */
 const COLUMNS: ReadonlyArray<{ key: string; label: string; states: string[]; tone?: Tone }> = [
   { key: "waiting", label: "待ち", states: ["queued"], tone: "neutral" },
   { key: "next", label: "着手できる", states: ["ready"], tone: "accent" },
@@ -114,6 +144,11 @@ export function KoboBoard({
   );
   const [query, setQuery] = useState("");
   const [registering, setRegistering] = useState(false);
+  /** 落ちた札を直すときの入力と手応え（I2：押したのに何も起きない、を作らない） */
+  const [fixReason, setFixReason] = useState("");
+  const [fixBusy, setFixBusy] = useState(false);
+  const [fixError, setFixError] = useState<string | undefined>(undefined);
+  const [fixDone, setFixDone] = useState<string | undefined>(undefined);
   useTicker(15_000);
 
   /** 受け持ちで絞る（PO要望 2026-08-07）。空文字＝全部。 */
@@ -167,6 +202,51 @@ export function KoboBoard({
       })),
     [tasks]
   );
+
+  /** 帳場の主：あなたを待っているもの */
+  const mine = useMemo(
+    () => MINE.map((g) => ({ ...g, rows: tasks.filter((t) => g.states.includes(t.status)) })),
+    [tasks]
+  );
+  const mineCount = mine.reduce((n, g) => n + g.rows.length, 0);
+  /** 帳場の従：番頭と職人が回している工程 */
+  const flow = useMemo(
+    () => FLOW.map((g) => ({ ...g, rows: tasks.filter((t) => g.states.includes(t.status)) })),
+    [tasks]
+  );
+
+  /** 落ちた札を動かし直す。**理由は必須**（帳簿に残り、職人にも渡る） */
+  const fixTask = async (
+    tool: "kobo.reopen" | "kobo.abandon",
+    mode?: "rework" | "reverify"
+  ): Promise<void> => {
+    if (!selected || !fixReason.trim()) return;
+    setFixBusy(true);
+    setFixError(undefined);
+    try {
+      await callModuleTool(endpoint, tool, {
+        projectTag: selected.projectTag,
+        taskId: selected.taskId,
+        reason: fixReason.trim(),
+        ...(mode ? { mode } : {}),
+      });
+      setFixDone(
+        tool === "kobo.abandon"
+          ? "畳みました"
+          : mode === "rework"
+            ? "職人に直させています"
+            : "関所をもう一度回しています"
+      );
+      setFixReason("");
+      list.reload();
+      detail.reload();
+    } catch (err) {
+      // I2: 押したのに何も起きなかったように見せない
+      setFixError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFixBusy(false);
+    }
+  };
 
   const board = (
     <ViewShell>
@@ -236,44 +316,97 @@ export function KoboBoard({
           </EmptyState>
         )
       ) : (
-        <Scroll className="kb-board">
-          {columns.map((column) => (
-            <section
-              key={column.key}
-              className={`kb-col${column.rows.length === 0 ? " is-empty" : ""}`}
-            >
-              <header className="kb-col-head">
-                <span>{column.label}</span>
-                <Badge tone={column.rows.length > 0 ? column.tone ?? "neutral" : "neutral"}>
-                  {column.rows.length}
-                </Badge>
+        <Scroll>
+          <div className="kb-counter">
+            {/* ── 主：あなたを待っている ───────────────────────────────── */}
+            <section className="kb-zone">
+              <header className="kb-zone-head">
+                <h2>あなたを待っている</h2>
+                <span className="kb-zone-sub">
+                  {mineCount === 0 ? "いまはありません" : `${mineCount} 件`}
+                </span>
               </header>
-              <div className="kb-col-body">
-              {column.rows.length === 0 ? (
-                <p className="kb-col-empty">—</p>
+              {mineCount === 0 ? (
+                // **空は「何もない」ではなく「手が空いている」。** 次にできることを言う
+                <p className="kb-col-empty">
+                  番頭と職人が回しています。積むものがあれば会話で頼んでください。
+                </p>
               ) : (
-                column.rows.map((task) => (
-                  <Card
-                    key={`${task.projectTag}/${task.taskId}`}
-                    tone={column.tone}
-                    selected={
-                      selected?.taskId === task.taskId && selected?.projectTag === task.projectTag
-                    }
-                    onClick={() =>
-                      setSelected({ projectTag: task.projectTag, taskId: task.taskId })
-                    }
-                  >
-                    <div className="kb-card-title">{task.title || task.taskId}</div>
-                    <div className="kb-card-meta">
-                      <span className="is-mono">{task.taskId}</span>
-                      <span>{STATUS_LABEL[task.status] ?? task.status}</span>
-                    </div>
-                  </Card>
-                ))
+                <div className="kb-slips">
+                  {mine.map((group) =>
+                    group.rows.length === 0 ? null : (
+                      <div key={group.key}>
+                        <p className="kb-group-label">{group.label}</p>
+                        <div className="kb-slips">
+                          {group.rows.map((task) => (
+                            <button
+                              type="button"
+                              key={`${task.projectTag}/${task.taskId}`}
+                              className={
+                                `kb-slip is-${group.kind}` +
+                                (selected?.taskId === task.taskId &&
+                                selected?.projectTag === task.projectTag
+                                  ? " is-selected"
+                                  : "")
+                              }
+                              onClick={() =>
+                                setSelected({ projectTag: task.projectTag, taskId: task.taskId })
+                              }
+                            >
+                              <div className="kb-slip-title">{task.title || task.taskId}</div>
+                              <div className="kb-slip-meta">
+                                <span className="is-mono">{task.taskId}</span>
+                                <span>{task.projectTag}</span>
+                                <span>{STATUS_LABEL[task.status] ?? task.status}</span>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  )}
+                </div>
               )}
+            </section>
+
+            {/* ── 従：流れ ─────────────────────────────────────────────── */}
+            <section className="kb-zone is-quiet">
+              <header className="kb-zone-head">
+                <h2>流れ</h2>
+                <span className="kb-zone-sub">番頭と職人が回している</span>
+              </header>
+              <div>
+                {flow.map((stage) => (
+                  <div
+                    key={stage.key}
+                    className={`kb-stage${stage.rows.length === 0 ? " is-empty" : ""}`}
+                  >
+                    <div className="kb-stage-head">
+                      <span className="kb-stage-name">{stage.label}</span>
+                      <span className="kb-stage-n">{stage.rows.length}</span>
+                    </div>
+                    {stage.rows.slice(0, 4).map((task) => (
+                      <button
+                        type="button"
+                        key={`${task.projectTag}/${task.taskId}`}
+                        className="kb-stage-item"
+                        title={task.title || task.taskId}
+                        onClick={() =>
+                          setSelected({ projectTag: task.projectTag, taskId: task.taskId })
+                        }
+                      >
+                        {task.title || task.taskId}
+                      </button>
+                    ))}
+                    {/* I2: 切ったことを黙らせない */}
+                    {stage.rows.length > 4 && (
+                      <span className="kb-stage-n">ほか {stage.rows.length - 4} 件</span>
+                    )}
+                  </div>
+                ))}
               </div>
             </section>
-          ))}
+          </div>
         </Scroll>
       )}
     </ViewShell>
@@ -373,6 +506,74 @@ export function KoboBoard({
             </li>
           ))}
         </ol>
+
+        {/* ── 落ちているなら、理由と直す道具を出す（task-0081/0082）──────────
+            **番号だけでは直せない。** 検証ログの末尾まで出す */}
+        {detail.data?.failure && (
+          <>
+            <h3 className="kb-h">なぜ落ちたか</h3>
+            <div className="kb-why">
+              {detail.data.failure.reason && (
+                <p className="kb-why-reason">{detail.data.failure.reason}</p>
+              )}
+              {detail.data.failure.logs
+                .filter((l) => l.tail && l.tail !== "(ログが読めません)")
+                .map((l) => (
+                  <div key={l.acId}>
+                    <div className="kb-why-ac">{l.acId}</div>
+                    <pre className="kb-why-log">{l.tail}</pre>
+                  </div>
+                ))}
+              {detail.data.failure.reopenCount > 0 && (
+                // P6：同じところを何度も叩いていないか
+                <p className="kb-why-again">
+                  すでに {detail.data.failure.reopenCount} 回 戻しています。
+                  同じところで落ち続けているなら、直し方ではなく前提を疑ってください。
+                </p>
+              )}
+            </div>
+
+            <h3 className="kb-h">どうしますか</h3>
+            <p className="kb-para">
+              <strong>タスクは切り直しません。</strong>
+              中身の問題なら職人に直させ、検証環境の問題なら中身を触らず関所だけ回し直します。
+              契約（受け入れ基準や検証コマンド）そのものが間違っていたときは、
+              定義ファイルを直して番頭に <code>kobo.amend</code> を頼んでください。
+            </p>
+            <div className="kb-actions">
+              <TextInput
+                placeholder="何が悪くて、どう直すのか（職人に渡り、帳簿にも残ります）"
+                value={fixReason}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFixReason(e.target.value)}
+                aria-label="直す理由"
+              />
+              <Button
+                variant="primary"
+                disabled={fixBusy || !fixReason.trim()}
+                onClick={() => void fixTask("kobo.reopen", "rework")}
+              >
+                中身を直させる
+              </Button>
+              <Button
+                disabled={fixBusy || !fixReason.trim()}
+                onClick={() => void fixTask("kobo.reopen", "reverify")}
+              >
+                検証だけやり直す
+              </Button>
+              <Button
+                variant="danger"
+                disabled={fixBusy || !fixReason.trim()}
+                onClick={() => void fixTask("kobo.abandon")}
+              >
+                畳む
+              </Button>
+            </div>
+            {fixDone && <p className="kb-para">{fixDone}</p>}
+            {fixError && (
+              <ErrorNote title="通りませんでした">{fixError}</ErrorNote>
+            )}
+          </>
+        )}
       </Scroll>
     </ViewShell>
   );

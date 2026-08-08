@@ -161,3 +161,134 @@
 .kb-field { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; }
 .kb-field > span { font-size: var(--t-meta); color: var(--sumi-2); }
 .kb-known { font-size: var(--t-note); color: var(--sumi-3); margin: 8px 0 0; }
+
+/* ══ 帳場（PO 裁定 2026-08-08）════════════════════════════════════════════
+   **7列の対称カンバンをやめた。** 列が7つ等しく並ぶ形は「全部を等しく見る」と
+   言っている。だが PO の仕事は全部を見ることではなく、**自分を待っているものを
+   片付けること**（vision「希少資源は PO の注意力」／夕方に行列を上から潰す）。
+   実際、11件のとき7列目「止まっている」は画面から**切れていた**——落ちた札が
+   いちばん見えない場所に居た。
+
+   だから面を2つに割る。左＝あなたを待っている（主）、右＝流れ（従）。
+   **意匠は足していない**——spec-design の5役をそのまま使う。 */
+.kb-counter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
+  gap: var(--s6, 24px);
+  height: 100%;
+  min-height: 0;
+  align-items: start;
+}
+.kb-zone { display: flex; flex-direction: column; gap: var(--s2, 8px); min-height: 0; min-width: 0; }
+.kb-zone-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2, 8px);
+  padding-bottom: var(--s1, 4px);
+  border-bottom: 1px solid var(--rule);
+}
+.kb-zone-head h2 { font-size: var(--t-head); font-weight: 600; margin: 0; color: var(--sumi); }
+.kb-zone-head .kb-zone-sub { font-size: var(--t-note); color: var(--sumi-3); }
+/* 「流れ」は従。見出しを一段落とす——同じ大きさだと2つの主役になる */
+.kb-zone.is-quiet .kb-zone-head h2 { font-size: var(--t-body); font-weight: 600; color: var(--sumi-2); }
+
+.kb-slips { display: flex; flex-direction: column; gap: var(--s2, 8px); }
+.kb-group-label {
+  font-size: var(--t-note);
+  color: var(--sumi-3);
+  margin: var(--s2, 8px) 0 0;
+}
+.kb-group-label:first-child { margin-top: 0; }
+
+/* ── 札 ─────────────────────────────────────────────────────────────────
+   **画面で唯一塗られている面が「あなたの番」**（spec-design §1.1：塗りを許すのは
+   朱だけ）。以前は判断待ちに琥珀（＝気をつける）を当てていて、いちばん大事な役に
+   別の役の色が乗っていた。
+   §1.4 に従い**色だけに預けない**——左の太い罫と、状態の字が形の側の手掛かり。 */
+.kb-slip {
+  display: block;
+  width: 100%;
+  text-align: start;
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--rule);
+  border-radius: var(--r-face, 10px);
+  background: var(--paper-1);
+  padding: var(--s3, 12px) var(--s4, 16px);
+  box-shadow: var(--shadow-rest);
+}
+.kb-slip:hover { border-color: color-mix(in srgb, var(--sumi-3) 50%, transparent); }
+.kb-slip:focus-visible { outline: 2px solid var(--ai); outline-offset: 2px; }
+.kb-slip.is-selected { border-color: var(--ai); }
+
+/* 判断待ち＝朱。**塗る**。ここだけ */
+.kb-slip.is-mine { background: var(--shu); border-color: var(--shu); border-left-color: var(--shu); }
+.kb-slip.is-mine .kb-slip-title,
+.kb-slip.is-mine .kb-slip-meta { color: var(--on-shu); }
+.kb-slip.is-mine .kb-slip-meta { opacity: .82; }
+.kb-slip.is-mine:hover { background: color-mix(in srgb, var(--shu) 88%, var(--sumi)); }
+
+/* 止まっている＝紫。**朱より必ず弱い**（spec-design §1.2）。塗らず、左罫と淡い地 */
+.kb-slip.is-stuck { background: var(--mur-t); border-left-color: var(--murasaki); }
+/* 動いている＝藍。点と左罫にだけ出す */
+.kb-slip.is-running { border-left-color: var(--ai); }
+
+.kb-slip-title {
+  font-size: var(--t-read);
+  line-height: 1.45;
+  color: var(--sumi);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.kb-slip-meta {
+  display: flex;
+  gap: var(--s3, 12px);
+  align-items: baseline;
+  font-size: var(--t-note);
+  color: var(--sumi-3);
+  margin-top: var(--s1, 4px);
+}
+.kb-slip-meta .is-mono { font-family: var(--mono); }
+/* ── 流れ（従）─────────────────────────────────────────────────────────
+   工程ごとに1行。数と、そこに居る札の題を小さく添えるだけ。
+   **ここは読み飛ばして良い場所**なので、密度を上げて静かにする */
+.kb-stage { display: flex; flex-direction: column; gap: 2px; padding: var(--s2, 8px) 0; border-bottom: 1px solid var(--rule); }
+.kb-stage:last-child { border-bottom: 0; }
+.kb-stage-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s2, 8px); }
+.kb-stage-name { font-size: var(--t-meta); color: var(--sumi-2); }
+.kb-stage-n { font-size: var(--t-meta); color: var(--sumi-3); font-family: var(--mono); }
+.kb-stage.is-empty .kb-stage-name,
+.kb-stage.is-empty .kb-stage-n { color: var(--sumi-3); opacity: .6; }
+.kb-stage-item {
+  font-size: var(--t-note);
+  color: var(--sumi-2);
+  background: none;
+  border: 0;
+  padding: 1px 0;
+  text-align: start;
+  font-family: inherit;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+.kb-stage-item:hover { color: var(--sumi); text-decoration: underline; }
+.kb-stage-item:focus-visible { outline: 2px solid var(--ai); outline-offset: 1px; }
+
+/* ── 落ちた理由（詳細の中）───────────────────────────────────────────── */
+.kb-why { border-left: 3px solid var(--murasaki); background: var(--mur-t); padding: var(--s3, 12px) var(--s4, 16px); border-radius: var(--r-ctl, 6px); margin: var(--s3, 12px) 0; }
+.kb-why-reason { font-family: var(--mono); font-size: var(--t-meta); color: var(--sumi); margin: 0 0 var(--s2, 8px); overflow-wrap: anywhere; }
+.kb-why-log { font-family: var(--mono); font-size: var(--t-note); background: var(--code-bg); color: var(--code-ink); padding: var(--s2, 8px); border-radius: var(--r-ctl, 6px); overflow-x: auto; margin: var(--s1, 4px) 0 0; white-space: pre; }
+.kb-why-ac { font-size: var(--t-note); color: var(--sumi-2); font-family: var(--mono); margin-top: var(--s2, 8px); }
+.kb-why-again { font-size: var(--t-note); color: var(--murasaki); margin: var(--s2, 8px) 0 0; }
+
+@container canvas (max-width: 860px) {
+  /* 狭いときは流れを下へ。**主従は変えない**——待たせているものが先 */
+  .kb-counter { grid-template-columns: minmax(0, 1fr); gap: var(--s4, 16px); }
+}

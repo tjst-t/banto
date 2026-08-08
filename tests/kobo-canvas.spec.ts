@@ -1,6 +1,12 @@
 /**
  * 工場の面（`kobo.board` / `kobo.review`）が**使えること**を、実物を描いて見張る。
  *
+ * **2026-08-08：ボードを帳場に作り替えた**（7列の対称カンバンをやめた）。
+ * 検体の**意図は変えていない**——「主が幅を使うか」「字が切れないか」「経緯が重ならないか」
+ * 「詳細から戻れるか」。作りが変わったので、見る場所だけ移した。
+ * **横スクロールの掴み手の検体は落とした**——帳場は横に流さないので、
+ * 7列目が切れるという壊れ方そのものが無くなった（それが元の報告だった）。
+ *
  * PO報告 2026-08-07：「キャンバスの工場のUIもレビューのUIも壊れていて使い物にならない」。
  * 原因は3つとも**寸法の話**で、型検査もユニットテストも一切気づけない類だった：
  *
@@ -36,7 +42,7 @@ test.describe("工場のボード", () => {
 
   test.beforeEach(async ({ page }) => {
     await open(page, host);
-    await page.waitForSelector(".kb-board");
+    await page.waitForSelector(".kb-counter");
   });
 
   test("何も選んでいないとき、ボードがキャンバスの幅をほぼ全部使う", async ({ page }) => {
@@ -53,22 +59,33 @@ test.describe("工場のボード", () => {
     ).toBeGreaterThan(0.98);
   });
 
-  test("列が複数見えている（1列半しか見えない、にならない）", async ({ page }) => {
-    const board = (await page.locator(".kb-board").boundingBox())!;
-    const cols = page.locator(".kb-col");
-    await expect(cols).toHaveCount(7);
+  test("**横に流れない**（7列目が切れる、という壊れ方をなくした）", async ({ page }) => {
+    const overflow = await page.locator(".cv-work-main").evaluate(
+      (el) => el.scrollWidth - el.clientWidth
+    );
+    expect(overflow, "面が横にはみ出している（切れて見えなくなる札が出る）").toBeLessThanOrEqual(1);
 
-    let visible = 0;
-    for (let i = 0; i < 7; i++) {
-      const box = await cols.nth(i).boundingBox();
-      // 右端まで収まっている列だけ数える
-      if (box && box.x + box.width <= board.x + board.width + 1) visible += 1;
+    const board = (await page.locator(".kb-counter").boundingBox())!;
+    const cols = page.locator(".kb-zone");
+    await expect(cols, "主（待っている）と従（流れ）の2区画が要る").toHaveCount(2);
+
+    // **2区画とも右端まで収まっていること**
+    for (let i = 0; i < 2; i++) {
+      const box = (await cols.nth(i).boundingBox())!;
+      expect(
+        box.x + box.width,
+        `${i === 0 ? "主" : "従"}の区画が面からはみ出している`
+      ).toBeLessThanOrEqual(board.x + board.width + 1);
     }
-    expect(visible, "見えている列が少なすぎる").toBeGreaterThanOrEqual(4);
+
+    // **主が従より広い。** 同じ幅だと2つの主役になり、どちらを見ればよいか分からない
+    const main = (await cols.nth(0).boundingBox())!;
+    const quiet = (await cols.nth(1).boundingBox())!;
+    expect(main.width, "待っているものが流れより狭い（主従が逆）").toBeGreaterThan(quiet.width);
   });
 
   test("札の題が横に切れない（はみ出さない）", async ({ page }) => {
-    const titles = page.locator(".kb-card-title");
+    const titles = page.locator(".kb-slip-title");
     const count = await titles.count();
     expect(count).toBeGreaterThan(0);
     for (let i = 0; i < count; i++) {
@@ -78,7 +95,7 @@ test.describe("工場のボード", () => {
   });
 
   test("選ぶと詳細が出る。経緯の行が重ならない", async ({ page }) => {
-    await page.locator(".cv-card").first().click();
+    await page.locator(".kb-slip").first().click();
     await expect(page.locator(".cv-work-detail")).toHaveCount(1);
 
     // 種類と中身が重なっていた（`state_transitioned` が固定幅を超えていた）
@@ -118,25 +135,20 @@ test.describe("工場のボード（まばらなとき）", () => {
     await host.close();
   });
 
-  test("空の列は畳んで、中身のある列に幅を渡す", async ({ page }) => {
+  test("まばらでも、待たせているものが主に集まる（横に流れない）", async ({ page }) => {
     await open(page, host);
-    await page.waitForSelector(".kb-board");
+    await page.waitForSelector(".kb-counter");
 
-    // 空の列は畳む（見出しだけ）。
-    // **6列**なのは prop-0001 第1段から——検体の3件のうち `closed` の1件は
-    // 既定で出なくなり、「終わった」列も空になる。残るのは failed 2件が入る
-    // 「止まっている」列だけ（落ちたものは既定に残す）
-    await expect(page.locator(".kb-col.is-empty")).toHaveCount(6);
+    // 検体は failed 2 と closed 1。closed は既定で出ない（prop-0001 第1段）ので、
+    // **主に 2 枚だけ**が並び、流れは空になる
+    await expect(page.locator(".kb-slip.is-stuck")).toHaveCount(2);
+    await expect(page.locator(".kb-slip.is-mine")).toHaveCount(0);
 
-    const board = (await page.locator(".kb-board").boundingBox())!;
-    const cols = page.locator(".kb-col");
-    let visible = 0;
-    for (let i = 0; i < 7; i++) {
-      const box = await cols.nth(i).boundingBox();
-      if (box && box.x + box.width <= board.x + board.width + 1) visible += 1;
-    }
-    // **まばらなら横スクロールなしで全部見える**のが要点
-    expect(visible, "まばらなのに列が収まっていない").toBe(7);
+    // **まばらでも横に流れない**（元の壊れ方は、まばらなのに列が押し出されることだった）
+    const overflow = await page.locator(".cv-work-main").evaluate(
+      (el) => el.scrollWidth - el.clientWidth
+    );
+    expect(overflow, "まばらなのに横にはみ出している").toBeLessThanOrEqual(1);
   });
 });
 
@@ -180,8 +192,8 @@ test.describe("工場のボード（PO要望 2026-08-07 第2報）", () => {
 
   test("詳細は面いっぱいを使い、戻る導線がある", async ({ page }) => {
     await open(page, host);
-    await page.waitForSelector(".kb-board");
-    await page.locator(".cv-card").first().click();
+    await page.waitForSelector(".kb-counter");
+    await page.locator(".kb-slip").first().click();
 
     const detail = (await page.locator(".cv-work-detail").boundingBox())!;
     const canvas = (await page.locator(".cv-work").boundingBox())!;
@@ -194,27 +206,16 @@ test.describe("工場のボード（PO要望 2026-08-07 第2報）", () => {
     await expect(page.locator(".cv-work-detail")).toHaveCount(0);
   });
 
-  test("横スクロールの掴み手が面の下端にある", async ({ page }) => {
-    await open(page, host);
-    const board = (await page.locator(".kb-board").boundingBox())!;
-    const shell = (await page.locator(".cv-work-main").boundingBox())!;
-    // ボードが面の高さいっぱいに伸びていれば、掴み手も下端に出る
-    expect(
-      board.y + board.height,
-      "ボードが中身の高さしか無い（掴み手が札のすぐ下に浮く）"
-    ).toBeGreaterThan(shell.y + shell.height - 40);
-  });
-
   test("担当の職人へ飛べる", async ({ page }) => {
     await open(page, host);
-    await page.waitForSelector(".kb-board");
-    await page.locator(".cv-card").first().click();
+    await page.waitForSelector(".kb-counter");
+    await page.locator(".kb-slip").first().click();
     await expect(page.locator(".kb-goto-worker").first()).toBeVisible();
   });
 
   test("受け持ちで絞れる（2つ以上のときだけ出す）", async ({ page }) => {
     await open(page, host);
-    await page.waitForSelector(".kb-board");
+    await page.waitForSelector(".kb-counter");
     // この検体は受け持ち1つなので、絞りは出さない（要らない口を出さない）
     await expect(page.locator('select[aria-label="受け持ちで絞る"]')).toHaveCount(0);
   });
@@ -231,7 +232,7 @@ test.describe("工場のボードの既定（prop-0001 第1段）", () => {
 
   test.beforeEach(async ({ page }) => {
     await open(page, host);
-    await page.waitForSelector(".kb-board");
+    await page.waitForSelector(".kb-counter");
   });
 
   test("既定では片が付いたものを出さない。落ちたものは出す", async ({ page }) => {
@@ -251,12 +252,11 @@ test.describe("工場のボードの既定（prop-0001 第1段）", () => {
     // 外すと、一番忘れられやすいものが見えなくなる
     // failed は「止まっている」列に出る（task-0110 / 0111）
     await expect(
-      page.locator(".kb-card-title").filter({ hasText: "同期のリトライ" }).first(),
-      "動いているものが出ていない（前提が崩れている）"
+      page.locator(".kb-stage-item").filter({ hasText: "同期のリトライ" }).first(),
+      "動いているものが流れに出ていない（前提が崩れている）"
     ).toBeVisible();
-    const failedCol = page.locator(".kb-col").filter({ hasText: "止まっている" });
     await expect(
-      failedCol.locator(".kb-card-title"),
+      page.locator(".kb-slip.is-stuck"),
       "failed が既定から消えている（落ちたタスクが忘れられる）"
     ).toHaveCount(2);
   });
@@ -272,5 +272,47 @@ test.describe("工場のボードの既定（prop-0001 第1段）", () => {
       "aria-pressed",
       "true"
     );
+  });
+});
+
+test.describe("落ちた札を、切り直さずに直す（task-0081/0082）", () => {
+  let host: KoboHost;
+  test.beforeAll(async () => {
+    host = await startKoboHost();
+  });
+  test.afterAll(async () => {
+    await host.close();
+  });
+
+  test.beforeEach(async ({ page }) => {
+    await open(page, host);
+    await page.waitForSelector(".kb-counter");
+    // 止まっている札を開く
+    await page.locator(".kb-slip.is-stuck").first().click();
+    await page.waitForSelector(".cv-work-detail");
+  });
+
+  test("**なぜ落ちたかが読める**（番号だけでなく検証ログの中身まで）", async ({ page }) => {
+    await expect(page.getByText("なぜ落ちたか")).toBeVisible();
+    await expect(page.locator(".kb-why-reason")).toContainText("verify_failed:a4");
+    // ここが要点——番号から先はログにしか無い
+    await expect(page.locator(".kb-why-log")).toContainText("期待した値と違います");
+  });
+
+  test("戻した回数が出る（P6：同じところを何度も叩いていないか）", async ({ page }) => {
+    await expect(page.locator(".kb-why-again")).toContainText("2 回");
+  });
+
+  test("**直す道具が3つとも在る**。理由を書くまで押せない", async ({ page }) => {
+    const rework = page.getByRole("button", { name: "中身を直させる" });
+    const reverify = page.getByRole("button", { name: "検証だけやり直す" });
+    const abandon = page.getByRole("button", { name: "畳む" });
+    for (const b of [rework, reverify, abandon]) {
+      await expect(b).toBeVisible();
+      // 理由は帳簿に残り職人にも渡る。空のまま押させない
+      await expect(b).toBeDisabled();
+    }
+    await page.getByLabel("直す理由").fill("検証環境の道具が足りていない");
+    for (const b of [rework, reverify, abandon]) await expect(b).toBeEnabled();
   });
 });
