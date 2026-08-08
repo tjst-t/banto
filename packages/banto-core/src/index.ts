@@ -213,6 +213,7 @@ export {
   loadModuleRegistryConfig,
   resolveModuleEndpoint,
   createModuleClient,
+  longCallFetch,
 } from "./module-invocation.js";
 export {
   MODULE_TOOL_PATH,

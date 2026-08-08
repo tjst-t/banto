@@ -84,6 +84,13 @@ async function transitionTo(
     }
   );
   if (r.status !== 200) {
+    // **工場は自分でも進む。** `queued → ready` はゲートを通った時点で tick が動かすので、
+    // 状態を読んでから POST するまでの隙に機構が先に着いていることがある
+    // （task-0083 で番頭ホストの HTTP が速くなったら顕在化した。**機構は正しい**）。
+    // 着きたかった先に既に居るなら、それは成功として扱う——**着いたことを確かめてから**
+    // 通すので、本物の遷移失敗は見逃さない
+    const now = await getStatus(base, proj, taskId);
+    if (now === to) return;
     const body = await r.text();
     throw new Error(
       `Transition ${taskId}→'${to}' failed (${r.status}): ${body}`

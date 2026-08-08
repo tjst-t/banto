@@ -488,15 +488,27 @@ describe("[AC-S75f66b-6-3-B] resolution task failed → origin chain-fails (I2)"
       // Task is in implementing. Drive back to auditing and send 2nd fail.
       assert.equal(afterFail1, "implementing", `after 1st fail must be implementing or failed (got ${afterFail1})`);
       await safeTransitionTo(base, PROJ, conflictTaskId, "auditing");
-      await pollUntil(() => getStatus(base, PROJ, conflictTaskId), (s) => s === "auditing", 3000, 100);
+      // **やり直しの職人を起こせずに落ちるのは、いつ届くか分からない**（pi が無い環境なので
+      // 必ず落ちる）。`implementing` を見た直後に `failed` が届くことがあるので、
+      // どちらに着いたかを見てから次を決める——**着いた先を確かめてから**進むので、
+      // 本物の壊れ方は見逃さない（task-0083 で HTTP が速くなって顕在化した）
+      const beforeFail2 = await pollUntil(
+        () => getStatus(base, PROJ, conflictTaskId),
+        (st) => st === "auditing" || st === "failed",
+        3000, 100
+      );
 
-      // 2nd fail → 2 consecutive fails → task fails
-      const fail2R = await fetch(`${base}/api/v1/projects/${PROJ}/tasks/${conflictTaskId}/audit-report`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ verdict: "fail", findings: ["still not resolved"] }),
-      });
-      assert.equal(fail2R.status, 200, "second fail verdict must succeed");
+      if (beforeFail2 === "auditing") {
+        // 2nd fail → 2 consecutive fails → task fails
+        const fail2R = await fetch(`${base}/api/v1/projects/${PROJ}/tasks/${conflictTaskId}/audit-report`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ verdict: "fail", findings: ["still not resolved"] }),
+        });
+        assert.equal(fail2R.status, 200, "second fail verdict must succeed");
+      }
+      // beforeFail2 === "failed" なら、やり直しの職人を起こせずに落ちた道。
+      // どちらでも「衝突タスクが failed に着く」ことは下で確かめる
     }
 
     // Wait for conflict task to reach failed
