@@ -209,11 +209,20 @@ function handleProvision(input: Record<string, unknown>): void {
 
   const project = projectName(taskId);
 
-  // `docker compose up -d` — starts all services in the background.
+  // `docker compose up -d --build` — starts all services in the background.
+  //
+  // **`--build` が要る**（inc-0037）。付けないと compose は「イメージが既に在れば作らない」
+  // ので、**Dockerfile を直しても永久に効かない**。task-0075 で「道具立ての契約は
+  // Dockerfile」と決めたのに、その契約が最初にビルドした時点で凍る——しかも黙って。
+  //
+  // 実測：loamium の Dockerfile を Debian ＋ Chromium に書き換えてゲートを回したが、
+  // 使われたのは 675MB の古いイメージ（新しいものは 2.33GB）で、PDF のテスト7件は
+  // 落ちたまま。「直したのに何も変わらない」という、いちばん気づきにくい形だった。
+  //
+  // 毎回付けても、変わっていなければレイヤキャッシュが効くので安い。
   // **イメージのビルドを含みうる**ので、呼び出し側の予算（task-0075 の 10 分）を使う。
-  // 自前の 120 秒で切っていた頃は、重いイメージの初回ビルドが必ず落ちていた（inc-0034）。
   const budget = innerBudgetMs(input);
-  const r = runCmd("docker", composeArgs(project, composeFile, ["up", "-d"]), {
+  const r = runCmd("docker", composeArgs(project, composeFile, ["up", "-d", "--build"]), {
     timeoutMs: budget,
     ...(workdir ? { cwd: workdir } : {}),
   });
@@ -471,12 +480,32 @@ function handleRun(input: Record<string, unknown>): void {
   // 決定34d: compose を解決した場所で回す。handle に残した workdir を既定にするので、
   // 後続の run が毎回 workdir を渡さなくても provision と同じ場所で動く
   const runWorkdir = (input["workdir"] as string | undefined) ?? handle.workdir;
+
+  // **worktree の中では git が動かない**（inc-0038・実機で踏んだ）。
+  //
+  // マージ前ゲートは職人の worktree で検証を回す。worktree の `.git` は
+  // ディレクトリではなく**ファイル**で、`gitdir: <本体のパス>` と書いてある。
+  // その先はホストのパスなので、コンテナの中からは存在しない：
+  //
+  //   fatal: not a git repository: /home/.../loamium/.git/worktrees/task-task-0005
+  //
+  // git を呼ぶテストは**全部**これで落ちる。しかも `git check-ignore` は 128 を返し、
+  // テストは「無視されなかった」（1）と読む——**git が動いていないことが、
+  // テストの失敗に化ける**（loamium で実際に2件そうだった）。
+  //
+  // 本体の `.git` を**同じ絶対パスに**読み取り専用で見せれば解ける。読み取り専用なのは、
+  // 検証コマンドが他人のリポジトリの履歴を書き換えられては困るため（検証は読む仕事）。
+  const gitdirMount = resolveWorktreeGitdirMount(runWorkdir);
   // **持ち時間は呼び出し側の予算から**（task-0079）。ここが自前の 120 秒だったせいで、
   // 2分を超える検証コマンドは全て「exit 255」で落ちていた（inc-0034）。
   const budget = innerBudgetMs(input);
   const r = runCmd(
     "docker",
-    composeArgs(project, composeFile, ["run", "--rm", "--no-TTY", serviceName, "sh", "-c", cmd]),
+    composeArgs(project, composeFile, [
+      "run", "--rm", "--no-TTY",
+      ...(gitdirMount ? ["-v", `${gitdirMount}:${gitdirMount}:ro`] : []),
+      serviceName, "sh", "-c", cmd,
+    ]),
     { timeoutMs: budget, ...(runWorkdir ? { cwd: runWorkdir } : {}) }
   );
 
@@ -501,6 +530,43 @@ function handleRun(input: Record<string, unknown>): void {
 
   // I2: exit code is reported as-is, never normalized to 0 on failure
   process.stdout.write(JSON.stringify({ exit: r.exitCode, log_path: logPath }) + "\n");
+}
+
+/**
+ * worktree なら、本体の `.git` の場所を返す（inc-0038）。
+ *
+ * worktree の `.git` は `gitdir: <本体>/.git/worktrees/<名前>` と書かれた**ファイル**。
+ * その `<本体>/.git` を同じ絶対パスで見せれば、コンテナの中でも git が動く。
+ *
+ * 通常のリポジトリ（`.git` がディレクトリ）なら何も要らない——bind mount に含まれている。
+ * 読めない・形が違うときは `undefined`（**推測で mount しない**）。
+ */
+function resolveWorktreeGitdirMount(workdir: string | undefined): string | undefined {
+  if (!workdir) return undefined;
+  const dotGit = path.join(workdir, ".git");
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(dotGit);
+  } catch {
+    return undefined; // git 管理下ではない
+  }
+  if (stat.isDirectory()) return undefined; // 普通のリポジトリ。既に見えている
+
+  let text: string;
+  try {
+    text = fs.readFileSync(dotGit, "utf8");
+  } catch {
+    return undefined;
+  }
+  const match = /^gitdir:\s*(.+?)\s*$/m.exec(text);
+  if (!match) return undefined;
+
+  // `<本体>/.git/worktrees/<名前>` から `<本体>/.git` を取り出す
+  const gitdir = match[1]!;
+  const idx = gitdir.indexOf(`${path.sep}worktrees${path.sep}`);
+  const mainGitDir = idx >= 0 ? gitdir.slice(0, idx) : gitdir;
+  if (!path.isAbsolute(mainGitDir) || !fs.existsSync(mainGitDir)) return undefined;
+  return mainGitDir;
 }
 
 /**

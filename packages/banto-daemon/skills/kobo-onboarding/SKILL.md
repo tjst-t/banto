@@ -41,6 +41,15 @@ profiles:
 - **名前を変えるなら** `<repo>/meta/config.yaml` の `verify.profile` にも書く
 - **道具立ては Dockerfile に書く**。ホストに `apt` するのではなく、イメージに入れる
   ——そこが「このプロジェクトの検証に何が要るか」の契約
+- **テストが `git` を呼ぶなら `RUN git config --system --add safe.directory '*'` を入れる。**
+  リポジトリは bind mount で、所有者はホストのユーザ／コンテナは root なので、
+  git が `detected dubious ownership` で止まります。**git が動いていないことが
+  「テストが落ちた」に化ける**ので気づきにくい（実機で2件そうだった）
+- **ヘッドレスブラウザが要るなら Alpine を選ばない。** playwright は Alpine（musl）を
+  サポートしておらず、落ちてくる Chromium は glibc 版で起動しません。Debian 系
+  （`node:22-bookworm-slim` 等）にして `npx playwright install --with-deps chromium`。
+  **ブラウザはイメージに焼くこと**——検証は毎回まっさらな one-off コンテナで走るので、
+  `setup` で入れても名前付きボリュームの外は次から消えます
 - **依存の取得は `setup` に書く**（`npm ci` 等）。**受け入れ条件の `verify` に書かない**。
   立てただけでは node_modules は空（名前付きボリュームに隔離してあるため）なので、
   ここが抜けると検証コマンドが `command not found` で落ちます。`verify` 側に書くと

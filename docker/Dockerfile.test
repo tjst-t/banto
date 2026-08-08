@@ -9,3 +9,10 @@ FROM node:22-alpine
 # make / g++ / python3: ネイティブ依存のビルドに要ることがある
 # docker-cli: 検証環境の docker ドライバ自身の受け入れテストが docker を呼ぶ
 RUN apk add --no-cache git make g++ python3 docker-cli
+
+# **bind mount したリポジトリを git が触れるようにする**（task-0084・実機で踏んだ）。
+# `/app` はホストのリポジトリを bind mount したもので所有者はホストのユーザ、
+# コンテナは root。git は所有者違いを見て `detected dubious ownership` で止まり、
+# **git が動いていないことがテストの失敗に化ける**（loamium で実際に2件がそうだった）。
+RUN git config --system --add safe.directory '*'
+
