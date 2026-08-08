@@ -61,6 +61,22 @@ const REGULAR_TRANSITIONS: ReadonlySet<string> = new Set<string>([
   // merged → closed: tasks without hypothesis (caller ensures no-hypothesis condition)
   "merged:closed",
   "evaluating:closed",
+
+  // ── failed から戻る道（task-0081・PO 要望 2026-08-08）────────────────────
+  //
+  // **タスクを切り直させない。** 落ちたら新しいタスクを立てる運用だと、同じ依頼が
+  // task-0004 → task-0005 → … と増え、経緯が分断される（実機で実際にそうなった）。
+  // 番頭が理由を見て、直して、**同じタスクのまま**最後まで通せるようにする。
+  //
+  // どちらへ戻すかは**落ちた理由で変わる**ので、番頭が選ぶ（`kobo.reopen` の mode）：
+  //   - implementing: 中身の問題（スコープ違反・本当にテストが落ちる）。職人が直す
+  //   - approved:     検証環境の問題。中身は触らず、マージ前ゲートをもう一度回す
+  //
+  // `failed:closed` は「どうしようもないものを、落ちたまま畳む」道（PO 要望）。
+  // **記録は消えない**——経緯には failed を通ったことが残る。
+  "failed:implementing",
+  "failed:approved",
+  "failed:closed",
 ]);
 
 /**
@@ -83,6 +99,10 @@ const PAUSABLE_STATES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
 /**
  * Terminal states: once here a task cannot be failed or superseded again.
  * D2: expressed as data — fail()/supersede() refuse to act if already terminal.
+ *
+ * **「終端」＝「二度と落ちない」であって「二度と動かない」ではない**（task-0081）。
+ * `failed` からは番頭の判断で戻れる（→ REGULAR_TRANSITIONS の failed: の3本）。
+ * ここに残しているのは、落ちたものをもう一度 fail() させないため。
  */
 const TERMINAL_STATES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
   "closed",

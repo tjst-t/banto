@@ -17,6 +17,7 @@
  */
 
 import * as http from "node:http";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   EventLog,
@@ -838,6 +839,183 @@ export class Daemon {
         );
       }
     }
+  }
+
+  /**
+   * **なぜ落ちたか**（task-0081）。番頭が直す前に読む材料。
+   *
+   * 落ちた理由の要約（`task_failed` の reason）だけでは直しようがない——
+   * 「`verify_failed:a4(exit=1)`」から分かるのは番号だけで、**何が起きたかは
+   * 検証のログにしか無い**。ここでログの在り処と末尾まで返す。
+   *
+   * D3: どこにも保存しない。イベントログとゲートのログから毎回導出する。
+   * D10: 番頭に全文は渡さない（文脈が埋まる）。末尾だけ返し、全文はパスで示す。
+   */
+  failureDetail(
+    projectTag: string,
+    taskId: string,
+    tailLines = 40
+  ): {
+    reason?: string;
+    gateReasons: string[];
+    logs: Array<{ acId: string; dir: string; tail: string }>;
+    /** 落ちてから戻した回数（P6：同じところを何度も叩いていないか） */
+    reopenCount: number;
+  } {
+    const events = this.getTaskEvents(projectTag, taskId);
+
+    // 直近の task_failed（要約）
+    let reason: string | undefined;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i]!;
+      if (e.type === "task_failed") { reason = e.reason; break; }
+    }
+
+    // 直近の落ちたマージ前ゲート（理由の内訳とログの在り処）
+    let gateReasons: string[] = [];
+    let logPaths: string[] = [];
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i]!;
+      if (e.type === "merge_gate_evaluated" && e.passed === false) {
+        gateReasons = e.reasons ?? [];
+        logPaths = (e as { logPaths?: string[] }).logPaths ?? [];
+        break;
+      }
+    }
+
+    const logs = logPaths.map((dir) => {
+      const acId = path.basename(dir);
+      let tail = "";
+      for (const name of ["stdout.txt", "stderr.txt"]) {
+        try {
+          const text = fs.readFileSync(path.join(dir, name), "utf-8").trimEnd();
+          if (text) tail += (tail ? "\n" : "") + `--- ${name} ---\n` + lastLines(text, tailLines);
+        } catch {
+          // ログが消えている（保持期間切れ・別機械）。**無いことを黙らせない**
+        }
+      }
+      return { acId, dir, tail: tail || "(ログが読めません)" };
+    });
+
+    // **落ちてから戻した回数**（D3: 導出。新しいイベント種を増やさない）。
+    // P6「同じ試験に2回パッチを当てて定着しなかったら根本原因分析」は、これが無くて
+    // 機械では発火できなかった（inc-0031 の残りの問い）
+    const reopenCount = events.filter(
+      (e) => e.type === "state_transitioned" && e.from === "failed"
+    ).length;
+
+    return { ...(reason ? { reason } : {}), gateReasons, logs, reopenCount };
+  }
+
+  /**
+   * 落ちたタスクを**同じタスクのまま**動かし直す（task-0081・PO 要望 2026-08-08）。
+   *
+   * **タスクを切り直させない。** 落ちるたびに新しいタスクを立てる運用だと、同じ依頼が
+   * task-0004 → task-0005 → … と増え、経緯が分断される（実機でそうなった）。
+   *
+   * どちらへ戻すかは**落ちた理由で変わる**ので、番頭が選ぶ：
+   * - `rework`:   中身の問題。職人をもう一度起こして直させる（落ちた理由を渡す）
+   * - `reverify`: 検証環境の問題。**中身は触らず**マージ前ゲートをもう一度回す
+   *
+   * I2: `reverify` は**承認まで行った実績があるときだけ**許す。監査を飛ばして
+   * マージ待ちに置けてしまうと、番頭の取り違えで未監査のものがマージされる。
+   */
+  async reopenTask(
+    projectTag: string,
+    taskId: string,
+    options: { mode: "rework" | "reverify"; reason: string; by: string }
+  ): Promise<{ ok: true; to: string } | { ok: false; reason: string }> {
+    const task = this.store.getTask(taskId, projectTag);
+    if (!task) return { ok: false, reason: `${taskId} は ${projectTag} の工場にありません` };
+    if (task.status !== "failed") {
+      return {
+        ok: false,
+        reason: `${taskId} は failed ではありません（いまは ${task.status}）。戻せるのは落ちたタスクだけです`,
+      };
+    }
+
+    const to = options.mode === "rework" ? "implementing" : "approved";
+
+    if (options.mode === "reverify") {
+      // I2: 監査を飛ばさせない。承認まで行った実績が要る
+      const reached = this.getTaskEvents(projectTag, taskId).some(
+        (e) => e.type === "state_transitioned" && e.to === "approved"
+      );
+      if (!reached) {
+        return {
+          ok: false,
+          reason:
+            `${taskId} は承認まで行っていないので「検証しなおし」はできません` +
+            "（監査を飛ばしてマージ待ちに置くことになります）。中身から直すなら mode: \"rework\" を使ってください",
+        };
+      }
+    }
+
+    const result = this.transition(projectTag, taskId, to, `reopened_by:${options.by}（${options.reason}）`);
+    if (!result.ok) return { ok: false, reason: `${to} へ戻せませんでした: ${result.reason}` };
+
+    if (options.mode === "rework") {
+      // 落ちた理由を職人へ渡す。**渡さないと同じ失敗を繰り返す**
+      const detail = this.failureDetail(projectTag, taskId);
+      const findings = [
+        ...(detail.reason ? [`前回の失敗: ${detail.reason}`] : []),
+        ...detail.gateReasons.map((r) => `マージ前ゲート: ${r}`),
+        ...detail.logs
+          .filter((l) => l.tail && l.tail !== "(ログが読めません)")
+          .map((l) => `検証 ${l.acId} のログ末尾:\n${l.tail}`),
+        `番頭からの指示: ${options.reason}`,
+      ];
+      // 監査のやり直しと同じ道を通す（職人の起こし方を2つ持たない）。
+      //
+      // **待つ。** 監査のやり直しは帳簿の handler の中なので投げっぱなしにするが、
+      // ここは番頭が呼んだ道具——起こせたかどうかを返さないと、
+      // 「戻しました」と言った直後に落ちていても番頭は気づけない（I2）。
+      await this.spawnReworkSession(projectTag, taskId, findings, "前回どこで落ちたか");
+
+      // 起こす途中で落ちていたら（`spawnReworkSession` が recordTaskFailed する）、
+      // 成功に見せない
+      const after = this.store.getTask(taskId, projectTag);
+      if (after?.status !== "implementing") {
+        return {
+          ok: false,
+          reason:
+            `${taskId} を implementing へ戻しましたが、職人を起こせませんでした` +
+            `（いまは ${after?.status ?? "不明"}）。kobo.task で理由を読んでください`,
+        };
+      }
+    }
+
+    return { ok: true, to };
+  }
+
+  /**
+   * どうしようもないものを、**落ちたまま畳む**（task-0081・PO 要望 2026-08-08）。
+   *
+   * `failed` に置きっぱなしだと、既定の一覧（prop-0001）に出続けて
+   * 「まだ見る必要がある」ふりをする。畳めば消えるが、**記録は消えない**
+   * ——経緯には failed を通ったことが残り、畳んだ理由も残る。
+   */
+  abandonTask(
+    projectTag: string,
+    taskId: string,
+    options: { reason: string; by: string }
+  ): { ok: true } | { ok: false; reason: string } {
+    const task = this.store.getTask(taskId, projectTag);
+    if (!task) return { ok: false, reason: `${taskId} は ${projectTag} の工場にありません` };
+    if (task.status !== "failed") {
+      return {
+        ok: false,
+        reason: `${taskId} は failed ではありません（いまは ${task.status}）`,
+      };
+    }
+    const result = this.transition(
+      projectTag,
+      taskId,
+      "closed",
+      `abandoned_by:${options.by}（${options.reason}）`
+    );
+    if (!result.ok) return { ok: false, reason: `畳めませんでした: ${result.reason}` };
+    return { ok: true };
   }
 
   /**
@@ -1866,7 +2044,9 @@ export class Daemon {
   private async spawnReworkSession(
     projectTag: string,
     taskId: string,
-    findings: string[]
+    findings: string[],
+    /** 指摘の見出し。監査のやり直しと、落ちたタスクの立て直しで言葉が違う（task-0081） */
+    findingsHeading?: string
   ): Promise<void> {
     const task = this.store.getTask(taskId, projectTag);
     if (!task) {
@@ -1904,7 +2084,7 @@ export class Daemon {
         taskId,
         role: "rework",
         worktreePath,
-        instruction: buildExecutorInstruction(task, worktreePath, findings),
+        instruction: buildExecutorInstruction(task, worktreePath, findings, findingsHeading),
         modelTier,
         extension: "banto-executor",
       });
@@ -2849,10 +3029,19 @@ function formatScope(task: TaskRecord): string[] {
  * **コミットまでが仕事**（決定62a）。コミットが無いとマージキューが持っていくものが無く、
  * 「実装したのに何も起きない」で止まる——ここを書き落とすと通しで壊れる。
  */
+/** 末尾 n 行だけ取る。切ったことは黙らせない（I2）。 */
+function lastLines(text: string, n: number): string {
+  const lines = text.split("\n");
+  if (lines.length <= n) return text;
+  return [`（先頭 ${lines.length - n} 行は省略）`, ...lines.slice(-n)].join("\n");
+}
+
 export function buildExecutorInstruction(
   task: TaskRecord,
   worktreePath: string,
-  findings: string[] = []
+  findings: string[] = [],
+  /** 指摘の見出し（既定は監査の指摘）。落ちたタスクの立て直しでは言葉を変える（task-0081） */
+  findingsHeading = "監査の指摘（前回の提出で見つかった問題）"
 ): string {
   const taskId = task.id;
   const body = typeof task["body"] === "string" ? task["body"].trim() : "";
@@ -2879,7 +3068,7 @@ export function buildExecutorInstruction(
   if (findings.length > 0) {
     lines.push(
       ``,
-      `## 監査の指摘（前回の提出で見つかった問題）`,
+      `## ${findingsHeading}`,
       ``,
       `以下を解決してから report_done を呼んでください:`,
       ...findings.map((f) => `- ${f}`)

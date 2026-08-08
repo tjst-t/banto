@@ -226,13 +226,24 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
                     ? e.passed
                       ? "通過"
                       : `待ち: ${e.blockedBy.join(", ")}`
-                    : "",
+                    : e.type === "merge_gate_evaluated"
+                      // **なぜ落ちたかが読めないと直せない**（task-0081）。
+                      // ここが空文字だったので、経緯を見ても番号すら出なかった
+                      ? e.passed
+                        ? "通過"
+                        : `不通過: ${(e.reasons ?? []).join(", ")}`
+                      : "",
         }));
 
       // **レビューの段は Kobo が決める**（決定57・66）。番頭ホストに判定させると、
       // 判定表（プロジェクトの meta/config.yaml）を読めない側が推測することになり、
       // PO 直行のタスクを「あなたが通してよい」と見せてしまう
       const stage = daemon.reviewStageOf(project.id, found);
+      // **落ちているなら、なぜ落ちたかまで出す**（task-0081）。
+      // 「verify_failed:a4(exit=1)」だけでは直しようがない——番号から先は
+      // 検証のログにしか無い。番頭はこれを読んでから reopen を決める
+      const failure = found.status === "failed" ? daemon.failureDetail(project.id, params.taskId) : undefined;
+
       // 決定59: 判断が要るものは**触れる状態**で差し出す。生きている公開URLだけを出す
       const envUrl = daemon.reviewEnvUrl(project.id, params.taskId);
       const scope = (found["scope"] as { paths?: string[] } | undefined)?.paths ?? [];
@@ -243,12 +254,33 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
         scope.length > 0 ? `スコープ: ${scope.join(", ")}` : "",
         "",
         ...history.map((h) => `${h.at} ${h.type}${h.detail ? ` — ${h.detail}` : ""}`),
+        ...(failure
+          ? [
+              "",
+              "── なぜ落ちたか ──",
+              ...(failure.reason ? [failure.reason] : []),
+              ...failure.gateReasons.map((r) => `・${r}`),
+              ...failure.logs.flatMap((l) => [``, `[${l.acId}] ${l.dir}`, l.tail]),
+              "",
+              failure.reopenCount > 0
+                ? `※ このタスクは既に ${failure.reopenCount} 回 戻している。` +
+                  "同じところで落ち続けているなら、直し方ではなく前提を疑うこと（P6）"
+                : "直せるなら kobo.reopen（中身なら rework / 検証環境なら reverify）、" +
+                  "どうしようもなければ kobo.abandon で畳む",
+            ]
+          : []),
       ]
         .filter((line) => line !== "")
         .join("\n");
       return {
         content: [{ type: "text" as const, text }],
-        details: { task: found, reviewStage: stage, ...(envUrl ? { envUrl } : {}), history },
+        details: {
+          task: found,
+          reviewStage: stage,
+          ...(envUrl ? { envUrl } : {}),
+          history,
+          ...(failure ? { failure } : {}),
+        },
       };
     },
   });
@@ -475,7 +507,91 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     },
   });
 
-  return [enqueue, list, task, projects, events, approve, supersede, registerProject];
+  /**
+   * 落ちたタスクを**同じタスクのまま**動かし直す（task-0081・PO 要望 2026-08-08）。
+   *
+   * **切り直させないための道具**。落ちるたびに新しいタスクを立てると、同じ依頼が
+   * task-0004 → task-0005 → … と増え、経緯が分断される（実機でそうなった）。
+   */
+  const reopen = defineNamespacedTool({
+    name: "kobo.reopen",
+    label: "Kobo: Reopen",
+    description:
+      "落ちたタスクを**同じタスクのまま**動かし直す。**タスクを切り直さない**" +
+      "——新しく積み直すと経緯が分断され、何度目の挑戦か分からなくなる。" +
+      "**先に kobo.task で「なぜ落ちたか」を読むこと。** 落ちた理由で戻す先が変わる：" +
+      "中身の問題（スコープ違反・本当にテストが落ちる）なら rework（職人が直す）、" +
+      "検証環境の問題（環境が立たない・道具が無い）なら reverify（中身は触らずゲートを回し直す）。" +
+      "どうしようもないものは kobo.abandon で畳む。",
+    parameters: Type.Object({
+      projectTag: Type.String({ description: "どのプロジェクトか" }),
+      taskId: Type.String({ description: "戻すタスクの id" }),
+      mode: Type.Union([Type.Literal("rework"), Type.Literal("reverify")], {
+        description:
+          "rework=中身から直す（職人を起こす）/ reverify=中身は触らずマージ前ゲートを回し直す",
+      }),
+      reason: Type.String({
+        description: "**何が悪くて、どう直すのか**。職人にそのまま渡り、帳簿にも残る",
+      }),
+    }),
+    async execute(params) {
+      requireProject(params.projectTag);
+      const r = await daemon.reopenTask(params.projectTag, params.taskId, {
+        mode: params.mode,
+        reason: params.reason,
+        by: "banto",
+      });
+      // I2: 戻せなかったことを成功に見せない
+      if (!r.ok) throw new Error(r.reason);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `${params.taskId} を ${r.to} へ戻しました（${params.mode}）。` +
+              (params.mode === "rework"
+                ? "職人を起こしています——落ちた理由と指示は渡してあります"
+                : "マージ前ゲートをもう一度回します（中身は触っていません）"),
+          },
+        ],
+        details: { taskId: params.taskId, projectTag: params.projectTag, to: r.to, mode: params.mode },
+      };
+    },
+  });
+
+  /**
+   * どうしようもないものを、**落ちたまま畳む**（task-0081・PO 要望 2026-08-08）。
+   */
+  const abandon = defineNamespacedTool({
+    name: "kobo.abandon",
+    label: "Kobo: Abandon",
+    description:
+      "落ちたタスクを**畳む**（諦める）。直せる見込みが無いときだけ。" +
+      "**記録は消えない**——経緯には落ちたことも畳んだ理由も残る。" +
+      "畳むと既定の一覧から外れるので、「まだ見る必要がある」ふりをしなくなる。" +
+      "直せるなら先に kobo.reopen を考えること。",
+    parameters: Type.Object({
+      projectTag: Type.String({ description: "どのプロジェクトか" }),
+      taskId: Type.String({ description: "畳むタスクの id" }),
+      reason: Type.String({ description: "**なぜ諦めるのか**。帳簿に残る" }),
+    }),
+    async execute(params) {
+      requireProject(params.projectTag);
+      const r = daemon.abandonTask(params.projectTag, params.taskId, {
+        reason: params.reason,
+        by: "banto",
+      });
+      if (!r.ok) throw new Error(r.reason);
+      return {
+        content: [
+          { type: "text" as const, text: `${params.taskId} を畳みました（落ちたまま・理由は帳簿に残ります）` },
+        ],
+        details: { taskId: params.taskId, projectTag: params.projectTag, status: "closed" },
+      };
+    },
+  });
+
+  return [enqueue, list, task, projects, events, approve, supersede, registerProject, reopen, abandon];
 }
 
 /**
