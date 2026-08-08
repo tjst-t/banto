@@ -2079,3 +2079,69 @@ llama addon 1件**——**loamium の `Dockerfile.test` に道具が足りない
    PO が画面から直したいなら要る
 3. prop-0001 の第2段・第3段は実測で困ってから
 4. `chat-ux` の末尾追従が間欠で落ちる（既存・未着手）
+
+## セッション更新（2026-08-08、★ loamium/task-0005 がマージまで通った・task-0084）
+
+PO 裁定「A でいいよ」（検証イメージを Debian にして Chromium を焼く）。
+**通す過程で banto 側の穴が2つ出た。どちらも「直したのに何も変わらない」形。**
+
+### 経過（10件落ち → 2件 → 0件）
+
+| 手 | 残る失敗 |
+|---|---|
+| Alpine のまま | **10件**（PDF 7・git 2・llama 1） |
+| Debian ＋ Chromium を焼く（loamium） | **2件**（git） |
+| worktree の git を直す（banto・inc-0038） | **0件** → **マージ** |
+
+```
+03:37:56 merge_gate_evaluated passed=true → task_merged 07b93b0 → merged → closed
+```
+
+**main に `07b93b0`（作者 `banto-executor`）。** 1943件すべて green。
+
+### なぜ Chromium 一択だったか（調べた結果）
+
+`htmlToPdf` は `playwright.chromium.launch()` を直接呼ぶ——設定ではなくコードなので
+ブラウザは選べない。**入れ方**に選択肢があり、実測で Alpine が消えた：
+`npx playwright install chromium` は **glibc 版**を落とすので musl では起動しない
+（`chrome: not found`）。`apk add chromium` は入るが、playwright に実行ファイルの場所を
+渡す環境変数が無く、版もホスト（CfT 149）とずれる。**Debian なら公式サポートで
+ホストと同じ版**。ビルド 205秒 / イメージ 2.33GB。
+
+### inc-0037: Dockerfile を直しても永久に効かなかった
+
+`docker compose up -d` に **`--build` が無い**。compose は「イメージが既に在れば作らない」
+ので、**契約は最初にビルドした時点で凍る**。task-0075 で「道具立ての契約は Dockerfile」と
+決めたのに、書いても効かない状態だった。
+
+実測：Dockerfile を書き換えてゲートを回したが、使われたのは **675MB の古いイメージ**
+（新しいものは 2.33GB）で、**10件落ちたまま1件も変わらなかった**。
+
+### inc-0038: worktree の中では git が動いていなかった
+
+ゲートは worktree で検証を回す。worktree の `.git` は**ファイル**で、指す先はホストのパス
+——コンテナからは見えない（`fatal: not a git repository`）。
+
+**`git check-ignore` は 128（git のエラー）を返す**ので、テストは「無視されなかった」（1）と
+読む——**git が動いていないことがテストの失敗に化ける**。
+所有者違い（`dubious ownership`）でも同じ 128 になり、**症状が同じで原因が2つ**あった。
+
+直し：ドライバが**本体の `.git` を同じ絶対パスに読み取り専用で**見せる。
+所有者違いはイメージ側の話なので `safe.directory` を Dockerfile と SKILL へ。
+
+**読み取り専用にしてある**（検証は読む仕事）。`git commit` する検証コマンドは通らない
+——要るようになったら決める。
+
+### 確かめたこと（I1）
+
+- `npm test` **1,345件 green**（新規2件）。どちらも**直しを戻すと落ちる**
+- 実機で loamium/task-0005 が**マージまで到達**（1943件 green・ゲート通過）
+- ビルド 205秒・イメージ 2.33GB・検証 356秒（Alpine の 439秒から短縮）
+
+### 次の一手
+
+1. **loamium/task-0004 を畳む**（`kobo.abandon`）。task-0005 に引き継がれて済んだもの
+2. **面（GUI）に reopen / abandon / amend の口が無い**。番頭の道具としては足りている
+3. **検証コンテナで `git commit` が要るようになったら**、`.git` の読み取り専用を見直す
+4. prop-0001 の第2段・第3段は実測で困ってから
+5. `chat-ux` の末尾追従が間欠で落ちる（既存・未着手）
