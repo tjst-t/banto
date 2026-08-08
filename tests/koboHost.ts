@@ -76,13 +76,30 @@ function taskDetail(taskId: string, rows: typeof TASKS): Record<string, unknown>
   };
 }
 
+/**
+ * 本物の `kobo.list` と同じ既定（prop-0001 第1段）。
+ *
+ * **偽ホストでも既定を本物に合わせる。** ここで全件返してしまうと、
+ * 「既定では片が付いたものが出ない」という肝心の振る舞いを面の検体が確かめられない。
+ */
+const DEFAULT_LIST_STATES = new Set([
+  "queued", "ready", "planning", "implementing", "auditing",
+  "review-ready", "in-review", "approved", "merging", "paused",
+  // 終端だが放っておいてよいものではない（→ kobo-tools.ts の同名の集合）
+  "failed",
+]);
+
+function listRows(rows: typeof TASKS, args: Record<string, unknown>): typeof TASKS {
+  const state = args["state"];
+  if (state === "all") return rows;
+  if (typeof state === "string") return rows.filter((t) => t.status === state);
+  return rows.filter((t) => DEFAULT_LIST_STATES.has(t.status));
+}
+
 const TOOLS: Record<string, (args: Record<string, unknown>) => Record<string, unknown>> = {
   "kobo.list": (args) => {
-    const wanted = args["status"];
-    const rows = Array.isArray(wanted)
-      ? TASKS.filter((t) => (wanted as string[]).includes(t.status))
-      : TASKS;
-    return { tasks: rows };
+    const rows = listRows(TASKS, args);
+    return { tasks: rows, total: rows.length, truncated: false };
   },
   "kobo.projects": () => ({ projects: [{ id: "loamium", repoPath: "/home/ubuntu/ghq/github.com/tjst-t/loamium" }] }),
   "kobo.task": (args) => taskDetail(String(args["taskId"] ?? ""), TASKS),
@@ -105,12 +122,8 @@ export async function startKoboHost(
   const rows = options.tasks ?? TASKS;
   TOOLS["kobo.task"] = (args) => taskDetail(String(args["taskId"] ?? ""), rows);
   TOOLS["kobo.list"] = (args) => {
-    const wanted = args["status"];
-    return {
-      tasks: Array.isArray(wanted)
-        ? rows.filter((t) => (wanted as string[]).includes(t.status))
-        : rows,
-    };
+    const shown = listRows(rows, args);
+    return { tasks: shown, total: shown.length, truncated: false };
   };
 
   const server = http.createServer((req, res) => {

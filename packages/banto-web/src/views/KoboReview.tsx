@@ -70,8 +70,9 @@ export function KoboReview({ params, endpoint }: CanvasViewProps): React.ReactEl
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   const [done, setDone] = useState<string | undefined>(undefined);
 
+  // **判断待ちを探す面なので、既定のまま引く**（prop-0001 第1段）。
+  // 片が付いたタスクで 100 件の枠を埋めると、判断待ちが押し出される
   const list = useModuleTool<{ tasks: TaskRow[] }>(endpoint, "kobo.list", {
-    state: "all",
     limit: 100,
     ...(initialProject ? { projectTag: initialProject } : {}),
   });

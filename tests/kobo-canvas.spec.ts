@@ -122,8 +122,11 @@ test.describe("工場のボード（まばらなとき）", () => {
     await open(page, host);
     await page.waitForSelector(".kb-board");
 
-    // 空の列は畳む（見出しだけ）
-    await expect(page.locator(".kb-col.is-empty")).toHaveCount(5);
+    // 空の列は畳む（見出しだけ）。
+    // **6列**なのは prop-0001 第1段から——検体の3件のうち `closed` の1件は
+    // 既定で出なくなり、「終わった」列も空になる。残るのは failed 2件が入る
+    // 「止まっている」列だけ（落ちたものは既定に残す）
+    await expect(page.locator(".kb-col.is-empty")).toHaveCount(6);
 
     const board = (await page.locator(".kb-board").boundingBox())!;
     const cols = page.locator(".kb-col");
@@ -214,5 +217,60 @@ test.describe("工場のボード（PO要望 2026-08-07 第2報）", () => {
     await page.waitForSelector(".kb-board");
     // この検体は受け持ち1つなので、絞りは出さない（要らない口を出さない）
     await expect(page.locator('select[aria-label="受け持ちで絞る"]')).toHaveCount(0);
+  });
+});
+
+test.describe("工場のボードの既定（prop-0001 第1段）", () => {
+  let host: KoboHost;
+  test.beforeAll(async () => {
+    host = await startKoboHost();
+  });
+  test.afterAll(async () => {
+    await host.close();
+  });
+
+  test.beforeEach(async ({ page }) => {
+    await open(page, host);
+    await page.waitForSelector(".kb-board");
+  });
+
+  test("既定では片が付いたものを出さない。落ちたものは出す", async ({ page }) => {
+    // **終わったタスクは消えないので、放っておくと 100 件の枠を埋めて
+    // 動いているタスクを押し出す**（実機で 340 件中 100 件しか出ない状態になっていた）。
+    // 直す前のボードは `state: "all"` を渡していて、ここが素通りしていた
+    await expect(
+      page.getByText("vault の走査を打ち切れるようにする"),
+      "merged が既定で出ている（枠を食う）"
+    ).toHaveCount(0);
+    await expect(
+      page.getByText("ノートの並び替えを安定にする"),
+      "closed が既定で出ている（枠を食う）"
+    ).toHaveCount(0);
+
+    // **落ちたものは残す。** 「終わった」と「止まっている」は違う——
+    // 外すと、一番忘れられやすいものが見えなくなる
+    // failed は「止まっている」列に出る（task-0110 / 0111）
+    await expect(
+      page.locator(".kb-card-title").filter({ hasText: "同期のリトライ" }).first(),
+      "動いているものが出ていない（前提が崩れている）"
+    ).toBeVisible();
+    const failedCol = page.locator(".kb-col").filter({ hasText: "止まっている" });
+    await expect(
+      failedCol.locator(".kb-card-title"),
+      "failed が既定から消えている（落ちたタスクが忘れられる）"
+    ).toHaveCount(2);
+  });
+
+  test("切り替えれば片が付いたものも出る（隠しただけで捨てていない）", async ({ page }) => {
+    await page.getByRole("button", { name: "片が付いたものも見る" }).click();
+    await expect(
+      page.getByText("vault の走査を打ち切れるようにする"),
+      "切り替えても merged が出てこない（本当に消えている）"
+    ).toBeVisible();
+    // 押した状態が分かること（押しても何も変わらないように見えない）
+    await expect(page.getByRole("button", { name: /片が付いたものも/ })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
   });
 });

@@ -27,7 +27,7 @@ const MAX_ROWS = 100;
 /** タスク定義ファイルの置き場（プロジェクトのリポジトリからの相対）。 */
 const TASKS_DIR = path.join("work", "tasks");
 
-/** 状態の並び（一覧の見出しに使う）。 */
+/** 動いている状態（工程の途中にあるもの）。 */
 const ACTIVE_STATES = new Set([
   "queued",
   "ready",
@@ -40,6 +40,22 @@ const ACTIVE_STATES = new Set([
   "merging",
   "paused",
 ]);
+
+/**
+ * 既定で見せる状態＝**まだ誰かが見る必要があるもの**（prop-0001 第1段）。
+ *
+ * **「終わった」と「止まっている」は違う。** `failed` は終端だが、放っておいてよい
+ * ものではない——実際に loamium の task-0004 / 0005 はマージ前ゲートで failed に
+ * なったまま、誰の既定の視界にも入っていなかった。終端だからと既定から外すと、
+ * **落ちたタスクが一番忘れられやすい**という逆の結果になる。
+ *
+ * 既定から外すのは「片が付いたもの」だけ：`merged` / `closed` / `superseded` /
+ * `evaluating`。見たいときは `state: "all"` か状態名で指定する。
+ *
+ * D5：この線引きは判断なので Kobo が持つ。GUI/CLI は同じ既定を見るだけ
+ * ——Surface ごとに違う既定を持つと、番頭と PO が違うものを見ることになる。
+ */
+const DEFAULT_LIST_STATES = new Set([...ACTIVE_STATES, "failed"]);
 
 export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
   /** プロジェクトを引く。I2: 知らないプロジェクトは、知っているものを添えて止まる。 */
@@ -113,7 +129,9 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     description:
       "工場のタスク一覧。いま何が動いていて、何が待っていて、何が終わったかが分かる。" +
       "**状態は工場の帳簿が真実**で、タスクファイルの status は意図でしかない（決定62e）。" +
-      "state で絞れる（例: ready / in-review）。既定は動いているものだけ。",
+      "state で絞れる（例: ready / in-review）。**既定はまだ見る必要があるものだけ**" +
+      "（動いているもの＋failed）。片が付いたもの（merged / closed / superseded）は " +
+      "state: \"all\" か状態名で指定したときだけ出る。",
     parameters: Type.Object({
       projectTag: Type.Optional(Type.String({ description: "プロジェクトで絞る（省略時は全部）" })),
       state: Type.Optional(
@@ -132,7 +150,7 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
         .filter((task) => {
           if (params.state === "all") return true;
           if (params.state) return task.status === params.state;
-          return ACTIVE_STATES.has(task.status);
+          return DEFAULT_LIST_STATES.has(task.status);
         });
       // I2: **切ったことを黙らせない**（task-0068 と同じ形）。終わったタスクは
       // 積み上がる一方（保持期間による削除は未実装）なので、いずれ必ずここに当たる
@@ -150,7 +168,7 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
         rows.length === 0
           ? params.state
             ? `状態 "${params.state}" のタスクはありません`
-            : "動いているタスクはありません"
+            : "見る必要のあるタスクはありません（片が付いたものは state: \"all\" で出ます）"
           : [
               ...rows.map((r) => `${r.status.padEnd(12)} ${r.taskId} ${r.title}`),
               ...(total > rows.length

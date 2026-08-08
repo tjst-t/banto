@@ -116,11 +116,21 @@ export function KoboBoard({
   const [registering, setRegistering] = useState(false);
   useTicker(15_000);
 
-  // 終わったものも含めて全部引く。ボードは「何が終わったか」も読む場所（決定62e）
   /** 受け持ちで絞る（PO要望 2026-08-07）。空文字＝全部。 */
   const [project, setProject] = useState<string>(initialProject ?? "");
+  /**
+   * 片が付いたものも出すか（prop-0001 第1段・既定は出さない）。
+   *
+   * **終わったタスクは消えないので、放っておくと 100 件の枠を埋めて動いているものを
+   * 押し出す**（実機で 340 件中 100 件しか出ない状態になっていた）。既定を
+   * 「まだ見る必要があるもの」にして、枠を動いているタスクに使う。
+   * **何も捨てていない**——見るときは切り替えれば出る。
+   */
+  const [showDone, setShowDone] = useState(false);
   const list = useModuleTool<{ tasks: TaskRow[]; total?: number; truncated?: boolean }>(endpoint, "kobo.list", {
-    state: "all",
+    // **既定は渡さない。** 線引きは Kobo が持つ（D5）——ここで state を指定すると
+    // 面ごとに違う既定を持つことになり、番頭と PO が違うものを見る
+    ...(showDone ? { state: "all" } : {}),
     limit: 100,
     ...(project ? { projectTag: project } : {}),
   });
@@ -176,6 +186,15 @@ export function KoboBoard({
             ))}
           </Select>
         )}
+        {/* 既定は「まだ見る必要があるもの」。片が付いたものはここで出す（prop-0001 第1段） */}
+        <Button
+          small
+          variant={showDone ? "primary" : "ghost"}
+          onClick={() => setShowDone((v) => !v)}
+          aria-pressed={showDone}
+        >
+          {showDone ? "片が付いたものも表示中" : "片が付いたものも見る"}
+        </Button>
         {/* I2: 切ったことを黙らせない。終わったタスクは積み上がる一方なので、いずれ必ず当たる */}
         <Badge tone={list.data?.truncated ? "warn" : "neutral"}>
           {list.data?.truncated
