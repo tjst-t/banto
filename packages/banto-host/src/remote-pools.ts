@@ -24,6 +24,7 @@ import {
   createEnvironmentPoolModule,
   type EnvironmentPool,
 } from "@banto/environment-pool";
+import { longCallFetch } from "@banto/core";
 import type { BantoModule } from "./module.js";
 import {
   contractOnly,
@@ -57,7 +58,7 @@ export function defaultEnvironmentPoolUrl(): string {
  */
 export function createRemoteWorkerPoolModule(
   remoteUrl: string = defaultWorkerPoolUrl(),
-  fetchImpl: typeof fetch = fetch
+  fetchImpl = longCallFetch()
 ): BantoModule {
   const contract = createWorkerPoolModule(contractOnly<WorkerPool>("Worker Pool"), WORKER_POOL_BASE_URL);
   return {
@@ -81,7 +82,7 @@ export function createRemoteWorkerPoolModule(
  */
 export function createRemoteEnvironmentPoolModule(
   remoteUrl: string = defaultEnvironmentPoolUrl(),
-  fetchImpl: typeof fetch = fetch
+  fetchImpl = longCallFetch()
 ): BantoModule {
   const contract = createEnvironmentPoolModule(
     contractOnly<EnvironmentPool>("Environment Pool"),

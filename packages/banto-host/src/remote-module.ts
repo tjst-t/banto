@@ -23,7 +23,7 @@
 import * as http from "node:http";
 import * as net from "node:net";
 import type { Duplex } from "node:stream";
-import { MODULE_TOOL_PATH, createModuleClient } from "@banto/core";
+import { MODULE_TOOL_PATH, createModuleClient, longCallFetch } from "@banto/core";
 import type { ModuleSettingsSpec, NamespacedToolDefinition } from "@banto/core";
 
 /** 実装を持たない写し。触られたら投げる——`execute` は必ず差し替わるので、来たら配線の誤り。 */
@@ -42,7 +42,7 @@ export function createRemoteTools(
   moduleName: string,
   specs: NamespacedToolDefinition[],
   remoteUrl: string,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl = longCallFetch()
 ): NamespacedToolDefinition[] {
   const client = createModuleClient({ modules: { [moduleName]: { baseUrl: remoteUrl } } }, fetchImpl);
   return specs.map((spec) => ({
@@ -69,7 +69,7 @@ export function createRemoteSettings(
   domain: string,
   moduleName: string,
   remoteUrl: string,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl = longCallFetch()
 ): ModuleSettingsSpec {
   const client = createModuleClient({ modules: { [moduleName]: { baseUrl: remoteUrl } } }, fetchImpl);
   return {
