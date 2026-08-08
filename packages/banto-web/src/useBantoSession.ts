@@ -34,6 +34,15 @@ export type ConnectionStatus = "connecting" | "open" | "reconnecting" | "closed"
 /** スレッド1本分の見えている状態。 */
 interface ThreadState {
   chat: TranscriptEntry[];
+  /**
+   * この会話の履歴が届いているか。**「発言が無い」と「まだ取っていない」を分ける**——
+   * 接続時に配られるのは見ている会話の分だけなので（`history_request`）、
+   * 空の chat は「まだ取っていない」ことのほうが多い。
+   *
+   * 繋ぎ直したら全部 false に戻す。切れている間の差分を取りこぼしているので、
+   * 手元の写しはもう当てにできない（移った先で取り直す）。
+   */
+  historyLoaded: boolean;
   tabs: CanvasTabView[];
   activeTabId: string | undefined;
   /**
@@ -55,6 +64,7 @@ interface ThreadState {
 
 const EMPTY_THREAD: ThreadState = {
   chat: [],
+  historyLoaded: false,
   tabs: [],
   activeTabId: undefined,
   canvasKnown: false,
@@ -96,6 +106,13 @@ export interface BantoSession {
   unreadThreadIds: string[];
   /** 特定スレッドの会話を読む（履歴の読み取り用）。 */
   chatOf(threadId: string): TranscriptEntry[];
+  /**
+   * その会話の履歴を手元に用意する（無ければホストへ頼む）。
+   * 中身を出す面は描く前にこれを呼ぶ——接続時に届くのは見ている会話の分だけ。
+   */
+  ensureHistory(threadId: string): void;
+  /** その会話の履歴が手元にあるか。「発言が無い」と「まだ取っていない」を分ける。 */
+  historyLoaded(threadId: string): boolean;
   send(text: string, attachments?: Attachment[]): void;
   abort(): void;
   switchTab(tabId: string): void;
@@ -267,6 +284,11 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
   /** 見ているスレッドを購読ハンドラから参照する（再接続させないため ref で持つ）。 */
   const activeRef = useRef<string>(undefined);
   activeRef.current = activeThreadId;
+  /**
+   * すでに頼んだ会話。同じ履歴を二重に取りに行かないための控え
+   * （切替を往復すると効果が何度も走る）。繋ぎ直したら忘れる。
+   */
+  const requested = useRef<Set<string>>(new Set());
   /** 見る先の変更の伝え先。**接続を張り直させないため ref 越しに呼ぶ**（下の効果の deps に入れない）。 */
   const onActiveThreadRef = useRef(options.onActiveThread);
   onActiveThreadRef.current = options.onActiveThread;
@@ -335,7 +357,12 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
     let attempt = 0;
 
     const connect = (): void => {
-      const socket = new WebSocket(url);
+      // 見ている会話をここで名乗る。ホストはその1本ぶんの履歴だけを接続時に配る
+      // （残りは移ったときに `history_request`）。welcome を待ってから頼むと
+      // 往復が1回増え、細い回線ほどそれが効く
+      const target = new URL(url, window.location.href);
+      if (activeRef.current) target.searchParams.set("thread", activeRef.current);
+      const socket = new WebSocket(target);
       socketRef.current = socket;
       setStatus(attempt === 0 ? "connecting" : "reconnecting");
 
@@ -358,6 +385,21 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
       const event = JSON.parse(raw.data) as ServerEvent;
       switch (event.type) {
         case "welcome":
+          // 繋ぎ直した合図。**手元の履歴は全部「取っていない」に戻す**——切れている間の
+          // 差分は誰も届けてくれないので、写しに穴が空いている可能性がある。
+          // 中身は消さない（見えているものが一瞬消えるほうが害が大きい）。
+          // 直後に届く見ている会話の history が、その1本を本物に差し替える
+          setByThread((prev) => {
+            const next: Record<string, ThreadState> = {};
+            for (const [id, state] of Object.entries(prev)) {
+              next[id] = state.historyLoaded ? { ...state, historyLoaded: false } : state;
+            }
+            return next;
+          });
+          requested.current.clear();
+          // 見ている会話は `?thread=` で頼んである（この直後に history が届く）。
+          // 控えておかないと、下の効果がもう一度頼んで同じ履歴が二重に流れる
+          if (activeRef.current) requested.current.add(activeRef.current);
           setSessionId(event.sessionId);
           setTools(event.tools);
           setCatalog(event.catalog);
@@ -399,8 +441,14 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
         }
 
         case "history":
-          // ホストが持つ会話の真実。リロード時はここで復元される
-          update(event.threadId, (prev) => ({ ...prev, chat: event.entries }));
+          // ホストが持つ会話の真実。リロード時はここで復元される。
+          // **丸ごと差し替える**——ホストは transcript へ記録してから配るので、
+          // 頼んでから届くまでに流れた差分もこの中に入っている
+          update(event.threadId, (prev) => ({
+            ...prev,
+            chat: event.entries,
+            historyLoaded: true,
+          }));
           break;
 
         case "canvas_state":
@@ -479,9 +527,12 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
     };
   }, [url, update, syncStreaming, syncModels]);
 
-  const post = useCallback((message: Record<string, unknown>) => {
+  /** 送れたら true。**送れたかどうかを返す**のは、履歴の要求が握り潰されないため（→ `ensureHistory`）。 */
+  const post = useCallback((message: Record<string, unknown>): boolean => {
     const socket = socketRef.current;
-    if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    socket.send(JSON.stringify(message));
+    return true;
   }, []);
 
   const threads = useMemo(() => allThreads.filter((t) => t.state === "open"), [allThreads]);
@@ -541,6 +592,32 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
   }, [activeThreadId]);
 
   const chatOf = (threadId: string): TranscriptEntry[] => byThread[threadId]?.chat ?? [];
+  const historyLoaded = (threadId: string): boolean =>
+    byThread[threadId]?.historyLoaded ?? false;
+
+  /**
+   * その会話の履歴を手元に用意する。まだ無ければホストへ頼む。
+   *
+   * 接続時に届くのは見ている会話の分だけなので、**中身を出す面はここを通す**
+   * （会話タブ・畳んだ会話の読み取り）。すでにあるものは何もしない。
+   */
+  const ensureHistory = useCallback(
+    (threadId: string) => {
+      if (requested.current.has(threadId)) return;
+      // **送れたときだけ控える**。まだ繋がっていないのに控えてしまうと、
+      // 繋がったあとも「頼んだ」と思い込んで永久に取りに行かない
+      if (post({ type: "history_request", threadId })) requested.current.add(threadId);
+    },
+    [post]
+  );
+
+  // 見ている会話の履歴を用意する。**移った経路を問わない**——未読を落とすのと同じ理由で、
+  // タブを押したときだけだと戻る／進むやリロードで取り漏らす
+  useEffect(() => {
+    if (!activeThreadId) return;
+    if (byThread[activeThreadId]?.historyLoaded) return;
+    ensureHistory(activeThreadId);
+  }, [activeThreadId, byThread, ensureHistory]);
 
   // React.memo on ChatRow 側の再描画を抑えるため、session オブジェクトの参照を安定させる。
   // 内部 state が変わらなくても毎回 new object だと App が無駄に再描画される。
@@ -676,6 +753,8 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
       busy: active.busy,
       unreadThreadIds,
       chatOf,
+      ensureHistory,
+      historyLoaded,
       send,
       abort,
       switchTab,
@@ -727,6 +806,8 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
       reopenThread,
       renameThread,
       chatOf,
+      ensureHistory,
+      historyLoaded,
       setModel,
       setDraft,
       activeModel,

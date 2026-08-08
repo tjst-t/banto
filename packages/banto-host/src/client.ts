@@ -16,9 +16,21 @@ export type ServerEventHandler = (event: ServerEvent) => void;
 export class BantoHostClient {
   private constructor(private readonly ws: WebSocket) {}
 
-  /** 接続が確立するまで待って返す。 */
-  static async connect(url: string, onEvent: ServerEventHandler): Promise<BantoHostClient> {
-    const ws = new WebSocket(url.endsWith(BANTO_WS_PATH) ? url : `${url}${BANTO_WS_PATH}`);
+  /**
+   * 接続が確立するまで待って返す。
+   *
+   * `viewing` はどの会話を見ているか。**接続時に履歴が届くのはこの1本だけ**で、
+   * 他の会話は `history_request` で取りに行く（省略すると既定スレッド）。
+   */
+  static async connect(
+    url: string,
+    onEvent: ServerEventHandler,
+    viewing?: string
+  ): Promise<BantoHostClient> {
+    const base = url.endsWith(BANTO_WS_PATH) ? url : `${url}${BANTO_WS_PATH}`;
+    const target = new URL(base);
+    if (viewing) target.searchParams.set("thread", viewing);
+    const ws = new WebSocket(target);
 
     ws.on("message", (data: Buffer) => {
       // I2: サーバからの壊れたJSONは黙って捨てず例外にする（プロトコル不整合の早期発見）

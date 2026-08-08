@@ -88,6 +88,13 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 /* 発話と発話の間だけ大きく空ける。ツール行・思考行・知らせは直前の発話に属する部品 */
 .msg--po:not(:first-child), .msg--banto:not(:first-child) { margin-top: var(--s6); }
 .chat-empty { color: var(--sumi-3); font-size: var(--t-meta); line-height: 1.9; margin: 0; }
+/* 窓の上端。長い会話は末尾から描くので、遡る口をここに出す（App の CHAT_WINDOW） */
+.chat-load-older {
+  align-self: center; border: 1px solid var(--rule); background: transparent;
+  border-radius: var(--r-ctl); padding: 0 var(--s3); height: 28px; cursor: pointer;
+  font-family: inherit; font-size: var(--t-meta); color: var(--sumi-3);
+}
+.chat-load-older:hover { color: var(--sumi); }
 
 .msg { font-size: var(--t-body); line-height: var(--lh-body); white-space: pre-wrap; word-break: break-word; }
 /* Markdown で描くところは pre-wrap を切る（ブロック間の改行が空行として二重に効く） */

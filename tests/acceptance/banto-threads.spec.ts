@@ -251,23 +251,78 @@ describe("[task-0035/a3] イベントとメッセージがスレッドで分か�
     }
   });
 
-  it("[task-0035/a3] 接続時に全スレッドの履歴が届く（1接続で複数タブを描ける）", async () => {
+  it("[task-0035/a3] 接続時の履歴は見ている会話の分だけ（残りは頼んで取る）", async () => {
     const url = await start();
     const second = await threads.open();
     threads.resolve().record({ role: "po", text: "こっちの話" });
     second.record({ role: "po", text: "あっちの話" });
 
     const events: ServerEvent[] = [];
-    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    // 見ているのは second。全部まとめて配ると、会話が増えるほど接続が重くなる
+    const client = await BantoHostClient.connect(url, (e) => events.push(e), second.id);
     try {
       await waitFor(events, (e) => e.type === "history" && e.threadId === second.id);
-      const histories = events.filter((e) => e.type === "history");
-      assert.equal(histories.length, 2, "スレッドごとに1通ずつ");
-
-      const forSecond = histories.find((e) => e.type === "history" && e.threadId === second.id);
+      const forSecond = events.find((e) => e.type === "history" && e.threadId === second.id);
       assert.deepEqual(forSecond?.type === "history" && forSecond.entries, [
         { role: "po", text: "あっちの話" },
       ]);
+      assert.equal(
+        events.filter((e) => e.type === "history").length,
+        1,
+        "見ていない会話の履歴は接続時に流さない"
+      );
+
+      // 移ったら頼んで取れる（1接続で複数タブを描けることは変わらない）
+      client.send({ type: "history_request", threadId: threads.resolve().id });
+      await waitFor(events, (e) => e.type === "history" && e.threadId === threads.resolve().id);
+      const forFirst = events.find(
+        (e) => e.type === "history" && e.threadId === threads.resolve().id
+      );
+      assert.deepEqual(forFirst?.type === "history" && forFirst.entries, [
+        { role: "po", text: "こっちの話" },
+      ]);
+    } finally {
+      client.close();
+    }
+  });
+
+  it("[task-0035/a3] 一覧の要約はホストが載せる（履歴を配らずに履歴一覧が描ける）", async () => {
+    const url = await start();
+    const second = await threads.open();
+    second.record({ role: "po", text: "あっちの話\n2行目は出さない" });
+
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    try {
+      await waitFor(events, (e) => e.type === "welcome");
+      const welcome = events.find((e) => e.type === "welcome");
+      const view =
+        welcome?.type === "welcome"
+          ? welcome.threads.find((t) => t.threadId === second.id)
+          : undefined;
+      assert.equal(view?.preview, "あっちの話");
+      // 要約が載っているのだから、この会話の全文は接続時に要らない
+      assert.equal(
+        events.some((e) => e.type === "history" && e.threadId === second.id),
+        false
+      );
+    } finally {
+      client.close();
+    }
+  });
+
+  it("[task-0035/a3] 知らない会話の履歴を頼まれたら空で埋めずエラーを返す", async () => {
+    const url = await start();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    try {
+      client.send({ type: "history_request", threadId: "thread-none" });
+      await waitFor(events, (e) => e.type === "error");
+      // I2: 「発言なし」と誤って描かせない
+      assert.equal(
+        events.some((e) => e.type === "history" && e.threadId === "thread-none"),
+        false
+      );
     } finally {
       client.close();
     }

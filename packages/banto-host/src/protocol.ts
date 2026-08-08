@@ -168,7 +168,23 @@ export interface InboxOpenMessage {
   itemId: string;
 }
 
+/**
+ * その会話の履歴を寄越せ、という要求。
+ *
+ * **接続時に配るのは見ている会話の分だけ**（inc: Android/Tailscale から使えない）。
+ * 全スレッドの全文を配っていた頃は接続のたびに 9.67MB 流れ、遅い回線では画面が
+ * 数十秒沈黙していた。他の会話は、POがそこへ移ったときに初めて取りに来る。
+ *
+ * 一度受け取った会話は、以後の差分がブロードキャストで届き続けるので取り直す必要はない
+ * （番頭は transcript へ記録してから配るので、`history` はその時点までを必ず含む）。
+ */
+export interface HistoryRequestMessage {
+  type: "history_request";
+  threadId: string;
+}
+
 export type ClientMessage =
+  | HistoryRequestMessage
   | InboxAnswerMessage
   | InboxOpenMessage
   | PromptMessage
@@ -238,6 +254,14 @@ export interface ThreadView {
    * 画面から消える——実際にその不具合を踏んだ。再接続したクライアントもここを見る。
    */
   streaming: boolean;
+  /**
+   * 中身が分かる最初の発話の1行（履歴一覧の要約）。
+   *
+   * **ここに置くのは、一覧が transcript を持たずに描けるようにするため。** 接続時に
+   * 配るのは見ている会話の履歴だけ（→ `HistoryRequestMessage`）なので、畳んだ会話の
+   * 中身は手元に無い。要約のためだけに全文を送らせない
+   */
+  preview?: string;
 }
 
 /** 接続直後に1度だけ送られる。 */

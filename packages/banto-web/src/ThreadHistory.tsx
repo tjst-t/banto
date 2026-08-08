@@ -13,6 +13,7 @@
  * 「残ること・戻れること」から。
  */
 
+import { useEffect } from "react";
 import type { ThreadView, TranscriptEntry } from "@banto/host/protocol";
 import { Icon } from "./icons.js";
 import { ChatRow } from "./messages.js";
@@ -20,6 +21,10 @@ import { ChatRow } from "./messages.js";
 export interface ThreadHistoryProps {
   closedThreads: ThreadView[];
   chatOf(threadId: string): TranscriptEntry[];
+  /** 読む会話の履歴を取り寄せる。接続時に届くのは見ている会話の分だけ。 */
+  ensureHistory(threadId: string): void;
+  /** その会話の履歴が手元にあるか（「発言なし」と「まだ来ていない」を分ける）。 */
+  historyLoaded(threadId: string): boolean;
   /**
    * 右で読んでいる会話。**真実は URL**（`viewLocation.ts`）——自分で持つと、
    * リロードや戻る／進むで一覧に戻ってしまう。
@@ -30,12 +35,15 @@ export interface ThreadHistoryProps {
   onBack(): void;
 }
 
-/** 一覧に出す1行分の要約。中身が分かる最初の発話を採る。 */
-function preview(entries: TranscriptEntry[]): string {
-  const first = entries.find((e) => e.role === "po" || e.role === "banto");
-  if (!first || !("text" in first)) return "（発言なし）";
-  const line = first.text.split("\n").find((l) => l.trim().length > 0) ?? "";
-  return line.length > 60 ? `${line.slice(0, 60)}…` : line;
+/**
+ * 一覧に出す1行分の要約。
+ *
+ * **ホストが `ThreadView` に載せてくる**（`preview`）。以前はここで transcript から
+ * 作っていたが、そのために畳んだ会話の全文を接続時に配る必要があった——一覧の
+ * 1行のために数MB流していたことになる。
+ */
+function preview(thread: ThreadView): string {
+  return thread.preview ?? "（発言なし）";
 }
 
 function formatClosedAt(iso: string | undefined): string {
@@ -45,9 +53,16 @@ function formatClosedAt(iso: string | undefined): string {
 }
 
 export function ThreadHistory(props: ThreadHistoryProps): React.ReactElement {
-  const { closedThreads, chatOf, selectedId, onSelect, onReopen, onBack } = props;
+  const { closedThreads, chatOf, ensureHistory, historyLoaded, selectedId, onSelect, onReopen, onBack } =
+    props;
   const selected = closedThreads.find((t) => t.threadId === selectedId);
   const entries = selected ? chatOf(selected.threadId) : [];
+  // 読む会話が決まってから取り寄せる（一覧を出すだけなら要約で足りる）
+  const selectedThreadId = selected?.threadId;
+  useEffect(() => {
+    if (selectedThreadId) ensureHistory(selectedThreadId);
+  }, [selectedThreadId, ensureHistory]);
+  const loaded = selectedThreadId ? historyLoaded(selectedThreadId) : false;
 
   return (
     <div className={`history-view ${selected ? "showing-read" : ""}`}>
@@ -74,7 +89,7 @@ export function ThreadHistory(props: ThreadHistoryProps): React.ReactElement {
                   <span className="history-row-title">{thread.title}</span>
                   <span className="history-row-at">{formatClosedAt(thread.closedAt)}</span>
                 </div>
-                <div className="history-row-preview">{preview(chatOf(thread.threadId))}</div>
+                <div className="history-row-preview">{preview(thread)}</div>
                 <div className="history-row-actions">
                   <button
                     className="history-row-resume"
@@ -121,7 +136,10 @@ export function ThreadHistory(props: ThreadHistoryProps): React.ReactElement {
             {/* チャット欄と同じ器（縦に積んで、発話ごとに間を空ける）に同じ部品を並べる */}
             <div className="history-read-scroll">
               {entries.length === 0 ? (
-                <p className="history-read-empty">この会話には発言がありません。</p>
+                // I1: まだ届いていないものを「発言がありません」と言い切らない
+                <p className="history-read-empty">
+                  {loaded ? "この会話には発言がありません。" : "読み込んでいます…"}
+                </p>
               ) : (
                 entries.map((entry, i) => <ChatRow key={i} entry={entry} />)
               )}

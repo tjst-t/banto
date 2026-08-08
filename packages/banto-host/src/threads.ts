@@ -170,7 +170,23 @@ export class Thread {
       streaming: this.session.isStreaming,
       ...(this.closedAt ? { closedAt: this.closedAt } : {}),
       ...(this.model ? { model: this.model } : {}),
+      ...(this.preview() ? { preview: this.preview() } : {}),
     };
+  }
+
+  /**
+   * 中身が分かる最初の発話の1行。履歴一覧がこれだけで描けるようにする
+   * （全文は移った先で取りに来る）。
+   */
+  private preview(): string | undefined {
+    const first = this.transcript.find(
+      (e): e is typeof e & { text: string } =>
+        (e.role === "po" || e.role === "banto") && "text" in e
+    );
+    if (!first) return undefined;
+    const line = first.text.split("\n").find((l) => l.trim().length > 0);
+    if (!line) return undefined;
+    return line.length > 60 ? `${line.slice(0, 60)}…` : line;
   }
 
   /**

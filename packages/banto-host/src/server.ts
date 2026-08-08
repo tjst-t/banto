@@ -60,6 +60,14 @@ const ATTACHMENT_URL_BASE = "/api/attachments/";
 const TOOL_PAYLOAD_MAX_CHARS = 4000;
 
 /**
+ * 死活確認（ping）の間隔。この2倍まで pong が返らなければ、その接続は畳む。
+ *
+ * 30秒にしたのは、間に挟まる NAT・Tailscale の DERP 中継が黙って落とす前に
+ * 通しておきたいから——多くの実装で無通信の見切りは60秒前後にある。
+ */
+const WS_HEARTBEAT_MS = 30_000;
+
+/**
  * ツールの引数・結果を履歴に載せられる大きさへ収める。
  * 長すぎるときは文字列に落として切り詰める（構造を保ったまま部分的に消すと、
  * 何が欠けたのか読み取れなくなる）。
@@ -218,6 +226,13 @@ export class BantoHostServer {
   /** 取次。会話に紐づかない唯一の状態（POを待たせているもの）。 */
   private readonly inbox: Inbox | undefined;
   private readonly clients = new Set<WebSocket>();
+  /**
+   * 前回の ping に pong を返した接続。死んだ接続を畳むためだけに持つ（→ `heartbeat`）。
+   * 接続そのものが鍵なので、close で clients から外れれば一緒に消える WeakSet でよい。
+   */
+  private readonly alive = new WeakSet<WebSocket>();
+  /** 死活確認のタイマー。close で止める。 */
+  private readonly heartbeat: ReturnType<typeof setInterval>;
   private readonly unsubscribeThreads: () => void;
   /** 現在のモデル情報。画像添付の可否判定に使う。切替で入れ替わる。 */
   private modelInfo: ModelInfo | undefined;
@@ -265,9 +280,51 @@ export class BantoHostServer {
     this.modelProvider = options.modelProvider;
     this.selectModel = options.onSelectModel;
     this.httpServer = httpServer;
-    this.wss = new WebSocketServer({ noServer: true });
+    this.wss = new WebSocketServer({
+      noServer: true,
+      // 接続時に配る history は全スレッド分で数MBになる（inc: Android/Tailscale から
+      // 使えない）。中身は同じ形の JSON の繰り返しなので、deflate が非常によく効く
+      // ——実測 9.67MB → 1.43MB（85%減）。
+      //
+      // **文脈持ち越し（context takeover）は切らない。** 切ると1フレームごとに辞書が
+      // 捨てられ、この「同じ形が延々続く」流れでは圧縮率が大きく落ちる。代償は接続ごとの
+      // zlib 窓（数百KB）だが、この面に繋ぐのはPOの画面が数枚——常時多接続ではない
+      perMessageDeflate: {
+        // 小さなフレーム（turn_start 等）は圧縮しても縮まず、往復の CPU だけ増える
+        threshold: 1024,
+        // level は 6（zlib 既定）。実測 9.67MB に対し level 3 が 1.66MB / 68ms、
+        // level 6 が 1.43MB / 132ms、level 9 は 6 と同じ大きさでさらに遅い。
+        // 遅い回線ほど 0.23MB の差が効くので、64ms の CPU は払う価値がある
+        zlibDeflateOptions: { level: 6 },
+        concurrencyLimit: 10,
+      },
+    });
 
-    this.wss.on("connection", (ws: WebSocket) => this.handleConnection(ws));
+    this.wss.on("connection", (ws: WebSocket, req: http.IncomingMessage) =>
+      this.handleConnection(ws, req)
+    );
+
+    // **死活確認**（inc: Android/Tailscale から使えない）。
+    //
+    // モバイル回線・Tailscale・NAT の間では、画面消灯やハンドオーバで TCP が
+    // **黙って**切れる。FIN が来ないので close が上がらず、番頭側は生きていると思って
+    // 配信し続け、画面側は「繋がっているのに何も来ない」まま止まる。
+    // ping を投げて pong が返らない接続を畳むと、画面側の onclose が発火して
+    // 繋ぎ直しに入れる——切れたことに気づかせるのが目的。
+    this.heartbeat = setInterval(() => {
+      for (const ws of this.clients) {
+        if (!this.alive.has(ws)) {
+          // 前回の ping に答えていない＝もう居ない。terminate は 'close' を続けて出すので
+          // clients からはそちらで外れる
+          ws.terminate();
+          continue;
+        }
+        this.alive.delete(ws);
+        ws.ping();
+      }
+    }, WS_HEARTBEAT_MS);
+    // 死活確認のためだけにプロセスを起こし続けない（テストが終わらなくなる）
+    this.heartbeat.unref?.();
     // upgrade はここで一手に受け、パスで振り分ける（案A：proxy exposer の WS 中継）。
     // ws に server を持たせると /ws 以外の upgrade を全部 400 で蹴るため、noServer にして
     // 自分の面（/ws）とモジュールの面（中継 URL）をここで分ける
@@ -461,6 +518,7 @@ export class BantoHostServer {
 
   /** サーバを止める。セッションの後始末は呼び出し側の責務。 */
   async close(): Promise<void> {
+    clearInterval(this.heartbeat);
     this.unsubscribeThreads();
     for (const thread of this.threads.list()) thread.dispose();
     for (const ws of this.clients) ws.close();
@@ -505,8 +563,11 @@ export class BantoHostServer {
     socket.destroy();
   }
 
-  private handleConnection(ws: WebSocket): void {
+  private handleConnection(ws: WebSocket, req?: http.IncomingMessage): void {
     this.clients.add(ws);
+    // 繋がった直後は生きているとみなす（最初の ping まで畳まれないように）
+    this.alive.add(ws);
+    ws.on("pong", () => this.alive.add(ws));
     ws.on("close", () => this.clients.delete(ws));
     // I2: 接続エラー（不正フレーム等）を握りつぶさずログに出し、この接続だけ閉じる。
     //     ここで受けないと unhandled 'error' で Node プロセス全体が死ぬ（WS_ERR_EXPECTED_MASK 等）。
@@ -555,11 +616,26 @@ export class BantoHostServer {
       })),
     });
 
-    // 開いている全スレッドぶん配る。リロードしても会話が消えず、途中から繋いだ
-    // クライアントも履歴を見られる——1接続で複数スレッドを描けるのはこのため
+    // **履歴は見ている会話の分だけ配る**（inc: Android/Tailscale から使えない）。
+    //
+    // 以前はここで全スレッドの全文を配っており、接続のたびに 9.67MB 流れていた。
+    // 会話は畳まない限り増え続けるので、遅い回線では際限なく重くなる形だった。
+    // 残りは POがその会話へ移ったときに `history_request` で取りに来る。
+    //
+    // どの会話を見ているかは `/ws?thread=<id>` で聞く——welcome を待ってから
+    // 要求させると往復が1回増え、それは回線が細いほど効いてくる。
+    // 知らないID・畳んだ会話を指されたら既定へ落とす（要求は信用しない）。
+    const requested = req ? new URL(req.url ?? "/", "http://x").searchParams.get("thread") : null;
+    const viewing =
+      threads.find((t) => t.id === requested && t.state === "open") ?? defaultThread;
+    if (viewing) {
+      this.send(ws, { type: "history", threadId: viewing.id, entries: viewing.transcript });
+    }
+
+    // モデルとキャンバスは全スレッドぶん配る。**こちらは履歴と違って小さく**
+    // （実測で合わせて 8KB 弱）、タブの見た目と復元がこれに依存している
     for (const thread of threads) {
-      this.send(ws, { type: "history", threadId: thread.id, entries: thread.transcript });
-      // その会話が使っているモデル。**会話ごと**なので history と同じく1本ずつ配る（D3）
+      // その会話が使っているモデル。**会話ごと**なので1本ずつ配る（D3）
       const model = thread.model ?? this.hostDefaultModel();
       if (model) {
         this.send(ws, {
@@ -600,6 +676,19 @@ export class BantoHostServer {
     }
     // 既知の type を捌いたあと message は never に絞られるため、先に控えておく
     const receivedType: unknown = (message as { type?: unknown } | null)?.type;
+
+    // 移った先の会話の履歴を配る（接続時に配らなかった分）。
+    // **要求した1人にだけ返す**——他のクライアントは別の会話を見ている
+    if (message?.type === "history_request") {
+      const thread = this.threads.list().find((t) => t.id === message.threadId);
+      if (!thread) {
+        // I2: 知らない会話を空の履歴で黙って埋めない（画面が「発言なし」と誤って出る）
+        this.send(ws, { type: "error", message: `unknown thread: ${message.threadId}` });
+        return;
+      }
+      this.send(ws, { type: "history", threadId: thread.id, entries: thread.transcript });
+      return;
+    }
 
     // スレッドの開閉。開いても既存スレッドは何も変わらない（決定2）
     if (message?.type === "thread_open") {

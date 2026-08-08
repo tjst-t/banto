@@ -64,6 +64,14 @@ const CHAT_WIDTH_MIN = 300;
 /** 入力欄の最大の高さ（AI Elements の `max-h-48`）。最低の高さは CSS の min-height。 */
 const MAX_COMPOSER_HEIGHT_PX = 192;
 
+/**
+ * チャットに一度に描く発話の数（→ App の `shownCount`）。
+ *
+ * 200 は「開いた直後に画面を数枚ぶん埋めて、なお余る」量。これ以上増やしても
+ * 最初の一画面には出ないが、Markdown の組み立ては全部走ってしまう。
+ */
+const CHAT_WINDOW = 200;
+
 
 /**
  * 中核の Tool の到達先（ADR-0011 決定42）。`llm.*` はモジュールではなく中核のドメイン。
@@ -409,6 +417,27 @@ export function App(): React.ReactElement {
   useEffect(() => {
     void scrollToBottom({ animation: "instant" });
   }, [session.activeThreadId, scrollToBottom]);
+
+  /**
+   * 描くのは末尾の何件か（inc: Android/Tailscale から使えない）。
+   *
+   * **全部描かない。** 長い会話は5千行を超えており、1行ごとに Markdown を組み立てるので
+   * （`ChatRow` → `StreamingMarkdown`）、丸ごと描くと開いた瞬間に画面が固まる。転送を
+   * 軽くしても、この描画の重さは1バイトも減らない——実機で効くのはこちら。
+   *
+   * 高さを見積もる本式の仮想スクロールにはしていない。行の高さがまちまち（思考の
+   * 折り畳み・コードブロック・添付）なうえ、下に貼り付く追従（`use-stick-to-bottom`）と
+   * 噛み合わせる必要があり、**チャットは下から読むもの**なので窓を下端に固定できる。
+   * 上へ遡りたいときだけ窓を広げる形にした。
+   */
+  const [shownCount, setShownCount] = useState(CHAT_WINDOW);
+  // 会話を移ったら窓を戻す（前の会話で遡った分を持ち越さない）
+  useEffect(() => setShownCount(CHAT_WINDOW), [session.activeThreadId]);
+  const shownFrom = Math.max(0, session.chat.length - shownCount);
+  const shownChat = useMemo(
+    () => session.chat.slice(shownFrom),
+    [session.chat, shownFrom]
+  );
 
   /**
    * 送信ボタンと待ち表示の状態（AI Elements の `ChatStatus`）。
@@ -1122,6 +1151,8 @@ export function App(): React.ReactElement {
         <ThreadHistory
           closedThreads={session.closedThreads}
           chatOf={session.chatOf}
+          ensureHistory={session.ensureHistory}
+          historyLoaded={session.historyLoaded}
           selectedId={view.readThreadId}
           onSelect={(id) => navigate((prev) => ({ ...prev, readThreadId: id }))}
           /* 再開すると会話面へ移る（reopenThread が URL ごと動かす） */
@@ -1368,7 +1399,20 @@ export function App(): React.ReactElement {
                 番頭に話しかけてください。キャンバスに何かを出したいときは「〜を開いて」と頼みます。
               </p>
             )}
-            {session.chat.map((entry, i) => {
+            {/* 遡って読みたくなったぶんだけ描く。押した分は下に留まる（追従は切れない） */}
+            {shownFrom > 0 && (
+              <button
+                className="chat-load-older"
+                type="button"
+                onClick={() => setShownCount((n) => n + CHAT_WINDOW)}
+              >
+                以前の発言を読む（残り {shownFrom} 件）
+              </button>
+            )}
+            {shownChat.map((entry, offset) => {
+              // 元の並びでの位置。**窓の中の位置と混ぜない**——読み捨てたエラーの記録も、
+              // 「届いている最中の行か」の判定も、会話全体での位置で持っている
+              const i = shownFrom + offset;
               const threadId = session.activeThreadId;
               if (entry.role === "error" && threadId && dismissedErrors[threadId]?.has(i)) {
                 return null;
