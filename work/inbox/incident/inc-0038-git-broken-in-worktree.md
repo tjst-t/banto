@@ -41,9 +41,39 @@ fatal: not a git repository: /home/.../loamium/.git/worktrees/task-task-0005
 見せる**。worktree かどうかは `.git` がファイルかどうかで判る（`gitdir:` を読む）。
 普通のリポジトリなら何もしない——既に bind mount に入っている。
 
-**読み取り専用にしてある。** 検証は読む仕事で、他人のリポジトリの履歴を書き換えられては
-困る。ただし `git commit` するような検証コマンドは通らない——**要るようになったら
-そのとき決める**（いまは「git が動かない」より確実に良い）。
+**読み取り専用にしてある。** 見せているのは `<本体>/.git` で、これは**全 worktree と
+PO の作業チェックアウトが共有している実物**。書けるようにすると、検証コマンドが
+`git reset --hard`・ref の削除・`gc` などで **PO の実リポジトリを壊せる**。
+検証は他人のコードを走らせる場所なので、ここは開けない。
+
+### 何が通って、何が落ちるか（実測）
+
+| 操作 | 結果 |
+|---|---|
+| `git log` / `diff` / `rev-parse` / `check-ignore` | **通る** |
+| `git status` | **通る**（index の更新は best-effort なので落ちない） |
+| `git add` / `git commit` | **128 で落ちる** |
+| `git stash` | 落ちる |
+
+境界は「**その worktree の git 状態を書き換えるか**」。読む系と `status` は全部通る。
+
+### 実際に困る検証（見当）
+
+- リポジトリ自身にコミットするテスト（git hooks / pre-commit を実リポジトリで試すもの）
+- `git stash` を使う道具（husky / lint-staged 系）
+- リリース系の dry-run（semantic-release / changesets。タグやコミットを打つ）
+
+「作業ツリーが汚れていないこと」を `git diff --exit-code` で見る類は**読みなので通る**。
+
+**banto 自身はいまのところ影響なし**（調査済み）。リポジトリ自身に git を使っているのは
+`source-hygiene.spec.ts` の `git ls-files`（読み）だけで、他の受け入れテストは全部
+`os.tmpdir()` に本物のリポジトリを作って書いている——コンテナの中の書ける場所。
+
+### 要るようになったときの筋（PO 了承済み・2026-08-08）
+
+**read-write にするのではなく、worktree ではなく clone を渡す。** 自己完結していて
+書き放題で、壊れても実リポジトリに波及しない。コストは clone の時間だけ。
+`.git` を rw で見せる案は採らない——共有物を検証コマンドに開けることになる。
 
 所有者違いの方（`dubious ownership`）は**イメージ側の話**なので、
 `RUN git config --system --add safe.directory '*'` を banto 自身の `Dockerfile.test` と
