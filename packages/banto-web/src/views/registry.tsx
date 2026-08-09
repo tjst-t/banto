@@ -14,6 +14,7 @@
 
 import type { ComponentType } from "react";
 import { FileBrowser } from "./FileBrowser.js";
+import { FileViewer } from "./FileViewer.js";
 import { GitViewer } from "./GitViewer.js";
 import { PlaceSettings } from "./PlaceSettings.js";
 import { RepoManager } from "./RepoManager.js";
@@ -62,6 +63,8 @@ export interface CanvasViewProps {
 const REGISTRY: Record<string, ComponentType<CanvasViewProps>> = {
   // 基本GUIセット（workspace モジュール提供。決定18・24）
   FileBrowser,
+  // 1つを読む面（ADR-0017 決定79）。探す面（FileBrowser）とは目的が違うので分ける
+  FileViewer,
   GitViewer,
   // リポジトリ／ワークツリー（repo-manager 提供・決定36）と検証環境（environment-pool 提供・決定32）
   RepoManager,

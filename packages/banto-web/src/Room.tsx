@@ -1,0 +1,781 @@
+/**
+ * 会話の1列（間）— 幹も枝も同じ器で描く（ADR-0017 決定77・79・80）。
+ *
+ * 幹と枝は**同じもの**として描く：どちらも会話で、違うのは頭（還す条件・畳む口）だけ。
+ * 2通りに描くと、POは「いまどちらを読んでいるか」を見た目から学び直すことになる。
+ *
+ * **作業する面が開くと、この列は細い帯になる**（決定79）。そこで読むのではなく、
+ * **話しかけるための幅**だから——面を見ながら「これ何？」と訊けないのは、番頭が主体の
+ * 店として本末転倒。帯の幅はつまんで変えられる。
+ *
+ * **判断待ちは常設しない**（決定80）。会話の流れの中に立ち、遡ったときだけ↓が朱になる。
+ *
+ * D3/D5: 会話の真実はホスト。ここは配られたものを描き、押されたことを投げ返すだけ。
+ */
+
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+// D6: 末尾追従は Vercel AI Elements と同じ use-stick-to-bottom に任せる
+import { useStickToBottom } from "use-stick-to-bottom";
+import type { Attachment, InboxItemView, ThreadView } from "@banto/host/protocol";
+import type { LlmModelInfo } from "@banto/core";
+import { ChatRow, Loader } from "./messages.js";
+import { PendingDecisions } from "./Inbox.js";
+import { MergeBranchForm } from "./Branch.js";
+import { Icon } from "./icons.js";
+import { Modal, SearchField } from "./views/ui.js";
+import { callModuleTool } from "./views/useModuleTool.js";
+import { useListNav } from "./listNav.js";
+import type { BantoSession, CurrentModel } from "./useBantoSession.js";
+
+/**
+ * 中核の Tool の到達先（ADR-0011 決定42）。`llm.*` はモジュールではなく中核のドメイン。
+ * 相対パスなので、自分のオリジン（＝開発時は vite、常駐時はホスト）に解決される。
+ */
+const CORE_TOOL_ENDPOINT = "/api/core";
+
+/** 入力欄の最大の高さ（AI Elements の `max-h-48`）。最低の高さは CSS の min-height。 */
+const MAX_COMPOSER_HEIGHT_PX = 192;
+
+/**
+ * チャットに一度に描く発話の数。
+ *
+ * 200 は「開いた直後に画面を数枚ぶん埋めて、なお余る」量。これ以上増やしても
+ * 最初の一画面には出ないが、Markdown の組み立ては全部走ってしまう。
+ */
+const CHAT_WINDOW = 200;
+
+/**
+ * 追従が切れたとき、「POが自分で動かした」と見なす直前の猶予（inc-0045）。
+ *
+ * ホイールを1つ転がしてから追従が切れるまでには、ライブラリ側の遅延が挟まる。
+ * 短すぎるとPOの操作を機械の読み違いと取り違えて勝手に下へ引き戻す——**そちらのほうが
+ * 害が大きい**ので、余裕を持たせる。
+ */
+const USER_SCROLL_GRACE_MS = 400;
+
+/** テキスト添付の上限。これを超えたら添付せずエラー表示する。 */
+const MAX_FILE_BYTES = 100 * 1024;
+/** 画像の上限。WS の maxPayload 既定（100MiB）を base64（+33%）込みで割らない安全な値。 */
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+/** ファイル選択ダイアログで選べるもの。画像と、テキストとして読めるファイル。 */
+const ACCEPT_TYPES =
+  "image/*,.txt,.md,.log,.json,.jsonl,.csv,.tsv,.yml,.yaml,.toml,.xml,.html,.css," +
+  ".js,.mjs,.cjs,.ts,.tsx,.jsx,.py,.rb,.go,.rs,.java,.c,.h,.cpp,.hpp,.cs,.php," +
+  ".sh,.bash,.sql,.ini,.cfg,.env,.diff,.patch,.gitignore";
+
+/** 添付待ちの1ファイル。送信時に FileReader で読み取る。 */
+export interface PendingFile {
+  kind: "image" | "file";
+  name: string;
+  size: number;
+  mimeType?: string;
+  file: File;
+  previewUrl?: string;
+}
+
+/** トークン数を読みやすく（1200 → 1.2k）。 */
+function formatTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1000)}k`;
+  return String(tokens);
+}
+
+/**
+ * 送ってから最初の一文字が届くまでの間（AI Elements の `status === "submitted"`）。
+ * **独楽だけを置く**——番頭が喋り始めたら消える。
+ */
+function ThinkingRow(): React.ReactElement {
+  return (
+    <div className="msg msg--thinking" role="status" aria-live="polite">
+      <Loader />
+      <span className="sr-only">考えています</span>
+    </div>
+  );
+}
+
+/**
+ * この会話が文脈をどれだけ使っているか（AI Elements の `Context`）。
+ * **実測が届くまで出さない**（I1）。
+ */
+function ContextMeter({
+  tokens,
+  contextWindow,
+}: {
+  tokens: number | undefined;
+  contextWindow: number | undefined;
+}): React.ReactElement | null {
+  if (tokens === undefined) return null;
+  if (!contextWindow) {
+    return (
+      <span className="context-meter" title={`直近のターンで ${tokens.toLocaleString()} トークン`}>
+        {formatTokens(tokens)}
+      </span>
+    );
+  }
+  const ratio = Math.min(1, tokens / contextWindow);
+  const percent = Math.round(ratio * 100);
+  return (
+    <span
+      className={`context-meter ${ratio >= 0.9 ? "is-full" : ratio >= 0.7 ? "is-warn" : ""}`}
+      title={
+        `文脈の使用量：${tokens.toLocaleString()} / ${contextWindow.toLocaleString()} トークン` +
+        "（直近のターンで運んだ入力＋キャッシュ＋出力の実測）"
+      }
+    >
+      <svg className="context-meter-ring" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+        <circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" strokeWidth="2" opacity="0.2" />
+        <circle
+          cx="7"
+          cy="7"
+          r="6"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeDasharray={`${ratio * 2 * Math.PI * 6} ${2 * Math.PI * 6}`}
+          transform="rotate(-90 7 7)"
+        />
+      </svg>
+      {percent}%
+    </span>
+  );
+}
+
+/**
+ * モデル選択（AI Elements の `PromptInputModelSelect`）。
+ *
+ * 一覧は中核の `llm.list` から取り、**番頭が使ってよいモデルだけ**を出す（`hostUsable`）。
+ * 選んだ結果は自分で覚えない。ホストが `model_state` を配り直したときに変わる（D3）。
+ * **押した脇に開くドロップダウンは使わない**（`Modal`。PO報告 2026-08-06）。
+ */
+function ModelSelect({
+  current,
+  onSelect,
+}: {
+  current: CurrentModel | undefined;
+  onSelect: (provider: string, model: string) => void;
+}): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [models, setModels] = useState<LlmModelInfo[]>();
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    if (!open || models) return;
+    void callModuleTool<{ models: LlmModelInfo[] }>(CORE_TOOL_ENDPOINT, "llm.list", {
+      adopted: true,
+      limit: 200,
+    })
+      .then((data) => setModels(data.models.filter((m) => m.hostUsable)))
+      // I2: 取れなかったことを黙らない。空の一覧を「モデルが無い」と誤読させない
+      .catch((err: unknown) => setError(String(err)));
+  }, [open, models]);
+
+  const matched = (models ?? []).filter((m) => {
+    const q = query.trim().toLowerCase();
+    if (q.length === 0) return true;
+    return `${m.providerId} ${m.name} ${m.id}`.toLowerCase().includes(q);
+  });
+  const providers = [...new Set(matched.map((m) => m.providerId))];
+  const ordered = providers.flatMap((providerId) =>
+    matched.filter((m) => m.providerId === providerId)
+  );
+
+  const close = (): void => {
+    setOpen(false);
+    setQuery("");
+  };
+  const pick = (m: LlmModelInfo): void => {
+    onSelect(m.providerId, m.id);
+    close();
+  };
+  const nav = useListNav(ordered, { onChoose: pick, resetKey: query });
+
+  return (
+    <div className="model-select">
+      <button
+        className="model-select-trigger"
+        type="button"
+        onClick={() => setOpen(!open)}
+        title={current ? `${current.provider} / ${current.id}` : "モデルを選ぶ"}
+      >
+        <span className="model-select-name">{current?.id ?? "モデル"}</span>
+        <span className="model-select-caret">▾</span>
+      </button>
+      {open && (
+        <Modal
+          title="モデルを選ぶ"
+          onClose={close}
+          footer={<span className="picker-hint">↑↓ で選ぶ · Enter で決める · Esc で閉じる</span>}
+        >
+          <div className="model-select-menu">
+            <div className="model-select-search">
+              <SearchField
+                value={query}
+                onChange={setQuery}
+                onKeyDown={nav.onKeyDown}
+                placeholder="モデルを探す…"
+                autoFocus
+              />
+            </div>
+            <div className="model-select-list" role="listbox" ref={nav.listRef}>
+              {error !== undefined && <div className="model-select-error">{error}</div>}
+              {error === undefined && models === undefined && (
+                <div className="model-select-empty">読み込んでいます…</div>
+              )}
+              {models !== undefined && matched.length === 0 && (
+                <div className="model-select-empty">
+                  {(models ?? []).length === 0
+                    ? "採用しているモデルがありません。設定の「LLM・モデル」で採用してください。"
+                    : "見つかりません"}
+                </div>
+              )}
+              {providers.map((providerId) => (
+                <div key={providerId}>
+                  <div className="model-select-group">{providerId}</div>
+                  {matched
+                    .filter((m) => m.providerId === providerId)
+                    .map((m) => {
+                      const isCurrent = current?.provider === m.providerId && current.id === m.id;
+                      const index = ordered.indexOf(m);
+                      return (
+                        <button
+                          key={`${m.providerId}/${m.id}`}
+                          className={`model-select-item ${isCurrent ? "is-current" : ""} ${
+                            nav.isOn(index) ? "is-on" : ""
+                          }`}
+                          type="button"
+                          role="option"
+                          aria-selected={isCurrent}
+                          onClick={() => pick(m)}
+                          {...nav.rowProps(index)}
+                        >
+                          <span className="model-select-item-name">{m.name}</span>
+                          {m.contextWindow ? (
+                            <span className="model-select-badge">{formatTokens(m.contextWindow)}</span>
+                          ) : (
+                            <span
+                              className="model-select-badge is-unknown"
+                              title="文脈の長さが分かりません。選ぶと毎ターン要約が走る可能性があります"
+                            >
+                              長さ不明
+                            </span>
+                          )}
+                          {m.cost && (m.cost.input > 0 || m.cost.output > 0) && (
+                            <span className="model-select-badge" title="100万トークンあたり 入力/出力">
+                              ${m.cost.input}/${m.cost.output}
+                            </span>
+                          )}
+                          {m.vision && <span className="model-select-badge">画像可</span>}
+                          <span className="model-select-check">
+                            {isCurrent && <Icon name="check" size={14} />}
+                          </span>
+                        </button>
+                      );
+                    })}
+                </div>
+              ))}
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+export interface RoomProps {
+  session: BantoSession;
+  /** この列が描いている会話（幹または枝）。 */
+  thread: ThreadView;
+  /** 作業する面が開いていて、この列が細い帯になっているか（決定79）。 */
+  slim?: boolean;
+  /** 狭い画面で、下から上がってきた紙として出ているか（決定79）。 */
+  raised?: boolean;
+  /** この会話に関わる判断待ち（決定80：会話の流れの中に立つ）。 */
+  pending: InboxItemView[];
+  onAnswerInbox(itemId: string, actionId: string): void;
+  onOpenInbox(itemId: string): void;
+  /** 枝の札から別の枝へ移る。 */
+  onOpenBranch(threadId: string): void;
+  /** 器の「面への口」。 */
+  onOpenView(kind: string, params?: Record<string, unknown>): void;
+  /** 枝を閉じて幹へ戻る（枝のときだけ）。 */
+  onCloseBranch?(): void;
+  /** 枝を畳んで幹へ還す（枝のときだけ）。 */
+  onMergeBranch?(conclusion: string): void;
+  /** 細い帯の幅をつまんで変える（決定79）。 */
+  onGrip?(e: React.PointerEvent<HTMLDivElement>): void;
+  /** いま見ている枝（札の強調に使う）。 */
+  activeBranchId?: string;
+}
+
+/**
+ * 会話の1列。
+ *
+ * **末尾追従はこの列が持つ**——幹と枝が並ぶので、1つの hook を共有できない
+ * （片方のスクロールがもう片方を動かす）。
+ */
+export function Room({
+  session,
+  thread,
+  slim = false,
+  raised = false,
+  pending,
+  onAnswerInbox,
+  onOpenInbox,
+  onOpenBranch,
+  onOpenView,
+  onCloseBranch,
+  onMergeBranch,
+  onGrip,
+  activeBranchId,
+}: RoomProps): React.ReactElement {
+  const threadId = thread.threadId;
+  const isBranch = thread.kind === "branch";
+  const chat = useMemo(() => session.chatOf(threadId), [session, threadId]);
+  const busy = session.busyOf(threadId);
+  const draft = session.draftOf(threadId);
+  const model = session.modelOf(threadId);
+
+  /**
+   * 末尾追従。**最初の貼り付きだけ瞬間移動にする**——保存された会話を丸ごと復元してから
+   * 貼り付くので、滑らせると先頭から最下部まで延々と動いて見える。
+   */
+  const stick = useStickToBottom({ initial: "instant", resize: "smooth" });
+  const { scrollToBottom } = stick;
+  useEffect(() => {
+    void scrollToBottom({ animation: "instant" });
+  }, [threadId, scrollToBottom]);
+
+  /**
+   * **追従が切れてよいのは、POが自分で上へ動かしたときだけ**（inc-0045）。
+   * 切れた理由がPOの操作なら従い、そうでなければ貼り直す。
+   */
+  const lastGestureAt = useRef(0);
+  const noteGesture = useCallback(() => {
+    lastGestureAt.current = Date.now();
+  }, []);
+  useEffect(() => {
+    if (stick.isAtBottom) return;
+    if (Date.now() - lastGestureAt.current < USER_SCROLL_GRACE_MS) return;
+    void scrollToBottom({ animation: "instant" });
+  }, [stick.isAtBottom, scrollToBottom]);
+
+  /** 描くのは末尾の何件か。上へ遡りたいときだけ窓を広げる。 */
+  const [shownCount, setShownCount] = useState(CHAT_WINDOW);
+  useEffect(() => setShownCount(CHAT_WINDOW), [threadId]);
+  const shownFrom = Math.max(0, chat.length - shownCount);
+  const shownChat = useMemo(() => chat.slice(shownFrom), [chat, shownFrom]);
+
+  const lastEntry = chat[chat.length - 1];
+  const chatStatus: "ready" | "submitted" | "streaming" | "error" = busy
+    ? lastEntry?.role === "banto" || lastEntry?.role === "tool" || lastEntry?.role === "reasoning"
+      ? "streaming"
+      : "submitted"
+    : lastEntry?.role === "error"
+      ? "error"
+      : "ready";
+
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
+  const [attachError, setAttachError] = useState<string>();
+  const [dismissedErrors, setDismissedErrors] = useState<ReadonlySet<number>>(new Set());
+  const [merging, setMerging] = useState(false);
+
+  // 会話を移ったら添付と読み捨ての記録を落とす（別の会話に付けたつもりのものを送らない）
+  useEffect(() => {
+    setPendingFiles([]);
+    setAttachError(undefined);
+    setDismissedErrors(new Set());
+    setMerging(false);
+  }, [threadId]);
+
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const wanted = el.scrollHeight;
+    el.style.height = `${Math.min(wanted, MAX_COMPOSER_HEIGHT_PX)}px`;
+    el.style.overflowY = wanted > MAX_COMPOSER_HEIGHT_PX ? "auto" : "hidden";
+  }, [draft, slim]);
+
+  const addFiles = (files: FileList | null): void => {
+    if (!files) return;
+    setAttachError(undefined);
+    const accepted: PendingFile[] = [];
+    for (const file of Array.from(files)) {
+      if (file.type.startsWith("image/")) {
+        if (!model?.vision) {
+          setAttachError(`${model?.id ?? "現在のモデル"}は画像非対応です`);
+          continue;
+        }
+        if (file.size > MAX_IMAGE_BYTES) {
+          setAttachError(
+            `画像「${file.name}」は大きすぎます（上限 ${MAX_IMAGE_BYTES / 1024 / 1024}MB）`
+          );
+          continue;
+        }
+        accepted.push({
+          kind: "image",
+          name: file.name,
+          size: file.size,
+          mimeType: file.type,
+          file,
+          previewUrl: URL.createObjectURL(file),
+        });
+      } else {
+        if (file.size > MAX_FILE_BYTES) {
+          setAttachError(`テキストファイル「${file.name}」は大きすぎます（上限 100KB）`);
+          continue;
+        }
+        accepted.push({ kind: "file", name: file.name, size: file.size, file });
+      }
+    }
+    if (accepted.length > 0) setPendingFiles((prev) => [...prev, ...accepted]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const removePending = (index: number): void => {
+    setPendingFiles((prev) => {
+      const target = prev[index];
+      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
+  /**
+   * クリップボードからの画像ペースト。画像だけを取り出して添付に回し、
+   * **テキストには触らない**——preventDefault しないので文字のペーストは既定のまま。
+   */
+  const handlePaste = (event: React.ClipboardEvent): void => {
+    const items = event.clipboardData?.items;
+    if (!items) return;
+    const transfer = new DataTransfer();
+    let foundImage = false;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i]!.type.startsWith("image/")) {
+        const file = items[i]!.getAsFile();
+        if (file) {
+          transfer.items.add(file);
+          foundImage = true;
+        }
+      }
+    }
+    if (foundImage) addFiles(transfer.files);
+  };
+
+  const readFileAsText = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result ?? ""));
+      reader.onerror = () => reject(new Error(`${file.name} を読み込めません`));
+      reader.readAsText(file);
+    });
+
+  const readImageAsBase64 = (file: File): Promise<{ dataBase64: string; mimeType: string }> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = String(reader.result ?? "");
+        const comma = dataUrl.indexOf(",");
+        if (comma === -1) {
+          reject(new Error(`${file.name} を読み込めません`));
+          return;
+        }
+        resolve({
+          dataBase64: dataUrl.slice(comma + 1),
+          mimeType: file.type || "application/octet-stream",
+        });
+      };
+      reader.onerror = () => reject(new Error(`${file.name} を読み込めません`));
+      reader.readAsDataURL(file);
+    });
+
+  const submit = async (): Promise<void> => {
+    const text = draft.trim();
+    if ((text.length === 0 && pendingFiles.length === 0) || busy) return;
+    setAttachError(undefined);
+    try {
+      const attachments: Attachment[] = [];
+      for (const att of pendingFiles) {
+        if (att.kind === "image") {
+          const { dataBase64, mimeType } = await readImageAsBase64(att.file);
+          attachments.push({ kind: "image", name: att.name, mimeType, dataBase64 });
+        } else {
+          const content = await readFileAsText(att.file);
+          // NUL を含むものはバイナリ——テキストとして添付すると文脈を壊す（I2）
+          if (content.includes("\u0000")) {
+            setAttachError(`「${att.name}」はテキストとして読めないため添付できません`);
+            return;
+          }
+          attachments.push({ kind: "file", name: att.name, content });
+        }
+      }
+      session.send(threadId, text, attachments);
+      void stick.scrollToBottom();
+      session.setDraft(threadId, "");
+      for (const att of pendingFiles) if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
+      setPendingFiles([]);
+    } catch (err) {
+      setAttachError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const branchOf = useCallback(
+    (id: string): ThreadView | undefined => session.threadOf(id),
+    [session]
+  );
+  const branchHasTurn = useCallback(
+    (id: string): boolean =>
+      session.inbox.some((i) => !i.resolvedAt && i.opens?.threadId === id),
+    [session.inbox]
+  );
+
+  return (
+    <section
+      className={[
+        "room",
+        isBranch ? "room--branch chat-pane" : "room--trunk chat-pane",
+        slim ? "is-slim" : "",
+        raised ? "is-raised" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      data-thread={threadId}
+    >
+      <div className="room-head">
+        {isBranch && onCloseBranch && (
+          <button
+            className="room-back"
+            type="button"
+            onClick={onCloseBranch}
+            aria-label="枝を閉じる"
+            title="枝を閉じる（畳むわけではありません）"
+          >
+            <Icon name="close" size={15} />
+          </button>
+        )}
+        <div className="room-head-t">
+          {isBranch && <div className="room-from">◂ 幹から</div>}
+          <h1 className="room-title">{thread.title}</h1>
+          {!slim && isBranch && thread.returnCondition && (
+            <div className="room-sub">枝 ・ 還す条件：{thread.returnCondition}</div>
+          )}
+        </div>
+        {!slim && isBranch && onMergeBranch && (
+          <button className="btn btn--small" type="button" onClick={() => setMerging(true)}>
+            畳んで幹に回収
+          </button>
+        )}
+      </div>
+
+      {merging && onMergeBranch && (
+        <div className="room-merge">
+          <MergeBranchForm
+            branch={thread}
+            onMerge={(c) => {
+              onMergeBranch(c);
+              setMerging(false);
+            }}
+            onCancel={() => setMerging(false)}
+          />
+        </div>
+      )}
+
+      <div
+        className="chat-scroll"
+        ref={stick.scrollRef}
+        onWheel={noteGesture}
+        onPointerDown={noteGesture}
+        onTouchStart={noteGesture}
+        onKeyDown={noteGesture}
+      >
+        {/* 追従は「中身の高さ」を ResizeObserver で見て決まるので、器と中身を分ける。
+            `talk` は器の畳み判定に使うコンテナ（決定78：会話の帯の幅で決まる） */}
+        <div className="chat-scroll-content talk" ref={stick.contentRef}>
+          {chat.length === 0 && (
+            <p className="chat-empty">
+              {isBranch
+                ? "この枝で番頭に話しかけてください。"
+                : "番頭に話しかけてください。長くなる話は枝にすると、幹が読める帯のまま残ります。"}
+            </p>
+          )}
+          {shownFrom > 0 && (
+            <button
+              className="chat-load-older"
+              type="button"
+              onClick={() => setShownCount((n) => n + CHAT_WINDOW)}
+            >
+              以前の発言を読む（残り {shownFrom} 件）
+            </button>
+          )}
+          {shownChat.map((entry, offset) => {
+            const i = shownFrom + offset;
+            if (entry.role === "error" && dismissedErrors.has(i)) return null;
+            return (
+              <ChatRow
+                key={(entry as { id?: string }).id ?? i}
+                entry={entry}
+                isStreaming={chatStatus === "streaming" && i === chat.length - 1}
+                {...(entry.role === "error"
+                  ? {
+                      onDismissError: () =>
+                        setDismissedErrors((prev) => new Set(prev).add(i)),
+                    }
+                  : {})}
+                branchOf={branchOf}
+                branchHasTurn={branchHasTurn}
+                {...(activeBranchId ? { activeBranchId } : {})}
+                onOpenBranch={onOpenBranch}
+                onOpenView={onOpenView}
+              />
+            );
+          })}
+          {chatStatus === "submitted" && <ThinkingRow />}
+
+          {/*
+            **判断待ちは会話の流れの中に立つ**（決定80）。固定の帯は置かない——
+            番頭が判断を求めたなら、それは会話の最新の発言なので、放っておいても一番下にある。
+            気づかせるのは横断の通知と、遡ったときの↓（すぐ下）。
+          */}
+          <PendingDecisions
+            items={pending}
+            onAnswer={onAnswerInbox}
+            onOpen={onOpenInbox}
+            variant="chat"
+          />
+        </div>
+      </div>
+
+      {/*
+        遡ったときだけ出る↓（`spec-chat-ui` §3.2）。判断待ちがあれば**朱**になる
+        （決定80）——読みと入力の間に常設はひとつも無い。
+      */}
+      {!stick.isAtBottom && chat.length > 0 && (
+        <button
+          className={`chat-to-bottom ${pending.length > 0 ? "is-turn" : ""}`}
+          onClick={() => void stick.scrollToBottom()}
+          title={pending.length > 0 ? "判断待ちがあります" : "一番下へ"}
+        >
+          {pending.length > 0 && (
+            <span className="chat-to-bottom-n">判断待ち {pending.length}</span>
+          )}
+          <Icon name="arrow-down" size={16} />
+        </button>
+      )}
+
+      {onGrip && <div className="pane-resizer room-grip" onPointerDown={onGrip} role="separator" aria-orientation="vertical" aria-label="会話の帯の幅を変える" />}
+
+      <div className="chat-composer">
+        <div className="composer-box" data-key="c" onClick={() => inputRef.current?.focus()}>
+          {pendingFiles.length > 0 && (
+            <div className="attach-list">
+              {pendingFiles.map((att, i) => (
+                <span className="attach-chip" key={`${att.name}:${i}`}>
+                  {att.kind === "image" && att.previewUrl && (
+                    <img className="attach-thumb" src={att.previewUrl} alt={att.name} />
+                  )}
+                  <span className="attach-name" title={att.name}>
+                    <Icon name={att.kind === "image" ? "image" : "file"} size={13} /> {att.name}
+                  </span>
+                  <button
+                    className="attach-remove"
+                    type="button"
+                    onClick={() => removePending(i)}
+                    aria-label={`${att.name} を取り消す`}
+                  >
+                    <Icon name="close" size={13} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          {attachError && (
+            <div className="attach-error" role="alert">
+              <Icon name="error" size={14} />
+              <span className="attach-error-text">{attachError}</span>
+              <button
+                className="attach-error-close"
+                type="button"
+                onClick={() => setAttachError(undefined)}
+                aria-label="このエラーを閉じる"
+              >
+                <Icon name="close" size={14} />
+              </button>
+            </div>
+          )}
+          <textarea
+            className="chat-input"
+            ref={inputRef}
+            value={draft}
+            placeholder={
+              busy
+                ? "番頭が考えています…"
+                : isBranch
+                  ? "この枝で番頭に話す"
+                  : "番頭に相談する（幹）"
+            }
+            rows={1}
+            onChange={(e) => session.setDraft(threadId, e.target.value)}
+            onPaste={handlePaste}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                void submit();
+              }
+              if (e.key === "Backspace" && e.currentTarget.value === "" && pendingFiles.length > 0) {
+                e.preventDefault();
+                removePending(pendingFiles.length - 1);
+              }
+            }}
+          />
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            hidden
+            accept={ACCEPT_TYPES}
+            onChange={(e) => addFiles(e.target.files)}
+          />
+          <div className="chat-actions">
+            <button
+              className="attach-btn"
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              title="画像・テキストファイルを添付（貼り付け・ドラッグ＆ドロップも可）"
+              aria-label="添付"
+            >
+              <Icon name="plus" size={16} />
+            </button>
+            <ModelSelect
+              current={model}
+              onSelect={(provider, id) => session.setModel(threadId, provider, id)}
+            />
+            <ContextMeter tokens={session.contextTokensOf(threadId)} contextWindow={model?.contextWindow} />
+            {!slim && <span className="chat-hint">Enter で送信</span>}
+            <button
+              className={`composer-submit is-${chatStatus}`}
+              type="button"
+              onClick={() => (chatStatus === "streaming" ? session.abort(threadId) : void submit())}
+              disabled={
+                chatStatus === "ready" && draft.trim().length === 0 && pendingFiles.length === 0
+              }
+              aria-label={chatStatus === "streaming" ? "中断" : "送る"}
+              title={chatStatus === "streaming" ? "中断" : "送る"}
+            >
+              {chatStatus === "submitted" ? (
+                <Loader />
+              ) : chatStatus === "streaming" ? (
+                <span className="composer-submit-stop" />
+              ) : chatStatus === "error" ? (
+                <Icon name="close" size={15} />
+              ) : (
+                <Icon name="enter" size={15} />
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}

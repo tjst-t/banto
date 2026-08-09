@@ -106,7 +106,7 @@ export function CommandPalette(props: CommandPaletteProps): React.ReactElement |
       });
     }
     out.push(
-      { id: "act:new", icon: "plus", group: "操作", label: "新しい会話を始める", run: props.onNewThread },
+      { id: "act:new", icon: "plus", group: "操作", label: "枝を開く", run: props.onNewThread },
       { id: "act:inbox", icon: "inbox", group: "操作", label: "取次を開く", run: () => props.onFace("inbox") },
       { id: "act:history", icon: "history", group: "操作", label: "履歴を開く", run: () => props.onFace("history") },
       { id: "act:settings", icon: "settings", group: "操作", label: "設定を開く", run: () => props.onFace("settings") },

@@ -196,6 +196,7 @@ export async function startKoboHost(
           title: "会話",
           sessionId: "fake",
           isDefault: true,
+          kind: "trunk",
           state: "open",
           streaming: false,
           model: { provider: "fake", id: "fake", vision: false },

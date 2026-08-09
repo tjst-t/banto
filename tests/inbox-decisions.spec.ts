@@ -33,6 +33,9 @@ const thread = (threadId: string, title: string, isDefault: boolean): Record<str
   title,
   sessionId: "fake",
   isDefault,
+  // ADR-0017 決定77: 既定の宛先＝幹。それ以外は枝（還す条件を持って生まれる）
+  kind: isDefault ? "trunk" : "branch",
+  ...(isDefault ? {} : { returnCondition: `${title} の結論が出たら`, openedBy: "po", openReason: "往復が続く" }),
   state: "open",
   streaming: false,
 });

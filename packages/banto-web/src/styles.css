@@ -25,27 +25,64 @@ button, input, textarea, select { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--ai); outline-offset: 2px; border-radius: var(--r-seal); }
 code { font-family: var(--mono); font-size: var(--t-note); }
 
-.shell { height: 100%; display: flex; flex-direction: column; }
+/**
+ * 殻：**レール ＋ 続き間**（ADR-0017 決定77・79）。
+ *
+ * 幹は地、枝はその上の紙、作業する面はさらに上。広い画面で横に並んでいても関係は
+ * 重なりのままで、狭い画面の重ねと同じ模型になる。
+ */
+.shell { height: 100%; display: flex; }
 
-/* ══ 上段 ═══════════════════════════════════════════════════════════════ */
-.shell-topbar {
-  display: flex; align-items: center; gap: var(--s3);
-  height: var(--h-bar); padding: 0 var(--s5);
-  background: var(--paper-1); border-bottom: 1px solid var(--rule);
+/* ══ レール：行き先の帯 ═══════════════════════════════════════════════════
+   プロジェクトも枝も面も同じ種類のもの＝どこへ行くか。**会話の列には触れない**ので、
+   読み物が無傷のまま残る。押さなくても、点で本数と状態が分かる（決定77 の不変条件③） */
+.rail {
+  flex: none; width: 200px; display: flex; flex-direction: column; gap: 2px;
+  padding: var(--s3) var(--s2); background: var(--paper-1);
+  border-right: 1px solid var(--rule); overflow-y: auto;
 }
-/* 屋号は明朝。番頭の声と同じ書体で、店の名として置く。
-   App.tsx の3つの span（番／banto／番頭）を、役ごとに割り当て直している */
-.brand { display: flex; flex-direction: column; justify-content: center; flex: none; line-height: 1.15; }
-.brand-name {                                /* 屋号「番頭」 */
-  font-family: var(--sho); font-size: var(--t-head); font-weight: 600;
-  letter-spacing: .22em; color: var(--ai);
+.rail .brand { padding: 0 var(--s2) var(--s3); }
+.rail-sep { height: 1px; background: var(--rule); margin: var(--s2) var(--s2); flex: none; }
+.rail-sp { flex: 1; min-height: var(--s3); }
+.rail-btn, .rail-trunk, .hold, .hold-new {
+  flex: none; display: flex; align-items: center; gap: var(--s2);
+  height: var(--h-ctl-sm); padding: 0 var(--s2); min-width: 0;
+  border: 0; border-radius: var(--r-ctl); background: none;
+  color: var(--sumi-3); cursor: pointer; font: inherit; font-size: var(--t-meta);
+  text-align: left;
 }
-.brand-sub {                                 /* 読み。段の外の大きさだが、屋号の一部として扱う */
-  font-family: var(--ui); font-size: 10px; font-weight: 500;
-  letter-spacing: .3em; color: var(--sumi-3); text-transform: uppercase;
+.rail-btn:hover, .rail-trunk:hover, .hold:hover, .hold-new:hover {
+  background: var(--paper-2); color: var(--sumi);
 }
-.topbar-spacer { margin-left: auto; }
-.conn { font-size: var(--t-note); font-family: var(--mono); color: var(--sumi-3); display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.rail-btn.is-active, .rail-trunk.is-active, .hold.is-active {
+  background: var(--ai-t); color: var(--ai); font-weight: 700;
+}
+.rail-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-hold { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.hold-label { font-size: var(--t-meta); }
+.hold-more {
+  align-self: flex-start; margin: 2px var(--s2); border: 0; background: var(--paper-2);
+  border-radius: var(--r-seal); padding: 2px 8px; cursor: pointer;
+  font: inherit; font-family: var(--mono); font-size: var(--t-note); color: var(--sumi-3);
+}
+.hold-more:hover { color: var(--sumi); }
+.hold-new { color: var(--ai); }
+.held-row {
+  display: flex; align-items: center; gap: var(--s2); width: 100%;
+  border: 0; background: none; border-radius: var(--r-ctl); padding: 7px var(--s2);
+  cursor: pointer; font: inherit; font-size: var(--t-meta); color: inherit; text-align: left;
+}
+.held-row:hover { background: var(--paper-2); }
+.held-row-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.held-row-m { flex: none; font-size: var(--t-note); color: var(--sumi-3); }
+/* 取次の数字。**朱はここと判断待ちにしか出ない** */
+.inbox-n {
+  flex: none; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+  background: var(--shu); color: #fff; font-family: var(--mono); font-size: var(--t-note);
+  display: grid; place-items: center; font-weight: 700;
+}
+.rail-btn.is-empty .inbox-n { background: var(--paper-2); color: var(--sumi-3); font-weight: 400; }
+.conn { font-size: var(--t-note); font-family: var(--mono); color: var(--sumi-3); display: inline-flex; align-items: center; gap: 6px; flex: none; padding: var(--s2); }
 .conn::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--sumi-3); }
 .conn--open::before { background: var(--koke); }
 .conn--connecting::before, .conn--reconnecting::before { background: var(--kohaku); }
@@ -53,29 +90,85 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 .conn--closed { color: var(--murasaki); }
 .conn--closed::before { background: var(--murasaki); }
 
-.shell-body { display: flex; flex: 1; min-height: 0; }
-
-/* 絵だけのボタン（履歴・設定・明暗）。上段に並ぶ */
-.pin-tab {
-  flex: none; display: inline-grid; place-items: center;
-  /* 背丈は家が決める（上段ごと詰める家がある）。--h-tab は上段に並ぶ押しものの役 */
-  width: var(--h-tab); height: var(--h-tab); padding: 0;
-  border: 0; border-radius: var(--r-ctl); background: none;
-  color: var(--sumi-3); cursor: pointer; line-height: 1;
+/* 屋号は明朝。番頭の声と同じ書体で、店の名として置く */
+.brand { display: flex; flex-direction: column; justify-content: center; flex: none; line-height: 1.15; }
+.brand-name {
+  font-family: var(--sho); font-size: var(--t-head); font-weight: 600;
+  letter-spacing: .22em; color: var(--ai);
 }
-.pin-tab:hover { background: var(--paper-2); color: var(--sumi); }
-.pin-tab.is-active { background: var(--ai); color: var(--paper-1); }
+.brand-sub {
+  font-family: var(--ui); font-size: 10px; font-weight: 500;
+  letter-spacing: .3em; color: var(--sumi-3); text-transform: uppercase;
+}
+
+/* ══ 続き間 ═══════════════════════════════════════════════════════════════ */
+.rooms { flex: 1; min-width: 0; display: flex; position: relative; }
+.room { flex: 1 1 0; min-width: 340px; display: flex; flex-direction: column; position: relative; }
+/* 枝は幹の上に置いた紙。**横に並んでいても、関係は重なり**（決定79） */
+.room--branch {
+  background: var(--paper-1); border-left: 1px solid var(--rule);
+  box-shadow: -14px 0 34px rgba(17, 22, 31, .07);
+  z-index: 2;
+}
+/* 作業する面が主役のとき、会話は**話しかけるための細い帯**になる（決定79） */
+.room.is-slim { flex: 0 0 var(--slim-w, 344px); min-width: 260px; }
+.room.is-slim .room-head { padding: var(--s3) var(--s4); }
+.room.is-slim .chat-scroll-content { padding-left: var(--s4); padding-right: var(--s4); }
+.room.is-slim .chat-composer { padding-left: var(--s3); padding-right: var(--s3); }
+.room-grip { position: absolute; right: -3px; top: 0; bottom: 0; width: 7px; z-index: 12; flex: none; }
+
+.room-head {
+  flex: none; display: flex; align-items: center; gap: var(--s2);
+  padding: var(--s4) var(--s6) var(--s2); min-width: 0;
+}
+.room-head-t { flex: 1; min-width: 0; }
+.room-title { font-size: var(--t-read); font-weight: 700; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-from { font-size: var(--t-note); color: var(--sumi-3); }
+.room-sub { font-size: var(--t-note); color: var(--sumi-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-back {
+  flex: none; display: inline-grid; place-items: center; width: 28px; height: 28px;
+  border: 0; border-radius: var(--r-ctl); background: none; color: var(--sumi-3); cursor: pointer;
+}
+.room-back:hover { background: var(--paper-2); color: var(--murasaki); }
+.room-merge { flex: none; padding: 0 var(--s6) var(--s3); }
+
+/* 背表紙。**消さない——押せば戻る**（モーダルより良いのはここ） */
+.spine {
+  flex: none; width: 44px; display: flex; flex-direction: column; align-items: center; gap: var(--s2);
+  padding: var(--s4) 0; background: var(--paper-2); border: 0; border-right: 1px solid var(--rule);
+  cursor: pointer; color: var(--sumi-3);
+}
+.spine:hover { background: var(--paper-1); color: var(--sumi); }
+.spine-mark {
+  width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--r-ctl);
+  background: var(--paper-1); font-size: var(--t-meta); font-weight: 700; color: var(--sumi-2);
+}
+
+/* 作業する面。**手前を背表紙に畳んで全幅を使う**（決定79） */
+.work { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; z-index: 3; }
+.work-note {
+  align-self: center; flex: none; font-size: var(--t-note); color: var(--sumi-3);
+  padding: 0 var(--s2); white-space: nowrap;
+}
+/* 面が1枚も無いときの入口。**タブ列とは別の器**（横に流せる箱に入れない） */
+.open-work {
+  position: fixed; right: var(--s5); bottom: var(--s5); z-index: 50;
+  display: inline-flex; align-items: center; gap: 6px; height: var(--h-ctl-sm);
+  padding: 0 var(--s3); border: 1px solid var(--rule); border-radius: var(--r-ctl);
+  background: var(--paper-1); color: var(--sumi-3); cursor: pointer;
+  font: inherit; font-size: var(--t-meta); box-shadow: var(--shadow-pop);
+}
+.open-work:hover { color: var(--ai); }
+
+/* 狭いときに上端へ覗く幹。**戻り道が常に見えている**（決定79） */
+.peek { display: none; }
 
 /* ══ 会話 ═══════════════════════════════════════════════════════════════ */
-.chat-pane {
-  position: relative;
-  width: 420px; flex-shrink: 0; display: flex; flex-direction: column;
-  background: var(--paper-1); border-left: 1px solid var(--rule);
-}
-.chat-head { display: flex; align-items: baseline; gap: var(--s3); padding: 18px var(--s6) var(--s3); }
-.chat-head-main { min-width: 0; }
-.chat-title { font-size: var(--t-read); font-weight: 700; }
-.chat-sub { font-size: var(--t-note); color: var(--sumi-3); font-family: var(--mono); }
+/**
+ * 会話の列（幹も枝も同じ器）。幅は続き間が決める（`.room` / `.room.is-slim`）
+ * ——ここで決め打ちにすると、細い帯の幅をつまんで変えられなくなる（決定79）。
+ */
+.chat-pane { display: flex; flex-direction: column; }
 .btn--small { font-size: var(--t-meta); padding: 0 var(--s3); height: var(--h-ctl-sm); margin-left: auto; flex-shrink: 0; }
 .btn:disabled { opacity: .4; cursor: default; }
 
@@ -609,51 +702,70 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 .pane-resizer::before { content: ""; position: absolute; inset: 0 2px; background: transparent; transition: background .12s; }
 .pane-resizer:hover::before, .pane-resizer:active::before { background: var(--ai); opacity: .35; }
 
-/* ══ 狭い画面 ═══════════════════════════════════════════════════════════ */
-.mobile-footer { display: none; }
+/* ══ 狭い画面：**重ねる**（ADR-0017 決定79）════════════════════════════════
+   幹が地。枝と面は**下から上がる紙**で、上端に幹が覗く。押せば戻る。
+   広い画面の「横に並ぶ」と同じ模型（重なり）をそのまま縦に倒したもの。 */
 
-@media (max-width: 860px) {
-  .shell-body { flex-direction: column; position: relative; flex: 1; min-height: 0; }
-  .pane-resizer { display: none; }
+@media (max-width: 760px) {
+  .shell { flex-direction: column; }
 
-  .shell-topbar { position: fixed; top: 0; left: 0; right: 0; z-index: 200; background: var(--paper-1); }
+  /* レールは上端の帯になる。**行き先の帯**という役は変わらない */
+  .rail {
+    flex-direction: row; align-items: center; width: auto; height: var(--h-bar);
+    padding: 0 var(--s3); gap: var(--s2); overflow-x: auto; overflow-y: hidden;
+    border-right: 0; border-bottom: 1px solid var(--rule);
+    position: fixed; top: 0; left: 0; right: 0; z-index: 200; background: var(--paper-1);
+  }
   .shell { padding-top: var(--h-bar); }
+  .rail .rail-sep { width: 1px; height: 22px; margin: 0 2px; }
+  .rail .brand { padding: 0 var(--s2) 0 0; }
+  .rail .brand-sub { display: none; }
+  /* 狭いところで接続の文字は場所を取るだけ。**点は残す**（切れたことは分かる必要がある） */
+  .rail .conn { font-size: 0; gap: 0; }
+  /* 狭いところでは点と数字だけ。**名前は帯の外に出す**（押せば分かる） */
+  .rail .rail-label, .rail .cmdk-key { display: none; }
+  .rail-hold { flex-direction: row; gap: 2px; }
+  .rail-sp { flex: 1; min-height: 0; }
+  .conn { padding: 0; }
 
   /**
-   * 読んでいる間だけ屋号の帯を退かせる（spec-canvas-ui §3.1・PO報告 2026-08-08）。
-   *
-   * 390×780 でファイルを開くと、本文に残るのは 411px＝画面の 53% だった。畳めるものを
-   * 畳んでも帯 52px が常に載っている。**戻す仕草は、いましている仕草（上へ送る）と同じ**
-   * ——退かせるかどうかを決めるのは面の側（`useRetractOnScroll` が `<html data-retract>`
-   * を立てる）で、効かせるかどうかを決めるのはここ。広い画面では退かさない。
+   * 読んでいる間だけ帯を退かせる（spec-canvas-ui §3.1・PO報告 2026-08-08）。
+   * **戻す仕草は、いましている仕草（上へ送る）と同じ**——退かせるかどうかを決めるのは
+   * 面の側（`useRetractOnScroll` が `<html data-retract>` を立てる）。
    */
-  :root[data-retract] .shell-topbar { transform: translateY(-100%); }
+  :root[data-retract] .rail { transform: translateY(-100%); }
   :root[data-retract] .shell { padding-top: 0; }
-  .shell-topbar, .shell { transition: transform .16s ease, padding-top .16s ease; }
+  .rail, .shell { transition: transform .16s ease, padding-top .16s ease; }
   @media (prefers-reduced-motion: reduce) {
-    .shell-topbar, .shell { transition: none; }
+    .rail, .shell { transition: none; }
   }
 
-  .mobile-footer {
-    display: flex; position: fixed; bottom: 0; left: 0; right: 0; height: 56px;
-    background: var(--paper-1); border-top: 1px solid var(--rule); z-index: 200;
+  .rooms { position: relative; overflow: hidden; }
+  .room { min-width: 0; }
+  /* 幹は地。常にそこに在る（畳めない・決定77） */
+  .room--trunk { position: absolute; inset: 0; }
+  /* 枝と面は下から上がる紙。上端 58px に幹が覗く */
+  .room--branch, .work {
+    position: absolute; left: 0; right: 0; top: 58px; bottom: 0; z-index: 20;
+    border-radius: var(--r-card) var(--r-card) 0 0; border-left: 0;
+    box-shadow: 0 -8px 34px rgba(17, 22, 31, .18); background: var(--paper);
+    transform: translateY(103%); transition: transform .26s ease;
   }
-  .mobile-footer.hidden { opacity: .3; pointer-events: none; }
-  .mobile-footer-btn {
-    flex: 1; font: inherit; font-size: var(--t-meta); padding: var(--s2) var(--s3);
-    border: 0; background: none; color: var(--sumi-3); cursor: pointer;
-    display: flex; align-items: center; justify-content: center; gap: 6px;
-  }
-  .mobile-footer-btn:hover { color: var(--sumi); }
-  .mobile-footer-btn.is-active { color: var(--ai); font-weight: 700; }
-  .mobile-footer-btn:disabled { opacity: .4; cursor: default; }
+  .room--branch.is-raised, .work.is-raised { transform: none; }
+  .work { z-index: 25; }
+  .room.is-slim { flex: 1 1 auto; }
+  .room-grip, .spine, .open-work { display: none; }
 
-  .canvas-pane, .chat-pane {
-    position: absolute; top: 0; left: 0; right: 0; bottom: 56px;
-    width: 100% !important; border-left: none !important; border-top: none !important;
+  /* 上端に覗く幹。**戻り道が常に見えている** */
+  .peek {
+    display: flex; align-items: flex-end; gap: var(--s2);
+    position: absolute; left: 0; right: 0; top: 0; height: 58px; z-index: 19;
+    padding: 0 var(--s4) 8px; border: 0; cursor: pointer;
+    background: linear-gradient(to bottom, var(--paper) 60%, rgba(0, 0, 0, 0));
+    font: inherit; font-size: var(--t-note); color: var(--sumi-3); text-align: left;
   }
-  .mobile-view-chat .canvas-pane { display: none; }
-  .mobile-view-canvas .chat-pane { display: none; }
+  .peek-sp { flex: 1; }
+  .peek-now { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
 }
 
 /* ══ 設定の面 ═══════════════════════════════════════════════════════════ */
@@ -854,13 +966,14 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 }
 .pend-go:hover { color: var(--ai); background: var(--ai-t); }
 
-/* 会話の横（入力欄のすぐ上）に固定して出す分（PO裁定 2026-08-09）。
-   遡ると見えなくなる位置だと、判断待ちを持ったまま話し続けられてしまう */
-.pend--chat {
-  padding: 0 var(--s3) var(--s2);
-  max-height: 45%;
-  overflow-y: auto;
-}
+/**
+ * 会話の中に立つ判断待ち（ADR-0017 決定80）。
+ *
+ * **固定の帯は置かない。** 番頭が判断を求めたなら、それは会話の最新の発言なので、
+ * 放っておいても一番下にある。気づかせるのは横断の通知と、遡ったときの↓の朱。
+ * 帰属も自明になる——「この会話の下にある」以外の意味を持ちようがない。
+ */
+.pend--chat { padding: var(--s2) 0 0; }
 
 /* ══ ⌘K（横断して引く）════════════════════════════════════════════════════ */
 .cmdk-tab { display: inline-flex; align-items: center; width: auto; gap: 6px; padding: 0 var(--s2); }
@@ -940,3 +1053,242 @@ code { font-family: var(--mono); font-size: var(--t-note); }
   .is-alt [data-key]::after { animation: key-pop .12s ease-out; }
   @keyframes key-pop { from { opacity: 0; transform: scale(.8); } }
 }
+
+
+/* ══ 器：Tool の戻り値を会話の中に描く（ADR-0017 決定78・81）═══════════════
+   **番頭は選ぶが、作らない。** 語彙は中核が持ち、ここはその見せ方だけを持つ。
+   モジュールごとの CSS は足さない（spec-canvas-ui §10 の延長）。 */
+
+.u {
+  align-self: stretch; border-radius: var(--r-face); background: var(--paper);
+  box-shadow: var(--shadow-rest); overflow: hidden; font-size: var(--t-meta);
+}
+.u-head {
+  display: flex; align-items: center; gap: var(--s2);
+  padding: 7px var(--s3); border-bottom: 1px solid var(--rule); min-width: 0;
+}
+.u-ico { flex: none; color: var(--ai); }
+.u-title { font-size: var(--t-meta); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.u-meta { font-family: var(--mono); font-size: var(--t-note); color: var(--sumi-3); flex: none; }
+.u-sp { flex: 1; min-width: 0; }
+/* **器は凍る。だから「いつの」を必ず出す**（決定81(c)） */
+.u-when { flex: none; font-family: var(--mono); font-size: var(--t-note); color: var(--sumi-3); opacity: .8; white-space: nowrap; }
+.u-fold-btn {
+  flex: none; display: none; place-items: center; width: 22px; height: 22px;
+  border: 0; border-radius: var(--r-seal); background: none; color: var(--sumi-3); cursor: pointer;
+}
+.u-fold-btn:hover { background: var(--paper-2); color: var(--sumi); }
+.u-body { padding: var(--s2) var(--s3); }
+/* 畳んだ姿（決定78）。**広いときは出さない**——コンテナクエリで入れ替わる */
+.u-fold {
+  display: none; align-items: center; gap: var(--s2); width: 100%;
+  padding: 8px var(--s3); border: 0; background: none; cursor: pointer;
+  font: inherit; font-size: var(--t-meta); color: var(--sumi-2); text-align: left;
+}
+.u-fold:hover { background: var(--paper-2); }
+.u-fold-open { flex: none; font-size: var(--t-note); color: var(--ai); }
+.u-note {
+  padding: 6px var(--s3) 8px; font-size: var(--t-note); color: var(--sumi-3);
+  border-top: 1px solid var(--rule); line-height: 1.7;
+}
+.u-trunc { font-size: var(--t-note); color: var(--sumi-3); margin-top: 4px; }
+
+/* 役の点。**5役だけ**（決定78）——モジュールに独自の状態名を持ち込ませない */
+.u-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--sumi-3); }
+.u-dot.is-run { background: var(--ai); }
+.u-dot.is-turn { background: var(--shu); }
+.u-dot.is-stop { background: var(--murasaki); }
+.u-dot.is-warn { background: var(--kohaku); }
+.u-dot.is-done { background: var(--koke); }
+
+.u-rows { display: flex; flex-direction: column; }
+.u-row { display: flex; align-items: center; gap: var(--s2); padding: 5px 0; border-bottom: 1px solid var(--rule); min-width: 0; }
+.u-row:last-child { border-bottom: 0; }
+.u-row-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.u-row-m { flex: none; font-style: normal; font-family: var(--mono); font-size: var(--t-note); color: var(--sumi-3); }
+
+.u-kv { display: grid; grid-template-columns: minmax(76px, auto) 1fr; gap: 2px var(--s3); margin: 0; }
+.u-kv dt { color: var(--sumi-3); font-size: var(--t-note); }
+.u-kv dd { color: var(--sumi-2); margin: 0; }
+
+.u-table-wrap { overflow-x: auto; }
+.u-table { width: 100%; border-collapse: collapse; font-size: var(--t-meta); }
+.u-table th { text-align: left; font-size: var(--t-note); color: var(--sumi-3); font-weight: 700; padding: 5px var(--s2); }
+.u-table td { padding: 5px var(--s2); border-top: 1px solid var(--rule); }
+/* 桁が揃わない数字は比べられない */
+.u-table .is-num { text-align: right; font-family: var(--mono); }
+
+.u-diff { font-family: var(--mono); font-size: var(--t-note); line-height: 1.7; overflow-x: auto; }
+.u-hunk-h { color: var(--sumi-3); }
+.u-diff-l { white-space: pre; }
+.u-diff-l.is-add { color: var(--koke); }
+.u-diff-l.is-del { color: var(--murasaki); }
+
+.u-stats { display: flex; gap: var(--s2); }
+.u-stat { flex: 1; border: 1px solid var(--rule); border-radius: var(--r-ctl); padding: var(--s2); }
+.u-stat b { display: block; font-size: var(--t-title); font-weight: 700; line-height: 1.2; }
+.u-stat span { font-size: var(--t-note); color: var(--sumi-3); }
+.u-stat.is-turn b { color: var(--shu); }
+.u-stat.is-stop b { color: var(--murasaki); }
+.u-stat.is-warn b { color: var(--kohaku); }
+
+.u-meter { display: flex; align-items: center; gap: var(--s2); }
+.u-meter-l { color: var(--sumi-2); }
+.u-meter-track { flex: 1; height: 6px; border-radius: 3px; background: var(--paper-2); overflow: hidden; }
+.u-meter-fill { display: block; height: 100%; background: var(--ai); }
+/* 色は**役が決める**。モジュールが「70%で黄色」のような閾値を持ち込まない（D5） */
+.u-meter-fill.is-warn { background: var(--kohaku); }
+.u-meter-fill.is-stop { background: var(--murasaki); }
+.u-meter-v { flex: none; font-family: var(--mono); font-size: var(--t-note); color: var(--sumi-2); }
+
+.u-spark svg { display: block; width: 100%; height: 30px; }
+.u-spark polyline { fill: none; stroke: var(--sumi-3); stroke-width: 1.6; vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-linejoin: round; }
+.u-spark circle { fill: var(--sumi-3); }
+/* 望む向きへ動いていれば苔、逆なら紫（止まっている側）。**軸も凡例も出さない** */
+.u-spark.is-good polyline { stroke: var(--koke); }
+.u-spark.is-good circle { fill: var(--koke); }
+.u-spark.is-bad polyline { stroke: var(--murasaki); }
+.u-spark.is-bad circle { fill: var(--murasaki); }
+.u-spark-t { display: flex; align-items: baseline; gap: var(--s2); color: var(--sumi-2); margin-bottom: 4px; }
+.u-spark-t b { font-family: var(--mono); color: var(--sumi); }
+.u-spark-t em { font-style: normal; font-size: var(--t-note); color: var(--sumi-3); }
+
+.u-time { display: flex; flex-direction: column; }
+.u-time-e { display: flex; gap: var(--s2); padding: 4px 0; }
+.u-time-e time { flex: none; width: 48px; font-family: var(--mono); font-size: var(--t-note); color: var(--sumi-3); }
+.u-time-l { position: relative; flex: none; width: 12px; }
+.u-time-l::before { content: ""; position: absolute; left: 5px; top: -5px; bottom: -5px; width: 1px; background: var(--rule); }
+.u-time-l::after { content: ""; position: absolute; left: 2px; top: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--sumi-3); }
+.u-time-e.is-done .u-time-l::after { background: var(--koke); }
+.u-time-e.is-turn .u-time-l::after { background: var(--shu); }
+.u-time-e.is-stop .u-time-l::after { background: var(--murasaki); }
+.u-time-e:first-child .u-time-l::before { top: 7px; }
+.u-time-e:last-child .u-time-l::before { bottom: 50%; }
+.u-time-t { flex: 1; min-width: 0; }
+
+.u--image .u-body { padding: 0; }
+.u-img { display: block; background: var(--paper-2); }
+.u-img img { display: block; width: 100%; height: auto; }
+
+.u-doc { font-size: var(--t-meta); line-height: 1.85; color: var(--sumi-2); }
+.u-doc h1, .u-doc h2, .u-doc h3, .u-doc h4 { font-size: var(--t-body); font-weight: 700; color: var(--sumi); margin: 0 0 4px; }
+
+.u-quote {
+  margin: 0; padding-left: var(--s3); border-left: 3px solid var(--rule);
+  color: var(--sumi-2); line-height: 1.85;
+}
+.u-quote cite { display: block; font-style: normal; font-size: var(--t-note); color: var(--sumi-3); margin-top: 4px; }
+
+/* 描けなかったとき（決定81(d)）。**紫**——朱は判断待ちに取ってある */
+.u--broken { box-shadow: var(--shadow-rest), inset 3px 0 0 var(--murasaki); }
+.u--broken .u-ico { color: var(--murasaki); }
+.u--broken .u-title { color: var(--murasaki); }
+.u-raw { margin-top: var(--s2); }
+.u-raw pre {
+  margin: var(--s1) 0 0; padding: var(--s2); background: var(--paper-2);
+  border-radius: var(--r-ctl); font-size: var(--t-note); overflow-x: auto; max-height: 240px;
+}
+
+/* 面への口。**これがあるから他の器は小さいままでいられる**（決定78） */
+.u-open {
+  align-self: stretch; display: flex; align-items: center; gap: var(--s3); width: 100%;
+  padding: var(--s3); border: 0; border-radius: var(--r-face);
+  background: var(--paper); box-shadow: var(--shadow-rest); cursor: pointer;
+  font: inherit; text-align: left; color: inherit;
+}
+.u-open:hover:not(:disabled) { box-shadow: var(--shadow-pop); }
+.u-open:disabled { opacity: .5; cursor: default; }
+.u-open-ico { flex: none; color: var(--ai); }
+.u-open-t { flex: 1; min-width: 0; }
+.u-open-t b { display: block; font-size: var(--t-body); font-weight: 600; }
+.u-open-t s { display: block; text-decoration: none; font-size: var(--t-note); color: var(--sumi-3); }
+.u-open-go { flex: none; font-size: var(--t-note); color: var(--ai); }
+.u-with-open { align-self: stretch; display: flex; flex-direction: column; gap: 4px; }
+.u-doc-all { align-self: flex-start; }
+
+/**
+ * 畳んだ姿への切り替えは**コンテナクエリ**（決定78・`spec-canvas-ui` §3 と同じ規約）。
+ *
+ * ビューポートではなく**会話の帯の幅**で決まるので、細い帯でもモバイルでも同じものが効く。
+ * 自分で開いたもの（`.is-open`）は畳まない。
+ */
+@container talk (max-width: 430px) {
+  .u:not(.is-open) > .u-head { border-bottom: 0; }
+  .u:not(.is-open) > .u-body,
+  .u:not(.is-open) > .u-note { display: none; }
+  .u:not(.is-open) > .u-fold { display: flex; }
+  .u .u-fold-btn { display: grid; }
+  .u-open { padding: var(--s2); }
+  .u-open-go { display: none; }
+}
+
+/* ══ 幹に立つ2つの行（ADR-0017 決定77）══════════════════════════════════════
+   枝の札は**参照**（生きている）、還った1行は**記録**（凍る）。混ぜない。 */
+
+.bcard {
+  align-self: stretch; width: 100%; text-align: left; cursor: pointer;
+  border: 0; border-radius: var(--r-face); background: var(--paper);
+  box-shadow: var(--shadow-rest); padding: var(--s3); font: inherit; color: inherit;
+}
+.bcard:hover { box-shadow: var(--shadow-pop); }
+.bcard.is-active { box-shadow: var(--shadow-rest), 0 0 0 1.5px var(--ai); }
+.bcard.is-turn { box-shadow: var(--shadow-rest), inset 3px 0 0 var(--shu); }
+.bcard.is-missing {
+  display: flex; align-items: center; gap: var(--s2); cursor: default;
+  color: var(--murasaki); font-size: var(--t-meta);
+}
+.bc-top { display: flex; align-items: center; gap: var(--s2); margin-bottom: 2px; }
+.bc-tag {
+  flex: none; font-size: var(--t-note); font-weight: 700; letter-spacing: .06em;
+  color: var(--ai); background: var(--ai-t); border-radius: var(--r-seal); padding: 1px 6px;
+}
+.bc-by { font-size: var(--t-note); color: var(--sumi-3); }
+.bc-sp { flex: 1; }
+.bc-title { font-size: var(--t-body); font-weight: 600; line-height: 1.5; margin: 0; }
+/* 還す条件は**必ず出す**——書けないなら枝にしない、が歯止めなので（決定77） */
+.bc-cond { font-size: var(--t-note); color: var(--sumi-2); margin-top: 2px; }
+.bc-reason { font-size: var(--t-note); color: var(--sumi-3); margin-top: 1px; }
+.bc-foot {
+  display: flex; align-items: center; gap: var(--s2); margin-top: var(--s2);
+  font-size: var(--t-note); color: var(--sumi-2);
+}
+.bc-go { flex: none; color: var(--ai); }
+
+.bresult { align-self: stretch; display: flex; gap: var(--s2); font-size: var(--t-meta); }
+.bres-mark {
+  flex: none; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--koke); color: var(--koke); margin-top: 2px;
+}
+.bres-body { flex: 1; min-width: 0; }
+.bres-head { color: var(--sumi-2); }
+.bres-head b { color: var(--sumi); font-weight: 600; }
+.bres-when { font-family: var(--mono); font-size: var(--t-note); color: var(--sumi-3); margin-left: var(--s2); }
+.bres-conc { color: var(--sumi); margin-top: 2px; }
+.bres-label { color: var(--sumi-3); }
+.bres-go {
+  display: inline-flex; align-items: center; gap: 4px; margin-top: 4px;
+  border: 0; background: none; cursor: pointer; padding: 2px 4px; border-radius: var(--r-seal);
+  font: inherit; font-size: var(--t-note); color: var(--sumi-3);
+}
+.bres-go:hover { color: var(--ai); background: var(--ai-t); }
+
+/* 枝を開く／畳むときの入力。**還す条件と結論を書かせる**（決定77） */
+.nb { display: flex; flex-direction: column; gap: var(--s3); }
+.nb-head { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-meta); }
+.nb-field { display: flex; flex-direction: column; gap: 4px; font-size: var(--t-meta); }
+.nb-field > span { color: var(--sumi-2); font-weight: 700; }
+.nb-note { font-size: var(--t-note); color: var(--sumi-3); line-height: 1.8; margin: 0; }
+.nb-note b { color: var(--sumi-2); }
+.nb-actions { display: flex; justify-content: flex-end; }
+
+/* 一番下へ戻る↓に**判断待ちの朱を載せる**（決定80）。常設はひとつも無くなる */
+.chat-to-bottom.is-turn {
+  width: auto; padding: 0 var(--s3); gap: 6px; background: var(--shu); color: var(--on-shu);
+  font-weight: 700; font-size: var(--t-note);
+}
+.chat-to-bottom.is-turn:hover { background: var(--shu); filter: brightness(1.06); }
+.chat-to-bottom-n { white-space: nowrap; }
+
+/* 1つのファイルを読む面（決定79） */
+.fv-path { color: var(--sumi-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fv-body { flex: 1; min-height: 0; overflow: auto; }

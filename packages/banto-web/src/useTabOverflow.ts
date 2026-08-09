@@ -5,7 +5,7 @@
  * 見えない——指で探させることになる。収まらない分だけ ▾ にまとめ、**▾ は収まらない
  * ときだけ出す**。
  *
- * 会話のタブ（`ThreadTabs`）とキャンバスのタブ（`App`）で同じ計算をするので、ここに1つ置く。
+ * キャンバスのタブ（`App`）と、収納の要る帯で同じ計算をするので、ここに1つ置く。
  */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";

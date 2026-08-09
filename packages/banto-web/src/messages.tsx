@@ -17,6 +17,8 @@ import type { TranscriptAttachment, TranscriptEntry } from "@banto/host/protocol
 import { highlightToHtml, useColorScheme } from "./views/fileHighlight.js";
 import { Icon } from "./icons.js";
 import { MarkdownLink } from "./links.js";
+import { UtsuwaRow } from "./Utsuwa.js";
+import { BranchCard, BranchResultRow } from "./Branch.js";
 
 /** 考え終わってから思考を畳むまで（AI Elements の `AUTO_CLOSE_DELAY`）。 */
 const REASONING_AUTO_CLOSE_MS = 1000;
@@ -350,12 +352,27 @@ export const ChatRow = React.memo(
     entry,
     isStreaming,
     onDismissError,
+    branchOf,
+    activeBranchId,
+    branchHasTurn,
+    onOpenBranch,
+    onOpenView,
   }: {
     entry: TranscriptEntry;
     /** いま届いている最中の行か（思考の見出しを切り替えるのに使う）。 */
     isStreaming?: boolean;
     /** error 行の × が押されたとき（error 以外には渡さない）。 */
     onDismissError?: () => void;
+    /**
+     * 枝の札は**参照**（決定77）なので、描くときに帳簿から引き直す。
+     * 渡さないと札は畳んだ姿だけで出る（履歴・職人ビューアはそれでよい）。
+     */
+    branchOf?: (branchId: string) => import("@banto/host/protocol").ThreadView | undefined;
+    activeBranchId?: string;
+    branchHasTurn?: (branchId: string) => boolean;
+    onOpenBranch?: (threadId: string) => void;
+    /** 器の「面への口」が押されたとき。渡さないと押せない（描けない面は出さない・決定12）。 */
+    onOpenView?: (kind: string, params?: Record<string, unknown>) => void;
   }): React.ReactElement => {
     switch (entry.role) {
       case "po":
@@ -390,6 +407,30 @@ export const ChatRow = React.memo(
       case "notice":
         // 外からの知らせ（決定29）。番頭の発話と混ざらないよう見た目を分け、出所も出す
         return <NoticeRow source={entry.source} text={entry.text} />;
+      case "branch":
+        // 枝の札（決定77）。**写しではなく参照**なので、帳簿から引き直して描く
+        return (
+          <BranchCard
+            branch={branchOf?.(entry.branchId)}
+            active={activeBranchId === entry.branchId}
+            hasTurn={branchHasTurn?.(entry.branchId) ?? false}
+            {...(onOpenBranch ? { onOpen: onOpenBranch } : {})}
+          />
+        );
+      case "branch_result":
+        // 還った1行（決定77）。**記録なので凍る**——ここで帳簿は引かない
+        return (
+          <BranchResultRow
+            branchId={entry.branchId}
+            title={entry.title}
+            conclusion={entry.conclusion}
+            at={entry.at}
+            {...(onOpenBranch ? { onOpen: onOpenBranch } : {})}
+          />
+        );
+      case "utsuwa":
+        // Tool の戻り値を中核の器で描く（決定78・81）。器も凍る
+        return <UtsuwaRow u={entry.utsuwa} {...(onOpenView ? { onOpenView } : {})} />;
       case "tool":
         return (
           <ToolRow

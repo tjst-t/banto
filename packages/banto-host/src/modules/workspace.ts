@@ -65,6 +65,34 @@ const workspaceViews: CanvasViewSpec[] = [
     icon: "📁",
   },
   {
+    /**
+     * **1つのファイルを読む面**（ADR-0017 決定79）。
+     *
+     * `file.browser`（探す・移動する）とは目的が違うので別種にする——決定17 が
+     * 「シェルと職人ビューアは目的が違うので別コンポーネント」としたのと同じ理屈。
+     * 器の `doc`（抜粋）から「全部読む →」で来る先がここ。
+     */
+    kind: "file.viewer",
+    title: "ファイルを読む",
+    description:
+      "**1つのファイルを読むだけ**の面。一覧は出さないので、本文に幅を全部使える。" +
+      "器（doc）に抜粋を出したあと「全部読む」で開く先。探して回りたいなら file.browser を使う。" +
+      "line を渡すとその行まで自動でスクロールして強調する。",
+    parameters: Type.Object({
+      place: Type.Optional(
+        Type.String({ description: "どの場所（リポジトリ等）のファイルか。place.list の id" })
+      ),
+      path: Type.String({ description: "読むファイルのパス（ディレクトリは開けない）" }),
+      line: Type.Optional(
+        Type.Number({ description: "この行まで自動スクロールして強調する（1始まり）" })
+      ),
+      endLine: Type.Optional(Type.Number({ description: "範囲で強調したいときの終了行" })),
+    }),
+    component: "FileViewer",
+    category: "workspace",
+    icon: "📄",
+  },
+  {
     kind: "git.viewer",
     title: "Git",
     description:

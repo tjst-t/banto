@@ -88,24 +88,38 @@ export interface BantoSession {
   sessionId: string | undefined;
   tools: string[];
   catalog: CatalogEntryView[];
-  /** 開いている分身（タブに並ぶ）。 */
-  threads: ThreadView[];
   /** 登録されているモジュールと到達先（GUI を持たないものも含む）。 */
   modules: ModuleEndpointView[];
-  /** 畳んだ分身（履歴に並ぶ）。新しく畳んだものが先頭。 */
-  closedThreads: ThreadView[];
+  /**
+   * 幹（ADR-0017 決定77）。プロジェクトに1本で、畳まない。
+   * ホストが立ち上がりきる前だけ undefined——空状態として扱う。
+   */
+  trunk: ThreadView | undefined;
+  /** 開いている枝。**レールの点**として全部出る（埋没しない不変条件の③）。 */
+  branches: ThreadView[];
+  /** 畳んだ枝（履歴に並ぶ）。新しく畳んだものが先頭。 */
+  mergedBranches: ThreadView[];
+  /** 会話を1本引く（枝の札は参照なので、描くたびにここから引き直す）。 */
+  threadOf(threadId: string): ThreadView | undefined;
+  /** いま見ている会話（幹または枝）。 */
   activeThreadId: string | undefined;
-  /** 見ているスレッドの状態。 */
+  /** 見ている会話のキャンバス（＝作業する面。決定79）。 */
   tabs: CanvasTabView[];
   activeTabId: string | undefined;
-  chat: TranscriptEntry[];
-  busy: boolean;
   /** 見ている会話のキャンバスの状態が届いたか（空なのか、まだ分からないのか）。 */
   canvasKnown: boolean;
-  /** 未読の印がついているスレッドID。 */
+  /** 未読の印がついている会話ID。 */
   unreadThreadIds: string[];
-  /** 特定スレッドの会話を読む（履歴の読み取り用）。 */
+  /** その会話の発話。**列ごとに引く**——幹と枝が同時に出るため。 */
   chatOf(threadId: string): TranscriptEntry[];
+  /** その会話でいま番頭が喋っているか。 */
+  busyOf(threadId: string): boolean;
+  /** その会話の書きかけ。 */
+  draftOf(threadId: string): string;
+  /** その会話が使っているモデル。 */
+  modelOf(threadId: string): CurrentModel | undefined;
+  /** その会話が直近のターンで運んだトークン数（分かるまでは undefined）。 */
+  contextTokensOf(threadId: string): number | undefined;
   /**
    * その会話の履歴を手元に用意する（無ければホストへ頼む）。
    * 中身を出す面は描く前にこれを呼ぶ——接続時に届くのは見ている会話の分だけ。
@@ -113,34 +127,31 @@ export interface BantoSession {
   ensureHistory(threadId: string): void;
   /** その会話の履歴が手元にあるか。「発言が無い」と「まだ取っていない」を分ける。 */
   historyLoaded(threadId: string): boolean;
-  send(text: string, attachments?: Attachment[]): void;
-  abort(): void;
+  send(threadId: string, text: string, attachments?: Attachment[]): void;
+  abort(threadId: string): void;
+  setDraft(threadId: string, text: string): void;
+  setModel(threadId: string, provider: string, model: string): void;
   switchTab(tabId: string): void;
   closeTab(tabId: string): void;
   /** タブをドラッグで並べ替える。順序の真実はホスト側（D3）。 */
   reorderTab(tabId: string, toIndex: number): void;
-  /** POがカタログから自分でGUIを開く（決定25の人側の経路）。 */
+  /** POがカタログから自分で面を開く（決定25の人側の経路）。 */
   openView(kind: string, params?: Record<string, unknown>): void;
-  newSession(): void;
-  /** 分身を切り替える。UI側だけの状態（ホストは全スレッドを同時に進めている）。 */
+  /** 見る会話を移る。 */
   switchThread(threadId: string): void;
-  openThread(title?: string): void;
-  closeThread(threadId: string): void;
+  /**
+   * 枝を開く（決定77）。**還す条件と理由は必須**——書けないものは枝にしない。
+   */
+  openBranch(spec: { title: string; returnCondition: string; reason: string }): void;
+  /** 枝を畳んで幹へ還す（決定77）。結論は必須。 */
+  mergeBranch(threadId: string, conclusion: string): void;
+  /** 畳んだ枝を開き直す。 */
   reopenThread(threadId: string): void;
   /** 会話に名前を付け直す（番頭の `thread.rename` と同じ結果。決定25の人側）。 */
   renameThread(threadId: string, title: string): void;
-  /** いま見ている会話が使っているモデル（届くまでは undefined）。 */
-  model: CurrentModel | undefined;
-  /** いま見ている会話のモデルを変える。効いたかは `model` が入れ替わることで分かる。 */
-  setModel(provider: string, model: string): void;
-  /** いま見ている会話の書きかけ。 */
-  draft: string;
-  setDraft(text: string): void;
-  /** いま見ている会話が直近のターンで運んだトークン数（分かるまでは undefined）。 */
-  contextTokens: number | undefined;
   /** 取次に積まれているもの（答えの出たものも含む）。会話に紐づかない。 */
   inbox: InboxItemView[];
-  /** まだ答えの出ていない数。上段の札に出る唯一の数字。 */
+  /** まだ答えの出ていない数。レールの札に出る唯一の数字。 */
   inboxPending: number;
   /** 一通に答える。会話と面はホストが同時に開く。 */
   answerInbox(itemId: string, actionId: string): void;
@@ -241,6 +252,27 @@ function applyDelta(prev: TranscriptEntry[], event: ServerEvent): TranscriptEntr
       };
       return next;
     }
+
+    // 器（決定78・81）。**凍る**ので、積んだあと差分は来ない
+    case "utsuwa":
+      return [...prev, { role: "utsuwa", utsuwa: event.utsuwa }];
+
+    // 枝の札（決定77）。指しているだけなので中身は持たない
+    case "branch_card":
+      return [...prev, { role: "branch", branchId: event.branchId }];
+
+    // 枝が幹へ還った1行（決定77）。こちらは記録なので凍る
+    case "branch_result":
+      return [
+        ...prev,
+        {
+          role: "branch_result",
+          branchId: event.branchId,
+          title: event.title,
+          conclusion: event.conclusion,
+          at: event.at,
+        },
+      ];
 
     case "turn_end":
       return event.errorMessage ? [...prev, { role: "error", text: event.errorMessage }] : prev;
@@ -535,39 +567,30 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
     return true;
   }, []);
 
-  const threads = useMemo(() => allThreads.filter((t) => t.state === "open"), [allThreads]);
-  const closedThreads = useMemo(
+  /** 幹。**プロジェクトに1本**（決定77）。ホストが立ち上がりきる前だけ undefined */
+  const trunk = useMemo(() => allThreads.find((t) => t.kind === "trunk"), [allThreads]);
+  /** 開いている枝。レールの点として全部出る（埋没しない不変条件の③） */
+  const branches = useMemo(
+    () => allThreads.filter((t) => t.kind === "branch" && t.state === "open"),
+    [allThreads]
+  );
+  const mergedBranches = useMemo(
     () =>
       allThreads
-        .filter((t) => t.state === "closed")
+        .filter((t) => t.kind === "branch" && t.state === "closed")
         .sort((a, b) => (b.closedAt ?? "").localeCompare(a.closedAt ?? "")),
     [allThreads]
   );
+  const threadOf = useCallback(
+    (threadId: string): ThreadView | undefined =>
+      allThreads.find((t) => t.threadId === threadId),
+    [allThreads]
+  );
   // memoized: byThread または activeThreadId が変わったときのみ参照が変わる
-  // （active_delta で text_delta が連続しても active が作り直されない）
   const active = useMemo<ThreadState>(
     () => (activeThreadId ? byThread[activeThreadId] : undefined) ?? EMPTY_THREAD,
     [activeThreadId, byThread]
   );
-  const activeTabs = useMemo(
-    () => active.tabs,
-    [active.tabs]
-  );
-  const activeTabId = useMemo(
-    () => active.activeTabId,
-    [active.activeTabId]
-  );
-  const activeChat = useMemo(
-    () => active.chat,
-    [active.chat]
-  );
-  const activeBusy = useMemo(
-    () => active.busy,
-    [active.busy]
-  );
-  const activeModel = useMemo(() => active.model, [active.model]);
-  const activeDraft = useMemo(() => active.draft, [active.draft]);
-  const activeTokens = useMemo(() => active.contextTokens, [active.contextTokens]);
   const unreadThreadIds = useMemo(
     () => Object.entries(byThread).filter(([, s]) => s.unread).map(([id]) => id),
     [byThread]
@@ -579,53 +602,83 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
     onActiveThreadRef.current(threadId, { push: true });
   }, []);
 
-  // 見ている会話の未読は落とす。**移った経路を問わない**——タブを押したときだけ落とすと、
-  // 戻る／進むやリロードで開いた会話に印が残ったままになる
+  // 見ている会話の未読は落とす。**移った経路を問わない**
   useEffect(() => {
     if (!activeThreadId) return;
     setByThread((prev) => {
       const state = prev[activeThreadId];
-      // 参照を変えない（無駄な再描画を起こさない）
       if (!state?.unread) return prev;
       return { ...prev, [activeThreadId]: { ...state, unread: false } };
     });
   }, [activeThreadId]);
 
-  const chatOf = (threadId: string): TranscriptEntry[] => byThread[threadId]?.chat ?? [];
-  const historyLoaded = (threadId: string): boolean =>
-    byThread[threadId]?.historyLoaded ?? false;
+  /**
+   * 会話ごとの状態を引く口。
+   *
+   * **列ごとに引く**（決定79）——幹と枝が同時に画面へ出るので、「いま見ている1本」に
+   * 寄せた口だと片方しか描けない。
+   */
+  const chatOf = useCallback(
+    (threadId: string): TranscriptEntry[] => byThread[threadId]?.chat ?? [],
+    [byThread]
+  );
+  const busyOf = useCallback(
+    (threadId: string): boolean => byThread[threadId]?.busy ?? false,
+    [byThread]
+  );
+  const draftOf = useCallback(
+    (threadId: string): string => byThread[threadId]?.draft ?? "",
+    [byThread]
+  );
+  const modelOf = useCallback(
+    (threadId: string): CurrentModel | undefined => byThread[threadId]?.model,
+    [byThread]
+  );
+  const contextTokensOf = useCallback(
+    (threadId: string): number | undefined => byThread[threadId]?.contextTokens,
+    [byThread]
+  );
+  const historyLoaded = useCallback(
+    (threadId: string): boolean => byThread[threadId]?.historyLoaded ?? false,
+    [byThread]
+  );
 
   /**
    * その会話の履歴を手元に用意する。まだ無ければホストへ頼む。
    *
-   * 接続時に届くのは見ている会話の分だけなので、**中身を出す面はここを通す**
-   * （会話タブ・畳んだ会話の読み取り）。すでにあるものは何もしない。
+   * 接続時に届くのは見ている会話の分だけなので、**中身を出す面はここを通す**。
    */
   const ensureHistory = useCallback(
     (threadId: string) => {
       if (requested.current.has(threadId)) return;
-      // **送れたときだけ控える**。まだ繋がっていないのに控えてしまうと、
-      // 繋がったあとも「頼んだ」と思い込んで永久に取りに行かない
+      // **送れたときだけ控える**。まだ繋がっていないのに控えると、繋がったあとも
+      // 「頼んだ」と思い込んで永久に取りに行かない
       if (post({ type: "history_request", threadId })) requested.current.add(threadId);
     },
     [post]
   );
 
-  // 見ている会話の履歴を用意する。**移った経路を問わない**——未読を落とすのと同じ理由で、
-  // タブを押したときだけだと戻る／進むやリロードで取り漏らす
+  // 見ている会話の履歴を用意する。**移った経路を問わない**
   useEffect(() => {
     if (!activeThreadId) return;
     if (byThread[activeThreadId]?.historyLoaded) return;
     ensureHistory(activeThreadId);
   }, [activeThreadId, byThread, ensureHistory]);
 
-  // React.memo on ChatRow 側の再描画を抑えるため、session オブジェクトの参照を安定させる。
-  // 内部 state が変わらなくても毎回 new object だと App が無駄に再描画される。
-  // コールバックを const 変数として定義し、useMemo deps で安定参照を保証。
+  /**
+   * 幹の履歴も先に用意する（決定77）。
+   *
+   * **枝を見ているときも幹は画面に居る**（重なりの地）ので、移ってから取りに行くと
+   * 枝を開いた瞬間に幹が空になる。
+   */
+  useEffect(() => {
+    if (!trunk) return;
+    if (byThread[trunk.threadId]?.historyLoaded) return;
+    ensureHistory(trunk.threadId);
+  }, [trunk, byThread, ensureHistory]);
+
   const send = useCallback(
-    (text: string, attachments?: Attachment[]) => {
-      const threadId = activeThreadId;
-      if (!threadId) return;
+    (threadId: string, text: string, attachments?: Attachment[]) => {
       update(threadId, (prev) => ({ ...prev, busy: true }));
       post({
         type: "prompt",
@@ -634,12 +687,12 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
       });
     },
-    [activeThreadId, post, update]
+    [post, update]
   );
 
   const abort = useCallback(
-    () => post({ type: "abort", threadId: activeThreadId }),
-    [activeThreadId, post]
+    (threadId: string) => post({ type: "abort", threadId }),
+    [post]
   );
 
   /**
@@ -653,11 +706,11 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
   /** 答えずに、その件の会話と面だけ開く。 */
   const openInbox = useCallback((itemId: string) => post({ type: "inbox_open", itemId }), [post]);
 
-  // モデルは会話ごと。**いま見ている会話にだけ**効かせる
+  // モデルは会話ごと
   const setModel = useCallback(
-    (provider: string, model: string) =>
-      post({ type: "set_model", threadId: activeThreadId, provider, model }),
-    [activeThreadId, post]
+    (threadId: string, provider: string, model: string) =>
+      post({ type: "set_model", threadId, provider, model }),
+    [post]
   );
 
   /**
@@ -665,12 +718,10 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
    * そのまま送ってしまう（PO報告 2026-08-04）。
    */
   const setDraft = useCallback(
-    (text: string) => {
-      const threadId = activeThreadId;
-      if (!threadId) return;
+    (threadId: string, text: string) => {
       update(threadId, (prev) => (prev.draft === text ? prev : { ...prev, draft: text }));
     },
-    [activeThreadId, update]
+    [update]
   );
 
   const switchTab = useCallback(
@@ -689,6 +740,11 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
     [activeThreadId, post]
   );
 
+  /**
+   * 面を開く。**開く先は「いま見ている会話」のキャンバス**（決定2・79）——
+   * どこから開いたかは、その面がどちらのキャンバスに載っているかで表される。
+   * 幹から開けば枝は視界から外れ、枝から開けば枝が左に残る。
+   */
   const openView = useCallback(
     (kind: string, params?: Record<string, unknown>) =>
       post({
@@ -700,21 +756,21 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
     [activeThreadId, post]
   );
 
-  const newSession = useCallback(() => {
-    followNewThread.current = true;
-    post({ type: "new_session", threadId: activeThreadId });
-  }, [activeThreadId, post]);
-
-  const openThread = useCallback(
-    (title?: string) => {
+  /**
+   * 枝を開く（決定77）。**還す条件と理由は必須**——帳簿も拒むが、ここでも書かせる。
+   * 開いた枝へは自動で移る（押した意図に合わせる）。
+   */
+  const openBranch = useCallback(
+    (spec: { title: string; returnCondition: string; reason: string }) => {
       followNewThread.current = true;
-      post({ type: "thread_open", ...(title ? { title } : {}) });
+      post({ type: "thread_open", ...spec });
     },
     [post]
   );
 
-  const closeThread = useCallback(
-    (threadId: string) => post({ type: "thread_close", threadId }),
+  /** 枝を畳んで幹へ還す（決定77）。幹は畳めない（ホストが拒む）。 */
+  const mergeBranch = useCallback(
+    (threadId: string, conclusion: string) => post({ type: "thread_merge", threadId, conclusion }),
     [post]
   );
 
@@ -729,7 +785,6 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
   /**
    * 会話に名前を付け直す（PO要望 2026-08-05）。**名前の真実はホスト**（D3）——
    * ここでは楽観的に画面を書き換えず、`thread_state` が返ってくるのを待つ。
-   * 番頭が同じ会話を付け直したときと1本の経路にするため。
    */
   const renameThread = useCallback(
     (threadId: string, title: string) => post({ type: "thread_rename", threadId, title }),
@@ -743,37 +798,37 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
       tools,
       catalog,
       modules,
-      threads,
-      closedThreads,
+      trunk,
+      branches,
+      mergedBranches,
+      threadOf,
       activeThreadId,
       tabs: active.tabs,
       activeTabId: active.activeTabId,
       canvasKnown: active.canvasKnown,
-      chat: active.chat,
-      busy: active.busy,
       unreadThreadIds,
       chatOf,
+      busyOf,
+      draftOf,
+      modelOf,
+      contextTokensOf,
       ensureHistory,
       historyLoaded,
       send,
       abort,
+      setDraft,
+      setModel,
       switchTab,
       closeTab,
       reorderTab,
       openView,
-      newSession,
       switchThread,
-      openThread,
-      closeThread,
+      openBranch,
+      mergeBranch,
       reopenThread,
       renameThread,
-      model: active.model,
-      setModel,
-      draft: active.draft,
-      setDraft,
-      contextTokens: active.contextTokens,
       inbox,
-      /** まだ答えの出ていない数。上段の札に出る唯一の数字（導出なので持たない） */
+      /** まだ答えの出ていない数。レールの札に出る唯一の数字（導出なので持たない） */
       inboxPending: inbox.filter((i) => !i.resolvedAt).length,
       answerInbox,
       openInbox,
@@ -784,35 +839,33 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
       tools,
       catalog,
       modules,
-      threads,
-      closedThreads,
+      trunk,
+      branches,
+      mergedBranches,
+      threadOf,
       activeThreadId,
-      activeTabs,
-      activeTabId,
-      activeChat,
-      activeBusy,
+      active,
       unreadThreadIds,
-      byThread,
+      chatOf,
+      busyOf,
+      draftOf,
+      modelOf,
+      contextTokensOf,
+      ensureHistory,
+      historyLoaded,
       send,
       abort,
+      setDraft,
+      setModel,
       switchTab,
       closeTab,
       reorderTab,
       openView,
-      newSession,
       switchThread,
-      openThread,
-      closeThread,
+      openBranch,
+      mergeBranch,
       reopenThread,
       renameThread,
-      chatOf,
-      ensureHistory,
-      historyLoaded,
-      setModel,
-      setDraft,
-      activeModel,
-      activeDraft,
-      activeTokens,
       inbox,
       answerInbox,
       openInbox,

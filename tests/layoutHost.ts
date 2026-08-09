@@ -179,6 +179,7 @@ export async function startLayoutHost(themes?: UserThemeFixture): Promise<Layout
           title: "会話",
           sessionId: "fake",
           isDefault: true,
+          kind: "trunk",
           state: "open",
           streaming: false,
           model: { provider: "huihui", id: "qwen3.6-35b", vision: false },

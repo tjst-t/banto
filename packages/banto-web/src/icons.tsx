@@ -132,6 +132,7 @@ export function Icon({ name, size = 16, stroke = 1.5, className, title }: IconPr
  */
 const KIND_ICONS: Record<string, IconName> = {
   "file.browser": "folder",
+  "file.viewer": "file-text",
   "worker.viewer": "worker",
   "memory.viewer": "memory",
   "skill.viewer": "skill",
