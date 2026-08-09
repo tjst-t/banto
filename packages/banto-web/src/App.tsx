@@ -72,6 +72,16 @@ const MAX_COMPOSER_HEIGHT_PX = 192;
  */
 const CHAT_WINDOW = 200;
 
+/**
+ * 追従が切れたとき、「POが自分で動かした」と見なす直前の猶予（inc-0045）。
+ *
+ * ホイールを1つ転がしてから追従が切れるまでには、ライブラリ側の遅延（scroll の
+ * 取りこぼしを避ける待ち）が挟まる。短すぎるとPOの操作を機械の読み違いと取り違えて
+ * 勝手に下へ引き戻す——**そちらのほうが害が大きい**ので、余裕を持たせる。
+ * 惰性で流れる操作は転がすたびに時刻が更新されるので、長くても困らない。
+ */
+const USER_SCROLL_GRACE_MS = 400;
+
 
 /**
  * 中核の Tool の到達先（ADR-0011 決定42）。`llm.*` はモジュールではなく中核のドメイン。
@@ -431,6 +441,37 @@ export function App(): React.ReactElement {
     if (!chatFace) return;
     void scrollToBottom({ animation: "instant" });
   }, [session.activeThreadId, chatFace, scrollToBottom]);
+
+  /**
+   * **追従が切れてよいのは、POが自分で上へ動かしたときだけ**（inc-0045）。
+   *
+   * `use-stick-to-bottom` 1.1.6 は、自分が動かした分をPOの操作と読み違えることがある。
+   * 追従の1フレームは「伸びた先へ `scrollTop` を代入する」だが、**中身の組み直しが
+   * 間に合っていないと器がその値を受け取れず、ブラウザが切り詰める**。ライブラリは
+   * 切り詰められた値を次の scroll で読み、「代入した値より小さい＝上へ動かされた」と
+   * 判定して追従を切る（`escapedFromLock`）。切れると二度と戻らない。
+   *
+   * 実測：番頭が喋り出した直後、**10回に1回**この読み違いが起き、本文が 250〜740px
+   * 手前で止まったまま動かなくなっていた（`tests/chat-ux.spec.ts` の間欠的な失敗はこれ）。
+   * POには「番頭の返事が途中で止まった」ように見える。
+   *
+   * `resize` を spring から瞬間移動に変えても直らない（起きる場所が次の応答へ移るだけ）。
+   * ライブラリは最新（1.1.6）で、上流に直しはない。
+   *
+   * **だから判断のほうを持つ。** 切れた理由がPOの操作なら従い、そうでなければ貼り直す。
+   * 操作かどうかは器で起きた仕草（ホイール・触れる・押す・キー）で見る——ライブラリの
+   * 内部状態は覗かない。ここに書くのは決定であって、ライブラリの再実装ではない（D5）。
+   */
+  const lastGestureAt = useRef(0);
+  const noteGesture = useCallback(() => {
+    lastGestureAt.current = Date.now();
+  }, []);
+  useEffect(() => {
+    // 追いかけている間は何もしない。切れた瞬間だけを見る
+    if (chat.isAtBottom) return;
+    if (Date.now() - lastGestureAt.current < USER_SCROLL_GRACE_MS) return;
+    void scrollToBottom({ animation: "instant" });
+  }, [chat.isAtBottom, scrollToBottom]);
 
   /**
    * 描くのは末尾の何件か（inc: Android/Tailscale から使えない）。
@@ -1426,7 +1467,16 @@ export function App(): React.ReactElement {
             </button>
           </div>
 
-          <div className="chat-scroll" ref={chat.scrollRef}>
+          {/* POが自分で動かした仕草を控えておく（inc-0045）。追従が切れたとき、
+              それがPOの操作なのか機械の読み違いなのかは、これでしか分けられない */}
+          <div
+            className="chat-scroll"
+            ref={chat.scrollRef}
+            onWheel={noteGesture}
+            onPointerDown={noteGesture}
+            onTouchStart={noteGesture}
+            onKeyDown={noteGesture}
+          >
             {/* 追従は「中身の高さ」を ResizeObserver で見て決まるので、器と中身を分ける */}
             <div className="chat-scroll-content" ref={chat.contentRef}>
             {session.chat.length === 0 && (
