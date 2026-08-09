@@ -140,9 +140,31 @@ export async function createBantoHostSession(
   ].filter((s) => s.length > 0);
   const systemPrompt = sections.join("\n\n");
 
+  /**
+   * **番頭は置き場のコンテキストファイルを読まない**（`noContextFiles`・PO指摘 2026-08-09）。
+   *
+   * pi の既定は cwd から `CLAUDE.md` / `AGENTS.md` を拾って**システムプロンプトの後ろへ
+   * 継ぎ足す**。番頭ホストの cwd は systemd の `WorkingDirectory`＝**banto のインストール先**
+   * なので、番頭は毎セッション **banto 自身の開発規約**（「P1: スコープ外パスに触らない」
+   * 「npm run dev:web」「docs/spec/ を読め」…）を読まされていた。実測で
+   * システムプロンプト 4,973 文字のうち 4,300 文字がそれだった。
+   *
+   * 二重に間違っている。①番頭は banto の開発者ではない——CLAUDE.md は
+   * **banto を開発する側**（Claude Code）への指示であって、製品としての番頭の人格ではない。
+   * ②仮に「案件の文脈を読む」のが正しいとしても、拾うのは**インストール先**であって
+   * 相談している案件ではない。loamium の話をしていても banto の CLAUDE.md が載る。
+   *
+   * 番頭の人格は上の `sections` が組み立て、案件の知識は SKILL（決定26・progressive
+   * disclosure）と `file.*` で**必要なときに**引く。置き場に落ちている物を黙って
+   * 継ぎ足す経路は要らない。
+   *
+   * **職人はこの限りではない。** 職人の cwd はワークツリー＝その案件のリポジトリなので、
+   * そこの `CLAUDE.md` を読むのは正しい（`pi-rpc-driver` はそのまま）。
+   */
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir,
+    noContextFiles: true,
     systemPromptOverride: () => systemPrompt,
   });
   await resourceLoader.reload();
