@@ -65,6 +65,7 @@ import { CORE_ORIGIN, createModuleRegistry, resolveSkills, type SkillEntry } fro
 import { createStudioModule } from "./modules/studio.js";
 import { createPiAgentModule } from "./modules/pi-agent.js";
 import { createLlmTools } from "./llm-tools.js";
+import { refreshModelCatalog } from "./model-catalog.js";
 import { createWorkspaceModule } from "./modules/workspace.js";
 import { PlaceGrantStore } from "./place-grants.js";
 import { ThreadStore } from "./thread-store.js";
@@ -592,15 +593,16 @@ async function serve(options: ServeOptions): Promise<void> {
    * pi 0.84 で `AuthStorage` と `ModelRegistry.create()` は無くなり、資格情報とモデル表を
    * まとめて持つ `ModelRuntime` に一本化された（`ModelRegistry` はその同期版の facade）。
    *
-   * **`refresh()` が非同期になった**——「await してから同期の読み出しをすること」と
-   * 型に書いてある。以前は投げっぱなしで済んでいたので、ここで待つ。
+   * `create()` は**外へ出ない**（内側の更新は `allowNetwork: false`）。ここで揃うのは
+   * `models.json` と組み込みの定義から組んだ表で、それだけで解決はできる（実測 1231 件）。
    */
   const modelRuntime = await ModelRuntime.create({
     authPath: path.join(agentDir, "auth.json"),
     modelsPath: path.join(agentDir, "models.json"),
   });
   const modelRegistry = new ModelRegistry(modelRuntime);
-  await modelRegistry.refresh();
+  // **待たない**（inc-0047）。遅い外の応答に待ち受け開始を握らせない
+  void refreshModelCatalog(modelRegistry);
 
   const workerPoolSettings = (settings.all().modules?.["worker-pool"] ?? {}) as Record<string, unknown>;
   const llmCatalog = new LlmCatalog({
