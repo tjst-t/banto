@@ -5,7 +5,8 @@
  * 依存しないため文字列のまま扱い、実体への解決はここ（UI側）が行う。
  * iframe は使わず、コンポーネントをそのまま描画する（決定12）。
  *
- * **ここに載るのは、どこかのモジュールが登録している面だけ。** 誰も登録していない
+ * **ここに載るのは、どこかが名指ししている面だけ**——モジュールが登録したキャンバスの面か、
+ * 中核の設定区画が `view` で宣言した面（決定43）。誰も名指ししていない
  * コンポーネントを置いておくと、直せない・気づけない死んだ画面になる
  * （`tests/acceptance/canvas-view-components.spec.ts` は逆向き——登録された面が
  * ここに在ることを見る）。
@@ -14,7 +15,7 @@
 import type { ComponentType } from "react";
 import { FileBrowser } from "./FileBrowser.js";
 import { GitViewer } from "./GitViewer.js";
-import { PlacePermissions } from "./PlacePermissions.js";
+import { PlaceSettings } from "./PlaceSettings.js";
 import { RepoManager } from "./RepoManager.js";
 import { EnvManager } from "./EnvManager.js";
 import { WorkerViewer } from "./WorkerViewer.js";
@@ -62,7 +63,6 @@ const REGISTRY: Record<string, ComponentType<CanvasViewProps>> = {
   // 基本GUIセット（workspace モジュール提供。決定18・24）
   FileBrowser,
   GitViewer,
-  PlacePermissions,
   // リポジトリ／ワークツリー（repo-manager 提供・決定36）と検証環境（environment-pool 提供・決定32）
   RepoManager,
   EnvManager,
@@ -71,8 +71,9 @@ const REGISTRY: Record<string, ComponentType<CanvasViewProps>> = {
   // 番頭の中身（studio モジュール提供。決定25・26）
   MemoryViewer,
   SkillViewer,
-  // LLM 管理（中核の設定区画が名指しで描く。ADR-0011 決定43）
+  // 中核の設定区画が名指しで描く面（ADR-0011 決定43）。キャンバスには出ない
   LlmRegistryViewer,
+  PlaceSettings,
   // 工場（kobo モジュール提供。ADR-0013 決定56・57・59）
   KoboBoard,
   KoboReview,

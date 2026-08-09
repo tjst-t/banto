@@ -22,7 +22,21 @@ const Action = Type.Object({
   ),
 });
 
-export function createInboxTools(inbox: Inbox): NamespacedToolDefinition[] {
+export interface InboxToolOptions {
+  /**
+   * この Tool を渡す会話（決定73）。積まれた一通の既定の宛先になる。
+   *
+   * **番頭に書かせない**——自分の threadId を知らないし、書かせれば別の会話へ飛ぶ札が
+   * できる（決定35a・`worker.delegate` の `origin` と同じ理由）。これがあることで、
+   * 取次の札から**その話をしていた会話へ戻れる**（PO要望 2026-08-09）。
+   */
+  threadId?: string;
+}
+
+export function createInboxTools(
+  inbox: Inbox,
+  options: InboxToolOptions = {}
+): NamespacedToolDefinition[] {
   const post = defineNamespacedTool({
     name: "inbox.post",
     label: "Inbox: Post",
@@ -43,11 +57,16 @@ export function createInboxTools(inbox: Inbox): NamespacedToolDefinition[] {
       ask: Type.String({ description: "求める判断：POに決めてほしいこと" }),
       actions: Type.Array(Action, { description: "その場で押せる答え。2〜4つ" }),
       blocking: Type.Optional(Type.Number({ description: "この判断が止めている後続の数。並び順に効く" })),
-      threadId: Type.Optional(Type.String({ description: "押したときに移る会話" })),
+      threadId: Type.Optional(
+        Type.String({ description: "押したときに移る会話。省略すると**いまのこの会話**" })
+      ),
       canvasKind: Type.Optional(Type.String({ description: "押したときにキャンバスに開く面の種別" })),
       canvasParams: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
     }),
     async execute(p) {
+      // 宛先を書かなかったら**この会話**。積んだ札から話の続きへ戻れるようにするため、
+      // 「どの会話でもない札」を作らない（決定73）
+      const threadId = p.threadId ?? options.threadId;
       const item = inbox.post({
         source: { id: p.sourceId, label: p.sourceLabel },
         kind: p.kind,
@@ -58,10 +77,10 @@ export function createInboxTools(inbox: Inbox): NamespacedToolDefinition[] {
         ask: p.ask,
         actions: p.actions,
         ...(p.blocking !== undefined ? { blocking: p.blocking } : {}),
-        ...(p.threadId || p.canvasKind
+        ...(threadId || p.canvasKind
           ? {
               opens: {
-                ...(p.threadId ? { threadId: p.threadId } : {}),
+                ...(threadId ? { threadId } : {}),
                 ...(p.canvasKind
                   ? { canvas: { kind: p.canvasKind, ...(p.canvasParams ? { params: p.canvasParams } : {}) } }
                   : {}),

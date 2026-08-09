@@ -15,12 +15,9 @@ import { createFileTools } from "../file-tools.js";
 import { createFileRawHandler } from "../file-raw.js";
 import { createFileWriteTools, type FileWriteToolOptions } from "../file-write-tools.js";
 import { createPlaceTools } from "../place-tools.js";
-import {
-  createPlaceGrantAdminTools,
-  createPlaceRequestTools,
-  PLACE_PERMISSIONS_VIEW_KIND,
-} from "../place-grant-tools.js";
+import { createPlaceGrantAdminTools, createPlaceRequestTools } from "../place-grant-tools.js";
 import type { PlaceGrantStore } from "../place-grants.js";
+import type { Inbox } from "../inbox.js";
 import { createGitTools } from "../git-tools.js";
 import type { BantoModule } from "../module.js";
 import type { PlaceRegistry } from "../places.js";
@@ -97,35 +94,27 @@ const workspaceViews: CanvasViewSpec[] = [
 ];
 
 /**
- * 書き込み許可のパネル（決定38c・e）。番頭が canvas.open で出せる（task-0042 a5）ので、
- * 会話の流れの中で承認が起きる——決定2「その時の相談内容に応じて番頭が出し入れする」通りの形。
- */
-const permissionsView: CanvasViewSpec = {
-  kind: PLACE_PERMISSIONS_VIEW_KIND,
-  title: "書き込み許可",
-  description:
-    "番頭からの書き込み許可の要求と、いま与えている許可の一覧。その場で許可・拒否・取り消しができる。" +
-    "番頭が「書きたい」と頼んだとき、POにその場で決めてもらうために開く。",
-  parameters: Type.Object({
-    place: Type.Optional(
-      Type.String({ description: "この場所の許可を先頭に表示する（省略時は保留中の要求から）" })
-    ),
-  }),
-  component: "PlacePermissions",
-  category: "workspace",
-  icon: "🔐",
-};
-
-/**
+ * 書き込み許可は**キャンバスの面を持たない**（決定75）。
+ *
+ * かつては `place.permissions` という面をここから登録していたが、設定の「場所」と
+ * 同じことを2箇所で決められる状態になっていた（PO報告 2026-08-09「かぶっている」）。
+ * 場所と、そこで書ける範囲は**同じ1つの設定**なので設定側に寄せた。
+ *
+ * **その場の判断は取次で足りる**（決定73）——番頭が頼むと判断待ちの札が積まれ、
+ * POは会話の横のボタンで許せる。細かく決めたいときだけ、札から設定へ飛ぶ。
+ *
  * @param places 場所の帳簿。`file.*` / `git.*` は**呼び出しごとに場所を選ぶ**（決定36e）。
  *   GUI も同じ Tool 契約を HTTP 経由で呼ぶので、引数が1つ増えるだけで場所の選択UIが
  *   成り立つ（決定25：人も番頭も同じ契約、経路が違うだけ）。
  * @param write 書き込み（`file.write`）の設定。ホスト自身のデータ置き場を渡す（決定38b）
+ * @param grants 許可の帳簿。渡すと `place.request_write` と承認の口が生える
+ * @param inbox 取次。渡すと、番頭の書き込み要求がPOの判断待ちとして積まれる（決定73）
  */
 export function createWorkspaceModule(
   places: PlaceRegistry,
   write: FileWriteToolOptions = {},
-  grants?: PlaceGrantStore
+  grants?: PlaceGrantStore,
+  inbox?: Inbox
 ): BantoModule {
   return {
     name: "workspace",
@@ -146,11 +135,11 @@ export function createWorkspaceModule(
       ...createFileWriteTools(places, write),
       ...placeScopedTools(places, createGitTools),
       // 決定38c: 番頭は範囲の拡大を「頼める」だけ。承認は internalTools 側にある
-      ...(grants ? createPlaceRequestTools(places, grants) : []),
+      ...(grants ? createPlaceRequestTools(places, grants, { ...(inbox ? { inbox } : {}) }) : []),
     ],
     // 番頭には渡さない口（決定29e と同じ枠）。番頭が自分で承認できないことの機構的な保証
-    internalTools: grants ? createPlaceGrantAdminTools(grants) : [],
-    views: grants ? [...workspaceViews, permissionsView] : workspaceViews,
+    internalTools: grants ? createPlaceGrantAdminTools(grants, places) : [],
+    views: workspaceViews,
     // このモジュールが既定として出す SKILL（決定26 の第2層）。
     // 置き場所は banto-host パッケージ直下の module-skills/（core 用の skills/ とは混ぜない）。
     // src/modules/workspace.ts も dist/modules/workspace.js も深さが同じなので、

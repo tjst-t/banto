@@ -111,6 +111,13 @@ export function ensureDeskDir(configs: readonly StaticPlaceConfig[]): string | u
  */
 export interface PlaceGrantSource {
   writableFor(placeId: string): readonly string[];
+  /**
+   * **どの場所でも**許された範囲（決定74）。持たない実装があってよい（省略可）。
+   *
+   * PO裁定 2026-08-09：効く先は**登録された全ての場所**——リポジトリだけに絞ると、
+   * 「効く場所と効かない場所」をPOが覚えることになる。
+   */
+  globalWritable?(): readonly string[];
 }
 
 /** 場所の帳簿。提供元を束ね、砦の判定に使う。 */
@@ -183,13 +190,19 @@ export class PlaceRegistry {
   }
 
   /**
-   * POが後から許した範囲を重ねる（決定38c）。
+   * POが後から許した範囲を重ねる（決定38c・74）。
    *
    * 設定側の `writable` を**置き換えず足す**。設定で与えた範囲が、承認の取り消しで
    * 消えてしまわないようにするため（設定を書いたのは PO であって承認の帳簿ではない）。
+   *
+   * 重ねる順は「設定 → その場所の承認 → 全場所共通」。**判定に順序は効かない**
+   * （どれか1つに当たれば書ける）が、画面がこの順で読めるようにしてある。
    */
   private withGrants(place: Place): Place {
-    const granted = this.grants?.writableFor(place.id) ?? [];
+    const granted = [
+      ...(this.grants?.writableFor(place.id) ?? []),
+      ...(this.grants?.globalWritable?.() ?? []),
+    ];
     if (granted.length === 0) return place;
     const merged = [...(place.writable ?? [])];
     for (const pattern of granted) if (!merged.includes(pattern)) merged.push(pattern);

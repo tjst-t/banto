@@ -175,7 +175,7 @@ export function SettingsPanel(props: SettingsPanelProps): React.ReactElement {
             {active.id === APPEARANCE_ID ? (
               <ThemePicker theme={theme} />
             ) : active.view ? (
-              <SectionView name={active.view} origin={active.origin} />
+              <SectionView name={active.view} origin={active.origin} endpointOf={props.endpointOf} />
             ) : (
               <>
             {active.fields.map((field) => (
@@ -296,7 +296,15 @@ function renderInput(
  *
  * I2: 名前が解決できないときは黙って空白にしない——設定が消えたように見えるため。
  */
-function SectionView({ name, origin }: { name: string; origin: string }): React.ReactElement {
+function SectionView({
+  name,
+  origin,
+  endpointOf,
+}: {
+  name: string;
+  origin: string;
+  endpointOf: CanvasViewProps["endpointOf"];
+}): React.ReactElement {
   if (origin !== "core") {
     return <ErrorNote title="この区画は描けません">モジュールの区画は項目の宣言だけを出せます（決定41）。</ErrorNote>;
   }
@@ -304,7 +312,11 @@ function SectionView({ name, origin }: { name: string; origin: string }): React.
   if (!Component) {
     return <ErrorNote title="この設定を描けません">ビュー「{name}」がUI側の解決表にありません。</ErrorNote>;
   }
-  // キャンバスの面と同じ契約で描く（決定43）。中核の区画なので到達先は中核の Tool 面
+  // キャンバスの面と同じ契約で描く（決定43）。中核の区画なので到達先は中核の Tool 面。
+  //
+  // **モジュールの到達先も引けるようにする**（決定27 のレジストリ方式）。中核の区画でも、
+  // モジュールが持つ口を要ることがある——場所の許可は workspace が持っている。
+  // URLを直書きさせないための口であって、直接呼び合うこと自体は決定27 のとおり
   return (
     <Component
       params={{}}
@@ -312,7 +324,7 @@ function SectionView({ name, origin }: { name: string; origin: string }): React.
       kind={`settings.${name}`}
       module="core"
       endpoint={CORE_TOOL_BASE_URL}
-      endpointOf={() => undefined}
+      endpointOf={endpointOf}
       // 設定の区画から別の面は開かない（キャンバスのタブではないので開き先が無い）
       openCanvas={() => undefined}
     />

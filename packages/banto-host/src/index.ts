@@ -171,9 +171,22 @@ export {
 export {
   createPlaceRequestTools,
   createPlaceGrantAdminTools,
-  PLACE_PERMISSIONS_VIEW_KIND,
+  PLACE_SETTINGS_SECTION,
+  type PlaceRequestToolOptions,
 } from "./place-grant-tools.js";
 export { PlaceGrantStore, type PlaceGrantRequest, type PlaceGrantState } from "./place-grants.js";
+// 取次（決定73）。判断を求めるものはモジュールを問わずここへ積む
+export {
+  Inbox,
+  type InboxAction,
+  type InboxEffect,
+  type InboxItem,
+  type InboxItemView,
+  type InboxOpens,
+  type InboxSource,
+  type PostInput,
+} from "./inbox.js";
+export { createInboxTools, type InboxToolOptions } from "./inbox-tools.js";
 export { createGitTools } from "./git-tools.js";
 export { workspaceRoot, resolveInWorkspace, toWorkspaceRelative } from "./workspace.js";
 export {

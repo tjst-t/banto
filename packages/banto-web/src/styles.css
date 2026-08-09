@@ -839,9 +839,28 @@ code { font-family: var(--mono); font-size: var(--t-note); }
   background: var(--shu); color: var(--on-shu);
   font-family: var(--sho); font-size: var(--t-meta); font-weight: 600; border-radius: var(--r-seal);
 }
-.pend-from { margin-left: auto; font-size: var(--t-note); color: var(--sumi-2); display: inline-flex; align-items: center; }
+.pend-from {
+  margin-left: auto; font-size: var(--t-note); color: var(--sumi-2);
+  display: inline-flex; align-items: center; gap: 4px;
+}
 .pend-ask { font-size: var(--t-body); line-height: 1.8; margin: 0; }
-.pend-actions { display: flex; gap: 7px; margin-top: var(--s2); flex-wrap: wrap; }
+.pend-what { font-size: var(--t-meta); line-height: 1.8; color: var(--sumi-2); margin: 4px 0 0; }
+.pend-actions { display: flex; gap: 7px; margin-top: var(--s2); flex-wrap: wrap; align-items: center; }
+/* 「どこへ行けるか」は答えではないので、ボタンの列から見た目で外す */
+.pend-go {
+  margin-left: auto; border: none; background: none; cursor: pointer;
+  font-size: var(--t-note); color: var(--sumi-2);
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 4px; border-radius: var(--r-seal);
+}
+.pend-go:hover { color: var(--ai); background: var(--ai-t); }
+
+/* 会話の横（入力欄のすぐ上）に固定して出す分（PO裁定 2026-08-09）。
+   遡ると見えなくなる位置だと、判断待ちを持ったまま話し続けられてしまう */
+.pend--chat {
+  padding: 0 var(--s3) var(--s2);
+  max-height: 45%;
+  overflow-y: auto;
+}
 
 /* ══ ⌘K（横断して引く）════════════════════════════════════════════════════ */
 .cmdk-tab { display: inline-flex; align-items: center; width: auto; gap: 6px; padding: 0 var(--s2); }

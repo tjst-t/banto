@@ -39,10 +39,18 @@ interface GrantsFile {
   version: 1;
   /** 場所 id → 許された範囲。 */
   grants: Record<string, string[]>;
+  /**
+   * **どの場所でも**許す範囲（決定74）。場所ごとの許可に重ねて効く。
+   *
+   * 「全部のリポジトリで `docs/**` は書いてよい」のような、場所ごとに決める意味の無い
+   * 許可のため。無いと、番頭が新しいリポジトリに触るたびに同じ承認を繰り返すことになり、
+   * **POが中身を読まずに押す習慣**がつく——それは決定38e が避けたかったことそのもの。
+   */
+  global: string[];
   requests: PlaceGrantRequest[];
 }
 
-const EMPTY: GrantsFile = { version: 1, grants: {}, requests: [] };
+const EMPTY: GrantsFile = { version: 1, grants: {}, global: [], requests: [] };
 
 /**
  * 許可と要求の帳簿。
@@ -62,6 +70,26 @@ export class PlaceGrantStore {
   /** その場所に許されている範囲。`PlaceRegistry` がここを引く。 */
   writableFor(placeId: string): readonly string[] {
     return this.state.grants[placeId] ?? [];
+  }
+
+  /**
+   * どの場所でも許されている範囲（決定74）。`PlaceRegistry` が全ての場所に重ねる。
+   *
+   * **場所ごとの許可と混ぜて返さない**——画面が「これは共通で許した分だ」と言えなくなる。
+   * 混ざると、1つの場所から取り消したつもりが他の場所でも消えて驚くことになる。
+   */
+  globalWritable(): readonly string[] {
+    return this.state.global;
+  }
+
+  /**
+   * 共通の許可を差し替える（決定74）。**足すのではなく置き換える**——
+   * 消す手段が無いと、広げすぎたときに戻せない（決定38e の `revoke` と同じ理由）。
+   */
+  setGlobal(patterns: readonly string[]): string[] {
+    this.state.global = normalize(patterns);
+    this.write();
+    return [...this.state.global];
   }
 
   /** 許可の全体。GUI に「いま何を許しているか」を出すため（決定38e）。 */
@@ -158,7 +186,7 @@ export class PlaceGrantStore {
   }
 
   private read(): GrantsFile {
-    if (!fs.existsSync(this.filePath)) return { ...EMPTY, grants: {}, requests: [] };
+    if (!fs.existsSync(this.filePath)) return { ...EMPTY, grants: {}, global: [], requests: [] };
     const raw = fs.readFileSync(this.filePath, "utf-8");
     let parsed: unknown;
     try {
@@ -171,6 +199,8 @@ export class PlaceGrantStore {
     return {
       version: 1,
       grants: file.grants ?? {},
+      // 共通の許可を知らない頃の帳簿は `global` を持たない。無いことは「何も共通で許していない」
+      global: Array.isArray(file.global) ? file.global : [],
       requests: Array.isArray(file.requests) ? file.requests : [],
     };
   }

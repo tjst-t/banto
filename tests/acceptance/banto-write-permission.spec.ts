@@ -21,7 +21,6 @@ import {
   createStaticPlaceProvider,
   createWorkspaceModule,
   createFileWriteTools,
-  PLACE_PERMISSIONS_VIEW_KIND,
   type NamespacedToolDefinition,
 } from "@banto/host";
 
@@ -232,13 +231,19 @@ describe("[task-0042/a3・a5] 画面と取り消し", () => {
     assert.ok(fs.existsSync(path.join(repo, "work", "a.md")));
   });
 
-  it("番頭が canvas.open で開けるGUIとして登録されている（a5）", () => {
+  /**
+   * task-0086 で a5 は差し替わった。**キャンバスの面は持たない**（決定75）——
+   * 設定の「場所」と同じことを2箇所で決められる状態だったので設定へ寄せ、
+   * その場の判断は取次が受ける（決定73。→ banto-inbox-decisions.spec.ts）。
+   */
+  it("書き込み許可はキャンバスの面を持たない（設定へ寄せた・a5改）", () => {
     const grants = new PlaceGrantStore(grantsFile);
     const places = new PlaceRegistry([createStaticPlaceProvider([{ id: "repo", path: repo }])], grants);
     const module = createWorkspaceModule(places, {}, grants);
-    const view = module.views.find((v) => v.kind === PLACE_PERMISSIONS_VIEW_KIND);
-    assert.ok(view, "place.permissions が views にある");
-    assert.equal(view!.component, "PlacePermissions");
+    assert.ok(
+      !module.views.some((v) => v.kind === "place.permissions"),
+      "place.permissions はカタログに出ない（設定と二重になる）"
+    );
   });
 });
 

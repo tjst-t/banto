@@ -517,10 +517,22 @@ export interface InboxItemView {
   why?: string;
   what: string;
   ask: string;
+  /**
+   * その場で押せる答え。
+   *
+   * **押されたときに何が起きるかは載せない**（決定73）——効かせるのはホストで、
+   * 画面は「押された」を投げ返すだけ（D5）。ここに宛先を載せると、画面から
+   * 任意の口を呼べることになる（承認を番頭から機構で分けた意味が無くなる）。
+   */
   actions: Array<{ id: string; label: string; tone?: "call" | "plain" | "quiet" }>;
   opens?: {
     threadId?: string;
     canvas?: { kind: string; params?: Record<string, unknown>; title?: string };
+    /**
+     * 設定の区画（決定75）。**開くのは画面**——設定は会話に被さる面で、
+     * キャンバスのタブではないのでホストからは動かせない。
+     */
+    settings?: { section?: string };
   };
   blocking?: number;
   createdAt: string;

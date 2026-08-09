@@ -513,6 +513,31 @@ export function App(): React.ReactElement {
     },
     [navigate]
   );
+  /**
+   * 取次の一通を開く（決定73・75）。
+   *
+   * **会話と面はホストが動かす**（片方だけ動いた状態を見せないため）。画面が受け持つのは
+   * 「どの面を出すか」だけ——設定は会話に被さる面で、キャンバスのタブではないので
+   * ホストからは動かせない。
+   */
+  const openInboxItem = useCallback(
+    (itemId: string) => {
+      const item = session.inbox.find((i) => i.id === itemId);
+      session.openInbox(itemId);
+      if (item?.opens?.settings) {
+        const section = item.opens.settings.section;
+        navigate((prev) => ({
+          face: "settings",
+          ...(prev.threadId ? { threadId: prev.threadId } : {}),
+          ...(prev.tabId ? { tabId: prev.tabId } : {}),
+          ...(section ? { section } : {}),
+        }));
+        return;
+      }
+      backToChat();
+    },
+    [session, navigate, backToChat]
+  );
   /** チャット欄の幅。境界のドラッグで変えられる（PO要望 2026-07-31）。 */
   const [chatWidth, setChatWidth] = useState(readStoredChatWidth);
   const chatPaneRef = useRef<HTMLElement>(null);
@@ -1025,10 +1050,7 @@ export function App(): React.ReactElement {
           backToChat();
           session.openView(kind);
         }}
-        onOpenInbox={(id) => {
-          session.openInbox(id);
-          backToChat();
-        }}
+        onOpenInbox={openInboxItem}
         onFace={showFace}
         onNewThread={() => {
           backToChat();
@@ -1154,11 +1176,9 @@ export function App(): React.ReactElement {
         <InboxFace
           items={session.inbox}
           onAnswer={session.answerInbox}
-          /* 開く先はホストが動かす。動いたら会話へ戻す（面が被さったままだと見えない） */
-          onOpen={(id) => {
-            session.openInbox(id);
-            backToChat();
-          }}
+          /* 開く先はホストが動かす。動いたら会話（または設定）へ移す——
+             面が被さったままだと、開いたものが見えない */
+          onOpen={openInboxItem}
           onBack={backToChat}
         />
       ) : historyOpen ? (
@@ -1252,6 +1272,7 @@ export function App(): React.ReactElement {
                   (i) => !i.resolvedAt && i.opens?.canvas?.kind === activeTab.kind
                 )}
                 onAnswer={session.answerInbox}
+                onOpen={openInboxItem}
               />
             )}
             {!activeTab ? (
@@ -1459,6 +1480,28 @@ export function App(): React.ReactElement {
               <Icon name="arrow-down" size={16} />
             </button>
           )}
+
+          {/*
+            **この会話に関わる判断待ちを、入力欄のすぐ上に出す**（PO裁定 2026-08-09）。
+            取次にあるのと同じ札で、押した結果も同じ（真実は一箇所・D3）。
+
+            会話の流れに差し込まず固定するのは、遡ると見えなくなる位置だと
+            **判断待ちを持ったまま話し続けられてしまう**から。答えると消え、
+            番頭の返事が会話の続きとして入る。
+
+            出すのは「この会話宛」と「どの会話でもない」もの——他の会話で頼まれた判断が
+            ここに出ると、文脈の無い札を読まされることになる
+          */}
+          <PendingDecisions
+            items={session.inbox.filter(
+              (i) =>
+                !i.resolvedAt &&
+                (i.opens?.threadId === undefined || i.opens.threadId === session.activeThreadId)
+            )}
+            onAnswer={session.answerInbox}
+            onOpen={openInboxItem}
+            variant="chat"
+          />
 
           {/* AI Elements の PromptInput：添付・入力欄・道具立てを1つの枠に収める */}
           <div className="chat-composer">

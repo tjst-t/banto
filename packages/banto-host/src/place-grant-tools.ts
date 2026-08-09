@@ -13,14 +13,30 @@ import { Type } from "typebox";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 import type { PlaceRegistry } from "./places.js";
 import type { PlaceGrantStore } from "./place-grants.js";
+import type { Inbox } from "./inbox.js";
 
-/** キャンバスGUI の kind。番頭が `canvas.open` で出せる（a5）。 */
-export const PLACE_PERMISSIONS_VIEW_KIND = "place.permissions";
+/** 書き込み許可を出す設定の区画（決定75）。取次の一通がここへ導く。 */
+export const PLACE_SETTINGS_SECTION = "places";
+
+/** 広すぎる範囲。積む札にそのまま出す（決定38e：押す前に見えるようにする）。 */
+const BROAD = new Set(["**", "**/*", "*"]);
+
+export interface PlaceRequestToolOptions {
+  /**
+   * 取次（決定73）。渡すと、番頭の要求がそのままPOの判断待ちとして積まれる。
+   *
+   * **これが無いと、頼んだことに PO が気づけない。** 以前は要求が帳簿に載るだけで、
+   * 番頭が `canvas.open` で許可の面を出さない限り画面に何も出なかった——
+   * 「判断を求めるものは全部ここに集まる」（決定58）から外れていた唯一の口だった。
+   */
+  inbox?: Inbox;
+}
 
 /** 番頭へ渡す Tool。要求できるだけで、決められない。 */
 export function createPlaceRequestTools(
   places: PlaceRegistry,
-  grants: PlaceGrantStore
+  grants: PlaceGrantStore,
+  options: PlaceRequestToolOptions = {}
 ): NamespacedToolDefinition[] {
   const request = defineNamespacedTool({
     name: "place.request_write",
@@ -30,7 +46,8 @@ export function createPlaceRequestTools(
       "決めるのはPOで、許可されるまで file.write は失敗し続ける。" +
       "書こうとして断られたときや、これから書く必要が分かったときに使う。" +
       "範囲は必要な分だけ狭く求めること（docs/** など）。" +
-      "頼んだら canvas.open で place.permissions を開くと、POがその場で許可できる。",
+      "頼むと**取次に判断待ちとして積まれ、POはその場のボタンで許せる**——" +
+      "面を開かせる必要はない。答えが出たらこちらへ知らせが入るので、それまで待つこと。",
     parameters: Type.Object({
       place: Type.String({ description: "対象の場所 id（place.list で分かる）" }),
       patterns: Type.Array(Type.String(), {
@@ -38,6 +55,11 @@ export function createPlaceRequestTools(
         minItems: 1,
       }),
       reason: Type.String({ description: "何のために書くのかを一言で" }),
+      threadId: Type.Optional(
+        Type.String({
+          description: "（ホストが埋める。書かないこと）判断待ちを届ける会話",
+        })
+      ),
     }),
     async execute(params) {
       // I2: 知らない場所への要求は受け付けない。承認しても効かない許可が帳簿に残る
@@ -45,6 +67,54 @@ export function createPlaceRequestTools(
       const record = grants.request(place.id, params.patterns, params.reason);
 
       const already = place.writable ?? [];
+      const posted = options.inbox
+        ? options.inbox.post({
+            // 同じ要求で札を積み増さない。帳簿側の重複排除（同じ場所・同じ範囲なら
+            // 同じ id が返る）とここが噛み合って、頼み直しても札は1枚のまま
+            key: `place-grant:${record.id}`,
+            source: { id: "place", label: "書き込み許可" },
+            kind: "番頭では決められない",
+            rule: "D1",
+            title: `${place.label} の ${record.patterns.join(", ")} に書かせてほしい`,
+            why: record.reason,
+            what:
+              already.length > 0
+                ? `いま許しているのは ${already.join(", ")} です。要求はこの外側にあります。`
+                : `${place.label}（${place.path}）は読み取り専用です。`,
+            ask: record.patterns.some((p) => BROAD.has(p))
+              ? "**この範囲はその場所の全体に及びます**（.git/ と Banto のデータ置き場を除く）。この範囲で許しますか。"
+              : "この範囲で書くことを許しますか。範囲を狭めたいときは設定から決められます。",
+            actions: [
+              {
+                id: "approve",
+                label: "この範囲で許す",
+                tone: "call",
+                // 決定73: 押されたらホストが承認の口を呼ぶ。番頭は自分では呼べないまま
+                effect: {
+                  module: "workspace",
+                  tool: "place.approve_write",
+                  args: { requestId: record.id },
+                },
+              },
+              {
+                id: "deny",
+                label: "断る",
+                tone: "quiet",
+                effect: {
+                  module: "workspace",
+                  tool: "place.deny_write",
+                  args: { requestId: record.id },
+                },
+              },
+            ],
+            opens: {
+              ...(params.threadId ? { threadId: params.threadId } : {}),
+              // 範囲を狭める・共通の許可にする、はボタンでは表せない。設定へ逃がす
+              settings: { section: PLACE_SETTINGS_SECTION },
+            },
+          })
+        : undefined;
+
       return {
         content: [
           {
@@ -52,10 +122,19 @@ export function createPlaceRequestTools(
             text:
               `${place.label} への書き込みを頼みました（${record.id}）: ${record.patterns.join(", ")}\n` +
               `**まだ書けません。** POが許可するまで file.write は失敗します。\n` +
+              (posted
+                ? "取次に判断待ちとして積みました。**答えが出るまでこの件は進めないでください**——" +
+                  "決まったら知らせが入ります。\n"
+                : "") +
               (already.length > 0 ? `現在の許可: ${already.join(", ")}` : "現在は読み取り専用です。"),
           },
         ],
-        details: { request: record, place: { id: place.id, label: place.label }, current: [...already] },
+        details: {
+          request: record,
+          place: { id: place.id, label: place.label },
+          current: [...already],
+          ...(posted ? { inboxId: posted.id } : {}),
+        },
       };
     },
   });
@@ -70,24 +149,42 @@ export function createPlaceRequestTools(
  * 足りており、**保留中の要求は PO に見せるためのもの**だから——番頭に見せると、
  * 自分の要求が処理待ちであることを根拠に催促する余地を作るだけで、判断材料は増えない。
  */
-export function createPlaceGrantAdminTools(grants: PlaceGrantStore): NamespacedToolDefinition[] {
+export function createPlaceGrantAdminTools(
+  grants: PlaceGrantStore,
+  places?: PlaceRegistry
+): NamespacedToolDefinition[] {
   const list = defineNamespacedTool({
     name: "place.list_requests",
     label: "Place: List Requests",
-    description: "書き込み許可の保留中の要求と、いま与えている許可の一覧（GUI用）。",
+    description:
+      "書き込み許可の保留中の要求・いま与えている許可・全場所共通の許可、" +
+      "および登録されている場所の一覧（GUI用）。設定画面はここ1つから描く。",
     parameters: Type.Object({}),
     async execute() {
       const requests = grants.requests();
       const pending = requests.filter((r) => r.state === "pending");
       const current = grants.grants();
+      const global = [...grants.globalWritable()];
+      // 場所の一覧も同じ口から返す。**画面が2つの口を突き合わせずに済むように**
+      // ——「いま何が書けるか」は場所の実効値で、承認の帳簿だけでは言えない
+      const registered = places
+        ? (await places.list()).map((p) => ({
+            id: p.id,
+            label: p.label,
+            path: p.path,
+            writable: [...(p.writable ?? [])],
+          }))
+        : [];
       return {
         content: [
           {
             type: "text" as const,
-            text: `保留 ${pending.length} 件 / 許可済みの場所 ${Object.keys(current).length} 件`,
+            text:
+              `保留 ${pending.length} 件 / 許可済みの場所 ${Object.keys(current).length} 件` +
+              (global.length > 0 ? ` / 共通の許可 ${global.join(", ")}` : ""),
           },
         ],
-        details: { requests, pending, grants: current },
+        details: { requests, pending, grants: current, global, places: registered },
       };
     },
   });
@@ -151,5 +248,34 @@ export function createPlaceGrantAdminTools(grants: PlaceGrantStore): NamespacedT
     },
   });
 
-  return [list, approve, deny, revoke];
+  const setGlobal = defineNamespacedTool({
+    name: "place.set_global_write",
+    label: "Place: Set Global Write",
+    description:
+      "**登録された全ての場所**で書ける範囲を差し替える（GUI用・決定74）。" +
+      "「どのリポジトリでも docs/** は書いてよい」のような、場所ごとに決める意味の無い許可のため。" +
+      "足すのではなく置き換えるので、空の配列を渡すと共通の許可は無くなる。",
+    parameters: Type.Object({
+      patterns: Type.Array(Type.String(), {
+        description: "全場所で許す範囲（glob）。空にすると共通の許可を無くす",
+      }),
+    }),
+    async execute(params) {
+      const next = grants.setGlobal(params.patterns);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              next.length === 0
+                ? "全場所共通の許可を無くしました。"
+                : `全場所共通で許す範囲: ${next.join(", ")}`,
+          },
+        ],
+        details: { global: next },
+      };
+    },
+  });
+
+  return [list, approve, deny, revoke, setGlobal];
 }

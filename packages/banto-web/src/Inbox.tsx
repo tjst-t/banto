@@ -203,15 +203,10 @@ function Letter({
       )}
 
       {/* 押した先を**先に見せる**。押してから「どこへ飛んだ？」にしない */}
-      {item.opens && (
+      {openLabel(item) && (
         <button className="ib-go" type="button" onClick={() => onOpen(item.id)}>
           <Icon name="arrow-right" size={13} />
-          {[
-            item.opens.threadId ? "この件の会話を開く" : undefined,
-            item.opens.canvas ? `キャンバスに ${item.opens.canvas.title ?? item.opens.canvas.kind} を開く` : undefined,
-          ]
-            .filter(Boolean)
-            .join(" ／ ")}
+          {openLabel(item)}
         </button>
       )}
     </article>
@@ -219,23 +214,53 @@ function Letter({
 }
 
 /**
- * いま開いている面に関わる判断待ちを、面の中にも出す。
+ * 「押すとどこへ行くか」の一行。
  *
- * 取次を開かないと気づけない、では判断が滞る——**見ているものに用があるなら、
- * 見ているところに出す**。押した結果は取次と同じ（真実は一箇所・D3）。
+ * **会話が先**（PO要望 2026-08-09）。取次に出てくる件は、たいてい元の話の続きが要る
+ * ——札だけ読んで決められるようにはしてあるが、決められないときに戻る先が要る。
+ *
+ * @param here いま既にその会話にいる（会話の横に出している）。**会話へ行く導線は出さない**
+ *   ——「この件の会話へ」を押しても何も動かないのでは、押した意図と食い違う
+ */
+function openLabel(item: InboxItemView, here = false): string | undefined {
+  const parts = [
+    item.opens?.threadId && !here ? "この件の会話へ" : undefined,
+    item.opens?.canvas
+      ? `キャンバスに ${item.opens.canvas.title ?? item.opens.canvas.kind} を開く`
+      : undefined,
+    item.opens?.settings ? "設定で細かく決める" : undefined,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" ／ ") : undefined;
+}
+
+/**
+ * 判断待ちを、**見ているところに**出す。
+ *
+ * 取次を開かないと気づけない、では判断が滞る——見ているものに用があるなら、見ている
+ * ところに出す。出す先は2つで、どちらも同じ札・同じ結果（真実は一箇所・D3）：
+ *
+ * - **面の中**：いま開いているキャンバスの面に関わる件
+ * - **会話の入力欄の上**（`variant="chat"`）：その会話に関わる件（PO裁定 2026-08-09）。
+ *   固定して出すのは、遡ると見えなくなる位置だと**判断待ちを持ったまま話し続けられる**
+ *   から——朱は「あなたの番です」の色で、流れて消えてよいものではない
  *
  * 器（App）の側で出すので、個々の面は取次を知らなくてよい（D5）。
  */
 export function PendingDecisions({
   items,
   onAnswer,
+  onOpen,
+  variant = "canvas",
 }: {
   items: InboxItemView[];
   onAnswer(itemId: string, actionId: string): void;
+  /** 会話・面・設定へ飛ぶ。渡さないと導線を出さない。 */
+  onOpen?: (itemId: string) => void;
+  variant?: "canvas" | "chat";
 }): React.ReactElement | null {
   if (items.length === 0) return null;
   return (
-    <div className="pend">
+    <div className={`pend pend--${variant}`}>
       {items.map((item) => (
         <div className="pend-card" key={item.id}>
           <div className="pend-h">
@@ -243,6 +268,7 @@ export function PendingDecisions({
             <span className="pend-seal">断</span>
             <b>あなたの判断を待っています</b>
             <span className="pend-from">
+              <Icon name={sourceIcon(item.source.id)} size={12} />
               {item.source.label}
               {item.rule && <span className="ib-rule">{item.rule}</span>}
             </span>
@@ -251,6 +277,9 @@ export function PendingDecisions({
             <b>{item.title}</b>
             {item.ask ? ` — ${item.ask}` : ""}
           </p>
+          {/* 会話の横では**起きたことも出す**。取次を開かずに決められることが要件なので、
+              三部構成のうち「経緯」だけを省く（それは目の前の会話そのものだから） */}
+          {variant === "chat" && item.what && <p className="pend-what">{item.what}</p>}
           <div className="pend-actions">
             {item.actions.map((a) => (
               <button
@@ -262,6 +291,13 @@ export function PendingDecisions({
                 {a.label}
               </button>
             ))}
+            {/* 会話の横では**その会話へ行く導線を出さない**（既にそこにいる） */}
+            {onOpen && openLabel(item, variant === "chat") && (
+              <button className="pend-go" type="button" onClick={() => onOpen(item.id)}>
+                {openLabel(item, variant === "chat")}
+                <Icon name="arrow-right" size={12} />
+              </button>
+            )}
           </div>
         </div>
       ))}

@@ -1397,10 +1397,16 @@
 .st-body .markdown p, .st-body .markdown ul, .st-body .markdown ol { margin-bottom: 11px; }
 .st-desc { margin: 0; padding: 12px 16px 0; font-size: var(--t-meta); color: var(--sumi-3); line-height: 1.7; }
 
-/* ══ 書き込み許可（place.permissions） ═════════════════════════════════════ */
+/* ══ 場所と書き込み許可（設定の区画・決定75） ══════════════════════════════
+   キャンバスの面ではなく設定の中身なので、器（ViewShell/Scroll）を持たない
+   ——設定側の内容欄がそのまま親になる */
 
-.pp-patterns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 7px; }
-.pp-tag {
+.ps-lede { margin-top: 0; }
+.ps-path { display: block; font-size: var(--t-note); color: var(--sumi-3); margin-top: 2px; }
+.ps-global { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.ps-global .cv-input { flex: 1 1 260px; font-family: var(--mono); }
+.ps-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 7px; }
+.ps-tag {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1411,24 +1417,31 @@
   border-radius: var(--r-ctl);
   background: var(--paper-2);
 }
-.pp-tag.is-broad { border-color: var(--murasaki); color: var(--murasaki); background: var(--mur-t); }
-.pp-tag button {
+/* どこから来た許可かを、札そのものに書く（決定38e：見えることが対策） */
+.ps-tag em {
+  font-family: var(--sans); font-style: normal; font-size: var(--t-note);
+  color: var(--sumi-3); padding: 0 3px;
+}
+.ps-tag.is-global { background: var(--ai-t); }
+.ps-tag.is-global em { color: var(--ai); }
+.ps-tag.is-broad { border-color: var(--murasaki); color: var(--murasaki); background: var(--mur-t); }
+.ps-tag button {
   border: none;
   background: none;
   color: inherit;
   opacity: 0.55;
   cursor: pointer;
-  font-size: var(--t-read);
   line-height: 1;
   padding: 2px 4px;
   border-radius: 5px;
+  display: inline-flex;
 }
-.pp-tag button:hover { opacity: 1; color: var(--murasaki); }
-.pp-field { display: block; margin-top: 10px; font-size: var(--t-meta); color: var(--sumi-3); }
-.pp-field .cv-input { display: block; width: 100%; margin-top: 4px; font-family: var(--mono); }
-.pp-actions { display: flex; gap: 8px; margin-top: 11px; flex-wrap: wrap; }
-.pp-history { list-style: none; margin: 0; padding: 0; font-size: var(--t-meta); }
-.pp-history li {
+.ps-tag button:hover { opacity: 1; color: var(--murasaki); }
+.ps-field { display: block; margin-top: 10px; font-size: var(--t-meta); color: var(--sumi-3); }
+.ps-field .cv-input { display: block; width: 100%; margin-top: 4px; font-family: var(--mono); }
+.ps-actions { display: flex; gap: 8px; margin-top: 11px; flex-wrap: wrap; }
+.ps-history { list-style: none; margin: 0; padding: 0; font-size: var(--t-meta); }
+.ps-history li {
   display: flex;
   align-items: baseline;
   gap: 8px;
@@ -1436,7 +1449,7 @@
   border-bottom: 1px solid var(--rule);
   flex-wrap: wrap;
 }
-.pp-history li:last-child { border-bottom: none; }
+.ps-history li:last-child { border-bottom: none; }
 
 /* ══ リポジトリ（repo.manager） ════════════════════════════════════════════ */
 

@@ -20,7 +20,7 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
 import type { ImageContent } from "@earendil-works/pi-ai";
 
-import type { Inbox } from "./inbox.js";
+import type { Inbox, InboxEffect, InboxItem } from "./inbox.js";
 import { THEME_URL_BASE, type UserThemes } from "./user-themes.js";
 import type { CanvasCatalog } from "./canvas.js";
 import { CORE_ORIGIN, type ModuleRegistry } from "./module.js";
@@ -173,6 +173,19 @@ export interface BantoHostServerOptions {
    */
   inbox?: Inbox;
   /**
+   * 取次の選択肢に付いた処理を実行する口（決定73）。
+   *
+   * **POが押したことを、その場で効かせるために要る。** 承認のような
+   * 「番頭には呼べない口」（決定29e・38c）は、番頭の次のターンに任せられない
+   * ——押したのに何も起きず、番頭に頼み直させることになる。
+   *
+   * 引くのはホストではなくモジュールの帳簿（決定27：Banto をブローカーにしない）。
+   * ここは渡された宛先をそのまま呼ぶだけで、何が起きるかは知らない（D5）。
+   *
+   * @returns 実行結果の一行。番頭への知らせに載る
+   */
+  runInboxEffect?(effect: InboxEffect): Promise<string>;
+  /**
    * 持ち込みのテーマ置き場（spec-design §6.4）。渡すと `/api/themes` で台帳を、
    * `/api/themes/<name>.css` で中身を配る。作り直さずにテーマを足せる。
    */
@@ -225,6 +238,8 @@ export class BantoHostServer {
   private readonly modules: ModuleRegistry | undefined;
   /** 取次。会話に紐づかない唯一の状態（POを待たせているもの）。 */
   private readonly inbox: Inbox | undefined;
+  /** 取次の選択肢に付いた処理を実行する口（決定73）。無ければ記録と知らせだけ。 */
+  private readonly runInboxEffect: BantoHostServerOptions["runInboxEffect"];
   private readonly clients = new Set<WebSocket>();
   /**
    * 前回の ping に pong を返した接続。死んだ接続を畳むためだけに持つ（→ `heartbeat`）。
@@ -271,6 +286,7 @@ export class BantoHostServer {
     this.catalog = options.catalog;
     this.modules = options.modules;
     this.inbox = options.inbox;
+    this.runInboxEffect = options.runInboxEffect;
     // 積まれた／答えが出たら全員へ配り直す（D3：真実は Inbox 側の一箇所）
     if (this.inbox) {
       const inbox = this.inbox;
@@ -1158,21 +1174,65 @@ export class BantoHostServer {
 
     if (message.type === "inbox_open") return;
 
-    try {
-      const answered = this.inbox.resolve(item.id, message.actionId ?? "");
-      const label = answered.actions.find((a) => a.id === answered.resolution)?.label ?? answered.resolution;
-      // 番頭へ。**POが決めたという事実**だけを渡し、解釈は番頭に任せる（D5）
-      this.broadcast({
-        type: "notice",
-        threadId: thread.id,
-        source: "system",
-        text:
-          `取次「${answered.title}」に PO が答えました：**${label}**\n` +
-          `（求めていた判断：${answered.ask}）`,
+    const action = item.actions.find((a) => a.id === message.actionId);
+    // I2: 知らない選択肢はここで断る（Inbox.resolve も断るが、先に効果を走らせないため）
+    if (!action) {
+      this.send(ws, {
+        type: "error",
+        message:
+          `"${message.actionId ?? ""}" は「${item.title}」の選択肢にありません` +
+          `（${item.actions.map((a) => a.id).join(" / ")}）`,
       });
+      return;
+    }
+
+    /**
+     * 押されたことを**先に効かせる**（決定73）。
+     *
+     * I2: 効かせられなかったら畳まない。「許した」と記録が残るのに書けないままなのが
+     * 一番たちが悪い——札は判断待ちのまま残り、POはもう一度押せる。
+     */
+    let effectText: string | undefined;
+    if (action.effect) {
+      if (!this.runInboxEffect) {
+        this.send(ws, {
+          type: "error",
+          message: `この選択肢は処理を伴いますが、このホストは実行の口を持っていません（${action.effect.module}.${action.effect.tool}）`,
+        });
+        return;
+      }
+      try {
+        effectText = await this.runInboxEffect(action.effect);
+      } catch (err) {
+        this.send(ws, { type: "error", message: `「${action.label}」を実行できません: ${String(err)}` });
+        return;
+      }
+    }
+
+    let answered: InboxItem;
+    try {
+      answered = this.inbox.resolve(item.id, action.id);
     } catch (err) {
       this.send(ws, { type: "error", message: String(err) });
+      return;
     }
+
+    /**
+     * 番頭へ。**POが決めたという事実**だけを渡し、解釈は番頭に任せる（D5）。
+     *
+     * `notify` で入れるので、記録に残り**ターンが回る**（決定73）——broadcast だけだと
+     * 画面には出るが番頭は何も知らず、POは「押したのに進まない」を見ることになる
+     * （実際にそうなっていた）。宛先はその一通が指す会話。
+     */
+    const text =
+      `取次「${answered.title}」に PO が答えました：**${action.label}**\n` +
+      `（求めていた判断：${answered.ask}）` +
+      (effectText ? `\n結果：${effectText}` : "") +
+      "\n\nこの答えを踏まえて、待っていた作業を続けてください。";
+    // 待たない：ターンの完走を待つとボタンの反応が返らない。失敗は notify 側が記録する
+    void this.notify(text, { threadId: thread.id, source: answered.source.id }).catch((err) => {
+      this.send(ws, { type: "error", message: `番頭へ答えを伝えられません: ${String(err)}` });
+    });
   }
 
   private broadcast(event: ServerEvent): void {

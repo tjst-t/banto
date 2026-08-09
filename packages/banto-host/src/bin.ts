@@ -384,7 +384,7 @@ Write everything the user sees in ${RESPONSE_LANGUAGE}: chat replies, thread nam
 # Files and git
 
 - file.* and git.* let you read the contents and history of a place.
-- file.write lets you write your own output — decision records, tickets, notes — but **only within the scope the user has granted for that place**, and every place is read-only by default. If a write is refused, ask for the scope with place.request_write, and open place.permissions with canvas.open so the user can grant it on the spot. Asking alone does not grant it.
+- file.write lets you write your own output — decision records, tickets, notes — but **only within the scope the user has granted for that place**, and every place is read-only by default. If a write is refused, ask for the scope with place.request_write. That posts a decision to the inbox and the user can grant it from a button next to the conversation — you do not need to open any view. Asking alone does not grant it: wait for the notice that says how they answered.
 - Work that changes code goes to a worker. Do not write it yourself (D10).
 - You do not have git write operations (commit, push, branch). Delegate them to a worker — what gets written stays uncommitted and goes through the user's review.
 
@@ -645,8 +645,17 @@ async function serve(options: ServeOptions): Promise<void> {
   const koboUrl = defaultKoboUrl();
   const koboModule = createKoboModule(koboUrl);
 
+  /**
+   * 取次（受け口）。**会話に紐づかない**——どの会話を見ていても、POを待たせている
+   * ものは同じ1つの列にある。記録は追記だけのイベントログで、起動時に読み直す。
+   *
+   * モジュールより先に作る（決定73）：判断を求める口を持つモジュールは、ここへ積む。
+   */
+  const inbox = new Inbox(path.join(dataDir(), "inbox.jsonl"));
+
   const modules = createModuleRegistry([
-    createWorkspaceModule(places, { protectedPaths }, grants),
+    // 決定73: 書き込み許可の要求も取次へ積む。判断を求めるものは全部1つの列に集まる
+    createWorkspaceModule(places, { protectedPaths }, grants, inbox),
     // Worker Pool は**必須の組み込みモジュール**（決定27c）。無いと番頭は職人へ委譲できず
     // D10 が構造的に満たせない。立っていなくても登録はする——`worker.*` が消えると、
     // 番頭は「工房が無い」ではなく「委譲の仕方を知らない」状態になり、自分で手を動かし始める
@@ -725,12 +734,6 @@ async function serve(options: ServeOptions): Promise<void> {
 
   const catalog = createCanvasCatalog(modules.views());
 
-  /**
-   * 取次（受け口）。**会話に紐づかない**——どの会話を見ていても、POを待たせている
-   * ものは同じ1つの列にある。記録は追記だけのイベントログで、起動時に読み直す。
-   */
-  const inbox = new Inbox(path.join(dataDir(), "inbox.jsonl"));
-
   /** 持ち込みのテーマ。置くだけで足せる（作り直しが要らない）。 */
   const userThemes = new UserThemes(path.join(dataDir(), "themes"));
 
@@ -792,8 +795,9 @@ async function serve(options: ServeOptions): Promise<void> {
     // モジュールではない。番頭は常にこれらを持つ。
     const ownTools = [
       ...createCanvasTools(canvas, catalog),
-      // 取次は会話に紐づかないが、積むのは会話の中の番頭なので Tool は各会話に配る
-      ...createInboxTools(inbox),
+      // 取次は会話に紐づかないが、積むのは会話の中の番頭なので Tool は各会話に配る。
+      // 宛先を渡すのは、積んだ札から**その話をしていた会話へ戻れる**ようにするため（決定73）
+      ...createInboxTools(inbox, { threadId }),
       ...llmTools,
       ...createThreadTools({
         threads,
@@ -855,6 +859,11 @@ async function serve(options: ServeOptions): Promise<void> {
         // ——登録すると工場がそこで職人を動かし、ブランチを切ってマージする
         if (tool.name === "kobo.register_project") {
           return guardPathArg(tool, places, "repoPath");
+        }
+        // 決定73: 書き込み許可の判断待ちは**頼んだ会話**へ返る。職人・工場と同じ機構で、
+        // 宛先は番頭に書かせずここで固定する（番頭は自分の threadId を知らない）
+        if (tool.name === "place.request_write") {
+          return bindToolArgs(tool, { threadId });
         }
         return tool;
       }),
@@ -1050,6 +1059,33 @@ async function serve(options: ServeOptions): Promise<void> {
     modules,
     // ADR-0011 決定42: 中核の Tool も HTTP に出す（中核由来のGUIの到達先）
     coreTools: llmTools,
+    /**
+     * 取次で押された選択肢を効かせる（決定73）。
+     *
+     * **引くのはモジュールの帳簿**（決定27：Banto をブローカーにしない）。呼ぶ先は
+     * 普通 `internalTools`——番頭には渡していない口を、POが押したときだけホストが呼ぶ。
+     *
+     * I2: 知らないモジュール・知らない Tool は黙って成功にしない。押した側は
+     *     効いたつもりでいるので、効かなかったことは必ず返す。
+     */
+    runInboxEffect: async (effect) => {
+      const tools =
+        effect.module === CORE_ORIGIN
+          ? llmTools
+          : (() => {
+              const owner = modules.get(effect.module);
+              if (!owner) throw new Error(`モジュール "${effect.module}" は登録されていません`);
+              return [...owner.tools, ...(owner.internalTools ?? [])];
+            })();
+      const tool = tools.find((t) => t.name === effect.tool);
+      if (!tool) {
+        throw new Error(`"${effect.module}" に Tool "${effect.tool}" はありません`);
+      }
+      const result = await tool.execute((effect.args ?? {}) as never, {
+        toolCallId: `inbox-${Date.now()}`,
+      });
+      return result.content.map((c) => c.text ?? "").join("").trim();
+    },
     // task-0048: ビルド済み UI があれば同じポートで配る（常駐させるときの形）
     ...(webDir ? { webDir } : {}),
     // 画像添付の可否判定（/api/model）。id は指定されたモデル名のまま
