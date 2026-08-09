@@ -128,11 +128,28 @@ function waitFor(
   });
 }
 
-describe("[task-0088/a1] 幹はプロジェクトに1本で、畳めない（ADR-0017 決定77）", () => {
-  it("[task-0088/a1] 幹は1本しか開けない", async () => {
-    await threads.open(TRUNK);
-    await assert.rejects(() => threads.open(TRUNK), /幹は既にあります/u);
-    assert.equal(threads.list({ kind: "trunk" }).length, 1);
+describe("[task-0088/a1] 幹はプロジェクトの単位で、畳めない（ADR-0017 決定77）", () => {
+  it("[task-0088/a1] 幹は何本でも開ける（幹＝プロジェクト・PO裁定 2026-08-09）", async () => {
+    const a = await threads.open({ kind: "trunk", title: "banto" });
+    const b = await threads.open({ kind: "trunk", title: "自宅サーバ" });
+    assert.deepEqual(threads.trunks().map((t) => t.title), ["banto", "自宅サーバ"]);
+    // 既定の宛先は開いている先頭
+    assert.equal(threads.defaultThreadId, a.id);
+    assert.equal(b.isDefault, false);
+  });
+
+  it("[task-0088/a1] 枝は「いま居る会話の幹」に付く（隣の幹へ混ざらない）", async () => {
+    const a = await threads.open({ kind: "trunk", title: "banto" });
+    const b = await threads.open({ kind: "trunk", title: "自宅サーバ" });
+    const onB = await threads.open(branchSpec("証明書が切れる"), b.id);
+
+    assert.equal(onB.parentId, b.id);
+    // 札が立つのは**その幹**だけ
+    assert.deepEqual(
+      b.transcript.filter((e) => e.role === "branch"),
+      [{ role: "branch", branchId: onB.id }]
+    );
+    assert.deepEqual(a.transcript, []);
   });
 
   it("[task-0088/a1] 幹は畳めない。宛先は常に幹（会話のタブが要らない）", async () => {

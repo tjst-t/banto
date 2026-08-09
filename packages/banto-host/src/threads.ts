@@ -1,7 +1,10 @@
 /**
- * 会話は**幹1本と枝**（ADR-0017 決定77。旧: 並列のスレッド＝ADR-0010 決定2）。
+ * 会話は**幹と枝**（ADR-0017 決定77。旧: 並列のスレッド＝ADR-0010 決定2）。
  *
  * - **幹はプロジェクトに1本で、永続。畳まない。** 会話のタブは作らない
+ *   ——**幹がプロジェクトの単位そのもの**（PO裁定 2026-08-09）。プロジェクトの帳簿を
+ *   別に持たない（D3）ので、幹が何本あるかがプロジェクトが何個あるかになる。
+ *   画面のレールに並ぶのはこの幹（見本 `13-tsuzukima-kai.html` のプロジェクト列）
  * - **枝は「還す条件」を持って生まれる。** 何が決まれば幹に還るかを書けないものは
  *   枝にしない（幹で話す）——ここが Slack との分岐点そのもの
  * - **深さは1段。** 枝の中に枝を作らない。埋没は深さに対して指数的に効く
@@ -353,48 +356,35 @@ export class ThreadRegistry {
     if (!this.store) return;
     const stored = this.store.threads();
     /**
-     * 幹を先に決める。**枝より先に読む**——枝は親を指すので、順序が逆だと親が居ない。
+     * 幹を先に読む——枝は親を指すので、順序が逆だと親が居ない。
      *
-     * 古い索引（幹と枝より前）には `kind` が無いので、ここで1本を幹に選ぶ。
-     * **並びの先頭ではなく「開いている先頭」**——古い索引は畳んだ会話から並ぶので、
-     * 先頭を取ると**畳まれた幹**ができてしまう（幹は永続・畳まない。決定77）。
-     * 1本も開いていなければ、最後に畳んだものを幹として開き直す——幹の無い店は無い。
+     * **古い索引（幹と枝より前）は、1本残らず幹として読み戻す**（PO裁定 2026-08-09）。
+     * 幹がプロジェクトの単位なので、並んでいた会話はそれぞれ独立した話であって、
+     * どれかの枝ではない——**還す条件を後から捏造しない**（決定77：書けないものは枝に
+     * しない）。開いていた／畳んでいたはそのまま残す。
      */
-    const chosenTrunk =
-      stored.find((t) => t.kind === "trunk") ??
-      stored.find((t) => t.state === "open") ??
-      [...stored].sort((a, b) => (b.closedAt ?? "").localeCompare(a.closedAt ?? ""))[0];
-    let trunkId = chosenTrunk?.id;
-    const ordered = trunkId
-      ? [...stored].sort((a, b) => (a.id === trunkId ? -1 : b.id === trunkId ? 1 : 0))
-      : stored;
+    const ordered = [...stored].sort(
+      (a, b) => (a.kind === "branch" ? 1 : 0) - (b.kind === "branch" ? 1 : 0)
+    );
     for (const saved of ordered) {
       try {
         const parts = await this.factory(saved.id, saved.sessionFile, saved.model);
-        // 古い索引（幹と枝より前）には kind が無い。**先頭を幹、残りを枝として読み戻す**
-        // ——pre-release なので移行表は作らないが、黙って会話を失わせもしない（I2）。
-        // 還す条件が無い枝は帳簿として成り立たない（決定77）ので、遡って書けない以上
-        // 「読み戻した」ことが分かる条件を入れる
-        const kind = saved.kind ?? (saved.id === trunkId ? "trunk" : "branch");
-        const legacy =
-          kind === "branch" && !saved.returnCondition
-            ? {
-                parentId: saved.parentId ?? trunkId!,
-                returnCondition: "（幹と枝より前の会話。畳むときに結論を書く）",
-                openedBy: "po" as const,
-                openReason: "ADR-0017 より前に開かれた会話",
-              }
-            : undefined;
+        // 古い索引には kind が無い。**1本残らず幹として読み戻す**（上の注記）。
+        // 還す条件の無い枝は帳簿として成り立たない（決定77）——遡って書けない以上、
+        // 枝にはしない
+        const kind = saved.kind ?? "trunk";
         const thread = new Thread({
           id: saved.id,
           title: saved.title,
           kind,
-          ...(legacy ?? {
-            ...(saved.parentId ? { parentId: saved.parentId } : {}),
-            ...(saved.returnCondition ? { returnCondition: saved.returnCondition } : {}),
-            ...(saved.openedBy ? { openedBy: saved.openedBy } : {}),
-            ...(saved.openReason ? { openReason: saved.openReason } : {}),
-          }),
+          ...(kind === "branch"
+            ? {
+                ...(saved.parentId ? { parentId: saved.parentId } : {}),
+                ...(saved.returnCondition ? { returnCondition: saved.returnCondition } : {}),
+                ...(saved.openedBy ? { openedBy: saved.openedBy } : {}),
+                ...(saved.openReason ? { openReason: saved.openReason } : {}),
+              }
+            : {}),
           ...(saved.conclusion ? { conclusion: saved.conclusion } : {}),
           session: parts.session,
           ...(parts.model ? { model: parts.model } : {}),
@@ -406,8 +396,8 @@ export class ThreadRegistry {
           ...(parts.dispose ? { dispose: parts.dispose } : {}),
         });
         thread.transcript = this.store.transcript(saved.id);
-        // **幹は畳まない**（決定77）。畳まれた記録が残っていても開いて戻す
-        if (saved.state === "closed" && thread.kind === "branch") {
+        // 畳んでいたものは畳んだまま戻す（幹も枝も。履歴で読める）
+        if (saved.state === "closed") {
           thread.state = "closed";
           if (saved.closedAt) thread.closedAt = saved.closedAt;
         }
@@ -423,7 +413,6 @@ export class ThreadRegistry {
         }
         this.attach(thread);
         this.threads.set(saved.id, thread);
-        if (thread.kind === "trunk") trunkId = thread.id;
       } catch (err) {
         console.error(`[banto] 会話 ${saved.id} を開き直せませんでした: ${String(err)}`);
       }
@@ -443,19 +432,25 @@ export class ThreadRegistry {
    * なので、過去の位置には差し込まない。
    */
   private repairTrunkCards(): void {
-    const trunk = this.trunk();
-    if (!trunk) return;
-    const carded = new Set(
-      trunk.transcript
-        .filter((e): e is Extract<TranscriptEntry, { role: "branch" }> => e.role === "branch")
-        .map((e) => e.branchId)
-    );
-    const missing = this.list({ state: "open", kind: "branch" }).filter((b) => !carded.has(b.id));
-    if (missing.length === 0) return;
-    for (const branch of missing) trunk.record({ role: "branch", branchId: branch.id });
+    let repaired = 0;
+    for (const trunk of this.trunks()) {
+      const carded = new Set(
+        trunk.transcript
+          .filter((e): e is Extract<TranscriptEntry, { role: "branch" }> => e.role === "branch")
+          .map((e) => e.branchId)
+      );
+      const missing = this.list({ state: "open", kind: "branch" }).filter(
+        (b) => b.parentId === trunk.id && !carded.has(b.id)
+      );
+      if (missing.length === 0) continue;
+      for (const branch of missing) trunk.record({ role: "branch", branchId: branch.id });
+      repaired += missing.length;
+      this.flush(trunk);
+    }
     // I2: 黙って直さない。何本立て直したかはログに出す（次の起動で 0 になるはず）
-    console.log(`[banto] 幹に札の無い枝 ${missing.length} 本に札を立てました（決定77）`);
-    this.flush(trunk);
+    if (repaired > 0) {
+      console.log(`[banto] 幹に札の無い枝 ${repaired} 本に札を立てました（決定77）`);
+    }
   }
 
   /** 記録とキャンバスの変更を保存に繋ぐ。 */
@@ -543,21 +538,23 @@ export class ThreadRegistry {
    * @param from 誰から開いたか（枝のとき必須）。枝からは開けない
    */
   async open(spec: ThreadSpec, from?: string): Promise<Thread> {
-    if (spec.kind === "trunk" && this.trunk()) {
-      // I2: 2本目の幹を黙って作らない。幹はプロジェクトに1本（決定77）
-      throw new Error("幹は既にあります（幹はプロジェクトに1本・決定77）");
-    }
+    /**
+     * 枝の親になる幹。**「いま居る会話の幹」**を指す（PO裁定 2026-08-09）——
+     * 幹が複数あるので「その幹」を決めずに枝は開けない。`from` を省いたら既定の幹。
+     */
+    let parentTrunk: Thread | undefined;
     if (spec.kind === "branch") {
-      const parent = from === undefined ? undefined : this.threads.get(from);
-      if (from !== undefined && !parent) throw new Error(`unknown thread: ${from}`);
+      const from_ = from === undefined ? undefined : this.threads.get(from);
+      if (from !== undefined && !from_) throw new Error(`unknown thread: ${from}`);
       // 実行時の縛り。**深さ1段**（決定77）——埋没は深さに対して指数的に効く
-      if (parent?.kind === "branch") {
+      if (from_?.kind === "branch") {
         throw new Error(
           "枝の中に枝は開けません（深さは1段・決定77）。" +
             "この枝を畳んで幹へ還してから開き直してください"
         );
       }
-      if (!this.trunk()) throw new Error("幹がありません。先に幹を開いてください");
+      parentTrunk = from_ ?? this.trunk();
+      if (!parentTrunk) throw new Error("幹がありません。先に幹を開いてください");
     }
 
     const id = `thread-${++this.counter}`;
@@ -569,7 +566,7 @@ export class ThreadRegistry {
       kind: spec.kind,
       ...(spec.kind === "branch"
         ? {
-            parentId: this.trunk()!.id,
+            parentId: parentTrunk!.id,
             returnCondition: spec.returnCondition,
             openedBy: spec.openedBy,
             openReason: spec.reason,
@@ -589,21 +586,30 @@ export class ThreadRegistry {
     this.refreshDefault();
     this.persistIndex(thread);
     // 幹の札。**開いた1行**だけを幹に流す（枝の中身は流さない・決定77）
-    if (thread.kind === "branch") {
-      const trunk = this.trunk()!;
-      trunk.record({ role: "branch", branchId: thread.id });
-      this.onTrunkCard?.(trunk, thread);
+    if (thread.kind === "branch" && parentTrunk) {
+      parentTrunk.record({ role: "branch", branchId: thread.id });
+      this.onTrunkCard?.(parentTrunk, thread);
     }
     this.emit();
     return thread;
   }
 
   /**
-   * 幹（プロジェクトに1本）。無ければ undefined——起動直後の一瞬だけ。
+   * 既定の幹（`threadId` 省略時の宛先）。**開いている先頭**。
+   * 1本も無ければ undefined——起動直後の一瞬だけ。
    */
   trunk(): Thread | undefined {
-    for (const thread of this.threads.values()) if (thread.kind === "trunk") return thread;
-    return undefined;
+    return this.list({ state: "open", kind: "trunk" })[0];
+  }
+
+  /**
+   * 幹の一覧（＝プロジェクトの一覧。PO裁定 2026-08-09）。
+   *
+   * **プロジェクトの帳簿を別に持たない**（D3）——幹がプロジェクトの単位そのものなので、
+   * ここが画面のレールに並ぶ列になる。畳んだ幹（読み戻した過去の会話）は履歴へ。
+   */
+  trunks(filter: { state?: "open" | "closed" } = {}): Thread[] {
+    return this.list({ ...filter, kind: "trunk" });
   }
 
   /**
@@ -683,7 +689,7 @@ export class ThreadRegistry {
   branchVisibility(hasNotice: (branchId: string) => boolean = () => false): Array<{
     branchId: string;
     title: string;
-    /** ①幹の札（`branch` の行が幹にある） */
+    /** ①幹の札（`branch` の行が親の幹にある） */
     trunkCard: boolean;
     /** ②横断の通知 */
     notice: boolean;
@@ -691,14 +697,15 @@ export class ThreadRegistry {
     rail: boolean;
     visible: boolean;
   }> {
-    const trunk = this.trunk();
-    const carded = new Set(
-      (trunk?.transcript ?? [])
-        .filter((e): e is Extract<TranscriptEntry, { role: "branch" }> => e.role === "branch")
-        .map((e) => e.branchId)
-    );
+    // **どの幹の札か**まで見る（幹は複数ある）。他の幹に立っていても、その枝は埋没する
+    const carded = new Set<string>();
+    for (const trunk of this.trunks()) {
+      for (const e of trunk.transcript) {
+        if (e.role === "branch") carded.add(`${trunk.id}\u0000${e.branchId}`);
+      }
+    }
     return this.list({ state: "open", kind: "branch" }).map((branch) => {
-      const trunkCard = carded.has(branch.id);
+      const trunkCard = carded.has(`${branch.parentId ?? ""}\u0000${branch.id}`);
       const notice = hasNotice(branch.id);
       // 開いている枝は帳簿に載っている＝レールの点として必ず出る（画面はこの一覧を描く）
       const rail = true;

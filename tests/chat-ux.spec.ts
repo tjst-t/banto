@@ -42,7 +42,15 @@ const thread = (
   isDefault,
   // ADR-0017 決定77: 既定の宛先＝幹。それ以外は枝（還す条件を持って生まれる）
   kind: isDefault ? "trunk" : "branch",
-  ...(isDefault ? {} : { returnCondition: `${title} の結論が出たら`, openedBy: "po", openReason: "往復が続く" }),
+  ...(isDefault
+    ? {}
+    : {
+        // 枝は必ず親（幹）を指す。**指さない枝はレールから消える＝埋没する**（決定77）
+        parentId: "t-1",
+        returnCondition: `${title} の結論が出たら`,
+        openedBy: "po",
+        openReason: "往復が続く",
+      }),
   state: "open",
   streaming: false,
 });
@@ -501,6 +509,7 @@ test.describe("枝を開く（ADR-0017 決定77）", () => {
       .poll(() => host.received.find((m) => m["type"] === "thread_open"))
       .toEqual({
         type: "thread_open",
+        threadId: THREAD_ID,
         title: "認証の設計",
         returnCondition: "方式が決まったら",
         reason: "往復が続く",

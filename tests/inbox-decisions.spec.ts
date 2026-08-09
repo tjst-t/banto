@@ -35,7 +35,15 @@ const thread = (threadId: string, title: string, isDefault: boolean): Record<str
   isDefault,
   // ADR-0017 決定77: 既定の宛先＝幹。それ以外は枝（還す条件を持って生まれる）
   kind: isDefault ? "trunk" : "branch",
-  ...(isDefault ? {} : { returnCondition: `${title} の結論が出たら`, openedBy: "po", openReason: "往復が続く" }),
+  ...(isDefault
+    ? {}
+    : {
+        // 枝は必ず親（幹）を指す。**指さない枝はレールから消える＝埋没する**（決定77）
+        parentId: "t-1",
+        returnCondition: `${title} の結論が出たら`,
+        openedBy: "po",
+        openReason: "往復が続く",
+      }),
   state: "open",
   streaming: false,
 });

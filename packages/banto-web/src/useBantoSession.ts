@@ -91,14 +91,14 @@ export interface BantoSession {
   /** 登録されているモジュールと到達先（GUI を持たないものも含む）。 */
   modules: ModuleEndpointView[];
   /**
-   * 幹（ADR-0017 決定77）。プロジェクトに1本で、畳まない。
-   * ホストが立ち上がりきる前だけ undefined——空状態として扱う。
+   * 幹の一覧（＝**プロジェクトの一覧**。PO裁定 2026-08-09）。レールに並ぶ列。
+   * ホストが立ち上がりきる前だけ空——空状態として扱う。
    */
-  trunk: ThreadView | undefined;
+  trunks: ThreadView[];
   /** 開いている枝。**レールの点**として全部出る（埋没しない不変条件の③）。 */
   branches: ThreadView[];
-  /** 畳んだ枝（履歴に並ぶ）。新しく畳んだものが先頭。 */
-  mergedBranches: ThreadView[];
+  /** 畳んだ会話（履歴に並ぶ。幹・枝を問わない）。新しく畳んだものが先頭。 */
+  closedThreads: ThreadView[];
   /** 会話を1本引く（枝の札は参照なので、描くたびにここから引き直す）。 */
   threadOf(threadId: string): ThreadView | undefined;
   /** いま見ている会話（幹または枝）。 */
@@ -141,8 +141,14 @@ export interface BantoSession {
   switchThread(threadId: string): void;
   /**
    * 枝を開く（決定77）。**還す条件と理由は必須**——書けないものは枝にしない。
+   * どの幹の枝になるかは `threadId`（いま居る会話）で決まる。
    */
-  openBranch(spec: { title: string; returnCondition: string; reason: string }): void;
+  openBranch(spec: {
+    threadId?: string;
+    title: string;
+    returnCondition: string;
+    reason: string;
+  }): void;
   /** 枝を畳んで幹へ還す（決定77）。結論は必須。 */
   mergeBranch(threadId: string, conclusion: string): void;
   /** 畳んだ枝を開き直す。 */
@@ -567,17 +573,21 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
     return true;
   }, []);
 
-  /** 幹。**プロジェクトに1本**（決定77）。ホストが立ち上がりきる前だけ undefined */
-  const trunk = useMemo(() => allThreads.find((t) => t.kind === "trunk"), [allThreads]);
+  /** 幹＝プロジェクト（PO裁定 2026-08-09）。開いているものがレールに並ぶ */
+  const trunks = useMemo(
+    () => allThreads.filter((t) => t.kind === "trunk" && t.state === "open"),
+    [allThreads]
+  );
   /** 開いている枝。レールの点として全部出る（埋没しない不変条件の③） */
   const branches = useMemo(
     () => allThreads.filter((t) => t.kind === "branch" && t.state === "open"),
     [allThreads]
   );
-  const mergedBranches = useMemo(
+  /** 畳んだ会話。**幹・枝を問わない**——履歴は「畳んだもの」の置き場（決定30c） */
+  const closedThreads = useMemo(
     () =>
       allThreads
-        .filter((t) => t.kind === "branch" && t.state === "closed")
+        .filter((t) => t.state === "closed")
         .sort((a, b) => (b.closedAt ?? "").localeCompare(a.closedAt ?? "")),
     [allThreads]
   );
@@ -672,10 +682,12 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
    * 枝を開いた瞬間に幹が空になる。
    */
   useEffect(() => {
-    if (!trunk) return;
-    if (byThread[trunk.threadId]?.historyLoaded) return;
-    ensureHistory(trunk.threadId);
-  }, [trunk, byThread, ensureHistory]);
+    const focused = activeThreadId ? allThreads.find((t) => t.threadId === activeThreadId) : undefined;
+    const trunkId = focused?.kind === "branch" ? focused.parentId : focused?.threadId;
+    if (!trunkId) return;
+    if (byThread[trunkId]?.historyLoaded) return;
+    ensureHistory(trunkId);
+  }, [activeThreadId, allThreads, byThread, ensureHistory]);
 
   const send = useCallback(
     (threadId: string, text: string, attachments?: Attachment[]) => {
@@ -761,7 +773,7 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
    * 開いた枝へは自動で移る（押した意図に合わせる）。
    */
   const openBranch = useCallback(
-    (spec: { title: string; returnCondition: string; reason: string }) => {
+    (spec: { threadId?: string; title: string; returnCondition: string; reason: string }) => {
       followNewThread.current = true;
       post({ type: "thread_open", ...spec });
     },
@@ -798,9 +810,9 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
       tools,
       catalog,
       modules,
-      trunk,
+      trunks,
       branches,
-      mergedBranches,
+      closedThreads,
       threadOf,
       activeThreadId,
       tabs: active.tabs,
@@ -839,9 +851,9 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
       tools,
       catalog,
       modules,
-      trunk,
+      trunks,
       branches,
-      mergedBranches,
+      closedThreads,
       threadOf,
       activeThreadId,
       active,

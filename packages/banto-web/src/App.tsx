@@ -203,12 +203,22 @@ export function App(): React.ReactElement {
    * どこにも居ないという状態は作らない（決定77）。
    */
   const focused = useMemo(
-    () => (view.threadId ? session.threadOf(view.threadId) : undefined) ?? session.trunk,
+    () => (view.threadId ? session.threadOf(view.threadId) : undefined) ?? session.trunks[0],
     [view.threadId, session]
   );
   /** 枝を見ているか。幹は畳めないので、枝のときだけ2枚重なる。 */
   const branch = focused?.kind === "branch" ? focused : undefined;
-  const trunk = session.trunk;
+  /**
+   * いま居るプロジェクトの幹（PO裁定 2026-08-09：幹＝プロジェクト）。
+   * 枝を見ているなら**その枝の親**——他の幹の枝がレールに混ざらないようにする。
+   */
+  const trunk = useMemo(
+    () =>
+      (branch?.parentId ? session.threadOf(branch.parentId) : undefined) ??
+      (focused?.kind === "trunk" ? focused : undefined) ??
+      session.trunks[0],
+    [branch, focused, session]
+  );
 
   /** 会話を移る（枝の札・レールの点・取次から）。 */
   const openThread = useCallback(
@@ -389,17 +399,20 @@ export function App(): React.ReactElement {
   const hiddenTabIds = tabOverflow.hiddenIds;
   const hiddenTabs = session.tabs.filter((t) => hiddenTabIds.has(t.id));
 
-  /** その会話に関わる判断待ち（決定80：会話の流れの中に立つ）。 */
+  /**
+   * その会話に関わる判断待ち（決定80：会話の流れの中に立つ）。
+   * **どの会話でもない件は、いま居る幹に出す**——文脈の無い札を隣の幹へ配らない。
+   */
   const pendingFor = useCallback(
     (threadId: string | undefined) =>
       session.inbox.filter(
         (i) =>
           !i.resolvedAt &&
           (i.opens?.threadId === undefined
-            ? threadId === session.trunk?.threadId
+            ? threadId === trunk?.threadId
             : i.opens.threadId === threadId)
       ),
-    [session.inbox, session.trunk]
+    [session.inbox, trunk]
   );
 
   /**
@@ -410,7 +423,20 @@ export function App(): React.ReactElement {
    */
   const held = useMemo(() => {
     const order = { turn: 0, stop: 1, run: 2 } as const;
-    const items = session.branches.map((b) => {
+    /**
+     * **いま居る幹の枝だけ**（幹＝プロジェクト）。隣のプロジェクトの枝は混ぜない。
+     *
+     * I2: **親を引けない枝は消さない**——消すとレールの点から外れ、埋没しない不変条件
+     * （決定77）が画面の側で破れる。行き場の無い枝は既定の幹の下に出す。
+     */
+    const known = new Set(session.trunks.map((t) => t.threadId));
+    const fallback = trunk?.threadId === session.trunks[0]?.threadId;
+    const mine = session.branches.filter((b) =>
+      b.parentId !== undefined && known.has(b.parentId)
+        ? b.parentId === trunk?.threadId
+        : fallback
+    );
+    const items = mine.map((b) => {
       const turn = session.inbox.some((i) => !i.resolvedAt && i.opens?.threadId === b.threadId);
       return {
         threadId: b.threadId,
@@ -420,7 +446,7 @@ export function App(): React.ReactElement {
       };
     });
     return items.sort((a, b) => order[a.state] - order[b.state]);
-  }, [session.branches, session.inbox]);
+  }, [session.branches, session.inbox, trunk]);
   /** レールに点で出すのは先頭 6 本。溢れた分は「+N」から被さる面で見る。 */
   const heldShown = held.slice(0, 6);
   const heldRest = held.length - heldShown.length;
@@ -527,7 +553,7 @@ export function App(): React.ReactElement {
         open={palette.open}
         onClose={() => palette.setOpen(false)}
         threads={trunk ? [trunk, ...session.branches] : session.branches}
-        closedThreads={session.mergedBranches}
+        closedThreads={session.closedThreads}
         catalog={openableCatalog}
         inbox={session.inbox}
         onOpenThread={(id) => openThread(id, { focus: true })}
@@ -568,19 +594,35 @@ export function App(): React.ReactElement {
 
         <div className="rail-sep" />
 
-        {/* 幹。**畳めないので閉じる口は無い**（決定77） */}
-        {trunk && (
-          <button
-            className={`rail-trunk ${!branch ? "is-active" : ""}`}
-            type="button"
-            onClick={() => openThread(trunk.threadId, { focus: true })}
-            title={`${trunk.title}（プロジェクトの幹）`}
-            data-key="1"
-          >
-            <Icon name="home" size={16} />
-            <span className="rail-label">幹</span>
-          </button>
-        )}
+        {/*
+          幹＝**プロジェクト**（PO裁定 2026-08-09）。ここがレールの列そのもので、
+          プロジェクトの帳簿は別に持たない（D3）。**畳めないので閉じる口は無い**（決定77）。
+          枝を持つ幹には点を添える——押さなくても、どの幹に用があるか分かる
+        */}
+        {session.trunks.map((t, i) => {
+          const turn = session.inbox.some(
+            (item) =>
+              !item.resolvedAt &&
+              (item.opens?.threadId === t.threadId ||
+                session.branches.some(
+                  (b) => b.parentId === t.threadId && b.threadId === item.opens?.threadId
+                ))
+          );
+          return (
+            <button
+              key={t.threadId}
+              className={`rail-trunk ${trunk?.threadId === t.threadId ? "is-active" : ""}`}
+              type="button"
+              onClick={() => openThread(t.threadId, { focus: true })}
+              title={`${t.title}（プロジェクトの幹）`}
+              {...(i < 9 ? { "data-key": String(i + 1) } : {})}
+            >
+              <Icon name="home" size={16} />
+              <span className="rail-label">{t.title}</span>
+              {turn && <span className="rail-bell" aria-label="あなたの番" />}
+            </button>
+          );
+        })}
 
         {/* 抱えているもの。**点で並ぶので、押さなくても本数と状態が分かる** */}
         <div className="rail-hold">
@@ -725,7 +767,7 @@ export function App(): React.ReactElement {
         />
       ) : historyOpen ? (
         <ThreadHistory
-          closedThreads={session.mergedBranches}
+          closedThreads={session.closedThreads}
           chatOf={session.chatOf}
           ensureHistory={session.ensureHistory}
           historyLoaded={session.historyLoaded}
@@ -897,7 +939,8 @@ export function App(): React.ReactElement {
         <Modal title="枝を開く" onClose={() => setNewBranch(false)}>
           <NewBranchForm
             onOpen={(spec) => {
-              session.openBranch(spec);
+              // どの幹の枝になるかは**いま居るプロジェクト**で決まる
+              session.openBranch({ ...(trunk ? { threadId: trunk.threadId } : {}), ...spec });
               setNewBranch(false);
             }}
             onCancel={() => setNewBranch(false)}

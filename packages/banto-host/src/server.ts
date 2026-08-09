@@ -735,14 +735,18 @@ export class BantoHostServer {
     // **還す条件と理由は必須**——帳簿が拒むので、ここで補わない（I2）
     if (message?.type === "thread_open") {
       try {
-        await this.threads.open({
-          kind: "branch",
-          title: message.title,
-          returnCondition: message.returnCondition,
-          reason: message.reason,
-          // POが画面から開いた（決定77：番頭の判断でも PO の指示でも開く）
-          openedBy: "po",
-        });
+        await this.threads.open(
+          {
+            kind: "branch",
+            title: message.title,
+            returnCondition: message.returnCondition,
+            reason: message.reason,
+            // POが画面から開いた（決定77：番頭の判断でも PO の指示でも開く）
+            openedBy: "po",
+          },
+          // どの幹の枝かは**POが居た会話**で決まる（幹は複数ある）
+          message.threadId
+        );
       } catch (err) {
         this.send(ws, { type: "error", message: String(err) });
       }

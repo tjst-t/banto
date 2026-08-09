@@ -102,8 +102,13 @@ export interface CanvasOpenMessage extends ThreadTarget {
  * `returnCondition` と `reason` は**必須**。何が決まれば幹に還るかを書けないものは
  * 枝にしない（幹で話す）——ここが Slack との分岐点そのもの。
  */
-export interface ThreadOpenMessage {
+export interface ThreadOpenMessage extends ThreadTarget {
   type: "thread_open";
+  /**
+   * どの会話から開くか。**その会話の幹が親になる**（幹は複数あるので、省くと既定の幹）。
+   * 枝を指すとエラー（深さは1段）。
+   */
+  threadId?: string;
   title: string;
   /** 還す条件。何が決まれば幹に還るか。 */
   returnCondition: string;
@@ -231,8 +236,9 @@ export interface ThreadView {
   threadId: string;
   title: string;
   /**
-   * 幹か枝か（ADR-0017 決定77）。**幹はプロジェクトに1本で永続・畳まない**。
-   * 枝は還す条件を持って生まれ、畳むと結論1行が幹に還る。
+   * 幹か枝か（ADR-0017 決定77）。**幹はプロジェクトの単位そのもの**（PO裁定 2026-08-09）
+   * ——レールに並ぶ列がこれで、プロジェクトの帳簿は別に持たない（D3）。
+   * 枝は還す条件を持って生まれ、畳むと結論1行がその幹に還る。
    */
   kind: "trunk" | "branch";
   /** 枝の親。**常に幹**（深さは1段。枝の中に枝は作らない）。 */

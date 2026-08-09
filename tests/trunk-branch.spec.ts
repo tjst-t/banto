@@ -295,6 +295,9 @@ test.describe("[task-0088/a1] 幹はプロジェクトに1本で、畳めない"
     await open(page);
     await expect(page.locator(".rail-hold .hold")).toHaveCount(1);
     await expect(page.locator(".rail-hold .hold")).toContainText("間欠的に落ちる試験");
+    // 幹（＝プロジェクト）はレールの列。1つだけ並んでいる
+    await expect(page.locator(".rail-trunk")).toHaveCount(1);
+    await expect(page.locator(".rail-trunk")).toContainText("banto");
   });
 });
 
@@ -355,7 +358,11 @@ test.describe("[task-0088/a2] 枝は還す条件が無いと開けない", () =>
     await submit.click();
     await expect
       .poll(() => host.received.find((m) => m["type"] === "thread_open"))
-      .toMatchObject({ returnCondition: "500ms を切ったら", reason: "職人を立てて詰める" });
+      .toMatchObject({
+        threadId: TRUNK,
+        returnCondition: "500ms を切ったら",
+        reason: "職人を立てて詰める",
+      });
   });
 });
 
