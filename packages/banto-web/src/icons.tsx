@@ -14,7 +14,7 @@ export type IconName =
   // 器・移動
   | "chevron-down" | "chevron-right" | "chevron-left" | "arrow-right"
   | "arrow-down" | "arrow-up" | "arrow-left" | "external" | "enter" | "stop"
-  | "close" | "plus" | "minus" | "search" | "copy" | "check" | "dot"
+  | "close" | "plus" | "minus" | "search" | "copy" | "check" | "dot" | "more"
   // 面（キャンバスに開くもの）
   | "chat" | "history" | "settings" | "inbox" | "file" | "file-text" | "folder"
   | "image" | "table" | "archive" | "binary" | "graph" | "home" | "memory"
@@ -46,6 +46,8 @@ const SHAPES: Record<IconName, React.ReactNode> = {
   copy: <><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a1 1 0 011-1h9" /></>,
   check: <path d="M5 13l4.5 4.5L19 7" />,
   dot: <circle cx="12" cy="12" r="3.5" fill="currentColor" stroke="none" />,
+  // そのほか（畳んだ操作）。1つの絵として持たせる——点を3つ並べて置くと器から溢れる
+  more: <><circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" /><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none" /></>,
 
   chat: <path d="M20 12a7 7 0 01-7 7H8l-4 3v-5.5A7 7 0 018 5h5a7 7 0 017 7z" />,
   history: <><circle cx="12" cy="12" r="8.5" /><path d="M12 7v5.2l3.2 2" /></>,

@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ファイル閲覧 v2 — 狭い画面の縦の予算（spec-file-browser 2026-08-08）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=IBM+Plex+Mono:wght@400;600&family=Shippori+Mincho:wght@500&display=swap" rel="stylesheet">
+<style>
+/* トークンは packages/banto-web/src/theme/tokens.css（和紙・明）をそのまま引く。
+   ここで新しい値を作らない（spec-design 第一原理）。 */
+:root{
+  --paper:#EFEBE1; --paper-1:#F8F6F0; --paper-2:#E4DFD2; --rule:#DCD6C7;
+  --sumi:#191712; --sumi-2:#4A463D; --sumi-3:#8A8474;
+  --ai:#1E3A5F; --ai-t:#E3E7EE; --shu:#B03A26; --shu-t:#F5E4DF;
+  --murasaki:#5A3E63; --mur-t:#E4DDDF; --kohaku:#A05A12; --koh-t:#F7EDDD;
+  --koke:#4A6B45; --koke-t:#E7EDE5; --code-bg:#26221A; --code-ink:#E4DFD2;
+  --shadow-rest:0 1px 2px rgba(25,23,18,.06); --shadow-pop:0 8px 24px rgba(25,23,18,.14);
+  --t-note:11px; --t-meta:12px; --t-body:13px; --t-read:15px; --t-head:19px; --t-title:26px;
+  --ui:"Zen Kaku Gothic New","Hiragino Sans","Noto Sans JP",system-ui,sans-serif;
+  --sho:"Shippori Mincho","Hiragino Mincho ProN",serif;
+  --mono:"IBM Plex Mono","SFMono-Regular",Menlo,monospace;
+  --r-seal:2px; --r-ctl:6px; --r-face:10px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--paper);color:var(--sumi);font-family:var(--ui);font-size:var(--t-body);
+  line-height:1.75;padding:32px 24px 64px}
+.wrap{max-width:1180px;margin:0 auto}
+
+h1{font-size:var(--t-title);font-weight:700;letter-spacing:.02em;margin-bottom:4px}
+.lede{color:var(--sumi-2);font-size:var(--t-read);max-width:70ch;margin-bottom:8px}
+.meta{color:var(--sumi-3);font-size:var(--t-meta);font-family:var(--mono);margin-bottom:32px}
+h2{font-size:var(--t-head);font-weight:700;margin:40px 0 4px;padding-top:20px;border-top:1px solid var(--rule)}
+h2:first-of-type{border-top:none;padding-top:0}
+h2 .n{font-family:var(--mono);color:var(--sumi-3);font-size:var(--t-meta);margin-right:8px}
+.note{color:var(--sumi-2);max-width:74ch;margin-bottom:20px}
+.note b{font-weight:700;color:var(--sumi)}
+
+/* ── 端末の枠。390×780 の実寸 ───────────────────────────────── */
+.row{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start}
+.fig{flex:none}
+.cap{font-size:var(--t-meta);color:var(--sumi-3);margin-bottom:8px;font-family:var(--mono)}
+.cap b{font-family:var(--ui);color:var(--sumi);font-weight:700;font-size:var(--t-body)}
+.cap.bad b{color:var(--murasaki)}
+.cap.good b{color:var(--koke)}
+.phone{width:390px;height:780px;background:var(--paper);border-radius:var(--r-face);
+  box-shadow:var(--shadow-pop);overflow:hidden;display:flex;flex-direction:column;position:relative}
+
+/* 屋号の帯 */
+.topbar{flex:none;height:52px;display:flex;align-items:center;gap:8px;padding:0 12px;background:var(--paper)}
+.topbar.gone{display:none}
+.logo{font-family:var(--sho);font-size:var(--t-read);font-weight:500;letter-spacing:.12em;color:var(--ai)}
+.logo small{display:block;font-family:var(--ui);font-size:8px;letter-spacing:.28em;color:var(--sumi-3)}
+.tbtn{width:30px;height:30px;border-radius:var(--r-ctl);display:grid;place-items:center;color:var(--sumi-3)}
+.tspacer{flex:1}
+.conn{font-size:var(--t-note);color:var(--koke)}
+
+/* タブ列 */
+.tabbar{flex:none;height:45px;display:flex;align-items:flex-end;gap:4px;padding:0 12px;background:var(--paper)}
+.tab{height:34px;display:flex;align-items:center;gap:6px;padding:0 12px;border-radius:var(--r-ctl) var(--r-ctl) 0 0;
+  background:var(--paper-1);color:var(--sumi);font-weight:700;font-size:var(--t-body)}
+.tab .x{color:var(--sumi-3);font-size:var(--t-meta)}
+.tabadd{margin-left:auto;width:30px;height:30px;display:grid;place-items:center;color:var(--sumi-3);
+  background:var(--paper-2);border-radius:var(--r-ctl)}
+
+/* 面（キャンバスの器） */
+.face{flex:1;min-height:0;margin:0 12px 12px;background:var(--paper-1);
+  border-radius:0 var(--r-face) var(--r-face) var(--r-face);display:flex;flex-direction:column;overflow:hidden}
+
+/* 下端の切替 */
+.footer{flex:none;height:56px;display:flex;background:var(--paper);border-top:1px solid var(--rule)}
+.fbtn{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;color:var(--sumi-3);font-size:var(--t-body)}
+.fbtn.on{color:var(--ai);font-weight:700}
+
+/* ── 面の中：道具立て ────────────────────────────────────── */
+.bar{flex:none;display:flex;align-items:center;gap:8px;padding:4px 8px;min-height:46px}
+.bar.b2{border-bottom:1px solid var(--rule)}
+.place{display:inline-flex;align-items:center;gap:6px;height:38px;padding:0 10px;background:var(--paper-2);
+  border-radius:var(--r-ctl);font-size:var(--t-body);font-weight:700;flex:0 1 auto;max-width:40%;
+  overflow:hidden;white-space:nowrap}
+.place .pin{color:var(--sumi-3);font-size:var(--t-note);font-weight:400}
+.place .car{color:var(--sumi-3);font-size:var(--t-note)}
+.crumbs{display:flex;align-items:center;gap:2px;flex:1;min-width:0;font-family:var(--mono);font-size:var(--t-meta)}
+.crumb{height:38px;display:inline-flex;align-items:center;padding:0 8px;border-radius:var(--r-ctl);color:var(--sumi-3);white-space:nowrap}
+.crumb.home{width:38px;justify-content:center;background:var(--paper-2);padding:0}
+.crumb.more{background:var(--paper-2);font-weight:700;color:var(--sumi-2)}
+.crumb.last{color:var(--sumi);font-weight:700}
+.sep{color:var(--sumi-3);opacity:.5}
+.field{flex:1;min-width:0;display:flex;align-items:center;gap:8px;height:38px;padding:0 10px;
+  background:var(--paper-2);border-radius:var(--r-ctl);color:var(--sumi-3);font-size:var(--t-read);
+  overflow:hidden;white-space:nowrap}
+.chip{flex:none;height:38px;min-width:38px;padding:0 10px;display:inline-flex;align-items:center;
+  justify-content:center;gap:4px;background:var(--paper-2);border-radius:var(--r-ctl);
+  font-size:var(--t-meta);color:var(--sumi-2)}
+.chip.on{background:var(--ai-t);color:var(--ai);font-weight:700}
+
+/* ── 一覧 ───────────────────────────────────────────── */
+.list{flex:1;min-height:0;overflow:hidden;padding:4px 6px}
+.ent{display:flex;align-items:center;gap:10px;height:44px;padding:0 8px;border-radius:7px;font-size:var(--t-read)}
+.ent .ico{flex:none;color:var(--sumi-3);width:18px;text-align:center}
+.ent .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ent.dir .nm{font-weight:700}
+.ent .sz{flex:none;font-family:var(--mono);font-size:var(--t-meta);color:var(--sumi-3)}
+.ent.sel{background:var(--ai-t);color:var(--ai)}
+.ent.sel .sz{color:var(--ai);opacity:.75}
+
+/* ── 中身 ───────────────────────────────────────────── */
+.head{flex:none;display:flex;align-items:center;gap:8px;height:46px;padding:0 8px;
+  border-bottom:1px solid var(--rule);background:var(--paper-1)}
+.back{flex:none;height:38px;display:inline-flex;align-items:center;gap:4px;padding:0 10px;
+  background:var(--paper-2);border-radius:var(--r-ctl);color:var(--ai);font-size:var(--t-body)}
+.fname{flex:1;min-width:0;font-family:var(--mono);font-size:var(--t-body);font-weight:600;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:ltr}
+.seg{flex:none;display:inline-flex;background:var(--paper-2);border-radius:var(--r-ctl);overflow:hidden}
+.seg span{height:38px;display:inline-flex;align-items:center;padding:0 10px;font-size:var(--t-meta);color:var(--sumi-3)}
+.seg span.on{background:var(--ai-t);color:var(--ai);font-weight:700}
+.dots{flex:none;width:38px;height:38px;display:grid;place-items:center;background:var(--paper-2);
+  border-radius:var(--r-ctl);color:var(--sumi-2);font-weight:700}
+.body{flex:1;min-height:0;overflow:hidden;padding:14px 16px;position:relative}
+.body h3{font-size:var(--t-head);font-weight:700;margin:0 0 8px}
+.body h4{font-size:var(--t-read);font-weight:700;margin:14px 0 6px}
+.body p{font-size:var(--t-read);line-height:1.85;margin-bottom:10px}
+.code{flex:1;min-height:0;overflow:hidden;background:var(--code-bg);color:var(--code-ink);
+  font-family:var(--mono);font-size:var(--t-read);line-height:1.6;padding:8px 0}
+.code .ln{display:block;padding:0 12px;white-space:pre-wrap;overflow-wrap:anywhere}
+.code .no{display:inline-block;width:2.2em;color:var(--sumi-3);user-select:none;text-align:right;margin-right:10px}
+.code .hl{background:var(--koh-t);color:var(--sumi);box-shadow:inset 3px 0 0 0 var(--kohaku)}
+.code .k{color:#C7A0DC}.code .s{color:#9FC08A}.code .c{color:#8A8474}
+
+.notebar{flex:none;display:flex;align-items:center;gap:8px;margin:8px;padding:8px 10px;
+  background:var(--koh-t);border-radius:var(--r-ctl);font-size:var(--t-meta);color:var(--sumi-2)}
+.notebar .lnk{margin-left:auto;color:var(--ai);font-weight:700;white-space:nowrap}
+
+/* iframe（HTML の隔離プレビュー） */
+.frame{flex:1;min-height:0;margin:8px;border-radius:var(--r-ctl);background:#fff;overflow:hidden;
+  display:flex;flex-direction:column}
+.frame .sandboxbar{flex:none;display:flex;align-items:center;gap:6px;padding:4px 8px;background:var(--paper-2);
+  font-size:var(--t-note);color:var(--sumi-3);font-family:var(--mono)}
+.frame .doc{flex:1;padding:14px;font-family:Georgia,serif;color:#222;overflow:hidden}
+.frame .doc h1{font-size:20px;margin-bottom:8px;color:#111}
+.frame .doc p{font-size:13px;line-height:1.7;margin-bottom:8px}
+.frame .doc .btn{display:inline-block;margin-top:6px;padding:6px 12px;background:#2b6cb0;color:#fff;border-radius:4px;font-size:12px}
+
+/* 退いた状態の目印 */
+.retracted{position:absolute;left:0;right:0;height:3px;background:linear-gradient(var(--rule),transparent)}
+
+/* ── 縦の予算の帯グラフ ──────────────────────────────── */
+.budget{display:flex;gap:24px;flex-wrap:wrap;margin-top:8px}
+.bcol{flex:1 1 300px;min-width:280px}
+.btitle{font-size:var(--t-body);font-weight:700;margin-bottom:6px}
+.bstack{display:flex;flex-direction:column;height:340px;border-radius:var(--r-ctl);overflow:hidden;
+  box-shadow:var(--shadow-rest)}
+.seg2{display:flex;align-items:center;justify-content:space-between;padding:0 10px;font-size:var(--t-note);
+  font-family:var(--mono);overflow:hidden;white-space:nowrap}
+.s-chrome{background:var(--mur-t);color:var(--murasaki)}
+.s-shell{background:var(--paper-2);color:var(--sumi-3)}
+.s-content{background:var(--koke-t);color:var(--koke);font-weight:700;align-items:flex-start;padding-top:8px}
+.bsum{font-size:var(--t-meta);color:var(--sumi-2);margin-top:8px}
+.bsum b{font-size:var(--t-read)}
+
+table{border-collapse:collapse;width:100%;max-width:900px;font-size:var(--t-body);margin-top:8px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font-size:var(--t-note);letter-spacing:.05em;color:var(--sumi-3);font-weight:700}
+td.num{font-family:var(--mono);white-space:nowrap}
+.del{color:var(--murasaki)}
+.add{color:var(--koke);font-weight:700}
+.tagline{display:inline-block;padding:1px 7px;border-radius:999px;font-size:var(--t-note);
+  font-family:var(--mono);background:var(--paper-2);color:var(--sumi-2)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>ファイル閲覧 v2 — 狭い画面の縦の予算</h1>
+<p class="lede">PO報告 2026-08-08「操作部分が場所を取りすぎて、ファイルの表示領域が小さすぎる」への答え。
+実寸 390×780 で並べてある。値は <code>theme/tokens.css</code>（和紙・明）だけを引いている。</p>
+<p class="meta">spec-file-browser §2.3 / §2.4 / §5.2 / §6.4 ・ spec-canvas-ui §3.1</p>
+
+<!-- ══ 1. 中身を読むとき ══ -->
+<h2><span class="n">1</span>ファイルを読むとき</h2>
+<p class="note">いまは道具立てが <b>3段（204px）</b>——場所＋パンくず 108px、「‹ ファイル一覧」41px、
+ファイル名の帯 55px。決めでは<b>1段（46px）</b>にまとめ、送っている間はそれも退く。</p>
+
+<div class="row">
+
+  <!-- いま -->
+  <div class="fig">
+    <div class="cap bad"><b>いま</b> ／ 本文 411px（53%）</div>
+    <div class="phone">
+      <div class="topbar">
+        <div class="logo">番 頭<small>BANTO</small></div>
+        <div class="tspacer"></div>
+        <div class="tbtn">◷</div><div class="tbtn">⚙</div><div class="tbtn">☾</div>
+        <div class="conn">● 接続中</div>
+      </div>
+      <div class="tabbar"><div class="tab">▤ ファイル <span class="x">×</span></div><div class="tabadd">＋</div></div>
+      <div class="face">
+        <div class="bar"><div class="place" style="flex:1 1 auto;max-width:none"><span class="pin">◎</span>banto<span class="car">⌄</span></div></div>
+        <div class="bar" style="padding-top:0">
+          <div class="crumbs">
+            <span class="crumb home">⌂</span><span class="sep">/</span>
+            <span class="crumb">docs</span><span class="sep">/</span>
+            <span class="crumb">spec</span><span class="sep">/</span>
+            <span class="crumb">deep</span><span class="sep">/</span>
+            <span class="crumb">nested</span><span class="sep">/</span>
+          </div>
+          <span style="color:var(--sumi-3);font-size:var(--t-meta);white-space:nowrap">🔍 探す</span>
+        </div>
+        <div style="flex:none;padding:0 8px 6px"><span class="back">‹ ファイル一覧</span></div>
+        <div class="head" style="height:55px">
+          <span class="fname">README.md</span>
+          <span class="seg"><span class="on" style="height:32px">整形</span><span style="height:32px">原文</span></span>
+          <span style="color:var(--sumi-3);font-size:var(--t-meta);white-space:nowrap">⧉ 本文をコピー</span>
+        </div>
+        <div class="body">
+          <h3>見出し 0</h3>
+          <p style="font-size:var(--t-body)">本文の行 1。ファイル閲覧のプレビューを埋めるための文章です。
+          本文の行 2。ファイル閲覧のプレビューを埋めるための文章です。
+          本文の行 3。ファイル閲覧のプレビューを埋めるための文章です。</p>
+          <p style="font-size:var(--t-body)">本文の行 4。ファイル閲覧のプレビューを埋めるための文章です。
+          本文の行 5。ファイル閲覧のプレビューを埋めるための文章です。</p>
+        </div>
+      </div>
+      <div class="footer"><div class="fbtn">◌ チャット</div><div class="fbtn on">▤ キャンバス</div></div>
+    </div>
+  </div>
+
+  <!-- 決め（静止） -->
+  <div class="fig">
+    <div class="cap good"><b>決め</b> ／ 本文 569px（73%）</div>
+    <div class="phone">
+      <div class="topbar">
+        <div class="logo">番 頭<small>BANTO</small></div>
+        <div class="tspacer"></div>
+        <div class="tbtn">◷</div><div class="tbtn">⚙</div><div class="tbtn">☾</div>
+        <div class="conn">● 接続中</div>
+      </div>
+      <div class="tabbar"><div class="tab">▤ ファイル <span class="x">×</span></div><div class="tabadd">＋</div></div>
+      <div class="face">
+        <div class="head">
+          <span class="back">‹ 一覧</span>
+          <span class="fname">README.md</span>
+          <span class="seg"><span class="on">整形</span><span>原文</span></span>
+          <span class="dots">⋯</span>
+        </div>
+        <div class="body">
+          <h3>見出し 0</h3>
+          <p>本文の行 1。ファイル閲覧のプレビューを埋めるための文章です。
+          本文の行 2。ファイル閲覧のプレビューを埋めるための文章です。
+          本文の行 3。ファイル閲覧のプレビューを埋めるための文章です。</p>
+          <h4>見出し 1</h4>
+          <p>本文の行 4。ファイル閲覧のプレビューを埋めるための文章です。
+          本文の行 5。ファイル閲覧のプレビューを埋めるための文章です。
+          本文の行 6。ファイル閲覧のプレビューを埋めるための文章です。</p>
+          <p>本文の行 7。ファイル閲覧のプレビューを埋めるための文章です。
+          本文の行 8。ファイル閲覧のプレビューを埋めるための文章です。</p>
+        </div>
+      </div>
+      <div class="footer"><div class="fbtn">◌ チャット</div><div class="fbtn on">▤ キャンバス</div></div>
+    </div>
+  </div>
+
+  <!-- 決め（送っている間） -->
+  <div class="fig">
+    <div class="cap good"><b>決め・送っている間</b> ／ 本文 660px（85%）</div>
+    <div class="phone">
+      <div class="topbar gone"></div>
+      <div class="tabbar"><div class="tab">▤ ファイル <span class="x">×</span></div><div class="tabadd">＋</div></div>
+      <div class="face">
+        <div class="retracted"></div>
+        <div class="body">
+          <h3>見出し 0</h3>
+          <p>本文の行 1。ファイル閲覧のプレビューを埋めるための文章です。
+          本文の行 2。ファイル閲覧のプレビューを埋めるための文章です。
+          本文の行 3。ファイル閲覧のプレビューを埋めるための文章です。</p>
+          <h4>見出し 1</h4>
+          <p>本文の行 4。ファイル閲覧のプレビューを埋めるための文章です。
+          本文の行 5。ファイル閲覧のプレビューを埋めるための文章です。
+          本文の行 6。ファイル閲覧のプレビューを埋めるための文章です。</p>
+          <p>本文の行 7。ファイル閲覧のプレビューを埋めるための文章です。
+          本文の行 8。ファイル閲覧のプレビューを埋めるための文章です。
+          本文の行 9。ファイル閲覧のプレビューを埋めるための文章です。</p>
+          <h4>見出し 2</h4>
+          <p>本文の行 10。ファイル閲覧のプレビューを埋めるための文章です。</p>
+        </div>
+      </div>
+      <div class="footer"><div class="fbtn">◌ チャット</div><div class="fbtn on">▤ キャンバス</div></div>
+    </div>
+  </div>
+</div>
+
+<h2><span class="n">2</span>縦の予算</h2>
+<div class="budget">
+  <div class="bcol">
+    <div class="btitle">いま</div>
+    <div class="bstack">
+      <div class="seg2 s-shell" style="height:22.7px"><span>屋号の帯</span><span>52</span></div>
+      <div class="seg2 s-shell" style="height:19.6px"><span>タブ列</span><span>45</span></div>
+      <div class="seg2 s-chrome" style="height:47.1px"><span>場所＋パンくず</span><span>108</span></div>
+      <div class="seg2 s-chrome" style="height:17.9px"><span>‹ ファイル一覧</span><span>41</span></div>
+      <div class="seg2 s-chrome" style="height:24px"><span>名前＋整形/原文</span><span>55</span></div>
+      <div class="seg2 s-content" style="height:179.2px"><span>本文</span><span>411</span></div>
+      <div class="seg2 s-shell" style="height:24.4px"><span>切替バー</span><span>56</span></div>
+    </div>
+    <p class="bsum">道具立て <b class="del">204px</b> ／ 本文 <b class="del">411px（53%）</b></p>
+  </div>
+  <div class="bcol">
+    <div class="btitle">決め（静止）</div>
+    <div class="bstack">
+      <div class="seg2 s-shell" style="height:22.7px"><span>屋号の帯</span><span>52</span></div>
+      <div class="seg2 s-shell" style="height:19.6px"><span>タブ列</span><span>45</span></div>
+      <div class="seg2 s-chrome" style="height:20px"><span>‹一覧・名前・整形/原文・⋯</span><span>46</span></div>
+      <div class="seg2 s-content" style="height:248.1px"><span>本文</span><span>569</span></div>
+      <div class="seg2 s-shell" style="height:24.4px"><span>切替バー</span><span>56</span></div>
+    </div>
+    <p class="bsum">道具立て <b class="add">46px</b> ／ 本文 <b class="add">569px（73%）</b></p>
+  </div>
+  <div class="bcol">
+    <div class="btitle">決め（送っている間）</div>
+    <div class="bstack">
+      <div class="seg2 s-shell" style="height:19.6px"><span>タブ列（退かせない）</span><span>45</span></div>
+      <div class="seg2 s-content" style="height:290.8px"><span>本文</span><span>660</span></div>
+      <div class="seg2 s-shell" style="height:24.4px"><span>切替バー</span><span>56</span></div>
+    </div>
+    <p class="bsum">道具立て <b class="add">0px</b> ／ 本文 <b class="add">660px（85%）</b></p>
+  </div>
+</div>
+
+<!-- ══ 3. 一覧 ══ -->
+<h2><span class="n">3</span>一覧を見るとき</h2>
+<p class="note">常設は<b>2段（92px）</b>。<span class="tagline">場所＋パンくず</span> と
+<span class="tagline">絞る欄＋隠し</span>。「探す」ボタンと2段目のバーは廃止し、
+<b>打つと絞る／Enter でこの下を探す</b>の1つの欄にまとめた。
+パンくずは<b>末尾優先で畳む</b>——切れて消えるのが「いまいる所」だったのを直す。</p>
+
+<div class="row">
+  <div class="fig">
+    <div class="cap bad"><b>いま</b> ／ 道具立て 167px・最初の行が y=272・行 32px・末尾 <code>place</code> が器の外</div>
+    <div class="phone">
+      <div class="topbar">
+        <div class="logo">番 頭<small>BANTO</small></div><div class="tspacer"></div>
+        <div class="tbtn">◷</div><div class="tbtn">⚙</div><div class="tbtn">☾</div><div class="conn">● 接続中</div>
+      </div>
+      <div class="tabbar"><div class="tab">▤ ファイル <span class="x">×</span></div><div class="tabadd">＋</div></div>
+      <div class="face">
+        <div class="bar" style="min-height:56px"><div class="place" style="flex:1 1 auto;max-width:none"><span class="pin">◎</span>banto<span class="car">⌄</span></div></div>
+        <div class="bar" style="padding-top:0;min-height:44px">
+          <div class="crumbs">
+            <span class="crumb home">⌂</span><span class="sep">/</span><span class="crumb">docs</span><span class="sep">/</span>
+            <span class="crumb">spec</span><span class="sep">/</span><span class="crumb">deep</span><span class="sep">/</span>
+            <span class="crumb">nested</span><span class="sep">/</span>
+          </div>
+          <span style="color:var(--sumi-3);font-size:var(--t-meta);white-space:nowrap">🔍 探す</span>
+        </div>
+        <div class="bar" style="padding-top:0;min-height:67px">
+          <div class="field" style="height:46px;font-size:var(--t-head);flex:1 1 60%">🔍 この一覧を絞る</div>
+          <span style="font-size:var(--t-meta);color:var(--sumi-3);white-space:nowrap">☐ 隠しファイルも表示</span>
+        </div>
+        <div class="list" style="padding-top:0">
+          <div class="ent dir" style="height:32px;font-size:var(--t-body)"><span class="ico">▭</span><span class="nm">packages</span><span class="sz">›</span></div>
+          <div class="ent dir" style="height:32px;font-size:var(--t-body)"><span class="ico">▭</span><span class="nm">docs</span><span class="sz">›</span></div>
+          <div class="ent dir" style="height:32px;font-size:var(--t-body)"><span class="ico">▭</span><span class="nm">work</span><span class="sz">›</span></div>
+          <div class="ent dir" style="height:32px;font-size:var(--t-body)"><span class="ico">▭</span><span class="nm">tests</span><span class="sz">›</span></div>
+          <div class="ent dir" style="height:32px;font-size:var(--t-body)"><span class="ico">▭</span><span class="nm">prototype</span><span class="sz">›</span></div>
+          <div class="ent dir" style="height:32px;font-size:var(--t-body)"><span class="ico">▭</span><span class="nm">node_modules</span><span class="sz">›</span></div>
+          <div class="ent" style="height:32px;font-size:var(--t-body)"><span class="ico">▤</span><span class="nm">README.md</span><span class="sz" style="font-size:11px">900 B</span></div>
+          <div class="ent" style="height:32px;font-size:var(--t-body)"><span class="ico">▤</span><span class="nm">CLAUDE.md</span><span class="sz" style="font-size:11px">1.2 KB</span></div>
+          <div class="ent" style="height:32px;font-size:var(--t-body)"><span class="ico">▤</span><span class="nm">package.json</span><span class="sz" style="font-size:11px">1.5 KB</span></div>
+          <div class="ent" style="height:32px;font-size:var(--t-body)"><span class="ico">▤</span><span class="nm">tsconfig.json</span><span class="sz" style="font-size:11px">1.8 KB</span></div>
+          <div class="ent" style="height:32px;font-size:var(--t-body)"><span class="ico">▤</span><span class="nm">playwright.config.ts</span><span class="sz" style="font-size:11px">2.1 KB</span></div>
+        </div>
+      </div>
+      <div class="footer"><div class="fbtn">◌ チャット</div><div class="fbtn on">▤ キャンバス</div></div>
+    </div>
+  </div>
+
+  <div class="fig">
+    <div class="cap good"><b>決め</b> ／ 道具立て 92px・行 44px・末尾 <code>place</code> が必ず見える</div>
+    <div class="phone">
+      <div class="topbar">
+        <div class="logo">番 頭<small>BANTO</small></div><div class="tspacer"></div>
+        <div class="tbtn">◷</div><div class="tbtn">⚙</div><div class="tbtn">☾</div><div class="conn">● 接続中</div>
+      </div>
+      <div class="tabbar"><div class="tab">▤ ファイル <span class="x">×</span></div><div class="tabadd">＋</div></div>
+      <div class="face">
+        <div class="bar">
+          <div class="place"><span class="pin">◎</span>banto<span class="car">⌄</span></div>
+          <div class="crumbs">
+            <span class="crumb home">⌂</span><span class="crumb more">…</span><span class="sep">/</span>
+            <span class="crumb">nested</span><span class="sep">/</span><span class="crumb last">place</span>
+          </div>
+        </div>
+        <div class="bar b2" style="padding-top:0">
+          <div class="field">🔍 絞る（Enter でこの下を探す）</div>
+          <span class="chip">隠</span>
+        </div>
+        <div class="list">
+          <div class="ent dir"><span class="ico">▭</span><span class="nm">packages</span><span class="sz">›</span></div>
+          <div class="ent dir"><span class="ico">▭</span><span class="nm">docs</span><span class="sz">›</span></div>
+          <div class="ent dir"><span class="ico">▭</span><span class="nm">work</span><span class="sz">›</span></div>
+          <div class="ent dir"><span class="ico">▭</span><span class="nm">tests</span><span class="sz">›</span></div>
+          <div class="ent dir"><span class="ico">▭</span><span class="nm">prototype</span><span class="sz">›</span></div>
+          <div class="ent sel"><span class="ico">▤</span><span class="nm">README.md</span><span class="sz">900 B</span></div>
+          <div class="ent"><span class="ico">▤</span><span class="nm">CLAUDE.md</span><span class="sz">1.2 KB</span></div>
+          <div class="ent"><span class="ico">▤</span><span class="nm">package.json</span><span class="sz">1.5 KB</span></div>
+          <div class="ent"><span class="ico">▤</span><span class="nm">tsconfig.json</span><span class="sz">1.8 KB</span></div>
+          <div class="ent"><span class="ico">▤</span><span class="nm">index.html</span><span class="sz">4.2 KB</span></div>
+          <div class="ent"><span class="ico">▤</span><span class="nm">diagram.png</span><span class="sz">88 KB</span></div>
+        </div>
+      </div>
+      <div class="footer"><div class="fbtn">◌ チャット</div><div class="fbtn on">▤ キャンバス</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 4. 新しく足すもの ══ -->
+<h2><span class="n">4</span>PO要望 2026-08-08 — 別タブ・HTML の静的配信・行を指されたとき</h2>
+<p class="note"><b>HTML は隔離した iframe で描く</b>（<code>sandbox allow-scripts</code>・<code>allow-same-origin</code> なし）。
+頭に「別タブで開く」を直接出す。<b>行を指されて開いたときは原文で開く</b>——
+いまは整形で開くので、番頭が指した行がどこにも出ていない。</p>
+
+<div class="row">
+  <div class="fig">
+    <div class="cap good"><b>HTML</b> ／ 隔離した枠で描き、別タブへも出せる</div>
+    <div class="phone">
+      <div class="topbar">
+        <div class="logo">番 頭<small>BANTO</small></div><div class="tspacer"></div>
+        <div class="tbtn">◷</div><div class="tbtn">⚙</div><div class="tbtn">☾</div><div class="conn">● 接続中</div>
+      </div>
+      <div class="tabbar"><div class="tab">▤ ファイル <span class="x">×</span></div><div class="tabadd">＋</div></div>
+      <div class="face">
+        <div class="head">
+          <span class="back">‹ 一覧</span>
+          <span class="fname">index.html</span>
+          <span class="seg"><span class="on">整形</span><span>原文</span></span>
+          <span class="dots" style="width:auto;padding:0 10px;font-weight:400;color:var(--ai);font-size:var(--t-meta)">⧉ 別タブ</span>
+        </div>
+        <div class="frame">
+          <div class="sandboxbar">⛨ sandbox allow-scripts（Banto の API・localStorage には届かない）</div>
+          <div class="doc">
+            <h1>Verification Report</h1>
+            <p>Generated 2026-08-08 by worker <code>w-0142</code>. 331 tests passed, 0 failed.</p>
+            <p>相対パスの資産（<code>./style.css</code>・<code>img/plot.png</code>）もそのまま解決する
+            ——URL を経路で表しているため。</p>
+            <span class="btn">Open full report</span>
+          </div>
+        </div>
+      </div>
+      <div class="footer"><div class="fbtn">◌ チャット</div><div class="fbtn on">▤ キャンバス</div></div>
+    </div>
+  </div>
+
+  <div class="fig">
+    <div class="cap good"><b>行を指されて開いたとき</b> ／ 原文で開き、その行に合わせる</div>
+    <div class="phone">
+      <div class="topbar">
+        <div class="logo">番 頭<small>BANTO</small></div><div class="tspacer"></div>
+        <div class="tbtn">◷</div><div class="tbtn">⚙</div><div class="tbtn">☾</div><div class="conn">● 接続中</div>
+      </div>
+      <div class="tabbar"><div class="tab">▤ ファイル <span class="x">×</span></div><div class="tabadd">＋</div></div>
+      <div class="face">
+        <div class="head">
+          <span class="back">‹ 一覧</span>
+          <span class="fname">…/views/FileBrowser.tsx</span>
+          <span class="seg"><span>整形</span><span class="on">原文</span></span>
+          <span class="dots">⋯</span>
+        </div>
+        <div class="notebar"><span>560 行目に合わせています</span><span class="lnk">整形で読む</span></div>
+        <div class="code">
+          <span class="ln"><span class="no">556</span><span class="c">  /** 番頭が指定した行の強調は、そのファイルを</span></span>
+          <span class="ln"><span class="no">557</span><span class="c">      見ている間だけ。 */</span></span>
+          <span class="ln"><span class="no">558</span><span class="k">  const</span> highlightFrom =</span>
+          <span class="ln"><span class="no">559</span>    file === initialPath ? initialLine : undefined;</span>
+          <span class="ln hl"><span class="no">560</span><span class="k">  const</span> highlightTo = file === initialPath</span>
+          <span class="ln hl"><span class="no">561</span>    ? initialEndLine ?? initialLine : undefined;</span>
+          <span class="ln"><span class="no">562</span></span>
+          <span class="ln"><span class="no">563</span><span class="c">  /** 検索結果から開いたときの行。 */</span></span>
+          <span class="ln"><span class="no">564</span><span class="k">  const</span> [hitLine, setHitLine] = useState&lt;{</span>
+          <span class="ln"><span class="no">565</span>    path: <span class="s">string</span>; line: <span class="s">number</span>;</span>
+          <span class="ln"><span class="no">566</span>  }&gt;();</span>
+          <span class="ln"><span class="no">567</span></span>
+          <span class="ln"><span class="no">568</span><span class="k">  const</span> hitHere = hitLine !== undefined</span>
+          <span class="ln"><span class="no">569</span>    &amp;&amp; hitLine.path === file</span>
+          <span class="ln"><span class="no">570</span>    ? hitLine.line : undefined;</span>
+        </div>
+      </div>
+      <div class="footer"><div class="fbtn">◌ チャット</div><div class="fbtn on">▤ キャンバス</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 5. 何をどこから引いたか ══ -->
+<h2><span class="n">5</span>何をどこから引いたか</h2>
+<table>
+  <tr><th>引いたもの</th><th style="width:90px">減</th><th>代わりに何で届くか</th></tr>
+  <tr><td>場所＋パンくずの2段（読んでいる間）</td><td class="num del">−108px</td><td>「‹ 一覧」1手で戻れば読める。読みながら場所は変えない</td></tr>
+  <tr><td>「‹ ファイル一覧」の独立行</td><td class="num del">−41px</td><td>中身の頭に取り込む</td></tr>
+  <tr><td>名前の帯を 55 → 46px</td><td class="num del">−9px</td><td>折り返し・コピーは <code>⋯</code> の中へ</td></tr>
+  <tr><td>屋号の帯＋頭（送っている間）</td><td class="num del">−98px</td><td>上へ少し送れば戻る。いましている仕草のまま</td></tr>
+  <tr><td>「探す」ボタンと2段目のバー（一覧）</td><td class="num del">−67px</td><td>絞る欄で Enter。探し方は結果の見出しで切り替える</td></tr>
+  <tr><td>「隠しファイルも表示」の文言</td><td class="num del">−0px</td><td>チップ（38px）。当たりは 21 → 38px に<b>増える</b></td></tr>
+</table>
+<p class="note" style="margin-top:16px">増やしたものもある——<b>一覧の行 32 → 44px</b>、<b>字を一段上げる</b>（本文・原文・
+一覧の名前を <code>--t-read</code> に）。押せない・読めないものを詰めても密度にはならない。</p>
+
+</div>
+</body>
+</html>

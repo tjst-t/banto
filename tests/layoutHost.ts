@@ -21,11 +21,24 @@ const WEB_DIST = path.join(here, "..", "packages", "banto-web", "dist");
 const THREAD_ID = "t-1";
 
 /** キャンバスを縦に溢れさせるための一覧（送れる高さが無いと「居座る」を確かめられない）。 */
-const ENTRIES = Array.from({ length: 200 }, (_, i) => ({
-  name: `file-${String(i).padStart(3, "0")}.ts`,
-  type: "file",
-  size: 100 + i,
-}));
+const ENTRIES = [
+  // 種別ごとの姿（spec-file-browser §5.9・§5.10）を確かめられるだけの品揃え
+  { name: "packages", type: "dir" },
+  { name: "README.md", type: "file", size: 900 },
+  { name: "page.html", type: "file", size: 1200 },
+  { name: "shot.png", type: "file", size: 88_000 },
+  ...Array.from({ length: 200 }, (_, i) => ({
+    name: `file-${String(i).padStart(3, "0")}.ts`,
+    type: "file",
+    size: 100 + i,
+  })),
+];
+
+/** 読ませる中身。狭い画面で本文の高さを測るので、器より高いことが要る。 */
+const FILE_TEXT = Array.from(
+  { length: 120 },
+  (_, i) => (i % 8 === 0 ? `## 見出し ${i / 8}` : `本文の行 ${i}。読める高さを測るための文章です。`)
+).join("\n");
 
 export interface LayoutHost {
   readonly port: number;
@@ -52,6 +65,21 @@ export async function startLayoutHost(themes?: UserThemeFixture): Promise<Layout
         .writeHead(200, { "Content-Type": "application/json" })
         .end(JSON.stringify({ content: [{ type: "text", text: "ok" }], details }));
     };
+    /** 本物と同じく**頼まれたパスをそのまま返す**（画面はそれで突き合わせる・§8.1）。 */
+    const withArgs = (make: (args: Record<string, unknown>) => unknown): void => {
+      let body = "";
+      req.on("data", (chunk) => (body += String(chunk)));
+      req.on("end", () => {
+        const parsed = ((): Record<string, unknown> => {
+          try {
+            return ((JSON.parse(body || "{}") as { args?: Record<string, unknown> }).args ?? {});
+          } catch {
+            return {};
+          }
+        })();
+        json(make(parsed));
+      });
+    };
     if (url === "/api/file/tools/place.list") {
       return json({
         places: [{ id: "demo", label: "デモ", path: "/tmp/demo", writable: [] }],
@@ -59,7 +87,40 @@ export async function startLayoutHost(themes?: UserThemeFixture): Promise<Layout
       });
     }
     if (url === "/api/file/tools/file.stat") return json({ type: "dir", path: "." });
-    if (url === "/api/file/tools/file.list") return json({ entries: ENTRIES });
+    // `path` を返すのは本物と同じ（`toWorkspaceRelative`）。画面は**頼んだパスと一致する
+    // ときだけ描く**ので（spec-file-browser §8.1）、省くと一覧が出ない
+    if (url === "/api/file/tools/file.list") {
+      return withArgs((args) => ({
+        path: typeof args["path"] === "string" ? args["path"] : ".",
+        total: ENTRIES.length,
+        truncated: false,
+        entries: ENTRIES,
+      }));
+    }
+    if (url === "/api/file/tools/file.read") {
+      return withArgs((args) => ({
+        path: typeof args["path"] === "string" ? args["path"] : "",
+        binary: false,
+        size: FILE_TEXT.length,
+        content: FILE_TEXT,
+        totalLines: 120,
+        shownLines: 120,
+        from: 1,
+        to: 120,
+        truncated: false,
+      }));
+    }
+    // そのまま配る口（§5.8）。iframe / <img> の src がここへ来る
+    if (url.startsWith("/api/file/raw/")) {
+      res
+        .writeHead(200, {
+          "Content-Type": url.endsWith(".html") ? "text/html; charset=utf-8" : "text/plain",
+          "X-Content-Type-Options": "nosniff",
+          "Content-Security-Policy": "sandbox allow-scripts allow-popups",
+        })
+        .end("<h1>raw</h1>");
+      return;
+    }
 
     // 持ち込みのテーマ。ホストは配るだけで、濾すのは画面側（D5）
     if (url === "/api/themes") {

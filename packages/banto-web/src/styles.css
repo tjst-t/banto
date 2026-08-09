@@ -619,6 +619,21 @@ code { font-family: var(--mono); font-size: var(--t-note); }
   .shell-topbar { position: fixed; top: 0; left: 0; right: 0; z-index: 200; background: var(--paper-1); }
   .shell { padding-top: var(--h-bar); }
 
+  /**
+   * 読んでいる間だけ屋号の帯を退かせる（spec-canvas-ui §3.1・PO報告 2026-08-08）。
+   *
+   * 390×780 でファイルを開くと、本文に残るのは 411px＝画面の 53% だった。畳めるものを
+   * 畳んでも帯 52px が常に載っている。**戻す仕草は、いましている仕草（上へ送る）と同じ**
+   * ——退かせるかどうかを決めるのは面の側（`useRetractOnScroll` が `<html data-retract>`
+   * を立てる）で、効かせるかどうかを決めるのはここ。広い画面では退かさない。
+   */
+  :root[data-retract] .shell-topbar { transform: translateY(-100%); }
+  :root[data-retract] .shell { padding-top: 0; }
+  .shell-topbar, .shell { transition: transform .16s ease, padding-top .16s ease; }
+  @media (prefers-reduced-motion: reduce) {
+    .shell-topbar, .shell { transition: none; }
+  }
+
   .mobile-footer {
     display: flex; position: fixed; bottom: 0; left: 0; right: 0; height: 56px;
     background: var(--paper-1); border-top: 1px solid var(--rule); z-index: 200;

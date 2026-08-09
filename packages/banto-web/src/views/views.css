@@ -646,7 +646,7 @@
 .cv-row:hover { background: var(--paper); }
 .cv-row.is-selected { background: var(--ai-t); color: var(--ai); font-weight: 500; }
 .cv-row.is-selected .cv-row-sub,
-.cv-row.is-selected .cv-row-trail { color: rgba(128, 128, 128, 0.22); }
+.cv-row.is-selected .cv-row-trail { color: var(--ai); opacity: 0.75; }
 .cv-row.is-selected .cv-count { background: var(--paper-2); border-color: transparent; color: var(--ai); }
 .cv-row-main { flex: 1; min-width: 0; }
 .cv-row-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -705,9 +705,18 @@
   .cv-btn { min-height: 38px; padding: 8px 16px; }
   .cv-btn.is-small { min-height: 32px; }
   .cv-iconbtn { width: 38px; height: 38px; }
-  .cv-chip { min-height: 32px; padding: 8px 12px; }
-  .cv-seg-opt { min-height: 32px; padding: 8px 16px; }
-  .cv-input, .cv-select, .cv-search-input { min-height: 38px; font-size: var(--t-head); }
+  /* 入切の札も択一の片も、指で押すものは 38px（spec-canvas-ui §3。実測で 21px / 32px だった） */
+  .cv-chip { min-height: 38px; padding: 8px 12px; }
+  .cv-seg-opt { min-height: 38px; padding: 8px 14px; }
+  /* 字は 16px 以上（iOS の自動ズームを避ける）。**縦の余白はその分だけ詰める**——
+     19px に 8px の余白を足すと 51px になり、38px の当たりのつもりが帯を 67px にしていた */
+  .cv-input, .cv-select, .cv-search-input {
+    min-height: 38px;
+    font-size: var(--t-head);
+    line-height: 1.2;
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
   .cv-row { min-height: 42px; }
   .cv-toggle { font-size: var(--t-meta); }
   /* 見出しの脇に置いた操作は、狭いと見出しを潰す。行を分ける */
@@ -976,20 +985,27 @@
 
 /* ══ ファイル閲覧（file.browser） ═══════════════════════════════════════════ */
 
+/**
+ * パンくず。**末尾優先で畳む。横に流さない**（spec-file-browser §3.2）。
+ *
+ * 以前は `overflow-x: auto`（つまみは非表示）で逃がしていたが、狭い画面で切れて
+ * 消えるのが**いまいるディレクトリ**だった——390px で `🏠/docs/spec/deep/nested/` まで
+ * 出て `place` が器の外（実測 2026-08-08）。畳むのは JSX 側（頭から落とす）で、
+ * ここは「溢れさせない」ことだけを持つ。
+ */
 .fb-crumbs {
   display: flex;
   align-items: center;
   gap: 1px;
-  flex: 1 1 200px;
+  flex: 1 1 120px;
   min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
+  overflow: hidden;
   font-family: var(--mono);
   font-size: var(--t-meta);
 }
-.fb-crumbs::-webkit-scrollbar { display: none; }
 .fb-crumb {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   font: inherit;
   padding: 4px 8px;
   color: var(--sumi-3);
@@ -998,7 +1014,19 @@
   border-radius: 6px;
   cursor: pointer;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+/* 末尾（いまいる所）だけは縮めない。**切れて消えてよい段ではない** */
+.fb-crumb.is-last { flex: none; }
+/* 畳んだ段を出す札。段があること自体を見せる（隠れているものを隠さない） */
+.fb-crumb.is-more {
+  flex: none;
+  background: var(--paper-2);
+  color: var(--sumi-2);
+  font-weight: 700;
+}
+.fb-crumb.is-more:hover { border-color: var(--ai); color: var(--ai); }
 .fb-crumb:hover { background: var(--paper); color: var(--ai); }
 .fb-crumb.is-last { color: var(--sumi); font-weight: 700; cursor: default; }
 .fb-crumb.is-last:hover { background: none; color: var(--sumi); }
@@ -1038,13 +1066,17 @@
 .fb-entry:hover { background: var(--paper); }
 .fb-entry.is-dir .fb-entry-name { font-weight: 700; }
 .fb-entry.is-selected { background: var(--ai-t); color: var(--ai); font-weight: 500; }
-.fb-entry.is-selected .fb-size { color: rgba(128, 128, 128, 0.22); }
+/* 選んでも末尾の情報を消さない（spec-canvas-ui §5.1）。
+   選択は「いまこれを見ている」であって「もう見なくてよい」ではない */
+.fb-entry.is-selected .fb-size { color: var(--ai); opacity: 0.75; }
 .fb-icon { flex: none; color: var(--sumi-3); }
 .fb-entry-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fb-size { flex: none; font-size: var(--t-note); color: var(--sumi-3); font-family: var(--mono); }
 
 /* 一致した行。**器から溢れさせない**——横に流れると、どこで切れたのかも見えない */
 .fb-hit { display: block; flex: 1; min-width: 0; }
+/* 頭を落として末尾を残すのは**文字列側**でやる（`shortenPath`）。
+   `direction: rtl` は先頭の `/` が末尾へ回って壊れる（spec-design が PlacePicker で実測） */
 .fb-hit-path {
   display: block;
   font-size: var(--t-note);
@@ -1053,8 +1085,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  direction: rtl;
-  text-align: left;
 }
 .fb-hit-text {
   display: block;
@@ -1064,20 +1094,31 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cv-row.is-selected .fb-hit-path { color: rgba(128, 128, 128, 0.22); }
+.cv-row.is-selected .fb-hit-path { color: var(--ai); opacity: 0.75; }
 
 .fb-file { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+/**
+ * 中身の頭は**1段**（spec-file-browser §5.2）。戻る導線もここに入れる。
+ *
+ * 以前は「‹ ファイル一覧」が独立した行（41px）で、その下に名前の帯（55px）が居た。
+ * 狭い画面では上段（108px）と併せて 204px——本文に残るのは 411px しかなかった。
+ */
 .fb-file-head {
   flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
-  padding: 8px 12px;
+  padding: 4px 8px;
+  min-height: 46px;
   border-bottom: 1px solid var(--rule);
   background: var(--paper-1);
 }
+/* 送っている間は退く（§6.4）。上へ送れば戻る */
+.fb-file.is-retracted .fb-file-head { display: none; }
+/* 広いときは戻る導線が要らない（両方見えている） */
+.fb-back { display: none; }
 .fb-file-path {
+  flex: 1;
   font-family: var(--mono);
   font-size: var(--t-meta);
   font-weight: 700;
@@ -1085,23 +1126,65 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  direction: rtl;
-  text-align: left;
 }
-.fb-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.fb-preview-scroll { flex: 1; min-height: 0; overflow: auto; padding: 16px 16px 24px; }
-.fb-preview-scroll .markdown { max-width: 78ch; font-size: var(--t-body); line-height: 1.85; }
-.fb-preview-scroll .markdown h1 { font-size: var(--t-head); margin: 20px 0 8px; }
-.fb-preview-scroll .markdown h2 { font-size: var(--t-head); margin: 20px 0 8px; }
-.fb-preview-scroll .markdown h3 { font-size: var(--t-read); margin: 16px 0 8px; }
-.fb-preview-scroll .markdown p,
-.fb-preview-scroll .markdown ul,
-.fb-preview-scroll .markdown ol { margin-bottom: 12px; }
+.fb-open { flex: none; text-decoration: none; }
+
+/**
+ * 中身のスクロールは**この器だけ**が持つ。
+ *
+ * 以前は preview と source がそれぞれ別の器でスクロールしており、位置の復元も
+ * 「送ったら退く」（§6.4）も、どちらを見ているかで別の要素を掴む必要があった。
+ */
+.fb-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.fb-preview { padding: 16px 16px 24px; }
+.fb-preview .markdown { max-width: 78ch; font-size: var(--t-body); line-height: 1.85; }
+.fb-preview .markdown h1 { font-size: var(--t-head); margin: 20px 0 8px; }
+.fb-preview .markdown h2 { font-size: var(--t-head); margin: 20px 0 8px; }
+.fb-preview .markdown h3 { font-size: var(--t-read); margin: 16px 0 8px; }
+.fb-preview .markdown p,
+.fb-preview .markdown ul,
+.fb-preview .markdown ol { margin-bottom: 12px; }
+
+/* 器から溢れるもの（表・図）は**その箱の中だけ**横に送る。面ごとずらさない（§6.5） */
+.fb-scrollx { overflow-x: auto; }
+
+/* HTML は隔離した枠で描く（§5.9）。`sandbox` は JSX 側（allow-same-origin を付けない） */
+.fb-frame {
+  display: block;
+  width: 100%;
+  height: 70vh;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-face);
+  background: var(--paper-1);
+}
+.fb-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  border-radius: var(--r-face);
+}
+
+/* 一致したところ（§10 ③27）。地は淡い琥珀、字はそのまま——色だけに預けない */
+.fb-mark { background: var(--koh-t); color: inherit; border-radius: 3px; padding: 0 1px; }
+
+/* 置けるものが無いときの空状態は**上寄せの小さいもの**。面の中央に大きく構えない */
+.fb-empty-top { overflow: auto; }
+.fb-empty-top .cv-empty { min-height: 0; padding-top: 32px; justify-content: flex-start; }
+
+/* 「…」に畳んだもの（§5.2） */
+.fb-menu { display: flex; flex-direction: column; gap: 8px; padding: 4px; }
+.fb-menu-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.fb-menu-row .cv-btn { text-decoration: none; }
+.fb-menu-path {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--t-note);
+  color: var(--sumi-3);
+  overflow-wrap: anywhere;
+}
 
 .fb-code {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
   margin: 0;
   padding: 8px 0;
   background: var(--code-bg);
@@ -1112,7 +1195,8 @@
 }
 .fb-code.is-wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
 .fb-line { display: block; padding: 0 16px; }
-.fb-line.is-highlight { background: rgba(224, 169, 90, 0.2); box-shadow: inset 3px 0 0 0 var(--kohaku); }
+/* 状態は色と形の両方で（spec-design §1.4）。地はトークンの淡い琥珀、形は左の罫 */
+.fb-line.is-highlight { background: var(--koh-t); color: var(--sumi); box-shadow: inset 3px 0 0 0 var(--kohaku); }
 .fb-lineno {
   display: inline-block;
   margin-right: 14px;
@@ -1155,6 +1239,49 @@
 .fb-csv th { background: var(--paper-1); font-weight: 700; position: sticky; top: 0; }
 .fb-csv tbody tr:nth-child(even) td { background: var(--paper-1); }
 
+/**
+ * ファイル閲覧の狭いとき（spec-file-browser §2.4・§6.2・§6.4）。
+ *
+ * 実測 390×780 で、最初のファイルが y=272（画面の 35%）・一覧の行が 32px・
+ * 中身を読むと本文が 411px（53%）しか残っていなかった。**引くのは道具立て、
+ * 増やすのは押せる大きさと字**。
+ */
+@container canvas (max-width: 760px) {
+  /* 読んでいる間は上段（場所・パンくず）を畳む（§2.3）。−108px */
+  .fb.is-reading > .fb-where { display: none; }
+
+  /* 道具立ての1段は 46px（§2.4 の予算）。当たりは 38px のまま、余白だけ詰める */
+  .fb .cv-bar { padding: 4px 8px; min-height: 46px; }
+  .fb-file-head { padding: 0 8px; }
+
+  /* 一覧はこの面で最も押すもの。38px は下限であって、続けて押すものの寸法ではない */
+  .fb-entry { min-height: 44px; font-size: var(--t-read); }
+  .fb-entry .fb-size { font-size: var(--t-meta); }
+  .fb-crumb { min-height: 38px; display: inline-flex; align-items: center; }
+  .fb-crumb.is-home { width: 38px; height: 38px; font-size: var(--t-head); }
+  .fb-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: none;
+    min-height: 38px;
+    padding: 0 10px;
+    font: inherit;
+    font-size: var(--t-body);
+    color: var(--ai);
+    background: var(--paper-2);
+    border: 1px solid transparent;
+    border-radius: var(--r-ctl);
+    cursor: pointer;
+  }
+  /* 読ませる本文は読ませる大きさで（§5.6）。原文とコードも上げる——折り返しが
+     既定で入っている以上、「字を大きくすると1行の情報が減る」は成り立たない */
+  .fb-preview .markdown { font-size: var(--t-read); }
+  .fb-code { font-size: var(--t-read); }
+  .fb-code-plain, .fb-code-html pre { font-size: var(--t-read); }
+  .fb-frame { height: 100%; min-height: 60vh; }
+}
+
 /* ══ 差分（git.viewer / diff プレビュー） ═══════════════════════════════════ */
 
 .gv-diff {
@@ -1192,7 +1319,7 @@
 .gv-status.is-add { color: var(--koke); }
 .gv-status.is-del { color: var(--murasaki); }
 .gv-status.is-new { color: var(--kohaku); }
-.cv-row.is-selected .gv-status { color: rgba(128, 128, 128, 0.22); }
+.cv-row.is-selected .gv-status { color: var(--ai); opacity: 0.75; }
 .gv-path {
   flex: 1;
   min-width: 0;
@@ -1210,7 +1337,7 @@
   font-size: var(--t-note);
   color: var(--ai);
 }
-.cv-row.is-selected .gv-hash { color: rgba(128, 128, 128, 0.22); }
+.cv-row.is-selected .gv-hash { color: var(--ai); opacity: 0.75; }
 .gv-side-section { display: flex; flex-direction: column; min-height: 0; }
 .gv-side-section.is-changes { flex: 0 1 auto; max-height: 45%; border-bottom: 1px solid var(--rule); }
 .gv-side-section.is-log { flex: 1 1 auto; }
@@ -1319,7 +1446,7 @@
   color: var(--sumi-3);
   overflow-wrap: anywhere;
 }
-.cv-row.is-selected .rm-path { color: rgba(128, 128, 128, 0.22); }
+.cv-row.is-selected .rm-path { color: var(--ai); opacity: 0.75; }
 .rm-add { flex: none; padding: 8px 12px; border-top: 1px solid var(--rule); background: var(--paper); }
 /* 入力と押しボタン。狭いところでは押しボタンが下へ回る（欄が読めない幅まで詰めない） */
 .rm-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -1765,9 +1892,9 @@
 .place-row-check { flex: none; color: var(--ai); font-weight: 700; }
 
 @container canvas (max-width: 760px) {
-  .place-btn { min-height: 38px; font-size: var(--t-body); max-width: none; flex: 1 1 140px; }
-  .fb-crumb.is-home { width: 38px; height: 38px; font-size: var(--t-head); }
-  .fb-crumb { min-height: 34px; }
+  /* **伸ばさない**（spec-file-browser §3.1）。`flex: 1 1 140px` だと 390px の画面で
+     340px まで伸び、5文字の札が1行を占有していた（実測 2026-08-08） */
+  .place-btn { min-height: 38px; font-size: var(--t-body); max-width: 40%; flex: 0 1 auto; }
   .canvas-menu-row .canvas-tab-label { padding: 12px 4px 12px 12px; }
   .canvas-menu-row .canvas-tab-close { padding: 12px; }
 }

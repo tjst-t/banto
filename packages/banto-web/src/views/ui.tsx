@@ -712,6 +712,76 @@ export function formatTime(iso: string | undefined): string {
   return date.toLocaleString("ja-JP", { hour12: false, dateStyle: "short", timeStyle: "short" });
 }
 
+/**
+ * 狭いとき、読んでいる間だけ道具立てを退かせる（`spec-canvas-ui` §3.1・PO報告 2026-08-08）。
+ *
+ * 390×780 でファイルを開くと、本文に残るのは 411px＝画面の 53% だった。畳めるものを
+ * 畳んでも屋号の帯と面の頭が常に載っている——**読んでいる最中の頭には仕事が無い**ので、
+ * 下へ送っている間は退かせ、上へ少しでも送れば戻す。
+ *
+ * 戻す仕草は、いましている仕草（上へ送る）と同じ。**戻すための新しい操作を作らない。**
+ *
+ * 屋号の帯（`.topbar`）はこの面の持ち物ではないので、`<html data-retract>` の1属性で
+ * 伝える——効かせるかどうかは受け取る側の CSS が決める（面に判断を持たせない・D5）。
+ * 実際に退くのはスマホ幅のときだけで、キャンバスが細いだけの広い画面では退かない。
+ *
+ * **器は ref ではなく実体で受け取る。** 送られる器は「読み込み中 → 中身」で作り直されるので、
+ * `RefObject` を見ていると *効果が張られたときには居なかった* 器を掴んだままになり、
+ * 一度も動かない（実装中に踏んだ）。呼ぶ側は callback ref で state に持つ。
+ *
+ * @param scroller 送られる器（無ければ null）
+ * @param active   退かせてよい状況か（詳細を見ている間だけ true にする）
+ * @returns 退いているか。呼ぶ側は自分の頭にクラスを当てる
+ */
+export function useRetractOnScroll(scroller: HTMLElement | null, active: boolean): boolean {
+  const [retracted, setRetracted] = useState(false);
+  /** 面自身の幅。狭さの判定はキャンバスの幅（`spec-canvas-ui` §3）に揃える */
+  const [narrow, setNarrow] = useState(false);
+  const lastTop = useRef(0);
+
+  const on = active && narrow && retracted;
+
+  useEffect(() => {
+    if (!scroller || !active) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) setNarrow(entry.contentRect.width <= 760);
+    });
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  }, [scroller, active]);
+
+  useEffect(() => {
+    const el = scroller;
+    if (!el || !active || !narrow) {
+      setRetracted(false);
+      return;
+    }
+    lastTop.current = el.scrollTop;
+    const onScroll = (): void => {
+      const top = el.scrollTop;
+      const delta = top - lastTop.current;
+      // 小さな揺れで出たり入ったりさせない（指を置いただけで動くと落ち着かない）
+      if (Math.abs(delta) < 8) return;
+      lastTop.current = top;
+      // いちばん上まで戻ったら必ず出す。頭が無いまま先頭に居る状態を作らない
+      setRetracted(top > 48 && delta > 0);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- el は scroller そのもの
+  }, [scroller, active, narrow]);
+
+  useEffect(() => {
+    if (on) document.documentElement.dataset["retract"] = "";
+    else delete document.documentElement.dataset["retract"];
+    return () => {
+      delete document.documentElement.dataset["retract"];
+    };
+  }, [on]);
+
+  return on;
+}
+
 /** 一定の間隔で再描画する（残り時間の表示など）。止まった表示を放置しないため。 */
 export function useTicker(intervalMs = 30_000): number {
   const [tick, setTick] = useState(() => Date.now());

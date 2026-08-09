@@ -12,6 +12,7 @@
 
 import { Type } from "typebox";
 import { createFileTools } from "../file-tools.js";
+import { createFileRawHandler } from "../file-raw.js";
 import { createFileWriteTools, type FileWriteToolOptions } from "../file-write-tools.js";
 import { createPlaceTools } from "../place-tools.js";
 import {
@@ -135,6 +136,9 @@ export function createWorkspaceModule(
       "閲覧は登録されたどの場所にも届き、書き込みはPOが場所ごとに許した範囲だけ（既定は読み取り専用）。" +
       "gitは閲覧のみで、変更操作は持たない（決定37）。どの場所を見るかは place で選ぶ。",
     endpoint: { baseUrl: WORKSPACE_BASE_URL },
+    // Tool の規約に乗らない口（決定27b・39）。バイトをそのまま渡す役は `details` に
+    // 載せられないので、この経路だけモジュールが自分で捌く（spec-file-browser §5.8）
+    serve: createFileRawHandler(places, WORKSPACE_BASE_URL),
     tools: [
       // 場所の一覧。file.* の引数を埋めるために要る（決定36e）
       ...createPlaceTools(places),
