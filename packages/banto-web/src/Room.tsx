@@ -306,6 +306,14 @@ export interface RoomProps {
   onGrip?(e: React.PointerEvent<HTMLDivElement>): void;
   /** いま見ている枝（札の強調に使う）。 */
   activeBranchId?: string;
+  /**
+   * 番頭への入力へ移れ、という合図（PO要望 2026-08-06）。
+   *
+   * **数が増えたら移る。** キーで会話へ飛んだのに、話しかけるのにマウスへ持ち替えるのでは
+   * 近道にならない。面を見に行くときは移さない（見に行ったのであって、話しかけに行った
+   * のではない）ので、呼び手が増やすかどうかを決める。
+   */
+  focusSeq?: number;
 }
 
 /**
@@ -328,6 +336,7 @@ export function Room({
   onMergeBranch,
   onGrip,
   activeBranchId,
+  focusSeq = 0,
 }: RoomProps): React.ReactElement {
   const threadId = thread.threadId;
   const isBranch = thread.kind === "branch";
@@ -381,6 +390,13 @@ export function Room({
   const [attachError, setAttachError] = useState<string>();
   const [dismissedErrors, setDismissedErrors] = useState<ReadonlySet<number>>(new Set());
   const [merging, setMerging] = useState(false);
+  /**
+   * 名前を付け直している最中の下書き（PO要望 2026-08-05・決定25 の人側）。
+   *
+   * **会話のタブが無くなったので、名付けの口は列の頭に移した**（ADR-0017 決定77）。
+   * 真実はホスト（D3）——ここでは楽観的に書き換えず、`thread_state` が返るのを待つ。
+   */
+  const [renaming, setRenaming] = useState<string>();
 
   // 会話を移ったら添付と読み捨ての記録を落とす（別の会話に付けたつもりのものを送らない）
   useEffect(() => {
@@ -388,7 +404,14 @@ export function Room({
     setAttachError(undefined);
     setDismissedErrors(new Set());
     setMerging(false);
+    setRenaming(undefined);
   }, [threadId]);
+
+  // 合図が来たら入力へ移る。**いま掴めなければ何もしない**（列ごと作り直された直後）
+  useEffect(() => {
+    if (focusSeq <= 0) return;
+    inputRef.current?.focus();
+  }, [focusSeq]);
 
   useLayoutEffect(() => {
     const el = inputRef.current;
@@ -557,7 +580,38 @@ export function Room({
         )}
         <div className="room-head-t">
           {isBranch && <div className="room-from">◂ 幹から</div>}
-          <h1 className="room-title">{thread.title}</h1>
+          {renaming === undefined ? (
+            <h1
+              className="room-title"
+              title="押すと名前を付け直せます"
+              onClick={() => setRenaming(thread.title)}
+            >
+              {thread.title}
+            </h1>
+          ) : (
+            <input
+              className="tt-rename"
+              value={renaming}
+              autoFocus
+              onChange={(e) => setRenaming(e.target.value)}
+              onBlur={() => setRenaming(undefined)}
+              onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing) return;
+                if (e.key === "Escape") {
+                  // **殻へ渡さない**。渡すと Esc が「枝を閉じる」まで届いて、
+                  // 名付けをやめただけのつもりが会話ごと畳まれる
+                  e.stopPropagation();
+                  // 書きかけは捨てる。**名前は変わらない**（押した意図と食い違わせない）
+                  setRenaming(undefined);
+                  return;
+                }
+                if (e.key !== "Enter") return;
+                // I2: 空の名前は投げない（ホストも拒むが、往復させる意味がない）
+                if (renaming.trim() !== "") session.renameThread(threadId, renaming);
+                setRenaming(undefined);
+              }}
+            />
+          )}
           {!slim && isBranch && thread.returnCondition && (
             <div className="room-sub">枝 ・ 還す条件：{thread.returnCondition}</div>
           )}

@@ -1,8 +1,8 @@
 /**
- * 広い画面の器。
+ * 広い画面の器（ADR-0017 決定79）。
  *
- * 狭いときと違い、チャットとキャンバスは**同時に出る**。境界は掴んで動かせる（PO要望
- * 2026-07-31）ので、その掴み手が在ることまで見る。
+ * **作業する面が開いているときだけ**、会話と面が同時に出る——会話は細い帯になり、
+ * つまんで幅を変えられる。面が無いときは会話が全幅を使う（400px の列に押し込まない）。
  *
  * 前提: `npm run build:web` 済み（packages/banto-web/dist）。
  */
@@ -27,40 +27,42 @@ test.describe("広い画面の器", () => {
     await page.waitForSelector(".shell");
   });
 
-  test("チャットとキャンバスが同時に出て、境界を掴める", async ({ page }) => {
+  test("面が開いていると、会話は細い帯として左に残る", async ({ page }) => {
     await expect(page.locator(".chat-scroll")).toBeVisible();
     await expect(page.locator(".canvas-tabbar")).toBeVisible();
+    // **話しかけられる**——そこで読むのではなく、話しかけるための幅だから
+    await expect(page.locator(".room .chat-input")).toBeVisible();
     // 下端の切替はスマホ用。広い画面では出さない
-    await expect(page.locator(".mobile-footer")).toBeHidden();
+    await expect(page.locator(".mobile-footer")).toHaveCount(0);
 
-    const resizer = page.locator(".pane-resizer");
-    await expect(resizer).toBeVisible();
+    const room = (await page.locator(".room").boundingBox())!;
+    expect(room.width, "細い帯の下限（260px）を割っている").toBeGreaterThanOrEqual(260);
+    expect(room.width, "細い帯の上限（620px）を超えている").toBeLessThanOrEqual(620);
   });
 
   /**
-   * 境界は**どの家でも掴める**。符牒は見た目を1本の罫（1px）に落としているので、
-   * 掴める幅は罫の左右へ食み出した当たり（`::before`）が持つ——見た目を細くした結果
-   * 掴めなくなっていないかを、家ごとに確かめる（PO報告 2026-08-06）。
+   * 帯は**どの家でも掴める**。符牒は見た目を1本の罫（1px）に落としているので、
+   * 掴める幅は罫の左右へ食み出した当たり（`::before`）が持つ（PO報告 2026-08-06）。
    */
   for (const family of ["washi", "fucho"]) {
-    test(`境界をドラッグするとチャット欄の幅が変わる：${family}`, async ({ page }) => {
+    test(`帯をドラッグすると会話の幅が変わる：${family}`, async ({ page }) => {
       await page.evaluate((f) => localStorage.setItem("banto.theme", `${f}:light`), family);
       await page.reload();
       await page.waitForSelector(".shell");
 
-      const chat = page.locator(".chat-pane");
-      const before = (await chat.boundingBox())!.width;
+      const room = page.locator(".room");
+      const before = (await room.boundingBox())!.width;
 
-      const handle = (await page.locator(".pane-resizer").boundingBox())!;
+      const handle = (await page.locator(".room-grip").boundingBox())!;
       const y = handle.y + handle.height / 2;
       await page.mouse.move(handle.x + handle.width / 2, y);
       await page.mouse.down();
-      // チャットは右側にあるので、左へ動かすほど広くなる
-      await page.mouse.move(handle.x - 120, y, { steps: 8 });
+      // 会話は左にあるので、右へ動かすほど広くなる
+      await page.mouse.move(handle.x + 140, y, { steps: 8 });
       await page.mouse.up();
 
-      const after = (await chat.boundingBox())!.width;
-      expect(after, "境界を掴めていない").toBeGreaterThan(before + 80);
+      const after = (await room.boundingBox())!.width;
+      expect(after, "帯を掴めていない").toBeGreaterThan(before + 80);
     });
   }
 
@@ -76,5 +78,18 @@ test.describe("広い画面の器", () => {
     expect(moved, "キャンバスの中身が短すぎて送れていない").toBeGreaterThan(0);
 
     expect((await tabbar.boundingBox())?.y).toBe(before?.y);
+  });
+
+  test("面を全部閉じると、会話が全幅を使う", async ({ page }) => {
+    const room = page.locator(".room");
+    const slim = (await room.boundingBox())!.width;
+
+    const closes = page.locator(".canvas-tab-close");
+    const n = await closes.count();
+    for (let i = 0; i < n; i++) await closes.first().click();
+
+    await expect(page.locator(".work")).toHaveCount(0);
+    const wide = (await room.boundingBox())!.width;
+    expect(wide, "面を畳んでも会話が細いまま").toBeGreaterThan(slim + 200);
   });
 });

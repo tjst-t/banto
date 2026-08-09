@@ -30,7 +30,7 @@ async function openCanvas(page: Page): Promise<void> {
   await page.setViewportSize(PHONE);
   await page.goto(`http://127.0.0.1:${host.port}/`);
   await page.waitForSelector(".shell");
-  await page.locator(".mobile-footer-btn", { hasText: "キャンバス" }).click();
+  // 面は**下から上がった紙**として既に出ている（ADR-0017 決定79）。下端の切替は無くなった
   await page.waitForSelector(".fb-entry");
 }
 

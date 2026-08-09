@@ -273,8 +273,10 @@ async function fillConversation(page: import("@playwright/test").Page): Promise<
 
 /** いま最下部にいるか（追従の判定と同じ 70px の余裕で見る）。 */
 function atBottom(page: import("@playwright/test").Page): Promise<boolean> {
+  // 枝を開くと列は2本になる（決定79）。**見ているのは最後に開いた紙**
   return page
     .locator(".chat-scroll")
+    .last()
     .evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight <= 70);
 }
 
@@ -361,7 +363,9 @@ test.describe("会話の切り替え", () => {
       store.__samples = [];
       let ticks = 0;
       const tick = (): void => {
-        const el = document.querySelector(".chat-scroll");
+        // 枝を開くと列は2本になる。**見ているのは最後に開いた紙**（決定79）
+        const all = document.querySelectorAll(".chat-scroll");
+        const el = all[all.length - 1];
         if (el) store.__samples.push(Math.round(el.scrollTop));
         if (++ticks < 90) requestAnimationFrame(tick);
       };
@@ -376,7 +380,7 @@ test.describe("会話の切り替え", () => {
     await fillConversation(page);
     // 切替は**押してから**測る（押す前の位置は前の会話のもので、混ぜると判定が濁る）。
     // spring は50フレーム前後続くので、1〜2フレーム遅れても滑っていれば必ず写る
-    await page.locator(".thread-tab", { hasText: "別の会話" }).click();
+    await page.locator(".rail-hold .hold").click();
     const samples = await samplePositions(page, async () => {});
     const settled = samples[samples.length - 1] ?? 0;
     // 滑っていれば途中の位置（先頭寄り）が並ぶ。飛んでいれば常に最下部付近
@@ -390,12 +394,10 @@ test.describe("会話の切り替え", () => {
     // 面を開くとチャットは作り直される。戻ったときが `initial` の出番——
     // ここが spring だと、保存された会話を復元してから最下部まで延々と滑る
     // 設定を名指しで開く（右端の pin-tab は明暗の切替になった。位置で取ると別のものを押す）
-    await page.locator(".pin-tab[data-key='s']").click();
+    await page.locator(".rail-btn[data-key='s']").click();
     await expect(page.locator(".chat-scroll")).toBeHidden();
 
-    const samples = await samplePositions(page, () =>
-      page.locator(".thread-tab").first().click()
-    );
+    const samples = await samplePositions(page, () => page.locator(".rail-trunk").click());
     const settled = samples[samples.length - 1] ?? 0;
     expect(settled, "戻ったのに中身が無い").toBeGreaterThan(0);
     const slid = samples.filter((v) => v > 0 && v < settled * 0.5);
@@ -406,33 +408,37 @@ test.describe("会話の切り替え", () => {
 
 test.describe("会話ごとの状態", () => {
   test("下書きは会話ごとに分かれる（移っても混ざらない）", async ({ page }) => {
-    const input = page.locator(".chat-input");
-    await input.fill("こちらの会話の書きかけ");
+    // 幹と枝は**同時に画面へ出る**（決定79）ので、どちらの入力かを名指しする
+    const trunkInput = page.locator(".room--trunk .chat-input");
+    const branchInput = page.locator(".room--branch .chat-input");
+    await trunkInput.fill("こちらの会話の書きかけ");
 
-    await page.locator(".thread-tab", { hasText: "別の会話" }).click();
-    await expect(input).toHaveValue("", { timeout: 2000 });
-    await input.fill("あちらの会話の書きかけ");
+    await page.locator(".rail-hold .hold").click();
+    await expect(branchInput).toHaveValue("", { timeout: 2000 });
+    await branchInput.fill("あちらの会話の書きかけ");
 
-    await page.locator(".thread-tab").first().click();
-    await expect(input).toHaveValue("こちらの会話の書きかけ");
-    await page.locator(".thread-tab", { hasText: "別の会話" }).click();
-    await expect(input).toHaveValue("あちらの会話の書きかけ");
+    // 幹はその場に残っているので、書きかけもそのまま
+    await expect(trunkInput).toHaveValue("こちらの会話の書きかけ");
+    await page.locator(".rail-trunk").click();
+    await expect(page.locator(".room--branch")).toHaveCount(0);
+    await expect(trunkInput).toHaveValue("こちらの会話の書きかけ");
+    await page.locator(".rail-hold .hold").click();
+    await expect(branchInput).toHaveValue("あちらの会話の書きかけ");
   });
 
-  test("モデルも会話ごと。切り替えると表示も入れ替わる", async ({ page }) => {
-    const trigger = page.locator(".model-select-trigger");
-    await expect(trigger).toHaveText(/qwen3\.6-35b/);
+  test("モデルも会話ごと。枝を開くとその枝のモデルが出る", async ({ page }) => {
+    const trunkModel = page.locator(".room--trunk .model-select-trigger");
+    await expect(trunkModel).toHaveText(/qwen3\.6-35b/);
 
-    await page.locator(".thread-tab", { hasText: "別の会話" }).click();
-    await expect(trigger).toHaveText(/claude-opus-5/);
-
-    await page.locator(".thread-tab").first().click();
-    await expect(trigger).toHaveText(/qwen3\.6-35b/);
+    await page.locator(".rail-hold .hold").click();
+    await expect(page.locator(".room--branch .model-select-trigger")).toHaveText(/claude-opus-5/);
+    // 幹のほうは変わらない（会話ごとに持つ）
+    await expect(trunkModel).toHaveText(/qwen3\.6-35b/);
   });
 
-  test("モデルの切替は、いま見ている会話を宛先にする", async ({ page }) => {
-    await page.locator(".thread-tab", { hasText: "別の会話" }).click();
-    await page.locator(".model-select-trigger").click();
+  test("モデルの切替は、その列の会話を宛先にする", async ({ page }) => {
+    await page.locator(".rail-hold .hold").click();
+    await page.locator(".room--branch .model-select-trigger").click();
     await page.locator(".model-select-search input").fill("Qwen");
     await page.locator(".model-select-item").click();
 
@@ -463,16 +469,14 @@ test.describe("文脈の使用量", () => {
     await expect(meter).toHaveClass(/is-full/);
   });
 
-  test("使用量は会話ごと。移ると入れ替わる", async ({ page }) => {
+  test("使用量は会話ごと。枝には枝の分だけ出る", async ({ page }) => {
     host.emit({ type: "context_state", tokens: 40000 });
-    await expect(page.locator(".context-meter")).toHaveText(/20%/);
+    await expect(page.locator(".room--trunk .context-meter")).toHaveText(/20%/);
 
-    await page.locator(".thread-tab", { hasText: "別の会話" }).click();
-    // あちらはまだターンが回っていない
-    await expect(page.locator(".context-meter")).toHaveCount(0);
-
-    await page.locator(".thread-tab").first().click();
-    await expect(page.locator(".context-meter")).toHaveText(/20%/);
+    await page.locator(".rail-hold .hold").click();
+    // 枝はまだターンが回っていない（0% と偽らない・I1）
+    await expect(page.locator(".room--branch .context-meter")).toHaveCount(0);
+    await expect(page.locator(".room--trunk .context-meter")).toHaveText(/20%/);
   });
 
   test("モデル一覧に文脈の長さが出る", async ({ page }) => {
@@ -481,43 +485,42 @@ test.describe("文脈の使用量", () => {
   });
 });
 
-test.describe("新しい会話", () => {
-  test("開いた直後からモデルが出ている", async ({ page }) => {
-    const trigger = page.locator(".model-select-trigger");
-    await expect(trigger).toHaveText(/qwen3\.6-35b/);
+test.describe("枝を開く（ADR-0017 決定77）", () => {
+  test("還す条件と理由が揃うまで開けない", async ({ page }) => {
+    await page.locator(".hold-new").click();
+    const submit = page.getByRole("button", { name: "この条件で開く" });
+    await expect(submit).toBeDisabled();
 
-    // ＋（新しい会話）を押す
-    await page.locator(".thread-new-btn").click();
-    await expect(page.locator(".thread-tab", { hasText: "新しい会話" })).toBeVisible();
+    const fields = page.locator(".nb input");
+    await fields.nth(0).fill("認証の設計");
+    await fields.nth(1).fill("方式が決まったら");
+    await fields.nth(2).fill("往復が続く");
+    await submit.click();
 
-    // 一覧が更新されただけの会話でも、モデルが空にならない
-    await expect(trigger).toHaveText(/qwen3\.6-35b/);
-    await expect(trigger).not.toHaveText(/^モデル/);
+    await expect
+      .poll(() => host.received.find((m) => m["type"] === "thread_open"))
+      .toEqual({
+        type: "thread_open",
+        title: "認証の設計",
+        returnCondition: "方式が決まったら",
+        reason: "往復が続く",
+      });
   });
 });
 
 /**
- * タブを右クリックして名前を変える（PO要望 2026-08-05）。
+ * 会話の名前を変える（PO要望 2026-08-05・決定25 の人側）。
  *
- * 見たいのは「右クリック → 名前を変える → 打って Enter」でホストへ `thread_rename` が
- * 飛び、**返ってきた一覧で**タブの字が変わること。UI 側で先に書き換えていないことも
- * 併せて見る（名前の真実はホスト。D3）。
+ * **会話のタブが無くなった**（ADR-0017 決定77）ので、名付けの口は列の頭に移した。
+ * 見たいのは「題を押して打って Enter」でホストへ `thread_rename` が飛び、
+ * **返ってきた一覧で**字が変わること。UI 側で先に書き換えていないことも併せて見る（D3）。
  */
 test.describe("会話の名前を変える", () => {
-  /** 対象のタブを右クリックして、メニューを出す。 */
-  async function openTabMenu(
-    page: import("@playwright/test").Page,
-    title: string
-  ): Promise<void> {
-    await page.locator(".thread-tab-wrap", { hasText: title }).click({ button: "right" });
-    await expect(page.locator(".thread-ctx-menu")).toBeVisible();
-  }
+  test("題を押して Enter でホストへ届き、字が変わる", async ({ page }) => {
+    await page.locator(".rail-hold .hold").click();
+    await page.locator(".room--branch .room-title").click();
 
-  test("右クリック → 名前を変える → Enter でホストへ届き、タブの字が変わる", async ({ page }) => {
-    await openTabMenu(page, "別の会話");
-    await page.locator(".thread-ctx-menu button", { hasText: "名前を変える" }).click();
-
-    const input = page.locator(".tt-rename");
+    const input = page.locator(".room--branch .tt-rename");
     await expect(input).toBeVisible();
     await expect(input).toHaveValue("別の会話");
     await input.fill("認証の設計");
@@ -526,49 +529,30 @@ test.describe("会話の名前を変える", () => {
     await expect
       .poll(() => host.received.find((m) => m["type"] === "thread_rename"))
       .toEqual({ type: "thread_rename", threadId: OTHER_THREAD_ID, title: "認証の設計" });
-    await expect(page.locator(".thread-tab", { hasText: "認証の設計" })).toBeVisible();
+    await expect(page.locator(".room--branch .room-title")).toHaveText("認証の設計");
   });
 
   test("Esc でやめると、名前は変わらずホストへも投げない", async ({ page }) => {
-    await openTabMenu(page, "別の会話");
-    await page.locator(".thread-ctx-menu button", { hasText: "名前を変える" }).click();
-    await page.locator(".tt-rename").fill("書きかけ");
-    await page.locator(".tt-rename").press("Escape");
+    await page.locator(".rail-hold .hold").click();
+    await page.locator(".room--branch .room-title").click();
+    await page.locator(".room--branch .tt-rename").fill("書きかけ");
+    await page.locator(".room--branch .tt-rename").press("Escape");
 
     await expect(page.locator(".tt-rename")).toHaveCount(0);
-    await expect(page.locator(".thread-tab", { hasText: "別の会話" })).toBeVisible();
+    await expect(page.locator(".room--branch .room-title")).toHaveText("別の会話");
     await page.waitForTimeout(200);
     expect(host.received.find((m) => m["type"] === "thread_rename")).toBeUndefined();
   });
 
   test("空にして確定しても、名前は消えない（消す操作ではない）", async ({ page }) => {
-    await openTabMenu(page, "別の会話");
-    await page.locator(".thread-ctx-menu button", { hasText: "名前を変える" }).click();
-    await page.locator(".tt-rename").fill("   ");
-    await page.locator(".tt-rename").press("Enter");
+    await page.locator(".rail-hold .hold").click();
+    await page.locator(".room--branch .room-title").click();
+    await page.locator(".room--branch .tt-rename").fill("   ");
+    await page.locator(".room--branch .tt-rename").press("Enter");
 
-    await expect(page.locator(".thread-tab", { hasText: "別の会話" })).toBeVisible();
+    await expect(page.locator(".room--branch .room-title")).toHaveText("別の会話");
     await page.waitForTimeout(200);
     expect(host.received.find((m) => m["type"] === "thread_rename")).toBeUndefined();
-  });
-
-  test("書き換えている間は、押しても会話が切り替わらない", async ({ page }) => {
-    // いま見ているのは既定の会話。隣のタブを右クリックしても、見る先は動かない
-    await openTabMenu(page, "別の会話");
-    await page.locator(".thread-ctx-menu button", { hasText: "名前を変える" }).click();
-    await page.locator(".tt-rename").click();
-
-    await expect(page.locator(".thread-tab-wrap.is-active")).toContainText("会話");
-    await expect(page.locator(".tt-rename")).toBeFocused();
-  });
-
-  test("右クリックからそのまま畳める", async ({ page }) => {
-    await openTabMenu(page, "別の会話");
-    await page.locator(".thread-ctx-menu button", { hasText: "畳む" }).click();
-
-    await expect
-      .poll(() => host.received.find((m) => m["type"] === "thread_close"))
-      .toEqual({ type: "thread_close", threadId: OTHER_THREAD_ID });
   });
 });
 
@@ -791,8 +775,8 @@ test.describe("キーだけで会話へ入る", () => {
     await page.keyboard.press("f");
     await page.keyboard.press("2");
 
-    await expect(page.locator(".thread-tab-wrap.is-active")).toContainText("別の会話");
-    await expect(page.locator(".chat-input")).toBeFocused();
+    await expect(page.locator(".room--branch .room-title")).toHaveText("別の会話");
+    await expect(page.locator(".room--branch .chat-input")).toBeFocused();
     // 符牒は畳まれている（押したら消える）
     await expect(page.locator("html")).not.toHaveClass(/is-alt/);
   });
@@ -805,8 +789,8 @@ test.describe("キーだけで会話へ入る", () => {
     await page.locator(".cp-input").press("Enter");
 
     await expect(page.locator(".cp")).toHaveCount(0);
-    await expect(page.locator(".thread-tab-wrap.is-active")).toContainText("別の会話");
-    await expect(page.locator(".chat-input")).toBeFocused();
+    await expect(page.locator(".room--branch .room-title")).toHaveText("別の会話");
+    await expect(page.locator(".room--branch .chat-input")).toBeFocused();
   });
 
   test("面を見に行くときは入力へ移さない（話しかけに行ったのではない）", async ({ page }) => {
@@ -843,7 +827,7 @@ test.describe("履歴の会話ログ", () => {
         },
       ],
     });
-    await page.locator(".pin-tab[data-key='h']").click();
+    await page.locator(".rail-btn[data-key='h']").click();
     await page.locator(".history-row", { hasText: "別の会話" }).click();
 
     const log = page.locator(".history-read-scroll");

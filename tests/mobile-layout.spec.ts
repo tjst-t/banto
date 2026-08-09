@@ -1,15 +1,17 @@
 /**
- * 狭い画面の器（スマホ幅）。
+ * 狭い画面の器（スマホ幅）。**重ねる**（ADR-0017 決定79）。
  *
- * 見たいのは**道具立てが居座ること**——キャンバスの中身をどれだけ送っても、タブ列と
- * 「開く」は上端に残る。以前はこれを `position: sticky` が付いているかで見ていたが、
- * 器は「タブ列＝伸びない枠 ＋ 中身＝自分でスクロールする箱」で組んであり、sticky は
- * 使っていない（付けても何もしない）。**姿勢ではなく振る舞いで確かめる**。
+ * 幹が地、作業する面は下から上がる紙で、上端に幹が覗く。下端の切替は無くなった
+ * ——覗きが戻り道そのものなので、同じことを2通りに持たない。
+ *
+ * 見たいのは**道具立てが居座ること**——面の中身をどれだけ送っても、タブ列と「開く」は
+ * 上端に残る。器は「タブ列＝伸びない枠 ＋ 中身＝自分でスクロールする箱」で組んであり、
+ * sticky は使っていない。**姿勢ではなく振る舞いで確かめる**。
  *
  * 前提: `npm run build:web` 済み（packages/banto-web/dist）。
  */
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import { startLayoutHost, type LayoutHost } from "./layoutHost.js";
 
 let host: LayoutHost;
@@ -27,8 +29,7 @@ test.describe("狭い画面の器", () => {
     await page.setViewportSize({ width: 390, height: 780 });
     await page.goto(`http://127.0.0.1:${host.port}/`);
     await page.waitForSelector(".shell");
-    // 狭い画面ではチャットとキャンバスが排他。キャンバス側へ移る
-    await page.locator(".mobile-footer-btn", { hasText: "キャンバス" }).click();
+    // 面が開いていれば、それが上がってきた紙として出ている（決定79）
     await expect(page.locator(".canvas-tabbar")).toBeVisible();
   });
 
@@ -37,13 +38,12 @@ test.describe("狭い画面の器", () => {
     const before = await tabbar.boundingBox();
     expect(before, "タブ列が描かれていない").not.toBeNull();
 
-    // キャンバスの中身（ファイル一覧）を送る。送れる高さが無いと検証にならない
     const scroller = page.locator(".canvas-body .cv-scroll").first();
     const moved = await scroller.evaluate((el) => {
       el.scrollTop = el.scrollHeight;
       return el.scrollTop;
     });
-    expect(moved, "キャンバスの中身が短すぎて送れていない").toBeGreaterThan(0);
+    expect(moved, "面の中身が短すぎて送れていない").toBeGreaterThan(0);
 
     const after = await tabbar.boundingBox();
     expect(after?.y).toBe(before?.y);
@@ -59,11 +59,17 @@ test.describe("狭い画面の器", () => {
     expect(overflow.y, "ページごとスクロールしている").toBeLessThanOrEqual(0);
   });
 
-  test("チャットとキャンバスは排他（下端の切替で入れ替わる）", async ({ page }: { page: Page }) => {
-    await expect(page.locator(".chat-scroll")).toBeHidden();
+  test("面は上がってきた紙。上端に幹が覗き、押すと幹へ戻る", async ({ page }) => {
+    await expect(page.locator(".work")).toHaveClass(/is-raised/);
+    // 幹は**地として在り続ける**（畳めない・決定77）
+    await expect(page.locator(".room--trunk")).toBeAttached();
 
-    await page.locator(".mobile-footer-btn", { hasText: "チャット" }).click();
-    await expect(page.locator(".chat-scroll")).toBeVisible();
-    await expect(page.locator(".canvas-tabbar")).toBeHidden();
+    const peek = page.locator(".peek");
+    await expect(peek).toBeVisible();
+    await peek.click();
+
+    await expect(page.locator(".work")).toHaveCount(0);
+    await expect(page.locator(".room--trunk .chat-scroll")).toBeVisible();
+    await expect(page.locator(".peek")).toHaveCount(0);
   });
 });

@@ -122,7 +122,14 @@ code { font-family: var(--mono); font-size: var(--t-note); }
   padding: var(--s4) var(--s6) var(--s2); min-width: 0;
 }
 .room-head-t { flex: 1; min-width: 0; }
-.room-title { font-size: var(--t-read); font-weight: 700; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-title { font-size: var(--t-read); font-weight: 700; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
+/* 名前をその場で書き換える。字の大きさは題と揃える（押した先で字が跳ねないように） */
+.tt-rename {
+  width: 100%; font-size: var(--t-read); font-weight: 700;
+  border: 0; border-radius: var(--r-seal); background: var(--paper-2);
+  padding: 1px var(--s1);
+}
+.tt-rename:focus { outline: none; box-shadow: 0 0 0 2px var(--ai); }
 .room-from { font-size: var(--t-note); color: var(--sumi-3); }
 .room-sub { font-size: var(--t-note); color: var(--sumi-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .room-back {
@@ -754,7 +761,9 @@ code { font-family: var(--mono); font-size: var(--t-note); }
   .room--branch.is-raised, .work.is-raised { transform: none; }
   .work { z-index: 25; }
   .room.is-slim { flex: 1 1 auto; }
-  .room-grip, .spine, .open-work { display: none; }
+  .room-grip, .spine { display: none; }
+  /* 下ろした紙へ戻る口。**畳んだのではなく下ろしただけ**なので、戻り道を残す */
+  .open-work { bottom: calc(var(--s5) + 84px); }
 
   /* 上端に覗く幹。**戻り道が常に見えている** */
   .peek {
@@ -1058,6 +1067,12 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 /* ══ 器：Tool の戻り値を会話の中に描く（ADR-0017 決定78・81）═══════════════
    **番頭は選ぶが、作らない。** 語彙は中核が持ち、ここはその見せ方だけを持つ。
    モジュールごとの CSS は足さない（spec-canvas-ui §10 の延長）。 */
+
+/**
+ * 器の畳み判定の器（決定78）。**ビューポートではなく会話の帯の幅**で決まるので、
+ * 細い帯でもモバイルでも同じものが効く（`spec-canvas-ui` §3 と同じ規約）。
+ */
+.talk { container-type: inline-size; container-name: talk; }
 
 .u {
   align-self: stretch; border-radius: var(--r-face); background: var(--paper);

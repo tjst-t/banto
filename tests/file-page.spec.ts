@@ -61,6 +61,9 @@ test.describe("別タブの1枚（§5.8.4）", () => {
 
 test.describe("面から別タブへの行き先", () => {
   test("Markdown は1枚へ、HTML は raw のまま", async ({ page }) => {
+    // **一覧と詳細が同時に出る幅**で見る。作業する面はレールと会話の帯を除いた残りなので、
+    // 既定の 1280 だと面の内幅が 760px を割り、一覧がドリルダウンへ切り替わる（§2）
+    await page.setViewportSize({ width: 1600, height: 900 });
     await page.goto(`http://127.0.0.1:${host.port}/`);
     await page.waitForSelector(".fb-entry");
 
@@ -84,7 +87,7 @@ test.describe("面から別タブへの行き先", () => {
 
 test.describe("整形表示の幅（§5.6）", () => {
   test("Markdown の本文が器の幅を使い切る", async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.setViewportSize({ width: 1600, height: 900 });
     await page.goto(`http://127.0.0.1:${host.port}/`);
     await page.waitForSelector(".fb-entry");
     await page.locator(".fb-entry", { hasText: "README.md" }).first().click();

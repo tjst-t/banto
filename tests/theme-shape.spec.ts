@@ -30,6 +30,9 @@ const ABSENT: Record<string, string> = {
   "canvas-more-btn": "同上",
   "canvas-more-count": "同上",
   "canvas-tab-empty": "タブが1枚も無いときだけ出る字",
+  hold: "枝が1本も開いていないときは、抱えているものの点が並ばない（ADR-0017 決定77）",
+  "hold-more": "抱えているものが6本を超えたときだけ出る「+N」",
+  "room--branch": "枝を開いているときだけ出る紙（幹の上に重ねる）",
 };
 
 /** 層が名指ししているクラス名を読み取る（`:root[data-theme…] .foo .bar` の `.foo`）。 */
@@ -83,10 +86,10 @@ test.describe("家の層が名指ししているもの（クラス名の契約�
     await page.goto(`http://127.0.0.1:${host.port}/`);
     await page.waitForSelector(".shell");
 
-    /** 家で姿が変わるもの：上段の地と、番頭の印。 */
+    /** 家で姿が変わるもの：レールの地と、番頭の印。 */
     const look = async (): Promise<{ bar: string; mark: string }> =>
       page.evaluate(() => ({
-        bar: getComputedStyle(document.querySelector(".shell-topbar")!).backgroundColor,
+        bar: getComputedStyle(document.querySelector(".rail")!).backgroundColor,
         mark: getComputedStyle(document.querySelector(".msg--banto")!, "::before").content,
       }));
 
@@ -137,10 +140,10 @@ test.describe("家の層が名指ししているもの（クラス名の契約�
       await page.reload();
       await page.waitForSelector(".canvas-tabbar");
 
-      /** 会話タブとキャンバスのタブに、札（`::before` / `::after`）が出ているか。 */
+      /** レールとキャンバスのタブに、札（`::before` / `::after`）が出ているか。 */
       const chips = async (): Promise<string[]> =>
         page.evaluate(() =>
-          [".thread-tab[data-key]", ".canvas-tab-label[data-key]"].flatMap((sel) => {
+          [".rail-trunk[data-key]", ".canvas-tab-label[data-key]"].flatMap((sel) => {
             const el = document.querySelector(sel);
             if (!el) return [];
             return (["::before", "::after"] as const)

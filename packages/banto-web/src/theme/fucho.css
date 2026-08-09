@@ -19,19 +19,21 @@
  * 出典：`prototype/redesign/05-fucho.html`
  */
 
-/* ══ 上段＝状態行。黒地に白字、屋号は藍のチップ ════════════════════════════ */
-:root[data-theme^="fucho"] .shell-topbar {
+/* ══ レール＝状態の帯。黒地に白字、屋号は藍のチップ ══════════════════════
+   会話のタブは無くなった（ADR-0017 決定77）ので、帯の住人は
+   **横断の通知・幹・抱えているもの・道具立て**に変わっている。 */
+:root[data-theme^="fucho"] .rail {
   padding: 0;
   gap: 0;
   background: var(--bar-bg);
+  border-right: 0;
   border-bottom: 0;
 }
 :root[data-theme^="fucho"] .brand {
   flex-direction: row;
   align-items: center;
   gap: 0;
-  height: 100%;
-  padding: 0 var(--s3);
+  padding: var(--s2) var(--s3);
   background: var(--ai);
 }
 :root[data-theme^="fucho"] .brand-name {
@@ -41,36 +43,31 @@
   letter-spacing: 0.06em;
   color: var(--bar-on);
 }
-/* 読み（BANTO）は状態行に収まらない。屋号だけを残す */
+/* 読み（BANTO）は状態の帯に収まらない。屋号だけを残す */
 :root[data-theme^="fucho"] .brand-sub { display: none; }
 
-/* 会話タブ：平らな矩形。右罫で区切り、選んでいるものだけ地を上げる */
-:root[data-theme^="fucho"] .thread-tabs-wrap { margin-left: 0; }
-:root[data-theme^="fucho"] .thread-tab-wrap {
-  border-right: 1px solid var(--bar-raise);
-  box-shadow: none;
-}
-:root[data-theme^="fucho"] .thread-tab-wrap.is-active {
-  background: var(--bar-raise);
-  box-shadow: none;
-}
-:root[data-theme^="fucho"] .thread-tab { color: var(--bar-ink); padding: 0 var(--s3); }
-:root[data-theme^="fucho"] .thread-tab-wrap:hover .thread-tab,
-:root[data-theme^="fucho"] .thread-tab-wrap.is-active .thread-tab { color: var(--bar-on); }
-:root[data-theme^="fucho"] .thread-tab-close { color: var(--bar-ink); }
-
-/* 右端の道具立ても状態行の住人にする */
-:root[data-theme^="fucho"] .pin-tab,
-:root[data-theme^="fucho"] .inbox-tab {
+/* 帯の住人は**平らな矩形**。選んでいるものだけ地を上げる */
+:root[data-theme^="fucho"] .rail-btn,
+:root[data-theme^="fucho"] .rail-trunk,
+:root[data-theme^="fucho"] .hold,
+:root[data-theme^="fucho"] .hold-new {
   border-radius: 0;
   color: var(--bar-ink);
 }
-:root[data-theme^="fucho"] .pin-tab:hover,
-:root[data-theme^="fucho"] .inbox-tab:hover { background: var(--bar-raise); color: var(--bar-on); }
+:root[data-theme^="fucho"] .rail-btn:hover,
+:root[data-theme^="fucho"] .rail-trunk:hover,
+:root[data-theme^="fucho"] .hold:hover,
+:root[data-theme^="fucho"] .hold-new:hover { background: var(--bar-raise); color: var(--bar-on); }
+:root[data-theme^="fucho"] .rail-btn.is-active,
+:root[data-theme^="fucho"] .rail-trunk.is-active,
+:root[data-theme^="fucho"] .hold.is-active {
+  background: var(--bar-raise);
+  color: var(--bar-on);
+}
+:root[data-theme^="fucho"] .rail-sep { background: var(--bar-raise); }
+:root[data-theme^="fucho"] .hold-more { background: var(--bar-raise); color: var(--bar-ink); border-radius: 0; }
 :root[data-theme^="fucho"] .cmdk-key { background: var(--bar-raise); color: var(--bar-ink); }
-:root[data-theme^="fucho"] .conn { color: var(--bar-ink); padding-right: var(--s3); }
-:root[data-theme^="fucho"] .thread-new-btn { color: var(--bar-ink); border-radius: 0; }
-:root[data-theme^="fucho"] .thread-new-btn:hover { background: var(--bar-raise); color: var(--bar-on); }
+:root[data-theme^="fucho"] .conn { color: var(--bar-ink); }
 
 /**
  * 符牒の札は**⌥・f のときだけ**浮く（PO裁定 2026-08-06）。
@@ -81,9 +78,9 @@
  *
  * 姿は面の側（`styles.css`）に1つだけ。ここで持つのは帯の上での置き方だけ：
  * ①輪を墨の色にする（既定は紙の色で、黒地の上では白く縁取られる）
- * ②縦の真ん中に置く（帯が 30px しかないので、上へ寄せると天地が詰まって見える）
+ * ②縦の真ん中に置く（帯が細いので、上へ寄せると天地が詰まって見える）
  */
-:root[data-theme^="fucho"].is-alt .shell-topbar [data-key]::after {
+:root[data-theme^="fucho"].is-alt .rail [data-key]::after {
   top: 50%;
   transform: translateY(-50%);
   box-shadow: 0 0 0 1px var(--bar-bg);
@@ -172,7 +169,7 @@
 :root[data-theme^="fucho"] .pane-resizer:hover::before,
 :root[data-theme^="fucho"] .pane-resizer:active::before { opacity: .5; }
 /* 罫は掴み手が持つ。チャット側の border と二重に引かない */
-:root[data-theme^="fucho"] .chat-pane { border-left: 0; }
+:root[data-theme^="fucho"] .room--branch { border-left: 0; }
 
 /* 番頭の印（`»`）とPOの吹き出しの角は `--banto-mark*` / `--bubble-radius`（トークン）。
    印の**位置**だけは組み方なので、ここで上へ揃える */

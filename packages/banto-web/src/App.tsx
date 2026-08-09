@@ -154,6 +154,20 @@ export function App(): React.ReactElement {
   const [newBranch, setNewBranch] = useState(false);
   /** 細い帯の幅（決定79）。 */
   const [slimWidth, setSlimWidth] = useState(readStoredSlimWidth);
+  /**
+   * 番頭への入力へ移る合図（PO要望 2026-08-06）。
+   *
+   * キーで会話へ飛んだのに、話しかけるのにマウスへ持ち替えるのでは近道にならない。
+   * **面を見に行くときは移さない**——見に行ったのであって、話しかけに行ったのではない。
+   */
+  const [focusReq, setFocusReq] = useState<{ threadId: string; seq: number }>();
+  /**
+   * 狭い画面で、上がっていた紙を下ろしたか（決定79）。
+   *
+   * **面は畳まない**——覗きを押したら「幹へ戻る」であって「面を閉じる」ではない。
+   * 閉じてしまうと、戻ったときに開き直す手間が増える（面は抱えたまま残る）。
+   */
+  const [lowered, setLowered] = useState(false);
 
   const historyOpen = view.face === "history";
   const settingsOpen = view.face === "settings";
@@ -198,12 +212,20 @@ export function App(): React.ReactElement {
 
   /** 会話を移る（枝の札・レールの点・取次から）。 */
   const openThread = useCallback(
-    (threadId: string) => {
+    (threadId: string, options: { focus?: boolean } = {}) => {
       setHoldOpen(false);
       backToChat();
       session.switchThread(threadId);
+      if (options.focus) {
+        setFocusReq((prev) => ({ threadId, seq: (prev?.seq ?? 0) + 1 }));
+      }
     },
     [session, backToChat]
+  );
+  /** その列へ入力の合図が出ているか。 */
+  const focusSeqOf = useCallback(
+    (threadId: string): number => (focusReq?.threadId === threadId ? focusReq.seq : 0),
+    [focusReq]
   );
 
   /**
@@ -299,22 +321,6 @@ export function App(): React.ReactElement {
     return () => document.removeEventListener("click", close);
   }, [tabMenuOpen]);
 
-  /**
-   * Esc で1枚ずつ剥がす（重なりの順に：面 → 枝 → 被さる面）。
-   * **入力中の Esc は IME の変換取り消しに使われる**ので、変換中は何もしない。
-   */
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key !== "Escape" || e.isComposing) return;
-      if (holdOpen) return setHoldOpen(false);
-      if (newBranch) return setNewBranch(false);
-      if (faceOpen) return backToChat();
-      if (session.activeTabId) return session.closeTab(session.activeTabId);
-      if (branch && trunk) return openThread(trunk.threadId);
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [holdOpen, newBranch, faceOpen, backToChat, session, branch, trunk, openThread]);
 
   /**
    * キャンバスのタブ：URL とホストを合わせる。
@@ -419,7 +425,34 @@ export function App(): React.ReactElement {
   const heldShown = held.slice(0, 6);
   const heldRest = held.length - heldShown.length;
 
+  // 面を開いた／移ったら紙は上がり直す（番頭が開いたのに何も見えないのが一番困る）
+  useEffect(() => {
+    if (activeTabId) setLowered(false);
+  }, [activeTabId]);
+
   const workOpen = activeTab !== undefined && ActiveView !== undefined;
+  /** 狭い画面では、下ろした紙は出さない（幹が地として残る）。 */
+  const showWork = activeTab !== undefined && !(narrow && lowered);
+
+  /**
+   * Esc で1枚ずつ剥がす（重なりの順に：面 → 枝 → 被さる面）。
+   * **入力中の Esc は IME の変換取り消しに使われる**ので、変換中は何もしない。
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== "Escape" || e.isComposing) return;
+      if (holdOpen) return setHoldOpen(false);
+      if (newBranch) return setNewBranch(false);
+      if (faceOpen) return backToChat();
+      // **面は畳まない。** Esc は「1枚剥がす」であって「閉じる」ではない——閉じてしまうと、
+      // 戻ったときに開き直す手間が増える（面は抱えたまま残る・決定79）。
+      // 広い画面では面と会話が並んでいるので、剥がすものは枝だけ
+      if (narrow && showWork) return setLowered(true);
+      if (branch && trunk) return openThread(trunk.threadId);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [holdOpen, newBranch, faceOpen, backToChat, narrow, showWork, branch, trunk, openThread]);
   /** 作業する面が開いたら、いま居た会話が細い帯になる（決定79）。 */
   const slim = workOpen && !narrow;
 
@@ -497,7 +530,7 @@ export function App(): React.ReactElement {
         closedThreads={session.mergedBranches}
         catalog={openableCatalog}
         inbox={session.inbox}
-        onOpenThread={openThread}
+        onOpenThread={(id) => openThread(id, { focus: true })}
         onReopenThread={(id) => session.reopenThread(id)}
         onOpenView={(kind) => {
           followOpenedTab.current = true;
@@ -540,8 +573,9 @@ export function App(): React.ReactElement {
           <button
             className={`rail-trunk ${!branch ? "is-active" : ""}`}
             type="button"
-            onClick={() => openThread(trunk.threadId)}
+            onClick={() => openThread(trunk.threadId, { focus: true })}
             title={`${trunk.title}（プロジェクトの幹）`}
+            data-key="1"
           >
             <Icon name="home" size={16} />
             <span className="rail-label">幹</span>
@@ -550,12 +584,14 @@ export function App(): React.ReactElement {
 
         {/* 抱えているもの。**点で並ぶので、押さなくても本数と状態が分かる** */}
         <div className="rail-hold">
-          {heldShown.map((h) => (
+          {heldShown.map((h, i) => (
             <button
               key={h.threadId}
               className={`hold ${branch?.threadId === h.threadId ? "is-active" : ""}`}
               type="button"
-              onClick={() => openThread(h.threadId)}
+              /* 符牒。会話のタブが無くなったので、幹は 1、枝は 2 から振る */
+              data-key={String(i + 2)}
+              onClick={() => openThread(h.threadId, { focus: true })}
               title={`${h.title}${h.meta ? ` — 還す条件：${h.meta}` : ""}`}
               aria-label={h.title}
             >
@@ -714,6 +750,7 @@ export function App(): React.ReactElement {
               }}
               {...(slim && !branch ? { onGrip: startResize } : {})}
               {...(branch ? { activeBranchId: branch.threadId } : {})}
+              focusSeq={focusSeqOf(trunk.threadId)}
             />
           )}
 
@@ -739,12 +776,13 @@ export function App(): React.ReactElement {
               }}
               {...(slim ? { onGrip: startResize } : {})}
               activeBranchId={branch.threadId}
+              focusSeq={focusSeqOf(branch.threadId)}
             />
           )}
 
           {/* ── 作業する面：**手前を背表紙に畳んで全幅を使う**（決定79）───────
               400px の列に押し込まない。探す・移動する・比べるには幅が要る */}
-          {activeTab && (
+          {showWork && activeTab && (
             <section className={`work canvas-pane ${narrow ? "is-raised" : ""}`}>
               <div className="canvas-tabbar">
                 <div className="canvas-tabstrip" ref={tabOverflow.stripRef}>
@@ -817,18 +855,19 @@ export function App(): React.ReactElement {
           )}
 
           {/* 狭いときに上端へ覗く幹。**戻り道が常に見えている**（決定79） */}
-          {narrow && (branch || activeTab) && (
+          {narrow && (branch || showWork) && (
             <button
               className="peek"
               type="button"
               onClick={() => {
-                if (activeTab) session.closeTab(activeTab.id);
+                // 重なりの順に1枚ずつ下ろす。**面は畳まない**（抱えたまま残る）
+                if (showWork) setLowered(true);
                 else if (trunk) openThread(trunk.threadId);
               }}
             >
               <span>▲ {trunk.title} に戻る</span>
               <span className="peek-sp" />
-              <span className="peek-now">{activeTab ? activeTab.title : branch?.title}</span>
+              <span className="peek-now">{showWork && activeTab ? activeTab.title : branch?.title}</span>
             </button>
           )}
         </div>
@@ -937,16 +976,16 @@ export function App(): React.ReactElement {
 
       {/* 何も開いていないときに、そのまま押せる札を並べる（決定25の人側の経路）。
           **タブ列とは別の器**——面が1枚も無いときは作業する間そのものが無い */}
-      {!faceOpen && trunk && !activeTab && openableCatalog.length > 0 && (
+      {!faceOpen && trunk && !showWork && openableCatalog.length > 0 && (
         <button
           className="open-work"
           type="button"
-          onClick={() => setCatalogOpen(true)}
-          title="作業する面を開く"
+          onClick={() => (activeTab ? setLowered(false) : setCatalogOpen(true))}
+          title={activeTab ? "作業する面へ戻る" : "作業する面を開く"}
           data-key="o"
         >
           <Icon name="canvas" size={15} />
-          面を開く
+          {activeTab ? "面へ戻る" : "面を開く"}
         </button>
       )}
     </div>

@@ -251,7 +251,8 @@ function query(page: Page): URLSearchParams {
 
 /** いま活性の会話タブ（活性の印はタブを包む側に付く）。 */
 function activeThreadTitle(page: Page) {
-  return page.locator(".thread-tab-wrap.is-active");
+  // 会話のタブは無い（ADR-0017 決定77）。**いま見ている列の頭**が「どこに居るか」
+  return page.locator(".room").last().locator(".room-title");
 }
 
 /**
@@ -268,7 +269,7 @@ test.describe("開いている会話", () => {
   test("選んだ会話が URL に残り、リロードしても戻ってくる", async ({ page }) => {
     await expect(activeThreadTitle(page)).toHaveText(/会話A/);
 
-    await page.locator(".thread-tab", { hasText: "会話B" }).click();
+    await page.locator(".rail-hold .hold").click();
     await expect(activeThreadTitle(page)).toHaveText(/会話B/);
     expect(query(page).get("thread")).toBe(THREAD_B);
 
@@ -280,7 +281,7 @@ test.describe("開いている会話", () => {
   });
 
   test("戻る／進むで会話を行き来できる", async ({ page }) => {
-    await page.locator(".thread-tab", { hasText: "会話B" }).click();
+    await page.locator(".rail-hold .hold").click();
     await expect(activeThreadTitle(page)).toHaveText(/会話B/);
 
     await page.goBack();
@@ -357,19 +358,20 @@ test.describe("キャンバスの開いているGUI", () => {
     await page.locator(".canvas-tab-label", { hasText: "時計" }).click();
     await expect(page.locator(".canvas-tab.is-active")).toHaveText(/時計/);
 
-    await page.locator(".thread-tab", { hasText: "会話B" }).click();
-    // 会話Bにはタブが無い。前の会話のタブを持ち越さない
-    await expect(page.locator(".canvas-tab-empty")).toBeVisible();
+    await page.locator(".rail-hold .hold").click();
+    // 会話Bにはタブが無い。前の会話のタブを持ち越さない——**作業する面ごと出ない**
+    // （ADR-0017 決定79：面は会話ごとのキャンバスに載る）
+    await expect(page.locator(".work")).toHaveCount(0);
     await expectQuery(page, "tab").toBe(null);
 
-    await page.locator(".thread-tab", { hasText: "会話A" }).click();
+    await page.locator(".rail-trunk").click();
     await expect(page.locator(".canvas-tab.is-active")).toHaveText(/時計/);
   });
 });
 
 test.describe("設定・履歴の面", () => {
   test("開いていた区画までリロードで戻ってくる", async ({ page }) => {
-    await page.locator(".pin-tab[data-key='s']").click();
+    await page.locator(".rail-btn[data-key='s']").click();
     await expect(page.locator(".sp-nav")).toBeVisible();
     expect(query(page).get("view")).toBe("settings");
 
@@ -382,7 +384,7 @@ test.describe("設定・履歴の面", () => {
   });
 
   test("戻るで設定から会話へ帰り、進むでまた設定へ", async ({ page }) => {
-    await page.locator(".pin-tab[data-key='s']").click();
+    await page.locator(".rail-btn[data-key='s']").click();
     await expect(page.locator(".sp-nav")).toBeVisible();
 
     await page.goBack();
@@ -393,7 +395,7 @@ test.describe("設定・履歴の面", () => {
   });
 
   test("Esc で会話へ戻る（面は履歴に積まれているので進むで開き直せる）", async ({ page }) => {
-    await page.locator(".pin-tab[data-key='s']").click();
+    await page.locator(".rail-btn[data-key='s']").click();
     await expect(page.locator(".sp-nav")).toBeVisible();
 
     await page.keyboard.press("Escape");
@@ -405,7 +407,7 @@ test.describe("設定・履歴の面", () => {
   });
 
   test("履歴の面もリロードで戻ってくる", async ({ page }) => {
-    await page.locator(".pin-tab[data-key='h']").click();
+    await page.locator(".rail-btn[data-key='h']").click();
     await expect(page.locator(".history-view")).toBeVisible();
     expect(query(page).get("view")).toBe("history");
 

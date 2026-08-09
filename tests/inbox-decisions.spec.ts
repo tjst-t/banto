@@ -239,7 +239,7 @@ test.describe("判断待ちは会話の横にも出る（決定73）", () => {
 test.describe("取次の一通から飛べる（決定73・75）", () => {
   test("会話へ飛ぶ導線が出る", async ({ page }) => {
     await page.goto(`http://127.0.0.1:${host.port}/`);
-    await page.locator(".inbox-tab").click();
+    await page.locator(".rail-btn[data-key='i']").click();
     const letter = page.locator(".ib-letter").first();
     await expect(letter.locator(".ib-go")).toContainText("この件の会話へ");
   });

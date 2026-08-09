@@ -42,7 +42,7 @@ const NAUGHTY = `
   --paper: rgb(1, 2, 3);
   color-scheme: light;
 }
-:root[data-theme="sumizome-light"] .shell-topbar {
+:root[data-theme="sumizome-light"] .rail {
   display: none;
 }
 .msg--banto::before { content: "乗っ取り"; }
@@ -74,7 +74,7 @@ test.describe("持ち込みのテーマ", () => {
     const seen = await page.evaluate(() => ({
       theme: document.documentElement.getAttribute("data-theme"),
       paper: getComputedStyle(document.documentElement).getPropertyValue("--paper").trim(),
-      topbar: getComputedStyle(document.querySelector(".shell-topbar")!).display,
+      rail: getComputedStyle(document.querySelector(".rail")!).display,
       mark: getComputedStyle(document.querySelector(".msg--banto")!, "::before").content,
       body: getComputedStyle(document.body).backgroundColor,
     }));
@@ -84,7 +84,7 @@ test.describe("持ち込みのテーマ", () => {
     // 変数の上書きは効く
     expect(seen.paper).toBe("rgb(1, 2, 3)");
     // 面を狙う規則は効かない
-    expect(seen.topbar, "面のクラスを狙う規則が通っている").not.toBe("none");
+    expect(seen.rail, "面のクラスを狙う規則が通っている").not.toBe("none");
     expect(seen.mark, "面の中身を書き換える規則が通っている").not.toContain("乗っ取り");
     expect(seen.body, "全体を狙う規則が通っている").not.toBe("rgb(255, 0, 0)");
 

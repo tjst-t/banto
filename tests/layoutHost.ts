@@ -166,10 +166,28 @@ export async function startLayoutHost(themes?: UserThemeFixture): Promise<Layout
   const port = typeof address === "object" && address ? address.port : 0;
   const sockets = new Set<WebSocket>();
 
+  /** 開いている面（会話ごと）。**閉じたら閉じたまま**にしないと、器の姿を確かめられない */
+  let tabs = [
+    { id: "tab-1", kind: "file.browser", title: "ファイル", params: {}, rev: 1 },
+    { id: "tab-2", kind: "file.browser", title: "もう一枚", params: {}, rev: 1 },
+  ];
+
   wss.on("connection", (socket) => {
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
     const send = (event: unknown): void => socket.send(JSON.stringify(event));
+    // POが面を畳んだら畳む（D3：真実はホスト側）
+    socket.on("message", (raw) => {
+      const message = JSON.parse(String(raw)) as { type?: string; tabId?: string };
+      if (message.type !== "canvas_close") return;
+      tabs = tabs.filter((t) => t.id !== message.tabId);
+      send({
+        type: "canvas_state",
+        threadId: THREAD_ID,
+        tabs,
+        activeTabId: tabs[tabs.length - 1]?.id,
+      });
+    });
     send({
       type: "welcome",
       sessionId: "fake",
@@ -218,11 +236,8 @@ export async function startLayoutHost(themes?: UserThemeFixture): Promise<Layout
       type: "canvas_state",
       threadId: THREAD_ID,
       /* 2枚開けておく。タブの区切りと符牒の札は、1枚だけだと確かめられない */
-      tabs: [
-        { id: "tab-1", kind: "file.browser", title: "ファイル", params: {}, rev: 1 },
-        { id: "tab-2", kind: "file.browser", title: "もう一枚", params: {}, rev: 1 },
-      ],
-      activeTabId: "tab-1",
+      tabs,
+      activeTabId: tabs[0]?.id,
     });
   });
 
