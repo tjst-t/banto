@@ -352,8 +352,19 @@ export class ThreadRegistry {
   async restore(): Promise<void> {
     if (!this.store) return;
     const stored = this.store.threads();
-    // 幹を先に決める。**枝より先に読む**——枝は親を指すので、順序が逆だと親が居ない
-    let trunkId = stored.find((t) => t.kind === "trunk")?.id;
+    /**
+     * 幹を先に決める。**枝より先に読む**——枝は親を指すので、順序が逆だと親が居ない。
+     *
+     * 古い索引（幹と枝より前）には `kind` が無いので、ここで1本を幹に選ぶ。
+     * **並びの先頭ではなく「開いている先頭」**——古い索引は畳んだ会話から並ぶので、
+     * 先頭を取ると**畳まれた幹**ができてしまう（幹は永続・畳まない。決定77）。
+     * 1本も開いていなければ、最後に畳んだものを幹として開き直す——幹の無い店は無い。
+     */
+    const chosenTrunk =
+      stored.find((t) => t.kind === "trunk") ??
+      stored.find((t) => t.state === "open") ??
+      [...stored].sort((a, b) => (b.closedAt ?? "").localeCompare(a.closedAt ?? ""))[0];
+    let trunkId = chosenTrunk?.id;
     const ordered = trunkId
       ? [...stored].sort((a, b) => (a.id === trunkId ? -1 : b.id === trunkId ? 1 : 0))
       : stored;
@@ -364,7 +375,7 @@ export class ThreadRegistry {
         // ——pre-release なので移行表は作らないが、黙って会話を失わせもしない（I2）。
         // 還す条件が無い枝は帳簿として成り立たない（決定77）ので、遡って書けない以上
         // 「読み戻した」ことが分かる条件を入れる
-        const kind = saved.kind ?? (trunkId === undefined ? "trunk" : "branch");
+        const kind = saved.kind ?? (saved.id === trunkId ? "trunk" : "branch");
         const legacy =
           kind === "branch" && !saved.returnCondition
             ? {
@@ -395,7 +406,8 @@ export class ThreadRegistry {
           ...(parts.dispose ? { dispose: parts.dispose } : {}),
         });
         thread.transcript = this.store.transcript(saved.id);
-        if (saved.state === "closed") {
+        // **幹は畳まない**（決定77）。畳まれた記録が残っていても開いて戻す
+        if (saved.state === "closed" && thread.kind === "branch") {
           thread.state = "closed";
           if (saved.closedAt) thread.closedAt = saved.closedAt;
         }
@@ -417,7 +429,33 @@ export class ThreadRegistry {
       }
     }
     this.refreshDefault();
+    this.repairTrunkCards();
     this.emit();
+  }
+
+  /**
+   * 幹に札の無い枝へ、札を立て直す（決定77 の不変条件）。
+   *
+   * > 開いている枝は、必ず ①幹の札 ②横断の通知 ③レールの点 のどれかに出ている。
+   *
+   * **読み戻したときだけ効く。** 新しく開いた枝は `open` が札を立てるので、ここを通るのは
+   * 幹と枝より前の会話だけ——遡って立てられない以上、いま末尾に立てる。幹は追記のみ（D3）
+   * なので、過去の位置には差し込まない。
+   */
+  private repairTrunkCards(): void {
+    const trunk = this.trunk();
+    if (!trunk) return;
+    const carded = new Set(
+      trunk.transcript
+        .filter((e): e is Extract<TranscriptEntry, { role: "branch" }> => e.role === "branch")
+        .map((e) => e.branchId)
+    );
+    const missing = this.list({ state: "open", kind: "branch" }).filter((b) => !carded.has(b.id));
+    if (missing.length === 0) return;
+    for (const branch of missing) trunk.record({ role: "branch", branchId: branch.id });
+    // I2: 黙って直さない。何本立て直したかはログに出す（次の起動で 0 になるはず）
+    console.log(`[banto] 幹に札の無い枝 ${missing.length} 本に札を立てました（決定77）`);
+    this.flush(trunk);
   }
 
   /** 記録とキャンバスの変更を保存に繋ぐ。 */

@@ -147,3 +147,84 @@ describe("[task-0036] 壊れた保存で黙って会話を失わない（I2）",
  * （ADR-0017 決定77）。枝は生まれた瞬間に幹へ札が立ち、畳むには結論が要るので、
  * 空の器が保存先に並ぶ経路そのものが無い。詳細は `banto-threads.spec.ts`。
  */
+
+/**
+ * [task-0088] 幹と枝より前の索引を読み戻す（ADR-0017 決定77）。
+ *
+ * 実運用の索引は**畳んだ会話から並んでいる**ので、「並びの先頭を幹」にすると
+ * 畳まれた幹ができる——幹は永続で畳まない、が最初の起動で破れる。
+ */
+describe("[task-0088] 古い索引（kind の無い会話）を読み戻す", () => {
+  /** kind を持たない索引を直に書く（幹と枝より前の形）。 */
+  function writeLegacyIndex(threads: Array<Record<string, unknown>>): void {
+    fs.writeFileSync(
+      path.join(dir, "index.json"),
+      JSON.stringify({ version: 1, counter: threads.length, threads }, null, 2)
+    );
+  }
+
+  it("[task-0088] 畳んだ会話が先頭でも、幹に選ばれるのは開いている会話", async () => {
+    writeLegacyIndex([
+      { id: "thread-1", title: "はじめの会話", state: "closed", createdAt: "2026-07-01T00:00:00.000Z", closedAt: "2026-07-02T00:00:00.000Z" },
+      { id: "thread-2", title: "会話 2", state: "closed", createdAt: "2026-07-03T00:00:00.000Z", closedAt: "2026-07-04T00:00:00.000Z" },
+      { id: "thread-3", title: "いまの話", state: "open", createdAt: "2026-08-01T00:00:00.000Z" },
+      { id: "thread-4", title: "別の話", state: "open", createdAt: "2026-08-02T00:00:00.000Z" },
+    ]);
+
+    const registry = new ThreadRegistry(factoryRecording([]), new ThreadStore(dir));
+    await registry.restore();
+
+    const trunk = registry.trunk();
+    assert.ok(trunk, "幹が1本ある");
+    assert.equal(trunk.id, "thread-3", "開いている先頭が幹");
+    assert.equal(trunk.state, "open", "幹は畳まれていない");
+    assert.equal(registry.list({ kind: "trunk" }).length, 1);
+
+    // 残りは枝。**還す条件は遡って書けない**ので、読み戻したことが分かる条件が入る
+    const branch = registry.resolve("thread-4");
+    assert.equal(branch.kind, "branch");
+    assert.equal(branch.parentId, trunk.id);
+    assert.match(branch.returnCondition ?? "", /幹と枝より前/u);
+    // 畳んでいた会話は畳んだまま（枝として履歴に残る）
+    assert.equal(registry.resolve("thread-1").state, "closed");
+  });
+
+  it("[task-0088] 読み戻した枝にも幹の札が立つ（埋没しない不変条件）", async () => {
+    writeLegacyIndex([
+      { id: "thread-1", title: "いまの話", state: "open", createdAt: "2026-08-01T00:00:00.000Z" },
+      { id: "thread-2", title: "別の話", state: "open", createdAt: "2026-08-02T00:00:00.000Z" },
+    ]);
+
+    const registry = new ThreadRegistry(factoryRecording([]), new ThreadStore(dir));
+    await registry.restore();
+
+    for (const seen of registry.branchVisibility()) {
+      assert.ok(seen.trunkCard, `枝 ${seen.title} の札が幹に無い`);
+      assert.ok(seen.visible);
+    }
+
+    // 二度目の起動で札が二重にならない（追記のみ・D3）
+    registry.flushAll();
+    const again = new ThreadRegistry(factoryRecording([]), new ThreadStore(dir));
+    await again.restore();
+    const cards = again.trunk()!.transcript.filter((e) => e.role === "branch");
+    assert.equal(cards.length, 1);
+  });
+
+  it("[task-0088] 全部畳まれていても幹は開いて戻す（幹の無い店は無い）", async () => {
+    writeLegacyIndex([
+      { id: "thread-1", title: "古い話", state: "closed", createdAt: "2026-07-01T00:00:00.000Z", closedAt: "2026-07-02T00:00:00.000Z" },
+      { id: "thread-2", title: "最後の話", state: "closed", createdAt: "2026-07-03T00:00:00.000Z", closedAt: "2026-08-01T00:00:00.000Z" },
+    ]);
+
+    const registry = new ThreadRegistry(factoryRecording([]), new ThreadStore(dir));
+    await registry.restore();
+
+    const trunk = registry.trunk();
+    assert.ok(trunk, "幹が1本ある");
+    assert.equal(trunk.id, "thread-2", "最後に畳んだものを幹にする");
+    assert.equal(trunk.state, "open");
+    assert.equal(registry.defaultThreadId, "thread-2");
+  });
+});
+
