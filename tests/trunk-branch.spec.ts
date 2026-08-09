@@ -464,7 +464,7 @@ test.describe("[task-0088/a11,a12] 作業する面", () => {
     await expect(page.locator(".work")).toHaveCount(0);
 
     // 枝から開く → 枝が細い帯として左に残り、幹は背表紙になる
-    await page.locator(".canvas-catalog-btn, .open-work").first().click();
+    await page.locator(".rail-work").click();
     await page.locator(".catalog-item", { hasText: "ファイル" }).first().click();
     await expect(page.locator(".work")).toBeVisible();
     await expect(page.locator(".room--branch")).toBeVisible();

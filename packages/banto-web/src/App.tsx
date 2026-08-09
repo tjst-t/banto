@@ -619,6 +619,24 @@ export function App(): React.ReactElement {
           </button>
         </div>
 
+        {/*
+          作業する面もレールの住人（決定79）——**行き先の帯**に置く。
+          浮かせる札にすると入力欄に被さるので、置き場をここに1つ持つ。
+          下ろしただけの紙は「面へ戻る」で上げ直す（畳んだのではない）。
+        */}
+        {openableCatalog.length > 0 && !showWork && (
+          <button
+            className="rail-btn rail-work"
+            type="button"
+            onClick={() => (activeTab ? setLowered(false) : setCatalogOpen(true))}
+            title={activeTab ? "作業する面へ戻る" : "作業する面を開く"}
+            data-key="o"
+          >
+            <Icon name="canvas" size={16} />
+            <span className="rail-label">{activeTab ? "面へ戻る" : "面を開く"}</span>
+          </button>
+        )}
+
         <span className="rail-sp" />
 
         <button
@@ -974,20 +992,6 @@ export function App(): React.ReactElement {
         </Modal>
       )}
 
-      {/* 何も開いていないときに、そのまま押せる札を並べる（決定25の人側の経路）。
-          **タブ列とは別の器**——面が1枚も無いときは作業する間そのものが無い */}
-      {!faceOpen && trunk && !showWork && openableCatalog.length > 0 && (
-        <button
-          className="open-work"
-          type="button"
-          onClick={() => (activeTab ? setLowered(false) : setCatalogOpen(true))}
-          title={activeTab ? "作業する面へ戻る" : "作業する面を開く"}
-          data-key="o"
-        >
-          <Icon name="canvas" size={15} />
-          {activeTab ? "面へ戻る" : "面を開く"}
-        </button>
-      )}
     </div>
   );
 }

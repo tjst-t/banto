@@ -157,15 +157,8 @@ code { font-family: var(--mono); font-size: var(--t-note); }
   align-self: center; flex: none; font-size: var(--t-note); color: var(--sumi-3);
   padding: 0 var(--s2); white-space: nowrap;
 }
-/* 面が1枚も無いときの入口。**タブ列とは別の器**（横に流せる箱に入れない） */
-.open-work {
-  position: fixed; right: var(--s5); bottom: var(--s5); z-index: 50;
-  display: inline-flex; align-items: center; gap: 6px; height: var(--h-ctl-sm);
-  padding: 0 var(--s3); border: 1px solid var(--rule); border-radius: var(--r-ctl);
-  background: var(--paper-1); color: var(--sumi-3); cursor: pointer;
-  font: inherit; font-size: var(--t-meta); box-shadow: var(--shadow-pop);
-}
-.open-work:hover { color: var(--ai); }
+/* 面を開く口はレールの住人（行き先の帯）。**浮かせない**——入力欄に被さる */
+.rail-work { color: var(--ai); }
 
 /* 狭いときに上端へ覗く幹。**戻り道が常に見えている**（決定79） */
 .peek { display: none; }
@@ -731,7 +724,9 @@ code { font-family: var(--mono); font-size: var(--t-note); }
   .rail .conn { font-size: 0; gap: 0; }
   /* 狭いところでは点と数字だけ。**名前は帯の外に出す**（押せば分かる） */
   .rail .rail-label, .rail .cmdk-key { display: none; }
-  .rail-hold { flex-direction: row; gap: 2px; }
+  /* 帯の住人は**縮まない**。縮ませると隣に重なって、押したものと違うものが反応する */
+  .rail-hold { flex-direction: row; gap: 2px; flex: none; }
+  .rail-hold > * { flex: none; }
   .rail-sp { flex: 1; min-height: 0; }
   .conn { padding: 0; }
 
@@ -762,8 +757,6 @@ code { font-family: var(--mono); font-size: var(--t-note); }
   .work { z-index: 25; }
   .room.is-slim { flex: 1 1 auto; }
   .room-grip, .spine { display: none; }
-  /* 下ろした紙へ戻る口。**畳んだのではなく下ろしただけ**なので、戻り道を残す */
-  .open-work { bottom: calc(var(--s5) + 84px); }
 
   /* 上端に覗く幹。**戻り道が常に見えている** */
   .peek {
