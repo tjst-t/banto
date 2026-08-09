@@ -22,6 +22,7 @@ import {
   type HostSession,
   type ServerEvent,
 } from "@banto/host";
+import { TRUNK } from "./threadSpecs.js";
 
 const HELLO: CanvasViewSpec = {
   kind: "demo.hello",
@@ -361,7 +362,7 @@ describe("[task-0012/a4] キャンバス状態のWS配信", () => {
       tools: createCanvasTools(canvas, catalog),
       canvas,
     }));
-    await threads.open();
+    await threads.open(TRUNK);
     server = await BantoHostServer.start({ threads, port: 0, catalog });
     return `ws://localhost:${server.port}${BANTO_WS_PATH}`;
   }
@@ -419,7 +420,7 @@ describe("[task-0014] POが直接タブを操作する経路", () => {
       tools: createCanvasTools(canvas, catalog),
       canvas,
     }));
-    await threads.open();
+    await threads.open(TRUNK);
     server = await BantoHostServer.start({ threads, port: 0, catalog });
     return `ws://localhost:${server.port}${BANTO_WS_PATH}`;
   }

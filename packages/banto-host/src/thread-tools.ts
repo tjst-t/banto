@@ -59,23 +59,45 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     name: "thread.open",
     label: "Thread: Open",
     description:
-      "新しい会話スレッド（分身）を開く。関心事が別なら会話を分けると、割り込みで元の話が" +
-      "壊れない。**既に開いている会話とキャンバスには何も起きない**。" +
-      "message を渡すと、その分身が最初の一言を受け取って動き出す。",
+      "**枝**を開く（ADR-0017 決定77）。継続的な議論・調査になると見たときに自分で開いてよく、" +
+      "POが明示したときも開く。開いた瞬間に**幹へ札が1行**立つので、埋没しない。" +
+      "**既に開いている幹・枝とそのキャンバスには何も起きない**。" +
+      "message を渡すと、その枝が最初の一言を受け取って動き出す。\n" +
+      "**還す条件を書けないものは枝にしない**（幹で話す）。枝の中に枝は開けない" +
+      "——枝が別の枝を要するなら、いまの枝を畳んで幹へ還してから開き直す。",
     parameters: Type.Object({
-      title: Type.Optional(
-        Type.String({ description: "会話の名前。何の話かが一目で分かる短い語にする" })
-      ),
+      title: Type.String({
+        description: "枝の名前。何の話かが一目で分かる短い語にする",
+      }),
+      returnCondition: Type.String({
+        description:
+          "**還す条件**。何が決まれば幹に還るかを1行で書く（例：「再現条件が特定できたら」）。" +
+          "書けないなら枝にせず、幹で話すこと",
+      }),
+      reason: Type.String({
+        description:
+          "**開いた理由**。なぜ幹ではなくここで話すのかを1行で。札に出るのでPOが読む",
+      }),
       message: Type.Optional(
         Type.String({
           description:
-            "新しい分身へ渡す最初の一言。分身は記憶を共有するが**この会話の文脈は持たない**ため、" +
+            "新しい枝へ渡す最初の一言。枝は記憶を共有するが**この会話の文脈は持たない**ため、" +
             "何をしてほしいかを書き切ること",
         })
       ),
     }),
     async execute(params) {
-      const thread = await options.threads.open(params.title);
+      // 番頭が開いたので openedBy は banto。深さ1段は帳簿が実行時に縛る（決定77）
+      const thread = await options.threads.open(
+        {
+          kind: "branch",
+          title: params.title,
+          returnCondition: params.returnCondition,
+          openedBy: "banto",
+          reason: params.reason,
+        },
+        options.threadId
+      );
       if (params.message && options.seed) {
         // 種を蒔くのは開いたあと。失敗しても開いたことは取り消さない
         // ——スレッドは既にあるので、握りつぶすと「開いたのに誰も知らない」になる（I2）
@@ -85,7 +107,47 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
         content: [
           {
             type: "text" as const,
-            text: `新しい会話を開きました: ${thread.title} (threadId: ${thread.id})`,
+            text:
+              `枝「${thread.title}」を開きました (threadId: ${thread.id})。` +
+              `還す条件：${params.returnCondition}。幹に札を立てました`,
+          },
+        ],
+        details: thread.view(),
+      };
+    },
+  });
+
+  /**
+   * 枝を畳んで幹へ還す（決定77）。
+   *
+   * **出口は「結論」であって「実装」ではない**——incident を起票し task を積んだ時点で
+   * 畳む。実装の寿命まで開いておくと、結局 Slack になる。**保留も結論の一種**として
+   * 「保留：理由」で畳み、開き直せるようにする。
+   *
+   * 宛先は**自分の枝に固定**する（決定35a と同じ理由）。
+   */
+  const merge = defineNamespacedTool({
+    name: "thread.merge",
+    label: "Thread: Merge",
+    description:
+      "**いまのこの枝**を畳んで幹へ還す。幹の末尾に結論が1行積まれ、この枝は履歴へ移る" +
+      "（中身は消えず、開き直せる）。還す条件を満たしたら畳むこと。" +
+      "**出口は結論であって実装ではない**——incident を起票し task を積んだ時点で畳む。" +
+      "決めきれないものは「保留：理由」で畳んでよい。幹は畳めない。",
+    parameters: Type.Object({
+      conclusion: Type.String({
+        description:
+          "**結論の1行**。幹に残るのはこれだけなので、何が決まったかを言い切る" +
+          "（例：「inc-0048 を起票し task-0091 を積んだ」「保留：計測が足りない」）",
+      }),
+    }),
+    async execute(params) {
+      const thread = options.threads.merge(options.threadId, params.conclusion);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `枝「${thread.title}」を畳んで幹へ還しました。結論：${thread.conclusion}`,
           },
         ],
         details: thread.view(),
@@ -128,18 +190,19 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     name: "thread.list",
     label: "Thread: List",
     description:
-      "開いている会話（分身）の一覧を返す。いま何本の話が並行しているかを確かめたいときに使う。" +
-      "「＊」が付いているのが**いまのこの会話**。",
+      "幹と、開いている枝の一覧を返す。いま何本の話が並行しているかと、それぞれの" +
+      "**還す条件**を確かめたいときに使う。「＊」が付いているのが**いまのこの会話**。",
     parameters: Type.Object({}),
     async execute() {
-      const threads = options.threads.list();
+      const threads = options.threads.list({ state: "open" });
       const text =
         threads.length === 0
           ? "開いている会話はありません"
           : threads
               .map(
                 (t) =>
-                  `${t.isDefault ? "◎" : "○"} ${t.title} (threadId: ${t.id})` +
+                  `${t.kind === "trunk" ? "幹" : "枝"} ${t.title} (threadId: ${t.id})` +
+                  `${t.returnCondition ? ` — 還す条件：${t.returnCondition}` : ""}` +
                   `${t.id === options.threadId ? " ＊いまのこの会話" : ""}`
               )
               .join("\n");
@@ -150,5 +213,5 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     },
   });
 
-  return [open, rename, list];
+  return [open, merge, rename, list];
 }

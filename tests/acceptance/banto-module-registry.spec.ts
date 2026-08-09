@@ -35,6 +35,7 @@ import {
   type ServerEvent,
   type SkillEntry,
 } from "@banto/host";
+import { TRUNK } from "./threadSpecs.js";
 
 /** 場所1つの帳簿。task-0038 で workspace モジュールは場所を受け取るようになった。 */
 function placesOf(root: string): PlaceRegistry {
@@ -322,7 +323,7 @@ describe("[task-0015/a3] UI へモジュールの接続情報が渡る", () => {
       tools: [],
       canvas: new Canvas(catalog),
     }));
-    await threads.open();
+    await threads.open(TRUNK);
     server = await BantoHostServer.start({ threads, port: 0, catalog, modules });
 
     const events: ServerEvent[] = [];
@@ -368,7 +369,7 @@ describe("[task-0015/a3] UI へモジュールの接続情報が渡る", () => {
       tools: [],
       canvas: new Canvas(catalog),
     }));
-    await threads.open();
+    await threads.open(TRUNK);
     server = await BantoHostServer.start({ threads, port: 0, catalog, modules: createModuleRegistry() });
 
     const events: ServerEvent[] = [];

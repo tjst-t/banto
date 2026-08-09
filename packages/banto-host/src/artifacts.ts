@@ -55,6 +55,27 @@ export interface ArtifactSummary {
   outline: string;
 }
 
+/**
+ * 退避した1件の素性（ADR-0017 決定81(a)）。
+ *
+ * **番頭にデータを再送させないための控え。** 番頭は `canvas.show` で「どのツール結果を・
+ * どの器で」だけを言い、実体はホストがここから引く。`details`（GUI 向けの構造化データ）を
+ * 持つのはそのため——本文（`content`）は LLM 向けの散文で、器には載らない。
+ */
+export interface ArtifactRecord {
+  id: string;
+  /** 論理名（`env.list` など）。器が描けなかったときに出どころとして出す（I2）。 */
+  tool: string;
+  /** その Tool を提供しているモジュール名。分からなければドメインで代用する。 */
+  module: string;
+  /** 取った時刻。器の「いつの」になる（決定81(c)）。 */
+  at: string;
+  /** 呼び出しの引数。 */
+  args?: unknown;
+  /** GUI 向けの構造化データ。器はここから作る。 */
+  details?: unknown;
+}
+
 /** `artifact.read` の結果。 */
 export interface ArtifactSlice {
   id: string;
@@ -106,6 +127,61 @@ export class ArtifactStore {
     const filePath = path.join(this.dir, `${id}.md`);
     fs.writeFileSync(filePath, text, "utf-8");
     return { id, filePath, chars: text.length, lines: countLines(text) };
+  }
+
+  /**
+   * ツール結果を素性つきで退避する（ADR-0017 決定81(a)）。
+   *
+   * **大きさに関係なく必ず控える。** 器に載せられるのは「退避済みの結果」だけなので、
+   * 小さい結果を控えないと、番頭は同じデータを言い直す羽目になる（＝再送）。
+   * 本文（`.md`）と素性（`.json`）を別ファイルにするのは、`artifact.read` が
+   * これまでどおり本文だけを読めるようにするため。
+   */
+  writeResult(params: {
+    tool: string;
+    module: string;
+    args?: unknown;
+    text: string;
+    details?: unknown;
+    at?: string;
+  }): ArtifactRef {
+    const ref = this.write(params.text);
+    const record: ArtifactRecord = {
+      id: ref.id,
+      tool: params.tool,
+      module: params.module,
+      at: params.at ?? new Date().toISOString(),
+      ...(params.args !== undefined ? { args: params.args } : {}),
+      ...(params.details !== undefined ? { details: params.details } : {}),
+    };
+    try {
+      fs.writeFileSync(this.metaPath(ref.id), `${JSON.stringify(record)}\n`, "utf-8");
+    } catch (err) {
+      // I2 の例外ではない: 素性が書けなくても本文は退避できている。器に載せられなくなる
+      // だけなので、会話は止めずに知らせる（決定81(d) と同じ扱い）
+      console.error(`[banto] ${ref.id} の素性を書けませんでした: ${String(err)}`);
+    }
+    return ref;
+  }
+
+  /** 素性のファイル。本文（`.md`）と分ける。 */
+  private metaPath(id: string): string {
+    return path.join(this.dir, `${sanitizeId(id)}.json`);
+  }
+
+  /**
+   * 退避した結果の素性を引く（`canvas.show` が使う）。
+   *
+   * I2: 無いものを黙って空で返さない——番頭が「データが無かった」と読み違える。
+   */
+  result(id: string): ArtifactRecord {
+    const file = this.metaPath(id);
+    if (!fs.existsSync(file)) {
+      throw new Error(
+        `artifact "${id}" の素性がこの会話にありません（器に載せられるのは退避済みの結果だけ）`
+      );
+    }
+    return JSON.parse(fs.readFileSync(file, "utf-8")) as ArtifactRecord;
   }
 
   /**
@@ -286,6 +362,13 @@ export interface ArtifactOffloadOptions {
   thresholdChars?: number;
   /** 退避しない Tool の論理名。記憶や栞そのものを退避すると意味が無い。 */
   exempt?: readonly string[];
+  /**
+   * Tool 名からモジュール名を引く（決定81(d)）。
+   *
+   * 器が描けなかったときに「どのモジュールの・どの Tool か」を出すため——直せるのは
+   * 登録した人なので、出所が分かる形で残す。渡さなければドメインで代用する。
+   */
+  moduleOf?: (toolName: string) => string | undefined;
 }
 
 /**
@@ -315,6 +398,7 @@ export function withArtifactOffload(
   return tools.map((tool) => {
     if (exempt.some((prefix) => tool.name.startsWith(prefix))) return tool;
     const neutral = tool as AnyBantoTool;
+    const moduleName = options.moduleOf?.(tool.name) ?? tool.name.split(".")[0] ?? tool.name;
     return {
       ...tool,
       async execute(args: unknown, ctx?: unknown): Promise<BantoToolResult> {
@@ -325,9 +409,27 @@ export function withArtifactOffload(
           .filter((c) => c.type === "text")
           .map((c) => c.text)
           .join("\n");
-        if (text.length <= threshold) return result;
+        // **大きさに関係なく控える**（決定81(a)）。器に載せられるのは退避済みの結果だけで、
+        // 控えないと番頭が同じデータを言い直す（＝再送）ことになる
+        const ref = store.writeResult({
+          tool: tool.name,
+          module: moduleName,
+          args,
+          text,
+          ...(result.details !== undefined ? { details: result.details } : {}),
+        });
+        if (text.length <= threshold) {
+          // 小さい結果は本文をそのまま返す。**引換番号だけ1行添える**——これが無いと
+          // 番頭は「どのツール結果を」を指せず、器に載せるためにデータを言い直す
+          return {
+            content: [
+              ...result.content,
+              { type: "text" as const, text: `［観測 ${ref.id}｜canvas.show で器に載せられる］` },
+            ],
+            ...(result.details !== undefined ? { details: result.details } : {}),
+          };
+        }
 
-        const ref = store.write(text);
         const stub = renderStub({
           toolName: tool.name,
           args,

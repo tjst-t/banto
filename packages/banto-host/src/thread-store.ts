@@ -25,6 +25,20 @@ import type { TranscriptEntry } from "./protocol.js";
 export interface StoredThread {
   id: string;
   title: string;
+  /**
+   * 幹か枝か（ADR-0017 決定77）。**古い索引には無い**——読み戻す側が先頭を幹として扱う。
+   */
+  kind?: "trunk" | "branch";
+  /** 枝の親（常に幹）。 */
+  parentId?: string;
+  /** 還す条件。枝には必ずある（決定77）。 */
+  returnCondition?: string;
+  /** 誰が開いたか。 */
+  openedBy?: "banto" | "po";
+  /** 開いた理由。 */
+  openReason?: string;
+  /** 畳んだときの結論。 */
+  conclusion?: string;
   state: "open" | "closed";
   createdAt: string;
   closedAt?: string;

@@ -94,7 +94,7 @@ import { createSkillTools } from "./skill-tools.js";
 import { bindToolArgs, createThreadTools } from "./thread-tools.js";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 import { Type } from "typebox";
-import { ThreadRegistry, type ThreadFactory } from "./threads.js";
+import { ThreadRegistry, watchStaleBranches, type ThreadFactory } from "./threads.js";
 import { loadBantoSkills } from "./skills.js";
 
 /**
@@ -1045,9 +1045,10 @@ async function serve(options: ServeOptions): Promise<void> {
   const threadStore = new ThreadStore(path.join(dataDir(), "threads"));
   threads = new ThreadRegistry(threadFactory, threadStore);
   await threads.restore();
-  // 残っていた会話が1本も無ければ新しく開く。宛先が無いと threadId 省略のメッセージを捌けない
+  // 幹が無ければ開く（ADR-0017 決定77：幹はプロジェクトに1本で永続）。
+  // 宛先が無いと threadId 省略のメッセージを捌けない
   const restored = threads.list({ state: "open" });
-  const defaultThread = restored[0] ?? (await threads.open());
+  const defaultThread = threads.trunk() ?? (await threads.open({ kind: "trunk" }));
   if (restored.length > 0) {
     console.log(`[banto] 会話を ${threads.list().length} 本読み戻しました`);
   }
@@ -1168,6 +1169,36 @@ async function serve(options: ServeOptions): Promise<void> {
     notify: (message) => server.notify(message, { source: "env" }),
     cursorPath: path.join(dataDir(), "env-cursor.json"),
   });
+  /**
+   * 黙って止まった枝を取次へ積む（ADR-0017 決定77・P6・ADR-0016）。
+   *
+   * **忘れられた枝を人の記憶に頼らせない。** 埋没しない不変条件（幹の札・横断の通知・
+   * レールの点）のうち、止まっている枝には**横断の通知**を足す——札は在っても、
+   * 動いていないことは札からは読めない。
+   */
+  const stopStaleBranches = watchStaleBranches(threads, {
+    onStale: (branch, days) => {
+      inbox.post({
+        // 同じ枝で札を積み増さない（動き出せば `watchStaleBranches` が忘れる）
+        key: `branch-stale:${branch.id}`,
+        source: { id: "banto", label: "番頭" },
+        kind: "止まっている枝",
+        rule: "P6",
+        title: `枝「${branch.title}」が ${days} 日止まっています`,
+        ...(branch.openReason ? { why: branch.openReason } : {}),
+        what:
+          `還す条件は「${branch.returnCondition ?? "（無し）"}」ですが、` +
+          `${days} 日なにも記録されていません。黙って止まった枝は機構の異常として扱います（P6）。`,
+        ask: "この枝をどうしますか",
+        actions: [
+          { id: "open", label: "枝を開いて続ける", tone: "call" },
+          { id: "hold", label: "保留で畳む", tone: "plain" },
+        ],
+        opens: { threadId: branch.id },
+      });
+    },
+  });
+
   // 立っているかを一度だけ確かめる。I2: 届かない相手を「何も無い」と混同しない
   void fetch(`${koboUrl.replace(/\/api\/kobo$/, "")}/api/v1/health`)
     .then((res) => {
@@ -1222,6 +1253,7 @@ async function serve(options: ServeOptions): Promise<void> {
       stopWorkerNotices();
       stopKoboNotices();
       stopEnvNotices();
+      stopStaleBranches();
       // server.close() が全スレッドの後始末（購読解除＋対話ループの dispose）まで行う
       await server.close();
       threads.dispose();

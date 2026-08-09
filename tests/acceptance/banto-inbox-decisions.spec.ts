@@ -35,6 +35,7 @@ import {
   type NamespacedToolDefinition,
   type ServerEvent,
 } from "@banto/host";
+import { TRUNK } from "./threadSpecs.js";
 
 let dir: string;
 let repo: string;
@@ -177,7 +178,7 @@ async function startHost(fixture: Fixture): Promise<{ url: string; session: Fake
     session = new FakeSession();
     return { session, tools: [] };
   });
-  await threads.open();
+  await threads.open(TRUNK);
   server = await BantoHostServer.start({
     threads,
     inbox: fixture.inbox,

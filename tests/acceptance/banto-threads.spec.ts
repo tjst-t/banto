@@ -28,6 +28,7 @@ import {
   type HostSession,
   type ServerEvent,
 } from "@banto/host";
+import { TRUNK, branchSpec } from "./threadSpecs.js";
 import { defineNamespacedTool } from "@banto/core";
 import { Type } from "typebox";
 
@@ -101,7 +102,7 @@ afterEach(async () => {
 });
 
 async function start(): Promise<string> {
-  await threads.open();
+  await threads.open(TRUNK);
   server = await BantoHostServer.start({ threads, port: 0, catalog });
   return `ws://localhost:${server.port}${BANTO_WS_PATH}`;
 }
@@ -127,65 +128,198 @@ function waitFor(
   });
 }
 
-describe("[task-0035/a1] 複数のスレッドが並行する", () => {
-  it("[task-0035/a1] 開いた分だけ独立した対話ループができる", async () => {
-    await threads.open();
-    await threads.open();
-    await threads.open();
+describe("[task-0088/a1] 幹はプロジェクトに1本で、畳めない（ADR-0017 決定77）", () => {
+  it("[task-0088/a1] 幹は1本しか開けない", async () => {
+    await threads.open(TRUNK);
+    await assert.rejects(() => threads.open(TRUNK), /幹は既にあります/u);
+    assert.equal(threads.list({ kind: "trunk" }).length, 1);
+  });
+
+  it("[task-0088/a1] 幹は畳めない。宛先は常に幹（会話のタブが要らない）", async () => {
+    const trunk = await threads.open(TRUNK);
+    const branch = await threads.open(branchSpec("枝1"));
+    trunk.record({ role: "po", text: "中身のある会話" });
+
+    assert.equal(trunk.isDefault, true);
+    assert.equal(branch.isDefault, false);
+    assert.equal(threads.defaultThreadId, trunk.id);
+
+    assert.throws(() => threads.merge(trunk.id, "畳む"), /幹は畳めません/u);
+    // 枝を全部畳んでも宛先は幹のまま（＝空状態にならない）
+    threads.merge(branch.id, "結論");
+    assert.equal(threads.defaultThreadId, trunk.id);
+    assert.equal(threads.resolve().id, trunk.id);
+
+    // 畳んでも消えない（決定30c と同じ扱い）
+    assert.deepEqual(threads.list({ state: "open" }).map((t) => t.id), [trunk.id]);
+    assert.deepEqual(threads.list().map((t) => t.id), [trunk.id, branch.id]);
+  });
+
+  it("[task-0088/a1] 幹より先に枝は開けない（I2）", async () => {
+    await assert.rejects(() => threads.open(branchSpec("枝")), /幹がありません/u);
+  });
+
+  it("[task-0088/a1] 開いた分だけ独立した対話ループができる", async () => {
+    await threads.open(TRUNK);
+    await threads.open(branchSpec("枝1"));
+    await threads.open(branchSpec("枝2"));
 
     assert.equal(threads.list().length, 3);
     const ids = new Set(made.map((m) => m.session.sessionId));
-    assert.equal(ids.size, 3, "スレッドごとに別の対話ループが要る");
+    assert.equal(ids.size, 3, "枝ごとに別の対話ループが要る");
   });
 
-  it("[task-0035/a1] 既定スレッドは固定ではなく「開いている先頭」が担う", async () => {
-    const first = await threads.open();
-    const second = await threads.open();
-    // 中身のある会話で見る（空の会話は畳まずに捨てられる＝task-0059）
-    first.record({ role: "po", text: "中身のある会話" });
+  it("[task-0088/a1] 知らないIDを幹へ黙って落とさない（I2）", async () => {
+    await threads.open(TRUNK);
+    assert.throws(() => threads.resolve("thread-999"), /unknown thread/u);
+    assert.throws(() => threads.merge("thread-999", "結論"), /unknown thread/u);
+    // 省略は幹へ
+    assert.equal(threads.resolve().kind, "trunk");
+  });
+});
 
-    assert.equal(first.isDefault, true);
-    assert.equal(second.isDefault, false);
-    assert.equal(threads.defaultThreadId, first.id);
-
-    // どの会話も畳める（PO要望 2026-07-31）。宛先は次の開いている会話へ移る
-    threads.close(first.id);
-    assert.equal(threads.defaultThreadId, second.id);
-    assert.equal(second.isDefault, true);
-    assert.equal(threads.resolve().id, second.id, "threadId 省略の宛先も移る");
-
-    // 畳んでも消えない（決定30c と同じ扱い）
-    assert.deepEqual(threads.list({ state: "open" }).map((t) => t.id), [second.id]);
-    assert.deepEqual(threads.list().map((t) => t.id), [first.id, second.id]);
+describe("[task-0088/a2] 枝は還す条件を持って生まれる（決定77）", () => {
+  it("[task-0088/a2] 還す条件・理由・開いた人が枝に残る", async () => {
+    await threads.open(TRUNK);
+    const branch = await threads.open({
+      kind: "branch",
+      title: "間欠的に落ちる試験",
+      returnCondition: "再現条件が特定できたら",
+      openedBy: "po",
+      reason: "往復が続くので枝にする",
+    });
+    assert.equal(branch.kind, "branch");
+    assert.equal(branch.returnCondition, "再現条件が特定できたら");
+    assert.equal(branch.openedBy, "po");
+    assert.equal(branch.openReason, "往復が続くので枝にする");
+    assert.equal(branch.parentId, threads.trunk()!.id, "親は常に幹");
   });
 
-  it("[task-0035/a1] 全部畳んだら宛先は無くなる（空状態を隠さない・I2）", async () => {
-    const first = await threads.open();
-    first.record({ role: "po", text: "中身のある会話" });
-    threads.close(first.id);
-
-    assert.equal(threads.defaultThreadId, undefined);
-    assert.throws(() => threads.resolve(), /no open thread/);
-    // 畳んだスレッドは指定すれば引ける（知らせを届けるため・決定35b）
-    assert.equal(threads.resolve(first.id).id, first.id);
-
-    threads.reopen(first.id);
-    assert.equal(threads.defaultThreadId, first.id);
+  it("[task-0088/a2] 番頭の判断でも PO の指示でも開ける", async () => {
+    await threads.open(TRUNK);
+    const byBanto = await threads.open(branchSpec("番頭が開いた", "banto"));
+    const byPo = await threads.open(branchSpec("POが指示した", "po"));
+    assert.equal(byBanto.openedBy, "banto");
+    assert.equal(byPo.openedBy, "po");
   });
 
-  it("[task-0035/a1] 知らないIDを既定へ黙って落とさない（I2）", async () => {
-    await threads.open();
-    assert.throws(() => threads.resolve("thread-999"), /unknown thread/);
-    assert.throws(() => threads.close("thread-999"), /unknown thread/);
-    // 省略は既定へ
-    assert.equal(threads.resolve().isDefault, true);
+  it("[task-0088/a2] 還す条件の無い枝は帳簿が拒む（型でも書けない・実行時も拒む）", async () => {
+    await threads.open(TRUNK);
+    // 型としては書けない形を、帳簿の側でも拒むことを見る（I4：any の理由はここ）
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 型で塞いだ形が
+    // 実行時にも塞がっていることを確かめるため、意図的に型を外す
+    const bad = { kind: "branch", title: "条件なし", openedBy: "po", reason: "なんとなく" } as any;
+    await assert.rejects(() => threads.open(bad), /還す条件/u);
+  });
+});
+
+describe("[task-0088/a3] 枝を畳むと結論が幹へ還る（決定77）", () => {
+  it("[task-0088/a3] 幹の末尾に結論が1行積まれ、既存の行は書き換わらない", async () => {
+    const trunk = await threads.open(TRUNK);
+    trunk.record({ role: "po", text: "最初の発話" });
+    const branch = await threads.open(branchSpec("枝1"));
+    const before = trunk.transcript.map((e) => JSON.stringify(e));
+
+    threads.merge(branch.id, "inc-0048 を起票し task-0091 を積んだ");
+
+    const after = trunk.transcript;
+    assert.deepEqual(
+      after.slice(0, before.length).map((e) => JSON.stringify(e)),
+      before,
+      "幹は追記のみ（D3）——既存の行は書き換わらない"
+    );
+    const last = after[after.length - 1];
+    assert.equal(last?.role, "branch_result");
+    if (last?.role === "branch_result") {
+      assert.equal(last.branchId, branch.id);
+      assert.equal(last.conclusion, "inc-0048 を起票し task-0091 を積んだ");
+    }
+  });
+
+  it("[task-0088/a3] 保留も結論の一種。畳んで開き直せる", async () => {
+    await threads.open(TRUNK);
+    const branch = await threads.open(branchSpec("枝1"));
+    threads.merge(branch.id, "保留：計測が足りない");
+    assert.equal(branch.state, "closed");
+
+    threads.reopen(branch.id);
+    assert.equal(branch.state, "open");
+    assert.equal(branch.conclusion, "保留：計測が足りない", "何を保留したかは残る");
+    // 幹へ還した1行は消えない（追記のみ）
+    const results = threads
+      .trunk()!
+      .transcript.filter((e) => e.role === "branch_result");
+    assert.equal(results.length, 1);
+  });
+
+  it("[task-0088/a3] 空の結論では畳めない（I2）", async () => {
+    await threads.open(TRUNK);
+    const branch = await threads.open(branchSpec("枝1"));
+    assert.throws(() => threads.merge(branch.id, "   "), /結論は空にできません/u);
+    assert.equal(branch.state, "open");
+  });
+});
+
+describe("[task-0088/a4] 深さは1段（決定77）", () => {
+  it("[task-0088/a4] 枝の中から枝は開けない", async () => {
+    await threads.open(TRUNK);
+    const branch = await threads.open(branchSpec("枝1"));
+    await assert.rejects(
+      () => threads.open(branchSpec("枝の中の枝"), branch.id),
+      /枝の中に枝は開けません/u
+    );
+  });
+
+  it("[task-0088/a4] 幹から開いた枝の親は必ず幹", async () => {
+    const trunk = await threads.open(TRUNK);
+    const a = await threads.open(branchSpec("枝1"), trunk.id);
+    const b = await threads.open(branchSpec("枝2"));
+    assert.equal(a.parentId, trunk.id);
+    assert.equal(b.parentId, trunk.id);
+  });
+});
+
+describe("[task-0088/a5] 埋没しない不変条件（決定77）", () => {
+  it("[task-0088/a5] 開いている枝は全部、幹の札・横断の通知・レールの点のどれかに出ている", async () => {
+    await threads.open(TRUNK);
+    await threads.open(branchSpec("枝1"));
+    await threads.open(branchSpec("枝2"));
+    await threads.open(branchSpec("枝3"));
+
+    // **全枝を走査する**——1本でも「どこにも出ていない」ものがあれば埋没している
+    const seen = threads.branchVisibility();
+    assert.equal(seen.length, 3);
+    for (const b of seen) {
+      assert.ok(b.visible, `枝 ${b.title} がどこにも出ていない`);
+      assert.ok(b.trunkCard, `枝 ${b.title} の札が幹に無い（開いた1行が流れていない）`);
+      assert.ok(b.rail, `枝 ${b.title} がレールの点に出ていない`);
+    }
+  });
+
+  it("[task-0088/a5] 畳んだ枝は走査の対象から外れる（一覧が信用できなくなるため）", async () => {
+    await threads.open(TRUNK);
+    const branch = await threads.open(branchSpec("枝1"));
+    threads.merge(branch.id, "結論");
+    assert.equal(threads.branchVisibility().length, 0);
+  });
+
+  it("[task-0088/a5] 黙って止まった枝は滞留として拾える（P6・ADR-0016）", async () => {
+    await threads.open(TRUNK);
+    const fresh = await threads.open(branchSpec("動いている"));
+    const stale = await threads.open(branchSpec("止まっている"));
+    stale.lastActivityAt = new Date(Date.now() - 6 * 86_400_000).toISOString();
+
+    const found = threads.staleBranches();
+    assert.deepEqual(found.map((s) => s.thread.id), [stale.id]);
+    assert.ok(found[0]!.days >= 3, "何日止まっているかを数える（率ではなく実測・P6）");
+    assert.ok(!found.some((s) => s.thread.id === fresh.id));
   });
 });
 
 describe("[task-0035/a2] キャンバスはスレッドごと（決定2）", () => {
   it("[task-0035/a2] 片方でGUIを開いても、もう片方のタブ構成は変わらない", async () => {
-    await threads.open();
-    await threads.open();
+    await threads.open(TRUNK);
+    await threads.open(branchSpec("枝1"));
     const [a, b] = made;
 
     a!.canvas.open("demo.hello");
@@ -201,7 +335,7 @@ describe("[task-0035/a2] キャンバスはスレッドごと（決定2）", () 
 
   it("[task-0035/a2] canvas_state はどのスレッドのものか判別できる", async () => {
     const url = await start();
-    const second = await threads.open();
+    const second = await threads.open(branchSpec("枝1"));
 
     const events: ServerEvent[] = [];
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
@@ -229,7 +363,7 @@ describe("[task-0035/a2] キャンバスはスレッドごと（決定2）", () 
 describe("[task-0035/a3] イベントとメッセージがスレッドで分かれる", () => {
   it("[task-0035/a3] welcome にスレッド一覧と既定スレッドが載る", async () => {
     const url = await start();
-    const second = await threads.open("別の話");
+    const second = await threads.open(branchSpec("別の話"));
 
     const events: ServerEvent[] = [];
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
@@ -253,7 +387,7 @@ describe("[task-0035/a3] イベントとメッセージがスレッドで分か�
 
   it("[task-0035/a3] 接続時の履歴は見ている会話の分だけ（残りは頼んで取る）", async () => {
     const url = await start();
-    const second = await threads.open();
+    const second = await threads.open(branchSpec("枝1"));
     threads.resolve().record({ role: "po", text: "こっちの話" });
     second.record({ role: "po", text: "あっちの話" });
 
@@ -278,7 +412,9 @@ describe("[task-0035/a3] イベントとメッセージがスレッドで分か�
       const forFirst = events.find(
         (e) => e.type === "history" && e.threadId === threads.resolve().id
       );
+      // 幹には枝の札も立っている（決定77）
       assert.deepEqual(forFirst?.type === "history" && forFirst.entries, [
+        { role: "branch", branchId: second.id },
         { role: "po", text: "こっちの話" },
       ]);
     } finally {
@@ -288,7 +424,7 @@ describe("[task-0035/a3] イベントとメッセージがスレッドで分か�
 
   it("[task-0035/a3] 一覧の要約はホストが載せる（履歴を配らずに履歴一覧が描ける）", async () => {
     const url = await start();
-    const second = await threads.open();
+    const second = await threads.open(branchSpec("枝1"));
     second.record({ role: "po", text: "あっちの話\n2行目は出さない" });
 
     const events: ServerEvent[] = [];
@@ -330,7 +466,7 @@ describe("[task-0035/a3] イベントとメッセージがスレッドで分か�
 
   it("[task-0035/a3] 発話は宛先スレッドにだけ入る", async () => {
     const url = await start();
-    const second = await threads.open();
+    const second = await threads.open(branchSpec("枝1"));
 
     const events: ServerEvent[] = [];
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
@@ -340,7 +476,12 @@ describe("[task-0035/a3] イベントとメッセージがスレッドで分か�
 
       assert.deepEqual(made[1]!.session.prompts, ["あっちへ"]);
       assert.deepEqual(made[0]!.session.prompts, [], "別のスレッドには入らない");
-      assert.deepEqual(threads.resolve().transcript, [], "既定スレッドの履歴も汚れない");
+      // 幹に立つのは枝の札だけ。**枝の中身は幹に流さない**（決定77）
+      assert.deepEqual(
+        threads.resolve().transcript,
+        [{ role: "branch", branchId: second.id }],
+        "幹の履歴に枝の発話は流れない"
+      );
     } finally {
       client.close();
     }
@@ -348,7 +489,7 @@ describe("[task-0035/a3] イベントとメッセージがスレッドで分か�
 
   it("[task-0035/a3] threadId 省略は既定スレッド（スレッドを知らないクライアント）", async () => {
     const url = await start();
-    await threads.open();
+    await threads.open(branchSpec("枝1"));
 
     const events: ServerEvent[] = [];
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
@@ -378,7 +519,7 @@ describe("[task-0035/a3] イベントとメッセージがスレッドで分か�
 
   it("[task-0035/a3] 番頭の発話（text_delta）もスレッドが付く", async () => {
     const url = await start();
-    const second = await threads.open();
+    const second = await threads.open(branchSpec("枝1"));
 
     const events: ServerEvent[] = [];
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
@@ -391,7 +532,8 @@ describe("[task-0035/a3] イベントとメッセージがスレッドで分か�
       assert.equal(delta.type === "text_delta" && delta.threadId, second.id);
       // 履歴も宛先スレッドにだけ積まれる
       assert.deepEqual(second.transcript, [{ role: "banto", text: "はい" }]);
-      assert.deepEqual(threads.resolve().transcript, []);
+      // 幹には枝の札しか立たない（枝の中身は幹に流さない・決定77）
+    assert.deepEqual(threads.resolve().transcript, [{ role: "branch", branchId: second.id }]);
     } finally {
       client.close();
     }
@@ -407,12 +549,19 @@ describe("[task-0035] スレッドの開閉（プロトコル）", () => {
     const events: ServerEvent[] = [];
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
     try {
-      client.send({ type: "thread_open", title: "新しい関心事" });
+      client.send({
+        type: "thread_open",
+        title: "新しい関心事",
+        returnCondition: "方針が決まったら",
+        reason: "往復が続く",
+      });
       const state = await waitFor(events, (e) => e.type === "thread_state");
       assert.equal(state.type === "thread_state" && state.threads.length, 2);
 
       // 「目の前の話は壊れない」（決定2）
-      assert.deepEqual(threads.resolve().transcript, [{ role: "po", text: "元の話" }]);
+      // 幹には枝の札が1行増えるだけ。前の発話はそのまま（追記のみ・D3）
+      assert.deepEqual(threads.resolve().transcript[0], { role: "po", text: "元の話" });
+      assert.equal(threads.resolve().transcript.length, 2);
       assert.equal(made[0]!.canvas.snapshot().tabs.length, 1);
     } finally {
       client.close();
@@ -421,7 +570,7 @@ describe("[task-0035] スレッドの開閉（プロトコル）", () => {
 
   it("[task-0058] thread_rename でPOも名前を付け直せる（決定25 の人側）", async () => {
     const url = await start();
-    const second = await threads.open("会話 2");
+    const second = await threads.open(branchSpec("会話 2"));
     second.record({ role: "po", text: "元の話" });
 
     const events: ServerEvent[] = [];
@@ -452,81 +601,48 @@ describe("[task-0035] スレッドの開閉（プロトコル）", () => {
 
       client.send({ type: "thread_rename", threadId: threads.resolve().id, title: "  " });
       await waitFor(events, (e) => e.type === "error" && /empty/.test(e.message));
-      assert.equal(threads.resolve().title, "はじめの会話");
+      assert.equal(threads.resolve().title, "幹");
     } finally {
       client.close();
     }
   });
 
-  it("[task-0037] new_session は畳んで新しく始める（消さない・PO要望 2026-07-31）", async () => {
+  it("[task-0088/a2] 還す条件の無い thread_open は黙って通さない（I2）", async () => {
     const url = await start();
-    const first = threads.resolve();
-    first.record({ role: "po", text: "前の話" });
-
     const events: ServerEvent[] = [];
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
     try {
-      client.send({ type: "new_session", threadId: first.id });
-      await waitFor(
-        events,
-        (e) =>
-          e.type === "thread_state" &&
-          e.threads.some((t) => t.threadId === first.id && t.state === "closed") &&
-          e.threads.some((t) => t.state === "open")
-      );
-
-      // 会話は消えない。履歴から読めるし再開もできる
-      assert.equal(first.state, "closed");
-      assert.deepEqual(first.transcript, [{ role: "po", text: "前の話" }]);
-      // 新しい会話が始まっている（本数は変わらず、置き換わる）
-      assert.equal(threads.list({ state: "open" }).length, 1);
-      assert.notEqual(threads.list({ state: "open" })[0]!.id, first.id);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 型で塞いだ形が
+      // 配線の側でも塞がっていることを確かめるため、意図的に型を外す
+      client.send({ type: "thread_open", title: "条件なし", reason: "なんとなく" } as any);
+      await waitFor(events, (e) => e.type === "error" && /還す条件/.test(e.message));
+      assert.equal(threads.list({ kind: "branch" }).length, 0, "条件の無い枝は生まれない");
     } finally {
       client.close();
     }
   });
 
-  it("[task-0037] new_session は他のスレッドを触らない", async () => {
+  it("[task-0088/a3] thread_merge は枝を畳んで幹へ結論を還す。他の枝は触らない", async () => {
     const url = await start();
-    const first = threads.resolve();
-    // 空だと畳まずに捨てられる（task-0059）。ここで見たいのは「他は触られない」ことなので中身を持たせる
-    first.record({ role: "po", text: "こちらの話" });
-    const second = await threads.open();
-    second.record({ role: "po", text: "別件は残る" });
+    const trunk = threads.resolve();
+    trunk.record({ role: "po", text: "幹の話" });
+    const branch = await threads.open(branchSpec("枝1"));
+    const other = await threads.open(branchSpec("枝2"));
+    other.record({ role: "po", text: "別件は残る" });
 
     const events: ServerEvent[] = [];
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
     try {
-      client.send({ type: "new_session", threadId: first.id });
+      client.send({ type: "thread_merge", threadId: branch.id, conclusion: "決まった" });
       await waitFor(
         events,
-        (e) => e.type === "thread_state" && e.threads.some((t) => t.state === "closed")
+        (e) => e.type === "branch_result" && e.branchId === branch.id
       );
-      assert.equal(second.state, "open");
-      assert.deepEqual(second.transcript, [{ role: "po", text: "別件は残る" }]);
-    } finally {
-      client.close();
-    }
-  });
-
-  it("[task-0035] 最初の会話も畳める（PO要望 2026-07-31）", async () => {
-    const url = await start();
-    const first = threads.resolve();
-    first.record({ role: "po", text: "中身のある会話" });
-
-    const events: ServerEvent[] = [];
-    const client = await BantoHostClient.connect(url, (e) => events.push(e));
-    try {
-      client.send({ type: "thread_close", threadId: first.id });
-      await waitFor(
-        events,
-        (e) =>
-          e.type === "thread_state" &&
-          e.threads.every((t) => t.state === "closed")
-      );
-      // 消えてはいない。履歴から再開できる
-      assert.deepEqual(threads.list().map((t) => t.id), [first.id]);
-      assert.equal(threads.defaultThreadId, undefined);
+      assert.equal(branch.state, "closed");
+      assert.equal(other.state, "open");
+      assert.deepEqual(other.transcript, [{ role: "po", text: "別件は残る" }]);
+      // 幹は追記のみ。最初の発話は残っている
+      assert.deepEqual(trunk.transcript[0], { role: "po", text: "幹の話" });
     } finally {
       client.close();
     }
@@ -535,14 +651,20 @@ describe("[task-0035] スレッドの開閉（プロトコル）", () => {
 
 describe("[task-0035/a4] 番頭自身が分身する口", () => {
   it("[task-0035/a4] thread.open で新しいスレッドが増える", async () => {
-    const first = await threads.open();
+    const first = await threads.open(TRUNK);
     const tools = createThreadTools({ threads, threadId: first.id });
     const open = tools.find((t) => t.name === "thread.open")!;
 
-    const result = await open.execute({ title: "調査" });
+    const result = await open.execute({
+      title: "調査",
+      returnCondition: "分かったら",
+      reason: "往復が続く",
+    });
     assert.equal(threads.list().length, 2);
     const opened = threads.list()[1]!;
     assert.equal(opened.title, "調査");
+    assert.equal(opened.kind, "branch");
+    assert.equal(opened.openedBy, "banto", "番頭の判断で開いた枝");
     assert.match(
       result.content.map((c) => c.text).join(""),
       new RegExp(opened.id),
@@ -551,7 +673,7 @@ describe("[task-0035/a4] 番頭自身が分身する口", () => {
   });
 
   it("[task-0035/a4] message を渡すと新しい分身に最初の一言が届く", async () => {
-    const first = await threads.open();
+    const first = await threads.open(TRUNK);
     const seeded: Array<{ threadId: string; message: string }> = [];
     const tools = createThreadTools({
       threads,
@@ -562,14 +684,19 @@ describe("[task-0035/a4] 番頭自身が分身する口", () => {
     });
     const open = tools.find((t) => t.name === "thread.open")!;
 
-    await open.execute({ title: "調査", message: "この件を調べて" });
+    await open.execute({
+      title: "調査",
+      returnCondition: "分かったら",
+      reason: "往復が続く",
+      message: "この件を調べて",
+    });
     const opened = threads.list()[1]!;
     assert.deepEqual(seeded, [{ threadId: opened.id, message: "この件を調べて" }]);
   });
 
   it("[task-0035/a4] thread.list で並行している会話が分かる", async () => {
-    const first = await threads.open();
-    await threads.open("別件");
+    const first = await threads.open(TRUNK);
+    await threads.open(branchSpec("別件"));
     const tools = createThreadTools({ threads, threadId: first.id });
     const list = tools.find((t) => t.name === "thread.list")!;
 
@@ -579,8 +706,8 @@ describe("[task-0035/a4] 番頭自身が分身する口", () => {
   });
 
   it("[task-0058] thread.list で「どれが自分か」が分かる（自分の名前を見て付け直せる）", async () => {
-    await threads.open();
-    const second = await threads.open("別件");
+    await threads.open(TRUNK);
+    const second = await threads.open(branchSpec("別件"));
     const tools = createThreadTools({ threads, threadId: second.id });
     const list = tools.find((t) => t.name === "thread.list")!;
 
@@ -589,13 +716,13 @@ describe("[task-0035/a4] 番頭自身が分身する口", () => {
       .join("")
       .split("\n");
     assert.match(lines.find((l) => l.includes(second.id))!, /いまのこの会話/);
-    assert.doesNotMatch(lines.find((l) => l.includes("はじめの会話"))!, /いまのこの会話/);
+    assert.doesNotMatch(lines.find((l) => l.startsWith("幹"))!, /いまのこの会話/);
   });
 });
 
 describe("[task-0058] 番頭が会話に名前を付け直す（PO要望 2026-08-05）", () => {
   it("[task-0058] thread.rename で名前が変わり、購読者へ流れる", async () => {
-    const thread = await threads.open();
+    const thread = await threads.open(TRUNK);
     const seen: string[][] = [];
     threads.subscribe((list) => seen.push(list.map((t) => t.title)));
     const rename = createThreadTools({ threads, threadId: thread.id }).find(
@@ -610,7 +737,7 @@ describe("[task-0058] 番頭が会話に名前を付け直す（PO要望 2026-08
   });
 
   it("[task-0058] 名前を変えても会話とキャンバスは何も変わらない（決定2）", async () => {
-    const thread = await threads.open();
+    const thread = await threads.open(TRUNK);
     thread.record({ role: "po", text: "認証の話" });
     made[0]!.canvas.open("demo.hello");
 
@@ -622,8 +749,8 @@ describe("[task-0058] 番頭が会話に名前を付け直す（PO要望 2026-08
   });
 
   it("[task-0058] 隣の会話の名前は変えられない（決定35a：宛先は自分に固定）", async () => {
-    const mine = await threads.open();
-    const other = await threads.open("別件");
+    const mine = await threads.open(TRUNK);
+    const other = await threads.open(branchSpec("別件"));
     const rename = createThreadTools({ threads, threadId: mine.id }).find(
       (t) => t.name === "thread.rename"
     )!;
@@ -635,26 +762,27 @@ describe("[task-0058] 番頭が会話に名前を付け直す（PO要望 2026-08
     assert.equal(other.title, "別件");
   });
 
-  it("[task-0058] 畳んだ会話も名前を付け直せる（履歴こそ名前で探す）", async () => {
-    const thread = await threads.open();
-    thread.record({ role: "po", text: "終わった調査の話" });
-    threads.close(thread.id);
+  it("[task-0058] 畳んだ枝も名前を付け直せる（履歴こそ名前で探す）", async () => {
+    await threads.open(TRUNK);
+    const branch = await threads.open(branchSpec("調査"));
+    branch.record({ role: "po", text: "終わった調査の話" });
+    threads.merge(branch.id, "結論");
 
-    threads.rename(thread.id, "終わった調査");
+    threads.rename(branch.id, "終わった調査");
 
-    assert.equal(thread.title, "終わった調査");
-    assert.equal(thread.state, "closed");
+    assert.equal(branch.title, "終わった調査");
+    assert.equal(branch.state, "closed");
   });
 
   it("[task-0058] 空の名前と知らないIDはエラーにする（I2）", async () => {
-    const thread = await threads.open();
+    const thread = await threads.open(TRUNK);
     assert.throws(() => threads.rename(thread.id, "   "), /empty/);
     assert.throws(() => threads.rename("thread-999", "迷子"), /unknown thread/);
-    assert.equal(thread.title, "はじめの会話", "失敗しても名前は元のまま");
+    assert.equal(thread.title, "幹", "失敗しても名前は元のまま");
   });
 
   it("[task-0058] 長すぎる名前と改行は整えて受ける（タブは1行しかない）", async () => {
-    const thread = await threads.open();
+    const thread = await threads.open(TRUNK);
     threads.rename(thread.id, `  認証の\n設計  `);
     assert.equal(thread.title, "認証の 設計");
 
@@ -663,7 +791,8 @@ describe("[task-0058] 番頭が会話に名前を付け直す（PO要望 2026-08
   });
 
   it("[task-0058] 同じ名前を付け直しても、画面へは知らせない（無駄な再描画を起こさない）", async () => {
-    const thread = await threads.open("認証の設計");
+    await threads.open(TRUNK);
+    const thread = await threads.open(branchSpec("認証の設計"));
     let emitted = 0;
     threads.subscribe(() => emitted++);
 
@@ -676,7 +805,7 @@ describe("[task-0058] 番頭が会話に名前を付け直す（PO要望 2026-08
 describe("[task-0035/a7] 知らせの宛先（決定35a）", () => {
   it("[task-0035/a7] notify はスレッドを指定でき、そのスレッドにだけ入る", async () => {
     await start();
-    const second = await threads.open();
+    const second = await threads.open(branchSpec("枝1"));
 
     await server!.notify("職人からの報告", { threadId: second.id, source: "worker" });
 
@@ -685,7 +814,8 @@ describe("[task-0035/a7] 知らせの宛先（決定35a）", () => {
     assert.deepEqual(second.transcript.slice(0, 1), [
       { role: "notice", source: "worker", text: "職人からの報告" },
     ]);
-    assert.deepEqual(threads.resolve().transcript, []);
+    // 幹には枝の札しか立たない（枝の中身は幹に流さない・決定77）
+    assert.deepEqual(threads.resolve().transcript, [{ role: "branch", branchId: second.id }]);
   });
 
   it("[task-0035/a7] 宛先不明の知らせを黙って捨てない（I2）", async () => {
@@ -698,90 +828,28 @@ describe("[task-0035/a7] 知らせの宛先（決定35a）", () => {
 
   it("[task-0035/a7] threadId 省略時は既定スレッドへ（起動元との互換）", async () => {
     await start();
-    await threads.open();
+    await threads.open(branchSpec("枝1"));
     await server!.notify("宛先なしの報告");
     assert.deepEqual(made[0]!.session.prompts, ["宛先なしの報告"]);
     assert.deepEqual(made[1]!.session.prompts, []);
   });
 });
 
-describe("[task-0059] 何も無いまま閉じた会話は残さない（PO要望 2026-08-05）", () => {
-  it("[task-0059] 一度も何も入らずに畳んだ会話は、履歴にも帳簿にも残らない", async () => {
-    const first = await threads.open();
-    first.record({ role: "po", text: "こちらは残る" });
-    const empty = await threads.open();
+/**
+ * [task-0059] 「何も無いまま閉じた会話は捨てる」は**役目を終えた**（ADR-0017 決定77）。
+ *
+ * 枝は生まれた瞬間に幹へ札が立ち、畳むには結論が要る——**空の器が履歴に並ぶ経路が無い**。
+ * 捨てる機構を残すと、幹の札だけが宙に浮いた行として残ることになる（幹は追記のみ・D3）。
+ */
 
-    threads.close(empty.id);
-
-    assert.deepEqual(threads.list().map((t) => t.id), [first.id], "空の器は消える");
-    assert.throws(() => threads.resolve(empty.id), /unknown thread/);
-  });
-
-  it("[task-0059] 中身が1行でもあれば畳んで残す（決定30c はそのまま）", async () => {
-    await threads.open();
-    const second = await threads.open();
-    second.record({ role: "po", text: "ひとこと" });
-
-    threads.close(second.id);
-
-    assert.equal(second.state, "closed");
-    assert.deepEqual(threads.list({ state: "closed" }).map((t) => t.id), [second.id]);
-  });
-
-  it("[task-0059] POの発話でなくても、届いていれば残す（職人の報告だけの会話）", async () => {
-    await threads.open();
-    const second = await threads.open();
-    second.record({ role: "notice", source: "worker", text: "職人からの報告" });
-
-    threads.close(second.id);
-
-    assert.equal(second.state, "closed", "見るべきものがある会話は畳んで残す");
-  });
-
-  it("[task-0059] 捨てた会話の器は後始末される（対話ループが残らない）", async () => {
-    await threads.open();
-    const empty = await threads.open();
-    let disposed = false;
-    empty.disposers.push(() => {
-      disposed = true;
-    });
-
-    threads.close(empty.id);
-
-    assert.equal(disposed, true);
-  });
-
-  it("[task-0059] 捨てたら一覧の知らせが飛ぶ（画面から消える）", async () => {
-    const first = await threads.open();
-    first.record({ role: "po", text: "こちらは残る" });
-    const empty = await threads.open();
-    const seen: string[][] = [];
-    threads.subscribe((list) => seen.push(list.map((t) => t.id)));
-
-    threads.close(empty.id);
-
-    assert.deepEqual(seen, [[first.id]]);
-  });
-
-  it("[task-0059] 空の会話を畳むと、宛先は開いている先頭へ移る", async () => {
-    const first = await threads.open();
-    first.record({ role: "po", text: "こちらは残る" });
-    const empty = await threads.open();
-
-    threads.close(empty.id);
-
-    assert.equal(threads.defaultThreadId, first.id);
-  });
-});
-
-describe("[task-0037] 畳んだ分身は履歴に残り、再開できる", () => {
+describe("[task-0088/a3] 畳んだ枝は履歴に残り、再開できる", () => {
   it("[task-0037] 畳んでも会話とキャンバスは消えない", async () => {
-    await threads.open();
-    const second = await threads.open("調査");
+    await threads.open(TRUNK);
+    const second = await threads.open(branchSpec("調査"));
     second.record({ role: "po", text: "調べて" });
     made[1]!.canvas.open("demo.hello");
 
-    threads.close(second.id);
+    threads.merge(second.id, "結論");
 
     assert.equal(second.state, "closed");
     assert.ok(second.closedAt, "畳んだ時刻が残る");
@@ -790,10 +858,10 @@ describe("[task-0037] 畳んだ分身は履歴に残り、再開できる", () =
   });
 
   it("[task-0037] 再開すると同じ会話の続きから話せる", async () => {
-    await threads.open();
-    const second = await threads.open();
+    await threads.open(TRUNK);
+    const second = await threads.open(branchSpec("枝1"));
     second.record({ role: "po", text: "前の話" });
-    threads.close(second.id);
+    threads.merge(second.id, "結論");
 
     const reopened = threads.reopen(second.id);
     assert.equal(reopened.id, second.id, "新しいスレッドを作らない");
@@ -803,35 +871,35 @@ describe("[task-0037] 畳んだ分身は履歴に残り、再開できる", () =
   });
 
   it("[task-0037] 畳むのは冪等。未知のIDはエラー（I2）", async () => {
-    await threads.open();
-    const second = await threads.open();
+    await threads.open(TRUNK);
+    const second = await threads.open(branchSpec("枝1"));
     // 中身がある会話で見る（空だと畳まずに捨てるので、閉じたままかを見られない＝task-0059）
     second.record({ role: "po", text: "中身のある会話" });
-    threads.close(second.id);
-    threads.close(second.id); // 2度目も落ちない
+    threads.merge(second.id, "結論");
+    threads.merge(second.id, "結論"); // 2度目も落ちない
     assert.equal(second.state, "closed");
     assert.throws(() => threads.reopen("thread-999"), /unknown thread/);
   });
 
   it("[task-0037] 畳んだスレッドにも知らせは届く（決定35b の足場）", async () => {
     await start();
-    const second = await threads.open();
+    const second = await threads.open(branchSpec("枝1"));
     second.record({ role: "po", text: "中身のある会話" });
-    threads.close(second.id);
+    threads.merge(second.id, "結論");
 
     await server!.notify("職人からの報告", { threadId: second.id, source: "worker" });
     assert.deepEqual(made[1]!.session.prompts, ["職人からの報告"]);
   });
 
-  it("[task-0037] thread_close / thread_reopen がプロトコルから使える", async () => {
+  it("[task-0088/a3] thread_merge / thread_reopen がプロトコルから使える", async () => {
     const url = await start();
-    const second = await threads.open();
+    const second = await threads.open(branchSpec("枝1"));
     second.record({ role: "po", text: "中身のある会話" });
 
     const events: ServerEvent[] = [];
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
     try {
-      client.send({ type: "thread_close", threadId: second.id });
+      client.send({ type: "thread_merge", threadId: second.id, conclusion: "結論" });
       await waitFor(
         events,
         (e) =>
@@ -869,7 +937,7 @@ describe("[task-0035/a6] 職人の起動元をスレッド粒度にする（決�
   });
 
   it("[task-0035/a6] 番頭に自分の threadId を書かせない（固定して渡す）", async () => {
-    await threads.open();
+    await threads.open(TRUNK);
     const calls: Array<Record<string, unknown>> = [];
     const delegate = defineNamespacedTool({
       name: "worker.delegate",

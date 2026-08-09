@@ -1,21 +1,27 @@
 /**
- * 会話スレッド＝番頭の分身（ADR-0010 決定2・task-0035）。
+ * 会話は**幹1本と枝**（ADR-0017 決定77。旧: 並列のスレッド＝ADR-0010 決定2）。
+ *
+ * - **幹はプロジェクトに1本で、永続。畳まない。** 会話のタブは作らない
+ * - **枝は「還す条件」を持って生まれる。** 何が決まれば幹に還るかを書けないものは
+ *   枝にしない（幹で話す）——ここが Slack との分岐点そのもの
+ * - **深さは1段。** 枝の中に枝を作らない。埋没は深さに対して指数的に効く
+ * - **枝を畳むと結論1行が幹に還る。** 幹は追記のみ（D3）
  *
  * `docs/vision.md` の「番頭は分身する。関心事ごとにインスタンスへ分かれて並行し…
- * 割り込みが PO の文脈を壊さない」の機構。**スレッド1本につきキャンバス1つ**を持つ
- * ——あるスレッドで GUI を開いても、別スレッドの表示は変わらない（決定2）。
+ * 割り込みが PO の文脈を壊さない」の機構は残る——分身の**単位が枝になった**だけ。
+ * **スレッド1本につきキャンバス1つ**を持つ（決定2）ので、面を「どこから開いたか」は
+ * その面がどちらのキャンバスに載っているかで表される（決定79）。
  *
  * 記憶は**スレッドを越えて共有される**。ここでは持たない——D11「番頭は記憶を持つ」は
  * スレッド単位ではなく番頭単位で、スレッドごとに記憶を作ると番頭が分裂する。
  *
- * D5: 判断は無い。スレッドの帳簿と、1本分の会話の器だけ。
- *     「いつ分身するか」はここに書かない（epic-0006 のスコープ外）。
+ * D5: 判断は無い。会話の帳簿と、1本分の会話の器だけ。
  */
 
 import type { Canvas } from "./canvas.js";
 import type { HostSession } from "./server.js";
 import type { NamespacedToolDefinition } from "./tool-registry.js";
-import type { ThreadView, TranscriptEntry } from "./protocol.js";
+import type { BranchOpener, ThreadView, TranscriptEntry } from "./protocol.js";
 import type { ThreadStore } from "./thread-store.js";
 
 /** 1本分の器を組み立てる。呼ぶたびに**新しい対話ループとキャンバス**を作ること。 */
@@ -57,8 +63,39 @@ export type ThreadFactory = (
   dispose?: () => void;
 }>;
 
-/** 既定スレッドの名前。閉じられない。 */
-const DEFAULT_TITLE = "はじめの会話";
+/** 幹の名前。**プロジェクトに1本で、畳まない**（決定77）。 */
+const TRUNK_TITLE = "幹";
+
+/**
+ * 会話を開くときの姿（ADR-0017 決定77）。
+ *
+ * **枝に親は書けない。** 親は常に幹（深さ1段）なので欄そのものを持たせない——
+ * 型として書けないことが、深さ1段の1つ目の縛りになる。2つ目は実行時（`open` が
+ * 枝からの枝を拒む）。
+ *
+ * **`returnCondition` と `reason` は必須の欄**——「書けないなら枝にしない」を
+ * 呼び出し側の心がけではなく機構にする。
+ */
+export type ThreadSpec =
+  | { kind: "trunk"; title?: string }
+  | {
+      kind: "branch";
+      title: string;
+      /** 還す条件。何が決まれば幹に還るか。 */
+      returnCondition: string;
+      /** 番頭の判断か、POの指示か。 */
+      openedBy: BranchOpener;
+      /** 開いた理由。札に必ず出す。 */
+      reason: string;
+    };
+
+/**
+ * 枝が滞留したと見なすまでの日数。
+ *
+ * **黙って止まった枝は機構の異常**として扱う（決定77・P6・ADR-0016）。忘れられた枝を
+ * 人の記憶に頼らせないため、これを超えたら取次へ積む。
+ */
+export const BRANCH_STALE_DAYS = 3;
 
 /**
  * 題の長さの上限。**切り詰めるだけで拒まない**——名前が長いのは会話を止める理由にならない。
@@ -87,6 +124,21 @@ export function normalizeThreadTitle(title: string): string | undefined {
 export class Thread {
   readonly id: string;
   title: string;
+  /** 幹か枝か（決定77）。生まれたあと変わらない。 */
+  readonly kind: "trunk" | "branch";
+  /** 枝の親。**常に幹**（深さ1段）。幹には無い。 */
+  readonly parentId: string | undefined;
+  /** 還す条件。**枝には必ずある**——書けないものは枝にしない（決定77）。 */
+  readonly returnCondition: string | undefined;
+  /** 誰が開いたか（番頭の判断か、POの指示か）。 */
+  readonly openedBy: BranchOpener | undefined;
+  /** 開いた理由。札に出す。 */
+  readonly openReason: string | undefined;
+  /**
+   * 畳んだときの結論（決定77）。**保留も結論の一種**として「保留：理由」で畳める。
+   * 開き直すと消えない——幹に還した1行は記録なので、そのまま残る。
+   */
+  conclusion: string | undefined;
   /**
    * 畳んだスレッドは**消えない**（Worker Pool の決定30c と同じ発想）。
    * 一覧から外れるだけで、履歴として読めるし同じ会話のまま再開できる。
@@ -94,6 +146,14 @@ export class Thread {
   state: "open" | "closed" = "open";
   /** 開いた時刻。保存した会話を並べるのに要る（task-0036）。 */
   readonly createdAt: string = new Date().toISOString();
+  /**
+   * 最後に何かが記録された時刻。**滞留の検出に使う**（決定77）。
+   *
+   * D3: 記録から導出できるので保存しない——読み戻したときは開いた時刻から数え直す
+   * （記録の1行1行に時刻が無いため。ここは「止まっている枝を見つける」用途で、
+   * 正確な最終発話時刻が要る場面ではない）。
+   */
+  lastActivityAt: string = new Date().toISOString();
   closedAt: string | undefined;
   readonly session: HostSession;
   readonly canvas: Canvas | undefined;
@@ -138,6 +198,12 @@ export class Thread {
   constructor(params: {
     id: string;
     title: string;
+    kind: "trunk" | "branch";
+    parentId?: string;
+    returnCondition?: string;
+    openedBy?: BranchOpener;
+    openReason?: string;
+    conclusion?: string;
     session: HostSession;
     canvas?: Canvas;
     tools: NamespacedToolDefinition[];
@@ -149,6 +215,16 @@ export class Thread {
   }) {
     this.id = params.id;
     this.title = params.title;
+    this.kind = params.kind;
+    this.parentId = params.parentId;
+    this.returnCondition = params.returnCondition;
+    this.openedBy = params.openedBy;
+    this.openReason = params.openReason;
+    this.conclusion = params.conclusion;
+    // I2: 枝に還す条件と親が無いのは帳簿の壊れ。黙って幹のように振る舞わせない
+    if (params.kind === "branch" && (!params.parentId || !params.returnCondition)) {
+      throw new Error(`枝 ${params.id} に親か還す条件がありません（決定77）`);
+    }
     this.session = params.session;
     this.canvas = params.canvas;
     this.toolNames = params.tools.map((t) => t.name);
@@ -163,6 +239,12 @@ export class Thread {
     return {
       threadId: this.id,
       title: this.title,
+      kind: this.kind,
+      ...(this.parentId ? { parentId: this.parentId } : {}),
+      ...(this.returnCondition ? { returnCondition: this.returnCondition } : {}),
+      ...(this.openedBy ? { openedBy: this.openedBy } : {}),
+      ...(this.openReason ? { openReason: this.openReason } : {}),
+      ...(this.conclusion ? { conclusion: this.conclusion } : {}),
       sessionId: this.session.sessionId,
       isDefault: this.isDefault,
       state: this.state,
@@ -196,6 +278,7 @@ export class Thread {
    */
   record(entry: TranscriptEntry): void {
     this.recordInner(entry);
+    this.lastActivityAt = new Date().toISOString();
     this.onRecord?.();
   }
 
@@ -268,12 +351,40 @@ export class ThreadRegistry {
    */
   async restore(): Promise<void> {
     if (!this.store) return;
-    for (const saved of this.store.threads()) {
+    const stored = this.store.threads();
+    // 幹を先に決める。**枝より先に読む**——枝は親を指すので、順序が逆だと親が居ない
+    let trunkId = stored.find((t) => t.kind === "trunk")?.id;
+    const ordered = trunkId
+      ? [...stored].sort((a, b) => (a.id === trunkId ? -1 : b.id === trunkId ? 1 : 0))
+      : stored;
+    for (const saved of ordered) {
       try {
         const parts = await this.factory(saved.id, saved.sessionFile, saved.model);
+        // 古い索引（幹と枝より前）には kind が無い。**先頭を幹、残りを枝として読み戻す**
+        // ——pre-release なので移行表は作らないが、黙って会話を失わせもしない（I2）。
+        // 還す条件が無い枝は帳簿として成り立たない（決定77）ので、遡って書けない以上
+        // 「読み戻した」ことが分かる条件を入れる
+        const kind = saved.kind ?? (trunkId === undefined ? "trunk" : "branch");
+        const legacy =
+          kind === "branch" && !saved.returnCondition
+            ? {
+                parentId: saved.parentId ?? trunkId!,
+                returnCondition: "（幹と枝より前の会話。畳むときに結論を書く）",
+                openedBy: "po" as const,
+                openReason: "ADR-0017 より前に開かれた会話",
+              }
+            : undefined;
         const thread = new Thread({
           id: saved.id,
           title: saved.title,
+          kind,
+          ...(legacy ?? {
+            ...(saved.parentId ? { parentId: saved.parentId } : {}),
+            ...(saved.returnCondition ? { returnCondition: saved.returnCondition } : {}),
+            ...(saved.openedBy ? { openedBy: saved.openedBy } : {}),
+            ...(saved.openReason ? { openReason: saved.openReason } : {}),
+          }),
+          ...(saved.conclusion ? { conclusion: saved.conclusion } : {}),
           session: parts.session,
           ...(parts.model ? { model: parts.model } : {}),
           ...(parts.canvas ? { canvas: parts.canvas } : {}),
@@ -300,6 +411,7 @@ export class ThreadRegistry {
         }
         this.attach(thread);
         this.threads.set(saved.id, thread);
+        if (thread.kind === "trunk") trunkId = thread.id;
       } catch (err) {
         console.error(`[banto] 会話 ${saved.id} を開き直せませんでした: ${String(err)}`);
       }
@@ -358,6 +470,12 @@ export class ThreadRegistry {
     this.store.upsert({
       id: thread.id,
       title: thread.title,
+      kind: thread.kind,
+      ...(thread.parentId ? { parentId: thread.parentId } : {}),
+      ...(thread.returnCondition ? { returnCondition: thread.returnCondition } : {}),
+      ...(thread.openedBy ? { openedBy: thread.openedBy } : {}),
+      ...(thread.openReason ? { openReason: thread.openReason } : {}),
+      ...(thread.conclusion ? { conclusion: thread.conclusion } : {}),
       state: thread.state,
       createdAt: thread.createdAt,
       ...(thread.closedAt ? { closedAt: thread.closedAt } : {}),
@@ -374,19 +492,51 @@ export class ThreadRegistry {
   }
 
   /**
-   * 新しいスレッドを開く。**既存のスレッドには何も起きない**（決定2）。
+   * 幹を開く、または枝を生やす（ADR-0017 決定77）。
+   * **既存の幹・枝には何も起きない**（決定2「目の前の話は壊れない」）。
    *
-   * 最初の1本が既定スレッドになる——`threadId` を省略したメッセージの宛先で、
-   * 閉じられない（宛先が無くなると、スレッドを知らないクライアントが話せなくなる）。
+   * 深さ1段は**2つの縛り**で守る：
+   * 1. **型** — `ThreadSpec` に親の欄が無い。親は常に幹なので書きようがない
+   * 2. **実行時** — `from` が枝なら拒む。枝が別の枝を要するなら、畳んで幹へ還してから開き直す
+   *
+   * 枝を開くと**幹の末尾に札が1行積まれる**——「どこにも出ていない枝は作れない」
+   * （決定77 の不変条件）を、心がけではなく機構にする。
+   *
+   * @param from 誰から開いたか（枝のとき必須）。枝からは開けない
    */
-  async open(title?: string): Promise<Thread> {
+  async open(spec: ThreadSpec, from?: string): Promise<Thread> {
+    if (spec.kind === "trunk" && this.trunk()) {
+      // I2: 2本目の幹を黙って作らない。幹はプロジェクトに1本（決定77）
+      throw new Error("幹は既にあります（幹はプロジェクトに1本・決定77）");
+    }
+    if (spec.kind === "branch") {
+      const parent = from === undefined ? undefined : this.threads.get(from);
+      if (from !== undefined && !parent) throw new Error(`unknown thread: ${from}`);
+      // 実行時の縛り。**深さ1段**（決定77）——埋没は深さに対して指数的に効く
+      if (parent?.kind === "branch") {
+        throw new Error(
+          "枝の中に枝は開けません（深さは1段・決定77）。" +
+            "この枝を畳んで幹へ還してから開き直してください"
+        );
+      }
+      if (!this.trunk()) throw new Error("幹がありません。先に幹を開いてください");
+    }
+
     const id = `thread-${++this.counter}`;
-    const first = this.threads.size === 0;
     const parts = await this.factory(id);
-    const wantedTitle = title === undefined ? undefined : normalizeThreadTitle(title);
+    const wantedTitle = normalizeThreadTitle(spec.kind === "trunk" ? (spec.title ?? "") : spec.title);
     const thread = new Thread({
       id,
-      title: wantedTitle ?? (first ? DEFAULT_TITLE : `会話 ${this.counter}`),
+      title: wantedTitle ?? (spec.kind === "trunk" ? TRUNK_TITLE : `枝 ${this.counter}`),
+      kind: spec.kind,
+      ...(spec.kind === "branch"
+        ? {
+            parentId: this.trunk()!.id,
+            returnCondition: spec.returnCondition,
+            openedBy: spec.openedBy,
+            openReason: spec.reason,
+          }
+        : {}),
       session: parts.session,
       ...(parts.model ? { model: parts.model } : {}),
       ...(parts.canvas ? { canvas: parts.canvas } : {}),
@@ -400,74 +550,152 @@ export class ThreadRegistry {
     this.threads.set(id, thread);
     this.refreshDefault();
     this.persistIndex(thread);
+    // 幹の札。**開いた1行**だけを幹に流す（枝の中身は流さない・決定77）
+    if (thread.kind === "branch") {
+      const trunk = this.trunk()!;
+      trunk.record({ role: "branch", branchId: thread.id });
+      this.onTrunkCard?.(trunk, thread);
+    }
     this.emit();
     return thread;
   }
 
   /**
-   * 既定スレッド（`threadId` 省略時の宛先）を開いている先頭に付け替える。
-   *
-   * どれか1本を「閉じられない特別な会話」にすると、PO はいちばん最初の会話を
-   * 片付けられない。代わりに宛先を動的にする——**全部畳んだら宛先は無くなる**が、
-   * それは空状態として扱う（プロトタイプにも空状態がある）。
+   * 幹（プロジェクトに1本）。無ければ undefined——起動直後の一瞬だけ。
    */
-  private refreshDefault(): void {
-    const open = this.list({ state: "open" });
-    for (const thread of this.threads.values()) thread.isDefault = false;
-    if (open[0]) open[0].isDefault = true;
+  trunk(): Thread | undefined {
+    for (const thread of this.threads.values()) if (thread.kind === "trunk") return thread;
+    return undefined;
   }
 
   /**
-   * スレッドを畳む。**消さない**——会話もキャンバスもそのまま残り、履歴として読めるし
-   * `reopen` で同じ会話の続きから話せる（決定30c と同じ扱い）。
-   *
-   * 購読も解除しない。再開したときに配信が死んでいると、戻ったのに何も流れてこない。
-   *
-   * **どの会話も畳める**（PO要望 2026-07-31）。畳んだ結果 `threadId` 省略の宛先が
-   * 無くなることはありうる——それは空状態として扱い、隠さない。
-   *
-   * I2: 未知のIDは黙って成功にせずエラーにする。
+   * `threadId` 省略時の宛先は**常に幹**（決定77）。
+   * 幹は畳まないので、宛先が無くなることはない。
    */
-  close(threadId: string, now = new Date()): void {
+  private refreshDefault(): void {
+    const trunk = this.trunk();
+    for (const thread of this.threads.values()) thread.isDefault = thread === trunk;
+  }
+
+  /**
+   * 枝を畳んで幹へ還す（決定77）。**消さない**——会話もキャンバスもそのまま残り、
+   * 履歴として読めるし `reopen` で続きから話せる（決定30c と同じ扱い）。
+   *
+   * **幹の末尾に結論が1行積まれる。既存の行は書き換わらない**（幹は追記のみ・D3）。
+   * 出口は「結論」であって「実装」ではない——incident を起票し task を積んだ時点で畳む。
+   * **保留も結論の一種**として「保留：理由」で畳み、開き直せる。
+   *
+   * I2: 幹・未知のID・空の結論は黙って成功にせずエラーにする。
+   */
+  merge(threadId: string, conclusion: string, now = new Date()): Thread {
     const thread = this.threads.get(threadId);
     if (!thread) throw new Error(`unknown thread: ${threadId}`);
-    if (thread.state === "closed") return; // 冪等
-    // **何も無いまま閉じた会話は残さない**（PO要望 2026-08-05）。開いてすぐ閉じただけの
-    // 空の器が履歴に並ぶと、読みたい会話がその分だけ遠くなる。畳んで残す値打ちがあるのは
-    // 中身のある会話——「畳んでも消えない」（決定30c）は**中身を失わない**という約束で、
-    // 中身の無い器まで残す約束ではない。
-    if (thread.transcript.length === 0) {
-      this.discard(thread);
-      return;
+    if (thread.kind === "trunk") {
+      throw new Error("幹は畳めません（幹は永続・決定77）");
     }
+    const text = conclusion.replace(/\s+/gu, " ").trim();
+    if (text === "") throw new Error("結論は空にできません（保留なら「保留：理由」と書く）");
+    if (thread.state === "closed" && thread.conclusion === text) return thread; // 冪等
+    thread.conclusion = text;
     thread.state = "closed";
     thread.closedAt = now.toISOString();
+    const trunk = this.trunk();
+    if (trunk) {
+      const entry = {
+        role: "branch_result" as const,
+        branchId: thread.id,
+        title: thread.title,
+        conclusion: text,
+        at: thread.closedAt,
+      };
+      trunk.record(entry);
+      this.onBranchResult?.(trunk, entry);
+    }
     // 畳むときは間引かず今すぐ書く（畳んだ直後に落ちても会話が残るように）
     this.flush(thread);
     this.refreshDefault();
     this.emit();
+    return thread;
   }
 
   /**
-   * 何も無い会話を捨てる（`close` から呼ばれる。PO要望 2026-08-05）。
-   *
-   * **失うものが無いことが前提**——記録が空なのを確かめてから来ること。器（対話ループ・
-   * キャンバス）を後始末し、帳簿と保存先の両方から消す。片方に残すと、次の起動で
-   * 「画面に出ないのにファイルだけある」会話が増える。
+   * 幹の札が立ったときに呼ばれる（配信のため）。帳簿は配信を知らない（D5）ので、
+   * サーバが差し込む。
    */
-  private discard(thread: Thread): void {
-    // 間引いていた保存が後から走ると、消したはずの記録が書き戻る
-    const pending = this.pendingSaves.get(thread.id);
-    if (pending) {
-      clearTimeout(pending);
-      this.pendingSaves.delete(thread.id);
+  onTrunkCard: ((trunk: Thread, branch: Thread) => void) | undefined;
+  /** 結論が幹へ還ったときに呼ばれる。 */
+  onBranchResult:
+    | ((
+        trunk: Thread,
+        entry: { branchId: string; title: string; conclusion: string; at: string }
+      ) => void)
+    | undefined;
+
+  /**
+   * 埋没しない不変条件（決定77）を機械で確かめられる形にする。
+   *
+   * > 開いている枝は、必ず **①幹の札 ②横断の通知 ③レールの点** のどれかに出ている。
+   * > **どこにも出ていない枝は作れない。**
+   *
+   * `spec-ui` §2 の「現れる場所のない操作は追加できない」と同じ形。ここは①と③を数え、
+   * ②（取次）は呼び出し側が知っているので渡してもらう。
+   *
+   * @param hasNotice その枝について取次に一通が積まれているか
+   */
+  branchVisibility(hasNotice: (branchId: string) => boolean = () => false): Array<{
+    branchId: string;
+    title: string;
+    /** ①幹の札（`branch` の行が幹にある） */
+    trunkCard: boolean;
+    /** ②横断の通知 */
+    notice: boolean;
+    /** ③レールの点（開いている枝は必ず一覧に出る） */
+    rail: boolean;
+    visible: boolean;
+  }> {
+    const trunk = this.trunk();
+    const carded = new Set(
+      (trunk?.transcript ?? [])
+        .filter((e): e is Extract<TranscriptEntry, { role: "branch" }> => e.role === "branch")
+        .map((e) => e.branchId)
+    );
+    return this.list({ state: "open", kind: "branch" }).map((branch) => {
+      const trunkCard = carded.has(branch.id);
+      const notice = hasNotice(branch.id);
+      // 開いている枝は帳簿に載っている＝レールの点として必ず出る（画面はこの一覧を描く）
+      const rail = true;
+      return {
+        branchId: branch.id,
+        title: branch.title,
+        trunkCard,
+        notice,
+        rail,
+        visible: trunkCard || notice || rail,
+      };
+    });
+  }
+
+  /**
+   * 黙って止まった枝（決定77・P6・ADR-0016）。
+   *
+   * **機構の異常として扱う**——忘れられた枝を人の記憶に頼らせない。呼び出し側が
+   * これを取次へ積む。最後に何かが記録された時刻から数える。
+   */
+  staleBranches(options: { now?: Date; days?: number } = {}): Array<{
+    thread: Thread;
+    /** 何日止まっているか（切り捨て）。 */
+    days: number;
+  }> {
+    const now = options.now ?? new Date();
+    const limit = options.days ?? BRANCH_STALE_DAYS;
+    const out: Array<{ thread: Thread; days: number }> = [];
+    for (const thread of this.list({ state: "open", kind: "branch" })) {
+      const since = Date.parse(thread.lastActivityAt);
+      if (Number.isNaN(since)) continue;
+      const days = Math.floor((now.getTime() - since) / 86_400_000);
+      if (days >= limit) out.push({ thread, days });
     }
-    thread.onRecord = undefined;
-    thread.dispose();
-    this.threads.delete(thread.id);
-    this.store?.remove(thread.id);
-    this.refreshDefault();
-    this.emit();
+    return out;
   }
 
   /**
@@ -494,28 +722,35 @@ export class ThreadRegistry {
     return thread;
   }
 
-  /** 畳んだスレッドを開き直す。会話はそのまま残っているので続きから話せる。 */
+  /**
+   * 畳んだ枝を開き直す。会話はそのまま残っているので続きから話せる。
+   *
+   * **幹へ還した1行は消さない**（幹は追記のみ・D3）。結論も残す——「保留：理由」で
+   * 畳んだものを開き直したとき、何を保留したのかが読めなくなるため。
+   */
   reopen(threadId: string): Thread {
     const thread = this.threads.get(threadId);
     if (!thread) throw new Error(`unknown thread: ${threadId}`);
     thread.state = "open";
     thread.closedAt = undefined;
+    thread.lastActivityAt = new Date().toISOString();
     this.refreshDefault();
+    this.persistIndex(thread);
     this.emit();
     return thread;
   }
 
   /**
    * 宛先を引く。畳んだスレッドも引ける——知らせを届けるため（決定35b）。
-   * `threadId` 省略時は既定スレッド（スレッドを知らないクライアント）。
-   * I2: 知らないIDを既定へ黙って落とさない——別の会話に発話が紛れ込む。
+   * **`threadId` 省略時は幹**（決定77：幹は畳まないので宛先は必ずある）。
+   * I2: 知らないIDを幹へ黙って落とさない——別の会話に発話が紛れ込む。
    */
   resolve(threadId?: string): Thread {
     if (threadId === undefined) {
-      const fallback = this.list({ state: "open" })[0];
-      // I2: 全部畳まれている状態を黙って作らない。呼び出し側が空状態として扱う
-      if (!fallback) throw new Error("no open thread");
-      return fallback;
+      const trunk = this.trunk();
+      // I2: 幹が無い状態を黙って埋めない。呼び出し側が空状態として扱う
+      if (!trunk) throw new Error("no trunk");
+      return trunk;
     }
     const thread = this.threads.get(threadId);
     if (!thread) throw new Error(`unknown thread: ${threadId}`);
@@ -527,17 +762,19 @@ export class ThreadRegistry {
   }
 
   /**
-   * スレッドの一覧。**畳んだ分も既定で含む**——閉じても記録は残る（決定30c）。
-   * 開いているものだけ見たいなら `{ state: "open" }`。
+   * 会話の一覧。**畳んだ分も既定で含む**——閉じても記録は残る（決定30c）。
+   * 開いている枝だけ見たいなら `{ state: "open", kind: "branch" }`。
    */
-  list(filter: { state?: "open" | "closed" } = {}): Thread[] {
-    const all = [...this.threads.values()];
-    return filter.state ? all.filter((t) => t.state === filter.state) : all;
+  list(filter: { state?: "open" | "closed"; kind?: "trunk" | "branch" } = {}): Thread[] {
+    let all = [...this.threads.values()];
+    if (filter.state) all = all.filter((t) => t.state === filter.state);
+    if (filter.kind) all = all.filter((t) => t.kind === filter.kind);
+    return all;
   }
 
-  /** `threadId` 省略時の宛先。開いている会話が無ければ undefined（空状態）。 */
+  /** `threadId` 省略時の宛先＝幹。幹がまだ無ければ undefined（起動直後の一瞬）。 */
   get defaultThreadId(): string | undefined {
-    return this.list({ state: "open" })[0]?.id;
+    return this.trunk()?.id;
   }
 
   /** 開閉・改名を購読する。戻り値で解除。 */
@@ -557,4 +794,47 @@ export class ThreadRegistry {
     this.threads.clear();
     this.listeners.clear();
   }
+}
+
+/**
+ * 黙って止まった枝を見張り、見つけたら知らせる（決定77・P6）。
+ *
+ * **忘れられた枝を人の記憶に頼らせない。** 何を積むかはここでは決めない（D5）——
+ * 呼び出し側が取次の一通に組み立てる。同じ枝を毎回積み直さないよう、一度知らせた枝は
+ * 覚えておく（取次の側の合印と二重になるが、こちらは走査の無駄を省くため）。
+ *
+ * @returns 見張りを止める関数
+ */
+export function watchStaleBranches(
+  threads: ThreadRegistry,
+  options: {
+    onStale(branch: Thread, days: number): void | Promise<void>;
+    /** 見る間隔（ms）。既定 1 時間——日数で数えるものを毎分見ても何も変わらない。 */
+    intervalMs?: number;
+    days?: number;
+    log?(message: string): void;
+  }
+): () => void {
+  const told = new Set<string>();
+  const log = options.log ?? ((m: string) => console.error(m));
+  const tick = async (): Promise<void> => {
+    try {
+      const stale = threads.staleBranches(options.days !== undefined ? { days: options.days } : {});
+      const alive = new Set(stale.map((s) => s.thread.id));
+      // 動き出した枝は忘れる（また止まったら改めて知らせる）
+      for (const id of [...told]) if (!alive.has(id)) told.delete(id);
+      for (const { thread, days } of stale) {
+        if (told.has(thread.id)) continue;
+        told.add(thread.id);
+        await options.onStale(thread, days);
+      }
+    } catch (err) {
+      // I2: 見張りが黙って死なないようにする。次の tick で取り直す
+      log(`[banto] 止まっている枝を見られませんでした: ${String(err)}`);
+    }
+  };
+  const timer = setInterval(() => void tick(), options.intervalMs ?? 3_600_000);
+  timer.unref?.();
+  void tick();
+  return () => clearInterval(timer);
 }

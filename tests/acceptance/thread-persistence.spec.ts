@@ -13,6 +13,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { ThreadRegistry, ThreadStore, type HostSession, type ThreadFactory } from "@banto/host";
+import { TRUNK, branchSpec } from "./threadSpecs.js";
 
 let dir: string;
 
@@ -51,12 +52,12 @@ describe("[task-0036] 会話が再起動を越えて残る", () => {
     const store = new ThreadStore(dir);
     const first = new ThreadRegistry(factoryRecording([]), store);
 
-    const a = await first.open("最初の相談");
+    const a = await first.open({ kind: "trunk", title: "最初の相談" });
     a.record({ role: "po", text: "こんにちは" });
     a.record({ role: "banto", text: "はい" });
-    const b = await first.open("別の話");
+    const b = await first.open(branchSpec("別の話"));
     b.record({ role: "po", text: "こっちは畳む" });
-    first.close(b.id);
+    first.merge(b.id, "結論");
     first.flushAll();
 
     // 別のインスタンス＝再起動した想定
@@ -66,9 +67,10 @@ describe("[task-0036] 会話が再起動を越えて残る", () => {
 
     const restoredA = second.resolve(a.id);
     assert.equal(restoredA.title, "最初の相談");
+    // 幹には枝の札（開いた1行）と結論（還った1行）が積まれる（決定77）
     assert.deepEqual(
       restoredA.transcript.map((e) => ("text" in e ? e.text : e.role)),
-      ["こんにちは", "はい"]
+      ["こんにちは", "はい", "branch", "branch_result"]
     );
 
     const restoredB = second.resolve(b.id);
@@ -85,20 +87,20 @@ describe("[task-0036] 会話が再起動を越えて残る", () => {
   it("id の番号は再起動を越えて続く（過去の会話を上書きしない）", async () => {
     const store = new ThreadStore(dir);
     const first = new ThreadRegistry(factoryRecording([]), store);
-    await first.open();
-    await first.open();
+    await first.open(TRUNK);
+    await first.open(branchSpec("枝1"));
     first.flushAll();
 
     const second = new ThreadRegistry(factoryRecording([]), new ThreadStore(dir));
     await second.restore();
-    const fresh = await second.open("3本目");
+    const fresh = await second.open(branchSpec("3本目"));
     assert.equal(fresh.id, "thread-3", "続きから振ること");
     assert.equal(second.list().length, 3);
   });
 
   it("保存先を渡さなければ何も書かない（テストと使い捨てのため）", async () => {
     const registry = new ThreadRegistry(factoryRecording([]));
-    const thread = await registry.open();
+    const thread = await registry.open(TRUNK);
     thread.record({ role: "po", text: "残らない" });
     registry.flushAll();
     assert.deepEqual(fs.readdirSync(dir), []);
@@ -108,7 +110,7 @@ describe("[task-0036] 会話が再起動を越えて残る", () => {
     // canvas を持たない器なので tabs は空のまま。索引に canvasTabs の欄が出ることだけ見る
     const store = new ThreadStore(dir);
     const registry = new ThreadRegistry(factoryRecording([]), store);
-    const thread = await registry.open();
+    const thread = await registry.open(TRUNK);
     registry.flushAll();
     const saved = new ThreadStore(dir).threads().find((t) => t.id === thread.id)!;
     assert.equal(saved.state, "open");
@@ -140,46 +142,8 @@ describe("[task-0036] 壊れた保存で黙って会話を失わない（I2）",
   });
 });
 
-describe("[task-0059] 何も無いまま閉じた会話は保存先にも残さない（PO要望 2026-08-05）", () => {
-  it("索引・記録・番頭の文脈のどれも残らない", async () => {
-    const store = new ThreadStore(dir);
-    const registry = new ThreadRegistry(factoryRecording([]), store);
-    const keep = await registry.open("残る会話");
-    keep.record({ role: "po", text: "ひとこと" });
-    const empty = await registry.open();
-    registry.flushAll();
-    const sessionFile = path.join(dir, `${empty.id}-session.jsonl`);
-    fs.writeFileSync(sessionFile, "番頭の文脈\n");
-
-    registry.close(empty.id);
-
-    const saved = new ThreadStore(dir).threads();
-    assert.deepEqual(saved.map((t) => t.id), [keep.id], "索引から消える");
-    assert.equal(fs.existsSync(path.join(dir, `${empty.id}.jsonl`)), false, "記録も消える");
-    assert.equal(fs.existsSync(sessionFile), false, "番頭の文脈も消える");
-  });
-
-  it("捨てた会話は再起動後にも出てこない", async () => {
-    const registry = new ThreadRegistry(factoryRecording([]), new ThreadStore(dir));
-    const keep = await registry.open("残る会話");
-    keep.record({ role: "po", text: "ひとこと" });
-    const empty = await registry.open();
-    registry.close(empty.id);
-    registry.flushAll();
-
-    const restarted = new ThreadRegistry(factoryRecording([]), new ThreadStore(dir));
-    await restarted.restore();
-    assert.deepEqual(restarted.list().map((t) => t.id), [keep.id]);
-  });
-
-  it("id の番号は使い回さない（捨てても次は続きから振る）", async () => {
-    const registry = new ThreadRegistry(factoryRecording([]), new ThreadStore(dir));
-    const first = await registry.open();
-    first.record({ role: "po", text: "ひとこと" });
-    const empty = await registry.open();
-    registry.close(empty.id);
-
-    const next = await registry.open();
-    assert.equal(next.id, "thread-3", "捨てた番号を再利用すると、過去の記録と混ざる");
-  });
-});
+/**
+ * [task-0059] 「何も無いまま閉じた会話は保存先にも残さない」は**役目を終えた**
+ * （ADR-0017 決定77）。枝は生まれた瞬間に幹へ札が立ち、畳むには結論が要るので、
+ * 空の器が保存先に並ぶ経路そのものが無い。詳細は `banto-threads.spec.ts`。
+ */

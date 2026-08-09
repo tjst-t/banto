@@ -25,6 +25,7 @@ import {
   type HostSession,
   type ServerEvent,
 } from "@banto/host";
+import { TRUNK, branchSpec } from "./threadSpecs.js";
 import type { WorkerEvent } from "@banto/worker-pool";
 
 /**
@@ -78,7 +79,7 @@ async function startHost(
     session = new FakeSession();
     return { session, tools, ...(lastError ? { getLastError: lastError } : {}) };
   });
-  await threads.open();
+  await threads.open(TRUNK);
   server = await BantoHostServer.start({ threads, port: 0, ...(extra ?? {}) });
   return { url: `ws://localhost:${server.port}${BANTO_WS_PATH}`, tools: tools.map((t) => t.name) };
 }
@@ -674,8 +675,8 @@ describe("会話面が要る材料の配信", () => {
       sessions.push(s);
       return { session: s, tools };
     });
-    await threads.open();
-    await threads.open();
+    await threads.open(TRUNK);
+    await threads.open(branchSpec("枝1"));
     server = await BantoHostServer.start({
       threads,
       port: 0,
@@ -732,13 +733,13 @@ describe("会話面が要る材料の配信", () => {
       const used = wanted ?? hostDefault;
       return { session, tools, model: { ...used, vision: false } };
     });
-    await threads.open();
+    await threads.open(TRUNK);
     server = await BantoHostServer.start({ threads, port: 0 });
     const url = `ws://localhost:${server.port}${BANTO_WS_PATH}`;
 
     // 標準を変えてから開いた会話には、新しい標準が効く
     hostDefault = { provider: "p2", id: "standard-2" };
-    await threads.open();
+    await threads.open(branchSpec("枝1"));
 
     const events: ServerEvent[] = [];
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
@@ -759,7 +760,7 @@ describe("会話面が要る材料の配信", () => {
       session = new FakeSession();
       return { session, tools };
     });
-    await threads.open();
+    await threads.open(TRUNK);
     server = await BantoHostServer.start({
       threads,
       port: 0,
@@ -802,9 +803,8 @@ describe("会話面が要る材料の配信", () => {
     }
   });
 
-  it("[task-0037] new_session は畳んで新しく始め、全クライアントへ通知される", async () => {
-    // 以前は会話を捨てていた。畳むだけで消さないので、あとから履歴で読める
-    // （PO要望 2026-07-31）。詳細は banto-threads.spec.ts
+  it("[task-0088/a3] thread_merge は枝を畳んで結論を幹へ積み、全クライアントへ通知される", async () => {
+    // ADR-0017 決定77。畳むだけで消さないので、あとから履歴で読める
     const { url } = await startHost();
     const a: ServerEvent[] = [];
     const b: ServerEvent[] = [];
@@ -813,33 +813,45 @@ describe("会話面が要る材料の配信", () => {
     await waitFor(a, "history");
     await waitFor(b, "history");
 
-    clientA.send({ type: "prompt", text: "何か" });
-    await waitFor(a, "turn_end");
+    clientA.send({
+      type: "thread_open",
+      title: "間欠的に落ちる試験",
+      returnCondition: "再現条件が特定できたら",
+      reason: "往復が続く",
+    });
+    const opened = (await waitFor(b, "thread_state")) as Extract<
+      ServerEvent,
+      { type: "thread_state" }
+    >;
+    const branch = opened.threads.find((t) => t.kind === "branch");
+    assert.ok(branch, "枝が開いている");
+    assert.equal(branch.returnCondition, "再現条件が特定できたら");
 
     b.length = 0;
-    clientA.send({ type: "new_session" });
-    // 開くのと畳むので2通来る。**最後の状態**を見る（先に開いてから畳むため）
-    await waitFor(b, "thread_state");
-    const deadline = Date.now() + 2000;
-    let last = b.filter((e) => e.type === "thread_state").pop();
-    while (
-      Date.now() < deadline &&
-      !(last?.type === "thread_state" && last.threads.some((t) => t.state === "closed"))
-    ) {
-      await new Promise<void>((r) => setTimeout(r, 20));
-      last = b.filter((e) => e.type === "thread_state").pop();
-    }
-    assert.ok(last?.type === "thread_state", "thread_state が全クライアントへ届く");
-    if (last?.type === "thread_state") {
-      assert.ok(
-        last.threads.some((t) => t.state === "closed"),
-        "前の会話は畳まれて履歴に残る"
-      );
-      assert.ok(last.threads.some((t) => t.state === "open"), "新しい会話が始まっている");
-    }
+    clientA.send({ type: "thread_merge", threadId: branch.threadId, conclusion: "inc-0048 を起票" });
+    const result = (await waitFor(b, "branch_result")) as Extract<
+      ServerEvent,
+      { type: "branch_result" }
+    >;
+    assert.equal(result.conclusion, "inc-0048 を起票");
+    assert.equal(result.branchId, branch.threadId);
 
     clientA.close();
     clientB.close();
+  });
+
+  it("[task-0088/a1] 幹は畳めない（thread_merge を拒む・I2）", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    const welcome = (await waitFor(events, "welcome")) as Extract<ServerEvent, { type: "welcome" }>;
+    const trunk = welcome.threads.find((t) => t.kind === "trunk");
+    assert.ok(trunk, "幹が1本ある");
+
+    client.send({ type: "thread_merge", threadId: trunk.threadId, conclusion: "畳む" });
+    const err = (await waitFor(events, "error")) as Extract<ServerEvent, { type: "error" }>;
+    assert.match(err.message, /幹は畳めません/u);
+    client.close();
   });
 });
 

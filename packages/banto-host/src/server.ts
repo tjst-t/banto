@@ -351,6 +351,16 @@ export class BantoHostServer {
       for (const thread of threads) this.attach(thread);
       this.broadcast({ type: "thread_state", threads: threads.map((t) => t.view()) });
     });
+    /**
+     * 幹に立つ2つの行（ADR-0017 決定77）を配る。
+     *
+     * 帳簿は記録を持つが配信は知らない（D5）ので、ここで差し込む——記録して黙ると、
+     * 開いている画面には枝の札が出ないまま次の発話が続く。
+     */
+    this.threads.onTrunkCard = (trunk, branch) =>
+      this.broadcast({ type: "branch_card", threadId: trunk.id, branchId: branch.id });
+    this.threads.onBranchResult = (trunk, entry) =>
+      this.broadcast({ type: "branch_result", threadId: trunk.id, ...entry });
   }
 
   /**
@@ -706,20 +716,29 @@ export class BantoHostServer {
       return;
     }
 
-    // スレッドの開閉。開いても既存スレッドは何も変わらない（決定2）
+    // 枝を開く（ADR-0017 決定77）。開いても幹と他の枝は何も変わらない（決定2）。
+    // **還す条件と理由は必須**——帳簿が拒むので、ここで補わない（I2）
     if (message?.type === "thread_open") {
       try {
-        await this.threads.open(message.title);
+        await this.threads.open({
+          kind: "branch",
+          title: message.title,
+          returnCondition: message.returnCondition,
+          reason: message.reason,
+          // POが画面から開いた（決定77：番頭の判断でも PO の指示でも開く）
+          openedBy: "po",
+        });
       } catch (err) {
         this.send(ws, { type: "error", message: String(err) });
       }
       return;
     }
-    if (message?.type === "thread_close") {
+    // 枝を畳んで幹へ還す。幹は畳めない（帳簿が拒む）
+    if (message?.type === "thread_merge") {
       try {
-        this.threads.close(message.threadId);
+        this.threads.merge(message.threadId, message.conclusion);
       } catch (err) {
-        // I2: 既定スレッド・未知のIDを黙って成功にしない
+        // I2: 幹・未知のID・空の結論を黙って成功にしない
         this.send(ws, { type: "error", message: String(err) });
       }
       return;
@@ -820,18 +839,6 @@ export class BantoHostServer {
         }
       } catch (err) {
         // I2: 未知のタブID・未知のkindは黙って無視せず理由を返す
-        this.send(ws, { type: "error", message: String(err) });
-      }
-      return;
-    }
-
-    if (message?.type === "new_session") {
-      // いまの会話を畳んで新しく始める。**捨てない**——畳んだ会話は履歴に残り再開できる
-      // （PO要望 2026-07-31）。先に開くのは、宛先が一瞬でも無くならないようにするため
-      try {
-        await this.threads.open();
-        this.threads.close(thread.id);
-      } catch (err) {
         this.send(ws, { type: "error", message: String(err) });
       }
       return;

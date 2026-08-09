@@ -94,38 +94,33 @@ export interface CanvasOpenMessage extends ThreadTarget {
 }
 
 /**
- * いまの会話を畳んで、新しい会話を始める（＝置き換え）。
+ * 枝を開く（ADR-0017 決定77）。**PO の指示でも番頭の判断でも開く**。
  *
- * **畳むだけで消さない**（PO要望 2026-07-31）。以前は会話を捨てていたため、あとから
- * 見返すことも再開することもできなかった——決定30c で「畳んでも記録は残る」に揃えた以上、
- * ここだけ黙って消えるのは筋が通らない。畳んだ会話は履歴に並び、再開できる。
- *
- * `thread_open` との違いは**いまの会話を畳むかどうか**だけ：
- * - `thread_open`：会話を増やす（いまの会話は開いたまま並行する）
- * - `new_session`：いまの話は切り上げて、新しく始める（タブの本数は変わらない）
- */
-export interface NewSessionMessage extends ThreadTarget {
-  type: "new_session";
-}
-
-/**
- * 新しい会話スレッドを開く（番頭の分身。決定2）。
- *
- * **既存のスレッドは何も変わらない**——会話もキャンバスもそのまま残る
+ * **既存の幹・枝は何も変わらない**——会話もキャンバスもそのまま残る
  * （「目の前の話は壊れない」）。
+ *
+ * `returnCondition` と `reason` は**必須**。何が決まれば幹に還るかを書けないものは
+ * 枝にしない（幹で話す）——ここが Slack との分岐点そのもの。
  */
 export interface ThreadOpenMessage {
   type: "thread_open";
-  title?: string;
+  title: string;
+  /** 還す条件。何が決まれば幹に還るか。 */
+  returnCondition: string;
+  /** 開いた理由。札に出る。 */
+  reason: string;
 }
 
 /**
- * スレッドを畳む。**消えない**——タブから外れて履歴へ移るだけ。
- * 既定スレッドは畳めない（会話の宛先が無くなるため）。
+ * 枝を畳んで幹へ還す（決定77）。**消えない**——履歴へ移り、結論1行が幹の末尾に積まれる。
+ *
+ * 幹は畳めない（`threadId` に幹を指すとエラー）。
  */
-export interface ThreadCloseMessage {
-  type: "thread_close";
+export interface ThreadMergeMessage {
+  type: "thread_merge";
   threadId: string;
+  /** 結論。**保留も結論の一種**として「保留：理由」で畳める。 */
+  conclusion: string;
 }
 
 /** 畳んだスレッドを開き直す。会話はそのまま残っているので続きから話せる。 */
@@ -193,9 +188,8 @@ export type ClientMessage =
   | CanvasCloseMessage
   | CanvasReorderMessage
   | CanvasOpenMessage
-  | NewSessionMessage
   | ThreadOpenMessage
-  | ThreadCloseMessage
+  | ThreadMergeMessage
   | ThreadReopenMessage
   | ThreadRenameMessage
   | SetModelMessage;
@@ -229,13 +223,31 @@ export interface CatalogEntryView {
   endpoint: string;
 }
 
-/** 会話スレッド1本の姿（タブの1つ）。 */
+/** 誰が枝を開いたか（ADR-0017 決定77：番頭の判断でも PO の指示でも開く）。 */
+export type BranchOpener = "banto" | "po";
+
+/** 会話スレッド1本の姿（幹1本と、その枝）。 */
 export interface ThreadView {
   threadId: string;
   title: string;
+  /**
+   * 幹か枝か（ADR-0017 決定77）。**幹はプロジェクトに1本で永続・畳まない**。
+   * 枝は還す条件を持って生まれ、畳むと結論1行が幹に還る。
+   */
+  kind: "trunk" | "branch";
+  /** 枝の親。**常に幹**（深さは1段。枝の中に枝は作らない）。 */
+  parentId?: string;
+  /** 還す条件。**枝には必ずある**——書けないものは枝にしない（決定77）。 */
+  returnCondition?: string;
+  /** 誰が開いたか。 */
+  openedBy?: BranchOpener;
+  /** 開いた理由。札に必ず出す——書けないなら枝にしない、が歯止め（決定77）。 */
+  openReason?: string;
+  /** 畳んだときの結論（保留も結論の一種）。畳むまでは無い。 */
+  conclusion?: string;
   /** ハーネス側のセッションID。デバッグと突き合わせ用。 */
   sessionId: string;
-  /** 既定スレッド（threadId 省略時の宛先）。閉じられない。 */
+  /** 既定スレッド（threadId 省略時の宛先）＝幹。 */
   isDefault: boolean;
   /**
    * 畳んだスレッドは消えない（決定30c と同じ扱い）。タブから外れて履歴へ移るだけで、
@@ -346,9 +358,177 @@ export interface TranscriptAttachment {
   mimeType?: string;
 }
 
+/**
+ * 器の役（ADR-0017 決定78）。**5役だけ**——モジュールに独自の状態名を持ち込ませない。
+ * 持ち込ませると色の意味が崩れる。
+ */
+export type UtsuwaState = "run" | "turn" | "stop" | "warn" | "done";
+
+/**
+ * 器の語彙（ADR-0017 決定78）。**13種で打ち止め**——足すのは ADR を通す。
+ *
+ * `choice` だけは `canvas.show` から出せない：判断を求めるものは取次1本（決定73）で、
+ * 押されたときに効く口（`InboxEffect`）を持つのは取次だけだから。画面はこの名前で
+ * 取次の一通を描く（＝器の語彙としては13種）。
+ */
+export const UTSUWA_KINDS = [
+  "list",
+  "facts",
+  "table",
+  "diff",
+  "choice",
+  "stats",
+  "meter",
+  "spark",
+  "timeline",
+  "image",
+  "doc",
+  "quote",
+  "open",
+] as const;
+
+export type UtsuwaKind = (typeof UTSUWA_KINDS)[number];
+
+/**
+ * どの器にも載る欄。
+ *
+ * **`at` は必須**（決定81(c)）——器は「そのときそう見えた記録」で凍るので、
+ * いつの写しなのかが読めないと、いまの状態と見分けが付かない。
+ */
+export interface UtsuwaBase {
+  /** いつの記録か。ISO8601。画面が人の単位に落とす */
+  at: string;
+  /** 出どころ。直せるのは登録した人なので、器にも必ず添える（決定81(d)・I2） */
+  from: { module: string; tool: string; artifact: string };
+  title?: string;
+  /** 見出しの脇の小さい字（件数・大きさ） */
+  meta?: string;
+  /** 切ったこと・抜粋であることを隠さないための1行（I1） */
+  note?: string;
+}
+
+/** 差分の1かたまり。 */
+export interface UtsuwaHunk {
+  header?: string;
+  /** 行の頭（` ` 文脈 / `+` 足した / `-` 消した）と本文。 */
+  lines: Array<[" " | "+" | "-", string]>;
+}
+
+/**
+ * 会話に埋まる器1つ（膳＝器1つ。決定81(b)：入れ子は許さない）。
+ *
+ * `broken` は器ではなく**中核の振る舞い**（決定81(d)）——描けなかったことを
+ * 会話に出し、番頭にも同じものを返す。
+ */
+export type UtsuwaView =
+  | (UtsuwaBase & {
+      kind: "list";
+      items: Array<{ label: string; state?: UtsuwaState; meta?: string }>;
+      /** 全体の件数（切って出したとき、切る前の数）。 */
+      total?: number;
+    })
+  | (UtsuwaBase & { kind: "facts"; facts: Array<[string, string | null]> })
+  | (UtsuwaBase & {
+      kind: "table";
+      cols: Array<{ label: string; align?: "num" }>;
+      rows: Array<Array<string | number | null>>;
+    })
+  | (UtsuwaBase & {
+      kind: "diff";
+      path: string;
+      added?: number;
+      removed?: number;
+      hunks: UtsuwaHunk[];
+      truncated?: boolean;
+    })
+  | (UtsuwaBase & {
+      kind: "choice";
+      ask: string;
+      /** `effect` は載せない（決定73）。画面は押されたことを投げ返すだけ。 */
+      options: Array<{ id: string; label: string; tone?: "call" | "plain" | "quiet" }>;
+    })
+  | (UtsuwaBase & {
+      kind: "stats";
+      /** 値は**人の単位に落としてから**渡す（器で整形しない）。 */
+      stats: Array<{ value: string; label: string; state?: UtsuwaState }>;
+    })
+  | (UtsuwaBase & {
+      kind: "meter";
+      label: string;
+      value: number;
+      /** 上限。分からないときはこの器を使わない——分母の無い割合は嘘になる（I1）。 */
+      max: number;
+      unit?: string;
+      state?: UtsuwaState;
+    })
+  | (UtsuwaBase & {
+      kind: "spark";
+      label: string;
+      points: number[];
+      unit?: string;
+      span?: string;
+      /** どちらへ動けば良いか。器はこれを見て色を決める（D5）。 */
+      good?: "up" | "down";
+    })
+  | (UtsuwaBase & {
+      kind: "timeline";
+      events: Array<{ at: string; label: string; state?: UtsuwaState }>;
+    })
+  | (UtsuwaBase & {
+      kind: "image";
+      /** 参照。base64 を文脈に載せない（`/api/attachments/...` 等）。 */
+      src: string;
+      /** 必須（I1：見えない人に「画像」とだけ出さない）。 */
+      alt: string;
+      w?: number;
+      h?: number;
+    })
+  | (UtsuwaBase & {
+      kind: "doc";
+      excerpt: string;
+      path?: string;
+      truncated?: boolean;
+      /** 全部を読む面への口。 */
+      open?: { view: string; args?: Record<string, unknown> };
+    })
+  | (UtsuwaBase & { kind: "quote"; text: string; source: string; href?: string })
+  | (UtsuwaBase & {
+      kind: "open";
+      view: string;
+      label: string;
+      args?: Record<string, unknown>;
+    })
+  | (UtsuwaBase & {
+      kind: "broken";
+      /** 頼まれた器の名。 */
+      wanted: string;
+      /** 何が足りなかったか。 */
+      missing: string;
+      /** 素の値。**畳んで置く**——黙って素の JSON を出さない（決定81(d)）。 */
+      raw?: string;
+    });
+
 export type TranscriptEntry =
   | { role: "po"; text: string; attachments?: TranscriptAttachment[] }
   | { role: "banto"; text: string }
+  /**
+   * 枝の札（ADR-0017 決定77）。**写しではなく参照**なので、題も状態も生きている
+   * ——画面は `branchId` から枝を引いて描く。幹に残るのはこの1行だけ。
+   */
+  | { role: "branch"; branchId: string }
+  /**
+   * 枝が幹へ還った1行（決定77）。**こちらは記録なので凍る**——畳んだ時点の結論を
+   * そのまま持つ。幹は追記のみ（D3）なので、既存の行は書き換わらない。
+   */
+  | {
+      role: "branch_result";
+      branchId: string;
+      title: string;
+      conclusion: string;
+      at: string;
+    }
+  /** 番頭が器に載せた Tool の戻り値（決定78・81）。**凍る**。 */
+  | { role: "utsuwa"; utsuwa: UtsuwaView }
   /**
    * 番頭の思考（ハーネスの thinking）。本文とは別に積む——応答と混ぜると、
    * どこまでが考えでどこからが答えなのか読めなくなる。
@@ -421,6 +601,31 @@ export interface ReasoningDeltaEvent extends ThreadScope {
 export interface ReasoningEndEvent extends ThreadScope {
   type: "reasoning_end";
   durationMs: number;
+}
+
+/**
+ * 番頭が器を1つ出した（ADR-0017 決定78・81）。会話へ積まれる。
+ *
+ * **器は凍る**ので、これ以後この器は書き換わらない——後から差分は来ない。
+ */
+export interface UtsuwaEvent extends ThreadScope {
+  type: "utsuwa";
+  utsuwa: UtsuwaView;
+}
+
+/** 枝が生まれ、幹に札が立った（決定77）。 */
+export interface BranchCardEvent extends ThreadScope {
+  type: "branch_card";
+  branchId: string;
+}
+
+/** 枝が幹へ還った（決定77）。幹の末尾に結論1行が積まれる。 */
+export interface BranchResultEvent extends ThreadScope {
+  type: "branch_result";
+  branchId: string;
+  title: string;
+  conclusion: string;
+  at: string;
 }
 
 /** Tool実行の開始。name は論理名（決定22）。 */
@@ -572,6 +777,9 @@ export type ServerEvent =
   | ContextStateEvent
   | ToolStartEvent
   | ToolEndEvent
+  | UtsuwaEvent
+  | BranchCardEvent
+  | BranchResultEvent
   | TurnStartEvent
   | TurnEndEvent
   | CanvasStateEvent

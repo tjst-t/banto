@@ -99,14 +99,17 @@ export {
   type BantoSkill,
 } from "./skills.js";
 export { BantoHostServer, type BantoHostServerOptions, type HostSession } from "./server.js";
-// 会話スレッド＝番頭の分身（決定2・task-0035）
+// 会話は幹1本と枝（ADR-0017 決定77。分身の単位が枝になった）
 export {
   Thread,
   ThreadRegistry,
+  BRANCH_STALE_DAYS,
   MAX_THREAD_TITLE_LENGTH,
   normalizeThreadTitle,
   type ThreadFactory,
+  type ThreadSpec,
 } from "./threads.js";
+export { watchStaleBranches } from "./threads.js";
 export { createThreadTools, bindToolArgs, type ThreadToolsOptions } from "./thread-tools.js";
 // 場所の帳簿と砦（決定36・38）
 export {
