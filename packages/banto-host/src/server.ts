@@ -35,6 +35,7 @@ import {
   type NoticeSource,
   type ServerEvent,
   type TranscriptAttachment,
+  type UtsuwaView,
 } from "./protocol.js";
 import { fromWireToolName } from "@banto/core";
 import type { Thread, ThreadRegistry } from "./threads.js";
@@ -531,6 +532,20 @@ export class BantoHostServer {
       });
     });
     return thread.notices;
+  }
+
+  /**
+   * 器を1つ会話へ積んで配る（ADR-0017 決定78・81）。
+   *
+   * **器は凍る**（決定81(c)）——記録に入ったら書き換えない。ターンは回さない：
+   * 器は番頭が自分で出したものなので、自分に知らせる意味が無い（`notify` との違い）。
+   *
+   * I2: 宛先不明を黙って捨てない。
+   */
+  showUtsuwa(threadId: string | undefined, utsuwa: UtsuwaView): void {
+    const thread = this.threads.resolve(threadId);
+    thread.record({ role: "utsuwa", utsuwa });
+    this.broadcast({ type: "utsuwa", threadId: thread.id, utsuwa });
   }
 
   /** 実際に待ち受けているポート（port: 0 のとき割り当てられた値）。 */

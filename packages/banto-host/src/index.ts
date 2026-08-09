@@ -32,6 +32,7 @@ export {
   type ArtifactRef,
   type ArtifactSlice,
   type ArtifactSummary,
+  type ArtifactRecord,
   type ArtifactOffloadOptions,
 } from "./artifacts.js";
 export { createArtifactTools } from "./artifact-tools.js";
@@ -151,7 +152,18 @@ export {
   type CanvasTab,
   type CanvasSnapshot,
 } from "./canvas.js";
-export { createCanvasTools } from "./canvas-tools.js";
+export { createCanvasTools, type CanvasToolsOptions } from "./canvas-tools.js";
+// 器＝中核が持つ有限の語彙（ADR-0017 決定78・81）。番頭は選ぶが、作らない
+export {
+  buildUtsuwa,
+  brokenUtsuwa,
+  pickPath,
+  SHOWABLE_UTSUWA_KINDS,
+  UTSUWA_NOT_SHOWABLE,
+  type UtsuwaOrigin,
+  type UtsuwaLabels,
+  type UtsuwaBuildResult,
+} from "./canvas-utsuwa.js";
 export type {
   CanvasStateEvent,
   CanvasTabView,
@@ -160,6 +172,17 @@ export type {
   CanvasOpenMessage,
 } from "./protocol.js";
 export type { TranscriptEntry, HistoryEvent, PoMessageEvent } from "./protocol.js";
+export {
+  UTSUWA_KINDS,
+  type UtsuwaKind,
+  type UtsuwaState,
+  type UtsuwaView,
+  type UtsuwaEvent,
+  type BranchOpener,
+  type ThreadView,
+  type ThreadOpenMessage,
+  type ThreadMergeMessage,
+} from "./protocol.js";
 export { createFileTools } from "./file-tools.js";
 export { createFileWriteTools, type FileWriteToolOptions } from "./file-write-tools.js";
 export { createPlaceTools } from "./place-tools.js";

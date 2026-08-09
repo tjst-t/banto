@@ -56,6 +56,13 @@ export interface CreateBantoHostSessionOptions {
   /** 退避に回す大きさ（文字数）。省略すると `DEFAULT_ARTIFACT_THRESHOLD_CHARS`。 */
   artifactThresholdChars?: number;
   /**
+   * Tool 名からモジュール名を引く（ADR-0017 決定81(d)）。
+   *
+   * 器が描けなかったときに「どのモジュールの・どの Tool か」を出すため——直せるのは
+   * 登録した人なので、出所が分かる形で残す。渡さなければドメインで代用する。
+   */
+  artifactModuleOf?: (toolName: string) => string | undefined;
+  /**
    * 番頭核のSKILL（手続き記憶）を読み込むか。既定 true。
    * false にすると `packages/banto-host/skills/` を読まない（テスト用）。
    */
@@ -192,9 +199,12 @@ export async function createBantoHostSession(
     ? withArtifactOffload(
         tools,
         options.artifacts,
-        options.artifactThresholdChars !== undefined
-          ? { thresholdChars: options.artifactThresholdChars }
-          : {}
+        {
+          ...(options.artifactThresholdChars !== undefined
+            ? { thresholdChars: options.artifactThresholdChars }
+            : {}),
+          ...(options.artifactModuleOf ? { moduleOf: options.artifactModuleOf } : {}),
+        }
       )
     : tools;
 

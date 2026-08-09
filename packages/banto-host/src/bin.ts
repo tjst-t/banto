@@ -792,11 +792,19 @@ async function serve(options: ServeOptions): Promise<void> {
   let server: BantoHostServer;
   const threadFactory: ThreadFactory = async (threadId, resumeFrom, wantedModel) => {
     const canvas = new Canvas(catalog);
+    // 提案§3.1: ツール出力の退避先。**会話ごと**——別の会話の観測を引けると、
+    // スレッドごとに文脈を分けている意味（決定35a）が崩れる。
+    // ADR-0017 決定81(a): 器に載せるのはここに退避済みの結果だけ（データを再送させない）
+    const artifacts = new ArtifactStore(path.join(dataDir(), "artifacts", threadId));
     // 記憶・SKILLのToolは createBantoHostSession が内部で足すので、ここでは渡さない。
     // canvas.* / thread.* / llm.* は Banto 中核自身のドメイン（決定27a・ADR-0011 決定42）で
     // モジュールではない。番頭は常にこれらを持つ。
     const ownTools = [
-      ...createCanvasTools(canvas, catalog),
+      ...createCanvasTools(canvas, catalog, {
+        artifacts,
+        // 器は会話へ積んで配る。**凍る**ので後から書き換えない（決定81(c)）
+        showUtsuwa: (utsuwa) => server.showUtsuwa(threadId, utsuwa),
+      }),
       // 取次は会話に紐づかないが、積むのは会話の中の番頭なので Tool は各会話に配る。
       // 宛先を渡すのは、積んだ札から**その話をしていた会話へ戻れる**ようにするため（決定73）
       ...createInboxTools(inbox, { threadId }),
@@ -903,10 +911,6 @@ async function serve(options: ServeOptions): Promise<void> {
     const registered = await places.list();
     const memoryPlaces = rememberProjectIds(registered).scopes;
 
-    // 提案§3.1: ツール出力の退避先。**会話ごと**——別の会話の観測を引けると、
-    // スレッドごとに文脈を分けている意味（決定35a）が崩れる
-    const artifacts = new ArtifactStore(path.join(dataDir(), "artifacts", threadId));
-
     const { session } = await createBantoHostSession({
       systemPrompt: SYSTEM_PROMPT,
       tools: ownTools,
@@ -915,6 +919,8 @@ async function serve(options: ServeOptions): Promise<void> {
       // ワークツリーのIDで指されても断らない——記憶は親に畳まれる（projectIdFor）
       knownPlaceIds: () => [...memoryPlaces.map((p) => p.id), ...registered.map((p) => p.id)],
       artifacts,
+      // 器が描けなかったときに出どころを名指しできるようにする（決定81(d)）
+      artifactModuleOf: (name) => modules.moduleForTool(name)?.name,
       ...(artifactThresholdChars() !== undefined
         ? { artifactThresholdChars: artifactThresholdChars()! }
         : {}),
