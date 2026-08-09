@@ -17,3 +17,8 @@ work/attachments/
 # Playwright の実行結果（生成物）
 test-results/
 playwright-report/
+
+# 手元で dev サーバを回したときの出力（起動ログ・クラッシュログ）。中身は実行のたびに
+# 変わる生成物で、履歴に残す意味がない
+.server.log
+.ui.log
