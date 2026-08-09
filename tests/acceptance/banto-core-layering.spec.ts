@@ -46,11 +46,12 @@ describe("[AC-S254276-3-1] banto-core layering: tools, client, prompt assets; ad
 
     // Check for actual TypeScript import statements referencing pi packages.
     // Comments mentioning these names are allowed (documentation only).
+    // **スコープ名で列挙しない。** pi は `@mariozechner/*` から `@earendil-works/*` へ
+    // 移った（2026-08-08）。旧スコープだけを見ていると、名前が変わった瞬間に
+    // 見張りが黙って効かなくなる——inc-0040 と同じ「列挙で書かれた規約」の罠。
     const importPatterns = [
-      /^import\s.*['"@]mariozechner/m,
-      /^import\s.*['"]pi-coding-agent/m,
-      /^import\s.*['"]pi-agent-core/m,
-      /^import\s.*['"]@mariozechner\//m,
+      /^import\s[\s\S]*?['"]@[^"']*\/pi-/m,
+      /^import\s[\s\S]*?['"]pi-(coding-agent|agent-core|ai|tui)/m,
     ];
 
     for (const filename of entries) {
@@ -74,9 +75,10 @@ describe("[AC-S254276-3-1] banto-core layering: tools, client, prompt assets; ad
       ...(pkg["peerDependencies"] as Record<string, string> | undefined ?? {}),
     };
     for (const dep of Object.keys(deps)) {
+      // スコープを名指ししない（上と同じ理由）
       assert.ok(
-        !dep.includes("@mariozechner"),
-        `banto-core must not depend on @mariozechner, found: ${dep}`
+        !/\/pi-|^pi-/.test(dep),
+        `banto-core must not depend on a pi package, found: ${dep}`
       );
     }
   });

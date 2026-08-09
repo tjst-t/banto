@@ -153,7 +153,7 @@ function readConfig(): { baseUrl: string; projectTag: string; taskId: string } {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pi API は実行時に渡される。
-// 型を得るために @mariozechner/pi-coding-agent を import すると、この拡張が職人側の
+// 型を得るために @earendil-works/pi-coding-agent を import すると、この拡張が職人側の
 // ランタイムに縛られる（banto-executor と同じ判断）。(I4)
 export default function (pi: any): void {
   const { baseUrl, projectTag, taskId } = readConfig();

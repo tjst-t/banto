@@ -16,7 +16,7 @@ import type { ModuleSettingsSpec, SettingsWriteResult } from "@banto/core";
 import type { BantoModule } from "../module.js";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "../tool-registry.js";
 import type { CanvasViewSpec } from "../canvas.js";
-import { getAgentDir } from "@mariozechner/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export const PI_AGENT_BASE_URL = "/api/pi-agent";
 

@@ -22,8 +22,8 @@ import {
   withEmptyResponseGuard,
   type GuardableSession,
 } from "@banto/host";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, StopReason, ToolResultMessage } from "@mariozechner/pi-ai";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage, StopReason, ToolResultMessage } from "@earendil-works/pi-ai";
 
 /** テスト用の AssistantMessage。判定で使わないフィールド（api/provider/usage 等）は省略する。 */
 function assistantMessage(content: AssistantMessage["content"], stopReason: StopReason = "stop"): AssistantMessage {

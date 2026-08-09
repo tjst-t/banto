@@ -11,8 +11,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { getModel } from "@mariozechner/pi-ai";
-import { AuthStorage, ModelRegistry, SessionManager } from "@mariozechner/pi-coding-agent";
+import { getModel } from "@earendil-works/pi-ai/compat";
+import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
+import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
 
 import { JsonlMemoryStore, ScopedMemory } from "@banto/core";
 import {
@@ -58,15 +59,19 @@ afterEach(() => {
 async function makeSession(overrides: Record<string, unknown> = {}) {
   const model = getModel("anthropic", "claude-opus-4-5");
   assert.ok(model);
-  const authStorage = AuthStorage.inMemory();
   return createBantoHostSession({
     systemPrompt: "あなたは番頭です。",
     tools: [],
     memory,
     cwd: process.cwd(),
     model,
-    authStorage,
-    modelRegistry: ModelRegistry.inMemory(authStorage),
+    // pi 0.84: 資格情報とモデル表は ModelRuntime に一本化された。
+    // 試験では**どこにも触らないもの**を渡す（`modelsPath: null` でファイルを読ませない）
+    modelRuntime: await ModelRuntime.create({
+      credentials: new InMemoryCredentialStore(),
+      modelsStore: new InMemoryModelsStore(),
+      modelsPath: null,
+    }),
     sessionManager: SessionManager.inMemory(),
     ...overrides,
   });

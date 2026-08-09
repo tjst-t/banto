@@ -13,7 +13,12 @@ export interface ResolvedAuthLike {
   ok?: boolean;
   error?: string;
   apiKey?: string;
-  headers?: Record<string, string>;
+  /**
+   * pi 0.84 から**値に `null` を取りうる**（`ProviderHeaders`）。null は「既定で付く
+   * ヘッダを外す」の意味で、こちらは単発呼び出しのヘッダを毎回組み立てるので
+   * **落として渡す**（外すべきものは、そもそも付けていない）。
+   */
+  headers?: Record<string, string | null>;
 }
 
 /** 単発呼び出しに渡す認証を解決する関数。 */
@@ -34,8 +39,16 @@ export async function requireAuth(
   if (resolved.ok === false) {
     throw new Error(`${what}: モデルの認証を解決できません（${resolved.error ?? "理由不明"}）`);
   }
+  const headers =
+    resolved.headers === undefined
+      ? undefined
+      : Object.fromEntries(
+          Object.entries(resolved.headers).filter(
+            (entry): entry is [string, string] => entry[1] !== null
+          )
+        );
   return {
     ...(resolved.apiKey !== undefined ? { apiKey: resolved.apiKey } : {}),
-    ...(resolved.headers !== undefined ? { headers: resolved.headers } : {}),
+    ...(headers !== undefined ? { headers } : {}),
   };
 }

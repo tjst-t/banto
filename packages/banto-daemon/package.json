@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@banto/core": "*",
-    "@mariozechner/pi-coding-agent": "^0.73.1",
+    "@earendil-works/pi-coding-agent": "^0.84.1",
     "ws": "^8.21.1",
     "@banto/repo-manager": "*"
   },

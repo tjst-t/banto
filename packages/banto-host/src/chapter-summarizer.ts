@@ -13,7 +13,7 @@
  * I2: LLM が失敗したら例外にする——引き継ぎ無しで章を畳むのがいちばん困る。
  */
 
-import { completeSimple, type Model } from "@mariozechner/pi-ai";
+import { completeSimple, type Model } from "@earendil-works/pi-ai/compat";
 import type { ChapterHandoff, ChapterInput } from "./chapters.js";
 import { requireAuth, type AuthResolver } from "./llm-auth.js";
 import type { HandoffSummary } from "./handoffs.js";

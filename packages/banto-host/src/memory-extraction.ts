@@ -26,7 +26,7 @@
  * I2: 抽出の失敗は握りつぶさずログに残す。ただし**会話は止めない**（task-0022 a5）。
  */
 
-import { completeSimple, type Model } from "@mariozechner/pi-ai";
+import { completeSimple, type Model } from "@earendil-works/pi-ai/compat";
 import type { MemoryKind, MemoryRecord, MemoryStore } from "@banto/core";
 import { requireAuth, type AuthResolver } from "./llm-auth.js";
 

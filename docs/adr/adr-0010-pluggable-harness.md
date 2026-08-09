@@ -90,7 +90,7 @@ ADR-0009 で「番頭のハーネスは自作しない」と決めた。自作�
   - **Extension API は不採用**：Tool登録・イベント購読はできるが、コア状態（`session.agent.state.messages` 等）の直接操作やセッションループ自体の差し替えができない、pi のライフサイクル内に閉じた制約付きプラグインインターフェースのため。
   - **RPCモードは不採用**：プロセス分離・言語非依存という利点はあるが、TypeScript同士の直結という前提（banto-core は既にTypeScript strict）では型安全性と直接状態アクセスを失う代償の方が大きい。
   - **SDKモードを採用**：`createAgentSession()` 等でセッションを組み立て、メッセージ履歴の直接操作・ターン境界イベント購読（`steer()`/`followUp()`等）を使って、番頭側の記憶注入・Tool/SKILL登録・ターン制御を自前ホスト側に持つ。
-- 参照：pi のドキュメント（`packages/coding-agent/docs/sdk.md`・`rpc.md`・`extensions.md`、[badlogic/pi-mono](https://github.com/badlogic/pi-mono)）。
+- 参照：pi のドキュメント（`packages/coding-agent/docs/sdk.md`・`rpc.md`・`extensions.md`、[earendil-works/pi](https://github.com/earendil-works/pi)）。**移転前は badlogic/pi-mono**——決定当時のリンクはそちらを指していた（npm も `@mariozechner/*` から `@earendil-works/*` へ改称）。
 
 ### 12. Kobo GUI コンポーネントの埋め込み方式：iframe不採用、Reactコンポーネント直接importで統一（2026-07-29、PO裁定）
 

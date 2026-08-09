@@ -14,7 +14,7 @@
  * D3: session state is tracked by the daemon via events; the driver only manages
  *     the process lifecycle.
  * D5: no judgment logic here — pure process management + protocol translation.
- * D6: uses only child_process (stdlib) and @mariozechner/pi-coding-agent binary.
+ * D6: uses only child_process (stdlib) and @earendil-works/pi-coding-agent binary.
  *     (pi-coding-agent is the VISION tech_constraints-mandated runtime.)
  */
 
@@ -146,7 +146,7 @@ interface ActiveSession {
 export interface PiRpcDriverOptions {
   /**
    * Path to the pi CLI entry-point (dist/cli.js).
-   * Defaults to the binary bundled with @mariozechner/pi-coding-agent.
+   * Defaults to the binary bundled with @earendil-works/pi-coding-agent.
    */
   piCliPath?: string;
   /**
@@ -263,12 +263,12 @@ export class PiRpcDriver implements RuntimeDriver {
     const candidates = [
       // Installed as a dependency of banto-daemon
       new URL(
-        "../../../node_modules/@mariozechner/pi-coding-agent/dist/cli.js",
+        "../../../node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
         import.meta.url
       ).pathname,
       // Monorepo root node_modules (npm workspaces hoist)
       new URL(
-        "../../../../node_modules/@mariozechner/pi-coding-agent/dist/cli.js",
+        "../../../../node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
         import.meta.url
       ).pathname,
     ];
@@ -282,7 +282,7 @@ export class PiRpcDriver implements RuntimeDriver {
     });
     if (!found) {
       throw new Error(
-        "pi CLI not found. Install @mariozechner/pi-coding-agent or set piCliPath."
+        "pi CLI not found. Install @earendil-works/pi-coding-agent or set piCliPath."
       );
     }
     this.piCliPath = found;

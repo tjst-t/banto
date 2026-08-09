@@ -71,7 +71,7 @@ const PI_MODEL = "deepseek-v4-flash-free";
 function probeAuth(): { ok: boolean; reason?: string; detail: string } {
   const piCli = (() => {
     const candidates = [
-      path.resolve(import.meta.dirname ?? ".", "../../node_modules/@mariozechner/pi-coding-agent/dist/cli.js"),
+      path.resolve(import.meta.dirname ?? ".", "../../node_modules/@earendil-works/pi-coding-agent/dist/cli.js"),
       path.resolve(import.meta.dirname ?? ".", "../../node_modules/.bin/pi"),
     ];
     return candidates.find((p) => {

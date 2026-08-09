@@ -21,7 +21,7 @@
  * D6: no dependencies beyond banto-core and node built-ins.
  *     pi itself is the runtime; we do not import its modules here so that
  *     banto-core can remain pi-free. The pi parameter is typed `any` because
- *     importing @mariozechner/pi-coding-agent would violate D6 (adds a build dep)
+ *     importing @earendil-works/pi-coding-agent would violate D6 (adds a build dep)
  *     and the adapter is always loaded by pi at runtime, which provides the API. (I4)
  */
 

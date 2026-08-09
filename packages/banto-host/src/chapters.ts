@@ -29,9 +29,9 @@
  * I2: 資料が書けなかったら章を閉じない——引き継ぎ無しで文脈だけ消すのが最悪。
  */
 
-import type { AgentSession } from "@mariozechner/pi-coding-agent";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { renderArtifactIndex, type ArtifactStore } from "./artifacts.js";
-import { calculateContextTokens, estimateTokens } from "@mariozechner/pi-coding-agent";
+import { calculateContextTokens, estimateTokens } from "@earendil-works/pi-coding-agent";
 import {
   renderChapterOpening,
   type HandoffRecord,

@@ -21,6 +21,7 @@
     "test:ui": "playwright test"
   },
   "devDependencies": {
+    "@earendil-works/pi-agent-core": "^0.84.1",
     "@playwright/test": "^1.62.1",
     "@types/node": "^26.1.1",
     "tsx": "^4.15.0",

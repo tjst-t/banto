@@ -16,8 +16,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import { getModel, getModels } from "@mariozechner/pi-ai";
-import { AuthStorage, getAgentDir, ModelRegistry, SessionManager } from "@mariozechner/pi-coding-agent";
+import { getModel, getModels } from "@earendil-works/pi-ai/compat";
+import { getAgentDir, ModelRegistry, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import {
   JsonlMemoryStore,
   LlmCatalog,
@@ -588,9 +588,19 @@ async function serve(options: ServeOptions): Promise<void> {
 
   // LLM Catalog の初期化（ADR-0004）。pi の設定を読み、banto のオーバーレイと統合する
   const agentDir = getAgentDir();
-  const authStorage = AuthStorage.create(path.join(agentDir, "auth.json"));
-  const modelRegistry = ModelRegistry.create(authStorage, path.join(agentDir, "models.json"));
-  modelRegistry.refresh();
+  /**
+   * pi 0.84 で `AuthStorage` と `ModelRegistry.create()` は無くなり、資格情報とモデル表を
+   * まとめて持つ `ModelRuntime` に一本化された（`ModelRegistry` はその同期版の facade）。
+   *
+   * **`refresh()` が非同期になった**——「await してから同期の読み出しをすること」と
+   * 型に書いてある。以前は投げっぱなしで済んでいたので、ここで待つ。
+   */
+  const modelRuntime = await ModelRuntime.create({
+    authPath: path.join(agentDir, "auth.json"),
+    modelsPath: path.join(agentDir, "models.json"),
+  });
+  const modelRegistry = new ModelRegistry(modelRuntime);
+  await modelRegistry.refresh();
 
   const workerPoolSettings = (settings.all().modules?.["worker-pool"] ?? {}) as Record<string, unknown>;
   const llmCatalog = new LlmCatalog({
@@ -900,7 +910,7 @@ async function serve(options: ServeOptions): Promise<void> {
       moduleSkills: modules.skills(),
       learnedSkills,
       sessionManager,
-      modelRegistry,
+      modelRuntime,
       ...(sessionModel ? { model: sessionModel } : {}),
     });
     // imp-0016: ツールコール（git status / file.read など）の後、次の LLM 応答が空

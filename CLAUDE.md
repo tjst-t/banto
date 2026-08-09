@@ -17,7 +17,8 @@
 - **Banto（番頭）のハーネスは差し替え可能。** 第一実装は pi coding agent。Kobo・WorkerAgent・UI（アテンションキュー／バックログ）とのやりとりはすべて Tool／SKILL の公開 I/F を介し、ハーネスの内部実装に依存しない
 - **LLMプロバイダ層はプラガブル＝モデル非依存**（Anthropic / OpenAI / opencode経由 / 将来ローカルLLM）。banto-core に I/F、アダプタで差し替える
 - **記憶は既存の記憶システムを採用する（自作しない）。** 参照実装は Hermes Agent（Nous, MIT）。手続き記憶は SKILL.md（agentskills.io）形式
-- **pi（badlogic/pi-mono）は職人（Worker Pool）ランタイム、および番頭ハーネスの第一実装として使う**。無改造で扱う
+- **pi（earendil-works/pi）は職人（Worker Pool）ランタイム、および番頭ハーネスの第一実装として使う**。無改造で扱う
+  - npm は `@earendil-works/pi-coding-agent` / `pi-ai` / `pi-agent-core`。**旧 `@mariozechner/*` は deprecated**（2026-08-08 に 0.73.1 → 0.84.1 へ移行）
 - **モジュール（Module）＝ Banto への登録単位**（ADR-0010 決定25・27）。①接続情報 ②番頭へのTool ③キャンバスへのGUI ④SKILL を1単位で登録する。Kobo・基本GUIセット・Worker Pool はいずれもモジュール。`Provider` は LLMプロバイダで埋まっているため使わない。コード内は `BantoModule` 等と接頭辞を付ける（`module` はESモジュールと衝突）
   - **モジュールとドメインの関係**：ドメインは決定9のTool名前空間プレフィックス。各モジュールは1つ以上のドメインを持つが逆は成り立たない（`canvas.*`/`memory.*`/`skill.*` は Banto 中核自身）
   - 散文で世界観を語るときの「店」（vision.md）は商家の比喩として残す。機構を指すときは「モジュール」

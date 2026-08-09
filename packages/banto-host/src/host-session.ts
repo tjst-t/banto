@@ -17,7 +17,7 @@ import {
   SessionManager,
   type CreateAgentSessionOptions,
   type CreateAgentSessionResult,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import type { ScopedMemory } from "@banto/core";
 import { createArtifactTools } from "./artifact-tools.js";
 import { withArtifactOffload, type ArtifactStore } from "./artifacts.js";
@@ -75,8 +75,12 @@ export interface CreateBantoHostSessionOptions {
   /** Global pi config directory. Default: ~/.pi/agent */
   agentDir?: string;
   model?: CreateAgentSessionOptions["model"];
-  authStorage?: CreateAgentSessionOptions["authStorage"];
-  modelRegistry?: CreateAgentSessionOptions["modelRegistry"];
+  /**
+   * pi 0.84 で `authStorage` / `modelRegistry` は無くなり、資格情報とモデル表を
+   * まとめて持つ `modelRuntime` に一本化された。渡さなければ pi が
+   * `agentDir/auth.json` と `models.json` から自分で作る（従来と同じ既定）。
+   */
+  modelRuntime?: CreateAgentSessionOptions["modelRuntime"];
   sessionManager?: CreateAgentSessionOptions["sessionManager"];
 }
 
@@ -176,8 +180,7 @@ export async function createBantoHostSession(
     cwd,
     agentDir,
     model: options.model,
-    authStorage: options.authStorage,
-    modelRegistry: options.modelRegistry,
+    modelRuntime: options.modelRuntime,
     resourceLoader,
     noTools: "builtin",
     customTools: offloaded.map(toPiTool),

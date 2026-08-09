@@ -10,7 +10,7 @@
  * D6: 依存は @banto/core と pi の型のみ（pi 依存はこの層に閉じる）。
  */
 
-import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   assertNamespacedToolName,
   toWireToolName,

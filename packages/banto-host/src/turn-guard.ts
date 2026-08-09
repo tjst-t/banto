@@ -5,7 +5,7 @@
  * 次の LLM 応答が生成されず、UI の送信ボタンが「送る」（＝アイドル）のまま停止する
  * 事象が起きた。調査の結論（検証済み）:
  *
- * - pi（@mariozechner/pi-coding-agent）の agent-loop は、ツールコール結果を context に
+ * - pi（@earendil-works/pi-coding-agent）の agent-loop は、ツールコール結果を context に
  *   入れた後も継続ターンを要求するが、次の LLM 応答が「空」（content に text も toolCall
  *   も無い、stopReason: "stop"）だと、それを異常と検出せず正常終了としてターンを閉じる。
  * - pi の自動リトライ（agent-session.js の `_isRetryableError`）は stopReason "error" の
@@ -25,8 +25,8 @@
  *     core job（D11）だが、ハーネス差し替え可能性の契約は壊さず、bin.ts が適用するだけ。
  */
 
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { AssistantMessage, Message, ToolResultMessage } from "@mariozechner/pi-ai";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage, Message, ToolResultMessage } from "@earendil-works/pi-ai";
 import type { HostSession } from "./server.js";
 
 /** 空応答の再試行上限。超えたらエラーとして打ち切る（I2: 握りつぶさない）。 */

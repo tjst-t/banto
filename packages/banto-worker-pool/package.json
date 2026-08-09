@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@banto/core": "*",
-    "@mariozechner/pi-coding-agent": "^0.73.1",
+    "@earendil-works/pi-coding-agent": "^0.84.1",
     "typebox": "^1.1.24"
   }
 }

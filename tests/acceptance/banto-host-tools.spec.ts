@@ -11,8 +11,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { getModel } from "@mariozechner/pi-ai";
-import { AuthStorage, ModelRegistry, SessionManager } from "@mariozechner/pi-coding-agent";
+import { getModel } from "@earendil-works/pi-ai/compat";
+import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
+import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 
 import {
@@ -178,18 +179,24 @@ describe("[task-0004][task-0006] Minimal SDK-mode session (no Kobo, no network)"
 
     // Fully in-memory / hermetic: no filesystem writes, no network, no API key needed
     // to construct the session (only to actually call session.prompt()).
-    const authStorage = AuthStorage.inMemory();
-    const { session } = await createBantoHostSession({
+      const { session } = await createBantoHostSession({
       systemPrompt: "You are the Banto host skeleton under test.",
       tools: [koboReadyTool],
       cwd: process.cwd(),
       model,
-      authStorage,
-      modelRegistry: ModelRegistry.inMemory(authStorage),
+      // pi 0.84: 資格情報とモデル表は ModelRuntime に一本化された（`modelsPath: null`
+      // でファイルを読ませない＝完全にメモリ内で閉じる）
+      modelRuntime: await ModelRuntime.create({
+        credentials: new InMemoryCredentialStore(),
+        modelsStore: new InMemoryModelsStore(),
+        modelsPath: null,
+      }),
       sessionManager: SessionManager.inMemory(),
     });
 
-    // pi appends discovered context files (this repo's own CLAUDE.md) after the override base.
+    // 番頭は cwd のコンテキストファイルを読まない（`noContextFiles`・PO指摘 2026-08-09）。
+    // 以前はここに「pi が this repo の CLAUDE.md を継ぎ足す」と書いてあり、それが実際に
+    // 起きていた——番頭が banto の開発規約を毎セッション読んでいた（host-no-context-files.spec.ts）
     assert.ok(session.agent.state.systemPrompt.startsWith("You are the Banto host skeleton under test."));
     assert.equal(session.agent.state.model?.id, model.id);
 
