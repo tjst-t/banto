@@ -8,7 +8,13 @@
 #   `security_opt: [apparmor=unconfined]` が要る
 # - provision 後もコンテナが running を保つ必要があるので command は sleep infinity
 # - run は one-shot の sibling で動く。ソースは bind mount で共有し、node_modules は
-#   名前付きボリュームに隔離してホストの作業ツリーを汚さない
+#   別の場所に隔離してホストの作業ツリーを汚さない
+#
+# **node_modules の置き場は `BANTO_CACHE_DIR` で受ける**（spec-environment §5.2）。
+# 名前付きボリュームだと compose がプロジェクト名（`<taskId>-docker`）を前置するので
+# **タスクごとに別物**になり、毎タスク `npm ci`（実測60秒）を払い直していた。
+# ドライバが鍵（package-lock.json 等の中身のハッシュ）ごとの場所を渡してくるので、
+# 同じ鍵のタスクは用意済みのものを掴む。渡されないときは従来どおりタスク限りの場所。
 services:
   test:
     build:
@@ -19,7 +25,5 @@ services:
     working_dir: /app
     volumes:
       - ..:/app
-      - banto-node-modules:/app/node_modules
+      - ${BANTO_CACHE_DIR:-./.banto-node-modules}:/app/node_modules
     command: ["sleep", "infinity"]
-volumes:
-  banto-node-modules:

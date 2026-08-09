@@ -20,6 +20,7 @@
  */
 
 import * as fs from "node:fs";
+import { ensureCacheDir, listCacheDirs, removeCacheDir } from "./cache-dir.js";
 import * as path from "node:path";
 import * as net from "node:net";
 import * as childProcess from "node:child_process";
@@ -246,6 +247,15 @@ async function handleProvision(input: Record<string, unknown>): Promise<void> {
   // Resource name carries the taskID prefix (I3)
   const name = `${taskId}-env`;
 
+  /**
+   * 環境より長生きする置き場（spec §5.2）。**このドライバはホストでそのまま動く**ので、
+   * 繋ぎ方は symlink——作業場所の `cachePath` を、鍵の付いた置き場へ向ける。
+   *
+   * 既に実体（symlink でないディレクトリ）が居るなら**触らない**。人が置いたものを
+   * 消してまで使う機能ではないので、その場合は置き場を使わない（毎回 setup に落ちる）。
+   */
+  const cache = attachCacheBySymlink(input, workdir);
+
   // Spawn the process. Use shell=true to handle compound commands.
   // D6: node:child_process stdlib.
   const child = childProcess.spawn(cmd, [], {
@@ -282,7 +292,44 @@ async function handleProvision(input: Record<string, unknown>): Promise<void> {
   // handle に残すので、後続の run が workdir を渡さなくても同じ場所で動く
   if (workdir) handle["workdir"] = workdir;
 
-  process.stdout.write(JSON.stringify({ handle }) + "\n");
+  process.stdout.write(
+    JSON.stringify({ handle, ...(cache ? { cache: { primed: cache.primed } } : {}) }) + "\n"
+  );
+}
+
+/**
+ * 置き場を作業場所へ symlink で繋ぐ。繋げなければ `undefined`（＝置き場を使わない）。
+ */
+function attachCacheBySymlink(
+  input: Record<string, unknown>,
+  workdir: string | undefined
+): { primed: boolean } | undefined {
+  const key = input["cacheKey"] as string | undefined;
+  const root = input["cacheRoot"] as string | undefined;
+  const at = input["cachePath"] as string | undefined;
+  if (!key || !root || !at) return undefined;
+
+  const store = ensureCacheDir(root, key);
+  const link = path.isAbsolute(at) ? at : path.resolve(workdir ?? process.cwd(), at);
+  try {
+    const existing = fs.lstatSync(link, { throwIfNoEntry: false });
+    if (existing?.isSymbolicLink()) {
+      if (fs.readlinkSync(link) === store.dir) return { primed: store.primed };
+      fs.unlinkSync(link); // 別の鍵を指していた古い繋ぎ。張り替える
+    } else if (existing) {
+      // I2: 人が置いた実体を消さない。置き場を使わないことにする
+      process.stderr.write(
+        `process-driver: ${link} に実体があるため置き場を使いません（毎回 setup になります）\n`
+      );
+      return undefined;
+    }
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    fs.symlinkSync(store.dir, link);
+    return { primed: store.primed };
+  } catch (err) {
+    process.stderr.write(`process-driver: 置き場を繋げませんでした: ${String(err)}\n`);
+    return undefined;
+  }
 }
 
 async function handleDeploy(input: Record<string, unknown>): Promise<void> {
@@ -479,6 +526,28 @@ async function handleList(_input: Record<string, unknown>): Promise<void> {
   process.stdout.write(JSON.stringify(items) + "\n");
 }
 
+
+// ── 環境より長生きする置き場（spec-environment §5.2）─────────────────────────
+//
+// 実体はプールのホスト上のディレクトリ（`cache-dir.ts`）。**在るかどうかはここが真**で、
+// 最後に使った時刻はプールの台帳が持つ——ボリュームにもディレクトリにも「最後に使った」は
+// 無いので導出できない。
+
+function handleCacheList(input: Record<string, unknown>): void {
+  const cacheRoot = input["cacheRoot"] as string | undefined;
+  // 根を渡されなければ持っていない。**空を返すのが正しい**（黙って別の場所を探さない）
+  const entries = cacheRoot ? listCacheDirs(cacheRoot) : [];
+  process.stdout.write(JSON.stringify({ entries }) + "\n");
+}
+
+function handleCacheRemove(input: Record<string, unknown>): void {
+  const cacheRoot = input["cacheRoot"] as string | undefined;
+  const key = input["key"] as string | undefined;
+  // 冪等必須（`teardown` と同じ規約）。指すものが無いのは成功
+  if (cacheRoot && key) removeCacheDir(cacheRoot, key);
+  process.stdout.write(JSON.stringify({}) + "\n");
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -519,6 +588,12 @@ async function main(): Promise<void> {
         break;
       case "teardown":
         await handleTeardown(input);
+        break;
+      case "cache-list":
+        handleCacheList(input);
+        break;
+      case "cache-remove":
+        handleCacheRemove(input);
         break;
       case "list":
         await handleList(input);

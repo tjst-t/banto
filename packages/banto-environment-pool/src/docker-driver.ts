@@ -34,6 +34,7 @@
  */
 
 import * as fs from "node:fs";
+import { ensureCacheDir, listCacheDirs, removeCacheDir } from "./cache-dir.js";
 import * as path from "node:path";
 import * as childProcess from "node:child_process";
 import * as os from "node:os";
@@ -53,11 +54,56 @@ interface DockerHandle {
 
 // ── Docker compose project naming (I3) ────────────────────────────────────────
 //
-// The compose project name is: `<taskId>-docker`
-// This gives us the taskID prefix required by I3, and a stable name for list/teardown.
-
+// プロジェクト名は `banto-env-<taskId>`。
+//
+// **以前は `<taskId>-docker` だった。** 名前の綴りだけで「自分のもの」を見分けていたので、
+// **たまたま `-docker` で終わる他人のプロジェクトを自分のものとして数えていた**
+// ——`myapp-docker`（compose は既定でディレクトリ名をプロジェクト名にする）で実測。
+// 照合はそれを「台帳に無い実リソース（孤児）」として挙げ、畳む口を作れば**POの無関係な
+// コンテナを壊す**ところだった（PO指摘 2026-08-08）。
+//
+// 名前は二重の守りの片方。所有の真実は §list の台帳（`STATE_FILE`）が持つ。
 function projectName(taskId: string): string {
-  return `${taskId}-docker`;
+  return `banto-env-${taskId}`;
+}
+
+// ── 自分が作ったものの記録（所有の真実）──────────────────────────────────────
+//
+// **名前から推測しない。作ったものを覚える。** `process` ドライバは最初からこうしており、
+// docker ドライバだけが `docker compose ls` の全件から名前で濾していた。
+//
+// 記録を失ったときは `list` が空を返す＝**孤児を報告しなくなる**。検出は落ちるが、
+// 他人のものを自分のものと言うことは無い——**倒れる向きを安全側にしてある**。
+const STATE_FILE =
+  process.env["BANTO_DOCKER_DRIVER_STATE"] ??
+  path.join(os.tmpdir(), "banto-docker-driver-state.json");
+
+function readOwned(): string[] {
+  try {
+    if (!fs.existsSync(STATE_FILE)) return [];
+    const parsed: unknown = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+    return Array.isArray(parsed) ? parsed.filter((p): p is string => typeof p === "string") : [];
+  } catch {
+    // I2: 壊れていても動く。空＝何も自分のものと言わない（安全側）
+    return [];
+  }
+}
+
+function writeOwned(projects: readonly string[]): void {
+  try {
+    fs.writeFileSync(STATE_FILE, JSON.stringify([...new Set(projects)], null, 2), "utf8");
+  } catch (err) {
+    // 記録できなくても provision は続ける（畳めなくなるだけで、立ったものは使える）
+    process.stderr.write(`docker-driver: 所有の記録を書けませんでした: ${String(err)}\n`);
+  }
+}
+
+function rememberOwned(project: string): void {
+  writeOwned([...readOwned(), project]);
+}
+
+function forgetOwned(project: string): void {
+  writeOwned(readOwned().filter((p) => p !== project));
 }
 
 // ── Shell-out helper (sync) ───────────────────────────────────────────────────
@@ -221,10 +267,24 @@ function handleProvision(input: Record<string, unknown>): void {
   //
   // 毎回付けても、変わっていなければレイヤキャッシュが効くので安い。
   // **イメージのビルドを含みうる**ので、呼び出し側の予算（task-0075 の 10 分）を使う。
+  // 環境より長生きする置き場（spec §5.2）。**compose ファイルが受け取る形にして渡す**——
+  // 名前付きボリュームは compose のプロジェクト名が前置されてタスクごとに別物になるので、
+  // 共有するなら bind mount で場所そのものを渡すほかない。
+  //
+  // compose 側は `${BANTO_CACHE_DIR:-...}` で受ける。**書いていない compose では
+  // 何も起きない**（環境変数を無視するだけ）＝既存のプロファイルを壊さない。
+  const cacheKey = input["cacheKey"] as string | undefined;
+  const cacheRoot = input["cacheRoot"] as string | undefined;
+  let cache: { dir: string; primed: boolean } | undefined;
+  if (cacheKey && cacheRoot) {
+    cache = ensureCacheDir(cacheRoot, cacheKey);
+  }
+
   const budget = innerBudgetMs(input);
   const r = runCmd("docker", composeArgs(project, composeFile, ["up", "-d", "--build"]), {
     timeoutMs: budget,
     ...(workdir ? { cwd: workdir } : {}),
+    ...(cache ? { env: { ...process.env, BANTO_CACHE_DIR: cache.dir } } : {}),
   });
   if (r.timedOut) {
     // I2: 時間切れを「compose が落ちた」と混同しない。何分で切ったかまで言う
@@ -241,6 +301,9 @@ function handleProvision(input: Record<string, unknown>): void {
     process.exit(1);
   }
 
+  // 立ったものを自分のものとして覚える（所有の真実。名前から推測しない）
+  rememberOwned(project);
+
   const created = new Date().toISOString();
   const handle: DockerHandle = {
     project,
@@ -251,7 +314,10 @@ function handleProvision(input: Record<string, unknown>): void {
     ...(workdir ? { workdir } : {}),
   };
 
-  process.stdout.write(JSON.stringify({ handle }) + "\n");
+  // spec §5.2.2: 置き場に既に中身があるか。プールはこれを見て `setup` を飛ばす
+  process.stdout.write(
+    JSON.stringify({ handle, ...(cache ? { cache: { primed: cache.primed } } : {}) }) + "\n"
+  );
 }
 
 function handleDeploy(input: Record<string, unknown>): void {
@@ -496,6 +562,10 @@ function handleRun(input: Record<string, unknown>): void {
   // 本体の `.git` を**同じ絶対パスに**読み取り専用で見せれば解ける。読み取り専用なのは、
   // 検証コマンドが他人のリポジトリの履歴を書き換えられては困るため（検証は読む仕事）。
   const gitdirMount = resolveWorktreeGitdirMount(runWorkdir);
+  const runCacheKey = input["cacheKey"] as string | undefined;
+  const runCacheRoot = input["cacheRoot"] as string | undefined;
+  const runCacheDir =
+    runCacheKey && runCacheRoot ? ensureCacheDir(runCacheRoot, runCacheKey).dir : undefined;
   // **持ち時間は呼び出し側の予算から**（task-0079）。ここが自前の 120 秒だったせいで、
   // 2分を超える検証コマンドは全て「exit 255」で落ちていた（inc-0034）。
   const budget = innerBudgetMs(input);
@@ -506,7 +576,13 @@ function handleRun(input: Record<string, unknown>): void {
       ...(gitdirMount ? ["-v", `${gitdirMount}:${gitdirMount}:ro`] : []),
       serviceName, "sh", "-c", cmd,
     ]),
-    { timeoutMs: budget, ...(runWorkdir ? { cwd: runWorkdir } : {}) }
+    {
+      timeoutMs: budget,
+      ...(runWorkdir ? { cwd: runWorkdir } : {}),
+      // provision と同じ置き場を見せる。渡さないと compose は既定の場所を掴み、
+      // **用意したものが `run` から見えない**（spec §5.2）
+      ...(runCacheDir ? { env: { ...process.env, BANTO_CACHE_DIR: runCacheDir } } : {}),
+    }
   );
 
   // Capture combined stdout+stderr as the log
@@ -691,17 +767,18 @@ function handleTeardown(input: Record<string, unknown>): void {
     }
   }
 
+  // 畳み切ってから記録を落とす（先に落とすと、失敗したものが誰の持ち物でもなくなる）
+  forgetOwned(project);
+
   process.stdout.write(JSON.stringify({}) + "\n");
 }
 
 function handleList(_input: Record<string, unknown>): void {
-  // Use `docker compose ls --format json` to enumerate all compose projects.
-  // Then filter to only those whose name starts with a taskID prefix pattern.
-  // Per spec §2 and I3: list returns all driver-managed resources (taskID-prefixed).
-  // The naming pattern for this driver is: <taskId>-docker (see projectName()).
-  // We cannot filter by a specific taskId since list has no taskId input (spec §2).
-  // Instead, we return ALL `<*>-docker` projects — the daemon reconciles against
-  // its ledger to identify which belong to which task.
+  // **自分が作ったものだけを返す**（spec §2「ドライバが管理下に持つ全リソース」）。
+  //
+  // 以前は `docker compose ls` の全件から名前が `-docker` で終わるものを残していた。
+  // それは所有の**推測**で、他人のプロジェクトを巻き込む（`myapp-docker` で実測）。
+  // いまは記録（STATE_FILE）と実在（compose ls）の**積**を返す。
 
   const r = runCmd("docker", ["compose", "ls", "--format", "json"], {
     timeoutMs: QUERY_TIMEOUT_MS,
@@ -729,12 +806,17 @@ function handleList(_input: Record<string, unknown>): void {
     }
   }
 
-  // Filter: only projects whose name ends with `-docker` (driver-managed)
-  // This is our naming convention (I3): projectName(taskId) = `${taskId}-docker`
+  // 記録に在るものだけ。記録が空なら何も自分のものと言わない（安全側に倒す）
+  const owned = new Set(readOwned());
   const managed = projects.filter((p) => {
     const name = p["Name"] as string | undefined;
-    return typeof name === "string" && name.endsWith("-docker");
+    return typeof name === "string" && owned.has(name);
   });
+
+  // 記録に在るのに実在しないものは、外で消された分。記録から落として溜めない
+  const alive = new Set(managed.map((p) => p["Name"] as string));
+  const stale = [...owned].filter((name) => !alive.has(name));
+  if (stale.length > 0) writeOwned([...alive]);
 
   // Build the list output shape per spec §2: [{handle, name, created}]
   // D3: handle is opaque to daemon; we return the project name as the lookup key.
@@ -793,6 +875,65 @@ function handleList(_input: Record<string, unknown>): void {
   process.stdout.write(JSON.stringify(items) + "\n");
 }
 
+
+// ── 環境より長生きする置き場（spec-environment §5.2）─────────────────────────
+//
+// 実体はプールのホスト上のディレクトリ（`cache-dir.ts`）。**在るかどうかはここが真**で、
+// 最後に使った時刻はプールの台帳が持つ——ボリュームにもディレクトリにも「最後に使った」は
+// 無いので導出できない。
+
+function handleCacheList(input: Record<string, unknown>): void {
+  const cacheRoot = input["cacheRoot"] as string | undefined;
+  // 根を渡されなければ持っていない。**空を返すのが正しい**（黙って別の場所を探さない）
+  const entries = cacheRoot ? listCacheDirs(cacheRoot) : [];
+  process.stdout.write(JSON.stringify({ entries }) + "\n");
+}
+
+/**
+ * 置き場を消す。**作ったのはコンテナ（root）なので、消すのもコンテナに頼む。**
+ *
+ * 実測で踏んだ（2026-08-08）：コンテナは root で走るので、bind mount した置き場の中身は
+ * **ホストから見て root 所有**になる。プールは root ではないので `rm` が EACCES で落ち、
+ * **上限が黙って効かなくなる**——上限の仕組みを先に入れるという条件が、いちばん効いて
+ * ほしいドライバで空振りする形だった。
+ *
+ * 素の `fs` を先に試すのは、まだ何も書かれていない置き場（自分が mkdir しただけ）を
+ * わざわざコンテナを起こして消さないため。
+ */
+function handleCacheRemove(input: Record<string, unknown>): void {
+  const cacheRoot = input["cacheRoot"] as string | undefined;
+  const key = input["key"] as string | undefined;
+  // 冪等必須（`teardown` と同じ規約）。指すものが無いのは成功
+  if (!cacheRoot || !key) {
+    process.stdout.write(JSON.stringify({}) + "\n");
+    return;
+  }
+  const safe = key.replace(/[^a-zA-Z0-9_-]/g, "");
+  if (safe.length === 0) {
+    process.stdout.write(JSON.stringify({}) + "\n");
+    return;
+  }
+  try {
+    removeCacheDir(cacheRoot, key);
+  } catch {
+    // root 所有の中身が残っている。**作った側の権限で消す**
+    const root = path.resolve(cacheRoot);
+    const r = runCmd(
+      "docker",
+      ["run", "--rm", "-v", `${root}:/banto-cache`, "alpine:3", "rm", "-rf", `/banto-cache/${safe}`],
+      { timeoutMs: 120_000 }
+    );
+    if (r.exitCode !== 0) {
+      // I2: 消せなかったことを成功に見せない。プールが出来事として残す
+      process.stderr.write(
+        `docker-driver cache-remove: ${safe} を消せませんでした (exit ${r.exitCode}):\n${r.stderr}\n`
+      );
+      process.exit(1);
+    }
+  }
+  process.stdout.write(JSON.stringify({}) + "\n");
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 function main(): void {
@@ -828,6 +969,12 @@ function main(): void {
         break;
       case "teardown":
         handleTeardown(input);
+        break;
+      case "cache-list":
+        handleCacheList(input);
+        break;
+      case "cache-remove":
+        handleCacheRemove(input);
         break;
       case "list":
         handleList(input);

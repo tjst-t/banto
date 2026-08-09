@@ -40,6 +40,26 @@ export interface EnvProfile {
    * テストが落ちたように読める）——という3つが同時に起きる（inc-0034）。
    */
   setup?: string;
+  /**
+   * 環境より長生きする置き場（`spec-environment` §5.2・PO裁定 2026-08-08）。
+   *
+   * `setup` の結果（`node_modules` 等）は環境の寿命で消えるので、**毎タスク同じ用意を
+   * 払い直していた**（実測 60 秒／タスク）。ここを書くと、同じ鍵の置き場が使い回される。
+   *
+   * - `key` … **中身を決めるファイルを全部挙げる**。挙げ忘れたものが変わると古い置き場を
+   *   掴む（`package-lock.json` だけでは足りないことがある——土台のイメージが変われば
+   *   ネイティブ依存のバイナリが変わる）
+   * - `path` … 環境の中でどこに現れてほしいか
+   */
+  cache?: EnvProfileCache;
+}
+
+/** `cache` の宣言（`spec-environment` §5.2.1）。 */
+export interface EnvProfileCache {
+  /** 中身を決めるファイル（リポジトリからの相対パス）。この**中身**から鍵を作る。 */
+  key: string[];
+  /** 環境の中での置き場所。 */
+  path: string;
 }
 
 /** Validation result for a single profile entry */
@@ -188,6 +208,40 @@ export function validateProfile(name: string, raw: unknown): ProfileValidation {
     setup = obj["setup"].trim();
   }
 
+  // cache: 環境より長生きする置き場（§5.2）。**両方揃っていないと受け取らない**——
+  // 片方だけ書けたことにすると、鍵の無い置き場や行き先の無い鍵ができる
+  let cache: EnvProfileCache | undefined;
+  if (obj["cache"] !== undefined && obj["cache"] !== null) {
+    const raw = obj["cache"];
+    if (typeof raw !== "object" || Array.isArray(raw)) {
+      return { ok: false, name, reason: `profile "${name}": cache must be a mapping` };
+    }
+    const block = raw as Record<string, unknown>;
+    const keyRaw = block["key"];
+    const pathRaw = block["path"];
+    if (
+      !Array.isArray(keyRaw) ||
+      keyRaw.length === 0 ||
+      !keyRaw.every((k) => typeof k === "string" && k.trim().length > 0)
+    ) {
+      return {
+        ok: false,
+        name,
+        reason:
+          `profile "${name}": cache.key must be a non-empty list of file paths ` +
+          `(中身を決めるものを全部挙げる。挙げ忘れたものが変わると古い置き場を掴む)`,
+      };
+    }
+    if (typeof pathRaw !== "string" || pathRaw.trim().length === 0) {
+      return {
+        ok: false,
+        name,
+        reason: `profile "${name}": cache.path must be a non-empty path inside the environment`,
+      };
+    }
+    cache = { key: keyRaw.map((k) => (k as string).trim()), path: pathRaw.trim() };
+  }
+
   const profile: EnvProfile = {
     name,
     driver,
@@ -196,6 +250,7 @@ export function validateProfile(name: string, raw: unknown): ProfileValidation {
     ...(quota !== undefined ? { quota } : {}),
     ...(credentials !== undefined ? { credentials } : {}),
     ...(setup !== undefined ? { setup } : {}),
+    ...(cache !== undefined ? { cache } : {}),
   };
   return { ok: true, profile };
 }

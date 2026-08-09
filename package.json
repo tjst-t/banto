@@ -17,7 +17,7 @@
     "typecheck": "tsc --project tsconfig.check.json",
     "typecheck:web": "tsc --project packages/banto-web/tsconfig.json",
     "test": "BANTO_WORKER_POOL_URL=http://127.0.0.1:1/api/worker-pool BANTO_ENV_POOL_URL=http://127.0.0.1:1/api/environment-pool node --import tsx --test tests/acceptance/*.spec.ts",
-    "test:e2e": "BANTO_WORKER_POOL_URL=http://127.0.0.1:1/api/worker-pool BANTO_ENV_POOL_URL=http://127.0.0.1:1/api/environment-pool node --import tsx --test tests/e2e/*.spec.ts",
+    "test:e2e": "BANTO_WORKER_POOL_URL=http://127.0.0.1:1/api/worker-pool BANTO_ENV_POOL_URL=http://127.0.0.1:1/api/environment-pool node --import tsx --test --test-concurrency=1 tests/e2e/*.spec.ts",
     "test:ui": "playwright test"
   },
   "devDependencies": {

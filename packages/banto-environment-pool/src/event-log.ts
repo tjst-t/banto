@@ -31,7 +31,19 @@ export type EnvEventType =
   /** リトライしても畳めなかった（＝外にリソースが残っている可能性）。 */
   | "env_teardown_failed"
   /** 照合で台帳に無い実リソースが見つかった（＝孤児）。 */
-  | "env_orphans_found";
+  | "env_orphans_found"
+  /** 孤児を名指しで畳んだ（人・番頭の明示の一手。自動では起きない）。 */
+  | "env_orphan_torn_down"
+  /**
+   * 置き場（`cache`・spec §5.2）を上限で落とした。**正常な動作**であって失敗ではない
+   * ——落としたぶんは次に使うとき作り直される（60秒払い直すだけで、正しさは変わらない）。
+   * 残すのは「なぜ毎回速いはずが遅かったのか」を後から辿れるようにするため。
+   */
+  | "env_cache_swept"
+  /** 置き場を消せなかった（＝ディスクに残っている）。次の provision でまた試みる。 */
+  | "env_cache_sweep_failed"
+  /** 置き場を使えなかった（鍵の材料が読めない等）。毎回 setup に落ちている。 */
+  | "env_cache_unavailable";
 
 export interface EnvEvent {
   /** 1から始まる連番。購読の再開点（`afterEventId`）に使う。 */

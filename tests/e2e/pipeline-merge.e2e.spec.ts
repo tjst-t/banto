@@ -52,6 +52,11 @@ import {
   createWorkerModuleTools,
   createWorkerTools,
 } from "@banto/worker-pool";
+import {
+  EnvironmentPool,
+  EnvironmentPoolService,
+  createEnvTools,
+} from "@banto/environment-pool";
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -78,7 +83,7 @@ function probeAuth(): { ok: boolean; reason?: string; detail: string } {
     const candidates = [
       path.resolve(
         import.meta.dirname ?? ".",
-        "../../node_modules/@mariozechner/pi-coding-agent/dist/cli.js"
+        "../../node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
       ),
       path.resolve(import.meta.dirname ?? ".", "../../node_modules/.bin/pi"),
     ];
@@ -256,6 +261,9 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: drop → auto-spawn → implement → R
   let daemon: Daemon;
   let workerPool: WorkerPool;
   let workerService: WorkerPoolService;
+  /** この試験専用の検証環境（実機の常駐サービスには触らない。task-0066）。 */
+  let envPool: EnvironmentPool | undefined;
+  let envService: EnvironmentPoolService | undefined;
   let worktreePath: string | undefined;
   const projectTag = "e2e-merge-project";
 
@@ -302,6 +310,39 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: drop → auto-spawn → implement → R
       port: 0,
     });
 
+    /**
+     * **この試験は自分の Environment Pool を立てる。**
+     *
+     * `npm run test:e2e` は `BANTO_ENV_POOL_URL` を届かない先（`127.0.0.1:1`）に固定して
+     * いる——実機の常駐サービスがテストの相手になるのを防ぐため（task-0066）。その上で
+     * task-0075 が「**Kobo は検証をホストで走らせない**」と決めたので、`verify` を持つ
+     * 受け入れ条件は**環境が無ければ確かめられず**、ゲートは `verify_env_unavailable` で
+     * 落とす（正しい動作）。両方が正しいまま、この試験だけが取り残されていた。
+     *
+     * 逃げ道は2つあった：①`verify` を外す ②自分のプールを立てる。①は
+     * 「ゲートが受け入れ条件を確かめる」という**この試験の主題**を削るので採らない。
+     * ハーネスを立てて URL を明示的に渡すのは `host-uses-pool-services.spec.ts` が
+     * 書いている作法そのもの——職人と同じ形で環境も立てる。
+     */
+    fs.mkdirSync(path.join(repoDir, "meta"), { recursive: true });
+    fs.writeFileSync(
+      path.join(repoDir, "meta", "environments.yaml"),
+      [
+        "profiles:",
+        "  test:",
+        "    driver: process",
+        "    ttl: 10m",
+        "    config:",
+        '      cmd: "sleep 600"',
+        "",
+      ].join("\n")
+    );
+    envPool = new EnvironmentPool({ dataDir: path.join(tmpDir, "env-pool") });
+    envService = await EnvironmentPoolService.start({
+      tools: createEnvTools(envPool),
+      port: 0,
+    });
+
     // disableAuditSpawn is NOT set: the REAL audit session auto-spawns on
     // implementing→auditing (S75f66b-3 mechanism exercised by this E2E).
     daemon = Daemon.create({
@@ -311,6 +352,7 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: drop → auto-spawn → implement → R
       tickIntervalMs: 500,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
       workerPoolUrl: workerService.baseUrl,
+      environmentPoolUrl: envService.baseUrl,
     });
 
     daemon.registerProject(projectTag, repoDir);
@@ -320,6 +362,15 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: drop → auto-spawn → implement → R
   after(async () => {
     if (daemon) {
       try { await daemon.stop(); } catch { /* ignore */ }
+    }
+    // I3: 立てた環境とサービスは畳む（外にプロセスを残さない）
+    if (envPool) {
+      for (const env of envPool.list()) {
+        try { await envPool.teardown(env.envId); } catch { /* ignore */ }
+      }
+    }
+    if (envService) {
+      try { await envService.close(); } catch { /* ignore */ }
     }
     if (workerPool) {
       // 起こした職人は畳む（I3・決定63）

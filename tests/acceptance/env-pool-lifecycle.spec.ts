@@ -115,9 +115,18 @@ describe("[task-0059] 畳み損ねを成功に見せない（teardown の再試�
     await pool.provision({ repoPath: repo, profile: "badneck", taskId: "t-3" });
     pool.startMaintenance();
 
+    /**
+     * **状態だけでなく知らせも待つ。**
+     *
+     * 台帳が `teardown-failed` になるのは**1回目の失敗の時点**だが、知らせが出るのは
+     * 再試行を撃ち切ってから（間に 200ms の間合いが入る）。状態だけ待って知らせを
+     * 確かめると、その隙間で必ず落ちる——**機械が空いているほど隙間が開く**ので、
+     * 掃除で負荷が下がった途端に毎回落ちるようになった（2026-08-09 に実測）。
+     * 待つ対象を、確かめる対象に合わせる。
+     */
     await until(() => {
       const all = pool.list({ taskId: "t-3", includeTornDown: true });
-      return all.length > 0 && all[0]!.state === "teardown-failed";
+      return all.length > 0 && all[0]!.state === "teardown-failed" && notices.length > 0;
     });
 
     const entry = pool.list({ taskId: "t-3", includeTornDown: true })[0]!;

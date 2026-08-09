@@ -404,6 +404,35 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     },
   });
 
+  /**
+   * 孤児を名指しで1件だけ畳む（PO裁定 2026-08-08）。
+   *
+   * **一括の口は用意しない。** 孤児かどうかはドライバの自己申告に依っていて、そこが
+   * 間違うと他人の作業を壊す（docker ドライバが名前の綴りで所有を推測しており、無関係な
+   * `myapp-docker` を孤児として挙げていた——実測で確認）。判定を記録ベースに直した後でも、
+   * **誤報の代償は雑音・誤削除の代償は取り返しがつかない**という非対称は残る。
+   */
+  const teardownOrphanTool = defineNamespacedTool({
+    name: "env.teardown_orphan",
+    label: "Env: Teardown orphan",
+    description:
+      "台帳に無い実リソース（孤児）を**名指しで1件だけ**畳む。名前は env.list の orphans に出るもの。" +
+      "**まとめて畳む口は無い**——孤児の判定は取り違えることがあり、他人の作業を壊すと取り返しが" +
+      "つかないため、1件ずつ確かめて畳む。見つからない・複数当たるときは畳まずに断る。",
+    parameters: Type.Object({
+      name: Type.String({ description: "畳む孤児の名前（env.list の orphans に出るもの）" }),
+    }),
+    async execute(params) {
+      const done = await pool.teardownOrphan(params.name);
+      return {
+        content: [
+          { type: "text" as const, text: `孤児 "${done.name}"（${done.driver}）を畳みました` },
+        ],
+        details: done,
+      };
+    },
+  });
+
   const listProfilesTool = defineNamespacedTool({
     name: "env.list_profiles",
     label: "Env: List Profiles",
@@ -465,6 +494,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     run,
     collect,
     teardown,
+    teardownOrphanTool,
     cleanup,
     list,
     listProfilesTool,

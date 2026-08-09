@@ -10,8 +10,13 @@ profiles:
     driver: docker
     config:
       compose: docker/test.yaml
-    # 立てたあと一度だけ（task-0080）。node_modules は名前付きボリュームに隔離して
-    # あるので、立てただけでは中が空——ここで用意しないと検証コマンドが走らない
+    # 立てたあと一度だけ（task-0080）。node_modules は別の場所に隔離してあるので、
+    # 立てただけでは中が空——ここで用意しないと検証コマンドが走らない
     setup: "npm ci"
+    # 環境より長生きする置き場（spec-environment §5.2）。**中身を決めるものを全部挙げる**
+    # ——ロックだけだと、土台のイメージが変わったときに古いバイナリを掴む
+    cache:
+      key:  [package-lock.json, docker/Dockerfile.test]
+      path: /app/node_modules
     # マージ前ゲートは直列なので、居座らせない。検証が終われば畳まれる
     ttl: 45m

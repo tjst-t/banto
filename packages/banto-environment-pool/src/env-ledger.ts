@@ -41,6 +41,16 @@ export interface EnvLedgerEntry {
    * 後続の `run` に provision と同じ場所を渡せるように残す。
    */
   workdir?: string;
+  /**
+   * 環境より長生きする置き場の鍵と場所（spec §5.2）。
+   *
+   * `workdir` と同じ「**導出できない入力**」——`run` も provision と同じ置き場を見る
+   * 必要があり（docker は compose を読み直すので、渡さないと既定の場所を掴む）、
+   * handle からは導けない。handle に入れないのは §2 の照合（list が返す handle と
+   * 一致すること）を崩さないため。
+   */
+  cacheKey?: string;
+  cachePath?: string;
   /** 外から見られるURL（決定39）。導出できない事実なので持つ。 */
   url?: string;
   /** 公開しているポート。 */

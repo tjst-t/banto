@@ -104,7 +104,14 @@ describe("[AC-S9d7fdb-3-3] docker driver teardown idempotency, list prefix, and 
   // Unique taskId to avoid pollution across test runs
   const taskId = `task-docker-td-${Date.now()}`;
   // An "unrelated" project that must NOT appear in the driver's list
-  const unrelatedProjectName = `unrelated-proj-${Date.now()}`;
+  /**
+   * **わざと紛らわしい名前にする**（inc-0043）。以前はここが `unrelated-proj-<ts>` で、
+   * ドライバの綴りの条件（`-docker` で終わる）に**最初から当たらない名前**だった。
+   * だからこの試験は「名前で濾せている」ことしか確かめておらず、所有の判定が
+   * 名前の推測であることを見逃していた——実際、無関係な `myapp-docker` は孤児として
+   * 挙がっていた。**試験を実装に合わせて書くと、実装の穴がそのまま試験の穴になる。**
+   */
+  const unrelatedProjectName = `unrelated-proj-${Date.now()}-docker`;
 
   let handle: EnvHandle | undefined;
 
@@ -184,13 +191,13 @@ describe("[AC-S9d7fdb-3-3] docker driver teardown idempotency, list prefix, and 
     );
 
     // Our project must be in the list
-    const ours = out.find((item) => {
-      const name = item.name as string;
-      return name.startsWith(taskId);
-    });
+    // 綴りではなく **provision が返した handle** で自分のものを見分ける
+    //（名前の付け方は変わりうる。所有の根拠は記録であって綴りではない・spec §2.1）
+    const ourProject = (handle as { project?: string }).project;
+    const ours = out.find((item) => (item.handle as { project?: string })?.project === ourProject);
     assert.ok(
       ours !== undefined,
-      `list must contain our taskID-prefixed project (taskId=${taskId}): ` +
+      `list must contain the project we provisioned (${ourProject}): ` +
         `found=${JSON.stringify(out.map((i) => i.name))}`
     );
 
@@ -203,8 +210,7 @@ describe("[AC-S9d7fdb-3-3] docker driver teardown idempotency, list prefix, and 
       `created must be valid ISO-8601: ${ours.created}`
     );
 
-    // Unrelated project must NOT be in the list
-    // (it does not have the `-docker` suffix that the driver uses for its projects)
+    // **名前が紛らわしくても**、自分が作っていないものは出てはいけない（spec §2.1）
     const unrelated = out.find((item) => {
       const name = item.name as string;
       return name === unrelatedProjectName;
@@ -399,15 +405,10 @@ describe("[AC-S9d7fdb-3-3] docker driver full contract suite (7 verbs, real dock
     const out = parseOutput(r.stdout) as ListOutput;
     assert.ok(Array.isArray(out), `list output must be JSON array: ${r.stdout}`);
 
-    // Our provisioned entry should be in the list (taskID-prefixed name — I3)
-    const ours = out.find((item) => {
-      const name = item.name as string;
-      return name.startsWith(taskId);
-    });
-    assert.ok(
-      ours,
-      `list must contain our taskID-prefixed resource (taskId=${taskId}): ${r.stdout}`
-    );
+    // 綴りではなく provision が返した handle で照合する（spec §2.1）
+    const ourProject = (handle as { project?: string }).project;
+    const ours = out.find((item) => (item.handle as { project?: string })?.project === ourProject);
+    assert.ok(ours, `list must contain the project we provisioned (${ourProject}): ${r.stdout}`);
     // Verify list item shape: {handle, name, created}
     assert.equal(typeof ours.handle, "object", "list item must have handle");
     assert.equal(typeof ours.name, "string", "list item must have name");

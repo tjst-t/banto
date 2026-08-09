@@ -28,12 +28,19 @@ import {
 } from "./env-driver-runner.js";
 import { decryptSops, resolveCredentialsPath } from "./sops.js";
 import {
+  assertCacheCeiling,
   checkAdhocDriver,
   clampTtl,
   resolveLimits,
   resolveRunTimeout,
   type EnvLimits,
 } from "./limits.js";
+import {
+  CacheLedger,
+  computeCacheKey,
+  planSweep,
+  type DriverCacheEntry,
+} from "./cache-store.js";
 import { loadProfile, listProfiles } from "./profiles.js";
 
 /** ログの返し方。全文は番頭の文脈を埋め、パスだけでは番頭が結果を判断できない。 */
@@ -93,6 +100,12 @@ export interface EnvironmentPoolOptions {
    * ——`worker.delegate` の `worktreePath` と同じ形の穴を、もう1つ作ることになる。
    */
   collectRoot?: string;
+  /**
+   * 環境より長生きする置き場の根（spec §5.2）。既定 `<dataDir>/env-cache`。
+   *
+   * `collectRoot` と同じ理由で**プールが決める**——呼び出し側に書かせない。
+   */
+  cacheRoot?: string;
 }
 
 /** 環境を1つ用意するときの指定。プロファイル経由かアドホックかのどちらか。 */
@@ -213,6 +226,19 @@ export const ADHOC_PROFILE_PREFIX = "adhoc:";
 /** 公開方式（G9 (b)）。既定 `auto` は「caddy の口があれば caddy、無ければ proxy」。 */
 export type ExposeMode = "auto" | "proxy" | "caddy";
 
+/** `provision` の出力のうち、置き場に関する部分（spec §5.2.2・任意）。 */
+interface CacheProvisionOutput {
+  cache?: { primed?: boolean };
+}
+
+/**
+ * sh に渡す1語として囲む。**置き場の場所はプロファイルが書いた文字列**なので、
+ * そのまま連結するとコマンドが割れる。
+ */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 export class EnvironmentPool {
   private readonly ledger: EnvLedger;
   private limits: EnvLimits;
@@ -233,11 +259,22 @@ export class EnvironmentPool {
   /** 同じことを何度も知らせないための記録（毎分の tick で繰り返さない）。 */
   private readonly notified = new Set<string>();
   /** 照合で見つかった孤児（台帳に無い実リソース）。画面と番頭に見せる。 */
-  private orphanList: Array<{ driver: string; name: string; created: string }> = [];
+  /**
+   * 照合で見つかった孤児。**畳めるように handle も持つ**——名前だけでは畳めず、
+   * 呼ぶ側に handle を組み立てさせると「不透明な handle」（spec §2）が崩れる。
+   */
+  private orphanList: Array<{ driver: string; name: string; created: string; handle?: EnvHandle }> = [];
   /** 衛生に関わる出来事の追記専用ログ（task-0067）。番頭はここを引きに来る。 */
   private readonly eventLog: EnvEventLog;
   /** イベントログが壊れていた場合の説明（I2）。 */
   readonly eventLogCorruption: string | null;
+  /**
+   * 置き場（`cache`・spec §5.2）の帳簿。**最後に使った時刻だけ**を持つ——
+   * 在るかどうかはドライバが真で、時刻はドライバから導出できない。
+   */
+  private readonly cacheLedger: CacheLedger;
+  /** 置き場の根。**プールが決める**（ドライバでも呼び出し側でもない）。 */
+  private readonly cacheRoot: string;
 
   constructor(options: EnvironmentPoolOptions) {
     const opened = EnvLedger.open(options.dataDir);
@@ -260,6 +297,12 @@ export class EnvironmentPool {
     this.maintenanceIntervalMs = options.maintenanceIntervalMs ?? 60_000;
     this.teardownRetryLimit = Math.max(1, options.teardownRetryLimit ?? 3);
     this.onAttention = options.onAttention;
+    // **上限の検査は組み立てのときに1度だけ。** 設定から上限を外せてしまうと、
+    // PO の条件（上限の仕組みを先に入れる）が設定1行で無効になる（spec §5.2.3）
+    assertCacheCeiling(this.limits);
+    this.cacheLedger = new CacheLedger(options.dataDir);
+    // 場所を決めるのはプール（§6 の `dest` と同じ規則）。ドライバにも呼び出し側にも選ばせない
+    this.cacheRoot = options.cacheRoot ?? path.join(options.dataDir, "env-cache");
   }
 
   // ── TTL 執行と照合（spec-environment §5・決定32e）────────────────────────
@@ -297,7 +340,8 @@ export class EnvironmentPool {
 
   /** 照合で見つかった孤児。台帳に無いのに実在するリソース。 */
   orphans(): Array<{ driver: string; name: string; created: string }> {
-    return [...this.orphanList];
+    // handle は外へ出さない（不透明・呼ぶ側は名前で指す）
+    return this.orphanList.map(({ driver, name, created }) => ({ driver, name, created }));
   }
 
   /**
@@ -528,7 +572,7 @@ export class EnvironmentPool {
   async reconcile(): Promise<Array<{ driver: string; name: string; created: string }>> {
     const known = new Set(this.ledger.listLive().map((e) => JSON.stringify(e.handle)));
     const drivers = new Set(this.ledger.list().map((e) => e.driver));
-    const found: Array<{ driver: string; name: string; created: string }> = [];
+    const found: Array<{ driver: string; name: string; created: string; handle?: EnvHandle }> = [];
 
     for (const driver of drivers) {
       let result;
@@ -548,6 +592,7 @@ export class EnvironmentPool {
           driver,
           name: typeof item["name"] === "string" ? item["name"] : "(名前なし)",
           created: typeof item["created"] === "string" ? item["created"] : "",
+          ...(item["handle"] !== undefined ? { handle: item["handle"] as EnvHandle } : {}),
         });
       }
     }
@@ -555,7 +600,54 @@ export class EnvironmentPool {
       console.warn(`[env] 台帳に無い実リソースが ${found.length} 件あります（照合）`);
     }
     this.orphanList = found;
-    return found;
+    return found.map(({ driver, name, created }) => ({ driver, name, created }));
+  }
+
+  /**
+   * 孤児（台帳に無い実リソース）を**1件だけ、名指しで**畳む（PO裁定 2026-08-08）。
+   *
+   * **一括で畳む口は作らない。** 孤児の判定は「ドライバが自分のものと言ったもの」に
+   * 依っており、そこが間違うと**他人の作業を壊す**——実際、docker ドライバは名前の綴りで
+   * 所有を推測していて、無関係な `myapp-docker` を孤児として挙げていた（実測）。
+   * 判定を記録ベースに直した上でも、**誤って報告する代償（雑音）と誤って畳む代償
+   * （取り返しがつかない）は釣り合わない**。だから畳むのは常に人か番頭の明示の一手にする。
+   *
+   * I2: 見つからない・複数当たるときは畳まずに断る。「たぶんこれだろう」で消さない。
+   */
+  async teardownOrphan(name: string): Promise<{ driver: string; name: string }> {
+    // 掴んでいる一覧は古いかもしれない。**畳む前に取り直す**
+    await this.reconcile();
+    const hits = this.orphanList.filter((o) => o.name === name);
+    if (hits.length === 0) {
+      const known = this.orphanList.map((o) => o.name).join(", ");
+      throw new Error(
+        `孤児 "${name}" は見つかりません（照合し直した結果）。` +
+          `いまの孤児: ${known || "(なし)"}——既に消えているか、名前が違います`
+      );
+    }
+    if (hits.length > 1) {
+      throw new Error(`孤児 "${name}" が ${hits.length} 件あります。名前で一意に指せません`);
+    }
+    const target = hits[0]!;
+    if (target.handle === undefined) {
+      throw new Error(
+        `孤児 "${name}" は handle を持っていないため畳めません（${target.driver} が list で返していない）`
+      );
+    }
+    const result = await runDriverVerb(
+      resolveDriverPath(target.driver),
+      "teardown",
+      { handle: target.handle },
+      this.timeoutMs
+    );
+    if (!result.ok) throw new Error(`孤児 "${name}" を畳めませんでした: ${result.error}`);
+
+    this.orphanList = this.orphanList.filter((o) => o !== target);
+    this.eventLog.append({
+      type: "env_orphan_torn_down",
+      data: { driver: target.driver, name, created: target.created },
+    });
+    return { driver: target.driver, name };
   }
 
   /** いまの sops 鍵ファイル（設定画面に見せる。**鍵の中身は読まない**）。 */
@@ -612,6 +704,10 @@ export class EnvironmentPool {
 
     const extraEnv = await this.credentialsFor(resolved.profile, request.repoPath);
 
+    // 環境より長生きする置き場（spec §5.2）。**鍵が作れないときは使わない**——
+    // 欠けた鍵は「別のものを同じ鍵で指す」ことになるので、黙って落として毎回 setup する
+    const cache = this.resolveCache(resolved.profile, resolved.driver, request);
+
     const driverPath = resolveDriverPath(resolved.driver);
     const result = await runDriverVerb(
       driverPath,
@@ -623,6 +719,8 @@ export class EnvironmentPool {
         // task-0074: プロファイルを読んだ場所。ドライバは `config` の中の相対パスを
         // これを基点に解ける（`config` の中身は Pool が解釈しない・spec §2 のまま）
         ...(request.repoPath ? { repoPath: path.resolve(request.repoPath) } : {}),
+        // spec §5.2.2: 任意。ドライバが無視すれば `cache` は返らず、今までどおり毎回 setup
+        ...(cache ? { cacheKey: cache.key, cachePath: cache.path, cacheRoot: this.cacheRoot } : {}),
       },
       // 立てるのはイメージのビルドを含みうる（task-0075）。他の動詞より長く待つ
       this.provisionTimeoutMs,
@@ -648,6 +746,7 @@ export class EnvironmentPool {
       handle,
       createdAt: createdAt.toISOString(),
       ttlDeadline: new Date(createdAt.getTime() + resolved.ttlMs).toISOString(),
+      ...(cache ? { cacheKey: cache.key, cachePath: cache.path } : {}),
       ...(request.workdir ? { workdir: path.resolve(request.workdir) } : {}),
     };
     this.ledger.add(entry);
@@ -715,7 +814,16 @@ export class EnvironmentPool {
     // **provision の一部にするのが要点**。呼び出し側から見て「provision が成功した」＝
     // 「検証コマンドを走らせられる」になる。段を分けて呼ばせると、呼び忘れた経路
     // （番頭のアドホック・`env.verify`・ゲート）ごとに同じ穴が開く。
-    if (resolved.profile?.setup) {
+    //
+    // **置き場に既に中身があるなら飛ばす**（spec §5.2）。飛ばしてよいのは、置き場の中身が
+    // 鍵（＝中身を決めるファイルの内容）から一意に決まるものだけ——だから鍵に何を入れるかを
+    // プロファイルに書かせている。
+    const primed = cache !== undefined && (result.output as CacheProvisionOutput).cache?.primed === true;
+    if (cache) {
+      this.cacheLedger.touch({ key: cache.key, driver: resolved.driver, profile: resolved.profileName });
+    }
+
+    if (resolved.profile?.setup && !primed) {
       const setupCmd = resolved.profile.setup;
       try {
         const outcome = await this.run(
@@ -733,6 +841,16 @@ export class EnvironmentPool {
               `ログ: ${outcome.logPath}\n${outcome.logTail}`
           );
         }
+        // **成功したときだけ印を書く**（spec §5.2.2）。途中で死んだ半端な置き場を
+        // 「入っている」と誤判定させないため——次に来たドライバは印を見て primed を決める
+        if (cache) {
+          await this.run(
+            entry.envId,
+            `mkdir -p ${shellQuote(cache.path)} && touch ${shellQuote(`${cache.path}/.banto-primed`)}`,
+            DEFAULT_LOG_TAIL_LINES,
+            this.timeoutMs
+          ).catch(() => undefined);
+        }
       } catch (err) {
         // I3: 用意できなかった環境を残さない。畳んでから投げる（expose の失敗と同じ扱い）
         await this.teardown(entry.envId).catch(() => undefined);
@@ -743,7 +861,114 @@ export class EnvironmentPool {
       }
     }
 
+    // **掃除は provision のたび**（spec §5.2.3）。別の周期を作らない——置き場が増えるのは
+    // ここだけなので、増えた直後に見るのがいちばん漏れない。失敗しても provision は返す
+    // （立った環境を掃除の都合で壊さない）が、黙らせはしない（I2）
+    if (cache) {
+      await this.sweepCache(resolved.driver, driverPath, cache.key, extraEnv).catch(() => undefined);
+    }
+
     return { ...toSummary(entry), healthcheck };
+  }
+
+  /**
+   * 置き場の鍵を決める（spec §5.2.1）。
+   *
+   * **使わない条件を先に置く。** 上限が 0（機構を止めてある）／プロファイルが `cache` を
+   * 書いていない／鍵の材料が読めない——どれも「置き場を使わず、今までどおり毎回 setup」
+   * に落ちる。**黙って中途半端な鍵を作らない**のが要点（I2）。
+   */
+  private resolveCache(
+    profile: EnvProfile | undefined,
+    driver: string,
+    request: ProvisionRequest
+  ): { key: string; path: string } | undefined {
+    if (this.limits.cacheMaxEntries <= 0) return undefined;
+    const declared = profile?.cache;
+    if (!declared) return undefined;
+
+    // 鍵の材料は**そのタスクの作業場所**から読む（workdir が無ければプロファイルの在り処）
+    const base = request.workdir ?? request.repoPath;
+    if (!base) return undefined;
+    const files = declared.key.map((rel) => path.resolve(base, rel));
+    const key = computeCacheKey({ driver, profile: profile.name, files });
+    if (!key.ok) {
+      this.eventLog.append({
+        type: "env_cache_unavailable",
+        profile: profile.name,
+        data: { reason: key.reason },
+      });
+      return undefined;
+    }
+    return { key: key.key, path: declared.path };
+  }
+
+  /**
+   * 上限を超えた置き場を落とす（spec §5.2.3）。
+   *
+   * **在るかどうかはドライバが真**（`cache-list`）。台帳は最後に使った時刻を添えるだけで、
+   * 台帳に無いものは「時刻が分からない」＝最初に落ちる（§5 の照合と同じ向き）。
+   */
+  private async sweepCache(
+    driver: string,
+    driverPath: string,
+    keepKey: string,
+    extraEnv: Record<string, string> | undefined
+  ): Promise<void> {
+    const listed = await runDriverVerb(
+      driverPath,
+      "cache-list",
+      { cacheRoot: this.cacheRoot },
+      this.timeoutMs,
+      extraEnv ?? {}
+    );
+    // ドライバが `cache-list` を持たないなら掃除もできない。**それ自体は失敗ではない**
+    // （置き場を作らないドライバなので増えない）が、作るのに消せないなら片手落ちなので出す
+    if (!listed.ok) return;
+    const present = ((listed.output as { entries?: DriverCacheEntry[] }).entries ?? []).filter(
+      (e): e is DriverCacheEntry => typeof e?.key === "string"
+    );
+
+    const plan = planSweep({
+      present,
+      ledger: this.cacheLedger,
+      maxEntries: this.limits.cacheMaxEntries,
+      maxAgeMs: this.limits.cacheMaxAgeMs,
+      keep: keepKey,
+    });
+    if (plan.remove.length === 0) return;
+
+    const removed: string[] = [];
+    for (const key of plan.remove) {
+      const out = await runDriverVerb(
+        driverPath,
+        "cache-remove",
+        { key, cacheRoot: this.cacheRoot },
+        this.timeoutMs,
+        extraEnv ?? {}
+      );
+      if (out.ok) removed.push(key);
+      else {
+        // I2: 消せなかったことを黙らせない。次の provision でまた試みる
+        this.eventLog.append({
+          type: "env_cache_sweep_failed",
+          data: { key, driver, reason: out.error },
+        });
+      }
+    }
+    this.cacheLedger.forget(removed);
+    if (removed.length > 0) {
+      this.eventLog.append({
+        type: "env_cache_swept",
+        data: {
+          driver,
+          removed,
+          kept: plan.kept,
+          maxEntries: this.limits.cacheMaxEntries,
+          note: "落としたぶんは次に使うとき作り直される（正しさは変わらない）",
+        },
+      });
+    }
   }
 
   /** 成果物を配る。ドライバによっては何もしない。 */
@@ -1074,7 +1299,13 @@ export class EnvironmentPool {
     input: Record<string, unknown>,
     timeoutMs = this.timeoutMs
   ): Promise<unknown> {
-    const result = await runDriverVerb(resolveDriverPath(entry.driver), verb, input, timeoutMs);
+    // 置き場は provision と同じものを見せる（spec §5.2）。docker は compose を読み直すので、
+    // 渡さないと `run` だけ既定の場所を掴み、用意したものが見えない
+    const withCache =
+      entry.cacheKey !== undefined
+        ? { ...input, cacheKey: entry.cacheKey, cacheRoot: this.cacheRoot, ...(entry.cachePath !== undefined ? { cachePath: entry.cachePath } : {}) }
+        : input;
+    const result = await runDriverVerb(resolveDriverPath(entry.driver), verb, withCache, timeoutMs);
     // I2: ドライバの失敗を成功に見せない
     if (!result.ok) throw new Error(`${verb} が失敗しました（${entry.envId}）: ${result.error}`);
     return result.output;

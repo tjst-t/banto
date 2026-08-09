@@ -72,6 +72,19 @@ export interface EnvLimits {
    * 生きている環境は期間に関係なく残る。
    */
   ledgerRetentionMs: number;
+  /**
+   * 置き場（`cache`・spec §5.2）を1つのドライバにいくつまで持たせるか。
+   *
+   * **「無制限」を用意しない**（PO条件 2026-08-08）。置き場は外に累積するディスクなので
+   * one-way（D1）で、「上限の仕組みを先に入れる」ことを条件に採った決めだから、
+   * **上限を外して使う道を作らないこと**が条件の守り方そのものになる。
+   *
+   * `0` にするとキャッシュ機構が止まる——`cache` を書いたプロファイルも、書いていないのと
+   * 同じ挙動（毎回 `setup`）に落ちる。**止める道はあるが、外す道は無い。**
+   */
+  cacheMaxEntries: number;
+  /** それだけ使われていない置き場は落とす（既定30日）。 */
+  cacheMaxAgeMs: number;
 }
 
 /**
@@ -91,7 +104,32 @@ export const DEFAULT_ENV_LIMITS: EnvLimits = {
   defaultSetupTimeoutMs: 15 * 60 * 1000,
   collectedRetentionMs: 7 * 24 * 3600 * 1000,
   ledgerRetentionMs: 30 * 24 * 3600 * 1000,
+  // ロックファイルが変わるたびに1つ増える。8 あれば行き来する枝は賄えて、
+  // 古いものは落ちる——増え続けないことが先で、当たり続けることは後（spec §5.2.3）
+  cacheMaxEntries: 8,
+  cacheMaxAgeMs: 30 * 24 * 3600 * 1000,
 };
+
+/**
+ * 上限の設定として成り立っているか。**Pool を組み立てるときに1度だけ見る。**
+ *
+ * 「無制限」を表す値（負数・非整数・`Infinity`）を弾く——設定から上限を外せてしまうと、
+ * PO の条件（上限の仕組みを先に入れる）が設定1行で無効化される（spec §5.2.3）。
+ */
+export function assertCacheCeiling(limits: EnvLimits): void {
+  const { cacheMaxEntries, cacheMaxAgeMs } = limits;
+  if (!Number.isInteger(cacheMaxEntries) || cacheMaxEntries < 0) {
+    throw new Error(
+      `cacheMaxEntries は 0 以上の整数でなければなりません（受け取った値: ${String(cacheMaxEntries)}）。` +
+        "置き場は外に累積するので、無制限にする道は用意していません。止めたいときは 0 にしてください"
+    );
+  }
+  if (!Number.isFinite(cacheMaxAgeMs) || cacheMaxAgeMs <= 0) {
+    throw new Error(
+      `cacheMaxAgeMs は有限の正の数でなければなりません（受け取った値: ${String(cacheMaxAgeMs)}）`
+    );
+  }
+}
 
 /** 設定で一部だけ上書きできるようにする（ホストの起動設定から渡す）。 */
 export function resolveLimits(overrides: Partial<EnvLimits> = {}): EnvLimits {

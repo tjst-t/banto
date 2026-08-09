@@ -62,6 +62,7 @@ export { createEnvironmentPoolModule, ENVIRONMENT_POOL_BASE_URL } from "./module
 export {
   DEFAULT_ENV_LIMITS,
   BUILTIN_DRIVER_NAMES,
+  assertCacheCeiling,
   resolveLimits,
   checkProfileLimits,
   checkAdhocDriver,
@@ -102,3 +103,14 @@ export type { SopsDecryptResult } from "./sops.js";
  * ここから export しないのは、import すると CLI 本体が走ってしまうため。
  */
 export const BUILTIN_ENV_DRIVERS = ["process", "docker"] as const;
+
+// 環境より長生きする置き場（spec-environment §5.2・PO裁定 2026-08-08）
+export {
+  CacheLedger,
+  computeCacheKey,
+  planSweep,
+  type CacheUseRecord,
+  type DriverCacheEntry,
+  type SweepResult,
+} from "./cache-store.js";
+export { ensureCacheDir, listCacheDirs, removeCacheDir, PRIMED_MARKER } from "./cache-dir.js";
