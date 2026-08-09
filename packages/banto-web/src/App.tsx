@@ -411,12 +411,26 @@ export function App(): React.ReactElement {
    * 応答が届くときの追従（`resize`）は spring のまま。そちらは「いま伸びた分だけ」動く。
    */
   const chat = useStickToBottom({ initial: "instant", resize: "smooth" });
-  // スレッドを切り替えたら最新の位置から読み始める。**切替は新しい会話を開いたのと同じ**で、
-  // 前のスレッドで上を読んでいた状態（追従の解除）は持ち越さない
+  /**
+   * 最新の位置から読み始める場面は2つ。**どちらも自分で言う。**
+   *
+   * ① スレッドの切替——**切替は新しい会話を開いたのと同じ**で、前のスレッドで上を
+   *    読んでいた状態（追従の解除）は持ち越さない。
+   * ② 被さっていた面（設定・履歴・取次）から会話へ戻ったとき。ここは `.chat-scroll` が
+   *    **作り直される**——面は条件分岐で描いているので、戻ると器ごと新しくなる。
+   *
+   * ② を `initial: "instant"` に任せていたのが誤りだった。あれは**この hook が最初に
+   *    中身を掴んだ1回**にしか効かず、App は面を開いている間も生きているので二度目は来ない。
+   *    戻ったあとは「貼り付き直すかどうか」が競争になり、**実測で3回に1回、会話の
+   *    先頭のまま止まっていた**（`tests/chat-ux.spec.ts` の間欠的な失敗はこれ。
+   *    中身は全部届いているのに `scrollTop` が 0 のまま動かない）。
+   */
   const { scrollToBottom } = chat;
+  const chatFace = view.face === "chat";
   useEffect(() => {
+    if (!chatFace) return;
     void scrollToBottom({ animation: "instant" });
-  }, [session.activeThreadId, scrollToBottom]);
+  }, [session.activeThreadId, chatFace, scrollToBottom]);
 
   /**
    * 描くのは末尾の何件か（inc: Android/Tailscale から使えない）。
