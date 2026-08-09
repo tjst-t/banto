@@ -239,14 +239,15 @@ describe("[task-0016] workspace モジュールが Tool・GUI・データAPI の
     const module = createWorkspaceModule(placesOf(root));
 
     assert.ok(module.tools.length > 0, "番頭向けのTool");
-    assert.deepEqual(module.views.map((v) => v.kind), ["file.browser", "git.viewer"]);
+    // `file.viewer` は「1つを読む面」（ADR-0017 決定79）。探す面とは目的が違うので分ける
+    assert.deepEqual(module.views.map((v) => v.kind), ["file.browser", "file.viewer", "git.viewer"]);
     // データAPIの到達先。組み込みなので相対パス（決定25）
     assert.equal(module.endpoint.baseUrl, "/api/workspace");
   });
 
   it("[task-0016/a1] GUIエントリは決定17の形（component参照を持つ）", () => {
     const views = createWorkspaceModule(placesOf(root)).views;
-    assert.deepEqual(views.map((v) => v.component), ["FileBrowser", "GitViewer"]);
+    assert.deepEqual(views.map((v) => v.component), ["FileBrowser", "FileViewer", "GitViewer"]);
     for (const view of views) {
       assert.ok(view.description.length > 0);
       assert.ok(view.parameters);
