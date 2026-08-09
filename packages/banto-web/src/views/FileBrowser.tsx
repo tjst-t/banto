@@ -15,13 +15,10 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { useModuleTool, callModuleTool } from "./useModuleTool.js";
 import { PlacePicker, usePlaceSelection } from "./PlacePicker.js";
 import type { CanvasViewProps } from "./registry.js";
 import { Icon, iconOfFile, type IconName } from "../icons.js";
-import { MarkdownLink } from "../links.js";
 import { useListNav } from "../listNav.js";
 import {
   Button,
@@ -42,23 +39,12 @@ import {
   formatBytes,
   useRetractOnScroll,
 } from "./ui.js";
-import {
-  classifyDiffLine,
-  codeLangOfPath,
-  extOfPath,
-  isRawKind,
-  kindOfPath,
-  PREVIEW_MAX_LINES,
-} from "./filePreview.js";
+import { codeLangOfPath, isRawKind, kindOfPath, PREVIEW_MAX_LINES } from "./filePreview.js";
 import { fileRawUrl } from "./fileRaw.js";
-import {
-  highlightCode,
-  highlightToHtml,
-  useColorScheme,
-  type HighlightedLine,
-  type HighlightResult,
-  type Scheme,
-} from "./fileHighlight.js";
+import { filePageUrl } from "./filePage.js";
+// 中身の描き手は別タブの1枚（`FilePage`）と共有する。同じファイルが2つの姿を持たないため
+import { CodeBody, FilePreviewBody } from "./FileBody.js";
+import { useColorScheme } from "./fileHighlight.js";
 
 /** 「続きを読む」1回で足す行数。ホスト側のサイズ上限に当たればそこで止まる。 */
 const READ_MORE_LINES = 2000;
@@ -124,335 +110,6 @@ export function shortenPath(p: string, maxSegments = 2): string {
 /** 拡張子でそれらしい絵を選ぶ。中身を開く前の見当がつくだけでよい。対応は icons.tsx。 */
 function iconOf(entry: Entry): IconName {
   return iconOfFile(entry.name, entry.type === "dir");
-}
-
-/** shiki トークンの装飾（TextMate の fontStyle ビットマスク: 1=italic 2=bold 4=underline）。 */
-function tokenStyle(t: HighlightedLine): React.CSSProperties {
-  const style: React.CSSProperties = {};
-  if (t.color) style.color = t.color;
-  if (t.fontStyle) {
-    if ((t.fontStyle & 1) !== 0) style.fontStyle = "italic";
-    if ((t.fontStyle & 2) !== 0) style.fontWeight = "bold";
-    if ((t.fontStyle & 4) !== 0) style.textDecoration = "underline";
-  }
-  return style;
-}
-
-/** Mermaid 描画（task-0053）。mermaid.js は動的インポートで初回ロードに載せない。 */
-let mermaidSeq = 0;
-
-function MermaidBlock({
-  code,
-  scheme,
-  onReady,
-}: {
-  code: string;
-  scheme: Scheme;
-  onReady?: () => void;
-}): React.ReactElement {
-  const [svg, setSvg] = useState<string>();
-  const [error, setError] = useState<string>();
-  const ref = useRef<HTMLDivElement>(null);
-  const bindRef = useRef<((el: HTMLElement) => void) | undefined>(undefined);
-
-  useEffect(() => {
-    let cancelled = false;
-    setSvg(undefined);
-    setError(undefined);
-    (async () => {
-      try {
-        const mermaid = (await import("mermaid")).default;
-        mermaid.initialize({ startOnLoad: false, theme: scheme === "dark" ? "dark" : "default" });
-        const id = `fb-mermaid-${++mermaidSeq}`;
-        const { svg: rendered, bindFunctions } = await mermaid.render(id, code);
-        if (cancelled) return;
-        bindRef.current = bindFunctions;
-        setSvg(rendered);
-        onReady?.();
-      } catch (err) {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : String(err));
-        onReady?.();
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // onReady は親の安定したコールバック（useCallback([])）。依存に入れると毎描画で再描画になる
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code, scheme]);
-
-  // bindFunctions は SVG が DOM に入ってから呼ぶ（図中のリンク等をクリック可能にする）
-  useEffect(() => {
-    if (svg && bindRef.current && ref.current) bindRef.current(ref.current);
-  }, [svg]);
-
-  if (error) {
-    return (
-      <div className="fb-mermaid">
-        <ErrorNote title="図を描けませんでした">{error}</ErrorNote>
-        <pre className="fb-code-plain">
-          <code>{code}</code>
-        </pre>
-      </div>
-    );
-  }
-  if (!svg) return <Loading label="図を描いています…" rows={2} />;
-  return <div className="fb-mermaid" ref={ref} dangerouslySetInnerHTML={{ __html: svg }} />;
-}
-
-/** CSV/TSV のテーブル表示（task-0054）。papaparse は動的インポートで遅延読み込み。 */
-function CsvTable({
-  content,
-  delimiter,
-}: {
-  content: string;
-  delimiter: "," | "\t";
-}): React.ReactElement {
-  const [rows, setRows] = useState<string[][]>();
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const Papa = (await import("papaparse")).default;
-      const res = Papa.parse<string[]>(content, { delimiter, skipEmptyLines: true });
-      if (!cancelled) setRows(res.data);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [content, delimiter]);
-
-  if (!rows) return <Loading label="表を読んでいます…" rows={2} />;
-  if (rows.length === 0) return <p className="cv-muted">空のファイルです</p>;
-
-  // 1行目をヘッダとして強調する（task-0054 a2）。列数は全行の最大に揃える
-  const header = rows[0]!;
-  const cols = Math.max(header.length, ...rows.map((r) => r.length));
-  return (
-    <table className="fb-csv">
-      <thead>
-        <tr>
-          {header.map((cell, i) => (
-            <th key={i} scope="col">
-              {cell}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.slice(1).map((row, i) => (
-          <tr key={i}>
-            {Array.from({ length: cols }, (_, j) => (
-              <td key={j}>{row[j] ?? ""}</td>
-            ))}
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-/** diff/patch の unified 色分け（task-0055）。GitViewer と同じ語彙を使う。 */
-function DiffPreview({ content }: { content: string }): React.ReactElement {
-  return (
-    <pre className="gv-diff">
-      {content.split("\n").map((line, i) => (
-        <span key={i} className={`gv-diff-line ${classifyDiffLine(line) ?? ""}`}>
-          {line}
-          {"\n"}
-        </span>
-      ))}
-    </pre>
-  );
-}
-
-/** コードのハイライト表示（行番号なし）。Markdown 内コードブロックと preview に使う。 */
-function ShikiBlock({
-  code,
-  lang,
-  scheme,
-}: {
-  code: string;
-  lang: string;
-  scheme: Scheme;
-}): React.ReactElement {
-  const [html, setHtml] = useState<string>();
-
-  useEffect(() => {
-    let cancelled = false;
-    setHtml(undefined);
-    void highlightToHtml(code, lang, scheme).then((out) => {
-      if (!cancelled) setHtml(out);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [code, lang, scheme]);
-
-  // 読み込み中・言語非対応でも素のコードを出して読める状態を保つ
-  if (html === undefined) {
-    return (
-      <pre className="fb-code-plain">
-        <code>{code}</code>
-      </pre>
-    );
-  }
-  if (html === "") return <pre />;
-  return <div className="fb-code-html" dangerouslySetInnerHTML={{ __html: html }} />;
-}
-
-/**
- * react-markdown のコード要素。適用順は task-0053 b: ①mermaid を検出 ②それ以外は shiki
- * （二重適用を防ぐ——mermaid ブロックを shiki に渡さない）。
- */
-function MarkdownCode({
-  node: _node,
-  className,
-  children,
-  scheme,
-  onMermaidReady,
-  ...rest
-}: React.JSX.IntrinsicElements["code"] & {
-  node?: unknown;
-  scheme: Scheme;
-  onMermaidReady: () => void;
-}): React.ReactElement {
-  const text = String(children ?? "").replace(/\n$/, "");
-  const lang = /language-([\w-]+)/.exec(className ?? "")?.[1];
-
-  // 言語指定なし＝インラインコード。そのまま描く
-  if (!lang) {
-    return (
-      <code className={className} {...rest}>
-        {children}
-      </code>
-    );
-  }
-  if (lang.toLowerCase() === "mermaid") {
-    return <MermaidBlock code={text} scheme={scheme} onReady={onMermaidReady} />;
-  }
-  return <ShikiBlock code={text} lang={lang} scheme={scheme} />;
-}
-
-/** コード種別ファイルの preview 表示（ハイライト・行番号なし）。 */
-function CodePreview({
-  content,
-  lang,
-  scheme,
-}: {
-  content: string;
-  lang?: string;
-  scheme: Scheme;
-}): React.ReactElement {
-  const [html, setHtml] = useState<string>();
-
-  useEffect(() => {
-    let cancelled = false;
-    setHtml(undefined);
-    const task: Promise<string | undefined> = lang
-      ? highlightToHtml(content, lang, scheme)
-      : Promise.resolve(undefined);
-    void task.then((out) => {
-      if (!cancelled) setHtml(out);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [content, lang, scheme]);
-
-  if (html === undefined) {
-    return (
-      <pre className="fb-code-plain">
-        <code>{content}</code>
-      </pre>
-    );
-  }
-  if (html === "") return <div className="fb-code-html" />;
-  return <div className="fb-code-html" dangerouslySetInnerHTML={{ __html: html }} />;
-}
-
-/**
- * ファイル内容を行番号つきで描き、指定範囲を強調して自動スクロールする。
- * 番頭が「この行を見て」と言えるようにするための面。
- */
-function CodeBody({
-  content,
-  from,
-  to,
-  wrap,
-  lang,
-  scheme,
-}: {
-  content: string;
-  from?: number;
-  to?: number;
-  wrap?: boolean;
-  lang?: string;
-  scheme: Scheme;
-}): React.ReactElement {
-  const targetRef = useRef<HTMLSpanElement>(null);
-  const lines = content.split("\n");
-  const start = from ?? 0;
-  const end = to ?? from ?? 0;
-  const [highlight, setHighlight] = useState<HighlightResult>();
-
-  /**
-   * 強調行へ寄せるのは**基点が変わったときだけ**（spec-file-browser §5.4）。
-   * 依存に `content` を入れていたので、「続きを読む」で中身が伸びるたびに寄せ直し、
-   * 読んでいた位置から強調行へ引き戻していた。
-   */
-  useEffect(() => {
-    targetRef.current?.scrollIntoView({ block: "center" });
-  }, [from, to]);
-
-  useEffect(() => {
-    if (!lang) {
-      setHighlight(undefined);
-      return;
-    }
-    let cancelled = false;
-    setHighlight(undefined);
-    void highlightCode(content, lang, scheme).then((res) => {
-      if (!cancelled) setHighlight(res);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [content, lang, scheme]);
-
-  const width = String(lines.length).length;
-  const useHighlight = highlight !== undefined && highlight.lines.length === lines.length;
-
-  return (
-    <pre
-      className={`fb-code ${wrap ? "is-wrap" : ""}`}
-      style={useHighlight ? { backgroundColor: highlight.bg, color: highlight.fg } : undefined}
-    >
-      {lines.map((line, i) => {
-        const lineNo = i + 1;
-        const highlighted = lineNo >= start && lineNo <= end;
-        const tokens = useHighlight ? highlight.lines[i] : undefined;
-        return (
-          <span
-            key={i}
-            className={`fb-line ${highlighted ? "is-highlight" : ""}`}
-            ref={lineNo === start ? targetRef : undefined}
-          >
-            <span className="fb-lineno">{String(lineNo).padStart(width, " ")}</span>
-            {tokens && tokens.length > 0
-              ? tokens.map((t, j) => (
-                  <span key={j} style={tokenStyle(t)}>
-                    {t.content}
-                  </span>
-                ))
-              : line}
-            {"\n"}
-          </span>
-        );
-      })}
-    </pre>
-  );
 }
 
 /**
@@ -657,6 +314,7 @@ function FileMenu({
   wrap,
   onWrap,
   showWrap,
+  openHref,
   rawHref,
   onClose,
 }: {
@@ -665,6 +323,8 @@ function FileMenu({
   wrap: boolean;
   onWrap: (next: boolean) => void;
   showWrap: boolean;
+  /** 別タブの行き先（§5.8.4）。整形で読める1枚か、ブラウザが自分で描ける種別なら raw */
+  openHref: string | undefined;
   rawHref: string | undefined;
   onClose: () => void;
 }): React.ReactElement {
@@ -687,7 +347,7 @@ function FileMenu({
         {rawHref !== undefined && (
           <div className="fb-menu-row">
             {/* 開きっぱなしで使う面を潰さない（spec-design §8.3 と同じ理由） */}
-            <a className="cv-btn" href={rawHref} target="_blank" rel="noreferrer">
+            <a className="cv-btn" href={openHref ?? rawHref} target="_blank" rel="noreferrer">
               <Icon name="external" size={14} /> 別タブで開く
             </a>
             <a className="cv-btn" href={`${rawHref}?dl=1`} download>
@@ -852,6 +512,21 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
   const raw = isRawKind(kind);
   const rawHref =
     file !== undefined && place !== undefined ? fileRawUrl(endpoint, place, file) : undefined;
+  /**
+   * 「別タブで開く」の行き先（§5.8.4・PO要望 2026-08-09）。
+   *
+   * **整形して読める1枚へ送る。** `file.raw` は md も ts も `text/plain` で配るので
+   * （§5.8.2）、そこへ送ると面の中では整形で読めていたものが別タブでは原文に戻る。
+   *
+   * ただし `html` / `image` は **raw のまま**——ブラウザ自身が既に整形して見せる種別で、
+   * こちらの1枚に載せると iframe の中に押し込むことになり、かえって読みにくい。
+   */
+  const openHref =
+    file !== undefined && place !== undefined
+      ? raw
+        ? rawHref
+        : filePageUrl(window.location.pathname, endpoint, place, file)
+      : undefined;
 
   const mode = modeChoice.path === file ? modeChoice.mode : lineFrom !== undefined ? "source" : "preview";
   const wrap = wrapChoice.path === file ? wrapChoice.on : true;
@@ -951,7 +626,6 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
       : `${fileTotalLines} 行すべて読み込みました。`;
   })();
   const codeLang = kind === "code" || kind === "html" ? codeLangOfPath(file ?? "") : undefined;
-  const csvDelimiter: "," | "\t" = extOfPath(file ?? "") === "tsv" ? "\t" : ",";
 
   /** 狭いとき、読んでいる間だけ頭を退かせる（§6.4） */
   const retracted = useRetractOnScroll(bodyEl, pane === "file" && file !== undefined);
@@ -1261,21 +935,13 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
           </button>
         </div>
         <div className="fb-body">
-          <div className="fb-preview">
-            <div className="markdown">
-              <Markdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  code: (props) => (
-                    <MarkdownCode {...props} scheme={scheme} onMermaidReady={bumpPreviewReady} />
-                  ),
-                  a: MarkdownLink,
-                }}
-              >
-                {readmeBody.content ?? ""}
-              </Markdown>
-            </div>
-          </div>
+          <FilePreviewBody
+            path={readmePath ?? readmeName}
+            kind="markdown"
+            content={readmeBody.content ?? ""}
+            scheme={scheme}
+            onReady={bumpPreviewReady}
+          />
         </div>
       </div>
     ) : (
@@ -1330,6 +996,7 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
           wrap={wrap}
           onWrap={(next) => setWrapChoice({ path: file, on: next })}
           showWrap={effectiveMode === "source"}
+          openHref={openHref}
           rawHref={rawHref}
           onClose={() => setMenuOpen(false)}
         />
@@ -1394,48 +1061,14 @@ export function FileBrowser({ params, endpoint }: CanvasViewProps): React.ReactE
         // 中身のスクロールは**この器だけ**が持つ（頭を退かせる判定も復元もここを見る）
         <div className="fb-body" ref={attachBody}>
           {effectiveMode === "preview" ? (
-            <div className="fb-preview">
-              {kind === "markdown" && (
-                <div className="markdown">
-                  <Markdown
-                    remarkPlugins={[remarkGfm]}
-                    components={{
-                      code: (props) => (
-                        <MarkdownCode {...props} scheme={scheme} onMermaidReady={bumpPreviewReady} />
-                      ),
-                      // 外に出るリンクは別タブへ（links.tsx）。読んでいる面ごと差し替わらない
-                      a: MarkdownLink,
-                    }}
-                  >
-                    {contentText}
-                  </Markdown>
-                </div>
-              )}
-              {kind === "mermaid" && (
-                <MermaidBlock code={contentText} scheme={scheme} onReady={bumpPreviewReady} />
-              )}
-              {kind === "csv" && (
-                <div className="fb-scrollx">
-                  <CsvTable content={contentText} delimiter={csvDelimiter} />
-                </div>
-              )}
-              {kind === "diff" && <DiffPreview content={contentText} />}
-              {kind === "code" && <CodePreview content={contentText} lang={codeLang} scheme={scheme} />}
-              {/* 隔離した枠（§5.8.3）。`allow-same-origin` は付けない——付けると
-                  リポジトリの中の HTML が Banto のオリジンで動くスクリプトになる */}
-              {kind === "html" && rawHref !== undefined && (
-                <iframe
-                  className="fb-frame"
-                  src={rawHref}
-                  sandbox="allow-scripts"
-                  title={file}
-                  referrerPolicy="no-referrer"
-                />
-              )}
-              {kind === "image" && rawHref !== undefined && (
-                <img className="fb-image" src={rawHref} alt={file} />
-              )}
-            </div>
+            <FilePreviewBody
+              path={file}
+              kind={kind}
+              content={contentText}
+              {...(rawHref !== undefined ? { rawHref } : {})}
+              scheme={scheme}
+              onReady={bumpPreviewReady}
+            />
           ) : (
             <CodeBody
               content={contentText}

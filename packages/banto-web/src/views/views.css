@@ -1137,7 +1137,15 @@
  */
 .fb-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .fb-preview { padding: 16px 16px 24px; }
-.fb-preview .markdown { max-width: 78ch; font-size: var(--t-body); line-height: 1.85; }
+/**
+ * **幅は器いっぱい**（PO報告 2026-08-09：「謎の空白が右側にできる」）。
+ *
+ * 以前は `max-width: 78ch` で行長を抑えていた。読み物としては筋が通るが、この面は
+ * **自分で幅を決められない**——キャンバスの1枚として、POが引いた仕切りの中に居る。
+ * 広げたのに本文が伸びなければ、余りは「読みやすさ」ではなく**壊れて見える空白**になる。
+ * 行長を詰めたいときは仕切りを狭める側で決める（`SplitView` の掴みは既にある）。
+ */
+.fb-preview .markdown { font-size: var(--t-body); line-height: 1.85; }
 .fb-preview .markdown h1 { font-size: var(--t-head); margin: 20px 0 8px; }
 .fb-preview .markdown h2 { font-size: var(--t-head); margin: 20px 0 8px; }
 .fb-preview .markdown h3 { font-size: var(--t-read); margin: 16px 0 8px; }
@@ -1280,6 +1288,57 @@
   .fb-code { font-size: var(--t-read); }
   .fb-code-plain, .fb-code-html pre { font-size: var(--t-read); }
   .fb-frame { height: 100%; min-height: 60vh; }
+}
+
+/* ══ 別タブの1枚（FilePage・§5.8.4） ═══════════════════════════════════════ */
+
+/**
+ * 会話もキャンバスも持たない、ファイル1つだけの画面。
+ *
+ * **道具立ては1段だけ。** ここへ来た人は読みに来ている——面と同じ道具を並べ直すと、
+ * 別タブで開く意味（1枚をまるごと本文に使う）が消える。中身の描き手は面と共通
+ * （`FileBody.tsx`）なので、ここで持つのは器の形だけ。
+ */
+.fp { height: 100%; display: flex; flex-direction: column; background: var(--paper); }
+.fp-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  min-height: 46px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper-1);
+}
+.fp-place {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--t-note);
+  color: var(--sumi-3);
+}
+.fp-path {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: var(--t-meta);
+  font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: ltr;
+}
+.fp-link { flex: none; text-decoration: none; }
+.fp-body { flex: 1; min-height: 0; overflow: auto; }
+.fp .cv-note { margin: 8px 12px 0; }
+/* 面と違って幅を分け合う相手が居ない。読ませる大きさで出す（§5.6） */
+.fp-body .markdown { font-size: var(--t-read); }
+.fp-body .fb-frame { height: calc(100vh - 60px); }
+
+@media (max-width: 760px) {
+  .fp-place { display: none; }
+  .fp-body .fb-code, .fp-body .fb-code-plain, .fp-body .fb-code-html pre { font-size: var(--t-read); }
 }
 
 /* ══ 差分（git.viewer / diff プレビュー） ═══════════════════════════════════ */

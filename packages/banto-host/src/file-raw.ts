@@ -34,12 +34,23 @@ export const RAW_PATH = "/raw/";
  * **表に無いものは `text/plain`。** 中身から型を推測（sniff）しない——推測は
  * 「テキストのつもりで置いたものが実行される」経路になる。
  *
- * `svg` を**画像として配らない**のは、SVG が `<script>` を持てるため。画像の顔をして
- * 文書として開ける形式は、この表では素のテキストに落とす。
+ * **HTML の連れ（css / js / font / json）は表に載せる**（PO報告 2026-08-09：
+ * 「同じフォルダから配信する CSS が当たらない」）。`nosniff` を付けている以上、
+ * `text/plain` で配った `.css` はブラウザが**意匠として使うことを拒む**——「HTML を
+ * 静的配信扱いにする」（§5.8 の PO要望②）は、連れが載っていないと成り立たない。
+ * 危険は増えない：スクリプトが動くのは §5.8.3 の不透明なオリジンの中だけで、
+ * そこでは**元から inline の `<script>` が動く**。外に置いた `.js` を拒む理由が無い。
+ *
+ * `svg` は**変わらず画像として配らない**——SVG は `<script>` を持て、`<img>` の連れとしてだけ
+ * でなく**それ自体を文書として開ける**。ここを緩めるのは §5.8.3 の隔離に触る決めなので D1。
  */
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
   html: "text/html; charset=utf-8",
   htm: "text/html; charset=utf-8",
+  css: "text/css; charset=utf-8",
+  js: "text/javascript; charset=utf-8",
+  mjs: "text/javascript; charset=utf-8",
+  json: "application/json; charset=utf-8",
   png: "image/png",
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
@@ -48,6 +59,10 @@ const CONTENT_TYPES: Readonly<Record<string, string>> = {
   avif: "image/avif",
   ico: "image/x-icon",
   pdf: "application/pdf",
+  woff2: "font/woff2",
+  woff: "font/woff",
+  ttf: "font/ttf",
+  otf: "font/otf",
 };
 
 const TEXT_FALLBACK = "text/plain; charset=utf-8";

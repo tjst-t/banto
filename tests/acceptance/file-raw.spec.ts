@@ -129,9 +129,53 @@ describe("file.raw: 安全側の作り（§5.8.3）", () => {
   });
 
   it("表に無い型は素のテキストに落ちる", async () => {
-    fs.writeFileSync(path.join(root, "app.js"), "alert(1)");
-    const res = await get(`${BASE}/raw/demo/app.js`);
+    fs.writeFileSync(path.join(root, "notes.rst"), "見出し\n===");
+    const res = await get(`${BASE}/raw/demo/notes.rst`);
     assert.match(String(res.headers["content-type"]), /^text\/plain/);
+  });
+});
+
+/**
+ * PO報告 2026-08-09：「同じフォルダから配信する CSS が当たらない」。
+ *
+ * `nosniff` を付けている以上、`text/plain` で配った `.css` はブラウザが**意匠として
+ * 使うことを拒む**——「HTML を静的配信扱いにする」（§5.8 の PO要望②）は、連れが
+ * 表に載っていないと成り立たない。
+ */
+describe("file.raw: HTML の連れ（§5.8.2）", () => {
+  before(() => {
+    fs.writeFileSync(path.join(root, "app.js"), "document.title='x'");
+    fs.writeFileSync(path.join(root, "font.woff2"), Buffer.from([0x77, 0x4f, 0x46, 0x32]));
+    fs.writeFileSync(path.join(root, "data.json"), '{"a":1}');
+  });
+
+  it("CSS は text/css で配る（さもないと意匠が当たらない）", async () => {
+    const res = await get(`${BASE}/raw/demo/sub/style.css`);
+    assert.match(String(res.headers["content-type"]), /^text\/css/);
+  });
+
+  it("JS・フォント・JSON も型どおり配る", async () => {
+    const cases: Array<[string, RegExp]> = [
+      ["app.js", /^text\/javascript/],
+      ["font.woff2", /^font\/woff2/],
+      ["data.json", /^application\/json/],
+    ];
+    for (const [file, type] of cases) {
+      const res = await get(`${BASE}/raw/demo/${file}`);
+      assert.match(String(res.headers["content-type"]), type, file);
+    }
+  });
+
+  it("連れは**不活性のまま**（文書として開かれても動かない）", async () => {
+    // 隔離が緩むのは HTML と PDF だけ（§5.8.3）。css / js を直に開いても
+    // `allow-scripts` は付かない＝そこから Banto を触る足場にならない
+    for (const file of ["sub/style.css", "app.js", "data.json"]) {
+      const res = await get(`${BASE}/raw/demo/${file}`);
+      const csp = String(res.headers["content-security-policy"]);
+      assert.match(csp, /sandbox/, file);
+      assert.doesNotMatch(csp, /allow-scripts/, file);
+      assert.equal(res.headers["x-content-type-options"], "nosniff", file);
+    }
   });
 });
 
