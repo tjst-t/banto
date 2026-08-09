@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>案8 帳面 — 店の全部が1枚に載る</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=M+PLUS+1+Code:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="fucho.css">
+<style>
+/* ══════════════════════════════════════════════════════════════════════════
+   案8「帳面」— 店の全部が1枚に載る。舐めれば分かる
+
+   ■ 立ち戻ったところ（案7 と同じ原典、逆の読み）
+   案7 は「POの仕事は裁くこと」と読んで、常設の画面を捨てた。
+   ここは同じ原典の**別の一節**を取る：
+
+     ・「UIはPOの**注意力（レビュー帯域）の配分装置**として設計する」（spec-ui）
+
+   配分するには、**配る先が全部見えていなければならない**。裁く前に「店がどうなって
+   いるか」が分からないと、目の前の1件が重いのか軽いのかが決められない。
+
+   ■ 賭けていること
+   **一望性。** 1行1件・24px の帳面に、あなたの番・動いている・止まっている・
+   今日決まったこと を全部載せる。スクロールしたら負け、という設計。
+
+   ・行頭は**符号1文字**（※ ／ 〆 × ！）。色が見えなくても役が分かる
+   ・↑↓ か j k で行を移り、Enter か → で右に開く。**開いても帳面は消えない**
+   ・1 2 3 でその場で裁く。**開かずに裁ける**のが密度の効き目
+   ・会話は「場所」ではなく**行の中身**。幹もタブも無く、1件＝1本の会話
+   ・絞り込みは `/` で**下端に開く**。閉じれば消える。常設して高さを取らない
+   ・f で行に符牒が浮き、1文字で直接飛ぶ
+
+   ■ 失うもの
+   落ち着き。常に全部が見えているので、案7 のような「空になる」体験が無い。
+   1件に集中させる力も弱い——目が他の行へ逃げる。
+
+   署名：**帳面の罫と符号**。24px の行が機械的に並び、左端の1文字だけで役が読める。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.shell { height: 100%; display: flex; flex-direction: column; padding-bottom: 24px; }
+.body { flex: 1; min-height: 0; display: flex; }
+
+/* ── 帳面 ─────────────────────────────────────────────────────────────── */
+.ledger { width: 46%; min-width: 380px; max-width: 620px; flex: none; display: flex; flex-direction: column;
+          background: var(--face); border-right: 1px solid var(--line); }
+.lg-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+/* 言う口。帳面の頭に置き、打てば行が1本立つ */
+.new { flex: none; display: flex; align-items: center; gap: var(--s2); height: 26px; padding: 0 var(--s3);
+       border-bottom: 1px solid var(--line); background: var(--bg); }
+.new input { flex: 1; min-width: 0; height: 24px; border: 0; background: none; font-size: var(--t-meta); }
+.new input:focus { outline: none; }
+.new input::placeholder { color: var(--ink-3); }
+.new .hk { opacity: .5; }
+.grp { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: var(--s2);
+       padding: 5px var(--s3); background: var(--sunk); border-bottom: 1px solid var(--line);
+       font-size: var(--t-note); color: var(--ink-3); }
+.grp b { color: var(--ink-2); font-weight: 700; letter-spacing: .06em; }
+.grp .sp { flex: 1; }
+.grp.wait b { color: var(--shu); }
+
+/* 1行1件・24px。**ここが密度の本体** */
+.row { position: relative; display: flex; align-items: center; gap: var(--s2); width: 100%;
+       height: 24px; padding: 0 var(--s3) 0 var(--s2); font-size: var(--t-meta);
+       border-bottom: 1px solid transparent; white-space: nowrap; }
+.row:hover { background: var(--bg); }
+.row.on { background: var(--ai-t); box-shadow: inset 2px 0 0 var(--ai); }
+.row .tt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.row .who { color: var(--ink-3); font-size: var(--t-note); flex: none; }
+.row time { color: var(--ink-3); font-size: var(--t-note); flex: none; width: 46px; text-align: right; }
+.row.done .tt { color: var(--ink-2); }
+.row .kf { left: 2px; }
+.is-fu .row { padding-left: var(--s5); }
+
+.lg-foot { flex: none; border-top: 1px solid var(--line); }
+/* 絞り込みは呼び出すもの。**閉じれば高さを返す** */
+.filt { display: none; align-items: center; gap: var(--s2); padding: var(--s1) var(--s3); background: var(--sunk); }
+.filt.on { display: flex; }
+.filt input { flex: 1; min-width: 0; height: 24px; border: 0; background: none; font-size: var(--t-meta); }
+.filt input:focus { outline: none; }
+.filt .n { color: var(--ink-3); font-size: var(--t-note); }
+.hint { display: flex; align-items: center; gap: var(--s3); padding: var(--s1) var(--s3); font-size: var(--t-note); color: var(--ink-3); }
+.hint .sp { flex: 1; }
+
+/* ── 開いた件 ─────────────────────────────────────────────────────────── */
+.detail { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.dt-head { flex: none; display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4);
+           border-bottom: 1px solid var(--line); font-size: var(--t-note); color: var(--ink-3); }
+.dt-head .sp { flex: 1; }
+.dt-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: var(--s4) var(--s5) var(--s5); }
+.dt-scroll h1 { font-size: var(--t-head); font-weight: 700; line-height: 1.5; letter-spacing: -.01em; margin-bottom: var(--s3); }
+.kv { display: grid; grid-template-columns: 72px 1fr; gap: 2px var(--s3); font-size: var(--t-meta); line-height: 1.85; margin-bottom: var(--s4); }
+.kv dt { color: var(--ink-3); }
+.kv dd { color: var(--ink-2); }
+.kv dd q { color: var(--ink); font-style: normal; }
+
+.ask { padding: var(--s3); border: 1px solid var(--line); border-left: 3px solid var(--shu); border-radius: var(--r); background: var(--shu-t); margin-bottom: var(--s4); }
+.ask-h { font-size: var(--t-note); color: var(--shu); font-weight: 700; letter-spacing: .06em; margin-bottom: var(--s2); }
+.opts { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.opt { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border: 1px solid var(--line);
+       border-radius: var(--r); background: var(--face); font-size: var(--t-meta); }
+.opt:hover { border-color: var(--ai); color: var(--ai); }
+.opt.main { background: var(--shu); border-color: var(--shu); color: #fff; font-weight: 500; }
+.opt.main:hover { filter: brightness(1.1); color: #fff; }
+
+/* 面は件の中のタブ。**開く操作をさせず、要るものは付いた状態で出す** */
+.tabs { display: flex; align-items: stretch; height: 26px; border-bottom: 1px solid var(--line); margin-bottom: var(--s3); }
+.tab { display: flex; align-items: center; gap: 6px; padding: 0 var(--s3); font-size: var(--t-note); color: var(--ink-3); border-right: 1px solid var(--line); }
+.tab:hover { color: var(--ink); }
+.tab.on { color: var(--ink); box-shadow: inset 0 -2px 0 var(--ai); font-weight: 500; }
+
+.sec-h { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-note); color: var(--ink-3); margin: var(--s4) 0 var(--s2); }
+.sec-h::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.log { display: flex; flex-direction: column; gap: var(--s3); }
+.po { align-self: flex-end; max-width: 82%; background: var(--sunk); padding: 6px var(--s3); border-radius: var(--r); font-size: var(--t-meta); }
+.ba { position: relative; padding-left: var(--s5); font-size: var(--t-meta); line-height: 1.85; }
+.ba::before { content: "»"; position: absolute; left: 0; top: 0; color: var(--ai); font-weight: 700; }
+.tl { position: relative; padding-left: var(--s5); font-size: var(--t-note); color: var(--ink-3); }
+.tl::before { content: "·"; position: absolute; left: 6px; color: var(--ok); font-weight: 700; }
+.dl { border: 1px solid var(--line); border-radius: var(--r); background: var(--bg); padding: var(--s2) var(--s3);
+      font-size: var(--t-note); line-height: 1.7; white-space: pre; overflow-x: auto; }
+.dl .a { color: var(--ok); } .dl .d { color: var(--mur); } .dl .c { color: var(--ink-3); }
+.lrow { display: flex; align-items: center; gap: var(--s2); padding: 4px 0; border-bottom: 1px solid var(--line); font-size: var(--t-meta); }
+.lrow .sp { flex: 1; }
+.lrow em { font-style: normal; color: var(--ink-3); font-size: var(--t-note); }
+
+.say { flex: none; display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); border-top: 1px solid var(--line); background: var(--face); }
+.say input { flex: 1; min-width: 0; height: 28px; border: 0; background: none; font-size: var(--t-meta); }
+.say input:focus { outline: none; }
+.say input::placeholder { color: var(--ink-3); }
+
+.empty { display: grid; place-items: center; height: 100%; color: var(--ink-3); font-size: var(--t-meta); text-align: center; }
+</style>
+</head>
+<body>
+<div class="shell" id="shell">
+  <header class="sl">
+    <span class="sl-mark">番頭</span>
+    <span class="sl-i">banto</span>
+    <span class="sl-i call">あなたの番 <b id="slWait">4</b></span>
+    <span class="sl-sp"></span>
+    <span class="sl-i">動いている <b>16</b></span>
+    <span class="sl-i">止まっている <b>2</b></span>
+    <span class="sl-i"><span class="sl-k">i</span> 言う</span>
+    <span class="sl-i"><span class="sl-k">/</span> 絞る</span>
+    <span class="sl-i"><span class="sl-k">f</span> 符牒</span>
+  </header>
+
+  <div class="body">
+    <!-- 帳面：店の全部。**スクロールしたら負け** -->
+    <section class="ledger">
+      <!-- **話しかけること＝帳面に行が1本立つこと。** 1件＝1本の会話、という
+           この案の考え方の裏返しなので、別の入口を作らない。24px しか取らない -->
+      <div class="new">
+        <span style="color:var(--ai);font-weight:700">»</span>
+        <input id="newIn" placeholder="番頭に言う（例：昨日の続き）" autocomplete="off">
+        <span class="hk"><span class="k g">i</span></span>
+      </div>
+      <div class="lg-scroll" id="lg"></div>
+      <div class="lg-foot">
+        <div class="filt" id="filt">
+          <span style="color:var(--ink-3)">/</span>
+          <input id="q" placeholder="絞る" autocomplete="off">
+          <span class="n" id="filtN"></span>
+          <span class="n">Esc で閉じる</span>
+        </div>
+        <div class="hint">
+          <span>↑↓ 選ぶ</span><span>⏎ 開く</span><span>1 2 3 裁く</span><span>i 言う</span><span>/ 絞る</span>
+          <span class="sp"></span><span id="count"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 開いた件。**帳面は消えない** -->
+    <section class="detail" id="detail"></section>
+  </div>
+</div>
+
+<div class="foot">
+  案8 帳面 — 店の全部が1枚に載る<span class="sp"></span>
+  <button id="themeBtn">明暗</button>
+  <span>↑↓ 選ぶ · ⏎ 開く · 1 2 3 裁く · i 言う · / 絞る · f 符牒</span>
+</div>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════════════
+   帳面は**1本の配列**で、群は状態から導く（D3：状態の真実は一箇所）。
+   「いまどれを選んでいるか」だけが画面の状態。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+const F = "abcdefghijklmnopqrstuvwxyz";
+const D = (h, why, what, weigh, opts, tabs, log) => ({ h, why, what, weigh, opts, tabs, log });
+
+const ROWS = [
+  { s: "wait", t: ".cv-* の CSS 名を変えてよいか", who: "職人 w-30", at: "6分", d:
+    D(".cv-* の CSS 名を変えてよいか",
+      "意匠がプロダクトらしくない。何が効いているか教えて",
+      "views.css 1770 行の内訳を数えた。器 420／部品 700／面ごとの上書き 650 行",
+      "変えれば体系が通る。据え置けば互換が保たれるが、名前と中身が食い違ったまま残る",
+      [["名前ごと変える", 1], ["名前は据え置く", 0]],
+      [["差分", `<div class="dl"><span class="c">@@ views/parts.css @@</span>
+<span class="d">- .cv-bar   { display:flex; }</span>
+<span class="d">- .cv-split { display:flex; }</span>
+<span class="a">+ .bar   { display:flex; }</span>
+<span class="a">+ .split { display:flex; }</span>
+<span class="c">  /* 外向け：語彙表と3つの面が .cv-* を名指し */</span></div>`],
+       ["職人", `<div class="lrow">w-30 · views.css の分割<span class="sp"></span><em>判断待ち</em></div>
+                 <div class="lrow">w-31 · canvas_state の到着順<span class="sp"></span><em>04:12</em></div>`]],
+      [["po", "views.css を役割ごとに分けて"], ["tl", "file.read views/views.css — 1770 行"],
+       ["ba", "内訳を数えました。器 420／部品 700／面ごとの上書き 650 行です。器と部品は共通なので2ファイルに残し、上書きは各面へ寄せます。"],
+       ["tl", "file.write views/parts.css — 待っています"],
+       ["ba", "ここで止めました。<code>.cv-*</code> は外向けの契約なので、名前は私では決めません（D1）。"]]) },
+
+  { s: "wait", t: "検証環境が3つ、6日畳まれていません", who: "環境の番", at: "2時間", d:
+    D("検証環境が3つ、6日畳まれていません",
+      "検証環境は使い終わったら畳んで、と言われています",
+      "3つとも最後の接続から6日。畳めば概算 4,200 円/月が浮く。畳んでも再現手順から立て直せる",
+      "畳めば費用が減る。立て直しは初回だけ4分、二度目からは40秒",
+      [["3つとも畳む", 1], ["env-27 だけ残す", 0], ["全部残す", 0]],
+      [["環境", `<div class="lrow"><span class="sg warn">！</span>env-31 · task-0086 の検証<span class="sp"></span><em>6日 · 1,400円/月</em></div>
+                 <div class="lrow"><span class="sg warn">！</span>env-29 · inc-0041 の再現<span class="sp"></span><em>6日 · 1,400円/月</em></div>
+                 <div class="lrow"><span class="sg warn">！</span>env-27 · 意匠の見本<span class="sp"></span><em>7日 · 1,400円/月</em></div>`]],
+      [["ba", "3つとも 6日 触られていません。畳んでよいか決めてください——費用は私の裁量の外です（D1）。"]]) },
+
+  { s: "wait", t: "会話の面、案3「座敷」で確定してよいか", who: "番頭", at: "12分", d:
+    D("会話の面、案3「座敷」で確定してよいか",
+      "キャンバスとチャットの横並びが本当にいいのか悩んでいる",
+      "6案を組んで比べた。会話を主にすると構造の問題が直り、広い面での作業が一手増える",
+      "**利用体験を変える本物のトレードオフ**なので上げます（D9）",
+      [["座敷で確定する", 1], ["いまの2ペインのまま", 0], ["もう1案見たい", 0]],
+      [["見本", `<div class="lrow">03-zashiki.html<span class="sp"></span><em>会話が本体</em></div>
+                 <div class="lrow">06-suji.html<span class="sp"></span><em>幹1本と枝</em></div>
+                 <div class="lrow">07-ukagai.html<span class="sp"></span><em>裁いて空にする</em></div>`]],
+      [["po", "横並びが本当にいいのか悩んでいる"],
+       ["ba", "案3「座敷」が未決のまま残っています（2026-08-05 の裁定⑤）。そこから3案を組みました。"],
+       ["po", "広い面での作業が一手増える、ってどのくらい？"],
+       ["ba", "ファイル閲覧と差分で1操作、実測 0.4 秒です。戻るときは Esc 1打なので、いまより速くなります。"]]) },
+
+  { s: "wait", t: "更新のたびに Caddy を止めてよいか", who: "番頭", at: "2日", d:
+    D("更新のたびに Caddy を止めてよいか",
+      "また証明書切れてた",
+      "3回目。更新中だけ 80 番が掴まれる。止めれば確実だが、18〜25 秒だけ公開URLが落ちる",
+      "止めれば確実に直る。止めずに直す道はまだ見つかっていない",
+      [["止めてよい", 1], ["止めずに直す道を探す", 0]],
+      [],
+      [["po", "また証明書切れてた"], ["ba", "3回目です。月に一度しか起きないので、当てずっぽうで直すと直ったかどうかが分かりません。"]]) },
+
+  { s: "stop", t: "依存ゲートの再実装", who: "職人 w-28", at: "6日", d:
+    D("依存ゲートの再実装が 6日 動いていません",
+      "Kobo の tick が番頭の立てた職人を見ていない",
+      "職人 w-28 が 6日前に落ちたまま、誰も引き取っていない",
+      "黙って止まっているのは機構が壊れている合図として扱います（P6）",
+      [["畳んで保留にする", 1], ["私が引き取る", 0]], [],
+      [["ba", "上げなかったのは私の判断です——止まっていること自体は利用体験を変えないので。6日を超えたので上げました。"]]) },
+  { s: "stop", t: "ケイデンスの予定を Kobo に持たせる", who: "職人 w-22", at: "9日", d:
+    D("ケイデンスの予定を Kobo に持たせる", "定期の棚卸しが回っていない", "spec-daemon-core §5 が未実装のまま", "急ぎません",
+      [["畳んで保留にする", 1], ["私が引き取る", 0]], [], [["ba", "未実装のまま止まっています。</p>"]]) },
+
+  { s: "run", t: "開いたタブに中身が出ない", who: "職人 2人", at: "04:12" },
+  { s: "run", t: "意匠トークンの棚卸し", who: "職人 1人", at: "22:40" },
+  { s: "run", t: "キャンバスの器を container query に", who: "職人 1人", at: "06:03" },
+  { s: "run", t: "WS 再接続の取りこぼし", who: "職人 1人", at: "03:20" },
+  { s: "run", t: "SKILL の索引が古い", who: "職人 1人", at: "11:04" },
+  { s: "run", t: "記憶の取り違えを訂正する", who: "職人 2人", at: "00:41" },
+  { s: "run", t: "差分の表示が横に伸びる", who: "職人 1人", at: "08:12" },
+  { s: "run", t: "環境の quota を実測に寄せる", who: "職人 1人", at: "01:55" },
+  { s: "run", t: "秘密の置き場を sops に寄せる", who: "職人 1人", at: "19:30" },
+  { s: "run", t: "置き場の探索を ghq に任せる", who: "職人 1人", at: "02:08" },
+  { s: "run", t: "監査の判定を面に出す", who: "職人 1人", at: "05:44" },
+  { s: "run", t: "タブの溢れを ▾ に収める", who: "職人 1人", at: "07:19" },
+  { s: "run", t: "携帯への知らせを ntfy に", who: "職人 1人", at: "13:02" },
+  { s: "run", t: "ボードを Kobo の写しにする", who: "職人 2人", at: "04:37" },
+  { s: "run", t: "PO ごとの意匠を持てるようにする", who: "職人 1人", at: "21:11" },
+  { s: "run", t: "章の閾値を実測で決める", who: "職人 1人", at: "00:12" },
+
+  { s: "done", t: "起動時にモデル台帳を取りに行かない", who: "inc-0047 · task-0088", at: "08:30" },
+  { s: "done", t: "静的HTMLに連れがいなかった", who: "inc-0046 · task-0087", at: "昨日" },
+  { s: "done", t: "間欠的な失敗は機構が壊れている合図", who: "ADR-0016", at: "3日前" },
+  { s: "done", t: "判断を求めるものは取次1つ", who: "ADR-0015 · task-0086", at: "4日前" },
+  { s: "done", t: "検証環境を1つ畳んだ（7日無反応）", who: "番頭が決めた", at: "11:05" },
+  { s: "done", t: "記憶を12件足し、2件を訂正した", who: "番頭が決めた", at: "13:22" },
+];
+
+const SG = { wait: "※", run: "／", done: "〆", stop: "×", warn: "！" };
+const GRP = [
+  ["wait", "あなたの番", "裁けば店が進みます"],
+  ["stop", "止まっている", "機構が壊れている合図（P6）"],
+  ["run",  "動いている",  "見なくてよい。呼ばれたら見る"],
+  ["done", "今日決まったこと", "控え"],
+];
+
+let sel = 0, filt = false, q = "", tab = 0;
+const shell = document.getElementById("shell");
+
+const shown = () => ROWS.filter(r => !q || r.t.includes(q) || r.who.includes(q));
+
+function renderLedger() {
+  const list = shown();
+  if (sel >= list.length) sel = Math.max(0, list.length - 1);
+  const out = []; let n = 0;
+  for (const [s, label, note] of GRP) {
+    const rows = list.filter(r => r.s === s);
+    if (!rows.length) continue;
+    out.push(`<div class="grp ${s === "wait" ? "wait" : ""}"><span class="sg ${s}">${SG[s]}</span><b>${label}</b><span>${rows.length}</span><span class="sp"></span><span>${note}</span></div>`);
+    for (const r of rows) {
+      const idx = list.indexOf(r);
+      out.push(`<button class="row ${r.s} ${idx === sel ? "on" : ""}" data-i="${idx}">
+        <span class="k g kf">${F[n++] || "·"}</span>
+        <span class="sg ${r.s}">${SG[r.s]}</span>
+        <span class="tt">${r.t}</span>
+        <span class="who">${r.who}</span><time>${r.at}</time></button>`);
+    }
+  }
+  document.getElementById("lg").innerHTML = out.join("");
+  document.getElementById("count").textContent = `${list.length} 件${q ? ` / ${ROWS.length}` : ""}`;
+  document.getElementById("filtN").textContent = q ? `${list.length} 件` : "";
+  document.getElementById("slWait").textContent = ROWS.filter(r => r.s === "wait").length;
+  document.querySelector(".row.on")?.scrollIntoView({ block: "nearest" });
+}
+
+function renderDetail() {
+  const r = shown()[sel];
+  const host = document.getElementById("detail");
+  if (!r) { host.innerHTML = `<div class="empty">当たりませんでした</div>`; return; }
+  if (!r.d) {
+    // 中身の要らない行（動いている・済んだ）は、開いても薄いままでよい
+    host.innerHTML = `
+      <div class="dt-head"><span class="sg ${r.s}">${SG[r.s]}</span><span>${r.who}</span><span class="sp"></span><span>${r.at}</span></div>
+      <div class="dt-scroll"><h1>${r.t}</h1>
+        <p style="font-size:var(--t-meta);color:var(--ink-3)">${r.s === "run" ? "私が持っています。あなたの手は要りません——判断が要るようになったら、帳面の一番上へ移します。" : "決まったことの控えです。"}</p>
+      </div>
+      <div class="say"><span style="color:var(--ai);font-weight:700">»</span><input placeholder="この件について番頭に話す"></div>`;
+    return;
+  }
+  const d = r.d;
+  if (tab >= (d.tabs?.length || 0)) tab = 0;
+  host.innerHTML = `
+    <div class="dt-head"><span class="sg ${r.s}">${SG[r.s]}</span><span>${r.who}</span><span class="sp"></span><span>${r.at}</span></div>
+    <div class="dt-scroll">
+      <h1>${d.h}</h1>
+      <dl class="kv">
+        <dt>経緯</dt><dd><q>${d.why}</q></dd>
+        <dt>起きたこと</dt><dd>${d.what}</dd>
+        <dt>秤</dt><dd>${d.weigh}</dd>
+      </dl>
+      ${d.opts.length ? `<div class="ask">
+        <div class="ask-h">求める判断</div>
+        <div class="opts">${d.opts.map((o, n) => `<button class="opt ${o[1] ? "main" : ""}" data-pick="${n}"><span class="k ${o[1] ? "d" : "g"}">${n + 1}</span>${o[0]}</button>`).join("")}</div>
+      </div>` : ""}
+      ${d.tabs?.length ? `<div class="tabs">${d.tabs.map((t, n) => `<button class="tab ${n === tab ? "on" : ""}" data-tab="${n}">${t[0]}</button>`).join("")}</div>${d.tabs[tab][1]}` : ""}
+      <div class="sec-h">やりとり</div>
+      <div class="log">${d.log.map(([k, t]) => k === "po" ? `<div class="po">${t}</div>` : k === "tl" ? `<div class="tl">${t}</div>` : `<div class="ba">${t}</div>`).join("")}</div>
+    </div>
+    <div class="say"><span style="color:var(--ai);font-weight:700">»</span><input placeholder="この件について番頭に話す"><span style="color:var(--ink-3);font-size:var(--t-note)">1 2 3 で裁く</span></div>`;
+}
+
+function render() { renderLedger(); renderDetail(); }
+
+/* 裁くと帳面から落ちて「今日決まったこと」へ移る。**開かずに裁ける** */
+function pick(n) {
+  const list = shown(), r = list[sel];
+  if (!r || !r.d || n >= r.d.opts.length) return;
+  r.s = "done"; r.who = "あなたが決めた"; r.at = "たったいま";
+  r.d.log.push(["ba", `承りました——<b>${r.d.opts[n][0]}</b>。ここから先は私が進めます。`]);
+  render();
+}
+
+/* 言う＝行を立てる。**「あなたの番」ではなく「動いている」に立つ**
+   ——言った時点でそれは私の持ち物で、あなたを待たせるものではない（D9・D10） */
+function say(text) {
+  const row = { s: "run", t: text, who: "あなたが言った", at: "たったいま",
+    d: { h: text, why: text, what: "受け取ったところです。まず私で調べます。",
+      weigh: "手が要ることが出たら職人を立てます。<b>あなたの判断が要ることが出たときだけ</b>、この行が一番上（あなたの番）へ移ります（D9）。",
+      opts: [], tabs: [],
+      log: [["po", text], ["ba", "承りました。私が持ちます——判断が要るようになったら、帳面の一番上へ移します。"]] } };
+  ROWS.unshift(row);
+  q = ""; document.getElementById("q").value = "";
+  document.getElementById("filt").classList.remove("on"); filt = false;
+  sel = shown().indexOf(row); tab = 0;
+  render();
+}
+
+function move(dir) {
+  const list = shown();
+  sel = Math.max(0, Math.min(list.length - 1, sel + dir));
+  render();
+}
+
+document.addEventListener("click", (e) => {
+  const row = e.target.closest("[data-i]"); if (row) { sel = +row.dataset.i; tab = 0; return render(); }
+  const p = e.target.closest("[data-pick]"); if (p) return pick(+p.dataset.pick);
+  const t = e.target.closest("[data-tab]"); if (t) { tab = +t.dataset.tab; return renderDetail(); }
+});
+document.getElementById("newIn").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { e.target.blur(); return; }
+  if (e.key !== "Enter") return;
+  const v = e.target.value.trim(); if (!v) return;
+  e.target.value = ""; e.target.blur(); say(v);
+});
+document.getElementById("q").addEventListener("input", (e) => { q = e.target.value.trim(); sel = 0; render(); });
+document.getElementById("themeBtn").addEventListener("click", () => {
+  const r = document.documentElement; r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+});
+
+document.addEventListener("keydown", (e) => {
+  const typing = e.target.tagName === "INPUT";
+  if (e.key === "Escape") {
+    if (filt) { filt = false; q = ""; document.getElementById("q").value = "";
+      document.getElementById("filt").classList.remove("on"); shell.querySelector(".ledger").focus?.(); render(); }
+    return;
+  }
+  if (typing) {
+    if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
+    if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
+    return;
+  }
+  if (e.key === "i") { e.preventDefault(); return document.getElementById("newIn").focus(); }
+  if (e.key === "/") { e.preventDefault(); filt = true; document.getElementById("filt").classList.add("on"); document.getElementById("q").focus(); return; }
+  if (e.key === "f") { shell.classList.toggle("is-fu"); return; }
+  if (e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); return move(1); }
+  if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); return move(-1); }
+  if (e.key === "Enter" || e.key === "ArrowRight") { e.preventDefault(); return renderDetail(); }
+  const n = "123456789".indexOf(e.key);
+  if (n >= 0) return pick(n);
+  // 符牒：浮いている1文字で直に飛ぶ
+  if (shell.classList.contains("is-fu")) {
+    const at = F.indexOf(e.key);
+    if (at >= 0 && at < shown().length) { sel = at; tab = 0; shell.classList.remove("is-fu"); render(); }
+  }
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Alt") shell.classList.add("is-fu"); });
+document.addEventListener("keyup", (e) => { if (e.key === "Alt") shell.classList.remove("is-fu"); });
+
+render();
+</script>
+</body>
+</html>

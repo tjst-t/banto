@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>案12 続き間・改 — 器が会話に埋まり、作業だけが間になる</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="ideal.css">
+<style>
+/* ══════════════════════════════════════════════════════════════════════════
+   案12「続き間・改」— 案9 の骨格 ＋ 案11 の器 ＋ 案10 のモバイル
+
+   ■ 3案から採ったもの
+   ・案9「続き間」：幹は常に左に居る。深さは横。手前の間は消えない
+   ・案11「膳」  ：番頭が Tool の戻り値を**中核の器**に載せて会話に埋める
+   ・案10「重ね」：狭いときは重ねる。幹が上端に覗く
+
+   ■ 器を入れると、列がほとんど増えない
+   案9 では面を開くたびに列が生えた。器を入れると、差分も職人の手元も記憶も
+   **会話の中に埋まる**ので列を食わない。列が生えるのは
+   「探す・移動する・比べる」＝**幅が要る作業**のときだけになる。
+
+   ■ 常設を、読みと入力の間から追い出した（PO指摘 2026-08-09）
+   前案では「いま抱えているもの」を入力欄のすぐ上に置いていたが、
+   決定73 が入力欄の直上を選んだ理由は
+   **「判断待ちを持ったまま話し続けさせない」**——塞いでいるものだけに効く理由で、
+   動いているだけのものには当てはまらない。だから：
+
+     ・**あなたの番だけ**が入力欄の直上に固定（無ければ何も出ない）
+     ・**いま抱えているもの**は列の頭に**数字だけ**。押すまで画面を取らない（決定58の作法）
+     ・読みと入力の間に常設は**ひとつも無い**
+
+   ■ 作業する面は、手前を背表紙に畳んで全幅を使う
+   ファイル閲覧を 400px の列に押し込まない。奥の間に入ると襖が閉まる——
+   ただし背表紙は残るので、**戻り道が見えている**（モーダルより良いのはここ）。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.shell { height: 100%; display: flex; padding-bottom: 26px; }
+
+/* ── 左端：横断の通知とプロジェクト（狭いときは上端の帯になる）──────────── */
+.rail { width: 58px; flex: none; display: flex; flex-direction: column; align-items: center; gap: var(--s2);
+        padding: var(--s3) 0; background: var(--surface-2); }
+.rail-btn { position: relative; width: 38px; height: 38px; display: grid; place-items: center; border-radius: var(--r-md);
+            color: var(--text-2); background: var(--surface); box-shadow: var(--sh-1); }
+.rail-btn:hover { color: var(--text); }
+.rail-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.rail-btn .count { position: absolute; top: -5px; right: -5px; }
+.rail-sep { width: 22px; height: 1px; background: var(--line); margin: var(--s1) 0; }
+.pj { position: relative; width: 38px; height: 38px; display: grid; place-items: center; border-radius: var(--r-md);
+      color: var(--text-3); font-size: var(--t-md); font-weight: 600; transition: all var(--dur) var(--ease); }
+.pj:hover { background: var(--surface-3); color: var(--text); }
+.pj.on { background: var(--surface); color: var(--accent); box-shadow: var(--sh-1); }
+.pj.on::before { content: ""; position: absolute; left: -10px; top: 8px; bottom: 8px; width: 3px; border-radius: 0 2px 2px 0; background: var(--accent); }
+.pj .bell { position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--turn); }
+.rail .sp { flex: 1; }
+.tip { position: absolute; left: 46px; top: 50%; transform: translateY(-50%); padding: 4px 10px; border-radius: var(--r-sm);
+       background: var(--text); color: var(--surface); font-size: var(--t-xs); white-space: nowrap;
+       opacity: 0; pointer-events: none; transition: opacity var(--dur); z-index: 40; }
+.rail-btn:hover .tip, .pj:hover .tip { opacity: 1; }
+/* ── 抱えているものは**レール**に置く（PO指摘 2026-08-09）─────────────
+   レールは「行き先」の帯で、プロジェクトも枝も面も同じ種類のもの＝どこへ行くか。
+   会話の列には一切触れないので、読み物が無傷のまま。押さなくても
+   **何本あって、どれがあなたの番か**が点で分かる。名前は帯の外に出す。      */
+.hold { position: relative; width: 30px; height: 30px; display: grid; place-items: center; border-radius: var(--r-sm); }
+.hold:hover { background: var(--surface-3); }
+.hold.on { background: var(--accent-soft); }
+.hold .dot { width: 9px; height: 9px; }
+.hold .tip { left: 42px; }
+.hold:hover .tip { opacity: 1; }
+.hold-more { width: 30px; height: 22px; display: grid; place-items: center; border-radius: var(--r-sm);
+             font-family: var(--f-mono); font-size: var(--t-xs); color: var(--text-3); background: var(--surface-3); }
+.hold-more:hover { color: var(--text); }
+
+/* ══ 続き間 ══════════════════════════════════════════════════════════════ */
+.rooms { flex: 1; min-width: 0; display: flex; position: relative; }
+.room { flex: 1 1 0; min-width: 340px; display: flex; flex-direction: column; background: var(--bg);
+        border-left: 1px solid var(--line); }
+.room:first-child { border-left: 0; }
+.rooms.d2 .room.trunk { flex-grow: .82; }
+
+/* ══ 重なり ══════════════════════════════════════════════════════════════
+   幹は**地**、枝は**その上に置いた紙**、作業する面は**さらに上**。
+   広い画面では横に並んでいても、関係は「重なり」のまま——
+   狭い画面の重ね（案10）と同じ模型が、広い画面でもそのまま成り立つ。       */
+@keyframes slide-in { from { opacity: .4; transform: translateX(18px); } to { opacity: 1; transform: none; } }
+@keyframes rise-in  { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .room.branch, .work, .face-panel { animation: none !important; } }
+
+.room.branch, .work {
+  background: var(--surface); border-left: 0; margin-top: 10px;
+  animation: slide-in 150ms var(--ease);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  box-shadow: -14px 0 34px rgba(17,22,31,.09), -1px 0 0 var(--line);
+}
+/* **面は枝の上にかぶさる。** 層の順は 幹（地）→ 枝（10px 浮く）→ 面（20px 浮く）で、
+   面だけ左へ食い込ませる——横に並べたのではなく「重ねた」ことを絵で言う */
+.room.branch { z-index: 2; }
+.work { margin-top: 20px; margin-left: -10px; z-index: 3;
+        box-shadow: -24px 0 52px rgba(17,22,31,.17), -1px 0 0 var(--line); }
+:root[data-theme="dark"] .room.branch { box-shadow: -14px 0 34px rgba(0,0,0,.5), -1px 0 0 var(--line); }
+:root[data-theme="dark"] .work { box-shadow: -24px 0 52px rgba(0,0,0,.65), -1px 0 0 var(--line); }
+/* 面の中身も紙の上なので、地から浮かせない */
+.work .fb-side { background: var(--bg); }
+/* 紙の上では、器は地から浮かない（紙の上に紙を重ねない） */
+.room.branch .u, .room.branch .u-open, .room.branch .bcard { box-shadow: none; background: var(--bg); }
+.room.branch .u-code { background: var(--surface); }
+/* どこから生えた紙かを頭に出す */
+.from { font-size: var(--t-xs); color: var(--text-3); }
+.from b { color: var(--text-2); font-weight: 500; }
+
+/* ── 作業する面が主役のとき：会話は**話しかけるための細い帯**になる ──────
+   会話が主役なら会話が広い。作業が主役なら作業が広く、会話は細くてよい
+   ——そこで読むのではなく、話しかけるための幅だから（PO指摘 2026-08-09）  */
+.room.slim { flex: 0 0 var(--slim-w, 344px); min-width: 260px; position: relative; }
+/* 帯の幅は決め打ちにしない。**主役が何かはその時の作業で変わる**ので、つまんで変えられる */
+.grip { position: absolute; right: -3px; top: 0; bottom: 0; width: 7px; z-index: 12; cursor: col-resize; }
+.grip::after { content: ""; position: absolute; left: 3px; top: 0; bottom: 0; width: 1px; background: transparent; transition: background var(--dur); }
+.grip:hover::after, body.dragging .grip::after { background: var(--accent); }
+body.dragging { cursor: col-resize; user-select: none; }
+.room.slim .held-btn { display: none; }
+.room.slim .col { max-width: none; }
+.room.slim .composer-wrap .composer { max-width: none; }
+.room.slim .room-head { min-height: 46px; padding: var(--s2) var(--s3); }
+.room.slim .scroll, .room.slim .composer-wrap { padding-left: var(--s3); padding-right: var(--s3); }
+.room.slim .jump { right: var(--s3); }
+
+/* 作業する面が開いたら、手前は背表紙になる。**消さない——押せば戻る** */
+/* 背表紙。**縦書きはやめた**（読めなかった）——絵と頭文字だけ。名前は帯の外に出す */
+.spine { position: relative; width: 44px; flex: none; display: flex; flex-direction: column; align-items: center; gap: var(--s2);
+         padding: var(--s4) 0; background: var(--surface-2); }
+.spine:hover { background: var(--surface-3); }
+.spine svg { width: 15px; height: 15px; fill: none; stroke: var(--text-3); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.spine .mark { width: 28px; height: 28px; display: grid; place-items: center; border-radius: var(--r-sm);
+               background: var(--surface); box-shadow: var(--sh-1); font-size: var(--t-sm); font-weight: 600; color: var(--text-2); }
+.spine .tip { left: 50px; }
+.spine:hover .tip { opacity: 1; }
+
+/* ── 列の頭：**数字だけ常設**。押すまで画面を取らない ─────────────────── */
+.room-head { position: relative; flex: none; display: flex; align-items: center; gap: var(--s2);
+             padding: var(--s3) var(--s4); min-height: 54px; border-bottom: 1px solid var(--line-2); }
+.room-head .t { min-width: 0; flex: 1; }
+.room-head h1 { font-size: var(--t-lg); font-weight: 650; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.room-head .sub { font-size: var(--t-xs); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.held-btn { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: var(--r-sm);
+            font-size: var(--t-xs); color: var(--text-2); background: var(--surface-2); white-space: nowrap; }
+.held-btn:hover { background: var(--surface-3); color: var(--text); }
+.held-btn.on { background: var(--accent); color: #fff; }
+.held-btn b { font-family: var(--f-mono); font-weight: 600; }
+.held-btn .turn-n { color: var(--turn); font-weight: 700; }
+.held-btn.on .turn-n { color: #fff; }
+
+/* 抱えているものの一覧。**開いたときだけ降りてくる** */
+.held { position: absolute; left: var(--s3); right: var(--s3); top: calc(100% - 4px); z-index: 30;
+        background: var(--surface); border-radius: var(--r-md); box-shadow: var(--sh-3); padding: var(--s2);
+        max-height: 60vh; overflow-y: auto; }
+.held[hidden] { display: none; }
+.held-sec { display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s2) var(--s1);
+            font-size: var(--t-xs); color: var(--text-3); }
+.held-sec.turn { color: var(--turn); font-weight: 700; }
+.held-sec::after { content: ""; flex: 1; height: 1px; background: var(--line-2); }
+.held-row { display: flex; align-items: center; gap: var(--s2); width: 100%; padding: 7px var(--s2);
+            border-radius: var(--r-sm); font-size: var(--t-sm); }
+.held-row:hover { background: var(--surface-2); }
+.held-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.held-row .m { font-family: var(--f-mono); font-size: var(--t-xs); color: var(--text-3); flex: none; }
+.held-scrim { position: fixed; inset: 0; z-index: 29; }
+.held-foot { padding: var(--s2); font-size: var(--t-xs); color: var(--text-3); line-height: 1.7; border-top: 1px solid var(--line-2); margin-top: var(--s1); }
+
+.scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--s4); }
+/* 器の畳み判定は**コンテナクエリ**（spec-canvas-ui §3 と同じ規約を器にも効かせる）
+   ——ビューポートではなく「会話の帯の幅」で決まる。細い帯でもモバイルでも同じ */
+.col { display: flex; flex-direction: column; gap: var(--s4); padding: var(--s4) 0 var(--s5);
+       max-width: 720px; margin: 0 auto; container-type: inline-size; container-name: talk; }
+.u-fold { display: none; align-items: center; gap: var(--s2); width: 100%; padding: 10px var(--s4); font-size: var(--t-sm); }
+.u-fold .sp { flex: 1; }
+.u-fold:hover { background: var(--surface-2); }
+@container talk (max-width: 430px) {
+  .u:not(.open) > .u-head { border-bottom: 0; }
+  .u:not(.open) > .u-body, .u:not(.open) > .u-note { display: none; }
+  .u:not(.open) > .u-fold { display: flex; }
+  .u-open { padding: var(--s2) var(--s3); }
+  .u-open .badge { display: none; }
+}
+
+/* ── 判断待ちは**常設しない**（決定73 の画面側を差し替える提案）─────────
+   決定73 が入力欄の直上を選んだ理由は「気づけること」と
+   「判断待ちを持ったまま話し続けないこと」の2つ。前者は横断の通知が既に担い、
+   後者は**遡ったときだけ**の問題。番頭が判断を求めたなら、それは会話の最新の
+   発言なので、放っておいても一番下にある。
+
+   だから `spec-chat-ui` §3.2 の**既にある↓ボタンに朱を載せる**だけで足りる。
+   常設がゼロになり、帰属も自明になる（「この会話の下にある」以外の意味がない）。 */
+.jump { position: absolute; right: var(--s5); bottom: 96px; z-index: 15;
+        display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 var(--s3);
+        border-radius: 999px; background: var(--surface); color: var(--text-2);
+        box-shadow: var(--sh-2); font-size: var(--t-xs); }
+.jump:hover { color: var(--text); }
+.jump[hidden] { display: none; }
+.jump.turn { background: var(--turn); color: var(--on-color); font-weight: 600; }
+.jump svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+
+.composer-wrap { flex: none; padding: var(--s2) var(--s4) var(--s4); position: relative; }
+.composer-wrap::before { content: ""; position: absolute; left: 0; right: 0; bottom: 100%; height: 22px;
+                         background: linear-gradient(to top, var(--bg), rgba(0,0,0,0)); pointer-events: none; }
+.composer-wrap .composer { max-width: 720px; margin: 0 auto; }
+
+/* ══ 器（案11 から）══════════════════════════════════════════════════════
+   Tool の戻り値を、中核が持つ有限の語彙で描く。**番頭は選ぶが、作らない**  */
+.u { border-radius: var(--r-md); background: var(--surface); box-shadow: var(--sh-1); overflow: hidden; }
+.u-head { display: flex; align-items: center; gap: var(--s2); padding: 9px var(--s3) 9px var(--s4); border-bottom: 1px solid var(--line-2); }
+.u-head svg { width: 14px; height: 14px; fill: none; stroke: var(--accent); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.u-head b { font-size: var(--t-sm); font-weight: 650; }
+.u-head .m { font-family: var(--f-mono); font-size: var(--t-xs); color: var(--text-3); }
+.u-head .when { font-family: var(--f-mono); font-size: var(--t-xs); color: var(--text-3); opacity: .75; white-space: nowrap; }
+.u-head .sp { flex: 1; }
+.u-body { padding: var(--s3) var(--s4); }
+.u-row { display: flex; align-items: center; gap: var(--s2); padding: 6px 0; font-size: var(--t-sm); border-bottom: 1px solid var(--line-2); }
+.u-row:last-child { border-bottom: 0; }
+.u-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.u-row em { font-style: normal; font-family: var(--f-mono); font-size: var(--t-xs); color: var(--text-3); }
+.u-kv { display: grid; grid-template-columns: minmax(76px,auto) 1fr; gap: 2px var(--s3); font-size: var(--t-sm); }
+.u-kv dt { color: var(--text-3); font-size: var(--t-xs); }
+.u-kv dd { color: var(--text-2); }
+.u-code { font-family: var(--f-mono); font-size: var(--t-xs); line-height: 1.75; white-space: pre; overflow-x: auto;
+          background: var(--bg); border-radius: var(--r-sm); padding: var(--s2) var(--s3); }
+.u-code .a { color: var(--ok); } .u-code .d { color: var(--stop); } .u-code .c { color: var(--text-3); }
+.u-broken { box-shadow: var(--sh-1), inset 3px 0 0 var(--stop); }
+.u-broken .u-head svg { stroke: var(--stop); }
+.u-broken .u-head b { color: var(--stop); }
+.u-img { background: var(--surface-2); }
+.u-img svg { display: block; width: 100%; height: auto; }
+.u-doc { font-size: var(--t-sm); line-height: 1.9; color: var(--text-2); }
+.u-doc h4 { font-size: var(--t-md); font-weight: 650; color: var(--text); margin-bottom: var(--s1); }
+.u-doc p + p { margin-top: var(--s2); }
+.u-doc ul { padding-left: 18px; margin-top: var(--s1); }
+.u-note .btn { vertical-align: -3px; margin-right: var(--s2); }
+
+.u-spark svg { display: block; width: 100%; height: 30px; }
+.u-spark polyline { fill: none; stroke: var(--ok); stroke-width: 1.6; vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-linejoin: round; }
+.u-spark circle { fill: var(--ok); }
+.u-spark .v { display: flex; align-items: baseline; gap: var(--s2); font-size: var(--t-sm); color: var(--text-2); margin-bottom: 4px; }
+.u-spark .v b { font-family: var(--f-mono); color: var(--text); }
+.u-spark .v .sp { flex: 1; }
+.u-note { padding: 7px var(--s4) 9px; font-size: var(--t-xs); color: var(--text-3); border-top: 1px solid var(--line-2); }
+
+/* 面への口。**これがあるから他の器は小さいままでいられる** */
+.u-open { display: flex; align-items: center; gap: var(--s3); width: 100%; padding: var(--s3) var(--s4);
+          border-radius: var(--r-md); background: var(--surface); box-shadow: var(--sh-1); }
+.u-open:hover { box-shadow: var(--sh-2); }
+.u-open svg { width: 16px; height: 16px; fill: none; stroke: var(--accent); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.u-open .t { flex: 1; min-width: 0; }
+.u-open .t b { display: block; font-size: var(--t-md); font-weight: 600; }
+.u-open .t s { display: block; text-decoration: none; font-size: var(--t-xs); color: var(--text-3); }
+
+/* 枝の札・回収の1行 */
+.bcard { border-radius: var(--r-md); background: var(--surface); box-shadow: var(--sh-1); padding: var(--s3) var(--s4); width: 100%; }
+.bcard:hover { box-shadow: var(--sh-2); }
+.bcard.on { box-shadow: var(--sh-1), 0 0 0 1.5px var(--accent); }
+.bc-top { display: flex; align-items: center; gap: var(--s2); margin-bottom: 2px; }
+.bc-top .sp { flex: 1; }
+.bcard h3 { font-size: var(--t-md); font-weight: 600; line-height: 1.5; }
+.bc-cond { font-size: var(--t-xs); color: var(--text-3); margin-top: 1px; }
+.bc-foot { display: flex; align-items: center; gap: var(--s2); margin-top: var(--s2); font-size: var(--t-xs); color: var(--text-2); }
+.bc-foot .sp { flex: 1; } .bc-foot .m { font-family: var(--f-mono); color: var(--text-3); }
+.bcard.merged { background: none; box-shadow: none; border: 1px dashed var(--line); }
+.bcard.merged h3 { color: var(--text-2); font-weight: 500; }
+.bc-result { font-size: var(--t-sm); color: var(--text-2); margin-top: 2px; }
+.bc-result b { color: var(--text); font-weight: 500; }
+.backline { display: flex; align-items: flex-start; gap: var(--s2); font-size: var(--t-sm); color: var(--text-2); }
+.backline .k { flex: none; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%;
+               box-shadow: inset 0 0 0 1.5px var(--ok); color: var(--ok); margin-top: 3px; }
+.backline .k svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+.backline b { color: var(--text); font-weight: 600; }
+
+/* ══ 作業する面：全幅を使う ══════════════════════════════════════════════ */
+.work { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; background: var(--bg); border-left: 1px solid var(--line); }
+.work-head { flex: none; display: flex; align-items: center; gap: var(--s2); padding: var(--s3) var(--s4); min-height: 54px; border-bottom: 1px solid var(--line-2); }
+.work-head .t { flex: 1; min-width: 0; }
+.work-head h1 { font-size: var(--t-lg); font-weight: 650; }
+.work-head .sub { font-size: var(--t-xs); color: var(--text-3); }
+.work-body { flex: 1; min-height: 0; display: flex; }
+
+/* ファイル閲覧の見本。**これを 400px の列に入れられない**ことを見せるための面 */
+.fb-side { width: 288px; flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: var(--surface); }
+.fb-tools { flex: none; display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s3); border-bottom: 1px solid var(--line-2); }
+.fb-tools .chip { display: flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border-radius: 999px;
+                  background: var(--surface-2); font-size: var(--t-xs); color: var(--text-2); }
+.fb-tools input { flex: 1; min-width: 0; height: 26px; border: 0; background: none; font-size: var(--t-xs); }
+.fb-tools input:focus { outline: none; }
+.fb-list { flex: 1; min-height: 0; overflow-y: auto; padding: var(--s2) var(--s2) var(--s4); }
+.fb-row { display: flex; align-items: center; gap: var(--s2); width: 100%; height: 28px; padding: 0 var(--s2); border-radius: var(--r-sm); font-size: var(--t-sm); }
+.fb-row:hover { background: var(--surface-2); }
+.fb-row.on { background: var(--accent-soft); color: var(--accent-ink); font-weight: 500; }
+.fb-row svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; opacity: .6; flex: none; }
+.fb-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fb-row .m { font-family: var(--f-mono); font-size: var(--t-xs); color: var(--text-3); }
+.fb-row.ind { padding-left: var(--s5); }
+.fb-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.fb-crumb { flex: none; display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s4); font-family: var(--f-mono); font-size: var(--t-xs); color: var(--text-3); border-bottom: 1px solid var(--line-2); }
+.fb-crumb b { color: var(--text); font-weight: 500; }
+.fb-crumb .sp { flex: 1; }
+.fb-code { flex: 1; min-height: 0; overflow: auto; padding: var(--s3) 0; font-family: var(--f-mono); font-size: var(--t-xs); line-height: 1.8; }
+.fb-code .l { display: flex; }
+.fb-code .n { width: 48px; flex: none; text-align: right; padding-right: var(--s4); color: var(--text-3); user-select: none; }
+.fb-code .c { white-space: pre; }
+.fb-code .kw { color: var(--accent); } .fb-code .st { color: var(--ok); } .fb-code .cm { color: var(--text-3); }
+
+/* 抱えているものが多いときの一覧。**ドロップダウンではなく被さる面**（§5） */
+.face-panel { position: absolute; left: 50%; top: 0; transform: translateX(-50%); width: min(560px, 100%);
+              max-height: 100%; overflow-y: auto; background: var(--bg); box-shadow: var(--sh-3);
+              padding: var(--s5) var(--s5) var(--s6); animation: rise-in 140ms var(--ease); }
+.face-panel h2 { font-size: var(--t-xl); font-weight: 650; margin-bottom: var(--s3); }
+
+/* ── 横断の通知：被さる面 ─────────────────────────────────────────────── */
+.veil { position: fixed; inset: 0; z-index: 70; display: none; background: rgba(17,22,31,.32); }
+.veil.on { display: block; }
+.inbox { position: absolute; left: 50%; top: 0; transform: translateX(-50%); width: min(760px, 100%); height: 100%;
+         background: var(--bg); box-shadow: var(--sh-3); display: flex; flex-direction: column; }
+.ib-head { flex: none; padding: var(--s6) var(--s6) var(--s3); }
+.ib-head h2 { font-size: var(--t-2xl); font-weight: 650; letter-spacing: -.01em; }
+.ib-head p { font-size: var(--t-sm); color: var(--text-2); margin-top: 2px; }
+.ib-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--s6) var(--s6); display: flex; flex-direction: column; gap: var(--s3); }
+
+/* ══ 狭いとき：案10 の重ね ═══════════════════════════════════════════════
+   幹が地。枝と面は**下から上がる紙**で、上端に幹が覗く。押せば戻る        */
+.peek { display: none; }
+@media (max-width: 760px) {
+  .shell { flex-direction: column; }
+  .rail { flex-direction: row; width: auto; height: 50px; padding: 0 var(--s3); gap: var(--s2);
+          border-bottom: 1px solid var(--line); }
+  .rail .rail-sep { width: 1px; height: 22px; margin: 0 var(--s1); }
+  .rail .sp { flex: 1; }
+  .rail .tip { display: none; }
+  .rail .held-btn { display: flex; }
+  .rooms { position: relative; overflow: hidden; }
+  .room { min-width: 0; border-left: 0; }
+  .room.trunk { position: absolute; inset: 0; }
+  .room.branch, .work {
+    position: absolute; left: 0; right: 0; top: 58px; bottom: 0; z-index: 20;
+    border-radius: var(--r-lg) var(--r-lg) 0 0; box-shadow: var(--sh-3); border-left: 0;
+    transform: translateY(103%); transition: transform 260ms var(--ease); background: var(--bg);
+  }
+  .room.branch.up, .work.up { transform: none; }
+  .work { z-index: 25; }
+  .spine { display: none; }
+  /* 上端に覗く幹。**戻り道が常に見えている** */
+  .peek { position: absolute; left: 0; right: 0; top: 0; height: 58px; z-index: 19;
+          display: flex; align-items: flex-end; padding: 0 var(--s4) 6px;
+          background: linear-gradient(to bottom, var(--bg) 60%, rgba(0,0,0,0)); }
+  .peek .in { display: flex; align-items: center; gap: var(--s2); width: 100%; font-size: var(--t-xs); color: var(--text-3); }
+  .peek .in .sp { flex: 1; }
+  .room-head .held-btn { display: none; }
+  .held { left: var(--s2); right: var(--s2); top: 54px; position: fixed; }
+  .scroll { padding: 0 var(--s3); }
+  .composer-wrap, .pending { padding-left: var(--s3); padding-right: var(--s3); }
+  .fb-side { width: 148px; }
+  .fb-code .n { width: 34px; padding-right: var(--s2); }
+  .inbox { width: 100%; }
+}
+</style>
+</head>
+<body>
+<div class="shell" id="shell">
+  <nav class="rail">
+    <button class="rail-btn" id="inboxBtn">
+      <svg viewBox="0 0 24 24"><path d="M3 13h4l2 3h6l2-3h4"/><path d="M5 5h14l2 8v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4z"/></svg>
+      <span class="count" id="ibN">3</span><span class="tip">横断の通知</span>
+    </button>
+    <div class="rail-sep"></div>
+    <span id="pjList" style="display:contents"></span>
+    <div class="rail-sep"></div>
+    <!-- 抱えているもの。**点で並ぶので、押さなくても本数と状態が分かる** -->
+    <span id="holdList" style="display:contents"></span>
+    <span class="sp"></span>
+    <!-- 左下。**畳んだものと設定は、行き先ではあるが「いま」ではない**ので下端に置く -->
+    <button class="pj" id="histBtn">
+      <svg viewBox="0 0 24 24" style="width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+      <span class="tip">履歴（畳んだもの）</span></button>
+    <button class="pj" id="setBtn">
+      <svg viewBox="0 0 24 24" style="width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round"><path d="M4 7h10M18 7h2M4 12h4M12 12h8M4 17h10M18 17h2"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="16" cy="17" r="2"/></svg>
+      <span class="tip">設定</span></button>
+    <button class="pj" id="themeBtn"><svg viewBox="0 0 24 24" style="width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.6"><path d="M20 14a8 8 0 01-10-10 8 8 0 1010 10z"/></svg><span class="tip">明暗</span></button>
+  </nav>
+
+  <div class="rooms d1" id="rooms"></div>
+</div>
+
+<div class="veil" id="veil">
+  <div class="inbox">
+    <div class="ib-head"><h2 id="faceTitle"></h2><p id="faceLead"></p></div>
+    <div class="ib-list" id="faceBody"></div>
+  </div>
+</div>
+
+<div class="stamp">案12 続き間・改<span class="sp"></span>
+  <span>器は会話に埋まる · 作業する面だけが間になる · 読みと入力の間に常設は無い</span></div>
+
+<script src="scene.js"></script>
+<script>
+const { PROJECTS, BRANCHES, TRUNKS, LETTERS, svg, ICON } = window.SCENE;
+const $ = (id) => document.getElementById(id);
+
+/* ══ 器：中核が持つ有限の語彙。**番頭は選ぶが、作らない** ══════════════ */
+const U = {
+  /* 決定③：**器は凍る（記録）**。だから「いつの」を必ず出す——出さないと、
+     古い写しなのか いまの状態なのかが読めない。いまを知りたければ open で面へ */
+  head: (icon, title, meta, when) => `<div class="u-head">${svg(icon)}<b>${title}</b>
+    <span class="m">${meta || ""}</span><span class="sp"></span>
+    <span class="when">${when || "11:05 時点"}</span></div>`,
+  /* **どの器も「畳んだ1行」を必ず持つ**（B①）。狭い帯とモバイルで同じものが効く。
+     器を1つ足すコストが2倍になるので、語彙を増やしにくくする歯止ちにもなる */
+  fold: (t) => `<button class="u-fold" data-unfold="1"><span>${t}</span><span class="sp"></span><span class="badge">開く</span></button>`,
+  list: (icon, title, meta, items, note) => `<div class="u">${U.head(icon, title, meta)}
+    ${U.fold(`${items.length} 件`)}
+    <div class="u-body">${items.map(i => `<div class="u-row"><span class="dot ${i[1] || "done"}"></span>
+      <span class="t">${i[0]}</span><em>${i[2] || ""}</em></div>`).join("")}</div>
+    ${note ? `<div class="u-note">${note}</div>` : ""}</div>`,
+  facts: (icon, title, rows) => `<div class="u">${U.head(icon, title)}
+    ${U.fold(`${rows.length} 件の事実`)}
+    <div class="u-body"><dl class="u-kv">${rows.map(r => `<dt>${r[0]}</dt><dd>${r[1] ?? "—"}</dd>`).join("")}</dl></div></div>`,
+  diff: (path, meta, code, note) => `<div class="u">${U.head("diff", path, meta)}
+    ${U.fold(meta)}
+    <div class="u-body"><div class="u-code">${code}</div></div>
+    ${note ? `<div class="u-note">${note}</div>` : ""}</div>`,
+  spark: (label, pts, val, span, note) => `<div class="u">${U.head("diff", label, span)}
+    ${U.fold(`いま ${val}`)}
+    <div class="u-body u-spark">
+      <div class="v"><span class="sp"></span><b>${val}</b><span style="font-size:var(--t-xs);color:var(--text-3)">${span}</span></div>
+      <svg viewBox="0 0 100 28" preserveAspectRatio="none"><polyline points="${pts}"/>
+        <circle cx="100" cy="${pts.split(" ").pop().split(",")[1]}" r="2.2"/></svg>
+    </div>${note ? `<div class="u-note">${note}</div>` : ""}</div>`,
+  /* 画像。**押すと原寸**（面ではなく重ねる）——見るだけのものに間は要らない */
+  image: (title, meta, art, note) => `<div class="u">${U.head("file", title, meta)}
+    ${U.fold("画像 1枚")}
+    <div class="u-body" style="padding:0"><div class="u-img">${art}</div></div>
+    ${note ? `<div class="u-note">${note}</div>` : ""}</div>`,
+  /* 文書の抜粋。**全部は面で読む**——長い散文は器の大きさを超える */
+  doc: (title, meta, body, workKey) => `<div class="u">${U.head("file", title, meta)}
+    ${U.fold("抜粋")}
+    <div class="u-body"><div class="u-doc">${body}</div></div>
+    <div class="u-note"><button class="btn btn-ghost" data-work="${workKey}" style="height:24px;padding:0 8px">全部読む →</button>
+      抜粋です。全部は面にあります</div></div>`,
+  /* 決定④：描けなかったら**会話に出す**。どのモジュールのどの Tool か・何が足りないかまで。
+     番頭にも同じものが返るので言い直せる（会話は止めない）。素の値は畳んで置く */
+  broken: (mod, tool, want, why) => `<div class="u u-broken">
+    <div class="u-head"><svg viewBox="0 0 24 24"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17v.5"/></svg>
+      <b>この形は描けませんでした</b><span class="sp"></span></div>
+    <div class="u-body">
+      <dl class="u-kv"><dt>出どころ</dt><dd><code>${mod}</code> / <code>${tool}</code></dd>
+        <dt>頼んだ器</dt><dd><code>${want}</code></dd>
+        <dt>足りないもの</dt><dd>${why}</dd></dl>
+      <div style="margin-top:var(--s2)"><button class="btn btn-ghost" style="height:24px;padding:0 8px">素の値を見る</button></div>
+    </div></div>`,
+  /* 面への口。**器で描けないものの逃げ道**——これがあるから他が小さくいられる */
+  open: (workKey, label, meta) => `<button class="u-open" data-work="${workKey}">
+      ${svg(WORKS[workKey].icon)}<span class="t"><b>${label}</b><s>${meta}</s></span>
+      <span class="badge accent">間を開く →</span></button>`,
+};
+
+/* ══ 作業する面：探す・移動する・比べる。**幅が要る** ══════════════════ */
+const CODE = [
+  ['<span class="cm">/* 器の語彙（案11「膳」の土台） */</span>', 1],
+  ['', 2],
+  ['<span class="kw">const</span> U = {', 3],
+  ['  list:  (title, items) =&gt; …,', 4],
+  ['  facts: (title, rows)  =&gt; …,', 5],
+  ['  diff:  (path, hunks)  =&gt; …,', 6],
+  ['  <span class="cm">// 面への口。器で描けないものの逃げ道</span>', 7],
+  ['  open:  (view, args)   =&gt; …,', 8],
+  ['};', 9],
+];
+const WORKS = {
+  /* **単体のファイルを読む面。** ファイル閲覧（探す）とは目的が違うので分ける
+     ——決定17 が「シェルと職人ビューアは目的が違うので別コンポーネント」と
+     したのと同じ理屈。器の「全部読む →」からここへ来る */
+  file: {
+    title: "12-utsuwa.html", meta: "prototype/redesign · 21 KB · 読むだけ", icon: "file",
+    html: `<div class="fb-main" style="flex:1">
+      <div class="fb-crumb">prototype / redesign / <b>12-utsuwa.html</b><span class="sp"></span>21 KB · 2分前</div>
+      <div class="fb-code">${[
+        ['<span class="cm">&lt;!-- 器の語彙（案11「膳」の土台） --&gt;</span>', 1],
+        ['', 2],
+        ['<span class="kw">&lt;div</span> class=<span class="st">"lede"</span><span class="kw">&gt;</span>', 3],
+        ['  <span class="kw">&lt;h1&gt;</span>Tool の戻り値を、番頭が<span class="kw">&lt;/h1&gt;</span>', 4],
+        ['  <span class="kw">&lt;p</span> class=<span class="st">"sub"</span><span class="kw">&gt;</span>モジュールは GUI 部品を作らない。', 5],
+        ['     <span class="cm">&lt;!-- この語彙に載る形でデータを返すだけ --&gt;</span>', 6],
+        ['  <span class="kw">&lt;/p&gt;</span>', 7],
+        ['<span class="kw">&lt;/div&gt;</span>', 8],
+      ].map(([c, n]) => `<div class="l"><span class="n">${n}</span><span class="c">${c}</span></div>`).join("")}</div>
+    </div>`
+  },
+  files: {
+    title: "ファイル", meta: "banto · main · 214 ファイル", icon: "file",
+    html: `
+      <div class="fb-side">
+        <div class="fb-tools"><span class="chip">banto</span><input placeholder="絞る"></div>
+        <div class="fb-list">
+          <button class="fb-row">${svg("file")}<span class="t">docs</span></button>
+          <button class="fb-row">${svg("file")}<span class="t">packages</span></button>
+          <button class="fb-row">${svg("file")}<span class="t">prototype</span></button>
+          <button class="fb-row ind">${svg("file")}<span class="t">redesign</span></button>
+          <button class="fb-row ind" style="padding-left:var(--s8)"><span class="t">tokens.css</span><span class="m">6.4K</span></button>
+          <button class="fb-row ind" style="padding-left:var(--s8)"><span class="t">ideal.css</span><span class="m">7.1K</span></button>
+          <button class="fb-row ind on" style="padding-left:var(--s8)"><span class="t">12-utsuwa.html</span><span class="m">21K</span></button>
+          <button class="fb-row ind" style="padding-left:var(--s8)"><span class="t">13-tsuzukima-kai.html</span><span class="m">28K</span></button>
+          <button class="fb-row">${svg("file")}<span class="t">tests</span></button>
+          <button class="fb-row">${svg("file")}<span class="t">work</span></button>
+        </div>
+      </div>
+      <div class="fb-main">
+        <div class="fb-crumb">prototype / redesign / <b>12-utsuwa.html</b><span class="sp"></span>21 KB · 2分前</div>
+        <div class="fb-code">${CODE.map(([c, n]) => `<div class="l"><span class="n">${n}</span><span class="c">${c}</span></div>`).join("")}</div>
+      </div>`
+  },
+};
+
+/* ══ 幹と枝の中身。器を埋め込んだもの ══════════════════════════════════ */
+const row = (e) => {
+  const [k, a, b, c] = e;
+  if (k === "po")   return `<div class="msg-po">${a}</div>`;
+  if (k === "ba")   return `<div class="msg-ba">${a}</div>`;
+  if (k === "tool") return `<div class="msg-tool"><b>${a}</b> ${b}<span class="sp"></span>${c}</div>`;
+  if (k === "note") return `<div class="msg-note"><em>${a}</em>${b}</div>`;
+  if (k === "seam") return `<div class="msg-seam">${a}</div>`;
+  if (k === "u")    return a;
+  if (k === "branch") return bcard(a);
+  if (k === "back")   return backline(a);
+  return "";
+};
+
+const TRUNK = {
+  banto: [
+    ["seam", "文脈が一杯になったので、ここまでを畳んで引き継ぎました"],
+    ["po", "ファイル面、開くとタブは増えるのに中身が出ないことがある"],
+    ["tool", "file.search", "canvas_state", "12件"],
+    ["ba", "<p>手元で再現しました。<strong>30 回中 11 回</strong>です。間欠なので機構が壊れている合図として扱います（P6）。</p><p>ここから先は往復が続くので、<strong>枝にします</strong>。</p>"],
+    ["u", U.spark("タブに中身が出ない率", "0,3.9 14.3,6.6 28.6,5.3 42.9,8.5 57.1,20.2 71.4,22.8 85.7,26.7 100,28",
+      "0%", "直近8日", "37% → 0%。<b>向き</b>が要るときだけ線にします。数字1つでは良くなっているか言えないので")],
+    ["branch", "tab"],
+    ["branch", "catalog"],
+    ["back", "catalog"],
+    ["po", "会話とキャンバスの横並び、本当にこれでいいのか悩んでいる"],
+    ["ba", "<p>案3「座敷」が未決のまま残っています。あなたが明示したので<strong>枝にします</strong>——ここは私が勝手に決めるところではありません。</p>"],
+    ["branch", "ui"],
+    ["po", "番頭の記憶、いまどこまで効いてる？"],
+    ["ba", "<p>89 件です。直近7日で 12 件足しました。<strong>これは枝にしません</strong>——見れば済む話なので、ここに出します。</p>"],
+    ["u", U.list("memory", "直近に足した記憶", "89件 · +12", [
+      ["POは「まれに落ちる」で先へ進むのを嫌う", "done", "P6"],
+      ["朱は「あなたの判断待ち」専用", "done", "裁定"],
+      ["ドロップダウンは使わない", "done", "報告"],
+      ["会話とキャンバスの主従は未決", "run", "保留"],
+    ], "会話に出しているのは<b>抜粋</b>です。全部は面にあります")],
+    ["po", "さっきの意匠の見本、どんな感じだったっけ"],
+    ["ba", "<p>これです。押すと原寸で見られます。</p>"],
+    ["u", U.image("案12 の見本", "1512×950 · 2分前", `<svg viewBox="0 0 320 150">
+      <rect width="320" height="150" fill="var(--surface)"/>
+      <rect x="0" y="0" width="22" height="150" fill="var(--surface-3)"/>
+      <circle cx="11" cy="14" r="5" fill="var(--turn)"/><circle cx="11" cy="34" r="5" fill="var(--accent)"/>
+      <rect x="30" y="10" width="130" height="7" rx="3" fill="var(--surface-3)"/>
+      <rect x="30" y="28" width="150" height="44" rx="4" fill="var(--surface-2)"/>
+      <rect x="30" y="80" width="150" height="30" rx="4" fill="var(--surface-2)"/>
+      <rect x="192" y="6" width="124" height="140" rx="6" fill="var(--surface-2)"/>
+      <rect x="202" y="18" width="70" height="6" rx="3" fill="var(--surface-3)"/>
+      <rect x="202" y="34" width="104" height="26" rx="3" fill="var(--surface)"/>
+    </svg>`)],
+    ["po", "ADR の草案、いまどうなってる？"],
+    ["ba", "<p>頭だけ出します。</p>"],
+    ["u", U.doc("ADR-0017（草案）", "docs/adr · 2.1 KB", `
+      <h4>会話の面：幹1本と枝、器と面</h4>
+      <p>会話が中心であることは動かさない。プロジェクトごとに幹となる会話は永続で、枝が分岐し、終われば幹に回収される。</p>
+      <ul><li>器は中核が持ち、モジュールは形を合わせる</li><li>作業する面だけが間になる</li></ul>`, "file")],
+    ["po", "器の4件、決めよう"],
+    ["ba", `<p>承りました。<strong>①番頭が都度指定（データは再送しない）②膳＝器1つ ③器は凍らせて「いつの」を出す ④描けなかったら会話に出す</strong>——4件とも記憶に入れます。</p>
+      <p>①で <code>canvas.show</code> が1つ要ります。ADR に副作用として書きます。</p>`],
+    ["tool", "memory.save", "器の4件（2026-08-09 PO裁定）", "足しました"],
+    ["ba", "<p>さっそく④に当たりました。環境の一覧を表で出そうとして弾かれています。</p>"],
+    ["u", U.broken("environment-pool", "env.list", "table", "<code>cols</code> がありません（<code>rows</code> はあります）")],
+    ["ba", "<p>一覧の器に替えて出し直します。</p>"],
+    ["po", "prototype のファイル、ちょっと見たい"],
+    ["ba", "<p>これは器に載りません——<strong>探して、移動して、比べる</strong>作業なので。間を開きます。</p>"],
+    ["u", U.open("files", "ファイルを見る", "banto · main · 214 ファイル · 探す作業")],
+  ],
+  home: [
+    ["po", "また証明書切れてた"],
+    ["ba", "<p>3回目です。月に一度しか起きないので、当てずっぽうで直すと直ったかどうかが分かりません。枝にして条件から詰めます。</p>"],
+    ["branch", "cert"],
+  ],
+  hermes: [
+    ["po", "記憶の検索、体感で遅い"],
+    ["ba", "<p>実測 1.2 秒でした。<strong>体感は当たっています</strong>。枝にして 500ms を目標にします。</p>"],
+    ["branch", "mem"],
+  ],
+};
+
+/* 幹そのものへの判断待ち（枝の判断待ちとは別。**この会話を塞いでいるもの**） */
+const TRUNK_PENDING = {
+  banto: { text: "この形で ADR-0017 を起こしてよいか", opts: ["起こしてよい", "もう1案見たい"] },
+};
+
+const BLOG = {
+  ui: [
+    ["seam", "この枝は幹から生まれました"],
+    ["po", "Slack のスレッドだと枝が埋没するけど、そこはどうする？"],
+    ["ba", "<p>埋没の原因は4つで、うち2つはこの店では起きません。</p><ul><li><strong>枝の持ち主が人間</strong>——ここでは私が持ちます（D10）</li><li><strong>未処理を集める口が無い</strong>——横断の通知が1本あります（ADR-0015）</li></ul><p>残る2つは、<strong>還す条件</strong>を必須にし、畳んだら幹へ1行積むことで閉じます。</p>"],
+    ["po", "名前を変えると何が動くの？"],
+    ["u", U.diff("views/parts.css", "+42 −18",
+      `<span class="c">@@ 器と部品を分ける @@</span>
+<span class="d">- .cv-bar   { display: flex; }</span>
+<span class="d">- .cv-split { display: flex; }</span>
+<span class="a">+ .bar      { display: flex; }</span>
+<span class="a">+ .split    { display: flex; }</span>`,
+      "60 行のうち先頭のみ。<b>切ったことは隠しません</b>（I1）")],
+    ["po", "枝を開くのは、番頭が判断してもいいし、私が指示してもいい。両方でいこう"],
+    ["ba", "<p>承りました。<strong>枝を開くのは、私の判断でも、あなたの指示でもよい</strong>——決まりとして記憶に入れます。</p>"],
+    ["tool", "memory.save", "枝を開くのは番頭とPOの両方から", "足しました"],
+    ["ba", "<p>草案を置きました。頭だけ出します。</p>"],
+    ["u", U.doc("ADR-0017（草案）", "docs/adr · 2.1 KB", `
+      <h4>会話の面：幹1本と枝、器と面</h4>
+      <p>会話が中心であることは動かさない。枝は還す条件を持って生まれ、終われば幹に回収される。</p>`, "file")],
+    ["u", U.open("files", "この枝で触っているファイル", "prototype/redesign · 探す作業")],
+    ["u", U.facts("diff", "外向けに名指ししている先", [
+      ["語彙表", "spec-canvas-ui §5"],
+      ["面", "file.browser / git.viewer / worker.viewer"],
+      ["移行の手間", "機械的。私が請け負えます"],
+      ["公開パッケージ", null],
+    ])],
+  ],
+  tab: [
+    ["seam", "この枝は幹から生まれました"],
+    ["ba", "<p>職人を2人立てました。到着順を実測しています。</p>"],
+    ["u", U.list("workers", "職人の手元", "2人 · 生きています", [
+      ["canvas_state の到着順を追う", "run", "w-31 · 04:12"],
+      ["再現手順の切り出し", "done", "w-29 · 終わりました"],
+    ])],
+    ["note", "職人 w-29", "390×780 と 1440×900 の両方で再現。幅は関係ありません"],
+  ],
+  gate: [
+    ["ba", "<p>職人 w-28 が 6日前に落ちてから、誰も引き取っていません。黙って止まっている枝は、機構が壊れている合図として扱います（P6）。</p>"],
+    ["po", "いったん置いておいて"],
+    ["ba", "<p>置いておくなら<strong>畳みます</strong>。開いたままにすると、抱えているものの一覧が信用できなくなります。</p>"],
+  ],
+  cert: [
+    ["seam", "この枝は幹から生まれました"],
+    ["ba", "<p>3回目です。落ちる条件から詰めます。</p>"],
+    ["u", U.facts("env", "更新のとき何が起きているか", [
+      ["掴まれる口", "80番（更新中だけ）"], ["落ちる長さ", "18〜25 秒"], ["起きる頻度", "月に1度"],
+    ])],
+  ],
+  catalog: [["ba", "<p>畳んだ枝です。中身は残っていて、いつでも読み返せます。</p>"]],
+  mem: [["ba", "<p>職人が索引の張り方を試しています。</p>"]],
+};
+
+/* ══ 状態。**いまどこを見ているか**の1本道だけ ═══════════════════════ */
+let pj = "banto";
+let branch = null;     // 開いている枝
+let work = null;       // 開いている作業する面
+let heldOpen = false;
+const works = [];      // 開いた面（畳んでも抱えたまま）
+/* **面はどこから開いたかを覚える。** 幹から開いたなら枝は閉じ、枝から開いたなら
+   枝を左に寄せて右に面を開く——開いた経路で、隣に残るものが変わる */
+const workFrom = {};
+
+const mine = () => Object.entries(BRANCHES).filter(([, b]) => b.proj === pj && b.state !== "merged");
+const narrow = () => window.matchMedia("(max-width: 760px)").matches;
+
+function bcard(k) {
+  const b = BRANCHES[k];
+  if (b.state === "merged") return `<div class="bcard merged">
+    <div class="bc-top"><span class="badge">枝</span><span class="sp"></span><span style="font-size:var(--t-xs);color:var(--text-3)">畳みました</span></div>
+    <h3>${b.title}</h3><div class="bc-result"><b>結論：</b>${b.result}</div></div>`;
+  return `<button class="bcard ${branch === k ? "on" : ""}" data-branch="${k}">
+    <div class="bc-top"><span class="badge ${b.state === "turn" ? "turn" : "accent"}">枝</span>
+      <span style="font-size:var(--t-xs);color:var(--text-3)">${b.by}</span><span class="sp"></span></div>
+    <h3>${b.title}</h3><div class="bc-cond">還す条件：${b.cond}</div>
+    <div class="bc-foot"><span class="dot ${b.state}"></span>
+      ${b.state === "turn" ? "あなたの判断を待っています" : b.state === "stop" ? "止まっています" : "動いています"}
+      <span class="m">${b.meta}</span><span class="sp"></span>
+      <span style="color:var(--accent);font-weight:500">${branch === k ? "この間を見ています" : "隣の間で開く →"}</span></div></button>`;
+}
+const askBlock = (text, opts) => `<div class="ask">
+  <div class="ask-h">あなたの判断を待っています</div><p>${text}</p>
+  <div class="ask-a">${opts.map((oo, n) => `<button class="btn ${n === 0 ? "btn-turn" : n === 2 ? "btn-ghost" : ""}">${oo}</button>`).join("")}</div></div>`;
+const jumpBtn = (hasAsk) => `<button class="jump ${hasAsk ? "turn" : ""}" data-jump="1" hidden>
+  ${hasAsk ? "判断待ち 1" : ""}<svg viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg></button>`;
+
+const backline = (k) => `<div class="backline"><span class="k">${svg("check")}</span>
+  <div>枝「<b>${BRANCHES[k].title}</b>」を幹に回収しました<br><span style="color:var(--text-3)">結論：</span>${BRANCHES[k].result}</div></div>`;
+
+/* ── 列 ─────────────────────────────────────────────────────────────── */
+function trunkRoom(slim) {
+  const p = TRUNK_PENDING[pj];
+  return `
+    <section class="room trunk ${slim ? "slim" : ""}">
+      <div class="room-head">
+        <div class="t"><h1>${PROJECTS[pj].name}</h1></div>
+
+      </div>
+      <div class="scroll" data-stick><div class="col">
+        ${TRUNK[pj].map(row).join("")}
+        ${p ? askBlock(p.text, p.opts) : ""}
+      </div></div>
+      ${jumpBtn(!!p)}
+      ${slim ? '<div class="grip"></div>' : ""}
+      <div class="composer-wrap"><div class="composer">
+        <textarea placeholder="番頭に相談する（${PROJECTS[pj].name} の幹）"></textarea>
+        <div class="composer-tools"><span class="m">claude-opus-5</span><span class="sp"></span>
+          <button class="btn btn-accent">送る</button></div></div></div>
+    </section>`;
+}
+
+function renderHold() {
+  const items = [
+    ...mine().map(([k, b]) => ({ kind: "branch", k, title: b.title, state: b.state, meta: b.meta })),
+    ...works.map(k => ({ kind: "work", k, title: WORKS[k].title, state: "run", meta: WORKS[k].meta })),
+  ];
+  const order = { turn: 0, stop: 1, run: 2 };
+  items.sort((a, b) => (order[a.state] ?? 3) - (order[b.state] ?? 3));
+  const shown = items.slice(0, 6), rest = items.length - shown.length;
+  $("holdList").innerHTML = shown.map(i => `<button class="hold ${
+      (i.kind === "branch" ? branch : work) === i.k ? "on" : ""}" data-${i.kind}="${i.k}">
+      <span class="dot ${i.state}"></span><span class="tip">${i.title} — ${i.meta}</span></button>`).join("")
+    + (rest > 0 ? `<button class="hold-more" data-held="1">+${rest}</button>` : "");
+  return items;
+}
+
+function heldPanel() {
+  const grp = (label, cls, rows) => rows.length ? `<div class="held-sec ${cls}">${label} ${rows.length}</div>` +
+    rows.map(([k, b]) => `<button class="held-row" data-branch="${k}"><span class="dot ${b.state}"></span>
+      <span class="t">${b.title}</span><span class="m">${b.meta}</span></button>`).join("") : "";
+  const w = works.length ? `<div class="held-sec">開いている面 ${works.length}</div>` +
+    works.map(k => `<button class="held-row" data-work="${k}"><span class="dot run"></span>
+      <span class="t">${WORKS[k].title}</span><span class="m">${WORKS[k].meta}</span></button>`).join("") : "";
+  const g = (s) => mine().filter(([, b]) => b.state === s);
+  return `<div class="face-panel"><h2>抱えているもの</h2>
+    ${grp("あなたの番", "turn", g("turn"))}${grp("止まっている", "", g("stop"))}${grp("動いている", "", g("run"))}${w}
+    <div class="held-foot">開いている枝は、必ず<b>幹・横断の通知・レールの点</b>のどれかに出ている。<br>
+      どこにも出ていない枝は作れない。</div></div>`;
+}
+
+function branchRoom(k, slim) {
+  const b = BRANCHES[k];
+  return `
+    <section class="room branch ${slim ? "slim" : ""} ${narrow() ? "up" : ""}">
+      <div class="room-head">
+        <button class="btn btn-icon btn-ghost" data-close="branch">${svg("close")}</button>
+        <div class="t">
+          <div class="from">◂ <b>${PROJECTS[pj].name}</b> の幹から</div>
+          <h1>${b.title}</h1>
+          ${slim ? "" : `<div class="sub">枝 ・ 還す条件：${b.cond}</div>`}
+        </div>
+        ${slim ? "" : `<button class="btn" data-merge="${k}">畳んで幹に回収</button>`}
+      </div>
+      <div class="scroll" data-stick><div class="col">
+        ${(BLOG[k] || []).map(row).join("")}
+        ${b.ask ? askBlock(b.ask.text, b.ask.opts) : ""}
+      </div></div>
+      ${jumpBtn(!!b.ask)}
+      ${slim ? '<div class="grip"></div>' : ""}
+      <div class="composer-wrap"><div class="composer">
+        <textarea placeholder="この枝で番頭に話す"></textarea>
+        <div class="composer-tools"><span class="m">claude-opus-5</span><span class="sp"></span>
+          <button class="btn btn-accent">送る</button></div></div></div>
+    </section>`;
+}
+
+function workRoom(k) {
+  const w = WORKS[k];
+  return `<section class="work ${narrow() ? "up" : ""}">
+    <div class="work-head">
+      <button class="btn btn-icon btn-ghost" data-close="work">${svg("close")}</button>
+      <div class="t"><h1>${w.title}</h1><div class="sub">作業する面 ・ ${w.meta}</div></div>
+      <span class="badge accent">会話は左に残しています</span>
+    </div>
+    <div class="work-body">${w.html}</div>
+  </section>`;
+}
+
+const spine = (label, kind, mark) => `<button class="spine" data-spine="${kind}">
+  ${svg("back")}<span class="mark">${mark}</span><span class="tip">${label} へ戻る</span></button>`;
+
+function render() {
+  $("pjList").innerHTML = Object.entries(PROJECTS).map(([k, p]) => {
+    const turn = Object.values(BRANCHES).some(b => b.proj === k && b.state === "turn");
+    return `<button class="pj ${k === pj ? "on" : ""}" data-pj="${k}">${p.name[0]}
+      ${turn ? '<span class="bell"></span>' : ""}<span class="tip">${p.name}</span></button>`;
+  }).join("");
+
+  renderHold();
+
+  let html;
+  if (work && !narrow()) {
+    /* 作業が主役。**会話は消さず、話しかけるための細い帯として残す**。
+       残すのは「いま居た会話」で、もう一方だけが背表紙になる */
+    html = (branch ? spine(PROJECTS[pj].name + " の幹", "trunk", PROJECTS[pj].name[0]) : "")
+         + (branch ? branchRoom(branch, true) : trunkRoom(true))
+         + workRoom(work);
+    $("rooms").className = "rooms work-on";
+  } else {
+    html = trunkRoom() + (branch ? branchRoom(branch) : "") + (work ? workRoom(work) : "")
+         + (narrow() && (branch || work) ? `<div class="peek" data-close="all"><div class="in">
+              <span>▲ ${PROJECTS[pj].name} の幹に戻る</span><span class="sp"></span>
+              <span>${work ? WORKS[work].title : BRANCHES[branch].title}</span></div></div>` : "");
+    $("rooms").className = `rooms d${branch ? 2 : 1}`;
+  }
+  if (heldOpen) html += `<div class="held-scrim" data-scrim="1"></div>` + heldPanel();
+  $("rooms").innerHTML = html;
+  $("rooms").querySelectorAll("[data-stick]").forEach(s => { s.scrollTop = s.scrollHeight; });
+  wireJump();
+  renderFace();
+}
+
+/* 遡ったときだけ↓が出る。判断待ちがあれば朱になる。**常設はしない** */
+function wireJump() {
+  $("rooms").querySelectorAll(".room").forEach(room => {
+    const sc = room.querySelector("[data-stick]");
+    const jump = room.querySelector(".jump");
+    if (!sc || !jump) return;
+    const upd = () => { jump.hidden = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 80; };
+    sc.addEventListener("scroll", upd, { passive: true });
+    jump.addEventListener("click", () => { sc.scrollTo({ top: sc.scrollHeight, behavior: "smooth" }); });
+    upd();
+  });
+}
+
+let face = "inbox";
+function renderFace() {
+  const T = $("faceTitle"), L = $("faceLead"), B = $("faceBody");
+  if (face === "inbox") {
+    T.textContent = "横断の通知";
+    L.textContent = "出所もプロジェクトも問わず、あなたに用があるものはここ1本。押せばその枝の間へ入ります。";
+    B.innerHTML = LETTERS.filter(l => BRANCHES[l.to].state !== "merged").map(l => {
+      const b = BRANCHES[l.to], other = b.proj !== pj;
+      return `<div class="letter ${l.tone || ""}">
+        <div class="lt-top"><span class="lt-from">${l.from}</span>
+          <span class="badge ${l.tone === "stop" ? "stop" : "turn"}">${l.kind}</span>
+          ${other ? `<span class="badge accent lt-proj">${PROJECTS[b.proj].name}</span>` : ""}
+          <span class="sp"></span><span class="lt-age">${l.age}</span></div>
+        <h3>${l.h}</h3>
+        <dl><dt>経緯</dt><dd><q>${l.why}</q></dd><dt>起きたこと</dt><dd>${l.what}</dd><dt>枝</dt><dd>${b.title}</dd></dl>
+        <div class="lt-a">${l.opts.map((oo, n) => `<button class="btn ${n === 0 ? "btn-turn" : ""}">${oo}</button>`).join("")}
+          <span class="sp"></span>
+          <button class="btn btn-ghost" data-goto="${l.to}">${svg("branch")}${other ? PROJECTS[b.proj].name + " の枝へ" : "その枝へ"}</button></div>
+      </div>`;
+    }).join("");
+  } else if (face === "hist") {
+    T.textContent = "履歴";
+    L.textContent = "畳んだ枝と、畳んだプロジェクト。中身は残っていて、いつでも読み返せます。";
+    const merged = Object.entries(BRANCHES).filter(([, b]) => b.state === "merged");
+    B.innerHTML = (merged.length ? merged.map(([k, b]) => `<div class="letter" style="border-left-color:var(--ok)">
+        <div class="lt-top"><span class="lt-from">${PROJECTS[b.proj].name}</span>
+          <span class="badge ok">畳んだ枝</span><span class="sp"></span><span class="lt-age">${b.meta}</span></div>
+        <h3>${b.title}</h3>
+        <dl><dt>結論</dt><dd>${b.result}</dd><dt>還す条件</dt><dd>${b.cond}</dd></dl>
+        <div class="lt-a"><button class="btn" data-branch="${k}">中身をひらく</button></div></div>`).join("")
+      : `<p style="font-size:var(--t-sm);color:var(--text-3)">まだ何も畳んでいません。</p>`)
+      + `<div class="letter" style="border-left-color:var(--line)">
+          <div class="lt-top"><span class="lt-from">プロジェクト</span><span class="badge">畳んだもの</span></div>
+          <h3>畳んだプロジェクトはありません</h3>
+          <dl><dt>いま</dt><dd>${Object.keys(PROJECTS).length} 本の幹が開いています</dd></dl></div>`;
+  } else {
+    T.textContent = "設定";
+    L.textContent = "区画に分けてあります。番頭に言っても変えられます——ここは自分で触りたいときの入口。";
+    const secs = [
+      ["LLM・モデル", "採用しているモデル 6 · 既定 claude-opus-5"],
+      ["場所（Place）", "banto / 自宅サーバ / 記憶の検証 · 書き込み許可 2"],
+      ["意匠", "第三の家 · 明 / 暗 · 動きを減らす設定に従う"],
+      ["通知", "携帯への知らせ · 静穏時間 23:00–07:00"],
+      ["モジュール", "workspace / worker-pool / environment-pool / studio"],
+    ];
+    B.innerHTML = secs.map(([t, m]) => `<button class="letter" style="border-left-color:var(--accent);text-align:left;width:100%">
+      <h3 style="margin-bottom:2px">${t}</h3>
+      <p style="font-size:var(--t-sm);color:var(--text-3)">${m}</p></button>`).join("");
+  }
+  const n = LETTERS.filter(l => BRANCHES[l.to].state !== "merged").length;
+  const c = $("ibN"); c.textContent = n; c.classList.toggle("zero", !n);
+}
+const openFace = (k) => { face = k; renderFace(); $("veil").classList.add("on"); };
+
+/* ── 手つき ───────────────────────────────────────────────────────────── */
+document.addEventListener("click", (e) => {
+  if (e.target.closest("[data-scrim]")) { heldOpen = false; return render(); }
+  const uf = e.target.closest("[data-unfold]");
+  if (uf) { uf.closest(".u").classList.toggle("open"); return; }
+  if (e.target.closest("[data-held]")) { heldOpen = !heldOpen; return render(); }
+  const br = e.target.closest("[data-branch]"); if (br) {
+    branch = br.dataset.branch; heldOpen = false;
+    $("veil").classList.remove("on");
+    return render();
+  }
+  const wk = e.target.closest("[data-work]"); if (wk) {
+    const k = wk.dataset.work;
+    if (wk.closest(".room.branch")) workFrom[k] = branch;        // 枝から開いた
+    else if (wk.closest(".room.trunk")) workFrom[k] = "trunk";   // 幹から開いた
+    const from = workFrom[k] || "trunk";                          // レール・一覧からは記録に戻す
+    branch = from === "trunk" ? null : from;
+    work = k; if (!works.includes(k)) works.push(k); heldOpen = false; return render();
+  }
+  const cl = e.target.closest("[data-close]"); if (cl) {
+    if (cl.dataset.close === "branch") branch = null;
+    else if (cl.dataset.close === "work") work = null;
+    else { branch = null; work = null; }
+    return render();
+  }
+  const sp = e.target.closest("[data-spine]"); if (sp) { work = null; if (sp.dataset.spine === "trunk") branch = null; return render(); }
+  const mg = e.target.closest("[data-merge]"); if (mg) {
+    const k = mg.dataset.merge, b = BRANCHES[k];
+    b.state = "merged"; b.meta = "畳みました";
+    TRUNK[b.proj].push(["back", k]);
+    branch = null; return render();
+  }
+  const p = e.target.closest("[data-pj]"); if (p) { pj = p.dataset.pj; branch = null; work = null; heldOpen = false; return render(); }
+  const g = e.target.closest("[data-goto]"); if (g) {
+    $("veil").classList.remove("on");
+    pj = BRANCHES[g.dataset.goto].proj; branch = g.dataset.goto; work = null; return render();
+  }
+  if (e.target === $("veil")) $("veil").classList.remove("on");
+  if (heldOpen && !e.target.closest(".held")) { heldOpen = false; render(); }
+});
+$("inboxBtn").addEventListener("click", () => openFace("inbox"));
+$("histBtn").addEventListener("click", () => openFace("hist"));
+$("setBtn").addEventListener("click", () => openFace("set"));
+$("themeBtn").addEventListener("click", () => {
+  const r = document.documentElement; r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if ($("veil").classList.contains("on")) return $("veil").classList.remove("on");
+  if (heldOpen) { heldOpen = false; return render(); }
+  if (work) { work = null; return render(); }
+  if (branch) { branch = null; return render(); }
+});
+/* 描き直すのは**狭い／広いが変わったときだけ**。毎フレーム全部作り直さない */
+let wasNarrow = narrow();
+window.addEventListener("resize", () => { const n = narrow(); if (n !== wasNarrow) { wasNarrow = n; render(); } });
+
+/* 帯の幅をつまんで変える */
+document.addEventListener("pointerdown", (e) => {
+  const g = e.target.closest(".grip"); if (!g) return;
+  const room = g.closest(".room"); const x0 = e.clientX; const w0 = room.getBoundingClientRect().width;
+  document.body.classList.add("dragging"); g.setPointerCapture(e.pointerId);
+  const move = (ev) => {
+    const w = Math.max(260, Math.min(620, w0 + (ev.clientX - x0)));
+    document.documentElement.style.setProperty("--slim-w", w + "px");
+  };
+  const up = () => {
+    document.body.classList.remove("dragging");
+    window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
+  };
+  window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+});
+
+render();
+</script>
+</body>
+</html>

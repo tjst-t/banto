@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>器の語彙 — Tool の戻り値を、番頭が膳に組む</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="ideal.css">
+<style>
+/* ══════════════════════════════════════════════════════════════════════════
+   器の語彙（案11「膳」の土台）
+
+   案11 は「番頭が画面を組む」案だが、**無から作らせてはいけない**。
+   組ませると同じ話が毎回違う見た目になり、spec-canvas-ui の第一原理
+   （POから見ればどれも番頭が出した面でひと続き）が崩れる。
+
+   だから：**器は中核が有限の語彙として持ち、番頭は選ぶだけ。**
+   モジュールは部品を作らない——Tool の戻り値を、この語彙に載る形で返す。
+
+   ここはその語彙の提案。各器につき「いつ使うか／Tool の戻り値／見本」を並べる。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.wrap { max-width: 1080px; margin: 0 auto; padding: var(--s10) var(--s6) 80px; }
+.lede h1 { font-size: var(--t-3xl); font-weight: 700; letter-spacing: -.02em; line-height: 1.35; }
+.lede .sub { font-size: var(--t-lg); color: var(--text-2); margin-top: var(--s2); line-height: 1.8; }
+.lede .meta { font-family: var(--f-mono); font-size: var(--t-xs); color: var(--text-3); margin-top: var(--s3); }
+
+.rule-box { margin: var(--s8) 0; padding: var(--s5); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--sh-1); }
+.rule-box h2 { font-size: var(--t-lg); font-weight: 650; margin-bottom: var(--s2); }
+.rule-box ol { padding-left: 20px; }
+.rule-box li { font-size: var(--t-md); line-height: 1.9; margin: var(--s2) 0; color: var(--text-2); }
+.rule-box li b { color: var(--text); font-weight: 600; }
+
+table.layers { width: 100%; border-collapse: collapse; margin-top: var(--s3); font-size: var(--t-sm); }
+table.layers th, table.layers td { text-align: left; padding: 9px var(--s3); border-bottom: 1px solid var(--line); vertical-align: top; }
+table.layers th { font-size: var(--t-xs); color: var(--text-3); font-weight: 600; }
+table.layers td b { font-weight: 600; }
+
+.sec-h { display: flex; align-items: baseline; gap: var(--s3); margin: var(--s10) 0 var(--s4); }
+.sec-h h2 { font-size: var(--t-2xl); font-weight: 700; letter-spacing: -.01em; }
+.sec-h span { font-size: var(--t-sm); color: var(--text-3); }
+
+/* ── 1つの器 ─────────────────────────────────────────────────────────── */
+.item { background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--sh-1); overflow: hidden; margin-bottom: var(--s5); }
+.it-head { display: flex; align-items: baseline; gap: var(--s3); padding: var(--s4) var(--s5) var(--s2); flex-wrap: wrap; }
+.it-head h3 { font-size: var(--t-xl); font-weight: 700; }
+.it-head code { font-family: var(--f-mono); font-size: var(--t-sm); background: var(--accent-soft); color: var(--accent-ink); padding: 2px 8px; border-radius: var(--r-sm); }
+.it-head .when { font-size: var(--t-sm); color: var(--text-2); flex: 1 1 100%; line-height: 1.75; }
+.it-head .when b { color: var(--text); font-weight: 600; }
+.it-body { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 0; border-top: 1px solid var(--line-2); }
+@media (max-width: 860px) { .it-body { grid-template-columns: minmax(0,1fr); } }
+.side { padding: var(--s4) var(--s5); }
+.side + .side { border-left: 1px solid var(--line-2); }
+@media (max-width: 860px) { .side + .side { border-left: 0; border-top: 1px solid var(--line-2); } }
+.side h4 { font-size: var(--t-xs); color: var(--text-3); font-weight: 600; margin-bottom: var(--s2); letter-spacing: .04em; }
+pre.json { font-family: var(--f-mono); font-size: var(--t-xs); line-height: 1.75; white-space: pre; overflow-x: auto;
+           background: var(--bg); border-radius: var(--r-md); padding: var(--s3); color: var(--text-2); }
+pre.json .k { color: var(--accent-ink); }
+pre.json .s { color: var(--ok); }
+pre.json .n { color: var(--stop); }
+:root[data-theme="dark"] pre.json .k { color: var(--accent); }
+.note { font-size: var(--t-xs); color: var(--text-3); line-height: 1.8; margin-top: var(--s2); }
+.note b { color: var(--text-2); font-weight: 600; }
+
+/* ── 見本（実際に描いたもの）───────────────────────────────────────────── */
+.demo { display: flex; flex-direction: column; gap: var(--s3); }
+
+/* 器①〜⑨の実装。**ここが「中核が持つ語彙」そのもの** */
+.u-rows { border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
+.u-rows .r { display: flex; align-items: center; gap: var(--s2); padding: 8px var(--s3); font-size: var(--t-sm); border-bottom: 1px solid var(--line-2); }
+.u-rows .r:last-child { border-bottom: 0; }
+.u-rows .r .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.u-rows .r em { font-style: normal; font-family: var(--f-mono); font-size: var(--t-xs); color: var(--text-3); flex: none; }
+
+.u-kv { display: grid; grid-template-columns: minmax(80px, auto) 1fr; gap: 3px var(--s3); font-size: var(--t-sm); }
+.u-kv dt { color: var(--text-3); font-size: var(--t-xs); }
+.u-kv dd { color: var(--text-2); }
+.u-kv dd b { color: var(--text); font-weight: 600; }
+
+.u-table { width: 100%; border-collapse: collapse; font-size: var(--t-sm); border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
+.u-table th { text-align: left; font-size: var(--t-xs); color: var(--text-3); font-weight: 600; padding: 7px var(--s3); background: var(--surface-2); }
+.u-table td { padding: 7px var(--s3); border-top: 1px solid var(--line-2); }
+.u-table td.num { font-family: var(--f-mono); text-align: right; }
+
+.u-diff { font-family: var(--f-mono); font-size: var(--t-xs); line-height: 1.75; white-space: pre; overflow-x: auto;
+          background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3); }
+.u-diff .a { color: var(--ok); } .u-diff .d { color: var(--stop); } .u-diff .c { color: var(--text-3); }
+
+.u-meter { display: flex; align-items: center; gap: var(--s3); font-size: var(--t-sm); }
+.u-meter .track { flex: 1; height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.u-meter .fill { display: block; height: 100%; background: var(--accent); }
+.u-meter .fill.warn { background: var(--warn); }
+.u-meter .v { font-family: var(--f-mono); font-size: var(--t-xs); color: var(--text-2); }
+
+.u-stat { display: flex; gap: var(--s3); }
+.u-stat .s { flex: 1; border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3); }
+.u-stat b { display: block; font-size: var(--t-2xl); font-weight: 700; line-height: 1.2; }
+.u-stat span { font-size: var(--t-xs); color: var(--text-3); }
+.u-stat .s.turn b { color: var(--turn); }
+.u-stat .s.stop b { color: var(--stop); }
+
+.u-spark { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3); }
+.u-spark .sp-t { display: flex; align-items: baseline; gap: var(--s2); font-size: var(--t-sm); color: var(--text-2); margin-bottom: var(--s2); }
+.u-spark .sp-t .sp { flex: 1; }
+.u-spark .sp-t b { font-family: var(--f-mono); font-size: var(--t-md); color: var(--text); }
+.u-spark .sp-t em { font-style: normal; font-size: var(--t-xs); color: var(--text-3); }
+.u-spark svg { display: block; width: 100%; height: 34px; }
+.u-spark polyline { fill: none; stroke: var(--ok); stroke-width: 1.6; vector-effect: non-scaling-stroke;
+                    stroke-linecap: round; stroke-linejoin: round; }
+.u-spark circle { fill: var(--ok); }
+/* 望まない向きへ動いているものは紫（止まっている側）で描く */
+.u-spark.up polyline { stroke: var(--stop); }
+.u-spark.up circle { fill: var(--stop); }
+.u-spark .note { margin-top: var(--s2); }
+
+.u-img { border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; background: var(--surface-2); }
+.u-img svg { display: block; width: 100%; height: auto; }
+.u-doc { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3) var(--s4); font-size: var(--t-sm); line-height: 1.9; color: var(--text-2); }
+.u-doc h4 { font-size: var(--t-md); font-weight: 650; color: var(--text); margin-bottom: var(--s1); }
+.u-doc ul { padding-left: 18px; margin-top: var(--s1); }
+
+.u-broken { border: 1px solid var(--line); border-left: 3px solid var(--stop); border-radius: var(--r-md); padding: var(--s3) var(--s4); }
+.u-broken > b { color: var(--stop); font-size: var(--t-sm); }
+
+.u-quote { padding-left: var(--s4); border-left: 3px solid var(--line); font-size: var(--t-sm); color: var(--text-2); line-height: 1.85; }
+.u-quote cite { display: block; font-style: normal; font-size: var(--t-xs); color: var(--text-3); margin-top: var(--s1); }
+
+.u-choice { display: flex; flex-wrap: wrap; gap: var(--s2); }
+
+.u-time { display: flex; flex-direction: column; gap: 0; }
+.u-time .e { display: flex; gap: var(--s3); font-size: var(--t-sm); padding: 5px 0; }
+.u-time .e time { font-family: var(--f-mono); font-size: var(--t-xs); color: var(--text-3); flex: none; width: 46px; }
+.u-time .e .l { position: relative; flex: none; width: 12px; }
+.u-time .e .l::before { content: ""; position: absolute; left: 5px; top: -6px; bottom: -6px; width: 1px; background: var(--line); }
+.u-time .e .l::after { content: ""; position: absolute; left: 2px; top: 7px; width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
+.u-time .e.ok .l::after { background: var(--ok); }
+.u-time .e.turn .l::after { background: var(--turn); }
+.u-time .e:first-child .l::before { top: 8px; }
+.u-time .e:last-child .l::before { bottom: 50%; }
+
+.warnbox { margin: var(--s8) 0 0; padding: var(--s5); border-radius: var(--r-lg); background: var(--turn-soft); border-left: 3px solid var(--turn); }
+.warnbox h2 { font-size: var(--t-lg); font-weight: 700; color: var(--turn); margin-bottom: var(--s2); }
+.warnbox p { font-size: var(--t-md); line-height: 1.9; color: var(--text-2); }
+.warnbox p + p { margin-top: var(--s2); }
+.warnbox b { color: var(--text); font-weight: 600; }
+
+.topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: var(--s3);
+          height: 46px; padding: 0 var(--s6); background: var(--bg); border-bottom: 1px solid var(--line); }
+.topbar b { font-weight: 650; }
+.topbar .sp { flex: 1; }
+.topbar a { color: var(--accent); font-size: var(--t-sm); text-decoration: none; }
+.topbar a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <b>器の語彙</b><span style="font-size:var(--t-sm);color:var(--text-3)">案11「膳」の土台</span>
+  <span class="sp"></span>
+  <a href="11-zen.html">案11 膳 →</a>
+  <button class="btn btn-icon btn-ghost" id="themeBtn"><svg viewBox="0 0 24 24"><path d="M20 14a8 8 0 01-10-10 8 8 0 1010 10z"/></svg></button>
+</div>
+
+<div class="wrap">
+  <div class="lede">
+    <h1>Tool の戻り値を、番頭が<br>中核の器に載せて膳に組む</h1>
+    <p class="sub">モジュールは GUI 部品を作らない。<b>この語彙に載る形でデータを返すだけ</b>。<br>
+      番頭が決めるのは「どのデータを・どの器で・どれだけ」であって、レイアウトを作ることではない。</p>
+    <p class="meta">提案 · 2026-08-09 · 案11「膳」に付随 · 器 13 種</p>
+  </div>
+
+  <div class="rule-box">
+    <h2>この語彙が守る4つの規則</h2>
+    <ol>
+      <li><b>番頭は選ぶが、作らない。</b>器は有限。無から組ませると、同じ話が毎回違う見た目になる。生成UIではなく<b>選択UI</b>。</li>
+      <li><b>器は中核が持ち、モジュールは形を合わせる。</b><code>spec-canvas-ui</code> §10「モジュールごとの CSS を足さない。足りない語彙は §5 に追加して全モジュールで共有する」の延長。</li>
+      <li><b>膳は小さい。大きいものは面へ。</b>Tool の戻り値は 4000 文字で切り詰められる（<code>TOOL_PAYLOAD_MAX_CHARS</code>）ので、<b>この線は規約ではなく機構が引く</b>。切ったことは隠さない（I1）。</li>
+      <li><b>どの器も「畳んだ姿」を持つ。</b>広い姿と、狭いときの<b>1行</b>（「4件」「+42 −18」）。
+        判定は<b>コンテナクエリ</b>——ビューポートではなく「会話の帯の幅」で決まるので、
+        細い帯でもモバイルでも同じものが効く（<code>spec-canvas-ui</code> §3 と同じ規約）。
+        器を1つ足すコストが2倍になるので、<b>語彙を増やしにくくする歯止め</b>にもなる。</li>
+      <li><b>器は凍る。どの器も「いつの」を出す。</b>器は<b>そのときそう見えた記録</b>で、会話の一部だから後から変わってはいけない（幹は追記のみ・D3）。
+        いまの状態が要るなら <code>open</code> で面へ行く。<b>枝の札だけは参照なので生きる</b>——記録と参照を混ぜない。</li>
+      <li><b>分からないものは分からないと出す。</b>件数・時刻・大きさを 0 と偽らない（I1）。器は <code>null</code> を「—」として描き、勝手に埋めない。</li>
+    </ol>
+
+    <table class="layers">
+      <tr><th>層</th><th>誰が持つか</th><th>データの出どころ</th><th>大きさ</th></tr>
+      <tr><td><b>面</b>（canvas-view）</td><td>モジュール（React・決定12 のまま）</td><td>自分で <code>endpoint</code> から取る（決定25）</td><td>画面いっぱい</td></tr>
+      <tr><td><b>膳の器</b>（この頁）</td><td><b>中核</b></td><td><b>番頭が <code>canvas.show</code> で指した Tool の戻り値</b></td><td>会話の1ブロック</td></tr>
+    </table>
+    <p class="note"><b>決定25 が部分的に裏返る。</b>面は自分でデータを取るが、器は番頭の文脈を通ったデータを描く。
+      これは制約であると同時に安全弁でもある——文脈を通る以上、膳に載るものは必ず小さい。</p>
+  </div>
+
+  <div class="sec-h"><h2>器の語彙</h2><span>13 種。どれも「畳んだ姿」を持つ</span></div>
+
+  <!-- ① 行の一覧 -->
+  <div class="item">
+    <div class="it-head">
+      <h3>行の一覧</h3><code>list</code>
+      <p class="when"><b>いちばん使う器。</b>同じ形のものが複数あり、1つずつに状態が付くとき。職人・環境・記憶・ファイル・枝——ほぼ何でも載る。
+        <b>10 行を超えたら面へ送る</b>（膳は舐めるためのもので、探すためのものではない）。</p>
+    </div>
+    <div class="it-body">
+      <div class="side"><h4>Tool の戻り値</h4>
+        <pre class="json">{ <span class="k">"utsuwa"</span>: <span class="s">"list"</span>,
+  <span class="k">"title"</span>: <span class="s">"止まっていない検証環境"</span>,
+  <span class="k">"total"</span>: <span class="n">3</span>,
+  <span class="k">"items"</span>: [
+    { <span class="k">"label"</span>: <span class="s">"env-31 · task-0086 の検証"</span>,
+      <span class="k">"state"</span>: <span class="s">"warn"</span>,
+      <span class="k">"meta"</span>:  <span class="s">"6日 · 1,400円/月"</span> },
+    …
+  ] }</pre>
+        <p class="note"><code>state</code> は <b>5役だけ</b>（<code>run / turn / stop / warn / done</code>）。
+          モジュールが独自の状態名を持ち込まない——持ち込ませると色の意味が崩れる。</p>
+      </div>
+      <div class="side"><h4>見本</h4>
+        <div class="demo">
+          <div class="u-rows">
+            <div class="r"><span class="dot warn"></span><span class="t">env-31 · task-0086 の検証</span><em>6日 · 1,400円/月</em></div>
+            <div class="r"><span class="dot warn"></span><span class="t">env-29 · inc-0041 の再現</span><em>6日 · 1,400円/月</em></div>
+            <div class="r"><span class="dot warn"></span><span class="t">env-27 · 意匠の見本</span><em>7日 · 1,400円/月</em></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ② 鍵と値 -->
+  <div class="item">
+    <div class="it-head">
+      <h3>鍵と値</h3><code>facts</code>
+      <p class="when">1件について<b>いくつかの事実</b>を並べるとき。設定・素性・ひとつの対象の内訳。
+        <b>三部構成（経緯／起きたこと／求める判断）もこの器</b>で描く（<code>spec-ui</code> §3）。</p>
+    </div>
+    <div class="it-body">
+      <div class="side"><h4>Tool の戻り値</h4>
+        <pre class="json">{ <span class="k">"utsuwa"</span>: <span class="s">"facts"</span>,
+  <span class="k">"title"</span>: <span class="s">"env-31"</span>,
+  <span class="k">"facts"</span>: [
+    [<span class="s">"置き場"</span>,   <span class="s">"banto / task-0086"</span>],
+    [<span class="s">"最後の接続"</span>, <span class="s">"6日前"</span>],
+    [<span class="s">"費用"</span>,     <span class="s">"1,400円/月"</span>],
+    [<span class="s">"公開URL"</span>,  <span class="s">null</span>]
+  ] }</pre>
+        <p class="note"><code>null</code> は <b>「—」</b>と描く。空文字で埋めたり項目ごと落としたりしない（I1）。</p>
+      </div>
+      <div class="side"><h4>見本</h4>
+        <div class="demo">
+          <dl class="u-kv">
+            <dt>置き場</dt><dd>banto / task-0086</dd>
+            <dt>最後の接続</dt><dd>6日前</dd>
+            <dt>費用</dt><dd><b>1,400円/月</b></dd>
+            <dt>公開URL</dt><dd>—</dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ③ 表 -->
+  <div class="item">
+    <div class="it-head">
+      <h3>表</h3><code>table</code>
+      <p class="when"><b>列どうしを見比べるとき</b>だけ。行の一覧との違いは「揃った数字を縦に比べたいか」。
+        比べないなら行の一覧のほうが軽い。<b>4列・8行まで</b>。</p>
+    </div>
+    <div class="it-body">
+      <div class="side"><h4>Tool の戻り値</h4>
+        <pre class="json">{ <span class="k">"utsuwa"</span>: <span class="s">"table"</span>,
+  <span class="k">"cols"</span>: [
+    { <span class="k">"label"</span>: <span class="s">"ファイル"</span> },
+    { <span class="k">"label"</span>: <span class="s">"行"</span>, <span class="k">"align"</span>: <span class="s">"num"</span> },
+    { <span class="k">"label"</span>: <span class="s">"役"</span> }
+  ],
+  <span class="k">"rows"</span>: [
+    [<span class="s">"views.css"</span>,  <span class="n">1770</span>, <span class="s">"いま"</span>],
+    [<span class="s">"base.css"</span>,   <span class="n">420</span>,  <span class="s">"器"</span>],
+    [<span class="s">"parts.css"</span>,  <span class="n">700</span>,  <span class="s">"部品"</span>]
+  ] }</pre>
+        <p class="note"><code>align: "num"</code> の列は<b>等幅で右寄せ</b>。桁が揃わない数字は比べられない。</p>
+      </div>
+      <div class="side"><h4>見本</h4>
+        <div class="demo">
+          <table class="u-table">
+            <tr><th>ファイル</th><th style="text-align:right">行</th><th>役</th></tr>
+            <tr><td>views.css</td><td class="num">1,770</td><td>いま</td></tr>
+            <tr><td>base.css</td><td class="num">420</td><td>器</td></tr>
+            <tr><td>parts.css</td><td class="num">700</td><td>部品</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ④ 差分 -->
+  <div class="item">
+    <div class="it-head">
+      <h3>差分</h3><code>diff</code>
+      <p class="when">何がどう変わるかを見せるとき。<b>抜粋であることを隠さない</b>——全部見たいときは面（Git）へ。</p>
+    </div>
+    <div class="it-body">
+      <div class="side"><h4>Tool の戻り値</h4>
+        <pre class="json">{ <span class="k">"utsuwa"</span>: <span class="s">"diff"</span>,
+  <span class="k">"path"</span>: <span class="s">"views/parts.css"</span>,
+  <span class="k">"added"</span>: <span class="n">42</span>, <span class="k">"removed"</span>: <span class="n">18</span>,
+  <span class="k">"hunks"</span>: [
+    { <span class="k">"header"</span>: <span class="s">"器と部品を分ける"</span>,
+      <span class="k">"lines"</span>: [
+        [<span class="s">"-"</span>, <span class="s">".cv-bar   { display: flex; }"</span>],
+        [<span class="s">"+"</span>, <span class="s">".bar      { display: flex; }"</span>]
+      ] }
+  ],
+  <span class="k">"truncated"</span>: <span class="s">true</span> }</pre>
+        <p class="note"><code>truncated</code> が真なら<b>「N 行のうち先頭のみ」と書く</b>。切ったことを隠さない（I1・<code>spec-chat-ui</code> §6.3）。</p>
+      </div>
+      <div class="side"><h4>見本</h4>
+        <div class="demo">
+          <div class="u-diff"><span class="c">@@ 器と部品を分ける @@</span>
+<span class="d">- .cv-bar   { display: flex; }</span>
+<span class="d">- .cv-split { display: flex; }</span>
+<span class="a">+ .bar      { display: flex; }</span>
+<span class="a">+ .split    { display: flex; }</span></div>
+          <p class="note">views/parts.css · <b>+42 −18</b> · 60 行のうち先頭のみ</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑤ 選択肢 -->
+  <div class="item">
+    <div class="it-head">
+      <h3>選択肢</h3><code>choice</code>
+      <p class="when"><b>あなたの番のときだけ。</b>朱はここにしか出ない。押されたら効く口（<code>InboxEffect</code>）を持てる（決定73）。
+        <b>3つ以内</b>——並べて比べられない数を並べない。</p>
+    </div>
+    <div class="it-body">
+      <div class="side"><h4>Tool の戻り値</h4>
+        <pre class="json">{ <span class="k">"utsuwa"</span>: <span class="s">"choice"</span>,
+  <span class="k">"ask"</span>: <span class="s">"3つとも畳んでよいか"</span>,
+  <span class="k">"options"</span>: [
+    { <span class="k">"label"</span>: <span class="s">"3つとも畳む"</span>, <span class="k">"primary"</span>: <span class="s">true</span>,
+      <span class="k">"effect"</span>: { <span class="k">"module"</span>: <span class="s">"environment-pool"</span>,
+                  <span class="k">"tool"</span>: <span class="s">"env.fold"</span>,
+                  <span class="k">"args"</span>: { <span class="k">"ids"</span>: [<span class="s">"env-31"</span>,<span class="s">"env-29"</span>,<span class="s">"env-27"</span>] } } },
+    { <span class="k">"label"</span>: <span class="s">"env-27 だけ残す"</span> },
+    { <span class="k">"label"</span>: <span class="s">"くわしく聞く"</span>, <span class="k">"kind"</span>: <span class="s">"ghost"</span> }
+  ] }</pre>
+        <p class="note"><b><code>effect</code> は画面へ配らない</b>（決定73）。配ると画面から任意の口を叩けることになり、承認を番頭から機構で分けた意味が無くなる。</p>
+      </div>
+      <div class="side"><h4>見本</h4>
+        <div class="demo">
+          <div class="ask">
+            <div class="ask-h">あなたの判断を待っています</div>
+            <p>3つとも 6日 触られていません。畳んでよいか決めてください。</p>
+            <div class="ask-a">
+              <button class="btn btn-turn">3つとも畳む</button>
+              <button class="btn">env-27 だけ残す</button>
+              <button class="btn btn-ghost">くわしく聞く</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑥ 数の札 -->
+  <div class="item">
+    <div class="it-head">
+      <h3>数の札</h3><code>stats</code>
+      <p class="when"><b>数そのものが答えのとき。</b>3つまで。4つ目からは表にする——札が増えると読まずに眺めるものになる。</p>
+    </div>
+    <div class="it-body">
+      <div class="side"><h4>Tool の戻り値</h4>
+        <pre class="json">{ <span class="k">"utsuwa"</span>: <span class="s">"stats"</span>,
+  <span class="k">"stats"</span>: [
+    { <span class="k">"value"</span>: <span class="n">4</span>,  <span class="k">"label"</span>: <span class="s">"あなたの番"</span>, <span class="k">"state"</span>: <span class="s">"turn"</span> },
+    { <span class="k">"value"</span>: <span class="n">16</span>, <span class="k">"label"</span>: <span class="s">"動いている"</span> },
+    { <span class="k">"value"</span>: <span class="n">2</span>,  <span class="k">"label"</span>: <span class="s">"止まっている"</span>, <span class="k">"state"</span>: <span class="s">"stop"</span> }
+  ] }</pre>
+        <p class="note">数は<b>人の単位に落としてから渡す</b>（<code>formatBytes</code> / <code>formatCount</code> / <code>formatRelative</code>）。器で整形しない。</p>
+      </div>
+      <div class="side"><h4>見本</h4>
+        <div class="demo">
+          <div class="u-stat">
+            <div class="s turn"><b>4</b><span>あなたの番</span></div>
+            <div class="s"><b>16</b><span>動いている</span></div>
+            <div class="s stop"><b>2</b><span>止まっている</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑦ 目盛 -->
+  <div class="item">
+    <div class="it-head">
+      <h3>目盛</h3><code>meter</code>
+      <p class="when"><b>上限に対してどこまで来たか。</b>quota・文脈の使用量・進み具合。
+        <b>上限が分からないときは使わない</b>——分母の無い割合は嘘になる（I1）。</p>
+    </div>
+    <div class="it-body">
+      <div class="side"><h4>Tool の戻り値</h4>
+        <pre class="json">{ <span class="k">"utsuwa"</span>: <span class="s">"meter"</span>,
+  <span class="k">"label"</span>: <span class="s">"環境の quota"</span>,
+  <span class="k">"value"</span>: <span class="n">7</span>, <span class="k">"max"</span>: <span class="n">10</span>,
+  <span class="k">"unit"</span>: <span class="s">"台"</span>,
+  <span class="k">"state"</span>: <span class="s">"warn"</span> }</pre>
+        <p class="note">色は<b>役が決める</b>（<code>warn</code> なら琥珀）。モジュールが「70%で黄色」のような閾値を持ち込まない——判断は中核と番頭に置く（D5）。</p>
+      </div>
+      <div class="side"><h4>見本</h4>
+        <div class="demo">
+          <div class="u-meter"><span style="color:var(--text-2)">環境の quota</span>
+            <span class="track"><span class="fill warn" style="width:70%"></span></span>
+            <span class="v">7 / 10 台</span></div>
+          <div class="u-meter"><span style="color:var(--text-2)">この会話の文脈</span>
+            <span class="track"><span class="fill" style="width:38%"></span></span>
+            <span class="v">38%</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑧ 推移 -->
+  <div class="item">
+    <div class="it-head">
+      <h3>推移</h3><code>spark</code>
+      <p class="when"><b>数字1つでは「良くなっているのか」が言えないとき。</b>
+        <code>P6</code> が要求する計測（何回中何回落ちるか）は、いまの率だけでなく<b>下がっているかどうか</b>で意味が変わる。
+        <b>1本だけ・8〜30点まで</b>。軸も凡例も出さない——比べるものが1つなら、要るのは形と現在値だけ。</p>
+    </div>
+    <div class="it-body">
+      <div class="side"><h4>Tool の戻り値</h4>
+        <pre class="json">{ <span class="k">"utsuwa"</span>: <span class="s">"spark"</span>,
+  <span class="k">"label"</span>: <span class="s">"タブに中身が出ない率"</span>,
+  <span class="k">"points"</span>: [<span class="n">37</span>,<span class="n">33</span>,<span class="n">35</span>,<span class="n">30</span>,<span class="n">12</span>,<span class="n">8</span>,<span class="n">2</span>,<span class="n">0</span>],
+  <span class="k">"unit"</span>: <span class="s">"%"</span>,
+  <span class="k">"span"</span>: <span class="s">"直近8日"</span>,
+  <span class="k">"good"</span>: <span class="s">"down"</span> }</pre>
+        <p class="note"><code>good</code> は<b>「どちらへ動けば良いか」</b>。器はこれを見て色を決める——
+          モジュールに「緑にして」と言わせない（D5）。値の目盛は出さない。<b>読みたいのは向きと現在値</b>で、
+          細かい数字が要るなら表か面へ。</p>
+      </div>
+      <div class="side"><h4>見本</h4>
+        <div class="demo">
+          <div class="u-spark">
+            <div class="sp-t"><span>タブに中身が出ない率</span><span class="sp"></span><b>0%</b><em>直近8日</em></div>
+            <svg viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true">
+              <polyline points="0,3.9 14.3,6.6 28.6,5.3 42.9,8.5 57.1,20.2 71.4,22.8 85.7,26.7 100,28"/>
+              <circle cx="100" cy="28" r="2.2"/>
+            </svg>
+            <p class="note">37% → 0%。<b>下がっている</b>ので苔。上がっていれば紫（止まっている側）で描く。</p>
+          </div>
+          <div class="u-spark up">
+            <div class="sp-t"><span>環境の費用</span><span class="sp"></span><b>4,200円/月</b><em>直近6か月</em></div>
+            <svg viewBox="0 0 100 28" preserveAspectRatio="none" aria-hidden="true">
+              <polyline points="0,24 20,22 40,18 60,14 80,8 100,3"/>
+              <circle cx="100" cy="3" r="2.2"/>
+            </svg>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑨ 経過 -->
+  <div class="item">
+    <div class="it-head">
+      <h3>経過</h3><code>timeline</code>
+      <p class="when"><b>順番に意味があるとき。</b>何がいつ起きたか、どこで止まったか。
+        行の一覧との違いは「並びを変えてはいけないかどうか」。</p>
+    </div>
+    <div class="it-body">
+      <div class="side"><h4>Tool の戻り値</h4>
+        <pre class="json">{ <span class="k">"utsuwa"</span>: <span class="s">"timeline"</span>,
+  <span class="k">"events"</span>: [
+    { <span class="k">"at"</span>: <span class="s">"09:12"</span>, <span class="k">"label"</span>: <span class="s">"職人 w-29 を立てた"</span>,     <span class="k">"state"</span>: <span class="s">"done"</span> },
+    { <span class="k">"at"</span>: <span class="s">"09:40"</span>, <span class="k">"label"</span>: <span class="s">"再現手順が出た"</span>,        <span class="k">"state"</span>: <span class="s">"done"</span> },
+    { <span class="k">"at"</span>: <span class="s">"10:05"</span>, <span class="k">"label"</span>: <span class="s">"名前を変えてよいか"</span>,    <span class="k">"state"</span>: <span class="s">"turn"</span> }
+  ] }</pre>
+        <p class="note">時刻は<b>モジュールが人の単位に落として渡す</b>。器はタイムゾーンを知らない。</p>
+      </div>
+      <div class="side"><h4>見本</h4>
+        <div class="demo">
+          <div class="u-time">
+            <div class="e ok"><time>09:12</time><span class="l"></span><span>職人 w-29 を立てた</span></div>
+            <div class="e ok"><time>09:40</time><span class="l"></span><span>再現手順が出た</span></div>
+            <div class="e turn"><time>10:05</time><span class="l"></span><span>名前を変えてよいか — あなたの番</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑩ 画像 -->
+  <div class="item">
+    <div class="it-head">
+      <h3>画像</h3><code>image</code>
+      <p class="when"><b>見せたほうが速いとき。</b>画面の見本・図・POが送った写真。
+        器の中では<b>幅いっぱいで高さは成り行き</b>、押すと原寸で重なる（面にはしない——見るだけのものに間は要らない）。</p>
+    </div>
+    <div class="it-body">
+      <div class="side"><h4>Tool の戻り値</h4>
+        <pre class="json">{ <span class="k">"utsuwa"</span>: <span class="s">"image"</span>,
+  <span class="k">"title"</span>: <span class="s">"案12 の見本"</span>,
+  <span class="k">"src"</span>:   <span class="s">"artifact:shot-0031"</span>,
+  <span class="k">"w"</span>: <span class="n">1512</span>, <span class="k">"h"</span>: <span class="n">950</span>,
+  <span class="k">"alt"</span>:   <span class="s">"幹と枝と面が横に並んだ画面"</span> }</pre>
+        <p class="note"><code>src</code> は<b>参照</b>（<code>artifact:</code>）。base64 を文脈に載せない——
+          載せると 4000 文字の予算を1枚で使い切る。<code>alt</code> は必須（I1：見えない人に「画像」とだけ出さない）。</p>
+      </div>
+      <div class="side"><h4>見本</h4>
+        <div class="demo"><div class="u-img">
+          <svg viewBox="0 0 320 132" role="img" aria-label="幹と枝と面が横に並んだ画面">
+            <rect width="320" height="132" fill="var(--surface-2)"/>
+            <rect x="0" y="0" width="20" height="132" fill="var(--surface-3)"/>
+            <circle cx="10" cy="13" r="4.5" fill="var(--turn)"/><circle cx="10" cy="31" r="4.5" fill="var(--accent)"/>
+            <rect x="28" y="10" width="118" height="6" rx="3" fill="var(--surface-3)"/>
+            <rect x="28" y="26" width="136" height="38" rx="4" fill="var(--surface)"/>
+            <rect x="28" y="72" width="136" height="26" rx="4" fill="var(--surface)"/>
+            <rect x="176" y="6" width="138" height="122" rx="6" fill="var(--surface)"/>
+            <rect x="186" y="18" width="64" height="6" rx="3" fill="var(--surface-3)"/>
+            <rect x="186" y="34" width="118" height="24" rx="3" fill="var(--surface-2)"/>
+          </svg>
+        </div><p class="note">畳んだ姿：<b>画像 1枚 ▸</b></p></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑪ 文書 -->
+  <div class="item">
+    <div class="it-head">
+      <h3>文書</h3><code>doc</code>
+      <p class="when"><b>散文の抜粋。</b>ADR・spec・記憶の本文・引き継ぎ資料。
+        <b>見出しと最初の数段落まで</b>。それ以上は「全部読む →」で<b>単体のファイルを読む面</b>へ送る
+        ——長い散文は器の大きさを超える。</p>
+    </div>
+    <div class="it-body">
+      <div class="side"><h4>Tool の戻り値</h4>
+        <pre class="json">{ <span class="k">"utsuwa"</span>: <span class="s">"doc"</span>,
+  <span class="k">"title"</span>: <span class="s">"ADR-0017（草案）"</span>,
+  <span class="k">"path"</span>:  <span class="s">"docs/adr/adr-0017-…md"</span>,
+  <span class="k">"excerpt"</span>: <span class="s">"## 会話の面：幹1本と枝、器と面\n\n会話が…"</span>,
+  <span class="k">"truncated"</span>: <span class="s">true</span>,
+  <span class="k">"open"</span>: { <span class="k">"view"</span>: <span class="s">"file.viewer"</span>, <span class="k">"args"</span>: { <span class="k">"path"</span>: <span class="s">"…"</span> } } }</pre>
+        <p class="note">描くのは<b>見出し・段落・箇条書き・強調だけ</b>。表も画像もコードも器の外へ出す
+          ——マークダウンを全部描けるようにすると、器が小さなブラウザになる。</p>
+      </div>
+      <div class="side"><h4>見本</h4>
+        <div class="demo">
+          <div class="u-doc">
+            <h4>会話の面：幹1本と枝、器と面</h4>
+            <p>会話が中心であることは動かさない。プロジェクトごとに幹となる会話は永続で、枝が分岐し、終われば幹に回収される。</p>
+            <ul><li>器は中核が持ち、モジュールは形を合わせる</li><li>作業する面だけが間になる</li></ul>
+          </div>
+          <p class="note"><b>全部読む →</b> で単体のファイルを読む面へ。畳んだ姿：<b>抜粋 ▸</b></p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑫ 引用 -->
+  <div class="item">
+    <div class="it-head">
+      <h3>引用</h3><code>quote</code>
+      <p class="when"><b>出どころのある文字をそのまま見せるとき。</b>ログの抜粋・記憶の一節・POの過去の発言。
+        <b>出どころを必ず添える</b>——番頭の言葉と、拾ってきた言葉を混ぜない。</p>
+    </div>
+    <div class="it-body">
+      <div class="side"><h4>Tool の戻り値</h4>
+        <pre class="json">{ <span class="k">"utsuwa"</span>: <span class="s">"quote"</span>,
+  <span class="k">"text"</span>: <span class="s">"「まれに落ちる」で先へ進むのはやめよう"</span>,
+  <span class="k">"source"</span>: <span class="s">"記憶 · 2026-08-06 · PO の発言"</span>,
+  <span class="k">"href"</span>: <span class="s">"memory:mem-0042"</span> }</pre>
+        <p class="note"><code>href</code> があれば<b>面へ飛べる</b>。膳は抜粋で、全部はいつも面にある。</p>
+      </div>
+      <div class="side"><h4>見本</h4>
+        <div class="demo">
+          <div class="u-quote">「まれに落ちる」で先へ進むのはやめよう
+            <cite>記憶 · 2026-08-06 · PO の発言 →</cite></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ⑬ 面への口 -->
+  <div class="item">
+    <div class="it-head">
+      <h3>面への口</h3><code>open</code>
+      <p class="when"><b>膳に載らないとき。</b>10行を超える一覧・全部の差分・触れる環境。
+        <b>この器があるから、他の器が小さいままでいられる</b>——載らないものを無理に載せない逃げ道。</p>
+    </div>
+    <div class="it-body">
+      <div class="side"><h4>Tool の戻り値</h4>
+        <pre class="json">{ <span class="k">"utsuwa"</span>: <span class="s">"open"</span>,
+  <span class="k">"view"</span>: <span class="s">"git.viewer"</span>,   <span class="c">// または file.viewer（単体を読む）</span>
+  <span class="k">"label"</span>: <span class="s">"差分をぜんぶ見る"</span>,
+  <span class="k">"meta"</span>: <span class="s">"12 ファイル · +420 −180"</span>,
+  <span class="k">"args"</span>: { <span class="k">"place"</span>: <span class="s">"banto"</span>, <span class="k">"ref"</span>: <span class="s">"HEAD"</span> } }</pre>
+        <p class="note"><b>描けない面は出さない</b>（決定12・17）。濾すのは offer する側＝UI。実体の無い面を並べると、押した先が「この面を描けません」になる。</p>
+        <p class="note"><b>探す面と読む面は分ける。</b><code>file.browser</code>（探す・移動する）と
+          <code>file.viewer</code>（1つを読む）は目的が違うので別種にする——決定17 が
+          「シェルと職人ビューアは目的が違うので別コンポーネント」としたのと同じ理屈。</p>
+        <p class="note"><b>開いた面は「膳と同じ頁」に出る</b>（案11）。幹の隣に寄り添い、狭い画面ではめくりの1枚になる
+          ——枝と面で置き場を分けない。閉じても<b>会話には抜粋が残る</b>ので、あとから遡れる。</p>
+      </div>
+      <div class="side"><h4>見本</h4>
+        <div class="demo">
+          <button class="btn" style="width:100%;justify-content:flex-start;height:38px;background:var(--surface-2)">
+            <svg viewBox="0 0 24 24" style="stroke:var(--accent)"><path d="M12 4v16M4 8h4M4 16h4M16 12h4"/></svg>
+            差分をぜんぶ見る
+            <span class="sp" style="flex:1"></span>
+            <span style="font-family:var(--f-mono);font-size:var(--t-xs);color:var(--text-3)">12 ファイル · +420 −180</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sec-h"><h2>作らない器</h2><span>足さない理由を書いておく。書いておかないと同じ議論が戻る</span></div>
+  <div class="rule-box">
+    <table class="layers">
+      <tr><th>作らないもの</th><th>なぜ</th><th>代わりに</th></tr>
+      <tr><td><b>棒グラフ</b></td><td>膳に載る程度の本数（2〜5本）なら、<b>表のほうが速く正確に読める</b>。棒は本数が多いときに効く器で、多いなら膳ではない</td><td>表／面</td></tr>
+      <tr><td><b>円グラフ</b></td><td>角度は人が読み違える。<b>割合が1つなら目盛、複数なら表</b>で足りる</td><td>目盛／表</td></tr>
+      <tr><td><b>散布図・箱ひげ</b></td><td>点を見比べる作業は膳の大きさを超える。ここで要るのは<b>分析ではなく判断</b></td><td>面</td></tr>
+      <tr><td><b>ツリー・グラフ図</b></td><td>依存や階層は、番頭が<b>言葉で言えるなら言うべき</b>（「Aが終わらないとBは動けません」）。図にすると読む手間が増える</td><td>本文／面</td></tr>
+      <tr><td><b>カンバン・ボード</b></td><td>面の仕事（<code>kobo.board</code>）。膳に置くと、<b>眺めるためのものが会話に居座る</b></td><td>面</td></tr>
+      <tr><td><b>マークダウンの全部描画</b></td><td>表・画像・コード・脚注まで描けるようにすると、<b>器が小さなブラウザになる</b>。文書の器は見出しと段落と箇条書きだけ</td><td>文書＋面</td></tr>
+      <tr><td><b>自由な図・画像の生成</b></td><td>番頭に絵を描かせると、<b>選択UIが生成UIに戻る</b>。この語彙の前提が崩れる</td><td>——</td></tr>
+    </table>
+    <p class="note">共通する判定は1つ：<b>「見比べる作業」は面、「判断に要る事実」は膳。</b>
+      グラフのうち <code>spark</code> だけを残したのは、これが見比べる器ではなく<b>1つの事実（向き）を言う器</b>だから。</p>
+  </div>
+
+  <div class="warnbox">
+    <h2>足すときの歯止め</h2>
+    <p><b>器を1つ足すたびに、番頭の選択肢が増え、画面のばらつきが増える。</b>
+      だから足すのは ADR を通す。判定はこの2つ：</p>
+    <p>① <b>いまの器の組み合わせで描けないか。</b>ほとんどは「行の一覧＋鍵と値」で足りる。<br>
+      ② <b>載せたいものが、そもそも膳の大きさか。</b>4000文字に収まらないなら、それは器ではなく<b>面</b>の仕事。</p>
+    <p>逆に、<b>使われていない器は畳む</b>。案11 は番頭の選択に賭ける案なので、選択肢が多いほど賭けが重くなる。</p>
+  </div>
+
+  <div class="sec-h"><h2>決まったこと</h2><span>2026-08-09 · PO裁定</span></div>
+  <div class="rule-box">
+    <ol>
+      <li><b>どの器で描くかは番頭が都度指定する。</b>モジュールは素のデータを返すだけで、器のことを知らない。
+        同じ戻り値でも文脈によって出したい器は変わり、モジュールは文脈を知らないから（D5）。<br>
+        <b>データは再送させない</b>——番頭は「どのツール結果を・どの器で・どこを」だけを言い、実体はホストが
+        退避済みの結果（決定47(a) の <code>artifacts/</code>）から引く。<br>
+        <b>副作用：新しい Tool が1つ要る</b>（<code>canvas.show</code>）。ADR に書く。</li>
+
+      <li><b>膳＝器1つ。</b>並べたいときは器を続けて出し、縦に並べる。まとまりを表現する＝レイアウトを組ませることなので、
+        「番頭は選ぶが作らない」が崩れる。<b>入れ子は許さない</b>。足りないと分かったら、上限3・入れ子なしの配列を後から足せる。</li>
+
+      <li><b>器は凍らせ、「いつの」を必ず出す。</b>面と器は二重管理ではない——
+        <b>器＝そのときそう見えた記録</b>（会話の一部・書き換わらない）、<b>面＝いまの状態</b>（自分で取る）。
+        <b>枝の札だけは参照なので生きる。</b></li>
+
+      <li><b>描けない戻り値は会話に出し、番頭にも返す。</b>どのモジュールのどの Tool か・頼んだ器・何が足りないかまで書く
+        （直せるのは登録した人なので、出所が分かる形で）。番頭にも同じものが返るので言い直せる。<b>会話は止めない</b>——
+        回復可能だから I2 の「failed にして止まる」には当たらない。素の値は畳んで置き、<b>黙って素の JSON を出さない</b>
+        （壊れた見た目が既定になる）。</li>
+    </ol>
+
+    <div class="item" style="margin-top:var(--s5);margin-bottom:0">
+      <div class="it-head"><h3>描けなかったときの姿</h3><code>（器ではなく、中核の振る舞い）</code></div>
+      <div class="it-body">
+        <div class="side"><h4>返ってきたもの</h4>
+          <pre class="json">{ <span class="k">"utsuwa"</span>: <span class="s">"table"</span>,
+  <span class="k">"rows"</span>: [ … ]        <span class="c">// cols が無い</span>
+}</pre></div>
+        <div class="side"><h4>見本</h4>
+          <div class="demo"><div class="u-broken">
+            <b>⚠ この形は描けませんでした</b>
+            <dl class="u-kv" style="margin-top:var(--s2)">
+              <dt>出どころ</dt><dd><code>environment-pool</code> / <code>env.list</code></dd>
+              <dt>頼んだ器</dt><dd><code>table</code></dd>
+              <dt>足りないもの</dt><dd><code>cols</code> がありません（<code>rows</code> はあります）</dd>
+            </dl>
+            <p class="note">番頭にも同じものが返るので、一覧の器に替えて出し直せます。</p>
+          </div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+document.getElementById("themeBtn").addEventListener("click", () => {
+  const r = document.documentElement;
+  r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+});
+</script>
+</body>
+</html>

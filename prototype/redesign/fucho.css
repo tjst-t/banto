@@ -1,0 +1,145 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   符牒の意匠（案7・案8の共有）— 和紙とは別の家
+
+   和紙は「紙の上の商家」だった。符牒は**帳面と符号**の側に立つ。
+   `docs/spec/design.md` §6.4 が言うとおり、符牒を符牒たらしめているのは配色ではなく
+   **形**——黒い状態行・平らな面・1本の罫の境目・`»` の印・全面等幅。ここではその形を
+   トークンと基部だけに絞って置き、組み方は各案が持つ。
+
+   和紙との違いを、意図として書いておく：
+
+   | | 和紙 | 符牒 |
+   |---|---|---|
+   | 書体 | 明朝＋角ゴシック（声の主で分ける） | **全面等幅**（行が機械的に揃い、目が舐めるだけで読める） |
+   | 境目 | 濃さの差と影 | **1px の罫だけ。影は使わない** |
+   | 角 | 3段（2 / 6 / 10px） | **3px の1段だけ** |
+   | 状態 | 点の色と形 | **符号1文字**（※ ／ 〆 ×）＋色 |
+   | 上端 | 紙の帯 | **黒い状態行** |
+   | 操作 | 押す | **符牒（キー）で打つ。押すのは代わりの経路** |
+
+   暗い地は用意するが**明を主とする**（案5 の主張：端末の隣に黒い窓をもう一枚増やさない）。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* 地：3段だけ。枠を引かず、濃さと1本の罫で分ける */
+  --bg:    #F5F4F0;
+  --face:  #FCFBF8;
+  --sunk:  #E9E7E0;
+  --line:  #DEDBD2;
+
+  /* 墨：3段だけ */
+  --ink:   #17171A;
+  --ink-2: #55545A;
+  --ink-3: #8B8A90;
+
+  /* 色は「誰の番か・どう止まっているか」だけを言う。塗ってよいのは朱と黒帯だけ */
+  --ai:    #1B4B8F;  --ai-t:  #E4EAF3;   /* 藍 選ばれている・符牒 */
+  --shu:   #C1341C;  --shu-t: #F8E5E1;   /* 朱 あなたの番。唯一、面を塗ってよい */
+  --mur:   #5A3E63;  --mur-t: #EDE7EF;   /* 紫 止まった（失敗・incident） */
+  --koh:   #8A5A10;  --koh-t: #F6EEDC;   /* 琥珀 気をつける */
+  --ok:    #2F6B4F;  --ok-t:  #E4EDE7;   /* 苔 済んだ */
+  --on-dark: #E7E5DE;
+
+  /* 字：6段だけ。中間を作らない */
+  --t-note:  10.5px;
+  --t-meta:  11.5px;
+  --t-body:  13px;
+  --t-read:  15px;
+  --t-head:  18px;
+  --t-title: 24px;
+
+  --mono: "M PLUS 1 Code", "SFMono-Regular", Menlo, Consolas, monospace;
+
+  /* 余白は 4 の倍数だけ */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 20px; --s6: 24px; --s8: 32px;
+
+  /* 角は1段だけ。**符牒に丸みは要らない** */
+  --r: 3px;
+
+  color-scheme: light;
+  --scroll-thumb: #CCC9C0;
+}
+:root { scrollbar-color: var(--scroll-thumb) transparent; scrollbar-width: thin; }
+
+:root[data-theme="dark"] {
+  --bg:    #131316;
+  --face:  #1A1A1E;
+  --sunk:  #232329;
+  --line:  #2E2E35;
+
+  --ink:   #E8E7E3;
+  --ink-2: #A09F9A;
+  --ink-3: #6B6A67;
+
+  --ai:    #7FA8DC;  --ai-t:  rgba(127,168,220,.16);
+  --shu:   #E2624A;  --shu-t: rgba(226,98,74,.16);
+  --mur:   #A98CB4;  --mur-t: rgba(169,140,180,.16);
+  --koh:   #D9A24C;  --koh-t: rgba(217,162,76,.16);
+  --ok:    #6FAE85;  --ok-t:  rgba(111,174,133,.16);
+  --on-dark: #E7E5DE;
+
+  color-scheme: dark;
+  --scroll-thumb: #3A3A42;
+}
+
+/* ── 基部 ─────────────────────────────────────────────────────────────── */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: var(--mono); background: var(--bg); color: var(--ink);
+  font-size: var(--t-body); line-height: 1.75; -webkit-font-smoothing: antialiased;
+}
+button, input, textarea { font: inherit; color: inherit; }
+button { background: none; border: 0; cursor: pointer; text-align: left; }
+::selection { background: var(--ai-t); }
+:focus-visible { outline: 2px solid var(--ai); outline-offset: 1px; }
+code { background: var(--sunk); padding: 1px 5px; border-radius: var(--r); font-size: var(--t-meta); }
+
+/* ── 上端：状態行。**押せるものはここに置かない**（見るためだけの帯）───────
+   tmux の status line と同じ役目。常設はこれ1本で、面は取らない            */
+.sl { flex: none; display: flex; align-items: center; height: 30px; padding: 0 var(--s3);
+      background: var(--ink); color: var(--on-dark); font-size: var(--t-meta); white-space: nowrap; overflow: hidden; }
+:root[data-theme="dark"] .sl { background: #000; }
+.sl-mark { align-self: stretch; display: flex; align-items: center; padding: 0 10px; margin-left: -12px;
+           background: var(--ai); color: #fff; font-weight: 700; letter-spacing: .1em; }
+.sl-i { padding: 0 10px; color: #9C9A94; display: flex; align-items: center; gap: 6px; }
+.sl-i b { color: var(--on-dark); font-weight: 500; }
+.sl-i.call b { color: #F09070; font-weight: 700; }
+.sl-sp { flex: 1; }
+.sl-k { padding: 0 3px; border-radius: 2px; background: #33333A; color: #C9C7C1; font-size: var(--t-note); }
+
+/* ── 符牒（キーの札）。**常置しない**。f か ⌥ のときだけ浮く ────────────── */
+.k { display: inline-grid; place-items: center; min-width: 15px; height: 15px; padding: 0 3px;
+     background: var(--ai); color: #fff; border-radius: 2px;
+     font-size: var(--t-note); font-weight: 700; line-height: 1; flex: none; }
+.k.g { background: var(--sunk); color: var(--ink-2); }
+.k.d { background: rgba(0,0,0,.3); color: #fff; }
+/* 浮いている符牒は行の左の余白へ。**本文の位置をずらさない** */
+.kf { position: absolute; left: -21px; top: 50%; transform: translateY(-50%); opacity: 0; transition: opacity .1s; }
+.is-fu .kf { opacity: 1; }
+
+/* ── 押すもの ─────────────────────────────────────────────────────────── */
+.btn { display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 11px;
+       border-radius: var(--r); font-size: var(--t-meta); background: var(--sunk); color: var(--ink-2); }
+.btn:hover { color: var(--ink); filter: brightness(.97); }
+.btn.shu { background: var(--shu); color: #fff; font-weight: 500; }
+.btn.shu:hover { filter: brightness(1.1); }
+.btn.flat { background: none; color: var(--ink-3); }
+.btn.flat:hover { background: var(--sunk); color: var(--ink); }
+.btn:disabled { opacity: .4; cursor: default; }
+
+/* ── 符号。**色が見えなくても、字で役が分かる** ──────────────────────────
+   ※ あなたの番 ／ 動いている 〆 済んだ × 止まった ！ 気をつける            */
+.sg { display: inline-block; width: 14px; text-align: center; flex: none; font-weight: 700; }
+.sg.wait { color: var(--shu); }
+.sg.run  { color: var(--ai); }
+.sg.done { color: var(--ok); }
+.sg.stop { color: var(--mur); }
+.sg.warn { color: var(--koh); }
+
+/* 見本の札（製品の一部ではない） */
+.foot { position: fixed; left: 0; right: 0; bottom: 0; height: 24px; display: flex; align-items: center; gap: var(--s3);
+        padding: 0 var(--s3); background: var(--sunk); color: var(--ink-2); border-top: 1px solid var(--line);
+        font-size: var(--t-note); z-index: 60; }
+.foot .sp { flex: 1; }
+.foot button { color: var(--ai); text-decoration: underline; text-underline-offset: 2px; font-size: var(--t-note); }

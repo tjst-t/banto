@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>案10 重ね — 枝は幹の上に重なる紙</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="ideal.css">
+<style>
+/* ══════════════════════════════════════════════════════════════════════════
+   案10「重ね」— 枝は幹の上に重なる紙。開いている枝は下端に背表紙で積む
+
+   ■ 直したかったこと
+   案9「続き間」は幹を見失わないが、**列が細る**。読み物である会話を細い列に
+   押し込むのは本末転倒で、しかも狭い画面ではこの形が成り立たない。
+
+   ■ 賭けていること
+   **1つに集中する。** 枝は幹の上に**紙が重なる**形で開く。ただし
+   ・上端に**幹の直近2行が覗いている**（peek）。押せば幹に戻る
+   ・開いている枝は**下端に背表紙**として積まれる。押せば入れ替わる
+   ——「いま何本抱えているか」は下端の厚みで分かり、幹は上端に必ず在る。
+
+   ・広い画面でもスマホでも**同じ形**。畳む向きが体で分かる（下から上がる／下へ抜ける）
+   ・面は枝の紙の**右半分**に出る（狭いときはさらに重なる）
+   ・畳むと紙が下へ抜け、幹の末尾に結論が1行積まれる
+   ・横断の通知は上端の帯から降りてくる（一級の面）
+
+   ■ 失うもの
+   幹と枝を**同時には読めない**（覗くのは2行だけ）。案9 はそこに賭けた対の案。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.shell { height: 100%; display: flex; flex-direction: column; padding-bottom: 26px; position: relative; overflow: hidden; }
+
+/* ── 上端：プロジェクトと横断の通知。**細く、常に在る** ─────────────────── */
+.top { flex: none; display: flex; align-items: center; gap: var(--s2); height: 48px; padding: 0 var(--s4);
+       background: var(--surface); border-bottom: 1px solid var(--line); z-index: 30; }
+.pj-btn { display: flex; align-items: center; gap: var(--s2); height: 32px; padding: 0 var(--s3); border-radius: var(--r-sm); font-weight: 600; }
+.pj-btn:hover { background: var(--surface-2); }
+.pj-btn .dot { background: var(--accent); }
+.pj-btn svg { width: 14px; height: 14px; fill: none; stroke: var(--text-3); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.top .sp { flex: 1; }
+.ib-btn { display: flex; align-items: center; gap: var(--s2); height: 32px; padding: 0 var(--s3); border-radius: var(--r-sm); color: var(--text-2); }
+.ib-btn:hover { background: var(--surface-2); color: var(--text); }
+.ib-btn svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ── 幹：地。**永続で、閉じない** ──────────────────────────────────────── */
+.trunk { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--s5); }
+.col { display: flex; flex-direction: column; gap: var(--s4); padding: var(--s5) 0 var(--s6); max-width: 720px; margin: 0 auto; }
+.composer-wrap { flex: none; padding: var(--s2) var(--s5) var(--s4); position: relative; }
+/* 背表紙が積まれている間は、その厚みだけ入力欄を上げる（重ならせない） */
+.has-deck .composer-wrap { padding-bottom: 46px; }
+.composer-wrap::before { content: ""; position: absolute; left: 0; right: 0; bottom: 100%; height: 26px;
+                         background: linear-gradient(to top, var(--bg), transparent); pointer-events: none; }
+.composer-wrap .composer { max-width: 720px; margin: 0 auto; }
+
+/* 枝の札・面の札・回収の1行（案9 と同じ部品） */
+.bcard { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); box-shadow: var(--sh-1); padding: var(--s3) var(--s4); width: 100%; }
+.bcard:hover { border-color: var(--accent); }
+.bc-top { display: flex; align-items: center; gap: var(--s2); margin-bottom: 2px; }
+.bc-top .sp { flex: 1; }
+.bcard h3 { font-size: var(--t-md); font-weight: 600; line-height: 1.5; }
+.bc-cond { font-size: var(--t-xs); color: var(--text-3); margin-top: 1px; }
+.bc-foot { display: flex; align-items: center; gap: var(--s2); margin-top: var(--s2); font-size: var(--t-xs); color: var(--text-2); }
+.bc-foot .sp { flex: 1; }
+.bc-foot .m { font-family: var(--f-mono); color: var(--text-3); }
+.bcard.merged { background: none; box-shadow: none; border-style: dashed; }
+.bcard.merged h3 { color: var(--text-2); font-weight: 500; }
+.bc-result { font-size: var(--t-sm); color: var(--text-2); margin-top: 2px; }
+.bc-result b { color: var(--text); font-weight: 500; }
+.backline { display: flex; align-items: flex-start; gap: var(--s2); font-size: var(--t-sm); color: var(--text-2); }
+.backline .k { flex: none; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%;
+               box-shadow: inset 0 0 0 1.5px var(--ok); color: var(--ok); margin-top: 3px; }
+.backline .k svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.backline b { color: var(--text); font-weight: 600; }
+.fcard { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); box-shadow: var(--sh-1);
+         display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s3) var(--s2) var(--s4); width: 100%; }
+.fcard svg { width: 15px; height: 15px; fill: none; stroke: var(--accent); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.fcard b { font-size: var(--t-md); font-weight: 600; }
+.fcard .m { font-family: var(--f-mono); font-size: var(--t-xs); color: var(--text-3); }
+.fcard .sp { flex: 1; }
+
+/* ══ 重なる紙 ════════════════════════════════════════════════════════════
+   下から上がってくる。**上端に幹が2行だけ覗く**——戻り道が常に見えている  */
+.sheet { position: absolute; left: 0; right: 0; top: 108px; bottom: 26px; z-index: 20;
+         background: var(--bg); border-radius: var(--r-lg) var(--r-lg) 0 0; box-shadow: var(--sh-3);
+         display: flex; flex-direction: column; overflow: hidden;
+         transform: translateY(105%); transition: transform 260ms var(--ease); }
+.sheet.on { transform: none; }
+/* 覗いている幹を押すと戻る、と分かるように帯を置く */
+.peek { position: absolute; left: 0; right: 0; top: 48px; height: 60px; z-index: 19;
+        display: none; align-items: flex-end; padding: 0 var(--s5) var(--s2);
+        background: linear-gradient(to bottom, var(--bg) 62%, rgba(0,0,0,0)); cursor: pointer; }
+.peek.on { display: flex; }
+.peek-in { max-width: 720px; width: 100%; margin: 0 auto; display: flex; align-items: center; gap: var(--s2);
+           font-size: var(--t-xs); color: var(--text-3); }
+.peek-in .sp { flex: 1; }
+.peek:hover .peek-in { color: var(--text-2); }
+
+.sh-head { flex: none; display: flex; align-items: center; gap: var(--s2); padding: var(--s3) var(--s4);
+           border-bottom: 1px solid var(--line); background: var(--surface); }
+.sh-head .t { min-width: 0; flex: 1; }
+.sh-head h2 { font-size: var(--t-lg); font-weight: 650; line-height: 1.4; }
+.sh-head .sub { font-size: var(--t-xs); color: var(--text-3); }
+.sh-body { flex: 1; min-height: 0; display: flex; }
+.sh-talk { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+/* 面は枝の紙の右半分。狭いときは重ねる（この見本は広い画面のみ） */
+.sh-face { width: 0; flex: none; overflow: hidden; background: var(--surface); border-left: 1px solid var(--line);
+           display: flex; flex-direction: column; transition: width 240ms var(--ease); }
+.sheet.face-on .sh-face { width: 46%; }
+.fc-head { flex: none; display: flex; align-items: center; gap: var(--s2); padding: var(--s3) var(--s4); border-bottom: 1px solid var(--line); }
+.fc-head b { font-size: var(--t-md); font-weight: 650; }
+.fc-head .m { font-family: var(--f-mono); font-size: var(--t-xs); color: var(--text-3); }
+.fc-head .sp { flex: 1; }
+.fc-body { flex: 1; min-height: 0; overflow-y: auto; padding: var(--s4); }
+
+.code { font-family: var(--f-mono); font-size: var(--t-sm); line-height: 1.75; white-space: pre; overflow-x: auto;
+        background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3); }
+.code .a { color: var(--ok); } .code .d { color: var(--stop); } .code .c { color: var(--text-3); }
+.rows { border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
+.rows .r { display: flex; align-items: center; gap: var(--s2); padding: 9px var(--s3); font-size: var(--t-sm); border-bottom: 1px solid var(--line-2); }
+.rows .r:last-child { border-bottom: 0; }
+.rows .r b { font-weight: 500; } .rows .r .sp { flex: 1; }
+.rows .r em { font-style: normal; font-family: var(--f-mono); font-size: var(--t-xs); color: var(--text-3); }
+
+/* ══ 下端：開いている枝の背表紙。**厚みがそのまま抱えている数** ══════════ */
+.deck { position: absolute; left: 0; right: 0; bottom: 26px; z-index: 40; display: flex; align-items: flex-end;
+        gap: var(--s2); padding: 0 var(--s4) var(--s2); pointer-events: none; }
+.deck .in { display: flex; gap: 6px; margin: 0 auto; pointer-events: auto; }
+.book { display: flex; align-items: center; gap: var(--s2); height: 34px; padding: 0 var(--s3);
+        border-radius: var(--r-md) var(--r-md) 0 0; background: var(--surface); box-shadow: var(--sh-2);
+        border: 1px solid var(--line); border-bottom: 0; font-size: var(--t-sm); max-width: 260px;
+        transition: transform var(--dur) var(--ease); }
+.book:hover { transform: translateY(-3px); }
+.book.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.book.on .dot { box-shadow: none; background: #fff; }
+.book .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.book .x { opacity: .5; }
+.book:hover .x { opacity: 1; }
+
+/* ── 横断の通知：上から降りてくる一級の面 ─────────────────────────────── */
+.veil { position: fixed; inset: 0; z-index: 70; display: none; background: rgba(17,22,31,.32); }
+.veil.on { display: block; }
+.inbox { position: absolute; left: 50%; top: 0; transform: translateX(-50%); width: min(760px, 100%); height: 100%;
+         background: var(--bg); box-shadow: var(--sh-3); display: flex; flex-direction: column; }
+.ib-head2 { flex: none; padding: var(--s6) var(--s6) var(--s3); }
+.ib-head2 h2 { font-size: var(--t-2xl); font-weight: 650; letter-spacing: -.01em; }
+.ib-head2 p { font-size: var(--t-sm); color: var(--text-2); margin-top: 2px; }
+.ib-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--s6) var(--s6); display: flex; flex-direction: column; gap: var(--s3); }
+
+/* プロジェクトを選ぶ：重ねる面（ドロップダウンは使わない） */
+.pick { position: absolute; left: 50%; top: 80px; transform: translateX(-50%); width: min(460px, calc(100% - 32px));
+        background: var(--surface); border-radius: var(--r-lg); box-shadow: var(--sh-3); overflow: hidden; }
+.pick h3 { padding: var(--s4) var(--s5) var(--s2); font-size: var(--t-lg); font-weight: 650; }
+.pick .r { display: flex; align-items: center; gap: var(--s3); width: 100%; padding: var(--s3) var(--s5); }
+.pick .r:hover { background: var(--surface-2); }
+.pick .r .t { flex: 1; min-width: 0; }
+.pick .r b { display: block; font-size: var(--t-md); font-weight: 600; }
+.pick .r s { display: block; text-decoration: none; font-size: var(--t-xs); color: var(--text-3); }
+</style>
+</head>
+<body>
+<div class="shell" id="shell">
+  <header class="top">
+    <button class="pj-btn" id="pjBtn"><span class="dot"></span><span id="pjName">banto</span>
+      <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></svg></button>
+    <span style="font-size:var(--t-xs);color:var(--text-3)">幹・この会話は畳まれません</span>
+    <span class="sp"></span>
+    <button class="ib-btn" id="inboxBtn">
+      <svg viewBox="0 0 24 24"><path d="M3 13h4l2 3h6l2-3h4"/><path d="M5 5h14l2 8v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4z"/></svg>
+      横断の通知 <span class="count" id="ibN">3</span></button>
+    <button class="btn btn-icon btn-ghost" id="themeBtn"><svg viewBox="0 0 24 24"><path d="M20 14a8 8 0 01-10-10 8 8 0 1010 10z"/></svg></button>
+  </header>
+
+  <!-- 幹：地。永続で、閉じない -->
+  <main class="trunk">
+    <div class="scroll" id="scroll"><div class="col" id="col"></div></div>
+    <div class="composer-wrap"><div class="composer">
+      <textarea placeholder="番頭に相談する（banto の幹）" id="ta"></textarea>
+      <div class="composer-tools"><span class="m">claude-opus-5</span><span class="sp"></span>
+        <button class="btn btn-accent">送る</button></div>
+    </div></div>
+  </main>
+
+  <!-- 覗いている幹。押せば戻る -->
+  <div class="peek" id="peek"><div class="peek-in"><span>▲ 幹に戻る</span><span class="sp"></span><span id="peekTail"></span></div></div>
+
+  <!-- 重なる紙 -->
+  <section class="sheet" id="sheet">
+    <div class="sh-head">
+      <button class="btn btn-icon btn-ghost" id="sheetDown" title="幹に戻る（紙は下端に残ります）">
+        <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></svg></button>
+      <div class="t"><h2 id="shTitle">—</h2><div class="sub" id="shSub"></div></div>
+      <button class="btn" id="mergeBtn">畳んで幹に回収</button>
+    </div>
+    <div class="sh-body">
+      <div class="sh-talk">
+        <div class="scroll" id="shScroll"><div class="col" id="shCol"></div></div>
+        <div class="composer-wrap"><div class="composer">
+          <textarea placeholder="この枝で番頭に話す"></textarea>
+          <div class="composer-tools"><span class="m">claude-opus-5</span><span class="sp"></span>
+            <button class="btn btn-accent">送る</button></div>
+        </div></div>
+      </div>
+      <div class="sh-face">
+        <div class="fc-head"><b id="fcTitle">—</b><span class="m" id="fcMeta"></span><span class="sp"></span>
+          <button class="btn btn-icon btn-ghost" id="fcClose"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+        <div class="fc-body" id="fcBody"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 開いている枝の背表紙。厚みがそのまま抱えている数 -->
+  <div class="deck" id="deck"></div>
+</div>
+
+<div class="veil" id="veil">
+  <div class="inbox" id="inboxFace">
+    <div class="ib-head2"><h2>横断の通知</h2>
+      <p>出所もプロジェクトも問わず、あなたに用があるものはここ1本。押せばその枝の紙が上がります。</p></div>
+    <div class="ib-list" id="ibList"></div>
+  </div>
+  <div class="pick" id="pickFace" style="display:none">
+    <h3>プロジェクト</h3>
+    <div id="pickList"></div>
+  </div>
+</div>
+
+<div class="stamp">案10 重ね — 枝は幹の上に重なる紙<span class="sp"></span><span>上端に幹が覗き、下端に開いている枝が積まれる</span></div>
+
+<script src="scene.js"></script>
+<script>
+const { PROJECTS, FACES, BRANCHES, TRUNKS, LETTERS, svg, row } = window.SCENE;
+
+let pj = "banto";
+let open = [];        // 下端に積まれている枝（開いたまま畳んでいないもの）
+let active = null;    // いま上がっている紙
+let face = null;      // その紙で開いている面
+
+const $ = (id) => document.getElementById(id);
+
+function bcard(k) {
+  const b = BRANCHES[k];
+  if (b.state === "merged") return `<div class="bcard merged">
+      <div class="bc-top"><span class="badge">枝</span><span class="sp"></span><span style="font-size:var(--t-xs);color:var(--text-3)">畳みました</span></div>
+      <h3>${b.title}</h3><div class="bc-result"><b>結論：</b>${b.result}</div></div>`;
+  return `<button class="bcard" data-open="${k}">
+      <div class="bc-top"><span class="badge ${b.state === "turn" ? "turn" : "accent"}">枝</span>
+        <span style="font-size:var(--t-xs);color:var(--text-3)">${b.by}</span><span class="sp"></span></div>
+      <h3>${b.title}</h3>
+      <div class="bc-cond">還す条件：${b.cond}</div>
+      <div class="bc-foot"><span class="dot ${b.state}"></span>
+        ${b.state === "turn" ? "あなたの判断を待っています" : b.state === "stop" ? "止まっています" : "動いています"}
+        <span class="m">${b.meta}</span><span class="sp"></span>
+        <span style="color:var(--accent);font-weight:500">▲ 開く</span></div>
+    </button>`;
+}
+const fcard = (k) => {
+  const f = FACES[k];
+  return `<button class="fcard" data-face="${k}">${svg(f.icon)}<b>${f.title}</b><span class="m">${f.meta}</span>
+    <span class="sp"></span><span class="badge">開く</span></button>`;
+};
+
+function renderTrunk() {
+  $("col").innerHTML = TRUNKS[pj].map(e => row(e, {
+    branch: bcard, face: fcard,
+    back: (k) => `<div class="backline"><span class="k">${svg("check")}</span><div>枝「<b>${BRANCHES[k].title}</b>」を幹に回収しました<br><span style="color:var(--text-3)">結論：</span>${BRANCHES[k].result}</div></div>`,
+  })).join("");
+  $("ta").placeholder = `番頭に相談する（${PROJECTS[pj].name} の幹）`;
+  $("pjName").textContent = PROJECTS[pj].name;
+  $("scroll").scrollTop = $("scroll").scrollHeight;
+  // 覗きに出す幹の末尾
+  const last = [...TRUNKS[pj]].reverse().find(e => e[0] === "po" || e[0] === "ba");
+  $("peekTail").textContent = last ? (last[0] === "po" ? "あなた：" : "番頭：") + last[1].replace(/<[^>]+>/g, "").slice(0, 34) + "…" : "";
+}
+
+function renderSheet() {
+  const on = !!active;
+  $("sheet").classList.toggle("on", on);
+  $("peek").classList.toggle("on", on);
+  if (!on) return;
+  const b = BRANCHES[active];
+  $("shTitle").textContent = b.title;
+  $("shSub").innerHTML = `枝 · 還す条件：${b.cond}`;
+  $("shCol").innerHTML = b.log.map(e => row(e, { face: fcard })).join("") +
+    (b.ask ? `<div class="ask"><div class="ask-h">あなたの判断を待っています</div><p>${b.ask.text}</p>
+      <div class="ask-a">${b.ask.opts.map((o, n) => `<button class="btn ${n === 0 ? "btn-turn" : n === 2 ? "btn-ghost" : ""}">${o}</button>`).join("")}</div></div>` : "");
+  $("shScroll").scrollTop = 0;
+  $("sheet").classList.toggle("face-on", !!face);
+  if (face) { $("fcTitle").textContent = FACES[face].title; $("fcMeta").textContent = FACES[face].meta; $("fcBody").innerHTML = FACES[face].html; }
+}
+
+function renderDeck() {
+  document.getElementById("shell").classList.toggle("has-deck", open.length > 0);
+  $("deck").innerHTML = open.length ? `<div class="in">${open.map(k => {
+    const b = BRANCHES[k];
+    return `<button class="book ${k === active ? "on" : ""}" data-book="${k}">
+      <span class="dot ${b.state}"></span><span class="t">${b.title}</span>
+      <span class="x" data-shut="${k}">✕</span></button>`;
+  }).join("")}</div>` : "";
+}
+
+function render() { renderTrunk(); renderSheet(); renderDeck(); renderInbox(); }
+
+function openBranch(k) {
+  if (!open.includes(k)) open.push(k);
+  active = k; face = null; render();
+}
+function toTrunk() { active = null; face = null; render(); }   // 紙は下端に残る
+function shut(k) { open = open.filter(x => x !== k); if (active === k) active = null; render(); }
+function merge(k) {
+  const b = BRANCHES[k];
+  b.state = "merged"; b.meta = "畳みました";
+  TRUNKS[b.proj].push(["back", k]);
+  shut(k);
+}
+
+function renderInbox() {
+  const live = LETTERS.filter(l => BRANCHES[l.to].state !== "merged");
+  $("ibList").innerHTML = live.map(l => {
+    const b = BRANCHES[l.to], other = b.proj !== pj;
+    return `<div class="letter ${l.tone || ""}">
+      <div class="lt-top"><span class="lt-from">${l.from}</span>
+        <span class="badge ${l.tone === "stop" ? "stop" : "turn"}">${l.kind}</span>
+        ${other ? `<span class="badge accent lt-proj">${PROJECTS[b.proj].name}</span>` : ""}
+        <span class="sp"></span><span class="lt-age">${l.age}</span></div>
+      <h3>${l.h}</h3>
+      <dl><dt>経緯</dt><dd><q>${l.why}</q></dd><dt>起きたこと</dt><dd>${l.what}</dd><dt>枝</dt><dd>${b.title}</dd></dl>
+      <div class="lt-a">${l.opts.map((o, n) => `<button class="btn ${n === 0 ? "btn-turn" : ""}">${o}</button>`).join("")}
+        <span class="sp"></span>
+        <button class="btn btn-ghost" data-goto="${l.to}">${svg("branch")}${other ? PROJECTS[b.proj].name + " の枝へ" : "その枝へ"}</button></div>
+    </div>`;
+  }).join("");
+  const c = $("ibN"); c.textContent = live.length; c.classList.toggle("zero", !live.length);
+}
+
+function renderPick() {
+  $("pickList").innerHTML = Object.entries(PROJECTS).map(([k, p]) => {
+    const live = Object.values(BRANCHES).filter(b => b.proj === k && b.state !== "merged");
+    const turn = live.filter(b => b.state === "turn").length;
+    return `<button class="r" data-pj="${k}"><span class="dot ${turn ? "turn" : "run"}"></span>
+      <span class="t"><b>${p.name}</b><s>${p.note} · 枝 ${live.length}${turn ? ` · あなたの番 ${turn}` : ""}</s></span>
+      ${k === pj ? '<span class="badge accent">いま見ています</span>' : ""}</button>`;
+  }).join("");
+}
+
+const veil = $("veil");
+const showVeil = (which) => {
+  $("inboxFace").style.display = which === "inbox" ? "" : "none";
+  $("pickFace").style.display = which === "pick" ? "" : "none";
+  veil.classList.add("on");
+};
+
+document.addEventListener("click", (e) => {
+  const shutBtn = e.target.closest("[data-shut]"); if (shutBtn) { e.stopPropagation(); return shut(shutBtn.dataset.shut); }
+  const bk = e.target.closest("[data-book]"); if (bk) return openBranch(bk.dataset.book);
+  const o = e.target.closest("[data-open]"); if (o) return openBranch(o.dataset.open);
+  const f = e.target.closest("[data-face]"); if (f) {
+    if (!active) { /* 幹で開いた面は、幹に居たまま紙として上げる */ open.push; }
+    face = f.dataset.face;
+    if (!active) { active = null; showFaceOnTrunk(face); return; }
+    return renderSheet();
+  }
+  const g = e.target.closest("[data-goto]"); if (g) { veil.classList.remove("on"); pj = BRANCHES[g.dataset.goto].proj; openBranch(g.dataset.goto); return; }
+  const p = e.target.closest("[data-pj]"); if (p) { veil.classList.remove("on"); pj = p.dataset.pj; open = []; active = null; face = null; return render(); }
+  if (e.target === veil) veil.classList.remove("on");
+});
+
+/* 幹で開いた面も**紙として上がる**（枝と同じ手つき。語彙を増やさない） */
+function showFaceOnTrunk(k) {
+  const f = FACES[k];
+  $("sheet").classList.add("on"); $("peek").classList.add("on");
+  $("shTitle").textContent = f.title; $("shSub").textContent = "キャンバス · 幹で開きました";
+  $("shCol").innerHTML = `<div style="font-size:var(--t-sm);color:var(--text-2)">この面は幹で開いています。閉じても幹の会話には札が残ります。</div>` + f.html;
+  $("sheet").classList.remove("face-on");
+  $("mergeBtn").style.display = "none";
+}
+
+$("sheetDown").addEventListener("click", () => { $("mergeBtn").style.display = ""; toTrunk(); });
+$("mergeBtn").addEventListener("click", () => active && merge(active));
+$("fcClose").addEventListener("click", () => { face = null; renderSheet(); });
+$("inboxBtn").addEventListener("click", () => { renderInbox(); showVeil("inbox"); });
+$("pjBtn").addEventListener("click", () => { renderPick(); showVeil("pick"); });
+$("peek").addEventListener("click", () => { $("mergeBtn").style.display = ""; toTrunk(); });
+$("themeBtn").addEventListener("click", () => {
+  const r = document.documentElement; r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (veil.classList.contains("on")) return veil.classList.remove("on");
+  if (face) { face = null; return renderSheet(); }
+  if (active || $("sheet").classList.contains("on")) { $("mergeBtn").style.display = ""; toTrunk(); }
+});
+
+render();
+</script>
+</body>
+</html>

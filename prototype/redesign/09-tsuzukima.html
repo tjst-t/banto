@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>案9 続き間 — 幹を一度も見失わない</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="ideal.css">
+<style>
+/* ══════════════════════════════════════════════════════════════════════════
+   案9「続き間」— 幹を一度も見失わない。深さを**横**にする
+
+   ■ 直したかったこと
+   案6「筋」で一番痛かったのは、**枝に入ると幹が消える**ことだった。
+   枝に長く居ると、いま何の話の枝なのかが分からなくなる。パンくず1行では足りない。
+
+   ■ 賭けていること
+   商家の**続き間**——襖を開けると次の間、また次の間。開けても手前の間は消えない。
+   幹・枝・面を**横に並べた列**にして、深さを空間そのものにする。
+
+   ・幹（永続）は**常に左に居る**。枝を開いても消えず、狭くなるだけ
+   ・枝を開くと右に列が生える。面を開くとさらに右へ
+   ・**幹と枝を同時に見ながら話せる**——「幹ではこう言ったが、枝ではこうだ」が並ぶ
+   ・畳むと列が右から閉じ、幹の末尾に結論が1行積まれる（回収が絵で見える）
+   ・列が増えたら**手前の列が背表紙になる**（消えはしない。押せば戻る）
+   ・横断の通知は左端のレールの一番上。数字だけで、開くまで面を取らない
+
+   ■ 失うもの
+   各列の幅。狭い画面ではこの形が成り立たない（畳んで1列にするしかない）。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.shell { height: 100%; display: flex; padding-bottom: 26px; }
+
+/* ── 左端：プロジェクトと、横断の通知 ─────────────────────────────────── */
+.rail { width: 58px; flex: none; display: flex; flex-direction: column; align-items: center; gap: var(--s2);
+        padding: var(--s3) 0; background: var(--surface-2); }
+.rail-inbox { position: relative; width: 38px; height: 38px; display: grid; place-items: center; border-radius: var(--r-md);
+              background: var(--surface); box-shadow: var(--sh-1); color: var(--text-2); }
+.rail-inbox:hover { color: var(--text); }
+.rail-inbox svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.rail-inbox .count { position: absolute; top: -5px; right: -5px; }
+.rail-sep { width: 22px; height: 1px; background: var(--line); margin: var(--s1) 0; }
+.pj { position: relative; width: 38px; height: 38px; display: grid; place-items: center; border-radius: var(--r-md);
+      color: var(--text-3); font-size: var(--t-md); font-weight: 600; transition: all var(--dur) var(--ease); }
+.pj:hover { background: var(--surface-3); color: var(--text); }
+.pj.on { background: var(--surface); color: var(--accent); box-shadow: var(--sh-1); }
+.pj.on::before { content: ""; position: absolute; left: -10px; top: 8px; bottom: 8px; width: 3px; border-radius: 0 2px 2px 0; background: var(--accent); }
+.pj .bell { position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--turn); }
+.rail .sp { flex: 1; }
+.tip { position: absolute; left: 46px; top: 50%; transform: translateY(-50%); padding: 4px 10px; border-radius: var(--r-sm);
+       background: var(--text); color: var(--surface); font-size: var(--t-xs); white-space: nowrap;
+       opacity: 0; pointer-events: none; transition: opacity var(--dur); z-index: 30; }
+.pj:hover .tip, .rail-inbox:hover .tip { opacity: 1; }
+
+/* ══ 続き間 ══════════════════════════════════════════════════════════════
+   列は右へ生える。**手前の列は消えない**——それがこの案の全部            */
+.rooms { flex: 1; min-width: 0; display: flex; }
+.room { flex: 1 1 0; min-width: 330px; display: flex; flex-direction: column; background: var(--bg);
+        border-left: 1px solid var(--line); transition: flex-grow var(--dur) var(--ease); }
+.room:first-child { border-left: 0; }
+/* 奥の間ほど広い。手前（幹）は読める幅を保ったまま譲る */
+.rooms.d1 .room.trunk { flex-grow: 1; }
+.rooms.d2 .room.trunk { flex-grow: .78; }
+.rooms.d3 .room.trunk { flex-grow: .72; }
+.rooms.d3 .room.branch { flex-grow: 1; }
+
+/* 列が3つを超えたら、手前を背表紙に畳む（消さない） */
+.spine { width: 40px; flex: none; display: flex; flex-direction: column; align-items: center; gap: var(--s3);
+         padding: var(--s4) 0; background: var(--surface-2); border-left: 1px solid var(--line); cursor: pointer; }
+.spine:hover { background: var(--surface-3); }
+.spine .v { writing-mode: vertical-rl; font-size: var(--t-xs); color: var(--text-2); letter-spacing: .06em;
+            max-height: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.room-head { flex: none; display: flex; align-items: center; gap: var(--s2); padding: var(--s3) var(--s4) var(--s2); min-height: 52px; }
+.room-head .t { min-width: 0; flex: 1; }
+.room-head h1 { font-size: var(--t-lg); font-weight: 650; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.room-head .sub { font-size: var(--t-xs); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.room-head .sub b { color: var(--text-2); font-weight: 500; }
+.room.trunk .room-head { border-bottom: 1px solid var(--line-2); }
+.kind { font-size: var(--t-xs); font-weight: 700; letter-spacing: .06em; color: var(--accent); }
+.kind.turn { color: var(--turn); }
+
+.scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--s4); }
+.col { display: flex; flex-direction: column; gap: var(--s4); padding: var(--s4) 0 var(--s5); max-width: 700px; margin: 0 auto; }
+.room.trunk .col { max-width: 720px; }
+
+/* 幹に載る枝の札。**開いた1行**——中身は幹に流さない */
+.bcard { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); box-shadow: var(--sh-1);
+         padding: var(--s3) var(--s4); transition: border-color var(--dur) var(--ease); }
+.bcard:hover { border-color: var(--accent); }
+.bcard.on { border-color: var(--accent); box-shadow: var(--sh-1), 0 0 0 1px var(--accent); }
+.bc-top { display: flex; align-items: center; gap: var(--s2); margin-bottom: 2px; }
+.bc-top .sp { flex: 1; }
+.bcard h3 { font-size: var(--t-md); font-weight: 600; line-height: 1.5; }
+.bc-cond { font-size: var(--t-xs); color: var(--text-3); margin-top: 1px; }
+.bc-foot { display: flex; align-items: center; gap: var(--s2); margin-top: var(--s2); font-size: var(--t-xs); color: var(--text-2); }
+.bc-foot .sp { flex: 1; }
+.bc-foot .m { font-family: var(--f-mono); color: var(--text-3); }
+/* 畳んだ枝は、姿だけ済んだものになる（幹は書き換わらない） */
+.bcard.merged { background: none; box-shadow: none; border-style: dashed; }
+.bcard.merged h3 { color: var(--text-2); font-weight: 500; }
+.bc-result { font-size: var(--t-sm); color: var(--text-2); margin-top: 2px; }
+.bc-result b { color: var(--text); font-weight: 500; }
+/* 回収の1行 */
+.backline { display: flex; align-items: flex-start; gap: var(--s2); font-size: var(--t-sm); color: var(--text-2); }
+.backline .k { flex: none; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%;
+               box-shadow: inset 0 0 0 1.5px var(--ok); color: var(--ok); margin-top: 3px; }
+.backline .k svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.backline b { color: var(--text); font-weight: 600; }
+
+/* 面の札 */
+.fcard { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); box-shadow: var(--sh-1);
+         display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s3) var(--s2) var(--s4); }
+.fcard svg { width: 15px; height: 15px; fill: none; stroke: var(--accent); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.fcard b { font-size: var(--t-md); font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fcard .m { font-family: var(--f-mono); font-size: var(--t-xs); color: var(--text-3); }
+.fcard .sp { flex: 1; }
+
+.composer-wrap { flex: none; padding: var(--s2) var(--s4) var(--s4); position: relative; }
+.composer-wrap::before { content: ""; position: absolute; left: 0; right: 0; bottom: 100%; height: 24px;
+                         background: linear-gradient(to top, var(--bg), transparent); pointer-events: none; }
+.composer-wrap .composer { max-width: 700px; margin: 0 auto; }
+
+/* 面の中身 */
+.pane { flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--s4) var(--s4); }
+.code { font-family: var(--f-mono); font-size: var(--t-sm); line-height: 1.75; white-space: pre; overflow-x: auto;
+        background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3); }
+.code .a { color: var(--ok); } .code .d { color: var(--stop); } .code .c { color: var(--text-3); }
+.rows { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); overflow: hidden; }
+.rows .r { display: flex; align-items: center; gap: var(--s2); padding: 9px var(--s3); font-size: var(--t-sm); border-bottom: 1px solid var(--line-2); }
+.rows .r:last-child { border-bottom: 0; }
+.rows .r b { font-weight: 500; }
+.rows .r .sp { flex: 1; }
+.rows .r em { font-style: normal; font-family: var(--f-mono); font-size: var(--t-xs); color: var(--text-3); }
+
+/* ── 横断の通知：被さる面。開くまで画面を取らない ────────────────────── */
+.veil { position: fixed; inset: 0; z-index: 60; display: none; background: rgba(17,22,31,.32); }
+.veil.on { display: block; }
+.inbox { position: absolute; left: 50%; top: 0; transform: translateX(-50%); width: min(760px, 100%); height: 100%;
+         background: var(--bg); box-shadow: var(--sh-3); display: flex; flex-direction: column; }
+.ib-head { flex: none; padding: var(--s6) var(--s6) var(--s3); }
+.ib-head h2 { font-size: var(--t-2xl); font-weight: 650; letter-spacing: -.01em; }
+.ib-head p { font-size: var(--t-sm); color: var(--text-2); margin-top: 2px; }
+.ib-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--s6) var(--s6); display: flex; flex-direction: column; gap: var(--s3); }
+</style>
+</head>
+<body>
+<div class="shell" id="shell">
+  <nav class="rail">
+    <!-- 横断の通知。**プロジェクトの上に置く**——どの幹にいても同じ口 -->
+    <button class="rail-inbox" id="inboxBtn">
+      <svg viewBox="0 0 24 24"><path d="M3 13h4l2 3h6l2-3h4"/><path d="M5 5h14l2 8v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4z"/></svg>
+      <span class="count" id="ibN">3</span><span class="tip">横断の通知 — 3件</span>
+    </button>
+    <div class="rail-sep"></div>
+    <div id="pjList"></div>
+    <span class="sp"></span>
+    <button class="pj" id="themeBtn"><svg viewBox="0 0 24 24" style="width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.6"><path d="M20 14a8 8 0 01-10-10 8 8 0 1010 10z"/></svg><span class="tip">明暗</span></button>
+  </nav>
+
+  <div class="rooms d1" id="rooms"></div>
+</div>
+
+<div class="veil" id="veil">
+  <div class="inbox">
+    <div class="ib-head">
+      <h2>横断の通知</h2>
+      <p>出所もプロジェクトも問わず、あなたに用があるものはここ1本。押せばその枝の間へ入ります。</p>
+    </div>
+    <div class="ib-list" id="ibList"></div>
+  </div>
+</div>
+
+<div class="stamp">案9 続き間 — 幹を一度も見失わない<span class="sp"></span><span>幹 → 枝 → 面 が横に並ぶ。手前の間は消えない</span></div>
+
+<script src="scene.js"></script>
+<script>
+const { PROJECTS, FACES, BRANCHES, TRUNKS, LETTERS, svg, row } = window.SCENE;
+
+/* 状態は「いまどの間まで開けているか」の1本道だけ。
+   [幹] / [幹, 枝] / [幹, 枝, 面] ——深さは最大3（枝の中に枝は作らない） */
+let pj = "banto";
+let path = [];          // ["ui"] や ["ui","diff"]
+const rooms = document.getElementById("rooms");
+
+const isFace = (k) => !!FACES[k];
+
+function trunkCol() {
+  const t = TRUNKS[pj].map(e => row(e, {
+    branch: (k) => bcard(k),
+    back: (k) => `<div class="backline"><span class="k">${svg("check")}</span><div>枝「<b>${BRANCHES[k].title}</b>」を幹に回収しました<br><span style="color:var(--text-3)">結論：</span>${BRANCHES[k].result}</div></div>`,
+    face: (k) => fcard(k),
+  })).join("");
+  return `
+    <section class="room trunk">
+      <div class="room-head">
+        <div class="t"><h1>${PROJECTS[pj].name}</h1>
+          <div class="sub"><b>幹</b>・この会話は畳まれません</div></div>
+      </div>
+      <div class="scroll" data-stick><div class="col">${t}</div></div>
+      <div class="composer-wrap"><div class="composer">
+        <textarea placeholder="番頭に相談する（${PROJECTS[pj].name} の幹）"></textarea>
+        <div class="composer-tools"><span class="m">claude-opus-5</span><span class="sp"></span>
+          <button class="btn btn-accent">送る</button></div>
+      </div></div>
+    </section>`;
+}
+
+function bcard(k) {
+  const b = BRANCHES[k];
+  if (b.state === "merged") return `<div class="bcard merged" data-open="${k}">
+      <div class="bc-top"><span class="badge">枝</span><span class="sp"></span><span style="font-size:var(--t-xs);color:var(--text-3)">畳みました</span></div>
+      <h3>${b.title}</h3><div class="bc-result"><b>結論：</b>${b.result}</div></div>`;
+  const on = path[0] === k;
+  return `<button class="bcard ${on ? "on" : ""}" data-open="${k}">
+      <div class="bc-top"><span class="badge ${b.state === "turn" ? "turn" : "accent"}">枝</span>
+        <span style="font-size:var(--t-xs);color:var(--text-3)">${b.by}</span><span class="sp"></span></div>
+      <h3>${b.title}</h3>
+      <div class="bc-cond">還す条件：${b.cond}</div>
+      <div class="bc-foot"><span class="dot ${b.state}"></span>
+        ${b.state === "turn" ? "あなたの判断を待っています" : b.state === "stop" ? "止まっています" : "動いています"}
+        <span class="m">${b.meta}</span><span class="sp"></span>
+        <span style="color:var(--accent);font-weight:500">${on ? "この間を見ています" : "隣の間で開く →"}</span></div>
+    </button>`;
+}
+
+function fcard(k) {
+  const f = FACES[k], on = path[path.length - 1] === k;
+  return `<button class="fcard" data-open="${k}">
+      ${svg(f.icon)}<b>${f.title}</b><span class="m">${f.meta}</span><span class="sp"></span>
+      <span class="badge ${on ? "accent" : ""}">${on ? "開いています" : "隣の間で開く →"}</span></button>`;
+}
+
+function branchCol(k) {
+  const b = BRANCHES[k];
+  const body = b.log.map(e => row(e, { face: (fk) => fcard(fk) })).join("") +
+    (b.ask ? `<div class="ask"><div class="ask-h">あなたの判断を待っています</div><p>${b.ask.text}</p>
+       <div class="ask-a">${b.ask.opts.map((o, n) => `<button class="btn ${n === 0 ? "btn-turn" : n === 2 ? "btn-ghost" : ""}">${o}</button>`).join("")}</div></div>` : "");
+  return `
+    <section class="room branch">
+      <div class="room-head">
+        <button class="btn btn-icon btn-ghost" data-close="0" title="この間を閉じる">${svg("close")}</button>
+        <div class="t"><h1>${b.title}</h1>
+          <div class="sub"><span class="kind ${b.state === "turn" ? "turn" : ""}">枝</span> · 還す条件：${b.cond}</div></div>
+        <button class="btn" data-merge="${k}">畳んで幹に回収</button>
+      </div>
+      <div class="scroll" data-stick><div class="col">${body}</div></div>
+      <div class="composer-wrap"><div class="composer">
+        <textarea placeholder="この枝で番頭に話す"></textarea>
+        <div class="composer-tools"><span class="m">claude-opus-5</span><span class="sp"></span>
+          <button class="btn btn-accent">送る</button></div>
+      </div></div>
+    </section>`;
+}
+
+function faceCol(k, depth) {
+  const f = FACES[k];
+  return `
+    <section class="room face">
+      <div class="room-head">
+        <button class="btn btn-icon btn-ghost" data-close="${depth}" title="この間を閉じる">${svg("close")}</button>
+        <div class="t"><h1>${f.title}</h1><div class="sub">${f.meta}</div></div>
+      </div>
+      <div class="pane">${f.html}</div>
+    </section>`;
+}
+
+function render() {
+  document.getElementById("pjList").innerHTML = Object.entries(PROJECTS).map(([k, p]) => {
+    const turn = Object.values(BRANCHES).some(b => b.proj === k && b.state === "turn");
+    return `<button class="pj ${k === pj ? "on" : ""}" data-pj="${k}">${p.name[0]}
+      ${turn ? '<span class="bell"></span>' : ""}<span class="tip">${p.name} — ${p.note}</span></button>`;
+  }).join("");
+
+  const cols = [trunkCol()];
+  path.forEach((k, n) => cols.push(isFace(k) ? faceCol(k, n) : branchCol(k)));
+
+  /* 3つを超えたら**手前を背表紙に畳む**。消しはしない——押せば戻る */
+  let html;
+  if (cols.length > 3) {
+    const hidden = cols.length - 3;
+    html = `<button class="spine" data-spine="1"><span class="v">${PROJECTS[pj].name} の幹</span></button>` + cols.slice(hidden).join("");
+  } else html = cols.join("");
+
+  rooms.className = `rooms d${Math.min(cols.length, 3)}`;
+  rooms.innerHTML = html;
+  rooms.querySelectorAll("[data-stick]").forEach(s => { s.scrollTop = s.scrollHeight; });
+}
+
+function open(k) {
+  if (isFace(k)) { path = [path[0], k].filter(Boolean); }
+  else { path = [k]; }
+  render();
+}
+function close(depth) { path = path.slice(0, +depth); render(); }
+function merge(k) {
+  const b = BRANCHES[k];
+  b.state = "merged"; b.meta = "畳みました";
+  TRUNKS[b.proj].push(["back", k]);
+  path = []; render();
+}
+
+function renderInbox() {
+  document.getElementById("ibList").innerHTML = LETTERS
+    .filter(l => BRANCHES[l.to].state !== "merged")
+    .map(l => {
+      const b = BRANCHES[l.to], other = b.proj !== pj;
+      return `<div class="letter ${l.tone || ""}">
+        <div class="lt-top"><span class="lt-from">${l.from}</span>
+          <span class="badge ${l.tone === "stop" ? "stop" : "turn"}">${l.kind}</span>
+          ${other ? `<span class="badge accent lt-proj">${PROJECTS[b.proj].name}</span>` : ""}
+          <span class="sp"></span><span class="lt-age">${l.age}</span></div>
+        <h3>${l.h}</h3>
+        <dl><dt>経緯</dt><dd><q>${l.why}</q></dd>
+            <dt>起きたこと</dt><dd>${l.what}</dd>
+            <dt>枝</dt><dd>${b.title}</dd></dl>
+        <div class="lt-a">${l.opts.map((o, n) => `<button class="btn ${n === 0 ? "btn-turn" : ""}">${o}</button>`).join("")}
+          <span class="sp"></span>
+          <button class="btn btn-ghost" data-goto="${l.to}">${svg("branch")}${other ? PROJECTS[b.proj].name + " の枝へ" : "その枝へ"}</button></div>
+      </div>`;
+    }).join("");
+  const n = LETTERS.filter(l => BRANCHES[l.to].state !== "merged").length;
+  const c = document.getElementById("ibN"); c.textContent = n; c.classList.toggle("zero", n === 0);
+}
+
+document.addEventListener("click", (e) => {
+  const o = e.target.closest("[data-open]"); if (o) return open(o.dataset.open);
+  const c = e.target.closest("[data-close]"); if (c) return close(c.dataset.close);
+  const m = e.target.closest("[data-merge]"); if (m) return merge(m.dataset.merge);
+  const s = e.target.closest("[data-spine]"); if (s) { path = []; return render(); }
+  const p = e.target.closest("[data-pj]"); if (p) { pj = p.dataset.pj; path = []; renderInbox(); return render(); }
+  const g = e.target.closest("[data-goto]"); if (g) {
+    const b = BRANCHES[g.dataset.goto];
+    document.getElementById("veil").classList.remove("on");
+    pj = b.proj; open(g.dataset.goto); renderInbox(); return;
+  }
+  if (e.target === document.getElementById("veil")) document.getElementById("veil").classList.remove("on");
+});
+document.getElementById("inboxBtn").addEventListener("click", () => { renderInbox(); document.getElementById("veil").classList.add("on"); });
+document.getElementById("themeBtn").addEventListener("click", () => {
+  const r = document.documentElement; r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  const v = document.getElementById("veil");
+  if (v.classList.contains("on")) return v.classList.remove("on");
+  if (path.length) { path.pop(); render(); }
+});
+
+renderInbox(); render();
+</script>
+</body>
+</html>
