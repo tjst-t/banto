@@ -5,7 +5,7 @@ kind: incident
 origin: agent
 class: silent-failure
 status: resolved
-refs: [task-0072]
+refs: [task-0072, adr-0016]
 ---
 
 ## 内容

@@ -5,7 +5,7 @@ kind: incident
 origin: agent
 class: ui-behavior
 status: resolved
-refs: [spec-chat-ui, spec-ui, inc-0031, inc-0041]
+refs: [spec-chat-ui, spec-ui, inc-0031, inc-0041, adr-0016]
 ---
 
 ## 内容
