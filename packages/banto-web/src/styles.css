@@ -741,7 +741,7 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 
 /* 全部畳んだ空状態 */
 .threads-empty {
-  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: var(--s2); padding: 40px var(--s5);
 }
 .threads-empty-title { font-size: var(--t-head); font-weight: 700; margin: 0; }
@@ -833,7 +833,13 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 }
 
 /* ══ 設定の面 ═══════════════════════════════════════════════════════════ */
-.sp { display: flex; height: 100%; min-height: 0; }
+/**
+ * 設定は**レールの隣に置く一級の面**（決定41）。殻は横並び（レール＋中身）なので、
+ * ここで `flex: 1` を宣言しないと**中身の最小幅まで縮む**——字が1文字ずつ縦に折り返され、
+ * 面ごと壊れて見える（PO報告 2026-08-10）。`min-width: 0` は中の一覧が
+ * はみ出したときに殻を押し広げないため。
+ */
+.sp { flex: 1; min-width: 0; display: flex; height: 100%; min-height: 0; }
 .sp-nav {
   width: 190px; flex: none; display: flex; flex-direction: column; gap: 2px;
   padding: var(--s3); border-right: 1px solid var(--rule); overflow-y: auto;

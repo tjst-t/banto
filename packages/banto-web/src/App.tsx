@@ -245,10 +245,6 @@ export function App(): React.ReactElement {
     },
     [session, backToChat]
   );
-  const focusSeqOf = useCallback(
-    (threadId: string): number => (focusReq?.threadId === threadId ? focusReq.seq : 0),
-    [focusReq]
-  );
 
   /**
    * 取次の一通を開く（決定73・75）。
@@ -441,9 +437,40 @@ export function App(): React.ReactElement {
     if (activeTabId) setLowered(false);
   }, [activeTabId]);
 
-  const workOpen = activeTab !== undefined && ActiveView !== undefined;
-  /** 狭い画面では、下ろした紙は出さない（幹が地として残る）。 */
-  const showWork = activeTab !== undefined && !(narrow && lowered);
+  /**
+   * 幹を押す（PO要望 2026-08-10）。
+   *
+   * **いま居る幹をもう一度押したら、上に載っている紙を剥がす**——枝も面も畳んで地へ戻る。
+   * 重なりの模型（幹が地・枝と面が上の紙）が、そのまま操作になる。別の幹なら移るだけ。
+   *
+   * 面は**畳まず下ろすだけ**（決定79：畳んだ面を開き直すと組み合わせが戻る）。
+   */
+  const pressTrunk = useCallback(
+    (threadId: string) => {
+      const here = trunk?.threadId === threadId;
+      if (here && (branch || activeTab)) {
+        setHoldOpen(false);
+        backToChat();
+        setLowered(true);
+        // 幹へ戻ると、その幹のキャンバスも見えなくなる（面は抱えたまま残る）
+        if (branch) session.switchThread(threadId);
+        return;
+      }
+      openThread(threadId, { focus: true });
+    },
+    [trunk, branch, activeTab, backToChat, session, openThread]
+  );
+  const focusSeqOf = useCallback(
+    (threadId: string): number => (focusReq?.threadId === threadId ? focusReq.seq : 0),
+    [focusReq]
+  );
+
+  const workOpen = activeTab !== undefined && ActiveView !== undefined && !lowered;
+  /**
+   * 下ろした紙は出さない（幹が地として残る）。**畳んだのではなく下ろしただけ**なので、
+   * 面はレールの点に残り、押せば上がり直す（決定79）。
+   */
+  const showWork = activeTab !== undefined && !lowered;
   /** 作業する面が開いたら、いま居た会話が細い帯になる（決定79）。 */
   const slim = workOpen && !narrow;
 
@@ -454,15 +481,22 @@ export function App(): React.ReactElement {
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== "Escape" || e.isComposing) return;
+      /**
+       * **重ねたものが上に在るなら、剥がすのはそちら。**
+       * 面の中で開いた `Modal`（場所選び・道具立てのメニュー）は自分で Esc を捌くので、
+       * ここまで来た Esc を殻が横取りすると、閉じたつもりの1回で紙まで下りる
+       * （実際に踏んだ：`tests/file-page.spec.ts`）。
+       */
+      if (document.querySelector("[role='dialog']")) return;
       if (holdOpen) return setHoldOpen(false);
       if (faceOpen) return backToChat();
       // **面は畳まない。** Esc は「1枚剥がす」であって「閉じる」ではない
-      if (narrow && showWork) return setLowered(true);
+      if (showWork) return setLowered(true);
       if (branch && trunk) return openThread(trunk.threadId);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [holdOpen, faceOpen, backToChat, narrow, showWork, branch, trunk, openThread]);
+  }, [holdOpen, faceOpen, backToChat, showWork, branch, trunk, openThread]);
 
   /** 背表紙。**消さない——押せば戻る**（モーダルより良いのはここ）。 */
   const spine = (label: string, mark: string, onClick: () => void): React.ReactElement => (
@@ -530,7 +564,7 @@ export function App(): React.ReactElement {
               key={t.threadId}
               className={`pj ${trunk?.threadId === t.threadId ? "is-active" : ""}`}
               type="button"
-              onClick={() => openThread(t.threadId, { focus: true })}
+              onClick={() => pressTrunk(t.threadId)}
               aria-label={t.title}
               {...(i < 9 ? { "data-key": String(i + 1) } : {})}
             >

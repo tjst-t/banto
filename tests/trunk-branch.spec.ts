@@ -168,6 +168,24 @@ class FakeHost {
   static async start(): Promise<FakeHost> {
     const server = http.createServer((req, res) => {
       const url = (req.url ?? "/").split("?")[0] ?? "/";
+      if (url === "/api/settings/tools/settings.describe") {
+        res.writeHead(200, { "Content-Type": "application/json" }).end(
+          JSON.stringify({
+            content: [],
+            details: {
+              sections: [
+                {
+                  id: "look",
+                  title: "見た目",
+                  description: "この画面の地の明暗",
+                  fields: [],
+                },
+              ],
+            },
+          })
+        );
+        return;
+      }
       if (url.startsWith("/api/")) {
         res
           .writeHead(200, { "Content-Type": "application/json" })
@@ -229,7 +247,10 @@ class FakeHost {
           endpoint: "/api/file",
         },
       ],
-      modules: [{ name: "file", title: "ファイル", description: "見る", baseUrl: "/api/file" }],
+      modules: [
+        { name: "file", title: "ファイル", description: "見る", baseUrl: "/api/file" },
+        { name: "settings", title: "設定", description: "設定", baseUrl: "/api/settings" },
+      ],
     });
     send({ type: "history", threadId: TRUNK, entries: TRUNK_HISTORY });
     send({ type: "history", threadId: BRANCH, entries: BRANCH_HISTORY });
@@ -481,6 +502,64 @@ test.describe("[task-0088/a11,a12] 作業する面", () => {
     await expect(page.locator(".work")).toBeVisible();
     await expect(page.locator(".room--branch")).toBeVisible();
     await expect(page.locator(".spine")).toBeVisible();
+  });
+});
+
+test.describe("幹を押すと上の紙を剥がす（PO要望 2026-08-10）", () => {
+  test("いま居る幹を押すと、開いていた面が下りる", async ({ page }) => {
+    await open(page);
+    await page.locator(".room--trunk .u-open").click();
+    await expect(page.locator(".work")).toBeVisible();
+
+    await page.locator(".pj").click();
+    await expect(page.locator(".work")).toHaveCount(0);
+    // **畳んだのではなく下ろしただけ**——面はレールの点に残り、押せば上がり直す
+    await expect(page.locator(".hold--face")).toHaveCount(1);
+    await page.locator(".hold--face").click();
+    await expect(page.locator(".work")).toBeVisible();
+  });
+
+  test("いま居る幹を押すと、開いていた枝も閉じる", async ({ page }) => {
+    await open(page);
+    await page.locator(".hold--branch").click();
+    await expect(page.locator(".room--branch")).toBeVisible();
+
+    await page.locator(".pj").click();
+    await expect(page.locator(".room--branch")).toHaveCount(0);
+    await expect(page.locator(".room--trunk")).toBeVisible();
+    // 枝は畳んでいない（レールの点に残る）
+    await expect(page.locator(".hold--branch")).toHaveCount(1);
+  });
+});
+
+test.describe("面はページを押し広げない（PO報告 2026-08-10）", () => {
+  /**
+   * **面を開いてもページごとスクロールしない。** 器の中で縮まない面があると、殻ごと
+   * 押し広げて窓の外にスクロールバーが生える——読みたいものが窓の外へ出ていく。
+   */
+  const overflow = (page: Page): Promise<{ x: number; y: number }> =>
+    page.evaluate(() => ({
+      x: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      y: document.documentElement.scrollHeight - document.documentElement.clientHeight,
+    }));
+
+  test("作業する面を開いてもページは動かない", async ({ page }) => {
+    await open(page);
+    expect(await overflow(page)).toEqual({ x: 0, y: 0 });
+    await page.locator(".room--trunk .u-open").click();
+    await expect(page.locator(".work")).toBeVisible();
+    expect(await overflow(page), "面がページを押し広げている").toEqual({ x: 0, y: 0 });
+  });
+
+  test("設定の面は器いっぱいに敷かれ、ページも動かない", async ({ page }) => {
+    await open(page);
+    await page.locator(".rail-btn[data-key='s']").click();
+    const panel = page.locator(".sp");
+    await expect(panel).toBeVisible();
+    const width = (await panel.boundingBox())!.width;
+    // **縮まない**——`flex: 1` が無いと中身の最小幅まで縮み、字が1文字ずつ縦に折り返される
+    expect(width, "設定の面が縮んでいる").toBeGreaterThan(900);
+    expect(await overflow(page), "設定の面がページを押し広げている").toEqual({ x: 0, y: 0 });
   });
 });
 
