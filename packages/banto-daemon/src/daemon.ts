@@ -1092,7 +1092,7 @@ export class Daemon {
   async reopenTask(
     projectTag: string,
     taskId: string,
-    options: { mode: "rework" | "reverify"; reason: string; by: string }
+    options: { mode: "rework" | "reverify"; reason: string; by: string; origin?: string }
   ): Promise<{ ok: true; to: string } | { ok: false; reason: string }> {
     const task = this.store.getTask(taskId, projectTag);
     if (!task) return { ok: false, reason: `${taskId} は ${projectTag} の工場にありません` };
@@ -1135,6 +1135,31 @@ export class Daemon {
             "変わった基準を誰も見ていない状態でマージ待ちに置けません——mode: \"rework\" で監査からやり直してください",
         };
       }
+    }
+
+    /**
+     * **戻せと言った会話が、以後の宛先になる**（決定58 の延長・PO報告 2026-08-10）。
+     *
+     * 宛先はこれまで「積んだとき」にしか付かなかった。だが `work/tasks/*.md` から
+     * 取り込まれたタスク（`watcher-ingest`）には宛先が無く、番頭が会話から戻しても
+     * 付かないままで、知らせが**帳場へ流れ込んでいた**——task-0089 が実際にそうなった
+     * （3回とも `origin: undefined` のまま失敗の知らせだけが帳場に積まれた）。
+     *
+     * 戻すのは番頭の明示的な行為で、そのとき番頭はどれかの会話に居る。**そこが宛先。**
+     * 既に宛先があるときは書き換えない——最初に積んだ会話から奪わない。
+     */
+    if (options.origin && !this.originOfTask(projectTag, taskId)) {
+      this.log.append({
+        type: "task_contract_amended",
+        projectTag,
+        taskId,
+        amendedBy: options.by === "po" ? "po" : "banto",
+        reason: `宛先（origin）を ${options.origin} に定めました（${options.mode} で戻したため）`,
+        changes: ["宛先（origin）"],
+        // 契約は動かしていないので監査は無効化しない（reverify を塞がない）
+        auditInvalidated: false,
+        contract: { origin: options.origin },
+      });
     }
 
     const result = this.transition(projectTag, taskId, to, `reopened_by:${options.by}（${options.reason}）`);

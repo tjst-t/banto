@@ -537,6 +537,12 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
       reason: Type.String({
         description: "**何が悪くて、どう直すのか**。職人にそのまま渡り、帳簿にも残る",
       }),
+      origin: Type.Optional(
+        Type.String({
+          description:
+            "知らせの宛先（スレッド）。**番頭は書かない**——束ねる層が固定する（決定58）",
+        })
+      ),
     }),
     async execute(params) {
       requireProject(params.projectTag);
@@ -544,6 +550,8 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
         mode: params.mode,
         reason: params.reason,
         by: "banto",
+        // 宛先の無いタスク（ファイルから取り込んだもの）は、ここで初めて宛先が付く
+        ...(params.origin ? { origin: params.origin } : {}),
       });
       // I2: 戻せなかったことを成功に見せない
       if (!r.ok) throw new Error(r.reason);

@@ -98,8 +98,9 @@ let driver: CaptureDriver;
 let workers: WorkerPoolHarness;
 
 /** そのタスクをゲートで落ちた形にする（承認まで行かせるかを選べる）。 */
-function driveToFailed(taskId: string, opts: { viaApproved: boolean }): void {
-  daemon.createTask(PROJ, taskId, taskId);
+function driveToFailed(taskId: string, opts: { viaApproved: boolean; origin?: string }): void {
+  // origin を渡すと「番頭が会話から積んだ」形、渡さないと「ファイルから取り込んだ」形
+  daemon.createTask(PROJ, taskId, taskId, opts.origin ? { origin: opts.origin } : {});
   const steps = opts.viaApproved
     ? ["queued", "ready", "planning", "implementing", "auditing", "review-ready", "in-review", "approved", "merging"]
     : ["queued", "ready", "planning", "implementing"];
@@ -265,6 +266,53 @@ describe("[task-0081] 同じタスクのまま戻せる（切り直さない）"
     const instruction = driver.injected.join("\n");
     assert.match(instruction, /前回どこで落ちたか/, "落ちた理由の見出しが職人へ渡っていない");
     assert.match(instruction, /package-lock\.json/, "番頭の指示が職人へ渡っていない");
+  });
+
+  /**
+   * **戻せと言った会話が、以後の宛先になる**（PO報告 2026-08-10）。
+   *
+   * 宛先はこれまで「積んだとき」にしか付かなかった。`work/tasks/*.md` から取り込まれた
+   * タスク（`watcher-ingest`）には宛先が無く、番頭が会話から戻しても付かないままだったので、
+   * 知らせが**帳場へ流れ込んでいた**——task-0089 が3回ともそうなった。
+   */
+  it("宛先の無いタスクを戻すと、戻した会話が宛先になる", async () => {
+    const id = "task-1020";
+    driveToFailed(id, { viaApproved: true });
+    assert.equal(daemon.originOfTask(PROJ, id), undefined, "前提：取り込んだタスクに宛先は無い");
+
+    await call("kobo.reopen", {
+      projectTag: PROJ,
+      taskId: id,
+      mode: "rework",
+      reason: "直して",
+      origin: "banto:thread-61",
+    });
+
+    assert.equal(
+      daemon.originOfTask(PROJ, id),
+      "banto:thread-61",
+      "戻した会話が宛先になっていない（知らせが既定＝帳場へ流れる）"
+    );
+  });
+
+  it("既に宛先があるタスクは、戻しても宛先を奪わない", async () => {
+    const id = "task-1021";
+    driveToFailed(id, { viaApproved: true, origin: "banto:thread-50" });
+    assert.equal(daemon.originOfTask(PROJ, id), "banto:thread-50", "前提：積んだ会話の宛先がある");
+
+    await call("kobo.reopen", {
+      projectTag: PROJ,
+      taskId: id,
+      mode: "rework",
+      reason: "直して",
+      origin: "banto:thread-61",
+    });
+
+    assert.equal(
+      daemon.originOfTask(PROJ, id),
+      "banto:thread-50",
+      "最初に積んだ会話から宛先を奪ってはいけない"
+    );
   });
 
   it("reverify: 中身は触らずゲートを回し直す（approved へ戻る）", async () => {

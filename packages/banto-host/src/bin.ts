@@ -961,7 +961,10 @@ async function serve(options: ServeOptions): Promise<void> {
         }
         // 決定58: 工場に積んだ仕事の知らせも**積んだスレッド**へ返る。職人と同じ機構で、
         // 宛先は番頭に書かせずここで固定する（番頭は自分がどのスレッドかを知らない）
-        if (tool.name === "kobo.enqueue") {
+        // **戻すときも宛先を固定する**（PO報告 2026-08-10）。`work/tasks/*.md` から
+        // 取り込まれたタスクには宛先が無く、番頭が会話から戻しても付かないままで、
+        // 知らせが帳場へ流れ込んでいた（task-0089）。戻せと言った会話が宛先になる
+        if (tool.name === "kobo.enqueue" || tool.name === "kobo.reopen") {
           return bindToolArgs(tool, { origin: threadOrigin(threadId) });
         }
         // 決定36g：**番頭が任意のパスを渡せる口は砦に通す。** 受け持たせるリポジトリも同じ
