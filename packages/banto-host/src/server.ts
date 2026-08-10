@@ -827,6 +827,51 @@ export class BantoHostServer {
       return;
     }
 
+    /**
+     * **PO がその場で章を畳む**（提案§3.2 の人側・決定25）。
+     *
+     * 自動で畳むのは文脈の量が閾値に達したときだけだが、**区切りは人にも分かる**
+     * ——「この話は終わったので、ここから先は別の前提で進めたい」は量では拾えない。
+     * 畳めたことは `onChapterClosed` が知らせとして流す（ここでは返さない）。
+     */
+    if (message?.type === "chapter_close") {
+      // I2: 畳めない理由はその場で言う。押したのに何も起きないのが一番困る
+      if (thread.state === "closed") {
+        this.send(ws, {
+          type: "error",
+          message: `「${thread.title}」は畳んだ会話です。開き直してから区切ってください`,
+        });
+        return;
+      }
+      if (!thread.closeChapter) {
+        this.send(ws, {
+          type: "error",
+          message:
+            "この会話では章立てが働いていません（要約に使えるモデルがありません）。" +
+            "設定でモデルを採用するか、BANTO_CHAPTER_MODEL を見直してください",
+        });
+        return;
+      }
+      /**
+       * **喋っている最中は畳まない。** 道具を呼んでいる途中で文脈が消えると、番頭は
+       * 自分が何をしていたか分からなくなる（自動の側が `agent_end` だけを見ているのと
+       * 同じ理由）。待たせるのではなく断る——POは終わってから押し直せる。
+       */
+      if (thread.session.isStreaming) {
+        this.send(ws, {
+          type: "error",
+          message: "番頭が喋っている最中は区切れません。返事が終わってから押してください",
+        });
+        return;
+      }
+      try {
+        await thread.closeChapter();
+      } catch (err) {
+        // I2: 資料が書けなければ畳まない（ChapterKeeper の決め）。その理由をそのまま出す
+        this.send(ws, { type: "error", message: `章を畳めませんでした: ${String(err)}` });
+      }
+      return;
+    }
     // その会話で使うモデルを変える。**会話ごと**なので、他の会話は変わらない
     if (message?.type === "set_model") {
       if (!this.selectModel) {

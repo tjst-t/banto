@@ -155,6 +155,11 @@ export interface BantoSession {
   reopenThread(threadId: string): void;
   /** 会話に名前を付け直す（番頭の `thread.rename` と同じ結果。決定25の人側）。 */
   renameThread(threadId: string, title: string): void;
+  /**
+   * **いま章を畳む**（提案§3.2 の人側）。閾値に達していなくても畳む。
+   * 畳めたことは知らせとして会話に出る——ここでは楽観的に何も書き換えない（D3）。
+   */
+  closeChapter(threadId: string): void;
   /** 取次に積まれているもの（答えの出たものも含む）。会話に紐づかない。 */
   inbox: InboxItemView[];
   /** まだ答えの出ていない数。レールの札に出る唯一の数字。 */
@@ -809,6 +814,17 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
     [post]
   );
 
+  /**
+   * PO が「ここまで」と区切る（提案§3.2 の人側）。
+   *
+   * 結果はホストが知らせとして流す（畳めたときも、畳めなかったときも）。**画面が
+   * 先に何かを書き換えることはしない**——真実はホストの側にある（D3）。
+   */
+  const closeChapter = useCallback(
+    (threadId: string) => post({ type: "chapter_close", threadId }),
+    [post]
+  );
+
   const session = useMemo<BantoSession>(
     () => ({
       status,
@@ -845,6 +861,7 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
       mergeBranch,
       reopenThread,
       renameThread,
+      closeChapter,
       inbox,
       /** まだ答えの出ていない数。レールの札に出る唯一の数字（導出なので持たない） */
       inboxPending: inbox.filter((i) => !i.resolvedAt).length,
@@ -884,6 +901,7 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
       mergeBranch,
       reopenThread,
       renameThread,
+      closeChapter,
       inbox,
       answerInbox,
       openInbox,

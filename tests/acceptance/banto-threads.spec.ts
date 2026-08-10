@@ -107,6 +107,15 @@ async function start(): Promise<string> {
   return `ws://localhost:${server.port}${BANTO_WS_PATH}`;
 }
 
+/** 条件が満たされるまで待つ（イベントではなく副作用を見るとき）。 */
+async function waitForValue(ok: () => boolean, timeoutMs = 2000): Promise<void> {
+  const started = Date.now();
+  while (!ok()) {
+    if (Date.now() - started > timeoutMs) throw new Error("待っていたことが起きませんでした");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
 /** 指定の型のイベントが来るまで待つ。 */
 function waitFor(
   events: ServerEvent[],
@@ -779,6 +788,125 @@ describe("[task-0035] スレッドの開閉（プロトコル）", () => {
       assert.deepEqual(other.transcript, [{ role: "po", text: "別件は残る" }]);
       // 幹は追記のみ。最初の発話は残っている
       assert.deepEqual(trunk.transcript[0], { role: "po", text: "幹の話" });
+    } finally {
+      client.close();
+    }
+  });
+});
+
+/**
+ * **人が章を区切る口**（提案§3.2 の人側・決定25）。
+ *
+ * 自動で畳むのは文脈の量が閾値に達したときだけ。「この話は終わったので、ここから先は
+ * 別の前提で進めたい」は量では拾えないので、人にも同じことができる口を持たせる。
+ */
+describe("[提案§3.2] chapter_close（人が章を区切る）", () => {
+  it("章立てが働いている会話では、押すと畳まれる", async () => {
+    const folded: string[] = [];
+    threads = new ThreadRegistry(async (threadId) => {
+      const session = new FakeSession(`session-of-${threadId}`);
+      return {
+        session,
+        tools: [],
+        closeChapter: async () => void folded.push(threadId),
+      };
+    });
+    const url = await start();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    try {
+      const trunk = threads.resolve();
+      client.send({ type: "chapter_close", threadId: trunk.id });
+      await waitForValue(() => folded.length > 0);
+      assert.deepEqual(folded, [trunk.id]);
+      assert.equal(
+        events.find((e) => e.type === "error"),
+        undefined,
+        "畳めたのにエラーを出してはいけない"
+      );
+    } finally {
+      client.close();
+    }
+  });
+
+  it("章立てが働いていない会話では、理由を言って断る（I2）", async () => {
+    // 既定の器（beforeEach）は closeChapter を渡していない＝要約に使えるモデルが無い構成
+    const url = await start();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    try {
+      client.send({ type: "chapter_close", threadId: threads.resolve().id });
+      const err = await waitFor(events, (e) => e.type === "error");
+      assert.match(
+        err.type === "error" ? err.message : "",
+        /章立てが働いていません/,
+        "押したのに何も起きない、が一番困る"
+      );
+    } finally {
+      client.close();
+    }
+  });
+
+  it("喋っている最中は断る（道具の途中で文脈を消さない）", async () => {
+    const folded: string[] = [];
+    let made: FakeSession | undefined;
+    threads = new ThreadRegistry(async (threadId) => {
+      const session = new FakeSession(`session-of-${threadId}`);
+      made = session;
+      return { session, tools: [], closeChapter: async () => void folded.push(threadId) };
+    });
+    const url = await start();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    try {
+      made!.isStreaming = true;
+      client.send({ type: "chapter_close", threadId: threads.resolve().id });
+      const err = await waitFor(events, (e) => e.type === "error");
+      assert.match(err.type === "error" ? err.message : "", /喋っている最中/);
+      assert.deepEqual(folded, [], "ターンの最中に畳んではいけない");
+    } finally {
+      client.close();
+    }
+  });
+
+  it("畳んだ会話では断る", async () => {
+    const folded: string[] = [];
+    threads = new ThreadRegistry(async (threadId) => ({
+      session: new FakeSession(`session-of-${threadId}`),
+      tools: [],
+      closeChapter: async () => void folded.push(threadId),
+    }));
+    const url = await start();
+    const branch = await threads.open(branchSpec("枝"));
+    threads.merge(branch.id, "決まった");
+
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    try {
+      client.send({ type: "chapter_close", threadId: branch.id });
+      const err = await waitFor(events, (e) => e.type === "error");
+      assert.match(err.type === "error" ? err.message : "", /畳んだ会話/);
+      assert.deepEqual(folded, []);
+    } finally {
+      client.close();
+    }
+  });
+
+  it("畳めなかった理由をそのまま出す（資料が書けなければ畳まない）", async () => {
+    threads = new ThreadRegistry(async (threadId) => ({
+      session: new FakeSession(`session-of-${threadId}`),
+      tools: [],
+      closeChapter: async () => {
+        throw new Error("章の引き継ぎ資料が空で返りました");
+      },
+    }));
+    const url = await start();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    try {
+      client.send({ type: "chapter_close", threadId: threads.resolve().id });
+      const err = await waitFor(events, (e) => e.type === "error");
+      assert.match(err.type === "error" ? err.message : "", /資料が空で返りました/);
     } finally {
       client.close();
     }

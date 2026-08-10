@@ -288,6 +288,39 @@ function atBottom(page: import("@playwright/test").Page): Promise<boolean> {
     .evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight <= 70);
 }
 
+/**
+ * **人が章を区切る口**（提案§3.2 の人側・決定25）。
+ *
+ * 自動で畳むのは文脈の量が閾値に達したときだけ。「この話は終わった」は量では拾えない
+ * ので、人にも同じことができる。**文脈の目盛りの隣**に置く——押す気になるのは
+ * 目盛りを見たときなので、離すと探させることになる（D7）。
+ */
+test.describe("章を区切る（人側）", () => {
+  test("目盛りの隣にあり、押すと chapter_close が飛ぶ", async ({ page }) => {
+    const button = page.locator(".chapter-close");
+    await expect(button).toBeVisible();
+
+    // 入力の脇の並びに居る（文脈の目盛りと同じ列）。**探させない**——目盛りは実測が
+    // 届くまで出ないので（I1）、ここでは列そのものを見る
+    const actions = page.locator(".chat-actions");
+    await expect(actions.locator(".model-select")).toBeVisible();
+    await expect(actions.locator(".chapter-close")).toBeVisible();
+
+    await button.click();
+    await expect
+      .poll(() => host.received.find((m) => m["type"] === "chapter_close"))
+      .toEqual({ type: "chapter_close", threadId: THREAD_ID });
+  });
+
+  test("番頭が喋っている最中は押せない（道具の途中で文脈を消さない）", async ({ page }) => {
+    host.emit({ type: "turn_start" });
+    await expect(page.locator(".chapter-close")).toBeDisabled();
+
+    host.emit({ type: "turn_end" });
+    await expect(page.locator(".chapter-close")).toBeEnabled();
+  });
+});
+
 test.describe("末尾追従（use-stick-to-bottom）", () => {
   test("最下部にいる間は、届いた分だけ追いかける", async ({ page }) => {
     await fillConversation(page);

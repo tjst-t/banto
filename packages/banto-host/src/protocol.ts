@@ -128,6 +128,22 @@ export interface ThreadMergeMessage {
   conclusion: string;
 }
 
+/**
+ * **いま章を畳む**（提案§3.2 の人側・決定25）。
+ *
+ * ふだんは閾値（文脈長の割合）に達したときに自動で畳まれるが、**区切りは人にも分かる**
+ * ——「この話は終わったので、ここから先は別の前提で進めたい」は閾値では拾えない。
+ * 番頭の側に同じ口は無い（番頭は自分の文脈量を測って畳む側）。
+ *
+ * 閾値に達していなくても畳む。ただし**ターンの最中は畳まない**——道具を呼んでいる
+ * 途中で文脈が消えると、番頭は自分が何をしていたか分からなくなる。
+ */
+export interface ChapterCloseMessage {
+  type: "chapter_close";
+  /** どの会話の章を畳むか。省略すると既定の宛先（幹）。 */
+  threadId?: string;
+}
+
 /** 畳んだスレッドを開き直す。会話はそのまま残っているので続きから話せる。 */
 export interface ThreadReopenMessage {
   type: "thread_reopen";
@@ -197,6 +213,7 @@ export type ClientMessage =
   | ThreadMergeMessage
   | ThreadReopenMessage
   | ThreadRenameMessage
+  | ChapterCloseMessage
   | SetModelMessage;
 
 // ── Server → Client ──────────────────────────────────────────────────────────

@@ -452,6 +452,19 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 .context-meter.is-warn { color: var(--kohaku); }
 .context-meter.is-full { color: var(--murasaki); }
 
+/*
+  ここまでを章として畳む（提案§3.2 の人側）。**目盛りの隣に置く**——押す気になるのは
+  文脈の量を見たときなので、離すと探させることになる（D7）。
+  控えめに置く：ふだん押すものではなく、区切りたいときだけ手が伸びる
+*/
+.chapter-close {
+  border: 0; background: none; color: var(--sumi-3);
+  display: inline-grid; place-items: center;
+  width: 26px; height: 26px; border-radius: var(--r-ctl); cursor: pointer; flex: none;
+}
+.chapter-close:hover:not(:disabled) { background: var(--paper-1); color: var(--sumi); }
+.chapter-close:disabled { opacity: 0.4; cursor: default; }
+
 /* ── モデル選択 ─────────────────────────────────────────────────────── */
 .model-select { position: relative; flex: none; min-width: 0; }
 .model-select-trigger {

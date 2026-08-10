@@ -1169,6 +1169,14 @@ async function serve(options: ServeOptions): Promise<void> {
       session: guardedSession,
       canvas,
       tools,
+      /**
+       * **PO がその場で章を畳む口**（決定25 の人側）。
+       *
+       * 閾値は文脈の量しか見ないが、区切りは人にも分かる——「この話は終わったので、
+       * ここから先は別の前提で進めたい」は量では拾えない。`chapters` が無い構成
+       * （要約に使えるモデルが無い）では渡さない。サーバがその不在を理由として出す
+       */
+      ...(chapters ? { closeChapter: async () => void (await chapters.closeChapter()) } : {}),
       // この会話が実際に使っているモデル。画面と索引へ出す（会話ごとに持つ）
       ...(threadModel && wanted
         ? {

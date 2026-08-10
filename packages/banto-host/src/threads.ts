@@ -89,6 +89,13 @@ export type ThreadFactory = (
    */
   resumePendingTurn?: () => Promise<void>;
   /**
+   * **いま章を畳む**（提案§3.2 の人側）。閾値に達していなくても畳む。
+   *
+   * 章立てが働いていない構成（要約に使えるモデルが無い）では渡らない——
+   * その場合は「畳めません」と理由を出す（I2：黙って何も起きないのが一番困る）。
+   */
+  closeChapter?: () => Promise<void>;
+  /**
    * 対話ループの後始末。スレッドを閉じるとき・ホストを終うときに呼ばれる。
    *
    * `HostSession`（server が要求する最小契約）には入れない——配信に要るものではなく、
@@ -233,6 +240,11 @@ export class Thread {
    * サーバ起動後に open スレッドだけ呼ばれる（畳んだスレッドは開き直すまで話さない）。
    */
   readonly resumePendingTurn: (() => Promise<void>) | undefined;
+  /**
+   * **いま章を畳む**（提案§3.2 の人側）。章立てが働いていない会話では `undefined`。
+   * サーバはこれが無いことを「畳めない理由」としてそのまま PO に出す（I2）。
+   */
+  readonly closeChapter: (() => Promise<void>) | undefined;
   /** 会話の真実。接続時にまとめて配り、以後は差分イベントで追随させる（D3）。 */
   transcript: TranscriptEntry[] = [];
   /**
@@ -267,6 +279,7 @@ export class Thread {
     sessionFile?: string;
     model?: { provider: string; id: string; vision: boolean; contextWindow?: number };
     resumePendingTurn?: () => Promise<void>;
+    closeChapter?: () => Promise<void>;
     dispose?: () => void;
   }) {
     this.id = params.id;
@@ -289,6 +302,7 @@ export class Thread {
     this.sessionFile = params.sessionFile;
     this.model = params.model;
     this.resumePendingTurn = params.resumePendingTurn;
+    this.closeChapter = params.closeChapter;
     if (params.dispose) this.disposers.push(params.dispose);
   }
 
@@ -459,6 +473,8 @@ export class ThreadRegistry {
           ...(parts.getLastError ? { getLastError: parts.getLastError } : {}),
           ...(parts.sessionFile ? { sessionFile: parts.sessionFile } : {}),
           ...(parts.resumePendingTurn ? { resumePendingTurn: parts.resumePendingTurn } : {}),
+      ...(parts.closeChapter ? { closeChapter: parts.closeChapter } : {}),
+          ...(parts.closeChapter ? { closeChapter: parts.closeChapter } : {}),
           ...(parts.dispose ? { dispose: parts.dispose } : {}),
         });
         thread.transcript = this.store.transcript(saved.id);
@@ -669,6 +685,7 @@ export class ThreadRegistry {
       ...(parts.getLastError ? { getLastError: parts.getLastError } : {}),
       ...(parts.sessionFile ? { sessionFile: parts.sessionFile } : {}),
       ...(parts.resumePendingTurn ? { resumePendingTurn: parts.resumePendingTurn } : {}),
+      ...(parts.closeChapter ? { closeChapter: parts.closeChapter } : {}),
       ...(parts.dispose ? { dispose: parts.dispose } : {}),
     });
     this.attach(thread);

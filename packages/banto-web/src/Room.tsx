@@ -855,6 +855,27 @@ export function Room({
               onSelect={(provider, id) => session.setModel(threadId, provider, id)}
             />
             <ContextMeter tokens={session.contextTokensOf(threadId)} contextWindow={model?.contextWindow} />
+            {/*
+              **区切りは人にも分かる**（提案§3.2 の人側）。自動で畳むのは文脈の量が
+              閾値に達したときだけで、「この話は終わった」は量では拾えない。
+              文脈の目盛りの隣に置く——押す気になるのは、目盛りを見たときだから（D7）
+            */}
+            <button
+              className="chapter-close"
+              type="button"
+              onClick={() => session.closeChapter(threadId)}
+              // **ターンが走っている間は押せない**（喋り出す前の間も含む）。道具を呼んで
+              // いる途中で文脈が消えると、番頭は自分が何をしていたか分からなくなる
+              disabled={busy}
+              title={
+                busy
+                  ? "番頭の返事が終わってから区切れます"
+                  : "ここまでを1章として畳む（前のやり取りは失われません）"
+              }
+              aria-label="ここまでを章として畳む"
+            >
+              <Icon name="chapter" size={14} />
+            </button>
             {!slim && <span className="chat-hint">Enter で送信</span>}
             <button
               className={`composer-submit is-${chatStatus}`}
