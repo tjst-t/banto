@@ -41,10 +41,10 @@ const MemoryKindSchema = Type.Union(
 
 const MemoryScopeSchema = Type.Union([Type.Literal("person"), Type.Literal("project")], {
   description:
-    "person（人の記憶。POの好み・習慣・事実。**全プロジェクトで共有される**）、" +
-    "project（プロジェクトの記憶。そのプロジェクトの決定・規約・ドメイン。**横断しない**）。" +
-    "project を選ぶときは place も渡す。**迷ったら person ではなく project**——" +
-    "プロジェクト固有の話が人の記憶に入ると、無関係なプロジェクトの判断まで歪める",
+    "person（人の記憶。POの好み・習慣・事実。**幹をまたいで共有される**）、" +
+    "project（**この幹の記憶**。その仕事の決定・規約・ドメイン。**他の幹へは載らない**）。" +
+    "**迷ったら person ではなく project**——ある仕事に固有の話が人の記憶に入ると、" +
+    "無関係な仕事の判断まで歪める。幹をまたいで効く一般解になったときだけ person にする",
 });
 
 /** 記憶を1件、プロンプト用の1行にする。 */
@@ -55,13 +55,22 @@ function renderLine(record: MemoryRecord): string {
   return `- ${record.text}${since}${mark} (id: ${record.id})`;
 }
 
-/** `ScopedMemory` を渡す前に place を検算する（I2：知らない場所へ黙って書かない）。 */
+/** `createMemoryTools` の指定。記憶の区画は**幹**（PO裁定 2026-08-10）。 */
 export interface MemoryToolsOptions {
   /**
-   * いま登録されている場所のID。渡すと `scope: "project"` の place を検算する。
-   * 省略すると検算しない（テスト・場所を持たない構成向け）。
+   * いま在る幹のID。渡すと `scope: "project"` の宛先を検算する。
+   * 省略すると検算しない（テスト・幹を持たない構成向け）。
    */
-  knownPlaceIds?: () => readonly string[];
+  knownTrunkIds?: () => readonly string[];
+  /**
+   * **いまの会話の幹**（PO裁定 2026-08-10）。記憶が分かれる単位は幹になった。
+   *
+   * 渡すと `scope: "project"` で `trunk` を省いたときの既定になる——番頭は常に
+   * ちょうど1つの幹に居るので、毎回どの幹かを書かせる意味がない。
+   */
+  defaultTrunkId?: () => string | undefined;
+  /** 幹の一覧（横断して探すときに開く区画）。id と、人に見える名前。 */
+  knownTrunkList?: () => readonly { id: string; label?: string }[];
 }
 
 /**
@@ -75,32 +84,38 @@ export function createMemoryTools(
   options: MemoryToolsOptions = {}
 ): NamespacedToolDefinition[] {
   /**
-   * `scope` と `place` からストアを解決する。
+   * `scope` と `trunk` からストアを解決する。
    *
-   * I2: `project` なのに place が無い／知らない場所を指しているときは、人の記憶へ
+   * I2: `project` なのに幹が決まらない／知らない幹を指しているときは、人の記憶へ
    *     黙って落とさずエラーにする——それが ADR-0003 の禁じた「横断」そのもの。
    */
-  const resolve = (scope: MemoryScope | undefined, place: string | undefined): MemoryStore => {
+  const resolve = (scope: MemoryScope | undefined, trunk: string | undefined): MemoryStore => {
     const wanted = scope ?? "person";
     if (wanted === "person") return memory.forPerson();
-    if (!place || place.trim() === "") {
+    // **既定はいまの会話の幹**（PO裁定 2026-08-10）。番頭は常に1つの幹に居る
+    const id = trunk && trunk.trim() !== "" ? trunk : options.defaultTrunkId?.();
+    if (!id) {
       throw new Error(
-        'scope: "project" には place が要ります（ADR-0003: プロジェクトの記憶は横断させない）'
+        'scope: "project" には幹が要ります（記憶が分かれる単位は幹・ADR-0003 の第二層）'
       );
     }
-    const known = options.knownPlaceIds?.();
-    if (known && !known.includes(place)) {
+    const known = options.knownTrunkIds?.();
+    if (known && !known.includes(id)) {
       throw new Error(
-        `知らない場所です: ${place}（登録されている場所: ${known.join(", ") || "なし"}）`
+        `知らない幹です: ${id}（開いている幹: ${known.join(", ") || "なし"}）`
       );
     }
-    return memory.forProject(place);
+    return memory.forProject(id);
   };
 
   const scopeParams = {
     scope: Type.Optional(MemoryScopeSchema),
-    place: Type.Optional(
-      Type.String({ description: 'scope: "project" のときの場所ID（例: github.com/tjst-t/banto）' })
+    trunk: Type.Optional(
+      Type.String({
+        description:
+          'scope: "project" のときの幹のID。**省略するとこの会話の幹**——' +
+          "他の幹を指すときだけ書く（thread.list で確かめる）",
+      })
     ),
   };
 
@@ -111,7 +126,9 @@ export function createMemoryTools(
       "長期に覚えておくべきことを1件保存する。" +
       "セッションを跨いで参照されるため、その場限りの作業メモではなく、次回以降も効く事実だけを書く。" +
       "既存の記憶を訂正する場合は supersedes に古い記憶のIDを渡す。" +
-      "**進行中の作業の経緯はここに入れない**——それは会話の引き継ぎ（章）が持つ。",
+      "**進行中の作業の経緯はここに入れない**——それは会話の引き継ぎ（章）が持つ。\n" +
+      "**記憶が分かれる単位は幹**：`scope: \"project\"` はこの会話の幹に入り、他の幹の" +
+      "会話には載らない。幹をまたいで効くものだけ `scope: \"person\"` にする。",
     parameters: Type.Object({
       kind: MemoryKindSchema,
       text: Type.String({ description: "記憶の内容。1件1事実で簡潔に書く。" }),
@@ -131,7 +148,7 @@ export function createMemoryTools(
       ),
     }),
     async execute(params) {
-      const store = resolve(params.scope, params.place);
+      const store = resolve(params.scope, params.trunk);
       // I2: 存在しないIDの訂正は MemoryStore が例外にする。ここで握りつぶさない。
       const input = {
         kind: params.kind,
@@ -145,7 +162,10 @@ export function createMemoryTools(
         ? store.supersede(params.supersedes, input)
         : store.save(input);
 
-      const where = params.scope === "project" ? `${params.place} の記憶` : "人の記憶";
+      const where =
+        params.scope === "project"
+          ? `幹「${params.trunk ?? options.defaultTrunkId?.() ?? "?"}」の記憶`
+          : "人の記憶（幹をまたぐ）";
       return {
         content: [
           { type: "text" as const, text: `saved memory ${saved.id} to ${where}: ${saved.text}` },
@@ -168,7 +188,7 @@ export function createMemoryTools(
       ...scopeParams,
     }),
     async execute(params) {
-      const store = resolve(params.scope, params.place);
+      const store = resolve(params.scope, params.trunk);
       const records = store.list(params.kind ? { kind: params.kind } : {});
       const text =
         records.length === 0
@@ -183,20 +203,59 @@ export function createMemoryTools(
     label: "Memory: Search",
     description:
       "記憶を本文の部分一致で探す。空白区切りの語をすべて含むものが返る（大小文字は無視）。" +
-      "注入の予算から溢れた記憶を引くときに使う。",
+      "注入の予算から溢れた記憶を引くときに使う。\n" +
+      "**注入は幹ごとだが、探すのは幹をまたげる**（`acrossTrunks: true`）——" +
+      "「前に別の仕事で似た話をした」を思い出せないと、幹を分けた代償が大きすぎる。",
     parameters: Type.Object({
       text: Type.String({ description: "探す語。空白区切りで複数指定するとAND検索になる" }),
       kind: Type.Optional(MemoryKindSchema),
       ...scopeParams,
+      acrossTrunks: Type.Optional(
+        Type.Boolean({
+          description:
+            "**他の幹の記憶も探す**（人の記憶も含む）。どの幹の記憶かは結果に出る。" +
+            "見つけたものを持ってくるなら、いまの幹へ改めて memory.save すること",
+        })
+      ),
       limit: Type.Optional(Type.Number({ description: "返す最大件数（既定20）" })),
     }),
     async execute(params) {
-      const store = resolve(params.scope, params.place);
-      const records = store.search({
+      const query = {
         text: params.text,
         ...(params.kind ? { kind: params.kind } : {}),
         ...(params.limit !== undefined ? { limit: params.limit } : {}),
-      });
+      };
+      /**
+       * **幹をまたいで探す**（PO裁定 2026-08-10）。注入は幹ごとに絞るが、探すのは
+       * 絞らない——予算が要るのは注入だけで、探すのは番頭が要ると判断したときだけ走る。
+       */
+      if (params.acrossTrunks === true) {
+        const here = options.defaultTrunkId?.();
+        const lines: string[] = [];
+        for (const r of memory.forPerson().search(query)) {
+          lines.push(`- [人の記憶] ${r.text} (id: ${r.id})`);
+        }
+        for (const project of options.knownTrunkList?.() ?? []) {
+          for (const r of memory.forProject(project.id).search(query)) {
+            const mark = project.id === here ? "この幹" : (project.label ?? project.id);
+            lines.push(`- [${mark}] ${r.text} (id: ${r.id})`);
+          }
+        }
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                lines.length === 0
+                  ? `「${params.text}」に当たる記憶は、どの幹にもありません`
+                  : lines.join("\n"),
+            },
+          ],
+          details: {},
+        };
+      }
+      const store = resolve(params.scope, params.trunk);
+      const records = store.search(query);
       const text =
         records.length === 0
           ? `「${params.text}」に当たる記憶はありません`
@@ -218,7 +277,7 @@ export function createMemoryTools(
       ...scopeParams,
     }),
     async execute(params) {
-      const store = resolve(params.scope, params.place);
+      const store = resolve(params.scope, params.trunk);
       // I2: 知らないIDは MemoryStore が例外にする。黙って成功にしない
       const tombstone = store.forget(params.id, params.reason);
       return {
@@ -236,13 +295,13 @@ export function createMemoryTools(
 /** `renderMemoryForPrompt` の指定。 */
 export interface RenderMemoryOptions {
   /**
-   * この会話で効くプロジェクト（ADR-0003）。渡した場所の記憶だけが載る。
-   * 空・省略なら人の記憶だけ。
+   * この会話で効く幹（ADR-0003 の第二層）。渡した幹の記憶だけが載る。
+   * 空・省略なら人の記憶だけ。**普通はちょうど1本**（いまの会話の幹）。
    */
-  places?: readonly { id: string; label?: string }[];
+  trunks?: readonly { id: string; label?: string }[];
   /**
-   * 層ごとのトークン予算。人の記憶にこの値、プロジェクトの記憶は全体でこの値を
-   * 場所の数で割って配る。省略すると `DEFAULT_MEMORY_TOKEN_BUDGET`。
+   * 層ごとのトークン予算。人の記憶にこの値、幹の記憶は全体でこの値を
+   * 幹の数で割って配る。省略すると `DEFAULT_MEMORY_TOKEN_BUDGET`。
    */
   tokenBudget?: number;
 }
@@ -290,18 +349,18 @@ export function renderMemoryForPrompt(
     sections.push(`## あなた（人）について\n\n${personBody.join("\n\n")}`);
   }
 
-  const places = options.places ?? [];
-  if (places.length > 0) {
-    // プロジェクトの記憶は全体で1層ぶんの予算を、場所の数で割って配る。
-    // 場所が増えるほど1件ずつは載らなくなるが、人の記憶を押し出すよりはよい
-    const perPlace =
+  const trunks = options.trunks ?? [];
+  if (trunks.length > 0) {
+    // 幹の記憶は全体で1層ぶんの予算を、幹の数で割って配る。
+    // 幹が増えるほど1件ずつは載らなくなるが、人の記憶を押し出すよりはよい
+    const perTrunk =
       options.tokenBudget === undefined
         ? undefined
-        : Math.max(1, Math.floor(options.tokenBudget / places.length));
-    for (const place of places) {
-      const body = renderStore(memory.forProject(place.id), perPlace);
+        : Math.max(1, Math.floor(options.tokenBudget / trunks.length));
+    for (const trunk of trunks) {
+      const body = renderStore(memory.forProject(trunk.id), perTrunk);
       if (body.length === 0) continue;
-      sections.push(`## ${place.label ?? place.id} について\n\n${body.join("\n\n")}`);
+      sections.push(`## ${trunk.label ?? trunk.id} について\n\n${body.join("\n\n")}`);
     }
   }
 
@@ -311,7 +370,8 @@ export function renderMemoryForPrompt(
   const foot = [
     "これらは過去のセッションで保存された。矛盾する指示を受けたら、" +
       "古い記憶を memory.save の supersedes で訂正する。",
-    "**プロジェクトの記憶は、その見出しの場所の中でだけ効く**（他のプロジェクトへ持ち出さない）。",
+    "**幹の記憶は、その見出しの幹の中でだけ効く**（他の幹へ持ち出さない）。" +
+      "他の幹で覚えたことを探すなら `memory.search({ acrossTrunks: true })`。",
   ];
   if (omittedTotal > 0) {
     foot.push(

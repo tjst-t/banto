@@ -220,8 +220,18 @@ describe("[PO報告 2026-08-10] 番頭は「いまどの会話に居るか」を
       proj.id
     );
 
-    assert.deepEqual(seen[0], { kind: "trunk", isMain: true, title: "帳場" });
-    assert.deepEqual(seen[1], { kind: "trunk", isMain: false, title: "loamium" });
+    assert.deepEqual(seen[0], {
+      kind: "trunk",
+      isMain: true,
+      title: "帳場",
+      trunkId: "thread-1",
+    });
+    assert.deepEqual(seen[1], {
+      kind: "trunk",
+      isMain: false,
+      title: "loamium",
+      trunkId: proj.id,
+    });
     assert.deepEqual(seen[2], {
       kind: "branch",
       isMain: false,
@@ -229,7 +239,33 @@ describe("[PO報告 2026-08-10] 番頭は「いまどの会話に居るか」を
       returnCondition: "描画方式が決まったら",
       // **どの幹の枝か**まで渡す（親を知らないと、何の話の一部かが分からない）
       parentTitle: "loamium",
+      // **記憶の区画は親の幹**（PO裁定 2026-08-10）。枝で調べたことは仕事に溜まる
+      trunkId: proj.id,
     });
+  });
+
+  it("記憶の区画（trunkId）は、幹なら自分・枝なら親", async () => {
+    const seen: Array<Record<string, unknown> | undefined> = [];
+    const registry = new ThreadRegistry(async (threadId, _resume, _model, identity) => {
+      seen.push(identity as Record<string, unknown> | undefined);
+      return { session: new FakeSession(`s-${threadId}`), tools: [] };
+    });
+
+    const trunk = await registry.open({ kind: "trunk", title: "banto 開発" });
+    const a = await registry.open(
+      { kind: "branch", title: "枝A", returnCondition: "x", openedBy: "banto", reason: "y" },
+      trunk.id
+    );
+    const b = await registry.open(
+      { kind: "branch", title: "枝B", returnCondition: "x", openedBy: "banto", reason: "y" },
+      trunk.id
+    );
+
+    assert.equal(seen[0]?.["trunkId"], trunk.id);
+    assert.equal(seen[1]?.["trunkId"], trunk.id, "枝は親の幹と同じ区画");
+    assert.equal(seen[2]?.["trunkId"], trunk.id, "同じ幹の枝はどれも同じ区画");
+    assert.equal(a.parentId, trunk.id);
+    assert.equal(b.parentId, trunk.id);
   });
 
 });

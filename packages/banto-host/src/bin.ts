@@ -23,8 +23,6 @@ import {
   LlmCatalog,
   MODEL_ALIASES,
   ScopedMemory,
-  resolveProjects,
-  type Place,
   type PlaceProvider,
   type ResolvedModel,
 } from "@banto/core";
@@ -205,36 +203,25 @@ function memoryPath(): string {
 }
 
 /**
- * プロジェクトの記憶の置き場所（ADR-0003 第二層。**横断させない**）。
+ * その仕事の記憶の置き場所（ADR-0003 第二層。**横断させない**）。
  *
- * 場所ごとに別ファイルにする——同じファイルに `scope` で同居させると、絞り込みを
+ * **区画の単位は幹**（PO裁定 2026-08-10）。以前は場所（リポジトリ）で分けていたが、
+ * 複数のリポジトリにまたがる仕事も、まだリポジトリの無い相談も持てないので、
+ * **場所は「どこに書けるか」、幹は「何についての仕事か」**と切り離した。
+ *
+ * 幹ごとに別ファイルにする——同じファイルに `scope` で同居させると、絞り込みを
  * 1箇所書き忘れた時点で混ざる。ここでは混ぜようとしても混ざらない。
- *
- * 場所IDはスラッシュを含む（`github.com/tjst-t/banto`）ので、そのままではファイル名に
- * できない。`encodeURIComponent` で1階層に潰す——可逆なので、ファイルを見れば
- * どの場所のものか分かる。
  *
  * 置き場は**リポジトリの中ではなくホストのデータ置き場**。リポジトリに置くと、
  * 番頭が自分の記憶を書き換えられてしまう（決定38b と同じ理由）。
  */
-function projectMemoryPath(placeId: string): string {
-  return path.join(dataDir(), "projects", encodeURIComponent(placeId), "memory.jsonl");
+function trunkMemoryPath(trunkId: string): string {
+  return path.join(dataDir(), "trunks", encodeURIComponent(trunkId), "memory.jsonl");
 }
 
-/**
- * 場所の同一性を見るための実パス（PO裁定 2026-08-05：同じ場所は1プロジェクト）。
- *
- * リンクを解決してから比べる——`BANTO_PLACES` の静的な場所と repo-manager が出す
- * 同じリポジトリが、片方だけリンク越しだと別物に見える。
- *
- * 解決できないパス（まだ無い等）はそのまま返す。**畳まないだけ**で害は無い。
- */
-function realPathOrSelf(target: string): string {
-  try {
-    return fs.realpathSync(target);
-  } catch {
-    return path.resolve(target);
-  }
+/** 場所で分けていた頃の記憶の置き場（読み出し専用。移行の案内に使う）。 */
+function legacyPlaceMemoryPath(placeId: string): string {
+  return path.join(dataDir(), "projects", encodeURIComponent(placeId), "memory.jsonl");
 }
 
 /**
@@ -377,7 +364,14 @@ Write everything the user sees in ${RESPONSE_LANGUAGE}: chat replies, thread nam
 
 # Memory
 
-- When something worth remembering across conversations comes up — the user's preferences, habits, standing decisions — save it with memory.save.
+Memory is split in two, and **the unit of the second layer is the trunk**.
+
+- \`scope: "person"\` — the user themselves: preferences, habits, standing decisions. Carried into **every** conversation.
+- \`scope: "project"\` — this trunk's memory: the decisions, conventions and domain of this one piece of work. It is injected **only into this trunk and its branches**, and never into another trunk. You do not name the trunk — leaving \`trunk\` out means the one you are in.
+- A branch shares its parent trunk's memory. What you learn in a branch stays with the work after the branch is folded.
+- **When in doubt, project, not person.** Something specific to one job that lands in the person layer skews your judgement on unrelated jobs.
+- The injected memory is only this trunk's. To reach across, \`memory.search({ acrossTrunks: true })\` — use it when you suspect "we worked this out somewhere else". If you find something worth keeping here, save it here too.
+- What a trunk carries out when it ends is your call (thread.close_trunk). That is how trunk memory becomes person memory.
 
 # Conversations: trunks, branches, and the 帳場
 
@@ -438,15 +432,20 @@ function describeThread(identity: ThreadIdentity | undefined): string {
       "a request before it has become a project, one-off errands.",
       "",
       "When something here grows into work with its own body of memory, start a trunk for it",
-      "with thread.open_trunk and continue there. When it does not, just deal with it here."
+      "with thread.open_trunk and continue there. When it does not, just deal with it here.",
+      "",
+      "**The 帳場 has its own memory partition, and it is a lost-and-found, not a project.**",
+      "Anything that turns out to belong to a project should be saved in that project's trunk,",
+      "not here."
     );
   } else if (identity.kind === "trunk") {
     lines.push(
       `You are in the trunk of the project 「${identity.title}」.`,
       "",
-      "Everything in this conversation is about this project. Memory you save here is about",
-      "this project. If a request turns out to belong to a different project, say so and",
-      "point at that trunk instead of answering here.",
+      "Everything in this conversation is about this project. **This trunk is also the unit",
+      "of memory**: what you save with scope \"project\" is injected into this trunk and its",
+      "branches, and into no other conversation. If a request turns out to belong to a",
+      "different project, say so and point at that trunk instead of answering here.",
       "",
       "This trunk holds the decisions: keep it readable end to end. Work that will take",
       "repeated back-and-forth goes to a branch (thread.open)."
@@ -459,6 +458,9 @@ function describeThread(identity: ThreadIdentity | undefined): string {
       identity.returnCondition
         ? `It returns when: ${identity.returnCondition}`
         : "No return condition was written for it. Work out what would end it, or fold it.",
+      "",
+      "**Memory here belongs to the trunk**, not to the branch: what you save with scope",
+      "\"project\" stays with 「" + (identity.parentTitle ?? "the trunk") + "」 after this branch is folded.",
       "",
       "Stay on this one question. **You cannot open a branch from here** — if it needs one,",
       "fold this branch back first. When the condition is met, fold it with thread.merge and",
@@ -553,42 +555,45 @@ async function serve(options: ServeOptions): Promise<void> {
   const handoffs = new HandoffStore(path.join(dataDir(), "handoffs"));
 
   /**
-   * 場所ID → プロジェクトID の写し（PO裁定 2026-08-05）。
+   * 場所で分けていた頃の記憶を**黙って捨てない**（I2・PO裁定 2026-08-10）。
    *
-   * ワークツリーの記憶は親リポジトリのものとして扱う。**写しで持つ**のは、
-   * 記憶のストアを開くのが同期の経路（`ScopedMemory.forProject`）で、場所の導出は
-   * 非同期（`gwq` を叩く）だから。場所を一覧するたびに更新する（`rememberProjectIds`）。
+   * 区画を場所から幹へ移したので、`projects/<場所>/memory.jsonl` はもう誰も読まない。
+   * ここで名指ししておかないと、覚えていたはずのことが理由も分からず消えて見える。
+   * **自動で移さない**——どの幹の記憶かは中身を読まないと決まらず、推測で混ぜたら
+   * 幹を分けた意味が消えるから。移し先は PO と番頭が決める。
    */
-  const projectIds = new Map<string, string>();
-  /** 別名で同じ場所を指していた組（警告を1度だけ出すために覚える）。 */
-  const warnedAliases = new Set<string>();
-  const rememberProjectIds = (list: readonly Place[]): { scopes: Array<{ id: string; label: string }> } => {
-    // シンボリックリンクを解決してから同一性を見る（リンク越しの別名も同じ場所）
-    const resolved = resolveProjects(list, (place) => realPathOrSelf(place.path));
-    for (const [placeId, projectId] of resolved.idByPlace) projectIds.set(placeId, projectId);
-    // I2: 別名を畳んだことは黙っていない——別名側のファイルに記憶が残っていると、
-    //     覚えたはずのことが消えて見える
-    for (const [canonical, others] of resolved.aliases) {
-      const stranded = others.filter((id) => fs.existsSync(projectMemoryPath(id)));
-      if (stranded.length === 0) continue;
-      const key = `${canonical}:${stranded.join(",")}`;
-      if (warnedAliases.has(key)) continue;
-      warnedAliases.add(key);
+  const warnStrandedPlaceMemory = (): void => {
+    const dir = path.join(dataDir(), "projects");
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(dir);
+    } catch {
+      return; // 無いのが普通（場所で分けていた頃を通っていない）
+    }
+    for (const name of entries) {
+      const file = legacyPlaceMemoryPath(decodeURIComponent(name));
+      let lines: number;
+      try {
+        lines = fs.readFileSync(file, "utf-8").split("\n").filter((l) => l.trim().length > 0).length;
+      } catch {
+        continue;
+      }
+      if (lines === 0) continue;
       console.warn(
-        `[banto] 場所 ${stranded.join(" / ")} は ${canonical} と同じ場所です。` +
-          `プロジェクトの記憶は ${canonical} に一本化されますが、` +
-          `${stranded.map((id) => projectMemoryPath(id)).join(" / ")} に古い記憶が残っています`
+        `[banto] ${file} に場所で分けていた頃の記憶が ${lines} 件あります。` +
+          "記憶の区画は幹になったので、この記憶はもう会話に載りません" +
+          "（要るものは読んで memory.save で幹へ入れ直してください）"
       );
     }
-    return { scopes: resolved.scopes };
   };
-  /** 写しに無ければ自分自身を返す。**推測で親を作らない**（別プロジェクトに混ぜない） */
-  const projectIdFor = (placeId: string): string => projectIds.get(placeId) ?? placeId;
 
-  // ADR-0003 の二層。人の記憶は1つ、プロジェクトの記憶は**プロジェクトごと**（横断させない）
+  /**
+   * ADR-0003 の二層。人の記憶は1つ、その仕事の記憶は**幹ごと**（横断させない）。
+   * 区画の単位を場所から幹へ移した（PO裁定 2026-08-10）。
+   */
   const memory = new ScopedMemory(
     new JsonlMemoryStore(memoryPath()),
-    (placeId) => new JsonlMemoryStore(projectMemoryPath(projectIdFor(placeId)))
+    (trunkId) => new JsonlMemoryStore(trunkMemoryPath(trunkId))
   );
   const skills = loadBantoSkills();
   // 決定26・task-0017: SKILL の学習層。番頭が書けない場所に置く（決定38b と同じ理由）
@@ -781,9 +786,9 @@ async function serve(options: ServeOptions): Promise<void> {
           modules.skills(),
         ]),
       // ADR-0003 の第二層をビューアが切り替えられるようにする。
-      // **プロジェクト単位に畳む**——ワークツリーごとにチップが並ぶと、同じリポジトリの
-      // 記憶が5つに分かれているように見えてしまう（実際には1つ）
-      places: async () => rememberProjectIds(await places.list()).scopes,
+      // **区画は幹**（PO裁定 2026-08-10）。畳んだ幹も出す——記憶は幹を終えても残るので、
+      // 出さないと「覚えていたはずのもの」が画面から消える
+      places: async () => threads.trunks().map((t) => ({ id: t.id, label: t.title })),
     })
   );
 
@@ -990,22 +995,39 @@ async function serve(options: ServeOptions): Promise<void> {
     }
     const sessionModel = threadModel ?? model;
 
-    // ADR-0003: この会話で効くプロジェクト。登録されている場所の記憶だけが注入され、
-    // それぞれ見出しの下に分かれて載る（どのプロジェクトの話かが混ざらない）。
-    //
-    // **ワークツリーは親リポジトリに畳む**（PO裁定 2026-08-05）。畳まないと、同じ
-    // リポジトリのブランチの数だけ見出しが増え、記憶もその数だけ分かれる
-    const registered = await places.list();
-    const memoryPlaces = rememberProjectIds(registered).scopes;
+    /**
+     * ADR-0003 の第二層：**この会話の幹の記憶だけ**を注入する（PO裁定 2026-08-10）。
+     *
+     * 区画の単位を場所から幹へ移した。**枝は親の幹と同じ区画**なので、枝で調べたことは
+     * その仕事の記憶として溜まる。他の幹の記憶は載らない——載せると、幹を分けた意味が消える
+     * （探すのは `memory.search({ acrossTrunks: true })` で幹をまたげる）。
+     */
+    const here = identity
+      ? [
+          {
+            id: identity.trunkId,
+            label:
+              identity.kind === "branch" ? (identity.parentTitle ?? identity.title) : identity.title,
+          },
+        ]
+      : [];
+    /**
+     * 区画の一覧（横断して探すときに開く先）。**畳んだ幹も入れる**——終わった仕事の
+     * 記憶こそ横断で効く。無ければ「覚えていたはずのもの」に手が届かない
+     */
+    const knownTrunks = (): Array<{ id: string; label: string }> =>
+      threads.trunks().map((t) => ({ id: t.id, label: t.title }));
 
     const { session } = await createBantoHostSession({
       // **会話ごとに立場が違う**ので、そこだけを足して渡す（PO報告 2026-08-10）
       systemPrompt: SYSTEM_PROMPT + describeThread(identity),
       tools: ownTools,
       memory,
-      memoryPlaces,
-      // ワークツリーのIDで指されても断らない——記憶は親に畳まれる（projectIdFor）
-      knownPlaceIds: () => [...memoryPlaces.map((p) => p.id), ...registered.map((p) => p.id)],
+      memoryTrunks: here,
+      // I2: 知らない幹へ黙って書かない。省略時はこの会話の幹（defaultTrunkId）
+      knownTrunkIds: () => knownTrunks().map((t) => t.id),
+      defaultTrunkId: () => identity?.trunkId,
+      knownTrunkList: knownTrunks,
       artifacts,
       // 器が描けなかったときに出どころを名指しできるようにする（決定81(d)）
       artifactModuleOf: (name) => modules.moduleForTool(name)?.name,
@@ -1056,8 +1078,12 @@ async function serve(options: ServeOptions): Promise<void> {
         // PO指摘 2026-08-05: 退避した観測の索引を引き継ぎ資料へ書く。
         // 渡さないと、畳んだ番頭は栞（artifact のID）を見失う
         artifacts,
-        // 決定28: 記憶の抽出は章の境界だけで走る（explicit gate）。人の記憶へ入れる
-        // ——プロジェクト固有の話は場所が特定できないので、ここでは横断層に入れない
+        // 決定28: 記憶の抽出は章の境界だけで走る（explicit gate）。**人の記憶へ入れる**。
+        //
+        // 区画が幹になった今、宛先の幹は分かる（identity.trunkId）が、抽出器は「人に
+        // ついての長生きする事実」を出すように書かれていて、差分に区画を持たない。
+        // 幹へ入れるなら抽出器の出力形式から変わるので、ここでは変えない
+        // （残っている論点：仕事に固有の話が横断層へ入りうる。→ handoff）
         extractMemories: async (transcript) => {
           const person = memory.forPerson();
           const deltas = await createLlmMemoryExtractor({
@@ -1098,8 +1124,12 @@ async function serve(options: ServeOptions): Promise<void> {
     // server はイベントの wire名→論理名 逆引きに、登録した論理名のToolを必要とする
       const tools = [
         ...ownTools,
+        // **逆引き用の写し**（実際に走るのは createBantoHostSession が組んだ側）。
+        // 同じ options で組まないと、名前が食い違って逆引きが外れる
         ...createMemoryTools(memory, {
-          knownPlaceIds: () => [...memoryPlaces.map((p) => p.id), ...registered.map((p) => p.id)],
+          knownTrunkIds: () => knownTrunks().map((t) => t.id),
+          defaultTrunkId: () => identity?.trunkId,
+          knownTrunkList: knownTrunks,
         }),
         ...createSkillTools(skills, { learned: learnedSkills, defaults: skills }),
         ...createArtifactTools(artifacts),
@@ -1134,6 +1164,9 @@ async function serve(options: ServeOptions): Promise<void> {
       },
     };
   };
+
+  // I2: 場所で分けていた頃の記憶が残っていたら名指しする（自動では移さない）
+  warnStrandedPlaceMemory();
 
   // task-0036: 会話はホストの再起動を越えて残る
   const threadStore = new ThreadStore(path.join(dataDir(), "threads"));

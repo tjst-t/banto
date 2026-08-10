@@ -241,7 +241,7 @@ describe("[提案§3.5 / ADR-0003] 記憶の二層", () => {
     memory.forProject("proj-a").save({ kind: "fact", text: "A の決定" });
     memory.forProject("proj-b").save({ kind: "fact", text: "B の決定" });
 
-    const prompt = renderMemoryForPrompt(memory, { places: [{ id: "proj-a", label: "プロジェクトA" }] });
+    const prompt = renderMemoryForPrompt(memory, { trunks: [{ id: "proj-a", label: "プロジェクトA" }] });
 
     assert.match(prompt, /## あなた（人）について/);
     assert.match(prompt, /## プロジェクトA について/);
@@ -258,10 +258,12 @@ describe("[提案§3.5 / ADR-0003] 記憶の二層", () => {
     assert.doesNotMatch(prompt, /A の決定/);
   });
 
-  it("プロジェクトの記憶は「その場所の中でだけ効く」とプロンプトに書く", () => {
+  it("幹の記憶は「その幹の中でだけ効く」とプロンプトに書く", () => {
     memory.forProject("proj-a").save({ kind: "fact", text: "A の決定" });
-    const prompt = renderMemoryForPrompt(memory, { places: [{ id: "proj-a" }] });
-    assert.match(prompt, /他のプロジェクトへ持ち出さない/);
+    const prompt = renderMemoryForPrompt(memory, { trunks: [{ id: "proj-a" }] });
+    assert.match(prompt, /他の幹へ持ち出さない/);
+    // 幹をまたぐ引き方があることも書く（分けた代償を番頭が回収できるように）
+    assert.match(prompt, /acrossTrunks/);
   });
 
   it("場所を持たない構成でプロジェクトの記憶を引こうとしたらエラー（I2：人の記憶へ落とさない）", () => {
@@ -273,19 +275,19 @@ describe("[提案§3.5 / ADR-0003] 記憶の二層", () => {
     assert.throws(() => memory.forProject("  "), /requires a place id/);
   });
 
-  it('memory.save Tool は scope: "project" に place を要求する', async () => {
+  it('memory.save Tool は scope: "project" に幹を要求する（既定が無いとき）', async () => {
     await assert.rejects(
       () => tool("memory.save").execute({ kind: "fact", text: "X", scope: "project" } as never),
-      /place が要ります/
+      /幹が要ります/
     );
   });
 
-  it("memory.save Tool は知らない場所への保存を断る（I2）", async () => {
-    const tools = createMemoryTools(memory, { knownPlaceIds: () => ["proj-a"] });
+  it("memory.save Tool は知らない幹への保存を断る（I2）", async () => {
+    const tools = createMemoryTools(memory, { knownTrunkIds: () => ["proj-a"] });
     const save = tools.find((t) => t.name === "memory.save")!;
     await assert.rejects(
-      () => save.execute({ kind: "fact", text: "X", scope: "project", place: "proj-z" } as never),
-      /知らない場所です/
+      () => save.execute({ kind: "fact", text: "X", scope: "project", trunk: "proj-z" } as never),
+      /知らない幹です/
     );
   });
 
@@ -294,11 +296,121 @@ describe("[提案§3.5 / ADR-0003] 記憶の二層", () => {
       kind: "fact",
       text: "A の決定",
       scope: "project",
-      place: "proj-a",
+      trunk: "proj-a",
     } as never);
 
     assert.deepEqual(memory.forProject("proj-a").list().map((r) => r.text), ["A の決定"]);
     assert.deepEqual(person.list(), [], "人の記憶には入らない");
+  });
+});
+
+// ── 記憶の区画は幹（PO裁定 2026-08-10）──────────────────────────────────────
+
+/**
+ * 記憶が分かれる単位を**場所（リポジトリ）から幹へ**移した。
+ *
+ * 場所に結びつけていると、複数のリポジトリにまたがる仕事も、まだリポジトリの無い
+ * 相談も記憶を持てない。幹＝プロジェクトの単位なので、区画もそこに合わせる。
+ *
+ * 見たいのは3つ: **省略でいまの幹に入る**・**幹をまたいで注入されない**・
+ * **探すときだけは幹をまたげる**（分けた代償を番頭が回収できる）。
+ */
+describe("[ADR-0003 / PO裁定 2026-08-10] 記憶の区画は幹", () => {
+  /** thread-51 の会話に居る番頭が持つ Tool 一式。 */
+  const toolsHere = (trunkId: string) =>
+    createMemoryTools(memory, {
+      defaultTrunkId: () => trunkId,
+      knownTrunkIds: () => ["thread-51", "thread-52"],
+      knownTrunkList: () => [
+        { id: "thread-51", label: "banto 開発" },
+        { id: "thread-52", label: "ひらがな学習アプリ" },
+      ],
+    });
+  const here = (trunkId: string, name: string) => {
+    const found = toolsHere(trunkId).find((t) => t.name === name);
+    assert.ok(found, `${name} が登録されていない`);
+    return found;
+  };
+
+  it("幹を書かずに保存すると、いまの会話の幹に入る", async () => {
+    await here("thread-51", "memory.save").execute({
+      kind: "fact",
+      text: "デプロイは systemd 再起動で足りる",
+      scope: "project",
+    } as never);
+
+    assert.deepEqual(
+      memory.forProject("thread-51").list().map((r) => r.text),
+      ["デプロイは systemd 再起動で足りる"]
+    );
+    assert.deepEqual(memory.forProject("thread-52").list(), [], "他の幹には入らない");
+    assert.deepEqual(person.list(), [], "人の記憶にも入らない");
+  });
+
+  it("枝は親の幹と同じ区画（枝で調べたことが仕事に溜まる）", async () => {
+    // 枝の会話でも defaultTrunkId は親の幹（ThreadIdentity.trunkId がそう解決する）
+    await here("thread-51", "memory.save").execute({
+      kind: "fact",
+      text: "間欠的に落ちるのは fixture の後片付け漏れ",
+      scope: "project",
+    } as never);
+
+    assert.equal(memory.forProject("thread-51").list().length, 1);
+  });
+
+  it("別の幹の記憶はプロンプトに載らない", () => {
+    memory.forProject("thread-51").save({ kind: "fact", text: "banto の決定" });
+    memory.forProject("thread-52").save({ kind: "fact", text: "ひらがなアプリの決定" });
+
+    const prompt = renderMemoryForPrompt(memory, {
+      trunks: [{ id: "thread-51", label: "banto 開発" }],
+    });
+    assert.match(prompt, /## banto 開発 について/);
+    assert.match(prompt, /banto の決定/);
+    assert.doesNotMatch(prompt, /ひらがなアプリの決定/, "幹を分けた意味が消える");
+  });
+
+  it("acrossTrunks なら幹をまたいで探せる（どの幹のものかも出る）", async () => {
+    memory.forProject("thread-51").save({ kind: "fact", text: "incus で隔離して動かす" });
+    memory.forProject("thread-52").save({ kind: "fact", text: "incus は使わない" });
+    person.save({ kind: "habit", text: "incus のログは journalctl で見る" });
+
+    const result = await here("thread-51", "memory.search").execute({
+      text: "incus",
+      acrossTrunks: true,
+    } as never);
+    const text = result.content.map((c) => ("text" in c ? c.text : "")).join("\n");
+
+    assert.match(text, /\[人の記憶\].*journalctl/);
+    assert.match(text, /\[この幹\].*incus で隔離/);
+    assert.match(text, /\[ひらがな学習アプリ\].*incus は使わない/);
+  });
+
+  it("acrossTrunks を付けなければ、いまの幹の中だけを探す", async () => {
+    memory.forProject("thread-51").save({ kind: "fact", text: "incus で隔離して動かす" });
+    memory.forProject("thread-52").save({ kind: "fact", text: "incus は使わない" });
+
+    const result = await here("thread-51", "memory.search").execute({
+      text: "incus",
+      scope: "project",
+    } as never);
+    const text = result.content.map((c) => ("text" in c ? c.text : "")).join("\n");
+
+    assert.match(text, /incus で隔離/);
+    assert.doesNotMatch(text, /incus は使わない/);
+  });
+
+  it("知らない幹を名指ししたら断る（I2：黙って新しい区画を作らない）", async () => {
+    await assert.rejects(
+      () =>
+        here("thread-51", "memory.save").execute({
+          kind: "fact",
+          text: "X",
+          scope: "project",
+          trunk: "thread-99",
+        } as never),
+      /知らない幹です/
+    );
   });
 });
 

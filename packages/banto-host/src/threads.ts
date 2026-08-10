@@ -39,6 +39,14 @@ import type { ThreadStore } from "./thread-store.js";
  */
 export interface ThreadIdentity {
   kind: "trunk" | "branch";
+  /**
+   * **記憶の区画**（PO裁定 2026-08-10）。幹なら自分、枝なら親の幹。
+   *
+   * 記憶が分かれる単位を場所（リポジトリ）から幹へ移した——複数のリポジトリにまたがる
+   * 仕事も、まだリポジトリの無い相談も、幹1本として1つの区画を持てる。枝は親の幹と
+   * 同じ区画（同じ仕事の中の往復なので、分ける意味がない）。
+   */
+  trunkId: string;
   /** 帳場（メインの幹）か。どの幹の話でもないものの受け皿。 */
   isMain: boolean;
   title: string;
@@ -419,6 +427,7 @@ export class ThreadRegistry {
         const parts = await this.factory(saved.id, saved.sessionFile, saved.model, {
           kind: savedKind,
           isMain: saved.isMain === true,
+          trunkId: savedKind === "trunk" ? saved.id : (saved.parentId ?? saved.id),
           title: saved.title,
           ...(saved.returnCondition ? { returnCondition: saved.returnCondition } : {}),
           ...(saved.parentId
@@ -633,6 +642,8 @@ export class ThreadRegistry {
     const parts = await this.factory(id, undefined, undefined, {
       kind: spec.kind,
       isMain: spec.kind === "trunk" && spec.main === true,
+      // 記憶の区画は幹。枝は親の幹と同じ区画を使う
+      trunkId: spec.kind === "trunk" ? id : parentTrunk!.id,
       title,
       ...(spec.kind === "branch" ? { returnCondition: spec.returnCondition } : {}),
       ...(parentTrunk ? { parentTitle: parentTrunk.title } : {}),

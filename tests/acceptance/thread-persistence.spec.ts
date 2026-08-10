@@ -281,6 +281,8 @@ describe("[PO報告 2026-08-10] 読み戻した会話にも「いまどの会話
     assert.equal(branch?.["returnCondition"], "描画方式が決まったら");
     // **どの幹の枝か**まで渡る（幹を先に読み戻しているので親が引ける）
     assert.equal(branch?.["parentTitle"], "loamium");
+    // 読み戻しでも記憶の区画は親の幹（幹ごとの記憶が再起動で迷子にならない）
+    assert.equal(branch?.["trunkId"], proj.id);
   });
 });
 

@@ -241,24 +241,24 @@ export const DEFAULT_MEMORY_EVAL: readonly MemoryEvalCase[] = [
   {
     id: "multi-project-isolated",
     category: "multi-session-recall",
-    question: "別のプロジェクトの記憶が混ざらないか（ADR-0003）",
+    question: "別の幹の記憶が混ざらないか（ADR-0003）",
     arrange: (m) => {
       m.forProject("proj-a").save({ kind: "fact", text: "A のデプロイは staging 経由" });
       m.forProject("proj-b").save({ kind: "fact", text: "B のデプロイは直接" });
     },
-    render: { places: [{ id: "proj-a", label: "A" }] },
+    render: { trunks: [{ id: "proj-a", label: "A" }] },
     expectInPrompt: ["A のデプロイは staging 経由"],
     expectNotInPrompt: ["B のデプロイは直接"],
   },
   {
     id: "multi-person-crosses",
     category: "multi-session-recall",
-    question: "人の記憶はプロジェクトを問わず出るか",
+    question: "人の記憶は幹を問わず出るか",
     arrange: (m) => {
       m.forPerson().save({ kind: "preference", text: "日本語で返答する" });
       m.forProject("proj-a").save({ kind: "fact", text: "A の決定" });
     },
-    render: { places: [{ id: "proj-a" }] },
+    render: { trunks: [{ id: "proj-a" }] },
     expectInPrompt: ["日本語で返答する", "A の決定"],
   },
   // 6. 予算超過

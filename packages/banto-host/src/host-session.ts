@@ -40,14 +40,18 @@ export interface CreateBantoHostSessionOptions {
    */
   memory?: ScopedMemory;
   /**
-   * この会話で効くプロジェクト（ADR-0003 の第二層）。渡した場所の記憶だけが注入され、
-   * 他のプロジェクトの記憶は**横断しない**。省略すると人の記憶だけ。
+   * この会話で効く幹（ADR-0003 の第二層）。渡した幹の記憶だけが注入され、
+   * 他の幹の記憶は**横断しない**。省略すると人の記憶だけ。普通はちょうど1本。
    */
-  memoryPlaces?: readonly { id: string; label?: string }[];
+  memoryTrunks?: readonly { id: string; label?: string }[];
+  /** `scope: "project"` で区画を省いたときの既定（＝この会話の幹）。 */
+  defaultTrunkId?: () => string | undefined;
+  /** 幹の一覧（`memory.search({ acrossTrunks: true })` が開く区画）。 */
+  knownTrunkList?: () => readonly { id: string; label?: string }[];
   /** 記憶の注入に使うトークン予算。省略すると banto-core の既定。 */
   memoryTokenBudget?: number;
-  /** `scope: "project"` の place を検算するための、登録済みの場所ID。 */
-  knownPlaceIds?: () => readonly string[];
+  /** `scope: "project"` の宛先を検算するための、いま在る幹のID。 */
+  knownTrunkIds?: () => readonly string[];
   /**
    * ツール出力の退避先（提案§3.1）。渡すと `artifact.read` が自動で登録され、
    * 大きなツール結果は栞に置き換わる。省略すると退避しない（テスト・使い捨て用途）。
@@ -137,7 +141,7 @@ export async function createBantoHostSession(
     options.systemPrompt,
     options.memory
       ? renderMemoryForPrompt(options.memory, {
-          ...(options.memoryPlaces ? { places: options.memoryPlaces } : {}),
+          ...(options.memoryTrunks ? { trunks: options.memoryTrunks } : {}),
           ...(options.memoryTokenBudget !== undefined
             ? { tokenBudget: options.memoryTokenBudget }
             : {}),
@@ -179,10 +183,11 @@ export async function createBantoHostSession(
   const tools = [
     ...options.tools,
     ...(options.memory
-      ? createMemoryTools(
-          options.memory,
-          options.knownPlaceIds ? { knownPlaceIds: options.knownPlaceIds } : {}
-        )
+      ? createMemoryTools(options.memory, {
+          ...(options.knownTrunkIds ? { knownTrunkIds: options.knownTrunkIds } : {}),
+          ...(options.defaultTrunkId ? { defaultTrunkId: options.defaultTrunkId } : {}),
+          ...(options.knownTrunkList ? { knownTrunkList: options.knownTrunkList } : {}),
+        })
       : []),
     ...(skills.length > 0 || options.learnedSkills
       ? createSkillTools(skills, {

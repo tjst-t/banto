@@ -158,10 +158,10 @@ export function MemoryViewer({ params, endpoint }: CanvasViewProps): React.React
         </Button>
       </ViewBar>
 
-      {/* ADR-0003: 層の切り替え。場所が1つも無いときは出さない（人の記憶しか無い） */}
+      {/* ADR-0003: 層の切り替え。区画は**幹**（PO裁定 2026-08-10）。幹が1つも無ければ出さない */}
       {places.length > 0 && (
         <ViewBar>
-          <Chip on={place === ""} onClick={() => setPlace("")} title="全プロジェクトで共有される記憶">
+          <Chip on={place === ""} onClick={() => setPlace("")} title="幹をまたいで共有される記憶">
             あなた（人）
           </Chip>
           {places.map((p) => (
@@ -169,7 +169,7 @@ export function MemoryViewer({ params, endpoint }: CanvasViewProps): React.React
               key={p.id}
               on={place === p.id}
               onClick={() => setPlace(p.id)}
-              title={`${p.label} に閉じた記憶（他のプロジェクトへは持ち出されない）`}
+              title={`幹「${p.label}」に閉じた記憶（他の幹へは持ち出されない）`}
             >
               {p.label}
             </Chip>
