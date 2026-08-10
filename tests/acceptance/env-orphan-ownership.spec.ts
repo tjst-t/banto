@@ -118,6 +118,52 @@ describe("[spec-environment §5] 孤児の判定は自分が作ったものに�
   });
 });
 
+/**
+ * **所有の記録は置き場ごと**（PO報告 2026-08-10）。
+ *
+ * 記録の既定は `os.tmpdir()/banto-docker-driver-state.json` という**機械に1つの場所**
+ * だった。同じ機械で試験を回すと、試験が立てたコンテナが**本番のプール自身のもの**
+ * として記録され、本番の台帳には無いので「孤児」として毎回帳場へ知らせが飛んでいた。
+ *
+ * 所有はプールごとに違う。だから記録も置き場ごとに分ける——プールがドライバへ
+ * 置き場を教える（`BANTO_DOCKER_DRIVER_STATE`）。
+ */
+describe("[spec-environment §5] 所有の記録は置き場ごとに分かれる", () => {
+  it("プールはドライバへ自分の置き場を教える", async () => {
+    const { EnvironmentPool } = await import("@banto/environment-pool");
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "env-pool-owned-"));
+    const pool = new EnvironmentPool({ dataDir });
+
+    // 記録の置き場は**この置き場の中**。機械に1つの既定を指してはいけない
+    const env = (pool as unknown as { driverEnv: Record<string, string> }).driverEnv;
+    assert.equal(
+      env["BANTO_DOCKER_DRIVER_STATE"],
+      path.join(dataDir, "docker-driver-owned.json"),
+      "所有の記録が置き場の外にある＝別のプールと共有してしまう"
+    );
+    assert.ok(
+      !env["BANTO_DOCKER_DRIVER_STATE"]!.startsWith(os.tmpdir() + path.sep + "banto-docker-driver-state"),
+      "機械に1つの既定を指している"
+    );
+
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it("別の置き場のプールは、別の記録を指す（試験と本番が混ざらない）", async () => {
+    const { EnvironmentPool } = await import("@banto/environment-pool");
+    const a = fs.mkdtempSync(path.join(os.tmpdir(), "env-pool-a-"));
+    const b = fs.mkdtempSync(path.join(os.tmpdir(), "env-pool-b-"));
+    const envOf = (dir: string): string =>
+      (new EnvironmentPool({ dataDir: dir }) as unknown as {
+        driverEnv: Record<string, string>;
+      }).driverEnv["BANTO_DOCKER_DRIVER_STATE"]!;
+
+    assert.notEqual(envOf(a), envOf(b), "違う置き場のプールが同じ記録を指している");
+
+    for (const d of [a, b]) fs.rmSync(d, { recursive: true, force: true });
+  });
+});
+
 describe("[spec-environment §5] 名前空間", () => {
   it("プロジェクト名は banto のものと分かる形（`banto-env-<taskId>`）", async () => {
     const src = fs.readFileSync(

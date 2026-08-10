@@ -275,6 +275,18 @@ export class EnvironmentPool {
   private readonly cacheLedger: CacheLedger;
   /** 置き場の根。**プールが決める**（ドライバでも呼び出し側でもない）。 */
   private readonly cacheRoot: string;
+  /**
+   * ドライバへ渡す環境変数。**所有の記録を置き場ごとに分ける**（PO報告 2026-08-10）。
+   *
+   * docker ドライバは「自分が作ったプロジェクト」を記録しておき、`list` でそれだけを
+   * 返す（名前で推測しないための守り・inc-0043）。ところがその記録の既定が
+   * `os.tmpdir()/banto-docker-driver-state.json` という**機械に1つの場所**だった。
+   *
+   * 結果、同じ機械で試験を回すと**試験が立てたコンテナが本番のプール自身のものとして
+   * 記録され**、本番の台帳には無いので「台帳に無い実リソース＝孤児」として毎回帳場へ
+   * 知らせが飛んでいた。所有はプールごとに違うので、記録も置き場ごとに分ける。
+   */
+  private readonly driverEnv: Record<string, string>;
 
   constructor(options: EnvironmentPoolOptions) {
     const opened = EnvLedger.open(options.dataDir);
@@ -303,6 +315,9 @@ export class EnvironmentPool {
     this.cacheLedger = new CacheLedger(options.dataDir);
     // 場所を決めるのはプール（§6 の `dest` と同じ規則）。ドライバにも呼び出し側にも選ばせない
     this.cacheRoot = options.cacheRoot ?? path.join(options.dataDir, "env-cache");
+    this.driverEnv = {
+      BANTO_DOCKER_DRIVER_STATE: path.join(options.dataDir, "docker-driver-owned.json"),
+    };
   }
 
   // ── TTL 執行と照合（spec-environment §5・決定32e）────────────────────────
@@ -577,7 +592,13 @@ export class EnvironmentPool {
     for (const driver of drivers) {
       let result;
       try {
-        result = await runDriverVerb(resolveDriverPath(driver), "list", {}, this.timeoutMs);
+        result = await runDriverVerb(
+          resolveDriverPath(driver),
+          "list",
+          {},
+          this.timeoutMs,
+          this.driverEnv
+        );
       } catch (err) {
         console.error(`[env] ${driver} の照合に失敗しました: ${String(err)}`);
         continue;
@@ -638,7 +659,8 @@ export class EnvironmentPool {
       resolveDriverPath(target.driver),
       "teardown",
       { handle: target.handle },
-      this.timeoutMs
+      this.timeoutMs,
+      this.driverEnv
     );
     if (!result.ok) throw new Error(`孤児 "${name}" を畳めませんでした: ${result.error}`);
 
@@ -724,7 +746,9 @@ export class EnvironmentPool {
       },
       // 立てるのはイメージのビルドを含みうる（task-0075）。他の動詞より長く待つ
       this.provisionTimeoutMs,
-      extraEnv
+      // 所有の記録は置き場ごと。**ここが要**——作ったものを記録するのが provision なので、
+      // ここで置き場を教えないと機械に1つの既定へ書かれ、他のプールの list に混ざる
+      { ...this.driverEnv, ...extraEnv }
     );
     if (!result.ok) {
       throw new Error(`環境を用意できませんでした（${resolved.driver}）: ${result.error}`);
@@ -920,7 +944,7 @@ export class EnvironmentPool {
       "cache-list",
       { cacheRoot: this.cacheRoot },
       this.timeoutMs,
-      extraEnv ?? {}
+      { ...this.driverEnv, ...(extraEnv ?? {}) }
     );
     // ドライバが `cache-list` を持たないなら掃除もできない。**それ自体は失敗ではない**
     // （置き場を作らないドライバなので増えない）が、作るのに消せないなら片手落ちなので出す
@@ -945,7 +969,7 @@ export class EnvironmentPool {
         "cache-remove",
         { key, cacheRoot: this.cacheRoot },
         this.timeoutMs,
-        extraEnv ?? {}
+        { ...this.driverEnv, ...(extraEnv ?? {}) }
       );
       if (out.ok) removed.push(key);
       else {
@@ -1060,7 +1084,8 @@ export class EnvironmentPool {
       driverPath,
       "teardown",
       { handle: entry.handle },
-      this.timeoutMs
+      this.timeoutMs,
+      this.driverEnv
     );
     // 畳むなら公開も取り下げる。**先に取り下げる**——環境が消えたのにURLだけ生き残ると、
     // 開いた人は「壊れている」としか分からない（決定39）
@@ -1305,7 +1330,13 @@ export class EnvironmentPool {
       entry.cacheKey !== undefined
         ? { ...input, cacheKey: entry.cacheKey, cacheRoot: this.cacheRoot, ...(entry.cachePath !== undefined ? { cachePath: entry.cachePath } : {}) }
         : input;
-    const result = await runDriverVerb(resolveDriverPath(entry.driver), verb, withCache, timeoutMs);
+    const result = await runDriverVerb(
+      resolveDriverPath(entry.driver),
+      verb,
+      withCache,
+      timeoutMs,
+      this.driverEnv
+    );
     // I2: ドライバの失敗を成功に見せない
     if (!result.ok) throw new Error(`${verb} が失敗しました（${entry.envId}）: ${result.error}`);
     return result.output;
