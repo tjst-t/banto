@@ -29,45 +29,25 @@
   border-right: 0;
   border-bottom: 0;
 }
-:root[data-theme^="fucho"] .brand {
-  flex-direction: row;
-  align-items: center;
-  gap: 0;
-  padding: var(--s2) var(--s3);
-  background: var(--ai);
-}
-:root[data-theme^="fucho"] .brand-name {
-  font-family: var(--mono);
-  font-size: var(--t-meta);
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  color: var(--bar-on);
-}
-/* 読み（BANTO）は状態の帯に収まらない。屋号だけを残す */
-:root[data-theme^="fucho"] .brand-sub { display: none; }
-
-/* 帯の住人は**平らな矩形**。選んでいるものだけ地を上げる */
 :root[data-theme^="fucho"] .rail-btn,
-:root[data-theme^="fucho"] .rail-trunk,
-:root[data-theme^="fucho"] .hold,
-:root[data-theme^="fucho"] .hold-new {
+:root[data-theme^="fucho"] .pj,
+:root[data-theme^="fucho"] .hold {
   border-radius: 0;
   color: var(--bar-ink);
 }
 :root[data-theme^="fucho"] .rail-btn:hover,
-:root[data-theme^="fucho"] .rail-trunk:hover,
-:root[data-theme^="fucho"] .hold:hover,
-:root[data-theme^="fucho"] .hold-new:hover { background: var(--bar-raise); color: var(--bar-on); }
+:root[data-theme^="fucho"] .pj:hover,
+:root[data-theme^="fucho"] .hold:hover { background: var(--bar-raise); color: var(--bar-on); }
 :root[data-theme^="fucho"] .rail-btn.is-active,
-:root[data-theme^="fucho"] .rail-trunk.is-active,
+:root[data-theme^="fucho"] .pj.is-active,
 :root[data-theme^="fucho"] .hold.is-active {
   background: var(--bar-raise);
   color: var(--bar-on);
 }
 :root[data-theme^="fucho"] .rail-sep { background: var(--bar-raise); }
 :root[data-theme^="fucho"] .hold-more { background: var(--bar-raise); color: var(--bar-ink); border-radius: 0; }
-:root[data-theme^="fucho"] .cmdk-key { background: var(--bar-raise); color: var(--bar-ink); }
-:root[data-theme^="fucho"] .conn { color: var(--bar-ink); }
+/* 名前の札は帯の外に出るので、帯の地とぶつからないよう墨のまま */
+:root[data-theme^="fucho"] .tip { border-radius: 0; }
 
 /**
  * 符牒の札は**⌥・f のときだけ**浮く（PO裁定 2026-08-06）。
@@ -86,90 +66,21 @@
   box-shadow: 0 0 0 1px var(--bar-bg);
 }
 
-/* ══ キャンバスのタブも平らに ═══════════════════════════════════════════
-   **帯の中は全部が同じ背丈の升**にする。角丸の札を浮かせない——タブだけ平らに
-   しても、右端の「開く」や収納の ▾ が丸いままだと、そこだけ浮いて見える。
+/* ══ 作業する面の頭も帯として扱う ═══════════════════════════════════════
+   タブ列は無くなった（ADR-0017 決定79：開いた面はレールの点に並ぶ）ので、
+   帯として残るのは**面の頭**だけ。ここも角丸を落として升に揃える。 */
+:root[data-theme^="fucho"] .work-head {
+  background: var(--bar-bg);
+  border-bottom: 0;
+}
+:root[data-theme^="fucho"] .work-title { color: var(--bar-on); }
+:root[data-theme^="fucho"] .work-sub { color: var(--bar-ink); }
+:root[data-theme^="fucho"] .work-head .room-back { color: var(--bar-ink); border-radius: 0; }
+:root[data-theme^="fucho"] .work-head .room-back:hover { background: var(--bar-raise); color: var(--bar-on); }
 
-   背丈は案5に合わせて 32px（`.buf-tabs`）。和紙の 40px より一段低い——
-   符牒は「端末の隣に置く道具」なので、帯に高さを使わない。                    */
-:root[data-theme^="fucho"] .canvas-tabbar {
-  padding: 0;
-  gap: 0;
-  align-items: stretch;
-  border-bottom: 1px solid var(--rule);
-  background: var(--paper-1);
-}
-/* 升の中身は帯の高さで決まる。上下の余白は持たせない */
-:root[data-theme^="fucho"] .canvas-tab-label { padding: 0 var(--s2) 0 var(--s3); }
-:root[data-theme^="fucho"] .canvas-tab-close { padding: 0 var(--s2) 0 var(--s1); }
-
-/* 面を器いっぱいに敷くのは `--face-margin` / `--face-radius`（トークン）の役。
-   右端に余白が残ると、スクロールバーとチャットの間に空きが出る（PO報告 2026-08-06） */
-:root[data-theme^="fucho"] .canvas-tab {
-  border-radius: 0;
-  border-right: 1px solid var(--rule);
-  background: none;
-}
-:root[data-theme^="fucho"] .canvas-tab.is-active {
-  background: var(--paper);
-  box-shadow: inset 0 -2px 0 var(--ai);
-}
-/* 「開く」と収納の ▾ は帯の右端の升。丸い札ではなく、タブと同じ高さで並ぶ。
-   （「開く」は器を持たず帯の直下にいるので、升にするのはボタン自身） */
-:root[data-theme^="fucho"] .canvas-more-wrap {
-  align-self: stretch;
-  margin: 0;
-  display: flex;
-}
-:root[data-theme^="fucho"] .canvas-catalog-btn,
-:root[data-theme^="fucho"] .canvas-more-btn {
-  width: auto;
-  height: auto;
-  padding: 0 var(--s3);
-  border: 0;
-  border-left: 1px solid var(--rule);
-  border-radius: 0;
-  background: none;
-}
-:root[data-theme^="fucho"] .canvas-catalog-btn:hover,
-:root[data-theme^="fucho"] .canvas-catalog-btn[aria-expanded="true"],
-:root[data-theme^="fucho"] .canvas-more-btn:hover,
-:root[data-theme^="fucho"] .canvas-more-btn[aria-expanded="true"] {
-  background: var(--paper);
-  color: var(--ai);
-}
-:root[data-theme^="fucho"] .canvas-more-count { border-radius: var(--r-seal); padding: 0 var(--s1); }
-/* タブが1枚も無いときの字も、升の高さに揃えて置く */
-:root[data-theme^="fucho"] .canvas-tab-empty { display: flex; align-items: center; padding: 0 var(--s3); }
-
-/* ══ 面と面の境目は1本の罫 ═══════════════════════════════════════════════
-   掴み手（`.pane-resizer`）は 5px の空きで、和紙では地に沈んで見えない。
-   符牒は**面を罫で仕切る**組みなので、そこだけ地の色が抜けて溝に見えていた
-   （PO報告 2026-08-06）。掴める幅は残したまま、真ん中に罫を1本立てる。       */
-:root[data-theme^="fucho"] .pane-resizer {
-  /**
-   * **場所は 1px、当たりは 9px。**
-   *
-   * 見た目だけを罫にしたいが、器ごと 1px にすると掴めなくなる（実測：掴めなかった）。
-   * 幅は 9px のまま持たせ、左右へ負の余白で食い込ませて**取る場所を 1px に畳む**。
-   * 描くのは真ん中の 1px だけなので、見えるのは1本の罫。
-   */
-  flex: 0 0 9px;
-  margin: 0 -4px;
-  z-index: 1;
-  background: linear-gradient(
-    to right,
-    transparent 4px,
-    var(--rule) 4px,
-    var(--rule) 5px,
-    transparent 5px
-  );
-}
-:root[data-theme^="fucho"] .pane-resizer::before { inset: 0 3px; }
-:root[data-theme^="fucho"] .pane-resizer:hover::before,
-:root[data-theme^="fucho"] .pane-resizer:active::before { opacity: .5; }
-/* 罫は掴み手が持つ。チャット側の border と二重に引かない */
 :root[data-theme^="fucho"] .room--branch { border-left: 0; }
+/* 面は器いっぱいに敷く（PO報告 2026-08-06）。1px の罫も空きになる */
+:root[data-theme^="fucho"] .work { border-left: 0; }
 
 /* 番頭の印（`»`）とPOの吹き出しの角は `--banto-mark*` / `--bubble-radius`（トークン）。
    印の**位置**だけは組み方なので、ここで上へ揃える */

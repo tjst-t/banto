@@ -30,6 +30,16 @@ export interface ThreadToolsOptions {
    * 省略すると、開くだけで何も起きない（PO が話しかけるまで待つ）。
    */
   seed?: (threadId: string, message: string) => Promise<void>;
+  /**
+   * 幹を終うときに**持って出る記憶**を横断の層へ上げる（PO裁定 2026-08-09）。
+   *
+   * 枝を畳むと結論1行が幹へ還るのと同じ形が、一段上で繰り返される——幹を終うと、
+   * その仕事で得た一般解が横断の層へ還る。**選別するのは番頭**（何を持って出るかは
+   * 判断であって、機械には決められない）。渡さないと `thread.close_trunk` は生えない。
+   *
+   * @returns 実際に足した件数
+   */
+  carryOut?: (texts: readonly string[]) => Promise<number> | number;
 }
 
 /**
@@ -186,6 +196,53 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     },
   });
 
+  /**
+   * 幹を終う（PO裁定 2026-08-09）。
+   *
+   * **枝を畳むのは「回収」、幹を終うのは「店じまい」。** 還す先が無いので結論は取らず、
+   * 代わりに**持って出る記憶**を選ぶ。ここが番頭の判断——その幹でしか通じない事情は
+   * 置いていき、他の仕事でも効く一般解だけを横断の層へ上げる。
+   */
+  const closeTrunk = defineNamespacedTool({
+    name: "thread.close_trunk",
+    label: "Thread: Close Trunk",
+    description:
+      "**幹を終う**（プロジェクトが終わったとき）。畳んだ幹は履歴に残り、開き直せる。" +
+      "開いている枝が1本でもあると終えない——先に畳んで還すこと。\n" +
+      "**持って出る記憶を選ぶのはあなた**（`carry`）。その幹でしか通じない事情は置いていき、" +
+      "他の仕事でも効く一般解だけを横断の層へ上げる。選ばなかったものは幹と一緒に畳まれ、" +
+      "会話としては残るが、以後の会話には注入されない。",
+    parameters: Type.Object({
+      threadId: Type.String({ description: "終う幹の threadId（thread.list で確認できる）" }),
+      carry: Type.Array(Type.String(), {
+        description:
+          "**横断の層へ持って出る記憶**。1件1行で、その幹の外でも意味が通る形に書き直すこと" +
+          "（「この幹では〜」ではなく「〜のときは〜する」）。持って出るものが無ければ空の配列",
+      }),
+    }),
+    async execute(params) {
+      // I2: 配線されていないことを「終えたつもり」にしない
+      if (!options.carryOut) {
+        throw new Error("この会話では幹を終えません（記憶の口が配線されていません）");
+      }
+      const carried = params.carry.map((t) => t.trim()).filter((t) => t !== "");
+      const added = await options.carryOut(carried);
+      // **記憶を先に上げてから終う。** 逆だと、終うのに失敗したとき記憶だけが残る
+      const thread = options.threads.closeTrunk(params.threadId);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `幹「${thread.title}」を終いました。持って出た記憶 ${added} 件。` +
+              (carried.length === 0 ? "（持って出るものはありませんでした）" : ""),
+          },
+        ],
+        details: { thread: thread.view(), carried: added },
+      };
+    },
+  });
+
   const list = defineNamespacedTool({
     name: "thread.list",
     label: "Thread: List",
@@ -213,5 +270,5 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     },
   });
 
-  return [open, merge, rename, list];
+  return [open, merge, rename, list, ...(options.carryOut ? [closeTrunk] : [])];
 }

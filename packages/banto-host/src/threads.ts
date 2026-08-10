@@ -663,6 +663,44 @@ export class ThreadRegistry {
   }
 
   /**
+   * 幹を終う（PO裁定 2026-08-09）。**プロジェクトが終わったとき**の口。
+   *
+   * 枝を畳むのが「回収」なら、こちらは「店じまい」——還す先が無いので結論は取らない。
+   * 代わりに**持って出る記憶**を番頭が選別する（`thread.close_trunk` の `carry`）。
+   *
+   * **開いている枝が1本でもあれば終えない。** 終えると枝は幹の札ごと履歴へ沈み、
+   * レールの点からも消える——埋没しない不変条件（決定77）が、作るときではなく
+   * 終うときに破れる。先に畳ませる。
+   *
+   * I2: 枝・未知のIDは黙って成功にしない。
+   */
+  closeTrunk(threadId: string, now = new Date()): Thread {
+    const thread = this.threads.get(threadId);
+    if (!thread) throw new Error(`unknown thread: ${threadId}`);
+    if (thread.kind !== "trunk") {
+      throw new Error("これは幹ではありません（枝は thread.merge で畳みます）");
+    }
+    if (thread.state === "closed") return thread; // 冪等
+    const open = this.list({ state: "open", kind: "branch" }).filter(
+      (b) => b.parentId === thread.id
+    );
+    if (open.length > 0) {
+      throw new Error(
+        `この幹には開いている枝が ${open.length} 本あります（${open
+          .map((b) => b.title)
+          .join(" / ")}）。先に畳んで還してください——` +
+          "幹を終うと、枝が札ごと履歴へ沈んで埋没します（決定77）"
+      );
+    }
+    thread.state = "closed";
+    thread.closedAt = now.toISOString();
+    this.flush(thread);
+    this.refreshDefault();
+    this.emit();
+    return thread;
+  }
+
+  /**
    * 幹の札が立ったときに呼ばれる（配信のため）。帳簿は配信を知らない（D5）ので、
    * サーバが差し込む。
    */

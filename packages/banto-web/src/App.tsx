@@ -1,30 +1,29 @@
 /**
- * Banto の画面：**幹1本と枝、そして作業する面**（ADR-0017 決定77・79・80）。
+ * Banto の画面：**続き間**（ADR-0017 決定77・79・80。見本 `prototype/redesign/13-tsuzukima-kai.html`）。
  *
  * ## 骨格
  *
  * ```
- * .rail   横断の通知 ／ 抱えているものの点 ／ 履歴・設定・明暗   （狭いと上端の帯）
- * .rooms  [背表紙] 幹（地）→ 枝（その上の紙）→ 作業する面（さらに上）
+ * .rail    横断の通知 ／ プロジェクト（＝幹） ／ 抱えているもの ／ 履歴・設定・明暗
+ * .rooms   [背表紙] 幹（地）→ 枝（その上の紙）→ 作業する面（さらに上）
  * ```
  *
+ * **レールは行き先の帯。** プロジェクトも枝も面も同じ種類のもの＝どこへ行くか。
+ * 会話の列には一切触れないので、読み物が無傷のまま残る。**押さなくても、何本あって
+ * どれがあなたの番かが点で分かる**——名前は帯の外（ホバー）に出す。
+ *
  * **幹・枝・面は重なりで表す**（決定79）。広い画面で横に並んでいても関係は重なりのままで、
- * 狭い画面の重ねと同じ模型になる。狭いとき（760px 以下）は幹が地、枝と面が下から上がる紙で、
- * 上端に幹が覗く。
+ * 狭い画面（760px 以下）の重ねと同じ模型になる。
  *
- * **作業する面が開くと、いま居た会話は細い帯として残る**（決定79）——面を見ながら
- * 「これ何？」と訊けないのは、番頭が主体の店として本末転倒。帯の幅はつまんで変えられる。
+ * **作業する面が開くと、いま居た会話は細い帯として残る**——そこで読むのではなく、
+ * **話しかけるための幅**。手前の会話は背表紙に畳んで、面は全幅を使う。
  *
- * **面はどこから開いたかを覚える**（決定79・a12）。キャンバスは会話ごと（決定2）なので、
- * 面が載っているキャンバスがそのまま「どこから開いたか」になる——幹から開けば枝は視界から
- * 外れ、枝から開けば枝が細い帯として左に残る。畳んだ面を開き直すと、その組み合わせが戻る。
- *
- * **会話のタブは無い**（決定77）。幹は畳めず、枝はレールの点と幹の札から開く。
+ * **枝を開く口も、面を開く口も、レールには無い**（PO裁定 2026-08-10）。枝は会話の中で
+ * 番頭が自分で開くか、POが会話で指示して開く。面は会話に残る「面への口」（`open` の器）
+ * から開き直す——開いた面は必ず会話に1行残るので、レールに口を作る必要がない。
  *
  * D3/D5: 会話も面の状態もホストが持つ真実をそのまま描く。
- *
- * **いま見ている場所（面・会話・キャンバスのタブ・設定の区画）は URL が持つ**
- * （`viewLocation.ts`）。だから戻る／進むが効き、リロードしても同じ画面に戻る。
+ * 場所（面・会話・タブ・設定の区画）は URL が持つ（`viewLocation.ts`）。
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -32,23 +31,17 @@ import { useBantoSession } from "./useBantoSession.js";
 import { resolveCanvasView } from "./views/registry.js";
 import { ThreadHistory } from "./ThreadHistory.js";
 import { SettingsPanel } from "./views/SettingsPanel.js";
-import { Modal, SearchField } from "./views/ui.js";
 import { useViewLocation } from "./viewLocation.js";
-import { useTabOverflow } from "./useTabOverflow.js";
 import { Icon, iconOfKind } from "./icons.js";
 import { InboxFace } from "./Inbox.js";
 import { CommandPalette, useCommandPalette } from "./CommandPalette.js";
 import { useKeyHints } from "./keyHints.js";
-import { useListNav } from "./listNav.js";
 import { useThemeState } from "./theme/ThemeProvider.js";
 import { Room } from "./Room.js";
-import { NewBranchForm } from "./Branch.js";
 
 /**
  * 既定は**同一オリジンの `/ws`**。開発サーバがそれを番頭ホストへ中継するので、
  * リバースプロキシ（Caddy等）のサブドメイン経由でもそのまま繋がる。
- * 別ホストの番頭に繋ぎたいときは `?host=ws://...` で上書きする。
- *
  * **中継 URL（`{baseUrl}/env/<envId>/`）で開かれたときは、WS も同じ中継パスへ繋ぐ**。
  */
 function defaultWsUrl(): string {
@@ -64,10 +57,8 @@ function defaultWsUrl(): string {
 const WS_URL = new URLSearchParams(location.search).get("host") ?? defaultWsUrl();
 
 /**
- * 細い帯の幅（決定79）。
- *
- * **そこで読むのではなく、話しかけるための幅**。主役がその時の作業で変わるので
- * 決め打ちにせず、つまんで変えられる（上下限だけ決める）。
+ * 細い帯の幅（決定79）。**そこで読むのではなく、話しかけるための幅**。
+ * 主役がその時の作業で変わるので決め打ちにせず、つまんで変えられる。
  */
 const SLIM_WIDTH_KEY = "banto.slimWidth";
 const SLIM_WIDTH_DEFAULT = 344;
@@ -76,6 +67,9 @@ const SLIM_WIDTH_MAX = 620;
 
 /** 狭い画面の境（決定79）。ここから下は幹が地で、枝と面が重なる紙になる。 */
 const NARROW_PX = 760;
+
+/** レールに点で並べる上限。溢れた分は「+N」から被さる面で見る（見本と同じ）。 */
+const HOLD_SHOWN = 6;
 
 function clampSlimWidth(width: number): number {
   return Math.min(Math.max(width, SLIM_WIDTH_MIN), SLIM_WIDTH_MAX);
@@ -105,6 +99,49 @@ function useNarrow(): boolean {
   return narrow;
 }
 
+/** 抱えているもの1件（枝か、開いた面）。**どちらも「行き先」**なので同じ点で出す。 */
+interface Held {
+  kind: "branch" | "face";
+  id: string;
+  title: string;
+  state: "turn" | "stop" | "run";
+  meta: string;
+}
+
+/**
+ * レールの押しもの。**絵だけ。名前は帯の外（ホバー）に出す**——見本のとおり、
+ * 帯の中に字を入れると幅を食い、押せるものの数だけ列が伸びる。
+ */
+function RailBtn({
+  icon,
+  tip,
+  active,
+  onClick,
+  count,
+  dataKey,
+}: {
+  icon: Parameters<typeof Icon>[0]["name"];
+  tip: string;
+  active?: boolean;
+  onClick(): void;
+  count?: number;
+  dataKey?: string;
+}): React.ReactElement {
+  return (
+    <button
+      className={`rail-btn ${active ? "is-active" : ""} ${count === 0 ? "is-empty" : ""}`}
+      type="button"
+      onClick={onClick}
+      aria-label={tip}
+      {...(dataKey ? { "data-key": dataKey } : {})}
+    >
+      <Icon name={icon} size={17} />
+      {count !== undefined && <span className="inbox-n">{count}</span>}
+      <span className="tip">{tip}</span>
+    </button>
+  );
+}
+
 export function App(): React.ReactElement {
   const theme = useThemeState();
   // ⌘K：既にある場所への近道。ここから新しい状態は生まれない
@@ -115,7 +152,7 @@ export function App(): React.ReactElement {
   const narrow = useNarrow();
 
   /**
-   * ホストの都合で見る先が決まったとき（幹へ落ちる・自分が開いた枝）。
+   * ホストの都合で見る先が決まったとき（幹へ落ちる・番頭が開いた枝）。
    * **面は保ったまま**会話だけ動かす。
    */
   const onActiveThread = useCallback(
@@ -142,32 +179,17 @@ export function App(): React.ReactElement {
     onActiveThread,
   });
 
-  const [dragTabId, setDragTabId] = useState<string>();
-  const [dropIndex, setDropIndex] = useState<number>();
-  const [catalogOpen, setCatalogOpen] = useState(false);
-  const [catalogQuery, setCatalogQuery] = useState("");
-  /** 収まらないタブをまとめる ▾ の開閉。 */
-  const [tabMenuOpen, setTabMenuOpen] = useState(false);
   /** 抱えているものの一覧（レールの「+N」から開く被さる面）。 */
   const [holdOpen, setHoldOpen] = useState(false);
-  /** 枝を開くときの入力（還す条件と理由を書かせる）。 */
-  const [newBranch, setNewBranch] = useState(false);
   /** 細い帯の幅（決定79）。 */
   const [slimWidth, setSlimWidth] = useState(readStoredSlimWidth);
   /**
-   * 番頭への入力へ移る合図（PO要望 2026-08-06）。
-   *
-   * キーで会話へ飛んだのに、話しかけるのにマウスへ持ち替えるのでは近道にならない。
-   * **面を見に行くときは移さない**——見に行ったのであって、話しかけに行ったのではない。
-   */
-  const [focusReq, setFocusReq] = useState<{ threadId: string; seq: number }>();
-  /**
    * 狭い画面で、上がっていた紙を下ろしたか（決定79）。
-   *
-   * **面は畳まない**——覗きを押したら「幹へ戻る」であって「面を閉じる」ではない。
-   * 閉じてしまうと、戻ったときに開き直す手間が増える（面は抱えたまま残る）。
+   * **面は畳まない**——覗きを押すのは「幹へ戻る」であって「面を閉じる」ではない。
    */
   const [lowered, setLowered] = useState(false);
+  /** 番頭への入力へ移る合図（キーで会話へ飛んだときだけ）。 */
+  const [focusReq, setFocusReq] = useState<{ threadId: string; seq: number }>();
 
   const historyOpen = view.face === "history";
   const settingsOpen = view.face === "settings";
@@ -198,20 +220,13 @@ export function App(): React.ReactElement {
     [navigate]
   );
 
-  /**
-   * いま見ている会話（幹または枝）。**既定は幹**——会話のタブは無いので、
-   * どこにも居ないという状態は作らない（決定77）。
-   */
+  /** いま見ている会話（幹または枝）。**既定は開いている先頭の幹**。 */
   const focused = useMemo(
     () => (view.threadId ? session.threadOf(view.threadId) : undefined) ?? session.trunks[0],
     [view.threadId, session]
   );
-  /** 枝を見ているか。幹は畳めないので、枝のときだけ2枚重なる。 */
   const branch = focused?.kind === "branch" ? focused : undefined;
-  /**
-   * いま居るプロジェクトの幹（PO裁定 2026-08-09：幹＝プロジェクト）。
-   * 枝を見ているなら**その枝の親**——他の幹の枝がレールに混ざらないようにする。
-   */
+  /** いま居るプロジェクトの幹。枝を見ているなら**その枝の親**。 */
   const trunk = useMemo(
     () =>
       (branch?.parentId ? session.threadOf(branch.parentId) : undefined) ??
@@ -226,13 +241,10 @@ export function App(): React.ReactElement {
       setHoldOpen(false);
       backToChat();
       session.switchThread(threadId);
-      if (options.focus) {
-        setFocusReq((prev) => ({ threadId, seq: (prev?.seq ?? 0) + 1 }));
-      }
+      if (options.focus) setFocusReq((prev) => ({ threadId, seq: (prev?.seq ?? 0) + 1 }));
     },
     [session, backToChat]
   );
-  /** その列へ入力の合図が出ているか。 */
   const focusSeqOf = useCallback(
     (threadId: string): number => (focusReq?.threadId === threadId ? focusReq.seq : 0),
     [focusReq]
@@ -269,7 +281,7 @@ export function App(): React.ReactElement {
     }
   }, [slimWidth]);
 
-  /** 細い帯をつまんで広げる（決定79）。会話は左にあるので、右へ動かすほど広くなる。 */
+  /** 細い帯をつまんで広げる。会話は左にあるので、右へ動かすほど広くなる。 */
   const startResize = (e: React.PointerEvent<HTMLDivElement>): void => {
     e.preventDefault();
     const handle = e.currentTarget;
@@ -288,70 +300,18 @@ export function App(): React.ReactElement {
     handle.addEventListener("pointerup", onUp);
   };
 
-  /**
-   * **この画面で描ける面だけを「開けるもの」として扱う**（決定12・17）。
-   * カタログを配るのはホスト、描けるかを知っているのはUI。
-   */
+  /** **この画面で描ける面だけ**を開けるものとして扱う（決定12・17）。 */
   const openableCatalog = useMemo(
     () => session.catalog.filter((entry) => resolveCanvasView(entry.component) !== undefined),
     [session.catalog]
   );
-  const unresolvedCatalog = useMemo(
-    () => session.catalog.filter((entry) => resolveCanvasView(entry.component) === undefined),
-    [session.catalog]
-  );
-
-  const catalogGroups = useMemo(() => {
-    const q = catalogQuery.trim().toLowerCase();
-    const matched = openableCatalog.filter((entry) =>
-      q.length === 0
-        ? true
-        : `${entry.title} ${entry.description} ${entry.kind} ${entry.module}`.toLowerCase().includes(q)
-    );
-    return Object.entries(
-      matched.reduce<Record<string, typeof session.catalog>>((groups, entry) => {
-        const key = entry.category ?? "その他";
-        (groups[key] ??= []).push(entry);
-        return groups;
-      }, {})
-    );
-  }, [openableCatalog, catalogQuery]);
-  const catalogOrdered = useMemo(
-    () => catalogGroups.flatMap(([, entries]) => entries),
-    [catalogGroups]
-  );
-
-  // 収納メニューは外側を押したら閉じる
-  useEffect(() => {
-    if (!tabMenuOpen) return;
-    const close = (e: MouseEvent): void => {
-      if (!(e.target as Element | null)?.closest(".canvas-more-wrap")) setTabMenuOpen(false);
-    };
-    document.addEventListener("click", close);
-    return () => document.removeEventListener("click", close);
-  }, [tabMenuOpen]);
-
 
   /**
-   * キャンバスのタブ：URL とホストを合わせる。
-   *
-   * 真実はホスト（`canvas_state`）。URL は「どのタブを見たいか」の意図で、**動いた側に
-   * 合わせて片方を直す**。
+   * キャンバスの面：URL とホストを合わせる。真実はホスト（`canvas_state`）。
+   * URL は「どの面を見たいか」の意図で、**動いた側に合わせて片方を直す**。
    */
   const syncedTabRef = useRef<string>(undefined);
-  /** POがカタログから開いた1回だけ履歴に積む（番頭が開いた分は積まない）。 */
   const followOpenedTab = useRef(false);
-
-  const openFromCatalog = (kind: string): void => {
-    followOpenedTab.current = true;
-    session.openView(kind);
-    setCatalogOpen(false);
-    setCatalogQuery("");
-  };
-  const catalogNav = useListNav(catalogOrdered, {
-    onChoose: (entry) => openFromCatalog(entry.kind),
-    resetKey: catalogQuery,
-  });
 
   const { activeThreadId, activeTabId, tabs: canvasTabs, canvasKnown, switchTab } = session;
   useEffect(() => {
@@ -392,12 +352,15 @@ export function App(): React.ReactElement {
     [session.modules, session.catalog]
   );
 
-  const tabOverflow = useTabOverflow(
-    session.tabs.map((t) => t.id),
-    { reservePx: 52, gapPx: 3, ...(session.activeTabId ? { pinnedId: session.activeTabId } : {}) }
+  /** 面を開く（会話に残る「面への口」・⌘K・取次から）。 */
+  const openView = useCallback(
+    (kind: string, params?: Record<string, unknown>) => {
+      followOpenedTab.current = true;
+      setLowered(false);
+      session.openView(kind, params);
+    },
+    [session]
   );
-  const hiddenTabIds = tabOverflow.hiddenIds;
-  const hiddenTabs = session.tabs.filter((t) => hiddenTabIds.has(t.id));
 
   /**
    * その会話に関わる判断待ち（決定80：会話の流れの中に立つ）。
@@ -418,38 +381,60 @@ export function App(): React.ReactElement {
   /**
    * 抱えているもの（決定77 の不変条件③「レールの点」）。
    *
-   * **開いている枝は全部ここに出る。** 押さなくても本数と状態が点で分かる——
-   * どこにも出ていない枝は作れない、を画面の側でも成り立たせる。
+   * **開いている枝と、開いた面**。どちらも「行き先」なので同じ点で並べる（見本と同じ）。
+   * 押さなくても本数と状態が分かる——どこにも出ていない枝は作れない、を画面でも成り立たせる。
    */
-  const held = useMemo(() => {
+  const held = useMemo<Held[]>(() => {
     const order = { turn: 0, stop: 1, run: 2 } as const;
     /**
-     * **いま居る幹の枝だけ**（幹＝プロジェクト）。隣のプロジェクトの枝は混ぜない。
-     *
      * I2: **親を引けない枝は消さない**——消すとレールの点から外れ、埋没しない不変条件
      * （決定77）が画面の側で破れる。行き場の無い枝は既定の幹の下に出す。
      */
     const known = new Set(session.trunks.map((t) => t.threadId));
     const fallback = trunk?.threadId === session.trunks[0]?.threadId;
-    const mine = session.branches.filter((b) =>
-      b.parentId !== undefined && known.has(b.parentId)
-        ? b.parentId === trunk?.threadId
-        : fallback
-    );
-    const items = mine.map((b) => {
-      const turn = session.inbox.some((i) => !i.resolvedAt && i.opens?.threadId === b.threadId);
-      return {
-        threadId: b.threadId,
+    const branches: Held[] = session.branches
+      .filter((b) =>
+        b.parentId !== undefined && known.has(b.parentId)
+          ? b.parentId === trunk?.threadId
+          : fallback
+      )
+      .map((b) => ({
+        kind: "branch" as const,
+        id: b.threadId,
         title: b.title,
-        state: (turn ? "turn" : "run") as "turn" | "stop" | "run",
-        meta: b.returnCondition ?? "",
-      };
-    });
-    return items.sort((a, b) => order[a.state] - order[b.state]);
-  }, [session.branches, session.inbox, trunk]);
-  /** レールに点で出すのは先頭 6 本。溢れた分は「+N」から被さる面で見る。 */
-  const heldShown = held.slice(0, 6);
+        state: session.inbox.some((i) => !i.resolvedAt && i.opens?.threadId === b.threadId)
+          ? ("turn" as const)
+          : ("run" as const),
+        meta: b.returnCondition ?? (b.openReason ?? ""),
+      }));
+    // 開いた面も抱えているもの。**畳んでも抱えたまま**（決定79）
+    const faces: Held[] = session.tabs.map((t) => ({
+      kind: "face" as const,
+      id: t.id,
+      title: t.title,
+      state: "run" as const,
+      meta: t.kind,
+    }));
+    return [...branches, ...faces].sort((a, b) => order[a.state] - order[b.state]);
+  }, [session.branches, session.inbox, session.tabs, session.trunks, trunk]);
+  const heldShown = held.slice(0, HOLD_SHOWN);
   const heldRest = held.length - heldShown.length;
+
+  const openHeld = useCallback(
+    (item: Held) => {
+      setHoldOpen(false);
+      // 会話へ行くなら**入力へも移る**（キーで飛んだのに持ち替えでは近道にならない）
+      if (item.kind === "branch") {
+        openThread(item.id, { focus: true });
+        return;
+      }
+      setLowered(false);
+      // **ホストへ直接投げず URL を動かす**（押した経路と戻るの経路を1本にする）。
+      // URL に合わせて `canvas_switch` を投げるのは下の効果
+      navigate((prev) => ({ ...prev, tabId: item.id }));
+    },
+    [openThread, navigate]
+  );
 
   // 面を開いた／移ったら紙は上がり直す（番頭が開いたのに何も見えないのが一番困る）
   useEffect(() => {
@@ -459,91 +444,32 @@ export function App(): React.ReactElement {
   const workOpen = activeTab !== undefined && ActiveView !== undefined;
   /** 狭い画面では、下ろした紙は出さない（幹が地として残る）。 */
   const showWork = activeTab !== undefined && !(narrow && lowered);
+  /** 作業する面が開いたら、いま居た会話が細い帯になる（決定79）。 */
+  const slim = workOpen && !narrow;
 
   /**
-   * Esc で1枚ずつ剥がす（重なりの順に：面 → 枝 → 被さる面）。
-   * **入力中の Esc は IME の変換取り消しに使われる**ので、変換中は何もしない。
+   * Esc で1枚ずつ剥がす（重なりの順に：被さる面 → 面 → 枝）。
+   * **入力中の Esc は IME の変換取り消し**に使われるので、変換中は何もしない。
    */
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== "Escape" || e.isComposing) return;
       if (holdOpen) return setHoldOpen(false);
-      if (newBranch) return setNewBranch(false);
       if (faceOpen) return backToChat();
-      // **面は畳まない。** Esc は「1枚剥がす」であって「閉じる」ではない——閉じてしまうと、
-      // 戻ったときに開き直す手間が増える（面は抱えたまま残る・決定79）。
-      // 広い画面では面と会話が並んでいるので、剥がすものは枝だけ
+      // **面は畳まない。** Esc は「1枚剥がす」であって「閉じる」ではない
       if (narrow && showWork) return setLowered(true);
       if (branch && trunk) return openThread(trunk.threadId);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [holdOpen, newBranch, faceOpen, backToChat, narrow, showWork, branch, trunk, openThread]);
-  /** 作業する面が開いたら、いま居た会話が細い帯になる（決定79）。 */
-  const slim = workOpen && !narrow;
-
-  const canvasTab = (
-    tab: (typeof session.tabs)[number],
-    index: number,
-    inMenu: boolean
-  ): React.ReactElement => (
-    <span
-      key={tab.id}
-      data-tab-id={tab.id}
-      className={[
-        inMenu ? "canvas-menu-row" : "canvas-tab",
-        tab.id === session.activeTabId ? "is-active" : "",
-        !inMenu && dropIndex === index ? "is-drop-target" : "",
-        !inMenu && hiddenTabIds.has(tab.id) ? "is-hidden" : "",
-      ]
-        .filter(Boolean)
-        .join(" ")}
-      draggable={!inMenu}
-      onDragStart={() => setDragTabId(tab.id)}
-      onDragEnd={() => {
-        setDragTabId(undefined);
-        setDropIndex(undefined);
-      }}
-      onDragOver={(e) => {
-        if (inMenu || !dragTabId) return;
-        e.preventDefault();
-        setDropIndex(index);
-      }}
-      onDrop={(e) => {
-        if (inMenu) return;
-        e.preventDefault();
-        if (dragTabId) session.reorderTab(dragTabId, index);
-        setDragTabId(undefined);
-        setDropIndex(undefined);
-      }}
-    >
-      <button
-        className="canvas-tab-label"
-        {...(inMenu ? {} : { "data-key": "qweryupa"[index] })}
-        onClick={() => {
-          navigate((prev) => ({ ...prev, tabId: tab.id }));
-          setTabMenuOpen(false);
-        }}
-        title={inMenu ? tab.kind : `${tab.kind}（ドラッグで並べ替え）`}
-      >
-        <Icon name={iconOfKind(tab.kind)} size={14} className="canvas-tab-icon" />
-        <span className="canvas-tab-text">{tab.title}</span>
-      </button>
-      <button
-        className="canvas-tab-close"
-        onClick={() => session.closeTab(tab.id)}
-        aria-label={`${tab.title} を閉じる`}
-      >
-        <Icon name="close" size={13} />
-      </button>
-    </span>
-  );
+  }, [holdOpen, faceOpen, backToChat, narrow, showWork, branch, trunk, openThread]);
 
   /** 背表紙。**消さない——押せば戻る**（モーダルより良いのはここ）。 */
   const spine = (label: string, mark: string, onClick: () => void): React.ReactElement => (
-    <button className="spine" type="button" onClick={onClick} title={`${label} へ戻る`}>
+    <button className="spine" type="button" onClick={onClick} aria-label={`${label} へ戻る`}>
       <Icon name="chevron-left" size={15} />
       <span className="spine-mark">{mark}</span>
+      <span className="tip">{label} へ戻る</span>
     </button>
   );
 
@@ -552,52 +478,43 @@ export function App(): React.ReactElement {
       <CommandPalette
         open={palette.open}
         onClose={() => palette.setOpen(false)}
-        threads={trunk ? [trunk, ...session.branches] : session.branches}
+        threads={[...session.trunks, ...session.branches]}
         closedThreads={session.closedThreads}
         catalog={openableCatalog}
         inbox={session.inbox}
         onOpenThread={(id) => openThread(id, { focus: true })}
         onReopenThread={(id) => session.reopenThread(id)}
         onOpenView={(kind) => {
-          followOpenedTab.current = true;
           backToChat();
-          session.openView(kind);
+          openView(kind);
         }}
         onOpenInbox={openInboxItem}
         onFace={showFace}
+        /* 枝は会話の中で開く（PO裁定 2026-08-10）。⌘K からは幹へ飛んで話しかけるだけ */
         onNewThread={() => {
           backToChat();
-          setNewBranch(true);
+          if (trunk) openThread(trunk.threadId, { focus: true });
         }}
         onToggleTheme={theme.toggle}
       />
 
-      {/* ── レール：行き先の帯（決定77 の不変条件③）───────────────────────
-          プロジェクトも枝も面も同じ種類のもの＝どこへ行くか。会話の列には触れないので、
-          読み物が無傷のまま残る。狭いときは上端の帯になる */}
+      {/* ── レール：行き先の帯（決定77 の不変条件③）──────────────────────── */}
       <nav className="rail">
-        <div className="brand">
-          <span className="brand-name">番頭</span>
-          <span className="brand-sub">banto</span>
-        </div>
-        <button
-          className={`rail-btn ${inboxOpen ? "is-active" : ""} ${session.inboxPending === 0 ? "is-empty" : ""}`}
-          type="button"
+        <RailBtn
+          icon="inbox"
+          tip="横断の通知"
+          active={inboxOpen}
+          count={session.inboxPending}
           onClick={() => showFace("inbox")}
-          title="横断の通知（番頭に用があるもの）"
-          data-key="i"
-        >
-          <Icon name="inbox" size={17} />
-          <span className="rail-label">取次</span>
-          <span className="inbox-n">{session.inboxPending}</span>
-        </button>
+          dataKey="i"
+        />
 
         <div className="rail-sep" />
 
         {/*
-          幹＝**プロジェクト**（PO裁定 2026-08-09）。ここがレールの列そのもので、
-          プロジェクトの帳簿は別に持たない（D3）。**畳めないので閉じる口は無い**（決定77）。
-          枝を持つ幹には点を添える——押さなくても、どの幹に用があるか分かる
+          プロジェクト＝幹（PO裁定 2026-08-09）。**頭文字の印**で並べ、名前は帯の外へ。
+          用のある幹には朱の点を添える——押さなくても、どこに用があるか分かる。
+          幹は畳めない（終うのは番頭の口・`thread.close_trunk`）ので閉じる×は無い
         */}
         {session.trunks.map((t, i) => {
           const turn = session.inbox.some(
@@ -611,132 +528,88 @@ export function App(): React.ReactElement {
           return (
             <button
               key={t.threadId}
-              className={`rail-trunk ${trunk?.threadId === t.threadId ? "is-active" : ""}`}
+              className={`pj ${trunk?.threadId === t.threadId ? "is-active" : ""}`}
               type="button"
               onClick={() => openThread(t.threadId, { focus: true })}
-              title={`${t.title}（プロジェクトの幹）`}
+              aria-label={t.title}
               {...(i < 9 ? { "data-key": String(i + 1) } : {})}
             >
-              <Icon name="home" size={16} />
-              <span className="rail-label">{t.title}</span>
-              {turn && <span className="rail-bell" aria-label="あなたの番" />}
+              {[...t.title][0] ?? "幹"}
+              {turn && <span className="bell" />}
+              <span className="tip">{t.title}</span>
             </button>
           );
         })}
 
-        {/* 抱えているもの。**点で並ぶので、押さなくても本数と状態が分かる** */}
-        <div className="rail-hold">
-          {heldShown.map((h, i) => (
-            <button
-              key={h.threadId}
-              className={`hold ${branch?.threadId === h.threadId ? "is-active" : ""}`}
-              type="button"
-              /* 符牒。会話のタブが無くなったので、幹は 1、枝は 2 から振る */
-              data-key={String(i + 2)}
-              onClick={() => openThread(h.threadId, { focus: true })}
-              title={`${h.title}${h.meta ? ` — 還す条件：${h.meta}` : ""}`}
-              aria-label={h.title}
-            >
-              <span className={`u-dot is-${h.state}`} />
-              <span className="rail-label hold-label">{h.title}</span>
-            </button>
-          ))}
-          {heldRest > 0 && (
-            <button className="hold-more" type="button" onClick={() => setHoldOpen(true)}>
-              +{heldRest}
-            </button>
-          )}
-          <button
-            className="hold-new"
-            type="button"
-            onClick={() => {
-              backToChat();
-              setNewBranch(true);
-            }}
-            title="枝を開く（還す条件が要ります）"
-            data-key="n"
-          >
-            <Icon name="plus" size={15} />
-            <span className="rail-label">枝を開く</span>
-          </button>
-        </div>
+        <div className="rail-sep" />
 
-        {/*
-          作業する面もレールの住人（決定79）——**行き先の帯**に置く。
-          浮かせる札にすると入力欄に被さるので、置き場をここに1つ持つ。
-          下ろしただけの紙は「面へ戻る」で上げ直す（畳んだのではない）。
-        */}
-        {openableCatalog.length > 0 && !showWork && (
+        {/* 抱えているもの＝枝と開いた面。**点で並ぶので、押さなくても本数と状態が分かる** */}
+        {heldShown.map((h, i) => (
           <button
-            className="rail-btn rail-work"
+            key={`${h.kind}:${h.id}`}
+            /* 符牒は**行き先の並び**に1本で振る（幹のあと、抱えているものが続く） */
+            {...(session.trunks.length + i < 9
+              ? { "data-key": String(session.trunks.length + i + 1) }
+              : {})}
+            /* 枝と面は**同じ点**で並べる（どちらも行き先）。種別は class で言うだけ
+               ——見た目は変えない。変えると「点で本数が分かる」が崩れる */
+            className={`hold hold--${h.kind} ${
+              (h.kind === "branch" ? branch?.threadId : session.activeTabId) === h.id
+                ? "is-active"
+                : ""
+            }`}
             type="button"
-            onClick={() => (activeTab ? setLowered(false) : setCatalogOpen(true))}
-            title={activeTab ? "作業する面へ戻る" : "作業する面を開く"}
-            data-key="o"
+            onClick={() => openHeld(h)}
+            aria-label={h.title}
           >
-            <Icon name="canvas" size={16} />
-            <span className="rail-label">{activeTab ? "面へ戻る" : "面を開く"}</span>
+            <span className={`u-dot is-${h.state}`} />
+            <span className="tip">
+              {h.title}
+              {h.meta ? ` — ${h.meta}` : ""}
+            </span>
+          </button>
+        ))}
+        {heldRest > 0 && (
+          <button className="hold-more" type="button" onClick={() => setHoldOpen(true)}>
+            +{heldRest}
           </button>
         )}
 
         <span className="rail-sp" />
 
-        <button
-          className={`rail-btn ${historyOpen ? "is-active" : ""}`}
-          type="button"
+        {/* 畳んだものと設定は「行き先ではあるが、いまではない」ので下端に置く（見本と同じ） */}
+        <RailBtn
+          icon="history"
+          tip="履歴（終えた幹）"
+          active={historyOpen}
           onClick={() => showFace("history")}
-          title="履歴（畳んだ枝）"
-          aria-label="履歴"
-          data-key="h"
-        >
-          <Icon name="history" size={17} />
-          <span className="rail-label">履歴</span>
-        </button>
-        <button
-          className={`rail-btn ${settingsOpen ? "is-active" : ""}`}
-          type="button"
+          dataKey="h"
+        />
+        <RailBtn
+          icon="settings"
+          tip="設定"
+          active={settingsOpen}
           onClick={() => showFace("settings")}
-          title="設定"
-          aria-label="設定"
-          data-key="s"
-        >
-          <Icon name="settings" size={17} />
-          <span className="rail-label">設定</span>
-        </button>
-        <button
-          className="rail-btn cmdk-tab"
-          type="button"
+          dataKey="s"
+        />
+        <RailBtn
+          icon="search"
+          tip="横断して引く（⌘K）"
           onClick={() => palette.setOpen(true)}
-          title="横断して引く（⌘K）"
-          aria-label="横断して引く"
-          data-key="k"
-        >
-          <Icon name="search" size={16} />
-          <span className="rail-label">横断して引く</span>
-          <kbd className="cmdk-key">⌘K</kbd>
-        </button>
-        <button
-          className="rail-btn"
-          type="button"
+          dataKey="k"
+        />
+        <RailBtn
+          icon={theme.mode === "dark" ? "sun" : "moon"}
+          tip={`${theme.family.name}：${theme.mode === "dark" ? "明かりを点ける" : "明かりを落とす"}`}
           onClick={theme.toggle}
-          title={`${theme.family.name}：${theme.mode === "dark" ? "明かりを点ける" : "明かりを落とす"}`}
-          aria-label="明るさを切り替える"
-          data-key="t"
-        >
-          <Icon name={theme.mode === "dark" ? "sun" : "moon"} size={17} />
-          <span className="rail-label">明暗</span>
-        </button>
-        <span className={`conn conn--${session.status}`}>
-          {session.status === "open"
-            ? "接続中"
-            : session.status === "connecting"
-              ? "接続しています…"
-              : session.status === "reconnecting"
-                ? "繋ぎ直しています…"
-                : "切断"}
+          dataKey="t"
+        />
+        <span className={`conn conn--${session.status}`} title={connLabel(session.status)}>
+          <span className="tip">{connLabel(session.status)}</span>
         </span>
       </nav>
 
+      {/* ── 設定：一級の面。**中身が広いので被せずに置き換える** ──────────── */}
       {settingsOpen ? (
         settingsEndpoint ? (
           <SettingsPanel
@@ -746,7 +619,7 @@ export function App(): React.ReactElement {
             module="settings"
             endpoint={settingsEndpoint}
             endpointOf={endpointOf}
-            openCanvas={session.openView}
+            openCanvas={openView}
             section={view.section}
             onSection={(id) => navigate((prev) => ({ ...prev, section: id }))}
           />
@@ -758,24 +631,6 @@ export function App(): React.ReactElement {
             </p>
           </div>
         )
-      ) : inboxOpen ? (
-        <InboxFace
-          items={session.inbox}
-          onAnswer={session.answerInbox}
-          onOpen={openInboxItem}
-          onBack={backToChat}
-        />
-      ) : historyOpen ? (
-        <ThreadHistory
-          closedThreads={session.closedThreads}
-          chatOf={session.chatOf}
-          ensureHistory={session.ensureHistory}
-          historyLoaded={session.historyLoaded}
-          selectedId={view.readThreadId}
-          onSelect={(id) => navigate((prev) => ({ ...prev, readThreadId: id }))}
-          onReopen={(id) => session.reopenThread(id)}
-          onBack={backToChat}
-        />
       ) : !trunk ? (
         /* 幹が届くまで。**空状態を隠さない**（I1） */
         <div className="threads-empty">
@@ -792,9 +647,8 @@ export function App(): React.ReactElement {
         >
           {/* 面が開いていて枝も開いているとき、幹は背表紙になる。**押せば戻る** */}
           {slim && branch &&
-            spine(trunk.title, trunk.title.slice(0, 1), () => openThread(trunk.threadId))}
+            spine(trunk.title, [...trunk.title][0] ?? "幹", () => openThread(trunk.threadId))}
 
-          {/* 幹。面が開いていて枝を見ているときは背表紙に譲る */}
           {(!slim || !branch) && (
             <Room
               session={session}
@@ -804,10 +658,7 @@ export function App(): React.ReactElement {
               onAnswerInbox={session.answerInbox}
               onOpenInbox={openInboxItem}
               onOpenBranch={openThread}
-              onOpenView={(kind, params) => {
-                followOpenedTab.current = true;
-                session.openView(kind, params);
-              }}
+              onOpenView={openView}
               {...(slim && !branch ? { onGrip: startResize } : {})}
               {...(branch ? { activeBranchId: branch.threadId } : {})}
               focusSeq={focusSeqOf(trunk.threadId)}
@@ -825,10 +676,7 @@ export function App(): React.ReactElement {
               onAnswerInbox={session.answerInbox}
               onOpenInbox={openInboxItem}
               onOpenBranch={openThread}
-              onOpenView={(kind, params) => {
-                followOpenedTab.current = true;
-                session.openView(kind, params);
-              }}
+              onOpenView={openView}
               onCloseBranch={() => openThread(trunk.threadId)}
               onMergeBranch={(conclusion) => {
                 session.mergeBranch(branch.threadId, conclusion);
@@ -841,51 +689,28 @@ export function App(): React.ReactElement {
           )}
 
           {/* ── 作業する面：**手前を背表紙に畳んで全幅を使う**（決定79）───────
-              400px の列に押し込まない。探す・移動する・比べるには幅が要る */}
+              タブ列は持たない。開いた面はレールの点に並び、そこから移る */}
           {showWork && activeTab && (
             <section className={`work canvas-pane ${narrow ? "is-raised" : ""}`}>
-              <div className="canvas-tabbar">
-                <div className="canvas-tabstrip" ref={tabOverflow.stripRef}>
-                  {session.tabs.map((tab, index) => canvasTab(tab, index, false))}
-                </div>
-
-                {hiddenTabs.length > 0 && (
-                  <div className="canvas-more-wrap">
-                    <button
-                      className="canvas-more-btn"
-                      type="button"
-                      aria-expanded={tabMenuOpen}
-                      title={`表示しきれないタブ（${hiddenTabs.length}）`}
-                      onClick={() => setTabMenuOpen((v) => !v)}
-                    >
-                      <span className="canvas-more-count">{hiddenTabs.length}</span>
-                      <Icon name="chevron-down" size={14} />
-                    </button>
-                    {tabMenuOpen && (
-                      <div className="canvas-more-menu">
-                        {hiddenTabs.map((tab) => canvasTab(tab, session.tabs.indexOf(tab), true))}
-                      </div>
-                    )}
+              <div className="work-head">
+                <button
+                  className="room-back"
+                  type="button"
+                  onClick={() => session.closeTab(activeTab.id)}
+                  aria-label="この面を畳む"
+                  title="この面を畳む"
+                >
+                  <Icon name="close" size={15} />
+                </button>
+                <div className="work-head-t">
+                  <h1 className="work-title">{activeTab.title}</h1>
+                  <div className="work-sub">
+                    作業する面 ・ {activeSpec?.description ?? activeTab.kind}
                   </div>
-                )}
-
-                {openableCatalog.length > 0 && (
-                  <button
-                    className="canvas-catalog-btn"
-                    onClick={() => setCatalogOpen(true)}
-                    aria-label="開くものを選ぶ"
-                    aria-expanded={catalogOpen}
-                    title="開くものを選ぶ"
-                    data-key="o"
-                  >
-                    <Icon name="plus" size={16} />
-                  </button>
-                )}
-                {/* いま居た会話が細い帯として残っていることを言う（決定79） */}
+                </div>
                 {slim && <span className="work-note">会話は左に残しています</span>}
               </div>
-
-              <div className="canvas-body">
+              <div className="work-body canvas-body">
                 {ActiveView ? (
                   <ActiveView
                     key={`${activeTab.id}:${activeTab.rev}`}
@@ -895,10 +720,10 @@ export function App(): React.ReactElement {
                     module={activeSpec!.module}
                     endpoint={activeSpec!.endpoint}
                     endpointOf={endpointOf}
-                    openCanvas={session.openView}
+                    openCanvas={openView}
                   />
                 ) : (
-                  // I2: カタログにあるのにUIが解決できない＝配線漏れ。黙って空にせず理由を出す
+                  // I2: カタログにあるのにUIが解決できない＝配線漏れ。理由を出す
                   <div className="canvas-empty">
                     <div className="canvas-empty-inner">
                       <Icon name="warn" size={30} stroke={1.2} className="canvas-empty-mark" />
@@ -922,119 +747,89 @@ export function App(): React.ReactElement {
               onClick={() => {
                 // 重なりの順に1枚ずつ下ろす。**面は畳まない**（抱えたまま残る）
                 if (showWork) setLowered(true);
-                else if (trunk) openThread(trunk.threadId);
+                else openThread(trunk.threadId);
               }}
             >
               <span>▲ {trunk.title} に戻る</span>
               <span className="peek-sp" />
-              <span className="peek-now">{showWork && activeTab ? activeTab.title : branch?.title}</span>
+              <span className="peek-now">
+                {showWork && activeTab ? activeTab.title : branch?.title}
+              </span>
             </button>
           )}
         </div>
       )}
 
-      {/* 枝を開く（決定77：還す条件が要る）。**被さる面**で出す——脇に開くものは狭い画面で
-          必ず端からはみ出す（`spec-canvas-ui` §5） */}
-      {newBranch && (
-        <Modal title="枝を開く" onClose={() => setNewBranch(false)}>
-          <NewBranchForm
-            onOpen={(spec) => {
-              // どの幹の枝になるかは**いま居るプロジェクト**で決まる
-              session.openBranch({ ...(trunk ? { threadId: trunk.threadId } : {}), ...spec });
-              setNewBranch(false);
-            }}
-            onCancel={() => setNewBranch(false)}
-          />
-        </Modal>
-      )}
-
-      {/* 抱えているものの一覧。**ドロップダウンではなく被さる面**（`spec-canvas-ui` §5） */}
-      {holdOpen && (
-        <Modal
-          title="抱えているもの"
-          onClose={() => setHoldOpen(false)}
-          footer={
-            <span className="picker-hint">
-              開いている枝は、必ず<b>幹の札・横断の通知・レールの点</b>のどれかに出ています。
-              どこにも出ていない枝は作れません。
-            </span>
-          }
+      {/* ── 被さる面（見本の `.veil`）。横断の通知と履歴はここに出す ────────
+          脇に開くものは狭い画面で必ず端からはみ出す（`spec-canvas-ui` §5） */}
+      {(inboxOpen || historyOpen || holdOpen) && (
+        <div
+          className="veil"
+          onClick={(e) => {
+            if (e.target !== e.currentTarget) return;
+            if (holdOpen) setHoldOpen(false);
+            else backToChat();
+          }}
         >
-          {held.map((h) => (
-            <button
-              key={h.threadId}
-              className="held-row"
-              type="button"
-              onClick={() => openThread(h.threadId)}
-            >
-              <span className={`u-dot is-${h.state}`} />
-              <span className="held-row-t">{h.title}</span>
-              <span className="held-row-m">{h.meta}</span>
-            </button>
-          ))}
-        </Modal>
-      )}
-
-      {catalogOpen && (
-        <Modal
-          title="キャンバスに開く"
-          onClose={() => setCatalogOpen(false)}
-          footer={
-            <>
-              <span className="picker-hint">↑↓ で選ぶ · Enter で開く · Esc で閉じる</span>
-              {/* I2: 描けない面があることを黙らない。出所（kind）まで出す */}
-              {unresolvedCatalog.length > 0 && (
-                <span className="catalog-unresolved">
-                  この画面で描けない面が {unresolvedCatalog.length} 件あります（配線漏れ）:{" "}
-                  {unresolvedCatalog.map((e) => e.kind).join(", ")}
-                </span>
-              )}
-            </>
-          }
-        >
-          <div className="catalog-search">
-            <SearchField
-              value={catalogQuery}
-              onChange={setCatalogQuery}
-              onKeyDown={catalogNav.onKeyDown}
-              placeholder="名前・説明で絞る"
-              autoFocus
-            />
-          </div>
-          <div ref={catalogNav.listRef}>
-            {catalogGroups.length === 0 ? (
-              <p className="catalog-empty">「{catalogQuery}」に当てはまる面はありません。</p>
-            ) : (
-              catalogGroups.map(([category, entries]) => (
-                <div key={category}>
-                  <div className="catalog-group-label">{category}</div>
-                  {entries.map((entry) => {
-                    const opened = session.tabs.some((t) => t.kind === entry.kind);
-                    const index = catalogOrdered.indexOf(entry);
-                    return (
-                      <button
-                        key={entry.kind}
-                        className={`catalog-item ${catalogNav.isOn(index) ? "is-on" : ""}`}
-                        onClick={() => openFromCatalog(entry.kind)}
-                        title={`${entry.kind} · ${entry.module}`}
-                        {...catalogNav.rowProps(index)}
-                      >
-                        <Icon name={iconOfKind(entry.kind)} size={17} className="ci-ico" />
-                        <span className="ci-body">
-                          <span className="ci-name">{entry.title}</span>
-                          <span className="ci-desc">{entry.description}</span>
-                        </span>
-                        {opened && <span className="ci-open">開いています</span>}
-                      </button>
-                    );
-                  })}
-                </div>
-              ))
+          <div className={`veil-panel ${historyOpen ? "is-wide" : ""}`}>
+            {inboxOpen && (
+              <InboxFace
+                items={session.inbox}
+                onAnswer={session.answerInbox}
+                onOpen={openInboxItem}
+                onBack={backToChat}
+              />
+            )}
+            {historyOpen && (
+              <ThreadHistory
+                /* 履歴は**終えた幹の一覧**（PO裁定 2026-08-10）。畳んだ枝は幹の記録に
+                   結論1行として残るので、ここへは並べない */
+                closedThreads={session.closedThreads.filter((t) => t.kind === "trunk")}
+                chatOf={session.chatOf}
+                ensureHistory={session.ensureHistory}
+                historyLoaded={session.historyLoaded}
+                selectedId={view.readThreadId}
+                onSelect={(id) => navigate((prev) => ({ ...prev, readThreadId: id }))}
+                onReopen={(id) => session.reopenThread(id)}
+                onBack={backToChat}
+              />
+            )}
+            {holdOpen && (
+              <div className="held-face">
+                <h2 className="held-face-h">抱えているもの</h2>
+                {held.map((h) => (
+                  <button
+                    key={`${h.kind}:${h.id}`}
+                    className="held-row"
+                    type="button"
+                    onClick={() => openHeld(h)}
+                  >
+                    <span className={`u-dot is-${h.state}`} />
+                    <span className="held-row-t">{h.title}</span>
+                    <span className="held-row-m">{h.meta}</span>
+                  </button>
+                ))}
+                <p className="held-foot">
+                  開いている枝は、必ず<b>幹の札・横断の通知・レールの点</b>のどれかに出ています。
+                  <br />
+                  どこにも出ていない枝は作れません。
+                </p>
+              </div>
             )}
           </div>
-        </Modal>
+        </div>
       )}
-
     </div>
   );
+}
+
+/** 接続の状態を1語で。**切れたことは分かる必要がある**（点は残す）。 */
+function connLabel(status: string): string {
+  return status === "open"
+    ? "接続中"
+    : status === "connecting"
+      ? "接続しています…"
+      : status === "reconnecting"
+        ? "繋ぎ直しています…"
+        : "切断";
 }

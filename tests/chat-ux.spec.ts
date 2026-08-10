@@ -388,7 +388,7 @@ test.describe("会話の切り替え", () => {
     await fillConversation(page);
     // 切替は**押してから**測る（押す前の位置は前の会話のもので、混ぜると判定が濁る）。
     // spring は50フレーム前後続くので、1〜2フレーム遅れても滑っていれば必ず写る
-    await page.locator(".rail-hold .hold").click();
+    await page.locator(".hold").click();
     const samples = await samplePositions(page, async () => {});
     const settled = samples[samples.length - 1] ?? 0;
     // 滑っていれば途中の位置（先頭寄り）が並ぶ。飛んでいれば常に最下部付近
@@ -405,7 +405,7 @@ test.describe("会話の切り替え", () => {
     await page.locator(".rail-btn[data-key='s']").click();
     await expect(page.locator(".chat-scroll")).toBeHidden();
 
-    const samples = await samplePositions(page, () => page.locator(".rail-trunk").click());
+    const samples = await samplePositions(page, () => page.locator(".pj").click());
     const settled = samples[samples.length - 1] ?? 0;
     expect(settled, "戻ったのに中身が無い").toBeGreaterThan(0);
     const slid = samples.filter((v) => v > 0 && v < settled * 0.5);
@@ -421,16 +421,16 @@ test.describe("会話ごとの状態", () => {
     const branchInput = page.locator(".room--branch .chat-input");
     await trunkInput.fill("こちらの会話の書きかけ");
 
-    await page.locator(".rail-hold .hold").click();
+    await page.locator(".hold").click();
     await expect(branchInput).toHaveValue("", { timeout: 2000 });
     await branchInput.fill("あちらの会話の書きかけ");
 
     // 幹はその場に残っているので、書きかけもそのまま
     await expect(trunkInput).toHaveValue("こちらの会話の書きかけ");
-    await page.locator(".rail-trunk").click();
+    await page.locator(".pj").click();
     await expect(page.locator(".room--branch")).toHaveCount(0);
     await expect(trunkInput).toHaveValue("こちらの会話の書きかけ");
-    await page.locator(".rail-hold .hold").click();
+    await page.locator(".hold").click();
     await expect(branchInput).toHaveValue("あちらの会話の書きかけ");
   });
 
@@ -438,14 +438,14 @@ test.describe("会話ごとの状態", () => {
     const trunkModel = page.locator(".room--trunk .model-select-trigger");
     await expect(trunkModel).toHaveText(/qwen3\.6-35b/);
 
-    await page.locator(".rail-hold .hold").click();
+    await page.locator(".hold").click();
     await expect(page.locator(".room--branch .model-select-trigger")).toHaveText(/claude-opus-5/);
     // 幹のほうは変わらない（会話ごとに持つ）
     await expect(trunkModel).toHaveText(/qwen3\.6-35b/);
   });
 
   test("モデルの切替は、その列の会話を宛先にする", async ({ page }) => {
-    await page.locator(".rail-hold .hold").click();
+    await page.locator(".hold").click();
     await page.locator(".room--branch .model-select-trigger").click();
     await page.locator(".model-select-search input").fill("Qwen");
     await page.locator(".model-select-item").click();
@@ -481,7 +481,7 @@ test.describe("文脈の使用量", () => {
     host.emit({ type: "context_state", tokens: 40000 });
     await expect(page.locator(".room--trunk .context-meter")).toHaveText(/20%/);
 
-    await page.locator(".rail-hold .hold").click();
+    await page.locator(".hold").click();
     // 枝はまだターンが回っていない（0% と偽らない・I1）
     await expect(page.locator(".room--branch .context-meter")).toHaveCount(0);
     await expect(page.locator(".room--trunk .context-meter")).toHaveText(/20%/);
@@ -493,27 +493,13 @@ test.describe("文脈の使用量", () => {
   });
 });
 
-test.describe("枝を開く（ADR-0017 決定77）", () => {
-  test("還す条件と理由が揃うまで開けない", async ({ page }) => {
-    await page.locator(".hold-new").click();
-    const submit = page.getByRole("button", { name: "この条件で開く" });
-    await expect(submit).toBeDisabled();
-
-    const fields = page.locator(".nb input");
-    await fields.nth(0).fill("認証の設計");
-    await fields.nth(1).fill("方式が決まったら");
-    await fields.nth(2).fill("往復が続く");
-    await submit.click();
-
-    await expect
-      .poll(() => host.received.find((m) => m["type"] === "thread_open"))
-      .toEqual({
-        type: "thread_open",
-        threadId: THREAD_ID,
-        title: "認証の設計",
-        returnCondition: "方式が決まったら",
-        reason: "往復が続く",
-      });
+test.describe("枝を開く口は会話の中だけ（PO裁定 2026-08-10）", () => {
+  test("レールに枝を開く口も、面を開く口も無い", async ({ page }) => {
+    // 枝は番頭が会話の中で開くか、POが会話で指示する。**行き先の帯に「作る」口を混ぜない**
+    await expect(page.locator(".hold-new")).toHaveCount(0);
+    await expect(page.locator(".rail-work")).toHaveCount(0);
+    // 面もレールからは開かない（会話に残る「面への口」から開き直す）
+    await expect(page.locator(".canvas-catalog-btn")).toHaveCount(0);
   });
 });
 
@@ -526,7 +512,7 @@ test.describe("枝を開く（ADR-0017 決定77）", () => {
  */
 test.describe("会話の名前を変える", () => {
   test("題を押して Enter でホストへ届き、字が変わる", async ({ page }) => {
-    await page.locator(".rail-hold .hold").click();
+    await page.locator(".hold").click();
     await page.locator(".room--branch .room-title").click();
 
     const input = page.locator(".room--branch .tt-rename");
@@ -542,7 +528,7 @@ test.describe("会話の名前を変える", () => {
   });
 
   test("Esc でやめると、名前は変わらずホストへも投げない", async ({ page }) => {
-    await page.locator(".rail-hold .hold").click();
+    await page.locator(".hold").click();
     await page.locator(".room--branch .room-title").click();
     await page.locator(".room--branch .tt-rename").fill("書きかけ");
     await page.locator(".room--branch .tt-rename").press("Escape");
@@ -554,7 +540,7 @@ test.describe("会話の名前を変える", () => {
   });
 
   test("空にして確定しても、名前は消えない（消す操作ではない）", async ({ page }) => {
-    await page.locator(".rail-hold .hold").click();
+    await page.locator(".hold").click();
     await page.locator(".room--branch .room-title").click();
     await page.locator(".room--branch .tt-rename").fill("   ");
     await page.locator(".room--branch .tt-rename").press("Enter");
@@ -831,6 +817,10 @@ test.describe("履歴の会話ログ", () => {
         {
           ...thread(OTHER_THREAD_ID, titles[OTHER_THREAD_ID]!, false),
           model: MODEL_B,
+          // 履歴に並ぶのは**終えた幹**（PO裁定 2026-08-10）
+          kind: "trunk",
+          parentId: undefined,
+          returnCondition: undefined,
           state: "closed",
           closedAt: "2026-08-06T00:00:00.000Z",
         },

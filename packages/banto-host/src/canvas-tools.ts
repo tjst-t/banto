@@ -15,7 +15,7 @@ import { Type } from "typebox";
 import type { Canvas, CanvasCatalog } from "./canvas.js";
 import type { ArtifactStore } from "./artifacts.js";
 import type { UtsuwaView } from "./protocol.js";
-import { buildUtsuwa, pickPath, SHOWABLE_UTSUWA_KINDS } from "./canvas-utsuwa.js";
+import { buildUtsuwa, openUtsuwa, pickPath, SHOWABLE_UTSUWA_KINDS } from "./canvas-utsuwa.js";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 
 /** `canvas.show`（器を出す口）を生やすのに要るもの。 */
@@ -83,12 +83,22 @@ export function createCanvasTools(
       ),
     }),
     async execute(params) {
+      const spec = catalog.get(params.kind);
       // I2: 未知の kind は Canvas が利用可能な一覧付きで例外にする（決定20）
       const tab = canvas.open(
         params.kind,
         (params.params as Record<string, unknown> | undefined) ?? {},
         params.title,
         { ...(params.newTab === true ? { newTab: true } : {}) }
+      );
+      // **開いた面は会話に残す**（決定78 の「面への口」）。面を畳んでも遡って開き直せる
+      options.showUtsuwa?.(
+        openUtsuwa({
+          view: tab.kind,
+          label: tab.title,
+          ...(spec?.description ? { meta: spec.description } : {}),
+          args: tab.params,
+        })
       );
       const how = tab.rev === 0 ? "opened" : "reused tab for";
       return {

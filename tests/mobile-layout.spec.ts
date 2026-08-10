@@ -30,13 +30,13 @@ test.describe("狭い画面の器", () => {
     await page.goto(`http://127.0.0.1:${host.port}/`);
     await page.waitForSelector(".shell");
     // 面が開いていれば、それが上がってきた紙として出ている（決定79）
-    await expect(page.locator(".canvas-tabbar")).toBeVisible();
+    await expect(page.locator(".work-head")).toBeVisible();
   });
 
-  test("中身を送っても、タブ列は上端に居座る", async ({ page }) => {
-    const tabbar = page.locator(".canvas-tabbar");
+  test("中身を送っても、面の頭は上端に居座る", async ({ page }) => {
+    const tabbar = page.locator(".work-head");
     const before = await tabbar.boundingBox();
-    expect(before, "タブ列が描かれていない").not.toBeNull();
+    expect(before, "面の頭が描かれていない").not.toBeNull();
 
     const scroller = page.locator(".canvas-body .cv-scroll").first();
     const moved = await scroller.evaluate((el) => {

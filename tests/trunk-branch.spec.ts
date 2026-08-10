@@ -106,6 +106,18 @@ const TRUNK_HISTORY = [
 const BRANCH_HISTORY = [
   { role: "po", text: "Slack のスレッドだと枝が埋没するけど、そこはどうする？" },
   { role: "banto", text: "埋没の原因は4つで、うち2つはこの店では起きません。" },
+  // 枝からも面を開ける（開いた面はその枝のキャンバスに載る＝どこから開いたかの記録）
+  {
+    role: "utsuwa",
+    utsuwa: {
+      kind: "open",
+      at: "2026-08-09T03:00:00.000Z",
+      from: { module: "core", tool: "canvas.open", artifact: "-" },
+      view: "file.browser",
+      label: "この枝で触っているファイル",
+      meta: "prototype/redesign · 探す作業",
+    },
+  },
 ];
 
 /** 判断待ち。**会話の流れの中に立つ**（決定80）。 */
@@ -293,11 +305,11 @@ test.describe("[task-0088/a1] 幹はプロジェクトに1本で、畳めない"
 
   test("[task-0088/a1] 開いている枝はレールの点に出ている（埋没しない不変条件③）", async ({ page }) => {
     await open(page);
-    await expect(page.locator(".rail-hold .hold")).toHaveCount(1);
-    await expect(page.locator(".rail-hold .hold")).toContainText("間欠的に落ちる試験");
+    await expect(page.locator(".hold--branch")).toHaveCount(1);
+    await expect(page.locator(".hold--branch")).toHaveAttribute("aria-label", "間欠的に落ちる試験");
     // 幹（＝プロジェクト）はレールの列。1つだけ並んでいる
-    await expect(page.locator(".rail-trunk")).toHaveCount(1);
-    await expect(page.locator(".rail-trunk")).toContainText("banto");
+    await expect(page.locator(".pj")).toHaveCount(1);
+    await expect(page.locator(".pj")).toContainText("banto");
   });
 });
 
@@ -342,27 +354,21 @@ test.describe("[task-0088/a2,a3] 枝の札と、還った1行", () => {
   });
 });
 
-test.describe("[task-0088/a2] 枝は還す条件が無いと開けない", () => {
-  test("[task-0088/a2] 3つ揃うまで開けない", async ({ page }) => {
+test.describe("[task-0088/a2] 枝を開く口は会話の中だけ（PO裁定 2026-08-10）", () => {
+  test("[task-0088/a2] レールに枝を開くボタンが無い", async ({ page }) => {
     await open(page);
-    await page.locator(".hold-new").click();
-    const submit = page.getByRole("button", { name: "この条件で開く" });
-    await expect(submit).toBeDisabled();
-    const fields = page.locator(".nb input");
-    await fields.nth(0).fill("記憶の検索が遅い");
-    await expect(submit).toBeDisabled();
-    await fields.nth(1).fill("500ms を切ったら");
-    await expect(submit).toBeDisabled();
-    await fields.nth(2).fill("職人を立てて詰める");
-    await expect(submit).toBeEnabled();
-    await submit.click();
-    await expect
-      .poll(() => host.received.find((m) => m["type"] === "thread_open"))
-      .toMatchObject({
-        threadId: TRUNK,
-        returnCondition: "500ms を切ったら",
-        reason: "職人を立てて詰める",
-      });
+    // 枝は**会話の中**で開く——番頭が自分で開くか、POが会話で指示する。
+    // 行き先の帯（レール）に「作る」口を混ぜない（見本 13 にも無い）
+    await expect(page.locator(".hold-new")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "枝を開く" })).toHaveCount(0);
+  });
+
+  test("[task-0088/a2] 面を開く口もレールに無い（会話に残る口から開く）", async ({ page }) => {
+    await open(page);
+    await expect(page.locator(".rail-work")).toHaveCount(0);
+    await expect(page.locator(".open-work")).toHaveCount(0);
+    // 代わりに、会話に残った「面への口」から開く
+    await expect(page.locator(".room--trunk .u-open")).toBeVisible();
   });
 });
 
@@ -393,7 +399,7 @@ test.describe("[task-0088/a7,a8,a9] 器", () => {
   test("[task-0088/a7] 細い帯では器が畳まれ、押すと開く（コンテナクエリ）", async ({ page }) => {
     await open(page);
     // 面を開くと会話は細い帯になる（決定79）→ 器の畳み判定が効く
-    await page.locator(".u-open").click();
+    await page.locator(".room--trunk .u-open").click();
     await expect(page.locator(".work")).toBeVisible();
     const list = page.locator(".u--list").first();
     await expect(list.locator(".u-fold")).toBeVisible();
@@ -432,7 +438,7 @@ test.describe("[task-0088/a11,a12] 作業する面", () => {
   test("[task-0088/a11] 面を開くと会話が細い帯として残り、話しかけられる", async ({ page }) => {
     await open(page);
     const before = (await page.locator(".room--trunk").boundingBox())!.width;
-    await page.locator(".u-open").click();
+    await page.locator(".room--trunk .u-open").click();
     await expect(page.locator(".work")).toBeVisible();
     const room = page.locator(".room--trunk");
     const after = (await room.boundingBox())!.width;
@@ -444,7 +450,7 @@ test.describe("[task-0088/a11,a12] 作業する面", () => {
 
   test("[task-0088/a11] 帯の幅はつまんで変えられる", async ({ page }) => {
     await open(page);
-    await page.locator(".u-open").click();
+    await page.locator(".room--trunk .u-open").click();
     await expect(page.locator(".work")).toBeVisible();
     const room = page.locator(".room--trunk");
     const before = (await room.boundingBox())!.width;
@@ -466,13 +472,12 @@ test.describe("[task-0088/a11,a12] 作業する面", () => {
     await expect(page.locator(".room--branch")).toHaveCount(0);
 
     // 枝へ移ると、その枝のキャンバスは空なので面は閉じる（面は会話ごと・決定2）
-    await page.locator(".rail-hold .hold").click();
+    await page.locator(".hold--branch").click();
     await expect(page.locator(".room--branch")).toBeVisible();
     await expect(page.locator(".work")).toHaveCount(0);
 
     // 枝から開く → 枝が細い帯として左に残り、幹は背表紙になる
-    await page.locator(".rail-work").click();
-    await page.locator(".catalog-item", { hasText: "ファイル" }).first().click();
+    await page.locator(".room--branch .u-open").click();
     await expect(page.locator(".work")).toBeVisible();
     await expect(page.locator(".room--branch")).toBeVisible();
     await expect(page.locator(".spine")).toBeVisible();
@@ -485,7 +490,7 @@ test.describe("[task-0088/a13] 狭い画面では重なる", () => {
     // 幹だけのときは覗きも紙も無い
     await expect(page.locator(".peek")).toHaveCount(0);
 
-    await page.locator(".rail-hold .hold").click();
+    await page.locator(".hold--branch").click();
     await expect(page.locator(".room--branch")).toHaveClass(/is-raised/);
     const peek = page.locator(".peek");
     await expect(peek).toBeVisible();
@@ -499,7 +504,7 @@ test.describe("[task-0088/a13] 狭い画面では重なる", () => {
 
   test("[task-0088/a13] 面も下から上がる紙になる。ページごとずれない", async ({ page }) => {
     await open(page, 390, 780);
-    await page.locator(".u-open").click();
+    await page.locator(".room--trunk .u-open").click();
     await expect(page.locator(".work")).toHaveClass(/is-raised/);
     await expect(page.locator(".peek")).toBeVisible();
 

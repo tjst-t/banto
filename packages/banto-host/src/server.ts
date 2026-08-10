@@ -37,6 +37,7 @@ import {
   type TranscriptAttachment,
   type UtsuwaView,
 } from "./protocol.js";
+import { openUtsuwa } from "./canvas-utsuwa.js";
 import { fromWireToolName } from "@banto/core";
 import type { Thread, ThreadRegistry } from "./threads.js";
 import { workspaceRoot } from "./workspace.js";
@@ -852,9 +853,21 @@ export class BantoHostServer {
         else if (message.type === "canvas_close") canvas.close(message.tabId);
         else if (message.type === "canvas_reorder") canvas.reorder(message.tabId, message.toIndex);
         else {
-          canvas.open(message.kind, message.params ?? {}, message.title, {
+          const tab = canvas.open(message.kind, message.params ?? {}, message.title, {
             ...(message.newTab === true ? { newTab: true } : {}),
           });
+          // **開いた面は会話に残す**（決定78 の「面への口」）。番頭が開いたときと同じ形
+          // ——POが自分で開いた面も、あとから遡って開き直せる（決定25：経路が違うだけ）
+          const spec = this.catalog?.get(tab.kind);
+          this.showUtsuwa(
+            thread.id,
+            openUtsuwa({
+              view: tab.kind,
+              label: tab.title,
+              ...(spec?.description ? { meta: spec.description } : {}),
+              args: tab.params,
+            })
+          );
         }
       } catch (err) {
         // I2: 未知のタブID・未知のkindは黙って無視せず理由を返す

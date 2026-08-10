@@ -76,7 +76,8 @@ export function ThreadHistory(props: ThreadHistoryProps): React.ReactElement {
         <div className="history-list-scroll">
           {closedThreads.length === 0 ? (
             <p className="history-empty">
-              畳んだ会話はまだありません。会話タブの × で畳むと、ここに残ります。
+              終えた幹はまだありません。プロジェクトが終わったら番頭に「この幹は終い」と
+              伝えてください——持って出る記憶を選んでから終います。
             </p>
           ) : (
             closedThreads.map((thread) => (

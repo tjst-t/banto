@@ -815,6 +815,18 @@ async function serve(options: ServeOptions): Promise<void> {
         threadId,
         // 出所は「別の会話」。職人の報告と同じ札で出さない（PO報告 2026-07-31）
         seed: (threadId, message) => server.notify(message, { threadId, source: "thread" }),
+        /**
+         * 幹を終うとき、番頭が選んだ記憶を**横断の層（人の記憶）へ上げる**。
+         * 枝の結論が幹へ還るのと同じ形が、一段上で繰り返される（PO裁定 2026-08-09）。
+         */
+        carryOut: (texts) => {
+          const person = memory.forPerson();
+          for (const text of texts) {
+            // 番頭が選んで持って出たものなので `explicit`（会話から抽出したのではない）
+            person.save({ kind: "fact", text, origin: "explicit" });
+          }
+          return texts.length;
+        },
       }),
       // レベル1（PO裁定）: banto 自身の再起動。exit(0) で終わり、systemd の Restart=always が
       // 起動し直す。職人・検証環境の始末は KillMode=control-group の cgroup 巻き添えで成立する

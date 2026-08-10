@@ -57,6 +57,32 @@ export interface UtsuwaLabels {
   args?: Record<string, unknown>;
 }
 
+/**
+ * 面を開いた1行（ADR-0017 決定78「面への口」）。
+ *
+ * **開いた面は会話に残る。** 見本（`13-tsuzukima-kai.html` の幹）が `face` の行として
+ * 持っているもので、これがあるから面を畳んでも**あとから遡って開き直せる**。
+ * 器なので凍る——「いつ開いたか」の記録であって、面のいまの姿ではない。
+ */
+export function openUtsuwa(params: {
+  view: string;
+  label: string;
+  meta?: string;
+  args?: Record<string, unknown>;
+  at?: string;
+}): UtsuwaView {
+  return {
+    kind: "open",
+    at: params.at ?? new Date().toISOString(),
+    // 面への口は番頭（中核）が出すもので、モジュールの戻り値ではない
+    from: { module: "core", tool: "canvas.open", artifact: "-" },
+    view: params.view,
+    label: params.label,
+    ...(params.meta ? { meta: params.meta } : {}),
+    ...(params.args && Object.keys(params.args).length > 0 ? { args: params.args } : {}),
+  };
+}
+
 /** 描けなかったことを器として返す（決定81(d)）。 */
 export function brokenUtsuwa(params: {
   origin: UtsuwaOrigin;

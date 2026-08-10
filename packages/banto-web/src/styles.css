@@ -35,73 +35,78 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 
 /* ══ レール：行き先の帯 ═══════════════════════════════════════════════════
    プロジェクトも枝も面も同じ種類のもの＝どこへ行くか。**会話の列には触れない**ので、
-   読み物が無傷のまま残る。押さなくても、点で本数と状態が分かる（決定77 の不変条件③） */
+   読み物が無傷のまま残る。**絵だけを並べ、名前は帯の外（ホバー）に出す**
+   ——帯の中に字を入れると幅を食い、押せるものの数だけ列が伸びる（見本 13）。 */
 .rail {
-  flex: none; width: 200px; display: flex; flex-direction: column; gap: 2px;
-  padding: var(--s3) var(--s2); background: var(--paper-1);
-  border-right: 1px solid var(--rule); overflow-y: auto;
+  flex: none; width: 58px; display: flex; flex-direction: column; align-items: center;
+  gap: var(--s2); padding: var(--s3) 0; background: var(--paper-1);
+  border-right: 1px solid var(--rule);
 }
-.rail .brand { padding: 0 var(--s2) var(--s3); }
-.rail-sep { height: 1px; background: var(--rule); margin: var(--s2) var(--s2); flex: none; }
+.rail-sep { width: 22px; height: 1px; background: var(--rule); margin: 2px 0; flex: none; }
 .rail-sp { flex: 1; min-height: var(--s3); }
-.rail-btn, .rail-trunk, .hold, .hold-new {
-  flex: none; display: flex; align-items: center; gap: var(--s2);
-  height: var(--h-ctl-sm); padding: 0 var(--s2); min-width: 0;
-  border: 0; border-radius: var(--r-ctl); background: none;
-  color: var(--sumi-3); cursor: pointer; font: inherit; font-size: var(--t-meta);
-  text-align: left;
+
+/* 帯の住人は同じ寸法の升。**押せるものは 38px 以上**（spec-canvas-ui §3） */
+.rail-btn, .pj {
+  position: relative; flex: none; width: 38px; height: 38px;
+  display: grid; place-items: center; border: 0; border-radius: var(--r-ctl);
+  background: none; color: var(--sumi-3); cursor: pointer; font: inherit; line-height: 1;
 }
-.rail-btn:hover, .rail-trunk:hover, .hold:hover, .hold-new:hover {
-  background: var(--paper-2); color: var(--sumi);
-}
-.rail-btn.is-active, .rail-trunk.is-active, .hold.is-active {
-  background: var(--ai-t); color: var(--ai); font-weight: 700;
-}
-.rail-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rail-hold { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rail-btn:hover, .pj:hover { background: var(--paper-2); color: var(--sumi); }
+.rail-btn.is-active, .pj.is-active { background: var(--ai-t); color: var(--ai); }
+/* いま居るプロジェクトは、左端の罫でも言う（色だけに頼らない）。
+   **疑似要素は使わない**——符牒の札（`.is-alt [data-key]::after`）と場所を取り合う */
+.pj.is-active { box-shadow: inset 3px 0 0 var(--ai); }
+/* プロジェクトは**頭文字の印**。名前は帯の外へ */
+.pj { font-size: var(--t-body); font-weight: 700; }
 /* 用のある幹に添える点。**朱は判断待ち専用**（spec-design §1.1） */
-.rail-bell { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--shu); }
-.hold-label { font-size: var(--t-meta); }
+.pj .bell {
+  position: absolute; top: 4px; right: 4px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--shu);
+}
+
+/* 抱えているもの（枝と開いた面）。**点だけ**——押さなくても本数と状態が分かる */
+.hold {
+  position: relative; flex: none; width: 30px; height: 30px; display: grid; place-items: center;
+  border: 0; border-radius: var(--r-seal); background: none; cursor: pointer;
+}
+.hold:hover { background: var(--paper-2); }
+.hold.is-active { background: var(--ai-t); }
+.hold .u-dot { width: 9px; height: 9px; }
 .hold-more {
-  align-self: flex-start; margin: 2px var(--s2); border: 0; background: var(--paper-2);
-  border-radius: var(--r-seal); padding: 2px 8px; cursor: pointer;
+  flex: none; width: 30px; height: 22px; display: grid; place-items: center;
+  border: 0; border-radius: var(--r-seal); background: var(--paper-2); cursor: pointer;
   font: inherit; font-family: var(--mono); font-size: var(--t-note); color: var(--sumi-3);
 }
 .hold-more:hover { color: var(--sumi); }
-.hold-new { color: var(--ai); }
-.held-row {
-  display: flex; align-items: center; gap: var(--s2); width: 100%;
-  border: 0; background: none; border-radius: var(--r-ctl); padding: 7px var(--s2);
-  cursor: pointer; font: inherit; font-size: var(--t-meta); color: inherit; text-align: left;
+
+/* 名前は帯の外に出す。**ホバーで浮く札**（見本の `.tip`） */
+.tip {
+  position: absolute; left: 46px; top: 50%; transform: translateY(-50%);
+  padding: 4px 10px; border-radius: var(--r-seal);
+  background: var(--sumi); color: var(--paper); font-size: var(--t-note);
+  white-space: nowrap; opacity: 0; pointer-events: none; z-index: 60;
+  transition: opacity .12s;
 }
-.held-row:hover { background: var(--paper-2); }
-.held-row-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.held-row-m { flex: none; font-size: var(--t-note); color: var(--sumi-3); }
+.rail-btn:hover .tip, .pj:hover .tip, .hold:hover .tip, .spine:hover .tip, .conn:hover .tip {
+  opacity: 1;
+}
 /* 取次の数字。**朱はここと判断待ちにしか出ない** */
 .inbox-n {
-  flex: none; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+  position: absolute; top: -2px; right: -2px;
+  min-width: 17px; height: 17px; padding: 0 4px; border-radius: 999px;
   background: var(--shu); color: #fff; font-family: var(--mono); font-size: var(--t-note);
-  display: grid; place-items: center; font-weight: 700;
+  display: grid; place-items: center; font-weight: 700; line-height: 1;
 }
 .rail-btn.is-empty .inbox-n { background: var(--paper-2); color: var(--sumi-3); font-weight: 400; }
-.conn { font-size: var(--t-note); font-family: var(--mono); color: var(--sumi-3); display: inline-flex; align-items: center; gap: 6px; flex: none; padding: var(--s2); }
-.conn::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--sumi-3); }
+/* 接続は点だけ。**切れたことは分かる必要がある**ので消さない */
+.conn {
+  position: relative; flex: none; width: 38px; height: 20px; display: grid; place-items: center;
+}
+.conn::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--sumi-3); }
 .conn--open::before { background: var(--koke); }
 .conn--connecting::before, .conn--reconnecting::before { background: var(--kohaku); }
 /* 切断は「止まった」。エラーの色は紫（朱は判断待ちに取ってある） */
-.conn--closed { color: var(--murasaki); }
 .conn--closed::before { background: var(--murasaki); }
-
-/* 屋号は明朝。番頭の声と同じ書体で、店の名として置く */
-.brand { display: flex; flex-direction: column; justify-content: center; flex: none; line-height: 1.15; }
-.brand-name {
-  font-family: var(--sho); font-size: var(--t-head); font-weight: 600;
-  letter-spacing: .22em; color: var(--ai);
-}
-.brand-sub {
-  font-family: var(--ui); font-size: 10px; font-weight: 500;
-  letter-spacing: .3em; color: var(--sumi-3); text-transform: uppercase;
-}
 
 /* ══ 続き間 ═══════════════════════════════════════════════════════════════ */
 .rooms { flex: 1; min-width: 0; display: flex; position: relative; }
@@ -116,12 +121,16 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 .room.is-slim { flex: 0 0 var(--slim-w, 344px); min-width: 260px; }
 .room.is-slim .room-head { padding: var(--s3) var(--s4); }
 .room.is-slim .chat-scroll-content { padding-left: var(--s4); padding-right: var(--s4); }
+/* 入力欄も同じ幅に揃える（読みと入力が段違いだと目が横に泳ぐ） */
+.chat-composer { max-width: 720px; width: 100%; margin: 0 auto; }
+.room.is-slim .chat-composer { max-width: none; }
 .room.is-slim .chat-composer { padding-left: var(--s3); padding-right: var(--s3); }
 .room-grip { position: absolute; right: -3px; top: 0; bottom: 0; width: 7px; z-index: 12; flex: none; }
 
 .room-head {
   flex: none; display: flex; align-items: center; gap: var(--s2);
-  padding: var(--s4) var(--s6) var(--s2); min-width: 0;
+  padding: var(--s3) var(--s5); min-width: 0; min-height: var(--h-bar);
+  border-bottom: 1px solid var(--rule);
 }
 .room-head-t { flex: 1; min-width: 0; }
 .room-title { font-size: var(--t-read); font-weight: 700; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
@@ -154,16 +163,59 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 }
 
 /* 作業する面。**手前を背表紙に畳んで全幅を使う**（決定79） */
-.work { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; z-index: 3; }
-.work-note {
-  align-self: center; flex: none; font-size: var(--t-note); color: var(--sumi-3);
-  padding: 0 var(--s2); white-space: nowrap;
+.work {
+  flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; z-index: 3;
+  background: var(--paper); border-left: 1px solid var(--rule);
+  box-shadow: -24px 0 52px rgba(17, 22, 31, .10);
 }
-/* 面を開く口はレールの住人（行き先の帯）。**浮かせない**——入力欄に被さる */
-.rail-work { color: var(--ai); }
+/**
+ * 面の頭。**タブ列は持たない**（見本 13）——開いた面はレールの点に並び、そこから移る。
+ * タブ列を持つと、行き先が2箇所（レールと帯）に分かれて置き場の記憶を要求する（D7）。
+ */
+.work-head {
+  flex: none; display: flex; align-items: center; gap: var(--s2);
+  padding: var(--s3) var(--s4); min-height: var(--h-bar);
+  border-bottom: 1px solid var(--rule);
+}
+.work-head-t { flex: 1; min-width: 0; }
+.work-title { font-size: var(--t-read); font-weight: 700; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-sub { font-size: var(--t-note); color: var(--sumi-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 会話が消えたのではないことを言う（決定79） */
+.work-note {
+  flex: none; font-size: var(--t-note); color: var(--ai); background: var(--ai-t);
+  border-radius: var(--r-seal); padding: 2px 8px; white-space: nowrap;
+}
+.work-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
 /* 狭いときに上端へ覗く幹。**戻り道が常に見えている**（決定79） */
 .peek { display: none; }
+
+/* ══ 被さる面（見本の `.veil`）════════════════════════════════════════════
+   横断の通知・履歴・抱えているものはここに出す。**脇に開くメニューは使わない**
+   ——狭い画面で必ず端からはみ出す（`spec-canvas-ui` §5）。画面に対して置けば、
+   広さに関係なく収まる。 */
+.veil {
+  position: fixed; inset: 0; z-index: 300; background: rgba(0, 0, 0, .28);
+  display: flex; justify-content: center;
+}
+.veil-panel {
+  width: min(760px, 100%); height: 100%; background: var(--paper);
+  box-shadow: var(--shadow-pop); display: flex; flex-direction: column; min-height: 0;
+  overflow: hidden;
+}
+/* 中の面は器いっぱいを使う（自分でスクロールする） */
+.veil-panel > * { flex: 1; min-height: 0; }
+/* 履歴は一覧＋読みの2段なので、被さる面も少し広く取る */
+.veil-panel.is-wide { width: min(1000px, 100%); }
+
+/* 抱えているものの一覧（「+N」から開く） */
+.held-face { overflow-y: auto; padding: var(--s6) var(--s6) var(--s8); }
+.held-face-h { font-size: var(--t-title); font-weight: 700; margin: 0 0 var(--s3); }
+.held-foot {
+  margin-top: var(--s4); padding-top: var(--s3); border-top: 1px solid var(--rule);
+  font-size: var(--t-note); color: var(--sumi-3); line-height: 1.8;
+}
+.held-foot b { color: var(--sumi-2); }
 
 /* ══ 会話 ═══════════════════════════════════════════════════════════════ */
 /**
@@ -179,7 +231,17 @@ code { font-family: var(--mono); font-size: var(--t-note); }
  * ResizeObserver で見て追従するので、padding や gap は中身側に置く。
  */
 .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
-.chat-scroll-content { display: flex; flex-direction: column; gap: var(--s2); padding: var(--s2) var(--s6) var(--s5); }
+/**
+ * 読む幅は 720px まで（見本 13 の `.col`）。**広い画面で行が伸び切らないように**
+ * ——1行が長すぎると目が戻る先を見失う。細い帯では器の畳み判定（`.talk` の
+ * コンテナクエリ）が効くので、ここは上限だけ決める。
+ */
+.chat-scroll-content {
+  display: flex; flex-direction: column; gap: var(--s2);
+  padding: var(--s2) var(--s6) var(--s5);
+  max-width: 720px; width: 100%; margin: 0 auto;
+}
+.room.is-slim .chat-scroll-content { max-width: none; }
 /* 発話と発話の間だけ大きく空ける。ツール行・思考行・知らせは直前の発話に属する部品 */
 .msg--po:not(:first-child), .msg--banto:not(:first-child) { margin-top: var(--s6); }
 .chat-empty { color: var(--sumi-3); font-size: var(--t-meta); line-height: 1.9; margin: 0; }
@@ -720,17 +782,11 @@ code { font-family: var(--mono); font-size: var(--t-note); }
   }
   .shell { padding-top: var(--h-bar); }
   .rail .rail-sep { width: 1px; height: 22px; margin: 0 2px; }
-  .rail .brand { padding: 0 var(--s2) 0 0; }
-  .rail .brand-sub { display: none; }
-  /* 狭いところで接続の文字は場所を取るだけ。**点は残す**（切れたことは分かる必要がある） */
-  .rail .conn { font-size: 0; gap: 0; }
-  /* 狭いところでは点と数字だけ。**名前は帯の外に出す**（押せば分かる） */
-  .rail .rail-label, .rail .cmdk-key { display: none; }
-  /* 帯の住人は**縮まない**。縮ませると隣に重なって、押したものと違うものが反応する */
-  .rail-hold { flex-direction: row; gap: 2px; flex: none; }
-  .rail-hold > * { flex: none; }
   .rail-sp { flex: 1; min-height: 0; }
-  .conn { padding: 0; }
+  /* 帯の住人は**縮まない**。縮ませると隣に重なって、押したものと違うものが反応する */
+  .rail > * { flex: none; }
+  /* 指で触る画面にホバーは無い。札は下へ出す（帯の外＝下端） */
+  .tip { left: 50%; top: 42px; transform: translateX(-50%); }
 
   /**
    * 読んでいる間だけ帯を退かせる（spec-canvas-ui §3.1・PO報告 2026-08-08）。
@@ -759,6 +815,10 @@ code { font-family: var(--mono); font-size: var(--t-note); }
   .work { z-index: 25; }
   .room.is-slim { flex: 1 1 auto; }
   .room-grip, .spine { display: none; }
+  /* 面の頭も詰める。**本文が画面の 70% を切らない**ように（spec-canvas-ui §3.1） */
+  .work-head { min-height: 40px; padding: 4px var(--s3); }
+  .work-sub { display: none; }
+  .room-head { min-height: 40px; padding: 4px var(--s3); }
 
   /* 上端に覗く幹。**戻り道が常に見えている** */
   .peek {

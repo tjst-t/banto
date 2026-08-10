@@ -312,7 +312,7 @@ test.describe("落ちた札を、切り直さずに直す（task-0081/0082）", 
   test("**直す道具が3つとも在る**。理由を書くまで押せない", async ({ page }) => {
     const rework = page.getByRole("button", { name: "中身を直させる" });
     const reverify = page.getByRole("button", { name: "検証だけやり直す" });
-    const abandon = page.getByRole("button", { name: "畳む" });
+    const abandon = page.locator(".cv-work-detail").getByRole("button", { name: "畳む" });
     for (const b of [rework, reverify, abandon]) {
       await expect(b).toBeVisible();
       // 理由は帳簿に残り職人にも渡る。空のまま押させない

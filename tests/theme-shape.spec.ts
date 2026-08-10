@@ -26,11 +26,6 @@ const LAYER = path.join(here, "..", "packages", "banto-web", "src", "theme", "fu
  * 契約から外してよいのか分からないので、書けないなら試験を通してはいけない。
  */
 const ABSENT: Record<string, string> = {
-  "canvas-more-wrap": "タブが溢れたときだけ出る収納",
-  "canvas-more-btn": "同上",
-  "canvas-more-count": "同上",
-  "canvas-tab-empty": "タブが1枚も無いときだけ出る字",
-  hold: "枝が1本も開いていないときは、抱えているものの点が並ばない（ADR-0017 決定77）",
   "hold-more": "抱えているものが6本を超えたときだけ出る「+N」",
   "room--branch": "枝を開いているときだけ出る紙（幹の上に重ねる）",
 };
@@ -104,25 +99,24 @@ test.describe("家の層が名指ししているもの（クラス名の契約�
     expect(fucho.bar, "符牒の上段は墨の地").not.toBe(washi.bar);
   });
 
-  test("符牒でも道具立ては器の中に収まる（帯から食み出さない）", async ({ page }) => {
+  test("符牒では面の頭が升に収まる（浮いた札にしない）", async ({ page }) => {
     await page.setViewportSize({ width: 1400, height: 900 });
     await page.goto(`http://127.0.0.1:${host.port}/`);
     await page.evaluate(() => localStorage.setItem("banto.theme", "fucho:light"));
     await page.reload();
-    await page.waitForSelector(".canvas-tabbar");
+    await page.waitForSelector(".work-head");
 
-    /* 「開く（＋）」はタブと同じ升に収まる。角丸の札が浮いていた（PO報告 2026-08-06） */
+    /* 帯の中は全部が同じ升。角丸の札を浮かせない（PO報告 2026-08-06）。
+       タブ列は無くなった（ADR-0017 決定79）ので、帯として残るのは面の頭だけ */
     const fit = await page.evaluate(() => {
-      const bar = document.querySelector(".canvas-tabbar")!.getBoundingClientRect();
-      const btn = document.querySelector(".canvas-catalog-btn")!.getBoundingClientRect();
-      return { barTop: bar.top, barBottom: bar.bottom, btnTop: btn.top, btnBottom: btn.bottom };
+      const bar = document.querySelector(".work-head")!.getBoundingClientRect();
+      const btn = document.querySelector(".work-head .room-back")!.getBoundingClientRect();
+      const radius = getComputedStyle(document.querySelector(".work-head .room-back")!).borderRadius;
+      return { barTop: bar.top, barBottom: bar.bottom, btnTop: btn.top, btnBottom: btn.bottom, radius };
     });
     expect(fit.btnTop).toBeGreaterThanOrEqual(fit.barTop);
     expect(fit.btnBottom).toBeLessThanOrEqual(fit.barBottom);
-    // 升なので、帯の高さいっぱいに伸びている（浮いた札ではない）
-    expect(fit.btnBottom - fit.btnTop).toBeGreaterThan((fit.barBottom - fit.barTop) * 0.8);
-    // 帯の背丈は案5と同じ 32px（和紙の 40px より一段低い）
-    expect(fit.barBottom - fit.barTop).toBe(32);
+    expect(fit.radius, "符牒では角を落とす").toBe("0px");
   });
 
   /**
@@ -138,12 +132,12 @@ test.describe("家の層が名指ししているもの（クラス名の契約�
       await page.goto(`http://127.0.0.1:${host.port}/`);
       await page.evaluate((f) => localStorage.setItem("banto.theme", `${f}:light`), family);
       await page.reload();
-      await page.waitForSelector(".canvas-tabbar");
+      await page.waitForSelector(".work-head");
 
       /** レールとキャンバスのタブに、札（`::before` / `::after`）が出ているか。 */
       const chips = async (): Promise<string[]> =>
         page.evaluate(() =>
-          [".rail-trunk[data-key]", ".canvas-tab-label[data-key]"].flatMap((sel) => {
+          [".pj[data-key]", ".hold[data-key]"].flatMap((sel) => {
             const el = document.querySelector(sel);
             if (!el) return [];
             return (["::before", "::after"] as const)

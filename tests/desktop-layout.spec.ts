@@ -29,7 +29,7 @@ test.describe("広い画面の器", () => {
 
   test("面が開いていると、会話は細い帯として左に残る", async ({ page }) => {
     await expect(page.locator(".chat-scroll")).toBeVisible();
-    await expect(page.locator(".canvas-tabbar")).toBeVisible();
+    await expect(page.locator(".work-head")).toBeVisible();
     // **話しかけられる**——そこで読むのではなく、話しかけるための幅だから
     await expect(page.locator(".room .chat-input")).toBeVisible();
     // 下端の切替はスマホ用。広い画面では出さない
@@ -66,8 +66,8 @@ test.describe("広い画面の器", () => {
     });
   }
 
-  test("中身を送っても、タブ列は上端に居座る", async ({ page }) => {
-    const tabbar = page.locator(".canvas-tabbar");
+  test("中身を送っても、面の頭は上端に居座る", async ({ page }) => {
+    const tabbar = page.locator(".work-head");
     const before = await tabbar.boundingBox();
 
     const scroller = page.locator(".canvas-body .cv-scroll").first();
@@ -84,9 +84,11 @@ test.describe("広い画面の器", () => {
     const room = page.locator(".room");
     const slim = (await room.boundingBox())!.width;
 
-    const closes = page.locator(".canvas-tab-close");
-    const n = await closes.count();
-    for (let i = 0; i < n; i++) await closes.first().click();
+    // 面は1枚ずつ畳む（タブ列は無い。開いた面はレールの点に並ぶ）
+    for (let i = 0; i < 4 && (await page.locator(".work").count()) > 0; i++) {
+      await page.locator(".work-head .room-back").click();
+      await page.waitForTimeout(150);
+    }
 
     await expect(page.locator(".work")).toHaveCount(0);
     const wide = (await room.boundingBox())!.width;

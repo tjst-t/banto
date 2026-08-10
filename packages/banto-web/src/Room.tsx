@@ -407,10 +407,17 @@ export function Room({
     setRenaming(undefined);
   }, [threadId]);
 
-  // 合図が来たら入力へ移る。**いま掴めなければ何もしない**（列ごと作り直された直後）
+  /**
+   * 合図が来たら入力へ移る。
+   *
+   * **次のフレームでもう一度掴む。** 押した先（レールの点）へブラウザが焦点を戻すことが
+   * あり、1回だけだと押した直後に奪われる——実際に符牒（⌥→数字）で踏んだ。
+   */
   useEffect(() => {
     if (focusSeq <= 0) return;
     inputRef.current?.focus();
+    const frame = requestAnimationFrame(() => inputRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
   }, [focusSeq]);
 
   useLayoutEffect(() => {

@@ -277,7 +277,7 @@ test.describe("開いている会話", () => {
   test("選んだ会話が URL に残り、リロードしても戻ってくる", async ({ page }) => {
     await expect(activeThreadTitle(page)).toHaveText(/会話A/);
 
-    await page.locator(".rail-hold .hold").click();
+    await page.locator(".hold--branch").click();
     await expect(activeThreadTitle(page)).toHaveText(/会話B/);
     expect(query(page).get("thread")).toBe(THREAD_B);
 
@@ -289,7 +289,7 @@ test.describe("開いている会話", () => {
   });
 
   test("戻る／進むで会話を行き来できる", async ({ page }) => {
-    await page.locator(".rail-hold .hold").click();
+    await page.locator(".hold--branch").click();
     await expect(activeThreadTitle(page)).toHaveText(/会話B/);
 
     await page.goBack();
@@ -309,10 +309,10 @@ test.describe("開いている会話", () => {
 
 test.describe("キャンバスの開いているGUI", () => {
   test("タブを切り替えると URL に残り、リロードで同じタブに戻る", async ({ page }) => {
-    await expect(page.locator(".canvas-tab.is-active")).toHaveText(/デモ/);
+    await expect(page.locator(".work-title")).toHaveText(/デモ/);
 
-    await page.locator(".canvas-tab-label", { hasText: "時計" }).click();
-    await expect(page.locator(".canvas-tab.is-active")).toHaveText(/時計/);
+    await page.locator(".hold--face[aria-label=\"時計\"]").click();
+    await expect(page.locator(".work-title")).toHaveText(/時計/);
     expect(query(page).get("tab")).toBe(TAB_CLOCK);
     // 活性の真実はホスト側。押した結果はホストへ届いている（D3）
     expect(host.received.some((m) => m["type"] === "canvas_switch" && m["tabId"] === TAB_CLOCK)).toBe(
@@ -320,16 +320,16 @@ test.describe("キャンバスの開いているGUI", () => {
     );
 
     await page.reload();
-    await page.waitForSelector(".canvas-tab");
-    await expect(page.locator(".canvas-tab.is-active")).toHaveText(/時計/);
+    await page.waitForSelector(".work-head");
+    await expect(page.locator(".work-title")).toHaveText(/時計/);
   });
 
   test("戻るで前に見ていたタブへ帰る", async ({ page }) => {
-    await page.locator(".canvas-tab-label", { hasText: "時計" }).click();
-    await expect(page.locator(".canvas-tab.is-active")).toHaveText(/時計/);
+    await page.locator(".hold--face[aria-label=\"時計\"]").click();
+    await expect(page.locator(".work-title")).toHaveText(/時計/);
 
     await page.goBack();
-    await expect(page.locator(".canvas-tab.is-active")).toHaveText(/デモ/);
+    await expect(page.locator(".work-title")).toHaveText(/デモ/);
     // 戻るときも経路は同じ——ホストへ切替を投げ直す
     expect(host.received.some((m) => m["type"] === "canvas_switch" && m["tabId"] === TAB_HELLO)).toBe(
       true
@@ -337,43 +337,44 @@ test.describe("キャンバスの開いているGUI", () => {
   });
 
   test("ホスト側で開かれたGUIには追随する（押し戻さない）", async ({ page }) => {
-    await page.locator(".canvas-tab-label", { hasText: "時計" }).click();
-    await expect(page.locator(".canvas-tab.is-active")).toHaveText(/時計/);
+    await page.locator(".hold--face[aria-label=\"時計\"]").click();
+    await expect(page.locator(".work-title")).toHaveText(/時計/);
 
     // 番頭が別のGUIを開いた
     host.openTab(THREAD_A, { id: "tab-new", kind: "demo.hello", title: "番頭が開いた", params: {}, rev: 1 });
-    await expect(page.locator(".canvas-tab.is-active")).toHaveText(/番頭が開いた/);
+    await expect(page.locator(".work-title")).toHaveText(/番頭が開いた/);
     await expectQuery(page, "tab").toBe("tab-new");
 
     // 押していない移動なので履歴には積まない——戻ると「時計」ではなく、その前の位置へ
     await page.goBack();
-    await expect(page.locator(".canvas-tab.is-active")).toHaveText(/デモ/);
+    await expect(page.locator(".work-title")).toHaveText(/デモ/);
   });
 
   test("カタログから自分で開いたGUIは履歴に積む（戻ると前のタブへ）", async ({ page }) => {
-    await expect(page.locator(".canvas-tab.is-active")).toHaveText(/デモ/);
+    await expect(page.locator(".work-title")).toHaveText(/デモ/);
 
-    await page.locator(".canvas-catalog-btn").click();
-    await page.locator(".catalog-item", { hasText: "時計" }).click();
-    await expect(page.locator(".canvas-tab.is-active")).toHaveText(/開いた:demo.clock/);
+    await page.keyboard.press("ControlOrMeta+k");
+    await page.locator(".cp-input").fill("時計");
+    await page.locator(".cp-input").press("Enter");
+    await expect(page.locator(".work-title")).toHaveText(/開いた:demo.clock/);
 
     // 押して開いたものなので、戻ると開く前のタブへ帰る
     await page.goBack();
-    await expect(page.locator(".canvas-tab.is-active")).toHaveText(/デモ/);
+    await expect(page.locator(".work-title")).toHaveText(/デモ/);
   });
 
   test("会話ごとに別のキャンバス。会話を移るとタブの記憶も入れ替わる", async ({ page }) => {
-    await page.locator(".canvas-tab-label", { hasText: "時計" }).click();
-    await expect(page.locator(".canvas-tab.is-active")).toHaveText(/時計/);
+    await page.locator(".hold--face[aria-label=\"時計\"]").click();
+    await expect(page.locator(".work-title")).toHaveText(/時計/);
 
-    await page.locator(".rail-hold .hold").click();
+    await page.locator(".hold--branch").click();
     // 会話Bにはタブが無い。前の会話のタブを持ち越さない——**作業する面ごと出ない**
     // （ADR-0017 決定79：面は会話ごとのキャンバスに載る）
     await expect(page.locator(".work")).toHaveCount(0);
     await expectQuery(page, "tab").toBe(null);
 
-    await page.locator(".rail-trunk").click();
-    await expect(page.locator(".canvas-tab.is-active")).toHaveText(/時計/);
+    await page.locator(".pj").click();
+    await expect(page.locator(".work-title")).toHaveText(/時計/);
   });
 });
 
