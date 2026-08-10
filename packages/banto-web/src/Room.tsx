@@ -340,6 +340,13 @@ export function Room({
 }: RoomProps): React.ReactElement {
   const threadId = thread.threadId;
   const isBranch = thread.kind === "branch";
+  /**
+   * 畳んだ会話（PO報告 2026-08-10）。
+   *
+   * **入力欄を出さない。** 還したはずの枝で話が続くと、幹に還した結論と食い違う。
+   * 代わりに結論と「開き直す」を出す——畳んでも消えない（決定30c）ので、続きは話せる。
+   */
+  const closed = thread.state === "closed";
   const chat = useMemo(() => session.chatOf(threadId), [session, threadId]);
   const busy = session.busyOf(threadId);
   const draft = session.draftOf(threadId);
@@ -727,6 +734,27 @@ export function Room({
 
       {onGrip && <div className="pane-resizer room-grip" onPointerDown={onGrip} role="separator" aria-orientation="vertical" aria-label="会話の帯の幅を変える" />}
 
+      {closed ? (
+        <div className="room-closed">
+          <div className="room-closed-h">
+            <Icon name="check" size={14} />
+            {isBranch ? "この枝は畳んで幹へ還しました" : "この幹は終えました"}
+          </div>
+          {thread.conclusion && (
+            <p className="room-closed-c">
+              <span className="bres-label">結論：</span>
+              {thread.conclusion}
+            </p>
+          )}
+          <button
+            className="btn btn--primary btn--small"
+            type="button"
+            onClick={() => session.reopenThread(threadId)}
+          >
+            開き直して続ける
+          </button>
+        </div>
+      ) : (
       <div className="chat-composer">
         <div className="composer-box" data-key="c" onClick={() => inputRef.current?.focus()}>
           {pendingFiles.length > 0 && (
@@ -837,6 +865,7 @@ export function Room({
           </div>
         </div>
       </div>
+      )}
     </section>
   );
 }

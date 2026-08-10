@@ -35,12 +35,33 @@ import {
   type NoticeSource,
   type ServerEvent,
   type TranscriptAttachment,
+  type TranscriptEntry,
   type UtsuwaView,
 } from "./protocol.js";
 import { openUtsuwa } from "./canvas-utsuwa.js";
 import { fromWireToolName } from "@banto/core";
 import type { Thread, ThreadRegistry } from "./threads.js";
 import { workspaceRoot } from "./workspace.js";
+
+/**
+ * 同じ面への口が既に立っているか（PO報告 2026-08-10）。
+ *
+ * 行き先（`view`）と引数が同じなら同じ口。**引数まで見る**のは、同じ面でも
+ * 別のファイルを開いたなら別の行き先だから。
+ */
+function hasSameOpen(
+  transcript: readonly TranscriptEntry[],
+  utsuwa: Extract<UtsuwaView, { kind: "open" }>
+): boolean {
+  const args = JSON.stringify(utsuwa.args ?? {});
+  return transcript.some(
+    (e) =>
+      e.role === "utsuwa" &&
+      e.utsuwa.kind === "open" &&
+      e.utsuwa.view === utsuwa.view &&
+      JSON.stringify(e.utsuwa.args ?? {}) === args
+  );
+}
 
 /**
  * 添付（テキストファイル）の保存先。ワークスペースのルート配下の `work/attachments/`。
@@ -545,6 +566,14 @@ export class BantoHostServer {
    */
   showUtsuwa(threadId: string | undefined, utsuwa: UtsuwaView): void {
     const thread = this.threads.resolve(threadId);
+    /**
+     * **面への口は増やさない**（PO報告 2026-08-10）。
+     *
+     * 同じ面を開き直すたびに札を積むと、番頭が1回の用件で `canvas.open` を数回呼んだだけで
+     * 同じ行が並ぶ（実際に5つ並んだ）。**口は「その面へ行ける」ことを言うもの**なので、
+     * 同じ行き先が2つある意味がない。既に同じ口が立っているなら、記録は増やさず配信もしない。
+     */
+    if (utsuwa.kind === "open" && hasSameOpen(thread.transcript, utsuwa)) return;
     thread.record({ role: "utsuwa", utsuwa });
     this.broadcast({ type: "utsuwa", threadId: thread.id, utsuwa });
   }
@@ -877,6 +906,24 @@ export class BantoHostServer {
     }
 
     if (message?.type === "prompt") {
+      /**
+       * **畳んだ会話には話しかけられない**（PO報告 2026-08-10）。
+       *
+       * 枝を畳んだのに入力欄が生きていると、還したはずの話が続き、幹に還した結論と
+       * 食い違う（実際に踏んだ）。**知らせは届く**（決定35b）ので、そちらは止めない。
+       * I2: 黙って捨てず、開き直せることまで言う。
+       */
+      if (thread.state === "closed") {
+        this.send(ws, {
+          type: "error",
+          message:
+            thread.kind === "branch"
+              ? `枝「${thread.title}」は畳みました（結論：${thread.conclusion ?? "—"}）。` +
+                "続けるなら履歴から開き直してください"
+              : `幹「${thread.title}」は終えました。続けるなら履歴から開き直してください`,
+        });
+        return;
+      }
       if (
         typeof message.text !== "string" ||
         (message.text.length === 0 && (!message.attachments || message.attachments.length === 0))

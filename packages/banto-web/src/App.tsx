@@ -226,6 +226,17 @@ export function App(): React.ReactElement {
     [view.threadId, session]
   );
   const branch = focused?.kind === "branch" ? focused : undefined;
+  /**
+   * 見ていた枝が畳まれたら幹へ戻す（PO報告 2026-08-10）。
+   *
+   * **番頭が畳んだときにも効く**——`thread.merge` は会話の中から呼ばれるので、
+   * 画面が居座ると「還したはずの枝で話し続けている」ように見える。
+   */
+  useEffect(() => {
+    if (branch?.state !== "closed") return;
+    const parent = branch.parentId ? session.threadOf(branch.parentId) : undefined;
+    if (parent) openThreadRef.current?.(parent.threadId);
+  }, [branch, session]);
   /** いま居るプロジェクトの幹。枝を見ているなら**その枝の親**。 */
   const trunk = useMemo(
     () =>
@@ -234,6 +245,9 @@ export function App(): React.ReactElement {
       session.trunks[0],
     [branch, focused, session]
   );
+
+  /** 上の効果から呼ぶための控え（`openThread` は下で定義される）。 */
+  const openThreadRef = useRef<(id: string, o?: { focus?: boolean }) => void>(undefined);
 
   /** 会話を移る（枝の札・レールの点・取次から）。 */
   const openThread = useCallback(
@@ -460,6 +474,7 @@ export function App(): React.ReactElement {
     },
     [trunk, branch, activeTab, backToChat, session, openThread]
   );
+  openThreadRef.current = openThread;
   const focusSeqOf = useCallback(
     (threadId: string): number => (focusReq?.threadId === threadId ? focusReq.seq : 0),
     [focusReq]
@@ -562,7 +577,9 @@ export function App(): React.ReactElement {
           return (
             <button
               key={t.threadId}
-              className={`pj ${trunk?.threadId === t.threadId ? "is-active" : ""}`}
+              className={`pj ${t.isMain ? "is-main" : ""} ${
+                trunk?.threadId === t.threadId ? "is-active" : ""
+              }`}
               type="button"
               onClick={() => pressTrunk(t.threadId)}
               aria-label={t.title}
@@ -570,7 +587,10 @@ export function App(): React.ReactElement {
             >
               {[...t.title][0] ?? "幹"}
               {turn && <span className="bell" />}
-              <span className="tip">{t.title}</span>
+              <span className="tip">
+                {t.title}
+                {t.isMain ? "（帳場：どの幹の話でもないものはここへ）" : ""}
+              </span>
             </button>
           );
         })}

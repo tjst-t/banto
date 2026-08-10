@@ -58,6 +58,12 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 .pj.is-active { box-shadow: inset 3px 0 0 var(--ai); }
 /* プロジェクトは**頭文字の印**。名前は帯の外へ */
 .pj { font-size: var(--t-body); font-weight: 700; }
+/* 帳場は店にただ1つで、終えない。**先頭に固定**（PO裁定 2026-08-10） */
+.pj.is-main { color: var(--ai); }
+.pj.is-main::after {
+  content: ""; position: absolute; left: 8px; right: 8px; bottom: 2px; height: 2px;
+  border-radius: 1px; background: var(--ai); opacity: .45;
+}
 /* 用のある幹に添える点。**朱は判断待ち専用**（spec-design §1.1） */
 .pj .bell {
   position: absolute; top: 4px; right: 4px; width: 7px; height: 7px;
@@ -1356,6 +1362,21 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 .nb-note { font-size: var(--t-note); color: var(--sumi-3); line-height: 1.8; margin: 0; }
 .nb-note b { color: var(--sumi-2); }
 .nb-actions { display: flex; justify-content: flex-end; }
+
+/* 畳んだ会話。**入力欄の代わりに結論と開き直す口**（PO報告 2026-08-10） */
+.room-closed {
+  flex: none; margin: 0 var(--s5) var(--s5); padding: var(--s3) var(--s4);
+  background: var(--paper-1); border-radius: var(--r-face);
+  box-shadow: inset 3px 0 0 var(--koke), var(--shadow-rest);
+  display: flex; flex-direction: column; align-items: flex-start; gap: var(--s2);
+  max-width: 720px; width: calc(100% - var(--s5) * 2);
+}
+.room-closed-h {
+  display: flex; align-items: center; gap: 6px;
+  font-size: var(--t-meta); font-weight: 700; color: var(--koke);
+}
+.room-closed-c { margin: 0; font-size: var(--t-meta); color: var(--sumi); }
+.room.is-slim .room-closed { margin: 0 var(--s3) var(--s3); width: calc(100% - var(--s3) * 2); }
 
 /* 一番下へ戻る↓に**判断待ちの朱を載せる**（決定80）。常設はひとつも無くなる */
 .chat-to-bottom.is-turn {

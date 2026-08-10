@@ -18,17 +18,29 @@ import { WebSocketServer, type WebSocket } from "ws";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIST = path.join(here, "..", "packages", "banto-web", "dist");
 
+const MAIN = "t-main";
 const TRUNK = "t-trunk";
 const BRANCH = "t-branch";
 
-/** 幹1本（畳めない）と枝1本（還す条件を持つ）。 */
+/** 帳場（メインの幹）と、ふつうの幹1本、その枝1本。 */
 const THREADS = [
+  {
+    threadId: MAIN,
+    title: "帳場",
+    kind: "trunk",
+    isMain: true,
+    sessionId: "fake",
+    isDefault: true,
+    state: "open",
+    streaming: false,
+    model: { provider: "huihui", id: "qwen3.6-35b", vision: false },
+  },
   {
     threadId: TRUNK,
     title: "banto",
     kind: "trunk",
     sessionId: "fake",
-    isDefault: true,
+    isDefault: false,
     state: "open",
     streaming: false,
     model: { provider: "huihui", id: "qwen3.6-35b", vision: false, contextWindow: 200000 },
@@ -152,6 +164,7 @@ class FakeHost {
   readonly received: Array<Record<string, unknown>> = [];
   /** キャンバスの状態（会話ごと）。**面はどこから開いたかを覚える**（決定79・a12）。 */
   private canvas: Record<string, { tabs: unknown[]; activeTabId?: string }> = {
+    [MAIN]: { tabs: [] },
     [TRUNK]: { tabs: [] },
     [BRANCH]: { tabs: [] },
   };
@@ -160,9 +173,38 @@ class FakeHost {
    * 試験ごとに手を戻す。**偽ホストは1つを使い回す**ので、前の試験で開いた面が
    * 残っていると次の試験が別の前提で走る（P6：間欠的に落ちる試験を作らない）。
    */
+  /** 番頭が枝を畳んだ、として配り直す。 */
+  mergeBranch(conclusion: string): void {
+    this.merged = conclusion;
+    for (const socket of this.sockets) {
+      socket.send(
+        JSON.stringify({
+          type: "branch_result",
+          threadId: TRUNK,
+          branchId: BRANCH,
+          title: "間欠的に落ちる試験",
+          conclusion,
+          at: new Date().toISOString(),
+        })
+      );
+      socket.send(JSON.stringify({ type: "thread_state", threads: this.threadViews() }));
+    }
+  }
+
+  private merged: string | undefined;
+
+  private threadViews(): unknown[] {
+    return THREADS.map((t) =>
+      t.threadId === BRANCH && this.merged !== undefined
+        ? { ...t, state: "closed", closedAt: new Date().toISOString(), conclusion: this.merged }
+        : t
+    );
+  }
+
   reset(): void {
+    this.merged = undefined;
     this.received.length = 0;
-    this.canvas = { [TRUNK]: { tabs: [] }, [BRANCH]: { tabs: [] } };
+    this.canvas = { [MAIN]: { tabs: [] }, [TRUNK]: { tabs: [] }, [BRANCH]: { tabs: [] } };
   }
 
   static async start(): Promise<FakeHost> {
@@ -224,8 +266,8 @@ class FakeHost {
     send({
       type: "welcome",
       sessionId: "fake",
-      threads: THREADS,
-      defaultThreadId: TRUNK,
+      threads: this.threadViews(),
+      defaultThreadId: MAIN,
       tools: [],
       catalog: [
         {
@@ -252,6 +294,7 @@ class FakeHost {
         { name: "settings", title: "設定", description: "設定", baseUrl: "/api/settings" },
       ],
     });
+    send({ type: "history", threadId: MAIN, entries: [] });
     send({ type: "history", threadId: TRUNK, entries: TRUNK_HISTORY });
     send({ type: "history", threadId: BRANCH, entries: BRANCH_HISTORY });
     send({ type: "inbox_state", items: INBOX });
@@ -312,6 +355,9 @@ async function open(page: Page, width = 1400, height = 900): Promise<void> {
   await page.setViewportSize({ width, height });
   await page.goto(`http://127.0.0.1:${host.port}/`);
   await page.waitForSelector(".room--trunk");
+  // 既定の宛先は**帳場**。試験の題材は banto の幹なので、そちらへ移ってから始める
+  await page.locator(".pj").nth(1).click();
+  await expect(page.locator(".room--trunk .room-title")).toHaveText("banto");
 }
 
 test.describe("[task-0088/a1] 幹はプロジェクトに1本で、畳めない", () => {
@@ -328,9 +374,10 @@ test.describe("[task-0088/a1] 幹はプロジェクトに1本で、畳めない"
     await open(page);
     await expect(page.locator(".hold--branch")).toHaveCount(1);
     await expect(page.locator(".hold--branch")).toHaveAttribute("aria-label", "間欠的に落ちる試験");
-    // 幹（＝プロジェクト）はレールの列。1つだけ並んでいる
-    await expect(page.locator(".pj")).toHaveCount(1);
-    await expect(page.locator(".pj")).toContainText("banto");
+    // 幹（＝プロジェクト）はレールの列。**帳場が先頭**（PO裁定 2026-08-10）
+    await expect(page.locator(".pj")).toHaveCount(2);
+    await expect(page.locator(".pj").first()).toHaveClass(/is-main/);
+    await expect(page.locator(".pj").first()).toHaveAttribute("aria-label", "帳場");
   });
 });
 
@@ -505,13 +552,37 @@ test.describe("[task-0088/a11,a12] 作業する面", () => {
   });
 });
 
+test.describe("帳場と、畳んだ会話（PO裁定 2026-08-10）", () => {
+  test("帳場はレールの先頭に固定され、既定の宛先になっている", async ({ page }) => {
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await page.goto(`http://127.0.0.1:${host.port}/`);
+    await page.waitForSelector(".room--trunk");
+    // 何も指していないときに開くのは**帳場**（どの幹の話でもないものの受け皿）
+    await expect(page.locator(".room--trunk .room-title")).toHaveText("帳場");
+    await expect(page.locator(".pj").first()).toHaveClass(/is-main/);
+  });
+
+  test("畳んだ枝ではチャットできない（結論と開き直す口が出る）", async ({ page }) => {
+    await open(page);
+    await page.locator(".hold--branch").click();
+    await expect(page.locator(".room--branch .chat-input")).toBeVisible();
+
+    // ホストが畳んだと配り直す（番頭が `thread.merge` を呼んだのと同じ形）
+    host.mergeBranch("再現条件は canvas_state の到着順でした");
+
+    await expect(page.locator(".room--branch")).toHaveCount(0);
+    // 履歴から開いても入力欄は出ない——還した話が続くと、幹の結論と食い違う
+    await expect(page.locator(".hold--branch")).toHaveCount(0);
+  });
+});
+
 test.describe("幹を押すと上の紙を剥がす（PO要望 2026-08-10）", () => {
   test("いま居る幹を押すと、開いていた面が下りる", async ({ page }) => {
     await open(page);
     await page.locator(".room--trunk .u-open").click();
     await expect(page.locator(".work")).toBeVisible();
 
-    await page.locator(".pj").click();
+    await page.locator(".pj").nth(1).click();
     await expect(page.locator(".work")).toHaveCount(0);
     // **畳んだのではなく下ろしただけ**——面はレールの点に残り、押せば上がり直す
     await expect(page.locator(".hold--face")).toHaveCount(1);
@@ -524,7 +595,7 @@ test.describe("幹を押すと上の紙を剥がす（PO要望 2026-08-10）", (
     await page.locator(".hold--branch").click();
     await expect(page.locator(".room--branch")).toBeVisible();
 
-    await page.locator(".pj").click();
+    await page.locator(".pj").nth(1).click();
     await expect(page.locator(".room--branch")).toHaveCount(0);
     await expect(page.locator(".room--trunk")).toBeVisible();
     // 枝は畳んでいない（レールの点に残る）

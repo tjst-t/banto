@@ -573,9 +573,15 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
     return true;
   }, []);
 
-  /** 幹＝プロジェクト（PO裁定 2026-08-09）。開いているものがレールに並ぶ */
+  /**
+   * 幹＝プロジェクト（PO裁定 2026-08-09）。開いているものがレールに並ぶ。
+   * **帳場は必ず先頭**（PO裁定 2026-08-10）——店にただ1つで、消えない場所だから。
+   */
   const trunks = useMemo(
-    () => allThreads.filter((t) => t.kind === "trunk" && t.state === "open"),
+    () =>
+      allThreads
+        .filter((t) => t.kind === "trunk" && t.state === "open")
+        .sort((a, b) => (b.isMain ? 1 : 0) - (a.isMain ? 1 : 0)),
     [allThreads]
   );
   /** 開いている枝。レールの点として全部出る（埋没しない不変条件の③） */

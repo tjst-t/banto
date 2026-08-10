@@ -195,6 +195,50 @@ describe("[task-0088/a1] 幹はプロジェクトの単位で、畳めない（A
   });
 });
 
+describe("[PO裁定 2026-08-10] 帳場（メインの幹）", () => {
+  it("帳場は店にただ1つ。2つ目は作れない", async () => {
+    await threads.open({ kind: "trunk", main: true, title: "帳場" });
+    await assert.rejects(
+      () => threads.open({ kind: "trunk", main: true }),
+      /帳場は既にあります/u
+    );
+    // ふつうの幹は何本でも起こせる
+    await threads.open({ kind: "trunk", title: "banto" });
+    assert.equal(threads.trunks().length, 2);
+  });
+
+  it("宛先の決まらない知らせは帳場へ来る（たまたま先頭の幹へ流れ込まない）", async () => {
+    // **先に別の幹**を起こしてから帳場を作る——順序に頼っていないことを見る
+    const other = await threads.open({ kind: "trunk", title: "ひらがな学習アプリ構想" });
+    const main = await threads.open({ kind: "trunk", main: true, title: "帳場" });
+
+    assert.equal(threads.main()?.id, main.id);
+    assert.equal(threads.resolve().id, main.id, "threadId 省略の宛先は帳場");
+    assert.equal(threads.defaultThreadId, main.id);
+    assert.equal(main.isMain, true);
+    assert.equal(other.isMain, false);
+  });
+
+  it("帳場は終えない（宛先の行き先が消える）", async () => {
+    const main = await threads.open({ kind: "trunk", main: true, title: "帳場" });
+    assert.throws(() => threads.closeTrunk(main.id), /帳場は終えません/u);
+    assert.equal(main.state, "open");
+  });
+
+  it("ふつうの幹は終えられる。開いている枝があれば止まる", async () => {
+    await threads.open({ kind: "trunk", main: true, title: "帳場" });
+    const proj = await threads.open({ kind: "trunk", title: "loamium" });
+    const branch = await threads.open(branchSpec("エディタUI調査"), proj.id);
+
+    assert.throws(() => threads.closeTrunk(proj.id), /開いている枝が 1 本/u);
+    threads.merge(branch.id, "結論");
+    threads.closeTrunk(proj.id);
+    assert.equal(proj.state, "closed");
+    // 帳場は残る（宛先は消えない）
+    assert.equal(threads.defaultThreadId, threads.main()!.id);
+  });
+});
+
 describe("[task-0088/a2] 枝は還す条件を持って生まれる（決定77）", () => {
   it("[task-0088/a2] 還す条件・理由・開いた人が枝に残る", async () => {
     await threads.open(TRUNK);

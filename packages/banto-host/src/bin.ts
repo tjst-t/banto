@@ -1063,10 +1063,16 @@ async function serve(options: ServeOptions): Promise<void> {
   const threadStore = new ThreadStore(path.join(dataDir(), "threads"));
   threads = new ThreadRegistry(threadFactory, threadStore);
   await threads.restore();
-  // 幹が無ければ開く（ADR-0017 決定77：幹はプロジェクトに1本で永続）。
-  // 宛先が無いと threadId 省略のメッセージを捌けない
+  /**
+   * 帳場（メインの幹）が無ければ**新しく開く**（PO裁定 2026-08-10）。
+   *
+   * **既存の幹は昇格させない。** どの幹も既にその話題の記憶と経緯を抱えているので、
+   * 「どの幹の話でもないもの」の受け皿には向かない——たまたま先頭にあった幹へ
+   * 孤児の知らせが流れ込む、という今回の不具合がそれだった。
+   */
   const restored = threads.list({ state: "open" });
-  const defaultThread = threads.trunk() ?? (await threads.open({ kind: "trunk" }));
+  const defaultThread =
+    threads.main() ?? (await threads.open({ kind: "trunk", main: true }));
   if (restored.length > 0) {
     console.log(`[banto] 会話を ${threads.list().length} 本読み戻しました`);
   }

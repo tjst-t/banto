@@ -234,3 +234,20 @@ describe("[task-0088] 古い索引（kind の無い会話）を読み戻す", ()
   });
 });
 
+describe("[PO裁定 2026-08-10] 帳場は再起動を越えて帳場のまま", () => {
+  it("読み戻しても帳場は1つで、宛先はそこ", async () => {
+    const store = new ThreadStore(dir);
+    const first = new ThreadRegistry(factoryRecording([]), store);
+    await first.open({ kind: "trunk", title: "banto" });
+    const main = await first.open({ kind: "trunk", main: true, title: "帳場" });
+    first.flushAll();
+
+    const second = new ThreadRegistry(factoryRecording([]), new ThreadStore(dir));
+    await second.restore();
+
+    assert.equal(second.main()?.id, main.id);
+    assert.equal(second.defaultThreadId, main.id);
+    assert.equal(second.trunks().length, 2);
+  });
+});
+

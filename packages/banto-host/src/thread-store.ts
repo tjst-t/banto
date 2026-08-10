@@ -29,6 +29,8 @@ export interface StoredThread {
    * 幹か枝か（ADR-0017 決定77）。**古い索引には無い**——読み戻す側が先頭を幹として扱う。
    */
   kind?: "trunk" | "branch";
+  /** 帳場（メインの幹）か。店にただ1つで、終えない（PO裁定 2026-08-10）。 */
+  isMain?: boolean;
   /** 枝の親（常に幹）。 */
   parentId?: string;
   /** 還す条件。枝には必ずある（決定77）。 */

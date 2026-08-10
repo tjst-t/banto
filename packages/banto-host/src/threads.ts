@@ -70,6 +70,12 @@ export type ThreadFactory = (
 const TRUNK_TITLE = "幹";
 
 /**
+ * 帳場（メインの幹）の名前。**店の帳場**——番頭が座っていて、どの用件もまずここへ来る。
+ * 名前は付け直せる（`thread.rename`）。
+ */
+const MAIN_TITLE = "帳場";
+
+/**
  * 会話を開くときの姿（ADR-0017 決定77）。
  *
  * **枝に親は書けない。** 親は常に幹（深さ1段）なので欄そのものを持たせない——
@@ -80,7 +86,17 @@ const TRUNK_TITLE = "幹";
  * 呼び出し側の心がけではなく機構にする。
  */
 export type ThreadSpec =
-  | { kind: "trunk"; title?: string }
+  | {
+      kind: "trunk";
+      title?: string;
+      /**
+       * **帳場**（メインの幹。PO裁定 2026-08-10）。店にただ1つ、消せない。
+       *
+       * どの幹の話でもないもの——宛先の決まらない知らせ、まだ幹になっていない相談——は
+       * ここへ来る。**新しい幹はここから生まれる**ので、帳場が無いと店が始まらない。
+       */
+      main?: boolean;
+    }
   | {
       kind: "branch";
       title: string;
@@ -129,6 +145,11 @@ export class Thread {
   title: string;
   /** 幹か枝か（決定77）。生まれたあと変わらない。 */
   readonly kind: "trunk" | "branch";
+  /**
+   * **帳場**（メインの幹。PO裁定 2026-08-10）。店にただ1つで、終えない。
+   * 宛先の決まらない知らせはここへ来る（`resolve(undefined)`）。
+   */
+  readonly isMain: boolean;
   /** 枝の親。**常に幹**（深さ1段）。幹には無い。 */
   readonly parentId: string | undefined;
   /** 還す条件。**枝には必ずある**——書けないものは枝にしない（決定77）。 */
@@ -202,6 +223,7 @@ export class Thread {
     id: string;
     title: string;
     kind: "trunk" | "branch";
+    isMain?: boolean;
     parentId?: string;
     returnCondition?: string;
     openedBy?: BranchOpener;
@@ -219,6 +241,7 @@ export class Thread {
     this.id = params.id;
     this.title = params.title;
     this.kind = params.kind;
+    this.isMain = params.isMain === true;
     this.parentId = params.parentId;
     this.returnCondition = params.returnCondition;
     this.openedBy = params.openedBy;
@@ -243,6 +266,7 @@ export class Thread {
       threadId: this.id,
       title: this.title,
       kind: this.kind,
+      ...(this.isMain ? { isMain: true } : {}),
       ...(this.parentId ? { parentId: this.parentId } : {}),
       ...(this.returnCondition ? { returnCondition: this.returnCondition } : {}),
       ...(this.openedBy ? { openedBy: this.openedBy } : {}),
@@ -377,6 +401,7 @@ export class ThreadRegistry {
           id: saved.id,
           title: saved.title,
           kind,
+          ...(saved.isMain ? { isMain: true } : {}),
           ...(kind === "branch"
             ? {
                 ...(saved.parentId ? { parentId: saved.parentId } : {}),
@@ -396,8 +421,8 @@ export class ThreadRegistry {
           ...(parts.dispose ? { dispose: parts.dispose } : {}),
         });
         thread.transcript = this.store.transcript(saved.id);
-        // 畳んでいたものは畳んだまま戻す（幹も枝も。履歴で読める）
-        if (saved.state === "closed") {
+        // 畳んでいたものは畳んだまま戻す（幹も枝も。履歴で読める）。**帳場は除く**
+        if (saved.state === "closed" && !thread.isMain) {
           thread.state = "closed";
           if (saved.closedAt) thread.closedAt = saved.closedAt;
         }
@@ -504,6 +529,7 @@ export class ThreadRegistry {
       id: thread.id,
       title: thread.title,
       kind: thread.kind,
+      ...(thread.isMain ? { isMain: true } : {}),
       ...(thread.parentId ? { parentId: thread.parentId } : {}),
       ...(thread.returnCondition ? { returnCondition: thread.returnCondition } : {}),
       ...(thread.openedBy ? { openedBy: thread.openedBy } : {}),
@@ -542,6 +568,10 @@ export class ThreadRegistry {
      * 枝の親になる幹。**「いま居る会話の幹」**を指す（PO裁定 2026-08-09）——
      * 幹が複数あるので「その幹」を決めずに枝は開けない。`from` を省いたら既定の幹。
      */
+    if (spec.kind === "trunk" && spec.main === true && this.main()) {
+      // I2: 帳場は店にただ1つ。2つ目を黙って作らない
+      throw new Error("帳場は既にあります（店にただ1つ・PO裁定 2026-08-10）");
+    }
     let parentTrunk: Thread | undefined;
     if (spec.kind === "branch") {
       const from_ = from === undefined ? undefined : this.threads.get(from);
@@ -562,8 +592,11 @@ export class ThreadRegistry {
     const wantedTitle = normalizeThreadTitle(spec.kind === "trunk" ? (spec.title ?? "") : spec.title);
     const thread = new Thread({
       id,
-      title: wantedTitle ?? (spec.kind === "trunk" ? TRUNK_TITLE : `枝 ${this.counter}`),
+      title:
+        wantedTitle ??
+        (spec.kind === "trunk" ? (spec.main === true ? MAIN_TITLE : TRUNK_TITLE) : `枝 ${this.counter}`),
       kind: spec.kind,
+      ...(spec.kind === "trunk" && spec.main === true ? { isMain: true } : {}),
       ...(spec.kind === "branch"
         ? {
             parentId: parentTrunk!.id,
@@ -595,11 +628,22 @@ export class ThreadRegistry {
   }
 
   /**
-   * 既定の幹（`threadId` 省略時の宛先）。**開いている先頭**。
-   * 1本も無ければ undefined——起動直後の一瞬だけ。
+   * **帳場**（メインの幹）。店にただ1つで、終えない（PO裁定 2026-08-10）。
+   *
+   * `threadId` 省略時の宛先はここ——**どの幹の話でもない知らせ**（孤児の検証環境・
+   * 職人の報告で宛先が決まらないもの）が、たまたま先頭にあった幹へ流れ込むのを防ぐ。
+   */
+  main(): Thread | undefined {
+    for (const thread of this.threads.values()) if (thread.isMain) return thread;
+    return undefined;
+  }
+
+  /**
+   * 既定の幹（`threadId` 省略時の宛先）。**帳場**が居ればそこ。
+   * まだ無いときだけ開いている先頭で代用する（起動直後の一瞬）。
    */
   trunk(): Thread | undefined {
-    return this.list({ state: "open", kind: "trunk" })[0];
+    return this.main() ?? this.list({ state: "open", kind: "trunk" })[0];
   }
 
   /**
@@ -679,6 +723,12 @@ export class ThreadRegistry {
     if (!thread) throw new Error(`unknown thread: ${threadId}`);
     if (thread.kind !== "trunk") {
       throw new Error("これは幹ではありません（枝は thread.merge で畳みます）");
+    }
+    // I2: 帳場を終えると、宛先の決まらない知らせの行き先が消える（PO裁定 2026-08-10）
+    if (thread.isMain) {
+      throw new Error(
+        "帳場は終えません（店にただ1つの幹で、宛先の決まらない知らせがここへ来ます）"
+      );
     }
     if (thread.state === "closed") return thread; // 冪等
     const open = this.list({ state: "open", kind: "branch" }).filter(

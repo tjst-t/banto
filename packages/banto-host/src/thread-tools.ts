@@ -243,6 +243,53 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     },
   });
 
+  /**
+   * 新しい幹を起こす（PO裁定 2026-08-10）。
+   *
+   * **幹＝プロジェクトの単位**なので、判定は「その記憶を、もう一方の会話に混ぜたいか」。
+   * 混ぜたくないなら別の幹、混ぜたいなら既にある幹で話す。帳場（メインの幹）は
+   * どの幹の話でもないものの受け皿で、**新しい幹はそこから生まれる**。
+   */
+  const openTrunk = defineNamespacedTool({
+    name: "thread.open_trunk",
+    label: "Thread: Open Trunk",
+    description:
+      "**新しい幹（プロジェクト）を起こす**。幹は記憶が分かれる単位なので、" +
+      "判定は「その記憶を、いまの幹の会話に混ぜたいか」——混ぜたくないなら別の幹にする。\n" +
+      "混ぜたいなら幹を増やさず、いまの幹で話すこと。往復が続くだけなら枝（thread.open）。" +
+      "**理由を書けないなら起こさない**（幹が増えるほど記憶が細切れになる）。",
+    parameters: Type.Object({
+      title: Type.String({ description: "プロジェクトの名前。レールに頭文字が出る" }),
+      reason: Type.String({
+        description:
+          "**なぜ既にある幹ではなく新しい幹なのか**を1行で（例：「loamium の事情を banto の" +
+          "判断に混ぜたくない」）",
+      }),
+      message: Type.Optional(
+        Type.String({ description: "新しい幹へ渡す最初の一言。省略すると開くだけ" })
+      ),
+    }),
+    async execute(params) {
+      const thread = await options.threads.open({ kind: "trunk", title: params.title });
+      // 開いた理由は幹の1行目に残す（あとから「なぜ分けたか」を読めるように）
+      thread.record({
+        role: "notice",
+        source: "thread",
+        text: `この幹を起こしました。理由：${params.reason}`,
+      });
+      if (params.message && options.seed) await options.seed(thread.id, params.message);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `幹「${thread.title}」を起こしました (threadId: ${thread.id})`,
+          },
+        ],
+        details: thread.view(),
+      };
+    },
+  });
+
   const list = defineNamespacedTool({
     name: "thread.list",
     label: "Thread: List",
@@ -258,7 +305,7 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
           : threads
               .map(
                 (t) =>
-                  `${t.kind === "trunk" ? "幹" : "枝"} ${t.title} (threadId: ${t.id})` +
+                  `${t.isMain ? "帳場" : t.kind === "trunk" ? "幹" : "枝"} ${t.title} (threadId: ${t.id})` +
                   `${t.returnCondition ? ` — 還す条件：${t.returnCondition}` : ""}` +
                   `${t.id === options.threadId ? " ＊いまのこの会話" : ""}`
               )
@@ -270,5 +317,5 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     },
   });
 
-  return [open, merge, rename, list, ...(options.carryOut ? [closeTrunk] : [])];
+  return [open, openTrunk, merge, rename, list, ...(options.carryOut ? [closeTrunk] : [])];
 }
