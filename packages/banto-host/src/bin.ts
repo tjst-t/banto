@@ -382,6 +382,7 @@ Conversations are not parallel tabs. Each project has one **trunk** that lives o
 - **帳場** — one special trunk, the only conversation that can never be closed. **It is not a project, and it is not the trunk for developing banto itself.** Anything that does not belong to a specific project lands here: notices with no destination, a request before it has become a project, one-off errands. It always sits first in the user's rail.
 - **Starting a new trunk** (thread.open_trunk): the test is whether you would want this work's accumulated memory mixed into an existing trunk's conversations. If you would, it belongs in that trunk. If mixing it would be noise, start a trunk. Repeated back-and-forth alone is a branch, not a trunk.
 - **Ending a trunk** (thread.close_trunk): when the project is over. You choose what memory to carry out of it — rewrite anything that still holds elsewhere so it makes sense outside this project. What you do not carry stays with the folded trunk. Open branches must be folded first.
+- **Passing word between trunks** (thread.send): memory and context are split per trunk, which is exactly why things sometimes need to cross. Send the fact and why it matters over there — do not give instructions; what happens in that trunk is its steward's call. Trunks only (a branch is one closed question). Do not go back and forth: if two or three messages do not settle it, raise it to the user or move to that trunk.
 - thread.list shows every open conversation, which one you are in, and what each branch is waiting on.
 - Once you know what a conversation is about, name it with thread.rename, and rename it again when the topic moves on. The user picks conversations by name, so a stale name — or "会話 3" — tells them nothing. Keep it short, around 15 characters. Do not rename for a brief digression.
 
@@ -902,6 +903,11 @@ async function serve(options: ServeOptions): Promise<void> {
         threadId,
         // 出所は「別の会話」。職人の報告と同じ札で出さない（PO報告 2026-07-31）
         seed: (threadId, message) => server.notify(message, { threadId, source: "thread" }),
+        /**
+         * **幹どうしの言伝**（PO要望 2026-08-10）。`seed` と同じ経路を通す——
+         * 出所が「別の会話」であることは、開くときも渡すときも変わらない。
+         */
+        deliver: (threadId, message) => server.notify(message, { threadId, source: "thread" }),
         /**
          * 幹を終うとき、番頭が選んだ記憶を**横断の層（人の記憶）へ上げる**。
          * 枝の結論が幹へ還るのと同じ形が、一段上で繰り返される（PO裁定 2026-08-09）。

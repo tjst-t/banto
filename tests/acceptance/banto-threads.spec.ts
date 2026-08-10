@@ -21,6 +21,7 @@ import {
   createCanvasCatalog,
   createCanvasTools,
   createThreadTools,
+  resetSendCounters,
   bindToolArgs,
   isBantoOrigin,
   threadIdOfOrigin,
@@ -79,6 +80,8 @@ let threads: ThreadRegistry;
 let made: Array<{ session: FakeSession; canvas: Canvas }>;
 
 beforeEach(() => {
+  // 言伝の回数はモジュールに溜まる。試験どうしで持ち越さない
+  resetSendCounters();
   made = [];
   threads = new ThreadRegistry(async (threadId) => {
     const session = new FakeSession(`session-of-${threadId}`);
@@ -956,6 +959,79 @@ describe("[task-0035/a4] 番頭自身が分身する口", () => {
     });
     const opened = threads.list()[1]!;
     assert.deepEqual(seeded, [{ threadId: opened.id, message: "この件を調べて" }]);
+  });
+
+  /**
+   * **幹どうしの言伝**（PO要望 2026-08-10）。
+   *
+   * 幹は記憶も文脈も分かれている（ADR-0003 追補）。分けたからこそ跨いで伝えたいことが
+   * 出てくるので、その口を持つ——PO に手で運ばせない。
+   */
+  describe("[PO要望 2026-08-10] thread.send（幹どうしの言伝）", () => {
+    const sendTools = (fromId: string, box: Array<{ threadId: string; message: string }>) =>
+      createThreadTools({
+        threads,
+        threadId: fromId,
+        deliver: async (threadId, message) => {
+          box.push({ threadId, message });
+        },
+      }).find((t) => t.name === "thread.send")!;
+
+    it("別の幹へ届き、どの幹からかが分かる（PO の発言に見せない）", async () => {
+      const a = await threads.open({ kind: "trunk", title: "banto開発" });
+      const b = await threads.open({ kind: "trunk", title: "ひらがなアプリ" });
+      const box: Array<{ threadId: string; message: string }> = [];
+
+      await sendTools(a.id, box).execute({ threadId: b.id, message: "音声認識は HTTPS が要る" });
+
+      assert.equal(box.length, 1);
+      assert.equal(box[0]!.threadId, b.id);
+      // I1: 出所を偽らない。受け手はどちらの幹の話かで判断が変わる
+      assert.match(box[0]!.message, /幹「banto開発」から/);
+      assert.match(box[0]!.message, /音声認識は HTTPS が要る/);
+    });
+
+    it("枝へは渡せない（1つの問いに割り込ませない）", async () => {
+      const a = await threads.open({ kind: "trunk", title: "幹A" });
+      const branch = await threads.open(branchSpec("枝"));
+      const box: Array<{ threadId: string; message: string }> = [];
+
+      await assert.rejects(
+        () => sendTools(a.id, box).execute({ threadId: branch.id, message: "ねえ" }),
+        /枝です/
+      );
+      assert.deepEqual(box, []);
+    });
+
+    it("自分自身・終えた幹・知らない id は断る（I2）", async () => {
+      const a = await threads.open({ kind: "trunk", title: "幹A" });
+      const closed = await threads.open({ kind: "trunk", title: "終えた幹" });
+      threads.closeTrunk(closed.id);
+      const box: Array<{ threadId: string; message: string }> = [];
+      const send = sendTools(a.id, box);
+
+      await assert.rejects(() => send.execute({ threadId: a.id, message: "x" }), /自分自身/);
+      await assert.rejects(() => send.execute({ threadId: closed.id, message: "x" }), /終えています/);
+      await assert.rejects(() => send.execute({ threadId: "thread-999", message: "x" }), /ありません/);
+      assert.deepEqual(box, []);
+    });
+
+    it("往復が続きすぎたら断る（P4：頼むだけでは止まらない）", async () => {
+      const a = await threads.open({ kind: "trunk", title: "幹A" });
+      const b = await threads.open({ kind: "trunk", title: "幹B" });
+      const box: Array<{ threadId: string; message: string }> = [];
+      const send = sendTools(a.id, box);
+
+      for (let i = 0; i < 5; i++) await send.execute({ threadId: b.id, message: `${i}` });
+      await assert.rejects(() => send.execute({ threadId: b.id, message: "6通目" }), /続きすぎ/);
+      assert.equal(box.length, 5, "上限を超えた分は届いてはいけない");
+    });
+
+    it("deliver を渡さない構成では生えない", async () => {
+      const a = await threads.open({ kind: "trunk", title: "幹A" });
+      const names = createThreadTools({ threads, threadId: a.id }).map((t) => t.name);
+      assert.ok(!names.includes("thread.send"));
+    });
   });
 
   it("[task-0035/a4] thread.list で並行している会話が分かる", async () => {

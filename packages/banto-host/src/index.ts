@@ -111,7 +111,13 @@ export {
   type ThreadSpec,
 } from "./threads.js";
 export { watchStaleBranches } from "./threads.js";
-export { createThreadTools, bindToolArgs, type ThreadToolsOptions } from "./thread-tools.js";
+export {
+  createThreadTools,
+  bindToolArgs,
+  allowSend,
+  resetSendCounters,
+  type ThreadToolsOptions,
+} from "./thread-tools.js";
 // 場所の帳簿と砦（決定36・38）
 export {
   PlaceRegistry,

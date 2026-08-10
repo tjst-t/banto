@@ -40,6 +40,52 @@ export interface ThreadToolsOptions {
    * @returns 実際に足した件数
    */
   carryOut?: (texts: readonly string[]) => Promise<number> | number;
+  /**
+   * **別の幹へ言伝を届ける**（PO要望 2026-08-10）。届いた側はターンが回り、番頭が読む。
+   *
+   * `seed` と同じ経路（`server.notify`）だが、こちらは**開くためではなく渡すため**。
+   * 渡さないと `thread.send` は生えない。
+   */
+  deliver?: (threadId: string, message: string) => Promise<void>;
+}
+
+/**
+ * 幹どうしの言伝が往復し続けるのを止める（P4）。
+ *
+ * **頼むだけでは止まらない。** 両側とも番頭なので、「返事をありがとう」「こちらこそ」で
+ * いくらでも続けられる——PO の見ていないところでトークンだけが減る。だから機構で止める。
+ *
+ * 数えるのは**向きのある組**（A→B と B→A は別）。窓の中で上限に達したら断り、
+ * 「PO に上げるか、直接その幹で話してもらえ」と理由を返す。
+ */
+const SEND_WINDOW_MS = 10 * 60 * 1000;
+const SEND_MAX_PER_WINDOW = 5;
+
+/** 直近の言伝（送り元→宛先ごとの時刻）。プロセスの寿命でよい——長期の事実ではない。 */
+const recentSends = new Map<string, number[]>();
+
+/** 窓の中の回数を数え、上限内なら記録して true。 */
+export function allowSend(
+  from: string,
+  to: string,
+  now: number,
+  window = SEND_WINDOW_MS,
+  max = SEND_MAX_PER_WINDOW
+): boolean {
+  const key = `${from}\u0000${to}`;
+  const fresh = (recentSends.get(key) ?? []).filter((at) => now - at < window);
+  if (fresh.length >= max) {
+    recentSends.set(key, fresh);
+    return false;
+  }
+  fresh.push(now);
+  recentSends.set(key, fresh);
+  return true;
+}
+
+/** 試験用：数えた分を忘れる。 */
+export function resetSendCounters(): void {
+  recentSends.clear();
 }
 
 /**
@@ -317,5 +363,89 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     },
   });
 
-  return [open, openTrunk, merge, rename, list, ...(options.carryOut ? [closeTrunk] : [])];
+  /**
+   * **別の幹へ言伝を渡す**（PO要望 2026-08-10）。
+   *
+   * 幹は記憶も文脈も分かれている（ADR-0003 追補）。分けたからこそ、**跨いで伝えたいこと**
+   * が出てくる——「そちらで踏んだ不具合はこちらの原因だった」「この決定はそちらにも効く」。
+   * それを PO が手で運ぶのは、番頭が居る意味を削ぐ。
+   *
+   * 届いた側は**知らせとして受け取り、ターンが回る**。番頭が読んで、要れば動く。
+   * 相手の会話に割り込んで喋るのではなく、**渡すだけ**——何をするかは相手の番頭が決める。
+   */
+  const send = defineNamespacedTool({
+    name: "thread.send",
+    label: "Thread: Send",
+    description:
+      "**別の幹へ言伝を渡す。** 幹は記憶も文脈も分かれているので、跨いで伝えたいことは" +
+      "ここを通す（PO に運ばせない）。届いた側は知らせとして受け取り、番頭が読む。\n" +
+      "**渡すのは事実と、なぜそちらに関係するか。** 相手の幹で何をするかは相手が決める" +
+      "——指図しない。返事が要るなら、そう書けば相手から `thread.send` で返ってくる。\n" +
+      "**宛先は幹だけ**（枝には送れない。枝は1つの問いに閉じているので、割り込ませない）。" +
+      "宛先は `thread.list` で確かめる。**往復は続けない**——2〜3 で決着しないなら、" +
+      "PO に上げるか、その幹へ移って直接話す。",
+    parameters: Type.Object({
+      threadId: Type.String({ description: "宛先の幹の id（thread.list で確かめる）" }),
+      message: Type.String({
+        description:
+          "渡す言伝。**なぜその幹に関係するか**を先に書く（相手は経緯を知らない）。" +
+          "こちらの幹の名前は自動で添えられるので、書かなくてよい",
+      }),
+    }),
+    async execute(params) {
+      if (!options.deliver) {
+        throw new Error("この構成では言伝を渡せません（deliver が渡されていません）");
+      }
+      const me = options.threads.get(options.threadId);
+      const to = options.threads.get(params.threadId);
+      // I2: 宛先の取り違えを黙って既定へ落とさない
+      if (!to) throw new Error(`${params.threadId} という会話はありません（thread.list で確かめてください）`);
+      if (to.id === options.threadId) {
+        throw new Error("自分自身へは渡せません（いま話しているのがその会話です）");
+      }
+      if (to.kind === "branch") {
+        throw new Error(
+          `${to.title} は枝です。枝は1つの問いに閉じているので割り込ませません——` +
+            `親の幹（${to.parentId ?? "?"}）へ渡してください`
+        );
+      }
+      if (to.state === "closed") {
+        throw new Error(`幹「${to.title}」は終えています。開き直さないと渡せません`);
+      }
+      if (params.message.trim() === "") throw new Error("空の言伝は渡せません");
+      // P4: 往復し続けるのを機構で止める。頼むだけでは止まらない
+      if (!allowSend(options.threadId, to.id, Date.now())) {
+        throw new Error(
+          `「${to.title}」への言伝が続きすぎています（10分で ${SEND_MAX_PER_WINDOW} 通）。` +
+            "往復で決着していないので、PO に上げるか、その幹へ移って直接話してください"
+        );
+      }
+
+      // I1: 出所を偽らない。**PO の発言に見えてはいけない**——受け手はどちらの幹の話かで
+      //     判断が変わる。宛先の番頭が「誰が言ったか」を読めるように、幹の名前を添える
+      const from = me ? `幹「${me.title}」` : "別の幹";
+      await options.deliver(to.id, `${from}から言伝です：\n\n${params.message}`);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `幹「${to.title}」へ渡しました。あちらの番頭が読みます` +
+              "（返事が要るなら、あちらから言伝で返ってきます）",
+          },
+        ],
+        details: { threadId: to.id, title: to.title },
+      };
+    },
+  });
+
+  return [
+    open,
+    openTrunk,
+    merge,
+    rename,
+    list,
+    ...(options.deliver ? [send] : []),
+    ...(options.carryOut ? [closeTrunk] : []),
+  ];
 }
