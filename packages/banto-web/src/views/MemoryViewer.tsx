@@ -84,8 +84,8 @@ export function MemoryViewer({ params, endpoint }: CanvasViewProps): React.React
   const initialPlace = typeof params["place"] === "string" ? params["place"] : "";
   const [kind, setKind] = useState(initialKind);
   /**
-   * どの層を見ているか（ADR-0003）。`""` は人の記憶、それ以外は場所ID。
-   * **人とプロジェクトを1つの一覧に混ぜない**——混ぜた時点で「横断させない」が形骸化する。
+   * どの層を見ているか（ADR-0003）。`""` は人の記憶、それ以外は幹のID。
+   * **人と幹を1つの一覧に混ぜない**——混ぜた時点で「横断させない」が形骸化する。
    */
   const [place, setPlace] = useState(initialPlace);
   /** 訂正済み・忘れたものも見るか。既定は今有効な記憶だけ（履歴を見たいときだけ出す） */
@@ -107,7 +107,7 @@ export function MemoryViewer({ params, endpoint }: CanvasViewProps): React.React
   });
   const records = list.data?.records ?? [];
 
-  // 場所が消えた（登録から外れた）ときに、空の一覧を見続けないよう人の記憶へ戻す
+  // 幹が一覧から消えたときに、空の一覧を見続けないよう人の記憶へ戻す
   useEffect(() => {
     if (place && scopes.data && !places.some((p) => p.id === place)) setPlace("");
   }, [place, scopes.data, places]);

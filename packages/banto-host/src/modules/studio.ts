@@ -107,10 +107,10 @@ function createStudioDataTools(options: StudioModuleOptions): NamespacedToolDefi
           description: "どの層を見るか（ADR-0003）。既定は person",
         })
       ),
-      place: Type.Optional(Type.String({ description: 'scope: "project" のときの場所ID' })),
+      place: Type.Optional(Type.String({ description: 'scope: "project" のときの幹のID' })),
     }),
     async execute(params) {
-      // I2: project なのに場所が無ければ ScopedMemory が例外にする。人の記憶へ落とさない
+      // I2: project なのに幹が無ければ ScopedMemory が例外にする。人の記憶へ落とさない
       const store = options.memory.resolve(params.scope ?? "person", params.place);
       const records = store.list({
         ...(params.kind ? { kind: params.kind } : {}),
@@ -136,15 +136,15 @@ function createStudioDataTools(options: StudioModuleOptions): NamespacedToolDefi
   });
 
   /**
-   * ビューアが層を切り替えるための場所の一覧（ADR-0003）。
+   * ビューアが層を切り替えるための区画の一覧（ADR-0003）。区画は**幹**。
    *
-   * `place.list`（番頭向け）と別に持つのは、こちらが**画面のためのデータ**だから
+   * 番頭向けの口と別に持つのは、こちらが**画面のためのデータ**だから
    * （決定25：モジュールは GUI のデータ口を自分で出す）。
    */
   const scopes = defineNamespacedTool({
     name: "studio.memory.scopes",
     label: "Studio: Memory scopes",
-    description: "記憶ビューアが切り替えられる層（人／各プロジェクト）を返す。",
+    description: "記憶ビューアが切り替えられる層（人／各幹）を返す。",
     parameters: Type.Object({}),
     async execute() {
       const places = options.places ? await options.places() : [];
@@ -176,7 +176,7 @@ function createStudioDataTools(options: StudioModuleOptions): NamespacedToolDefi
           description: "どの層の記憶か（既定 person）",
         })
       ),
-      place: Type.Optional(Type.String({ description: 'scope: "project" のときの場所ID' })),
+      place: Type.Optional(Type.String({ description: 'scope: "project" のときの幹のID' })),
     }),
     async execute(params) {
       const store = options.memory.resolve(params.scope ?? "person", params.place);

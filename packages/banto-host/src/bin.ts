@@ -785,10 +785,17 @@ async function serve(options: ServeOptions): Promise<void> {
           coreSkills,
           modules.skills(),
         ]),
-      // ADR-0003 の第二層をビューアが切り替えられるようにする。
-      // **区画は幹**（PO裁定 2026-08-10）。畳んだ幹も出す——記憶は幹を終えても残るので、
-      // 出さないと「覚えていたはずのもの」が画面から消える
-      places: async () => threads.trunks().map((t) => ({ id: t.id, label: t.title })),
+      /**
+       * ADR-0003 の第二層をビューアが切り替えられるようにする。**区画は幹**（PO裁定 2026-08-10）。
+       *
+       * 出すのは**開いている幹と、記憶がある幹だけ**。畳んだ幹も記憶は残るので落とせないが、
+       * 全部並べると空の札が数十枚出て、中身のある層が埋もれる（D7：探させない）。
+       */
+      places: async () =>
+        threads
+          .trunks()
+          .filter((t) => t.state === "open" || memory.forProject(t.id).list().length > 0)
+          .map((t) => ({ id: t.id, label: t.title })),
     })
   );
 
