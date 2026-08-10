@@ -22,6 +22,8 @@ import type { ScopedMemory } from "@banto/core";
 import { createArtifactTools } from "./artifact-tools.js";
 import { withArtifactOffload, type ArtifactStore } from "./artifacts.js";
 import { createMemoryTools, renderMemoryForPrompt } from "./memory-tools.js";
+import { createHandoffTools } from "./handoff-tools.js";
+import type { HandoffStore } from "./handoffs.js";
 import { CORE_ORIGIN, resolveSkills, type SkillEntry } from "./module.js";
 import { LEARNED_ORIGIN, type LearnedSkillStore } from "./skill-learning.js";
 import { createSkillTools } from "./skill-tools.js";
@@ -57,6 +59,12 @@ export interface CreateBantoHostSessionOptions {
    * 大きなツール結果は栞に置き換わる。省略すると退避しない（テスト・使い捨て用途）。
    */
   artifacts?: ArtifactStore;
+  /**
+   * 章の引き継ぎ資料の置き場（提案§3.2）。渡すと `handoff.read` / `handoff.list` が
+   * 自動で登録される。**ここで組む**——`bin.ts` 側の一覧に足すだけだと、実際に
+   * モデルへ渡る道具箱に入らない（inc-0050 でそうなっていた）。`threadId` が要る。
+   */
+  handoffs?: { store: HandoffStore; threadId: string };
   /** 退避に回す大きさ（文字数）。省略すると `DEFAULT_ARTIFACT_THRESHOLD_CHARS`。 */
   artifactThresholdChars?: number;
   /**
@@ -188,6 +196,9 @@ export async function createBantoHostSession(
           ...(options.defaultTrunkId ? { defaultTrunkId: options.defaultTrunkId } : {}),
           ...(options.knownTrunkList ? { knownTrunkList: options.knownTrunkList } : {}),
         })
+      : []),
+    ...(options.handoffs
+      ? createHandoffTools(options.handoffs.store, options.handoffs.threadId)
       : []),
     ...(skills.length > 0 || options.learnedSkills
       ? createSkillTools(skills, {

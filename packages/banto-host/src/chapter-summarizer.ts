@@ -88,6 +88,21 @@ export function createLlmChapterSummarizer(
       .filter((c): c is { type: "text"; text: string } => c.type === "text")
       .map((c) => c.text)
       .join("\n");
+
+    /**
+     * **空で返ってきたら「書けた」ことにしない**（I2・inc-0050）。
+     *
+     * `stopReason` が `error` でなくても、本文が1文字も無いことがある（考えるだけ考えて
+     * 何も出さない・上限に当たって出力が空、等）。ここで通すと `parseHandoff` が
+     * 「TOPIC: 前の章の続き／詳細は空」という**中身の無い資料**を作り、それが書き出され、
+     * 文脈だけが畳まれる——引き継ぎ無しで畳むのがいちばん困る、という決めが空振りする。
+     * 実際に thread-50 の第1章がこれで空になった。
+     */
+    if (text.trim() === "") {
+      throw new Error(
+        `章の引き継ぎ資料が空で返りました（stopReason: ${response.stopReason}）。章は畳みません`
+      );
+    }
     return parseHandoff(text);
   };
 }
@@ -98,8 +113,15 @@ export function createLlmChapterSummarizer(
  * **形式どおりでなくても捨てない。** 読めなかったときは全文を本文として残し、
  * 見出しだけを最小限に組み立てる——資料の中身は失われない（要約を作り直せる方が、
  * 中身を落とすより安い）。
+ *
+ * **ただし空は別**（I2・inc-0050）。捨てないものが何も無いので、読み取れる形に
+ * 仕立てると「TOPIC: 前の章の続き／詳細は空」という中身の無い資料になってしまう。
+ * それを書いて文脈を畳むと、引き継ぎ無しで畳んだのと同じ——例外にして畳ませない。
  */
 export function parseHandoff(text: string): ChapterHandoff {
+  if (text.trim() === "") {
+    throw new Error("章の引き継ぎ資料が空です（中身の無い資料は書きません）");
+  }
   const [head, body] = splitOnce(text, "---BODY---");
 
   const topic = matchLine(head, /^TOPIC:\s*(.+)$/mu);

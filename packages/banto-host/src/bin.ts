@@ -1031,6 +1031,15 @@ async function serve(options: ServeOptions): Promise<void> {
       tools: ownTools,
       memory,
       memoryTrunks: here,
+      /**
+       * 章の引き継ぎ資料を読む口（提案§3.2・inc-0050）。
+       *
+       * **セッションを組むところで渡す。** 以前は下の「逆引き用の写し」にしか足して
+       * おらず、番頭の道具箱に入っていなかった——文脈には見出しだけが載るのに詳細を
+       * 引く手段が無く、段階的開示の後半が丸ごと欠けていた。記憶・SKILL・成果物と
+       * 同じ場所で組めば、片方だけ足し忘れることが起きない
+       */
+      handoffs: { store: handoffs, threadId },
       // I2: 知らない幹へ黙って書かない。省略時はこの会話の幹（defaultTrunkId）
       knownTrunkIds: () => knownTrunks().map((t) => t.id),
       defaultTrunkId: () => identity?.trunkId,
@@ -1116,6 +1125,20 @@ async function serve(options: ServeOptions): Promise<void> {
           server.notify(
             `ここまでを第${record.chapter}章として畳みました（${record.summary.topic}）。` +
               "前のやり取りは失われていません——詳細が要るときは番頭が引き継ぎ資料を読みます。",
+            { threadId, source: "system" }
+          );
+        },
+        /**
+         * **畳めなかったことも隠さない**（inc-0050）。
+         *
+         * 畳めないと文脈は増え続ける。黙って毎ターン試し続けると、POには
+         * 「そのうち急に何も入らなくなる」形でだけ現れる。出しておけば手が打てる。
+         */
+        onCloseFailed: (err) => {
+          server.notify(
+            `章を畳めませんでした（${String(err)}）。文脈はそのまま伸び続けます` +
+              "——このまま続けると入らなくなるので、区切りのよいところで新しい幹へ移すか、" +
+              "要約に使うモデル（BANTO_CHAPTER_MODEL）を見直してください。",
             { threadId, source: "system" }
           );
         },
