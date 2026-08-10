@@ -251,3 +251,36 @@ describe("[PO裁定 2026-08-10] 帳場は再起動を越えて帳場のまま", 
   });
 });
 
+describe("[PO報告 2026-08-10] 読み戻した会話にも「いまどの会話か」が渡る", () => {
+  it("再起動しても帳場は帳場として渡される（立場を忘れない）", async () => {
+    const first = new ThreadRegistry(factoryRecording([]), new ThreadStore(dir));
+    await first.open({ kind: "trunk", main: true, title: "帳場" });
+    const proj = await first.open({ kind: "trunk", title: "loamium" });
+    await first.open(
+      {
+        kind: "branch",
+        title: "エディタUI調査",
+        returnCondition: "描画方式が決まったら",
+        openedBy: "banto",
+        reason: "往復が続く",
+      },
+      proj.id
+    );
+    first.flushAll();
+
+    const seen: Array<Record<string, unknown> | undefined> = [];
+    const second = new ThreadRegistry(async (threadId, _resume, _model, identity) => {
+      seen.push(identity as Record<string, unknown> | undefined);
+      return { session: new FakeSession(), tools: [] };
+    }, new ThreadStore(dir));
+    await second.restore();
+
+    const main = seen.find((i) => i?.["isMain"] === true);
+    assert.ok(main, "帳場の素性が渡っていない");
+    const branch = seen.find((i) => i?.["kind"] === "branch");
+    assert.equal(branch?.["returnCondition"], "描画方式が決まったら");
+    // **どの幹の枝か**まで渡る（幹を先に読み戻しているので親が引ける）
+    assert.equal(branch?.["parentTitle"], "loamium");
+  });
+});
+

@@ -94,7 +94,12 @@ import { createSkillTools } from "./skill-tools.js";
 import { bindToolArgs, createThreadTools } from "./thread-tools.js";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 import { Type } from "typebox";
-import { ThreadRegistry, watchStaleBranches, type ThreadFactory } from "./threads.js";
+import {
+  ThreadRegistry,
+  watchStaleBranches,
+  type ThreadFactory,
+  type ThreadIdentity,
+} from "./threads.js";
 import { loadBantoSkills } from "./skills.js";
 
 /**
@@ -370,11 +375,28 @@ Write everything the user sees in ${RESPONSE_LANGUAGE}: chat replies, thread nam
 - **place** — a directory you can work against: a repository, a worktree, or a scratch area. List them with place.list; tools take a \`place\` argument saying which one you mean.
 - **canvas** — a display area you can open on the user's screen, for things that are hard to convey in text.
 
-# Memory and conversation
+# Memory
 
 - When something worth remembering across conversations comes up — the user's preferences, habits, standing decisions — save it with memory.save.
-- To show the user something, open it with canvas.open (canvas.list_catalog tells you what can be opened).
-- Once you know what this conversation is about, name it with thread.rename. Rename it again whenever the topic moves on: the user picks conversations by tab name, so a stale first-topic name — or "会話 3" — tells them nothing about the contents. Keep the name short, around 15 characters. Do not rename for a brief digression or for a continuation of the same topic.
+
+# Conversations: trunks, branches, and the 帳場
+
+Conversations are not parallel tabs. Each project has one **trunk** that lives on, and short-lived **branches** hang off it.
+
+- **trunk** — one project. It is never folded away by itself, and it is the record of what got decided. Only two lines from a branch ever reach its trunk: the line saying a branch opened, and the line saying what it concluded. **Never replay a branch's contents into the trunk** — that is what makes a trunk readable end to end.
+- **branch** — one question that has an end. Open it with thread.open when a topic is going to take repeated back-and-forth. You must say what would bring it back (returnCondition) and why it is not being discussed in the trunk (reason). **If you cannot say what would end it, do not open a branch — talk in the trunk.** Branches are one level deep: you cannot open a branch from inside a branch. Fold it with thread.merge and give the conclusion in one line; "保留：<reason>" is a valid conclusion.
+- **帳場** — one special trunk, the only conversation that can never be closed. **It is not a project, and it is not the trunk for developing banto itself.** Anything that does not belong to a specific project lands here: notices with no destination, a request before it has become a project, one-off errands. It always sits first in the user's rail.
+- **Starting a new trunk** (thread.open_trunk): the test is whether you would want this work's accumulated memory mixed into an existing trunk's conversations. If you would, it belongs in that trunk. If mixing it would be noise, start a trunk. Repeated back-and-forth alone is a branch, not a trunk.
+- **Ending a trunk** (thread.close_trunk): when the project is over. You choose what memory to carry out of it — rewrite anything that still holds elsewhere so it makes sense outside this project. What you do not carry stays with the folded trunk. Open branches must be folded first.
+- thread.list shows every open conversation, which one you are in, and what each branch is waiting on.
+- Once you know what a conversation is about, name it with thread.rename, and rename it again when the topic moves on. The user picks conversations by name, so a stale name — or "会話 3" — tells them nothing. Keep it short, around 15 characters. Do not rename for a brief digression.
+
+# Showing things: utsuwa inside the conversation, faces for work
+
+- **utsuwa** — a fixed vocabulary of small display forms that sit inside the conversation. Put a tool result into one with canvas.show: you name the utsuwa, the observation id (printed at the end of every tool result as ［観測 a-0007］), and optionally which part of it. **You never resend the data and you never lay out a screen** — the vocabulary is fixed and the core draws it. Use them for the facts the user needs in order to decide.
+- **face** — a full view opened with canvas.open, for work that needs width: searching, navigating, comparing. canvas.list_catalog says what can be opened. Opening one leaves a line in the conversation, so the user can return to it later.
+- Rule of thumb: **comparing is a face; facts to decide on are an utsuwa.** A list over ten rows, a whole diff, anything the user has to touch — send it to a face.
+- If canvas.show reports it could not draw, it tells you what was missing. Pick another utsuwa or send it to a face. The conversation is not blocked.
 
 # Delegating to workers
 
@@ -393,6 +415,59 @@ Write everything the user sees in ${RESPONSE_LANGUAGE}: chat replies, thread nam
 
 - Run verification with env.verify. The mechanism brings the environment up, runs the command, and always tears it down, so the result counts as **a verified fact** rather than a worker's claim.
 - When you want the user to see something with their own eyes, pass ports to env.provision's expose and it returns a url. You do not need this when only a machine has to check. Use env.provision only when the environment must stay up for review, and tear it down with env.teardown when you are done.`;
+/**
+ * 「いまどの会話に居るか」をシステムプロンプトへ足す（PO報告 2026-08-10）。
+ *
+ * **帳場を「banto 開発の幹」と取り違えていた**——会話ごとに立場が違うのに、番頭へ渡る
+ * プロンプトは全会話で同じだった。`thread.list` で毎ターン確かめさせるのは高くつくので、
+ * 器を作るときに一度だけ渡す。
+ *
+ * 題は後から変わりうる（`thread.rename`）ので「開いたときの名前」として渡す。
+ * 変わらないもの（帳場か・幹か枝か・還す条件）が肝心なので、そちらを強く書く。
+ */
+function describeThread(identity: ThreadIdentity | undefined): string {
+  if (!identity) return "";
+  const lines: string[] = ["", "# This conversation", ""];
+  if (identity.isMain) {
+    lines.push(
+      `You are in the **帳場** (opened as 「${identity.title}」).`,
+      "",
+      "This is the one conversation that is never closed, and **it is not a project**.",
+      "It is not the trunk for developing banto, and it is not about any single repository.",
+      "Anything that has no project of its own arrives here: notices with no destination,",
+      "a request before it has become a project, one-off errands.",
+      "",
+      "When something here grows into work with its own body of memory, start a trunk for it",
+      "with thread.open_trunk and continue there. When it does not, just deal with it here."
+    );
+  } else if (identity.kind === "trunk") {
+    lines.push(
+      `You are in the trunk of the project 「${identity.title}」.`,
+      "",
+      "Everything in this conversation is about this project. Memory you save here is about",
+      "this project. If a request turns out to belong to a different project, say so and",
+      "point at that trunk instead of answering here.",
+      "",
+      "This trunk holds the decisions: keep it readable end to end. Work that will take",
+      "repeated back-and-forth goes to a branch (thread.open)."
+    );
+  } else {
+    lines.push(
+      `You are in the branch 「${identity.title}」` +
+        (identity.parentTitle ? `, off the trunk 「${identity.parentTitle}」.` : "."),
+      "",
+      identity.returnCondition
+        ? `It returns when: ${identity.returnCondition}`
+        : "No return condition was written for it. Work out what would end it, or fold it.",
+      "",
+      "Stay on this one question. **You cannot open a branch from here** — if it needs one,",
+      "fold this branch back first. When the condition is met, fold it with thread.merge and",
+      "give the conclusion in one line; that line is all the trunk will see."
+    );
+  }
+  return lines.join("\n");
+}
+
 /**
  * 再起動後に中断していた職人を自動で起こす（task-0050）。
  *
@@ -790,7 +865,7 @@ async function serve(options: ServeOptions): Promise<void> {
   // 記憶は全スレッドで共有する（D11：番頭は記憶を持つ。分裂させない）。
   let threads: ThreadRegistry;
   let server: BantoHostServer;
-  const threadFactory: ThreadFactory = async (threadId, resumeFrom, wantedModel) => {
+  const threadFactory: ThreadFactory = async (threadId, resumeFrom, wantedModel, identity) => {
     const canvas = new Canvas(catalog);
     // 提案§3.1: ツール出力の退避先。**会話ごと**——別の会話の観測を引けると、
     // スレッドごとに文脈を分けている意味（決定35a）が崩れる。
@@ -924,7 +999,8 @@ async function serve(options: ServeOptions): Promise<void> {
     const memoryPlaces = rememberProjectIds(registered).scopes;
 
     const { session } = await createBantoHostSession({
-      systemPrompt: SYSTEM_PROMPT,
+      // **会話ごとに立場が違う**ので、そこだけを足して渡す（PO報告 2026-08-10）
+      systemPrompt: SYSTEM_PROMPT + describeThread(identity),
       tools: ownTools,
       memory,
       memoryPlaces,

@@ -195,6 +195,45 @@ describe("[task-0088/a1] 幹はプロジェクトの単位で、畳めない（A
   });
 });
 
+describe("[PO報告 2026-08-10] 番頭は「いまどの会話に居るか」を渡される", () => {
+  /**
+   * **帳場を「banto 開発の幹」と取り違えていた。** 会話ごとに立場が違うのに、番頭へ渡る
+   * ものが全会話で同じだったのが原因。器を作るときに素性を渡す。
+   */
+  it("帳場・幹・枝で、渡される素性が違う", async () => {
+    const seen: Array<Record<string, unknown> | undefined> = [];
+    const registry = new ThreadRegistry(async (threadId, _resume, _model, identity) => {
+      seen.push(identity as Record<string, unknown> | undefined);
+      return { session: new FakeSession(`s-${threadId}`), tools: [] };
+    });
+
+    await registry.open({ kind: "trunk", main: true, title: "帳場" });
+    const proj = await registry.open({ kind: "trunk", title: "loamium" });
+    await registry.open(
+      {
+        kind: "branch",
+        title: "エディタUI調査",
+        returnCondition: "描画方式が決まったら",
+        openedBy: "banto",
+        reason: "往復が続く",
+      },
+      proj.id
+    );
+
+    assert.deepEqual(seen[0], { kind: "trunk", isMain: true, title: "帳場" });
+    assert.deepEqual(seen[1], { kind: "trunk", isMain: false, title: "loamium" });
+    assert.deepEqual(seen[2], {
+      kind: "branch",
+      isMain: false,
+      title: "エディタUI調査",
+      returnCondition: "描画方式が決まったら",
+      // **どの幹の枝か**まで渡す（親を知らないと、何の話の一部かが分からない）
+      parentTitle: "loamium",
+    });
+  });
+
+});
+
 describe("[PO裁定 2026-08-10] 帳場（メインの幹）", () => {
   it("帳場は店にただ1つ。2つ目は作れない", async () => {
     await threads.open({ kind: "trunk", main: true, title: "帳場" });

@@ -27,6 +27,27 @@ import type { NamespacedToolDefinition } from "./tool-registry.js";
 import type { BranchOpener, ThreadView, TranscriptEntry } from "./protocol.js";
 import type { ThreadStore } from "./thread-store.js";
 
+/**
+ * その会話が**何であるか**（PO報告 2026-08-10）。
+ *
+ * **番頭に渡す。** 帳場に居るのか、あるプロジェクトの幹に居るのか、どの幹の枝に居るのかは
+ * 会話ごとに違い、話し方が変わる——実際、帳場を「banto 開発の幹」と取り違えていた。
+ * `thread.list` で毎ターン確かめさせるのは高くつくので、器を作るときに一度渡す。
+ *
+ * ここに入るのは**後から変わらないもの**だけ。題は変わりうるので「開いたときの名前」
+ * として扱う（`thread.rename` の結果は画面と帳簿が持つ・D3）。
+ */
+export interface ThreadIdentity {
+  kind: "trunk" | "branch";
+  /** 帳場（メインの幹）か。どの幹の話でもないものの受け皿。 */
+  isMain: boolean;
+  title: string;
+  /** 枝の還す条件（あれば）。 */
+  returnCondition?: string;
+  /** 枝のとき、親の幹の名前。 */
+  parentTitle?: string;
+}
+
 /** 1本分の器を組み立てる。呼ぶたびに**新しい対話ループとキャンバス**を作ること。 */
 export type ThreadFactory = (
   threadId: string,
@@ -39,7 +60,9 @@ export type ThreadFactory = (
    * この会話で使いたいモデル。**復元では保存されていたもの**、新規では省略（＝番頭の標準）。
    * 会話ごとにモデルを持つため、器を作る側がここを見て組み立てる。
    */
-  model?: { provider: string; id: string }
+  model?: { provider: string; id: string },
+  /** その会話が何であるか（帳場・幹・枝）。器を作る側がシステムプロンプトへ入れる。 */
+  identity?: ThreadIdentity
 ) => Promise<{
   session: HostSession;
   canvas?: Canvas;
@@ -392,11 +415,20 @@ export class ThreadRegistry {
     );
     for (const saved of ordered) {
       try {
-        const parts = await this.factory(saved.id, saved.sessionFile, saved.model);
+        const savedKind = saved.kind ?? "trunk";
+        const parts = await this.factory(saved.id, saved.sessionFile, saved.model, {
+          kind: savedKind,
+          isMain: saved.isMain === true,
+          title: saved.title,
+          ...(saved.returnCondition ? { returnCondition: saved.returnCondition } : {}),
+          ...(saved.parentId
+            ? { parentTitle: this.threads.get(saved.parentId)?.title ?? saved.parentId }
+            : {}),
+        });
         // 古い索引には kind が無い。**1本残らず幹として読み戻す**（上の注記）。
         // 還す条件の無い枝は帳簿として成り立たない（決定77）——遡って書けない以上、
         // 枝にはしない
-        const kind = saved.kind ?? "trunk";
+        const kind = savedKind;
         const thread = new Thread({
           id: saved.id,
           title: saved.title,
@@ -588,13 +620,27 @@ export class ThreadRegistry {
     }
 
     const id = `thread-${++this.counter}`;
-    const parts = await this.factory(id);
+    const wantedTitleEarly = normalizeThreadTitle(
+      spec.kind === "trunk" ? (spec.title ?? "") : spec.title
+    );
+    const title =
+      wantedTitleEarly ??
+      (spec.kind === "trunk"
+        ? spec.main === true
+          ? MAIN_TITLE
+          : TRUNK_TITLE
+        : `枝 ${this.counter}`);
+    const parts = await this.factory(id, undefined, undefined, {
+      kind: spec.kind,
+      isMain: spec.kind === "trunk" && spec.main === true,
+      title,
+      ...(spec.kind === "branch" ? { returnCondition: spec.returnCondition } : {}),
+      ...(parentTrunk ? { parentTitle: parentTrunk.title } : {}),
+    });
     const wantedTitle = normalizeThreadTitle(spec.kind === "trunk" ? (spec.title ?? "") : spec.title);
     const thread = new Thread({
       id,
-      title:
-        wantedTitle ??
-        (spec.kind === "trunk" ? (spec.main === true ? MAIN_TITLE : TRUNK_TITLE) : `枝 ${this.counter}`),
+      title,
       kind: spec.kind,
       ...(spec.kind === "trunk" && spec.main === true ? { isMain: true } : {}),
       ...(spec.kind === "branch"
