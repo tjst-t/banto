@@ -20,3 +20,19 @@ profiles:
       path: /app/node_modules
     # マージ前ゲートは直列なので、居座らせない。検証が終われば畳まれる
     ttl: 45m
+  # PO がブラウザで触れるための開発画面プロファイル（2026-08-10 新設）。
+  # config.port を持つので「人が触る」環境として扱われる（決定59）。
+  # compose は docker/dev.yaml——vite dev server をホスト 4201 で公開する。
+  # （ホスト 4200 は opencode.service が占有。config.port は「ホスト側から見える
+  #   ポート」なので 4201 を指す。proxy exposer は 127.0.0.1:config.port へ中継する）
+  dev:
+    driver: docker
+    config:
+      compose: docker/dev.yaml
+      port: 4201
+    setup: "npm ci"
+    cache:
+      key:  [package-lock.json, docker/Dockerfile.test]
+      path: /app/node_modules
+    # レビューで触ってもらうための環境なので、十分な時間を残す（安全弁。使い終わったら畳む）
+    ttl: 8h

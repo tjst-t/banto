@@ -1,0 +1,35 @@
+# banto の開発画面（banto-web）を PO がブラウザで触れるための環境。
+# Environment Pool の docker ドライバ用（provision で `docker compose up -d`）。
+#
+# - 土台は test と同じ node:22-alpine（Dockerfile.test を流用）
+# - vite dev server をコンテナ内 4200 で立てる
+# - ホスト側は **4201 にマップ**（4200 は opencode.service が占有）。proxy exposer は
+#   ホストの 127.0.0.1:<config.port> へ中継するので、config.port も 4201 に合わせる
+# - /ws と /api は本番 banto ホスト（127.0.0.1:4100）へ中継する（vite.config.ts の proxy）。
+#   コンテナからホストへは host.docker.internal 経由で到達する
+# - Host 検査（DNS リバインディング対策）は検証環境のため無効化（BANTO_WEB_ALLOWED_HOSTS=true）
+#
+# **command の npm ci 前置き（2026-08-10 実機で踏んだ踏み）**: Environment Pool の provision は
+# 「先に compose up、後から setup（npm ci）」の順で回る（pool.ts）。test は sleep infinity なので
+# 問題にならないが、dev server は起動時に node_modules が空だと `vite: not found` で即死する。
+# キャッシュが無い窓を塞ぐため、vite を起こす前に node_modules を確認して用意する。
+# 根本修正（provision の順序）は Kobo にタスクを積んで直す。
+services:
+  web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.test
+    security_opt:
+      - apparmor=unconfined
+    working_dir: /app
+    environment:
+      BANTO_HOST_URL: http://host.docker.internal:4100
+      BANTO_WEB_ALLOWED_HOSTS: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ..:/app
+      - ${BANTO_CACHE_DIR:-./.banto-node-modules}:/app/node_modules
+    command: ["sh", "-c", "test -d node_modules/.bin/vite || npm ci; npm --prefix packages/banto-web run dev"]
+    ports:
+      - "4201:4200"
