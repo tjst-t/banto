@@ -341,6 +341,79 @@ test.describe("末尾追従（use-stick-to-bottom）", () => {
     expect(after).toBe(before);
   });
 
+  /**
+   * inc-0048。**猶予（時間）ではなく掛け金（状態）で持つ**ことの確かめ。
+   *
+   * 以前は「直前 400ms に仕草があったか」で見ていたので、上げたまま読んでいる間に
+   * 判定が走ると猶予を過ぎていて下へ引き戻された。**何秒経っても・何回届いても**
+   * 戻らないことを見る（1回ぶんの待ちでは、時間で見ている実装も通ってしまう）。
+   */
+  test("上げたまま読んでいる間は、何度届いても戻らない（時間で緩まない）", async ({ page }) => {
+    await fillConversation(page);
+
+    await page.locator(".chat-scroll").hover();
+    await page.mouse.wheel(0, -300);
+    await page.waitForTimeout(200);
+    const before = await page.locator(".chat-scroll").evaluate((el) => el.scrollTop);
+
+    // 猶予（かつて 400ms）をとうに越える長さで、応答を3回に分けて届ける
+    for (let turn = 0; turn < 3; turn++) {
+      host.emit({ type: "turn_start" });
+      for (let i = 0; i < 15; i++) host.emit({ type: "text_delta", delta: `${turn}-${i} 割り込み\n\n` });
+      host.emit({ type: "turn_end" });
+      await page.waitForTimeout(700);
+      const now = await page.locator(".chat-scroll").evaluate((el) => el.scrollTop);
+      expect(now, `${turn + 1} 回目の応答で下へ引き戻された`).toBe(before);
+    }
+
+    await expect(page.locator(".chat-to-bottom")).toBeVisible();
+  });
+
+  /**
+   * 掛け金は**器が上へ動いたとき**だけ掛かる。触っただけ（選ぶ・押す）では掛からない
+   * ——掛かると、読んでいるつもりが無いのに追従が止まって「途中で固まった」に見える。
+   */
+  test("触っただけでは追従は止まらない（押す・選ぶ）", async ({ page }) => {
+    await fillConversation(page);
+
+    const scroller = page.locator(".chat-scroll");
+    const box = (await scroller.boundingBox())!;
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    await page.waitForTimeout(150);
+
+    host.emit({ type: "turn_start" });
+    for (let i = 0; i < 20; i++) host.emit({ type: "text_delta", delta: `追記 ${i}\n\n` });
+    host.emit({ type: "turn_end" });
+    await page.waitForTimeout(900);
+
+    expect(await atBottom(page), "触っただけで追従が切れた").toBe(true);
+  });
+
+  /**
+   * 掛け金が外れるのは最下部へ戻ったときだけ。**自分で下げて戻った**ときも外れる
+   * （↓ボタンだけが戻り道ではない）。
+   */
+  test("自分で最下部まで戻すと、また追いかけ始める", async ({ page }) => {
+    await fillConversation(page);
+
+    await page.locator(".chat-scroll").hover();
+    await page.mouse.wheel(0, -300);
+    await page.waitForTimeout(200);
+    expect(await atBottom(page)).toBe(false);
+
+    // ↓ボタンではなく、自分で転がして戻る
+    await page.mouse.wheel(0, 600);
+    await page.waitForTimeout(300);
+    expect(await atBottom(page), "戻り切れていない").toBe(true);
+
+    host.emit({ type: "turn_start" });
+    for (let i = 0; i < 20; i++) host.emit({ type: "text_delta", delta: `再開 ${i}\n\n` });
+    host.emit({ type: "turn_end" });
+    await page.waitForTimeout(900);
+
+    expect(await atBottom(page), "戻ったのに追いかけ直していない").toBe(true);
+  });
+
   test("↓ボタンを押すと最下部へ戻り、また追いかけ始める", async ({ page }) => {
     await fillConversation(page);
     await page.locator(".chat-scroll").hover();
