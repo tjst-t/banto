@@ -13,13 +13,19 @@
 #   コンテナからホストへは host.docker.internal 経由で到達する
 # - Host 検査（DNS リバインディング対策）は検証環境のため無効化（BANTO_WEB_ALLOWED_HOSTS=true）
 #
-# **command は vite を起こすだけ**（task-0089 以降）。以前はここに
+# **command は vite を起こすだけ**。以前はここに
 # `test -d node_modules/.bin/vite || npm ci;` を前置きしていた——provision が
 # 「先に compose up、後から setup（npm ci）」の順で回っていたので、node_modules が空のまま
-# vite が起きて `vite: not found` で即死したためのプロファイル側のハックだった。
-# 本体（Environment Pool）が用意を `compose up` の前に済ませるようになった（task-0089）ので、
-# **長命のコマンドは起きた時点で node_modules を掴める**。ハックは撤去した——
-# 残すと「用意が済んでいなくても自分でどうにかする器」になり、順序が壊れても気づけない。
+# vite が起きて `vite: not found`（exit 127）で即死したためのプロファイル側のハックだった。
+# ハックは撤去した——残すと「用意が済んでいなくても自分でどうにかする器」になり、
+# 順序が壊れても気づけない。
+#
+# **⚠ この撤去は task-0089 が入って初めて成り立つ。task-0089 より先にこの枝を入れないこと。**
+# 用意（`setup`）を `compose up` の前に済ませる直しは task-0089 で作られたが、
+# 2026-08-11 時点で main には未マージ（枝 `task/task-0089` にのみ在る）。
+# 本体（`packages/banto-environment-pool/src/pool.ts`）は今も
+# 「compose up → healthcheck → setup」の順で回るので、**この枝を単独で先に入れると
+# dev の provision が `vite: not found` で再び壊れる**。
 services:
   web:
     build:
