@@ -188,8 +188,8 @@ export interface MergeProcessorOptions {
   /**
    * タスクのワークツリーを引く（ADR-0013 決定60・a6）。
    *
-   * 置き場所を決めるのは `gwq` になったので、**呼び出し側が知っている場所を渡す**
-   * ——`<base>/<projectTag>/<taskId>` を組み立てると、gwq の命名では見つからない。
+   * 置き場所を決めるのは repo-manager の並び（`layout.ts`）なので、**呼び出し側が
+   * 知っている場所を渡す**——`<base>/<projectTag>/<taskId>` を組み立てても見つからない。
    * 省略時は従来どおり `worktreeBaseDir` から組み立てる。
    */
   getWorktreePath?: (projectTag: string, taskId: string) => string;

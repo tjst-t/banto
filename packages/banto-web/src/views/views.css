@@ -51,6 +51,21 @@
 }
 
 /**
+ * 設定面に埋まったビューの中では、スクロールを**外へ渡す**（PO報告 2026-08-10）。
+ *
+ * キャンバスの面は器の高さいっぱいを使い、自分の中でスクロールする（`.cv-scroll`）。
+ * ところが設定の区画に埋まったときは、外側（`.sp-content`）が縦に伸びるので `.cv` の
+ * `height:100%` は auto になり、**`.cv-scroll` は中身と同じ高さ＝スクロールできない**。
+ * そこに `overscroll-behavior: contain` が付いていると、動かないスクロール領域が
+ * ホイールを飲み込み、外側にも流れない——「マウスを端（＝この領域の外の余白）へ
+ * 持っていかないとスクロールできない」のはこれ。
+ *
+ * 埋まっているときだけ連鎖を許す。キャンバスで開いたときの `contain`（面の中で
+ * 止める）はそのまま——あちらは実際にスクロールできるので、外へ漏らす理由がない。
+ */
+.sp-content .cv-scroll { overscroll-behavior: auto; }
+
+/**
  * 設定面のスマホ対応。
  *
  * 左ナビ＋内容の2カラムのままだと、内容側が指2本分の幅しか残らない。横に寝かせた
@@ -474,6 +489,13 @@
   background: var(--paper-2);
   white-space: nowrap;
 }
+/* 押せる札（PO要望 2026-08-11）。読み取り専用の札と地は同じで、押せることだけを足す */
+.cv-badge.is-pressable { cursor: pointer; font-family: inherit; }
+.cv-badge.is-pressable:hover { border-color: var(--rule); background: var(--paper-1); }
+.cv-badge.is-pressable:focus-visible { outline: 2px solid var(--ai); outline-offset: 1px; }
+/* 文脈長の手入力。札と同じ高さに収める（列が跳ねない） */
+.llm-ctx-input { width: 9ch; height: 22px; padding: 0 6px; font-size: var(--t-note); }
+
 .cv-badge.is-ok { color: var(--koke); border-color: color-mix(in srgb, var(--koke) 45%, transparent); background: var(--koke-t); }
 .cv-badge.is-warn { color: var(--kohaku); border-color: var(--koh-t); background: var(--koh-t); }
 .cv-badge.is-danger { color: var(--murasaki); border-color: color-mix(in srgb, var(--murasaki) 45%, transparent); background: var(--mur-t); }
@@ -1978,3 +2000,24 @@
 .ico { flex: none; vertical-align: -0.15em; }
 /* 注記の絵は、その注記の色を継ぐ（気をつける＝琥珀、止まった＝紫） */
 .cv-note-icon { flex: none; margin-top: 2px; }
+
+/* ── 職人の設定（バックエンドと等級ごとのモデル） ───────────────────────────── */
+
+.ws-backend + .ws-backend { margin-top: 8px; }
+/* 切ってあるものは**消さずに沈める**——無くなると「入れ直す」ができない */
+.ws-backend.is-off { opacity: .62; }
+.ws-backend-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ws-backend-name { font-weight: 700; font-size: var(--t-body); }
+.ws-backend-sub {
+  margin-top: 4px;
+  font-size: var(--t-note);
+  color: var(--sumi-3);
+  line-height: 1.7;
+}
+.ws-backend-state { margin-top: 6px; font-size: var(--t-note); color: var(--sumi-3); }
+.ws-backend-state.is-ok { color: var(--midori, var(--sumi-3)); }
+.ws-backend-state.is-warn { color: var(--kohaku); }
+.ws-warn { color: var(--kohaku); display: inline-flex; align-items: center; gap: 4px; }
+.ws-minutes { width: 96px; }
+/* 「ここでは決めない」の断り書き。地の文より弱く、しかし読み飛ばされない程度に */
+.llm-moved { margin: 0; font-size: var(--t-note); line-height: 1.8; }

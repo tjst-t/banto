@@ -17,6 +17,7 @@ import type { TranscriptAttachment, TranscriptEntry } from "@banto/host/protocol
 import { highlightToHtml, useColorScheme } from "./views/fileHighlight.js";
 import { Icon } from "./icons.js";
 import { MarkdownLink } from "./links.js";
+import { Linkify, rehypeLinkify, splitPathAndLine, type LinkTargets } from "./linkify.js";
 import { UtsuwaRow } from "./Utsuwa.js";
 import { BranchCard, BranchResultRow } from "./Branch.js";
 
@@ -119,10 +120,51 @@ const CodeBlock = React.memo(({ children }: React.ComponentProps<"pre">): React.
 });
 
 /**
+ * ファイル面を開く先（PO要望 2026-08-11）。
+ *
+ * 会話の中のパスを押したときに開く。**上から配る**——`StreamingMarkdown` は会話の
+ * あちこち（応答・知らせ・思考・職人のログ）で使われるので、使う側ごとに渡させると
+ * 渡し忘れた場所だけ押せなくなる。
+ */
+const FileLinkContext = React.createContext<LinkTargets | undefined>(undefined);
+
+export function FileLinkProvider({
+  targets,
+  children,
+}: {
+  targets: LinkTargets;
+  children: React.ReactNode;
+}): React.ReactElement {
+  return <FileLinkContext.Provider value={targets}>{children}</FileLinkContext.Provider>;
+}
+
+/** `rehypeLinkify` が印を付けた span を、押せるものに差し替える。 */
+function PathSpan({
+  children,
+  ...rest
+}: React.HTMLAttributes<HTMLSpanElement> & { "data-banto-path"?: string }): React.ReactElement {
+  const targets = React.useContext(FileLinkContext);
+  const path = rest["data-banto-path"];
+  if (!path || !targets?.openFile) return <span {...rest}>{children}</span>;
+  const { path: file, line } = splitPathAndLine(path);
+  return (
+    <button
+      type="button"
+      className="linkify-path"
+      title={`${file}${line ? `:${line}` : ""} をファイル面で開く`}
+      onClick={() => targets.openFile?.(file, line)}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
  * コードブロックとリンクだけ差し替える。他の要素は react-markdown の既定のまま。
  * リンクは外に出るものを別タブへ（`links.tsx`）——会話ごと差し替わると書きかけが消える。
+ * パスは押すとファイル面が開く（`rehypeLinkify` が印を付けたものを `span` で受ける）。
  */
-const MARKDOWN_COMPONENTS = { pre: CodeBlock, a: MarkdownLink };
+const MARKDOWN_COMPONENTS = { pre: CodeBlock, a: MarkdownLink, span: PathSpan };
 
 /**
  * ストリーミング中の Markdown。
@@ -133,10 +175,26 @@ const MARKDOWN_COMPONENTS = { pre: CodeBlock, a: MarkdownLink };
  */
 export const StreamingMarkdown = React.memo(({ text }: { text: string }): React.ReactElement => (
   // remark-gfm: 表・打ち消し線・タスクリスト等。素の react-markdown は CommonMark のみ
-  <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+  <Markdown
+    remarkPlugins={[remarkGfm]}
+    // 文中のファイルパスを押せるようにする（PO要望 2026-08-11）
+    rehypePlugins={[rehypeLinkify]}
+    components={MARKDOWN_COMPONENTS}
+  >
     {remend(text)}
   </Markdown>
 ));
+
+/**
+ * **Markdown にしない行**（POの発言・職人への指示・解釈できなかった行）を描く。
+ *
+ * 書いたとおりに出しつつ、URL とパスだけ押せるようにする（PO要望 2026-08-11）。
+ * Markdown で描いてしまうと、PO が書いた `*` や `#` が消えて別の文になる。
+ */
+export function PlainText({ text }: { text: string }): React.ReactElement {
+  const targets = React.useContext(FileLinkContext);
+  return <Linkify text={text} {...(targets ? { targets } : {})} />;
+}
 
 /** 考えていた時間の文言。測れていないときは秒数を騙らない（I1）。 */
 function thoughtLabel(durationMs: number | undefined): string {
@@ -381,7 +439,8 @@ export const ChatRow = React.memo(
             {entry.attachments && entry.attachments.length > 0 && (
               <AttachmentChips items={entry.attachments} />
             )}
-            {entry.text}
+            {/* PO の発言は Markdown で描かない（書いたとおりに出す）。URL とパスだけ押せる */}
+            <PlainText text={entry.text} />
           </div>
         );
       case "reasoning":
@@ -407,6 +466,23 @@ export const ChatRow = React.memo(
       case "notice":
         // 外からの知らせ（決定29）。番頭の発話と混ざらないよう見た目を分け、出所も出す
         return <NoticeRow source={entry.source} text={entry.text} />;
+      case "chapter":
+        /**
+         * ここで章を畳んだ（PO要望 2026-08-11）。**細い線1本と、何の話だったか**。
+         *
+         * 発言ではないので吹き出しにしない——読み返したときに「ここで区切った」が
+         * 一目で分かればよい。前のやり取りは消えていないので、線は切断ではなく仕切り。
+         */
+        return (
+          <div className="chapter-mark" title={`第${entry.chapter}章：${entry.topic}`}>
+            <span className="chapter-mark-rule" aria-hidden="true" />
+            <span className="chapter-mark-t">
+              第{entry.chapter}章までを畳みました
+              {entry.topic && <span className="chapter-mark-topic">{entry.topic}</span>}
+            </span>
+            <span className="chapter-mark-rule" aria-hidden="true" />
+          </div>
+        );
       case "branch":
         // 枝の札（決定77）。**写しではなく参照**なので、帳簿から引き直して描く
         return (

@@ -19,6 +19,8 @@
  *                            共有しないと、画面で選んだモデルが職人に効かない（D3）
  *   BANTO_WORKER_PROVIDER    職人の既定 provider（省略時は pi の既定解決）
  *   BANTO_WORKER_MODEL       職人の既定モデル
+ *   BANTO_CLAUDE_MODEL       Claude Code の職人の既定モデル（既定 sonnet。番頭は
+ *                            `worker.delegate` の `model` で仕事ごとに指名できる）
  *   BANTO_WORKER_IDLE_MS     安全弁（何もしていない職人を畳むまで。既定15分。0 で切る）
  *
  * **既定では 127.0.0.1 しか待ち受けない。** この面は**任意のディレクトリで任意のコマンドを
@@ -31,6 +33,9 @@
 
 import * as path from "node:path";
 import { PiRpcDriver } from "./pi-rpc-driver.js";
+import { ClaudeAgentDriver, CLAUDE_AGENT_DRIVER_ID } from "./claude-agent-driver.js";
+import { CLAUDE_KNOWN_MODELS, CLAUDE_TIER_MODELS } from "./claude-agent/naming.js";
+import { claudeAgentAvailability } from "./claude-agent/availability.js";
 import { WorkerPool, DEFAULT_IDLE_TIMEOUT_MS } from "./pool.js";
 import { createWorkerModuleTools, createWorkerReportTools, createWorkerTools } from "./worker-tools.js";
 import { WorkerPoolService, WORKER_POOL_DEFAULT_PORT } from "./service.js";
@@ -134,7 +139,17 @@ async function main(): Promise<void> {
 
   // 設定画面で決めた値 > 環境変数 > 既定。保存先は自分のデータ置き場（task-0066）
   const settings = createFileSettingsSection(path.join(dataDir, "settings.json"));
-  const savedIdleMs = settings.read()["idleTimeoutMs"];
+  const saved = settings.read();
+  const savedIdleMs = saved["idleTimeoutMs"];
+
+  // 決定11: ランタイムは差し替えられる。番頭は `worker.delegate` の `runtime` で選ぶ
+  // （既定は pi のまま——Claude Code は認証とコストの前提が違うので、黙って既定にしない）
+  const claudeDriver = new ClaudeAgentDriver({
+    sessionBaseDir: path.join(dataDir, "sessions"),
+    // 等級ごとの割り当ては工房が持つ（設定画面「職人」）。ここは名指しも割り当ても
+    // 無いときの受け皿だけ
+    ...(process.env["BANTO_CLAUDE_MODEL"] ? { defaultModel: process.env["BANTO_CLAUDE_MODEL"] } : {}),
+  });
   const idleTimeoutMs =
     typeof savedIdleMs === "number"
       ? savedIdleMs
@@ -142,6 +157,32 @@ async function main(): Promise<void> {
 
   const pool = new WorkerPool({
     driver,
+    // pi は登録（LLM Registry）で解く。第一候補が無ければ同じ等級の採用済みから
+    driverRegistration: {
+      title: "pi",
+      description: "pi coding agent。モデルは「LLM・モデル」の登録から解決する。",
+      resolveTier: (tier) => {
+        const resolved = catalog.resolveForWorker(tier);
+        return resolved ? `${resolved.model.provider}/${resolved.model.id}` : undefined;
+      },
+    },
+    runtimes: {
+      [CLAUDE_AGENT_DRIVER_ID]: {
+        driver: claudeDriver,
+        title: "Claude Code",
+        description:
+          "Claude Code（Agent SDK）。認証は Claude Code のもの（~/.claude）を使う——" +
+          "モデルは別名で指定し、世代は Claude 側が解決する。",
+        probe: () => claudeAgentAvailability(),
+        models: () => CLAUDE_KNOWN_MODELS.map((m) => ({ name: m.value, label: m.label })),
+        // 割り当てが無い等級は、Claude Code 側の別名で解ける
+        resolveTier: (tier) => CLAUDE_TIER_MODELS[tier],
+      },
+    },
+    // 名指しできるモデルを数え上げるため（`worker.models`）。tier→モデルの解決は
+    // 設定画面で決めた割り当て（`settingsSection`）が持つ
+    catalog,
+    settingsSection: settings,
     dataDir,
     // 単体で立てるときの既定の名乗り。起動元は呼び出しごとに `origin` を渡す（決定29）
     defaultProjectTag: "default",
@@ -169,7 +210,7 @@ async function main(): Promise<void> {
       ...createWorkerReportTools(pool),
       ...createWorkerModuleTools(pool),
       // 設定画面（決定41）は番頭ホスト側に出る。別プロセスなので読み書きを口で受ける
-      ...createSettingsTools("worker", createWorkerPoolSettings(pool, settings)),
+      ...createSettingsTools("worker", createWorkerPoolSettings(pool, { section: settings })),
     ],
     port,
     host,
@@ -177,6 +218,10 @@ async function main(): Promise<void> {
 
   console.log(
     `[worker-pool] 職人の既定モデル: ${fallback ? `${fallback.model.provider}/${fallback.model.id}（${fallback.tier}）` : "(pi の既定解決)"}`
+  );
+  console.log(
+    `[worker-pool] 使えるランタイム: ${pool.availableRuntimes().join(", ")}` +
+      `（既定 ${pool.defaultRuntime}／Claude Code の既定モデル ${claudeDriver.currentDefaults().model}）`
   );
   console.log(
     `[worker-pool] ${service.baseUrl} で待ち受けています（台帳: ${dataDir}）\n` +

@@ -27,6 +27,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FileLinkProvider } from "./messages.js";
 import { useBantoSession } from "./useBantoSession.js";
 import { resolveCanvasView } from "./views/registry.js";
 import { ThreadHistory } from "./ThreadHistory.js";
@@ -227,16 +228,12 @@ export function App(): React.ReactElement {
   );
   const branch = focused?.kind === "branch" ? focused : undefined;
   /**
-   * 見ていた枝が畳まれたら幹へ戻す（PO報告 2026-08-10）。
+   * 見ていた枝が**目の前で**畳まれたら幹へ戻すのは、会話の層が受け持つ
+   * （`useBantoSession` の `thread_state`）——**開閉の変わり目はそこでしか見えない**。
    *
-   * **番頭が畳んだときにも効く**——`thread.merge` は会話の中から呼ばれるので、
-   * 画面が居座ると「還したはずの枝で話し続けている」ように見える。
+   * ここに置いていた同じ判断は外した（PO報告 2026-08-11）。2箇所にあると、片方が
+   * 「畳んでいる」だけで弾き、畳んだ枝を読みに開くたびに追い返される。
    */
-  useEffect(() => {
-    if (branch?.state !== "closed") return;
-    const parent = branch.parentId ? session.threadOf(branch.parentId) : undefined;
-    if (parent) openThreadRef.current?.(parent.threadId);
-  }, [branch, session]);
   /** いま居るプロジェクトの幹。枝を見ているなら**その枝の親**。 */
   const trunk = useMemo(
     () =>
@@ -245,9 +242,6 @@ export function App(): React.ReactElement {
       session.trunks[0],
     [branch, focused, session]
   );
-
-  /** 上の効果から呼ぶための控え（`openThread` は下で定義される）。 */
-  const openThreadRef = useRef<(id: string, o?: { focus?: boolean }) => void>(undefined);
 
   /** 会話を移る（枝の札・レールの点・取次から）。 */
   const openThread = useCallback(
@@ -474,7 +468,6 @@ export function App(): React.ReactElement {
     },
     [trunk, branch, activeTab, backToChat, session, openThread]
   );
-  openThreadRef.current = openThread;
   const focusSeqOf = useCallback(
     (threadId: string): number => (focusReq?.threadId === threadId ? focusReq.seq : 0),
     [focusReq]
@@ -522,7 +515,23 @@ export function App(): React.ReactElement {
     </button>
   );
 
+  /**
+   * 会話の中のファイルパスを押したとき（PO要望 2026-08-11）。
+   *
+   * **ファイル面をその場所で開く。** どの場所（リポジトリ）のパスかは書かれていないので
+   * 指定しない——面が既定の場所で解決し、見つからなければ画面が選ばせる。行番号が
+   * 付いていればそこまで飛ぶ（`file.grep` の結果をそのまま押せる）。
+   */
+  const fileLinkTargets = useMemo(
+    () => ({
+      openFile: (path: string, line?: number): void =>
+        openView("file.browser", { path, ...(line !== undefined ? { line } : {}) }),
+    }),
+    [openView]
+  );
+
   return (
+    <FileLinkProvider targets={fileLinkTargets}>
     <div className={`shell ${narrow ? "is-narrow" : ""} ${workOpen ? "has-work" : ""}`}>
       <CommandPalette
         open={palette.open}
@@ -874,6 +883,7 @@ export function App(): React.ReactElement {
         </div>
       )}
     </div>
+    </FileLinkProvider>
   );
 }
 

@@ -13,6 +13,26 @@ export {
   type PiRpcDriverOptions,
 } from "./pi-rpc-driver.js";
 export {
+  ClaudeAgentDriver,
+  CLAUDE_AGENT_DRIVER_ID,
+  type ClaudeAgentDriverOptions,
+} from "./claude-agent-driver.js";
+export {
+  toClaudeToolNames,
+  resolveClaudeModel,
+  CLAUDE_TIER_MODELS,
+  CLAUDE_KNOWN_MODELS,
+  CLAUDE_DEFAULT_MODEL,
+  CLAUDE_REPORT_TOOL,
+  CLAUDE_ASK_TOOL,
+  CLAUDE_REPORT_TOOL_NAMES,
+  CLAUDE_KOBO_TOOL_NAMES,
+  CLAUDE_WEB_TOOL_NAMES,
+  type ClaudeModelTier,
+} from "./claude-agent/naming.js";
+export { SessionTranscript, readSessionIdFromLines } from "./claude-agent/session-log.js";
+export { endedWithoutReporting, CLAUDE_REPORT_PROMPT } from "./claude-agent/report.js";
+export {
   SpawnLedger,
   isProcessAlive,
   killOrphanProcess,
@@ -54,6 +74,16 @@ export {
 } from "./pi-extension/web-tools.js";
 export { createWorkerTools, createWorkerReportTools, createWorkerModuleTools } from "./worker-tools.js";
 export { createWorkerPoolSettings } from "./settings.js";
+export type { WorkerSettingsValues, WorkerSettingsUpdate } from "./settings.js";
+export {
+  BackendRegistry,
+  WORKER_TIERS,
+  type BackendView,
+  type BackendState,
+  type RuntimeRegistration,
+  type WorkerTier,
+} from "./backends.js";
+export { claudeAgentAvailability } from "./claude-agent/availability.js";
 export { resumeWorkers } from "./resume.js";
 export { createHandleGrip } from "./pi-rpc-driver.js";
 export type { HandleGrip } from "./pi-rpc-driver.js";
@@ -68,3 +98,4 @@ export {
   WORKER_POOL_DEFAULT_PORT,
   type WorkerPoolServiceOptions,
 } from "./service.js";
+export { createKoboChannel, type KoboChannel } from "./claude-agent/kobo.js";

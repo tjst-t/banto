@@ -285,6 +285,10 @@ export class EnvironmentPool {
    * 結果、同じ機械で試験を回すと**試験が立てたコンテナが本番のプール自身のものとして
    * 記録され**、本番の台帳には無いので「台帳に無い実リソース＝孤児」として毎回帳場へ
    * 知らせが飛んでいた。所有はプールごとに違うので、記録も置き場ごとに分ける。
+   *
+   * **process ドライバも同じ**（PO報告 2026-08-11）。docker だけ分けて process を
+   * 置き去りにしていたので、`again-env` / `k0-env` のように試験や一度きりの環境が
+   * 本番の孤児として上がり続けた——**片方だけ直すと直したつもりになる**。
    */
   private readonly driverEnv: Record<string, string>;
 
@@ -317,6 +321,7 @@ export class EnvironmentPool {
     this.cacheRoot = options.cacheRoot ?? path.join(options.dataDir, "env-cache");
     this.driverEnv = {
       BANTO_DOCKER_DRIVER_STATE: path.join(options.dataDir, "docker-driver-owned.json"),
+      BANTO_PROCESS_DRIVER_STATE: path.join(options.dataDir, "process-driver-owned.json"),
     };
   }
 
@@ -426,14 +431,39 @@ export class EnvironmentPool {
       }
       this.sweep();
       const orphans = await this.reconcile();
-      if (orphans.length > 0) {
-        this.attention(
-          `orphans:${orphans.length}:${orphans.map((o) => o.name).join(",")}`,
-          "env_orphans_found",
-          `台帳に無い検証環境のリソースが ${orphans.length} 件あります（${orphans
+      /**
+       * **1件ずつ数える**（PO報告 2026-08-11）。
+       *
+       * 合図を「その回に見つかった集合」で作っていたので、**同じ孤児が何度も上がった**
+       * ——他の孤児が1つ増減するだけで鍵が変わり、既に知らせたものが混ざったまま
+       * また流れる（実測：同じ 1 件が 26 回）。帳場はそれで埋まっていた。
+       *
+       * 数えるのは名前。**まだ知らせていないものが1件でもあるときだけ**知らせ、
+       * 消えた孤児は忘れる（また現れたら改めて知らせる・`watchStaleBranches` と同じ形）。
+       */
+      const seen = new Set(orphans.map((o) => `orphan:${o.driver}/${o.name}`));
+      for (const key of [...this.notified]) {
+        if (key.startsWith("orphan:") && !seen.has(key)) this.notified.delete(key);
+      }
+      const fresh = orphans.filter((o) => !this.notified.has(`orphan:${o.driver}/${o.name}`));
+      if (fresh.length > 0) {
+        for (const o of fresh) this.notified.add(`orphan:${o.driver}/${o.name}`);
+        this.eventLog.append({
+          type: "env_orphans_found",
+          data: {
+            // **知らせるのは新しく見つかった分だけ。** 全部並べると、既に知らせたものが
+            // 毎回混ざって「また増えた」と読める
+            orphans: fresh,
+            message:
+              `台帳に無い検証環境のリソースが ${fresh.length} 件あります（${fresh
+                .map((o) => o.name)
+                .join(", ")}）。Banto が把握していないものなので、消してよいか確かめてください`,
+          },
+        });
+        this.onAttention?.(
+          `台帳に無い検証環境のリソースが ${fresh.length} 件あります（${fresh
             .map((o) => o.name)
-            .join(", ")}）。Banto が把握していないものなので、消してよいか確かめてください`,
-          { data: { orphans } }
+            .join(", ")}）`
         );
       }
     } finally {
@@ -585,7 +615,31 @@ export class EnvironmentPool {
    * 勝手に消すと、Banto 以外が作ったものまで巻き込む。見えるようにするところまで。
    */
   async reconcile(): Promise<Array<{ driver: string; name: string; created: string }>> {
-    const known = new Set(this.ledger.listLive().map((e) => JSON.stringify(e.handle)));
+    /**
+     * **突き合わせは名前で**（PO報告 2026-08-11）。
+     *
+     * もとは `JSON.stringify(handle)` を丸ごと比べていた。だが**ドライバの `list` は
+     * provision に渡した handle を復元できない**——docker ドライバの実測：
+     *
+     * |          | 台帳（provision）      | `list` が返すもの                |
+     * |----------|------------------------|----------------------------------|
+     * | taskId   | `task-0005`            | `banto-env-task-0005`（接頭辞込み）|
+     * | created  | `06:05:14.091Z`        | `06:05:13.000Z`（docker は秒精度）|
+     * | workdir  | `.../hiragana-app`     | `.../hiragana-app/docker`         |
+     *
+     * `list` は docker に聞き直して組み立てるので、これは直しようがない。つまり
+     * **立っている環境が1つ残らず「台帳に無い実リソース＝孤児」として上がっていた**
+     * ——帳場が孤児の知らせで埋まっていた本当の原因はこれ。
+     *
+     * 名前は provision が決め、`list` もそれを返す（spec §2）ので、両側で一致する。
+     * 名前を持たないドライバのために、丸ごとの比較は残す。
+     */
+    const identity = (handle: unknown, fallbackName?: string): string => {
+      const record = handle as Record<string, unknown> | undefined;
+      const name = typeof record?.["name"] === "string" ? record["name"] : fallbackName;
+      return name !== undefined && name.length > 0 ? `name:${name}` : JSON.stringify(handle);
+    };
+    const known = new Set(this.ledger.listLive().map((e) => identity(e.handle)));
     const drivers = new Set(this.ledger.list().map((e) => e.driver));
     const found: Array<{ driver: string; name: string; created: string; handle?: EnvHandle }> = [];
 
@@ -605,7 +659,8 @@ export class EnvironmentPool {
       }
       if (!result.ok || !Array.isArray(result.output)) continue;
       for (const item of result.output as Array<Record<string, unknown>>) {
-        if (known.has(JSON.stringify(item["handle"]))) continue;
+        const name = typeof item["name"] === "string" ? item["name"] : undefined;
+        if (known.has(identity(item["handle"], name))) continue;
         // ドライバが生死を添えているなら、死んだものは実リソースではない。
         // 添えていないドライバでは判断材料が無いので数える（黙って見逃すより良い）
         if (item["alive"] === false) continue;

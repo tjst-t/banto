@@ -46,12 +46,17 @@ export type { EnvExposer, ExposedEnv, ExposeRequest } from "./env-exposer.js";
 export type {
   SettingField,
   SettingFieldType,
+  SettingsFields,
   ModuleSettingsSpec,
   SettingsSection,
   SettingsWriteResult,
 } from "./module-settings.js";
 // 別プロセスのモジュールが設定を届けるための橋（task-0066）
-export { createSettingsTools, createFileSettingsSection } from "./module-settings.js";
+export {
+  createSettingsTools,
+  createFileSettingsSection,
+  resolveSettingsFields,
+} from "./module-settings.js";
 export type {
   EnvProfile,
   ProfileValidation,

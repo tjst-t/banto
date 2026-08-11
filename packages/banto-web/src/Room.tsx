@@ -421,6 +421,15 @@ export function Room({
    * 真実はホスト（D3）——ここでは楽観的に書き換えず、`thread_state` が返るのを待つ。
    */
   const [renaming, setRenaming] = useState<string>();
+  /**
+   * 章を畳んでいる最中か（PO報告 2026-08-11）。
+   *
+   * **押しても何も起きないように見えていた**——引き継ぎ資料は別のモデルに書かせるので
+   * 十数秒かかることがあり、その間ホストからは何も来ない。真実はホスト側（D3）なので
+   * 会話は書き換えず、**押したことだけ**をここで持つ。畳めた印（`chapter`）か
+   * しくじり（`error`）が会話に入ったら下ろす。
+   */
+  const [folding, setFolding] = useState(false);
 
   // 会話を移ったら添付と読み捨ての記録を落とす（別の会話に付けたつもりのものを送らない）
   useEffect(() => {
@@ -429,7 +438,15 @@ export function Room({
     setDismissedErrors(new Set());
     setMerging(false);
     setRenaming(undefined);
+    setFolding(false);
   }, [threadId]);
+
+  // 畳めた／畳めなかったが会話に入ったら、押している見た目を下ろす
+  useEffect(() => {
+    if (!folding) return;
+    const last = chat[chat.length - 1];
+    if (last?.role === "chapter" || last?.role === "error") setFolding(false);
+  }, [chat, folding]);
 
   /**
    * 合図が来たら入力へ移る。
@@ -647,7 +664,8 @@ export function Room({
             <div className="room-sub">枝 ・ 還す条件：{thread.returnCondition}</div>
           )}
         </div>
-        {!slim && isBranch && onMergeBranch && (
+        {/* 畳んだ枝には出さない——還した話をもう一度還すと、幹に結論が二重に並ぶ */}
+        {!slim && isBranch && !closed && onMergeBranch && (
           <button className="btn btn--small" type="button" onClick={() => setMerging(true)}>
             畳んで幹に回収
           </button>
@@ -861,16 +879,22 @@ export function Room({
               文脈の目盛りの隣に置く——押す気になるのは、目盛りを見たときだから（D7）
             */}
             <button
-              className="chapter-close"
+              className={`chapter-close ${folding ? "is-folding" : ""}`}
               type="button"
-              onClick={() => session.closeChapter(threadId)}
+              onClick={() => {
+                setFolding(true);
+                session.closeChapter(threadId);
+              }}
               // **ターンが走っている間は押せない**（喋り出す前の間も含む）。道具を呼んで
               // いる途中で文脈が消えると、番頭は自分が何をしていたか分からなくなる
-              disabled={busy}
+              // 畳んでいる最中も押せない——二度押しても2章にはならない（帳簿が弾く）
+              disabled={busy || folding}
               title={
-                busy
-                  ? "番頭の返事が終わってから区切れます"
-                  : "ここまでを1章として畳む（前のやり取りは失われません）"
+                folding
+                  ? "引き継ぎ資料を書いています（畳めたら会話に区切りの線が入ります）"
+                  : busy
+                    ? "番頭の返事が終わってから区切れます"
+                    : "ここまでを1章として畳む（前のやり取りは失われません）"
               }
               aria-label="ここまでを章として畳む"
             >

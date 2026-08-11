@@ -175,7 +175,30 @@ export function SettingsPanel(props: SettingsPanelProps): React.ReactElement {
             {active.id === APPEARANCE_ID ? (
               <ThemePicker theme={theme} />
             ) : active.view ? (
-              <SectionView name={active.view} origin={active.origin} endpointOf={props.endpointOf} />
+              <SectionView
+                name={active.view}
+                origin={active.origin}
+                endpointOf={props.endpointOf}
+                bridge={{
+                  values: active.values,
+                  busy,
+                  reload: () => description.reload(),
+                  save: async (next) => {
+                    setBusy(true);
+                    try {
+                      const result = await callModuleTool<{ applied: boolean; message?: string }>(
+                        endpoint,
+                        "settings.update",
+                        { section: active.id, values: next }
+                      );
+                      description.reload();
+                      return result.message;
+                    } finally {
+                      setBusy(false);
+                    }
+                  },
+                }}
+              />
             ) : (
               <>
             {active.fields.map((field) => (
@@ -300,33 +323,36 @@ function SectionView({
   name,
   origin,
   endpointOf,
+  bridge,
 }: {
   name: string;
   origin: string;
   endpointOf: CanvasViewProps["endpointOf"];
+  bridge: NonNullable<CanvasViewProps["settings"]>;
 }): React.ReactElement {
-  if (origin !== "core") {
-    return <ErrorNote title="この区画は描けません">モジュールの区画は項目の宣言だけを出せます（決定41）。</ErrorNote>;
-  }
   const Component = resolveCanvasView(name);
   if (!Component) {
     return <ErrorNote title="この設定を描けません">ビュー「{name}」がUI側の解決表にありません。</ErrorNote>;
   }
-  // キャンバスの面と同じ契約で描く（決定43）。中核の区画なので到達先は中核の Tool 面。
+  // キャンバスの面と同じ契約で描く（決定43。**モジュールにも開いた**・2026-08-10）。
+  // 到達先は区画の出どころ——中核なら中核の Tool 面、モジュールならそのモジュール。
   //
-  // **モジュールの到達先も引けるようにする**（決定27 のレジストリ方式）。中核の区画でも、
+  // **他のモジュールの到達先も引けるようにする**（決定27 のレジストリ方式）。中核の区画でも、
   // モジュールが持つ口を要ることがある——場所の許可は workspace が持っている。
   // URLを直書きさせないための口であって、直接呼び合うこと自体は決定27 のとおり
+  const endpoint = origin === "core" ? CORE_TOOL_BASE_URL : (endpointOf(origin) ?? CORE_TOOL_BASE_URL);
   return (
     <Component
       params={{}}
       tabId={`settings:${name}`}
       kind={`settings.${name}`}
-      module="core"
-      endpoint={CORE_TOOL_BASE_URL}
+      module={origin}
+      endpoint={endpoint}
       endpointOf={endpointOf}
       // 設定の区画から別の面は開かない（キャンバスのタブではないので開き先が無い）
       openCanvas={() => undefined}
+      // 値の読み書きは設定画面の口のまま（GUI を宣言しても経路は増やさない）
+      settings={bridge}
     />
   );
 }

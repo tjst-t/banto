@@ -35,7 +35,6 @@ import {
 
 type Tier = "reasoning" | "standard" | "fast";
 type Scope = "host" | "worker";
-type ConstraintKey = "vision" | "local" | "free";
 
 interface KeyInfo {
   name: string;
@@ -96,14 +95,6 @@ interface CatalogData {
   files: FileState;
 }
 
-interface Resolution {
-  model: { provider: string; id: string; name: string };
-  tier: Tier;
-  requestedTier: Tier;
-  usedFallbackTier: boolean;
-  droppedPick: boolean;
-  key?: KeyInfo;
-}
 
 /** 「探して採用」の絞り込み。プロバイダごとに持つ。 */
 interface SearchState {
@@ -122,13 +113,6 @@ const EMPTY_SEARCH: SearchState = {
   sort: "name",
 };
 
-const TIERS: readonly Tier[] = ["reasoning", "standard", "fast"];
-
-const CONSTRAINTS: ReadonlyArray<{ key: ConstraintKey; label: string; hint: string }> = [
-  { key: "vision", label: "画像を読む", hint: "スクショ・図をそのまま渡す" },
-  { key: "local", label: "外に出さない", hint: "ローカル実行のみ。機密を含む" },
-  { key: "free", label: "有料キーを使わない", hint: "無料枠・ローカルのみ" },
-];
 
 const EMPTY: CatalogData = {
   providers: [],
@@ -161,18 +145,71 @@ function keyStateOf(k: KeyInfo): { text: string; tone: "ok" | "warn" | "danger" 
   return { text: "未確認", tone: "neutral" };
 }
 
-/** モデルの能力の札。**分からないものは分からないと出す**（推測しない）。 */
-function ModelCaps({ model }: { model: ModelInfo }): React.ReactElement {
+/**
+ * モデルの能力の札。**分からないものは分からないと出す**（推測しない）。
+ *
+ * 文脈長だけは**押すと手で入れられる**（PO要望 2026-08-11）。プロバイダの `/models` は
+ * 文脈長を返さないことがあり（huihui の `deepseek-v4-flash-abliterated` は 1M あるのに
+ * 分からない）、分からないままだと章立ての閾値も目盛りも効かず、実際より短いものとして
+ * 進む。**分かっている人がその場で入れられる**のがいちばん短い道。
+ */
+function ModelCaps({
+  model,
+  onSetContextWindow,
+}: {
+  model: ModelInfo;
+  onSetContextWindow?(value: number | undefined): void;
+}): React.ReactElement {
+  const [editing, setEditing] = useState<string>();
+  const commit = (): void => {
+    const raw = (editing ?? "").trim();
+    setEditing(undefined);
+    if (raw === "") {
+      // 空＝手入力の取り消し（プロバイダが言う値に戻る）
+      if (model.contextWindow !== undefined) onSetContextWindow?.(undefined);
+      return;
+    }
+    // 「1M」「200k」も受ける——人はその単位で覚えている
+    const m = /^(\d+(?:\.\d+)?)\s*([kKmM])?$/u.exec(raw);
+    if (!m) return; // 読めないものは黙って捨てる（ホスト側でも弾かれる）
+    const unit = m[2]?.toLowerCase();
+    const value = Number(m[1]) * (unit === "m" ? 1_000_000 : unit === "k" ? 1_000 : 1);
+    onSetContextWindow?.(Math.round(value));
+  };
   return (
     <span className="llm-model-caps">
-      {model.contextWindow ? (
-        <Badge title={`${model.contextWindow.toLocaleString()} トークン`}>
+      {editing !== undefined ? (
+        <input
+          className="cv-input llm-ctx-input"
+          value={editing}
+          autoFocus
+          placeholder="1M / 200k / 128000"
+          aria-label={`${model.id} の文脈長`}
+          onChange={(e) => setEditing(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing) return;
+            if (e.key === "Enter") commit();
+            if (e.key === "Escape") setEditing(undefined);
+          }}
+        />
+      ) : model.contextWindow ? (
+        <Badge
+          title={`${model.contextWindow.toLocaleString()} トークン（押すと直せます）`}
+          {...(onSetContextWindow
+            ? { onClick: () => setEditing(String(model.contextWindow)) }
+            : {})}
+        >
           {formatCount(model.contextWindow)}
         </Badge>
       ) : (
         <Badge
           tone="warn"
-          title="文脈の長さが分かりません。ハーネスは 0 として扱うため、毎ターン要約が走る可能性があります"
+          title={
+            "文脈の長さが分かりません。ハーネスは 0 として扱うため、毎ターン要約が走る可能性があります。" +
+            (onSetContextWindow ? "押すと手で入れられます" : "")
+          }
+          {...(onSetContextWindow ? { onClick: () => setEditing("") } : {})}
         >
           長さ不明
         </Badge>
@@ -195,15 +232,6 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [probeTier, setProbeTier] = useState<Tier>("standard");
-  const [probeCons, setProbeCons] = useState<Record<ConstraintKey, boolean>>({
-    vision: false,
-    local: false,
-    free: false,
-  });
-  const [probe, setProbe] = useState<
-    { ok: true; value: Resolution } | { ok: false; message: string }
-  >();
   /** プロバイダ追加の入力。開いている間だけ持つ。 */
   const [adding, setAdding] = useState<{ id: string; baseUrl: string; apiKey: string }>();
   /** キーの入力欄（プロバイダごと）。**打ち終わるまでしか持たない**——送ったら消す。 */
@@ -322,17 +350,6 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
     }
   };
 
-  const runProbe = async (tier: Tier, cons: Record<ConstraintKey, boolean>): Promise<void> => {
-    const constraints: Record<string, boolean> = {};
-    for (const c of CONSTRAINTS) if (cons[c.key]) constraints[c.key] = true;
-    try {
-      const value = await callModuleTool<Resolution>(endpoint, "llm.resolve", { tier, constraints });
-      setProbe({ ok: true, value });
-    } catch (err) {
-      setProbe({ ok: false, message: err instanceof Error ? err.message : String(err) });
-    }
-  };
-
   const toggleProvider = (id: string): void => {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -354,7 +371,6 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
     modelsByProvider.set(m.providerId, listForProvider);
   }
   const hostModels = data.models.filter((m) => m.hostUsable);
-  const workerDefault = data.tiers.find((t) => t.tier === data.defaults.workerTier);
   const tierOptions = data.tiers.map((t) => ({ value: t.tier, label: t.label, title: t.description }));
 
   return (
@@ -411,29 +427,16 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                 ))}
               </Select>
             </div>
-            <div className="llm-role">
-              <span className="llm-role-mark">職</span>
-              <div className="llm-role-main">
-                <div className="llm-role-name">職人</div>
-                <div className="llm-role-sub">
-                  {workerDefault?.pick
-                    ? `制約なしのとき ${workerDefault.pick.provider} / ${workerDefault.pick.model}`
-                    : "tier で指定"}
-                </div>
-              </div>
-              <Select
-                disabled={busy}
-                aria-label="職人の既定 tier"
-                value={data.defaults.workerTier}
-                onChange={(e) => void run("llm.set_worker_tier", { tier: e.target.value })}
-              >
-                {data.tiers.map((t) => (
-                  <option key={t.tier} value={t.tier}>
-                    {t.label}
-                  </option>
-                ))}
-              </Select>
-            </div>
+            {/*
+              職人の既定（等級・等級ごとのモデル）は**「職人」の区画へ移した**
+              （PO要望 2026-08-10）。ここに置くと pi のモデルだけが特別扱いになり、
+              Claude Code のような登録に載らないバックエンドのモデルを並べられない。
+              この区画が持つのは素材（プロバイダ・鍵・モデル）と**採用**まで。
+            */}
+            <p className="cv-muted llm-moved">
+              職人が何で動くか・等級ごとにどのモデルを使うかは「職人」の区画で決めます。
+              ここで決めるのは<strong>職人に使わせてよいモデル</strong>（下の採用）までです。
+            </p>
           </section>
 
           {/* ② どう選ばれるか */}
@@ -444,7 +447,6 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                 <div key={t.tier} className="llm-tier-card">
                   <div className="llm-tier-head">
                     <Badge className={`is-tier-${t.tier}`}>{t.label}</Badge>
-                    {data.defaults.workerTier === t.tier && <Badge tone="ok">職人の既定</Badge>}
                   </div>
                   <textarea
                     className="llm-tier-desc"
@@ -460,85 +462,17 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                       }
                     }}
                   />
-                  <div className="llm-tier-pick">
-                    第一候補: <code>{t.pick ? `${t.pick.provider} / ${t.pick.model}` : "—"}</code>
-                  </div>
+
                 </div>
               ))}
             </div>
           </section>
 
-          <section className="llm-sec">
-            <div className="llm-sec-label">解決の確認</div>
-            <div className="llm-probe">
-              <div className="llm-probe-row">
-                <span className="llm-probe-label">tier</span>
-                <div className="llm-probe-opts">
-                  {TIERS.map((t) => (
-                    <Chip
-                      key={t}
-                      on={probeTier === t}
-                      onClick={() => {
-                        setProbeTier(t);
-                        void runProbe(t, probeCons);
-                      }}
-                    >
-                      {data.tiers.find((x) => x.tier === t)?.label ?? t}
-                    </Chip>
-                  ))}
-                </div>
-              </div>
-              <div className="llm-probe-row">
-                <span className="llm-probe-label">制約</span>
-                <div className="llm-probe-opts">
-                  {CONSTRAINTS.map((c) => (
-                    <Chip
-                      key={c.key}
-                      on={probeCons[c.key]}
-                      title={c.hint}
-                      onClick={() => {
-                        const next = { ...probeCons, [c.key]: !probeCons[c.key] };
-                        setProbeCons(next);
-                        void runProbe(probeTier, next);
-                      }}
-                    >
-                      {c.label}
-                    </Chip>
-                  ))}
-                </div>
-              </div>
-              {probe ? (
-                <div className={`llm-probe-out ${probe.ok ? "" : "is-none"}`}>
-                  {probe.ok ? (
-                    <>
-                      <div className="llm-probe-model">
-                        {probe.value.model.provider} / {probe.value.model.id}
-                      </div>
-                      <div className="llm-probe-line">
-                        キー: <code className="cv-mono">{probe.value.key?.name ?? "該当なし"}</code>
-                      </div>
-                      {probe.value.usedFallbackTier && (
-                        <div className="llm-probe-line is-warn">
-                          要求した tier に候補が無いため別の tier に落ちました
-                        </div>
-                      )}
-                      {probe.value.droppedPick && (
-                        <div className="llm-probe-line is-warn">
-                          第一候補は制約で落ちたため、同じ tier の次の候補です
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    probe.message
-                  )}
-                </div>
-              ) : (
-                <p className="cv-muted" style={{ margin: 0 }}>
-                  tier と制約を選ぶと、いまの設定で実際にどのモデルに決まるかが出ます。
-                </p>
-              )}
-            </div>
-          </section>
+          {/*
+            「解決の確認」（tier と制約を選んで実際に決まるモデルを見る）はここから外した。
+            確かめたいのは**職人がどのモデルで動くか**で、その割り当ては「職人」の区画に
+            あるため——あちらの等級ごとの行に「指定なし（いまは X になります）」が出る。
+          */}
 
           {/* ③ 素材 */}
           <section className="llm-sec">
@@ -759,7 +693,16 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                           return (
                             <div key={`${m.providerId}/${m.id}`} className="llm-model">
                               <span className="llm-model-id">{m.id}</span>
-                              <ModelCaps model={m} />
+                              <ModelCaps
+                                model={m}
+                                onSetContextWindow={(contextWindow) =>
+                                  void run("llm.set_context_window", {
+                                    provider: m.providerId,
+                                    model: m.id,
+                                    ...(contextWindow !== undefined ? { contextWindow } : {}),
+                                  })
+                                }
+                              />
                               <span className="llm-model-acts">
                                 {/* tier は3つしかない。**開いて選ぶより、並べて押す** */}
                                 <Segmented
@@ -906,7 +849,16 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                             {result.models.map((m) => (
                               <div key={`found/${m.providerId}/${m.id}`} className="llm-model">
                                 <span className="llm-model-id">{m.id}</span>
-                                <ModelCaps model={m} />
+                                <ModelCaps
+                                model={m}
+                                onSetContextWindow={(contextWindow) =>
+                                  void run("llm.set_context_window", {
+                                    provider: m.providerId,
+                                    model: m.id,
+                                    ...(contextWindow !== undefined ? { contextWindow } : {}),
+                                  })
+                                }
+                              />
                                 <span className="llm-model-acts">
                                   <Button
                                     small

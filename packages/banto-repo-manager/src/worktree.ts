@@ -15,7 +15,9 @@
 import * as childProcess from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { output, runCommand, type CommandRunner } from "./command.js";
+import { runCommand, type CommandRunner } from "./command.js";
+import { worktreePathFor } from "./layout.js";
+import { worktreeForBranch } from "./git-worktrees.js";
 
 /**
  * Create a git worktree for a task if it does not already exist.
@@ -51,21 +53,21 @@ export async function createWorktree(repoPath: string, worktreePath: string): Pr
 }
 
 /**
- * タスク用のワークツリーを `gwq` の置き場に作る（ADR-0013 決定60・task-0060 a6）。
+ * タスク用のワークツリーを作る（ADR-0013 決定60・task-0060 a6。PO裁定 2026-08-11 で自前に）。
  *
- * **置き場所を自分で決めない。** `gwq add` に作らせるので、出来上がりは gwq の設定
- * （`worktree.basedir` と命名テンプレート）に従い、そのまま `gwq list` に載る＝番頭と PO が
- * **場所として中を読める**。Kobo が `<dataDir>/worktrees/` に作っていた頃は、実装中の
- * 中身を誰も読めなかった（決定36h の2段目）。
+ * **置き場は `layout.ts` が決める。** 以前は `gwq add` に作らせていたが、`gwq` は置き場を
+ * `git remote get-url origin` から組み立てるので、**リモートの無いリポジトリでは作れない**
+ * ——ひらがなの task-0001 / 0002 はここで止まった（`failed to generate worktree path`）。
+ * いまは「リポジトリが根のどこに在るか」から導くので、リモートの有無に依らない。
+ * 並びは今までと同じなので、手元のワークツリーはそのまま使える。
  *
  * **冪等**：そのブランチのワークツリーが既にあれば、作らずにその場所を返す。
  * 監査・rework は実装者と同じワークツリーを見る必要があるため、ここが冪等でないと
  * 「作り直して空のディレクトリを監査する」ことになる。
  *
- * **出来上がりの場所は git に聞く**（gwq の出力を解釈しない・D3）。`git worktree list
- * --porcelain` はリポジトリに紐づくので、同名ブランチが別リポジトリにあっても取り違えない。
+ * **出来上がりの場所は git に聞く**（組み立てた見込みのパスを返さない・D3）。
  *
- * I2: `gwq` が無い／失敗したときは黙って別の場所に作らない。理由を添えて投げる
+ * I2: 作れなかったときは黙って別の場所に作らない。理由を添えて投げる
  *     ——呼び出し側（Kobo）は task_failed として記録し、止まる。
  */
 export async function addTaskWorktree(opts: {
@@ -74,26 +76,36 @@ export async function addTaskWorktree(opts: {
   branch: string;
   /** 外部コマンドの実行口。テストで差し替える。 */
   run?: CommandRunner;
+  /** 置き場の根。省略すると設定（`BANTO_WORKTREE_BASE`）か既定。 */
+  base?: string;
+  /** リポジトリの根。id の導出に使う。 */
+  roots?: readonly string[];
 }): Promise<{ path: string; created: boolean }> {
   const run = opts.run ?? runCommand;
 
   const existing = await worktreeForBranch(run, opts.repoPath, opts.branch);
   if (existing) return { path: existing, created: false };
 
+  const target = worktreePathFor({
+    repoPath: opts.repoPath,
+    branch: opts.branch,
+    ...(opts.base ? { base: opts.base } : {}),
+    ...(opts.roots ? { roots: opts.roots } : {}),
+  });
+
   // 既にブランチがあるなら -b は付けない（rework でブランチだけ残っている場合）
   const branchExists = await run("git", ["-C", opts.repoPath, "rev-parse", "--verify", opts.branch]);
-  const args = branchExists.ok ? ["add", opts.branch] : ["add", "-b", opts.branch];
-  const result = await run("gwq", args, { cwd: opts.repoPath });
-  if (result.notFound) {
-    throw new Error(
-      "gwq が導入されていないため、ワークツリーを作れません。" +
-        "Kobo は置き場所を自分で決めません（決定60）——gwq を入れるか、" +
-        "worktreeBaseDir を明示してください。"
-    );
-  }
+  const args = branchExists.ok
+    ? ["-C", opts.repoPath, "worktree", "add", target, opts.branch]
+    : ["-C", opts.repoPath, "worktree", "add", "-b", opts.branch, target];
+
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const result = await run("git", args);
+  if (result.notFound) throw new Error("git が導入されていないため、ワークツリーを作れません。");
   if (!result.ok) {
     throw new Error(
-      `gwq ${args.join(" ")} が失敗しました: ${result.stderr.trim() || result.stdout.trim() || "(出力なし)"}`
+      `git worktree add が失敗しました（${target}）: ` +
+        `${result.stderr.trim() || result.stdout.trim() || "(出力なし)"}`
     );
   }
 
@@ -101,40 +113,11 @@ export async function addTaskWorktree(opts: {
   // I2: 作ったつもりで見当たらないなら、見込みのパスを組み立てて返さない
   if (!created) {
     throw new Error(
-      `gwq はワークツリーを作りましたが、${opts.repoPath} の git worktree list に ` +
+      `ワークツリーを作りましたが、${opts.repoPath} の git worktree list に ` +
         `"${opts.branch}" が現れませんでした。`
     );
   }
   return { path: created, created: true };
-}
-
-/**
- * そのリポジトリで、指定ブランチをチェックアウトしているワークツリーの場所。
- *
- * 本体（先頭のエントリ）は除く——本体で作業させると worktree の意味が無い。
- */
-async function worktreeForBranch(
-  run: CommandRunner,
-  repoPath: string,
-  branch: string
-): Promise<string | undefined> {
-  const raw = await output(run, "git", ["-C", repoPath, "worktree", "list", "--porcelain"]);
-  if (raw === undefined) return undefined; // git が無い環境（呼び出し側が別途失敗する）
-
-  // --porcelain は空行区切りのブロック。先頭ブロックが本体
-  const blocks = raw.split("\n\n").filter((b) => b.trim().length > 0);
-  for (const [index, block] of blocks.entries()) {
-    if (index === 0) continue; // 本体
-    const lines = block.split("\n").map((l) => l.trim());
-    const pathLine = lines.find((l) => l.startsWith("worktree "));
-    const branchLine = lines.find((l) => l.startsWith("branch "));
-    if (!pathLine || !branchLine) continue;
-    const ref = branchLine.slice("branch ".length).trim();
-    if (ref === `refs/heads/${branch}` || ref === branch) {
-      return path.resolve(pathLine.slice("worktree ".length).trim());
-    }
-  }
-  return undefined;
 }
 
 /**

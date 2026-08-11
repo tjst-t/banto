@@ -9,7 +9,7 @@
  * 何を読むか・どのモードで出すかは呼ぶ側が決める。** ここは受け取ったものを描くだけ。
  */
 
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MarkdownLink } from "../links.js";
@@ -237,8 +237,18 @@ function MarkdownCode({
   return <ShikiBlock code={text} lang={lang} scheme={scheme} />;
 }
 
-/** Markdown の整形表示。会話側（`.markdown`）と同じ語彙で描く。 */
-export function MarkdownBody({
+/**
+ * Markdown の整形表示。会話側（`.markdown`）と同じ語彙で描く。
+ *
+ * **中身が変わらない限り組み直さない**（PO報告 2026-08-11）。ここを素で置いていたので、
+ * 画面のどこかが描き直されるたびに**ファイル全体の Markdown を解析し直して**いた。
+ * 実測：59KB の `.md` を開いた状態で入力欄に1文字打つと **128ms**——プロファイルの上位が
+ * micromark（Markdown の字句解析）で埋まる。読んでいるファイルは打鍵で変わらないのだから、
+ * 解析も1度でよい。
+ *
+ * `components` も毎回作らない——中で作ると、要素の同一性が変わって下の木が全部描き直される。
+ */
+export const MarkdownBody = React.memo(function MarkdownBody({
   content,
   scheme,
   onReady,
@@ -247,23 +257,27 @@ export function MarkdownBody({
   scheme: Scheme;
   onReady?: () => void;
 }): React.ReactElement {
+  const components = useMemo(
+    () => ({
+      code: (props: React.ComponentProps<"code">) => (
+        <MarkdownCode {...props} scheme={scheme} {...(onReady ? { onMermaidReady: onReady } : {})} />
+      ),
+      // 外に出るリンクは別タブへ（links.tsx）。読んでいる面ごと差し替わらない
+      a: MarkdownLink,
+    }),
+    [scheme, onReady]
+  );
   return (
     <div className="markdown">
-      <Markdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          code: (props) => (
-            <MarkdownCode {...props} scheme={scheme} {...(onReady ? { onMermaidReady: onReady } : {})} />
-          ),
-          // 外に出るリンクは別タブへ（links.tsx）。読んでいる面ごと差し替わらない
-          a: MarkdownLink,
-        }}
-      >
+      <Markdown remarkPlugins={REMARK_PLUGINS} components={components}>
         {content}
       </Markdown>
     </div>
   );
-}
+});
+
+/** 毎回作らない（新しい配列を渡すと react-markdown が組み直す）。 */
+const REMARK_PLUGINS = [remarkGfm];
 
 /** コード種別ファイルの preview 表示（ハイライト・行番号なし）。 */
 function CodePreview({

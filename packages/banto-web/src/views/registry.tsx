@@ -22,6 +22,7 @@ import { EnvManager } from "./EnvManager.js";
 import { WorkerViewer } from "./WorkerViewer.js";
 import { MemoryViewer } from "./MemoryViewer.js";
 import { SkillViewer } from "./SkillViewer.js";
+import { WorkerSettings } from "./WorkerSettings.js";
 import { LlmRegistryViewer } from "./LlmRegistryViewer.js";
 import { KoboBoard } from "./KoboBoard.js";
 import { KoboReview } from "./KoboReview.js";
@@ -54,6 +55,26 @@ export interface CanvasViewProps {
    * ——開き方（新しいタブか・どこに置くか）はキャンバスの持ち物で、面は知らなくてよい。
    */
   openCanvas(kind: string, params?: Record<string, unknown>): void;
+  /**
+   * 設定の区画として描かれているときだけ渡る（決定43 をモジュールへ開放・2026-08-10）。
+   *
+   * **値のやりとりは設定画面の口のまま**——GUI を宣言しても、読み書きは
+   * `settings.describe` / `settings.update` を通る。モジュールごとに独自の口を生やすと、
+   * 番頭に渡らないはずの操作が別の面から漏れる。
+   */
+  settings?: SettingsViewBridge;
+}
+
+/** 設定の区画として描かれる面に渡すもの。 */
+export interface SettingsViewBridge {
+  /** その区画の `read()` が返した値。 */
+  values: Record<string, unknown>;
+  /** 触った分だけを渡して保存する（`settings.update`）。返り値は画面に出す一言。 */
+  save(values: Record<string, unknown>): Promise<string | undefined>;
+  /** 読み直す（他の面で変えたときのため）。 */
+  reload(): void;
+  /** 保存中か（画面が操作を止めるため）。 */
+  busy: boolean;
 }
 
 /**
@@ -77,6 +98,8 @@ const REGISTRY: Record<string, ComponentType<CanvasViewProps>> = {
   // 中核の設定区画が名指しで描く面（ADR-0011 決定43）。キャンバスには出ない
   LlmRegistryViewer,
   PlaceSettings,
+  // 職人（worker-pool モジュール提供）。バックエンドと等級ごとのモデルの当て方
+  WorkerSettings,
   // 工場（kobo モジュール提供。ADR-0013 決定56・57・59）
   KoboBoard,
   KoboReview,

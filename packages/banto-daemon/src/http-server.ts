@@ -25,9 +25,10 @@
  */
 
 import * as http from "node:http";
-import { MODULE_TOOL_PATH } from "@banto/core";
+import { MODULE_TOOL_PATH, createSettingsTools } from "@banto/core";
 import type { Daemon } from "./daemon.js";
 import { createKoboTools } from "./kobo-tools.js";
+import { createKoboSettings } from "./kobo-settings.js";
 
 /** モジュールとしての到達先（`{baseUrl}/tools/{名前}`）。決定27b。 */
 export const KOBO_MODULE_PATH = "/api/kobo";
@@ -85,8 +86,18 @@ async function readBody(req: http.IncomingMessage): Promise<unknown> {
 }
 
 export function createHttpServer(daemon: Daemon): http.Server {
-  // 決定27b の呼び出し規約で公開する Tool（番頭ホストはここへ繋ぐ）
-  const koboTools = createKoboTools(daemon);
+  // 決定27b の呼び出し規約で公開する Tool（番頭ホストはここへ繋ぐ）。
+  // 設定の口（決定41）も同じ面に出す——工場は独立プロセスなので、設定画面は
+  // `kobo.settings_read` / `kobo.settings_write` を HTTP で叩く（task-0066 と同じ形）
+  const koboTools = [...createKoboTools(daemon), ...createSettingsTools(
+      "kobo",
+      createKoboSettings({
+        roleAssignments: () => daemon.roleAssignments(),
+        setRoleAssignments: (next) => daemon.setRoleAssignments(next),
+        selectableModelNames: () => daemon.selectableModelNames(),
+        selectableModels: () => daemon.selectableModels(),
+      })
+    )];
 
   const routes: Route[] = [
     // Health check

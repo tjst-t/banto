@@ -180,13 +180,17 @@ export class StateMachine {
    *   1. state_transitioned(from=currentStatus, to="paused") — D3: owns the status change
    *   2. task_paused(suspended_from=currentStatus)           — metadata: records restore point
    *
+   * `reason` は**なぜ止まったか**（PO報告 2026-08-11）。知らせの層はこれを読んで札に出す
+   * ——無いと「コンフリクト等で保留されています」としか言えず、職人の質問文が消える。
+   *
    * Returns { ok: false } if the task is not in a pausable state.
    */
   static pause(
     log: EventLog,
     taskId: string,
     currentStatus: TaskStatus,
-    projectTag: string = "default"
+    projectTag: string = "default",
+    reason?: string
   ): TransitionResult {
     if (!PAUSABLE_STATES.has(currentStatus)) {
       log.append({
@@ -207,6 +211,7 @@ export class StateMachine {
       taskId,
       from: currentStatus,
       to: "paused",
+      ...(reason ? { reason } : {}),
     });
     // Metadata event: records suspended_from so resume() can restore it
     log.append({

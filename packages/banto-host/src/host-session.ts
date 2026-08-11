@@ -27,6 +27,7 @@ import type { HandoffStore } from "./handoffs.js";
 import { CORE_ORIGIN, resolveSkills, type SkillEntry } from "./module.js";
 import { LEARNED_ORIGIN, type LearnedSkillStore } from "./skill-learning.js";
 import { createSkillTools } from "./skill-tools.js";
+import { guardTurn, type TurnBudget } from "./turn-budget.js";
 import { loadBantoSkills, renderSkillsForPrompt } from "./skills.js";
 import { toPiTool, type NamespacedToolDefinition } from "./tool-registry.js";
 
@@ -67,6 +68,11 @@ export interface CreateBantoHostSessionOptions {
   handoffs?: { store: HandoffStore; threadId: string };
   /** 退避に回す大きさ（文字数）。省略すると `DEFAULT_ARTIFACT_THRESHOLD_CHARS`。 */
   artifactThresholdChars?: number;
+  /**
+   * **ターンの予算**（PO報告 2026-08-11）。渡すと、番頭が呼べる道具すべてに掛かる。
+   * 渡さないと掛からない（試験や、別の使い方をする呼び出し元のため）。
+   */
+  turnBudget?: TurnBudget;
   /**
    * Tool 名からモジュール名を引く（ADR-0017 決定81(d)）。
    *
@@ -224,6 +230,18 @@ export async function createBantoHostSession(
       )
     : tools;
 
+  /**
+   * **ターンの予算を、番頭が呼べる道具**すべて**に掛ける**（PO報告 2026-08-11・P4）。
+   *
+   * ここが「番頭に渡る道具の最後の1点」——モジュールの口も、中核の口（canvas / thread /
+   * llm）も、ここで足される記憶・SKILL・成果物・引き継ぎの口も、全部これを通る。
+   * 呼び出し側で選んで掛けると、**足し忘れた道具が抜け道になる**（実際、最初に書いた
+   * 対策は `file.find` を数えておらず、実機の暴走を止められなかった）。
+   */
+  const budgeted = options.turnBudget
+    ? offloaded.map((tool) => guardTurn(tool, options.turnBudget!))
+    : offloaded;
+
   return createAgentSession({
     cwd,
     agentDir,
@@ -231,7 +249,7 @@ export async function createBantoHostSession(
     modelRuntime: options.modelRuntime,
     resourceLoader,
     noTools: "builtin",
-    customTools: offloaded.map(toPiTool),
+    customTools: budgeted.map(toPiTool),
     sessionManager: options.sessionManager ?? SessionManager.inMemory(),
   });
 }

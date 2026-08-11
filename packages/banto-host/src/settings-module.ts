@@ -11,7 +11,8 @@
  */
 
 import { Type } from "typebox";
-import type { ModuleSettingsSpec, SettingsSection } from "@banto/core";
+import { resolveSettingsFields } from "@banto/core";
+import type { ModuleSettingsSpec, SettingField, SettingsSection } from "@banto/core";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 import type { BantoModule, ModuleRegistry } from "./module.js";
 import type { SettingsStore } from "./settings-store.js";
@@ -27,7 +28,7 @@ interface SettingsSectionView {
   origin: string;
   /** 由来の表示名（モジュールの `title`）。画面が「どこが公開しているか」を出すため。 */
   originTitle: string;
-  fields: ModuleSettingsSpec["fields"];
+  fields: SettingField[];
   /** 項目で表せない中核の区画が指定する描き先（ADR-0011 決定43）。 */
   view?: string;
   values: Record<string, unknown>;
@@ -86,11 +87,19 @@ export function createSettingsModule(options: SettingsModuleOptions): BantoModul
       const views: SettingsSectionView[] = [];
       for (const { id, origin, originTitle, spec } of sections()) {
         let values: Record<string, unknown> = {};
+        // 宣言は**開くたびに解決する**（選択肢が動く区画があるため。PO要望 2026-08-10）
+        let fields: SettingField[] = [];
         try {
           values = await spec.read();
         } catch (err) {
           // I2: 1区画が読めなくても他は出す。ただし黙らせない
           console.error(`[banto] 設定「${spec.title}」を読めませんでした: ${String(err)}`);
+        }
+        try {
+          fields = await resolveSettingsFields(spec);
+        } catch (err) {
+          // I2: 選択肢を数え上げられなかったことを「項目なし」に見せない
+          console.error(`[banto] 設定「${spec.title}」の項目を組み立てられませんでした: ${String(err)}`);
         }
         views.push({
           id,
@@ -98,7 +107,7 @@ export function createSettingsModule(options: SettingsModuleOptions): BantoModul
           ...(spec.description ? { description: spec.description } : {}),
           origin,
           originTitle,
-          fields: spec.fields,
+          fields,
           ...(spec.view ? { view: spec.view } : {}),
           values,
         });

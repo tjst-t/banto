@@ -255,3 +255,12 @@ export {
   withEmptyResponseGuard,
   type GuardableSession,
 } from "./turn-guard.js";
+export {
+  createTurnBudget,
+  guardTurn,
+  DEFAULT_REPEAT_LIMIT,
+  DEFAULT_CALL_LIMIT,
+  type TurnBudget,
+  type TurnBudgetOptions,
+} from "./turn-budget.js";
+export { withWorkerCard, WORKER_VIEW } from "./worker-card.js";

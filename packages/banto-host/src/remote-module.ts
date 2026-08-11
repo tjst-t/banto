@@ -74,6 +74,22 @@ export function createRemoteSettings(
   const client = createModuleClient({ modules: { [moduleName]: { baseUrl: remoteUrl } } }, fetchImpl);
   return {
     ...spec,
+    /**
+     * **項目の宣言は到達先から取る**（PO要望 2026-08-10）。写しが持っている宣言は
+     * 静的なので、選択肢が動く区画（採用済みのモデル・使えるバックエンド）では
+     * 「画面に並ぶもの」と「実際に選べるもの」が食い違う。届かないときだけ写しに落ちる。
+     */
+    async fields() {
+      try {
+        const result = await client.invoke(moduleName, `${domain}.settings_read`, {});
+        const remote = (result.details as { fields?: unknown })?.fields;
+        if (Array.isArray(remote)) return remote as ModuleSettingsSpec["fields"] & [];
+      } catch {
+        // I2 の例外: 届かないことを「項目なし」にしない。写しの宣言で描く
+        // （値の読み出しは同じ呼びで別に失敗し、そちらが画面に理由を出す）
+      }
+      return typeof spec.fields === "function" ? await spec.fields() : spec.fields;
+    },
     async read() {
       const result = await client.invoke(moduleName, `${domain}.settings_read`, {});
       return ((result.details as { values?: Record<string, unknown> })?.values ?? {}) as Record<

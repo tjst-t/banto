@@ -32,6 +32,7 @@ import { createKoboModule, defaultKoboUrl } from "@banto/daemon";
 import { BANTO_ORIGIN, startWorkerNotices, threadOrigin } from "./worker-notice.js";
 import { guardWorkerOrigin } from "./worker-guard.js";
 import { startKoboNotices } from "./kobo-notice.js";
+import { createRemoteSettings } from "./remote-module.js";
 import { startEnvNotices } from "./env-notice.js";
 
 import { Canvas, createCanvasCatalog } from "./canvas.js";
@@ -41,6 +42,7 @@ import { createInboxTools } from "./inbox-tools.js";
 import { UserThemes } from "./user-themes.js";
 import { createBantoHostSession } from "./host-session.js";
 import { resumeInterruptedTurn, withEmptyResponseGuard } from "./turn-guard.js";
+import type { HostSession } from "./server.js";
 import { BantoHostClient } from "./client.js";
 import { BANTO_DEFAULT_PORT, type ServerEvent } from "./protocol.js";
 import { BantoHostServer } from "./server.js";
@@ -89,6 +91,8 @@ import {
 } from "./places.js";
 import { guardPathArg } from "./place-scoped.js";
 import { createSkillTools } from "./skill-tools.js";
+import { createTurnBudget } from "./turn-budget.js";
+import { withWorkerCard } from "./worker-card.js";
 import { bindToolArgs, createThreadTools } from "./thread-tools.js";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 import { Type } from "typebox";
@@ -726,7 +730,13 @@ async function serve(options: ServeOptions): Promise<void> {
   // 「積み方を知らない」状態になり、自分で実装を始めてしまう（D10 が崩れる）。
   // 立っているかは起動時に一度だけ確かめてログに出す（黙って届かない状態を作らない）
   const koboUrl = defaultKoboUrl();
-  const koboModule = createKoboModule(koboUrl);
+  const koboContract = createKoboModule(koboUrl);
+  // 決定41: 工場の区画（役割ごとの職人の当て方）も設定画面に出す。項目の宣言は
+  // 工場のパッケージから、読み書きは HTTP 越しに——Worker Pool と同じ形（task-0066）
+  const koboModule = {
+    ...koboContract,
+    settings: createRemoteSettings(koboContract.settings, "kobo", koboContract.name, koboUrl),
+  };
 
   /**
    * 取次（受け口）。**会話に紐づかない**——どの会話を見ていても、POを待たせている
@@ -880,6 +890,11 @@ async function serve(options: ServeOptions): Promise<void> {
   let server: BantoHostServer;
   const threadFactory: ThreadFactory = async (threadId, resumeFrom, wantedModel, identity) => {
     const canvas = new Canvas(catalog);
+    /**
+     * ターンの予算（PO報告 2026-08-11）。**会話ごと**に持つ——隣の会話の数えと混ぜると、
+     * 正常な1回目の確認まで断ることになる。
+     */
+    const turnBudget = createTurnBudget();
     // 提案§3.1: ツール出力の退避先。**会話ごと**——別の会話の観測を引けると、
     // スレッドごとに文脈を分けている意味（決定35a）が崩れる。
     // ADR-0017 決定81(a): 器に載せるのはここに退避済みの結果だけ（データを再送させない）
@@ -949,12 +964,26 @@ async function serve(options: ServeOptions): Promise<void> {
       }),
       // 決定35a: 職人の報告は**起こしたスレッド**へ返る。番頭に自分の threadId を
       // 書かせず、ここで固定して渡す（番頭は自分がどのスレッドかを知らない）
+      /**
+       * ターンの予算は**ここでは掛けない**（PO報告 2026-08-11）。
+       *
+       * 番頭が呼べる道具の最後の1点（`createBantoHostSession`）でまとめて掛ける——
+       * 呼び出し側で選んで掛けると、**足し忘れた道具が抜け道になる**。実際、最初に
+       * 書いた対策はモジュールの口だけを見ていて、`file.find` を混ぜられた実機の暴走を
+       * 止められなかった。
+       */
       ...modules.tools().map((tool) => {
         if (tool.name === "worker.delegate") {
           const bound = bindToolArgs(tool, { origin: threadOrigin(threadId) });
           // 決定36g：職人の作業場所を砦に通す。いままで無検査で、番頭が任意の
           // ディレクトリを職人に書き換えさせられた
-          return guardPathArg(bound, places, "worktreePath");
+          const guarded = guardPathArg(bound, places, "worktreePath");
+          /**
+           * **起こしたら会話に口が立つ**（PO要望 2026-08-11）。番頭が `canvas.open` を
+           * 思い出したときだけ、では忘れたときに見えない——枝の札（決定77）と同じく
+           * 機構にする。「どこにも出ていない職人は起こせない」。
+           */
+          return withWorkerCard(guarded, (utsuwa) => server.showUtsuwa(threadId, utsuwa));
         }
         // 決定63：**自分が起こしていない職人は畳めない。** Kobo の職人を番頭が畳むと、
         // Kobo は動いているつもりのまま実体が消える（Worker Pool 側には置けない——
@@ -1038,6 +1067,8 @@ async function serve(options: ServeOptions): Promise<void> {
       // **会話ごとに立場が違う**ので、そこだけを足して渡す（PO報告 2026-08-10）
       systemPrompt: SYSTEM_PROMPT + describeThread(identity),
       tools: ownTools,
+      // 番頭が呼べる道具すべてに掛かる（抜け道を作らない）
+      turnBudget,
       memory,
       memoryTrunks: here,
       /**
@@ -1070,6 +1101,20 @@ async function serve(options: ServeOptions): Promise<void> {
     // 応答が止まる。withEmptyResponseGuard が空応答を continue() で再試行する。
     // 再試行はガードの中で完結するので、server は HostSession 契約のまま無変更（決定3）
     const guardedSession = withEmptyResponseGuard(session);
+    /**
+     * 新しい入力が来たら、同じ確認の数えを戻す（PO報告 2026-08-11）。
+     *
+     * 数えは「ターンの中で同じことを繰り返していないか」を見るもの。PO の言葉や職人の
+     * 知らせが来たなら状況は変わっているので、そこから数え直す——さもないと、前のターンの
+     * 数えが残っていて**正常な1回目の確認まで断る**ことになる。
+     */
+    const countingSession: HostSession = {
+      ...guardedSession,
+      prompt: async (text, options) => {
+        turnBudget.reset();
+        return guardedSession.prompt(text, options);
+      },
+    };
 
     // 提案§3.2: pi の自動コンパクションを切り、章立てに置き換える。
     //
@@ -1130,12 +1175,18 @@ async function serve(options: ServeOptions): Promise<void> {
           ? { thresholdRatio: chapterThresholdRatio()! }
           : {}),
         onChapterClosed: (record) => {
-          // 畳んだことは隠さない。番頭が細部を覚えていないときに PO が気づける
-          server.notify(
-            `ここまでを第${record.chapter}章として畳みました（${record.summary.topic}）。` +
-              "前のやり取りは失われていません——詳細が要るときは番頭が引き継ぎ資料を読みます。",
-            { threadId, source: "system" }
-          );
+          /**
+           * 畳んだことは隠さない——が、**番頭には言わない**（PO報告 2026-08-11）。
+           *
+           * 知らせ（`notify`）で流していたので、畳むたびに**ターンが回っていた**。
+           * 番頭は畳んだばかりの空の文脈で、PO が何も頼んでいないのに `thread.list`・
+           * `inbox.list`・`kobo.list` と調べ始める——押した側から見れば「区切ったのに
+           * 勝手に喋り出す」で、軽くしたはずの文脈もその場で埋め直される。
+           *
+           * 章の頭には引き継ぎ資料が入っている（`renderChapterOpening`）ので、番頭に
+           * 改めて教える必要はない。**画面に区切りの線が1本入れば足りる**。
+           */
+          server.markChapter(threadId, record.chapter, record.summary.topic);
         },
         /**
          * **畳めなかったことも隠さない**（inc-0050）。
@@ -1175,7 +1226,7 @@ async function serve(options: ServeOptions): Promise<void> {
         ...createHandoffTools(handoffs, threadId),
       ];
     return {
-      session: guardedSession,
+      session: countingSession,
       canvas,
       tools,
       /**
@@ -1185,7 +1236,9 @@ async function serve(options: ServeOptions): Promise<void> {
        * ここから先は別の前提で進めたい」は量では拾えない。`chapters` が無い構成
        * （要約に使えるモデルが無い）では渡さない。サーバがその不在を理由として出す
        */
-      ...(chapters ? { closeChapter: async () => void (await chapters.closeChapter()) } : {}),
+      // **畳めたかどうかを返す**——溜まっていない章は畳みようがなく、黙って何も
+      // 起きないと押した側からは壊れて見える（PO報告 2026-08-11）
+      ...(chapters ? { closeChapter: async () => (await chapters.closeChapter()) !== undefined } : {}),
       // この会話が実際に使っているモデル。画面と索引へ出す（会話ごとに持つ）
       ...(threadModel && wanted
         ? {

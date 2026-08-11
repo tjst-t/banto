@@ -93,8 +93,11 @@ export type ThreadFactory = (
    *
    * 章立てが働いていない構成（要約に使えるモデルが無い）では渡らない——
    * その場合は「畳めません」と理由を出す（I2：黙って何も起きないのが一番困る）。
+   *
+   * **畳んだかどうかを返す。** まだ何も溜まっていない章は畳みようがなく、以前は
+   * 黙って何も起きなかった（PO報告 2026-08-11）——押した側からは壊れて見える。
    */
-  closeChapter?: () => Promise<void>;
+  closeChapter?: () => Promise<boolean>;
   /**
    * 対話ループの後始末。スレッドを閉じるとき・ホストを終うときに呼ばれる。
    *
@@ -244,7 +247,7 @@ export class Thread {
    * **いま章を畳む**（提案§3.2 の人側）。章立てが働いていない会話では `undefined`。
    * サーバはこれが無いことを「畳めない理由」としてそのまま PO に出す（I2）。
    */
-  readonly closeChapter: (() => Promise<void>) | undefined;
+  readonly closeChapter: (() => Promise<boolean>) | undefined;
   /** 会話の真実。接続時にまとめて配り、以後は差分イベントで追随させる（D3）。 */
   transcript: TranscriptEntry[] = [];
   /**
@@ -279,7 +282,7 @@ export class Thread {
     sessionFile?: string;
     model?: { provider: string; id: string; vision: boolean; contextWindow?: number };
     resumePendingTurn?: () => Promise<void>;
-    closeChapter?: () => Promise<void>;
+    closeChapter?: () => Promise<boolean>;
     dispose?: () => void;
   }) {
     this.id = params.id;
@@ -761,7 +764,20 @@ export class ThreadRegistry {
     thread.conclusion = text;
     thread.state = "closed";
     thread.closedAt = now.toISOString();
-    const trunk = this.trunk();
+    /**
+     * 還す先は**その枝の親**（PO報告 2026-08-11）。
+     *
+     * 既定の幹（＝帳場）へ還していたので、banto 開発の幹で開いた枝の結論が帳場に出た
+     * ——札は親に立つ（`open`）のに結論は別の幹へ行くので、幹が読める帯にならない。
+     * **札と結論は同じ幹に並ぶ**のが決定77の形。
+     */
+    const trunk = thread.parentId ? this.threads.get(thread.parentId) : undefined;
+    // I2: 親を引けないのは帳簿の壊れ。黙って帳場へ落とすと、また別の幹に結論が紛れ込む
+    if (!trunk) {
+      console.error(
+        `[banto] 枝 ${thread.id} の親（${thread.parentId ?? "なし"}）を引けず、結論を還せませんでした`
+      );
+    }
     if (trunk) {
       const entry = {
         role: "branch_result" as const,
