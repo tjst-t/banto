@@ -20,6 +20,36 @@ import * as path from "node:path";
 export const PRIMED_MARKER = ".banto-primed";
 
 /**
+ * 鍵に対応する置き場の場所（作らずに求めるだけ）。
+ *
+ * 鍵の濾し方を1箇所に閉じるためにある——ドライバもプールもここを通す。
+ */
+export function cacheDirFor(cacheRoot: string, key: string): string {
+  const safe = key.replace(/[^a-zA-Z0-9_-]/g, "");
+  if (safe.length === 0) throw new Error(`置き場の鍵が空です: ${JSON.stringify(key)}`);
+  return path.join(path.resolve(cacheRoot), safe);
+}
+
+/**
+ * 「用意が最後まで終わった」印を書く（§5.2.2）。**ホスト側で書く**のが要点。
+ *
+ * 以前はプールが `env.run`（＝環境の中でコマンドを走らせる口）で `touch` していた。
+ * 置き場は**プールのホスト上のディレクトリ**（このファイルが真）なので、印を書くのに
+ * 環境の生死を借りる理由が無い——実際、環境が起動直後に落ちるプロファイルでは
+ * `touch` ごと失敗し、しかも `.catch(() => undefined)` で握りつぶされていた（task-0089）。
+ *
+ * I2: 書けなかったら投げる。書けていないのに「用意済み」と記録すると、
+ *     次の provision は用意を飛ばして**空の置き場**を掴む。
+ */
+export function markPrimed(cacheRoot: string, key: string): string {
+  const dir = cacheDirFor(cacheRoot, key);
+  fs.mkdirSync(dir, { recursive: true });
+  const marker = path.join(dir, PRIMED_MARKER);
+  fs.writeFileSync(marker, `${new Date().toISOString()}\n`, "utf-8");
+  return marker;
+}
+
+/**
  * 鍵に対応する置き場を用意して、その場所を返す。
  *
  * `primed` は**印があるかどうか**。途中で死んだ半端な置き場は印を持たないので、
@@ -30,9 +60,7 @@ export function ensureCacheDir(
   key: string
 ): { dir: string; primed: boolean } {
   // 鍵はこちらが作ったハッシュだが、経路として使う以上は素通しにしない
-  const safe = key.replace(/[^a-zA-Z0-9_-]/g, "");
-  if (safe.length === 0) throw new Error(`置き場の鍵が空です: ${JSON.stringify(key)}`);
-  const dir = path.join(path.resolve(cacheRoot), safe);
+  const dir = cacheDirFor(cacheRoot, key);
   fs.mkdirSync(dir, { recursive: true });
   return { dir, primed: fs.existsSync(path.join(dir, PRIMED_MARKER)) };
 }

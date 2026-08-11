@@ -1,0 +1,25 @@
+# dev server 系プロファイルの検体（task-0089）。
+#
+# **本体のコマンドが、用意（`setup`）の成果を要る**構成。実機で踏んだのはこの形で、
+# `command` が vite（node_modules/.bin/vite）だった：
+#
+#   compose up → node_modules が空 → `vite: not found` → **exit 127 で即死**
+#   → そのあと setup（npm ci）は完走するが、落ちたコンテナは戻ってこない
+#
+# ここでは vite の代わりに「置き場に置かれたスクリプトを exec する」ことで同じ形にする。
+# 用意より先に立てれば即死し、用意を先に済ませれば起きたままになる。
+#
+# `test-compose.yaml`（`sleep` で待つだけ）は起動に何も要らないので、この壊れ方をしない
+# ——だから dev server 系を初めて作るまで見つからなかった。
+services:
+  app:
+    image: busybox:latest
+    working_dir: /work
+    command: ["sh", "-c", "exec sh /work/deps/dev-server"]
+    security_opt:
+      - apparmor=unconfined
+    volumes:
+      # setup がここに置いたものが、立ち上がる本体からも見える
+      - dev-deps:/work/deps
+volumes:
+  dev-deps:
