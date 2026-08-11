@@ -42,6 +42,7 @@ import {
   type DriverCacheEntry,
 } from "./cache-store.js";
 import { loadProfile, listProfiles } from "./profiles.js";
+import { markPrimed, PRIMED_MARKER } from "./cache-dir.js";
 
 /** ログの返し方。全文は番頭の文脈を埋め、パスだけでは番頭が結果を判断できない。 */
 const DEFAULT_LOG_TAIL_LINES = 40;
@@ -232,11 +233,14 @@ interface CacheProvisionOutput {
 }
 
 /**
- * sh に渡す1語として囲む。**置き場の場所はプロファイルが書いた文字列**なので、
- * そのまま連結するとコマンドが割れる。
+ * `provision` の出力のうち、用意に関する部分（task-0089・任意）。
+ *
+ * **順序を知っているのはドライバだけ**なので、用意を走らせる場所もドライバに寄せた
+ * ——`ran: true` は「立てる工程の中で、長命のコマンドを起こす前に済ませた」の申告。
+ * この欄を返さないドライバでは、プールが従来どおり立ったあとに走らせる。
  */
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
+interface SetupProvisionOutput {
+  setup?: { ran?: boolean };
 }
 
 export class EnvironmentPool {
@@ -798,6 +802,15 @@ export class EnvironmentPool {
         ...(request.repoPath ? { repoPath: path.resolve(request.repoPath) } : {}),
         // spec §5.2.2: 任意。ドライバが無視すれば `cache` は返らず、今までどおり毎回 setup
         ...(cache ? { cacheKey: cache.key, cachePath: cache.path, cacheRoot: this.cacheRoot } : {}),
+        // **用意を「立てる」の中へ渡す**（task-0089）。順序を知っているのはドライバだけ
+        // ——docker なら `compose up` の前、process なら長命のコマンドを起こす前。
+        // 無視するドライバでは `setup.ran` が返らず、下の従来どおりの経路に落ちる
+        ...(resolved.profile?.setup
+          ? {
+              setup: resolved.profile.setup,
+              setupTimeoutMs: this.limits.defaultSetupTimeoutMs,
+            }
+          : {}),
       },
       // 立てるのはイメージのビルドを含みうる（task-0075）。他の動詞より長く待つ
       this.provisionTimeoutMs,
@@ -874,16 +887,6 @@ export class EnvironmentPool {
       }
     }
 
-    // spec §3.1: 立った直後の疎通も返す。立ったが使えない環境を黙って返して、
-    // 次の run の失敗で初めて気づく、という順序にしない
-    let healthcheck: { ok: boolean; detail?: string };
-    try {
-      healthcheck = await this.healthcheck(entry.envId);
-    } catch (err) {
-      // I2: 疎通が確かめられなかったことを ok:true に丸めない
-      healthcheck = { ok: false, detail: err instanceof Error ? err.message : String(err) };
-    }
-
     // **プロファイルの `setup` を、立てるうちに済ませる**（task-0080）。
     //
     // 「立った」と「使える」は別。docker のプロファイルは node_modules を名前付き
@@ -897,12 +900,24 @@ export class EnvironmentPool {
     // **置き場に既に中身があるなら飛ばす**（spec §5.2）。飛ばしてよいのは、置き場の中身が
     // 鍵（＝中身を決めるファイルの内容）から一意に決まるものだけ——だから鍵に何を入れるかを
     // プロファイルに書かせている。
-    const primed = cache !== undefined && (result.output as CacheProvisionOutput).cache?.primed === true;
+    const driverOutput = result.output as CacheProvisionOutput & SetupProvisionOutput;
+    const primed = cache !== undefined && driverOutput.cache?.primed === true;
+    // 置き場を実際に繋いだのはドライバ。**繋がなかったなら印も書かない**——
+    // 繋げなかった（process ドライバが人の置いた実体を見つけた等）のに印だけ残すと、
+    // 次の provision が空の置き場を「用意済み」と読む
+    const cacheAttached = cache !== undefined && driverOutput.cache !== undefined;
     if (cache) {
       this.cacheLedger.touch({ key: cache.key, driver: resolved.driver, profile: resolved.profileName });
     }
 
-    if (resolved.profile?.setup && !primed) {
+    // **順序はドライバが持つ**（task-0089）。`setup.ran` が返ったなら、用意は
+    // 「立てる」の中で——長命のコマンドを起こす前に——済んでいる。ここで走らせ直さない。
+    let setupDone = driverOutput.setup?.ran === true;
+
+    if (resolved.profile?.setup && !primed && !setupDone) {
+      // **順序を知らないドライバのための従来どおりの経路。** 立ったあとに `run` で走らせる
+      // ——待つだけの環境なら成り立つが、長命のコマンドが用意を要る場合は成り立たない
+      // （だから同梱の2つは上の経路で済ませている）
       const setupCmd = resolved.profile.setup;
       try {
         const outcome = await this.run(
@@ -920,16 +935,7 @@ export class EnvironmentPool {
               `ログ: ${outcome.logPath}\n${outcome.logTail}`
           );
         }
-        // **成功したときだけ印を書く**（spec §5.2.2）。途中で死んだ半端な置き場を
-        // 「入っている」と誤判定させないため——次に来たドライバは印を見て primed を決める
-        if (cache) {
-          await this.run(
-            entry.envId,
-            `mkdir -p ${shellQuote(cache.path)} && touch ${shellQuote(`${cache.path}/.banto-primed`)}`,
-            DEFAULT_LOG_TAIL_LINES,
-            this.timeoutMs
-          ).catch(() => undefined);
-        }
+        setupDone = true;
       } catch (err) {
         // I3: 用意できなかった環境を残さない。畳んでから投げる（expose の失敗と同じ扱い）
         await this.teardown(entry.envId).catch(() => undefined);
@@ -938,6 +944,47 @@ export class EnvironmentPool {
             `${err instanceof Error ? err.message : String(err)}`
         );
       }
+    }
+
+    // **成功したときだけ印を書く**（spec §5.2.2）。途中で死んだ半端な置き場を
+    // 「入っている」と誤判定させないため——次に来たドライバは印を見て primed を決める。
+    //
+    // **ホスト側で書く**（task-0089）。以前は `env.run`＝環境の中で `touch` していたが、
+    // 置き場の実体はプールのホスト上のディレクトリ（`cache-dir.ts` が真）で、印を書くのに
+    // 環境の生死を借りる理由が無い。借りていたせいで、起動直後に落ちるプロファイルでは
+    // 印が書かれず、しかも `.catch(() => undefined)` で握りつぶされていた。
+    if (setupDone && cacheAttached) {
+      try {
+        markPrimed(this.cacheRoot, cache.key);
+      } catch (err) {
+        // I2: 握りつぶさない。書けていないのに「用意済み」と扱うと、次の provision が
+        // 用意を飛ばして**空の置き場**を掴む——毎回作り直すより悪い壊れ方になる
+        const reason = err instanceof Error ? err.message : String(err);
+        this.eventLog.append({
+          type: "env_cache_marker_failed",
+          profile: resolved.profileName,
+          data: { key: cache.key, driver: resolved.driver, reason },
+        });
+        await this.teardown(entry.envId).catch(() => undefined);
+        throw new Error(
+          `用意は済みましたが、済んだ印（${PRIMED_MARKER}）を書けませんでした` +
+            `（profile: ${resolved.profileName}・key: ${cache.key}）: ${reason}`
+        );
+      }
+    }
+
+    // spec §3.1: 立った直後の疎通も返す。立ったが使えない環境を黙って返して、
+    // 次の run の失敗で初めて気づく、という順序にしない。
+    //
+    // **用意のあとに見る**（task-0089）。前は用意より先に見ていたので、用意が要る
+    // プロファイルでは「まだ使えない環境」を ok と報告できてしまった——実機では
+    // dev server が exit 127 で落ちる直前の running を掴んで `ok: true` を返していた。
+    let healthcheck: { ok: boolean; detail?: string };
+    try {
+      healthcheck = await this.healthcheck(entry.envId);
+    } catch (err) {
+      // I2: 疎通が確かめられなかったことを ok:true に丸めない
+      healthcheck = { ok: false, detail: err instanceof Error ? err.message : String(err) };
     }
 
     // **掃除は provision のたび**（spec §5.2.3）。別の周期を作らない——置き場が増えるのは

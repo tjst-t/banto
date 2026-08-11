@@ -43,7 +43,15 @@ export type EnvEventType =
   /** 置き場を消せなかった（＝ディスクに残っている）。次の provision でまた試みる。 */
   | "env_cache_sweep_failed"
   /** 置き場を使えなかった（鍵の材料が読めない等）。毎回 setup に落ちている。 */
-  | "env_cache_unavailable";
+  | "env_cache_unavailable"
+  /**
+   * 用意は済んだのに「済んだ印」を書けなかった（task-0089）。
+   *
+   * 印が無いと次の provision は用意をやり直す——遅いだけで正しさは保たれる向きだが、
+   * **書けないこと自体は異常**（置き場はプールのホスト上の自分のディレクトリ）なので
+   * 握りつぶさない。provision もこの時点で失敗する。
+   */
+  | "env_cache_marker_failed";
 
 export interface EnvEvent {
   /** 1から始まる連番。購読の再開点（`afterEventId`）に使う。 */
