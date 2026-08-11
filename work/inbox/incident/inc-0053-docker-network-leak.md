@@ -4,8 +4,8 @@ type: incident
 kind: incident
 origin: kobo
 class: environment
-status: open
-refs: [task-0090, docker-driver]
+status: closed
+refs: [task-0090, docker-driver, c8d7848]
 ---
 
 ## 内容
@@ -32,13 +32,19 @@ docker ドライバの teardown は `docker compose down -v`（コンテナ・�
 - 対処は「使われていないネットワークを手で削除」だが、**機構として直っていない**
   （再発する）
 
-## 直すべきこと（未着手）
+## 対処
 
-- docker ドライバの teardown（または run の後始末）で、**プロジェクトのネットワークを
-  確実に掃除する**（`docker network rm` または `compose down` の対象を広げる）
-- テスト実行後もネットワークが残らないことを検証するテスト
+- **c8d7848** で `docker-driver.ts` に `removeLeftoverNetworks` を追加。
+  compose ラベル（`com.docker.compose.project`）で自分のプロジェクトのネットワークだけを
+  拾い、未使用なら `docker network rm` で掃除する。
+- `tests/acceptance/env-docker-network-cleanup.spec.ts`（155行）を新規追加。
+  テスト実行後にネットワークが残らないことを検証。
 
 ## 確かめたこと
 
 - 2026-08-11: task-0090 の検証中、27個の leak を確認・削除 → acceptance が通った
-- 本 incident はこのときの記録。対応タスクは未着手
+- 2026-08-11: c8d7848 で修正・テスト追加。acceptance 68件パス / 0失敗
+
+## クローズ
+
+修正済み。再発したら reopen。
