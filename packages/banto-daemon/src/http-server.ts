@@ -14,10 +14,15 @@
  *
  * Error responses: JSON { "error": "..." }
  *
- * **認証は持たない。守るのは前段と待ち受けアドレス**（ADR-0010 決定40、task-0061）。
+ * **原則として認証は持たない。守るのは前段と待ち受けアドレス**（ADR-0010 決定40、task-0061）。
  * この口は帳簿を書き換えられる（状態遷移・監査判定）ので、**既定では 127.0.0.1 だけ**が
  * 届く（`DaemonConfig.bindHost`）。広げるのは明示のときだけで、そのときは起動ログに
  * 警告が出る——番頭側を 127.0.0.1 に閉じた隣で、無認証の口が黙って開いている状態を作らない。
+ *
+ * **例外は1つだけ**（PO裁定 2026-08-11・第0波 0-3）：
+ *   POST {KOBO_MODULE_PATH}/projects/:proj/tasks/:id/approve   → PO 専用（合言葉が要る）
+ * ここは「番頭ではなく PO が通した」を帳簿に書く口なので、届くこと＝名乗れることでは困る。
+ * 合言葉は `BANTO_PO_TOKEN`（`DaemonConfig.poToken`）。未設定なら口は閉じたまま（503）。
  *
  * D5: all logic delegated to Daemon class; this file is pure routing.
  * D6: node:http (no framework dependency).
@@ -25,6 +30,7 @@
  */
 
 import * as http from "node:http";
+import * as crypto from "node:crypto";
 import { MODULE_TOOL_PATH, createSettingsTools } from "@banto/core";
 import type { Daemon } from "./daemon.js";
 import { createKoboTools } from "./kobo-tools.js";
@@ -60,6 +66,34 @@ class BadRequestError extends Error {
     super(message);
     this.name = "BadRequestError";
   }
+}
+
+/**
+ * PO が名乗れているか（PO裁定 2026-08-11・第0波 0-3）。
+ *
+ * **決定40 の唯一の例外**。この口は「番頭ではなく PO が通した」を帳簿に書くので、
+ * 待ち受けアドレスだけでは足りない——同じ機械に届く者はみな PO を名乗れてしまう。
+ *
+ * 合言葉が未設定なら口は**閉じたまま**（`unconfigured`）。無設定を「素通し」にすると、
+ * 設定し忘れた本番で誰でも承認できる状態が黙って出来上がる（I2）。
+ */
+function checkPoAuth(
+  req: http.IncomingMessage,
+  expected: string | undefined
+): "ok" | "unconfigured" | "denied" {
+  if (!expected) return "unconfigured";
+  const header = req.headers["authorization"];
+  const bearer = typeof header === "string" && /^Bearer\s+/i.test(header)
+    ? header.replace(/^Bearer\s+/i, "")
+    : undefined;
+  const raw = req.headers["x-banto-po-token"];
+  const presented = bearer ?? (typeof raw === "string" ? raw : undefined);
+  if (!presented) return "denied";
+  // 長さが違えば timingSafeEqual は投げる。先に長さで弾く（漏れるのは長さだけ）
+  const a = Buffer.from(presented, "utf-8");
+  const b = Buffer.from(expected, "utf-8");
+  if (a.length !== b.length) return "denied";
+  return crypto.timingSafeEqual(a, b) ? "ok" : "denied";
 }
 
 async function readBody(req: http.IncomingMessage): Promise<unknown> {
@@ -372,6 +406,62 @@ export function createHttpServer(daemon: Daemon): http.Server {
           return;
         }
         sendJson(res, 200, { task });
+      },
+    },
+
+    // PO が自分で通す口（PO裁定 2026-08-11・第0波 0-3）。
+    //
+    // **番頭の `kobo.approve` とは名乗る者が違う**。レビュー段が `po` と判定されたタスク
+    // （統治コード・PO 必須の面）は番頭には通せず、いままで PO 自身がブラウザから通す経路が
+    // 無かった——ここが `approvedBy: "po"` として帳簿に書く唯一の口になる。
+    //
+    // 通しても関所は飛ばない（決定57）。この後にマージ前ゲートが回るのは番頭経由と同じ。
+    //
+    // D5: 判断は `daemon.approveTask` にある。ここがするのは名乗りの照合と routing だけ。
+    {
+      method: "POST",
+      pattern: new RegExp(`^${KOBO_MODULE_PATH}/projects/([^/]+)/tasks/([^/]+)/approve$`),
+      handler: async (req, res, match) => {
+        const auth = checkPoAuth(req, daemon.poToken());
+        if (auth === "unconfigured") {
+          sendJson(res, 503, {
+            error: "po_token_not_configured",
+            message:
+              "PO の合言葉が設定されていないため、この口は閉じています。" +
+              "BANTO_PO_TOKEN を設定して Kobo を起動し直してください",
+          });
+          return;
+        }
+        if (auth === "denied") {
+          res.setHeader("WWW-Authenticate", 'Bearer realm="kobo-po"');
+          sendJson(res, 401, { error: "unauthorized" });
+          return;
+        }
+
+        const proj = decodeURIComponent(match[1] ?? "");
+        const taskId = decodeURIComponent(match[2] ?? "");
+        if (!daemon.projectExists(proj)) {
+          sendJson(res, 404, { error: "project_not_found" });
+          return;
+        }
+        const task = daemon.getTask(proj, taskId);
+        if (!task) {
+          sendJson(res, 404, { error: "not_found" });
+          return;
+        }
+        const body = (await readBody(req)) as Record<string, unknown>;
+        const note = typeof body["note"] === "string" ? body["note"] : undefined;
+
+        const result = daemon.approveTask(proj, taskId, {
+          by: "po",
+          ...(note ? { note } : {}),
+        });
+        // I2: 通せなかったことを success:true で包まない。理由をそのまま返す
+        if (!result.ok) {
+          sendJson(res, 409, { error: "not_approvable", message: result.reason });
+          return;
+        }
+        sendJson(res, 200, { success: true, state: result.status });
       },
     },
 
