@@ -1,5 +1,9 @@
-# banto の開発画面（banto-web）を PO がブラウザで触れるための環境。
+# banto の開発画面（banto-web）を PO がブラウザで触れるための環境（`dev` プロファイル）。
 # Environment Pool の docker ドライバ用（provision で `docker compose up -d`）。
+#
+# **役割はひとつ——人が触る面を出すこと**。マージ前ゲートの検証はこちらでは走らせない
+# （それは `docker/test.yaml` の `test` プロファイル）。PO裁定 2026-08-11（案B）で
+# 「実行環境用（dev）」と「検証用（test）」を分けると決めた——**器を兼ねさせない**。
 #
 # - 土台は test と同じ node:22-alpine（Dockerfile.test を流用）
 # - vite dev server をコンテナ内 4200 で立てる
@@ -9,11 +13,13 @@
 #   コンテナからホストへは host.docker.internal 経由で到達する
 # - Host 検査（DNS リバインディング対策）は検証環境のため無効化（BANTO_WEB_ALLOWED_HOSTS=true）
 #
-# **command の npm ci 前置き（2026-08-10 実機で踏んだ踏み）**: Environment Pool の provision は
-# 「先に compose up、後から setup（npm ci）」の順で回る（pool.ts）。test は sleep infinity なので
-# 問題にならないが、dev server は起動時に node_modules が空だと `vite: not found` で即死する。
-# キャッシュが無い窓を塞ぐため、vite を起こす前に node_modules を確認して用意する。
-# 根本修正（provision の順序）は Kobo にタスクを積んで直す。
+# **command は vite を起こすだけ**（task-0089 以降）。以前はここに
+# `test -d node_modules/.bin/vite || npm ci;` を前置きしていた——provision が
+# 「先に compose up、後から setup（npm ci）」の順で回っていたので、node_modules が空のまま
+# vite が起きて `vite: not found` で即死したためのプロファイル側のハックだった。
+# 本体（Environment Pool）が用意を `compose up` の前に済ませるようになった（task-0089）ので、
+# **長命のコマンドは起きた時点で node_modules を掴める**。ハックは撤去した——
+# 残すと「用意が済んでいなくても自分でどうにかする器」になり、順序が壊れても気づけない。
 services:
   web:
     build:
@@ -30,6 +36,6 @@ services:
     volumes:
       - ..:/app
       - ${BANTO_CACHE_DIR:-./.banto-node-modules}:/app/node_modules
-    command: ["sh", "-c", "test -d node_modules/.bin/vite || npm ci; npm --prefix packages/banto-web run dev"]
+    command: ["npm", "--prefix", "packages/banto-web", "run", "dev"]
     ports:
       - "4201:4200"
