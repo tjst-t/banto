@@ -400,6 +400,34 @@ describe("[task-0088/a3] 枝を畳むと結論が幹へ還る（決定77）", ()
     assert.equal(results.length, 1);
   });
 
+  /**
+   * **結論は「その枝の親」へ還る**（PO報告 2026-08-11）。
+   *
+   * 既定の幹（＝帳場）へ還していたので、banto 開発の幹で開いた枝の結論が帳場に出た。
+   * 札は親に立つのに結論は別の幹へ行くので、**幹を読んでも話が繋がらない**。
+   */
+  it("[PO報告 2026-08-11] 結論は帳場ではなく、その枝の親の幹へ還る", async () => {
+    const main = await threads.open({ kind: "trunk", main: true, title: "帳場" });
+    const project = await threads.open({ kind: "trunk", title: "banto開発" });
+    const branch = await threads.open(branchSpec("sops機構の一般化検討"), project.id);
+
+    threads.merge(branch.id, "一般化は保留：適用先が1つしかない");
+
+    const onProject = project.transcript.filter((e) => e.role === "branch_result");
+    assert.equal(onProject.length, 1, "開いた幹に還る");
+    assert.equal(
+      main.transcript.filter((e) => e.role === "branch_result").length,
+      0,
+      "帳場には出ない（どの幹の話でもないもの専用の受け皿・PO裁定 2026-08-10）"
+    );
+    // 札と結論が同じ幹に並ぶ（決定77：幹は端から端まで読める帯）
+    assert.equal(
+      project.transcript.filter((e) => e.role === "branch").length,
+      1,
+      "札も同じ幹にある"
+    );
+  });
+
   it("[task-0088/a3] 空の結論では畳めない（I2）", async () => {
     await threads.open(TRUNK);
     const branch = await threads.open(branchSpec("枝1"));
@@ -811,7 +839,7 @@ describe("[提案§3.2] chapter_close（人が章を区切る）", () => {
       return {
         session,
         tools: [],
-        closeChapter: async () => void folded.push(threadId),
+        closeChapter: async () => folded.push(threadId) > 0,
       };
     });
     const url = await start();
@@ -826,6 +854,68 @@ describe("[提案§3.2] chapter_close（人が章を区切る）", () => {
         events.find((e) => e.type === "error"),
         undefined,
         "畳めたのにエラーを出してはいけない"
+      );
+    } finally {
+      client.close();
+    }
+  });
+
+  /**
+   * **畳めた印は入るが、ターンは回らない**（PO報告 2026-08-11）。
+   *
+   * 知らせ（`notice`）で流していたので、畳むたびに番頭のターンが回っていた——畳んだ
+   * 直後の空の文脈で、POが何も頼んでいないのに独りでに調べ物を始める。畳んで軽くした
+   * 文脈をその場で埋め直すので、押した意味そのものが消える。
+   */
+  it("[PO報告 2026-08-11] 畳むと区切りの印が入る。番頭のターンは回らない", async () => {
+    let made: FakeSession | undefined;
+    threads = new ThreadRegistry(async (threadId) => {
+      const session = new FakeSession(`session-of-${threadId}`);
+      made = session;
+      return { session, tools: [], closeChapter: async () => true };
+    });
+    const url = await start();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    try {
+      const trunk = threads.resolve();
+      // 実際に畳むのは器の側。ここでは畳んだと知らせる経路だけを見る
+      server!.markChapter(trunk.id, 2, "孤児リソースの一掃");
+
+      const mark = await waitFor(events, (e) => e.type === "chapter_closed");
+      assert.equal(mark.type === "chapter_closed" ? mark.chapter : 0, 2);
+      assert.equal(mark.type === "chapter_closed" ? mark.topic : "", "孤児リソースの一掃");
+      // 会話にも印が残る（読み返したときに「ここで区切った」が分かる）
+      assert.equal(trunk.transcript[trunk.transcript.length - 1]?.role, "chapter");
+      // **ここが要点**：番頭には何も渡っていない
+      assert.deepEqual(made!.prompts, [], "畳んだことを番頭に喋らせない");
+      assert.equal(
+        events.find((e) => e.type === "turn_start"),
+        undefined,
+        "ターンを回すと、空の文脈で番頭が独りでに動き出す"
+      );
+    } finally {
+      client.close();
+    }
+  });
+
+  it("[PO報告 2026-08-11] 畳むものが無いときは黙らない（I2）", async () => {
+    threads = new ThreadRegistry(async (threadId) => ({
+      session: new FakeSession(`session-of-${threadId}`),
+      tools: [],
+      // 溜まっていない章は畳みようがない（ChapterKeeper が undefined を返す形）
+      closeChapter: async () => false,
+    }));
+    const url = await start();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    try {
+      client.send({ type: "chapter_close", threadId: threads.resolve().id });
+      const err = await waitFor(events, (e) => e.type === "error");
+      assert.match(
+        err.type === "error" ? err.message : "",
+        /畳むものがまだありません/,
+        "押したのに何も起きない、が一番困る"
       );
     } finally {
       client.close();
@@ -856,7 +946,7 @@ describe("[提案§3.2] chapter_close（人が章を区切る）", () => {
     threads = new ThreadRegistry(async (threadId) => {
       const session = new FakeSession(`session-of-${threadId}`);
       made = session;
-      return { session, tools: [], closeChapter: async () => void folded.push(threadId) };
+      return { session, tools: [], closeChapter: async () => folded.push(threadId) > 0 };
     });
     const url = await start();
     const events: ServerEvent[] = [];
@@ -877,7 +967,7 @@ describe("[提案§3.2] chapter_close（人が章を区切る）", () => {
     threads = new ThreadRegistry(async (threadId) => ({
       session: new FakeSession(`session-of-${threadId}`),
       tools: [],
-      closeChapter: async () => void folded.push(threadId),
+      closeChapter: async () => folded.push(threadId) > 0,
     }));
     const url = await start();
     const branch = await threads.open(branchSpec("枝"));
@@ -962,6 +1052,45 @@ describe("[task-0035/a4] 番頭自身が分身する口", () => {
   });
 
   /**
+   * **渡したら手を離す**（PO報告 2026-08-11）。
+   *
+   * `seed`（＝`server.notify`）が返るのは**宛先のターンが完走したとき**。待っていたので、
+   * 枝を開いた幹が枝の調べ物の間ずっと「思考中」で固まり、終わった途端に動き出して
+   * 同じ検討をもう一度やった。**待たないことを機構で確かめる**——待つ実装に戻すと
+   * この試験が固まる（P6：時間で誤魔化さない）。
+   */
+  it("[PO報告 2026-08-11] 枝の作業を待たずに返る（開いた側を固めない）", async () => {
+    const first = await threads.open(TRUNK);
+    let released: (() => void) | undefined;
+    const turn = new Promise<void>((resolve) => {
+      released = resolve;
+    });
+    const tools = createThreadTools({
+      threads,
+      threadId: first.id,
+      // 枝のターンが延々と続いている間を模す（解くまで返らない）
+      seed: async () => turn,
+    });
+    const open = tools.find((t) => t.name === "thread.open")!;
+
+    const result = await open.execute({
+      title: "sops機構の一般化検討",
+      returnCondition: "一般化できるか決まったら",
+      reason: "往復が続く",
+      message: "この件を調べて",
+    });
+
+    // 枝はまだ喋っている。それでも幹は返っている
+    assert.match(
+      result.content.map((c) => c.text).join(""),
+      /同じ調べ物をここで始めない/u,
+      "二重に走らせないことを番頭に伝える"
+    );
+    released?.();
+    await turn;
+  });
+
+  /**
    * **幹どうしの言伝**（PO要望 2026-08-10）。
    *
    * 幹は記憶も文脈も分かれている（ADR-0003 追補）。分けたからこそ跨いで伝えたいことが
@@ -989,6 +1118,37 @@ describe("[task-0035/a4] 番頭自身が分身する口", () => {
       // I1: 出所を偽らない。受け手はどちらの幹の話かで判断が変わる
       assert.match(box[0]!.message, /幹「banto開発」から/);
       assert.match(box[0]!.message, /音声認識は HTTPS が要る/);
+    });
+
+    /**
+     * **枝の名前を幹の名前として名乗らない**（PO報告 2026-08-11）。
+     *
+     * 送り手を無条件に `幹「…」` と書いていたので、枝から出した言伝が
+     * 「幹『単語の固まり表示と絵』から言伝です」と名乗っていた——受け手はそんな名前の
+     * 幹があると読む。記憶が分かれる単位は幹なので、**親の幹を主にして枝を添える**。
+     */
+    it("[PO報告 2026-08-11] 枝から出した言伝は、親の幹を名乗る", async () => {
+      const project = await threads.open({ kind: "trunk", title: "banto開発" });
+      const other = await threads.open({ kind: "trunk", title: "ひらがなアプリ" });
+      const branch = await threads.open(branchSpec("単語の固まり表示と絵"), project.id);
+      const box: Array<{ threadId: string; message: string }> = [];
+
+      await sendTools(branch.id, box).execute({
+        threadId: other.id,
+        message: "この決定はそちらにも効きます",
+      });
+
+      assert.equal(box.length, 1);
+      assert.match(
+        box[0]!.message,
+        /幹「banto開発」の枝「単語の固まり表示と絵」から/u,
+        "枝の名前を幹の名前として名乗ってはいけない（I1）"
+      );
+      assert.doesNotMatch(
+        box[0]!.message,
+        /幹「単語の固まり表示と絵」/u,
+        "枝の名前が幹として出ている"
+      );
     });
 
     it("枝へは渡せない（1つの問いに割り込ませない）", async () => {
@@ -1139,6 +1299,121 @@ describe("[task-0058] 番頭が会話に名前を付け直す（PO要望 2026-08
     threads.rename(thread.id, "認証の設計");
 
     assert.equal(emitted, 0);
+  });
+});
+
+/**
+ * **PO の言葉は、番頭が何をしていても届く**（PO報告 2026-08-11）。
+ *
+ * `isStreaming` が真なのは**トークンを吐いている間だけ**で、道具を実行している間は偽。
+ * 番頭が道具を回し続けているとき（＝暴走しているとき）はほぼ常に偽なので、
+ * PO の「ちょっとまって」は `Agent is already processing a prompt` で弾かれた。
+ * **止めたいときに限って止められない**、いちばん困る形（実機・thread-69）。
+ */
+describe("[PO報告 2026-08-11] 暴走中でも PO の言葉が届く", () => {
+  /** 道具の実行中（isStreaming は偽）に prompt すると、pi と同じ文面で断るセッション。 */
+  class BusySession extends FakeSession {
+    /** steer として来たものだけ受け取る。 */
+    steered: string[] = [];
+    override async prompt(
+      text: string,
+      options?: { streamingBehavior?: string }
+    ): Promise<void> {
+      if (options?.streamingBehavior === "steer") {
+        this.steered.push(text);
+        return;
+      }
+      throw new Error(
+        "Agent is already processing a prompt. Use steer() or followUp() to queue messages, " +
+          "or wait for completion."
+      );
+    }
+  }
+
+  it("道具の実行中（isStreaming は偽）でも、steer として積み直して届く", async () => {
+    let busy: BusySession | undefined;
+    threads = new ThreadRegistry(async (threadId) => {
+      busy = new BusySession(`session-of-${threadId}`);
+      // **偽のまま**。暴走中に PO が入力したときの実際の姿
+      busy.isStreaming = false;
+      return { session: busy, tools: [] };
+    });
+    const url = await start();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    try {
+      client.send({ type: "prompt", threadId: threads.resolve().id, text: "ちょっとまって" });
+
+      await waitForValue(() => (busy?.steered.length ?? 0) > 0);
+      assert.deepEqual(busy!.steered, ["ちょっとまって"], "PO の言葉が消えている");
+      // 断られたことを会話のエラーとして残さない（届いているのだから）
+      const failed = events.find(
+        (e) => e.type === "turn_end" && "errorMessage" in e && e.errorMessage
+      );
+      assert.equal(failed, undefined, `届いたのに失敗として記録している: ${JSON.stringify(failed)}`);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+/**
+ * **閉じた面を、押して開き直せる**（PO要望 2026-08-11）。
+ *
+ * 面を開いた口は会話に残る（決定78）が、同じ口が既にあると積まない決めだった
+ * （PO報告 2026-08-10：番頭が1回の用件で数回開いて同じ行が5つ並んだ）。そのため
+ * **一度開いた面は、閉じたあと開き直しても口が立たない**——最初の口は何百行も上にあり、
+ * 実際には辿り着けない。開き直したら、いまの位置に口が立つ必要がある。
+ */
+describe("[PO要望 2026-08-11] 面を開き直したら、その場に口が立つ", () => {
+  it("1回のターンで何度開いても口は1つ（同じ行を並べない）", async () => {
+    const url = await start();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    try {
+      const trunk = threads.resolve();
+      for (let i = 0; i < 3; i++) {
+        client.send({
+          type: "canvas_open",
+          threadId: trunk.id,
+          kind: "demo.hello",
+          params: {},
+        });
+      }
+      await waitForValue(
+        () => trunk.transcript.filter((e) => e.role === "utsuwa").length > 0
+      );
+      await new Promise((r) => setTimeout(r, 200));
+      assert.equal(
+        trunk.transcript.filter((e) => e.role === "utsuwa").length,
+        1,
+        "同じ用件で開き直しただけの行を並べない"
+      );
+    } finally {
+      client.close();
+    }
+  });
+
+  it("**次のターンで開き直すと、その場に口が立つ**（閉じた面へ戻れる）", async () => {
+    const url = await start();
+    const client = await BantoHostClient.connect(url, () => undefined);
+    try {
+      const trunk = threads.resolve();
+      client.send({ type: "canvas_open", threadId: trunk.id, kind: "demo.hello", params: {} });
+      await waitForValue(() => trunk.transcript.some((e) => e.role === "utsuwa"));
+
+      // PO が何か言った＝次のターン。ここで開き直す（面は閉じた後という想定）
+      trunk.record({ role: "po", text: "さっきの面をもう一度見せて" });
+      client.send({ type: "canvas_open", threadId: trunk.id, kind: "demo.hello", params: {} });
+
+      await waitForValue(
+        () => trunk.transcript.filter((e) => e.role === "utsuwa").length === 2
+      );
+      // **いちばん下に立つ**（上まで遡らせない）
+      assert.equal(trunk.transcript[trunk.transcript.length - 1]?.role, "utsuwa");
+    } finally {
+      client.close();
+    }
   });
 });
 

@@ -189,6 +189,75 @@ describe("LLM Registry — 職人への解決は (tier, 制約) で決まる", (
   });
 });
 
+/**
+ * **文脈長を手で入れられる**（PO要望 2026-08-11）。
+ *
+ * プロバイダの `/models` は文脈長を返さないことがある（huihui の
+ * `deepseek-v4-flash-abliterated` は 1M あるのに分からない）。分からないままだと
+ * 章立ての閾値も文脈の目盛りも効かず、**実際より短いものとして**進む。
+ */
+describe("[PO要望 2026-08-11] 文脈長が分からないモデルに、手で入れる", () => {
+  it("入れた値が一覧に出る（分からないままにしない）", () => {
+    const c = standardSeed();
+    assert.equal(
+      c.models().find((m) => m.id === "small")?.contextWindow,
+      undefined,
+      "この検体は文脈長を持たない（前提）"
+    );
+
+    c.setContextWindow("cloud", "small", 1_000_000);
+    assert.equal(c.models().find((m) => m.id === "small")?.contextWindow, 1_000_000);
+  });
+
+  it("**手で入れた値が優先**（あとからプロバイダが返してきても上書きしない）", () => {
+    const c = standardSeed();
+    c.setContextWindow("cloud", "small", 1_000_000);
+    // プロバイダが「実は 8192 でした」と言ってくる
+    c.mergeModels("cloud", [
+      { id: "big" },
+      { id: "mid" },
+      { id: "small", contextWindow: 8192 },
+    ]);
+    assert.equal(
+      c.models().find((m) => m.id === "small")?.contextWindow,
+      1_000_000,
+      "人が入れた意図を、取得のたびに上書きしてはいけない"
+    );
+  });
+
+  it("空にすると手入力を取り消し、プロバイダが言う値に戻る", () => {
+    const c = standardSeed();
+    c.mergeModels("cloud", [{ id: "small", contextWindow: 8192 }]);
+    c.setContextWindow("cloud", "small", 1_000_000);
+    assert.equal(c.models().find((m) => m.id === "small")?.contextWindow, 1_000_000);
+
+    c.setContextWindow("cloud", "small", undefined);
+    assert.equal(c.models().find((m) => m.id === "small")?.contextWindow, 8192);
+  });
+
+  it("打ち間違いは受けない（I2）", () => {
+    const c = standardSeed();
+    // 1M のつもりで 1000 と入れても動きはするが、会話が数往復で畳まれるようになる
+    assert.throws(() => c.setContextWindow("cloud", "small", 0), /文脈長は/u);
+    assert.throws(() => c.setContextWindow("cloud", "small", -1), /文脈長は/u);
+    assert.throws(() => c.setContextWindow("cloud", "small", 1.5), /整数/u);
+    assert.throws(() => c.setContextWindow("cloud", "small", 10 ** 12), /文脈長は/u);
+    assert.equal(c.models().find((m) => m.id === "small")?.contextWindow, undefined);
+  });
+
+  it("保存され、読み直しても残る", () => {
+    const c = standardSeed();
+    c.setContextWindow("cloud", "small", 200_000);
+    const reopened = new LlmCatalog({
+      authJsonPath: path.join(dir, "auth.json"),
+      modelsJsonPath: path.join(dir, "models.json"),
+      overlayPath: path.join(dir, "llm-registry.json"),
+      resolver: { find: () => undefined, getKnownModels: () => undefined },
+    });
+    assert.equal(reopened.models().find((m) => m.id === "small")?.contextWindow, 200_000);
+  });
+});
+
 describe("LLM Registry — 解決先を失う操作は止める", () => {
   it("番頭の既定モデルを番頭の使用可から外せない", () => {
     const c = standardSeed();

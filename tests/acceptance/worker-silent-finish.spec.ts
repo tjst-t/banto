@@ -19,7 +19,7 @@ import {
   endedWithoutReporting,
   lastAssistantText,
 } from "../../packages/banto-worker-pool/src/pi-extension/worker-report.js";
-import { renderWorkerNotice } from "@banto/host";
+import { isNoticeworthy, renderWorkerNotice } from "@banto/host";
 import type { WorkerEvent } from "@banto/worker-pool";
 
 /** pi のメッセージ列を組み立てる小道具。 */
@@ -128,5 +128,85 @@ describe("[silent-finish] 番頭にどう見えるか（出所を偽らない・
     assert.match(notice.split("\n")[0]!, /から報告：/);
     assert.match(notice, /職人の主張であって完了の証明ではありません/);
     assert.doesNotMatch(notice, /職人が書いた報告ではありません/);
+  });
+});
+
+/**
+ * **ターンの終わりに、番頭の判断が要るのはどのときか**（PO指摘 2026-08-11）。
+ *
+ * 「毎ターン知らせるとうるさい」で切り捨てていたが、それは雑だった。ターンの終わり方は
+ * 4つあり、3つは既に何かが番頭へ届いている——抜けていたのは**進捗だけ報告して手を止めた**
+ * とき。番頭は「着手しました」を読んで work in progress と思うが、職人は止まっている。
+ */
+describe("[PO指摘 2026-08-11] 手が空いたことを、伝わっていないときだけ知らせる", () => {
+  const turnEnded = (data: Record<string, unknown>): WorkerEvent =>
+    ({
+      id: 9,
+      at: "2026-08-11T00:00:00.000Z",
+      type: "worker_turn_ended",
+      kind: "fact",
+      origin: "banto",
+      projectTag: "test",
+      taskId: "task-0042",
+      sessionId: "s-1",
+      data,
+    }) as WorkerEvent;
+
+  it("進捗だけ報告して止まったら知らせる（番頭は動いていると思っている）", () => {
+    const event = turnEnded({ text: "着手しました", reported: true, settled: false });
+    assert.equal(isNoticeworthy(event), true);
+
+    const notice = renderWorkerNotice(event)!;
+    assert.match(notice.split("\n")[0]!, /手が空きました/u);
+    assert.match(notice, /着手しました/u, "最後の発話が手がかりとして出る");
+    assert.match(notice, /worker\.steer/u, "続けるか畳むかを決められるように書く（D8）");
+    assert.match(notice, /worker\.close/u);
+  });
+
+  it("完了を報告済み・質問して待ち・黙って終えた（代理報告済み）は知らせない", () => {
+    // どれも**そのターンで既に何かが番頭へ届いている**——二重に読ませない
+    assert.equal(isNoticeworthy(turnEnded({ settled: true, reported: true })), false);
+    assert.equal(
+      isNoticeworthy(turnEnded({ settled: true, waiting: true, reported: true })),
+      false
+    );
+  });
+
+  it("発話が無くても知らせる（何も言わずに止まったことが分かる）", () => {
+    const notice = renderWorkerNotice(turnEnded({ reported: true, settled: false }))!;
+    assert.match(notice.split("\n")[0]!, /発話なし/u);
+  });
+});
+
+/**
+ * **自分で畳んだ職人の「終わりました」は要らない**（PO要望 2026-08-11）。
+ *
+ * `worker.close` は kill してから畳むので `worker_exited` が必ず先に積まれる。番頭から
+ * 見ると「自分で畳んだのに、そのあとプロセス終了を知らされる」——実測で 356人中 315人が
+ * この形だった。**起動・停止は番頭自身がやったことなので知らせない**という元からの決めに
+ * 揃える。予期していない死だけを残す（作業中に落ちたのは番頭がやっていないことなので）。
+ */
+describe("[PO要望 2026-08-11] 畳んだ結果の終了は知らせない", () => {
+  const exited = (data: Record<string, unknown>): WorkerEvent =>
+    ({
+      id: 7,
+      at: "2026-08-11T00:00:00.000Z",
+      type: "worker_exited",
+      kind: "fact",
+      origin: "banto",
+      projectTag: "test",
+      taskId: "task-0042",
+      sessionId: "s-1",
+      data,
+    }) as WorkerEvent;
+
+  it("番頭が畳んだ結果の終了は知らせない（自分でやったこと）", () => {
+    assert.equal(isNoticeworthy(exited({ exitCode: 0, signal: null, expected: true })), false);
+    assert.equal(renderWorkerNotice(exited({ exitCode: 0, signal: null, expected: true })), undefined);
+  });
+
+  it("予期していない死は今までどおり知らせる（気づけなくなる）", () => {
+    const notice = renderWorkerNotice(exited({ exitCode: null, signal: "SIGKILL" }))!;
+    assert.match(notice.split("\n")[0]!, /シグナル SIGKILL で落ちました/u);
   });
 });

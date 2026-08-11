@@ -104,6 +104,18 @@ const TRUNK_HISTORY = [
       meta: "banto · main · 探す作業",
     },
   },
+  // 大きな Markdown を読む面（PO報告 2026-08-11 の再現に要る）
+  {
+    role: "utsuwa",
+    utsuwa: {
+      kind: "open",
+      at: "2026-08-09T02:08:00.000Z",
+      from: { module: "core", tool: "canvas.open", artifact: "-" },
+      view: "file.viewer",
+      label: "契約マッピングを読む",
+      args: { path: "reports/mapping.md", place: "desk" },
+    },
+  },
   // 枝の札（参照）と、還った1行（記録）
   { role: "branch", branchId: BRANCH },
   {
@@ -117,6 +129,18 @@ const TRUNK_HISTORY = [
 
 const BRANCH_HISTORY = [
   { role: "po", text: "Slack のスレッドだと枝が埋没するけど、そこはどうする？" },
+  // 枝でも同じ面を開ける（PO が実際に開いていたのは枝の側）
+  {
+    role: "utsuwa",
+    utsuwa: {
+      kind: "open",
+      at: "2026-08-09T03:01:00.000Z",
+      from: { module: "core", tool: "canvas.open", artifact: "-" },
+      view: "file.viewer",
+      label: "契約マッピングを読む",
+      args: { path: "reports/mapping.md", place: "desk" },
+    },
+  },
   { role: "banto", text: "埋没の原因は4つで、うち2つはこの店では起きません。" },
   // 枝からも面を開ける（開いた面はその枝のキャンバスに載る＝どこから開いたかの記録）
   {
@@ -228,10 +252,53 @@ class FakeHost {
         );
         return;
       }
+      // ファイルを読む面が中身を取りに来る口。**大きな Markdown を返す**——
+      // 打鍵のたびに解析し直していた問題（PO報告 2026-08-11）は、中身が大きくないと出ない
+      if (url.endsWith("/tools/file.read")) {
+        /**
+         * 実機のもの（59KB・536行）に近い形。**行数は preview の上限（2000行）内**に
+         * 収める——超えると整形表示に切り替わらず、この問題が再現しない
+         */
+        const body =
+          "# 実行環境インターフェース契約\n\n" +
+          Array.from(
+            { length: 160 },
+            (_, i) =>
+              `## ${i} 節 — 契約と現行の対応\n\n` +
+              `- 対応: env.provision は §${i} を満たす。` +
+              "詳細は packages/banto-environment-pool/src/pool.ts を参照。".repeat(6) +
+              "\n\n| 契約 | 現行 | 判定 | 備考 |\n|---|---|---|---|\n" +
+              `| a${i} | b${i} | ○ | ${"長めの備考。".repeat(8)} |\n\n`
+          ).join("");
+        res.writeHead(200, { "Content-Type": "application/json" }).end(
+          JSON.stringify({
+            content: [],
+            details: { path: "reports/mapping.md", content: body, totalLines: body.split("\n").length },
+          })
+        );
+        return;
+      }
       if (url.startsWith("/api/")) {
+        /**
+         * **中身のある面を返す**（PO報告 2026-08-11）。
+         *
+         * 空の面では、開いていても描き直しが安いので**入力欄の遅さが再現しない**。
+         * 実際に PO が開いているのは中身のある面なので、それに近い量を返す。
+         */
+        const entries = Array.from({ length: 600 }, (_, i) => ({
+          name: `file-${i}.ts`,
+          path: `packages/banto-web/src/file-${i}.ts`,
+          kind: i % 7 === 0 ? "dir" : "file",
+          size: 1024 + i,
+        }));
         res
           .writeHead(200, { "Content-Type": "application/json" })
-          .end(JSON.stringify({ content: [], details: { path: ".", entries: [], total: 0 } }));
+          .end(
+            JSON.stringify({
+              content: [],
+              details: { path: ".", entries, total: entries.length },
+            })
+          );
         return;
       }
       const rel = url === "/" ? "index.html" : url.replace(/^\//, "");
@@ -320,7 +387,10 @@ class FakeHost {
     if (message["type"] === "canvas_open") {
       const threadId = String(message["threadId"] ?? TRUNK);
       const kind = String(message["kind"]);
-      const tab = { id: `tab-${kind}-${threadId}`, kind, title: kind, params: {}, rev: 1 };
+      // **押したときの引数をそのまま持たせる**（本物のキャンバスと同じ）。
+      // 落とすと、ファイルを読む面に「読むファイルが指定されていません」が出る
+      const params = (message["params"] ?? {}) as Record<string, unknown>;
+      const tab = { id: `tab-${kind}-${threadId}`, kind, title: kind, params, rev: 1 };
       this.canvas[threadId] = { tabs: [tab], activeTabId: tab.id };
       send({ type: "canvas_state", threadId, tabs: [tab], activeTabId: tab.id });
       return;
@@ -574,6 +644,46 @@ test.describe("帳場と、畳んだ会話（PO裁定 2026-08-10）", () => {
     // 履歴から開いても入力欄は出ない——還した話が続くと、幹の結論と食い違う
     await expect(page.locator(".hold--branch")).toHaveCount(0);
   });
+
+  /**
+   * **畳んだ枝は、開いたら開いたまま**（PO報告 2026-08-11）。
+   *
+   * 蹴り出していたのは「見ている最中に畳まれたとき」のためだったが、結論の行から
+   * 中身を読みに行ったときまで追い返していた。畳んでも消えない（決定30c）のだから、
+   * 読むために開くのは正しい操作——**話せないことと、見られないことは別**。
+   */
+  test("畳んだ枝を結論の行から開くと、開いたまま読める（再開の口も出る）", async ({ page }) => {
+    await open(page);
+    await page.locator(".hold--branch").click();
+    await expect(page.locator(".room--branch")).toBeVisible();
+
+    host.mergeBranch("再現条件は canvas_state の到着順でした");
+    // 目の前で畳まれたら幹へ戻る（ここまでは PO報告 2026-08-10 のまま）。
+    // **戻る先はその枝の親**——帳場へ落とすと、枝の話の続きから引き離される
+    await expect(page.locator(".room--branch")).toHaveCount(0);
+    await expect(page.locator(".room--trunk .room-title")).toHaveText("banto");
+
+    // 幹に還った1行から中身を開く
+    await page
+      .locator(`.bresult:has-text("間欠的に落ちる試験")`)
+      .getByRole("button", { name: "中身をひらく" })
+      .click();
+
+    await expect(page.locator(".room--branch")).toBeVisible();
+    await expect(page.locator(".room--branch .room-title")).toHaveText("間欠的に落ちる試験");
+    // 話せはしない。代わりに結論と、続けたいときの口が出る
+    await expect(page.locator(".room--branch .chat-input")).toHaveCount(0);
+    await expect(page.locator(".room--branch .room-closed-c")).toContainText(
+      "再現条件は canvas_state の到着順でした"
+    );
+    await expect(
+      page.locator(".room--branch").getByRole("button", { name: "開き直して続ける" })
+    ).toBeVisible();
+    // 還した話をもう一度還せない（幹に結論が二重に並ぶ）
+    await expect(
+      page.locator(".room--branch").getByRole("button", { name: "畳んで幹に回収" })
+    ).toHaveCount(0);
+  });
 });
 
 test.describe("幹を押すと上の紙を剥がす（PO要望 2026-08-10）", () => {
@@ -664,5 +774,56 @@ test.describe("[task-0088/a13] 狭い画面では重なる", () => {
     }));
     expect(overflow.x, "横スクロールが生えている").toBeLessThanOrEqual(0);
     expect(overflow.y, "ページごとスクロールしている").toBeLessThanOrEqual(0);
+  });
+});
+
+/**
+ * **キャンバスを開いていても、入力欄が重くならない**（PO報告 2026-08-11）。
+ *
+ * ## 何が起きていたか（実機・thread-71）
+ *
+ * 59KB の `.md`（`2026-08-11-exec-env-contract-mapping.md`）をファイル面で開いた状態で
+ * 1文字打つと **128ms**。プロファイルの上位が micromark（Markdown の字句解析）で埋まる
+ * ——**打鍵のたびにファイル全体を解析し直していた**。読んでいるファイルは打鍵で変わらない
+ * のだから、解析は1度でよい。直したあとは 13ms（実測・同じ環境）。
+ *
+ * ここでは**中身の大きい Markdown**を面に出して測る。小さい面では再現しない。
+ */
+test.describe("入力欄の速さ（面を開いていても）", () => {
+  /** 1文字あたりの所要（ms）。**押してから反映されるまで**を測る。 */
+  async function perKeystroke(page: Page, input: string): Promise<number> {
+    const box = page.locator(input);
+    await box.click();
+    await box.fill("");
+    const started = Date.now();
+    for (let i = 0; i < 5; i++) await box.press("a");
+    const elapsed = Date.now() - started;
+    await expect(box).toHaveValue("aaaaa");
+    await box.fill("");
+    return elapsed / 5;
+  }
+
+  test("大きな Markdown の面を開いていても、打鍵が引っかからない", async ({ page }) => {
+    await open(page);
+    // 会話の中の「面への口」からファイル面を開く（PO と同じ経路）
+    await page.locator(".room--trunk .u-open", { hasText: "契約マッピングを読む" }).click();
+    await expect(page.locator(".work")).toBeVisible();
+    await expect(page.locator(".work .markdown")).toBeVisible({ timeout: 20000 });
+
+    const perChar = await perKeystroke(page, ".room--trunk .chat-input");
+    // 直す前はここが 100ms を大きく超えていた（実機で 128ms）
+    expect(perChar, `1文字あたり ${perChar.toFixed(1)}ms`).toBeLessThan(100);
+  });
+
+  test("枝でも同じ（面は枝のキャンバスに載る）", async ({ page }) => {
+    await open(page);
+    await page.locator(".hold--branch").click();
+    await expect(page.locator(".room--branch")).toBeVisible();
+    await page.locator(".room--branch .u-open", { hasText: "契約マッピングを読む" }).click();
+    await expect(page.locator(".work")).toBeVisible();
+    await expect(page.locator(".work .markdown")).toBeVisible({ timeout: 20000 });
+
+    const perChar = await perKeystroke(page, ".room--branch .chat-input");
+    expect(perChar, `1文字あたり ${perChar.toFixed(1)}ms`).toBeLessThan(100);
   });
 });

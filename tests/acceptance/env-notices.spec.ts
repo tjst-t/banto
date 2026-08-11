@@ -157,6 +157,96 @@ describe("[task-0067/a1] 衛生の出来事が Environment Pool に残る", () =
     assert.equal(orphans!.envId, undefined, "孤児は特定の環境の話ではない");
   });
 
+  /**
+   * **立っている環境を孤児と呼ばない**（PO報告 2026-08-11）。
+   *
+   * 突き合わせを `JSON.stringify(handle)` で丸ごとやっていたが、**ドライバの `list` は
+   * provision に渡した handle を復元できない**（docker は taskId に接頭辞が付き、created は
+   * 秒精度に丸まり、workdir は compose ファイルの場所になる——実測）。つまり
+   * **立っている環境が1つ残らず孤児として上がっていた**。帳場が埋まっていた本当の原因。
+   */
+  it("[PO報告 2026-08-11] 立っている環境は孤児にならない（handle が完全一致しなくても）", async () => {
+    writeProfiles(`profiles:\n  badneck:\n    driver: "${FAILING_DRIVER}"\n    ttl: 1h\n`);
+    const pool = makePool();
+    const env = await pool.provision({ repoPath: repo, profile: "badneck", taskId: "t-live" });
+
+    /**
+     * ドライバが handle を**組み立て直す**状況を作る（docker が実際にそうしている）。
+     * 名前は同じまま、他の欄だけずらす——これで孤児と判定されるなら、立っている環境が
+     * 全部孤児になる。
+     */
+    const state = JSON.parse(fs.readFileSync(FAILING_DRIVER_STATE, "utf-8")) as Array<
+      Record<string, unknown>
+    >;
+    for (const entry of state) {
+      entry["taskId"] = `banto-env-${String(entry["taskId"])}`;
+      entry["created"] = "2000-01-01T00:00:00.000Z";
+      entry["workdir"] = "/どこか/別の場所";
+    }
+    fs.writeFileSync(FAILING_DRIVER_STATE, JSON.stringify(state), "utf-8");
+
+    const orphans = await pool.reconcile();
+    assert.deepEqual(
+      orphans.map((o) => o.name),
+      [],
+      `立っている環境を孤児として挙げている: ${JSON.stringify(orphans)}`
+    );
+    assert.ok(pool.list().some((e) => e.envId === env.envId), "台帳には居ること（前提）");
+  });
+
+  /**
+   * **同じ孤児を何度も知らせない**（PO報告 2026-08-11）。
+   *
+   * 合図を「その回に見つかった集合」で作っていたので、他の孤児が1つ増減するだけで鍵が
+   * 変わり、既に知らせたものが混ざったまま何度も流れた（実測：同じ 1 件が 26 回）。
+   * 帳場はそれで埋まっていた。
+   */
+  it("[PO報告 2026-08-11] 同じ孤児は1度だけ。新しい分が出たときだけ知らせる", async () => {
+    writeProfiles(`profiles:\n  badneck:\n    driver: "${FAILING_DRIVER}"\n    ttl: 1h\n`);
+    const pool = makePool();
+    // 台帳と突き合わせる相手（ドライバの管理下）を1つ増やす。**台帳には載せない**
+    const addOrphan = (name: string): void => {
+      const state = fs.existsSync(FAILING_DRIVER_STATE)
+        ? (JSON.parse(fs.readFileSync(FAILING_DRIVER_STATE, "utf-8")) as unknown[])
+        : [];
+      state.push({ name, taskId: `t-${name}`, created: new Date().toISOString() });
+      fs.writeFileSync(FAILING_DRIVER_STATE, JSON.stringify(state), "utf-8");
+    };
+    // 照合はドライバごとに走る＝そのドライバの環境が台帳に1つ要る（無いと list を呼ばない）
+    await pool.provision({ repoPath: repo, profile: "badneck", taskId: "t-anchor" });
+    const orphanEvents = (): Array<Array<{ name?: string }>> =>
+      pool
+        .events()
+        .filter((e) => e.type === "env_orphans_found")
+        .map((e) => (e.data["orphans"] ?? []) as Array<{ name?: string }>);
+
+    addOrphan("lost-a");
+    await pool.runMaintenance();
+    await pool.runMaintenance();
+    await pool.runMaintenance();
+    assert.equal(orphanEvents().length, 1, "同じ孤児は照合のたびに知らせない");
+
+    // 2件目が現れたときは知らせる。**新しい分だけ**——既に知らせたものを混ぜない
+    addOrphan("lost-b");
+    await pool.runMaintenance();
+    const events = orphanEvents();
+    assert.equal(events.length, 2, "新しい孤児は見逃さない");
+    assert.deepEqual(
+      events[1]!.map((o) => o.name),
+      ["lost-b"],
+      "既に知らせた分を混ぜると「また増えた」と読める"
+    );
+
+    // 消えた孤児は忘れる（また現れたら改めて知らせる）
+    fs.writeFileSync(FAILING_DRIVER_STATE, JSON.stringify([]), "utf-8");
+    await pool.runMaintenance();
+    addOrphan("lost-a");
+    await pool.runMaintenance();
+    const after = orphanEvents();
+    assert.equal(after.length, 3);
+    assert.deepEqual(after[2]!.map((o) => o.name), ["lost-a"], "戻ってきた孤児は知らせ直す");
+  });
+
   it("立てた・畳んだの実況は残さない（会話が検証環境の中継にならないため）", async () => {
     writeProfiles(
       "profiles:\n  dev:\n    driver: process\n    config:\n      cmd: sleep 60\n    ttl: 1h\n"
