@@ -60,7 +60,29 @@ export {
   type WorkerEventFilter,
   type WorkerEventHandler,
 } from "./event-log.js";
-export { workerReportExtensionPath, webToolsExtensionPath } from "./extension.js";
+export {
+  workerReportExtensionPath,
+  webToolsExtensionPath,
+  toolOffloadExtensionPath,
+} from "./extension.js";
+export {
+  installToolOffload,
+  ToolResultOffloader,
+  DEFAULT_WORKER_OFFLOAD_THRESHOLD_CHARS,
+  OFFLOAD_THRESHOLD_ENV,
+  OFFLOAD_DIR_ENV,
+  OFFLOAD_ENABLED_ENV,
+  READBACK_MAX_CHARS,
+  WORKER_OFFLOAD_PROMPT,
+  resolveThresholdChars,
+  resolveOffloadDir,
+  isOffloadEnabled,
+  isExemptTool,
+  outlineOf,
+  renderOffloadStub,
+  type ToolResultLike,
+  type OffloadPatch,
+} from "./pi-extension/tool-offload.js";
 export {
   WEB_TOOL_NAMES,
   isPublicHttpUrl,
