@@ -515,3 +515,40 @@ describe("[task-0014] POが直接タブを操作する経路", () => {
     client.close();
   });
 });
+
+/**
+ * inc-0054: 断るときは直し方まで書く（キャンバス版）。
+ * 「Unknown canvas tab "x"」だけでは、正しい id を知る手立てが無い。
+ */
+describe("[inc-0054] 知らないタブは、開いているものを名指しして断る", () => {
+  it("[inc-0054] 開いているタブがあれば、その id を挙げる", () => {
+    const tab = canvas.open("demo.hello", { message: "本題" });
+    for (const call of [
+      () => canvas.close("no-such-tab"),
+      () => canvas.switchTo("no-such-tab"),
+      () => canvas.reorder("no-such-tab", 0),
+    ]) {
+      let err: Error | undefined;
+      try {
+        call();
+      } catch (e) {
+        err = e as Error;
+      }
+      assert.ok(err, "知らない id は黙って無視しない（I2）");
+      assert.match(err.message, /Unknown canvas tab/, "既存の頭は残す");
+      assert.match(err.message, new RegExp(tab.id), "**いま開いている id** を名指しする");
+    }
+  });
+
+  it("[inc-0054] 1つも開いていないなら、そう言って開き方を示す", () => {
+    let err: Error | undefined;
+    try {
+      canvas.switchTo("no-such-tab");
+    } catch (e) {
+      err = e as Error;
+    }
+    assert.ok(err);
+    assert.match(err.message, /開いているタブはありません/, "「一覧が空」と「id 違い」は直し方が別");
+    assert.match(err.message, /canvas\.open/, "次にやることを書く");
+  });
+});

@@ -635,7 +635,7 @@ export class ThreadRegistry {
     let parentTrunk: Thread | undefined;
     if (spec.kind === "branch") {
       const from_ = from === undefined ? undefined : this.threads.get(from);
-      if (from !== undefined && !from_) throw new Error(`unknown thread: ${from}`);
+      if (from !== undefined && !from_) throw this.unknownThread(from);
       // 実行時の縛り。**深さ1段**（決定77）——埋没は深さに対して指数的に効く
       if (from_?.kind === "branch") {
         throw new Error(
@@ -724,6 +724,24 @@ export class ThreadRegistry {
   }
 
   /**
+   * 知らないIDを指されたときのエラー。**いま在る会話を名指しする**（inc-0054）。
+   *
+   * 「unknown thread: thread-999」だけでは、正しいIDを知る手立てが無い。
+   * 畳んだものにも知らせは届く（決定35b）ので、開いているものを先に挙げつつ
+   * 畳んだ数も添える——「IDが違う」のか「もう畳んだ」のかで直し方が別なため。
+   */
+  private unknownThread(threadId: string): Error {
+    const open = this.list({ state: "open" }).map((t) => `${t.id}（${t.title}）`);
+    const closed = this.list({ state: "closed" }).length;
+    return new Error(
+      `unknown thread: ${threadId} — いま開いているのは ` +
+        (open.length > 0 ? open.join("、") : "ありません") +
+        `${closed > 0 ? `。ほかに畳んだ会話が ${closed} 本あります（thread.list で引けます）` : ""}` +
+        "。この中のIDを渡してください"
+    );
+  }
+
+  /**
    * 幹の一覧（＝プロジェクトの一覧。PO裁定 2026-08-09）。
    *
    * **プロジェクトの帳簿を別に持たない**（D3）——幹がプロジェクトの単位そのものなので、
@@ -754,7 +772,7 @@ export class ThreadRegistry {
    */
   merge(threadId: string, conclusion: string, now = new Date()): Thread {
     const thread = this.threads.get(threadId);
-    if (!thread) throw new Error(`unknown thread: ${threadId}`);
+    if (!thread) throw this.unknownThread(threadId);
     if (thread.kind === "trunk") {
       throw new Error("幹は畳めません（幹は永続・決定77）");
     }
@@ -810,7 +828,7 @@ export class ThreadRegistry {
    */
   closeTrunk(threadId: string, now = new Date()): Thread {
     const thread = this.threads.get(threadId);
-    if (!thread) throw new Error(`unknown thread: ${threadId}`);
+    if (!thread) throw this.unknownThread(threadId);
     if (thread.kind !== "trunk") {
       throw new Error("これは幹ではありません（枝は thread.merge で畳みます）");
     }
@@ -934,7 +952,7 @@ export class ThreadRegistry {
    */
   rename(threadId: string, title: string): Thread {
     const thread = this.threads.get(threadId);
-    if (!thread) throw new Error(`unknown thread: ${threadId}`);
+    if (!thread) throw this.unknownThread(threadId);
     const normalized = normalizeThreadTitle(title);
     if (!normalized) throw new Error("title must not be empty");
     if (normalized === thread.title) return thread; // 冪等（保存も通知もしない）
@@ -953,7 +971,7 @@ export class ThreadRegistry {
    */
   reopen(threadId: string): Thread {
     const thread = this.threads.get(threadId);
-    if (!thread) throw new Error(`unknown thread: ${threadId}`);
+    if (!thread) throw this.unknownThread(threadId);
     thread.state = "open";
     thread.closedAt = undefined;
     thread.lastActivityAt = new Date().toISOString();
@@ -972,11 +990,16 @@ export class ThreadRegistry {
     if (threadId === undefined) {
       const trunk = this.trunk();
       // I2: 幹が無い状態を黙って埋めない。呼び出し側が空状態として扱う
-      if (!trunk) throw new Error("no trunk");
+      // （inc-0054: 「no trunk」だけでは何が起きたのか読めないので、状態と直し方を書く）
+      if (!trunk)
+        throw new Error(
+          "no trunk — 開いている幹が1本もないため、宛先を省略した呼び出しは通せません。" +
+            "thread.open で幹を開くか、threadId を明示してください"
+        );
       return trunk;
     }
     const thread = this.threads.get(threadId);
-    if (!thread) throw new Error(`unknown thread: ${threadId}`);
+    if (!thread) throw this.unknownThread(threadId);
     return thread;
   }
 

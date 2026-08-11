@@ -414,3 +414,71 @@ describe("[desk] 成果物置き場の既定", () => {
     assert.equal(ensureDeskDir([{ id: "workspace", path: "/tmp/ws" }]), undefined);
   });
 });
+
+/**
+ * inc-0054: 断るときは「直し方」まで書く。
+ *
+ * **読んでも直せないエラーは、繰り返しを生む。** 実測（thread-72・2026-08-11）で、
+ * 番頭が `file.write` を place 指定なしで7回連続で呼んで空回りし、最後は打ち切られた。
+ * 返っていたのは「Multiple places are registered (banto, desk, ...)」——事実は正しいが、
+ * **どの引数に何を入れれば通るのかが書かれていない**ので、同じ呼び出しを繰り返した。
+ *
+ * ここで見るのは「引数名が書かれているか」「候補が名指しされているか」の2点。
+ * 文言そのものではなく、**直せる形になっているか**を固定する。
+ */
+describe("[inc-0054] 断るときは直し方まで書く", () => {
+  const twoPlaces = () =>
+    new PlaceRegistry([
+      createStaticPlaceProvider([
+        { id: "repo-a", path: repoA },
+        { id: "repo-b", path: repoB },
+      ]),
+    ]);
+
+  it("[inc-0054] 場所が複数で省略されたら、引数名と候補と例を出す", async () => {
+    const err = await twoPlaces()
+      .resolve()
+      .then(() => undefined, (e: unknown) => e as Error);
+    assert.ok(err, "複数あるのに省略したら通らない（I2）");
+    assert.match(err.message, /Multiple places are registered/, "既存の頭は残す");
+    assert.match(err.message, /"place"/, "**どの引数か**を名指しする");
+    assert.match(err.message, /repo-a/, "候補を挙げる");
+    assert.match(err.message, /例: place: "repo-a"/, "そのまま書き写せる例を出す");
+  });
+
+  it("[inc-0054] 知らない場所を指されたら、渡せる id を名指しする", async () => {
+    const err = await twoPlaces()
+      .require("repo-x")
+      .then(() => undefined, (e: unknown) => e as Error);
+    assert.ok(err);
+    assert.match(err.message, /Unknown place "repo-x"/);
+    assert.match(err.message, /"place"/, "引数名を出す");
+    assert.match(err.message, /repo-a/, "渡せる id を挙げる");
+  });
+
+  it("[inc-0054] 場所の外を指されたら、その場所の根を出す（パスと場所のどちらが違うか分かる）", () => {
+    let err: Error | undefined;
+    try {
+      resolveInPlace({ id: "repo-a", label: "A", path: repoA }, "../outside/x.md");
+    } catch (e) {
+      err = e as Error;
+    }
+    assert.ok(err, "場所の外は弾く（砦）");
+    assert.match(err.message, /outside the place "repo-a"/, "既存の頭は残す");
+    assert.match(err.message, new RegExp(repoA.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")), "根を出す");
+    assert.match(err.message, /place/, "場所を変える道も示す");
+  });
+
+  it("[inc-0054] file.* が失敗したら、どの場所を見た結果かを添える", async () => {
+    const tools = placeScopedTools(twoPlaces(), (root) => createFileTools(root));
+    const read = tools.find((t) => t.name === "file.read");
+    assert.ok(read, "file.read がある");
+
+    const err = await read
+      .execute({ path: "docs/nope.md", place: "repo-b" }, {} as never)
+      .then(() => undefined, (e: unknown) => e as Error);
+    assert.ok(err, "無いファイルは黙って空を返さない（I2）");
+    assert.match(err.message, /repo-b/, "**どの場所を見たか**を書く（これが無いと場所を変えずに繰り返す）");
+    assert.match(err.message, new RegExp(repoB.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")), "根も書く");
+  });
+});

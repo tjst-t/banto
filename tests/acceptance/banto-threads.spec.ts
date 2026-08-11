@@ -1580,3 +1580,49 @@ describe("[task-0035/a5] 記憶はスレッドを越えて共有される（D11�
     assert.equal("memory" in thread, false);
   });
 });
+
+/**
+ * inc-0054: 断るときは直し方まで書く（会話版）。
+ * 「unknown thread: thread-999」だけでは、正しいIDを知る手立てが無い。
+ */
+describe("[inc-0054] 知らない会話は、在るものを名指しして断る", () => {
+  it("[inc-0054] 開いている会話のIDと題を挙げる", async () => {
+    const trunk = await threads.open({ kind: "trunk", title: "banto開発" });
+
+    for (const call of [
+      () => threads.resolve("thread-999"),
+      () => threads.merge("thread-999", "結論"),
+      () => threads.rename("thread-999", "新しい題"),
+      () => threads.reopen("thread-999"),
+    ]) {
+      let err: Error | undefined;
+      try {
+        call();
+      } catch (e) {
+        err = e as Error;
+      }
+      assert.ok(err, "知らないIDを幹へ黙って落とさない（I2）");
+      assert.match(err.message, /unknown thread: thread-999/, "既存の頭は残す");
+      assert.match(err.message, new RegExp(trunk.id), "**いま在るID**を名指しする");
+      assert.match(err.message, /banto開発/, "題も出す（IDだけではどれか分からない）");
+    }
+  });
+
+  it("[inc-0054] 畳んだ会話があれば本数を添える（IDが違うのか、もう畳んだのか）", async () => {
+    await threads.open({ kind: "trunk", title: "幹" });
+    const branch = await threads.open(
+      { kind: "branch", title: "枝", returnCondition: "決まったら", openedBy: "banto", reason: "調べる" },
+      undefined
+    );
+    threads.merge(branch.id, "済んだ");
+
+    let err: Error | undefined;
+    try {
+      threads.resolve("thread-999");
+    } catch (e) {
+      err = e as Error;
+    }
+    assert.ok(err);
+    assert.match(err.message, /畳んだ会話が 1 本/, "畳んだ側も見に行けると分かる形にする");
+  });
+});
