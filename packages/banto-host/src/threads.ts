@@ -89,6 +89,16 @@ export type ThreadFactory = (
    */
   resumePendingTurn?: () => Promise<void>;
   /**
+   * **いま章を畳む**（提案§3.2 の人側）。閾値に達していなくても畳む。
+   *
+   * 章立てが働いていない構成（要約に使えるモデルが無い）では渡らない——
+   * その場合は「畳めません」と理由を出す（I2：黙って何も起きないのが一番困る）。
+   *
+   * **畳んだかどうかを返す。** まだ何も溜まっていない章は畳みようがなく、以前は
+   * 黙って何も起きなかった（PO報告 2026-08-11）——押した側からは壊れて見える。
+   */
+  closeChapter?: () => Promise<boolean>;
+  /**
    * 対話ループの後始末。スレッドを閉じるとき・ホストを終うときに呼ばれる。
    *
    * `HostSession`（server が要求する最小契約）には入れない——配信に要るものではなく、
@@ -233,6 +243,11 @@ export class Thread {
    * サーバ起動後に open スレッドだけ呼ばれる（畳んだスレッドは開き直すまで話さない）。
    */
   readonly resumePendingTurn: (() => Promise<void>) | undefined;
+  /**
+   * **いま章を畳む**（提案§3.2 の人側）。章立てが働いていない会話では `undefined`。
+   * サーバはこれが無いことを「畳めない理由」としてそのまま PO に出す（I2）。
+   */
+  readonly closeChapter: (() => Promise<boolean>) | undefined;
   /** 会話の真実。接続時にまとめて配り、以後は差分イベントで追随させる（D3）。 */
   transcript: TranscriptEntry[] = [];
   /**
@@ -267,6 +282,7 @@ export class Thread {
     sessionFile?: string;
     model?: { provider: string; id: string; vision: boolean; contextWindow?: number };
     resumePendingTurn?: () => Promise<void>;
+    closeChapter?: () => Promise<boolean>;
     dispose?: () => void;
   }) {
     this.id = params.id;
@@ -289,6 +305,7 @@ export class Thread {
     this.sessionFile = params.sessionFile;
     this.model = params.model;
     this.resumePendingTurn = params.resumePendingTurn;
+    this.closeChapter = params.closeChapter;
     if (params.dispose) this.disposers.push(params.dispose);
   }
 
@@ -459,6 +476,8 @@ export class ThreadRegistry {
           ...(parts.getLastError ? { getLastError: parts.getLastError } : {}),
           ...(parts.sessionFile ? { sessionFile: parts.sessionFile } : {}),
           ...(parts.resumePendingTurn ? { resumePendingTurn: parts.resumePendingTurn } : {}),
+      ...(parts.closeChapter ? { closeChapter: parts.closeChapter } : {}),
+          ...(parts.closeChapter ? { closeChapter: parts.closeChapter } : {}),
           ...(parts.dispose ? { dispose: parts.dispose } : {}),
         });
         thread.transcript = this.store.transcript(saved.id);
@@ -616,7 +635,7 @@ export class ThreadRegistry {
     let parentTrunk: Thread | undefined;
     if (spec.kind === "branch") {
       const from_ = from === undefined ? undefined : this.threads.get(from);
-      if (from !== undefined && !from_) throw new Error(`unknown thread: ${from}`);
+      if (from !== undefined && !from_) throw this.unknownThread(from);
       // 実行時の縛り。**深さ1段**（決定77）——埋没は深さに対して指数的に効く
       if (from_?.kind === "branch") {
         throw new Error(
@@ -669,6 +688,7 @@ export class ThreadRegistry {
       ...(parts.getLastError ? { getLastError: parts.getLastError } : {}),
       ...(parts.sessionFile ? { sessionFile: parts.sessionFile } : {}),
       ...(parts.resumePendingTurn ? { resumePendingTurn: parts.resumePendingTurn } : {}),
+      ...(parts.closeChapter ? { closeChapter: parts.closeChapter } : {}),
       ...(parts.dispose ? { dispose: parts.dispose } : {}),
     });
     this.attach(thread);
@@ -704,6 +724,24 @@ export class ThreadRegistry {
   }
 
   /**
+   * 知らないIDを指されたときのエラー。**いま在る会話を名指しする**（inc-0054）。
+   *
+   * 「unknown thread: thread-999」だけでは、正しいIDを知る手立てが無い。
+   * 畳んだものにも知らせは届く（決定35b）ので、開いているものを先に挙げつつ
+   * 畳んだ数も添える——「IDが違う」のか「もう畳んだ」のかで直し方が別なため。
+   */
+  private unknownThread(threadId: string): Error {
+    const open = this.list({ state: "open" }).map((t) => `${t.id}（${t.title}）`);
+    const closed = this.list({ state: "closed" }).length;
+    return new Error(
+      `unknown thread: ${threadId} — いま開いているのは ` +
+        (open.length > 0 ? open.join("、") : "ありません") +
+        `${closed > 0 ? `。ほかに畳んだ会話が ${closed} 本あります（thread.list で引けます）` : ""}` +
+        "。この中のIDを渡してください"
+    );
+  }
+
+  /**
    * 幹の一覧（＝プロジェクトの一覧。PO裁定 2026-08-09）。
    *
    * **プロジェクトの帳簿を別に持たない**（D3）——幹がプロジェクトの単位そのものなので、
@@ -734,7 +772,7 @@ export class ThreadRegistry {
    */
   merge(threadId: string, conclusion: string, now = new Date()): Thread {
     const thread = this.threads.get(threadId);
-    if (!thread) throw new Error(`unknown thread: ${threadId}`);
+    if (!thread) throw this.unknownThread(threadId);
     if (thread.kind === "trunk") {
       throw new Error("幹は畳めません（幹は永続・決定77）");
     }
@@ -744,7 +782,20 @@ export class ThreadRegistry {
     thread.conclusion = text;
     thread.state = "closed";
     thread.closedAt = now.toISOString();
-    const trunk = this.trunk();
+    /**
+     * 還す先は**その枝の親**（PO報告 2026-08-11）。
+     *
+     * 既定の幹（＝帳場）へ還していたので、banto 開発の幹で開いた枝の結論が帳場に出た
+     * ——札は親に立つ（`open`）のに結論は別の幹へ行くので、幹が読める帯にならない。
+     * **札と結論は同じ幹に並ぶ**のが決定77の形。
+     */
+    const trunk = thread.parentId ? this.threads.get(thread.parentId) : undefined;
+    // I2: 親を引けないのは帳簿の壊れ。黙って帳場へ落とすと、また別の幹に結論が紛れ込む
+    if (!trunk) {
+      console.error(
+        `[banto] 枝 ${thread.id} の親（${thread.parentId ?? "なし"}）を引けず、結論を還せませんでした`
+      );
+    }
     if (trunk) {
       const entry = {
         role: "branch_result" as const,
@@ -777,7 +828,7 @@ export class ThreadRegistry {
    */
   closeTrunk(threadId: string, now = new Date()): Thread {
     const thread = this.threads.get(threadId);
-    if (!thread) throw new Error(`unknown thread: ${threadId}`);
+    if (!thread) throw this.unknownThread(threadId);
     if (thread.kind !== "trunk") {
       throw new Error("これは幹ではありません（枝は thread.merge で畳みます）");
     }
@@ -901,7 +952,7 @@ export class ThreadRegistry {
    */
   rename(threadId: string, title: string): Thread {
     const thread = this.threads.get(threadId);
-    if (!thread) throw new Error(`unknown thread: ${threadId}`);
+    if (!thread) throw this.unknownThread(threadId);
     const normalized = normalizeThreadTitle(title);
     if (!normalized) throw new Error("title must not be empty");
     if (normalized === thread.title) return thread; // 冪等（保存も通知もしない）
@@ -920,7 +971,7 @@ export class ThreadRegistry {
    */
   reopen(threadId: string): Thread {
     const thread = this.threads.get(threadId);
-    if (!thread) throw new Error(`unknown thread: ${threadId}`);
+    if (!thread) throw this.unknownThread(threadId);
     thread.state = "open";
     thread.closedAt = undefined;
     thread.lastActivityAt = new Date().toISOString();
@@ -939,11 +990,16 @@ export class ThreadRegistry {
     if (threadId === undefined) {
       const trunk = this.trunk();
       // I2: 幹が無い状態を黙って埋めない。呼び出し側が空状態として扱う
-      if (!trunk) throw new Error("no trunk");
+      // （inc-0054: 「no trunk」だけでは何が起きたのか読めないので、状態と直し方を書く）
+      if (!trunk)
+        throw new Error(
+          "no trunk — 開いている幹が1本もないため、宛先を省略した呼び出しは通せません。" +
+            "thread.open で幹を開くか、threadId を明示してください"
+        );
       return trunk;
     }
     const thread = this.threads.get(threadId);
-    if (!thread) throw new Error(`unknown thread: ${threadId}`);
+    if (!thread) throw this.unknownThread(threadId);
     return thread;
   }
 

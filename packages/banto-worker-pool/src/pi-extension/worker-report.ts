@@ -220,17 +220,35 @@ export default function (pi: any): void {
    */
   pi.on("agent_end", async (event: { messages?: readonly unknown[] }): Promise<void> => {
     const messages = event.messages ?? [];
-    if (!endedWithoutReporting(messages)) return;
-
+    const unreported = endedWithoutReporting(messages);
     const summary = lastAssistantText(messages);
+
+    if (unreported) {
+      try {
+        await post(REPORT.logicalName, {
+          summary: summary.length > 0 ? summary : "(発話なしで手を止めました)",
+          done: true,
+          auto: true,
+        });
+      } catch (err) {
+        process.stderr.write(`[worker-report] auto report failed: ${String(err)}\n`);
+      }
+    }
+
+    /**
+     * **喋り終わったことを、いつでも伝える**（PO要望 2026-08-11）。
+     *
+     * 上の安全弁は「報告しなかったとき」にしか動かない。報告したあとに手が空いたことは
+     * どこにも出ず、起動元は明示の報告か**時間切れ**（既定15分）を待つしかなかった。
+     * ターンの終わりはここで分かっているのだから、事実として渡す（意味は起動元が与える）。
+     */
     try {
-      await post(REPORT.logicalName, {
-        summary: summary.length > 0 ? summary : "(発話なしで手を止めました)",
-        done: true,
-        auto: true,
+      await post("worker.turn_ended", {
+        ...(summary.length > 0 ? { text: summary } : {}),
+        reported: !unreported,
       });
     } catch (err) {
-      process.stderr.write(`[worker-report] auto report failed: ${String(err)}\n`);
+      process.stderr.write(`[worker-report] turn_ended failed: ${String(err)}\n`);
     }
   });
 }

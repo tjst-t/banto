@@ -155,6 +155,11 @@ export interface BantoSession {
   reopenThread(threadId: string): void;
   /** 会話に名前を付け直す（番頭の `thread.rename` と同じ結果。決定25の人側）。 */
   renameThread(threadId: string, title: string): void;
+  /**
+   * **いま章を畳む**（提案§3.2 の人側）。閾値に達していなくても畳む。
+   * 畳めたことは知らせとして会話に出る——ここでは楽観的に何も書き換えない（D3）。
+   */
+  closeChapter(threadId: string): void;
   /** 取次に積まれているもの（答えの出たものも含む）。会話に紐づかない。 */
   inbox: InboxItemView[];
   /** まだ答えの出ていない数。レールの札に出る唯一の数字。 */
@@ -280,6 +285,13 @@ function applyDelta(prev: TranscriptEntry[], event: ServerEvent): TranscriptEntr
         },
       ];
 
+    // ここで章を畳んだ、という印（PO要望 2026-08-11）。区切りの線が1本入るだけ
+    case "chapter_closed":
+      return [
+        ...prev,
+        { role: "chapter", chapter: event.chapter, topic: event.topic, at: event.at },
+      ];
+
     case "turn_end":
       return event.errorMessage ? [...prev, { role: "error", text: event.errorMessage }] : prev;
 
@@ -340,6 +352,14 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
   const followNewThread = useRef(false);
   /** すでに知っているスレッド。新しく現れた1本を見つけるのに使う。 */
   const knownThreadIds = useRef(new Set<string>());
+  /**
+   * 直前に知っていた開閉。**「目の前で畳まれた」を見分けるため**（PO報告 2026-08-11）。
+   *
+   * 畳んだかどうかだけを見ていたので、畳んだ枝を読みに開いた瞬間に既定の幹へ弾き返して
+   * いた——畳んでも会話は消えない（決定30c）のだから、読むために開くのは正しい操作。
+   * 弾き返してよいのは**開いていたものが閉じたとき**だけ。
+   */
+  const threadStates = useRef(new Map<string, "open" | "closed">());
 
   const update = useCallback(
     (threadId: string, patch: (prev: ThreadState) => ThreadState) => {
@@ -446,10 +466,11 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
           syncStreaming(event.threads);
           syncModels(event.threads);
           knownThreadIds.current = new Set(event.threads.map((t) => t.threadId));
-          // 前に見ていた会話（URL に残っている）がまだ開いていれば、そこへ帰る。
-          // 畳まれていた／もう無いときだけ既定へ落とす——**位置を差し替えるだけ**なので
-          // 履歴には積まない（戻ると消えた会話へ帰ろうとするため）
-          if (!event.threads.some((t) => t.threadId === activeRef.current && t.state === "open")) {
+          threadStates.current = new Map(event.threads.map((t) => [t.threadId, t.state]));
+          // 前に見ていた会話（URL に残っている）へ帰る。**畳んでいても帰る**
+          // （PO報告 2026-08-11：読むために開いた枝は、読み込み直しても開いたまま）。
+          // **もう無いときだけ**既定へ落とす——位置を差し替えるだけなので履歴には積まない
+          if (!event.threads.some((t) => t.threadId === activeRef.current)) {
             onActiveThreadRef.current(event.defaultThreadId, { push: false });
           }
           break;
@@ -468,12 +489,30 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
             onActiveThreadRef.current(appeared.threadId, { push: true });
             break;
           }
-          // 見ていたスレッドが畳まれたら、開いている先頭へ移る（空の面を見せない）。
-          // こちらは自分で選んだ移動ではないので積まない
-          if (!event.threads.some((t) => t.threadId === activeRef.current && t.state === "open")) {
-            onActiveThreadRef.current(event.threads.find((t) => t.state === "open")?.threadId, {
-              push: false,
-            });
+          /**
+           * 見ていたスレッドが**目の前で**畳まれたら移る（空の面を見せない）。
+           * こちらは自分で選んだ移動ではないので積まない。
+           *
+           * **「閉じている」ではなく「いま閉じた」で見る**（PO報告 2026-08-11）——
+           * 畳んだ枝を読みに開いても、次の `thread_state` が来た瞬間に弾き返されていた。
+           *
+           * 移る先は**その枝の親の幹**。開いている先頭（＝帳場）へ落とすと、banto 開発の
+           * 枝を畳んだのに帳場に立たされる——枝の話の続きは親の幹にある。
+           */
+          const active = activeRef.current;
+          const was = active ? threadStates.current.get(active) : undefined;
+          threadStates.current = new Map(event.threads.map((t) => [t.threadId, t.state]));
+          const nowClosed = event.threads.find(
+            (t) => t.threadId === active && t.state === "closed"
+          );
+          if (was === "open" && nowClosed) {
+            const parent = event.threads.find(
+              (t) => t.threadId === nowClosed.parentId && t.state === "open"
+            );
+            onActiveThreadRef.current(
+              (parent ?? event.threads.find((t) => t.state === "open"))?.threadId,
+              { push: false }
+            );
           }
           break;
         }
@@ -809,6 +848,17 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
     [post]
   );
 
+  /**
+   * PO が「ここまで」と区切る（提案§3.2 の人側）。
+   *
+   * 結果はホストが知らせとして流す（畳めたときも、畳めなかったときも）。**画面が
+   * 先に何かを書き換えることはしない**——真実はホストの側にある（D3）。
+   */
+  const closeChapter = useCallback(
+    (threadId: string) => post({ type: "chapter_close", threadId }),
+    [post]
+  );
+
   const session = useMemo<BantoSession>(
     () => ({
       status,
@@ -845,6 +895,7 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
       mergeBranch,
       reopenThread,
       renameThread,
+      closeChapter,
       inbox,
       /** まだ答えの出ていない数。レールの札に出る唯一の数字（導出なので持たない） */
       inboxPending: inbox.filter((i) => !i.resolvedAt).length,
@@ -884,6 +935,7 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
       mergeBranch,
       reopenThread,
       renameThread,
+      closeChapter,
       inbox,
       answerInbox,
       openInbox,

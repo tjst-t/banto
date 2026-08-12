@@ -288,6 +288,76 @@ function atBottom(page: import("@playwright/test").Page): Promise<boolean> {
     .evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight <= 70);
 }
 
+/**
+ * **人が章を区切る口**（提案§3.2 の人側・決定25）。
+ *
+ * 自動で畳むのは文脈の量が閾値に達したときだけ。「この話は終わった」は量では拾えない
+ * ので、人にも同じことができる。**文脈の目盛りの隣**に置く——押す気になるのは
+ * 目盛りを見たときなので、離すと探させることになる（D7）。
+ */
+test.describe("章を区切る（人側）", () => {
+  test("目盛りの隣にあり、押すと chapter_close が飛ぶ", async ({ page }) => {
+    const button = page.locator(".chapter-close");
+    await expect(button).toBeVisible();
+
+    // 入力の脇の並びに居る（文脈の目盛りと同じ列）。**探させない**——目盛りは実測が
+    // 届くまで出ないので（I1）、ここでは列そのものを見る
+    const actions = page.locator(".chat-actions");
+    await expect(actions.locator(".model-select")).toBeVisible();
+    await expect(actions.locator(".chapter-close")).toBeVisible();
+
+    await button.click();
+    await expect
+      .poll(() => host.received.find((m) => m["type"] === "chapter_close"))
+      .toEqual({ type: "chapter_close", threadId: THREAD_ID });
+  });
+
+  test("番頭が喋っている最中は押せない（道具の途中で文脈を消さない）", async ({ page }) => {
+    host.emit({ type: "turn_start" });
+    await expect(page.locator(".chapter-close")).toBeDisabled();
+
+    host.emit({ type: "turn_end" });
+    await expect(page.locator(".chapter-close")).toBeEnabled();
+  });
+
+  /**
+   * **押したことが見え、畳んだ場所に線が残る**（PO報告 2026-08-11）。
+   *
+   * 引き継ぎ資料は別のモデルが書くので十数秒かかることがあり、その間ホストからは
+   * 何も来ない——押しても無反応に見えていた。
+   */
+  test("押している間はそれと分かり、畳めると細い区切りの線が入る", async ({ page }) => {
+    const button = page.locator(".chapter-close");
+    await button.click();
+    // 資料を書いている間。**二度押しできない**（押し直しても2章にはならない）
+    await expect(button).toHaveClass(/is-folding/);
+    await expect(button).toBeDisabled();
+    await expect(page.locator(".chapter-mark")).toHaveCount(0);
+
+    host.emit({ type: "chapter_closed", chapter: 3, topic: "孤児リソースの一掃", at: new Date().toISOString() });
+
+    const mark = page.locator(".chapter-mark");
+    await expect(mark).toBeVisible();
+    await expect(mark).toContainText("第3章までを畳みました");
+    await expect(mark).toContainText("孤児リソースの一掃");
+    // **切るのではなく仕切る**——線は左右に伸び、真ん中に何の話だったかが載る
+    await expect(mark.locator(".chapter-mark-rule")).toHaveCount(2);
+    await expect(button).not.toHaveClass(/is-folding/);
+    await expect(button).toBeEnabled();
+  });
+
+  test("畳めなかったときも押しっぱなしにしない（理由が会話に出る）", async ({ page }) => {
+    const button = page.locator(".chapter-close");
+    await button.click();
+    await expect(button).toBeDisabled();
+
+    host.emit({ type: "error", message: "畳むものがまだありません" });
+
+    await expect(button).toBeEnabled();
+    await expect(page.locator(".chat-scroll")).toContainText("畳むものがまだありません");
+  });
+});
+
 test.describe("末尾追従（use-stick-to-bottom）", () => {
   test("最下部にいる間は、届いた分だけ追いかける", async ({ page }) => {
     await fillConversation(page);
@@ -322,6 +392,24 @@ test.describe("末尾追従（use-stick-to-bottom）", () => {
     expect(after).toBe(before);
   });
 
+  /**
+   * ↓は**帯の真ん中**（PO要望 2026-08-11）。右端は親指から遠い——押すのは
+   * 「遡って読んでいて、いまの話に戻りたい」ときなので、手が伸びる場所に置く。
+   */
+  test("↓は会話の帯の真ん中に出る", async ({ page }) => {
+    await fillConversation(page);
+    await page.locator(".chat-scroll").hover();
+    await page.mouse.wheel(0, -300);
+    await page.waitForTimeout(200);
+
+    const jump = (await page.locator(".chat-to-bottom").boundingBox())!;
+    const room = (await page.locator(".room").first().boundingBox())!;
+    const jumpCenter = jump.x + jump.width / 2;
+    const roomCenter = room.x + room.width / 2;
+    // 帯の中央から半径 2px（丸めの誤差ぶん）に居る
+    expect(Math.abs(jumpCenter - roomCenter)).toBeLessThanOrEqual(2);
+  });
+
   test("わずかに上げただけでも追従は止まる（70px の内側でも）", async ({ page }) => {
     await fillConversation(page);
 
@@ -339,6 +427,79 @@ test.describe("末尾追従（use-stick-to-bottom）", () => {
 
     const after = await page.locator(".chat-scroll").evaluate((el) => el.scrollTop);
     expect(after).toBe(before);
+  });
+
+  /**
+   * inc-0048。**猶予（時間）ではなく掛け金（状態）で持つ**ことの確かめ。
+   *
+   * 以前は「直前 400ms に仕草があったか」で見ていたので、上げたまま読んでいる間に
+   * 判定が走ると猶予を過ぎていて下へ引き戻された。**何秒経っても・何回届いても**
+   * 戻らないことを見る（1回ぶんの待ちでは、時間で見ている実装も通ってしまう）。
+   */
+  test("上げたまま読んでいる間は、何度届いても戻らない（時間で緩まない）", async ({ page }) => {
+    await fillConversation(page);
+
+    await page.locator(".chat-scroll").hover();
+    await page.mouse.wheel(0, -300);
+    await page.waitForTimeout(200);
+    const before = await page.locator(".chat-scroll").evaluate((el) => el.scrollTop);
+
+    // 猶予（かつて 400ms）をとうに越える長さで、応答を3回に分けて届ける
+    for (let turn = 0; turn < 3; turn++) {
+      host.emit({ type: "turn_start" });
+      for (let i = 0; i < 15; i++) host.emit({ type: "text_delta", delta: `${turn}-${i} 割り込み\n\n` });
+      host.emit({ type: "turn_end" });
+      await page.waitForTimeout(700);
+      const now = await page.locator(".chat-scroll").evaluate((el) => el.scrollTop);
+      expect(now, `${turn + 1} 回目の応答で下へ引き戻された`).toBe(before);
+    }
+
+    await expect(page.locator(".chat-to-bottom")).toBeVisible();
+  });
+
+  /**
+   * 掛け金は**器が上へ動いたとき**だけ掛かる。触っただけ（選ぶ・押す）では掛からない
+   * ——掛かると、読んでいるつもりが無いのに追従が止まって「途中で固まった」に見える。
+   */
+  test("触っただけでは追従は止まらない（押す・選ぶ）", async ({ page }) => {
+    await fillConversation(page);
+
+    const scroller = page.locator(".chat-scroll");
+    const box = (await scroller.boundingBox())!;
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    await page.waitForTimeout(150);
+
+    host.emit({ type: "turn_start" });
+    for (let i = 0; i < 20; i++) host.emit({ type: "text_delta", delta: `追記 ${i}\n\n` });
+    host.emit({ type: "turn_end" });
+    await page.waitForTimeout(900);
+
+    expect(await atBottom(page), "触っただけで追従が切れた").toBe(true);
+  });
+
+  /**
+   * 掛け金が外れるのは最下部へ戻ったときだけ。**自分で下げて戻った**ときも外れる
+   * （↓ボタンだけが戻り道ではない）。
+   */
+  test("自分で最下部まで戻すと、また追いかけ始める", async ({ page }) => {
+    await fillConversation(page);
+
+    await page.locator(".chat-scroll").hover();
+    await page.mouse.wheel(0, -300);
+    await page.waitForTimeout(200);
+    expect(await atBottom(page)).toBe(false);
+
+    // ↓ボタンではなく、自分で転がして戻る
+    await page.mouse.wheel(0, 600);
+    await page.waitForTimeout(300);
+    expect(await atBottom(page), "戻り切れていない").toBe(true);
+
+    host.emit({ type: "turn_start" });
+    for (let i = 0; i < 20; i++) host.emit({ type: "text_delta", delta: `再開 ${i}\n\n` });
+    host.emit({ type: "turn_end" });
+    await page.waitForTimeout(900);
+
+    expect(await atBottom(page), "戻ったのに追いかけ直していない").toBe(true);
   });
 
   test("↓ボタンを押すと最下部へ戻り、また追いかけ始める", async ({ page }) => {
@@ -977,5 +1138,60 @@ test.describe("コンポーザ（AI Elements の PromptInput）", () => {
     const height = await input.evaluate((el) => el.getBoundingClientRect().height);
     expect(height).toBeLessThanOrEqual(192);
     expect(height).toBeGreaterThan(120);
+  });
+});
+
+/**
+ * **会話の中の URL とファイルパスは押せる**（PO要望 2026-08-11）。
+ *
+ * 押せないと、PO は URL をコピーして貼り直し、パスはファイル面を開いて辿り直すことになる
+ * ——見えているのに届かない。パスは押すとファイル面がその場所（行番号があればその行）で開く。
+ */
+test.describe("会話の中の URL とファイルパス", () => {
+  test("番頭の応答の中のパスを押すと、ファイル面がその行で開く", async ({ page }) => {
+    host.emit({ type: "turn_start" });
+    host.emit({
+      type: "text_delta",
+      delta: "直しました。詳しくは packages/banto-host/src/server.ts:1078 を見てください。\n",
+    });
+    host.emit({ type: "turn_end" });
+
+    const path = page.locator(".msg--banto .linkify-path");
+    await expect(path).toBeVisible();
+    await expect(path).toHaveText("packages/banto-host/src/server.ts:1078");
+
+    await path.click();
+    await expect
+      .poll(() => host.received.find((m) => m["type"] === "canvas_open"))
+      .toMatchObject({
+        type: "canvas_open",
+        kind: "file.browser",
+        params: { path: "packages/banto-host/src/server.ts", line: 1078 },
+      });
+  });
+
+  test("PO 自身の発言の中の URL も押せる（書いたとおりに出しつつ）", async ({ page }) => {
+    // 本物のホストは PO の発話を配り返す。その形をそのまま起こす
+    host.emit({
+      type: "po_message",
+      text: "これ見て https://example.com/a と work/tasks/task-0001.md",
+    });
+
+    const mine = page.locator(".msg--po").last();
+    // 書いたとおりに出る（Markdown で描き直さない）
+    await expect(mine).toContainText("これ見て");
+    const link = mine.locator("a");
+    await expect(link).toHaveAttribute("href", "https://example.com/a");
+    await expect(link).toHaveAttribute("target", "_blank");
+    await expect(mine.locator(".linkify-path")).toHaveText("work/tasks/task-0001.md");
+  });
+
+  test("日本語の文や小数を巻き込まない（誤爆したリンクは読みにくい）", async ({ page }) => {
+    host.emit({ type: "turn_start" });
+    host.emit({ type: "text_delta", delta: "1.5 倍にしました。かつ/または で分けます。\n" });
+    host.emit({ type: "turn_end" });
+
+    await expect(page.locator(".msg--banto").last()).toContainText("1.5 倍");
+    await expect(page.locator(".msg--banto .linkify-path")).toHaveCount(0);
   });
 });

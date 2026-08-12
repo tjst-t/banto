@@ -7,6 +7,7 @@
  * Configuration (environment variables or command line):
  *   BANTO_PORT     - HTTP port (default: 4500)
  *   BANTO_DATA_DIR - data directory for event log + registry (default: ./data)
+ *   BANTO_PO_TOKEN - PO 専用の承認口の合言葉（未設定ならその口は閉じたまま）
  */
 
 export { Daemon } from "./daemon.js";
@@ -26,6 +27,15 @@ export {
   KOBO_MODULE_NAME,
 } from "./kobo-module.js";
 export { createKoboTools, taskFilePath, readTaskDefinition } from "./kobo-tools.js";
+// 決定41: 工場も設定画面に区画を出す（役割ごとの職人の当て方。PO裁定 2026-08-10）
+export {
+  createKoboSettings,
+  KOBO_ROLES,
+  type KoboRole,
+  type RoleAssignment,
+  type RoleAssignments,
+  type RoleAssignmentStore,
+} from "./kobo-settings.js";
 export { KOBO_MODULE_PATH } from "./http-server.js";
 export {
   loadProjectConfig,
@@ -73,7 +83,16 @@ const isMain =
 
 if (isMain) {
   const { Daemon: DaemonClass } = await import("./daemon.js");
-  const daemon = DaemonClass.create();
+  const { createFileSettingsSection } = await import("@banto/core");
+  const nodePath = await import("node:path");
+  // 決定41: 設定画面で決めた役割ごとの当て方は、**次の起動でも効く**。
+  // 置き場は工場のデータ置き場（帳簿と同じ場所。借りる相手が居ない独立プロセスなので）
+  const dataDir = process.env["BANTO_DATA_DIR"] ?? "./data";
+  const daemon = DaemonClass.create({
+    roleAssignmentsSection: createFileSettingsSection(
+      nodePath.join(dataDir, "kobo-settings.json")
+    ),
+  });
   await daemon.start();
 
   // Graceful shutdown on SIGTERM/SIGINT (systemd sends SIGTERM)

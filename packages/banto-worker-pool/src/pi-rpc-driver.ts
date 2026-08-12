@@ -22,9 +22,13 @@ import * as childProcess from "node:child_process";
 import * as net from "node:net";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { StringDecoder } from "node:string_decoder";
 import type { RuntimeDriver, SpawnOptions, SessionHandle, DriverEvent, DriverEventHandler } from "@banto/core";
 import type { LlmCatalog, ModelConstraints, ModelTier } from "@banto/core";
+import { attachJsonlReader, createHandleGrip, waitForSpawnError, type HandleGrip } from "./child-session.js";
+
+// 職人と JSONL で話す枠組みは Claude Code のドライバと共通（child-session.ts）。
+// 公開の口を変えないよう、ここから再輸出しておく
+export { createHandleGrip, type HandleGrip } from "./child-session.js";
 
 /**
  * spawn 時の driverOptions から制約（vision / local / free）を読む。
@@ -41,94 +45,7 @@ function readConstraints(driverOptions: Record<string, unknown> | undefined): Mo
   return out;
 }
 
-// ── JSONL framing (spec: rpc.md §Framing) ──────────────────────────────────
-// Split on LF only. Do NOT use readline (also splits on U+2028/U+2029).
-
-function attachJsonlReader(
-  stream: NodeJS.ReadableStream,
-  onLine: (line: string) => void
-): () => void {
-  const decoder = new StringDecoder("utf8");
-  let buffer = "";
-
-  function onData(chunk: Buffer | string) {
-    buffer += typeof chunk === "string" ? chunk : decoder.write(chunk);
-    while (true) {
-      const idx = buffer.indexOf("\n");
-      if (idx === -1) break;
-      let line = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 1);
-      // Strip trailing CR (accept optional \r\n per spec)
-      if (line.endsWith("\r")) line = line.slice(0, -1);
-      if (line.length > 0) onLine(line);
-    }
-  }
-
-  function onEnd() {
-    const remaining = buffer + decoder.end();
-    if (remaining.length > 0) {
-      const line = remaining.endsWith("\r") ? remaining.slice(0, -1) : remaining;
-      if (line.length > 0) onLine(line);
-    }
-  }
-
-  stream.on("data", onData);
-  stream.on("end", onEnd);
-
-  return () => {
-    stream.off("data", onData);
-    stream.off("end", onEnd);
-  };
-}
-
 // ── Session record ──────────────────────────────────────────────────────────
-
-/**
- * 待っている間だけ handle を掴む仕組み（inc-0020）。
- *
- * 子プロセスと stdio は普段 `unref` してある——職人が残っていてもホストやテストが
- * 抜けられるようにするため。だが**その handle からの応答を待つあいだ**まで unref の
- * ままだと、他に ref された handle が無いとき Node が「やることが無い」と判断し、
- * `await` の途中でプロセスを畳む。ログもエラーも残らない。
- *
- * 「普段は放す・待つ間だけ掴む」を1か所にまとめる。待ちが重なっても数えているので、
- * 内側の待ちが終わっただけで放してしまうことはない。
- */
-export interface HandleGrip {
-  /** fn を待つあいだ handle を掴む。 */
-  hold<T>(fn: () => Promise<T>): Promise<T>;
-  /** 掴みを全部放す（プロセスが終わったとき）。 */
-  release(): void;
-}
-
-export function createHandleGrip(proc: childProcess.ChildProcess): HandleGrip {
-  let held = 0;
-  const setRef = (on: boolean): void => {
-    // 既に閉じた handle への ref/unref は無視される（例外にはならない）
-    if (on) proc.ref();
-    else proc.unref();
-    for (const stream of [proc.stdout, proc.stderr, proc.stdin]) {
-      if (!stream) continue;
-      const socket = stream as unknown as net.Socket;
-      if (on) socket.ref?.();
-      else socket.unref?.();
-    }
-  };
-  return {
-    async hold<T>(fn: () => Promise<T>): Promise<T> {
-      if (held++ === 0) setRef(true);
-      try {
-        return await fn();
-      } finally {
-        if (--held === 0) setRef(false);
-      }
-    },
-    release(): void {
-      held = 0;
-      setRef(false);
-    },
-  };
-}
 
 interface ActiveSession {
   pid: number;
@@ -444,6 +361,20 @@ export class PiRpcDriver implements RuntimeDriver {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
+    /**
+     * **起こせなかったことで工房ごと落とさない**（PO報告 2026-08-11）。
+     *
+     * `spawn` の失敗理由は**非同期に** `error` イベントで飛ぶ。受け手が1人も居ない
+     * `error` は Node の決まりでプロセスごと落とす——ワークツリー（`cwd`）が無いだけで
+     * 工房のサービスが死に、動いていた他の職人も道連れになった（claude-agent 側で実測）。
+     * **投げるより先に**受け手を立てる。
+     */
+    let spawnError: Error | undefined;
+    proc.on("error", (err: Error) => {
+      spawnError = err;
+      process.stderr.write(`[pi-rpc] 職人のプロセスで異常: ${err.message}\n`);
+    });
+
     // Unreference the child process and its stdio sockets so they do NOT
     // prevent the parent Node.js event loop from exiting when tests/daemon
     // are shutting down. The daemon tracks the process via the sessions map
@@ -461,7 +392,12 @@ export class PiRpcDriver implements RuntimeDriver {
 
     const pid = proc.pid;
     if (pid === undefined) {
-      throw new Error(`[pi-rpc] Failed to spawn pi process (pid undefined).`);
+      // I2: なぜ起こせなかったかを添える（作業場所が無い、が実際の原因だった）
+      const why = await waitForSpawnError(() => spawnError);
+      throw new Error(
+        `[pi-rpc] Failed to spawn pi process${why ? `: ${why.message}` : " (pid undefined)"}` +
+          `（作業場所: ${worktreePath}）`
+      );
     }
 
     // Forward stderr to daemon's stderr for diagnostics.

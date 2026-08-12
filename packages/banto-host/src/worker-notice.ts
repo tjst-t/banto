@@ -54,18 +54,44 @@ export function isBantoOrigin(origin: string): boolean {
  *
  * **畳んだこと（`worker_closed`）は知らせない**（PO裁定 2026-08-06）。職人が1人終わるたびに
  * 「畳みました」と「プロセスが終わりました」の2通が並んで届いていた——同じ出来事を2度
- * 読ませている。プロセスが終わったことは `worker_exited` で届くので、番頭が取り落とすものは無い。
+ * 読ませている。
+ *
+ * **番頭が畳んだ結果の `worker_exited` も知らせない**（PO要望 2026-08-11）。上の裁定で
+ * 片方を落としたが、残した側も**番頭が自分でやったこと**だった——`close` は kill してから
+ * 畳むので、終了は必ず先に積まれる。結局「畳みました」の代わりに「終了しました」を
+ * 読まされていただけで、無駄な一通は消えていなかった。予期していない死だけを残す。
  *
  * 決定30b（安全弁が働いたことに気づけるように）は**イベントログ側で保つ**——`reason` は
  * 今までどおり記録され、`worker.list` / `worker.events` と職人ビューアから引ける（決定30e）。
  * 会話へ押し込まないだけで、見えなくはしない。
  */
 export function isNoticeworthy(event: WorkerEvent): boolean {
-  return (
-    event.type === "worker_reported" ||
-    event.type === "worker_asked" ||
-    event.type === "worker_exited"
-  );
+  /**
+   * **喋り終わったのに、それが番頭へ伝わっていないとき**は知らせる（PO指摘 2026-08-11）。
+   *
+   * ターンの終わり方は4つあり、3つは既に何かが届いている（安全弁の代理報告・質問・
+   * 完了の報告）。抜けていたのは**進捗だけ報告して手を止めた**とき——番頭には
+   * 「着手しました」しか届かず、まだ動いていると読むが、実際は手が空いている。
+   * その1つだけを拾う。工房が `settled` として判定済み（台帳が真実・D3）。
+   */
+  if (event.type === "worker_turn_ended") {
+    return event.data["settled"] !== true;
+  }
+  /**
+   * **自分で畳んだ職人の「終わりました」は知らせない**（PO要望 2026-08-11）。
+   *
+   * `worker.close` は killしてから畳むので、`worker_exited` が必ず先に積まれる
+   * ——番頭から見ると「自分で畳んだのに、そのあとプロセス終了を知らされる」ことになり、
+   * 一通が必ず無駄に並んでいた（実測：356人中315人）。**起動・停止は番頭自身がやったこと
+   * なので知らせない**という、このファイルの元からの決めに揃える。
+   *
+   * **予期していない死は今までどおり知らせる**——作業中に落ちたことは、番頭がやって
+   * いないことで、知らなければ気づけない。工房が `expected` を付けて区別している。
+   */
+  if (event.type === "worker_exited") {
+    return event.data["expected"] !== true;
+  }
+  return event.type === "worker_reported" || event.type === "worker_asked";
 }
 
 /** 1行目に出す見出し。UI は畳んだ状態でここだけを見せるので、短く・中身が分かるように。 */
@@ -80,6 +106,12 @@ function headline(event: WorkerEvent): string {
       return event.data["auto"] === true
         ? `${who}が報告せずに手を止めました：${firstLine(String(event.data["summary"] ?? ""))}`
         : `${who}から報告：${firstLine(String(event.data["summary"] ?? ""))}`;
+    case "worker_turn_ended":
+      return `${who}の手が空きました${
+        String(event.data["text"] ?? "").trim().length > 0
+          ? `：${firstLine(String(event.data["text"]))}`
+          : "（発話なし）"
+      }`;
     default: {
       const signal = event.data["signal"];
       const code = event.data["exitCode"];
@@ -124,6 +156,15 @@ export function renderWorkerNotice(event: WorkerEvent): string | undefined {
       "",
       "答えが来るまでこの職人は待っています。答えられるなら worker.steer で返してください。" +
         "不可逆な選択や PO の意向が要る話（D1）なら、あなたの判断で PO に上げてください。"
+    );
+  } else if (event.type === "worker_turn_ended") {
+    const text = String(event.data["text"] ?? "").trim();
+    if (text.length > 0) lines.push("", `> ${text}`);
+    lines.push(
+      "",
+      "**報告はありましたが、そのあと手が止まっています。** 続きがあるつもりなら " +
+        "worker.steer で渡してください。終わっているなら成果を確かめて worker.close で" +
+        "畳んでください——放っておくと安全弁の時間まで残ります（I3）。"
     );
   } else if (event.type === "worker_reported") {
     lines.push("", `> ${String(event.data["summary"] ?? "")}`, "");

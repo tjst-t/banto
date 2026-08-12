@@ -16,13 +16,31 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { DriverEvent, RuntimeDriver, SessionHandle, SpawnOptions } from "@banto/core";
+import type {
+  DriverEvent,
+  RuntimeDriver,
+  SessionHandle,
+  SettingsSection,
+  SpawnOptions,
+} from "@banto/core";
+import {
+  BackendRegistry,
+  WORKER_TIERS,
+  type BackendView,
+  type RuntimeRegistration,
+  type WorkerTier,
+} from "./backends.js";
 import {
   WorkerEventLog,
   type WorkerEvent,
   type WorkerEventFilter,
   type WorkerEventHandler,
 } from "./event-log.js";
+import {
+  CLAUDE_AGENT_DRIVER_ID as CLAUDE_AGENT_RUNTIME,
+  CLAUDE_KNOWN_MODELS,
+  isClaudeModelName,
+} from "./claude-agent/naming.js";
 import { webToolsExtensionPath, workerReportExtensionPath } from "./extension.js";
 import { WORKER_REPORT_TOOL_NAMES } from "./pi-extension/worker-report.js";
 import { WEB_TOOL_NAMES } from "./pi-extension/web-tools.js";
@@ -59,8 +77,12 @@ export const WORKER_SYSTEM_PROMPT = [
  *
  * `waiting` は決定29(b)。質問して答えを待っている職人は**生きているが止まっている**。
  * `alive` だけでは「動いている」と区別がつかず、待ちっぱなしが溜まっても気づけない。
+ *
+ * `idle` は**喋り終わって手が空いている**（PO要望 2026-08-11）。生きてはいるが出力は
+ * 止まっている。以前は `running` と区別が付かず、起動元は明示の報告か時間切れを待つ
+ * しかなかった——見れば分かるようにする。
  */
-export type WorkerState = "running" | "waiting" | "exited" | "closed";
+export type WorkerState = "running" | "idle" | "waiting" | "exited" | "closed";
 
 /**
  * 職人を畳んだ理由（決定30e）。
@@ -97,6 +119,10 @@ export interface WorkerInfo {
   /** プロセスがまだ生きているか。ドライバのイベントと台帳のpidの生存確認から導く（D3）。 */
   alive: boolean;
   state: WorkerState;
+  /** どのランタイムで起こしたか（`pi-rpc` / `claude-agent-sdk` …）。steer・wake の宛先。 */
+  runtime: string;
+  /** 起こしたときに指定したモデル（指定があったときだけ）。 */
+  model?: string;
   spawnedAt: string;
   /** 終了していれば、その内訳（分かる場合）。 */
   exit?: WorkerExitDetail;
@@ -108,11 +134,63 @@ export interface WorkerInfo {
   closedAt?: string;
 }
 
+/**
+ * 名指しできるモデルを数え上げるための、登録の最小の形（LLM Registry の一部）。
+ *
+ * 型で縛らず形だけで受けるのは、Worker Pool を登録の実装に縛らないため（D6）。
+ */
+export interface WorkerModelCatalog {
+  models(): Array<{ providerId: string; id: string; name: string; tier: string; workerUsable: boolean }>;
+  /**
+   * 割り当てが無いときに、その等級で実際に選ばれるもの（分かるなら）。
+   *
+   * 画面に「指定しなければこれになります」を出すために要る——**指定なしの行が
+   * 何になるか分からない**まま選ばせると、PO は結局起こしてみるまで確かめられない。
+   */
+  resolveForWorker?(tier?: string): { model: { provider: string; id: string } } | undefined;
+}
+
+/** 名指しできるモデル1件（`worker.models` が返す形）。 */
+export interface SelectableModel {
+  /** `worker.delegate` の `model` にそのまま書ける名前。 */
+  name: string;
+  /** 画面や工場に出す表示名。 */
+  label: string;
+  /** どのランタイムで動くか。 */
+  runtime: string;
+  /** そのランタイムの表示名（画面が「どのバックエンドのモデルか」を出すため）。 */
+  runtimeTitle?: string;
+  /** 登録が持っている等級（分かるときだけ）。 */
+  tier?: string;
+}
+
 export interface WorkerPoolOptions {
-  /** 職人を起動するランタイム。既定は pi（PiRpcDriver）だが差し替え可能。 */
+  /** 職人を起動する既定のランタイム。既定は pi（PiRpcDriver）だが差し替え可能。 */
   driver: RuntimeDriver;
   /** ランタイムの識別子。台帳に残し、どのランタイムで起こした職人か分かるようにする。 */
   driverId?: string;
+  /** 既定のランタイムの見せ方（表示名・状態・等級の解き方）。省略すると識別子だけ。 */
+  driverRegistration?: Omit<RuntimeRegistration, "driver">;
+  /**
+   * 選べるランタイムの一覧（`driver` は既定として自動で入る）。
+   *
+   * 番頭は `worker.delegate` の `runtime` で選ぶ。**混在させて構わない**——
+   * 職人1人ごとにランタイムが決まり、台帳に残るので、追加の指示（steer）や
+   * 起こし直し（wake）は起こしたときと同じランタイムへ届く。
+   */
+  runtimes?: Record<string, RuntimeDriver | RuntimeRegistration>;
+  /**
+   * 名指しできるモデルを一覧するための登録（`worker.models`）。
+   *
+   * **解決には使わない**——tier からモデルを解く役はランタイム側（pi のドライバ）が
+   * 持っている（決定60a）。ここに要るのは「画面と工場に選ばせる名前」だけ。
+   */
+  catalog?: WorkerModelCatalog;
+  /**
+   * バックエンドと等級ごとの割り当ての保存先（設定画面が書く）。
+   * 渡さなければメモリだけ——次の起動では既定に戻る。
+   */
+  settingsSection?: SettingsSection;
   /** 台帳・セッションファイル・イベントログの置き場所。 */
   dataDir: string;
   /** projectTag を省略して呼ばれたときの既定。 */
@@ -184,16 +262,53 @@ export interface DelegateInput {
    */
   network?: boolean;
   modelTier?: SpawnOptions["modelTier"];
+  /**
+   * どのランタイムで起こすか（`pi` / `claude-code` など。省略時は既定のランタイム）。
+   *
+   * ランタイムごとに得意も費用も違うので、選ぶのは頼む側（番頭）の判断
+   * ——ここでは言われたとおりに起こすだけ（D5）。
+   */
+  runtime?: string;
+  /**
+   * 使うモデルの名指し（`opus` / `claude-opus-5` など）。`modelTier` より優先する。
+   *
+   * 等級（tier）はランタイム中立な言い方で、名指しはランタイム固有。番頭が
+   * 「この仕事は Claude Code の opus で」と決められるようにするための口（PO要望 2026-08-10）。
+   */
+  model?: string;
   driverOptions?: Record<string, unknown>;
 }
+
+/**
+ * 番頭が書きそうな呼び名 → ランタイムの識別子。
+ *
+ * 識別子（`pi-rpc` / `claude-agent-sdk`）は仕組みの名前で、番頭が覚えるものではない。
+ * 「claude で」「pi で」で通るようにしておく——通らなければ、番頭は毎回綴りを当てにいく。
+ */
+const RUNTIME_ALIASES: Readonly<Record<string, string>> = {
+  pi: "pi-rpc",
+  "pi-rpc": "pi-rpc",
+  claude: "claude-agent-sdk",
+  "claude-code": "claude-agent-sdk",
+  "claude-agent-sdk": "claude-agent-sdk",
+};
 
 export class WorkerPool {
   private readonly driver: RuntimeDriver;
   private readonly driverId: string;
+  /** 選べるランタイム。既定のものも入っている（識別子 → 登録）。 */
+  private readonly runtimes = new Map<string, RuntimeRegistration>();
+  /** バックエンドの入切と、等級ごとのモデルの割り当て（設定画面が書く）。 */
+  private readonly backendRegistry: BackendRegistry;
+  /** 名指しできるモデルを数え上げるための登録（解決には使わない）。 */
+  private readonly catalog: WorkerModelCatalog | undefined;
   private readonly dataDir: string;
   private readonly defaultProjectTag: string;
   private readonly defaultOrigin: string;
   private readonly reportUrl: string | undefined;
+  /** いま畳んでいる最中の職人（`worker_exited` に「予期していた」と印を付けるため）。 */
+  private readonly closing = new Set<string>();
+
   private readonly ledger: SpawnLedger;
   private readonly log: WorkerEventLog;
   private readonly unsubscribeDriver: () => void;
@@ -203,6 +318,21 @@ export class WorkerPool {
   constructor(options: WorkerPoolOptions) {
     this.driver = options.driver;
     this.driverId = options.driverId ?? "pi-rpc";
+    this.catalog = options.catalog;
+    this.runtimes.set(this.driverId, {
+      driver: this.driver,
+      title: "pi",
+      ...(options.driverRegistration ?? {}),
+    });
+    for (const [id, entry] of Object.entries(options.runtimes ?? {})) {
+      // ドライバだけ渡す形も受ける（既存の呼び出しを壊さない）
+      this.runtimes.set(id, "driver" in entry ? entry : { driver: entry as RuntimeDriver });
+    }
+    this.backendRegistry = new BackendRegistry(
+      this.runtimes,
+      this.driverId,
+      options.settingsSection
+    );
     this.dataDir = options.dataDir;
     this.defaultProjectTag = options.defaultProjectTag ?? "default";
     this.defaultOrigin = options.defaultOrigin ?? "unknown";
@@ -224,8 +354,14 @@ export class WorkerPool {
     this.log = log;
 
     // task-0027: ドライバのライフサイクルイベントを購読する。これが無いと職人が終わった
-    // 瞬間に誰も気づけず、覗きに行くまで分からない
-    this.unsubscribeDriver = this.driver.subscribe((event) => this.handleDriverEvent(event));
+    // 瞬間に誰も気づけず、覗きに行くまで分からない。**すべてのランタイムを購読する**
+    // ——1つでも漏らすと、そのランタイムで起こした職人だけ終了が記録されない
+    const unsubscribes = [...this.runtimes.values()].map((reg) =>
+      reg.driver.subscribe((event) => this.handleDriverEvent(event))
+    );
+    this.unsubscribeDriver = () => {
+      for (const off of unsubscribes) off();
+    };
 
     // 決定30b: 安全弁。主たる契機は番頭が畳むことで、これは取りこぼしを拾うだけ
     this.setIdleTimeout(options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, options.idleCheckMs);
@@ -309,6 +445,75 @@ export class WorkerPool {
   }
 
   /**
+   * **職人が喋り終わった**（PO要望 2026-08-11）。
+   *
+   * これまで起動元が「終わった」を知る道は2つしか無かった：職人が明示的に報告するか、
+   * 手が止まったまま**安全弁の時間切れ**（既定15分）を待つか。だが**出力が終わった時点で
+   * 終わったことは分かる**——ランタイムはターンの終わりを知っている。それを事実として
+   * 積み、起動元へすぐ渡す。
+   *
+   * **意味は起動元が与える**（決定29d）。ここは中立な事実だけ：
+   *   - `text`     そのターンの最後の発話（報告が無いときの手がかり）
+   *   - `reported` そのターンで報告か質問をしたか
+   *   - `waiting`  答え待ちで止まっているか（**終わったのではない**）
+   *   - `settled`  **そのターンで、手が止まったことが起動元へ既に伝わっているか**
+   *
+   * `settled` が要るのは、起動元が「もう一度知らせるべきか」を決められるようにするため
+   * （PO指摘 2026-08-11）。ターンの終わり方は4つあり、必要な扱いが違う：
+   *
+   * | そのターンで職人がしたこと | 起動元に届いているもの        | 改めて知らせるか |
+   * |---------------------------|------------------------------|-----------------|
+   * | 何も言わずに終えた        | 安全弁の代理報告（auto）      | 不要（二重になる）|
+   * | 質問した                  | 質問（「待っています」と書く）| 不要             |
+   * | 完了を報告した（done）    | 完了の報告                    | 不要             |
+   * | **進捗だけ報告した**      | 「着手しました」だけ          | **要る**         |
+   *
+   * 4つ目が抜けていた——起動元は work in progress と読むが、実際は手が空いている。
+   * **判定は工房が持つ**（職人やランタイムの自己申告より、台帳が確か）。
+   */
+  turnEnded(
+    sessionId: string,
+    info: { text?: string; reported?: boolean; waiting?: boolean } = {}
+  ): WorkerEvent {
+    const worker = this.requireWorker(sessionId);
+    const waiting = info.waiting === true || worker.question !== undefined;
+    return this.log.append({
+      type: "worker_turn_ended",
+      origin: worker.origin,
+      projectTag: worker.projectTag,
+      taskId: worker.taskId,
+      sessionId: worker.sessionId,
+      data: {
+        ...(info.text !== undefined ? { text: info.text } : {}),
+        reported: info.reported === true,
+        // 答え待ちの判定は**工房が持つ**（職人の自己申告より台帳が確か）
+        waiting,
+        settled: waiting || this.toldCallerItStopped(sessionId),
+      },
+    });
+  }
+
+  /**
+   * **このターンで、手が止まったことが起動元へ既に伝わっているか。**
+   *
+   * 見るのは前のターンの終わりから今までの分だけ——それ以前の完了報告は、いま終わった
+   * ターンとは別の話（`steer` で続きをやらせた場合、前のターンの「完了」は効かない）。
+   */
+  private toldCallerItStopped(sessionId: string): boolean {
+    const events = this.log.since(0, { sessionId });
+    let from = 0;
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i]!.type === "worker_turn_ended") {
+        from = i + 1;
+        break;
+      }
+    }
+    return events
+      .slice(from)
+      .some((e) => e.type === "worker_reported" && e.data["done"] === true);
+  }
+
+  /**
    * 職人からの質問を受ける。この職人は答えが来るまで `waiting` になる（決定29b）。
    */
   ask(sessionId: string, question: string, data: Record<string, unknown> = {}): WorkerEvent {
@@ -336,7 +541,19 @@ export class WorkerPool {
       projectTag: entry.projectTag,
       taskId: entry.taskId,
       sessionId: event.sessionId,
-      data: { pid: event.pid, exitCode: event.exitCode, signal: event.signal },
+      data: {
+        pid: event.pid,
+        exitCode: event.exitCode,
+        signal: event.signal,
+        /**
+         * **予期していた終わりか**（PO要望 2026-08-11）。
+         *
+         * 起動元が畳んだ結果として死んだのなら、それは起動元が自分でやったこと——
+         * 改めて知らせる意味がない。**事実は消さない**（D3・I1：いつ死んだかは記録に残す）。
+         * 知らせるかどうかを決められるように、印だけ添える（意味は起動元が与える・決定29d）。
+         */
+        ...(this.closing.has(event.sessionId) ? { expected: true } : {}),
+      },
     });
   }
 
@@ -351,9 +568,220 @@ export class WorkerPool {
    * I2: 起動に失敗したら台帳に書かず、理由を添えて投げる。指示の送信に失敗した場合は、
    *     起こしただけの職人を放置しないよう止めてから投げる。
    */
+  /** 選べるランタイムの識別子（番頭へのエラー文と Tool の説明に出す）。 */
+  availableRuntimes(): string[] {
+    return [...this.runtimes.keys()];
+  }
+
+  /** 既定のランタイムの識別子。 */
+  get defaultRuntime(): string {
+    return this.backendRegistry.defaultBackend();
+  }
+
+  /**
+   * 名指しできるモデルの一覧（`worker.delegate` の `model` に書ける名前）。
+   *
+   * **番頭と工場が「何と書けばよいか」を当てにいかないための口。** pi のモデルは登録から
+   * （採用しているものだけ）、Claude Code は別名から。ここで数え上げるだけで、
+   * どれを使うかは頼む側が決める（D5）。
+   */
+  selectableModels(): SelectableModel[] {
+    const models: SelectableModel[] = [];
+    // バックエンドが自分で持っているモデル（Claude Code の別名など）。
+    // 切ってあるバックエンドのものは並べない——選べないものを選ばせない
+    for (const [id, reg] of this.runtimes) {
+      if (!this.backendRegistry.isEnabled(id)) continue;
+      for (const m of reg.models?.() ?? []) {
+        models.push({ name: m.name, label: m.label, runtime: id, runtimeTitle: reg.title ?? id });
+      }
+    }
+    // pi のモデルは LLM Registry から。**採用しているものだけ**（PO裁定 2026-08-04）
+    // ——「LLM・モデル」で職人に許したものが、そのままここに並ぶ
+    if (this.backendRegistry.isEnabled(this.driverId)) {
+      const piTitle = this.runtimes.get(this.driverId)?.title ?? this.driverId;
+      for (const m of this.catalog?.models() ?? []) {
+        if (!m.workerUsable) continue;
+        models.push({
+          name: `${m.providerId}/${m.id}`,
+          label: `${m.name}（${m.providerId}）`,
+          runtime: this.driverId,
+          runtimeTitle: piTitle,
+          tier: m.tier,
+        });
+      }
+    }
+    return models;
+  }
+
+  /**
+   * 割り当てが無い等級で、いま実際に選ばれるモデル（分かるものだけ）。
+   *
+   * I1: 分からないものは入れない——「たぶんこれ」を出すと、確かめた事実と混ざる。
+   */
+  fallbackModels(): {
+    backend: string;
+    backendTitle: string;
+    models: Partial<Record<WorkerTier, string>>;
+  } {
+    const id = this.backendRegistry.defaultBackend();
+    const reg = this.runtimes.get(id);
+    const models: Partial<Record<WorkerTier, string>> = {};
+    for (const tier of WORKER_TIERS) {
+      // **答えるのは既定のバックエンド自身**。工房が代表して答えると、既定を
+      // 切り替えたときに画面が嘘をつく（pi の第一候補を出したまま Claude Code で動く）
+      const resolved = reg?.resolveTier?.(tier);
+      if (resolved) models[tier] = resolved;
+    }
+    return { backend: id, backendTitle: reg?.title ?? id, models };
+  }
+
+  /** バックエンドの一覧（設定画面が描く）。 */
+  backends(): BackendView[] {
+    const counts = new Map<string, number>();
+    for (const m of this.selectableModels()) {
+      counts.set(m.runtime, (counts.get(m.runtime) ?? 0) + 1);
+    }
+    return this.backendRegistry.list((id) => counts.get(id) ?? 0);
+  }
+
+  /** バックエンドを入れる／切る／既定にする。 */
+  setBackend(id: string, next: { enabled?: boolean; makeDefault?: boolean }): void {
+    const resolved = RUNTIME_ALIASES[id.toLowerCase()] ?? id;
+    this.backendRegistry.setBackend(resolved, next);
+  }
+
+  /** 等級ごとのモデルの割り当て（職人の既定）。 */
+  tierAssignments(): { defaultTier: WorkerTier | undefined; assignments: Partial<Record<WorkerTier, string>> } {
+    return {
+      defaultTier: this.backendRegistry.defaultTier(),
+      assignments: this.backendRegistry.assignments(),
+    };
+  }
+
+  /**
+   * 等級にモデルを当てる（空で解除）。
+   *
+   * I2: 選べないモデルを当てさせない——**保存できたのに職人が起きない**のが一番遠い失敗。
+   */
+  setTierAssignment(tier: WorkerTier, model: string | undefined): void {
+    if (model && model.trim().length > 0) {
+      const known = this.selectableModels().map((m) => m.name);
+      if (!known.includes(model.trim())) {
+        throw new Error(
+          `知らないモデルです: ${model}\n選べるのは: ${known.join(", ") || "(なし)"}`
+        );
+      }
+    }
+    this.backendRegistry.setAssignment(tier, model);
+  }
+
+  /** 職人の既定の等級。 */
+  setDefaultTier(tier: WorkerTier): void {
+    if (!WORKER_TIERS.includes(tier)) {
+      throw new Error(`知らない等級です: ${tier}（${WORKER_TIERS.join(" / ")}）`);
+    }
+    this.backendRegistry.setDefaultTier(tier);
+  }
+
+  /**
+   * 名前からランタイムを引く。
+   *
+   * I2: 知らない名前を黙って既定に落とさない。「claude で頼んだのに pi で動いていた」は、
+   *     出来上がりを見ても気づけない類の食い違いになる。
+   */
+  private driverFor(runtime?: string): { id: string; driver: RuntimeDriver } {
+    const id = runtime
+      ? (RUNTIME_ALIASES[runtime.toLowerCase()] ?? runtime)
+      : this.backendRegistry.defaultBackend();
+    const reg = this.runtimes.get(id);
+    if (!reg) {
+      throw new Error(
+        `Unknown runtime "${runtime ?? id}". 使えるのは: ${this.availableRuntimes().join(", ")}`
+      );
+    }
+    // I2: 切ってあるバックエンドで黙って起こさない（設定と実際を食い違わせない）
+    if (!this.backendRegistry.isEnabled(id)) {
+      throw new Error(`バックエンド "${id}" は設定で切ってあります（職人は起こせません）。`);
+    }
+    return { id, driver: reg.driver };
+  }
+
+  /**
+   * 名指しされたモデルから、動かすランタイムを言い当てる。
+   *
+   * **番頭や工場に「どのランタイムか」を併記させないため。** モデルを変えるたびに
+   * 2か所を直させると、片方だけ直った指定（claude のモデル名で pi を起こす）が通ってしまう。
+   *
+   * 見分けは名前の形だけ（D5：判断ではなく写し）：
+   *   - `opus` / `sonnet` / `haiku` / `claude-…` → Claude Code
+   *   - `provider/model` → pi（provider と model に割って渡す。pi は両方揃わないと効かない）
+   */
+  private planModel(
+    runtimeHint: string | undefined,
+    model: string | undefined
+  ): { runtime: string | undefined; driverOptions: Record<string, unknown> } {
+    const named = model?.trim();
+    if (!named) return { runtime: runtimeHint, driverOptions: {} };
+
+    /**
+     * **そのモデルがどのバックエンドのものかは一覧が知っている**（D3：名前→ランタイムの
+     * 真実は1つ）。ここを既定のバックエンド任せにすると、既定を Claude Code にした人が
+     * 等級に pi のモデルを当てた瞬間、`provider/model` が Claude Code へ流れる
+     * ——Claude は `provider` を見ないので、存在しないモデル名で起こそうとする（実機で確認）。
+     */
+    const known = this.selectableModels().find((m) => m.name === named);
+    // I2: 名指しとランタイムが食い違うなら黙って片方を勝たせない。どちらが違うのか分からなくなる
+    if (known && runtimeHint) {
+      const hinted = RUNTIME_ALIASES[runtimeHint.toLowerCase()] ?? runtimeHint;
+      if (hinted !== known.runtime) {
+        throw new Error(
+          `モデル "${named}" は ${known.runtimeTitle ?? known.runtime} のものです` +
+            `（runtime: ${runtimeHint} と食い違っています）。どちらかに揃えてください。`
+        );
+      }
+    }
+
+    if (isClaudeModelName(named)) {
+      return {
+        runtime: runtimeHint ?? known?.runtime ?? CLAUDE_AGENT_RUNTIME,
+        driverOptions: { model: named },
+      };
+    }
+    const slash = named.indexOf("/");
+    if (slash > 0) {
+      return {
+        // `provider/model` は登録（LLM Registry）のモデル＝登録を読むランタイムのもの。
+        // 既定のバックエンドに落とすと、上のコメントの取り違えが起きる
+        runtime: runtimeHint ?? known?.runtime ?? this.driverId,
+        driverOptions: { provider: named.slice(0, slash), model: named.slice(slash + 1) },
+      };
+    }
+    // I2: pi は provider と model が揃わないとモデル指定が効かない。片方だけ渡して
+    //     「指定したのに既定のモデルで動いていた」を作らない——ここで断る
+    throw new Error(
+      `モデルの指定 "${named}" は使えません。pi のモデルは "provider/model"（例 opencode-go/deepseek-v4-flash）、` +
+        "Claude Code は opus / sonnet / haiku などの名前で指定してください。"
+    );
+  }
+
   async delegate(input: DelegateInput): Promise<WorkerInfo> {
     const projectTag = input.projectTag ?? this.defaultProjectTag;
     const origin = input.origin ?? this.defaultOrigin;
+    /**
+     * 使うモデルを決める順番（PO要望 2026-08-10 で**ここに一本化**）:
+     *
+     *   1. 名指し（番頭・工場が「このモデルで」と決めた）
+     *   2. 設定画面で等級に当てたモデル（職人の既定）
+     *   3. どちらも無ければランタイムに任せる（pi は LLM Registry、Claude Code は別名）
+     *
+     * 以前は 2 が pi のドライバ（LLM Registry の tier→pick）と Claude のドライバに
+     * 分かれていた。分かれていると、**Claude のモデルは「LLM・モデル」の画面に並べられず**、
+     * 職人の既定をひとつの表で見られない。
+     */
+    const tier = (input.modelTier ?? this.backendRegistry.defaultTier()) as WorkerTier | undefined;
+    const chosenModel = input.model ?? this.backendRegistry.assignedModel(tier);
+    const planned = this.planModel(input.runtime, chosenModel);
+    const runtime = this.driverFor(planned.runtime);
     const sessionPath = path.join(
       this.dataDir,
       "sessions",
@@ -384,18 +812,23 @@ export class WorkerPool {
       ...resume,
       ...(this.reportUrl ? { projectTag, workerPoolUrl: this.reportUrl } : {}),
       ...(extensionPaths.length > 0 ? { extensionPaths } : {}),
+      // ランタイムが自分で解釈する分（pi は拡張で外の口を足し、Claude Code は
+      // 既定の道具立てから外す）。どちらも「許したときだけ渡す」は同じ（imp-0005）
+      ...(input.network !== undefined ? { network: input.network } : {}),
+      // モデルの名指しは、ランタイムが受け取れる形に割ってから渡す（pi は provider+model）
+      ...planned.driverOptions,
     };
 
     let handle: SessionHandle;
     try {
-      handle = await this.driver.spawn({
+      handle = await runtime.driver.spawn({
         taskId: input.taskId,
         worktreePath: input.worktreePath,
         sessionPath,
         // 立場（職人であること）はシステムプロンプト、やることは下の inject で渡す
         systemPrompt: input.systemPrompt ?? WORKER_SYSTEM_PROMPT,
         tools: this.resolveTools(input.tools, input.network ?? false),
-        ...(input.modelTier ? { modelTier: input.modelTier } : {}),
+        ...(tier ? { modelTier: tier } : {}),
         ...(driverOptions ? { driverOptions } : {}),
       });
     } catch (err) {
@@ -404,10 +837,10 @@ export class WorkerPool {
 
     // spawn は起こすだけ。ここで指示を送らないと職人は何もしない
     try {
-      await this.driver.inject(handle.sessionId, input.instruction);
+      await runtime.driver.inject(handle.sessionId, input.instruction);
     } catch (err) {
       // I2: 起こしただけの職人を放置しない。止めてから失敗を伝える
-      await this.driver.kill(handle.sessionId).catch(() => undefined);
+      await runtime.driver.kill(handle.sessionId).catch(() => undefined);
       throw new Error(
         `Started a worker for "${input.taskId}" but failed to deliver the instruction: ${String(err)}`
       );
@@ -422,7 +855,7 @@ export class WorkerPool {
       sessionId: handle.sessionId,
       sessionPath: handle.sessionPath,
       worktree: input.worktreePath,
-      driverId: this.driverId,
+      driverId: runtime.id,
       spawnedAt,
     });
 
@@ -444,6 +877,11 @@ export class WorkerPool {
         ...(input.tools && input.tools.length > 0 ? { tools: input.tools } : {}),
         ...(input.network ? { network: true } : {}),
         ...(input.resumeSessionPath ? { resumedFrom: input.resumeSessionPath } : {}),
+        // どのランタイムのどのモデルで起こしたか。**台帳が消えたあとも要る**——
+        // 畳んだ職人を起こし直すとき、ここが無いと別のランタイムで起きてしまう（決定30c）
+        runtime: runtime.id,
+        ...(chosenModel ? { model: chosenModel } : {}),
+        ...(input.modelTier ? { modelTier: input.modelTier } : {}),
       },
     });
 
@@ -457,6 +895,8 @@ export class WorkerPool {
       worktree: input.worktreePath,
       alive: true,
       state: "running",
+      runtime: runtime.id,
+      ...(chosenModel ? { model: chosenModel } : {}),
       spawnedAt,
     };
   }
@@ -646,6 +1086,11 @@ export class WorkerPool {
     const answered = latest("worker_answered");
     const pending = asked && (!answered || answered.id < asked.id) ? asked : undefined;
 
+    // 喋り終わったあと、まだ何も渡していないなら手が空いている（PO要望 2026-08-11）
+    const ended = latest("worker_turn_ended");
+    const woken = latest("worker_answered");
+    const idle = ended !== undefined && (!woken || woken.id < ended.id);
+
     const alive = entry !== undefined && closedEvent === undefined && isProcessAlive(base.pid);
     const state: WorkerState = closedEvent
       ? "closed"
@@ -653,13 +1098,24 @@ export class WorkerPool {
         ? "exited"
         : pending
           ? "waiting"
-          : "running";
+          : idle
+            ? "idle"
+            : "running";
+
+    // どのランタイムで起こしたか。台帳が先（生きている職人の帳簿）、消えていれば起動イベント。
+    // どちらにも無い＝ランタイムを1つしか持たなかった頃の記録なので、既定に寄せる
+    const runtime =
+      entry?.driverId ??
+      (typeof started?.data["runtime"] === "string" ? (started.data["runtime"] as string) : this.driverId);
+    const model = typeof started?.data["model"] === "string" ? (started.data["model"] as string) : undefined;
 
     return {
       ...base,
       sessionId,
       alive,
       state,
+      runtime,
+      ...(model ? { model } : {}),
       ...(exit ? { exit } : {}),
       ...(alive && pending ? { question: String(pending.data["question"] ?? "") } : {}),
       ...(closedEvent
@@ -698,7 +1154,8 @@ export class WorkerPool {
     if (!worker.alive) {
       throw new Error(`Worker "${sessionId}" has already exited (pid ${worker.pid}).`);
     }
-    await this.driver.inject(sessionId, message);
+    // 起こしたときと同じランタイムへ届ける（混在していても迷子にしない）
+    await this.driverFor(worker.runtime).driver.inject(sessionId, message);
     // 待っていた職人はこれで動き出す。答えたことを事実として積む（waiting が解ける）
     this.log.append({
       type: "worker_answered",
@@ -723,7 +1180,16 @@ export class WorkerPool {
     const worker = this.requireWorker(sessionId);
     if (worker.state === "closed") return;
 
-    await this.driver.kill(sessionId);
+    /**
+     * **これから畳む、と先に印を立てる**（PO要望 2026-08-11）。
+     *
+     * `kill` するとドライバから `process_exited` が飛び、`worker_exited` が積まれる
+     * ——**`worker_closed` より先に**。起動元から見ると「自分で畳んだのに、そのあと
+     * 『プロセスが終了しました』と知らされる」ことになり、無駄な一通が必ず並ぶ
+     * （実測：356人中315人がこの形）。印を見て「予期していた終わり」と分かるようにする。
+     */
+    this.closing.add(sessionId);
+    await this.driverFor(worker.runtime).driver.kill(sessionId);
     // ドライバが取りこぼしたプロセスが残ることがあるので、台帳の pid でも念押しする
     if (isProcessAlive(worker.pid)) await killOrphanProcess(worker.pid);
     this.ledger.remove(worker.projectTag, worker.taskId);
@@ -740,6 +1206,8 @@ export class WorkerPool {
         ...(worker.question !== undefined ? { unansweredQuestion: worker.question } : {}),
       },
     });
+    // 畳み終わった。印は落とす（同じ id で起こし直したときに残っていると誤判定する）
+    this.closing.delete(sessionId);
   }
 
   /**
@@ -777,6 +1245,8 @@ export class WorkerPool {
     // 全部の道具を持って戻り、web を渡した職人は web を失う——どちらも黙って起きる
     const started = this.log.last({ sessionId, type: "worker_started" });
     const tools = started?.data["tools"];
+    const model = started?.data["model"];
+    const modelTier = started?.data["modelTier"];
     return this.delegate({
       projectTag: past.projectTag,
       origin: past.origin,
@@ -786,6 +1256,13 @@ export class WorkerPool {
       resumeSessionPath: past.sessionPath,
       ...(Array.isArray(tools) ? { tools: tools as string[] } : {}),
       ...(started?.data["network"] === true ? { network: true } : {}),
+      // **同じランタイム・同じモデルで起こし直す。** ここを落とすと、Claude Code で
+      // 進めていた仕事が pi で目を覚まし、会話の再開にも失敗する（セッションの形が違う）
+      runtime: past.runtime,
+      ...(typeof model === "string" ? { model } : {}),
+      ...(typeof modelTier === "string"
+        ? { modelTier: modelTier as DelegateInput["modelTier"] }
+        : {}),
     });
   }
 

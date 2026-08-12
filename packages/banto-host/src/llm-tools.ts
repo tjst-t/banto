@@ -419,6 +419,48 @@ export function createLlmTools(options: LlmToolsOptions): NamespacedToolDefiniti
     },
   });
 
+  /**
+   * **文脈長を手で入れる**（PO要望 2026-08-11）。
+   *
+   * プロバイダの `/models` は文脈長を返さないことがある（huihui の
+   * `deepseek-v4-flash-abliterated` は 1M あるのに分からない）。分からないままだと
+   * 章立ての閾値も文脈の目盛りも効かず、**実際より短いものとして**進む。
+   */
+  const setContextWindow = defineNamespacedTool({
+    name: "llm.set_context_window",
+    label: "LLM: Set Context Window",
+    description:
+      "そのモデルの**文脈長を手で入れる**（プロバイダが返さないとき）。" +
+      "分からないままだと章立ての閾値も文脈の目盛りも効かず、実際より短いものとして進む。" +
+      "**手で入れた値が優先**——あとからプロバイダが返してきても上書きされない。" +
+      "空にすると手入力を取り消し、プロバイダが言う値に戻る。",
+    parameters: Type.Object({
+      provider: Type.String({ description: "プロバイダ名" }),
+      model: Type.String({ description: "モデル ID" }),
+      contextWindow: Type.Optional(
+        Type.Number({
+          description:
+            "文脈長（トークン数）。例: 1000000。省略すると手入力を取り消してプロバイダの値に戻す",
+        })
+      ),
+    }),
+    async execute(params) {
+      catalog.setContextWindow(params.provider, params.model, params.contextWindow);
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              params.contextWindow === undefined
+                ? `${params.provider}/${params.model} の文脈長の手入力を取り消しました。`
+                : `${params.provider}/${params.model} の文脈長を ${params.contextWindow.toLocaleString()} トークンにしました。`,
+          },
+        ],
+        details: params,
+      };
+    },
+  });
+
   const setProviderLocal = defineNamespacedTool({
     name: "llm.set_provider_local",
     label: "LLM: Set Provider Local",
@@ -804,6 +846,7 @@ export function createLlmTools(options: LlmToolsOptions): NamespacedToolDefiniti
     setWorkerTier,
     setPick,
     setUsable,
+    setContextWindow,
     setProviderLocal,
     setKeyOrder,
     setKeyScope,

@@ -290,3 +290,88 @@ describe("[task-0070] ファイルから取り込んだタスクの知らせも�
     }
   });
 });
+
+/**
+ * **watcher に先を越されても、宛先は付く**（PO報告 2026-08-11）。
+ *
+ * 番頭は「定義ファイルを書く → `kobo.enqueue`」の順で積む。その間に watcher が
+ * `status: queued` を見つけて取り込むと、enqueue は「既に積まれています」と断られ、
+ * **origin が永久に付かなかった**——ひらがなの task-0001/0002 の失敗が、積んだ幹
+ * （ひらがな学習アプリ構想）ではなく帳場に出たのはこれ。
+ */
+describe("[PO報告 2026-08-11] watcher が先に取り込んでも、積んだ幹へ返る", () => {
+  it("取り込み済みのタスクでも enqueue が宛先を引き受ける", async () => {
+    const h = await harness();
+    const delivered: Array<{ message: string; threadId?: string }> = [];
+    let stop: (() => void) | undefined;
+    try {
+      // **先に watcher に取らせる**（実機で起きた順序をそのまま作る）
+      h.writeTask("task-0104");
+      await until(() => h.daemon.getTask(h.proj, "task-0104") !== undefined);
+      assert.equal(
+        h.daemon.originOfTask(h.proj, "task-0104"),
+        undefined,
+        "この時点では宛先が無い（穴の再現）"
+      );
+
+      // 番頭が後から積む。**断られずに宛先だけ引き受ける**
+      const enqueue = h.tools.find((t) => t.name === "kobo.enqueue")!;
+      await enqueue.execute(
+        {
+          projectTag: h.proj,
+          taskId: "task-0104",
+          origin: threadOrigin("thread-50"),
+          originRef: "PO の報告（2026-08-11）",
+        } as never,
+        { toolCallId: "t" }
+      );
+      assert.equal(h.daemon.originOfTask(h.proj, "task-0104"), threadOrigin("thread-50"));
+
+      stop = startKoboNotices({
+        tools: h.tools,
+        notify: async (message, target) => {
+          delivered.push({ message, ...(target.threadId ? { threadId: target.threadId } : {}) });
+        },
+        cursorPath: path.join(h.tmpDir, "kobo-cursor.json"),
+        intervalMs: 100,
+        log: () => undefined,
+      });
+
+      await until(() => h.daemon.getTask(h.proj, "task-0104")?.status === "ready");
+      h.daemon.transition(h.proj, "task-0104", "failed", "worktree creation failed");
+
+      await until(() => delivered.some((d) => /止まりました/.test(d.message)));
+      const notice = delivered.find((d) => /止まりました/.test(d.message))!;
+      assert.equal(notice.threadId, "thread-50", "帳場ではなく、積んだ幹へ返る");
+      // 経緯も一緒に引き受ける（無いと札に「起きたこと」しか書けない・D8）
+      assert.match(notice.message, /PO の報告（2026-08-11）/u);
+    } finally {
+      stop?.();
+      await teardown(h);
+    }
+  });
+
+  it("既に宛先があるものは横取りさせない", async () => {
+    const h = await harness();
+    try {
+      h.writeTask("task-0105");
+      const enqueue = h.tools.find((t) => t.name === "kobo.enqueue")!;
+      await enqueue.execute(
+        { projectTag: h.proj, taskId: "task-0105", origin: threadOrigin("thread-1") } as never,
+        { toolCallId: "t" }
+      );
+      // 2度目は別の宛先。**契約は凍っている**ので断る（決定62c）
+      await assert.rejects(
+        () =>
+          enqueue.execute(
+            { projectTag: h.proj, taskId: "task-0105", origin: threadOrigin("thread-2") } as never,
+            { toolCallId: "t" }
+          ),
+        /既に積まれています/u
+      );
+      assert.equal(h.daemon.originOfTask(h.proj, "task-0105"), threadOrigin("thread-1"));
+    } finally {
+      await teardown(h);
+    }
+  });
+});

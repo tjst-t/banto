@@ -44,7 +44,22 @@ export function placeScopedTools(
       // そのルート向けに作り直して呼ぶ。組み立てるだけでI/Oは無いので毎回でよい
       const real = build(place.path).find((t) => t.name === tool.name);
       if (!real) throw new Error(`Tool "${tool.name}" disappeared when rebuilding for a place.`);
-      const result = await real.execute(params, ctx);
+
+      // **失敗したときも、どの場所を見た結果かを添える**（inc-0054）。
+      // `file.*` / `git.*` は自分がどの場所に居るかを知らない（この層が根を差し替えている）ので、
+      // 素の「No such file: work/reports/x.md」だけでは、パスが違うのか場所が違うのかを
+      // 読んだ側が切り分けられず、同じ呼び出しを場所を変えずに繰り返すことになる。
+      let result;
+      try {
+        result = await real.execute(params, ctx);
+      } catch (err) {
+        throw new Error(
+          `${err instanceof Error ? err.message : String(err)}` +
+            ` — 見たのは場所 "${place.id}"（根: ${place.path}）です。` +
+            `別の場所を見るなら引数 "${PLACE_PARAM}" を変えてください（place.list で一覧できます）`,
+          err instanceof Error ? { cause: err } : undefined
+        );
+      }
 
       // どの場所の結果かを常に添える（決定36d）。UI はここを見て出所を示せる
       return {

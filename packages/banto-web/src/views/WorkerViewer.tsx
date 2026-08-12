@@ -11,7 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useModuleTool } from "./useModuleTool.js";
 import type { CanvasViewProps } from "./registry.js";
-import { ReasoningRow, StreamingMarkdown, ToolRow, formatPayload } from "../messages.js";
+import { PlainText, ReasoningRow, StreamingMarkdown, ToolRow, formatPayload } from "../messages.js";
 import { Icon } from "../icons.js";
 import {
   Badge,
@@ -445,9 +445,11 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
                 return <ReasoningRow key={i} text={r.text} isStreaming={false} defaultOpen={false} />;
               }
               if (r.kind === "user") {
+                // 職人への指示は**生成された Markdown**（タスク定義そのもの）。
+                // 素で出すと `## 実装タスク` `**タイトル**:` が記号のまま並ぶ（PO報告 2026-08-11）
                 return (
-                  <div key={i} className="msg msg--po">
-                    {r.text}
+                  <div key={i} className="msg msg--po markdown">
+                    <StreamingMarkdown text={r.text} />
                   </div>
                 );
               }
@@ -467,7 +469,8 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
               }
               return (
                 <div key={i} className="wv-entry is-raw">
-                  {r.text}
+                  {/* 解釈できなかった行。素のまま出しつつ、URL とパスだけ押せる */}
+                  <PlainText text={r.text} />
                 </div>
               );
             })}

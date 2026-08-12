@@ -7,17 +7,23 @@
  * 決定37（番頭は Git の変更操作を持たない）には触れない。ワークツリーの用意は
  * **作業場所の用意**であって履歴の変更ではない。ここに commit / push / branch は無い。
  *
- * **砦が要らない形にしてある。** 引数で受けるのは `ghq` / `gwq` が既に知っている場所の id
- * だけで、任意のパスを受け取らない。作る場所も `gwq` の設定した置き場に従う（自分で決めない）。
+ * **砦が要らない形にしてある。** 引数で受けるのは**手元にある場所の id** だけで、任意の
+ * パスを受け取らない。作る場所も並び（`layout.ts`）が決める（呼び出し側に選ばせない）。
  * `worker.delegate` の `worktreePath` のような「番頭が任意のパスを渡せる」穴を作らない。
+ *
+ * **`ghq` / `gwq` は使わない**（PO裁定 2026-08-11）。並びは引き継いでいるので、
+ * それらで作った手元の資産はそのまま読める。
  */
 
+import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { Type } from "typebox";
 import { defineNamespacedTool, type BantoToolDefinition } from "@banto/core";
 import { output, runCommand, type CommandRunner } from "./command.js";
-import { listGhqRepositories, listGwqWorktrees, repoDiscoveryFor } from "./discovery.js";
-import { removeWorktree } from "./worktree.js";
+import { repoDiscoveryFor } from "./discovery.js";
+import { repositoryPathFor } from "./layout.js";
+import { addTaskWorktree, removeWorktree } from "./worktree.js";
 
 export interface RepoToolOptions {
   run?: CommandRunner;
@@ -28,9 +34,9 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
   /**
    * 一覧の写し（`place.list` と共有する）。
    *
-   * **使うのは読み取りの一覧だけ。** 作る・消す道具は `listGhq*` / `listGwq*` を直接呼ぶ
-   * ——「実行の前後を比べて増えたものを見つける」やり方は、写し越しに見ると前後が同じに
-   * 見えてしまう。そのかわり、変えたら最後に写しを捨てる（次に聞かれたら導出し直す）。
+   * 作る・消す道具も**同じ写しを読む**（どれが在るかを確かめるだけ）。出来上がりの場所は
+   * 前後の差分ではなく git に聞いて決めるので、写しが少し古くても取り違えない。
+   * 変えたら最後に写しを捨てる（次に聞かれたら導出し直す）。
    */
   const discovery = repoDiscoveryFor(run);
 
@@ -38,7 +44,7 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
     name: "repo.list",
     label: "Repo: List",
     description:
-      "ghq が知っているリポジトリと、gwq が知っているワークツリーの一覧。" +
+      "手元にあるリポジトリと、その git ワークツリーの一覧。" +
       "ワークツリーはどのリポジトリのものかも分かる。" +
       "作業できる場所そのものを知りたいだけなら place.list の方が広い（設定で足した作業領域も出る）。",
     parameters: Type.Object({
@@ -50,7 +56,7 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
         discovery.worktrees(),
       ]);
 
-      // どのリポジトリのワークツリーかを git に聞く（gwq の出力には入っていない）。
+      // どのリポジトリのワークツリーかを git に聞く（置き場の並びから推測しない）。
       // D3: 導出できるので持たない。件数は数個なので毎回引いてよい
       const withOwner = await Promise.all(
         worktrees.map(async (w) => {
@@ -75,7 +81,7 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
       const trees = withOwner.filter(match);
       const text =
         repos.length === 0 && trees.length === 0
-          ? "ghq / gwq が知っているものはありません（未導入か、まだ何も clone していない）"
+          ? "手元にリポジトリがありません（まだ何も clone / init していない）"
           : [
               ...repos.map((r) => `${r.id}`),
               ...trees.map((w) => `${w.id} — ワークツリー: ${w.branch}${w.repo ? ` （${w.repo}）` : ""}`),
@@ -93,7 +99,7 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
     name: "repo.clone",
     label: "Repo: Clone",
     description:
-      "リモートのリポジトリを手元に持ってくる（ghq get）。置き場所は ghq の規約に従うので指定しない。" +
+      "リモートのリポジトリを手元に持ってくる（git clone）。置き場所は手元の並びで決まるので指定しない。" +
       "取り込んだリポジトリはそのまま「場所」として選べるようになる。" +
       "**外に出ていく操作**（ネットワーク越しに取得する）なので、頼まれたときだけ使うこと。",
     parameters: Type.Object({
@@ -106,39 +112,49 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
     }),
     async execute(params) {
       const target = params.repository.trim();
-      // I2: 空や空白だけを ghq に渡すと、何が起きるか分からない引数解釈になる
+      // I2: 空や空白だけからは置き場を決められない
       if (target.length === 0) throw new Error("取ってくる対象が空です。");
 
-      const before = new Set((await listGhqRepositories(run)).map((r) => r.path));
-      // --silent は付けない。失敗したときに理由まで消えて「(出力なし)」しか返らなくなる（I2）
-      const args = [
-        "get",
-        ...(params.ssh ? ["-p"] : []),
-        ...(params.shallow ? ["--shallow"] : []),
-        target,
-      ];
-      const result = await run("ghq", args);
-      if (result.notFound) throw new Error("ghq が導入されていません。");
+      const where = repositoryPathFor(target);
+      // 既にあるなら取りに行かない（外に出ていく操作は必要なときだけ）
+      if (fs.existsSync(path.join(where.path, ".git"))) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `${where.id} は既に手元にあります（${where.path}）`,
+            },
+          ],
+          details: { repository: { id: where.id, path: where.path }, requested: target, alreadyPresent: true },
+        };
+      }
+
+      const url = cloneUrl(target, where.id, params.ssh === true);
+      fs.mkdirSync(path.dirname(where.path), { recursive: true });
+      const args = ["clone", ...(params.shallow ? ["--depth", "1"] : []), url, where.path];
+      const result = await run("git", args);
+      if (result.notFound) throw new Error("git が導入されていません。");
       if (!result.ok) {
         throw new Error(
           `取ってこられませんでした: ${result.stderr.trim() || result.stdout.trim() || "(出力なし)"}`
         );
       }
+      // I2: 作ったつもりで無いなら成功に見せない（見込みのパスをそのまま返さない・D3）
+      if (!fs.existsSync(path.join(where.path, ".git"))) {
+        throw new Error(`${url} を取り込みましたが、${where.path} にリポジトリがありません。`);
+      }
 
-      // 何ができたかは ghq に聞き直す（見込みのパスを組み立てて返さない。D3）
-      const added = (await listGhqRepositories(run)).find((r) => !before.has(r.path));
       // 場所が増えた。写しを捨てて、次に聞かれたら導出し直させる
       discovery.invalidate();
       return {
         content: [
-          {
-            type: "text" as const,
-            text: added
-              ? `取り込みました: ${added.id}（${added.path}）`
-              : `${target} は既に手元にあります（新しく増えたものはありません）`,
-          },
+          { type: "text" as const, text: `取り込みました: ${where.id}（${where.path}）` },
         ],
-        details: { repository: added ?? null, requested: target, alreadyPresent: !added },
+        details: {
+          repository: { id: where.id, path: where.path },
+          requested: target,
+          alreadyPresent: false,
+        },
       };
     },
   });
@@ -147,7 +163,7 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
     name: "repo.init",
     label: "Repo: Init",
     description:
-      "新しい Git リポジトリを手元に作る（ghq create）。置き場所は ghq の規約に従う。" +
+      "新しい Git リポジトリを手元に作る（git init）。置き場所は手元の並びで決まる。" +
       "リモートは作らない——手元に空のリポジトリができるだけで、公開はしない。",
     parameters: Type.Object({
       name: Type.String({
@@ -158,27 +174,32 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
       const target = params.name.trim();
       if (target.length === 0) throw new Error("作る名前が空です。");
 
-      const before = new Set((await listGhqRepositories(run)).map((r) => r.path));
-      const result = await run("ghq", ["create", target]);
-      if (result.notFound) throw new Error("ghq が導入されていません。");
+      // `<project>` だけのときは所有者を補えない。**推測しない**（I2）
+      const where = repositoryPathFor(
+        target.includes("/") ? target : `${defaultOwner()}/${target}`
+      );
+      if (fs.existsSync(path.join(where.path, ".git"))) {
+        throw new Error(`${where.id} は既にあります（${where.path}）。`);
+      }
+      fs.mkdirSync(where.path, { recursive: true });
+      const result = await run("git", ["-C", where.path, "init"]);
+      if (result.notFound) throw new Error("git が導入されていません。");
       if (!result.ok) {
         throw new Error(
           `作れませんでした: ${result.stderr.trim() || result.stdout.trim() || "(出力なし)"}`
         );
       }
-
-      const added = (await listGhqRepositories(run)).find((r) => !before.has(r.path));
       // 場所が増えた。作れていなくても写しは捨てる（増減の判断はこの下でする）
       discovery.invalidate();
-      // I2: 作ったつもりで増えていないなら、そう言う（成功に見せない）
-      if (!added) {
-        throw new Error(`${target} を作りましたが、ghq の一覧に現れませんでした。`);
+      // I2: 作ったつもりで無いなら、そう言う（成功に見せない）
+      if (!fs.existsSync(path.join(where.path, ".git"))) {
+        throw new Error(`${target} を作りましたが、${where.path} にリポジトリがありません。`);
       }
       return {
         content: [
-          { type: "text" as const, text: `作りました: ${added.id}（${added.path}）` },
+          { type: "text" as const, text: `作りました: ${where.id}（${where.path}）` },
         ],
-        details: { repository: added },
+        details: { repository: { id: where.id, path: where.path } },
       };
     },
   });
@@ -190,7 +211,7 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
       "リポジトリにワークツリー（同じリポジトリの別ブランチを別ディレクトリに置いたもの）を作る。" +
       "同じリポジトリで複数の作業を同時に進めたいときに使う。作られたワークツリーは場所として" +
       "登録され、そのまま file.* や worker.delegate の行き先にできる。" +
-      "置き場所は gwq の設定に従うので指定しない。ブランチを切る以外の Git 操作は持たない。",
+      "置き場所は手元の並びで決まるので指定しない。ブランチを切る以外の Git 操作は持たない。",
     parameters: Type.Object({
       repo: Type.String({ description: "対象リポジトリの場所 id（例: github.com/tjst-t/banto）" }),
       branch: Type.String({ description: "ワークツリーが指すブランチ名" }),
@@ -199,42 +220,35 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
       ),
     }),
     async execute(params) {
-      const repositories = await listGhqRepositories(run);
+      const repositories = await discovery.repositories();
       const repo = repositories.find((r) => r.id === params.repo);
       // I2: 知らないリポジトリを黙って作らない。どれがあるかを添えて止まる
       if (!repo) {
         throw new Error(
-          `リポジトリ "${params.repo}" は ghq が知りません。` +
+          `リポジトリ "${params.repo}" は手元にありません。` +
             `既知: ${repositories.map((r) => r.id).join(", ") || "(なし)"}`
         );
       }
 
-      // 前後を比べて「増えたもの」を見つける。ブランチ名で引くと、別のリポジトリに
-      // 同名ブランチのワークツリーがあるときに取り違える
-      const before = new Set((await listGwqWorktrees(run)).map((w) => w.path));
-
-      const args = ["add", ...(params.createBranch ? ["-b"] : []), params.branch];
-      const result = await run("gwq", args, { cwd: repo.path });
-      if (result.notFound) throw new Error("gwq が導入されていません。");
-      if (!result.ok) {
-        throw new Error(
-          `ワークツリーを作れませんでした: ${result.stderr.trim() || result.stdout.trim() || "(出力なし)"}`
-        );
-      }
-
-      // 作った結果を gwq に聞き直す（自分で組み立てた見込みのパスを返さない。D3）
-      const created = (await listGwqWorktrees(run)).find((w) => !before.has(w.path));
+      // **既にあるなら作らない**（addTaskWorktree と同じ冪等）。作り直すと、
+      // そこで進んでいた作業のディレクトリを別物に差し替えることになる
+      const created = await addTaskWorktree({ repoPath: repo.path, branch: params.branch, run });
       // 場所が増えた。**ここで捨てないと、作った直後の場所が使えない**（写しに無いため）
       discovery.invalidate();
-      const where = created ? `${created.id}（${created.path}）` : "(gwq の一覧に見当たりません)";
       return {
         content: [
           {
             type: "text" as const,
-            text: `${repo.label} にワークツリーを作りました: ${params.branch} → ${where}`,
+            text: created.created
+              ? `${repo.label} にワークツリーを作りました: ${params.branch} → ${created.path}`
+              : `${repo.label} の ${params.branch} は既にあります: ${created.path}`,
           },
         ],
-        details: { repo: { id: repo.id, path: repo.path }, branch: params.branch, worktree: created ?? null },
+        details: {
+          repo: { id: repo.id, path: repo.path },
+          branch: params.branch,
+          worktree: { path: created.path, created: created.created },
+        },
       };
     },
   });
@@ -249,12 +263,12 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
       worktree: Type.String({ description: "削除するワークツリーの場所 id" }),
     }),
     async execute(params) {
-      const worktrees = await listGwqWorktrees(run);
+      const worktrees = await discovery.worktrees();
       const target = worktrees.find((w) => w.id === params.worktree);
       // I2: 知らないものを消さない。取り違えて別の作業を消すのが一番困る
       if (!target) {
         throw new Error(
-          `ワークツリー "${params.worktree}" は gwq が知りません。` +
+          `ワークツリー "${params.worktree}" は手元にありません。` +
             `既知: ${worktrees.map((w) => w.id).join(", ") || "(なし)"}`
         );
       }
@@ -274,6 +288,37 @@ export function createRepoManagerTools(options: RepoToolOptions = {}): BantoTool
   });
 
   return [list, clone, init, add, remove];
+}
+
+/**
+ * 取ってくる先の URL を組み立てる（`ghq get` の代わり）。
+ *
+ * 渡されたものが既に URL ならそのまま使う。`<owner>/<repo>` の形なら、id から
+ * `https://<host>/<owner>/<repo>.git`（`ssh` なら `git@<host>:<owner>/<repo>.git`）にする
+ * ——**推測するのはここだけ**で、置き場は id から一意に決まっている。
+ */
+function cloneUrl(requested: string, id: string, ssh: boolean): string {
+  if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(requested) || /^[^@/]+@[^:]+:/u.test(requested)) {
+    return requested;
+  }
+  const [host, ...rest] = id.split("/");
+  const repoPath = rest.join("/");
+  return ssh ? `git@${host}:${repoPath}.git` : `https://${host}/${repoPath}.git`;
+}
+
+/**
+ * `<project>` だけを渡されたときの所有者。
+ *
+ * **手元のログイン名**を使う。`ghq create` は設定（`ghq.user`）から補っていたが、
+ * その設定ごと外したので、推測できる一番素直なものにする。分からなければ `local`
+ * ——**置き場が一意に決まりさえすればよい**（外へ出す名前ではない）。
+ */
+function defaultOwner(): string {
+  try {
+    return os.userInfo().username || "local";
+  } catch {
+    return "local";
+  }
 }
 
 /**

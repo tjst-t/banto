@@ -15,6 +15,7 @@ export type IconName =
   | "chevron-down" | "chevron-right" | "chevron-left" | "arrow-right"
   | "arrow-down" | "arrow-up" | "arrow-left" | "external" | "enter" | "stop"
   | "close" | "plus" | "minus" | "search" | "copy" | "check" | "dot" | "more"
+  | "chapter"
   // 面（キャンバスに開くもの）
   | "chat" | "history" | "settings" | "inbox" | "file" | "file-text" | "folder"
   | "image" | "table" | "archive" | "binary" | "graph" | "home" | "memory"
@@ -42,6 +43,8 @@ const SHAPES: Record<IconName, React.ReactNode> = {
   close: <path d="M6 6l12 12M18 6L6 18" />,
   plus: <path d="M12 5v14M5 12h14" />,
   minus: <path d="M5 12h14" />,
+  // 章を区切る。**切るのではなく仕切る**——前は失われないので、鋏ではなく罫と印にする
+  chapter: <><path d="M4 12h5M15 12h5" /><path d="M12 7v10" /></>,
   search: <><circle cx="11" cy="11" r="6" /><path d="M20 20l-4.5-4.5" /></>,
   copy: <><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a1 1 0 011-1h9" /></>,
   check: <path d="M5 13l4.5 4.5L19 7" />,

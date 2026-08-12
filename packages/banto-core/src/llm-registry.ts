@@ -248,6 +248,16 @@ interface ModelOverlay {
   free?: boolean;
   hostUsable?: boolean;
   workerUsable?: boolean;
+  /**
+   * **手で入れた文脈長**（PO要望 2026-08-11）。
+   *
+   * プロバイダの `/models` は文脈長を返さないことがある（huihui の
+   * `deepseek-v4-flash-abliterated` は 1M あるのに分からない）。分からないと `undefined`
+   * のまま扱われ、章立ての閾値も文脈の目盛りも効かず、**実際より短いものとして**進む。
+   * 分かっている人が入れられる口を持つ。**手で入れた値が優先**——プロバイダが後から
+   * 返してくるようになっても、こちらの意図を上書きしない。
+   */
+  contextWindow?: number;
 }
 
 interface ProviderOverlay {
@@ -275,6 +285,16 @@ interface Overlay {
   models?: Record<string, Record<string, ModelOverlay>>;
   providers?: Record<string, ProviderOverlay>;
 }
+
+/**
+ * 手で入れられる文脈長の範囲（PO要望 2026-08-11）。
+ *
+ * 下限は「章立てが意味を持つ最小」、上限は現実に存在する最大の桁より一段上。
+ * **範囲で弾くのは打ち間違いを見つけるため**——1M のつもりで 1000 と入れても、
+ * 動きはするが会話が数往復で畳まれるようになり、原因が分からない形で壊れる。
+ */
+export const MIN_CONTEXT_WINDOW = 1_000;
+export const MAX_CONTEXT_WINDOW = 100_000_000;
 
 function isModelTier(value: unknown): value is ModelTier {
   return value === "reasoning" || value === "standard" || value === "fast";
@@ -373,7 +393,11 @@ export class LlmCatalog {
           name: m.name ?? m.id,
           tier: this.getTier(providerId, m.id),
           vision: Array.isArray(m.input) && m.input.includes("image"),
-          ...(typeof m.contextWindow === "number" ? { contextWindow: m.contextWindow } : {}),
+          // **手で入れた文脈長が優先**（PO要望 2026-08-11）。プロバイダが返さないものを
+          // 人が補える形にしてあるので、あとから返ってきても意図を上書きしない
+          ...(typeof (ov?.contextWindow ?? m.contextWindow) === "number"
+            ? { contextWindow: ov?.contextWindow ?? m.contextWindow }
+            : {}),
           ...(m.cost ? { cost: { input: m.cost.input, output: m.cost.output } } : {}),
           free: ov?.free ?? (m.cost ? !priced : !hasAuth),
           /**
@@ -482,6 +506,32 @@ export class LlmCatalog {
     this.setModelOverlay(provider, model, { workerUsable: true });
     this.overlay!.picks ??= {};
     this.overlay!.picks[tier] = { provider, model };
+    this.saveOverlay();
+  }
+
+  /**
+   * **文脈長を手で入れる**（PO要望 2026-08-11）。
+   *
+   * プロバイダが返さないモデルのための口。`undefined` を渡すと手入力を取り消し、
+   * プロバイダが言う値（あれば）に戻る。
+   *
+   * I2: 0 や負の値、桁が現実離れしたものは受けない——黙って通すと、章立ての閾値が
+   *     おかしくなったことに気づけないまま会話が壊れる。
+   */
+  setContextWindow(provider: string, model: string, contextWindow: number | undefined): void {
+    this.ensureLoaded();
+    if (contextWindow !== undefined) {
+      if (!Number.isFinite(contextWindow) || !Number.isInteger(contextWindow)) {
+        throw new Error("文脈長は整数で指定してください（トークン数）。");
+      }
+      if (contextWindow < MIN_CONTEXT_WINDOW || contextWindow > MAX_CONTEXT_WINDOW) {
+        throw new Error(
+          `文脈長は ${MIN_CONTEXT_WINDOW}〜${MAX_CONTEXT_WINDOW} トークンで指定してください` +
+            `（受け取った値: ${contextWindow}）。`
+        );
+      }
+    }
+    this.setModelOverlay(provider, model, { contextWindow });
     this.saveOverlay();
   }
 

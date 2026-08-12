@@ -97,6 +97,23 @@ export class Canvas {
 
   constructor(private readonly catalog: CanvasCatalog) {}
 
+  /**
+   * 知らないタブを指されたときのエラー。**いま開いているものを名指しする**（inc-0054）。
+   *
+   * 「Unknown canvas tab "x"」だけだと、読んだ側は正しい id を知る手立てが無く、
+   * 当て推量で呼び直すことになる。閉じ切っている場合はその旨を書く——
+   * 「一覧が空」と「引数が違う」は直し方が別なので、区別できる形で返す。
+   */
+  private unknownTab(tabId: string): Error {
+    const open = this.tabs.map((t) => t.id);
+    return new Error(
+      `Unknown canvas tab "${tabId}".` +
+        (open.length > 0
+          ? ` — いま開いているタブは ${open.join(", ")} です。この中の id を渡してください`
+          : " — いまキャンバスに開いているタブはありません。canvas.open で開いてください")
+    );
+  }
+
   /** 現在の表示状態のスナップショット。 */
   snapshot(): CanvasSnapshot {
     return { tabs: this.tabs.map((t) => ({ ...t })), activeTabId: this.activeTabId };
@@ -154,7 +171,7 @@ export class Canvas {
   /** タブを閉じる。閉じたのがアクティブなら直前のタブへ移る。 */
   close(tabId: string): void {
     const index = this.tabs.findIndex((t) => t.id === tabId);
-    if (index === -1) throw new Error(`Unknown canvas tab "${tabId}".`);
+    if (index === -1) throw this.unknownTab(tabId);
     this.tabs.splice(index, 1);
     if (this.activeTabId === tabId) {
       this.activeTabId = this.tabs[Math.max(0, index - 1)]?.id;
@@ -168,7 +185,7 @@ export class Canvas {
    */
   reorder(tabId: string, toIndex: number): void {
     const from = this.tabs.findIndex((t) => t.id === tabId);
-    if (from === -1) throw new Error(`Unknown canvas tab "${tabId}".`);
+    if (from === -1) throw this.unknownTab(tabId);
     // 範囲外は端に寄せる（UIの計算誤差で失敗させない）
     const to = Math.max(0, Math.min(toIndex, this.tabs.length - 1));
     if (from === to) return;
@@ -181,7 +198,7 @@ export class Canvas {
   /** 表示するタブを切り替える。 */
   switchTo(tabId: string): void {
     if (!this.tabs.some((t) => t.id === tabId)) {
-      throw new Error(`Unknown canvas tab "${tabId}".`);
+      throw this.unknownTab(tabId);
     }
     this.activeTabId = tabId;
     this.notify();

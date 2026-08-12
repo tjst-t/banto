@@ -26,7 +26,14 @@ import {
   StateMachine,
   parseEnvProfiles as _parseEnvProfiles,
 } from "@banto/core";
-import type { OrchestrationEvent, TaskStatus, TaskRecord, TransitionResult } from "@banto/core";
+import type {
+  OrchestrationEvent,
+  TaskStatus,
+  TaskRecord,
+  TransitionResult,
+  SettingsSection,
+} from "@banto/core";
+import type { RoleAssignments, KoboRole } from "./kobo-settings.js";
 import { ProjectRegistry } from "./project-registry.js";
 import type { ProjectEntry } from "./project-registry.js";
 import { WsEventServer } from "./ws-server.js";
@@ -102,6 +109,20 @@ type WorkerRole = "executor" | "audit" | "rework";
  */
 function poolTaskId(taskId: string, role: WorkerRole): string {
   return role === "executor" ? taskId : `${taskId}:${role}`;
+}
+
+/**
+ * いま働いている職人の識別子（帳簿の最後の `agent_spawned`）。
+ *
+ * 工房の帳簿はどこまで読んだかを持たないので、再起動すると過去の報告がもう一度流れる。
+ * **いまの試行の分だけを読む**ための物差し（PO報告 2026-08-11）。
+ */
+function latestSpawnedSessionId(history: readonly OrchestrationEvent[]): string | undefined {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const ev = history[i];
+    if (ev?.type === "agent_spawned" && ev.sessionId) return ev.sessionId;
+  }
+  return undefined;
 }
 
 /** Worker Pool 側の taskId を、タスクと役目に戻す。 */
@@ -201,8 +222,24 @@ export interface DaemonConfig {
    * 外から使うなら前段（Caddy 等）で守る。`BANTO_DAEMON_BIND` で差し替えられる。
    */
   bindHost?: string;
+  /**
+   * PO だけが持つ合言葉（PO裁定 2026-08-11・第0波 0-3）。既定は `BANTO_PO_TOKEN`。
+   *
+   * **決定40 の唯一の例外**。Kobo の口は基本的に認証を持たず、待ち受けアドレスと前段で
+   * 守る——が、`POST {KOBO_MODULE_PATH}/projects/:proj/tasks/:id/approve` だけは
+   * 「番頭ではなく PO が通した」を帳簿に書く口なので、**誰でも名乗れては意味がない**。
+   *
+   * 未設定なら口は閉じたまま（503）。開いていない方が、黙って誰でも PO を名乗れるより良い。
+   */
+  poToken?: string;
   /** Root data directory (event log + registry). Default: ./data */
   dataDir: string;
+  /**
+   * 役割ごとの職人の当て方（設定画面が書く。PO裁定 2026-08-10）。
+   *
+   * 渡すと**次の起動でも効く**。渡さなければメモリだけに載る（試験はこちら）。
+   */
+  roleAssignmentsSection?: SettingsSection;
   /**
    * Polling interval (ms) for the task-definition watcher.
    * Default: 2000 ms. Set to a smaller value in tests for faster feedback.
@@ -245,6 +282,18 @@ export interface DaemonConfig {
    * Default: false (auto-spawn runs in production).
    */
   disableAutoSpawn?: boolean;
+  /**
+   * When true, do not register the serial merge-queue tick job.
+   *
+   * **試験のためだけの口**（`disableAuditSpawn` / `disableAutoSpawn` と同じ筋）。
+   * マージキューは `approved` のタスクを毎 tick 拾い、rebase → マージ前ゲートまで進む。
+   * その道は**プロジェクトの repoPath を実際に触る**——リポジトリが無ければ rebase 失敗
+   * として扱われ、`work/tasks/` に衝突解決タスクを書き、origin を `paused` にする。
+   * つまり「approved まで進めるだけ」の試験が、走らせる場所（そのパスに書けるか）で
+   * 結果を変える。ゲート判定だけを見る試験はこれを切って器から独立させる。
+   * Default: false（本番ではマージキューは常に回る）。
+   */
+  disableMergeQueue?: boolean;
   /**
    * Environment Pool の到達先（ADR-0013 決定60・61）。
    *
@@ -308,6 +357,15 @@ export class Daemon {
   private _workerEventsRunning = false;
 
   /**
+   * 役割ごとの職人の当て方（実装／手直し／監査に、どの等級・どのモデルを当てるか）。
+   *
+   * **PO が決めるもので、Kobo は当てはめるだけ**（D5）。決定60a はモデル名を Kobo から
+   * 遠ざけていたが、PO裁定 2026-08-10 で名指しの口が開いた——解決（provider・鍵・
+   * tier→モデルの表）は Worker Pool のままで、ここが持つのは**渡す名前**だけ。
+   */
+  private _roleAssignments: RoleAssignments = {};
+
+  /**
    * 依存ゲートの物理quota 用の**短命の写し**（決定36j と同じ扱い）。
    * 台帳ではない——プロセスが終われば消え、ゲートの tick の頭で取り直す（D3）。
    */
@@ -369,6 +427,11 @@ export class Daemon {
 
   private constructor(config: DaemonConfig) {
     this.config = config;
+    // 役割ごとの当て方は、渡されていれば前回の設定を読み戻す（D3：真実はファイル1つ）
+    const savedRoles = config.roleAssignmentsSection?.read()["roleAssignments"];
+    if (savedRoles && typeof savedRoles === "object") {
+      this._roleAssignments = savedRoles as RoleAssignments;
+    }
     this.log = EventLog.open(config.dataDir);
     this.store = StateStore.replay(this.log);
     this.index = EventIndex.build(this.log);
@@ -478,7 +541,10 @@ export class Daemon {
     // Rebase → merge gate → fast-forward merge → task_merged + merged transition.
     // Merged tasks without hypothesis are auto-closed.
     // Rebase conflicts: auto-file conflict task + pause origin (S75f66b-6).
-    this.scheduler.registerJob("merge-queue", () => this.runMergeQueueTick());
+    // disableMergeQueue: ゲート判定だけを見る試験は、repoPath を触るこの道を切れる。
+    if (!config.disableMergeQueue) {
+      this.scheduler.registerJob("merge-queue", () => this.runMergeQueueTick());
+    }
 
     // Built-in job: conflict-resolution outcome check (S75f66b-6, spec-daemon-core §4.2).
     // On each tick, derive paused-origin↔conflict-resolution pairs (D3: from event log).
@@ -494,11 +560,14 @@ export class Daemon {
   }
 
   static create(config: Partial<DaemonConfig> = {}): Daemon {
+    // 空文字は「設定されていない」と同じに扱う（空の合言葉で開くと、閉じたつもりの口が開く）
+    const poToken = config.poToken || process.env["BANTO_PO_TOKEN"] || undefined;
     const resolved: DaemonConfig = {
       port: config.port ?? parseInt(process.env["BANTO_PORT"] ?? "4500", 10),
       // 決定40: 既定は 127.0.0.1。広げるのは明示だけ（この口は帳簿を書き換えられる）
       bindHost: config.bindHost ?? process.env["BANTO_DAEMON_BIND"] ?? "127.0.0.1",
       dataDir: config.dataDir ?? process.env["BANTO_DATA_DIR"] ?? "./data",
+      ...(poToken !== undefined ? { poToken } : {}),
       watchIntervalMs: config.watchIntervalMs ?? 2000,
       tickIntervalMs:
         config.tickIntervalMs ??
@@ -511,10 +580,14 @@ export class Daemon {
         (Number.parseInt(process.env["BANTO_MAX_CONCURRENT_SESSIONS"] ?? "5", 10) || 5),
       disableAuditSpawn: config.disableAuditSpawn ?? false,
       disableAutoSpawn: config.disableAutoSpawn ?? false,
+      disableMergeQueue: config.disableMergeQueue ?? false,
       ...(config.environmentPoolUrl !== undefined
         ? { environmentPoolUrl: config.environmentPoolUrl }
         : {}),
       ...(config.workerPoolUrl !== undefined ? { workerPoolUrl: config.workerPoolUrl } : {}),
+      ...(config.roleAssignmentsSection !== undefined
+        ? { roleAssignmentsSection: config.roleAssignmentsSection }
+        : {}),
       ...(config.verifyRunner !== undefined ? { verifyRunner: config.verifyRunner } : {}),
     };
     return new Daemon(resolved);
@@ -730,6 +803,44 @@ export class Daemon {
 
     const existing = this.store.getTask(taskId, projectTag);
     if (existing) {
+      /**
+       * **宛先だけは後から引き受ける**（PO報告 2026-08-11）。
+       *
+       * 番頭は「定義ファイルを書く → `kobo.enqueue` を呼ぶ」の順で積むが、その間に
+       * **watcher が先に取り込む**（`status: queued` を見つけた時点で入る）。すると
+       * ここで「既に積まれています」と断られ、**origin が永久に付かない**——以後その
+       * タスクの知らせは1通残らず既定の宛先（帳場）へ流れる。実際、ひらがなの
+       * task-0001/0002 の失敗は、積んだ幹ではなく帳場に出た。
+       *
+       * **契約は凍ったまま**（決定62c・64）。origin / originRef は契約ではなく
+       * 「誰の求めで積んだか」なので、`kobo.reopen` も同じ形で後から定めている。
+       * 既に宛先があるものは書き換えない——横取りさせない。
+       */
+      const currentOrigin = this.originOfTask(projectTag, taskId);
+      if (options.origin && !currentOrigin) {
+        // D3: 状態はイベントから導出される。ここで写しを書き換えず、改訂を1件積む
+        const amended = this.log.append({
+          type: "task_contract_amended",
+          projectTag,
+          taskId,
+          amendedBy: "banto",
+          reason:
+            `宛先（origin）を ${options.origin} に定めました` +
+            "（watcher が先に取り込んでいたため、enqueue で引き受け）",
+          changes: ["宛先（origin）"],
+          // 契約は動かしていない。監査をやり直させない
+          auditInvalidated: false,
+          contract: {
+            origin: options.origin,
+            // 経緯も一緒に引き受ける（無いと札に「起きたこと」しか書けない・D8）
+            ...(options.originRef ? { originRef: options.originRef } : {}),
+          },
+        });
+        // 積むだけでは手元の写しに効かない。**適用してから返す**——さもないと、
+        // この直後に宛先を引いた側（知らせの層）が undefined を見る
+        this.applyAndBroadcast(amended);
+        return { ok: true, status: existing.status };
+      }
       // 決定62c・64: 取り込み済みの契約は凍結。訂正は新しいタスクを積み、元を superseded に
       return {
         ok: false,
@@ -1092,7 +1203,7 @@ export class Daemon {
   async reopenTask(
     projectTag: string,
     taskId: string,
-    options: { mode: "rework" | "reverify"; reason: string; by: string }
+    options: { mode: "rework" | "reverify"; reason: string; by: string; origin?: string }
   ): Promise<{ ok: true; to: string } | { ok: false; reason: string }> {
     const task = this.store.getTask(taskId, projectTag);
     if (!task) return { ok: false, reason: `${taskId} は ${projectTag} の工場にありません` };
@@ -1135,6 +1246,35 @@ export class Daemon {
             "変わった基準を誰も見ていない状態でマージ待ちに置けません——mode: \"rework\" で監査からやり直してください",
         };
       }
+    }
+
+    /**
+     * **戻せと言った会話が、以後の宛先になる**（決定58 の延長・PO報告 2026-08-10）。
+     *
+     * 宛先はこれまで「積んだとき」にしか付かなかった。だが `work/tasks/*.md` から
+     * 取り込まれたタスク（`watcher-ingest`）には宛先が無く、番頭が会話から戻しても
+     * 付かないままで、知らせが**帳場へ流れ込んでいた**——task-0089 が実際にそうなった
+     * （3回とも `origin: undefined` のまま失敗の知らせだけが帳場に積まれた）。
+     *
+     * 戻すのは番頭の明示的な行為で、そのとき番頭はどれかの会話に居る。**そこが宛先。**
+     * 既に宛先があるときは書き換えない——最初に積んだ会話から奪わない。
+     */
+    if (options.origin && !this.originOfTask(projectTag, taskId)) {
+      const amended = this.log.append({
+        type: "task_contract_amended",
+        projectTag,
+        taskId,
+        amendedBy: options.by === "po" ? "po" : "banto",
+        reason: `宛先（origin）を ${options.origin} に定めました（${options.mode} で戻したため）`,
+        changes: ["宛先（origin）"],
+        // 契約は動かしていないので監査は無効化しない（reverify を塞がない）
+        auditInvalidated: false,
+        contract: { origin: options.origin },
+      });
+      // **積むだけでは手元の写しに効かない**（PO報告 2026-08-11）。この直後に起きる
+      // rework の知らせが宛先を引くので、適用を飛ばすと**戻した会話にも届かない**
+      // ——再起動して読み直すまで直らない、いちばん気づきにくい形になる
+      this.applyAndBroadcast(amended);
     }
 
     const result = this.transition(projectTag, taskId, to, `reopened_by:${options.by}（${options.reason}）`);
@@ -1229,6 +1369,15 @@ export class Daemon {
     const project = this.registry.list().find((p) => p.id === projectTag);
     if (!project) return { verify: { profile: DEFAULT_VERIFY_PROFILE }, review: { poRequiredPaths: [] }, limits: {} };
     return loadProjectConfig(project.repoPath);
+  }
+
+  /**
+   * PO だけが持つ合言葉（PO裁定 2026-08-11・第0波 0-3）。未設定なら `undefined`。
+   *
+   * D3: 別に持たない。設定の値をそのまま読む——HTTP 面が照合に使う。
+   */
+  poToken(): string | undefined {
+    return this.config.poToken;
   }
 
   /**
@@ -1480,6 +1629,61 @@ export class Daemon {
    * （banto-executor / banto-auditor が `report_phase` / `audit_report` を提供する。決定29e）。
    * 番頭にこの口は渡らない——LLM に任意のコードを載せさせないため。
    */
+  /** いまの役割ごとの当て方（設定画面が読む）。 */
+  roleAssignments(): RoleAssignments {
+    return { ...this._roleAssignments };
+  }
+
+  /**
+   * 役割ごとの当て方を差し替える（決定41：設定画面から）。**次に起こす職人から**効く。
+   * 動いている職人はそのまま——途中でモデルが変わる方が分かりにくい。
+   */
+  setRoleAssignments(next: RoleAssignments): void {
+    this._roleAssignments = { ...next };
+    this.config.roleAssignmentsSection?.write({
+      ...(this.config.roleAssignmentsSection.read() ?? {}),
+      roleAssignments: this._roleAssignments,
+    });
+  }
+
+  /**
+   * 名指しに使える、Worker Pool が持っているモデル（届かなければ空）。
+   *
+   * 設定画面はこれで**選ばせる**。工場がモデルの表を持つのではなく、そのつど数え上げて
+   * もらう——「LLM・モデル」で職人に許したものが増減しても、工場は何も知らないで済む。
+   */
+  async selectableModels(): Promise<Array<{ name: string; label: string }>> {
+    try {
+      const details = await this.workerInvoke("worker.models", {});
+      const models = (details["models"] ?? []) as Array<{
+        name?: unknown;
+        label?: unknown;
+        runtimeTitle?: unknown;
+      }>;
+      return models
+        .map((m) => ({
+          name: String(m.name ?? ""),
+          label: `${m.runtimeTitle ? `${String(m.runtimeTitle)}: ` : ""}${String(m.label ?? m.name ?? "")}`,
+        }))
+        .filter((m) => m.name.length > 0);
+    } catch {
+      // I2 の例外: 届かないことを「選べるものが無い」と混同しない。画面は自由入力に落ちる
+      return [];
+    }
+  }
+
+  /** 名指しの照合に使う、Worker Pool が持っているモデル名（届かなければ空）。 */
+  async selectableModelNames(): Promise<string[]> {
+    try {
+      const models = await this.selectableModels();
+      return models.map((m) => m.name);
+    } catch {
+      // I2 の例外: 照合できないことを「知らない名前」と混同しない。工房が落ちている
+      // だけのときに設定を保存できなくなる方が困る——確かめられなければ通す
+      return [];
+    }
+  }
+
   private async delegateWorker(opts: {
     projectTag: string;
     taskId: string;
@@ -1493,13 +1697,29 @@ export class Daemon {
     // 同じ鍵の職人が残っていたら畳んでから起こす（台帳の鍵は1つ）
     await this.closeWorkerFor(opts.projectTag, poolId);
 
+    /**
+     * PO がこの役割に当てたもの（設定画面。PO裁定 2026-08-10）。
+     *
+     * 名指しがあれば等級より優先する——「監査は opus で」と決めたのに、昇格や
+     * タスクの `model_tier` で別のモデルに化けるなら、決めた意味が無い。
+     */
+    const assigned = this._roleAssignments[opts.role as KoboRole] ?? {};
+    const modelTier = assigned.tier ?? opts.modelTier;
+    if (assigned.tier || assigned.model) {
+      process.stdout.write(
+        `[banto-daemon] ${opts.projectTag}/${opts.taskId}: ${opts.role} は設定の当て方で起こします` +
+          `（${assigned.model ? `モデル ${assigned.model}` : `等級 ${modelTier}`}）\n`
+      );
+    }
+
     const details = await this.workerInvoke("worker.delegate_toolkit", {
       taskId: poolId,
       projectTag: opts.projectTag,
       origin: KOBO_ORIGIN,
       worktreePath: opts.worktreePath,
       instruction: opts.instruction,
-      modelTier: opts.modelTier,
+      modelTier,
+      ...(assigned.model ? { model: assigned.model } : {}),
       driverOptions: {
         // 職人が Kobo の口を叩くための到達先（拡張が環境変数で受け取る）
         daemonUrl: `http://localhost:${this.port}`,
@@ -1530,9 +1750,12 @@ export class Daemon {
   /**
    * タスクのワークツリーを用意する（決定60・a6）。
    *
-   * 既定では **gwq に作らせる**——置き場所は gwq の設定に従い、そのまま場所として
-   * 番頭にも PO にも見える。`worktreeBaseDir` を明示した構成（リモートの無いテスト用
-   * リポジトリなど）だけ、素の `git worktree` でそこに作る。
+   * 既定では **repo-manager の並び**（`layout.ts`）に作る——そのまま場所として番頭にも
+   * PO にも見える。`worktreeBaseDir` を明示した構成だけ、素の `git worktree` でそこに作る。
+   *
+   * **リモートの有無に依らない**（PO裁定 2026-08-11）。以前は `gwq` に作らせていて、
+   * `gwq` は置き場を `git remote get-url origin` から組み立てるため、**まだ push して
+   * いないリポジトリではタスクが1本も回らなかった**（ひらがなの task-0001 / 0002）。
    *
    * 冪等：監査・rework は実装者と同じワークツリーを見る必要がある。
    */
@@ -1558,9 +1781,9 @@ export class Daemon {
   /**
    * そのタスクのワークツリー（帳簿から引く。D3）。
    *
-   * 置き場所を決めるのは gwq なので、**Kobo は組み立てられない**——起こしたときに
-   * `agent_spawned.worktree` に残してあるものを読む。まだ職人を起こしていないタスクは
-   * 明示の置き場（または既定）の見込みのパスを返す（マージキューの後始末が使う）。
+   * 置き場所を決めるのは repo-manager の並びなので、**Kobo は組み立てない**——起こした
+   * ときに `agent_spawned.worktree` に残してあるものを読む。まだ職人を起こしていない
+   * タスクは明示の置き場（または既定）の見込みのパスを返す（マージキューの後始末が使う）。
    */
   private worktreeOf(projectTag: string, taskId: string): string {
     const events = this.index.getTaskHistory(taskId, projectTag);
@@ -1574,6 +1797,27 @@ export class Daemon {
       projectTag,
       taskId
     );
+  }
+
+  /**
+   * そのタスクのワークツリー。**無ければ用意する**（PO報告 2026-08-11）。
+   *
+   * `worktreeOf` は帳簿を引くだけなので、**一度も職人を起こせていないタスク**では
+   * 見込みのパスが返る——そこは存在しない。監査も rework もそれを `cwd` に渡すので、
+   * `spawn ENOENT` で落ちる。実際、ワークツリー作成に失敗して failed になった
+   * hiragana/task-0002 は、直しても同じところで落ち続けた（P6：同じ場所で落ち続けるなら
+   * 直し方ではなく前提を疑う）。
+   *
+   * 用意は冪等なので、既にあるものは作り直さない（実装者と同じ場所を見る）。
+   */
+  private async worktreeFor(projectTag: string, taskId: string): Promise<string> {
+    const events = this.index.getTaskHistory(taskId, projectTag);
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i]!;
+      if (ev.type === "agent_spawned" && ev.worktree) return ev.worktree;
+      if (ev.type === "audit_started" && ev.worktree) return ev.worktree;
+    }
+    return this.ensureWorktree(projectTag, taskId);
   }
 
   /**
@@ -1721,14 +1965,249 @@ export class Daemon {
   }
 
   /**
+   * 職人が聞いてきた／答えが届いた（PO報告 2026-08-11）。
+   *
+   * **聞かれたら止める。** 待っているのはタスクそのものなので、状態を `paused` にして
+   * 理由に質問文を置く——`kobo-notice.ts` が paused を「止まって待っています」として
+   * **積んだ会話へ**返すので、番頭が読んで `worker.steer` で答えられる。
+   *
+   * **答えが届いたら元へ戻す。** `StateMachine.pause` は止まる前の状態を控えている
+   * （`suspended_from`）ので、そこへ戻せばよい——実装の途中だったのか監査の途中だったのかを
+   * ここで推測しない（D3）。
+   *
+   * I2: 自分が起こした職人でなければ触らない。他人の職人の質問でタスクを止めない。
+   */
+  private applyWorkerQuestion(event: WorkerEventView): void {
+    const { taskId } = splitPoolTaskId(event.taskId);
+    const projectTag = event.projectTag;
+    const history = this.index.getTaskHistory(taskId, projectTag);
+    const spawned = history.some(
+      (e) => e.type === "agent_spawned" && e.sessionId === event.sessionId
+    );
+    if (!spawned) return;
+    const current = this.store.getTask(taskId, projectTag);
+    if (!current) return;
+
+    if (event.type === "worker_asked") {
+      // 既に止まっているなら重ねない（同じ職人が続けて聞くことはある）
+      if (current.status === "paused") return;
+      const question = String(event.data["question"] ?? "").trim();
+      const result = StateMachine.pause(
+        this.log,
+        taskId,
+        current.status as TaskStatus,
+        projectTag,
+        `職人が聞いています: ${question || "（質問文が記録されていません）"}\n` +
+          `答えるには worker.steer（sessionId: ${event.sessionId}）。` +
+          "答えると職人は待ちを解いて動き出し、このタスクも元の状態へ戻ります"
+      );
+      // I2: 止められなかったことを黙って成功にしない（終端の状態などで起きる）
+      if (!result.ok) {
+        process.stderr.write(
+          `[banto-daemon] ${projectTag}/${taskId} を止められませんでした（職人の質問）: ${result.reason}\n`
+        );
+        return;
+      }
+      this.refreshState();
+      this.broadcastLastEvent();
+      return;
+    }
+
+    // 答えが届いた＝待ちが解けた。**止まる前の状態へ戻す**
+    if (current.status !== "paused") return;
+    // どこから止まったかは帳簿にある（`task_paused.suspended_from`）。推測しない（D3）
+    const suspendedFrom = [...history]
+      .reverse()
+      .find((e): e is Extract<OrchestrationEvent, { type: "task_paused" }> => e.type === "task_paused")
+      ?.suspended_from;
+    if (!suspendedFrom) {
+      // I2: 戻り先が分からないまま適当な状態へ動かさない。止まったままにして知らせる
+      process.stderr.write(
+        `[banto-daemon] ${projectTag}/${taskId} の戻り先が帳簿にありません（止まったままにします）\n`
+      );
+      return;
+    }
+    const resumed = StateMachine.resume(this.log, taskId, "paused", suspendedFrom, projectTag);
+    if (!resumed.ok) {
+      process.stderr.write(
+        `[banto-daemon] ${projectTag}/${taskId} を戻せませんでした（答えが届いた後）: ${resumed.reason}\n`
+      );
+      return;
+    }
+    this.refreshState();
+    this.broadcastLastEvent();
+  }
+
+  /**
+   * 職人が「終わった」と言ってきた（PO報告 2026-08-11）。
+   *
+   * **`done` が立っているときだけ動かす。** 途中経過の報告（`done: false`）で監査へ
+   * 回すと、書きかけを検証させることになる。
+   *
+   * **実装役だけ。** 監査人の報告は判定ではない——自由文から pass / fail を推測すると、
+   * 落ちるべきものが通る。判定の口（`audit_report`）を持たないランタイムで動いている
+   * ことは**それ自体が異常**なので、下の I2 の通り理由を添えて止める。
+   *
+   * I2: 自分が起こした職人でなければ触らない。既に先へ進んでいるものも動かさない（冪等）。
+   */
+  private applyWorkerReport(event: WorkerEventView): void {
+    const { taskId, role } = splitPoolTaskId(event.taskId);
+    const projectTag = event.projectTag;
+    const history = this.index.getTaskHistory(taskId, projectTag);
+    const spawned = history.some(
+      (e) => e.type === "agent_spawned" && e.sessionId === event.sessionId
+    );
+    if (!spawned) return;
+    if (event.data["done"] !== true) return; // 途中経過は状態を動かさない
+    /**
+     * **いま働いている職人の報告だけを読む**（実測 2026-08-11）。
+     *
+     * 工房の帳簿はどこまで読んだかを別に持たない（D3：起動時は 0 から読み直す）ので、
+     * 再起動すると**過去の報告がもう一度流れてくる**。同じタスクを戻して（rework）
+     * 起こし直していると、その古い報告がいまの試行に当たってしまう——実際、前の監査人の
+     * 「判定の口が無い」報告が、口を載せ直したあとの試行を落とした。
+     *
+     * いまの職人かどうかは帳簿の**最後の `agent_spawned`** で決まる。過去の分は読み捨てる。
+     */
+    if (event.sessionId !== latestSpawnedSessionId(history)) return;
+    const current = this.store.getTask(taskId, projectTag);
+    if (!current) return;
+
+    const summary = String(event.data["summary"] ?? "").trim();
+
+    if (role === "audit") {
+      /**
+       * 監査人が**判定の口を使わずに**「終わった」と言ってきた。
+       *
+       * 自由文から通す／通さないを決めない（決定57 の一次受けは判定表であって作文ではない）。
+       * 黙って待つと安全弁の時間まで止まるので、**その場で理由を出して止める**——
+       * 監査の口が載っていないランタイムで監査を回している、という機構の問題だから。
+       */
+      if (current.status !== "auditing") return;
+      process.stderr.write(
+        `[banto-daemon] ${projectTag}/${taskId}: 監査人が判定を出さずに報告しました` +
+          "（このランタイムに audit_report が載っていません）\n"
+      );
+      this.recordTaskFailed(
+        projectTag,
+        taskId,
+        "audit_reported_without_verdict: 監査人が判定の口（audit_report）を使わずに報告しました。" +
+          "このランタイムには監査の口が載っていません" +
+          (summary ? `。監査人の言い分: ${summary}` : "")
+      );
+      return;
+    }
+
+    // 実装役（executor / rework）。**まだ実装中のときだけ**監査へ回す
+    if (current.status !== "implementing" && current.status !== "planning") return;
+    /**
+     * **段を飛ばさない。** `planning → auditing` は工程として通らない（ステートマシン）。
+     * pi の職人は `report_phase("implementing")` を通って進むが、その口を持たない
+     * ランタイムの職人は planning のまま終える——ここで1段進めてから監査へ回す。
+     * 「実装していた」ことは職人の報告そのものが示している。
+     */
+    if (current.status === "planning") {
+      const stepped = this.transition(
+        projectTag,
+        taskId,
+        "implementing",
+        `職人の報告（${role}）で実装中と分かりました`
+      );
+      if (!stepped.ok) {
+        process.stderr.write(
+          `[banto-daemon] ${projectTag}/${taskId} を implementing へ進められませんでした: ${stepped.reason}\n`
+        );
+        return;
+      }
+    }
+    const result = this.transition(
+      projectTag,
+      taskId,
+      "auditing",
+      `職人の報告（${role}）: ${summary || "（要約が記録されていません）"}`
+    );
+    if (!result.ok) {
+      process.stderr.write(
+        `[banto-daemon] ${projectTag}/${taskId} を監査へ回せませんでした: ${result.reason}\n`
+      );
+    }
+  }
+
+  /** 帳簿の末尾を配る（`refreshState` の直後に使う。既存の経路と同じ形）。 */
+  private broadcastLastEvent(): void {
+    const all = this.log.readAllEvents();
+    if (all.length > 0) this.wsServer.broadcast(all[all.length - 1]!);
+  }
+
+  /**
    * 職人の1件の出来事を、Kobo の帳簿とステートマシンへ写す。
    *
    * **意味を与えるのは起動元**（決定29d）。Worker Pool は中立な事実を並べるだけで、
    * 「監査人が判定を出さずに終わった＝失敗」という読みは Kobo の統治の話。
    */
   private applyWorkerEvent(event: WorkerEventView): void {
-    // 終わった（exited）か畳まれた（closed）ものだけを見る。報告・質問は Kobo の
-    // 経路（report_done / audit_report）に来るので、ここでは二重に読まない
+    /**
+     * **職人の質問を宙に消さない**（PO報告 2026-08-11）。
+     *
+     * `worker_asked` を誰も読んでいなかった。番頭ホスト側の知らせは
+     * 「番頭が起こした職人の分だけ」で弾かれ（決定29）、Kobo はここで exited / closed
+     * しか見ていなかった——**Kobo が起こした職人の質問は、どこにも出ないまま消えていた。**
+     * 職人は答えを待って止まり、やがて時間切れで終わり、`agent_exited_without_report`
+     * として failed になる。banto/task-0091 のセッションログにその形がそのまま残っている
+     * （「質問を投げて待っています」で止まったまま、33分後に failed）。
+     *
+     * 待っていることは**タスクの状態そのもの**なので、`paused` にする——止まった理由が
+     * 質問文になり、既存の知らせの道（`kobo-notice.ts` の paused）で**積んだ会話へ**返る。
+     * 番頭は `worker.steer` で答え、答えが届いたら（`worker_answered`）元の状態へ戻す。
+     */
+    if (event.type === "worker_asked" || event.type === "worker_answered") {
+      this.applyWorkerQuestion(event);
+      return;
+    }
+    /**
+     * **「終わった」を工房の経路からも受ける**（PO報告 2026-08-11）。
+     *
+     * ここは「報告は Kobo の経路（`report_done`）に来る」という前提で書かれていた。
+     * その前提は **pi の職人にしか当てはまらない**——`report_done` は pi 拡張
+     * （`pi-extension/banto-executor.ts`）が載せる口で、`extensionPaths` は pi の言葉。
+     * Claude Code の職人にはその口が無く、汎用の `worker.report` で工房へ報告する。
+     *
+     * 結果、**Claude Code で動く職人のタスクは 1本も先へ進まなかった**：実装を終えて
+     * コミットまでしているのに Kobo は `implementing` のまま、やがて職人が終わって
+     * `agent_exited_without_report` で failed になる。hiragana の task-0001 / 0002 が
+     * まさにこれで、工房の帳簿には `worker_reported { done: true }` が残っている。
+     *
+     * **意味を与えるのは起動元**（決定29d）なので、ここで受けるのが筋——ランタイムに
+     * 依らず同じ形になる。二重にはならない：`report_done` を通った職人は既に auditing
+     * へ移っており、下の遷移は planning / implementing のときしか起こさない。
+     */
+    if (event.type === "worker_reported") {
+      this.applyWorkerReport(event);
+      return;
+    }
+    /**
+     * **喋り終わった時点で先へ進める**（PO要望 2026-08-11）。
+     *
+     * 以前は「明示の報告」か「安全弁の時間切れ（既定15分）」しか完了を知る道が無かった。
+     * 出力が終わればその場で分かるのだから、待つ理由が無い——ランタイムがターンの
+     * 終わりを積むようになったので、Kobo はそれを読む。
+     *
+     * **答え待ちは終わりではない**（`waiting`）。質問して止まっている職人を「終わった」
+     * として監査へ回すと、書きかけを検証させることになる。
+     */
+    if (event.type === "worker_turn_ended") {
+      if (event.data["waiting"] === true) return;
+      // 報告があったならそちらで進んでいる（`applyWorkerReport`）。ここは無報告の埋め合わせ
+      this.applyWorkerReport({
+        ...event,
+        data: {
+          done: true,
+          summary: String(event.data["text"] ?? "").trim() || "（発話なしで手を止めました）",
+        },
+      });
+      return;
+    }
+    // 終わった（exited）か畳まれた（closed）ものだけを見る
     if (event.type !== "worker_exited" && event.type !== "worker_closed") return;
 
     const { taskId, role } = splitPoolTaskId(event.taskId);
@@ -1770,7 +2249,7 @@ export class Daemon {
       // **いま動いている監査人の分だけ数える。** 置き換えられた古い監査人の終了も
       // ここへ来る（同じ taskId で起こし直すと、工房が前の1人を畳む）——それで数えると
       // 1回の事故で2人起こしてしまう。実際そうなった（試験で捕まえた）
-      if (event.sessionId !== this.currentAuditSessionId(projectTag, taskId)) return;
+      if (event.sessionId !== latestSpawnedSessionId(history)) return;
       const attempts = this.countAuditAttempts(projectTag, taskId);
       if (attempts < AUDIT_ATTEMPT_LIMIT) {
         process.stderr.write(
@@ -2057,8 +2536,8 @@ export class Daemon {
       return;
     }
 
-    // 実装者と同じワークツリーを見る（帳簿から引く。組み立てない）
-    const worktreePath = this.worktreeOf(projectTag, taskId);
+    // 実装者と同じワークツリーを見る（帳簿から引く。無ければ用意する）
+    const worktreePath = await this.worktreeFor(projectTag, taskId);
 
     // 実装の職人はもう用済み（報告を出して auditing に入っている）。畳んでから監査を起こす
     // ——放っておくと安全弁の時間までプロセスが残る（I3）
@@ -2242,8 +2721,9 @@ export class Daemon {
       return;
     }
 
-    // 実装者と同じワークツリーで直す（作り直すと、直す対象が消える）
-    const worktreePath = this.worktreeOf(projectTag, taskId);
+    // 実装者と同じワークツリーで直す（作り直すと、直す対象が消える）。
+    // 一度も起こせていないタスクはここで初めて用意される（PO報告 2026-08-11）
+    const worktreePath = await this.worktreeFor(projectTag, taskId);
 
     // 監査人はもう役目を終えている。畳んでから rework を起こす
     await this.closeWorkerFor(projectTag, poolTaskId(taskId, "audit"));

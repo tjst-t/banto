@@ -862,7 +862,13 @@ describe("[task-0026/a6] 職人（別プロセス）からHTTPで報告できる
 
     assert.equal(banto.includes("worker.report"), false, "番頭には渡らない");
     // task-0060: 起動元が自分の道具立てを載せる口も internalTools（番頭には渡さない）
-    assert.deepEqual(internal.sort(), ["worker.ask", "worker.delegate_toolkit", "worker.report"]);
+    // PO要望 2026-08-11: ターンの終わりを伝える口も**ランタイムが呼ぶもの**なので internal
+    assert.deepEqual(internal.sort(), [
+      "worker.ask",
+      "worker.delegate_toolkit",
+      "worker.report",
+      "worker.turn_ended",
+    ]);
   });
 });
 
@@ -877,6 +883,36 @@ describe("[task-0028/a1] 番頭が畳む・理由が残る", () => {
     assert.equal(found?.state, "closed");
     assert.equal(found?.closeReason, "done");
     assert.ok(found?.closedAt);
+  });
+
+  /**
+   * **畳んだ結果の終了には「予期していた」印を付ける**（PO要望 2026-08-11）。
+   *
+   * `close` は kill してから畳むので `worker_exited` が先に積まれる。事実は消さない
+   * （いつ死んだかは記録に残す・D3）が、起動元が「知らせるまでもない」と判断できるように
+   * 印だけ添える。
+   */
+  it("[PO要望 2026-08-11] 畳んだ結果の worker_exited には expected が付く", async () => {
+    const worker = await pool.delegate({ ...JOB, taskId: "t-expected" });
+    // 本物のドライバは kill でプロセスが死に、**close が畳み終わる前に** process_exited が飛ぶ
+    const original = driver.kill.bind(driver);
+    driver.kill = async (sessionId: string): Promise<void> => {
+      await original(sessionId);
+      driver.emit({
+        type: "process_exited",
+        pid: worker.pid,
+        sessionId,
+        exitCode: 0,
+        signal: null,
+      });
+    };
+    await pool.close(worker.sessionId);
+
+    const events = pool.events(0).filter((e) => e.sessionId === worker.sessionId);
+    const exited = events.find((e) => e.type === "worker_exited");
+    // 事実そのものは残る（消していない）
+    assert.ok(exited, "終了の事実まで消してはいけない（いつ死んだかが分からなくなる）");
+    assert.equal(exited!.data["expected"], true, "自分で畳んだ結果だと分かること");
   });
 
   it("[task-0028/a1] 畳んだ理由を区別する（done / idle / stopped）", async () => {
@@ -1281,10 +1317,14 @@ describe("[task-0060] 起動元が自分の道具立てを載せる口は、番�
     );
   });
 
-  it("モデルは等級だけを受け取る（起動元はモデル名を知らない・決定60a）", () => {
+  it("等級で頼めるし、モデルの名指しもできる（決定60a の改訂・PO裁定 2026-08-10）", () => {
+    // 決定60a は「起動元は tier までしか渡さない」だったが、PO が「実装やレビューを
+    // どのモデルの職人にやらせるか名前で決めたい」と裁定した。**解決は Worker Pool のまま**
+    // ——起動元が知るのは `worker.models` が返す名前だけで、provider も鍵も知らない
     const tool = createWorkerModuleTools(pool).find((t) => t.name === "worker.delegate_toolkit")!;
     const props = (tool.parameters as { properties?: Record<string, unknown> }).properties ?? {};
     assert.ok("modelTier" in props, "tier は渡せる");
-    assert.ok(!("model" in props) && !("provider" in props), "モデル名・プロバイダは渡せない");
+    assert.ok("model" in props, "モデルの名指しも渡せる（改訂後）");
+    assert.ok(!("provider" in props), "プロバイダは渡さない（解決は Worker Pool の役目）");
   });
 });

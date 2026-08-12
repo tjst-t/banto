@@ -49,12 +49,32 @@ import { workspaceRoot } from "./workspace.js";
  * 行き先（`view`）と引数が同じなら同じ口。**引数まで見る**のは、同じ面でも
  * 別のファイルを開いたなら別の行き先だから。
  */
+/**
+ * 同じ口が**このターンで**既に立っているか（PO要望 2026-08-11 で範囲を絞った）。
+ *
+ * もとは会話の最初から探していた。そのため**一度開いた面は、閉じたあと開き直しても
+ * 口が立たない**——最初の口は何百行も上にあり、実際には辿り着けない。PO が求めたのは
+ * 「閉じた後に押して開き直せる口」なので、**開くたびに、いまの位置に立つ**必要がある。
+ *
+ * 一方、番頭が1回の用件で `canvas.open` を数回呼ぶと同じ行が並ぶ問題（PO報告 2026-08-10）は
+ * 残っている。だから**このターンの中だけ**を見る：直前の入力（POの発言・外からの知らせ）
+ * より後ろに同じ口があれば積まない。
+ */
 function hasSameOpen(
   transcript: readonly TranscriptEntry[],
   utsuwa: Extract<UtsuwaView, { kind: "open" }>
 ): boolean {
   const args = JSON.stringify(utsuwa.args ?? {});
-  return transcript.some(
+  // このターンの始まり＝最後の入力。無ければ会話の頭から
+  let from = 0;
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    const role = transcript[i]!.role;
+    if (role === "po" || role === "notice") {
+      from = i;
+      break;
+    }
+  }
+  return transcript.slice(from).some(
     (e) =>
       e.role === "utsuwa" &&
       e.utsuwa.kind === "open" &&
@@ -506,6 +526,35 @@ export class BantoHostServer {
   }
 
   /**
+   * **PO の言葉は、番頭が何をしていても届く**（PO報告 2026-08-11）。
+   *
+   * もとは `isStreaming` を見て、真のときだけ `steer` として積んでいた。ところが
+   * `isStreaming` が真なのは**トークンを吐いている間だけ**で、道具を実行している間は
+   * 偽になる——番頭が道具を回し続けているとき（＝暴走しているとき）はほぼ常に偽なので、
+   * PO の「ちょっとまって」は `Agent is already processing a prompt` で弾かれた。
+   * **止めたいときに限って止められない**、いちばん困る形だった（実機・thread-69）。
+   *
+   * 見るのをやめて**やってみて、駄目なら steer で積み直す**。状態を覗いて分岐するより、
+   * 実際の返事で決めるほうが競走に強い（I1：自己申告ではなく結果で判断する）。
+   */
+  private async promptEvenWhileBusy(
+    thread: Thread,
+    text: string,
+    options: Parameters<HostSession["prompt"]>[1] = {}
+  ): Promise<void> {
+    try {
+      await thread.session.prompt(text, {
+        ...options,
+        ...(thread.session.isStreaming ? { streamingBehavior: "steer" as const } : {}),
+      });
+    } catch (err) {
+      // ターンの最中だと分かったので、積み直す。それ以外の失敗はそのまま上へ
+      if (!isBusyError(err)) throw err;
+      await thread.session.prompt(text, { ...options, streamingBehavior: "steer" as const });
+    }
+  }
+
+  /**
    * 番頭に外から知らせを入れる（決定29）。職人からの報告・質問がここを通る。
    *
    * **宛先はその職人を起こしたスレッド**（決定35a）。`threadId` を省略すると既定スレッド
@@ -536,9 +585,7 @@ export class BantoHostServer {
       // 職人の報告でも番頭は喋り出す。ここを知らせないと画面から中断する手段が消える
       this.broadcast({ type: "turn_start", threadId: thread.id });
       try {
-        await thread.session.prompt(text, {
-          ...(thread.session.isStreaming ? { streamingBehavior: "steer" as const } : {}),
-        });
+        await this.promptEvenWhileBusy(thread, text);
       } catch (err) {
         // I2: 知らせが番頭に届かなかったことを黙らせない
         thread.record({ role: "error", text: String(err) });
@@ -554,6 +601,23 @@ export class BantoHostServer {
       });
     });
     return thread.notices;
+  }
+
+  /**
+   * **章を畳んだ印を1本入れる**（提案§3.2・PO要望 2026-08-11）。
+   *
+   * **ターンは回さない**（`notify` との違い）。知らせとして流していたときは、畳んだ直後の
+   * 空の文脈で番頭が独りでに `thread.list`・`inbox.list`・`kobo.list` と調べ始めていた
+   * ——POは何も頼んでいないのに会話が進み、畳んで軽くした文脈がその場で埋め直される。
+   * 畳んだことは**画面に見えれば足りる**。番頭には章の頭に引き継ぎ資料が入っている。
+   *
+   * I2: 宛先不明を黙って捨てない。
+   */
+  markChapter(threadId: string | undefined, chapter: number, topic: string): void {
+    const thread = this.threads.resolve(threadId);
+    const at = new Date().toISOString();
+    thread.record({ role: "chapter", chapter, topic, at });
+    this.broadcast({ type: "chapter_closed", threadId: thread.id, chapter, topic, at });
   }
 
   /**
@@ -827,6 +891,60 @@ export class BantoHostServer {
       return;
     }
 
+    /**
+     * **PO がその場で章を畳む**（提案§3.2 の人側・決定25）。
+     *
+     * 自動で畳むのは文脈の量が閾値に達したときだけだが、**区切りは人にも分かる**
+     * ——「この話は終わったので、ここから先は別の前提で進めたい」は量では拾えない。
+     * 畳めたことは `onChapterClosed` が知らせとして流す（ここでは返さない）。
+     */
+    if (message?.type === "chapter_close") {
+      // I2: 畳めない理由はその場で言う。押したのに何も起きないのが一番困る
+      if (thread.state === "closed") {
+        this.send(ws, {
+          type: "error",
+          message: `「${thread.title}」は畳んだ会話です。開き直してから区切ってください`,
+        });
+        return;
+      }
+      if (!thread.closeChapter) {
+        this.send(ws, {
+          type: "error",
+          message:
+            "この会話では章立てが働いていません（要約に使えるモデルがありません）。" +
+            "設定でモデルを採用するか、BANTO_CHAPTER_MODEL を見直してください",
+        });
+        return;
+      }
+      /**
+       * **喋っている最中は畳まない。** 道具を呼んでいる途中で文脈が消えると、番頭は
+       * 自分が何をしていたか分からなくなる（自動の側が `agent_end` だけを見ているのと
+       * 同じ理由）。待たせるのではなく断る——POは終わってから押し直せる。
+       */
+      if (thread.session.isStreaming) {
+        this.send(ws, {
+          type: "error",
+          message: "番頭が喋っている最中は区切れません。返事が終わってから押してください",
+        });
+        return;
+      }
+      try {
+        // I2: **何も起きなかったことを黙らせない**（PO報告 2026-08-11）。まだ溜まって
+        //     いない章・既に畳んでいる最中は畳みようがないが、押した側には見えない
+        const folded = await thread.closeChapter();
+        if (!folded) {
+          this.send(ws, {
+            type: "error",
+            message:
+              "畳むものがまだありません（この章にはやり取りが溜まっていないか、いま畳んでいる最中です）",
+          });
+        }
+      } catch (err) {
+        // I2: 資料が書けなければ畳まない（ChapterKeeper の決め）。その理由をそのまま出す
+        this.send(ws, { type: "error", message: `章を畳めませんでした: ${String(err)}` });
+      }
+      return;
+    }
     // その会話で使うモデルを変える。**会話ごと**なので、他の会話は変わらない
     if (message?.type === "set_model") {
       if (!this.selectModel) {
@@ -1002,9 +1120,8 @@ export class BantoHostServer {
 
       try {
         // ストリーミング中の追加入力は steer として積む（pi の既定では例外になるため）
-        await thread.session.prompt(text, {
+        await this.promptEvenWhileBusy(thread, text, {
           ...(images.length > 0 ? { images } : {}),
-          ...(thread.session.isStreaming ? { streamingBehavior: "steer" as const } : {}),
         });
       } catch (err) {
         // I2: ターンの失敗はクライアントへ伝える。握りつぶすと会話が無応答に見える
@@ -1327,4 +1444,16 @@ export class BantoHostServer {
       if (ws.readyState === WebSocket.OPEN) ws.send(payload);
     }
   }
+}
+
+/**
+ * 「まだ前のターンを処理している」という返事か（PO報告 2026-08-11）。
+ *
+ * ハーネスごとに文面が違いうるので、**言い回しではなく意味で拾う**。取りこぼしても
+ * 従来どおり失敗するだけで、余計に拾っても steer として積み直すだけ——どちらに転んでも
+ * 「PO の言葉が消える」ことにはならない側へ倒す。
+ */
+function isBusyError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /already processing|in progress|steer\(\)|busy/iu.test(message);
 }

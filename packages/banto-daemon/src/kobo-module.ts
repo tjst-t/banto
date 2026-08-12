@@ -16,6 +16,7 @@ import type { ModuleClient, NamespacedToolDefinition } from "@banto/core";
 import { KOBO_MODULE_PATH } from "./http-server.js";
 import type { Daemon } from "./daemon.js";
 import { createKoboTools } from "./kobo-tools.js";
+import { createKoboSettings } from "./kobo-settings.js";
 
 /** モジュール名（Tool 名前空間のドメインでもある）。 */
 export const KOBO_MODULE_NAME = "kobo";
@@ -104,6 +105,11 @@ export function createKoboModule(
     icon?: string;
   }>;
   skills: Array<{ name: string; description: string; filePath: string }>;
+  /**
+   * 設定の区画（決定41）。**契約（項目の宣言）だけ**をここで持ち、読み書きは
+   * 番頭ホストが `createRemoteSettings` で HTTP へ差し替える（Worker Pool と同じ形）。
+   */
+  settings: import("@banto/core").ModuleSettingsSpec;
 } {
   const client = createModuleClient(
     { modules: { [KOBO_MODULE_NAME]: { baseUrl: remoteUrl } } },
@@ -111,6 +117,8 @@ export function createKoboModule(
   );
   // 契約は Kobo 側の定義そのもの。`execute` だけを HTTP 越しに差し替える
   const specs = createKoboTools(contractOnlyDaemon());
+  // 項目の宣言は静的（写しには触らない）。読み書きだけが到達先へ行く
+  const settings = createKoboSettings(contractOnlyDaemon());
 
   return {
     name: KOBO_MODULE_NAME,
@@ -121,6 +129,7 @@ export function createKoboModule(
     // UI から見える先。ホストが `/api/kobo/tools/*` を受けて写しを実行し、Kobo へ中継する
     endpoint: { baseUrl: KOBO_MODULE_PATH },
     tools: createKoboProxyTools(specs, client),
+    settings,
     views: [
       {
         kind: "kobo.board",

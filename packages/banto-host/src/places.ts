@@ -247,7 +247,12 @@ export class PlaceRegistry {
     const fresh = places.find((p) => p.id === id);
     if (!fresh) {
       const known = places.map((p) => p.id).join(", ");
-      throw new Error(`Unknown place "${id}". Registered: ${known || "(none)"}`);
+      throw new Error(
+        `Unknown place "${id}". Registered: ${known || "(none)"}` +
+          (places.length > 0
+            ? ` — **引数 "place" にはこの中の id を渡してください**（例: place: "${places[0]!.id}"）`
+            : " — 場所が1つも登録されていません")
+      );
     }
     return fresh;
   }
@@ -257,14 +262,25 @@ export class PlaceRegistry {
    *
    * I2: 複数あるのに省略されたら決めない——黙って先頭を選ぶと、番頭が言わなかった
    *     ときに別の場所を触る。「どこでやりますか」と聞き返させる。
+   *
+   * **断るときは直し方まで書く**（inc-0054）。「複数あります」だけだと、読んだ側は
+   * どの引数に何を入れれば通るのか分からず、同じ呼び出しを繰り返して空回りする。
    */
   async resolve(id?: string): Promise<Place> {
     if (id !== undefined) return this.require(id);
     const places = await this.list();
     if (places.length === 1) return places[0]!;
-    if (places.length === 0) throw new Error("No place is registered.");
+    if (places.length === 0) {
+      throw new Error(
+        "No place is registered. 場所が1つも登録されていないので、file.* / git.* は使えません。" +
+          "place.list で確認してください"
+      );
+    }
+    const ids = places.map((p) => p.id);
     throw new Error(
-      `Multiple places are registered (${places.map((p) => p.id).join(", ")}). Specify one.`
+      `Multiple places are registered (${ids.join(", ")}). Specify one.` +
+        ` — どの場所か決まらないので実行していません。**引数 "place" に id を1つ渡して呼び直してください**` +
+        `（例: place: "${ids[0]}"）。それぞれの用途は place.list で読めます`
     );
   }
 
@@ -312,7 +328,13 @@ export function resolveInPlace(place: Place, relativePath: string): string {
   const realRoot = fs.existsSync(place.path) ? fs.realpathSync(place.path) : path.resolve(place.path);
 
   if (!isInside(resolved, realRoot)) {
-    throw new Error(`Path "${relativePath}" is outside the place "${place.id}".`);
+    // 直し方まで書く（inc-0054）。**どちらを直せばいいのかが分かれ目**——
+    // パスが悪いのか、場所の指定が悪いのかは、根を見せないと読んだ側に決められない
+    throw new Error(
+      `Path "${relativePath}" is outside the place "${place.id}".` +
+        ` — "${place.id}" の根は ${place.path} です。**根からの相対パスを渡す**か、` +
+        `別の場所なら引数 "place" をそちらの id に変えてください（place.list で一覧できます）`
+    );
   }
   return resolved;
 }

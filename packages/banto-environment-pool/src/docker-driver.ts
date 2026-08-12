@@ -760,6 +760,11 @@ function handleRun(input: Record<string, unknown>): void {
     // クライアント側なので、ここで消さないと延長して再試行する間ずっと走り続ける。
     // teardown のラベル掃除は環境を畳むときまで来ないので、それでは遅い。
     removeOneOffContainers(project, budget);
+    // **試しに畳んでみる**（best-effort）。one-off だけが繋がっていたネットワークなら
+    // ここで消える。本体のサービスがまだ繋がっていれば「使用中」で失敗するだけ
+    // ——それは正しい（本体を生かしたまま、その入れ物を消してはいけない）。
+    // teardown が最終的な安全網（removeLeftoverNetworks）なので、ここで消せなくても困らない。
+    removeLeftoverNetworks(project, budget);
     process.stdout.write(
       JSON.stringify({ exit: DRIVER_TIMEOUT_EXIT, log_path: logPath }) + "\n"
     );
@@ -839,6 +844,40 @@ function removeOneOffContainers(project: string, timeoutMs: number | undefined):
     process.stderr.write(
       `docker-driver run: 時間切れのあと残った one-off コンテナを消せませんでした` +
         `（exit ${rm.exitCode}）:\n${rm.stderr}\n`
+    );
+  }
+}
+
+/**
+ * この compose プロジェクトに残っているネットワークを消す（inc-0053）。
+ *
+ * `docker compose down -v` はネットワークも畳むはずだが、実測で27個の
+ * `banto-env-task-{oneoff,wt}-*_default` ネットワークが残っていた。原因は teardown 側
+ * ではなく、**teardown が走らない経路**（run が制限時間で殺されたときの one-off が
+ * ネットワークに繋がったまま残り、その後 down がネットワークを畳もうとしても
+ * 「使用中」で失敗する、あるいは teardown 自体が呼ばれないまま終わる）。
+ *
+ * ここは畳んだ**あと**の安全網。名前の綴りではなく `com.docker.compose.project` ラベル
+ * で自分のプロジェクトのものだけを拾う——名前の推測は他人のネットワークを巻き込む
+ * （`projectName` 冒頭のコメントと同じ理由）。
+ *
+ * I2 の例外：**消せなくても teardown 自体は失敗にしない**（呼び出し側の指定）。
+ * 使用中（他プロセスがまだ繋がっている）は珍しくなく、そのたびに teardown が
+ * 失敗扱いになると「畳めた」が信用できなくなる。ログにだけ残す。
+ */
+function removeLeftoverNetworks(project: string, timeoutMs: number | undefined): void {
+  const found = runCmd(
+    "docker",
+    ["network", "ls", "--filter", `label=com.docker.compose.project=${project}`, "--format", "{{.ID}}"],
+    { timeoutMs }
+  );
+  const ids = found.stdout.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+  if (ids.length === 0) return;
+  const rm = runCmd("docker", ["network", "rm", ...ids], { timeoutMs });
+  if (rm.exitCode !== 0) {
+    // I2: 消せなかったことは黙らせない。ただし呼び出し元（run/teardown）の成否は変えない（best-effort）
+    process.stderr.write(
+      `docker-driver: プロジェクト "${project}" の残ったネットワークを消せませんでした（exit ${rm.exitCode}）:\n${rm.stderr}\n`
     );
   }
 }
@@ -928,6 +967,10 @@ function handleTeardown(input: Record<string, unknown>): void {
       process.exit(1);
     }
   }
+
+  // コンテナを全部消し切ってから（ネットワークはコンテナが繋がっている間は消せない）。
+  // best-effort — 消せなくても teardown の成否は変えない
+  removeLeftoverNetworks(project, budget);
 
   // 畳み切ってから記録を落とす（先に落とすと、失敗したものが誰の持ち物でもなくなる）
   forgetOwned(project);

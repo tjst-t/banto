@@ -44,15 +44,6 @@ const MAX_COMPOSER_HEIGHT_PX = 192;
  */
 const CHAT_WINDOW = 200;
 
-/**
- * 追従が切れたとき、「POが自分で動かした」と見なす直前の猶予（inc-0045）。
- *
- * ホイールを1つ転がしてから追従が切れるまでには、ライブラリ側の遅延が挟まる。
- * 短すぎるとPOの操作を機械の読み違いと取り違えて勝手に下へ引き戻す——**そちらのほうが
- * 害が大きい**ので、余裕を持たせる。
- */
-const USER_SCROLL_GRACE_MS = 400;
-
 /** テキスト添付の上限。これを超えたら添付せずエラー表示する。 */
 const MAX_FILE_BYTES = 100 * 1024;
 /** 画像の上限。WS の maxPayload 既定（100MiB）を base64（+33%）込みで割らない安全な値。 */
@@ -358,21 +349,47 @@ export function Room({
    */
   const stick = useStickToBottom({ initial: "instant", resize: "smooth" });
   const { scrollToBottom } = stick;
-  useEffect(() => {
-    void scrollToBottom({ animation: "instant" });
-  }, [threadId, scrollToBottom]);
 
   /**
-   * **追従が切れてよいのは、POが自分で上へ動かしたときだけ**（inc-0045）。
-   * 切れた理由がPOの操作なら従い、そうでなければ貼り直す。
+   * **追従が切れてよいのは、POが自分で上へ動かしたときだけ**（inc-0045・inc-0048）。
+   *
+   * 切れた理由が2つある。**POが読み返そうと上げた**のと、**追従の1フレームが
+   * 切り詰められてライブラリが「上げられた」と誤読した**（inc-0045 の上流バグ）の2つ。
+   * 前者なら従い、後者なら貼り直す——見分けが要る。
+   *
+   * 見分けは「**器が実際に上へ動いたか**」で付く。誤読のときは `scrollTop` が一度も
+   * 下がらない（inc-0045 の実測。追従は代入するだけなので値は増える方向にしか動かない）。
+   * POが上げたときだけ下がる。
+   *
+   * **掛け金にするのが要点**（inc-0048）。以前は「直前 400ms に仕草があったか」で
+   * 見ていたが、猶予は仕草からの経過で測るのに**判定が走る時刻は選べない**。
+   * POが上げたまま読んでいる最中に `isAtBottom` が一度揺れると、そのときには猶予を
+   * 過ぎていて貼り直してしまう——負荷が高いほど揺れが遅れて出るので、混んでいるときだけ
+   * 下へ引き戻された。掛け金なら**いつ判定が走っても答えが変わらない**。
+   *
+   * 外れるのは**本当に最下端まで戻ったとき**だけ（自分で下げる・↓を押す）。
+   * ライブラリの `isAtBottom` では外さない——あちらは 70px の遊びを持つので、
+   * 60px 上げて読んでいる最中に「最下部にいる」と読み、掛け金がその場で外れてしまう
+   * （実測: この読み違いのせいで、掛け金を入れても 6回中1回はまだ引き戻された）。
    */
-  const lastGestureAt = useRef(0);
-  const noteGesture = useCallback(() => {
-    lastGestureAt.current = Date.now();
+  const escaped = useRef(false);
+  const lastTop = useRef(0);
+  const noteScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    const el = event.currentTarget;
+    const top = el.scrollTop;
+    // 1px の遊び: 端数の丸めで下がった／届いていないように見えるのを拾わない
+    if (top < lastTop.current - 1) escaped.current = true;
+    else if (el.scrollHeight - top - el.clientHeight <= 1) escaped.current = false;
+    lastTop.current = top;
   }, []);
   useEffect(() => {
-    if (stick.isAtBottom) return;
-    if (Date.now() - lastGestureAt.current < USER_SCROLL_GRACE_MS) return;
+    // 別の会話へ移ったら掛け金を戻す（前の会話で上げていたことを持ち越さない）
+    escaped.current = false;
+    lastTop.current = 0;
+    void scrollToBottom({ animation: "instant" });
+  }, [threadId, scrollToBottom]);
+  useEffect(() => {
+    if (stick.isAtBottom || escaped.current) return;
     void scrollToBottom({ animation: "instant" });
   }, [stick.isAtBottom, scrollToBottom]);
 
@@ -404,6 +421,15 @@ export function Room({
    * 真実はホスト（D3）——ここでは楽観的に書き換えず、`thread_state` が返るのを待つ。
    */
   const [renaming, setRenaming] = useState<string>();
+  /**
+   * 章を畳んでいる最中か（PO報告 2026-08-11）。
+   *
+   * **押しても何も起きないように見えていた**——引き継ぎ資料は別のモデルに書かせるので
+   * 十数秒かかることがあり、その間ホストからは何も来ない。真実はホスト側（D3）なので
+   * 会話は書き換えず、**押したことだけ**をここで持つ。畳めた印（`chapter`）か
+   * しくじり（`error`）が会話に入ったら下ろす。
+   */
+  const [folding, setFolding] = useState(false);
 
   // 会話を移ったら添付と読み捨ての記録を落とす（別の会話に付けたつもりのものを送らない）
   useEffect(() => {
@@ -412,7 +438,15 @@ export function Room({
     setDismissedErrors(new Set());
     setMerging(false);
     setRenaming(undefined);
+    setFolding(false);
   }, [threadId]);
+
+  // 畳めた／畳めなかったが会話に入ったら、押している見た目を下ろす
+  useEffect(() => {
+    if (!folding) return;
+    const last = chat[chat.length - 1];
+    if (last?.role === "chapter" || last?.role === "error") setFolding(false);
+  }, [chat, folding]);
 
   /**
    * 合図が来たら入力へ移る。
@@ -630,7 +664,8 @@ export function Room({
             <div className="room-sub">枝 ・ 還す条件：{thread.returnCondition}</div>
           )}
         </div>
-        {!slim && isBranch && onMergeBranch && (
+        {/* 畳んだ枝には出さない——還した話をもう一度還すと、幹に結論が二重に並ぶ */}
+        {!slim && isBranch && !closed && onMergeBranch && (
           <button className="btn btn--small" type="button" onClick={() => setMerging(true)}>
             畳んで幹に回収
           </button>
@@ -653,10 +688,7 @@ export function Room({
       <div
         className="chat-scroll"
         ref={stick.scrollRef}
-        onWheel={noteGesture}
-        onPointerDown={noteGesture}
-        onTouchStart={noteGesture}
-        onKeyDown={noteGesture}
+        onScroll={noteScroll}
       >
         {/* 追従は「中身の高さ」を ResizeObserver で見て決まるので、器と中身を分ける。
             `talk` は器の畳み判定に使うコンテナ（決定78：会話の帯の幅で決まる） */}
@@ -841,6 +873,33 @@ export function Room({
               onSelect={(provider, id) => session.setModel(threadId, provider, id)}
             />
             <ContextMeter tokens={session.contextTokensOf(threadId)} contextWindow={model?.contextWindow} />
+            {/*
+              **区切りは人にも分かる**（提案§3.2 の人側）。自動で畳むのは文脈の量が
+              閾値に達したときだけで、「この話は終わった」は量では拾えない。
+              文脈の目盛りの隣に置く——押す気になるのは、目盛りを見たときだから（D7）
+            */}
+            <button
+              className={`chapter-close ${folding ? "is-folding" : ""}`}
+              type="button"
+              onClick={() => {
+                setFolding(true);
+                session.closeChapter(threadId);
+              }}
+              // **ターンが走っている間は押せない**（喋り出す前の間も含む）。道具を呼んで
+              // いる途中で文脈が消えると、番頭は自分が何をしていたか分からなくなる
+              // 畳んでいる最中も押せない——二度押しても2章にはならない（帳簿が弾く）
+              disabled={busy || folding}
+              title={
+                folding
+                  ? "引き継ぎ資料を書いています（畳めたら会話に区切りの線が入ります）"
+                  : busy
+                    ? "番頭の返事が終わってから区切れます"
+                    : "ここまでを1章として畳む（前のやり取りは失われません）"
+              }
+              aria-label="ここまでを章として畳む"
+            >
+              <Icon name="chapter" size={14} />
+            </button>
             {!slim && <span className="chat-hint">Enter で送信</span>}
             <button
               className={`composer-submit is-${chatStatus}`}

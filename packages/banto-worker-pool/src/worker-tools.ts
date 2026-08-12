@@ -29,7 +29,11 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     description:
       "職人（worker）を起こして実作業を任せる。調査・実装・修正など、手を動かす仕事は" +
       "自分でやらずここへ渡す（D10）。職人は記憶を持たないので、必要な文脈は instruction に" +
-      "書き切ること。返り値の sessionId で以後の様子を見たり指示を足したりできる。",
+      "書き切ること。返り値の sessionId で以後の様子を見たり指示を足したりできる。\n" +
+      "**渡したら手を離し、このターンを終えること。** 職人が喋り終われば報告か" +
+      "「手が空きました」の知らせが**自動で届き、そこであなたのターンが回る**" +
+      "——ターンの中で待つことはできないので、`worker.attach` を繰り返して待ちの代わりに" +
+      "しないこと（文脈と費用が減るだけで、何も早くならない）。",
     parameters: Type.Object({
       taskId: Type.String({ description: "仕事の識別子。台帳とログに残る（例: task-0042）" }),
       origin: Type.Optional(
@@ -60,6 +64,21 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
           description: "モデルの等級。難しい仕事だけ reasoning にする（コスト）",
         })
       ),
+      runtime: Type.Optional(
+        Type.String({
+          description:
+            "どのランタイムで動かすか。`claude-code`（Claude Code / Agent SDK）か `pi`。" +
+            "省略すると Worker Pool の既定（通常は pi）。**選べないランタイムを頼むと、" +
+            "選べる名前を添えて断られる**（黙って既定に落ちることはない）",
+        })
+      ),
+      model: Type.Optional(
+        Type.String({
+          description:
+            "モデルの名指し（`modelTier` より優先）。Claude Code なら `opus` / `sonnet` / `haiku`、" +
+            "または `claude-opus-5` のような具体名。**難しい仕事だけ上げる**（コスト）",
+        })
+      ),
     }),
     async execute(params) {
       const worker = await pool.delegate({
@@ -71,12 +90,17 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
         ...(params.tools ? { tools: params.tools } : {}),
         ...(params.network !== undefined ? { network: params.network } : {}),
         ...(params.modelTier ? { modelTier: params.modelTier } : {}),
+        ...(params.runtime ? { runtime: params.runtime } : {}),
+        ...(params.model ? { model: params.model } : {}),
       });
+      const model = worker.model ? `/${worker.model}` : "";
       return {
         content: [
           {
             type: "text" as const,
-            text: `職人を起こしました: ${worker.taskId} (sessionId: ${worker.sessionId}, pid: ${worker.pid})`,
+            text:
+              `職人を起こしました: ${worker.taskId} ` +
+              `[${worker.runtime}${model}] (sessionId: ${worker.sessionId}, pid: ${worker.pid})`,
           },
         ],
         details: worker,
@@ -130,10 +154,29 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
                   w.state === "waiting" ? "⏸" : w.state === "closed" ? "✓" : w.alive ? "●" : "○";
                 const waiting = w.question ? ` 質問待ち: ${w.question}` : "";
                 const closed = w.closeReason ? `(${w.closeReason})` : "";
-                return `${mark} ${w.taskId} [${w.projectTag}] ${w.state}${closed} pid=${w.pid} sessionId=${w.sessionId}${waiting}`;
+                const runtime = `${w.runtime}${w.model ? `/${w.model}` : ""}`;
+                return `${mark} ${w.taskId} [${w.projectTag}] ${w.state}${closed} ${runtime} pid=${w.pid} sessionId=${w.sessionId}${waiting}`;
               })
               .join("\n") + range;
       return { content: [{ type: "text" as const, text }], details: result };
+    },
+  });
+
+  const models = defineNamespacedTool({
+    name: "worker.models",
+    label: "Worker: Models",
+    description:
+      "職人に名指しできるモデルの一覧。`worker.delegate` の `model` にそのまま書ける名前を返す。" +
+      "**難しさに合わないモデルを当てにいかないための口**——等級（modelTier）で足りるなら" +
+      "そちらでよい。名指しは「この仕事はこのモデルで」と決めたいときだけ。",
+    parameters: Type.Object({}),
+    async execute() {
+      const found = pool.selectableModels();
+      const text =
+        found.length === 0
+          ? "名指しできるモデルはありません（等級で頼んでください）"
+          : found.map((m) => `${m.name} — ${m.label}${m.tier ? `（${m.tier}）` : ""}`).join("\n");
+      return { content: [{ type: "text" as const, text }], details: { models: found } };
     },
   });
 
@@ -223,7 +266,9 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     label: "Worker: Attach",
     description:
       "職人の出力を覗く。プロセスに割り込まないので稼働中でも安全。" +
-      "「いまどうなっているか」を確認したいときに使う（決定18のセッションビューアと同じ経路）。",
+      "「いまどうなっているか」を確認したいときに使う（決定18のセッションビューアと同じ経路）。\n" +
+      "**完了を待つために繰り返し呼ばないこと。** 職人が終われば知らせが自動で届く" +
+      "——同じ確認を続けると機構が断る。",
     parameters: Type.Object({
       sessionId: Type.String({ description: "覗く職人" }),
       tailLines: Type.Optional(
@@ -285,7 +330,7 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     },
   });
 
-  return [delegate, list, steer, close, wake, stop, attach, events];
+  return [delegate, list, models, steer, close, wake, stop, attach, events];
 }
 
 /**
@@ -349,6 +394,45 @@ export function createWorkerReportTools(pool: WorkerPool): NamespacedToolDefinit
     },
   });
 
+  /**
+   * **喋り終わったことを伝える**（PO要望 2026-08-11）。
+   *
+   * 職人が呼ぶものではない——**ランタイム（拡張・ホスト）がターンの終わりに呼ぶ**。
+   * これまで起動元が「終わった」を知る道は、明示の報告か安全弁の時間切れ（既定15分）
+   * しか無かった。出力が終わった時点で分かることを、時間で待つ理由が無い。
+   */
+  const turnEnded = defineNamespacedTool({
+    name: "worker.turn_ended",
+    label: "Worker: Turn Ended",
+    description:
+      "**ランタイムが呼ぶ**：職人のターンが終わった（出力が止まった）ことを起動元へ伝える。" +
+      "職人自身が呼ぶものではない。完了かどうかの判断はここではしない——起動元が決める。",
+    parameters: Type.Object({
+      ...identity,
+      text: Type.Optional(
+        Type.String({ description: "そのターンの最後の発話（報告が無いときの手がかり）" })
+      ),
+      reported: Type.Optional(
+        Type.Boolean({ description: "そのターンで報告か質問をしたか" })
+      ),
+      waiting: Type.Optional(
+        Type.Boolean({ description: "答え待ちで止まっているか（**終わったのではない**）" })
+      ),
+    }),
+    async execute(params) {
+      const { sessionId } = resolve(params.projectTag, params.taskId);
+      const event = pool.turnEnded(sessionId, {
+        ...(params.text !== undefined ? { text: params.text } : {}),
+        ...(params.reported !== undefined ? { reported: params.reported } : {}),
+        ...(params.waiting !== undefined ? { waiting: params.waiting } : {}),
+      });
+      return {
+        content: [{ type: "text" as const, text: `ターンの終わりを伝えました（#${event.id}）` }],
+        details: { eventId: event.id },
+      };
+    },
+  });
+
   const ask = defineNamespacedTool({
     name: "worker.ask",
     label: "Worker: Ask",
@@ -379,7 +463,7 @@ export function createWorkerReportTools(pool: WorkerPool): NamespacedToolDefinit
     },
   });
 
-  return [report, ask];
+  return [report, ask, turnEnded];
 }
 
 /**
@@ -415,6 +499,23 @@ export function createWorkerModuleTools(pool: WorkerPool): NamespacedToolDefinit
             "モデルの等級。**起動元はモデル名を知らない**（決定60a）——解決は Worker Pool が行う",
         })
       ),
+      /**
+       * モデルの名指し（`modelTier` より優先）。**PO裁定 2026-08-10 で開いた口**。
+       *
+       * 決定60a は「起動元はモデル名を知らず tier までしか渡さない」だったが、PO が
+       * 「実装やレビューをどのモデルの職人にやらせるか、名前で決めたい」と裁定した。
+       * 名前は `worker.models` が返すものを使う（工場の設定画面がそこから選ばせる）。
+       *
+       * **ランタイムは名前から決まる**ので、起動元は併記しない——`opus` なら Claude Code、
+       * `provider/model` なら pi。2か所に書かせると、片方だけ直した指定が通ってしまう。
+       */
+      model: Type.Optional(
+        Type.String({
+          description:
+            "モデルの名指し（`modelTier` より優先）。`worker.models` が返す名前を使う" +
+            "（例: `opus` / `opencode-go/deepseek-v4-flash`）",
+        })
+      ),
       driverOptions: Type.Optional(
         Type.Object(
           {},
@@ -437,6 +538,7 @@ export function createWorkerModuleTools(pool: WorkerPool): NamespacedToolDefinit
         ...(params.tools ? { tools: params.tools } : {}),
         ...(params.network !== undefined ? { network: params.network } : {}),
         ...(params.modelTier ? { modelTier: params.modelTier } : {}),
+        ...(params.model ? { model: params.model } : {}),
         ...(params.driverOptions
           ? { driverOptions: params.driverOptions as Record<string, unknown> }
           : {}),

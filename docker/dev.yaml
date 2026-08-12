@@ -1,0 +1,47 @@
+# banto の開発画面（banto-web）を PO がブラウザで触れるための環境（`dev` プロファイル）。
+# Environment Pool の docker ドライバ用（provision で `docker compose up -d`）。
+#
+# **役割はひとつ——人が触る面を出すこと**。マージ前ゲートの検証はこちらでは走らせない
+# （それは `docker/test.yaml` の `test` プロファイル）。PO裁定 2026-08-11（案B）で
+# 「実行環境用（dev）」と「検証用（test）」を分けると決めた——**器を兼ねさせない**。
+#
+# - 土台は test と同じ node:22-alpine（Dockerfile.test を流用）
+# - vite dev server をコンテナ内 4200 で立てる
+# - ホスト側は **4201 にマップ**（4200 は opencode.service が占有）。proxy exposer は
+#   ホストの 127.0.0.1:<config.port> へ中継するので、config.port も 4201 に合わせる
+# - /ws と /api は本番 banto ホスト（127.0.0.1:4100）へ中継する（vite.config.ts の proxy）。
+#   コンテナからホストへは host.docker.internal 経由で到達する
+# - Host 検査（DNS リバインディング対策）は検証環境のため無効化（BANTO_WEB_ALLOWED_HOSTS=true）
+#
+# **command は vite を起こすだけ**。以前はここに
+# `test -d node_modules/.bin/vite || npm ci;` を前置きしていた——provision が
+# 「先に compose up、後から setup（npm ci）」の順で回っていたので、node_modules が空のまま
+# vite が起きて `vite: not found`（exit 127）で即死したためのプロファイル側のハックだった。
+# ハックは撤去した——残すと「用意が済んでいなくても自分でどうにかする器」になり、
+# 順序が壊れても気づけない。
+#
+# **⚠ この撤去は task-0089 が入って初めて成り立つ。task-0089 より先にこの枝を入れないこと。**
+# 用意（`setup`）を `compose up` の前に済ませる直しは task-0089 で作られたが、
+# 2026-08-11 時点で main には未マージ（枝 `task/task-0089` にのみ在る）。
+# 本体（`packages/banto-environment-pool/src/pool.ts`）は今も
+# 「compose up → healthcheck → setup」の順で回るので、**この枝を単独で先に入れると
+# dev の provision が `vite: not found` で再び壊れる**。
+services:
+  web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.test
+    security_opt:
+      - apparmor=unconfined
+    working_dir: /app
+    environment:
+      BANTO_HOST_URL: http://host.docker.internal:4100
+      BANTO_WEB_ALLOWED_HOSTS: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ..:/app
+      - ${BANTO_CACHE_DIR:-./.banto-node-modules}:/app/node_modules
+    command: ["npm", "--prefix", "packages/banto-web", "run", "dev"]
+    ports:
+      - "4201:4200"

@@ -56,22 +56,45 @@ export interface SettingsWriteResult {
   message?: string;
 }
 
+/**
+ * 項目の宣言。**そのときどきで決まる選択肢**（採用済みのモデル・使えるバックエンド）を
+ * 出せるよう、関数でも宣言できる（PO要望 2026-08-10）。
+ *
+ * 配列のままでよいのは、選択肢が固定のもの（等級・真偽）。**画面を開くたびに解決する**
+ * ので、モジュール側が「いま何が選べるか」を数え上げて返せる。
+ */
+export type SettingsFields =
+  | SettingField[]
+  | (() => SettingField[] | Promise<SettingField[]>);
+
+/** 宣言を解決する（配列ならそのまま、関数なら呼ぶ）。 */
+export async function resolveSettingsFields(spec: {
+  fields: SettingsFields;
+}): Promise<SettingField[]> {
+  return typeof spec.fields === "function" ? await spec.fields() : spec.fields;
+}
+
 /** モジュールが宣言する設定の区画。設定画面のナビ1つ分になる。 */
 export interface ModuleSettingsSpec {
   /** ナビに出す名前（例「検証環境」）。 */
   title: string;
   /** 区画の説明。何を決める場所かを1〜2文で。 */
   description?: string;
-  fields: SettingField[];
+  fields: SettingsFields;
   /**
    * 項目の宣言では表せない区画が、描くコンポーネントの名前を宣言する口
-   * （ADR-0011 決定43）。**中核の区画専用**。
+   * （ADR-0011 決定43。**2026-08-10 にモジュールへ開放**）。
    *
-   * モジュールには決定41（GUI は渡さない）がそのまま効く——逃げ道を全モジュールに
-   * 配ると、決定41 が防ごうとした「設定画面の中で書式がばらばらになる」が起きる。
-   * 中核は固定の小さな既知集合（場所／接続と公開／LLM）なので、そこだけに許す。
+   * もとは中核の区画だけに許していた——逃げ道を全モジュールに配ると、決定41 が
+   * 防ごうとした「設定画面の中で書式がばらばらになる」が起きるため。ただし
+   * **項目では表せない設定が中核の外にも出てきた**（職人のバックエンド管理：一覧・
+   * 状態・既定・等級ごとの割り当てが絡み合う）。宣言で書けるなら宣言のまま、という
+   * 原則は変えずに、書けないものだけがこちらへ来る:
    *
-   * 指定すると `fields` は描かれない。
+   *   - 既定は `fields`。**選択肢が動くだけなら関数で足りる**（`SettingsFields`）
+   *   - `view` は「一覧とその中の状態を同時に見せる」類だけ。指定すると `fields` は描かれない
+   *   - 描くのは**画面側が持っているコンポーネント**（キャンバスの面と同じ解決表）。
+   *     モジュールが React を持ち込むわけではない
    */
   view?: string;
   /** いまの値。`secret` の項目は中身を返さない。 */
@@ -120,8 +143,14 @@ export function createSettingsTools(
       "このモジュールの設定のいまの値を返す。**設定画面のための口**——番頭には渡らない。",
     parameters: Type.Object({}),
     async execute() {
-      const values = await spec.read();
-      return { content: [{ type: "text" as const, text: JSON.stringify(values) }], details: { values } };
+      // **項目の宣言も一緒に返す。** 別プロセスのモジュールは「いま何が選べるか」を
+      // 自分しか知らない（採用済みのモデル・使えるバックエンド）——値だけ返すと、
+      // 画面には静的な写しの選択肢が並び、実際に選べるものと食い違う
+      const [values, fields] = await Promise.all([spec.read(), resolveSettingsFields(spec)]);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(values) }],
+        details: { values, fields, ...(spec.view ? { view: spec.view } : {}) },
+      };
     },
   });
 

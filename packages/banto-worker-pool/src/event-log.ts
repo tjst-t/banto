@@ -37,7 +37,16 @@ export type WorkerEventType =
   /** 職人が質問した（主張）。答えが来るまで職人は待つ。 */
   | "worker_asked"
   /** 起動元が答えた・指示を足した（事実）。 */
-  | "worker_answered";
+  | "worker_answered"
+  /**
+   * **職人が喋り終わった**（事実。PO要望 2026-08-11）。
+   *
+   * ランタイムはターンの終わりを知っている。それを積むことで、起動元は「明示の報告」か
+   * 「安全弁の時間切れ」を待たずに、**出力が終わった時点で**手が空いたことを知れる。
+   * 「終わった」と言っているのではなく「喋り終わった」という事実なので、`fact`。
+   * 意味（完了なのか、答え待ちで止まっただけか）は起動元が与える（決定29d）。
+   */
+  | "worker_turn_ended";
 
 /** 事実か主張か。決定29(a)・I1。 */
 export type WorkerEventKind = "fact" | "claim";
@@ -48,6 +57,7 @@ const KIND_OF: Record<WorkerEventType, WorkerEventKind> = {
   worker_exited: "fact",
   worker_closed: "fact",
   worker_answered: "fact",
+  worker_turn_ended: "fact",
   worker_reported: "claim",
   worker_asked: "claim",
 };

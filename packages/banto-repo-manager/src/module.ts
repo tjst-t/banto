@@ -20,7 +20,7 @@ const repoViews = [
     kind: "repo.manager",
     title: "リポジトリ",
     description:
-      "ghq が知っているリポジトリと gwq が知っているワークツリーの一覧。" +
+      "手元にあるリポジトリと、その git ワークツリーの一覧。" +
       "ワークツリーを作る・削除するのもここでできる。" +
       "「どのリポジトリで作業するか」「別ブランチの作業場所を用意したい」ときに開く。" +
       "履歴を変える操作（commit・push）は無い。",
@@ -59,7 +59,7 @@ export function createRepoManagerModule(
     name: "repo-manager",
     title: "リポジトリ",
     description:
-      "ghq が知る Git リポジトリと gwq が知るワークツリーを、番頭が作業できる場所として提供する。" +
+      "手元の Git リポジトリと、その git ワークツリーを、番頭が作業できる場所として提供する。" +
       "独自の登録簿は持たず毎回そこから導出する。ワークツリーの作成・削除ができる" +
       "（作業場所の用意であって、commit・push などの履歴の変更は持たない）。",
     endpoint: { baseUrl },

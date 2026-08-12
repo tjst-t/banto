@@ -427,18 +427,38 @@ export function SearchField({
 
 export type Tone = "neutral" | "ok" | "warn" | "danger" | "accent";
 
-/** 小さな札。状態・分類を1語で表す。 */
+/**
+ * 小さな札。状態・分類を1語で表す。
+ *
+ * `onClick` を渡すと**押せる札**になる（PO要望 2026-08-11）。読み取り専用の札の隣に
+ * 直す口を別途置くより、その札自身を押せる方が短い——見えているものが操作対象になる。
+ * 押せるときは `button` にする（キーボードでも届く）。
+ */
 export function Badge({
   tone = "neutral",
   children,
   title,
   className = "",
+  onClick,
 }: {
   tone?: Tone;
   children: React.ReactNode;
   title?: string;
   className?: string;
+  onClick?(): void;
 }): React.ReactElement {
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        className={`cv-badge is-${tone} is-pressable ${className}`}
+        title={title}
+        onClick={onClick}
+      >
+        {children}
+      </button>
+    );
+  }
   return (
     <span className={`cv-badge is-${tone} ${className}`} title={title}>
       {children}

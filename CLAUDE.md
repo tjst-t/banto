@@ -31,7 +31,10 @@
 ## Commands
 
 ```
-npm test           # acceptance テスト（tests/acceptance）
+npm test           # acceptance テスト（tests/acceptance）。docker を要る7ファイルは除く
+npm run test:docker # その7ファイルだけ（ホストの docker が要る。meta/environments.yaml の
+                    #   test-docker プロファイル＝driver: process で回す。検証コンテナには
+                    #   socket を渡さないので、器の中では通らない）
 npm run test:e2e   # e2e テスト
 npm run build      # tsc -b
 npm run typecheck  # tsc --project tsconfig.check.json

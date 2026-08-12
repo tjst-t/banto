@@ -25,6 +25,7 @@ import * as path from "node:path";
 import * as childProcess from "node:child_process";
 
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
+import { createKoboSettings } from "../../packages/banto-daemon/src/kobo-settings.js";
 import { PiRpcDriver } from "../../packages/banto-worker-pool/src/pi-rpc-driver.js";
 import {
   FakeRuntimeDriver,
@@ -77,7 +78,20 @@ async function harness(options: { tickIntervalMs?: number } = {}): Promise<Harne
   const dataDir = path.join(tmpDir, "data");
 
   const driver = new FakeRuntimeDriver();
-  const workers = await startWorkerPool(driver);
+  const workers = await startWorkerPool(driver, {
+    // 名指しの照合（`worker.models`）に要る。実物の登録は LLM Registry が持つ
+    catalog: {
+      models: () => [
+        {
+          providerId: "opencode-go",
+          id: "deepseek-v4-flash",
+          name: "DeepSeek V4 Flash",
+          tier: "standard",
+          workerUsable: true,
+        },
+      ],
+    },
+  });
 
   const daemon = Daemon.create({
     port: 0,
@@ -284,6 +298,273 @@ describe("[task-0060/a1] 職人が報告せずに終わったら、Kobo が止�
   });
 });
 
+/**
+ * **「終わった」を工房の経路からも受ける**（PO報告 2026-08-11）。
+ *
+ * Kobo は `report_done`（pi 拡張が載せる口）でしか完了を知らなかった。Claude Code の
+ * 職人にはその口が無く、汎用の `worker.report` で工房へ報告する——**その出来事を Kobo が
+ * 読んでいなかったので、実装を終えてコミットまでしているのにタスクは implementing のまま**
+ * 止まり、やがて `agent_exited_without_report` で failed になった（hiragana/task-0001・0002）。
+ */
+describe("[PO報告 2026-08-11] 職人が終わったと言えば、口が違っても監査へ回る", () => {
+  let h: Harness;
+  before(async () => {
+    h = await harness({ tickIntervalMs: 200 });
+  });
+  after(async () => {
+    await teardown(h);
+  });
+
+  it("done の報告で implementing → auditing へ進む", async () => {
+    readyTask(h, "task-0030");
+    const session = await h.daemon.spawnTask(h.proj, "task-0030");
+    assert.equal(h.daemon.getTask(h.proj, "task-0030")?.status, "planning");
+
+    // 途中経過では動かさない（書きかけを検証させない）
+    h.workers.pool.report(session.sessionId, "着手しました", { done: false });
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal(
+      h.daemon.getTask(h.proj, "task-0030")?.status,
+      "planning",
+      "途中経過の報告で監査へ回してはいけない"
+    );
+
+    h.workers.pool.report(session.sessionId, "task-0030 完了。abc1234 でコミット済み", {
+      done: true,
+    });
+    await until(() => h.daemon.getTask(h.proj, "task-0030")?.status === "auditing");
+    const moved = h.daemon
+      .getTaskEvents(h.proj, "task-0030")
+      .findLast((e) => e.type === "state_transitioned" && e.to === "auditing") as
+      | { reason?: string }
+      | undefined;
+    assert.match(moved?.reason ?? "", /abc1234 でコミット済み/u, "何を報告したかが残ること");
+  });
+
+  it("同じ報告が二度読まれても、先へ進んだ状態は動かさない（冪等）", async () => {
+    const sessions = h.workers.pool.list().filter((w) => w.taskId === "task-0030");
+    const sessionId = sessions[0]!.sessionId;
+    h.workers.pool.report(sessionId, "もう一度", { done: true });
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal(
+      h.daemon.getTask(h.proj, "task-0030")?.status,
+      "auditing",
+      "auditing から動かしてはいけない（report_done を通った職人と二重にならない）"
+    );
+  });
+
+  /**
+   * **古い報告が、いまの試行に当たらない**（実測 2026-08-11）。
+   *
+   * 工房の帳簿はどこまで読んだかを持たない（D3：起動時は 0 から読み直す）ので、
+   * 再起動すると過去の報告がもう一度流れてくる。それがいまの試行に当たると、
+   * **前の職人の言い分で今の状態が動く**——実際、前の監査人の「判定の口が無い」報告が、
+   * 口を載せ直したあとの試行を落とした。
+   */
+  it("[実測 2026-08-11] 前の職人の報告は読み捨てる（起動時の読み直しで巻き戻さない）", async () => {
+    readyTask(h, "task-0032");
+    const executor = await h.daemon.spawnTask(h.proj, "task-0032");
+    h.workers.pool.report(executor.sessionId, "実装しました", { done: true });
+    await until(() => h.daemon.getTask(h.proj, "task-0032")?.status === "auditing");
+    // 監査人が起きた＝いま働いているのはそちら
+    await until(() => h.workers.pool.list().some((w) => w.taskId === "task-0032:audit"));
+
+    // **実装役がもう一度報告してくる**（＝読み直しで流れてきた古い出来事）
+    h.workers.pool.report(executor.sessionId, "実装しました", { done: true });
+    await new Promise((r) => setTimeout(r, 500));
+    assert.equal(
+      h.daemon.getTask(h.proj, "task-0032")?.status,
+      "auditing",
+      "前の職人の報告で、いまの状態を動かしてはいけない"
+    );
+  });
+
+  it("監査人が判定を出さずに報告したら、黙って待たずに止める（I2）", async () => {
+    readyTask(h, "task-0031");
+    const executor = await h.daemon.spawnTask(h.proj, "task-0031");
+    h.workers.pool.report(executor.sessionId, "実装しました", { done: true });
+    await until(() => h.daemon.getTask(h.proj, "task-0031")?.status === "auditing");
+
+    // 監査人は Kobo が起こす（auditing に入った tick で）。起きるまで待つ
+    await until(() => h.workers.pool.list().some((w) => w.taskId === "task-0031:audit"));
+    const audit = h.workers.pool.list().find((w) => w.taskId === "task-0031:audit")!;
+    h.workers.pool.report(audit.sessionId, "見ました。良さそうです", { done: true });
+
+    await until(() => h.daemon.getTask(h.proj, "task-0031")?.status === "failed");
+    const failed = h.daemon
+      .getTaskEvents(h.proj, "task-0031")
+      .findLast((e) => e.type === "task_failed") as { reason?: string } | undefined;
+    assert.match(
+      failed?.reason ?? "",
+      /audit_reported_without_verdict/u,
+      "自由文から通す／通さないを決めてはいけない（決定57）"
+    );
+  });
+});
+
+/**
+ * **喋り終わった時点で先へ進む**（PO要望 2026-08-11）。
+ *
+ * これまで起動元が「終わった」を知る道は2つしか無かった：職人が明示的に報告するか、
+ * 手が止まったまま**安全弁の時間切れ**（既定15分）を待つか。だが出力が終われば終わった
+ * ことはその場で分かる——ランタイムがターンの終わりを積み、Kobo がそれを読む。
+ */
+describe("[PO要望 2026-08-11] 職人が喋り終わったら、報告を待たずに先へ進む", () => {
+  let h: Harness;
+  before(async () => {
+    h = await harness({ tickIntervalMs: 200 });
+  });
+  after(async () => {
+    await teardown(h);
+  });
+
+  it("報告が無くてもターンの終わりで監査へ回る（時間切れを待たない）", async () => {
+    readyTask(h, "task-0040");
+    const session = await h.daemon.spawnTask(h.proj, "task-0040");
+    assert.equal(h.daemon.getTask(h.proj, "task-0040")?.status, "planning");
+
+    // 職人は報告しないまま喋り終わった。ランタイムが事実だけを積む
+    h.workers.pool.turnEnded(session.sessionId, {
+      text: "src/ を直して build を通しました",
+      reported: false,
+    });
+
+    await until(() => h.daemon.getTask(h.proj, "task-0040")?.status === "auditing");
+    const moved = h.daemon
+      .getTaskEvents(h.proj, "task-0040")
+      .findLast((e) => e.type === "state_transitioned" && e.to === "auditing") as
+      | { reason?: string }
+      | undefined;
+    assert.match(moved?.reason ?? "", /build を通しました/u, "最後の発話が手がかりとして残る");
+  });
+
+  it("答え待ちで止まっているのは「終わった」ではない", async () => {
+    readyTask(h, "task-0041");
+    const session = await h.daemon.spawnTask(h.proj, "task-0041");
+    h.workers.pool.ask(session.sessionId, "スコープ外も直してよいですか");
+    await until(() => h.daemon.getTask(h.proj, "task-0041")?.status === "paused");
+
+    // 質問したあとターンが終わる（＝答え待ちで止まる）。**監査へ回してはいけない**
+    h.workers.pool.turnEnded(session.sessionId, { text: "質問して待っています", reported: true });
+    await new Promise((r) => setTimeout(r, 500));
+    assert.equal(
+      h.daemon.getTask(h.proj, "task-0041")?.status,
+      "paused",
+      "答え待ちの職人を「終わった」として先へ進めてはいけない"
+    );
+  });
+
+  /**
+   * **既に伝わっているかを工房が判定する**（PO指摘 2026-08-11）。
+   *
+   * 「ターンの終わりに番頭の判断が要る」は正しい。ただし**そのターンで既に何かが届いて
+   * いるなら二重**なので、届いていないときだけ知らせる——その判定は台帳を持つ工房が持つ
+   * （職人やランタイムの自己申告より確か・D3）。
+   */
+  it("完了を報告して終えたターンは settled（改めて知らせない）", async () => {
+    readyTask(h, "task-0043");
+    const session = await h.daemon.spawnTask(h.proj, "task-0043");
+    h.workers.pool.report(session.sessionId, "終わりました", { done: true });
+    const ended = h.workers.pool.turnEnded(session.sessionId, { reported: true });
+    assert.equal(ended.data["settled"], true, "完了の報告が既に届いている");
+  });
+
+  it("進捗だけ報告して終えたターンは settled ではない（番頭は動いていると思っている）", async () => {
+    readyTask(h, "task-0044");
+    const session = await h.daemon.spawnTask(h.proj, "task-0044");
+    h.workers.pool.report(session.sessionId, "着手しました", { done: false });
+    const ended = h.workers.pool.turnEnded(session.sessionId, { reported: true });
+    assert.equal(ended.data["settled"], false, "「着手しました」だけでは手が止まったと分からない");
+  });
+
+  it("前のターンの完了報告は、次のターンには効かない", async () => {
+    readyTask(h, "task-0045");
+    const session = await h.daemon.spawnTask(h.proj, "task-0045");
+    h.workers.pool.report(session.sessionId, "終わりました", { done: true });
+    h.workers.pool.turnEnded(session.sessionId, { reported: true });
+
+    // 続きを渡した → 2ターン目。今度は何も報告せずに終える
+    await h.workers.pool.steer(session.sessionId, "続けてください");
+    const second = h.workers.pool.turnEnded(session.sessionId, { reported: false });
+    assert.equal(second.data["settled"], false, "前のターンの完了で今のターンを黙らせない");
+  });
+
+  it("手が空いていることが一覧から分かる（見れば分かる）", async () => {
+    readyTask(h, "task-0042");
+    const session = await h.daemon.spawnTask(h.proj, "task-0042");
+    assert.equal(
+      h.workers.pool.get(session.sessionId)?.state,
+      "running",
+      "起こした直後は動いている"
+    );
+
+    h.workers.pool.turnEnded(session.sessionId, { text: "終わりました", reported: false });
+    assert.equal(h.workers.pool.get(session.sessionId)?.state, "idle", "喋り終わったら idle");
+
+    // 次の指示を渡せば、また動いている
+    await h.workers.pool.steer(session.sessionId, "続けてください");
+    assert.equal(h.workers.pool.get(session.sessionId)?.state, "running");
+  });
+});
+
+/**
+ * **職人の質問を宙に消さない**（PO報告 2026-08-11）。
+ *
+ * `worker_asked` を誰も読んでいなかった：番頭ホスト側の知らせは「番頭が起こした職人の分
+ * だけ」で弾かれ（決定29）、Kobo は exited / closed しか見ていなかった。**Kobo が起こした
+ * 職人の質問は、どこにも出ないまま消えていた**——職人は答えを待って止まり、やがて
+ * `agent_exited_without_report` として failed になる。banto/task-0091 のセッションログに
+ * その形がそのまま残っている（「質問を投げて待っています」で止まり、33分後に failed）。
+ */
+describe("[PO報告 2026-08-11] 職人が聞いてきたら、タスクは止まって待つ", () => {
+  let h: Harness;
+  before(async () => {
+    h = await harness({ tickIntervalMs: 200 });
+  });
+  after(async () => {
+    await teardown(h);
+  });
+
+  it("質問が届くと paused になり、理由に質問文が残る", async () => {
+    readyTask(h, "task-0020");
+    const session = await h.daemon.spawnTask(h.proj, "task-0020");
+    assert.equal(h.daemon.getTask(h.proj, "task-0020")?.status, "planning");
+
+    h.workers.pool.ask(session.sessionId, "tests/ 配下も直してよいですか（スコープ外）");
+
+    await until(() => h.daemon.getTask(h.proj, "task-0020")?.status === "paused");
+    const paused = h.daemon
+      .getTaskEvents(h.proj, "task-0020")
+      .findLast((e) => e.type === "state_transitioned" && e.to === "paused") as
+      | { reason?: string }
+      | undefined;
+    assert.match(
+      paused?.reason ?? "",
+      /tests\/ 配下も直してよいですか/u,
+      "何を聞かれたのかが残らないと、番頭は答えようがない"
+    );
+    assert.match(paused?.reason ?? "", /worker\.steer/u, "どう答えるかも書く（D8）");
+    // 戻り先が帳簿に残る（推測しないため）
+    const meta = h.daemon
+      .getTaskEvents(h.proj, "task-0020")
+      .findLast((e) => e.type === "task_paused") as { suspended_from?: string } | undefined;
+    assert.equal(meta?.suspended_from, "planning");
+  });
+
+  it("答えると元の状態へ戻る（止まりっぱなしにしない）", async () => {
+    const sessions = h.workers.pool.list().filter((w) => w.taskId === "task-0020");
+    const sessionId = sessions[0]!.sessionId;
+
+    await h.workers.pool.steer(sessionId, "いいえ、src/** の中で直してください");
+
+    await until(() => h.daemon.getTask(h.proj, "task-0020")?.status === "planning");
+    const resumed = h.daemon
+      .getTaskEvents(h.proj, "task-0020")
+      .findLast((e) => e.type === "task_resumed") as { restored_to?: string } | undefined;
+    assert.equal(resumed?.restored_to, "planning", "止まる前の状態へ戻すこと");
+  });
+});
+
 // ── Kobo が落ちている間の出来事を取りこぼさない（旧・孤児回収）──────────────
 
 describe("[task-0060/a1] Kobo の再起動：職人は畳まず、落ちている間の出来事に追いつく", () => {
@@ -448,5 +729,69 @@ describe("[task-0060/a1] 本物の pi を Worker Pool 越しに起こす", () =>
 
     // 起こした者が片付ける（I3）
     await h.workers.pool.close(session.sessionId, "done");
+  });
+});
+
+// ── 役割ごとの職人の当て方（設定画面。PO裁定 2026-08-10） ─────────────────────
+
+describe("[kobo-roles] 実装・レビューを、どの等級／どのモデルの職人にやらせるか", () => {
+  let h: Harness;
+  before(async () => {
+    h = await harness();
+  });
+  after(async () => {
+    await teardown(h);
+  });
+
+  it("[kobo-roles] 何も決めていなければ、これまでどおり（タスクの等級で回る）", async () => {
+    readyTask(h, "task-0301", { model_tier: "fast" });
+    await h.daemon.spawnTask(h.proj, "task-0301");
+    const spawned = h.driver.byTaskId("task-0301")!;
+    assert.equal(spawned.modelTier, "fast");
+    assert.equal(spawned.driverOptions["model"], undefined);
+  });
+
+  it("[kobo-roles] 役割に等級を当てると、タスクの指定より優先される", async () => {
+    h.daemon.setRoleAssignments({ executor: { tier: "reasoning" } });
+    readyTask(h, "task-0302", { model_tier: "fast" });
+    await h.daemon.spawnTask(h.proj, "task-0302");
+    assert.equal(h.driver.byTaskId("task-0302")?.modelTier, "reasoning");
+  });
+
+  it("[kobo-roles] モデルを名指しすると、その名前が Worker Pool まで届く", async () => {
+    // 決定60a の改訂（PO裁定 2026-08-10）。Kobo は名前を渡すだけで、
+    // provider も鍵も知らない——解決は Worker Pool のまま
+    h.daemon.setRoleAssignments({
+      executor: { model: "opencode-go/deepseek-v4-flash" },
+    });
+    readyTask(h, "task-0303");
+    await h.daemon.spawnTask(h.proj, "task-0303");
+    const spawned = h.driver.byTaskId("task-0303")!;
+    assert.equal(spawned.driverOptions["provider"], "opencode-go");
+    assert.equal(spawned.driverOptions["model"], "deepseek-v4-flash");
+  });
+
+  it("[kobo-roles] 設定は読み書きでき、知らない名前は保存の時点で断る（I2）", async () => {
+    const settings = createKoboSettings({
+      roleAssignments: () => h.daemon.roleAssignments(),
+      setRoleAssignments: (next) => h.daemon.setRoleAssignments(next),
+      selectableModelNames: () => h.daemon.selectableModelNames(),
+    });
+
+    await settings.write({ auditModel: "opencode-go/deepseek-v4-flash", auditTier: "reasoning" });
+    const values = (await settings.read()) as Record<string, unknown>;
+    assert.equal(values["auditModel"], "opencode-go/deepseek-v4-flash");
+    assert.equal(values["auditTier"], "reasoning");
+
+    // 打ち間違いが「実際に職人を起こす夜」まで出ないのでは遅い
+    await assert.rejects(
+      () => Promise.resolve(settings.write({ auditModel: "オパス" })),
+      /知らないモデルです/
+    );
+    // 断ったなら、残っているのは前の値のまま
+    assert.equal(
+      ((await settings.read()) as Record<string, unknown>)["auditModel"],
+      "opencode-go/deepseek-v4-flash"
+    );
   });
 });

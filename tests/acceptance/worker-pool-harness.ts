@@ -22,7 +22,7 @@ import type {
   SessionHandle,
   SpawnOptions,
 } from "../../packages/banto-core/src/index.js";
-import { WorkerPool } from "../../packages/banto-worker-pool/src/pool.js";
+import { WorkerPool, type WorkerModelCatalog } from "../../packages/banto-worker-pool/src/pool.js";
 import { WorkerPoolService } from "../../packages/banto-worker-pool/src/service.js";
 import {
   createWorkerModuleTools,
@@ -43,10 +43,20 @@ export interface WorkerPoolHarness {
  *
  * @param driver 職人を起こすランタイム（テストでは偽のドライバ）
  */
-export async function startWorkerPool(driver: RuntimeDriver): Promise<WorkerPoolHarness> {
+export async function startWorkerPool(
+  driver: RuntimeDriver,
+  options: {
+    /** 追加のランタイム（Claude Code の職人を頼む経路を見るときに渡す）。 */
+    runtimes?: Record<string, RuntimeDriver>;
+    /** 名指しできるモデルの登録（`worker.models` が数え上げる元）。 */
+    catalog?: WorkerModelCatalog;
+  } = {}
+): Promise<WorkerPoolHarness> {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "kobo-worker-pool-"));
   const pool = new WorkerPool({
     driver,
+    ...(options.runtimes ? { runtimes: options.runtimes } : {}),
+    ...(options.catalog ? { catalog: options.catalog } : {}),
     dataDir,
     defaultProjectTag: "kobo",
     defaultOrigin: "kobo",

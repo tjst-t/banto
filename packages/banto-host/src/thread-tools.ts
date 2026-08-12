@@ -16,7 +16,7 @@
 
 import { Type } from "typebox";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "@banto/core";
-import type { ThreadRegistry } from "./threads.js";
+import type { Thread, ThreadRegistry } from "./threads.js";
 
 export interface ThreadToolsOptions {
   threads: ThreadRegistry;
@@ -28,6 +28,9 @@ export interface ThreadToolsOptions {
   /**
    * 新しいスレッドへ最初の一言を届ける。ターンが回り、分身が話し始める。
    * 省略すると、開くだけで何も起きない（PO が話しかけるまで待つ）。
+   *
+   * **返る約束はターンの完走**（`server.notify`）。だから呼ぶ側は待たない
+   * （下の `handOff` を通す）——待つと、開いた側の会話がその間ずっと止まる。
    */
   seed?: (threadId: string, message: string) => Promise<void>;
   /**
@@ -40,6 +43,96 @@ export interface ThreadToolsOptions {
    * @returns 実際に足した件数
    */
   carryOut?: (texts: readonly string[]) => Promise<number> | number;
+  /**
+   * **別の幹へ言伝を届ける**（PO要望 2026-08-10）。届いた側はターンが回り、番頭が読む。
+   *
+   * `seed` と同じ経路（`server.notify`）だが、こちらは**開くためではなく渡すため**。
+   * 渡さないと `thread.send` は生えない。
+   */
+  deliver?: (threadId: string, message: string) => Promise<void>;
+}
+
+/**
+ * 別の会話へ一言を**渡すだけ渡して、待たない**（PO報告 2026-08-11）。
+ *
+ * `server.notify` が返るのは**宛先のターンが完走したとき**。待つと、枝を開いた幹が
+ * 枝の調べ物が終わるまで「思考中」のまま固まり、終わった途端に動き出して**同じ検討を
+ * もう一度やる**（枝が何を出したかは幹の文脈に入らないので、続きから再開してしまう）。
+ * 実際に起きた形なので、機構で切る。
+ *
+ * I2: 渡せなかったことは黙らせない。宛先の会話には `notify` 側が error を記録するが、
+ * 宛先そのものが引けない場合はそこにも残らないので、ここでログに出す。
+ */
+function handOff(
+  deliver: (threadId: string, message: string) => Promise<void>,
+  threadId: string,
+  message: string,
+  what: string
+): void {
+  void deliver(threadId, message).catch((err) => {
+    console.error(`[banto] ${what}（${threadId}）を渡せませんでした: ${String(err)}`);
+  });
+}
+
+/**
+ * 言伝の**出どころの名乗り**（PO報告 2026-08-11）。
+ *
+ * もとは送り手を無条件に `幹「…」` と書いていた。だが**枝からも言伝は出せる**ので、
+ * 枝の名前が幹の名前として届いていた——実際に「幹『単語の固まり表示と絵』から言伝です」
+ * と名乗っており、受け手はそんな名前の幹があると読む。
+ *
+ * 記憶も文脈も分かれる単位は**幹**（ADR-0003 追補）なので、受け手が知りたいのは
+ * 「どの幹の話か」。枝から出たなら**親の幹を主にして、枝を添える**。
+ *
+ * I1: 出所を偽らない。分からないものを幹と言い切らない。
+ */
+export function senderLabel(threads: ThreadRegistry, me: Thread | undefined): string {
+  if (!me) return "別の会話";
+  if (me.kind !== "branch") return `幹「${me.title}」`;
+  const parent = me.parentId ? threads.get(me.parentId) : undefined;
+  // 親が引けないなら幹の名前は騙らない。枝であることだけ言う
+  return parent
+    ? `幹「${parent.title}」の枝「${me.title}」`
+    : `枝「${me.title}」`;
+}
+
+/**
+ * 幹どうしの言伝が往復し続けるのを止める（P4）。
+ *
+ * **頼むだけでは止まらない。** 両側とも番頭なので、「返事をありがとう」「こちらこそ」で
+ * いくらでも続けられる——PO の見ていないところでトークンだけが減る。だから機構で止める。
+ *
+ * 数えるのは**向きのある組**（A→B と B→A は別）。窓の中で上限に達したら断り、
+ * 「PO に上げるか、直接その幹で話してもらえ」と理由を返す。
+ */
+const SEND_WINDOW_MS = 10 * 60 * 1000;
+const SEND_MAX_PER_WINDOW = 5;
+
+/** 直近の言伝（送り元→宛先ごとの時刻）。プロセスの寿命でよい——長期の事実ではない。 */
+const recentSends = new Map<string, number[]>();
+
+/** 窓の中の回数を数え、上限内なら記録して true。 */
+export function allowSend(
+  from: string,
+  to: string,
+  now: number,
+  window = SEND_WINDOW_MS,
+  max = SEND_MAX_PER_WINDOW
+): boolean {
+  const key = `${from}\u0000${to}`;
+  const fresh = (recentSends.get(key) ?? []).filter((at) => now - at < window);
+  if (fresh.length >= max) {
+    recentSends.set(key, fresh);
+    return false;
+  }
+  fresh.push(now);
+  recentSends.set(key, fresh);
+  return true;
+}
+
+/** 試験用：数えた分を忘れる。 */
+export function resetSendCounters(): void {
+  recentSends.clear();
 }
 
 /**
@@ -73,6 +166,9 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
       "POが明示したときも開く。開いた瞬間に**幹へ札が1行**立つので、埋没しない。" +
       "**既に開いている幹・枝とそのキャンバスには何も起きない**。" +
       "message を渡すと、その枝が最初の一言を受け取って動き出す。\n" +
+      "**渡したらそこで手を離すこと。** この Tool は枝の作業を待たずにすぐ返る" +
+      "——**同じ調べ物をこの会話で始めない**（二重に走る）。結論は枝が畳むときに" +
+      "幹へ1行で還るので、いまは「枝で見ています」と言って手を止めてよい。\n" +
       "**還す条件を書けないものは枝にしない**（幹で話す）。枝の中に枝は開けない" +
       "——枝が別の枝を要するなら、いまの枝を畳んで幹へ還してから開き直す。",
     parameters: Type.Object({
@@ -109,9 +205,9 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
         options.threadId
       );
       if (params.message && options.seed) {
-        // 種を蒔くのは開いたあと。失敗しても開いたことは取り消さない
-        // ——スレッドは既にあるので、握りつぶすと「開いたのに誰も知らない」になる（I2）
-        await options.seed(thread.id, params.message);
+        // 種を蒔くのは開いたあと。**待たない**（handOff）——待つと、この幹が枝の作業の間
+        // ずっと止まる。失敗しても開いたことは取り消さない（スレッドは既にある・I2）
+        handOff(options.seed, thread.id, params.message, "枝への最初の一言");
       }
       return {
         content: [
@@ -119,7 +215,11 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
             type: "text" as const,
             text:
               `枝「${thread.title}」を開きました (threadId: ${thread.id})。` +
-              `還す条件：${params.returnCondition}。幹に札を立てました`,
+              `還す条件：${params.returnCondition}。幹に札を立てました。` +
+              (params.message
+                ? "**この枝はもう自分で動いています**——同じ調べ物をここで始めないこと。" +
+                  "結論は畳まれたときに幹へ1行還ります"
+                : "まだ誰も話しかけていません"),
           },
         ],
         details: thread.view(),
@@ -277,7 +377,10 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
         source: "thread",
         text: `この幹を起こしました。理由：${params.reason}`,
       });
-      if (params.message && options.seed) await options.seed(thread.id, params.message);
+      // 枝と同じく**待たない**——待つと、起こした側の会話が向こうのターンの間止まる
+      if (params.message && options.seed) {
+        handOff(options.seed, thread.id, params.message, "新しい幹への最初の一言");
+      }
       return {
         content: [
           {
@@ -317,5 +420,90 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     },
   });
 
-  return [open, openTrunk, merge, rename, list, ...(options.carryOut ? [closeTrunk] : [])];
+  /**
+   * **別の幹へ言伝を渡す**（PO要望 2026-08-10）。
+   *
+   * 幹は記憶も文脈も分かれている（ADR-0003 追補）。分けたからこそ、**跨いで伝えたいこと**
+   * が出てくる——「そちらで踏んだ不具合はこちらの原因だった」「この決定はそちらにも効く」。
+   * それを PO が手で運ぶのは、番頭が居る意味を削ぐ。
+   *
+   * 届いた側は**知らせとして受け取り、ターンが回る**。番頭が読んで、要れば動く。
+   * 相手の会話に割り込んで喋るのではなく、**渡すだけ**——何をするかは相手の番頭が決める。
+   */
+  const send = defineNamespacedTool({
+    name: "thread.send",
+    label: "Thread: Send",
+    description:
+      "**別の幹へ言伝を渡す。** 幹は記憶も文脈も分かれているので、跨いで伝えたいことは" +
+      "ここを通す（PO に運ばせない）。届いた側は知らせとして受け取り、番頭が読む。\n" +
+      "**渡すのは事実と、なぜそちらに関係するか。** 相手の幹で何をするかは相手が決める" +
+      "——指図しない。返事が要るなら、そう書けば相手から `thread.send` で返ってくる。\n" +
+      "**宛先は幹だけ**（枝には送れない。枝は1つの問いに閉じているので、割り込ませない）。" +
+      "宛先は `thread.list` で確かめる。**往復は続けない**——2〜3 で決着しないなら、" +
+      "PO に上げるか、その幹へ移って直接話す。",
+    parameters: Type.Object({
+      threadId: Type.String({ description: "宛先の幹の id（thread.list で確かめる）" }),
+      message: Type.String({
+        description:
+          "渡す言伝。**なぜその幹に関係するか**を先に書く（相手は経緯を知らない）。" +
+          "こちらの幹の名前は自動で添えられるので、書かなくてよい",
+      }),
+    }),
+    async execute(params) {
+      if (!options.deliver) {
+        throw new Error("この構成では言伝を渡せません（deliver が渡されていません）");
+      }
+      const me = options.threads.get(options.threadId);
+      const to = options.threads.get(params.threadId);
+      // I2: 宛先の取り違えを黙って既定へ落とさない
+      if (!to) throw new Error(`${params.threadId} という会話はありません（thread.list で確かめてください）`);
+      if (to.id === options.threadId) {
+        throw new Error("自分自身へは渡せません（いま話しているのがその会話です）");
+      }
+      if (to.kind === "branch") {
+        throw new Error(
+          `${to.title} は枝です。枝は1つの問いに閉じているので割り込ませません——` +
+            `親の幹（${to.parentId ?? "?"}）へ渡してください`
+        );
+      }
+      if (to.state === "closed") {
+        throw new Error(`幹「${to.title}」は終えています。開き直さないと渡せません`);
+      }
+      if (params.message.trim() === "") throw new Error("空の言伝は渡せません");
+      // P4: 往復し続けるのを機構で止める。頼むだけでは止まらない
+      if (!allowSend(options.threadId, to.id, Date.now())) {
+        throw new Error(
+          `「${to.title}」への言伝が続きすぎています（10分で ${SEND_MAX_PER_WINDOW} 通）。` +
+            "往復で決着していないので、PO に上げるか、その幹へ移って直接話してください"
+        );
+      }
+
+      // I1: 出所を偽らない。**PO の発言に見えてはいけない**——受け手はどちらの幹の話かで
+      //     判断が変わる。宛先の番頭が「誰が言ったか」を読めるように、出どころを添える
+      const from = senderLabel(options.threads, me);
+      // **待たない**（handOff）。待つと、相手の番頭が読み終えるまでこちらが固まる
+      handOff(options.deliver, to.id, `${from}から言伝です：\n\n${params.message}`, "言伝");
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `幹「${to.title}」へ渡しました。あちらの番頭が読みます` +
+              "（返事が要るなら、あちらから言伝で返ってきます）",
+          },
+        ],
+        details: { threadId: to.id, title: to.title },
+      };
+    },
+  });
+
+  return [
+    open,
+    openTrunk,
+    merge,
+    rename,
+    list,
+    ...(options.deliver ? [send] : []),
+    ...(options.carryOut ? [closeTrunk] : []),
+  ];
 }

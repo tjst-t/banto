@@ -128,6 +128,22 @@ export interface ThreadMergeMessage {
   conclusion: string;
 }
 
+/**
+ * **いま章を畳む**（提案§3.2 の人側・決定25）。
+ *
+ * ふだんは閾値（文脈長の割合）に達したときに自動で畳まれるが、**区切りは人にも分かる**
+ * ——「この話は終わったので、ここから先は別の前提で進めたい」は閾値では拾えない。
+ * 番頭の側に同じ口は無い（番頭は自分の文脈量を測って畳む側）。
+ *
+ * 閾値に達していなくても畳む。ただし**ターンの最中は畳まない**——道具を呼んでいる
+ * 途中で文脈が消えると、番頭は自分が何をしていたか分からなくなる。
+ */
+export interface ChapterCloseMessage {
+  type: "chapter_close";
+  /** どの会話の章を畳むか。省略すると既定の宛先（幹）。 */
+  threadId?: string;
+}
+
 /** 畳んだスレッドを開き直す。会話はそのまま残っているので続きから話せる。 */
 export interface ThreadReopenMessage {
   type: "thread_reopen";
@@ -197,6 +213,7 @@ export type ClientMessage =
   | ThreadMergeMessage
   | ThreadReopenMessage
   | ThreadRenameMessage
+  | ChapterCloseMessage
   | SetModelMessage;
 
 // ── Server → Client ──────────────────────────────────────────────────────────
@@ -541,6 +558,15 @@ export type TranscriptEntry =
   /** 番頭が器に載せた Tool の戻り値（決定78・81）。**凍る**。 */
   | { role: "utsuwa"; utsuwa: UtsuwaView }
   /**
+   * **ここで章を畳んだ**という印（提案§3.2・PO要望 2026-08-11）。
+   *
+   * 会話の中身ではなく**区切りの目印**なので、知らせ（`notice`）ではなくこれで置く
+   * ——`notice` にすると番頭のターンが回り、畳んだ直後の空の文脈で番頭が独りでに
+   * 動き出す（実際にそうなっていた）。畳んだ事実は画面に出れば足り、番頭には
+   * 引き継ぎ資料が章の頭に入っている。
+   */
+  | { role: "chapter"; chapter: number; topic: string; at: string }
+  /**
    * 番頭の思考（ハーネスの thinking）。本文とは別に積む——応答と混ぜると、
    * どこまでが考えでどこからが答えなのか読めなくなる。
    * `durationMs` は考え終わったときに入る（「X秒間考えました」の表示に使う）。
@@ -622,6 +648,21 @@ export interface ReasoningEndEvent extends ThreadScope {
 export interface UtsuwaEvent extends ThreadScope {
   type: "utsuwa";
   utsuwa: UtsuwaView;
+}
+
+/**
+ * **章を畳んだ**（提案§3.2・PO要望 2026-08-11）。会話に細い区切りの線が1本入る。
+ *
+ * **ターンは回らない**——`notice` で流していたときは、畳んだ直後の空の文脈で番頭が
+ * 独りでに調べ物を始めていた（畳んで軽くした文脈を、その場で埋め直していた）。
+ */
+export interface ChapterClosedEvent extends ThreadScope {
+  type: "chapter_closed";
+  /** 何章目を畳んだか。 */
+  chapter: number;
+  /** その章が何の話だったか（引き継ぎ資料の見出し）。 */
+  topic: string;
+  at: string;
 }
 
 /** 枝が生まれ、幹に札が立った（決定77）。 */
@@ -791,6 +832,7 @@ export type ServerEvent =
   | UtsuwaEvent
   | BranchCardEvent
   | BranchResultEvent
+  | ChapterClosedEvent
   | TurnStartEvent
   | TurnEndEvent
   | CanvasStateEvent

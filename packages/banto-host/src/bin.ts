@@ -32,6 +32,7 @@ import { createKoboModule, defaultKoboUrl } from "@banto/daemon";
 import { BANTO_ORIGIN, startWorkerNotices, threadOrigin } from "./worker-notice.js";
 import { guardWorkerOrigin } from "./worker-guard.js";
 import { startKoboNotices } from "./kobo-notice.js";
+import { createRemoteSettings } from "./remote-module.js";
 import { startEnvNotices } from "./env-notice.js";
 
 import { Canvas, createCanvasCatalog } from "./canvas.js";
@@ -41,6 +42,7 @@ import { createInboxTools } from "./inbox-tools.js";
 import { UserThemes } from "./user-themes.js";
 import { createBantoHostSession } from "./host-session.js";
 import { resumeInterruptedTurn, withEmptyResponseGuard } from "./turn-guard.js";
+import type { HostSession } from "./server.js";
 import { BantoHostClient } from "./client.js";
 import { BANTO_DEFAULT_PORT, type ServerEvent } from "./protocol.js";
 import { BantoHostServer } from "./server.js";
@@ -89,6 +91,8 @@ import {
 } from "./places.js";
 import { guardPathArg } from "./place-scoped.js";
 import { createSkillTools } from "./skill-tools.js";
+import { createTurnBudget } from "./turn-budget.js";
+import { withWorkerCard } from "./worker-card.js";
 import { bindToolArgs, createThreadTools } from "./thread-tools.js";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 import { Type } from "typebox";
@@ -382,6 +386,7 @@ Conversations are not parallel tabs. Each project has one **trunk** that lives o
 - **帳場** — one special trunk, the only conversation that can never be closed. **It is not a project, and it is not the trunk for developing banto itself.** Anything that does not belong to a specific project lands here: notices with no destination, a request before it has become a project, one-off errands. It always sits first in the user's rail.
 - **Starting a new trunk** (thread.open_trunk): the test is whether you would want this work's accumulated memory mixed into an existing trunk's conversations. If you would, it belongs in that trunk. If mixing it would be noise, start a trunk. Repeated back-and-forth alone is a branch, not a trunk.
 - **Ending a trunk** (thread.close_trunk): when the project is over. You choose what memory to carry out of it — rewrite anything that still holds elsewhere so it makes sense outside this project. What you do not carry stays with the folded trunk. Open branches must be folded first.
+- **Passing word between trunks** (thread.send): memory and context are split per trunk, which is exactly why things sometimes need to cross. Send the fact and why it matters over there — do not give instructions; what happens in that trunk is its steward's call. Trunks only (a branch is one closed question). Do not go back and forth: if two or three messages do not settle it, raise it to the user or move to that trunk.
 - thread.list shows every open conversation, which one you are in, and what each branch is waiting on.
 - Once you know what a conversation is about, name it with thread.rename, and rename it again when the topic moves on. The user picks conversations by name, so a stale name — or "会話 3" — tells them nothing. Keep it short, around 15 characters. Do not rename for a brief digression.
 
@@ -725,7 +730,13 @@ async function serve(options: ServeOptions): Promise<void> {
   // 「積み方を知らない」状態になり、自分で実装を始めてしまう（D10 が崩れる）。
   // 立っているかは起動時に一度だけ確かめてログに出す（黙って届かない状態を作らない）
   const koboUrl = defaultKoboUrl();
-  const koboModule = createKoboModule(koboUrl);
+  const koboContract = createKoboModule(koboUrl);
+  // 決定41: 工場の区画（役割ごとの職人の当て方）も設定画面に出す。項目の宣言は
+  // 工場のパッケージから、読み書きは HTTP 越しに——Worker Pool と同じ形（task-0066）
+  const koboModule = {
+    ...koboContract,
+    settings: createRemoteSettings(koboContract.settings, "kobo", koboContract.name, koboUrl),
+  };
 
   /**
    * 取次（受け口）。**会話に紐づかない**——どの会話を見ていても、POを待たせている
@@ -879,6 +890,11 @@ async function serve(options: ServeOptions): Promise<void> {
   let server: BantoHostServer;
   const threadFactory: ThreadFactory = async (threadId, resumeFrom, wantedModel, identity) => {
     const canvas = new Canvas(catalog);
+    /**
+     * ターンの予算（PO報告 2026-08-11）。**会話ごと**に持つ——隣の会話の数えと混ぜると、
+     * 正常な1回目の確認まで断ることになる。
+     */
+    const turnBudget = createTurnBudget();
     // 提案§3.1: ツール出力の退避先。**会話ごと**——別の会話の観測を引けると、
     // スレッドごとに文脈を分けている意味（決定35a）が崩れる。
     // ADR-0017 決定81(a): 器に載せるのはここに退避済みの結果だけ（データを再送させない）
@@ -902,6 +918,11 @@ async function serve(options: ServeOptions): Promise<void> {
         threadId,
         // 出所は「別の会話」。職人の報告と同じ札で出さない（PO報告 2026-07-31）
         seed: (threadId, message) => server.notify(message, { threadId, source: "thread" }),
+        /**
+         * **幹どうしの言伝**（PO要望 2026-08-10）。`seed` と同じ経路を通す——
+         * 出所が「別の会話」であることは、開くときも渡すときも変わらない。
+         */
+        deliver: (threadId, message) => server.notify(message, { threadId, source: "thread" }),
         /**
          * 幹を終うとき、番頭が選んだ記憶を**横断の層（人の記憶）へ上げる**。
          * 枝の結論が幹へ還るのと同じ形が、一段上で繰り返される（PO裁定 2026-08-09）。
@@ -943,12 +964,26 @@ async function serve(options: ServeOptions): Promise<void> {
       }),
       // 決定35a: 職人の報告は**起こしたスレッド**へ返る。番頭に自分の threadId を
       // 書かせず、ここで固定して渡す（番頭は自分がどのスレッドかを知らない）
+      /**
+       * ターンの予算は**ここでは掛けない**（PO報告 2026-08-11）。
+       *
+       * 番頭が呼べる道具の最後の1点（`createBantoHostSession`）でまとめて掛ける——
+       * 呼び出し側で選んで掛けると、**足し忘れた道具が抜け道になる**。実際、最初に
+       * 書いた対策はモジュールの口だけを見ていて、`file.find` を混ぜられた実機の暴走を
+       * 止められなかった。
+       */
       ...modules.tools().map((tool) => {
         if (tool.name === "worker.delegate") {
           const bound = bindToolArgs(tool, { origin: threadOrigin(threadId) });
           // 決定36g：職人の作業場所を砦に通す。いままで無検査で、番頭が任意の
           // ディレクトリを職人に書き換えさせられた
-          return guardPathArg(bound, places, "worktreePath");
+          const guarded = guardPathArg(bound, places, "worktreePath");
+          /**
+           * **起こしたら会話に口が立つ**（PO要望 2026-08-11）。番頭が `canvas.open` を
+           * 思い出したときだけ、では忘れたときに見えない——枝の札（決定77）と同じく
+           * 機構にする。「どこにも出ていない職人は起こせない」。
+           */
+          return withWorkerCard(guarded, (utsuwa) => server.showUtsuwa(threadId, utsuwa));
         }
         // 決定63：**自分が起こしていない職人は畳めない。** Kobo の職人を番頭が畳むと、
         // Kobo は動いているつもりのまま実体が消える（Worker Pool 側には置けない——
@@ -961,7 +996,10 @@ async function serve(options: ServeOptions): Promise<void> {
         }
         // 決定58: 工場に積んだ仕事の知らせも**積んだスレッド**へ返る。職人と同じ機構で、
         // 宛先は番頭に書かせずここで固定する（番頭は自分がどのスレッドかを知らない）
-        if (tool.name === "kobo.enqueue") {
+        // **戻すときも宛先を固定する**（PO報告 2026-08-10）。`work/tasks/*.md` から
+        // 取り込まれたタスクには宛先が無く、番頭が会話から戻しても付かないままで、
+        // 知らせが帳場へ流れ込んでいた（task-0089）。戻せと言った会話が宛先になる
+        if (tool.name === "kobo.enqueue" || tool.name === "kobo.reopen") {
           return bindToolArgs(tool, { origin: threadOrigin(threadId) });
         }
         // 決定36g：**番頭が任意のパスを渡せる口は砦に通す。** 受け持たせるリポジトリも同じ
@@ -1029,8 +1067,19 @@ async function serve(options: ServeOptions): Promise<void> {
       // **会話ごとに立場が違う**ので、そこだけを足して渡す（PO報告 2026-08-10）
       systemPrompt: SYSTEM_PROMPT + describeThread(identity),
       tools: ownTools,
+      // 番頭が呼べる道具すべてに掛かる（抜け道を作らない）
+      turnBudget,
       memory,
       memoryTrunks: here,
+      /**
+       * 章の引き継ぎ資料を読む口（提案§3.2・inc-0050）。
+       *
+       * **セッションを組むところで渡す。** 以前は下の「逆引き用の写し」にしか足して
+       * おらず、番頭の道具箱に入っていなかった——文脈には見出しだけが載るのに詳細を
+       * 引く手段が無く、段階的開示の後半が丸ごと欠けていた。記憶・SKILL・成果物と
+       * 同じ場所で組めば、片方だけ足し忘れることが起きない
+       */
+      handoffs: { store: handoffs, threadId },
       // I2: 知らない幹へ黙って書かない。省略時はこの会話の幹（defaultTrunkId）
       knownTrunkIds: () => knownTrunks().map((t) => t.id),
       defaultTrunkId: () => identity?.trunkId,
@@ -1052,6 +1101,20 @@ async function serve(options: ServeOptions): Promise<void> {
     // 応答が止まる。withEmptyResponseGuard が空応答を continue() で再試行する。
     // 再試行はガードの中で完結するので、server は HostSession 契約のまま無変更（決定3）
     const guardedSession = withEmptyResponseGuard(session);
+    /**
+     * 新しい入力が来たら、同じ確認の数えを戻す（PO報告 2026-08-11）。
+     *
+     * 数えは「ターンの中で同じことを繰り返していないか」を見るもの。PO の言葉や職人の
+     * 知らせが来たなら状況は変わっているので、そこから数え直す——さもないと、前のターンの
+     * 数えが残っていて**正常な1回目の確認まで断る**ことになる。
+     */
+    const countingSession: HostSession = {
+      ...guardedSession,
+      prompt: async (text, options) => {
+        turnBudget.reset();
+        return guardedSession.prompt(text, options);
+      },
+    };
 
     // 提案§3.2: pi の自動コンパクションを切り、章立てに置き換える。
     //
@@ -1112,10 +1175,30 @@ async function serve(options: ServeOptions): Promise<void> {
           ? { thresholdRatio: chapterThresholdRatio()! }
           : {}),
         onChapterClosed: (record) => {
-          // 畳んだことは隠さない。番頭が細部を覚えていないときに PO が気づける
+          /**
+           * 畳んだことは隠さない——が、**番頭には言わない**（PO報告 2026-08-11）。
+           *
+           * 知らせ（`notify`）で流していたので、畳むたびに**ターンが回っていた**。
+           * 番頭は畳んだばかりの空の文脈で、PO が何も頼んでいないのに `thread.list`・
+           * `inbox.list`・`kobo.list` と調べ始める——押した側から見れば「区切ったのに
+           * 勝手に喋り出す」で、軽くしたはずの文脈もその場で埋め直される。
+           *
+           * 章の頭には引き継ぎ資料が入っている（`renderChapterOpening`）ので、番頭に
+           * 改めて教える必要はない。**画面に区切りの線が1本入れば足りる**。
+           */
+          server.markChapter(threadId, record.chapter, record.summary.topic);
+        },
+        /**
+         * **畳めなかったことも隠さない**（inc-0050）。
+         *
+         * 畳めないと文脈は増え続ける。黙って毎ターン試し続けると、POには
+         * 「そのうち急に何も入らなくなる」形でだけ現れる。出しておけば手が打てる。
+         */
+        onCloseFailed: (err) => {
           server.notify(
-            `ここまでを第${record.chapter}章として畳みました（${record.summary.topic}）。` +
-              "前のやり取りは失われていません——詳細が要るときは番頭が引き継ぎ資料を読みます。",
+            `章を畳めませんでした（${String(err)}）。文脈はそのまま伸び続けます` +
+              "——このまま続けると入らなくなるので、区切りのよいところで新しい幹へ移すか、" +
+              "要約に使うモデル（BANTO_CHAPTER_MODEL）を見直してください。",
             { threadId, source: "system" }
           );
         },
@@ -1143,9 +1226,19 @@ async function serve(options: ServeOptions): Promise<void> {
         ...createHandoffTools(handoffs, threadId),
       ];
     return {
-      session: guardedSession,
+      session: countingSession,
       canvas,
       tools,
+      /**
+       * **PO がその場で章を畳む口**（決定25 の人側）。
+       *
+       * 閾値は文脈の量しか見ないが、区切りは人にも分かる——「この話は終わったので、
+       * ここから先は別の前提で進めたい」は量では拾えない。`chapters` が無い構成
+       * （要約に使えるモデルが無い）では渡さない。サーバがその不在を理由として出す
+       */
+      // **畳めたかどうかを返す**——溜まっていない章は畳みようがなく、黙って何も
+      // 起きないと押した側からは壊れて見える（PO報告 2026-08-11）
+      ...(chapters ? { closeChapter: async () => (await chapters.closeChapter()) !== undefined } : {}),
       // この会話が実際に使っているモデル。画面と索引へ出す（会話ごとに持つ）
       ...(threadModel && wanted
         ? {

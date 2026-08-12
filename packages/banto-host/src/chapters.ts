@@ -88,6 +88,13 @@ export interface ChapterKeeperOptions {
   /** 章を閉じたことを知らせる（画面に出す）。 */
   onChapterClosed?: (record: HandoffRecord) => void;
   /**
+   * **章を閉じられなかったことを知らせる**（inc-0050）。
+   *
+   * 畳めないと文脈は増え続けるので、黙って retry を重ねると「そのうち何も入らなくなる」
+   * 形で行き詰まる。POに見える形で出す口を持つ（I2）。
+   */
+  onCloseFailed?: (error: unknown) => void;
+  /**
    * 記憶の抽出（提案§3.4・決定28）。**章を閉じるときだけ発火する**——
    * これが論文のいう explicit gate で、毎ターン走らせないことが劣化への対処になる。
    *
@@ -120,7 +127,12 @@ export class ChapterKeeper {
       // ターンの終わりだけ見る。**ターンの途中で畳まない**——道具を呼んでいる最中に
       // 文脈が消えると、番頭は自分が何をしていたか分からなくなる
       if ((event as { type?: string }).type !== "agent_end") return;
-      void this.maybeCloseChapter();
+      // I2: 畳めなかったことを握りつぶさない。`void` のままだと unhandled rejection に
+      //     なって**どこにも出ない**——資料が空だった件（inc-0050）が見えなかった一因
+      void this.maybeCloseChapter().catch((err: unknown) => {
+        console.error(`[banto] ${this.options.threadId} の章を閉じられませんでした: ${String(err)}`);
+        this.options.onCloseFailed?.(err);
+      });
     });
   }
 

@@ -38,7 +38,11 @@ export function resolveInWorkspace(root: string, relativePath: string): string {
   const resolved = path.join(realExisting, path.relative(existing, candidate));
 
   if (resolved !== realRoot && !resolved.startsWith(realRoot + path.sep)) {
-    throw new Error(`Path "${relativePath}" is outside the workspace.`);
+    // 根を書く（inc-0054）。「外です」だけでは、どこからの相対で書けば通るのかが分からない
+    throw new Error(
+      `Path "${relativePath}" is outside the workspace.` +
+        ` — 根は ${realRoot} です。**そこからの相対パス**を渡してください（.. で外へは出られません）`
+    );
   }
   return resolved;
 }

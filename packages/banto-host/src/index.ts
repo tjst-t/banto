@@ -111,7 +111,13 @@ export {
   type ThreadSpec,
 } from "./threads.js";
 export { watchStaleBranches } from "./threads.js";
-export { createThreadTools, bindToolArgs, type ThreadToolsOptions } from "./thread-tools.js";
+export {
+  createThreadTools,
+  bindToolArgs,
+  allowSend,
+  resetSendCounters,
+  type ThreadToolsOptions,
+} from "./thread-tools.js";
 // 場所の帳簿と砦（決定36・38）
 export {
   PlaceRegistry,
@@ -249,3 +255,12 @@ export {
   withEmptyResponseGuard,
   type GuardableSession,
 } from "./turn-guard.js";
+export {
+  createTurnBudget,
+  guardTurn,
+  DEFAULT_REPEAT_LIMIT,
+  DEFAULT_CALL_LIMIT,
+  type TurnBudget,
+  type TurnBudgetOptions,
+} from "./turn-budget.js";
+export { withWorkerCard, WORKER_VIEW } from "./worker-card.js";

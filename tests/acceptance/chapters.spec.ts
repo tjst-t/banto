@@ -18,11 +18,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { getModel } from "@earendil-works/pi-ai/compat";
+import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
+import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
 import {
   ArtifactStore,
   ChapterKeeper,
   HandoffStore,
+  createBantoHostSession,
   createHandoffTools,
   parseHandoff,
   renderChapterOpening,
@@ -258,6 +261,51 @@ describe("[提案§3.2] 資料が書けなければ畳まない（I2）", () => 
     assert.match(JSON.stringify(session.agent.state.messages), /カワセミ/, "文脈が消えてはいけない");
     assert.deepEqual(store.list("thread-1"), [], "半端な資料を残してはいけない");
   });
+
+  /**
+   * inc-0050。**空の応答は「書けた」ではない。**
+   *
+   * `stopReason` が error でなくても本文が1文字も無いことがある。素通しすると
+   * `parseHandoff` が「TOPIC: 前の章の続き／詳細は空」という中身の無い資料を作り、
+   * それが書き出されて文脈だけが畳まれる——実際に thread-50 の第1章がこうなった。
+   */
+  it("要約器が空を返したら畳まない（中身の無い資料を書かない）", async () => {
+    // 閾値を越える長さ。空が素通しになると、ここで畳まれてしまう
+    const messages = [userMsg("合言葉はカワセミ"), assistantMsg("B"), userMsg("C"), assistantMsg("D", 700)];
+    const session = fakeSession(messages, SessionManager.inMemory());
+    const k = keeper(session, { summarize: async () => parseHandoff("") });
+
+    await assert.rejects(() => k.closeChapter(), /空/);
+    assert.deepEqual(store.list("thread-1"), [], "中身の無い資料を書いてはいけない");
+    assert.match(JSON.stringify(session.agent.state.messages), /カワセミ/, "文脈が消えてはいけない");
+  });
+
+  it("空白だけの応答も空として扱う", () => {
+    assert.throws(() => parseHandoff("  \n\n  "), /空/);
+  });
+
+  it("畳めなかったことは握りつぶさず知らせる（unhandled にしない）", async () => {
+    // 閾値を越える長さにする（4件以上・700トークン）——短い会話は畳まない
+    const messages = [userMsg("A"), assistantMsg("B"), userMsg("C"), assistantMsg("D", 700)];
+    const session = fakeSession(messages, SessionManager.inMemory());
+
+    const failures: unknown[] = [];
+    const k = keeper(session, {
+      summarize: async () => {
+        throw new Error("要約器が落ちた");
+      },
+      onCloseFailed: (err: unknown) => failures.push(err),
+    });
+    k.start();
+
+    // ターンの終わりで畳もうとして落ちる。**その場で知らせが出る**
+    session.emit({ type: "agent_end" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(failures.length, 1, "畳めなかったことが知らされていない");
+    assert.match(String(failures[0]), /要約器が落ちた/);
+    k.stop();
+  });
 });
 
 // ── 書き起こしの汚染対策（決定28 c）────────────────────────────────────────
@@ -356,6 +404,60 @@ describe("[提案§3.2] 引き継ぎの読み取りは、形式が崩れても�
     const parsed = parseHandoff("うっかり普通の文章で書いてしまった要約です。");
     assert.match(parsed.body, /うっかり普通の文章/);
     assert.match(parsed.summary.topic, /うっかり普通の文章/);
+  });
+});
+
+// ── 実際に番頭へ渡る道具箱に入っているか（inc-0050）────────────────────────
+
+/**
+ * **書けても読めなければ意味が無い。**
+ *
+ * `handoff.read` は実装も登録もされていたのに、実際にモデルへ渡る道具の一覧に
+ * 入っていなかった（`bin.ts` の「逆引き用の写し」にしか足されていなかった）。
+ * 文脈には見出しだけが載るのに詳細を引く手段が無く、段階的開示の後半が欠けていた。
+ *
+ * だから登録の有無ではなく、**セッションが持っている道具**を見る。
+ */
+describe("[提案§3.2 / inc-0050] 引き継ぎを読む口が、番頭の道具箱に入っている", () => {
+  it("handoffs を渡すと handoff.read / handoff.list がセッションに載る", async () => {
+    const model = getModel("anthropic", "claude-opus-4-5");
+    assert.ok(model);
+    const { session } = await createBantoHostSession({
+      systemPrompt: "あなたは番頭です。",
+      tools: [],
+      handoffs: { store, threadId: "thread-1" },
+      cwd: process.cwd(),
+      model,
+      modelRuntime: await ModelRuntime.create({
+        credentials: new InMemoryCredentialStore(),
+        modelsStore: new InMemoryModelsStore(),
+        modelsPath: null,
+      }),
+      sessionManager: SessionManager.inMemory(),
+    });
+
+    // 決定22: プロバイダへはドットを潰した wire 名で渡る
+    const names = session.agent.state.tools.map((t) => t.name);
+    assert.ok(names.includes("handoff__read"), `handoff.read が道具箱に無い: ${names.join(", ")}`);
+    assert.ok(names.includes("handoff__list"), `handoff.list が道具箱に無い: ${names.join(", ")}`);
+  });
+
+  it("handoffs を渡さなければ載らない（要らない構成で増やさない）", async () => {
+    const model = getModel("anthropic", "claude-opus-4-5");
+    assert.ok(model);
+    const { session } = await createBantoHostSession({
+      systemPrompt: "あなたは番頭です。",
+      tools: [],
+      cwd: process.cwd(),
+      model,
+      modelRuntime: await ModelRuntime.create({
+        credentials: new InMemoryCredentialStore(),
+        modelsStore: new InMemoryModelsStore(),
+        modelsPath: null,
+      }),
+      sessionManager: SessionManager.inMemory(),
+    });
+    assert.ok(!session.agent.state.tools.some((t) => t.name.startsWith("handoff__")));
   });
 });
 
