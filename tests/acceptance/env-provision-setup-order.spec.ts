@@ -17,6 +17,11 @@
  * 「起動に用意が要るプロファイル」を検体として置き、順序そのものを見張る。
  *
  * I1: 直しを戻すと落ちることを確認済み（process 側・docker 側とも）。
+ *
+ * **ここはホストの docker を要らない分だけ**（driver: process）。docker ドライバ側の
+ * 同じ検体は `env-docker-provision-setup-order.spec.ts` に在る——マージ前ゲートの器には
+ * socket が無いので、`npm run test:docker` へ寄せてある（`meta/environments.yaml` の
+ * `test-docker` プロファイル）。このファイルは器の中でも回るものだけを持つ。
  */
 
 import { describe, it, beforeEach, afterEach, after } from "node:test";
@@ -24,8 +29,6 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import * as childProcess from "node:child_process";
-import { fileURLToPath } from "node:url";
 
 import { EnvironmentPool } from "@banto/environment-pool";
 
@@ -34,10 +37,6 @@ const TEST_DRIVER_STATE = path.join(
   "banto-process-driver-state-acceptance-setup-order.json"
 );
 process.env["BANTO_PROCESS_DRIVER_STATE"] = TEST_DRIVER_STATE;
-
-const _thisDir = path.dirname(fileURLToPath(import.meta.url));
-const DEV_SERVER_COMPOSE = path.resolve(_thisDir, "../fixtures/docker/dev-server-compose.yaml");
-const WAITING_COMPOSE = path.resolve(_thisDir, "../fixtures/docker/test-compose.yaml");
 
 after(() => {
   fs.rmSync(TEST_DRIVER_STATE, { force: true });
@@ -72,15 +71,6 @@ function makePool(options: { cacheRoot?: string } = {}): EnvironmentPool {
   });
   pools.push(p);
   return p;
-}
-
-/** docker が使えることは前提（I1: 使えないなら skip せずに落とす）。 */
-function requireDockerCompose(): void {
-  const v = childProcess.spawnSync("docker", ["compose", "version"], {
-    encoding: "utf8",
-    timeout: 30_000,
-  });
-  assert.equal(v.status, 0, "docker compose が使えない（I1: skip しない）");
 }
 
 // ── a1: 用意が要る長命のコマンドが、起動直後に即死しない ──────────────────────
@@ -161,105 +151,6 @@ describe("[task-0089/a1] 用意は長命のコマンドを起こす前に済む�
   });
 });
 
-describe("[task-0089/a1] 用意は compose up の前に済む（docker）", () => {
-  it("**node_modules に当たる置き場が空でも、dev server 系のコマンドが即死しない**", async () => {
-    requireDockerCompose();
-
-    writeProfiles(
-      "profiles:\n" +
-        "  dev:\n" +
-        "    driver: docker\n" +
-        "    config:\n" +
-        `      compose: ${DEV_SERVER_COMPOSE}\n` +
-        '    setup: "mkdir -p /work/deps && echo \'while true; do sleep 1; done\' > ' +
-        "/work/deps/dev-server && echo prepared > /work/deps/marker\"\n" +
-        "    ttl: 10m\n"
-    );
-    const pool = makePool();
-
-    const taskId = `t-devsrv-${Date.now()}`;
-    const env = await pool.provision({ repoPath: repo, profile: "dev", taskId });
-    try {
-      // 直す前はここが `ok: false`（containers not running: ...=exited）になるか、
-      // 落ちる直前の running を掴んで `ok: true` と誤報告するかのどちらかだった
-      assert.equal(
-        env.healthcheck.ok,
-        true,
-        `立てた直後に使えなければならない: ${JSON.stringify(env.healthcheck)}`
-      );
-
-      // **一瞬ではなく生きていること**を、時間を置いた疎通と実際の run で確かめる
-      await new Promise((r) => setTimeout(r, 1_500));
-      const later = await pool.healthcheck(env.envId);
-      assert.equal(
-        later.ok,
-        true,
-        `起動直後に落ちている（exit 127 の再現）: ${JSON.stringify(later)}`
-      );
-
-      const out = await pool.run(env.envId, "cat /work/deps/marker");
-      assert.equal(out.exit, 0, `用意の成果が見えなければならない: ${out.logTail}`);
-      assert.match(out.logTail, /prepared/);
-    } finally {
-      await pool.teardown(env.envId).catch(() => undefined);
-    }
-  });
-});
-
-// ── a2: 待つだけのプロファイルは今までどおり ──────────────────────────────────
-
-describe("[task-0089/a2] 待つだけの test プロファイルは従来どおり", () => {
-  it("setup なしの test プロファイル（sleep で待つだけ）は今までどおり立って走る", async () => {
-    requireDockerCompose();
-
-    writeProfiles(
-      "profiles:\n" +
-        "  test:\n" +
-        "    driver: docker\n" +
-        "    config:\n" +
-        `      compose: ${WAITING_COMPOSE}\n` +
-        "    ttl: 10m\n"
-    );
-    const pool = makePool();
-
-    const taskId = `t-wait-${Date.now()}`;
-    const env = await pool.provision({ repoPath: repo, profile: "test", taskId });
-    try {
-      assert.equal(env.healthcheck.ok, true, JSON.stringify(env.healthcheck));
-      const out = await pool.run(env.envId, "echo alive");
-      assert.equal(out.exit, 0, out.logTail);
-      assert.match(out.logTail, /alive/);
-    } finally {
-      await pool.teardown(env.envId).catch(() => undefined);
-    }
-  });
-
-  it("setup つきの test プロファイルも従来どおり通る（順序が変わっただけ）", async () => {
-    requireDockerCompose();
-
-    writeProfiles(
-      "profiles:\n" +
-        "  test:\n" +
-        "    driver: docker\n" +
-        "    config:\n" +
-        `      compose: ${WAITING_COMPOSE}\n` +
-        '    setup: "true"\n' +
-        "    ttl: 10m\n"
-    );
-    const pool = makePool();
-
-    const taskId = `t-wait-setup-${Date.now()}`;
-    const env = await pool.provision({ repoPath: repo, profile: "test", taskId });
-    try {
-      assert.equal(env.healthcheck.ok, true, JSON.stringify(env.healthcheck));
-      const out = await pool.run(env.envId, "echo alive");
-      assert.equal(out.exit, 0, out.logTail);
-    } finally {
-      await pool.teardown(env.envId).catch(() => undefined);
-    }
-  });
-});
-
 // ── a3: 済んだ印の書き込み失敗を握りつぶさない ────────────────────────────────
 
 describe("[task-0089/a3] 済んだ印（.banto-primed）の書き込み失敗を握りつぶさない", () => {
@@ -299,35 +190,41 @@ describe("[task-0089/a3] 済んだ印（.banto-primed）の書き込み失敗を
       "用意が済んだ印が書かれていない（次の provision が毎回やり直す）"
     );
 
-    // 印を消して、置き場を書けなくする＝**印だけが書けない**状況を作る
-    fs.rmSync(path.join(keyDir, ".banto-primed"));
-    fs.chmodSync(keyDir, 0o555);
-    try {
-      await assert.rejects(
-        () =>
-          pool.provision({ repoPath: repo, workdir: repo, profile: "test", taskId: "t-mark-2" }),
-        (err: Error) => {
-          // 直す前は `.catch(() => undefined)` で握りつぶされ、provision は成功して返っていた
-          assert.match(
-            err.message,
-            /印|banto-primed/,
-            `印を書けなかったと分かる言葉であること: ${err.message}`
-          );
-          return true;
-        },
-        "印が書けなかったことを黙って成功に丸めてはならない（I2）"
-      );
+    // **印だけが書けない**状況を作る。印を消して、その場所を行き止まりの symlink に
+    // 差し替える——`markPrimed` は置き場を mkdir してから印を open するので、
+    // 置き場そのものは無事なまま**印の書き込みだけ**が ENOENT で落ちる。
+    //
+    // **権限（`chmod 0o555`）では作れない。** マージ前ゲートの器は root で走るので、
+    // 読み取り専用ディレクトリでも root は書けてしまい（CAP_DAC_OVERRIDE）、
+    // 「書けなかったら失敗する」が確かめられない——ホストでだけ通る検体になる。
+    // 行き止まりの symlink は uid に依らないので、器の中でもホストでも同じに落ちる。
+    // （`ensureCacheDir` は `existsSync` ＝ symlink を辿って見るので、行き止まりは
+    //   「印が無い」と読まれる。つまり用意は飛ばされず、印を書く所まで進む）
+    const marker = path.join(keyDir, ".banto-primed");
+    fs.rmSync(marker);
+    fs.symlinkSync(path.join(dir, "no-such-dir", "primed"), marker);
+    await assert.rejects(
+      () =>
+        pool.provision({ repoPath: repo, workdir: repo, profile: "test", taskId: "t-mark-2" }),
+      (err: Error) => {
+        // 直す前は `.catch(() => undefined)` で握りつぶされ、provision は成功して返っていた
+        assert.match(
+          err.message,
+          /印|banto-primed/,
+          `印を書けなかったと分かる言葉であること: ${err.message}`
+        );
+        return true;
+      },
+      "印が書けなかったことを黙って成功に丸めてはならない（I2）"
+    );
 
-      const event = pool.events().find((e) => e.type === "env_cache_marker_failed");
-      assert.ok(event, "印を書けなかったことが出来事に残らない（気づく契機が無い）");
-      assert.ok(
-        String(event!.data["reason"] ?? "").length > 0,
-        "理由が残っていない（I2）"
-      );
-      assert.equal(pool.list({ taskId: "t-mark-2" }).length, 0, "使える状態にできなかった環境を残さない");
-    } finally {
-      fs.chmodSync(keyDir, 0o755);
-    }
+    const event = pool.events().find((e) => e.type === "env_cache_marker_failed");
+    assert.ok(event, "印を書けなかったことが出来事に残らない（気づく契機が無い）");
+    assert.ok(
+      String(event!.data["reason"] ?? "").length > 0,
+      "理由が残っていない（I2）"
+    );
+    assert.equal(pool.list({ taskId: "t-mark-2" }).length, 0, "使える状態にできなかった環境を残さない");
   });
 
   it("印はホスト側に書かれる（環境の生死を借りない）", async () => {
