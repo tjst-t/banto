@@ -20,6 +20,13 @@
  *     already on the host (same host-tool assumption as the process driver's node/shell).
  *     Reason: D6 "no SDK dep" — shell-out to `docker compose` CLI uses the
  *     installed CLI, inherits compose file compatibility, and avoids the dockerode npm dep.
+ * provision input (任意・task-0089):
+ *   - setup:          用意のコマンド。**`compose up` の前**に `compose run --rm` で走らせる
+ *                     ——長命のコマンド（dev server 等）が用意を要る場合、あとから走らせても
+ *                     間に合わない（起動直後に落ちたコンテナは戻ってこない）
+ *   - setupTimeoutMs: 用意に掛ける持ち時間（予算と厳しい方を採る）
+ *   出力の `setup.ran` が「用意はこちらで済ませた」の申告。プールはこれを見て二度走らせない
+ *
  * I3: all managed resources carry a `<taskId>-docker` project name prefix.
  * I2: teardown is idempotent — already-gone project is a success (exit 0).
  * I2: a failed compose command is always surfaced as a non-zero exit (never silent skip).
@@ -281,15 +288,46 @@ function handleProvision(input: Record<string, unknown>): void {
   }
 
   const budget = innerBudgetMs(input);
+  const clock = startBudget(budget);
+  const cacheEnv = cache ? { ...process.env, BANTO_CACHE_DIR: cache.dir } : undefined;
+
+  // **用意（`setup`）は `up` の前に済ませる**（task-0089・実機で踏んだ）。
+  //
+  // 以前はプールが「`up -d` のあと `compose run --rm` で setup」の順に回していた。
+  // **待つだけのプロファイル（`sleep infinity`）でしか成り立たない順序**で、
+  // dev server を起こすプロファイル（vite 等）では起動時に node_modules が空 →
+  // `vite: not found` で **exit 127 で即死**する。setup はそのあと完走するが、
+  // **落ちたコンテナは戻ってこない**。しかも healthcheck は running だった一瞬を掴んで
+  // 「使えます」と誤報告していた。
+  //
+  // 用意を先に済ませれば、長命のコマンドは最初から揃った状態で起きる。
+  // 待つだけのプロファイルにとっては順序が変わるだけで、見える振る舞いは同じ。
+  const setup = readSetup(input);
+  let setupRan = false;
+  if (setup && !cache?.primed) {
+    runSetupBeforeUp({
+      project,
+      composeFile,
+      setup: setup.cmd,
+      ...(workdir ? { workdir } : {}),
+      ...(cacheEnv ? { env: cacheEnv } : {}),
+      timeoutMs: capBudget(clock.remaining(), setup.timeoutMs),
+    });
+    setupRan = true;
+  }
+
+  // **用意に使ったぶんを差し引いた残り**で立てる。同じ予算を各コマンドに丸ごと渡すと
+  // 合計が予算を超え、外側の subprocess timeout に殺されて理由が残らない
+  const upTimeout = clock.remaining();
   const r = runCmd("docker", composeArgs(project, composeFile, ["up", "-d", "--build"]), {
-    timeoutMs: budget,
+    timeoutMs: upTimeout,
     ...(workdir ? { cwd: workdir } : {}),
-    ...(cache ? { env: { ...process.env, BANTO_CACHE_DIR: cache.dir } } : {}),
+    ...(cacheEnv ? { env: cacheEnv } : {}),
   });
   if (r.timedOut) {
-    // I2: 時間切れを「compose が落ちた」と混同しない。何分で切ったかまで言う
+    // I2: 時間切れを「compose が落ちた」と混同しない。何秒で切ったかまで言う
     process.stderr.write(
-      `docker-driver provision: docker compose up が ${Math.round((budget ?? 0) / 1000)} 秒で時間切れ ` +
+      `docker-driver provision: docker compose up が ${Math.round((upTimeout ?? 0) / 1000)} 秒で時間切れ ` +
         `（イメージのビルドが長い可能性があります）:\n${r.stderr}\n`
     );
     process.exit(1);
@@ -314,10 +352,158 @@ function handleProvision(input: Record<string, unknown>): void {
     ...(workdir ? { workdir } : {}),
   };
 
-  // spec §5.2.2: 置き場に既に中身があるか。プールはこれを見て `setup` を飛ばす
+  // spec §5.2.2: 置き場に既に中身があるか。プールはこれを見て `setup` を飛ばす。
+  // `setup.ran` は「用意はこちらで済ませた」の申告——プールはこれを見て二度走らせない
   process.stdout.write(
-    JSON.stringify({ handle, ...(cache ? { cache: { primed: cache.primed } } : {}) }) + "\n"
+    JSON.stringify({
+      handle,
+      ...(cache ? { cache: { primed: cache.primed } } : {}),
+      ...(setup ? { setup: { ran: setupRan } } : {}),
+    }) + "\n"
   );
+}
+
+/**
+ * `up` の前に用意を走らせる（task-0089）。こけたら**残骸を残さず** exit 1。
+ *
+ * `compose run --rm` は本体を起こさずに one-off コンテナを立てるので、`up` の前でも
+ * 使える（ネットワークとボリュームはここで作られ、あとの `up` がそれを掴む）。
+ *
+ * I2: 用意の失敗も時間切れも、黙って `up` へ進まない——**用意できていない環境を
+ *     「立った」と言わない**のがこの直しの目的そのもの。
+ */
+function runSetupBeforeUp(opts: {
+  project: string;
+  composeFile: string;
+  setup: string;
+  workdir?: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs: number | undefined;
+}): void {
+  const { project, composeFile, setup, workdir, env, timeoutMs } = opts;
+
+  // **先にビルドする**（inc-0037 と同じ理由）。`up -d --build` まで待つと、用意だけが
+  // 古いイメージで走る——道具立ての契約は Dockerfile なので、そこがずれたら意味が無い。
+  // ビルド対象が無い compose では compose が警告を出して 0 で返る（実測）
+  const built = runCmd("docker", composeArgs(project, composeFile, ["build"]), {
+    timeoutMs,
+    ...(workdir ? { cwd: workdir } : {}),
+    ...(env ? { env } : {}),
+  });
+  if (built.timedOut || built.exitCode !== 0) {
+    cleanupAfterFailedSetup(project, composeFile, timeoutMs);
+    process.stderr.write(
+      `docker-driver provision: setup の前のイメージのビルドに失敗しました` +
+        `（${built.timedOut ? "時間切れ" : `exit ${built.exitCode}`}）:\n${built.stderr}\n`
+    );
+    process.exit(1);
+  }
+
+  const serviceName = resolveServiceName(project, composeFile);
+  if (!serviceName) {
+    cleanupAfterFailedSetup(project, composeFile, timeoutMs);
+    process.stderr.write(
+      `docker-driver provision: setup を走らせるサービス名が ${composeFile} から決まりません\n`
+    );
+    process.exit(1);
+  }
+
+  // `run` 動詞と同じ形で走らせる（worktree の git も同じように見せる。inc-0038）
+  const gitdirMount = resolveWorktreeGitdirMount(workdir);
+  const r = runCmd(
+    "docker",
+    composeArgs(project, composeFile, [
+      "run", "--rm", "--no-TTY",
+      ...(gitdirMount ? ["-v", `${gitdirMount}:${gitdirMount}:ro`] : []),
+      serviceName, "sh", "-c", setup,
+    ]),
+    {
+      timeoutMs,
+      ...(workdir ? { cwd: workdir } : {}),
+      ...(env ? { env } : {}),
+    }
+  );
+  if (r.timedOut || r.exitCode !== 0) {
+    cleanupAfterFailedSetup(project, composeFile, timeoutMs);
+    process.stderr.write(
+      `docker-driver provision: setup が失敗しました` +
+        `（${r.timedOut ? "時間切れ" : `exit ${r.exitCode}`}）: ${setup}\n` +
+        `${r.stdout}\n${r.stderr}\n`
+    );
+    process.exit(1);
+  }
+}
+
+/**
+ * 用意でこけたときの後始末。**まだ台帳に載っていない**ので、ここで畳まないと
+ * 誰も畳めない（I3：外に残るリソースはいちばん高くつく）。
+ */
+function cleanupAfterFailedSetup(
+  project: string,
+  composeFile: string,
+  timeoutMs: number | undefined
+): void {
+  runCmd("docker", composeArgs(project, composeFile, ["down", "-v"]), { timeoutMs });
+  const leftovers = runCmd("docker", [
+    "ps", "-aq", "--filter", `label=com.docker.compose.project=${project}`,
+  ], { timeoutMs: QUERY_TIMEOUT_MS });
+  const ids = leftovers.stdout.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+  if (ids.length > 0) runCmd("docker", ["rm", "-f", ...ids], { timeoutMs });
+}
+
+/** provision の入力から `setup`（と、それに掛ける持ち時間）を読む。 */
+function readSetup(input: Record<string, unknown>): { cmd: string; timeoutMs?: number } | undefined {
+  const cmd = input["setup"];
+  if (typeof cmd !== "string" || cmd.trim().length === 0) return undefined;
+  const raw = input["setupTimeoutMs"];
+  const timeoutMs = typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : undefined;
+  return { cmd, ...(timeoutMs !== undefined ? { timeoutMs } : {}) };
+}
+
+/**
+ * 使い切った分を差し引いて残りを返す時計。
+ *
+ * provision が内側で何本もコマンドを起こすようになった以上、**同じ予算を各コマンドに
+ * 丸ごと渡すと合計が予算を超える**——外側の subprocess timeout に殺され、
+ * 何で落ちたか分からない失敗になる。
+ */
+function startBudget(budget: number | undefined): { remaining: () => number | undefined } {
+  if (budget === undefined) return { remaining: () => undefined };
+  const deadline = Date.now() + budget;
+  // 残り 0 は「縛らない」と区別が付かないので、最低 1ms は返す（必ず即時に切れる）
+  return { remaining: () => Math.max(1, deadline - Date.now()) };
+}
+
+/** 2つの持ち時間の厳しい方（どちらも無ければ縛らない）。 */
+function capBudget(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return Math.min(a, b);
+}
+
+/**
+ * compose のサービス名を決める（`run` と `setup` で同じ決め方を使う）。
+ *
+ * D6: YAML パーサを足さない。compose ファイルの形は決まっている（`services:` の直下）ので
+ * 正規表現で足りる。読めない・書いていないときは走っているコンテナのラベルから拾う。
+ */
+function resolveServiceName(project: string, composeFile: string): string | undefined {
+  try {
+    const raw = fs.readFileSync(composeFile, "utf8");
+    const match = raw.match(/^services:\s*\n\s+([a-zA-Z0-9_-]+)\s*:/m);
+    if (match) return match[1];
+  } catch {
+    // 読めなければラベルから拾う
+  }
+  const psResult = runCmd("docker", [
+    "ps",
+    "--filter", `label=com.docker.compose.project=${project}`,
+    "--format", "{{.Label \"com.docker.compose.service\"}}",
+  ], { timeoutMs: QUERY_TIMEOUT_MS });
+  if (psResult.exitCode === 0 && psResult.stdout.trim()) {
+    return psResult.stdout.trim().split("\n")[0]?.trim();
+  }
+  return undefined;
 }
 
 function handleDeploy(input: Record<string, unknown>): void {
@@ -486,31 +672,7 @@ function handleRun(input: Record<string, unknown>): void {
   // First determine the service name from the compose file to use with compose run.
   // We pick the first service in the compose file.
   // D1: the compose file is the user's source of truth for what's in the environment.
-  let serviceName: string | undefined;
-  try {
-    const raw = fs.readFileSync(composeFile, "utf8");
-    // Simple YAML service extraction — find the first key under "services:"
-    // D6: avoid adding a YAML parser dep; regex is sufficient for this well-structured case.
-    // The compose file has known shape: `services:\n  <service>:\n`
-    const match = raw.match(/^services:\s*\n\s+([a-zA-Z0-9_-]+)\s*:/m);
-    if (match) {
-      serviceName = match[1];
-    }
-  } catch {
-    // If we can't read the compose file, fall back to getting from docker ps
-  }
-
-  if (!serviceName) {
-    // Fall back: query running containers and pick the first service name from labels
-    const psResult = runCmd("docker", [
-      "ps",
-      "--filter", `label=com.docker.compose.project=${project}`,
-      "--format", "{{.Label \"com.docker.compose.service\"}}",
-    ], { timeoutMs: QUERY_TIMEOUT_MS });
-    if (psResult.exitCode === 0 && psResult.stdout.trim()) {
-      serviceName = psResult.stdout.trim().split("\n")[0]?.trim();
-    }
-  }
+  const serviceName = resolveServiceName(project, composeFile);
 
   if (!serviceName) {
     process.stderr.write(`docker-driver run: could not determine service name for project ${project}\n`);

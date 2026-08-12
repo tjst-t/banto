@@ -14,6 +14,11 @@
  *   - name: taskID-prefixed resource name (I3: mandatory prefix for list/cleanup)
  *   - taskId: the task this environment belongs to
  *
+ * provision input (任意・task-0089):
+ *   - setup:          用意のコマンド。**長命のコマンドを起こす前**に走らせる
+ *   - setupTimeoutMs: 用意に掛ける持ち時間（予算と厳しい方を採る）
+ *   出力の `setup.ran` が「用意はこちらで済ませた」の申告
+ *
  * D6: node:child_process, node:net, node:fs, node:path only (no npm deps).
  * I3: all managed resources carry a `<taskId>-env` naming prefix.
  * I2: teardown is idempotent — already-gone process is a success (exit 0).
@@ -256,6 +261,34 @@ async function handleProvision(input: Record<string, unknown>): Promise<void> {
    */
   const cache = attachCacheBySymlink(input, workdir);
 
+  // **用意（`setup`）は長命のコマンドを起こす前に済ませる**（task-0089）。
+  //
+  // docker ドライバで実機で踏んだのと同じ順序の問題がここにもある——用意が要る
+  // コマンド（dev server 等）は、用意より先に起こすと起動直後に落ちる。
+  // 待つだけのコマンド（`sleep`）では順序が変わっても見える振る舞いは同じ。
+  const setup = readSetup(input);
+  let setupRan = false;
+  if (setup && !cache?.primed) {
+    const done = childProcess.spawnSync(setup.cmd, [], {
+      shell: true,
+      encoding: "utf8",
+      ...(workdir ? { cwd: workdir } : {}),
+      ...(setup.timeoutMs !== undefined ? { timeout: setup.timeoutMs } : {}),
+    });
+    const timedOut =
+      (done.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
+    if (timedOut || done.status !== 0) {
+      // I2: 用意できていない環境を「立った」と言わない。長命のコマンドは起こさない
+      process.stderr.write(
+        `process-driver provision: setup が失敗しました` +
+          `（${timedOut ? "時間切れ" : `exit ${done.status ?? -1}`}）: ${setup.cmd}\n` +
+          `${done.stdout ?? ""}\n${done.stderr ?? ""}\n`
+      );
+      process.exit(1);
+    }
+    setupRan = true;
+  }
+
   // Spawn the process. Use shell=true to handle compound commands.
   // D6: node:child_process stdlib.
   const child = childProcess.spawn(cmd, [], {
@@ -293,8 +326,26 @@ async function handleProvision(input: Record<string, unknown>): Promise<void> {
   if (workdir) handle["workdir"] = workdir;
 
   process.stdout.write(
-    JSON.stringify({ handle, ...(cache ? { cache: { primed: cache.primed } } : {}) }) + "\n"
+    JSON.stringify({
+      handle,
+      ...(cache ? { cache: { primed: cache.primed } } : {}),
+      // 「用意はこちらで済ませた」の申告。プールはこれを見て二度走らせない
+      ...(setup ? { setup: { ran: setupRan } } : {}),
+    }) + "\n"
   );
+}
+
+/** provision の入力から `setup`（と、それに掛ける持ち時間）を読む。 */
+function readSetup(input: Record<string, unknown>): { cmd: string; timeoutMs?: number } | undefined {
+  const cmd = input["setup"];
+  if (typeof cmd !== "string" || cmd.trim().length === 0) return undefined;
+  const raw = input["setupTimeoutMs"];
+  const budget = innerBudgetMs(input);
+  const declared = typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : undefined;
+  // 厳しい方を採る（呼び出し側の予算を超えて用意し続けない）
+  const timeoutMs =
+    declared === undefined ? budget : budget === undefined ? declared : Math.min(declared, budget);
+  return { cmd, ...(timeoutMs !== undefined ? { timeoutMs } : {}) };
 }
 
 /**
