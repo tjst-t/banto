@@ -628,6 +628,10 @@ describe("[task-0060/a1] 役目を終えた職人は Kobo が畳む（番頭に�
 
     await until(() => h.driver.byTaskId("task-0020:audit") !== undefined);
 
+    // task-0092: 畳むのは「kill してから `worker_closed` を積む」の2手。その途中は
+    // プロセスが既に居ないので状態は "exited" に見える（pool.ts の導出）。監査人が
+    // 起きた瞬間に読むと**この隙間を踏む**ので、畳み終わりまで待ってから確かめる
+    await until(() => h.workers.pool.get(executor.sessionId)?.state === "closed");
     const executorWorker = h.workers.pool.get(executor.sessionId);
     assert.equal(
       executorWorker?.state,
@@ -665,9 +669,10 @@ describe("[task-0060/a1] 役目を終えた職人は Kobo が畳む（番頭に�
       "監査の指摘が指示に書き切ってある（職人は記憶を持たない）"
     );
 
-    const auditWorker = h.workers.pool
-      .list()
-      .find((w) => w.taskId === "task-0020:audit");
+    // 上と同じ隙間（kill 済み・`worker_closed` はこれから）を踏まないよう畳み終わりを待つ
+    const findAudit = () => h.workers.pool.list().find((w) => w.taskId === "task-0020:audit");
+    await until(() => findAudit()?.state === "closed");
+    const auditWorker = findAudit();
     assert.equal(auditWorker?.state, "closed", "監査人は役目を終えたので畳まれる");
   });
 });
