@@ -16,6 +16,12 @@ export {
 } from "./tool-registry.js";
 export { createBantoHostSession, type CreateBantoHostSessionOptions } from "./host-session.js";
 export {
+  PRESENTED_TOOL_NAMES,
+  presentedWireNames,
+  renderToolCategories,
+  selectPresentedTools,
+} from "./presented-tools.js";
+export {
   createMemoryTools,
   renderMemoryForPrompt,
   type MemoryToolsOptions,

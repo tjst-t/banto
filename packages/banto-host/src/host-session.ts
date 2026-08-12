@@ -30,6 +30,14 @@ import { createSkillTools } from "./skill-tools.js";
 import { guardTurn, type TurnBudget } from "./turn-budget.js";
 import { loadBantoSkills, renderSkillsForPrompt } from "./skills.js";
 import { toPiTool, type NamespacedToolDefinition } from "./tool-registry.js";
+import {
+  presentedWireNames,
+  renderToolCategories,
+  selectPresentedTools,
+} from "./presented-tools.js";
+
+/** 提示の実数を出すのは起動につき1回だけ（会話ごとに52行出さない）。 */
+let loggedPresentation = false;
 
 export interface CreateBantoHostSessionOptions {
   /** System prompt for this turn loop. Plain string here — real prompt content is a later task. */
@@ -95,6 +103,18 @@ export interface CreateBantoHostSessionOptions {
    * `skill.learn` / `skill.unlearn` が登録される。
    */
   learnedSkills?: LearnedSkillStore;
+  /**
+   * **在庫と提示を分ける**（ADR-0019 決定82）。true にすると、登録した道具のうち
+   * `PRESENTED_TOOL_NAMES` に在るものだけをモデルへ見せ、**決定85 の並び**で渡す。
+   * 併せて散文の一覧（決定84-5）をシステムプロンプトへ足す。
+   *
+   * 既定 false ＝ 従来どおり全部見せる。**本番の合成は `bin.ts` が true を渡す**
+   * ——試験や別の使い方をする呼び出し元（少数の道具だけを渡す）を巻き込まないため。
+   *
+   * 隠すだけで**在庫からは外さない**ので、モジュールの HTTP 面（GUI）も
+   * wire名→論理名の逆引きも生きたまま。
+   */
+  presentSelectedTools?: boolean;
   /** Working directory for resource discovery. Default: process.cwd() */
   cwd?: string;
   /** Global pi config directory. Default: ~/.pi/agent */
@@ -149,10 +169,44 @@ export async function createBantoHostSession(
     options.moduleSkills ?? [],
   ]).map((e) => e.skill);
 
+  /**
+   * **道具の在庫を先に組む**（ADR-0019 決定84-5）。
+   *
+   * 以前はシステムプロンプトを先に作っていたが、散文の道具一覧を載せるには
+   * 「何を提示するか」が先に決まっていなければならない。順序を入れ替えただけで、
+   * 中身は変えていない。
+   */
+  const tools = [
+    ...options.tools,
+    ...(options.memory
+      ? createMemoryTools(options.memory, {
+          ...(options.knownTrunkIds ? { knownTrunkIds: options.knownTrunkIds } : {}),
+          ...(options.defaultTrunkId ? { defaultTrunkId: options.defaultTrunkId } : {}),
+          ...(options.knownTrunkList ? { knownTrunkList: options.knownTrunkList } : {}),
+        })
+      : []),
+    ...(options.handoffs
+      ? createHandoffTools(options.handoffs.store, options.handoffs.threadId)
+      : []),
+    ...(skills.length > 0 || options.learnedSkills
+      ? createSkillTools(skills, {
+          ...(options.learnedSkills ? { learned: options.learnedSkills } : {}),
+          defaults,
+        })
+      : []),
+    ...(options.artifacts ? createArtifactTools(options.artifacts) : []),
+  ];
+
   // 記憶とSKILL一覧をシステムプロンプトの末尾に足す。
   // 記憶はセッション開始時点の内容を焼き込むので、以後の保存分は memory.recall で読み直す。
+  //
+  // 決定84-5: 道具の散文一覧も載せる。いままでは一行も出ていなかった——pi は
+  // `promptSnippet` を付けた道具だけを "Available tools" に載せる仕様で、banto はどれにも
+  // 付けておらず、さらに `systemPromptOverride` を使うため pi 側の組み立てが捨てられていた。
+  // 結果、道具の JSON スキーマだけが案内文なしでぶら下がっていた。
   const sections = [
     options.systemPrompt,
+    options.presentSelectedTools ? renderToolCategories(selectPresentedTools(tools)) : "",
     options.memory
       ? renderMemoryForPrompt(options.memory, {
           ...(options.memoryTrunks ? { trunks: options.memoryTrunks } : {}),
@@ -194,27 +248,6 @@ export async function createBantoHostSession(
   });
   await resourceLoader.reload();
 
-  const tools = [
-    ...options.tools,
-    ...(options.memory
-      ? createMemoryTools(options.memory, {
-          ...(options.knownTrunkIds ? { knownTrunkIds: options.knownTrunkIds } : {}),
-          ...(options.defaultTrunkId ? { defaultTrunkId: options.defaultTrunkId } : {}),
-          ...(options.knownTrunkList ? { knownTrunkList: options.knownTrunkList } : {}),
-        })
-      : []),
-    ...(options.handoffs
-      ? createHandoffTools(options.handoffs.store, options.handoffs.threadId)
-      : []),
-    ...(skills.length > 0 || options.learnedSkills
-      ? createSkillTools(skills, {
-          ...(options.learnedSkills ? { learned: options.learnedSkills } : {}),
-          defaults,
-        })
-      : []),
-    ...(options.artifacts ? createArtifactTools(options.artifacts) : []),
-  ];
-
   // 提案§3.1: 大きなツール結果は文脈に載せず、栞に置き換える。
   // **皮をかぶせるのは pi へ渡す直前**——挿入時に決めることでプレフィックスキャッシュを守る
   const offloaded = options.artifacts
@@ -242,14 +275,58 @@ export async function createBantoHostSession(
     ? offloaded.map((tool) => guardTurn(tool, options.turnBudget!))
     : offloaded;
 
-  return createAgentSession({
+  const created = await createAgentSession({
     cwd,
     agentDir,
     model: options.model,
     modelRuntime: options.modelRuntime,
     resourceLoader,
     noTools: "builtin",
+    // **在庫**——全部登録する。提示は下で絞る（決定82）
     customTools: budgeted.map(toPiTool),
     sessionManager: options.sessionManager ?? SessionManager.inMemory(),
   });
+
+  /**
+   * **在庫と提示を分ける**（ADR-0019 決定82・83・85）。
+   *
+   * 登録は全部済ませたうえで、**モデルへ見せる集合だけ**を選び直す。`setActiveToolsByName`
+   * は渡した順序をそのまま `agent.state.tools` にするので、**絞り込み（決定83）と
+   * 並び替え（決定85）が同じ一手で済む**。
+   *
+   * なぜここか——`customTools` を減らすのではなく、登録の**後**で絞る。減らすと
+   * モジュールの HTTP 面（`module-serve.ts`＝GUI）と wire名→論理名の逆引きが壊れる。
+   * **隠すが、持っている。**
+   *
+   * pi の既定は「新しく登録された道具を自動で有効化する」（`_refreshToolRegistry`）。
+   * その後にこれを呼ぶので、以後は選び直した集合が保たれる。
+   *
+   * 副作用に注意: この呼び出しは pi 側のシステムプロンプトも組み直すが、banto は
+   * `systemPromptOverride` を使っているため**その結果は捨てられる**（＝プロンプトは動かない）。
+   * 道具の散文一覧は上の `sections` で自前に載せている（決定84-5）。
+   */
+  if (options.presentSelectedTools) {
+    const wireNames = presentedWireNames(tools);
+    // I2: 表の道具が在庫に1本も無いなら、絞ると道具ゼロの番頭になる。黙って壊さない
+    if (wireNames.length === 0) {
+      throw new Error(
+        "presentSelectedTools was requested but none of PRESENTED_TOOL_NAMES are registered."
+      );
+    }
+    created.session.setActiveToolsByName(wireNames);
+    /**
+     * **絞った実数を1度だけ出す。**
+     *
+     * 観測面（`welcome.tools`・CLI の表示・受け入れ試験）が見ているのは**在庫の写し**なので、
+     * そちらの数は絞っても動かない。実測（ADR-0019「実測で確かめること」①）で
+     * 「仕分け後の道具数」を読むときに、**写しの数を見ると嘘になる**——inc-0050 で
+     * 一度踏んだ「一覧が2つある」罠の裏返し。ここが唯一の真実。
+     */
+    if (!loggedPresentation) {
+      loggedPresentation = true;
+      console.log(`[banto] 道具: 提示 ${wireNames.length} / 在庫 ${tools.length}`);
+    }
+  }
+
+  return created;
 }

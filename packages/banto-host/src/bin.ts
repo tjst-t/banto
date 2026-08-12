@@ -1067,6 +1067,18 @@ async function serve(options: ServeOptions): Promise<void> {
       // **会話ごとに立場が違う**ので、そこだけを足して渡す（PO報告 2026-08-10）
       systemPrompt: SYSTEM_PROMPT + describeThread(identity),
       tools: ownTools,
+      /**
+       * **在庫と提示を分ける**（ADR-0019 決定82）。在庫は `ownTools` のまま全部、
+       * モデルに見せるのは `PRESENTED_TOOL_NAMES` だけにする。
+       *
+       * **実測（2026-08-12・ローカル vLLM・n=80 の対比較）**: 100個そのままだと
+       * 番頭は **48.8% のターンで道具を1本も呼ばない**。43本に絞ると 98.8%、
+       * 散文の一覧を足すと 100%（いずれも p<0.001）。**埋もれた道具が呼ばれない**
+       * のではなく、**道具箱ごと見えなくなっていた**。
+       *
+       * 本番の合成だけが true を渡す——試験や、少数の道具で組む呼び出し元を巻き込まない。
+       */
+      presentSelectedTools: true,
       // 番頭が呼べる道具すべてに掛かる（抜け道を作らない）
       turnBudget,
       memory,
