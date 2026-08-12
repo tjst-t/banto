@@ -222,6 +222,16 @@ export interface DaemonConfig {
    * 外から使うなら前段（Caddy 等）で守る。`BANTO_DAEMON_BIND` で差し替えられる。
    */
   bindHost?: string;
+  /**
+   * PO だけが持つ合言葉（PO裁定 2026-08-11・第0波 0-3）。既定は `BANTO_PO_TOKEN`。
+   *
+   * **決定40 の唯一の例外**。Kobo の口は基本的に認証を持たず、待ち受けアドレスと前段で
+   * 守る——が、`POST {KOBO_MODULE_PATH}/projects/:proj/tasks/:id/approve` だけは
+   * 「番頭ではなく PO が通した」を帳簿に書く口なので、**誰でも名乗れては意味がない**。
+   *
+   * 未設定なら口は閉じたまま（503）。開いていない方が、黙って誰でも PO を名乗れるより良い。
+   */
+  poToken?: string;
   /** Root data directory (event log + registry). Default: ./data */
   dataDir: string;
   /**
@@ -550,11 +560,14 @@ export class Daemon {
   }
 
   static create(config: Partial<DaemonConfig> = {}): Daemon {
+    // 空文字は「設定されていない」と同じに扱う（空の合言葉で開くと、閉じたつもりの口が開く）
+    const poToken = config.poToken || process.env["BANTO_PO_TOKEN"] || undefined;
     const resolved: DaemonConfig = {
       port: config.port ?? parseInt(process.env["BANTO_PORT"] ?? "4500", 10),
       // 決定40: 既定は 127.0.0.1。広げるのは明示だけ（この口は帳簿を書き換えられる）
       bindHost: config.bindHost ?? process.env["BANTO_DAEMON_BIND"] ?? "127.0.0.1",
       dataDir: config.dataDir ?? process.env["BANTO_DATA_DIR"] ?? "./data",
+      ...(poToken !== undefined ? { poToken } : {}),
       watchIntervalMs: config.watchIntervalMs ?? 2000,
       tickIntervalMs:
         config.tickIntervalMs ??
@@ -1356,6 +1369,15 @@ export class Daemon {
     const project = this.registry.list().find((p) => p.id === projectTag);
     if (!project) return { verify: { profile: DEFAULT_VERIFY_PROFILE }, review: { poRequiredPaths: [] }, limits: {} };
     return loadProjectConfig(project.repoPath);
+  }
+
+  /**
+   * PO だけが持つ合言葉（PO裁定 2026-08-11・第0波 0-3）。未設定なら `undefined`。
+   *
+   * D3: 別に持たない。設定の値をそのまま読む——HTTP 面が照合に使う。
+   */
+  poToken(): string | undefined {
+    return this.config.poToken;
   }
 
   /**
