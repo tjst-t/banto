@@ -7,6 +7,8 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+
+import type { BantoHarness, HarnessEvent } from "@banto/core";
 import { Type } from "typebox";
 
 import {
@@ -322,7 +324,7 @@ describe("[task-0012/a2] canvas.* Tool", () => {
 
 // ── WS 配信 ─────────────────────────────────────────────────────────────────
 
-class FakeSession implements HostSession {
+class FakeSession implements BantoHarness {
   readonly sessionId = "test-session";
   isStreaming = false;
   subscribe(): () => void {
@@ -330,6 +332,19 @@ class FakeSession implements HostSession {
   }
   async prompt(): Promise<void> {}
   async abort(): Promise<void> {}
+
+  // ── BantoHarness の残り（ADR-0020 決定89）。章立てはこの試験では使わない ──
+  readonly backendId = "fake";
+  contextTokens(): number | undefined {
+    return undefined;
+  }
+  messageCount(): number {
+    return 0;
+  }
+  transcript(): string {
+    return "";
+  }
+  async startChapter(): Promise<void> {}
 }
 
 let server: BantoHostServer | undefined;
@@ -358,7 +373,7 @@ function waitFor(events: ServerEvent[], predicate: (e: ServerEvent) => boolean, 
 describe("[task-0012/a4] キャンバス状態のWS配信", () => {
   async function start(): Promise<string> {
     const threads = new ThreadRegistry(async () => ({
-      session: new FakeSession(),
+      harness: new FakeSession(),
       tools: createCanvasTools(canvas, catalog),
       canvas,
     }));
@@ -416,7 +431,7 @@ describe("[task-0012/a4] キャンバス状態のWS配信", () => {
 describe("[task-0014] POが直接タブを操作する経路", () => {
   async function start(): Promise<string> {
     const threads = new ThreadRegistry(async () => ({
-      session: new FakeSession(),
+      harness: new FakeSession(),
       tools: createCanvasTools(canvas, catalog),
       canvas,
     }));

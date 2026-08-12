@@ -27,6 +27,7 @@ import {
   HandoffStore,
   createBantoHostSession,
   createHandoffTools,
+  PiHarness,
   parseHandoff,
   renderChapterOpening,
   renderTranscript,
@@ -97,14 +98,31 @@ const goodSummarizer = async (): Promise<ChapterHandoff> => ({
   body: "詳細な経緯。ADR-0003 の二層が未実装であること、FTS5 の前提が崩れていることを確認した。",
 });
 
+/**
+ * ADR-0020 決定89: 章立ては `BantoHarness` の語彙で動く。
+ *
+ * **偽セッションを本物の `PiHarness` で包む**——こうすると、章の検証が seam を
+ * 通ったまま残り、pi 固有の手順（`appendCompaction` ＋ `buildSessionContext`）も
+ * 一緒に検証される。
+ */
+function harnessOf(session: ReturnType<typeof fakeSession>): PiHarness {
+  return new PiHarness({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 偽のセッション。
+    // 契約のうち章立てが使う部分だけを持つ（テストの意図的な絞り込み）
+    session: session as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 同上
+    agentSession: session as any,
+    toLogicalName: (n) => n,
+    renderTranscript,
+  });
+}
+
 function keeper(
   session: ReturnType<typeof fakeSession>,
   overrides: Record<string, unknown> = {}
 ): ChapterKeeper {
   return new ChapterKeeper({
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 偽のセッション。
-    // 契約のうち章立てが使う部分だけを持つ（テストの意図的な絞り込み）
-    session: session as any,
+    harness: harnessOf(session),
     store,
     threadId: "thread-1",
     summarize: goodSummarizer,
@@ -116,11 +134,12 @@ function keeper(
 // ── コンパクションを切る ────────────────────────────────────────────────────
 
 describe("[提案§3.2] 自動コンパクションを切って章立てに置き換える", () => {
-  it("start() で pi の自動コンパクションが切れる", () => {
+  it("ハーネスを組んだ時点で pi の自動コンパクションが切れる（ADR-0020 決定89）", () => {
     const session = fakeSession([], SessionManager.inMemory());
     assert.equal(session.autoCompactionEnabled, true, "前提：既定では入っている");
+    // 章の境界を番頭が持つのは**契約の前提**なので、見張りを始めたかとは別に効く
 
-    keeper(session).start();
+    keeper(session);
     assert.equal(session.autoCompactionEnabled, false, "切れていないと畳む前に潰される");
   });
 });

@@ -30,21 +30,22 @@ import {
   type ServerEvent,
 } from "@banto/host";
 import { TRUNK, branchSpec } from "./threadSpecs.js";
+import type { BantoHarness, HarnessEvent } from "@banto/core";
 import { defineNamespacedTool } from "@banto/core";
 import { Type } from "typebox";
 
 /** 対話ループの偽物。prompt は記録するだけで、イベントは emit で好きに起こす。 */
-class FakeSession implements HostSession {
+class FakeSession implements BantoHarness {
   readonly sessionId: string;
   isStreaming = false;
   prompts: string[] = [];
   disposed = false;
-  private readonly listeners = new Set<(event: unknown) => void>();
+  private readonly listeners = new Set<(event: HarnessEvent) => void>();
 
   constructor(id: string) {
     this.sessionId = id;
   }
-  subscribe(listener: (event: unknown) => void): () => void {
+  subscribe(listener: (event: HarnessEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
@@ -52,9 +53,22 @@ class FakeSession implements HostSession {
     this.prompts.push(text);
   }
   async abort(): Promise<void> {}
-  emit(event: unknown): void {
+  emit(event: HarnessEvent): void {
     for (const listener of this.listeners) listener(event);
   }
+
+  // ── BantoHarness の残り（ADR-0020 決定89）。章立てはこの試験では使わない ──
+  readonly backendId = "fake";
+  contextTokens(): number | undefined {
+    return undefined;
+  }
+  messageCount(): number {
+    return 0;
+  }
+  transcript(): string {
+    return "";
+  }
+  async startChapter(): Promise<void> {}
 }
 
 const catalog = createCanvasCatalog([
@@ -77,7 +91,7 @@ const catalog = createCanvasCatalog([
 let server: BantoHostServer | undefined;
 let threads: ThreadRegistry;
 /** 作られた順のスレッド部品。テストから中身を覗くため。 */
-let made: Array<{ session: FakeSession; canvas: Canvas }>;
+let made: Array<{ harness: FakeSession; canvas: Canvas }>;
 
 beforeEach(() => {
   // 言伝の回数はモジュールに溜まる。試験どうしで持ち越さない
@@ -86,9 +100,9 @@ beforeEach(() => {
   threads = new ThreadRegistry(async (threadId) => {
     const session = new FakeSession(`session-of-${threadId}`);
     const canvas = new Canvas(catalog);
-    made.push({ session, canvas });
+    made.push({ harness: session, canvas });
     return {
-      session,
+      harness: session,
       canvas,
       tools: [
         ...createCanvasTools(canvas, catalog),
@@ -194,7 +208,7 @@ describe("[task-0088/a1] 幹はプロジェクトの単位で、畳めない（A
     await threads.open(branchSpec("枝2"));
 
     assert.equal(threads.list().length, 3);
-    const ids = new Set(made.map((m) => m.session.sessionId));
+    const ids = new Set(made.map((m) => m.harness.sessionId));
     assert.equal(ids.size, 3, "枝ごとに別の対話ループが要る");
   });
 
@@ -216,7 +230,7 @@ describe("[PO報告 2026-08-10] 番頭は「いまどの会話に居るか」を
     const seen: Array<Record<string, unknown> | undefined> = [];
     const registry = new ThreadRegistry(async (threadId, _resume, _model, identity) => {
       seen.push(identity as Record<string, unknown> | undefined);
-      return { session: new FakeSession(`s-${threadId}`), tools: [] };
+      return { harness: new FakeSession(`s-${threadId}`), tools: [] };
     });
 
     await registry.open({ kind: "trunk", main: true, title: "帳場" });
@@ -260,7 +274,7 @@ describe("[PO報告 2026-08-10] 番頭は「いまどの会話に居るか」を
     const seen: Array<Record<string, unknown> | undefined> = [];
     const registry = new ThreadRegistry(async (threadId, _resume, _model, identity) => {
       seen.push(identity as Record<string, unknown> | undefined);
-      return { session: new FakeSession(`s-${threadId}`), tools: [] };
+      return { harness: new FakeSession(`s-${threadId}`), tools: [] };
     });
 
     const trunk = await registry.open({ kind: "trunk", title: "banto 開発" });
@@ -650,8 +664,8 @@ describe("[task-0035/a3] イベントとメッセージがスレッドで分か�
       client.send({ type: "prompt", threadId: second.id, text: "あっちへ" });
       await waitFor(events, (e) => e.type === "turn_end" && e.threadId === second.id);
 
-      assert.deepEqual(made[1]!.session.prompts, ["あっちへ"]);
-      assert.deepEqual(made[0]!.session.prompts, [], "別のスレッドには入らない");
+      assert.deepEqual(made[1]!.harness.prompts, ["あっちへ"]);
+      assert.deepEqual(made[0]!.harness.prompts, [], "別のスレッドには入らない");
       // 幹に立つのは枝の札だけ。**枝の中身は幹に流さない**（決定77）
       assert.deepEqual(
         threads.resolve().transcript,
@@ -672,8 +686,8 @@ describe("[task-0035/a3] イベントとメッセージがスレッドで分か�
     try {
       client.send({ type: "prompt", text: "既定へ" });
       await waitFor(events, (e) => e.type === "turn_end");
-      assert.deepEqual(made[0]!.session.prompts, ["既定へ"]);
-      assert.deepEqual(made[1]!.session.prompts, []);
+      assert.deepEqual(made[0]!.harness.prompts, ["既定へ"]);
+      assert.deepEqual(made[1]!.harness.prompts, []);
     } finally {
       client.close();
     }
@@ -687,7 +701,7 @@ describe("[task-0035/a3] イベントとメッセージがスレッドで分か�
       client.send({ type: "prompt", threadId: "thread-999", text: "迷子" });
       const error = await waitFor(events, (e) => e.type === "error");
       assert.match(error.type === "error" ? error.message : "", /unknown thread/);
-      assert.deepEqual(made[0]!.session.prompts, [], "別の会話に発話が紛れ込まない");
+      assert.deepEqual(made[0]!.harness.prompts, [], "別の会話に発話が紛れ込まない");
     } finally {
       client.close();
     }
@@ -700,10 +714,7 @@ describe("[task-0035/a3] イベントとメッセージがスレッドで分か�
     const events: ServerEvent[] = [];
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
     try {
-      made[1]!.session.emit({
-        type: "message_update",
-        assistantMessageEvent: { type: "text_delta", delta: "はい" },
-      });
+      made[1]!.harness.emit({ type: "text_delta", delta: "はい" });
       const delta = await waitFor(events, (e) => e.type === "text_delta");
       assert.equal(delta.type === "text_delta" && delta.threadId, second.id);
       // 履歴も宛先スレッドにだけ積まれる
@@ -837,7 +848,7 @@ describe("[提案§3.2] chapter_close（人が章を区切る）", () => {
     threads = new ThreadRegistry(async (threadId) => {
       const session = new FakeSession(`session-of-${threadId}`);
       return {
-        session,
+        harness: session,
         tools: [],
         closeChapter: async () => folded.push(threadId) > 0,
       };
@@ -872,7 +883,7 @@ describe("[提案§3.2] chapter_close（人が章を区切る）", () => {
     threads = new ThreadRegistry(async (threadId) => {
       const session = new FakeSession(`session-of-${threadId}`);
       made = session;
-      return { session, tools: [], closeChapter: async () => true };
+      return { harness: session, tools: [], closeChapter: async () => true };
     });
     const url = await start();
     const events: ServerEvent[] = [];
@@ -901,7 +912,7 @@ describe("[提案§3.2] chapter_close（人が章を区切る）", () => {
 
   it("[PO報告 2026-08-11] 畳むものが無いときは黙らない（I2）", async () => {
     threads = new ThreadRegistry(async (threadId) => ({
-      session: new FakeSession(`session-of-${threadId}`),
+      harness: new FakeSession(`session-of-${threadId}`),
       tools: [],
       // 溜まっていない章は畳みようがない（ChapterKeeper が undefined を返す形）
       closeChapter: async () => false,
@@ -946,7 +957,7 @@ describe("[提案§3.2] chapter_close（人が章を区切る）", () => {
     threads = new ThreadRegistry(async (threadId) => {
       const session = new FakeSession(`session-of-${threadId}`);
       made = session;
-      return { session, tools: [], closeChapter: async () => folded.push(threadId) > 0 };
+      return { harness: session, tools: [], closeChapter: async () => folded.push(threadId) > 0 };
     });
     const url = await start();
     const events: ServerEvent[] = [];
@@ -965,7 +976,7 @@ describe("[提案§3.2] chapter_close（人が章を区切る）", () => {
   it("畳んだ会話では断る", async () => {
     const folded: string[] = [];
     threads = new ThreadRegistry(async (threadId) => ({
-      session: new FakeSession(`session-of-${threadId}`),
+      harness: new FakeSession(`session-of-${threadId}`),
       tools: [],
       closeChapter: async () => folded.push(threadId) > 0,
     }));
@@ -987,7 +998,7 @@ describe("[提案§3.2] chapter_close（人が章を区切る）", () => {
 
   it("畳めなかった理由をそのまま出す（資料が書けなければ畳まない）", async () => {
     threads = new ThreadRegistry(async (threadId) => ({
-      session: new FakeSession(`session-of-${threadId}`),
+      harness: new FakeSession(`session-of-${threadId}`),
       tools: [],
       closeChapter: async () => {
         throw new Error("章の引き継ぎ資料が空で返りました");
@@ -1245,7 +1256,7 @@ describe("[task-0058] 番頭が会話に名前を付け直す（PO要望 2026-08
 
     assert.equal(thread.transcript.length, 1);
     assert.equal(made[0]!.canvas.snapshot().tabs.length, 1);
-    assert.equal(made[0]!.session.prompts.length, 0, "名付けでターンは回らない");
+    assert.equal(made[0]!.harness.prompts.length, 0, "名付けでターンは回らない");
   });
 
   it("[task-0058] 隣の会話の名前は変えられない（決定35a：宛先は自分に固定）", async () => {
@@ -1336,7 +1347,7 @@ describe("[PO報告 2026-08-11] 暴走中でも PO の言葉が届く", () => {
       busy = new BusySession(`session-of-${threadId}`);
       // **偽のまま**。暴走中に PO が入力したときの実際の姿
       busy.isStreaming = false;
-      return { session: busy, tools: [] };
+      return { harness: busy, tools: [] };
     });
     const url = await start();
     const events: ServerEvent[] = [];
@@ -1424,8 +1435,8 @@ describe("[task-0035/a7] 知らせの宛先（決定35a）", () => {
 
     await server!.notify("職人からの報告", { threadId: second.id, source: "worker" });
 
-    assert.deepEqual(made[1]!.session.prompts, ["職人からの報告"], "宛先のターンが回る");
-    assert.deepEqual(made[0]!.session.prompts, [], "別のスレッドには届かない");
+    assert.deepEqual(made[1]!.harness.prompts, ["職人からの報告"], "宛先のターンが回る");
+    assert.deepEqual(made[0]!.harness.prompts, [], "別のスレッドには届かない");
     assert.deepEqual(second.transcript.slice(0, 1), [
       { role: "notice", source: "worker", text: "職人からの報告" },
     ]);
@@ -1445,8 +1456,8 @@ describe("[task-0035/a7] 知らせの宛先（決定35a）", () => {
     await start();
     await threads.open(branchSpec("枝1"));
     await server!.notify("宛先なしの報告");
-    assert.deepEqual(made[0]!.session.prompts, ["宛先なしの報告"]);
-    assert.deepEqual(made[1]!.session.prompts, []);
+    assert.deepEqual(made[0]!.harness.prompts, ["宛先なしの報告"]);
+    assert.deepEqual(made[1]!.harness.prompts, []);
   });
 });
 
@@ -1503,7 +1514,7 @@ describe("[task-0088/a3] 畳んだ枝は履歴に残り、再開できる", () =
     threads.merge(second.id, "結論");
 
     await server!.notify("職人からの報告", { threadId: second.id, source: "worker" });
-    assert.deepEqual(made[1]!.session.prompts, ["職人からの報告"]);
+    assert.deepEqual(made[1]!.harness.prompts, ["職人からの報告"]);
   });
 
   it("[task-0088/a3] thread_merge / thread_reopen がプロトコルから使える", async () => {

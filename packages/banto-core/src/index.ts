@@ -102,6 +102,20 @@ export type {
   DriverId,
 } from "./runtime-driver.js";
 
+/**
+ * BantoHarness — 番頭の**会話の契約**（ADR-0020 決定88・89）。
+ *
+ * `RuntimeDriver`（上）と併置する。あちらは**プロセスの監督＝関所**、こちらは
+ * **会話のやり方＝差し替えるもの**。層が違うので流用しない。
+ */
+export type {
+  BantoHarness,
+  HarnessEvent,
+  HarnessImage,
+  HarnessPromptOptions,
+  ChapterOpening,
+} from "./banto-harness.js";
+
 // Executor + audit tool definitions (runtime-neutral; no pi/agent-sdk imports)
 // Tool 契約（ランタイム中立・決定1／task-0025）。契約の型はこの1つだけ
 export { defineBantoTool, defineNamespacedTool } from "./banto-tool.js";

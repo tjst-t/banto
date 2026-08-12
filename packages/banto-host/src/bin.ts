@@ -17,7 +17,13 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { getModel, getModels } from "@earendil-works/pi-ai/compat";
-import { getAgentDir, ModelRegistry, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+  getAgentDir,
+  ModelRegistry,
+  ModelRuntime,
+  SessionManager,
+  type AgentSession,
+} from "@earendil-works/pi-coding-agent";
 import {
   JsonlMemoryStore,
   LlmCatalog,
@@ -49,7 +55,7 @@ import { BantoHostServer } from "./server.js";
 import { createArtifactTools } from "./artifact-tools.js";
 import { ArtifactStore } from "./artifacts.js";
 import { createLlmChapterSummarizer } from "./chapter-summarizer.js";
-import { ChapterKeeper } from "./chapters.js";
+import { ChapterKeeper, renderTranscript } from "./chapters.js";
 import { createHandoffTools } from "./handoff-tools.js";
 import { HandoffStore } from "./handoffs.js";
 import { applyMemoryDeltas, createLlmMemoryExtractor } from "./memory-extraction.js";
@@ -95,6 +101,8 @@ import { createTurnBudget } from "./turn-budget.js";
 import { withWorkerCard } from "./worker-card.js";
 import { bindToolArgs, createThreadTools } from "./thread-tools.js";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
+import { fromWireToolName } from "@banto/core";
+import { PiHarness } from "./pi-harness.js";
 import { Type } from "typebox";
 import {
   ThreadRegistry,
@@ -1128,7 +1136,30 @@ async function serve(options: ServeOptions): Promise<void> {
       },
     };
 
-    // 提案§3.2: pi の自動コンパクションを切り、章立てに置き換える。
+    /**
+     * **pi バックエンド**（ADR-0020 決定88・89）。ここから先、番頭のターンループは
+     * `BantoHarness` の語彙だけで動く——pi の `agent.state.messages` や
+     * `sessionManager` に触るのはこの皮の内側だけになる。
+     *
+     * 生成時に自動コンパクションを切る（章の境界は番頭が持つ）。
+     */
+    const harness = new PiHarness({
+      // 会話の口は皮を通す（空応答ガード＋ターン予算のリセット）
+      session: countingSession,
+      // 文脈と章の操作は pi の本体でしか出来ない。**皮では届かない**
+      agentSession: session,
+      toLogicalName: (wireName) => {
+        try {
+          return fromWireToolName(wireName);
+        } catch {
+          // 名前空間規則に従わない名前（pi 組み込み等）はそのまま通す
+          return wireName;
+        }
+      },
+      renderTranscript,
+    });
+
+    // 提案§3.2: 自動コンパクションを切り（ハーネスが済ませた）、章立てに置き換える。
     //
     // **要約器は本セッションと別の呼び出し**（決定28）。安いモデルがカタログにあれば
     // それを使い、無ければこの会話のモデルで書く。要約器を用意できないときは
@@ -1148,7 +1179,7 @@ async function serve(options: ServeOptions): Promise<void> {
     let chapters: ChapterKeeper | undefined;
     if (writerModel) {
       chapters = new ChapterKeeper({
-        session,
+        harness,
         store: handoffs,
         threadId,
         summarize: createLlmChapterSummarizer({
@@ -1219,7 +1250,7 @@ async function serve(options: ServeOptions): Promise<void> {
     } else {
       console.warn(
         `[banto] ${threadId}: 要約に使えるモデルが無いため章立てを始めません` +
-          "（文脈は pi の自動コンパクションのままです）"
+          "（文脈のまとめ直しはハーネス任せになります）"
       );
     }
 
@@ -1238,7 +1269,7 @@ async function serve(options: ServeOptions): Promise<void> {
         ...createHandoffTools(handoffs, threadId),
       ];
     return {
-      session: countingSession,
+      harness,
       canvas,
       tools,
       /**
@@ -1359,11 +1390,11 @@ async function serve(options: ServeOptions): Promise<void> {
     onSelectModel: async (thread, nextProvider: string, nextId: string) => {
       const next = resolveModel(nextProvider, nextId);
       if (!next) throw new Error(`${nextProvider}/${nextId} は使えるモデルの一覧にありません`);
-      if (!thread.session.setModel) {
+      if (!thread.harness.setModel) {
         throw new Error("このハーネスは動作中のモデル切替に対応していません");
       }
       // **その会話だけ**に効かせる。他の会話は自分のモデルのまま（PO裁定 2026-08-04）
-      await thread.session.setModel(next);
+      await thread.harness.setModel(next);
       console.log(`[banto] model(${thread.id}): ${nextProvider}/${nextId}`);
       return {
         id: nextId,
