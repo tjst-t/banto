@@ -17,6 +17,13 @@ export {
 export { createBantoHostSession, type CreateBantoHostSessionOptions } from "./host-session.js";
 // pi バックエンド（ADR-0020 決定89）。`BantoHarness` の第一実装
 export { PiHarness, type PiHarnessOptions } from "./pi-harness.js";
+// Agent SDK バックエンド（ADR-0020 決定89・91〜93）。番頭を Claude Code で回す
+export {
+  ClaudeAgentHarness,
+  BANTO_MCP_SERVER,
+  type ClaudeAgentHarnessOptions,
+} from "./claude-agent-harness.js";
+export { jsonSchemaToZod, jsonSchemaToZodShape } from "./schema-to-zod.js";
 export {
   PRESENTED_TOOL_NAMES,
   presentedWireNames,

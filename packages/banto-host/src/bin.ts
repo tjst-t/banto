@@ -101,8 +101,10 @@ import { createTurnBudget } from "./turn-budget.js";
 import { withWorkerCard } from "./worker-card.js";
 import { bindToolArgs, createThreadTools } from "./thread-tools.js";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
-import { fromWireToolName } from "@banto/core";
+import { fromWireToolName, type BantoHarness } from "@banto/core";
 import { PiHarness } from "./pi-harness.js";
+import { ClaudeAgentHarness } from "./claude-agent-harness.js";
+import { selectPresentedTools } from "./presented-tools.js";
 import { Type } from "typebox";
 import {
   ThreadRegistry,
@@ -1137,13 +1139,27 @@ async function serve(options: ServeOptions): Promise<void> {
     };
 
     /**
-     * **pi バックエンド**（ADR-0020 決定88・89）。ここから先、番頭のターンループは
-     * `BantoHarness` の語彙だけで動く——pi の `agent.state.messages` や
-     * `sessionManager` に触るのはこの皮の内側だけになる。
+     * **バックエンドを選ぶ**（ADR-0020 決定88・95）。設定は起動時に読む——走っている
+     * 会話の途中で会話のやり方は変えられない（設定画面も `restartRequired`）。
      *
-     * 生成時に自動コンパクションを切る（章の境界は番頭が持つ）。
+     * Agent SDK は **Claude 以外のモデルに繋げない**（公式が明文で非対応）。
+     * ローカルの無料モデルで回したいなら pi を選ぶ。
+     *
+     * ここから先、番頭のターンループは `BantoHarness` の語彙だけで動く——pi の
+     * `agent.state.messages` や `sessionManager` に触るのは皮の内側だけになる。
      */
-    const harness = new PiHarness({
+    const harnessChoice = settings.all().harness?.backend ?? "pi";
+    const harness: BantoHarness =
+      harnessChoice === "claude-agent-sdk"
+        ? new ClaudeAgentHarness({
+            systemPrompt: SYSTEM_PROMPT + describeThread(identity),
+            // 提示する集合だけを載せる（ADR-0019 決定82）。組み込みは `tools: []` で0本
+            tools: selectPresentedTools(ownTools),
+            ...(settings.all().harness?.model
+              ? { model: settings.all().harness!.model! }
+              : {}),
+          })
+        : new PiHarness({
       // 会話の口は皮を通す（空応答ガード＋ターン予算のリセット）
       session: countingSession,
       // 文脈と章の操作は pi の本体でしか出来ない。**皮では届かない**

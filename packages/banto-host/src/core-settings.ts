@@ -187,6 +187,60 @@ export function createCoreSettingsSections(
         },
       },
     },
+    {
+      id: "harness",
+      spec: {
+        title: "番頭のバックエンド",
+        description:
+          "**番頭の会話を回すのは誰か**（ADR-0020 決定88）。pi は好きなモデルを挿せる" +
+          "（ローカルの vLLM も可）。Claude Code は手元のサブスクリプションで動くが、" +
+          "**Claude 以外のモデルには繋げない**（公式が明文で非対応）。" +
+          "職人のバックエンドは「職人」の面で別に選ぶ。",
+        fields: [
+          {
+            key: "backend",
+            label: "会話を回すバックエンド",
+            type: "select",
+            options: [
+              { value: "pi", label: "pi（モデルは「LLM・モデル」で選ぶ）" },
+              { value: "claude-agent-sdk", label: "Claude Code（Agent SDK・Claude 専用）" },
+            ],
+            description:
+              "pi は LLM 登録のモデルで動く。Claude Code は ~/.claude の認証をそのまま使う",
+            restartRequired: true,
+          },
+          {
+            key: "model",
+            label: "モデル（Claude Code のときだけ）",
+            type: "text",
+            placeholder: "opus / sonnet / haiku",
+            description:
+              "別名か完全なモデルID。空なら Claude Code の既定。" +
+              "**pi のときは使わない**——そちらは「LLM・モデル」の標準が効く",
+            restartRequired: true,
+          },
+        ],
+        read: () => {
+          const current = store.all().harness ?? {};
+          return { backend: current.backend ?? "pi", model: current.model ?? "" };
+        },
+        write: (values) => {
+          const backend = String(values["backend"] ?? "pi");
+          if (backend !== "pi" && backend !== "claude-agent-sdk") {
+            // I2: 知らないバックエンドを黙って保存しない（起動して初めて止まるより、ここで断る）
+            throw new Error(`知らないバックエンドです: ${backend}`);
+          }
+          const model = String(values["model"] ?? "").trim();
+          store.update("harness", { backend, ...(model ? { model } : {}) });
+          return {
+            applied: false,
+            message:
+              "保存しました。**次の起動から効きます**" +
+              "（走っている会話の途中でバックエンドは変えられません）。",
+          };
+        },
+      } as ModuleSettingsSpec,
+    },
     // ADR-0011 決定42・43: LLM は中核。項目では表しきれないので専用の面を宣言する
     ...(options.llmCatalog
       ? [
