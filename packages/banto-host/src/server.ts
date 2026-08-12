@@ -18,7 +18,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
-import type { ImageContent } from "@earendil-works/pi-ai";
+import type { BantoHarness, HarnessEvent, HarnessImage } from "@banto/core";
 
 import type { Inbox, InboxEffect, InboxItem } from "./inbox.js";
 import { THEME_URL_BASE, type UserThemes } from "./user-themes.js";
@@ -161,7 +161,7 @@ export interface HostSession {
   subscribe(listener: (event: unknown) => void): () => void;
   prompt(
     text: string,
-    options?: { streamingBehavior?: "steer" | "followUp"; images?: ImageContent[] }
+    options?: { streamingBehavior?: "steer" | "followUp"; images?: HarnessImage[] }
   ): Promise<void>;
   abort(): Promise<void>;
   /**
@@ -417,7 +417,7 @@ export class BantoHostServer {
     this.attached.add(thread.id);
 
     thread.disposers.push(
-      thread.session.subscribe((event) => this.handleSessionEvent(thread, event))
+      thread.harness.subscribe((event) => this.handleHarnessEvent(thread, event))
     );
     // D3: キャンバスの真実はホスト側。状態が変わるたび全クライアントへ配る
     if (thread.canvas) {
@@ -543,14 +543,14 @@ export class BantoHostServer {
     options: Parameters<HostSession["prompt"]>[1] = {}
   ): Promise<void> {
     try {
-      await thread.session.prompt(text, {
+      await thread.harness.prompt(text, {
         ...options,
-        ...(thread.session.isStreaming ? { streamingBehavior: "steer" as const } : {}),
+        ...(thread.harness.isStreaming ? { streamingBehavior: "steer" as const } : {}),
       });
     } catch (err) {
       // ターンの最中だと分かったので、積み直す。それ以外の失敗はそのまま上へ
       if (!isBusyError(err)) throw err;
-      await thread.session.prompt(text, { ...options, streamingBehavior: "steer" as const });
+      await thread.harness.prompt(text, { ...options, streamingBehavior: "steer" as const });
     }
   }
 
@@ -723,7 +723,7 @@ export class BantoHostServer {
     this.send(ws, {
       type: "welcome",
       // スレッドを知らないクライアントとの互換。扱えるクライアントは threads を見る
-      ...(defaultThread ? { sessionId: defaultThread.session.sessionId } : {}),
+      ...(defaultThread ? { sessionId: defaultThread.harness.sessionId } : {}),
       threads: threads.map((t) => t.view()),
       ...(defaultThread ? { defaultThreadId: defaultThread.id } : {}),
       tools: defaultThread?.toolNames ?? [],
@@ -921,7 +921,7 @@ export class BantoHostServer {
        * 自分が何をしていたか分からなくなる（自動の側が `agent_end` だけを見ているのと
        * 同じ理由）。待たせるのではなく断る——POは終わってから押し直せる。
        */
-      if (thread.session.isStreaming) {
+      if (thread.harness.isStreaming) {
         this.send(ws, {
           type: "error",
           message: "番頭が喋っている最中は区切れません。返事が終わってから押してください",
@@ -977,7 +977,7 @@ export class BantoHostServer {
     }
 
     if (message?.type === "abort") {
-      await thread.session.abort();
+      await thread.harness.abort();
       return;
     }
 
@@ -1057,7 +1057,7 @@ export class BantoHostServer {
       // 保存して file.read で読めるようにする（パス注釈をプロンプトに追記）。
       // I2: 非対応モデルへの画像は握りつぶさず、理由を返して prompt 自体を処理しない
       let text = message.text;
-      const images: ImageContent[] = [];
+      const images: HarnessImage[] = [];
       // 会話に残す添付。**中身ではなく保存先だけ**を持つ（TranscriptAttachment）
       const recorded: TranscriptAttachment[] = [];
       if (message.attachments && message.attachments.length > 0) {
@@ -1174,7 +1174,14 @@ export class BantoHostServer {
     }
   }
 
-  private handleSessionEvent(thread: Thread, event: unknown): void {
+  /**
+   * ハーネスの出来事を受けて、履歴へ積み・配信する（ADR-0020 決定89）。
+   *
+   * **翻訳はもうここに無い。** 生のイベントを解釈していたのはバックエンド依存の仕事で、
+   * ハーネスの内側へ下ろした。ここに残るのは番頭の仕事——宛先（threadId）を付け、
+   * 大きすぎる中身を切り詰め（決定81）、履歴に残し、配る。
+   */
+  private handleHarnessEvent(thread: Thread, event: HarnessEvent): void {
     const translated = this.toServerEvent(thread, event);
     if (!translated) return;
 
@@ -1209,125 +1216,53 @@ export class BantoHostServer {
   }
 
   /**
-   * ハーネスのセッションイベントを Banto のプロトコルへ変換する。
-   * 対象外のイベントは undefined（そのまま捨てる）。
+   * ハーネスの語彙（`HarnessEvent`）を Banto のプロトコル（`ServerEvent`）へ写す。
+   *
+   * **バックエンド依存の解釈はここに無い**（ADR-0020 決定89）。残っているのは
+   * 番頭の仕事だけ——宛先を付ける、中身を切り詰める（決定81 `TOOL_PAYLOAD_MAX_CHARS`）、
+   * 文脈の使用量を覚える。対象外は undefined（そのまま捨てる）。
    */
-  private toServerEvent(thread: Thread, event: unknown): ServerEvent | undefined {
-    const e = event as {
-      type?: string;
-      toolCallId?: string;
-      toolName?: string;
-      isError?: boolean;
-      args?: unknown;
-      result?: unknown;
-      assistantMessageEvent?: { type?: string; delta?: string };
-    } | null;
-
-    if (e?.type === "message_update" && e.assistantMessageEvent?.type === "text_delta") {
-      return { type: "text_delta", threadId: thread.id, delta: String(e.assistantMessageEvent.delta) };
-    }
-    // 思考（thinking）。ハーネスは text とは別のイベントで出す
-    if (e?.type === "message_update" && e.assistantMessageEvent?.type === "thinking_start") {
-      this.thinkingStartedAt.set(thread.id, Date.now());
-      return undefined;
-    }
-    if (e?.type === "message_update" && e.assistantMessageEvent?.type === "thinking_delta") {
-      return {
-        type: "reasoning_delta",
-        threadId: thread.id,
-        delta: String(e.assistantMessageEvent.delta),
-      };
-    }
-    if (e?.type === "message_update" && e.assistantMessageEvent?.type === "thinking_end") {
-      const startedAt = this.thinkingStartedAt.get(thread.id);
-      this.thinkingStartedAt.delete(thread.id);
-      // 開始を見ていない（途中で繋がった等）ときは 0。時間を推測して名乗らない（I1）
-      return {
-        type: "reasoning_end",
-        threadId: thread.id,
-        durationMs: startedAt === undefined ? 0 : Date.now() - startedAt,
-      };
-    }
-    /**
-     * 文脈のまとめ直し（compaction）。**黙って進めない**——ハーネスは文脈が長くなると
-     * 自動で会話を要約して置き換える。話した内容が実際に削られるので、起きたことは
-     * 会話に残す（PO要望 2026-08-04：それまで画面には何も出ていなかった）。
-     */
-    if (e?.type === "compaction_end") {
-      const done = e as {
-        reason?: string;
-        aborted?: boolean;
-        errorMessage?: string;
-        result?: { tokensBefore?: number };
-      };
-      if (done.aborted) return undefined;
-      // I2: 失敗したことも隠さない（要約できないまま長い文脈で走り続ける）
-      if (done.errorMessage) {
+  private toServerEvent(thread: Thread, event: HarnessEvent): ServerEvent | undefined {
+    switch (event.type) {
+      case "text_delta":
+        return { type: "text_delta", threadId: thread.id, delta: event.delta };
+      case "reasoning_delta":
+        return { type: "reasoning_delta", threadId: thread.id, delta: event.delta };
+      case "reasoning_end":
+        return { type: "reasoning_end", threadId: thread.id, durationMs: event.durationMs };
+      case "notice":
+        return { type: "notice", threadId: thread.id, source: event.source, text: event.text };
+      case "turn_end": {
+        // そのターンで運んだ量＝次に運ぶ量の目安。分かったときだけ画面へ出す
+        if (event.contextTokens === undefined || event.contextTokens <= 0) return undefined;
+        this.contextTokens.set(thread.id, event.contextTokens);
+        return { type: "context_state", threadId: thread.id, tokens: event.contextTokens };
+      }
+      case "run_end":
+        // 章を閉じるかの判定は ChapterKeeper が同じ出来事を購読して行う。画面には出さない
+        return undefined;
+      case "tool_start": {
+        const input = clampToolPayload(event.input);
         return {
-          type: "notice",
+          type: "tool_start",
           threadId: thread.id,
-          source: "system",
-          text: `文脈のまとめ直しに失敗しました：${done.errorMessage}`,
+          toolCallId: event.toolCallId,
+          name: event.name,
+          ...(input !== undefined ? { input } : {}),
         };
       }
-      const before = done.result?.tokensBefore;
-      const why =
-        done.reason === "overflow"
-          ? "文脈があふれたため"
-          : done.reason === "manual"
-            ? "指示により"
-            : "文脈が長くなったため";
-      return {
-        type: "notice",
-        threadId: thread.id,
-        source: "system",
-        text:
-          `${why}、ここまでの会話をまとめ直しました` +
-          (before ? `（まとめる前 ${before.toLocaleString()} トークン）` : "") +
-          "。**古いやり取りは要約に置き換わっています**——番頭が細部を覚えていないときは、" +
-          "必要な前提をもう一度伝えてください。",
-      };
-    }
-
-    // ターンの終わりに、そのターンで運んだトークン数が分かる。
-    // **入力＋キャッシュ＋出力**＝次のターンで運ぶ量の目安（文脈の使用量として出す）
-    if (e?.type === "turn_end") {
-      const usage = (e as { message?: { usage?: Record<string, unknown> } }).message?.usage;
-      if (usage) {
-        const tokens =
-          numberOf(usage["input"]) +
-          numberOf(usage["cacheRead"]) +
-          numberOf(usage["cacheWrite"]) +
-          numberOf(usage["output"]);
-        if (tokens > 0) {
-          this.contextTokens.set(thread.id, tokens);
-          return { type: "context_state", threadId: thread.id, tokens };
-        }
+      case "tool_end": {
+        const output = clampToolPayload(event.output);
+        return {
+          type: "tool_end",
+          threadId: thread.id,
+          toolCallId: event.toolCallId,
+          name: event.name,
+          isError: event.isError,
+          ...(output !== undefined ? { output } : {}),
+        };
       }
-      return undefined;
     }
-    if (e?.type === "tool_execution_start") {
-      const input = clampToolPayload(e.args);
-      return {
-        type: "tool_start",
-        threadId: thread.id,
-        toolCallId: String(e.toolCallId),
-        name: this.toLogicalName(String(e.toolName)),
-        ...(input !== undefined ? { input } : {}),
-      };
-    }
-    if (e?.type === "tool_execution_end") {
-      const output = clampToolPayload(e.result);
-      return {
-        type: "tool_end",
-        threadId: thread.id,
-        toolCallId: String(e.toolCallId),
-        name: this.toLogicalName(String(e.toolName)),
-        isError: Boolean(e.isError),
-        ...(output !== undefined ? { output } : {}),
-      };
-    }
-    return undefined;
   }
 
   private send(ws: WebSocket, event: ServerEvent): void {

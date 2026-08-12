@@ -10,6 +10,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Type } from "typebox";
+import type { BantoHarness, HarnessEvent } from "@banto/core";
 import { JsonlMemoryStore, ScopedMemory } from "@banto/core";
 
 import {
@@ -295,7 +296,7 @@ describe("[task-0015] 組み込みモジュール", () => {
 
 // ── UI へ接続情報が渡ること（a3）─────────────────────────────────────────────
 
-class FakeSession implements HostSession {
+class FakeSession implements BantoHarness {
   readonly sessionId = "test-session";
   isStreaming = false;
   subscribe(): () => void {
@@ -303,6 +304,19 @@ class FakeSession implements HostSession {
   }
   async prompt(): Promise<void> {}
   async abort(): Promise<void> {}
+
+  // ── BantoHarness の残り（ADR-0020 決定89）。章立てはこの試験では使わない ──
+  readonly backendId = "fake";
+  contextTokens(): number | undefined {
+    return undefined;
+  }
+  messageCount(): number {
+    return 0;
+  }
+  transcript(): string {
+    return "";
+  }
+  async startChapter(): Promise<void> {}
 }
 
 describe("[task-0015/a3] UI へモジュールの接続情報が渡る", () => {
@@ -319,7 +333,7 @@ describe("[task-0015/a3] UI へモジュールの接続情報が渡る", () => {
     ]);
     const catalog = createCanvasCatalog(modules.views());
     const threads = new ThreadRegistry(async () => ({
-      session: new FakeSession(),
+      harness: new FakeSession(),
       tools: [],
       canvas: new Canvas(catalog),
     }));
@@ -365,7 +379,7 @@ describe("[task-0015/a3] UI へモジュールの接続情報が渡る", () => {
       },
     ]);
     const threads = new ThreadRegistry(async () => ({
-      session: new FakeSession(),
+      harness: new FakeSession(),
       tools: [],
       canvas: new Canvas(catalog),
     }));

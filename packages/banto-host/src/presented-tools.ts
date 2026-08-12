@@ -109,6 +109,12 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
   // 章の引き継ぎ（決定47b）
   "handoff.read",
   "handoff.list",
+  /**
+   * **読み取り1本だけ残す。** 番頭が「いま自分は何で動いているか」を答えられなくなると、
+   * モデルの相談そのものができない（実測32回・`llm.*` 19本の中で最多）。
+   * 書き換え系18本は設定画面にあるので落とす（決定41c「設定の口は番頭に渡さない」）。
+   */
+  "llm.list",
 ];
 
 /** ドメインごとの一行説明（決定84-5 の散文一覧を組むのに使う）。 */

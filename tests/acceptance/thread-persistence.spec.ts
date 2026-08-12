@@ -8,6 +8,8 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+
+import type { BantoHarness, HarnessEvent } from "@banto/core";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -25,7 +27,7 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-class FakeSession implements HostSession {
+class FakeSession implements BantoHarness {
   readonly sessionId = "s";
   isStreaming = false;
   subscribe(): () => void {
@@ -33,6 +35,19 @@ class FakeSession implements HostSession {
   }
   async prompt(): Promise<void> {}
   async abort(): Promise<void> {}
+
+  // ── BantoHarness の残り（ADR-0020 決定89）。章立てはこの試験では使わない ──
+  readonly backendId = "fake";
+  contextTokens(): number | undefined {
+    return undefined;
+  }
+  messageCount(): number {
+    return 0;
+  }
+  transcript(): string {
+    return "";
+  }
+  async startChapter(): Promise<void> {}
 }
 
 /** 器を作るたびに、渡された復元元を記録する。 */
@@ -40,7 +55,7 @@ function factoryRecording(seen: Array<string | undefined>): ThreadFactory {
   return async (threadId, resumeFrom) => {
     seen.push(resumeFrom);
     return {
-      session: new FakeSession(),
+      harness: new FakeSession(),
       tools: [],
       sessionFile: path.join(dir, `${threadId}-session.jsonl`),
     };
@@ -271,7 +286,7 @@ describe("[PO報告 2026-08-10] 読み戻した会話にも「いまどの会話
     const seen: Array<Record<string, unknown> | undefined> = [];
     const second = new ThreadRegistry(async (threadId, _resume, _model, identity) => {
       seen.push(identity as Record<string, unknown> | undefined);
-      return { session: new FakeSession(), tools: [] };
+      return { harness: new FakeSession(), tools: [] };
     }, new ThreadStore(dir));
     await second.restore();
 

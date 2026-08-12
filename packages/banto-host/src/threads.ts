@@ -22,7 +22,7 @@
  */
 
 import type { Canvas } from "./canvas.js";
-import type { HostSession } from "./server.js";
+import type { BantoHarness } from "@banto/core";
 import type { NamespacedToolDefinition } from "./tool-registry.js";
 import type { BranchOpener, ThreadView, TranscriptEntry } from "./protocol.js";
 import type { ThreadStore } from "./thread-store.js";
@@ -72,7 +72,8 @@ export type ThreadFactory = (
   /** その会話が何であるか（帳場・幹・枝）。器を作る側がシステムプロンプトへ入れる。 */
   identity?: ThreadIdentity
 ) => Promise<{
-  session: HostSession;
+  /** 会話を回すハーネス（ADR-0020 決定89）。pi でも Agent SDK でもよい。 */
+  harness: BantoHarness;
   canvas?: Canvas;
   /** この器が実際に使っているモデル。会話ごとに持ち、画面と索引へ出す。 */
   model?: { provider: string; id: string; vision: boolean; contextWindow?: number };
@@ -220,7 +221,7 @@ export class Thread {
    */
   lastActivityAt: string = new Date().toISOString();
   closedAt: string | undefined;
-  readonly session: HostSession;
+  readonly harness: BantoHarness;
   readonly canvas: Canvas | undefined;
   readonly toolNames: string[];
   /**
@@ -275,7 +276,7 @@ export class Thread {
     openedBy?: BranchOpener;
     openReason?: string;
     conclusion?: string;
-    session: HostSession;
+    harness: BantoHarness;
     canvas?: Canvas;
     tools: NamespacedToolDefinition[];
     getLastError?: () => string | undefined;
@@ -298,7 +299,7 @@ export class Thread {
     if (params.kind === "branch" && (!params.parentId || !params.returnCondition)) {
       throw new Error(`枝 ${params.id} に親か還す条件がありません（決定77）`);
     }
-    this.session = params.session;
+    this.harness = params.harness;
     this.canvas = params.canvas;
     this.toolNames = params.tools.map((t) => t.name);
     this.getLastError = params.getLastError ?? ((): string | undefined => undefined);
@@ -320,11 +321,11 @@ export class Thread {
       ...(this.openedBy ? { openedBy: this.openedBy } : {}),
       ...(this.openReason ? { openReason: this.openReason } : {}),
       ...(this.conclusion ? { conclusion: this.conclusion } : {}),
-      sessionId: this.session.sessionId,
+      sessionId: this.harness.sessionId,
       isDefault: this.isDefault,
       state: this.state,
       // D3: 忙しさの真実はここ。UI は自分の操作から推測しない
-      streaming: this.session.isStreaming,
+      streaming: this.harness.isStreaming,
       ...(this.closedAt ? { closedAt: this.closedAt } : {}),
       ...(this.model ? { model: this.model } : {}),
       ...(this.preview() ? { preview: this.preview() } : {}),
@@ -469,7 +470,7 @@ export class ThreadRegistry {
               }
             : {}),
           ...(saved.conclusion ? { conclusion: saved.conclusion } : {}),
-          session: parts.session,
+          harness: parts.harness,
           ...(parts.model ? { model: parts.model } : {}),
           ...(parts.canvas ? { canvas: parts.canvas } : {}),
           tools: parts.tools,
@@ -681,7 +682,7 @@ export class ThreadRegistry {
             openReason: spec.reason,
           }
         : {}),
-      session: parts.session,
+      harness: parts.harness,
       ...(parts.model ? { model: parts.model } : {}),
       ...(parts.canvas ? { canvas: parts.canvas } : {}),
       tools: parts.tools,

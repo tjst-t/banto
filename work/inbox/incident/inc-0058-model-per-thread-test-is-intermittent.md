@@ -1,0 +1,52 @@
+---
+id: inc-0058
+type: incident
+kind: bug
+origin: claude
+class: test-stability
+status: open
+refs: [adr-0020, banto-host-server]
+---
+
+## 内容
+
+**`tests/acceptance/banto-host-server.spec.ts` の「モデルは会話ごと。変えても他の会話は
+変わらない」が、全体実行のときだけ間欠的に落ちる。**
+
+```
+AssertionError: The expression evaluated to a falsy value:
+  assert.ok(echoed.type === "model_state" && echoed.id === "after")
+  at tests/acceptance/banto-host-server.spec.ts:705
+```
+
+## 計測（P6：根拠は分類ではなく数）
+
+| 条件 | 結果 |
+|---|---|
+| その1ファイルだけ実行 | **通る**（1/1） |
+| `npm test` 全体・ADR-0020 の seam 変更**あり** | **落ちる**（1回目）／**通る**（2回目） |
+| `npm test` 全体・seam 変更を `git stash` して**外した状態** | **落ちる**（1/1） |
+
+**変更前でも同じ試験が同じ形で落ちた**ので、ADR-0020 の seam 切りが原因ではない。
+**「単体では通る」は無罪の証拠にならない**（P6）——全体実行でだけ出るのは、
+並行実行の資源競合か、この試験がイベントの到着順に依存していることを示す。
+
+現時点の n は小さい（各条件1〜2回）。**直すときは、まず回数を測って再現率を出すこと。**
+
+## 見当（未確認）
+
+- この試験は `model_state` イベントの到着を `waitFor` で待っている。全体実行では
+  他の試験と WebSocket / ポートを取り合うため、到着が遅れて待ちが切れている可能性
+- `FakeSession` は `readonly sessionId = "test-session"` で**全スレッドが同じ id を名乗る**。
+  スレッドを跨いで取り違える余地がある
+
+## なぜいま直さないか
+
+ADR-0020 の seam 切りは「**挙動を変えない**」ことを完了条件にしており（`npm test` 全通過）、
+この試験はその前から落ちている。**ついでに直すとスコープが混ざる**（P1）ので分ける。
+
+## 残っていること
+
+- 再現率の計測（何回中何回落ちるか）。`--test-concurrency` を変えて挙動が変わるかも見る
+- `FakeSession` の `sessionId` を会話ごとに変えて消えるか試す
+- 消えないなら、到着待ちの機構（`waitFor`）側を疑う

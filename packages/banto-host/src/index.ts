@@ -15,6 +15,8 @@ export {
   type ToolRegistry,
 } from "./tool-registry.js";
 export { createBantoHostSession, type CreateBantoHostSessionOptions } from "./host-session.js";
+// pi バックエンド（ADR-0020 決定89）。`BantoHarness` の第一実装
+export { PiHarness, type PiHarnessOptions } from "./pi-harness.js";
 export {
   PRESENTED_TOOL_NAMES,
   presentedWireNames,
