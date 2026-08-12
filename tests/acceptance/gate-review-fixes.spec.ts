@@ -373,6 +373,95 @@ describe("[Scc9152-2-fix2] gate_evaluated events are deduplicated", () => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
+// task-0098: 「リポジトリが無い」は衝突ではない
+//
+// 上の fix2 は `disableMergeQueue` でマージキューを切って器から独立させている。
+// だがそれは試験側の逃げで、機構そのものは「repoPath が実在しない」を rebase 衝突と
+// 読み違え、`<repoPath>/work/tasks/` に衝突解決タスクを書いて origin を paused に
+// 落としていた。**書けるかどうかは走らせる器の権限で変わる**ので、同じ入力で結果が
+// 割れる（ホスト＝EACCES で途中で止まる／root のコンテナ＝書けてしまう）。
+//
+// ここではマージキューを**入れたまま**、実在しない repoPath（ただし親は書ける場所＝
+// コンテナと同じ条件をホストで再現する）で、衝突タスクが書かれないこと・origin が
+// paused に落ちないことを見る。
+// ────────────────────────────────────────────────────────────────────────────
+
+describe("[task-0098] 実在しないリポジトリはマージ衝突として扱わない", () => {
+  let tmpDir: string;
+  let repoPath: string;
+  let daemon: Daemon;
+  let base: string;
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-0098-"));
+    // 実在しないが、**親は書ける**場所。root のコンテナが /repos に書けてしまう条件を
+    // ホストでもそのまま再現するための置き方（ここが書けないと再現しない）。
+    repoPath = path.join(tmpDir, "missing-repo");
+    daemon = Daemon.create({
+      port: 0,
+      dataDir: tmpDir,
+      tickIntervalMs: 200,
+      disableAuditSpawn: true,
+      disableAutoSpawn: true,
+      // マージキューは切らない——見たいのはその機構だから
+    });
+    await daemon.start();
+    base = `http://localhost:${daemon.port}`;
+
+    const projRes = await fetch(`${base}/api/v1/projects`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "proj-0098", repoPath }),
+    });
+    assert.equal(projRes.status, 201);
+  });
+
+  after(async () => {
+    await daemon.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("[0098-a] approved のタスクは衝突タスクを生まず、paused にも落ちない", async () => {
+    await fetch(`${base}/api/v1/projects/proj-0098/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "no-repo-0098",
+        title: "リポジトリが無い状態でマージへ回る",
+        scope: { paths: ["fff/**"] },
+      }),
+    });
+    await transitionTask(base, "proj-0098", "no-repo-0098", "queued");
+    await pollUntil(
+      () => getStatus(base, "proj-0098", "no-repo-0098"),
+      (s) => s === "ready",
+      3000
+    );
+    await transitionTask(
+      base, "proj-0098", "no-repo-0098",
+      "planning", "implementing", "auditing", "review-ready", "in-review", "approved"
+    );
+
+    // マージキューが数 tick 回るのを待つ（tickIntervalMs=200）
+    await new Promise((r) => setTimeout(r, 1000));
+
+    const status = await getStatus(base, "proj-0098", "no-repo-0098");
+    assert.notEqual(
+      status,
+      "paused",
+      "リポジトリが無いのは衝突ではない——origin を paused に落としてはいけない"
+    );
+
+    // 実在しないリポジトリの中に衝突解決タスクを書いていないこと
+    assert.equal(
+      fs.existsSync(path.join(repoPath, "work", "tasks")),
+      false,
+      `実在しない repoPath (${repoPath}) の中にタスクを書いてはいけない`
+    );
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
 // Fix 3: mid-path glob intersection
 // ────────────────────────────────────────────────────────────────────────────
 
