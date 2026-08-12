@@ -1,11 +1,35 @@
-# banto 自身の検証環境プロファイル（Environment Pool の docker ドライバ用）。
+# banto 自身の環境プロファイル（Environment Pool の docker ドライバ用）。
 #
 # **Kobo は検証をホストで走らせない**（PO裁定 2026-08-07・task-0075）。受け持たせる
 # リポジトリには必ず1つ要る——banto 自身も例外ではない（自分を受け持たせるのだから）。
 #
+# **検証用と実行環境用は別のプロファイルにする**（PO裁定 2026-08-11・案B）:
+#
+# | プロファイル  | 役割                       | 器の中身                    | 生き方              |
+# |---------------|----------------------------|-----------------------------|---------------------|
+# | `test`        | マージ前ゲートの検証       | sleep infinity（待つだけ）  | 検証が済めば畳む    |
+# | `test-docker` | docker ドライバ自身の検証  | ホストで直接（器を作らない）| 検証が済めば畳む    |
+# | `dev`         | PO がブラウザで触る面      | vite dev server（長命）     | 触り終わるまで残す  |
+#
+# 兼ねさせない理由は2つ。**検証は器の生死に左右されてはいけない**（dev server が落ちたことが
+# テストの失敗に化ける）ことと、**人が触る環境は検証が終わっても残ってほしい**こと——
+# 求める寿命が逆向きなので、ttl も公開の有無も1つの器では決められない。
+#
+# どちらも用意（`setup`）は provision の一部。プロファイル側で node_modules を自前で
+# 用意する小細工は置かない——器が「用意が済んでいなくても自分でどうにかする」ようになると、
+# 本体の順序が壊れても気づけない。
+#
+# **⚠ マージ順の縛り: この分離は task-0089 の後にしか入れられない。**
+# 用意を `compose up` の前に済ませる直し（task-0089）は 2026-08-11 時点で未マージ
+# （枝 `task/task-0089` にのみ在る）。本体は今も「compose up → healthcheck → setup」の順なので、
+# **task-0089 より先にこの枝を入れると `dev` の provision が `vite: not found` で壊れる**
+# （`test` は sleep infinity なので順序に依らず立つ）。
+#
 # 名前が `test` なのは `meta/config.yaml` の `verify.profile` の既定だから。
 # 変えるならそちらにも書くこと。
 profiles:
+  # マージ前ゲートの検証専用（compose は docker/test.yaml）。人が触る面は持たない
+  # ——ポートを開けないので決定59の「人が触る環境」にはならない。
   test:
     driver: docker
     config:
@@ -14,13 +38,58 @@ profiles:
     # 立てただけでは中が空——ここで用意しないと検証コマンドが走らない
     setup: "npm ci"
     # 環境より長生きする置き場（spec-environment §5.2）。**中身を決めるものを全部挙げる**
-    # ——ロックだけだと、土台のイメージが変わったときに古いバイナリを掴む
+    # ——ロックだけだと、土台のイメージが変わったときに古いバイナリを掴む。
+    # 鍵はドライバ名とプロファイル名も含めて作られる（pool.ts の resolveCache）ので、
+    # **同じ材料でも test と dev の置き場は別物**。検証用の node_modules を、
+    # 人が触る環境が書き換えることはない
     cache:
       key:  [package-lock.json, docker/Dockerfile.test]
       path: /app/node_modules
     # マージ前ゲートは直列なので、居座らせない。検証が終われば畳まれる
     ttl: 45m
-  # PO がブラウザで触れるための開発画面プロファイル（2026-08-10 新設）。
+  # **docker ドライバ自身の受け入れテスト専用**（PO裁定 2026-08-12・案B+案D）。
+  #
+  # `test` の器（docker/test.yaml）には docker socket が無く、`docker compose` サブコマンドも
+  # 入っていない。docker を叩く受け入れテストは I1 により skip せず**必ず落ちる**設計なので、
+  # そのままだとゲートが中身と無関係に落ち続ける（実測: 7ファイル）。
+  #
+  # **socket を器に渡す道は採らない。** `/var/run/docker.sock` のマウントは、bind mount 付きの
+  # コンテナを作れる＝ホスト root 相当の権限を器に渡すのと同じ。socket proxy で API を絞っても
+  # コンテナ作成を許す時点で昇格経路は残るので、緩和にならない。特権コンテナ／DinD も、
+  # docker ドライバがリポジトリを bind mount する以上、内側 daemon から見たパスがホストと
+  # 一致せず配線し直しになる。
+  #
+  # **だから器を作らずホストで走らせる。** driver: process はホストでそのままコマンドを回すので、
+  # socket を晒す先の器がそもそも無い。docker ドライバの受け入れテストは定義上ホストの docker を
+  # 要する——器の中では原理的に検証できない類のもので、ここだけは冒頭の
+  # 「Kobo は検証をホストで走らせない」の例外として PO が明示的に認めた。
+  #
+  # 回すのは `npm run test:docker`（対象7ファイルを package.json に列挙してある）。
+  # `npm test` 側は同じ7ファイルを除外するので、**2つを足して初めて全部が回る**。
+  # 片方に足し忘れると：新しい docker テストは `npm test` に残って器の中で落ちる（気づける）、
+  # ファイル名を変えると `test:docker` が存在しないパスで落ちる（気づける）。
+  # どちらの取りこぼしも黙って緑にはならない。
+  test-docker:
+    driver: process
+    config:
+      # 器を作らないので「立てる」対象が要らない。それでもドライバは常駐プロセスを求める
+      # （provision は config.cmd 必須）ので、待つだけのものを置く——`test` の
+      # sleep infinity と同じ理由で、**起動に何も要らない**ものにしてある。
+      # config.port は持たせない＝決定59の「人が触る環境」にはならない。
+      cmd: "sleep infinity"
+    # ホストの作業ツリーに node_modules が無い状態（＝毎タスクの新しい worktree）でも回るように。
+    # 既に実体のディレクトリが居るなら process ドライバは置き場を使わず触らない
+    setup: "npm ci"
+    # 鍵に Dockerfile.test を挙げないのは、**この経路は器を作らない**から——中身を決めるのは
+    # ロックだけ。置き場はドライバ名とプロファイル名込みの鍵で切られる（pool.ts の resolveCache）
+    # ので、`test` の node_modules とは別物になる
+    cache:
+      key:  [package-lock.json]
+      path: node_modules
+    # docker の立ち上げ・片付けを実際に回すぶん `test` より時間を要る。それでも居座らせない
+    ttl: 45m
+  # PO がブラウザで触れるための開発画面プロファイル（2026-08-10 新設）。**検証には使わない**
+  # ——ここで npm test を回すと、dev server の生死が検証結果に化ける（案B の分離の要点）。
   # config.port を持つので「人が触る」環境として扱われる（決定59）。
   # compose は docker/dev.yaml——vite dev server をホスト 4201 で公開する。
   # （ホスト 4200 は opencode.service が占有。config.port は「ホスト側から見える
@@ -30,7 +99,11 @@ profiles:
     config:
       compose: docker/dev.yaml
       port: 4201
+    # **長命の vite を起こす前に済む**（task-0089）。以前は compose up が先だったので
+    # node_modules が空のまま vite が起きて即死し、compose 側で npm ci を前置きしていた
     setup: "npm ci"
+    # 土台（Dockerfile.test）は test と共用なので、鍵の材料も同じものを挙げる。
+    # 置き場そのものはプロファイル名込みの鍵で別に切られる（test 側の注記のとおり）
     cache:
       key:  [package-lock.json, docker/Dockerfile.test]
       path: /app/node_modules

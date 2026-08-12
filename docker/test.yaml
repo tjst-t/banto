@@ -1,4 +1,12 @@
-# banto のテスト環境（Environment Pool の docker ドライバ用）。
+# banto の**検証専用**環境（Environment Pool の docker ドライバ用・`test` プロファイル）。
+#
+# **役割はひとつ——マージ前ゲートの検証コマンドを走らせる器**（task-0075）。人が触る面は
+# 持たない（ポートを開けない・長命のサービスを起こさない）。ブラウザで触るための環境は
+# `docker/dev.yaml`（`dev` プロファイル）が別に持つ——**混ぜない**（PO裁定 2026-08-11・案B）。
+# 混ぜると、検証のたびに dev server が立ち上がって器の生死が検証結果に化ける。
+#
+# 土台のイメージ（`docker/Dockerfile.test`）は dev と共用する。道具立ての契約はそちらが真で、
+# **置き場の鍵にも土台を入れてある**（下の cache）ので、土台が変われば両方が用意し直す。
 #
 # ドライバは provision で `docker compose up -d`、run で
 # `docker compose run --rm <先頭サービス> sh -c <cmd>` を実行する。
@@ -7,6 +15,11 @@
 # - docker-default の AppArmor プロファイルをロードできないので
 #   `security_opt: [apparmor=unconfined]` が要る
 # - provision 後もコンテナが running を保つ必要があるので command は sleep infinity
+#   **待つだけ＝起動に何も要らない**のが要点。用意（npm ci）が済んでいるかに依らずに立つので、
+#   provision の順序（用意が先か後か）に関わらずこの器は壊れない。
+#   ——用意を `compose up` の前に済ませる直しは task-0089 にあるが 2026-08-11 時点で未マージで、
+#   本体は今も「compose up → healthcheck → setup」の順。この器はその順でも成り立つ
+#   （dev は成り立たない。`docker/dev.yaml` の警告を見よ）
 # - run は one-shot の sibling で動く。ソースは bind mount で共有し、node_modules は
 #   別の場所に隔離してホストの作業ツリーを汚さない
 #

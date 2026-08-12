@@ -98,7 +98,10 @@ describe("[Scc9152-2-fix1] Temporal ancestor ordering prevents deadlock", () => 
     // Long tick interval: we want to confirm gate fires on transition, not periodic tick.
     // disableAuditSpawn: tests gate deferred-review logic; transitions pass through auditing
     // as state placeholders without needing actual audit session spawning.
-    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 60000, disableAuditSpawn: true, disableAutoSpawn: true });
+    // disableMergeQueue: approved は「依存が解けた」という意味でしか使っていない。
+    // マージキューを回すと repoPath（実在しない /repos/...）を触りに行き、書けるか否かで
+    // 結果が変わる——判定したいのはゲートだけなので切る。理由は fix2 側の注記に詳しい。
+    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 60000, disableAuditSpawn: true, disableAutoSpawn: true, disableMergeQueue: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
 
@@ -198,7 +201,16 @@ describe("[Scc9152-2-fix2] gate_evaluated events are deduplicated", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-fix2-"));
     // Short tick interval to drive multiple gate evaluations
     // disableAuditSpawn: tests gate deduplication logic; same reasoning as above.
-    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 200, disableAuditSpawn: true, disableAutoSpawn: true });
+    //
+    // disableMergeQueue（task-0093）: **これが無いと、走らせる場所で結果が変わる**。
+    // fix2-b は依存 dep-a を approved まで進めて「解けた」と見せる。だがマージキューは
+    // approved を毎 tick 拾い、プロジェクトの repoPath（`/repos/proj-fix2`＝実在しない）で
+    // rebase を試み、失敗を衝突とみなして `<repoPath>/work/tasks/` に衝突解決タスクを
+    // 書き、dep-a を `paused` にする。`paused` は解決済みではないので dep-a が塞ぐ側へ
+    // 戻り、3本目の gate_evaluated が出る。ホストでは /repos に書けず（EACCES）その道が
+    // 途中で止まるので出ない——コンテナは root なので書けてしまい、決定的に落ちていた。
+    // 見たいのはゲートの重複排除だけなので、repoPath を触る道を切って器から独立させる。
+    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 200, disableAuditSpawn: true, disableAutoSpawn: true, disableMergeQueue: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
 

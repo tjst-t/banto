@@ -273,6 +273,18 @@ export interface DaemonConfig {
    */
   disableAutoSpawn?: boolean;
   /**
+   * When true, do not register the serial merge-queue tick job.
+   *
+   * **試験のためだけの口**（`disableAuditSpawn` / `disableAutoSpawn` と同じ筋）。
+   * マージキューは `approved` のタスクを毎 tick 拾い、rebase → マージ前ゲートまで進む。
+   * その道は**プロジェクトの repoPath を実際に触る**——リポジトリが無ければ rebase 失敗
+   * として扱われ、`work/tasks/` に衝突解決タスクを書き、origin を `paused` にする。
+   * つまり「approved まで進めるだけ」の試験が、走らせる場所（そのパスに書けるか）で
+   * 結果を変える。ゲート判定だけを見る試験はこれを切って器から独立させる。
+   * Default: false（本番ではマージキューは常に回る）。
+   */
+  disableMergeQueue?: boolean;
+  /**
    * Environment Pool の到達先（ADR-0013 決定60・61）。
    *
    * 既定は `BANTO_ENV_POOL_URL`、それも無ければ独立サービスの既定ポート。
@@ -519,7 +531,10 @@ export class Daemon {
     // Rebase → merge gate → fast-forward merge → task_merged + merged transition.
     // Merged tasks without hypothesis are auto-closed.
     // Rebase conflicts: auto-file conflict task + pause origin (S75f66b-6).
-    this.scheduler.registerJob("merge-queue", () => this.runMergeQueueTick());
+    // disableMergeQueue: ゲート判定だけを見る試験は、repoPath を触るこの道を切れる。
+    if (!config.disableMergeQueue) {
+      this.scheduler.registerJob("merge-queue", () => this.runMergeQueueTick());
+    }
 
     // Built-in job: conflict-resolution outcome check (S75f66b-6, spec-daemon-core §4.2).
     // On each tick, derive paused-origin↔conflict-resolution pairs (D3: from event log).
@@ -552,6 +567,7 @@ export class Daemon {
         (Number.parseInt(process.env["BANTO_MAX_CONCURRENT_SESSIONS"] ?? "5", 10) || 5),
       disableAuditSpawn: config.disableAuditSpawn ?? false,
       disableAutoSpawn: config.disableAutoSpawn ?? false,
+      disableMergeQueue: config.disableMergeQueue ?? false,
       ...(config.environmentPoolUrl !== undefined
         ? { environmentPoolUrl: config.environmentPoolUrl }
         : {}),
