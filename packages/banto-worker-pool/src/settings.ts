@@ -65,10 +65,10 @@ export function createWorkerPoolSettings(
   return {
     title: "職人のバックエンド",
     description:
-      "職人を動かすバックエンドの入切と、アイドルの安全弁（ADR-0021 決定102）。\n\n" +
-      "**等級ごとのモデルの割り当ては「役ごとのモデル」へ移りました**" +
+      "職人を動かすバックエンドの入切と、アイドルの安全弁です。" +
+      "等級ごとのモデルの割り当ては「役ごとのモデル」へ移りました" +
       "——割り当てはバックエンドを跨ぐ問いなので、番頭と一緒に1枚で選びます。" +
-      "ここが持つのは**供給の入切**（どのランタイムを使うか）まで。",
+      "ここが持つのは供給の入切（どのランタイムを使うか）までです。",
     // 決定43（モジュールへ開放。PO要望 2026-08-10）: 一覧と状態が絡むため描き先を宣言する
     view: "WorkerSettings",
     fields: [],
@@ -77,7 +77,7 @@ export function createWorkerPoolSettings(
       // **いま実際に効いているもの**を映す（核の台帳 → 工房の残骸 の順）。画面は読むだけ
       defaultTier: (pool.resolvedDefaultTier() ?? "") as WorkerTier | "",
       tiers: WORKER_TIERS,
-      assignments: pool.tierAssignments().assignments,
+      assignments: pool.resolvedAssignments(),
       backends: pool.backends(),
       models: pool.selectableModels(),
       fallbackBackend: pool.fallbackModels().backendTitle,

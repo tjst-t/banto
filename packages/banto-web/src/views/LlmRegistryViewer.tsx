@@ -406,7 +406,7 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
             決める（バックエンドを跨いで1枚）。
           */}
           <section className="llm-sec">
-            <div className="llm-sec-label">この面は pi の供給</div>
+            <div className="llm-sec-label">この面は pi バックエンドの供給</div>
             <p className="cv-muted llm-moved">
               ここで決めるのは<strong>どのモデルを台帳に載せるか</strong>（プロバイダ・鍵・取り込み・
               採用）までです。<strong>番頭や職人が何を使うか</strong>は設定の

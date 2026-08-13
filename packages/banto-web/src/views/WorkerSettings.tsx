@@ -167,8 +167,8 @@ export function WorkerSettings(props: CanvasViewProps): React.ReactElement {
             <div className="llm-sec-head">
               <span className="llm-sec-label">等級ごとのモデル</span>
               <span className="llm-add-note">
-                <strong>「役ごとのモデル」へ移りました</strong>（ADR-0021 決定102）
-                ——割り当てはバックエンドを跨ぐ問いなので、番頭と一緒に1枚で選びます。
+                「役ごとのモデル」へ移りました——割り当てはバックエンドを跨ぐ問いなので、
+                番頭と一緒に1枚で選びます。ここに出るのは<strong>いま効いている割り当て</strong>です。
               </span>
             </div>
             <div className="llm-tiers">

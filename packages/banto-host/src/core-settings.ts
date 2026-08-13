@@ -43,6 +43,33 @@ function linesToPlaces(lines: readonly unknown[]): PlaceSetting[] {
   return places;
 }
 
+/** 束縛を画面の値（`backend|provider|model`）へ。 */
+function refValue(ref?: { backend?: string; provider: string; model: string }): string {
+  return ref ? `${ref.backend ?? "pi"}|${ref.provider}|${ref.model}` : "";
+}
+
+/**
+ * **いまの値が一覧に無ければ足す**（I2：画面と実態を食い違わせない）。
+ *
+ * 供給に聞いた一覧は「いま選べるもの」で、**いま効いているもの**とは限らない
+ * ——実機では番頭が `claude/opus` なのに、聞いた一覧には `opus[1m]` しか無かった。
+ * 黙って先頭の項目が選ばれているように見せると、開いただけで別のモデルに見える。
+ */
+function withCurrent(
+  options: Array<{ value: string; label: string }>,
+  current: string
+): Array<{ value: string; label: string }> {
+  if (current === "" || options.some((o) => o.value === current)) return options;
+  const [backend, provider, model] = current.split("|");
+  return [
+    {
+      value: current,
+      label: `${backend} › ${provider} › ${model}（いま効いている・一覧にはまだ出ていない）`,
+    },
+    ...options,
+  ];
+}
+
 export interface CoreSettingsOptions {
   /**
    * **番頭が使うモデルの選択肢**（PO裁定 2026-08-13）。
@@ -206,21 +233,22 @@ export function createCoreSettingsSections(
       spec: {
         title: "役ごとのモデル",
         description:
-          "**誰が何を使うか**を決める1枚（ADR-0021 決定102）。選ぶのは「バックエンド → " +
-          "プロバイダ → モデル」の3段で、**同じ `opus` が pi 経由でも Claude Code 経由でも**" +
-          "指せる。\n\n" +
-          "- **番頭**：ここで決めるのは**新しい会話がどれで始まるか**だけ。" +
-          "いま開いている会話は、会話の画面のモデル選択でその場で変えられる（再起動は要らない）\n" +
-          "- **職人**：等級ごとの既定。**頼む側が名指しすれば、そちらが優先される**" +
-          "（Kobo の実装・レビューは自分で持っている・決定99a）\n" +
-          "- モデルそのものの登録（プロバイダ・鍵・取り込み）は「LLM・モデル（pi の供給）」で",
+          "誰が何を使うかを決める1枚です。選ぶのは「バックエンド → プロバイダ → モデル」の3段で、" +
+          "同じ opus が pi 経由でも Claude Code 経由でも指せます。" +
+          "番頭についてここで決めるのは新しい会話がどれで始まるかだけで、" +
+          "いま開いている会話は会話の画面のモデル選択でその場で変えられます。" +
+          "職人は等級ごとの既定で、頼む側が名指しすればそちらが優先されます。" +
+          "モデルそのものの登録（プロバイダ・鍵・取り込み）は「使えるモデル」の面で行います。",
         fields: [
           {
             key: "steward",
             label: "番頭",
             type: "select",
             get options() {
-              return options.harnessChoices?.() ?? [];
+              return withCurrent(
+                options.harnessChoices?.() ?? [],
+                refValue(options.llmCatalog?.roles().steward)
+              );
             },
             description: "新しい会話の既定。会話ごとの切り替えは会話の画面で",
           },
@@ -239,7 +267,10 @@ export function createCoreSettingsSections(
             label: `職人（${TIER_LABELS[tier]}）`,
             type: "select" as const,
             get options() {
-              return [{ value: "", label: "（割り当てなし）" }, ...(options.workerChoices?.() ?? [])];
+              return withCurrent(
+                [{ value: "", label: "（割り当てなし）" }, ...(options.workerChoices?.() ?? [])],
+                refValue(options.llmCatalog?.roles()[workerRoleOf(tier)])
+              );
             },
             description: `${TIER_LABELS[tier]}で頼まれたときに使うモデル`,
           })),
@@ -301,11 +332,13 @@ export function createCoreSettingsSections(
           {
             id: "llm",
             spec: {
-              title: "使えるモデル（登録と採用）",
+              title: "使えるモデル（pi の供給）",
               description:
-                "**ここは「何が在るか」と「使ってよいか」だけ**（カタログと採用）。" +
-                "誰がどれを使うかは別の面で決める——番頭は「番頭が使うモデル」、" +
-                "職人は「職人」。会話ごとの切り替えは会話の画面から。",
+                "ここは pi バックエンドの供給の面です——プロバイダの登録・鍵・取り込み・" +
+                "文脈長・等級と、この店で使う気があるか（採用）まで。" +
+                "誰がどれを使うかは「役ごとのモデル」で決めます" +
+                "（Claude Code のモデルも含めてバックエンドを跨いで1枚）。" +
+                "会話ごとの切り替えは会話の画面から。",
               // 項目の宣言では表せないため、描き先だけを宣言する（決定43）
               view: "LlmRegistryViewer",
               fields: [],

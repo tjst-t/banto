@@ -709,6 +709,19 @@ export class WorkerPool {
   }
 
   /**
+   * **いま実際に効いている等級ごとの割り当て**（核の台帳）。画面はこれを映す
+   * ——工房に残っている値を出すと、消したはずの設定が生きているように見える。
+   */
+  resolvedAssignments(): Partial<Record<WorkerTier, string>> {
+    const out: Partial<Record<WorkerTier, string>> = {};
+    for (const tier of WORKER_TIERS) {
+      const found = this.assignedFromLedger(tier);
+      if (found) out[tier] = found.model;
+    }
+    return out;
+  }
+
+  /**
    * **もう読まれない工房の割り当て**（ADR-0021 段2）。
    *
    * 台帳へ移した後も設定ファイルには残る。黙って無視すると「画面で直したのに変わらない」

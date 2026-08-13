@@ -879,6 +879,11 @@ async function serve(options: ServeOptions): Promise<void> {
     refreshWorkerModels();
     return workerModelCache;
   };
+  /**
+   * **起動時に温める。** 設定を最初に開いた1回だけ職人の選択肢が空になり、
+   * いまの割り当てが「一覧に無い」と出る——**開いただけで壊れて見える**（実機で確認）。
+   */
+  setTimeout(() => refreshWorkerModels(), 2_000).unref?.();
   const harnessBackendOptions = (): HarnessBackendOption[] => harnessBackends.map(toBackendOption);
 
   modules.register(
