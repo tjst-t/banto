@@ -998,10 +998,21 @@ async function serve(options: ServeOptions): Promise<void> {
    */
   const harnessSwitchers = new Map<
     string,
-    { pi: () => BantoHarness; claude: (model?: string) => BantoHarness }
+    {
+      pi: () => BantoHarness;
+      claude: (model?: string) => BantoHarness;
+      /** Claude 側を畳む（pi へ戻すとき）。札は残るので選び直せば続きから戻る。 */
+      releaseClaude: () => void;
+    }
   >();
   let server: BantoHostServer;
-  const threadFactory: ThreadFactory = async (threadId, resumeFrom, wantedModel, identity) => {
+  const threadFactory: ThreadFactory = async (
+    threadId,
+    resumeFrom,
+    wantedModel,
+    identity,
+    resumeBackendSession
+  ) => {
     const canvas = new Canvas(catalog);
     /**
      * ターンの予算（PO報告 2026-08-11）。**会話ごと**に持つ——隣の会話の数えと混ぜると、
@@ -1272,14 +1283,34 @@ async function serve(options: ServeOptions): Promise<void> {
      * 退避もターン予算も無かった**（レビュー 2026-08-13 で発覚。本番の既定がそれだった）。
      * D11・決定47a・暴走を止めるターン予算は、**どのバックエンドでも同じように効く**必要がある。
      */
+    /**
+     * **この会話の Claude 側の札**（決定97・task-0104）。復元で渡ってきたものから始め、
+     * 差し替えのたびに引き継ぐ——モデルを替えても会話は続く（別セッションにしない）。
+     */
+    let claudeResume: string | undefined = resumeBackendSession;
+    /** いま生きている Claude のハーネス。**1本だけ持つ**（畳まないと子プロセスが積み上がる）。 */
+    let claudeHarness: ClaudeAgentHarness | undefined;
     const makeClaudeHarness = (model?: string): BantoHarness => {
+      /**
+       * **前のものを畳んでから作る**（task-0104 の3番）。`PromptQueue` は「空になっても
+       * 終わらせない」ので、参照を落とすだけでは `query()` が生き続け、バックエンドを
+       * 往復するたびに Claude Code の子プロセスが積み上がる。
+       */
+      const previous = claudeHarness;
+      if (previous) {
+        // 札は引き継ぐ（畳む前に取る）。取らないとモデルを替えるたびに文脈が消える
+        claudeResume = previous.resumeToken() ?? claudeResume;
+        void previous.dispose();
+      }
       const assembled = assembleStewardContext(stewardContextOptions);
-      return new ClaudeAgentHarness({
+      claudeHarness = new ClaudeAgentHarness({
         systemPrompt: assembled.systemPrompt,
         // 提示する集合だけを載せる（ADR-0019 決定82）。組み込みは `tools: []` で0本
         tools: selectPresentedTools(assembled.tools),
         ...(model ? { model } : {}),
+        ...(claudeResume ? { resume: claudeResume } : {}),
       });
+      return claudeHarness;
     };
 
     const piHarness: BantoHarness = new PiHarness({
@@ -1321,7 +1352,20 @@ async function serve(options: ServeOptions): Promise<void> {
             wantedModel?.backend === "claude-agent-sdk" ? wantedModel.id : stewardRole?.model
           )
         : piHarness;
-    harnessSwitchers.set(threadId, { pi: () => piHarness, claude: makeClaudeHarness });
+    harnessSwitchers.set(threadId, {
+      pi: () => piHarness,
+      claude: makeClaudeHarness,
+      /**
+       * **pi へ戻すときに Claude 側を畳む**（決定97）。札は残すので、また Claude を
+       * 選べば同じ文脈から続く——畳むのは走っているプロセスだけ。
+       */
+      releaseClaude: () => {
+        if (!claudeHarness) return;
+        claudeResume = claudeHarness.resumeToken() ?? claudeResume;
+        void claudeHarness.dispose();
+        claudeHarness = undefined;
+      },
+    });
 
     // 提案§3.2: 自動コンパクションを切り（ハーネスが済ませた）、章立てに置き換える。
     //
@@ -1469,6 +1513,11 @@ async function serve(options: ServeOptions): Promise<void> {
       dispose: () => {
         chapters?.stop();
         session.dispose();
+        // 決定97: 会話を畳んだら Claude 側も畳む（`Thread.dispose` はいまのハーネスしか
+        // 知らない——pi へ戻したあとに残っている Claude のセッションはここでしか届かない）
+        void claudeHarness?.dispose();
+        // 作り手の表からも外す（残すと畳んだ会話の作り手を掴んだままになる）
+        harnessSwitchers.delete(threadId);
       },
     };
   };
@@ -1575,6 +1624,8 @@ async function serve(options: ServeOptions): Promise<void> {
 
       // pi へ戻す（あるいは pi のまま）。**同じ pi セッションへ戻る**ので文脈も戻る
       const back = thread.model?.backend === "claude-agent-sdk" ? switcher?.pi() : undefined;
+      // 決定97: 戻ったら Claude 側は畳む（放すだけでは子プロセスが残る）
+      if (back) switcher?.releaseClaude();
       const target = back ?? thread.harness;
       if (!target.setModel) {
         throw new Error("このハーネスは動作中のモデル切替に対応していません");

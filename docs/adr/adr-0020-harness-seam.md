@@ -56,8 +56,8 @@ export interface BantoHarness {
   subscribe(handler: (e: HarnessEvent) => void): () => void;
   contextTokens(): number | undefined;                          // 章の閾値判定
   startChapter(opening: ChapterOpening): Promise<void>;         // 決定92
-  // restore は**まだ契約に入れていない**（Claude 側の会話復元が未実装・task-0104）
-  // restore(record: ThreadRecord): Promise<void>;
+  // restore は**手続きではなく札**にした（決定97・task-0104）。resumeToken() が返した
+  // ものを索引へ保存し、次の起動で作り手へ渡す
 }
 
 export type HarnessEvent =
@@ -281,6 +281,45 @@ Claude Code（Agent SDK 経由）でも選べる——職人側の「ランタ�
 （ADR-0011 決定43）**スキーマが大きすぎるから**であって GUI 基盤の限界ではない。
 opencode 型の4キー最小契約（`npm` / `name` / `baseURL` / `models[].limit`）まで削れば
 単一の宣言フォームに収まる。
+
+### 決定97: 復元は**手続きではなく札**。契約に `resumeToken` / `dispose` / `contextWindow` を足す
+
+（番頭裁定 2026-08-13・task-0104。決定89 で保留にした `restore(record)` を差し替える）
+
+決定89 は `restore(record: ThreadRecord): Promise<void>` を想定して**保留にしていた**が、
+実装してみると**復元は「組み立てるときに札を渡す」で足りる**——生きているハーネスへ
+後から文脈を差し込む口は要らないし、あれば「いつ呼んでよいのか」が増えるだけだった。
+
+```ts
+resumeToken?(): string | undefined;   // 次の起動でこの会話を続けるための札
+contextWindow?(): number | undefined; // 章の閾値をバックエンドの文脈長で測る
+dispose?(): Promise<void> | void;     // 後始末（子プロセス・待ち行列）
+```
+
+番頭ホストは `resumeToken()` を索引（`StoredThread.backendSessionId`）へ保存し、
+次の起動で作り手へ渡す。pi は札を持たない（セッションファイルで戻る）ので `undefined`。
+
+**踏んでいた穴**（すべて 2026-08-13 に実機で確認・I1）:
+
+| | 症状 | 実体 |
+|---|---|---|
+| 1 | **新しい会話で番頭が黙る** | 新規にも `resume: randomUUID()` を渡していた。実在しない札の `resume` は `error_during_execution` で返り、翻訳の上では**本文の無いターン**にしか見えない。SDK の型注釈どおり、新規は `sessionId` で立てる（両立しない） |
+| 2 | **再起動のたびに番頭だけが全部忘れる** | 札をどこにも保存していなかった。画面の記録は戻るので、POからは「番頭が急に前提を無視し始めた」に見える |
+| 3 | **子プロセスが積み上がる** | `PromptQueue` は「空になっても終わらせない」設計。放すだけでは `query()` が生き続ける。実測：ハーネス1本＝子1本で、畳むまで減らない |
+| 4 | **発話が1つ握り潰される** | `startChapter` の後に抜けてくる古いループの `finally` が新しい `run` を消し、2本目の `query()` が立つ。**世代**を持たせて塞いだ |
+| 5 | 区切る位置がずれる | 閾値を pi のモデルの文脈長で測っていた。SDK が `result.modelUsage[*].contextWindow` を返す（実測 200,000）ので**自前の表を持たない**（D3） |
+| 6 | ターンが終わるまで画面が無音 | `includePartialMessages` で本文と思考を差分で流す。全文で二重に出さないよう掛け金を持つ |
+
+**エラーで終わったターンを黙って通さない**（I2）。翻訳は `result` を一様に
+「ターンの終わり」として扱っていたので、上の1と2は**どちらも「番頭が黙る」**という
+同じ見え方になり、原因が分からなかった。いまは知らせを出し、**読み戻せなかった札は
+捨てて立て直す**——握り続けると以後どの発話も同じ理由で落ちて会話が永久に死ぬ。
+
+**モデルを替えても文脈は続く。** 差し替えのたびに前のハーネスから札を引き継ぐので、
+`opus` → `sonnet` は同じ会話の続きになる。pi へ戻すときは Claude 側を畳むが札は残す
+（選び直せば続きから戻る）。
+
+**未決3（サブスクリプションの消費）は動かない。** 今回の実測は haiku での機構確認のみ。
 
 ## CLAUDE.md との関係
 

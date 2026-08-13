@@ -99,11 +99,24 @@ async function startHost(
 }
 
 /** 指定の型のイベントが来るまで待つ。 */
-function waitFor(events: ServerEvent[], type: ServerEvent["type"], timeoutMs = 2000): Promise<ServerEvent> {
+/**
+ * `type` の出来事が届くまで待つ。
+ *
+ * **`where` を渡せる**（P6・2026-08-13）。接続時は**会話の本数だけ** `model_state` が
+ * 配られるので、「型で待って配列を空にする」書き方だと、遅れて届いた初期値を
+ * 変更の反響と取り違える——**間欠的に落ちる試験は、待ち方が壊れている合図**。
+ * 待ちを延ばすのではなく、探しているものを名指しする。
+ */
+function waitFor(
+  events: ServerEvent[],
+  type: ServerEvent["type"],
+  timeoutMs = 2000,
+  where: (e: ServerEvent) => boolean = () => true
+): Promise<ServerEvent> {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     const tick = setInterval(() => {
-      const found = events.find((e) => e.type === type);
+      const found = events.find((e) => e.type === type && where(e));
       if (found) {
         clearInterval(tick);
         resolve(found);
@@ -694,14 +707,17 @@ describe("会話面が要る材料の配信", () => {
     b.length = 0;
     clientA.send({ type: "set_model", threadId: first.id, provider: "p2", model: "after" });
 
-    const changed = await waitFor(a, "model_state");
+    // **変更の反響を名指しで待つ。** 型だけで待つと、接続時に配られた初期値
+    // （会話の本数だけ届く）が空にした直後の配列へ遅れて入り、それを拾ってしまう
+    const isAfter = (e: ServerEvent): boolean => e.type === "model_state" && e.id === "after";
+    const changed = await waitFor(a, "model_state", 2000, isAfter);
     assert.ok(changed.type === "model_state");
     assert.equal(changed.threadId, first.id, "変えた会話の話として届く");
     assert.equal(changed.provider, "p2");
     assert.equal(changed.id, "after");
     assert.equal(changed.vision, true);
     // 選んでいない方の画面にも届く（D3: 真実はホスト側）
-    const echoed = await waitFor(b, "model_state");
+    const echoed = await waitFor(b, "model_state", 2000, isAfter);
     assert.ok(echoed.type === "model_state" && echoed.id === "after");
 
     // **効くのは宛先の会話だけ**。もう1本は自分のモデルのまま

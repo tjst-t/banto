@@ -169,9 +169,19 @@ export class ChapterKeeper {
     return this.harness.contextTokens();
   }
 
+  /**
+   * 判定に使う文脈長。**ハーネスが知っていればそちらが勝つ**（決定97・task-0104）。
+   *
+   * 渡される既定はこの会話の pi モデルのもの——バックエンドを Claude に替えても
+   * ローカルモデルの文脈長で測っていて、区切る位置がまるで違っていた。
+   */
+  private contextWindow(): number | undefined {
+    return this.harness.contextWindow?.() ?? this.options.contextWindow;
+  }
+
   /** 閾値を超えているか。 */
   shouldClose(): boolean {
-    const window = this.options.contextWindow;
+    const window = this.contextWindow();
     if (!window || window <= 0) return false;
     if (this.harness.messageCount() < (this.options.minMessages ?? DEFAULT_MIN_MESSAGES)) {
       return false;
