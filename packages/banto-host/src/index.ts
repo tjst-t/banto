@@ -287,3 +287,7 @@ export {
   type TurnBudgetOptions,
 } from "./turn-budget.js";
 export { withWorkerCard, WORKER_VIEW } from "./worker-card.js";
+export {
+  withTierUnassignedNotice,
+  type WorkerTierNoticeOptions,
+} from "./worker-tier-notice.js";
