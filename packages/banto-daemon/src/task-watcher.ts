@@ -112,7 +112,9 @@ export class TaskWatcher {
   }
 
   private async poll(): Promise<void> {
-    const projects = this.daemon.listProjects();
+    // **どのプロジェクトを見るかは Daemon が決める**（D5）。受け持ちを外したもの、
+    // 取り込みの弁を閉じたものはここに出てこない（PO 裁定 2026-08-13・inc-0063）
+    const projects = this.daemon.projectsToWatch();
     for (const project of projects) {
       await this.pollProject(project.id, project.repoPath);
     }

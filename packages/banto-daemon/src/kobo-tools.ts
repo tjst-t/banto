@@ -375,20 +375,167 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     },
   });
 
+  /**
+   * 受け持ちを外す（PO 裁定 2026-08-13・inc-0063）。
+   *
+   * `kobo.register_project` の対になる口。**載せる判断を不可逆にしない**ために開けた
+   * ——一度載せたら二度と降ろせない状態では、詰まったプロジェクトを切り離せない。
+   */
+  const unregisterProject = defineNamespacedTool({
+    name: "kobo.unregister_project",
+    label: "Kobo: Unregister Project",
+    description:
+      "リポジトリの**受け持ちを外す**（kobo.register_project の対）。外すと、そのプロジェクトは" +
+      "**watcher が見ない・マージキューが回さない・職人が起きない**。" +
+      "**帳簿は消えません**——タスクの記録もイベントも残り、同じ id で登録し直せば経緯はそのまま繋がります。" +
+      "**動いているタスクがあると外れません**（何が動いているかを名指しで返します）。" +
+      "承知の上で外すときだけ force: true を付けること。" +
+      "止めたいだけなら外すより kobo.set_watch / kobo.set_merge_queue の方が穏当です。",
+    parameters: Type.Object({
+      projectTag: Type.String({ description: "外すプロジェクトの id（kobo.projects で確認できる）" }),
+      reason: Type.String({ description: "**なぜ外すのか**。帳簿に残る" }),
+      force: Type.Optional(
+        Type.Boolean({
+          description:
+            "動いているタスクがあっても外す（既定 false）。**職人や検証環境が付いたまま置き去りになる**" +
+            "ので、何を置き去りにするか分かったうえで付けること",
+        })
+      ),
+    }),
+    async execute(params) {
+      const result = daemon.unregisterProject(params.projectTag, {
+        reason: params.reason,
+        ...(params.force !== undefined ? { force: params.force } : {}),
+        by: "banto",
+      });
+      // I2: 外せなかったことを成功に見せない。理由（動いているタスクの名前）をそのまま返す
+      if (!result.ok) throw new Error(result.reason);
+      const { entry, active, pending } = result;
+      const text = [
+        `受け持ちを外しました: ${entry.id}（${entry.repoPath}）。`,
+        "watcher・マージキュー・職人の差配はこのプロジェクトに対して回りません。",
+        "帳簿（タスクの記録とイベント）は残っています——同じ id で登録し直せば繋がります。",
+        ...(active.length > 0
+          ? [
+              `**動いたまま置き去りにしたもの（force）**: ${active
+                .map((t) => `${t.id} [${t.status}]`)
+                .join(" / ")}`,
+            ]
+          : []),
+        ...(pending.length > 0
+          ? [`まだ片が付いていないもの: ${pending.map((t) => `${t.id} [${t.status}]`).join(" / ")}`]
+          : []),
+      ].join("\n");
+      return {
+        content: [{ type: "text" as const, text }],
+        details: {
+          projectTag: entry.id,
+          repoPath: entry.repoPath,
+          activeTaskIds: active.map((t) => t.id),
+          pendingTaskIds: pending.map((t) => t.id),
+        },
+      };
+    },
+  });
+
+  /** 弁を切り替える2つの口（`kobo.set_watch` / `kobo.set_merge_queue`）を組み立てる。 */
+  const controlTool = (
+    name: "kobo.set_watch" | "kobo.set_merge_queue",
+    which: "watch" | "mergeQueue",
+    label: string,
+    description: string,
+    stopped: string,
+    running: string
+  ) =>
+    defineNamespacedTool({
+      name,
+      label,
+      description,
+      parameters: Type.Object({
+        projectTag: Type.String({ description: "どのプロジェクトか" }),
+        enabled: Type.Boolean({ description: "true=動かす / false=止める" }),
+        reason: Type.String({ description: "**なぜ止める（動かす）のか**。帳簿と一覧に残る" }),
+      }),
+      async execute(params) {
+        requireProject(params.projectTag);
+        const result = daemon.setProjectControl(params.projectTag, which, params.enabled, {
+          reason: params.reason,
+          by: "banto",
+        });
+        // I2: 切り替えられなかったことを成功に見せない
+        if (!result.ok) throw new Error(result.reason);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `${params.projectTag}: ${params.enabled ? running : stopped}\n` +
+                "この設定は保存されているので、**Kobo を再起動しても残ります**。" +
+                "いまの状態は kobo.projects で読めます。",
+            },
+          ],
+          details: { projectTag: params.projectTag, control: which, enabled: params.enabled },
+        };
+      },
+    });
+
+  const setWatch = controlTool(
+    "kobo.set_watch",
+    "watch",
+    "Kobo: Set Watch",
+    "そのプロジェクトの**タスク取り込み（watcher）を止める／動かす**。" +
+      "止めると `work/tasks/*.md` を工場が読まなくなる——定義ファイルが増えても積まれません。" +
+      "**プロジェクト単位**なので、片方を止めても他は回り続けます。" +
+      "**設定は保存され、Kobo を再起動しても残ります。** いまの状態は kobo.projects で読めます。" +
+      "既に積まれたタスクは止まりません（それを止めるのは kobo.set_merge_queue と kobo.abandon）。",
+    "タスクの取り込みを**止めました**（work/tasks/*.md は読まれません）",
+    "タスクの取り込みを**動かしました**（work/tasks/*.md をまた読みます）"
+  );
+
+  const setMergeQueue = controlTool(
+    "kobo.set_merge_queue",
+    "mergeQueue",
+    "Kobo: Set Merge Queue",
+    "そのプロジェクトの**マージキューを止める／動かす**（非常停止の弁）。" +
+      "止めると rebase・マージ前ゲート・マージ・**コンフリクト解消タスクの自動起票**・" +
+      "paused からの自動再開が、いっさい回らなくなります。" +
+      "**マージキューが同じタスクを積み続けるとき（inc-0063 の周回）にこれで止める。**" +
+      "**プロジェクト単位**なので、他のプロジェクトのマージは止まりません。" +
+      "**設定は保存され、Kobo を再起動しても残ります。** 止まっていることは kobo.projects で読めます。",
+    "マージキューを**止めました**（rebase・自動起票・状態遷移は回りません）",
+    "マージキューを**動かしました**（次の tick から回ります）"
+  );
+
   const projects = defineNamespacedTool({
     name: "kobo.projects",
     label: "Kobo: Projects",
     description:
       "工場が受け持っているプロジェクト（統治単位）の一覧。タスクを積む前に、" +
       "そのリポジトリが登録されているかを確かめるのに使う。" +
+      "**止めている弁（取り込み／マージキュー）もここに出る**——" +
+      "「積んだのに動かない」ときは、まずここを見ること。" +
       "載っていなければ kobo.register_project で受け持たせる。",
     parameters: Type.Object({}),
     async execute() {
       const rows = daemon.listProjects();
+      // **黙って止まっているのが一番困る**（PO 裁定 2026-08-13）。止めた弁は
+      // 一覧の各行に出す——読み口を別に用意すると、見ない側から見えなくなる
+      const describe = (p: (typeof rows)[number]): string => {
+        const stopped: string[] = [];
+        if (p.watch && !p.watch.enabled) {
+          stopped.push(`取り込み停止（${p.watch.reason ?? "理由なし"}・${p.watch.changedAt}）`);
+        }
+        if (p.mergeQueue && !p.mergeQueue.enabled) {
+          stopped.push(
+            `マージキュー停止（${p.mergeQueue.reason ?? "理由なし"}・${p.mergeQueue.changedAt}）`
+          );
+        }
+        return `${p.id} — ${p.repoPath}` + (stopped.length > 0 ? `\n    ⏸ ${stopped.join(" / ")}` : "");
+      };
       const text =
         rows.length === 0
           ? "登録されているプロジェクトはありません"
-          : rows.map((p) => `${p.id} — ${p.repoPath}`).join("\n");
+          : rows.map(describe).join("\n");
       return { content: [{ type: "text" as const, text }], details: { projects: rows } };
     },
   });
@@ -660,6 +807,8 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
   return [
     enqueue, list, task, projects, events, approve, supersede, registerProject,
     reopen, abandon, amend,
+    // 制御の口（PO 裁定 2026-08-13・inc-0063）
+    unregisterProject, setWatch, setMergeQueue,
   ];
 }
 

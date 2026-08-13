@@ -705,6 +705,142 @@ export class Daemon {
     return this.registry.has(id);
   }
 
+  // ── 制御の弁（PO 裁定 2026-08-13・inc-0063）─────────────────────────────────
+  //
+  // **載せる判断を可逆にする**ための3つの口。inc-0063 で、マージキューが空 rebase を
+  // 「コンフリクト未解消」と読んで解消タスクを1分ごとに起票し続けたとき、番頭には
+  // 止める手段が1つも無かった——外す口も、取り込みを止める口も、キューを止める口も。
+  //
+  // D5: 判断（何が動いているか・外していいか）はここに置く。Tool は受け渡しだけ。
+  // D3: 状態の真実は projects.json（`ProjectRegistry`）1箇所。導出できる写しを持たない。
+
+  /**
+   * 受け持ちを外すのを止める状態＝**いま人か機械が手をかけているもの**（PO 裁定 2026-08-13）。
+   *
+   * `queued` や `review-ready` を入れていないのは、待っているだけのものまで塞ぐと、
+   * 詰まったプロジェクトを降ろせなくなるため——ただし**数えて名前は出す**（下の警告）。
+   */
+  private static readonly UNREGISTER_BLOCKING_STATES: ReadonlySet<string> = new Set<TaskStatus>([
+    "ready",
+    "planning",
+    "implementing",
+    "auditing",
+    "merging",
+  ]);
+
+  /** 外れずに残る（＝終端でない）状態。force で外すとき「何を置き去りにするか」に使う。 */
+  private static readonly UNREGISTER_PENDING_STATES: ReadonlySet<string> = new Set<TaskStatus>([
+    "queued",
+    "review-ready",
+    "in-review",
+    "approved",
+    "paused",
+    "failed",
+  ]);
+
+  /** watcher が見てよいプロジェクト（登録があり、取り込みの弁が開いているもの）。 */
+  projectsToWatch(): ProjectEntry[] {
+    return this.registry.list().filter((p) => this.registry.isEnabled(p.id, "watch"));
+  }
+
+  /** マージキューを回してよいプロジェクトか。外れているものは false。 */
+  mergeQueueEnabledFor(projectTag: string): boolean {
+    return this.registry.isEnabled(projectTag, "mergeQueue");
+  }
+
+  /** 取り込みの弁が開いているか。 */
+  watchEnabledFor(projectTag: string): boolean {
+    return this.registry.isEnabled(projectTag, "watch");
+  }
+
+  /**
+   * 受け持ちを外す。**帳簿は消さない**——外れるのは受け持ちだけで、タスクの記録と
+   * イベントはそのまま残る（同じ id で登録し直せば繋がる）。
+   *
+   * I2: 動いているタスクがあるときは**黙って外さない**。何が動いているかを名指しして
+   * 断り、`force: true` を明示したときだけ外す。
+   */
+  unregisterProject(
+    id: string,
+    opts: { reason: string; force?: boolean; by?: string }
+  ):
+    | { ok: true; entry: ProjectEntry; active: TaskRecord[]; pending: TaskRecord[] }
+    | { ok: false; reason: string; active: TaskRecord[] } {
+    if (!this.registry.has(id)) {
+      const known = this.registry.list().map((p) => p.id).join(", ");
+      return {
+        ok: false,
+        reason: `"${id}" は受け持っていません（既知: ${known || "(なし)"}）`,
+        active: [],
+      };
+    }
+
+    // 状態の真実は帳簿。読む前に取り直す（tick の途中で変わっている）
+    this.refreshState();
+    const tasks = this.store.getTasksByProject(id);
+    const active = tasks.filter((t) => Daemon.UNREGISTER_BLOCKING_STATES.has(t.status));
+    const pending = tasks.filter((t) => Daemon.UNREGISTER_PENDING_STATES.has(t.status));
+
+    if (active.length > 0 && opts.force !== true) {
+      // I2: 「外せませんでした」だけでは調べ直しになる。何が動いているかを名指しする
+      const named = active.map((t) => `${t.id} [${t.status}]`).join(" / ");
+      return {
+        ok: false,
+        reason:
+          `${id} には動いているタスクが ${active.length} 件あります: ${named}。` +
+          "職人や検証環境が付いたまま外すと、終わったことを誰も引き取れなくなります" +
+          "——先に畳む（kobo.abandon）か、承知の上なら force: true を明示してください",
+        active,
+      };
+    }
+
+    const entry = this.registry.unregister(id)!;
+    // 帳簿には残す。**外したこと自体が後から読めないと、消えた理由が誰にも分からない**
+    this.log.append({
+      type: "po_operation",
+      projectTag: id,
+      operation: "project_unregistered",
+      payload: {
+        repoPath: entry.repoPath,
+        reason: opts.reason,
+        by: opts.by ?? "banto",
+        forced: opts.force === true,
+        activeTaskIds: active.map((t) => t.id),
+        pendingTaskIds: pending.map((t) => t.id),
+      },
+    });
+    return { ok: true, entry, active, pending };
+  }
+
+  /**
+   * 取り込み（watcher）／マージキューの弁を切り替える。
+   *
+   * 永続化は `ProjectRegistry` が同期で書き切る——**再起動したら消える設定では止血に
+   * ならない**（この口が要る場面は、まさに Kobo を再起動できないときである）。
+   */
+  setProjectControl(
+    id: string,
+    which: "watch" | "mergeQueue",
+    enabled: boolean,
+    opts: { reason: string; by?: string }
+  ): { ok: true; entry: ProjectEntry } | { ok: false; reason: string } {
+    const entry = this.registry.setControl(id, which, enabled, opts.reason);
+    if (!entry) {
+      const known = this.registry.list().map((p) => p.id).join(", ");
+      return {
+        ok: false,
+        reason: `"${id}" は受け持っていません（既知: ${known || "(なし)"}）`,
+      };
+    }
+    this.log.append({
+      type: "po_operation",
+      projectTag: id,
+      operation: which === "watch" ? "project_watch_set" : "project_merge_queue_set",
+      payload: { enabled, reason: opts.reason, by: opts.by ?? "banto" },
+    });
+    return { ok: true, entry };
+  }
+
   // ── Task operations ────────────────────────────────────────────────────────
 
   getTasksByProject(projectTag: string): TaskRecord[] {
@@ -3303,7 +3439,11 @@ export class Daemon {
       }
 
       // Enumerate ready tasks from derived state (D3: no extra flag).
-      const readyTasks = this.store.getAllTasks().filter((t) => t.status === "ready");
+      // **受け持っていないプロジェクトの職人は起こさない**（PO 裁定 2026-08-13）。
+      // タスクの記録は帳簿に残り続けるので、ここで絞らないと「外したのに職人が起きる」
+      const readyTasks = this.store
+        .getAllTasks()
+        .filter((t) => t.status === "ready" && this.registry.has(t.projectTag));
 
       for (const task of readyTasks) {
         // Re-check quota each iteration — previous spawns in this loop count.
@@ -3377,6 +3517,9 @@ export class Daemon {
         const proj = this.registry.list().find((p) => p.id === projectTag);
         return proj?.repoPath;
       },
+      // 非常停止の弁（PO 裁定 2026-08-13・inc-0063）。閉じている＝rebase も自動起票も
+      // 状態遷移も回さない。受け持ちを外したプロジェクトもここで false になる
+      isProjectEnabled: (projectTag: string) => this.mergeQueueEnabledFor(projectTag),
       // task-0071: 検証コマンドの制限時間は層B設定（`meta/config.yaml`）。
       // 読めなければゲートの既定に任せる——1つの設定でマージキュー全体を止めない（I2）
       // task-0075: 検証は検証環境の中で回す。**ホストへは落とさない**
@@ -3479,6 +3622,11 @@ export class Daemon {
     // NOTE: The origin task is currently in `merging` (the merge queue put it there).
     // After we pause it here it becomes `paused`. If the tick fires again before the
     // watcher injects the conflict task, the origin is already paused → skip.
+    // 弁が閉じているなら**起票しない**（inc-0063 の非常停止）。ここは
+    // processMergeQueue から呼ばれるので普通は届かないが、自動起票の口は
+    // これ1つなので、止める判定もここに置いておく（二重でも害は無い）
+    if (!this.mergeQueueEnabledFor(originProjectTag)) return;
+
     this.refreshState();
     const originTask = this.store.getTask(originTaskId, originProjectTag);
     if (!originTask) {
@@ -3581,6 +3729,11 @@ export class Daemon {
 
     for (const pair of pairs) {
       const { originTaskId, originProjectTag, resolutionTaskId, resolutionProjectTag } = pair;
+
+      // 弁が閉じているプロジェクトは動かさない（inc-0063）。**paused → merging の
+      // 再開はここから出ている**——マージキュー本体だけ止めても、この道が残っていると
+      // 周回は止まらない（帳簿には po_operation と記録されるので、PO が押したように見える）
+      if (!this.mergeQueueEnabledFor(originProjectTag)) continue;
 
       const resolutionTask = this.store.getTask(resolutionTaskId, resolutionProjectTag);
       if (!resolutionTask) continue;

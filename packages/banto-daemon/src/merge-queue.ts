@@ -237,6 +237,15 @@ export interface MergeProcessorOptions {
   getProjectRepoPath: (projectTag: string) => string | undefined;
 
   /**
+   * そのプロジェクトのマージキューを回してよいか（PO 裁定 2026-08-13・inc-0063）。
+   *
+   * **判断は持たない**——開いているかどうかを Daemon（`ProjectRegistry`）に聞くだけ。
+   * 閉じているプロジェクトのタスクは待ち行列から**取り除かれる**ので、先頭に居座って
+   * 他のプロジェクトを止めることもない。省略時は全部回す（既存の呼び出しはそのまま）。
+   */
+  isProjectEnabled?: (projectTag: string) => boolean;
+
+  /**
    * Function to get all current task records (for post-merge gate re-eval trigger).
    * The caller (daemon) passes its store.getAllTasks() here.
    */
@@ -271,7 +280,12 @@ export async function processMergeQueue(
   opts: MergeProcessorOptions
 ): Promise<boolean> {
   const allEvents = log.readAllEvents();
-  const queue = deriveQueue(allEvents);
+  // 弁が閉じているプロジェクトは**待ち行列から外す**（inc-0063 の非常停止）。
+  // 先頭を飛ばすのではなく外すのは、閉じたプロジェクトのタスクが頭に居座って
+  // 他のプロジェクトのマージまで止めるのを避けるため
+  const queue = deriveQueue(allEvents).filter(
+    (entry) => opts.isProjectEnabled?.(entry.projectTag) ?? true
+  );
 
   if (queue.length === 0) {
     return false; // Nothing to process

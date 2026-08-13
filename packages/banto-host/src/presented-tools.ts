@@ -84,6 +84,17 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
   "kobo.task",
   "kobo.approve",
   "kobo.reopen",
+  /**
+   * **制御の口**（PO 裁定 2026-08-13・inc-0063）。頻度で選ぶと必ず落ちる——
+   * 使うのは工場が壊れたときだけで、平時の呼び出しは 0 回である。それでも渡すのは、
+   * **無いと止められない**から：inc-0063 では工場が1分ごとに同じタスクを起票し続け、
+   * 番頭には watcher を止める口もキューを止める口も受け持ちを外す口も無かった。
+   * 在庫にあっても提示していなければ「無い」のと同じ（決定82）。
+   */
+  "kobo.projects",
+  "kobo.set_merge_queue",
+  "kobo.set_watch",
+  "kobo.unregister_project",
   // 器（決定78・81a）
   "canvas.open",
   "canvas.show",
