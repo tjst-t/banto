@@ -287,6 +287,22 @@ function applyDelta(prev: TranscriptEntry[], event: ServerEvent): TranscriptEntr
           title: event.title,
           conclusion: event.conclusion,
           at: event.at,
+          // 詳細の**在処は枝**（決定108）。幹には在ることだけが載る
+          ...(event.hasDetail ? { hasDetail: true } : {}),
+        },
+      ];
+
+    // 畳む前に枝から還った相談・報告（決定107）。札・結論と同じ列に並ぶ
+    case "branch_note":
+      return [
+        ...prev,
+        {
+          role: "branch_note",
+          branchId: event.branchId,
+          title: event.title,
+          kind: event.kind,
+          text: event.text,
+          at: event.at,
         },
       ];
 

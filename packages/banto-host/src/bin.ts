@@ -404,13 +404,14 @@ Memory is split in two, and **the unit of the second layer is the trunk**.
 
 Conversations are not parallel tabs. Each project has one **trunk** that lives on, and short-lived **branches** hang off it.
 
-- **trunk** — one project. It is never folded away by itself, and it is the record of what got decided. Only two lines from a branch ever reach its trunk: the line saying a branch opened, and the line saying what it concluded. **Never replay a branch's contents into the trunk** — that is what makes a trunk readable end to end.
-- **branch** — one question that has an end. Open it with thread.open when a topic is going to take repeated back-and-forth. You must say what would bring it back (returnCondition) and why it is not being discussed in the trunk (reason). **If you cannot say what would end it, do not open a branch — talk in the trunk.** Branches are one level deep: you cannot open a branch from inside a branch. Fold it with thread.merge and give the conclusion in one line; "保留：<reason>" is a valid conclusion.
+- **trunk** — one project. It is never folded away by itself, and it is the record of what got decided. What lands in a trunk stays short: a branch opened, a branch asked or reported something, a branch concluded. **Never replay a branch's contents into the trunk** — that is what makes a trunk readable end to end. Detail is not lost, it is read on demand (thread.read).
+- **branch** — one question that has an end. Open it with thread.open when a topic is going to take repeated back-and-forth. You must say what would bring it back (returnCondition) and why it is not being discussed in the trunk (reason). **If you cannot say what would end it, do not open a branch — talk in the trunk.** Branches are one level deep: you cannot open a branch from inside a branch. Fold it with thread.merge and give the conclusion in one line; "保留：<reason>" is a valid conclusion. thread.merge also takes what you investigated / decided / what is left — that detail stays in the branch, not the trunk.
+- **A trunk and its branches can talk while a branch is running.** From the trunk: thread.read to see what is actually happening inside one (open or already folded), thread.steer to hand it a message after it started — a changed premise, a narrowed scope, an answer. From a branch: thread.consult to put a question or a report back on the trunk before you fold, when the trunk's judgement is needed and inventing a conclusion would be worse. Do not use it as chat: a branch that consults on every step should have stayed in the trunk.
 - **帳場** — one special trunk, the only conversation that can never be closed. **It is not a project, and it is not the trunk for developing banto itself.** Anything that does not belong to a specific project lands here: notices with no destination, a request before it has become a project, one-off errands. It always sits first in the user's rail.
 - **Starting a new trunk** (thread.open_trunk): the test is whether you would want this work's accumulated memory mixed into an existing trunk's conversations. If you would, it belongs in that trunk. If mixing it would be noise, start a trunk. Repeated back-and-forth alone is a branch, not a trunk.
 - **Ending a trunk** (thread.close_trunk): when the project is over. You choose what memory to carry out of it — rewrite anything that still holds elsewhere so it makes sense outside this project. What you do not carry stays with the folded trunk. Open branches must be folded first.
-- **Passing word between trunks** (thread.send): memory and context are split per trunk, which is exactly why things sometimes need to cross. Send the fact and why it matters over there — do not give instructions; what happens in that trunk is its steward's call. Trunks only (a branch is one closed question). Do not go back and forth: if two or three messages do not settle it, raise it to the user or move to that trunk.
-- thread.list shows every open conversation, which one you are in, and what each branch is waiting on.
+- **Passing word between trunks** (thread.send): memory and context are split per trunk, which is exactly why things sometimes need to cross. Send the fact and why it matters over there — do not give instructions; what happens in that trunk is its steward's call. Trunks only — another trunk's branches are none of your business, and you cannot read inside them either. Do not go back and forth: if two or three messages do not settle it, raise it to the user or move to that trunk.
+- thread.list shows every open conversation, which one you are in, and what each branch is waiting on. Add includeClosed to find a folded branch you want to read back.
 - Once you know what a conversation is about, name it with thread.rename, and rename it again when the topic moves on. The user picks conversations by name, so a stale name — or "会話 3" — tells them nothing. Keep it short, around 15 characters. Do not rename for a brief digression.
 
 # Showing things: utsuwa inside the conversation, faces for work
@@ -1096,6 +1097,12 @@ async function serve(options: ServeOptions): Promise<void> {
          * 出所が「別の会話」であることは、開くときも渡すときも変わらない。
          */
         deliver: (threadId, message) => server.notify(message, { threadId, source: "thread" }),
+        /**
+         * **枝から幹への相談**（決定107）。記録は `ThreadRegistry.consult` が札として
+         * 済ませているので、ここでは幹のターンだけ回す——`notify` を使うと同じ一言が
+         * 知らせとしても積まれ、1つの相談が2行に見える
+         */
+        nudge: (threadId, message) => server.nudge(threadId, message),
         /**
          * 幹を終うとき、番頭が選んだ記憶を**横断の層（人の記憶）へ上げる**。
          * 枝の結論が幹へ還るのと同じ形が、一段上で繰り返される（PO裁定 2026-08-09）。

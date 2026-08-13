@@ -19,7 +19,7 @@ import { Icon } from "./icons.js";
 import { MarkdownLink } from "./links.js";
 import { Linkify, rehypeLinkify, splitPathAndLine, type LinkTargets } from "./linkify.js";
 import { UtsuwaRow } from "./Utsuwa.js";
-import { BranchCard, BranchResultRow } from "./Branch.js";
+import { BranchCard, BranchNoteRow, BranchResultRow } from "./Branch.js";
 
 /** 考え終わってから思考を畳むまで（AI Elements の `AUTO_CLOSE_DELAY`）。 */
 const REASONING_AUTO_CLOSE_MS = 1000;
@@ -500,6 +500,19 @@ export const ChatRow = React.memo(
             branchId={entry.branchId}
             title={entry.title}
             conclusion={entry.conclusion}
+            at={entry.at}
+            {...(entry.hasDetail ? { hasDetail: true } : {})}
+            {...(onOpenBranch ? { onOpen: onOpenBranch } : {})}
+          />
+        );
+      case "branch_note":
+        // 畳む前に枝から還った一言（決定107）。札と結論と同じ列に並べる（知らせに混ぜない）
+        return (
+          <BranchNoteRow
+            branchId={entry.branchId}
+            title={entry.title}
+            kind={entry.kind}
+            text={entry.text}
             at={entry.at}
             {...(onOpenBranch ? { onOpen: onOpenBranch } : {})}
           />

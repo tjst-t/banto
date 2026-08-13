@@ -69,7 +69,8 @@ function hasSameOpen(
   let from = 0;
   for (let i = transcript.length - 1; i >= 0; i--) {
     const role = transcript[i]!.role;
-    if (role === "po" || role === "notice") {
+    // 枝からの相談（決定107）もターンの始まり——知らせと同じく、これで番頭が喋り出す
+    if (role === "po" || role === "notice" || role === "branch_note") {
       from = i;
       break;
     }
@@ -419,6 +420,20 @@ export class BantoHostServer {
       this.broadcast({ type: "branch_card", threadId: trunk.id, branchId: branch.id });
     this.threads.onBranchResult = (trunk, entry) =>
       this.broadcast({ type: "branch_result", threadId: trunk.id, ...entry });
+    /**
+     * 枝から幹への相談・報告（決定107）。**同じ列に並べる**ので、札と結論と同じ扱いで配る
+     * ——知らせに混ぜると、幹を読み返したときにどの枝の話か辿れない。
+     */
+    this.threads.onBranchNote = (trunk, entry) =>
+      this.broadcast({
+        type: "branch_note",
+        threadId: trunk.id,
+        branchId: entry.branchId,
+        title: entry.title,
+        kind: entry.kind,
+        text: entry.text,
+        at: entry.at,
+      });
   }
 
   /**
@@ -587,16 +602,44 @@ export class BantoHostServer {
    */
   notify(text: string, options: NotifyOptions = {}): Promise<void> {
     const source = options.source ?? "system";
+    return this.deliverToThread(text, options.threadId, (thread) => {
+      thread.record({ role: "notice", source, text });
+      this.broadcast({ type: "notice", threadId: thread.id, source, text });
+    });
+  }
+
+  /**
+   * **記録は済んでいる前提で、番頭のターンだけ回す**（決定107）。
+   *
+   * 枝からの相談は `ThreadRegistry.consult` が既に**札**として幹へ積んでいる。ここで
+   * `notify` を使うと同じ一言が知らせとしても積まれ、1つの相談が2行に見える
+   * ——記録の形は呼び出し側が決め、ターンを回す仕掛けはここが持つ。
+   */
+  nudge(threadId: string | undefined, text: string): Promise<void> {
+    return this.deliverToThread(text, threadId, () => {});
+  }
+
+  /**
+   * 知らせをスレッドの列に並べ、番頭のターンを1本回す。
+   *
+   * **記録の形だけが呼び出しごとに違う**（知らせの行か、枝の札か）ので、そこを渡して
+   * もらう。直列化・turn_start/turn_end・失敗の記録はどの経路でも同じでなければ
+   * ならない——別々に書くと、片方だけ turn_start を出さない、といった食い違いが出る。
+   */
+  private deliverToThread(
+    text: string,
+    threadId: string | undefined,
+    record: (thread: Thread) => void
+  ): Promise<void> {
     let thread: Thread;
     try {
-      thread = this.threads.resolve(options.threadId);
+      thread = this.threads.resolve(threadId);
     } catch (err) {
       // I2: 宛先不明の知らせを黙って捨てない
       return Promise.reject(err instanceof Error ? err : new Error(String(err)));
     }
     thread.notices = thread.notices.then(async () => {
-      thread.record({ role: "notice", source, text });
-      this.broadcast({ type: "notice", threadId: thread.id, source, text });
+      record(thread);
       // 職人の報告でも番頭は喋り出す。ここを知らせないと画面から中断する手段が消える
       this.broadcast({ type: "turn_start", threadId: thread.id });
       try {
