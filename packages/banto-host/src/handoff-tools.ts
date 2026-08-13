@@ -20,15 +20,9 @@ export function createHandoffTools(
     name: "handoff.read",
     label: "Handoff: Read",
     description:
-      "前の章の引き継ぎ資料を読む。" +
-      "会話が長くなると章を区切って文脈を畳んでおり、いまの文脈には見出ししか載っていない。" +
-      "**前提が要るときは憶測で埋めず、ここを読むこと。** 元のやり取りは失われていない。",
+      "前の章の引き継ぎ資料を読む（いまの文脈には見出ししか載っていない）。\n例: {} → この会話の最新の章／{id: \"thread-1/ch-0001\"} → その章（id は英語の識別子）\n**前提が要るときは憶測で埋めず、ここを読む。**",
     parameters: Type.Object({
-      id: Type.Optional(
-        Type.String({
-          description: '資料のID（例: "thread-1/ch-0001"）。省略するとこの会話の最新の章',
-        })
-      ),
+      id: Type.Optional(Type.String())
     }),
     async execute(params) {
       const id: string | undefined = params.id ?? store.list(threadId).at(-1);
@@ -41,7 +35,8 @@ export function createHandoffTools(
   const list = defineNamespacedTool({
     name: "handoff.list",
     label: "Handoff: List",
-    description: "この会話の章の一覧を返す。どこまで畳んだかを確かめるときに使う。",
+    description:
+      "この会話の章の一覧（どこまで畳んだかの確認）。\n例: {} → \"- thread-1/ch-0001\" の行",
     parameters: Type.Object({}),
     async execute() {
       const ids = store.list(threadId);

@@ -14,68 +14,36 @@
  */
 
 import { Type } from "typebox";
-import { defineNamespacedTool, type NamespacedToolDefinition } from "@banto/core";
+import { OpenObject, StringEnum, defineNamespacedTool, type NamespacedToolDefinition } from "@banto/core";
 import type { EnvironmentPool, ProvisionRequest } from "./pool.js";
 import { COLLECTED_PLACE_ID } from "./collected-place.js";
 
-/** プロファイル経由・アドホックの共通引数。どちらか一方を使う（決定34c・e）。 */
+/**
+ * プロファイル経由・アドホックの共通引数。どちらか一方を使う（決定34c・e）。
+ *
+ * **説明は1行ずつ**（ADR-0019 決定84-2）。`env.verify` と `env.provision` の2本に
+ * 丸ごと写るので、ここが長いと定義の量が2倍で効いてくる。手順は SKILL 側へ逃がす。
+ */
 const targetFields = {
-  repoPath: Type.Optional(
-    Type.String({
-      description:
-        "プロファイルの在り処（リポジトリのルート。meta/environments.yaml を読む）。profile を使うなら必須",
-    })
-  ),
-  profile: Type.Optional(
-    Type.String({ description: "使うプロファイル名。env.list_profiles で分かる" })
-  ),
-  driver: Type.Optional(
-    Type.String({
-      description:
-        "プロファイルを使わず直接指定する場合のドライバ（process / docker）。profile とは同時に使えない",
-    })
-  ),
-  config: Type.Optional(
-    Type.Object({}, { additionalProperties: true, description: "driver 指定時の設定ブロック" })
-  ),
-  workdir: Type.Optional(
-    Type.String({
-      description:
-        "どこで動かすか（絶対パス）。職人が作った worktree を指せば、そこで検証できる。省略時は既定の場所",
-    })
-  ),
-  taskId: Type.Optional(
-    Type.String({ description: "何の検証かを台帳とログに残すラベル（Koboのタスクidでも自分で付けた名でもよい）" })
-  ),
-  projectTag: Type.Optional(
-    Type.String({
-      description:
-        "どの統治単位の環境かを台帳に残すラベル（省略時 banto）。" +
-        "Kobo は自分のプロジェクトを入れ、env.list をこれで絞る（ADR-0013 決定60）",
-    })
-  ),
-  expose: Type.Optional(
-    Type.Number({
-      description:
-        "このポートを外から見えるようにする。POがブラウザで開いて自分の目で確かめたいときに指定する" +
-        "（返り値の url を伝えること）。機械が確かめるだけなら要らない",
-    })
-  ),
-  exposeProfilePort: Type.Optional(
-    Type.Boolean({
-      description:
-        "プロファイルが持つポートを公開する（決定59）。**ポート番号を知らなくてよい**——" +
-        "レビューのために人が触れるようにしたいときは、番号ではなくこれを渡す",
-    })
-  ),
-  exposeMode: Type.Optional(
-    Type.Union([
-      Type.Literal("auto", { description: "caddy が設定されていれば caddy、無ければ proxy（既定）" }),
-      Type.Literal("proxy", { description: "banto の中継で公開する（強制）" }),
-      Type.Literal("caddy", { description: "Caddy のサブドメインで公開する（強制。設定が無いと断る）" }),
-    ], { description: "公開方式（G9）。expose と一緒に指定する。既定 auto" })
-  ),
+  repoPath: Type.Optional(Type.String({ description: "profile を使うなら必須" })),
+  profile: Type.Optional(Type.String()),
+  driver: Type.Optional(Type.String({ description: "process / docker。profile と併用不可" })),
+  config: Type.Optional(OpenObject()),
+  workdir: Type.Optional(Type.String()),
+  taskId: Type.Optional(Type.String()),
+  projectTag: Type.Optional(Type.String()),
+  expose: Type.Optional(Type.Number()),
+  exposeProfilePort: Type.Optional(Type.Boolean()),
+  exposeMode: Type.Optional(StringEnum(["auto", "proxy", "caddy"] as const)),
 };
+
+/**
+ * 値の言語を明示する一行（ADR-0019 決定84-2）。
+ *
+ * arXiv:2601.05366 の最多の故障は `parameter value language mismatch`。`envId` の欄に
+ * 「検証環境」のような日本語が入ると、機構は無い環境を指されたことしか分からない。
+ */
+const ENV_ID_HINT = "\nenvId は英語の識別子（env.list の値）で埋める。";
 
 /**
  * Tool の引数を `ProvisionRequest` に写す。
@@ -132,25 +100,15 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.verify",
     label: "Env: Verify",
     description:
-      "使い捨ての検証環境を立てて、コマンドを走らせて、**必ず畳む**。" +
-      "「このブランチでテストが通るか確かめて」に対する道具で、結果は機構が返した事実として受け取れる" +
-      "（職人の報告は主張であって完了の証明ではない）。" +
-      "途中で失敗しても畳むところまで面倒を見る。畳めなかった場合は tornDown: false で返るので、" +
-      "そのときは env.list で残骸を確認すること。" +
-      "環境を残したい（レビュー用のdev serverを立てておく等）ときは、これではなく env.provision を使う。",
+      "使い捨ての環境を立て、コマンドを走らせ、**必ず畳む**。結果は機構が返した事実。\n例: {repoPath: \"/home/ubuntu/ghq/github.com/tjst-t/banto\", profile: \"test\", cmd: \"npm test\"} → 通ったか＋終了コード＋ログ末尾\n値は英語（パス・プロファイル名・コマンド）で埋める。",
     parameters: Type.Object({
       ...targetFields,
-      cmd: Type.String({ description: "環境の中で走らせる検証コマンド" }),
-      artifactPath: Type.Optional(Type.String({ description: "配る成果物の絶対パス（省略可）" })),
+      cmd: Type.String(),
+      artifactPath: Type.Optional(Type.String()),
       collect: Type.Optional(
-        Type.Boolean({
-          description:
-            "成果物を取り出すか（既定 false）。置き場所は機構が決め、返り値の collected に入る",
-        })
+        Type.Boolean()
       ),
-      timeoutMs: Type.Optional(
-        Type.Number({ description: "検証コマンドの制限時間（ミリ秒）。省略すると既定" })
-      ),
+      timeoutMs: Type.Optional(Type.Number())
     }),
     async execute(params) {
       const result = await pool.verify({
@@ -188,9 +146,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.provision",
     label: "Env: Provision",
     description:
-      "検証環境を1つ立てて**そのまま残す**。返る envId で以降の操作を指す。" +
-      "レビュー用に立てておきたい場合に使う。使い捨ての検証なら env.verify の方がよい" +
-      "（畳み忘れが起きない）。立てたものは必ず env.teardown で畳むこと。",
+      "環境を1つ立てて**そのまま残す**（レビュー用の dev server 等）。\n例: {repoPath: \"/home/ubuntu/ghq/github.com/tjst-t/banto\", profile: \"web\", exposeProfilePort: true} → envId と url\n値は英語で埋める。使い終わったら env.teardown。",
     parameters: Type.Object(targetFields),
     async execute(params) {
       const summary = await pool.provision(asRequest(params));
@@ -221,10 +177,11 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
   const deploy = defineNamespacedTool({
     name: "env.deploy",
     label: "Env: Deploy",
-    description: "立てた環境へ成果物を配る。ドライバによっては何もしない（立てた時点で動いている）。",
+    description:
+      "立てた環境へ成果物を配る。ドライバによっては何もしない。\n例: {envId: \"env-04479785fc\", artifactPath: \"/home/ubuntu/build/app.tar.gz\"} → 配った旨\n値は英語（識別子・絶対パス）で埋める。",
     parameters: Type.Object({
-      envId: Type.String({ description: "対象の環境 id" }),
-      artifactPath: Type.String({ description: "配る成果物の絶対パス" }),
+      envId: Type.String(),
+      artifactPath: Type.String()
     }),
     async execute(params) {
       await pool.deploy(params.envId, params.artifactPath);
@@ -238,8 +195,11 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
   const healthcheck = defineNamespacedTool({
     name: "env.healthcheck",
     label: "Env: Healthcheck",
-    description: "環境が使える状態か確かめる。ここが通らないうちに走らせた結果は当てにならない。",
-    parameters: Type.Object({ envId: Type.String({ description: "対象の環境 id" }) }),
+    description:
+      "環境が使える状態か確かめる（通らないうちの結果は当てにならない）。\n例: {envId: \"env-04479785fc\"} → \"env-04479785fc: 使えます\"" + ENV_ID_HINT,
+    parameters: Type.Object({
+      envId: Type.String()
+    }),
     async execute(params) {
       const health = await pool.healthcheck(params.envId);
       return {
@@ -258,19 +218,17 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.run",
     label: "Env: Run",
     description:
-      "環境の中でコマンドを走らせ、終了コードとログの末尾を返す。" +
-      "ログは末尾だけ返る（全文はログのパスにある）。",
+      "立てた環境の中でコマンドを走らせ、終了コードとログの末尾を返す。\n例: {envId: \"env-04479785fc\", cmd: \"npm run typecheck\"} → \"終了コード 0\" ＋末尾40行\ncmd は英語で埋める（シェルにそのまま渡る）。",
     parameters: Type.Object({
-      envId: Type.String({ description: "対象の環境 id" }),
-      cmd: Type.String({ description: "走らせるコマンド" }),
-      logTailLines: Type.Optional(Type.Number({ description: "返すログの行数（既定 40）" })),
+      envId: Type.String(),
+      cmd: Type.String(),
+      logTailLines: Type.Optional(Type.Number()),
       timeoutMs: Type.Optional(
         Type.Number({
           description:
-            "コマンドの制限時間（ミリ秒）。省略すると既定。**短くはできるが長くはできない**" +
-            "（能力側の上限まで）。env.list_profiles の limits で今の値が分かる",
+            "**短くはできるが長くはできない**（env.list_profiles の limits まで）"
         })
-      ),
+      )
     }),
     async execute(params) {
       const result = await pool.run(params.envId, params.cmd, params.logTailLines, params.timeoutMs);
@@ -286,12 +244,8 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.collect",
     label: "Env: Collect",
     description:
-      "環境から成果物（ログ・カバレッジ等）を取り出す。環境を畳むと中身は消えるので、" +
-      "残したいものは畳む前に取り出す。**置き場所は指定しない**——機構が決めて返す。" +
-      "返ってきた場所は読み取り専用の場所として登録されているので、file.* でそのまま読める。",
-    parameters: Type.Object({
-      envId: Type.String({ description: "対象の環境 id" }),
-    }),
+      "環境から成果物（ログ・カバレッジ等）を取り出す。畳むと消えるので、残すなら先に。\n例: {envId: \"env-04479785fc\"} → 取り出した先のパス（file.* で読める）" + ENV_ID_HINT,
+    parameters: Type.Object({ envId: Type.String() }),
     async execute(params) {
       const { dest } = await pool.collect(params.envId);
       return {
@@ -310,9 +264,8 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.teardown",
     label: "Env: Teardown",
     description:
-      "環境を畳む。既に畳んであるものへ呼んでも問題ない。" +
-      "立てた環境は使い終わったら必ず畳むこと——外に残ると費用がかかり続ける。",
-    parameters: Type.Object({ envId: Type.String({ description: "対象の環境 id" }) }),
+      "環境を畳む（既に畳んであるものへ呼んでも問題ない）。外に残ると費用がかかり続ける。\n例: {envId: \"env-04479785fc\"} → \"畳みました: env-04479785fc\"" + ENV_ID_HINT,
+    parameters: Type.Object({ envId: Type.String() }),
     async execute(params) {
       const result = await pool.teardown(params.envId);
       return {
@@ -331,14 +284,11 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.list",
     label: "Env: List",
     description:
-      "いま立っている検証環境の一覧。畳み忘れがないかを確かめるときに引く。" +
-      "同時に立てられる数には上限があるので、立てられなくなったらここを見る。",
+      "いま立っている環境の一覧（畳み忘れ・同時上限・孤児・成果物の量）。\n例: {} → \"env-04479785fc — test / task-0042 / 期限 2026-08-13T12:00:00Z\"\nprojectTag・taskId は英語の識別子で埋める。",
     parameters: Type.Object({
-      includeTornDown: Type.Optional(
-        Type.Boolean({ description: "畳んだものも含める（既定 false）" })
-      ),
-      projectTag: Type.Optional(Type.String({ description: "このプロジェクトの環境だけに絞る" })),
-      taskId: Type.Optional(Type.String({ description: "このラベルの環境だけに絞る" })),
+      includeTornDown: Type.Optional(Type.Boolean()),
+      projectTag: Type.Optional(Type.String()),
+      taskId: Type.Optional(Type.String())
     }),
     async execute(params) {
       const environments = pool.list(params);
@@ -380,18 +330,10 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.cleanup",
     label: "Env: Cleanup",
     description:
-      "回収した成果物を捨てる。もう要らないと判断したときに使う（期限が来れば機構も捨てるが、" +
-      "先に判断できるならその方が溜まらない）。" +
-      "**環境の記録（台帳）は消えない**——何を立てたかの記録は残る。" +
-      "どれを捨てるかは必ず指定する。全部捨てるなら olderThanDays: 0。" +
-      "いまどれくらい溜まっているかは env.list の artifacts で分かる。",
+      "回収した成果物を捨てる（**台帳は消えない**）。溜まり具合は env.list の artifacts。\n例: {olderThanDays: 7} → 7日より古い分／{envId: \"env-04479785fc\"} → その環境の分" + ENV_ID_HINT,
     parameters: Type.Object({
-      envId: Type.Optional(
-        Type.String({ description: "この環境の成果物だけ捨てる" })
-      ),
-      olderThanDays: Type.Optional(
-        Type.Number({ description: "この日数より古い成果物を捨てる（0 なら全部）" })
-      ),
+      envId: Type.Optional(Type.String()),
+      olderThanDays: Type.Optional(Type.Number())
     }),
     async execute(params) {
       const result = pool.cleanupArtifacts(params);
@@ -416,12 +358,8 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.teardown_orphan",
     label: "Env: Teardown orphan",
     description:
-      "台帳に無い実リソース（孤児）を**名指しで1件だけ**畳む。名前は env.list の orphans に出るもの。" +
-      "**まとめて畳む口は無い**——孤児の判定は取り違えることがあり、他人の作業を壊すと取り返しが" +
-      "つかないため、1件ずつ確かめて畳む。見つからない・複数当たるときは畳まずに断る。",
-    parameters: Type.Object({
-      name: Type.String({ description: "畳む孤児の名前（env.list の orphans に出るもの）" }),
-    }),
+      "台帳に無い実リソース（孤児）を**名指しで1件だけ**畳む。名前は env.list の orphans（英語の識別子）。\n例: {name: \"banto-env-9f2c1a\"} → 畳んだ旨。まとめて畳む口は無い。",
+    parameters: Type.Object({ name: Type.String() }),
     async execute(params) {
       const done = await pool.teardownOrphan(params.name);
       return {
@@ -437,11 +375,8 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.list_profiles",
     label: "Env: List Profiles",
     description:
-      "そのリポジトリで使える検証プロファイルの一覧。" +
-      "上限を超えていて使えないものは、なぜ使えないかと一緒に返る。",
-    parameters: Type.Object({
-      repoPath: Type.String({ description: "リポジトリのルート（meta/environments.yaml を読む）" }),
-    }),
+      "そのリポジトリで使える検証プロファイルの一覧（使えないものは理由つき）。\n例: {repoPath: \"/home/ubuntu/ghq/github.com/tjst-t/banto\"} → \"test — process / ttl 30分\"\nrepoPath は英語の絶対パスで埋める。",
+    parameters: Type.Object({ repoPath: Type.String() }),
     async execute(params) {
       const { usable, rejected } = pool.profiles(params.repoPath);
       const lines = usable.map((p) => `${p.name} — ${p.driver} / ttl ${Math.round(p.ttlMs / 60000)}分`);
@@ -460,15 +395,10 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.events",
     label: "Env: Events",
     description:
-      "検証環境の衛生に関わる出来事を古い順に返す（期限切れで畳んだ・畳み損ねた・" +
-      "台帳に無い実リソースが出た）。**立てた・畳んだの実況は入らない**——" +
-      "いま何が立っているかは env.list を見ること。" +
-      "afterEventId を渡すと、その続きだけを取れる。",
+      "環境の衛生に関わる出来事（期限切れ・畳み損ね・孤児）を古い順に返す。\n例: {afterEventId: 40, limit: 20} → #41 以降の20件。いま何が立っているかは env.list。",
     parameters: Type.Object({
-      afterEventId: Type.Optional(
-        Type.Number({ description: "このID より後だけを返す（省略時は最初から）" })
-      ),
-      limit: Type.Optional(Type.Number({ description: `最大件数（既定 ${MAX_EVENTS}）` })),
+      afterEventId: Type.Optional(Type.Number()),
+      limit: Type.Optional(Type.Number())
     }),
     async execute(params) {
       const limit = Math.max(1, Math.min(params.limit ?? MAX_EVENTS, MAX_EVENTS));

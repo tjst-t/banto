@@ -12,7 +12,7 @@
  *     型依存が要る状態だった（imp-0003 の実害）。
  */
 
-import { defineNamespacedTool, type NamespacedToolDefinition } from "@banto/core";
+import { StringEnum, defineNamespacedTool, type NamespacedToolDefinition } from "@banto/core";
 import { Type } from "typebox";
 import { DEFAULT_PAGE_SIZE } from "./pool.js";
 import type { WorkerPool } from "./pool.js";
@@ -22,63 +22,54 @@ const MAX_ATTACH_LINES = 200;
 /** 1回に返すイベントの上限。同上。 */
 const MAX_EVENTS = 100;
 
+/**
+ * 例に出す職人の識別子（ADR-0019 決定84-1）。
+ *
+ * **実物の形をそのまま出す。** `sessionId` は UUIDv7 で、短い別名は無い——
+ * 「w-28」のような架空の形を例にすると、番頭がその形を作って渡してくる。
+ */
+const EXAMPLE_SESSION_ID = "019fbd87-1aba-74e8-a7bd-14f9dc8b2ede";
+
+/**
+ * 値の言語を明示する一行（ADR-0019 決定84-2）。
+ *
+ * arXiv:2601.05366 が挙げる最多の故障は `parameter value language mismatch`——
+ * banto は PO が日本語・道具の I/F が英語という、その型そのもの。**識別子の欄に
+ * 日本語を書かせない**ことを、例だけに頼らず言葉でも言う。
+ */
+const ID_HINT = "\nsessionId は英語の識別子（UUID）で埋める。";
+
 export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] {
   const delegate = defineNamespacedTool({
     name: "worker.delegate",
     label: "Worker: Delegate",
     description:
-      "職人（worker）を起こして実作業を任せる。調査・実装・修正など、手を動かす仕事は" +
-      "自分でやらずここへ渡す（D10）。職人は記憶を持たないので、必要な文脈は instruction に" +
-      "書き切ること。返り値の sessionId で以後の様子を見たり指示を足したりできる。\n" +
-      "**渡したら手を離し、このターンを終えること。** 職人が喋り終われば報告か" +
-      "「手が空きました」の知らせが**自動で届き、そこであなたのターンが回る**" +
-      "——ターンの中で待つことはできないので、`worker.attach` を繰り返して待ちの代わりに" +
-      "しないこと（文脈と費用が減るだけで、何も早くならない）。",
+      `職人に実作業（調査・実装・修正）を任せる。手を動かす仕事は自分でやらず渡す（D10）。\n例: {taskId: "task-0042", worktreePath: "/home/ubuntu/worktrees/banto/task-0042", instruction: "落ちる原因を調べて報告する"} → sessionId "${EXAMPLE_SESSION_ID}"\ninstruction 以外の値は英語（識別子・パス）で埋める。\n**渡したら手を離してターンを終える**（知らせは自動で届く。attach で待たない）。`,
     parameters: Type.Object({
-      taskId: Type.String({ description: "仕事の識別子。台帳とログに残る（例: task-0042）" }),
-      origin: Type.Optional(
-        Type.String({ description: "起動元＝報告の宛先（省略時は Worker Pool の既定）" })
-      ),
-      worktreePath: Type.String({ description: "作業させるディレクトリの絶対パス" }),
+      taskId: Type.String(),
+      origin: Type.Optional(Type.String()),
+      worktreePath: Type.String(),
       instruction: Type.String({
-        description: "職人への指示。職人は記憶を持たないため、前提・目的・完了条件を書き切る",
+        description: "職人は記憶を持たないので前提・目的・完了条件を書き切る"
       }),
-      projectTag: Type.Optional(Type.String({ description: "利用者の名前空間（省略可）" })),
+      projectTag: Type.Optional(Type.String()),
       tools: Type.Optional(
         Type.Array(Type.String(), {
           description:
-            "職人に使わせるTool名の許可リスト。省略すると read/bash/edit/write/grep/find/ls を" +
-            "全部持つ＝**調べるだけのつもりでも書き換えられる**。読むだけで足りる仕事は " +
-            '["read","grep","find","ls"] のように絞ること。報告経路は書かなくても残る',
+            '例: ["read","grep","find","ls"]。省略すると write/bash まで全部持つ' +
+            "＝**調べるだけのつもりでも書き換えられる**"
         })
       ),
-      network: Type.Optional(
-        Type.Boolean({
-          description:
-            "外を読む口（web.fetch / web.search）を渡すか。**既定は渡さない**。" +
-            "外の資料を自分で当たらせたい調査のときだけ true にする",
-        })
-      ),
+      network: Type.Optional(Type.Boolean()),
       modelTier: Type.Optional(
-        Type.Union([Type.Literal("reasoning"), Type.Literal("standard"), Type.Literal("fast")], {
-          description: "モデルの等級。難しい仕事だけ reasoning にする（コスト）",
-        })
+        StringEnum(["reasoning", "standard", "fast"] as const, {})
       ),
-      runtime: Type.Optional(
-        Type.String({
-          description:
-            "どのランタイムで動かすか。`claude-code`（Claude Code / Agent SDK）か `pi`。" +
-            "省略すると Worker Pool の既定（通常は pi）。**選べないランタイムを頼むと、" +
-            "選べる名前を添えて断られる**（黙って既定に落ちることはない）",
-        })
-      ),
+      // **綴りは残す。** 短くしても、選べる名前だけは削らない——無いランタイムを
+      // 当てにいく呼び方が実際に出る（claude-agent-worker.spec.ts が押さえている）
+      runtime: Type.Optional(Type.String({ description: "claude-code / pi（既定 pi）" })),
       model: Type.Optional(
-        Type.String({
-          description:
-            "モデルの名指し（`modelTier` より優先）。Claude Code なら `opus` / `sonnet` / `haiku`、" +
-            "または `claude-opus-5` のような具体名。**難しい仕事だけ上げる**（コスト）",
-        })
-      ),
+        Type.String({ description: "opus / sonnet / haiku など（一覧は worker.models）" })
+      )
     }),
     async execute(params) {
       const worker = await pool.delegate({
@@ -112,23 +103,15 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     name: "worker.list",
     label: "Worker: List",
     description:
-      "職人の一覧を返す（生存確認つき）。誰に何を任せているか、さっき頼んだ仕事がどうなったかを" +
-      "把握したいときに使う。**新しいものから返す**。**畳んだ職人も既定で含む**" +
-      "——閉じても記録は残る。query で絞り込め、多いときは limit / offset で辿れる。",
+      "誰に何を任せているかの一覧（新しい順・生存確認つき）。畳んだ職人も既定で含む。\n例: {} → 全部／{includeClosed: false} → 稼働中だけ／{query: \"task-0042\"} → その仕事だけ\nquery は英語の識別子で埋める。",
     parameters: Type.Object({
-      projectTag: Type.Optional(Type.String({ description: "名前空間で絞る（省略時は全部）" })),
-      includeClosed: Type.Optional(
-        Type.Boolean({ description: "畳んだ職人も含める（既定 true）。稼働中だけ見たいなら false" })
-      ),
+      projectTag: Type.Optional(Type.String()),
+      includeClosed: Type.Optional(Type.Boolean()),
       query: Type.Optional(
-        Type.String({
-          description:
-            "絞り込み。taskId・projectTag・起動元・worktree・状態・**起動時の指示**を対象に、" +
-            "空白区切りの語をすべて含むものを返す（大文字小文字は区別しない）",
-        })
+        Type.String()
       ),
-      limit: Type.Optional(Type.Number({ description: `1回に返す件数（既定 ${DEFAULT_PAGE_SIZE}）` })),
-      offset: Type.Optional(Type.Number({ description: "先頭から飛ばす件数（続きを見るとき）" })),
+      limit: Type.Optional(Type.Number()),
+      offset: Type.Optional(Type.Number())
     }),
     async execute(params) {
       const result = pool.find({
@@ -166,9 +149,7 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     name: "worker.models",
     label: "Worker: Models",
     description:
-      "職人に名指しできるモデルの一覧。`worker.delegate` の `model` にそのまま書ける名前を返す。" +
-      "**難しさに合わないモデルを当てにいかないための口**——等級（modelTier）で足りるなら" +
-      "そちらでよい。名指しは「この仕事はこのモデルで」と決めたいときだけ。",
+      "職人に名指しできるモデルの一覧。worker.delegate の model にそのまま書ける名前が返る。\n例: {} → \"opus — Opus\"／\"opencode/deepseek-v4 — DeepSeek V4（fast）\"",
     parameters: Type.Object({}),
     async execute() {
       const found = pool.selectableModels();
@@ -184,11 +165,10 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     name: "worker.steer",
     label: "Worker: Steer",
     description:
-      "稼働中の職人に追加の指示を渡す。方針を変えたいとき・足りない文脈を補うときに使う。" +
-      "**職人からの質問に答えるのもこれ**（答えると職人は待ちを解いて動き出す）。",
+      `稼働中の職人に指示を渡す。**職人の質問に答えるのもこれ**（答えると待ちが解ける）。\n例: {sessionId: "${EXAMPLE_SESSION_ID}", message: "そのまま直してよい"} → 渡した旨${ID_HINT}`,
     parameters: Type.Object({
-      sessionId: Type.String({ description: "対象の職人（worker.list で確認できる）" }),
-      message: Type.String({ description: "渡す指示" }),
+      sessionId: Type.String(),
+      message: Type.String()
     }),
     async execute(params) {
       // I2: 不在・終了済みの職人への指示は WorkerPool が例外にする
@@ -204,12 +184,8 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     name: "worker.close",
     label: "Worker: Close",
     description:
-      "仕事が済んだ職人を畳む。**成果を確かめて良いと判断したら、放置せず畳むこと**——" +
-      "待機中の職人はプロセスとして残り続ける。報告が来ただけでは畳まない（報告は主張であって" +
-      "完了の証明ではない）。畳んでも記録もセッションも残り、worker.wake で起こし直せる。",
-    parameters: Type.Object({
-      sessionId: Type.String({ description: "畳む職人" }),
-    }),
+      `仕事が済んだ職人を畳む。記録は残り worker.wake で起こし直せる。\n例: {sessionId: "${EXAMPLE_SESSION_ID}"} → 畳んだ旨${ID_HINT}\n**報告が来ただけでは畳まない**（報告は主張であって完了の証明ではない）。`,
+    parameters: Type.Object({ sessionId: Type.String() }),
     async execute(params) {
       await pool.close(params.sessionId, "done");
       return {
@@ -223,11 +199,10 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     name: "worker.wake",
     label: "Worker: Wake",
     description:
-      "畳んだ職人を起こし直す。**元の会話が復元される**ので、前に渡した前提を書き直さなくてよい。" +
-      "同じ仕事の続きを頼むときに使う（まったく別の仕事なら worker.delegate）。",
+      `畳んだ職人を起こし直す。**元の会話が復元される**ので前提を書き直さなくてよい。\n例: {sessionId: "${EXAMPLE_SESSION_ID}", instruction: "監査の指摘を直す"} → 起こした旨${ID_HINT}\n別の仕事なら worker.delegate。`,
     parameters: Type.Object({
-      sessionId: Type.String({ description: "起こし直す職人（worker.list の履歴から選ぶ）" }),
-      instruction: Type.String({ description: "続きとして渡す指示" }),
+      sessionId: Type.String(),
+      instruction: Type.String()
     }),
     async execute(params) {
       const worker = await pool.wake(params.sessionId, params.instruction);
@@ -247,11 +222,8 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     name: "worker.stop",
     label: "Worker: Stop",
     description:
-      "職人を強制的に止める。作業中でも止まる。仕事が済んだので畳むときは worker.close を使う" +
-      "——理由を分けておかないと、履歴が「なぜ終わったのか」に答えられない。",
-    parameters: Type.Object({
-      sessionId: Type.String({ description: "止める職人" }),
-    }),
+      `職人を強制的に止める（作業中でも止まる）。\n例: {sessionId: "${EXAMPLE_SESSION_ID}"} → 止めた旨。仕事が済んで畳むなら worker.close。${ID_HINT}`,
+    parameters: Type.Object({ sessionId: Type.String() }),
     async execute(params) {
       await pool.stop(params.sessionId);
       return {
@@ -265,15 +237,10 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     name: "worker.attach",
     label: "Worker: Attach",
     description:
-      "職人の出力を覗く。プロセスに割り込まないので稼働中でも安全。" +
-      "「いまどうなっているか」を確認したいときに使う（決定18のセッションビューアと同じ経路）。\n" +
-      "**完了を待つために繰り返し呼ばないこと。** 職人が終われば知らせが自動で届く" +
-      "——同じ確認を続けると機構が断る。",
+      `職人の出力の末尾を覗く（割り込まないので稼働中でも安全）。\n例: {sessionId: "${EXAMPLE_SESSION_ID}", tailLines: 50} → 末尾50行${ID_HINT}\n**完了を待つために繰り返し呼ばない**（機構が断る）。`,
     parameters: Type.Object({
-      sessionId: Type.String({ description: "覗く職人" }),
-      tailLines: Type.Optional(
-        Type.Number({ description: `末尾から何行返すか（既定 ${MAX_ATTACH_LINES}）` })
-      ),
+      sessionId: Type.String(),
+      tailLines: Type.Optional(Type.Number())
     }),
     async execute(params) {
       const limit = Math.max(1, Math.min(params.tailLines ?? MAX_ATTACH_LINES, MAX_ATTACH_LINES));
@@ -292,17 +259,12 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     name: "worker.events",
     label: "Worker: Events",
     description:
-      "職人に起きたことの記録を新しい順ではなく古い順に返す（起動・終了・報告・質問）。" +
-      "**事実（kind=fact）と職人の主張（kind=claim）は分かれている**——" +
-      "「終わったと言っている」は完了の証明ではないので、成果は自分で確かめること。" +
-      "afterEventId を渡すと、その続きだけを取れる。",
+      "職人に起きたこと（起動・終了・報告・質問）を古い順に返す。\n例: {afterEventId: 120, limit: 20} → #121 以降の20件\nsessionId・origin は英語の識別子で埋める。\n**事実(fact)と職人の主張(claim)は分かれている**——「終わった」は完了の証明ではない。",
     parameters: Type.Object({
-      afterEventId: Type.Optional(
-        Type.Number({ description: "このID より後だけを返す（省略時は最初から）" })
-      ),
-      sessionId: Type.Optional(Type.String({ description: "特定の職人に絞る" })),
-      origin: Type.Optional(Type.String({ description: "起動元で絞る" })),
-      limit: Type.Optional(Type.Number({ description: `最大件数（既定 ${MAX_EVENTS}）` })),
+      afterEventId: Type.Optional(Type.Number()),
+      sessionId: Type.Optional(Type.String()),
+      origin: Type.Optional(Type.String()),
+      limit: Type.Optional(Type.Number())
     }),
     async execute(params) {
       const limit = Math.max(1, Math.min(params.limit ?? MAX_EVENTS, MAX_EVENTS));

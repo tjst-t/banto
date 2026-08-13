@@ -42,24 +42,12 @@ export function createPlaceRequestTools(
     name: "place.request_write",
     label: "Place: Request Write",
     description:
-      "ある場所に書き込む許可をPOに求める。**これは頼むだけで、許可は与えられない**——" +
-      "決めるのはPOで、許可されるまで file.write は失敗し続ける。" +
-      "書こうとして断られたときや、これから書く必要が分かったときに使う。" +
-      "範囲は必要な分だけ狭く求めること（docs/** など）。" +
-      "頼むと**取次に判断待ちとして積まれ、POはその場のボタンで許せる**——" +
-      "面を開かせる必要はない。答えが出たらこちらへ知らせが入るので、それまで待つこと。",
+      "ある場所に書き込む許可をPOに求める。**頼むだけで、許可は与えられない**。\n例: {place: \"banto\", patterns: [\"work/tasks/*.md\"], reason: \"起票のため\"} → 取次に積んだ旨\nplace と patterns は英語の識別子・glob で埋める（範囲は狭く）。",
     parameters: Type.Object({
-      place: Type.String({ description: "対象の場所 id（place.list で分かる）" }),
-      patterns: Type.Array(Type.String(), {
-        description: "書きたい範囲（場所のルートからの glob。例: docs/**, work/tasks/*.md）",
-        minItems: 1,
-      }),
-      reason: Type.String({ description: "何のために書くのかを一言で" }),
-      threadId: Type.Optional(
-        Type.String({
-          description: "（ホストが埋める。書かないこと）判断待ちを届ける会話",
-        })
-      ),
+      place: Type.String(),
+      patterns: Type.Array(Type.String(), { minItems: 1 }),
+      reason: Type.String(),
+      threadId: Type.Optional(Type.String())
     }),
     async execute(params) {
       // I2: 知らない場所への要求は受け付けない。承認しても効かない許可が帳簿に残る

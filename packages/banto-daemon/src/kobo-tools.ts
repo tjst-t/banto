@@ -16,7 +16,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Type } from "typebox";
-import { defineNamespacedTool, validateTaskFrontmatter } from "@banto/core";
+import { StringEnum, defineNamespacedTool, validateTaskFrontmatter } from "@banto/core";
 import type { NamespacedToolDefinition } from "@banto/core";
 import type { Daemon } from "./daemon.js";
 import { taskPayload } from "./task-watcher.js";
@@ -57,6 +57,14 @@ const ACTIVE_STATES = new Set([
  */
 const DEFAULT_LIST_STATES = new Set([...ACTIVE_STATES, "failed"]);
 
+/**
+ * 値の言語を明示する一行（ADR-0019 決定84-2）。
+ *
+ * arXiv:2601.05366 の最多の故障は `parameter value language mismatch`。`taskId` に
+ * 「道具定義の書き直し」と書かれると、Kobo は無い札を指されたことしか分からない。
+ */
+const ID_HINT = "\nprojectTag・taskId は英語の識別子で埋める。";
+
 export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
   /** プロジェクトを引く。I2: 知らないプロジェクトは、知っているものを添えて止まる。 */
   const requireProject = (projectTag: string): { id: string; repoPath: string } => {
@@ -74,28 +82,14 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     name: "kobo.enqueue",
     label: "Kobo: Enqueue",
     description:
-      "タスク定義ファイルを工場へ積む。積まれたタスクは依存ゲートを通り、職人が自動で着手し、" +
-      "監査を経てマージまで運ばれる——**以後あなたが手を動かす必要は無い**。" +
-      "**コードを変える仕事はここへ積むこと**（自分で書かない・D10・決定62a）。" +
-      "先に work/tasks/task-NNNN.md を書き、status: queued にしてからこれを呼ぶ。" +
-      "レビュー待ちや完了は、積んだこの会話へ返ってくる。",
+      "タスク定義ファイルを工場へ積む。以後ゲート→職人→監査→マージまで自動で運ばれる。\n例: {projectTag: \"banto\", taskId: \"task-0042\", originRef: \"PO の「道具定義を短く」から\"} → 積んだ旨\n値は英語の識別子で埋める。**コードを変える仕事はここへ積む**（D10）。\n先に work/tasks/task-NNNN.md を書き status: queued にする。",
     parameters: Type.Object({
-      projectTag: Type.String({ description: "どのプロジェクトか（kobo.projects で確認できる）" }),
-      taskId: Type.String({ description: "積むタスクの id（例: task-0042）。ファイル名と一致させる" }),
-      origin: Type.Optional(
-        Type.String({
-          description:
-            "積んだ元＝返す宛先（省略時は宛先なし）。**番頭は書かない**" +
-            "——Tool を束ねる層がこの会話に固定する（決定35a と同じ形）",
-        })
-      ),
+      projectTag: Type.String(),
+      taskId: Type.String(),
+      origin: Type.Optional(Type.String({ description: "**番頭は書かない**" })),
       originRef: Type.Optional(
-        Type.String({
-          description:
-            "**なぜこれを積むのか**——元になった PO の指示や経緯を1〜2行で。" +
-            "工場は経緯を知らないので、これが無いと判断を求める札に「起きたこと」しか書けない（D8）",
-        })
-      ),
+        Type.String({ description: "**なぜ積むのか**を1〜2行で（D8）" })
+      )
     }),
     async execute(params) {
       const project = requireProject(params.projectTag);
@@ -127,17 +121,11 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     name: "kobo.list",
     label: "Kobo: List",
     description:
-      "工場のタスク一覧。いま何が動いていて、何が待っていて、何が終わったかが分かる。" +
-      "**状態は工場の帳簿が真実**で、タスクファイルの status は意図でしかない（決定62e）。" +
-      "state で絞れる（例: ready / in-review）。**既定はまだ見る必要があるものだけ**" +
-      "（動いているもの＋failed）。片が付いたもの（merged / closed / superseded）は " +
-      "state: \"all\" か状態名で指定したときだけ出る。",
+      "工場のタスク一覧。**状態は工場の帳簿が真実**（ファイルの status は意図）。\n例: {} → まだ見る必要があるものだけ／{projectTag: \"banto\", state: \"in-review\"} → レビュー待ち\nstate は英語で埋める。片が付いたものは state: \"all\" のときだけ出る。",
     parameters: Type.Object({
-      projectTag: Type.Optional(Type.String({ description: "プロジェクトで絞る（省略時は全部）" })),
-      state: Type.Optional(
-        Type.String({ description: "状態で絞る（例: ready・in-review・failed）。all で全部" })
-      ),
-      limit: Type.Optional(Type.Number({ description: `最大件数（既定 ${MAX_ROWS}）` })),
+      projectTag: Type.Optional(Type.String()),
+      state: Type.Optional(Type.String()),
+      limit: Type.Optional(Type.Number())
     }),
     async execute(params) {
       const limit = Math.max(1, Math.min(params.limit ?? MAX_ROWS, MAX_ROWS));
@@ -186,13 +174,11 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     name: "kobo.task",
     label: "Kobo: Task",
     description:
-      "1つのタスクの**いまと経緯**。状態・契約（スコープ・受け入れ基準）と、" +
-      "何が起きてきたか（着手・監査の判定・マージ）が順に読める。" +
-      "止まっているタスクの理由を知りたいときはこれ。",
+      "1つのタスクの**いまと経緯**（状態・契約・着手・監査の判定・マージ）。\n例: {projectTag: \"banto\", taskId: \"task-0042\"} → 状態と契約＋出来事の並び" + ID_HINT,
     parameters: Type.Object({
-      projectTag: Type.String({ description: "どのプロジェクトか" }),
-      taskId: Type.String({ description: "読むタスクの id" }),
-      limit: Type.Optional(Type.Number({ description: `経緯の最大件数（既定 ${MAX_ROWS}）` })),
+      projectTag: Type.String(),
+      taskId: Type.String(),
+      limit: Type.Optional(Type.Number())
     }),
     async execute(params) {
       const project = requireProject(params.projectTag);
@@ -597,14 +583,11 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     name: "kobo.approve",
     label: "Kobo: Approve",
     description:
-      "レビュー待ちのタスクを通す。通すとマージキューへ入る——ただし**関所は飛ばない**：" +
-      "この後にマージ前ゲート（スコープ違反の検査と検証コマンド）が回り、あなたに飛ばす手段は無い" +
-      "（決定57）。**あなたのレビューは2つの機械的検査の上に乗る判断**であって、検査の代わりではない。" +
-      "PO の判断が要ると機械的に判定されたタスクは、ここでは通せない——取次へ上げること。",
+      "レビュー待ちのタスクを通してマージキューへ入れる。\n例: {projectTag: \"banto\", taskId: \"task-0042\", note: \"受け入れ基準を確かめた\"} → 通した旨" + ID_HINT + "\n**関所は飛ばない**（この後にマージ前ゲートが回る）。",
     parameters: Type.Object({
-      projectTag: Type.String({ description: "どのプロジェクトか" }),
-      taskId: Type.String({ description: "通すタスクの id" }),
-      note: Type.Optional(Type.String({ description: "何を見て良しとしたか（帳簿に残る）" })),
+      projectTag: Type.String(),
+      taskId: Type.String(),
+      note: Type.Optional(Type.String())
     }),
     async execute(params) {
       const project = requireProject(params.projectTag);
@@ -668,28 +651,15 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     name: "kobo.reopen",
     label: "Kobo: Reopen",
     description:
-      "落ちたタスクを**同じタスクのまま**動かし直す。**タスクを切り直さない**" +
-      "——新しく積み直すと経緯が分断され、何度目の挑戦か分からなくなる。" +
-      "**先に kobo.task で「なぜ落ちたか」を読むこと。** 落ちた理由で戻す先が変わる：" +
-      "中身の問題（スコープ違反・本当にテストが落ちる）なら rework（職人が直す）、" +
-      "検証環境の問題（環境が立たない・道具が無い）なら reverify（中身は触らずゲートを回し直す）。" +
-      "どうしようもないものは kobo.abandon で畳む。",
+      "落ちたタスクを**同じタスクのまま**動かし直す（切り直すと経緯が分断される）。\n例: {projectTag: \"banto\", taskId: \"task-0042\", mode: \"rework\", reason: \"スコープ外を触っている\"} → 戻した旨" + ID_HINT + "\n**先に kobo.task で「なぜ落ちたか」を読む。**",
     parameters: Type.Object({
-      projectTag: Type.String({ description: "どのプロジェクトか" }),
-      taskId: Type.String({ description: "戻すタスクの id" }),
-      mode: Type.Union([Type.Literal("rework"), Type.Literal("reverify")], {
-        description:
-          "rework=中身から直す（職人を起こす）/ reverify=中身は触らずマージ前ゲートを回し直す",
+      projectTag: Type.String(),
+      taskId: Type.String(),
+      mode: StringEnum(["rework", "reverify"] as const, {
+        description: "rework=中身から直す / reverify=中身は触らずゲートを回し直す"
       }),
-      reason: Type.String({
-        description: "**何が悪くて、どう直すのか**。職人にそのまま渡り、帳簿にも残る",
-      }),
-      origin: Type.Optional(
-        Type.String({
-          description:
-            "知らせの宛先（スレッド）。**番頭は書かない**——束ねる層が固定する（決定58）",
-        })
-      ),
+      reason: Type.String({ description: "**何が悪くて、どう直すのか**。職人にそのまま渡る" }),
+      origin: Type.Optional(Type.String({ description: "**番頭は書かない**" }))
     }),
     async execute(params) {
       requireProject(params.projectTag);

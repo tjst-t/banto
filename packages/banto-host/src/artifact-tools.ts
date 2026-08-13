@@ -18,17 +18,12 @@ export function createArtifactTools(store: ArtifactStore): NamespacedToolDefinit
     name: "artifact.read",
     label: "Artifact: Read",
     description:
-      "退避されたツール出力の中身を読む。" +
-      "大きな出力（ファイル・差分・職人の報告）は文脈に載せず、栞（artifact <id>）だけが返っている。" +
-      "**要る所だけ読むこと**——全文を読み戻すと、退避した意味が無くなる。" +
-      "語で絞るなら grep、位置で読むなら offset / limit を使う。",
+      "退避されたツール出力（栞 `artifact a-0001`）の中身を読む。\n例: {id: \"a-0001\", grep: \"FAIL\"} → 一致行だけ／{offset: 200, limit: 50} → 200行目から50行\ngrep の語は英語で埋める。**要る所だけ読む。**",
     parameters: Type.Object({
-      id: Type.String({ description: '栞に書かれている artifact のID（例: "a-0001"）' }),
-      grep: Type.Optional(
-        Type.String({ description: "この語を含む行だけを、行番号つきで返す（大小文字を無視）" })
-      ),
-      offset: Type.Optional(Type.Number({ description: "読み始める行（1始まり。既定1）" })),
-      limit: Type.Optional(Type.Number({ description: "読む行数（既定200）" })),
+      id: Type.String(),
+      grep: Type.Optional(Type.String()),
+      offset: Type.Optional(Type.Number()),
+      limit: Type.Optional(Type.Number())
     }),
     async execute(params) {
       // I2: 無いID・壊れたIDは ArtifactStore が例外にする。黙って空を返さない

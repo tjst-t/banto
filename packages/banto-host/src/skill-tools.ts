@@ -39,8 +39,7 @@ export function createSkillTools(
     name: "skill.list",
     label: "Skill: List",
     description:
-      "使えるSKILL（手順知識）の一覧と、それぞれをいつ使うかを返す。" +
-      "一覧はセッション開始時にも渡されているため、確認し直したいときに使う。",
+      "使えるSKILL（手順知識）の一覧と、それぞれをいつ使うか。\n例: {} → \"work-handoff — 章を畳んで引き継ぐとき\" の行",
     parameters: Type.Object({}),
     async execute() {
       const text =
@@ -55,11 +54,8 @@ export function createSkillTools(
     name: "skill.read",
     label: "Skill: Read",
     description:
-      "SKILLの本体（手順）を読む。該当する作業に入る前に必ず読み、その手順に従うこと。" +
-      "読めるのは登録済みSKILLのみで、任意のファイルは読めない。",
-    parameters: Type.Object({
-      name: Type.String({ description: "SKILLの名前（例: work-handoff）" }),
-    }),
+      "SKILLの本体（手順）を読む。該当する作業に入る前に必ず読み、その手順に従う。\n例: {name: \"kobo-enqueue\"} → その手順の本文。name は英語の識別子で埋める。",
+    parameters: Type.Object({ name: Type.String() }),
     async execute(params) {
       // I2: 未知のSKILL名は握りつぶさずエラーにする（利用可能な名前を添えて返す）
       const body = readBantoSkill(params.name, skills);

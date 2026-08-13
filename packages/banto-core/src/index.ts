@@ -130,6 +130,10 @@ export type {
   BantoToolContext,
 } from "./banto-tool.js";
 
+// スキーマを平らに書く小道具（ADR-0019 決定84-3）
+export { StringEnum, OpenObject } from "./tool-schema.js";
+export type { TStringEnum } from "./tool-schema.js";
+
 // LLM Catalog — プロバイダ・モデル・キーの一元管理（ADR-0004 / spec §3.5）
 export {
   LlmCatalog,

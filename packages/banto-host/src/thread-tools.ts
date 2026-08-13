@@ -282,35 +282,12 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     name: "thread.open",
     label: "Thread: Open",
     description:
-      "**枝**を開く（ADR-0017 決定77）。継続的な議論・調査になると見たときに自分で開いてよく、" +
-      "POが明示したときも開く。開いた瞬間に**幹へ札が1行**立つので、埋没しない。" +
-      "**既に開いている幹・枝とそのキャンバスには何も起きない**。" +
-      "message を渡すと、その枝が最初の一言を受け取って動き出す。\n" +
-      "**渡したらそこで手を離すこと。** この Tool は枝の作業を待たずにすぐ返る" +
-      "——**同じ調べ物をこの会話で始めない**（二重に走る）。結論は枝が畳むときに" +
-      "幹へ1行で還るので、いまは「枝で見ています」と言って手を止めてよい。\n" +
-      "**還す条件を書けないものは枝にしない**（幹で話す）。枝の中に枝は開けない" +
-      "——枝が別の枝を要するなら、いまの枝を畳んで幹へ還してから開き直す。",
+      "**枝**を開いて続く議論・調査をそちらへ移す。開いた瞬間に幹へ札が1行立つ。\n例: {title: \"道具定義の圧縮\", returnCondition: \"前後の対比較が出たら\", reason: \"幹と混ざる\", message: \"実ログ由来の題材で測ってほしい\"} → 枝の id\n**渡したら手を離す**（同じ調べ物をこの会話で始めない）。",
     parameters: Type.Object({
-      title: Type.String({
-        description: "枝の名前。何の話かが一目で分かる短い語にする",
-      }),
-      returnCondition: Type.String({
-        description:
-          "**還す条件**。何が決まれば幹に還るかを1行で書く（例：「再現条件が特定できたら」）。" +
-          "書けないなら枝にせず、幹で話すこと",
-      }),
-      reason: Type.String({
-        description:
-          "**開いた理由**。なぜ幹ではなくここで話すのかを1行で。札に出るのでPOが読む",
-      }),
-      message: Type.Optional(
-        Type.String({
-          description:
-            "新しい枝へ渡す最初の一言。枝は記憶を共有するが**この会話の文脈は持たない**ため、" +
-            "何をしてほしいかを書き切ること",
-        })
-      ),
+      title: Type.String(),
+      returnCondition: Type.String(),
+      reason: Type.String(),
+      message: Type.Optional(Type.String())
     }),
     async execute(params) {
       // 番頭が開いたので openedBy は banto。深さ1段は帳簿が実行時に縛る（決定77）
@@ -599,33 +576,12 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     name: "thread.merge",
     label: "Thread: Merge",
     description:
-      "**いまのこの枝**を畳んで幹へ還す。幹の末尾に結論が1行積まれ、この枝は履歴へ移る" +
-      "（中身は消えず、開き直せる）。還す条件を満たしたら畳むこと。" +
-      "**出口は結論であって実装ではない**——incident を起票し task を積んだ時点で畳む。" +
-      "決めきれないものは「保留：理由」で畳んでよい。幹は畳めない。\n" +
-      "**調べたこと・決めたこと・残ったことは書き残せる**（investigated / decided / remaining）" +
-      "——幹へは流れず枝に残り、`thread.read` で開いたときに読める。",
+      "**いまのこの枝**を畳んで幹へ還す（幹の末尾に結論が1行積まれる）。\n例: {conclusion: \"inc-0048 を起票し task-0091 を積んだ\", investigated: [\"10回走らせて3回落ちた\"], decided: [\"待ちを延ばさず機構を直す\"], remaining: [\"task-0092 を積んだ\"]} → 畳んだ旨\n**出口は結論であって実装ではない。** 幹は畳めない。決めきれないものは「保留：理由」で畳んでよい。\n調べた・決めた・残った（investigated / decided / remaining）は**幹へは流れず枝に残る**——`thread.read` で開いたときに読める。",
     parameters: Type.Object({
-      conclusion: Type.String({
-        description:
-          "**結論の1行**。幹に残るのはこれだけなので、何が決まったかを言い切る" +
-          "（例：「inc-0048 を起票し task-0091 を積んだ」「保留：計測が足りない」）",
-      }),
-      investigated: Type.Optional(
-        Type.Array(Type.String(), {
-          description: "**何を調べたか**。1件1行（例：「10回走らせて3回落ちた」）",
-        })
-      ),
-      decided: Type.Optional(
-        Type.Array(Type.String(), {
-          description: "**何を決めたか**。1件1行。結論の1行に入り切らなかった判断をここへ",
-        })
-      ),
-      remaining: Type.Optional(
-        Type.Array(Type.String(), {
-          description: "**何が残ったか**。1件1行（未確認・積んだ task・見送った筋）",
-        })
-      ),
+      conclusion: Type.String(),
+      investigated: Type.Optional(Type.Array(Type.String())),
+      decided: Type.Optional(Type.Array(Type.String())),
+      remaining: Type.Optional(Type.Array(Type.String())),
     }),
     async execute(params) {
       const detail = renderMergeDetail(params);
@@ -780,16 +736,9 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     name: "thread.list",
     label: "Thread: List",
     description:
-      "幹と、開いている枝の一覧を返す。いま何本の話が並行しているかと、それぞれの" +
-      "**還す条件**を確かめたいときに使う。「＊」が付いているのが**いまのこの会話**。\n" +
-      "`{ includeClosed: true }` で畳んだ枝と幹も並ぶ（中身は thread.read で読める）。",
+      "幹と、開いている枝の一覧（**還す条件**つき）。「＊」が**いまのこの会話**。\n例: {} → \"thread-7 道具定義の圧縮 — 還す条件: 前後の対比較が出たら ＊いまのこの会話\"\n`{includeClosed: true}` で畳んだ枝と幹も並ぶ（中身は thread.read で読める）。",
     parameters: Type.Object({
-      includeClosed: Type.Optional(
-        Type.Boolean({
-          description:
-            "畳んだ会話も並べるか（既定 false）。畳んだ枝の中身を読み返したいときに true",
-        })
-      ),
+      includeClosed: Type.Optional(Type.Boolean()),
     }),
     async execute(params) {
       const threads = params.includeClosed
@@ -829,20 +778,10 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     name: "thread.send",
     label: "Thread: Send",
     description:
-      "**別の幹へ言伝を渡す。** 幹は記憶も文脈も分かれているので、跨いで伝えたいことは" +
-      "ここを通す（PO に運ばせない）。届いた側は知らせとして受け取り、番頭が読む。\n" +
-      "**渡すのは事実と、なぜそちらに関係するか。** 相手の幹で何をするかは相手が決める" +
-      "——指図しない。返事が要るなら、そう書けば相手から `thread.send` で返ってくる。\n" +
-      "**宛先は幹だけ**（枝には送れない。枝は1つの問いに閉じているので、割り込ませない）。" +
-      "宛先は `thread.list` で確かめる。**往復は続けない**——2〜3 で決着しないなら、" +
-      "PO に上げるか、その幹へ移って直接話す。",
+      "**別の幹へ言伝を渡す**（幹は記憶も文脈も分かれている）。\n例: {threadId: \"thread-7\", message: \"env.verify の既定 timeout が変わりました\"} → 渡した旨\nthreadId は英語の識別子で埋める。**宛先は幹だけ**（枝には送れない）。",
     parameters: Type.Object({
-      threadId: Type.String({ description: "宛先の幹の id（thread.list で確かめる）" }),
-      message: Type.String({
-        description:
-          "渡す言伝。**なぜその幹に関係するか**を先に書く（相手は経緯を知らない）。" +
-          "こちらの幹の名前は自動で添えられるので、書かなくてよい",
-      }),
+      threadId: Type.String(),
+      message: Type.String()
     }),
     async execute(params) {
       if (!options.deliver) {

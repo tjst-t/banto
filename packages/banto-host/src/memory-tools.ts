@@ -25,27 +25,20 @@ import {
   type MemoryStore,
   type ScopedMemory,
 } from "@banto/core";
+import { StringEnum } from "@banto/core";
 import { Type } from "typebox";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 
-const MemoryKindSchema = Type.Union(
-  [Type.Literal("preference"), Type.Literal("habit"), Type.Literal("fact")],
-  {
-    description:
-      "preference（好み。文体や見せ方など、そうしてほしいこと。変わってよい）、" +
-      "habit（習慣。手順やチェックのルーティン。変わってよい）、" +
-      "fact（事実。名前・役割・許諾範囲など、導出できず変わらないことが期待される属性）。" +
-      "**事実を好みに入れない**——名前を好みとして覚えると「変えてよいもの」として扱ってしまう",
-  }
-);
+/**
+ * 種別と区画（ADR-0019 決定84-2・84-3）。
+ *
+ * **4本の道具に丸ごと写る**（save / recall / search / forget）ので、ここが長いと
+ * 定義の量が4倍で効く。**選び方の指針は `memory.save` の説明1箇所にだけ書く**
+ * ——同じ段落を4回載せると、それだけで記憶の道具が定義量の3割を占めていた。
+ */
+const MemoryKindSchema = StringEnum(["preference", "habit", "fact"] as const);
 
-const MemoryScopeSchema = Type.Union([Type.Literal("person"), Type.Literal("project")], {
-  description:
-    "person（人の記憶。POの好み・習慣・事実。**幹をまたいで共有される**）、" +
-    "project（**この幹の記憶**。その仕事の決定・規約・ドメイン。**他の幹へは載らない**）。" +
-    "**迷ったら person ではなく project**——ある仕事に固有の話が人の記憶に入ると、" +
-    "無関係な仕事の判断まで歪める。幹をまたいで効く一般解になったときだけ person にする",
-});
+const MemoryScopeSchema = StringEnum(["person", "project"] as const);
 
 /** 記憶を1件、プロンプト用の1行にする。 */
 function renderLine(record: MemoryRecord): string {
@@ -110,42 +103,21 @@ export function createMemoryTools(
 
   const scopeParams = {
     scope: Type.Optional(MemoryScopeSchema),
-    trunk: Type.Optional(
-      Type.String({
-        description:
-          'scope: "project" のときの幹のID。**省略するとこの会話の幹**——' +
-          "他の幹を指すときだけ書く（thread.list で確かめる）",
-      })
-    ),
+    trunk: Type.Optional(Type.String()),
   };
 
   const saveTool = defineNamespacedTool({
     name: "memory.save",
     label: "Memory: Save",
     description:
-      "長期に覚えておくべきことを1件保存する。" +
-      "セッションを跨いで参照されるため、その場限りの作業メモではなく、次回以降も効く事実だけを書く。" +
-      "既存の記憶を訂正する場合は supersedes に古い記憶のIDを渡す。" +
-      "**進行中の作業の経緯はここに入れない**——それは会話の引き継ぎ（章）が持つ。\n" +
-      "**記憶が分かれる単位は幹**：`scope: \"project\"` はこの会話の幹に入り、他の幹の" +
-      "会話には載らない。幹をまたいで効くものだけ `scope: \"person\"` にする。",
+      "次回以降も効く事実を1件、長期に覚える（その場限りの作業メモは入れない）。\n例: {kind: \"habit\", scope: \"project\", text: \"検証は env.verify で回す\", refs: [\"task-0100\"]} → 記憶の id\ntext 以外は英語の識別子で埋める。scope は person=幹をまたぐ / project=この幹だけ（既定）で、**迷ったら project**。\ntrunk は省略でこの会話の幹。",
     parameters: Type.Object({
       kind: MemoryKindSchema,
-      text: Type.String({ description: "記憶の内容。1件1事実で簡潔に書く。" }),
+      text: Type.String(),
       ...scopeParams,
-      validFrom: Type.Optional(
-        Type.String({
-          description:
-            "この事実が世界で真になった時刻（ISO-8601、任意）。" +
-            "「2026-08から〜」のように、いつから真かが意味を持つときだけ渡す。記録した時刻とは別軸",
-        })
-      ),
-      refs: Type.Optional(
-        Type.Array(Type.String(), { description: "関連するタスク・ADR等のID（任意）" })
-      ),
-      supersedes: Type.Optional(
-        Type.String({ description: "訂正する場合、置き換える古い記憶のID" })
-      ),
+      validFrom: Type.Optional(Type.String()),
+      refs: Type.Optional(Type.Array(Type.String(), {})),
+      supersedes: Type.Optional(Type.String())
     }),
     async execute(params) {
       const store = resolve(params.scope, params.trunk);
@@ -179,13 +151,10 @@ export function createMemoryTools(
     name: "memory.recall",
     label: "Memory: Recall",
     description:
-      "保存済みの記憶を取り出す。訂正済み・忘れた記憶は既定で除外される。" +
-      "セッション開始時の記憶は既にシステムプロンプトへ注入されているため、" +
-      "種別で絞りたいときや、注入後に保存した記憶を読み直したいときに使う。" +
-      "**注入は予算で打ち切られる**ので、「他にN件」と出ていたらここか memory.search で引く。",
+      "保存済みの記憶を取り出す（訂正済み・忘れたものは除く）。\n例: {kind: \"habit\", scope: \"project\"} → \"- [habit] 検証は env.verify で回す (id: …)\"\nkind・scope・trunk は英語の識別子で埋める。注入から溢れた分はここか memory.search で引く。",
     parameters: Type.Object({
       kind: Type.Optional(MemoryKindSchema),
-      ...scopeParams,
+      ...scopeParams
     }),
     async execute(params) {
       const store = resolve(params.scope, params.trunk);
@@ -202,22 +171,13 @@ export function createMemoryTools(
     name: "memory.search",
     label: "Memory: Search",
     description:
-      "記憶を本文の部分一致で探す。空白区切りの語をすべて含むものが返る（大小文字は無視）。" +
-      "注入の予算から溢れた記憶を引くときに使う。\n" +
-      "**注入は幹ごとだが、探すのは幹をまたげる**（`acrossTrunks: true`）——" +
-      "「前に別の仕事で似た話をした」を思い出せないと、幹を分けた代償が大きすぎる。",
+      "記憶を本文の部分一致で探す（空白区切りの語をすべて含むもの・大小文字は無視）。\n例: {text: \"env.verify\", acrossTrunks: true} → 他の幹の記憶も含めて一致したもの\ntext は覚えたときの言葉のまま、trunk は英語の識別子で埋める。\n**探すのは幹をまたげる。** 持ってくるなら、いまの幹へ改めて memory.save する。",
     parameters: Type.Object({
-      text: Type.String({ description: "探す語。空白区切りで複数指定するとAND検索になる" }),
+      text: Type.String(),
       kind: Type.Optional(MemoryKindSchema),
       ...scopeParams,
-      acrossTrunks: Type.Optional(
-        Type.Boolean({
-          description:
-            "**他の幹の記憶も探す**（人の記憶も含む）。どの幹の記憶かは結果に出る。" +
-            "見つけたものを持ってくるなら、いまの幹へ改めて memory.save すること",
-        })
-      ),
-      limit: Type.Optional(Type.Number({ description: "返す最大件数（既定20）" })),
+      acrossTrunks: Type.Optional(Type.Boolean()),
+      limit: Type.Optional(Type.Number())
     }),
     async execute(params) {
       const query = {
@@ -268,13 +228,11 @@ export function createMemoryTools(
     name: "memory.forget",
     label: "Memory: Forget",
     description:
-      "記憶を1件忘れる。誤って覚えたことや、もう当てはまらなくなったことに使う。" +
-      "**訂正したいだけなら memory.save の supersedes を使う**——忘れると中身が残らない。" +
-      "記録は消えず「忘れた」ことが追記される（後から何を忘れたか辿れる）。",
+      "記憶を1件忘れる（記録は消えず「忘れた」ことが追記される）。\n例: {id: \"3f2a…\", reason: \"移設して当てはまらなくなった\"} → 忘れた旨\nid・trunk は英語の識別子（memory.recall の値）で埋める。\n**訂正したいだけなら memory.save の supersedes。**",
     parameters: Type.Object({
-      id: Type.String({ description: "忘れる記憶のID" }),
-      reason: Type.Optional(Type.String({ description: "忘れる理由（任意）" })),
-      ...scopeParams,
+      id: Type.String(),
+      reason: Type.Optional(Type.String()),
+      ...scopeParams
     }),
     async execute(params) {
       const store = resolve(params.scope, params.trunk);
