@@ -10,7 +10,7 @@ scope:
     - "packages/*/src/**"
     - "docs/adr/adr-0019-inventory-and-presentation.md"
 acceptance:
-  - { id: a1, text: "番頭に提示する道具（PRESENTED_TOOL_NAMES の55本）の description が、目的1行＋入出力例の形になっている" }
+  - { id: a1, text: "番頭に提示する道具（PRESENTED_TOOL_NAMES の56本）の description が、目的1行＋入出力例の形になっている" }
   - { id: a2, text: "道具定義の合計文字数が、着手前より 30% 以上減っている（提示分）" }
   - { id: a3, text: "引数の値を英語/識別子で埋めることが、値を取る道具の説明文に明示されている" }
   - { id: a4, text: "書き直しの前後を、実ログ由来の題材で対比較して測っている（n≥60・McNemar）。悪化していないこと" }
@@ -39,7 +39,7 @@ API 機能に依存せず説明文に数行足すだけなので、ローカル�
 
 ## やること
 
-1. `PRESENTED_TOOL_NAMES` の55本について、description を「**目的1行＋入出力例**」に書き直す
+1. `PRESENTED_TOOL_NAMES` の56本について、description を「**目的1行＋入出力例**」に書き直す
    - 長いものから: `env.verify` 2,060字・`worker.delegate` 1,784字・`inbox.post` 1,768字・
      `env.provision` 1,616字・`memory.save` 1,524字・`memory.search` 1,331字・`canvas.show` 1,271字
    - **盛らない。** 手順は SKILL 側へ逃がす（段階的開示）
@@ -55,5 +55,5 @@ API 機能に依存せず説明文に数行足すだけなので、ローカル�
 ## 確かめていないこと
 
 - スキーマの平坦化が効くかは**未測定**。3を独立の条件として測ること
-- 55本すべてを書き直す必要があるか。呼び出し上位（`worker.*` 42%・`file.*` 25%）から
+- 56本すべてを書き直す必要があるか。呼び出し上位（`worker.*` 42%・`file.*` 25%）から
   始めて、効き目が頭打ちになる点を見るほうが安い

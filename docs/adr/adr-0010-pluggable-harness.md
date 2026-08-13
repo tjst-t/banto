@@ -3,6 +3,7 @@ id: adr-0010
 type: adr
 status: accepted
 refs: [vision, principles, adr-0009, spec-daemon-core, spec-ui]
+amended_by: [adr-0020]
 branch: explore/agent-primary-v2
 ---
 
@@ -85,6 +86,10 @@ ADR-0009 で「番頭のハーネスは自作しない」と決めた。自作�
 - 「自作しない」（ADR-0009・本ADR §3のスコープ）という原則との関係：禁止しているのは記憶の**アーキテクチャ設計**をゼロから発明すること（旧ブランチのQuirefoldで頓挫した領域）であり、実績のある設計を踏襲した薄い実装は「自作しない」の範囲内と整理する。
 
 ### 11. pi coding agent 上での番頭ターンループ構成：SDKモードで自前ホストに埋め込む（2026-07-28、PO裁定）
+
+> **改訂（2026-08-12・ADR-0020 決定88〜93）**：番頭ハーネスは `BantoHarness` 契約の
+> 実装であり、**pi の SDK モードはその第一実装**。第二実装として Agent SDK がある。
+> プロセス境界（`RuntimeDriver`）は差し替えの機構ではなく**関所**として別の層に置く。
 
 - **pi Agent SDK を使い、自前の Node.js ホストプロセス内に pi のエージェントループを直接埋め込む。** pi が提供する3方式（Extension API／RPCモード／SDKモード）のうち、番頭の本質的な仕事である記憶注入・ターン制御（D11）には、セッションのメッセージ履歴への直接アクセスとターン境界イベントの購読が要る。
   - **Extension API は不採用**：Tool登録・イベント購読はできるが、コア状態（`session.agent.state.messages` 等）の直接操作やセッションループ自体の差し替えができない、pi のライフサイクル内に閉じた制約付きプラグインインターフェースのため。

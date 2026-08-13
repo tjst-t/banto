@@ -56,7 +56,8 @@ export interface BantoHarness {
   subscribe(handler: (e: HarnessEvent) => void): () => void;
   contextTokens(): number | undefined;                          // 章の閾値判定
   startChapter(opening: ChapterOpening): Promise<void>;         // 決定92
-  restore(record: ThreadRecord): Promise<void>;
+  // restore は**まだ契約に入れていない**（Claude 側の会話復元が未実装・task-0104）
+  // restore(record: ThreadRecord): Promise<void>;
 }
 
 export type HarnessEvent =
@@ -192,12 +193,19 @@ roles: {
 同じ問いに2箇所が答えていた・D3 違反）。道具も `llm.set_host_default` /
 `llm.set_pick` / `llm.set_worker_tier` の3本が `llm.set_role` 1本になった。
 
+**まだ実装できていないもの**（2026-08-13 のレビューで確認・task-0102 で扱う）:
+`NotSupported` の型 ／ `ModelRef` の1文字列化（いまは3フィールド）／ Catalog を
+ハーネスへの問い合わせに倒す ／ `hostUsable`・`workerUsable` → Policy 1つ ／
+`LlmDefaults.workerTier` の撤去 ／ モデル操作 Tool 17→4。
+**「実装した形」は束縛の表だけで、決定94 は完了していない。**
+
 **移行で踏んだ罠**（記録として）: 旧欄を消したら、2026-08-04 の一度きりの移行
 （`migrateOnce`）が**毎回の起動で作り直していた**——「無ければ作る」判定が、
 消したそばから真になっていたため。**書き先を移すときは、その欄に書く全部の経路を
 探すこと**（`migrateOnce` / `migrateWorkerDefault` / `repairDefaults` / `tiers()` の4箇所あった）。
 
-**モデル操作の Tool は 19本 → 4本。** 設定変更は Tool ではなく GUI とファイルの担当にする
+**モデル操作の Tool は 19本 → 4本にしたい。ただし 2026-08-13 時点では 17本（未実装）**
+——畳めたのは `set_host_default` / `set_pick` / `set_worker_tier` → `set_role` の3→1だけ。 設定変更は Tool ではなく GUI とファイルの担当にする
 ——調べた製品はどこもモデル設定をエージェントの Tool にしていない。ADR-0019 の実測で
 **19本中13本が一度も呼ばれていない**のは、それらが Tool であるべきでなかったから。
 
@@ -248,7 +256,7 @@ Claude Code（Agent SDK 経由）でも選べる——職人側の「ランタ�
 | `settings.json` の `modules["worker-pool"]` | 読み手なし | 削ってよい |
 | `picks` / `resolveForWorker` | **生きている。** `llm-tools.ts:240,355` / `worker-pool/bin.ts:121,165` / `pi-rpc-driver.ts:243` の5箇所から呼ばれる。実際に claude-agent-sdk ばかり使われているだけで、pi の職人経路では効く | **残す**（棚卸しの「デッドコード」は誤り） |
 | `BANTO_WORKER_PROVIDER` / `BANTO_WORKER_MODEL` | **読まれている**（`worker-pool/bin.ts:128-134`）。systemd でコメントアウトされているだけ | 残す |
-| 複数鍵のフェイルオーバー | 未確認 | 確かめてから決める |
+| 複数鍵のフェイルオーバー | **作動しない**（`auth.json` は1プロバイダ1鍵なので候補は最大1本・`llm-registry.ts` の `resolveKey` に**呼び出し元が無い**・実際の認証は pi の `ModelRegistry`）。2026-08-13 に静的に確定 | inc-0059 で処遇を決める |
 
 **「使われていない」と「死んでいる」は違う。** 前者は設定の話で、後者はコードの話。
 

@@ -7,7 +7,7 @@
 **2つの層が別々の段階にある。**
 
 - **Kobo（決定的統治基盤・旧称 daemon）は実装済み**。`packages/banto-daemon` / `banto-core` / `banto-cli` にイベントログ・ステートマシン・依存ゲート・マージキュー・環境台帳が入っており、`tests/acceptance` の331テストが通る。構造逆転（ADR-0009）でもこの層は**残す**——番頭はこの上に乗る
-- **番頭核（Banto ホスト）は未実装。ハーネスはプラガブル**——Kobo・WorkerAgent（職人）との結合は Tool／SKILL の公開 I/F のみを介し、特定のエージェントハーネス実装に依存しない。**第一実装は pi coding agent**。記憶は自作しない：既存の記憶システムを採用する（参照実装は Hermes Agent）。詳細は ADR-0009・ADR-0010（起票中）
+- **番頭核（Banto ホスト）は未実装。ハーネスはプラガブル**——Kobo・WorkerAgent（職人）との結合は Tool／SKILL の公開 I/F のみを介し、特定のエージェントハーネス実装に依存しない。**第一実装は pi coding agent**。記憶は自作しない：既存の記憶システムを採用する（参照実装は Hermes Agent）。詳細は ADR-0009・ADR-0010（accepted）
 
 `docs/spec/` の仕様群が設計の真実（living document）。Spec と実態が食い違ったら黙って寄せず incident を積む（P3）。
 
@@ -16,8 +16,12 @@
 - TypeScript（strict）
 - **Banto（番頭）のハーネスは差し替え可能。** 第一実装は pi coding agent。Kobo・WorkerAgent・UI（アテンションキュー／バックログ）とのやりとりはすべて Tool／SKILL の公開 I/F を介し、ハーネスの内部実装に依存しない
 - **LLMプロバイダ層はプラガブル＝モデル非依存**（Anthropic / OpenAI / opencode経由 / 将来ローカルLLM）。banto-core に I/F、アダプタで差し替える
+  - **条件つき**（ADR-0020）：Agent SDK バックエンドは **Claude 専用**（公式が非 Claude を明文で非対応）。
+    そのバックエンドを選んでいる間、その役はモデル非依存でなくなる。**pi 経路を残すことが整合の条件**
 - **記憶は既存の記憶システムを採用する（自作しない）。** 参照実装は Hermes Agent（Nous, MIT）。手続き記憶は SKILL.md（agentskills.io）形式
 - **pi（earendil-works/pi）は職人（Worker Pool）ランタイム、および番頭ハーネスの第一実装として使う**。無改造で扱う
+  - 番頭のハーネスは `BantoHarness` 契約（ADR-0020 決定88・89）。**実装は pi と Agent SDK の2つ**で、
+    会話の途中でも切り替わる。プロセス境界（`RuntimeDriver`）は差し替えではなく**関所**
   - npm は `@earendil-works/pi-coding-agent` / `pi-ai` / `pi-agent-core`。**旧 `@mariozechner/*` は deprecated**（2026-08-08 に 0.73.1 → 0.84.1 へ移行）
 - **モジュール（Module）＝ Banto への登録単位**（ADR-0010 決定25・27）。①接続情報 ②番頭へのTool ③キャンバスへのGUI ④SKILL を1単位で登録する。Kobo・基本GUIセット・Worker Pool はいずれもモジュール。`Provider` は LLMプロバイダで埋まっているため使わない。コード内は `BantoModule` 等と接頭辞を付ける（`module` はESモジュールと衝突）
   - **モジュールとドメインの関係**：ドメインは決定9のTool名前空間プレフィックス。各モジュールは1つ以上のドメインを持つが逆は成り立たない（`canvas.*`/`memory.*`/`skill.*` は Banto 中核自身）
@@ -75,6 +79,6 @@ npm run typecheck:web  # WebUIの型検査（.tsx を含む）
 - 判断規則の全21則: `docs/DESIGN_PRINCIPLES.json`（原典散文: `docs/principles.md`）
 - 仕様（設計の真実）: `docs/spec/` — daemon-core（＝**Kobo コア**。ファイル名とIDは据え置き）/ document-system / schemas / environment / improvement-loop / multi-project / ui
 - 構造逆転の決定: `docs/adr/adr-0009-agent-primary-inversion.md`（accepted）
-- ハーネス差し替え可能性・Tool/SKILL I/F・記憶の採用方針: `docs/adr/adr-0010-pluggable-harness.md`（起票中）
+- ハーネス差し替え可能性・Tool/SKILL I/F・記憶の採用方針: `docs/adr/adr-0010-pluggable-harness.md`（accepted）
 - 設計経緯・全体像: `docs/notes/pi-coding-agent-design-v2.md`（逆転前の設計。pi の位置づけは ADR-0009 で分割済み）
 - Sprint管理: `docs/ROADMAP.json`
