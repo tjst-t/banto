@@ -20,6 +20,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { ModelLedger, isLedgerRole, type LedgerRole } from "./model-ledger.js";
 
 export type ModelTier = "reasoning" | "standard" | "fast";
 
@@ -147,8 +148,11 @@ export interface LlmTierInfo {
   tier: ModelTier;
   label: string;
   description: string;
-  /** この tier の第一候補。制約で落ちたら同じ tier の次の候補に降りる */
-  pick?: { provider: string; model: string };
+  /**
+   * この tier の第一候補。制約で落ちたら同じ tier の次の候補に降りる。
+   * **`backend` も載る**（決定103）——同じ名前が経路違いで2つありうる。
+   */
+  pick?: { backend?: string; provider: string; model: string };
 }
 
 /**
@@ -273,6 +277,14 @@ export interface LlmResolution {
 }
 
 export interface LlmCatalogOptions {
+  /**
+   * **役の台帳**（ADR-0021 決定101）。渡すと、役の割り当てはこちらが持つ
+   * ——`llm-registry.json` は pi の供給の台帳に戻る。
+   *
+   * 省略できるのは、供給だけを見る呼び出し元（試験・工房の解決）のため。
+   * 省略した場合は従来どおりオーバーレイの `roles` を使う。
+   */
+  ledger?: ModelLedger;
   authJsonPath: string;
   modelsJsonPath: string;
   overlayPath: string;
@@ -386,6 +398,8 @@ export class LlmCatalog {
   private readonly overlayPath: string;
   private readonly resolver: LlmModelResolver;
   private migration: LlmCatalogOptions["migration"];
+  /** 役の台帳（ADR-0021 決定101）。渡されていれば、役の割り当てはこちらが持つ。 */
+  private readonly ledger: ModelLedger | undefined;
   private overlay: Overlay | null = null;
 
   /** キーの上限は実行時状態。プロセスが落ちれば消えてよい（D3） */
@@ -406,6 +420,7 @@ export class LlmCatalog {
     this.overlayPath = options.overlayPath;
     this.resolver = options.resolver;
     this.migration = options.migration;
+    this.ledger = options.ledger;
   }
 
   // ── 読み出し ──────────────────────────────────────────────────────────
@@ -502,7 +517,7 @@ export class LlmCatalog {
     this.ensureLoaded();
     return MODEL_TIERS.map((tier) => {
       // **導出**（D3）。束縛の真実は `roles` 1つで、ここは画面向けの写し
-      const pick = this.overlay!.roles?.[workerRoleOf(tier)];
+      const pick = this.roles()[workerRoleOf(tier)];
       return {
         tier,
         label: TIER_LABELS[tier],
@@ -517,7 +532,7 @@ export class LlmCatalog {
    */
   defaults(): LlmDefaults {
     this.ensureLoaded();
-    const host = this.overlay!.roles?.steward;
+    const host = this.roles().steward;
     // 職人の既定等級は**工房が持つ**（`backends.defaultTier`）。ここでは名乗らない（決定98）
     return { ...(host ? { host: { ...host } } : {}) };
   }
@@ -579,23 +594,65 @@ export class LlmCatalog {
     if (backend === undefined || backend === "pi") {
       this.allowUse(provider, model, role === "steward" ? "host" : "worker", true);
     }
-    this.overlay!.roles ??= {};
-    this.overlay!.roles[role] = { ...(backend ? { backend } : {}), provider, model };
+    this.writeRole(role, { ...(backend ? { backend } : {}), provider, model });
     this.saveOverlay();
   }
 
   /** 役割の割り当てを外す。 */
   clearRole(role: LlmRole): void {
     this.ensureLoaded();
-    if (!this.overlay!.roles?.[role]) return;
-    delete this.overlay!.roles[role];
+    if (!this.roles()[role]) return;
+    this.writeRole(role, undefined);
     this.saveOverlay();
   }
 
-  /** いまの割り当て（読み取り）。 */
+  /**
+   * いまの割り当て（読み取り）。**台帳があればそちらが真実**（ADR-0021 決定101）。
+   *
+   * 返す形は従来のまま（`backend` は省略可）——呼び出し側を巻き込まないため。
+   * 台帳の中では `backend` は必須で、省略されていたものは移行時に `pi` になっている。
+   */
   roles(): LlmRoleBindings {
     this.ensureLoaded();
+    /**
+     * **台帳がまだ無いならオーバーレイを読む。**
+     *
+     * 番頭ホストと工房は別サービスで、**工房を先に新しい版へ上げる**（移行の窓を作らない）。
+     * そのとき台帳はまだ無い——ここで空を返すと、役の割り当てが引けずに候補の先頭が
+     * 黙って選ばれる。移行が済むまでは従来の場所を読む。
+     */
+    if (this.ledger?.exists()) {
+      const out: LlmRoleBindings = {};
+      for (const [role, binding] of Object.entries(this.ledger.roles())) {
+        const ref = binding?.default;
+        if (!ref || !isLlmRole(role)) continue;
+        out[role] = { backend: ref.backend, provider: ref.provider, model: ref.model };
+      }
+      return out;
+    }
     return { ...(this.overlay!.roles ?? {}) };
+  }
+
+  /**
+   * **役へ書く唯一の口**（決定101c）。役の欄を丸ごと置き換えない
+   * ——`backend` が落ちた事故は `backend` 固有ではなく**全置換**が原因だった。
+   *
+   * `backend` を省いた呼び出しは `pi` を意味する（決定94：それ以前のデータはすべて pi）。
+   */
+  private writeRole(role: LlmRole, ref: LlmModelRef | undefined): void {
+    if (this.ledger && !this.ledger.isReadOnly && isLedgerRole(role)) {
+      if (ref) {
+        this.ledger.updateRole(role as LedgerRole, {
+          default: { backend: ref.backend ?? "pi", provider: ref.provider, model: ref.model },
+        });
+      } else {
+        this.ledger.clearRole(role as LedgerRole);
+      }
+      return;
+    }
+    this.overlay!.roles ??= {};
+    if (ref) this.overlay!.roles[role] = { ...ref };
+    else delete this.overlay!.roles[role];
   }
 
   /**
@@ -812,7 +869,7 @@ export class LlmCatalog {
       const cands = candidatesOf(t);
       if (cands.length === 0) continue;
       // 束縛は `roles` 1つ（決定94）。等級は候補を絞るための目安として残る
-      const pick = this.overlay!.roles?.[workerRoleOf(t)];
+      const pick = this.roles()[workerRoleOf(t)];
       const preferred = pick
         ? cands.find((c) => c.providerId === pick.provider && c.id === pick.model)
         : undefined;
@@ -835,7 +892,7 @@ export class LlmCatalog {
   /** 番頭の既定モデル。設定されていなければ通常 tier から拾う */
   resolveHostDefault(): ResolvedModel | undefined {
     this.ensureLoaded();
-    const host = this.overlay!.roles?.steward;
+    const host = this.roles().steward;
     // pi のモデルだけがここで解決できる（Claude Code のモデルは登録に載らない）
     if (host && (host.backend === undefined || host.backend === "pi")) {
       const resolved = this.resolver.find(host.provider, host.model);
@@ -904,6 +961,45 @@ export class LlmCatalog {
     this.migratePolicy();
     this.migrateAdoption();
     if (this.migration) this.migrateOnce();
+    // **最後に**役を台帳へ移す（決定101）。上の移行がすべてオーバーレイへ landing した後で拾う
+    this.migrateLedger();
+  }
+
+  /**
+   * **役を核の台帳へ移す**（ADR-0021 決定101・2026-08-13）。
+   *
+   * `llm-registry.json` は pi の供給の台帳に戻り、役の割り当ては別ファイルが持つ。
+   * **`backend` が無いものは `pi`**（決定94：それ以前のデータはすべて pi）。
+   *
+   * **台帳が既にあってもオーバーレイに `roles` が残っていたら拾う。** 古い版のプロセスが
+   * 書き戻すことがあるため——「スキーマを変えたら、そのファイルを書く全プロセスを
+   * 入れ直す」を踏み外したときに、黙って古い割り当てへ戻らないようにする。
+   */
+  private migrateLedger(): void {
+    // **移行を走らせるのは書き手だけ**（決定101d）。工房は読むだけで開いている
+    if (!this.ledger || this.ledger.isReadOnly) return;
+    const legacy = this.overlay!.roles;
+    const created = this.ledger.initialize({
+      adopted: [],
+      roles: Object.fromEntries(
+        Object.entries(legacy ?? {}).flatMap(([role, ref]) =>
+          ref && isLedgerRole(role)
+            ? [[role, { default: { backend: ref.backend ?? "pi", provider: ref.provider, model: ref.model } }]]
+            : []
+        )
+      ),
+    });
+    if (!created && legacy && Object.keys(legacy).length > 0) {
+      // 台帳が先にあった＝古い版が書き戻した。**台帳を正として、残骸だけ落とす**
+      console.warn(
+        `[banto] llm-registry.json に古い roles が ${Object.keys(legacy).length} 件残っていました` +
+          "（役の台帳が正です）。落とします"
+      );
+    }
+    if (legacy) {
+      delete this.overlay!.roles;
+      this.saveOverlay();
+    }
   }
 
   /** オーバーレイの更新時刻（無ければ -1）。 */
@@ -1343,7 +1439,7 @@ export class LlmCatalog {
       return fallback;
     };
 
-    const host = this.overlay!.roles?.steward;
+    const host = this.roles().steward;
     /**
      * **pi の束縛だけを直す。** Claude Code のモデルは LLM 登録に載らないので
      * `exists()` は必ず偽になる——見境なく直すと、モデルを取り込むボタン1つで
@@ -1357,15 +1453,15 @@ export class LlmCatalog {
         from: `${host.provider}/${host.model}`,
         to: next ? `${next.providerId}/${next.id}` : undefined,
       });
-      if (next) this.overlay!.roles!.steward = { provider: next.providerId, model: next.id };
-      else delete this.overlay!.roles!.steward;
+      // 決定101c: 役へ書くのは `writeRole` 1本。**backend も明示する**
+      this.writeRole("steward", next ? { backend: "pi", provider: next.providerId, model: next.id } : undefined);
       this.saveOverlay();
     }
 
     // 職人の役割（`worker.<tier>`）。束縛の表は `roles` 1つ（決定94）
     for (const tier of MODEL_TIERS) {
       const role = workerRoleOf(tier);
-      const bound = this.overlay!.roles?.[role];
+      const bound = this.roles()[role];
       if (!bound || (bound.backend !== undefined && bound.backend !== "pi")) continue;
       if (exists(bound.provider, bound.model)) continue;
       const next = replacement(bound.provider, tier, "worker");
@@ -1374,8 +1470,7 @@ export class LlmCatalog {
         from: `${bound.provider}/${bound.model}`,
         to: next ? `${next.providerId}/${next.id}` : undefined,
       });
-      if (next) this.overlay!.roles![role] = { provider: next.providerId, model: next.id };
-      else delete this.overlay!.roles![role];
+      this.writeRole(role, next ? { backend: "pi", provider: next.providerId, model: next.id } : undefined);
       this.saveOverlay();
     }
 

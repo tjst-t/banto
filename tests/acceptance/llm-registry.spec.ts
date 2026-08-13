@@ -500,8 +500,10 @@ describe("プロバイダ・キー・モデルの編集", () => {
     // 何をどう変えたかを返す（黙って別のモデルに変えない）
     assert.equal(changes.length, 2, `got: ${JSON.stringify(changes)}`);
     assert.ok(changes.every((x) => x.from === "cloud/消える" && x.to === "cloud/残る"));
-    assert.deepEqual(c.defaults().host, { provider: "cloud", model: "残る" });
+    assert.deepEqual(c.defaults().host, { backend: "pi", provider: "cloud", model: "残る" },
+      "**付け替えでも経路を明示する**（決定103：backend を落とす経路を作らない）");
     assert.deepEqual(c.tiers().find((t) => t.tier === "standard")?.pick, {
+      backend: "pi",
       provider: "cloud",
       model: "残る",
     });
@@ -520,7 +522,7 @@ describe("プロバイダ・キー・モデルの編集", () => {
     const changes = c.repairDefaults();
     c.reload();
     assert.deepEqual(changes, [{ role: "番頭の標準", from: "cloud/唯一", to: "cloud/別物" }]);
-    assert.deepEqual(c.defaults().host, { provider: "cloud", model: "別物" });
+    assert.deepEqual(c.defaults().host, { backend: "pi", provider: "cloud", model: "別物" });
     assert.equal(c.models().find((m) => m.id === "別物")?.policy.includes("host"), true, "選んだものは採用済みにする");
   });
 

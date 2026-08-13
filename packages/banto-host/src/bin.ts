@@ -27,6 +27,7 @@ import {
 import {
   JsonlMemoryStore,
   LlmCatalog,
+  ModelLedger,
   MODEL_ALIASES,
   ScopedMemory,
   type PlaceProvider,
@@ -711,7 +712,14 @@ async function serve(options: ServeOptions): Promise<void> {
   void refreshModelCatalog(modelRegistry);
 
   const workerPoolSettings = (settings.all().modules?.["worker-pool"] ?? {}) as Record<string, unknown>;
+  /**
+   * **役の台帳**（ADR-0021 決定101）。`llm-registry.json`（pi の供給）とは別ファイル。
+   *
+   * **書くのは番頭ホストだけ**（決定101d）。工房は読み取り専用で開く。
+   */
+  const modelLedger = new ModelLedger({ path: path.join(dataDir(), "model-roles.json") });
   const llmCatalog = new LlmCatalog({
+    ledger: modelLedger,
     authJsonPath: path.join(agentDir, "auth.json"),
     modelsJsonPath: path.join(agentDir, "models.json"),
     overlayPath: path.join(dataDir(), "llm-registry.json"),
