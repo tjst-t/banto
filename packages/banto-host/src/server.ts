@@ -69,7 +69,8 @@ function hasSameOpen(
   let from = 0;
   for (let i = transcript.length - 1; i >= 0; i--) {
     const role = transcript[i]!.role;
-    if (role === "po" || role === "notice") {
+    // 枝からの相談（決定107）もターンの始まり——知らせと同じく、これで番頭が喋り出す
+    if (role === "po" || role === "notice" || role === "branch_note") {
       from = i;
       break;
     }
