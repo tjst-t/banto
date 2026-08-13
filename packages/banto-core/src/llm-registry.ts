@@ -471,6 +471,7 @@ export class LlmCatalog {
     this.ensureLoaded();
     const modelsJson = this.readModelsJson();
     const auth = this.readAuth();
+    const adoptedFromLedger = this.ledgerAdopted();
     const result: LlmModelInfo[] = [];
 
     for (const [rawProvider, value] of Object.entries(modelsJson.providers)) {
@@ -502,7 +503,16 @@ export class LlmCatalog {
            * OpenRouter のように337件あるプロバイダでは、選択肢が全部並んで選べなくなる。
            * 使うものを明示的に採用する形へ反転した（既存環境は移行で全採用にする）。
            */
-          policy: [...(ov?.policy ?? [])],
+          /**
+           * **採用は核の台帳が持つ**（ADR-0021 決定101e）。母集団は1つなので、
+           * 採用されていれば番頭にも職人にも許す——役ごとの絞り（`only`）は台帳の側。
+           * 台帳がまだ無いうちは従来のオーバーレイを読む（入れ替えの窓）。
+           */
+          policy: adoptedFromLedger
+            ? adoptedFromLedger.has(`${providerId}/${m.id}`)
+              ? [...MODEL_USES]
+              : []
+            : [...(ov?.policy ?? [])],
         });
       }
     }
@@ -511,6 +521,15 @@ export class LlmCatalog {
       const pc = a.providerId.localeCompare(b.providerId);
       return pc !== 0 ? pc : a.id.localeCompare(b.id);
     });
+  }
+
+  /**
+   * 核の台帳の母集団（`provider/model` の集合）。台帳がまだ無ければ `undefined`
+   * ——呼び出し側は従来のオーバーレイへ落ちる。
+   */
+  private ledgerAdopted(): Set<string> | undefined {
+    if (!this.ledger?.exists()) return undefined;
+    return new Set(this.ledger.adopted().map((r) => `${r.provider}/${r.model}`));
   }
 
   tiers(): LlmTierInfo[] {
@@ -705,6 +724,16 @@ export class LlmCatalog {
         );
       }
     }
+    /**
+     * **母集団は1つ**（決定101e）。台帳があれば `use` に依らず母集団へ足す・外す
+     * ——「番頭には許すが職人には許さない」は役の `only` で書く。
+     */
+    if (this.ledger?.exists() && !this.ledger.isReadOnly) {
+      const ref = { backend: "pi", provider, model };
+      if (allowed) this.ledger.adopt(ref);
+      else this.ledger.unadopt(ref);
+      return;
+    }
     this.allowUse(provider, model, use, allowed);
     this.saveOverlay();
   }
@@ -863,8 +892,15 @@ export class LlmCatalog {
         return true;
       });
 
-    // 要求した tier → 隣の tier の順に見る。制約はどの段でも緩めない
-    const order: ModelTier[] = [requestedTier, ...MODEL_TIERS.filter((t) => t !== requestedTier)];
+    /**
+     * **落ちない**（ADR-0021 決定104・PO裁定 2026-08-13）。
+     *
+     * 以前は `[要求した等級, ...MODEL_TIERS の残り]` の順に見ていた。`MODEL_TIERS` は
+     * `["reasoning","standard","fast"]` なので、**`fast` を要求して候補が無いと次に
+     * `reasoning` を見る**——安いつもりが一番高いモデルに落ちる。`usedFallbackTier` に
+     * 記録は残るが誰も見ていない。**知らせて人に設定させる**（呼び出し側が断る）。
+     */
+    const order: ModelTier[] = [requestedTier];
     for (const t of order) {
       const cands = candidatesOf(t);
       if (cands.length === 0) continue;
@@ -963,6 +999,38 @@ export class LlmCatalog {
     if (this.migration) this.migrateOnce();
     // **最後に**役を台帳へ移す（決定101）。上の移行がすべてオーバーレイへ landing した後で拾う
     this.migrateLedger();
+    this.migrateAdoptedToLedger();
+  }
+
+  /**
+   * **採用を核の台帳の母集団へ移す**（ADR-0021 決定101e・2026-08-13）。
+   *
+   * `policy` は pi の台帳にあったので Claude のモデルに旗が立たなかった（症状1）。
+   * **役ごとに採り直さない**——母集団は1つで、役の絞りは任意（画面に二度手間を出さない）。
+   *
+   * **移してから古い欄を消す。** 消さないと「同じ問いに2箇所が答える」に戻る。
+   * 消した後は `migrateAdoption`（2026-08-04 の移行）が再び全件を採用にしないよう、
+   * あちらの移行印（`adoptionMigratedAt`）が既に立っていることが前提。
+   */
+  private migrateAdoptedToLedger(): void {
+    if (!this.ledger || this.ledger.isReadOnly || !this.ledger.exists()) return;
+    let moved = 0;
+    let seen = 0;
+    for (const [providerId, models] of Object.entries(this.overlay!.models ?? {})) {
+      for (const [modelId, ov] of Object.entries(models ?? {})) {
+        if (!ov || ov.policy === undefined) continue;
+        seen++;
+        if (ov.policy.length > 0) {
+          this.ledger.adopt({ backend: "pi", provider: providerId, model: modelId });
+          moved++;
+        }
+        delete ov.policy;
+      }
+    }
+    if (seen > 0) {
+      this.saveOverlay();
+      console.log(`[banto] 採用 ${moved} 件を役の台帳の母集団へ移しました（決定101e）`);
+    }
   }
 
   /**

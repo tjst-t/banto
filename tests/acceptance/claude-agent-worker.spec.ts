@@ -231,11 +231,16 @@ let dir: string;
 let piDriver: FakeDriver;
 let claudeDriver: FakeDriver;
 let pool: WorkerPool;
+/** 核の台帳の中身（試験の中で書き換える）。 */
+let ledgerRoles: Record<string, { backend: string; provider: string; model: string } | undefined> = {};
+let ledgerDefaultTier: string | undefined;
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-claude-worker-"));
   piDriver = new FakeDriver("pi");
   claudeDriver = new FakeDriver("claude");
+  ledgerRoles = {};
+  ledgerDefaultTier = undefined;
   pool = new WorkerPool({
     driver: piDriver,
     // 本物と同じ形で登録する（バックエンドが自分の持ちモデルを名乗る）
@@ -243,6 +248,12 @@ beforeEach(() => {
     dataDir: dir,
     defaultProjectTag: "test",
     idleTimeoutMs: 0,
+    // ADR-0021 決定101: 等級 → モデルの割り当ては核の台帳（工房は読むだけ）
+    modelLedger: {
+      exists: () => true,
+      defaultTier: () => ledgerDefaultTier,
+      role: (role: string) => (ledgerRoles[role] ? { default: ledgerRoles[role] } : undefined),
+    },
   });
 });
 
@@ -697,6 +708,25 @@ describe("[claude-worker] ドライバは子プロセスと約束どおりに話
 
 // ── モデルの名指しと、設定画面から選べること ────────────────────────────────
 
+
+/**
+ * **役の台帳の代わり**（ADR-0021 決定101）。等級 → モデルの割り当ては核が持つので、
+ * 工房の試験はこれを読ませる（工房は読むだけ・決定101d）。
+ */
+function fakeLedger(
+  roles: Partial<Record<string, { backend: string; provider: string; model: string }>>,
+  defaultTier?: string
+) {
+  return {
+    exists: () => true,
+    defaultTier: () => defaultTier,
+    role: (role: string) => {
+      const found = roles[role];
+      return found ? { default: found } : undefined;
+    },
+  };
+}
+
 describe("[claude-worker] モデルの名指しから、ランタイムが決まる", () => {
   it("[claude-worker] Claude Code の名前を書けば、ランタイムを併記しなくても Claude Code で起きる", async () => {
     // 2か所（runtime と model）に書かせると、片方だけ直した指定が黙って通る
@@ -732,11 +762,13 @@ describe("[claude-worker] モデルの名指しから、ランタイムが決ま
       },
       dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "banto-default-backend-")),
       idleTimeoutMs: 0,
+      modelLedger: fakeLedger({
+        "worker.standard": { backend: "pi", provider: "opencode-go", model: "deepseek-v4-flash" },
+      }),
     });
     try {
       const settings = createWorkerPoolSettings(withCatalog);
       settings.write({ backends: { [CLAUDE_AGENT_DRIVER_ID]: { makeDefault: true } } });
-      settings.write({ assignments: { standard: "opencode-go/deepseek-v4-flash" } });
 
       const worker = await withCatalog.delegate({
         ...JOB,
@@ -821,8 +853,8 @@ describe("[claude-worker] 職人の設定（バックエンドと等級ごとの
   });
 
   it("[claude-worker] 等級にモデルを当てると、その等級の職人がそのモデルで起きる", async () => {
-    const spec = settingsOf();
-    await spec.write({ assignments: { reasoning: "opus" } });
+    // 割り当ては核の台帳（ADR-0021 決定101）。工房は読むだけ
+    ledgerRoles["worker.reasoning"] = { backend: "claude-agent-sdk", provider: "claude", model: "opus" };
 
     const worker = await pool.delegate({ ...JOB, taskId: "task-0150", modelTier: "reasoning" });
     // 名指しが無くても、割り当てからランタイムまで決まる
@@ -831,14 +863,21 @@ describe("[claude-worker] 職人の設定（バックエンドと等級ごとの
   });
 
   it("[claude-worker] 名指しは割り当てより優先される（番頭の判断が勝つ）", async () => {
-    await settingsOf().write({ assignments: { standard: "opus" } });
+    ledgerRoles["worker.standard"] = { backend: "claude-agent-sdk", provider: "claude", model: "opus" };
     await pool.delegate({ ...JOB, taskId: "task-0151", modelTier: "standard", model: "haiku" });
     assert.equal(claudeDriver.spawned[0]?.driverOptions?.["model"], "haiku");
   });
 
-  it("[claude-worker] 選べないモデルは当てさせない（保存できたのに起きない、を作らない）", async () => {
-    // 同期に投げるので throws で受ける（保存の口はその場で断る）
-    assert.throws(() => settingsOf().write({ assignments: { fast: "gpt-9" } }), /知らないモデルです/);
+  it("[claude-worker] 等級の割り当ては工房では受けない（同じ問いに2箇所が答えない）", async () => {
+    /**
+     * **ここで受けると二重管理に戻る**（ADR-0021 決定101d・102）。台帳を持つのは核で、
+     * 工房は読むだけ。I2: 黙って捨てず、行き先を言う。
+     */
+    assert.throws(
+      () => settingsOf().write({ assignments: { fast: "gpt-9" } }),
+      /役ごとのモデル/
+    );
+    assert.throws(() => settingsOf().write({ defaultTier: "fast" }), /役ごとのモデル/);
   });
 
   it("[claude-worker] 切ったバックエンドでは起こさない。モデルの一覧からも消える", async () => {
@@ -938,9 +977,9 @@ describe("[claude-worker] 職人の設定（バックエンドと等級ごとの
       settingsSection: section,
       idleTimeoutMs: 0,
     });
+    // **供給の入切**は工房が持つ（決定99a：既定は核、供給の入切は工房）
     createWorkerPoolSettings(first).write({
-      assignments: { reasoning: "opus" },
-      defaultTier: "fast",
+      backends: { [CLAUDE_AGENT_DRIVER_ID]: { makeDefault: true } },
     });
     first.dispose();
 
@@ -953,10 +992,7 @@ describe("[claude-worker] 職人の設定（バックエンドと等級ごとの
       idleTimeoutMs: 0,
     });
     try {
-      assert.deepEqual(second.tierAssignments(), {
-        defaultTier: "fast",
-        assignments: { reasoning: "opus" },
-      });
+      assert.equal(second.defaultRuntime, CLAUDE_AGENT_DRIVER_ID, "決めた既定のバックエンドが残る");
     } finally {
       second.dispose();
       fs.rmSync(dataDir, { recursive: true, force: true });

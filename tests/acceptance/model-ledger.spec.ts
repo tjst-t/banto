@@ -262,3 +262,65 @@ describe("[決定101a] 移行の前後どちらでも、工房は同じ答えを
     assert.equal(reader.role("steward")?.default?.model, "big");
   });
 });
+
+describe("[決定101e] 採用は母集団1つ（台帳へ移す）", () => {
+  it("旧い policy は母集団へ移り、オーバーレイからは消える", () => {
+    fs.writeFileSync(
+      path.join(dir, "llm-registry.json"),
+      JSON.stringify({
+        adoptionMigratedAt: "2026-08-04T00:00:00.000Z",
+        models: {
+          cloud: {
+            big: { policy: ["host", "worker"], contextWindow: 200000 },
+            small: { policy: ["host"] },
+          },
+        },
+      })
+    );
+    const c = seedCatalog(true);
+    const models = c.models();
+    // **役ごとの区別は畳む**——母集団は1つ（画面に二度手間を出さない）
+    assert.deepEqual(models.find((m) => m.id === "big")?.policy, ["host", "worker"]);
+    assert.deepEqual(models.find((m) => m.id === "small")?.policy, ["host", "worker"]);
+
+    const overlay = JSON.parse(fs.readFileSync(path.join(dir, "llm-registry.json"), "utf-8")) as {
+      models: Record<string, Record<string, Record<string, unknown>>>;
+    };
+    assert.equal(overlay.models["cloud"]!["big"]!["policy"], undefined, "古い欄は消す");
+    assert.equal(overlay.models["cloud"]!["big"]!["contextWindow"], 200000, "併記は落とさない");
+    assert.equal(ledger().adopted().length, 2, "母集団に2件");
+  });
+
+  it("採用していないものは母集団に入らない", () => {
+    fs.writeFileSync(
+      path.join(dir, "llm-registry.json"),
+      JSON.stringify({
+        adoptionMigratedAt: "2026-08-04T00:00:00.000Z",
+        models: { cloud: { big: { policy: [] }, small: { policy: ["worker"] } } },
+      })
+    );
+    const c = seedCatalog(true);
+    assert.deepEqual(c.models().find((m) => m.id === "big")?.policy, []);
+    assert.deepEqual(
+      ledger().adopted().map((r) => r.model),
+      ["small"]
+    );
+  });
+
+  it("採用の切り替えは母集団を出入りする（用途に依らず1つ）", () => {
+    // 何も無いところから作ると、2026-08-04 の移行が「いま在るものを全採用」にする
+    const c = seedCatalog(true);
+    c.models(); // 移行を走らせる（台帳はここで出来る）
+    const has = (model: string): boolean =>
+      ledger().adopted().some((r) => r.provider === "cloud" && r.model === model);
+    assert.equal(has("big"), true);
+
+    // **どちらの用途で外しても母集団から出る**（役ごとに採り直さないため）
+    c.setPolicy("cloud", "big", "worker", false);
+    assert.equal(has("big"), false);
+    assert.equal(has("small"), true, "他のモデルは巻き添えにしない");
+
+    c.setPolicy("cloud", "big", "host", true);
+    assert.equal(has("big"), true);
+  });
+});
