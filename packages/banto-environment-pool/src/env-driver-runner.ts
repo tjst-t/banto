@@ -43,6 +43,55 @@ export const DEFAULT_DRIVER_TIMEOUT_MS = 30_000;
  */
 export const DEFAULT_PROVISION_TIMEOUT_MS = 10 * 60_000;
 
+// ── 子へ持ち込まない環境変数 ──────────────────────────────────────────────────
+
+/**
+ * **常駐サービス自身の deploy 姿勢**。検証環境の子プロセスへは持ち込まない。
+ *
+ * ## 何が起きたか（2026-08-13・実機）
+ *
+ * `banto-environment-pool.service` は `Environment=NODE_ENV=production` で動く。
+ * ドライバはその環境をそのまま継ぎ、ドライバが起こす `setup`（`npm ci`）も継ぐ。
+ * npm は production では devDependencies を入れない——`test-docker` プロファイルは
+ * `driver: process`（器を作らずホストでそのまま走る）なので、**稼働中の作業ツリーの
+ * node_modules から tsx / typescript が消えた**。結果、①検証が回らない ②新しい職人が
+ * 起こせない（ドライバが `tsx/dist/loader.mjs` を解決できない）③サービスを再起動すると
+ * `node --import tsx` で起動不能、の3つが同時に起きた。
+ *
+ * ## なぜ「消す」で、「development を渡す」ではないか
+ *
+ * 検証環境の中がどのモードであるべきかを決めるのは**環境の側**（プロファイル・イメージ・
+ * リポジトリ）であって、番頭たちの deploy 事情ではない。プールに言えるのは
+ * 「**うちの姿勢を持ち込まない**」だけで、そこから先に口を出す筋合いは無い（D5）。
+ * 消せば npm も node も既定（＝production ではない）に戻り、器のイメージが自分で
+ * `ENV NODE_ENV=production` を宣言しているならそちらは当然そのまま効く。
+ *
+ * 明示は勝つ：`extraEnv`（credentials・spec-environment §4）で渡された値は後から重ねるので、
+ * どうしても要る環境は自分で名指しできる。
+ */
+export const ENV_NOT_INHERITED_BY_DRIVER: readonly string[] = ["NODE_ENV"];
+
+/**
+ * ドライバの子プロセスへ渡す環境を組み立てる（純関数）。
+ *
+ * 継ぐもの・落とすもの・上書きするものを1箇所で決める。**ここが唯一の合流点**——
+ * 動詞ごと・ドライバごとに書くと、書き忘れた経路だけが同じ穴に落ちる。
+ */
+export function driverSpawnEnv(
+  base: NodeJS.ProcessEnv,
+  extraEnv?: Record<string, string>
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value === undefined) continue;
+    if (ENV_NOT_INHERITED_BY_DRIVER.includes(key)) continue;
+    out[key] = value;
+  }
+  // 明示（credentials）は継承より強い。落とした変数もここで名指しすれば戻せる
+  for (const [key, value] of Object.entries(extraEnv ?? {})) out[key] = value;
+  return out;
+}
+
 // ── Driver runner result ───────────────────────────────────────────────────────
 
 export type DriverRunResult<T> =
@@ -141,23 +190,18 @@ export async function runDriverVerb(
     let stderrBuf = "";
     let settled = false;
 
-    // Build spawn env: inherit process.env, then overlay extraEnv (credentials).
+    // Build spawn env: inherit process.env (minus this service's own deploy posture —
+    // see ENV_NOT_INHERITED_BY_DRIVER), then overlay extraEnv (credentials).
     // SECURITY (S9d7fdb-6 / spec-environment §4): extraEnv values are ONLY injected here
     // into the driver subprocess env. They are never written to logs, stdout, stdin, or argv.
-    let spawnEnv: Record<string, string> | undefined;
-    if (extraEnv && Object.keys(extraEnv).length > 0) {
-      // Cast reason (I4): process.env is Record<string, string | undefined>; child_process.spawn
-      // tolerates undefined entries at runtime (they are dropped), so narrowing to
-      // Record<string, string> here is safe for the spawn env option.
-      spawnEnv = { ...(process.env as Record<string, string>) };
-      for (const [k, v] of Object.entries(extraEnv)) {
-        spawnEnv[k] = v;
-      }
-    }
+    //
+    // **常に明示で渡す**（extraEnv があるときだけ組み立てる形はやめた）。継承のままにすると
+    // NODE_ENV=production がドライバ→setup へ素通りし、`npm ci` が devDependencies を落とす。
+    const spawnEnv = driverSpawnEnv(process.env, extraEnv);
 
     const child = childProcess.spawn(spawnCmd, spawnArgs, {
       stdio: ["pipe", "pipe", "pipe"],
-      ...(spawnEnv ? { env: spawnEnv } : {}),
+      env: spawnEnv,
     });
 
     child.stdout.on("data", (chunk: Buffer) => { stdoutBuf += chunk.toString("utf8"); });

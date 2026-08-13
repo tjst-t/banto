@@ -87,6 +87,8 @@ export type { EnvEvent, EnvEventInput, EnvEventType } from "./event-log.js";
 export {
   runDriverVerb,
   resolveDriverPath,
+  driverSpawnEnv,
+  ENV_NOT_INHERITED_BY_DRIVER,
   DEFAULT_DRIVER_TIMEOUT_MS,
 } from "./env-driver-runner.js";
 export type { DriverRunResult } from "./env-driver-runner.js";
