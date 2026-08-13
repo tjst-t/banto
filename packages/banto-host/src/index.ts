@@ -283,10 +283,14 @@ export {
 export {
   createTurnBudget,
   guardTurn,
+  withTurnBudgetReset,
   DEFAULT_REPEAT_LIMIT,
+  DEFAULT_CALL_WARN_LIMIT,
+  DEFAULT_CALL_WARN_AGAIN_LIMIT,
   DEFAULT_CALL_LIMIT,
   type TurnBudget,
   type TurnBudgetOptions,
+  type TurnBudgetVerdict,
 } from "./turn-budget.js";
 export { withWorkerCard, WORKER_VIEW } from "./worker-card.js";
 export {

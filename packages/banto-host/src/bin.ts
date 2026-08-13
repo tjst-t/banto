@@ -60,7 +60,6 @@ import {
   type CreateBantoHostSessionOptions,
 } from "./host-session.js";
 import { resumeInterruptedTurn, withEmptyResponseGuard } from "./turn-guard.js";
-import type { HostSession } from "./server.js";
 import { BantoHostClient } from "./client.js";
 import { BANTO_DEFAULT_PORT, type ServerEvent } from "./protocol.js";
 import { BantoHostServer } from "./server.js";
@@ -109,7 +108,7 @@ import {
 } from "./places.js";
 import { guardPathArg } from "./place-scoped.js";
 import { createSkillTools } from "./skill-tools.js";
-import { createTurnBudget } from "./turn-budget.js";
+import { createTurnBudget, withTurnBudgetReset } from "./turn-budget.js";
 import { withWorkerCard } from "./worker-card.js";
 import { withTierUnassignedNotice } from "./worker-tier-notice.js";
 import { bindToolArgs, createThreadTools } from "./thread-tools.js";
@@ -1305,21 +1304,6 @@ async function serve(options: ServeOptions): Promise<void> {
     // 再試行はガードの中で完結するので、server は HostSession 契約のまま無変更（決定3）
     const guardedSession = withEmptyResponseGuard(session);
     /**
-     * 新しい入力が来たら、同じ確認の数えを戻す（PO報告 2026-08-11）。
-     *
-     * 数えは「ターンの中で同じことを繰り返していないか」を見るもの。PO の言葉や職人の
-     * 知らせが来たなら状況は変わっているので、そこから数え直す——さもないと、前のターンの
-     * 数えが残っていて**正常な1回目の確認まで断る**ことになる。
-     */
-    const countingSession: HostSession = {
-      ...guardedSession,
-      prompt: async (text, options) => {
-        turnBudget.reset();
-        return guardedSession.prompt(text, options);
-      },
-    };
-
-    /**
      * **バックエンドを選ぶ**（ADR-0020 決定88・95）。設定は起動時に読む——走っている
      * 会話の途中で会話のやり方は変えられない（設定画面も `restartRequired`）。
      *
@@ -1372,24 +1356,35 @@ async function serve(options: ServeOptions): Promise<void> {
         ...(model ? { model } : {}),
         ...(claudeResume ? { resume: claudeResume } : {}),
       });
-      return claudeHarness;
+      return withTurnBudgetReset(claudeHarness, turnBudget);
     };
 
-    const piHarness: BantoHarness = new PiHarness({
-      // 会話の口は皮を通す（空応答ガード＋ターン予算のリセット）
-      session: countingSession,
-      // 文脈と章の操作は pi の本体でしか出来ない。**皮では届かない**
-      agentSession: session,
-      toLogicalName: (wireName) => {
-        try {
-          return fromWireToolName(wireName);
-        } catch {
-          // 名前空間規則に従わない名前（pi 組み込み等）はそのまま通す
-          return wireName;
-        }
-      },
-      renderTranscript,
-    });
+    /**
+     * **ターン予算の数え直しはバックエンドの継ぎ目で掛ける**（PO報告 2026-08-13）。
+     *
+     * 以前は `HostSession` を包んだ皮の中で `reset()` していたが、その皮は
+     * pi にしか渡らず、Agent SDK 側では**一度も数え直されなかった**——本番の既定が
+     * そちらで、PO が話しかけるほど数えが積み上がり、新しい指示ごと断られた。
+     * ここで包めば、番頭のターンを回す入力は出所に依らず全部 `prompt()` を通る。
+     */
+    const piHarness: BantoHarness = withTurnBudgetReset(
+      new PiHarness({
+        // 会話の口は皮を通す（空応答ガード）
+        session: guardedSession,
+        // 文脈と章の操作は pi の本体でしか出来ない。**皮では届かない**
+        agentSession: session,
+        toLogicalName: (wireName) => {
+          try {
+            return fromWireToolName(wireName);
+          } catch {
+            // 名前空間規則に従わない名前（pi 組み込み等）はそのまま通す
+            return wireName;
+          }
+        },
+        renderTranscript,
+      }),
+      turnBudget
+    );
 
     /**
      * この会話が始まるバックエンド。会話ごとの指定（索引に残る）→ 設定の既定 → pi。
