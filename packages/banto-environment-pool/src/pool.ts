@@ -43,6 +43,7 @@ import {
 } from "./cache-store.js";
 import { loadProfile, listProfiles } from "./profiles.js";
 import { markPrimed, PRIMED_MARKER } from "./cache-dir.js";
+import { destructiveSetupName } from "./process-guard.js";
 
 /** ログの返し方。全文は番頭の文脈を埋め、パスだけでは番頭が結果を判断できない。 */
 const DEFAULT_LOG_TAIL_LINES = 40;
@@ -788,6 +789,35 @@ export class EnvironmentPool {
     // 環境より長生きする置き場（spec §5.2）。**鍵が作れないときは使わない**——
     // 欠けた鍵は「別のものを同じ鍵で指す」ことになるので、黙って落として毎回 setup する
     const cache = this.resolveCache(resolved.profile, resolved.driver, request);
+
+    /**
+     * **器を作らないドライバが破壊的な setup を打つことを、記録に残す**（2026-08-13 の事故）。
+     *
+     * 弾かない——弾くのは「守られた場所 ∧ 破壊的」のときで、それはドライバが理由つきで
+     * 断る（`process-guard.ts`）。ここに残したいのは**通った回**の方である。逃げ道を使って
+     * 通したときこそ、後から「どこで何を打ったか」が要る。事故のときは犯人
+     * （`test-docker` プロファイル）を突き止めるのに人手が要った。
+     *
+     * ドライバを呼ぶ**前**に書く。断られて provision が失敗しても記録は残る（I3：
+     * 気づく契機を必ず1つ残す）。
+     */
+    const destructive =
+      resolved.driver === "process" ? destructiveSetupName(resolved.profile?.setup) : undefined;
+    if (destructive) {
+      this.eventLog.append({
+        type: "env_destructive_setup",
+        profile: resolved.profileName,
+        data: {
+          driver: resolved.driver,
+          command: destructive,
+          setup: resolved.profile?.setup,
+          taskId,
+          // どこで打つか。`workdir` が無ければドライバは継いだ cwd で走る
+          workdir: request.workdir ? path.resolve(request.workdir) : null,
+          ...(request.repoPath ? { repoPath: path.resolve(request.repoPath) } : {}),
+        },
+      });
+    }
 
     const driverPath = resolveDriverPath(resolved.driver);
     const result = await runDriverVerb(

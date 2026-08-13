@@ -51,7 +51,16 @@ export type EnvEventType =
    * **書けないこと自体は異常**（置き場はプールのホスト上の自分のディレクトリ）なので
    * 握りつぶさない。provision もこの時点で失敗する。
    */
-  | "env_cache_marker_failed";
+  | "env_cache_marker_failed"
+  /**
+   * `driver: process` で破壊的な setup（`npm ci` 等）を打った（2026-08-13 の事故）。
+   *
+   * **弾かない。記録するだけ。** 弾くのは「守られた場所 ∧ 破壊的」のときで、それは
+   * ドライバが理由つきで断る（`process-guard.ts`）。ここに残すのは**通った回**の方
+   * ——器を作らないドライバがどこで何を打ったかは、後から辿れないと犯人が分からない。
+   * 実際、事故の犯人（`test-docker` プロファイル）を突き止めるのに人手が要った。
+   */
+  | "env_destructive_setup";
 
 export interface EnvEvent {
   /** 1から始まる連番。購読の再開点（`afterEventId`）に使う。 */

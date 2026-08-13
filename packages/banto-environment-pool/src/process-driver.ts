@@ -31,6 +31,7 @@ import * as net from "node:net";
 import * as childProcess from "node:child_process";
 import * as os from "node:os";
 import { DRIVER_TIMEOUT_EXIT, innerBudgetMs } from "./driver-budget.js";
+import { refuseDestructiveSetup, renderProtectedRefusal } from "./process-guard.js";
 
 // ── Process state file (for list/idempotent teardown) ────────────────────────
 //
@@ -251,6 +252,30 @@ async function handleProvision(input: Record<string, unknown>): Promise<void> {
 
   // Resource name carries the taskID prefix (I3)
   const name = `${taskId}-env`;
+
+  /**
+   * **稼働中の作業ツリーに破壊的な setup を打たせない**（2026-08-13 の事故）。
+   *
+   * ここでやる理由は2つ。**何かを触る前**であること（置き場の張り替えも setup も
+   * この下にある）と、実際に打つ場所を知っているのはこのドライバだけであること——
+   * `workdir` が無ければ継いだ cwd でそのまま走るので、危ういかどうかは
+   * 「打つ場所」でしか判定できない。
+   *
+   * 弾くのは**守られた場所 ∧ 破壊的なコマンド**のときだけ（`process-guard.ts`）。
+   * 無害な setup は守られた場所でもそのまま通る——判定を取り違えて健全な検証を
+   * 止めるのが一番まずい。
+   */
+  const refusal = refuseDestructiveSetup({
+    target: workdir ?? process.cwd(),
+    setup: typeof input["setup"] === "string" ? (input["setup"] as string) : undefined,
+    env: process.env,
+    cwd: process.cwd(),
+  });
+  if (refusal) {
+    // I2: 危ういまま「立った」と言わない。理由と次の一手を添えて止まる
+    process.stderr.write(`${renderProtectedRefusal(refusal)}\n`);
+    process.exit(1);
+  }
 
   /**
    * 環境より長生きする置き場（spec §5.2）。**このドライバはホストでそのまま動く**ので、

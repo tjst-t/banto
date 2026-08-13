@@ -91,6 +91,17 @@ export {
   ENV_NOT_INHERITED_BY_DRIVER,
   DEFAULT_DRIVER_TIMEOUT_MS,
 } from "./env-driver-runner.js";
+// 器を作らないドライバの見張り（守られた場所 ∧ 破壊的なコマンド）
+export {
+  destructiveSetupName,
+  protectedRoots,
+  protectedRootFor,
+  refuseDestructiveSetup,
+  renderProtectedRefusal,
+  DESTRUCTIVE_SETUP_PATTERNS,
+  PROTECTED_PATHS_ENV,
+  type ProtectedRefusal,
+} from "./process-guard.js";
 export type { DriverRunResult } from "./env-driver-runner.js";
 
 // credentials の復号（決定32d: 鍵はこのモジュールが持つ。番頭の文脈に平文を出さない）
