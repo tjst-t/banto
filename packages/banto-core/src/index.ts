@@ -114,6 +114,8 @@ export type {
   HarnessImage,
   HarnessPromptOptions,
   ChapterOpening,
+  // 「この経路では回せない」を値で持つ（決定98a）
+  NotSupported,
 } from "./banto-harness.js";
 
 // Executor + audit tool definitions (runtime-neutral; no pi/agent-sdk imports)
@@ -142,6 +144,8 @@ export {
   workerRoleOf,
   // ハーネスに依存しないモデル解決（task-0066）。工房が独立サービスとして立つのに要る
   MODEL_ALIASES,
+  // 採用の方針（ADR-0020 決定98）。hostUsable/workerUsable を1つに畳んだもの
+  MODEL_USES,
   createFileModelResolver,
   piAgentDir,
 } from "./llm-registry.js";
@@ -151,6 +155,8 @@ export type {
   LlmModelRef,
   ModelTier,
   ModelConstraints,
+  ModelUse,
+  ModelPolicy,
   KeyScope,
   KeyState,
   LlmKeyInfo,

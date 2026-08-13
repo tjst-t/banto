@@ -726,7 +726,7 @@ describe("[claude-worker] モデルの名指しから、ランタイムが決ま
             id: "deepseek-v4-flash",
             name: "DeepSeek V4 Flash",
             tier: "standard",
-            workerUsable: true,
+            policy: ["worker"],
           },
         ],
       },
@@ -773,9 +773,9 @@ describe("[claude-worker] モデルの名指しから、ランタイムが決ま
       runtimes: { [CLAUDE_AGENT_DRIVER_ID]: claudeBackend(claudeDriver) },
       catalog: {
         models: () => [
-          { providerId: "opencode-go", id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", tier: "standard", workerUsable: true },
+          { providerId: "opencode-go", id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", tier: "standard", policy: ["worker"] },
           // 採用していないものは並べない（PO裁定 2026-08-04）
-          { providerId: "opencode-go", id: "not-adopted", name: "未採用", tier: "fast", workerUsable: false },
+          { providerId: "opencode-go", id: "not-adopted", name: "未採用", tier: "fast", policy: [] },
         ],
       },
       dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "banto-claude-models-")),

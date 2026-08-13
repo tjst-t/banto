@@ -16,6 +16,7 @@ import {
   TIER_LABELS,
   type KeyScope,
   type ModelConstraints,
+  type ModelUse,
   type ModelTier,
   LLM_ROLES,
   isLlmRole,
@@ -148,8 +149,25 @@ export interface LlmToolsOptions {
   onHostModelChanged?: (provider: string, model: string) => void;
 }
 
+/**
+ * `llm.*` の内訳（ADR-0020 決定98f）。
+ *
+ * **番頭が持つのは読みと診断だけ。** 設定変更は GUI とファイルの担当にする
+ * ——調べた製品はどこもモデル設定をエージェントの Tool にしていないし、ADR-0019 の
+ * 実測でも19本中13本が一度も呼ばれていなかった（決定41c「設定の口は番頭に渡さない」）。
+ *
+ * **`settings` も在庫からは消さない。** モジュールの HTTP 面（`coreTools`）が
+ * これを引くので、消すと設定画面が 404 になる（ADR-0019 決定82 と同じ理由）。
+ */
+export interface LlmToolSets {
+  /** 番頭に渡す4本。読み（`list` / `resolve`）と診断（`check_key`）と取り込み直し（`reload`）。 */
+  tools: NamespacedToolDefinition[];
+  /** 設定画面だけが使う13本。番頭の道具箱には入れないが、HTTP 面には出す。 */
+  settings: NamespacedToolDefinition[];
+}
+
 /** `llm.*` を生成する。`createCanvasTools` と同じく bin.ts が中核の Tool 群として組む。 */
-export function createLlmTools(options: LlmToolsOptions): NamespacedToolDefinition[] {
+export function createLlmTools(options: LlmToolsOptions): LlmToolSets {
   const { catalog } = options;
 
   const list = defineNamespacedTool({
@@ -183,7 +201,7 @@ export function createLlmTools(options: LlmToolsOptions): NamespacedToolDefiniti
       const adoptedOnly = params.adopted ?? true;
       const q = (params.query ?? "").trim().toLowerCase();
       let models = data.models;
-      if (adoptedOnly) models = models.filter((m) => m.hostUsable || m.workerUsable);
+      if (adoptedOnly) models = models.filter((m) => m.policy.length > 0);
       if (params.provider) models = models.filter((m) => m.providerId === params.provider);
       if (params.tier) models = models.filter((m) => m.tier === params.tier);
       if (params.vision) models = models.filter((m) => m.vision);
@@ -363,10 +381,10 @@ export function createLlmTools(options: LlmToolsOptions): NamespacedToolDefiniti
   });
 
   const setUsable = defineNamespacedTool({
-    name: "llm.set_usable",
-    label: "LLM: Set Usable",
+    name: "llm.set_policy",
+    label: "LLM: Set Policy",
     description:
-      "そのモデルを番頭／職人が使ってよいかを切り替える。" +
+      "そのモデルを番頭／職人が使ってよいかを切り替える（採用の方針・決定98）。" +
       "番頭の既定・tier の第一候補になっているものは外せない。",
     parameters: Type.Object({
       provider: Type.String({ description: "プロバイダ名" }),
@@ -375,7 +393,7 @@ export function createLlmTools(options: LlmToolsOptions): NamespacedToolDefiniti
       usable: Type.Boolean({ description: "true=使ってよい" }),
     }),
     async execute(params) {
-      catalog.setUsable(params.provider, params.model, params.scope as KeyScope, params.usable);
+      catalog.setPolicy(params.provider, params.model, params.scope as ModelUse, params.usable);
       const label = params.scope === "host" ? "番頭" : "職人";
       return {
         content: [
@@ -764,7 +782,7 @@ export function createLlmTools(options: LlmToolsOptions): NamespacedToolDefiniti
       const adoptedBefore = new Set(
         catalog
           .models()
-          .filter((m) => m.providerId === params.provider && (m.hostUsable || m.workerUsable))
+          .filter((m) => m.providerId === params.provider && m.policy.length > 0)
           .map((m) => m.id)
       );
       const result = catalog.mergeModels(params.provider, fetched, ensure, trustCapabilities);
@@ -807,25 +825,33 @@ export function createLlmTools(options: LlmToolsOptions): NamespacedToolDefiniti
     },
   });
 
-  return [
-    list,
-    resolve,
-    setTier,
-    setTierDescription,
-    setRole,
-    setUsable,
-    setContextWindow,
-    setProviderLocal,
-    setKeyOrder,
-    setKeyScope,
-    reload,
-    addProvider,
-    removeProvider,
-    setKey,
-    removeKey,
-    checkKey,
-    fetchModels,
-  ];
+  return {
+    /**
+     * **番頭が持つ4本**（決定98f）。
+     *
+     * `list` は「いま自分は何で動いているか」——これが無いとモデルの相談そのものが
+     * できない（実測32回・`llm.*` の中で最多）。`resolve` は職人へ振るときの
+     * 「その等級だと何になるか」。`check_key` と `reload` は**診断と取り込み直し**で、
+     * 設定を変えるものではない（変えるのは人）。
+     */
+    tools: [list, resolve, checkKey, reload],
+    /** 設定画面の口。**番頭には渡さない**が、HTTP 面には出す（消すと画面が 404 になる）。 */
+    settings: [
+      setTier,
+      setTierDescription,
+      setRole,
+      setUsable,
+      setContextWindow,
+      setProviderLocal,
+      setKeyOrder,
+      setKeyScope,
+      addProvider,
+      removeProvider,
+      setKey,
+      removeKey,
+      fetchModels,
+    ],
+  };
 }
 
 /**

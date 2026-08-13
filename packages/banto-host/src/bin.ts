@@ -35,7 +35,12 @@ import {
 
 import type { WorkerInfo } from "@banto/worker-pool";
 // Claude Code バックエンドの選択肢（PO裁定 2026-08-13）。認証の有無もここで見る
-import { CLAUDE_KNOWN_MODELS, claudeAgentAvailability } from "@banto/worker-pool";
+import {
+  createClaudeBackend,
+  createPiBackend,
+  toBackendOption,
+  type HarnessBackendDescriptor,
+} from "./harness-backends.js";
 import { createKoboModule, defaultKoboUrl } from "@banto/daemon";
 import { BANTO_ORIGIN, startWorkerNotices, threadOrigin } from "./worker-notice.js";
 import { guardWorkerOrigin } from "./worker-guard.js";
@@ -746,6 +751,11 @@ async function serve(options: ServeOptions): Promise<void> {
 
   // ADR-0011 決定42: LLM は中核のドメイン。モジュールではなく中核の Tool として持つ
   const llmTools = createLlmTools({ catalog: llmCatalog });
+  /**
+   * **在庫は減らさない**（ADR-0019 決定82）。番頭に渡すのは4本だけだが（決定98f）、
+   * HTTP 面（設定画面の到達先）と取次の効きは17本のまま——ここを絞ると画面が 404 になる。
+   */
+  const llmAllTools = [...llmTools.tools, ...llmTools.settings];
 
   // 決定38b・63: どの設定でも書かせない置き場。**自分の分だけでは足りない**——
   // Kobo の帳簿（イベントログ・登録簿）も番頭には触れないことが機構で担保されている
@@ -808,47 +818,21 @@ async function serve(options: ServeOptions): Promise<void> {
    * 同じ `opus` が両方に出るのが正しい——どちらの経路で呼ぶかを人が選ぶ。
    * **会話の画面（`settings.harness_models`）と設定の選択肢が同じ元から出る**（D3）。
    */
-  const harnessBackendOptions = (): HarnessBackendOption[] => {
-        const piModels = llmCatalog.models().filter((m) => m.hostUsable);
-        const byProvider = new Map<string, typeof piModels>();
-        for (const m of piModels) {
-          const list = byProvider.get(m.providerId) ?? [];
-          list.push(m);
-          byProvider.set(m.providerId, list);
-        }
-        const claude = claudeAgentAvailability();
-        return [
-          {
-            id: "pi",
-            label: "pi（登録したプロバイダ・ローカルLLMも可）",
-            providers: [...byProvider.entries()].map(([id, models]) => ({
-              id,
-              models: models.map((m) => ({
-                id: m.id,
-                ...(m.name ? { name: m.name } : {}),
-                vision: m.vision,
-                ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
-              })),
-            })),
-          },
-          {
-            id: "claude-agent-sdk",
-            label: "Claude Code（手元のサブスクリプション・Claude 専用）",
-            // I2: 認証が無いなら選ばせない。選べてから落ちるより、選ぶ前に理由を出す
-            ...(claude.ok ? {} : { unavailable: claude.detail }),
-            providers: [
-              {
-                id: "claude",
-                models: CLAUDE_KNOWN_MODELS.map((m) => ({
-                  id: m.value,
-                  name: m.label,
-                  vision: true,
-                })),
-              },
-            ],
-          },
-        ];
-  };
+  /**
+   * **バックエンドは自分を名乗る**（決定98d）。ここは並べるだけで、中身は知らない
+   * ——`CLAUDE_KNOWN_MODELS` を直に読んでいた頃は、バックエンドが増えるたびに
+   * ここと `onSelectModel` の2箇所を直して回ることになっていた。
+   */
+  const harnessBackends: HarnessBackendDescriptor[] = [
+    createPiBackend({
+      // 番頭に許しているモデルだけ（採用の方針・決定98b）
+      hostModels: () => llmCatalog.models().filter((m) => m.policy.includes("host")),
+      resolve: (provider, id) => resolveModel(provider, id),
+    }),
+    createClaudeBackend(),
+  ];
+  const backendById = new Map(harnessBackends.map((b) => [b.id, b]));
+  const harnessBackendOptions = (): HarnessBackendOption[] => harnessBackends.map(toBackendOption);
 
   modules.register(
     createSettingsModule({
@@ -1035,7 +1019,8 @@ async function serve(options: ServeOptions): Promise<void> {
       // 取次は会話に紐づかないが、積むのは会話の中の番頭なので Tool は各会話に配る。
       // 宛先を渡すのは、積んだ札から**その話をしていた会話へ戻れる**ようにするため（決定73）
       ...createInboxTools(inbox, { threadId }),
-      ...llmTools,
+      // 決定98f: 番頭が持つのは読みと診断の4本だけ（設定変更は GUI とファイルの担当）
+      ...llmTools.tools,
       ...createThreadTools({
         threads,
         // 名前を付け直す宛先は**この会話**に固定する（番頭に threadId を書かせない）
@@ -1551,7 +1536,7 @@ async function serve(options: ServeOptions): Promise<void> {
     catalog,
     modules,
     // ADR-0011 決定42: 中核の Tool も HTTP に出す（中核由来のGUIの到達先）
-    coreTools: llmTools,
+    coreTools: llmAllTools,
     /**
      * 取次で押された選択肢を効かせる（決定73）。
      *
@@ -1564,7 +1549,7 @@ async function serve(options: ServeOptions): Promise<void> {
     runInboxEffect: async (effect) => {
       const tools =
         effect.module === CORE_ORIGIN
-          ? llmTools
+          ? llmAllTools
           : (() => {
               const owner = modules.get(effect.module);
               if (!owner) throw new Error(`モジュール "${effect.module}" は登録されていません`);
@@ -1606,8 +1591,17 @@ async function serve(options: ServeOptions): Promise<void> {
       const switcher = harnessSwitchers.get(thread.id);
 
       /**
+       * **回せるかはバックエンドに聞く**（決定98a）。`undefined` ではなく
+       * `NotSupported` が返るので、断る理由と**次にどうすればよいか**をそのまま出せる。
+       */
+      const chosen = backendById.get(backend);
+      // I2: 知らないバックエンドを黙って pi として扱わない（別の経路で開いてしまう）
+      if (!chosen) throw new Error(`バックエンド "${backend}" は登録されていません`);
+      const support = chosen.supports({ provider: nextProvider, model: nextId });
+      if (support !== true) throw new Error(support.reason);
+
+      /**
        * **Claude Code のときはモデルの別名をそのまま渡す**（決定94）。
-       *
        * Agent SDK は Claude 以外へ繋げないので、LLM 登録での解決はしない
        * ——登録に載らないモデル（`opus` 等）を「使えない」と断ってしまう。
        */
@@ -1619,8 +1613,8 @@ async function serve(options: ServeOptions): Promise<void> {
         return { id: nextId, vision: false, backend, harness };
       }
 
-      const next = resolveModel(nextProvider, nextId);
-      if (!next) throw new Error(`${nextProvider}/${nextId} は使えるモデルの一覧にありません`);
+      // ここまで来れば pi が解決できることは `supports` が確かめている
+      const next = resolveModel(nextProvider, nextId)!;
 
       // pi へ戻す（あるいは pi のまま）。**同じ pi セッションへ戻る**ので文脈も戻る
       const back = thread.model?.backend === "claude-agent-sdk" ? switcher?.pi() : undefined;

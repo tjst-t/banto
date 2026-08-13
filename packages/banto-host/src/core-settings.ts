@@ -207,7 +207,14 @@ export function createCoreSettingsSections(
             key: "steward",
             label: "番頭が使うモデル",
             type: "select",
-            options: options.harnessChoices?.() ?? [],
+            /**
+             * **開くたびに引き直す**（決定98d）。区画は起動時に1回だけ組まれるので、
+             * ここで配列にして持つと**選択肢が起動時のまま凍る**——モデルを採用しても
+             * 出てこないし、バックエンドへの問い合わせ（1秒後に返る）も反映されない。
+             */
+            get options() {
+              return options.harnessChoices?.() ?? [];
+            },
             description: "会話の画面と同じ選択肢。ここは新しい会話の既定だけを決める",
           },
         ],

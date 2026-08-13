@@ -140,7 +140,7 @@ export interface WorkerInfo {
  * 型で縛らず形だけで受けるのは、Worker Pool を登録の実装に縛らないため（D6）。
  */
 export interface WorkerModelCatalog {
-  models(): Array<{ providerId: string; id: string; name: string; tier: string; workerUsable: boolean }>;
+  models(): Array<{ providerId: string; id: string; name: string; tier: string; policy: readonly string[] }>;
   /**
    * 割り当てが無いときに、その等級で実際に選ばれるもの（分かるなら）。
    *
@@ -600,7 +600,7 @@ export class WorkerPool {
     if (this.backendRegistry.isEnabled(this.driverId)) {
       const piTitle = this.runtimes.get(this.driverId)?.title ?? this.driverId;
       for (const m of this.catalog?.models() ?? []) {
-        if (!m.workerUsable) continue;
+        if (!m.policy.includes("worker")) continue;
         models.push({
           name: `${m.providerId}/${m.id}`,
           label: `${m.name}（${m.providerId}）`,

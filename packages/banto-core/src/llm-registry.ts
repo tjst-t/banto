@@ -57,6 +57,21 @@ export const CONSTRAINT_KEYS: readonly (keyof ModelConstraints)[] = [
   "free",
 ] as const;
 
+/**
+ * **モデルの用途**（決定98）。誰がそのモデルを使ってよいか。
+ *
+ * 以前は `hostUsable` / `workerUsable` という2つの真偽値だった。用途は増える
+ * （要約器・記憶の抽出器はいまも別の口で選んでいる）ので、増えるたびに欄が増える形を
+ * やめて**1つの集合**にする。鍵の割り当て（`KeyScope`）と語彙は同じだが別の軸
+ * ——鍵は「どの鍵を誰に使わせるか」、こちらは「どのモデルを誰に許すか」。
+ */
+export type ModelUse = "host" | "worker";
+
+/** 採用の方針。**空＝誰にも許していない**（採用していない）。 */
+export type ModelPolicy = readonly ModelUse[];
+
+export const MODEL_USES: readonly ModelUse[] = ["host", "worker"] as const;
+
 export type KeyScope = "host" | "worker";
 
 /**
@@ -121,10 +136,11 @@ export interface LlmModelInfo {
   cost?: { input: number; output: number };
   /** 有料キーを使わない */
   free: boolean;
-  /** 番頭が使ってよい（＝採用している） */
-  hostUsable: boolean;
-  /** 職人が使ってよい（＝採用している） */
-  workerUsable: boolean;
+  /**
+   * **誰に許しているか**（決定98）。空＝採用していない。
+   * 以前の `hostUsable` / `workerUsable` を1つに畳んだもの。
+   */
+  policy: ModelUse[];
 }
 
 export interface LlmTierInfo {
@@ -179,11 +195,19 @@ export interface LlmModelRef {
 
 export type LlmRoleBindings = Partial<Record<LlmRole, LlmModelRef>>;
 
+/**
+ * 旧い形での既定（画面と道具の互換のため）。**真実は `roles`**——ここは導出（D3）。
+ *
+ * `workerTier` は捨てた（決定98）。`defaults()` が常に `"standard"` を返す死んだ欄で、
+ * 職人の既定等級は**工房が持つ**（`backends.defaultTier`）——同じ問いに2箇所が
+ * 答えている状態を、片方が嘘をつく形で残していた。
+ */
 export interface LlmDefaults {
-  /** 番頭は連続した会話なので具体モデルで持つ（`roles.steward` の写し）。 */
-  host?: { provider: string; model: string };
-  /** 職人はタスクごとに起動するので tier で指定する */
-  workerTier: ModelTier;
+  /**
+   * 番頭は連続した会話なので具体モデルで持つ（`roles.steward` の写し）。
+   * **`backend` も入る**——`roles` の写しである以上、落とすとここだけが別の答えになる。
+   */
+  host?: LlmModelRef;
 }
 
 /** pi の設定ファイルが banto の外で変わったかどうか。 */
@@ -290,7 +314,11 @@ interface ModelsJson {
 
 interface ModelOverlay {
   free?: boolean;
+  /** **採用の方針**（決定98）。`hostUsable`/`workerUsable` から移行する。 */
+  policy?: ModelUse[];
+  /** 旧形式。読み込み時に `policy` へ移す（決定98 の移行）。 */
   hostUsable?: boolean;
+  /** 旧形式。 */
   workerUsable?: boolean;
   /**
    * **手で入れた文脈長**（PO要望 2026-08-11）。
@@ -459,8 +487,7 @@ export class LlmCatalog {
            * OpenRouter のように337件あるプロバイダでは、選択肢が全部並んで選べなくなる。
            * 使うものを明示的に採用する形へ反転した（既存環境は移行で全採用にする）。
            */
-          hostUsable: ov?.hostUsable ?? false,
-          workerUsable: ov?.workerUsable ?? false,
+          policy: [...(ov?.policy ?? [])],
         });
       }
     }
@@ -491,11 +518,8 @@ export class LlmCatalog {
   defaults(): LlmDefaults {
     this.ensureLoaded();
     const host = this.overlay!.roles?.steward;
-    return {
-      ...(host ? { host: { ...host } } : {}),
-      // 職人の既定等級は**工房が持つ**（`backends.defaultTier`）。ここでは名乗らない
-      workerTier: "standard",
-    };
+    // 職人の既定等級は**工房が持つ**（`backends.defaultTier`）。ここでは名乗らない（決定98）
+    return { ...(host ? { host: { ...host } } : {}) };
   }
 
   catalog(): LlmCatalogData {
@@ -553,11 +577,7 @@ export class LlmCatalog {
      * ——立てようとすると台帳に幽霊の行ができる。
      */
     if (backend === undefined || backend === "pi") {
-      this.setModelOverlay(
-        provider,
-        model,
-        role === "steward" ? { hostUsable: true } : { workerUsable: true }
-      );
+      this.allowUse(provider, model, role === "steward" ? "host" : "worker", true);
     }
     this.overlay!.roles ??= {};
     this.overlay!.roles[role] = { ...(backend ? { backend } : {}), provider, model };
@@ -605,12 +625,12 @@ export class LlmCatalog {
   }
 
   /**
-   * モデルを役割ごとに使用可/不可にする。
-   * 番頭の既定・tier の第一候補になっているものは外せない（外すと解決先を失う）。
+   * **採用の方針を変える**（決定98。旧 `setUsable`）。
+   * 割り当てられているモデルは外せない（外すと解決先を失う）。
    */
-  setUsable(provider: string, model: string, scope: KeyScope, usable: boolean): void {
+  setPolicy(provider: string, model: string, use: ModelUse, allowed: boolean): void {
     this.ensureLoaded();
-    if (!usable) {
+    if (!allowed) {
       /**
        * **割り当てられているモデルは採用を外せない**（外すと解決先を失う）。
        * 見る先は `roles` 1つ——以前は `defaults.host` と `picks` の2箇所を見ていた。
@@ -619,7 +639,7 @@ export class LlmCatalog {
         ([role, ref]) =>
           ref?.provider === provider &&
           ref.model === model &&
-          (scope === "host" ? role === "steward" : role.startsWith("worker."))
+          (use === "host" ? role === "steward" : role.startsWith("worker."))
       );
       if (bound) {
         throw new Error(
@@ -628,8 +648,21 @@ export class LlmCatalog {
         );
       }
     }
-    this.setModelOverlay(provider, model, scope === "host" ? { hostUsable: usable } : { workerUsable: usable });
+    this.allowUse(provider, model, use, allowed);
     this.saveOverlay();
+  }
+
+  /**
+   * 採用の集合へ足す・引く。**書き先は `policy` 1つ**（決定98）——
+   * 欄が2つあった頃は、片方だけ書く経路が増えるたびに食い違った。
+   */
+  private allowUse(provider: string, model: string, use: ModelUse, allowed: boolean): void {
+    const current = new Set(this.overlay!.models?.[provider]?.[model]?.policy ?? []);
+    if (allowed) current.add(use);
+    else current.delete(use);
+    this.setModelOverlay(provider, model, {
+      policy: MODEL_USES.filter((u) => current.has(u)),
+    });
   }
 
   setProviderLocal(providerId: string, local: boolean): void {
@@ -765,7 +798,7 @@ export class LlmCatalog {
 
     const candidatesOf = (t: ModelTier): LlmModelInfo[] =>
       models.filter((m) => {
-        if (!m.workerUsable || m.tier !== t) return false;
+        if (!m.policy.includes("worker") || m.tier !== t) return false;
         const p = providers.get(m.providerId);
         if (constraints.vision && !m.vision) return false;
         if (constraints.local && !p?.local) return false;
@@ -808,7 +841,7 @@ export class LlmCatalog {
       const resolved = this.resolver.find(host.provider, host.model);
       if (resolved) return resolved;
     }
-    const fallback = this.models().find((m) => m.hostUsable && m.tier === "standard");
+    const fallback = this.models().find((m) => m.policy.includes("host") && m.tier === "standard");
     return fallback ? this.resolver.find(fallback.providerId, fallback.id) : undefined;
   }
 
@@ -868,6 +901,7 @@ export class LlmCatalog {
     this.loadedAt = new Date().toISOString();
     this.migrateWorkerDefault();
     this.migrateRoles();
+    this.migratePolicy();
     this.migrateAdoption();
     if (this.migration) this.migrateOnce();
   }
@@ -933,6 +967,31 @@ export class LlmCatalog {
   }
 
   /**
+   * **`hostUsable` ＋ `workerUsable` → `policy` への移行**（決定98・2026-08-13）。
+   *
+   * 採用の真実を1つの集合にする。**古い欄は移してから消す**——残すと、片方だけ書く
+   * 経路が次に足されたときに食い違う（`roles` への移行で踏んだのと同じ罠）。
+   * 移行印は持たない：古い欄が在るかどうかが、そのまま「まだ移していない」の印になる。
+   */
+  private migratePolicy(): void {
+    let moved = 0;
+    for (const models of Object.values(this.overlay!.models ?? {})) {
+      for (const ov of Object.values(models ?? {})) {
+        if (!ov) continue;
+        if (ov.hostUsable === undefined && ov.workerUsable === undefined) continue;
+        const policy = new Set<ModelUse>(ov.policy ?? []);
+        if (ov.hostUsable) policy.add("host");
+        if (ov.workerUsable) policy.add("worker");
+        ov.policy = MODEL_USES.filter((u) => policy.has(u));
+        delete ov.hostUsable;
+        delete ov.workerUsable;
+        moved++;
+      }
+    }
+    if (moved > 0) this.saveOverlay();
+  }
+
+  /**
    * 「全部使ってよい」→「採用したものだけ使える」への移行（2026-08-04）。
    *
    * **いま使えているものを黙って使えなくしない**——反転した瞬間に全モデルが選べなくなり、
@@ -951,8 +1010,7 @@ export class LlmCatalog {
         const current = this.overlay!.models[providerId]![m.id];
         this.overlay!.models[providerId]![m.id] = {
           ...current,
-          hostUsable: current?.hostUsable ?? true,
-          workerUsable: current?.workerUsable ?? true,
+          policy: current?.policy ?? [...MODEL_USES],
         };
       }
     }
@@ -1275,12 +1333,12 @@ export class LlmCatalog {
         pool.find((m) => m.providerId === provider) ??
         pool.find((m) => m.tier === tier) ??
         pool[0];
-      const adopted = available.filter((m) => (usable === "host" ? m.hostUsable : m.workerUsable));
+      const adopted = available.filter((m) => m.policy.includes(usable));
       const found = pick(adopted);
       if (found) return found;
       const fallback = pick(available);
       if (fallback) {
-        this.setUsable(fallback.providerId, fallback.id, usable, true);
+        this.setPolicy(fallback.providerId, fallback.id, usable, true);
       }
       return fallback;
     };

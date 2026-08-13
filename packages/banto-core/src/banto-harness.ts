@@ -26,6 +26,19 @@
  * D6: 依存なし（**pi を import しない**——`banto-core-layering.spec.ts` が機械検証している）。
  */
 
+/**
+ * **回せない**（決定98a）。`undefined` で返さないのが要点。
+ *
+ * 「解決できなかった」と「このバックエンドでは原理的に回せない」は**直し方が違う**
+ * ——前者はモデルを登録すれば直り、後者は経路を替えるしかない。同じ `undefined` に
+ * 潰すと、画面に出せる理由が「使えません」だけになる（実際そうなっていた）。
+ */
+export interface NotSupported {
+  supported: false;
+  /** 人に出す理由。**次に何をすればよいか**まで書く（I2）。 */
+  reason: string;
+}
+
 /** 画像の中身。pi の `ImageContent` と同じ形だが、こちらは中立（決定3）。 */
 export interface HarnessImage {
   type: "image";
