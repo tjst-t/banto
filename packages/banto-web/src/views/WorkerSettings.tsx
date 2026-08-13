@@ -98,7 +98,6 @@ export function WorkerSettings(props: CanvasViewProps): React.ReactElement {
   };
 
   /** そのモデルはどのバックエンドのものか（切ってあるものは選べない）。 */
-  const optionsFor = (): ModelOption[] => models;
 
   return (
     <ViewShell className="ws-view">
@@ -168,63 +167,32 @@ export function WorkerSettings(props: CanvasViewProps): React.ReactElement {
             <div className="llm-sec-head">
               <span className="llm-sec-label">等級ごとのモデル</span>
               <span className="llm-add-note">
-                指定しなければ、そのバックエンドの既定の解き方に任せます
-                （pi は「LLM・モデル」の第一候補、Claude Code は等級の別名）。
+                <strong>「役ごとのモデル」へ移りました</strong>（ADR-0021 決定102）
+                ——割り当てはバックエンドを跨ぐ問いなので、番頭と一緒に1枚で選びます。
               </span>
             </div>
             <div className="llm-tiers">
-              {tiers.map((tier) => {
-                const assigned = values.assignments?.[tier] ?? "";
-                const chosen = models.find((m) => m.name === assigned);
-                return (
-                  <div key={tier} className="llm-tier-card">
-                    <div className="llm-tier-head">
-                      <Badge className={`is-tier-${tier}`}>{TIER_LABELS[tier]}</Badge>
-                      {values.defaultTier === tier && <Badge tone="ok">職人の既定</Badge>}
-                    </div>
-                    <Select
-                      disabled={bridge.busy}
-                      aria-label={`${TIER_LABELS[tier]} に当てるモデル`}
-                      value={assigned}
-                      onChange={(e) =>
-                        void send({ assignments: { [tier]: e.target.value } })
-                      }
-                    >
-                      <option value="">（指定なし）</option>
-                      {optionsFor().map((m) => (
-                        <option key={m.name} value={m.name}>
-                          {m.runtimeTitle ?? m.runtime}: {m.label}
-                        </option>
-                      ))}
-                    </Select>
-                    <div className="llm-tier-pick">
-                      {chosen ? (
-                        <>
-                          いま: <code>{chosen.name}</code>
-                        </>
-                      ) : assigned ? (
-                        // I2: 選べないものが当たっているなら、黙って消さずに見せる
-                        <span className="ws-warn">
-                          <Icon name="warn" size={13} /> <code>{assigned}</code> はいま選べません
-                        </span>
-                      ) : values.fallbacks?.[tier] ? (
-                        <>
-                          指定なし（既定の {values.fallbackBackend ?? "バックエンド"} が{" "}
-                          <code>{values.fallbacks[tier]}</code> を使います）
-                        </>
-                      ) : (
-                        `指定なし（既定の ${values.fallbackBackend ?? "バックエンド"} に任せる）`
-                      )}
-                    </div>
+              {tiers.map((tier) => (
+                <div key={tier} className="llm-tier-card">
+                  <div className="llm-tier-head">
+                    <Badge className={`is-tier-${tier}`}>{TIER_LABELS[tier]}</Badge>
+                    {values.defaultTier === tier && <Badge tone="ok">職人の既定</Badge>}
                   </div>
-                );
-              })}
+                  <div className="llm-tier-pick">
+                    {values.assignments?.[tier] ? (
+                      <>
+                        いま: <code>{values.assignments[tier]}</code>
+                      </>
+                    ) : (
+                      <span className="cv-muted">（割り当てなし）</span>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
           </section>
 
-          {/* ③ 既定と安全弁 */}
           <section className="llm-sec">
-            <div className="llm-sec-label">職人の既定</div>
             <div className="llm-role">
               <span className="llm-role-mark">等</span>
               <div className="llm-role-main">
@@ -233,19 +201,10 @@ export function WorkerSettings(props: CanvasViewProps): React.ReactElement {
                   タスクにも番頭にも指定が無いときに使う等級
                 </div>
               </div>
-              <Select
-                disabled={bridge.busy}
-                aria-label="職人の既定の等級"
-                value={values.defaultTier ?? ""}
-                onChange={(e) => void send({ defaultTier: e.target.value })}
-              >
-                <option value="">（指定なし）</option>
-                {tiers.map((t) => (
-                  <option key={t} value={t}>
-                    {TIER_LABELS[t]}
-                  </option>
-                ))}
-              </Select>
+              <span className="llm-tier-pick">
+                {values.defaultTier ? TIER_LABELS[values.defaultTier] : "（指定なし）"}
+                <span className="cv-muted">　→「役ごとのモデル」で変えます</span>
+              </span>
             </div>
             <div className="llm-role">
               <span className="llm-role-mark">弁</span>

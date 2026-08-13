@@ -840,6 +840,45 @@ async function serve(options: ServeOptions): Promise<void> {
     createClaudeBackend(),
   ];
   const backendById = new Map(harnessBackends.map((b) => [b.id, b]));
+
+  /**
+   * **職人に選べるモデル**（ADR-0021 決定102）。数え上げるのは工房で、ここは写しを持つだけ
+   * ——番頭の層とは別の名乗り（決定100）なので、番頭側の一覧を流用しない。
+   *
+   * **待たない。** 設定の区画は同期で組むので、いまある写しを返して裏で取り直す
+   * （Claude のモデル一覧と同じ形・決定98d）。**取れなかったら空にしない**（I2）。
+   */
+  let workerModelCache: Array<{ value: string; label: string }> = [];
+  let workerModelsAskedAt = 0;
+  const WORKER_MODELS_TTL_MS = 60_000;
+  const refreshWorkerModels = (): void => {
+    if (Date.now() - workerModelsAskedAt < WORKER_MODELS_TTL_MS) return;
+    workerModelsAskedAt = Date.now();
+    const tool = modules.tools().find((t) => t.name === "worker.models");
+    if (!tool) return;
+    void tool
+      .execute({}, { toolCallId: `worker-models-${Date.now()}` })
+      .then((result) => {
+        const found = (result.details as { models?: Array<{ name: string; label: string; runtime: string }> })
+          ?.models;
+        if (!found || found.length === 0) return; // I2: 空を信じない
+        workerModelCache = found.map((m) => {
+          // 名前の形はバックエンドで違う（pi は `provider/model`、Claude は別名だけ）
+          const slash = m.name.indexOf("/");
+          const backend = m.runtime === "claude-agent-sdk" ? "claude-agent-sdk" : "pi";
+          const [provider, model] =
+            slash > 0 ? [m.name.slice(0, slash), m.name.slice(slash + 1)] : ["claude", m.name];
+          return { value: `${backend}|${provider}|${model}`, label: `${backend} › ${m.label}` };
+        });
+      })
+      .catch(() => {
+        // 工房が落ちているだけ。写しはそのまま（選べないものを選ばせない・I2）
+      });
+  };
+  const workerModelChoices = (): Array<{ value: string; label: string }> => {
+    refreshWorkerModels();
+    return workerModelCache;
+  };
   const harnessBackendOptions = (): HarnessBackendOption[] => harnessBackends.map(toBackendOption);
 
   modules.register(
@@ -867,6 +906,17 @@ async function serve(options: ServeOptions): Promise<void> {
             ...(c.writable ? { writable: [...c.writable] } : {}),
           })),
         onPlacesChanged: () => ensureDesk(settings, workspace),
+        /**
+         * **職人に選べるモデル**（ADR-0021 決定102）。工房が数え上げたものをそのまま出す
+         * ——番頭の層とは別の名乗りなので、こちらは工房へ聞く（決定100）。
+         *
+         * 工房が落ちていれば空。**そのときは自由入力に落ちず「割り当てなし」だけになる**
+         * ——選べないものを選ばせないため（I2）。
+         */
+        workerChoices: () => workerModelChoices(),
+        // 既定の等級は**核の台帳**が持つ（決定99a）
+        workerDefaultTier: () => modelLedger.defaultTier() ?? "",
+        onWorkerTierChanged: (tier) => modelLedger.setDefaultTier(tier),
       }),
       modules,
       store: settings,

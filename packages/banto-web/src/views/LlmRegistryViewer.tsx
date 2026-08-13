@@ -399,47 +399,19 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
             </Note>
           )}
 
-          {/* ① いま何が効いているか */}
+          {/*
+            **役割の割り当てはここに無い**（ADR-0021 決定102）。
+            この面は **pi バックエンドの供給**——プロバイダ・鍵・取り込み・文脈長・等級と、
+            「この店で使う気があるか」（採用）まで。誰が何を使うかは設定の「役ごとのモデル」で
+            決める（バックエンドを跨いで1枚）。
+          */}
           <section className="llm-sec">
-            <div className="llm-sec-label">役割の既定</div>
-            <div className="llm-role">
-              <span className="llm-role-mark">番</span>
-              <div className="llm-role-main">
-                <div className="llm-role-name">番頭</div>
-                <div className="llm-role-sub">具体モデルで固定</div>
-              </div>
-              <Select
-                disabled={busy}
-                aria-label="番頭が使うモデル"
-                value={
-                  data.defaults.host ? `${data.defaults.host.provider}|${data.defaults.host.model}` : ""
-                }
-                onChange={(e) => {
-                  const [provider, model] = e.target.value.split("|");
-                  // ADR-0020 決定94: 束縛の口は `llm.set_role` 1本
-                  // この画面が並べているのは **pi の台帳**のモデルなので、経路も pi と名乗る（決定103）
-                  if (provider && model) {
-                    void run("llm.set_role", { role: "steward", backend: "pi", provider, model });
-                  }
-                }}
-              >
-                {!data.defaults.host && <option value="">（未設定）</option>}
-                {hostModels.map((m) => (
-                  <option key={`${m.providerId}|${m.id}`} value={`${m.providerId}|${m.id}`}>
-                    {m.providerId} / {m.id}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            {/*
-              職人の既定（等級・等級ごとのモデル）は**「職人」の区画へ移した**
-              （PO要望 2026-08-10）。ここに置くと pi のモデルだけが特別扱いになり、
-              Claude Code のような登録に載らないバックエンドのモデルを並べられない。
-              この区画が持つのは素材（プロバイダ・鍵・モデル）と**採用**まで。
-            */}
+            <div className="llm-sec-label">この面は pi の供給</div>
             <p className="cv-muted llm-moved">
-              職人が何で動くか・等級ごとにどのモデルを使うかは「職人」の区画で決めます。
-              ここで決めるのは<strong>職人に使わせてよいモデル</strong>（下の採用）までです。
+              ここで決めるのは<strong>どのモデルを台帳に載せるか</strong>（プロバイダ・鍵・取り込み・
+              採用）までです。<strong>番頭や職人が何を使うか</strong>は設定の
+              「役ごとのモデル」で決めます——同じ <code className="cv-mono">opus</code> が
+              pi 経由でも Claude Code 経由でも指せるので、割り当てはバックエンドを跨いで1枚で選びます。
             </p>
           </section>
 
@@ -688,12 +660,6 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                         )}
 
                         {models.map((m) => {
-                          const isHostDef =
-                            data.defaults.host?.provider === m.providerId &&
-                            data.defaults.host?.model === m.id;
-                          const tierInfo = data.tiers.find((t) => t.tier === m.tier);
-                          const isPick =
-                            tierInfo?.pick?.provider === m.providerId && tierInfo?.pick?.model === m.id;
                           return (
                             <div key={`${m.providerId}/${m.id}`} className="llm-model">
                               <span className="llm-model-id">{m.id}</span>
@@ -740,36 +706,11 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                                     {scope === "host" ? "番頭" : "職人"}
                                   </Chip>
                                 ))}
-                                <Chip
-                                  on={isHostDef}
-                                  disabled={busy}
-                                  title="番頭が使うモデルにする"
-                                  onClick={() =>
-                                    void run("llm.set_role", {
-                                      role: "steward",
-                                      backend: "pi",
-                                      provider: m.providerId,
-                                      model: m.id,
-                                    })
-                                  }
-                                >
-                                  番頭
-                                </Chip>
-                                <Chip
-                                  on={isPick}
-                                  disabled={busy}
-                                  title={`職人の ${tierInfo?.label ?? m.tier} に割り当てる`}
-                                  onClick={() =>
-                                    void run("llm.set_role", {
-                                      role: `worker.${m.tier}`,
-                                      backend: "pi",
-                                      provider: m.providerId,
-                                      model: m.id,
-                                    })
-                                  }
-                                >
-                                  職人の{tierInfo?.label ?? m.tier}
-                                </Chip>
+                                {/*
+                                  **役割の割り当てチップはここに無い**（ADR-0021 決定102）。
+                                  割り当てはバックエンドを跨ぐ問いなので、設定の「役ごとのモデル」で1枚にした
+                                  ——ここに置くと pi のモデルだけが特別扱いになる。
+                                */}
                                 {/* 採用をやめる＝番頭も職人も使わない。台帳には残る */}
                                 <Button
                                   small

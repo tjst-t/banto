@@ -167,6 +167,8 @@ async function main(): Promise<void> {
       : Number.parseInt(process.env["BANTO_WORKER_IDLE_MS"] ?? String(DEFAULT_IDLE_TIMEOUT_MS), 10);
 
   const pool = new WorkerPool({
+    // 決定101: 等級 → モデルの割り当ては核の台帳が持つ（工房は読むだけ）
+    modelLedger: ledger,
     driver,
     // pi は登録（LLM Registry）で解く。第一候補が無ければ同じ等級の採用済みから
     driverRegistration: {
@@ -227,9 +229,27 @@ async function main(): Promise<void> {
     host,
   });
 
+  /**
+   * **実際に走るものを言う**（ADR-0021 症状2）。
+   *
+   * ここは LLM 登録の解決（`resolveForWorker`）を出していたが、実機では**工房の割り当てが
+   * 勝っていた**ので、`職人の既定モデル: opencode-go/deepseek-v4-flash（standard）` と
+   * 出しながら実際は `opus` で走っていた——**1行に2つの嘘**。台帳を引いて言い直す。
+   */
+  const startupTier = pool.resolvedDefaultTier();
+  const startupModel = pool.resolvedDefaultModel();
   console.log(
-    `[worker-pool] 職人の既定モデル: ${fallback ? `${fallback.model.provider}/${fallback.model.id}（${fallback.tier}）` : "(pi の既定解決)"}`
+    `[worker-pool] 職人の既定: ${startupTier ?? "(指定なし)"} → ` +
+      `${startupModel ?? "(ランタイムの既定解決)"}`
   );
+  // I2: 古い割り当てが残っていたら黙って無視しない（どこを直せばよいか分からなくなる）
+  const stale = pool.staleTierAssignments();
+  if (stale.length > 0) {
+    console.warn(
+      `[worker-pool] 工房に残っている等級の割り当て ${stale.length} 件は**もう読まれません**` +
+        `（${stale.join(" / ")}）。割り当ては「役」の設定画面（核の台帳）で決めます（ADR-0021）`
+    );
+  }
   console.log(
     `[worker-pool] 使えるランタイム: ${pool.availableRuntimes().join(", ")}` +
       `（既定 ${pool.defaultRuntime}／Claude Code の既定モデル ${claudeDriver.currentDefaults().model}）`

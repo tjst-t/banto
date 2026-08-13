@@ -15,6 +15,7 @@ import {
   LlmCatalog,
   TIER_LABELS,
   type KeyScope,
+  type LlmResolution,
   type ModelConstraints,
   type ModelUse,
   type ModelTier,
@@ -257,15 +258,45 @@ export function createLlmTools(options: LlmToolsOptions): LlmToolSets {
     }),
     async execute(params) {
       const constraints = (params.constraints ?? {}) as ModelConstraints;
+      /**
+       * **実際に走るものを言う**（ADR-0021 症状2）。
+       *
+       * ここは pi の登録だけを引いていたので、実機では `opencode-go/deepseek-v4-flash` と
+       * 答えながら職人は `opus` で走っていた——**画面が嘘をつくより悪い**（番頭の判断が
+       * 誤情報の上に乗る）。等級に割り当てがあるなら、それをそのまま返す。
+       *
+       * 制約つきの問い合わせだけは pi の登録で解く（制約は pi のモデルの属性なので）。
+       */
+      const wantedTier = (params.tier as ModelTier | undefined) ?? "standard";
+      const bound = Object.keys(constraints).length === 0
+        ? catalog.roles()[`worker.${wantedTier}` as never]
+        : undefined;
+      if (bound) {
+        const ref = bound as { backend?: string; provider: string; model: string };
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `${ref.backend ?? "pi"} / ${ref.provider}/${ref.model}` +
+                `（${TIER_LABELS[wantedTier]}の割り当て）。` +
+                "頼む側が model を名指しすれば、それが優先されます（決定99a）。",
+            },
+          ],
+          details: { tier: wantedTier, ...ref } as unknown as LlmResolution,
+        };
+      }
       const r = catalog.resolveForWorker(params.tier as ModelTier | undefined, constraints);
       if (!r) {
         const named = Object.entries(constraints)
           .filter(([, v]) => v)
           .map(([k]) => k);
+        // 決定104: 等級を落として埋めない。**知らせて人に設定させる**
         throw new Error(
           `条件を満たすモデルがありません（tier: ${params.tier ?? "既定"}` +
             (named.length ? `, 制約: ${named.join(", ")}` : "") +
-            "）。制約を緩めるか、その tier に条件を満たすモデルを足してください。"
+            "）。**別の等級へ勝手に落としません**——その等級にモデルを割り当てるか、" +
+            "制約を見直してください（設定の「役」）。"
         );
       }
       const notes: string[] = [];

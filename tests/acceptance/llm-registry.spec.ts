@@ -150,26 +150,32 @@ describe("LLM Registry — 職人への解決は (tier, 制約) で決まる", (
     assert.equal(c.resolveForWorker("reasoning", { local: true, vision: true }), undefined);
   });
 
-  it("tier を落としてでも制約は守る。緩めるのは tier だけ", () => {
+  /**
+   * **等級は落ちない**（ADR-0021 決定104・PO裁定 2026-08-13）。
+   *
+   * 以前は隣の等級へ落ちていた。並びが `["reasoning","standard","fast"]` なので、
+   * **`fast` を要求して候補が無いと次に `reasoning`**——安いつもりが一番高いモデルに
+   * 落ちる。記録（`usedFallbackTier`）は残るが誰も見ていない。**知らせて人に設定させる。**
+   */
+  it("制約を満たせないなら解決しない（等級を落として埋めない）", () => {
     const c = standardSeed();
-    // 通常にローカルのモデルは無い。tier は高速へ落ちるが、ローカル限定は守られる
-    const r = c.resolveForWorker("standard", { local: true });
-    assert.equal(r?.model.provider, "local", "外に出るモデルを返してはいけない");
-    assert.equal(r?.tier, "fast");
-    assert.equal(r?.usedFallbackTier, true, "tier が落ちたことは呼び出し側に分かる");
+    // 通常にローカルのモデルは無い。**高速のローカルへ勝手に落ちない**
+    assert.equal(c.resolveForWorker("standard", { local: true }), undefined);
   });
 
-  it("tier は候補が無ければ隣に落ちるが、落ちたことを隠さない", () => {
+  it("要求した等級に候補が無ければ解決しない", () => {
     const c = seed({
       cloud: { auth: true, models: [{ id: "only", input: ["text"] }] },
     });
     c.setTier("cloud", "only", "fast");
 
-    const r = c.resolveForWorker("reasoning");
-    assert.equal(r?.model.id, "only");
-    assert.equal(r?.requestedTier, "reasoning");
-    assert.equal(r?.tier, "fast");
-    assert.equal(r?.usedFallbackTier, true);
+    assert.equal(
+      c.resolveForWorker("reasoning"),
+      undefined,
+      "**安いつもりが一番高いモデルに落ちる**のを止める（決定104）"
+    );
+    // 要求どおりの等級なら解決する
+    assert.equal(c.resolveForWorker("fast")?.model.id, "only");
   });
 
   it("職人が使えないモデルは候補に入らない", () => {

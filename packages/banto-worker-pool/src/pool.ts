@@ -139,6 +139,17 @@ export interface WorkerInfo {
  *
  * 型で縛らず形だけで受けるのは、Worker Pool を登録の実装に縛らないため（D6）。
  */
+/**
+ * 役の台帳のうち、工房が要る分だけ（`ModelLedger` の部分形）。
+ *
+ * 型で縛らず形だけで受けるのは、工房を核の実装に縛らないため（`WorkerModelCatalog` と同じ）。
+ */
+export interface WorkerRoleLedger {
+  role(role: string): { default?: { backend: string; provider: string; model: string } } | undefined;
+  defaultTier(): string | undefined;
+  exists(): boolean;
+}
+
 export interface WorkerModelCatalog {
   models(): Array<{ providerId: string; id: string; name: string; tier: string; policy: readonly string[] }>;
   /**
@@ -186,6 +197,11 @@ export interface WorkerPoolOptions {
    * 持っている（決定60a）。ここに要るのは「画面と工場に選ばせる名前」だけ。
    */
   catalog?: WorkerModelCatalog;
+  /**
+   * **役の台帳**（ADR-0021 決定101）。等級 → モデルの割り当てはここが持つ。
+   * **読むだけ**（決定101d）——書くのは番頭ホスト。
+   */
+  modelLedger?: WorkerRoleLedger;
   /**
    * バックエンドと等級ごとの割り当ての保存先（設定画面が書く）。
    * 渡さなければメモリだけ——次の起動では既定に戻る。
@@ -302,6 +318,7 @@ export class WorkerPool {
   private readonly backendRegistry: BackendRegistry;
   /** 名指しできるモデルを数え上げるための登録（解決には使わない）。 */
   private readonly catalog: WorkerModelCatalog | undefined;
+  private readonly modelLedger: WorkerRoleLedger | undefined;
   private readonly dataDir: string;
   private readonly defaultProjectTag: string;
   private readonly defaultOrigin: string;
@@ -316,6 +333,7 @@ export class WorkerPool {
   private idleSweeper: NodeJS.Timeout | undefined;
 
   constructor(options: WorkerPoolOptions) {
+    this.modelLedger = options.modelLedger;
     this.driver = options.driver;
     this.driverId = options.driverId ?? "pi-rpc";
     this.catalog = options.catalog;
@@ -675,12 +693,68 @@ export class WorkerPool {
     this.backendRegistry.setAssignment(tier, model);
   }
 
+  /**
+   * **いま実際に効いている既定の等級**（核の台帳 → 工房の既定 の順）。
+   * 起動ログと画面がこれを言う——「言っていることと走るもの」を食い違わせない。
+   */
+  resolvedDefaultTier(): WorkerTier | undefined {
+    return (this.modelLedger?.defaultTier() ?? this.backendRegistry.defaultTier()) as
+      | WorkerTier
+      | undefined;
+  }
+
+  /** **いま実際に効いている既定のモデル**（名指しが無いときに選ばれるもの）。 */
+  resolvedDefaultModel(): string | undefined {
+    return this.assignedFromLedger(this.resolvedDefaultTier())?.model;
+  }
+
+  /**
+   * **もう読まれない工房の割り当て**（ADR-0021 段2）。
+   *
+   * 台帳へ移した後も設定ファイルには残る。黙って無視すると「画面で直したのに変わらない」
+   * が再発するので、起動時に名指しする（I2）。
+   */
+  staleTierAssignments(): string[] {
+    if (!this.modelLedger?.exists()) return [];
+    return Object.entries(this.backendRegistry.assignments())
+      .filter(([, model]) => model && model.trim().length > 0)
+      .map(([tier, model]) => `${tier}=${String(model)}`);
+  }
+
   /** 職人の既定の等級。 */
   setDefaultTier(tier: WorkerTier): void {
     if (!WORKER_TIERS.includes(tier)) {
       throw new Error(`知らない等級です: ${tier}（${WORKER_TIERS.join(" / ")}）`);
     }
     this.backendRegistry.setDefaultTier(tier);
+  }
+
+  /**
+   * 等級に当たっているモデル（核の台帳）。**バックエンドまで一緒に返す**——
+   * 同じ `opus` が pi 経由でも Claude Code 経由でも指せるので、名前だけでは決まらない
+   * （決定100a：id 空間は `RUNTIME_ALIASES` で揃える）。
+   *
+   * 台帳がまだ無いうちは、従来どおり工房の割り当てへ落ちる（入れ替えの窓）。
+   */
+  private assignedFromLedger(
+    tier: WorkerTier | undefined
+  ): { runtime?: string; model: string } | undefined {
+    if (!tier) return undefined;
+    if (!this.modelLedger?.exists()) {
+      const legacy = this.backendRegistry.assignedModel(tier);
+      return legacy ? { model: legacy } : undefined;
+    }
+    const bound = this.modelLedger.role(`worker.${tier}`)?.default;
+    if (!bound) return undefined;
+    /**
+     * **名前の形はバックエンドで違う**。pi は `provider/model`（登録を引くため両方要る）、
+     * Claude Code は別名だけ（`provider` を見ない）。台帳は3成分で持っているので、
+     * ここで一覧と同じ綴りに直す——`planModel` が引く `selectableModels()` の `name` と
+     * 揃っていないと「知らないモデル」で落ちる。
+     */
+    const name =
+      bound.backend === CLAUDE_AGENT_RUNTIME ? bound.model : `${bound.provider}/${bound.model}`;
+    return { runtime: bound.backend, model: name };
   }
 
   /**
@@ -778,9 +852,21 @@ export class WorkerPool {
      * 分かれていた。分かれていると、**Claude のモデルは「LLM・モデル」の画面に並べられず**、
      * 職人の既定をひとつの表で見られない。
      */
-    const tier = (input.modelTier ?? this.backendRegistry.defaultTier()) as WorkerTier | undefined;
-    const chosenModel = input.model ?? this.backendRegistry.assignedModel(tier);
-    const planned = this.planModel(input.runtime, chosenModel);
+    /**
+     * **既定は核の台帳、上書きは呼び出し側**（ADR-0021 決定99a）。
+     *
+     * 等級の既定も割り当ても核が持つ（`model-roles.json`）。工房が自分の
+     * `tierAssignments` を持っていた頃は、**同じ問いに2箇所が答えて食い違っていた**
+     * ——しかも LLM 画面の側は読まれず、選び直しても何も変わらなかった。
+     *
+     * `input.model`（番頭・Kobo の名指し）が最優先なのは変わらない。
+     */
+    const tier = (input.modelTier ??
+      this.modelLedger?.defaultTier() ??
+      this.backendRegistry.defaultTier()) as WorkerTier | undefined;
+    const assigned = this.assignedFromLedger(tier);
+    const chosenModel = input.model ?? assigned?.model;
+    const planned = this.planModel(input.runtime ?? assigned?.runtime, chosenModel);
     const runtime = this.driverFor(planned.runtime);
     const sessionPath = path.join(
       this.dataDir,
