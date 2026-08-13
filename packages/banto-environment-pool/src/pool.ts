@@ -16,6 +16,7 @@
 
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
+import * as net from "node:net";
 import * as path from "node:path";
 import type { EnvExposer, EnvHandle, EnvProfile } from "@banto/core";
 import { EnvLedger, countLiveByProfile, type EnvLedgerEntry } from "./env-ledger.js";
@@ -786,6 +787,24 @@ export class EnvironmentPool {
 
     const extraEnv = await this.credentialsFor(resolved.profile, request.repoPath);
 
+    /**
+     * **人が触る環境に割り当てるホスト側のポート**（PO裁定 2026-08-13）。
+     *
+     * これが無かったころ、ホスト側の番号を決めていたのは**プロファイル（compose ファイル）
+     * だけ**だった（`docker/dev.yaml` の `"4201:4200"`）。同じプロファイルで2つ立てると
+     * ①2本目が bind できずに落ちる ②仮に立っても中継の上流が同じ番号なので
+     * **2つの URL が同じ環境を指す**（＝別のタスクの画面を見て承認できてしまう）。
+     *
+     * 空きを1つ取り、`BANTO_ENV_PORT` としてドライバへ渡す（`BANTO_CACHE_DIR` と同じ形）。
+     * **使うかどうかはドライバとプロファイルが決める**——使ったドライバは
+     * `publishedPort` を返し、返さなければ今までどおり `config.port` に落ちる（既存のまま）。
+     */
+    const wantsExposure = request.expose === undefined && request.exposeProfilePort === true;
+    const assignedPort = wantsExposure ? await freeHostPort() : undefined;
+    // 秘密（`extraEnv`）には混ぜない。渡すのは「立てる」ときだけで足りる
+    const portEnv: Record<string, string> =
+      assignedPort !== undefined ? { BANTO_ENV_PORT: String(assignedPort) } : {};
+
     // 環境より長生きする置き場（spec §5.2）。**鍵が作れないときは使わない**——
     // 欠けた鍵は「別のものを同じ鍵で指す」ことになるので、黙って落として毎回 setup する
     const cache = this.resolveCache(resolved.profile, resolved.driver, request);
@@ -845,8 +864,9 @@ export class EnvironmentPool {
       // 立てるのはイメージのビルドを含みうる（task-0075）。他の動詞より長く待つ
       this.provisionTimeoutMs,
       // 所有の記録は置き場ごと。**ここが要**——作ったものを記録するのが provision なので、
-      // ここで置き場を教えないと機械に1つの既定へ書かれ、他のプールの list に混ざる
-      { ...this.driverEnv, ...extraEnv }
+      // ここで置き場を教えないと機械に1つの既定へ書かれ、他のプールの list に混ざる。
+      // `BANTO_ENV_PORT` は「人が触る環境に割り当てたホスト側のポート」（使うかはドライバ次第）
+      { ...this.driverEnv, ...extraEnv, ...portEnv }
     );
     if (!result.ok) {
       throw new Error(`環境を用意できませんでした（${resolved.driver}）: ${result.error}`);
@@ -877,8 +897,22 @@ export class EnvironmentPool {
     // ——「レビューのために人が触れるようにする」という意図だけを受け取る
     let exposePort = request.expose;
     if (exposePort === undefined && request.exposeProfilePort === true) {
+      /**
+       * **まずドライバに聞く**（PO裁定 2026-08-13）。「実際にどのポートで公開されたか」を
+       * 知っているのはドライバだけで、プロファイルに書いてある番号は*希望*でしかない。
+       *
+       * - docker: `compose ps` で実際の publish 先を引いて返す（ホスト側は可変にできる）
+       * - process: 割り当てた `BANTO_ENV_PORT` をコマンドが使ったときだけ返す
+       *
+       * **返らなければ今までどおり `config.port`**。既存のプロファイル（ホスト側を
+       * 固定で publish しているもの）は1つも壊れない——ただし同じプロファイルを
+       * 2つ立てれば、そちらは従来どおり衝突する（直すには profile 側の移行が要る）。
+       */
+      const published = (result.output as { publishedPort?: unknown }).publishedPort;
+      const fromDriver = typeof published === "number" ? published : Number(published);
       const configured = (resolved.config as { port?: unknown })?.port;
-      const port = typeof configured === "number" ? configured : Number(configured);
+      const fromProfile = typeof configured === "number" ? configured : Number(configured);
+      const port = Number.isFinite(fromDriver) && fromDriver > 0 ? fromDriver : fromProfile;
       if (Number.isFinite(port) && port > 0) {
         exposePort = port;
       } else {
@@ -1493,6 +1527,31 @@ function toSummary(entry: EnvLedgerEntry): EnvSummary {
     // 畳み損ねを「畳んだ」と同じに見せない（spec §5）
     state: entry.teardownFailed ? "teardown-failed" : entry.tornDownAt ? "torn-down" : "live",
   };
+}
+
+/**
+ * 空いているホスト側のポートを1つ取る（PO裁定 2026-08-13）。
+ *
+ * **取ってすぐ手放す**（listen(0) → close）。掴んだまま渡すと、渡した先が bind できない。
+ * 手放してから使うまでの隙に他人が取る可能性は残るが、その場合は環境が立たずに
+ * 失敗として現れる——「立っているのに中身が別物」より、はるかに気づける壊れ方である。
+ *
+ * D6: node:net のみ（ポートを探す道具を足さない）。
+ */
+async function freeHostPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        server.close(() => reject(new Error("空きポートを取れませんでした")));
+        return;
+      }
+      const { port } = address;
+      server.close(() => resolve(port));
+    });
+  });
 }
 
 /** ディレクトリの大きさ。捨てた効果を見せるために測る。 */

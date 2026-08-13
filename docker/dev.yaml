@@ -7,8 +7,12 @@
 #
 # - 土台は test と同じ node:22-alpine（Dockerfile.test を流用）
 # - vite dev server をコンテナ内 4200 で立てる
-# - ホスト側は **4201 にマップ**（4200 は opencode.service が占有）。proxy exposer は
-#   ホストの 127.0.0.1:<config.port> へ中継するので、config.port も 4201 に合わせる
+# - ホスト側は **固定しない**（PO裁定 2026-08-13）。`- "4200"` はコンテナ側だけの宣言で、
+#   ホスト側の番号は docker が空きから選ぶ。Environment Pool は立てたあと
+#   `docker compose ps --format json` で**実際の publish 先を引いて**そこへ中継する。
+#   固定していたころ（`"4201:4200"`）は、同じプロファイルで2つ立てると
+#   ①2本目が bind できず落ちる ②仮に立っても中継の上流が同じ番号なので
+#   **2つの URL が同じ環境を指す**（＝別タスクの画面を見て承認できる）の2つが起きた
 # - /ws と /api は本番 banto ホスト（127.0.0.1:4100）へ中継する（vite.config.ts の proxy）。
 #   コンテナからホストへは host.docker.internal 経由で到達する
 # - Host 検査（DNS リバインディング対策）は検証環境のため無効化（BANTO_WEB_ALLOWED_HOSTS=true）
@@ -43,5 +47,6 @@ services:
       - ..:/app
       - ${BANTO_CACHE_DIR:-./.banto-node-modules}:/app/node_modules
     command: ["npm", "--prefix", "packages/banto-web", "run", "dev"]
+    # ホスト側は書かない＝docker が空きを割り当てる（上のコメント参照）
     ports:
-      - "4201:4200"
+      - "4200"

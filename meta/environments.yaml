@@ -105,14 +105,18 @@ profiles:
   # PO がブラウザで触れるための開発画面プロファイル（2026-08-10 新設）。**検証には使わない**
   # ——ここで npm test を回すと、dev server の生死が検証結果に化ける（案B の分離の要点）。
   # config.port を持つので「人が触る」環境として扱われる（決定59）。
-  # compose は docker/dev.yaml——vite dev server をホスト 4201 で公開する。
-  # （ホスト 4200 は opencode.service が占有。config.port は「ホスト側から見える
-  #   ポート」なので 4201 を指す。proxy exposer は 127.0.0.1:config.port へ中継する）
+  # compose は docker/dev.yaml——vite dev server を**コンテナ内 4200** で立てる。
+  #
+  # **`config.port` はコンテナ側／アプリ側のポート**（PO裁定 2026-08-13）。ホスト側の
+  # 番号はもう固定しない——compose は `- "4200"` とだけ書き、docker が空きを選び、
+  # Environment Pool が `docker compose ps` で実際の publish 先を引いてそこへ中継する。
+  # おかげで**判断待ちが2本並んでも、それぞれ別の環境の URL が出る**（以前は 4201 固定で、
+  # 2本目が立たないか、2つの URL が同じ環境を指していた）。
   dev:
     driver: docker
     config:
       compose: docker/dev.yaml
-      port: 4201
+      port: 4200
     # **長命の vite を起こす前に済む**（task-0089）。以前は compose up が先だったので
     # node_modules が空のまま vite が起きて即死し、compose 側で npm ci を前置きしていた
     #

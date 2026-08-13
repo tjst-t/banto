@@ -352,15 +352,78 @@ function handleProvision(input: Record<string, unknown>): void {
     ...(workdir ? { workdir } : {}),
   };
 
+  /**
+   * **実際に publish されたホスト側のポート**（PO裁定 2026-08-13）。
+   *
+   * これを返すのが要点：compose のホスト側を固定しなくてよくなる
+   * （`ports: - "4200"` と書けば docker が空きを割り当てる）。固定していたころは
+   * 同じプロファイルを2つ立てると2本目が bind できず、しかも中継の上流が同じ番号なので
+   * **2つの URL が同じ環境を指していた**。
+   *
+   * 探し方は「`config.port`（＝**コンテナ側**のポート）を publish しているもの」。
+   * 見つからなければ何も返さない——プールは今までどおり `config.port` に落ちるので、
+   * ホスト側を固定している既存の compose は1つも壊れない。
+   */
+  const publishedPort = findPublishedPort(project, composeFile, config, workdir);
+
   // spec §5.2.2: 置き場に既に中身があるか。プールはこれを見て `setup` を飛ばす。
   // `setup.ran` は「用意はこちらで済ませた」の申告——プールはこれを見て二度走らせない
   process.stdout.write(
     JSON.stringify({
       handle,
+      ...(publishedPort !== undefined ? { publishedPort } : {}),
       ...(cache ? { cache: { primed: cache.primed } } : {}),
       ...(setup ? { setup: { ran: setupRan } } : {}),
     }) + "\n"
   );
+}
+
+/**
+ * 立ったスタックの中で、**コンテナ側 `config.port` を publish しているホスト側の番号**を引く。
+ *
+ * `docker compose ps --format json` は compose のバージョンによって
+ * 「1行1オブジェクト（JSON Lines）」と「配列1つ」の両方があるので、どちらも読む。
+ * **引けなければ `undefined`**——「分からない」を番号で埋めない（プール側は
+ * プロファイルの値に落ちるので、公開そのものは従来どおり続く）。
+ */
+function findPublishedPort(
+  project: string,
+  composeFile: string,
+  config: Record<string, unknown> | undefined,
+  workdir: string | undefined
+): number | undefined {
+  const target = Number((config as { port?: unknown } | undefined)?.port);
+  if (!Number.isFinite(target) || target <= 0) return undefined;
+
+  const r = runCmd("docker", composeArgs(project, composeFile, ["ps", "--format", "json"]), {
+    timeoutMs: QUERY_TIMEOUT_MS,
+    ...(workdir ? { cwd: workdir } : {}),
+  });
+  if (r.exitCode !== 0) return undefined;
+
+  const rows: Array<Record<string, unknown>> = [];
+  for (const line of r.stdout.split("\n")) {
+    const text = line.trim();
+    if (!text) continue;
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (Array.isArray(parsed)) rows.push(...(parsed as Array<Record<string, unknown>>));
+      else if (parsed && typeof parsed === "object") rows.push(parsed as Record<string, unknown>);
+    } catch {
+      // 1行だけ壊れていても他の行は読める。**黙って全部捨てない**
+    }
+  }
+
+  for (const row of rows) {
+    const publishers = row["Publishers"];
+    if (!Array.isArray(publishers)) continue;
+    for (const p of publishers as Array<Record<string, unknown>>) {
+      if (Number(p["TargetPort"]) !== target) continue;
+      const published = Number(p["PublishedPort"]);
+      if (Number.isFinite(published) && published > 0) return published;
+    }
+  }
+  return undefined;
 }
 
 /**

@@ -1,0 +1,16 @@
+# ホスト側のポートを**固定しない** compose（PO裁定 2026-08-13）。
+#
+# `- "4200"` はコンテナ側の宣言だけ。ホスト側の番号は docker が空きから選ぶので、
+# 同じプロファイルを2つ立てても bind がぶつからない。Environment Pool は立てたあと
+# `docker compose ps --format json` で実際の publish 先を引いて、そこへ中継する。
+#
+# security_opt: apparmor=unconfined — このホストでは /sys/kernel/security が
+# 見えないため（他の docker fixture と同じ理由）。
+services:
+  app:
+    image: busybox:latest
+    command: ["sh", "-c", "while true; do sleep 1; done"]
+    security_opt:
+      - apparmor=unconfined
+    ports:
+      - "4200"
