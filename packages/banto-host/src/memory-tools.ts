@@ -158,7 +158,7 @@ export function createMemoryTools(
     name: "memory.recall",
     label: "Memory: Recall",
     description:
-      "保存済みの記憶を取り出す（訂正済み・忘れたものは除く）。\n例: {kind: \"habit\", scope: \"project\"} → \"- [habit] 検証は env.verify で回す (id: …)\"\n注入から溢れた分はここか memory.search で引く。",
+      "保存済みの記憶を取り出す（訂正済み・忘れたものは除く）。\n例: {kind: \"habit\", scope: \"project\"} → \"- [habit] 検証は env.verify で回す (id: …)\"\nkind・scope・trunk は英語の識別子で埋める。注入から溢れた分はここか memory.search で引く。",
     parameters: Type.Object({
       kind: Type.Optional(MemoryKindSchema),
       ...scopeParams
@@ -178,7 +178,7 @@ export function createMemoryTools(
     name: "memory.search",
     label: "Memory: Search",
     description:
-      "記憶を本文の部分一致で探す（空白区切りの語をすべて含むもの・大小文字は無視）。\n例: {text: \"env.verify\", acrossTrunks: true} → 他の幹の記憶も含めて一致したもの\n**探すのは幹をまたげる。** 持ってくるなら、いまの幹へ改めて memory.save する。",
+      "記憶を本文の部分一致で探す（空白区切りの語をすべて含むもの・大小文字は無視）。\n例: {text: \"env.verify\", acrossTrunks: true} → 他の幹の記憶も含めて一致したもの\ntext は覚えたときの言葉のまま、trunk は英語の識別子で埋める。\n**探すのは幹をまたげる。** 持ってくるなら、いまの幹へ改めて memory.save する。",
     parameters: Type.Object({
       text: Type.String(),
       kind: Type.Optional(MemoryKindSchema),
@@ -235,7 +235,7 @@ export function createMemoryTools(
     name: "memory.forget",
     label: "Memory: Forget",
     description:
-      "記憶を1件忘れる（記録は消えず「忘れた」ことが追記される）。\n例: {id: \"3f2a…\", reason: \"移設して当てはまらなくなった\"} → 忘れた旨\n**訂正したいだけなら memory.save の supersedes。**",
+      "記憶を1件忘れる（記録は消えず「忘れた」ことが追記される）。\n例: {id: \"3f2a…\", reason: \"移設して当てはまらなくなった\"} → 忘れた旨\nid・trunk は英語の識別子（memory.recall の値）で埋める。\n**訂正したいだけなら memory.save の supersedes。**",
     parameters: Type.Object({
       id: Type.String(),
       reason: Type.Optional(Type.String()),

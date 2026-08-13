@@ -20,7 +20,7 @@ export function createHandoffTools(
     name: "handoff.read",
     label: "Handoff: Read",
     description:
-      "前の章の引き継ぎ資料を読む（いまの文脈には見出ししか載っていない）。\n例: {} → この会話の最新の章／{id: \"thread-1/ch-0001\"} → その章\n**前提が要るときは憶測で埋めず、ここを読む。**",
+      "前の章の引き継ぎ資料を読む（いまの文脈には見出ししか載っていない）。\n例: {} → この会話の最新の章／{id: \"thread-1/ch-0001\"} → その章（id は英語の識別子）\n**前提が要るときは憶測で埋めず、ここを読む。**",
     parameters: Type.Object({
       id: Type.Optional(Type.String())
     }),

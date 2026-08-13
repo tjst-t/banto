@@ -20,7 +20,7 @@ export function createPlaceTools(places: PlaceRegistry): NamespacedToolDefinitio
     name: "place.list",
     label: "Place: List",
     description:
-      "いま作業できる場所の一覧（id・パス・書き込みが許された範囲）。既定は読み取り専用。\n例: {} → 全件／{query: \"banto\"} → 名前・パスに banto を含むものだけ",
+      "いま作業できる場所の一覧（id・パス・書き込みが許された範囲）。既定は読み取り専用。\n例: {} → 全件／{query: \"banto\"} → 名前・パスに banto を含むものだけ\nquery は英語で埋める。",
     parameters: Type.Object({
       query: Type.Optional(Type.String())
     }),

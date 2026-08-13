@@ -101,7 +101,7 @@ export function createGitTools(repoRoot: string): NamespacedToolDefinition[] {
     name: "git.log",
     label: "Git: Log",
     description:
-      "コミット履歴を新しい順に返す。閲覧専用。\n例: {limit: 5, path: \"docs/adr\"} → \"7133f76 2026-08-13 tjst-t — fix(work): …\"",
+      "コミット履歴を新しい順に返す。閲覧専用。\n例: {limit: 5, path: \"docs/adr\"} → \"7133f76 2026-08-13 tjst-t — fix(work): …\"\nref とパスは英語で埋める。",
     parameters: Type.Object({
       limit: Type.Optional(Type.Number()),
       path: Type.Optional(Type.String()),
@@ -195,7 +195,7 @@ export function createGitTools(repoRoot: string): NamespacedToolDefinition[] {
     name: "git.show",
     label: "Git: Show",
     description:
-      "1つのコミットが入れた変更（メタ・変更ファイル一覧・差分）。閲覧専用。\n例: {ref: \"7133f76\"} → 全体／{ref: \"HEAD\", path: \"docs/ROADMAP.json\"} → 1ファイル分",
+      "1つのコミットが入れた変更（メタ・変更ファイル一覧・差分）。閲覧専用。\n例: {ref: \"7133f76\"} → 全体／{ref: \"HEAD\", path: \"docs/ROADMAP.json\"} → 1ファイル分\nref とパスは英語で埋める。",
     parameters: Type.Object({
       ref: Type.String(),
       path: Type.Optional(Type.String())

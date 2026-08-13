@@ -103,7 +103,7 @@ export function createCanvasTools(
     name: "canvas.close",
     label: "Canvas: Close",
     description:
-      "キャンバスのタブを閉じる。\n例: {tabId: \"0c675706-3474-4f88-9422-d3ce262bddd0\"} → 閉じた旨",
+      "キャンバスのタブを閉じる。\n例: {tabId: \"0c675706-3474-4f88-9422-d3ce262bddd0\"} → 閉じた旨\ntabId は英語の識別子（UUID）で埋める。",
     parameters: Type.Object({ tabId: Type.String({ description: "canvas.query_state に出る UUID" }) }),
     async execute(params) {
       canvas.close(params.tabId);

@@ -57,6 +57,14 @@ const ACTIVE_STATES = new Set([
  */
 const DEFAULT_LIST_STATES = new Set([...ACTIVE_STATES, "failed"]);
 
+/**
+ * 値の言語を明示する一行（ADR-0019 決定84-2）。
+ *
+ * arXiv:2601.05366 の最多の故障は `parameter value language mismatch`。`taskId` に
+ * 「道具定義の書き直し」と書かれると、Kobo は無い札を指されたことしか分からない。
+ */
+const ID_HINT = "\nprojectTag・taskId は英語の識別子で埋める。";
+
 export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
   /** プロジェクトを引く。I2: 知らないプロジェクトは、知っているものを添えて止まる。 */
   const requireProject = (projectTag: string): { id: string; repoPath: string } => {
@@ -166,7 +174,7 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     name: "kobo.task",
     label: "Kobo: Task",
     description:
-      "1つのタスクの**いまと経緯**（状態・契約・着手・監査の判定・マージ）。\n例: {projectTag: \"banto\", taskId: \"task-0042\"} → 状態と契約＋出来事の並び",
+      "1つのタスクの**いまと経緯**（状態・契約・着手・監査の判定・マージ）。\n例: {projectTag: \"banto\", taskId: \"task-0042\"} → 状態と契約＋出来事の並び" + ID_HINT,
     parameters: Type.Object({
       projectTag: Type.String(),
       taskId: Type.String(),
@@ -575,7 +583,7 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     name: "kobo.approve",
     label: "Kobo: Approve",
     description:
-      "レビュー待ちのタスクを通してマージキューへ入れる。\n例: {projectTag: \"banto\", taskId: \"task-0042\", note: \"受け入れ基準を確かめた\"} → 通した旨\n**関所は飛ばない**（この後にマージ前ゲートが回る）。",
+      "レビュー待ちのタスクを通してマージキューへ入れる。\n例: {projectTag: \"banto\", taskId: \"task-0042\", note: \"受け入れ基準を確かめた\"} → 通した旨" + ID_HINT + "\n**関所は飛ばない**（この後にマージ前ゲートが回る）。",
     parameters: Type.Object({
       projectTag: Type.String(),
       taskId: Type.String(),
@@ -643,7 +651,7 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     name: "kobo.reopen",
     label: "Kobo: Reopen",
     description:
-      "落ちたタスクを**同じタスクのまま**動かし直す（切り直すと経緯が分断される）。\n例: {projectTag: \"banto\", taskId: \"task-0042\", mode: \"rework\", reason: \"スコープ外を触っている\"} → 戻した旨\n**先に kobo.task で「なぜ落ちたか」を読む。**",
+      "落ちたタスクを**同じタスクのまま**動かし直す（切り直すと経緯が分断される）。\n例: {projectTag: \"banto\", taskId: \"task-0042\", mode: \"rework\", reason: \"スコープ外を触っている\"} → 戻した旨" + ID_HINT + "\n**先に kobo.task で「なぜ落ちたか」を読む。**",
     parameters: Type.Object({
       projectTag: Type.String(),
       taskId: Type.String(),

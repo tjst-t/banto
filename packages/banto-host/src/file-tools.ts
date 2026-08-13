@@ -282,7 +282,7 @@ export function createFileTools(
     name: "file.stat",
     label: "File: Stat",
     description:
-      "パスが在るか・ファイルかディレクトリか・サイズを返す。\n例: {path: \"docs/spec\"} → \"docs/spec: dir\"／{path: \"README.md\"} → \"file (2841 bytes)\"",
+      "パスが在るか・ファイルかディレクトリか・サイズを返す。\n例: {path: \"docs/spec\"} → \"docs/spec: dir\"／{path: \"README.md\"} → \"file (2841 bytes)\"\npath は英語で埋める。",
     parameters: Type.Object({ path: Type.String() }),
     async execute(params) {
       const target = resolveInWorkspace(root, params.path);
