@@ -168,6 +168,14 @@ export class ClaudeAgentHarness implements BantoHarness {
   /** 差分（`stream_event`）で本文を受け取ったか。**二重に流さない**ための掛け金。 */
   private sawPartial = false;
   private disposed = false;
+  /**
+   * **ターンの終わりを待っている呼び出し**（task-0104 の実機確認で発覚）。
+   *
+   * `prompt()` は pi では**ターンが終わるまで返らない**。サーバはそれを前提に
+   * `turn_end` を配っている（`server.ts` の「`await promptEvenWhileBusy` の後」）ので、
+   * 待ち行列へ積んで即座に返すと、**返事が来る前に画面が「終わった」になる**。
+   */
+  private turnWaiters: Array<() => void> = [];
   /** いまの章の系プロンプト（`startChapter` で差し替わる）。 */
   private systemPrompt: string;
   private turns: Turn[] = [];
@@ -203,6 +211,19 @@ export class ClaudeAgentHarness implements BantoHarness {
 
   private emit(event: HarnessEvent): void {
     for (const l of [...this.listeners]) l(event);
+  }
+
+  /**
+   * ターンの終わりを待っている `prompt()` を放す。
+   *
+   * **手が止まったときだけでなく、走りが終わったときも呼ぶ**——中断・落ちた・畳んだの
+   * どれでも `run_end` は出ない。ここを1本にしておかないと、画面が「回答中」のまま
+   * 戻らなくなる（I2：黙って待ち続けるのが一番困る）。
+   */
+  private releaseTurn(): void {
+    const waiters = this.turnWaiters;
+    this.turnWaiters = [];
+    for (const resolve of waiters) resolve();
   }
 
   /** 番頭の道具を MCP の口として載せる。**wire 名で**（決定91）。 */
@@ -320,6 +341,8 @@ export class ClaudeAgentHarness implements BantoHarness {
           this.queue.close();
           this.queue = new PromptQueue();
         }
+        // 走りが終わった＝もう `run_end` は来ない。待っている `prompt()` を放す
+        this.releaseTurn();
       }
     })();
   }
@@ -343,11 +366,21 @@ export class ClaudeAgentHarness implements BantoHarness {
     this.streaming = true;
     this.queue.push(body);
     this.start();
+    /**
+     * **ターンが終わるまで返らない**（pi と同じ約束）。
+     *
+     * サーバは `prompt()` の解決をもって `turn_end` を配る。積んで即座に返していたので、
+     * **返事が来る前に画面が「終わった」になっていた**（実機で確認 2026-08-13）。
+     * 走りが終わってしまったときも `releaseTurn` で必ず放す（待ち続けない）。
+     */
+    await new Promise<void>((resolve) => this.turnWaiters.push(resolve));
   }
 
   async abort(): Promise<void> {
     this.abortController?.abort();
     this.streaming = false;
+    // 中断では `run_end` が出ない。放さないと画面が「回答中」のまま戻らない
+    this.releaseTurn();
   }
 
   // ── 章 ──────────────────────────────────────────────────────────────────
@@ -388,6 +421,7 @@ export class ClaudeAgentHarness implements BantoHarness {
     this.systemPrompt = `${this.options.systemPrompt}\n\n${opening.text}`;
     this.turns = [];
     this.tokens = undefined;
+    this.releaseTurn();
   }
 
   // ── 復元と後始末（決定97・task-0104） ──────────────────────────────────
@@ -422,6 +456,7 @@ export class ClaudeAgentHarness implements BantoHarness {
     this.streaming = false;
     this.run = undefined;
     this.listeners.clear();
+    this.releaseTurn();
   }
 
   // ── 語彙の翻訳（SDK のメッセージ → HarnessEvent） ──────────────────────
@@ -587,6 +622,8 @@ export class ClaudeAgentHarness implements BantoHarness {
       this.streaming = false;
       // **手を止めた**。章を閉じるかの判定はここ（決定89）
       this.emit({ type: "run_end" });
+      // ターンの終わりを待っている `prompt()` を放す（サーバはこれで turn_end を配る）
+      this.releaseTurn();
     }
   }
 }

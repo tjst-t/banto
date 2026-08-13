@@ -117,8 +117,11 @@ describe("[ADR-0020 決定92] 番頭に組み込みツールを持たせない",
 
 describe("[ADR-0020 決定93] 章の切れ目は種から始め直す", () => {
   it("種は系プロンプトへ入り、記録は空になり、セッションが変わる", async () => {
-    const harness = new ClaudeAgentHarness({ systemPrompt: "元の人格", tools: [] });
-    await harness.prompt("最初の話");
+    // **本物の `query()` を起こさない**。ここで起こすと試験が Claude Code の
+    // 子プロセスを立て、`prompt()` がターンの終わりを待つぶん実際に往復してしまう
+    const { harness } = withFakeQuery({ systemPrompt: "元の人格" });
+    void harness.prompt("最初の話");
+    await settle();
     assert.equal(harness.messageCount(), 1);
     const before = harness.sessionId;
 
@@ -385,10 +388,10 @@ async function settle(times = 4): Promise<void> {
   for (let i = 0; i < times; i++) await new Promise((r) => setImmediate(r));
 }
 
-function withFakeQuery(options: { resume?: string } = {}) {
+function withFakeQuery(options: { resume?: string; systemPrompt?: string } = {}) {
   const spawned: FakeQuery[] = [];
   const harness = new ClaudeAgentHarness({
-    systemPrompt: "sp",
+    systemPrompt: options.systemPrompt ?? "sp",
     tools: [],
     ...(options.resume ? { resume: options.resume } : {}),
     spawnQuery: ({ prompt, options: opts }) => {
@@ -406,7 +409,7 @@ function withFakeQuery(options: { resume?: string } = {}) {
 describe("[決定97] 走っている query の後始末", () => {
   it("発話は待ち行列を通って query へ届く", async () => {
     const { harness, spawned } = withFakeQuery();
-    await harness.prompt("ひとつめ");
+    void harness.prompt("ひとつめ");
     await settle();
     assert.equal(spawned.length, 1);
     assert.deepEqual(spawned[0]!.received, ["ひとつめ"]);
@@ -414,7 +417,7 @@ describe("[決定97] 走っている query の後始末", () => {
 
   it("dispose で待ち行列が閉じ、query が終わる（放すだけでは終わらない）", async () => {
     const { harness, spawned } = withFakeQuery();
-    await harness.prompt("はなし");
+    void harness.prompt("はなし");
     await settle();
     assert.equal(spawned[0]!.inputClosed, false, "空になっても終わらせないのが待ち行列の設計");
 
@@ -422,6 +425,36 @@ describe("[決定97] 走っている query の後始末", () => {
     await settle();
     assert.equal(spawned[0]!.inputClosed, true, "畳めば入力の生成器が返り切る＝子プロセスが終わる");
     await assert.rejects(() => harness.prompt("あとから"), /畳まれています/, "I2: 黙って捨てない");
+  });
+
+  it("prompt はターンが終わるまで返らない（サーバがこれで turn_end を配る）", async () => {
+    const { harness, spawned } = withFakeQuery();
+    let done = false;
+    const turn = harness.prompt("問い").then(() => (done = true));
+    await settle();
+    assert.equal(done, false, "積んだだけで返すと、返事の前に画面が「終わった」になる");
+
+    spawned[0]!.emit({ type: "assistant", message: { content: [{ type: "text", text: "答え" }] } });
+    await settle();
+    assert.equal(done, false, "本文が来ただけではまだ終わりではない");
+
+    spawned[0]!.emit({ type: "result", subtype: "success" });
+    await turn;
+    assert.equal(done, true, "run_end で返る");
+  });
+
+  it("中断・畳みでも返る（画面が「回答中」のまま戻らなくなる）", async () => {
+    const { harness } = withFakeQuery();
+    const aborted = harness.prompt("問い");
+    await settle();
+    await harness.abort();
+    await aborted;
+
+    const { harness: h2 } = withFakeQuery();
+    const disposed = h2.prompt("問い");
+    await settle();
+    await h2.dispose();
+    await disposed;
   });
 
   it("dispose は冪等（往復のたびに畳んでも壊れない）", async () => {
@@ -432,13 +465,13 @@ describe("[決定97] 走っている query の後始末", () => {
 
   it("章を畳んだ後、古いループが新しい query を消さない（世代の掛け金）", async () => {
     const { harness, spawned } = withFakeQuery();
-    await harness.prompt("前の章の話");
+    void harness.prompt("前の章の話");
     await settle();
     assert.equal(spawned.length, 1);
 
     // 走っている最中に章を畳む（待ち行列を閉じ、abort する）
     await harness.startChapter({ text: "種", tokensBefore: 9, chapter: 2, handoffId: "h-2" });
-    await harness.prompt("新しい章の話");
+    void harness.prompt("新しい章の話");
     await settle();
     assert.equal(spawned.length, 2, "新しい章は新しい query で始まる");
     assert.deepEqual(spawned[1]!.received, ["新しい章の話"]);
@@ -446,7 +479,7 @@ describe("[決定97] 走っている query の後始末", () => {
     // ここで**古いほうの後始末が届く**。掛け金が無いと run が消え、次の発話で3本目が立つ
     spawned[0]!.end();
     await settle();
-    await harness.prompt("続き");
+    void harness.prompt("続き");
     await settle();
     assert.equal(spawned.length, 2, "古いループの finally が新しい run を消していない");
     assert.deepEqual(spawned[1]!.received, ["新しい章の話", "続き"], "発話が握り潰されない");
@@ -456,7 +489,7 @@ describe("[決定97] 走っている query の後始末", () => {
     const { harness, spawned } = withFakeQuery();
     const seen: HarnessEvent[] = [];
     harness.subscribe((e) => seen.push(e));
-    await harness.prompt("前の章の話");
+    void harness.prompt("前の章の話");
     await settle();
 
     await harness.startChapter({ text: "種", tokensBefore: 9, chapter: 2, handoffId: "h-2" });
@@ -471,13 +504,13 @@ describe("[決定97] 走っている query の後始末", () => {
 
   it("query が終わった後の発話も届く（待ち行列を作り直す）", async () => {
     const { harness, spawned } = withFakeQuery();
-    await harness.prompt("いちど目");
+    void harness.prompt("いちど目");
     await settle();
     // 本物でいえば error_during_execution 等で query が終わった状態
     spawned[0]!.end();
     await settle();
 
-    await harness.prompt("にど目");
+    void harness.prompt("にど目");
     await settle();
     assert.equal(spawned.length, 2, "起こし直す");
     assert.deepEqual(spawned[1]!.received, ["にど目"], "死んだ生成器へ渡って消えない");

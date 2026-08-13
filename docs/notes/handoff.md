@@ -2361,6 +2361,31 @@ root 所有になっていると `npm run build:web` が EACCES で落ちる。
 `waitFor` に述語を足して**探しているものを名指しで待つ**形にした。
 起票時の見当（`FakeSession` の sessionId 共有／ポートの取り合い）は**両方とも外れ**。
 
+### 実機で確かめる過程で7つめが出た
+
+**Claude 側だけ `prompt()` がターンを待たずに返っていた。** サーバは `prompt()` の解決を
+もって `turn_end` を配る（pi は待って返る）ので、**返事が来る前に画面が「終わった」に
+なる**。これが直るまで受け入れ自体が観測できないので併せて直した。
+
+> **契約の言葉が同じでも、意味が同じとは限らない。** `prompt(): Promise<void>` は
+> 型としては両方満たすが、片方は「積んだ」で片方は「終わった」だった。
+> 呼ぶ側（サーバ）がどちらの意味に掛けているかを見ないと、seam は嘘をつく。
+
+### 実機の確かめ方（そのまま使える）
+
+**PO の会話を汚さずに済む。** 別ポート・別データ置き場で番頭ホストを1本立て、
+Kobo・工房・検証環境の URL を**空いていない番号へ向けて切り離す**（向けないと
+本物の Kobo の知らせを拾い、番頭が実際に動き出す——一度やってしまった）。
+
+```
+BANTO_DATA_DIR=<tmp> BANTO_KOBO_URL=http://127.0.0.1:4999/... \
+BANTO_WORKER_POOL_URL=http://127.0.0.1:4998/... BANTO_ENV_POOL_URL=http://127.0.0.1:4997/... \
+node --import tsx packages/banto-host/src/bin.ts serve --port 4199
+```
+
+`<tmp>/llm-registry.json` に `roles.steward` だけ書けば、そのバックエンドで新しい幹が立つ。
+WS へ `{"type":"prompt","text":"..."}` を投げ、`text_delta` を拾って `turn_end` で締める。
+
 ### 残っているもの
 
 - **inc-0062**：バックエンドを替えると `ChapterKeeper` の購読が古いハーネスに残り、
