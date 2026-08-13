@@ -38,6 +38,14 @@ const targetFields = {
 };
 
 /**
+ * 値の言語を明示する一行（ADR-0019 決定84-2）。
+ *
+ * arXiv:2601.05366 の最多の故障は `parameter value language mismatch`。`envId` の欄に
+ * 「検証環境」のような日本語が入ると、機構は無い環境を指されたことしか分からない。
+ */
+const ENV_ID_HINT = "\nenvId は英語の識別子（env.list の値）で埋める。";
+
+/**
  * Tool の引数を `ProvisionRequest` に写す。
  *
  * typebox の `Type.Object({}, { additionalProperties: true })` は `object` として型付くが、
@@ -172,7 +180,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.deploy",
     label: "Env: Deploy",
     description:
-      "立てた環境へ成果物を配る。ドライバによっては何もしない。\n例: {envId: \"env-04479785fc\", artifactPath: \"/home/ubuntu/build/app.tar.gz\"} → 配った旨",
+      "立てた環境へ成果物を配る。ドライバによっては何もしない。\n例: {envId: \"env-04479785fc\", artifactPath: \"/home/ubuntu/build/app.tar.gz\"} → 配った旨\n値は英語（識別子・絶対パス）で埋める。",
     parameters: Type.Object({
       envId: Type.String(),
       artifactPath: Type.String()
@@ -190,7 +198,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.healthcheck",
     label: "Env: Healthcheck",
     description:
-      "環境が使える状態か確かめる（通らないうちの結果は当てにならない）。\n例: {envId: \"env-04479785fc\"} → \"env-04479785fc: 使えます\"",
+      "環境が使える状態か確かめる（通らないうちの結果は当てにならない）。\n例: {envId: \"env-04479785fc\"} → \"env-04479785fc: 使えます\"" + ENV_ID_HINT,
     parameters: Type.Object({
       envId: Type.String()
     }),
@@ -238,7 +246,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.collect",
     label: "Env: Collect",
     description:
-      "環境から成果物（ログ・カバレッジ等）を取り出す。畳むと消えるので、残すなら先に。\n例: {envId: \"env-04479785fc\"} → 取り出した先のパス（file.* で読める）",
+      "環境から成果物（ログ・カバレッジ等）を取り出す。畳むと消えるので、残すなら先に。\n例: {envId: \"env-04479785fc\"} → 取り出した先のパス（file.* で読める）" + ENV_ID_HINT,
     parameters: Type.Object({ envId: Type.String() }),
     async execute(params) {
       const { dest } = await pool.collect(params.envId);
@@ -258,7 +266,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.teardown",
     label: "Env: Teardown",
     description:
-      "環境を畳む（既に畳んであるものへ呼んでも問題ない）。外に残ると費用がかかり続ける。\n例: {envId: \"env-04479785fc\"} → \"畳みました: env-04479785fc\"",
+      "環境を畳む（既に畳んであるものへ呼んでも問題ない）。外に残ると費用がかかり続ける。\n例: {envId: \"env-04479785fc\"} → \"畳みました: env-04479785fc\"" + ENV_ID_HINT,
     parameters: Type.Object({ envId: Type.String() }),
     async execute(params) {
       const result = await pool.teardown(params.envId);
@@ -278,7 +286,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.list",
     label: "Env: List",
     description:
-      "いま立っている環境の一覧（畳み忘れ・同時上限・孤児・成果物の量）。\n例: {} → \"env-04479785fc — test / task-0042 / 期限 2026-08-13T12:00:00Z\"",
+      "いま立っている環境の一覧（畳み忘れ・同時上限・孤児・成果物の量）。\n例: {} → \"env-04479785fc — test / task-0042 / 期限 2026-08-13T12:00:00Z\"\nprojectTag・taskId は英語の識別子で埋める。",
     parameters: Type.Object({
       includeTornDown: Type.Optional(Type.Boolean()),
       projectTag: Type.Optional(Type.String()),
@@ -324,7 +332,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.cleanup",
     label: "Env: Cleanup",
     description:
-      "回収した成果物を捨てる（**台帳は消えない**）。溜まり具合は env.list の artifacts。\n例: {olderThanDays: 7} → 7日より古い分／{envId: \"env-04479785fc\"} → その環境の分",
+      "回収した成果物を捨てる（**台帳は消えない**）。溜まり具合は env.list の artifacts。\n例: {olderThanDays: 7} → 7日より古い分／{envId: \"env-04479785fc\"} → その環境の分" + ENV_ID_HINT,
     parameters: Type.Object({
       envId: Type.Optional(Type.String()),
       olderThanDays: Type.Optional(Type.Number())
@@ -352,7 +360,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.teardown_orphan",
     label: "Env: Teardown orphan",
     description:
-      "台帳に無い実リソース（孤児）を**名指しで1件だけ**畳む。名前は env.list の orphans。\n例: {name: \"banto-env-9f2c1a\"} → 畳んだ旨。まとめて畳む口は無い。",
+      "台帳に無い実リソース（孤児）を**名指しで1件だけ**畳む。名前は env.list の orphans（英語の識別子）。\n例: {name: \"banto-env-9f2c1a\"} → 畳んだ旨。まとめて畳む口は無い。",
     parameters: Type.Object({ name: Type.String() }),
     async execute(params) {
       const done = await pool.teardownOrphan(params.name);
@@ -369,7 +377,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.list_profiles",
     label: "Env: List Profiles",
     description:
-      "そのリポジトリで使える検証プロファイルの一覧（使えないものは理由つき）。\n例: {repoPath: \"/home/ubuntu/ghq/github.com/tjst-t/banto\"} → \"test — process / ttl 30分\"",
+      "そのリポジトリで使える検証プロファイルの一覧（使えないものは理由つき）。\n例: {repoPath: \"/home/ubuntu/ghq/github.com/tjst-t/banto\"} → \"test — process / ttl 30分\"\nrepoPath は英語の絶対パスで埋める。",
     parameters: Type.Object({ repoPath: Type.String({ description: "絶対パス" }) }),
     async execute(params) {
       const { usable, rejected } = pool.profiles(params.repoPath);
