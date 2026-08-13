@@ -43,6 +43,14 @@ process.env["BANTO_PROCESS_DRIVER_STATE"] = TEST_DRIVER_STATE;
 
 // ── Helper to invoke the driver ───────────────────────────────────────────────
 
+// task-0092: ドライバは呼ぶたびに node を起こし、tsx で変換するところから始まる。
+// 実測（4コアVM）で最初の1行が出るまで 空いていれば 0.6 秒、混んでいれば 3.5 秒。
+// `test:docker` はこの隣で docker のビルドが走るので、10 秒は**変換の遅さを測って
+// 落ちる**幅だった（時間切れ → status=null → exitCode -1 → `list exited -1`）。
+// 隣の docker 系（env-docker-*.spec.ts）と同じ 60 秒に揃える——契約の速さを測る
+// ための値ではなく、「返ってこない」を捕まえるための上限。
+const DRIVER_INVOKE_TIMEOUT_MS = 60_000;
+
 /**
  * Invoke the process driver as a subprocess for a given verb.
  * Returns { exitCode, stdout, stderr }.
@@ -53,7 +61,7 @@ process.env["BANTO_PROCESS_DRIVER_STATE"] = TEST_DRIVER_STATE;
 function invokeDriver(
   verb: string,
   input: Record<string, unknown>,
-  timeoutMs = 10_000
+  timeoutMs = DRIVER_INVOKE_TIMEOUT_MS
 ): { exitCode: number; stdout: string; stderr: string } {
   const inputJson = JSON.stringify(input);
   const result = childProcess.spawnSync(

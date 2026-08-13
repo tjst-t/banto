@@ -98,6 +98,40 @@ async function startHost(
   return { url: `ws://localhost:${server.port}${BANTO_WS_PATH}`, tools: tools.map((t) => t.name) };
 }
 
+/** 指定の型のイベントが `count` 件たまるまで待つ。
+ *
+ * 接続直後の配信は**会話の本数だけ**届くものがある（server.ts は model_state を
+ * スレッド1本ずつ送る）。1件だけ待って配列を空にすると、残りが空にした後から届き、
+ * 次に待つ「切り替え後の通知」と読み違える。負荷が高いほど当たりやすい競合なので、
+ * 初期配信は**受け取り切ってから**次へ進む。
+ */
+function waitForCount(
+  events: ServerEvent[],
+  type: ServerEvent["type"],
+  count: number,
+  timeoutMs = 2000
+): Promise<ServerEvent[]> {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const tick = setInterval(() => {
+      const found = events.filter((e) => e.type === type);
+      if (found.length >= count) {
+        clearInterval(tick);
+        resolve(found);
+      } else if (Date.now() - started > timeoutMs) {
+        clearInterval(tick);
+        reject(
+          new Error(
+            `timed out waiting for ${count}x "${type}" (got ${found.length}); events: ${events
+              .map((e) => e.type)
+              .join(", ")}`
+          )
+        );
+      }
+    }, 10);
+  });
+}
+
 /** 指定の型のイベントが来るまで待つ。 */
 /**
  * `type` の出来事が届くまで待つ。
@@ -697,9 +731,13 @@ describe("会話面が要る材料の配信", () => {
     const b: ServerEvent[] = [];
     const clientA = await BantoHostClient.connect(url, (e) => a.push(e));
     const clientB = await BantoHostClient.connect(url, (e) => b.push(e));
-    // 接続直後に会話ごとのモデルが届く（後から繋いだ画面も選択中が分かる）
-    const initial = await waitFor(a, "model_state");
-    assert.ok(initial.type === "model_state" && initial.id === "before");
+    // 接続直後に会話ごとのモデルが届く（後から繋いだ画面も選択中が分かる）。
+    // **会話の本数だけ**届くので、両方の画面が全部を受け取り切るまで待ってから
+    // 配列を空にする（1本ぶんだけ待つと、遅れて届いた初期値を切替の通知と読み違える）
+    const opened = threads.list().length;
+    const initial = await waitForCount(a, "model_state", opened);
+    assert.ok(initial[0]!.type === "model_state" && initial[0]!.id === "before");
+    await waitForCount(b, "model_state", opened);
     const first = threads.list()[0]!;
     const second = threads.list()[1]!;
 

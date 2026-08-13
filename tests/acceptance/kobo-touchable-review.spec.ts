@@ -227,6 +227,12 @@ describe("[Phase 3/決定59] レビューには触れる環境を添える", () 
     assert.equal(approved.ok, true);
 
     await until(() => h.pool.list({ taskId: "task-0001" }).length === 0);
+    // task-0092: 台帳から外れるのと `env_torn_down` を積むのは別の手。混んでいると
+    // 帳簿の方が先に空になり、記録を読みに行くのが早すぎることがある——**記録そのものを待つ**
+    // （次の it「畳んだあとは URL を載せない」も、この記録から導くので巻き添えで落ちていた）
+    await until(() =>
+      h.daemon.getTaskEvents(h.proj, "task-0001").some((e) => e.type === "env_torn_down")
+    );
     assert.ok(
       h.daemon.getTaskEvents(h.proj, "task-0001").some((e) => e.type === "env_torn_down"),
       "畳んだ記録が残る"

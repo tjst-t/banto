@@ -239,6 +239,11 @@ describe("[task-0059/a1] タスクが終わったら畳む（I3：作った者�
       assert.equal(history.length, 1, "履歴には残る");
       assert.equal(history[0]!.state, "torn-down");
 
+      // task-0092: プールの帳簿が空になるのと、Kobo が記録を積むのは別の手。混んでいると
+      // 帳簿の方が先に空になるので、**読む側の記録そのもの**を待ってから確かめる
+      await until(() =>
+        h.daemon.getTaskEvents(h.projId, "task-0004").some((e) => e.type === "env_torn_down")
+      );
       const events = h.daemon.getTaskEvents(h.projId, "task-0004");
       assert.ok(
         events.some((e) => e.type === "env_torn_down"),
