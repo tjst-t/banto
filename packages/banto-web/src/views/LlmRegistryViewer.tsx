@@ -416,7 +416,8 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                 }
                 onChange={(e) => {
                   const [provider, model] = e.target.value.split("|");
-                  if (provider && model) void run("llm.set_host_default", { provider, model });
+                  // ADR-0020 決定94: 束縛の口は `llm.set_role` 1本
+                  if (provider && model) void run("llm.set_role", { role: "steward", provider, model });
                 }}
               >
                 {!data.defaults.host && <option value="">（未設定）</option>}
@@ -739,25 +740,30 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                                 <Chip
                                   on={isHostDef}
                                   disabled={busy}
-                                  title="番頭の既定モデルにする"
+                                  title="番頭が使うモデルにする"
                                   onClick={() =>
-                                    void run("llm.set_host_default", {
+                                    void run("llm.set_role", {
+                                      role: "steward",
                                       provider: m.providerId,
                                       model: m.id,
                                     })
                                   }
                                 >
-                                  番頭既定
+                                  番頭
                                 </Chip>
                                 <Chip
                                   on={isPick}
                                   disabled={busy}
-                                  title={`${tierInfo?.label ?? m.tier} の第一候補にする`}
+                                  title={`職人の ${tierInfo?.label ?? m.tier} に割り当てる`}
                                   onClick={() =>
-                                    void run("llm.set_pick", { provider: m.providerId, model: m.id })
+                                    void run("llm.set_role", {
+                                      role: `worker.${m.tier}`,
+                                      provider: m.providerId,
+                                      model: m.id,
+                                    })
                                   }
                                 >
-                                  {tierInfo?.label ?? m.tier}の第一候補
+                                  職人の{tierInfo?.label ?? m.tier}
                                 </Chip>
                                 {/* 採用をやめる＝番頭も職人も使わない。台帳には残る */}
                                 <Button

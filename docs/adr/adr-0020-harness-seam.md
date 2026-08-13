@@ -172,6 +172,31 @@ resolve(ref: ModelRef): Binding | NotSupported
 **能力メタは「宣言」ではなく「問い合わせ」に倒す。** pi は cost/contextWindow を宣言できるが
 Agent SDK はできない（事後に usage が返るだけ）。両対応の最大公約数は問い合わせ。
 
+**実装した形**（2026-08-13）:
+
+```
+roles: {
+  "steward":          { provider, model },   // 旧 defaults.host
+  "worker.reasoning": { provider, model },   // 旧 picks.reasoning
+  "worker.standard":  { provider, model },
+  "worker.fast":      { provider, model },
+}
+```
+
+**表を1つにすると番人が3つ消えた。** 以前は `picks`（等級→モデル）が `tiers`
+（モデル→等級）の**逆写像**で、整合を守る番人がコード側に要った——`setTier` は
+第一候補の等級変更を拒み、`setUsable` も第一候補を守り、`setPick` は暗黙に採用を立てた。
+束縛が1つになったので、**等級はいつでも動かせて割り当ては動かない**。
+
+`defaults.workerTier` は捨てた（工房の `backends.defaultTier` が実際には勝っており、
+同じ問いに2箇所が答えていた・D3 違反）。道具も `llm.set_host_default` /
+`llm.set_pick` / `llm.set_worker_tier` の3本が `llm.set_role` 1本になった。
+
+**移行で踏んだ罠**（記録として）: 旧欄を消したら、2026-08-04 の一度きりの移行
+（`migrateOnce`）が**毎回の起動で作り直していた**——「無ければ作る」判定が、
+消したそばから真になっていたため。**書き先を移すときは、その欄に書く全部の経路を
+探すこと**（`migrateOnce` / `migrateWorkerDefault` / `repairDefaults` / `tiers()` の4箇所あった）。
+
 **モデル操作の Tool は 19本 → 4本。** 設定変更は Tool ではなく GUI とファイルの担当にする
 ——調べた製品はどこもモデル設定をエージェントの Tool にしていない。ADR-0019 の実測で
 **19本中13本が一度も呼ばれていない**のは、それらが Tool であるべきでなかったから。

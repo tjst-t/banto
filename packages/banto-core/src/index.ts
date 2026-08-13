@@ -136,12 +136,18 @@ export {
   DEFAULT_TIER_DESCRIPTIONS,
   CONSTRAINT_KEYS,
   isModelTier,
+  // 役割ごとの束縛（ADR-0020 決定94）。束縛の表はこれ1つ
+  LLM_ROLES,
+  isLlmRole,
+  workerRoleOf,
   // ハーネスに依存しないモデル解決（task-0066）。工房が独立サービスとして立つのに要る
   MODEL_ALIASES,
   createFileModelResolver,
   piAgentDir,
 } from "./llm-registry.js";
 export type {
+  LlmRole,
+  LlmRoleBindings,
   ModelTier,
   ModelConstraints,
   KeyScope,
