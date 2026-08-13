@@ -14,7 +14,7 @@
  */
 
 import { Type } from "typebox";
-import { StringEnum, defineNamespacedTool, type NamespacedToolDefinition } from "@banto/core";
+import { OpenObject, StringEnum, defineNamespacedTool, type NamespacedToolDefinition } from "@banto/core";
 import type { EnvironmentPool, ProvisionRequest } from "./pool.js";
 import { COLLECTED_PLACE_ID } from "./collected-place.js";
 
@@ -28,7 +28,7 @@ const targetFields = {
   repoPath: Type.Optional(Type.String({ description: "profile を使うなら必須" })),
   profile: Type.Optional(Type.String()),
   driver: Type.Optional(Type.String({ description: "process / docker。profile と併用不可" })),
-  config: Type.Optional(Type.Object({}, { additionalProperties: true })),
+  config: Type.Optional(OpenObject()),
   workdir: Type.Optional(Type.String()),
   taskId: Type.Optional(Type.String()),
   projectTag: Type.Optional(Type.String()),
@@ -226,7 +226,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
       timeoutMs: Type.Optional(
         Type.Number({
           description:
-            "制限時間（ミリ秒）。**短くはできるが長くはできない**（env.list_profiles の limits まで）"
+            "**短くはできるが長くはできない**（env.list_profiles の limits まで）"
         })
       )
     }),

@@ -50,8 +50,8 @@ export function createInboxTools(
       why: Type.Optional(Type.String({ description: "起点のPO指示の引用と時刻" })),
       what: Type.String(),
       ask: Type.String(),
-      actions: Type.Array(Action, {}),
-      blocking: Type.Optional(Type.Number()),
+      actions: Type.Array(Action, { description: "2〜4つ" }),
+      blocking: Type.Optional(Type.Number({ description: "止めている後続の数（並びに効く）" })),
       threadId: Type.Optional(Type.String()),
       canvasKind: Type.Optional(Type.String()),
       canvasParams: Type.Optional(OpenObject())
