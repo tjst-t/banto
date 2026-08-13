@@ -77,20 +77,30 @@ describe("[決定98d] モデルの一覧はバックエンドに聞く", () => {
     );
   });
 
-  it("聞けたら、その答えに入れ替わる", async () => {
+  it("聞けたら足される。**組み込みの別名は消えない**", async () => {
     const backend = createClaudeBackend({
       ask: async () => [
         { id: "default", name: "Default (recommended)" },
         { id: "opus[1m]", name: "Opus (1M context)" },
+        { id: "sonnet", name: "Sonnet" },
       ],
     });
     backend.providers(); // 裏で聞き始める
     await new Promise((r) => setImmediate(r));
+    const ids = backend.providers()[0]!.models.map((m) => m.id);
     assert.deepEqual(
-      backend.providers()[0]!.models.map((m) => m.id),
-      ["default", "opus[1m]"],
-      "手書きの表は既に古かった（実機で確認）"
+      ids,
+      ["default", "opus[1m]", "sonnet", "opus", "haiku"],
+      "聞いた側が先、足りないぶんを組み込みから補う"
     );
+    /**
+     * **実測（2026-08-13）**：`supportedModels()` に素の `opus` は入っていないが、
+     * `opus` は生きていて `opus[1m]` とは別のモデルへ解決する
+     * （`claude-opus-5` / `claude-opus-5[1m]`）。実機の番頭は `opus` で動いており、
+     * 聞いた一覧だけを出すと**いま効いている束縛が選択肢から消える**。
+     */
+    assert.ok(ids.includes("opus"), "聞いた一覧は「勧める一覧」であって「使える名前の全部」ではない");
+    assert.equal(ids.filter((i) => i === "sonnet").length, 1, "重ねても二重に出ない");
   });
 
   it("聞けなかったら黙って空にしない（I2）", async () => {

@@ -106,7 +106,18 @@ export function createPiBackend(options: {
   };
 }
 
-/** 組み込みの別名。**聞けるまでの答え**であって、正典ではない。 */
+/**
+ * 組み込みの別名。**聞けるまでの答え**であり、かつ**聞いた一覧に足りないぶん**でもある。
+ *
+ * **実測（2026-08-13）**：`supportedModels()` が返すのは
+ * `default` / `opus[1m]` / `claude-fable-5[1m]` / `sonnet` / `haiku` で、**素の `opus` は
+ * 入っていない**。だが `opus` は生きていて、`opus[1m]` とは**別のモデル**へ解決する
+ * （`claude-opus-5` と `claude-opus-5[1m]`——文脈長が違う）。
+ *
+ * つまり**聞いた一覧は「勧める一覧」であって「使える名前の全部」ではない。**
+ * 実機の番頭は `opus` で動いており、聞いた一覧だけを出すと**いま効いている束縛が
+ * 選択肢から消える**（画面が実態を映せなくなる）。両方を足す。
+ */
 const BUILT_IN_CLAUDE_MODELS = CLAUDE_KNOWN_MODELS.map((m) => ({
   id: m.value,
   name: m.label,
@@ -192,7 +203,13 @@ export function createClaudeBackend(
     providers: () => {
       // 聞くのは裏で。**いまある答えをすぐ返す**（起動も画面も待たせない）
       refresh();
-      return [{ id: "claude", models: cached ?? BUILT_IN_CLAUDE_MODELS }];
+      /**
+       * **聞いた一覧に、組み込みの別名を重ねる**（上の注記）。聞いた側を先に置く
+       * ——そちらが「いま勧められているもの」で、組み込みは補いだから。
+       */
+      const asked = cached ?? [];
+      const missing = BUILT_IN_CLAUDE_MODELS.filter((b) => !asked.some((a) => a.id === b.id));
+      return [{ id: "claude", models: [...asked, ...missing] }];
     },
     supports: (ref) =>
       ref.provider === "claude"
