@@ -41,6 +41,11 @@ export interface StoredThread {
   openReason?: string;
   /** 畳んだときの結論。 */
   conclusion?: string;
+  /**
+   * 畳んだときの詳細（決定108）。**幹には流れない**ので、ここが唯一の置き場
+   * ——落とすと、再起動した瞬間に「開けば読める」が嘘になる。
+   */
+  conclusionDetail?: string;
   state: "open" | "closed";
   createdAt: string;
   closedAt?: string;

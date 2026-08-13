@@ -1097,6 +1097,12 @@ async function serve(options: ServeOptions): Promise<void> {
          */
         deliver: (threadId, message) => server.notify(message, { threadId, source: "thread" }),
         /**
+         * **枝から幹への相談**（決定107）。記録は `ThreadRegistry.consult` が札として
+         * 済ませているので、ここでは幹のターンだけ回す——`notify` を使うと同じ一言が
+         * 知らせとしても積まれ、1つの相談が2行に見える
+         */
+        nudge: (threadId, message) => server.nudge(threadId, message),
+        /**
          * 幹を終うとき、番頭が選んだ記憶を**横断の層（人の記憶）へ上げる**。
          * 枝の結論が幹へ還るのと同じ形が、一段上で繰り返される（PO裁定 2026-08-09）。
          */

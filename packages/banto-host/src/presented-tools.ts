@@ -114,10 +114,20 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
   "canvas.open",
   "canvas.show",
   "canvas.close",
-  // 会話の仕切り（決定77）
+  /**
+   * 会話の仕切り（決定77）と、**幹と枝の対話**（決定105〜108・PO指示 2026-08-13）。
+   *
+   * `thread.read` / `thread.steer` / `thread.consult` は在庫に足すだけでは届かない
+   * ——ここに載せないと「番頭の手に無い」のと同じ（決定82）。枝の中が見えない・
+   * 途中で方針を渡せない・枝から相談できない、という痛みを開けるための3本なので、
+   * 提示から落ちると入れた意味がそのまま消える。
+   */
   "thread.open",
   "thread.list",
+  "thread.read",
   "thread.send",
+  "thread.steer",
+  "thread.consult",
   "thread.merge",
   // 判断を求める唯一の口（決定73）
   "inbox.post",
@@ -151,7 +161,8 @@ const DOMAIN_BLURB: Record<string, string> = {
   git: "read history in a place (viewing only — no commit/push/branch)",
   kobo: "put work on the factory queue, read it, approve it, send it back",
   canvas: "show things to the user in the conversation",
-  thread: "run the conversation — open branches, list, hand over, merge back",
+  thread:
+    "run the conversation — open branches, read what is happening inside one, steer it mid-flight, consult the trunk, merge back",
   inbox: "the one place to ask the user for a decision",
   place: "see which places you can reach, and ask for write scope",
   env: "run verification in a throwaway environment — the mechanism returns a fact, not a worker's claim (I1)",

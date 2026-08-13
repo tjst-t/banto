@@ -255,6 +255,16 @@ export interface CatalogEntryView {
 /** 誰が枝を開いたか（ADR-0017 決定77：番頭の判断でも PO の指示でも開く）。 */
 export type BranchOpener = "banto" | "po";
 
+/**
+ * 枝から幹へ還す一言の種類（決定107）。
+ *
+ * **返事が要るかどうか**が分かれ目。`question` は幹の番頭に判断を求めており、
+ * 枝はそれを待っている（`thread.steer` で返す）。`report` は知らせるだけで、
+ * 枝はそのまま進む——受け手が読み分けられないと、問いが黙殺されるか、
+ * 報告に返事を書かされるかのどちらかになる。
+ */
+export type BranchNoteKind = "question" | "report";
+
 /** 会話スレッド1本の姿（幹1本と、その枝）。 */
 export interface ThreadView {
   threadId: string;
@@ -280,6 +290,11 @@ export interface ThreadView {
   openReason?: string;
   /** 畳んだときの結論（保留も結論の一種）。畳むまでは無い。 */
   conclusion?: string;
+  /**
+   * 畳んだときの**詳細がある**か（決定108）。中身は載せない——一覧に出るのは結論の1行で、
+   * 詳細は枝を開いて（番頭なら `thread.read`）読む。
+   */
+  hasConclusionDetail?: boolean;
   /** ハーネス側のセッションID。デバッグと突き合わせ用。 */
   sessionId: string;
   /** 既定スレッド（threadId 省略時の宛先）＝幹。 */
@@ -561,6 +576,26 @@ export type TranscriptEntry =
       title: string;
       conclusion: string;
       at: string;
+      /**
+       * 詳細（何を調べ・何を決め・何が残ったか）があるか（決定108）。
+       * **中身は載せない**——幹に積むのは1行のままで、読むのは枝を開いてから。
+       */
+      hasDetail?: boolean;
+    }
+  /**
+   * **枝から幹へ、畳む前に還した一言**（決定107）。問いか報告かを持つ。
+   *
+   * 知らせ（`notice`）にしないのは、枝の札・結論と**同じ列に並べる**ため——
+   * 知らせで流すと他の通知に紛れ、読み返したときにどの枝の話か辿れない。
+   * `branch_result` と同じく**記録なので凍る**。
+   */
+  | {
+      role: "branch_note";
+      branchId: string;
+      title: string;
+      kind: BranchNoteKind;
+      text: string;
+      at: string;
     }
   /** 番頭が器に載せた Tool の戻り値（決定78・81）。**凍る**。 */
   | { role: "utsuwa"; utsuwa: UtsuwaView }
@@ -684,6 +719,23 @@ export interface BranchResultEvent extends ThreadScope {
   branchId: string;
   title: string;
   conclusion: string;
+  at: string;
+  /** 詳細があるか（決定108）。中身は載せない——読むのは枝を開いてから。 */
+  hasDetail?: boolean;
+}
+
+/**
+ * **枝から幹への相談・報告**（決定107）。幹の末尾に札が1枚立つ。
+ *
+ * `notice` と分けるのは、枝の札（`branch_card`）・結論（`branch_result`）と同じ列に
+ * 並べるため——知らせに混ぜると、他の通知の中に紛れて辿れなくなる。
+ */
+export interface BranchNoteEvent extends ThreadScope {
+  type: "branch_note";
+  branchId: string;
+  title: string;
+  kind: BranchNoteKind;
+  text: string;
   at: string;
 }
 
@@ -841,6 +893,7 @@ export type ServerEvent =
   | UtsuwaEvent
   | BranchCardEvent
   | BranchResultEvent
+  | BranchNoteEvent
   | ChapterClosedEvent
   | TurnStartEvent
   | TurnEndEvent

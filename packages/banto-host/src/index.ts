@@ -122,6 +122,8 @@ export {
   BRANCH_STALE_DAYS,
   MAX_THREAD_TITLE_LENGTH,
   normalizeThreadTitle,
+  trunkIdOf,
+  type BranchNote,
   type ThreadFactory,
   type ThreadSpec,
 } from "./threads.js";

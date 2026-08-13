@@ -92,12 +92,18 @@ export function BranchResultRow({
   title,
   conclusion,
   at,
+  hasDetail = false,
   onOpen,
 }: {
   branchId: string;
   title: string;
   conclusion: string;
   at: string;
+  /**
+   * 詳細（何を調べ・何を決め・何が残ったか）があるか（決定108）。
+   * **中身は幹に載せない**——在ることだけ言い、読むのは枝を開いてから。
+   */
+  hasDetail?: boolean;
   onOpen?(threadId: string): void;
 }): React.ReactElement {
   return (
@@ -118,7 +124,53 @@ export function BranchResultRow({
         </div>
         {onOpen && (
           <button className="bres-go" type="button" onClick={() => onOpen(branchId)}>
-            中身をひらく
+            {hasDetail ? "詳しい経緯をひらく" : "中身をひらく"}
+            <Icon name="arrow-right" size={12} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * **枝から幹へ還った相談・報告**（決定107）。畳む前でも還せる。
+ *
+ * 知らせの行にしないのは、**枝の札・還った1行と同じ列に並べる**ため——知らせに混ぜると
+ * 職人の報告や検証環境の知らせに紛れ、幹を読み返したときにどの枝の話か辿れない。
+ * `branch_result` と同じく**記録なので凍る**。
+ */
+export function BranchNoteRow({
+  branchId,
+  title,
+  kind,
+  text,
+  at,
+  onOpen,
+}: {
+  branchId: string;
+  title: string;
+  kind: "question" | "report";
+  text: string;
+  at: string;
+  onOpen?(threadId: string): void;
+}): React.ReactElement {
+  return (
+    <div className={`bresult bnote is-${kind}`}>
+      <span className="bres-mark" aria-hidden="true">
+        <Icon name="arrow-up" size={11} />
+      </span>
+      <div className="bres-body">
+        <div className="bres-head">
+          枝「<b>{title}</b>」からの{kind === "question" ? "問い" : "報告"}
+          <span className="bres-when" title={at}>
+            {formatRelative(at)}
+          </span>
+        </div>
+        <div className="bres-conc">{text}</div>
+        {onOpen && (
+          <button className="bres-go" type="button" onClick={() => onOpen(branchId)}>
+            この枝をひらく
             <Icon name="arrow-right" size={12} />
           </button>
         )}
