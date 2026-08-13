@@ -43,6 +43,7 @@ import { createWorkerPoolSettings } from "./settings.js";
 import { WORKER_POOL_BASE_URL } from "./module.js";
 import {
   LlmCatalog,
+  ModelLedger,
   createFileModelResolver,
   createFileSettingsSection,
   createSettingsTools,
@@ -108,14 +109,24 @@ async function main(): Promise<void> {
   // 見る解決器で足りる——結果のうち実際に使われるのは provider と id で、最後の解決は
   // 職人を起こす pi の CLI が行う
   const agentDir = piAgentDir();
+  const bantoDataDir =
+    process.env["BANTO_DATA_DIR"] ?? path.join(process.cwd(), ".banto");
+  /**
+   * **役の台帳**（ADR-0021 決定101）。番頭ホストが書き、工房は**読むだけ**（決定101d）。
+   *
+   * **書き先を移したら、読み手も一緒に移す。** ここを繋がないと、役の割り当てが
+   * 引けなくなって候補の先頭が黙って選ばれる（`resolveForWorker` の `preferred` が外れる）。
+   */
+  const ledger = new ModelLedger({
+    path: path.join(bantoDataDir, "model-roles.json"),
+    readOnly: true,
+  });
   const catalog = new LlmCatalog({
+    ledger,
     authJsonPath: path.join(agentDir, "auth.json"),
     modelsJsonPath: path.join(agentDir, "models.json"),
     // **番頭ホストと同じオーバーレイ**（画面で選んだ tier・採用したモデルがそのまま効く）
-    overlayPath: path.join(
-      process.env["BANTO_DATA_DIR"] ?? path.join(process.cwd(), ".banto"),
-      "llm-registry.json"
-    ),
+    overlayPath: path.join(bantoDataDir, "llm-registry.json"),
     resolver: createFileModelResolver(path.join(agentDir, "models.json")),
   });
   const fallback = catalog.resolveForWorker();

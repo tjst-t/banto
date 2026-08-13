@@ -349,11 +349,19 @@ export function createLlmTools(options: LlmToolsOptions): LlmToolSets {
     description:
       "役割にモデルを割り当てる。`steward`＝番頭が使うモデル、" +
       "`worker.reasoning` / `worker.standard` / `worker.fast`＝職人が等級ごとに使うモデル。" +
-      "割り当てると同時に採用も立つ（使えないモデルは割り当てられないため）。",
+      "割り当てると同時に採用も立つ（使えないモデルは割り当てられないため）。" +
+      "**backend まで含めて指定する**——同じ `opus` が pi 経由でも Claude Code 経由でも指せる。",
     parameters: Type.Object({
       role: Type.String({
         description: "steward / worker.reasoning / worker.standard / worker.fast",
       }),
+      /**
+       * **どの経路で呼ぶか**（ADR-0021 決定103）。省略は `pi` を意味する
+       * ——ここが無かったので、画面から選び直すたびに束縛の `backend` が落ちていた。
+       */
+      backend: Type.Optional(
+        Type.String({ description: "pi / claude-agent-sdk（省略時は pi）" })
+      ),
       provider: Type.String({ description: "プロバイダ名" }),
       model: Type.String({ description: "モデル ID" }),
     }),
@@ -364,7 +372,7 @@ export function createLlmTools(options: LlmToolsOptions): LlmToolSets {
           `知らない役割です: ${params.role}（${LLM_ROLES.join(" / ")} のどれか）`
         );
       }
-      catalog.setRole(params.role as never, params.provider, params.model);
+      catalog.setRole(params.role as never, params.provider, params.model, params.backend);
       if (params.role === "steward") {
         options.onHostModelChanged?.(params.provider, params.model);
       }
@@ -372,7 +380,9 @@ export function createLlmTools(options: LlmToolsOptions): LlmToolSets {
         content: [
           {
             type: "text",
-            text: `${params.role} に ${params.provider}/${params.model} を割り当てました。`,
+            text:
+              `${params.role} に ${params.backend ?? "pi"}/${params.provider}/${params.model} を` +
+              "割り当てました。",
           },
         ],
         details: { role: params.role, provider: params.provider, model: params.model },

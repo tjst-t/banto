@@ -172,6 +172,24 @@ export type {
   ResolvedModel,
 } from "./llm-registry.js";
 
+// 役の台帳 — 誰が何を使うか（ADR-0021 決定99・101）。**供給（pi の登録）とは別**
+export {
+  ModelLedger,
+  MODEL_LEDGER_SCHEMA_VERSION,
+  LEDGER_ROLES,
+  isLedgerRole,
+  ledgerWorkerRole,
+  sameRef,
+  refKey,
+} from "./model-ledger.js";
+export type {
+  LedgerRole,
+  LedgerModelRef,
+  RoleBinding,
+  ModelLedgerData,
+  ModelLedgerOptions,
+} from "./model-ledger.js";
+
 // 場所（Place）— 番頭が作業してよい場所の契約（決定36c）
 // 親子関係（PO裁定 2026-08-05）：ワークツリーは親リポジトリを指し、記憶の層は親で決まる
 export type { Place, PlaceProvider } from "./place.js";

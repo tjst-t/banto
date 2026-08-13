@@ -417,7 +417,10 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                 onChange={(e) => {
                   const [provider, model] = e.target.value.split("|");
                   // ADR-0020 決定94: 束縛の口は `llm.set_role` 1本
-                  if (provider && model) void run("llm.set_role", { role: "steward", provider, model });
+                  // この画面が並べているのは **pi の台帳**のモデルなので、経路も pi と名乗る（決定103）
+                  if (provider && model) {
+                    void run("llm.set_role", { role: "steward", backend: "pi", provider, model });
+                  }
                 }}
               >
                 {!data.defaults.host && <option value="">（未設定）</option>}
@@ -744,6 +747,7 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                                   onClick={() =>
                                     void run("llm.set_role", {
                                       role: "steward",
+                                      backend: "pi",
                                       provider: m.providerId,
                                       model: m.id,
                                     })
@@ -758,6 +762,7 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                                   onClick={() =>
                                     void run("llm.set_role", {
                                       role: `worker.${m.tier}`,
+                                      backend: "pi",
                                       provider: m.providerId,
                                       model: m.id,
                                     })
