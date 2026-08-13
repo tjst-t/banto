@@ -34,6 +34,8 @@ import {
 } from "@banto/core";
 
 import type { WorkerInfo } from "@banto/worker-pool";
+// Claude Code バックエンドの選択肢（PO裁定 2026-08-13）。認証の有無もここで見る
+import { CLAUDE_KNOWN_MODELS, claudeAgentAvailability } from "@banto/worker-pool";
 import { createKoboModule, defaultKoboUrl } from "@banto/daemon";
 import { BANTO_ORIGIN, startWorkerNotices, threadOrigin } from "./worker-notice.js";
 import { guardWorkerOrigin } from "./worker-guard.js";
@@ -791,6 +793,53 @@ async function serve(options: ServeOptions): Promise<void> {
       }),
       modules,
       store: settings,
+      /**
+       * **バックエンド → プロバイダ → モデル**（PO裁定 2026-08-13）。
+       *
+       * pi 側は LLM 登録の「番頭が使ってよい」モデル、Claude Code 側は SDK の別名。
+       * 同じ `opus` が両方に出るのが正しい——どちらの経路で呼ぶかを人が選ぶ。
+       */
+      harnessOptions: () => {
+        const piModels = llmCatalog.models().filter((m) => m.hostUsable);
+        const byProvider = new Map<string, typeof piModels>();
+        for (const m of piModels) {
+          const list = byProvider.get(m.providerId) ?? [];
+          list.push(m);
+          byProvider.set(m.providerId, list);
+        }
+        const claude = claudeAgentAvailability();
+        return [
+          {
+            id: "pi",
+            label: "pi（登録したプロバイダ・ローカルLLMも可）",
+            providers: [...byProvider.entries()].map(([id, models]) => ({
+              id,
+              models: models.map((m) => ({
+                id: m.id,
+                ...(m.name ? { name: m.name } : {}),
+                vision: m.vision,
+                ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
+              })),
+            })),
+          },
+          {
+            id: "claude-agent-sdk",
+            label: "Claude Code（手元のサブスクリプション・Claude 専用）",
+            // I2: 認証が無いなら選ばせない。選べてから落ちるより、選ぶ前に理由を出す
+            ...(claude.ok ? {} : { unavailable: claude.detail }),
+            providers: [
+              {
+                id: "claude",
+                models: CLAUDE_KNOWN_MODELS.map((m) => ({
+                  id: m.value,
+                  name: m.label,
+                  vision: true,
+                })),
+              },
+            ],
+          },
+        ];
+      },
     })
   );
 
@@ -897,6 +946,15 @@ async function serve(options: ServeOptions): Promise<void> {
   //
   // 記憶は全スレッドで共有する（D11：番頭は記憶を持つ。分裂させない）。
   let threads: ThreadRegistry;
+  /**
+   * 会話ごとのハーネスの作り手（PO要望 2026-08-13）。**会話の途中でバックエンドを
+   * 差し替える**ために、両方の作り手を覚えておく。pi 側は同じものを返す——章立てが
+   * その pi セッションに紐づいているので、戻ったときに文脈が残っている必要がある。
+   */
+  const harnessSwitchers = new Map<
+    string,
+    { pi: () => BantoHarness; claude: (model?: string) => BantoHarness }
+  >();
   let server: BantoHostServer;
   const threadFactory: ThreadFactory = async (threadId, resumeFrom, wantedModel, identity) => {
     const canvas = new Canvas(catalog);
@@ -1148,18 +1206,24 @@ async function serve(options: ServeOptions): Promise<void> {
      * ここから先、番頭のターンループは `BantoHarness` の語彙だけで動く——pi の
      * `agent.state.messages` や `sessionManager` に触るのは皮の内側だけになる。
      */
-    const harnessChoice = settings.all().harness?.backend ?? "pi";
-    const harness: BantoHarness =
-      harnessChoice === "claude-agent-sdk"
-        ? new ClaudeAgentHarness({
-            systemPrompt: SYSTEM_PROMPT + describeThread(identity),
-            // 提示する集合だけを載せる（ADR-0019 決定82）。組み込みは `tools: []` で0本
-            tools: selectPresentedTools(ownTools),
-            ...(settings.all().harness?.model
-              ? { model: settings.all().harness!.model! }
-              : {}),
-          })
-        : new PiHarness({
+    /**
+     * **バックエンドは provider の上位の階層**（PO裁定 2026-08-13）。
+     *
+     * `opus` は pi（opencode zen）経由でも Agent SDK 経由でも選べるので、
+     * **モデル名からバックエンドは決まらない**。人が選ぶのは
+     * 「バックエンド → プロバイダ → モデル」の3段で、選び直しは会話の途中でできる。
+     *
+     * 作り手を両方持っておく——差し替えのたびに組み立て直せるようにするため。
+     */
+    const makeClaudeHarness = (model?: string): BantoHarness =>
+      new ClaudeAgentHarness({
+        systemPrompt: SYSTEM_PROMPT + describeThread(identity),
+        // 提示する集合だけを載せる（ADR-0019 決定82）。組み込みは `tools: []` で0本
+        tools: selectPresentedTools(ownTools),
+        ...(model ? { model } : {}),
+      });
+
+    const piHarness: BantoHarness = new PiHarness({
       // 会話の口は皮を通す（空応答ガード＋ターン予算のリセット）
       session: countingSession,
       // 文脈と章の操作は pi の本体でしか出来ない。**皮では届かない**
@@ -1174,6 +1238,18 @@ async function serve(options: ServeOptions): Promise<void> {
       },
       renderTranscript,
     });
+
+    /**
+     * この会話が始まるバックエンド。会話ごとの指定（索引に残る）→ 設定の既定 → pi。
+     * **走り出しは片方だけ組む**のではなく pi は常に組む——章立てが pi の
+     * セッションに紐づいており、戻ってきたときに文脈が残っている必要があるため。
+     */
+    const startBackend = wantedModel?.backend ?? settings.all().harness?.backend ?? "pi";
+    const harness: BantoHarness =
+      startBackend === "claude-agent-sdk"
+        ? makeClaudeHarness(wantedModel?.id ?? settings.all().harness?.model)
+        : piHarness;
+    harnessSwitchers.set(threadId, { pi: () => piHarness, claude: makeClaudeHarness });
 
     // 提案§3.2: 自動コンパクションを切り（ハーネスが済ませた）、章立てに置き換える。
     //
@@ -1403,18 +1479,40 @@ async function serve(options: ServeOptions): Promise<void> {
      * 会話ごとに別の頭になったりしないし、再起動で選び直させるのも筋が悪い。
      * I2: 解決できない・ハーネスが対応していないときは throw して、画面を前のままにする。
      */
-    onSelectModel: async (thread, nextProvider: string, nextId: string) => {
+    onSelectModel: async (thread, nextProvider: string, nextId: string, nextBackend?: string) => {
+      const backend = nextBackend ?? thread.model?.backend ?? "pi";
+      const switcher = harnessSwitchers.get(thread.id);
+
+      /**
+       * **Claude Code のときはモデルの別名をそのまま渡す**（決定94）。
+       *
+       * Agent SDK は Claude 以外へ繋げないので、LLM 登録での解決はしない
+       * ——登録に載らないモデル（`opus` 等）を「使えない」と断ってしまう。
+       */
+      if (backend === "claude-agent-sdk") {
+        if (!switcher) throw new Error("この会話はバックエンドを差し替えられません");
+        const harness = switcher.claude(nextId);
+        console.log(`[banto] backend(${thread.id}): claude-agent-sdk / ${nextId}`);
+        return { id: nextId, vision: true, backend, harness };
+      }
+
       const next = resolveModel(nextProvider, nextId);
       if (!next) throw new Error(`${nextProvider}/${nextId} は使えるモデルの一覧にありません`);
-      if (!thread.harness.setModel) {
+
+      // pi へ戻す（あるいは pi のまま）。**同じ pi セッションへ戻る**ので文脈も戻る
+      const back = thread.model?.backend === "claude-agent-sdk" ? switcher?.pi() : undefined;
+      const target = back ?? thread.harness;
+      if (!target.setModel) {
         throw new Error("このハーネスは動作中のモデル切替に対応していません");
       }
       // **その会話だけ**に効かせる。他の会話は自分のモデルのまま（PO裁定 2026-08-04）
-      await thread.harness.setModel(next);
-      console.log(`[banto] model(${thread.id}): ${nextProvider}/${nextId}`);
+      await target.setModel(next);
+      console.log(`[banto] model(${thread.id}): ${backend} / ${nextProvider}/${nextId}`);
       return {
         id: nextId,
         vision: next.input.includes("image"),
+        backend,
+        ...(back ? { harness: back } : {}),
         ...(next.contextWindow ? { contextWindow: next.contextWindow } : {}),
       };
     },

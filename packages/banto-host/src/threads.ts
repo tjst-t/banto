@@ -22,7 +22,7 @@
  */
 
 import type { Canvas } from "./canvas.js";
-import type { BantoHarness } from "@banto/core";
+import type { BantoHarness, HarnessEvent } from "@banto/core";
 import type { NamespacedToolDefinition } from "./tool-registry.js";
 import type { BranchOpener, ThreadView, TranscriptEntry } from "./protocol.js";
 import type { ThreadStore } from "./thread-store.js";
@@ -68,7 +68,11 @@ export type ThreadFactory = (
    * この会話で使いたいモデル。**復元では保存されていたもの**、新規では省略（＝番頭の標準）。
    * 会話ごとにモデルを持つため、器を作る側がここを見て組み立てる。
    */
-  model?: { provider: string; id: string },
+  /**
+   * この会話のモデル。**`backend` は provider の上位の階層**（ADR-0020・PO裁定 2026-08-13）
+   * ——`opus` は pi 経由でも Agent SDK 経由でも選べるので、名前からは決まらない。
+   */
+  model?: { backend?: string; provider: string; id: string },
   /** その会話が何であるか（帳場・幹・枝）。器を作る側がシステムプロンプトへ入れる。 */
   identity?: ThreadIdentity
 ) => Promise<{
@@ -76,7 +80,7 @@ export type ThreadFactory = (
   harness: BantoHarness;
   canvas?: Canvas;
   /** この器が実際に使っているモデル。会話ごとに持ち、画面と索引へ出す。 */
-  model?: { provider: string; id: string; vision: boolean; contextWindow?: number };
+  model?: { backend?: string; provider: string; id: string; vision: boolean; contextWindow?: number };
   /** このスレッドに登録した論理名のTool（wire名の逆引きに使う）。 */
   tools: NamespacedToolDefinition[];
   /** 直近のターンでプロバイダ側エラーがあれば返す。**スレッドごと**に別。 */
@@ -221,7 +225,14 @@ export class Thread {
    */
   lastActivityAt: string = new Date().toISOString();
   closedAt: string | undefined;
-  readonly harness: BantoHarness;
+  /**
+   * 会話を回しているハーネス。**差し替えられる**（ADR-0020 決定88・PO要望 2026-08-13）
+   * ——モデルを会話の途中で変えられるのと同じく、バックエンドも変えられる。
+   * 差し替えは `replaceHarness` を通すこと（購読を張り直す必要があるため）。
+   */
+  harness: BantoHarness;
+  /** ハーネスの購読を外す口。差し替えのときに張り直す。 */
+  private harnessDisposer: (() => void) | undefined;
   readonly canvas: Canvas | undefined;
   readonly toolNames: string[];
   /**
@@ -232,13 +243,39 @@ export class Thread {
   readonly getLastError: () => string | undefined;
   /** 番頭の文脈が書かれている pi セッションファイル（task-0036）。 */
   readonly sessionFile: string | undefined;
+
+  /**
+   * ハーネスの出来事を購読する。**差し替えのときに張り直せるよう、ここ1箇所に集める**
+   * ——`disposers` に混ぜると、ハーネスの購読だけを外せない。
+   */
+  listen(handler: (event: HarnessEvent) => void): void {
+    this.harnessDisposer?.();
+    this.harnessDisposer = this.harness.subscribe(handler);
+  }
+
+  /**
+   * **会話の途中でバックエンドを差し替える**（PO要望 2026-08-13）。
+   *
+   * モデルを変えられるのと同じ感覚で変えられるべきなので、再起動は要らない形にする。
+   * 古い購読を外して新しいハーネスへ張り直す——ここを忘れると、画面には何も流れて
+   * こないのに番頭は動いている、という一番分かりにくい壊れ方をする。
+   *
+   * **文脈は引き継がない。** バックエンドが変わると生きているセッションも変わるので、
+   * 引き継ぐなら呼び出し側が種（`startChapter`）で渡すこと（決定93）。
+   */
+  replaceHarness(next: BantoHarness, handler: (event: HarnessEvent) => void): void {
+    this.harnessDisposer?.();
+    this.harnessDisposer = undefined;
+    this.harness = next;
+    this.listen(handler);
+  }
   /**
    * この会話で使っているモデル（PO裁定 2026-08-04）。
    *
    * **会話ごとに持つ**——話題ごとに向いたモデルが違うので、切り替えても他の会話は変わらない。
    * 索引に保存され、再起動しても同じモデルで再開する。
    */
-  model: { provider: string; id: string; vision: boolean; contextWindow?: number } | undefined;
+  model: { backend?: string; provider: string; id: string; vision: boolean; contextWindow?: number } | undefined;
   /**
    * 復元された中断ターンを再開する処理（imp-0016 主対策）。
    * サーバ起動後に open スレッドだけ呼ばれる（畳んだスレッドは開き直すまで話さない）。
@@ -281,7 +318,7 @@ export class Thread {
     tools: NamespacedToolDefinition[];
     getLastError?: () => string | undefined;
     sessionFile?: string;
-    model?: { provider: string; id: string; vision: boolean; contextWindow?: number };
+    model?: { backend?: string; provider: string; id: string; vision: boolean; contextWindow?: number };
     resumePendingTurn?: () => Promise<void>;
     closeChapter?: () => Promise<boolean>;
     dispose?: () => void;
@@ -391,6 +428,8 @@ export class Thread {
   }
 
   dispose(): void {
+    this.harnessDisposer?.();
+    this.harnessDisposer = undefined;
     for (const off of this.disposers) off();
     this.disposers.length = 0;
   }

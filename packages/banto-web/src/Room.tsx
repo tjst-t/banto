@@ -32,6 +32,8 @@ import type { BantoSession, CurrentModel } from "./useBantoSession.js";
  * 相対パスなので、自分のオリジン（＝開発時は vite、常駐時はホスト）に解決される。
  */
 const CORE_TOOL_ENDPOINT = "/api/core";
+/** 設定モジュールの口（番頭には渡らない `internalTools`）。 */
+const SETTINGS_TOOL_ENDPOINT = "/api/settings";
 
 /** 入力欄の最大の高さ（AI Elements の `max-h-48`）。最低の高さは CSS の min-height。 */
 const MAX_COMPOSER_HEIGHT_PX = 192;
@@ -134,49 +136,99 @@ function ContextMeter({
 /**
  * モデル選択（AI Elements の `PromptInputModelSelect`）。
  *
- * 一覧は中核の `llm.list` から取り、**番頭が使ってよいモデルだけ**を出す（`hostUsable`）。
- * 選んだ結果は自分で覚えない。ホストが `model_state` を配り直したときに変わる（D3）。
+ * **バックエンド → プロバイダ → モデル の3段**（PO裁定 2026-08-13）。バックエンドは
+ * プロバイダの上位の階層で、同じ `opus` が pi（opencode zen）経由でも Claude Code 経由でも
+ * 選べる——だからモデル名からは決まらず、人が選ぶ。**ここで選べば会話の途中でも切り替わる**
+ * （再起動は要らない）。
+ *
+ * 一覧は `settings.harness_models` から取る（番頭には渡さない口）。選んだ結果は自分で
+ * 覚えない。ホストが `model_state` を配り直したときに変わる（D3）。
  * **押した脇に開くドロップダウンは使わない**（`Modal`。PO報告 2026-08-06）。
  */
+interface BackendOption {
+  id: string;
+  label: string;
+  unavailable?: string;
+  providers: Array<{
+    id: string;
+    models: Array<{ id: string; name?: string; vision?: boolean; contextWindow?: number }>;
+  }>;
+}
+
+/** 画面の一覧に並べる1行（バックエンドとプロバイダを畳んだ形）。 */
+interface Choice {
+  backend: string;
+  backendLabel: string;
+  provider: string;
+  id: string;
+  name: string;
+}
+
 function ModelSelect({
   current,
   onSelect,
 }: {
   current: CurrentModel | undefined;
-  onSelect: (provider: string, model: string) => void;
+  onSelect: (provider: string, model: string, backend: string) => void;
 }): React.ReactElement {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [models, setModels] = useState<LlmModelInfo[]>();
+  const [backends, setBackends] = useState<BackendOption[]>();
   const [error, setError] = useState<string>();
 
   useEffect(() => {
-    if (!open || models) return;
-    void callModuleTool<{ models: LlmModelInfo[] }>(CORE_TOOL_ENDPOINT, "llm.list", {
-      adopted: true,
-      limit: 200,
-    })
-      .then((data) => setModels(data.models.filter((m) => m.hostUsable)))
+    if (!open || backends) return;
+    void callModuleTool<{ backends: BackendOption[] }>(
+      SETTINGS_TOOL_ENDPOINT,
+      "settings.harness_models",
+      {}
+    )
+      .then((data) => setBackends(data.backends))
       // I2: 取れなかったことを黙らない。空の一覧を「モデルが無い」と誤読させない
       .catch((err: unknown) => setError(String(err)));
-  }, [open, models]);
+  }, [open, backends]);
 
-  const matched = (models ?? []).filter((m) => {
+  const all: Choice[] = (backends ?? [])
+    .filter((b) => !b.unavailable)
+    .flatMap((b) =>
+      b.providers.flatMap((p) =>
+        p.models.map((m) => ({
+          backend: b.id,
+          backendLabel: b.label,
+          provider: p.id,
+          id: m.id,
+          name: m.name ?? m.id,
+        }))
+      )
+    );
+  const matched = all.filter((c) => {
     const q = query.trim().toLowerCase();
     if (q.length === 0) return true;
-    return `${m.providerId} ${m.name} ${m.id}`.toLowerCase().includes(q);
+    return `${c.backendLabel} ${c.provider} ${c.name} ${c.id}`.toLowerCase().includes(q);
   });
-  const providers = [...new Set(matched.map((m) => m.providerId))];
-  const ordered = providers.flatMap((providerId) =>
-    matched.filter((m) => m.providerId === providerId)
-  );
+  // バックエンド → プロバイダ の順に畳む（見出しは2段）
+  const groups: Array<{ backend: string; backendLabel: string; provider: string; rows: Choice[] }> =
+    [];
+  for (const c of matched) {
+    const last = groups[groups.length - 1];
+    if (last && last.backend === c.backend && last.provider === c.provider) last.rows.push(c);
+    else
+      groups.push({
+        backend: c.backend,
+        backendLabel: c.backendLabel,
+        provider: c.provider,
+        rows: [c],
+      });
+  }
+  const ordered = groups.flatMap((g) => g.rows);
+  const blocked = (backends ?? []).filter((b) => b.unavailable);
 
   const close = (): void => {
     setOpen(false);
     setQuery("");
   };
-  const pick = (m: LlmModelInfo): void => {
-    onSelect(m.providerId, m.id);
+  const pick = (c: Choice): void => {
+    onSelect(c.provider, c.id, c.backend);
     close();
   };
   const nav = useListNav(ordered, { onChoose: pick, resetKey: query });
@@ -210,59 +262,53 @@ function ModelSelect({
             </div>
             <div className="model-select-list" role="listbox" ref={nav.listRef}>
               {error !== undefined && <div className="model-select-error">{error}</div>}
-              {error === undefined && models === undefined && (
+              {error === undefined && backends === undefined && (
                 <div className="model-select-empty">読み込んでいます…</div>
               )}
-              {models !== undefined && matched.length === 0 && (
+              {backends !== undefined && matched.length === 0 && (
                 <div className="model-select-empty">
-                  {(models ?? []).length === 0
-                    ? "採用しているモデルがありません。設定の「LLM・モデル」で採用してください。"
+                  {all.length === 0
+                    ? "選べるモデルがありません。設定の「LLM・モデル」で採用してください。"
                     : "見つかりません"}
                 </div>
               )}
-              {providers.map((providerId) => (
-                <div key={providerId}>
-                  <div className="model-select-group">{providerId}</div>
-                  {matched
-                    .filter((m) => m.providerId === providerId)
-                    .map((m) => {
-                      const isCurrent = current?.provider === m.providerId && current.id === m.id;
-                      const index = ordered.indexOf(m);
-                      return (
-                        <button
-                          key={`${m.providerId}/${m.id}`}
-                          className={`model-select-item ${isCurrent ? "is-current" : ""} ${
-                            nav.isOn(index) ? "is-on" : ""
-                          }`}
-                          type="button"
-                          role="option"
-                          aria-selected={isCurrent}
-                          onClick={() => pick(m)}
-                          {...nav.rowProps(index)}
-                        >
-                          <span className="model-select-item-name">{m.name}</span>
-                          {m.contextWindow ? (
-                            <span className="model-select-badge">{formatTokens(m.contextWindow)}</span>
-                          ) : (
-                            <span
-                              className="model-select-badge is-unknown"
-                              title="文脈の長さが分かりません。選ぶと毎ターン要約が走る可能性があります"
-                            >
-                              長さ不明
-                            </span>
-                          )}
-                          {m.cost && (m.cost.input > 0 || m.cost.output > 0) && (
-                            <span className="model-select-badge" title="100万トークンあたり 入力/出力">
-                              ${m.cost.input}/${m.cost.output}
-                            </span>
-                          )}
-                          {m.vision && <span className="model-select-badge">画像可</span>}
-                          <span className="model-select-check">
-                            {isCurrent && <Icon name="check" size={14} />}
-                          </span>
-                        </button>
-                      );
-                    })}
+              {groups.map((g) => (
+                <div key={`${g.backend}/${g.provider}`}>
+                  {/* **バックエンドはプロバイダの上位**。同じ opus が両方に出るのが正しい */}
+                  <div className="model-select-group">
+                    {g.backendLabel} <span aria-hidden>›</span> {g.provider}
+                  </div>
+                  {g.rows.map((c) => {
+                    const isCurrent =
+                      (current?.backend ?? "pi") === c.backend &&
+                      current?.provider === c.provider &&
+                      current?.id === c.id;
+                    const index = ordered.indexOf(c);
+                    return (
+                      <button
+                        key={`${c.backend}/${c.provider}/${c.id}`}
+                        className={`model-select-item ${isCurrent ? "is-current" : ""} ${
+                          nav.isOn(index) ? "is-on" : ""
+                        }`}
+                        type="button"
+                        role="option"
+                        aria-selected={isCurrent}
+                        onClick={() => pick(c)}
+                        {...nav.rowProps(index)}
+                      >
+                        <span className="model-select-item-name">{c.name}</span>
+                        <span className="model-select-check">
+                          {isCurrent && <Icon name="check" size={14} />}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+              {/* I2: 選べないバックエンドは黙って消さず、理由を出す */}
+              {blocked.map((b) => (
+                <div key={b.id} className="model-select-empty" title={b.unavailable}>
+                  {b.label}：{b.unavailable}
                 </div>
               ))}
             </div>
@@ -870,7 +916,7 @@ export function Room({
             </button>
             <ModelSelect
               current={model}
-              onSelect={(provider, id) => session.setModel(threadId, provider, id)}
+              onSelect={(provider, id, backend) => session.setModel(threadId, provider, id, backend)}
             />
             <ContextMeter tokens={session.contextTokensOf(threadId)} contextWindow={model?.contextWindow} />
             {/*
