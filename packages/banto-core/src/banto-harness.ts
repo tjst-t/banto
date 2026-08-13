@@ -111,6 +111,13 @@ export interface BantoHarness {
   readonly sessionId: string;
   readonly isStreaming: boolean;
 
+  /**
+   * 話しかける。**ターンが終わるまで返らない**（決定97）。
+   *
+   * サーバはここの解決をもって `turn_end` を配る——積んで即座に返す実装にすると、
+   * **返事が来る前に画面が「終わった」になる**（Agent SDK 側で実際にそうなっていた）。
+   * 中断・落ちた・畳んだときも返すこと（待ち続けると「回答中」のまま戻らない）。
+   */
   prompt(text: string, options?: HarnessPromptOptions): Promise<void>;
   abort(): Promise<void>;
 
