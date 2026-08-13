@@ -88,6 +88,11 @@ interface EnvProfileView {
   name: string;
   driver: string;
   quota?: { max_instances: number };
+  /**
+   * ドライバごとの設定。**Kobo はここを解釈しない**（決定60a）——例外は
+   * 「人が触れる面を持つか」だけで、`profileIsTouchable` がその1点を見る（理由はそこに書いた）。
+   */
+  config?: Record<string, unknown>;
 }
 
 /**
@@ -3323,6 +3328,84 @@ export class Daemon {
   // ── 判断待ちに入ったら環境を立てる（S9d7fdb-7・決定59）─────────────────────
 
   /**
+   * 判断待ちのあいだ立てる環境のプロファイル名。**立てないなら `undefined`**（段11c・段B）。
+   *
+   * 順に見る。**上ほど具体的**：
+   *   1. タスクの `environment`（そのタスクだけの事情。書いてあれば従う）
+   *   2. 層B設定の `review.env_profile`（プロジェクトが名指しした「人が触る環境」）
+   *   3. 層B設定の `verify.profile` ——ただし**触れる面を持つときだけ**
+   *
+   * 3で条件を付けるのは、**触れない環境を毎回立てても費用しか掛からない**から。
+   * banto の `verify.profile` は `test`（docker・`setup: npm ci`・ポート無し）で、
+   * そのまま流用すると「毎回 docker が立つが PO は触れない」になる——決定59 が
+   * 果たしたいのは「触って決められる」ことなので、それなら立てない方がよい。
+   *
+   * **立てなかったことは帳簿に残す**（I2）。番頭が読んで「`review.env_profile` を
+   * 設定してください」と分かる形にする——黙って何も起きないのが、11c が6日間
+   * 動いていなかったときの姿そのものだった。
+   */
+  private async reviewEnvProfile(
+    projectTag: string,
+    task: TaskRecord
+  ): Promise<string | undefined> {
+    const declared = typeof task["environment"] === "string" ? task["environment"] : undefined;
+    if (declared) return declared;
+
+    const config = this.projectConfig(projectTag);
+    if (config.review.envProfile) return config.review.envProfile;
+
+    const candidate = config.verify.profile;
+    const notProvisioned = (reason: string): undefined => {
+      const event = this.log.append({
+        type: "env_provision_failed",
+        projectTag,
+        taskId: task.id,
+        profileName: candidate,
+        reason: `立てていません: ${reason}`,
+      });
+      this.applyAndBroadcast(event);
+      return undefined;
+    };
+
+    if (!candidate) return notProvisioned("使えるプロファイルが決められません");
+    let touchable: boolean;
+    try {
+      touchable = await this.profileIsTouchable(projectTag, candidate);
+    } catch (err) {
+      // I2: 「聞けなかった」を「触れない」と混同しない。理由をそのまま残す
+      return notProvisioned(
+        `プロファイルを Environment Pool に聞けませんでした: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    if (!touchable) {
+      return notProvisioned(
+        `検証用のプロファイル "${candidate}" は人が触れる面（config.port）を持ちません。` +
+          "触れない環境を立てても判断の役に立たないので立てていません" +
+          "——触らせたいなら meta/config.yaml に review.env_profile を書いてください"
+      );
+    }
+    return candidate;
+  }
+
+  /**
+   * そのプロファイルは**人が触れる面を持つか**。
+   *
+   * **プロファイルの定義ファイルは読まない**（決定60a）。Environment Pool に聞いた答えの中を見る。
+   * ここだけが `config` を覗く例外で、見るのは**ポートが在るかどうか**だけ——番号は読まない
+   * （どのポートを公開するかは Environment Pool が決める・`exposeProfilePort`）。
+   * 判定式は Environment Pool の公開判定（`pool.ts` の `exposeProfilePort` 分岐）と同じにしてある
+   * ——ここがずれると「Kobo は触れると言うのに URL が出ない」が起きる。
+   */
+  private async profileIsTouchable(projectTag: string, profileName: string): Promise<boolean> {
+    const { usable } = await this.getEnvironmentProfiles(projectTag);
+    const found = usable.find((p) => p.name === profileName);
+    const configured = found?.config?.["port"];
+    if (configured === undefined) return false;
+    const port = typeof configured === "number" ? configured : Number(configured);
+    return Number.isFinite(port) && port > 0;
+  }
+
+  /**
    * `review-ready` に入ったタスクの環境を立てる。
    *
    * 決定59：**PO の判断が要るものは、見るだけでなく触れる状態で差し出す。**
@@ -3330,29 +3413,20 @@ export class Daemon {
    * ブラウザビュー／セッションビューアが担う。
    *
    * 段11c で3つ直した（報告 A-6。それまで実測 `env_provisioned` は 0 件だった）：
-   *   1. **宣言が無ければプロジェクトの既定検証プロファイルへ落ちる。** `environment` を
-   *      書いたタスクは 70 本中 0 本で、書けと促すものも無かった——入口が実質塞がっていた
+   *   1. **宣言が無ければプロジェクトの既定へ落ちる。** `environment` を書いたタスクは
+   *      70 本中 0 本で、書けと促すものも無かった——入口が実質塞がっていた
    *   2. **タスクのワークツリーを渡す。** 渡さないと立つのは main のチェックアウト
    *   3. **発火点は `review-ready`**（呼び出し側のコメント参照）
    *
    * I2: provision の失敗は遷移を巻き戻さない。既に遷移は成立しており（D3）、
-   *     失敗は `env_provision_failed` として見えるようにする。
+   *     失敗（および**立てなかったこと**）は `env_provision_failed` として見えるようにする。
    */
   private async _autoProvisionOnReview(projectTag: string, taskId: string): Promise<void> {
     try {
       const task = this.store.getTask(taskId, projectTag);
       if (!task) return;
 
-      /**
-       * 段11c-1: **宣言が無いことを「要らない」と読まない。**
-       *
-       * タスクの `environment` は任意フィールドで、実測で 70 本中 0 本しか書いていなかった
-       * ——ここで黙って return していたので、機構は6日間・1,952 イベントを通して一度も
-       * 先へ進んでいない。「全タスクに手で書かせる」方向では直らない（書かせる促しも無い）。
-       * 宣言はプロジェクトの既定（層B設定 `meta/config.yaml` の `verify.profile`）で埋める。
-       */
-      let profileName = typeof task["environment"] === "string" ? task["environment"] : undefined;
-      if (!profileName) profileName = this.projectConfig(projectTag).verify.profile;
+      const profileName = await this.reviewEnvProfile(projectTag, task);
       if (!profileName) return;
 
       /**

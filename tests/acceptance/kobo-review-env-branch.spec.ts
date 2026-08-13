@@ -31,6 +31,7 @@ import {
   EnvironmentPoolService,
   createEnvTools,
 } from "@banto/environment-pool";
+import { loadProjectConfig } from "../../packages/banto-daemon/src/review-policy.js";
 
 // imp-0012: テスト用の一時 state に隔離
 const TEST_DRIVER_STATE = path.join(
@@ -103,8 +104,12 @@ before(async () => {
   git(["config", "user.name", "t"], repoDir);
   fs.mkdirSync(path.join(repoDir, "meta"), { recursive: true });
   fs.writeFileSync(path.join(repoDir, "meta", "environments.yaml"), PROFILE, "utf-8");
-  // 段11c-1: `environment` を宣言しないタスクの落ち先
-  fs.writeFileSync(path.join(repoDir, "meta", "config.yaml"), "verify:\n  profile: dev\n", "utf-8");
+  // 段11c-1: `environment` を宣言しないタスクの落ち先（層B設定が名指しする環境）
+  fs.writeFileSync(
+    path.join(repoDir, "meta", "config.yaml"),
+    "review:\n  env_profile: dev\n",
+    "utf-8"
+  );
   fs.writeFileSync(path.join(repoDir, "marker.txt"), "main", "utf-8");
   git(["add", "-A"], repoDir);
   git(["commit", "-m", "init"], repoDir);
@@ -172,7 +177,7 @@ describe("[段11c] PO が触るレビュー用の環境は、ブランチを映�
     assert.equal(pool.list({ taskId: TASK }).length, 1, "判断待ちの間に環境が在ること");
   });
 
-  it("[段11c-1] `environment` の宣言が無くても、層B設定の検証プロファイルで立つ", () => {
+  it("[段11c-1] `environment` の宣言が無くても、層B設定が名指しした環境で立つ", () => {
     assert.equal(pool.list({ taskId: TASK })[0]!.profile, "dev");
   });
 
@@ -215,5 +220,41 @@ describe("[段11c] PO が触るレビュー用の環境は、ブランチを映�
     assert.equal(approved.ok, true, JSON.stringify(approved));
     await until(() => pool.list({ taskId: TASK }).length === 0);
     await until(() => daemon.getTaskEvents(PROJ, TASK).some((e) => e.type === "env_torn_down"));
+  });
+});
+
+/**
+ * 層B設定の読み取り（段B）。**書いたのに効かない状態を作らない**（I2）。
+ */
+describe("[段B] `review.env_profile` の読み取り", () => {
+  const withConfig = <T>(body: string, run: (dir: string) => T): T => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "review-env-cfg-"));
+    try {
+      fs.mkdirSync(path.join(dir, "meta"), { recursive: true });
+      fs.writeFileSync(path.join(dir, "meta", "config.yaml"), body, "utf-8");
+      return run(dir);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("プロファイル名として読める", () => {
+    withConfig("review:\n  env_profile: dev\n", (dir) => {
+      assert.equal(loadProjectConfig(dir).review.envProfile, "dev");
+    });
+  });
+
+  it("書いていなければ undefined（無いことと壊れていることを混同しない）", () => {
+    withConfig("review:\n  po_required_paths:\n    - src/**\n", (dir) => {
+      const config = loadProjectConfig(dir);
+      assert.equal(config.review.envProfile, undefined);
+      assert.deepEqual(config.review.poRequiredPaths, ["src/**"], "他の項目は読めている");
+    });
+  });
+
+  it("文字列でなければ投げる（黙って無視して「効かない設定」にしない・I2）", () => {
+    withConfig("review:\n  env_profile:\n    - dev\n", (dir) => {
+      assert.throws(() => loadProjectConfig(dir), /review\.env_profile はプロファイル名/);
+    });
   });
 });

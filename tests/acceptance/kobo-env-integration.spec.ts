@@ -24,6 +24,7 @@ import {
   EnvironmentPool,
   EnvironmentPoolService,
   createEnvTools,
+  createEnvProxyExposer,
 } from "@banto/environment-pool";
 
 // imp-0012: テスト用の一時 state に隔離
@@ -86,16 +87,27 @@ async function harness(
       "profiles:\n  dev:\n    driver: process\n    config:\n      cmd: sleep 120\n    ttl: 1h\n",
     "utf-8"
   );
-  // 段11c-1: `environment` を宣言していないタスクの落ち先（層B設定の検証プロファイル）
+  // 段11c-1: `environment` を宣言していないタスクの落ち先（層B設定が名指しする環境）
   if (options.configBody !== null) {
     fs.writeFileSync(
       path.join(projectDir, "meta", "config.yaml"),
-      options.configBody ?? "verify:\n  profile: dev\n",
+      options.configBody ?? "review:\n  env_profile: dev\n",
       "utf-8"
     );
   }
 
-  const pool = new EnvironmentPool({ dataDir: poolDir, driverTimeoutMs: 20_000 });
+  const pool = new EnvironmentPool({
+    dataDir: poolDir,
+    driverTimeoutMs: 20_000,
+    // 決定39: ポートを持つプロファイル（＝人が触れる面）は公開の口が要る。
+    // 無いと `exposeProfilePort` の頼みが「公開の実装が設定されていない」で落ちる
+    exposers: {
+      proxy: createEnvProxyExposer({
+        baseUrl: "/api/environment-pool",
+        publicBaseUrl: "https://banto.example",
+      }),
+    },
+  });
   const service = await EnvironmentPoolService.start({ tools: createEnvTools(pool), port: 0 });
 
   const worktreeBase = path.join(dataDir, "worktrees");
@@ -196,7 +208,7 @@ describe("[task-0059/a1] レビューに入ったら Environment Pool に立て�
    * 70 本中 0 本——つまりこの経路は6日間・1,952 イベントを通して一度も先へ進んでおらず、
    * 「PO が触れる環境」は Kobo の外（番頭の手）でしか立っていなかった。
    */
-  it("environment を宣言していなくても、プロジェクトの既定検証プロファイルで立つ", async () => {
+  it("environment を宣言していなくても、層B設定が名指しした環境で立つ", async () => {
     await driveToReview(h, "task-0002");
     await until(() =>
       h.daemon.getTaskEvents(h.projId, "task-0002").some((e) => e.type === "env_provisioned")
@@ -204,7 +216,7 @@ describe("[task-0059/a1] レビューに入ったら Environment Pool に立て�
 
     const live = h.pool.list({ taskId: "task-0002" });
     assert.equal(live.length, 1, "宣言が無いタスクにも触れる場所が出る");
-    assert.equal(live[0]!.profile, "dev", "層B設定の verify.profile が既定として使われる");
+    assert.equal(live[0]!.profile, "dev", "層B設定の review.env_profile が既定として使われる");
   });
 
   /**
@@ -337,6 +349,112 @@ describe("[task-0059/a1] 立てられないものを ready にしない（物理
 
       await h.pool.teardown(taken.envId);
       await until(() => h.daemon.getTask(h.projId, "task-0005")?.status === "ready");
+    } finally {
+      await teardownHarness(h);
+    }
+  });
+});
+
+/**
+ * 段B（PO 指示 2026-08-13）: **触れない環境を立てて「触れる」ふりをしない。**
+ *
+ * 第1便では `environment` の宣言が無いとき `verify.profile` へ落としたが、
+ * banto のそれは `test`（docker・`setup: npm ci`・**ポート無し**）で、
+ * 「毎回 docker が立つのに PO は触れない」——費用だけ掛かって決定59 の目的を果たさない。
+ *
+ * 落ち先は3分岐になる。**どれに落ちたかを番頭が読める**ことが条件（I2）。
+ */
+describe("[段B] 判断待ちに立てる環境の決め方（3分岐）", () => {
+  /** ポートを持つ（人が触れる）／持たない（検証専用）の2つを定義する。 */
+  const PROFILES =
+    "profiles:\n" +
+    "  touchable:\n" +
+    "    driver: process\n" +
+    "    config:\n" +
+    "      cmd: sleep 120\n" +
+    "      port: 5199\n" +
+    "    ttl: 1h\n" +
+    "  verify-only:\n" +
+    "    driver: process\n" +
+    "    config:\n" +
+    "      cmd: sleep 120\n" +
+    "    ttl: 1h\n";
+
+  it("① `review.env_profile` を名指ししていれば、それで立つ", async () => {
+    const h = await harness({
+      profileBody: PROFILES,
+      configBody: "verify:\n  profile: verify-only\nreview:\n  env_profile: touchable\n",
+    });
+    try {
+      await driveToReview(h, "task-0010");
+      await until(() =>
+        h.daemon.getTaskEvents(h.projId, "task-0010").some((e) => e.type === "env_provisioned")
+      );
+      const live = h.pool.list({ taskId: "task-0010" });
+      assert.equal(live.length, 1);
+      assert.equal(live[0]!.profile, "touchable", "名指しより verify.profile が勝ってはいけない");
+      assert.ok(live[0]!.url, "人が触れる URL が出る（決定59）");
+    } finally {
+      await teardownHarness(h);
+    }
+  });
+
+  it("② 名指しが無くても、`verify.profile` が触れる面を持つならそれで立つ", async () => {
+    const h = await harness({
+      profileBody: PROFILES,
+      configBody: "verify:\n  profile: touchable\n",
+    });
+    try {
+      await driveToReview(h, "task-0011");
+      await until(() =>
+        h.daemon.getTaskEvents(h.projId, "task-0011").some((e) => e.type === "env_provisioned")
+      );
+      assert.equal(h.pool.list({ taskId: "task-0011" })[0]!.profile, "touchable");
+    } finally {
+      await teardownHarness(h);
+    }
+  });
+
+  it("③ どちらも無いときは**立てず**、理由を帳簿に残す（費用だけの環境を作らない）", async () => {
+    const h = await harness({
+      profileBody: PROFILES,
+      configBody: "verify:\n  profile: verify-only\n",
+    });
+    try {
+      await driveToReview(h, "task-0012");
+      await until(() =>
+        h.daemon.getTaskEvents(h.projId, "task-0012").some((e) => e.type === "env_provision_failed")
+      );
+
+      assert.equal(h.pool.list({ taskId: "task-0012" }).length, 0, "立ててはいけない");
+      const event = h.daemon
+        .getTaskEvents(h.projId, "task-0012")
+        .find((e) => e.type === "env_provision_failed") as { reason: string; profileName: string };
+      // **番頭が読んで直せること**が条件。どのプロファイルが・なぜ・どうすればよいか
+      assert.match(event.reason, /^立てていません:/);
+      assert.match(event.reason, /config\.port/, "触れない理由が書いてある");
+      assert.match(event.reason, /review\.env_profile/, "どう直すかが書いてある");
+      assert.equal(event.profileName, "verify-only", "どのプロファイルの話かが分かる");
+    } finally {
+      await teardownHarness(h);
+    }
+  });
+
+  it("タスクが `environment` を宣言していれば、層B設定より優先される（一番具体的なものが勝つ）", async () => {
+    const h = await harness({
+      profileBody: PROFILES,
+      configBody: "review:\n  env_profile: touchable\n",
+    });
+    try {
+      await driveToReview(h, "task-0013", "verify-only");
+      await until(() =>
+        h.daemon.getTaskEvents(h.projId, "task-0013").some((e) => e.type === "env_provisioned")
+      );
+      assert.equal(
+        h.pool.list({ taskId: "task-0013" })[0]!.profile,
+        "verify-only",
+        "タスクが名指ししたものを勝手に取り替えない"
+      );
     } finally {
       await teardownHarness(h);
     }

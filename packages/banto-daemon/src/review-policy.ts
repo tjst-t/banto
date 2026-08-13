@@ -54,6 +54,18 @@ export interface ProjectConfig {
      * 書き方は `scope.paths` と同じ glob（`packages/banto-web/**`）。**既定は空**。
      */
     poRequiredPaths: string[];
+    /**
+     * **判断待ちの間、人が触るための環境プロファイル**（決定59・段11c）。
+     *
+     * `meta/environments.yaml` に定義したもののうち、**人が触れる面を持つもの**を名指しする。
+     * 省略したときは `verify.profile` に落ちるが、そちらは**触れる面を持つときだけ**使う
+     * ——マージ前ゲートの検証用プロファイルは普通ポートを持たないので、そのまま流用すると
+     * 「毎回 docker で立つが PO は触れない」という費用だけの環境が出来る（実測でそうなった）。
+     *
+     * 判定表と同じくこれも**プロジェクトの持ち物**（決定66・38f）。どのプロファイルが
+     * 触れる面を持つかを知っているのは Environment Pool なので、Kobo は名前だけを扱う。
+     */
+    envProfile?: string;
   };
   limits: {
     /**
@@ -123,6 +135,10 @@ export function loadProjectConfig(repoPath: string): ProjectConfig {
   if (rawPaths !== undefined && !Array.isArray(rawPaths)) {
     throw new Error(`${PROJECT_CONFIG_PATH}: review.po_required_paths は配列で書いてください`);
   }
+  const envProfile = review["env_profile"];
+  if (envProfile !== undefined && typeof envProfile !== "string") {
+    throw new Error(`${PROJECT_CONFIG_PATH}: review.env_profile はプロファイル名（文字列）で書いてください`);
+  }
   const tier = limits["max_model_tier"];
   if (tier !== undefined && !["fast", "standard", "reasoning"].includes(String(tier))) {
     throw new Error(
@@ -164,7 +180,10 @@ export function loadProjectConfig(repoPath: string): ProjectConfig {
 
   return {
     verify: { profile: (verifyProfile as string | undefined) ?? DEFAULT_VERIFY_PROFILE },
-    review: { poRequiredPaths: Array.isArray(rawPaths) ? rawPaths.map(String) : [] },
+    review: {
+      poRequiredPaths: Array.isArray(rawPaths) ? rawPaths.map(String) : [],
+      ...(envProfile !== undefined ? { envProfile } : {}),
+    },
     limits: {
       ...(tier !== undefined ? { maxModelTier: tier as ProjectConfig["limits"]["maxModelTier"] } : {}),
       ...(concurrent !== undefined ? { maxConcurrentSessions: concurrent } : {}),
