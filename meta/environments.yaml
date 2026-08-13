@@ -107,7 +107,7 @@ profiles:
   # config.port を持つので「人が触る」環境として扱われる（決定59）。
   # compose は docker/dev.yaml——vite dev server を**コンテナ内 4200** で立てる。
   #
-  # **`config.port` はコンテナ側／アプリ側のポート**（PO裁定 2026-08-13）。ホスト側の
+  # **`config.port` はコンテナ側／アプリ側のポート**（番頭判断 2026-08-13）。ホスト側の
   # 番号はもう固定しない——compose は `- "4200"` とだけ書き、docker が空きを選び、
   # Environment Pool が `docker compose ps` で実際の publish 先を引いてそこへ中継する。
   # おかげで**判断待ちが2本並んでも、それぞれ別の環境の URL が出る**（以前は 4201 固定で、

@@ -351,7 +351,7 @@ async function handleProvision(input: Record<string, unknown>): Promise<void> {
   if (workdir) handle["workdir"] = workdir;
 
   /**
-   * **どのポートで公開されたか**（PO裁定 2026-08-13）。
+   * **どのポートで公開されたか**（番頭判断 2026-08-13）。
    *
    * このドライバはホストでそのまま動くので、bind するのは**アプリ自身**——ドライバに
    * 観測する手段は無い。だから「アプリが割り当てを受け取ったと分かるとき」だけ申告する：

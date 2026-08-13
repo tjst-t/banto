@@ -788,7 +788,7 @@ export class EnvironmentPool {
     const extraEnv = await this.credentialsFor(resolved.profile, request.repoPath);
 
     /**
-     * **人が触る環境に割り当てるホスト側のポート**（PO裁定 2026-08-13）。
+     * **人が触る環境に割り当てるホスト側のポート**（番頭判断 2026-08-13）。
      *
      * これが無かったころ、ホスト側の番号を決めていたのは**プロファイル（compose ファイル）
      * だけ**だった（`docker/dev.yaml` の `"4201:4200"`）。同じプロファイルで2つ立てると
@@ -898,7 +898,7 @@ export class EnvironmentPool {
     let exposePort = request.expose;
     if (exposePort === undefined && request.exposeProfilePort === true) {
       /**
-       * **まずドライバに聞く**（PO裁定 2026-08-13）。「実際にどのポートで公開されたか」を
+       * **まずドライバに聞く**（番頭判断 2026-08-13）。「実際にどのポートで公開されたか」を
        * 知っているのはドライバだけで、プロファイルに書いてある番号は*希望*でしかない。
        *
        * - docker: `compose ps` で実際の publish 先を引いて返す（ホスト側は可変にできる）
@@ -1530,7 +1530,7 @@ function toSummary(entry: EnvLedgerEntry): EnvSummary {
 }
 
 /**
- * 空いているホスト側のポートを1つ取る（PO裁定 2026-08-13）。
+ * 空いているホスト側のポートを1つ取る（番頭判断 2026-08-13）。
  *
  * **取ってすぐ手放す**（listen(0) → close）。掴んだまま渡すと、渡した先が bind できない。
  * 手放してから使うまでの隙に他人が取る可能性は残るが、その場合は環境が立たずに

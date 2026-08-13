@@ -353,7 +353,7 @@ function handleProvision(input: Record<string, unknown>): void {
   };
 
   /**
-   * **実際に publish されたホスト側のポート**（PO裁定 2026-08-13）。
+   * **実際に publish されたホスト側のポート**（番頭判断 2026-08-13）。
    *
    * これを返すのが要点：compose のホスト側を固定しなくてよくなる
    * （`ports: - "4200"` と書けば docker が空きを割り当てる）。固定していたころは

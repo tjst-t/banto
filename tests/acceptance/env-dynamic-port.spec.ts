@@ -1,5 +1,5 @@
 /**
- * 人が触る環境のホスト側ポートは**固定しない**（PO裁定 2026-08-13）。
+ * 人が触る環境のホスト側ポートは**固定しない**（番頭判断 2026-08-13）。
  *
  * **困っていたこと。** ホスト側の番号を決めていたのはプロファイル（compose ファイル）だけで
  * （`docker/dev.yaml` の `"4201:4200"`）、Environment Pool も exposer もドライバも
@@ -92,7 +92,7 @@ after(() => {
   fs.rmSync(TEST_DRIVER_STATE, { force: true });
 });
 
-describe("[PO裁定 2026-08-13] 同じプロファイルを2つ立てても、URL は別々の環境を指す", () => {
+describe("[番頭判断 2026-08-13] 同じプロファイルを2つ立てても、URL は別々の環境を指す", () => {
   let pool: EnvironmentPool;
   let repoDir: string;
   let a: { envId: string; url?: string; exposedPort?: number };
@@ -181,7 +181,7 @@ describe("[PO裁定 2026-08-13] 同じプロファイルを2つ立てても、UR
   });
 });
 
-describe("[PO裁定 2026-08-13] 既存のプロファイルは変わらない（申告が無ければ config.port）", () => {
+describe("[番頭判断 2026-08-13] 既存のプロファイルは変わらない（申告が無ければ config.port）", () => {
   it("`BANTO_ENV_PORT` を使わないコマンドは、これまでどおり config.port で公開される", async () => {
     const pool = newPool();
     // 実際に bind はしない（`sleep`）。見たいのは「どの番号で公開したと台帳に載るか」

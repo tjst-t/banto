@@ -1,6 +1,6 @@
 /**
  * docker ドライバは、**実際に publish されたホスト側のポートを申告する**
- * （PO裁定 2026-08-13）。
+ * （番頭判断 2026-08-13）。
  *
  * これが無かったころ、ホスト側の番号を決めていたのは compose ファイルだけだった
  * （`docker/dev.yaml` の `"4201:4200"`）。同じプロファイルで2つ立てると2本目が bind
@@ -92,7 +92,7 @@ after(() => {
   }
 });
 
-describe("[PO裁定 2026-08-13] docker は実際の publish 先を申告する", () => {
+describe("[番頭判断 2026-08-13] docker は実際の publish 先を申告する", () => {
   it("ホスト側を固定しない compose で立てると、割り当てられた番号が返る", () => {
     const out = provision(TASK_A);
     assert.ok(out.publishedPort, "publishedPort が返っていない（プールは config.port に落ちる）");
