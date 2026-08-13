@@ -25,6 +25,16 @@ export function webToolsExtensionPath(): string {
   return piExtensionPath("web-tools");
 }
 
+/**
+ * 長いツール結果をファイルへ退避し、栞に置き換える拡張のパス（task-0090）。
+ *
+ * **全職人に載せる。** 長いツール結果の直後に応答が返らなくなる事故（task-0089 で3回連続）は
+ * モデル固有ではなく、載せ忘れた職人だけが同じ穴に落ちる。止めたいときは環境変数で切る。
+ */
+export function toolOffloadExtensionPath(): string {
+  return piExtensionPath("tool-offload");
+}
+
 /** src から実行する場合と dist から実行する場合で拡張子が変わるため、自分に合わせて解決する。 */
 function piExtensionPath(name: string): string {
   const ext = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
