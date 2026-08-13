@@ -1548,8 +1548,8 @@ async function serve(options: ServeOptions): Promise<void> {
     /**
      * 画面からモデルを変える口（決定：番頭は具体モデルを持つ／ADR-0004）。
      *
-     * **開いている会話すべてに効かせて、既定としても保存する**——番頭は連続した一人で、
-     * 会話ごとに別の頭になったりしないし、再起動で選び直させるのも筋が悪い。
+     * **その会話だけに効かせる**（PO裁定 2026-08-04）。既定は書き換えない——新しい会話の
+     * 既定は `roles.steward`（設定画面「番頭が使うモデル」）が持つ。
      * I2: 解決できない・ハーネスが対応していないときは throw して、画面を前のままにする。
      */
     onSelectModel: async (thread, nextProvider: string, nextId: string, nextBackend?: string) => {

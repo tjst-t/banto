@@ -1,7 +1,7 @@
 ---
 id: adr-0019
 type: adr
-status: proposed
+status: accepted
 supersedes: adr-0018
 refs: [adr-0009, adr-0010, adr-0011, adr-0017, adr-0018, inc-0056, inc-0057, imp-0018]
 ---
@@ -246,9 +246,10 @@ node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.d.ts:308
 | `inbox.post` | 1 | 決定73。判断を求める唯一の口 |
 | `place.list/request_write` | 2 | 決定36・38c |
 | `handoff.read/list` | 2 | 決定47b |
+| `llm.list` | 1 | **読み取り1本だけ残す**。番頭が「いま何で動いているか」を答えられないとモデルの相談ができない（実測32回・`llm.*` 中最多）。書き換え系18本は設定画面にある（決定41c） |
 | `env.*` | 12 | **未決①のため現状維持。** 一度「外す」と裁定され取り下げられた以上、決めていないことを絞り込みのついでに実装しない |
 
-**合計 55本**（`env.*` 12本を含む。外すなら 43本）。Anthropic の 30〜50 の帯を少し超える。
+**合計 56本**（`env.*` 12本を含む。外すなら 43本）。Anthropic の 30〜50 の帯を少し超える。
 
 **それでも実測上は問題にならない**——条件F が示すとおり、「何か呼ぶ」を決めているのは
 数ではなく**散文の一覧**で、100個のままでも 100% に戻る。数を減らす効き目（B）は
