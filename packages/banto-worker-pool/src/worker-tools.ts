@@ -30,12 +30,21 @@ const MAX_EVENTS = 100;
  */
 const EXAMPLE_SESSION_ID = "019fbd87-1aba-74e8-a7bd-14f9dc8b2ede";
 
+/**
+ * 値の言語を明示する一行（ADR-0019 決定84-2）。
+ *
+ * arXiv:2601.05366 が挙げる最多の故障は `parameter value language mismatch`——
+ * banto は PO が日本語・道具の I/F が英語という、その型そのもの。**識別子の欄に
+ * 日本語を書かせない**ことを、例だけに頼らず言葉でも言う。
+ */
+const ID_HINT = "\nsessionId は英語の識別子（UUID）で埋める。";
+
 export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] {
   const delegate = defineNamespacedTool({
     name: "worker.delegate",
     label: "Worker: Delegate",
     description:
-      "職人に実作業（調査・実装・修正）を任せる。手を動かす仕事は自分でやらず渡す（D10）。\n例: {taskId: \"task-0042\", worktreePath: \"/home/ubuntu/worktrees/banto/task-0042\", instruction: \"落ちる原因を調べて報告する\"} → sessionId \"019fbd87-1aba-74e8-a7bd-14f9dc8b2ede\"\ninstruction 以外の値は英語（識別子・パス）で埋める。\n**渡したら手を離してターンを終える**（知らせは自動で届く。attach で待たない）。",
+      `職人に実作業（調査・実装・修正）を任せる。手を動かす仕事は自分でやらず渡す（D10）。\n例: {taskId: "task-0042", worktreePath: "/home/ubuntu/worktrees/banto/task-0042", instruction: "落ちる原因を調べて報告する"} → sessionId "${EXAMPLE_SESSION_ID}"\ninstruction 以外の値は英語（識別子・パス）で埋める。\n**渡したら手を離してターンを終える**（知らせは自動で届く。attach で待たない）。`,
     parameters: Type.Object({
       taskId: Type.String(),
       origin: Type.Optional(Type.String({ description: "報告の宛先" })),
@@ -152,7 +161,7 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     name: "worker.steer",
     label: "Worker: Steer",
     description:
-      "稼働中の職人に指示を渡す。**職人の質問に答えるのもこれ**（答えると待ちが解ける）。\n例: {sessionId: \"019fbd87-1aba-74e8-a7bd-14f9dc8b2ede\", message: \"そのまま直してよい\"} → 渡した旨",
+      `稼働中の職人に指示を渡す。**職人の質問に答えるのもこれ**（答えると待ちが解ける）。\n例: {sessionId: "${EXAMPLE_SESSION_ID}", message: "そのまま直してよい"} → 渡した旨${ID_HINT}`,
     parameters: Type.Object({
       sessionId: Type.String(),
       message: Type.String()
@@ -171,7 +180,7 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     name: "worker.close",
     label: "Worker: Close",
     description:
-      "仕事が済んだ職人を畳む。記録は残り worker.wake で起こし直せる。\n例: {sessionId: \"019fbd87-1aba-74e8-a7bd-14f9dc8b2ede\"} → 畳んだ旨\n**報告が来ただけでは畳まない**（報告は主張であって完了の証明ではない）。",
+      `仕事が済んだ職人を畳む。記録は残り worker.wake で起こし直せる。\n例: {sessionId: "${EXAMPLE_SESSION_ID}"} → 畳んだ旨${ID_HINT}\n**報告が来ただけでは畳まない**（報告は主張であって完了の証明ではない）。`,
     parameters: Type.Object({ sessionId: Type.String() }),
     async execute(params) {
       await pool.close(params.sessionId, "done");
@@ -186,7 +195,7 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     name: "worker.wake",
     label: "Worker: Wake",
     description:
-      "畳んだ職人を起こし直す。**元の会話が復元される**ので前提を書き直さなくてよい。\n例: {sessionId: \"019fbd87-1aba-74e8-a7bd-14f9dc8b2ede\", instruction: \"監査の指摘を直す\"} → 起こした旨\n別の仕事なら worker.delegate。",
+      `畳んだ職人を起こし直す。**元の会話が復元される**ので前提を書き直さなくてよい。\n例: {sessionId: "${EXAMPLE_SESSION_ID}", instruction: "監査の指摘を直す"} → 起こした旨${ID_HINT}\n別の仕事なら worker.delegate。`,
     parameters: Type.Object({
       sessionId: Type.String(),
       instruction: Type.String()
@@ -209,7 +218,7 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     name: "worker.stop",
     label: "Worker: Stop",
     description:
-      "職人を強制的に止める（作業中でも止まる）。\n例: {sessionId: \"019fbd87-1aba-74e8-a7bd-14f9dc8b2ede\"} → 止めた旨。仕事が済んで畳むなら worker.close。",
+      `職人を強制的に止める（作業中でも止まる）。\n例: {sessionId: "${EXAMPLE_SESSION_ID}"} → 止めた旨。仕事が済んで畳むなら worker.close。${ID_HINT}`,
     parameters: Type.Object({ sessionId: Type.String() }),
     async execute(params) {
       await pool.stop(params.sessionId);
@@ -224,7 +233,7 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     name: "worker.attach",
     label: "Worker: Attach",
     description:
-      "職人の出力の末尾を覗く（割り込まないので稼働中でも安全）。\n例: {sessionId: \"019fbd87-1aba-74e8-a7bd-14f9dc8b2ede\", tailLines: 50} → 末尾50行\n**完了を待つために繰り返し呼ばない**（機構が断る）。",
+      `職人の出力の末尾を覗く（割り込まないので稼働中でも安全）。\n例: {sessionId: "${EXAMPLE_SESSION_ID}", tailLines: 50} → 末尾50行${ID_HINT}\n**完了を待つために繰り返し呼ばない**（機構が断る）。`,
     parameters: Type.Object({
       sessionId: Type.String(),
       tailLines: Type.Optional(Type.Number())
@@ -246,7 +255,7 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     name: "worker.events",
     label: "Worker: Events",
     description:
-      "職人に起きたこと（起動・終了・報告・質問）を古い順に返す。\n例: {afterEventId: 120, limit: 20} → #121 以降の20件\n**事実(fact)と職人の主張(claim)は分かれている**——「終わった」は完了の証明ではない。",
+      "職人に起きたこと（起動・終了・報告・質問）を古い順に返す。\n例: {afterEventId: 120, limit: 20} → #121 以降の20件\nsessionId・origin は英語の識別子で埋める。\n**事実(fact)と職人の主張(claim)は分かれている**——「終わった」は完了の証明ではない。",
     parameters: Type.Object({
       afterEventId: Type.Optional(Type.Number()),
       sessionId: Type.Optional(Type.String()),
