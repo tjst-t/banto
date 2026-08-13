@@ -91,6 +91,16 @@ export {
   type OffloadOutputPatch,
 } from "./tool-offload.js";
 export {
+  createClaudeToolOffload,
+  CLAUDE_WORKER_OFFLOAD_PROMPT,
+  type ClaudeToolOffload,
+} from "./claude-agent/tool-offload.js";
+export {
+  buildHostOptions,
+  buildAppendedPrompt,
+  type BuildHostOptionsParams,
+} from "./claude-agent/options.js";
+export {
   WEB_TOOL_NAMES,
   isPublicHttpUrl,
   htmlToText,

@@ -33,12 +33,13 @@ import {
   createSdkMcpServer,
   query,
   tool,
-  type Options,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { BANTO_MCP_SERVER, CLAUDE_DEFAULT_MODEL, CLAUDE_WEB_TOOL_NAMES } from "./naming.js";
-import { CLAUDE_REPORT_PROMPT, createReportChannel, endedWithoutReporting } from "./report.js";
+import { BANTO_MCP_SERVER, CLAUDE_DEFAULT_MODEL } from "./naming.js";
+import { createReportChannel, endedWithoutReporting } from "./report.js";
 import { createKoboChannel } from "./kobo.js";
+import { createClaudeToolOffload } from "./tool-offload.js";
+import { buildHostOptions } from "./options.js";
 import { SessionTranscript } from "./session-log.js";
 
 // ── 起動時の指定 ────────────────────────────────────────────────────────────
@@ -304,30 +305,24 @@ async function main(): Promise<void> {
       }
     : undefined;
 
-  const appended = [config.systemPrompt, report ? CLAUDE_REPORT_PROMPT : ""]
-    .filter((text) => text.trim().length > 0)
-    .join("\n\n");
+  /**
+   * 長いツール結果の退避（task-0090 / task-0102）。
+   *
+   * pi 職人には拡張として載っているものと**同じ判断**を、この経路では `PostToolUse` フックで
+   * 載せる。載せ忘れた経路だけが「長い結果の直後に応答が返らない」穴に落ちる——
+   * 実運用の職人はほぼ全部こちらなので、ここが空いていた間は対策が効いていなかった。
+   */
+  const offload = createClaudeToolOffload();
 
-  const options: Options = {
-    model: config.model,
+  // 組み立ては `options.ts`（純関数）。**繋ぎ目を試験から叩けるようにするため**に分けてある
+  const options = buildHostOptions({
+    config,
     cwd: process.cwd(),
-    // imp-0004: 立場は**追記**する。既定のプロンプト（道具の作法）を奪わない
-    systemPrompt: {
-      type: "preset",
-      preset: "claude_code",
-      ...(appended.length > 0 ? { append: appended } : {}),
-    },
-    // imp-0004: 空なら既定の道具立てのまま。空の許可リストを渡すと道具が1つも無い職人になる
-    tools: config.tools.length > 0 ? config.tools : { type: "preset", preset: "claude_code" },
-    // imp-0005: 外を読む口は許したときだけ。Claude Code の既定には入っているので明示的に外す
-    ...(config.network ? {} : { disallowedTools: [...CLAUDE_WEB_TOOL_NAMES] }),
-    ...(mcpServers ? { mcpServers } : {}),
-    // 職人の前に人は居ない。**可否を尋ねる相手が居ない**ので通す。危険の境目は
-    // 「渡した道具（tools）」と「作業させる worktree」であって、対話の確認ではない（pi と同じ）
-    canUseTool: async (_toolName, input) => ({ behavior: "allow" as const, updatedInput: input }),
-    settingSources: config.settingSources,
-    ...(config.resume ? { resume: config.resume } : { sessionId }),
-  };
+    sessionId,
+    reported: Boolean(report),
+    offload,
+    mcpServers,
+  });
 
   const session = query({ prompt: queue.stream(), options });
 
