@@ -60,7 +60,7 @@ export interface ChapterKeeperOptions {
    * **pi の `AgentSession` を直に持たない。** 章に要るのは「いまの量」「短すぎないか」
    * 「書き起こし」「捨てて種から始め直す」の4つで、どれも `BantoHarness` の語彙で言える。
    */
-  harness: BantoHarness;
+  harness: BantoHarness | (() => BantoHarness);
   store: HandoffStore;
   threadId: string;
   /**
@@ -115,6 +115,17 @@ export const DEFAULT_MIN_MESSAGES = 4;
 
 export class ChapterKeeper {
   private readonly options: ChapterKeeperOptions;
+  /**
+   * **いまのハーネスを毎回引く**（PO要望 2026-08-13 の差し替えに追随するため）。
+   *
+   * 生成時のものを掴んでいると、会話の途中でバックエンドを替えたときに
+   * **動いていないほうを見張り続ける**——自動の章立ては永久に畳まれず、
+   * 「区切る」を押すと話していないほうのセッションが畳まれる。
+   */
+  private get harness(): BantoHarness {
+    const h = this.options.harness;
+    return typeof h === "function" ? h() : h;
+  }
   private closing = false;
   private unsubscribe: (() => void) | undefined;
 
@@ -129,7 +140,7 @@ export class ChapterKeeper {
    * 「章の境界は番頭が持つ」は契約の前提であって、見張りを始めたかどうかとは別。
    */
   start(): void {
-    this.unsubscribe = this.options.harness.subscribe((event) => {
+    this.unsubscribe = this.harness.subscribe((event) => {
       // **手を止めたときだけ**見る（`run_end`）。ターンの途中で畳まない——道具を
       // 呼んでいる最中に文脈が消えると、番頭は自分が何をしていたか分からなくなる
       if (event.type !== "run_end") return;
@@ -155,14 +166,14 @@ export class ChapterKeeper {
    * 黙って働かなくなるのは、閾値が無いのと同じだから。
    */
   contextTokens(): number | undefined {
-    return this.options.harness.contextTokens();
+    return this.harness.contextTokens();
   }
 
   /** 閾値を超えているか。 */
   shouldClose(): boolean {
     const window = this.options.contextWindow;
     if (!window || window <= 0) return false;
-    if (this.options.harness.messageCount() < (this.options.minMessages ?? DEFAULT_MIN_MESSAGES)) {
+    if (this.harness.messageCount() < (this.options.minMessages ?? DEFAULT_MIN_MESSAGES)) {
       return false;
     }
     const tokens = this.contextTokens();
@@ -188,7 +199,8 @@ export class ChapterKeeper {
     if (this.closing) return undefined;
     this.closing = true;
     try {
-      const { harness, store, threadId, summarize } = this.options;
+      const { store, threadId, summarize } = this.options;
+      const harness = this.harness;
       if (harness.messageCount() === 0) return undefined;
 
       const chapter = store.nextChapter(threadId);

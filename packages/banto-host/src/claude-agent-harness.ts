@@ -203,6 +203,12 @@ export class ClaudeAgentHarness implements BantoHarness {
       }),
       // 置き場の設定ファイルを読まない（番頭は banto の開発者ではない・host-session.ts 参照）
       settingSources: [],
+      /**
+       * **止める口を実際に繋ぐ**。以前は `AbortController` を作るだけで渡しておらず、
+       * `abort()` は `streaming = false` を立てるだけ——**画面は止まったと出るのに
+       * モデルは走り続けた**（レビュー 2026-08-13）。
+       */
+      abortController: this.abortController ?? new AbortController(),
       ...(this.options.model ? { model: this.options.model } : {}),
       resume: this.sdkSessionId,
     };
@@ -211,8 +217,7 @@ export class ClaudeAgentHarness implements BantoHarness {
   /** `query()` を起こして、出てくるものを番頭の語彙へ翻訳し続ける。 */
   private start(): void {
     if (this.run) return;
-    const controller = new AbortController();
-    this.abortController = controller;
+    this.abortController = new AbortController();
     const session = query({ prompt: this.queue.stream(), options: this.buildOptions() });
     this.run = (async () => {
       try {
@@ -237,10 +242,20 @@ export class ClaudeAgentHarness implements BantoHarness {
     })();
   }
 
-  async prompt(text: string, _options?: HarnessPromptOptions): Promise<void> {
-    this.turns.push({ role: "user", text });
+  async prompt(text: string, options?: HarnessPromptOptions): Promise<void> {
+    /**
+     * I2: **黙って落とさない。** 画像はまだ載せられないので、その旨を本文に足して
+     * 番頭に伝える——添付したのに何も言われないのが一番困る。
+     */
+    const images = options?.images ?? [];
+    const body =
+      images.length > 0
+        ? `${text}\n\n（このバックエンドでは画像 ${images.length} 件を渡せませんでした。` +
+          "内容が要るなら、文章で伝えるか pi のバックエンドへ切り替えてください）"
+        : text;
+    this.turns.push({ role: "user", text: body });
     this.streaming = true;
-    this.queue.push(text);
+    this.queue.push(body);
     this.start();
   }
 
