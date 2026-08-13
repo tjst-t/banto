@@ -18,7 +18,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { LlmCatalog, type LlmModelResolver, type ResolvedModel } from "@banto/core";
+import {
+  LlmCatalog,
+  workerRoleOf,
+  type LlmModelResolver,
+  type ResolvedModel,
+} from "@banto/core";
 import { contextWindowFromCatalog } from "@banto/host";
 
 /** models.json の1モデル分。input に "image" があると vision 扱いになる。 */
@@ -117,7 +122,7 @@ afterEach(() => {
 describe("LLM Registry — 職人への解決は (tier, 制約) で決まる", () => {
   it("tier だけ指定すれば、その tier の第一候補が返る", () => {
     const c = standardSeed();
-    c.setPick("cloud", "mid");
+    c.setRole(workerRoleOf(c.getTier("cloud", "mid")), "cloud", "mid");
 
     const r = c.resolveForWorker("standard");
     assert.equal(r?.model.id, "mid");
@@ -129,7 +134,7 @@ describe("LLM Registry — 職人への解決は (tier, 制約) で決まる", (
   it("第一候補が制約で落ちたら、同じ tier の次の候補に降りる", () => {
     const c = standardSeed();
     // 高速の第一候補はクラウドの small。ローカル限定を付けると local/tiny に降りるはず
-    c.setPick("cloud", "small");
+    c.setRole(workerRoleOf(c.getTier("cloud", "small")), "cloud", "small");
 
     const r = c.resolveForWorker("fast", { local: true });
     assert.equal(r?.model.provider, "local");
@@ -184,7 +189,7 @@ describe("LLM Registry — 職人への解決は (tier, 制約) で決まる", (
 
   it("番頭は tier を通らず、自分の既定モデルを使う", () => {
     const c = standardSeed();
-    c.setHostDefault("cloud", "big");
+    c.setRole("steward", "cloud", "big");
     assert.equal(c.resolveHostDefault()?.id, "big");
   });
 });
@@ -259,31 +264,36 @@ describe("[PO要望 2026-08-11] 文脈長が分からないモデルに、手で
 });
 
 describe("LLM Registry — 解決先を失う操作は止める", () => {
-  it("番頭の既定モデルを番頭の使用可から外せない", () => {
+  it("役割に割り当てたモデルは、その役割の採用から外せない", () => {
     const c = standardSeed();
-    c.setHostDefault("cloud", "big");
-    assert.throws(() => c.setUsable("cloud", "big", "host", false), /既定モデル/);
+    c.setRole("steward", "cloud", "big");
+    assert.throws(() => c.setUsable("cloud", "big", "host", false), /steward/);
   });
 
-  it("tier の第一候補を職人の使用可から外せない", () => {
+  it("職人の役割に割り当てたモデルも外せない", () => {
     const c = standardSeed();
-    c.setPick("cloud", "mid");
-    assert.throws(() => c.setUsable("cloud", "mid", "worker", false), /第一候補/);
+    c.setRole("worker.standard", "cloud", "mid");
+    assert.throws(() => c.setUsable("cloud", "mid", "worker", false), /worker\.standard/);
   });
 
-  it("第一候補のまま tier を移せない（元の tier の第一候補が居なくなるため）", () => {
+  /**
+   * **等級は束縛ではなくなった**（ADR-0020 決定94）。
+   *
+   * 以前は「第一候補のまま等級を移せない」という番人が居た——`picks`（等級→モデル）が
+   * `tiers`（モデル→等級）の逆写像で、片方を動かすともう片方が壊れたため。
+   * 束縛を `roles` 1つにしたので、**等級はいつでも動かせて、割り当ては動かない**。
+   */
+  it("割り当てたモデルの等級は、いつでも動かせる（逆写像が消えたので）", () => {
     const c = standardSeed();
-    c.setPick("cloud", "mid");
-    assert.throws(() => c.setTier("cloud", "mid", "fast"), /第一候補/);
+    c.setRole("worker.standard", "cloud", "mid");
 
-    // 空けるには「同じ tier の」別のモデルを第一候補にする必要がある
-    c.setTier("cloud", "small", "standard");
-    c.setPick("cloud", "small");
     c.setTier("cloud", "mid", "fast");
-    assert.equal(c.getTier("cloud", "mid"), "fast");
+
+    assert.equal(c.getTier("cloud", "mid"), "fast", "等級は動く");
     assert.deepEqual(
-      c.tiers().find((t) => t.tier === "standard")?.pick,
-      { provider: "cloud", model: "small" }
+      c.roles()["worker.standard"],
+      { provider: "cloud", model: "mid" },
+      "**割り当ては等級と無関係に残る**——ここが1つの表にした利得"
     );
   });
 });
@@ -344,7 +354,7 @@ describe("LLM Registry — pi の設定ファイル", () => {
     assert.ok(c.models().some((m) => m.id === "added"), "読み直した内容が反映される");
   });
 
-  it("旧形式（職人の既定が具体モデル）は、既定 tier と第一候補へ移る", () => {
+  it("旧形式（職人の既定が具体モデル）は、役割へ移る", () => {
     // 先に旧形式のオーバーレイを置いてから読ませる
     fs.writeFileSync(
       path.join(dir, "llm-registry.json"),
@@ -355,14 +365,13 @@ describe("LLM Registry — pi の設定ファイル", () => {
     );
     const c = seed({ cloud: { auth: true, models: [{ id: "mid" }] } });
 
-    assert.equal(c.defaults().workerTier, "standard");
-    assert.deepEqual(
-      c.tiers().find((t) => t.tier === "standard")?.pick,
-      { provider: "cloud", model: "mid" }
-    );
+    // ADR-0020 決定94: 旧形式は `roles` へ移る（束縛の表は1つ）
+    assert.deepEqual(c.roles()["worker.standard"], { provider: "cloud", model: "mid" });
 
     const saved = JSON.parse(fs.readFileSync(path.join(dir, "llm-registry.json"), "utf-8"));
-    assert.equal(saved.defaults.worker, undefined, "旧形式は残さない");
+    // **同じ問いに2箇所が答える状態を残さない**（D3）。空になった旧欄ごと落とす
+    assert.equal(saved.defaults, undefined, "旧形式は残さない");
+    assert.equal(saved.picks, undefined, "第一候補の表も残さない");
   });
 });
 
@@ -480,8 +489,8 @@ describe("プロバイダ・キー・モデルの編集", () => {
     });
     c.setTier("cloud", "消える", "standard");
     c.setTier("cloud", "残る", "standard");
-    c.setHostDefault("cloud", "消える");
-    c.setPick("cloud", "消える");
+    c.setRole("steward", "cloud", "消える");
+    c.setRole(workerRoleOf(c.getTier("cloud", "消える")), "cloud", "消える");
 
     c.mergeModels("cloud", [{ id: "残る" }]);
     c.reload();
@@ -500,7 +509,7 @@ describe("プロバイダ・キー・モデルの編集", () => {
 
   it("採用しているものが無ければ、採用していないものを採用してでも付け替える", () => {
     const c = seed({ cloud: { auth: true, models: [{ id: "唯一" }] } });
-    c.setHostDefault("cloud", "唯一");
+    c.setRole("steward", "cloud", "唯一");
 
     // 新しく来た「別物」は採用されていない（既定は false）
     c.mergeModels("cloud", [{ id: "別物" }]);

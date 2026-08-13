@@ -17,6 +17,8 @@ import {
   type KeyScope,
   type ModelConstraints,
   type ModelTier,
+  LLM_ROLES,
+  isLlmRole,
 } from "@banto/core";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 
@@ -316,78 +318,46 @@ export function createLlmTools(options: LlmToolsOptions): NamespacedToolDefiniti
     },
   });
 
-  const setHostDefault = defineNamespacedTool({
-    name: "llm.set_host_default",
-    label: "LLM: Set Host Default",
+  /**
+   * **役割にモデルを割り当てる**（ADR-0020 決定94）。
+   *
+   * `llm.set_host_default` / `llm.set_pick` / `llm.set_worker_tier` の3本を畳んだもの。
+   * 束縛の表が `roles` 1つになったので、口も1つでよい——3本あったのは、
+   * 「番頭の既定」と「tier の第一候補」が別の表だったことの写しだった。
+   */
+  const setRole = defineNamespacedTool({
+    name: "llm.set_role",
+    label: "LLM: Assign role",
     description:
-      "番頭自身の既定モデルを変える。番頭は連続した会話なので具体モデルで持つ。" +
-      "次のセッションから効く。",
+      "役割にモデルを割り当てる。`steward`＝番頭が使うモデル、" +
+      "`worker.reasoning` / `worker.standard` / `worker.fast`＝職人が等級ごとに使うモデル。" +
+      "割り当てると同時に採用も立つ（使えないモデルは割り当てられないため）。",
     parameters: Type.Object({
+      role: Type.String({
+        description: "steward / worker.reasoning / worker.standard / worker.fast",
+      }),
       provider: Type.String({ description: "プロバイダ名" }),
       model: Type.String({ description: "モデル ID" }),
     }),
     async execute(params) {
-      catalog.setHostDefault(params.provider, params.model);
-      options.onHostModelChanged?.(params.provider, params.model);
+      // I2: 知らない役割を黙って作らない
+      if (!isLlmRole(params.role)) {
+        throw new Error(
+          `知らない役割です: ${params.role}（${LLM_ROLES.join(" / ")} のどれか）`
+        );
+      }
+      catalog.setRole(params.role as never, params.provider, params.model);
+      if (params.role === "steward") {
+        options.onHostModelChanged?.(params.provider, params.model);
+      }
       return {
         content: [
           {
             type: "text",
-            text: `番頭の既定を ${params.provider}/${params.model} にしました。次のセッションから効きます。`,
+            text: `${params.role} に ${params.provider}/${params.model} を割り当てました。`,
           },
         ],
-        details: { provider: params.provider, model: params.model },
-      };
-    },
-  });
-
-  const setWorkerTier = defineNamespacedTool({
-    name: "llm.set_worker_tier",
-    label: "LLM: Set Worker Tier",
-    description:
-      "職人の既定 tier を変える。職人はタスクごとに起こすので、具体モデルではなく tier で持つ。" +
-      "次に起こす職人から効く。",
-    parameters: Type.Object({ tier: TierSchema }),
-    async execute(params) {
-      const tier = params.tier as ModelTier;
-      catalog.setWorkerTier(tier);
-      options.onWorkerTierChanged?.(tier);
-      const r = catalog.resolveForWorker(tier, {});
-      return {
-        content: [
-          {
-            type: "text",
-            text:
-              `職人の既定を ${TIER_LABELS[tier]} にしました。次に起こす職人から効きます` +
-              (r ? `（制約なしのとき ${r.model.provider}/${r.model.id}）` : "") +
-              "。",
-          },
-        ],
-        details: { tier, resolved: r ?? null },
-      };
-    },
-  });
-
-  const setPick = defineNamespacedTool({
-    name: "llm.set_pick",
-    label: "LLM: Set Tier Pick",
-    description:
-      "そのモデルを、自分が属する tier の第一候補にする。制約で落ちたときは同じ tier の次の候補に降りる。",
-    parameters: Type.Object({
-      provider: Type.String({ description: "プロバイダ名" }),
-      model: Type.String({ description: "モデル ID" }),
-    }),
-    async execute(params) {
-      catalog.setPick(params.provider, params.model);
-      const tier = catalog.getTier(params.provider, params.model);
-      return {
-        content: [
-          {
-            type: "text",
-            text: `${params.provider}/${params.model} を ${TIER_LABELS[tier]} の第一候補にしました。`,
-          },
-        ],
-        details: { provider: params.provider, model: params.model, tier },
+        details: { role: params.role, provider: params.provider, model: params.model },
       };
     },
   });
@@ -842,9 +812,7 @@ export function createLlmTools(options: LlmToolsOptions): NamespacedToolDefiniti
     resolve,
     setTier,
     setTierDescription,
-    setHostDefault,
-    setWorkerTier,
-    setPick,
+    setRole,
     setUsable,
     setContextWindow,
     setProviderLocal,

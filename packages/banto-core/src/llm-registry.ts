@@ -135,8 +135,37 @@ export interface LlmTierInfo {
   pick?: { provider: string; model: string };
 }
 
+/**
+ * **役割**（ADR-0020 決定94）。誰が何を使うかは、この1つの表だけが持つ。
+ *
+ * 以前は「番頭の既定（`defaults.host`）」と「tier の第一候補（`picks`）」の2つに
+ * 分かれており、しかも `picks` は `tiers`（モデル→等級）の**逆写像**だった。
+ * 同じ関係を2つの構造で持っていたので、整合を守る番人がコード側に3つ要った
+ * （`setTier` は第一候補の等級変更を拒む／`setUsable` も第一候補を守る／
+ * `setPick` は暗黙に採用を立てる）。**表を1つにすると、その3つが消える。**
+ */
+export const LLM_ROLES = [
+  "steward",
+  "worker.reasoning",
+  "worker.standard",
+  "worker.fast",
+] as const;
+export type LlmRole = (typeof LLM_ROLES)[number];
+
+export function isLlmRole(value: string): value is LlmRole {
+  return (LLM_ROLES as readonly string[]).includes(value);
+}
+
+/** 職人の等級から役割名へ。Kobo は等級しか渡さない（決定60a）ので変換が要る。 */
+export function workerRoleOf(tier: ModelTier): LlmRole {
+  return `worker.${tier}` as LlmRole;
+}
+
+/** 役割 → モデル。**これが唯一の束縛の表**。 */
+export type LlmRoleBindings = Partial<Record<LlmRole, { provider: string; model: string }>>;
+
 export interface LlmDefaults {
-  /** 番頭は連続した会話なので具体モデルで持つ */
+  /** 番頭は連続した会話なので具体モデルで持つ（`roles.steward` の写し）。 */
   host?: { provider: string; model: string };
   /** 職人はタスクごとに起動するので tier で指定する */
   workerTier: ModelTier;
@@ -275,11 +304,19 @@ interface Overlay {
   adoptionMigratedAt?: string;
   tiers?: Record<string, Record<string, ModelTier>>;
   tierDescriptions?: Partial<Record<ModelTier, string>>;
+  /** **役割ごとの束縛**（決定94）。いまの真実はこれ1つ。 */
+  roles?: LlmRoleBindings;
+  /** 旧形式。読み込み時に `roles` へ移す（決定94 の移行）。 */
   picks?: Partial<Record<ModelTier, { provider: string; model: string }>>;
   defaults?: {
+    /** 旧形式。読み込み時に `roles.steward` へ移す。 */
     host?: { provider: string; model: string };
+    /**
+     * 旧形式。**工房の `backends.defaultTier` が実際には勝っており**（棚卸し 2026-08-13）、
+     * 同じ問いに2箇所が答えていた（D3 違反）。読み込み時に捨てる。
+     */
     workerTier?: ModelTier;
-    /** 旧形式。読み込み時に workerTier + picks へ移す */
+    /** さらに旧い形式。 */
     worker?: { provider: string; model: string };
   };
   models?: Record<string, Record<string, ModelOverlay>>;
@@ -422,7 +459,8 @@ export class LlmCatalog {
   tiers(): LlmTierInfo[] {
     this.ensureLoaded();
     return MODEL_TIERS.map((tier) => {
-      const pick = this.overlay!.picks?.[tier];
+      // **導出**（D3）。束縛の真実は `roles` 1つで、ここは画面向けの写し
+      const pick = this.overlay!.roles?.[workerRoleOf(tier)];
       return {
         tier,
         label: TIER_LABELS[tier],
@@ -432,12 +470,16 @@ export class LlmCatalog {
     });
   }
 
+  /**
+   * 旧い形での既定（画面と道具の互換のため）。**真実は `roles`**——ここは導出（D3）。
+   */
   defaults(): LlmDefaults {
     this.ensureLoaded();
-    const host = this.overlay!.defaults?.host;
+    const host = this.overlay!.roles?.steward;
     return {
       ...(host ? { host: { ...host } } : {}),
-      workerTier: this.overlay!.defaults?.workerTier ?? "standard",
+      // 職人の既定等級は**工房が持つ**（`backends.defaultTier`）。ここでは名乗らない
+      workerTier: "standard",
     };
   }
 
@@ -462,14 +504,13 @@ export class LlmCatalog {
     this.ensureLoaded();
     const before = this.getTier(providerId, modelId);
     if (before === tier) return;
-    // 第一候補のまま tier を移すと、元の tier の第一候補が居なくなる
-    const pick = this.overlay!.picks?.[before];
-    if (pick && pick.provider === providerId && pick.model === modelId) {
-      throw new Error(
-        `${providerId}/${modelId} は「${TIER_LABELS[before]}」の第一候補です。` +
-          `先に同じ tier の別のモデルを第一候補にしてから tier を変えてください。`
-      );
-    }
+    /**
+     * **等級は「モデルの目安」であって束縛ではない**（決定94）。
+     *
+     * 以前はここに「第一候補のまま等級を移すな」という番人が居た——`picks` が
+     * `tiers` の逆写像だったので、片方を動かすともう片方が壊れたため。
+     * 束縛を `roles` 1つにしたので、等級はいつでも動かせる。
+     */
     this.overlay!.tiers ??= {};
     this.overlay!.tiers[providerId] ??= {};
     this.overlay!.tiers[providerId]![modelId] = tier;
@@ -483,30 +524,36 @@ export class LlmCatalog {
     this.saveOverlay();
   }
 
-  /** 番頭の既定モデル。使えないモデルは既定にできないので、同時に使用可にする */
-  setHostDefault(provider: string, model: string): void {
+  /**
+   * **役割にモデルを割り当てる**（決定94）。束縛の表はこれ1つ。
+   *
+   * 使えないモデルは割り当てられないので、**同時に採用も立てる**（policy）——
+   * 「割り当てたのに使えない」という状態を作らないため。
+   */
+  setRole(role: LlmRole, provider: string, model: string): void {
     this.ensureLoaded();
-    this.setModelOverlay(provider, model, { hostUsable: true });
-    this.overlay!.defaults ??= {};
-    this.overlay!.defaults.host = { provider, model };
+    this.setModelOverlay(
+      provider,
+      model,
+      role === "steward" ? { hostUsable: true } : { workerUsable: true }
+    );
+    this.overlay!.roles ??= {};
+    this.overlay!.roles[role] = { provider, model };
     this.saveOverlay();
   }
 
-  setWorkerTier(tier: ModelTier): void {
+  /** 役割の割り当てを外す。 */
+  clearRole(role: LlmRole): void {
     this.ensureLoaded();
-    this.overlay!.defaults ??= {};
-    this.overlay!.defaults.workerTier = tier;
+    if (!this.overlay!.roles?.[role]) return;
+    delete this.overlay!.roles[role];
     this.saveOverlay();
   }
 
-  /** その tier の第一候補にする。職人が使えないモデルは候補にならないので同時に使用可にする */
-  setPick(provider: string, model: string): void {
+  /** いまの割り当て（読み取り）。 */
+  roles(): LlmRoleBindings {
     this.ensureLoaded();
-    const tier = this.getTier(provider, model);
-    this.setModelOverlay(provider, model, { workerUsable: true });
-    this.overlay!.picks ??= {};
-    this.overlay!.picks[tier] = { provider, model };
-    this.saveOverlay();
+    return { ...(this.overlay!.roles ?? {}) };
   }
 
   /**
@@ -542,18 +589,21 @@ export class LlmCatalog {
   setUsable(provider: string, model: string, scope: KeyScope, usable: boolean): void {
     this.ensureLoaded();
     if (!usable) {
-      const host = this.overlay!.defaults?.host;
-      if (scope === "host" && host?.provider === provider && host?.model === model) {
-        throw new Error(`${provider}/${model} は番頭の既定モデルです。先に別のモデルを既定にしてください。`);
-      }
-      if (scope === "worker") {
-        const tier = this.getTier(provider, model);
-        const pick = this.overlay!.picks?.[tier];
-        if (pick?.provider === provider && pick?.model === model) {
-          throw new Error(
-            `${provider}/${model} は「${TIER_LABELS[tier]}」の第一候補です。先に別のモデルを第一候補にしてください。`
-          );
-        }
+      /**
+       * **割り当てられているモデルは採用を外せない**（外すと解決先を失う）。
+       * 見る先は `roles` 1つ——以前は `defaults.host` と `picks` の2箇所を見ていた。
+       */
+      const bound = Object.entries(this.roles()).find(
+        ([role, ref]) =>
+          ref?.provider === provider &&
+          ref.model === model &&
+          (scope === "host" ? role === "steward" : role.startsWith("worker."))
+      );
+      if (bound) {
+        throw new Error(
+          `${provider}/${model} は「${bound[0]}」に割り当てられています。` +
+            "先に別のモデルを割り当ててください。"
+        );
       }
     }
     this.setModelOverlay(provider, model, scope === "host" ? { hostUsable: usable } : { workerUsable: usable });
@@ -687,7 +737,7 @@ export class LlmCatalog {
    */
   resolveForWorker(tier?: ModelTier, constraints: ModelConstraints = {}): LlmResolution | undefined {
     this.ensureLoaded();
-    const requestedTier = tier ?? this.defaults().workerTier;
+    const requestedTier = tier ?? "standard";
     const providers = new Map(this.providers().map((p) => [p.id, p]));
     const models = this.models();
 
@@ -706,7 +756,8 @@ export class LlmCatalog {
     for (const t of order) {
       const cands = candidatesOf(t);
       if (cands.length === 0) continue;
-      const pick = this.overlay!.picks?.[t];
+      // 束縛は `roles` 1つ（決定94）。等級は候補を絞るための目安として残る
+      const pick = this.overlay!.roles?.[workerRoleOf(t)];
       const preferred = pick
         ? cands.find((c) => c.providerId === pick.provider && c.id === pick.model)
         : undefined;
@@ -729,7 +780,7 @@ export class LlmCatalog {
   /** 番頭の既定モデル。設定されていなければ通常 tier から拾う */
   resolveHostDefault(): ResolvedModel | undefined {
     this.ensureLoaded();
-    const host = this.defaults().host;
+    const host = this.overlay!.roles?.steward;
     if (host) {
       const resolved = this.resolver.find(host.provider, host.model);
       if (resolved) return resolved;
@@ -793,6 +844,7 @@ export class LlmCatalog {
     this.loadedHash = this.hashPiFiles();
     this.loadedAt = new Date().toISOString();
     this.migrateWorkerDefault();
+    this.migrateRoles();
     this.migrateAdoption();
     if (this.migration) this.migrateOnce();
   }
@@ -826,6 +878,35 @@ export class LlmCatalog {
     this.overlay!.models ??= {};
     this.overlay!.models[provider] ??= {};
     this.overlay!.models[provider]![model] = { ...this.overlay!.models[provider]![model], ...patch };
+  }
+
+  /**
+   * **`defaults.host` ＋ `picks` → `roles` への移行**（ADR-0020 決定94・2026-08-13）。
+   *
+   * 束縛の表を1つにする。**黙って割り当てを失わない**——移した後に古い欄を消すので、
+   * 移し損ねると番頭のモデルが消える。だから「roles が既に在れば何もしない」ではなく
+   * 「古い欄が在れば移す」で判定する（片方だけ残っている場合も拾う）。
+   */
+  private migrateRoles(): void {
+    const old = this.overlay!;
+    const hasOld = Boolean(old.defaults?.host || old.picks || old.defaults?.workerTier);
+    if (!hasOld) return;
+    old.roles ??= {};
+    if (old.defaults?.host && !old.roles.steward) {
+      old.roles.steward = { ...old.defaults.host };
+    }
+    for (const [tier, ref] of Object.entries(old.picks ?? {})) {
+      const role = workerRoleOf(tier as ModelTier);
+      if (ref && !old.roles[role]) old.roles[role] = { ...ref };
+    }
+    // 古い欄は落とす。**同じ問いに2箇所が答える状態を残さない**（D3）
+    delete old.picks;
+    if (old.defaults) {
+      delete old.defaults.host;
+      delete old.defaults.workerTier;
+      if (Object.keys(old.defaults).length === 0) delete old.defaults;
+    }
+    this.saveOverlay();
   }
 
   /**
@@ -864,10 +945,11 @@ export class LlmCatalog {
     const legacy = this.overlay!.defaults?.worker;
     if (!legacy) return;
     const tier = this.overlay!.tiers?.[legacy.provider]?.[legacy.model] ?? "standard";
-    this.overlay!.defaults!.workerTier ??= tier;
-    this.overlay!.picks ??= {};
-    this.overlay!.picks[tier] ??= { provider: legacy.provider, model: legacy.model };
+    // 書き先は `roles`（決定94）。古い欄を作り直さない
+    this.overlay!.roles ??= {};
+    this.overlay!.roles[workerRoleOf(tier)] ??= { provider: legacy.provider, model: legacy.model };
     delete this.overlay!.defaults!.worker;
+    if (Object.keys(this.overlay!.defaults!).length === 0) delete this.overlay!.defaults;
     this.saveOverlay();
   }
 
@@ -875,9 +957,16 @@ export class LlmCatalog {
     if (!this.migration) return;
     let changed = false;
 
-    if (this.migration.hostProvider && this.migration.hostModel && !this.overlay!.defaults?.host) {
-      this.overlay!.defaults ??= {};
-      this.overlay!.defaults.host = {
+    /**
+     * **書き先は `roles`**（ADR-0020 決定94）。
+     *
+     * 以前はここが `defaults.host` と `picks` を作っていた。束縛の表を1つにしたとき
+     * ここを直し忘れ、**毎回の起動で古い欄が復活する**という壊れ方をした（実機で踏んだ）
+     * ——「無ければ作る」判定が、消したそばから真になっていたため。
+     */
+    this.overlay!.roles ??= {};
+    if (this.migration.hostProvider && this.migration.hostModel && !this.overlay!.roles.steward) {
+      this.overlay!.roles.steward = {
         provider: this.migration.hostProvider,
         model: this.migration.hostModel,
       };
@@ -885,15 +974,12 @@ export class LlmCatalog {
     }
 
     if (this.migration.workerProvider && this.migration.workerModel) {
-      const tier = this.overlay!.tiers?.[this.migration.workerProvider]?.[this.migration.workerModel] ?? "standard";
-      this.overlay!.defaults ??= {};
-      if (this.overlay!.defaults.workerTier === undefined) {
-        this.overlay!.defaults.workerTier = tier;
-        changed = true;
-      }
-      this.overlay!.picks ??= {};
-      if (this.overlay!.picks[tier] === undefined) {
-        this.overlay!.picks[tier] = {
+      const tier =
+        this.overlay!.tiers?.[this.migration.workerProvider]?.[this.migration.workerModel] ??
+        "standard";
+      const role = workerRoleOf(tier);
+      if (this.overlay!.roles[role] === undefined) {
+        this.overlay!.roles[role] = {
           provider: this.migration.workerProvider,
           model: this.migration.workerModel,
         };
@@ -1176,7 +1262,7 @@ export class LlmCatalog {
       return fallback;
     };
 
-    const host = this.overlay!.defaults?.host;
+    const host = this.overlay!.roles?.steward;
     if (host && !exists(host.provider, host.model)) {
       const tier = this.getTier(host.provider, host.model);
       const next = replacement(host.provider, tier, "host");
@@ -1185,21 +1271,24 @@ export class LlmCatalog {
         from: `${host.provider}/${host.model}`,
         to: next ? `${next.providerId}/${next.id}` : undefined,
       });
-      if (next) this.overlay!.defaults!.host = { provider: next.providerId, model: next.id };
-      else delete this.overlay!.defaults!.host;
+      if (next) this.overlay!.roles!.steward = { provider: next.providerId, model: next.id };
+      else delete this.overlay!.roles!.steward;
       this.saveOverlay();
     }
 
-    for (const [tier, pick] of Object.entries(this.overlay!.picks ?? {})) {
-      if (!pick || exists(pick.provider, pick.model)) continue;
-      const next = replacement(pick.provider, tier as ModelTier, "worker");
+    // 職人の役割（`worker.<tier>`）。束縛の表は `roles` 1つ（決定94）
+    for (const tier of MODEL_TIERS) {
+      const role = workerRoleOf(tier);
+      const bound = this.overlay!.roles?.[role];
+      if (!bound || exists(bound.provider, bound.model)) continue;
+      const next = replacement(bound.provider, tier, "worker");
       changes.push({
-        role: `${TIER_LABELS[tier as ModelTier] ?? tier}の第一候補`,
-        from: `${pick.provider}/${pick.model}`,
+        role,
+        from: `${bound.provider}/${bound.model}`,
         to: next ? `${next.providerId}/${next.id}` : undefined,
       });
-      if (next) this.overlay!.picks![tier as ModelTier] = { provider: next.providerId, model: next.id };
-      else delete this.overlay!.picks![tier as ModelTier];
+      if (next) this.overlay!.roles![role] = { provider: next.providerId, model: next.id };
+      else delete this.overlay!.roles![role];
       this.saveOverlay();
     }
 
