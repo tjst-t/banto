@@ -214,9 +214,18 @@ Claude Code（Agent SDK 経由）でも選べる——職人側の「ランタ�
 **既にデッドコード**で、職人は工房側の `tierAssignments` で決まっている。同じことを
 番頭側でも繰り返さないために、番頭の既定もバックエンドの隣に置く。
 
-あわせて**死んでいる機構を掃除する**：`BANTO_PROVIDER` / `BANTO_MODEL`（**どこからも
-読まれていない**のに README が設定を勧めている）、`settings.json` の
-`modules["worker-pool"]`、複数鍵のフェイルオーバー一式（1プロバイダ1鍵では構造上作動しない）。
+あわせて**死んでいる機構を掃除する**。ただし**削る前に実地で確かめること**——
+棚卸しの報告には誤りがあった（2026-08-13 に確認）:
+
+| 機構 | 実地の確認 | 処遇 |
+|---|---|---|
+| `BANTO_PROVIDER` / `BANTO_MODEL` | **番頭は読んでいない**（README と systemd が設定を勧めていた＝嘘） | 文書と unit から削除（済み） |
+| `settings.json` の `modules["worker-pool"]` | 読み手なし | 削ってよい |
+| `picks` / `resolveForWorker` | **生きている。** `llm-tools.ts:240,355` / `worker-pool/bin.ts:121,165` / `pi-rpc-driver.ts:243` の5箇所から呼ばれる。実際に claude-agent-sdk ばかり使われているだけで、pi の職人経路では効く | **残す**（棚卸しの「デッドコード」は誤り） |
+| `BANTO_WORKER_PROVIDER` / `BANTO_WORKER_MODEL` | **読まれている**（`worker-pool/bin.ts:128-134`）。systemd でコメントアウトされているだけ | 残す |
+| 複数鍵のフェイルオーバー | 未確認 | 確かめてから決める |
+
+**「使われていない」と「死んでいる」は違う。** 前者は設定の話で、後者はコードの話。
 
 ### 決定96: 設定画面は **3段＋ポリシー**
 
