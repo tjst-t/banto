@@ -210,6 +210,14 @@ export { createPlaceTools } from "./place-tools.js";
 export { ThreadStore, type StoredThread } from "./thread-store.js";
 export { SettingsStore, type BantoSettings, type PlaceSetting } from "./settings-store.js";
 export { createCoreSettingsSections } from "./core-settings.js";
+// バックエンドの名乗り（ADR-0020 決定98a・98d）。回せないことを値で返す
+export {
+  createClaudeBackend,
+  createPiBackend,
+  toBackendOption,
+  type HarnessBackendDescriptor,
+  type BackendModelRef,
+} from "./harness-backends.js";
 export {
   createSettingsModule,
   settingsSection,

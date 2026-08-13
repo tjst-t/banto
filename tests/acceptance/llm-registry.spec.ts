@@ -177,7 +177,7 @@ describe("LLM Registry — 職人への解決は (tier, 制約) で決まる", (
     // 第一候補を決めていないので、高速では cloud/small が先に来る
     assert.equal(c.resolveForWorker("fast")?.model.id, "small");
 
-    c.setUsable("cloud", "small", "worker", false);
+    c.setPolicy("cloud", "small", "worker", false);
     assert.equal(c.resolveForWorker("fast")?.model.id, "tiny");
   });
 
@@ -267,13 +267,13 @@ describe("LLM Registry — 解決先を失う操作は止める", () => {
   it("役割に割り当てたモデルは、その役割の採用から外せない", () => {
     const c = standardSeed();
     c.setRole("steward", "cloud", "big");
-    assert.throws(() => c.setUsable("cloud", "big", "host", false), /steward/);
+    assert.throws(() => c.setPolicy("cloud", "big", "host", false), /steward/);
   });
 
   it("職人の役割に割り当てたモデルも外せない", () => {
     const c = standardSeed();
     c.setRole("worker.standard", "cloud", "mid");
-    assert.throws(() => c.setUsable("cloud", "mid", "worker", false), /worker\.standard/);
+    assert.throws(() => c.setPolicy("cloud", "mid", "worker", false), /worker\.standard/);
   });
 
   /**
@@ -514,25 +514,25 @@ describe("プロバイダ・キー・モデルの編集", () => {
     // 新しく来た「別物」は採用されていない（既定は false）
     c.mergeModels("cloud", [{ id: "別物" }]);
     c.reload();
-    assert.equal(c.models().find((m) => m.id === "別物")?.hostUsable, false);
+    assert.equal(c.models().find((m) => m.id === "別物")?.policy.includes("host"), false);
 
     // それでも番頭が動かないよりましなので、採用した上で付け替える
     const changes = c.repairDefaults();
     c.reload();
     assert.deepEqual(changes, [{ role: "番頭の標準", from: "cloud/唯一", to: "cloud/別物" }]);
     assert.deepEqual(c.defaults().host, { provider: "cloud", model: "別物" });
-    assert.equal(c.models().find((m) => m.id === "別物")?.hostUsable, true, "選んだものは採用済みにする");
+    assert.equal(c.models().find((m) => m.id === "別物")?.policy.includes("host"), true, "選んだものは採用済みにする");
   });
 
   it("新しく取り込んだモデルは採用されない（選択肢が勝手に増えない）", () => {
     const c = seed({ cloud: { auth: true, models: [{ id: "はじめから" }] } });
     // 既存のものは移行で採用済み
-    assert.equal(c.models().find((m) => m.id === "はじめから")?.hostUsable, true);
+    assert.equal(c.models().find((m) => m.id === "はじめから")?.policy.includes("host"), true);
 
     c.mergeModels("cloud", [{ id: "はじめから" }, { id: "あとから" }]);
     c.reload();
-    assert.equal(c.models().find((m) => m.id === "あとから")?.hostUsable, false);
-    assert.equal(c.models().find((m) => m.id === "はじめから")?.hostUsable, true);
+    assert.equal(c.models().find((m) => m.id === "あとから")?.policy.includes("host"), false);
+    assert.equal(c.models().find((m) => m.id === "はじめから")?.policy.includes("host"), true);
   });
 
   it("欠けている能力（画像可否・文脈長）は後から埋まる", () => {
@@ -644,7 +644,7 @@ describe("数百のモデルがあるプロバイダ", () => {
 
   it("移行では全部採用済みになる（いま使えているものを取り上げない）", () => {
     const c = bigSeed();
-    assert.equal(c.models().filter((m) => m.hostUsable).length, 337);
+    assert.equal(c.models().filter((m) => m.policy.includes("host")).length, 337);
   });
 
   it("移行後に増えたモデルは採用されない（選択肢が勝手に337件にならない）", () => {
@@ -655,7 +655,7 @@ describe("数百のモデルがあるプロバイダ", () => {
 
     assert.equal(c.models().length, 301, "台帳には全部載る");
     assert.deepEqual(
-      c.models().filter((m) => m.hostUsable).map((m) => m.id),
+      c.models().filter((m) => m.policy.includes("host")).map((m) => m.id),
       ["はじめ"],
       "選べるのは採用したものだけ"
     );
@@ -664,8 +664,8 @@ describe("数百のモデルがあるプロバイダ", () => {
   it("職人の解決も採用したものからしか選ばない", () => {
     const c = seed({ big: { auth: true, models: [{ id: "採用" }, { id: "未採用" }] } });
     // 「未採用」を落とし、「採用」だけ残す
-    c.setUsable("big", "未採用", "worker", false);
-    c.setUsable("big", "未採用", "host", false);
+    c.setPolicy("big", "未採用", "worker", false);
+    c.setPolicy("big", "未採用", "host", false);
     const r = c.resolveForWorker("standard", {});
     assert.equal(r?.model.id, "採用");
   });
@@ -700,5 +700,55 @@ describe("公開台帳からの文脈長の引き当て", () => {
   it("台帳が無い・載っていないなら undefined（推測しない）", () => {
     assert.equal(contextWindowFromCatalog(undefined, "opencode", "claude-opus-5"), undefined);
     assert.equal(contextWindowFromCatalog(catalog, "opencode", "知らないモデル"), undefined);
+  });
+});
+
+/**
+ * **概念を畳む**（ADR-0020 決定98・task-0102）。
+ *
+ * 決定94 は「概念を 7 → 5 に」と決めたが、畳めたのは束縛の表だけだった。残りの
+ * `hostUsable`/`workerUsable` → `policy`、`LlmDefaults.workerTier` の撤去はここで固定する。
+ */
+describe("[決定98] 採用は policy 1つ", () => {
+  it("旧い2つの欄（hostUsable / workerUsable）は読み込みで policy へ移る", () => {
+    const c = standardSeed();
+    // 実データと同じ形をオーバーレイへ直に書く（移行の前の姿）
+    const overlayPath = path.join(dir, "llm-registry.json");
+    const overlay = JSON.parse(fs.readFileSync(overlayPath, "utf-8")) as Record<string, unknown>;
+    overlay["models"] = {
+      cloud: {
+        big: { hostUsable: true, workerUsable: true, contextWindow: 200000 },
+        mid: { hostUsable: false, workerUsable: true },
+        small: { hostUsable: false, workerUsable: false },
+      },
+    };
+    fs.writeFileSync(overlayPath, JSON.stringify(overlay));
+    c.reload();
+
+    const models = c.models();
+    assert.deepEqual(models.find((m) => m.id === "big")?.policy, ["host", "worker"]);
+    assert.deepEqual(models.find((m) => m.id === "mid")?.policy, ["worker"]);
+    assert.deepEqual(models.find((m) => m.id === "small")?.policy, []);
+    // **古い欄は消す**——残すと、片方だけ書く経路が次に足されたときに食い違う
+    const after = JSON.parse(fs.readFileSync(overlayPath, "utf-8")) as {
+      models: Record<string, Record<string, Record<string, unknown>>>;
+    };
+    assert.equal(after.models["cloud"]!["big"]!["hostUsable"], undefined);
+    assert.equal(after.models["cloud"]!["big"]!["workerUsable"], undefined);
+    // 併記されていた他の欄は落とさない
+    assert.equal(after.models["cloud"]!["big"]!["contextWindow"], 200000);
+  });
+
+  it("採用を外しても、もう一方の用途は残る（1つの集合で両方を持つ）", () => {
+    const c = standardSeed();
+    c.setPolicy("cloud", "mid", "host", true);
+    c.setPolicy("cloud", "mid", "worker", true);
+    c.setPolicy("cloud", "mid", "host", false);
+    assert.deepEqual(c.models().find((m) => m.id === "mid")?.policy, ["worker"]);
+  });
+
+  it("既定は職人の等級を名乗らない（工房が持つものを二重に答えない）", () => {
+    const c = standardSeed();
+    assert.deepEqual(Object.keys(c.defaults()).filter((k) => k !== "host"), []);
   });
 });

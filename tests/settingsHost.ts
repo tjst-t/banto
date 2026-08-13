@@ -33,8 +33,7 @@ const MODELS = Array.from({ length: 40 }, (_, i) => ({
   contextWindow: 128_000,
   cost: { input: 1, output: 5 },
   free: false,
-  hostUsable: true,
-  workerUsable: true,
+  policy: ["host", "worker"],
 }));
 
 const CATALOG = {
@@ -55,7 +54,7 @@ const CATALOG = {
     { tier: "standard", label: "通常", description: "ふだんの実装" },
     { tier: "fast", label: "高速", description: "短い仕事" },
   ],
-  defaults: { workerTier: "standard" },
+  defaults: {},
   files: { changed: false, loadedAt: "", loadedHash: "a", currentHash: "a" },
 };
 

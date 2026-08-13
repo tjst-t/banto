@@ -87,7 +87,7 @@ async function harness(options: { tickIntervalMs?: number } = {}): Promise<Harne
           id: "deepseek-v4-flash",
           name: "DeepSeek V4 Flash",
           tier: "standard",
-          workerUsable: true,
+          policy: ["worker"],
         },
       ],
     },

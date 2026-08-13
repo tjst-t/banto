@@ -69,8 +69,8 @@ interface ModelInfo {
   contextWindow?: number;
   cost?: { input: number; output: number };
   free: boolean;
-  hostUsable: boolean;
-  workerUsable: boolean;
+  /** 誰に許しているか（決定98）。空＝採用していない。 */
+  policy: Array<"host" | "worker">;
 }
 
 interface TierInfo {
@@ -91,7 +91,7 @@ interface CatalogData {
   providers: ProviderInfo[];
   models: ModelInfo[];
   tiers: TierInfo[];
-  defaults: { host?: { provider: string; model: string }; workerTier: Tier };
+  defaults: { host?: { backend?: string; provider: string; model: string } };
   files: FileState;
 }
 
@@ -118,7 +118,7 @@ const EMPTY: CatalogData = {
   providers: [],
   models: [],
   tiers: [],
-  defaults: { workerTier: "standard" },
+  defaults: {},
   files: { changed: false, loadedAt: "", loadedHash: "", currentHash: "" },
 };
 
@@ -370,7 +370,7 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
     listForProvider.push(m);
     modelsByProvider.set(m.providerId, listForProvider);
   }
-  const hostModels = data.models.filter((m) => m.hostUsable);
+  const hostModels = data.models.filter((m) => m.policy.includes("host"));
   const tierOptions = data.tiers.map((t) => ({ value: t.tier, label: t.label, title: t.description }));
 
   return (
@@ -722,15 +722,15 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                                 {(["host", "worker"] as const).map((scope: Scope) => (
                                   <Chip
                                     key={scope}
-                                    on={scope === "host" ? m.hostUsable : m.workerUsable}
+                                    on={scope === "host" ? m.policy.includes("host") : m.policy.includes("worker")}
                                     disabled={busy}
                                     title={`${scope === "host" ? "番頭" : "職人"}が使ってよい`}
                                     onClick={() =>
-                                      void run("llm.set_usable", {
+                                      void run("llm.set_policy", {
                                         provider: m.providerId,
                                         model: m.id,
                                         scope,
-                                        usable: !(scope === "host" ? m.hostUsable : m.workerUsable),
+                                        usable: !(scope === "host" ? m.policy.includes("host") : m.policy.includes("worker")),
                                       })
                                     }
                                   >
@@ -772,13 +772,13 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                                   disabled={busy}
                                   title="この一覧から外す（台帳には残るので、また探して採用できます）"
                                   onClick={() => {
-                                    void run("llm.set_usable", {
+                                    void run("llm.set_policy", {
                                       provider: m.providerId,
                                       model: m.id,
                                       scope: "host",
                                       usable: false,
                                     }).then(() =>
-                                      run("llm.set_usable", {
+                                      run("llm.set_policy", {
                                         provider: m.providerId,
                                         model: m.id,
                                         scope: "worker",
@@ -868,10 +868,10 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                                 <span className="llm-model-acts">
                                   <Button
                                     small
-                                    variant={m.hostUsable ? "ghost" : "primary"}
-                                    disabled={busy || m.hostUsable}
+                                    variant={m.policy.includes("host") ? "ghost" : "primary"}
+                                    disabled={busy || m.policy.includes("host")}
                                     onClick={() => {
-                                      void run("llm.set_usable", {
+                                      void run("llm.set_policy", {
                                         provider: m.providerId,
                                         model: m.id,
                                         scope: "host",
@@ -879,7 +879,7 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                                       }).then(() => void runSearch(p.id, state));
                                     }}
                                   >
-                                    {m.hostUsable ? "採用済み" : "採用する"}
+                                    {m.policy.includes("host") ? "採用済み" : "採用する"}
                                   </Button>
                                 </span>
                               </div>
