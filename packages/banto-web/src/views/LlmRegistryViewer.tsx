@@ -34,7 +34,6 @@ import {
 } from "./ui.js";
 
 type Tier = "reasoning" | "standard" | "fast";
-type Scope = "host" | "worker";
 
 interface KeyInfo {
   name: string;
@@ -688,24 +687,27 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                                     })
                                   }
                                 />
-                                {(["host", "worker"] as const).map((scope: Scope) => (
-                                  <Chip
-                                    key={scope}
-                                    on={scope === "host" ? m.policy.includes("host") : m.policy.includes("worker")}
-                                    disabled={busy}
-                                    title={`${scope === "host" ? "番頭" : "職人"}が使ってよい`}
-                                    onClick={() =>
-                                      void run("llm.set_policy", {
-                                        provider: m.providerId,
-                                        model: m.id,
-                                        scope,
-                                        usable: !(scope === "host" ? m.policy.includes("host") : m.policy.includes("worker")),
-                                      })
-                                    }
-                                  >
-                                    {scope === "host" ? "番頭" : "職人"}
-                                  </Chip>
-                                ))}
+                                {/*
+                                  **採用は1つ**（ADR-0021 決定101e）。以前は「番頭」「職人」の
+                                  2つのチップだったが、母集団を1つにしたので常に連動する
+                                  ——2つ出すと、押しても両方変わることの説明がつかない。
+                                  「この役には使わせたくない」は役の側の絞りで書く。
+                                */}
+                                <Chip
+                                  on={m.policy.length > 0}
+                                  disabled={busy}
+                                  title="この店で使う気があるモデルにする（役ごとの絞りは「役ごとのモデル」で）"
+                                  onClick={() =>
+                                    void run("llm.set_policy", {
+                                      provider: m.providerId,
+                                      model: m.id,
+                                      scope: "host",
+                                      usable: m.policy.length === 0,
+                                    })
+                                  }
+                                >
+                                  採用
+                                </Chip>
                                 {/*
                                   **役割の割り当てチップはここに無い**（ADR-0021 決定102）。
                                   割り当てはバックエンドを跨ぐ問いなので、設定の「役ごとのモデル」で1枚にした
