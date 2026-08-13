@@ -48,7 +48,11 @@ import { createCanvasTools } from "./canvas-tools.js";
 import { Inbox } from "./inbox.js";
 import { createInboxTools } from "./inbox-tools.js";
 import { UserThemes } from "./user-themes.js";
-import { createBantoHostSession } from "./host-session.js";
+import {
+  assembleStewardContext,
+  createBantoHostSession,
+  type CreateBantoHostSessionOptions,
+} from "./host-session.js";
 import { resumeInterruptedTurn, withEmptyResponseGuard } from "./turn-guard.js";
 import type { HostSession } from "./server.js";
 import { BantoHostClient } from "./client.js";
@@ -1172,7 +1176,10 @@ async function serve(options: ServeOptions): Promise<void> {
     const knownTrunks = (): Array<{ id: string; label: string }> =>
       threads.trunks().map((t) => ({ id: t.id, label: t.title }));
 
-    const { session } = await createBantoHostSession({
+    /**
+     * 番頭の文脈と道具の材料。**バックエンドを問わず同じものを渡す**（ADR-0020 決定89）。
+     */
+    const stewardContextOptions: CreateBantoHostSessionOptions = {
       // **会話ごとに立場が違う**ので、そこだけを足して渡す（PO報告 2026-08-10）
       systemPrompt: SYSTEM_PROMPT + describeThread(identity),
       tools: ownTools,
@@ -1207,7 +1214,7 @@ async function serve(options: ServeOptions): Promise<void> {
       knownTrunkList: knownTrunks,
       artifacts,
       // 器が描けなかったときに出どころを名指しできるようにする（決定81(d)）
-      artifactModuleOf: (name) => modules.moduleForTool(name)?.name,
+      artifactModuleOf: (name: string) => modules.moduleForTool(name)?.name,
       ...(artifactThresholdChars() !== undefined
         ? { artifactThresholdChars: artifactThresholdChars()! }
         : {}),
@@ -1216,7 +1223,9 @@ async function serve(options: ServeOptions): Promise<void> {
       sessionManager,
       modelRuntime,
       ...(sessionModel ? { model: sessionModel } : {}),
-    });
+    };
+
+    const { session } = await createBantoHostSession(stewardContextOptions);
     // imp-0016: ツールコール（git status / file.read など）の後、次の LLM 応答が空
     // （text/toolCall なし・stopReason "stop"）だと pi が正常終了としてターンを閉じ、
     // 応答が止まる。withEmptyResponseGuard が空応答を continue() で再試行する。
@@ -1256,13 +1265,22 @@ async function serve(options: ServeOptions): Promise<void> {
      *
      * 作り手を両方持っておく——差し替えのたびに組み立て直せるようにするため。
      */
-    const makeClaudeHarness = (model?: string): BantoHarness =>
-      new ClaudeAgentHarness({
-        systemPrompt: SYSTEM_PROMPT + describeThread(identity),
+    /**
+     * **組み立ては pi と共通**（`assembleStewardContext`）。
+     *
+     * ここを別に組んでいたせいで、Agent SDK の番頭には**記憶も SKILL も散文の道具一覧も
+     * 退避もターン予算も無かった**（レビュー 2026-08-13 で発覚。本番の既定がそれだった）。
+     * D11・決定47a・暴走を止めるターン予算は、**どのバックエンドでも同じように効く**必要がある。
+     */
+    const makeClaudeHarness = (model?: string): BantoHarness => {
+      const assembled = assembleStewardContext(stewardContextOptions);
+      return new ClaudeAgentHarness({
+        systemPrompt: assembled.systemPrompt,
         // 提示する集合だけを載せる（ADR-0019 決定82）。組み込みは `tools: []` で0本
-        tools: selectPresentedTools(ownTools),
+        tools: selectPresentedTools(assembled.tools),
         ...(model ? { model } : {}),
       });
+    };
 
     const piHarness: BantoHarness = new PiHarness({
       // 会話の口は皮を通す（空応答ガード＋ターン予算のリセット）
@@ -1325,7 +1343,8 @@ async function serve(options: ServeOptions): Promise<void> {
     let chapters: ChapterKeeper | undefined;
     if (writerModel) {
       chapters = new ChapterKeeper({
-        harness,
+        // **いまのハーネスを毎回引く**——差し替えに追随する（PO要望 2026-08-13）
+        harness: () => threads.get(threadId)?.harness ?? harness,
         store: handoffs,
         threadId,
         summarize: createLlmChapterSummarizer({
@@ -1547,7 +1566,8 @@ async function serve(options: ServeOptions): Promise<void> {
         if (!switcher) throw new Error("この会話はバックエンドを差し替えられません");
         const harness = switcher.claude(nextId);
         console.log(`[banto] backend(${thread.id}): claude-agent-sdk / ${nextId}`);
-        return { id: nextId, vision: true, backend, harness };
+        // I1: このバックエンドは画像を渡せない。できないことを true と名乗らない
+        return { id: nextId, vision: false, backend, harness };
       }
 
       const next = resolveModel(nextProvider, nextId);

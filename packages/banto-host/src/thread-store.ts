@@ -47,7 +47,7 @@ export interface StoredThread {
   /** pi のセッションファイル。**番頭の文脈はこちらが持つ**（会話の記録とは別物）。 */
   sessionFile?: string;
   /** この会話で使っていたモデル。再起動しても同じモデルで再開する。 */
-  model?: { provider: string; id: string };
+  model?: { backend?: string; provider: string; id: string };
   /** キャンバスに開いていたもの。畳んで開き直したときに元の面へ戻す。 */
   canvasTabs?: Array<{ kind: string; params: Record<string, unknown>; title?: string }>;
 }

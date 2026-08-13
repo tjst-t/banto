@@ -639,7 +639,17 @@ export class ThreadRegistry {
       createdAt: thread.createdAt,
       ...(thread.closedAt ? { closedAt: thread.closedAt } : {}),
       ...(thread.sessionFile ? { sessionFile: thread.sessionFile } : {}),
-      ...(thread.model ? { model: { provider: thread.model.provider, id: thread.model.id } } : {}),
+      // **backend も残す**（PO裁定 2026-08-13）。落とすと、会話ごとのバックエンド選択が
+      // 再起動で必ず消える——「会話に記録があるなら、それが勝つ」が成立しない
+      ...(thread.model
+        ? {
+            model: {
+              ...(thread.model.backend ? { backend: thread.model.backend } : {}),
+              provider: thread.model.provider,
+              id: thread.model.id,
+            },
+          }
+        : {}),
       ...(thread.canvas
         ? {
             canvasTabs: thread.canvas

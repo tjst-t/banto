@@ -1286,7 +1286,12 @@ export class LlmCatalog {
     };
 
     const host = this.overlay!.roles?.steward;
-    if (host && !exists(host.provider, host.model)) {
+    /**
+     * **pi の束縛だけを直す。** Claude Code のモデルは LLM 登録に載らないので
+     * `exists()` は必ず偽になる——見境なく直すと、モデルを取り込むボタン1つで
+     * 番頭が黙って pi へ戻り、`backend` 欄ごと消える。
+     */
+    if (host && (host.backend === undefined || host.backend === "pi") && !exists(host.provider, host.model)) {
       const tier = this.getTier(host.provider, host.model);
       const next = replacement(host.provider, tier, "host");
       changes.push({
@@ -1303,7 +1308,8 @@ export class LlmCatalog {
     for (const tier of MODEL_TIERS) {
       const role = workerRoleOf(tier);
       const bound = this.overlay!.roles?.[role];
-      if (!bound || exists(bound.provider, bound.model)) continue;
+      if (!bound || (bound.backend !== undefined && bound.backend !== "pi")) continue;
+      if (exists(bound.provider, bound.model)) continue;
       const next = replacement(bound.provider, tier, "worker");
       changes.push({
         role,
