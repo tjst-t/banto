@@ -21,6 +21,7 @@ import {
   type ModelTier,
   LLM_ROLES,
   isLlmRole,
+  StringEnum,
 } from "@banto/core";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 
@@ -124,12 +125,11 @@ export function costFromCatalog(
   };
 }
 
-const TierSchema = Type.Union(
-  [Type.Literal("reasoning"), Type.Literal("standard"), Type.Literal("fast")],
-  { description: "reasoning=高精度、standard=通常、fast=高速" }
-);
+const TierSchema = StringEnum(["reasoning", "standard", "fast"] as const, {
+  description: "reasoning=高精度、standard=通常、fast=高速",
+});
 
-const ScopeSchema = Type.Union([Type.Literal("host"), Type.Literal("worker")], {
+const ScopeSchema = StringEnum(["host", "worker"] as const, {
   description: "host=番頭、worker=職人",
 });
 
@@ -175,27 +175,19 @@ export function createLlmTools(options: LlmToolsOptions): LlmToolSets {
     name: "llm.list",
     label: "LLM: List",
     description:
-      "プロバイダ・モデル・キー・tier・既定の一覧を返す。" +
-      "**全件は返さない**——プロバイダによっては数百のモデルがあるので、" +
-      "既定では採用しているものだけ。探すときは query と絞り込みを使う。",
+      "プロバイダ・モデル・キー・tier・既定の一覧。**いま自分が何で動いているか**を答えるのに引く。\n例: {} → 採用しているものだけ／{query: \"deepseek\", adopted: false} → 全部から探す\nquery と provider は英語で埋める。",
     parameters: Type.Object({
       tier: Type.Optional(TierSchema),
       /** 名前・ID の部分一致。空白区切りの語は**すべて**含むものを返す。 */
-      query: Type.Optional(Type.String({ description: "名前・IDで絞る（空白区切りで絞り込み）" })),
+      query: Type.Optional(Type.String()),
       /** プロバイダで絞る。検索語と混ぜない（順番で結果が変わってしまう）。 */
-      provider: Type.Optional(Type.String({ description: "このプロバイダのものだけ" })),
-      adopted: Type.Optional(
-        Type.Boolean({ description: "採用しているものだけ（既定 true）。false で全部から探す" })
-      ),
-      vision: Type.Optional(Type.Boolean({ description: "画像を読めるものだけ" })),
-      free: Type.Optional(Type.Boolean({ description: "無料のものだけ" })),
-      minContext: Type.Optional(Type.Number({ description: "文脈長がこれ以上のものだけ" })),
-      sort: Type.Optional(
-        Type.Union([Type.Literal("name"), Type.Literal("context"), Type.Literal("price")], {
-          description: "並び順。既定は name",
-        })
-      ),
-      limit: Type.Optional(Type.Number({ description: `返す最大件数（既定 ${LIST_DEFAULT_LIMIT}）` })),
+      provider: Type.Optional(Type.String()),
+      adopted: Type.Optional(Type.Boolean()),
+      vision: Type.Optional(Type.Boolean()),
+      free: Type.Optional(Type.Boolean()),
+      minContext: Type.Optional(Type.Number()),
+      sort: Type.Optional(StringEnum(["name", "context", "price"] as const, {})),
+      limit: Type.Optional(Type.Number())
     }),
     async execute(params) {
       const data = catalog.catalog();

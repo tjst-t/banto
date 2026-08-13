@@ -116,18 +116,11 @@ export function createFileTools(
     name: "file.list",
     label: "File: List",
     description:
-      "ワークスペース内のディレクトリの中身を一覧する。閲覧専用で、変更はできない。" +
-      "何がどこにあるか把握したいときに使う。",
+      "ディレクトリの中身を一覧する（閲覧専用）。\n例: {path: \"packages/banto-host/src\"} → \"d canvas/\" \"f bin.ts (52413 bytes)\"\npath は英語のパスで埋める。",
     parameters: Type.Object({
-      path: Type.Optional(
-        Type.String({ description: "ワークスペースからの相対パス。省略時はルート" })
-      ),
-      includeHidden: Type.Optional(
-        Type.Boolean({ description: "ドット始まりや node_modules 等も含める（既定 false）" })
-      ),
-      limit: Type.Optional(
-        Type.Number({ description: `返す件数の上限（既定 ${MAX_ENTRIES}・最大 ${ENTRIES_CEILING}）` })
-      ),
+      path: Type.Optional(Type.String()),
+      includeHidden: Type.Optional(Type.Boolean()),
+      limit: Type.Optional(Type.Number())
     }),
     async execute(params) {
       const target = resolveInWorkspace(root, params.path ?? ".");
@@ -185,17 +178,11 @@ export function createFileTools(
     name: "file.read",
     label: "File: Read",
     description:
-      "ワークスペース内のファイルを読む。閲覧専用で、書き込みはできない。" +
-      "長いファイルは一定行で打ち切られ、その旨と続きの読み方が示される。" +
-      "続きは offset に次の行番号を渡して読む。",
+      "ファイルを読む（閲覧専用）。長いと打ち切られ、続きの読み方が末尾に出る。\n例: {path: \"docs/adr/adr-0019.md\"} → 1〜400行目／{offset: 401} → その続き\npath は英語のパスで埋める（ワークスペースからの相対）。",
     parameters: Type.Object({
-      path: Type.String({ description: "ワークスペースからの相対パス" }),
-      offset: Type.Optional(
-        Type.Number({ description: "読み始める行（1始まり。既定1）" })
-      ),
-      maxLines: Type.Optional(
-        Type.Number({ description: `読む行数の上限（既定 ${MAX_LINES}）` })
-      ),
+      path: Type.String(),
+      offset: Type.Optional(Type.Number()),
+      maxLines: Type.Optional(Type.Number())
     }),
     async execute(params) {
       const target = resolveInWorkspace(root, params.path);
@@ -295,11 +282,8 @@ export function createFileTools(
     name: "file.stat",
     label: "File: Stat",
     description:
-      "パスが存在するか、ファイルかディレクトリか、サイズを返す。" +
-      "file.list（ディレクトリ用）と file.read（ファイル用）のどちらを使うか決めるときに引く。",
-    parameters: Type.Object({
-      path: Type.String({ description: "ワークスペースからの相対パス" }),
-    }),
+      "パスが在るか・ファイルかディレクトリか・サイズを返す。\n例: {path: \"docs/spec\"} → \"docs/spec: dir\"／{path: \"README.md\"} → \"file (2841 bytes)\"",
+    parameters: Type.Object({ path: Type.String() }),
     async execute(params) {
       const target = resolveInWorkspace(root, params.path);
       if (!fs.existsSync(target)) {
@@ -321,17 +305,12 @@ export function createFileTools(
     name: "file.find",
     label: "File: Find",
     description:
-      "ファイル名のパターンでファイルを探す。glob が使える（`*.ts` / `**/canvas*` 等）。" +
-      "`/` を含まないパターンはファイル名だけに照合する。閲覧専用で、どこに何があるか探すときに使う。",
+      "ファイル名の glob で探す（閲覧専用）。`/` を含まないパターンはファイル名だけに照合。\n例: {pattern: \"*.spec.ts\", path: \"tests\"} → \"tests/acceptance/env-docker-run.spec.ts (5120 bytes)\"\npattern は英語で埋める（中身を探すなら file.grep）。",
     parameters: Type.Object({
-      pattern: Type.String({ description: "ファイル名のglob（例: *.ts, **/git-*.ts, README*）" }),
-      path: Type.Optional(Type.String({ description: "探索を始めるディレクトリ（省略時はルート）" })),
-      includeHidden: Type.Optional(
-        Type.Boolean({ description: "ドット始まりや node_modules 等も探す（既定 false）" })
-      ),
-      limit: Type.Optional(
-        Type.Number({ description: `件数の上限（既定 ${MAX_FIND_RESULTS}・最大 ${FIND_CEILING}）` })
-      ),
+      pattern: Type.String(),
+      path: Type.Optional(Type.String()),
+      includeHidden: Type.Optional(Type.Boolean()),
+      limit: Type.Optional(Type.Number())
     }),
     async execute(params) {
       const start = params.path ?? ".";
@@ -383,21 +362,14 @@ export function createFileTools(
     name: "file.grep",
     label: "File: Grep",
     description:
-      "ファイルの中身を正規表現で検索し、一致した行を行番号つきで返す。" +
-      "`glob` でファイルを絞れる。見つけた箇所は file.browser の line 引数でそのまま開ける。" +
-      "**上限で切ったときは総数も返る**ので、取りこぼしていないかはそこで分かる（多ければ limit を上げる）。" +
-      "閲覧専用で、どこに何が書かれているか探すときに使う。",
+      "ファイルの中身を正規表現で検索し、一致行を `path:line: 本文` で返す（閲覧専用）。\n例: {pattern: \"PRESENTED_TOOL_NAMES\", glob: \"*.ts\"} → \"packages/banto-host/src/presented-tools.ts:31: export const …\"\npattern は英語の識別子・正規表現で埋める。",
     parameters: Type.Object({
-      pattern: Type.String({ description: "検索する正規表現（例: createModuleRegistry, TODO|FIXME）" }),
-      path: Type.Optional(Type.String({ description: "探索を始めるディレクトリ（省略時はルート）" })),
-      glob: Type.Optional(Type.String({ description: "対象ファイルを絞るglob（例: *.ts）" })),
-      ignoreCase: Type.Optional(Type.Boolean({ description: "大文字小文字を区別しない" })),
-      includeHidden: Type.Optional(
-        Type.Boolean({ description: "ドット始まりや node_modules 等も探す（既定 false）" })
-      ),
-      limit: Type.Optional(
-        Type.Number({ description: `一致行の上限（既定 ${MAX_GREP_RESULTS}・最大 ${GREP_CEILING}）` })
-      ),
+      pattern: Type.String(),
+      path: Type.Optional(Type.String()),
+      glob: Type.Optional(Type.String()),
+      ignoreCase: Type.Optional(Type.Boolean()),
+      includeHidden: Type.Optional(Type.Boolean()),
+      limit: Type.Optional(Type.Number())
     }),
     async execute(params) {
       const start = params.path ?? ".";

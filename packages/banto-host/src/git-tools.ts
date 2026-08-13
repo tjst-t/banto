@@ -54,7 +54,7 @@ export function createGitTools(repoRoot: string): NamespacedToolDefinition[] {
     name: "git.status",
     label: "Git: Status",
     description:
-      "作業ツリーの状態（現在のブランチ、変更済み・未追跡のファイル）を返す。閲覧専用。",
+      "作業ツリーの状態（ブランチ・変更済み・未追跡）。閲覧専用。\n例: {} → \"## main\" \"M packages/banto-host/src/bin.ts\" \"?? notes.md\"",
     parameters: Type.Object({}),
     async execute() {
       const out = await git(repoRoot, ["status", "--porcelain=v1", "-b"]);
@@ -74,17 +74,12 @@ export function createGitTools(repoRoot: string): NamespacedToolDefinition[] {
     name: "git.diff",
     label: "Git: Diff",
     description:
-      "差分を返す。既定は作業ツリーの未コミット分。ref を指定するとその時点との差分、" +
-      "staged を true にするとステージ済みの差分。閲覧専用で、変更はしない。",
+      "差分を返す（閲覧専用）。既定は作業ツリーの未コミット分。\n例: {} → 未コミット分／{ref: \"main\", stat: true} → main との変更量だけ\nref とパスは英語で埋める。",
     parameters: Type.Object({
-      ref: Type.Optional(
-        Type.String({ description: "比較対象（例: HEAD, main, HEAD~3, a1b2c3）" })
-      ),
-      path: Type.Optional(Type.String({ description: "対象を絞るパス" })),
-      staged: Type.Optional(Type.Boolean({ description: "ステージ済みの差分を見る" })),
-      stat: Type.Optional(
-        Type.Boolean({ description: "本文ではなく変更量の要約だけを見る（全体像の把握用）" })
-      ),
+      ref: Type.Optional(Type.String()),
+      path: Type.Optional(Type.String()),
+      staged: Type.Optional(Type.Boolean()),
+      stat: Type.Optional(Type.Boolean())
     }),
     async execute(params) {
       const args = ["diff"];
@@ -105,11 +100,12 @@ export function createGitTools(repoRoot: string): NamespacedToolDefinition[] {
   const log = defineNamespacedTool({
     name: "git.log",
     label: "Git: Log",
-    description: "コミット履歴を新しい順に返す。閲覧専用。",
+    description:
+      "コミット履歴を新しい順に返す。閲覧専用。\n例: {limit: 5, path: \"docs/adr\"} → \"7133f76 2026-08-13 tjst-t — fix(work): …\"",
     parameters: Type.Object({
-      limit: Type.Optional(Type.Number({ description: "件数（既定 20）" })),
-      path: Type.Optional(Type.String({ description: "このパスに触れたコミットだけに絞る" })),
-      ref: Type.Optional(Type.String({ description: "起点（例: main, HEAD~10）" })),
+      limit: Type.Optional(Type.Number()),
+      path: Type.Optional(Type.String()),
+      ref: Type.Optional(Type.String())
     }),
     async execute(params) {
       const limit = Math.max(1, Math.min(params.limit ?? 20, 200));
@@ -199,11 +195,10 @@ export function createGitTools(repoRoot: string): NamespacedToolDefinition[] {
     name: "git.show",
     label: "Git: Show",
     description:
-      "1つのコミットが入れた変更を返す（メタ情報・変更ファイル一覧・差分）。" +
-      "「このコミットで何が変わったか」を見るときに使う。閲覧専用。",
+      "1つのコミットが入れた変更（メタ・変更ファイル一覧・差分）。閲覧専用。\n例: {ref: \"7133f76\"} → 全体／{ref: \"HEAD\", path: \"docs/ROADMAP.json\"} → 1ファイル分",
     parameters: Type.Object({
-      ref: Type.String({ description: "コミット（例: a1b2c3, HEAD, HEAD~2）" }),
-      path: Type.Optional(Type.String({ description: "差分を1ファイルに絞る" })),
+      ref: Type.String(),
+      path: Type.Optional(Type.String())
     }),
     async execute(params) {
       // メタ情報。%x09 はタブ区切り（件名に空白が入っても壊れない）
