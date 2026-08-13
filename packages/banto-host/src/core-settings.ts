@@ -43,6 +43,12 @@ function linesToPlaces(lines: readonly unknown[]): PlaceSetting[] {
 }
 
 export interface CoreSettingsOptions {
+  /**
+   * **番頭が使うモデルの選択肢**（PO裁定 2026-08-13）。
+   * 会話の画面と同じ「バックエンド → プロバイダ → モデル」を、`backend|provider|model`
+   * の値で返す。**選択肢を2箇所で組まない**（D3）ので、bin.ts が1つの元から作る。
+   */
+  harnessChoices?: () => Array<{ value: string; label: string }>;
   /** 場所が変わったときに呼ぶ（その場で効かせるため）。 */
   onPlacesChanged?: () => void;
   /**
@@ -194,51 +200,37 @@ export function createCoreSettingsSections(
         description:
           "**会話ごとの切り替えは、会話の画面のモデル選択でできる**（再起動は要らない）。" +
           "ここで決めるのは**新しい会話がどれで始まるか**だけ。\n\n" +
-          "設定の面は3つあるが、役割が違う——" +
-          "**「使えるモデル」＝何が在って何を採用するか**（カタログ）、" +
-          "**ここ＝番頭が使うもの**、**「職人」＝職人が使うもの**（割り当て）。\n\n" +
-          "バックエンドはプロバイダの**上位の階層**——同じ `opus` が pi（opencode zen）経由でも " +
-          "Claude Code 経由でも選べるので、モデル名からは決まらない。" +
-          "pi は登録したプロバイダのモデル（ローカルの vLLM も可）、" +
-          "Claude Code は手元のサブスクリプションで動くが **Claude 以外には繋げない**。",
+          "選ぶのは「バックエンド → プロバイダ → モデル」の1つ——同じ `opus` が pi" +
+          "（opencode zen 経由）でも Claude Code 経由でも指せるので、**どの経路で呼ぶか**まで含めて選ぶ。",
         fields: [
           {
-            key: "backend",
-            label: "会話を回すバックエンド",
+            key: "steward",
+            label: "番頭が使うモデル",
             type: "select",
-            options: [
-              { value: "pi", label: "pi（モデルは「LLM・モデル」で選ぶ）" },
-              { value: "claude-agent-sdk", label: "Claude Code（Agent SDK・Claude 専用）" },
-            ],
-            description:
-              "pi は LLM 登録のモデルで動く。Claude Code は ~/.claude の認証をそのまま使う",
-          },
-          {
-            key: "model",
-            label: "モデル（Claude Code のときだけ）",
-            type: "text",
-            placeholder: "opus / sonnet / haiku",
-            description:
-              "別名か完全なモデルID。空なら Claude Code の既定。" +
-              "**pi のときは使わない**——そちらは「LLM・モデル」の標準が効く",
+            options: options.harnessChoices?.() ?? [],
+            description: "会話の画面と同じ選択肢。ここは新しい会話の既定だけを決める",
           },
         ],
         read: () => {
-          const current = store.all().harness ?? {};
-          return { backend: current.backend ?? "pi", model: current.model ?? "" };
+          const steward = options.llmCatalog?.roles().steward;
+          return {
+            steward: steward
+              ? `${steward.backend ?? "pi"}|${steward.provider}|${steward.model}`
+              : "",
+          };
         },
         write: (values) => {
-          const backend = String(values["backend"] ?? "pi");
-          if (backend !== "pi" && backend !== "claude-agent-sdk") {
-            // I2: 知らないバックエンドを黙って保存しない（起動して初めて止まるより、ここで断る）
-            throw new Error(`知らないバックエンドです: ${backend}`);
+          const raw = String(values["steward"] ?? "");
+          const [backend, provider, model] = raw.split("|");
+          // I2: 壊れた値を黙って既定に落とさない
+          if (!backend || !provider || !model) {
+            throw new Error(`モデルの指定が不正です: ${raw}`);
           }
-          const model = String(values["model"] ?? "").trim();
-          store.update("harness", { backend, ...(model ? { model } : {}) });
+          options.llmCatalog?.setRole("steward", provider, model, backend);
           return {
             applied: true,
             message:
-              "保存しました。**新しい会話からこれで始まります**" +
+              "**新しい会話からこれで始まります**" +
               "（いま開いている会話は、会話の画面のモデル選択でその場で変えられます）。",
           };
         },

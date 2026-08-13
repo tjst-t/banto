@@ -161,8 +161,23 @@ export function workerRoleOf(tier: ModelTier): LlmRole {
   return `worker.${tier}` as LlmRole;
 }
 
-/** 役割 → モデル。**これが唯一の束縛の表**。 */
-export type LlmRoleBindings = Partial<Record<LlmRole, { provider: string; model: string }>>;
+/**
+ * 役割 → モデルの座標。**これが唯一の束縛の表**。
+ *
+ * **`backend` を含めるのが要点**（PO裁定 2026-08-13）。同じ `opus` が pi（opencode zen 経由）
+ * でも Claude Code（Agent SDK 経由）でも指せるので、`provider/model` だけでは
+ * **一意に解決できない**——解決できない参照は参照ではない。含めなかったせいで
+ * 「新しい会話は何で始まるか」に2箇所が別の答えを出す状態を一度作った（実データで食い違った）。
+ *
+ * 省略時は `pi`（それ以前からのデータはすべて pi）。
+ */
+export interface LlmModelRef {
+  backend?: string;
+  provider: string;
+  model: string;
+}
+
+export type LlmRoleBindings = Partial<Record<LlmRole, LlmModelRef>>;
 
 export interface LlmDefaults {
   /** 番頭は連続した会話なので具体モデルで持つ（`roles.steward` の写し）。 */
@@ -530,15 +545,22 @@ export class LlmCatalog {
    * 使えないモデルは割り当てられないので、**同時に採用も立てる**（policy）——
    * 「割り当てたのに使えない」という状態を作らないため。
    */
-  setRole(role: LlmRole, provider: string, model: string): void {
+  setRole(role: LlmRole, provider: string, model: string, backend?: string): void {
     this.ensureLoaded();
-    this.setModelOverlay(
-      provider,
-      model,
-      role === "steward" ? { hostUsable: true } : { workerUsable: true }
-    );
+    /**
+     * 採用（policy）は **pi のモデルにだけ**立てる。Claude Code のモデルは
+     * LLM 登録（`models.json` 由来）に載らないので、採用の旗を立てる先が無い
+     * ——立てようとすると台帳に幽霊の行ができる。
+     */
+    if (backend === undefined || backend === "pi") {
+      this.setModelOverlay(
+        provider,
+        model,
+        role === "steward" ? { hostUsable: true } : { workerUsable: true }
+      );
+    }
     this.overlay!.roles ??= {};
-    this.overlay!.roles[role] = { provider, model };
+    this.overlay!.roles[role] = { ...(backend ? { backend } : {}), provider, model };
     this.saveOverlay();
   }
 
@@ -781,7 +803,8 @@ export class LlmCatalog {
   resolveHostDefault(): ResolvedModel | undefined {
     this.ensureLoaded();
     const host = this.overlay!.roles?.steward;
-    if (host) {
+    // pi のモデルだけがここで解決できる（Claude Code のモデルは登録に載らない）
+    if (host && (host.backend === undefined || host.backend === "pi")) {
       const resolved = this.resolver.find(host.provider, host.model);
       if (resolved) return resolved;
     }
