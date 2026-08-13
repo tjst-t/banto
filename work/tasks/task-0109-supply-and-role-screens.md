@@ -3,7 +3,7 @@ id: task-0109
 type: task
 kind: improvement
 title: "段3: 画面を「供給の面」と「役の面」に割り直す"
-status: done
+status: closed
 refs: ["adr-0021"]
 scope:
   paths: ["packages/**", "tests/**", "work/**"]
@@ -36,3 +36,5 @@ review:
   あの面は実体が **pi バックエンドの供給**なので、そう名乗る
 - **職人の設定画面から等級の割り当てを外した**（読み取り専用の表示に）。書こうとすると
   行き先を言って断る（黙って捨てない・I2）
+
+> 2026-08-13: 内容は既に main に取り込み済みのため、Kobo 側で failed→closed として畳んだ（キューの棚卸し）。

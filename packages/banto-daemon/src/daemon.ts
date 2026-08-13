@@ -58,6 +58,8 @@ import { taskPayload } from "./task-watcher.js";
 import {
   fileConflictTask,
   deriveOriginResolutionPairs,
+  hasOpenResolutionTask,
+  type OriginResolutionPair,
 } from "./conflict-filer.js";
 // ADR-0013 決定60: 台帳を持つ能力（職人・検証環境）は**モジュールが持つ**。Kobo は
 // `worker.*` / `env.*` を**モジュール経由で呼ぶ側**になり、台帳・ドライバ・sops・
@@ -147,6 +149,21 @@ function splitPoolTaskId(id: string): { taskId: string; role: WorkerRole } {
  * 大きすぎる・文脈が入り切らない等）なので、回数を増やしても同じ壁に当たるため。
  */
 const AUDIT_ATTEMPT_LIMIT = 2;
+
+/**
+ * コンフリクト解消後の再開を**誰がやったか**（inc-0063 の4）。
+ *
+ * 帳簿の `po_operation` は名前のとおり PO の操作を残す場所なのに、機構の自動処理
+ * （解消タスクが片付いた → origin を merging へ戻す）が同じ型で無記名に積まれていた。
+ * PO は何も押していないので、`payload.actor` に出所を書いて読み分けられるようにする。
+ *
+ * **型そのものを増やさなかった理由**: `StateStore.applyEvent` は知らない type を
+ * 見ると throw する（I2: 版ずれを黙って無視しない）。新しい type を本番の帳簿に
+ * 書いた後でこの変更を巻き戻すと、**古い版の Kobo が帳簿を再生できず起動できない**。
+ * この直しは未コミットで PO のレビューを待つ＝巻き戻りうるので、後方互換の側を採る。
+ * 型を分けるなら、読み手（core の再生・API・番頭の表示）を先に直してから。
+ */
+const CONFLICT_RESUME_ACTOR = "system";
 
 /** モデルの等級。Kobo が知ってよいのはここまで（決定60a）。 */
 type ModelTier = "reasoning" | "standard" | "fast";
@@ -580,7 +597,14 @@ export class Daemon {
         (Number.parseInt(process.env["BANTO_MAX_CONCURRENT_SESSIONS"] ?? "5", 10) || 5),
       disableAuditSpawn: config.disableAuditSpawn ?? false,
       disableAutoSpawn: config.disableAutoSpawn ?? false,
-      disableMergeQueue: config.disableMergeQueue ?? false,
+      // 止血の口（inc-0063）: 先頭が詰まってマージキュー全体が止まったとき、
+      // コードを触らずに（＝ユニット定義の1行で）この道だけ切れるようにする。
+      // 他の設定と同じく引数が優先で、無ければ環境変数を見る。
+      disableMergeQueue:
+        config.disableMergeQueue ??
+        ["1", "true"].includes(
+          (process.env["BANTO_DISABLE_MERGE_QUEUE"] ?? "").trim().toLowerCase()
+        ),
       ...(config.environmentPoolUrl !== undefined
         ? { environmentPoolUrl: config.environmentPoolUrl }
         : {}),
@@ -3640,6 +3664,25 @@ export class Daemon {
       return;
     }
 
+    // 1b. 同じ origin に**まだ決着していない解消タスク**があるなら、二本目を積まない
+    //     （inc-0063 の3）。1 分ごとに 1 本ずつゴミタスクが増え、`scope.paths: ["**"]` で
+    //     後続を全部塞いだのはここ。ただし**止めるのは起票だけ**——origin は paused に
+    //     落として待たせる。merging に残すとマージキューの先頭で毎 tick rebase を
+    //     叩き続け、直列のキュー全体が止まる（inc-0063 と同じ詰まり方になる）
+    const openResolution = hasOpenResolutionTask(
+      this.store.getAllTasks(),
+      originTaskId,
+      originProjectTag
+    );
+    if (openResolution) {
+      process.stdout.write(
+        `[banto-daemon] conflict task not filed: ${originProjectTag}/${originTaskId} ` +
+          `already has an unresolved conflict-resolution task; pausing origin only\n`
+      );
+      this.pauseOriginForConflict(originTaskId, originProjectTag);
+      return;
+    }
+
     // 2. Find the project's repo path to write the conflict task file.
     const proj = this.registry.list().find((p) => p.id === originProjectTag);
     if (!proj) {
@@ -3689,7 +3732,17 @@ export class Daemon {
     );
 
     // 4. Pause the origin task (suspended_from=merging).
-    //    StateMachine.pause() emits state_transitioned(merging→paused) + task_paused.
+    this.pauseOriginForConflict(originTaskId, originProjectTag);
+  }
+
+  /**
+   * コンフリクトで止まった origin を paused（suspended_from=merging）に落とす。
+   *
+   * StateMachine.pause() が state_transitioned(merging→paused) + task_paused を出す。
+   * 起票した場合も、既に解消タスクがあって起票を見送った場合も、**origin の扱いは同じ**
+   * ——マージキューから降ろして解消を待たせる（inc-0063 の3）。
+   */
+  private pauseOriginForConflict(originTaskId: string, originProjectTag: string): void {
     const pauseResult = StateMachine.pause(
       this.log,
       originTaskId,
@@ -3721,11 +3774,16 @@ export class Daemon {
    *
    * D3: correspondence derived from refs[0] (discovered-from convention) — no mapping file.
    * I2: chain-fail is used when resolution fails (origin cannot proceed without resolution).
+   *
+   * inc-0063: 再開は**1つの解消タスクにつき1回**。二度目を打たない印は
+   * `conflictResumeAlreadyRecorded` が帳簿から導出する。
    */
   private runConflictResolutionCheck(): void {
     this.refreshState();
     const allTasks = this.store.getAllTasks();
-    const pairs = deriveOriginResolutionPairs(allTasks);
+    const pairs = deriveOriginResolutionPairs(allTasks, {
+      isConsumed: (pair) => this.conflictResumeAlreadyRecorded(pair),
+    });
 
     for (const pair of pairs) {
       const { originTaskId, originProjectTag, resolutionTaskId, resolutionProjectTag } = pair;
@@ -3760,15 +3818,24 @@ export class Daemon {
               `(resolution ${resolutionProjectTag}/${resolutionTaskId} ${resStatus})\n`
           );
           // AC-S75f66b-6-3: record the origin↔resolution linkage explicitly.
-          // A po_operation event captures the correlation so the audit trail shows
-          // WHICH resolution task caused the resume (D3: derived from events, not
-          // a mapping file; I2: the linkage is in the log, not just ordering).
+          // この1件が「このペアの後始末は打った」印そのもの（inc-0063 の2）。
+          // 次の tick の `isConsumed` はこれを読んで二度目を打たない
+          // （D3: 導出はイベントログから。消費済みフラグのファイルは作らない）。
+          //
+          // `actor` は**誰がやったか**（inc-0063 の4）。ここは機構の自動処理で、
+          // PO は何も押していない——出所を書かないと帳簿の `po_operation` が
+          // 全部 PO の判断に見え、「誰が決めたか」が追えなくなる
           this.log.append({
             type: "po_operation",
             projectTag: originProjectTag,
             operation: "conflict_resolved",
             taskId: originTaskId,
-            payload: { resolutionTaskId, resolutionProjectTag },
+            payload: {
+              resolutionTaskId,
+              resolutionProjectTag,
+              actor: CONFLICT_RESUME_ACTOR,
+              by: "kobo/conflict-resolution-check",
+            },
           });
         } else {
           process.stderr.write(
@@ -3810,6 +3877,26 @@ export class Daemon {
       }
       // If resolution task is still active (not terminal), do nothing on this tick.
     }
+  }
+
+  /**
+   * この (origin, 解消タスク) の組で**再開をもう打ったか**を帳簿から導出する（inc-0063 の2）。
+   *
+   * 再開のたびに `po_operation(conflict_resolved, payload.resolutionTaskId=…)` を1件積んで
+   * いるので、その1件がそのまま「実施済み」の印になる。**新しい永続ファイルは作らない**
+   * （D3: 状態はイベントログの再生から導出する）。
+   *
+   * `actor` の有無は見ない——この印は inc-0063 より前の帳簿（`actor` が無い時代の
+   * `po_operation`）にも積まれており、**古い帳簿の消費済みも消費済みとして読む**必要がある。
+   * これを見落とすと、稼働中の帳簿に残る task-0097↔task-0099 が再び動き出す。
+   */
+  private conflictResumeAlreadyRecorded(pair: OriginResolutionPair): boolean {
+    const history = this.index.getTaskHistory(pair.originTaskId, pair.originProjectTag);
+    return history.some((ev) => {
+      if (ev.type !== "po_operation") return false;
+      if (ev.operation !== "conflict_resolved") return false;
+      return ev.payload?.["resolutionTaskId"] === pair.resolutionTaskId;
+    });
   }
 }
 

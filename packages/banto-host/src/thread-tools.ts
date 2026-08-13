@@ -16,6 +16,7 @@
 
 import { Type } from "typebox";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "@banto/core";
+import type { TranscriptEntry } from "./protocol.js";
 import type { Thread, ThreadRegistry } from "./threads.js";
 
 export interface ThreadToolsOptions {

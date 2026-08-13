@@ -36,7 +36,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { execFileSync } from "node:child_process";
-import { Daemon } from "@banto/daemon";
+import {
+  Daemon,
+  deriveOriginResolutionPairs,
+  hasOpenResolutionTask,
+} from "@banto/daemon";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -383,11 +387,21 @@ describe("[AC-S75f66b-6-3-A] resolution task merged → origin resumed and reach
       correlationEv !== undefined,
       "AC-3: po_operation(conflict_resolved) with resolutionTaskId must be emitted after resume"
     );
-    const corrPayload = (correlationEv as { payload?: { resolutionTaskId?: string } }).payload;
+    const corrPayload = (correlationEv as {
+      payload?: { resolutionTaskId?: string; actor?: string };
+    }).payload;
     assert.equal(
       corrPayload?.resolutionTaskId,
       conflictTaskId,
       `correlation event must reference the resolution task ID (${conflictTaskId})`
+    );
+
+    // inc-0063 の4: この再開は**機構がやった**。PO は何も押していないので、
+    // 出所が帳簿から読めること（PO の判断と機構の自動処理を混ぜない）
+    assert.equal(
+      corrPayload?.actor,
+      "system",
+      "inc-0063: 機構の自動処理は PO 名義にしない（payload.actor で出所が判る）"
     );
 
     // D3: no mapping file persisted
@@ -555,5 +569,238 @@ describe("[AC-S75f66b-6-3-B] resolution task failed → origin chain-fails (I2)"
     // Origin must NOT have been resumed (paused → failed path, not paused → resumed)
     const originResumedEv = events.find((e) => e.type === "task_resumed" && e.taskId === "task-orig-b");
     assert.ok(!originResumedEv, "origin must NOT have task_resumed event when resolution fails");
+  });
+});
+
+// ── inc-0063: 対応づけの判定そのもの（純関数）────────────────────────────────────
+//
+// 周回の芯は「片付いた解消タスクが恒久的にペアの片割れになり続けること」だった。
+// 判定は純関数に置いてあるので、デーモンを起こさずに直に確かめる。
+
+describe("[inc-0063] deriveOriginResolutionPairs: 消費済みのペアは返さない", () => {
+  /** task-0097（paused）↔ task-0099（closed）——本番で 1 分ごとに拾い直されていた組。 */
+  const tasks = [
+    {
+      id: "task-0097",
+      status: "paused",
+      projectTag: "banto",
+      suspendedFrom: "merging",
+    },
+    {
+      id: "task-0099",
+      status: "closed",
+      projectTag: "banto",
+      kind: "conflict",
+      refs: ["task-0097"],
+    },
+  ];
+
+  it("印が無ければペアは返る（初回の再開は打てる）", () => {
+    const pairs = deriveOriginResolutionPairs(tasks);
+    assert.equal(pairs.length, 1, "消費済みの印が無い間は1組返る");
+    assert.equal(pairs[0]!.originTaskId, "task-0097");
+    assert.equal(pairs[0]!.resolutionTaskId, "task-0099");
+  });
+
+  it("消費済みの印があるペアは返らない（二度目の再開を打たない）", () => {
+    const pairs = deriveOriginResolutionPairs(tasks, {
+      isConsumed: (p) =>
+        p.originTaskId === "task-0097" && p.resolutionTaskId === "task-0099",
+    });
+    assert.deepEqual(pairs, [], "一度再開した組は二度と返らない（inc-0063 の周回の芯）");
+  });
+
+  it("消費済みなのは**その組だけ**——別の解消タスクは残る", () => {
+    const withSecond = [
+      ...tasks,
+      {
+        id: "task-0150",
+        status: "closed",
+        projectTag: "banto",
+        kind: "conflict",
+        refs: ["task-0097"],
+      },
+    ];
+    const pairs = deriveOriginResolutionPairs(withSecond, {
+      isConsumed: (p) => p.resolutionTaskId === "task-0099",
+    });
+    assert.equal(pairs.length, 1);
+    assert.equal(pairs[0]!.resolutionTaskId, "task-0150");
+  });
+});
+
+describe("[inc-0063] hasOpenResolutionTask: 未決着の解消タスクを数える", () => {
+  const origin = {
+    id: "task-0097",
+    status: "merging",
+    projectTag: "banto",
+  };
+
+  it("queued の解消タスクがあれば true（二本目を積まない）", () => {
+    const tasks = [
+      origin,
+      { id: "task-0099", status: "queued", projectTag: "banto", kind: "conflict", refs: ["task-0097"] },
+    ];
+    assert.equal(hasOpenResolutionTask(tasks, "task-0097", "banto"), true);
+  });
+
+  it("片付いた解消タスクだけなら false（新しい衝突には新しい一本を積む）", () => {
+    for (const status of ["merged", "closed", "failed", "superseded"]) {
+      const tasks = [
+        origin,
+        { id: "task-0099", status, projectTag: "banto", kind: "conflict", refs: ["task-0097"] },
+      ];
+      assert.equal(
+        hasOpenResolutionTask(tasks, "task-0097", "banto"),
+        false,
+        `${status} は未決着に数えない`
+      );
+    }
+  });
+
+  it("別の origin / 別のプロジェクトの解消タスクは数えない", () => {
+    const tasks = [
+      origin,
+      { id: "task-0099", status: "queued", projectTag: "banto", kind: "conflict", refs: ["task-0090"] },
+      { id: "task-0101", status: "queued", projectTag: "other", kind: "conflict", refs: ["task-0097"] },
+    ];
+    assert.equal(hasOpenResolutionTask(tasks, "task-0097", "banto"), false);
+  });
+});
+
+// ── Test Case C: inc-0063 の周回そのもの ──────────────────────────────────────
+//
+// 2026-08-13 に起きた形をそのまま再現する:
+//   解消タスクが片付く → origin を再開 → origin はまだ衝突する → また止まる
+//   → **片付いた解消タスクをもう一度拾って、また再開する**（1 分周期の無限ループ）
+//
+// 直っていれば、再開は 1 回きり。origin は paused のまま止まり、ゴミタスクも増えない。
+
+describe("[inc-0063] 片付いた解消タスクで origin を何度も再開しない", () => {
+  let tmpDir: string;
+  let repoDir: string;
+  let worktreeBaseDir: string;
+  let daemon: Daemon;
+  let base: string;
+  const PROJ = "proj-resume-c";
+  const ORIGIN = "task-orig-c";
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-resume-c-"));
+    repoDir = path.join(tmpDir, "repo");
+    worktreeBaseDir = path.join(tmpDir, "worktrees");
+    fs.mkdirSync(repoDir, { recursive: true });
+    git(repoDir, "init", "-b", "main");
+    git(repoDir, "config", "user.email", "test@banto.local");
+    git(repoDir, "config", "user.name", "banto-test");
+    fs.writeFileSync(path.join(repoDir, "shared.ts"), "// initial\nexport const VALUE = 0;\n");
+    git(repoDir, "add", "-A");
+    git(repoDir, "commit", "-m", "initial");
+
+    daemon = Daemon.create({
+      port: 0, dataDir: path.join(tmpDir, "data"), worktreeBaseDir,
+      tickIntervalMs: 200, watchIntervalMs: 200,
+      disableAuditSpawn: true, maxConcurrentSessions: 0,
+      disableAutoSpawn: true,
+    });
+    await daemon.start();
+    base = `http://localhost:${daemon.port}`;
+  });
+
+  after(async () => {
+    await daemon.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("[inc-0063] 再開は解消タスク1本につき1回きり", async () => {
+    const { conflictTaskId } = await setupConflictScenario({
+      base, proj: PROJ, repoDir, worktreeBaseDir,
+      anchorTaskId: "task-anch-c", originTaskId: ORIGIN,
+    });
+
+    // **origin のブランチは直さない**。本番と同じ形——解消タスクが片付いても
+    // origin 自身はまだ main と衝突する（inc-0063 の task-0097 はこの状態だった）
+    await pollUntil(() => getTask(base, PROJ, conflictTaskId), (t) => t !== null, 10000, 200);
+
+    const conflictWorktreePath = path.join(worktreeBaseDir, PROJ, conflictTaskId);
+    if (!fs.existsSync(conflictWorktreePath)) {
+      git(repoDir, "worktree", "add", "--detach", conflictWorktreePath);
+    }
+    try { git(conflictWorktreePath, "checkout", "-B", `task/${conflictTaskId}`); }
+    catch { /* already on branch */ }
+    fs.writeFileSync(path.join(conflictWorktreePath, "CONFLICT_RESOLVED.txt"), "resolved\n");
+    git(conflictWorktreePath, "add", "-A");
+    git(conflictWorktreePath, "commit", "-m", `fix: ${conflictTaskId} — resolve`);
+
+    for (const step of ["queued", "ready", "planning", "implementing", "auditing"]) {
+      await safeTransitionTo(base, PROJ, conflictTaskId, step);
+    }
+    await pollUntil(() => getStatus(base, PROJ, conflictTaskId), (s) => s === "auditing", 5000, 100);
+    const auditR = await fetch(`${base}/api/v1/projects/${PROJ}/tasks/${conflictTaskId}/audit-report`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ verdict: "pass", findings: [] }),
+    });
+    assert.equal(auditR.status, 200, "conflict task audit pass must succeed");
+
+    const conflictFinal = await pollUntil(
+      () => getStatus(base, PROJ, conflictTaskId),
+      (s) => s === "merged" || s === "closed" || s === "failed",
+      25000, 200
+    );
+    assert.ok(
+      conflictFinal === "merged" || conflictFinal === "closed",
+      `conflict task must reach merged/closed (got ${conflictFinal})`
+    );
+
+    // 1 回目の再開が来るまで待つ（これは正しい動き）
+    const afterResume = await pollUntil(
+      () => getEvents(base, PROJ),
+      (evs) => evs.some((e) => e.type === "task_resumed" && e.taskId === ORIGIN),
+      25000, 200
+    );
+    assert.ok(
+      afterResume.some((e) => e.type === "task_resumed" && e.taskId === ORIGIN),
+      "解消タスクが片付いたら origin は1回は再開される"
+    );
+
+    // ここから先は**何も起きない**ことを確かめる。tick は 200ms なので 4 秒で 20 周。
+    // 壊れていた頃はこの間に 20 回再開し、20 本のゴミタスクが積まれていた
+    await new Promise((r) => setTimeout(r, 4000));
+
+    const events = await getEvents(base, PROJ);
+    const resumes = events.filter((e) => e.type === "task_resumed" && e.taskId === ORIGIN);
+    assert.equal(
+      resumes.length, 1,
+      `origin の再開は1回きりであること（${resumes.length} 回起きた＝周回に入っている）`
+    );
+
+    const correlations = events.filter(
+      (e) =>
+        e.type === "po_operation" &&
+        (e as { operation?: string }).operation === "conflict_resolved" &&
+        e.taskId === ORIGIN
+    );
+    assert.equal(
+      correlations.length, 1,
+      `conflict_resolved の記録も1件きりであること（${correlations.length} 件あった）`
+    );
+
+    // ゴミタスクの増殖が止まっていること。
+    // 1 本目＝最初の衝突、2 本目＝再開後に再び衝突したときの1本。それ以上は増えない
+    const conflictFiles = fs
+      .readdirSync(path.join(repoDir, "work", "tasks"))
+      .filter((f) => f.includes(`conflict-resolution-for-${ORIGIN}`));
+    assert.ok(
+      conflictFiles.length <= 2,
+      `解消タスクが増殖していないこと（${conflictFiles.length} 本: ${conflictFiles.join(", ")}）`
+    );
+
+    // 再び衝突した origin は paused で止まったまま（勝手に merging へ戻らない）
+    const originStatus = await getStatus(base, PROJ, ORIGIN);
+    assert.equal(
+      originStatus, "paused",
+      `origin は解消待ちで止まっていること（got ${originStatus}）`
+    );
   });
 });

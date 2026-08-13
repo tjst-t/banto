@@ -3,7 +3,7 @@ id: task-0106
 type: task
 kind: improvement
 title: "段1a: 役の台帳を核に作る（版印つき・書き口は部分更新1本）"
-status: done
+status: closed
 refs: ["adr-0021"]
 scope:
   paths: ["packages/**", "tests/**", "work/**"]
@@ -56,4 +56,6 @@ review:
   `claude-agent-sdk` のまま、職人3件は `pi` が入る。オーバーレイの `roles` は消え、
   `policy` 32件はそのまま。`resolveForWorker("standard")` は移行前と同じ
   `opencode-go/deepseek-v4-flash` を返す（**挙動が変わらない**）
+
+> 2026-08-13: 内容は既に main に取り込み済みのため、Kobo 側で failed→closed として畳んだ（キューの棚卸し）。
 

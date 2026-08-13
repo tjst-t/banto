@@ -3,7 +3,7 @@ id: task-0102
 type: task
 kind: improvement
 title: "決定94 の残り（概念を 7→5 に畳み切る）"
-status: done
+status: closed
 refs: ["adr-0020", "adr-0019"]
 scope:
   paths: ["packages/**", "docs/adr/**", "work/**"]
@@ -65,3 +65,5 @@ ADR-0020 決定94 は「概念を 7 → 5」と決めたが、**2026-08-13 時�
 - **`supportedModels()` を実機で確認**：LLM を呼ばずに約1秒。手書きの表に無い
   `default` / `opus[1m]` / `claude-fable-5[1m]` が並んだ——**表は既に古かった**
 - `npm test` 全通過・typecheck・typecheck:web・build:web
+
+> 2026-08-13: 内容は既に main に取り込み済みのため、Kobo 側で failed→closed として畳んだ（キューの棚卸し）。

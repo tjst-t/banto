@@ -85,6 +85,21 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
   "kobo.approve",
   "kobo.reopen",
   /**
+   * **後始末の口**（inc-0063 の5番）。在庫には最初からあったのに提示していなかった
+   * ——その結果、機構は `kobo.task` の失敗欄と `kobo-notice.ts` の助言で
+   * 「`kobo.abandon` で畳んでください」「定義を直して `kobo.amend`」と**案内し続けながら、
+   * 番頭の手にはその道具が無い**という状態が続いていた。案内と道具の食い違いは、
+   * 番頭から見れば「言われたとおりにできない」であって、失敗の理由が分からない。
+   *
+   * `kobo.supersede` は**唯一 merging / paused のタスクに届く口**でもある
+   * （`Daemon.transition` は `superseded` を `StateMachine.supersede` へ回し、
+   * これは終端以外のどの状態からでも通る）。inc-0063 で merging に居座った
+   * task-0097 を降ろせなかったのは、この口が提示されていなかったからでもある。
+   */
+  "kobo.abandon",
+  "kobo.supersede",
+  "kobo.amend",
+  /**
    * **制御の口**（PO 裁定 2026-08-13・inc-0063）。頻度で選ぶと必ず落ちる——
    * 使うのは工場が壊れたときだけで、平時の呼び出しは 0 回である。それでも渡すのは、
    * **無いと止められない**から：inc-0063 では工場が1分ごとに同じタスクを起票し続け、

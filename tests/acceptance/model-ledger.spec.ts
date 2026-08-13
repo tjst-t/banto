@@ -307,6 +307,85 @@ describe("[決定101e] 採用は母集団1つ（台帳へ移す）", () => {
     );
   });
 
+  /**
+   * **症状1が消えたか**（ADR-0021・task-0107 の a2）。
+   *
+   * 「入れ物（3成分の母集団）は移したが、書く経路が pi 限定のまま」だと、Claude の
+   * モデルには旗が立たない。ここが立たない限り、母集団は pi の言い換えでしかない。
+   */
+  it("役の面で Claude のモデルを選べば、母集団に旗が立つ（症状1）", () => {
+    const c = seedCatalog(true);
+    c.models(); // 移行を走らせる（台帳をここで作る）
+    c.setRole("steward", "claude", "opus", "claude-agent-sdk");
+
+    assert.deepEqual(
+      ledger().adopted().find((r) => r.backend === "claude-agent-sdk"),
+      { backend: "claude-agent-sdk", provider: "claude", model: "opus" },
+      "**pi 限定の番人を外した**——どのバックエンドのモデルも母集団へ入る"
+    );
+    assert.deepEqual(
+      c.adoptedRefs().filter((r) => r.backend !== "pi").map((r) => r.model),
+      ["opus"],
+      "`models()` は pi の供給しか並べないので、母集団はここから読む"
+    );
+  });
+
+  /**
+   * **番人を外しただけでは、既に割り当ててあるものは治らない。**
+   *
+   * 実機の台帳は4つの役すべてが Claude を指しているのに母集団は pi の32件だけ、
+   * という形で残っていた（2026-08-13 実測）。選び直すまで直らないのでは、
+   * 「入れ物は移したが症状は治っていない」がそのまま再演する。
+   */
+  it("割り当て済みの役は、読み込みのたびに母集団へ揃えられる（不変条件）", () => {
+    // 番人が居た頃の姿：役は Claude を指しているのに、母集団には居ない
+    const l = ledger();
+    l.updateRole("steward", {
+      default: { backend: "claude-agent-sdk", provider: "claude", model: "opus" },
+    });
+    assert.deepEqual(l.adopted(), []);
+
+    seedCatalog(true).models(); // 読み込み（＝移行）を走らせる
+    assert.deepEqual(
+      ledger().adopted().filter((r) => r.backend !== "pi"),
+      [{ backend: "claude-agent-sdk", provider: "claude", model: "opus" }],
+      "割り当てられているものは必ず母集団に居る"
+    );
+  });
+
+  it("役に割り当てた Claude のモデルは母集団から外せない（解決先を失う）", () => {
+    const c = seedCatalog(true);
+    c.models();
+    c.setRole("worker.fast", "claude", "haiku", "claude-agent-sdk");
+    assert.throws(
+      () => ledger().unadopt({ backend: "claude-agent-sdk", provider: "claude", model: "haiku" }),
+      /割り当てられています/
+    );
+  });
+
+  it("Claude の採用は、同じ名前の pi のモデルに旗を立てない（バックエンドで絞る）", () => {
+    const c = seedCatalog(true);
+    c.models();
+    // pi 側の `cloud/big` を採用から外し、同名を Claude 側で採用する
+    c.setPolicy("cloud", "big", "host", false);
+    c.setRole("steward", "cloud", "big", "claude-agent-sdk");
+    assert.deepEqual(
+      c.models().find((m) => m.id === "big")?.policy,
+      [],
+      "**pi の供給の旗は pi の母集団だけで決まる**——ここで漏れると、採用していない pi の" +
+        "モデルが「採用済み」に見え、そのまま職人の候補に並ぶ"
+    );
+  });
+
+  it("台帳がまだ無い呼び出し元は、従来どおり pi のオーバーレイに旗を立てる（入れ替えの窓）", () => {
+    const c = seedCatalog(false);
+    c.setRole("steward", "cloud", "big");
+    assert.ok(
+      c.models().find((m) => m.id === "big")?.policy.includes("host"),
+      "台帳が無ければ書き先は pi のオーバーレイしか無い"
+    );
+  });
+
   it("採用の切り替えは母集団を出入りする（用途に依らず1つ）", () => {
     // 何も無いところから作ると、2026-08-04 の移行が「いま在るものを全採用」にする
     const c = seedCatalog(true);

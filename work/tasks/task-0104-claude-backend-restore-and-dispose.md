@@ -3,7 +3,7 @@ id: task-0104
 type: task
 kind: improvement
 title: "Claude バックエンドの復元と後始末"
-status: done
+status: closed
 refs: ["adr-0020", "adr-0019"]
 scope:
   paths: ["packages/**", "docs/adr/**", "work/**"]
@@ -90,3 +90,5 @@ review:
 - `ChapterKeeper.start()` の購読は**生成時のハーネスに張りっぱなし**で、会話の途中で
   バックエンドを替えると自動の章立てが働かない（`closeChapter` は追随する）。
   今回のスコープ外なので **inc-0062** に積んだ
+
+> 2026-08-13: 内容は既に main に取り込み済みのため、Kobo 側で failed→closed として畳んだ（キューの棚卸し）。

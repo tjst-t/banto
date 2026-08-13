@@ -47,6 +47,8 @@ export {
   type CloseReason,
   DEFAULT_IDLE_TIMEOUT_MS,
   DEFAULT_PAGE_SIZE,
+  TIER_UNASSIGNED_CODE,
+  tierFromUnassignedError,
   type WorkerExitDetail,
   type DelegateInput,
 } from "./pool.js";
