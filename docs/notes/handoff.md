@@ -2532,3 +2532,60 @@ llm.resolve: claude-agent-sdk / claude/opus（高精度の割り当て）  ← �
 **移行は「走っているほうを正」**（PO裁定・Pro x20 の枠がある前提）。工房に残った旧い割り当ては
 起動時に「もう読まれません」と名指しする。
 
+---
+
+# ここから読む — 2026-08-13 セッションの終わりの状態
+
+## 実機（systemd 4サービス。すべて active）
+
+```
+番頭   claude-agent-sdk / claude/opus     道具: 提示 56 / 在庫 85   会話 52本
+職人   既定 reasoning → opus（核の台帳）  バックエンド pi-rpc / claude-agent-sdk
+台帳   <data>/model-roles.json  … 役の割り当てと母集団（32モデル）
+       <data>/llm-registry.json … pi バックエンドの供給（プロバイダ・鍵・文脈長・等級）
+       <data>/worker-pool/settings.json … 供給の入切だけ（defaultBackend）
+       <data>/data/kobo-settings.json … Kobo の役（executor/rework/audit＝すべて opus）
+```
+
+`npm test` **1,626件 green**・typecheck・typecheck:web・build:web。
+
+## このセッションで入れたもの（すべて main・デプロイ済み）
+
+1. **task-0104**（ADR-0020 決定97）Claude バックエンドの復元と後始末。
+   **新しい会話が黙る**という、起票より広い穴が出た（`resume` の取り違え）
+2. **task-0102**（決定98）決定94 の残りを畳む。`policy` / `NotSupported` / Catalog の問い合わせ化
+3. **ADR-0021 accepted**（決定99〜104）と **task-0106〜0109**。
+   **供給と役の決定を分ける**。二重管理を畳み、画面を割り直した
+4. **inc-0058 resolved**（間欠する試験）・**inc-0024 resolved**（モデル tier の spec 乖離）
+
+## 次にやること（優先順）
+
+1. **task-0103** 決定96 の設定画面（3段＋ポリシー・**実推論での検証**）。
+   ADR-0021 段3 で「役の面」と「供給の面」の割り直しは済んだので、**残りは
+   ①検証（Goose 型＝実際に推論を1回叩く）②プロバイダ追加のフォーム**
+2. **task-0110** `spec-daemon-core` §3.5 のモデル tier 表を ADR-0021 の形へ（P3・inc-0024 から）
+3. **task-0105** ADR-0019 実装後の実測（実機はいま測れる状態）
+4. **inc-0062** バックエンドを替えると `ChapterKeeper` の購読が古いハーネスに残る
+5. **inc-0059 / 0060 / 0061**（複数鍵フェイルオーバー・`worker.close` の冪等 no-op・復号の軸）
+6. ADR-0020 **未決3：サブスクリプションの消費は未計測**。職人も番頭も Claude で回っている
+
+## 測っていないこと（正直に）
+
+- **番頭を Claude で回したときの実機の往復**は、**隔離したホスト**でしか確かめていない
+  （PO の52会話を汚さないため）。実機の番頭は既定が Claude だが、いまある会話はすべて pi 由来
+- **サブスクリプションの消費**（上記）
+- 段2 で職人の解決経路が変わったが、**実際に職人を起こしての before/after は未実施**
+
+## 触っていない未コミット（PO のもの）
+
+`work/tasks/task-0089.md` / `task-0098.md`（変更）、`task-0099-*` / `task-0101-*`（未追跡）。
+
+## 退避（元に戻すときはここから）
+
+```
+/var/lib/banto/llm-registry.json.bak-20260813-task0102 / -task0106 / -stage23
+/var/lib/banto/model-roles.json.bak-20260813-stage23
+/var/lib/banto/worker-pool/settings.json.bak-20260813-adr0021
+/var/lib/banto/threads/index.json.bak-20260813-task0104
+```
+
