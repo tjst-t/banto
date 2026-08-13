@@ -689,6 +689,50 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
   });
 
   /**
+   * レビューで駄目だったものを、**契約を変えずに**実装へ戻す（段2・報告 A 表 11b）。
+   *
+   * `kobo.reopen` の隣。入口が違うだけ（reopen は落ちたもの・こちらは判断待ちのもの）で、
+   * 行き先も職人の起こし方も同じ。**契約を変える差し戻しは `kobo.amend` の領分**。
+   */
+  const sendBack = defineNamespacedTool({
+    name: "kobo.send_back",
+    label: "Kobo: Send back",
+    description:
+      "レビュー待ちのタスクを**実装へ差し戻す**（通さない方の判断）。\n例: {projectTag: \"banto\", taskId: \"task-0042\", reason: \"エラーを握り潰している（I2）。握らず失敗させること\"} → 戻した旨" + ID_HINT +
+      "\n**契約は変わらない**——同じスコープ・同じ受け入れ基準のまま、理由を渡して次の試行を起こす。" +
+      "スコープや基準そのものを直すなら kobo.amend、依頼が別物なら kobo.supersede。" +
+      "\n落ちた（failed）ものを戻すのは kobo.reopen。",
+    parameters: Type.Object({
+      projectTag: Type.String(),
+      taskId: Type.String(),
+      reason: Type.String({ description: "**何が駄目で、どう直すのか**。職人にそのまま渡り、帳簿にも残る" }),
+      origin: Type.Optional(Type.String({ description: "**番頭は書かない**" })),
+    }),
+    async execute(params) {
+      requireProject(params.projectTag);
+      const r = await daemon.sendBackTask(params.projectTag, params.taskId, {
+        reason: params.reason,
+        by: "banto",
+        // 宛先の無いタスク（ファイルから取り込んだもの）は、ここで初めて宛先が付く
+        ...(params.origin ? { origin: params.origin } : {}),
+      });
+      // I2: 戻せなかったことを成功に見せない
+      if (!r.ok) throw new Error(r.reason);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `${params.taskId} を実装へ差し戻しました（契約は変えていません）。` +
+              "職人を起こしています——指摘はそのまま渡してあります",
+          },
+        ],
+        details: { taskId: params.taskId, projectTag: params.projectTag, to: r.to },
+      };
+    },
+  });
+
+  /**
    * どうしようもないものを、**落ちたまま畳む**（task-0081・PO 要望 2026-08-08）。
    */
   const abandon = defineNamespacedTool({
@@ -776,7 +820,7 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
 
   return [
     enqueue, list, task, projects, events, approve, supersede, registerProject,
-    reopen, abandon, amend,
+    reopen, sendBack, abandon, amend,
     // 制御の口（PO 裁定 2026-08-13・inc-0063）
     unregisterProject, setWatch, setMergeQueue,
   ];

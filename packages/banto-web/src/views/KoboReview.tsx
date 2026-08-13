@@ -1,14 +1,18 @@
 /**
- * レビュー面（ADR-0013 決定57・59、task-0049）。
+ * レビュー面（ADR-0013 決定57・59、task-0049・0147）。
  *
  * **判断するための面。** 監査を通ったタスクが並び、経緯・変更の範囲・受け入れ基準・
  * 監査の判定が1つの画面に揃う。**触れる環境があれば開ける**（決定59）——見るだけでなく
  * 触って決める。
  *
  * 3段のレビュー（決定57）がそのまま出る：
- *   - `po` と判定されたものは**ここでは通せない**。判定は工場が機械的に行い、
- *     この画面は結果を描くだけ（D5）——「気づいた人が上げる」形にしない
+ *   - `po` と判定されたものは**番頭には通せない**。判定は工場が機械的に行い、
+ *     この画面は結果を描くだけ（D5）——「気づいた人が上げる」形にしない。
+ *     **PO 自身は合言葉を入れて通せる**（task-0147）——番頭の口（`kobo.approve`）ではなく
+ *     PO 専用の HTTP の口を叩く。合言葉は画面が預かるだけで、番頭ホストは保存しない
  *   - それ以外は通せる。ただし**通しても関所は飛ばない**（マージ前ゲートが後に回る）
+ *   - どちらの段でも**差し戻せる**（段2）。通すか差し戻すかが判断で、通すしか押せない面は
+ *     判断の片側しか受け取れない
  *
  * データも操作も kobo モジュールの口を通す（決定25）。番頭の Tool は呼ばない。
  */
@@ -58,6 +62,76 @@ interface TaskDetail {
 /** 判断待ちの状態（決定57 の一次受けが効く範囲）。 */
 const WAITING = ["review-ready", "in-review"];
 
+/**
+ * PO の合言葉を置く場所（task-0147 の縛り4）。
+ *
+ * **`localStorage` には置かない。** 持つとしても最長でタブを閉じるまで——`sessionStorage`
+ * はタブごとに消える。ここに置くのは「タスクを数本続けて通すのに毎回打ち直させない」ためだけで、
+ * 番頭ホストにも Kobo にも送られた合言葉は残らない（照合して捨てる）。
+ */
+const PO_TOKEN_KEY = "banto.kobo.po_token";
+
+/** 押したときだけ読む（描画のたびに触らない）。 */
+function readPoToken(): string {
+  try {
+    return window.sessionStorage.getItem(PO_TOKEN_KEY) ?? "";
+  } catch {
+    // sessionStorage が使えない（プライベート閲覧等）。手で入れてもらえば足りる
+    return "";
+  }
+}
+
+function rememberPoToken(token: string): void {
+  try {
+    window.sessionStorage.setItem(PO_TOKEN_KEY, token);
+  } catch {
+    // 覚えられなくても通せる。ここで失敗を画面に出すと、通ったことが埋もれる
+  }
+}
+
+/**
+ * PO 専用の承認口（`http-server.ts` の `POST {baseUrl}/projects/:proj/tasks/:id/approve`）。
+ *
+ * **番頭の Tool 経路ではない**（task-0147 の縛り3）。`kobo.approve` は決定57 により
+ * `po` 段のタスクを通せず、この口だけが `approvedBy: "po"` を帳簿に書く。
+ * 名乗りはリクエストごとにブラウザから渡し、**どこにも保存されない**（縛り2）。
+ *
+ * I2: 「閉じている」（合言葉が未設定）と「名乗りが違う」と「通せない状態」を区別して返す
+ * ——全部「失敗しました」に潰すと、PO は自分が何を直せばよいか分からない。
+ */
+async function approveAsPo(
+  endpoint: string,
+  projectTag: string,
+  taskId: string,
+  token: string,
+  note?: string
+): Promise<void> {
+  const url =
+    `${endpoint.replace(/\/$/, "")}/projects/${encodeURIComponent(projectTag)}` +
+    `/tasks/${encodeURIComponent(taskId)}/approve`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(note ? { note } : {}),
+  });
+  if (res.ok) return;
+
+  const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
+  if (res.status === 503 && body.error === "po_token_not_configured") {
+    throw new Error(
+      "PO の合言葉が工場に設定されていないため、この口は閉じています" +
+        "（BANTO_PO_TOKEN を設定して Kobo を起動し直してください）"
+    );
+  }
+  if (res.status === 401) {
+    throw new Error("合言葉が違います（名乗りが通りませんでした）");
+  }
+  throw new Error(body.message ?? body.error ?? res.statusText);
+}
+
 export function KoboReview({ params, endpoint }: CanvasViewProps): React.ReactElement {
   const initialProject = typeof params["projectTag"] === "string" ? params["projectTag"] : undefined;
   const initialTask = typeof params["taskId"] === "string" ? params["taskId"] : undefined;
@@ -66,9 +140,14 @@ export function KoboReview({ params, endpoint }: CanvasViewProps): React.ReactEl
     initialProject && initialTask ? { projectTag: initialProject, taskId: initialTask } : undefined
   );
   const [note, setNote] = useState("");
+  const [reason, setReason] = useState("");
+  const [poToken, setPoToken] = useState(() => readPoToken());
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
-  const [done, setDone] = useState<string | undefined>(undefined);
+  /** 片が付いたもの（通した／差し戻した）。どちらを押したかで出す言葉が違う */
+  const [done, setDone] = useState<{ taskId: string; kind: "approved" | "sent_back" } | undefined>(
+    undefined
+  );
 
   // **判断待ちを探す面なので、既定のまま引く**（prop-0001 第1段）。
   // 片が付いたタスクで 100 件の枠を埋めると、判断待ちが押し出される
@@ -111,6 +190,15 @@ export function KoboReview({ params, endpoint }: CanvasViewProps): React.ReactEl
     setSelected({ projectTag: head.projectTag, taskId: head.taskId });
   }, [waiting, selected]);
 
+  /** 押したあとの後始末。どの操作でも同じ（一覧と詳細を取り直す） */
+  const finish = (taskId: string, kind: "approved" | "sent_back"): void => {
+    setDone({ taskId, kind });
+    setNote("");
+    setReason("");
+    list.reload();
+    detail.reload();
+  };
+
   const approve = async (): Promise<void> => {
     if (!selected) return;
     setBusy(true);
@@ -121,12 +209,59 @@ export function KoboReview({ params, endpoint }: CanvasViewProps): React.ReactEl
         taskId: selected.taskId,
         ...(note.trim() ? { note: note.trim() } : {}),
       });
-      setDone(selected.taskId);
-      setNote("");
-      list.reload();
-      detail.reload();
+      finish(selected.taskId, "approved");
     } catch (err) {
       // I2: 押したのに何も起きなかったように見せない。理由をそのまま出す
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * PO 自身が通す（task-0147）。**番頭の口とは別の口**——決定57 により
+   * `kobo.approve` は `po` 段のタスクを通せない。押せるのはこの面を見ている人だけで、
+   * 番頭のモデルからは呼べない（Tool ではないので在庫に載らない）。
+   */
+  const approveAsPoAction = async (): Promise<void> => {
+    if (!selected) return;
+    setBusy(true);
+    setActionError(undefined);
+    try {
+      await approveAsPo(
+        endpoint,
+        selected.projectTag,
+        selected.taskId,
+        poToken,
+        note.trim() || undefined
+      );
+      // 通ったときだけ覚える（間違った合言葉を覚えても打ち直しが要るだけ）
+      rememberPoToken(poToken);
+      finish(selected.taskId, "approved");
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * 実装へ差し戻す（段2）。**契約は変えない**——スコープや受け入れ基準を直すのは
+   * `kobo.amend` の領分で、ここは同じ契約のまま次の試行を起こすだけ。
+   * 理由は職人にそのまま渡るので、空では押せない。
+   */
+  const sendBack = async (): Promise<void> => {
+    if (!selected || !reason.trim()) return;
+    setBusy(true);
+    setActionError(undefined);
+    try {
+      await callModuleTool(endpoint, "kobo.send_back", {
+        projectTag: selected.projectTag,
+        taskId: selected.taskId,
+        reason: reason.trim(),
+      });
+      finish(selected.taskId, "sent_back");
+    } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
@@ -267,7 +402,8 @@ export function KoboReview({ params, endpoint }: CanvasViewProps): React.ReactEl
           {forPo ? (
             <Note tone="warn">
               これは <strong>PO の判断が要る</strong>もの（統治コード、または PO 必須の面に
-              触る）です。番頭は通せません——経緯・変更点・懸念をまとめて取次へ上げてください。
+              触る）です。番頭は通せません——番頭は経緯・変更点・懸念をまとめて取次へ上げ、
+              <strong>PO は合言葉を入れてここから通せます</strong>。
             </Note>
           ) : (
             <Note tone="neutral">
@@ -276,24 +412,65 @@ export function KoboReview({ params, endpoint }: CanvasViewProps): React.ReactEl
             </Note>
           )}
 
-          {done === selected.taskId ? (
-            <Note tone="ok">通しました。マージキューへ入りました。</Note>
+          {done?.taskId === selected.taskId ? (
+            <Note tone="ok">
+              {done.kind === "approved"
+                ? "通しました。マージキューへ入りました。"
+                : "差し戻しました。契約はそのままで、職人がもう一度直します。"}
+            </Note>
           ) : (
-            stillWaiting &&
-            !forPo && (
-              <div className="kb-actions">
-                <TextInput
-                  value={note}
-                  onChange={(event) => setNote(event.target.value)}
-                  placeholder="何を見て良しとしたか（帳簿に残ります）"
-                />
-                <Button variant="primary" onClick={() => void approve()} disabled={busy}>
-                  {busy ? "通しています…" : "通す"}
-                </Button>
-              </div>
+            stillWaiting && (
+              <>
+                <div className="kb-actions">
+                  <TextInput
+                    value={note}
+                    onChange={(event) => setNote(event.target.value)}
+                    placeholder="何を見て良しとしたか（帳簿に残ります）"
+                  />
+                  {forPo ? (
+                    <>
+                      {/* task-0147: 合言葉は押すときに入れる。番頭ホストは預からない */}
+                      <TextInput
+                        type="password"
+                        value={poToken}
+                        onChange={(event) => setPoToken(event.target.value)}
+                        placeholder="PO の合言葉"
+                        autoComplete="off"
+                      />
+                      <Button
+                        variant="primary"
+                        onClick={() => void approveAsPoAction()}
+                        disabled={busy || poToken.length === 0}
+                      >
+                        {busy ? "通しています…" : "PO として通す"}
+                      </Button>
+                    </>
+                  ) : (
+                    <Button variant="primary" onClick={() => void approve()} disabled={busy}>
+                      {busy ? "通しています…" : "通す"}
+                    </Button>
+                  )}
+                </div>
+
+                {/* 段2: 判断の片側（通さない方）。契約は変えずに実装へ戻す */}
+                <div className="kb-actions">
+                  <TextInput
+                    value={reason}
+                    onChange={(event) => setReason(event.target.value)}
+                    placeholder="何が駄目で、どう直すのか（職人にそのまま渡ります）"
+                  />
+                  <Button
+                    variant="default"
+                    onClick={() => void sendBack()}
+                    disabled={busy || reason.trim().length === 0}
+                  >
+                    {busy ? "戻しています…" : "差し戻す"}
+                  </Button>
+                </div>
+              </>
             )
           )}
-          {actionError && <ErrorNote title="通せませんでした">{actionError}</ErrorNote>}
+          {actionError && <ErrorNote title="押せませんでした">{actionError}</ErrorNote>}
         </section>
       </Scroll>
     </ViewShell>

@@ -1475,6 +1475,84 @@ export class Daemon {
   }
 
   /**
+   * レビューで見て駄目だったものを、**契約を変えずに実装へ戻す**（段2・報告 A 表 11b）。
+   *
+   * **`kobo.reopen` との違いは入口**：reopen は `failed`（機械が落とした）から戻す道で、
+   * こちらは `review-ready` / `in-review`（人・番頭が見て駄目だと決めた）から戻す道。
+   * どちらも行き先は `implementing` で、職人の起こし方も同じ（道を2つ持たない）。
+   *
+   * **契約は動かさない。** スコープや受け入れ基準を変えたいなら `kobo.amend`、
+   * 依頼そのものを別物にするなら `kobo.supersede` の領分で、ここは「同じ契約のまま
+   * 次の試行を起こす」だけ——だから監査は無効化しないし `task_contract_amended` も積まない。
+   *
+   * **`po` 段のタスクも番頭が戻せる。** 決定57 が番頭に禁じているのは*通す*ことで、
+   * 差し戻しは厳しい方向へ倒す判断だから緩みが出ない（approveTask の `po` 判定と非対称なのは
+   * 意図的。緩い方へは倒れない・review-policy.ts の原則と同じ向き）。
+   */
+  async sendBackTask(
+    projectTag: string,
+    taskId: string,
+    options: { reason: string; by: "banto" | "po"; origin?: string }
+  ): Promise<{ ok: true; to: string } | { ok: false; reason: string }> {
+    const task = this.store.getTask(taskId, projectTag);
+    if (!task) return { ok: false, reason: `${taskId} は ${projectTag} の工場にありません` };
+    if (task.status !== "review-ready" && task.status !== "in-review") {
+      return {
+        ok: false,
+        reason:
+          `${taskId} はレビュー待ちではありません（いまは ${task.status}）。` +
+          "差し戻せるのは判断待ちのものだけです——落ちたものは kobo.reopen で戻してください",
+      };
+    }
+
+    // 宛先の扱いは `reopenTask` と同じ（決定58 の延長）。戻せと言った会話が以後の宛先になる
+    if (options.origin && !this.originOfTask(projectTag, taskId)) {
+      const amended = this.log.append({
+        type: "task_contract_amended",
+        projectTag,
+        taskId,
+        amendedBy: options.by,
+        reason: `宛先（origin）を ${options.origin} に定めました（差し戻したため）`,
+        changes: ["宛先（origin）"],
+        // 契約は動かしていない（宛先は契約ではない）ので監査は無効化しない
+        auditInvalidated: false,
+        contract: { origin: options.origin },
+      });
+      this.applyAndBroadcast(amended);
+    }
+
+    const result = this.transition(
+      projectTag,
+      taskId,
+      "implementing",
+      `sent_back_by:${options.by}（${options.reason}）`
+    );
+    if (!result.ok) return { ok: false, reason: `implementing へ戻せませんでした: ${result.reason}` };
+
+    // **理由をそのまま職人へ渡す**（渡さないと同じものが上がってくる）。
+    // 監査のやり直し・reopen と同じ道を通す——職人の起こし方を3つ持たない
+    await this.spawnReworkSession(
+      projectTag,
+      taskId,
+      [`レビューで差し戻されました: ${options.reason}`],
+      "レビューでの指摘"
+    );
+
+    // 起こす途中で落ちていたら（`spawnReworkSession` が recordTaskFailed する）、成功に見せない（I2）
+    const after = this.store.getTask(taskId, projectTag);
+    if (after?.status !== "implementing") {
+      return {
+        ok: false,
+        reason:
+          `${taskId} を implementing へ戻しましたが、職人を起こせませんでした` +
+          `（いまは ${after?.status ?? "不明"}）。kobo.task で理由を読んでください`,
+      };
+    }
+
+    return { ok: true, to: "implementing" };
+  }
+
+  /**
    * どうしようもないものを、**落ちたまま畳む**（task-0081・PO 要望 2026-08-08）。
    *
    * `failed` に置きっぱなしだと、既定の一覧（prop-0001）に出続けて
@@ -2600,8 +2678,14 @@ export class Daemon {
       // 決定59: **判断が付いた瞬間に畳む。** 終端（failed/closed/superseded）に加えて、
       // レビューを抜けたとき（approved）も畳む——判断待ちの間だけ生かすのが決定59 の
       // 「環境の寿命は判断に紐づける」。放置された札の分は TTL が落とす
+      //
+      // **差し戻しも「判断が付いた」である**（段2・11c）。レビューから implementing へ
+      // 戻ったとき、触るための環境はもう要らない——ここを入れないと、環境の寿命が
+      // 「判断」ではなく TTL 任せになる（決定59 が守りたかったものが緩む）
       const TERMINAL_STATES = new Set(["failed", "closed", "superseded", "approved"]);
-      if (TERMINAL_STATES.has(toStatus)) {
+      const sentBack =
+        (fromStatus === "review-ready" || fromStatus === "in-review") && toStatus === "implementing";
+      if (TERMINAL_STATES.has(toStatus) || sentBack) {
         this._trackBackground(new Promise<void>((resolve) => {
           setImmediate(() => void this._teardownTaskEnvs(projectTag, taskId).then(resolve, resolve));
         }));
@@ -2636,17 +2720,24 @@ export class Daemon {
         }
       }
 
-      // S9d7fdb-7 (AC-S9d7fdb-7-1, AC-S9d7fdb-7-2): Auto-provision env on review-ready→in-review.
-      // When a task with an `environment` field enters in-review, provision its env automatically
-      // so the PO gets something they can actually touch（決定59。tmux ペインは廃止した）.
+      // S9d7fdb-7 (AC-S9d7fdb-7-1, AC-S9d7fdb-7-2): Auto-provision env on entering review-ready.
+      // 監査を通ったタスクが判断待ちに入ったら、その環境を自動で立てる
+      // ——PO が見るだけでなく触れる状態で差し出すため（決定59。tmux ペインは廃止した）。
+      //
+      // **発火点は `review-ready`**（段11c-3・報告 A-6 (4)）。以前は `in-review` だったが、
+      // `approveTask` が review-ready → in-review → approved を**同じ同期呼び出しで**進めるため、
+      // in-review の滞在時間は実測で中央値 0.01 秒・最大 0.03 秒しかなく、`setImmediate` で
+      // 走り出す頃には必ず approved に着いていた——立てた直後に必ず畳まれ、**PO が触れる時間が
+      // 存在しなかった**（実測 `env_provisioned` 0 件）。判断待ちの時間はすべて review-ready で
+      // 過ごされる。**畳む側（判断が付いたら畳む）は変えていない。**
       //
       // Design rules:
       //   D5: all orchestration logic here; HTTP layer is pure routing.
       //   I2: provision failure MUST NOT block the transition — it is surfaced as an event.
-      //       The transition to in-review is already committed (D3); this hook is fire-and-forget.
-      //   D3: we read task.environment from the state store (the event-derived record),
+      //       The transition is already committed (D3); this hook is fire-and-forget.
+      //   D3: we read the task record from the state store (the event-derived record),
       //       not from disk directly — the event log is the single runtime truth.
-      if (toStatus === "in-review") {
+      if (toStatus === "review-ready") {
         // Fire-and-forget: tracked so Daemon.stop() drains before log.close() (D3/I2: no drops).
         this._trackBackground(new Promise<void>((resolve) => {
           setImmediate(() => void this._autoProvisionOnReview(projectTag, taskId).then(resolve, resolve));
@@ -3137,11 +3228,17 @@ export class Daemon {
     };
   }
 
+  /**
+   * @param options.workdir **どこを映すか**（段11c-2・報告 A-6 (3)）。タスクのワークツリーを
+   *   渡す。渡さないとドライバ側で `repoPath`（＝ main のチェックアウト）に落ちるので、
+   *   **ブランチの変更が1つも映っていない画面を PO に触らせる**ことになる
+   *   ——ゲートの経路（`gateVerifyRunner`）は最初から渡していて、ここだけ欠けていた
+   */
   async provisionEnv(
     projectTag: string,
     taskId: string,
     profileName: string,
-    options: { forReview?: boolean } = {}
+    options: { forReview?: boolean; workdir?: string } = {}
   ): Promise<{ ok: true; envId: string; url?: string } | { ok: false; reason: string }> {
     const proj = this.registry.get(projectTag);
     if (!proj) {
@@ -3155,6 +3252,8 @@ export class Daemon {
         profile: profileName,
         taskId,
         projectTag,
+        // 段11c-2: 立てる場所はタスクのワークツリー（＝ブランチ）。無指定は main を映す
+        ...(options.workdir ? { workdir: options.workdir } : {}),
         // 決定59: **触れる状態で差し出す**。ポート番号は知らなくてよい——「人が触る」という
         // 意図だけを渡し、どのポートかは Environment Pool がプロファイルから決める（決定60a）
         ...(options.forReview ? { exposeProfilePort: true } : {}),
@@ -3221,15 +3320,20 @@ export class Daemon {
     return { ok: true };
   }
 
-  // ── レビューに入ったら環境を立てる（S9d7fdb-7・決定59）─────────────────────
+  // ── 判断待ちに入ったら環境を立てる（S9d7fdb-7・決定59）─────────────────────
 
   /**
-   * `in-review` に入ったタスクに `environment` があれば、その環境を立てる。
+   * `review-ready` に入ったタスクの環境を立てる。
    *
    * 決定59：**PO の判断が要るものは、見るだけでなく触れる状態で差し出す。**
    * tmux ペインは廃止した（Kobo から tmux 依存を外す）——見る面はキャンバスの
-   * ブラウザビュー／セッションビューアが担う。公開URLを判断待ちに添えるのは
-   * epic-0010 の3段目。
+   * ブラウザビュー／セッションビューアが担う。
+   *
+   * 段11c で3つ直した（報告 A-6。それまで実測 `env_provisioned` は 0 件だった）：
+   *   1. **宣言が無ければプロジェクトの既定検証プロファイルへ落ちる。** `environment` を
+   *      書いたタスクは 70 本中 0 本で、書けと促すものも無かった——入口が実質塞がっていた
+   *   2. **タスクのワークツリーを渡す。** 渡さないと立つのは main のチェックアウト
+   *   3. **発火点は `review-ready`**（呼び出し側のコメント参照）
    *
    * I2: provision の失敗は遷移を巻き戻さない。既に遷移は成立しており（D3）、
    *     失敗は `env_provision_failed` として見えるようにする。
@@ -3239,11 +3343,43 @@ export class Daemon {
       const task = this.store.getTask(taskId, projectTag);
       if (!task) return;
 
-      const profileName = typeof task["environment"] === "string" ? task["environment"] : undefined;
+      /**
+       * 段11c-1: **宣言が無いことを「要らない」と読まない。**
+       *
+       * タスクの `environment` は任意フィールドで、実測で 70 本中 0 本しか書いていなかった
+       * ——ここで黙って return していたので、機構は6日間・1,952 イベントを通して一度も
+       * 先へ進んでいない。「全タスクに手で書かせる」方向では直らない（書かせる促しも無い）。
+       * 宣言はプロジェクトの既定（層B設定 `meta/config.yaml` の `verify.profile`）で埋める。
+       */
+      let profileName = typeof task["environment"] === "string" ? task["environment"] : undefined;
+      if (!profileName) profileName = this.projectConfig(projectTag).verify.profile;
       if (!profileName) return;
 
+      /**
+       * 段11c-2: **映すのはブランチ。** 帳簿から引いたワークツリーを渡す。
+       *
+       * 見つからない・消えているときは**立てない**（I2：fail-closed）。ここで黙って
+       * `workdir` 無しで頼むと、Environment Pool → ドライバの `workdir ?? repoPath` で
+       * main のチェックアウトが立ち、**変更が1つも映っていない画面を PO が承認する**。
+       * 「環境が無い」は気づけるが、「中身が違う環境が在る」は開いても気づけない。
+       */
+      const workdir = this.worktreeOf(projectTag, taskId);
+      if (!fs.existsSync(workdir)) {
+        const failed = this.log.append({
+          type: "env_provision_failed",
+          projectTag,
+          taskId,
+          profileName,
+          reason:
+            `タスクのワークツリーが見つかりません（${workdir}）。` +
+            "ブランチを映さない環境（main のチェックアウト）を判断の材料に差し出さないため、立てません",
+        });
+        this.applyAndBroadcast(failed);
+        return;
+      }
+
       // 二重に立てない：既にこのタスクの環境が生きていれば何もしない
-      // （再度 in-review に入ったとき、プロファイルに quota が無いと1つずつ漏れる）
+      // （再度 review-ready に入ったとき、プロファイルに quota が無いと1つずつ漏れる）
       let live: EnvView[];
       try {
         live = await this.listEnvironments({ projectTag, taskId });
@@ -3264,16 +3400,21 @@ export class Daemon {
       }
       if (live.length > 0) return;
 
-      // 決定59: レビューのための環境は**触れる状態**で差し出す（公開URLつき）
-      await this.provisionEnv(projectTag, taskId, profileName, { forReview: true });
+      // 決定59: レビューのための環境は**触れる状態**で差し出す（公開URLつき）。
+      // 段11c-2: 映すのはタスクのワークツリー（＝ブランチ）
+      await this.provisionEnv(projectTag, taskId, profileName, { forReview: true, workdir });
 
       // task-0072: **立てている間にレビューが終わっていたら畳む。** 職人で踏んだのと
       // 同じ形——終端に着いたときの後始末は「いま立っている環境」を畳むので、まだ
       // 立ち上がっていなかったものを取りこぼす。環境は期限で必ず畳まれるとはいえ、
-      // 最長24時間は外で動く（I3：消し忘れは金銭的実害）
+      // 最長24時間は外で動く（I3：消し忘れは金銭的実害）。
+      //
+      // 段11c-3: 判定は**判断待ちのあいだか**（review-ready / in-review）で見る。
+      // `in-review` だけを見ていると、番頭が開いた（review-ready → in-review）だけで
+      // 立てたばかりの環境を畳んでしまう——畳む条件そのものは変えていない（判断が付いたら畳む）
       this.refreshState();
       const after = this.store.getTask(taskId, projectTag)?.status;
-      if (after !== "in-review") {
+      if (after !== "review-ready" && after !== "in-review") {
         process.stderr.write(
           `[banto-daemon] ${projectTag}/${taskId} は環境を立てている間に ` +
             `${after ?? "(消えた)"} へ移りました。立てたばかりの環境を畳みます\n`

@@ -66,6 +66,8 @@ interface Harness {
   service: EnvironmentPoolService;
   tools: ReturnType<typeof createKoboTools>;
   proj: string;
+  /** タスクのワークツリーの置き場（段11c-2：立てる環境はここを映す） */
+  worktreeBase: string;
   dirs: string[];
 }
 
@@ -104,6 +106,7 @@ async function harness(profileBody: string): Promise<Harness> {
   });
   const service = await EnvironmentPoolService.start({ tools: createEnvTools(pool), port: 0 });
 
+  const worktreeBase = path.join(dataDir, "worktrees");
   const daemon = Daemon.create({
     port: await freePort(),
     dataDir,
@@ -111,13 +114,22 @@ async function harness(profileBody: string): Promise<Harness> {
     tickIntervalMs: 300,
     disableAutoSpawn: true,
     disableAuditSpawn: true,
+    worktreeBaseDir: worktreeBase,
     environmentPoolUrl: service.baseUrl,
   });
   await daemon.start();
   const proj = "touchable-proj";
   daemon.registerProject(proj, projectDir);
 
-  return { daemon, pool, service, tools: createKoboTools(daemon), proj, dirs: [dataDir, poolDir, projectDir] };
+  return {
+    daemon,
+    pool,
+    service,
+    tools: createKoboTools(daemon),
+    proj,
+    worktreeBase,
+    dirs: [dataDir, poolDir, projectDir],
+  };
 }
 
 async function teardown(h: Harness): Promise<void> {
@@ -139,6 +151,8 @@ async function driveToReview(h: Harness, taskId: string, environment: string): P
     acceptance: [{ id: "a1", text: "動く" }],
     environment,
   });
+  // 段11c-2: 環境はタスクのワークツリーを映す。職人を起こさない検体でも在ることにする
+  fs.mkdirSync(path.join(h.worktreeBase, h.proj, taskId), { recursive: true });
   h.daemon.transition(h.proj, taskId, "queued", "test");
   await until(() => h.daemon.getTask(h.proj, taskId)?.status === "ready");
   for (const to of ["planning", "implementing", "auditing", "review-ready", "in-review"]) {
@@ -167,7 +181,7 @@ describe("[Phase 3/決定59] レビューには触れる環境を添える", () 
     await teardown(h);
   });
 
-  it("in-review に入ると環境が立ち、**公開URLが帳簿に残る**", async () => {
+  it("判断待ち（review-ready）に入ると環境が立ち、**公開URLが帳簿に残る**", async () => {
     await driveToReview(h, "task-0001", "dev");
     await until(() =>
       h.daemon.getTaskEvents(h.proj, "task-0001").some((e) => e.type === "env_provisioned")

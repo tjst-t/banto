@@ -13,6 +13,7 @@
  */
 
 import * as fs from "node:fs";
+import type * as http from "node:http";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -46,7 +47,7 @@ import { createKoboModule, defaultKoboUrl } from "@banto/daemon";
 import { BANTO_ORIGIN, startWorkerNotices, threadOrigin } from "./worker-notice.js";
 import { guardWorkerOrigin } from "./worker-guard.js";
 import { startKoboNotices } from "./kobo-notice.js";
-import { createRemoteSettings } from "./remote-module.js";
+import { createRemoteRelay, createRemoteSettings } from "./remote-module.js";
 import { startEnvNotices } from "./env-notice.js";
 
 import { Canvas, createCanvasCatalog } from "./canvas.js";
@@ -788,9 +789,23 @@ async function serve(options: ServeOptions): Promise<void> {
   const koboContract = createKoboModule(koboUrl);
   // 決定41: 工場の区画（役割ごとの職人の当て方）も設定画面に出す。項目の宣言は
   // 工場のパッケージから、読み書きは HTTP 越しに——Worker Pool と同じ形（task-0066）
+  /**
+   * **PO が画面から通せるようにするための中継**（task-0147・段3）。
+   *
+   * 工場は 127.0.0.1 にしか出ていない（決定40）ので、ブラウザからは直接届かない。
+   * Tool の口（`/tools/*`）は写しの `execute` が担うので中継しない——中継されるのは
+   * 工場が自分で生やしている面、いまは **PO 専用の承認口**
+   * （`POST /api/kobo/projects/:proj/tasks/:id/approve`）だけ。
+   *
+   * 検証環境で先に踏んだのと同じ形（決定39）。**ホストは合言葉を預からない**
+   * ——ブラウザが付けた名乗りをそのまま流し、照合するのは工場（task-0147 の縛り2）。
+   * ここに判断は無い（D5）。
+   */
+  const koboRelay = createRemoteRelay(koboUrl);
   const koboModule = {
     ...koboContract,
     settings: createRemoteSettings(koboContract.settings, "kobo", koboContract.name, koboUrl),
+    serve: (req: http.IncomingMessage, res: http.ServerResponse) => koboRelay.serve(req, res),
   };
 
   /**

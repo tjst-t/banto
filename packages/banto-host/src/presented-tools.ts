@@ -83,6 +83,12 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
   "kobo.list",
   "kobo.task",
   "kobo.approve",
+  /**
+   * **通さない方の判断**（段2）。`kobo.approve` と対になる口で、片方だけ提示すると
+   * 「通す」しか押せない——実際そうなっていて、駄目だと分かったタスクを実装へ戻す道は
+   * 契約を書き換える `kobo.amend` しか無かった（報告 A 表 11b）。
+   */
+  "kobo.send_back",
   "kobo.reopen",
   /**
    * **後始末の口**（inc-0063 の5番）。在庫には最初からあったのに提示していなかった

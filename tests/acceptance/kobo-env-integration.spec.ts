@@ -63,6 +63,8 @@ interface Harness {
   pool: EnvironmentPool;
   service: EnvironmentPoolService;
   projId: string;
+  /** タスクのワークツリーの置き場（段11c-2：立てる環境はここを映す） */
+  worktreeBase: string;
   dirs: string[];
 }
 
@@ -70,7 +72,9 @@ interface Harness {
  * Kobo と Environment Pool（独立サービス）を立てる。
  * @param envPoolUrl 到達先を差し替える（到達できない場合の検査に使う）
  */
-async function harness(options: { profileBody?: string; envPoolUrl?: string } = {}): Promise<Harness> {
+async function harness(
+  options: { profileBody?: string; envPoolUrl?: string; configBody?: string | null } = {}
+): Promise<Harness> {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "kobo-env-daemon-"));
   const poolDir = fs.mkdtempSync(path.join(os.tmpdir(), "kobo-env-pool-"));
   const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "kobo-env-proj-"));
@@ -82,10 +86,19 @@ async function harness(options: { profileBody?: string; envPoolUrl?: string } = 
       "profiles:\n  dev:\n    driver: process\n    config:\n      cmd: sleep 120\n    ttl: 1h\n",
     "utf-8"
   );
+  // 段11c-1: `environment` を宣言していないタスクの落ち先（層B設定の検証プロファイル）
+  if (options.configBody !== null) {
+    fs.writeFileSync(
+      path.join(projectDir, "meta", "config.yaml"),
+      options.configBody ?? "verify:\n  profile: dev\n",
+      "utf-8"
+    );
+  }
 
   const pool = new EnvironmentPool({ dataDir: poolDir, driverTimeoutMs: 20_000 });
   const service = await EnvironmentPoolService.start({ tools: createEnvTools(pool), port: 0 });
 
+  const worktreeBase = path.join(dataDir, "worktrees");
   const daemon = Daemon.create({
     port: await freePort(),
     dataDir,
@@ -93,6 +106,7 @@ async function harness(options: { profileBody?: string; envPoolUrl?: string } = 
     tickIntervalMs: 200,
     disableAutoSpawn: true,
     disableAuditSpawn: true,
+    worktreeBaseDir: worktreeBase,
     environmentPoolUrl: options.envPoolUrl ?? service.baseUrl,
   });
   await daemon.start();
@@ -100,7 +114,7 @@ async function harness(options: { profileBody?: string; envPoolUrl?: string } = 
   const projId = "kobo-env-proj";
   daemon.registerProject(projId, projectDir);
 
-  return { daemon, pool, service, projId, dirs: [dataDir, poolDir, projectDir] };
+  return { daemon, pool, service, projId, worktreeBase, dirs: [dataDir, poolDir, projectDir] };
 }
 
 async function teardownHarness(h: Harness): Promise<void> {
@@ -114,19 +128,26 @@ async function teardownHarness(h: Harness): Promise<void> {
  * タスクを作り、`in-review` まで運ぶ。
  *
  * `queued → ready` は**ゲートが上げる**（手で動かすものではない）ので、そこだけは待つ。
+ *
+ * 段11c-2: 環境が映すのは**タスクのワークツリー**なので、職人を起こさない検体でも
+ * ワークツリーは在ることにする（無ければ Kobo は「main を映す環境」を立てずに断る）。
  */
 async function driveToReview(
-  daemon: Daemon,
-  projId: string,
+  h: Harness,
   taskId: string,
-  environment?: string
+  environment?: string,
+  options: { withoutWorktree?: boolean } = {}
 ): Promise<void> {
+  const { daemon, projId } = h;
   daemon.createTask(projId, taskId, `レビュー用 ${taskId}`, {
     kind: "feature",
     scope: { paths: [`src/${taskId}/**`] },
     acceptance: [{ id: "a1", text: "動く" }],
     ...(environment ? { environment } : {}),
   });
+  if (!options.withoutWorktree) {
+    fs.mkdirSync(path.join(h.worktreeBase, projId, taskId), { recursive: true });
+  }
   assert.equal(daemon.transition(projId, taskId, "queued", "test").ok, true);
   await until(() => daemon.getTask(projId, taskId)?.status === "ready");
 
@@ -149,8 +170,8 @@ describe("[task-0059/a1] レビューに入ったら Environment Pool に立て�
     await teardownHarness(h);
   });
 
-  it("environment を持つタスクが in-review に入ると、環境が立ち env_provisioned が出る", async () => {
-    await driveToReview(h.daemon, h.projId, "task-0001", "dev");
+  it("environment を持つタスクが判断待ちに入ると、環境が立ち env_provisioned が出る", async () => {
+    await driveToReview(h, "task-0001", "dev");
 
     // 立てるのは fire-and-forget（遷移をブロックしない）ので、記録が出るまで待つ。
     // **台帳に載るのが先、Kobo の記録は後**なので、台帳で待つと記録の手前で見に行ってしまう
@@ -168,14 +189,42 @@ describe("[task-0059/a1] レビューに入ったら Environment Pool に立て�
     assert.equal((provisioned as { envId: string }).envId, live[0]!.envId);
   });
 
-  it("environment を持たないタスクでは立てない（頼まれてもいないものを立てない）", async () => {
-    await driveToReview(h.daemon, h.projId, "task-0002");
-    await new Promise((r) => setTimeout(r, 800));
+  /**
+   * 段11c-1（報告 A-6 (1)）。**宣言が無いことを「要らない」と読まない。**
+   *
+   * 以前はここで黙って return していた。実測で `environment` を宣言したタスクは
+   * 70 本中 0 本——つまりこの経路は6日間・1,952 イベントを通して一度も先へ進んでおらず、
+   * 「PO が触れる環境」は Kobo の外（番頭の手）でしか立っていなかった。
+   */
+  it("environment を宣言していなくても、プロジェクトの既定検証プロファイルで立つ", async () => {
+    await driveToReview(h, "task-0002");
+    await until(() =>
+      h.daemon.getTaskEvents(h.projId, "task-0002").some((e) => e.type === "env_provisioned")
+    );
 
-    assert.equal(h.pool.list({ taskId: "task-0002" }).length, 0);
-    const events = h.daemon.getTaskEvents(h.projId, "task-0002");
-    assert.equal(events.filter((e) => e.type === "env_provisioned").length, 0);
-    assert.equal(events.filter((e) => e.type === "env_provision_failed").length, 0);
+    const live = h.pool.list({ taskId: "task-0002" });
+    assert.equal(live.length, 1, "宣言が無いタスクにも触れる場所が出る");
+    assert.equal(live[0]!.profile, "dev", "層B設定の verify.profile が既定として使われる");
+  });
+
+  /**
+   * 段11c-2 の fail-closed（報告 A-6 (3)）。**中身が違う環境を差し出さない。**
+   *
+   * ワークツリーが引けないときに `workdir` 無しで頼むと、ドライバの `workdir ?? repoPath`
+   * で main のチェックアウトが立つ。「環境が無い」は開けば気づけるが、
+   * 「中身が main の環境が在る」は開いても気づけない——だから立てずに理由を残す。
+   */
+  it("ワークツリーが無いときは立てず、理由を残す（main を映す環境を差し出さない）", async () => {
+    await driveToReview(h, "task-0007", "dev", { withoutWorktree: true });
+    await until(() =>
+      h.daemon.getTaskEvents(h.projId, "task-0007").some((e) => e.type === "env_provision_failed")
+    );
+
+    assert.equal(h.pool.list({ taskId: "task-0007" }).length, 0, "立ててはいけない");
+    const failed = h.daemon
+      .getTaskEvents(h.projId, "task-0007")
+      .find((e) => e.type === "env_provision_failed") as { reason: string };
+    assert.match(failed.reason, /ワークツリーが見つかりません/);
   });
 
   it("既にそのタスクの環境が生きていれば、二重に立てない", async () => {
@@ -188,7 +237,7 @@ describe("[task-0059/a1] レビューに入ったら Environment Pool に立て�
       projectTag: h.projId,
     });
 
-    await driveToReview(h.daemon, h.projId, "task-0006", "dev");
+    await driveToReview(h, "task-0006", "dev");
     await new Promise((r) => setTimeout(r, 1000));
 
     assert.equal(h.pool.list({ taskId: "task-0006" }).length, 1, "1つのまま（漏れない）");
@@ -205,7 +254,7 @@ describe("[task-0059/a6] 到達できないことを成功に見せない（I2�
     const dead = `http://127.0.0.1:${await freePort()}/api/environment-pool`;
     const h = await harness({ envPoolUrl: dead });
     try {
-      await driveToReview(h.daemon, h.projId, "task-0003", "dev");
+      await driveToReview(h, "task-0003", "dev");
       await until(() =>
         h.daemon
           .getTaskEvents(h.projId, "task-0003")
@@ -229,7 +278,7 @@ describe("[task-0059/a1] タスクが終わったら畳む（I3：作った者�
   it("failed に落ちたタスクの環境は畳まれ、env_torn_down が出る", async () => {
     const h = await harness();
     try {
-      await driveToReview(h.daemon, h.projId, "task-0004", "dev");
+      await driveToReview(h, "task-0004", "dev");
       await until(() => h.pool.list({ taskId: "task-0004" }).length === 1);
 
       h.daemon.transition(h.projId, "task-0004", "failed", "テスト");
