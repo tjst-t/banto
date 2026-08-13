@@ -50,8 +50,27 @@ export interface ClaudeAgentHarnessOptions {
   tools: NamespacedToolDefinition[];
   /** `opus` / `sonnet` / `haiku` 等の別名か、完全なモデル ID。 */
   model?: string;
-  /** 復元するときの SDK セッション ID。 */
+  /**
+   * **前の会話の札**（`resumeToken()` が返したもの・決定97）。
+   *
+   * 渡すと `resume` で続きから起こす。**渡さないときは `sessionId` で新しく立てる**
+   * ——ここを取り違えて「新規なのに `resume` へ乱数の UUID を渡す」形になっていた。
+   * 実在しない札の `resume` は `error_during_execution` で返り、翻訳の上では
+   * 「本文の無いターン」に見える＝**番頭が黙る**（実測 2026-08-13・task-0104）。
+   */
   resume?: string;
+  /**
+   * `query()` の差し替え。**試験のためだけ**にある口（本番は渡さない）。
+   *
+   * 世代の掛け金・待ち行列の作り直し・復元の失敗からの立て直しは、どれも
+   * **`query()` が実際に立って終わる**ところでしか現れない——翻訳だけを流し込む
+   * 試験では1件も落ちない。`PiHarness` が pi のセッションを受け取るのと同じ形で、
+   * 起こす手続きを外から渡せるようにしてある。
+   */
+  spawnQuery?: (args: {
+    prompt: AsyncIterable<SDKUserMessage>;
+    options: Options;
+  }) => AsyncIterable<unknown>;
 }
 
 /**
@@ -126,16 +145,44 @@ export class ClaudeAgentHarness implements BantoHarness {
   private abortController: AbortController | undefined;
   private streaming = false;
   private sdkSessionId: string;
+  /**
+   * **その札で `resume` できるか**（決定97）。
+   *
+   * 新しい会話では false ＝ `sessionId` で立てる。SDK が `init` を返した時点で
+   * 記録が始まっている（実測：`~/.claude/projects/<場所>/<id>.jsonl` ができる）ので
+   * true にする。`startChapter` で捨てたら false に戻す。
+   */
+  private sessionExists: boolean;
+  /**
+   * **走っている `query()` の世代**（task-0104）。
+   *
+   * `startChapter` と `dispose` は走行中のループを畳むが、非同期のループが実際に
+   * 抜けるのはその後になる。世代を持たないと、**古いループの `finally` が新しい `run`
+   * を消し**、次の発話で2本目の `query()` が立って発話が1つ握り潰される。
+   */
+  private generation = 0;
+  /** この run で `resume` に渡した札（失敗したときに何を読み戻せなかったかを言うため）。 */
+  private resumedFrom: string | undefined;
+  /** この run で `init` を受け取ったか。復元の失敗はここが false のまま終わる形で出る。 */
+  private sawInit = false;
+  /** 差分（`stream_event`）で本文を受け取ったか。**二重に流さない**ための掛け金。 */
+  private sawPartial = false;
+  private disposed = false;
   /** いまの章の系プロンプト（`startChapter` で差し替わる）。 */
   private systemPrompt: string;
   private turns: Turn[] = [];
   private tokens: number | undefined;
+  /** モデルの文脈長。**SDK が返したものを使う**（自前の表を持たない・D3）。 */
+  private window: number | undefined;
   private thinkingStartedAt: number | undefined;
 
   constructor(options: ClaudeAgentHarnessOptions) {
     this.options = options;
     this.systemPrompt = options.systemPrompt;
+    // **札があれば続きから、無ければ新しく立てる**（決定97）。ここを一本化していたのが
+    // task-0104 の1番——新規にも `resume` を渡していた
     this.sdkSessionId = options.resume ?? randomUUID();
+    this.sessionExists = options.resume !== undefined;
     for (const t of options.tools) {
       this.logicalByWire.set(`mcp__${BANTO_MCP_SERVER}__${toWireToolName(t.name)}`, t.name);
     }
@@ -210,39 +257,78 @@ export class ClaudeAgentHarness implements BantoHarness {
        */
       abortController: this.abortController ?? new AbortController(),
       ...(this.options.model ? { model: this.options.model } : {}),
-      resume: this.sdkSessionId,
+      /**
+       * **続きから起こすのか、新しく立てるのか**（決定97）。
+       *
+       * `resume` は既にある会話の札。`sessionId` は「この UUID で立てる」——SDK の型注釈も
+       * 両立しないと明記している（`Cannot be used with continue or resume`）。
+       * 新規に `resume` を渡すと SDK は `error_during_execution` を返し、翻訳の上では
+       * 本文の無いターンになる＝番頭が黙る（実測 2026-08-13）。
+       */
+      ...(this.sessionExists
+        ? { resume: this.sdkSessionId }
+        : { sessionId: this.sdkSessionId }),
+      /**
+       * **本文を差分で流す**（task-0104 の6番）。無いとターンが終わるまで画面が無音で、
+       * 長考するモデルほど「止まっている」と見分けがつかない。
+       */
+      includePartialMessages: true,
     };
   }
 
   /** `query()` を起こして、出てくるものを番頭の語彙へ翻訳し続ける。 */
   private start(): void {
     if (this.run) return;
+    // **世代を1つ進める**（task-0104 の4番）。畳んだ後に抜けてくる古いループが、
+    // ここで立てた新しい run を消さないようにする
+    const generation = ++this.generation;
     this.abortController = new AbortController();
-    const session = query({ prompt: this.queue.stream(), options: this.buildOptions() });
+    this.sawInit = false;
+    this.resumedFrom = this.sessionExists ? this.sdkSessionId : undefined;
+    const spawn = this.options.spawnQuery ?? query;
+    const session = spawn({ prompt: this.queue.stream(), options: this.buildOptions() });
     this.run = (async () => {
       try {
         for await (const message of session) {
+          // 畳んだ後に届く古い query の残響は流さない（章を跨いで前の章の発話が出る）
+          if (generation !== this.generation) break;
           this.translate(message as Record<string, unknown>);
         }
       } catch (error) {
         // I2: 落ちたことを握りつぶさない。会話に出して、番頭とPOの両方に見えるようにする
-        this.emit({
-          type: "notice",
-          source: "system",
-          text: `Claude Code のセッションが落ちました：${String(
-            (error as Error)?.message ?? error
-          )}`,
-        });
+        if (generation === this.generation) {
+          this.emit({
+            type: "notice",
+            source: "system",
+            text: `Claude Code のセッションが落ちました：${String(
+              (error as Error)?.message ?? error
+            )}`,
+          });
+        }
       } finally {
         // **`run_end` はここで出さない**（`result` で出している）。両方で出すと
         // 章の判定が1ターンに2回走る（pi 側で同じ罠を踏んだ・決定89）
-        this.streaming = false;
-        this.run = undefined;
+        if (generation === this.generation) {
+          this.streaming = false;
+          this.run = undefined;
+          /**
+           * **待ち行列を作り直す。** `query()` が終わると入力の生成器も終わるが、
+           * その生成器は `PromptQueue.waiting` に自分の resolver を残したまま止まる
+           * ——次の発話はその死んだ生成器へ渡り、**どこにも届かない**。
+           * 起こし直すときは新しい行列から始める。
+           */
+          this.queue.close();
+          this.queue = new PromptQueue();
+        }
       }
     })();
   }
 
   async prompt(text: string, options?: HarnessPromptOptions): Promise<void> {
+    // I2: 畳んだハーネスへ話しかけられたら黙って捨てない（発話が消えたことに気づけない）
+    if (this.disposed) {
+      throw new Error("このハーネスは畳まれています（dispose 済み）。新しく組み立ててください");
+    }
     /**
      * I2: **黙って落とさない。** 画像はまだ載せられないので、その旨を本文に足して
      * 番頭に伝える——添付したのに何も言われないのが一番困る。
@@ -287,16 +373,55 @@ export class ClaudeAgentHarness implements BantoHarness {
    * **系プロンプト**へ入れる——ユーザーメッセージとして渡した回は使われなかった。
    */
   async startChapter(opening: ChapterOpening): Promise<void> {
+    // **世代を進めてから畳む**（task-0104 の4番）。古いループの `finally` が
+    // 新しい run を消さないようにするのが要点で、順序を逆にすると効かない
+    this.generation++;
     this.queue.close();
     this.abortController?.abort();
     this.run = undefined;
     this.streaming = false;
     this.queue = new PromptQueue();
-    // 新しいセッションにする（前の文脈へ戻れないようにする）
+    // 新しいセッションにする（前の文脈へ戻れないようにする）。**まだ実在しない**ので
+    // 次は `resume` ではなく `sessionId` で立てる（決定97）
     this.sdkSessionId = randomUUID();
+    this.sessionExists = false;
     this.systemPrompt = `${this.options.systemPrompt}\n\n${opening.text}`;
     this.turns = [];
     this.tokens = undefined;
+  }
+
+  // ── 復元と後始末（決定97・task-0104） ──────────────────────────────────
+
+  /**
+   * 次の起動でこの会話を続けるための札。**一度も往復していなければ無い**
+   * ——実在しない札を保存すると、次の起動でその `resume` が必ず失敗する。
+   */
+  resumeToken(): string | undefined {
+    return this.sessionExists ? this.sdkSessionId : undefined;
+  }
+
+  /** モデルの文脈長。SDK が `result` で返した値（自前の表を持たない）。 */
+  contextWindow(): number | undefined {
+    return this.window;
+  }
+
+  /**
+   * **畳む**（task-0104 の3番）。
+   *
+   * `PromptQueue` は「空になっても終わらせない」設計なので、参照を落とすだけでは
+   * `query()` が生き続け、**バックエンドを往復するたびに Claude Code の子プロセスが
+   * 積み上がる**。待ち行列を閉じて（＝入力の生成器を返し切らせて）から止める。
+   */
+  async dispose(): Promise<void> {
+    if (this.disposed) return; // 冪等
+    this.disposed = true;
+    // 走っているループの後始末を無効化してから畳む（世代の掛け金）
+    this.generation++;
+    this.queue.close();
+    this.abortController?.abort();
+    this.streaming = false;
+    this.run = undefined;
+    this.listeners.clear();
   }
 
   // ── 語彙の翻訳（SDK のメッセージ → HarnessEvent） ──────────────────────
@@ -307,6 +432,37 @@ export class ClaudeAgentHarness implements BantoHarness {
     if (type === "system" && message["subtype"] === "init") {
       const id = message["session_id"];
       if (typeof id === "string") this.sdkSessionId = id;
+      // ここまで来れば SDK 側に記録が始まっている＝次からは `resume` で戻れる（決定97）
+      this.sessionExists = true;
+      this.sawInit = true;
+      return;
+    }
+
+    /**
+     * **本文と思考の差分**（`includePartialMessages`・task-0104 の6番）。
+     *
+     * 中身は Anthropic の生のストリームイベント。ここで流したものは、後から届く
+     * `assistant` の全文で**もう一度流さない**（`sawPartial`）。
+     */
+    if (type === "stream_event") {
+      const event = message["event"] as Record<string, unknown> | undefined;
+      if (event?.["type"] !== "content_block_delta") return;
+      const delta = event["delta"] as Record<string, unknown> | undefined;
+      const kind = delta?.["type"];
+      if (kind === "text_delta") {
+        const text = String(delta?.["text"] ?? "");
+        if (text) {
+          this.sawPartial = true;
+          this.emit({ type: "text_delta", delta: text });
+        }
+      } else if (kind === "thinking_delta") {
+        const thought = String(delta?.["thinking"] ?? "");
+        if (thought) {
+          this.sawPartial = true;
+          if (this.thinkingStartedAt === undefined) this.thinkingStartedAt = Date.now();
+          this.emit({ type: "reasoning_delta", delta: thought });
+        }
+      }
       return;
     }
 
@@ -318,14 +474,16 @@ export class ClaudeAgentHarness implements BantoHarness {
         if (block["type"] === "text") {
           const text = String(block["text"] ?? "");
           if (text) {
+            // 記録は全文から作る（差分で流したかに依らず、章の要約器へ渡すものは要る）
             this.turns.push({ role: "assistant", text });
-            this.emit({ type: "text_delta", delta: text });
+            // 差分で流し済みなら**もう一度流さない**（同じ本文が2回出る）
+            if (!this.sawPartial) this.emit({ type: "text_delta", delta: text });
           }
         } else if (block["type"] === "thinking") {
           // 思考は本文と別のチャネル（決定90）
           if (this.thinkingStartedAt === undefined) this.thinkingStartedAt = Date.now();
           const thought = String(block["thinking"] ?? "");
-          if (thought) this.emit({ type: "reasoning_delta", delta: thought });
+          if (thought && !this.sawPartial) this.emit({ type: "reasoning_delta", delta: thought });
         } else if (block["type"] === "tool_use") {
           const wire = String(block["name"] ?? "");
           const callId = String(block["id"] ?? "");
@@ -343,6 +501,9 @@ export class ClaudeAgentHarness implements BantoHarness {
         this.emit({ type: "reasoning_end", durationMs: Date.now() - this.thinkingStartedAt });
         this.thinkingStartedAt = undefined;
       }
+      // 次の塊の差分はこれから届く。ここで戻しておかないと、道具を挟んだ2つ目以降の
+      // 発話が「差分で流し済み」と誤判定されて消える
+      this.sawPartial = false;
       return;
     }
 
@@ -369,6 +530,44 @@ export class ClaudeAgentHarness implements BantoHarness {
     }
 
     if (type === "result") {
+      /**
+       * **モデルの文脈長**は SDK が返したものを使う（task-0104 の5番）。自前の表を
+       * 持つと世代が上がるたびに書き換えて回ることになり、忘れれば黙ってずれる（D3）。
+       */
+      const modelUsage = message["modelUsage"] as Record<string, unknown> | undefined;
+      for (const entry of Object.values(modelUsage ?? {})) {
+        const w = (entry as Record<string, unknown> | undefined)?.["contextWindow"];
+        if (typeof w === "number" && w > 0) this.window = w;
+      }
+      /**
+       * **エラーで終わったターンを黙って通さない**（I2・task-0104）。
+       *
+       * 翻訳は `result` を一様に「ターンの終わり」として扱っていたので、
+       * `error_during_execution` は**本文の無いターン**にしか見えなかった
+       * ——番頭が黙る、という一番診断しにくい形で出る。
+       */
+      const subtype = message["subtype"];
+      if (typeof subtype === "string" && subtype !== "success") {
+        const failedResume = this.resumedFrom !== undefined && !this.sawInit;
+        this.emit({
+          type: "notice",
+          source: "system",
+          text: failedResume
+            ? `前の会話（${this.resumedFrom}）を読み戻せませんでした（${subtype}）。` +
+              "この会話は続きからではなく、新しく始め直します——" +
+              "画面の記録は残っていますが、番頭はこれ以前を覚えていません。"
+            : `Claude Code がターンを終えられませんでした（${subtype}）。`,
+        });
+        if (failedResume) {
+          /**
+           * **読み戻せない札を握り続けない。** 掴んだままだと以後どの発話も同じ理由で
+           * 落ち、会話が永久に死ぬ。新しく立て直す（何が起きたかは上で知らせている）。
+           */
+          this.sessionExists = false;
+          this.sdkSessionId = randomUUID();
+          this.resumedFrom = undefined;
+        }
+      }
       const usage = message["usage"] as Record<string, unknown> | undefined;
       if (usage) {
         const total =

@@ -74,7 +74,15 @@ export type ThreadFactory = (
    */
   model?: { backend?: string; provider: string; id: string },
   /** その会話が何であるか（帳場・幹・枝）。器を作る側がシステムプロンプトへ入れる。 */
-  identity?: ThreadIdentity
+  identity?: ThreadIdentity,
+  /**
+   * **バックエンド側の会話の札**（決定97・task-0104）。復元のときだけ渡る。
+   *
+   * pi の `resumeFrom`（セッションファイル）と役は同じだが、**別のバックエンドのもの**
+   * なので別に持つ——同じ会話が pi と Agent SDK を往復するので、片方を捨てると
+   * 戻ったときに文脈が無い。
+   */
+  resumeBackendSession?: string
 ) => Promise<{
   /** 会話を回すハーネス（ADR-0020 決定89）。pi でも Agent SDK でもよい。 */
   harness: BantoHarness;
@@ -430,6 +438,14 @@ export class Thread {
   dispose(): void {
     this.harnessDisposer?.();
     this.harnessDisposer = undefined;
+    /**
+     * **ハーネス自身も畳む**（決定97・task-0104）。購読を外すだけでは足りない
+     * ——Agent SDK は子プロセスを抱えており、放すだけでは終わらない。
+     * I2: 畳めなかったことを握りつぶさない（会話は閉じるので throw はしない）。
+     */
+    void Promise.resolve(this.harness.dispose?.()).catch((err: unknown) => {
+      console.error(`[banto] ${this.id} のハーネスを畳めませんでした: ${String(err)}`);
+    });
     for (const off of this.disposers) off();
     this.disposers.length = 0;
   }
@@ -481,16 +497,23 @@ export class ThreadRegistry {
     for (const saved of ordered) {
       try {
         const savedKind = saved.kind ?? "trunk";
-        const parts = await this.factory(saved.id, saved.sessionFile, saved.model, {
-          kind: savedKind,
-          isMain: saved.isMain === true,
-          trunkId: savedKind === "trunk" ? saved.id : (saved.parentId ?? saved.id),
-          title: saved.title,
-          ...(saved.returnCondition ? { returnCondition: saved.returnCondition } : {}),
-          ...(saved.parentId
-            ? { parentTitle: this.threads.get(saved.parentId)?.title ?? saved.parentId }
-            : {}),
-        });
+        const parts = await this.factory(
+          saved.id,
+          saved.sessionFile,
+          saved.model,
+          {
+            kind: savedKind,
+            isMain: saved.isMain === true,
+            trunkId: savedKind === "trunk" ? saved.id : (saved.parentId ?? saved.id),
+            title: saved.title,
+            ...(saved.returnCondition ? { returnCondition: saved.returnCondition } : {}),
+            ...(saved.parentId
+              ? { parentTitle: this.threads.get(saved.parentId)?.title ?? saved.parentId }
+              : {}),
+          },
+          // 決定97: Agent SDK 側の文脈はこの札でしか戻せない（pi の sessionFile と両立）
+          saved.backendSessionId
+        );
         // 古い索引には kind が無い。**1本残らず幹として読み戻す**（上の注記）。
         // 還す条件の無い枝は帳簿として成り立たない（決定77）——遡って書けない以上、
         // 枝にはしない
@@ -639,6 +662,14 @@ export class ThreadRegistry {
       createdAt: thread.createdAt,
       ...(thread.closedAt ? { closedAt: thread.closedAt } : {}),
       ...(thread.sessionFile ? { sessionFile: thread.sessionFile } : {}),
+      /**
+       * **バックエンド側の札**（決定97・task-0104）。無いときは書かない——`upsert` は
+       * 既存へ重ねるので、まだ札の無い状態（一度も往復していない）が
+       * 保存済みの札を消してしまうことはない。
+       */
+      ...(thread.harness.resumeToken?.()
+        ? { backendSessionId: thread.harness.resumeToken()! }
+        : {}),
       // **backend も残す**（PO裁定 2026-08-13）。落とすと、会話ごとのバックエンド選択が
       // 再起動で必ず消える——「会話に記録があるなら、それが勝つ」が成立しない
       ...(thread.model

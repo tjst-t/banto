@@ -46,6 +46,15 @@ export interface StoredThread {
   closedAt?: string;
   /** pi のセッションファイル。**番頭の文脈はこちらが持つ**（会話の記録とは別物）。 */
   sessionFile?: string;
+  /**
+   * **バックエンド側の会話の札**（`BantoHarness.resumeToken()`・決定97・task-0104）。
+   *
+   * pi はセッションファイル（上）で戻るが、Agent SDK は自分の置き場に記録を持っていて
+   * **セッションIDでしか指せない**。ここを残していなかったので、Claude で話していた
+   * 会話は**再起動のたびに番頭だけが全部忘れた**——画面には記録が戻るので、POからは
+   * 「番頭が急に前提を無視し始めた」に見える。
+   */
+  backendSessionId?: string;
   /** この会話で使っていたモデル。再起動しても同じモデルで再開する。 */
   model?: { backend?: string; provider: string; id: string };
   /** キャンバスに開いていたもの。畳んで開き直したときに元の面へ戻す。 */
