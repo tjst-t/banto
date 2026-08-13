@@ -20,13 +20,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import {
-  ModelLedger,
-  isLedgerRole,
-  refKey,
-  type LedgerModelRef,
-  type LedgerRole,
-} from "./model-ledger.js";
+import { ModelLedger, isLedgerRole, type LedgerRole } from "./model-ledger.js";
 
 export type ModelTier = "reasoning" | "standard" | "fast";
 
@@ -530,29 +524,12 @@ export class LlmCatalog {
   }
 
   /**
-   * 核の台帳の母集団のうち **pi の供給の分**（`provider/model` の集合）。
-   * 台帳がまだ無ければ `undefined`——呼び出し側は従来のオーバーレイへ落ちる。
-   *
-   * **`backend` で絞る**（task-0107）。母集団はバックエンドを跨ぐようになったので、
-   * ここで絞らないと `claude-agent-sdk/claude/opus` を採用しただけで、pi 側の
-   * 同名モデル（opencode 経由の `claude/opus` 等）にも旗が立って見える。
+   * 核の台帳の母集団（`provider/model` の集合）。台帳がまだ無ければ `undefined`
+   * ——呼び出し側は従来のオーバーレイへ落ちる。
    */
   private ledgerAdopted(): Set<string> | undefined {
     if (!this.ledger?.exists()) return undefined;
-    return new Set(
-      this.ledger
-        .adopted()
-        .filter((r) => r.backend === "pi")
-        .map((r) => `${r.provider}/${r.model}`)
-    );
-  }
-
-  /**
-   * **母集団そのもの**（バックエンドを跨ぐ3成分）。`models()` は pi の供給しか並べない
-   * ので、Claude のモデルに立った旗はここからしか読めない。台帳が無ければ空。
-   */
-  adoptedRefs(): LedgerModelRef[] {
-    return this.ledger?.exists() ? this.ledger.adopted() : [];
+    return new Set(this.ledger.adopted().map((r) => `${r.provider}/${r.model}`));
   }
 
   tiers(): LlmTierInfo[] {
@@ -629,20 +606,11 @@ export class LlmCatalog {
   setRole(role: LlmRole, provider: string, model: string, backend?: string): void {
     this.ensureLoaded();
     /**
-     * **どのバックエンドのモデルも母集団へ入る**（ADR-0021 症状1・task-0107）。
-     *
-     * ここには「採用は pi のモデルにだけ立てる。Claude Code のモデルは `models.json` に
-     * 載らないので旗を立てる先が無い」という番人が居た。**書き先を核の台帳へ移した時点で
-     * その前提は消えている**——母集団は3成分（`backend/provider/model`）で持つので、
-     * Claude のモデルも幽霊にならずに載る。番人を残したままだと、入れ物だけ移して
-     * 症状1（Claude に旗が立たない）がそのまま残る。
-     *
-     * 台帳がまだ無い間（入れ替えの窓）は pi のオーバーレイしか書き先が無いので、
-     * そのときだけ従来どおり pi のモデルに旗を立てる。
+     * 採用（policy）は **pi のモデルにだけ**立てる。Claude Code のモデルは
+     * LLM 登録（`models.json` 由来）に載らないので、採用の旗を立てる先が無い
+     * ——立てようとすると台帳に幽霊の行ができる。
      */
-    if (this.ledger?.exists() && !this.ledger.isReadOnly) {
-      this.ledger.adopt({ backend: backend ?? "pi", provider, model });
-    } else if (backend === undefined || backend === "pi") {
+    if (backend === undefined || backend === "pi") {
       this.allowUse(provider, model, role === "steward" ? "host" : "worker", true);
     }
     this.writeRole(role, { ...(backend ? { backend } : {}), provider, model });
@@ -1032,28 +1000,6 @@ export class LlmCatalog {
     // **最後に**役を台帳へ移す（決定101）。上の移行がすべてオーバーレイへ landing した後で拾う
     this.migrateLedger();
     this.migrateAdoptedToLedger();
-    this.adoptBoundRoles();
-  }
-
-  /**
-   * **役に割り当てられているものは、必ず母集団に居る**（ADR-0021 決定101e・task-0107）。
-   *
-   * `setRole` は割り当てと同時に採用を立てるが、**それは新しく選び直したときだけ**。
-   * pi 限定の番人が居た頃に割り当てた Claude のモデルは、番人を外しても旗が立たないまま
-   * ——「入れ物は移したが症状は治っていない」がここで再演する。**不変条件として毎回**
-   * 確かめる（冪等・既に居れば何もしない）。
-   *
-   * 逆向き（母集団から外れたものを役から外す）はしない。`unadopt` が割り当て済みを
-   * 断るので、そちらの向きの食い違いは作れない。
-   */
-  private adoptBoundRoles(): void {
-    if (!this.ledger || this.ledger.isReadOnly || !this.ledger.exists()) return;
-    for (const binding of Object.values(this.ledger.roles())) {
-      const ref = binding?.default;
-      if (!ref || this.ledger.isAdopted(ref)) continue;
-      this.ledger.adopt(ref);
-      console.log(`[banto] 役に割り当て済みの ${refKey(ref)} を母集団へ入れました（決定101e）`);
-    }
   }
 
   /**

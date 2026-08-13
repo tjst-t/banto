@@ -111,7 +111,6 @@ import { guardPathArg } from "./place-scoped.js";
 import { createSkillTools } from "./skill-tools.js";
 import { createTurnBudget } from "./turn-budget.js";
 import { withWorkerCard } from "./worker-card.js";
-import { withTierUnassignedNotice } from "./worker-tier-notice.js";
 import { bindToolArgs, createThreadTools } from "./thread-tools.js";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 import { fromWireToolName, type BantoHarness } from "@banto/core";
@@ -1156,13 +1155,7 @@ async function serve(options: ServeOptions): Promise<void> {
            * 思い出したときだけ、では忘れたときに見えない——枝の札（決定77）と同じく
            * 機構にする。「どこにも出ていない職人は起こせない」。
            */
-          const carded = withWorkerCard(guarded, (utsuwa) => server.showUtsuwa(threadId, utsuwa));
-          /**
-           * **等級が空いていて起こせなかったら取次へ**（ADR-0021 決定104）。
-           * 直せるのは PO だけ（設定の口は番頭に渡していない・決定41c）なので、
-           * 会話のエラーで終わらせない。
-           */
-          return withTierUnassignedNotice(carded, { inbox, threadId });
+          return withWorkerCard(guarded, (utsuwa) => server.showUtsuwa(threadId, utsuwa));
         }
         // 決定63：**自分が起こしていない職人は畳めない。** Kobo の職人を番頭が畳むと、
         // Kobo は動いているつもりのまま実体が消える（Worker Pool 側には置けない——

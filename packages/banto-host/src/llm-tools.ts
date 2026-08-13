@@ -232,35 +232,15 @@ export function createLlmTools(options: LlmToolsOptions): LlmToolSets {
       });
       const limit = Math.max(1, Math.min(params.limit ?? LIST_DEFAULT_LIMIT, LIST_MAX_LIMIT));
       const page = sorted.slice(0, limit);
-      /**
-       * **母集団は pi の供給より広い**（ADR-0021 決定101e・task-0107）。
-       *
-       * 上の `models` は `models.json` 由来＝**pi の供給しか並ばない**。Claude Code の
-       * モデルに立った採用の旗はそこに現れないので、別に添える——添えないと
-       * 「聞いた一覧に無い＝使えない」と読める（実際には使える）。
-       */
-      const adoptedRefs = catalog.adoptedRefs();
-      const otherBackends = adoptedRefs.filter((r) => r.backend !== "pi");
       const text =
         `${data.providers.length} プロバイダ` +
         `、${adoptedOnly ? "採用中" : "全体"}から ${matched} 件` +
         (page.length < matched ? `（うち ${page.length} 件を返す）` : "") +
-        (otherBackends.length > 0
-          ? `。ほかに pi 以外のバックエンドで ${otherBackends.length} 件を採用しています` +
-            `（${otherBackends.map((r) => `${r.backend}/${r.model}`).join(" / ")}）`
-          : "") +
         (data.files.changed ? "。pi の設定ファイルが外部で変更されています（llm.reload で読み直せます）" : "");
       return {
         content: [{ type: "text", text }],
         // I1: 切ったことを隠さない。総数と、返した件数の両方を出す
-        details: {
-          ...data,
-          models: page,
-          matched,
-          total: data.models.length,
-          truncated: page.length < matched,
-          adopted: adoptedRefs,
-        },
+        details: { ...data, models: page, matched, total: data.models.length, truncated: page.length < matched },
       };
     },
   });

@@ -239,29 +239,6 @@ export const DEFAULT_PAGE_SIZE = 20;
 /** 安全弁の既定。番頭が畳むより十分に長くとる（決定30b）。 */
 export const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 
-/**
- * **等級に割り当てが無くて断った**ことの合印（ADR-0021 決定104）。
- *
- * 決定104 は「候補が無いときは取次へ一通積む」だが、**工房は取次を知らない**
- * （決定27：ブローカーにしない）。積むのは番頭ホストで、こちらは断った理由を
- * 見分けられる形で渡すだけ。
- *
- * **なぜ文言に埋めるか**：モジュール間の呼び出し（`createModuleClient.invoke`）は
- * 失敗を文字列にして返す（`module-invocation.ts:216-223`）ので、構造を渡す口が無い。
- * 日本語の言い回しで見分けると、文言を直した日に黙って積まれなくなる——だから
- * **契約として輸出した合印**で見分ける。
- */
-export const TIER_UNASSIGNED_CODE = "BANTO_TIER_UNASSIGNED";
-
-/** 断りの文言から等級を読む。合印が無ければ `undefined`（＝別の失敗）。 */
-export function tierFromUnassignedError(message: string): WorkerTier | undefined {
-  const found = new RegExp(`${TIER_UNASSIGNED_CODE}:(\\w+)`).exec(message);
-  const tier = found?.[1];
-  return tier && (WORKER_TIERS as readonly string[]).includes(tier)
-    ? (tier as WorkerTier)
-    : undefined;
-}
-
 /** 職人に仕事を投げるときの指定。SpawnOptions より上位の、呼び出し側に優しい形。 */
 export interface DelegateInput {
   /** 利用者の名前空間（省略時は defaultProjectTag）。 */
@@ -902,29 +879,6 @@ export class WorkerPool {
       this.backendRegistry.defaultTier()) as WorkerTier | undefined;
     const assigned = this.assignedFromLedger(tier);
     const chosenModel = input.model ?? assigned?.model;
-    /**
-     * **等級に割り当てが無いなら、黙ってランタイム既定へ落ちない**（ADR-0021 決定104）。
-     *
-     * ここを素通りさせると `planModel(runtime, undefined)` がランタイム任せになり、
-     * pi のドライバは**起動時の写し**（`defaultProvider` / `defaultModel`）で走る。
-     * 決定104 が止めたかったのはまさにこれ——「安いつもりが一番高いモデル」も
-     * 「画面で選んだのと違うモデル」も、例外にならないので誰も気づけない。
-     *
-     * **帰結を承知で断る**：その職人は起きない（工場が止まる場面が出る）。
-     * 取次へ積むのは**番頭ホスト側**——工房は取次を知らない（決定27：ブローカーにしない）
-     * ので、合印（`TIER_UNASSIGNED_CODE`）だけを文言に載せて渡す。
-     *
-     * 名指し（`input.model`）があるときは通す（決定99a：上書きの経路は最優先）。
-     * 台帳がまだ無い間（入れ替えの窓）も従来どおり通す——断る根拠が読めていない。
-     */
-    if (!chosenModel && tier && this.modelLedger?.exists()) {
-      throw new Error(
-        `${TIER_UNASSIGNED_CODE}:${tier}\n` +
-          `等級「${tier}」にモデルが割り当てられていないので、職人を起こしませんでした。\n` +
-          "**別のモデルへ勝手に落としません**（ADR-0021 決定104）——設定の「役ごとのモデル」で" +
-          `${tier} にモデルを当てるか、頼むときに model を名指ししてください。`
-      );
-    }
     const planned = this.planModel(input.runtime ?? assigned?.runtime, chosenModel);
     const runtime = this.driverFor(planned.runtime);
     const sessionPath = path.join(
