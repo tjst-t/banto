@@ -65,24 +65,31 @@ export {
   webToolsExtensionPath,
   toolOffloadExtensionPath,
 } from "./extension.js";
+export { installToolOffload } from "./pi-extension/tool-offload.js";
 export {
-  installToolOffload,
   ToolResultOffloader,
   DEFAULT_WORKER_OFFLOAD_THRESHOLD_CHARS,
+  MIN_OFFLOAD_LEAF_CHARS,
   OFFLOAD_THRESHOLD_ENV,
   OFFLOAD_DIR_ENV,
   OFFLOAD_ENABLED_ENV,
   READBACK_MAX_CHARS,
   WORKER_OFFLOAD_PROMPT,
+  PI_OFFLOAD_DIALECT,
+  CLAUDE_OFFLOAD_DIALECT,
+  renderWorkerOffloadPrompt,
   resolveThresholdChars,
   resolveOffloadDir,
   isOffloadEnabled,
   isExemptTool,
   outlineOf,
   renderOffloadStub,
+  type OffloadDialect,
   type ToolResultLike,
+  type ToolOutputLike,
   type OffloadPatch,
-} from "./pi-extension/tool-offload.js";
+  type OffloadOutputPatch,
+} from "./tool-offload.js";
 export {
   WEB_TOOL_NAMES,
   isPublicHttpUrl,
