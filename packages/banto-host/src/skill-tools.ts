@@ -55,7 +55,7 @@ export function createSkillTools(
     label: "Skill: Read",
     description:
       "SKILLの本体（手順）を読む。該当する作業に入る前に必ず読み、その手順に従う。\n例: {name: \"kobo-enqueue\"} → その手順の本文。name は英語の識別子で埋める。",
-    parameters: Type.Object({ name: Type.String({ description: "例: work-handoff" }) }),
+    parameters: Type.Object({ name: Type.String() }),
     async execute(params) {
       // I2: 未知のSKILL名は握りつぶさずエラーにする（利用可能な名前を添えて返す）
       const body = readBantoSkill(params.name, skills);

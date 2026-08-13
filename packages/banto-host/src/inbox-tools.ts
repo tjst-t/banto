@@ -9,7 +9,7 @@
  */
 
 import { Type } from "typebox";
-import { StringEnum } from "@banto/core";
+import { OpenObject, StringEnum } from "@banto/core";
 import type { Inbox } from "./inbox.js";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 
@@ -44,17 +44,17 @@ export function createInboxTools(
     parameters: Type.Object({
       sourceId: Type.String(),
       sourceLabel: Type.String(),
-      kind: Type.String({ description: "種別の表示名" }),
+      kind: Type.String(),
       rule: Type.Optional(Type.String()),
       title: Type.String(),
-      why: Type.Optional(Type.String({ description: "経緯：起点のPO指示の引用と時刻" })),
-      what: Type.String({ description: "経過と判明した事実" }),
-      ask: Type.String({ description: "決めてほしいこと" }),
+      why: Type.Optional(Type.String({ description: "起点のPO指示の引用と時刻" })),
+      what: Type.String(),
+      ask: Type.String(),
       actions: Type.Array(Action, {}),
       blocking: Type.Optional(Type.Number()),
-      threadId: Type.Optional(Type.String({ description: "省略で**いまのこの会話**" })),
+      threadId: Type.Optional(Type.String()),
       canvasKind: Type.Optional(Type.String()),
-      canvasParams: Type.Optional(Type.Record(Type.String(), Type.Unknown()))
+      canvasParams: Type.Optional(OpenObject())
     }),
     async execute(p) {
       // 宛先を書かなかったら**この会話**。積んだ札から話の続きへ戻れるようにするため、

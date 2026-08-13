@@ -86,7 +86,7 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     parameters: Type.Object({
       projectTag: Type.String(),
       taskId: Type.String(),
-      origin: Type.Optional(Type.String({ description: "**番頭は書かない**（束ねる層が固定する）" })),
+      origin: Type.Optional(Type.String({ description: "**番頭は書かない**" })),
       originRef: Type.Optional(
         Type.String({ description: "**なぜ積むのか**を1〜2行で。無いと札に「起きたこと」しか書けない（D8）" })
       )

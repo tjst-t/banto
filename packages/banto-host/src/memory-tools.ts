@@ -36,16 +36,9 @@ import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-regi
  * 定義の量が4倍で効く。**選び方の指針は `memory.save` の説明1箇所にだけ書く**
  * ——同じ段落を4回載せると、それだけで記憶の道具が定義量の3割を占めていた。
  */
-const MemoryKindSchema = StringEnum(["preference", "habit", "fact"] as const, {
-  description: "好み / 習慣 / 事実",
-});
+const MemoryKindSchema = StringEnum(["preference", "habit", "fact"] as const);
 
-const MemoryScopeSchema = StringEnum(["person", "project"] as const, {
-  description: "person=幹をまたぐ / project=この幹だけ（既定）",
-});
-
-/** `memory.*` の説明に共通で足す1行（幹の既定）。 */
-const TRUNK_NOTE = "**trunk は省略するとこの会話の幹**（他の幹を指すときだけ thread.list の id を書く）。";
+const MemoryScopeSchema = StringEnum(["person", "project"] as const);
 
 /** 記憶を1件、プロンプト用の1行にする。 */
 function renderLine(record: MemoryRecord): string {
@@ -117,7 +110,7 @@ export function createMemoryTools(
     name: "memory.save",
     label: "Memory: Save",
     description:
-      "次回以降も効く事実を1件、長期に覚える（その場限りの作業メモは入れない）。\n例: {kind: \"habit\", scope: \"project\", text: \"検証は env.verify で回す\", refs: [\"task-0100\"]} → 記憶の id\ntext 以外は英語の識別子で埋める。**迷ったら person ではなく project。**\ntrunk は省略でこの会話の幹。",
+      "次回以降も効く事実を1件、長期に覚える（その場限りの作業メモは入れない）。\n例: {kind: \"habit\", scope: \"project\", text: \"検証は env.verify で回す\", refs: [\"task-0100\"]} → 記憶の id\ntext 以外は英語の識別子で埋める。scope は person=幹をまたぐ / project=この幹だけ（既定）で、**迷ったら project**。\ntrunk は省略でこの会話の幹。",
     parameters: Type.Object({
       kind: MemoryKindSchema,
       text: Type.String(),

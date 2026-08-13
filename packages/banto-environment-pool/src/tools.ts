@@ -31,8 +31,8 @@ const targetFields = {
   config: Type.Optional(Type.Object({}, { additionalProperties: true })),
   workdir: Type.Optional(Type.String()),
   taskId: Type.Optional(Type.String()),
-  projectTag: Type.Optional(Type.String({ description: "既定 banto" })),
-  expose: Type.Optional(Type.Number({ description: "外から見せるポート" })),
+  projectTag: Type.Optional(Type.String()),
+  expose: Type.Optional(Type.Number()),
   exposeProfilePort: Type.Optional(Type.Boolean()),
   exposeMode: Type.Optional(StringEnum(["auto", "proxy", "caddy"] as const)),
 };
@@ -108,9 +108,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
       collect: Type.Optional(
         Type.Boolean()
       ),
-      timeoutMs: Type.Optional(
-        Type.Number({ description: "検証コマンドの制限時間（ミリ秒）。省略時は既定" })
-      )
+      timeoutMs: Type.Optional(Type.Number())
     }),
     async execute(params) {
       const result = await pool.verify({
@@ -378,7 +376,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     label: "Env: List Profiles",
     description:
       "そのリポジトリで使える検証プロファイルの一覧（使えないものは理由つき）。\n例: {repoPath: \"/home/ubuntu/ghq/github.com/tjst-t/banto\"} → \"test — process / ttl 30分\"\nrepoPath は英語の絶対パスで埋める。",
-    parameters: Type.Object({ repoPath: Type.String({ description: "絶対パス" }) }),
+    parameters: Type.Object({ repoPath: Type.String() }),
     async execute(params) {
       const { usable, rejected } = pool.profiles(params.repoPath);
       const lines = usable.map((p) => `${p.name} — ${p.driver} / ttl ${Math.round(p.ttlMs / 60000)}分`);

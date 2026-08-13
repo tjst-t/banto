@@ -56,7 +56,7 @@ export function createFileWriteTools(
       "自分の成果物（決定の記録・起票・メモ）を書く。新規作成または全文の上書き。\n例: {place: \"banto\", path: \"work/tasks/task-0042.md\", content: \"---\\nid: task-0042\\n---\\n…\"} → 書いた旨\nplace と path は英語で埋める。**書けるのはPOが許した範囲だけ**（既定は読み取り専用）。\nコードを変えるなら worker.delegate（D10）。",
     parameters: Type.Object({
       path: Type.String(),
-      content: Type.String({ description: "全文。既存はこれで置き換わる" }),
+      content: Type.String({ description: "全文（既存は置き換わる）" }),
       // `place-scoped.ts` の PLACE_PARAM と同じ名前。番頭にも GUI にも同じ引数に見える
       place: Type.Optional(Type.String())
     }),

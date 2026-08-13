@@ -285,8 +285,8 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
       "**枝**を開いて続く議論・調査をそちらへ移す。開いた瞬間に幹へ札が1行立つ。\n例: {title: \"道具定義の圧縮\", returnCondition: \"前後の対比較が出たら\", reason: \"幹と混ざる\", message: \"実ログ由来の題材で測ってほしい\"} → 枝の id\n**渡したら手を離す**（同じ調べ物をこの会話で始めない）。",
     parameters: Type.Object({
       title: Type.String(),
-      returnCondition: Type.String({ description: "何が決まれば幹に還るかを1行で" }),
-      reason: Type.String({ description: "なぜ幹ではなくここで話すのかを1行で" }),
+      returnCondition: Type.String(),
+      reason: Type.String(),
       message: Type.Optional(Type.String())
     }),
     async execute(params) {
@@ -780,7 +780,7 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     description:
       "**別の幹へ言伝を渡す**（幹は記憶も文脈も分かれている）。\n例: {threadId: \"thread-7\", message: \"env.verify の既定 timeout が変わりました\"} → 渡した旨\nthreadId は英語の識別子で埋める。**宛先は幹だけ**（枝には送れない）。",
     parameters: Type.Object({
-      threadId: Type.String({ description: "例: thread-7（thread.list で確かめる）" }),
+      threadId: Type.String(),
       message: Type.String()
     }),
     async execute(params) {

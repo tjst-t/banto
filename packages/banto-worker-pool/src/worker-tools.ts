@@ -47,7 +47,7 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
       `職人に実作業（調査・実装・修正）を任せる。手を動かす仕事は自分でやらず渡す（D10）。\n例: {taskId: "task-0042", worktreePath: "/home/ubuntu/worktrees/banto/task-0042", instruction: "落ちる原因を調べて報告する"} → sessionId "${EXAMPLE_SESSION_ID}"\ninstruction 以外の値は英語（識別子・パス）で埋める。\n**渡したら手を離してターンを終える**（知らせは自動で届く。attach で待たない）。`,
     parameters: Type.Object({
       taskId: Type.String(),
-      origin: Type.Optional(Type.String({ description: "報告の宛先" })),
+      origin: Type.Optional(Type.String()),
       worktreePath: Type.String(),
       instruction: Type.String({
         description: "職人は記憶を持たないので前提・目的・完了条件を書き切る"
@@ -64,8 +64,12 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
       modelTier: Type.Optional(
         StringEnum(["reasoning", "standard", "fast"] as const, {})
       ),
-      runtime: Type.Optional(Type.String()),
-      model: Type.Optional(Type.String())
+      // **綴りは残す。** 短くしても、選べる名前だけは削らない——無いランタイムを
+      // 当てにいく呼び方が実際に出る（claude-agent-worker.spec.ts が押さえている）
+      runtime: Type.Optional(Type.String({ description: "claude-code / pi（既定 pi）" })),
+      model: Type.Optional(
+        Type.String({ description: "opus / sonnet / haiku など（一覧は worker.models）" })
+      )
     }),
     async execute(params) {
       const worker = await pool.delegate({

@@ -12,7 +12,7 @@
  */
 
 import { Type } from "typebox";
-import { StringEnum } from "@banto/core";
+import { OpenObject, StringEnum } from "@banto/core";
 import type { Canvas, CanvasCatalog } from "./canvas.js";
 import type { ArtifactStore } from "./artifacts.js";
 import type { UtsuwaView } from "./protocol.js";
@@ -66,8 +66,8 @@ export function createCanvasTools(
     description:
       "キャンバスにGUIをタブとして開く（POに見せたいとき）。データは取らない。\n例: {kind: \"file.browser\", params: {path: \"docs/adr\"}} → tabId\nkind と params の値は英語で埋める（一覧は canvas.list_catalog）。",
     parameters: Type.Object({
-      kind: Type.String({ description: "例: file.browser, worker.viewer, kobo.board" }),
-      params: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+      kind: Type.String(),
+      params: Type.Optional(OpenObject()),
       title: Type.Optional(Type.String()),
       newTab: Type.Optional(Type.Boolean())
     }),
@@ -104,7 +104,7 @@ export function createCanvasTools(
     label: "Canvas: Close",
     description:
       "キャンバスのタブを閉じる。\n例: {tabId: \"0c675706-3474-4f88-9422-d3ce262bddd0\"} → 閉じた旨\ntabId は英語の識別子（UUID）で埋める。",
-    parameters: Type.Object({ tabId: Type.String({ description: "canvas.query_state に出る UUID" }) }),
+    parameters: Type.Object({ tabId: Type.String() }),
     async execute(params) {
       canvas.close(params.tabId);
       return { content: [{ type: "text" as const, text: `closed ${params.tabId}` }], details: {} };
@@ -172,7 +172,7 @@ export function createCanvasTools(
       note: Type.Optional(Type.String()),
       view: Type.Optional(Type.String()),
       label: Type.Optional(Type.String()),
-      args: Type.Optional(Type.Record(Type.String(), Type.Unknown()))
+      args: Type.Optional(OpenObject())
     }),
     async execute(params) {
       const store = options.artifacts;

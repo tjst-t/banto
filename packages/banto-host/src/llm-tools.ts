@@ -125,9 +125,7 @@ export function costFromCatalog(
   };
 }
 
-const TierSchema = StringEnum(["reasoning", "standard", "fast"] as const, {
-  description: "reasoning=高精度、standard=通常、fast=高速",
-});
+const TierSchema = StringEnum(["reasoning", "standard", "fast"] as const);
 
 const ScopeSchema = StringEnum(["host", "worker"] as const, {
   description: "host=番頭、worker=職人",

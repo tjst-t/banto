@@ -15,7 +15,7 @@
  * D6: 依存は typebox のみ（既に契約が使っている）。
  */
 
-import { Type, type TEnum, type TSchemaOptions } from "typebox";
+import { Type, type TEnum, type TSchemaOptions, type TUnsafe } from "typebox";
 
 /** `enum` で書いた文字列の選択肢。`Type.Union([Literal…])` の平らな版。 */
 export type TStringEnum<T extends string> = TEnum<T[]>;
@@ -31,4 +31,17 @@ export function StringEnum<const T extends string>(
   options: TSchemaOptions = {}
 ): TStringEnum<T> {
   return Type.Enum([...values] as T[], { ...options, type: "string" });
+}
+
+/**
+ * 中身を解釈しない開いたオブジェクト（GUI のパラメータ等）を書く。
+ *
+ * `Type.Record(Type.String(), Type.Unknown())` は `patternProperties: { "^.*$": {} }`
+ * ——**正規表現をキーにした入れ子の部分スキーマ**になる。同じ「何でも入る object」を
+ * `additionalProperties` 1つで書けば平らになり、正規表現キーを受け取れない検証も通る。
+ */
+export function OpenObject(options: TSchemaOptions = {}): TUnsafe<Record<string, unknown>> {
+  // `Type.Object({}, …)` にすると空の `properties: {}` まで出る。開いた object だと
+  // 言うだけなら、その1行は要らない（決定84-2: 盛らない）
+  return Type.Unsafe<Record<string, unknown>>({ ...options, type: "object", additionalProperties: true });
 }

@@ -45,12 +45,9 @@ export function createPlaceRequestTools(
       "ある場所に書き込む許可をPOに求める。**頼むだけで、許可は与えられない**。\n例: {place: \"banto\", patterns: [\"work/tasks/*.md\"], reason: \"起票のため\"} → 取次に積んだ旨\nplace と patterns は英語の識別子・glob で埋める（範囲は狭く）。",
     parameters: Type.Object({
       place: Type.String(),
-      patterns: Type.Array(Type.String(), {
-        description: "例: docs/**, work/tasks/*.md",
-        minItems: 1
-      }),
-      reason: Type.String({ description: "何のために書くのかを一言で" }),
-      threadId: Type.Optional(Type.String({ description: "（ホストが埋める。書かない）" }))
+      patterns: Type.Array(Type.String(), { minItems: 1 }),
+      reason: Type.String(),
+      threadId: Type.Optional(Type.String())
     }),
     async execute(params) {
       // I2: 知らない場所への要求は受け付けない。承認しても効かない許可が帳簿に残る
