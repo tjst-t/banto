@@ -79,7 +79,7 @@ import { PlaceGrantStore } from "./place-grants.js";
 import { ThreadStore } from "./thread-store.js";
 import { SettingsStore } from "./settings-store.js";
 import { createCoreSettingsSections } from "./core-settings.js";
-import { createSettingsModule, settingsSection } from "./settings-module.js";
+import { type HarnessBackendOption, createSettingsModule, settingsSection } from "./settings-module.js";
 import { createRepoManagerModule, createRepoManagerPlaceProvider } from "@banto/repo-manager";
 import { createCollectedPlaceProvider } from "@banto/environment-pool";
 import {
@@ -713,6 +713,26 @@ async function serve(options: ServeOptions): Promise<void> {
     },
   });
 
+
+  /**
+   * **`settings.harness` → `roles.steward` へ畳む**（PO裁定 2026-08-13）。
+   *
+   * 「新しい会話は何で始まるか」に2箇所が答えていた（実データで食い違った）。
+   * 束縛の座標に `backend` を持たせたので、設定側の欄は要らなくなる。
+   * **設定側を真実として移す**——実際に効いていたのはそちらだから（`startBackend`）。
+   */
+  const legacyHarness = settings.all().harness;
+  if (legacyHarness?.backend) {
+    const current = llmCatalog.roles().steward;
+    llmCatalog.setRole(
+      "steward",
+      legacyHarness.backend === "claude-agent-sdk" ? "claude" : (current?.provider ?? "opencode"),
+      legacyHarness.model ?? current?.model ?? "",
+      legacyHarness.backend
+    );
+    settings.update("harness", undefined as never);
+    console.log(`[banto] 番頭の既定を roles.steward へ移しました（${legacyHarness.backend}）`);
+  }
   // 職人のモデル解決（tier→実モデル）は**工房が自分で持つ**（task-0066）。番頭ホストは
   // 台帳（オーバーレイ）を書くだけで、職人を起こすのは別プロセス——オーバーレイは
   // 更新時刻で読み直されるので、画面で選んだ tier は次の委譲から効く（D3）。
@@ -777,29 +797,14 @@ async function serve(options: ServeOptions): Promise<void> {
   ]);
 
   // 設定モジュールは他モジュールの宣言を集めるので、レジストリが揃ってから登録する（決定41）
-  modules.register(
-    createSettingsModule({
-      core: createCoreSettingsSections(settings, {
-        llmCatalog,
-        // いま効いている場所をそのまま映す（画面と実態を食い違わせない）。
-        // 保存が無いときの起動時指定も、既定の書斎も、ここに含まれる
-        effectivePlaces: () =>
-          effectiveStaticPlaces(settings, workspace).map((c) => ({
-            id: c.id,
-            path: c.path,
-            ...(c.writable ? { writable: [...c.writable] } : {}),
-          })),
-        onPlacesChanged: () => ensureDesk(settings, workspace),
-      }),
-      modules,
-      store: settings,
-      /**
-       * **バックエンド → プロバイダ → モデル**（PO裁定 2026-08-13）。
-       *
-       * pi 側は LLM 登録の「番頭が使ってよい」モデル、Claude Code 側は SDK の別名。
-       * 同じ `opus` が両方に出るのが正しい——どちらの経路で呼ぶかを人が選ぶ。
-       */
-      harnessOptions: () => {
+  /**
+   * **バックエンド → プロバイダ → モデル**（PO裁定 2026-08-13）。
+   *
+   * pi 側は LLM 登録の「番頭が使ってよい」モデル、Claude Code 側は SDK の別名。
+   * 同じ `opus` が両方に出るのが正しい——どちらの経路で呼ぶかを人が選ぶ。
+   * **会話の画面（`settings.harness_models`）と設定の選択肢が同じ元から出る**（D3）。
+   */
+  const harnessBackendOptions = (): HarnessBackendOption[] => {
         const piModels = llmCatalog.models().filter((m) => m.hostUsable);
         const byProvider = new Map<string, typeof piModels>();
         for (const m of piModels) {
@@ -839,7 +844,43 @@ async function serve(options: ServeOptions): Promise<void> {
             ],
           },
         ];
-      },
+  };
+
+  modules.register(
+    createSettingsModule({
+      core: createCoreSettingsSections(settings, {
+        llmCatalog,
+        // 設定画面の選択肢も**会話の画面と同じ元**から作る（D3）
+        harnessChoices: () =>
+          harnessBackendOptions()
+            .filter((b) => !b.unavailable)
+            .flatMap((b) =>
+              b.providers.flatMap((p) =>
+                p.models.map((m) => ({
+                  value: `${b.id}|${p.id}|${m.id}`,
+                  label: `${b.label} › ${p.id} › ${m.name ?? m.id}`,
+                }))
+              )
+            ),
+        // いま効いている場所をそのまま映す（画面と実態を食い違わせない）。
+        // 保存が無いときの起動時指定も、既定の書斎も、ここに含まれる
+        effectivePlaces: () =>
+          effectiveStaticPlaces(settings, workspace).map((c) => ({
+            id: c.id,
+            path: c.path,
+            ...(c.writable ? { writable: [...c.writable] } : {}),
+          })),
+        onPlacesChanged: () => ensureDesk(settings, workspace),
+      }),
+      modules,
+      store: settings,
+      /**
+       * **バックエンド → プロバイダ → モデル**（PO裁定 2026-08-13）。
+       *
+       * pi 側は LLM 登録の「番頭が使ってよい」モデル、Claude Code 側は SDK の別名。
+       * 同じ `opus` が両方に出るのが正しい——どちらの経路で呼ぶかを人が選ぶ。
+       */
+      harnessOptions: () => harnessBackendOptions(),
     })
   );
 
@@ -1244,10 +1285,23 @@ async function serve(options: ServeOptions): Promise<void> {
      * **走り出しは片方だけ組む**のではなく pi は常に組む——章立てが pi の
      * セッションに紐づいており、戻ってきたときに文脈が残っている必要があるため。
      */
-    const startBackend = wantedModel?.backend ?? settings.all().harness?.backend ?? "pi";
+    const stewardRole = llmCatalog.roles().steward;
+    /**
+     * この会話が始まるバックエンド。
+     *
+     * **会話に記録があるなら、それが勝つ**——索引に `backend` が無い記録は
+     * バックエンドという概念より前のもので、**pi を指している**（他に無かった）。
+     * ここで既定へ落とすと、pi のモデルで話していた会話が黙って別のバックエンドで
+     * 起き直る（実機で 52 会話が丸ごとそうなった）。
+     */
+    const startBackend = wantedModel
+      ? (wantedModel.backend ?? "pi")
+      : (stewardRole?.backend ?? "pi");
     const harness: BantoHarness =
       startBackend === "claude-agent-sdk"
-        ? makeClaudeHarness(wantedModel?.id ?? settings.all().harness?.model)
+        ? makeClaudeHarness(
+            wantedModel?.backend === "claude-agent-sdk" ? wantedModel.id : stewardRole?.model
+          )
         : piHarness;
     harnessSwitchers.set(threadId, { pi: () => piHarness, claude: makeClaudeHarness });
 
@@ -1625,7 +1679,19 @@ async function serve(options: ServeOptions): Promise<void> {
 
   console.log(`[banto] listening on ws://localhost:${server.port}/ws`);
   console.log(
-    `[banto] model: ${model ? `${model.provider}/${model.id}` : "(pi の既定解決)"}`
+    /**
+     * **新しい会話が何で始まるか**を、そのまま出す（I1）。
+     *
+     * 以前はここが pi の解決結果だけを出しており、既定が Claude Code のときも
+     * `huihui/...` と名乗って**嘘になっていた**。バックエンドまで含めて言う。
+     */
+    (() => {
+      const steward = llmCatalog.roles().steward;
+      if (steward) {
+        return `[banto] model: ${steward.backend ?? "pi"} / ${steward.provider}/${steward.model}`;
+      }
+      return `[banto] model: ${model ? `pi / ${model.provider}/${model.id}` : "(pi の既定解決)"}`;
+    })()
   );
   console.log(`[banto] memory: ${memoryPath()}`);
   console.log(`[banto] skills: ${skills.map((s) => s.name).join(", ") || "(none)"}`);

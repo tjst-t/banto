@@ -148,6 +148,7 @@ export {
 export type {
   LlmRole,
   LlmRoleBindings,
+  LlmModelRef,
   ModelTier,
   ModelConstraints,
   KeyScope,
