@@ -176,6 +176,15 @@ export interface HostSession {
 /** モデル情報。WebUI が画像添付の可否を判定するための最小形。 */
 export interface ModelInfo {
   id: string;
+  /**
+   * **バックエンドが変わったときの新しいハーネス**（PO要望 2026-08-13）。
+   *
+   * モデルの名前でバックエンドが決まる（職人側の `planModel` と同じ規則）。
+   * 返ってきたら会話のハーネスを差し替える——再起動は要らない。
+   */
+  harness?: BantoHarness;
+  /** どのバックエンドで動いているか。画面に出す。 */
+  backend?: string;
   /** vision 対応（モデルの input が image を受け付ける）か。 */
   vision: boolean;
   /** 文脈に入る最大トークン数（分かるときだけ）。 */
@@ -262,7 +271,13 @@ export interface BantoHostServerOptions {
    * 保存も、ここを渡す側（bin.ts）の責任。server は結果を配るだけ（D5）。
    * I2: 切り替えられないときは throw すること——黙って前のモデルのまま続けない。
    */
-  onSelectModel?: (thread: Thread, provider: string, model: string) => Promise<ModelInfo>;
+  onSelectModel?: (
+    thread: Thread,
+    provider: string,
+    model: string,
+    /** **provider の上位の階層**（PO裁定 2026-08-13）。省略なら会話のいまのバックエンド。 */
+    backend?: string
+  ) => Promise<ModelInfo>;
   /** いま使っているモデルのプロバイダ。`model_state` に載せる。 */
   modelProvider?: string;
 }
@@ -306,7 +321,7 @@ export class BantoHostServer {
    * 起動時に解決されたものをそのまま持つ。
    */
   private hostDefaultModel():
-    | { provider: string; id: string; vision: boolean; contextWindow?: number }
+    | { backend?: string; provider: string; id: string; vision: boolean; contextWindow?: number }
     | undefined {
     if (!this.modelInfo) return undefined;
     return {
@@ -416,9 +431,9 @@ export class BantoHostServer {
     if (this.attached.has(thread.id)) return;
     this.attached.add(thread.id);
 
-    thread.disposers.push(
-      thread.harness.subscribe((event) => this.handleHarnessEvent(thread, event))
-    );
+    // ハーネスの購読は Thread が1箇所で持つ——**差し替えのときに張り直す**ため
+    // （`disposers` に混ぜると、ハーネスのぶんだけを外せない）
+    thread.listen((event) => this.handleHarnessEvent(thread, event));
     // D3: キャンバスの真実はホスト側。状態が変わるたび全クライアントへ配る
     if (thread.canvas) {
       thread.disposers.push(
@@ -952,8 +967,13 @@ export class BantoHostServer {
         return;
       }
       try {
-        const next = await this.selectModel(thread, message.provider, message.model);
+        const next = await this.selectModel(thread, message.provider, message.model, message.backend);
+        // バックエンドごと変わったなら、会話のハーネスを差し替える（購読も張り直す）
+        if (next.harness && next.harness !== thread.harness) {
+          thread.replaceHarness(next.harness, (event) => this.handleHarnessEvent(thread, event));
+        }
         thread.model = {
+          ...(next.backend ? { backend: next.backend } : {}),
           provider: message.provider,
           id: next.id,
           vision: next.vision,
@@ -964,6 +984,7 @@ export class BantoHostServer {
         this.broadcast({
           type: "model_state",
           threadId: thread.id,
+          ...(next.backend ? { backend: next.backend } : {}),
           provider: message.provider,
           id: next.id,
           vision: next.vision,

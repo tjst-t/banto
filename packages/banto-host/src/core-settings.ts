@@ -190,12 +190,14 @@ export function createCoreSettingsSections(
     {
       id: "harness",
       spec: {
-        title: "番頭のバックエンド",
+        title: "番頭のバックエンド（新しい会話の既定）",
         description:
-          "**番頭の会話を回すのは誰か**（ADR-0020 決定88）。pi は好きなモデルを挿せる" +
-          "（ローカルの vLLM も可）。Claude Code は手元のサブスクリプションで動くが、" +
-          "**Claude 以外のモデルには繋げない**（公式が明文で非対応）。" +
-          "職人のバックエンドは「職人」の面で別に選ぶ。",
+          "**会話ごとの切り替えは、会話の画面のモデル選択でできる**（再起動は要らない）。" +
+          "ここで決めるのは**新しい会話がどれで始まるか**だけ。\n\n" +
+          "バックエンドはプロバイダの**上位の階層**——同じ `opus` が pi（opencode zen）経由でも " +
+          "Claude Code 経由でも選べるので、モデル名からは決まらない。" +
+          "pi は登録したプロバイダのモデル（ローカルの vLLM も可）、" +
+          "Claude Code は手元のサブスクリプションで動くが **Claude 以外には繋げない**。",
         fields: [
           {
             key: "backend",
@@ -207,7 +209,6 @@ export function createCoreSettingsSections(
             ],
             description:
               "pi は LLM 登録のモデルで動く。Claude Code は ~/.claude の認証をそのまま使う",
-            restartRequired: true,
           },
           {
             key: "model",
@@ -217,7 +218,6 @@ export function createCoreSettingsSections(
             description:
               "別名か完全なモデルID。空なら Claude Code の既定。" +
               "**pi のときは使わない**——そちらは「LLM・モデル」の標準が効く",
-            restartRequired: true,
           },
         ],
         read: () => {
@@ -233,10 +233,10 @@ export function createCoreSettingsSections(
           const model = String(values["model"] ?? "").trim();
           store.update("harness", { backend, ...(model ? { model } : {}) });
           return {
-            applied: false,
+            applied: true,
             message:
-              "保存しました。**次の起動から効きます**" +
-              "（走っている会話の途中でバックエンドは変えられません）。",
+              "保存しました。**新しい会話からこれで始まります**" +
+              "（いま開いている会話は、会話の画面のモデル選択でその場で変えられます）。",
           };
         },
       } as ModuleSettingsSpec,

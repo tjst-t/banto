@@ -41,6 +41,26 @@ export interface SettingsModuleOptions {
   modules: ModuleRegistry;
   /** 設定の保存先。画面に「どこに保存しているか」を出すため。 */
   store: SettingsStore;
+  /**
+   * **選べるバックエンドと、その下のモデル**（PO裁定 2026-08-13）。
+   *
+   * 会話の途中で切り替える画面が使う。**番頭には渡さない**（`internalTools`）
+   * ——モデルの選び直しは人の操作で、番頭の道具ではない。
+   */
+  harnessOptions?: () => Promise<HarnessBackendOption[]> | HarnessBackendOption[];
+}
+
+/** バックエンド → プロバイダ → モデル の3段（`opus` は pi 経由でも SDK 経由でも選べる）。 */
+export interface HarnessBackendOption {
+  id: string;
+  label: string;
+  /** 使えない理由（認証が無い等）。あるときは画面で選ばせない。 */
+  unavailable?: string;
+  providers: Array<{
+    id: string;
+    label?: string;
+    models: Array<{ id: string; name?: string; vision?: boolean; contextWindow?: number }>;
+  }>;
 }
 
 /**
@@ -77,6 +97,26 @@ export function createSettingsModule(options: SettingsModuleOptions): BantoModul
       .filter((m) => m.settings)
       .map((m) => ({ id: m.name, origin: m.name, originTitle: m.title, spec: m.settings! })),
   ];
+
+  /**
+   * 画面が「バックエンド → プロバイダ → モデル」を出すための一覧。
+   *
+   * **バックエンドは provider の上位の階層**——同じ `opus` が pi（opencode zen）経由でも
+   * Claude Code 経由でも選べるので、モデル名からは決まらない（PO裁定 2026-08-13）。
+   */
+  const harnessModels = defineNamespacedTool({
+    name: "settings.harness_models",
+    label: "Settings: Harness models",
+    description: "選べるバックエンドと、その下のプロバイダ・モデルを返す（画面用）。",
+    parameters: Type.Object({}),
+    async execute() {
+      const backends = (await options.harnessOptions?.()) ?? [];
+      return {
+        content: [{ type: "text" as const, text: `${backends.length} 個のバックエンド` }],
+        details: { backends },
+      };
+    },
+  });
 
   const describe = defineNamespacedTool({
     name: "settings.describe",
@@ -161,7 +201,11 @@ export function createSettingsModule(options: SettingsModuleOptions): BantoModul
     endpoint: { baseUrl: SETTINGS_BASE_URL },
     // 番頭には1本も渡さない（決定38b の自己昇格を機構で塞ぐ）
     tools: [],
-    internalTools: [describe, update] as NamespacedToolDefinition[],
+    internalTools: [
+      describe,
+      update,
+      ...(options.harnessOptions ? [harnessModels] : []),
+    ] as NamespacedToolDefinition[],
     // **キャンバスの面にはしない**（PO要望 2026-08-01）。設定は Banto の一級の機能で、
     // 会話と同じヘッダーの右端から開く独立した面（prototype の3面構成：
     // セッション面／履歴面／設定面）。番頭が canvas.open で出すものでもない

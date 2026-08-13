@@ -58,6 +58,13 @@ export interface AbortMessage extends ThreadTarget {
  */
 export interface SetModelMessage extends ThreadTarget {
   type: "set_model";
+  /**
+   * **会話を回すバックエンド**（PO裁定 2026-08-13）。provider の**上位の階層**。
+   *
+   * 同じ `opus` が pi（opencode zen）経由でも Claude Code 経由でも選べるので、
+   * モデル名からは決まらない。省略すると、いまのバックエンドのまま。
+   */
+  backend?: string;
   provider: string;
   model: string;
 }
@@ -285,7 +292,7 @@ export interface ThreadView {
   /** 畳んだ時刻（state が closed のとき）。 */
   closedAt?: string;
   /** この会話で使っているモデル。会話ごとに持つ（未設定なら番頭の標準）。 */
-  model?: { provider: string; id: string; vision: boolean; contextWindow?: number };
+  model?: { backend?: string; provider: string; id: string; vision: boolean; contextWindow?: number };
   /**
    * いま番頭が喋っている最中か。
    *
@@ -742,6 +749,8 @@ export interface CanvasStateEvent extends ThreadScope {
  */
 export interface ModelStateEvent extends ThreadScope {
   type: "model_state";
+  /** どのバックエンドで動いているか（provider の上位）。 */
+  backend?: string;
   provider: string;
   /** モデル ID（表示にも使う）。 */
   id: string;
