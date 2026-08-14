@@ -252,7 +252,14 @@ export function resolveReviewStage(task: TaskRecord, config: ProjectConfig): Rev
   if (declared === "auto") return "auto";
   if (declared === "po") return "po";
   if (declared === "banto") return "banto";
-  // 旧称 `manual` は `banto` へ読み替える（決定57：人＝PO 直行だった経路に番頭が入る）
+  /**
+   * 旧称 `manual` は `banto` へ読み替える（決定57：人＝PO 直行だった経路に番頭が入る）。
+   *
+   * **明示的に写す。** ここを「知らない値は既定へ落とす」で済ませていると、既定を
+   * 反転した瞬間（realign 第3便）に**「人が見る」と書いたタスクが黙って機械通過になる**
+   * ——帳簿には `manual` 宣言が13本あった。読み替えの向きは既定と独立でなければならない。
+   */
+  if (declared === "manual") return "banto";
   return DEFAULT_REVIEW_STAGE;
 }
 
