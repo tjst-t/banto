@@ -36,10 +36,25 @@ export type {
   DaemonConfigEvent,
   EnvProfileRejectedEvent,
   EnvProvisionFailedEvent,
+  TaskStalledEvent,
+  TaskSettledOutsideEvent,
+  TaskContractAmendedEvent,
 } from "./events.js";
 
+// 滞留を帳簿から導出する（realign 第2便・rethink C-3 第1手）。時間は保存しない（D3）
+export {
+  stateEnteredAt,
+  dwellMs,
+  lastObservableChangeAt,
+  stalledAlreadyRecorded,
+  currentBlockedBy,
+  contractVersionOf,
+  formatDwell,
+  DEFAULT_DWELL_WARN_MINUTES,
+} from "./dwell.js";
+
 // Environment profile parser (spec-environment §1)
-export { parseEnvProfiles, validateProfile, parseTtl } from "./env-profile-parser.js";
+export { parseEnvProfiles, validateProfile, parseTtl, envProfileDigest } from "./env-profile-parser.js";
 // 検証環境を外から見えるようにする口（決定39・imp-0008）。配置で手段が変わるので差し替え可能
 export type { EnvExposer, ExposedEnv, ExposeRequest } from "./env-exposer.js";
 // モジュールが設定画面に自分の設定を出す契約（決定41）。GUI ではなく項目の宣言を渡す
@@ -214,7 +229,7 @@ export type { NamespacedToolName } from "./tool-namespace.js";
 export { createExecutorTools, createAuditTools } from "./tools.js";
 
 // Prompt asset loader (reads from skills/ directory at repo root)
-export { loadPromptAsset } from "./prompt-assets.js";
+export { loadPromptAsset, promptAssetDigest } from "./prompt-assets.js";
 
 // Environment driver contract types — spec-environment §2
 // D1: field names in input/output shapes are FIXED to spec §2. Do NOT rename without ADR.

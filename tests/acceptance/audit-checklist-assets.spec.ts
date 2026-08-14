@@ -172,16 +172,20 @@ describe("[AC-S75f66b-3-2] Audit prompt assets are layer-A text files (skills/ d
 
 // ── Suite 2: CHECK-MARKER-42 propagation test ──────────────────────────────────
 //
-// **経路が変わった**（task-0060・ADR-0013 決定60）。以前は Kobo が skills/ を読んで
-// `systemPrompt` に載せ、それが spawn の引数として渡っていた。いまは Kobo は監査の
-// プロンプトを組み立てない——監査人を起こすのは Worker Pool で、監査の観点は
-// **banto-auditor 拡張**が pi の `before_agent_start` で自分から読む。
+// **経路がもう一度変わった**（realign 第2便・段1）。
 //
-// 検査するのはその実物：拡張を読み込んで、フックが返すシステムプロンプトに
-// チェックリストの中身が入っていることを確かめる。**偽の pi ではなく本物の拡張**を
-// 呼ぶので、「Kobo が渡したつもりの文字列」ではなく実際に効く経路を見ている。
+// 前は banto-auditor 拡張が pi の `before_agent_start` でチェックリストを読み、
+// システムプロンプトに載せていた。だがその拡張は `driverOptions.extensionPaths`＝
+// **pi の言葉**で渡っており、**Claude Agent SDK の職人はそれを読まない**
+// （`claude-agent/tool-offload.ts` に同じ形の記録がある）。実運用の監査人はほぼ全て
+// SDK 経路なので、**基準は監査人に一度も届いていなかった**——この試験は pi 拡張を
+// 直に呼んでいたため、届いていないことを捕まえられなかった。
+//
+// いまは **Kobo が指示文に載せて渡す**（`buildAuditInstruction`）。経路に依らず届き、
+// `audit_verdict.checklistVersion` に刻む指紋が「実際に渡した中身」と一致する。
+// だからここで見るのも指示文になる。拡張が担うのは役の説明（audit-system）だけ。
 
-describe("[AC-S75f66b-3-2] Checklist edit propagates to the audit agent's system prompt", () => {
+describe("[AC-S75f66b-3-2] Checklist edit propagates to the audit agent", () => {
   let originalChecklist: string;
 
   before(() => {
@@ -200,7 +204,7 @@ describe("[AC-S75f66b-3-2] Checklist edit propagates to the audit agent's system
     fs.writeFileSync(checklistPath, originalChecklist);
   });
 
-  it("[AC-S75f66b-3-2] scenario-2-api step-1: CHECK-MARKER-42 appears in the audit agent's system prompt", async () => {
+  it("[AC-S75f66b-3-2] scenario-2-api step-1: CHECK-MARKER-42 が監査人に届く（経路に依らず）", async () => {
     // 拡張は環境変数から自分の宛先を読む。読めないと I2 で投げる
     const savedProject = process.env["BANTO_PROJECT"];
     const savedTask = process.env["BANTO_TASK_ID"];
@@ -231,11 +235,27 @@ describe("[AC-S75f66b-3-2] Checklist edit propagates to the audit agent's system
       const hook = hooks.get("before_agent_start");
       assert.ok(hook, "before_agent_start フックが登録されること（ここで観点を載せる）");
 
+      // 拡張が載せるのは**役の説明**（audit-system）。基準はここではない
       const { systemPrompt } = hook!({ systemPrompt: "（ランタイムの既定）" }, undefined);
       assert.ok(
-        systemPrompt.includes("CHECK-MARKER-42"),
-        "監査人のシステムプロンプトに skills/audit-checklist.md の中身が入ること" +
-          `（起動時にファイルから読む——D2）。冒頭: ${systemPrompt.slice(0, 200)}`
+        systemPrompt.includes("auditor agent"),
+        `拡張は役の説明を載せること。冒頭: ${systemPrompt.slice(0, 200)}`
+      );
+
+      // **基準は Kobo が指示文で渡す。** ここが pi・Agent SDK の両方に効く唯一の経路
+      const { buildAuditInstruction } = await import(
+        "../../packages/banto-daemon/src/daemon.js"
+      );
+      const instruction = buildAuditInstruction(
+        { id: "task-checklist-1", status: "auditing", projectTag: "proj-checklist-marker", title: "t" },
+        "proj-checklist-marker",
+        "task-checklist-1",
+        "/tmp/wt"
+      );
+      assert.ok(
+        instruction.includes("CHECK-MARKER-42"),
+        "監査人へ渡す指示文に skills/audit-checklist.md の中身が入ること" +
+          "（ファイルから読む——D2。**pi 拡張だけに載せると SDK 経路の監査人に届かない**）"
       );
     } finally {
       if (savedProject === undefined) delete process.env["BANTO_PROJECT"];

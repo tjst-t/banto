@@ -311,6 +311,28 @@ export interface MergeGateEvaluatedEvent extends EventBase {
    * Empty when no verify commands were run or when scope check failed first.
    */
   logPaths: string[];
+  /**
+   * **どの環境で検査したか**（realign 第2便・段1）。検証環境プロファイルの中身から
+   * 作った短い指紋（`envProfileDigest`）。
+   *
+   * これが無いと「通った」が**いつまで有効か**を計算できない——検証環境の定義
+   * （土台のイメージ・`setup`・キャッシュの鍵）が変われば、同じ差分でも結果は変わりうる。
+   * 既定を反転して人の承認なしに着地させる（第3便）前に、ここが刻まれている必要がある。
+   *
+   * 任意なのは、この項目より前に書かれた帳簿を読めなくしないため。検証コマンドを
+   * 1本も持たないタスクでは環境を立てないので、そのときも付かない。
+   */
+  environmentDigest?: string;
+  /**
+   * **どのコミットの上で検査したか**（realign 第2便・段1）。`base` を解決した SHA。
+   *
+   * `passed` は「この土台の上でなら通る」という主張でしかない。メインラインが進めば
+   * 主張の前提が変わる——それを後から言えるようにするための項目。
+   *
+   * 任意なのは、この項目より前に書かれた帳簿を読めなくしないため。`git rev-parse` に
+   * 失敗したときも付かない（I2: 嘘の SHA を書くより、無いと言う）。
+   */
+  baseCommit?: string;
 }
 
 /**
@@ -346,6 +368,104 @@ export interface AuditVerdictEvent extends EventBase {
    * Empty array on pass. Short strings only — full transcript is in sessionPath.
    */
   findings: string[];
+  /**
+   * **どの契約に対して監査したか**（realign 第2便・段1）。
+   *
+   * 契約を定めたイベントの `eventId`——`task_created`、または直近の
+   * `task_contract_amended`。**新しく版番号を持たない**：契約の版は既に帳簿が
+   * 表しており（決定64 改訂）、別に数えると帳簿と食い違う。導出は
+   * `contractVersionOf`（`dwell.ts` と同じく `banto-core` の純関数）。
+   *
+   * これがあると「この判定はまだ有効か」が**計算できる**——いまの契約の版と
+   * 突き合わせるだけでよい。無かったので、代わりに「基準が動いたら状態を
+   * implementing へ巻き戻す」という乱暴な形で表していた（`Daemon.amendTask`）。
+   *
+   * 任意なのは、この項目より前に書かれた帳簿を読めなくしないため。
+   *
+   * **刻みの無い判定は自動着地させない**【2026-08-14・番頭決定】——この項目より前に
+   * 積まれた `audit_verdict` には版が付いておらず、**刻まれたものと混在する**。
+   * `review.policy` の既定を反転したあと（realign 第3便）も、`contractVersion` /
+   * `checklistVersion` を持たない判定は今までどおり人（番頭または PO）の承認を通す。
+   * 刻みを要求した意味は「証拠のあるものだけを機械に通させる」ことであって、証拠が
+   * 無いものを黙って通すなら要求した意味がなくなる。→ `spec-daemon-core` §2.4
+   */
+  contractVersion?: number;
+  /**
+   * **どの基準で監査したか**（realign 第2便・段1）。監査チェックリストの中身から
+   * 作った短い指紋（`promptAssetDigest("audit-checklist")`）。
+   *
+   * 中身のハッシュにしているのは、チェックリストが版番号を持たないファイルだから
+   * （`skills/audit-checklist.md`）。番号を別に振ると、書き換えても番号を上げ忘れる。
+   *
+   * **刻む前に、その中身が監査人に届いていることを確かめてある**——届いていない
+   * 基準の指紋を刻むのは、証拠ではなく嘘になる（`buildAuditInstruction` を参照）。
+   *
+   * 任意なのは、この項目より前に書かれた帳簿を読めなくしないため。
+   */
+  checklistVersion?: string;
+}
+
+/**
+ * **止まっている**（realign 第2便・rethink C-3 第1手）。
+ *
+ * 状態は「いつからその状態なのか」を持っていない。だから何日詰まっていても
+ * 誰も気づけなかった（実測 19.2h / 28.6h / 16.8h）。滞在時間は帳簿から導出できる
+ * （`dwellMs`）ので**保存はしない**——このイベントが持つのは「閾値を超えた」という
+ * 判定の事実と、そのときの実測値（あとから閾値を変えても、当時の判断が読める）。
+ *
+ * D3: 状態は動かさない。これは知らせるための記録であって、状態遷移ではない。
+ * **同じ状態のあいだ二度は鳴らない**（`stalledAlreadyRecorded`）——鳴り続ける知らせは
+ * 読まれなくなり、知らせないのと同じになる。
+ */
+export interface TaskStalledEvent extends EventBase {
+  type: "task_stalled";
+  taskId: string;
+  /** 止まっている状態（この状態のあいだ、このイベントは1回だけ積まれる）。 */
+  status: TaskStatus;
+  /** その状態に入ってからの経過（ms）。判定した時点の実測値。 */
+  dwellMs: number;
+  /** 超えた閾値（ms）。層B設定 `limits.dwell_warn_minutes` から。 */
+  thresholdMs: number;
+  /**
+   * **なぜ止まっているか**（`gate_evaluated.blockedBy` の最新）。
+   * task-0100 の 19.2 時間は「`blockedBy` が 18 時間変わらなかった」というだけの事実で、
+   * それを言える機構が無かった。空配列は「依存では止まっていない」。
+   */
+  blockedBy: string[];
+  /**
+   * 最後に**外から見える変化**があった時刻（`lastObservableChangeAt`）。
+   * 状態に入った時刻より新しいことがある（職人は動いているが状態が変わらない場合）。
+   */
+  lastChangeAt: string;
+}
+
+/**
+ * **工場の外で決着した**（realign 第2便・imp-0019 の4番）。
+ *
+ * `kobo.abandon` は failed のタスクにしか効かず、queued / paused / review-ready の
+ * まま「中身が別のところで入った」ものを帳簿の上で畳む手段が無かった。実際に
+ * 番頭がここで詰まり、判定を帳簿へ書き戻せずに文書で代用した。
+ *
+ * **failed とは区別する。** 失敗ではない——工場を通らずに片づいただけである。
+ * D3: 状態を動かすのは `state_transitioned`（→ `closed`）。これは理由の記録。
+ * **記録は消えない**：経緯にはそれまでの遷移がすべて残る。
+ */
+export interface TaskSettledOutsideEvent extends EventBase {
+  type: "task_settled_outside";
+  taskId: string;
+  /** 誰が畳んだか（`banto` / `po`）。 */
+  settledBy: string;
+  /**
+   * どう決着したか。**理由の分類**であって失敗ではない。
+   * - `landed_elsewhere`: 中身が別の経路で main に入った
+   * - `no_longer_needed`: もう要らなくなった（前提が変わった・重複していた）
+   * - `handled_directly`: 番頭が職人へ直接投げて片づけた（工場を通していない）
+   */
+  outcome: "landed_elsewhere" | "no_longer_needed" | "handled_directly";
+  /** **なぜそう言えるのか**。マージコミット・置き換わった先など、根拠が残る。 */
+  reason: string;
+  /** 畳んだ時点の状態（どこで止まっていたのかが読める）。 */
+  settled_from: TaskStatus;
 }
 
 /**
@@ -472,6 +592,8 @@ export type OrchestrationEvent =
   | TaskResumedEvent
   | TaskFailedEvent
   | TaskSupersededEvent
+  | TaskStalledEvent
+  | TaskSettledOutsideEvent
   | TaskContractAmendedEvent
   | TaskIngestRejectedEvent
   | TickJobFailedEvent

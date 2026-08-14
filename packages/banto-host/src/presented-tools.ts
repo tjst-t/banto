@@ -107,6 +107,16 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
    * task-0097 を降ろせなかったのは、この口が提示されていなかったからでもある。
    */
   "kobo.abandon",
+  /**
+   * **工場の外で決着したものを降ろす口**（realign 第2便・imp-0019 の4番）。
+   *
+   * `kobo.abandon` は failed にしか効かない。queued / paused / review-ready のまま
+   * 中身が別の経路で main に入ったタスクを畳む道が無く、2026-08-13 の棚卸しで番頭が
+   * 実際にここで詰まった——判定を帳簿へ書き戻せず、文書が代わりの記録になった。
+   *
+   * 在庫に足すだけでは足りない。**ここに載せないとモデルには見えない**（決定82）。
+   */
+  "kobo.settle",
   "kobo.supersede",
   "kobo.amend",
   /**
