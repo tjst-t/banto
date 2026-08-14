@@ -1760,9 +1760,13 @@ async function serve(options: ServeOptions): Promise<void> {
   // ——Kobo と同じく `worker.events` を `afterEventId` で追う。
   //
   // 決定35a: 宛先は**起こしたスレッド**。origin を見て振り分ける。
+  //
+  // inc-0069: 読み位置はファイルに持ち、**配り終えた分までしか進めない**。落ちている
+  // 間に出た報告と、積んだまま配れていなかった報告が、再起動で消えないようにする。
   const stopWorkerNotices = startWorkerNotices({
     tools: modules.tools(),
     notify: (message, target) => server.notify(message, { ...target, source: "worker" }),
+    cursorPath: path.join(dataDir(), "worker-cursor.json"),
   });
 
   // 決定58: 工場の判断待ちは**積んだスレッド**へ返る。別プロセスなので引きに行く形
