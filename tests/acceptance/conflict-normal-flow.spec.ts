@@ -118,7 +118,9 @@ async function advanceTo(
  * Build a conflict task markdown file content (simulates auto-filer output).
  *
  * Uses status:queued so the watcher ingests it immediately.
- * review.policy:auto so auditing→merging (skips manual PO review step).
+ * review.policy:auto を名乗るが、**検査コマンドを持たない**ので realign 第3便以降は
+ * 自動着地せず人の承認を通る（自動生成のコンフリクト解消に回せる検査が無いため）。
+ * これは `conflict-filer.ts` が実際に書き出す形と同じ。
  */
 function buildConflictTaskFile(taskId: string, originTaskId: string): string {
   return [
@@ -334,8 +336,12 @@ describe("[AC-S75f66b-6-2] Conflict task flows through normal pipeline", () => {
     // ── Step 3: Drive through the normal pipeline via HTTP transitions ─────
     // This tests that kind:conflict tasks have NO special handling at any pipeline stage.
     // Same sequence as any other task: queued → ready → planning → implementing →
-    // auditing → (review-ready → in-review for manual policy, OR merging for auto).
-    // review.policy=auto → auditing → merging (no in-review step).
+    // auditing → review-ready → in-review → approved → merging.
+    //
+    // realign 第3便: `review.policy: auto` を名乗っていても、**この契約は検査を
+    // 1本も持たない**（コンフリクト解消に回せる検査コマンドを自動生成できない）ので
+    // 自動着地の条件を満たさず、人の承認を通る。ここで見たいのは「kind:conflict に
+    // 特別扱いが無い」ことなので、普通のタスクと同じ道を通す。
     await advanceTo(
       base,
       PROJ,
@@ -343,12 +349,14 @@ describe("[AC-S75f66b-6-2] Conflict task flows through normal pipeline", () => {
       "ready",
       "planning",
       "implementing",
-      "auditing"
+      "auditing",
+      "review-ready",
+      "in-review",
+      "approved"
     );
 
-    // For review.policy=auto: auditing → merging directly (AC-S75f66b-6-2 says "same flow").
-    // We drive this via HTTP transition (disableAuditSpawn=true means no real audit session).
-    await transitionTo(base, PROJ, CONFLICT_TASK_ID, "merging");
+    // approved からは**マージキューが自分で** merging へ進める（processMergeQueue）。
+    // 横から押し込むと、キューが拾う前に状態が動いて競る
 
     // ── Wait: merge queue processes the conflict task ───────────────────────
     const finalStatus = await pollUntil(

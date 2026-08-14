@@ -24,7 +24,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { parseYamlFrontmatter } from "@banto/core";
-import type { TaskRecord } from "@banto/core";
+import type { OrchestrationEvent, TaskRecord } from "@banto/core";
 
 /** レビューの段（決定57）。 */
 export type ReviewStage = "auto" | "banto" | "po";
@@ -32,8 +32,20 @@ export type ReviewStage = "auto" | "banto" | "po";
 /** 取りうる段。層B設定の綴りを照合するために並びとしても持つ。 */
 export const REVIEW_STAGES: readonly ReviewStage[] = ["auto", "banto", "po"];
 
-/** 既定は `banto`——監査を通ったものは番頭が一次受けする（決定57）。 */
-export const DEFAULT_REVIEW_STAGE: ReviewStage = "banto";
+/**
+ * 既定は `auto`——**証拠の揃ったものは人を通さず着地させる**（PO 裁定 2026-08-14）。
+ *
+ * 反転前は `banto`（監査を通ったものを番頭が一次受けする）だった。反転したのは、
+ * 番頭が一次受けする形だと番頭の文脈が工場の中継で埋まり、D10（細かい仕事をしない）
+ * が守れないため。
+ *
+ * **既定が `auto` でも、そのまま着地するわけではない。** `autoLandBlockers` が
+ * 証拠を要求し、欠けていれば `banto` へ落とす。ここが緩んで見えるのは policy の
+ * 解決までで、着地の可否はその先で決まる。
+ *
+ * 戻すときは層Bの `review.default_policy: banto`（ビルドも再起動も要らない）。
+ */
+export const DEFAULT_REVIEW_STAGE: ReviewStage = "auto";
 
 /** 層B設定ファイル（プロジェクトのリポジトリの中）。 */
 export const PROJECT_CONFIG_PATH = path.join("meta", "config.yaml");
@@ -288,6 +300,107 @@ export function resolveReviewStage(task: TaskRecord, config: ProjectConfig): Rev
   // 既定は層Bで差し替えられる（後戻りの口）。ここまで来ているということは、厳しい側の
   // 上書き（`governance` / `po_required_paths`）にも `manual` にも当たっていない
   return config.review.defaultPolicy ?? DEFAULT_REVIEW_STAGE;
+}
+
+// ── 自動着地の証拠（realign 第3便・PO 裁定 2026-08-14）─────────────────────────
+
+/**
+ * 監査の側の証拠。`handleAuditVerdict` が判定を刻むのと同じ時点で全部手に入る。
+ */
+export interface AutoLandEvidence {
+  /** どの契約に対して監査したか（`audit_verdict.contractVersion`）。 */
+  contractVersion?: number;
+  /** どの基準で監査したか（`audit_verdict.checklistVersion`）。 */
+  checklistVersion?: string;
+  /**
+   * そのときの契約の受け入れ条件。**見るのは `verify` だけ**（他の欄は無視する）
+   * ——`id` や `text` まで要求すると、呼ぶ側が判定と関係ない形合わせを強いられる。
+   */
+  acceptance: ReadonlyArray<{ verify?: string; [key: string]: unknown }>;
+}
+
+/**
+ * **自動着地を止める理由**。空なら人を通さず着地させてよい（PO 裁定 2026-08-14）。
+ *
+ * 真偽値ではなく理由の並びを返すのは、**落とした原因が帳簿から読めるようにする**ため
+ * （I2：握り潰さない）。欠けが複数あれば複数返す——1つ直せば通ると読ませない。
+ *
+ * ## なぜ刻みを要求するのか
+ *
+ * 帳簿にある過去の監査 pass は、**判定基準が監査人に一度も届いていない状態**で、
+ * **D1 を知らない実装役**の成果に対して出されたもの（realign 第2便で両方塞いだ）。
+ * 刻みの無い判定は、その混在した過去のものと区別が付かない。「証拠のあるものだけを
+ * 機械に通させる」ために刻みを要求したのだから、証拠が無いものを黙って通すなら
+ * 要求した意味がなくなる。→ `spec-daemon-core` §2.4
+ *
+ * ## なぜ検査を要求するのか
+ *
+ * マージ前ゲートは**契約が書いた `verify` を回すだけ**なので、1本も無ければ
+ * 「何も確かめずに passed」になる。実測で帳簿の契約72本中50本がこれだった。
+ * 人が見るならその目が検査の代わりになるが、機械だけで通すならならない。
+ */
+export function autoLandBlockers(evidence: AutoLandEvidence): string[] {
+  const blockers: string[] = [];
+  if (evidence.contractVersion === undefined) {
+    blockers.push("auto_land_unmarked:contractVersion（どの契約に対して監査したかが刻まれていない）");
+  }
+  if (evidence.checklistVersion === undefined) {
+    blockers.push("auto_land_unmarked:checklistVersion（どの基準で監査したかが刻まれていない）");
+  }
+  // 空文字は「有る」に数えない——回すものが無いのは 1本も無いのと同じ
+  if (!evidence.acceptance.some((ac) => typeof ac.verify === "string" && ac.verify.length > 0)) {
+    blockers.push("auto_land_no_verify（契約に検査コマンドが1本も無く、ゲートが素通りする）");
+  }
+  return blockers;
+}
+
+/**
+ * ゲートの側の証拠。**自動着地のときだけ要求する**（番頭裁定 2026-08-14）。
+ *
+ * この2つは `runMergeGate` の**出力**で、監査の分岐の時点にはまだ存在しない
+ * （ゲートが回るのは `merging` に入ったあと）。だから「自動着地の入力」ではなく
+ * **ゲートの成立条件**として扱う——状態機械を作り替えてゲートを前倒しするより、
+ * 通す側の条件を1つ足す方が影響が小さい。
+ *
+ * **人の承認を経た経路には効かせない。** 人が見ているものと機械だけで通すものを
+ * 同じ基準にすると、既存の緑が理由なく落ちる。この非対称は意図。
+ */
+export function gateEvidenceBlockers(marks: {
+  baseCommit?: string;
+  environmentDigest?: string;
+}): string[] {
+  const blockers: string[] = [];
+  if (marks.baseCommit === undefined) {
+    blockers.push("auto_land_unmarked:baseCommit（どのコミットの上で検査したかを刻めなかった）");
+  }
+  if (marks.environmentDigest === undefined) {
+    blockers.push("auto_land_unmarked:environmentDigest（どの環境で検査したかを刻めなかった）");
+  }
+  return blockers;
+}
+
+/**
+ * そのタスクは**人の承認を経ずに** `merging` へ入ったか（D3：帳簿から導く）。
+ *
+ * `auditing → merging` が自動着地の道、`approved → merging` が人を通した道
+ * （`state-machine.ts` の遷移表）。**直近の入り方**で決める——過去に一度承認された
+ * ことを、いまの着地の証拠に流用しない（落ちて差し戻し、次は自動、が起こりうる）。
+ *
+ * 別に持たない：真実は `state_transitioned` の並びだけ（D3）。
+ */
+export function landedWithoutHumanApproval(
+  events: readonly OrchestrationEvent[],
+  projectTag: string,
+  taskId: string
+): boolean {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type !== "state_transitioned") continue;
+    if (e.projectTag !== projectTag || e.taskId !== taskId) continue;
+    if (e.to !== "merging") continue;
+    return e.from === "auditing";
+  }
+  return false;
 }
 
 /**

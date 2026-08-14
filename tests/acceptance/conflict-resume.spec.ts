@@ -105,6 +105,23 @@ async function safeTransitionTo(
   }
 }
 
+/**
+ * 監査を通ったタスクを `approved` まで進める（realign 第3便）。
+ *
+ * ここのタスクは `review.policy: auto` を名乗るが**検査コマンドを持たない**ので、
+ * 自動着地の条件を満たさず `review-ready` で止まる。この一連の試験が見たいのは
+ * コンフリクトの再開・連鎖失敗であって着地の可否ではないので、人が通す道を通す。
+ *
+ * 検査を持たせて自動着地させる手もあるが、この試験には検証環境が配線されていない
+ * （`BANTO_ENV_POOL_URL` は届かない先）ため、ゲートが `verify_env_unavailable` で
+ * 落ちる。**確かめていないものを通す道を試験に作らない**（I1）。
+ */
+async function approveAfterAudit(base: string, proj: string, taskId: string): Promise<void> {
+  if ((await getStatus(base, proj, taskId)) !== "review-ready") return;
+  await safeTransitionTo(base, proj, taskId, "in-review");
+  await safeTransitionTo(base, proj, taskId, "approved");
+}
+
 function git(cwd: string, ...args: string[]): Buffer {
   return execFileSync("git", args, { cwd, stdio: "pipe" });
 }
@@ -202,6 +219,7 @@ async function setupConflictScenario(opts: {
       body: JSON.stringify({ verdict: "pass", findings: [] }),
     });
     assert.equal(verdictR.status, 200, `audit pass for ${taskId} must succeed`);
+    await approveAfterAudit(base, proj, taskId);
   }
 
   // Anchor merges first (serial queue — it entered merging first)
@@ -322,6 +340,9 @@ describe("[AC-S75f66b-6-3-A] resolution task merged → origin resumed and reach
       body: JSON.stringify({ verdict: "pass", findings: [] }),
     });
     assert.equal(auditR.status, 200, "conflict task audit pass must succeed");
+
+    // realign 第3便: 検査を持たない契約は自動着地しない。人が通す（approveAfterAudit の注記）
+    await approveAfterAudit(base, PROJ, conflictTaskId);
 
     // Wait for conflict task to merge
     const conflictFinal = await pollUntil(
@@ -742,6 +763,9 @@ describe("[inc-0063] 片付いた解消タスクで origin を何度も再開し
       body: JSON.stringify({ verdict: "pass", findings: [] }),
     });
     assert.equal(auditR.status, 200, "conflict task audit pass must succeed");
+
+    // realign 第3便: 検査を持たない契約は自動着地しない。人が通す（approveAfterAudit の注記）
+    await approveAfterAudit(base, PROJ, conflictTaskId);
 
     const conflictFinal = await pollUntil(
       () => getStatus(base, PROJ, conflictTaskId),
