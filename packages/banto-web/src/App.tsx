@@ -243,6 +243,29 @@ export function App(): React.ReactElement {
     [branch, focused, session]
   );
 
+  /**
+   * 履歴の「幹」タブに並べるもの＝**終えた幹だけ**（PO裁定 2026-08-10）。
+   * 枝を混ぜない——枝は隣のタブに、その幹のぶんだけ並ぶ。
+   */
+  const closedTrunks = useMemo(
+    () => session.closedThreads.filter((t) => t.kind === "trunk"),
+    [session.closedThreads]
+  );
+  /**
+   * 履歴の「枝」タブに並べるもの＝**いま居る幹の枝だけ**（PO報告 2026-08-14）。
+   * 畳んだ枝も並べる（決定111）——結論の置き場が幹の帯にしか無いと、他の話題が
+   * 挟まった時点で読めなくなる。開いている枝が先で、畳んだものは新しい順
+   * （`session.closedThreads` が既にその順）。
+   */
+  const trunkBranches = useMemo(() => {
+    const trunkId = trunk?.threadId;
+    if (!trunkId) return [];
+    return [
+      ...session.branches.filter((b) => b.parentId === trunkId),
+      ...session.closedThreads.filter((b) => b.kind === "branch" && b.parentId === trunkId),
+    ];
+  }, [session.branches, session.closedThreads, trunk]);
+
   /** 会話を移る（枝の札・レールの点・取次から）。 */
   const openThread = useCallback(
     (threadId: string, options: { focus?: boolean } = {}) => {
@@ -664,7 +687,7 @@ export function App(): React.ReactElement {
         {/* 畳んだものと設定は「行き先ではあるが、いまではない」ので下端に置く（見本と同じ） */}
         <RailBtn
           icon="history"
-          tip="履歴（終えた幹）"
+          tip="履歴（この幹の枝と、終えた幹）"
           active={historyOpen}
           onClick={() => showFace("history")}
           dataKey="h"
@@ -866,19 +889,20 @@ export function App(): React.ReactElement {
             )}
             {historyOpen && (
               <ThreadHistory
-                /**
-                 * 履歴は**畳んだものの置き場**（決定30c・ADR-0022 決定111で復元）。
-                 * 幹だけに絞っていたのは「畳んだ枝は幹の記録に結論1行として残るので、
-                 * ここへは並べない」という意図だったが、その1行は流れる場所（幹の帯）
-                 * にしか無く、他の話題が挟まると読めなくなる。結論つきで並べる。
-                 */
-                closedThreads={session.closedThreads}
+                /* 「幹」は**終えた幹だけ**（PO裁定 2026-08-10）。枝は隣のタブに出る */
+                closedTrunks={closedTrunks}
+                /* 「枝」は**いま居る幹の枝だけ**（PO報告 2026-08-14）。畳んだ枝も並べる
+                   ——結論の置き場が流れる場所（幹の帯）にしか無いのが元の困りごと（決定111） */
+                trunkBranches={trunkBranches}
+                {...(trunk ? { trunkTitle: trunk.title } : {})}
                 chatOf={session.chatOf}
+                threadOf={session.threadOf}
                 ensureHistory={session.ensureHistory}
                 historyLoaded={session.historyLoaded}
                 selectedId={view.readThreadId}
                 onSelect={(id) => navigate((prev) => ({ ...prev, readThreadId: id }))}
                 onReopen={(id) => session.reopenThread(id)}
+                onOpen={(id) => openThread(id, { focus: true })}
                 onBack={backToChat}
               />
             )}

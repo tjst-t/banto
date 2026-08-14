@@ -155,15 +155,8 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 }
 .room-back:hover { background: var(--paper-2); color: var(--murasaki); }
 .room-merge { flex: none; padding: 0 var(--s6) var(--s3); }
-/*
- * いま見ている幹の枝（ADR-0022 決定112）。流れない一覧——時系列の帯（chat-scroll）とは別。
- * 中身は `.bcard` / `.bresult` をそのまま並べるだけで、新しい見た目は作らない。
- */
-.room-branches {
-  flex: none; display: flex; flex-direction: column; gap: var(--s2);
-  padding: var(--s3) var(--s5); border-bottom: 1px solid var(--rule);
-  max-height: 240px; overflow-y: auto;
-}
+/* 枝の一覧は会話の面に置かない（PO報告 2026-08-14）。`.room-branches` は履歴の
+   「枝」タブへ移した——`flex: none` の帯は、会話が空でも器の高さを取り続ける */
 
 /* 背表紙。**消さない——押せば戻る**（モーダルより良いのはここ） */
 .spine {
@@ -750,6 +743,8 @@ code { font-family: var(--mono); font-size: var(--t-note); }
   display: inline-flex; align-items: center; gap: 6px;
 }
 .history-back-to-chat:hover { color: var(--sumi); }
+/* 幹と枝の2つのタブ（PO報告 2026-08-14）。択一の意匠は `.cv-seg` をそのまま使う */
+.history-tabs { flex: none; padding: 0 var(--s5) var(--s3); }
 .history-list-scroll { overflow-y: auto; padding: 0 var(--s3) var(--s4); flex: 1; min-height: 0; }
 .history-empty, .history-read-empty { font-size: var(--t-meta); color: var(--sumi-3); padding: var(--s3) 6px; }
 .history-read-empty { text-align: center; padding-top: 60px; }
