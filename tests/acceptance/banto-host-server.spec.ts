@@ -20,6 +20,7 @@ import {
   BANTO_WS_PATH,
   BantoHostClient,
   BantoHostServer,
+  type BantoHostServerOptions,
   createMemoryTools,
   isNoticeworthy,
   renderWorkerNotice,
@@ -60,8 +61,17 @@ class FakeSession implements BantoHarness {
     for (const listener of this.listeners) listener(event);
   }
 
+  /**
+   * ハーネスが**実測した**文脈長（Claude Agent SDK なら `result` の `modelUsage`）。
+   * 一度も往復していなければ `undefined`——「まだ分からない」を数で埋めない。
+   */
+  window: number | undefined;
+
   // ── BantoHarness の残り（ADR-0020 決定89）。章立てはこの試験では使わない ──
   readonly backendId = "fake";
+  contextWindow(): number | undefined {
+    return this.window;
+  }
   contextTokens(): number | undefined {
     return undefined;
   }
@@ -894,6 +904,205 @@ describe("会話面が要る材料の配信", () => {
     client.send({ type: "thread_merge", threadId: trunk.threadId, conclusion: "畳む" });
     const err = (await waitFor(events, "error")) as Extract<ServerEvent, { type: "error" }>;
     assert.match(err.message, /幹は畳めません/u);
+    client.close();
+  });
+});
+
+// ── 文脈の目盛りに要る「本物の文脈長」（task-0150） ─────────────────────────────
+
+/**
+ * **文脈長は、ハーネスが実測した値だけを名乗る。**
+ *
+ * 実測 2026-08-14：番頭は `claude-agent-sdk` の `opus` で動いているのに
+ * `GET /api/model` が `{"id":"opus","vision":false}` を返し、**文脈長の欄が丸ごと
+ * 落ちていた**。欄が無いと `Room.tsx` の `ContextMeter` が `null` を返す
+ * ——文脈使用量の目盛りが画面から消え、「章を畳むか」を人が決める材料が無くなる。
+ *
+ * 直前の修正（`hostModelInfo`）は、pi 側の**代打**モデル（128000）の値を標準として
+ * 出してしまう誤りを止めたもので、その不変条件はそのまま——代打の値は載せない。
+ * 代わりに**ハーネスが SDK から実測した値**（`BantoHarness.contextWindow()`）を配る。
+ *
+ * 実測が届くのは最初のターンが終わったときなので、`model_state` を
+ * **その時点で配り直す**必要がある（接続直後とモデル切替でしか流れていなかった）。
+ */
+describe("[task-0150] モデルの文脈長は実測を配る", () => {
+  /** `hostModelInfo()` が返す形。代打の値を落としているので文脈長の欄は無い。 */
+  const HOST_MODEL = { id: "opus", vision: false };
+  /** pi 側の代打（`huihui/deepseek-v4-flash-abliterated`）に付いていた既定値。 */
+  const STAND_IN_WINDOW = 128_000;
+  /** Claude Agent SDK が `result` で返してきた本物（実測 2026-08-14）。 */
+  const MEASURED = 1_000_000;
+
+  /** 会話が自分のモデルを持たない＝番頭の標準で回っている状態を作る。 */
+  async function startWithHostDefault(options?: {
+    onSelectModel?: BantoHostServerOptions["onSelectModel"];
+  }): Promise<{ url: string; sessions: FakeSession[]; threads: ThreadRegistry }> {
+    const tools = createMemoryTools(new ScopedMemory(store));
+    const sessions: FakeSession[] = [];
+    const threads = new ThreadRegistry(async () => {
+      const s = new FakeSession();
+      sessions.push(s);
+      return { harness: s, tools };
+    });
+    await threads.open(TRUNK);
+    server = await BantoHostServer.start({
+      threads,
+      port: 0,
+      model: HOST_MODEL,
+      modelProvider: "anthropic",
+      ...(options?.onSelectModel ? { onSelectModel: options.onSelectModel } : {}),
+    });
+    return { url: `ws://localhost:${server.port}${BANTO_WS_PATH}`, sessions, threads };
+  }
+
+  /** `GET /api/model` の中身。 */
+  async function apiModel(): Promise<{ id: string; vision: boolean; contextWindow?: number }> {
+    const res = await fetch(`http://localhost:${server!.port}/api/model`);
+    return (await res.json()) as { id: string; vision: boolean; contextWindow?: number };
+  }
+
+  it("実測がまだ無ければ、文脈長の欄を出さない（分からないを数で埋めない）", async () => {
+    const { url } = await startWithHostDefault();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+
+    const state = await waitFor(events, "model_state");
+    assert.ok(state.type === "model_state" && state.id === "opus");
+    assert.ok(!("contextWindow" in state), "起動直後は欄ごと出さない");
+
+    const body = await apiModel();
+    assert.ok(!("contextWindow" in body), "/api/model も欄ごと出さない");
+    client.close();
+  });
+
+  it("実測が初めて届いたら model_state を配り直す（次の再接続まで待たせない）", async () => {
+    const { url, sessions, threads } = await startWithHostDefault();
+    const a: ServerEvent[] = [];
+    const b: ServerEvent[] = [];
+    // 同じ番頭を2つの画面で見ている（D3: 真実はホスト側。届くのは全員へ）
+    const clientA = await BantoHostClient.connect(url, (e) => a.push(e));
+    const clientB = await BantoHostClient.connect(url, (e) => b.push(e));
+    const opened = threads.list().length;
+    await waitForCount(a, "model_state", opened);
+    await waitForCount(b, "model_state", opened);
+    a.length = 0;
+    b.length = 0;
+
+    // 最初のターンが終わり、SDK が本物の文脈長を返した
+    sessions[0]!.window = MEASURED;
+    sessions[0]!.emit({ type: "turn_end" });
+
+    const measured = (e: ServerEvent): boolean =>
+      e.type === "model_state" && e.contextWindow === MEASURED;
+    const gotA = await waitFor(a, "model_state", 2000, measured);
+    assert.ok(gotA.type === "model_state");
+    assert.equal(gotA.threadId, threads.list()[0]!.id);
+    assert.equal(gotA.id, "opus", "名前は標準のまま（実測で綴りは変わらない）");
+    await waitFor(b, "model_state", 2000, measured);
+
+    clientA.close();
+    clientB.close();
+  });
+
+  it("実測した値は /api/model にも載る", async () => {
+    const { url, sessions } = await startWithHostDefault();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "model_state");
+
+    sessions[0]!.window = MEASURED;
+    sessions[0]!.emit({ type: "turn_end" });
+    await waitFor(
+      events,
+      "model_state",
+      2000,
+      (e) => e.type === "model_state" && e.contextWindow === MEASURED
+    );
+
+    const body = await apiModel();
+    assert.equal(body.id, "opus");
+    assert.equal(body.contextWindow, MEASURED);
+    client.close();
+  });
+
+  it("代打の値（128000）は、ターンが回っても標準の文脈長として載らない", async () => {
+    // pi のハーネスは実測を持たない（`contextWindow()` が undefined）。
+    // 代打の 128000 は `hostModelInfo` が既に落としているので、どこからも入らない
+    const { url, sessions } = await startWithHostDefault();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "model_state");
+    events.length = 0;
+
+    sessions[0]!.window = undefined;
+    sessions[0]!.emit({ type: "turn_end" });
+    await new Promise((r) => setTimeout(r, 80));
+
+    assert.equal(
+      events.some((e) => e.type === "model_state" && e.contextWindow !== undefined),
+      false,
+      "測れていないのに数を配らない"
+    );
+    const body = await apiModel();
+    assert.ok(!("contextWindow" in body));
+    assert.notEqual(body.contextWindow, STAND_IN_WINDOW);
+    client.close();
+  });
+
+  it("同じ値を測り直しても配り直さない（変わったときだけ配る）", async () => {
+    const { url, sessions } = await startWithHostDefault();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "model_state");
+    events.length = 0;
+
+    sessions[0]!.window = MEASURED;
+    sessions[0]!.emit({ type: "turn_end" });
+    await waitFor(
+      events,
+      "model_state",
+      2000,
+      (e) => e.type === "model_state" && e.contextWindow === MEASURED
+    );
+    sessions[0]!.emit({ type: "turn_end" });
+    sessions[0]!.emit({ type: "turn_end" });
+    await new Promise((r) => setTimeout(r, 80));
+
+    assert.equal(events.filter((e) => e.type === "model_state").length, 1);
+    client.close();
+  });
+
+  it("モデルを替えたら、前のモデルで測った値は捨てる", async () => {
+    const { url, sessions, threads } = await startWithHostDefault({
+      // 切替先は文脈長を名乗らない（Claude Agent SDK は登録に載らないので常にこう）
+      onSelectModel: async (_thread, _provider, model) => ({ id: model, vision: false }),
+    });
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    await waitFor(events, "model_state");
+
+    sessions[0]!.window = MEASURED;
+    sessions[0]!.emit({ type: "turn_end" });
+    await waitFor(
+      events,
+      "model_state",
+      2000,
+      (e) => e.type === "model_state" && e.contextWindow === MEASURED
+    );
+    events.length = 0;
+
+    const first = threads.list()[0]!;
+    client.send({ type: "set_model", threadId: first.id, provider: "anthropic", model: "haiku" });
+    const changed = await waitFor(
+      events,
+      "model_state",
+      2000,
+      (e) => e.type === "model_state" && e.id === "haiku"
+    );
+    assert.ok(
+      !("contextWindow" in changed),
+      "opus で測った値を haiku の文脈長として出さない"
+    );
     client.close();
   });
 });

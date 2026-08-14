@@ -325,12 +325,83 @@ export class BantoHostServer {
     | { backend?: string; provider: string; id: string; vision: boolean; contextWindow?: number }
     | undefined {
     if (!this.modelInfo) return undefined;
+    // 実測が届いていればそれが真実（I1）。届くまでは欄ごと落とす——数で埋めない
+    const contextWindow = this.hostMeasuredWindow ?? this.modelInfo.contextWindow;
     return {
       provider: this.modelProvider ?? "",
       id: this.modelInfo.id,
       vision: this.modelInfo.vision,
-      ...(this.modelInfo.contextWindow ? { contextWindow: this.modelInfo.contextWindow } : {}),
+      ...(contextWindow ? { contextWindow } : {}),
     };
+  }
+
+  /**
+   * その会話が使っているモデル（`model_state` に載せる形）。
+   *
+   * 会話ごとの指定が無ければ番頭の標準。**実測した文脈長があればそれで上書きする**
+   * ——表に書いてある値より、そのハーネスが実際に測った値のほうが正しい。
+   */
+  private modelOf(
+    thread: Thread
+  ):
+    | { backend?: string; provider: string; id: string; vision: boolean; contextWindow?: number }
+    | undefined {
+    const model = thread.model ?? this.hostDefaultModel();
+    if (!model) return undefined;
+    const measured = this.measuredWindow.get(thread.id);
+    return measured ? { ...model, contextWindow: measured } : model;
+  }
+
+  /**
+   * `GET /api/model` に出す番頭の標準モデル。
+   * ハーネス（`ModelInfo.harness`）は配線であって能力ではないので載せない。
+   */
+  private hostModelResponse(): { id: string; vision: boolean; contextWindow?: number } | undefined {
+    if (!this.modelInfo) return undefined;
+    const contextWindow = this.hostMeasuredWindow ?? this.modelInfo.contextWindow;
+    return {
+      id: this.modelInfo.id,
+      vision: this.modelInfo.vision,
+      ...(contextWindow ? { contextWindow } : {}),
+    };
+  }
+
+  /**
+   * **ハーネスが文脈長を測れたら、その場で `model_state` を配り直す**（task-0150）。
+   *
+   * 実測が分かるのは**最初のターンが終わったとき**（Agent SDK の `result`）。
+   * `model_state` は接続直後とモデル切替でしか流れていなかったので、ここで配り直さないと
+   * 目盛りは「次に画面を開き直すまで」出ない。変わったときだけ配る（同じ値は流さない）。
+   */
+  private noteContextWindow(thread: Thread): void {
+    const measured = thread.harness.contextWindow?.();
+    // I1: 測れていないことを 0 や既定値で埋めない。分からないなら黙る
+    if (typeof measured !== "number" || measured <= 0) return;
+    if (this.measuredWindow.get(thread.id) === measured) return;
+    this.measuredWindow.set(thread.id, measured);
+    /**
+     * 自分のモデルを持たない会話＝番頭の標準で回っている。その実測が標準の実測。
+     * 会話が自分で標準と同じモデルを選んでいる場合も同じ（名前が一致すれば同じモデル）。
+     */
+    const onHostDefault = thread.model === undefined;
+    if (onHostDefault || (this.modelInfo && thread.model?.id === this.modelInfo.id)) {
+      this.hostMeasuredWindow = measured;
+    }
+    // 標準が分かったなら、標準で回っている会話は全部変わる（D3: 真実は一箇所）
+    const targets = onHostDefault ? this.threads.list().filter((t) => !t.model) : [thread];
+    for (const target of targets) {
+      const model = this.modelOf(target);
+      if (!model) continue;
+      this.broadcast({
+        type: "model_state",
+        threadId: target.id,
+        ...(model.backend ? { backend: model.backend } : {}),
+        provider: model.provider,
+        id: model.id,
+        vision: model.vision,
+        ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+      });
+    }
   }
   /** 思考が始まった時刻（スレッド毎）。「X秒間考えました」を測るために持つ。 */
   private readonly thinkingStartedAt = new Map<string, number>();
@@ -339,6 +410,24 @@ export class BantoHostServer {
    * ——再起動したら次のターンまで分からない。推定で埋めるより黙るほうがよい（I1）。
    */
   private readonly contextTokens = new Map<string, number>();
+  /**
+   * **ハーネスが実測した文脈長**（スレッド毎）。目盛りの分母になる。
+   *
+   * モデルの表（LLM 登録）は当てにできない——`claude-agent-sdk` のモデルはそこに
+   * 載らず、`resolveHostDefault()` は pi 側の**代打**へ落ちる。代打の能力値は標準とは
+   * 何の関係も無いので `hostModelInfo` が欄ごと落としており、その結果このバックエンドで
+   * 動いている間は**構造的に必ず**分母が消えていた（画面から目盛りが丸ごと消える）。
+   *
+   * 唯一の正しい出どころは `BantoHarness.contextWindow()`——Agent SDK が `result` で
+   * 返した実測。ここには**測れた値しか入らない**（pi のハーネスはこの口を持たないので、
+   * 代打の値がこの経路に入ることはない）。**実行時状態なので保存しない**（D3）。
+   */
+  private readonly measuredWindow = new Map<string, number>();
+  /**
+   * 番頭の標準モデルで回っている会話が実測した文脈長（`GET /api/model` に出す）。
+   * 自分のモデルを持たない会話＝標準で回っている会話なので、その実測が標準の実測。
+   */
+  private hostMeasuredWindow: number | undefined;
 
   private constructor(options: BantoHostServerOptions, httpServer: http.Server) {
     this.threads = options.threads;
@@ -498,7 +587,12 @@ export class BantoHostServer {
     // 現在のモデル情報。WebUI が画像添付の可否を選択時点で判定するために使う。
     // モデル未指定（pi の既定解決に任せている）ときは、対応を名乗れないので
     // 非対応として返す（I1: 知らないことを対応と偽らない）
+    //
+    // **文脈長だけは立ってから変わる**（task-0150）。ハーネスが最初のターンで測るまで
+    // 分からないので、起動時の写しではなく**立ったサーバへ聞きに行く**——写しを返すと
+    // 「1往復したのに欄が出ない」が再起動まで続く
     const modelInfo = options.model;
+    let live: BantoHostServer | undefined;
     const httpServer = http.createServer((req, res) => {
       void (async () => {
         if (req.method === "GET" && req.url === "/health") {
@@ -527,7 +621,9 @@ export class BantoHostServer {
           return;
         }
         if (req.method === "GET" && req.url === "/api/model") {
-          const body = JSON.stringify(modelInfo ?? { id: "(未設定)", vision: false });
+          const body = JSON.stringify(
+            live?.hostModelResponse() ?? modelInfo ?? { id: "(未設定)", vision: false }
+          );
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(body);
           return;
@@ -565,6 +661,8 @@ export class BantoHostServer {
     });
 
     const server = new BantoHostServer(options, httpServer);
+    // ここから `/api/model` は写しではなく生きたサーバに聞く（実測が入ると変わる）
+    live = server;
     await new Promise<void>((resolve, reject) => {
       httpServer.once("error", reject);
       httpServer.listen(options.port ?? BANTO_DEFAULT_PORT, options.host ?? "127.0.0.1", () => {
@@ -849,7 +947,7 @@ export class BantoHostServer {
     // （実測で合わせて 8KB 弱）、タブの見た目と復元がこれに依存している
     for (const thread of threads) {
       // その会話が使っているモデル。**会話ごと**なので1本ずつ配る（D3）
-      const model = thread.model ?? this.hostDefaultModel();
+      const model = this.modelOf(thread);
       if (model) {
         this.send(ws, {
           type: "model_state",
@@ -1042,6 +1140,9 @@ export class BantoHostServer {
           vision: next.vision,
           ...(next.contextWindow ? { contextWindow: next.contextWindow } : {}),
         };
+        // **前のモデルで測った文脈長は捨てる**——別のモデルの分母を使い回さない。
+        // 次のターンが終われば、新しいハーネスが測った値がまた入る
+        this.measuredWindow.delete(thread.id);
         this.threads.persistIndex(thread);
         // 選んだ本人だけでなく全員へ。複数の画面で同じ会話を見ている（D3）
         this.broadcast({
@@ -1266,6 +1367,9 @@ export class BantoHostServer {
    * 大きすぎる中身を切り詰め（決定81）、履歴に残し、配る。
    */
   private handleHarnessEvent(thread: Thread, event: HarnessEvent): void {
+    // 文脈長は**ターンが終わって初めて分かる**（Agent SDK の `result` に載る）。
+    // 分かった時点で配り直さないと、目盛りは次に画面を開き直すまで出ない（task-0150）
+    if (event.type === "turn_end") this.noteContextWindow(thread);
     const translated = this.toServerEvent(thread, event);
     if (!translated) return;
 
