@@ -141,8 +141,25 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
   "kobo.projects",
   "kobo.set_merge_queue",
   "kobo.set_watch",
+  /**
+   * **受け持たせる口**（実地の穴 2026-08-14）。外す `kobo.unregister_project` だけを
+   * 提示していて、**入れる口が無かった**——片方だけ渡すのは `kobo.approve` に対して
+   * `kobo.send_back` が無かったのと同じ形の欠陥である。
+   *
+   * SKILL `kobo-onboarding` は「載っていなければ `kobo.register_project` で受け持たせる」と
+   * 手順に書いている。道具が無いので、実際には職人に Kobo の生 HTTP
+   * （`POST /api/v1/projects`）を叩かせて迂回した。**入れる口と外す口は対で置く。**
+   */
+  "kobo.register_project",
   "kobo.unregister_project",
-  // 器（決定78・81a）
+  /**
+   * 器（決定78・81a）。**何が開けるかを知る口を先に置く**（実地の穴 2026-08-14）。
+   *
+   * システムプロンプトが「`canvas.list_catalog` says what can be opened」と書いているのに
+   * 提示していなかった。`canvas.open` は開くものの名前を知っている前提の口なので、
+   * 一覧が無ければ番頭は当て推量で開くか、開くのをやめるかしかない。
+   */
+  "canvas.list_catalog",
   "canvas.open",
   "canvas.show",
   "canvas.close",
@@ -154,6 +171,15 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
    * 途中で方針を渡せない・枝から相談できない、という痛みを開けるための3本なので、
    * 提示から落ちると入れた意味がそのまま消える。
    */
+  /**
+   * **幹を起こす口**（実地の穴 2026-08-14）。番頭のシステムプロンプトにも SKILL
+   * `trunk-and-branch` にも「`thread.open_trunk` で幹を起こせ」と書いてあるのに、
+   * 提示していなかった。新しい案件（dentaku）の幹を起こせず、番頭は PO に
+   * 「画面から作ってください」と頼んだ——**幹の操作は番頭の仕事**（PO 明言）。
+   *
+   * `thread.open` は既に在る幹の下に**枝**を開く口で、代わりにはならない。
+   */
+  "thread.open_trunk",
   "thread.open",
   "thread.list",
   "thread.read",
@@ -161,6 +187,19 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
   "thread.steer",
   "thread.consult",
   "thread.merge",
+  /**
+   * **名を付ける口**（実地の穴 2026-08-14）。プロンプトは「`thread.rename` で名前を付けろ」
+   * と指示している。無ければ会話は開いたときの仮の題のまま並び、番頭にも PO にも
+   * どれが何の話か分からなくなる——迂回は無い（題を変えられるのは画面＝PO の手だけ）。
+   */
+  "thread.rename",
+  /**
+   * **終う口**（実地の穴 2026-08-14）。プロンプトは「`thread.close_trunk` で終う」と書き、
+   * 畳むときに記憶を横断の層へ持ち出すのもこの口（`carryOut`）。提示していないので、
+   * 番頭は自分で起こした幹を自分で終えず、PO の手を借りることになっていた。
+   * **起こす口と終う口は対で置く。**
+   */
+  "thread.close_trunk",
   // 判断を求める唯一の口（決定73）
   "inbox.post",
   // 場所と書き込み範囲（決定36・38c）
@@ -183,6 +222,15 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
    * 書き換え系18本は設定画面にあるので落とす（決定41c「設定の口は番頭に渡さない」）。
    */
   "llm.list",
+  /**
+   * **自分を起こし直す口**（実地の穴 2026-08-14）。`kobo.set_watch` と同じで、頻度で選ぶと
+   * 必ず落ちる——平時は 0 回である。それでも渡すのは**無いと自分では直せない**から。
+   *
+   * SKILL `safe-restart` は手順に「`system.restart` を呼ぶ」と書いている。提示していないので、
+   * 番頭は職人に Main PID を `kill -9` させて systemd の `Restart=` に拾わせた。番頭を
+   * 直すたびに PO か職人の手が要るのは、番頭が自分の面倒を見られないということである。
+   */
+  "system.restart",
 ];
 
 /** ドメインごとの一行説明（決定84-5 の散文一覧を組むのに使う）。 */
@@ -192,15 +240,18 @@ const DOMAIN_BLURB: Record<string, string> = {
   artifact: "pull back a result that was offloaded to a bookmark",
   git: "read history in a place (viewing only — no commit/push/branch)",
   kobo: "put work on the factory queue, read it, approve it, send it back",
-  canvas: "show things to the user in the conversation",
+  canvas: "show things to the user in the conversation; list_catalog says what can be opened",
   thread:
-    "run the conversation — open branches, read what is happening inside one, steer it mid-flight, consult the trunk, merge back",
+    "run the conversation — raise and close trunks, name them, open branches, read what is happening inside one, steer it mid-flight, consult the trunk, merge back",
   inbox: "the one place to ask the user for a decision",
   place: "see which places you can reach, and ask for write scope",
   env: "run verification in a throwaway environment — the mechanism returns a fact, not a worker's claim (I1)",
   memory: "remember and recall across conversations",
   skill: "read the procedure for a task before doing it",
   handoff: "read a chapter handoff",
+  llm: "see which model you are running on (changing it is the user's job, in settings)",
+  // 説明が無いドメインは散文一覧に裸の行として出る（決定84-5）。足したら1行足す
+  system: "restart the banto host itself when you have changed how it runs",
 };
 
 /** 論理名からドメインを取る（`repo.worktree.add` → `repo`）。 */
