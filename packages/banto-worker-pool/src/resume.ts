@@ -65,9 +65,9 @@ function isTaskSafe(taskId: string): boolean {
   return ![/-restart$/i, /reboot$/i, /systemctl/i].some((p) => p.test(taskId));
 }
 
-/** 検証用ワークツリーでの実行は、ホストの資産を書き換えうるので復帰させない。 */
-function isWorktreeSafe(worktree: string): boolean {
-  return !worktree.includes("/worktrees/") && !worktree.includes(".worktrees/");
+/** 実在しないワークツリーでは wake がどのみち失敗するので、事前に弾く。 */
+function worktreeExists(worktree: string): boolean {
+  return fs.existsSync(worktree);
 }
 
 /**
@@ -138,8 +138,8 @@ export async function resumeWorkers(options: ResumeOptions): Promise<ResumeOutco
       results.push({ ...base, ok: true, detail: "見送り: ホストを再起動しうるタスク" });
       continue;
     }
-    if (!isWorktreeSafe(worker.worktree)) {
-      results.push({ ...base, ok: true, detail: "見送り: 検証用ワークツリー" });
+    if (!worktreeExists(worker.worktree)) {
+      results.push({ ...base, ok: true, detail: "見送り: ワークツリーが存在しない" });
       continue;
     }
 

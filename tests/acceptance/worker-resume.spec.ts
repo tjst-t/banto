@@ -73,8 +73,7 @@ class FakeDriver implements RuntimeDriver {
 let dir: string;
 let driver: FakeDriver;
 let pool: WorkerPool;
-
-const JOB = { taskId: "task-0042", worktreePath: "/tmp/wt", instruction: "調べて直して" };
+let JOB: { taskId: string; worktreePath: string; instruction: string };
 
 /**
  * 復帰でメッセージが届いた数。
@@ -95,6 +94,10 @@ beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-resume-"));
   driver = new FakeDriver();
   pool = new WorkerPool({ driver, dataDir: dir, defaultProjectTag: "test" });
+
+  const worktreePath = path.join(dir, "worktree");
+  fs.mkdirSync(worktreePath, { recursive: true });
+  JOB = { taskId: "task-0042", worktreePath, instruction: "調べて直して" };
 });
 
 afterEach(() => {
@@ -144,8 +147,8 @@ describe("職人の復帰 — 落ちる前に生きていた職人だけ起こ�
     assert.equal(wakeCount(before), 0);
   });
 
-  it("検証用ワークツリーの職人は起き直さない", async () => {
-    await pool.delegate({ ...JOB, worktreePath: "/home/x/worktrees/banto/feat-a" });
+  it("ワークツリーが実在しない職人は起き直さない", async () => {
+    await pool.delegate({ ...JOB, worktreePath: path.join(dir, "no-such-worktree") });
     driver.killAllProcesses();
     await settle();
 
@@ -153,6 +156,20 @@ describe("職人の復帰 — 落ちる前に生きていた職人だけ起こ�
     const results = await resumeWorkers({ pool, stateDir: dir, log: () => {} });
     assert.match(results[0]!.detail, /見送り/);
     assert.equal(wakeCount(before), 0);
+  });
+
+  it("/worktrees/ を含むパスでも、実在すれば復帰する", async () => {
+    const worktreePath = path.join(dir, "worktrees", "banto", "feat-a");
+    fs.mkdirSync(worktreePath, { recursive: true });
+    await pool.delegate({ ...JOB, worktreePath });
+    driver.killAllProcesses();
+    await settle();
+
+    const before = driver.injected.length;
+    const results = await resumeWorkers({ pool, stateDir: dir, log: () => {} });
+    assert.equal(results.length, 1);
+    assert.equal(results[0]!.detail, "復帰");
+    assert.equal(wakeCount(before), 1);
   });
 });
 
