@@ -13,14 +13,17 @@
  * 諦めると、**章を畳む道が塞がったまま文脈だけが伸び続ける**——長い会話ほど
  * 起きやすく、長い会話ほど畳めないと困る、という向きに効いてしまう。
  *
+ * **どのバックエンドで呼ぶかは知らない**（task-0151）。pi か claude-agent-sdk かは
+ * `chapter-model.ts` が解決し、`chapter-completers.ts` が実装を持つ。ここが持つのは
+ * 座標（`ChapterModelRef`）と、断り・資料に載せる名前だけ。
+ *
  * D5: 判断は無い。プロンプトと、返ってきたものの読み取りだけ。
- * D6: 依存は pi-ai（既に banto-host の依存）のみ。
+ * D6: 追加の依存は無い（呼ぶ口は呼び出し側が注入する）。
  * I2: LLM が失敗したら例外にする——引き継ぎ無しで章を畳むのがいちばん困る。
  */
 
-import { completeSimple, type Model } from "@earendil-works/pi-ai/compat";
 import type { ChapterHandoff, ChapterInput } from "./chapters.js";
-import { requireAuth, type AuthResolver } from "./llm-auth.js";
+import { chapterModelLabel, type ChapterModelRef } from "./chapter-model.js";
 import type { HandoffSummary } from "./handoffs.js";
 
 const SYSTEM_PROMPT = [
@@ -92,7 +95,8 @@ export interface ChapterCompletion {
 }
 
 /**
- * LLM を呼ぶ口。**既定は pi の `completeSimple`**。
+ * LLM を呼ぶ口。**実装はバックエンドごとに `chapter-completers.ts` が持つ**
+ * （pi 経由・claude-agent-sdk 経由）。どちらを使うかは呼び出し側が注入する。
  *
  * 差し替えられるようにしてあるのは、上限に当たったときの筋書き（inc-0068）を
  * 本物のモデルを叩かずに試験で押さえるため。
@@ -104,16 +108,26 @@ export type ChapterCompleter = (request: {
 }) => Promise<ChapterCompletion>;
 
 export interface ChapterSummarizerOptions {
-  /** 要約に使うモデル。**本セッションと別のものを指定してよい**（決定28）。 */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pi の Model は Api で
-  // 型付けされており、呼ぶ側はどの Api かを知らないまま解決した実体を渡す (I4)
-  model: Model<any>;
-  /** モデルの認証を解決する（`ModelRegistry.getApiKeyAndHeaders` を渡す）。 */
-  auth: AuthResolver;
+  /**
+   * 要約に使うモデルの座標（決定103と同じ3成分）。**本セッションと別のものを
+   * 指定してよい**（決定28）——断りの文言・資料に残す名前（a6）に使う。
+   */
+  modelRef: ChapterModelRef;
+  /** モデル自身の出力上限（トークン）。分かれば、やり直しの予算の頭打ちに使う。 */
+  modelMaxTokens?: number;
+  /** LLM を呼ぶ口。バックエンドごとの実装は `chapter-completers.ts`。 */
+  complete: ChapterCompleter;
   /** 資料の長さの上限（トークン）。既定 `DEFAULT_CHAPTER_MAX_TOKENS`。 */
   maxTokens?: number;
-  /** LLM を呼ぶ口。渡さなければ pi の `completeSimple`（試験で差し替える）。 */
-  complete?: ChapterCompleter;
+  /**
+   * 指定されたモデルが解決できず、既定へ落ちたときの記録（task-0151 a4・I2）。
+   * 章を畳めなかったときの断りに「指定された名前・解決の結果・実際に使ったもの」を
+   * 載せる——`chapter-model.ts` の `resolveChapterModel` が返す `fallback` をそのまま渡す。
+   */
+  fallback?: {
+    requested: ChapterModelRef | { raw: string };
+    reason: string;
+  };
 }
 
 /** 1回分の試みの記録。断りの文言に載せる（inc-0068 の4番）。 */
@@ -128,12 +142,10 @@ interface Attempt {
 export function createLlmChapterSummarizer(
   options: ChapterSummarizerOptions
 ): (input: ChapterInput) => Promise<ChapterHandoff> {
-  const complete = options.complete ?? piCompleter(options);
+  const complete = options.complete;
   // モデル自身の出力上限。これを超えて頼んでも通らない（プロバイダによっては弾かれる）
-  const modelCap = positiveNumber((options.model as { maxTokens?: unknown }).maxTokens);
-  const modelName = `${String((options.model as { provider?: unknown }).provider ?? "?")}/${String(
-    (options.model as { id?: unknown }).id ?? "?"
-  )}`;
+  const modelCap = positiveNumber(options.modelMaxTokens);
+  const modelName = chapterModelLabel(options.modelRef);
 
   return async (input) => {
     const attempts: Attempt[] = [];
@@ -187,7 +199,10 @@ export function createLlmChapterSummarizer(
 
     const budget = options.maxTokens ?? DEFAULT_CHAPTER_MAX_TOKENS;
     const first = await run("1回目", input.transcript, budget, FORMAT);
-    if (first !== "") return parseHandoff(first);
+    if (first !== "") {
+      const handoff = parseHandoff(first);
+      return { summary: handoff.summary, body: withModelNote(handoff.body, modelName) };
+    }
 
     /**
      * **上限に当たったからといって、そのまま諦めない**（inc-0068）。
@@ -216,36 +231,22 @@ export function createLlmChapterSummarizer(
         "\n\n---\n（この資料は2回目の試みで書いた。1回目は出力上限に当たって空だったため、" +
         (trimmed.length < input.transcript.length ? "書き起こしの古い部分を省き、" : "") +
         "短い形式で書き直している。元の書き起こしは会話のセッションに残っている）";
-      return { summary: handoff.summary, body: `${handoff.body}${note}` };
+      return { summary: handoff.summary, body: withModelNote(`${handoff.body}${note}`, modelName) };
     }
 
-    throw new Error(describeEmpty(modelName, modelCap, attempts));
+    throw new Error(describeEmpty(modelName, modelCap, attempts, options.fallback));
   };
 }
 
-/** pi の `completeSimple` を呼ぶ既定の口。 */
-function piCompleter(options: ChapterSummarizerOptions): ChapterCompleter {
-  return async (request) => {
-    // I2: 鍵が無いまま呼びに行かない
-    const auth = await requireAuth(options.auth, options.model, "章の引き継ぎ資料");
-    const response = await completeSimple(
-      options.model,
-      {
-        systemPrompt: request.systemPrompt,
-        messages: [
-          { role: "user", content: [{ type: "text", text: request.prompt }], timestamp: Date.now() },
-        ],
-      },
-      {
-        maxTokens: request.maxTokens,
-        ...(auth.apiKey !== undefined ? { apiKey: auth.apiKey } : {}),
-        ...(auth.headers !== undefined ? { headers: auth.headers } : {}),
-      }
-    );
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pi の content は
-    // ブロックの直和で、ここで見るのは type と text だけ (I4)
-    return response as any as ChapterCompletion;
-  };
+/**
+ * **実際に要約へ使ったモデルを資料に残す**（task-0151 a6）。
+ *
+ * 資料は独立して読まれる（`handoff.read`・引き継ぎ後の再開）。誰が書いたかが
+ * 資料自身に無いと、後から「なぜこの密度・この言葉遣いなのか」を辿れない
+ * ——特にやり直し（2回目）が絡むと、モデルが変わっていないことの確認にもなる。
+ */
+function withModelNote(body: string, modelName: string): string {
+  return `${body}\n\n---\n（要約に使ったモデル: ${modelName}）`;
 }
 
 /** 書き起こしを後ろ（新しい側）から `limit` 字だけ残す。短ければそのまま。 */
@@ -269,7 +270,8 @@ export function trimTranscript(transcript: string, limit: number): string {
 function describeEmpty(
   modelName: string,
   modelCap: number | undefined,
-  attempts: readonly Attempt[]
+  attempts: readonly Attempt[],
+  fallback: ChapterSummarizerOptions["fallback"]
 ): string {
   const detail = attempts
     .map(
@@ -278,13 +280,24 @@ function describeEmpty(
         `stopReason ${a.stopReason}`
     )
     .join("／");
+  /**
+   * **指定と実際が食い違っていたら、それも言う**（task-0151 a4）。「指定された名前・
+   * 解決の結果・実際に使ったもの」の3つが揃わないと、見直す先が「要約に使うモデル」
+   * なのか「その指定の書き方」なのか読んだ側で決められない（inc-0068 の教訓そのもの）。
+   */
+  const fallbackNote = fallback
+    ? ` 指定は ${
+        "raw" in fallback.requested ? fallback.requested.raw : chapterModelLabel(fallback.requested)
+      } でしたが解決できませんでした（${fallback.reason}）。実際に使ったのは既定の ${modelName} です。`
+    : "";
   return (
     "章の引き継ぎ資料が空で返りました（やり直しても空）。章は畳みません。" +
     `使ったモデル: ${modelName}` +
     (modelCap === undefined ? "" : `（このモデルの出力上限 ${modelCap}トークン）`) +
     `。${detail}。` +
     "2回目は出力予算を上げ・書き起こしを削り・短い形式で頼み直している" +
-    "——それでも空なので、要約に使うモデル（BANTO_CHAPTER_MODEL）を替えてください"
+    "——それでも空なので、要約に使うモデル（設定の「章の要約」または BANTO_CHAPTER_MODEL）を替えてください。" +
+    fallbackNote
   );
 }
 

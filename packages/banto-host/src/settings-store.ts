@@ -55,6 +55,14 @@ export interface BantoSettings {
     /** Claude Code のときだけ使う別名／モデルID（`opus` 等）。 */
     model?: string;
   };
+  /**
+   * **章の要約に使うモデル**（task-0151・inc-0068）。`backend|provider|model` の形
+   * ——「役ごとのモデル」の区画（`roles`）と同じ符号化（D3：選択肢を2箇所で組まない）。
+   *
+   * `BANTO_CHAPTER_MODEL`（環境変数）が設定されていれば、そちらが**この値より優先**
+   * される（互換のため。決定の経緯は README を参照）。
+   */
+  chapterModel?: string;
   network?: {
     /** 待ち受けるポート。 */
     port?: number;

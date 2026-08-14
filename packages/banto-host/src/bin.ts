@@ -67,7 +67,13 @@ import { BANTO_DEFAULT_PORT, type ServerEvent } from "./protocol.js";
 import { BantoHostServer } from "./server.js";
 import { createArtifactTools } from "./artifact-tools.js";
 import { ArtifactStore } from "./artifacts.js";
-import { createLlmChapterSummarizer } from "./chapter-summarizer.js";
+import { createLlmChapterSummarizer, type ChapterCompleter } from "./chapter-summarizer.js";
+import { createClaudeChapterCompleter, createPiChapterCompleter } from "./chapter-completers.js";
+import {
+  DEFAULT_CHAPTER_MODEL,
+  chapterModelLabel,
+  resolveChapterModel,
+} from "./chapter-model.js";
 import { ChapterKeeper, renderTranscript } from "./chapters.js";
 import { createHandoffTools } from "./handoff-tools.js";
 import { HandoffStore } from "./handoffs.js";
@@ -273,25 +279,7 @@ function chapterThresholdRatio(): number | undefined {
   return parsed;
 }
 
-/**
- * 章の引き継ぎ資料を書くモデル（決定28：抽出には安いモデルを使う）。
- *
- * `BANTO_CHAPTER_MODEL="provider/model-id"` で会話とは別のモデルを指定できる。
- * **指定が無ければ undefined**——呼び出し側が会話のモデルへ落とす。カタログの
- * 職人向け標準は tier（具体モデルではない）なので、ここでは当てにしない。
- *
- * I2: 指定したのに解決できないときは、黙って会話のモデルへ落とさず知らせる。
- */
-function chapterSummarizerModelSpec(): { provider: string; id: string } | undefined {
-  const raw = process.env["BANTO_CHAPTER_MODEL"];
-  if (raw === undefined || raw.trim() === "") return undefined;
-  const at = raw.indexOf("/");
-  if (at <= 0 || at === raw.length - 1) {
-    console.warn(`[banto] BANTO_CHAPTER_MODEL は "provider/model-id" の形です（${raw}）`);
-    return undefined;
-  }
-  return { provider: raw.slice(0, at), id: raw.slice(at + 1) };
-}
+// 章の要約に使うモデルの解決は `chapter-model.ts` の `resolveChapterModel`（task-0151）。
 
 /**
  * 陳腐化した学習層について incident を積む（P3・決定26・task-0017 a4）。
@@ -939,6 +927,13 @@ async function serve(options: ServeOptions): Promise<void> {
         // 既定の等級は**核の台帳**が持つ（決定99a）
         workerDefaultTier: () => modelLedger.defaultTier() ?? "",
         onWorkerTierChanged: (tier) => modelLedger.setDefaultTier(tier),
+        // task-0151 a3: 画面が「いま実際に使われているもの」を映せるよう、解決も同じ元から
+        effectiveChapterModel: () =>
+          resolveChapterModel({
+            envRaw: process.env["BANTO_CHAPTER_MODEL"],
+            settingsValue: settings.all().chapterModel,
+            backends: harnessBackends,
+          }),
       }),
       modules,
       store: settings,
@@ -1442,105 +1437,124 @@ async function serve(options: ServeOptions): Promise<void> {
 
     // 提案§3.2: 自動コンパクションを切り（ハーネスが済ませた）、章立てに置き換える。
     //
-    // **要約器は本セッションと別の呼び出し**（決定28）。安いモデルがカタログにあれば
-    // それを使い、無ければこの会話のモデルで書く。要約器を用意できないときは
-    // 章立てを始めない——引き継ぎ無しで文脈だけ畳むのが最悪だから（I2）。
-    const wantedSummarizer = chapterSummarizerModelSpec();
-    const summarizerModel = wantedSummarizer
-      ? resolveModel(wantedSummarizer.provider, wantedSummarizer.id)
-      : undefined;
-    // I2: 指定したのに解決できないときは黙って落とさず知らせる
-    if (wantedSummarizer && !summarizerModel) {
+    // **要約器は本セッションと別の呼び出し**（決定28）。**会話のモデルへは頼らない**
+    // （task-0151・inc-0068）——既定は claude-agent-sdk の haiku で固定。指定は
+    // 環境変数 BANTO_CHAPTER_MODEL > 画面の設定「章の要約に使うモデル」> 既定の順
+    // （README を参照）。指定が解決できないときも黙って別物へ落とさない（I2・a4）。
+    const chapterModelResolution = resolveChapterModel({
+      envRaw: process.env["BANTO_CHAPTER_MODEL"],
+      settingsValue: settings.all().chapterModel,
+      backends: harnessBackends,
+    });
+    if (chapterModelResolution.fallback) {
+      const { requested, reason, from } = chapterModelResolution.fallback;
+      const requestedLabel = "raw" in requested ? requested.raw : chapterModelLabel(requested);
       console.warn(
-        `[banto] BANTO_CHAPTER_MODEL（${wantedSummarizer.provider}/${wantedSummarizer.id}）を` +
-          "解決できません。会話のモデルで引き継ぎ資料を書きます"
+        `[banto] ${threadId}: 章の要約モデルの指定（${
+          from === "env" ? "BANTO_CHAPTER_MODEL" : "設定「章の要約に使うモデル」"
+        }: ${requestedLabel}）を解決できません（${reason}）。既定（${chapterModelLabel(
+          DEFAULT_CHAPTER_MODEL
+        )}）を使います`
       );
     }
-    const writerModel = summarizerModel ?? sessionModel;
-    let chapters: ChapterKeeper | undefined;
-    if (writerModel) {
-      chapters = new ChapterKeeper({
-        // **いまのハーネスを毎回引く**——差し替えに追随する（PO要望 2026-08-13）
-        harness: () => threads.get(threadId)?.harness ?? harness,
-        store: handoffs,
-        threadId,
-        summarize: createLlmChapterSummarizer({
-          model: writerModel,
-          auth: (m) => modelRegistry.getApiKeyAndHeaders(m),
-        }),
-        // 閾値は**会話のモデル**の文脈長で測る（要約器の文脈長ではない）
-        ...(sessionModel?.contextWindow ? { contextWindow: sessionModel.contextWindow } : {}),
-        // PO指摘 2026-08-05: 退避した観測の索引を引き継ぎ資料へ書く。
-        // 渡さないと、畳んだ番頭は栞（artifact のID）を見失う
-        artifacts,
-        // 決定28: 記憶の抽出は章の境界だけで走る（explicit gate）。**人の記憶へ入れる**。
-        //
-        // 区画が幹になった今、宛先の幹は分かる（identity.trunkId）が、抽出器は「人に
-        // ついての長生きする事実」を出すように書かれていて、差分に区画を持たない。
-        // 幹へ入れるなら抽出器の出力形式から変わるので、ここでは変えない
-        // （残っている論点：仕事に固有の話が横断層へ入りうる。→ handoff）
-        extractMemories: async (transcript) => {
-          const person = memory.forPerson();
-          const deltas = await createLlmMemoryExtractor({
-            model: writerModel,
-            auth: (m) => modelRegistry.getApiKeyAndHeaders(m),
-          })({ transcript, existing: person.list() });
-          const applied = applyMemoryDeltas(person, deltas);
-          for (const { delta, reason } of applied.skipped) {
-            console.warn(`[banto] 記憶を足しませんでした（${reason}）: ${JSON.stringify(delta)}`);
+    const chapterRef = chapterModelResolution.ref;
+    // pi 経由なら、この会話とは無関係にモデル実体を解決する（記憶抽出にも使う）。
+    // `resolveChapterModel` が既に `supports()` で確かめているので、pi のときは必ず解ける
+    const chapterPiModel =
+      chapterRef.backend === "pi" ? resolveModel(chapterRef.provider, chapterRef.model) : undefined;
+    const chapterComplete: ChapterCompleter =
+      chapterRef.backend === "claude-agent-sdk"
+        ? createClaudeChapterCompleter(chapterRef.model)
+        : createPiChapterCompleter(chapterPiModel!, (m) => modelRegistry.getApiKeyAndHeaders(m));
+    /**
+     * 記憶の抽出（`createLlmMemoryExtractor`）は今のところ pi 経由でしか呼べない
+     * （このタスクの範囲外・別途 inc として追う論点）。章の要約が claude-agent-sdk を
+     * 選んでいるときは、記憶の抽出だけ会話のモデルへ戻す——以前からの fallback と同じ形
+     */
+    const memoryModel = chapterPiModel ?? sessionModel;
+
+    const chapters = new ChapterKeeper({
+      // **いまのハーネスを毎回引く**——差し替えに追随する（PO要望 2026-08-13）
+      harness: () => threads.get(threadId)?.harness ?? harness,
+      store: handoffs,
+      threadId,
+      summarize: createLlmChapterSummarizer({
+        modelRef: chapterRef,
+        ...(chapterPiModel?.maxTokens ? { modelMaxTokens: chapterPiModel.maxTokens } : {}),
+        complete: chapterComplete,
+        ...(chapterModelResolution.fallback ? { fallback: chapterModelResolution.fallback } : {}),
+      }),
+      // 閾値は**会話のモデル**の文脈長で測る（要約器の文脈長ではない）
+      ...(sessionModel?.contextWindow ? { contextWindow: sessionModel.contextWindow } : {}),
+      // PO指摘 2026-08-05: 退避した観測の索引を引き継ぎ資料へ書く。
+      // 渡さないと、畳んだ番頭は栞（artifact のID）を見失う
+      artifacts,
+      // 決定28: 記憶の抽出は章の境界だけで走る（explicit gate）。**人の記憶へ入れる**。
+      //
+      // 区画が幹になった今、宛先の幹は分かる（identity.trunkId）が、抽出器は「人に
+      // ついての長生きする事実」を出すように書かれていて、差分に区画を持たない。
+      // 幹へ入れるなら抽出器の出力形式から変わるので、ここでは変えない
+      // （残っている論点：仕事に固有の話が横断層へ入りうる。→ handoff）
+      ...(memoryModel
+        ? {
+            extractMemories: async (transcript: string) => {
+              const person = memory.forPerson();
+              const deltas = await createLlmMemoryExtractor({
+                model: memoryModel,
+                auth: (m) => modelRegistry.getApiKeyAndHeaders(m),
+              })({ transcript, existing: person.list() });
+              const applied = applyMemoryDeltas(person, deltas);
+              for (const { delta, reason } of applied.skipped) {
+                console.warn(`[banto] 記憶を足しませんでした（${reason}）: ${JSON.stringify(delta)}`);
+              }
+              if (applied.added.length + applied.corrected.length > 0) {
+                console.log(
+                  `[banto] ${threadId}: 記憶を ${applied.added.length} 件追加・` +
+                    `${applied.corrected.length} 件訂正しました（次の章から効きます）`
+                );
+              }
+            },
           }
-          if (applied.added.length + applied.corrected.length > 0) {
-            console.log(
-              `[banto] ${threadId}: 記憶を ${applied.added.length} 件追加・` +
-                `${applied.corrected.length} 件訂正しました（次の章から効きます）`
-            );
-          }
-        },
-        ...(chapterThresholdRatio() !== undefined
-          ? { thresholdRatio: chapterThresholdRatio()! }
-          : {}),
-        onChapterClosed: (record) => {
-          /**
-           * 畳んだことは隠さない——が、**番頭には言わない**（PO報告 2026-08-11）。
-           *
-           * 知らせ（`notify`）で流していたので、畳むたびに**ターンが回っていた**。
-           * 番頭は畳んだばかりの空の文脈で、PO が何も頼んでいないのに `thread.list`・
-           * `inbox.list`・`kobo.list` と調べ始める——押した側から見れば「区切ったのに
-           * 勝手に喋り出す」で、軽くしたはずの文脈もその場で埋め直される。
-           *
-           * 章の頭には引き継ぎ資料が入っている（`renderChapterOpening`）ので、番頭に
-           * 改めて教える必要はない。**画面に区切りの線が1本入れば足りる**。
-           */
-          server.markChapter(threadId, record.chapter, record.summary.topic);
-        },
+        : {}),
+      ...(chapterThresholdRatio() !== undefined
+        ? { thresholdRatio: chapterThresholdRatio()! }
+        : {}),
+      onChapterClosed: (record) => {
         /**
-         * **畳めなかったことも隠さない**（inc-0050）。
+         * 畳んだことは隠さない——が、**番頭には言わない**（PO報告 2026-08-11）。
          *
-         * 畳めないと文脈は増え続ける。黙って毎ターン試し続けると、POには
-         * 「そのうち急に何も入らなくなる」形でだけ現れる。出しておけば手が打てる。
+         * 知らせ（`notify`）で流していたので、畳むたびに**ターンが回っていた**。
+         * 番頭は畳んだばかりの空の文脈で、PO が何も頼んでいないのに `thread.list`・
+         * `inbox.list`・`kobo.list` と調べ始める——押した側から見れば「区切ったのに
+         * 勝手に喋り出す」で、軽くしたはずの文脈もその場で埋め直される。
+         *
+         * 章の頭には引き継ぎ資料が入っている（`renderChapterOpening`）ので、番頭に
+         * 改めて教える必要はない。**画面に区切りの線が1本入れば足りる**。
          */
-        onCloseFailed: (err) => {
-          /**
-           * 見直す先は**理由の側が名乗る**（inc-0068）。ここで
-           * 「BANTO_CHAPTER_MODEL を見直してください」と一律に足していたが、
-           * 実際に使われていたモデルが分からないと、どの設定を触るか決まらない
-           * ——要約器が使ったモデル・入力の大きさ・出力上限・やり直したかは
-           * `String(err)` に載っている。
-           */
-          server.notify(
-            `章を畳めませんでした（${String(err)}）。文脈はそのまま伸び続けます` +
-              "——このまま続けると入らなくなるので、区切りのよいところで新しい幹へ移してください。",
-            { threadId, source: "system" }
-          );
-        },
-      });
-      chapters.start();
-    } else {
-      console.warn(
-        `[banto] ${threadId}: 要約に使えるモデルが無いため章立てを始めません` +
-          "（文脈のまとめ直しはハーネス任せになります）"
-      );
-    }
+        server.markChapter(threadId, record.chapter, record.summary.topic);
+      },
+      /**
+       * **畳めなかったことも隠さない**（inc-0050）。
+       *
+       * 畳めないと文脈は増え続ける。黙って毎ターン試し続けると、POには
+       * 「そのうち急に何も入らなくなる」形でだけ現れる。出しておけば手が打てる。
+       */
+      onCloseFailed: (err) => {
+        /**
+         * 見直す先は**理由の側が名乗る**（inc-0068）。ここで
+         * 「BANTO_CHAPTER_MODEL を見直してください」と一律に足していたが、
+         * 実際に使われていたモデルが分からないと、どの設定を触るか決まらない
+         * ——要約器が使ったモデル・入力の大きさ・出力上限・やり直したかは
+         * `String(err)` に載っている。
+         */
+        server.notify(
+          `章を畳めませんでした（${String(err)}）。文脈はそのまま伸び続けます` +
+            "——このまま続けると入らなくなるので、区切りのよいところで新しい幹へ移してください。",
+          { threadId, source: "system" }
+        );
+      },
+    });
+    chapters.start();
 
     // server はイベントの wire名→論理名 逆引きに、登録した論理名のToolを必要とする
       const tools = [
@@ -1564,12 +1578,13 @@ async function serve(options: ServeOptions): Promise<void> {
        * **PO がその場で章を畳む口**（決定25 の人側）。
        *
        * 閾値は文脈の量しか見ないが、区切りは人にも分かる——「この話は終わったので、
-       * ここから先は別の前提で進めたい」は量では拾えない。`chapters` が無い構成
-       * （要約に使えるモデルが無い）では渡さない。サーバがその不在を理由として出す
+       * ここから先は別の前提で進めたい」は量では拾えない。**要約に使えるモデルは
+       * 常に用意される**（task-0151：既定 haiku まで落ちるので、以前のように
+       * 章立てそのものを始めないことは無い）。
        */
       // **畳めたかどうかを返す**——溜まっていない章は畳みようがなく、黙って何も
       // 起きないと押した側からは壊れて見える（PO報告 2026-08-11）
-      ...(chapters ? { closeChapter: async () => (await chapters.closeChapter()) !== undefined } : {}),
+      closeChapter: async () => (await chapters.closeChapter()) !== undefined,
       // この会話が実際に使っているモデル。画面と索引へ出す（会話ごとに持つ）
       ...(threadModel && wanted
         ? {
