@@ -73,6 +73,9 @@ const NOTICEWORTHY = new Set([
   "task_failed",
   "task_merged",
   "audit_verdict",
+  // **止まっている**（realign 第2便）。工場は同じ状態のあいだ1回しか積まないので、
+  // ここで拾っても鳴り続けることはない
+  "task_stalled",
 ]);
 
 /**
@@ -96,6 +99,11 @@ interface KoboEventView {
   verdict?: string;
   findings?: string[];
   commitSha?: string;
+  /** `task_stalled`：どの状態で、どれだけ、何に阻まれて止まっているか。 */
+  status?: string;
+  dwellMs?: number;
+  thresholdMs?: number;
+  blockedBy?: string[];
 }
 
 /** タスク1件の見え方（`kobo.task` の返り）。 */
@@ -143,6 +151,19 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
   let running = false;
   let stopped = false;
 
+  /** 1通届ける。宛先が畳まれていたら既定の宛先へ逃がす（**消えたことにしない**・I2）。 */
+  const deliver = async (notice: { origin: string; text: string }): Promise<void> => {
+    const threadId = threadIdOfOrigin(notice.origin);
+    try {
+      await options.notify(notice.text, threadId ? { threadId } : {});
+    } catch (err) {
+      // 決定68: 宛先が畳まれていたら起こし直して届ける——のが本筋だが、起こし直せない
+      // ときは既定の宛先へ逃がす
+      log(`[banto] 工場の知らせの宛先 ${String(threadId)} へ届きません: ${String(err)}`);
+      await options.notify(notice.text, {}).catch(() => undefined);
+    }
+  };
+
   const tick = async (): Promise<void> => {
     if (running || stopped) return;
     running = true;
@@ -150,19 +171,25 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
       const details = await invoke("kobo.events", { afterEventId: cursor, limit: 100 });
       const events = (details["events"] ?? []) as KoboEventView[];
       const origins = (details["origins"] ?? {}) as Record<string, string>;
+
+      /**
+       * **同じ理由の知らせは束ねる**（realign 第2便）。
+       *
+       * 1件1通で流すと、溜まっていた分がそのまま通数になる——実測で35件が35回
+       * 届いた事例がある。そうなると番頭は読まなくなり、**知らせないのと同じ**になる。
+       * 束ねてよいのは「同じことが並んでいるだけ」のもの＝滞留の知らせ。
+       * 「止まった」「落ちた」は1件ずつ理由が違うので、今までどおり1通ずつ。
+       */
+      const stalled = events.filter((e) => e.type === "task_stalled");
       for (const event of events) {
         cursor = Math.max(cursor, event.eventId ?? 0);
+        if (event.type === "task_stalled") continue;
         const notice = await renderNotice(event, origins, invoke);
         if (!notice) continue;
-        const threadId = threadIdOfOrigin(notice.origin);
-        try {
-          await options.notify(notice.text, threadId ? { threadId } : {});
-        } catch (err) {
-          // 決定68: 宛先が畳まれていたら起こし直して届ける——のが本筋だが、起こし直せない
-          // ときは既定の宛先へ逃がす。**消えたことにしない**（I2）
-          log(`[banto] 工場の知らせの宛先 ${String(threadId)} へ届きません: ${String(err)}`);
-          await options.notify(notice.text, {}).catch(() => undefined);
-        }
+        await deliver(notice);
+      }
+      for (const bundle of bundleStalled(stalled, origins)) {
+        await deliver(bundle);
       }
       writeCursor(options.cursorPath, cursor);
     } catch (err) {
@@ -182,6 +209,72 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
     stopped = true;
     clearInterval(timer);
   };
+}
+
+/**
+ * 滞留の知らせを**宛先ごとに1通へ束ねる**（realign 第2便）。
+ *
+ * 束ねる単位は宛先（会話）。同じ会話へ「止まっています」を N 通送るのは、
+ * 1通に N 行書くのと情報は同じで、読まれなさだけが増える——実測で 35 件が
+ * 35 回届いた事例がある。
+ *
+ * D5: 判断は無い。並べ替え（長く止まっているものが上）と日本語への言い換えだけ。
+ */
+export function bundleStalled(
+  events: KoboEventView[],
+  origins: Record<string, string>
+): Array<{ origin: string; text: string }> {
+  const byOrigin = new Map<string, KoboEventView[]>();
+  for (const event of events) {
+    if (!event.taskId) continue;
+    const origin = origins[`${event.projectTag}/${event.taskId}`] ?? "";
+    const list = byOrigin.get(origin);
+    if (list) list.push(event);
+    else byOrigin.set(origin, [event]);
+  }
+
+  const bundles: Array<{ origin: string; text: string }> = [];
+  for (const [origin, group] of byOrigin) {
+    const sorted = [...group].sort((a, b) => (b.dwellMs ?? 0) - (a.dwellMs ?? 0));
+    const lines = sorted.map((e) => {
+      const blocked = (e.blockedBy ?? []).length > 0 ? `／待ち: ${e.blockedBy!.join(", ")}` : "";
+      return `- ${e.taskId}（${e.status ?? "?"}）${formatDuration(e.dwellMs ?? 0)}${blocked}`;
+    });
+    const head =
+      sorted.length === 1
+        ? `${sorted[0]!.taskId} が止まっています`
+        : `${sorted.length} 件が止まっています`;
+    bundles.push({
+      origin,
+      text: [
+        head,
+        "",
+        "**起きたこと**",
+        "状態が変わらないまま、決めてある時間を超えました（工場が帳簿から測っています）。",
+        ...lines,
+        "",
+        "**求める判断**",
+        "**待てば進むのか、詰まっているのかを見分けてください。** `kobo.task` で経緯を読み、" +
+          "「待ち」に出ているタスクがそれ自体止まっているなら、そこが本当の原因です。\n" +
+          "手は：職人が居ないなら `kobo.reopen`、レビュー待ちなら `kobo.approve` か `kobo.send_back`、" +
+          "**もう工場の外で決着しているなら `kobo.settle`**（失敗としては残りません）。\n" +
+          "この知らせは**同じ状態のあいだ一度だけ**出ます——次に鳴るのは状態が動いてからです。",
+      ].join("\n"),
+    });
+  }
+  return bundles;
+}
+
+/** 人が読む長さ。`banto-core` の `formatDwell` と同じ形（この層は Kobo に依存しない）。 */
+function formatDuration(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${minutes}分`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (hours < 24) return rest === 0 ? `${hours}時間` : `${hours}時間${rest}分`;
+  const days = Math.floor(hours / 24);
+  const restHours = hours % 24;
+  return restHours === 0 ? `${days}日` : `${days}日${restHours}時間`;
 }
 
 /**

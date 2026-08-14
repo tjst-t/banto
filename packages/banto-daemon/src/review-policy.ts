@@ -85,6 +85,21 @@ export interface ProjectConfig {
      * 「既定30秒では npm test が途中で切れていた」）。ゲート側だけ 60 秒のままだった。
      */
     verifyTimeoutMinutes?: number;
+    /**
+     * **どれだけ止まっていたら知らせるか**（状態ごと・分。realign 第2便）。
+     *
+     * `meta/config.yaml` の `limits.dwell_warn_minutes`：
+     * ```yaml
+     * limits:
+     *   dwell_warn_minutes:
+     *     queued: 120
+     *     review-ready: 480
+     * ```
+     * 書かなかった状態は `DEFAULT_DWELL_WARN_MINUTES` に落ちる。**どちらにも無い
+     * 状態は見張らない**——通り過ぎるだけの状態（ready / merging 等）で鳴らしても、
+     * 受け取った側にできることが無い。
+     */
+    dwellWarnMinutes?: Partial<Record<string, number>>;
   };
 }
 
@@ -178,6 +193,32 @@ export function loadProjectConfig(repoPath: string): ProjectConfig {
     }
   }
 
+  /**
+   * 滞留の閾値（状態ごと・分。realign 第2便）。
+   *
+   * I2: 数として読めないものを黙って無視しない——無視すると「閾値を設定したのに
+   * 鳴らない」が静かに起きる。設定の間違いは、知らせないことより見つけやすくする。
+   */
+  const rawDwell = limits["dwell_warn_minutes"];
+  let dwellWarnMinutes: Record<string, number> | undefined;
+  if (rawDwell !== undefined) {
+    if (typeof rawDwell !== "object" || rawDwell === null || Array.isArray(rawDwell)) {
+      throw new Error(
+        `${PROJECT_CONFIG_PATH}: limits.dwell_warn_minutes は「状態: 分」の対応で書いてください`
+      );
+    }
+    dwellWarnMinutes = {};
+    for (const [state, raw] of Object.entries(rawDwell as Record<string, unknown>)) {
+      const value = typeof raw === "number" ? raw : Number(String(raw));
+      if (!Number.isFinite(value) || value <= 0) {
+        throw new Error(
+          `${PROJECT_CONFIG_PATH}: limits.dwell_warn_minutes.${state} は正の数で書いてください（got "${String(raw)}"）`
+        );
+      }
+      dwellWarnMinutes[state] = value;
+    }
+  }
+
   return {
     verify: { profile: (verifyProfile as string | undefined) ?? DEFAULT_VERIFY_PROFILE },
     review: {
@@ -188,6 +229,7 @@ export function loadProjectConfig(repoPath: string): ProjectConfig {
       ...(tier !== undefined ? { maxModelTier: tier as ProjectConfig["limits"]["maxModelTier"] } : {}),
       ...(concurrent !== undefined ? { maxConcurrentSessions: concurrent } : {}),
       ...(verifyMinutes !== undefined ? { verifyTimeoutMinutes: verifyMinutes } : {}),
+      ...(dwellWarnMinutes !== undefined ? { dwellWarnMinutes } : {}),
     },
   };
 }

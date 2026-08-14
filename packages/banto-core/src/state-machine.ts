@@ -107,6 +107,35 @@ const PAUSABLE_STATES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
 ]);
 
 /**
+ * **工場の外で決着したと言える状態**（realign 第2便・imp-0019 の4番）。
+ *
+ * `kobo.abandon`（`failed:closed`）は落ちたものにしか効かず、queued / paused /
+ * review-ready のまま「中身が別の経路で入った」ものを畳む道が無かった。
+ * 実際に番頭がここで詰まり、棚卸しの判定を帳簿へ書き戻せなかった（imp-0019）。
+ *
+ * D2: 規則をデータで持つ。`REGULAR_TRANSITIONS` に `X:closed` を10本足すのではなく
+ * 専用の口にしているのは、**どこからでも closed へ飛べる機械にしないため**——
+ * `settle()` を通ったものだけが、理由（`task_settled_outside`）と一緒に閉じる。
+ *
+ * `merging` を外してあるのは着地の最中だから：キューが処理している最中に横から
+ * 閉じると、キューの側は自分が動かしているタスクの状態を失う（降ろす口は
+ * `kobo.supersede`）。`failed` も外してある——落ちたまま諦めるのは
+ * `kobo.abandon` の領分で、「失敗ではない」と言うためのこの口と混ぜない。
+ */
+const SETTLEABLE_STATES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+  "draft",
+  "queued",
+  "ready",
+  "planning",
+  "implementing",
+  "auditing",
+  "review-ready",
+  "in-review",
+  "approved",
+  "paused",
+]);
+
+/**
  * Terminal states: once here a task cannot be failed or superseded again.
  * D2: expressed as data — fail()/supersede() refuse to act if already terminal.
  *
@@ -358,6 +387,67 @@ export class StateMachine {
       projectTag,
       taskId,
       supersededBy: opts.by,
+    });
+    return { ok: true };
+  }
+
+  /**
+   * **工場の外で決着したものを畳む**（realign 第2便・imp-0019 の4番）。
+   *
+   * 中身が別の経路で main に入った・もう要らなくなった・番頭が直接片づけた——
+   * どれも**失敗ではない**ので `failed` を経由させない。`closed` へ直に落とし、
+   * なぜそう言えるのかを `task_settled_outside` に残す。
+   *
+   * Emits (in order):
+   *   1. state_transitioned(from=currentStatus, to="closed") — D3: 状態を動かすのはこれだけ
+   *   2. task_settled_outside(outcome, reason, settled_from)  — なぜ畳めるのかの記録
+   *
+   * **記録は消えない**：それまでの遷移も職人の起動も帳簿に残ったまま。消えるのは
+   * 「まだ見る必要がある」というふりだけ。
+   *
+   * Returns { ok: false } if the task is not in a settleable state.
+   */
+  static settleOutside(
+    log: EventLog,
+    taskId: string,
+    opts: {
+      currentStatus: TaskStatus;
+      by: string;
+      outcome: "landed_elsewhere" | "no_longer_needed" | "handled_directly";
+      reason: string;
+    },
+    projectTag: string = "default"
+  ): TransitionResult {
+    if (!SETTLEABLE_STATES.has(opts.currentStatus)) {
+      log.append({
+        type: "transition_rejected",
+        projectTag,
+        taskId,
+        attempted_from: opts.currentStatus,
+        attempted_to: "closed",
+        reason: "not_settleable_from_current_state",
+      });
+      return { ok: false, reason: "not_settleable_from_current_state" };
+    }
+
+    // D3: state_transitioned is the single canonical source of status changes
+    log.append({
+      type: "state_transitioned",
+      projectTag,
+      taskId,
+      from: opts.currentStatus,
+      to: "closed",
+      reason: `settled_outside:${opts.outcome}（${opts.reason}）`,
+    });
+    // Metadata event: 失敗ではないこと・なぜそう言えるのかが、ここにだけ残る
+    log.append({
+      type: "task_settled_outside",
+      projectTag,
+      taskId,
+      settledBy: opts.by,
+      outcome: opts.outcome,
+      reason: opts.reason,
+      settled_from: opts.currentStatus,
     });
     return { ok: true };
   }
