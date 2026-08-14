@@ -29,6 +29,9 @@ import type { TaskRecord } from "@banto/core";
 /** レビューの段（決定57）。 */
 export type ReviewStage = "auto" | "banto" | "po";
 
+/** 取りうる段。層B設定の綴りを照合するために並びとしても持つ。 */
+export const REVIEW_STAGES: readonly ReviewStage[] = ["auto", "banto", "po"];
+
 /** 既定は `banto`——監査を通ったものは番頭が一次受けする（決定57）。 */
 export const DEFAULT_REVIEW_STAGE: ReviewStage = "banto";
 
@@ -66,6 +69,18 @@ export interface ProjectConfig {
      * 触れる面を持つかを知っているのは Environment Pool なので、Kobo は名前だけを扱う。
      */
     envProfile?: string;
+    /**
+     * **`review.policy` を書かなかったタスクの既定**（realign 第3便）。
+     *
+     * 省略時は `DEFAULT_REVIEW_STAGE`。**これが反転の後戻りの口**——`projectConfig()` は
+     * 毎回ファイルを読み直す（写しを持たない・D3）ので、`meta/config.yaml` を1行直せば
+     * 再起動もビルドも要らずに次の判定から元へ戻せる。
+     *
+     * **緩い側の口を足しても緩みは増えない。** `governance` と `po_required_paths` は
+     * これより手前で効き、`manual` の読み替えもこれとは独立なので、ここを `auto` に
+     * しても厳しい側の上書きは必ず勝つ（下の `resolveReviewStage` の並び順）。
+     */
+    defaultPolicy?: ReviewStage;
   };
   limits: {
     /**
@@ -154,6 +169,15 @@ export function loadProjectConfig(repoPath: string): ProjectConfig {
   if (envProfile !== undefined && typeof envProfile !== "string") {
     throw new Error(`${PROJECT_CONFIG_PATH}: review.env_profile はプロファイル名（文字列）で書いてください`);
   }
+  // I2: 知らない綴りを黙って既定へ落とさない。落とすと「auto にしたのに人へ来る」
+  //     （あるいはその逆）が静かに起き、設定したのに効いていないことに気づけない
+  const defaultPolicy = review["default_policy"];
+  if (defaultPolicy !== undefined && !REVIEW_STAGES.includes(String(defaultPolicy) as ReviewStage)) {
+    throw new Error(
+      `${PROJECT_CONFIG_PATH}: review.default_policy は ${REVIEW_STAGES.join(" / ")} のいずれか` +
+        `（got "${String(defaultPolicy)}"）`
+    );
+  }
   const tier = limits["max_model_tier"];
   if (tier !== undefined && !["fast", "standard", "reasoning"].includes(String(tier))) {
     throw new Error(
@@ -224,6 +248,7 @@ export function loadProjectConfig(repoPath: string): ProjectConfig {
     review: {
       poRequiredPaths: Array.isArray(rawPaths) ? rawPaths.map(String) : [],
       ...(envProfile !== undefined ? { envProfile } : {}),
+      ...(defaultPolicy !== undefined ? { defaultPolicy: defaultPolicy as ReviewStage } : {}),
     },
     limits: {
       ...(tier !== undefined ? { maxModelTier: tier as ProjectConfig["limits"]["maxModelTier"] } : {}),
@@ -260,7 +285,9 @@ export function resolveReviewStage(task: TaskRecord, config: ProjectConfig): Rev
    * ——帳簿には `manual` 宣言が13本あった。読み替えの向きは既定と独立でなければならない。
    */
   if (declared === "manual") return "banto";
-  return DEFAULT_REVIEW_STAGE;
+  // 既定は層Bで差し替えられる（後戻りの口）。ここまで来ているということは、厳しい側の
+  // 上書き（`governance` / `po_required_paths`）にも `manual` にも当たっていない
+  return config.review.defaultPolicy ?? DEFAULT_REVIEW_STAGE;
 }
 
 /**

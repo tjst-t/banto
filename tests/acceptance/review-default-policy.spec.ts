@@ -14,9 +14,13 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 import {
   resolveReviewStage,
+  loadProjectConfig,
   DEFAULT_REVIEW_STAGE,
   type ProjectConfig,
 } from "../../packages/banto-daemon/src/review-policy.js";
@@ -41,6 +45,42 @@ function config(review: Partial<ProjectConfig["review"]> = {}): ProjectConfig {
     limits: {},
   };
 }
+
+/** `meta/config.yaml` を1本書いた使い捨てのリポジトリを作る。 */
+function repoWithConfig(yaml: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-review-policy-"));
+  fs.mkdirSync(path.join(dir, "meta"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "meta", "config.yaml"), yaml);
+  return dir;
+}
+
+describe("[realign-3] 層B設定の読み取り（review.default_policy）", () => {
+  it("`review.default_policy` を読む", () => {
+    const dir = repoWithConfig("review:\n  default_policy: auto\n");
+    assert.equal(loadProjectConfig(dir).review.defaultPolicy, "auto");
+  });
+
+  it("書かなければ欄ごと無い（既定へ落ちる）", () => {
+    const dir = repoWithConfig("review:\n  po_required_paths:\n    - packages/banto-web/**\n");
+    assert.equal(loadProjectConfig(dir).review.defaultPolicy, undefined);
+  });
+
+  /** I2: 知らない綴りを黙って既定へ落とさない——設定したのに効かない状態を作らない。 */
+  it("知らない綴りは黙って無視せず投げる", () => {
+    const dir = repoWithConfig("review:\n  default_policy: つよい\n");
+    assert.throws(() => loadProjectConfig(dir), /default_policy/);
+  });
+
+  it("同じファイルの他の欄と併存する", () => {
+    const dir = repoWithConfig(
+      "review:\n  default_policy: banto\n  env_profile: dev\n  po_required_paths:\n    - prototype/**\n"
+    );
+    const config = loadProjectConfig(dir);
+    assert.equal(config.review.defaultPolicy, "banto");
+    assert.equal(config.review.envProfile, "dev");
+    assert.deepEqual(config.review.poRequiredPaths, ["prototype/**"]);
+  });
+});
 
 describe("[realign-3] review.policy の解決", () => {
   describe("旧称 `manual` は人へ写る（既定に依らない）", () => {
