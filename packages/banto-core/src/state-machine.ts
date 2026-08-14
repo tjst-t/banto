@@ -111,9 +111,15 @@ const PAUSABLE_STATES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
 /**
  * **工場の外で決着したと言える状態**（realign 第2便・imp-0019 の4番）。
  *
- * `kobo.abandon`（`failed:closed`）は落ちたものにしか効かず、queued / paused /
+ * この口を足した当初、`kobo.abandon` は `failed:closed` だけで、queued / paused /
  * review-ready のまま「中身が別の経路で入った」ものを畳む道が無かった。
  * 実際に番頭がここで詰まり、棚卸しの判定を帳簿へ書き戻せなかった（imp-0019）。
+ *
+ * **その穴は塞がった**——PO 裁定 2026-08-14 で `abandon()` が横断遷移になり、畳める範囲は
+ * `settle()` と重なっている（`UNABANDONABLE_STATES` を参照）。**それでも口は分けたまま**：
+ * 違いは範囲ではなく**帳簿に何を書くか**で、`settle()` は「失敗ではない・外で決着した」、
+ * `abandon()` は「諦めた」。1つにまとめると「どれだけ捨てたか」と「どれだけ工場の外で
+ * 片付いたか」が混ざって数えられなくなる（PO 裁定 2026-08-14）。
  *
  * D2: 規則をデータで持つ。`REGULAR_TRANSITIONS` に `X:closed` を10本足すのではなく
  * 専用の口にしているのは、**どこからでも closed へ飛べる機械にしないため**——
@@ -162,6 +168,10 @@ const TERMINAL_STATES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
  *
  * `merged` は畳める（`merged:closed` は元からある道）。断るのは `closed` と `superseded`
  * ——どちらも「もう畳んである」ので、黙って成功を返すと二重に畳んだ記録が積み上がる（I2）。
+ *
+ * **`settleOutside()` と範囲が重なるのは承知のうえ**（`SETTLEABLE_STATES` を参照）。
+ * 分かれ目は状態ではなく畳む理由——「諦めた」なら `abandon()`、「失敗ではない・外で
+ * 決着した」なら `settleOutside()`。混ぜないのは別々に数えるため。
  */
 const UNABANDONABLE_STATES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
   "closed",
