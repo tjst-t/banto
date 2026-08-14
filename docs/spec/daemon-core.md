@@ -168,6 +168,29 @@ draft / queued / ready / planning / implementing / auditing
 >
 > 決めたのは**番頭**（PO 判断を要さないと判断した細部。利用体験は変わらず、緩い側へ倒れないため）。異論があれば言ってください。
 
+### 2.5 `review.policy` の既定は自動着地。ただし証拠の揃ったものだけ（realign 第3便）
+
+**既定は `auto`**【2026-08-14・PO 裁定：4案から「刻みあり＋検査ありだけ自動で着地させる」】。反転前は `banto`（監査を通ったものを番頭が一次受けする）だった。
+
+**`auto` は「人を通さなくてよい」という宣言でしかなく、通してよい根拠は別に要る。** 自動で着地するのは次が**両方**揃ったものだけで、どちらかを欠けば `banto` へ落として人（番頭または PO）の承認を通す：
+
+| 見るもの | どこで見るか | 実装 |
+|---|---|---|
+| `contractVersion` / `checklistVersion` の刻み | 監査の判定と同じ時点 | `autoLandBlockers` |
+| 契約が `acceptance[].verify` を1本以上持つこと | 同上 | `autoLandBlockers` |
+| `baseCommit` / `environmentDigest` の刻み | **マージ前ゲート** | `gateEvidenceBlockers` |
+
+- **刻みは2か所に分かれて出る。** `baseCommit` / `environmentDigest` は §2.4 のとおりゲートの**出力**で、監査の分岐の時点にはまだ存在しない（ゲートが回るのは `merging` に入ったあと）。だから前者2つは分岐の**入力**、後者2つは**ゲートの成立条件**として扱う——状態機械を作り替えてゲートを前倒しするより影響が小さい【2026-08-14・番頭決定】
+- **検査を要求するのは、ゲートが契約の書いた `verify` を回すだけだから。** 1本も無ければ「何も確かめずに passed」になる。実測で帳簿の契約72本中50本がこれだった。人が見るならその目が検査の代わりになるが、機械だけで通すならならない
+- **ゲート側の厳しさは auto 経路にだけ効かせる**（`landedWithoutHumanApproval` が `auditing → merging` か `approved → merging` かを帳簿から導く）。人が見ているものと機械だけで通すものを同じ基準にすると、**既存の緑が理由なく落ちる**。この非対称は意図であって漏れではない
+- **落とした理由は書き切る**（I2）。遷移の `reason` に `auto_land_unmarked:*` / `auto_land_no_verify` が入り、判断待ちの札にもそのまま載る（→ spec-ui §3）
+- **旧称 `manual` は既定に依らず `banto` へ写す。** 既定への fall-through で表していると、反転した瞬間に「人が見る」と書いたタスクが黙って機械通過になる（帳簿に13本あった）
+- **厳しい側の上書きは必ず勝つ。** `governance: true` と `review.po_required_paths` はこの既定より手前で効く（→ ADR-0013 決定57・66）
+
+**後戻りは層B設定1つ**：`meta/config.yaml` の `review.default_policy`（`auto` / `banto` / `po`）。Kobo は毎回このファイルを読み直すので、ビルドも再起動も要らずに次の判定から戻せる。戻したあとに残るのは**既に着地したマージだけ**で、それは帳簿の `audit_passed:auto` から数えられる。
+
+> **反転が効き始めるのは Kobo を再起動してからである。** 刻みを付ける実装（§2.4）は 2026-08-14 時点で稼働中の Kobo に入っておらず、帳簿の `audit_verdict` 23本は**1本も刻みを持たない**。つまり再起動までは自動着地率は 0% で、再起動後に監査を通ったものから条件を満たし始める。
+
 ## 3. spawn管理と回復
 
 > **失効（2026-08-06・ADR-0013 決定60、task-0060 で実装）。** 職人の台帳・生存確認・回復は
@@ -303,6 +326,9 @@ Koboのtickが担う定期処理の一覧（改訂 2026-08-07・ADR-0013 決定6
 - 閾値は**状態ごとの層B設定**（`meta/config.yaml` の `limits.dwell_warn_minutes`）。書かなかった状態は既定に落ちる：
 
 ```yaml
+review:
+  default_policy: banto    # policy を書かなかったタスクの既定（→ §2.5）。
+                           # 省略時は Kobo の既定＝ auto。これが反転の後戻りの口
 limits:
   dwell_warn_minutes:      # 既定 — queued 120 / implementing 90 / review-ready 240
     queued: 120            #        failed 60 / paused 240（単位は分）
