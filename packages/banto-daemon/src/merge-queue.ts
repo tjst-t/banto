@@ -47,7 +47,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { EventLog, TaskRecord } from "@banto/core";
 import { StateMachine } from "@banto/core";
-import type { OrchestrationEvent, StateTransitionedEvent } from "@banto/core";
+import type { OrchestrationEvent, StateTransitionedEvent, TickJobFailedEvent } from "@banto/core";
 import { runMergeGate, type GateVerifyRunner } from "./merge-gate.js";
 import { removeWorktree } from "@banto/repo-manager";
 
@@ -349,6 +349,34 @@ export async function processMergeQueue(
     return false;
   }
 
+  // ── 0. リポジトリが使える形か先に確かめる（task-0098） ────────────────────
+  //
+  // **「リポジトリが無い」は衝突ではない。** ここを素通しすると git は cwd 不在で
+  // 落ち、その失敗を rebase 衝突と読んで `<repoPath>/work/tasks/` に衝突解決タスクを
+  // 書き、origin を paused に落としていた。実在しない場所に書けるかどうかは
+  // **走らせる器の権限で変わる**——ホストのユーザは `/repos` に書けず（EACCES）
+  // 途中で止まるが、root のコンテナでは書けてしまう。同じ入力で結果が割れる。
+  // 分類を直して器から独立させる：使えないリポジトリは衝突ではなく tick の失敗。
+  //
+  // I2: 握りつぶさない（tick_job_failed に残す）。ただし tick ごとに同じ文言を
+  //     積み直さない——直前の merge-queue 失敗と同じなら積まない。
+  // タスクは `merging` のまま残し、リポジトリが戻れば次の tick で先へ進む。
+  const repoProblem = await findRepoProblem(repoPath);
+  if (repoProblem) {
+    const error =
+      `merge-queue: repo unusable for ${projectTag}/${taskId}: ${repoProblem}; ` +
+      `task stays in merging (not a conflict)`;
+    if (lastMergeQueueError(allEvents) !== error) {
+      log.append({
+        type: "tick_job_failed",
+        projectTag: "daemon",
+        jobName: "merge-queue",
+        error,
+      });
+    }
+    return false;
+  }
+
   // Task branch name: same convention used in spawnTask
   // The agent commits to a branch named "task/<taskId>" in the worktree.
   const taskBranch = `task/${taskId}`;
@@ -550,6 +578,39 @@ export async function processMergeQueue(
 }
 
 // ── Git helpers ───────────────────────────────────────────────────────────────
+
+/**
+ * リポジトリとして使える形かを見る（task-0098）。
+ *
+ * 使えない理由を1行で返す。使えるなら undefined。
+ * 判定は2つだけ——**在るか**と**git リポジトリか**。ここを通れば rebase の失敗は
+ * 本物の衝突（か、少なくとも中身の話）だと言える。
+ *
+ * D6: git CLI（stdlib の child_process）。新しい依存は足さない。
+ */
+async function findRepoProblem(repoPath: string): Promise<string | undefined> {
+  if (!fs.existsSync(repoPath)) {
+    return `repo path does not exist: ${repoPath}`;
+  }
+  try {
+    await execFileAsync("git", ["rev-parse", "--git-dir"], { cwd: repoPath });
+  } catch {
+    return `not a git repository: ${repoPath}`;
+  }
+  return undefined;
+}
+
+/** 直近の merge-queue の tick_job_failed の文言（無ければ undefined）。 */
+function lastMergeQueueError(events: OrchestrationEvent[]): string | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]!;
+    if (event.type === "tick_job_failed") {
+      const tickEvent = event as TickJobFailedEvent;
+      if (tickEvent.jobName === "merge-queue") return tickEvent.error;
+    }
+  }
+  return undefined;
+}
 
 /**
  * Rebase the task branch onto the mainline in the task's worktree.
