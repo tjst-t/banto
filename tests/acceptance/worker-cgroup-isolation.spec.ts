@@ -354,6 +354,22 @@ describe("[inc-0066] 職人1本ごとの袋", () => {
     assert.equal(DEFAULT_WORKER_MEMORY_MAX, 2 * 1024 ** 3);
   });
 
+  it("上限に当たったら袋ごと死ぬ（半分死んだ職人を残さない）", () => {
+    const fsx = productionShapedTree();
+    const bag = prepared(fsx).createBag("banto", "task-0149")!;
+    assert.equal(fsx.nodes.get(bag.dir)!.values.get("memory.oom.group"), "1");
+  });
+
+  it("袋ごと殺された（oom_group_kill）ことも「上限で死んだ」と読む", () => {
+    const fsx = productionShapedTree();
+    const cg = prepared(fsx);
+    const bag = cg.createBag("banto", "task-0149")!;
+    fsx.nodes
+      .get(bag.dir)!
+      .values.set("memory.events", "low 0\nhigh 0\nmax 5\noom 1\noom_kill 0\noom_group_kill 1\n");
+    assert.equal(cg.usage(bag).oomKilled, true);
+  });
+
   it("上限は設定で変えられる", () => {
     const fsx = productionShapedTree();
     const bag = prepared(fsx, 3 * 1024 ** 3).createBag("banto", "task-0149")!;

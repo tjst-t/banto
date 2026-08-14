@@ -387,6 +387,22 @@ export class WorkerCgroups {
       }
       throw new Error(`${dir}/memory.max に上限を書けませんでした: ${String(err)}`);
     }
+    /**
+     * **上限に当たったら袋ごと死ぬ**（`memory.oom.group`）。
+     *
+     * 既定（0）だと、カーネルは袋の中で「いちばん大きいもの」だけを殺す。すると
+     * `claude` CLI だけが消えて node ホストが半端に生き残る（あるいはその逆）といった、
+     * **半分死んだ職人**が残りうる。1本まるごと死ねば、工房から見えるのは
+     * `process_exited` 1件——いまのコードが既に知っている形に落ちる。
+     *
+     * 書けなくても職人は起こす。上限（`memory.max`）は既に張れており、
+     * ここは死に方を揃えるだけの refinement だから（カーネル 4.19 以降）。
+     */
+    try {
+      this.fsx.write(path.join(dir, "memory.oom.group"), "1");
+    } catch (err) {
+      console.error(`[worker-pool] ${dir}/memory.oom.group を書けませんでした（続行）: ${String(err)}`);
+    }
     return { dir, procsFile: path.join(dir, "cgroup.procs") };
   }
 
@@ -447,7 +463,8 @@ export class WorkerCgroups {
       ...(peakBytes !== undefined ? { peakBytes } : {}),
       ...(events ? { events } : {}),
       hitLimit: (events?.["max"] ?? 0) > 0,
-      oomKilled: (events?.["oom_kill"] ?? 0) > 0,
+      // `memory.oom.group=1` を張っているので、袋ごと殺された分（oom_group_kill）も同じ意味
+      oomKilled: (events?.["oom_kill"] ?? 0) > 0 || (events?.["oom_group_kill"] ?? 0) > 0,
       ...(problems.length > 0 ? { error: problems.join(" / ") } : {}),
     };
   }
