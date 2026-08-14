@@ -18,7 +18,15 @@
  * 優先順位（前提と注意・a5）: 環境変数 `BANTO_CHAPTER_MODEL` > 画面の設定（保存された値）
  * > 既定。環境変数は運用に出ているので互換のため残し、最優先のままにする。
  *
- * D5: 判断は「どちらを勝たせるか」「使えるかどうかをバックエンドに聞く」だけ。
+ * **解決は実行環境に左右されない**（PO差し戻し 2026-08-14）。「この座標は認識される形か」
+ * （`HarnessBackendDescriptor.supports()`）だけを見て、「いま実際に呼べるか」
+ * （`unavailable()`。認証の有無など）は見ない——見ると、同じ指定がホストでは通り、
+ * 認証の無い検証環境では黙って別のモデルへ落ちる。それは inc-0068 そのものの形
+ * （実測で確認済み：`CLAUDE_CONFIG_DIR` を空にすると、ホストでもこの食い違いが再現した）。
+ * 実際に呼べるかは呼ぶときに分かる——呼べなければ、そこで例外にする（I2。
+ * `chapter-completers.ts` の各口が担う）。
+ *
+ * D5: 判断は「どちらを勝たせるか」「座標を認識できるかをバックエンドに聞く」だけ。
  * D6: 追加の依存は無い。
  */
 
@@ -131,15 +139,25 @@ export function resolveChapterModel(options: {
 }): ChapterModelResolution {
   const backendById = new Map(options.backends.map((b) => [b.id, b] as const));
 
-  /** このバックエンド・モデルを実際に回せるか。回せなければ理由を返す。 */
+  /**
+   * この座標がこのバックエンドで**認識される形か**。理由があれば返す。
+   *
+   * **`backend.unavailable()`（いま実際に呼べるか）はここでは見ない**——見ると、
+   * 解決の結果が実行環境（認証の有無・SDK が使える状態か）に左右される。同じ指定が
+   * ホストでは通り、認証の無い環境（検証コンテナ等）では黙って別のモデルへ落ちる、
+   * という**まさに inc-0068 の形**の食い違いになる（実測で確認済み：
+   * `CLAUDE_CONFIG_DIR` を空にすると、ホストでもこの食い違いが再現する）。
+   *
+   * 「解決できる（座標として認識される）」と「いま実際に呼べる」は別のこと。
+   * 後者は呼ぶときに分かる——呼べなければ、その場で例外にする（I2）。
+   * ここで確かめるのは `supports()`（この参照をこのバックエンドで回せる形か）だけ。
+   */
   const unusable = (ref: ChapterModelRef): string | undefined => {
     const backend = backendById.get(ref.backend);
     if (!backend) {
       const known = [...backendById.keys()].join(", ");
       return `バックエンド "${ref.backend}" は登録されていません（あるのは ${known}）`;
     }
-    const unavailable = backend.unavailable();
-    if (unavailable) return unavailable;
     const support = backend.supports({ provider: ref.provider, model: ref.model });
     return support === true ? undefined : support.reason;
   };
