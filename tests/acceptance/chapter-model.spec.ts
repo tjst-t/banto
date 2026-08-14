@@ -172,7 +172,18 @@ describe("[task-0151 a4] 解決できないときは黙って既定へ落とさ�
     assert.match(result.fallback!.reason, /使えるモデルの一覧にありません/);
   });
 
-  it("バックエンドが使えない（認証が無い等）ときも理由を残す", () => {
+  /**
+   * PO差し戻し 2026-08-14: `resolveChapterModel` は `backend.unavailable()`
+   * （いま実際に呼べるか。認証の有無など）を見てはいけない。見ると、解決の結果が
+   * 実行環境に左右され、同じ指定がホストでは通り、認証の無い検証環境（docker）では
+   * 黙って別のモデルへ落ちる——inc-0068 そのものの形の食い違いになる
+   * （実測：`createClaudeBackend()` は `unavailable()` が `~/.claude` の認証の有無を見るため、
+   * 認証の無い環境で `chapter-model.spec.ts` のこの試験が落ちていた）。
+   *
+   * 「座標が認識される（`supports()`）」と「いま実際に呼べる（`unavailable()`）」は別のこと。
+   * 後者は呼ぶときに分かればよい——呼べなければそこで例外にする（I2）。
+   */
+  it("バックエンドが unavailable（認証が無い等）でも、座標が認識されれば解決する", () => {
     const result = resolveChapterModel({
       envRaw: "claude-agent-sdk/claude/haiku",
       settingsValue: undefined,
@@ -181,8 +192,13 @@ describe("[task-0151 a4] 解決できないときは黙って既定へ落とさ�
         fakeBackend("claude-agent-sdk", { unavailable: "~/.claude の認証がありません" }),
       ],
     });
-    assert.deepEqual(result.ref, DEFAULT_CHAPTER_MODEL);
-    assert.match(result.fallback!.reason, /認証/);
+    assert.deepEqual(
+      result.ref,
+      { backend: "claude-agent-sdk", provider: "claude", model: "haiku" },
+      "unavailable() を理由に既定へ落ちてはいけない（実行環境に解決結果が左右される）"
+    );
+    assert.equal(result.source, "env");
+    assert.equal(result.fallback, undefined);
   });
 
   it("知らないバックエンドを指定したときも理由を残す", () => {
