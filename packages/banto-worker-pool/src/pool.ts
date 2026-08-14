@@ -45,6 +45,7 @@ import {
   toolOffloadExtensionPath,
   webToolsExtensionPath,
   workerReportExtensionPath,
+  workKeepExtensionPath,
 } from "./extension.js";
 import { WORKER_REPORT_TOOL_NAMES } from "./pi-extension/worker-report.js";
 import { WEB_TOOL_NAMES } from "./pi-extension/web-tools.js";
@@ -955,6 +956,10 @@ export class WorkerPool {
     // 「長い結果の直後に応答が返らない」穴に落ちる（task-0089 で3回連続）。
     // 先頭に置くのは、後続の拡張が見る結果を先に小さくしておくため
     extensionPaths.unshift(toolOffloadExtensionPath());
+    // work-keep: 作業の取り置きも**全職人に載せる**。職人が落ちても・無報告で終わっても、
+    // そこまでの成果が名前つきの枝に残る。守るのは職人の作法ではなく機構なので、
+    // 報告先や network の有無で載せ分けない
+    extensionPaths.push(workKeepExtensionPath());
     // 決定29e: 報告先があるときだけ報告経路を載せる
     if (this.reportUrl) extensionPaths.push(workerReportExtensionPath());
     // imp-0005: 外を読む口は許したときだけ。載せなければ Tool 自体が存在しない

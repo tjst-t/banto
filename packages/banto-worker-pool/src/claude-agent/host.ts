@@ -39,6 +39,7 @@ import { BANTO_MCP_SERVER, CLAUDE_DEFAULT_MODEL } from "./naming.js";
 import { createReportChannel, endedWithoutReporting } from "./report.js";
 import { createKoboChannel } from "./kobo.js";
 import { createClaudeToolOffload } from "./tool-offload.js";
+import { createClaudeWorkKeep } from "./work-keep.js";
 import { buildHostOptions } from "./options.js";
 import { SessionTranscript } from "./session-log.js";
 
@@ -314,6 +315,16 @@ async function main(): Promise<void> {
    */
   const offload = createClaudeToolOffload();
 
+  /**
+   * 作業の取り置き（機構が定期的にコミットする）。
+   *
+   * 職人が落ちても・無報告で終わっても、そこまでの成果が名前つきの枝に残る。
+   * pi 経路には拡張（`pi-extension/work-keep.ts`）として載っている**同じ判断**を、
+   * この経路では `PostToolUse` フック＋タイマーで載せる——実運用の職人はほぼ全部こちらなので、
+   * ここが空いていれば機構はどこにも効いていないことになる（task-0102 と同じ穴）。
+   */
+  const workKeep = createClaudeWorkKeep(process.env, process.cwd(), sessionId);
+
   // 組み立ては `options.ts`（純関数）。**繋ぎ目を試験から叩けるようにするため**に分けてある
   const options = buildHostOptions({
     config,
@@ -321,6 +332,7 @@ async function main(): Promise<void> {
     sessionId,
     reported: Boolean(report),
     offload,
+    workKeep,
     mcpServers,
   });
 

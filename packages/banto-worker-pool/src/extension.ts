@@ -35,6 +35,20 @@ export function toolOffloadExtensionPath(): string {
   return piExtensionPath("tool-offload");
 }
 
+/**
+ * 職人の作業を定期的に取り置く拡張のパス（work-keep）。
+ *
+ * **全職人に載せる。** 職人が落ちたり無報告で終わったりすると、そこまでの成果は未コミットの
+ * ままワークツリーに取り残される——実測で8件失っている。守るのは職人の作法ではなく機構なので、
+ * `network` や報告先の有無に関わらず載せる。止めたいときは環境変数（`BANTO_WORKER_KEEP=0`）で切る。
+ *
+ * Claude Agent SDK 経路はこのパスを読まない（`extensionPaths` は pi の言葉）。
+ * あちらは `claude-agent/work-keep.ts` がホストから直に載せる。
+ */
+export function workKeepExtensionPath(): string {
+  return piExtensionPath("work-keep");
+}
+
 /** src から実行する場合と dist から実行する場合で拡張子が変わるため、自分に合わせて解決する。 */
 function piExtensionPath(name: string): string {
   const ext = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
