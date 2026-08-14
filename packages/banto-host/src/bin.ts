@@ -40,6 +40,7 @@ import type { WorkerInfo } from "@banto/worker-pool";
 import {
   createClaudeBackend,
   createPiBackend,
+  hostModelInfo,
   toBackendOption,
   type HarnessBackendDescriptor,
 } from "./harness-backends.js";
@@ -1654,15 +1655,25 @@ async function serve(options: ServeOptions): Promise<void> {
     // task-0048: ビルド済み UI があれば同じポートで配る（常駐させるときの形）
     ...(webDir ? { webDir } : {}),
     // 画像添付の可否判定（/api/model）。id は指定されたモデル名のまま
-    // （解決で API 送信用 id に変わる場合があるため——MODEL_ALIASES）。vision は
-    // 解決されたモデルの能力（input に image があるか）から求める
-    ...(model && currentModelId
+    // （解決で API 送信用 id に変わる場合があるため——MODEL_ALIASES）。
+    //
+    // **能力は「標準そのものを解けたとき」だけ名乗る**（`hostModelInfo`）。
+    // `resolveHostDefault()` が代打へ落ちていたときにその vision / contextWindow を
+    // 標準の値として出すと、名前は `opus` なのに中身は無関係なモデル、になる
+    ...(model && hostDefault
       ? {
-          model: {
-            id: currentModelId,
-            vision: model.input.includes("image"),
-            ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
-          },
+          model: hostModelInfo({
+            steward: hostDefault,
+            resolved: resolvedModel
+              ? {
+                  provider: resolvedModel.provider,
+                  id: resolvedModel.id,
+                  vision: model.input.includes("image"),
+                  ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+                }
+              : undefined,
+            resolveExact: (p, m) => llmCatalog.resolveExact(p, m),
+          }),
         }
       : {}),
     ...(currentProvider ? { modelProvider: currentProvider } : {}),
