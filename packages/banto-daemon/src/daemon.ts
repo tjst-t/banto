@@ -205,6 +205,17 @@ interface WorkerView {
   state: "running" | "waiting" | "exited" | "closed";
 }
 
+/**
+ * 畳むときに**止まらなかった**職人（PO 裁定 2026-08-14）。
+ *
+ * 「止められませんでした」だけでは番頭は動けない——どのセッションが走り続けているかを
+ * 名指しできて初めて、工房の口（`worker.close` / `worker.list`）で追える。
+ */
+export interface UnstoppedWorker {
+  sessionId: string;
+  error: string;
+}
+
 /** 起こした職人1人分（Kobo が帳簿に残す最小限）。 */
 export interface SpawnedSession {
   sessionId: string;
@@ -1558,33 +1569,129 @@ export class Daemon {
   }
 
   /**
-   * どうしようもないものを、**落ちたまま畳む**（task-0081・PO 要望 2026-08-08）。
+   * どうしようもないものを畳む（task-0081・PO 要望 2026-08-08、**PO 裁定 2026-08-14 で拡張**）。
    *
-   * `failed` に置きっぱなしだと、既定の一覧（prop-0001）に出続けて
-   * 「まだ見る必要がある」ふりをする。畳めば消えるが、**記録は消えない**
-   * ——経緯には failed を通ったことが残り、畳んだ理由も残る。
+   * 当初は `failed` 専用だった。畳めば既定の一覧（prop-0001）から外れるので
+   * 「まだ見る必要がある」ふりをしなくなる、というのが元の狙いである。
+   *
+   * **実運用で宙に浮くのは failed ではなかった。** 実機の工場には queued 10本・paused 3本・
+   * review-ready 1本が二度と動かないまま凍り、番頭には畳む手段が無かった（PO 裁定 2026-08-14）。
+   * いまは**どの状態からでも**畳める。断るのは `closed` / `superseded` ——もう畳んであるもの
+   * だけで、そのときは**いまの状態を名指しで**返す（I2：黙って成功を返さない）。
+   *
+   * **記録は消えない**——`state_transitioned.from` に畳む前の状態が載り、理由も残る。
+   *
+   * **稼働中の職人を置き去りにしない。** implementing / auditing のタスクには職人が
+   * ぶら下がっていることがある。畳むなら止める——止まらなかったときは握り潰さず、
+   * 返り値と帳簿（`po_operation:task_abandoned`）に**どのセッションが止まらなかったか**を
+   * 名指しで残す。畳むこと自体は成立させる（止められないからといって凍らせない）。
    */
-  abandonTask(
+  async abandonTask(
     projectTag: string,
     taskId: string,
     options: { reason: string; by: string }
-  ): { ok: true } | { ok: false; reason: string } {
+  ): Promise<
+    | { ok: true; from: TaskStatus; stoppedSessions: string[]; unstoppedSessions: UnstoppedWorker[] }
+    | { ok: false; reason: string }
+  > {
     const task = this.store.getTask(taskId, projectTag);
     if (!task) return { ok: false, reason: `${taskId} は ${projectTag} の工場にありません` };
-    if (task.status !== "failed") {
+    const from = task.status as TaskStatus;
+    if (from === "closed") {
+      return { ok: false, reason: `${taskId} は既に畳んであります（いまは closed）` };
+    }
+    if (from === "superseded") {
       return {
         ok: false,
-        reason: `${taskId} は failed ではありません（いまは ${task.status}）`,
+        reason:
+          `${taskId} は既に置き換えて降ろしてあります（いまは superseded）。` +
+          "畳み直す必要はありません",
       };
     }
+
+    // **止める前に閉じる。** 職人を起こしている最中に畳まれることがあり、そのとき
+    // `keepWorkerIfStillWanted` は「畳んだ後の状態」を読んで遅れて生まれた職人を始末する
+    // ——先に閉じておかないと、その拾い直しが効かない（task-0072 の取りこぼしと同じ形）
     const result = this.transition(
       projectTag,
       taskId,
       "closed",
-      `abandoned_by:${options.by}（${options.reason}）`
+      `abandoned_by:${options.by}（${from} から畳みました: ${options.reason}）`,
+      { abandon: true }
     );
     if (!result.ok) return { ok: false, reason: `畳めませんでした: ${result.reason}` };
-    return { ok: true };
+
+    const workers = await this.closeWorkersForAbandon(projectTag, taskId);
+
+    // 帳簿に「誰が・なぜ・どこから畳んだか」と、**止まらなかった職人**を残す（I2）。
+    // 状態そのものは上の `state_transitioned` が持つ（D3）——ここは経緯の付帯情報
+    this.applyAndBroadcast(
+      this.log.append({
+        type: "po_operation",
+        projectTag,
+        operation: "task_abandoned",
+        taskId,
+        payload: {
+          from,
+          by: options.by,
+          reason: options.reason,
+          stoppedSessions: workers.stopped,
+          unstoppedSessions: workers.unstopped,
+        },
+      })
+    );
+
+    return {
+      ok: true,
+      from,
+      stoppedSessions: workers.stopped,
+      unstoppedSessions: workers.unstopped,
+    };
+  }
+
+  /**
+   * 畳むタスクにぶら下がっている職人を止める。
+   *
+   * **止めに行く相手は帳簿から引く**（D3）。`agent_spawned` があって `agent_exited` が
+   * 無いセッションが「まだ居るはず」の職人——工房に毎回聞きに行かないのは、職人を
+   * 一度も起こしていないタスク（queued で凍ったものなど）まで工房への往復を払わせない
+   * ため、そして**工房が居ないときに「止められなかった」と嘘を言わない**ため。
+   *
+   * I2: 止まらなかったものは名前を返す。呼び出し側が返り値と帳簿に残す。
+   */
+  private async closeWorkersForAbandon(
+    projectTag: string,
+    taskId: string
+  ): Promise<{ stopped: string[]; unstopped: UnstoppedWorker[] }> {
+    const stopped: string[] = [];
+    const unstopped: UnstoppedWorker[] = [];
+
+    const history = this.index.getTaskHistory(taskId, projectTag);
+    const spawned: string[] = [];
+    const exited = new Set<string>();
+    for (const ev of history) {
+      if (ev.type === "agent_spawned" && ev.sessionId && !spawned.includes(ev.sessionId)) {
+        spawned.push(ev.sessionId);
+      }
+      if (ev.type === "agent_exited" && ev.sessionId) exited.add(ev.sessionId);
+    }
+    const live = spawned.filter((sessionId) => !exited.has(sessionId));
+
+    for (const sessionId of live) {
+      try {
+        await this.workerInvoke("worker.close", { sessionId });
+        stopped.push(sessionId);
+      } catch (err) {
+        // I2: 止められなかったことを「止めた」に丸めない。工房の安全弁が後で拾うとしても、
+        // **いま誰が走り続けているか**は番頭に見えていなければならない
+        unstopped.push({ sessionId, error: String(err) });
+        process.stderr.write(
+          `[banto-daemon] ${projectTag}/${taskId} を畳みましたが職人が止まりません（${sessionId}）: ${String(err)}\n`
+        );
+      }
+    }
+
+    return { stopped, unstopped };
   }
 
   /**
@@ -2613,7 +2720,15 @@ export class Daemon {
     projectTag: string,
     taskId: string,
     to: string,
-    reason?: string
+    reason?: string,
+    /**
+     * `abandon: true` のときだけ `closed` を**横断の遷移**として扱う（PO 裁定 2026-08-14）。
+     *
+     * 旗を要るようにしているのは、遷移表の `closed` を素通しにしないため——HTTP の
+     * `/transition` も機構の tick もこの口を通るので、素通しにすると「どの状態からでも
+     * 誰でも閉じられる」になる。畳むのは番頭の判断の口（`kobo.abandon`）だけ。
+     */
+    opts?: { abandon?: boolean }
   ): TransitionResult {
     const task = this.store.getTask(taskId, projectTag);
     if (!task) return { ok: false, reason: "task_not_found" };
@@ -2624,7 +2739,14 @@ export class Daemon {
     // Cross-cutting transitions: failed and superseded are reachable from any non-terminal state.
     // Route through StateMachine.fail() / StateMachine.supersede() instead of the transition table.
     let result: TransitionResult;
-    if (toStatus === "failed") {
+    if (toStatus === "closed" && opts?.abandon === true) {
+      result = StateMachine.abandon(
+        this.log,
+        taskId,
+        { currentStatus: fromStatus, reason: reason ?? "abandoned" },
+        projectTag
+      );
+    } else if (toStatus === "failed") {
       result = StateMachine.fail(
         this.log,
         taskId,
