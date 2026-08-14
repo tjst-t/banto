@@ -292,8 +292,60 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     },
   });
 
-  return [delegate, list, models, steer, close, wake, stop, attach, events];
+  /**
+   * 取り置きを**番頭が読める形にする**（work-keep）。
+   *
+   * ここが無いと、機構は成果を守れても番頭がそれを知る経路が無い——「在るのに誰も
+   * 気づけない」は、実装が全部あるのに一度も発火しなかった触れる環境と同じ形の穴である。
+   * `git branch --list` を番頭が打つことを期待する設計は、事実上「無い」のと同じ。
+   */
+  const keeps = defineNamespacedTool({
+    name: "worker.keeps",
+    label: "Worker: Keeps",
+    description:
+      "落ちた・無報告で終わった職人の**未コミットの成果**が、機構の取り置き枝に残っていないか調べる。\n" +
+      "職人が消えたのに成果が要るとき・差し戻す前にここを見る。\n" +
+      '例: {taskId: "task-0042"} → その仕事の取り置き／{} → 全部\n' +
+      "taskId・projectTag・repoPath は英語の識別子（パス）で埋める。\n" +
+      "**枝は職人が作ったものではなく機構が打ったもの**（打ち手は banto-keeper）。",
+    parameters: Type.Object({
+      taskId: Type.Optional(Type.String()),
+      projectTag: Type.Optional(Type.String()),
+      repoPath: Type.Optional(
+        Type.String({
+          description: "そのタスクのワークツリーが1つも残っていないときに、見に行く場所を名指しする",
+        })
+      ),
+    }),
+    async execute(params) {
+      const found = pool.keeps({
+        ...(params.taskId ? { taskId: params.taskId } : {}),
+        ...(params.projectTag ? { projectTag: params.projectTag } : {}),
+        ...(params.repoPath ? { repoPath: params.repoPath } : {}),
+      });
+      const text =
+        found.length === 0
+          ? params.taskId
+            ? `「${params.taskId}」の取り置きはありません`
+            : "取り置きはありません"
+          : found
+              .map((info) => {
+                const count = info.keptCount === undefined ? "" : ` ${info.keptCount}枚`;
+                return (
+                  `${info.branch}\n` +
+                  `  ${info.taskId} [${info.projectTag}] ${info.runtime}` +
+                  `${count} 起動 ${info.startedAt} 最後 ${info.lastKeptAt}\n` +
+                  `  中身を見る: git log -p ${info.branch}`
+                );
+              })
+              .join("\n");
+      return { content: [{ type: "text" as const, text }], details: { keeps: found } };
+    },
+  });
+
+  return [delegate, list, models, steer, close, wake, stop, attach, events, keeps];
 }
+
 
 /**
  * 職人自身が使う Tool（決定29）。**番頭には渡さない**——番頭が自分に報告しても意味がない。

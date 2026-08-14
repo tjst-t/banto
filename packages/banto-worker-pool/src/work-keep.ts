@@ -560,3 +560,279 @@ export function createWorktreeKeeper(
     ...(params.git ? { git: params.git } : {}),
   });
 }
+
+// ══ 見つける ════════════════════════════════════════════════════════════════
+
+/**
+ * **取り置きは「在るのに誰も気づけない」ものになってはいけない。**
+ *
+ * 番頭が `git branch --list` を打つことを期待する設計は、事実上「無い」のと同じ。
+ * ここから下は、取り置きを**道具で読める形にする**ための読み取り側である
+ * （繋ぎ込みは `worker-tools.ts` の `worker.keeps`）。
+ */
+
+/** 枝の名前から読み取れること。 */
+export interface KeepBranchName {
+  branch: string;
+  projectTag: string;
+  taskId: string;
+  /** 職人が起きた時刻（枝の名前に刻んである）。 */
+  startedAt: string;
+  runtime: string;
+}
+
+/**
+ * 取り置き枝の名前をほどく。**形が違うものは `undefined`**。
+ *
+ * ほどけないものを「たぶんこれだろう」で扱わない——掃除（`pruneKeepBranches`）が
+ * この判定を使うので、曖昧に通すと関係の無い枝を消しかねない。
+ */
+export function parseKeepBranch(branch: string): KeepBranchName | undefined {
+  const prefix = `${KEEP_BRANCH_PREFIX}/`;
+  if (!branch.startsWith(prefix)) return undefined;
+  const parts = branch.slice(prefix.length).split("/");
+  if (parts.length !== 3) return undefined;
+  const [projectTag, taskId, leaf] = parts as [string, string, string];
+  const matched = /^(\d{8})T(\d{6})Z-(.+)$/u.exec(leaf);
+  if (!matched) return undefined;
+  const [, date, time, runtime] = matched as unknown as [string, string, string, string];
+  const startedAt =
+    `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}` +
+    `T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}Z`;
+  return { branch, projectTag, taskId, startedAt, runtime };
+}
+
+/** 1本の取り置き枝の姿。 */
+export interface KeepBranchInfo extends KeepBranchName {
+  /** 先端のコミット。 */
+  commit: string;
+  /** 最後に撮った時刻（先端のコミット日時）。 */
+  lastKeptAt: string;
+  /** 何枚撮ったか（先端の見出しに書いてある番号。読めなければ `undefined`）。 */
+  keptCount?: number;
+}
+
+/** 先端の見出しから枚数を読む（`... の途中経過 #3（interval）`）。 */
+function keptCountOf(subject: string): number | undefined {
+  const matched = /#(\d+)/u.exec(subject);
+  if (!matched) return undefined;
+  const parsed = Number.parseInt(matched[1] as string, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * リポジトリの ref 置き場を一意に指す名前。
+ *
+ * ワークツリーは同じ `.git` を共有するので、**別のワークツリーから見ても同じ取り置きが見える**。
+ * 逆に言えば、走査する場所を素直に数えると同じリポジトリを何度も見てしまう——ここで畳む。
+ */
+export function resolveGitCommonDir(repo: string, git?: GitRunner): string | undefined {
+  const run = git ?? createGitRunner(repo);
+  try {
+    return run(["rev-parse", "--path-format=absolute", "--git-common-dir"]).trim();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 取り置き枝を数え上げる。
+ *
+ * ワークツリーが畳まれていても残る——枝は共有の `.git` 側にあるので、**同じリポジトリの
+ * どこか1つのワークツリーから見えれば全部見える**。逆に、そのリポジトリのワークツリーが
+ * 1つも残っていないと辿り着けない（そこは限界として報告してある）。
+ */
+export function listKeepBranches(
+  repo: string,
+  filter: { projectTag?: string | undefined; taskId?: string | undefined } = {},
+  git?: GitRunner
+): KeepBranchInfo[] {
+  const run = git ?? createGitRunner(repo);
+  let out: string;
+  try {
+    out = run([
+      "for-each-ref",
+      "--format=%(refname:short)%09%(objectname)%09%(committerdate:iso-strict)%09%(contents:subject)",
+      `refs/heads/${KEEP_BRANCH_PREFIX}/`,
+    ]);
+  } catch {
+    // git の外・壊れたリポジトリ。**空と「読めない」を混同しないため**に呼び出し側は
+    // resolveGitCommonDir で先に確かめる
+    return [];
+  }
+
+  const found: KeepBranchInfo[] = [];
+  for (const line of out.split("\n")) {
+    if (line.trim().length === 0) continue;
+    const [branch, commit, date, subject] = line.split("\t");
+    if (!branch || !commit || !date) continue;
+    const parsed = parseKeepBranch(branch);
+    if (!parsed) continue; // ほどけないものは数えない（消しもしない）
+    if (filter.projectTag && parsed.projectTag !== sanitizeRefPart(filter.projectTag)) continue;
+    if (filter.taskId && parsed.taskId !== sanitizeRefPart(filter.taskId)) continue;
+    const count = keptCountOf(subject ?? "");
+    found.push({
+      ...parsed,
+      commit,
+      lastKeptAt: date,
+      ...(count !== undefined ? { keptCount: count } : {}),
+    });
+  }
+  // 新しい順（番頭が最初に見たいのは直近の取り残し）
+  found.sort((a, b) => b.lastKeptAt.localeCompare(a.lastKeptAt));
+  return found;
+}
+
+// ══ 始末する ════════════════════════════════════════════════════════════════
+
+/**
+ * 取り置きを残す期限（日）。既定30日。
+ *
+ * 救出のための保険なので、それより古いものが要る場面は考えにくい。**掃除の仕方が無いものは、
+ * いずれ誰かが一括削除して成果ごと消える**——期限で消すのは、その終わり方を避けるため。
+ */
+export const DEFAULT_KEEP_MAX_AGE_DAYS = 30;
+
+/** 期限を変える環境変数。`0` 以下で掃除そのものを止める。 */
+export const KEEP_MAX_AGE_ENV = "BANTO_WORKER_KEEP_MAX_AGE_DAYS";
+
+/** 掃除の記録を置く名前（工房の dataDir の下）。 */
+export const KEEP_PRUNE_LOG = "keep-prune.jsonl";
+
+/** 期限を決める。読めない値は既定へ。`0` 以下は「掃除しない」。 */
+export function resolveKeepMaxAgeMs(env: EnvLike): number {
+  const raw = env[KEEP_MAX_AGE_ENV];
+  if (raw === undefined) return DEFAULT_KEEP_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+  const parsed = Number.parseInt(raw.trim(), 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_KEEP_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+  if (parsed <= 0) return 0; // 切ってある
+  return parsed * 24 * 60 * 60 * 1000;
+}
+
+/** 消さなかったものと、その理由。 */
+export interface KeepPruneSkip {
+  branch: string;
+  why: string;
+}
+
+export interface KeepPruneResult {
+  /** 見た枝の数（ほどけなかったものを含む）。 */
+  scanned: number;
+  /** 消した枝。 */
+  removed: KeepBranchInfo[];
+  /** まだ期限内なので残した枝の数。 */
+  kept: number;
+  /** 消すべきか判断できず**消さない側に倒した**もの。 */
+  skipped: KeepPruneSkip[];
+  /** 下見だけで実際には消していない。 */
+  dryRun: boolean;
+}
+
+export interface PruneKeepBranchesOptions {
+  /** どのリポジトリを掃除するか（そのリポジトリのワークツリーならどこでもよい）。 */
+  repo: string;
+  /** これより古いものを消す（ミリ秒）。`0` 以下なら何もしない。 */
+  maxAgeMs: number;
+  /** いまの時刻。 */
+  now?: number;
+  /** 下見だけ（既定 false）。 */
+  dryRun?: boolean;
+  /**
+   * 消してはいけない枝を守る口。`true` を返した枝は残す。
+   *
+   * 工房は「まだ生きている職人の枝」をここで守る——期限（既定30日）と定期取り置き（2分）の
+   * 差から、生きている職人の枝が期限に達することは普通は無いが、**時計が狂った・職人が
+   * 長く止まっていた**ときに備えて機構としても塞いでおく。
+   */
+  protect?: (info: KeepBranchInfo) => boolean;
+  /** 消す前後の記録先。 */
+  record?: (entry: Record<string, unknown>) => void;
+  /** git の口（試験から差し替える）。 */
+  git?: GitRunner;
+}
+
+/**
+ * 期限を過ぎた取り置きを消す。
+ *
+ * **消してよいと確かめられたものだけ消す**（迷ったら消さない側へ倒す）:
+ *
+ *   - `refs/heads/banto/keep/` の下だけを見る。他の枝には触れない
+ *   - 名前がこの機構の形にほどけないものは数えるだけで消さない
+ *   - 日時が読めないものは消さない
+ *   - `protect` が守ると言ったものは消さない
+ *   - 消すときは `update-ref -d <ref> <見たときのコミット>` ——**見たあとに動いた枝は
+ *     git 側で弾かれる**（生きている職人が撮った直後の取り違えを機構で防ぐ）
+ *
+ * **消す前に記録する**。何を消すつもりかを先に残してから消すので、途中で落ちても
+ * 「何が消えたか」ではなく「何を消そうとしたか」が残る——コミットの名前が残っていれば、
+ * git が実際にオブジェクトを捨てるまでの間は `update-ref` で戻せる。
+ */
+export function pruneKeepBranches(options: PruneKeepBranchesOptions): KeepPruneResult {
+  const now = options.now ?? Date.now();
+  const dryRun = options.dryRun ?? false;
+  const result: KeepPruneResult = { scanned: 0, removed: [], kept: 0, skipped: [], dryRun };
+  if (options.maxAgeMs <= 0) return result;
+
+  const run = options.git ?? createGitRunner(options.repo);
+  const branches = listKeepBranches(options.repo, {}, run);
+  result.scanned = branches.length;
+
+  const doomed: KeepBranchInfo[] = [];
+  for (const info of branches) {
+    const at = Date.parse(info.lastKeptAt);
+    if (!Number.isFinite(at)) {
+      // 迷ったら消さない
+      result.skipped.push({ branch: info.branch, why: `最後に撮った時刻を読めない（${info.lastKeptAt}）` });
+      continue;
+    }
+    if (now - at < options.maxAgeMs) {
+      result.kept += 1;
+      continue;
+    }
+    if (options.protect?.(info)) {
+      result.skipped.push({ branch: info.branch, why: "まだ動いている職人の取り置き" });
+      continue;
+    }
+    doomed.push(info);
+  }
+
+  if (doomed.length === 0) return result;
+
+  // **消す前に記録する。** 落ちても「何を消そうとしたか」がコミット名つきで残る
+  options.record?.({
+    at: new Date(now).toISOString(),
+    event: dryRun ? "keep_prune_planned_dry_run" : "keep_prune_planned",
+    repo: options.repo,
+    maxAgeMs: options.maxAgeMs,
+    count: doomed.length,
+    branches: doomed.map((info) => ({ branch: info.branch, commit: info.commit, lastKeptAt: info.lastKeptAt })),
+  });
+
+  if (dryRun) {
+    result.removed.push(...doomed);
+    return result;
+  }
+
+  for (const info of doomed) {
+    try {
+      // 見たときのコミットを条件に付ける。取り違えて別のものを消すくらいなら失敗した方がよい
+      run(["update-ref", "-d", `refs/heads/${info.branch}`, info.commit]);
+      result.removed.push(info);
+    } catch (err) {
+      result.skipped.push({
+        branch: info.branch,
+        why: `消せなかった: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  options.record?.({
+    at: new Date(now).toISOString(),
+    event: "keep_prune_done",
+    repo: options.repo,
+    removed: result.removed.map((info) => info.branch),
+    skipped: result.skipped,
+  });
+
+  return result;
+}

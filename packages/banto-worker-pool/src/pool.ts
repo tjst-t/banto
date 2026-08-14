@@ -47,6 +47,16 @@ import {
   workerReportExtensionPath,
   workKeepExtensionPath,
 } from "./extension.js";
+import {
+  KEEP_PRUNE_LOG,
+  listKeepBranches,
+  pruneKeepBranches,
+  resolveGitCommonDir,
+  resolveKeepMaxAgeMs,
+  sanitizeRefPart,
+  type KeepBranchInfo,
+  type KeepPruneResult,
+} from "./work-keep.js";
 import { WORKER_REPORT_TOOL_NAMES } from "./pi-extension/worker-report.js";
 import { WEB_TOOL_NAMES } from "./pi-extension/web-tools.js";
 import { SpawnLedger, isProcessAlive, killOrphanProcess, type LedgerEntry } from "./spawn-ledger.js";
@@ -359,6 +369,8 @@ export class WorkerPool {
   private readonly unsubscribeDriver: () => void;
   private idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
   private idleSweeper: NodeJS.Timeout | undefined;
+  /** 前に取り置きを掃除した時刻（0 は「まだ一度もしていない」）。 */
+  private lastKeepPruneAt = 0;
 
   constructor(options: WorkerPoolOptions) {
     this.modelLedger = options.modelLedger;
@@ -1043,6 +1055,11 @@ export class WorkerPool {
       },
     });
 
+    // work-keep: 期限を過ぎた取り置きを始末する。**職人を起こす場面に繋ぐ**のは、
+    // 取り置きが増えるのがここだから——増える口と減る口を同じところに置けば、
+    // 「掃除の仕組みはあるが誰も呼ばない」にならない
+    this.pruneKeepsIfDue(input.worktreePath);
+
     return {
       projectTag,
       taskId: input.taskId,
@@ -1495,6 +1512,100 @@ export class WorkerPool {
       .filter((l) => l.trim().length > 0);
     const lines = all.slice(-tailLines);
     return { lines, truncated: all.length > lines.length };
+  }
+
+  // ── 取り置き（work-keep）を見つける・始末する ─────────────────────────────
+
+  /**
+   * このリポジトリに残っている取り置きを数え上げる。
+   *
+   * **どのリポジトリを見るかは、職人の作業場所から決める。** 取り置きは共有の `.git` 側に
+   * 出来るので、そのリポジトリのワークツリーが1つでも残っていれば全部見える。
+   * `repoPath` を渡せばそこだけを見る（畳んだ職人しか居ないときの逃げ道）。
+   */
+  keeps(
+    filter: { projectTag?: string; taskId?: string; repoPath?: string } = {}
+  ): KeepBranchInfo[] {
+    // 同じ枝を2度返さないのは `keepRepos` の受け持ち（`.git` ごとに1回しか見に行かない）
+    return this.keepRepos(filter.repoPath).flatMap((repo) => listKeepBranches(repo, filter));
+  }
+
+  /**
+   * 期限を過ぎた取り置きを消す。
+   *
+   * **まだ動いている職人の枝は守る**（`protect`）。期限（既定30日）と定期取り置き（2分）の
+   * 差からそこに達することは普通は無いが、時計が狂ったときのために機構としても塞ぐ。
+   */
+  pruneKeeps(
+    options: { repoPath?: string; maxAgeMs?: number; dryRun?: boolean; now?: number } = {}
+  ): KeepPruneResult[] {
+    const maxAgeMs = options.maxAgeMs ?? resolveKeepMaxAgeMs(process.env);
+    const live = new Set(
+      this.list({ includeClosed: false })
+        .filter((worker) => worker.alive)
+        .map((worker) => `${sanitizeRefPart(worker.projectTag)}/${sanitizeRefPart(worker.taskId)}`)
+    );
+    const results: KeepPruneResult[] = [];
+    for (const repo of this.keepRepos(options.repoPath)) {
+      results.push(
+        pruneKeepBranches({
+          repo,
+          maxAgeMs,
+          ...(options.now !== undefined ? { now: options.now } : {}),
+          ...(options.dryRun !== undefined ? { dryRun: options.dryRun } : {}),
+          protect: (info) => live.has(`${info.projectTag}/${info.taskId}`),
+          record: (entry) => this.recordKeepPrune(entry),
+        })
+      );
+    }
+    return results;
+  }
+
+  /**
+   * 掃除の間隔。ここを短くしても消える枝は増えない（消えるのは期限を過ぎたものだけ）ので、
+   * 見に行く回数を抑える方に倒してある。
+   */
+  private static readonly KEEP_PRUNE_EVERY_MS = 6 * 60 * 60 * 1000;
+
+  /** 前に掃除してから間が空いていれば掃除する。**職人を起こす道を止めない**（I2 の例外）。 */
+  private pruneKeepsIfDue(worktreePath: string, now = Date.now()): void {
+    if (now - this.lastKeepPruneAt < WorkerPool.KEEP_PRUNE_EVERY_MS) return;
+    this.lastKeepPruneAt = now;
+    try {
+      this.pruneKeeps({ repoPath: worktreePath, now });
+    } catch (err) {
+      // 掃除の失敗で職人が起きないのは本末転倒。ただし黙らせない
+      console.error(`[worker-pool] work-keep の掃除に失敗: ${String(err)}`);
+    }
+  }
+
+  /** 掃除の記録（消す前に書く）。読めるところに残さないと「黙って消えた」になる。 */
+  private recordKeepPrune(entry: Record<string, unknown>): void {
+    try {
+      fs.appendFileSync(path.join(this.dataDir, KEEP_PRUNE_LOG), JSON.stringify(entry) + "\n", "utf-8");
+    } catch (err) {
+      console.error(`[worker-pool] work-keep の掃除の記録に失敗: ${String(err)}`);
+    }
+    if (entry["event"] === "keep_prune_planned") {
+      console.error(`[worker-pool] work-keep: 期限切れの取り置きを ${String(entry["count"])} 本消します`);
+    }
+  }
+
+  /** 走査するリポジトリ（同じ `.git` を共有するワークツリーは1つに畳む）。 */
+  private keepRepos(repoPath?: string): string[] {
+    const candidates = repoPath
+      ? [repoPath]
+      : [...new Set(this.list({ includeClosed: true }).map((worker) => worker.worktree))];
+    const repos: string[] = [];
+    const seen = new Set<string>();
+    for (const candidate of candidates) {
+      if (candidate.length === 0 || !fs.existsSync(candidate)) continue;
+      const common = resolveGitCommonDir(candidate);
+      if (!common || seen.has(common)) continue;
+      seen.add(common);
+      repos.push(candidate);
+    }
+    return repos;
   }
 
   /** 終了済みの職人を台帳から片付ける。返り値は片付けた数。 */

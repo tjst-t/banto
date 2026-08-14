@@ -31,11 +31,14 @@ import * as childProcess from "node:child_process";
 import {
   CLAUDE_KEEP_RUNTIME,
   DEFAULT_KEEP_INTERVAL_MS,
+  DEFAULT_KEEP_MAX_AGE_DAYS,
   KEEPER_EMAIL,
   KEEPER_NAME,
   KEEP_BRANCH_PREFIX,
   KEEP_ENABLED_ENV,
   KEEP_INTERVAL_ENV,
+  KEEP_MAX_AGE_ENV,
+  KEEP_PRUNE_LOG,
   KEEP_SUBJECT_PREFIX,
   PI_KEEP_RUNTIME,
   PiRpcDriver,
@@ -44,14 +47,22 @@ import {
   buildHostOptions,
   createClaudeToolOffload,
   createClaudeWorkKeep,
+  createGitRunner,
+  createWorkerTools,
   createWorktreeKeeper,
   installWorkKeep,
   isKeepEnabled,
   keepBranchName,
+  listKeepBranches,
+  parseKeepBranch,
+  pruneKeepBranches,
   resolveKeepIntervalMs,
+  resolveKeepMaxAgeMs,
   sanitizeRefPart,
   workKeepExtensionPath,
+  type GitRunner,
 } from "@banto/worker-pool";
+import { PRESENTED_TOOL_NAMES } from "../../packages/banto-host/src/presented-tools.js";
 
 // ── 道具立て ────────────────────────────────────────────────────────────────
 
@@ -889,6 +900,518 @@ describe("[work-keep] 両経路が同じ機構で守られる", () => {
       assert.ok(branch.endsWith(`-${runtime}`), branch);
       assert.equal(git(repo, ["log", "-1", "--format=%an", `refs/heads/${branch}`]).trim(), KEEPER_NAME);
       assert.equal(git(repo, ["show", `refs/heads/${branch}:成果.txt`]), body);
+    }
+  });
+});
+
+// ══ (F) 番頭が取り置きを見つけられること ═════════════════════════════════════
+
+/**
+ * **取り置きは「在るのに誰も気づけない」ものになってはいけない。**
+ *
+ * 機構が成果を守っても、番頭がそれを知る経路が無ければ守っていないのと同じ。
+ * 実装が全部あったのに一度も発火しなかった「触れる環境」と同じ形の穴なので、
+ * ここで押さえるのは **①枝を数え上げられること ②番頭の道具として届くこと** の2つ。
+ */
+describe("[work-keep/F] 取り置きを見つけられる", () => {
+  let repo: string;
+
+  beforeEach(() => {
+    repo = initRepo();
+  });
+
+  afterEach(() => {
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  /** 取り置きを1本作る（撮った枚数を n 枚にする）。 */
+  function makeKeep(
+    identity: { projectTag: string; taskId: string; runtime: string },
+    startedAt: Date,
+    shots = 1
+  ): WorktreeKeeper {
+    const keeper = new WorktreeKeeper({
+      cwd: repo,
+      identity,
+      intervalMs: 0,
+      branch: keepBranchName(identity, startedAt),
+      indexFile: path.join(repo, "..", `keep-${identity.taskId}-${identity.runtime}.index`),
+      onError: () => undefined,
+    });
+    for (let i = 0; i < shots; i++) {
+      fs.writeFileSync(path.join(repo, `${identity.taskId}-${identity.runtime}.txt`), `${i}\n`);
+      keeper.snapshot("interval");
+    }
+    return keeper;
+  }
+
+  it("枝の名前をほどいて「誰の・いつの・どのランタイムか」を返す", () => {
+    makeKeep({ projectTag: "banto", taskId: "task-0103", runtime: "claude-agent" }, new Date("2026-08-14T10:15:30Z"), 2);
+
+    const found = listKeepBranches(repo);
+
+    assert.equal(found.length, 1);
+    const info = found[0]!;
+    assert.equal(info.projectTag, "banto");
+    assert.equal(info.taskId, "task-0103");
+    assert.equal(info.runtime, "claude-agent");
+    assert.equal(info.startedAt, "2026-08-14T10:15:30Z");
+    assert.equal(info.keptCount, 2);
+    assert.equal(info.commit, git(repo, ["rev-parse", `refs/heads/${info.branch}`]).trim());
+  });
+
+  it("タスク・プロジェクトで絞れる", () => {
+    makeKeep({ projectTag: "banto", taskId: "task-0103", runtime: "pi" }, new Date("2026-08-14T10:00:00Z"));
+    makeKeep({ projectTag: "banto", taskId: "task-0104", runtime: "pi" }, new Date("2026-08-14T11:00:00Z"));
+    makeKeep({ projectTag: "other", taskId: "task-0103", runtime: "pi" }, new Date("2026-08-14T12:00:00Z"));
+
+    assert.deepEqual(
+      listKeepBranches(repo, { taskId: "task-0103" }).map((i) => i.projectTag).sort(),
+      ["banto", "other"]
+    );
+    assert.equal(listKeepBranches(repo, { projectTag: "banto" }).length, 2);
+    assert.equal(listKeepBranches(repo, { projectTag: "banto", taskId: "task-0104" }).length, 1);
+  });
+
+  it("新しい順に返す（番頭が最初に見たいのは直近の取り残し）", () => {
+    makeKeep({ projectTag: "banto", taskId: "old", runtime: "pi" }, new Date("2026-08-01T00:00:00Z"));
+    makeKeep({ projectTag: "banto", taskId: "new", runtime: "pi" }, new Date("2026-08-14T00:00:00Z"));
+
+    const found = listKeepBranches(repo);
+    assert.equal(found.length, 2);
+    assert.ok(found[0]!.lastKeptAt >= found[1]!.lastKeptAt);
+  });
+
+  it("この機構の形にほどけない名前は数えない（消しもしない）", () => {
+    makeKeep({ projectTag: "banto", taskId: "task-0103", runtime: "pi" }, new Date("2026-08-14T10:00:00Z"));
+    // 人が手で作った、頭だけ同じ枝
+    git(repo, ["update-ref", `refs/heads/${KEEP_BRANCH_PREFIX}/手で作った`, "HEAD"]);
+    git(repo, ["update-ref", `refs/heads/${KEEP_BRANCH_PREFIX}/a/b/よくわからない形`, "HEAD"]);
+
+    assert.equal(listKeepBranches(repo).length, 1);
+    assert.equal(parseKeepBranch("banto/keep/a/b/c"), undefined);
+    assert.equal(parseKeepBranch("feature/なにか"), undefined);
+    assert.equal(parseKeepBranch("banto/keep/p/t/20260814T101530Z-pi")?.runtime, "pi");
+  });
+
+  it("取り置きが1本も無ければ空（「読めない」と混同しない）", () => {
+    assert.deepEqual(listKeepBranches(repo), []);
+  });
+});
+
+describe("[work-keep/F] 番頭の道具として届く", () => {
+  let repo: string;
+  let poolDir: string;
+  let driver: FakeDriver;
+  let pool: WorkerPool;
+
+  beforeEach(() => {
+    repo = initRepo();
+    poolDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-wp-keeps-"));
+    driver = new FakeDriver();
+    pool = new WorkerPool({ driver, dataDir: poolDir, defaultProjectTag: "banto" });
+  });
+
+  afterEach(() => {
+    driver.cleanup();
+    fs.rmSync(poolDir, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  /** 職人を1人起こして、その worktree に取り置きを作る。 */
+  async function delegateWithKeep(taskId: string): Promise<string> {
+    await pool.delegate({ taskId, worktreePath: repo, instruction: "やって" });
+    const identity = { projectTag: "banto", taskId, runtime: "claude-agent" };
+    const keeper = new WorktreeKeeper({
+      cwd: repo,
+      identity,
+      intervalMs: 0,
+      branch: keepBranchName(identity, new Date("2026-08-14T10:15:30Z")),
+      indexFile: path.join(poolDir, `${taskId}.index`),
+      onError: () => undefined,
+    });
+    fs.writeFileSync(path.join(repo, `${taskId}.txt`), "書きかけ\n");
+    keeper.snapshot("turn_end");
+    return keeper.branch;
+  }
+
+  it("職人の作業場所からリポジトリを見つけて数え上げる", async () => {
+    const branch = await delegateWithKeep("task-0103");
+
+    const found = pool.keeps({ taskId: "task-0103" });
+
+    assert.equal(found.length, 1);
+    assert.equal(found[0]!.branch, branch);
+  });
+
+  it("同じリポジトリを2人の職人から2度数えない（別々のワークツリーでも）", async () => {
+    await delegateWithKeep("task-0103");
+    // 2人目は**同じリポジトリの別のワークツリー**で働く（現場では普通のこと）。
+    // 取り置き枝は共有の `.git` にあるので、素直に数えると同じものが2度返る
+    const second = path.join(repo, "..", `${path.basename(repo)}-wt2`);
+    git(repo, ["worktree", "add", "-q", "-b", "task-0104", second]);
+    try {
+      await pool.delegate({ taskId: "task-0104", worktreePath: second, instruction: "やって" });
+
+      const found = pool.keeps();
+      assert.equal(found.length, 1, found.map((i) => i.branch).join(" / "));
+    } finally {
+      git(repo, ["worktree", "remove", "--force", second]);
+    }
+  });
+
+  it("worker.keeps が中身と「どう見るか」を返す", async () => {
+    const branch = await delegateWithKeep("task-0103");
+    const keeps = createWorkerTools(pool).find((t) => t.name === "worker.keeps")!;
+
+    const result = await keeps.execute({ taskId: "task-0103" }, {} as never);
+
+    const text = (result.content[0] as { text: string }).text;
+    assert.match(text, new RegExp(branch.replace(/\//gu, "\\/"), "u"));
+    assert.match(text, /claude-agent/u);
+    assert.match(text, /git log -p /u);
+    assert.equal((result.details as { keeps: unknown[] }).keeps.length, 1);
+  });
+
+  it("取り置きが無いときは「無い」と言う（黙って空を返さない）", async () => {
+    await pool.delegate({ taskId: "task-0999", worktreePath: repo, instruction: "やって" });
+    const keeps = createWorkerTools(pool).find((t) => t.name === "worker.keeps")!;
+
+    const result = await keeps.execute({ taskId: "task-0999" }, {} as never);
+
+    assert.match((result.content[0] as { text: string }).text, /取り置きはありません/u);
+  });
+
+  it("番頭に提示される（在庫にあってもモデルには見えない、を防ぐ）", () => {
+    assert.ok(
+      PRESENTED_TOOL_NAMES.includes("worker.keeps"),
+      "worker.keeps が提示一覧に無い＝番頭からは存在しないのと同じ"
+    );
+    assert.ok(
+      createWorkerTools(pool).some((t) => t.name === "worker.keeps"),
+      "提示一覧にあるのに在庫に無い"
+    );
+  });
+});
+
+// ══ (G) 溜まり続ける取り置きの始末 ═══════════════════════════════════════════
+
+describe("[work-keep/G] 期限を過ぎた取り置きを消す", () => {
+  let repo: string;
+  const DAY = 24 * 60 * 60 * 1000;
+
+  beforeEach(() => {
+    repo = initRepo();
+  });
+
+  afterEach(() => {
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  /** 取り置きを1本作って、その枝名を返す。 */
+  function makeKeep(taskId: string, runtime = "pi"): string {
+    const identity = { projectTag: "banto", taskId, runtime };
+    const keeper = new WorktreeKeeper({
+      cwd: repo,
+      identity,
+      intervalMs: 0,
+      branch: keepBranchName(identity, new Date("2026-08-14T10:15:30Z")),
+      indexFile: path.join(repo, "..", `prune-${taskId}-${runtime}.index`),
+      onError: () => undefined,
+    });
+    fs.writeFileSync(path.join(repo, `${taskId}.txt`), "書きかけ\n");
+    keeper.snapshot("interval");
+    return keeper.branch;
+  }
+
+  /** 枝が残っているか。 */
+  function exists(branch: string): boolean {
+    try {
+      git(repo, ["rev-parse", "--verify", `refs/heads/${branch}`]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it("30日より古いものを消し、新しいものは残す", () => {
+    const old = makeKeep("task-old");
+    const fresh = makeKeep("task-fresh");
+    // 「古い」を作るのは時計の側（コミット日時を捏造しない）
+    const lastKeptAt = Date.parse(listKeepBranches(repo).find((i) => i.branch === old)!.lastKeptAt);
+
+    const result = pruneKeepBranches({
+      repo,
+      maxAgeMs: 30 * DAY,
+      now: lastKeptAt + 31 * DAY,
+      // task-fresh だけ守る（実際の「新しい」は時刻で決まるので、ここでは protect で分ける）
+      protect: (info) => info.branch === fresh,
+    });
+
+    assert.equal(result.removed.length, 1);
+    assert.equal(result.removed[0]!.branch, old);
+    assert.equal(exists(old), false);
+    assert.equal(exists(fresh), true);
+  });
+
+  it("期限内のものには触らない", () => {
+    const branch = makeKeep("task-0103");
+    const lastKeptAt = Date.parse(listKeepBranches(repo)[0]!.lastKeptAt);
+
+    const result = pruneKeepBranches({ repo, maxAgeMs: 30 * DAY, now: lastKeptAt + 29 * DAY });
+
+    assert.equal(result.removed.length, 0);
+    assert.equal(result.kept, 1);
+    assert.equal(exists(branch), true);
+  });
+
+  it("取り置き以外の枝には一切触らない", () => {
+    makeKeep("task-0103");
+    git(repo, ["update-ref", "refs/heads/feature/大事な作業", "HEAD"]);
+    git(repo, ["update-ref", `refs/heads/${KEEP_BRANCH_PREFIX}/手で作った`, "HEAD"]);
+
+    pruneKeepBranches({ repo, maxAgeMs: 1, now: Date.now() + 365 * DAY });
+
+    assert.equal(exists("feature/大事な作業"), true, "関係の無い枝を消した");
+    assert.equal(exists(`${KEEP_BRANCH_PREFIX}/手で作った`), true, "形がほどけない枝を消した");
+    assert.equal(exists("main"), true);
+  });
+
+  it("まだ動いている職人の取り置きは守る（消さない側に倒す）", () => {
+    const branch = makeKeep("task-0103");
+
+    const result = pruneKeepBranches({
+      repo,
+      maxAgeMs: 1,
+      now: Date.now() + 365 * DAY,
+      protect: (info) => info.taskId === "task-0103",
+    });
+
+    assert.equal(result.removed.length, 0);
+    assert.equal(result.skipped.length, 1);
+    assert.match(result.skipped[0]!.why, /まだ動いている職人/u);
+    assert.equal(exists(branch), true);
+  });
+
+  it("見たあとに動いた枝は消さない（間に職人がもう1枚撮った）", () => {
+    const branch = makeKeep("task-0103");
+    const real = createGitRunner(repo);
+    // 「掃除が見たあと・消す前」に職人が撮った1枚
+    const moved = real([
+      "commit-tree",
+      real(["rev-parse", "HEAD^{tree}"]).trim(),
+      "-m",
+      "職人がもう1枚撮った",
+    ]).trim();
+
+    let interleaved = false;
+    const raceGit: GitRunner = (args, env) => {
+      if (args[0] === "update-ref" && args[1] === "-d" && !interleaved) {
+        interleaved = true;
+        real(["update-ref", `refs/heads/${branch}`, moved]);
+      }
+      return real(args, env);
+    };
+
+    const result = pruneKeepBranches({ repo, maxAgeMs: 1, now: Date.now() + 365 * DAY, git: raceGit });
+
+    assert.ok(interleaved, "そもそも消しに行っていない");
+    assert.equal(result.removed.length, 0, "動いたあとの枝を消した＝職人の1枚を捨てた");
+    assert.equal(result.skipped.length, 1);
+    assert.match(result.skipped[0]!.why, /消せなかった/u);
+    assert.equal(exists(branch), true);
+    assert.equal(git(repo, ["rev-parse", `refs/heads/${branch}`]).trim(), moved);
+  });
+
+  it("下見（dryRun）では消さない", () => {
+    const branch = makeKeep("task-0103");
+
+    const result = pruneKeepBranches({ repo, maxAgeMs: 1, now: Date.now() + 365 * DAY, dryRun: true });
+
+    assert.equal(result.dryRun, true);
+    assert.equal(result.removed.length, 1);
+    assert.equal(exists(branch), true, "下見なのに消した");
+  });
+
+  it("消す前に記録する（途中で落ちても「何を消そうとしたか」が残る）", () => {
+    const branch = makeKeep("task-0103");
+    const commit = git(repo, ["rev-parse", `refs/heads/${branch}`]).trim();
+    const records: Record<string, unknown>[] = [];
+    /** 記録が呼ばれた時点で枝がまだ在ったか（＝本当に「消す前」か）。 */
+    const stillThere: boolean[] = [];
+
+    pruneKeepBranches({
+      repo,
+      maxAgeMs: 1,
+      now: Date.parse("2026-09-30T00:00:00Z"),
+      record: (entry) => {
+        records.push(entry);
+        if (entry["event"] === "keep_prune_planned") stillThere.push(exists(branch));
+      },
+    });
+
+    const planned = records.find((r) => r["event"] === "keep_prune_planned");
+    assert.ok(planned, "消す前の記録が無い");
+    assert.equal(planned["count"], 1);
+    // **順番が本体**：記録した時点ではまだ消えていないこと
+    assert.deepEqual(stillThere, [true], "記録より先に消していた（落ちたら何も残らない）");
+    assert.equal(records[0]!["event"], "keep_prune_planned");
+    // コミットの名前が残っている＝git がオブジェクトを捨てるまでは戻せる
+    assert.match(JSON.stringify(planned["branches"]), new RegExp(commit, "u"));
+    assert.ok(records.some((r) => r["event"] === "keep_prune_done"));
+    assert.equal(exists(branch), false);
+  });
+
+  it("期限を切ってあれば何もしない", () => {
+    const branch = makeKeep("task-0103");
+
+    const result = pruneKeepBranches({ repo, maxAgeMs: 0, now: Date.now() + 365 * DAY });
+
+    assert.equal(result.scanned, 0);
+    assert.equal(result.removed.length, 0);
+    assert.equal(exists(branch), true);
+  });
+
+  it("期限の既定は30日。環境変数で変えられる（0 以下で掃除しない）", () => {
+    assert.equal(DEFAULT_KEEP_MAX_AGE_DAYS, 30);
+    assert.equal(resolveKeepMaxAgeMs({}), 30 * DAY);
+    assert.equal(resolveKeepMaxAgeMs({ [KEEP_MAX_AGE_ENV]: "7" }), 7 * DAY);
+    assert.equal(resolveKeepMaxAgeMs({ [KEEP_MAX_AGE_ENV]: "0" }), 0);
+    assert.equal(resolveKeepMaxAgeMs({ [KEEP_MAX_AGE_ENV]: "-1" }), 0);
+    assert.equal(resolveKeepMaxAgeMs({ [KEEP_MAX_AGE_ENV]: "なんだこれ" }), 30 * DAY);
+  });
+});
+
+describe("[work-keep/G] 工房が自分で掃除する（誰も呼ばない、にしない）", () => {
+  let repo: string;
+  let poolDir: string;
+  let driver: FakeDriver;
+  let pool: WorkerPool;
+  let savedMaxAge: string | undefined;
+
+  beforeEach(() => {
+    repo = initRepo();
+    poolDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-wp-prune-"));
+    driver = new FakeDriver();
+    pool = new WorkerPool({ driver, dataDir: poolDir, defaultProjectTag: "banto" });
+    savedMaxAge = process.env[KEEP_MAX_AGE_ENV];
+  });
+
+  afterEach(() => {
+    driver.cleanup();
+    if (savedMaxAge === undefined) delete process.env[KEEP_MAX_AGE_ENV];
+    else process.env[KEEP_MAX_AGE_ENV] = savedMaxAge;
+    fs.rmSync(poolDir, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  /** 取り置きを1本作る。 */
+  function makeKeep(taskId: string): string {
+    const identity = { projectTag: "banto", taskId, runtime: "pi" };
+    const keeper = new WorktreeKeeper({
+      cwd: repo,
+      identity,
+      intervalMs: 0,
+      branch: keepBranchName(identity, new Date("2026-08-14T10:15:30Z")),
+      indexFile: path.join(poolDir, `${taskId}.index`),
+      onError: () => undefined,
+    });
+    fs.writeFileSync(path.join(repo, `${taskId}.txt`), "書きかけ\n");
+    keeper.snapshot("interval");
+    return keeper.branch;
+  }
+
+  /**
+   * 本当に古い取り置きを1本作る（コミット日時を過去にする）。
+   *
+   * 自動掃除は `Date.now()` で動く——時計を差し替える口を通らないので、**枝の側を
+   * 本当に古くしないと自動の道は試せない**。
+   */
+  function makeOldKeep(taskId: string, daysAgo: number): string {
+    const branch = keepBranchName(
+      { projectTag: "banto", taskId, runtime: "pi" },
+      new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000)
+    );
+    const at = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString();
+    const tree = git(repo, ["rev-parse", "HEAD^{tree}"]).trim();
+    const head = git(repo, ["rev-parse", "HEAD"]).trim();
+    const commit = execFileSync(
+      "git",
+      ["commit-tree", tree, "-p", head, "-m", `${KEEP_SUBJECT_PREFIX} ${taskId} の途中経過 #1（interval）`],
+      {
+        cwd: repo,
+        encoding: "utf-8",
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: KEEPER_NAME,
+          GIT_AUTHOR_EMAIL: KEEPER_EMAIL,
+          GIT_COMMITTER_NAME: KEEPER_NAME,
+          GIT_COMMITTER_EMAIL: KEEPER_EMAIL,
+          GIT_AUTHOR_DATE: at,
+          GIT_COMMITTER_DATE: at,
+        },
+      }
+    ).trim();
+    git(repo, ["update-ref", `refs/heads/${branch}`, commit]);
+    return branch;
+  }
+
+  it("職人を起こすと、期限を過ぎた取り置きが自動で消える（誰も呼ばない、にしない）", async () => {
+    const old = makeOldKeep("task-old", 40);
+    const fresh = makeKeep("task-fresh");
+    // まだ職人を起こしていないので、リポジトリは名指しで渡す
+    assert.equal(pool.keeps({ repoPath: repo }).length, 2);
+
+    // 既定（30日）のまま。職人を起こすだけで掃除が走る
+    delete process.env[KEEP_MAX_AGE_ENV];
+    await pool.delegate({ taskId: "task-new", worktreePath: repo, instruction: "やって" });
+
+    const left = pool.keeps().map((i) => i.branch);
+    assert.equal(left.includes(old), false, "40日前の取り置きが残っている＝自動掃除が走っていない");
+    assert.equal(left.includes(fresh), true, "期限内の取り置きまで消した");
+  });
+
+  it("掃除を切ってあれば、職人を起こしても消えない", async () => {
+    const old = makeOldKeep("task-old", 40);
+    process.env[KEEP_MAX_AGE_ENV] = "0";
+
+    await pool.delegate({ taskId: "task-new", worktreePath: repo, instruction: "やって" });
+
+    assert.equal(pool.keeps().some((i) => i.branch === old), true);
+  });
+
+  it("掃除は記録に残る（黙って消えた、にしない）", () => {
+    makeKeep("task-old");
+
+    pool.pruneKeeps({ repoPath: repo, maxAgeMs: 1, now: Date.parse("2026-09-30T00:00:00Z") });
+
+    const logPath = path.join(poolDir, KEEP_PRUNE_LOG);
+    assert.ok(fs.existsSync(logPath), `${logPath} が無い`);
+    const lines = fs.readFileSync(logPath, "utf-8").split("\n").filter((l) => l.length > 0);
+    const events = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+    assert.ok(events.some((e) => e["event"] === "keep_prune_planned"));
+    assert.ok(events.some((e) => e["event"] === "keep_prune_done"));
+  });
+
+  it("動いている職人の取り置きは、工房の掃除でも守られる", async () => {
+    await pool.delegate({ taskId: "task-alive", worktreePath: repo, instruction: "やって" });
+    const branch = makeKeep("task-alive");
+
+    const result = pool.pruneKeeps({ repoPath: repo, maxAgeMs: 1, now: Date.now() + 365 * 24 * 60 * 60 * 1000 });
+
+    assert.equal(result.flatMap((r) => r.removed).length, 0);
+    assert.match(result.flatMap((r) => r.skipped)[0]!.why, /まだ動いている職人/u);
+    assert.equal(pool.keeps().some((i) => i.branch === branch), true);
+  });
+
+  it("掃除が失敗しても職人は起きる（掃除のために起こせないのは本末転倒）", async () => {
+    // git の無いところを作業場所にする＝掃除は何も出来ない
+    const plain = fs.mkdtempSync(path.join(os.tmpdir(), "banto-wp-plain-"));
+    try {
+      const worker = await pool.delegate({ taskId: "task-0103", worktreePath: plain, instruction: "やって" });
+      assert.equal(worker.taskId, "task-0103");
+    } finally {
+      fs.rmSync(plain, { recursive: true, force: true });
     }
   });
 });
