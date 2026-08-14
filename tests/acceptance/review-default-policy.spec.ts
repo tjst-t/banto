@@ -82,6 +82,46 @@ describe("[realign-3] 層B設定の読み取り（review.default_policy）", () 
   });
 });
 
+/**
+ * **退役した設定は、書いてあっても Kobo を止めない**（第4便）。
+ *
+ * `verify.conflict_command` は第3便が足した設定で、読み手は「自動起票した解消タスクへ
+ * 検査コマンドを写す」処理**だけ**だった。第4便で解消タスクの起票ごと無くなったので、
+ * この設定は役目を終えている——残すと「効いている」と誤読される。
+ *
+ * **ただし消す前に確かめる。** 稼働中のプロジェクトの `meta/config.yaml` には
+ * この欄が書かれたまま残りうる。**未知の欄で起動できなくなってはいけない**ので、
+ * 読み手を消したあとも「書いてあれば黙って無視する」ことをここで縛る。
+ */
+describe("[第4便] 退役した層B設定（verify.conflict_command）", () => {
+  it("書いてあっても読めて落ちない（未知の欄を弾かない）", () => {
+    const dir = repoWithConfig("verify:\n  profile: test\n  conflict_command: npm test\n");
+    const loaded = loadProjectConfig(dir);
+    assert.equal(loaded.verify.profile, "test", "他の欄はいままでどおり読める");
+  });
+
+  it("値が壊れていても落ちない（もう誰も使わないので検査もしない）", () => {
+    // 第3便は空文字と引用符の混在を積む時点で断っていた。読み手が消えた以上、
+    // ここで断るのは「使っていない設定のために起動を止める」ことになる
+    for (const yaml of [
+      "verify:\n  profile: test\n  conflict_command: \"\"\n",
+      `verify:\n  profile: test\n  conflict_command: sh -c "echo 'x'"\n`,
+    ]) {
+      const dir = repoWithConfig(yaml);
+      assert.equal(loadProjectConfig(dir).verify.profile, "test");
+    }
+  });
+
+  it("読み取った設定に conflict_command は現れない（退役済み）", () => {
+    const dir = repoWithConfig("verify:\n  profile: test\n  conflict_command: npm test\n");
+    assert.equal(
+      (loadProjectConfig(dir).verify as Record<string, unknown>)["conflictCommand"],
+      undefined,
+      "退役した設定が読み取り結果に残っていると、使えると誤読される"
+    );
+  });
+});
+
 describe("[realign-3] review.policy の解決", () => {
   describe("旧称 `manual` は人へ写る（既定に依らない）", () => {
     it("`manual` と書いたタスクは `banto`（人が見る）になる", () => {
