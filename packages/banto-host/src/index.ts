@@ -78,6 +78,16 @@ export {
   type ChapterCompleter,
   type ChapterCompletion,
 } from "./chapter-summarizer.js";
+export { createPiChapterCompleter, createClaudeChapterCompleter } from "./chapter-completers.js";
+export {
+  resolveChapterModel,
+  parseChapterModelEnv,
+  parseChapterModelSetting,
+  chapterModelLabel,
+  DEFAULT_CHAPTER_MODEL,
+  type ChapterModelRef,
+  type ChapterModelResolution,
+} from "./chapter-model.js";
 // 記憶の評価セット（提案§3.6）。測らなければ静かに腐る
 export {
   runMemoryEval,
