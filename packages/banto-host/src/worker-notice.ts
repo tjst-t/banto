@@ -9,6 +9,9 @@
  * I1: 職人の報告は**主張**として渡す。「終わったと言っている」を「終わった」に翻訳しない。
  */
 
+import * as fs from "node:fs";
+import * as path from "node:path";
+
 import type { WorkerEvent } from "@banto/worker-pool";
 
 /** 番頭が起動元として名乗る名前（決定29の宛先）。 */
@@ -140,14 +143,80 @@ function firstLine(text: string): string {
 }
 
 /**
+ * **その知らせは、配る時点でもう用が済んでいないか**（inc-0069・imp-0021）。
+ *
+ * 知らせは「出来事が起きた瞬間の写し」として積まれ、番頭のターンが空くまで配れない。
+ * その間に状態が動くと、**既に畳んだ職人に「畳んでください」と催促する**札が届く
+ * ——2026-08-14 に1日で3例出た形である。だから配る直前に台帳を引き直し、
+ * 用が済んでいれば**取り下げとして**配る（記録は消さない・imp-0021 の作法）。
+ *
+ * @param later その職人について、このイベントより後に積まれた出来事
+ * @returns 取り下げる理由（日本語1文）。まだ用があるなら undefined
+ */
+export function withdrawnBecause(event: WorkerEvent, later: WorkerEvent[]): string | undefined {
+  const after = later.filter(
+    (e) => e.sessionId === event.sessionId && (e.id ?? 0) > (event.id ?? 0)
+  );
+
+  // 畳んだあとに届く知らせは、どの種類でも「もう手が要らない」（事象2・3・4）
+  const closed = after.find((e) => e.type === "worker_closed");
+  if (closed) {
+    const reason = String(closed.data["reason"] ?? "");
+    if (reason === "stopped") return "この職人はそのあと**停止**され、畳まれています。";
+    if (reason === "idle") return "この職人はそのあと安全弁（放置）で畳まれています。";
+    return "この職人はそのあと畳まれています。";
+  }
+
+  if (event.type === "worker_asked" && after.some((e) => e.type === "worker_answered")) {
+    return "この質問にはそのあと答えが渡っています。";
+  }
+  /**
+   * 「手が空きました」は**その時点で止まっていた**という知らせ。あとから報告や指示が
+   * 入っていれば、止まったままではない——催促する相手がもう居ない。
+   */
+  if (
+    event.type === "worker_turn_ended" &&
+    after.some((e) => e.type === "worker_reported" || e.type === "worker_answered")
+  ) {
+    return "そのあと報告か指示が入っており、手が止まったままではありません。";
+  }
+  if (event.type === "worker_reported" && after.some((e) => e.type === "worker_answered")) {
+    return "この報告にはそのあと指示を渡しています。";
+  }
+  return undefined;
+}
+
+/**
  * イベントを番頭への知らせに言い換える。知らせないイベントなら undefined。
  *
  * **1行目が見出し**で、以降が詳細。UI は畳んだ状態で1行目だけを見せるため、
  * sessionId のような機械向けの情報は下に置く——畳んだときに中身が見えなくなる。
+ *
+ * `later` を渡すと**配る時点の事実**で書き直す（inc-0069）。用が済んでいたら
+ * 見出しに【取り下げ】を付け、求める手（`worker.close` 等）を落とす——中身は残す。
  */
-export function renderWorkerNotice(event: WorkerEvent): string | undefined {
+export function renderWorkerNotice(event: WorkerEvent, later?: WorkerEvent[]): string | undefined {
   if (!isNoticeworthy(event)) return undefined;
-  const lines = [headline(event), "", `sessionId: ${event.sessionId}`];
+  const withdrawn = later ? withdrawnBecause(event, later) : undefined;
+  const lines = [
+    withdrawn ? `【取り下げ】${headline(event)}` : headline(event),
+    "",
+    `sessionId: ${event.sessionId}`,
+  ];
+
+  if (withdrawn) {
+    // 中身は消さない（何が届いていたのかを読めなくしない・imp-0021）
+    const body = String(
+      event.data["summary"] ?? event.data["question"] ?? event.data["text"] ?? ""
+    ).trim();
+    if (body.length > 0) lines.push("", `> ${body}`);
+    lines.push(
+      "",
+      `**この知らせは取り下げます。** ${withdrawn} 積んだ時点では判断が要りましたが、` +
+        "配る前に状況が動きました——**求める手はありません**。記録として残します。"
+    );
+    return lines.join("\n");
+  }
 
   if (event.type === "worker_asked") {
     lines.push(
@@ -191,6 +260,17 @@ export interface WorkerNoticeOptions {
   notify(message: string, target: { threadId?: string }): Promise<void>;
   /** 引く間隔（ms）。既定 1500——職人の質問を待たせすぎない値 */
   intervalMs?: number;
+  /**
+   * 読み位置を持たせるファイル（inc-0069）。
+   *
+   * 工場（`kobo-cursor.json`）・検証環境（`env-cursor.json`）は既にこうしているのに、
+   * 職人だけがメモリ上の読み位置だった——番頭ホストが落ちた瞬間、**まだ配れていない
+   * 報告が消える**。省略するとメモリだけ（従来の振る舞い）。
+   *
+   * 位置は**配り終えた分まで**しか進めない。積んだだけの分を進めると、落ちたときに
+   * その報告が消える（I2: 消えたことにしない）。
+   */
+  cursorPath?: string;
   log?(message: string): void;
 }
 
@@ -223,10 +303,77 @@ export function startWorkerNotices(options: WorkerNoticeOptions): () => void {
     return (result.details ?? {}) as Record<string, unknown>;
   };
 
-  /** 未設定。最初の tick で今の位置まで進める（起動前の分を流さないため） */
-  let cursor: number | undefined;
+  /**
+   * 読んだ位置。未設定なら最初の tick で今の位置まで進める（起動前の分を流さないため）。
+   * **配った位置とは別物**——配るのは番頭のターンなので、読むより遥かに遅い。
+   */
+  let cursor: number | undefined = options.cursorPath
+    ? readCursor(options.cursorPath)
+    : undefined;
+  /** 読み終えた最大の id（配り終えていれば、ここまで位置を進めてよい）。 */
+  let maxSeen = cursor ?? 0;
+  /** 積んだが、まだ配り終えていない知らせの id。 */
+  const pending = new Set<number>();
+  /**
+   * 会話ごとの配送列。
+   *
+   * **会話をまたいで直列にしない**（inc-0069 の本体）。以前はここが引き役の中にあり、
+   * 番頭が1本の会話で長考している間、引き役ごと `await notify` で止まっていた
+   * ——無関係な会話の職人の報告まで、まとめて足止めされる。同じ会話の中の順序は守る。
+   */
+  const queues = new Map<string, Promise<void>>();
   let running = false;
   let stopped = false;
+
+  /** 読み位置をファイルへ。**まだ配れていない一番古い知らせより手前**で止める。 */
+  const persist = (): void => {
+    if (!options.cursorPath) return;
+    const oldestPending = pending.size > 0 ? Math.min(...pending) : undefined;
+    writeCursor(options.cursorPath, oldestPending === undefined ? maxSeen : oldestPending - 1, log);
+  };
+
+  /** 1通を実際に配る。**配る瞬間の事実**で書き直してから渡す（inc-0069）。 */
+  const deliver = async (event: WorkerEvent, threadId: string | undefined): Promise<void> => {
+    let later: WorkerEvent[] = [];
+    try {
+      const details = await invoke("worker.events", {
+        sessionId: event.sessionId,
+        afterEventId: event.id,
+        limit: 100,
+      });
+      later = (details["events"] ?? []) as WorkerEvent[];
+    } catch (err) {
+      // 今の様子が引けないなら、古い写しのまま配る方がまし（知らせを消さない・I2）
+      log(`[banto] ${event.sessionId} の今の様子を引けませんでした: ${String(err)}`);
+    }
+    const notice = renderWorkerNotice(event, later);
+    if (!notice) return;
+    try {
+      await options.notify(notice, threadId ? { threadId } : {});
+    } catch (err) {
+      // 決定35b: 宛先スレッドが畳まれていたら既定へ逃がす。**消えたことにしない**（I2）
+      log(`[banto] 知らせの宛先 ${String(threadId)} が見つかりません: ${String(err)}`);
+      await options.notify(notice, {});
+    }
+  };
+
+  /** その会話の列の末尾へ積む。**列を rejected のまま残さない**（残すと以後全部消える）。 */
+  const enqueue = (event: WorkerEvent): void => {
+    const threadId = threadIdOfOrigin(event.origin);
+    const key = threadId ?? "";
+    pending.add(event.id);
+    const done = (err?: unknown): void => {
+      if (err !== undefined) log(`[banto] 職人の知らせを配れませんでした: ${String(err)}`);
+      pending.delete(event.id);
+      persist();
+    };
+    const next = (queues.get(key) ?? Promise.resolve()).then(
+      () => deliver(event, threadId).then(() => done(), done),
+      // 前の1通が転んでも、この会話の次の1通は配る
+      () => deliver(event, threadId).then(() => done(), done)
+    );
+    queues.set(key, next);
+  };
 
   const tick = async (): Promise<void> => {
     if (running || stopped) return;
@@ -235,24 +382,20 @@ export function startWorkerNotices(options: WorkerNoticeOptions): () => void {
       if (cursor === undefined) {
         const details = await invoke("worker.events", { limit: 1 });
         cursor = Number(details["lastEventId"] ?? 0);
+        maxSeen = cursor;
+        persist();
         return;
       }
       const details = await invoke("worker.events", { afterEventId: cursor, limit: 100 });
       const events = (details["events"] ?? []) as WorkerEvent[];
       for (const event of events) {
         cursor = Math.max(cursor, event.id ?? 0);
+        maxSeen = Math.max(maxSeen, event.id ?? 0);
         if (!isBantoOrigin(event.origin)) continue;
-        const notice = renderWorkerNotice(event);
-        if (!notice) continue;
-        const threadId = threadIdOfOrigin(event.origin);
-        try {
-          await options.notify(notice, threadId ? { threadId } : {});
-        } catch (err) {
-          // 決定35b: 宛先スレッドが畳まれていたら既定へ逃がす。**消えたことにしない**（I2）
-          log(`[banto] 知らせの宛先 ${String(threadId)} が見つかりません: ${String(err)}`);
-          await options.notify(notice, {}).catch(() => undefined);
-        }
+        if (!isNoticeworthy(event)) continue;
+        enqueue(event);
       }
+      persist();
     } catch (err) {
       // I2: 引けなかったことを黙って握らない。写しを進めないので次の tick で取り直す
       log(`[banto] 職人の知らせを引けませんでした: ${String(err)}`);
@@ -269,4 +412,30 @@ export function startWorkerNotices(options: WorkerNoticeOptions): () => void {
     stopped = true;
     clearInterval(timer);
   };
+}
+
+/**
+ * どこまで**配り終えた**か。無ければ undefined＝「今の位置から始める」。
+ *
+ * 壊れていたら undefined を返す——0 から読み直すと、溜まった履歴を全部会話へ流し込む。
+ * 検証環境（`env-notice.ts`）は 0 に倒しているが、あちらは1日に数件で、こちらは
+ * 数千件ある（実測 6600 超）。**多く届く方がよい**の限度を超える。
+ */
+function readCursor(cursorPath: string): number | undefined {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(cursorPath, "utf-8")) as { lastEventId?: number };
+    return typeof parsed.lastEventId === "number" ? parsed.lastEventId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeCursor(cursorPath: string, lastEventId: number, log: (m: string) => void): void {
+  try {
+    fs.mkdirSync(path.dirname(cursorPath), { recursive: true });
+    fs.writeFileSync(cursorPath, JSON.stringify({ lastEventId }), "utf-8");
+  } catch (err) {
+    // 書けなくても知らせは届いている。次の起動で読み直すと重複するだけ
+    log(`[banto] 職人の読み位置を保存できません: ${String(err)}`);
+  }
 }

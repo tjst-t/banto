@@ -280,6 +280,7 @@ export {
   isBantoOrigin,
   renderWorkerNotice,
   isNoticeworthy,
+  withdrawnBecause,
 } from "./worker-notice.js";
 export { createStudioModule, STUDIO_BASE_URL } from "./modules/studio.js";
 export { createPiAgentModule, PI_AGENT_BASE_URL } from "./modules/pi-agent.js";
