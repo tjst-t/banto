@@ -190,6 +190,20 @@ describe("番頭の標準モデルの能力（/api/model）", () => {
     assert.equal(info.vision, false);
   });
 
+  // opus 固有でないことの回帰確認——このバックエンドで動く3モデルすべてに等しく効く
+  for (const model of ["sonnet", "haiku"]) {
+    it(`backend が claude-agent-sdk のとき、${model} でも代打の文脈長（128000）を名乗らない`, () => {
+      const info = hostModelInfo({
+        steward: { backend: "claude-agent-sdk", provider: "anthropic", model },
+        resolved: standIn,
+        resolveExact: () => undefined,
+      });
+      assert.equal(info.id, model);
+      assert.ok(!("contextWindow" in info), "分からない文脈長は欄ごと落とす（数で埋めない）");
+      assert.equal(info.vision, false);
+    });
+  }
+
   it("代打が vision を持っていても、それを標準の能力として名乗らない", () => {
     const info = hostModelInfo({
       steward: { backend: "claude-agent-sdk", provider: "anthropic", model: "opus" },
