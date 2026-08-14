@@ -261,6 +261,39 @@ describe("[提案§3.2] 畳んだあとの文脈", () => {
     assert.equal((await k.closeChapter())!.chapter, 2);
     assert.deepEqual(store.list("thread-1"), ["thread-1/ch-0001", "thread-1/ch-0002"]);
   });
+
+  /**
+   * [PO報告 2026-08-14・事実確定] 畳んだ直後、pi版ハーネスの `contextTokens()` は
+   * 前章の実測（700）を引きずらない。
+   *
+   * `startChapter`（＝`closeChapter` の中の `buildSessionContext` 再構築）は境界より
+   * 前を1件も残さないので、`contextTokens()` が後ろから走査しても前章の assistant
+   * メッセージの usage には当たらない——新しい章の（種だけの）小さな見積りに落ちる。
+   * 「畳む判断が前章の値でされる」という疑いは、pi版については再現しなかった。
+   */
+  it("[事実確定] 畳んだ直後の contextTokens() は前章の実測を引きずらない（pi版）", async () => {
+    const sm = SessionManager.inMemory();
+    sm.appendMessage(userMsg("秘密の合言葉はカワセミ") as never);
+    sm.appendMessage(assistantMsg("承知しました", 700) as never);
+    sm.appendMessage(userMsg("続けて") as never);
+    sm.appendMessage(assistantMsg("はい", 700) as never);
+    const session = fakeSession(sm.buildSessionContext().messages, sm);
+    const harness = harnessOf(session);
+
+    assert.equal(harness.contextTokens(), 700, "前提：畳む前は前章の実測が出る");
+
+    await new ChapterKeeper({
+      harness,
+      store,
+      threadId: "thread-1",
+      summarize: goodSummarizer,
+      contextWindow: 1000,
+    }).closeChapter();
+
+    const after = harness.contextTokens();
+    assert.notEqual(after, 700, "前章の実測（700）を引きずっていない");
+    assert.ok(after !== undefined && after < 700, "新しい章の種だけの小さな見積りに落ちる");
+  });
 });
 
 // ── 失敗したとき ────────────────────────────────────────────────────────────
