@@ -79,7 +79,11 @@ export default function (pi: any): void {
    *
    * いまは Kobo が指示文に載せて渡す（`buildAuditInstruction`）。経路に依らず届き、
    * `audit_verdict.checklistVersion` に刻む指紋が「実際に渡した中身」と一致する。
-   * 二重に渡さないよう、ここからは外してある。
+   *
+   * **役の説明（`audit-system`）は Kobo も渡すので、pi 経路では二重に届く。
+   * それは承知のうえで残している**（realign 第2便・(P)）——重複は無害だが、片方が
+   * 届かないのは害だからである。**「二重だから」とここを消さないこと**：消すと
+   * pi 経路だけ役の説明を失い、同じ穴を逆向きに開けることになる。
    */
   pi.on(
     "before_agent_start",

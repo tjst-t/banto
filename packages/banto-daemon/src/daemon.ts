@@ -4352,9 +4352,35 @@ export function buildExecutorInstruction(
   /** 指摘の見出し（既定は監査の指摘）。落ちたタスクの立て直しでは言葉を変える（task-0081） */
   findingsHeading = "監査の指摘（前回の提出で見つかった問題）"
 ): string {
+  /**
+   * **役の説明を指示文に載せる**（realign 第2便・(P)）。
+   *
+   * 載せる前は `skills/executor-system.md` を渡していたのが pi 拡張の
+   * `before_agent_start`（`pi-extension/banto-executor.ts`）だけだった。それは
+   * `driverOptions.extensionPaths`＝**pi の言葉**で、Claude Agent SDK のドライバは
+   * 読まない——実運用の職人はほぼ全てその経路なので、**役の説明は届いていなかった**。
+   * SDK 経路の職人が受け取っていたのは Worker Pool の汎用プロンプトだけで、
+   * **「不可逆な変更を独断でしない」（D1）がプロンプトから丸ごと落ちていた。**
+   *
+   * 直し方は監査チェックリストと同じ——**Kobo が指示文に載せる**。driver 側の
+   * システムプロンプトに足す形は採らない：経路ごとに別の場所へ載せると、次に経路が
+   * 増えたときまた落ちる。**どちらの役を起こすかを知っているのは最初から Kobo** である。
+   *
+   * **pi 経路では二重に届く。これは意図的に許している。** `before_agent_start` は
+   * そのままにしてある——重複して届くのは無害だが、片方が届かないのは害だからである。
+   * **「二重だから」と拡張側を消さないこと**：消すと pi 経路だけ役の説明を失う。
+   *
+   * I2: 読めなければ投げる。役の説明を持たない職人を黙って動かさない
+   * ——第2便でチェックリストが誰にも届いていなかったのは、黙って落ちていたからである。
+   */
+  const roleAsset = loadPromptAsset("executor-system");
   const taskId = task.id;
   const body = typeof task["body"] === "string" ? task["body"].trim() : "";
   const lines = [
+    `## あなたの役`,
+    ``,
+    roleAsset,
+    ``,
     `## 実装タスク ${taskId}`,
     ``,
     `**タイトル**: ${String(task["title"] ?? taskId)}`,
@@ -4405,8 +4431,10 @@ export function buildExecutorInstruction(
 /**
  * 監査人への指示。
  *
- * 監査の観点そのもの（チェックリスト）は拡張が `skills/audit-*.md` から載せる。
- * ここに書くのは**このタスクを見るために要る事実**——どこに何があり、何を満たすべきか。
+ * **役の説明も観点も、ここから渡す**（realign 第2便）。以前は拡張が
+ * `skills/audit-*.md` を載せていたが、それは pi 経路にしか効かなかった。
+ * ここに書くのはそれに加えて**このタスクを見るために要る事実**
+ * ——どこに何があり、何を満たすべきか。
  */
 export function buildAuditInstruction(
   task: TaskRecord,
@@ -4426,10 +4454,24 @@ export function buildAuditInstruction(
    * 届いていない基準の指紋を `audit_verdict.checklistVersion` に刻むと、
    * それは証拠ではなく嘘になる。だから**Kobo が渡す**——ここに置けば経路に依らない。
    *
-   * I2: 読めなければ投げる。基準を持たない監査を、黙って始めさせない。
+   * **役の説明（`audit-system`）も同じ場所から渡す**（realign 第2便・(P)）。
+   * こちらも pi 拡張の `before_agent_start` だけに載っており、SDK 経路の監査人には
+   * 届いていなかった。**チェックリストと役の説明が別々の場所から来る状態にしない**
+   * ——片方だけ経路を移すと、次に読む人がどちらが正なのか判断できない。
+   *
+   * **pi 経路では二重に届く。これは意図的に許している。** 拡張側の
+   * `before_agent_start` はそのままにしてある——重複して届くのは無害だが、片方が
+   * 届かないのは害だからである。**「二重だから」と拡張側を消さないこと。**
+   *
+   * I2: 読めなければ投げる。基準や役を持たない監査を、黙って始めさせない。
    */
+  const roleAsset = loadPromptAsset("audit-system");
   const checklist = loadPromptAsset("audit-checklist");
   return [
+    `## あなたの役`,
+    ``,
+    roleAsset,
+    ``,
     `## タスク監査コンテキスト`,
     ``,
     `**タスクID**: ${taskId}`,
