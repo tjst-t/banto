@@ -138,7 +138,16 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
                 const waiting = w.question ? ` 質問待ち: ${w.question}` : "";
                 const closed = w.closeReason ? `(${w.closeReason})` : "";
                 const runtime = `${w.runtime}${w.model ? `/${w.model}` : ""}`;
-                return `${mark} ${w.taskId} [${w.projectTag}] ${w.state}${closed} ${runtime} pid=${w.pid} sessionId=${w.sessionId}${waiting}`;
+                /**
+                 * 職人の下で実際に動いているプロセス（inc-0066）。ホストの pid だけでは
+                 * OOM のダンプから職人を逆引きできなかった。走査中は何も出さない。
+                 */
+                const child = w.childProcesses
+                  ? w.childProcesses.children.length > 0
+                    ? ` child=${w.childProcesses.children.map((c) => `${c.comm}:${c.pid}`).join(",")}`
+                    : " child=不明"
+                  : "";
+                return `${mark} ${w.taskId} [${w.projectTag}] ${w.state}${closed} ${runtime} pid=${w.pid}${child} sessionId=${w.sessionId}${waiting}`;
               })
               .join("\n") + range;
       return { content: [{ type: "text" as const, text }], details: result };

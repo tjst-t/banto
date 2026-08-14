@@ -15,11 +15,18 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { ChildProcessRecord } from "./child-pids.js";
 
 // ── Ledger entry ─────────────────────────────────────────────────────────────
 
 export interface LedgerEntry {
-  /** OS pid of the child process */
+  /**
+   * OS pid of the child process.
+   *
+   * **これは node のホストの pid**（実測 190〜215MB）。実処理を抱えるのは、その下で
+   * ランタイムが起こす子（Claude Agent SDK なら `claude` CLI）で、そちらは
+   * `childProcesses` に載る（inc-0066）。
+   */
   pid: number;
   /** Project tag (namespace) */
   projectTag: string;
@@ -47,6 +54,18 @@ export interface LedgerEntry {
    * Optional — set only when tmux session management is active.
    */
   tmux_window?: string;
+  /**
+   * ホストの下でランタイムが起こした**実プロセス**（inc-0066）。
+   *
+   * 2026-08-14 の OOM で 11GB を抱えていたのはここに載るプロセスで、当時は pid が
+   * どこにも記録されておらず**犯人を同定できなかった**。ダンプの pid から職人を
+   * 逆引きできるようにするために置く。
+   *
+   * 起動直後の走査で埋まるので、起こした瞬間は未定義。見つけられなかったときも
+   * `error` 付きで載る（I2：黙って空にしない）。任意なのは、この項目より前に
+   * 書かれた台帳を読めなくしないため。
+   */
+  childProcesses?: ChildProcessRecord;
 }
 
 // ── Ledger file format ────────────────────────────────────────────────────────
@@ -150,6 +169,30 @@ export class SpawnLedger {
   add(entry: LedgerEntry): void {
     this.entries.set(`${entry.projectTag}/${entry.taskId}`, entry);
     this.flush();
+  }
+
+  /**
+   * 既にある1件を書き足す（起動のあとで分かることを載せるため。例：子プロセスの pid）。
+   *
+   * **無ければ何もしない。** 起こした職人が走査より先に畳まれることはあり、そのとき
+   * 台帳へ書き戻すと死んだ職人が生き返る。載せ先が無かったことは戻り値で伝える
+   * （呼び出し側はイベントログの方へ残す）。
+   *
+   * `pid` / `projectTag` / `taskId` は鍵なので差し替えさせない。
+   *
+   * @returns 書けたら true、その職人が台帳に居なければ false
+   */
+  update(
+    projectTag: string,
+    taskId: string,
+    patch: Partial<Omit<LedgerEntry, "projectTag" | "taskId" | "pid">>
+  ): boolean {
+    const key = `${projectTag}/${taskId}`;
+    const current = this.entries.get(key);
+    if (!current) return false;
+    this.entries.set(key, { ...current, ...patch });
+    this.flush();
+    return true;
   }
 
   /**

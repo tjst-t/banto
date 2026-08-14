@@ -39,6 +39,14 @@ export {
   type LedgerEntry,
 } from "./spawn-ledger.js";
 export {
+  probeChildPids,
+  descendantsOf,
+  parseProcStat,
+  type ChildProcessInfo,
+  type ChildProcessRecord,
+  type ChildPidProbeOptions,
+} from "./child-pids.js";
+export {
   WorkerPool,
   WORKER_SYSTEM_PROMPT,
   type WorkerPoolOptions,

@@ -46,7 +46,15 @@ export type WorkerEventType =
    * 「終わった」と言っているのではなく「喋り終わった」という事実なので、`fact`。
    * 意味（完了なのか、答え待ちで止まっただけか）は起動元が与える（決定29d）。
    */
-  | "worker_turn_ended";
+  | "worker_turn_ended"
+  /**
+   * **職人の下で動いている実プロセスの pid が分かった**（事実。inc-0066）。
+   *
+   * 台帳は職人を畳むと消えるので、事故のあとに履歴から引けるようにここにも積む
+   * （決定30c と同じ理由）。`data.children` に pid・親 pid・名前、突き止められなければ
+   * `data.error` に理由が入る——空を「子が居なかった」と読ませないため（I2）。
+   */
+  | "worker_child_pids";
 
 /** 事実か主張か。決定29(a)・I1。 */
 export type WorkerEventKind = "fact" | "claim";
@@ -58,6 +66,7 @@ const KIND_OF: Record<WorkerEventType, WorkerEventKind> = {
   worker_closed: "fact",
   worker_answered: "fact",
   worker_turn_ended: "fact",
+  worker_child_pids: "fact",
   worker_reported: "claim",
   worker_asked: "claim",
 };

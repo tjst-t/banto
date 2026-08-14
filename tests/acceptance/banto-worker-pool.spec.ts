@@ -124,6 +124,16 @@ let dir: string;
 let driver: FakeDriver;
 let pool: WorkerPool;
 
+/**
+ * ライフサイクルのイベントだけを並べる。
+ *
+ * `worker_child_pids`（inc-0066）は起動のあと**非同期に**積まれるので、順番の検査からは
+ * 外す。含めると「走査が間に合ったかどうか」で結果が変わる試験になり、間欠的に落ちる（P6）。
+ */
+function lifecycleTypes(events: WorkerEvent[]): string[] {
+  return events.filter((e) => e.type !== "worker_child_pids").map((e) => e.type);
+}
+
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-wp-"));
   driver = new FakeDriver();
@@ -131,6 +141,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // 走らせっぱなしの子プロセス走査（inc-0066）を打ち切ってから片付ける
+  pool.dispose();
   driver.cleanup();
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -621,12 +633,12 @@ describe("[task-0026/a1] イベントログと購読", () => {
 
     const all = pool.events();
     assert.deepEqual(
-      all.map((e) => e.type),
+      lifecycleTypes(all),
       ["worker_started", "worker_exited"]
     );
     // afterEventId で続きだけ取れる
     assert.deepEqual(
-      pool.events(all[0]!.id).map((e) => e.type),
+      lifecycleTypes(pool.events(all[0]!.id)),
       ["worker_exited"]
     );
   });
@@ -642,7 +654,7 @@ describe("[task-0026/a1] イベントログと購読", () => {
     pool.subscribe((e) => seen.push(e), { afterEventId: 0 });
 
     assert.deepEqual(
-      seen.map((e) => e.type),
+      lifecycleTypes(seen),
       ["worker_started", "worker_reported", "worker_asked"]
     );
   });
@@ -653,7 +665,7 @@ describe("[task-0026/a1] イベントログと購読", () => {
 
     const reopened = new WorkerPool({ driver, dataDir: dir, defaultProjectTag: "test" });
     assert.deepEqual(
-      reopened.events().map((e) => e.type),
+      lifecycleTypes(reopened.events()),
       ["worker_started", "worker_reported"]
     );
     reopened.dispose();

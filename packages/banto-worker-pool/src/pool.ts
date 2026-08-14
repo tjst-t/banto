@@ -49,6 +49,11 @@ import {
 import { WORKER_REPORT_TOOL_NAMES } from "./pi-extension/worker-report.js";
 import { WEB_TOOL_NAMES } from "./pi-extension/web-tools.js";
 import { SpawnLedger, isProcessAlive, killOrphanProcess, type LedgerEntry } from "./spawn-ledger.js";
+import {
+  probeChildPids,
+  type ChildPidProbeOptions,
+  type ChildProcessRecord,
+} from "./child-pids.js";
 
 /**
  * 職人の既定のシステムプロンプト（立場の伝達）。やることは instruction で渡す。
@@ -116,7 +121,15 @@ export interface WorkerInfo {
   taskId: string;
   /** この職人を起こしたのは誰か（決定29の宛先）。projectTag とは別。 */
   origin: string;
+  /** node のホストの pid。実処理を抱える子は `childProcesses` の方（inc-0066）。 */
   pid: number;
+  /**
+   * ホストの下でランタイムが起こした実プロセス（inc-0066）。
+   *
+   * 起動直後に走査するので、起こした直後は未定義。突き止められなかったときは
+   * `error` 付きで入る（空を「子が居ない」と読ませない・I2）。
+   */
+  childProcesses?: ChildProcessRecord;
   sessionId: string;
   sessionPath: string;
   worktree: string;
@@ -235,6 +248,13 @@ export interface WorkerPoolOptions {
   idleTimeoutMs?: number;
   /** 安全弁の点検間隔。既定は idleTimeoutMs の1/4。 */
   idleCheckMs?: number;
+  /**
+   * 職人の下の実プロセスを突き止める走査の加減（inc-0066）。
+   *
+   * 既定は「する」。`false` にすると走査しない——子を持たないランタイムしか使わないと
+   * 分かっている場合や、試験で余計なイベントを増やしたくない場合に切る。
+   */
+  childPidProbe?: boolean | ChildPidProbeOptions;
 }
 
 /** 一覧のページの既定の大きさ。 */
@@ -355,6 +375,10 @@ export class WorkerPool {
 
   private readonly ledger: SpawnLedger;
   private readonly log: WorkerEventLog;
+  /** 子プロセスの走査（inc-0066）。false なら走査しない。 */
+  private readonly childPidProbe: ChildPidProbeOptions | false;
+  /** 工房を終うときに、走らせっぱなしの走査へ打ち切りを伝える。 */
+  private readonly probesAborter = new AbortController();
   private readonly unsubscribeDriver: () => void;
   private idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
   private idleSweeper: NodeJS.Timeout | undefined;
@@ -408,6 +432,10 @@ export class WorkerPool {
       for (const off of unsubscribes) off();
     };
 
+    // inc-0066: 職人の下の実プロセスを台帳へ載せる。既定は「する」
+    const probe = options.childPidProbe ?? true;
+    this.childPidProbe = probe === false ? false : probe === true ? {} : probe;
+
     // 決定30b: 安全弁。主たる契機は番頭が畳むことで、これは取りこぼしを拾うだけ
     this.setIdleTimeout(options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, options.idleCheckMs);
   }
@@ -442,6 +470,8 @@ export class WorkerPool {
     this.unsubscribeDriver();
     this.log.clearSubscribers();
     if (this.idleSweeper) clearInterval(this.idleSweeper);
+    // 走らせっぱなしの子プロセス走査を打ち切る（終うのを待たせない・inc-0066）
+    this.probesAborter.abort();
   }
 
   // ── 起動元への報告経路（決定29） ─────────────────────────────────────────────
@@ -1038,6 +1068,24 @@ export class WorkerPool {
       },
     });
 
+    /**
+     * **職人の下の実プロセスを突き止めて台帳へ載せる**（inc-0066）。待たない。
+     *
+     * 子（`claude` CLI 等）が起きるのは指示を渡したあとなので、その場では分からない。
+     * かといって待てば委譲が数秒遅くなるうえ、走査が失敗したら職人が起きなくなる
+     * ——記録のために仕事を止めるのは本末転倒なので、放して走らせる。
+     */
+    void this.recordChildProcesses({
+      projectTag,
+      taskId: input.taskId,
+      origin,
+      sessionId: handle.sessionId,
+      pid: handle.pid,
+    }).catch((err: unknown) => {
+      // 受け手の居ない reject で工房ごと落とさない（claude-agent-driver の spawn error と同じ轍）
+      console.error(`[worker-pool] 子プロセスの走査が異常終了しました: ${String(err)}`);
+    });
+
     return {
       projectTag,
       taskId: input.taskId,
@@ -1065,6 +1113,78 @@ export class WorkerPool {
    * 報告先が無い（reportUrl 未設定）ときは拡張自体が載らないので、足すものも無い。
    * 外を読む口（imp-0005）も同じ理由で、許したときだけ足す。
    */
+  /**
+   * 起こした職人の下で動いている実プロセスを突き止め、台帳とイベントログへ残す（inc-0066）。
+   *
+   * **なぜ2箇所に書くか。** 台帳は畳んだ時点で消えるので、事故のあとに「あの職人は何を
+   * 抱えていたか」を引けるのはイベントログだけになる（決定30c と同じ理由）。逆に、
+   * いま動いている職人を pid から逆引きするには台帳が要る。用途が違うので両方に置く。
+   *
+   * **止めない・投げない。** ここは記録のためだけの処理で、失敗しても職人は働いている。
+   * ただし黙らない——理由は `error` として両方に残す（I2）。
+   */
+  private async recordChildProcesses(args: {
+    projectTag: string;
+    taskId: string;
+    origin: string;
+    sessionId: string;
+    pid: number;
+  }): Promise<void> {
+    if (this.childPidProbe === false) return;
+    let found: ChildProcessRecord;
+    try {
+      found = await probeChildPids(args.pid, {
+        ...this.childPidProbe,
+        signal: this.probesAborter.signal,
+      });
+    } catch (err) {
+      found = {
+        at: new Date().toISOString(),
+        children: [],
+        error: `子プロセスの走査に失敗しました: ${String(err)}`,
+      };
+    }
+
+    // 走査のあいだに畳まれていれば載せ先が無い。イベントの方には必ず残る
+    const entry = this.ledger.get(args.projectTag, args.taskId);
+    if (entry && entry.sessionId === args.sessionId) {
+      try {
+        this.ledger.update(args.projectTag, args.taskId, { childProcesses: found });
+      } catch (err) {
+        console.error(
+          `[worker-pool] 子プロセスの pid を台帳へ書けませんでした (${args.sessionId}): ${String(err)}`
+        );
+      }
+    }
+
+    try {
+      this.log.append({
+        type: "worker_child_pids",
+        origin: args.origin,
+        projectTag: args.projectTag,
+        taskId: args.taskId,
+        sessionId: args.sessionId,
+        data: {
+          // ホストの pid も一緒に置く。イベント単体で親子の対応が読めるように
+          pid: args.pid,
+          at: found.at,
+          children: found.children,
+          ...(found.error ? { error: found.error } : {}),
+          ...(found.truncated ? { truncated: true } : {}),
+        },
+      });
+    } catch (err) {
+      console.error(
+        `[worker-pool] 子プロセスの pid を記録できませんでした (${args.sessionId}): ${String(err)}`
+      );
+    }
+
+    // I2: 突き止められなかったことは、次の事故で効いてくる。その場で見えるようにもしておく
+    if (found.error) {
+      console.error(`[worker-pool] ${args.taskId} (${args.sessionId}): ${found.error}`);
+    }
+  }
+
   private resolveTools(requested: string[] | undefined, network = false): string[] {
     if (!requested || requested.length === 0) return [];
     const merged = [...requested];
@@ -1262,8 +1382,15 @@ export class WorkerPool {
       (typeof started?.data["runtime"] === "string" ? (started.data["runtime"] as string) : this.driverId);
     const model = typeof started?.data["model"] === "string" ? (started.data["model"] as string) : undefined;
 
+    /**
+     * 職人の下の実プロセス（inc-0066）。台帳が先——生きている職人の帳簿だから。
+     * 畳んで台帳から消えた職人は、起動時に積んだイベントから組み直す（決定30c）。
+     */
+    const childProcesses = entry?.childProcesses ?? childProcessesFromEvent(latest("worker_child_pids"));
+
     return {
       ...base,
+      ...(childProcesses ? { childProcesses } : {}),
       sessionId,
       alive,
       state,
@@ -1507,4 +1634,25 @@ export class WorkerPool {
     }
     return worker;
   }
+}
+
+/**
+ * `worker_child_pids` イベントから子プロセスの記録を組み直す（inc-0066）。
+ *
+ * 台帳から消えた職人（畳んだ・片付けた）でも、事故のあとに pid から辿れるようにするため。
+ * イベントの `data` は Worker Pool が解釈しない生の入れ物（D5）なので、ここで形を確かめる。
+ */
+function childProcessesFromEvent(event: WorkerEvent | undefined): ChildProcessRecord | undefined {
+  if (!event) return undefined;
+  const children = Array.isArray(event.data["children"])
+    ? (event.data["children"] as ChildProcessRecord["children"])
+    : [];
+  const at = typeof event.data["at"] === "string" ? (event.data["at"] as string) : event.at;
+  const error = typeof event.data["error"] === "string" ? (event.data["error"] as string) : undefined;
+  return {
+    at,
+    children,
+    ...(error ? { error } : {}),
+    ...(event.data["truncated"] === true ? { truncated: true } : {}),
+  };
 }
