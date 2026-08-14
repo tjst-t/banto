@@ -290,9 +290,31 @@ export async function probeChildPids(
       return { at: new Date().toISOString(), children: [...found.values()], error: table.error };
     }
 
-    let added = 0;
+    let moved = 0;
     for (const row of descendantsOf(rootPid, table.rows)) {
-      if (found.has(row.pid)) continue;
+      const known = found.get(row.pid);
+      if (known) {
+        /**
+         * **同じ pid でも `comm` が変わったら書き直す**（fork と exec の間で捕まえた分）。
+         *
+         * `fork` した子は、`exec` するまで親の `comm`・`cmdline` を着たままでいる。
+         * その隙に走査が当たると「親と同じ名前の子」が1件記録され、以後この pid は
+         * `found` に居るという理由で二度と見直されない——`sleep` や `claude` が
+         * **`sh` のまま台帳に載る**。OOM のあとに「誰が食べていたか」を答えるのが
+         * inc-0066 の目的なので、着替え終えた姿に更新しないと目的を果たさない。
+         *
+         * 実測（2026-08-14）: 検証コンテナで `worker-child-pids.spec.ts` が
+         * 18回中3回この形で落ちた（ホストでは10回中0回——器の方が遅く、隙が広い）。
+         * 落ちない機械でも台帳の中身は同じだけ狂うので、試験ではなく機構を直す（P6）。
+         */
+        if (known.comm === row.comm) continue;
+        known.comm = row.comm;
+        // 読めなかったとき（既に消えた等）は前に読めたものを残す——消して情報を減らさない
+        const recmd = readCmdline(row.pid);
+        if (recmd) known.cmd = recmd;
+        moved++;
+        continue;
+      }
       if (found.size >= maxChildren) {
         truncated = true;
         break;
@@ -306,10 +328,11 @@ export async function probeChildPids(
       const cmd = readCmdline(row.pid);
       if (cmd) info.cmd = cmd;
       found.set(row.pid, info);
-      added++;
+      moved++;
     }
 
-    if (added > 0) lastAppearedAt = now();
+    // 現れた／着替えた、のどちらも「木がまだ動いている」合図として猶予を測り直す
+    if (moved > 0) lastAppearedAt = now();
     // 何か見つかっていて、そこから `settleMs` のあいだ何も現れなければ落ち着いたと見なす。
     // **孫が遅れて現れる間は畳まない**——猶予は現れるたびに測り直している
     if (found.size > 0 && now() - lastAppearedAt >= settleMs) break;
