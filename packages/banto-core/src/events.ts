@@ -381,6 +381,13 @@ export interface AuditVerdictEvent extends EventBase {
    * implementing へ巻き戻す」という乱暴な形で表していた（`Daemon.amendTask`）。
    *
    * 任意なのは、この項目より前に書かれた帳簿を読めなくしないため。
+   *
+   * **刻みの無い判定は自動着地させない**【2026-08-14・番頭決定】——この項目より前に
+   * 積まれた `audit_verdict` には版が付いておらず、**刻まれたものと混在する**。
+   * `review.policy` の既定を反転したあと（realign 第3便）も、`contractVersion` /
+   * `checklistVersion` を持たない判定は今までどおり人（番頭または PO）の承認を通す。
+   * 刻みを要求した意味は「証拠のあるものだけを機械に通させる」ことであって、証拠が
+   * 無いものを黙って通すなら要求した意味がなくなる。→ `spec-daemon-core` §2.4
    */
   contractVersion?: number;
   /**
