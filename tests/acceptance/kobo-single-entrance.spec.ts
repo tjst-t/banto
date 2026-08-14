@@ -229,20 +229,33 @@ describe("[第4便] kobo.enqueue が唯一の入口", () => {
     assert.match(result.ok ? "" : result.reason, /shiranai/);
   });
 
-  it("記録ファイルが書けなかったら積まない（I2：黙って成功にしない）", () => {
-    const tasksDir = path.join(repoDir, "work", "tasks");
-    fs.chmodSync(tasksDir, 0o555);
+  it("記録ファイルが書けなかったら積まない（I2：黙って成功にしない）", async () => {
+    // **書けなくする手は uid に依らないものを選ぶ。** `chmod` は root では効かない
+    // ——器の中は root で走るので、そこだけ「書けてしまい」試験が割れる（実測）。
+    // `work/tasks` を**ディレクトリではなく素のファイル**にすれば、誰であれ書けない
+    const brokenRepo = fs.mkdtempSync(path.join(os.tmpdir(), "banto-se-broken-"));
+    const brokenProj = "broken-proj";
+    fs.mkdirSync(path.join(brokenRepo, "work"), { recursive: true });
+    fs.writeFileSync(path.join(brokenRepo, "work", "tasks"), "これはディレクトリではない", "utf-8");
+
+    const brokenDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-se-broken-data-"));
+    const brokenDaemon = Daemon.create({ port: 0, dataDir: brokenDataDir, tickIntervalMs: 100_000 });
+    await brokenDaemon.start();
     try {
-      const result = daemon.enqueueTask(PROJ, minimalInput({ title: "書けない" }), {
+      brokenDaemon.registerProject(brokenProj, brokenRepo, "default");
+
+      const result = brokenDaemon.enqueueTask(brokenProj, minimalInput({ title: "書けない" }), {
         originRef: "経緯",
       });
       assert.equal(result.ok, false, "書けなかったのに積まれている");
-      assert.match(result.ok ? "" : result.reason, /記録ファイル/);
+      assert.match(result.ok ? "" : result.reason, /記録ファイル|採番/);
+
       // 帳簿にも載っていないこと
-      const listed = daemon.getTasksByProject(PROJ).filter((t) => t["title"] === "書けない");
-      assert.equal(listed.length, 0);
+      assert.equal(brokenDaemon.getTasksByProject(brokenProj).length, 0);
     } finally {
-      fs.chmodSync(tasksDir, 0o755);
+      await brokenDaemon.stop();
+      fs.rmSync(brokenRepo, { recursive: true, force: true });
+      fs.rmSync(brokenDataDir, { recursive: true, force: true });
     }
   });
 });
