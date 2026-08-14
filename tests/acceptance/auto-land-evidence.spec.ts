@@ -238,15 +238,20 @@ describe("[realign-3] ゲートは自動着地のときだけ刻みを要求す�
   });
 
   after(() => {
+    for (const log of openLogs) log.close();
     for (const d of [repoDir, dataDir]) fs.rmSync(d, { recursive: true, force: true });
   });
 
   const proj = "proj-gate-asym";
 
+  /** 開いた帳簿。**最後に必ず閉じる**（開きっぱなしにすると全量走行の負荷になる）。 */
+  const openLogs: EventLog[] = [];
+
   /** 帳簿を1本用意し、そのタスクが `merging` へどう入ったかを刻む。 */
   function logWith(taskId: string, from: "auditing" | "approved"): EventLog {
     const dir = fs.mkdtempSync(path.join(dataDir, "log-"));
     const log = EventLog.open(dir);
+    openLogs.push(log);
     log.append({ type: "state_transitioned", projectTag: proj, taskId, from, to: "merging", reason: "test" } as never);
     return log;
   }

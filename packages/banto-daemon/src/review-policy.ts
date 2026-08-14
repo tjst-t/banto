@@ -61,6 +61,20 @@ export interface ProjectConfig {
      * ゲートは通らない**——受け持たせるリポジトリには必ず1つ要る。
      */
     profile: string;
+    /**
+     * **自動生成のコンフリクト解消タスクに持たせる検査コマンド**（realign 第3便・段3）。
+     *
+     * `conflict-filer.ts` が書き出す契約の受け入れ条件すべてに載る。上の `profile` の
+     * 環境の中で回るので、2つは組で読む。
+     *
+     * **既定は無い。** 書かなければ解消タスクは今までどおり検査ゼロの契約になり、
+     * 自動着地の条件（→ `spec-daemon-core` §2.5）を満たさず人の承認を通る——
+     * **これは正しい挙動なので塞がない**。設定した人だけが自動復旧を得る。
+     *
+     * コードに直書きしないのは、プロジェクトごとにテストの打ち方が違うから
+     * （banto の `npm test` を埋め込むと他のプロジェクトで破綻する）。
+     */
+    conflictCommand?: string;
   };
   review: {
     /**
@@ -171,6 +185,30 @@ export function loadProjectConfig(repoPath: string): ProjectConfig {
   if (verifyProfile !== undefined && typeof verifyProfile !== "string") {
     throw new Error(`${PROJECT_CONFIG_PATH}: verify.profile はプロファイル名（文字列）で書いてください`);
   }
+  /**
+   * 解消タスクに持たせる検査コマンド（realign 第3便・段3）。
+   *
+   * I2: **契約に書き出せない値は、設定を読んだ時点で断る。** 層Bの YAML パーサは
+   * エスケープを扱わない（`stripQuotes` / `splitRespectingQuotes`）ので、引用符を
+   * 両方含む文字列は受け入れ条件の inline map に載せると壊れる。壊れた契約を黙って
+   * 書くより、書いた人が直せる場所で断る方がよい。
+   */
+  const conflictCommand = verify["conflict_command"];
+  if (conflictCommand !== undefined) {
+    if (typeof conflictCommand !== "string" || conflictCommand.trim().length === 0) {
+      throw new Error(
+        `${PROJECT_CONFIG_PATH}: verify.conflict_command は検査コマンド（空でない文字列）で書いてください` +
+          "。回すものが無いなら、欄ごと書かないでください（そのとき解消タスクは人の承認を通ります）"
+      );
+    }
+    if (conflictCommand.includes('"') && conflictCommand.includes("'")) {
+      throw new Error(
+        `${PROJECT_CONFIG_PATH}: verify.conflict_command に引用符を両方（" と '）含めることはできません` +
+          "——タスク定義の受け入れ条件に書き出せません。どちらか一方に寄せてください"
+      );
+    }
+  }
+
   const review = (parsed["review"] ?? {}) as Record<string, unknown>;
   const limits = (parsed["limits"] ?? {}) as Record<string, unknown>;
   const rawPaths = review["po_required_paths"];
@@ -256,7 +294,10 @@ export function loadProjectConfig(repoPath: string): ProjectConfig {
   }
 
   return {
-    verify: { profile: (verifyProfile as string | undefined) ?? DEFAULT_VERIFY_PROFILE },
+    verify: {
+      profile: (verifyProfile as string | undefined) ?? DEFAULT_VERIFY_PROFILE,
+      ...(conflictCommand !== undefined ? { conflictCommand: conflictCommand as string } : {}),
+    },
     review: {
       poRequiredPaths: Array.isArray(rawPaths) ? rawPaths.map(String) : [],
       ...(envProfile !== undefined ? { envProfile } : {}),

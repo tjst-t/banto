@@ -118,9 +118,17 @@ async function advanceTo(
  * Build a conflict task markdown file content (simulates auto-filer output).
  *
  * Uses status:queued so the watcher ingests it immediately.
- * review.policy:auto を名乗るが、**検査コマンドを持たない**ので realign 第3便以降は
- * 自動着地せず人の承認を通る（自動生成のコンフリクト解消に回せる検査が無いため）。
- * これは `conflict-filer.ts` が実際に書き出す形と同じ。
+ * **この試験が見ているのは「層Bに `verify.conflict_command` が無い」世界**（realign 第3便）。
+ * その世界では `conflict-filer.ts` は検査コマンドを載せられないので、解消タスクは
+ * 自動着地の条件（→ `spec-daemon-core` §2.5）を満たさず人の承認を通る。ここで見たいのは
+ * 「`kind: conflict` にパイプラインの特別扱いが無い」ことなので、普通のタスクと同じ道を通す。
+ *
+ * 検査がある世界（層Bに書いたプロジェクト）で `policy: auto` を名乗って自動着地できる形に
+ * なることは `conflict-verify.spec.ts` が受け持つ。
+ *
+ * **`policy: auto` のまま残してあるのは意図**。いまの `conflict-filer` は検査を載せられない
+ * ときは `banto` と名乗る（名乗りと実態をずらさない）が、この写しを `auto` のままにして
+ * おくと「**auto を名乗っても検査が無ければ人を通る**」も同時に押さえられる。
  */
 function buildConflictTaskFile(taskId: string, originTaskId: string): string {
   return [
