@@ -303,7 +303,16 @@ async function keepBranchLine(
     // 取り置きが引けなくても知らせは出す（呼び先が無い構成でもここに落ちる）
     return undefined;
   }
-  const latest = branches[branches.length - 1];
+  /**
+   * **先頭が最新**。`worker.keeps` は `lastKeptAt` の降順で返す
+   * （`banto-worker-pool/src/work-keep.ts` の `listKeepBranches`：
+   * `found.sort((a, b) => b.lastKeptAt.localeCompare(a.lastKeptAt))`）。
+   *
+   * **並び順は呼び先の都合なので、根拠をここに書いておく。** 枝名の末尾に起動時刻が
+   * 入っているため末尾を最新と読み違えやすく、実際に一度間違えた——2本以上あるときに
+   * **いちばん古い枝を番頭に案内する**形になっていた（1本のときだけ偶然合う）。
+   */
+  const latest = branches[0];
   if (!latest) return undefined;
   // **切ったことを黙らせない。** 2本以上あるなら本数を添える（1本目だけ見て
   // 「これで全部」と読まれると、拾い残しに気づけない）

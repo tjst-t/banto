@@ -140,13 +140,34 @@ describe("[第2便] 落ちた札に、そこまでの作業の在り処が載る
     assert.ok(keepAt < adviceAt, "「求める判断」より後に出ている");
   });
 
-  it("2本以上あるなら**新しい方**を出し、本数を添える（拾い残しを黙らせない）", async () => {
+  /**
+   * **並びは `worker.keeps` の実物に合わせる。** `lastKeptAt` の降順＝**先頭が最新**
+   * （`work-keep.ts` の `listKeepBranches`）。枝名の末尾に起動時刻が入っているので
+   * 末尾を最新と読み違えやすく、実際に一度そう書いて**いちばん古い枝を案内していた**。
+   * だからここは「昇順で渡して末尾を見る」ではなく、**呼び先が返すとおりの並びで渡す**。
+   */
+  it("2本以上あるなら**先頭（最新）**を出し、本数を添える（拾い残しを黙らせない）", async () => {
     const [notice] = await deliverOnce({
       event: failedEvent,
-      keeps: async () => ({ keeps: [{ branch: KEEP }, { branch: KEEP2 }] }),
+      // 降順（新しい順）。これが `worker.keeps` の返り方
+      keeps: async () => ({ keeps: [{ branch: KEEP2 }, { branch: KEEP }] }),
     });
-    assert.ok(notice!.text.includes(KEEP2), "新しい方が出ていない");
+    assert.ok(notice!.text.includes(KEEP2), "新しい方（先頭）が出ていない");
+    assert.ok(
+      !notice!.text.includes(`\`${KEEP}\``),
+      "古い方を案内している——並び順を末尾＝最新と読み違えている"
+    );
     assert.match(notice!.text, /他に 1 本/);
+  });
+
+  it("3本でも先頭だけを出し、残りの本数を添える", async () => {
+    const KEEP3 = "banto/keep/banto/task-0042/20260814T141500-pi";
+    const [notice] = await deliverOnce({
+      event: failedEvent,
+      keeps: async () => ({ keeps: [{ branch: KEEP3 }, { branch: KEEP2 }, { branch: KEEP }] }),
+    });
+    assert.ok(notice!.text.includes(KEEP3), "先頭が出ていない");
+    assert.match(notice!.text, /他に 2 本/);
   });
 
   it("項目が文字列で返る形でも読める", async () => {
