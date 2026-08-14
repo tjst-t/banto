@@ -249,6 +249,7 @@ const DOMAIN_BLURB: Record<string, string> = {
   memory: "remember and recall across conversations",
   skill: "read the procedure for a task before doing it",
   handoff: "read a chapter handoff",
+  llm: "see which model you are running on (changing it is the user's job, in settings)",
   // 説明が無いドメインは散文一覧に裸の行として出る（決定84-5）。足したら1行足す
   system: "restart the banto host itself when you have changed how it runs",
 };

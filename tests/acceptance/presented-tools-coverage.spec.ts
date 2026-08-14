@@ -31,8 +31,11 @@ import { PRESENTED_TOOL_NAMES } from "@banto/host";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-/** 名前空間つきの道具名（決定9）。`repo.worktree.add` のような3段は使っていない。 */
-const TOOL_NAME = /\b([a-z][a-z0-9]*\.[a-z][a-z0-9_]*)\b/g;
+/**
+ * 名前空間つきの道具名（決定9）。`repo.worktree.add` のような**3段もある**——2段だけを
+ * 見ていると、いちばん深く隠れているものを取りこぼす。
+ */
+const TOOL_NAME = /\b([a-z][a-z0-9]*(?:\.[a-z][a-z0-9_]*)+)\b/g;
 
 /** 各パッケージの `src` 以下の TypeScript を全部集める。 */
 function sourceFiles(): string[] {
@@ -56,8 +59,8 @@ function sourceFiles(): string[] {
  * union（`name: "kobo.set_watch" | "kobo.set_merge_queue"`）も拾う——ここを取りこぼすと
  * 「表に在るのに在庫に無い」と**嘘の赤**が出る。
  */
-const NAME_PROPERTY =
-  /name:\s*("[a-z][a-z0-9]*\.[a-z][a-z0-9_]*"(?:\s*\|\s*"[a-z][a-z0-9]*\.[a-z][a-z0-9_]*")*)/g;
+const NAME_LITERAL = `"[a-z][a-z0-9]*(?:\\.[a-z][a-z0-9_]*)+"`;
+const NAME_PROPERTY = new RegExp(`name:\\s*(${NAME_LITERAL}(?:\\s*\\|\\s*${NAME_LITERAL})*)`, "g");
 
 /**
  * 在庫＝`defineNamespacedTool` で名前が付いている道具。
@@ -125,24 +128,17 @@ function skillTexts(): Array<{ file: string; text: string }> {
 }
 
 /**
- * **既知の食い違い。表に足すのではなく、文の方を直すべきもの。**
+ * **既知の食い違いの札。いまは空で、空が正しい状態。**
  *
- * 提示から外したのが意図的で、SKILL の案内が番頭ではなく職人向けに書かれている箇所。
- * 放っておくと番人が丸ごと無効になるので、1本ずつ理由を書いて留めておく。
- * **消えたら消えたで落ちる**（下の「札は腐らせない」）——文を直したら、ここからも外す。
+ * 「提示しないと決めた道具を、本文がまだ名指している」を一時的に見逃すための逃げ道。
+ * 最初は `repo.*`（clone / init / list / worktree.add / worktree.remove）と
+ * `git.blame` / `git.branches` の7本が載っていたが、**表ではなく文の方を直す**と決まり
+ * （番頭裁定 2026-08-14）、SKILL `repository` と `workspace` を書き直して全部落とした。
+ *
+ * ここに足すのは、文を直せない事情があるときだけ。理由を1本ずつ書くこと。下の
+ * 「札は腐らせない」が、事情が消えた札を落とし忘れたときに落ちる。
  */
-const KNOWN_DIVERGENCES: Record<string, string> = {
-  "repo.list":
-    "SKILL `repository` の手順1。repo.* は提示から外してある（既存の受け入れ検証が repo.clone を" +
-    "「隠す側」の例として使っている）。番頭は置き場の把握を職人へ委譲する（D10）——" +
-    "直すなら SKILL の文の方",
-  "repo.clone": "同上。**外に出ていく操作**（D1）なので、番頭の手に置くかどうかは PO の判断",
-  "repo.init": "同上",
-  "git.blame":
-    "SKILL `workspace` の閲覧一覧。git.status / diff / log / show の4本だけを提示している" +
-    "（決定37 の閲覧のみ）。5本目6本目を足すかは未決なので、いまは文の方が先走っている",
-  "git.branches": "同上",
-};
+const KNOWN_DIVERGENCES: Record<string, string> = {};
 
 describe("[番人] 提示表と、番頭への指示が食い違わない", () => {
   it("表の道具は全部、在庫に実在する（綴り違い・消えた道具が黙って飛ばされない）", () => {
