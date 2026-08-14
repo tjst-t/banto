@@ -645,6 +645,24 @@ test.describe("文脈の使用量", () => {
     await expect(page.locator(".room--trunk .context-meter")).toHaveText(/20%/);
   });
 
+  /**
+   * [PO報告 2026-08-14] 章を畳んでも前章の値を出し続けていた。
+   *
+   * ホストは `markChapter` で `tokens` を省略した `context_state` を配る
+   * （`server.ts`）。省略＝「まだ分からない」で、`ContextMeter` は
+   * 既に `tokens === undefined` を「出さない」で扱っている（0% とも偽らない）。
+   */
+  test("章を畳むと目盛りは消える（前章の値を出し続けない）", async ({ page }) => {
+    const meter = page.locator(".context-meter");
+    host.emit({ type: "context_state", tokens: 40000 });
+    await expect(meter).toHaveText(/20%/);
+
+    host.emit({ type: "context_state" });
+    host.emit({ type: "chapter_closed", chapter: 2, topic: "テスト章", at: new Date().toISOString() });
+
+    await expect(meter).toHaveCount(0);
+  });
+
   test("モデル一覧に文脈の長さが出る", async ({ page }) => {
     await page.locator(".model-select-trigger").click();
     await expect(page.locator(".model-select-item").first()).toContainText("200k");

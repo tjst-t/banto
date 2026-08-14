@@ -140,6 +140,74 @@ describe("[ADR-0020 決定93] 章の切れ目は種から始め直す", () => {
     assert.match(options.systemPrompt, /元の人格/);
     assert.match(options.systemPrompt, /前章の要約/, "**種はユーザー発話ではなく系プロンプト**");
   });
+
+  /**
+   * [番頭指示 2026-08-14・疑い(A)への答え] `buildOptions()` を覗くだけでは
+   * 「そのターンで何を渡すか」は分からない——実際に `prompt()` を起こして、
+   * `spawnQuery` が受け取った options を見て初めて確かめられる。
+   *
+   * 畳む前は `resume` で前章から続けて起こしていた会話が、畳んだ直後の最初の
+   * 起動では `resume` を渡さず、新しい `sessionId` で立つことを確認する。
+   * `resume` が残っていたら、それこそが「畳んだのに前章の文脈へ戻ってしまう」
+   * 本体側の不具合になるはずだったが、**実測では残っていない**。
+   */
+  it("[事実確定/A] 畳んだ後の最初の起動は resume を渡さず、新しい sessionId で立つ", async () => {
+    const { harness, spawned } = withFakeQuery({ resume: "old-chapter-session" });
+    void harness.prompt("前章の話");
+    await settle();
+    assert.equal(spawned.length, 1);
+    assert.equal(
+      spawned[0]!.options.resume,
+      "old-chapter-session",
+      "前提：畳む前は resume で前章から続けて起こしている"
+    );
+    assert.ok(!("sessionId" in spawned[0]!.options), "resume と sessionId は両立しない（SDK の型どおり）");
+
+    await harness.startChapter({ text: "種", tokensBefore: 1, chapter: 2, handoffId: "h-2" });
+    void harness.prompt("新しい章の話");
+    await settle();
+
+    assert.equal(spawned.length, 2, "新しい章は新しい query で始まる");
+    const nextOptions = spawned[1]!.options;
+    assert.ok(
+      !("resume" in nextOptions),
+      "前章の resume 札を渡していない（渡っていたら前章の文脈へ戻ってしまう＝本体の不具合）"
+    );
+    assert.equal(typeof nextOptions.sessionId, "string", "代わりに新しい sessionId で立てる");
+    assert.notEqual(nextOptions.sessionId, "old-chapter-session", "前章の札とは別物");
+    assert.equal(nextOptions.sessionId, harness.sessionId, "ハーネスが名乗るセッションIDと一致する");
+  });
+
+  /**
+   * [PO報告 2026-08-14・事実確定] 畳んだ直後、`contextTokens()` は前章の実測を
+   * 引きずらない——`startChapter` が `this.tokens = undefined` に戻すので、
+   * 次のターンの `result` が来るまで「まだ分からない」を正しく返す。
+   *
+   * ただし、この遷移自体は**出来事として配られない**——`toServerEvent` は
+   * `contextTokens === undefined` の `turn_end` を握りつぶすので、ハーネス側は
+   * 直っていても、ホスト側の帳簿（`server.ts` の `contextTokens` Map）は
+   * 前章の値を持ったまま残る（`banto-host-server.spec.ts` の事実確定テストを参照）。
+   */
+  it("[事実確定] 畳んだ直後の contextTokens() は前章の実測を引きずらない", async () => {
+    const { harness } = withFakeQuery({ systemPrompt: "元の人格" });
+    const out = feed(harness, [
+      {
+        type: "result",
+        usage: {
+          input_tokens: 100,
+          cache_read_input_tokens: 400,
+          cache_creation_input_tokens: 0,
+          output_tokens: 50,
+        },
+      },
+    ]);
+    assert.ok(out[0]?.type === "turn_end" && out[0].contextTokens === 550);
+    assert.equal(harness.contextTokens(), 550, "前提：畳む前は前章の実測が出る");
+
+    await harness.startChapter({ text: "種", tokensBefore: 550, chapter: 2, handoffId: "h-2" });
+
+    assert.equal(harness.contextTokens(), undefined, "前章の実測を引きずらず「まだ分からない」に戻る");
+  });
 });
 
 describe("[ADR-0020 決定89] ターンの終わりは1回だけ", () => {

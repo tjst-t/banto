@@ -818,11 +818,15 @@ export interface ModelStateEvent extends ThreadScope {
  * **実測だけを出す**（I1）——ハーネスが返したトークン数をそのまま配り、こちらで
  * 推定しない。ターンが1度も回っていない会話や、再起動直後はまだ分からないので
  * 何も配らない（「0%」と偽らない）。
+ *
+ * `tokens` を省略した1通は「章を畳んだ直後で、まだ分からない」を意味する
+ * （PO報告 2026-08-14）。畳んだ瞬間に前章の値を出し続けないための遷移で、
+ * 次のターンの実測が来ればまた通常どおり配られる。
  */
 export interface ContextStateEvent extends ThreadScope {
   type: "context_state";
-  /** 直近のターンで運んだトークン数（入力＋キャッシュ＋出力）。 */
-  tokens: number;
+  /** 直近のターンで運んだトークン数（入力＋キャッシュ＋出力）。省略＝まだ分からない。 */
+  tokens?: number;
 }
 
 /** 取次の一通（画面へ配る形）。三部構成は spec-ui §3。 */

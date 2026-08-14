@@ -812,6 +812,15 @@ export class BantoHostServer {
     const thread = this.threads.resolve(threadId);
     const at = new Date().toISOString();
     thread.record({ role: "chapter", chapter, topic, at });
+    /**
+     * **畳んだ瞬間、前章の使用量を持ち越さない**（PO報告 2026-08-14）。
+     *
+     * ここで消さないと、次のターンの実測が来るまで（そして畳んだ直後に繋ぎ直すたびに
+     * 何度でも）前章の値が「いまの使用量」として出続ける。`tokens` を省略した
+     * `context_state` で「まだ分からない」に戻す（I1: 古い値を新しい値と偽らない）。
+     */
+    this.contextTokens.delete(thread.id);
+    this.broadcast({ type: "context_state", threadId: thread.id });
     this.broadcast({ type: "chapter_closed", threadId: thread.id, chapter, topic, at });
   }
 
