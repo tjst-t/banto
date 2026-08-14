@@ -63,7 +63,8 @@ function adviceForFailure(reason: string): string {
     "原因は kobo.task で辿れます（検証ログの末尾まで出ます）。" +
     "**タスクは切り直さないこと**——中身の問題なら `kobo.reopen` の rework、" +
     "検証環境の問題なら reverify、契約そのものが間違っていたなら定義ファイルを直して " +
-    "`kobo.amend`。どうしようもなければ `kobo.abandon` で畳んでください。"
+    "`kobo.amend`。どうしようもなければ `kobo.abandon` で畳んでください" +
+    "——**どの状態のタスクでも畳めます**（落ちたものに限りません）。"
   );
 }
 

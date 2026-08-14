@@ -428,6 +428,34 @@ export async function processMergeQueue(
     return true;
   }
 
+  // ── 2.5 畳まれていないか読み直す（PO 裁定 2026-08-14）────────────────────
+  //
+  // ここまでで rebase と関所（検証環境を立てて検証コマンドを回す）を通っており、
+  // **数十秒から数分が経っている**。その間に番頭が `kobo.abandon` を通すと、タスクは
+  // どの状態からでも closed になる——待ち行列は `deriveQueue` が閉じたタスクを外すので
+  // 次の tick では拾わないが、**いま走っているこの1回**は止まらない。
+  //
+  // 塞がないと下の遷移が `from: "merging"` 決め打ちなので、closed のタスクが merged へ
+  // **蘇る**（しかも mainline には既にコミットが載っている）。畳んだものはマージしない。
+  const stillInFlight = opts
+    .getAllTasks()
+    .find((t) => t.id === taskId && t.projectTag === projectTag);
+  if (stillInFlight?.status !== "merging") {
+    // I2: 黙って降りない。何がマージを止めたのかを帳簿に残す
+    log.append({
+      type: "tick_job_failed",
+      projectTag: "daemon",
+      jobName: "merge-queue",
+      error:
+        `merge-queue: ${projectTag}/${taskId} は関所を通している間に ` +
+        `${stillInFlight?.status ?? "(消えた)"} へ移りました。マージせずに降ります`,
+    });
+    if (opts.onMergeComplete) {
+      opts.onMergeComplete(taskId, projectTag);
+    }
+    return true;
+  }
+
   // ── 3. Fast-forward merge into mainline ──────────────────────────────────
 
   let commitSha: string;

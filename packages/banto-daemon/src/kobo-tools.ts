@@ -289,7 +289,7 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
                 ? `※ このタスクは既に ${failure.reopenCount} 回 戻している。` +
                   "同じところで落ち続けているなら、直し方ではなく前提を疑うこと（P6）"
                 : "直せるなら kobo.reopen（中身なら rework / 検証環境なら reverify）、" +
-                  "どうしようもなければ kobo.abandon で畳む",
+                  "どうしようもなければ kobo.abandon で畳む（どの状態のタスクでも畳める）",
             ]
           : []),
       ]
@@ -506,7 +506,8 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
       "止めると `work/tasks/*.md` を工場が読まなくなる——定義ファイルが増えても積まれません。" +
       "**プロジェクト単位**なので、片方を止めても他は回り続けます。" +
       "**設定は保存され、Kobo を再起動しても残ります。** いまの状態は kobo.projects で読めます。" +
-      "既に積まれたタスクは止まりません（それを止めるのは kobo.set_merge_queue と kobo.abandon）。",
+      "既に積まれたタスクは止まりません（それを止めるのは kobo.set_merge_queue と、" +
+      "どの状態のタスクでも畳める kobo.abandon）。",
     "タスクの取り込みを**止めました**（work/tasks/*.md は読まれません）",
     "タスクの取り込みを**動かしました**（work/tasks/*.md をまた読みます）"
   );
@@ -766,16 +767,19 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
   });
 
   /**
-   * どうしようもないものを、**落ちたまま畳む**（task-0081・PO 要望 2026-08-08）。
+   * どうしようもないものを畳む（task-0081・PO 要望 2026-08-08、**PO 裁定 2026-08-14 で拡張**）。
    */
   const abandon = defineNamespacedTool({
     name: "kobo.abandon",
     label: "Kobo: Abandon",
     description:
-      "落ちたタスクを**畳む**（諦める）。直せる見込みが無いときだけ。" +
-      "**記録は消えない**——経緯には落ちたことも畳んだ理由も残る。" +
+      "二度と動かないタスクを**畳む**（諦める）。**どの状態からでも畳める**" +
+      "——queued / gating / implementing / auditing / review-ready / merging / paused / failed のどれでも closed になる。" +
+      "直せる見込みが無いときだけ。**記録は消えない**——経緯には畳む前の状態も畳んだ理由も残る。" +
       "畳むと既定の一覧から外れるので、「まだ見る必要がある」ふりをしなくなる。" +
-      "直せるなら先に kobo.reopen を考えること。",
+      "**動いている職人は止める**（止まらなければ、どのセッションが残ったかを返す）。" +
+      "既に closed / superseded のものは断る。" +
+      "落ちたものを直せるなら先に kobo.reopen、依頼が別物になったなら kobo.supersede を考えること。",
     parameters: Type.Object({
       projectTag: Type.String({ description: "どのプロジェクトか" }),
       taskId: Type.String({ description: "畳むタスクの id" }),
@@ -783,16 +787,37 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     }),
     async execute(params) {
       requireProject(params.projectTag);
-      const r = daemon.abandonTask(params.projectTag, params.taskId, {
+      const r = await daemon.abandonTask(params.projectTag, params.taskId, {
         reason: params.reason,
         by: "banto",
       });
       if (!r.ok) throw new Error(r.reason);
+      // I2: 止まらなかった職人を黙って落とさない。**名指しで**番頭に返す
+      const leftovers =
+        r.unstoppedSessions.length > 0
+          ? `\n**止まらなかった職人が居ます**（工房の口で追ってください）: ` +
+            r.unstoppedSessions.map((w) => `${w.sessionId}（${w.error}）`).join(" / ")
+          : "";
       return {
         content: [
-          { type: "text" as const, text: `${params.taskId} を畳みました（落ちたまま・理由は帳簿に残ります）` },
+          {
+            type: "text" as const,
+            text:
+              `${params.taskId} を畳みました（${r.from} から closed へ・理由は帳簿に残ります）` +
+              (r.stoppedSessions.length > 0
+                ? `。職人を ${r.stoppedSessions.length} 人止めました`
+                : "") +
+              leftovers,
+          },
         ],
-        details: { taskId: params.taskId, projectTag: params.projectTag, status: "closed" },
+        details: {
+          taskId: params.taskId,
+          projectTag: params.projectTag,
+          status: "closed",
+          from: r.from,
+          stoppedSessions: r.stoppedSessions,
+          unstoppedSessions: r.unstoppedSessions,
+        },
       };
     },
   });
