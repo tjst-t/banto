@@ -278,6 +278,60 @@ function formatDuration(ms: number): string {
 }
 
 /**
+ * **そこまでの作業が残っている枝**を1行で返す（無ければ `undefined`）。
+ *
+ * 引き先は Worker Pool の `worker.keeps`。**新しい依存は足さない**——`invoke` は
+ * Tool 名で引く汎用の口なので、この層は Worker Pool のコードを読み込まない（決定27）。
+ *
+ * I2 の例外としてここは握る：取り置きが引けなかったことを理由に**知らせ自体を落とさない**。
+ * 落ちたことを伝える方が、在り処を添えることより先である（届かないより粗い方がまし）。
+ * 呼び先がまだ無い構成でも、ここで catch されて何も足さずに成立する。
+ *
+ * **無いときは何も足さない。** 「取り置きはありません」を毎回出すと札が読みにくくなり、
+ * 本当に読ませたい「求める判断」が埋もれる。
+ */
+async function keepBranchLine(
+  invoke: (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>,
+  projectTag: string,
+  taskId: string
+): Promise<string | undefined> {
+  let branches: string[];
+  try {
+    const details = await invoke("worker.keeps", { projectTag, taskId });
+    branches = keepBranches(details);
+  } catch {
+    // 取り置きが引けなくても知らせは出す（呼び先が無い構成でもここに落ちる）
+    return undefined;
+  }
+  const latest = branches[branches.length - 1];
+  if (!latest) return undefined;
+  // **切ったことを黙らせない。** 2本以上あるなら本数を添える（1本目だけ見て
+  // 「これで全部」と読まれると、拾い残しに気づけない）
+  const others = branches.length > 1 ? `（他に ${branches.length - 1} 本）` : "";
+  return `そこまでの作業は \`${latest}\` に残っています（\`git log -p ${latest}\`）${others}`;
+}
+
+/**
+ * `worker.keeps` の返りから枝名を取り出す。
+ *
+ * 項目が文字列でも `{ branch }` でも読めるようにしてある——**読めない形なら空**を返し、
+ * 推測で組み立てた枝名を番頭に見せない（存在しない枝を `git log` させることになる）。
+ */
+function keepBranches(details: Record<string, unknown>): string[] {
+  const raw = details["keeps"];
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) =>
+      typeof item === "string"
+        ? item
+        : typeof (item as { branch?: unknown })?.branch === "string"
+          ? ((item as { branch: string }).branch)
+          : ""
+    )
+    .filter((branch) => branch.length > 0);
+}
+
+/**
  * 1件を知らせに言い換える。知らせないものは undefined。
  *
  * **1行目が見出し**で、以降が詳細（UI は畳んだ状態で1行目だけを見せる）。
@@ -326,6 +380,17 @@ async function renderNotice(
 
   if (event.type === "task_failed") {
     const reason = event.reason ?? "";
+    /**
+     * **そこまでの作業の在り処**（realign 第2便・機構が職人の成果を取り置く）。
+     *
+     * 落ちた札を受け取った番頭がまず知りたいのは「やり直しか、拾えるのか」である。
+     * 取り置きの枝があれば拾える——無いと、既にあるコミットを捨てて最初からやり直す
+     * 判断をしてしまう。`envUrl`（決定59）と同じ扱いで「求める判断」の直前に置く。
+     *
+     * **落ちたときだけ。** 監査の不通過（`audit_verdict` の fail）には載せない
+     * ——職人はまだ生きており、取り置きを案内する場面ではない。
+     */
+    const keep = await keepBranchLine(invoke, event.projectTag, taskId);
     return {
       origin,
       text: [
@@ -335,6 +400,7 @@ async function renderNotice(
         "**起きたこと**",
         reason || "（理由が記録されていません）",
         "",
+        ...(keep ? [keep, ""] : []),
         "**求める判断**",
         adviceForFailure(reason),
       ].join("\n"),
