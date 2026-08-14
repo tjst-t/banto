@@ -478,6 +478,19 @@ async function renderNotice(
 
   // review-ready＝**判断待ち**。ここが決定57 の一次受け
   const forPo = stage === "po";
+
+  /**
+   * **なぜここへ来たのか**（realign 第3便）。既定は自動着地に反転したので、
+   * review-ready に来るのは**自動着地の条件を満たさなかった例外**になった。
+   *
+   * 落ちた理由は `handleAuditVerdict` が遷移の `reason` に書き切っている。それを
+   * そのまま札に載せる——載せないと、番頭は「なぜ自分に来たのか」を毎回 `kobo.task`
+   * で調べ直すことになる（D10：細かい仕事をさせない）。
+   *
+   * D3: 別に持たない。帳簿の `reason` が唯一の出どころ。
+   */
+  const fellBack = event.reason?.match(/自動着地の条件を満たさない: (.+)）$/)?.[1];
+
   return {
     origin,
     text: [
@@ -488,6 +501,13 @@ async function renderNotice(
       "実装が終わり、**別セッションの監査を通りました**（実装者とは別の目で見ています）。" +
         (task?.scope?.paths?.length ? `\n変更の範囲: ${task.scope.paths.join(", ")}` : ""),
       "",
+      ...(fellBack
+        ? [
+            "**なぜあなたに来たか**",
+            `既定では人を通さず着地しますが、このタスクは条件を満たしませんでした: ${fellBack}`,
+            "",
+          ]
+        : []),
       // 決定59: 見るだけでなく触れる状態で差し出す。**押せば会話と面が同時に開く**
       ...(envUrl
         ? [`**触れる場所**`, `${envUrl}（判断が付くと畳まれます）`, ""]

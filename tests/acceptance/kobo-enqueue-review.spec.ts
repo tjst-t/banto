@@ -127,7 +127,12 @@ async function teardown(h: Harness): Promise<void> {
   fs.rmSync(h.tmpDir, { recursive: true, force: true });
 }
 
-/** 積むときの最小の入力（第4便：番頭が渡すのはこれ全部）。 */
+/**
+ * 積むときの最小の入力（第4便：番頭が渡すのはこれ全部）。
+ *
+ * **検査コマンドは既定で付けない**（realign 第3便）——検査ゼロの契約が自動着地しない
+ * ことも見たいので、素の形をそのまま残す。付けたいときは `acceptance` を上書きする。
+ */
 const TASK_INPUT = {
   title: "工場に積む仕事",
   kind: "feature",
@@ -136,6 +141,9 @@ const TASK_INPUT = {
   acceptance: [{ text: "動くこと" }],
   originRef: "試験",
 };
+
+/** 証拠（検査コマンド）の揃った受け入れ条件（第3便：自動着地の条件）。 */
+const WITH_VERIFY = [{ text: "動くこと", verify: "true" }];
 
 // ── 入口（task-0064）────────────────────────────────────────────────────────
 
@@ -239,7 +247,12 @@ describe("[task-0064] 番頭が工場に積む（入口）", () => {
 // ── 出口（task-0065）────────────────────────────────────────────────────────
 
 describe("[task-0065] レビューは3段（決定57・66）", () => {
-  it("既定は banto——監査を通ると review-ready で止まり、番頭が通せる", async () => {
+  /**
+   * 既定は `auto` に反転した（realign 第3便）が、**このタスクは検査を持たない**ので
+   * 自動着地の条件を満たさず `banto` へ落ちる。止まる理由が変わっただけで、
+   * 「番頭が一次受けして通せる」経路そのものは残っている。
+   */
+  it("検査を持たない契約は、既定が auto でも review-ready で止まり、番頭が通せる", async () => {
     const h = await harness();
     try {
       const id = String((await h.enqueue({ origin: threadOrigin(THREAD) }))["taskId"]);
@@ -251,7 +264,17 @@ describe("[task-0065] レビューは3段（決定57・66）", () => {
       assert.equal(
         h.daemon.getTask(h.proj, id)?.status,
         "review-ready",
-        "既定は番頭が一次受け（決定57）"
+        "検査ゼロの契約はゲートが素通りするので、人の目を通す（realign 第3便）"
+      );
+      const fellBack = h.daemon
+        .getTaskEvents(h.proj, id)
+        .find((e) => e.type === "state_transitioned" && (e as { to?: string }).to === "review-ready") as
+        | { reason?: string }
+        | undefined;
+      assert.match(
+        String(fellBack?.reason),
+        /auto_land_no_verify/,
+        "何が足りなくて人へ回したのかが帳簿から読めること（I2）"
       );
 
       await h.call("kobo.approve", {
@@ -271,16 +294,66 @@ describe("[task-0065] レビューは3段（決定57・66）", () => {
     }
   });
 
-  it("auto は番頭も見ずにマージへ進む", async () => {
+  it("auto かつ証拠が揃っていれば、番頭も見ずにマージへ進む", async () => {
     const h = await harness();
     try {
-      const id = String((await h.enqueue({ review: { policy: "auto" } }))["taskId"]);
+      const id = String(
+        (await h.enqueue({ review: { policy: "auto" }, acceptance: WITH_VERIFY }))["taskId"]
+      );
       await until(() => h.daemon.getTask(h.proj, id)?.status === "ready");
       for (const to of ["planning", "implementing", "auditing"]) {
         h.daemon.transition(h.proj, id, to, "test");
       }
       h.daemon.handleAuditVerdict(h.proj, id, "pass", []);
       assert.equal(h.daemon.getTask(h.proj, id)?.status, "merging");
+    } finally {
+      await teardown(h);
+    }
+  });
+
+  /**
+   * **既定の反転そのもの**（realign 第3便・PO 裁定 2026-08-14）。`review.policy` を
+   * 一言も書いていないタスクが、証拠が揃っていれば人を通さず着地する。
+   */
+  it("policy を書かなくても、証拠が揃っていればマージへ進む（既定が auto）", async () => {
+    const h = await harness();
+    try {
+      // `review` を一言も渡さない＝既定に任せる
+      const id = String((await h.enqueue({ acceptance: WITH_VERIFY }))["taskId"]);
+      await until(() => h.daemon.getTask(h.proj, id)?.status === "ready");
+      for (const to of ["planning", "implementing", "auditing"]) {
+        h.daemon.transition(h.proj, id, to, "test");
+      }
+      h.daemon.handleAuditVerdict(h.proj, id, "pass", []);
+      assert.equal(h.daemon.getTask(h.proj, id)?.status, "merging");
+    } finally {
+      await teardown(h);
+    }
+  });
+
+  /**
+   * **旧称 `manual` は既定に依らず人を通す。** 既定を反転しても、`manual` と
+   * 書いたタスクが黙って機械通過にならないこと（帳簿に13本あった）。
+   */
+  it("manual は証拠が揃っていても review-ready で止まる", async () => {
+    const h = await harness();
+    try {
+      // **第4便で `manual` は入口から渡せなくなった**（道具の語彙は auto / banto / po）。
+      // それでも帳簿には旧称のまま13本残っているので、**読む側**が旧称を人へ倒すことを
+      // 確かめ続ける必要がある——内部の口から旧称のまま載せて見る
+      const id = "task-legacy-manual";
+      h.daemon.createTask(h.proj, id, "旧称 manual の仕事", {
+        kind: "feature",
+        body: "本文。",
+        scope: { paths: ["src/**"] },
+        acceptance: [{ id: "a1", text: "動くこと", verify: "true" }],
+        review: { policy: "manual" },
+      });
+      for (const to of ["queued", "ready", "planning", "implementing", "auditing"]) {
+        h.daemon.transition(h.proj, id, to, "test");
+      }
+      h.daemon.handleAuditVerdict(h.proj, id, "pass", []);
+      assert.equal(h.daemon.getTask(h.proj, id)?.status, "review-ready");
     } finally {
       await teardown(h);
     }
@@ -431,6 +504,16 @@ describe("[task-0065] 判断待ちは積んだスレッドへ返る（決定58�
       assert.match(notice.message, /起きたこと[\s\S]*監査を通りました/, "起きたことが書いてある");
       assert.match(notice.message, /求める判断[\s\S]*kobo\.approve/, "求める判断が書いてある");
       assert.match(notice.message, /関所は飛びません/, "承認しても検査は残ることが書いてある");
+      /**
+       * realign 第3便: 既定は自動着地になった。**ここへ来たということは例外**なので、
+       * 何が足りなくて人へ回ったのかを札に書く——書かないと、番頭は「なぜ自分に
+       * 来たのか」を毎回 kobo.task で調べ直すことになる（D10：細かい仕事をさせない）。
+       */
+      assert.match(
+        notice.message,
+        /検査コマンドが1本も無/,
+        "何が足りなくて人へ回ったのかが札から読めること"
+      );
     } finally {
       stop?.();
       await teardown(h);

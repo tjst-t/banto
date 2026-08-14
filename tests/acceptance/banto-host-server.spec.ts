@@ -601,6 +601,50 @@ describe("会話面が要る材料の配信", () => {
     client.close();
   });
 
+  /**
+   * [PO報告 2026-08-14・事実確定] 章を畳んでも、前章の使用量が残り続ける。
+   *
+   * `markChapter` は `chapter_closed` を配るだけで `contextTokens` の帳簿
+   * （`server.ts` の `Map<threadId, number>`）に触らない。次のターンが終わって
+   * 新しい実測が来るまで、繋いだままの画面にも・畳んだ直後に繋ぎ直した画面にも
+   * 前章の値が出続ける。
+   */
+  it("[PO報告 2026-08-14] 章を畳むと、前章の使用量を持ち越さない", async () => {
+    const { url } = await startHost();
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    const history = await waitFor(events, "history");
+    assert.ok(history.type === "history");
+    const threadId = history.threadId;
+
+    // 前章で 2000 トークン運んだ
+    session.emit({ type: "turn_end", contextTokens: 2000 });
+    await waitFor(events, "context_state");
+
+    // 章を畳む（畳む処理そのものは器の側。ここはホストが知らせる経路だけを見る）
+    server!.markChapter(threadId, 2, "テスト章");
+    await waitFor(events, "chapter_closed");
+
+    // 畳んだ瞬間、繋いだままの画面にも「まだ分からない」（tokens 省略）が届く
+    await new Promise((r) => setTimeout(r, 80));
+    const afterClose = events.filter((e) => e.type === "context_state");
+    assert.equal(afterClose.length, 2, "畳んだ瞬間に、新しい context_state が1本配られる");
+    assert.equal(afterClose[1]!.tokens, undefined, "畳んだ直後は前章の値ではなく「分からない」を配る");
+    client.close();
+
+    // 畳んだ直後に繋ぎ直しても、前章の 2000 は出ない（帳簿から消えている）
+    const c: ServerEvent[] = [];
+    const clientC = await BantoHostClient.connect(url, (e) => c.push(e));
+    await waitFor(c, "history");
+    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(
+      c.some((e) => e.type === "context_state"),
+      false,
+      "分かっている会話だけ配る——畳んだ直後はまだ何も分からない"
+    );
+    clientC.close();
+  });
+
   it("文脈のまとめ直しは会話に残る（黙って話が削られない）", async () => {
     const { url } = await startHost();
     const events: ServerEvent[] = [];

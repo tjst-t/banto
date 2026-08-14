@@ -135,7 +135,9 @@ describe("[AC-S75f66b-3-3] audit pass routes: auto→merging, manual→review-re
     });
     assert.equal(projRes.status, 201, "project must register");
 
-    // taskManual: create via HTTP (no review.policy set → manual by default)
+    // taskManual: create via HTTP (no review.policy, no acceptance[].verify).
+    // realign 第3便で既定は `auto` に反転したが、**検査を1つも持たない契約は
+    // 自動着地の条件を満たさない**ので、こちらは review-ready で止まる。
     const createManual = await fetch(`${base}/api/v1/projects/${proj}/tasks`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -148,8 +150,12 @@ describe("[AC-S75f66b-3-3] audit pass routes: auto→merging, manual→review-re
     // taskAutoPolicy: create via daemon.createTask() with review.policy=auto in payload.
     // This simulates the task watcher ingesting a task file with `review: { policy: auto }` frontmatter.
     // The extra payload is spread into the task record (state-store.ts task_created handler).
+    // realign 第3便: 自動着地には**証拠**が要る。検査コマンドを持たない契約はゲートが
+    // 素通りするので `banto` へ落ちる——ここで見たいのは auto の経路そのものなので、
+    // 契約に検査を持たせて条件を満たさせる（taskManual 側が「持たない」方を受け持つ）
     daemon.createTask(proj, taskAutoPolicy, "Auto Policy Task", {
       review: { policy: "auto" },
+      acceptance: [{ id: "a1", text: "動くこと", verify: "true" }],
     });
     // task-0069: ready を待ってから進める（queued→planning は表に無い）
     await advanceTask(base, proj, taskAutoPolicy, ["queued", "planning", "implementing", "auditing"]);
@@ -162,7 +168,7 @@ describe("[AC-S75f66b-3-3] audit pass routes: auto→merging, manual→review-re
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("[AC-S75f66b-3-3] scenario-3-api step-1: audit pass without policy → review-ready", async () => {
+  it("[AC-S75f66b-3-3] scenario-3-api step-1: audit pass without verify → review-ready", async () => {
     // Audit session reports pass via POST /audit-report (real HTTP — Rule 2)
     const reportRes = await fetch(
       `${base}/api/v1/projects/${proj}/tasks/${taskManual}/audit-report`,

@@ -53,9 +53,13 @@ import { GateEvaluator, evaluatePendingGates } from "./gate-evaluator.js";
 import type { QuotaCheck } from "./gate-evaluator.js";
 import { addTaskWorktree, createWorktree } from "@banto/repo-manager";
 import { processMergeQueue } from "./merge-queue.js";
-import type { GateVerifyRunner } from "./merge-gate.js";
+// `getAcceptance` は第3便（自動着地の証拠）が使う。`readTaskDefinition` は main 側で
+// 解消タスクへ検査コマンドを写すために入れたものだが、**第4便で解消タスクごと消えた**
+// ——定義ファイルを読む経路も無くなったので、ここでは取らない
+import { getAcceptance, type GateVerifyRunner } from "./merge-gate.js";
 import {
   DEFAULT_VERIFY_PROFILE,
+  autoLandBlockers,
   loadProjectConfig,
   resolveReviewStage,
   type ProjectConfig,
@@ -3259,9 +3263,36 @@ export class Daemon {
       // **`po` は機械的に判定される**ので、タスクが auto を名乗っていても統治コードや
       // PO 必須の面に触るなら止まる——緩い方へは倒れない
       const stage = this.reviewStageOf(projectTag, task);
-      const targetStatus = stage === "auto" ? "merging" : "review-ready";
 
-      this.transition(projectTag, taskId, targetStatus, `audit_passed:${stage}`);
+      /**
+       * **証拠の無いものは自動着地させない**（realign 第3便・PO 裁定 2026-08-14）。
+       *
+       * `auto` は「人を通さなくてよい」という宣言でしかなく、**通してよい根拠**は別に要る。
+       * 刻み（どの契約に・どの基準で監査したか）と、ゲートが回すべき検査が契約にあること。
+       * どちらかを欠けば `banto` へ落として人の目を通す——**緩い方へは倒れない**。
+       *
+       * タスクが `auto` を名乗っていても同じに見る。検査ゼロの契約はゲートが素通りするので、
+       * 宣言の有無に関わらず「何も確かめずに着地した」が起きる。
+       *
+       * I2: 落とした理由を遷移の `reason` に書き切る。帳簿だけを見て原因が分かること。
+       */
+      const blockers =
+        stage === "auto"
+          ? autoLandBlockers({
+              ...(contractVersion !== undefined ? { contractVersion } : {}),
+              ...(checklistVersion !== undefined ? { checklistVersion } : {}),
+              acceptance: getAcceptance(task),
+            })
+          : [];
+      const landed = stage === "auto" && blockers.length === 0;
+      const targetStatus = landed ? "merging" : "review-ready";
+      const reason = landed
+        ? "audit_passed:auto"
+        : blockers.length > 0
+          ? `audit_passed:auto→banto（自動着地の条件を満たさない: ${blockers.join("; ")}）`
+          : `audit_passed:${stage}`;
+
+      this.transition(projectTag, taskId, targetStatus, reason);
       // 監査人の役目は終わり。畳む（I3：起こした者が片付ける・決定63）
       this._trackBackground(this.closeWorkerFor(projectTag, poolTaskId(taskId, "audit")));
     } else {
