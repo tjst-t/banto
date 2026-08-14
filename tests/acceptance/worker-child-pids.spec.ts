@@ -102,6 +102,108 @@ describe("[inc-0066] 職人の下の実プロセスを pid で同定できる", 
     );
   });
 
+  /**
+   * **打ち切りの条件**（inc-0066 の続き）。
+   *
+   * 職人は起きてから `esbuild` や `claude` を**次々に**作る。「子が1つ見つかって、
+   * 増えない走査が2回続いたら畳む」だと、いちばん最初に現れた1枚だけを記録して
+   * 終わりかねない——それでは OOM のときに「誰が食べていたか」を答えられず、
+   * inc-0066 の目的を果たさない。
+   *
+   * **ここは時間ではなく筋書きで確かめる。** 本物のプロセスで「孫が遅れて現れる」を
+   * 作ると、現れる時刻が盤面の混み具合で動く。実際それで全量4回中1回落ちていた
+   * （単体では10回中0回＝「単体では通る」は無罪の証拠にならない）。プロセス表と
+   * 時計の両方を台本にすれば、負荷に関係なく同じ結果になる。
+   */
+  describe("走査を畳む条件", () => {
+    const ROOT = 1000;
+    const SH = { pid: 1001, ppid: ROOT, comm: "sh" };
+    const SLEEP = { pid: 1002, ppid: 1001, comm: "sleep" };
+
+    /**
+     * 台本つきのプロセス表と時計。
+     *
+     * `appearAtCall` 回目の走査で初めて孫が見える。走査1回ごとに時計を `tickMs` 進める
+     * ——実際の経過時間は見ない（見たら負荷で結果が変わる）。
+     */
+    function scripted(appearAtCall: number, tickMs: number) {
+      let calls = 0;
+      let clock = 0;
+      return {
+        calls: () => calls,
+        now: () => clock,
+        readTable: () => {
+          calls++;
+          const rows = calls >= appearAtCall ? [SH, SLEEP] : [SH];
+          clock += tickMs;
+          return { rows };
+        },
+      };
+    }
+
+    it("先に見つかった子で畳まず、遅れて現れる孫まで待つ", async () => {
+      // 子は最初から見えているが、孫は4回目の走査でようやく現れる。
+      // 「増えない回が2回続いたら畳む」だと3回目で畳んでしまい、孫を取り落とす
+      const script = scripted(4, 100);
+
+      const found = await probeChildPids(ROOT, {
+        intervalMs: 0,
+        timeoutMs: 20_000,
+        readTable: script.readTable,
+        now: script.now,
+      });
+
+      assert.equal(found.error, undefined, `走査に失敗した: ${found.error ?? ""}`);
+      assert.deepEqual(
+        found.children.map((c) => c.comm).sort(),
+        ["sh", "sleep"],
+        "遅れて現れた孫を取り落としている（子1枚で畳んだ）"
+      );
+    });
+
+    it("落ち着いたら畳む（いつまでも走査し続けない）", async () => {
+      // 孫が現れない筋書き。それでも待ち続けるなら、この試験は timeoutMs で終わる
+      const script = scripted(Number.MAX_SAFE_INTEGER, 100);
+
+      const found = await probeChildPids(ROOT, {
+        intervalMs: 0,
+        timeoutMs: 20_000,
+        readTable: script.readTable,
+        now: script.now,
+      });
+
+      assert.deepEqual(found.children.map((c) => c.comm), ["sh"]);
+      // 20秒ぶんの 200 回ではなく、落ち着きを見た時点で畳んでいること
+      assert.ok(
+        script.calls() < 50,
+        `打ち切っていない（${script.calls()} 回も走査した）`
+      );
+    });
+
+    it("畳むまでの猶予は走査の間隔に引きずられない（速めても弱くならない）", async () => {
+      // **間欠の真因**。猶予を「回数」で持つと、試験や呼び出し側が intervalMs を
+      // 速めただけで猶予まで縮む——500ms×2回＝1秒のつもりが、100ms にすると 200ms に
+      // なっていた。猶予は時間で持つ
+      const fast = scripted(4, 10); // 1回 10ms（速い）
+      const slow = scripted(4, 100); // 1回 100ms（遅い）
+
+      const a = await probeChildPids(ROOT, {
+        intervalMs: 0,
+        readTable: fast.readTable,
+        now: fast.now,
+      });
+      const b = await probeChildPids(ROOT, {
+        intervalMs: 0,
+        readTable: slow.readTable,
+        now: slow.now,
+      });
+
+      // どちらも孫まで拾えていること（間隔を速めた方だけ取り落とす、にしない）
+      assert.deepEqual(a.children.map((c) => c.comm).sort(), ["sh", "sleep"]);
+      assert.deepEqual(b.children.map((c) => c.comm).sort(), ["sh", "sleep"]);
+    });
+  });
+
   describe("台帳と観測経路から引ける", () => {
     let dir: string;
     let pool: WorkerPool;
@@ -114,7 +216,10 @@ describe("[inc-0066] 職人の下の実プロセスを pid で同定できる", 
         driver,
         dataDir: dir,
         defaultProjectTag: "test",
-        // 試験を待たせないため速める。既定（20秒・500ms）でも同じ道を通る
+        // 試験を待たせないため速める。既定（20秒・500ms）でも同じ道を通る。
+        // **`intervalMs` を速めても猶予（`settleMs`）は縮まない**——ここを 100ms に
+        // したせいで猶予が 200ms になり、孫の `sleep` が現れる前に走査が畳まれて
+        // 全量4回中1回落ちていた。猶予を時間で持つようにして切り離してある
         childPidProbe: { timeoutMs: 5000, intervalMs: 100 },
       });
     });
