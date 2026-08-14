@@ -1094,6 +1094,96 @@ describe("[work-keep/F] 番頭の道具として届く", () => {
   });
 });
 
+/**
+ * **並びはリポジトリを跨いでも「新しい順」**。
+ *
+ * `listKeepBranches` は降順に並べるが、それは**1本のリポジトリの中の話**。工房が複数の
+ * リポジトリを見に行くとき、素直に連結すると「repo1 の中では降順・repo2 の中でも降順、
+ * でも全体では順不同」になる。
+ *
+ * ここを押さえるのは、番頭の知らせ（`kobo-notice.ts`）が**先頭だけを読んで**
+ * 「そこまでの作業はこの枝に残っています」と案内するから。順が崩れると**いちばん古い枝を
+ * 案内する**——`f56c43e` で一度直したのと同じ間違いが、多プロジェクト構成で再発する。
+ */
+describe("[work-keep/F] 並びはリポジトリを跨いでも新しい順", () => {
+  let repos: string[];
+  let poolDir: string;
+  let driver: FakeDriver;
+  let pool: WorkerPool;
+
+  beforeEach(() => {
+    repos = [];
+    poolDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-wp-keeps-order-"));
+    driver = new FakeDriver();
+    pool = new WorkerPool({ driver, dataDir: poolDir, defaultProjectTag: "banto" });
+  });
+
+  afterEach(() => {
+    driver.cleanup();
+    fs.rmSync(poolDir, { recursive: true, force: true });
+    for (const repo of repos) fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  /** 別々のリポジトリで職人を1人起こし、時刻を指定した取り置きを1本残す。 */
+  async function delegateWithKeepAt(taskId: string, at: string): Promise<string> {
+    const repo = initRepo();
+    repos.push(repo);
+    await pool.delegate({ taskId, worktreePath: repo, instruction: "やって" });
+    const branch = keepBranchName({ projectTag: "banto", taskId, runtime: "pi" }, new Date(at));
+    const tree = git(repo, ["rev-parse", "HEAD^{tree}"]).trim();
+    const head = git(repo, ["rev-parse", "HEAD"]).trim();
+    const commit = execFileSync(
+      "git",
+      ["commit-tree", tree, "-p", head, "-m", `${KEEP_SUBJECT_PREFIX} ${taskId} の途中経過 #1（interval）`],
+      {
+        cwd: repo,
+        encoding: "utf-8",
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: KEEPER_NAME,
+          GIT_AUTHOR_EMAIL: KEEPER_EMAIL,
+          GIT_COMMITTER_NAME: KEEPER_NAME,
+          GIT_COMMITTER_EMAIL: KEEPER_EMAIL,
+          GIT_AUTHOR_DATE: at,
+          GIT_COMMITTER_DATE: at,
+        },
+      }
+    ).trim();
+    git(repo, ["update-ref", `refs/heads/${branch}`, commit]);
+    return branch;
+  }
+
+  it("2つのリポジトリにまたがっても、全体として新しい順で返る", async () => {
+    // **古い方を先に起こす。** 走査するリポジトリの順は職人を起こした順に従うので、
+    // 連結しただけだと古い枝が先頭に来る
+    const older = await delegateWithKeepAt("task-old", "2026-08-01T00:00:00Z");
+    const newer = await delegateWithKeepAt("task-new", "2026-08-14T00:00:00Z");
+
+    const found = pool.keeps();
+
+    assert.deepEqual(
+      found.map((i) => i.branch),
+      [newer, older],
+      "リポジトリを跨ぐと降順が崩れている（先頭が最新でない）"
+    );
+    // 番頭が読むのは先頭だけ。ここが最新でないと、いちばん古い枝を案内することになる
+    assert.equal(found[0]!.branch, newer);
+  });
+
+  it("worker.keeps の返りも同じ並び（番頭が読むのはこちら）", async () => {
+    const older = await delegateWithKeepAt("task-old", "2026-08-01T00:00:00Z");
+    const newer = await delegateWithKeepAt("task-new", "2026-08-14T00:00:00Z");
+    const keeps = createWorkerTools(pool).find((t) => t.name === "worker.keeps")!;
+
+    const result = await keeps.execute({}, {} as never);
+
+    assert.deepEqual(
+      (result.details as { keeps: { branch: string }[] }).keeps.map((i) => i.branch),
+      [newer, older]
+    );
+  });
+});
+
 // ══ (G) 溜まり続ける取り置きの始末 ═══════════════════════════════════════════
 
 describe("[work-keep/G] 期限を過ぎた取り置きを消す", () => {
