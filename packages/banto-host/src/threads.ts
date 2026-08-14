@@ -22,10 +22,28 @@
  */
 
 import type { Canvas } from "./canvas.js";
-import type { HostSession } from "./server.js";
+import type { BantoHarness, HarnessEvent } from "@banto/core";
 import type { NamespacedToolDefinition } from "./tool-registry.js";
-import type { BranchOpener, ThreadView, TranscriptEntry } from "./protocol.js";
+import type {
+  BranchNoteKind,
+  BranchOpener,
+  ThreadView,
+  TranscriptEntry,
+} from "./protocol.js";
 import type { ThreadStore } from "./thread-store.js";
+
+/** 枝から幹へ立てる札1枚（決定107）。記録なので凍る。 */
+export type BranchNote = Extract<TranscriptEntry, { role: "branch_note" }>;
+
+/**
+ * その会話が属する幹（幹なら自分、枝なら親）。
+ *
+ * **記憶が分かれる単位と同じ**（ADR-0003 追補・`ThreadIdentity.trunkId`）。幹をまたいで
+ * 中身を読ませないための判定にも使う（決定105）——読めてしまうと、幹を分けた意味が消える。
+ */
+export function trunkIdOf(thread: Thread): string {
+  return thread.kind === "trunk" ? thread.id : (thread.parentId ?? thread.id);
+}
 
 /**
  * その会話が**何であるか**（PO報告 2026-08-10）。
@@ -68,14 +86,27 @@ export type ThreadFactory = (
    * この会話で使いたいモデル。**復元では保存されていたもの**、新規では省略（＝番頭の標準）。
    * 会話ごとにモデルを持つため、器を作る側がここを見て組み立てる。
    */
-  model?: { provider: string; id: string },
+  /**
+   * この会話のモデル。**`backend` は provider の上位の階層**（ADR-0020・PO裁定 2026-08-13）
+   * ——`opus` は pi 経由でも Agent SDK 経由でも選べるので、名前からは決まらない。
+   */
+  model?: { backend?: string; provider: string; id: string },
   /** その会話が何であるか（帳場・幹・枝）。器を作る側がシステムプロンプトへ入れる。 */
-  identity?: ThreadIdentity
+  identity?: ThreadIdentity,
+  /**
+   * **バックエンド側の会話の札**（決定97・task-0104）。復元のときだけ渡る。
+   *
+   * pi の `resumeFrom`（セッションファイル）と役は同じだが、**別のバックエンドのもの**
+   * なので別に持つ——同じ会話が pi と Agent SDK を往復するので、片方を捨てると
+   * 戻ったときに文脈が無い。
+   */
+  resumeBackendSession?: string
 ) => Promise<{
-  session: HostSession;
+  /** 会話を回すハーネス（ADR-0020 決定89）。pi でも Agent SDK でもよい。 */
+  harness: BantoHarness;
   canvas?: Canvas;
   /** この器が実際に使っているモデル。会話ごとに持ち、画面と索引へ出す。 */
-  model?: { provider: string; id: string; vision: boolean; contextWindow?: number };
+  model?: { backend?: string; provider: string; id: string; vision: boolean; contextWindow?: number };
   /** このスレッドに登録した論理名のTool（wire名の逆引きに使う）。 */
   tools: NamespacedToolDefinition[];
   /** 直近のターンでプロバイダ側エラーがあれば返す。**スレッドごと**に別。 */
@@ -205,6 +236,14 @@ export class Thread {
    */
   conclusion: string | undefined;
   /**
+   * 畳んだときの**詳細**（決定108・PO指示 2026-08-13）。何を調べ・何を決め・何が残ったか。
+   *
+   * **幹には流さない。** 幹に積まれるのは `conclusion` の1行だけで、こちらは枝に残り
+   * `thread.read` で開いたときにだけ読める——詳細を幹へ流すと、決定77 が守っていた
+   * 「幹は端から端まで読める帯」がその場で壊れる。**一覧は短く、詳細は開けば読める。**
+   */
+  conclusionDetail: string | undefined;
+  /**
    * 畳んだスレッドは**消えない**（Worker Pool の決定30c と同じ発想）。
    * 一覧から外れるだけで、履歴として読めるし同じ会話のまま再開できる。
    */
@@ -220,7 +259,14 @@ export class Thread {
    */
   lastActivityAt: string = new Date().toISOString();
   closedAt: string | undefined;
-  readonly session: HostSession;
+  /**
+   * 会話を回しているハーネス。**差し替えられる**（ADR-0020 決定88・PO要望 2026-08-13）
+   * ——モデルを会話の途中で変えられるのと同じく、バックエンドも変えられる。
+   * 差し替えは `replaceHarness` を通すこと（購読を張り直す必要があるため）。
+   */
+  harness: BantoHarness;
+  /** ハーネスの購読を外す口。差し替えのときに張り直す。 */
+  private harnessDisposer: (() => void) | undefined;
   readonly canvas: Canvas | undefined;
   readonly toolNames: string[];
   /**
@@ -231,13 +277,39 @@ export class Thread {
   readonly getLastError: () => string | undefined;
   /** 番頭の文脈が書かれている pi セッションファイル（task-0036）。 */
   readonly sessionFile: string | undefined;
+
+  /**
+   * ハーネスの出来事を購読する。**差し替えのときに張り直せるよう、ここ1箇所に集める**
+   * ——`disposers` に混ぜると、ハーネスの購読だけを外せない。
+   */
+  listen(handler: (event: HarnessEvent) => void): void {
+    this.harnessDisposer?.();
+    this.harnessDisposer = this.harness.subscribe(handler);
+  }
+
+  /**
+   * **会話の途中でバックエンドを差し替える**（PO要望 2026-08-13）。
+   *
+   * モデルを変えられるのと同じ感覚で変えられるべきなので、再起動は要らない形にする。
+   * 古い購読を外して新しいハーネスへ張り直す——ここを忘れると、画面には何も流れて
+   * こないのに番頭は動いている、という一番分かりにくい壊れ方をする。
+   *
+   * **文脈は引き継がない。** バックエンドが変わると生きているセッションも変わるので、
+   * 引き継ぐなら呼び出し側が種（`startChapter`）で渡すこと（決定93）。
+   */
+  replaceHarness(next: BantoHarness, handler: (event: HarnessEvent) => void): void {
+    this.harnessDisposer?.();
+    this.harnessDisposer = undefined;
+    this.harness = next;
+    this.listen(handler);
+  }
   /**
    * この会話で使っているモデル（PO裁定 2026-08-04）。
    *
    * **会話ごとに持つ**——話題ごとに向いたモデルが違うので、切り替えても他の会話は変わらない。
    * 索引に保存され、再起動しても同じモデルで再開する。
    */
-  model: { provider: string; id: string; vision: boolean; contextWindow?: number } | undefined;
+  model: { backend?: string; provider: string; id: string; vision: boolean; contextWindow?: number } | undefined;
   /**
    * 復元された中断ターンを再開する処理（imp-0016 主対策）。
    * サーバ起動後に open スレッドだけ呼ばれる（畳んだスレッドは開き直すまで話さない）。
@@ -275,12 +347,13 @@ export class Thread {
     openedBy?: BranchOpener;
     openReason?: string;
     conclusion?: string;
-    session: HostSession;
+    conclusionDetail?: string;
+    harness: BantoHarness;
     canvas?: Canvas;
     tools: NamespacedToolDefinition[];
     getLastError?: () => string | undefined;
     sessionFile?: string;
-    model?: { provider: string; id: string; vision: boolean; contextWindow?: number };
+    model?: { backend?: string; provider: string; id: string; vision: boolean; contextWindow?: number };
     resumePendingTurn?: () => Promise<void>;
     closeChapter?: () => Promise<boolean>;
     dispose?: () => void;
@@ -294,11 +367,12 @@ export class Thread {
     this.openedBy = params.openedBy;
     this.openReason = params.openReason;
     this.conclusion = params.conclusion;
+    this.conclusionDetail = params.conclusionDetail;
     // I2: 枝に還す条件と親が無いのは帳簿の壊れ。黙って幹のように振る舞わせない
     if (params.kind === "branch" && (!params.parentId || !params.returnCondition)) {
       throw new Error(`枝 ${params.id} に親か還す条件がありません（決定77）`);
     }
-    this.session = params.session;
+    this.harness = params.harness;
     this.canvas = params.canvas;
     this.toolNames = params.tools.map((t) => t.name);
     this.getLastError = params.getLastError ?? ((): string | undefined => undefined);
@@ -320,11 +394,13 @@ export class Thread {
       ...(this.openedBy ? { openedBy: this.openedBy } : {}),
       ...(this.openReason ? { openReason: this.openReason } : {}),
       ...(this.conclusion ? { conclusion: this.conclusion } : {}),
-      sessionId: this.session.sessionId,
+      // 一覧には出さない（幅を食う）。**あることだけ**を出して、開けば読める形にする（決定108）
+      ...(this.conclusionDetail ? { hasConclusionDetail: true } : {}),
+      sessionId: this.harness.sessionId,
       isDefault: this.isDefault,
       state: this.state,
       // D3: 忙しさの真実はここ。UI は自分の操作から推測しない
-      streaming: this.session.isStreaming,
+      streaming: this.harness.isStreaming,
       ...(this.closedAt ? { closedAt: this.closedAt } : {}),
       ...(this.model ? { model: this.model } : {}),
       ...(this.preview() ? { preview: this.preview() } : {}),
@@ -390,6 +466,16 @@ export class Thread {
   }
 
   dispose(): void {
+    this.harnessDisposer?.();
+    this.harnessDisposer = undefined;
+    /**
+     * **ハーネス自身も畳む**（決定97・task-0104）。購読を外すだけでは足りない
+     * ——Agent SDK は子プロセスを抱えており、放すだけでは終わらない。
+     * I2: 畳めなかったことを握りつぶさない（会話は閉じるので throw はしない）。
+     */
+    void Promise.resolve(this.harness.dispose?.()).catch((err: unknown) => {
+      console.error(`[banto] ${this.id} のハーネスを畳めませんでした: ${String(err)}`);
+    });
     for (const off of this.disposers) off();
     this.disposers.length = 0;
   }
@@ -441,16 +527,23 @@ export class ThreadRegistry {
     for (const saved of ordered) {
       try {
         const savedKind = saved.kind ?? "trunk";
-        const parts = await this.factory(saved.id, saved.sessionFile, saved.model, {
-          kind: savedKind,
-          isMain: saved.isMain === true,
-          trunkId: savedKind === "trunk" ? saved.id : (saved.parentId ?? saved.id),
-          title: saved.title,
-          ...(saved.returnCondition ? { returnCondition: saved.returnCondition } : {}),
-          ...(saved.parentId
-            ? { parentTitle: this.threads.get(saved.parentId)?.title ?? saved.parentId }
-            : {}),
-        });
+        const parts = await this.factory(
+          saved.id,
+          saved.sessionFile,
+          saved.model,
+          {
+            kind: savedKind,
+            isMain: saved.isMain === true,
+            trunkId: savedKind === "trunk" ? saved.id : (saved.parentId ?? saved.id),
+            title: saved.title,
+            ...(saved.returnCondition ? { returnCondition: saved.returnCondition } : {}),
+            ...(saved.parentId
+              ? { parentTitle: this.threads.get(saved.parentId)?.title ?? saved.parentId }
+              : {}),
+          },
+          // 決定97: Agent SDK 側の文脈はこの札でしか戻せない（pi の sessionFile と両立）
+          saved.backendSessionId
+        );
         // 古い索引には kind が無い。**1本残らず幹として読み戻す**（上の注記）。
         // 還す条件の無い枝は帳簿として成り立たない（決定77）——遡って書けない以上、
         // 枝にはしない
@@ -469,7 +562,10 @@ export class ThreadRegistry {
               }
             : {}),
           ...(saved.conclusion ? { conclusion: saved.conclusion } : {}),
-          session: parts.session,
+          // 決定108: 詳細も読み戻す。畳んだ枝を開いて読めるのが要点なので、
+          // 再起動で消えると「開けば読める」が成り立たなくなる
+          ...(saved.conclusionDetail ? { conclusionDetail: saved.conclusionDetail } : {}),
+          harness: parts.harness,
           ...(parts.model ? { model: parts.model } : {}),
           ...(parts.canvas ? { canvas: parts.canvas } : {}),
           tools: parts.tools,
@@ -595,11 +691,30 @@ export class ThreadRegistry {
       ...(thread.openedBy ? { openedBy: thread.openedBy } : {}),
       ...(thread.openReason ? { openReason: thread.openReason } : {}),
       ...(thread.conclusion ? { conclusion: thread.conclusion } : {}),
+      ...(thread.conclusionDetail ? { conclusionDetail: thread.conclusionDetail } : {}),
       state: thread.state,
       createdAt: thread.createdAt,
       ...(thread.closedAt ? { closedAt: thread.closedAt } : {}),
       ...(thread.sessionFile ? { sessionFile: thread.sessionFile } : {}),
-      ...(thread.model ? { model: { provider: thread.model.provider, id: thread.model.id } } : {}),
+      /**
+       * **バックエンド側の札**（決定97・task-0104）。無いときは書かない——`upsert` は
+       * 既存へ重ねるので、まだ札の無い状態（一度も往復していない）が
+       * 保存済みの札を消してしまうことはない。
+       */
+      ...(thread.harness.resumeToken?.()
+        ? { backendSessionId: thread.harness.resumeToken()! }
+        : {}),
+      // **backend も残す**（PO裁定 2026-08-13）。落とすと、会話ごとのバックエンド選択が
+      // 再起動で必ず消える——「会話に記録があるなら、それが勝つ」が成立しない
+      ...(thread.model
+        ? {
+            model: {
+              ...(thread.model.backend ? { backend: thread.model.backend } : {}),
+              provider: thread.model.provider,
+              id: thread.model.id,
+            },
+          }
+        : {}),
       ...(thread.canvas
         ? {
             canvasTabs: thread.canvas
@@ -681,7 +796,7 @@ export class ThreadRegistry {
             openReason: spec.reason,
           }
         : {}),
-      session: parts.session,
+      harness: parts.harness,
       ...(parts.model ? { model: parts.model } : {}),
       ...(parts.canvas ? { canvas: parts.canvas } : {}),
       tools: parts.tools,
@@ -768,9 +883,18 @@ export class ThreadRegistry {
    * 出口は「結論」であって「実装」ではない——incident を起票し task を積んだ時点で畳む。
    * **保留も結論の一種**として「保留：理由」で畳み、開き直せる。
    *
+   * **詳細（`detail`）は幹へ流さない**（決定108・PO指示 2026-08-13）。何を調べ・何を決め・
+   * 何が残ったかは**枝に残り**、`thread.read` で開いたときにだけ読める。幹に積むのは
+   * 1行のまま——両方を幹へ流すと、決定77 が守っていた「幹は端から端まで読める帯」が壊れる。
+   *
    * I2: 幹・未知のID・空の結論は黙って成功にせずエラーにする。
    */
-  merge(threadId: string, conclusion: string, now = new Date()): Thread {
+  merge(
+    threadId: string,
+    conclusion: string,
+    options: { detail?: string; now?: Date } = {}
+  ): Thread {
+    const now = options.now ?? new Date();
     const thread = this.threads.get(threadId);
     if (!thread) throw this.unknownThread(threadId);
     if (thread.kind === "trunk") {
@@ -778,8 +902,11 @@ export class ThreadRegistry {
     }
     const text = conclusion.replace(/\s+/gu, " ").trim();
     if (text === "") throw new Error("結論は空にできません（保留なら「保留：理由」と書く）");
+    const detail = options.detail?.trim();
     if (thread.state === "closed" && thread.conclusion === text) return thread; // 冪等
     thread.conclusion = text;
+    // 空の詳細で既にある詳細を消さない（畳み直しで中身が痩せるのを防ぐ）
+    if (detail) thread.conclusionDetail = detail;
     thread.state = "closed";
     thread.closedAt = now.toISOString();
     /**
@@ -803,6 +930,8 @@ export class ThreadRegistry {
         title: thread.title,
         conclusion: text,
         at: thread.closedAt,
+        // 詳細は幹に載せない。**在ることだけ**を言い、読むのは枝を開いてから（決定108）
+        ...(thread.conclusionDetail ? { hasDetail: true as const } : {}),
       };
       trunk.record(entry);
       this.onBranchResult?.(trunk, entry);
@@ -812,6 +941,63 @@ export class ThreadRegistry {
     this.refreshDefault();
     this.emit();
     return thread;
+  }
+
+  /**
+   * **枝から幹へ、畳む前に一言を還す**（決定107・PO指示 2026-08-13）。
+   *
+   * 決定77 は「幹に還るのは開いた1行と結論1行だけ」としていたが、**枝の途中で幹の判断が
+   * 要る場面**（前提が崩れた・思っていたより大きい・どちらの筋で進めるか）はそこから
+   * 漏れていた。畳むまで黙るか、結論を捏造して畳むかの二択になっていたのを開ける。
+   *
+   * **札として幹に立つ**（`notice` にしない）。知らせで流すと番頭の他の知らせに紛れ、
+   * 読み返したときにどの枝の話か辿れない——枝の札（`open`）・結論（`merge`）と
+   * 同じ列に並べる。埋没しない不変条件（決定77）はこれで保たれる。
+   *
+   * **幹のターンは回さない**（ここは帳簿・D5）。回すのは配信を持っている側の仕事。
+   *
+   * I2: 幹から・畳んだ枝から・空の本文・親を引けない枝は、黙って成功にしない。
+   */
+  consult(
+    branchId: string,
+    params: { kind: BranchNoteKind; message: string },
+    now = new Date()
+  ): { trunk: Thread; branch: Thread; entry: BranchNote } {
+    const branch = this.threads.get(branchId);
+    if (!branch) throw this.unknownThread(branchId);
+    if (branch.kind !== "branch") {
+      throw new Error(
+        "これは幹です。幹から幹へは thread.send、幹から枝へは thread.steer を使ってください"
+      );
+    }
+    if (branch.state === "closed") {
+      throw new Error(
+        `枝「${branch.title}」は畳んであります（結論：${branch.conclusion ?? "なし"}）。` +
+          "続きがあるなら開き直してください"
+      );
+    }
+    const text = params.message.trim();
+    if (text === "") throw new Error("空の相談は還せません");
+    const trunk = branch.parentId ? this.threads.get(branch.parentId) : undefined;
+    // I2: 親を引けないのは帳簿の壊れ。黙って帳場へ落とすと、別の幹に相談が紛れ込む
+    if (!trunk) {
+      throw new Error(
+        `枝 ${branch.id} の親（${branch.parentId ?? "なし"}）を引けないため、幹へ還せません`
+      );
+    }
+    const entry: BranchNote = {
+      role: "branch_note",
+      branchId: branch.id,
+      title: branch.title,
+      kind: params.kind,
+      text,
+      at: now.toISOString(),
+    };
+    trunk.record(entry);
+    // 枝も動いている。滞留（決定77）の数え直しはここでもする
+    branch.lastActivityAt = entry.at;
+    this.onBranchNote?.(trunk, entry);
+    return { trunk, branch, entry };
   }
 
   /**
@@ -867,9 +1053,17 @@ export class ThreadRegistry {
   onBranchResult:
     | ((
         trunk: Thread,
-        entry: { branchId: string; title: string; conclusion: string; at: string }
+        entry: {
+          branchId: string;
+          title: string;
+          conclusion: string;
+          at: string;
+          hasDetail?: boolean;
+        }
       ) => void)
     | undefined;
+  /** 枝から幹へ札が1枚立ったときに呼ばれる（決定107）。 */
+  onBranchNote: ((trunk: Thread, entry: BranchNote) => void) | undefined;
 
   /**
    * 埋没しない不変条件（決定77）を機械で確かめられる形にする。

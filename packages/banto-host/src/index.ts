@@ -15,6 +15,15 @@ export {
   type ToolRegistry,
 } from "./tool-registry.js";
 export { createBantoHostSession, type CreateBantoHostSessionOptions } from "./host-session.js";
+// pi バックエンド（ADR-0020 決定89）。`BantoHarness` の第一実装
+export { PiHarness, type PiHarnessOptions } from "./pi-harness.js";
+// Agent SDK バックエンド（ADR-0020 決定89・91〜93）。番頭を Claude Code で回す
+export {
+  ClaudeAgentHarness,
+  BANTO_MCP_SERVER,
+  type ClaudeAgentHarnessOptions,
+} from "./claude-agent-harness.js";
+export { jsonSchemaToZod, jsonSchemaToZodShape } from "./schema-to-zod.js";
 export {
   PRESENTED_TOOL_NAMES,
   presentedWireNames,
@@ -113,6 +122,8 @@ export {
   BRANCH_STALE_DAYS,
   MAX_THREAD_TITLE_LENGTH,
   normalizeThreadTitle,
+  trunkIdOf,
+  type BranchNote,
   type ThreadFactory,
   type ThreadSpec,
 } from "./threads.js";
@@ -201,6 +212,14 @@ export { createPlaceTools } from "./place-tools.js";
 export { ThreadStore, type StoredThread } from "./thread-store.js";
 export { SettingsStore, type BantoSettings, type PlaceSetting } from "./settings-store.js";
 export { createCoreSettingsSections } from "./core-settings.js";
+// バックエンドの名乗り（ADR-0020 決定98a・98d）。回せないことを値で返す
+export {
+  createClaudeBackend,
+  createPiBackend,
+  toBackendOption,
+  type HarnessBackendDescriptor,
+  type BackendModelRef,
+} from "./harness-backends.js";
 export {
   createSettingsModule,
   settingsSection,
@@ -264,9 +283,17 @@ export {
 export {
   createTurnBudget,
   guardTurn,
+  withTurnBudgetReset,
   DEFAULT_REPEAT_LIMIT,
+  DEFAULT_CALL_WARN_LIMIT,
+  DEFAULT_CALL_WARN_AGAIN_LIMIT,
   DEFAULT_CALL_LIMIT,
   type TurnBudget,
   type TurnBudgetOptions,
+  type TurnBudgetVerdict,
 } from "./turn-budget.js";
 export { withWorkerCard, WORKER_VIEW } from "./worker-card.js";
+export {
+  withTierUnassignedNotice,
+  type WorkerTierNoticeOptions,
+} from "./worker-tier-notice.js";

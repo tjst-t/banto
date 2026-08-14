@@ -9,16 +9,15 @@
  */
 
 import { Type } from "typebox";
+import { OpenObject, StringEnum } from "@banto/core";
 import type { Inbox } from "./inbox.js";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 
 const Action = Type.Object({
-  id: Type.String({ description: "押されたときに返る識別子（英数字）" }),
-  label: Type.String({ description: "ボタンに出す言葉。POが押す前に何が起きるか分かる言い方で" }),
+  id: Type.String(),
+  label: Type.String(),
   tone: Type.Optional(
-    Type.Union([Type.Literal("call"), Type.Literal("plain"), Type.Literal("quiet")], {
-      description: "call=推し（朱で塗る）／plain=既定／quiet=控えめ。推しは1つまで",
-    })
+    StringEnum(["call", "plain", "quiet"] as const, { description: "推し（call）は1つまで" })
   ),
 });
 
@@ -41,27 +40,21 @@ export function createInboxTools(
     name: "inbox.post",
     label: "Inbox: Post",
     description:
-      "POの判断を取次（画面上段の受け口）へ積む。**自分では決められないものだけ**を積むこと——" +
-      "D1（不可逆な選択）・D9（利用体験を変える本物のトレードオフ）・P3（仕様と実態の食い違い）に当たるもの。" +
-      "それ以外は自分で決めて進める。" +
-      "札は画面を遡らずに判断できる必要があるので、経緯・起きたこと・求める判断を必ず埋める。" +
-      "会話や面を指定すると、POが押したときにそれらが同時に開く。",
+      "POの判断を取次へ積む。**自分では決められないものだけ**（D1・D9・P3）。\n例: {sourceId: \"banto\", sourceLabel: \"番頭\", kind: \"後戻りできない\", rule: \"D1\", title: \"ログ形式を変えるか\", what: \"既存ログが読めなくなる\", ask: \"変えてよいか\", actions: [{id: \"go\", label: \"変える\", tone: \"call\"}, {id: \"stay\", label: \"いまのまま\"}]} → 積んだ旨\nsourceId と actions[].id は英語の識別子で埋める。",
     parameters: Type.Object({
-      sourceId: Type.String({ description: "出所の機械名（banto / worker / kobo / env / github など）" }),
-      sourceLabel: Type.String({ description: "出所の表示名（「職人 w-28」「Kobo（開発）」など）" }),
-      kind: Type.String({ description: "種別の表示名（「後戻りできない」「番頭では決められない」など）" }),
-      rule: Type.Optional(Type.String({ description: "よりどころの規則（D1 / D9 / P3 など）" })),
-      title: Type.String({ description: "一行で言う問い。札の見出しになる" }),
-      why: Type.Optional(Type.String({ description: "経緯：起点となったPOの指示の引用と時刻" })),
-      what: Type.String({ description: "起きたこと：その後の経過と、判明した事実" }),
-      ask: Type.String({ description: "求める判断：POに決めてほしいこと" }),
-      actions: Type.Array(Action, { description: "その場で押せる答え。2〜4つ" }),
-      blocking: Type.Optional(Type.Number({ description: "この判断が止めている後続の数。並び順に効く" })),
-      threadId: Type.Optional(
-        Type.String({ description: "押したときに移る会話。省略すると**いまのこの会話**" })
-      ),
-      canvasKind: Type.Optional(Type.String({ description: "押したときにキャンバスに開く面の種別" })),
-      canvasParams: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+      sourceId: Type.String(),
+      sourceLabel: Type.String(),
+      kind: Type.String(),
+      rule: Type.Optional(Type.String()),
+      title: Type.String(),
+      why: Type.Optional(Type.String({ description: "起点のPO指示の引用と時刻" })),
+      what: Type.String(),
+      ask: Type.String(),
+      actions: Type.Array(Action, { description: "2〜4つ" }),
+      blocking: Type.Optional(Type.Number({ description: "止めている後続の数（並びに効く）" })),
+      threadId: Type.Optional(Type.String()),
+      canvasKind: Type.Optional(Type.String()),
+      canvasParams: Type.Optional(OpenObject())
     }),
     async execute(p) {
       // 宛先を書かなかったら**この会話**。積んだ札から話の続きへ戻れるようにするため、

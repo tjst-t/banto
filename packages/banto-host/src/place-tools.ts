@@ -20,13 +20,9 @@ export function createPlaceTools(places: PlaceRegistry): NamespacedToolDefinitio
     name: "place.list",
     label: "Place: List",
     description:
-      "いま作業できる場所（リポジトリ・ワークツリー・設定された作業領域）の一覧を返す。" +
-      "file.* や worker.delegate に渡す place の id はここで分かる。" +
-      "どこに書けるか（書き込みが許された範囲）も併せて返る——既定はどこも読み取り専用。",
+      "いま作業できる場所の一覧（id・パス・書き込みが許された範囲）。既定は読み取り専用。\n例: {} → 全件／{query: \"banto\"} → 名前・パスに banto を含むものだけ\nquery は英語で埋める。",
     parameters: Type.Object({
-      query: Type.Optional(
-        Type.String({ description: "id・名前・パスの部分一致で絞り込む（省略時は全件）" })
-      ),
+      query: Type.Optional(Type.String())
     }),
     async execute(params) {
       const all = await places.list();

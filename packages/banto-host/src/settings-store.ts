@@ -43,6 +43,18 @@ export interface BantoSettings {
    * 中身の形は**モジュールが決める**——ここは保存先を貸しているだけで、解釈しない。
    */
   modules?: Record<string, Record<string, unknown>>;
+  /**
+   * **番頭の会話を回すバックエンド**（ADR-0020 決定88・95）。
+   *
+   * ここに置くのは、職人側が `worker-pool/settings.json` を分けたのと同じ理屈——
+   * Claude Code のモデルは LLM 登録に載らないので、同じ表に並べられない。
+   * **番頭の既定もバックエンド選択の隣に置く**（決定95）。
+   */
+  harness?: {
+    backend?: "pi" | "claude-agent-sdk";
+    /** Claude Code のときだけ使う別名／モデルID（`opus` 等）。 */
+    model?: string;
+  };
   network?: {
     /** 待ち受けるポート。 */
     port?: number;

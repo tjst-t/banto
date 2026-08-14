@@ -1,0 +1,47 @@
+/**
+ * 道具のスキーマを**平らに**書くための小道具（ADR-0019 決定84-3）。
+ *
+ * `Type.Union([Type.Literal("a"), Type.Literal("b")])` は `anyOf` の入れ子になる。
+ * 選択肢が文字列の並びでしかないところにその形を使うと、モデルからは
+ * 「3つの部分スキーマのどれかを満たす値」に見えるうえ、`strict` を要求する側
+ * （DeepSeek は「全プロパティ required・`additionalProperties: false`」を求める）が
+ * 通らない。**同じ意味を `enum` 1つで書く。**
+ *
+ * `type: "string"` を明示するのは、`Type.Enum` が `{ enum: [...] }` だけを出すため。
+ * 型を書かない `enum` を受け取れないプロバイダがある（JSON Schema としては妥当でも、
+ * 道具定義の検証が厳しい側で落ちる）ので、こちら側で埋めておく。
+ *
+ * D5: 判断は無い。JSON Schema の書き方だけ。
+ * D6: 依存は typebox のみ（既に契約が使っている）。
+ */
+
+import { Type, type TEnum, type TSchemaOptions, type TUnsafe } from "typebox";
+
+/** `enum` で書いた文字列の選択肢。`Type.Union([Literal…])` の平らな版。 */
+export type TStringEnum<T extends string> = TEnum<T[]>;
+
+/**
+ * 文字列の選択肢を `{ type: "string", enum: [...] }` として書く。
+ *
+ * 型は呼び出し側が並べたリテラルから取る——`StringEnum(["rework", "reverify"] as const)`
+ * で `"rework" | "reverify"` になる。
+ */
+export function StringEnum<const T extends string>(
+  values: readonly T[],
+  options: TSchemaOptions = {}
+): TStringEnum<T> {
+  return Type.Enum([...values] as T[], { ...options, type: "string" });
+}
+
+/**
+ * 中身を解釈しない開いたオブジェクト（GUI のパラメータ等）を書く。
+ *
+ * `Type.Record(Type.String(), Type.Unknown())` は `patternProperties: { "^.*$": {} }`
+ * ——**正規表現をキーにした入れ子の部分スキーマ**になる。同じ「何でも入る object」を
+ * `additionalProperties` 1つで書けば平らになり、正規表現キーを受け取れない検証も通る。
+ */
+export function OpenObject(options: TSchemaOptions = {}): TUnsafe<Record<string, unknown>> {
+  // `Type.Object({}, …)` にすると空の `properties: {}` まで出る。開いた object だと
+  // 言うだけなら、その1行は要らない（決定84-2: 盛らない）
+  return Type.Unsafe<Record<string, unknown>>({ ...options, type: "object", additionalProperties: true });
+}

@@ -12,6 +12,7 @@
  */
 
 import { Type } from "typebox";
+import { OpenObject, StringEnum } from "@banto/core";
 import type { Canvas, CanvasCatalog } from "./canvas.js";
 import type { ArtifactStore } from "./artifacts.js";
 import type { UtsuwaView } from "./protocol.js";
@@ -63,24 +64,12 @@ export function createCanvasTools(
     name: "canvas.open",
     label: "Canvas: Open",
     description:
-      "キャンバスにGUIをタブとして開き、アクティブにする。POに何かを見せたいときに使う。" +
-      "開けるkindは canvas.list_catalog で確認できる。表示を変えるだけで、データの取得はしない。" +
-      "既定では同じ種別のタブを使い回す（例：ファイルを次々に開いてもタブは増えない）。" +
-      "POが「別のタブで」「並べて見たい」と言ったときだけ newTab: true を渡す。",
+      "キャンバスにGUIをタブとして開く（POに見せたいとき）。データは取らない。\n例: {kind: \"file.browser\", params: {path: \"docs/adr\"}} → tabId\nkind と params の値は英語で埋める（一覧は canvas.list_catalog）。",
     parameters: Type.Object({
-      kind: Type.String({ description: "開くGUIの種別（例: demo.hello）" }),
-      params: Type.Optional(
-        Type.Record(Type.String(), Type.Unknown(), {
-          description: "そのGUIに渡すパラメータ。必要な形は canvas.list_catalog を参照",
-        })
-      ),
-      title: Type.Optional(Type.String({ description: "タブに表示する名前（省略時はカタログの既定）" })),
-      newTab: Type.Optional(
-        Type.Boolean({
-          description:
-            "既存のタブを使い回さず新しいタブで開く。POが明示的に別タブ・並べて見たいと言ったときだけ true",
-        })
-      ),
+      kind: Type.String(),
+      params: Type.Optional(OpenObject()),
+      title: Type.Optional(Type.String()),
+      newTab: Type.Optional(Type.Boolean())
     }),
     async execute(params) {
       const spec = catalog.get(params.kind);
@@ -113,10 +102,9 @@ export function createCanvasTools(
   const close = defineNamespacedTool({
     name: "canvas.close",
     label: "Canvas: Close",
-    description: "キャンバスのタブを閉じる。tabId は canvas.query_state で確認できる。",
-    parameters: Type.Object({
-      tabId: Type.String({ description: "閉じるタブのID" }),
-    }),
+    description:
+      "キャンバスのタブを閉じる。\n例: {tabId: \"0c675706-3474-4f88-9422-d3ce262bddd0\"} → 閉じた旨\ntabId は英語の識別子（UUID）で埋める。",
+    parameters: Type.Object({ tabId: Type.String() }),
     async execute(params) {
       canvas.close(params.tabId);
       return { content: [{ type: "text" as const, text: `closed ${params.tabId}` }], details: {} };
@@ -172,41 +160,19 @@ export function createCanvasTools(
     name: "canvas.show",
     label: "Canvas: Show",
     description:
-      "**Tool の戻り値を器に載せて会話に出す**。番頭が選ぶのは「どの観測を・どの器で・どこを」" +
-      "だけで、データは書き直さない（退避済みの結果からホストが引く）。\n" +
-      `使える器：${SHOWABLE_UTSUWA_KINDS.join(" / ")}。` +
-      "1回に1つ（並べたいときは続けて呼ぶ）。判断を求めるものは器ではなく取次（inbox.post）へ。\n" +
-      "**見比べる作業は面（canvas.open）、判断に要る事実は器**。10行を超える一覧・全部の差分・" +
-      "触れる環境は器に載せず `open` の器で面への口を出す。",
+      "**Tool の戻り値（退避済みの観測）を器に載せて会話に出す**。データは書き直さない。\n例: {utsuwa: \"table\", artifact: \"a-0007\", path: \"envs.items\", title: \"立っている環境\"} → 器を1つ\nutsuwa と path は英語で埋める。判断を求めるものは器ではなく inbox.post へ。",
     parameters: Type.Object({
-      utsuwa: Type.String({
-        description: `どの器で描くか（${SHOWABLE_UTSUWA_KINDS.join(" / ")}）`,
-      }),
+      utsuwa: StringEnum(SHOWABLE_UTSUWA_KINDS),
       artifact: Type.Optional(
-        Type.String({
-          description:
-            "載せる観測のID（`a-0007`）。ツール結果の末尾に出ている。" +
-            "`open` の器のときだけ省ける（面への口はデータを要らない）",
-        })
+        Type.String()
       ),
-      path: Type.Optional(
-        Type.String({
-          description:
-            "観測の中のどこを載せるか（`envs.items` のようなドット記法）。省略すると全体",
-        })
-      ),
-      title: Type.Optional(Type.String({ description: "器の見出し" })),
-      meta: Type.Optional(Type.String({ description: "見出しの脇の小さい字（件数・大きさ）" })),
-      note: Type.Optional(
-        Type.String({ description: "下に添える1行。抜粋であること・切ったことを書く" })
-      ),
-      view: Type.Optional(
-        Type.String({ description: "`open` の器で開く面の kind（`file.viewer` など）" })
-      ),
-      label: Type.Optional(Type.String({ description: "`open` の器の押せる文言" })),
-      args: Type.Optional(
-        Type.Record(Type.String(), Type.Unknown(), { description: "`open` の器が面へ渡す引数" })
-      ),
+      path: Type.Optional(Type.String()),
+      title: Type.Optional(Type.String()),
+      meta: Type.Optional(Type.String()),
+      note: Type.Optional(Type.String()),
+      view: Type.Optional(Type.String()),
+      label: Type.Optional(Type.String()),
+      args: Type.Optional(OpenObject())
     }),
     async execute(params) {
       const store = options.artifacts;

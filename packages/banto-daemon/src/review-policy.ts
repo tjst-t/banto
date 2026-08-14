@@ -54,6 +54,18 @@ export interface ProjectConfig {
      * 書き方は `scope.paths` と同じ glob（`packages/banto-web/**`）。**既定は空**。
      */
     poRequiredPaths: string[];
+    /**
+     * **判断待ちの間、人が触るための環境プロファイル**（決定59・段11c）。
+     *
+     * `meta/environments.yaml` に定義したもののうち、**人が触れる面を持つもの**を名指しする。
+     * 省略したときは `verify.profile` に落ちるが、そちらは**触れる面を持つときだけ**使う
+     * ——マージ前ゲートの検証用プロファイルは普通ポートを持たないので、そのまま流用すると
+     * 「毎回 docker で立つが PO は触れない」という費用だけの環境が出来る（実測でそうなった）。
+     *
+     * 判定表と同じくこれも**プロジェクトの持ち物**（決定66・38f）。どのプロファイルが
+     * 触れる面を持つかを知っているのは Environment Pool なので、Kobo は名前だけを扱う。
+     */
+    envProfile?: string;
   };
   limits: {
     /**
@@ -73,6 +85,21 @@ export interface ProjectConfig {
      * 「既定30秒では npm test が途中で切れていた」）。ゲート側だけ 60 秒のままだった。
      */
     verifyTimeoutMinutes?: number;
+    /**
+     * **どれだけ止まっていたら知らせるか**（状態ごと・分。realign 第2便）。
+     *
+     * `meta/config.yaml` の `limits.dwell_warn_minutes`：
+     * ```yaml
+     * limits:
+     *   dwell_warn_minutes:
+     *     queued: 120
+     *     review-ready: 480
+     * ```
+     * 書かなかった状態は `DEFAULT_DWELL_WARN_MINUTES` に落ちる。**どちらにも無い
+     * 状態は見張らない**——通り過ぎるだけの状態（ready / merging 等）で鳴らしても、
+     * 受け取った側にできることが無い。
+     */
+    dwellWarnMinutes?: Partial<Record<string, number>>;
   };
 }
 
@@ -123,6 +150,10 @@ export function loadProjectConfig(repoPath: string): ProjectConfig {
   if (rawPaths !== undefined && !Array.isArray(rawPaths)) {
     throw new Error(`${PROJECT_CONFIG_PATH}: review.po_required_paths は配列で書いてください`);
   }
+  const envProfile = review["env_profile"];
+  if (envProfile !== undefined && typeof envProfile !== "string") {
+    throw new Error(`${PROJECT_CONFIG_PATH}: review.env_profile はプロファイル名（文字列）で書いてください`);
+  }
   const tier = limits["max_model_tier"];
   if (tier !== undefined && !["fast", "standard", "reasoning"].includes(String(tier))) {
     throw new Error(
@@ -162,13 +193,43 @@ export function loadProjectConfig(repoPath: string): ProjectConfig {
     }
   }
 
+  /**
+   * 滞留の閾値（状態ごと・分。realign 第2便）。
+   *
+   * I2: 数として読めないものを黙って無視しない——無視すると「閾値を設定したのに
+   * 鳴らない」が静かに起きる。設定の間違いは、知らせないことより見つけやすくする。
+   */
+  const rawDwell = limits["dwell_warn_minutes"];
+  let dwellWarnMinutes: Record<string, number> | undefined;
+  if (rawDwell !== undefined) {
+    if (typeof rawDwell !== "object" || rawDwell === null || Array.isArray(rawDwell)) {
+      throw new Error(
+        `${PROJECT_CONFIG_PATH}: limits.dwell_warn_minutes は「状態: 分」の対応で書いてください`
+      );
+    }
+    dwellWarnMinutes = {};
+    for (const [state, raw] of Object.entries(rawDwell as Record<string, unknown>)) {
+      const value = typeof raw === "number" ? raw : Number(String(raw));
+      if (!Number.isFinite(value) || value <= 0) {
+        throw new Error(
+          `${PROJECT_CONFIG_PATH}: limits.dwell_warn_minutes.${state} は正の数で書いてください（got "${String(raw)}"）`
+        );
+      }
+      dwellWarnMinutes[state] = value;
+    }
+  }
+
   return {
     verify: { profile: (verifyProfile as string | undefined) ?? DEFAULT_VERIFY_PROFILE },
-    review: { poRequiredPaths: Array.isArray(rawPaths) ? rawPaths.map(String) : [] },
+    review: {
+      poRequiredPaths: Array.isArray(rawPaths) ? rawPaths.map(String) : [],
+      ...(envProfile !== undefined ? { envProfile } : {}),
+    },
     limits: {
       ...(tier !== undefined ? { maxModelTier: tier as ProjectConfig["limits"]["maxModelTier"] } : {}),
       ...(concurrent !== undefined ? { maxConcurrentSessions: concurrent } : {}),
       ...(verifyMinutes !== undefined ? { verifyTimeoutMinutes: verifyMinutes } : {}),
+      ...(dwellWarnMinutes !== undefined ? { dwellWarnMinutes } : {}),
     },
   };
 }

@@ -141,24 +141,29 @@ export interface CreateBantoHostSessionOptions {
  * `memory` を渡すと、番頭は記憶を持つ（D11）——保存済みの好み・習慣がシステムプロンプトへ
  * 注入され、`memory.save` / `memory.recall` で読み書きできる。
  */
-export async function createBantoHostSession(
-  options: CreateBantoHostSessionOptions
-): Promise<CreateAgentSessionResult> {
-  const cwd = options.cwd ?? process.cwd();
-  const agentDir = options.agentDir ?? getAgentDir();
-
-  // SKILLは一覧だけをプロンプトに載せ、本体は skill.read で読ませる（progressive disclosure）。
-  // pi 側の SKILL 機構は read ツールを前提とするため使わない（理由は skills.ts 冒頭）。
-  //
-  // 決定26: 番頭核の既定とモジュールの既定を、優先順位つきで解決する。学習層（task-0017）は
-  // resolveSkills の先頭に差し込むだけで効くので、ここの形は変わらない。
+/**
+ * **番頭の文脈と道具を組み立てる**（バックエンド共通・ADR-0020 決定89）。
+ *
+ * ここで組むもの:
+ * - 道具＝渡されたもの ＋ 記憶・引き継ぎ・SKILL・成果物の口
+ * - 系プロンプト＝人格 ＋ **道具の散文一覧**（決定84-5）＋ **記憶の注入**（D11）＋ SKILL 一覧
+ * - **皮**＝大きな結果の退避（決定47a）と**ターン予算**（全道具に一括）
+ *
+ * **バックエンドごとに組み直さない。** 以前はこの組み立てが pi 経路の内側にしかなく、
+ * Agent SDK バックエンドの番頭は**記憶も SKILL も散文一覧も退避もターン予算も無い**
+ * 状態で動いていた（レビュー 2026-08-13 で発覚。本番の既定がそれだった）。
+ * D11「番頭は記憶を持つ」も、決定47a の退避も、暴走を止めるターン予算も、
+ * **どのバックエンドでも同じように効く**必要がある。
+ */
+export function assembleStewardContext(options: CreateBantoHostSessionOptions): {
+  tools: NamespacedToolDefinition[];
+  systemPrompt: string;
+} {
   const coreSkills: SkillEntry[] =
     options.loadBantoSkills === false
       ? []
       : loadBantoSkills().map((skill) => ({ skill, origin: CORE_ORIGIN }));
-  // 既定＝番頭核とモジュール。学習層はこの上に載る（決定26）
   const defaults = resolveSkills([coreSkills, options.moduleSkills ?? []]).map((e) => e.skill);
-  // task-0017 a2: 学習層を**先頭**に置く。resolveSkills は先勝ちなので、これで既定を上書きする
   const learnedEntries: SkillEntry[] = (options.learnedSkills?.list() ?? []).map((entry) => ({
     skill: entry.skill,
     origin: LEARNED_ORIGIN,
@@ -169,13 +174,6 @@ export async function createBantoHostSession(
     options.moduleSkills ?? [],
   ]).map((e) => e.skill);
 
-  /**
-   * **道具の在庫を先に組む**（ADR-0019 決定84-5）。
-   *
-   * 以前はシステムプロンプトを先に作っていたが、散文の道具一覧を載せるには
-   * 「何を提示するか」が先に決まっていなければならない。順序を入れ替えただけで、
-   * 中身は変えていない。
-   */
   const tools = [
     ...options.tools,
     ...(options.memory
@@ -197,13 +195,6 @@ export async function createBantoHostSession(
     ...(options.artifacts ? createArtifactTools(options.artifacts) : []),
   ];
 
-  // 記憶とSKILL一覧をシステムプロンプトの末尾に足す。
-  // 記憶はセッション開始時点の内容を焼き込むので、以後の保存分は memory.recall で読み直す。
-  //
-  // 決定84-5: 道具の散文一覧も載せる。いままでは一行も出ていなかった——pi は
-  // `promptSnippet` を付けた道具だけを "Available tools" に載せる仕様で、banto はどれにも
-  // 付けておらず、さらに `systemPromptOverride` を使うため pi 側の組み立てが捨てられていた。
-  // 結果、道具の JSON スキーマだけが案内文なしでぶら下がっていた。
   const sections = [
     options.systemPrompt,
     options.presentSelectedTools ? renderToolCategories(selectPresentedTools(tools)) : "",
@@ -217,7 +208,34 @@ export async function createBantoHostSession(
       : "",
     renderSkillsForPrompt(skills),
   ].filter((s) => s.length > 0);
-  const systemPrompt = sections.join("\n\n");
+
+  // 提案§3.1: 大きなツール結果は文脈に載せず、栞に置き換える
+  const offloaded = options.artifacts
+    ? withArtifactOffload(tools, options.artifacts, {
+        ...(options.artifactThresholdChars !== undefined
+          ? { thresholdChars: options.artifactThresholdChars }
+          : {}),
+        ...(options.artifactModuleOf ? { moduleOf: options.artifactModuleOf } : {}),
+      })
+    : tools;
+
+  // ターンの予算を**番頭が呼べる道具すべてに**掛ける（呼び出し側で選ぶと抜け道になる）
+  const budgeted = options.turnBudget
+    ? offloaded.map((tool) => guardTurn(tool, options.turnBudget!))
+    : offloaded;
+
+  return { tools: budgeted, systemPrompt: sections.join("\n\n") };
+}
+
+export async function createBantoHostSession(
+  options: CreateBantoHostSessionOptions
+): Promise<CreateAgentSessionResult> {
+  const cwd = options.cwd ?? process.cwd();
+  const agentDir = options.agentDir ?? getAgentDir();
+
+  // **組み立てはバックエンド共通**（`assembleStewardContext`）。ここで pi 固有の話に入る前に、
+  // 記憶・SKILL・散文一覧・退避・ターン予算を済ませる
+  const { tools: budgeted, systemPrompt } = assembleStewardContext(options);
 
   /**
    * **番頭は置き場のコンテキストファイルを読まない**（`noContextFiles`・PO指摘 2026-08-09）。
@@ -247,33 +265,6 @@ export async function createBantoHostSession(
     systemPromptOverride: () => systemPrompt,
   });
   await resourceLoader.reload();
-
-  // 提案§3.1: 大きなツール結果は文脈に載せず、栞に置き換える。
-  // **皮をかぶせるのは pi へ渡す直前**——挿入時に決めることでプレフィックスキャッシュを守る
-  const offloaded = options.artifacts
-    ? withArtifactOffload(
-        tools,
-        options.artifacts,
-        {
-          ...(options.artifactThresholdChars !== undefined
-            ? { thresholdChars: options.artifactThresholdChars }
-            : {}),
-          ...(options.artifactModuleOf ? { moduleOf: options.artifactModuleOf } : {}),
-        }
-      )
-    : tools;
-
-  /**
-   * **ターンの予算を、番頭が呼べる道具**すべて**に掛ける**（PO報告 2026-08-11・P4）。
-   *
-   * ここが「番頭に渡る道具の最後の1点」——モジュールの口も、中核の口（canvas / thread /
-   * llm）も、ここで足される記憶・SKILL・成果物・引き継ぎの口も、全部これを通る。
-   * 呼び出し側で選んで掛けると、**足し忘れた道具が抜け道になる**（実際、最初に書いた
-   * 対策は `file.find` を数えておらず、実機の暴走を止められなかった）。
-   */
-  const budgeted = options.turnBudget
-    ? offloaded.map((tool) => guardTurn(tool, options.turnBudget!))
-    : offloaded;
 
   const created = await createAgentSession({
     cwd,
@@ -306,7 +297,7 @@ export async function createBantoHostSession(
    * 道具の散文一覧は上の `sections` で自前に載せている（決定84-5）。
    */
   if (options.presentSelectedTools) {
-    const wireNames = presentedWireNames(tools);
+    const wireNames = presentedWireNames(budgeted);
     // I2: 表の道具が在庫に1本も無いなら、絞ると道具ゼロの番頭になる。黙って壊さない
     if (wireNames.length === 0) {
       throw new Error(
@@ -324,7 +315,7 @@ export async function createBantoHostSession(
      */
     if (!loggedPresentation) {
       loggedPresentation = true;
-      console.log(`[banto] 道具: 提示 ${wireNames.length} / 在庫 ${tools.length}`);
+      console.log(`[banto] 道具: 提示 ${wireNames.length} / 在庫 ${budgeted.length}`);
     }
   }
 

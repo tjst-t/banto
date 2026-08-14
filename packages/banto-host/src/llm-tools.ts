@@ -15,8 +15,13 @@ import {
   LlmCatalog,
   TIER_LABELS,
   type KeyScope,
+  type LlmResolution,
   type ModelConstraints,
+  type ModelUse,
   type ModelTier,
+  LLM_ROLES,
+  isLlmRole,
+  StringEnum,
 } from "@banto/core";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 
@@ -120,12 +125,9 @@ export function costFromCatalog(
   };
 }
 
-const TierSchema = Type.Union(
-  [Type.Literal("reasoning"), Type.Literal("standard"), Type.Literal("fast")],
-  { description: "reasoning=高精度、standard=通常、fast=高速" }
-);
+const TierSchema = StringEnum(["reasoning", "standard", "fast"] as const);
 
-const ScopeSchema = Type.Union([Type.Literal("host"), Type.Literal("worker")], {
+const ScopeSchema = StringEnum(["host", "worker"] as const, {
   description: "host=番頭、worker=職人",
 });
 
@@ -146,42 +148,51 @@ export interface LlmToolsOptions {
   onHostModelChanged?: (provider: string, model: string) => void;
 }
 
+/**
+ * `llm.*` の内訳（ADR-0020 決定98f）。
+ *
+ * **番頭が持つのは読みと診断だけ。** 設定変更は GUI とファイルの担当にする
+ * ——調べた製品はどこもモデル設定をエージェントの Tool にしていないし、ADR-0019 の
+ * 実測でも19本中13本が一度も呼ばれていなかった（決定41c「設定の口は番頭に渡さない」）。
+ *
+ * **`settings` も在庫からは消さない。** モジュールの HTTP 面（`coreTools`）が
+ * これを引くので、消すと設定画面が 404 になる（ADR-0019 決定82 と同じ理由）。
+ */
+export interface LlmToolSets {
+  /** 番頭に渡す4本。読み（`list` / `resolve`）と診断（`check_key`）と取り込み直し（`reload`）。 */
+  tools: NamespacedToolDefinition[];
+  /** 設定画面だけが使う13本。番頭の道具箱には入れないが、HTTP 面には出す。 */
+  settings: NamespacedToolDefinition[];
+}
+
 /** `llm.*` を生成する。`createCanvasTools` と同じく bin.ts が中核の Tool 群として組む。 */
-export function createLlmTools(options: LlmToolsOptions): NamespacedToolDefinition[] {
+export function createLlmTools(options: LlmToolsOptions): LlmToolSets {
   const { catalog } = options;
 
   const list = defineNamespacedTool({
     name: "llm.list",
     label: "LLM: List",
     description:
-      "プロバイダ・モデル・キー・tier・既定の一覧を返す。" +
-      "**全件は返さない**——プロバイダによっては数百のモデルがあるので、" +
-      "既定では採用しているものだけ。探すときは query と絞り込みを使う。",
+      "プロバイダ・モデル・キー・tier・既定の一覧。**いま自分が何で動いているか**を答えるのに引く。\n例: {} → 採用しているものだけ／{query: \"deepseek\", adopted: false} → 全部から探す\nquery と provider は英語で埋める。",
     parameters: Type.Object({
       tier: Type.Optional(TierSchema),
       /** 名前・ID の部分一致。空白区切りの語は**すべて**含むものを返す。 */
-      query: Type.Optional(Type.String({ description: "名前・IDで絞る（空白区切りで絞り込み）" })),
+      query: Type.Optional(Type.String()),
       /** プロバイダで絞る。検索語と混ぜない（順番で結果が変わってしまう）。 */
-      provider: Type.Optional(Type.String({ description: "このプロバイダのものだけ" })),
-      adopted: Type.Optional(
-        Type.Boolean({ description: "採用しているものだけ（既定 true）。false で全部から探す" })
-      ),
-      vision: Type.Optional(Type.Boolean({ description: "画像を読めるものだけ" })),
-      free: Type.Optional(Type.Boolean({ description: "無料のものだけ" })),
-      minContext: Type.Optional(Type.Number({ description: "文脈長がこれ以上のものだけ" })),
-      sort: Type.Optional(
-        Type.Union([Type.Literal("name"), Type.Literal("context"), Type.Literal("price")], {
-          description: "並び順。既定は name",
-        })
-      ),
-      limit: Type.Optional(Type.Number({ description: `返す最大件数（既定 ${LIST_DEFAULT_LIMIT}）` })),
+      provider: Type.Optional(Type.String()),
+      adopted: Type.Optional(Type.Boolean()),
+      vision: Type.Optional(Type.Boolean()),
+      free: Type.Optional(Type.Boolean()),
+      minContext: Type.Optional(Type.Number()),
+      sort: Type.Optional(StringEnum(["name", "context", "price"] as const, {})),
+      limit: Type.Optional(Type.Number())
     }),
     async execute(params) {
       const data = catalog.catalog();
       const adoptedOnly = params.adopted ?? true;
       const q = (params.query ?? "").trim().toLowerCase();
       let models = data.models;
-      if (adoptedOnly) models = models.filter((m) => m.hostUsable || m.workerUsable);
+      if (adoptedOnly) models = models.filter((m) => m.policy.length > 0);
       if (params.provider) models = models.filter((m) => m.providerId === params.provider);
       if (params.tier) models = models.filter((m) => m.tier === params.tier);
       if (params.vision) models = models.filter((m) => m.vision);
@@ -211,15 +222,35 @@ export function createLlmTools(options: LlmToolsOptions): NamespacedToolDefiniti
       });
       const limit = Math.max(1, Math.min(params.limit ?? LIST_DEFAULT_LIMIT, LIST_MAX_LIMIT));
       const page = sorted.slice(0, limit);
+      /**
+       * **母集団は pi の供給より広い**（ADR-0021 決定101e・task-0107）。
+       *
+       * 上の `models` は `models.json` 由来＝**pi の供給しか並ばない**。Claude Code の
+       * モデルに立った採用の旗はそこに現れないので、別に添える——添えないと
+       * 「聞いた一覧に無い＝使えない」と読める（実際には使える）。
+       */
+      const adoptedRefs = catalog.adoptedRefs();
+      const otherBackends = adoptedRefs.filter((r) => r.backend !== "pi");
       const text =
         `${data.providers.length} プロバイダ` +
         `、${adoptedOnly ? "採用中" : "全体"}から ${matched} 件` +
         (page.length < matched ? `（うち ${page.length} 件を返す）` : "") +
+        (otherBackends.length > 0
+          ? `。ほかに pi 以外のバックエンドで ${otherBackends.length} 件を採用しています` +
+            `（${otherBackends.map((r) => `${r.backend}/${r.model}`).join(" / ")}）`
+          : "") +
         (data.files.changed ? "。pi の設定ファイルが外部で変更されています（llm.reload で読み直せます）" : "");
       return {
         content: [{ type: "text", text }],
         // I1: 切ったことを隠さない。総数と、返した件数の両方を出す
-        details: { ...data, models: page, matched, total: data.models.length, truncated: page.length < matched },
+        details: {
+          ...data,
+          models: page,
+          matched,
+          total: data.models.length,
+          truncated: page.length < matched,
+          adopted: adoptedRefs,
+        },
       };
     },
   });
@@ -237,15 +268,45 @@ export function createLlmTools(options: LlmToolsOptions): NamespacedToolDefiniti
     }),
     async execute(params) {
       const constraints = (params.constraints ?? {}) as ModelConstraints;
+      /**
+       * **実際に走るものを言う**（ADR-0021 症状2）。
+       *
+       * ここは pi の登録だけを引いていたので、実機では `opencode-go/deepseek-v4-flash` と
+       * 答えながら職人は `opus` で走っていた——**画面が嘘をつくより悪い**（番頭の判断が
+       * 誤情報の上に乗る）。等級に割り当てがあるなら、それをそのまま返す。
+       *
+       * 制約つきの問い合わせだけは pi の登録で解く（制約は pi のモデルの属性なので）。
+       */
+      const wantedTier = (params.tier as ModelTier | undefined) ?? "standard";
+      const bound = Object.keys(constraints).length === 0
+        ? catalog.roles()[`worker.${wantedTier}` as never]
+        : undefined;
+      if (bound) {
+        const ref = bound as { backend?: string; provider: string; model: string };
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `${ref.backend ?? "pi"} / ${ref.provider}/${ref.model}` +
+                `（${TIER_LABELS[wantedTier]}の割り当て）。` +
+                "頼む側が model を名指しすれば、それが優先されます（決定99a）。",
+            },
+          ],
+          details: { tier: wantedTier, ...ref } as unknown as LlmResolution,
+        };
+      }
       const r = catalog.resolveForWorker(params.tier as ModelTier | undefined, constraints);
       if (!r) {
         const named = Object.entries(constraints)
           .filter(([, v]) => v)
           .map(([k]) => k);
+        // 決定104: 等級を落として埋めない。**知らせて人に設定させる**
         throw new Error(
           `条件を満たすモデルがありません（tier: ${params.tier ?? "既定"}` +
             (named.length ? `, 制約: ${named.join(", ")}` : "") +
-            "）。制約を緩めるか、その tier に条件を満たすモデルを足してください。"
+            "）。**別の等級へ勝手に落としません**——その等級にモデルを割り当てるか、" +
+            "制約を見直してください（設定の「役」）。"
         );
       }
       const notes: string[] = [];
@@ -316,87 +377,65 @@ export function createLlmTools(options: LlmToolsOptions): NamespacedToolDefiniti
     },
   });
 
-  const setHostDefault = defineNamespacedTool({
-    name: "llm.set_host_default",
-    label: "LLM: Set Host Default",
+  /**
+   * **役割にモデルを割り当てる**（ADR-0020 決定94）。
+   *
+   * `llm.set_host_default` / `llm.set_pick` / `llm.set_worker_tier` の3本を畳んだもの。
+   * 束縛の表が `roles` 1つになったので、口も1つでよい——3本あったのは、
+   * 「番頭の既定」と「tier の第一候補」が別の表だったことの写しだった。
+   */
+  const setRole = defineNamespacedTool({
+    name: "llm.set_role",
+    label: "LLM: Assign role",
     description:
-      "番頭自身の既定モデルを変える。番頭は連続した会話なので具体モデルで持つ。" +
-      "次のセッションから効く。",
+      "役割にモデルを割り当てる。`steward`＝番頭が使うモデル、" +
+      "`worker.reasoning` / `worker.standard` / `worker.fast`＝職人が等級ごとに使うモデル。" +
+      "割り当てると同時に採用も立つ（使えないモデルは割り当てられないため）。" +
+      "**backend まで含めて指定する**——同じ `opus` が pi 経由でも Claude Code 経由でも指せる。",
     parameters: Type.Object({
+      role: Type.String({
+        description: "steward / worker.reasoning / worker.standard / worker.fast",
+      }),
+      /**
+       * **どの経路で呼ぶか**（ADR-0021 決定103）。省略は `pi` を意味する
+       * ——ここが無かったので、画面から選び直すたびに束縛の `backend` が落ちていた。
+       */
+      backend: Type.Optional(
+        Type.String({ description: "pi / claude-agent-sdk（省略時は pi）" })
+      ),
       provider: Type.String({ description: "プロバイダ名" }),
       model: Type.String({ description: "モデル ID" }),
     }),
     async execute(params) {
-      catalog.setHostDefault(params.provider, params.model);
-      options.onHostModelChanged?.(params.provider, params.model);
-      return {
-        content: [
-          {
-            type: "text",
-            text: `番頭の既定を ${params.provider}/${params.model} にしました。次のセッションから効きます。`,
-          },
-        ],
-        details: { provider: params.provider, model: params.model },
-      };
-    },
-  });
-
-  const setWorkerTier = defineNamespacedTool({
-    name: "llm.set_worker_tier",
-    label: "LLM: Set Worker Tier",
-    description:
-      "職人の既定 tier を変える。職人はタスクごとに起こすので、具体モデルではなく tier で持つ。" +
-      "次に起こす職人から効く。",
-    parameters: Type.Object({ tier: TierSchema }),
-    async execute(params) {
-      const tier = params.tier as ModelTier;
-      catalog.setWorkerTier(tier);
-      options.onWorkerTierChanged?.(tier);
-      const r = catalog.resolveForWorker(tier, {});
+      // I2: 知らない役割を黙って作らない
+      if (!isLlmRole(params.role)) {
+        throw new Error(
+          `知らない役割です: ${params.role}（${LLM_ROLES.join(" / ")} のどれか）`
+        );
+      }
+      catalog.setRole(params.role as never, params.provider, params.model, params.backend);
+      if (params.role === "steward") {
+        options.onHostModelChanged?.(params.provider, params.model);
+      }
       return {
         content: [
           {
             type: "text",
             text:
-              `職人の既定を ${TIER_LABELS[tier]} にしました。次に起こす職人から効きます` +
-              (r ? `（制約なしのとき ${r.model.provider}/${r.model.id}）` : "") +
-              "。",
+              `${params.role} に ${params.backend ?? "pi"}/${params.provider}/${params.model} を` +
+              "割り当てました。",
           },
         ],
-        details: { tier, resolved: r ?? null },
-      };
-    },
-  });
-
-  const setPick = defineNamespacedTool({
-    name: "llm.set_pick",
-    label: "LLM: Set Tier Pick",
-    description:
-      "そのモデルを、自分が属する tier の第一候補にする。制約で落ちたときは同じ tier の次の候補に降りる。",
-    parameters: Type.Object({
-      provider: Type.String({ description: "プロバイダ名" }),
-      model: Type.String({ description: "モデル ID" }),
-    }),
-    async execute(params) {
-      catalog.setPick(params.provider, params.model);
-      const tier = catalog.getTier(params.provider, params.model);
-      return {
-        content: [
-          {
-            type: "text",
-            text: `${params.provider}/${params.model} を ${TIER_LABELS[tier]} の第一候補にしました。`,
-          },
-        ],
-        details: { provider: params.provider, model: params.model, tier },
+        details: { role: params.role, provider: params.provider, model: params.model },
       };
     },
   });
 
   const setUsable = defineNamespacedTool({
-    name: "llm.set_usable",
-    label: "LLM: Set Usable",
+    name: "llm.set_policy",
+    label: "LLM: Set Policy",
     description:
-      "そのモデルを番頭／職人が使ってよいかを切り替える。" +
+      "そのモデルを番頭／職人が使ってよいかを切り替える（採用の方針・決定98）。" +
       "番頭の既定・tier の第一候補になっているものは外せない。",
     parameters: Type.Object({
       provider: Type.String({ description: "プロバイダ名" }),
@@ -405,7 +444,7 @@ export function createLlmTools(options: LlmToolsOptions): NamespacedToolDefiniti
       usable: Type.Boolean({ description: "true=使ってよい" }),
     }),
     async execute(params) {
-      catalog.setUsable(params.provider, params.model, params.scope as KeyScope, params.usable);
+      catalog.setPolicy(params.provider, params.model, params.scope as ModelUse, params.usable);
       const label = params.scope === "host" ? "番頭" : "職人";
       return {
         content: [
@@ -794,7 +833,7 @@ export function createLlmTools(options: LlmToolsOptions): NamespacedToolDefiniti
       const adoptedBefore = new Set(
         catalog
           .models()
-          .filter((m) => m.providerId === params.provider && (m.hostUsable || m.workerUsable))
+          .filter((m) => m.providerId === params.provider && m.policy.length > 0)
           .map((m) => m.id)
       );
       const result = catalog.mergeModels(params.provider, fetched, ensure, trustCapabilities);
@@ -837,27 +876,33 @@ export function createLlmTools(options: LlmToolsOptions): NamespacedToolDefiniti
     },
   });
 
-  return [
-    list,
-    resolve,
-    setTier,
-    setTierDescription,
-    setHostDefault,
-    setWorkerTier,
-    setPick,
-    setUsable,
-    setContextWindow,
-    setProviderLocal,
-    setKeyOrder,
-    setKeyScope,
-    reload,
-    addProvider,
-    removeProvider,
-    setKey,
-    removeKey,
-    checkKey,
-    fetchModels,
-  ];
+  return {
+    /**
+     * **番頭が持つ4本**（決定98f）。
+     *
+     * `list` は「いま自分は何で動いているか」——これが無いとモデルの相談そのものが
+     * できない（実測32回・`llm.*` の中で最多）。`resolve` は職人へ振るときの
+     * 「その等級だと何になるか」。`check_key` と `reload` は**診断と取り込み直し**で、
+     * 設定を変えるものではない（変えるのは人）。
+     */
+    tools: [list, resolve, checkKey, reload],
+    /** 設定画面の口。**番頭には渡さない**が、HTTP 面には出す（消すと画面が 404 になる）。 */
+    settings: [
+      setTier,
+      setTierDescription,
+      setRole,
+      setUsable,
+      setContextWindow,
+      setProviderLocal,
+      setKeyOrder,
+      setKeyScope,
+      addProvider,
+      removeProvider,
+      setKey,
+      removeKey,
+      fetchModels,
+    ],
+  };
 }
 
 /**

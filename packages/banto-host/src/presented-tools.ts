@@ -39,6 +39,10 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
   "worker.wake",
   "worker.stop",
   "worker.models",
+  // 落ちた職人の未コミットの成果を拾う（work-keep）。ここに無いと、機構が守った取り置きは
+  // 「在るのに誰も気づけない」ものになる——実装は全部あったのに一度も発火しなかった
+  // 触れる環境と同じ形の穴
+  "worker.keeps",
   // 場所を読む——判断の材料。25%
   "file.read",
   "file.grep",
@@ -83,15 +87,79 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
   "kobo.list",
   "kobo.task",
   "kobo.approve",
+  /**
+   * **通さない方の判断**（段2）。`kobo.approve` と対になる口で、片方だけ提示すると
+   * 「通す」しか押せない——実際そうなっていて、駄目だと分かったタスクを実装へ戻す道は
+   * 契約を書き換える `kobo.amend` しか無かった（報告 A 表 11b）。
+   */
+  "kobo.send_back",
   "kobo.reopen",
+  /**
+   * **後始末の口**（inc-0063 の5番）。在庫には最初からあったのに提示していなかった
+   * ——その結果、機構は `kobo.task` の失敗欄と `kobo-notice.ts` の助言で
+   * 「`kobo.abandon` で畳んでください」「定義を直して `kobo.amend`」と**案内し続けながら、
+   * 番頭の手にはその道具が無い**という状態が続いていた。案内と道具の食い違いは、
+   * 番頭から見れば「言われたとおりにできない」であって、失敗の理由が分からない。
+   *
+   * `kobo.supersede` は**merging / paused のタスクに届く口**である
+   * （`Daemon.transition` は `superseded` を `StateMachine.supersede` へ回し、
+   * これは終端以外のどの状態からでも通る）。inc-0063 で merging に居座った
+   * task-0097 を降ろせなかったのは、この口が提示されていなかったからでもある。
+   *
+   * `kobo.abandon` も**どの状態のタスクでも畳める**ようになった（PO 裁定 2026-08-14）。
+   * 以前は `failed` 専用で、実運用で宙に浮く queued / paused / review-ready には届かず、
+   * 実機の工場に14本が凍っていた。**降ろす口は3つとも状態では選ばない。選ぶのは理由**
+   * ——別の依頼で置き換えるなら `kobo.supersede`、単に諦めるなら `kobo.abandon`、
+   * 失敗ではなく工場の外で決着したなら `kobo.settle`。
+   */
+  "kobo.abandon",
+  /**
+   * **工場の外で決着したものを降ろす口**（realign 第2便・imp-0019 の4番）。
+   *
+   * 足した当初は `kobo.abandon` が failed 専用で、queued / paused / review-ready のまま
+   * 中身が別の経路で main に入ったタスクを畳む道が無かった——2026-08-13 の棚卸しで番頭が
+   * 実際にここで詰まり、判定を帳簿へ書き戻せず、文書が代わりの記録になった。
+   *
+   * その穴は PO 裁定 2026-08-14 で `kobo.abandon` が横断遷移になって塞がったが、**口は
+   * 残してある**。違いは畳める範囲ではなく**帳簿に何を書くか**——`kobo.settle` は
+   * 「失敗ではない（外で着地した／要らなくなった／直接やった）」、`kobo.abandon` は
+   * 「諦めた」。混ぜると「どれだけ捨てたか」と「どれだけ工場の外で片付いたか」が
+   * 混ざって数えられなくなる。
+   *
+   * 在庫に足すだけでは足りない。**ここに載せないとモデルには見えない**（決定82）。
+   */
+  "kobo.settle",
+  "kobo.supersede",
+  "kobo.amend",
+  /**
+   * **制御の口**（PO 裁定 2026-08-13・inc-0063）。頻度で選ぶと必ず落ちる——
+   * 使うのは工場が壊れたときだけで、平時の呼び出しは 0 回である。それでも渡すのは、
+   * **無いと止められない**から：inc-0063 では工場が1分ごとに同じタスクを起票し続け、
+   * 番頭には watcher を止める口もキューを止める口も受け持ちを外す口も無かった。
+   * 在庫にあっても提示していなければ「無い」のと同じ（決定82）。
+   */
+  "kobo.projects",
+  "kobo.set_merge_queue",
+  "kobo.set_watch",
+  "kobo.unregister_project",
   // 器（決定78・81a）
   "canvas.open",
   "canvas.show",
   "canvas.close",
-  // 会話の仕切り（決定77）
+  /**
+   * 会話の仕切り（決定77）と、**幹と枝の対話**（決定105〜108・PO指示 2026-08-13）。
+   *
+   * `thread.read` / `thread.steer` / `thread.consult` は在庫に足すだけでは届かない
+   * ——ここに載せないと「番頭の手に無い」のと同じ（決定82）。枝の中が見えない・
+   * 途中で方針を渡せない・枝から相談できない、という痛みを開けるための3本なので、
+   * 提示から落ちると入れた意味がそのまま消える。
+   */
   "thread.open",
   "thread.list",
+  "thread.read",
   "thread.send",
+  "thread.steer",
+  "thread.consult",
   "thread.merge",
   // 判断を求める唯一の口（決定73）
   "inbox.post",
@@ -109,6 +177,12 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
   // 章の引き継ぎ（決定47b）
   "handoff.read",
   "handoff.list",
+  /**
+   * **読み取り1本だけ残す。** 番頭が「いま自分は何で動いているか」を答えられなくなると、
+   * モデルの相談そのものができない（実測32回・`llm.*` 19本の中で最多）。
+   * 書き換え系18本は設定画面にあるので落とす（決定41c「設定の口は番頭に渡さない」）。
+   */
+  "llm.list",
 ];
 
 /** ドメインごとの一行説明（決定84-5 の散文一覧を組むのに使う）。 */
@@ -119,7 +193,8 @@ const DOMAIN_BLURB: Record<string, string> = {
   git: "read history in a place (viewing only — no commit/push/branch)",
   kobo: "put work on the factory queue, read it, approve it, send it back",
   canvas: "show things to the user in the conversation",
-  thread: "run the conversation — open branches, list, hand over, merge back",
+  thread:
+    "run the conversation — open branches, read what is happening inside one, steer it mid-flight, consult the trunk, merge back",
   inbox: "the one place to ask the user for a decision",
   place: "see which places you can reach, and ask for write scope",
   env: "run verification in a throwaway environment — the mechanism returns a fact, not a worker's claim (I1)",

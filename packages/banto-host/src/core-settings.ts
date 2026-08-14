@@ -11,6 +11,7 @@
  * その面が使う `llm.*` は中核の Tool なので、区画は `view` で描き先だけを宣言する。
  */
 
+import { MODEL_TIERS, TIER_LABELS, workerRoleOf } from "@banto/core";
 import type { LlmCatalog, ModelTier, ModuleSettingsSpec } from "@banto/core";
 import type { PlaceSetting, SettingsStore } from "./settings-store.js";
 
@@ -42,7 +43,40 @@ function linesToPlaces(lines: readonly unknown[]): PlaceSetting[] {
   return places;
 }
 
+/** 束縛を画面の値（`backend|provider|model`）へ。 */
+function refValue(ref?: { backend?: string; provider: string; model: string }): string {
+  return ref ? `${ref.backend ?? "pi"}|${ref.provider}|${ref.model}` : "";
+}
+
+/**
+ * **いまの値が一覧に無ければ足す**（I2：画面と実態を食い違わせない）。
+ *
+ * 供給に聞いた一覧は「いま選べるもの」で、**いま効いているもの**とは限らない
+ * ——実機では番頭が `claude/opus` なのに、聞いた一覧には `opus[1m]` しか無かった。
+ * 黙って先頭の項目が選ばれているように見せると、開いただけで別のモデルに見える。
+ */
+function withCurrent(
+  options: Array<{ value: string; label: string }>,
+  current: string
+): Array<{ value: string; label: string }> {
+  if (current === "" || options.some((o) => o.value === current)) return options;
+  const [backend, provider, model] = current.split("|");
+  return [
+    {
+      value: current,
+      label: `${backend} › ${provider} › ${model}（いま効いている・一覧にはまだ出ていない）`,
+    },
+    ...options,
+  ];
+}
+
 export interface CoreSettingsOptions {
+  /**
+   * **番頭が使うモデルの選択肢**（PO裁定 2026-08-13）。
+   * 会話の画面と同じ「バックエンド → プロバイダ → モデル」を、`backend|provider|model`
+   * の値で返す。**選択肢を2箇所で組まない**（D3）ので、bin.ts が1つの元から作る。
+   */
+  harnessChoices?: () => Array<{ value: string; label: string }>;
   /** 場所が変わったときに呼ぶ（その場で効かせるため）。 */
   onPlacesChanged?: () => void;
   /**
@@ -58,6 +92,13 @@ export interface CoreSettingsOptions {
   llmCatalog?: LlmCatalog;
   /** 職人の既定 tier が変わったときに Worker Pool へ伝える口。 */
   onWorkerTierChanged?: (tier: ModelTier) => void;
+  /**
+   * **職人に選べるモデル**（ADR-0021 決定102）。番頭と同じ3段だが、**層が違うので別に聞く**
+   * ——番頭の pi ハーネスと職人の pi ドライバは別物で、片方だけ使える構成がありうる（決定100）。
+   */
+  workerChoices?: () => Array<{ value: string; label: string }>;
+  /** いま効いている職人の既定等級（画面に映す）。 */
+  workerDefaultTier?: () => string;
 }
 
 /**
@@ -187,16 +228,117 @@ export function createCoreSettingsSections(
         },
       },
     },
+    {
+      id: "roles",
+      spec: {
+        title: "役ごとのモデル",
+        description:
+          "誰が何を使うかを決める1枚です。選ぶのは「バックエンド → プロバイダ → モデル」の3段で、" +
+          "同じ opus が pi 経由でも Claude Code 経由でも指せます。" +
+          "番頭についてここで決めるのは新しい会話がどれで始まるかだけで、" +
+          "いま開いている会話は会話の画面のモデル選択でその場で変えられます。" +
+          "職人は等級ごとの既定で、頼む側が名指しすればそちらが優先されます。" +
+          "モデルそのものの登録（プロバイダ・鍵・取り込み）は「使えるモデル」の面で行います。",
+        fields: [
+          {
+            key: "steward",
+            label: "番頭",
+            type: "select",
+            get options() {
+              return withCurrent(
+                options.harnessChoices?.() ?? [],
+                refValue(options.llmCatalog?.roles().steward)
+              );
+            },
+            description: "新しい会話の既定。会話ごとの切り替えは会話の画面で",
+          },
+          {
+            key: "defaultTier",
+            label: "職人の既定の等級",
+            type: "select",
+            options: [
+              { value: "", label: "（指定なし）" },
+              ...MODEL_TIERS.map((t) => ({ value: t, label: TIER_LABELS[t] })),
+            ],
+            description: "頼む側が等級を言わなかったときに使う",
+          },
+          ...MODEL_TIERS.map((tier) => ({
+            key: `worker.${tier}`,
+            label: `職人（${TIER_LABELS[tier]}）`,
+            type: "select" as const,
+            get options() {
+              return withCurrent(
+                [{ value: "", label: "（割り当てなし）" }, ...(options.workerChoices?.() ?? [])],
+                refValue(options.llmCatalog?.roles()[workerRoleOf(tier)])
+              );
+            },
+            description: `${TIER_LABELS[tier]}で頼まれたときに使うモデル`,
+          })),
+        ],
+        read: () => {
+          const roles = options.llmCatalog?.roles() ?? {};
+          const asValue = (r?: { backend?: string; provider: string; model: string }): string =>
+            r ? `${r.backend ?? "pi"}|${r.provider}|${r.model}` : "";
+          return {
+            steward: asValue(roles.steward),
+            defaultTier: options.workerDefaultTier?.() ?? "",
+            ...Object.fromEntries(
+              MODEL_TIERS.map((t) => [`worker.${t}`, asValue(roles[workerRoleOf(t)])])
+            ),
+          };
+        },
+        write: (values) => {
+          const applied: string[] = [];
+          for (const [key, raw] of Object.entries(values)) {
+            if (key === "defaultTier") {
+              const tier = String(raw ?? "");
+              if (tier && !MODEL_TIERS.includes(tier as ModelTier)) {
+                throw new Error(`知らない等級です: ${tier}`);
+              }
+              if (tier) {
+                options.onWorkerTierChanged?.(tier as ModelTier);
+                applied.push(`既定の等級を ${TIER_LABELS[tier as ModelTier]} に`);
+              }
+              continue;
+            }
+            const role = key === "steward" ? "steward" : key;
+            const text = String(raw ?? "");
+            if (text === "") {
+              options.llmCatalog?.clearRole(role as never);
+              applied.push(`${role} の割り当てを外しました`);
+              continue;
+            }
+            const [backend, provider, model] = text.split("|");
+            // I2: 壊れた値を黙って既定に落とさない
+            if (!backend || !provider || !model) {
+              throw new Error(`モデルの指定が不正です: ${text}`);
+            }
+            options.llmCatalog?.setRole(role as never, provider, model, backend);
+            applied.push(`${role} → ${backend}/${provider}/${model}`);
+          }
+          return {
+            applied: true,
+            message:
+              `${applied.join("、")}。\n\n` +
+              "**番頭は新しい会話から**効きます（いま開いている会話は会話の画面で）。" +
+              "**職人は次の委譲から**効きます。",
+          };
+        },
+      } as ModuleSettingsSpec,
+    },
     // ADR-0011 決定42・43: LLM は中核。項目では表しきれないので専用の面を宣言する
     ...(options.llmCatalog
       ? [
           {
             id: "llm",
             spec: {
-              title: "LLM・モデル",
+              title: "使えるモデル（pi の供給）",
               description:
-                "番頭と職人が使うモデル。番頭は具体モデル、職人は tier で指定し、" +
-                "具体モデルは登録から解決する。",
+                "ここは pi バックエンドの供給の面です——プロバイダの登録・鍵・取り込み・" +
+                "文脈長・等級と、この店で使う気があるか（採用）まで。" +
+                "誰がどれを使うかは「役ごとのモデル」で決めます" +
+                "（Claude Code のモデルも含めてバックエンドを跨いで1枚）。" +
+                "会話ごとの切り替えは会話の画面から。",
               // 項目の宣言では表せないため、描き先だけを宣言する（決定43）
               view: "LlmRegistryViewer",
               fields: [],

@@ -43,7 +43,7 @@ function stub(name: `${string}.${string}`) {
 /** 表に在るもの2本＋表に無いもの2本。 */
 const PRESENT_A = "worker.delegate" as const;
 const PRESENT_B = "memory.save" as const;
-const HIDDEN_A = "llm.set_key" as const;
+const HIDDEN_A = "llm.set_key" as const; // 書き換え系は落とす（llm.list だけ残す）
 const HIDDEN_B = "repo.clone" as const;
 
 async function session(tools: ReturnType<typeof stub>[], presentSelectedTools: boolean) {

@@ -81,6 +81,16 @@ export interface MergeGateResult {
   reasons: string[];
   /** Log directory paths for verify commands (path references only, per spec §2.1). */
   logPaths: string[];
+  /**
+   * **どの環境で検査したか**（realign 第2便・段1）。検証環境を立てたときだけ付く。
+   * `merge_gate_evaluated.environmentDigest` にそのまま入る。
+   */
+  environmentDigest?: string;
+  /**
+   * **どのコミットの上で検査したか**（realign 第2便・段1）。`base` を解決した SHA。
+   * `merge_gate_evaluated.baseCommit` にそのまま入る。
+   */
+  baseCommit?: string;
 }
 
 /** Options for runMergeGate. */
@@ -143,7 +153,18 @@ export interface GateVerifyRunner {
     profile: string;
     taskId: string;
     projectTag: string;
-  }): Promise<{ envId: string }>;
+  }): Promise<{
+    envId: string;
+    /**
+     * **立てた環境の中身の指紋**（realign 第2便・段1）。プロファイルの定義から作る
+     * （`envProfileDigest`）。ゲートの証拠に「どの環境で検査したか」を刻むための値。
+     *
+     * 任意なのは、環境の持ち主（Environment Pool）が返さないこともあるため
+     * ——**返らないなら刻まない**。分からないものを名前で埋めると、名前が同じまま
+     * 中身が変わった環境を「同じ環境」と言ってしまう（I2）。
+     */
+    profileDigest?: string;
+  }>;
   run(opts: {
     envId: string;
     cmd: string;
@@ -368,6 +389,9 @@ export async function runMergeGate(
   /** 検証に到達できなかった理由（環境が用意できない等）。空なら到達した。 */
   let verifyBlocked: string | undefined;
 
+  /** **どの環境で検査したか**（realign 第2便・段1）。立てられたときだけ付く。 */
+  let environmentDigest: string | undefined;
+
   if (withCommands.length > 0) {
     if (!verifyRunner) {
       // I2: **ホストへ落とさない。** 落とすと「たまたま通った」が戻る
@@ -377,7 +401,9 @@ export async function runMergeGate(
     } else {
       let envId: string | undefined;
       try {
-        ({ envId } = await verifyRunner.provision({
+        // 段1: 立てた環境の指紋も受け取る。**証拠に刻むのは、立った環境のもの**
+        // ——プロファイル名だけでは、名前が同じまま中身が変わったことを言えない
+        ({ envId, profileDigest: environmentDigest } = await verifyRunner.provision({
           repoPath: repoPathForProfile,
           workdir: worktreePath,
           profile: verifyProfile,
@@ -472,12 +498,23 @@ export async function runMergeGate(
 
   const passed = reasons.length === 0;
 
+  /**
+   * **どのコミットの上で検査したか**（realign 第2便・段1）。
+   *
+   * `passed` は「この土台の上でなら通る」という主張でしかない。メインラインが
+   * 進めば前提が変わる——それを後から言えるように、`base` を SHA へ解決して残す。
+   * I2: 解決できなければ**付けない**。嘘の SHA を書くより「無い」と言う。
+   */
+  const baseCommit = await resolveCommit(repoPath, base);
+
   const result: MergeGateResult = {
     passed,
     scopeResult,
     verifyResults,
     reasons,
     logPaths,
+    ...(environmentDigest !== undefined ? { environmentDigest } : {}),
+    ...(baseCommit !== undefined ? { baseCommit } : {}),
   };
 
   // ── 4. Append merge_gate_evaluated event ──────────────────────────────────
@@ -488,6 +525,10 @@ export async function runMergeGate(
     passed,
     reasons,
     logPaths,
+    // 段1: **何に対して通ったのか**。この2つが無いと、通った判定がまだ有効かを
+    // 計算できず、第3便（人の承認なしの着地）を安全に倒せない
+    ...(environmentDigest !== undefined ? { environmentDigest } : {}),
+    ...(baseCommit !== undefined ? { baseCommit } : {}),
   });
 
   // ── 5. Fail the task if gate did not pass ─────────────────────────────────
@@ -505,6 +546,23 @@ export async function runMergeGate(
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
+
+/**
+ * ref を SHA へ解決する（realign 第2便・段1）。
+ *
+ * I2: 解決できなければ `undefined`。**「分からない」を埋めない**——ここで ref 名
+ * （`main`）をそのまま返すと、あとから読む側は SHA だと思って比較し、常に一致しない
+ * か、常に一致するかのどちらかになる。どちらも証拠として役に立たない。
+ */
+async function resolveCommit(repoPath: string, ref: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-parse", ref], { cwd: repoPath });
+    const sha = stdout.trim();
+    return sha.length > 0 ? sha : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Extract scope.paths from a TaskRecord (D3: derived from record). */
 function getScopePaths(task: TaskRecord): string[] {

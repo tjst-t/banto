@@ -383,9 +383,22 @@ describe("[task-0065] レビューは3段（決定57・66）", () => {
 
       // 承認は `approved` まで。マージするのはキューで、その前にゲートが回る
       assert.equal(h.daemon.getTask(h.proj, "task-0015")?.status, "approved");
+      /**
+       * **止める道具は、飛ばす道具ではない**（PO 裁定 2026-08-13・inc-0063）。
+       *
+       * 名前の部分一致は「関所を飛ばす道具」を見つけるための当て推量でしかない。
+       * `kobo.set_merge_queue` はマージキューを**止める**弁で、通せるものを増やさない
+       * ——止めれば何もマージされず、開ければ関所つきの通常の道に戻るだけ。
+       * ここに載せるのは、**通す方向に働かないと確かめたもの**だけにすること。
+       */
+      const STOPPING_NOT_SKIPPING = new Set(["kobo.set_merge_queue"]);
       const koboTools = h.tools.map((t) => t.name);
-      assert.ok(
-        !koboTools.some((n) => /merge|gate|force/.test(n)),
+      const suspicious = koboTools.filter(
+        (n) => /merge|gate|force/.test(n) && !STOPPING_NOT_SKIPPING.has(n)
+      );
+      assert.deepEqual(
+        suspicious,
+        [],
         `番頭にゲートを飛ばす道具が無いこと。持っているのは: ${koboTools.join(", ")}`
       );
     } finally {

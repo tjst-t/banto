@@ -13,6 +13,8 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+
+import type { BantoHarness, HarnessEvent } from "@banto/core";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -157,7 +159,7 @@ describe("[task-0086/a3] 押されたら何を呼ぶかは画面へ配らない"
 // ── 取次の答えがその場で効き、番頭が先へ進む ────────────────────────────────
 
 /** ターンの進行だけをこちらから発火できるセッション（プロバイダを呼ばない）。 */
-class FakeSession implements HostSession {
+class FakeSession implements BantoHarness {
   readonly sessionId = "test-session";
   isStreaming = false;
   prompts: string[] = [];
@@ -168,6 +170,19 @@ class FakeSession implements HostSession {
   subscribe(): () => void {
     return () => {};
   }
+
+  // ── BantoHarness の残り（ADR-0020 決定89）。章立てはこの試験では使わない ──
+  readonly backendId = "fake";
+  contextTokens(): number | undefined {
+    return undefined;
+  }
+  messageCount(): number {
+    return 0;
+  }
+  transcript(): string {
+    return "";
+  }
+  async startChapter(): Promise<void> {}
 }
 
 /** 取次つきのホストを立てる。効果の実行は bin.ts と同じくモジュールの帳簿から引く。 */
@@ -176,7 +191,7 @@ async function startHost(fixture: Fixture): Promise<{ url: string; session: Fake
   let session!: FakeSession;
   const threads = new ThreadRegistry(async () => {
     session = new FakeSession();
-    return { session, tools: [] };
+    return { harness: session, tools: [] };
   });
   await threads.open(TRUNK);
   server = await BantoHostServer.start({

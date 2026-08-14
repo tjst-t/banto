@@ -67,6 +67,17 @@ export type {
   MergeGateOptions,
 } from "./merge-gate.js";
 
+// ConflictFiler — 解消タスクの起票と、origin↔解消タスクの対応づけ（S75f66b-6）。
+// inc-0063 の周回を止める判定はここに置いてあるので、試験から直に叩けるようにする
+export {
+  deriveOriginResolutionPairs,
+  hasOpenResolutionTask,
+} from "./conflict-filer.js";
+export type {
+  OriginResolutionPair,
+  DeriveOriginResolutionOptions,
+} from "./conflict-filer.js";
+
 // MergeQueue — serial merge processor (S75f66b-5, spec-daemon-core §4.1)
 export { deriveQueue, processMergeQueue } from "./merge-queue.js";
 export type {

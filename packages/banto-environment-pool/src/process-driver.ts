@@ -31,6 +31,7 @@ import * as net from "node:net";
 import * as childProcess from "node:child_process";
 import * as os from "node:os";
 import { DRIVER_TIMEOUT_EXIT, innerBudgetMs } from "./driver-budget.js";
+import { refuseDestructiveSetup, renderProtectedRefusal } from "./process-guard.js";
 
 // ── Process state file (for list/idempotent teardown) ────────────────────────
 //
@@ -253,6 +254,30 @@ async function handleProvision(input: Record<string, unknown>): Promise<void> {
   const name = `${taskId}-env`;
 
   /**
+   * **稼働中の作業ツリーに破壊的な setup を打たせない**（2026-08-13 の事故）。
+   *
+   * ここでやる理由は2つ。**何かを触る前**であること（置き場の張り替えも setup も
+   * この下にある）と、実際に打つ場所を知っているのはこのドライバだけであること——
+   * `workdir` が無ければ継いだ cwd でそのまま走るので、危ういかどうかは
+   * 「打つ場所」でしか判定できない。
+   *
+   * 弾くのは**守られた場所 ∧ 破壊的なコマンド**のときだけ（`process-guard.ts`）。
+   * 無害な setup は守られた場所でもそのまま通る——判定を取り違えて健全な検証を
+   * 止めるのが一番まずい。
+   */
+  const refusal = refuseDestructiveSetup({
+    target: workdir ?? process.cwd(),
+    setup: typeof input["setup"] === "string" ? (input["setup"] as string) : undefined,
+    env: process.env,
+    cwd: process.cwd(),
+  });
+  if (refusal) {
+    // I2: 危ういまま「立った」と言わない。理由と次の一手を添えて止まる
+    process.stderr.write(`${renderProtectedRefusal(refusal)}\n`);
+    process.exit(1);
+  }
+
+  /**
    * 環境より長生きする置き場（spec §5.2）。**このドライバはホストでそのまま動く**ので、
    * 繋ぎ方は symlink——作業場所の `cachePath` を、鍵の付いた置き場へ向ける。
    *
@@ -325,9 +350,25 @@ async function handleProvision(input: Record<string, unknown>): Promise<void> {
   // handle に残すので、後続の run が workdir を渡さなくても同じ場所で動く
   if (workdir) handle["workdir"] = workdir;
 
+  /**
+   * **どのポートで公開されたか**（番頭判断 2026-08-13）。
+   *
+   * このドライバはホストでそのまま動くので、bind するのは**アプリ自身**——ドライバに
+   * 観測する手段は無い。だから「アプリが割り当てを受け取ったと分かるとき」だけ申告する：
+   * **コマンドが `BANTO_ENV_PORT` を参照しているとき**である（`shell: true` で起こすので
+   * `--port $BANTO_ENV_PORT` はそのまま展開される）。
+   *
+   * 参照していないコマンドは、これまでどおり自分の決めたポートで待つ。申告しなければ
+   * プールは `config.port` に落ちるので、**既存のプロファイルは1つも変わらない**
+   * ——その代わり、同じプロファイルを2つ立てれば従来どおりぶつかる。
+   */
+  const assigned = Number(process.env["BANTO_ENV_PORT"]);
+  const usesAssignedPort = cmd.includes("BANTO_ENV_PORT") && Number.isFinite(assigned) && assigned > 0;
+
   process.stdout.write(
     JSON.stringify({
       handle,
+      ...(usesAssignedPort ? { publishedPort: assigned } : {}),
       ...(cache ? { cache: { primed: cache.primed } } : {}),
       // 「用意はこちらで済ませた」の申告。プールはこれを見て二度走らせない
       ...(setup ? { setup: { ran: setupRan } } : {}),

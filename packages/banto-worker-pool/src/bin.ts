@@ -22,6 +22,13 @@
  *   BANTO_CLAUDE_MODEL       Claude Code の職人の既定モデル（既定 sonnet。番頭は
  *                            `worker.delegate` の `model` で仕事ごとに指名できる）
  *   BANTO_WORKER_IDLE_MS     安全弁（何もしていない職人を畳むまで。既定15分。0 で切る）
+ *   BANTO_WORKER_CGROUP      職人1本ごとの cgroup 隔離（inc-0066 第2段）。
+ *                            `auto` で能力判定して有効化、`off`（既定）で判定もしない、
+ *                            絶対パスなら**そのディレクトリ**を委譲された親として使う。
+ *                            **既定が off なのは、本番の cgroup を書き換える操作だから**
+ *                            ——試験や開発機が黙って稼働中の袋を触りに行かないよう、
+ *                            有効化は systemd の drop-in など明示の場所でだけ行う
+ *   BANTO_WORKER_MEMORY_MAX  職人1本あたりの上限（既定 2G。`2G` / `1536M` / バイト数）
  *
  * **既定では 127.0.0.1 しか待ち受けない。** この面は**任意のディレクトリで任意のコマンドを
  * 実行できる職人**を起こせるので、認証の無いまま外へ出すと最も危ない口になる（決定40）。
@@ -32,6 +39,11 @@
  */
 
 import * as path from "node:path";
+import {
+  WorkerCgroups,
+  parseByteSize,
+  DEFAULT_WORKER_MEMORY_MAX,
+} from "./worker-cgroup.js";
 import { PiRpcDriver } from "./pi-rpc-driver.js";
 import { ClaudeAgentDriver, CLAUDE_AGENT_DRIVER_ID } from "./claude-agent-driver.js";
 import { CLAUDE_KNOWN_MODELS, CLAUDE_TIER_MODELS } from "./claude-agent/naming.js";
@@ -43,6 +55,7 @@ import { createWorkerPoolSettings } from "./settings.js";
 import { WORKER_POOL_BASE_URL } from "./module.js";
 import {
   LlmCatalog,
+  ModelLedger,
   createFileModelResolver,
   createFileSettingsSection,
   createSettingsTools,
@@ -72,6 +85,42 @@ function usage(): never {
       "  職人を起こせるので、広げるときは前段（Caddy 等）で守ること。\n"
   );
   process.exit(1);
+}
+
+/**
+ * 職人1本ごとの隔離を、環境変数の宣言どおりに組み立てる（inc-0066 第2段）。
+ *
+ * - 未設定 / `off` / `0` → 判定を**走らせない**。隔離なしで動く（理由つき）
+ * - `auto` / `on` / `1` → `/proc/self/cgroup` から委譲された袋を解いて能力判定する
+ * - 絶対パス → そのディレクトリを委譲された親として使う（別の unit・手動確認用）
+ *
+ * D5: ここに判断は無い。宣言を読んで組み立てるだけで、失敗の扱いは `WorkerCgroups` が持つ。
+ */
+function resolveWorkerCgroups(): WorkerCgroups {
+  const raw = (process.env["BANTO_WORKER_CGROUP"] ?? "off").trim();
+  const memoryMaxRaw = process.env["BANTO_WORKER_MEMORY_MAX"];
+  const memoryMax = parseByteSize(memoryMaxRaw);
+  // I2: 上限の指定を読み違えて黙って既定に落ちると、書いた本人が気づけない
+  if (memoryMaxRaw !== undefined && memoryMax === undefined) {
+    throw new Error(
+      `BANTO_WORKER_MEMORY_MAX を読み取れません: "${memoryMaxRaw}"（例: 2G / 1536M / 2147483648）`
+    );
+  }
+  const limit = memoryMax !== undefined ? { memoryMax } : {};
+
+  if (raw === "" || raw === "off" || raw === "0" || raw === "false") {
+    return WorkerCgroups.disabled(
+      "BANTO_WORKER_CGROUP が off（既定）。有効にするには auto を渡す",
+      memoryMax ?? DEFAULT_WORKER_MEMORY_MAX
+    );
+  }
+  if (raw === "auto" || raw === "on" || raw === "1" || raw === "true") {
+    return WorkerCgroups.prepare(limit);
+  }
+  if (path.isAbsolute(raw)) return WorkerCgroups.prepare({ selfDir: raw, ...limit });
+  throw new Error(
+    `BANTO_WORKER_CGROUP を読み取れません: "${raw}"（auto / off / 委譲された cgroup の絶対パス）`
+  );
 }
 
 async function main(): Promise<void> {
@@ -108,14 +157,24 @@ async function main(): Promise<void> {
   // 見る解決器で足りる——結果のうち実際に使われるのは provider と id で、最後の解決は
   // 職人を起こす pi の CLI が行う
   const agentDir = piAgentDir();
+  const bantoDataDir =
+    process.env["BANTO_DATA_DIR"] ?? path.join(process.cwd(), ".banto");
+  /**
+   * **役の台帳**（ADR-0021 決定101）。番頭ホストが書き、工房は**読むだけ**（決定101d）。
+   *
+   * **書き先を移したら、読み手も一緒に移す。** ここを繋がないと、役の割り当てが
+   * 引けなくなって候補の先頭が黙って選ばれる（`resolveForWorker` の `preferred` が外れる）。
+   */
+  const ledger = new ModelLedger({
+    path: path.join(bantoDataDir, "model-roles.json"),
+    readOnly: true,
+  });
   const catalog = new LlmCatalog({
+    ledger,
     authJsonPath: path.join(agentDir, "auth.json"),
     modelsJsonPath: path.join(agentDir, "models.json"),
     // **番頭ホストと同じオーバーレイ**（画面で選んだ tier・採用したモデルがそのまま効く）
-    overlayPath: path.join(
-      process.env["BANTO_DATA_DIR"] ?? path.join(process.cwd(), ".banto"),
-      "llm-registry.json"
-    ),
+    overlayPath: path.join(bantoDataDir, "llm-registry.json"),
     resolver: createFileModelResolver(path.join(agentDir, "models.json")),
   });
   const fallback = catalog.resolveForWorker();
@@ -155,7 +214,17 @@ async function main(): Promise<void> {
       ? savedIdleMs
       : Number.parseInt(process.env["BANTO_WORKER_IDLE_MS"] ?? String(DEFAULT_IDLE_TIMEOUT_MS), 10);
 
+  /**
+   * inc-0066 第2段：職人1本ごとの隔離。**能力判定はここで1回だけ**（宣言的）。
+   *
+   * 判定そのものが本番の cgroup を書き換える（`+memory` を配り、工房本体を葉へ退かす）ので、
+   * **明示的に有効にしたときしか走らせない**。試験や開発機が黙って稼働中の袋を触るのを、
+   * 設定の側で不可能にしておく。
+   */
   const pool = new WorkerPool({
+    cgroups: resolveWorkerCgroups(),
+    // 決定101: 等級 → モデルの割り当ては核の台帳が持つ（工房は読むだけ）
+    modelLedger: ledger,
     driver,
     // pi は登録（LLM Registry）で解く。第一候補が無ければ同じ等級の採用済みから
     driverRegistration: {
@@ -216,9 +285,27 @@ async function main(): Promise<void> {
     host,
   });
 
+  /**
+   * **実際に走るものを言う**（ADR-0021 症状2）。
+   *
+   * ここは LLM 登録の解決（`resolveForWorker`）を出していたが、実機では**工房の割り当てが
+   * 勝っていた**ので、`職人の既定モデル: opencode-go/deepseek-v4-flash（standard）` と
+   * 出しながら実際は `opus` で走っていた——**1行に2つの嘘**。台帳を引いて言い直す。
+   */
+  const startupTier = pool.resolvedDefaultTier();
+  const startupModel = pool.resolvedDefaultModel();
   console.log(
-    `[worker-pool] 職人の既定モデル: ${fallback ? `${fallback.model.provider}/${fallback.model.id}（${fallback.tier}）` : "(pi の既定解決)"}`
+    `[worker-pool] 職人の既定: ${startupTier ?? "(指定なし)"} → ` +
+      `${startupModel ?? "(ランタイムの既定解決)"}`
   );
+  // I2: 古い割り当てが残っていたら黙って無視しない（どこを直せばよいか分からなくなる）
+  const stale = pool.staleTierAssignments();
+  if (stale.length > 0) {
+    console.warn(
+      `[worker-pool] 工房に残っている等級の割り当て ${stale.length} 件は**もう読まれません**` +
+        `（${stale.join(" / ")}）。割り当ては「役」の設定画面（核の台帳）で決めます（ADR-0021）`
+    );
+  }
   console.log(
     `[worker-pool] 使えるランタイム: ${pool.availableRuntimes().join(", ")}` +
       `（既定 ${pool.defaultRuntime}／Claude Code の既定モデル ${claudeDriver.currentDefaults().model}）`

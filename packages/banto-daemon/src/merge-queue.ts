@@ -237,6 +237,15 @@ export interface MergeProcessorOptions {
   getProjectRepoPath: (projectTag: string) => string | undefined;
 
   /**
+   * そのプロジェクトのマージキューを回してよいか（PO 裁定 2026-08-13・inc-0063）。
+   *
+   * **判断は持たない**——開いているかどうかを Daemon（`ProjectRegistry`）に聞くだけ。
+   * 閉じているプロジェクトのタスクは待ち行列から**取り除かれる**ので、先頭に居座って
+   * 他のプロジェクトを止めることもない。省略時は全部回す（既存の呼び出しはそのまま）。
+   */
+  isProjectEnabled?: (projectTag: string) => boolean;
+
+  /**
    * Function to get all current task records (for post-merge gate re-eval trigger).
    * The caller (daemon) passes its store.getAllTasks() here.
    */
@@ -271,7 +280,12 @@ export async function processMergeQueue(
   opts: MergeProcessorOptions
 ): Promise<boolean> {
   const allEvents = log.readAllEvents();
-  const queue = deriveQueue(allEvents);
+  // 弁が閉じているプロジェクトは**待ち行列から外す**（inc-0063 の非常停止）。
+  // 先頭を飛ばすのではなく外すのは、閉じたプロジェクトのタスクが頭に居座って
+  // 他のプロジェクトのマージまで止めるのを避けるため
+  const queue = deriveQueue(allEvents).filter(
+    (entry) => opts.isProjectEnabled?.(entry.projectTag) ?? true
+  );
 
   if (queue.length === 0) {
     return false; // Nothing to process
@@ -436,6 +450,34 @@ export async function processMergeQueue(
     // Gate failure: runMergeGate already called StateMachine.fail() and appended
     // merge_gate_evaluated(passed=false) + state_transitioned(→failed) + task_failed.
     // Trigger gate re-eval for dependents and return.
+    if (opts.onMergeComplete) {
+      opts.onMergeComplete(taskId, projectTag);
+    }
+    return true;
+  }
+
+  // ── 2.5 畳まれていないか読み直す（PO 裁定 2026-08-14）────────────────────
+  //
+  // ここまでで rebase と関所（検証環境を立てて検証コマンドを回す）を通っており、
+  // **数十秒から数分が経っている**。その間に番頭が `kobo.abandon` を通すと、タスクは
+  // どの状態からでも closed になる——待ち行列は `deriveQueue` が閉じたタスクを外すので
+  // 次の tick では拾わないが、**いま走っているこの1回**は止まらない。
+  //
+  // 塞がないと下の遷移が `from: "merging"` 決め打ちなので、closed のタスクが merged へ
+  // **蘇る**（しかも mainline には既にコミットが載っている）。畳んだものはマージしない。
+  const stillInFlight = opts
+    .getAllTasks()
+    .find((t) => t.id === taskId && t.projectTag === projectTag);
+  if (stillInFlight?.status !== "merging") {
+    // I2: 黙って降りない。何がマージを止めたのかを帳簿に残す
+    log.append({
+      type: "tick_job_failed",
+      projectTag: "daemon",
+      jobName: "merge-queue",
+      error:
+        `merge-queue: ${projectTag}/${taskId} は関所を通している間に ` +
+        `${stillInFlight?.status ?? "(消えた)"} へ移りました。マージせずに降ります`,
+    });
     if (opts.onMergeComplete) {
       opts.onMergeComplete(taskId, projectTag);
     }

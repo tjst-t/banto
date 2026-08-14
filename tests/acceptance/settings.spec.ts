@@ -92,7 +92,7 @@ describe("[決定41/a] モジュールが宣言した区画が設定画面に集
     };
 
     const ids = details.sections.map((s) => s.id);
-    assert.deepEqual(ids, ["places", "network", "よそのモジュール"]);
+    assert.deepEqual(ids, ["places", "network", "roles", "よそのモジュール"]);
     // 由来が分かること（画面が「どのモジュールの設定か」を出せる）
     assert.equal(details.sections.find((s) => s.id === "よそのモジュール")!.origin, "よそのモジュール");
     // いまの値も一緒に来る（画面は宣言と値の両方が要る）
@@ -131,7 +131,8 @@ describe("[決定41/a] モジュールが宣言した区画が設定画面に集
     ]);
     const { describe: tool } = settingsToolsOf(modules);
     const details = (await tool.execute({})).details as { sections: Array<{ id: string }> };
-    assert.equal(details.sections.length, 3, "他の区画は出ること");
+    // 中核は places / network / roles（ADR-0021 決定102：役の面1枚）＋ 読める側のモジュール1つ
+    assert.equal(details.sections.length, 4, "他の区画は出ること");
   });
 });
 

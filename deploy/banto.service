@@ -24,8 +24,8 @@ WorkingDirectory=/home/ubuntu/ghq/github.com/tjst-t/banto
 
 Environment=NODE_ENV=production
 Environment=BANTO_DATA_DIR=/var/lib/banto
-Environment=BANTO_PROVIDER=opencode
-Environment=BANTO_MODEL=deepseek-v4-flash-free
+# BANTO_PROVIDER / BANTO_MODEL は**読まれない**（2026-08-04 の裁定で env の読み取りを
+# やめた。2026-08-13 に実地で確認）。モデルは設定画面と会話のモデル選択から変える
 # 番頭が書けるのはこのチェックアウトの docs/** と work/** のみ
 Environment=BANTO_PLACES=banto:/home/ubuntu/ghq/github.com/tjst-t/banto:docs/**,work/**
 # Kobo の帳簿（決定63）。**どの設定でも番頭に書かせない**——場所として登録されても届かない。

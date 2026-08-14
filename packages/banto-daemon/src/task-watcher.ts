@@ -112,7 +112,9 @@ export class TaskWatcher {
   }
 
   private async poll(): Promise<void> {
-    const projects = this.daemon.listProjects();
+    // **どのプロジェクトを見るかは Daemon が決める**（D5）。受け持ちを外したもの、
+    // 取り込みの弁を閉じたものはここに出てこない（PO 裁定 2026-08-13・inc-0063）
+    const projects = this.daemon.projectsToWatch();
     for (const project of projects) {
       await this.pollProject(project.id, project.repoPath);
     }
@@ -213,13 +215,21 @@ export class TaskWatcher {
       // **契約は改訂できる**ようになった（決定64 改訂）。`kobo.amend` を呼べば取り込まれる。
       // 初回の観測（`known === undefined`）は「書き換え」ではないので黙って通す
       if (known !== undefined && known !== mtimeMs) {
+        // **畳んだタスクの定義ファイルは残る**（`kobo.abandon` はファイルを消さない・
+        // PO 裁定 2026-08-14）。畳んだ後に PO がその md を触ることは普通に起きるので、
+        // そこで `kobo.amend` を勧めると「言われたとおりにできない」案内になる
+        // ——`amendTask` は closed / superseded を断る。案内と道具を食い違わせない
+        const done = existing.status === "closed" || existing.status === "superseded";
         this.daemon.emitIngestRejected(
           projectId,
           filePath,
           `already_ingested: ${fm.id} は取り込み済み（いまの状態: ${existing.status}）なので、` +
             "ファイルの変更は**黙っては**反映されません（改訂を記録に残すため）。" +
-            "この変更を採るなら kobo.amend を呼んでください——検証コマンドの訂正なら監査は" +
-            "やり直しになりません。基準やスコープを変えたなら監査からやり直しになります（決定64 改訂）"
+            (done
+              ? "このタスクは既に降りているので、改訂もできません（kobo.amend は断ります）。" +
+                "やり直すなら**別の id で**積み直してください"
+              : "この変更を採るなら kobo.amend を呼んでください——検証コマンドの訂正なら監査は" +
+                "やり直しになりません。基準やスコープを変えたなら監査からやり直しになります（決定64 改訂）")
         );
       }
       // Already ingested; mark as ingested at this mtime to suppress re-processing

@@ -53,25 +53,12 @@ export function createFileWriteTools(
     name: "file.write",
     label: "File: Write",
     description:
-      "ファイルを書く（新規作成または全文の上書き）。**書けるのはPOが場所ごとに許した範囲だけ**で、" +
-      "既定はどの場所も読み取り専用。許されていなければエラーになり、そのとき何が許されているかも返る。" +
-      "自分の成果物（決定の記録・起票・メモ）を残すために使う道具で、実装作業には使わない——" +
-      "コードを変えるなら worker.delegate で職人へ委譲すること（D10）。" +
-      "コミットはできないので、書いたものは未コミットのまま残りPOのレビューを通る。",
+      "自分の成果物（決定の記録・起票・メモ）を書く。新規作成または全文の上書き。\n例: {place: \"banto\", path: \"work/tasks/task-0042.md\", content: \"---\\nid: task-0042\\n---\\n…\"} → 書いた旨\nplace と path は英語で埋める。**書けるのはPOが許した範囲だけ**（既定は読み取り専用）。\nコードを変えるなら worker.delegate（D10）。",
     parameters: Type.Object({
-      path: Type.String({
-        description: "場所のルートからの相対パス。途中のディレクトリは必要なら作られる",
-      }),
-      content: Type.String({
-        description: "ファイルの中身（全文）。既にあるファイルはこの内容で置き換わる",
-      }),
+      path: Type.String(),
+      content: Type.String({ description: "全文（既存は置き換わる）" }),
       // `place-scoped.ts` の PLACE_PARAM と同じ名前。番頭にも GUI にも同じ引数に見える
-      place: Type.Optional(
-        Type.String({
-          description:
-            "どの場所に書くか。登録されている場所の id。場所が1つだけなら省略できる",
-        })
-      ),
+      place: Type.Optional(Type.String())
     }),
     async execute(params) {
       // I2: 複数あるのに省略されたらここで止まる（黙って別の場所に書かない）

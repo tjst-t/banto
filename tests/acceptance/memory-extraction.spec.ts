@@ -24,6 +24,8 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { JsonlMemoryStore } from "@banto/core";
 import {
   ChapterKeeper,
+  PiHarness,
+  renderTranscript,
   HandoffStore,
   applyMemoryDeltas,
   parseDeltas,
@@ -164,17 +166,31 @@ describe("[提案§3.4] 抽出は章の境界だけで走る（explicit gate）"
     };
   }
 
+  /** 偽の pi セッションを1つ作り、会話の口と pi の内部の両方に渡す（ADR-0020 決定89）。 */
+  function harnessOf(fake: ReturnType<typeof session>): PiHarness {
+    return new PiHarness({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 偽のセッション
+      session: fake as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 同上
+      agentSession: fake as any,
+      toLogicalName: (n) => n,
+      renderTranscript,
+    });
+  }
+
   it("章を閉じたときに抽出が呼ばれ、材料は書き起こしだけ", async () => {
     const seen: string[] = [];
     const keeper = new ChapterKeeper({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 偽のセッション
-      session: session(
-        [
-          { role: "user", content: [{ type: "text", text: "日本語で返答して" }] },
-          { role: "assistant", content: [{ type: "text", text: "承知しました" }] },
-        ],
-        SessionManager.inMemory()
-      ) as any,
+      // ADR-0020 決定89: 章立てはハーネスの語彙で動く。偽セッションを本物の PiHarness で包む
+      harness: harnessOf(
+        session(
+          [
+            { role: "user", content: [{ type: "text", text: "日本語で返答して" }] },
+            { role: "assistant", content: [{ type: "text", text: "承知しました" }] },
+          ],
+          SessionManager.inMemory()
+        )
+      ),
       store: new HandoffStore(path.join(dir, "handoffs")),
       threadId: "thread-1",
       summarize: handoff,
@@ -193,11 +209,9 @@ describe("[提案§3.4] 抽出は章の境界だけで走る（explicit gate）"
   it("抽出が失敗しても章は閉じ、会話は止まらない（task-0022 a5）", async () => {
     const handoffStore = new HandoffStore(path.join(dir, "handoffs"));
     const keeper = new ChapterKeeper({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 偽のセッション
-      session: session(
-        [{ role: "user", content: [{ type: "text", text: "A" }] }],
-        SessionManager.inMemory()
-      ) as any,
+      harness: harnessOf(
+        session([{ role: "user", content: [{ type: "text", text: "A" }] }], SessionManager.inMemory())
+      ),
       store: handoffStore,
       threadId: "thread-1",
       summarize: handoff,

@@ -39,6 +39,29 @@ export {
   type LedgerEntry,
 } from "./spawn-ledger.js";
 export {
+  WorkerCgroups,
+  nodeCgroupFs,
+  parseByteSize,
+  formatBytes,
+  resolveSelfCgroupDir,
+  DEFAULT_WORKER_MEMORY_MAX,
+  type CgroupFs,
+  type CgroupUsage,
+  type IsolationMode,
+  type IsolationStatus,
+  type KillResult,
+  type PrepareOptions,
+  type WorkerBag,
+} from "./worker-cgroup.js";
+export {
+  probeChildPids,
+  descendantsOf,
+  parseProcStat,
+  type ChildProcessInfo,
+  type ChildProcessRecord,
+  type ChildPidProbeOptions,
+} from "./child-pids.js";
+export {
   WorkerPool,
   WORKER_SYSTEM_PROMPT,
   type WorkerPoolOptions,
@@ -47,6 +70,8 @@ export {
   type CloseReason,
   DEFAULT_IDLE_TIMEOUT_MS,
   DEFAULT_PAGE_SIZE,
+  TIER_UNASSIGNED_CODE,
+  tierFromUnassignedError,
   type WorkerExitDetail,
   type DelegateInput,
 } from "./pool.js";
@@ -58,7 +83,90 @@ export {
   type WorkerEventFilter,
   type WorkerEventHandler,
 } from "./event-log.js";
-export { workerReportExtensionPath, webToolsExtensionPath } from "./extension.js";
+export {
+  workerReportExtensionPath,
+  webToolsExtensionPath,
+  toolOffloadExtensionPath,
+  workKeepExtensionPath,
+} from "./extension.js";
+export { installToolOffload } from "./pi-extension/tool-offload.js";
+export { installWorkKeep, PI_KEEP_RUNTIME } from "./pi-extension/work-keep.js";
+export {
+  WorktreeKeeper,
+  createWorktreeKeeper,
+  createGitRunner,
+  keepBranchName,
+  keepStamp,
+  sanitizeRefPart,
+  renderKeepMessage,
+  isKeepEnabled,
+  resolveKeepIntervalMs,
+  DEFAULT_KEEP_INTERVAL_MS,
+  KEEP_ENABLED_ENV,
+  KEEP_INTERVAL_ENV,
+  KEEP_BRANCH_PREFIX,
+  KEEP_SUBJECT_PREFIX,
+  KEEPER_NAME,
+  KEEPER_EMAIL,
+  type KeepIdentity,
+  type KeepOutcome,
+  type KeepReason,
+  type GitRunner,
+  type WorktreeKeeperOptions,
+  type CreateWorktreeKeeperParams,
+  parseKeepBranch,
+  listKeepBranches,
+  resolveGitCommonDir,
+  pruneKeepBranches,
+  resolveKeepMaxAgeMs,
+  DEFAULT_KEEP_MAX_AGE_DAYS,
+  KEEP_MAX_AGE_ENV,
+  KEEP_PRUNE_LOG,
+  type KeepBranchName,
+  type KeepBranchInfo,
+  type KeepPruneResult,
+  type KeepPruneSkip,
+  type PruneKeepBranchesOptions,
+} from "./work-keep.js";
+export {
+  createClaudeWorkKeep,
+  CLAUDE_KEEP_RUNTIME,
+  type ClaudeWorkKeep,
+} from "./claude-agent/work-keep.js";
+export {
+  ToolResultOffloader,
+  DEFAULT_WORKER_OFFLOAD_THRESHOLD_CHARS,
+  MIN_OFFLOAD_LEAF_CHARS,
+  OFFLOAD_THRESHOLD_ENV,
+  OFFLOAD_DIR_ENV,
+  OFFLOAD_ENABLED_ENV,
+  READBACK_MAX_CHARS,
+  WORKER_OFFLOAD_PROMPT,
+  PI_OFFLOAD_DIALECT,
+  CLAUDE_OFFLOAD_DIALECT,
+  renderWorkerOffloadPrompt,
+  resolveThresholdChars,
+  resolveOffloadDir,
+  isOffloadEnabled,
+  isExemptTool,
+  outlineOf,
+  renderOffloadStub,
+  type OffloadDialect,
+  type ToolResultLike,
+  type ToolOutputLike,
+  type OffloadPatch,
+  type OffloadOutputPatch,
+} from "./tool-offload.js";
+export {
+  createClaudeToolOffload,
+  CLAUDE_WORKER_OFFLOAD_PROMPT,
+  type ClaudeToolOffload,
+} from "./claude-agent/tool-offload.js";
+export {
+  buildHostOptions,
+  buildAppendedPrompt,
+  type BuildHostOptionsParams,
+} from "./claude-agent/options.js";
 export {
   WEB_TOOL_NAMES,
   isPublicHttpUrl,

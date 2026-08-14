@@ -36,7 +36,14 @@ profiles:
       compose: docker/test.yaml
     # 立てたあと一度だけ（task-0080）。node_modules は別の場所に隔離してあるので、
     # 立てただけでは中が空——ここで用意しないと検証コマンドが走らない
-    setup: "npm ci"
+    #
+    # **`--include=dev` は省かない**（2026-08-13 の事故）。このホストの常駐サービスは
+    # NODE_ENV=production で動くので、それを継いだ子が素の `npm ci` を打つと npm は
+    # devDependencies を落とす——**稼働中の作業ツリーから tsx / typescript が実際に消え**、
+    # 職人の起動とサービスの再起動が両方止まった（下の test-docker が driver: process で
+    # ホストの作業ツリーを直に触るため）。持ち込みは `driverSpawnEnv` で塞いだが、
+    # 検証に要るものは検証の側でも名指ししておく——tsc も node --test も devDependency である
+    setup: "npm ci --include=dev"
     # 環境より長生きする置き場（spec-environment §5.2）。**中身を決めるものを全部挙げる**
     # ——ロックだけだと、土台のイメージが変わったときに古いバイナリを掴む。
     # 鍵はドライバ名とプロファイル名も含めて作られる（pool.ts の resolveCache）ので、
@@ -79,7 +86,14 @@ profiles:
       cmd: "sleep infinity"
     # ホストの作業ツリーに node_modules が無い状態（＝毎タスクの新しい worktree）でも回るように。
     # 既に実体のディレクトリが居るなら process ドライバは置き場を使わず触らない
-    setup: "npm ci"
+    #
+    # **ここが 2026-08-13 の事故の現場**。`driver: process` は器を作らずホストの作業ツリーで
+    # そのまま `setup` を打つ。常駐サービスの NODE_ENV=production を継いだ `npm ci` が
+    # devDependencies を落とし、**稼働中の本体ツリーから tsx / typescript が消えた**——
+    # 検証が回らない・新しい職人が起こせない・再起動したら起動不能が同時に起きた。
+    # 持ち込みは `driverSpawnEnv` で塞いだが、ここでも名指ししておく（設定だけ・機構だけの
+    # どちらか片方に頼らない。この経路は本番の作業ツリーを直に触るのだから二重で守る）
+    setup: "npm ci --include=dev"
     # 鍵に Dockerfile.test を挙げないのは、**この経路は器を作らない**から——中身を決めるのは
     # ロックだけ。置き場はドライバ名とプロファイル名込みの鍵で切られる（pool.ts の resolveCache）
     # ので、`test` の node_modules とは別物になる
@@ -91,17 +105,24 @@ profiles:
   # PO がブラウザで触れるための開発画面プロファイル（2026-08-10 新設）。**検証には使わない**
   # ——ここで npm test を回すと、dev server の生死が検証結果に化ける（案B の分離の要点）。
   # config.port を持つので「人が触る」環境として扱われる（決定59）。
-  # compose は docker/dev.yaml——vite dev server をホスト 4201 で公開する。
-  # （ホスト 4200 は opencode.service が占有。config.port は「ホスト側から見える
-  #   ポート」なので 4201 を指す。proxy exposer は 127.0.0.1:config.port へ中継する）
+  # compose は docker/dev.yaml——vite dev server を**コンテナ内 4200** で立てる。
+  #
+  # **`config.port` はコンテナ側／アプリ側のポート**（番頭判断 2026-08-13）。ホスト側の
+  # 番号はもう固定しない——compose は `- "4200"` とだけ書き、docker が空きを選び、
+  # Environment Pool が `docker compose ps` で実際の publish 先を引いてそこへ中継する。
+  # おかげで**判断待ちが2本並んでも、それぞれ別の環境の URL が出る**（以前は 4201 固定で、
+  # 2本目が立たないか、2つの URL が同じ環境を指していた）。
   dev:
     driver: docker
     config:
       compose: docker/dev.yaml
-      port: 4201
+      port: 4200
     # **長命の vite を起こす前に済む**（task-0089）。以前は compose up が先だったので
     # node_modules が空のまま vite が起きて即死し、compose 側で npm ci を前置きしていた
-    setup: "npm ci"
+    #
+    # `--include=dev` の理由は test プロファイルと同じ（2026-08-13 の事故）。vite は
+    # devDependency なので、devDependencies が落ちればこの器は `vite: not found` で立たない
+    setup: "npm ci --include=dev"
     # 土台（Dockerfile.test）は test と共用なので、鍵の材料も同じものを挙げる。
     # 置き場そのものはプロファイル名込みの鍵で別に切られる（test 側の注記のとおり）
     cache:

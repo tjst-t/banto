@@ -34,7 +34,6 @@ import {
 } from "./ui.js";
 
 type Tier = "reasoning" | "standard" | "fast";
-type Scope = "host" | "worker";
 
 interface KeyInfo {
   name: string;
@@ -69,8 +68,8 @@ interface ModelInfo {
   contextWindow?: number;
   cost?: { input: number; output: number };
   free: boolean;
-  hostUsable: boolean;
-  workerUsable: boolean;
+  /** 誰に許しているか（決定98）。空＝採用していない。 */
+  policy: Array<"host" | "worker">;
 }
 
 interface TierInfo {
@@ -91,7 +90,7 @@ interface CatalogData {
   providers: ProviderInfo[];
   models: ModelInfo[];
   tiers: TierInfo[];
-  defaults: { host?: { provider: string; model: string }; workerTier: Tier };
+  defaults: { host?: { backend?: string; provider: string; model: string } };
   files: FileState;
 }
 
@@ -118,7 +117,7 @@ const EMPTY: CatalogData = {
   providers: [],
   models: [],
   tiers: [],
-  defaults: { workerTier: "standard" },
+  defaults: {},
   files: { changed: false, loadedAt: "", loadedHash: "", currentHash: "" },
 };
 
@@ -370,7 +369,7 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
     listForProvider.push(m);
     modelsByProvider.set(m.providerId, listForProvider);
   }
-  const hostModels = data.models.filter((m) => m.hostUsable);
+  const hostModels = data.models.filter((m) => m.policy.includes("host"));
   const tierOptions = data.tiers.map((t) => ({ value: t.tier, label: t.label, title: t.description }));
 
   return (
@@ -399,43 +398,19 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
             </Note>
           )}
 
-          {/* ① いま何が効いているか */}
+          {/*
+            **役割の割り当てはここに無い**（ADR-0021 決定102）。
+            この面は **pi バックエンドの供給**——プロバイダ・鍵・取り込み・文脈長・等級と、
+            「この店で使う気があるか」（採用）まで。誰が何を使うかは設定の「役ごとのモデル」で
+            決める（バックエンドを跨いで1枚）。
+          */}
           <section className="llm-sec">
-            <div className="llm-sec-label">役割の既定</div>
-            <div className="llm-role">
-              <span className="llm-role-mark">番</span>
-              <div className="llm-role-main">
-                <div className="llm-role-name">番頭</div>
-                <div className="llm-role-sub">具体モデルで固定</div>
-              </div>
-              <Select
-                disabled={busy}
-                aria-label="番頭が使うモデル"
-                value={
-                  data.defaults.host ? `${data.defaults.host.provider}|${data.defaults.host.model}` : ""
-                }
-                onChange={(e) => {
-                  const [provider, model] = e.target.value.split("|");
-                  if (provider && model) void run("llm.set_host_default", { provider, model });
-                }}
-              >
-                {!data.defaults.host && <option value="">（未設定）</option>}
-                {hostModels.map((m) => (
-                  <option key={`${m.providerId}|${m.id}`} value={`${m.providerId}|${m.id}`}>
-                    {m.providerId} / {m.id}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            {/*
-              職人の既定（等級・等級ごとのモデル）は**「職人」の区画へ移した**
-              （PO要望 2026-08-10）。ここに置くと pi のモデルだけが特別扱いになり、
-              Claude Code のような登録に載らないバックエンドのモデルを並べられない。
-              この区画が持つのは素材（プロバイダ・鍵・モデル）と**採用**まで。
-            */}
+            <div className="llm-sec-label">この面は pi バックエンドの供給</div>
             <p className="cv-muted llm-moved">
-              職人が何で動くか・等級ごとにどのモデルを使うかは「職人」の区画で決めます。
-              ここで決めるのは<strong>職人に使わせてよいモデル</strong>（下の採用）までです。
+              ここで決めるのは<strong>どのモデルを台帳に載せるか</strong>（プロバイダ・鍵・取り込み・
+              採用）までです。<strong>番頭や職人が何を使うか</strong>は設定の
+              「役ごとのモデル」で決めます——同じ <code className="cv-mono">opus</code> が
+              pi 経由でも Claude Code 経由でも指せるので、割り当てはバックエンドを跨いで1枚で選びます。
             </p>
           </section>
 
@@ -684,12 +659,6 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                         )}
 
                         {models.map((m) => {
-                          const isHostDef =
-                            data.defaults.host?.provider === m.providerId &&
-                            data.defaults.host?.model === m.id;
-                          const tierInfo = data.tiers.find((t) => t.tier === m.tier);
-                          const isPick =
-                            tierInfo?.pick?.provider === m.providerId && tierInfo?.pick?.model === m.id;
                           return (
                             <div key={`${m.providerId}/${m.id}`} className="llm-model">
                               <span className="llm-model-id">{m.id}</span>
@@ -718,47 +687,32 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                                     })
                                   }
                                 />
-                                {(["host", "worker"] as const).map((scope: Scope) => (
-                                  <Chip
-                                    key={scope}
-                                    on={scope === "host" ? m.hostUsable : m.workerUsable}
-                                    disabled={busy}
-                                    title={`${scope === "host" ? "番頭" : "職人"}が使ってよい`}
-                                    onClick={() =>
-                                      void run("llm.set_usable", {
-                                        provider: m.providerId,
-                                        model: m.id,
-                                        scope,
-                                        usable: !(scope === "host" ? m.hostUsable : m.workerUsable),
-                                      })
-                                    }
-                                  >
-                                    {scope === "host" ? "番頭" : "職人"}
-                                  </Chip>
-                                ))}
+                                {/*
+                                  **採用は1つ**（ADR-0021 決定101e）。以前は「番頭」「職人」の
+                                  2つのチップだったが、母集団を1つにしたので常に連動する
+                                  ——2つ出すと、押しても両方変わることの説明がつかない。
+                                  「この役には使わせたくない」は役の側の絞りで書く。
+                                */}
                                 <Chip
-                                  on={isHostDef}
+                                  on={m.policy.length > 0}
                                   disabled={busy}
-                                  title="番頭の既定モデルにする"
+                                  title="この店で使う気があるモデルにする（役ごとの絞りは「役ごとのモデル」で）"
                                   onClick={() =>
-                                    void run("llm.set_host_default", {
+                                    void run("llm.set_policy", {
                                       provider: m.providerId,
                                       model: m.id,
+                                      scope: "host",
+                                      usable: m.policy.length === 0,
                                     })
                                   }
                                 >
-                                  番頭既定
+                                  採用
                                 </Chip>
-                                <Chip
-                                  on={isPick}
-                                  disabled={busy}
-                                  title={`${tierInfo?.label ?? m.tier} の第一候補にする`}
-                                  onClick={() =>
-                                    void run("llm.set_pick", { provider: m.providerId, model: m.id })
-                                  }
-                                >
-                                  {tierInfo?.label ?? m.tier}の第一候補
-                                </Chip>
+                                {/*
+                                  **役割の割り当てチップはここに無い**（ADR-0021 決定102）。
+                                  割り当てはバックエンドを跨ぐ問いなので、設定の「役ごとのモデル」で1枚にした
+                                  ——ここに置くと pi のモデルだけが特別扱いになる。
+                                */}
                                 {/* 採用をやめる＝番頭も職人も使わない。台帳には残る */}
                                 <Button
                                   small
@@ -766,13 +720,13 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                                   disabled={busy}
                                   title="この一覧から外す（台帳には残るので、また探して採用できます）"
                                   onClick={() => {
-                                    void run("llm.set_usable", {
+                                    void run("llm.set_policy", {
                                       provider: m.providerId,
                                       model: m.id,
                                       scope: "host",
                                       usable: false,
                                     }).then(() =>
-                                      run("llm.set_usable", {
+                                      run("llm.set_policy", {
                                         provider: m.providerId,
                                         model: m.id,
                                         scope: "worker",
@@ -862,10 +816,10 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                                 <span className="llm-model-acts">
                                   <Button
                                     small
-                                    variant={m.hostUsable ? "ghost" : "primary"}
-                                    disabled={busy || m.hostUsable}
+                                    variant={m.policy.includes("host") ? "ghost" : "primary"}
+                                    disabled={busy || m.policy.includes("host")}
                                     onClick={() => {
-                                      void run("llm.set_usable", {
+                                      void run("llm.set_policy", {
                                         provider: m.providerId,
                                         model: m.id,
                                         scope: "host",
@@ -873,7 +827,7 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
                                       }).then(() => void runSearch(p.id, state));
                                     }}
                                   >
-                                    {m.hostUsable ? "採用済み" : "採用する"}
+                                    {m.policy.includes("host") ? "採用済み" : "採用する"}
                                   </Button>
                                 </span>
                               </div>

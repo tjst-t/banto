@@ -137,7 +137,7 @@ docker ドライバは `docker compose ls` の全件から**名前が `-docker` 
 | Tool | 入力 | 出力 |
 |---|---|---|
 | `env.verify` | `repoPath`, `cmd`, `workdir?`, `profile?` \| (`driver`+`config`), `taskId?`, `projectTag?`, `artifactPath?` | `{exit, logPath, logTail, envId, tornDown, teardownError?}` |
-| `env.provision` | `repoPath`, `taskId`, `workdir?`, `profile?` \| (`driver`+`config`), `projectTag?` | `{envId, profile, driver, healthcheck: {ok, detail?}, ttlDeadline}` |
+| `env.provision` | `repoPath`, `taskId`, `workdir?`, `profile?` \| (`driver`+`config`), `projectTag?` | `{envId, profile, driver, healthcheck: {ok, detail?}, ttlDeadline, profileDigest?}` |
 | `env.deploy` | `envId`, `artifactPath` | `{ok}` |
 | `env.healthcheck` | `envId` | `{ok, detail?}` |
 | `env.run` | `envId`, `cmd` | `{exit, logPath, logTail}` |
@@ -150,6 +150,7 @@ docker ドライバは `docker compose ls` の全件から**名前が `-docker` 
 - **teardown の失敗を成功に見せない**（I2）。`env.verify` は `tornDown: false` と `teardownError` を返し、台帳には `teardownFailed` が残ってリトライとケイデンス議題に載る（→ §5）
 - **`logTail` を返すのはログ本文を番頭に渡すため**。`logPath` だけでは番頭が結果を判断できず、かといって全文は文脈を埋める。上限行数で切り、切ったことを明示する
 - **職人には `env.*` を渡さない**（§3 の第3項）。職人は成果を出す側で、自分の成果を自分で検証させると I1 が崩れる
+- **`profileDigest` は「どの環境で回したか」を呼び出し側が証拠に刻むための指紋**（realign 第2便・段1）。プロファイルの**中身**（`driver` / `config` / `setup` / `cache` …）から作り、`name` は含めない——名前を変えただけの環境を別物と言わないため。逆に、同じ名前のまま土台のイメージや `setup` が変われば指紋は変わる。**アドホック（`driver`+`config` 直指定）には定義が無いので付かない。** 指紋を作るのは環境の持ち主であって呼び出し側ではない（決定60a：他モジュールの内部を読ませない）。用途は spec-daemon-core §2.4
 
 ## 4. 認証情報（credentials）
 

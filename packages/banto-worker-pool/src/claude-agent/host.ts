@@ -33,12 +33,14 @@ import {
   createSdkMcpServer,
   query,
   tool,
-  type Options,
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { BANTO_MCP_SERVER, CLAUDE_DEFAULT_MODEL, CLAUDE_WEB_TOOL_NAMES } from "./naming.js";
-import { CLAUDE_REPORT_PROMPT, createReportChannel, endedWithoutReporting } from "./report.js";
+import { BANTO_MCP_SERVER, CLAUDE_DEFAULT_MODEL } from "./naming.js";
+import { createReportChannel, endedWithoutReporting } from "./report.js";
 import { createKoboChannel } from "./kobo.js";
+import { createClaudeToolOffload } from "./tool-offload.js";
+import { createClaudeWorkKeep } from "./work-keep.js";
+import { buildHostOptions } from "./options.js";
 import { SessionTranscript } from "./session-log.js";
 
 // ── 起動時の指定 ────────────────────────────────────────────────────────────
@@ -163,7 +165,32 @@ function send(message: Record<string, unknown>): void {
 
 // ── 本体 ────────────────────────────────────────────────────────────────────
 
+/**
+ * **自分の袋（cgroup）へ入る**（inc-0066 第2段）。何より先に、SDK を触る前にやる。
+ *
+ * `cgroup.procs` へ自分の pid を書くと、以後この プロセスが起こす子孫——`claude` CLI も、
+ * その下の bash も grep も——**自動的に同じ袋の中で生まれる**（cgroup v2 の継承）。
+ * 親が spawn の後に書く形だと、書く前に起きた孫を取りこぼす。
+ *
+ * I2・fail closed: 入れなかったら**働かずに落ちる**。工房は「隔離を作ったのに入れなかった」
+ * 職人を隔離なしで走らせない（PO 裁定）——1本の暴走が機械全体を巻き込むため。
+ */
+function joinOwnCgroup(): void {
+  const procsFile = process.env["BANTO_WORKER_CGROUP_PROCS"];
+  if (!procsFile) return; // 隔離しない運転（開発機・コンテナ）。工房が別に警告を出している
+  try {
+    fs.writeFileSync(procsFile, String(process.pid));
+  } catch (err) {
+    process.stderr.write(
+      `[claude-agent] 自分を隔離（cgroup）へ入れられませんでした: ${procsFile}: ${String(err)}\n` +
+        `[claude-agent] 隔離なしでは働きません（inc-0066）\n`
+    );
+    process.exit(1);
+  }
+}
+
 async function main(): Promise<void> {
+  joinOwnCgroup();
   const config = readHostConfig(process.argv.slice(2));
   fs.mkdirSync(path.dirname(config.sessionFile), { recursive: true });
 
@@ -304,30 +331,35 @@ async function main(): Promise<void> {
       }
     : undefined;
 
-  const appended = [config.systemPrompt, report ? CLAUDE_REPORT_PROMPT : ""]
-    .filter((text) => text.trim().length > 0)
-    .join("\n\n");
+  /**
+   * 長いツール結果の退避（task-0090 / task-0102）。
+   *
+   * pi 職人には拡張として載っているものと**同じ判断**を、この経路では `PostToolUse` フックで
+   * 載せる。載せ忘れた経路だけが「長い結果の直後に応答が返らない」穴に落ちる——
+   * 実運用の職人はほぼ全部こちらなので、ここが空いていた間は対策が効いていなかった。
+   */
+  const offload = createClaudeToolOffload();
 
-  const options: Options = {
-    model: config.model,
+  /**
+   * 作業の取り置き（機構が定期的にコミットする）。
+   *
+   * 職人が落ちても・無報告で終わっても、そこまでの成果が名前つきの枝に残る。
+   * pi 経路には拡張（`pi-extension/work-keep.ts`）として載っている**同じ判断**を、
+   * この経路では `PostToolUse` フック＋タイマーで載せる——実運用の職人はほぼ全部こちらなので、
+   * ここが空いていれば機構はどこにも効いていないことになる（task-0102 と同じ穴）。
+   */
+  const workKeep = createClaudeWorkKeep(process.env, process.cwd(), sessionId);
+
+  // 組み立ては `options.ts`（純関数）。**繋ぎ目を試験から叩けるようにするため**に分けてある
+  const options = buildHostOptions({
+    config,
     cwd: process.cwd(),
-    // imp-0004: 立場は**追記**する。既定のプロンプト（道具の作法）を奪わない
-    systemPrompt: {
-      type: "preset",
-      preset: "claude_code",
-      ...(appended.length > 0 ? { append: appended } : {}),
-    },
-    // imp-0004: 空なら既定の道具立てのまま。空の許可リストを渡すと道具が1つも無い職人になる
-    tools: config.tools.length > 0 ? config.tools : { type: "preset", preset: "claude_code" },
-    // imp-0005: 外を読む口は許したときだけ。Claude Code の既定には入っているので明示的に外す
-    ...(config.network ? {} : { disallowedTools: [...CLAUDE_WEB_TOOL_NAMES] }),
-    ...(mcpServers ? { mcpServers } : {}),
-    // 職人の前に人は居ない。**可否を尋ねる相手が居ない**ので通す。危険の境目は
-    // 「渡した道具（tools）」と「作業させる worktree」であって、対話の確認ではない（pi と同じ）
-    canUseTool: async (_toolName, input) => ({ behavior: "allow" as const, updatedInput: input }),
-    settingSources: config.settingSources,
-    ...(config.resume ? { resume: config.resume } : { sessionId }),
-  };
+    sessionId,
+    reported: Boolean(report),
+    offload,
+    workKeep,
+    mcpServers,
+  });
 
   const session = query({ prompt: queue.stream(), options });
 

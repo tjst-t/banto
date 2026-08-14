@@ -36,10 +36,25 @@ export type {
   DaemonConfigEvent,
   EnvProfileRejectedEvent,
   EnvProvisionFailedEvent,
+  TaskStalledEvent,
+  TaskSettledOutsideEvent,
+  TaskContractAmendedEvent,
 } from "./events.js";
 
+// 滞留を帳簿から導出する（realign 第2便・rethink C-3 第1手）。時間は保存しない（D3）
+export {
+  stateEnteredAt,
+  dwellMs,
+  lastObservableChangeAt,
+  stalledAlreadyRecorded,
+  currentBlockedBy,
+  contractVersionOf,
+  formatDwell,
+  DEFAULT_DWELL_WARN_MINUTES,
+} from "./dwell.js";
+
 // Environment profile parser (spec-environment §1)
-export { parseEnvProfiles, validateProfile, parseTtl } from "./env-profile-parser.js";
+export { parseEnvProfiles, validateProfile, parseTtl, envProfileDigest } from "./env-profile-parser.js";
 // 検証環境を外から見えるようにする口（決定39・imp-0008）。配置で手段が変わるので差し替え可能
 export type { EnvExposer, ExposedEnv, ExposeRequest } from "./env-exposer.js";
 // モジュールが設定画面に自分の設定を出す契約（決定41）。GUI ではなく項目の宣言を渡す
@@ -102,6 +117,22 @@ export type {
   DriverId,
 } from "./runtime-driver.js";
 
+/**
+ * BantoHarness — 番頭の**会話の契約**（ADR-0020 決定88・89）。
+ *
+ * `RuntimeDriver`（上）と併置する。あちらは**プロセスの監督＝関所**、こちらは
+ * **会話のやり方＝差し替えるもの**。層が違うので流用しない。
+ */
+export type {
+  BantoHarness,
+  HarnessEvent,
+  HarnessImage,
+  HarnessPromptOptions,
+  ChapterOpening,
+  // 「この経路では回せない」を値で持つ（決定98a）
+  NotSupported,
+} from "./banto-harness.js";
+
 // Executor + audit tool definitions (runtime-neutral; no pi/agent-sdk imports)
 // Tool 契約（ランタイム中立・決定1／task-0025）。契約の型はこの1つだけ
 export { defineBantoTool, defineNamespacedTool } from "./banto-tool.js";
@@ -114,6 +145,10 @@ export type {
   BantoToolContext,
 } from "./banto-tool.js";
 
+// スキーマを平らに書く小道具（ADR-0019 決定84-3）
+export { StringEnum, OpenObject } from "./tool-schema.js";
+export type { TStringEnum } from "./tool-schema.js";
+
 // LLM Catalog — プロバイダ・モデル・キーの一元管理（ADR-0004 / spec §3.5）
 export {
   LlmCatalog,
@@ -122,14 +157,25 @@ export {
   DEFAULT_TIER_DESCRIPTIONS,
   CONSTRAINT_KEYS,
   isModelTier,
+  // 役割ごとの束縛（ADR-0020 決定94）。束縛の表はこれ1つ
+  LLM_ROLES,
+  isLlmRole,
+  workerRoleOf,
   // ハーネスに依存しないモデル解決（task-0066）。工房が独立サービスとして立つのに要る
   MODEL_ALIASES,
+  // 採用の方針（ADR-0020 決定98）。hostUsable/workerUsable を1つに畳んだもの
+  MODEL_USES,
   createFileModelResolver,
   piAgentDir,
 } from "./llm-registry.js";
 export type {
+  LlmRole,
+  LlmRoleBindings,
+  LlmModelRef,
   ModelTier,
   ModelConstraints,
+  ModelUse,
+  ModelPolicy,
   KeyScope,
   KeyState,
   LlmKeyInfo,
@@ -144,6 +190,24 @@ export type {
   LlmModelResolver,
   ResolvedModel,
 } from "./llm-registry.js";
+
+// 役の台帳 — 誰が何を使うか（ADR-0021 決定99・101）。**供給（pi の登録）とは別**
+export {
+  ModelLedger,
+  MODEL_LEDGER_SCHEMA_VERSION,
+  LEDGER_ROLES,
+  isLedgerRole,
+  ledgerWorkerRole,
+  sameRef,
+  refKey,
+} from "./model-ledger.js";
+export type {
+  LedgerRole,
+  LedgerModelRef,
+  RoleBinding,
+  ModelLedgerData,
+  ModelLedgerOptions,
+} from "./model-ledger.js";
 
 // 場所（Place）— 番頭が作業してよい場所の契約（決定36c）
 // 親子関係（PO裁定 2026-08-05）：ワークツリーは親リポジトリを指し、記憶の層は親で決まる
@@ -165,7 +229,7 @@ export type { NamespacedToolName } from "./tool-namespace.js";
 export { createExecutorTools, createAuditTools } from "./tools.js";
 
 // Prompt asset loader (reads from skills/ directory at repo root)
-export { loadPromptAsset } from "./prompt-assets.js";
+export { loadPromptAsset, promptAssetDigest } from "./prompt-assets.js";
 
 // Environment driver contract types — spec-environment §2
 // D1: field names in input/output shapes are FIXED to spec §2. Do NOT rename without ADR.

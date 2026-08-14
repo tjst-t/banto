@@ -13,6 +13,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import type { BantoHarness, HarnessEvent } from "@banto/core";
 import { JsonlMemoryStore, ScopedMemory } from "@banto/core";
 import {
   ThreadRegistry,
@@ -32,16 +33,16 @@ import type { WorkerEvent } from "@banto/worker-pool";
  * HostSession を満たすテスト用セッション。プロバイダを一切呼ばずに、ターンの進行だけを
  * こちらから発火できる。server が具象型ではなく HostSession に依存しているから可能。
  */
-class FakeSession implements HostSession {
+class FakeSession implements BantoHarness {
   readonly sessionId = "test-session";
   isStreaming = false;
   prompts: string[] = [];
   aborted = 0;
   /** モデル切替に対応するハーネスの再現（対応しない場合は未設定のまま）。 */
   setModel?: (model: unknown) => Promise<void>;
-  private listeners = new Set<(event: unknown) => void>();
+  private listeners = new Set<(event: HarnessEvent) => void>();
 
-  subscribe(listener: (event: unknown) => void): () => void {
+  subscribe(listener: (event: HarnessEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
@@ -55,9 +56,22 @@ class FakeSession implements HostSession {
   }
 
   /** ハーネス側から流れてくるイベントを再現する。 */
-  emit(event: unknown): void {
+  emit(event: HarnessEvent): void {
     for (const listener of this.listeners) listener(event);
   }
+
+  // ── BantoHarness の残り（ADR-0020 決定89）。章立てはこの試験では使わない ──
+  readonly backendId = "fake";
+  contextTokens(): number | undefined {
+    return undefined;
+  }
+  messageCount(): number {
+    return 0;
+  }
+  transcript(): string {
+    return "";
+  }
+  async startChapter(): Promise<void> {}
 }
 
 let dir: string;
@@ -77,19 +91,66 @@ async function startHost(
   // task-0035: サーバはスレッドの帳簿を受け取る。既定スレッドを1本開いてから立てる
   const threads = new ThreadRegistry(async () => {
     session = new FakeSession();
-    return { session, tools, ...(lastError ? { getLastError: lastError } : {}) };
+    return { harness: session, tools, ...(lastError ? { getLastError: lastError } : {}) };
   });
   await threads.open(TRUNK);
   server = await BantoHostServer.start({ threads, port: 0, ...(extra ?? {}) });
   return { url: `ws://localhost:${server.port}${BANTO_WS_PATH}`, tools: tools.map((t) => t.name) };
 }
 
-/** 指定の型のイベントが来るまで待つ。 */
-function waitFor(events: ServerEvent[], type: ServerEvent["type"], timeoutMs = 2000): Promise<ServerEvent> {
+/** 指定の型のイベントが `count` 件たまるまで待つ。
+ *
+ * 接続直後の配信は**会話の本数だけ**届くものがある（server.ts は model_state を
+ * スレッド1本ずつ送る）。1件だけ待って配列を空にすると、残りが空にした後から届き、
+ * 次に待つ「切り替え後の通知」と読み違える。負荷が高いほど当たりやすい競合なので、
+ * 初期配信は**受け取り切ってから**次へ進む。
+ */
+function waitForCount(
+  events: ServerEvent[],
+  type: ServerEvent["type"],
+  count: number,
+  timeoutMs = 2000
+): Promise<ServerEvent[]> {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     const tick = setInterval(() => {
-      const found = events.find((e) => e.type === type);
+      const found = events.filter((e) => e.type === type);
+      if (found.length >= count) {
+        clearInterval(tick);
+        resolve(found);
+      } else if (Date.now() - started > timeoutMs) {
+        clearInterval(tick);
+        reject(
+          new Error(
+            `timed out waiting for ${count}x "${type}" (got ${found.length}); events: ${events
+              .map((e) => e.type)
+              .join(", ")}`
+          )
+        );
+      }
+    }, 10);
+  });
+}
+
+/** 指定の型のイベントが来るまで待つ。 */
+/**
+ * `type` の出来事が届くまで待つ。
+ *
+ * **`where` を渡せる**（P6・2026-08-13）。接続時は**会話の本数だけ** `model_state` が
+ * 配られるので、「型で待って配列を空にする」書き方だと、遅れて届いた初期値を
+ * 変更の反響と取り違える——**間欠的に落ちる試験は、待ち方が壊れている合図**。
+ * 待ちを延ばすのではなく、探しているものを名指しする。
+ */
+function waitFor(
+  events: ServerEvent[],
+  type: ServerEvent["type"],
+  timeoutMs = 2000,
+  where: (e: ServerEvent) => boolean = () => true
+): Promise<ServerEvent> {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const tick = setInterval(() => {
+      const found = events.find((e) => e.type === type && where(e));
       if (found) {
         clearInterval(tick);
         resolve(found);
@@ -158,10 +219,7 @@ describe("[task-0009/a1] セッションイベントの配信", () => {
     await waitFor(events, "welcome");
 
     // プロバイダを呼ばずにターンの進行だけ再現する
-    session.emit({
-      type: "message_update",
-      assistantMessageEvent: { type: "text_delta", delta: "こんにちは" },
-    });
+    session.emit({ type: "text_delta", delta: "こんにちは" });
 
     const delta = await waitFor(events, "text_delta");
     assert.ok(delta.type === "text_delta" && delta.delta === "こんにちは");
@@ -176,16 +234,16 @@ describe("[task-0009/a1] セッションイベントの配信", () => {
 
     // プロバイダ側は wire 名で呼んでくる
     session.emit({
-      type: "tool_execution_start",
+      type: "tool_start",
       toolCallId: "call-1",
-      toolName: "memory__save",
-      args: {},
+      name: "memory.save",
+      input: {},
     });
     session.emit({
-      type: "tool_execution_end",
+      type: "tool_end",
       toolCallId: "call-1",
-      toolName: "memory__save",
-      result: {},
+      name: "memory.save",
+      output: {},
       isError: false,
     });
 
@@ -202,12 +260,8 @@ describe("[task-0009/a1] セッションイベントの配信", () => {
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
     await waitFor(events, "welcome");
 
-    session.emit({
-      type: "tool_execution_start",
-      toolCallId: "call-2",
-      toolName: "read",
-      args: {},
-    });
+    // 名前空間規則に従わない名前（pi 組み込み等）はそのまま通る——変換はハーネス側
+    session.emit({ type: "tool_start", toolCallId: "call-2", name: "read", input: {} });
 
     const start = await waitFor(events, "tool_start");
     assert.ok(start.type === "tool_start" && start.name === "read");
@@ -225,10 +279,7 @@ describe("[task-0009/a3] 複数クライアント", () => {
     await waitFor(a, "welcome");
     await waitFor(b, "welcome");
 
-    session.emit({
-      type: "message_update",
-      assistantMessageEvent: { type: "text_delta", delta: "全員に届く" },
-    });
+    session.emit({ type: "text_delta", delta: "全員に届く" });
 
     const fromA = await waitFor(a, "text_delta");
     const fromB = await waitFor(b, "text_delta");
@@ -251,10 +302,7 @@ describe("[task-0009/a3] 複数クライアント", () => {
     clientA.close();
     await new Promise((r) => setTimeout(r, 50));
 
-    session.emit({
-      type: "message_update",
-      assistantMessageEvent: { type: "text_delta", delta: "残った方へ" },
-    });
+    session.emit({ type: "text_delta", delta: "残った方へ" });
 
     const fromB = await waitFor(b, "text_delta");
     assert.ok(fromB.type === "text_delta" && fromB.delta === "残った方へ");
@@ -406,10 +454,10 @@ describe("[task-0014] 会話履歴のホスト保持（リロードで消えな�
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
     await waitFor(events, "history");
 
-    session.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "はい" } });
-    session.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "、確認します" } });
-    session.emit({ type: "tool_execution_start", toolCallId: "t1", toolName: "memory__save", args: {} });
-    session.emit({ type: "tool_execution_end", toolCallId: "t1", toolName: "memory__save", result: {}, isError: false });
+    session.emit({ type: "text_delta", delta: "はい" });
+    session.emit({ type: "text_delta", delta: "、確認します" });
+    session.emit({ type: "tool_start", toolCallId: "t1", name: "memory.save", input: {} });
+    session.emit({ type: "tool_end", toolCallId: "t1", name: "memory.save", output: {}, isError: false });
     await waitFor(events, "tool_end");
     client.close();
 
@@ -436,16 +484,9 @@ describe("会話面が要る材料の配信", () => {
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
     await waitFor(events, "history");
 
-    session.emit({ type: "message_update", assistantMessageEvent: { type: "thinking_start" } });
-    session.emit({
-      type: "message_update",
-      assistantMessageEvent: { type: "thinking_delta", delta: "まず前提を" },
-    });
-    session.emit({
-      type: "message_update",
-      assistantMessageEvent: { type: "thinking_delta", delta: "確かめる" },
-    });
-    session.emit({ type: "message_update", assistantMessageEvent: { type: "thinking_end" } });
+    session.emit({ type: "reasoning_delta", delta: "まず前提を" });
+    session.emit({ type: "reasoning_delta", delta: "確かめる" });
+    session.emit({ type: "reasoning_end", durationMs: 0 });
 
     const delta = await waitFor(events, "reasoning_delta");
     assert.ok(delta.type === "reasoning_delta" && delta.delta === "まず前提を");
@@ -474,16 +515,16 @@ describe("会話面が要る材料の配信", () => {
     await waitFor(events, "history");
 
     session.emit({
-      type: "tool_execution_start",
+      type: "tool_start",
       toolCallId: "t1",
-      toolName: "memory__save",
-      args: { text: "覚えること" },
+      name: "memory.save",
+      input: { text: "覚えること" },
     });
     session.emit({
-      type: "tool_execution_end",
+      type: "tool_end",
       toolCallId: "t1",
-      toolName: "memory__save",
-      result: { saved: true },
+      name: "memory.save",
+      output: { saved: true },
       isError: false,
     });
 
@@ -520,13 +561,8 @@ describe("会話面が要る材料の配信", () => {
     // ターンが回っていないので、まだ何も届いていない
     assert.equal(events.some((e) => e.type === "context_state"), false);
 
-    session.emit({
-      type: "turn_end",
-      message: {
-        role: "assistant",
-        usage: { input: 1200, output: 300, cacheRead: 500, cacheWrite: 0, totalTokens: 2000 },
-      },
-    });
+    // 入力＋キャッシュ＋出力の合算はハーネスが済ませる（ADR-0020 決定89・pi-harness.spec.ts）
+    session.emit({ type: "turn_end", contextTokens: 2000 });
 
     const state = await waitFor(events, "context_state");
     assert.ok(state.type === "context_state");
@@ -548,7 +584,7 @@ describe("会話面が要る材料の配信", () => {
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
     await waitFor(events, "history");
 
-    session.emit({ type: "turn_end", message: { role: "assistant" } });
+    session.emit({ type: "turn_end" });
     await new Promise((r) => setTimeout(r, 80));
 
     assert.equal(events.some((e) => e.type === "context_state"), false);
@@ -561,11 +597,11 @@ describe("会話面が要る材料の配信", () => {
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
     await waitFor(events, "history");
 
+    // 文言の組み立てはハーネスの仕事（pi-harness.spec.ts が見る）。ここは**配って残るか**
     session.emit({
-      type: "compaction_end",
-      reason: "threshold",
-      aborted: false,
-      result: { summary: "…", firstKeptEntryId: "x", tokensBefore: 180000 },
+      type: "notice",
+      source: "system",
+      text: "文脈が長くなったため、ここまでの会話をまとめ直しました（まとめる前 180,000 トークン）。",
     });
 
     const notice = await waitFor(events, "notice");
@@ -589,15 +625,15 @@ describe("会話面が要る材料の配信", () => {
     const client = await BantoHostClient.connect(url, (e) => events.push(e));
     await waitFor(events, "history");
 
-    session.emit({ type: "compaction_end", reason: "threshold", aborted: true });
+    // 中断を握りつぶす／失敗を出す の判断はハーネス側（pi-harness.spec.ts）。
+    // ここでは「知らせが来なければ何も出ない」「来れば出る」だけを見る
     await new Promise((r) => setTimeout(r, 60));
-    assert.equal(events.some((e) => e.type === "notice"), false, "中断は知らせない");
+    assert.equal(events.some((e) => e.type === "notice"), false, "知らせが無ければ何も出さない");
 
     session.emit({
-      type: "compaction_end",
-      reason: "overflow",
-      aborted: false,
-      errorMessage: "要約に失敗",
+      type: "notice",
+      source: "system",
+      text: "文脈のまとめ直しに失敗しました：要約に失敗",
     });
     const failed = await waitFor(events, "notice");
     assert.ok(failed.type === "notice" && failed.text.includes("失敗"));
@@ -611,10 +647,10 @@ describe("会話面が要る材料の配信", () => {
     await waitFor(events, "history");
 
     session.emit({
-      type: "tool_execution_end",
+      type: "tool_end",
       toolCallId: "t2",
-      toolName: "file__read",
-      result: "あ".repeat(20000),
+      name: "file.read",
+      output: "あ".repeat(20000),
       isError: false,
     });
 
@@ -673,7 +709,7 @@ describe("会話面が要る材料の配信", () => {
         applied.push(model);
       };
       sessions.push(s);
-      return { session: s, tools };
+      return { harness: s, tools };
     });
     await threads.open(TRUNK);
     await threads.open(branchSpec("枝1"));
@@ -684,7 +720,7 @@ describe("会話面が要る材料の配信", () => {
       modelProvider: "p1",
       onSelectModel: async (thread, provider, model) => {
         // 宛先の会話にだけ効かせる（bin.ts と同じ規則）
-        await thread.session.setModel?.({ provider, id: model });
+        await thread.harness.setModel?.({ provider, id: model });
         return { id: model, vision: true };
       },
     });
@@ -695,9 +731,13 @@ describe("会話面が要る材料の配信", () => {
     const b: ServerEvent[] = [];
     const clientA = await BantoHostClient.connect(url, (e) => a.push(e));
     const clientB = await BantoHostClient.connect(url, (e) => b.push(e));
-    // 接続直後に会話ごとのモデルが届く（後から繋いだ画面も選択中が分かる）
-    const initial = await waitFor(a, "model_state");
-    assert.ok(initial.type === "model_state" && initial.id === "before");
+    // 接続直後に会話ごとのモデルが届く（後から繋いだ画面も選択中が分かる）。
+    // **会話の本数だけ**届くので、両方の画面が全部を受け取り切るまで待ってから
+    // 配列を空にする（1本ぶんだけ待つと、遅れて届いた初期値を切替の通知と読み違える）
+    const opened = threads.list().length;
+    const initial = await waitForCount(a, "model_state", opened);
+    assert.ok(initial[0]!.type === "model_state" && initial[0]!.id === "before");
+    await waitForCount(b, "model_state", opened);
     const first = threads.list()[0]!;
     const second = threads.list()[1]!;
 
@@ -705,14 +745,17 @@ describe("会話面が要る材料の配信", () => {
     b.length = 0;
     clientA.send({ type: "set_model", threadId: first.id, provider: "p2", model: "after" });
 
-    const changed = await waitFor(a, "model_state");
+    // **変更の反響を名指しで待つ。** 型だけで待つと、接続時に配られた初期値
+    // （会話の本数だけ届く）が空にした直後の配列へ遅れて入り、それを拾ってしまう
+    const isAfter = (e: ServerEvent): boolean => e.type === "model_state" && e.id === "after";
+    const changed = await waitFor(a, "model_state", 2000, isAfter);
     assert.ok(changed.type === "model_state");
     assert.equal(changed.threadId, first.id, "変えた会話の話として届く");
     assert.equal(changed.provider, "p2");
     assert.equal(changed.id, "after");
     assert.equal(changed.vision, true);
     // 選んでいない方の画面にも届く（D3: 真実はホスト側）
-    const echoed = await waitFor(b, "model_state");
+    const echoed = await waitFor(b, "model_state", 2000, isAfter);
     assert.ok(echoed.type === "model_state" && echoed.id === "after");
 
     // **効くのは宛先の会話だけ**。もう1本は自分のモデルのまま
@@ -731,7 +774,7 @@ describe("会話面が要る材料の配信", () => {
     const threads = new ThreadRegistry(async (_id, _resume, wanted) => {
       session = new FakeSession();
       const used = wanted ?? hostDefault;
-      return { session, tools, model: { ...used, vision: false } };
+      return { harness: session, tools, model: { ...used, vision: false } };
     });
     await threads.open(TRUNK);
     server = await BantoHostServer.start({ threads, port: 0 });
@@ -758,7 +801,7 @@ describe("会話面が要る材料の配信", () => {
     const tools = createMemoryTools(new ScopedMemory(store));
     const threads = new ThreadRegistry(async () => {
       session = new FakeSession();
-      return { session, tools };
+      return { harness: session, tools };
     });
     await threads.open(TRUNK);
     server = await BantoHostServer.start({

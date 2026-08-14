@@ -41,13 +41,27 @@ export interface StoredThread {
   openReason?: string;
   /** 畳んだときの結論。 */
   conclusion?: string;
+  /**
+   * 畳んだときの詳細（決定108）。**幹には流れない**ので、ここが唯一の置き場
+   * ——落とすと、再起動した瞬間に「開けば読める」が嘘になる。
+   */
+  conclusionDetail?: string;
   state: "open" | "closed";
   createdAt: string;
   closedAt?: string;
   /** pi のセッションファイル。**番頭の文脈はこちらが持つ**（会話の記録とは別物）。 */
   sessionFile?: string;
+  /**
+   * **バックエンド側の会話の札**（`BantoHarness.resumeToken()`・決定97・task-0104）。
+   *
+   * pi はセッションファイル（上）で戻るが、Agent SDK は自分の置き場に記録を持っていて
+   * **セッションIDでしか指せない**。ここを残していなかったので、Claude で話していた
+   * 会話は**再起動のたびに番頭だけが全部忘れた**——画面には記録が戻るので、POからは
+   * 「番頭が急に前提を無視し始めた」に見える。
+   */
+  backendSessionId?: string;
   /** この会話で使っていたモデル。再起動しても同じモデルで再開する。 */
-  model?: { provider: string; id: string };
+  model?: { backend?: string; provider: string; id: string };
   /** キャンバスに開いていたもの。畳んで開き直したときに元の面へ戻す。 */
   canvasTabs?: Array<{ kind: string; params: Record<string, unknown>; title?: string }>;
 }

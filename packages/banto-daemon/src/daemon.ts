@@ -25,6 +25,15 @@ import {
   EventIndex,
   StateMachine,
   parseEnvProfiles as _parseEnvProfiles,
+  // realign 第2便: 滞留と「何に対して」は帳簿から導出する（保存しない・D3）
+  dwellMs,
+  lastObservableChangeAt,
+  stalledAlreadyRecorded,
+  currentBlockedBy,
+  contractVersionOf,
+  DEFAULT_DWELL_WARN_MINUTES,
+  promptAssetDigest,
+  loadPromptAsset,
 } from "@banto/core";
 import type {
   OrchestrationEvent,
@@ -58,6 +67,8 @@ import { taskPayload } from "./task-watcher.js";
 import {
   fileConflictTask,
   deriveOriginResolutionPairs,
+  hasOpenResolutionTask,
+  type OriginResolutionPair,
 } from "./conflict-filer.js";
 // ADR-0013 決定60: 台帳を持つ能力（職人・検証環境）は**モジュールが持つ**。Kobo は
 // `worker.*` / `env.*` を**モジュール経由で呼ぶ側**になり、台帳・ドライバ・sops・
@@ -86,6 +97,11 @@ interface EnvProfileView {
   name: string;
   driver: string;
   quota?: { max_instances: number };
+  /**
+   * ドライバごとの設定。**Kobo はここを解釈しない**（決定60a）——例外は
+   * 「人が触れる面を持つか」だけで、`profileIsTouchable` がその1点を見る（理由はそこに書いた）。
+   */
+  config?: Record<string, unknown>;
 }
 
 /**
@@ -148,6 +164,21 @@ function splitPoolTaskId(id: string): { taskId: string; role: WorkerRole } {
  */
 const AUDIT_ATTEMPT_LIMIT = 2;
 
+/**
+ * コンフリクト解消後の再開を**誰がやったか**（inc-0063 の4）。
+ *
+ * 帳簿の `po_operation` は名前のとおり PO の操作を残す場所なのに、機構の自動処理
+ * （解消タスクが片付いた → origin を merging へ戻す）が同じ型で無記名に積まれていた。
+ * PO は何も押していないので、`payload.actor` に出所を書いて読み分けられるようにする。
+ *
+ * **型そのものを増やさなかった理由**: `StateStore.applyEvent` は知らない type を
+ * 見ると throw する（I2: 版ずれを黙って無視しない）。新しい type を本番の帳簿に
+ * 書いた後でこの変更を巻き戻すと、**古い版の Kobo が帳簿を再生できず起動できない**。
+ * この直しは未コミットで PO のレビューを待つ＝巻き戻りうるので、後方互換の側を採る。
+ * 型を分けるなら、読み手（core の再生・API・番頭の表示）を先に直してから。
+ */
+const CONFLICT_RESUME_ACTOR = "system";
+
 /** モデルの等級。Kobo が知ってよいのはここまで（決定60a）。 */
 type ModelTier = "reasoning" | "standard" | "fast";
 
@@ -181,6 +212,17 @@ interface WorkerView {
   pid: number;
   alive: boolean;
   state: "running" | "waiting" | "exited" | "closed";
+}
+
+/**
+ * 畳むときに**止まらなかった**職人（PO 裁定 2026-08-14）。
+ *
+ * 「止められませんでした」だけでは番頭は動けない——どのセッションが走り続けているかを
+ * 名指しできて初めて、工房の口（`worker.close` / `worker.list`）で追える。
+ */
+export interface UnstoppedWorker {
+  sessionId: string;
+  error: string;
 }
 
 /** 起こした職人1人分（Kobo が帳簿に残す最小限）。 */
@@ -554,6 +596,17 @@ export class Daemon {
       this.runConflictResolutionCheck();
     });
 
+    /**
+     * **止まっているものを見つけて言う**（realign 第2便・rethink C-3 第1手）。
+     *
+     * 状態は「いつからその状態か」を答えられなかったので、何日詰まっていても誰も
+     * 気づけなかった（実測 19.2h / 28.6h / 16.8h）。滞在時間は帳簿から導出できる
+     * ——足りなかったのは、それを見て閾値と比べる者だけだった。
+     */
+    this.scheduler.registerJob("dwell-watch", () => {
+      this.runDwellWatch();
+    });
+
     // 期限の執行（TTL）と照合は **Environment Pool が持つ**（ADR-0013 決定60）。
     // 以前はここに tick があったが、台帳が2つあるため番頭が立てた環境は対象外だった
     // ——「作った者が片付ける」を能力側に寄せた（決定32e・inc-0027）。
@@ -580,7 +633,14 @@ export class Daemon {
         (Number.parseInt(process.env["BANTO_MAX_CONCURRENT_SESSIONS"] ?? "5", 10) || 5),
       disableAuditSpawn: config.disableAuditSpawn ?? false,
       disableAutoSpawn: config.disableAutoSpawn ?? false,
-      disableMergeQueue: config.disableMergeQueue ?? false,
+      // 止血の口（inc-0063）: 先頭が詰まってマージキュー全体が止まったとき、
+      // コードを触らずに（＝ユニット定義の1行で）この道だけ切れるようにする。
+      // 他の設定と同じく引数が優先で、無ければ環境変数を見る。
+      disableMergeQueue:
+        config.disableMergeQueue ??
+        ["1", "true"].includes(
+          (process.env["BANTO_DISABLE_MERGE_QUEUE"] ?? "").trim().toLowerCase()
+        ),
       ...(config.environmentPoolUrl !== undefined
         ? { environmentPoolUrl: config.environmentPoolUrl }
         : {}),
@@ -703,6 +763,142 @@ export class Daemon {
 
   projectExists(id: string): boolean {
     return this.registry.has(id);
+  }
+
+  // ── 制御の弁（PO 裁定 2026-08-13・inc-0063）─────────────────────────────────
+  //
+  // **載せる判断を可逆にする**ための3つの口。inc-0063 で、マージキューが空 rebase を
+  // 「コンフリクト未解消」と読んで解消タスクを1分ごとに起票し続けたとき、番頭には
+  // 止める手段が1つも無かった——外す口も、取り込みを止める口も、キューを止める口も。
+  //
+  // D5: 判断（何が動いているか・外していいか）はここに置く。Tool は受け渡しだけ。
+  // D3: 状態の真実は projects.json（`ProjectRegistry`）1箇所。導出できる写しを持たない。
+
+  /**
+   * 受け持ちを外すのを止める状態＝**いま人か機械が手をかけているもの**（PO 裁定 2026-08-13）。
+   *
+   * `queued` や `review-ready` を入れていないのは、待っているだけのものまで塞ぐと、
+   * 詰まったプロジェクトを降ろせなくなるため——ただし**数えて名前は出す**（下の警告）。
+   */
+  private static readonly UNREGISTER_BLOCKING_STATES: ReadonlySet<string> = new Set<TaskStatus>([
+    "ready",
+    "planning",
+    "implementing",
+    "auditing",
+    "merging",
+  ]);
+
+  /** 外れずに残る（＝終端でない）状態。force で外すとき「何を置き去りにするか」に使う。 */
+  private static readonly UNREGISTER_PENDING_STATES: ReadonlySet<string> = new Set<TaskStatus>([
+    "queued",
+    "review-ready",
+    "in-review",
+    "approved",
+    "paused",
+    "failed",
+  ]);
+
+  /** watcher が見てよいプロジェクト（登録があり、取り込みの弁が開いているもの）。 */
+  projectsToWatch(): ProjectEntry[] {
+    return this.registry.list().filter((p) => this.registry.isEnabled(p.id, "watch"));
+  }
+
+  /** マージキューを回してよいプロジェクトか。外れているものは false。 */
+  mergeQueueEnabledFor(projectTag: string): boolean {
+    return this.registry.isEnabled(projectTag, "mergeQueue");
+  }
+
+  /** 取り込みの弁が開いているか。 */
+  watchEnabledFor(projectTag: string): boolean {
+    return this.registry.isEnabled(projectTag, "watch");
+  }
+
+  /**
+   * 受け持ちを外す。**帳簿は消さない**——外れるのは受け持ちだけで、タスクの記録と
+   * イベントはそのまま残る（同じ id で登録し直せば繋がる）。
+   *
+   * I2: 動いているタスクがあるときは**黙って外さない**。何が動いているかを名指しして
+   * 断り、`force: true` を明示したときだけ外す。
+   */
+  unregisterProject(
+    id: string,
+    opts: { reason: string; force?: boolean; by?: string }
+  ):
+    | { ok: true; entry: ProjectEntry; active: TaskRecord[]; pending: TaskRecord[] }
+    | { ok: false; reason: string; active: TaskRecord[] } {
+    if (!this.registry.has(id)) {
+      const known = this.registry.list().map((p) => p.id).join(", ");
+      return {
+        ok: false,
+        reason: `"${id}" は受け持っていません（既知: ${known || "(なし)"}）`,
+        active: [],
+      };
+    }
+
+    // 状態の真実は帳簿。読む前に取り直す（tick の途中で変わっている）
+    this.refreshState();
+    const tasks = this.store.getTasksByProject(id);
+    const active = tasks.filter((t) => Daemon.UNREGISTER_BLOCKING_STATES.has(t.status));
+    const pending = tasks.filter((t) => Daemon.UNREGISTER_PENDING_STATES.has(t.status));
+
+    if (active.length > 0 && opts.force !== true) {
+      // I2: 「外せませんでした」だけでは調べ直しになる。何が動いているかを名指しする
+      const named = active.map((t) => `${t.id} [${t.status}]`).join(" / ");
+      return {
+        ok: false,
+        reason:
+          `${id} には動いているタスクが ${active.length} 件あります: ${named}。` +
+          "職人や検証環境が付いたまま外すと、終わったことを誰も引き取れなくなります" +
+          "——先に畳む（kobo.abandon）か、承知の上なら force: true を明示してください",
+        active,
+      };
+    }
+
+    const entry = this.registry.unregister(id)!;
+    // 帳簿には残す。**外したこと自体が後から読めないと、消えた理由が誰にも分からない**
+    this.log.append({
+      type: "po_operation",
+      projectTag: id,
+      operation: "project_unregistered",
+      payload: {
+        repoPath: entry.repoPath,
+        reason: opts.reason,
+        by: opts.by ?? "banto",
+        forced: opts.force === true,
+        activeTaskIds: active.map((t) => t.id),
+        pendingTaskIds: pending.map((t) => t.id),
+      },
+    });
+    return { ok: true, entry, active, pending };
+  }
+
+  /**
+   * 取り込み（watcher）／マージキューの弁を切り替える。
+   *
+   * 永続化は `ProjectRegistry` が同期で書き切る——**再起動したら消える設定では止血に
+   * ならない**（この口が要る場面は、まさに Kobo を再起動できないときである）。
+   */
+  setProjectControl(
+    id: string,
+    which: "watch" | "mergeQueue",
+    enabled: boolean,
+    opts: { reason: string; by?: string }
+  ): { ok: true; entry: ProjectEntry } | { ok: false; reason: string } {
+    const entry = this.registry.setControl(id, which, enabled, opts.reason);
+    if (!entry) {
+      const known = this.registry.list().map((p) => p.id).join(", ");
+      return {
+        ok: false,
+        reason: `"${id}" は受け持っていません（既知: ${known || "(なし)"}）`,
+      };
+    }
+    this.log.append({
+      type: "po_operation",
+      projectTag: id,
+      operation: which === "watch" ? "project_watch_set" : "project_merge_queue_set",
+      payload: { enabled, reason: opts.reason, by: opts.by ?? "banto" },
+    });
+    return { ok: true, entry };
   }
 
   // ── Task operations ────────────────────────────────────────────────────────
@@ -1315,33 +1511,347 @@ export class Daemon {
   }
 
   /**
-   * どうしようもないものを、**落ちたまま畳む**（task-0081・PO 要望 2026-08-08）。
+   * レビューで見て駄目だったものを、**契約を変えずに実装へ戻す**（段2・報告 A 表 11b）。
    *
-   * `failed` に置きっぱなしだと、既定の一覧（prop-0001）に出続けて
-   * 「まだ見る必要がある」ふりをする。畳めば消えるが、**記録は消えない**
-   * ——経緯には failed を通ったことが残り、畳んだ理由も残る。
+   * **`kobo.reopen` との違いは入口**：reopen は `failed`（機械が落とした）から戻す道で、
+   * こちらは `review-ready` / `in-review`（人・番頭が見て駄目だと決めた）から戻す道。
+   * どちらも行き先は `implementing` で、職人の起こし方も同じ（道を2つ持たない）。
+   *
+   * **契約は動かさない。** スコープや受け入れ基準を変えたいなら `kobo.amend`、
+   * 依頼そのものを別物にするなら `kobo.supersede` の領分で、ここは「同じ契約のまま
+   * 次の試行を起こす」だけ——だから監査は無効化しないし `task_contract_amended` も積まない。
+   *
+   * **`po` 段のタスクも番頭が戻せる。** 決定57 が番頭に禁じているのは*通す*ことで、
+   * 差し戻しは厳しい方向へ倒す判断だから緩みが出ない（approveTask の `po` 判定と非対称なのは
+   * 意図的。緩い方へは倒れない・review-policy.ts の原則と同じ向き）。
    */
-  abandonTask(
+  async sendBackTask(
+    projectTag: string,
+    taskId: string,
+    options: { reason: string; by: "banto" | "po"; origin?: string }
+  ): Promise<{ ok: true; to: string } | { ok: false; reason: string }> {
+    const task = this.store.getTask(taskId, projectTag);
+    if (!task) return { ok: false, reason: `${taskId} は ${projectTag} の工場にありません` };
+    if (task.status !== "review-ready" && task.status !== "in-review") {
+      return {
+        ok: false,
+        reason:
+          `${taskId} はレビュー待ちではありません（いまは ${task.status}）。` +
+          "差し戻せるのは判断待ちのものだけです——落ちたものは kobo.reopen で戻してください",
+      };
+    }
+
+    // 宛先の扱いは `reopenTask` と同じ（決定58 の延長）。戻せと言った会話が以後の宛先になる
+    if (options.origin && !this.originOfTask(projectTag, taskId)) {
+      const amended = this.log.append({
+        type: "task_contract_amended",
+        projectTag,
+        taskId,
+        amendedBy: options.by,
+        reason: `宛先（origin）を ${options.origin} に定めました（差し戻したため）`,
+        changes: ["宛先（origin）"],
+        // 契約は動かしていない（宛先は契約ではない）ので監査は無効化しない
+        auditInvalidated: false,
+        contract: { origin: options.origin },
+      });
+      this.applyAndBroadcast(amended);
+    }
+
+    const result = this.transition(
+      projectTag,
+      taskId,
+      "implementing",
+      `sent_back_by:${options.by}（${options.reason}）`
+    );
+    if (!result.ok) return { ok: false, reason: `implementing へ戻せませんでした: ${result.reason}` };
+
+    // **理由をそのまま職人へ渡す**（渡さないと同じものが上がってくる）。
+    // 監査のやり直し・reopen と同じ道を通す——職人の起こし方を3つ持たない
+    await this.spawnReworkSession(
+      projectTag,
+      taskId,
+      [`レビューで差し戻されました: ${options.reason}`],
+      "レビューでの指摘"
+    );
+
+    // 起こす途中で落ちていたら（`spawnReworkSession` が recordTaskFailed する）、成功に見せない（I2）
+    const after = this.store.getTask(taskId, projectTag);
+    if (after?.status !== "implementing") {
+      return {
+        ok: false,
+        reason:
+          `${taskId} を implementing へ戻しましたが、職人を起こせませんでした` +
+          `（いまは ${after?.status ?? "不明"}）。kobo.task で理由を読んでください`,
+      };
+    }
+
+    return { ok: true, to: "implementing" };
+  }
+
+  /**
+   * どうしようもないものを畳む（task-0081・PO 要望 2026-08-08、**PO 裁定 2026-08-14 で拡張**）。
+   *
+   * 当初は `failed` 専用だった。畳めば既定の一覧（prop-0001）から外れるので
+   * 「まだ見る必要がある」ふりをしなくなる、というのが元の狙いである。
+   *
+   * **実運用で宙に浮くのは failed ではなかった。** 実機の工場には queued 10本・paused 3本・
+   * review-ready 1本が二度と動かないまま凍り、番頭には畳む手段が無かった（PO 裁定 2026-08-14）。
+   * いまは**どの状態からでも**畳める。断るのは `closed` / `superseded` ——もう畳んであるもの
+   * だけで、そのときは**いまの状態を名指しで**返す（I2：黙って成功を返さない）。
+   *
+   * **記録は消えない**——`state_transitioned.from` に畳む前の状態が載り、理由も残る。
+   *
+   * **稼働中の職人を置き去りにしない。** implementing / auditing のタスクには職人が
+   * ぶら下がっていることがある。畳むなら止める——止まらなかったときは握り潰さず、
+   * 返り値と帳簿（`po_operation:task_abandoned`）に**どのセッションが止まらなかったか**を
+   * 名指しで残す。畳むこと自体は成立させる（止められないからといって凍らせない）。
+   */
+  async abandonTask(
     projectTag: string,
     taskId: string,
     options: { reason: string; by: string }
-  ): { ok: true } | { ok: false; reason: string } {
+  ): Promise<
+    | { ok: true; from: TaskStatus; stoppedSessions: string[]; unstoppedSessions: UnstoppedWorker[] }
+    | { ok: false; reason: string }
+  > {
     const task = this.store.getTask(taskId, projectTag);
     if (!task) return { ok: false, reason: `${taskId} は ${projectTag} の工場にありません` };
-    if (task.status !== "failed") {
+    const from = task.status as TaskStatus;
+    if (from === "closed") {
+      return { ok: false, reason: `${taskId} は既に畳んであります（いまは closed）` };
+    }
+    if (from === "superseded") {
       return {
         ok: false,
-        reason: `${taskId} は failed ではありません（いまは ${task.status}）`,
+        reason:
+          `${taskId} は既に置き換えて降ろしてあります（いまは superseded）。` +
+          "畳み直す必要はありません",
       };
     }
+
+    // **止める前に閉じる。** 職人を起こしている最中に畳まれることがあり、そのとき
+    // `keepWorkerIfStillWanted` は「畳んだ後の状態」を読んで遅れて生まれた職人を始末する
+    // ——先に閉じておかないと、その拾い直しが効かない（task-0072 の取りこぼしと同じ形）
     const result = this.transition(
       projectTag,
       taskId,
       "closed",
-      `abandoned_by:${options.by}（${options.reason}）`
+      `abandoned_by:${options.by}（${from} から畳みました: ${options.reason}）`,
+      { abandon: true }
     );
     if (!result.ok) return { ok: false, reason: `畳めませんでした: ${result.reason}` };
-    return { ok: true };
+
+    const workers = await this.closeWorkersForAbandon(projectTag, taskId);
+
+    // 帳簿に「誰が・なぜ・どこから畳んだか」と、**止まらなかった職人**を残す（I2）。
+    // 状態そのものは上の `state_transitioned` が持つ（D3）——ここは経緯の付帯情報
+    this.applyAndBroadcast(
+      this.log.append({
+        type: "po_operation",
+        projectTag,
+        operation: "task_abandoned",
+        taskId,
+        payload: {
+          from,
+          by: options.by,
+          reason: options.reason,
+          stoppedSessions: workers.stopped,
+          unstoppedSessions: workers.unstopped,
+        },
+      })
+    );
+
+    return {
+      ok: true,
+      from,
+      stoppedSessions: workers.stopped,
+      unstoppedSessions: workers.unstopped,
+    };
+  }
+
+  /**
+   * 畳むタスクにぶら下がっている職人を止める。
+   *
+   * **止めに行く相手は帳簿から引く**（D3）。`agent_spawned` があって `agent_exited` が
+   * 無いセッションが「まだ居るはず」の職人——工房に毎回聞きに行かないのは、職人を
+   * 一度も起こしていないタスク（queued で凍ったものなど）まで工房への往復を払わせない
+   * ため、そして**工房が居ないときに「止められなかった」と嘘を言わない**ため。
+   *
+   * I2: 止まらなかったものは名前を返す。呼び出し側が返り値と帳簿に残す。
+   */
+  private async closeWorkersForAbandon(
+    projectTag: string,
+    taskId: string
+  ): Promise<{ stopped: string[]; unstopped: UnstoppedWorker[] }> {
+    const stopped: string[] = [];
+    const unstopped: UnstoppedWorker[] = [];
+
+    const history = this.index.getTaskHistory(taskId, projectTag);
+    const spawned: string[] = [];
+    const exited = new Set<string>();
+    for (const ev of history) {
+      if (ev.type === "agent_spawned" && ev.sessionId && !spawned.includes(ev.sessionId)) {
+        spawned.push(ev.sessionId);
+      }
+      if (ev.type === "agent_exited" && ev.sessionId) exited.add(ev.sessionId);
+    }
+    const live = spawned.filter((sessionId) => !exited.has(sessionId));
+
+    for (const sessionId of live) {
+      try {
+        await this.workerInvoke("worker.close", { sessionId });
+        stopped.push(sessionId);
+      } catch (err) {
+        // I2: 止められなかったことを「止めた」に丸めない。工房の安全弁が後で拾うとしても、
+        // **いま誰が走り続けているか**は番頭に見えていなければならない
+        unstopped.push({ sessionId, error: String(err) });
+        process.stderr.write(
+          `[banto-daemon] ${projectTag}/${taskId} を畳みましたが職人が止まりません（${sessionId}）: ${String(err)}\n`
+        );
+      }
+    }
+
+    return { stopped, unstopped };
+  }
+
+  /**
+   * **工場の外で決着したものを畳む**（realign 第2便・imp-0019 の4番）。
+   *
+   * これを足した当初、`abandonTask` は failed にしか効かなかった。queued / paused /
+   * review-ready のまま「中身が別の経路で main に入った」ものを帳簿の上で畳む手段が無く、
+   * 番頭が実際にここで詰まった——2026-08-13 の棚卸しの判定を、帳簿へ書き戻せなかった。
+   *
+   * **その穴は塞がった**（PO 裁定 2026-08-14 で `abandonTask` は横断遷移になった）が、
+   * **口は分けたまま**にしてある。違いは畳める範囲ではなく**帳簿に何を書くか**——
+   * こちらは「失敗ではない・外で決着した」、`abandonTask` は「諦めた」。混ぜると
+   * 「どれだけ捨てたか」と「どれだけ工場の外で片付いたか」を別々に数えられなくなる。
+   *
+   * **failed とは区別する。** 失敗ではないので `failed` を経由させない。
+   * `closed` へ直に落とし、`task_settled_outside` に「どう決着したか・なぜそう
+   * 言えるのか・どこで止まっていたか」を残す（→ `StateMachine.settleOutside`）。
+   *
+   * 畳んだあとは終端の後始末（職人・検証環境を畳む）に乗せる——**起こした者が
+   * 片付ける**（I3）。乗せないと、降ろしたつもりのタスクの職人が動き続ける。
+   */
+  settleTaskOutside(
+    projectTag: string,
+    taskId: string,
+    options: {
+      reason: string;
+      by: string;
+      outcome: "landed_elsewhere" | "no_longer_needed" | "handled_directly";
+    }
+  ): { ok: true; from: string } | { ok: false; reason: string } {
+    const task = this.store.getTask(taskId, projectTag);
+    if (!task) return { ok: false, reason: `${taskId} は ${projectTag} の工場にありません` };
+
+    const from = task.status as TaskStatus;
+    const result = StateMachine.settleOutside(
+      this.log,
+      taskId,
+      { currentStatus: from, by: options.by, outcome: options.outcome, reason: options.reason },
+      projectTag
+    );
+    if (!result.ok) {
+      // I2: 畳めなかったことを成功に見せない。**どこへ行けばよいかまで言う**
+      // ——道具が断るだけだと、番頭はまた同じ口を叩く（第1便で同じ形を踏んだ）
+      this.refreshState();
+      const hint =
+        from === "failed"
+          ? "落ちたまま諦めるなら kobo.abandon（失敗ではないと言うのがこの口の役目です）"
+          : from === "merging"
+            ? "着地の最中です。降ろすなら kobo.supersede"
+            : `${from} からは畳めません`;
+      return { ok: false, reason: `${taskId} を畳めませんでした: ${hint}` };
+    }
+
+    this.refreshState();
+    const events = this.log.readAllEvents();
+    if (events.length > 0) this.wsServer.broadcast(events[events.length - 1]!);
+
+    // I3: 終端に入ったら、起こしてあるものを畳む（`recordTaskFailed` と同じ後始末）
+    this._trackBackground(
+      (async () => {
+        for (const role of ["executor", "audit", "rework"] as const) {
+          await this.closeWorkerFor(projectTag, poolTaskId(taskId, role));
+        }
+      })()
+    );
+
+    return { ok: true, from };
+  }
+
+  /**
+   * そのタスクが**いまの状態にいる長さ**（ms）。分からなければ `undefined`。
+   *
+   * D3: 保存しない。呼ばれるたびに帳簿から導出する（`dwellMs`）——保存すると、
+   * 状態を動かす経路すべてで更新し忘れが起き、静かに古い数字が出る。
+   */
+  dwellOf(projectTag: string, taskId: string): number | undefined {
+    return dwellMs(this.getTaskEvents(projectTag, taskId), projectTag, taskId);
+  }
+
+  /**
+   * **止まっているものを見つけて帳簿に刻む**（realign 第2便・rethink C-3 第1手）。
+   *
+   * 状態ごとの閾値（層B設定 `limits.dwell_warn_minutes`、既定
+   * `DEFAULT_DWELL_WARN_MINUTES`）を超えたら `task_stalled` を積む。
+   *
+   * **同じ状態のあいだ二度は鳴らない**（`stalledAlreadyRecorded`）。鳴った印は
+   * どこにも持たない——帳簿がそれを持っている（D3）。印を手元に持つと再起動で
+   * 消え、起動のたびに溜まっている分が全部鳴り直す。
+   *
+   * D3: 滞在時間は保存しない。ここで積むのは「閾値を超えた」という判定の事実と、
+   * そのときの実測値だけ——閾値を後から変えても、当時の判断が読める。
+   *
+   * `now` を受けるのは、**試験が時計を渡せるようにするため**（I1：19時間待って
+   * 確かめる、はできない）。tick からは既定のいまで呼ばれる。
+   */
+  runDwellWatch(now: number = Date.now()): void {
+    for (const project of this.registry.list()) {
+      const projectTag = project.id;
+
+      /**
+       * 閾値は**プロジェクトの持ち物**（決定66）。読めないものを既定に落とさない
+       * ——設定を書いたのに効いていない状態を隠す（I2）ので、読めなければ見送る。
+       */
+      let configured: Partial<Record<string, number>>;
+      try {
+        configured = this.projectConfig(projectTag).limits.dwellWarnMinutes ?? {};
+      } catch (err) {
+        process.stderr.write(
+          `[banto-daemon] ${projectTag}: 滞留の閾値を読めません（見送ります）: ${String(err)}\n`
+        );
+        continue;
+      }
+
+      const events = this.getProjectEvents(projectTag);
+      for (const task of this.store.getTasksByProject(projectTag)) {
+        const status = task.status as TaskStatus;
+        const minutes = configured[status] ?? DEFAULT_DWELL_WARN_MINUTES[status];
+        // 見張らない状態（通り過ぎるだけの ready / merging 等）は閾値を持たない
+        if (minutes === undefined) continue;
+
+        const dwelt = dwellMs(events, projectTag, task.id, now);
+        if (dwelt === undefined) continue;
+        const thresholdMs = minutes * 60_000;
+        if (dwelt < thresholdMs) continue;
+        if (stalledAlreadyRecorded(events, projectTag, task.id)) continue;
+
+        const event = this.log.append({
+          type: "task_stalled",
+          projectTag,
+          taskId: task.id,
+          status,
+          dwellMs: dwelt,
+          thresholdMs,
+          blockedBy: currentBlockedBy(events, projectTag, task.id),
+          lastChangeAt:
+            lastObservableChangeAt(events, projectTag, task.id) ?? new Date(now).toISOString(),
+        });
+        this.applyAndBroadcast(event);
+      }
+    }
   }
 
   /**
@@ -2370,7 +2880,15 @@ export class Daemon {
     projectTag: string,
     taskId: string,
     to: string,
-    reason?: string
+    reason?: string,
+    /**
+     * `abandon: true` のときだけ `closed` を**横断の遷移**として扱う（PO 裁定 2026-08-14）。
+     *
+     * 旗を要るようにしているのは、遷移表の `closed` を素通しにしないため——HTTP の
+     * `/transition` も機構の tick もこの口を通るので、素通しにすると「どの状態からでも
+     * 誰でも閉じられる」になる。畳むのは番頭の判断の口（`kobo.abandon`）だけ。
+     */
+    opts?: { abandon?: boolean }
   ): TransitionResult {
     const task = this.store.getTask(taskId, projectTag);
     if (!task) return { ok: false, reason: "task_not_found" };
@@ -2381,7 +2899,14 @@ export class Daemon {
     // Cross-cutting transitions: failed and superseded are reachable from any non-terminal state.
     // Route through StateMachine.fail() / StateMachine.supersede() instead of the transition table.
     let result: TransitionResult;
-    if (toStatus === "failed") {
+    if (toStatus === "closed" && opts?.abandon === true) {
+      result = StateMachine.abandon(
+        this.log,
+        taskId,
+        { currentStatus: fromStatus, reason: reason ?? "abandoned" },
+        projectTag
+      );
+    } else if (toStatus === "failed") {
       result = StateMachine.fail(
         this.log,
         taskId,
@@ -2440,8 +2965,14 @@ export class Daemon {
       // 決定59: **判断が付いた瞬間に畳む。** 終端（failed/closed/superseded）に加えて、
       // レビューを抜けたとき（approved）も畳む——判断待ちの間だけ生かすのが決定59 の
       // 「環境の寿命は判断に紐づける」。放置された札の分は TTL が落とす
+      //
+      // **差し戻しも「判断が付いた」である**（段2・11c）。レビューから implementing へ
+      // 戻ったとき、触るための環境はもう要らない——ここを入れないと、環境の寿命が
+      // 「判断」ではなく TTL 任せになる（決定59 が守りたかったものが緩む）
       const TERMINAL_STATES = new Set(["failed", "closed", "superseded", "approved"]);
-      if (TERMINAL_STATES.has(toStatus)) {
+      const sentBack =
+        (fromStatus === "review-ready" || fromStatus === "in-review") && toStatus === "implementing";
+      if (TERMINAL_STATES.has(toStatus) || sentBack) {
         this._trackBackground(new Promise<void>((resolve) => {
           setImmediate(() => void this._teardownTaskEnvs(projectTag, taskId).then(resolve, resolve));
         }));
@@ -2476,17 +3007,24 @@ export class Daemon {
         }
       }
 
-      // S9d7fdb-7 (AC-S9d7fdb-7-1, AC-S9d7fdb-7-2): Auto-provision env on review-ready→in-review.
-      // When a task with an `environment` field enters in-review, provision its env automatically
-      // so the PO gets something they can actually touch（決定59。tmux ペインは廃止した）.
+      // S9d7fdb-7 (AC-S9d7fdb-7-1, AC-S9d7fdb-7-2): Auto-provision env on entering review-ready.
+      // 監査を通ったタスクが判断待ちに入ったら、その環境を自動で立てる
+      // ——PO が見るだけでなく触れる状態で差し出すため（決定59。tmux ペインは廃止した）。
+      //
+      // **発火点は `review-ready`**（段11c-3・報告 A-6 (4)）。以前は `in-review` だったが、
+      // `approveTask` が review-ready → in-review → approved を**同じ同期呼び出しで**進めるため、
+      // in-review の滞在時間は実測で中央値 0.01 秒・最大 0.03 秒しかなく、`setImmediate` で
+      // 走り出す頃には必ず approved に着いていた——立てた直後に必ず畳まれ、**PO が触れる時間が
+      // 存在しなかった**（実測 `env_provisioned` 0 件）。判断待ちの時間はすべて review-ready で
+      // 過ごされる。**畳む側（判断が付いたら畳む）は変えていない。**
       //
       // Design rules:
       //   D5: all orchestration logic here; HTTP layer is pure routing.
       //   I2: provision failure MUST NOT block the transition — it is surfaced as an event.
-      //       The transition to in-review is already committed (D3); this hook is fire-and-forget.
-      //   D3: we read task.environment from the state store (the event-derived record),
+      //       The transition is already committed (D3); this hook is fire-and-forget.
+      //   D3: we read the task record from the state store (the event-derived record),
       //       not from disk directly — the event log is the single runtime truth.
-      if (toStatus === "in-review") {
+      if (toStatus === "review-ready") {
         // Fire-and-forget: tracked so Daemon.stop() drains before log.close() (D3/I2: no drops).
         this._trackBackground(new Promise<void>((resolve) => {
           setImmediate(() => void this._autoProvisionOnReview(projectTag, taskId).then(resolve, resolve));
@@ -2630,6 +3168,31 @@ export class Daemon {
       );
     }
 
+    /**
+     * **何に対して監査したのか**を、判定と同じイベントに刻む（realign 第2便・段1）。
+     *
+     * 契約の版は**帳簿から導出する**（`contractVersionOf`）——新しい版番号は持たない。
+     * 決定64 改訂で「凍結ではなく版で答える」と決めており、その版を既に
+     * `task_created` / `task_contract_amended` の並びが表している。別に数えると
+     * 二重管理になり、食い違ったときどちらが正か決められない（D3）。
+     *
+     * 基準の版はチェックリストの中身の指紋。**監査人に届いている中身**の指紋である
+     * ことが要点で、届けているのは `buildAuditInstruction`（両方の職人経路に載る）。
+     *
+     * I2: 指紋が作れないこと（資産が無い）を判定の失敗にはしない——判定そのものは
+     * 既に出ている。刻めなかったことを標準エラーに出し、**項目は付けない**
+     * （分からないものを埋めると、証拠が嘘になる）。
+     */
+    const contractVersion = contractVersionOf(this.getTaskEvents(projectTag, taskId), projectTag, taskId);
+    let checklistVersion: string | undefined;
+    try {
+      checklistVersion = promptAssetDigest("audit-checklist");
+    } catch (err) {
+      process.stderr.write(
+        `[banto-daemon] ${projectTag}/${taskId}: 監査基準の版を刻めませんでした: ${String(err)}\n`
+      );
+    }
+
     // Record the verdict event first (D3: event is the truth).
     const verdictEvent = this.log.append({
       type: "audit_verdict",
@@ -2637,6 +3200,8 @@ export class Daemon {
       taskId,
       verdict,
       findings,
+      ...(contractVersion !== undefined ? { contractVersion } : {}),
+      ...(checklistVersion !== undefined ? { checklistVersion } : {}),
     });
     this.applyAndBroadcast(verdictEvent);
 
@@ -2955,7 +3520,13 @@ export class Daemon {
         if (typeof envId !== "string") {
           throw new Error(`env.provision が envId を返しませんでした（profile: ${opts.profile}）`);
         }
-        return { envId };
+        // 段1: **どの環境で検査したか**を証拠に刻むための指紋。返らないなら刻まない
+        // ——Kobo は環境の中身を知らないので、ここで作り直すことはしない（決定60a）
+        const digest = details["profileDigest"];
+        return {
+          envId,
+          ...(typeof digest === "string" ? { profileDigest: digest } : {}),
+        };
       },
       run: async (opts) => {
         const details = await this.envInvoke("env.run", {
@@ -2977,11 +3548,17 @@ export class Daemon {
     };
   }
 
+  /**
+   * @param options.workdir **どこを映すか**（段11c-2・報告 A-6 (3)）。タスクのワークツリーを
+   *   渡す。渡さないとドライバ側で `repoPath`（＝ main のチェックアウト）に落ちるので、
+   *   **ブランチの変更が1つも映っていない画面を PO に触らせる**ことになる
+   *   ——ゲートの経路（`gateVerifyRunner`）は最初から渡していて、ここだけ欠けていた
+   */
   async provisionEnv(
     projectTag: string,
     taskId: string,
     profileName: string,
-    options: { forReview?: boolean } = {}
+    options: { forReview?: boolean; workdir?: string } = {}
   ): Promise<{ ok: true; envId: string; url?: string } | { ok: false; reason: string }> {
     const proj = this.registry.get(projectTag);
     if (!proj) {
@@ -2995,6 +3572,8 @@ export class Daemon {
         profile: profileName,
         taskId,
         projectTag,
+        // 段11c-2: 立てる場所はタスクのワークツリー（＝ブランチ）。無指定は main を映す
+        ...(options.workdir ? { workdir: options.workdir } : {}),
         // 決定59: **触れる状態で差し出す**。ポート番号は知らなくてよい——「人が触る」という
         // 意図だけを渡し、どのポートかは Environment Pool がプロファイルから決める（決定60a）
         ...(options.forReview ? { exposeProfilePort: true } : {}),
@@ -3061,29 +3640,135 @@ export class Daemon {
     return { ok: true };
   }
 
-  // ── レビューに入ったら環境を立てる（S9d7fdb-7・決定59）─────────────────────
+  // ── 判断待ちに入ったら環境を立てる（S9d7fdb-7・決定59）─────────────────────
 
   /**
-   * `in-review` に入ったタスクに `environment` があれば、その環境を立てる。
+   * 判断待ちのあいだ立てる環境のプロファイル名。**立てないなら `undefined`**（段11c・段B）。
+   *
+   * 順に見る。**上ほど具体的**：
+   *   1. タスクの `environment`（そのタスクだけの事情。書いてあれば従う）
+   *   2. 層B設定の `review.env_profile`（プロジェクトが名指しした「人が触る環境」）
+   *   3. 層B設定の `verify.profile` ——ただし**触れる面を持つときだけ**
+   *
+   * 3で条件を付けるのは、**触れない環境を毎回立てても費用しか掛からない**から。
+   * banto の `verify.profile` は `test`（docker・`setup: npm ci`・ポート無し）で、
+   * そのまま流用すると「毎回 docker が立つが PO は触れない」になる——決定59 が
+   * 果たしたいのは「触って決められる」ことなので、それなら立てない方がよい。
+   *
+   * **立てなかったことは帳簿に残す**（I2）。番頭が読んで「`review.env_profile` を
+   * 設定してください」と分かる形にする——黙って何も起きないのが、11c が6日間
+   * 動いていなかったときの姿そのものだった。
+   */
+  private async reviewEnvProfile(
+    projectTag: string,
+    task: TaskRecord
+  ): Promise<string | undefined> {
+    const declared = typeof task["environment"] === "string" ? task["environment"] : undefined;
+    if (declared) return declared;
+
+    const config = this.projectConfig(projectTag);
+    if (config.review.envProfile) return config.review.envProfile;
+
+    const candidate = config.verify.profile;
+    const notProvisioned = (reason: string): undefined => {
+      const event = this.log.append({
+        type: "env_provision_failed",
+        projectTag,
+        taskId: task.id,
+        profileName: candidate,
+        reason: `立てていません: ${reason}`,
+      });
+      this.applyAndBroadcast(event);
+      return undefined;
+    };
+
+    if (!candidate) return notProvisioned("使えるプロファイルが決められません");
+    let touchable: boolean;
+    try {
+      touchable = await this.profileIsTouchable(projectTag, candidate);
+    } catch (err) {
+      // I2: 「聞けなかった」を「触れない」と混同しない。理由をそのまま残す
+      return notProvisioned(
+        `プロファイルを Environment Pool に聞けませんでした: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    if (!touchable) {
+      return notProvisioned(
+        `検証用のプロファイル "${candidate}" は人が触れる面（config.port）を持ちません。` +
+          "触れない環境を立てても判断の役に立たないので立てていません" +
+          "——触らせたいなら meta/config.yaml に review.env_profile を書いてください"
+      );
+    }
+    return candidate;
+  }
+
+  /**
+   * そのプロファイルは**人が触れる面を持つか**。
+   *
+   * **プロファイルの定義ファイルは読まない**（決定60a）。Environment Pool に聞いた答えの中を見る。
+   * ここだけが `config` を覗く例外で、見るのは**ポートが在るかどうか**だけ——番号は読まない
+   * （どのポートを公開するかは Environment Pool が決める・`exposeProfilePort`）。
+   * 判定式は Environment Pool の公開判定（`pool.ts` の `exposeProfilePort` 分岐）と同じにしてある
+   * ——ここがずれると「Kobo は触れると言うのに URL が出ない」が起きる。
+   */
+  private async profileIsTouchable(projectTag: string, profileName: string): Promise<boolean> {
+    const { usable } = await this.getEnvironmentProfiles(projectTag);
+    const found = usable.find((p) => p.name === profileName);
+    const configured = found?.config?.["port"];
+    if (configured === undefined) return false;
+    const port = typeof configured === "number" ? configured : Number(configured);
+    return Number.isFinite(port) && port > 0;
+  }
+
+  /**
+   * `review-ready` に入ったタスクの環境を立てる。
    *
    * 決定59：**PO の判断が要るものは、見るだけでなく触れる状態で差し出す。**
    * tmux ペインは廃止した（Kobo から tmux 依存を外す）——見る面はキャンバスの
-   * ブラウザビュー／セッションビューアが担う。公開URLを判断待ちに添えるのは
-   * epic-0010 の3段目。
+   * ブラウザビュー／セッションビューアが担う。
+   *
+   * 段11c で3つ直した（報告 A-6。それまで実測 `env_provisioned` は 0 件だった）：
+   *   1. **宣言が無ければプロジェクトの既定へ落ちる。** `environment` を書いたタスクは
+   *      70 本中 0 本で、書けと促すものも無かった——入口が実質塞がっていた
+   *   2. **タスクのワークツリーを渡す。** 渡さないと立つのは main のチェックアウト
+   *   3. **発火点は `review-ready`**（呼び出し側のコメント参照）
    *
    * I2: provision の失敗は遷移を巻き戻さない。既に遷移は成立しており（D3）、
-   *     失敗は `env_provision_failed` として見えるようにする。
+   *     失敗（および**立てなかったこと**）は `env_provision_failed` として見えるようにする。
    */
   private async _autoProvisionOnReview(projectTag: string, taskId: string): Promise<void> {
     try {
       const task = this.store.getTask(taskId, projectTag);
       if (!task) return;
 
-      const profileName = typeof task["environment"] === "string" ? task["environment"] : undefined;
+      const profileName = await this.reviewEnvProfile(projectTag, task);
       if (!profileName) return;
 
+      /**
+       * 段11c-2: **映すのはブランチ。** 帳簿から引いたワークツリーを渡す。
+       *
+       * 見つからない・消えているときは**立てない**（I2：fail-closed）。ここで黙って
+       * `workdir` 無しで頼むと、Environment Pool → ドライバの `workdir ?? repoPath` で
+       * main のチェックアウトが立ち、**変更が1つも映っていない画面を PO が承認する**。
+       * 「環境が無い」は気づけるが、「中身が違う環境が在る」は開いても気づけない。
+       */
+      const workdir = this.worktreeOf(projectTag, taskId);
+      if (!fs.existsSync(workdir)) {
+        const failed = this.log.append({
+          type: "env_provision_failed",
+          projectTag,
+          taskId,
+          profileName,
+          reason:
+            `タスクのワークツリーが見つかりません（${workdir}）。` +
+            "ブランチを映さない環境（main のチェックアウト）を判断の材料に差し出さないため、立てません",
+        });
+        this.applyAndBroadcast(failed);
+        return;
+      }
+
       // 二重に立てない：既にこのタスクの環境が生きていれば何もしない
-      // （再度 in-review に入ったとき、プロファイルに quota が無いと1つずつ漏れる）
+      // （再度 review-ready に入ったとき、プロファイルに quota が無いと1つずつ漏れる）
       let live: EnvView[];
       try {
         live = await this.listEnvironments({ projectTag, taskId });
@@ -3104,16 +3789,21 @@ export class Daemon {
       }
       if (live.length > 0) return;
 
-      // 決定59: レビューのための環境は**触れる状態**で差し出す（公開URLつき）
-      await this.provisionEnv(projectTag, taskId, profileName, { forReview: true });
+      // 決定59: レビューのための環境は**触れる状態**で差し出す（公開URLつき）。
+      // 段11c-2: 映すのはタスクのワークツリー（＝ブランチ）
+      await this.provisionEnv(projectTag, taskId, profileName, { forReview: true, workdir });
 
       // task-0072: **立てている間にレビューが終わっていたら畳む。** 職人で踏んだのと
       // 同じ形——終端に着いたときの後始末は「いま立っている環境」を畳むので、まだ
       // 立ち上がっていなかったものを取りこぼす。環境は期限で必ず畳まれるとはいえ、
-      // 最長24時間は外で動く（I3：消し忘れは金銭的実害）
+      // 最長24時間は外で動く（I3：消し忘れは金銭的実害）。
+      //
+      // 段11c-3: 判定は**判断待ちのあいだか**（review-ready / in-review）で見る。
+      // `in-review` だけを見ていると、番頭が開いた（review-ready → in-review）だけで
+      // 立てたばかりの環境を畳んでしまう——畳む条件そのものは変えていない（判断が付いたら畳む）
       this.refreshState();
       const after = this.store.getTask(taskId, projectTag)?.status;
-      if (after !== "in-review") {
+      if (after !== "review-ready" && after !== "in-review") {
         process.stderr.write(
           `[banto-daemon] ${projectTag}/${taskId} は環境を立てている間に ` +
             `${after ?? "(消えた)"} へ移りました。立てたばかりの環境を畳みます\n`
@@ -3303,7 +3993,11 @@ export class Daemon {
       }
 
       // Enumerate ready tasks from derived state (D3: no extra flag).
-      const readyTasks = this.store.getAllTasks().filter((t) => t.status === "ready");
+      // **受け持っていないプロジェクトの職人は起こさない**（PO 裁定 2026-08-13）。
+      // タスクの記録は帳簿に残り続けるので、ここで絞らないと「外したのに職人が起きる」
+      const readyTasks = this.store
+        .getAllTasks()
+        .filter((t) => t.status === "ready" && this.registry.has(t.projectTag));
 
       for (const task of readyTasks) {
         // Re-check quota each iteration — previous spawns in this loop count.
@@ -3377,6 +4071,9 @@ export class Daemon {
         const proj = this.registry.list().find((p) => p.id === projectTag);
         return proj?.repoPath;
       },
+      // 非常停止の弁（PO 裁定 2026-08-13・inc-0063）。閉じている＝rebase も自動起票も
+      // 状態遷移も回さない。受け持ちを外したプロジェクトもここで false になる
+      isProjectEnabled: (projectTag: string) => this.mergeQueueEnabledFor(projectTag),
       // task-0071: 検証コマンドの制限時間は層B設定（`meta/config.yaml`）。
       // 読めなければゲートの既定に任せる——1つの設定でマージキュー全体を止めない（I2）
       // task-0075: 検証は検証環境の中で回す。**ホストへは落とさない**
@@ -3479,6 +4176,11 @@ export class Daemon {
     // NOTE: The origin task is currently in `merging` (the merge queue put it there).
     // After we pause it here it becomes `paused`. If the tick fires again before the
     // watcher injects the conflict task, the origin is already paused → skip.
+    // 弁が閉じているなら**起票しない**（inc-0063 の非常停止）。ここは
+    // processMergeQueue から呼ばれるので普通は届かないが、自動起票の口は
+    // これ1つなので、止める判定もここに置いておく（二重でも害は無い）
+    if (!this.mergeQueueEnabledFor(originProjectTag)) return;
+
     this.refreshState();
     const originTask = this.store.getTask(originTaskId, originProjectTag);
     if (!originTask) {
@@ -3489,6 +4191,25 @@ export class Daemon {
     }
     if (originTask.status === "paused") {
       // Already paused (idempotent — the tick re-observed the same conflict). Skip.
+      return;
+    }
+
+    // 1b. 同じ origin に**まだ決着していない解消タスク**があるなら、二本目を積まない
+    //     （inc-0063 の3）。1 分ごとに 1 本ずつゴミタスクが増え、`scope.paths: ["**"]` で
+    //     後続を全部塞いだのはここ。ただし**止めるのは起票だけ**——origin は paused に
+    //     落として待たせる。merging に残すとマージキューの先頭で毎 tick rebase を
+    //     叩き続け、直列のキュー全体が止まる（inc-0063 と同じ詰まり方になる）
+    const openResolution = hasOpenResolutionTask(
+      this.store.getAllTasks(),
+      originTaskId,
+      originProjectTag
+    );
+    if (openResolution) {
+      process.stdout.write(
+        `[banto-daemon] conflict task not filed: ${originProjectTag}/${originTaskId} ` +
+          `already has an unresolved conflict-resolution task; pausing origin only\n`
+      );
+      this.pauseOriginForConflict(originTaskId, originProjectTag);
       return;
     }
 
@@ -3541,7 +4262,17 @@ export class Daemon {
     );
 
     // 4. Pause the origin task (suspended_from=merging).
-    //    StateMachine.pause() emits state_transitioned(merging→paused) + task_paused.
+    this.pauseOriginForConflict(originTaskId, originProjectTag);
+  }
+
+  /**
+   * コンフリクトで止まった origin を paused（suspended_from=merging）に落とす。
+   *
+   * StateMachine.pause() が state_transitioned(merging→paused) + task_paused を出す。
+   * 起票した場合も、既に解消タスクがあって起票を見送った場合も、**origin の扱いは同じ**
+   * ——マージキューから降ろして解消を待たせる（inc-0063 の3）。
+   */
+  private pauseOriginForConflict(originTaskId: string, originProjectTag: string): void {
     const pauseResult = StateMachine.pause(
       this.log,
       originTaskId,
@@ -3573,14 +4304,24 @@ export class Daemon {
    *
    * D3: correspondence derived from refs[0] (discovered-from convention) — no mapping file.
    * I2: chain-fail is used when resolution fails (origin cannot proceed without resolution).
+   *
+   * inc-0063: 再開は**1つの解消タスクにつき1回**。二度目を打たない印は
+   * `conflictResumeAlreadyRecorded` が帳簿から導出する。
    */
   private runConflictResolutionCheck(): void {
     this.refreshState();
     const allTasks = this.store.getAllTasks();
-    const pairs = deriveOriginResolutionPairs(allTasks);
+    const pairs = deriveOriginResolutionPairs(allTasks, {
+      isConsumed: (pair) => this.conflictResumeAlreadyRecorded(pair),
+    });
 
     for (const pair of pairs) {
       const { originTaskId, originProjectTag, resolutionTaskId, resolutionProjectTag } = pair;
+
+      // 弁が閉じているプロジェクトは動かさない（inc-0063）。**paused → merging の
+      // 再開はここから出ている**——マージキュー本体だけ止めても、この道が残っていると
+      // 周回は止まらない（帳簿には po_operation と記録されるので、PO が押したように見える）
+      if (!this.mergeQueueEnabledFor(originProjectTag)) continue;
 
       const resolutionTask = this.store.getTask(resolutionTaskId, resolutionProjectTag);
       if (!resolutionTask) continue;
@@ -3607,15 +4348,24 @@ export class Daemon {
               `(resolution ${resolutionProjectTag}/${resolutionTaskId} ${resStatus})\n`
           );
           // AC-S75f66b-6-3: record the origin↔resolution linkage explicitly.
-          // A po_operation event captures the correlation so the audit trail shows
-          // WHICH resolution task caused the resume (D3: derived from events, not
-          // a mapping file; I2: the linkage is in the log, not just ordering).
+          // この1件が「このペアの後始末は打った」印そのもの（inc-0063 の2）。
+          // 次の tick の `isConsumed` はこれを読んで二度目を打たない
+          // （D3: 導出はイベントログから。消費済みフラグのファイルは作らない）。
+          //
+          // `actor` は**誰がやったか**（inc-0063 の4）。ここは機構の自動処理で、
+          // PO は何も押していない——出所を書かないと帳簿の `po_operation` が
+          // 全部 PO の判断に見え、「誰が決めたか」が追えなくなる
           this.log.append({
             type: "po_operation",
             projectTag: originProjectTag,
             operation: "conflict_resolved",
             taskId: originTaskId,
-            payload: { resolutionTaskId, resolutionProjectTag },
+            payload: {
+              resolutionTaskId,
+              resolutionProjectTag,
+              actor: CONFLICT_RESUME_ACTOR,
+              by: "kobo/conflict-resolution-check",
+            },
           });
         } else {
           process.stderr.write(
@@ -3657,6 +4407,26 @@ export class Daemon {
       }
       // If resolution task is still active (not terminal), do nothing on this tick.
     }
+  }
+
+  /**
+   * この (origin, 解消タスク) の組で**再開をもう打ったか**を帳簿から導出する（inc-0063 の2）。
+   *
+   * 再開のたびに `po_operation(conflict_resolved, payload.resolutionTaskId=…)` を1件積んで
+   * いるので、その1件がそのまま「実施済み」の印になる。**新しい永続ファイルは作らない**
+   * （D3: 状態はイベントログの再生から導出する）。
+   *
+   * `actor` の有無は見ない——この印は inc-0063 より前の帳簿（`actor` が無い時代の
+   * `po_operation`）にも積まれており、**古い帳簿の消費済みも消費済みとして読む**必要がある。
+   * これを見落とすと、稼働中の帳簿に残る task-0097↔task-0099 が再び動き出す。
+   */
+  private conflictResumeAlreadyRecorded(pair: OriginResolutionPair): boolean {
+    const history = this.index.getTaskHistory(pair.originTaskId, pair.originProjectTag);
+    return history.some((ev) => {
+      if (ev.type !== "po_operation") return false;
+      if (ev.operation !== "conflict_resolved") return false;
+      return ev.payload?.["resolutionTaskId"] === pair.resolutionTaskId;
+    });
   }
 }
 
@@ -3709,9 +4479,35 @@ export function buildExecutorInstruction(
   /** 指摘の見出し（既定は監査の指摘）。落ちたタスクの立て直しでは言葉を変える（task-0081） */
   findingsHeading = "監査の指摘（前回の提出で見つかった問題）"
 ): string {
+  /**
+   * **役の説明を指示文に載せる**（realign 第2便・(P)）。
+   *
+   * 載せる前は `skills/executor-system.md` を渡していたのが pi 拡張の
+   * `before_agent_start`（`pi-extension/banto-executor.ts`）だけだった。それは
+   * `driverOptions.extensionPaths`＝**pi の言葉**で、Claude Agent SDK のドライバは
+   * 読まない——実運用の職人はほぼ全てその経路なので、**役の説明は届いていなかった**。
+   * SDK 経路の職人が受け取っていたのは Worker Pool の汎用プロンプトだけで、
+   * **「不可逆な変更を独断でしない」（D1）がプロンプトから丸ごと落ちていた。**
+   *
+   * 直し方は監査チェックリストと同じ——**Kobo が指示文に載せる**。driver 側の
+   * システムプロンプトに足す形は採らない：経路ごとに別の場所へ載せると、次に経路が
+   * 増えたときまた落ちる。**どちらの役を起こすかを知っているのは最初から Kobo** である。
+   *
+   * **pi 経路では二重に届く。これは意図的に許している。** `before_agent_start` は
+   * そのままにしてある——重複して届くのは無害だが、片方が届かないのは害だからである。
+   * **「二重だから」と拡張側を消さないこと**：消すと pi 経路だけ役の説明を失う。
+   *
+   * I2: 読めなければ投げる。役の説明を持たない職人を黙って動かさない
+   * ——第2便でチェックリストが誰にも届いていなかったのは、黙って落ちていたからである。
+   */
+  const roleAsset = loadPromptAsset("executor-system");
   const taskId = task.id;
   const body = typeof task["body"] === "string" ? task["body"].trim() : "";
   const lines = [
+    `## あなたの役`,
+    ``,
+    roleAsset,
+    ``,
     `## 実装タスク ${taskId}`,
     ``,
     `**タイトル**: ${String(task["title"] ?? taskId)}`,
@@ -3762,8 +4558,10 @@ export function buildExecutorInstruction(
 /**
  * 監査人への指示。
  *
- * 監査の観点そのもの（チェックリスト）は拡張が `skills/audit-*.md` から載せる。
- * ここに書くのは**このタスクを見るために要る事実**——どこに何があり、何を満たすべきか。
+ * **役の説明も観点も、ここから渡す**（realign 第2便）。以前は拡張が
+ * `skills/audit-*.md` を載せていたが、それは pi 経路にしか効かなかった。
+ * ここに書くのはそれに加えて**このタスクを見るために要る事実**
+ * ——どこに何があり、何を満たすべきか。
  */
 export function buildAuditInstruction(
   task: TaskRecord,
@@ -3771,7 +4569,36 @@ export function buildAuditInstruction(
   taskId: string,
   worktreePath: string
 ): string {
+  /**
+   * **監査チェックリストを指示文に載せる**（realign 第2便・段1）。
+   *
+   * 載せる前は、チェックリストを渡していたのは pi 拡張の `before_agent_start`
+   * （`pi-extension/banto-auditor.ts`）だけだった。**それは `driverOptions.extensionPaths`
+   * 経由＝pi の言葉**で、Claude Agent SDK の職人はそれを読まない
+   * （`claude-agent/tool-offload.ts` に同じ形の記録がある）。実運用の監査人はほぼ全て
+   * SDK 経路なので、**基準は監査人に一度も届いていなかった**。
+   *
+   * 届いていない基準の指紋を `audit_verdict.checklistVersion` に刻むと、
+   * それは証拠ではなく嘘になる。だから**Kobo が渡す**——ここに置けば経路に依らない。
+   *
+   * **役の説明（`audit-system`）も同じ場所から渡す**（realign 第2便・(P)）。
+   * こちらも pi 拡張の `before_agent_start` だけに載っており、SDK 経路の監査人には
+   * 届いていなかった。**チェックリストと役の説明が別々の場所から来る状態にしない**
+   * ——片方だけ経路を移すと、次に読む人がどちらが正なのか判断できない。
+   *
+   * **pi 経路では二重に届く。これは意図的に許している。** 拡張側の
+   * `before_agent_start` はそのままにしてある——重複して届くのは無害だが、片方が
+   * 届かないのは害だからである。**「二重だから」と拡張側を消さないこと。**
+   *
+   * I2: 読めなければ投げる。基準や役を持たない監査を、黙って始めさせない。
+   */
+  const roleAsset = loadPromptAsset("audit-system");
+  const checklist = loadPromptAsset("audit-checklist");
   return [
+    `## あなたの役`,
+    ``,
+    roleAsset,
+    ``,
     `## タスク監査コンテキスト`,
     ``,
     `**タスクID**: ${taskId}`,
@@ -3796,5 +4623,9 @@ export function buildAuditInstruction(
     `5. 問題があれば verdict="fail" と具体的な findings を報告してください`,
     ``,
     `**重要**: 検査が完了したら必ず \`audit_report\` ツールを呼び出してください。呼び出さないと監査が完了しません。`,
+    ``,
+    `## 監査チェックリスト`,
+    ``,
+    checklist,
   ].join("\n");
 }

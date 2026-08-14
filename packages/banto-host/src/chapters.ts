@@ -29,9 +29,8 @@
  * I2: 資料が書けなかったら章を閉じない——引き継ぎ無しで文脈だけ消すのが最悪。
  */
 
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { BantoHarness } from "@banto/core";
 import { renderArtifactIndex, type ArtifactStore } from "./artifacts.js";
-import { calculateContextTokens, estimateTokens } from "@earendil-works/pi-coding-agent";
 import {
   renderChapterOpening,
   type HandoffRecord,
@@ -55,7 +54,13 @@ export interface ChapterHandoff {
 }
 
 export interface ChapterKeeperOptions {
-  session: AgentSession;
+  /**
+   * 会話を回しているハーネス（ADR-0020 決定89）。
+   *
+   * **pi の `AgentSession` を直に持たない。** 章に要るのは「いまの量」「短すぎないか」
+   * 「書き起こし」「捨てて種から始め直す」の4つで、どれも `BantoHarness` の語彙で言える。
+   */
+  harness: BantoHarness | (() => BantoHarness);
   store: HandoffStore;
   threadId: string;
   /**
@@ -110,6 +115,17 @@ export const DEFAULT_MIN_MESSAGES = 4;
 
 export class ChapterKeeper {
   private readonly options: ChapterKeeperOptions;
+  /**
+   * **いまのハーネスを毎回引く**（PO要望 2026-08-13 の差し替えに追随するため）。
+   *
+   * 生成時のものを掴んでいると、会話の途中でバックエンドを替えたときに
+   * **動いていないほうを見張り続ける**——自動の章立ては永久に畳まれず、
+   * 「区切る」を押すと話していないほうのセッションが畳まれる。
+   */
+  private get harness(): BantoHarness {
+    const h = this.options.harness;
+    return typeof h === "function" ? h() : h;
+  }
   private closing = false;
   private unsubscribe: (() => void) | undefined;
 
@@ -118,15 +134,16 @@ export class ChapterKeeper {
   }
 
   /**
-   * 見張りを始める。**まず自動コンパクションを切る**——これを切らないと、
-   * 章を閉じる前に pi が要約で潰してしまう。
+   * 見張りを始める。
+   *
+   * 自動コンパクションを切るのは**ハーネスの生成時**に移した（ADR-0020 決定89）——
+   * 「章の境界は番頭が持つ」は契約の前提であって、見張りを始めたかどうかとは別。
    */
   start(): void {
-    this.options.session.setAutoCompactionEnabled(false);
-    this.unsubscribe = this.options.session.subscribe((event) => {
-      // ターンの終わりだけ見る。**ターンの途中で畳まない**——道具を呼んでいる最中に
-      // 文脈が消えると、番頭は自分が何をしていたか分からなくなる
-      if ((event as { type?: string }).type !== "agent_end") return;
+    this.unsubscribe = this.harness.subscribe((event) => {
+      // **手を止めたときだけ**見る（`run_end`）。ターンの途中で畳まない——道具を
+      // 呼んでいる最中に文脈が消えると、番頭は自分が何をしていたか分からなくなる
+      if (event.type !== "run_end") return;
       // I2: 畳めなかったことを握りつぶさない。`void` のままだと unhandled rejection に
       //     なって**どこにも出ない**——資料が空だった件（inc-0050）が見えなかった一因
       void this.maybeCloseChapter().catch((err: unknown) => {
@@ -149,23 +166,26 @@ export class ChapterKeeper {
    * 黙って働かなくなるのは、閾値が無いのと同じだから。
    */
   contextTokens(): number | undefined {
-    const messages = this.options.session.agent.state.messages;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i];
-      if (message && message.role === "assistant" && "usage" in message && message.usage) {
-        return calculateContextTokens(message.usage);
-      }
-    }
-    if (messages.length === 0) return undefined;
-    return messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+    return this.harness.contextTokens();
+  }
+
+  /**
+   * 判定に使う文脈長。**ハーネスが知っていればそちらが勝つ**（決定97・task-0104）。
+   *
+   * 渡される既定はこの会話の pi モデルのもの——バックエンドを Claude に替えても
+   * ローカルモデルの文脈長で測っていて、区切る位置がまるで違っていた。
+   */
+  private contextWindow(): number | undefined {
+    return this.harness.contextWindow?.() ?? this.options.contextWindow;
   }
 
   /** 閾値を超えているか。 */
   shouldClose(): boolean {
-    const window = this.options.contextWindow;
+    const window = this.contextWindow();
     if (!window || window <= 0) return false;
-    const messages = this.options.session.agent.state.messages;
-    if (messages.length < (this.options.minMessages ?? DEFAULT_MIN_MESSAGES)) return false;
+    if (this.harness.messageCount() < (this.options.minMessages ?? DEFAULT_MIN_MESSAGES)) {
+      return false;
+    }
     const tokens = this.contextTokens();
     if (tokens === undefined) return false;
     const ratio = this.options.thresholdRatio ?? DEFAULT_CHAPTER_THRESHOLD_RATIO;
@@ -189,12 +209,12 @@ export class ChapterKeeper {
     if (this.closing) return undefined;
     this.closing = true;
     try {
-      const { session, store, threadId, summarize } = this.options;
-      const messages = session.agent.state.messages;
-      if (messages.length === 0) return undefined;
+      const { store, threadId, summarize } = this.options;
+      const harness = this.harness;
+      if (harness.messageCount() === 0) return undefined;
 
       const chapter = store.nextChapter(threadId);
-      const transcript = renderTranscript(messages);
+      const transcript = harness.transcript();
       const handoff = await summarize({ transcript, chapter });
 
       // 退避したものの索引を資料へ足す。**要約器の出力の後ろに機械的に付ける**——
@@ -206,19 +226,20 @@ export class ChapterKeeper {
       const record = store.write({ threadId, summary: handoff.summary, body });
 
       const tokensBefore = this.contextTokens() ?? 0;
-      // 境界より前は1件も残さない。`firstKeptEntryId` にどのエントリとも一致しない値を
-      // 渡すと buildSessionContext が「残さない」を選ぶ（このファイル冒頭の説明）
-      const keepNothing = `chapter-boundary:${record.id}`;
-      session.sessionManager.appendCompaction(
-        renderChapterOpening(record, { artifactCount: artifacts.length }),
-        keepNothing,
+      /**
+       * **文脈を捨てて、種から始め直す**（ADR-0020 決定93）。
+       *
+       * 「境界より前は1件も残さない」という意図は、以前は pi の語彙
+       * （`appendCompaction(keepNothing)` ＋ `buildSessionContext`）で書かれていた。
+       * ハーネスの語彙へ移したので、Agent SDK では `query()` の起こし直しとして
+       * 同じ意味が実装できる。
+       */
+      await harness.startChapter({
+        text: renderChapterOpening(record, { artifactCount: artifacts.length }),
         tokensBefore,
-        { bantoChapter: record.chapter, handoffId: record.id },
-        // fromHook: pi が作った要約ではないと分かるようにする
-        true
-      );
-      // pi の compact() と同じ手順。ここを忘れると、書いたのに文脈が畳まれない
-      session.agent.state.messages = session.sessionManager.buildSessionContext().messages;
+        chapter: record.chapter,
+        handoffId: record.id,
+      });
 
       // 記憶の抽出はここが唯一の発火点（explicit gate）。**待たない**——
       // 資料は既に書けており文脈も畳んだので、抽出の遅れで会話を止める理由が無い

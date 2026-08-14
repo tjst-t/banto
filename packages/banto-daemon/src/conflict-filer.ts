@@ -265,18 +265,67 @@ export interface OriginResolutionPair {
 }
 
 /**
+ * 解消タスクが「役目を終えた」状態（もうこれ以上動かない）。
+ *
+ * inc-0063: ここに居る解消タスクを「未解決の一本」と数えてしまうと、
+ * 同じ origin に二本目・三本目を積み続ける。数える側は必ずこれで除く。
+ */
+const TERMINAL_RESOLUTION_STATUSES: ReadonlySet<string> = new Set([
+  "merged",
+  "closed",
+  "failed",
+  "superseded",
+]);
+
+/**
+ * その origin に**まだ決着していない**解消タスクがあるか。
+ *
+ * inc-0063 の3: `handleRebaseConflict` は同じ origin に対して何度でも起票できてしまい、
+ * 1 分ごとに 1 本ずつゴミタスクが積まれた。起票の前にここで数える。
+ *
+ * D3: 台帳（＝イベントログから再生したタスク集合）から導出する。印のファイルは持たない。
+ */
+export function hasOpenResolutionTask(
+  tasks: Array<{ id: string; status: string; projectTag: string; [key: string]: unknown }>,
+  originTaskId: string,
+  projectTag: string
+): boolean {
+  return tasks.some((t) => {
+    if (t.projectTag !== projectTag) return false;
+    if ((t["kind"] as string | undefined) !== "conflict") return false;
+    const refs = t["refs"] as string[] | undefined;
+    if (!refs || refs[0] !== originTaskId) return false;
+    return !TERMINAL_RESOLUTION_STATUSES.has(t.status);
+  });
+}
+
+/** `deriveOriginResolutionPairs` の追加条件。 */
+export interface DeriveOriginResolutionOptions {
+  /**
+   * そのペアの後始末（origin の再開）を**もう打ったか**。true を返したペアは返さない。
+   *
+   * inc-0063 の1・2: closed のまま台帳に残る解消タスクが恒久的にペアの片割れになり、
+   * 「解消できた → origin を merging へ戻す」が 1 分ごとに再発した。判定はイベントログから
+   * 導出する（D3: 消費済みフラグのファイルを作らない）——呼び手が帳簿を引いて渡す。
+   */
+  isConsumed?: (pair: OriginResolutionPair) => boolean;
+}
+
+/**
  * Find all (paused-origin, conflict-resolution) pairs from the current task records.
  *
  * A valid pair is:
- *   - resolution task: kind=conflict, status != one of the terminal states we already handled,
- *     refs[0] = some task ID
+ *   - resolution task: kind=conflict, refs[0] = some task ID, and the pair has **not**
+ *     already been consumed (= the resume it implies was already performed once;
+ *     these are exactly "the terminal states we already handled")
  *   - origin task: status="paused", suspendedFrom="merging", id == resolution.refs[0]
  *
  * This is the canonical derivation function (D3). Called from the merge-result tick
  * to decide whether to resume or fail origin tasks.
  */
 export function deriveOriginResolutionPairs(
-  tasks: Array<{ id: string; status: string; projectTag: string; [key: string]: unknown }>
+  tasks: Array<{ id: string; status: string; projectTag: string; [key: string]: unknown }>,
+  options: DeriveOriginResolutionOptions = {}
 ): OriginResolutionPair[] {
   const pairs: OriginResolutionPair[] = [];
 
@@ -300,12 +349,18 @@ export function deriveOriginResolutionPairs(
     const suspendedFrom = originTask["suspendedFrom"] as string | undefined;
     if (suspendedFrom !== "merging") continue;
 
-    pairs.push({
+    const pair: OriginResolutionPair = {
       originTaskId,
       originProjectTag: originTask.projectTag,
       resolutionTaskId: task.id,
       resolutionProjectTag: task.projectTag,
-    });
+    };
+
+    // 消費済み（この解消タスクによる再開は打ち終わっている）なら返さない。
+    // **ここが inc-0063 の周回を止める1行**——docstring にだけ書かれていて実装に無かった条件。
+    if (options.isConsumed?.(pair)) continue;
+
+    pairs.push(pair);
   }
 
   return pairs;

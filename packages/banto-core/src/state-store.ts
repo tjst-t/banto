@@ -210,6 +210,20 @@ export class StateStore {
         break;
       }
 
+      case "task_settled_outside": {
+        // **工場の外で決着した**（realign 第2便・imp-0019）。D3: 状態は動かさない
+        // ——`closed` へ移すのは state_transitioned の仕事。
+        // **失敗ではないことを別の欄に残す**：`failureReason` に混ぜると、一覧も
+        // 知らせも「落ちた」と読む。区別できることがこの口の要点そのもの。
+        const key = StateStore.taskKey(event.projectTag, event.taskId);
+        const task = this.tasks.get(key);
+        if (task) {
+          task["settledOutcome"] = event.outcome;
+          task["settledReason"] = event.reason;
+        }
+        break;
+      }
+
       case "task_contract_amended": {
         // **契約を差し替える**（task-0082・決定64 改訂）。D3: 状態はイベントから導出される
         // ので、改訂もイベントとして適用する——ここを飛ばすと、記録だけ残って中身が
@@ -244,6 +258,9 @@ export class StateStore {
       case "env_provision_failed":
       case "env_review_tmux_pane_attached":
       case "env_review_tmux_pane_skipped":
+      // **止まっている**という判定の記録（realign 第2便）。状態は動かさない——
+      // 滞留は帳簿から導出できる値（`dwellMs`）で、ここに写しを作ると必ず食い違う（D3）。
+      case "task_stalled":
         // These events are recorded for the log's truth value but don't
         // directly alter the task state machine (handled by daemon logic).
         // D3: profiles are file-intent; rejection facts are events only.

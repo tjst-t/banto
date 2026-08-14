@@ -13,14 +13,22 @@
  */
 
 import * as fs from "node:fs";
+import type * as http from "node:http";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { getModel, getModels } from "@earendil-works/pi-ai/compat";
-import { getAgentDir, ModelRegistry, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+  getAgentDir,
+  ModelRegistry,
+  ModelRuntime,
+  SessionManager,
+  type AgentSession,
+} from "@earendil-works/pi-coding-agent";
 import {
   JsonlMemoryStore,
   LlmCatalog,
+  ModelLedger,
   MODEL_ALIASES,
   ScopedMemory,
   type PlaceProvider,
@@ -28,11 +36,19 @@ import {
 } from "@banto/core";
 
 import type { WorkerInfo } from "@banto/worker-pool";
+// Claude Code バックエンドの選択肢（PO裁定 2026-08-13）。認証の有無もここで見る
+import {
+  createClaudeBackend,
+  createPiBackend,
+  hostModelInfo,
+  toBackendOption,
+  type HarnessBackendDescriptor,
+} from "./harness-backends.js";
 import { createKoboModule, defaultKoboUrl } from "@banto/daemon";
 import { BANTO_ORIGIN, startWorkerNotices, threadOrigin } from "./worker-notice.js";
 import { guardWorkerOrigin } from "./worker-guard.js";
 import { startKoboNotices } from "./kobo-notice.js";
-import { createRemoteSettings } from "./remote-module.js";
+import { createRemoteRelay, createRemoteSettings } from "./remote-module.js";
 import { startEnvNotices } from "./env-notice.js";
 
 import { Canvas, createCanvasCatalog } from "./canvas.js";
@@ -40,16 +56,19 @@ import { createCanvasTools } from "./canvas-tools.js";
 import { Inbox } from "./inbox.js";
 import { createInboxTools } from "./inbox-tools.js";
 import { UserThemes } from "./user-themes.js";
-import { createBantoHostSession } from "./host-session.js";
+import {
+  assembleStewardContext,
+  createBantoHostSession,
+  type CreateBantoHostSessionOptions,
+} from "./host-session.js";
 import { resumeInterruptedTurn, withEmptyResponseGuard } from "./turn-guard.js";
-import type { HostSession } from "./server.js";
 import { BantoHostClient } from "./client.js";
 import { BANTO_DEFAULT_PORT, type ServerEvent } from "./protocol.js";
 import { BantoHostServer } from "./server.js";
 import { createArtifactTools } from "./artifact-tools.js";
 import { ArtifactStore } from "./artifacts.js";
 import { createLlmChapterSummarizer } from "./chapter-summarizer.js";
-import { ChapterKeeper } from "./chapters.js";
+import { ChapterKeeper, renderTranscript } from "./chapters.js";
 import { createHandoffTools } from "./handoff-tools.js";
 import { HandoffStore } from "./handoffs.js";
 import { applyMemoryDeltas, createLlmMemoryExtractor } from "./memory-extraction.js";
@@ -71,7 +90,7 @@ import { PlaceGrantStore } from "./place-grants.js";
 import { ThreadStore } from "./thread-store.js";
 import { SettingsStore } from "./settings-store.js";
 import { createCoreSettingsSections } from "./core-settings.js";
-import { createSettingsModule, settingsSection } from "./settings-module.js";
+import { type HarnessBackendOption, createSettingsModule, settingsSection } from "./settings-module.js";
 import { createRepoManagerModule, createRepoManagerPlaceProvider } from "@banto/repo-manager";
 import { createCollectedPlaceProvider } from "@banto/environment-pool";
 import {
@@ -91,10 +110,15 @@ import {
 } from "./places.js";
 import { guardPathArg } from "./place-scoped.js";
 import { createSkillTools } from "./skill-tools.js";
-import { createTurnBudget } from "./turn-budget.js";
+import { createTurnBudget, withTurnBudgetReset } from "./turn-budget.js";
 import { withWorkerCard } from "./worker-card.js";
+import { withTierUnassignedNotice } from "./worker-tier-notice.js";
 import { bindToolArgs, createThreadTools } from "./thread-tools.js";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
+import { fromWireToolName, type BantoHarness } from "@banto/core";
+import { PiHarness } from "./pi-harness.js";
+import { ClaudeAgentHarness } from "./claude-agent-harness.js";
+import { selectPresentedTools } from "./presented-tools.js";
 import { Type } from "typebox";
 import {
   ThreadRegistry,
@@ -381,13 +405,14 @@ Memory is split in two, and **the unit of the second layer is the trunk**.
 
 Conversations are not parallel tabs. Each project has one **trunk** that lives on, and short-lived **branches** hang off it.
 
-- **trunk** — one project. It is never folded away by itself, and it is the record of what got decided. Only two lines from a branch ever reach its trunk: the line saying a branch opened, and the line saying what it concluded. **Never replay a branch's contents into the trunk** — that is what makes a trunk readable end to end.
-- **branch** — one question that has an end. Open it with thread.open when a topic is going to take repeated back-and-forth. You must say what would bring it back (returnCondition) and why it is not being discussed in the trunk (reason). **If you cannot say what would end it, do not open a branch — talk in the trunk.** Branches are one level deep: you cannot open a branch from inside a branch. Fold it with thread.merge and give the conclusion in one line; "保留：<reason>" is a valid conclusion.
+- **trunk** — one project. It is never folded away by itself, and it is the record of what got decided. What lands in a trunk stays short: a branch opened, a branch asked or reported something, a branch concluded. **Never replay a branch's contents into the trunk** — that is what makes a trunk readable end to end. Detail is not lost, it is read on demand (thread.read).
+- **branch** — one question that has an end. Open it with thread.open when a topic is going to take repeated back-and-forth. You must say what would bring it back (returnCondition) and why it is not being discussed in the trunk (reason). **If you cannot say what would end it, do not open a branch — talk in the trunk.** Branches are one level deep: you cannot open a branch from inside a branch. Fold it with thread.merge and give the conclusion in one line; "保留：<reason>" is a valid conclusion. thread.merge also takes what you investigated / decided / what is left — that detail stays in the branch, not the trunk.
+- **A trunk and its branches can talk while a branch is running.** From the trunk: thread.read to see what is actually happening inside one (open or already folded), thread.steer to hand it a message after it started — a changed premise, a narrowed scope, an answer. From a branch: thread.consult to put a question or a report back on the trunk before you fold, when the trunk's judgement is needed and inventing a conclusion would be worse. Do not use it as chat: a branch that consults on every step should have stayed in the trunk.
 - **帳場** — one special trunk, the only conversation that can never be closed. **It is not a project, and it is not the trunk for developing banto itself.** Anything that does not belong to a specific project lands here: notices with no destination, a request before it has become a project, one-off errands. It always sits first in the user's rail.
 - **Starting a new trunk** (thread.open_trunk): the test is whether you would want this work's accumulated memory mixed into an existing trunk's conversations. If you would, it belongs in that trunk. If mixing it would be noise, start a trunk. Repeated back-and-forth alone is a branch, not a trunk.
 - **Ending a trunk** (thread.close_trunk): when the project is over. You choose what memory to carry out of it — rewrite anything that still holds elsewhere so it makes sense outside this project. What you do not carry stays with the folded trunk. Open branches must be folded first.
-- **Passing word between trunks** (thread.send): memory and context are split per trunk, which is exactly why things sometimes need to cross. Send the fact and why it matters over there — do not give instructions; what happens in that trunk is its steward's call. Trunks only (a branch is one closed question). Do not go back and forth: if two or three messages do not settle it, raise it to the user or move to that trunk.
-- thread.list shows every open conversation, which one you are in, and what each branch is waiting on.
+- **Passing word between trunks** (thread.send): memory and context are split per trunk, which is exactly why things sometimes need to cross. Send the fact and why it matters over there — do not give instructions; what happens in that trunk is its steward's call. Trunks only — another trunk's branches are none of your business, and you cannot read inside them either. Do not go back and forth: if two or three messages do not settle it, raise it to the user or move to that trunk.
+- thread.list shows every open conversation, which one you are in, and what each branch is waiting on. Add includeClosed to find a folded branch you want to read back.
 - Once you know what a conversation is about, name it with thread.rename, and rename it again when the topic moves on. The user picks conversations by name, so a stale name — or "会話 3" — tells them nothing. Keep it short, around 15 characters. Do not rename for a brief digression.
 
 # Showing things: utsuwa inside the conversation, faces for work
@@ -690,7 +715,14 @@ async function serve(options: ServeOptions): Promise<void> {
   void refreshModelCatalog(modelRegistry);
 
   const workerPoolSettings = (settings.all().modules?.["worker-pool"] ?? {}) as Record<string, unknown>;
+  /**
+   * **役の台帳**（ADR-0021 決定101）。`llm-registry.json`（pi の供給）とは別ファイル。
+   *
+   * **書くのは番頭ホストだけ**（決定101d）。工房は読み取り専用で開く。
+   */
+  const modelLedger = new ModelLedger({ path: path.join(dataDir(), "model-roles.json") });
   const llmCatalog = new LlmCatalog({
+    ledger: modelLedger,
     authJsonPath: path.join(agentDir, "auth.json"),
     modelsJsonPath: path.join(agentDir, "models.json"),
     overlayPath: path.join(dataDir(), "llm-registry.json"),
@@ -701,6 +733,26 @@ async function serve(options: ServeOptions): Promise<void> {
     },
   });
 
+
+  /**
+   * **`settings.harness` → `roles.steward` へ畳む**（PO裁定 2026-08-13）。
+   *
+   * 「新しい会話は何で始まるか」に2箇所が答えていた（実データで食い違った）。
+   * 束縛の座標に `backend` を持たせたので、設定側の欄は要らなくなる。
+   * **設定側を真実として移す**——実際に効いていたのはそちらだから（`startBackend`）。
+   */
+  const legacyHarness = settings.all().harness;
+  if (legacyHarness?.backend) {
+    const current = llmCatalog.roles().steward;
+    llmCatalog.setRole(
+      "steward",
+      legacyHarness.backend === "claude-agent-sdk" ? "claude" : (current?.provider ?? "opencode"),
+      legacyHarness.model ?? current?.model ?? "",
+      legacyHarness.backend
+    );
+    settings.update("harness", undefined as never);
+    console.log(`[banto] 番頭の既定を roles.steward へ移しました（${legacyHarness.backend}）`);
+  }
   // 職人のモデル解決（tier→実モデル）は**工房が自分で持つ**（task-0066）。番頭ホストは
   // 台帳（オーバーレイ）を書くだけで、職人を起こすのは別プロセス——オーバーレイは
   // 更新時刻で読み直されるので、画面で選んだ tier は次の委譲から効く（D3）。
@@ -710,6 +762,11 @@ async function serve(options: ServeOptions): Promise<void> {
 
   // ADR-0011 決定42: LLM は中核のドメイン。モジュールではなく中核の Tool として持つ
   const llmTools = createLlmTools({ catalog: llmCatalog });
+  /**
+   * **在庫は減らさない**（ADR-0019 決定82）。番頭に渡すのは4本だけだが（決定98f）、
+   * HTTP 面（設定画面の到達先）と取次の効きは17本のまま——ここを絞ると画面が 404 になる。
+   */
+  const llmAllTools = [...llmTools.tools, ...llmTools.settings];
 
   // 決定38b・63: どの設定でも書かせない置き場。**自分の分だけでは足りない**——
   // Kobo の帳簿（イベントログ・登録簿）も番頭には触れないことが機構で担保されている
@@ -733,9 +790,23 @@ async function serve(options: ServeOptions): Promise<void> {
   const koboContract = createKoboModule(koboUrl);
   // 決定41: 工場の区画（役割ごとの職人の当て方）も設定画面に出す。項目の宣言は
   // 工場のパッケージから、読み書きは HTTP 越しに——Worker Pool と同じ形（task-0066）
+  /**
+   * **PO が画面から通せるようにするための中継**（task-0147・段3）。
+   *
+   * 工場は 127.0.0.1 にしか出ていない（決定40）ので、ブラウザからは直接届かない。
+   * Tool の口（`/tools/*`）は写しの `execute` が担うので中継しない——中継されるのは
+   * 工場が自分で生やしている面、いまは **PO 専用の承認口**
+   * （`POST /api/kobo/projects/:proj/tasks/:id/approve`）だけ。
+   *
+   * 検証環境で先に踏んだのと同じ形（決定39）。**ホストは合言葉を預からない**
+   * ——ブラウザが付けた名乗りをそのまま流し、照合するのは工場（task-0147 の縛り2）。
+   * ここに判断は無い（D5）。
+   */
+  const koboRelay = createRemoteRelay(koboUrl);
   const koboModule = {
     ...koboContract,
     settings: createRemoteSettings(koboContract.settings, "kobo", koboContract.name, koboUrl),
+    serve: (req: http.IncomingMessage, res: http.ServerResponse) => koboRelay.serve(req, res),
   };
 
   /**
@@ -765,10 +836,89 @@ async function serve(options: ServeOptions): Promise<void> {
   ]);
 
   // 設定モジュールは他モジュールの宣言を集めるので、レジストリが揃ってから登録する（決定41）
+  /**
+   * **バックエンド → プロバイダ → モデル**（PO裁定 2026-08-13）。
+   *
+   * pi 側は LLM 登録の「番頭が使ってよい」モデル、Claude Code 側は SDK の別名。
+   * 同じ `opus` が両方に出るのが正しい——どちらの経路で呼ぶかを人が選ぶ。
+   * **会話の画面（`settings.harness_models`）と設定の選択肢が同じ元から出る**（D3）。
+   */
+  /**
+   * **バックエンドは自分を名乗る**（決定98d）。ここは並べるだけで、中身は知らない
+   * ——`CLAUDE_KNOWN_MODELS` を直に読んでいた頃は、バックエンドが増えるたびに
+   * ここと `onSelectModel` の2箇所を直して回ることになっていた。
+   */
+  const harnessBackends: HarnessBackendDescriptor[] = [
+    createPiBackend({
+      // 番頭に許しているモデルだけ（採用の方針・決定98b）
+      hostModels: () => llmCatalog.models().filter((m) => m.policy.includes("host")),
+      resolve: (provider, id) => resolveModel(provider, id),
+    }),
+    createClaudeBackend(),
+  ];
+  const backendById = new Map(harnessBackends.map((b) => [b.id, b]));
+
+  /**
+   * **職人に選べるモデル**（ADR-0021 決定102）。数え上げるのは工房で、ここは写しを持つだけ
+   * ——番頭の層とは別の名乗り（決定100）なので、番頭側の一覧を流用しない。
+   *
+   * **待たない。** 設定の区画は同期で組むので、いまある写しを返して裏で取り直す
+   * （Claude のモデル一覧と同じ形・決定98d）。**取れなかったら空にしない**（I2）。
+   */
+  let workerModelCache: Array<{ value: string; label: string }> = [];
+  let workerModelsAskedAt = 0;
+  const WORKER_MODELS_TTL_MS = 60_000;
+  const refreshWorkerModels = (): void => {
+    if (Date.now() - workerModelsAskedAt < WORKER_MODELS_TTL_MS) return;
+    workerModelsAskedAt = Date.now();
+    const tool = modules.tools().find((t) => t.name === "worker.models");
+    if (!tool) return;
+    void tool
+      .execute({}, { toolCallId: `worker-models-${Date.now()}` })
+      .then((result) => {
+        const found = (result.details as { models?: Array<{ name: string; label: string; runtime: string }> })
+          ?.models;
+        if (!found || found.length === 0) return; // I2: 空を信じない
+        workerModelCache = found.map((m) => {
+          // 名前の形はバックエンドで違う（pi は `provider/model`、Claude は別名だけ）
+          const slash = m.name.indexOf("/");
+          const backend = m.runtime === "claude-agent-sdk" ? "claude-agent-sdk" : "pi";
+          const [provider, model] =
+            slash > 0 ? [m.name.slice(0, slash), m.name.slice(slash + 1)] : ["claude", m.name];
+          return { value: `${backend}|${provider}|${model}`, label: `${backend} › ${m.label}` };
+        });
+      })
+      .catch(() => {
+        // 工房が落ちているだけ。写しはそのまま（選べないものを選ばせない・I2）
+      });
+  };
+  const workerModelChoices = (): Array<{ value: string; label: string }> => {
+    refreshWorkerModels();
+    return workerModelCache;
+  };
+  /**
+   * **起動時に温める。** 設定を最初に開いた1回だけ職人の選択肢が空になり、
+   * いまの割り当てが「一覧に無い」と出る——**開いただけで壊れて見える**（実機で確認）。
+   */
+  setTimeout(() => refreshWorkerModels(), 2_000).unref?.();
+  const harnessBackendOptions = (): HarnessBackendOption[] => harnessBackends.map(toBackendOption);
+
   modules.register(
     createSettingsModule({
       core: createCoreSettingsSections(settings, {
         llmCatalog,
+        // 設定画面の選択肢も**会話の画面と同じ元**から作る（D3）
+        harnessChoices: () =>
+          harnessBackendOptions()
+            .filter((b) => !b.unavailable)
+            .flatMap((b) =>
+              b.providers.flatMap((p) =>
+                p.models.map((m) => ({
+                  value: `${b.id}|${p.id}|${m.id}`,
+                  label: `${b.label} › ${p.id} › ${m.name ?? m.id}`,
+                }))
+              )
+            ),
         // いま効いている場所をそのまま映す（画面と実態を食い違わせない）。
         // 保存が無いときの起動時指定も、既定の書斎も、ここに含まれる
         effectivePlaces: () =>
@@ -778,9 +928,27 @@ async function serve(options: ServeOptions): Promise<void> {
             ...(c.writable ? { writable: [...c.writable] } : {}),
           })),
         onPlacesChanged: () => ensureDesk(settings, workspace),
+        /**
+         * **職人に選べるモデル**（ADR-0021 決定102）。工房が数え上げたものをそのまま出す
+         * ——番頭の層とは別の名乗りなので、こちらは工房へ聞く（決定100）。
+         *
+         * 工房が落ちていれば空。**そのときは自由入力に落ちず「割り当てなし」だけになる**
+         * ——選べないものを選ばせないため（I2）。
+         */
+        workerChoices: () => workerModelChoices(),
+        // 既定の等級は**核の台帳**が持つ（決定99a）
+        workerDefaultTier: () => modelLedger.defaultTier() ?? "",
+        onWorkerTierChanged: (tier) => modelLedger.setDefaultTier(tier),
       }),
       modules,
       store: settings,
+      /**
+       * **バックエンド → プロバイダ → モデル**（PO裁定 2026-08-13）。
+       *
+       * pi 側は LLM 登録の「番頭が使ってよい」モデル、Claude Code 側は SDK の別名。
+       * 同じ `opus` が両方に出るのが正しい——どちらの経路で呼ぶかを人が選ぶ。
+       */
+      harnessOptions: () => harnessBackendOptions(),
     })
   );
 
@@ -887,8 +1055,28 @@ async function serve(options: ServeOptions): Promise<void> {
   //
   // 記憶は全スレッドで共有する（D11：番頭は記憶を持つ。分裂させない）。
   let threads: ThreadRegistry;
+  /**
+   * 会話ごとのハーネスの作り手（PO要望 2026-08-13）。**会話の途中でバックエンドを
+   * 差し替える**ために、両方の作り手を覚えておく。pi 側は同じものを返す——章立てが
+   * その pi セッションに紐づいているので、戻ったときに文脈が残っている必要がある。
+   */
+  const harnessSwitchers = new Map<
+    string,
+    {
+      pi: () => BantoHarness;
+      claude: (model?: string) => BantoHarness;
+      /** Claude 側を畳む（pi へ戻すとき）。札は残るので選び直せば続きから戻る。 */
+      releaseClaude: () => void;
+    }
+  >();
   let server: BantoHostServer;
-  const threadFactory: ThreadFactory = async (threadId, resumeFrom, wantedModel, identity) => {
+  const threadFactory: ThreadFactory = async (
+    threadId,
+    resumeFrom,
+    wantedModel,
+    identity,
+    resumeBackendSession
+  ) => {
     const canvas = new Canvas(catalog);
     /**
      * ターンの予算（PO報告 2026-08-11）。**会話ごと**に持つ——隣の会話の数えと混ぜると、
@@ -911,7 +1099,8 @@ async function serve(options: ServeOptions): Promise<void> {
       // 取次は会話に紐づかないが、積むのは会話の中の番頭なので Tool は各会話に配る。
       // 宛先を渡すのは、積んだ札から**その話をしていた会話へ戻れる**ようにするため（決定73）
       ...createInboxTools(inbox, { threadId }),
-      ...llmTools,
+      // 決定98f: 番頭が持つのは読みと診断の4本だけ（設定変更は GUI とファイルの担当）
+      ...llmTools.tools,
       ...createThreadTools({
         threads,
         // 名前を付け直す宛先は**この会話**に固定する（番頭に threadId を書かせない）
@@ -923,6 +1112,12 @@ async function serve(options: ServeOptions): Promise<void> {
          * 出所が「別の会話」であることは、開くときも渡すときも変わらない。
          */
         deliver: (threadId, message) => server.notify(message, { threadId, source: "thread" }),
+        /**
+         * **枝から幹への相談**（決定107）。記録は `ThreadRegistry.consult` が札として
+         * 済ませているので、ここでは幹のターンだけ回す——`notify` を使うと同じ一言が
+         * 知らせとしても積まれ、1つの相談が2行に見える
+         */
+        nudge: (threadId, message) => server.nudge(threadId, message),
         /**
          * 幹を終うとき、番頭が選んだ記憶を**横断の層（人の記憶）へ上げる**。
          * 枝の結論が幹へ還るのと同じ形が、一段上で繰り返される（PO裁定 2026-08-09）。
@@ -983,7 +1178,13 @@ async function serve(options: ServeOptions): Promise<void> {
            * 思い出したときだけ、では忘れたときに見えない——枝の札（決定77）と同じく
            * 機構にする。「どこにも出ていない職人は起こせない」。
            */
-          return withWorkerCard(guarded, (utsuwa) => server.showUtsuwa(threadId, utsuwa));
+          const carded = withWorkerCard(guarded, (utsuwa) => server.showUtsuwa(threadId, utsuwa));
+          /**
+           * **等級が空いていて起こせなかったら取次へ**（ADR-0021 決定104）。
+           * 直せるのは PO だけ（設定の口は番頭に渡していない・決定41c）なので、
+           * 会話のエラーで終わらせない。
+           */
+          return withTierUnassignedNotice(carded, { inbox, threadId });
         }
         // 決定63：**自分が起こしていない職人は畳めない。** Kobo の職人を番頭が畳むと、
         // Kobo は動いているつもりのまま実体が消える（Worker Pool 側には置けない——
@@ -1063,7 +1264,10 @@ async function serve(options: ServeOptions): Promise<void> {
     const knownTrunks = (): Array<{ id: string; label: string }> =>
       threads.trunks().map((t) => ({ id: t.id, label: t.title }));
 
-    const { session } = await createBantoHostSession({
+    /**
+     * 番頭の文脈と道具の材料。**バックエンドを問わず同じものを渡す**（ADR-0020 決定89）。
+     */
+    const stewardContextOptions: CreateBantoHostSessionOptions = {
       // **会話ごとに立場が違う**ので、そこだけを足して渡す（PO報告 2026-08-10）
       systemPrompt: SYSTEM_PROMPT + describeThread(identity),
       tools: ownTools,
@@ -1098,7 +1302,7 @@ async function serve(options: ServeOptions): Promise<void> {
       knownTrunkList: knownTrunks,
       artifacts,
       // 器が描けなかったときに出どころを名指しできるようにする（決定81(d)）
-      artifactModuleOf: (name) => modules.moduleForTool(name)?.name,
+      artifactModuleOf: (name: string) => modules.moduleForTool(name)?.name,
       ...(artifactThresholdChars() !== undefined
         ? { artifactThresholdChars: artifactThresholdChars()! }
         : {}),
@@ -1107,28 +1311,136 @@ async function serve(options: ServeOptions): Promise<void> {
       sessionManager,
       modelRuntime,
       ...(sessionModel ? { model: sessionModel } : {}),
-    });
+    };
+
+    const { session } = await createBantoHostSession(stewardContextOptions);
     // imp-0016: ツールコール（git status / file.read など）の後、次の LLM 応答が空
     // （text/toolCall なし・stopReason "stop"）だと pi が正常終了としてターンを閉じ、
     // 応答が止まる。withEmptyResponseGuard が空応答を continue() で再試行する。
     // 再試行はガードの中で完結するので、server は HostSession 契約のまま無変更（決定3）
     const guardedSession = withEmptyResponseGuard(session);
     /**
-     * 新しい入力が来たら、同じ確認の数えを戻す（PO報告 2026-08-11）。
+     * **バックエンドを選ぶ**（ADR-0020 決定88・95）。設定は起動時に読む——走っている
+     * 会話の途中で会話のやり方は変えられない（設定画面も `restartRequired`）。
      *
-     * 数えは「ターンの中で同じことを繰り返していないか」を見るもの。PO の言葉や職人の
-     * 知らせが来たなら状況は変わっているので、そこから数え直す——さもないと、前のターンの
-     * 数えが残っていて**正常な1回目の確認まで断る**ことになる。
+     * Agent SDK は **Claude 以外のモデルに繋げない**（公式が明文で非対応）。
+     * ローカルの無料モデルで回したいなら pi を選ぶ。
+     *
+     * ここから先、番頭のターンループは `BantoHarness` の語彙だけで動く——pi の
+     * `agent.state.messages` や `sessionManager` に触るのは皮の内側だけになる。
      */
-    const countingSession: HostSession = {
-      ...guardedSession,
-      prompt: async (text, options) => {
-        turnBudget.reset();
-        return guardedSession.prompt(text, options);
-      },
+    /**
+     * **バックエンドは provider の上位の階層**（PO裁定 2026-08-13）。
+     *
+     * `opus` は pi（opencode zen）経由でも Agent SDK 経由でも選べるので、
+     * **モデル名からバックエンドは決まらない**。人が選ぶのは
+     * 「バックエンド → プロバイダ → モデル」の3段で、選び直しは会話の途中でできる。
+     *
+     * 作り手を両方持っておく——差し替えのたびに組み立て直せるようにするため。
+     */
+    /**
+     * **組み立ては pi と共通**（`assembleStewardContext`）。
+     *
+     * ここを別に組んでいたせいで、Agent SDK の番頭には**記憶も SKILL も散文の道具一覧も
+     * 退避もターン予算も無かった**（レビュー 2026-08-13 で発覚。本番の既定がそれだった）。
+     * D11・決定47a・暴走を止めるターン予算は、**どのバックエンドでも同じように効く**必要がある。
+     */
+    /**
+     * **この会話の Claude 側の札**（決定97・task-0104）。復元で渡ってきたものから始め、
+     * 差し替えのたびに引き継ぐ——モデルを替えても会話は続く（別セッションにしない）。
+     */
+    let claudeResume: string | undefined = resumeBackendSession;
+    /** いま生きている Claude のハーネス。**1本だけ持つ**（畳まないと子プロセスが積み上がる）。 */
+    let claudeHarness: ClaudeAgentHarness | undefined;
+    const makeClaudeHarness = (model?: string): BantoHarness => {
+      /**
+       * **前のものを畳んでから作る**（task-0104 の3番）。`PromptQueue` は「空になっても
+       * 終わらせない」ので、参照を落とすだけでは `query()` が生き続け、バックエンドを
+       * 往復するたびに Claude Code の子プロセスが積み上がる。
+       */
+      const previous = claudeHarness;
+      if (previous) {
+        // 札は引き継ぐ（畳む前に取る）。取らないとモデルを替えるたびに文脈が消える
+        claudeResume = previous.resumeToken() ?? claudeResume;
+        void previous.dispose();
+      }
+      const assembled = assembleStewardContext(stewardContextOptions);
+      claudeHarness = new ClaudeAgentHarness({
+        systemPrompt: assembled.systemPrompt,
+        // 提示する集合だけを載せる（ADR-0019 決定82）。組み込みは `tools: []` で0本
+        tools: selectPresentedTools(assembled.tools),
+        ...(model ? { model } : {}),
+        ...(claudeResume ? { resume: claudeResume } : {}),
+      });
+      return withTurnBudgetReset(claudeHarness, turnBudget);
     };
 
-    // 提案§3.2: pi の自動コンパクションを切り、章立てに置き換える。
+    /**
+     * **ターン予算の数え直しはバックエンドの継ぎ目で掛ける**（PO報告 2026-08-13）。
+     *
+     * 以前は `HostSession` を包んだ皮の中で `reset()` していたが、その皮は
+     * pi にしか渡らず、Agent SDK 側では**一度も数え直されなかった**——本番の既定が
+     * そちらで、PO が話しかけるほど数えが積み上がり、新しい指示ごと断られた。
+     * ここで包めば、番頭のターンを回す入力は出所に依らず全部 `prompt()` を通る。
+     */
+    const piHarness: BantoHarness = withTurnBudgetReset(
+      new PiHarness({
+        // 会話の口は皮を通す（空応答ガード）
+        session: guardedSession,
+        // 文脈と章の操作は pi の本体でしか出来ない。**皮では届かない**
+        agentSession: session,
+        toLogicalName: (wireName) => {
+          try {
+            return fromWireToolName(wireName);
+          } catch {
+            // 名前空間規則に従わない名前（pi 組み込み等）はそのまま通す
+            return wireName;
+          }
+        },
+        renderTranscript,
+      }),
+      turnBudget
+    );
+
+    /**
+     * この会話が始まるバックエンド。会話ごとの指定（索引に残る）→ 設定の既定 → pi。
+     * **走り出しは片方だけ組む**のではなく pi は常に組む——章立てが pi の
+     * セッションに紐づいており、戻ってきたときに文脈が残っている必要があるため。
+     */
+    const stewardRole = llmCatalog.roles().steward;
+    /**
+     * この会話が始まるバックエンド。
+     *
+     * **会話に記録があるなら、それが勝つ**——索引に `backend` が無い記録は
+     * バックエンドという概念より前のもので、**pi を指している**（他に無かった）。
+     * ここで既定へ落とすと、pi のモデルで話していた会話が黙って別のバックエンドで
+     * 起き直る（実機で 52 会話が丸ごとそうなった）。
+     */
+    const startBackend = wantedModel
+      ? (wantedModel.backend ?? "pi")
+      : (stewardRole?.backend ?? "pi");
+    const harness: BantoHarness =
+      startBackend === "claude-agent-sdk"
+        ? makeClaudeHarness(
+            wantedModel?.backend === "claude-agent-sdk" ? wantedModel.id : stewardRole?.model
+          )
+        : piHarness;
+    harnessSwitchers.set(threadId, {
+      pi: () => piHarness,
+      claude: makeClaudeHarness,
+      /**
+       * **pi へ戻すときに Claude 側を畳む**（決定97）。札は残すので、また Claude を
+       * 選べば同じ文脈から続く——畳むのは走っているプロセスだけ。
+       */
+      releaseClaude: () => {
+        if (!claudeHarness) return;
+        claudeResume = claudeHarness.resumeToken() ?? claudeResume;
+        void claudeHarness.dispose();
+        claudeHarness = undefined;
+      },
+    });
+
+    // 提案§3.2: 自動コンパクションを切り（ハーネスが済ませた）、章立てに置き換える。
     //
     // **要約器は本セッションと別の呼び出し**（決定28）。安いモデルがカタログにあれば
     // それを使い、無ければこの会話のモデルで書く。要約器を用意できないときは
@@ -1148,7 +1460,8 @@ async function serve(options: ServeOptions): Promise<void> {
     let chapters: ChapterKeeper | undefined;
     if (writerModel) {
       chapters = new ChapterKeeper({
-        session,
+        // **いまのハーネスを毎回引く**——差し替えに追随する（PO要望 2026-08-13）
+        harness: () => threads.get(threadId)?.harness ?? harness,
         store: handoffs,
         threadId,
         summarize: createLlmChapterSummarizer({
@@ -1219,7 +1532,7 @@ async function serve(options: ServeOptions): Promise<void> {
     } else {
       console.warn(
         `[banto] ${threadId}: 要約に使えるモデルが無いため章立てを始めません` +
-          "（文脈は pi の自動コンパクションのままです）"
+          "（文脈のまとめ直しはハーネス任せになります）"
       );
     }
 
@@ -1238,7 +1551,7 @@ async function serve(options: ServeOptions): Promise<void> {
         ...createHandoffTools(handoffs, threadId),
       ];
     return {
-      session: countingSession,
+      harness,
       canvas,
       tools,
       /**
@@ -1273,6 +1586,11 @@ async function serve(options: ServeOptions): Promise<void> {
       dispose: () => {
         chapters?.stop();
         session.dispose();
+        // 決定97: 会話を畳んだら Claude 側も畳む（`Thread.dispose` はいまのハーネスしか
+        // 知らない——pi へ戻したあとに残っている Claude のセッションはここでしか届かない）
+        void claudeHarness?.dispose();
+        // 作り手の表からも外す（残すと畳んだ会話の作り手を掴んだままになる）
+        harnessSwitchers.delete(threadId);
       },
     };
   };
@@ -1306,7 +1624,7 @@ async function serve(options: ServeOptions): Promise<void> {
     catalog,
     modules,
     // ADR-0011 決定42: 中核の Tool も HTTP に出す（中核由来のGUIの到達先）
-    coreTools: llmTools,
+    coreTools: llmAllTools,
     /**
      * 取次で押された選択肢を効かせる（決定73）。
      *
@@ -1319,7 +1637,7 @@ async function serve(options: ServeOptions): Promise<void> {
     runInboxEffect: async (effect) => {
       const tools =
         effect.module === CORE_ORIGIN
-          ? llmTools
+          ? llmAllTools
           : (() => {
               const owner = modules.get(effect.module);
               if (!owner) throw new Error(`モジュール "${effect.module}" は登録されていません`);
@@ -1337,37 +1655,81 @@ async function serve(options: ServeOptions): Promise<void> {
     // task-0048: ビルド済み UI があれば同じポートで配る（常駐させるときの形）
     ...(webDir ? { webDir } : {}),
     // 画像添付の可否判定（/api/model）。id は指定されたモデル名のまま
-    // （解決で API 送信用 id に変わる場合があるため——MODEL_ALIASES）。vision は
-    // 解決されたモデルの能力（input に image があるか）から求める
-    ...(model && currentModelId
+    // （解決で API 送信用 id に変わる場合があるため——MODEL_ALIASES）。
+    //
+    // **能力は「標準そのものを解けたとき」だけ名乗る**（`hostModelInfo`）。
+    // `resolveHostDefault()` が代打へ落ちていたときにその vision / contextWindow を
+    // 標準の値として出すと、名前は `opus` なのに中身は無関係なモデル、になる
+    ...(model && hostDefault
       ? {
-          model: {
-            id: currentModelId,
-            vision: model.input.includes("image"),
-            ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
-          },
+          model: hostModelInfo({
+            steward: hostDefault,
+            resolved: resolvedModel
+              ? {
+                  provider: resolvedModel.provider,
+                  id: resolvedModel.id,
+                  vision: model.input.includes("image"),
+                  ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+                }
+              : undefined,
+            resolveExact: (p, m) => llmCatalog.resolveExact(p, m),
+          }),
         }
       : {}),
     ...(currentProvider ? { modelProvider: currentProvider } : {}),
     /**
      * 画面からモデルを変える口（決定：番頭は具体モデルを持つ／ADR-0004）。
      *
-     * **開いている会話すべてに効かせて、既定としても保存する**——番頭は連続した一人で、
-     * 会話ごとに別の頭になったりしないし、再起動で選び直させるのも筋が悪い。
+     * **その会話だけに効かせる**（PO裁定 2026-08-04）。既定は書き換えない——新しい会話の
+     * 既定は `roles.steward`（設定画面「番頭が使うモデル」）が持つ。
      * I2: 解決できない・ハーネスが対応していないときは throw して、画面を前のままにする。
      */
-    onSelectModel: async (thread, nextProvider: string, nextId: string) => {
-      const next = resolveModel(nextProvider, nextId);
-      if (!next) throw new Error(`${nextProvider}/${nextId} は使えるモデルの一覧にありません`);
-      if (!thread.session.setModel) {
+    onSelectModel: async (thread, nextProvider: string, nextId: string, nextBackend?: string) => {
+      const backend = nextBackend ?? thread.model?.backend ?? "pi";
+      const switcher = harnessSwitchers.get(thread.id);
+
+      /**
+       * **回せるかはバックエンドに聞く**（決定98a）。`undefined` ではなく
+       * `NotSupported` が返るので、断る理由と**次にどうすればよいか**をそのまま出せる。
+       */
+      const chosen = backendById.get(backend);
+      // I2: 知らないバックエンドを黙って pi として扱わない（別の経路で開いてしまう）
+      if (!chosen) throw new Error(`バックエンド "${backend}" は登録されていません`);
+      const support = chosen.supports({ provider: nextProvider, model: nextId });
+      if (support !== true) throw new Error(support.reason);
+
+      /**
+       * **Claude Code のときはモデルの別名をそのまま渡す**（決定94）。
+       * Agent SDK は Claude 以外へ繋げないので、LLM 登録での解決はしない
+       * ——登録に載らないモデル（`opus` 等）を「使えない」と断ってしまう。
+       */
+      if (backend === "claude-agent-sdk") {
+        if (!switcher) throw new Error("この会話はバックエンドを差し替えられません");
+        const harness = switcher.claude(nextId);
+        console.log(`[banto] backend(${thread.id}): claude-agent-sdk / ${nextId}`);
+        // I1: このバックエンドは画像を渡せない。できないことを true と名乗らない
+        return { id: nextId, vision: false, backend, harness };
+      }
+
+      // ここまで来れば pi が解決できることは `supports` が確かめている
+      const next = resolveModel(nextProvider, nextId)!;
+
+      // pi へ戻す（あるいは pi のまま）。**同じ pi セッションへ戻る**ので文脈も戻る
+      const back = thread.model?.backend === "claude-agent-sdk" ? switcher?.pi() : undefined;
+      // 決定97: 戻ったら Claude 側は畳む（放すだけでは子プロセスが残る）
+      if (back) switcher?.releaseClaude();
+      const target = back ?? thread.harness;
+      if (!target.setModel) {
         throw new Error("このハーネスは動作中のモデル切替に対応していません");
       }
       // **その会話だけ**に効かせる。他の会話は自分のモデルのまま（PO裁定 2026-08-04）
-      await thread.session.setModel(next);
-      console.log(`[banto] model(${thread.id}): ${nextProvider}/${nextId}`);
+      await target.setModel(next);
+      console.log(`[banto] model(${thread.id}): ${backend} / ${nextProvider}/${nextId}`);
       return {
         id: nextId,
         vision: next.input.includes("image"),
+        backend,
+        ...(back ? { harness: back } : {}),
         ...(next.contextWindow ? { contextWindow: next.contextWindow } : {}),
       };
     },
@@ -1480,7 +1842,19 @@ async function serve(options: ServeOptions): Promise<void> {
 
   console.log(`[banto] listening on ws://localhost:${server.port}/ws`);
   console.log(
-    `[banto] model: ${model ? `${model.provider}/${model.id}` : "(pi の既定解決)"}`
+    /**
+     * **新しい会話が何で始まるか**を、そのまま出す（I1）。
+     *
+     * 以前はここが pi の解決結果だけを出しており、既定が Claude Code のときも
+     * `huihui/...` と名乗って**嘘になっていた**。バックエンドまで含めて言う。
+     */
+    (() => {
+      const steward = llmCatalog.roles().steward;
+      if (steward) {
+        return `[banto] model: ${steward.backend ?? "pi"} / ${steward.provider}/${steward.model}`;
+      }
+      return `[banto] model: ${model ? `pi / ${model.provider}/${model.id}` : "(pi の既定解決)"}`;
+    })()
   );
   console.log(`[banto] memory: ${memoryPath()}`);
   console.log(`[banto] skills: ${skills.map((s) => s.name).join(", ") || "(none)"}`);

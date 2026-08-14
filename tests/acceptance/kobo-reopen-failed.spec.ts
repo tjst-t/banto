@@ -9,11 +9,13 @@
  *   1. **なぜ落ちたかが読める**（`kobo.task`）。「verify_failed:a4(exit=1)」だけでは
  *      直しようがない——番号から先は検証のログにしか無い
  *   2. **同じタスクのまま戻せる**（`kobo.reopen`）。中身なら rework、検証環境なら reverify
- *   3. **どうしようもなければ畳める**（`kobo.abandon`）。落ちたまま closed へ
+ *   3. **どうしようもなければ畳める**（`kobo.abandon`）。closed へ
+ *      ——**どの状態からでも**（PO 裁定 2026-08-14。当初は failed 専用だった）
  *
  * 守ること（I2）:
  *   - `reverify` は**承認まで行った実績があるときだけ**。監査を飛ばさせない
- *   - 落ちていないタスクは戻せない・畳めない
+ *   - 落ちていないタスクは戻せない（`reopen` は failed 専用のまま）
+ *   - **もう畳んであるもの（closed / superseded）は畳み直さない**。いまの状態を名指しで断る
  *
  * 直しを戻すと落ちることを確認済み。
  */
@@ -373,7 +375,7 @@ describe("[task-0081] 同じタスクのまま戻せる（切り直さない）"
   });
 });
 
-describe("[task-0081] どうしようもないものは落ちたまま畳める", () => {
+describe("[task-0081] どうしようもないものは畳める（PO 裁定 2026-08-14: どの状態からでも）", () => {
   it("abandon: failed → closed。記録は消えない", async () => {
     const id = "task-1008";
     driveToFailed(id, { viaApproved: false });
@@ -403,13 +405,36 @@ describe("[task-0081] どうしようもないものは落ちたまま畳める"
     );
   });
 
-  it("落ちていないタスクは畳めない（I2）", async () => {
+  /**
+   * **2026-08-14 の PO 裁定で意図が変わった。** 以前ここは
+   * 「落ちていないタスクは畳めない（I2）」を固定していたが、実運用で宙に浮くのは
+   * failed ではなく queued / paused / review-ready の方だった。いまは畳めるのが正しい。
+   *
+   * 残っている I2 は「**もう畳んであるものを黙って畳み直さない**」で、次の1件が見る。
+   */
+  it("落ちていないタスク（queued）も畳める", async () => {
     const id = "task-1009";
     daemon.createTask(PROJ, id, id);
     daemon.transition(PROJ, id, "queued", "テスト");
+    await call("kobo.abandon", { projectTag: PROJ, taskId: id, reason: "やめる" });
+    assert.equal(daemon.getTask(PROJ, id)?.status, "closed");
+
+    // 経緯から**畳む前の状態**が読めること（記録は消えない）
+    const events = daemon.getTaskEvents(PROJ, id);
+    assert.ok(
+      events.some(
+        (e) => e.type === "state_transitioned" && e.from === "queued" && e.to === "closed"
+      ),
+      "queued から畳んだことが帳簿に残っていない"
+    );
+  });
+
+  it("既に畳んだものは畳み直せない（いまの状態を名指しで断る・I2）", async () => {
+    const id = "task-1009";
+    assert.equal(daemon.getTask(PROJ, id)?.status, "closed", "前提：既に畳んである");
     await assert.rejects(
-      () => call("kobo.abandon", { projectTag: PROJ, taskId: id, reason: "やめる" }),
-      /failed ではありません/
+      () => call("kobo.abandon", { projectTag: PROJ, taskId: id, reason: "二度目" }),
+      /いまは closed/
     );
   });
 
