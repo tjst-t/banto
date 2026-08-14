@@ -756,25 +756,44 @@ export class BantoHostServer {
       // I2: 宛先不明の知らせを黙って捨てない
       return Promise.reject(err instanceof Error ? err : new Error(String(err)));
     }
+    /**
+     * **列を rejected のまま残さない**（inc-0069）。
+     *
+     * ここは `thread.notices` に `.then` を継ぎ足していく列である。1通のどこか——
+     * 記録の書き込み、`broadcast` の `ws.send`、`getLastError`——が投げると、この
+     * Promise は rejected のまま残り、**以後この会話へ積む知らせは `.then` の本体すら
+     * 走らない**。1回の失敗で、その会話の職人の報告が静かに全部消える。だから外側で
+     * 受け止め、列は必ず fulfilled で次へ渡す（I2: 消えたことにしない）。
+     */
     thread.notices = thread.notices.then(async () => {
-      record(thread);
-      // 職人の報告でも番頭は喋り出す。ここを知らせないと画面から中断する手段が消える
-      this.broadcast({ type: "turn_start", threadId: thread.id });
       try {
-        await this.promptEvenWhileBusy(thread, text);
+        record(thread);
+        // 職人の報告でも番頭は喋り出す。ここを知らせないと画面から中断する手段が消える
+        this.broadcast({ type: "turn_start", threadId: thread.id });
+        try {
+          await this.promptEvenWhileBusy(thread, text);
+        } catch (err) {
+          // I2: 知らせが番頭に届かなかったことを黙らせない
+          thread.record({ role: "error", text: String(err) });
+          this.broadcast({ type: "turn_end", threadId: thread.id, errorMessage: String(err) });
+          return;
+        }
+        const lastError = thread.getLastError();
+        if (lastError) thread.record({ role: "error", text: lastError });
+        this.broadcast({
+          type: "turn_end",
+          threadId: thread.id,
+          ...(lastError ? { errorMessage: lastError } : {}),
+        });
       } catch (err) {
-        // I2: 知らせが番頭に届かなかったことを黙らせない
-        thread.record({ role: "error", text: String(err) });
+        console.error(`[banto] ${thread.id} への知らせで転びました: ${String(err)}`);
+        try {
+          thread.record({ role: "error", text: String(err) });
+        } catch {
+          // 記録すら書けないなら、上のログだけが痕跡になる
+        }
         this.broadcast({ type: "turn_end", threadId: thread.id, errorMessage: String(err) });
-        return;
       }
-      const lastError = thread.getLastError();
-      if (lastError) thread.record({ role: "error", text: lastError });
-      this.broadcast({
-        type: "turn_end",
-        threadId: thread.id,
-        ...(lastError ? { errorMessage: lastError } : {}),
-      });
     });
     return thread.notices;
   }
