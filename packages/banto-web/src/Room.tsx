@@ -20,7 +20,7 @@ import type { Attachment, InboxItemView, ThreadView } from "@banto/host/protocol
 import type { LlmModelInfo } from "@banto/core";
 import { ChatRow, Loader } from "./messages.js";
 import { PendingDecisions } from "./Inbox.js";
-import { BranchCard, BranchResultRow, MergeBranchForm } from "./Branch.js";
+import { MergeBranchForm } from "./Branch.js";
 import { Icon } from "./icons.js";
 import { Modal, SearchField } from "./views/ui.js";
 import { callModuleTool } from "./views/useModuleTool.js";
@@ -377,24 +377,13 @@ export function Room({
 }: RoomProps): React.ReactElement {
   const threadId = thread.threadId;
   const isBranch = thread.kind === "branch";
-  /**
-   * **いま見ている幹の枝**（ADR-0022 決定112）。時系列の帯とは別の、流れない一覧。
-   * 開いている枝と、片が付いた枝（結論つき）を並べる——他の話題をいくら重ねても消えない。
-   *
-   * レールの点（`held`・App.tsx）とは別物。**あちらは開いている枝だけ**（決定77
-   * 不変条件③）で、ここは片が付いた枝も並べる。混ぜると点の本数が読めなくなる。
+  /*
+   * **いま見ている幹の枝の一覧は、ここには置かない**（PO報告 2026-08-14）。
+   * ADR-0022 決定112 でチャット欄の上に「流れない枝一覧」を敷いたが、`flex: none` の
+   * 帯なので会話の中身にかかわらず常時 240px を占め、900px の窓では会話の3分の1が
+   * 埋まっていた。置き場は履歴の面の「枝」タブ（`ThreadHistory`）へ移した——
+   * 流れない場所に結論を残す、という決定112 の狙いはそちらで満たす。
    */
-  const trunkOpenBranches = useMemo(
-    () => (isBranch ? [] : session.branches.filter((b) => b.parentId === threadId)),
-    [session.branches, isBranch, threadId]
-  );
-  const trunkClosedBranches = useMemo(
-    () =>
-      isBranch
-        ? []
-        : session.closedThreads.filter((b) => b.kind === "branch" && b.parentId === threadId),
-    [session.closedThreads, isBranch, threadId]
-  );
   /**
    * 畳んだ会話（PO報告 2026-08-10）。
    *
@@ -748,37 +737,6 @@ export function Room({
             }}
             onCancel={() => setMerging(false)}
           />
-        </div>
-      )}
-
-      {/*
-        いま見ている幹の枝（ADR-0022 決定112）。時系列の帯とは別の、流れない一覧。
-        見た目は幹に立つ2つの行と同じ意匠（`BranchCard`・`BranchResultRow`）をそのまま使う
-        ——新しい部品は起こさない。押しても畳んだ枝は開き直らない（`onOpenBranch` は
-        会話を移すだけ・決定111）。
-      */}
-      {!slim && !isBranch && (trunkOpenBranches.length > 0 || trunkClosedBranches.length > 0) && (
-        <div className="room-branches">
-          {trunkOpenBranches.map((b) => (
-            <BranchCard
-              key={b.threadId}
-              branch={b}
-              active={b.threadId === activeBranchId}
-              hasTurn={branchHasTurn(b.threadId)}
-              onOpen={onOpenBranch}
-            />
-          ))}
-          {trunkClosedBranches.map((b) => (
-            <BranchResultRow
-              key={b.threadId}
-              branchId={b.threadId}
-              title={b.title}
-              conclusion={b.conclusion ?? ""}
-              at={b.closedAt ?? ""}
-              hasDetail={b.hasConclusionDetail === true}
-              onOpen={onOpenBranch}
-            />
-          ))}
         </div>
       )}
 
