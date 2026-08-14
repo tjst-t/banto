@@ -16,7 +16,8 @@
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
 import { CLAUDE_WEB_TOOL_NAMES } from "./naming.js";
 import { CLAUDE_REPORT_PROMPT } from "./report.js";
-import type { ClaudeToolOffload } from "./tool-offload.js";
+import type { ClaudeHookMatcher, ClaudeToolOffload } from "./tool-offload.js";
+import type { ClaudeWorkKeep } from "./work-keep.js";
 // 型だけ（`import type` は実行時に消えるので、ホストの `main()` を巻き込まない）
 import type { HostConfig } from "./host.js";
 
@@ -31,8 +32,36 @@ export interface BuildHostOptionsParams {
   reported: boolean;
   /** 長いツール結果の退避。切ってあるときは `undefined`。 */
   offload?: ClaudeToolOffload | undefined;
+  /** 作業の取り置き（機構が定期的にコミットする）。切ってあるときは `undefined`。 */
+  workKeep?: ClaudeWorkKeep | undefined;
   /** 職人に生やす MCP サーバ（報告・工場の口）。 */
   mcpServers?: Options["mcpServers"] | undefined;
+}
+
+/** ここで組み合わせるフックの種類（増えたらここに足す）。 */
+type ClaudeHookEvent = "PostToolUse" | "Stop";
+
+type ClaudeHookMap = Readonly<Partial<Record<ClaudeHookEvent, readonly ClaudeHookMatcher[]>>>;
+
+/**
+ * 複数の器のフックを1つにまとめる。
+ *
+ * 退避（task-0102）も取り置き（work-keep）も `PostToolUse` を使うので、
+ * **片方で上書きしない**ことがここの唯一の仕事。`hooks` は1つしか渡せないのだから、
+ * 後から器を足す人が黙って前の器を消せてしまう——それを構造で塞ぐ。
+ */
+function mergeHooks(...sources: Array<ClaudeHookMap | undefined>): Options["hooks"] | undefined {
+  const merged: Partial<Record<ClaudeHookEvent, ClaudeHookMatcher[]>> = {};
+  for (const source of sources) {
+    if (!source) continue;
+    for (const [event, matchers] of Object.entries(source) as Array<
+      [ClaudeHookEvent, readonly ClaudeHookMatcher[] | undefined]
+    >) {
+      if (!matchers || matchers.length === 0) continue;
+      (merged[event] ??= []).push(...matchers);
+    }
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
 /**
@@ -57,6 +86,7 @@ export function buildAppendedPrompt(params: {
 /** `query()` へ渡すものを組み立てる。 */
 export function buildHostOptions(params: BuildHostOptionsParams): Options {
   const { config } = params;
+  const hooks = mergeHooks(params.offload?.hooks, params.workKeep?.hooks);
   const appended = buildAppendedPrompt({
     systemPrompt: config.systemPrompt,
     reported: params.reported,
@@ -78,7 +108,9 @@ export function buildHostOptions(params: BuildHostOptionsParams): Options {
     ...(config.network ? {} : { disallowedTools: [...CLAUDE_WEB_TOOL_NAMES] }),
     ...(params.mcpServers ? { mcpServers: params.mcpServers } : {}),
     // task-0102: 長いツール結果はモデルへ渡る前に栞へ差し替える（切ってあれば載せない）
-    ...(params.offload ? { hooks: params.offload.hooks } : {}),
+    // work-keep: 道具を使うたびに、間隔が過ぎていれば作業を取り置く。**同じ `PostToolUse` を
+    // 分け合う**ので、どちらか片方だけを載せて上書きしない（mergePostToolUse）
+    ...(hooks ? { hooks } : {}),
     // 職人の前に人は居ない。**可否を尋ねる相手が居ない**ので通す。危険の境目は
     // 「渡した道具（tools）」と「作業させる worktree」であって、対話の確認ではない（pi と同じ）
     canUseTool: async (_toolName, input) => ({ behavior: "allow" as const, updatedInput: input }),
