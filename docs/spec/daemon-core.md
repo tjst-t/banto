@@ -60,6 +60,8 @@ draft → queued → ready → planning → implementing → auditing
 
 **緩める方向は PO だけ。** 番頭が通せるのは「検証コマンドの訂正・スコープからパスを取り除く・受け入れ条件を増やす」。PO が要るのは「スコープに新しいパスを足す・基準を変える・条件を消す」。**glob の広い／狭いは文字列では解けない**ので、いまの一覧に無い文字列が増えたら意味に関わらず PO に上げる（間違えてよいのは「厳しすぎる」側）。
 
+**`amend` と `supersede` の使い分け**：**同じ依頼のままなら `amend`**（契約を直して経緯を1本に保つ）、**依頼そのものが別物になったなら `supersede`**（新しいタスクを積み、元を `superseded` にする）。決定64 の改訂で訂正の既定は `amend` に移ったが、`supersede` が要る場面は残る——依頼が入れ替わったのに同じ id に上書きすると、**何を頼まれていたのかが帳簿から消える**。
+
 ### 1.1 failed から戻す（task-0081・PO 要望 2026-08-08）
 
 **落ちたタスクを切り直させない。** 落ちるたびに新しいタスクを立てる運用だと、同じ依頼が `task-0004` → `task-0005` → … と別 id に分かれ、**何度目の挑戦なのかが帳簿から読めない**（実機の loamium で実際にそうなった）。番頭が理由を見て、直して、**同じタスクのまま**最後まで通せるようにする。
@@ -315,21 +317,26 @@ Kobo は**2つの口**を持つ（改訂 2026-08-07・ADR-0013 決定58・60）�
 決定27b の呼び出し規約に乗る。**契約は Tool で、体系を2つ持たない**（決定9）。
 既定の到達先は `/api/kobo`。
 
-| Tool | 何をするか |
-|---|---|
-| `kobo.enqueue` | タスク定義ファイルを積む。`origin`（積んだスレッド）と `originRef`（経緯）つき |
-| `kobo.list` / `kobo.task` | 一覧と、1件の**いまと経緯**（解決済みのレビュー段・触れる環境つき） |
-| `kobo.projects` | 受け持っているプロジェクト |
-| `kobo.approve` | レビューを通す。**`po` と判定されたものは通せない**（決定57） |
-| `kobo.supersede` | 積んだタスクを置き換える（訂正の唯一の経路・決定64） |
-| `kobo.settle` | **工場の外で決着したものを畳む**（失敗ではない。→ §1.2） |
-| `kobo.events` | 起きたことを `afterEventId` で追う。**宛先（origin）を添えて返す** |
+| Tool | 何をするか | 番頭に見える |
+|---|---|---|
+| `kobo.enqueue` | タスク定義ファイルを積む。`origin`（積んだスレッド）と `originRef`（経緯）つき | ○ |
+| `kobo.list` / `kobo.task` | 一覧と、1件の**いまと経緯**（解決済みのレビュー段・触れる環境・滞在時間つき） | ○ |
+| `kobo.projects` | 受け持っているプロジェクト | ○ |
+| `kobo.approve` | レビューを通す。**`po` と判定されたものは通せない**（決定57） | ○ |
+| `kobo.send_back` | レビュー待ちを**実装へ差し戻す**（通さない方の判断）。契約は変えない | ○ |
+| `kobo.reopen` | **落ちたものを同じタスクのまま動かし直す**（`rework` / `reverify`。→ §1.1） | ○ |
+| `kobo.amend` | 積んだあとの契約を**訂正する**。緩める方向は PO だけ（→ §1.0） | ○ |
+| `kobo.supersede` | タスクを**別のタスクで置き換える**（→ §1.0 の使い分け） | ○ |
+| `kobo.abandon` | 落ちたものを**落ちたまま畳む**（諦める。→ §1.1） | ○ |
+| `kobo.settle` | **工場の外で決着したものを畳む**（失敗ではない。→ §1.2） | ○ |
+| `kobo.set_watch` / `kobo.set_merge_queue` | watcher・マージキューを**止める**（工場が壊れたときの制御の口） | ○ |
+| `kobo.unregister_project` | プロジェクトの**受け持ちを外す** | ○ |
+| `kobo.register_project` | プロジェクトを受け持つ | — |
+| `kobo.events` | 起きたことを `afterEventId` で追う。**宛先（origin）を添えて返す** | — |
 
-> この表は全量ではない（`kobo.reopen` / `send_back` / `abandon` / `amend` / `register_project` /
-> `unregister_project` / `set_watch` / `set_merge_queue` が実装にあって載っていない）。
-> 在庫の正典は `packages/banto-daemon/src/kobo-tools.ts`、**番頭に見えるもの**の正典は
-> `packages/banto-host/src/presented-tools.ts`（在庫にあっても後者に載せなければモデルには
-> 見えない・決定82）。
+**「番頭に見える」は在庫にあるかとは別の問いである。** 在庫の正典は `packages/banto-daemon/src/kobo-tools.ts`、番頭に見えるものの正典は `packages/banto-host/src/presented-tools.ts`——**後者に載せなければ、在庫にあってもモデルには存在しない**（決定82）。実際、`abandon` / `supersede` / `amend` は在庫にありながら提示されておらず、機構が「`kobo.abandon` で畳んでください」と案内し続ける一方で番頭の手にその道具が無い、という状態が続いた（inc-0063）。
+
+`—` の2本は**意図的に提示していない**：`register_project` は受け持ちを増やす操作で番頭の判断だけでは決めない。`kobo.events` は番頭ホストの知らせの層（`kobo-notice.ts`）が直に呼ぶ口で、モデルが読むのは `kobo.list` / `kobo.task` の方。
 
 **UI は Kobo へ直接は届かない**（§7 のとおり 127.0.0.1 にしか出ていない）。番頭ホストが
 自分の面に `/api/kobo/tools/*` を生やして中継する。
