@@ -591,12 +591,9 @@ describe("[提案§3.1+§3.2] 章を畳んでも、退避した観測の在り�
  * 本物のモデルは叩かない——LLM を呼ぶ口（`complete`）を差し替えて筋書きで確かめる。
  */
 describe("[inc-0068] 出力上限に当たって空で返ったら、一度はやり直す", () => {
-  /** pi の Model のうち、要約器が見る欄だけ。 */
-  const fakeModel = { provider: "huihui", id: "deepseek-v4-flash", maxTokens: 16384 };
-  /** `complete` を渡すので認証は解決しに行かない（呼ばれたら失敗させる）。 */
-  const noAuth = async () => {
-    throw new Error("認証を解決しに行ってはいけない");
-  };
+  /** 要約器が見る座標だけ。 */
+  const fakeModelRef = { backend: "pi", provider: "huihui", model: "deepseek-v4-flash" };
+  const fakeModelMaxTokens = 16384;
 
   /** 出力上限に当たって本文ゼロで返る応答。 */
   const emptyOnLength = { stopReason: "length", content: [{ type: "thinking", thinking: "…" }] };
@@ -616,10 +613,8 @@ describe("[inc-0068] 出力上限に当たって空で返ったら、一度は�
     overrides: Record<string, unknown> = {}
   ) {
     return createLlmChapterSummarizer({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 偽のモデル。
-      // 要約器が読むのは provider / id / maxTokens だけ（意図的な絞り込み）
-      model: fakeModel as any,
-      auth: noAuth,
+      modelRef: fakeModelRef,
+      modelMaxTokens: fakeModelMaxTokens,
       complete: async (request) => {
         seen.push({ prompt: request.prompt, maxTokens: request.maxTokens });
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 同上
@@ -650,7 +645,7 @@ describe("[inc-0068] 出力上限に当たって空で返ったら、一度は�
     assert.equal(seen[0]!.maxTokens, DEFAULT_CHAPTER_MAX_TOKENS, "1回目は既定の予算");
     assert.ok(seen[1]!.maxTokens > seen[0]!.maxTokens, "やり直しで予算が上がっていない");
     assert.ok(
-      seen[1]!.maxTokens <= fakeModel.maxTokens,
+      seen[1]!.maxTokens <= fakeModelMaxTokens,
       "モデル自身の上限を超えて頼んではいけない"
     );
     assert.match(seen[1]!.prompt, /2000字以内/, "より短い形式で頼んでいない");
@@ -729,6 +724,55 @@ describe("[inc-0068] 出力上限に当たって空で返ったら、一度は�
       JSON.stringify(session.agent.state.messages),
       /カワセミ/,
       "資料が書けたのだから文脈は畳まれる"
+    );
+  });
+
+  // ── task-0151 a6: 書き上がった資料に、実際に使ったモデルが残る ────────────────
+
+  it("[task-0151 a6] 1回で書けた資料に、使ったモデルが残る", async () => {
+    const seen: Array<{ prompt: string; maxTokens: number }> = [];
+    const summarize = summarizer([{ stopReason: "stop", content: [{ type: "text", text: goodBody }] }], seen);
+
+    const handoff = await summarize({ transcript: "PO: やあ", chapter: 1 });
+
+    assert.match(handoff.body, /要約に使ったモデル/);
+    assert.match(handoff.body, /pi\/huihui\/deepseek-v4-flash/, "座標（backend/provider/model）が残っていない");
+  });
+
+  it("[task-0151 a6] やり直しで書けた資料にも、使ったモデルが残る", async () => {
+    const seen: Array<{ prompt: string; maxTokens: number }> = [];
+    const summarize = summarizer([emptyOnLength, { stopReason: "stop", content: [{ type: "text", text: goodBody }] }], seen);
+
+    const handoff = await summarize({ transcript: "PO: やあ\n\n番頭: どうも", chapter: 1 });
+
+    assert.match(handoff.body, /2回目の試み/, "やり直したことは既存どおり残る");
+    assert.match(handoff.body, /要約に使ったモデル/);
+    assert.match(handoff.body, /pi\/huihui\/deepseek-v4-flash/);
+  });
+
+  // ── task-0151 a4: 断りに「指定された名前・解決の結果・実際に使ったもの」が載る ──
+
+  it("[task-0151 a4] 既定へ落ちていたときは、断りに指定・理由・実際に使ったものが載る", async () => {
+    const seen: Array<{ prompt: string; maxTokens: number }> = [];
+    const summarize = summarizer([emptyOnLength, emptyOnLength], seen, {
+      fallback: {
+        requested: { backend: "claude-agent-sdk", provider: "claude", model: "opus" },
+        reason: "Claude Code は claude 以外のプロバイダを回せません",
+      },
+    });
+
+    await assert.rejects(
+      () => summarize({ transcript: "PO: やあ", chapter: 1 }),
+      (err: Error) => {
+        assert.match(err.message, /claude-agent-sdk\/claude\/opus/, "指定された名前が載っていない");
+        assert.match(
+          err.message,
+          /Claude Code は claude 以外のプロバイダを回せません/,
+          "解決できなかった理由が載っていない"
+        );
+        assert.match(err.message, /pi\/huihui\/deepseek-v4-flash/, "実際に使ったものが載っていない");
+        return true;
+      }
     );
   });
 });

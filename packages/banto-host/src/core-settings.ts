@@ -13,6 +13,7 @@
 
 import { MODEL_TIERS, TIER_LABELS, workerRoleOf } from "@banto/core";
 import type { LlmCatalog, ModelTier, ModuleSettingsSpec } from "@banto/core";
+import type { ChapterModelResolution } from "./chapter-model.js";
 import type { PlaceSetting, SettingsStore } from "./settings-store.js";
 
 /** 場所は1行1件のテキストで扱う（`id:/path:glob,glob`）。表形式は画面が育ってから。 */
@@ -46,6 +47,11 @@ function linesToPlaces(lines: readonly unknown[]): PlaceSetting[] {
 /** 束縛を画面の値（`backend|provider|model`）へ。 */
 function refValue(ref?: { backend?: string; provider: string; model: string }): string {
   return ref ? `${ref.backend ?? "pi"}|${ref.provider}|${ref.model}` : "";
+}
+
+/** 束縛を人が読む形へ（`backend › provider › model`）。 */
+function refLabel(ref: { backend: string; provider: string; model: string }): string {
+  return `${ref.backend} › ${ref.provider} › ${ref.model}`;
 }
 
 /**
@@ -99,6 +105,13 @@ export interface CoreSettingsOptions {
   workerChoices?: () => Array<{ value: string; label: string }>;
   /** いま効いている職人の既定等級（画面に映す）。 */
   workerDefaultTier?: () => string;
+  /**
+   * **章の要約に実際に使われているモデル**（task-0151・a3）。保存した指定と、
+   * 環境変数・既定への落ちを解いた後のもの。画面はこれをそのまま映す
+   * ——「保存した値」と「実際に効いているもの」が食い違いうる（BANTO_CHAPTER_MODEL が
+   * 優先するため）ので、判断をここで再現せず呼び手からもらう。
+   */
+  effectiveChapterModel?: () => ChapterModelResolution;
 }
 
 /**
@@ -322,6 +335,67 @@ export function createCoreSettingsSections(
               `${applied.join("、")}。\n\n` +
               "**番頭は新しい会話から**効きます（いま開いている会話は会話の画面で）。" +
               "**職人は次の委譲から**効きます。",
+          };
+        },
+      } as ModuleSettingsSpec,
+    },
+    {
+      id: "chapterModel",
+      spec: {
+        title: "章の要約に使うモデル",
+        description:
+          "会話が長くなったとき、引き継ぎ資料を書くために使うモデルです（本編とは別の呼び出し・" +
+          "決定28）。会話のモデルとは独立に選べます——安いモデルで足ります。" +
+          "未指定なら既定（claude-agent-sdk の haiku）を使います。" +
+          "環境変数 BANTO_CHAPTER_MODEL が設定されている間は、そちらがここより優先されます（互換のため）。",
+        fields: () => [
+          {
+            key: "chapterModel",
+            label: "要約モデル",
+            type: "select",
+            get options() {
+              return withCurrent(options.harnessChoices?.() ?? [], store.all().chapterModel ?? "");
+            },
+            description: (() => {
+              const effective = options.effectiveChapterModel?.();
+              if (!effective) return "";
+              const label = refLabel(effective.ref);
+              if (effective.source === "env") {
+                return `いま実際に使われているのは ${label}（環境変数 BANTO_CHAPTER_MODEL）です。`;
+              }
+              const fallbackNote = effective.fallback
+                ? `指定（${
+                    "raw" in effective.fallback.requested
+                      ? effective.fallback.requested.raw
+                      : refLabel(effective.fallback.requested)
+                  }）を解決できず、既定へ落としています（${effective.fallback.reason}）。`
+                : "";
+              return `${fallbackNote}いま実際に使われているのは ${label} です。`;
+            })(),
+          },
+        ],
+        read: () => ({ chapterModel: store.all().chapterModel ?? "" }),
+        write: (values) => {
+          const raw = values["chapterModel"];
+          const text = String(raw ?? "");
+          if (text === "") {
+            store.update("chapterModel", undefined);
+            return {
+              applied: false,
+              message: "章の要約モデルの指定を外しました。次の会話から既定を使います。",
+            };
+          }
+          const [backend, provider, model] = text.split("|");
+          // I2: 壊れた値を黙って既定に落とさない
+          if (!backend || !provider || !model) {
+            throw new Error(`モデルの指定が不正です: ${text}`);
+          }
+          store.update("chapterModel", text);
+          return {
+            applied: false,
+            message:
+              `保存しました（${backend}/${provider}/${model}）。次の会話から効きます` +
+              "（いま開いている会話は、次に章を畳むときから）。",
           };
         },
       } as ModuleSettingsSpec,
