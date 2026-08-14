@@ -90,7 +90,6 @@ async function harness(options: { poToken?: string } = {}): Promise<Harness> {
   const daemon = Daemon.create({
     port: koboPort,
     dataDir: path.join(tmpDir, "data"),
-    watchIntervalMs: 99999,
     tickIntervalMs: 99999,
     disableAutoSpawn: true,
     disableAuditSpawn: true,

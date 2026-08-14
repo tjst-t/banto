@@ -114,7 +114,6 @@ async function harness(
   const daemon = Daemon.create({
     port: await freePort(),
     dataDir,
-    watchIntervalMs: 200,
     tickIntervalMs: 200,
     disableAutoSpawn: true,
     disableAuditSpawn: true,

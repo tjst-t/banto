@@ -8,7 +8,6 @@
  *   - ProjectRegistry (project metadata)
  *   - StateMachine (transition rules)
  *   - WsEventServer (real-time event broadcast)
- *   - TaskWatcher (polling watcher for work/tasks/*.md)
  *   - Scheduler (periodic tick jobs: gate re-evaluation, rotation, etc.)
  *
  * D3: state is derived from events, never written directly.
@@ -34,6 +33,7 @@ import {
   DEFAULT_DWELL_WARN_MINUTES,
   promptAssetDigest,
   loadPromptAsset,
+  VALID_TASK_KINDS,
 } from "@banto/core";
 import type {
   OrchestrationEvent,
@@ -47,15 +47,16 @@ import { ProjectRegistry } from "./project-registry.js";
 import type { ProjectEntry } from "./project-registry.js";
 import { WsEventServer } from "./ws-server.js";
 import { createHttpServer } from "./http-server.js";
-import { TaskWatcher } from "./task-watcher.js";
 import { Scheduler } from "./scheduler.js";
 import type { TickJob } from "./scheduler.js";
 import { GateEvaluator, evaluatePendingGates } from "./gate-evaluator.js";
 import type { QuotaCheck } from "./gate-evaluator.js";
 import { addTaskWorktree, createWorktree } from "@banto/repo-manager";
 import { processMergeQueue } from "./merge-queue.js";
+// `getAcceptance` は第3便（自動着地の証拠）が使う。`readTaskDefinition` は main 側で
+// 解消タスクへ検査コマンドを写すために入れたものだが、**第4便で解消タスクごと消えた**
+// ——定義ファイルを読む経路も無くなったので、ここでは取らない
 import { getAcceptance, type GateVerifyRunner } from "./merge-gate.js";
-import { readTaskDefinition } from "./kobo-tools.js";
 import {
   DEFAULT_VERIFY_PROFILE,
   autoLandBlockers,
@@ -64,13 +65,18 @@ import {
   type ProjectConfig,
   type ReviewStage,
 } from "./review-policy.js";
-import { taskPayload } from "./task-watcher.js";
 import {
-  fileConflictTask,
-  deriveOriginResolutionPairs,
-  hasOpenResolutionTask,
-  type OriginResolutionPair,
-} from "./conflict-filer.js";
+  assignAcceptanceIds,
+  contractFromRecord,
+  contractPayload,
+  nextTaskNumber,
+  taskFilePath,
+  writeTaskRecord,
+  TASKS_DIR,
+  type TaskContract,
+  type TaskContractAmendment,
+  type TaskContractInput,
+} from "./task-record.js";
 // ADR-0013 決定60: 台帳を持つ能力（職人・検証環境）は**モジュールが持つ**。Kobo は
 // `worker.*` / `env.*` を**モジュール経由で呼ぶ側**になり、台帳・ドライバ・sops・
 // pi の起動をここに持たない
@@ -166,19 +172,17 @@ function splitPoolTaskId(id: string): { taskId: string; role: WorkerRole } {
 const AUDIT_ATTEMPT_LIMIT = 2;
 
 /**
- * コンフリクト解消後の再開を**誰がやったか**（inc-0063 の4）。
+ * コンフリクトで戻したことの印（第4便）。
  *
- * 帳簿の `po_operation` は名前のとおり PO の操作を残す場所なのに、機構の自動処理
- * （解消タスクが片付いた → origin を merging へ戻す）が同じ型で無記名に積まれていた。
- * PO は何も押していないので、`payload.actor` に出所を書いて読み分けられるようにする。
+ * **新しいイベント型は足していない。** `state_transitioned` の任意フィールド `reason` に
+ * この接頭辞で書き、数えるときはこれで拾う。帳簿の形は外に累積する one-way な選択で、
+ * 増やすなら PO の判断が要る（D9）——`reason` で足りるなら足さない。
  *
- * **型そのものを増やさなかった理由**: `StateStore.applyEvent` は知らない type を
- * 見ると throw する（I2: 版ずれを黙って無視しない）。新しい type を本番の帳簿に
- * 書いた後でこの変更を巻き戻すと、**古い版の Kobo が帳簿を再生できず起動できない**。
- * この直しは未コミットで PO のレビューを待つ＝巻き戻りうるので、後方互換の側を採る。
- * 型を分けるなら、読み手（core の再生・API・番頭の表示）を先に直してから。
+ * 加えて機構の都合もある: `StateStore.applyEvent` は知らない type を見ると throw する
+ * （I2: 版ずれを黙って無視しない）。新しい type を本番の帳簿に書いた後で巻き戻すと、
+ * **古い版の Kobo が帳簿を再生できず起動できない**。
  */
-const CONFLICT_RESUME_ACTOR = "system";
+const CONFLICT_RETRY_REASON = "rebase_conflict";
 
 /** モデルの等級。Kobo が知ってよいのはここまで（決定60a）。 */
 type ModelTier = "reasoning" | "standard" | "fast";
@@ -284,11 +288,6 @@ export interface DaemonConfig {
    */
   roleAssignmentsSection?: SettingsSection;
   /**
-   * Polling interval (ms) for the task-definition watcher.
-   * Default: 2000 ms. Set to a smaller value in tests for faster feedback.
-   */
-  watchIntervalMs: number;
-  /**
    * Tick interval in milliseconds for the periodic scheduler.
    * Default: 60000 (1 minute) for production.
    * Override to a small value (e.g. 500) in tests to reduce wait time.
@@ -371,7 +370,6 @@ export class Daemon {
   private readonly registry: ProjectRegistry;
   private readonly httpServer: http.Server;
   private readonly wsServer: WsEventServer;
-  private readonly watcher: TaskWatcher;
   private readonly scheduler: Scheduler;
   private readonly gateEvaluator: GateEvaluator;
   /**
@@ -510,7 +508,6 @@ export class Daemon {
     this.wsServer = new WsEventServer(this.httpServer, (projectTag) =>
       this.log.getEventsByProject(projectTag)
     );
-    this.watcher = new TaskWatcher(this, config.watchIntervalMs);
 
     // GateEvaluator: implements spec-multi-project §3 three-condition gate.
     //
@@ -589,14 +586,6 @@ export class Daemon {
       this.scheduler.registerJob("merge-queue", () => this.runMergeQueueTick());
     }
 
-    // Built-in job: conflict-resolution outcome check (S75f66b-6, spec-daemon-core §4.2).
-    // On each tick, derive paused-origin↔conflict-resolution pairs (D3: from event log).
-    // If a resolution task reached merged/closed: resume the origin task to merging.
-    // If a resolution task failed: chain-fail the origin task (I2: stop, don't swallow).
-    this.scheduler.registerJob("conflict-resolution-check", () => {
-      this.runConflictResolutionCheck();
-    });
-
     /**
      * **止まっているものを見つけて言う**（realign 第2便・rethink C-3 第1手）。
      *
@@ -622,7 +611,6 @@ export class Daemon {
       bindHost: config.bindHost ?? process.env["BANTO_DAEMON_BIND"] ?? "127.0.0.1",
       dataDir: config.dataDir ?? process.env["BANTO_DATA_DIR"] ?? "./data",
       ...(poToken !== undefined ? { poToken } : {}),
-      watchIntervalMs: config.watchIntervalMs ?? 2000,
       tickIntervalMs:
         config.tickIntervalMs ??
         parseInt(process.env["BANTO_TICK_INTERVAL_MS"] ?? "60000", 10),
@@ -691,7 +679,6 @@ export class Daemon {
         process.stdout.write(
           `[banto-daemon] listening on ${bindHost}:${this.config.port} (dataDir=${this.config.dataDir})\n`
         );
-        this.watcher.start();
         this.scheduler.start();
         resolve();
       });
@@ -721,7 +708,6 @@ export class Daemon {
 
   /** Stop the daemon gracefully. */
   async stop(): Promise<void> {
-    this.watcher.stop();
     // Drain the scheduler FIRST: awaits any in-flight runAllJobs() so no scheduler
     // job can try to append events after log.close() (D3/I2: log is the single
     // runtime truth — no writes must be silently dropped).
@@ -799,19 +785,26 @@ export class Daemon {
     "failed",
   ]);
 
-  /** watcher が見てよいプロジェクト（登録があり、取り込みの弁が開いているもの）。 */
-  projectsToWatch(): ProjectEntry[] {
-    return this.registry.list().filter((p) => this.registry.isEnabled(p.id, "watch"));
-  }
-
   /** マージキューを回してよいプロジェクトか。外れているものは false。 */
   mergeQueueEnabledFor(projectTag: string): boolean {
     return this.registry.isEnabled(projectTag, "mergeQueue");
   }
 
-  /** 取り込みの弁が開いているか。 */
-  watchEnabledFor(projectTag: string): boolean {
+  /**
+   * **積む口の弁**が開いているか（第4便で意味が変わった）。
+   *
+   * もとは「watcher が `work/tasks/*.md` を読むか」だった。watcher を廃止したので、
+   * 同じ弁を**積むこと自体**に付け替えている——さもないと、PO が「このプロジェクトへは
+   * 積むな」と閉じた弁が watcher と一緒に消え、何も守らなくなる（実際、稼働中の台帳には
+   * banto の弁が閉じたまま入っている）。台帳に保存済みの値はそのまま効く。
+   */
+  enqueueEnabledFor(projectTag: string): boolean {
     return this.registry.isEnabled(projectTag, "watch");
+  }
+
+  /** 弁を閉じた理由。積めなかったときにそのまま返す（黙って止まっているのが一番困る）。 */
+  private enqueueStopReason(projectTag: string): string | undefined {
+    return this.registry.list().find((p) => p.id === projectTag)?.watch?.reason;
   }
 
   /**
@@ -975,128 +968,156 @@ export class Daemon {
     return task;
   }
 
-  // ── 入口（番頭が積む・ADR-0013 決定58、task-0064）───────────────────────────
+  // ── 入口（番頭が積む・ADR-0013 決定58、第4便で唯一の入口になった）─────────────
 
   /**
-   * タスク定義ファイルを積む（`kobo.enqueue` の実体）。
+   * 仕事を積む（`kobo.enqueue` の実体）。**Kobo へ入る口はここだけ**（第4便）。
    *
-   * **定義はファイル**（D4）。契約（`scope.paths`・受け入れ基準）は取り込み時点で固まり、
-   * 以後ファイルを直しても変わらない（決定62c・64）。ここが受け取るのは「どれを積むか」と、
-   * **誰の求めで積んだか**（`origin`＝返す宛先、`originRef`＝経緯）だけ。
+   * 番頭は依頼の中身を渡すだけで、`task-NNNN` を決めない。Kobo が採番し、記録ファイル
+   * （`work/tasks/task-NNNN.md`）を書き、`task_created` を出す——この順。
    *
-   * watcher の取り込みと**同じ組み立て**を使う（`taskPayload`）——入口によって契約が
-   * 変わってはいけない。違うのは「明示的に積まれた」ことと origin が残る点。
+   * **契約は引数から凍る**（決定62c）。ファイルを読み戻して契約を作る経路はもう無い
+   * ので、あとから md を直しても契約は動かない。以前は「watcher が既存タスクを読み
+   * 飛ばすこと」がその砦だったが、いまは**そもそも読まない**のが砦である。
    *
-   * I2: 積めない理由（ファイルが無い・形が違う・draft・既にある）をそれぞれ返す。
-   *     黙って何も起きない経路を作らない。
+   * I2: 積めない理由（弁が閉じている・必須が欠けている・書けない・上限超え）を
+   *     それぞれ返す。**ファイルが書けなかったら積まない**（PO 指示）。
    */
-  enqueueTaskFile(
+  enqueueTask(
     projectTag: string,
-    taskId: string,
-    options: { origin?: string; originRef?: string } = {}
-  ): { ok: true; status: string } | { ok: false; reason: string } {
+    input: TaskContractInput,
+    options: { originRef: string; origin?: string }
+  ):
+    | { ok: true; taskId: string; path: string; status: string }
+    | { ok: false; reason: string } {
     const project = this.registry.list().find((p) => p.id === projectTag);
-    if (!project) return { ok: false, reason: `project_not_found: ${projectTag}` };
-
-    const existing = this.store.getTask(taskId, projectTag);
-    if (existing) {
-      /**
-       * **宛先だけは後から引き受ける**（PO報告 2026-08-11）。
-       *
-       * 番頭は「定義ファイルを書く → `kobo.enqueue` を呼ぶ」の順で積むが、その間に
-       * **watcher が先に取り込む**（`status: queued` を見つけた時点で入る）。すると
-       * ここで「既に積まれています」と断られ、**origin が永久に付かない**——以後その
-       * タスクの知らせは1通残らず既定の宛先（帳場）へ流れる。実際、ひらがなの
-       * task-0001/0002 の失敗は、積んだ幹ではなく帳場に出た。
-       *
-       * **契約は凍ったまま**（決定62c・64）。origin / originRef は契約ではなく
-       * 「誰の求めで積んだか」なので、`kobo.reopen` も同じ形で後から定めている。
-       * 既に宛先があるものは書き換えない——横取りさせない。
-       */
-      const currentOrigin = this.originOfTask(projectTag, taskId);
-      if (options.origin && !currentOrigin) {
-        // D3: 状態はイベントから導出される。ここで写しを書き換えず、改訂を1件積む
-        const amended = this.log.append({
-          type: "task_contract_amended",
-          projectTag,
-          taskId,
-          amendedBy: "banto",
-          reason:
-            `宛先（origin）を ${options.origin} に定めました` +
-            "（watcher が先に取り込んでいたため、enqueue で引き受け）",
-          changes: ["宛先（origin）"],
-          // 契約は動かしていない。監査をやり直させない
-          auditInvalidated: false,
-          contract: {
-            origin: options.origin,
-            // 経緯も一緒に引き受ける（無いと札に「起きたこと」しか書けない・D8）
-            ...(options.originRef ? { originRef: options.originRef } : {}),
-          },
-        });
-        // 積むだけでは手元の写しに効かない。**適用してから返す**——さもないと、
-        // この直後に宛先を引いた側（知らせの層）が undefined を見る
-        this.applyAndBroadcast(amended);
-        return { ok: true, status: existing.status };
-      }
-      // 決定62c・64: 取り込み済みの契約は凍結。訂正は新しいタスクを積み、元を superseded に
+    if (!project) {
+      const known = this.registry.list().map((p) => p.id).join(", ");
       return {
         ok: false,
-        reason:
-          `${taskId} は既に積まれています（いまの状態: ${existing.status}）。` +
-          "契約を訂正するなら、定義ファイルを直して kobo.amend を呼んでください（決定64 改訂）" +
-          "——検証コマンドの訂正だけなら監査はやり直しになりません。" +
-          "**別のものを作りたい**なら新しいタスクを積み、元を kobo.supersede で置き換えてください",
+        reason: `Kobo は "${projectTag}" というプロジェクトを知りません。既知: ${known || "(なし)"}`,
       };
     }
 
-    const definition = readTaskDefinition(project.repoPath, taskId);
-    if (!definition.ok) return { ok: false, reason: definition.reason };
-    const validation = definition.frontmatter;
-    if (!validation.ok) return { ok: false, reason: validation.reason };
-    const fm = validation.frontmatter;
-    if (fm.id !== taskId) {
-      return { ok: false, reason: `ファイルの id (${fm.id}) と積もうとした id (${taskId}) が違います` };
-    }
-    // 決定62e: `draft` は「まだ積まないでほしい」の意思表示。明示の enqueue でも越えない
-    if (fm.status === "draft") {
+    // **止めてある口へは積まない**（第4便）。理由をそのまま返す——「なぜ止まっているか」が
+    // 分からないと、番頭は同じことを繰り返すか、勝手に開けにいく
+    if (!this.enqueueEnabledFor(projectTag)) {
+      const why = this.enqueueStopReason(projectTag) ?? "理由の記録がありません";
       return {
         ok: false,
         reason:
-          `${taskId} は draft です（「まだ積まないでほしい」の意思表示）。` +
-          "積むなら status: queued にしてから呼んでください",
+          `${projectTag} は積む口が止まっています: ${why}\n` +
+          "開けてよいかは PO の判断です（kobo.set_watch で開けられますが、勝手に開けないこと）",
       };
     }
+
+    const validated = this.validateContractInput(input);
+    if (!validated.ok) return validated;
 
     // 決定67: 費用の上限は**積む時点で拒否**する。黙って下の等級へ丸めない
-    // ——丸めると PO は「安く速く終わった」と読み、要求水準を満たさない成果を受け取る
     const ceiling = this.projectConfig(projectTag).limits.maxModelTier;
-    const requested = fm.model_tier;
+    const requested = validated.contract.model_tier;
     if (ceiling && requested && TIER_ORDER.indexOf(requested) > TIER_ORDER.indexOf(ceiling)) {
       return {
         ok: false,
         reason:
-          `${taskId} は model_tier: ${requested} を求めていますが、このプロジェクトの上限は ` +
-          `${ceiling} です（meta/config.yaml の limits.max_model_tier）。` +
-          "等級を下げるか、上限を上げるかを決めてから積んでください——黙って丸めません（決定67）",
+          `model_tier: ${requested} を求めていますが、このプロジェクトの上限は ${ceiling} です` +
+          "（meta/config.yaml の limits.max_model_tier）。等級を下げるか、上限を上げるかを" +
+          "決めてから積んでください——黙って丸めません（決定67）",
       };
     }
 
+    // 採番：記録ファイルの最大と帳簿の最大の両方を見る（PO 指示）
+    let taskId: string;
     try {
-      this.createTask(projectTag, taskId, fm.title, {
-        ...taskPayload(fm, definition.content),
+      const ledgerIds = this.store
+        .getAllTasks()
+        .filter((t) => t.projectTag === projectTag)
+        .map((t) => t.id);
+      taskId = `task-${nextTaskNumber(path.join(project.repoPath, TASKS_DIR), ledgerIds)}`;
+    } catch (err) {
+      return { ok: false, reason: `採番できませんでした: ${String(err)}` };
+    }
+
+    // 記録を書く。**書けなかったら積まない**（PO 指示・I2）
+    const written = writeTaskRecord(project.repoPath, taskId, validated.contract);
+    if (!written.ok) return written;
+
+    try {
+      this.createTask(projectTag, taskId, validated.contract.title, {
+        ...contractPayload(validated.contract),
         // 決定58: 宛先（積んだスレッド）と経緯。**Kobo は経緯を知らない**ので、
         // 積むときに受け取っておかないと、判断を求める札が「起きたこと」しか書けない
         ...(options.origin ? { origin: options.origin } : {}),
-        ...(options.originRef ? { originRef: options.originRef } : {}),
+        originRef: options.originRef,
         enqueuedBy: options.origin ? "banto" : "api",
       });
     } catch (err) {
-      return { ok: false, reason: `task_created failed: ${err instanceof Error ? err.message : String(err)}` };
+      // 記録は残す（消しにいかない）。番号は飛ぶが、飛んだ番号は次の採番が避ける
+      return {
+        ok: false,
+        reason: `task_created failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
     }
 
     const result = this.transition(projectTag, taskId, "queued", "kobo.enqueue");
     if (!result.ok) return { ok: false, reason: `queued へ進められません: ${result.reason}` };
-    return { ok: true, status: this.store.getTask(taskId, projectTag)?.status ?? "queued" };
+
+    return {
+      ok: true,
+      taskId,
+      path: path.relative(project.repoPath, written.path),
+      status: this.store.getTask(taskId, projectTag)?.status ?? "queued",
+    };
+  }
+
+  /**
+   * 積む前の検査（旧 `validateTaskFrontmatter` の役目を、**入力に対して**やる）。
+   *
+   * ファイルではなく引数を見るようになったので、検査も同期で返る——番頭は
+   * 「積んだのに拒否イベントが後から出る」を待たなくてよい（`task_ingest_rejected` が
+   * 出ていた非同期の拒否は、これで無くなる）。
+   */
+  private validateContractInput(
+    input: TaskContractInput
+  ): { ok: true; contract: TaskContract } | { ok: false; reason: string } {
+    const problems: string[] = [];
+    if (!input.title?.trim()) problems.push("title が要ります（1行）");
+    if (!input.body?.trim()) problems.push("body が要ります（依頼の本文。職人へ届くのはこれ）");
+    if (!VALID_TASK_KINDS.has(input.kind)) {
+      problems.push(`kind が違います: "${input.kind}"（使えるのは ${[...VALID_TASK_KINDS].join(", ")}）`);
+    }
+    const paths = input.scope?.paths ?? [];
+    if (!Array.isArray(paths) || paths.length === 0 || paths.some((p) => !p?.trim())) {
+      problems.push("scope.paths に1つ以上のパターンが要ります（変えてよい場所）");
+    }
+    const acceptance = input.acceptance ?? [];
+    if (!Array.isArray(acceptance) || acceptance.length === 0) {
+      problems.push("acceptance に1つ以上の受け入れ条件が要ります");
+    } else if (acceptance.some((a) => !a?.text?.trim())) {
+      problems.push("acceptance の text が空のものがあります");
+    }
+    if (problems.length > 0) return { ok: false, reason: problems.join(" / ") };
+
+    return {
+      ok: true,
+      contract: {
+        title: input.title.trim(),
+        kind: input.kind,
+        body: input.body,
+        scope: { paths: [...paths] },
+        // **id は Kobo が振る**（番頭は書かない・第4便）
+        acceptance: assignAcceptanceIds(acceptance),
+        ...(input.parent !== undefined ? { parent: input.parent } : {}),
+        ...(input.depends !== undefined ? { depends: [...input.depends] } : {}),
+        ...(input.refs !== undefined ? { refs: [...input.refs] } : {}),
+        ...(input.environment !== undefined ? { environment: input.environment } : {}),
+        ...(input.governance !== undefined ? { governance: input.governance } : {}),
+        ...(input.model_tier !== undefined ? { model_tier: input.model_tier } : {}),
+        ...(input.hypothesis !== undefined ? { hypothesis: input.hypothesis } : {}),
+        ...(input.review !== undefined ? { review: input.review } : {}),
+      },
+    };
   }
 
   /**
@@ -1241,16 +1262,22 @@ export class Daemon {
    * 分かれて追跡性がむしろ落ちていた**（実機の loamium task-0004 → 0005）。
    *
    * 代わりに3つを守る：
-   *   1. **黙って起きない**——ファイルを読み直すのはこれを呼んだときだけ
-   *      （watcher は今までどおり読み飛ばす。inc-0028 の直しはそのまま）
-   *   2. **記録に残る**——変更前後・誰が・なぜが `task_contract_amended` に載る
+   *   1. **黙って起きない**——変えたい中身を**引数で**渡したときだけ動く
+   *      （第4便：定義ファイルを読み戻す経路は無くなった。md は Kobo が書く記録で、
+   *      番頭がそれを直しても何も起きない——書き手を2人にしない）
+   *   2. **記録に残る**——変更前後・誰が・なぜが `task_contract_amended` に載り、
+   *      記録ファイルも新しい契約で書き直される
    *   3. **依存するものが差し戻る**——基準が動いたら監査は無効になり implementing へ
+   *
+   * `changes` は**差分**（渡した項目だけが変わる）。`acceptance` を渡すときは
+   * **全件を渡す**（id つき）——一部だけ渡すと消したのか触っていないのか読めない。
    *
    * I2: 緩める方向（スコープを広げる・基準を変える・条件を消す）は番頭では通らない。
    */
   amendTask(
     projectTag: string,
     taskId: string,
+    changesInput: TaskContractAmendment,
     options: { reason: string; by: "banto" | "po" }
   ): { ok: true; changes: string[]; auditInvalidated: boolean } | { ok: false; reason: string } {
     const task = this.store.getTask(taskId, projectTag);
@@ -1261,19 +1288,39 @@ export class Daemon {
 
     const project = this.registry.list().find((p) => p.id === projectTag);
     if (!project) return { ok: false, reason: `project_not_found: ${projectTag}` };
-    const definition = readTaskDefinition(project.repoPath, taskId);
-    if (!definition.ok) return { ok: false, reason: `定義ファイルが読めません: ${definition.reason}` };
-    const validation = definition.frontmatter;
-    if (!validation.ok) return { ok: false, reason: `定義ファイルの形が違います: ${validation.reason}` };
-    // **`title` は `taskPayload` に入らない**（`createTask` が別引数で受け、payload からは
+
+    // いまの契約（帳簿が真実・D3）に、渡された項目だけを重ねる
+    const current = contractFromRecord(task);
+    const amended: TaskContract = {
+      ...current,
+      ...(changesInput.title !== undefined ? { title: changesInput.title.trim() } : {}),
+      ...(changesInput.body !== undefined ? { body: changesInput.body } : {}),
+      ...(changesInput.scope !== undefined ? { scope: { paths: [...changesInput.scope.paths] } } : {}),
+      ...(changesInput.acceptance !== undefined ? { acceptance: changesInput.acceptance.map((a) => ({ ...a })) } : {}),
+      ...(changesInput.environment !== undefined ? { environment: changesInput.environment } : {}),
+      ...(changesInput.model_tier !== undefined ? { model_tier: changesInput.model_tier } : {}),
+      ...(changesInput.review !== undefined ? { review: changesInput.review } : {}),
+    };
+
+    if (amended.scope.paths.length === 0) {
+      return { ok: false, reason: "scope.paths を空にはできません（変えてよい場所が無くなります）" };
+    }
+    if (amended.acceptance.length === 0) {
+      return { ok: false, reason: "acceptance を空にはできません（完了の判定ができなくなります）" };
+    }
+    if (amended.acceptance.some((a) => !a.id?.trim() || !a.text?.trim())) {
+      return { ok: false, reason: "acceptance の各項目には id と text が要ります（全件を渡してください）" };
+    }
+
+    // **`title` は payload に入らない**（`createTask` が別引数で受け、payload からは
     // 落とされる）。足さずに比べると、中身が同じでも毎回「タイトルを変更」が出る
     // ——実際に踏んだ。帳簿に嘘の改訂が残るところだった
-    const next = { ...taskPayload(validation.frontmatter, definition.content), title: validation.frontmatter.title };
+    const next = { ...contractPayload(amended), title: amended.title };
 
     const { changes, auditInvalidated, loosens } = this.classifyAmendment(task, next);
     // I2: 何も変わっていないのに「改訂した」と記録しない（帳簿が嘘になる）
     if (changes.length === 0) {
-      return { ok: false, reason: `${taskId} の定義ファイルは、いまの契約と同じです（改訂するものがありません）` };
+      return { ok: false, reason: `${taskId} は渡された中身と同じです（改訂するものがありません）` };
     }
     if (loosens && options.by !== "po") {
       return {
@@ -1284,6 +1331,11 @@ export class Daemon {
           "（できていないものを通せてしまうため）——取次へ上げてください",
       };
     }
+
+    // 記録ファイルを新しい契約で書き直す。**書けなければ改訂しない**——帳簿だけ動いて
+    // 記録が古いまま残ると、あとから読む側が古い契約を見る（I2・第4便で Kobo が書き手）
+    const rewritten = writeTaskRecord(project.repoPath, taskId, amended);
+    if (!rewritten.ok) return rewritten;
 
     const event = this.log.append({
       type: "task_contract_amended",
@@ -4177,19 +4229,30 @@ export class Daemon {
     }
   }
   /**
-   * Handle a rebase conflict from the merge queue.
+   * rebase がコンフリクトしたときの扱い（第4便で**起票をやめた**）。
    *
-   * S75f66b-6 (AC-S75f66b-6-1):
-   *   1. Idempotency guard: if the origin task is already paused, skip filing
-   *      (tick may have re-observed the same conflict before the pause settled).
-   *   2. File a kind:conflict task to work/tasks/ (next task-NNNN number).
-   *      status: queued so the watcher ingests it via the normal path (D4).
-   *   3. Pause the origin task (paused, suspended_from=merging).
-   *   4. Refresh state + broadcast so HTTP/WS clients reflect the pause.
+   * ## 何が変わったか
    *
-   * D3: no mapping file written — correspondence is derived from refs[0] in events.
-   * D4: conflict task file goes through work/tasks/ + watcher (not direct createTask).
-   * I2: any error is logged; does not throw (recorded as tick_job_failed by scheduler).
+   * 以前は `kind: conflict` の**新しいタスクを機構が起票**し、origin を paused にして
+   * 待たせていた。第4便でこれをやめた——**機構は契約を作らない**（PO 指示 4-2）。
+   * 衝突の解消は「別の仕事」ではなく、**同じ契約の次の試行**として扱う。
+   *
+   * ## いまの扱い
+   *
+   *   1. `merging → implementing` へ戻す（監査もマージ前ゲートも元の契約でやり直しになる）
+   *   2. 衝突したファイルと rebase の出力を指摘として渡し、職人をもう1人起こす
+   *      （監査落ちの rework と同じ機構。ワークツリーは残っているのでその場で解ける）
+   *   3. **2回目の衝突で failed**。同じところを何度も叩かない（監査の
+   *      `audit_failed_twice` と同じ形。番頭が `kobo.reopen` / `kobo.abandon` で裁く）
+   *
+   * ## なぜ起票より良いか
+   *
+   * 解消タスクの受け入れ基準は「衝突が解消されている」だけで、**元の受け入れ基準を
+   * 誰も見ないまま main に入る**穴があった。同じタスクに戻せば元の契約で審査される。
+   * `origin`（依頼元の会話）も元タスクのものがそのまま効く。
+   *
+   * D3: 試行回数は帳簿から導出する（`state_transitioned.reason`）。印のファイルは作らない。
+   * I2: 戻せない・起こせないことを黙らせない。
    */
   private async handleRebaseConflict(
     originTaskId: string,
@@ -4197,264 +4260,119 @@ export class Daemon {
     error: Error,
     conflictedFiles: string[]
   ): Promise<void> {
-    // 1. Idempotency guard: if origin is already paused, don't file again.
-    //    This covers the case where the tick re-fires before the watcher ingests
-    //    the conflict task (the origin stays in merging between the file write and
-    //    the watcher's next poll cycle).
-    // NOTE: The origin task is currently in `merging` (the merge queue put it there).
-    // After we pause it here it becomes `paused`. If the tick fires again before the
-    // watcher injects the conflict task, the origin is already paused → skip.
-    // 弁が閉じているなら**起票しない**（inc-0063 の非常停止）。ここは
-    // processMergeQueue から呼ばれるので普通は届かないが、自動起票の口は
-    // これ1つなので、止める判定もここに置いておく（二重でも害は無い）
+    // processMergeQueue から呼ばれるので普通は届かないが、止める判定はここにも置く
     if (!this.mergeQueueEnabledFor(originProjectTag)) return;
 
     this.refreshState();
-    const originTask = this.store.getTask(originTaskId, originProjectTag);
-    if (!originTask) {
+    const task = this.store.getTask(originTaskId, originProjectTag);
+    if (!task) {
       process.stderr.write(
         `[banto-daemon] handleRebaseConflict: origin task ${originProjectTag}/${originTaskId} not found\n`
       );
       return;
     }
-    if (originTask.status === "paused") {
-      // Already paused (idempotent — the tick re-observed the same conflict). Skip.
-      return;
-    }
+    // 既に戻してある（tick が同じ衝突をもう一度見た）なら何もしない
+    if (task.status !== "merging") return;
 
-    // 1b. 同じ origin に**まだ決着していない解消タスク**があるなら、二本目を積まない
-    //     （inc-0063 の3）。1 分ごとに 1 本ずつゴミタスクが増え、`scope.paths: ["**"]` で
-    //     後続を全部塞いだのはここ。ただし**止めるのは起票だけ**——origin は paused に
-    //     落として待たせる。merging に残すとマージキューの先頭で毎 tick rebase を
-    //     叩き続け、直列のキュー全体が止まる（inc-0063 と同じ詰まり方になる）
-    const openResolution = hasOpenResolutionTask(
-      this.store.getAllTasks(),
-      originTaskId,
-      originProjectTag
-    );
-    if (openResolution) {
-      process.stdout.write(
-        `[banto-daemon] conflict task not filed: ${originProjectTag}/${originTaskId} ` +
-          `already has an unresolved conflict-resolution task; pausing origin only\n`
-      );
-      this.pauseOriginForConflict(originTaskId, originProjectTag);
-      return;
-    }
+    const attempts = this.countConflictRetries(originProjectTag, originTaskId);
+    const files =
+      conflictedFiles.length > 0
+        ? conflictedFiles.map((f) => `\`${f}\``).join(" / ")
+        : "(git status からは特定できず)";
 
-    // 2. Find the project's repo path to write the conflict task file.
-    const proj = this.registry.list().find((p) => p.id === originProjectTag);
-    if (!proj) {
-      process.stderr.write(
-        `[banto-daemon] handleRebaseConflict: project ${originProjectTag} not in registry\n`
-      );
-      // Record as tick_job_failed (I2: not silent).
-      this.log.append({
-        type: "tick_job_failed",
-        projectTag: "daemon",
-        jobName: "conflict-filer",
-        error: `project ${originProjectTag} not found in registry for conflict task filing`,
-      });
-      return;
-    }
-
-    // 3. File the conflict task (writes to work/tasks/).
-    //    The watcher will ingest it via the normal path on its next poll (D4).
-    let filed: { taskId: string; filePath: string };
-    try {
-      filed = fileConflictTask({
-        projectTag: originProjectTag,
+    if (attempts >= 1) {
+      // 2回目。**同じところを叩き続けない**（P6・監査の二度落ちと同じ扱い）
+      StateMachine.fail(
+        this.log,
         originTaskId,
-        originTaskTitle: String(originTask["title"] ?? originTaskId),
-        originTaskBranch: `task/${originTaskId}`,
-        mainline: "main",
-        conflictedFiles,
-        rebaseErrorMessage: error.message,
-        repoPath: proj.repoPath,
-      });
-    } catch (fileErr) {
-      const reason = `conflict task filing failed for ${originProjectTag}/${originTaskId}: ${
-        fileErr instanceof Error ? fileErr.message : String(fileErr)
-      }`;
-      process.stderr.write(`[banto-daemon] ${reason}\n`);
+        {
+          currentStatus: "merging",
+          reason:
+            `rebase_conflict_twice: ${files} が2回続けて衝突しました。` +
+            "自動の解き直しでは通らないので止めます（kobo.task で理由を読み、" +
+            "kobo.reopen か kobo.abandon で決めてください）",
+        },
+        originProjectTag
+      );
+      this.refreshState();
+      this.broadcastLatest();
+      this._trackBackground(
+        (async () => {
+          for (const role of ["executor", "audit", "rework"] as const) {
+            await this.closeWorkerFor(originProjectTag, poolTaskId(originTaskId, role));
+          }
+        })()
+      );
+      return;
+    }
+
+    // 1回目。同じ契約のまま implementing へ戻し、衝突の中身を渡して起こし直す
+    const back = this.transition(
+      originProjectTag,
+      originTaskId,
+      "implementing",
+      `${CONFLICT_RETRY_REASON}: ${files}`
+    );
+    if (!back.ok) {
+      // I2: 戻せなかったことを黙らせない。merging に残ると毎 tick 叩き続ける
+      process.stderr.write(
+        `[banto-daemon] handleRebaseConflict: ${originProjectTag}/${originTaskId} を implementing へ戻せません: ${back.reason}\n`
+      );
       this.log.append({
         type: "tick_job_failed",
         projectTag: "daemon",
-        jobName: "conflict-filer",
-        error: reason,
+        jobName: "merge-queue",
+        error: `rebase conflict retry failed for ${originProjectTag}/${originTaskId}: ${back.reason}`,
       });
       return;
     }
 
     process.stdout.write(
-      `[banto-daemon] conflict task filed: ${filed.taskId} for origin ${originProjectTag}/${originTaskId} (${filed.filePath})\n`
+      `[banto-daemon] rebase conflict: ${originProjectTag}/${originTaskId} を implementing へ戻します（${files}）\n`
     );
 
-    // 4. Pause the origin task (suspended_from=merging).
-    this.pauseOriginForConflict(originTaskId, originProjectTag);
+    const findings = [
+      `\`main\` へ rebase したところ、${files} が衝突しました。`,
+      "**同じタスクの続き**です。契約（スコープ・受け入れ基準）は変わっていません。",
+      `作業ブランチ \`task/${originTaskId}\` を \`main\` の最新に合わせ、両方の変更意図を` +
+        "統合したうえで、元の受け入れ基準がすべて成立することを確かめてください。",
+      "",
+      "git の出力（抜粋）:",
+      error.message.slice(0, 2000),
+    ];
+
+    this.refreshState();
+    this.broadcastLatest();
+    await this.spawnReworkSession(originProjectTag, originTaskId, findings, "どこが衝突したか");
   }
 
   /**
-   * コンフリクトで止まった origin を paused（suspended_from=merging）に落とす。
+   * このタスクが**コンフリクトで戻された回数**を帳簿から導出する（D3：数えて持たない）。
    *
-   * StateMachine.pause() が state_transitioned(merging→paused) + task_paused を出す。
-   * 起票した場合も、既に解消タスクがあって起票を見送った場合も、**origin の扱いは同じ**
-   * ——マージキューから降ろして解消を待たせる（inc-0063 の3）。
+   * 印は `state_transitioned(→implementing, reason: rebase_conflict…)` そのもの。
+   * **新しいイベント型は足していない**——帳簿の形は外に累積する one-way な選択なので、
+   * 増やすなら PO の判断が要る（D9）。既存の任意フィールド `reason` で足りる。
+   *
+   * 数えるのは**最後に merging へ進んで以降**……ではなく通算にしている：一度
+   * 衝突して直したタスクが再び衝突するなら、それは「機械が解けない衝突」であり、
+   * 通算2回で止めるのが P6（同じところを何度も叩かない）に合う。
    */
-  private pauseOriginForConflict(originTaskId: string, originProjectTag: string): void {
-    const pauseResult = StateMachine.pause(
-      this.log,
-      originTaskId,
-      "merging",
-      originProjectTag
-    );
-    if (!pauseResult.ok) {
-      process.stderr.write(
-        `[banto-daemon] handleRebaseConflict: failed to pause ${originProjectTag}/${originTaskId}: ${pauseResult.reason}\n`
-      );
-      // Still continue: the conflict file was already written.
-    }
+  private countConflictRetries(projectTag: string, taskId: string): number {
+    return this.getTaskEvents(projectTag, taskId).filter(
+      (ev) =>
+        ev.type === "state_transitioned" &&
+        ev.to === "implementing" &&
+        typeof ev.reason === "string" &&
+        ev.reason.startsWith(CONFLICT_RETRY_REASON)
+    ).length;
+  }
 
-    // Refresh state and broadcast.
-    this.refreshState();
+  /** 直近の1件を WS へ流す（状態を見ている側に届かないと「動いていない」に見える）。 */
+  private broadcastLatest(): void {
     const allEvents = this.log.readAllEvents();
     if (allEvents.length > 0) {
       this.wsServer.broadcast(allEvents[allEvents.length - 1]!);
     }
-  }
-
-  /**
-   * Conflict resolution outcome check tick job (S75f66b-6, spec-daemon-core §4.2).
-   *
-   * On each tick, derive paused-origin↔conflict-resolution pairs from the task store (D3).
-   * For each pair:
-   *   - Resolution task merged/closed → resume origin to merging (re-enters the queue).
-   *   - Resolution task failed        → chain-fail origin (I2: stop, don't swallow).
-   *
-   * D3: correspondence derived from refs[0] (discovered-from convention) — no mapping file.
-   * I2: chain-fail is used when resolution fails (origin cannot proceed without resolution).
-   *
-   * inc-0063: 再開は**1つの解消タスクにつき1回**。二度目を打たない印は
-   * `conflictResumeAlreadyRecorded` が帳簿から導出する。
-   */
-  private runConflictResolutionCheck(): void {
-    this.refreshState();
-    const allTasks = this.store.getAllTasks();
-    const pairs = deriveOriginResolutionPairs(allTasks, {
-      isConsumed: (pair) => this.conflictResumeAlreadyRecorded(pair),
-    });
-
-    for (const pair of pairs) {
-      const { originTaskId, originProjectTag, resolutionTaskId, resolutionProjectTag } = pair;
-
-      // 弁が閉じているプロジェクトは動かさない（inc-0063）。**paused → merging の
-      // 再開はここから出ている**——マージキュー本体だけ止めても、この道が残っていると
-      // 周回は止まらない（帳簿には po_operation と記録されるので、PO が押したように見える）
-      if (!this.mergeQueueEnabledFor(originProjectTag)) continue;
-
-      const resolutionTask = this.store.getTask(resolutionTaskId, resolutionProjectTag);
-      if (!resolutionTask) continue;
-
-      const resStatus = resolutionTask.status;
-
-      if (resStatus === "merged" || resStatus === "closed") {
-        // Resolution task succeeded → resume origin back to merging.
-        // The origin will re-enter the merge queue and be processed on the next tick.
-        const originTask = this.store.getTask(originTaskId, originProjectTag);
-        if (!originTask || originTask.status !== "paused") continue;
-
-        const resumeResult = StateMachine.resume(
-          this.log,
-          originTaskId,
-          "paused",
-          "merging",
-          originProjectTag
-        );
-
-        if (resumeResult.ok) {
-          process.stdout.write(
-            `[banto-daemon] conflict resolved: origin ${originProjectTag}/${originTaskId} resumed to merging ` +
-              `(resolution ${resolutionProjectTag}/${resolutionTaskId} ${resStatus})\n`
-          );
-          // AC-S75f66b-6-3: record the origin↔resolution linkage explicitly.
-          // この1件が「このペアの後始末は打った」印そのもの（inc-0063 の2）。
-          // 次の tick の `isConsumed` はこれを読んで二度目を打たない
-          // （D3: 導出はイベントログから。消費済みフラグのファイルは作らない）。
-          //
-          // `actor` は**誰がやったか**（inc-0063 の4）。ここは機構の自動処理で、
-          // PO は何も押していない——出所を書かないと帳簿の `po_operation` が
-          // 全部 PO の判断に見え、「誰が決めたか」が追えなくなる
-          this.log.append({
-            type: "po_operation",
-            projectTag: originProjectTag,
-            operation: "conflict_resolved",
-            taskId: originTaskId,
-            payload: {
-              resolutionTaskId,
-              resolutionProjectTag,
-              actor: CONFLICT_RESUME_ACTOR,
-              by: "kobo/conflict-resolution-check",
-            },
-          });
-        } else {
-          process.stderr.write(
-            `[banto-daemon] conflict-resolution-check: resume failed for ${originProjectTag}/${originTaskId}: ${resumeResult.reason}\n`
-          );
-        }
-
-        this.refreshState();
-        const allEvents = this.log.readAllEvents();
-        if (allEvents.length > 0) {
-          this.wsServer.broadcast(allEvents[allEvents.length - 1]!);
-        }
-
-        // Re-evaluate gates so the resumed (merging) task can be processed.
-        this.runGateReeval();
-      } else if (resStatus === "failed") {
-        // Resolution task failed → chain-fail origin (I2: stop, record, don't swallow).
-        const originTask = this.store.getTask(originTaskId, originProjectTag);
-        if (!originTask || originTask.status !== "paused") continue;
-
-        const failReason = `conflict_resolution_failed: resolution task ${resolutionTaskId} failed`;
-        StateMachine.fail(
-          this.log,
-          originTaskId,
-          { currentStatus: "paused", reason: failReason },
-          originProjectTag
-        );
-
-        process.stdout.write(
-          `[banto-daemon] conflict resolution failed: origin ${originProjectTag}/${originTaskId} chain-failed ` +
-            `(resolution ${resolutionProjectTag}/${resolutionTaskId} failed)\n`
-        );
-
-        this.refreshState();
-        const allEvents = this.log.readAllEvents();
-        if (allEvents.length > 0) {
-          this.wsServer.broadcast(allEvents[allEvents.length - 1]!);
-        }
-      }
-      // If resolution task is still active (not terminal), do nothing on this tick.
-    }
-  }
-
-  /**
-   * この (origin, 解消タスク) の組で**再開をもう打ったか**を帳簿から導出する（inc-0063 の2）。
-   *
-   * 再開のたびに `po_operation(conflict_resolved, payload.resolutionTaskId=…)` を1件積んで
-   * いるので、その1件がそのまま「実施済み」の印になる。**新しい永続ファイルは作らない**
-   * （D3: 状態はイベントログの再生から導出する）。
-   *
-   * `actor` の有無は見ない——この印は inc-0063 より前の帳簿（`actor` が無い時代の
-   * `po_operation`）にも積まれており、**古い帳簿の消費済みも消費済みとして読む**必要がある。
-   * これを見落とすと、稼働中の帳簿に残る task-0097↔task-0099 が再び動き出す。
-   */
-  private conflictResumeAlreadyRecorded(pair: OriginResolutionPair): boolean {
-    const history = this.index.getTaskHistory(pair.originTaskId, pair.originProjectTag);
-    return history.some((ev) => {
-      if (ev.type !== "po_operation") return false;
-      if (ev.operation !== "conflict_resolved") return false;
-      return ev.payload?.["resolutionTaskId"] === pair.resolutionTaskId;
-    });
   }
 }
 

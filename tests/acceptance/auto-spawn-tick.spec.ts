@@ -241,7 +241,6 @@ describe("[AC-S75f66b-2-1] ready task is auto-spawned on next tick (no manual sp
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
-      watchIntervalMs: 99999,
       tickIntervalMs: 300,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
       workerPoolUrl: workers.url,
@@ -364,7 +363,6 @@ describe("[AC-S75f66b-2-3] spawn failure results in task_failed; no re-spawn loo
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
-      watchIntervalMs: 99999,
       tickIntervalMs: 300,
       workerPoolUrl: workers.url,
       // No worktreeBaseDir / repoPath needed: FailDriver throws before worktree creation

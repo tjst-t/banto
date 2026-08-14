@@ -1,5 +1,5 @@
 /**
- * [AC-S254276-4-2] Walking skeleton E2E: task file drop → ingest → ready → spawn → implement → review-ready.
+ * [AC-S254276-4-2] Walking skeleton E2E: enqueue → ready → spawn → implement → review-ready.
  *
  * This is the milestone acceptance test: end-to-end from PO task file placement to
  * agent reaching review-ready state. Real daemon + real pi agent + real LLM required.
@@ -13,7 +13,7 @@
  *   1. Start real daemon (piProvider=opencode, piModel=deepseek-v4-flash-free).
  *   2. Register project pointing to a temporary git repo.
  *   3. Write a minimal task definition file to <repoPath>/work/tasks/e2e-task-001.md.
- *   4. Wait for the watcher to ingest the file → task appears as 'queued'.
+ *   4. Enqueue via kobo.enqueue → task appears as 'queued'.
  *   5. Wait for gate evaluation → task becomes 'ready'.
  *   6. Call spawnTask() explicitly (auto-spawn is a future sprint feature).
  *      Daemon wires: --extension banto-executor.ts + --provider opencode + --model deepseek-v4-flash-free
@@ -195,20 +195,8 @@ const TASK_ID = "task-0001";
 // Task prompt instructs the LLM to use the registered banto tools (not raw HTTP).
 // The banto-executor extension (loaded via --extension) registers report_phase/report_done.
 // acceptance items require { id, text } objects (spec: task-frontmatter.ts).
-const TASK_MD = `---
-id: ${TASK_ID}
-type: task
-kind: feature
-title: Hello World Task
-status: queued
-scope:
-  paths:
-    - hello.txt
-acceptance:
-  - { id: a1, text: "hello.txt exists and contains Hello banto" }
----
-
-Create a file called hello.txt in the current directory with the content: Hello banto
+/** 依頼の本文（第4便：`kobo.enqueue` に渡すもの。職人へそのまま届く）。 */
+const TASK_BODY = `Create a file called hello.txt in the current directory with the content: Hello banto
 
 Steps:
 1. Call report_phase with phase="implementing" to signal you have started.
@@ -287,7 +275,6 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → auditing (exec
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
-      watchIntervalMs: 500,
       tickIntervalMs: 500,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
       workerPoolUrl: workerService.baseUrl,
@@ -317,7 +304,7 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → auditing (exec
     }
   });
 
-  it("[AC-S254276-4-2] E2E: task file drop → ingest → ready → spawn → implement → auditing (S75f66b-3: executor done→audit, not self→review-ready)", async () => {
+  it("[AC-S254276-4-2] E2E: enqueue → ready → spawn → implement → auditing (S75f66b-3: executor done→audit, not self→review-ready)", async () => {
     // Auth gate: if auth failed, escalate as needs_human (I2: not skip)
     if (!authResult.ok) {
       throw new Error(
@@ -328,11 +315,22 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → auditing (exec
       );
     }
 
-    // ── Step 1: Drop task definition file ────────────────────────────────────
-    const taskFile = path.join(tasksDir, `${TASK_ID}.md`);
-    fs.writeFileSync(taskFile, TASK_MD, "utf8");
+    // ── Step 1: Enqueue（第4便：入口は kobo.enqueue だけ。採番も記録も Kobo）────
+    const enqueued = daemon.enqueueTask(
+      projectTag,
+      {
+        title: "Hello World Task",
+        kind: "feature",
+        body: TASK_BODY,
+        scope: { paths: ["hello.txt"] },
+        acceptance: [{ text: "hello.txt exists and contains Hello banto" }],
+      },
+      { originRef: "E2E: walking skeleton" }
+    );
+    assert.ok(enqueued.ok, `enqueue must succeed: ${enqueued.ok ? "" : enqueued.reason}`);
+    assert.equal(enqueued.ok && enqueued.taskId, TASK_ID, "Kobo が最初の番号を振ること");
 
-    // ── Step 2: Wait for watcher ingest → queued (or past queued) ──────────────
+    // ── Step 2: queued（またはその先）になっていること ─────────────────────────
     // Note: the gate evaluator runs immediately after task_created in the same tick,
     // so the task may already be "ready" by the first poll (draft→queued→ready in one cycle).
     const PAST_QUEUED = new Set([
@@ -346,7 +344,7 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → auditing (exec
     }, 10000);
     assert.ok(
       ingestedQueued,
-      "Task must be ingested (queued or further) within 10s after file drop (watcher ingest)"
+      "Task must be queued (or further) within 10s after enqueue"
     );
 
     const taskQueued = daemon.getTask(projectTag, TASK_ID);

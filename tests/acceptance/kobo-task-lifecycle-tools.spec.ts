@@ -111,35 +111,36 @@ function initRepo(repoDir: string): void {
   git("commit", "-m", "initial");
 }
 
-function writeTaskFile(
-  repoDir: string,
-  taskId: string,
+/**
+ * 積む（第4便：入口は `kobo.enqueue` だけ。**id は Kobo が振る**ので返す）。
+ * スコープを分けられるようにする——重ならなければ、複数の札を同時に ready まで運べる
+ */
+async function enqueue(
+  base: string,
+  projectTag: string,
   title: string,
-  /** スコープを分けられるようにする——重ならなければ、複数の札を同時に ready まで運べる */
   scopePath: string = "src/**"
-): void {
-  const dir = path.join(repoDir, "work", "tasks");
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, `${taskId}.md`),
-    `---
-id: ${taskId}
-type: task
-kind: feature
-title: ${title}
-status: queued
-scope:
-  paths: [${scopePath}]
-acceptance:
-  - { id: a1, text: 動作確認 }
----
-
-## 背景
-
-後始末の口のテスト用。
-`,
-    "utf-8"
-  );
+): Promise<string> {
+  const res = await fetch(`${base}/api/kobo/tools/${encodeURIComponent("kobo.enqueue")}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      args: {
+        projectTag,
+        title,
+        kind: "feature",
+        body: "本文。",
+        scope: { paths: [scopePath] },
+        acceptance: [{ text: "動作確認" }],
+        originRef: "試験",
+      },
+    }),
+  });
+  const body = (await res.json()) as { details?: { taskId?: string }; error?: string };
+  if (!res.ok || !body.details?.taskId) {
+    throw new Error(`enqueue failed: ${body.error ?? res.status}`);
+  }
+  return body.details.taskId;
 }
 
 async function registerProject(base: string, id: string, repoPath: string): Promise<void> {
@@ -198,6 +199,8 @@ describe("[kobo-task-lifecycle-tools] merging のタスクを降ろす", () => {
   let repo: string;
   let daemon: Daemon;
   let base: string;
+  let idA: string;
+  let idB: string;
   const PROJ = "proj-lifecycle";
 
   before(async () => {
@@ -207,7 +210,6 @@ describe("[kobo-task-lifecycle-tools] merging のタスクを降ろす", () => {
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
-      watchIntervalMs: 200,
       tickIntervalMs: 200,
       disableAutoSpawn: true,
       disableAuditSpawn: true,
@@ -220,9 +222,9 @@ describe("[kobo-task-lifecycle-tools] merging のタスクを降ろす", () => {
 
     // 2本とも merging に置く。`kobo.supersede` と `kobo.abandon` は**どちらもタスクを
     // 降ろす**ので、同じ札を使い回すと後の1本が「もう降りている」で断られる
-    writeTaskFile(repo, "task-0001", "merging に居座る仕事", "src/one/**");
-    writeTaskFile(repo, "task-0002", "merging に居座るもう1つの仕事", "src/two/**");
-    for (const taskId of ["task-0001", "task-0002"]) {
+    idA = await enqueue(base, PROJ, "merging に居座る仕事", "src/one/**");
+    idB = await enqueue(base, PROJ, "merging に居座るもう1つの仕事", "src/two/**");
+    for (const taskId of [idA, idB]) {
       const status = await pollUntil(
         () => statusOf(base, PROJ, taskId),
         (s) => s === "ready"
@@ -258,13 +260,13 @@ describe("[kobo-task-lifecycle-tools] merging のタスクを降ろす", () => {
   it("kobo.reopen は merging に届かない（failed 専用・いまの限界）", async () => {
     const refusal = await callToolExpectingRefusal(base, "kobo.reopen", {
       projectTag: PROJ,
-      taskId: "task-0001",
+      taskId: idA,
       mode: "rework",
       reason: "テスト: merging から戻そうとする",
     });
     assert.match(refusal, /failed/, "failed 専用であることを理由に言うこと");
     assert.match(refusal, /merging/, "いまの状態を言うこと");
-    assert.equal(await statusOf(base, PROJ, "task-0001"), "merging", "断ったなら動かないこと");
+    assert.equal(await statusOf(base, PROJ, idA), "merging", "断ったなら動かないこと");
   });
 
   /**
@@ -282,7 +284,7 @@ describe("[kobo-task-lifecycle-tools] merging のタスクを降ろす", () => {
   it("kobo.abandon は merging のタスクを畳める（どの状態からでも・PO 裁定 2026-08-14）", async () => {
     const result = await callTool(base, "kobo.abandon", {
       projectTag: PROJ,
-      taskId: "task-0002",
+      taskId: idB,
       reason: "テスト: merging から畳む",
     });
     assert.match(result.content[0]!.text, /畳みました/);
@@ -291,17 +293,17 @@ describe("[kobo-task-lifecycle-tools] merging のタスクを降ろす", () => {
       "merging",
       "**どこから畳んだか**を返すこと（経緯を辿る手がかり）"
     );
-    assert.equal(await statusOf(base, PROJ, "task-0002"), "closed", "merging から降りていること");
+    assert.equal(await statusOf(base, PROJ, idB), "closed", "merging から降りていること");
   });
 
   it("既に畳んだものは畳み直せない（いまの状態を名指しで断る・I2）", async () => {
     const refusal = await callToolExpectingRefusal(base, "kobo.abandon", {
       projectTag: PROJ,
-      taskId: "task-0002",
+      taskId: idB,
       reason: "テスト: 二度目",
     });
     assert.match(refusal, /closed/, "いまの状態を名指しで言うこと");
-    assert.equal(await statusOf(base, PROJ, "task-0002"), "closed", "断っても動かないこと");
+    assert.equal(await statusOf(base, PROJ, idB), "closed", "断っても動かないこと");
   });
 
   /**
@@ -313,12 +315,12 @@ describe("[kobo-task-lifecycle-tools] merging のタスクを降ろす", () => {
   it("kobo.supersede は merging のタスクを降ろせる（既存の遷移・不可逆な道は増やさない）", async () => {
     const result = await callTool(base, "kobo.supersede", {
       projectTag: PROJ,
-      taskId: "task-0001",
-      by: "task-0002",
+      taskId: idA,
+      by: idB,
     });
     assert.match(result.content[0]!.text, /置き換えました/);
     assert.equal(
-      await statusOf(base, PROJ, "task-0001"),
+      await statusOf(base, PROJ, idA),
       "superseded",
       "merging から降りていること"
     );

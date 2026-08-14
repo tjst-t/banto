@@ -169,7 +169,6 @@ describe("[AC-S75f66b-3-1] executor completion triggers audit session spawn", ()
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
-      watchIntervalMs: 99999,
       tickIntervalMs: 99999,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
       workerPoolUrl: workers.url,

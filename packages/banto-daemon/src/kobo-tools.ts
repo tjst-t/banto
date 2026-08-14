@@ -8,24 +8,22 @@
  * D3: 状態は Kobo のイベントログから導く。ここに写しを持たない。
  * I2: 到達できない・積めない・見つからないを、黙って空の成功にしない。
  *
- * **定義はファイル**（D4）。`kobo.enqueue` は「このファイルを積め」と言う口で、契約
- * （`scope.paths`・受け入れ基準）はファイルに書かれたものが取り込み時点で固まる（決定62c）。
- * 番頭が任意の内容を API で流し込む形にしないのは、**PO が読める形の定義を必ず残す**ため。
+ * **入口はここだけ**（第4便）。`work/tasks/*.md` を読む watcher は廃止した。番頭は
+ * 依頼の中身を `kobo.enqueue` に渡し、**Kobo が採番して記録ファイルを書く**——md は
+ * 入力ではなく記録になった。契約は**道具の入力から凍る**（決定62c）ので、あとから
+ * その md を直しても契約は動かない。PO が読める形の定義は Kobo が必ず残す。
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Type } from "typebox";
-import { StringEnum, defineNamespacedTool, formatDwell, validateTaskFrontmatter } from "@banto/core";
+import { StringEnum, defineNamespacedTool, formatDwell, VALID_TASK_KINDS } from "@banto/core";
 import type { NamespacedToolDefinition } from "@banto/core";
 import type { Daemon } from "./daemon.js";
-import { taskPayload } from "./task-watcher.js";
+import type { TaskContractAmendment, TaskContractInput } from "./task-record.js";
 
 /** 一覧・経緯で1度に返す上限。番頭の文脈を埋め尽くさないため。 */
 const MAX_ROWS = 100;
-
-/** タスク定義ファイルの置き場（プロジェクトのリポジトリからの相対）。 */
-const TASKS_DIR = path.join("work", "tasks");
 
 /** 動いている状態（工程の途中にあるもの）。 */
 const ACTIVE_STATES = new Set([
@@ -90,45 +88,104 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     return { id: project.id, repoPath: project.repoPath };
   };
 
+  /**
+   * 受け入れ条件の1件。**id は書かない**——Kobo が a1, a2… と振る（第4便 4-3）。
+   */
+  const acceptanceItem = Type.Object({
+    text: Type.String({ description: "満たすべきこと" }),
+    verify: Type.Optional(
+      Type.String({ description: "機械で確かめるコマンド。付けると「動いた」が主張でなく事実になる" })
+    ),
+  });
+
   const enqueue = defineNamespacedTool({
     name: "kobo.enqueue",
     label: "Kobo: Enqueue",
     description:
-      "タスク定義ファイルを工場へ積む。以後ゲート→職人→監査→マージまで自動で運ばれる。\n例: {projectTag: \"banto\", taskId: \"task-0042\", originRef: \"PO の「道具定義を短く」から\"} → 積んだ旨\n値は英語の識別子で埋める。**コードを変える仕事はここへ積む**（D10）。\n先に work/tasks/task-NNNN.md を書き status: queued にする。",
+      "工場へ仕事を積む。以後ゲート→職人→監査→マージまで自動で運ばれる。\n" +
+      "**コードを変える仕事はここへ積む**（D10）。ファイルは書かない——**採番も記録も Kobo がやる**。\n" +
+      '例: {projectTag: "banto", title: "札の並びを直す", kind: "fix", body: "## 背景\\n…", ' +
+      'scope: {paths: ["packages/banto-web/src/**"]}, acceptance: [{text: "並びが変わらない", verify: "npm test"}], ' +
+      'originRef: "PO の「札が飛ぶ」から"} → task-0042 を積んだ旨\n' +
+      "**body に依頼を書き切る**（職人は記憶を持たない・D11）。値は英語の識別子で埋める。",
     parameters: Type.Object({
-      projectTag: Type.String(),
-      taskId: Type.String(),
-      origin: Type.Optional(Type.String({ description: "**番頭は書かない**" })),
-      originRef: Type.Optional(
-        Type.String({ description: "**なぜ積むのか**を1〜2行で（D8）" })
-      )
+      projectTag: Type.String({ description: "どのプロジェクトか" }),
+      title: Type.String({ description: "一行で何をするか" }),
+      kind: StringEnum([...VALID_TASK_KINDS], { description: "仕事の種類" }),
+      body: Type.String({
+        description:
+          "**依頼そのもの**。前提・目的・完了条件を書き切る（これがそのまま職人へ届く）",
+      }),
+      scope: Type.Object(
+        { paths: Type.Array(Type.String(), { minItems: 1 }) },
+        { description: "変えてよい場所。**狭く**（マージ前に機械検査される）" }
+      ),
+      acceptance: Type.Array(acceptanceItem, {
+        minItems: 1,
+        description: "受け入れ条件。**id は書かない**（Kobo が振る）",
+      }),
+      originRef: Type.String({ description: "**なぜ積むのか**を1〜2行で（D8）" }),
+      parent: Type.Optional(Type.String({ description: "親タスク（epic）の id" })),
+      depends: Type.Optional(Type.Array(Type.String(), { description: "先に終わっている必要があるタスクの id" })),
+      refs: Type.Optional(Type.Array(Type.String(), { description: "関連する id（ADR・incident・タスク）" })),
+      environment: Type.Optional(
+        Type.String({ description: "検証環境のプロファイル名。書くとレビューで触れる環境が立つ（決定59）" })
+      ),
+      governance: Type.Optional(
+        Type.Boolean({ description: "統治コード（Kobo・番頭核）に触るなら true。PO レビューが必須になる" })
+      ),
+      model_tier: Type.Optional(
+        StringEnum(["reasoning", "standard", "fast"], { description: "既定 standard。難しい仕事だけ reasoning" })
+      ),
+      hypothesis: Type.Optional(
+        Type.Object(
+          {
+            expect: Type.String({ description: "何が起きると見込むか" }),
+            metric: Type.String({ description: "何で測るか（測らないなら none）" }),
+            horizon: Type.Optional(Type.String({ description: "いつ測るか" })),
+          },
+          { description: "書くとマージ後に evaluating へ回り、見込みが当たったかを確かめる" }
+        )
+      ),
+      review: Type.Optional(
+        Type.Object(
+          { policy: StringEnum(["auto", "banto", "po"]) },
+          { description: "誰が見るか。auto は誰も見ずにマージへ（統治コードに触るなら po が機械的に勝つ）" }
+        )
+      ),
     }),
     async execute(params) {
       const project = requireProject(params.projectTag);
-      const result = daemon.enqueueTaskFile(project.id, params.taskId, {
-        // 決定58: 宛先は**積んだスレッド**。番頭は自分の origin を書かない（束ねる層が固定する）
-        ...(params.origin ? { origin: params.origin } : {}),
-        ...(params.originRef ? { originRef: params.originRef } : {}),
+      // 決定58: 宛先は**積んだスレッド**。番頭は自分の origin を書かない（束ねる層が
+      // `bindToolArgs` で固定する）ので、道具の引数としては見せていない
+      const origin = (params as { origin?: string }).origin;
+      const result = daemon.enqueueTask(project.id, params as unknown as TaskContractInput, {
+        originRef: params.originRef,
+        ...(origin ? { origin } : {}),
       });
       if (!result.ok) {
         // I2: 積めなかったことを成功に見せない。理由をそのまま返す
-        throw new Error(`${params.taskId} を積めませんでした: ${result.reason}`);
+        throw new Error(`積めませんでした: ${result.reason}`);
       }
-      const task = daemon.getTask(project.id, params.taskId);
       return {
         content: [
           {
             type: "text" as const,
             text:
-              `積みました: ${params.taskId}（いまの状態: ${task?.status ?? "?"}）。\n` +
+              `積みました: ${result.taskId}（いまの状態: ${result.status}）。\n` +
+              `記録は ${result.path} に書きました。\n` +
               "ゲートを通ると職人が着手します。様子は kobo.task で読めます。",
           },
         ],
-        details: { taskId: params.taskId, projectTag: project.id, status: task?.status },
+        details: {
+          taskId: result.taskId,
+          projectTag: project.id,
+          path: result.path,
+          status: result.status,
+        },
       };
     },
   });
-
   const list = defineNamespacedTool({
     name: "kobo.list",
     label: "Kobo: List",
@@ -502,14 +559,15 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     "kobo.set_watch",
     "watch",
     "Kobo: Set Watch",
-    "そのプロジェクトの**タスク取り込み（watcher）を止める／動かす**。" +
-      "止めると `work/tasks/*.md` を工場が読まなくなる——定義ファイルが増えても積まれません。" +
+    "そのプロジェクトへ**仕事を積む口を止める／動かす**。" +
+      "止めると kobo.enqueue が**止めた理由を添えて断ります**——そのプロジェクトには何も積めません。" +
       "**プロジェクト単位**なので、片方を止めても他は回り続けます。" +
       "**設定は保存され、Kobo を再起動しても残ります。** いまの状態は kobo.projects で読めます。" +
       "既に積まれたタスクは止まりません（それを止めるのは kobo.set_merge_queue と、" +
-      "どの状態のタスクでも畳める kobo.abandon）。",
-    "タスクの取り込みを**止めました**（work/tasks/*.md は読まれません）",
-    "タスクの取り込みを**動かしました**（work/tasks/*.md をまた読みます）"
+      "どの状態のタスクでも畳める kobo.abandon）。" +
+      "**PO が止めたものを、あなたの判断で開けないこと。**",
+    "仕事を積む口を**止めました**（kobo.enqueue は断ります）",
+    "仕事を積む口を**動かしました**（kobo.enqueue でまた積めます）"
   );
 
   const setMergeQueue = controlTool(
@@ -532,7 +590,7 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     description:
       "工場が受け持っているプロジェクト（統治単位）の一覧。タスクを積む前に、" +
       "そのリポジトリが登録されているかを確かめるのに使う。" +
-      "**止めている弁（取り込み／マージキュー）もここに出る**——" +
+      "**止めている弁（積む口／マージキュー）もここに出る**——" +
       "「積んだのに動かない」ときは、まずここを見ること。" +
       "載っていなければ kobo.register_project で受け持たせる。",
     parameters: Type.Object({}),
@@ -543,7 +601,7 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
       const describe = (p: (typeof rows)[number]): string => {
         const stopped: string[] = [];
         if (p.watch && !p.watch.enabled) {
-          stopped.push(`取り込み停止（${p.watch.reason ?? "理由なし"}・${p.watch.changedAt}）`);
+          stopped.push(`積む口を停止（${p.watch.reason ?? "理由なし"}・${p.watch.changedAt}）`);
         }
         if (p.mergeQueue && !p.mergeQueue.enabled) {
           stopped.push(
@@ -906,28 +964,50 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     name: "kobo.amend",
     label: "Kobo: Amend",
     description:
-      "積んだあとの契約を**訂正する**。定義ファイルを直してから呼ぶ——**呼ばないと反映されない**" +
-      "（watcher は取り込み済みのファイルを読み飛ばす）。" +
+      "積んだあとの契約を**訂正する**。変えたい項目だけを渡す——**記録ファイルは Kobo が書き直す**" +
+      "（md を自分で直しても何も起きません）。\n" +
       "**いちばん効くのは検証コマンドの訂正**：受け入れ基準そのものは正しいのに `verify` の" +
       "書き方だけ間違っていた、という場合、基準は動いていないので**監査はやり直しになりません**。" +
       "基準（`acceptance[].text`）やスコープを変えると監査は無効になり implementing へ戻ります。" +
+      "`acceptance` を渡すときは**全件を id つきで**（一部だけだと、消したのか触っていないのか読めません）。" +
       "**緩める方向（スコープにパスを足す・基準を変える・条件を消す）は PO の判断**なので、" +
       "あなたには通せません——取次へ上げてください。**意味としては狭いスコープでも、" +
       "いまの一覧に無い文字列を足すなら PO 扱い**です（glob の広い／狭いは文字列では解けないので、" +
-      "厳しすぎる側に倒しています）。",
+      "厳しすぎる側に倒しています）。\n" +
+      "**種類・親・依存は変えられません**——それは訂正ではなく別の仕事なので kobo.supersede へ。",
     parameters: Type.Object({
       projectTag: Type.String({ description: "どのプロジェクトか" }),
       taskId: Type.String({ description: "訂正するタスクの id" }),
       reason: Type.String({
         description: "**なぜ訂正するのか**。帳簿に残り、あとから「何に対して監査したか」を辿る材料になる",
       }),
+      title: Type.Optional(Type.String({ description: "一行の題を直す" })),
+      body: Type.Optional(Type.String({ description: "依頼の本文を書き直す（職人へ届くのはこれ）" })),
+      scope: Type.Optional(
+        Type.Object({ paths: Type.Array(Type.String(), { minItems: 1 }) }, { description: "変えてよい場所（全件）" })
+      ),
+      acceptance: Type.Optional(
+        Type.Array(
+          Type.Object({
+            id: Type.String({ description: "いまの id（a1, a2…）。新しく足すなら次の番号" }),
+            text: Type.String(),
+            verify: Type.Optional(Type.String()),
+          }),
+          { minItems: 1, description: "受け入れ条件。**全件**を渡す" }
+        )
+      ),
+      environment: Type.Optional(Type.String({ description: "検証環境のプロファイル名" })),
+      model_tier: Type.Optional(StringEnum(["reasoning", "standard", "fast"])),
+      review: Type.Optional(Type.Object({ policy: StringEnum(["auto", "banto", "po"]) })),
     }),
     async execute(params) {
       requireProject(params.projectTag);
-      const r = daemon.amendTask(params.projectTag, params.taskId, {
-        reason: params.reason,
-        by: "banto",
-      });
+      const r = daemon.amendTask(
+        params.projectTag,
+        params.taskId,
+        params as unknown as TaskContractAmendment,
+        { reason: params.reason, by: "banto" }
+      );
       // I2: 通せなかったことを成功に見せない
       if (!r.ok) throw new Error(r.reason);
       return {
@@ -961,38 +1041,3 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
   ];
 }
 
-/**
- * タスク定義ファイルの場所（プロジェクトのリポジトリの中）。
- *
- * **番頭からパスを受け取らない**（決定36g の砦が要らない形）。受けるのは id だけで、
- * 置き場所は規約（`work/tasks/`）で決まる——任意のパスを読ませない。
- */
-export function taskFilePath(repoPath: string, taskId: string): string {
-  return path.join(repoPath, TASKS_DIR, `${taskId}.md`);
-}
-
-/** 積むときの検査つき読み取り。I2: 読めない・形が違う・意図が draft を、それぞれの理由で返す。 */
-export function readTaskDefinition(
-  repoPath: string,
-  taskId: string
-): { ok: true; content: string; frontmatter: ReturnType<typeof validateTaskFrontmatter> } | { ok: false; reason: string } {
-  // id は規約（task-NNNN）に限る。パス片を混ぜられないようにする
-  if (!/^task-\d{4,}$/.test(taskId)) {
-    return { ok: false, reason: `id の形が違います（task-NNNN が要ります）: "${taskId}"` };
-  }
-  const filePath = taskFilePath(repoPath, taskId);
-  if (!fs.existsSync(filePath)) {
-    return {
-      ok: false,
-      reason: `定義ファイルがありません: ${path.join(TASKS_DIR, `${taskId}.md`)}（先に書いてください）`,
-    };
-  }
-  const content = fs.readFileSync(filePath, "utf-8");
-  const frontmatter = validateTaskFrontmatter(content);
-  if (!frontmatter.ok) {
-    return { ok: false, reason: `定義ファイルの形が違います: ${frontmatter.reason}` };
-  }
-  return { ok: true, content, frontmatter };
-}
-
-export { taskPayload };

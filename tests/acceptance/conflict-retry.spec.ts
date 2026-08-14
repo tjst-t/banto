@@ -1,26 +1,15 @@
 /**
- * [AC-S75f66b-6-1] Conflict auto-filing: rebase failure auto-files a kind:conflict task,
- * pauses the original, and the merge queue continues with the next task.
+ * 第4便：**コンフリクトは「同じ契約の次の試行」**（PO 採用 2026-08-14）。
  *
- * story_type=api: exercises the real daemon HTTP API + real git repos.
- * No mocked daemon internals (I1).
+ * 以前は rebase が衝突すると機構が `kind: conflict` の新しいタスクを起票し、origin を
+ * paused にしていた。やめた——**機構は契約を作らない**。同じタスクを implementing へ
+ * 戻し、衝突の中身を指摘として渡して解かせる。2回目の衝突で failed。
  *
- * Scenario (from scenario-S75f66b-6.json scenario-1-api):
- *   - Real daemon + real git repo.
- *   - task-A and task-B both edit the same line of the same file on their branches.
- *   - task-C touches an unrelated file.
- *   - All three approved in order A→B→C.
- *
- *   Step 1: PO approves A, B, C; waits.
- *     Expected:
- *       - task-A merges.
- *       - task-B's rebase fails (conflicts with A's merge on main); NO merge of task-B.
- *       - A new conflict task file appears in work/tasks/ with:
- *           kind: conflict, status: queued, refs[0]=task-B, scope.paths=the conflicted file.
- *       - task-B is 'paused' (suspended_from=merging).
- *       - task-C reaches merged/closed (queue was NOT blocked by task-B's conflict).
- *
- * Tags: [AC-S75f66b-6-1]
+ * ここで確かめるのは4つ:
+ *   1. 衝突した origin は `implementing` へ戻る（paused ではない）
+ *   2. **新しいタスクは1本も生まれない**（記録ファイルも増えない）
+ *   3. 直列キューは詰まらない（後続の task-C は通る）
+ *   4. 2回目の衝突で `failed`（同じところを何度も叩かない・P6）
  */
 
 import { describe, it, before, after } from "node:test";
@@ -143,62 +132,49 @@ function setupTaskBranch(opts: {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe("[AC-S75f66b-6-1] Conflict auto-filing", () => {
+describe("[第4便] rebase の衝突は同じタスクの次の試行になる", () => {
   let tmpDir: string;
   let repoDir: string;
   let worktreeBaseDir: string;
   let daemon: Daemon;
   let base: string;
-  const PROJ = "proj-conflict-autofile";
+  const PROJ = "proj-conflict-retry";
 
   before(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-conflict-af-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-conflict-retry-"));
     repoDir = path.join(tmpDir, "repo");
     worktreeBaseDir = path.join(tmpDir, "worktrees");
 
-    // Initialize repo with initial commit on 'main'.
     fs.mkdirSync(repoDir, { recursive: true });
-    execFileSync("git", ["init", "-b", "main"], {
+    execFileSync("git", ["init", "-b", "main"], { cwd: repoDir, stdio: "pipe" });
+    execFileSync("git", ["config", "user.email", "test@banto-conflict-test.local"], {
       cwd: repoDir,
       stdio: "pipe",
     });
-    execFileSync(
-      "git",
-      ["config", "user.email", "test@banto-conflict-test.local"],
-      { cwd: repoDir, stdio: "pipe" }
-    );
     execFileSync("git", ["config", "user.name", "banto-conflict-test"], {
       cwd: repoDir,
       stdio: "pipe",
     });
 
-    // Initial file: shared.ts with a specific line that both A and B will edit
     fs.writeFileSync(
       path.join(repoDir, "shared.ts"),
       "// shared.ts\nexport const VERSION = 0;\n"
     );
     execFileSync("git", ["add", "-A"], { cwd: repoDir, stdio: "pipe" });
-    execFileSync("git", ["commit", "-m", "initial"], {
-      cwd: repoDir,
-      stdio: "pipe",
-    });
+    execFileSync("git", ["commit", "-m", "initial"], { cwd: repoDir, stdio: "pipe" });
 
-    // Start daemon with small tick interval
-    const dataDir = path.join(tmpDir, "data");
     daemon = Daemon.create({
       port: 0,
-      dataDir,
+      dataDir: path.join(tmpDir, "data"),
       worktreeBaseDir,
       tickIntervalMs: 200,
-      watchIntervalMs: 200, // fast watcher to pick up conflict task file quickly
       disableAuditSpawn: true,
-      // task-0060: 職人を要らないので Worker Pool に頼まない
+      // 職人は要らない（衝突の戻しは状態遷移で確かめる）
       disableAutoSpawn: true,
     });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
 
-    // Register project
     const projRes = await fetch(`${base}/api/v1/projects`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -212,10 +188,7 @@ describe("[AC-S75f66b-6-1] Conflict auto-filing", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("[AC-S75f66b-6-1] rebase conflict auto-files kind:conflict task, pauses origin, queue continues", async () => {
-    // ── Setup: three tasks ──────────────────────────────────────────────────
-
-    // task-A: edits shared.ts line 2 to VERSION = 1
+  it("衝突した origin は implementing へ戻り、新しいタスクは生まれない。後続は通る", async () => {
     setupTaskBranch({
       repoDir,
       worktreeBaseDir,
@@ -224,8 +197,6 @@ describe("[AC-S75f66b-6-1] Conflict auto-filing", () => {
       fileName: "shared.ts",
       content: "// shared.ts\nexport const VERSION = 1; // task-A\n",
     });
-
-    // task-B: edits shared.ts line 2 to VERSION = 2 (conflicts with A after A merges to main)
     setupTaskBranch({
       repoDir,
       worktreeBaseDir,
@@ -234,8 +205,6 @@ describe("[AC-S75f66b-6-1] Conflict auto-filing", () => {
       fileName: "shared.ts",
       content: "// shared.ts\nexport const VERSION = 2; // task-B\n",
     });
-
-    // task-C: adds unrelated.ts (no conflict)
     setupTaskBranch({
       repoDir,
       worktreeBaseDir,
@@ -245,7 +214,6 @@ describe("[AC-S75f66b-6-1] Conflict auto-filing", () => {
       content: "// unrelated\n",
     });
 
-    // Create tasks in daemon
     for (const { id, file } of [
       { id: "task-A", file: "shared.ts" },
       { id: "task-B", file: "shared.ts" },
@@ -264,7 +232,6 @@ describe("[AC-S75f66b-6-1] Conflict auto-filing", () => {
       assert.equal(r.status, 201, `task ${id} creation must succeed`);
     }
 
-    // Advance all three tasks to 'in-review'
     for (const taskId of ["task-A", "task-B", "task-C"]) {
       await advanceTo(
         base,
@@ -280,42 +247,58 @@ describe("[AC-S75f66b-6-1] Conflict auto-filing", () => {
       );
     }
 
-    // Step 1: Approve A, B, C in order
     await transitionTo(base, PROJ, "task-A", "approved");
     await transitionTo(base, PROJ, "task-B", "approved");
     await transitionTo(base, PROJ, "task-C", "approved");
 
-    // ── Wait: task-A must merge ─────────────────────────────────────────────
     const finalA = await pollUntil(
       () => getStatus(base, PROJ, "task-A"),
       (s) => s === "merged" || s === "closed" || s === "failed",
       15000
     );
-    assert.ok(
-      finalA === "merged" || finalA === "closed",
-      `task-A must merge (got ${finalA})`
-    );
+    assert.ok(finalA === "merged" || finalA === "closed", `task-A must merge (got ${finalA})`);
 
-    // ── Wait: task-B must be paused (conflict) ──────────────────────────────
-    const finalB = await pollUntil(
-      () => getStatus(base, PROJ, "task-B"),
-      (s) => s === "paused" || s === "failed",
+    // ── 1. task-B は implementing へ戻る（paused でも新タスクでもない）─────────
+    //
+    // **状態ではなくイベントで見る。** ここには Worker Pool が居ないので、戻した直後に
+    // 起こす職人が生まれず、`spawnReworkSession` は I2 のとおり task_failed を積む
+    // ——「戻した」ことの証拠は遷移そのものであって、その後の状態ではない
+    // （P6: 状態で見ると Worker Pool の有無で結果が割れ、間欠的に落ちる）
+    const retried = await pollUntil(
+      async () => {
+        const res = await fetch(`${base}/api/v1/projects/${PROJ}/tasks/task-B/events`);
+        const events = ((await res.json()) as { events: Array<Record<string, unknown>> }).events;
+        return events.find(
+          (e) =>
+            e["type"] === "state_transitioned" &&
+            e["from"] === "merging" &&
+            e["to"] === "implementing" &&
+            String(e["reason"] ?? "").startsWith("rebase_conflict")
+        );
+      },
+      (e) => e !== undefined,
       15000
     );
-    assert.equal(finalB, "paused", `task-B must be paused after conflict`);
-
-    // ── Verify task-B is paused with suspended_from=merging ────────────────
-    const taskB = await getTask(base, PROJ, "task-B");
-    assert.equal(taskB.status, "paused", "task-B status must be paused");
-    // suspendedFrom is on the task record (from task_paused event handler in StateStore)
-    // The HTTP API returns all task fields
-    assert.equal(
-      taskB["suspendedFrom"],
-      "merging",
-      "task-B must have suspendedFrom=merging"
+    assert.ok(retried, "衝突した task-B は merging → implementing へ戻ること");
+    assert.match(
+      String(retried?.["reason"]),
+      /shared\.ts/,
+      "どのファイルが衝突したかが帳簿から読めること"
     );
 
-    // ── Wait: task-C must merge (queue was not wedged by task-B) ───────────
+    // ── 2. 新しいタスクは生まれない（機構は契約を作らない）────────────────────
+    const listRes = await fetch(`${base}/api/v1/projects/${PROJ}/tasks`);
+    const tasks = ((await listRes.json()) as { tasks: Array<{ id: string }> }).tasks;
+    assert.deepEqual(
+      tasks.map((t) => t.id).sort(),
+      ["task-A", "task-B", "task-C"],
+      "解消タスクが起票されていないこと"
+    );
+    const tasksDir = path.join(repoDir, "work", "tasks");
+    const written = fs.existsSync(tasksDir) ? fs.readdirSync(tasksDir) : [];
+    assert.deepEqual(written, [], "記録ファイルも増えていないこと（機構は書かない）");
+
+    // ── 3. 直列キューは詰まらない ───────────────────────────────────────────
     const finalC = await pollUntil(
       () => getStatus(base, PROJ, "task-C"),
       (s) => s === "merged" || s === "closed" || s === "failed",
@@ -323,84 +306,41 @@ describe("[AC-S75f66b-6-1] Conflict auto-filing", () => {
     );
     assert.ok(
       finalC === "merged" || finalC === "closed",
-      `task-C must merge/close (queue must continue despite task-B conflict; got ${finalC})`
+      `task-C must merge/close（task-B の衝突でキューが詰まらないこと; got ${finalC}）`
     );
 
-    // ── Verify: NO merge of task-B on main ─────────────────────────────────
-    const gitLog = execFileSync("git", ["log", "main", "--oneline"], {
-      cwd: repoDir,
-    })
+    // ── 4. 2回目の衝突で failed（同じところを何度も叩かない・P6）─────────────
+    //
+    // 職人が直さないまま merging へ戻すと、同じ衝突がもう一度起きる。
+    // **理由で見る**——ここに至るまでに職人を起こせず failed になっている場合があるので、
+    // 「failed であること」ではなく「**2度目の衝突で**落ちたこと」を確かめる
+    await advanceTo(
+      base,
+      PROJ,
+      "task-B",
+      "implementing",
+      "auditing",
+      "review-ready",
+      "in-review",
+      "approved"
+    );
+    const failedTwice = await pollUntil(
+      async () => {
+        const res = await fetch(`${base}/api/v1/projects/${PROJ}/tasks/task-B/events`);
+        const events = ((await res.json()) as { events: Array<Record<string, unknown>> }).events;
+        return events.find(
+          (e) => e["type"] === "task_failed" && /rebase_conflict_twice/.test(String(e["reason"] ?? ""))
+        );
+      },
+      (e) => e !== undefined,
+      20000
+    );
+    assert.ok(failedTwice, "2回目の衝突は failed で止まること（同じところを叩き続けない）");
+    assert.equal(await getStatus(base, PROJ, "task-B"), "failed");
+
+    const gitLog = execFileSync("git", ["log", "main", "--oneline"], { cwd: repoDir })
       .toString()
       .trim();
-    assert.ok(
-      !gitLog.includes("task-B"),
-      `task-B must NOT be in git log main (got: ${gitLog})`
-    );
-
-    // ── Step 2: Verify the conflict task file was created ──────────────────
-    // Wait for watcher to detect the file (watchIntervalMs=200, may need a few polls)
-    const tasksDir = path.join(repoDir, "work", "tasks");
-    let conflictFiles: string[] = [];
-    const fileFound = await pollUntil(
-      async () => {
-        if (!fs.existsSync(tasksDir)) return false;
-        const files = fs.readdirSync(tasksDir);
-        conflictFiles = files.filter((f) => f.endsWith(".md") && f !== "");
-        return conflictFiles.some((f) => f.includes("conflict"));
-      },
-      (found) => found === true,
-      10000,
-      150
-    );
-    assert.ok(fileFound, "A conflict task file must be created in work/tasks/");
-
-    // Read and validate the conflict task file
-    const conflictFileName = conflictFiles.find((f) => f.includes("conflict"))!;
-    assert.ok(conflictFileName, "conflict task file must have 'conflict' in name");
-
-    const conflictFilePath = path.join(tasksDir, conflictFileName);
-    const conflictFileContent = fs.readFileSync(conflictFilePath, "utf-8");
-
-    // Validate frontmatter
-    const validation = validateTaskFrontmatter(conflictFileContent);
-    assert.ok(validation.ok, `conflict task frontmatter must be valid (got: ${!validation.ok ? (validation as { reason: string }).reason : "ok"})`);
-
-    if (validation.ok) {
-      const fm = validation.frontmatter;
-
-      // kind: conflict
-      assert.equal(fm.kind, "conflict", "conflict task must have kind:conflict");
-
-      // status: queued (watcher will ingest it)
-      assert.equal(fm.status, "queued", "conflict task must have status:queued");
-
-      // refs[0] = task-B (discovered-from convention)
-      assert.ok(
-        Array.isArray(fm.refs) && fm.refs[0] === "task-B",
-        `conflict task refs[0] must be 'task-B' (got: ${JSON.stringify(fm.refs)})`
-      );
-
-      // scope.paths must contain the conflicted file
-      assert.ok(
-        fm.scope.paths.some((p) => p.includes("shared.ts") || p === "**"),
-        `scope.paths must include the conflicted file 'shared.ts' (got: ${JSON.stringify(fm.scope.paths)})`
-      );
-
-      // id must be task-NNNN format
-      assert.ok(
-        /^task-\d{4,}$/.test(fm.id),
-        `conflict task id must be task-NNNN format (got: ${fm.id})`
-      );
-    }
-
-    // Body must mention task-B and mainline (both branches' provenance)
-    assert.ok(
-      conflictFileContent.includes("task-B"),
-      "conflict task body must reference the origin task (task-B)"
-    );
-    assert.ok(
-      conflictFileContent.includes("main"),
-      "conflict task body must reference the mainline branch"
-    );
+    assert.ok(!gitLog.includes("task-B"), `task-B は main に入っていないこと (got: ${gitLog})`);
   });
 });

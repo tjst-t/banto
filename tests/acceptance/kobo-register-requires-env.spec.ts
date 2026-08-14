@@ -90,7 +90,6 @@ async function withDaemon(
   const daemon = Daemon.create({
     port,
     dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "kobo-reg-data-")),
-    watchIntervalMs: 99999,
     tickIntervalMs: 99999,
     disableAutoSpawn: true,
     disableAuditSpawn: true,

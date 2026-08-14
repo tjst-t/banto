@@ -60,7 +60,8 @@ interface Harness {
   tmpDir: string;
   proj: string;
   /** タスク定義ファイルを置く（番頭が file.write でするのと同じこと）。 */
-  writeTask(taskId: string, frontmatter: string, body?: string): void;
+  /** 第4便: 積むのは道具の入力から。**id は Kobo が振る**ので返す */
+  enqueue(args?: Record<string, unknown>): Promise<Record<string, unknown>>;
   call(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
 
@@ -85,7 +86,6 @@ async function harness(options: { config?: string } = {}): Promise<Harness> {
     port,
     dataDir: path.join(tmpDir, "data"),
     // 定義ファイルは **明示的に積む**（watcher に拾わせない）——入口の検査なので
-    watchIntervalMs: 99999,
     tickIntervalMs: 200,
     disableAutoSpawn: true,
     disableAuditSpawn: true,
@@ -104,12 +104,14 @@ async function harness(options: { config?: string } = {}): Promise<Harness> {
     repoDir,
     tmpDir,
     proj,
-    writeTask(taskId, frontmatter, body = "この依頼の本文。") {
-      fs.writeFileSync(
-        path.join(repoDir, "work", "tasks", `${taskId}.md`),
-        `---\n${frontmatter}\n---\n\n${body}\n`,
-        "utf-8"
+    async enqueue(args = {}) {
+      const tool = tools.find((t) => t.name === "kobo.enqueue");
+      if (!tool) throw new Error("no tool: kobo.enqueue");
+      const result = await tool.execute(
+        { projectTag: proj, ...TASK_INPUT, ...args } as never,
+        { toolCallId: "t" }
       );
+      return (result.details ?? {}) as Record<string, unknown>;
     },
     async call(name, args) {
       const tool = tools.find((t) => t.name === name);
@@ -126,33 +128,28 @@ async function teardown(h: Harness): Promise<void> {
 }
 
 /**
- * @param withVerify 受け入れ条件に検査コマンドを持たせる（realign 第3便）。
- *   **既定は持たせない**——検査ゼロの契約が自動着地しないことも見たいので、
- *   素の形をそのまま残す。
+ * 積むときの最小の入力（第4便：番頭が渡すのはこれ全部）。
+ *
+ * **検査コマンドは既定で付けない**（realign 第3便）——検査ゼロの契約が自動着地しない
+ * ことも見たいので、素の形をそのまま残す。付けたいときは `acceptance` を上書きする。
  */
-const TASK_FM = (id: string, extra = "", withVerify = false) =>
-  [
-    `id: ${id}`,
-    "type: task",
-    "kind: feature",
-    `title: ${id} の仕事`,
-    "status: queued",
-    "scope:",
-    "  paths:",
-    "    - src/**",
-    "acceptance:",
-    withVerify
-      ? '  - { id: a1, text: "動くこと", verify: "true" }'
-      : '  - { id: a1, text: "動くこと" }',
-    extra,
-  ]
-    .filter((l) => l !== "")
-    .join("\n");
+const TASK_INPUT = {
+  title: "工場に積む仕事",
+  kind: "feature",
+  body: "この依頼の本文。",
+  scope: { paths: ["src/**"] },
+  acceptance: [{ text: "動くこと" }],
+  originRef: "試験",
+};
+
+/** 証拠（検査コマンド）の揃った受け入れ条件（第3便：自動着地の条件）。 */
+const WITH_VERIFY = [{ text: "動くこと", verify: "true" }];
 
 // ── 入口（task-0064）────────────────────────────────────────────────────────
 
 describe("[task-0064] 番頭が工場に積む（入口）", () => {
   let h: Harness;
+  let firstId: string;
   before(async () => {
     h = await harness();
   });
@@ -160,67 +157,66 @@ describe("[task-0064] 番頭が工場に積む（入口）", () => {
     await teardown(h);
   });
 
-  it("定義ファイルを積むと工場に載り、ゲートを通って ready になる", async () => {
-    h.writeTask("task-0001", TASK_FM("task-0001"));
-    const details = await h.call("kobo.enqueue", {
-      projectTag: h.proj,
-      taskId: "task-0001",
+  it("依頼の中身を渡すと Kobo が採番して積み、ゲートを通って ready になる", async () => {
+    const details = await h.enqueue({
       origin: threadOrigin(THREAD),
       originRef: "PO から「まず1本通してほしい」と言われた",
     });
-    assert.equal(details["taskId"], "task-0001");
+    firstId = String(details["taskId"]);
+    assert.match(firstId, /^task-\d{4}$/, "**番頭は番号を決めない**——Kobo が振る");
+    assert.equal(details["path"], `work/tasks/${firstId}.md`, "記録の在り処が返る");
 
-    await until(() => h.daemon.getTask(h.proj, "task-0001")?.status === "ready");
+    await until(() => h.daemon.getTask(h.proj, firstId)?.status === "ready");
+  });
+
+  it("記録ファイルは Kobo が書く（番頭は書かない）", () => {
+    const record = fs.readFileSync(path.join(h.repoDir, "work", "tasks", `${firstId}.md`), "utf-8");
+    assert.match(record, new RegExp(`^id: ${firstId}$`, "m"));
+    assert.match(record, /^written_by: kobo$/m);
+    assert.match(record, /この依頼の本文/);
   });
 
   it("[a2/a3] 宛先（積んだスレッド）と経緯が一緒に残る", () => {
-    const task = h.daemon.getTask(h.proj, "task-0001")!;
+    const task = h.daemon.getTask(h.proj, firstId)!;
     assert.equal(task["origin"], threadOrigin(THREAD), "積んだスレッドが残る（決定58）");
     assert.match(String(task["originRef"]), /まず1本通してほしい/, "経緯が残る（D8）");
   });
 
-  it("依頼の本文が契約と一緒に取り込まれる（職人に届くのはこれ）", () => {
-    const task = h.daemon.getTask(h.proj, "task-0001")!;
+  it("依頼の本文が契約と一緒に凍る（職人に届くのはこれ）", () => {
+    const task = h.daemon.getTask(h.proj, firstId)!;
     assert.match(String(task["body"]), /この依頼の本文/);
     assert.deepEqual((task["scope"] as { paths: string[] }).paths, ["src/**"]);
   });
 
-  it("[a4] 積めないときは理由が返る：定義ファイルが無い", async () => {
-    await assert.rejects(
-      () => h.call("kobo.enqueue", { projectTag: h.proj, taskId: "task-0404" }),
-      /定義ファイルがありません/
-    );
+  it("受け入れ条件の id は Kobo が振る（番頭は書かない）", () => {
+    const acceptance = h.daemon.getTask(h.proj, firstId)!["acceptance"] as Array<{ id: string }>;
+    assert.deepEqual(acceptance.map((a) => a.id), ["a1"]);
   });
 
-  it("[a4] 積めないときは理由が返る：draft は「まだ積まないでほしい」", async () => {
-    h.writeTask("task-0002", TASK_FM("task-0002").replace("status: queued", "status: draft"));
+  it("[a4] 積めないときは理由が返る：必須が欠けている", async () => {
     await assert.rejects(
-      () => h.call("kobo.enqueue", { projectTag: h.proj, taskId: "task-0002" }),
-      /draft/
+      () => h.enqueue({ scope: { paths: [] } }),
+      /scope\.paths/
     );
-    assert.equal(h.daemon.getTask(h.proj, "task-0002"), undefined, "積まれていないこと");
+    await assert.rejects(() => h.enqueue({ acceptance: [] }), /acceptance/);
   });
 
-  it("[決定64 改訂] 積み直しでは訂正できない。理由に kobo.amend と書いてある", async () => {
-    // 契約を書き換えて積み直そうとする（scope を広げる典型）
-    h.writeTask("task-0001", TASK_FM("task-0001").replace("    - src/**", "    - '**'"));
-    await assert.rejects(
-      () => h.call("kobo.enqueue", { projectTag: h.proj, taskId: "task-0001" }),
-      /既に積まれています[\s\S]*kobo\.amend/,
-      "訂正の道（kobo.amend）を案内すること——以前は「新しいタスクを積め」だった"
+  it("[決定62c] 契約は入力から凍る。記録ファイルを直しても動かない", () => {
+    const filePath = path.join(h.repoDir, "work", "tasks", `${firstId}.md`);
+    fs.writeFileSync(
+      filePath,
+      fs.readFileSync(filePath, "utf-8").replace('paths: ["src/**"]', 'paths: ["**"]'),
+      "utf-8"
     );
     assert.deepEqual(
-      (h.daemon.getTask(h.proj, "task-0001")!["scope"] as { paths: string[] }).paths,
+      (h.daemon.getTask(h.proj, firstId)!["scope"] as { paths: string[] }).paths,
       ["src/**"],
-      "積み直しで契約が動いてはいけない（改訂は kobo.amend でだけ起きる）"
+      "記録を直して契約が動くなら、マージ前ゲートの検査を後から緩められる"
     );
   });
 
   it("知らないプロジェクト・知らないタスクは、知っているものを添えて止まる（I2）", async () => {
-    await assert.rejects(
-      () => h.call("kobo.enqueue", { projectTag: "no-such", taskId: "task-0001" }),
-      /知りません/
-    );
+    await assert.rejects(() => h.enqueue({ projectTag: "no-such" }), /知りません/);
     await assert.rejects(
       () => h.call("kobo.task", { projectTag: h.proj, taskId: "task-9999" }),
       /ありません/
@@ -230,9 +226,9 @@ describe("[task-0064] 番頭が工場に積む（入口）", () => {
   it("一覧と経緯が読める（kobo.list / kobo.task）", async () => {
     const list = await h.call("kobo.list", { projectTag: h.proj });
     const tasks = list["tasks"] as Array<{ taskId: string; status: string }>;
-    assert.ok(tasks.some((t) => t.taskId === "task-0001"));
+    assert.ok(tasks.some((t) => t.taskId === firstId));
 
-    const detail = await h.call("kobo.task", { projectTag: h.proj, taskId: "task-0001" });
+    const detail = await h.call("kobo.task", { projectTag: h.proj, taskId: firstId });
     const history = detail["history"] as Array<{ type: string }>;
     assert.ok(history.some((e) => e.type === "task_created"));
     assert.ok(history.some((e) => e.type === "gate_evaluated"));
@@ -242,7 +238,7 @@ describe("[task-0064] 番頭が工場に積む（入口）", () => {
     const dead = createKoboModule(`http://127.0.0.1:${await freePort()}${KOBO_MODULE_PATH}`);
     const enqueue = dead.tools.find((t) => t.name === "kobo.enqueue")!;
     await assert.rejects(
-      () => enqueue.execute({ projectTag: h.proj, taskId: "task-0001" } as never, { toolCallId: "t" }),
+      () => enqueue.execute({ projectTag: h.proj, ...TASK_INPUT } as never, { toolCallId: "t" }),
       /Failed to reach module/
     );
   });
@@ -259,20 +255,19 @@ describe("[task-0065] レビューは3段（決定57・66）", () => {
   it("検査を持たない契約は、既定が auto でも review-ready で止まり、番頭が通せる", async () => {
     const h = await harness();
     try {
-      h.writeTask("task-0010", TASK_FM("task-0010"));
-      await h.call("kobo.enqueue", { projectTag: h.proj, taskId: "task-0010", origin: threadOrigin(THREAD) });
-      await until(() => h.daemon.getTask(h.proj, "task-0010")?.status === "ready");
+      const id = String((await h.enqueue({ origin: threadOrigin(THREAD) }))["taskId"]);
+      await until(() => h.daemon.getTask(h.proj, id)?.status === "ready");
       for (const to of ["planning", "implementing", "auditing"]) {
-        h.daemon.transition(h.proj, "task-0010", to, "test");
+        h.daemon.transition(h.proj, id, to, "test");
       }
-      h.daemon.handleAuditVerdict(h.proj, "task-0010", "pass", []);
+      h.daemon.handleAuditVerdict(h.proj, id, "pass", []);
       assert.equal(
-        h.daemon.getTask(h.proj, "task-0010")?.status,
+        h.daemon.getTask(h.proj, id)?.status,
         "review-ready",
         "検査ゼロの契約はゲートが素通りするので、人の目を通す（realign 第3便）"
       );
       const fellBack = h.daemon
-        .getTaskEvents(h.proj, "task-0010")
+        .getTaskEvents(h.proj, id)
         .find((e) => e.type === "state_transitioned" && (e as { to?: string }).to === "review-ready") as
         | { reason?: string }
         | undefined;
@@ -284,13 +279,13 @@ describe("[task-0065] レビューは3段（決定57・66）", () => {
 
       await h.call("kobo.approve", {
         projectTag: h.proj,
-        taskId: "task-0010",
+        taskId: id,
         note: "受け入れ基準を確かめた",
       });
-      assert.equal(h.daemon.getTask(h.proj, "task-0010")?.status, "approved");
+      assert.equal(h.daemon.getTask(h.proj, id)?.status, "approved");
 
       const approved = h.daemon
-        .getTaskEvents(h.proj, "task-0010")
+        .getTaskEvents(h.proj, id)
         .find((e) => e.type === "task_approved") as { approvedBy?: string; note?: string } | undefined;
       assert.equal(approved?.approvedBy, "banto", "誰が通したかが帳簿に残る");
       assert.match(String(approved?.note), /確かめた/);
@@ -302,14 +297,15 @@ describe("[task-0065] レビューは3段（決定57・66）", () => {
   it("auto かつ証拠が揃っていれば、番頭も見ずにマージへ進む", async () => {
     const h = await harness();
     try {
-      h.writeTask("task-0011", TASK_FM("task-0011", "review:\n  policy: auto", true));
-      await h.call("kobo.enqueue", { projectTag: h.proj, taskId: "task-0011" });
-      await until(() => h.daemon.getTask(h.proj, "task-0011")?.status === "ready");
+      const id = String(
+        (await h.enqueue({ review: { policy: "auto" }, acceptance: WITH_VERIFY }))["taskId"]
+      );
+      await until(() => h.daemon.getTask(h.proj, id)?.status === "ready");
       for (const to of ["planning", "implementing", "auditing"]) {
-        h.daemon.transition(h.proj, "task-0011", to, "test");
+        h.daemon.transition(h.proj, id, to, "test");
       }
-      h.daemon.handleAuditVerdict(h.proj, "task-0011", "pass", []);
-      assert.equal(h.daemon.getTask(h.proj, "task-0011")?.status, "merging");
+      h.daemon.handleAuditVerdict(h.proj, id, "pass", []);
+      assert.equal(h.daemon.getTask(h.proj, id)?.status, "merging");
     } finally {
       await teardown(h);
     }
@@ -322,14 +318,14 @@ describe("[task-0065] レビューは3段（決定57・66）", () => {
   it("policy を書かなくても、証拠が揃っていればマージへ進む（既定が auto）", async () => {
     const h = await harness();
     try {
-      h.writeTask("task-0012", TASK_FM("task-0012", "", true));
-      await h.call("kobo.enqueue", { projectTag: h.proj, taskId: "task-0012" });
-      await until(() => h.daemon.getTask(h.proj, "task-0012")?.status === "ready");
+      // `review` を一言も渡さない＝既定に任せる
+      const id = String((await h.enqueue({ acceptance: WITH_VERIFY }))["taskId"]);
+      await until(() => h.daemon.getTask(h.proj, id)?.status === "ready");
       for (const to of ["planning", "implementing", "auditing"]) {
-        h.daemon.transition(h.proj, "task-0012", to, "test");
+        h.daemon.transition(h.proj, id, to, "test");
       }
-      h.daemon.handleAuditVerdict(h.proj, "task-0012", "pass", []);
-      assert.equal(h.daemon.getTask(h.proj, "task-0012")?.status, "merging");
+      h.daemon.handleAuditVerdict(h.proj, id, "pass", []);
+      assert.equal(h.daemon.getTask(h.proj, id)?.status, "merging");
     } finally {
       await teardown(h);
     }
@@ -342,14 +338,22 @@ describe("[task-0065] レビューは3段（決定57・66）", () => {
   it("manual は証拠が揃っていても review-ready で止まる", async () => {
     const h = await harness();
     try {
-      h.writeTask("task-0013", TASK_FM("task-0013", "review:\n  policy: manual", true));
-      await h.call("kobo.enqueue", { projectTag: h.proj, taskId: "task-0013" });
-      await until(() => h.daemon.getTask(h.proj, "task-0013")?.status === "ready");
-      for (const to of ["planning", "implementing", "auditing"]) {
-        h.daemon.transition(h.proj, "task-0013", to, "test");
+      // **第4便で `manual` は入口から渡せなくなった**（道具の語彙は auto / banto / po）。
+      // それでも帳簿には旧称のまま13本残っているので、**読む側**が旧称を人へ倒すことを
+      // 確かめ続ける必要がある——内部の口から旧称のまま載せて見る
+      const id = "task-legacy-manual";
+      h.daemon.createTask(h.proj, id, "旧称 manual の仕事", {
+        kind: "feature",
+        body: "本文。",
+        scope: { paths: ["src/**"] },
+        acceptance: [{ id: "a1", text: "動くこと", verify: "true" }],
+        review: { policy: "manual" },
+      });
+      for (const to of ["queued", "ready", "planning", "implementing", "auditing"]) {
+        h.daemon.transition(h.proj, id, to, "test");
       }
-      h.daemon.handleAuditVerdict(h.proj, "task-0013", "pass", []);
-      assert.equal(h.daemon.getTask(h.proj, "task-0013")?.status, "review-ready");
+      h.daemon.handleAuditVerdict(h.proj, id, "pass", []);
+      assert.equal(h.daemon.getTask(h.proj, id)?.status, "review-ready");
     } finally {
       await teardown(h);
     }
@@ -358,27 +362,25 @@ describe("[task-0065] レビューは3段（決定57・66）", () => {
   it("[a2] governance: true は番頭には通せない。auto を名乗っていても po が勝つ", async () => {
     const h = await harness();
     try {
-      h.writeTask(
-        "task-0012",
-        TASK_FM("task-0012", "governance: true\nreview:\n  policy: auto")
+      const id = String(
+        (await h.enqueue({ governance: true, review: { policy: "auto" } }))["taskId"]
       );
-      await h.call("kobo.enqueue", { projectTag: h.proj, taskId: "task-0012" });
-      await until(() => h.daemon.getTask(h.proj, "task-0012")?.status === "ready");
+      await until(() => h.daemon.getTask(h.proj, id)?.status === "ready");
       for (const to of ["planning", "implementing", "auditing"]) {
-        h.daemon.transition(h.proj, "task-0012", to, "test");
+        h.daemon.transition(h.proj, id, to, "test");
       }
-      h.daemon.handleAuditVerdict(h.proj, "task-0012", "pass", []);
+      h.daemon.handleAuditVerdict(h.proj, id, "pass", []);
       assert.equal(
-        h.daemon.getTask(h.proj, "task-0012")?.status,
+        h.daemon.getTask(h.proj, id)?.status,
         "review-ready",
         "統治コードは auto を名乗っても素通りしない（緩い方へ倒れない）"
       );
 
       await assert.rejects(
-        () => h.call("kobo.approve", { projectTag: h.proj, taskId: "task-0012" }),
+        () => h.call("kobo.approve", { projectTag: h.proj, taskId: id }),
         /PO の判断が要ります/
       );
-      assert.equal(h.daemon.getTask(h.proj, "task-0012")?.status, "review-ready");
+      assert.equal(h.daemon.getTask(h.proj, id)?.status, "review-ready");
     } finally {
       await teardown(h);
     }
@@ -389,26 +391,24 @@ describe("[task-0065] レビューは3段（決定57・66）", () => {
       config: "review:\n  po_required_paths:\n    - packages/banto-web/**\n    - docs/spec/design.md\n",
     });
     try {
-      h.writeTask(
-        "task-0013",
-        TASK_FM("task-0013").replace("    - src/**", "    - packages/banto-web/src/App.tsx")
+      const id = String(
+        (await h.enqueue({ scope: { paths: ["packages/banto-web/src/App.tsx"] } }))["taskId"]
       );
-      await h.call("kobo.enqueue", { projectTag: h.proj, taskId: "task-0013" });
-      await until(() => h.daemon.getTask(h.proj, "task-0013")?.status === "ready");
+      await until(() => h.daemon.getTask(h.proj, id)?.status === "ready");
       for (const to of ["planning", "implementing", "auditing"]) {
-        h.daemon.transition(h.proj, "task-0013", to, "test");
+        h.daemon.transition(h.proj, id, to, "test");
       }
-      h.daemon.handleAuditVerdict(h.proj, "task-0013", "pass", []);
+      h.daemon.handleAuditVerdict(h.proj, id, "pass", []);
 
       await assert.rejects(
-        () => h.call("kobo.approve", { projectTag: h.proj, taskId: "task-0013" }),
+        () => h.call("kobo.approve", { projectTag: h.proj, taskId: id }),
         /PO の判断が要ります/,
         "番頭の付け忘れに依存せず、パスで機械的に判定される"
       );
 
       // 会話へ返す側も**工場に聞く**（ホスト側で推測しない）。ここがずれると、
       // PO 直行のタスクを「あなたが通してよい」と見せてしまう
-      const detail = await h.call("kobo.task", { projectTag: h.proj, taskId: "task-0013" });
+      const detail = await h.call("kobo.task", { projectTag: h.proj, taskId: id });
       assert.equal(detail["reviewStage"], "po");
     } finally {
       await teardown(h);
@@ -418,14 +418,10 @@ describe("[task-0065] レビューは3段（決定57・66）", () => {
   it("設定が壊れていたら、黙って緩い方へ倒れず止まる（I2）", async () => {
     const h = await harness({ config: "review:\n  po_required_paths: これは配列ではない\n" });
     try {
-      h.writeTask("task-0014", TASK_FM("task-0014"));
       // **積む時点で止まる**。緩い既定（banto）へ倒して受け付けると、PO 必須の面に触る
       // タスクが素通りしうる——設定を直すまで進ませない方が安全側
-      await assert.rejects(
-        () => h.call("kobo.enqueue", { projectTag: h.proj, taskId: "task-0014" }),
-        /配列で書いてください/
-      );
-      assert.equal(h.daemon.getTask(h.proj, "task-0014"), undefined, "積まれていないこと");
+      await assert.rejects(() => h.enqueue(), /配列で書いてください/);
+      assert.equal(h.daemon.getTasksByProject(h.proj).length, 0, "積まれていないこと");
     } finally {
       await teardown(h);
     }
@@ -434,17 +430,16 @@ describe("[task-0065] レビューは3段（決定57・66）", () => {
   it("[a6] 番頭が通しても関所は飛ばない（approved の先にマージ前ゲートがある）", async () => {
     const h = await harness();
     try {
-      h.writeTask("task-0015", TASK_FM("task-0015"));
-      await h.call("kobo.enqueue", { projectTag: h.proj, taskId: "task-0015" });
-      await until(() => h.daemon.getTask(h.proj, "task-0015")?.status === "ready");
+      const id = String((await h.enqueue())["taskId"]);
+      await until(() => h.daemon.getTask(h.proj, id)?.status === "ready");
       for (const to of ["planning", "implementing", "auditing"]) {
-        h.daemon.transition(h.proj, "task-0015", to, "test");
+        h.daemon.transition(h.proj, id, to, "test");
       }
-      h.daemon.handleAuditVerdict(h.proj, "task-0015", "pass", []);
-      await h.call("kobo.approve", { projectTag: h.proj, taskId: "task-0015" });
+      h.daemon.handleAuditVerdict(h.proj, id, "pass", []);
+      await h.call("kobo.approve", { projectTag: h.proj, taskId: id });
 
       // 承認は `approved` まで。マージするのはキューで、その前にゲートが回る
-      assert.equal(h.daemon.getTask(h.proj, "task-0015")?.status, "approved");
+      assert.equal(h.daemon.getTask(h.proj, id)?.status, "approved");
       /**
        * **止める道具は、飛ばす道具ではない**（PO 裁定 2026-08-13・inc-0063）。
        *
@@ -477,13 +472,14 @@ describe("[task-0065] 判断待ちは積んだスレッドへ返る（決定58�
     const delivered: Array<{ message: string; threadId?: string }> = [];
     let stop: (() => void) | undefined;
     try {
-      h.writeTask("task-0020", TASK_FM("task-0020"));
-      await h.call("kobo.enqueue", {
-        projectTag: h.proj,
-        taskId: "task-0020",
-        origin: threadOrigin(THREAD),
-        originRef: "PO から「一覧が遅いので直して」と言われた",
-      });
+      const id = String(
+        (
+          await h.enqueue({
+            origin: threadOrigin(THREAD),
+            originRef: "PO から「一覧が遅いので直して」と言われた",
+          })
+        )["taskId"]
+      );
 
       stop = startKoboNotices({
         tools: h.tools,
@@ -495,11 +491,11 @@ describe("[task-0065] 判断待ちは積んだスレッドへ返る（決定58�
         log: () => undefined,
       });
 
-      await until(() => h.daemon.getTask(h.proj, "task-0020")?.status === "ready");
+      await until(() => h.daemon.getTask(h.proj, id)?.status === "ready");
       for (const to of ["planning", "implementing", "auditing"]) {
-        h.daemon.transition(h.proj, "task-0020", to, "test");
+        h.daemon.transition(h.proj, id, to, "test");
       }
-      h.daemon.handleAuditVerdict(h.proj, "task-0020", "pass", []);
+      h.daemon.handleAuditVerdict(h.proj, id, "pass", []);
 
       await until(() => delivered.some((d) => /レビュー待ち/.test(d.message)));
       const notice = delivered.find((d) => /レビュー待ち/.test(d.message))!;
@@ -529,12 +525,7 @@ describe("[task-0065] 判断待ちは積んだスレッドへ返る（決定58�
     const delivered: string[] = [];
     let stop: (() => void) | undefined;
     try {
-      h.writeTask("task-0021", TASK_FM("task-0021"));
-      await h.call("kobo.enqueue", {
-        projectTag: h.proj,
-        taskId: "task-0021",
-        origin: threadOrigin(THREAD),
-      });
+      const id = String((await h.enqueue({ origin: threadOrigin(THREAD) }))["taskId"]);
       stop = startKoboNotices({
         tools: h.tools,
         notify: async (message) => {
@@ -544,9 +535,9 @@ describe("[task-0065] 判断待ちは積んだスレッドへ返る（決定58�
         intervalMs: 100,
         log: () => undefined,
       });
-      await until(() => h.daemon.getTask(h.proj, "task-0021")?.status === "ready");
+      await until(() => h.daemon.getTask(h.proj, id)?.status === "ready");
       for (const to of ["planning", "implementing"]) {
-        h.daemon.transition(h.proj, "task-0021", to, "test");
+        h.daemon.transition(h.proj, id, to, "test");
       }
       await new Promise((r) => setTimeout(r, 400));
       assert.deepEqual(delivered, [], "着手・実装中は知らせない（要点だけが会話に来る）");
@@ -561,12 +552,7 @@ describe("[task-0065] 判断待ちは積んだスレッドへ返る（決定58�
     const delivered: string[] = [];
     let stop: (() => void) | undefined;
     try {
-      h.writeTask("task-0022", TASK_FM("task-0022"));
-      await h.call("kobo.enqueue", {
-        projectTag: h.proj,
-        taskId: "task-0022",
-        origin: threadOrigin(THREAD),
-      });
+      const id = String((await h.enqueue({ origin: threadOrigin(THREAD) }))["taskId"]);
       stop = startKoboNotices({
         tools: h.tools,
         notify: async (message) => {
@@ -576,8 +562,8 @@ describe("[task-0065] 判断待ちは積んだスレッドへ返る（決定58�
         intervalMs: 100,
         log: () => undefined,
       });
-      await until(() => h.daemon.getTask(h.proj, "task-0022")?.status === "ready");
-      h.daemon.transition(h.proj, "task-0022", "failed", "職人が報告せずに終わった");
+      await until(() => h.daemon.getTask(h.proj, id)?.status === "ready");
+      h.daemon.transition(h.proj, id, "failed", "職人が報告せずに終わった");
 
       await until(() => delivered.some((m) => /止まりました/.test(m)));
       const notice = delivered.find((m) => /止まりました/.test(m))!;
@@ -593,20 +579,21 @@ describe("[task-0065] 判断待ちは積んだスレッドへ返る（決定58�
    * **この検査は逆を見ていた**（PO報告 2026-08-07・inc-0030）。
    *
    * もとは「宛先の無いものを既定スレッドへ流し込まない」と書いてあり、そのとおり
-   * 捨てていた。だが `origin` が付くのは `kobo.enqueue` 経由だけで、**タスク定義ファイルを
-   * watcher が取り込んだもの（決定64 の正規の入口）には付かない**——実機の loamium は
-   * 2本ともファイル経由で、監査で落ちたことも判断待ちも1通残らず捨てられていた。
+   * 捨てていた。だが `origin` が付くのは会話から積まれたときだけで、当時の正規の入口
+   * だったファイル経由（watcher）には付かなかった——実機の loamium は2本ともファイル
+   * 経由で、監査で落ちたことも判断待ちも1通残らず捨てられていた。
    *
-   * 宛先が分からないことは、知らせなくてよい理由にならない（I2）。
+   * **第4便で入口が1つになり、会話から積めば宛先は必ず付く。** それでも捨てないことは
+   * 確かめ続ける：CLI や内部の口から積まれたものには宛先が無く、
+   * 宛先が分からないことは知らせなくてよい理由にならない（I2）。
    */
   it("宛先が無いタスクの知らせも、既定のスレッドへ届く（捨てない）", async () => {
     const h = await harness();
     const delivered: Array<{ message: string; threadId?: string }> = [];
     let stop: (() => void) | undefined;
     try {
-      h.writeTask("task-0023", TASK_FM("task-0023"));
       // origin なしで積む＝宛先が無い
-      await h.call("kobo.enqueue", { projectTag: h.proj, taskId: "task-0023" });
+      const id = String((await h.enqueue())["taskId"]);
       stop = startKoboNotices({
         tools: h.tools,
         notify: async (message, target) => {
@@ -616,13 +603,13 @@ describe("[task-0065] 判断待ちは積んだスレッドへ返る（決定58�
         intervalMs: 100,
         log: () => undefined,
       });
-      await until(() => h.daemon.getTask(h.proj, "task-0023")?.status === "ready");
-      h.daemon.transition(h.proj, "task-0023", "failed", "テスト");
+      await until(() => h.daemon.getTask(h.proj, id)?.status === "ready");
+      h.daemon.transition(h.proj, id, "failed", "テスト");
 
       await until(() => delivered.some((d) => /止まりました/.test(d.message)));
       const notice = delivered.find((d) => /止まりました/.test(d.message))!;
       assert.equal(notice.threadId, undefined, "宛先が無いものは既定のスレッドへ");
-      assert.match(notice.message, /task-0023/);
+      assert.match(notice.message, new RegExp(id));
     } finally {
       stop?.();
       await teardown(h);

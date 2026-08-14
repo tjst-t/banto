@@ -625,6 +625,23 @@ function lastMergeQueueError(events: OrchestrationEvent[]): string | undefined {
  *     The thrown error message includes the conflicted file list (captured before abort).
  * D6: uses git CLI via child_process (stdlib).
  */
+/**
+ * git の失敗を、**衝突したファイルが読める形**の文言にする。
+ *
+ * `String(err)` だけだと `Error: Command failed: git rebase main` しか残らない。
+ * git は `CONFLICT (content): Merge conflict in <path>` を**標準出力**へ書くので、
+ * それを落とすと「どのファイルが衝突したか」が誰にも届かない——以前は
+ * `scope.paths: ["**"]` の逃げ道でこの目の粗さが隠れていた（inc-0063 の詰まり）。
+ * いまは衝突の中身をそのまま職人へ渡すので、ここで拾っておく。
+ */
+function gitFailureText(err: unknown): string {
+  const parts = [String(err)];
+  const e = err as { stdout?: unknown; stderr?: unknown };
+  if (typeof e?.stdout === "string" && e.stdout.trim()) parts.push(e.stdout);
+  if (typeof e?.stderr === "string" && e.stderr.trim()) parts.push(e.stderr);
+  return parts.join("\n");
+}
+
 async function rebaseTaskBranch(opts: {
   repoPath: string;
   worktreePath: string;
@@ -656,7 +673,7 @@ async function rebaseTaskBranch(opts: {
         // Ignore abort errors
       }
       throw new Error(
-        `rebase failed in worktree ${worktreePath}: ${String(err)}`
+        `rebase failed in worktree ${worktreePath}: ${gitFailureText(err)}`
       );
     }
   } else {
@@ -678,7 +695,7 @@ async function rebaseTaskBranch(opts: {
         // Ignore abort errors
       }
       throw new Error(
-        `rebase failed in repo ${repoPath} for branch ${taskBranch}: ${String(err)}`
+        `rebase failed in repo ${repoPath} for branch ${taskBranch}: ${gitFailureText(err)}`
       );
     }
   }

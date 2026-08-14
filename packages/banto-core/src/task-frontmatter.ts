@@ -36,10 +36,10 @@ export interface TaskFrontmatter {
   model_tier?: "reasoning" | "standard" | "fast";
   /**
    * Merge/audit policy for this task (spec-schemas §1, spec-daemon-core §1).
-   * "auto": audit pass → jump directly to merging (skip review-ready/in-review).
-   * "manual" (default): audit pass → review-ready, awaiting PO review.
+   * レビューは3段（決定57）: "auto"（誰も見ずにマージへ）/ "banto"（番頭が見る）/
+   * "po"（PO が見る）。"manual" は "banto" の旧称。
    */
-  review?: { policy?: "auto" | "manual" };
+  review?: { policy?: "auto" | "manual" | "banto" | "po" };
   [key: string]: unknown;
 }
 
@@ -236,10 +236,22 @@ export function parseYamlFrontmatter(raw: string): Record<string, unknown> {
 
 /**
  * Parse a block sequence (list of "- item" lines).
- * Items may be inline scalars or inline objects {k:v}.
+ * Items may be inline scalars, inline objects {k:v}, or block mappings:
+ *
+ *   - id: a1
+ *     text: "…"
+ *     verify: "…"
+ *
+ * **block 形式が要る理由**（第4便）: inline object（`{ id: a1, text: "…" }`）は
+ * `splitRespectingQuotes` がカンマで割るので、**値の中の引用符で壊れる**——
+ * `verify: "npm test -- --grep \"x\""` のような実在するコマンドが書けない。
+ * 1行1値の block 形式なら、値は行末まで取れるので割る必要がない。
+ * Kobo が記録ファイルを書くようになったので、書く側はこちらを使う。
  */
 function parseBlockSequence(lines: string[]): Array<string | Record<string, string>> {
   const items: Array<string | Record<string, string>> = [];
+  /** `- key: value` の形か（`- "a:b"` のような引用済みスカラーは含めない） */
+  const isMappingStart = (s: string): boolean => /^[A-Za-z_][A-Za-z0-9_-]*\s*:/.test(s);
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
@@ -248,15 +260,48 @@ function parseBlockSequence(lines: string[]): Array<string | Record<string, stri
       i++;
       continue;
     }
-    if (trimmed.startsWith("- ")) {
-      const item = trimmed.slice(2).trim();
-      if (item.startsWith("{")) {
-        items.push(parseInlineObject(item));
-      } else {
-        items.push(stripQuotes(item));
-      }
+    if (!trimmed.startsWith("- ")) {
+      i++;
+      continue;
     }
+
+    const dashIndent = line.length - trimmed.length;
+    const item = trimmed.slice(2).trim();
+    if (item.startsWith("{")) {
+      items.push(parseInlineObject(item));
+      i++;
+      continue;
+    }
+    if (!isMappingStart(item)) {
+      items.push(stripQuotes(item));
+      i++;
+      continue;
+    }
+
+    // Block mapping item: the "- " line holds the first pair; deeper-indented
+    // lines that are not a new "- " item hold the rest.
+    const entry: Record<string, string> = {};
+    const addPair = (text: string): void => {
+      const colonIdx = text.indexOf(":");
+      if (colonIdx === -1) return;
+      entry[text.slice(0, colonIdx).trim()] = stripQuotes(text.slice(colonIdx + 1).trim());
+    };
+    addPair(item);
     i++;
+    while (i < lines.length) {
+      const next = lines[i];
+      const nextTrimmed = next.trimStart();
+      if (!nextTrimmed || nextTrimmed.startsWith("#")) {
+        i++;
+        continue;
+      }
+      const nextIndent = next.length - nextTrimmed.length;
+      // A new item at the same level, or anything shallower, ends this entry
+      if (nextTrimmed.startsWith("- ") || nextIndent <= dashIndent) break;
+      addPair(nextTrimmed);
+      i++;
+    }
+    items.push(entry);
   }
   return items;
 }
@@ -354,7 +399,7 @@ export function extractFrontmatter(content: string): string | null {
 
 const REQUIRED_FIELDS = ["id", "type", "kind", "title", "status", "scope", "acceptance"] as const;
 
-const VALID_KINDS = new Set(["feature", "fix", "batch", "refactor", "conflict", "improvement"]);
+export const VALID_TASK_KINDS: ReadonlySet<string> = new Set(["feature", "fix", "batch", "refactor", "conflict", "improvement"]);
 
 const VALID_STATUSES = new Set(["draft", "queued", "done", "failed", "superseded", "cancelled"]);
 
@@ -397,10 +442,10 @@ export function validateTaskFrontmatter(fileContent: string): FrontmatterValidat
 
   // Validate kind
   const kind = String(parsed["kind"]);
-  if (!VALID_KINDS.has(kind)) {
+  if (!VALID_TASK_KINDS.has(kind)) {
     return {
       ok: false,
-      reason: `invalid kind: "${kind}" (valid: ${Array.from(VALID_KINDS).join(", ")})`,
+      reason: `invalid kind: "${kind}" (valid: ${Array.from(VALID_TASK_KINDS).join(", ")})`,
     };
   }
 
@@ -487,7 +532,10 @@ export function validateTaskFrontmatter(fileContent: string): FrontmatterValidat
   if (parsed["review"] !== undefined && typeof parsed["review"] === "object" && parsed["review"] !== null) {
     const reviewObj = parsed["review"] as Record<string, unknown>;
     const policy = reviewObj["policy"];
-    if (policy === "auto" || policy === "manual") {
+    // 決定57 のレビュー3段（auto / banto / po）と、旧称 `manual`。
+    // **読み取れる語彙を `resolveReviewStage` と揃える**——ここが狭いと、
+    // `policy: po` と書かれたものが黙って落ち、既定の段へ倒れる（緩い側への事故）
+    if (policy === "auto" || policy === "manual" || policy === "banto" || policy === "po") {
       frontmatter.review = { policy };
     }
   }

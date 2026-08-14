@@ -221,22 +221,8 @@ const TASK_FILE_NAME = "hello-merge.txt";
  * (auto-spawned by daemon on implementing→auditing) posts audit_report verdict;
  * on pass, the daemon transitions auditing→merging without any manual PO action.
  */
-const TASK_MD = `---
-id: ${TASK_ID}
-type: task
-kind: feature
-title: Hello Merge Task
-status: queued
-scope:
-  paths:
-    - ${TASK_FILE_NAME}
-acceptance:
-  - { id: a1, text: "${TASK_FILE_NAME} exists with content Hello merge", verify: "grep -q 'Hello merge' ${TASK_FILE_NAME}" }
-review:
-  policy: auto
----
-
-Create a file called ${TASK_FILE_NAME} in the current directory with the content: Hello merge
+/** 依頼の本文（第4便：`kobo.enqueue` に渡すもの。職人へそのまま届く）。 */
+const TASK_BODY = `Create a file called ${TASK_FILE_NAME} in the current directory with the content: Hello merge
 
 Steps:
 1. Call report_phase with phase="implementing" to signal you have started.
@@ -348,7 +334,6 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: drop → auto-spawn → implement → R
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
-      watchIntervalMs: 500,
       tickIntervalMs: 500,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
       workerPoolUrl: workerService.baseUrl,
@@ -396,11 +381,28 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: drop → auto-spawn → implement → R
       );
     }
 
-    // ── Step 1: Drop task definition file (PO performs NO further operation) ──
-    const taskFile = path.join(tasksDir, `${TASK_ID}.md`);
-    fs.writeFileSync(taskFile, TASK_MD, "utf8");
+    // ── Step 1: Enqueue（第4便：入口は kobo.enqueue だけ。以後 PO は何もしない）──
+    const enqueued = daemon.enqueueTask(
+      projectTag,
+      {
+        title: "Hello Merge Task",
+        kind: "feature",
+        body: TASK_BODY,
+        scope: { paths: [TASK_FILE_NAME] },
+        acceptance: [
+          {
+            text: `${TASK_FILE_NAME} exists with content Hello merge`,
+            verify: `grep -q 'Hello merge' ${TASK_FILE_NAME}`,
+          },
+        ],
+        review: { policy: "auto" },
+      },
+      { originRef: "E2E: pipeline merge" }
+    );
+    assert.ok(enqueued.ok, `enqueue must succeed: ${enqueued.ok ? "" : enqueued.reason}`);
+    assert.equal(enqueued.ok && enqueued.taskId, TASK_ID, "Kobo が最初の番号を振ること");
 
-    // ── Step 2: Wait for watcher → queued (or past) ──────────────────────────
+    // ── Step 2: queued（またはその先）になっていること ─────────────────────────
     const PAST_QUEUED = new Set([
       "queued", "ready", "planning", "implementing", "auditing",
       "review-ready", "in-review", "approved", "merging", "merged",
@@ -410,7 +412,7 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: drop → auto-spawn → implement → R
       const t = daemon.getTask(projectTag, TASK_ID);
       return !!t && PAST_QUEUED.has(t.status);
     }, 10000);
-    assert.ok(ingestedQueued, "Task must be ingested (queued or further) within 10s");
+    assert.ok(ingestedQueued, "Task must be queued (or further) within 10s");
 
     // ── Step 3: Wait for gate → ready ──────────────────────────────────────
     const becameReady = await pollUntilFn(() => {

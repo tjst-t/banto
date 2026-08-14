@@ -19,7 +19,11 @@
  *   - `verify` **だけ**の訂正 → 基準は動いていないので**監査は有効のまま**
  *   - 基準（`text`）・スコープの変更 → 監査は無効。`implementing` へ戻る
  *   - **緩める方向は PO だけ**（スコープを広げる・基準を変える・条件を消す）
- *   - 改訂は**明示的にだけ**起きる（ファイルを書き換えただけでは効かない）
+ *   - 改訂は**明示的にだけ**起きる
+ *
+ * **第4便で入口が変わった。** 定義ファイルを直してから `kobo.amend` を呼ぶ形はやめ、
+ * **変えたい中身を引数で渡す**——記録ファイルは Kobo が書き直す。書き手を2人にすると、
+ * どちらが契約なのかが決められなくなる（D3）。守るものは変わっていない。
  *
  * 直しを戻すと落ちることを確認済み。
  */
@@ -45,48 +49,39 @@ let tmpDir: string;
 let repoDir: string;
 let call: (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>;
 
-/** 定義ファイルを書く。`verify` と `scope` と基準文を差し替えられる。 */
-function writeTask(
-  taskId: string,
-  opts: { scope?: string; a1Text?: string; a1Verify?: string; extra?: string } = {}
-): void {
-  const {
-    scope = "src/**",
-    a1Text = "テストが通る",
-    a1Verify = "npm test",
-    extra = "",
-  } = opts;
-  fs.writeFileSync(
-    path.join(repoDir, "work", "tasks", `${taskId}.md`),
-    [
-      "---",
-      `id: ${taskId}`,
-      "type: task",
-      "kind: feature",
-      `title: "${taskId}"`,
-      "status: queued",
-      "scope:",
-      "  paths:",
-      `    - ${scope}`,
-      "acceptance:",
-      `  - { id: a1, text: "${a1Text}", verify: "${a1Verify}" }`,
-      ...(extra ? [extra] : []),
-      "---",
-      "",
-      "本文。",
-    ].join("\n"),
-    "utf-8"
-  );
+interface Acceptance {
+  id: string;
+  text: string;
+  verify?: string;
 }
 
-/** 積んで、監査済み（approved）まで進める。 */
-function enqueueAndApprove(taskId: string): void {
-  const r = daemon.enqueueTaskFile(PROJ, taskId, {});
-  assert.equal(r.ok, true, `積めなかった: ${JSON.stringify(r)}`);
+/** 積んで、監査済み（approved）まで進める。**id は Kobo が振る**ので返す。 */
+function enqueueAndApprove(
+  opts: { scope?: string[]; a1Text?: string; a1Verify?: string } = {}
+): string {
+  const { scope = ["src/**"], a1Text = "テストが通る", a1Verify = "npm test" } = opts;
+  const r = daemon.enqueueTask(
+    PROJ,
+    {
+      title: "改訂の試験",
+      kind: "feature",
+      body: "本文。",
+      scope: { paths: scope },
+      acceptance: [{ text: a1Text, verify: a1Verify }],
+    },
+    { originRef: "試験" }
+  );
+  if (!r.ok) throw new Error(`積めなかった: ${r.reason}`);
   for (const to of ["ready", "planning", "implementing", "auditing", "review-ready", "in-review", "approved"]) {
-    const t = daemon.transition(PROJ, taskId, to, "テスト：進める");
-    assert.equal(t.ok, true, `${taskId} → ${to}: ${JSON.stringify(t)}`);
+    const t = daemon.transition(PROJ, r.taskId, to, "テスト：進める");
+    assert.equal(t.ok, true, `${r.taskId} → ${to}: ${JSON.stringify(t)}`);
   }
+  return r.taskId;
+}
+
+/** いまの受け入れ条件（改訂は**全件**を渡すので、下敷きに使う）。 */
+function acceptanceOf(taskId: string): Acceptance[] {
+  return (daemon.getTask(PROJ, taskId)!["acceptance"] as Acceptance[]).map((a) => ({ ...a }));
 }
 
 before(async () => {
@@ -103,7 +98,6 @@ before(async () => {
   daemon = Daemon.create({
     port: 0,
     dataDir: path.join(tmpDir, "data"),
-    watchIntervalMs: 99999,
     tickIntervalMs: 99999,
     disableAutoSpawn: true,
     disableAuditSpawn: true,
@@ -127,33 +121,37 @@ after(async () => {
 });
 
 describe("[task-0082] 検証コマンドだけの訂正は、監査をやり直さない", () => {
-  it("verify を直すと契約に反映され、**監査は有効のまま**（実装をやり直さない）", async () => {
-    const id = "task-2001";
-    writeTask(id, { a1Verify: "npm ci --include=dev && npm test" });
-    enqueueAndApprove(id);
+  let firstId: string;
 
+  it("verify を直すと契約に反映され、**監査は有効のまま**（実装をやり直さない）", async () => {
     // 実機の loamium/task-0005 と同じ形：基準は正しく、確かめ方だけ壊れている
-    writeTask(id, { a1Verify: "npm test" });
+    firstId = enqueueAndApprove({ a1Verify: "npm ci --include=dev && npm test" });
+
     const r = await call("kobo.amend", {
       projectTag: PROJ,
-      taskId: id,
+      taskId: firstId,
       reason: "環境の用意は setup に移ったので、検証コマンドから npm ci を外す",
+      acceptance: [{ id: "a1", text: "テストが通る", verify: "npm test" }],
     });
 
     assert.equal(r["auditInvalidated"], false, "基準は変わっていないのに監査を無効にしている");
     assert.match((r["changes"] as string[]).join(" "), /検証コマンドを変更/);
 
     // **契約に実際に反映されていること**（記録だけ残って中身が古いままでは意味がない）
-    const acc = daemon.getTask(PROJ, id)!["acceptance"] as Array<Record<string, unknown>>;
-    assert.equal(acc[0]!["verify"], "npm test");
+    assert.equal(acceptanceOf(firstId)[0]!.verify, "npm test");
 
     // **状態は動かない**——approved のままマージ前ゲートへ進める（実装も監査もやり直さない）
-    assert.equal(daemon.getTask(PROJ, id)?.status, "approved");
+    assert.equal(daemon.getTask(PROJ, firstId)?.status, "approved");
+  });
+
+  it("記録ファイルも Kobo が書き直す（番頭が md を直す必要はない）", () => {
+    const record = fs.readFileSync(path.join(repoDir, "work", "tasks", `${firstId}.md`), "utf-8");
+    assert.match(record, /verify: npm test$/m);
+    assert.doesNotMatch(record, /npm ci/, "古い検証コマンドが記録に残っている");
   });
 
   it("改訂は経緯に残る（「何に対して監査したか」を版で答える）", async () => {
-    const id = "task-2001";
-    const d = await call("kobo.task", { projectTag: PROJ, taskId: id });
+    const d = await call("kobo.task", { projectTag: PROJ, taskId: firstId });
     const history = d["history"] as Array<{ type: string; detail: string }>;
     const amended = history.find((h) => h.type === "task_contract_amended");
     assert.ok(amended, "改訂が経緯に出ていない");
@@ -164,15 +162,15 @@ describe("[task-0082] 検証コマンドだけの訂正は、監査をやり直�
 
 describe("[task-0082] 基準やスコープが動いたら監査は無効", () => {
   it("受け入れ条件を増やすと監査は無効になり implementing へ戻る", async () => {
-    const id = "task-2002";
-    writeTask(id);
-    enqueueAndApprove(id);
-
-    writeTask(id, { extra: '  - { id: a2, text: "型検査も通る", verify: "npm run typecheck" }' });
+    const id = enqueueAndApprove();
     const r = await call("kobo.amend", {
       projectTag: PROJ,
       taskId: id,
       reason: "型検査も見ることにした",
+      acceptance: [
+        ...acceptanceOf(id),
+        { id: "a2", text: "型検査も通る", verify: "npm run typecheck" },
+      ],
     });
 
     // 増やすのは厳しくする方向だが、**監査はその条件を見ていない**
@@ -185,14 +183,18 @@ describe("[task-0082] 基準やスコープが動いたら監査は無効", () =
   });
 
   it("**中身が同じなら改訂しない**（帳簿に嘘の改訂を残さない）", async () => {
-    const id = "task-2003";
-    writeTask(id, { scope: "src/**" });
-    enqueueAndApprove(id);
+    const id = enqueueAndApprove({ scope: ["src/**"] });
 
-    // 一字一句同じものを書き直す
-    writeTask(id, { scope: "src/**" });
+    // 一字一句同じものを渡す
     await assert.rejects(
-      () => call("kobo.amend", { projectTag: PROJ, taskId: id, reason: "変えていない" }),
+      () =>
+        call("kobo.amend", {
+          projectTag: PROJ,
+          taskId: id,
+          reason: "変えていない",
+          scope: { paths: ["src/**"] },
+          acceptance: acceptanceOf(id),
+        }),
       /同じです/,
       "差分が無いのに改訂を記録すると、あとから「何が変わったのか」を辿れなくなる"
     );
@@ -200,34 +202,32 @@ describe("[task-0082] 基準やスコープが動いたら監査は無効", () =
   });
 
   it("スコープから**パスを取り除く**のは番頭でよい（触れる範囲が確実に減る）", async () => {
-    const id = "task-2009";
-    writeTask(id, { scope: "src/**\n    - docs/**" });
-    enqueueAndApprove(id);
+    const id = enqueueAndApprove({ scope: ["src/**", "docs/**"] });
 
-    writeTask(id, { scope: "src/**" });
     const r = await call("kobo.amend", {
       projectTag: PROJ,
       taskId: id,
       reason: "docs は触らないことにした",
+      scope: { paths: ["src/**"] },
     });
     assert.match((r["changes"] as string[]).join(" "), /スコープを変更/);
     // 減らしてもスコープが動いた以上、監査は無効（見ていた範囲が違う）
     assert.equal(r["auditInvalidated"], true);
-    assert.deepEqual(
-      (daemon.getTask(PROJ, id)!["scope"] as { paths: string[] }).paths,
-      ["src/**"]
-    );
+    assert.deepEqual((daemon.getTask(PROJ, id)!["scope"] as { paths: string[] }).paths, ["src/**"]);
   });
 
   it("**意味としては狭いスコープでも、新しい文字列なら PO 扱い**（glob は文字列で解けない）", async () => {
-    const id = "task-2010";
-    writeTask(id, { scope: "src/**" });
-    enqueueAndApprove(id);
+    const id = enqueueAndApprove({ scope: ["src/**"] });
 
     // `src/narrow/**` は `src/**` より狭いが、機械には判定させない
-    writeTask(id, { scope: "src/narrow/**" });
     await assert.rejects(
-      () => call("kobo.amend", { projectTag: PROJ, taskId: id, reason: "絞れると分かった" }),
+      () =>
+        call("kobo.amend", {
+          projectTag: PROJ,
+          taskId: id,
+          reason: "絞れると分かった",
+          scope: { paths: ["src/narrow/**"] },
+        }),
       /緩める方向|PO の判断/,
       "包含関係を機械に推させると、必ずどこかで緩い側に取り違える——厳しすぎる側に倒す"
     );
@@ -236,42 +236,47 @@ describe("[task-0082] 基準やスコープが動いたら監査は無効", () =
 
 describe("[task-0082] 緩める方向は PO だけ", () => {
   it("**スコープを広げる改訂は番頭では通らない**（範囲外を事後に正当化できてしまう）", async () => {
-    const id = "task-2004";
-    writeTask(id, { scope: "src/**" });
-    enqueueAndApprove(id);
+    const id = enqueueAndApprove({ scope: ["src/**"] });
 
-    writeTask(id, { scope: "'**'" });
     await assert.rejects(
-      () => call("kobo.amend", { projectTag: PROJ, taskId: id, reason: "全部触りたい" }),
+      () =>
+        call("kobo.amend", {
+          projectTag: PROJ,
+          taskId: id,
+          reason: "全部触りたい",
+          scope: { paths: ["**"] },
+        }),
       /緩める方向|PO の判断/,
       "番頭がスコープを広げられると、マージ前ゲートの検査が意味を失う"
     );
     // 拒否したら契約は動いていないこと
-    assert.deepEqual(
-      (daemon.getTask(PROJ, id)!["scope"] as { paths: string[] }).paths,
-      ["src/**"]
-    );
+    assert.deepEqual((daemon.getTask(PROJ, id)!["scope"] as { paths: string[] }).paths, ["src/**"]);
   });
 
   it("**基準そのものを変える改訂も番頭では通らない**（厳しくしたか緩めたか機械には読めない）", async () => {
-    const id = "task-2005";
-    writeTask(id, { a1Text: "テストが通る" });
-    enqueueAndApprove(id);
+    const id = enqueueAndApprove({ a1Text: "テストが通る" });
 
-    writeTask(id, { a1Text: "だいたい動く" });
     await assert.rejects(
-      () => call("kobo.amend", { projectTag: PROJ, taskId: id, reason: "基準を見直した" }),
+      () =>
+        call("kobo.amend", {
+          projectTag: PROJ,
+          taskId: id,
+          reason: "基準を見直した",
+          acceptance: [{ id: "a1", text: "だいたい動く", verify: "npm test" }],
+        }),
       /緩める方向|PO の判断/
     );
   });
 
   it("PO なら緩める改訂も通る（そのかわり監査は無効）", () => {
-    const id = "task-2006";
-    writeTask(id, { scope: "src/**" });
-    enqueueAndApprove(id);
+    const id = enqueueAndApprove({ scope: ["src/**"] });
 
-    writeTask(id, { scope: "'**'" });
-    const r = daemon.amendTask(PROJ, id, { reason: "PO が範囲を広げると決めた", by: "po" });
+    const r = daemon.amendTask(
+      PROJ,
+      id,
+      { scope: { paths: ["**"] } },
+      { reason: "PO が範囲を広げると決めた", by: "po" }
+    );
     assert.equal(r.ok, true, `PO なら通るはず: ${JSON.stringify(r)}`);
     assert.equal((r as { ok: true; auditInvalidated: boolean }).auditInvalidated, true);
     assert.equal(daemon.getTask(PROJ, id)?.status, "implementing");
@@ -280,19 +285,17 @@ describe("[task-0082] 緩める方向は PO だけ", () => {
 
 describe("[task-0082] 改訂と reopen の噛み合わせ", () => {
   it("**承認のあとに基準が変わったら reverify は通らない**（変わった基準を誰も見ていない）", async () => {
-    const id = "task-2007";
-    writeTask(id);
-    enqueueAndApprove(id);
+    const id = enqueueAndApprove();
     // 落ちた形にする
     daemon.transition(PROJ, id, "merging", "テスト");
     daemon.transition(PROJ, id, "failed", "テスト：ゲートで落ちる");
 
     // failed のまま基準を増やす（監査は無効になるが、終端なので状態は動かさない）
-    writeTask(id, { extra: '  - { id: a2, text: "別の条件", verify: "true" }' });
     const amended = await call("kobo.amend", {
       projectTag: PROJ,
       taskId: id,
       reason: "条件が足りていなかった",
+      acceptance: [...acceptanceOf(id), { id: "a2", text: "別の条件", verify: "true" }],
     });
     assert.equal(amended["auditInvalidated"], true);
     assert.equal(daemon.getTask(PROJ, id)?.status, "failed", "終端のものを勝手に動かさない");
@@ -306,17 +309,15 @@ describe("[task-0082] 改訂と reopen の噛み合わせ", () => {
   });
 
   it("verify だけの改訂なら、承認は生きていて reverify で進める", async () => {
-    const id = "task-2008";
-    writeTask(id, { a1Verify: "npm ci && npm test" });
-    enqueueAndApprove(id);
+    const id = enqueueAndApprove({ a1Verify: "npm ci && npm test" });
     daemon.transition(PROJ, id, "merging", "テスト");
     daemon.transition(PROJ, id, "failed", "テスト：ゲートで落ちる");
 
-    writeTask(id, { a1Verify: "npm test" });
     const amended = await call("kobo.amend", {
       projectTag: PROJ,
       taskId: id,
       reason: "環境の用意は setup に移った",
+      acceptance: [{ id: "a1", text: "テストが通る", verify: "npm test" }],
     });
     assert.equal(amended["auditInvalidated"], false);
 

@@ -82,7 +82,6 @@ describe("[task-0061/a2] Kobo は既定で 127.0.0.1 だけを待ち受ける（
     daemon = Daemon.create({
       port,
       dataDir: path.join(tmpDir, "data"),
-      watchIntervalMs: 99999,
       tickIntervalMs: 99999,
       disableAutoSpawn: true,
     });
@@ -125,7 +124,6 @@ describe("[task-0061/a2] Kobo は既定で 127.0.0.1 だけを待ち受ける（
     const open = Daemon.create({
       port: openPort,
       dataDir: path.join(openDir, "data"),
-      watchIntervalMs: 99999,
       tickIntervalMs: 99999,
       disableAutoSpawn: true,
       bindHost: "0.0.0.0",

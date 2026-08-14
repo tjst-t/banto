@@ -63,8 +63,16 @@ async function transitionTo(base: string, proj: string, taskId: string, to: stri
     body: JSON.stringify({ to }),
   });
   if (r.status !== 200) {
+    // **工場は自分でも進む。** `queued → ready` はゲートを通った時点で tick が動かすので、
+    // 状態を読んでから POST するまでの隙に機構が先に着いていることがある
+    // （この spec は tick 200ms。単体で回すと機械が空いていて tick が必ず勝ち、3/3 落ちた）。
+    // **判定を増やして避けるのではなく、失敗したあとに読み直して吸収する**——
+    // 着きたかった先に既に居るなら成功として扱う。**機構は正しい**。
+    // 読み直してなお違う先に居るなら、それは本物の遷移失敗なので見逃さない
+    const now = await getStatus(base, proj, taskId);
+    if (now === to) return;
     const body = await r.text();
-    throw new Error(`Transition ${taskId}→'${to}' failed (${r.status}): ${body}`);
+    throw new Error(`Transition ${taskId}→'${to}' failed (${r.status}): ${body}（いまは ${now}）`);
   }
 }
 
@@ -143,7 +151,6 @@ describe("[AC-S75f66b-5-3] Queue derived from event log; restart resumes process
       dataDir,
       worktreeBaseDir,
       tickIntervalMs: 200,
-      watchIntervalMs: 999999,
       disableAuditSpawn: true,
       // task-0060: 職人を要らないので Worker Pool に頼まない
       disableAutoSpawn: true,
@@ -311,7 +318,6 @@ describe("[AC-S75f66b-5-3] Queue derived from event log; restart resumes process
       dataDir,
       worktreeBaseDir,
       tickIntervalMs: 200,
-      watchIntervalMs: 999999,
       disableAuditSpawn: true,
       // task-0060: 職人を要らないので Worker Pool に頼まない
       disableAutoSpawn: true,

@@ -73,7 +73,6 @@ before(async () => {
   daemon = Daemon.create({
     port: 0,
     dataDir: path.join(tmpDir, "data"),
-    watchIntervalMs: 99999,
     tickIntervalMs: 200,
     worktreeBaseDir: path.join(tmpDir, "worktrees"),
     workerPoolUrl: workers.url,

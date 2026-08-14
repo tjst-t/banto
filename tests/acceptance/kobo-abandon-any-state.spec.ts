@@ -112,7 +112,6 @@ describe("[abandon-any-state] どの状態のタスクでも畳める", () => {
       dataDir: path.join(tmpDir, "data"),
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
       // 動かしたいのは「畳めるか」だけ。機構が横から状態を動かすと何を見たのか分からなくなる
-      watchIntervalMs: 99999,
       tickIntervalMs: 99999,
       disableAutoSpawn: true,
       disableAuditSpawn: true,
@@ -273,7 +272,6 @@ describe("[abandon-any-state] 畳むときに職人を止める", () => {
       port: 0,
       dataDir: path.join(tmpDir, "data"),
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
-      watchIntervalMs: 99999,
       tickIntervalMs: 99999,
       disableAutoSpawn: true,
       disableAuditSpawn: true,
@@ -384,7 +382,6 @@ describe("[abandon-any-state] 畳んだタスクは待ち行列に戻らない",
       port: 0,
       dataDir,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
-      watchIntervalMs: 99999,
       tickIntervalMs: 99999,
       disableAutoSpawn: true,
       disableAuditSpawn: true,
@@ -477,7 +474,6 @@ describe("[abandon-any-state] 関所を通している最中に畳んだらマ�
       dataDir: path.join(tmpDir, "data"),
       worktreeBaseDir,
       verifyRunner: pausing,
-      watchIntervalMs: 99999,
       tickIntervalMs: 100,
       disableAutoSpawn: true,
       disableAuditSpawn: true,
@@ -544,14 +540,16 @@ describe("[abandon-any-state] 関所を通している最中に畳んだらマ�
   });
 });
 
-// ── 3c/3d. paused からの自動再開・定義ファイルの watcher ──────────────────────
+// ── 3c/3d. 畳んだあと、機構が起こし直さないこと ──────────────────────────────
 
 /**
- * コンフリクトで `paused` に落ちた origin を畳んだあと、**解消タスクが片付いても
- * 起き上がらない**こと（`runConflictResolutionCheck`）。
+ * 畳んだタスクを**機構が起こし直さない**こと。
  *
- * 併せて、`work/tasks/*.md` は畳んでも残るので、**watcher が読み直して queued に
- * 戻さない**ことも見る——ここが塞がっていないと、この改修そのものが無意味になる。
+ * **第4便で起き上がる道が2本とも消えた。** もとは (1) 解消タスクが片付いたら origin を
+ * `merging` へ戻す `runConflictResolutionCheck` (2) `work/tasks/*.md` を読み直す watcher、
+ * の2本だった。いまはどちらも無い——衝突は同じタスクの次の試行になり、記録ファイルを
+ * 読む経路は無い。**それでも確かめ続ける**：畳んだものが動き出すのは、
+ * 「畳めるようにした」改修そのものを無意味にするからである。
  */
 describe("[abandon-any-state] 畳んだタスクは機構に起こされない", () => {
   const PROJ = "abandon-revive";
@@ -597,8 +595,7 @@ describe("[abandon-any-state] 畳んだタスクは機構に起こされない",
       port: 0,
       dataDir: path.join(tmpDir, "data"),
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
-      // watcher とマージキューは**本物を回す**——拾い直さないことを見るのが本題
-      watchIntervalMs: 100,
+      // マージキューは**本物を回す**——拾い直さないことを見るのが本題
       tickIntervalMs: 100,
       disableAutoSpawn: true,
       disableAuditSpawn: true,
@@ -614,7 +611,7 @@ describe("[abandon-any-state] 畳んだタスクは機構に起こされない",
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("paused（コンフリクト待ち）で畳んだら、解消タスクが片付いても起き上がらない", async () => {
+  it("コンフリクトで戻されたタスクを畳んだら、マージキューは二度と触らない", async () => {
     // task-X と task-Y が同じ行を書き換える＝ task-Y は rebase で必ず衝突する
     setupTaskBranch("task-X", "shared.ts", "// shared.ts\nexport const VERSION = 1; // X\n");
     setupTaskBranch("task-Y", "shared.ts", "// shared.ts\nexport const VERSION = 2; // Y\n");
@@ -632,85 +629,69 @@ describe("[abandon-any-state] 畳んだタスクは機構に起こされない",
     await advance("task-X", "approved");
     await advance("task-Y", "approved");
 
-    const paused = await pollUntil(() => statusOf("task-Y"), (s) => s === "paused" || s === "failed");
-    assert.equal(paused, "paused", "前提：task-Y がコンフリクトで止まっている");
+    // 第4便：衝突した task-Y は**同じタスクのまま** implementing へ戻る。
+    // **遷移で見る**——ここには Worker Pool が居ないので、戻した直後に職人を起こせず
+    // failed まで進むことがある（P6: 状態で見ると間欠的に割れる）
+    const retried = await pollUntil(
+      () =>
+        daemon
+          .getTaskEvents(PROJ, "task-Y")
+          .find(
+            (e) =>
+              e.type === "state_transitioned" &&
+              e.to === "implementing" &&
+              String(e.reason ?? "").startsWith("rebase_conflict")
+          ),
+      (e) => e !== undefined
+    );
+    assert.ok(retried, "前提：task-Y が衝突で implementing へ戻っている");
 
-    // paused のまま畳む（元は畳めなかった状態）
+    // **新しいタスクは生まれていない**（機構は契約を作らない）
+    assert.deepEqual(
+      daemon.getTasksByProject(PROJ).map((t) => t.id).sort(),
+      ["task-X", "task-Y"],
+      "解消タスクが起票されていないこと"
+    );
+
     const details = await call("kobo.abandon", {
       projectTag: PROJ,
       taskId: "task-Y",
       reason: "テスト: 解消する気が無いので畳む",
     });
-    assert.equal(details["from"], "paused");
+    // どこから畳んだかは、職人を起こせたかで変わる（implementing か failed）。
+    // **畳めたこと**と**起き上がらないこと**が本題なので、そこは縛らない
+    assert.ok(
+      ["implementing", "failed"].includes(String(details["from"])),
+      `衝突後の状態から畳めること（from=${String(details["from"])}）`
+    );
     assert.equal(await statusOf("task-Y"), "closed");
 
-    // 起票された解消タスクを片付ける。`runConflictResolutionCheck` は解消タスクが
-    // merged / closed になったとき origin を merging へ戻す——**そこが起き上がる道**
-    const resolution = await pollUntil(
-      () =>
-        daemon
-          .getTasksByProject(PROJ)
-          .find((t) => t["kind"] === "conflict" && t.status !== "closed"),
-      (t) => t !== undefined
-    );
-    assert.ok(resolution, "前提：解消タスクが起票されている");
-    await call("kobo.abandon", {
-      projectTag: PROJ,
-      taskId: resolution.id,
-      reason: "テスト: 解消タスクも畳む",
-    });
-
-    // tick を何周か回す。起き上がるならここで merging に戻る
+    // tick を何周か回す。起き上がるならここで動く
     await new Promise((r) => setTimeout(r, 1000));
-    assert.equal(
-      await statusOf("task-Y"),
-      "closed",
-      "畳んだタスクが自動再開で起き上がっている"
-    );
+    assert.equal(await statusOf("task-Y"), "closed", "畳んだタスクが起き上がっている");
   });
 
-  it("定義ファイルが残っていても、watcher は畳んだタスクを queued に戻さない", async () => {
-    const taskFile = path.join(repoDir, "work", "tasks", "task-9001.md");
-    fs.mkdirSync(path.dirname(taskFile), { recursive: true });
-    fs.writeFileSync(
-      taskFile,
-      `---
-id: task-9001
-type: task
-kind: feature
-title: 畳んだあとも残る定義ファイル
-status: queued
-scope:
-  paths: [zzz/**]
-acceptance:
-  - { id: a1, text: 動作確認 }
----
-
-## 背景
-
-畳んだあとに読み直されないことを見る。
-`,
-      "utf-8"
+  it("記録ファイルが残っていても、畳んだタスクは queued に戻らない", async () => {
+    const enqueued = daemon.enqueueTask(
+      PROJ,
+      {
+        title: "畳んだあとも残る記録ファイル",
+        kind: "feature",
+        body: "畳んだあとに読み直されないことを見る。",
+        scope: { paths: ["zzz/**"] },
+        acceptance: [{ text: "動作確認" }],
+      },
+      { originRef: "試験" }
     );
+    if (!enqueued.ok) throw new Error(enqueued.reason);
+    const taskFile = path.join(repoDir, enqueued.path);
 
-    const ingested = await pollUntil(() => statusOf("task-9001"), (s) => s === "queued" || s === "ready");
-    assert.ok(["queued", "ready"].includes(ingested), "前提：ファイルから取り込まれている");
+    await call("kobo.abandon", { projectTag: PROJ, taskId: enqueued.taskId, reason: "テスト: 畳む" });
+    assert.equal(await statusOf(enqueued.taskId), "closed");
 
-    await call("kobo.abandon", { projectTag: PROJ, taskId: "task-9001", reason: "テスト: 畳む" });
-    assert.equal(await statusOf("task-9001"), "closed");
-
-    // **ファイルは残る**（畳んでも消さない）。ここで queued に戻ると改修が無意味になる
-    assert.equal(fs.existsSync(taskFile), true, "前提：定義ファイルは畳んでも残る");
+    // **ファイルは残る**（畳んでも消さない）。読む経路が無いので queued には戻らない
+    assert.equal(fs.existsSync(taskFile), true, "前提：記録ファイルは畳んでも残る");
     await new Promise((r) => setTimeout(r, 600));
-    assert.equal(await statusOf("task-9001"), "closed", "watcher が畳んだタスクを起こし直している");
-
-    // PO がその md を触った場合（mtime が動く）も、黙って queued に戻らないこと
-    fs.utimesSync(taskFile, new Date(), new Date(Date.now() + 2000));
-    await new Promise((r) => setTimeout(r, 600));
-    assert.equal(
-      await statusOf("task-9001"),
-      "closed",
-      "**ファイルを触ったら queued に戻った**（この改修が無意味になる道）"
-    );
+    assert.equal(await statusOf(enqueued.taskId), "closed", "畳んだタスクが起こし直されている");
   });
 });
