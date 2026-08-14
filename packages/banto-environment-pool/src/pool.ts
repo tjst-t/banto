@@ -19,6 +19,7 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
 import type { EnvExposer, EnvHandle, EnvProfile } from "@banto/core";
+import { envProfileDigest } from "@banto/core";
 import { EnvLedger, countLiveByProfile, type EnvLedgerEntry } from "./env-ledger.js";
 import { EnvEventLog, type EnvEvent, type EnvEventInput, type EnvEventType } from "./event-log.js";
 import {
@@ -178,6 +179,14 @@ export interface EnvSummary {
 
 /** `env.provision` の返り（spec §3.1）。立てた直後に使える状態かも併せて返す。 */
 export interface ProvisionResult extends EnvSummary {
+  /**
+   * **プロファイルの中身の指紋**（realign 第2便・段1）。プロファイル経由で立てたときだけ。
+   *
+   * 呼び出し側（Kobo のマージ前ゲート）が「**どの環境で検査したか**」を証拠に刻むための値。
+   * プロファイル名では足りない——同じ名前のまま土台のイメージや `setup` が変われば、
+   * 同じ差分でも結果は変わりうる。アドホックには定義が無いので付かない。
+   */
+  profileDigest?: string;
   /**
    * 立てた直後の疎通確認。
    *
@@ -1058,7 +1067,14 @@ export class EnvironmentPool {
       await this.sweepCache(resolved.driver, driverPath, cache.key, extraEnv).catch(() => undefined);
     }
 
-    return { ...toSummary(entry), healthcheck };
+    return {
+      ...toSummary(entry),
+      healthcheck,
+      // **どの環境で回したのか**を呼び出し側が証拠に刻めるようにする（realign 第2便・段1）。
+      // プロファイル経由のときだけ付く——アドホックには「定義」が無いので指紋も無い。
+      // 名前ではなく中身から作るのは、同じ名前のまま土台や `setup` が変わりうるため
+      ...(resolved.profile ? { profileDigest: envProfileDigest(resolved.profile) } : {}),
+    };
   }
 
   /**

@@ -39,6 +39,10 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
   "worker.wake",
   "worker.stop",
   "worker.models",
+  // 落ちた職人の未コミットの成果を拾う（work-keep）。ここに無いと、機構が守った取り置きは
+  // 「在るのに誰も気づけない」ものになる——実装は全部あったのに一度も発火しなかった
+  // 触れる環境と同じ形の穴
+  "worker.keeps",
   // 場所を読む——判断の材料。25%
   "file.read",
   "file.grep",
@@ -108,6 +112,16 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
    * ——別の依頼で置き換えるなら `kobo.supersede`、単に諦めるなら `kobo.abandon`。
    */
   "kobo.abandon",
+  /**
+   * **工場の外で決着したものを降ろす口**（realign 第2便・imp-0019 の4番）。
+   *
+   * `kobo.abandon` は failed にしか効かない。queued / paused / review-ready のまま
+   * 中身が別の経路で main に入ったタスクを畳む道が無く、2026-08-13 の棚卸しで番頭が
+   * 実際にここで詰まった——判定を帳簿へ書き戻せず、文書が代わりの記録になった。
+   *
+   * 在庫に足すだけでは足りない。**ここに載せないとモデルには見えない**（決定82）。
+   */
+  "kobo.settle",
   "kobo.supersede",
   "kobo.amend",
   /**

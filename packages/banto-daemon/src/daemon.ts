@@ -25,6 +25,15 @@ import {
   EventIndex,
   StateMachine,
   parseEnvProfiles as _parseEnvProfiles,
+  // realign 第2便: 滞留と「何に対して」は帳簿から導出する（保存しない・D3）
+  dwellMs,
+  lastObservableChangeAt,
+  stalledAlreadyRecorded,
+  currentBlockedBy,
+  contractVersionOf,
+  DEFAULT_DWELL_WARN_MINUTES,
+  promptAssetDigest,
+  loadPromptAsset,
 } from "@banto/core";
 import type {
   OrchestrationEvent,
@@ -585,6 +594,17 @@ export class Daemon {
     // If a resolution task failed: chain-fail the origin task (I2: stop, don't swallow).
     this.scheduler.registerJob("conflict-resolution-check", () => {
       this.runConflictResolutionCheck();
+    });
+
+    /**
+     * **止まっているものを見つけて言う**（realign 第2便・rethink C-3 第1手）。
+     *
+     * 状態は「いつからその状態か」を答えられなかったので、何日詰まっていても誰も
+     * 気づけなかった（実測 19.2h / 28.6h / 16.8h）。滞在時間は帳簿から導出できる
+     * ——足りなかったのは、それを見て閾値と比べる者だけだった。
+     */
+    this.scheduler.registerJob("dwell-watch", () => {
+      this.runDwellWatch();
     });
 
     // 期限の執行（TTL）と照合は **Environment Pool が持つ**（ADR-0013 決定60）。
@@ -1692,6 +1712,141 @@ export class Daemon {
     }
 
     return { stopped, unstopped };
+  }
+
+  /**
+   * **工場の外で決着したものを畳む**（realign 第2便・imp-0019 の4番）。
+   *
+   * `abandonTask` は failed にしか効かない。queued / paused / review-ready のまま
+   * 「中身が別の経路で main に入った」ものを帳簿の上で畳む手段が無く、番頭が実際に
+   * ここで詰まった——2026-08-13 の棚卸しの判定を、帳簿へ書き戻せなかった。
+   *
+   * **failed とは区別する。** 失敗ではないので `failed` を経由させない。
+   * `closed` へ直に落とし、`task_settled_outside` に「どう決着したか・なぜそう
+   * 言えるのか・どこで止まっていたか」を残す（→ `StateMachine.settleOutside`）。
+   *
+   * 畳んだあとは終端の後始末（職人・検証環境を畳む）に乗せる——**起こした者が
+   * 片付ける**（I3）。乗せないと、降ろしたつもりのタスクの職人が動き続ける。
+   */
+  settleTaskOutside(
+    projectTag: string,
+    taskId: string,
+    options: {
+      reason: string;
+      by: string;
+      outcome: "landed_elsewhere" | "no_longer_needed" | "handled_directly";
+    }
+  ): { ok: true; from: string } | { ok: false; reason: string } {
+    const task = this.store.getTask(taskId, projectTag);
+    if (!task) return { ok: false, reason: `${taskId} は ${projectTag} の工場にありません` };
+
+    const from = task.status as TaskStatus;
+    const result = StateMachine.settleOutside(
+      this.log,
+      taskId,
+      { currentStatus: from, by: options.by, outcome: options.outcome, reason: options.reason },
+      projectTag
+    );
+    if (!result.ok) {
+      // I2: 畳めなかったことを成功に見せない。**どこへ行けばよいかまで言う**
+      // ——道具が断るだけだと、番頭はまた同じ口を叩く（第1便で同じ形を踏んだ）
+      this.refreshState();
+      const hint =
+        from === "failed"
+          ? "落ちたまま諦めるなら kobo.abandon（失敗ではないと言うのがこの口の役目です）"
+          : from === "merging"
+            ? "着地の最中です。降ろすなら kobo.supersede"
+            : `${from} からは畳めません`;
+      return { ok: false, reason: `${taskId} を畳めませんでした: ${hint}` };
+    }
+
+    this.refreshState();
+    const events = this.log.readAllEvents();
+    if (events.length > 0) this.wsServer.broadcast(events[events.length - 1]!);
+
+    // I3: 終端に入ったら、起こしてあるものを畳む（`recordTaskFailed` と同じ後始末）
+    this._trackBackground(
+      (async () => {
+        for (const role of ["executor", "audit", "rework"] as const) {
+          await this.closeWorkerFor(projectTag, poolTaskId(taskId, role));
+        }
+      })()
+    );
+
+    return { ok: true, from };
+  }
+
+  /**
+   * そのタスクが**いまの状態にいる長さ**（ms）。分からなければ `undefined`。
+   *
+   * D3: 保存しない。呼ばれるたびに帳簿から導出する（`dwellMs`）——保存すると、
+   * 状態を動かす経路すべてで更新し忘れが起き、静かに古い数字が出る。
+   */
+  dwellOf(projectTag: string, taskId: string): number | undefined {
+    return dwellMs(this.getTaskEvents(projectTag, taskId), projectTag, taskId);
+  }
+
+  /**
+   * **止まっているものを見つけて帳簿に刻む**（realign 第2便・rethink C-3 第1手）。
+   *
+   * 状態ごとの閾値（層B設定 `limits.dwell_warn_minutes`、既定
+   * `DEFAULT_DWELL_WARN_MINUTES`）を超えたら `task_stalled` を積む。
+   *
+   * **同じ状態のあいだ二度は鳴らない**（`stalledAlreadyRecorded`）。鳴った印は
+   * どこにも持たない——帳簿がそれを持っている（D3）。印を手元に持つと再起動で
+   * 消え、起動のたびに溜まっている分が全部鳴り直す。
+   *
+   * D3: 滞在時間は保存しない。ここで積むのは「閾値を超えた」という判定の事実と、
+   * そのときの実測値だけ——閾値を後から変えても、当時の判断が読める。
+   *
+   * `now` を受けるのは、**試験が時計を渡せるようにするため**（I1：19時間待って
+   * 確かめる、はできない）。tick からは既定のいまで呼ばれる。
+   */
+  runDwellWatch(now: number = Date.now()): void {
+    for (const project of this.registry.list()) {
+      const projectTag = project.id;
+
+      /**
+       * 閾値は**プロジェクトの持ち物**（決定66）。読めないものを既定に落とさない
+       * ——設定を書いたのに効いていない状態を隠す（I2）ので、読めなければ見送る。
+       */
+      let configured: Partial<Record<string, number>>;
+      try {
+        configured = this.projectConfig(projectTag).limits.dwellWarnMinutes ?? {};
+      } catch (err) {
+        process.stderr.write(
+          `[banto-daemon] ${projectTag}: 滞留の閾値を読めません（見送ります）: ${String(err)}\n`
+        );
+        continue;
+      }
+
+      const events = this.getProjectEvents(projectTag);
+      for (const task of this.store.getTasksByProject(projectTag)) {
+        const status = task.status as TaskStatus;
+        const minutes = configured[status] ?? DEFAULT_DWELL_WARN_MINUTES[status];
+        // 見張らない状態（通り過ぎるだけの ready / merging 等）は閾値を持たない
+        if (minutes === undefined) continue;
+
+        const dwelt = dwellMs(events, projectTag, task.id, now);
+        if (dwelt === undefined) continue;
+        const thresholdMs = minutes * 60_000;
+        if (dwelt < thresholdMs) continue;
+        if (stalledAlreadyRecorded(events, projectTag, task.id)) continue;
+
+        const event = this.log.append({
+          type: "task_stalled",
+          projectTag,
+          taskId: task.id,
+          status,
+          dwellMs: dwelt,
+          thresholdMs,
+          blockedBy: currentBlockedBy(events, projectTag, task.id),
+          lastChangeAt:
+            lastObservableChangeAt(events, projectTag, task.id) ?? new Date(now).toISOString(),
+        });
+        this.applyAndBroadcast(event);
+      }
+    }
   }
 
   /**
@@ -3008,6 +3163,31 @@ export class Daemon {
       );
     }
 
+    /**
+     * **何に対して監査したのか**を、判定と同じイベントに刻む（realign 第2便・段1）。
+     *
+     * 契約の版は**帳簿から導出する**（`contractVersionOf`）——新しい版番号は持たない。
+     * 決定64 改訂で「凍結ではなく版で答える」と決めており、その版を既に
+     * `task_created` / `task_contract_amended` の並びが表している。別に数えると
+     * 二重管理になり、食い違ったときどちらが正か決められない（D3）。
+     *
+     * 基準の版はチェックリストの中身の指紋。**監査人に届いている中身**の指紋である
+     * ことが要点で、届けているのは `buildAuditInstruction`（両方の職人経路に載る）。
+     *
+     * I2: 指紋が作れないこと（資産が無い）を判定の失敗にはしない——判定そのものは
+     * 既に出ている。刻めなかったことを標準エラーに出し、**項目は付けない**
+     * （分からないものを埋めると、証拠が嘘になる）。
+     */
+    const contractVersion = contractVersionOf(this.getTaskEvents(projectTag, taskId), projectTag, taskId);
+    let checklistVersion: string | undefined;
+    try {
+      checklistVersion = promptAssetDigest("audit-checklist");
+    } catch (err) {
+      process.stderr.write(
+        `[banto-daemon] ${projectTag}/${taskId}: 監査基準の版を刻めませんでした: ${String(err)}\n`
+      );
+    }
+
     // Record the verdict event first (D3: event is the truth).
     const verdictEvent = this.log.append({
       type: "audit_verdict",
@@ -3015,6 +3195,8 @@ export class Daemon {
       taskId,
       verdict,
       findings,
+      ...(contractVersion !== undefined ? { contractVersion } : {}),
+      ...(checklistVersion !== undefined ? { checklistVersion } : {}),
     });
     this.applyAndBroadcast(verdictEvent);
 
@@ -3333,7 +3515,13 @@ export class Daemon {
         if (typeof envId !== "string") {
           throw new Error(`env.provision が envId を返しませんでした（profile: ${opts.profile}）`);
         }
-        return { envId };
+        // 段1: **どの環境で検査したか**を証拠に刻むための指紋。返らないなら刻まない
+        // ——Kobo は環境の中身を知らないので、ここで作り直すことはしない（決定60a）
+        const digest = details["profileDigest"];
+        return {
+          envId,
+          ...(typeof digest === "string" ? { profileDigest: digest } : {}),
+        };
       },
       run: async (opts) => {
         const details = await this.envInvoke("env.run", {
@@ -4286,9 +4474,35 @@ export function buildExecutorInstruction(
   /** 指摘の見出し（既定は監査の指摘）。落ちたタスクの立て直しでは言葉を変える（task-0081） */
   findingsHeading = "監査の指摘（前回の提出で見つかった問題）"
 ): string {
+  /**
+   * **役の説明を指示文に載せる**（realign 第2便・(P)）。
+   *
+   * 載せる前は `skills/executor-system.md` を渡していたのが pi 拡張の
+   * `before_agent_start`（`pi-extension/banto-executor.ts`）だけだった。それは
+   * `driverOptions.extensionPaths`＝**pi の言葉**で、Claude Agent SDK のドライバは
+   * 読まない——実運用の職人はほぼ全てその経路なので、**役の説明は届いていなかった**。
+   * SDK 経路の職人が受け取っていたのは Worker Pool の汎用プロンプトだけで、
+   * **「不可逆な変更を独断でしない」（D1）がプロンプトから丸ごと落ちていた。**
+   *
+   * 直し方は監査チェックリストと同じ——**Kobo が指示文に載せる**。driver 側の
+   * システムプロンプトに足す形は採らない：経路ごとに別の場所へ載せると、次に経路が
+   * 増えたときまた落ちる。**どちらの役を起こすかを知っているのは最初から Kobo** である。
+   *
+   * **pi 経路では二重に届く。これは意図的に許している。** `before_agent_start` は
+   * そのままにしてある——重複して届くのは無害だが、片方が届かないのは害だからである。
+   * **「二重だから」と拡張側を消さないこと**：消すと pi 経路だけ役の説明を失う。
+   *
+   * I2: 読めなければ投げる。役の説明を持たない職人を黙って動かさない
+   * ——第2便でチェックリストが誰にも届いていなかったのは、黙って落ちていたからである。
+   */
+  const roleAsset = loadPromptAsset("executor-system");
   const taskId = task.id;
   const body = typeof task["body"] === "string" ? task["body"].trim() : "";
   const lines = [
+    `## あなたの役`,
+    ``,
+    roleAsset,
+    ``,
     `## 実装タスク ${taskId}`,
     ``,
     `**タイトル**: ${String(task["title"] ?? taskId)}`,
@@ -4339,8 +4553,10 @@ export function buildExecutorInstruction(
 /**
  * 監査人への指示。
  *
- * 監査の観点そのもの（チェックリスト）は拡張が `skills/audit-*.md` から載せる。
- * ここに書くのは**このタスクを見るために要る事実**——どこに何があり、何を満たすべきか。
+ * **役の説明も観点も、ここから渡す**（realign 第2便）。以前は拡張が
+ * `skills/audit-*.md` を載せていたが、それは pi 経路にしか効かなかった。
+ * ここに書くのはそれに加えて**このタスクを見るために要る事実**
+ * ——どこに何があり、何を満たすべきか。
  */
 export function buildAuditInstruction(
   task: TaskRecord,
@@ -4348,7 +4564,36 @@ export function buildAuditInstruction(
   taskId: string,
   worktreePath: string
 ): string {
+  /**
+   * **監査チェックリストを指示文に載せる**（realign 第2便・段1）。
+   *
+   * 載せる前は、チェックリストを渡していたのは pi 拡張の `before_agent_start`
+   * （`pi-extension/banto-auditor.ts`）だけだった。**それは `driverOptions.extensionPaths`
+   * 経由＝pi の言葉**で、Claude Agent SDK の職人はそれを読まない
+   * （`claude-agent/tool-offload.ts` に同じ形の記録がある）。実運用の監査人はほぼ全て
+   * SDK 経路なので、**基準は監査人に一度も届いていなかった**。
+   *
+   * 届いていない基準の指紋を `audit_verdict.checklistVersion` に刻むと、
+   * それは証拠ではなく嘘になる。だから**Kobo が渡す**——ここに置けば経路に依らない。
+   *
+   * **役の説明（`audit-system`）も同じ場所から渡す**（realign 第2便・(P)）。
+   * こちらも pi 拡張の `before_agent_start` だけに載っており、SDK 経路の監査人には
+   * 届いていなかった。**チェックリストと役の説明が別々の場所から来る状態にしない**
+   * ——片方だけ経路を移すと、次に読む人がどちらが正なのか判断できない。
+   *
+   * **pi 経路では二重に届く。これは意図的に許している。** 拡張側の
+   * `before_agent_start` はそのままにしてある——重複して届くのは無害だが、片方が
+   * 届かないのは害だからである。**「二重だから」と拡張側を消さないこと。**
+   *
+   * I2: 読めなければ投げる。基準や役を持たない監査を、黙って始めさせない。
+   */
+  const roleAsset = loadPromptAsset("audit-system");
+  const checklist = loadPromptAsset("audit-checklist");
   return [
+    `## あなたの役`,
+    ``,
+    roleAsset,
+    ``,
     `## タスク監査コンテキスト`,
     ``,
     `**タスクID**: ${taskId}`,
@@ -4373,5 +4618,9 @@ export function buildAuditInstruction(
     `5. 問題があれば verdict="fail" と具体的な findings を報告してください`,
     ``,
     `**重要**: 検査が完了したら必ず \`audit_report\` ツールを呼び出してください。呼び出さないと監査が完了しません。`,
+    ``,
+    `## 監査チェックリスト`,
+    ``,
+    checklist,
   ].join("\n");
 }
