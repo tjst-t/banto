@@ -39,6 +39,21 @@ export {
   type LedgerEntry,
 } from "./spawn-ledger.js";
 export {
+  WorkerCgroups,
+  nodeCgroupFs,
+  parseByteSize,
+  formatBytes,
+  resolveSelfCgroupDir,
+  DEFAULT_WORKER_MEMORY_MAX,
+  type CgroupFs,
+  type CgroupUsage,
+  type IsolationMode,
+  type IsolationStatus,
+  type KillResult,
+  type PrepareOptions,
+  type WorkerBag,
+} from "./worker-cgroup.js";
+export {
   probeChildPids,
   descendantsOf,
   parseProcStat,

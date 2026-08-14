@@ -164,7 +164,32 @@ function send(message: Record<string, unknown>): void {
 
 // ── 本体 ────────────────────────────────────────────────────────────────────
 
+/**
+ * **自分の袋（cgroup）へ入る**（inc-0066 第2段）。何より先に、SDK を触る前にやる。
+ *
+ * `cgroup.procs` へ自分の pid を書くと、以後この プロセスが起こす子孫——`claude` CLI も、
+ * その下の bash も grep も——**自動的に同じ袋の中で生まれる**（cgroup v2 の継承）。
+ * 親が spawn の後に書く形だと、書く前に起きた孫を取りこぼす。
+ *
+ * I2・fail closed: 入れなかったら**働かずに落ちる**。工房は「隔離を作ったのに入れなかった」
+ * 職人を隔離なしで走らせない（PO 裁定）——1本の暴走が機械全体を巻き込むため。
+ */
+function joinOwnCgroup(): void {
+  const procsFile = process.env["BANTO_WORKER_CGROUP_PROCS"];
+  if (!procsFile) return; // 隔離しない運転（開発機・コンテナ）。工房が別に警告を出している
+  try {
+    fs.writeFileSync(procsFile, String(process.pid));
+  } catch (err) {
+    process.stderr.write(
+      `[claude-agent] 自分を隔離（cgroup）へ入れられませんでした: ${procsFile}: ${String(err)}\n` +
+        `[claude-agent] 隔離なしでは働きません（inc-0066）\n`
+    );
+    process.exit(1);
+  }
+}
+
 async function main(): Promise<void> {
+  joinOwnCgroup();
   const config = readHostConfig(process.argv.slice(2));
   fs.mkdirSync(path.dirname(config.sessionFile), { recursive: true });
 

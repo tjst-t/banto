@@ -16,6 +16,7 @@ import { StringEnum, defineNamespacedTool, type NamespacedToolDefinition } from 
 import { Type } from "typebox";
 import { DEFAULT_PAGE_SIZE } from "./pool.js";
 import type { WorkerPool } from "./pool.js";
+import { formatBytes } from "./worker-cgroup.js";
 
 /** 一覧・アタッチの上限。番頭の文脈を埋め尽くさないため。 */
 const MAX_ATTACH_LINES = 200;
@@ -147,9 +148,33 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
                     ? ` child=${w.childProcesses.children.map((c) => `${c.comm}:${c.pid}`).join(",")}`
                     : " child=不明"
                   : "";
-                return `${mark} ${w.taskId} [${w.projectTag}] ${w.state}${closed} ${runtime} pid=${w.pid}${child} sessionId=${w.sessionId}${waiting}`;
+                /**
+                 * 隔離と、袋から読んだ使い切りの記録（inc-0066 第2段）。
+                 *
+                 * **上限に当たって殺された職人は、ここで名指しされる。** これが無いと
+                 * 番頭には「なぜか落ちた」としか見えず、2026-08-14 の事故が繰り返される。
+                 */
+                const isolation = w.isolation === "none" ? " 隔離なし" : "";
+                const mem = w.memory
+                  ? (w.memory.oomKilled
+                      ? " ⚠上限で kill された"
+                      : w.memory.hitLimit
+                        ? " ⚠上限に張り付いた"
+                        : "") +
+                    (w.memory.peakBytes !== undefined ? ` peak=${formatBytes(w.memory.peakBytes)}` : "")
+                  : "";
+                return `${mark} ${w.taskId} [${w.projectTag}] ${w.state}${closed} ${runtime} pid=${w.pid}${child}${isolation}${mem} sessionId=${w.sessionId}${waiting}`;
               })
-              .join("\n") + range;
+              .join("\n") +
+            range +
+            /**
+             * 隔離できていないことを番頭の目に必ず入れる（3点セットの3つ目・PO 裁定）。
+             * 「知らないうちに隔離なしで回っていた」を作らないための条件。
+             */
+            (pool.isolationStatus().mode === "none"
+              ? `\n\n⚠ この工房は職人を隔離していません（cgroup 不可: ` +
+                `${pool.isolationStatus().reason ?? "理由不明"}）。1本の暴走が機械全体を巻き込みます`
+              : "");
       return { content: [{ type: "text" as const, text }], details: result };
     },
   });

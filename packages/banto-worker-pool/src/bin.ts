@@ -22,6 +22,13 @@
  *   BANTO_CLAUDE_MODEL       Claude Code の職人の既定モデル（既定 sonnet。番頭は
  *                            `worker.delegate` の `model` で仕事ごとに指名できる）
  *   BANTO_WORKER_IDLE_MS     安全弁（何もしていない職人を畳むまで。既定15分。0 で切る）
+ *   BANTO_WORKER_CGROUP      職人1本ごとの cgroup 隔離（inc-0066 第2段）。
+ *                            `auto` で能力判定して有効化、`off`（既定）で判定もしない、
+ *                            絶対パスなら**そのディレクトリ**を委譲された親として使う。
+ *                            **既定が off なのは、本番の cgroup を書き換える操作だから**
+ *                            ——試験や開発機が黙って稼働中の袋を触りに行かないよう、
+ *                            有効化は systemd の drop-in など明示の場所でだけ行う
+ *   BANTO_WORKER_MEMORY_MAX  職人1本あたりの上限（既定 2G。`2G` / `1536M` / バイト数）
  *
  * **既定では 127.0.0.1 しか待ち受けない。** この面は**任意のディレクトリで任意のコマンドを
  * 実行できる職人**を起こせるので、認証の無いまま外へ出すと最も危ない口になる（決定40）。
@@ -32,6 +39,11 @@
  */
 
 import * as path from "node:path";
+import {
+  WorkerCgroups,
+  parseByteSize,
+  DEFAULT_WORKER_MEMORY_MAX,
+} from "./worker-cgroup.js";
 import { PiRpcDriver } from "./pi-rpc-driver.js";
 import { ClaudeAgentDriver, CLAUDE_AGENT_DRIVER_ID } from "./claude-agent-driver.js";
 import { CLAUDE_KNOWN_MODELS, CLAUDE_TIER_MODELS } from "./claude-agent/naming.js";
@@ -73,6 +85,42 @@ function usage(): never {
       "  職人を起こせるので、広げるときは前段（Caddy 等）で守ること。\n"
   );
   process.exit(1);
+}
+
+/**
+ * 職人1本ごとの隔離を、環境変数の宣言どおりに組み立てる（inc-0066 第2段）。
+ *
+ * - 未設定 / `off` / `0` → 判定を**走らせない**。隔離なしで動く（理由つき）
+ * - `auto` / `on` / `1` → `/proc/self/cgroup` から委譲された袋を解いて能力判定する
+ * - 絶対パス → そのディレクトリを委譲された親として使う（別の unit・手動確認用）
+ *
+ * D5: ここに判断は無い。宣言を読んで組み立てるだけで、失敗の扱いは `WorkerCgroups` が持つ。
+ */
+function resolveWorkerCgroups(): WorkerCgroups {
+  const raw = (process.env["BANTO_WORKER_CGROUP"] ?? "off").trim();
+  const memoryMaxRaw = process.env["BANTO_WORKER_MEMORY_MAX"];
+  const memoryMax = parseByteSize(memoryMaxRaw);
+  // I2: 上限の指定を読み違えて黙って既定に落ちると、書いた本人が気づけない
+  if (memoryMaxRaw !== undefined && memoryMax === undefined) {
+    throw new Error(
+      `BANTO_WORKER_MEMORY_MAX を読み取れません: "${memoryMaxRaw}"（例: 2G / 1536M / 2147483648）`
+    );
+  }
+  const limit = memoryMax !== undefined ? { memoryMax } : {};
+
+  if (raw === "" || raw === "off" || raw === "0" || raw === "false") {
+    return WorkerCgroups.disabled(
+      "BANTO_WORKER_CGROUP が off（既定）。有効にするには auto を渡す",
+      memoryMax ?? DEFAULT_WORKER_MEMORY_MAX
+    );
+  }
+  if (raw === "auto" || raw === "on" || raw === "1" || raw === "true") {
+    return WorkerCgroups.prepare(limit);
+  }
+  if (path.isAbsolute(raw)) return WorkerCgroups.prepare({ selfDir: raw, ...limit });
+  throw new Error(
+    `BANTO_WORKER_CGROUP を読み取れません: "${raw}"（auto / off / 委譲された cgroup の絶対パス）`
+  );
 }
 
 async function main(): Promise<void> {
@@ -166,7 +214,15 @@ async function main(): Promise<void> {
       ? savedIdleMs
       : Number.parseInt(process.env["BANTO_WORKER_IDLE_MS"] ?? String(DEFAULT_IDLE_TIMEOUT_MS), 10);
 
+  /**
+   * inc-0066 第2段：職人1本ごとの隔離。**能力判定はここで1回だけ**（宣言的）。
+   *
+   * 判定そのものが本番の cgroup を書き換える（`+memory` を配り、工房本体を葉へ退かす）ので、
+   * **明示的に有効にしたときしか走らせない**。試験や開発機が黙って稼働中の袋を触るのを、
+   * 設定の側で不可能にしておく。
+   */
   const pool = new WorkerPool({
+    cgroups: resolveWorkerCgroups(),
     // 決定101: 等級 → モデルの割り当ては核の台帳が持つ（工房は読むだけ）
     modelLedger: ledger,
     driver,

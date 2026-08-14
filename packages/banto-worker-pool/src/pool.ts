@@ -54,6 +54,14 @@ import {
   type ChildPidProbeOptions,
   type ChildProcessRecord,
 } from "./child-pids.js";
+import {
+  WorkerCgroups,
+  formatBytes,
+  type CgroupUsage,
+  type IsolationMode,
+  type IsolationStatus,
+  type WorkerBag,
+} from "./worker-cgroup.js";
 
 /**
  * 職人の既定のシステムプロンプト（立場の伝達）。やることは instruction で渡す。
@@ -123,6 +131,20 @@ export interface WorkerInfo {
   origin: string;
   /** node のホストの pid。実処理を抱える子は `childProcesses` の方（inc-0066）。 */
   pid: number;
+  /**
+   * この職人が cgroup で隔離されているか（inc-0066 第2段）。
+   *
+   * `none` は「隔離せずに動いている」という**宣言**。番頭がここを見て気づけるように
+   * 1本ごとに載せる——工房全体の設定を別途調べないと分からない形にはしない。
+   */
+  isolation?: IsolationMode;
+  /**
+   * 袋（cgroup）から読み取った使い切りの記録（inc-0066）。
+   *
+   * 生きている職人では畳むまで未定義。終わった職人では `memory.peak` と
+   * `memory.events` が入り、**上限に当たって殺されたのかどうか**がここで分かる。
+   */
+  memory?: CgroupUsage;
   /**
    * ホストの下でランタイムが起こした実プロセス（inc-0066）。
    *
@@ -255,6 +277,15 @@ export interface WorkerPoolOptions {
    * 分かっている場合や、試験で余計なイベントを増やしたくない場合に切る。
    */
   childPidProbe?: boolean | ChildPidProbeOptions;
+  /**
+   * 職人1本ごとの cgroup 隔離（inc-0066 第2段）。
+   *
+   * **既定は「隔離しない」。** 隔離は本物の cgroup を書き換える操作なので、
+   * 工房の入口（`bin.ts serve`）が明示的に能力判定した結果だけを受け取る
+   * ——渡されなければ判定そのものを走らせない。試験・開発機・コンテナで
+   * 勝手に本番の cgroup を触りに行くことを、型の側で不可能にしておくため。
+   */
+  cgroups?: WorkerCgroups;
 }
 
 /** 一覧のページの既定の大きさ。 */
@@ -379,6 +410,18 @@ export class WorkerPool {
   private readonly childPidProbe: ChildPidProbeOptions | false;
   /** 工房を終うときに、走らせっぱなしの走査へ打ち切りを伝える。 */
   private readonly probesAborter = new AbortController();
+  /** 職人1本ごとの隔離（inc-0066 第2段）。渡されなければ「隔離しない」。 */
+  private readonly cgroups: WorkerCgroups;
+  /**
+   * いま面倒を見ている袋（sessionId → 袋と、読み終えた使い切りの記録）。
+   *
+   * **袋の在り処の真実は cgroupfs と台帳**（D3）。ここはそれを引くための索引で、
+   * 記録（`usage`）だけは袋を消す前に読んだ一度きりの値なので持ち越す。
+   */
+  private readonly bags = new Map<
+    string,
+    { bag: WorkerBag; usage?: CgroupUsage; retired?: boolean }
+  >();
   private readonly unsubscribeDriver: () => void;
   private idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
   private idleSweeper: NodeJS.Timeout | undefined;
@@ -435,6 +478,36 @@ export class WorkerPool {
     // inc-0066: 職人の下の実プロセスを台帳へ載せる。既定は「する」
     const probe = options.childPidProbe ?? true;
     this.childPidProbe = probe === false ? false : probe === true ? {} : probe;
+
+    /**
+     * inc-0066 第2段：職人1本ごとの隔離。**運転モードは起動時に1回決めて動かさない**。
+     *
+     * 隔離できないこと自体は許す（開発機・コンテナでも工房は立つ）。許さないのは
+     * 「知らないうちに隔離なしで回っていた」で、そのために3箇所へ出す:
+     * ここ（起動ログ）・台帳の各行（`isolation`）・`worker.list`（番頭の目）。
+     */
+    this.cgroups = options.cgroups ?? WorkerCgroups.disabled("工房の設定で有効にされていません");
+    console.error(`[worker-pool] ${this.cgroups.describe()}`);
+    // 決定44 の復帰と対の掃除。落ちる前に生きていた職人の袋は残す（keep）
+    if (this.cgroups.enabled) {
+      for (const entry of this.ledger.list()) {
+        if (entry.cgroupDir) {
+          this.bags.set(entry.sessionId, {
+            bag: { dir: entry.cgroupDir, procsFile: path.join(entry.cgroupDir, "cgroup.procs") },
+          });
+        }
+      }
+      const swept = this.cgroups.sweep([...this.bags.values()].map((b) => b.bag.dir));
+      if (swept.removed.length > 0) {
+        console.error(`[worker-pool] 前回の袋を片付けました: ${swept.removed.join(", ")}`);
+      }
+      // I2: 台帳のどの職人のものでもないのに中身が生きている袋は、孤児が居る証拠。消さずに晒す
+      for (const left of swept.alive) {
+        console.error(
+          `[worker-pool] ⚠ 台帳に無い袋が生きています: ${left.name}（pid ${left.pids.join(",")}）`
+        );
+      }
+    }
 
     // 決定30b: 安全弁。主たる契機は番頭が畳むことで、これは取りこぼしを拾うだけ
     this.setIdleTimeout(options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, options.idleCheckMs);
@@ -610,6 +683,18 @@ export class WorkerPool {
     // 台帳に無い＝既に stop で片付けた職人。stop の時点で worker_stopped を積んである
     if (!entry) return;
 
+    /**
+     * **袋の記録は、消す前のいま読む**（inc-0066 第2段）。
+     *
+     * 上限に当たって殺された職人は `oom_kill` が1以上で返り、それが `worker_exited` に
+     * 載って番頭へ届く——「なぜか落ちた」で終わらせないための一本道。
+     * 殺して片付ける方は待たない（イベントを積むのを遅らせない）。
+     */
+    const memory = this.takeUsage(event.sessionId);
+    void this.retireBag(event.sessionId).catch((err: unknown) => {
+      console.error(`[worker-pool] 袋の後始末が異常終了しました: ${String(err)}`);
+    });
+
     this.log.append({
       type: "worker_exited",
       origin: entry.origin ?? this.defaultOrigin,
@@ -628,6 +713,8 @@ export class WorkerPool {
          * 知らせるかどうかを決められるように、印だけ添える（意味は起動元が与える・決定29d）。
          */
         ...(this.closing.has(event.sessionId) ? { expected: true } : {}),
+        // inc-0066 第2段: どれだけ抱えて終わったか。上限に当たっていればそれも
+        ...(memory ? { memory } : {}),
       },
     });
   }
@@ -643,6 +730,15 @@ export class WorkerPool {
    * I2: 起動に失敗したら台帳に書かず、理由を添えて投げる。指示の送信に失敗した場合は、
    *     起こしただけの職人を放置しないよう止めてから投げる。
    */
+  /**
+   * 職人をどう隔離しているか（inc-0066 第2段）。番頭から見える形にするための口。
+   *
+   * `worker.list` はこれを見て、隔離していないときに警告を1行足す（3点セットの3つ目）。
+   */
+  isolationStatus(): IsolationStatus {
+    return this.cgroups.status;
+  }
+
   /** 選べるランタイムの識別子（番頭へのエラー文と Tool の説明に出す）。 */
   availableRuntimes(): string[] {
     return [...this.runtimes.keys()];
@@ -990,9 +1086,33 @@ export class WorkerPool {
     // imp-0005: 外を読む口は許したときだけ。載せなければ Tool 自体が存在しない
     if (input.network) extensionPaths.push(webToolsExtensionPath());
 
+    /**
+     * **職人1本ごとの袋を、起こす前に作る**（inc-0066 第2段）。
+     *
+     * 作れなかったら**その職人を起こさない**（fail closed・PO 裁定）。隔離なしで起こすと
+     * 1本の暴走が機械全体を巻き込む——番頭は職人を1本起こせない方が、VM を落とすよりましである。
+     * 工房が「隔離しない」運転モードのときは袋そのものが無いので、ここは undefined を返す。
+     */
+    let bag: WorkerBag | undefined;
+    try {
+      bag = this.cgroups.createBag(projectTag, input.taskId);
+    } catch (err) {
+      throw new Error(
+        `職人の隔離（cgroup）を作れなかったため "${input.taskId}" を起こしませんでした: ${String(err)}。` +
+          `隔離なしで起こすと1本の暴走が機械全体を巻き込みます（inc-0066）`
+      );
+    }
+
     const driverOptions = {
       ...input.driverOptions,
       ...resume,
+      /**
+       * 袋の名簿。**子が自分で自分の pid を書いてから働き始める**ための宛先。
+       *
+       * 親が spawn の後に書く形だと、書く前に子が孫（`claude` CLI）を起こす競合が残る。
+       * 子が自分で入れば、以後その子孫は自動的に同じ袋の中で生まれる（cgroup v2 の継承）。
+       */
+      ...(bag ? { cgroupProcs: bag.procsFile } : {}),
       ...(this.reportUrl ? { projectTag, workerPoolUrl: this.reportUrl } : {}),
       ...(extensionPaths.length > 0 ? { extensionPaths } : {}),
       // ランタイムが自分で解釈する分（pi は拡張で外の口を足し、Claude Code は
@@ -1015,7 +1135,29 @@ export class WorkerPool {
         ...(driverOptions ? { driverOptions } : {}),
       });
     } catch (err) {
+      await this.discardBag(bag);
       throw new Error(`Failed to start worker for "${input.taskId}": ${String(err)}`);
+    }
+
+    /**
+     * **袋に入ったことを確かめる**（inc-0066 第2段）。子が自分で入っているはずなので
+     * ここは押さえだが、二重に書いても no-op なので確実な方を採る。
+     *
+     * 入っていなければ隔離が無いのと同じなので、**起こしたばかりの職人を畳んで失敗を返す**
+     * （fail closed）。「書いたつもり」で素通りさせない。
+     */
+    if (bag) {
+      try {
+        this.cgroups.join(bag, handle.pid);
+      } catch (err) {
+        await runtime.driver.kill(handle.sessionId).catch(() => undefined);
+        await this.discardBag(bag);
+        throw new Error(
+          `職人 "${input.taskId}" を隔離（cgroup）に入れられなかったので畳みました: ${String(err)}。` +
+            `隔離なしで働かせると1本の暴走が機械全体を巻き込みます（inc-0066）`
+        );
+      }
+      this.bags.set(handle.sessionId, { bag });
     }
 
     // spawn は起こすだけ。ここで指示を送らないと職人は何もしない
@@ -1024,6 +1166,8 @@ export class WorkerPool {
     } catch (err) {
       // I2: 起こしただけの職人を放置しない。止めてから失敗を伝える
       await runtime.driver.kill(handle.sessionId).catch(() => undefined);
+      await this.retireBag(handle.sessionId);
+      this.bags.delete(handle.sessionId);
       throw new Error(
         `Started a worker for "${input.taskId}" but failed to deliver the instruction: ${String(err)}`
       );
@@ -1040,6 +1184,9 @@ export class WorkerPool {
       worktree: input.worktreePath,
       driverId: runtime.id,
       spawnedAt,
+      // inc-0066 第2段: 隔離できていないことが台帳から分かるようにする（3点セットの2つ目）
+      isolation: this.cgroups.status.mode,
+      ...(bag ? { cgroupDir: bag.dir } : {}),
     });
 
     this.log.append({
@@ -1065,6 +1212,11 @@ export class WorkerPool {
         runtime: runtime.id,
         ...(chosenModel ? { model: chosenModel } : {}),
         ...(input.modelTier ? { modelTier: input.modelTier } : {}),
+        // inc-0066 第2段: どう隔離して起こしたか。台帳が消えたあとも履歴から引ける（決定30c）
+        isolation: this.cgroups.status.mode,
+        ...(bag
+          ? { cgroupDir: bag.dir, memoryMax: this.cgroups.status.memoryMax }
+          : { isolationReason: this.cgroups.status.reason ?? "理由不明" }),
       },
     });
 
@@ -1183,6 +1335,71 @@ export class WorkerPool {
     if (found.error) {
       console.error(`[worker-pool] ${args.taskId} (${args.sessionId}): ${found.error}`);
     }
+  }
+
+  /**
+   * 起こす前に作った袋を、起こせなかったので捨てる（inc-0066 第2段）。
+   *
+   * まだ誰も入っていないはずだが、`spawn` が途中まで進んでいた場合に備えて殺してから消す。
+   */
+  private async discardBag(bag: WorkerBag | undefined): Promise<void> {
+    if (!bag) return;
+    this.cgroups.killAll(bag);
+    const removed = await this.cgroups.remove(bag);
+    if (!removed.ok) {
+      console.error(`[worker-pool] 使わなかった袋を片付けられませんでした: ${bag.dir}（${removed.error}）`);
+    }
+  }
+
+  /**
+   * 職人の袋を畳む（inc-0066 第2段）。**記録を読んでから殺し、消す。**
+   *
+   * 順序が要点:
+   *
+   * 1. `memory.peak` / `memory.events` を読む——**`rmdir` すると二度と読めない。**
+   *    2026-08-14 の事故で「11GB を抱えていたのは誰か」が分からなかったことへの直接の答え
+   * 2. `cgroup.kill` で袋の中を全部殺す——相手の協力に依存しない。node ホストが
+   *    先に死んで取り残された `claude` CLI も、その下の bash も、ここで確実に死ぬ
+   * 3. 空いた袋を `rmdir`
+   *
+   * 冪等。プロセスが自分で死んだとき（`process_exited`）と、番頭が畳んだとき（`close`）の
+   * 両方から呼ばれ、後から呼んだ方は1回目に読んだ記録をそのまま受け取る。
+   */
+  private async retireBag(sessionId: string): Promise<CgroupUsage | undefined> {
+    const held = this.bags.get(sessionId);
+    if (!held) return undefined;
+    const usage = this.takeUsage(sessionId);
+    if (held.retired) return usage; // 既に畳んである
+    held.retired = true;
+
+    this.cgroups.killAll(held.bag);
+    const removed = await this.cgroups.remove(held.bag);
+    if (!removed.ok) {
+      console.error(`[worker-pool] 袋を片付けられませんでした: ${held.bag.dir}（${removed.error}）`);
+    }
+    if (usage?.oomKilled) {
+      // I2: 「なぜか落ちた」で終わらせない。番頭が読む前に、まず機械のログへ残す
+      console.error(
+        `[worker-pool] ⚠ 職人 ${sessionId} は上限（${formatBytes(this.cgroups.status.memoryMax)}）に当たり` +
+          `袋の中で kill されました（peak ${usage.peakBytes !== undefined ? formatBytes(usage.peakBytes) : "不明"}）`
+      );
+    }
+    return usage;
+  }
+
+  /**
+   * 袋が消える前に使い切りの記録を読み取り、覚えておく（inc-0066 第2段）。
+   *
+   * **同期でなければならない。** 記録を載せる先は `worker_exited` で、それを積むのは
+   * ドライバのイベントを受ける同期の経路（`handleDriverEvent`）。非同期にすると
+   * 「イベントには載っていないが、あとで分かった」という時間差が生まれ、
+   * 事故のあとに履歴だけを読む番頭がその差に気づけない。
+   */
+  private takeUsage(sessionId: string): CgroupUsage | undefined {
+    const held = this.bags.get(sessionId);
+    if (!held) return undefined;
+    if (!held.usage) held.usage = this.cgroups.usage(held.bag);
+    return held.usage;
   }
 
   private resolveTools(requested: string[] | undefined, network = false): string[] {
@@ -1388,9 +1605,23 @@ export class WorkerPool {
      */
     const childProcesses = entry?.childProcesses ?? childProcessesFromEvent(latest("worker_child_pids"));
 
+    /**
+     * 隔離（inc-0066 第2段）。台帳が先で、畳んだ職人は起動時のイベントから読む（決定30c）
+     * ——「あの職人は隔離されていたのか」は、事故のあとに必ず問われる。
+     */
+    const isolation: IsolationMode | undefined =
+      entry?.isolation ??
+      (started?.data["isolation"] === "cgroup" || started?.data["isolation"] === "none"
+        ? (started.data["isolation"] as IsolationMode)
+        : undefined);
+    /** 使い切りの記録。終わった職人にだけ在る（畳んだときと死んだときの両方に載る）。 */
+    const memory = usageFromEvent(closedEvent) ?? usageFromEvent(exited);
+
     return {
       ...base,
       ...(childProcesses ? { childProcesses } : {}),
+      ...(isolation ? { isolation } : {}),
+      ...(memory ? { memory } : {}),
       sessionId,
       alive,
       state,
@@ -1470,6 +1701,16 @@ export class WorkerPool {
      */
     this.closing.add(sessionId);
     await this.driverFor(worker.runtime).driver.kill(sessionId);
+    /**
+     * **袋ごと畳む**（inc-0066 第2段）。記録を読んでから `cgroup.kill` で全部殺し、消す。
+     *
+     * ドライバの `kill` は「標準入力に `abort` を書く」＝相手の協力に依存する経路で、
+     * 暴走した職人には効かない。台帳の pid への念押しも**単一 pid にしか届かず**、
+     * node ホストを殺したあとに残った `claude` CLI は PID 1 に引き取られて孤児になる
+     * ——2026-08-14 に「台帳は2件、claude は9本」を作った経路そのもの。袋なら取りこぼさない。
+     */
+    const memory = await this.retireBag(sessionId);
+    this.bags.delete(sessionId);
     // ドライバが取りこぼしたプロセスが残ることがあるので、台帳の pid でも念押しする
     if (isProcessAlive(worker.pid)) await killOrphanProcess(worker.pid);
     this.ledger.remove(worker.projectTag, worker.taskId);
@@ -1484,6 +1725,8 @@ export class WorkerPool {
         pid: worker.pid,
         // 質問に答えないまま畳んだ場合、それが履歴に残るようにしておく
         ...(worker.question !== undefined ? { unansweredQuestion: worker.question } : {}),
+        // inc-0066 第2段: 袋が消える前に読んだ使い切りの記録（畳んだ職人の分もここに残る）
+        ...(memory ? { memory } : {}),
       },
     });
     // 畳み終わった。印は落とす（同じ id で起こし直したときに残っていると誤判定する）
@@ -1642,6 +1885,29 @@ export class WorkerPool {
  * 台帳から消えた職人（畳んだ・片付けた）でも、事故のあとに pid から辿れるようにするため。
  * イベントの `data` は Worker Pool が解釈しない生の入れ物（D5）なので、ここで形を確かめる。
  */
+/**
+ * `worker_exited` / `worker_closed` に載せた袋の記録を読み戻す（inc-0066 第2段）。
+ *
+ * イベントの `data` は Worker Pool が解釈しない生の入れ物（D5）なので、ここで形を確かめる。
+ */
+function usageFromEvent(event: WorkerEvent | undefined): CgroupUsage | undefined {
+  const raw = event?.data["memory"];
+  if (!raw || typeof raw !== "object") return undefined;
+  const m = raw as Record<string, unknown>;
+  const peak = typeof m["peakBytes"] === "number" ? m["peakBytes"] : undefined;
+  const events =
+    m["events"] && typeof m["events"] === "object"
+      ? (m["events"] as Record<string, number>)
+      : undefined;
+  return {
+    ...(peak !== undefined ? { peakBytes: peak } : {}),
+    ...(events ? { events } : {}),
+    hitLimit: m["hitLimit"] === true,
+    oomKilled: m["oomKilled"] === true,
+    ...(typeof m["error"] === "string" ? { error: m["error"] } : {}),
+  };
+}
+
 function childProcessesFromEvent(event: WorkerEvent | undefined): ChildProcessRecord | undefined {
   if (!event) return undefined;
   const children = Array.isArray(event.data["children"])

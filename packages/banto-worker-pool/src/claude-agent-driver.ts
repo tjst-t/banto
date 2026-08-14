@@ -200,6 +200,17 @@ export class ClaudeAgentDriver implements RuntimeDriver {
       extraEnv["BANTO_DAEMON_URL"] = driverOptions["daemonUrl"] as string;
     }
     if (opts.taskId) extraEnv["BANTO_TASK_ID"] = opts.taskId;
+    /**
+     * **自分の袋（cgroup）の名簿**（inc-0066 第2段）。ホストは働き始める前に、
+     * ここへ自分の pid を書いて袋へ入る。
+     *
+     * 親（工房）が spawn の後に書く形では、書く前にホストが `claude` CLI を起こす競合が残る。
+     * 自分で入れば以後の子孫は自動的に同じ袋の中で生まれる——**11GB を抱えたのはその子**
+     * だったのだから、ここが取りこぼすと第2段の意味が無くなる。
+     */
+    if (typeof driverOptions["cgroupProcs"] === "string") {
+      extraEnv["BANTO_WORKER_CGROUP_PROCS"] = driverOptions["cgroupProcs"] as string;
+    }
 
     const proc = childProcess.spawn(this.nodePath, args, {
       cwd: opts.worktreePath,
