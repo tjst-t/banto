@@ -55,8 +55,14 @@ export interface ChildPidProbeOptions {
   timeoutMs?: number;
   /** 走査の間隔（既定 500ms）。 */
   intervalMs?: number;
-  /** 見つけたあと、これだけ連続で増えなければ打ち切る（既定 2）。 */
-  settleRounds?: number;
+  /**
+   * 木が落ち着いたと見なすまでの猶予（既定 1000ms）。**最後に何かが現れてから**測る。
+   *
+   * **回数ではなく時間で持つ。** 「増えない走査が2回続いたら畳む」だと、猶予が
+   * `intervalMs` に引きずられる——500ms×2＝1秒のつもりが、走査を 100ms に速めた
+   * とたん 200ms に縮む。速くするための旋盤が、黙って機構を弱めていた（inc-0066）。
+   */
+  settleMs?: number;
   /** 台帳を太らせないための上限（既定 16）。 */
   maxChildren?: number;
   /**
@@ -64,18 +70,34 @@ export interface ChildPidProbeOptions {
    * 理由つきで返す——途中まで分かっていたことまで捨てない。
    */
   signal?: AbortSignal;
+  /**
+   * プロセス表の読み口（既定は `/proc`、駄目なら `ps`）。
+   *
+   * **差し替えられるようにしてあるのは、打ち切りの条件を試験するため。** 本物のプロセスで
+   * 「孫が遅れて現れる」を作ると、現れる時刻が盤面の混み具合で動く＝**負荷で落ちる試験**に
+   * なる（実際にそれで間欠に落ちていた）。走査の何回目に何が見えるかを台本にできれば、
+   * 時間ではなく**筋書き**で確かめられる。
+   */
+  readTable?: () => { rows: ProcRow[] } | { error: string };
+  /**
+   * いまの時刻（既定 `Date.now`）。**`readTable` と対で試験のためにある。**
+   * 打ち切りは時間で測るので、時計まで台本にできないと「速い機械では通り、混んでいる
+   * 機械では落ちる」試験に逆戻りする。
+   */
+  now?: () => number;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_INTERVAL_MS = 500;
-const DEFAULT_SETTLE_ROUNDS = 2;
+/** 既定の猶予。従来の「500ms 間隔 × 2回」と同じ長さ＝実運用の振る舞いは変えない。 */
+const DEFAULT_SETTLE_MS = 1_000;
 const DEFAULT_MAX_CHILDREN = 16;
 
 /** `cmdline` をこの長さで切る。台帳は人が読むものなので、1行に収まる程度に。 */
 const CMD_MAX_LENGTH = 200;
 
 /** プロセス表の1行（pid・親・名前だけ）。 */
-interface ProcRow {
+export interface ProcRow {
   pid: number;
   ppid: number;
   comm: string;
@@ -226,8 +248,13 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * `rootPid`（＝台帳に載っているホストの pid）の子孫を突き止める。
  *
  * 子が起きるのは**指示を渡したあと**なので、一発で見に行っても間に合わない。
- * 見つかるまで少し待ち、見つかったあとも `settleRounds` 回だけ様子を見る
- * （SDK が複数のプロセスを起こす場合に、最初の1つで打ち切らないため）。
+ * 見つかるまで待ち、見つかったあとも**木が葉まで落ち着くまで**様子を見る。
+ *
+ * **畳む条件は「新しい子が増えない」ではなく「最後に現れてから `settleMs` 経った」。**
+ * 職人は起きてから `esbuild` や `claude` を次々に作り、孫・ひ孫が遅れて現れる。
+ * 最初の1枚を見つけた時点から回数で数えると、いちばん外側のラッパだけを記録して
+ * 畳みかねない——それでは OOM のときに「誰が食べていたか」を答えられない（inc-0066）。
+ * 現れるたびに猶予を測り直すので、木が伸びている間は畳まない。
  *
  * **職人の起動は止めない。** ここが失敗しても呼び出し側は捨て置ける形で返す（I2 の
  * 「握り潰さない」は、理由を `error` に残すことで果たす）。
@@ -238,22 +265,26 @@ export async function probeChildPids(
 ): Promise<ChildProcessRecord> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const intervalMs = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
-  const settleRounds = opts.settleRounds ?? DEFAULT_SETTLE_ROUNDS;
+  const settleMs = opts.settleMs ?? DEFAULT_SETTLE_MS;
   const maxChildren = opts.maxChildren ?? DEFAULT_MAX_CHILDREN;
   const signal = opts.signal;
+  const now = opts.now ?? Date.now;
   // 関数越しに読む。直に `signal.aborted` を見ると、TS が最初の判定で「もう false」と
   // 決めてしまい、await を跨いだ2度目の判定を無意味と見なす（実際は変わりうる）
   const aborted = (): boolean => signal?.aborted === true;
 
   const found = new Map<number, ChildProcessInfo>();
-  const deadline = Date.now() + timeoutMs;
-  let quietRounds = 0;
+  const deadline = now() + timeoutMs;
+  /** 最後に何かが現れた時刻。**現れるたびに測り直す**＝木が伸びている間は畳まない。 */
+  let lastAppearedAt = now();
   let truncated = false;
   let rounds = 0;
 
+  const readTable = opts.readTable ?? snapshotProcTable;
+
   for (;;) {
     rounds++;
-    const table = snapshotProcTable();
+    const table = readTable();
     if ("error" in table) {
       // 走査そのものができない。待っても変わらないので、理由を持って戻る
       return { at: new Date().toISOString(), children: [...found.values()], error: table.error };
@@ -278,12 +309,12 @@ export async function probeChildPids(
       added++;
     }
 
-    if (found.size > 0) {
-      quietRounds = added === 0 ? quietRounds + 1 : 0;
-      if (quietRounds >= settleRounds) break;
-    }
+    if (added > 0) lastAppearedAt = now();
+    // 何か見つかっていて、そこから `settleMs` のあいだ何も現れなければ落ち着いたと見なす。
+    // **孫が遅れて現れる間は畳まない**——猶予は現れるたびに測り直している
+    if (found.size > 0 && now() - lastAppearedAt >= settleMs) break;
     if (aborted()) break;
-    if (Date.now() >= deadline) break;
+    if (now() >= deadline) break;
     await sleep(intervalMs, signal);
     if (aborted()) break;
   }
