@@ -97,10 +97,15 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
    * 番頭の手にはその道具が無い**という状態が続いていた。案内と道具の食い違いは、
    * 番頭から見れば「言われたとおりにできない」であって、失敗の理由が分からない。
    *
-   * `kobo.supersede` は**唯一 merging / paused のタスクに届く口**でもある
+   * `kobo.supersede` は**merging / paused のタスクに届く口**である
    * （`Daemon.transition` は `superseded` を `StateMachine.supersede` へ回し、
    * これは終端以外のどの状態からでも通る）。inc-0063 で merging に居座った
    * task-0097 を降ろせなかったのは、この口が提示されていなかったからでもある。
+   *
+   * `kobo.abandon` も**どの状態のタスクでも畳める**ようになった（PO 裁定 2026-08-14）。
+   * 以前は `failed` 専用で、実運用で宙に浮く queued / paused / review-ready には届かず、
+   * 実機の工場に14本が凍っていた。2つの使い分けは**降ろす理由**である
+   * ——別の依頼で置き換えるなら `kobo.supersede`、単に諦めるなら `kobo.abandon`。
    */
   "kobo.abandon",
   "kobo.supersede",

@@ -26,6 +26,8 @@
  *   - resume(): paused → restored to suspended_from state
  *   - fail(): any non-terminal state → failed (I2: unrecoverable error)
  *   - supersede(): any non-terminal state → superseded (escalation replacement)
+ *   - abandon(): closed / superseded 以外のどの状態からでも → closed
+ *     （番頭が畳む・PO 裁定 2026-08-14。付帯イベントは持たない）
  *
  * All cross-cutting methods emit state_transitioned first (D3: single status
  * source), then the metadata event.
@@ -118,6 +120,22 @@ const TERMINAL_STATES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
   "closed",
   "merged",
   "failed",
+  "superseded",
+]);
+
+/**
+ * 畳めない状態（PO 裁定 2026-08-14）。**もう畳んである**ものだけ。
+ *
+ * `kobo.abandon` は当初 `failed` 専用だった（→ REGULAR_TRANSITIONS の `failed:closed`）が、
+ * 実運用で宙に浮くのは `queued` / `paused` / `review-ready` の方だった——実機の工場に
+ * queued 10本・paused 3本・review-ready 1本が凍り、**畳む手段が無かった**。
+ * そこで `abandon()` を `fail()` / `supersede()` と同じ**横断の遷移**にした。
+ *
+ * `merged` は畳める（`merged:closed` は元からある道）。断るのは `closed` と `superseded`
+ * ——どちらも「もう畳んである」ので、黙って成功を返すと二重に畳んだ記録が積み上がる（I2）。
+ */
+const UNABANDONABLE_STATES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+  "closed",
   "superseded",
 ]);
 
@@ -311,6 +329,50 @@ export class StateMachine {
       type: "task_failed",
       projectTag,
       taskId,
+      reason: opts.reason,
+    });
+    return { ok: true };
+  }
+
+  /**
+   * どうしようもないものを畳む（PO 裁定 2026-08-14）。**どの状態からでも closed へ。**
+   *
+   * `fail()` / `supersede()` と同じ**横断の遷移**で、遷移表は通らない。表に
+   * `queued:closed` などを足さなかったのは、そこへ足すと **`transition()` を呼ぶ誰でも**
+   * 前触れなくタスクを閉じられるようになるから——畳むのは番頭が「もう駄目だ」と判断した
+   * ときの操作であって、機構が通りがかりに踏む道ではない。
+   *
+   * Emits:
+   *   1. state_transitioned(from=currentStatus, to="closed", reason) — D3: 状態はこれが持つ
+   *
+   * `from` に**畳む前の状態が載る**ので、経緯からどこで凍っていたかが読める。
+   *
+   * Returns { ok: false } if the task is already closed / superseded (I2: 黙って成功にしない).
+   */
+  static abandon(
+    log: EventLog,
+    taskId: string,
+    opts: { currentStatus: TaskStatus; reason: string },
+    projectTag: string = "default"
+  ): TransitionResult {
+    if (UNABANDONABLE_STATES.has(opts.currentStatus)) {
+      log.append({
+        type: "transition_rejected",
+        projectTag,
+        taskId,
+        attempted_from: opts.currentStatus,
+        attempted_to: "closed",
+        reason: "already_abandoned",
+      });
+      return { ok: false, reason: "already_abandoned" };
+    }
+
+    log.append({
+      type: "state_transitioned",
+      projectTag,
+      taskId,
+      from: opts.currentStatus,
+      to: "closed",
       reason: opts.reason,
     });
     return { ok: true };
