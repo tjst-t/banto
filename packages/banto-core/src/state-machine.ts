@@ -26,6 +26,8 @@
  *   - resume(): paused → restored to suspended_from state
  *   - fail(): any non-terminal state → failed (I2: unrecoverable error)
  *   - supersede(): any non-terminal state → superseded (escalation replacement)
+ *   - abandon(): closed / superseded 以外のどの状態からでも → closed
+ *     （番頭が畳む・PO 裁定 2026-08-14。付帯イベントは持たない）
  *
  * All cross-cutting methods emit state_transitioned first (D3: single status
  * source), then the metadata event.
@@ -107,6 +109,41 @@ const PAUSABLE_STATES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
 ]);
 
 /**
+ * **工場の外で決着したと言える状態**（realign 第2便・imp-0019 の4番）。
+ *
+ * この口を足した当初、`kobo.abandon` は `failed:closed` だけで、queued / paused /
+ * review-ready のまま「中身が別の経路で入った」ものを畳む道が無かった。
+ * 実際に番頭がここで詰まり、棚卸しの判定を帳簿へ書き戻せなかった（imp-0019）。
+ *
+ * **その穴は塞がった**——PO 裁定 2026-08-14 で `abandon()` が横断遷移になり、畳める範囲は
+ * `settle()` と重なっている（`UNABANDONABLE_STATES` を参照）。**それでも口は分けたまま**：
+ * 違いは範囲ではなく**帳簿に何を書くか**で、`settle()` は「失敗ではない・外で決着した」、
+ * `abandon()` は「諦めた」。1つにまとめると「どれだけ捨てたか」と「どれだけ工場の外で
+ * 片付いたか」が混ざって数えられなくなる（PO 裁定 2026-08-14）。
+ *
+ * D2: 規則をデータで持つ。`REGULAR_TRANSITIONS` に `X:closed` を10本足すのではなく
+ * 専用の口にしているのは、**どこからでも closed へ飛べる機械にしないため**——
+ * `settle()` を通ったものだけが、理由（`task_settled_outside`）と一緒に閉じる。
+ *
+ * `merging` を外してあるのは着地の最中だから：キューが処理している最中に横から
+ * 閉じると、キューの側は自分が動かしているタスクの状態を失う（降ろす口は
+ * `kobo.supersede`）。`failed` も外してある——落ちたまま諦めるのは
+ * `kobo.abandon` の領分で、「失敗ではない」と言うためのこの口と混ぜない。
+ */
+const SETTLEABLE_STATES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+  "draft",
+  "queued",
+  "ready",
+  "planning",
+  "implementing",
+  "auditing",
+  "review-ready",
+  "in-review",
+  "approved",
+  "paused",
+]);
+
+/**
  * Terminal states: once here a task cannot be failed or superseded again.
  * D2: expressed as data — fail()/supersede() refuse to act if already terminal.
  *
@@ -118,6 +155,26 @@ const TERMINAL_STATES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
   "closed",
   "merged",
   "failed",
+  "superseded",
+]);
+
+/**
+ * 畳めない状態（PO 裁定 2026-08-14）。**もう畳んである**ものだけ。
+ *
+ * `kobo.abandon` は当初 `failed` 専用だった（→ REGULAR_TRANSITIONS の `failed:closed`）が、
+ * 実運用で宙に浮くのは `queued` / `paused` / `review-ready` の方だった——実機の工場に
+ * queued 10本・paused 3本・review-ready 1本が凍り、**畳む手段が無かった**。
+ * そこで `abandon()` を `fail()` / `supersede()` と同じ**横断の遷移**にした。
+ *
+ * `merged` は畳める（`merged:closed` は元からある道）。断るのは `closed` と `superseded`
+ * ——どちらも「もう畳んである」ので、黙って成功を返すと二重に畳んだ記録が積み上がる（I2）。
+ *
+ * **`settleOutside()` と範囲が重なるのは承知のうえ**（`SETTLEABLE_STATES` を参照）。
+ * 分かれ目は状態ではなく畳む理由——「諦めた」なら `abandon()`、「失敗ではない・外で
+ * 決着した」なら `settleOutside()`。混ぜないのは別々に数えるため。
+ */
+const UNABANDONABLE_STATES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+  "closed",
   "superseded",
 ]);
 
@@ -317,6 +374,50 @@ export class StateMachine {
   }
 
   /**
+   * どうしようもないものを畳む（PO 裁定 2026-08-14）。**どの状態からでも closed へ。**
+   *
+   * `fail()` / `supersede()` と同じ**横断の遷移**で、遷移表は通らない。表に
+   * `queued:closed` などを足さなかったのは、そこへ足すと **`transition()` を呼ぶ誰でも**
+   * 前触れなくタスクを閉じられるようになるから——畳むのは番頭が「もう駄目だ」と判断した
+   * ときの操作であって、機構が通りがかりに踏む道ではない。
+   *
+   * Emits:
+   *   1. state_transitioned(from=currentStatus, to="closed", reason) — D3: 状態はこれが持つ
+   *
+   * `from` に**畳む前の状態が載る**ので、経緯からどこで凍っていたかが読める。
+   *
+   * Returns { ok: false } if the task is already closed / superseded (I2: 黙って成功にしない).
+   */
+  static abandon(
+    log: EventLog,
+    taskId: string,
+    opts: { currentStatus: TaskStatus; reason: string },
+    projectTag: string = "default"
+  ): TransitionResult {
+    if (UNABANDONABLE_STATES.has(opts.currentStatus)) {
+      log.append({
+        type: "transition_rejected",
+        projectTag,
+        taskId,
+        attempted_from: opts.currentStatus,
+        attempted_to: "closed",
+        reason: "already_abandoned",
+      });
+      return { ok: false, reason: "already_abandoned" };
+    }
+
+    log.append({
+      type: "state_transitioned",
+      projectTag,
+      taskId,
+      from: opts.currentStatus,
+      to: "closed",
+      reason: opts.reason,
+    });
+    return { ok: true };
+  }
+
+  /**
    * Supersede a task (escalation-driven replacement).
    * Records the superseding task ID for audit trail.
    *
@@ -358,6 +459,67 @@ export class StateMachine {
       projectTag,
       taskId,
       supersededBy: opts.by,
+    });
+    return { ok: true };
+  }
+
+  /**
+   * **工場の外で決着したものを畳む**（realign 第2便・imp-0019 の4番）。
+   *
+   * 中身が別の経路で main に入った・もう要らなくなった・番頭が直接片づけた——
+   * どれも**失敗ではない**ので `failed` を経由させない。`closed` へ直に落とし、
+   * なぜそう言えるのかを `task_settled_outside` に残す。
+   *
+   * Emits (in order):
+   *   1. state_transitioned(from=currentStatus, to="closed") — D3: 状態を動かすのはこれだけ
+   *   2. task_settled_outside(outcome, reason, settled_from)  — なぜ畳めるのかの記録
+   *
+   * **記録は消えない**：それまでの遷移も職人の起動も帳簿に残ったまま。消えるのは
+   * 「まだ見る必要がある」というふりだけ。
+   *
+   * Returns { ok: false } if the task is not in a settleable state.
+   */
+  static settleOutside(
+    log: EventLog,
+    taskId: string,
+    opts: {
+      currentStatus: TaskStatus;
+      by: string;
+      outcome: "landed_elsewhere" | "no_longer_needed" | "handled_directly";
+      reason: string;
+    },
+    projectTag: string = "default"
+  ): TransitionResult {
+    if (!SETTLEABLE_STATES.has(opts.currentStatus)) {
+      log.append({
+        type: "transition_rejected",
+        projectTag,
+        taskId,
+        attempted_from: opts.currentStatus,
+        attempted_to: "closed",
+        reason: "not_settleable_from_current_state",
+      });
+      return { ok: false, reason: "not_settleable_from_current_state" };
+    }
+
+    // D3: state_transitioned is the single canonical source of status changes
+    log.append({
+      type: "state_transitioned",
+      projectTag,
+      taskId,
+      from: opts.currentStatus,
+      to: "closed",
+      reason: `settled_outside:${opts.outcome}（${opts.reason}）`,
+    });
+    // Metadata event: 失敗ではないこと・なぜそう言えるのかが、ここにだけ残る
+    log.append({
+      type: "task_settled_outside",
+      projectTag,
+      taskId,
+      settledBy: opts.by,
+      outcome: opts.outcome,
+      reason: opts.reason,
+      settled_from: opts.currentStatus,
     });
     return { ok: true };
   }

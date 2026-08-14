@@ -63,7 +63,8 @@ function adviceForFailure(reason: string): string {
     "原因は kobo.task で辿れます（検証ログの末尾まで出ます）。" +
     "**タスクは切り直さないこと**——中身の問題なら `kobo.reopen` の rework、" +
     "検証環境の問題なら reverify、契約そのものが間違っていたなら定義ファイルを直して " +
-    "`kobo.amend`。どうしようもなければ `kobo.abandon` で畳んでください。"
+    "`kobo.amend`。どうしようもなければ `kobo.abandon` で畳んでください" +
+    "——**どの状態のタスクでも畳めます**（落ちたものに限りません）。"
   );
 }
 
@@ -73,6 +74,9 @@ const NOTICEWORTHY = new Set([
   "task_failed",
   "task_merged",
   "audit_verdict",
+  // **止まっている**（realign 第2便）。工場は同じ状態のあいだ1回しか積まないので、
+  // ここで拾っても鳴り続けることはない
+  "task_stalled",
 ]);
 
 /**
@@ -96,6 +100,11 @@ interface KoboEventView {
   verdict?: string;
   findings?: string[];
   commitSha?: string;
+  /** `task_stalled`：どの状態で、どれだけ、何に阻まれて止まっているか。 */
+  status?: string;
+  dwellMs?: number;
+  thresholdMs?: number;
+  blockedBy?: string[];
 }
 
 /** タスク1件の見え方（`kobo.task` の返り）。 */
@@ -143,6 +152,19 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
   let running = false;
   let stopped = false;
 
+  /** 1通届ける。宛先が畳まれていたら既定の宛先へ逃がす（**消えたことにしない**・I2）。 */
+  const deliver = async (notice: { origin: string; text: string }): Promise<void> => {
+    const threadId = threadIdOfOrigin(notice.origin);
+    try {
+      await options.notify(notice.text, threadId ? { threadId } : {});
+    } catch (err) {
+      // 決定68: 宛先が畳まれていたら起こし直して届ける——のが本筋だが、起こし直せない
+      // ときは既定の宛先へ逃がす
+      log(`[banto] 工場の知らせの宛先 ${String(threadId)} へ届きません: ${String(err)}`);
+      await options.notify(notice.text, {}).catch(() => undefined);
+    }
+  };
+
   const tick = async (): Promise<void> => {
     if (running || stopped) return;
     running = true;
@@ -150,19 +172,25 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
       const details = await invoke("kobo.events", { afterEventId: cursor, limit: 100 });
       const events = (details["events"] ?? []) as KoboEventView[];
       const origins = (details["origins"] ?? {}) as Record<string, string>;
+
+      /**
+       * **同じ理由の知らせは束ねる**（realign 第2便）。
+       *
+       * 1件1通で流すと、溜まっていた分がそのまま通数になる——実測で35件が35回
+       * 届いた事例がある。そうなると番頭は読まなくなり、**知らせないのと同じ**になる。
+       * 束ねてよいのは「同じことが並んでいるだけ」のもの＝滞留の知らせ。
+       * 「止まった」「落ちた」は1件ずつ理由が違うので、今までどおり1通ずつ。
+       */
+      const stalled = events.filter((e) => e.type === "task_stalled");
       for (const event of events) {
         cursor = Math.max(cursor, event.eventId ?? 0);
+        if (event.type === "task_stalled") continue;
         const notice = await renderNotice(event, origins, invoke);
         if (!notice) continue;
-        const threadId = threadIdOfOrigin(notice.origin);
-        try {
-          await options.notify(notice.text, threadId ? { threadId } : {});
-        } catch (err) {
-          // 決定68: 宛先が畳まれていたら起こし直して届ける——のが本筋だが、起こし直せない
-          // ときは既定の宛先へ逃がす。**消えたことにしない**（I2）
-          log(`[banto] 工場の知らせの宛先 ${String(threadId)} へ届きません: ${String(err)}`);
-          await options.notify(notice.text, {}).catch(() => undefined);
-        }
+        await deliver(notice);
+      }
+      for (const bundle of bundleStalled(stalled, origins)) {
+        await deliver(bundle);
       }
       writeCursor(options.cursorPath, cursor);
     } catch (err) {
@@ -182,6 +210,135 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
     stopped = true;
     clearInterval(timer);
   };
+}
+
+/**
+ * 滞留の知らせを**宛先ごとに1通へ束ねる**（realign 第2便）。
+ *
+ * 束ねる単位は宛先（会話）。同じ会話へ「止まっています」を N 通送るのは、
+ * 1通に N 行書くのと情報は同じで、読まれなさだけが増える——実測で 35 件が
+ * 35 回届いた事例がある。
+ *
+ * D5: 判断は無い。並べ替え（長く止まっているものが上）と日本語への言い換えだけ。
+ */
+export function bundleStalled(
+  events: KoboEventView[],
+  origins: Record<string, string>
+): Array<{ origin: string; text: string }> {
+  const byOrigin = new Map<string, KoboEventView[]>();
+  for (const event of events) {
+    if (!event.taskId) continue;
+    const origin = origins[`${event.projectTag}/${event.taskId}`] ?? "";
+    const list = byOrigin.get(origin);
+    if (list) list.push(event);
+    else byOrigin.set(origin, [event]);
+  }
+
+  const bundles: Array<{ origin: string; text: string }> = [];
+  for (const [origin, group] of byOrigin) {
+    const sorted = [...group].sort((a, b) => (b.dwellMs ?? 0) - (a.dwellMs ?? 0));
+    const lines = sorted.map((e) => {
+      const blocked = (e.blockedBy ?? []).length > 0 ? `／待ち: ${e.blockedBy!.join(", ")}` : "";
+      return `- ${e.taskId}（${e.status ?? "?"}）${formatDuration(e.dwellMs ?? 0)}${blocked}`;
+    });
+    const head =
+      sorted.length === 1
+        ? `${sorted[0]!.taskId} が止まっています`
+        : `${sorted.length} 件が止まっています`;
+    bundles.push({
+      origin,
+      text: [
+        head,
+        "",
+        "**起きたこと**",
+        "状態が変わらないまま、決めてある時間を超えました（工場が帳簿から測っています）。",
+        ...lines,
+        "",
+        "**求める判断**",
+        "**待てば進むのか、詰まっているのかを見分けてください。** `kobo.task` で経緯を読み、" +
+          "「待ち」に出ているタスクがそれ自体止まっているなら、そこが本当の原因です。\n" +
+          "手は：職人が居ないなら `kobo.reopen`、レビュー待ちなら `kobo.approve` か `kobo.send_back`、" +
+          "**もう工場の外で決着しているなら `kobo.settle`**（失敗としては残りません）。\n" +
+          "この知らせは**同じ状態のあいだ一度だけ**出ます——次に鳴るのは状態が動いてからです。",
+      ].join("\n"),
+    });
+  }
+  return bundles;
+}
+
+/** 人が読む長さ。`banto-core` の `formatDwell` と同じ形（この層は Kobo に依存しない）。 */
+function formatDuration(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${minutes}分`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (hours < 24) return rest === 0 ? `${hours}時間` : `${hours}時間${rest}分`;
+  const days = Math.floor(hours / 24);
+  const restHours = hours % 24;
+  return restHours === 0 ? `${days}日` : `${days}日${restHours}時間`;
+}
+
+/**
+ * **そこまでの作業が残っている枝**を1行で返す（無ければ `undefined`）。
+ *
+ * 引き先は Worker Pool の `worker.keeps`。**新しい依存は足さない**——`invoke` は
+ * Tool 名で引く汎用の口なので、この層は Worker Pool のコードを読み込まない（決定27）。
+ *
+ * I2 の例外としてここは握る：取り置きが引けなかったことを理由に**知らせ自体を落とさない**。
+ * 落ちたことを伝える方が、在り処を添えることより先である（届かないより粗い方がまし）。
+ * 呼び先がまだ無い構成でも、ここで catch されて何も足さずに成立する。
+ *
+ * **無いときは何も足さない。** 「取り置きはありません」を毎回出すと札が読みにくくなり、
+ * 本当に読ませたい「求める判断」が埋もれる。
+ */
+async function keepBranchLine(
+  invoke: (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>,
+  projectTag: string,
+  taskId: string
+): Promise<string | undefined> {
+  let branches: string[];
+  try {
+    const details = await invoke("worker.keeps", { projectTag, taskId });
+    branches = keepBranches(details);
+  } catch {
+    // 取り置きが引けなくても知らせは出す（呼び先が無い構成でもここに落ちる）
+    return undefined;
+  }
+  /**
+   * **先頭が最新**。`worker.keeps` は `lastKeptAt` の降順で返す
+   * （`banto-worker-pool/src/work-keep.ts` の `listKeepBranches`：
+   * `found.sort((a, b) => b.lastKeptAt.localeCompare(a.lastKeptAt))`）。
+   *
+   * **並び順は呼び先の都合なので、根拠をここに書いておく。** 枝名の末尾に起動時刻が
+   * 入っているため末尾を最新と読み違えやすく、実際に一度間違えた——2本以上あるときに
+   * **いちばん古い枝を番頭に案内する**形になっていた（1本のときだけ偶然合う）。
+   */
+  const latest = branches[0];
+  if (!latest) return undefined;
+  // **切ったことを黙らせない。** 2本以上あるなら本数を添える（1本目だけ見て
+  // 「これで全部」と読まれると、拾い残しに気づけない）
+  const others = branches.length > 1 ? `（他に ${branches.length - 1} 本）` : "";
+  return `そこまでの作業は \`${latest}\` に残っています（\`git log -p ${latest}\`）${others}`;
+}
+
+/**
+ * `worker.keeps` の返りから枝名を取り出す。
+ *
+ * 項目が文字列でも `{ branch }` でも読めるようにしてある——**読めない形なら空**を返し、
+ * 推測で組み立てた枝名を番頭に見せない（存在しない枝を `git log` させることになる）。
+ */
+function keepBranches(details: Record<string, unknown>): string[] {
+  const raw = details["keeps"];
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) =>
+      typeof item === "string"
+        ? item
+        : typeof (item as { branch?: unknown })?.branch === "string"
+          ? ((item as { branch: string }).branch)
+          : ""
+    )
+    .filter((branch) => branch.length > 0);
 }
 
 /**
@@ -233,6 +390,17 @@ async function renderNotice(
 
   if (event.type === "task_failed") {
     const reason = event.reason ?? "";
+    /**
+     * **そこまでの作業の在り処**（realign 第2便・機構が職人の成果を取り置く）。
+     *
+     * 落ちた札を受け取った番頭がまず知りたいのは「やり直しか、拾えるのか」である。
+     * 取り置きの枝があれば拾える——無いと、既にあるコミットを捨てて最初からやり直す
+     * 判断をしてしまう。`envUrl`（決定59）と同じ扱いで「求める判断」の直前に置く。
+     *
+     * **落ちたときだけ。** 監査の不通過（`audit_verdict` の fail）には載せない
+     * ——職人はまだ生きており、取り置きを案内する場面ではない。
+     */
+    const keep = await keepBranchLine(invoke, event.projectTag, taskId);
     return {
       origin,
       text: [
@@ -242,6 +410,7 @@ async function renderNotice(
         "**起きたこと**",
         reason || "（理由が記録されていません）",
         "",
+        ...(keep ? [keep, ""] : []),
         "**求める判断**",
         adviceForFailure(reason),
       ].join("\n"),

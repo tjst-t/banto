@@ -39,6 +39,10 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
   "worker.wake",
   "worker.stop",
   "worker.models",
+  // 落ちた職人の未コミットの成果を拾う（work-keep）。ここに無いと、機構が守った取り置きは
+  // 「在るのに誰も気づけない」ものになる——実装は全部あったのに一度も発火しなかった
+  // 触れる環境と同じ形の穴
+  "worker.keeps",
   // 場所を読む——判断の材料。25%
   "file.read",
   "file.grep",
@@ -97,12 +101,34 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
    * 番頭の手にはその道具が無い**という状態が続いていた。案内と道具の食い違いは、
    * 番頭から見れば「言われたとおりにできない」であって、失敗の理由が分からない。
    *
-   * `kobo.supersede` は**唯一 merging / paused のタスクに届く口**でもある
+   * `kobo.supersede` は**merging / paused のタスクに届く口**である
    * （`Daemon.transition` は `superseded` を `StateMachine.supersede` へ回し、
    * これは終端以外のどの状態からでも通る）。inc-0063 で merging に居座った
    * task-0097 を降ろせなかったのは、この口が提示されていなかったからでもある。
+   *
+   * `kobo.abandon` も**どの状態のタスクでも畳める**ようになった（PO 裁定 2026-08-14）。
+   * 以前は `failed` 専用で、実運用で宙に浮く queued / paused / review-ready には届かず、
+   * 実機の工場に14本が凍っていた。**降ろす口は3つとも状態では選ばない。選ぶのは理由**
+   * ——別の依頼で置き換えるなら `kobo.supersede`、単に諦めるなら `kobo.abandon`、
+   * 失敗ではなく工場の外で決着したなら `kobo.settle`。
    */
   "kobo.abandon",
+  /**
+   * **工場の外で決着したものを降ろす口**（realign 第2便・imp-0019 の4番）。
+   *
+   * 足した当初は `kobo.abandon` が failed 専用で、queued / paused / review-ready のまま
+   * 中身が別の経路で main に入ったタスクを畳む道が無かった——2026-08-13 の棚卸しで番頭が
+   * 実際にここで詰まり、判定を帳簿へ書き戻せず、文書が代わりの記録になった。
+   *
+   * その穴は PO 裁定 2026-08-14 で `kobo.abandon` が横断遷移になって塞がったが、**口は
+   * 残してある**。違いは畳める範囲ではなく**帳簿に何を書くか**——`kobo.settle` は
+   * 「失敗ではない（外で着地した／要らなくなった／直接やった）」、`kobo.abandon` は
+   * 「諦めた」。混ぜると「どれだけ捨てたか」と「どれだけ工場の外で片付いたか」が
+   * 混ざって数えられなくなる。
+   *
+   * 在庫に足すだけでは足りない。**ここに載せないとモデルには見えない**（決定82）。
+   */
+  "kobo.settle",
   "kobo.supersede",
   "kobo.amend",
   /**

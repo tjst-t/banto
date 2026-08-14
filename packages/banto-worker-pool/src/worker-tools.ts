@@ -16,6 +16,7 @@ import { StringEnum, defineNamespacedTool, type NamespacedToolDefinition } from 
 import { Type } from "typebox";
 import { DEFAULT_PAGE_SIZE } from "./pool.js";
 import type { WorkerPool } from "./pool.js";
+import { formatBytes } from "./worker-cgroup.js";
 
 /** 一覧・アタッチの上限。番頭の文脈を埋め尽くさないため。 */
 const MAX_ATTACH_LINES = 200;
@@ -138,9 +139,42 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
                 const waiting = w.question ? ` 質問待ち: ${w.question}` : "";
                 const closed = w.closeReason ? `(${w.closeReason})` : "";
                 const runtime = `${w.runtime}${w.model ? `/${w.model}` : ""}`;
-                return `${mark} ${w.taskId} [${w.projectTag}] ${w.state}${closed} ${runtime} pid=${w.pid} sessionId=${w.sessionId}${waiting}`;
+                /**
+                 * 職人の下で実際に動いているプロセス（inc-0066）。ホストの pid だけでは
+                 * OOM のダンプから職人を逆引きできなかった。走査中は何も出さない。
+                 */
+                const child = w.childProcesses
+                  ? w.childProcesses.children.length > 0
+                    ? ` child=${w.childProcesses.children.map((c) => `${c.comm}:${c.pid}`).join(",")}`
+                    : " child=不明"
+                  : "";
+                /**
+                 * 隔離と、袋から読んだ使い切りの記録（inc-0066 第2段）。
+                 *
+                 * **上限に当たって殺された職人は、ここで名指しされる。** これが無いと
+                 * 番頭には「なぜか落ちた」としか見えず、2026-08-14 の事故が繰り返される。
+                 */
+                const isolation = w.isolation === "none" ? " 隔離なし" : "";
+                const mem = w.memory
+                  ? (w.memory.oomKilled
+                      ? " ⚠上限で kill された"
+                      : w.memory.hitLimit
+                        ? " ⚠上限に張り付いた"
+                        : "") +
+                    (w.memory.peakBytes !== undefined ? ` peak=${formatBytes(w.memory.peakBytes)}` : "")
+                  : "";
+                return `${mark} ${w.taskId} [${w.projectTag}] ${w.state}${closed} ${runtime} pid=${w.pid}${child}${isolation}${mem} sessionId=${w.sessionId}${waiting}`;
               })
-              .join("\n") + range;
+              .join("\n") +
+            range +
+            /**
+             * 隔離できていないことを番頭の目に必ず入れる（3点セットの3つ目・PO 裁定）。
+             * 「知らないうちに隔離なしで回っていた」を作らないための条件。
+             */
+            (pool.isolationStatus().mode === "none"
+              ? `\n\n⚠ この工房は職人を隔離していません（cgroup 不可: ` +
+                `${pool.isolationStatus().reason ?? "理由不明"}）。1本の暴走が機械全体を巻き込みます`
+              : "");
       return { content: [{ type: "text" as const, text }], details: result };
     },
   });
@@ -292,8 +326,60 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     },
   });
 
-  return [delegate, list, models, steer, close, wake, stop, attach, events];
+  /**
+   * 取り置きを**番頭が読める形にする**（work-keep）。
+   *
+   * ここが無いと、機構は成果を守れても番頭がそれを知る経路が無い——「在るのに誰も
+   * 気づけない」は、実装が全部あるのに一度も発火しなかった触れる環境と同じ形の穴である。
+   * `git branch --list` を番頭が打つことを期待する設計は、事実上「無い」のと同じ。
+   */
+  const keeps = defineNamespacedTool({
+    name: "worker.keeps",
+    label: "Worker: Keeps",
+    description:
+      "落ちた・無報告で終わった職人の**未コミットの成果**が、機構の取り置き枝に残っていないか調べる。\n" +
+      "職人が消えたのに成果が要るとき・差し戻す前にここを見る。\n" +
+      '例: {taskId: "task-0042"} → その仕事の取り置き／{} → 全部\n' +
+      "taskId・projectTag・repoPath は英語の識別子（パス）で埋める。\n" +
+      "**枝は職人が作ったものではなく機構が打ったもの**（打ち手は banto-keeper）。",
+    parameters: Type.Object({
+      taskId: Type.Optional(Type.String()),
+      projectTag: Type.Optional(Type.String()),
+      repoPath: Type.Optional(
+        Type.String({
+          description: "そのタスクのワークツリーが1つも残っていないときに、見に行く場所を名指しする",
+        })
+      ),
+    }),
+    async execute(params) {
+      const found = pool.keeps({
+        ...(params.taskId ? { taskId: params.taskId } : {}),
+        ...(params.projectTag ? { projectTag: params.projectTag } : {}),
+        ...(params.repoPath ? { repoPath: params.repoPath } : {}),
+      });
+      const text =
+        found.length === 0
+          ? params.taskId
+            ? `「${params.taskId}」の取り置きはありません`
+            : "取り置きはありません"
+          : found
+              .map((info) => {
+                const count = info.keptCount === undefined ? "" : ` ${info.keptCount}枚`;
+                return (
+                  `${info.branch}\n` +
+                  `  ${info.taskId} [${info.projectTag}] ${info.runtime}` +
+                  `${count} 起動 ${info.startedAt} 最後 ${info.lastKeptAt}\n` +
+                  `  中身を見る: git log -p ${info.branch}`
+                );
+              })
+              .join("\n");
+      return { content: [{ type: "text" as const, text }], details: { keeps: found } };
+    },
+  });
+
+  return [delegate, list, models, steer, close, wake, stop, attach, events, keeps];
 }
+
 
 /**
  * 職人自身が使う Tool（決定29）。**番頭には渡さない**——番頭が自分に報告しても意味がない。

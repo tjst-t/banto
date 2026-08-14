@@ -62,10 +62,10 @@ export default function (pi: any): void {
     });
   }
 
-  // Inject executor system prompt via before_agent_start hook.
-  // This fires before each LLM call and injects banto-specific instructions.
-  // We use before_agent_start (not session_start) because it provides a
-  // systemPrompt field that can be appended to. (extensions.md §before_agent_start)
+  // before_agent_start を使うのは systemPrompt に追記できる唯一のフックだから
+  // （session_start には無い。extensions.md §before_agent_start）。
+  /** **pi 経路にしか効かない。** 役は Kobo も指示文に載せる（二重は承知のうえ・第2便 (P)）。
+   * **消さないこと**——消すと pi 経路だけ役を失う。理由は `buildExecutorInstruction`。 */
   pi.on(
     "before_agent_start",
     (

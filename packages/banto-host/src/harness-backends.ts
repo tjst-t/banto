@@ -60,6 +60,58 @@ export function toBackendOption(backend: HarnessBackendDescriptor): HarnessBacke
 }
 
 /**
+ * 番頭の標準モデルとして**名乗ってよい能力**を決める（`GET /api/model`／`model_state`）。
+ *
+ * `LlmCatalog.resolveHostDefault()` は、番頭の標準を pi の登録で解けないとき
+ * **pi 側の別モデル（代打）へ落ちる**——Claude Code（`claude-agent-sdk`）のモデルは
+ * そもそも登録に載らないので、そのバックエンドを選んでいる間は必ず代打になる。
+ * 代打はセッションを組む型（pi-ai の `Model`）を埋めるためのものなので、
+ * **その能力値は標準とは何の関係も無い**。
+ *
+ * 実測（2026-08-14）：番頭は `opus` で動いているのに `/api/model` は
+ * `{"id":"opus","vision":false,"contextWindow":128000}` を返していた。128000 は
+ * 代打（`huihui/deepseek-v4-flash-abliterated`）に pi が付けた既定値で、
+ * 実際の `opus`（`claude-opus-5`）は 1,000,000 だった——名前は標準、中身は別モデル。
+ *
+ * だから**代打のときは能力を名乗らない**。文脈長は欄ごと落とす（「分からない」を
+ * 数で埋めない・I1）。正しい値をここに定数で書くこともしない——Anthropic 側の
+ * 仕様・プラン・`CLAUDE_CODE_DISABLE_1M_CONTEXT` で変わるので、書いた瞬間に嘘になる。
+ * 実測が要る経路（章の畳み）は `BantoHarness.contextWindow()` から本物を受け取っている。
+ */
+export function hostModelInfo(options: {
+  /** 番頭の標準（`roles.steward`）。名乗る `id` はここの綴りのまま。 */
+  steward: { backend?: string; provider: string; model: string };
+  /** `resolveHostDefault()` が返したモデルと、その能力。 */
+  resolved: { provider: string; id: string; vision: boolean; contextWindow?: number } | undefined;
+  /** 標準そのものを pi の登録で解けるか（`LlmCatalog.resolveExact`）。 */
+  resolveExact: (provider: string, model: string) => { provider: string; id: string } | undefined;
+}): { id: string; vision: boolean; contextWindow?: number } {
+  const backend = options.steward.backend ?? "pi";
+  // `resolveHostDefault()` と同じ条件で「標準そのものを解けたか」を判定する。
+  // 解けた結果と食い違っていれば、返ってきたのは代打
+  const exact =
+    backend === "pi"
+      ? options.resolveExact(options.steward.provider, options.steward.model)
+      : undefined;
+  const resolved = options.resolved;
+  const isHostDefault =
+    exact !== undefined &&
+    resolved !== undefined &&
+    exact.provider === resolved.provider &&
+    exact.id === resolved.id;
+  if (!isHostDefault || !resolved) {
+    // I1: できないほうへ倒す。`claude-agent-sdk` は実際に画像を渡せない
+    // （`onSelectModel` も同じく `vision: false` を返す）
+    return { id: options.steward.model, vision: false };
+  }
+  return {
+    id: options.steward.model,
+    vision: resolved.vision,
+    ...(resolved.contextWindow ? { contextWindow: resolved.contextWindow } : {}),
+  };
+}
+
+/**
  * pi バックエンド。**モデルは LLM 登録が持つ**——採用（`policy`）に `host` が
  * 立っているものだけが番頭の選択肢になる。
  *
@@ -112,7 +164,10 @@ export function createPiBackend(options: {
  * **実測（2026-08-13）**：`supportedModels()` が返すのは
  * `default` / `opus[1m]` / `claude-fable-5[1m]` / `sonnet` / `haiku` で、**素の `opus` は
  * 入っていない**。だが `opus` は生きていて、`opus[1m]` とは**別のモデル**へ解決する
- * （`claude-opus-5` と `claude-opus-5[1m]`——文脈長が違う）。
+ * （`claude-opus-5` と `claude-opus-5[1m]`）。
+ *
+ * **文脈長は同じ**（実測 2026-08-14：どちらも `claude-opus-5` / 1,000,000）。
+ * 以前ここには「文脈長が違う」と書いてあったが、測ると違うのは名前だけだった。
  *
  * つまり**聞いた一覧は「勧める一覧」であって「使える名前の全部」ではない。**
  * 実機の番頭は `opus` で動いており、聞いた一覧だけを出すと**いま効いている束縛が

@@ -69,7 +69,22 @@ export default function (pi: any): void {
     });
   }
 
-  // Inject audit system prompt + checklist via before_agent_start hook.
+  /**
+   * 監査人の役の説明を system prompt に足す（pi 経路だけ）。
+   *
+   * **チェックリストはここでは渡さない**（realign 第2便・段1）。この hook は
+   * `driverOptions.extensionPaths`＝**pi の言葉**に載っており、Claude Agent SDK の
+   * 職人はこの拡張を読まない——実運用の監査人はほぼ全て SDK 経路なので、ここだけで
+   * 渡していたころ**基準は監査人に一度も届いていなかった**。
+   *
+   * いまは Kobo が指示文に載せて渡す（`buildAuditInstruction`）。経路に依らず届き、
+   * `audit_verdict.checklistVersion` に刻む指紋が「実際に渡した中身」と一致する。
+   *
+   * **役の説明（`audit-system`）は Kobo も渡すので、pi 経路では二重に届く。
+   * それは承知のうえで残している**（realign 第2便・(P)）——重複は無害だが、片方が
+   * 届かないのは害だからである。**「二重だから」とここを消さないこと**：消すと
+   * pi 経路だけ役の説明を失い、同じ穴を逆向きに開けることになる。
+   */
   pi.on(
     "before_agent_start",
     (
@@ -77,14 +92,8 @@ export default function (pi: any): void {
       _ctx: unknown
     ): { systemPrompt: string } => {
       const systemPrompt = loadPromptAsset("audit-system");
-      const checklist = loadPromptAsset("audit-checklist");
       return {
-        systemPrompt:
-          event.systemPrompt +
-          "\n\n" +
-          systemPrompt +
-          "\n\n## 監査チェックリスト\n\n" +
-          checklist,
+        systemPrompt: event.systemPrompt + "\n\n" + systemPrompt,
       };
     }
   );

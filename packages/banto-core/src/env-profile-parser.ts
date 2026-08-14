@@ -10,6 +10,7 @@
  * I4: TypeScript strict; no 'any' without reason comment.
  */
 
+import { createHash } from "node:crypto";
 import { parseYamlFrontmatter } from "./task-frontmatter.js";
 
 /**
@@ -329,4 +330,36 @@ export function parseEnvProfiles(content: string): ParseEnvProfilesResult {
   }
 
   return { valid, failures };
+}
+
+/**
+ * 検証環境プロファイルの**中身の指紋**（realign 第2便・段1）。
+ *
+ * マージ前ゲートの証拠に「**どの環境で検査したか**」を刻むための値。名前
+ * （`test` 等）では足りない——同じ名前のまま土台のイメージや `setup` が変われば、
+ * 同じ差分でも結果は変わりうる。だから中身から作る。
+ *
+ * 鍵の順序で指紋が変わらないよう、再帰的に並べ替えてから JSON にする。
+ * `name` は含めない（名前を変えただけの環境を「別の環境」と言わないため）。
+ *
+ * D6: node:crypto のみ。
+ */
+export function envProfileDigest(profile: EnvProfile): string {
+  const { name: _name, ...rest } = profile;
+  return createHash("sha256")
+    .update(JSON.stringify(sortDeep(rest)), "utf-8")
+    .digest("hex")
+    .slice(0, 12);
+}
+
+/** 指紋を安定させるための正規化（オブジェクトの鍵を辞書順に並べ替える）。 */
+function sortDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortDeep);
+  if (value === null || typeof value !== "object") return value;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of entries) out[k] = sortDeep(v);
+  return out;
 }

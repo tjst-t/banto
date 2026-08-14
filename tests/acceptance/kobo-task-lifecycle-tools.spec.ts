@@ -1,7 +1,7 @@
 /**
  * タスクの**後始末の口**が番頭に届いていること（inc-0063 の5番）。
  *
- *   - `kobo.abandon`   — 落ちたタスクを畳む
+ *   - `kobo.abandon`   — 二度と動かないタスクを畳む（**どの状態からでも**・PO 裁定 2026-08-14）
  *   - `kobo.supersede` — 積んだタスクを置き換えて降ろす
  *   - `kobo.amend`     — 積んだあとの契約を訂正する
  *
@@ -111,7 +111,13 @@ function initRepo(repoDir: string): void {
   git("commit", "-m", "initial");
 }
 
-function writeTaskFile(repoDir: string, taskId: string, title: string): void {
+function writeTaskFile(
+  repoDir: string,
+  taskId: string,
+  title: string,
+  /** スコープを分けられるようにする——重ならなければ、複数の札を同時に ready まで運べる */
+  scopePath: string = "src/**"
+): void {
   const dir = path.join(repoDir, "work", "tasks");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(
@@ -123,7 +129,7 @@ kind: feature
 title: ${title}
 status: queued
 scope:
-  paths: [src/**]
+  paths: [${scopePath}]
 acceptance:
   - { id: a1, text: 動作確認 }
 ---
@@ -212,24 +218,29 @@ describe("[kobo-task-lifecycle-tools] merging のタスクを降ろす", () => {
     base = `http://localhost:${daemon.port}`;
     await registerProject(base, PROJ, repo);
 
-    writeTaskFile(repo, "task-0001", "merging に居座る仕事");
-    const status = await pollUntil(
-      () => statusOf(base, PROJ, "task-0001"),
-      (s) => s === "ready"
-    );
-    assert.equal(status, "ready", "task-0001 が ready まで進むこと（前提）");
-    for (const to of [
-      "planning",
-      "implementing",
-      "auditing",
-      "review-ready",
-      "in-review",
-      "approved",
-      "merging",
-    ]) {
-      await forceTo(base, PROJ, "task-0001", to);
+    // 2本とも merging に置く。`kobo.supersede` と `kobo.abandon` は**どちらもタスクを
+    // 降ろす**ので、同じ札を使い回すと後の1本が「もう降りている」で断られる
+    writeTaskFile(repo, "task-0001", "merging に居座る仕事", "src/one/**");
+    writeTaskFile(repo, "task-0002", "merging に居座るもう1つの仕事", "src/two/**");
+    for (const taskId of ["task-0001", "task-0002"]) {
+      const status = await pollUntil(
+        () => statusOf(base, PROJ, taskId),
+        (s) => s === "ready"
+      );
+      assert.equal(status, "ready", `${taskId} が ready まで進むこと（前提）`);
+      for (const to of [
+        "planning",
+        "implementing",
+        "auditing",
+        "review-ready",
+        "in-review",
+        "approved",
+        "merging",
+      ]) {
+        await forceTo(base, PROJ, taskId, to);
+      }
+      assert.equal(await statusOf(base, PROJ, taskId), "merging", "merging に置けること（前提）");
     }
-    assert.equal(await statusOf(base, PROJ, "task-0001"), "merging", "merging に置けること（前提）");
   });
 
   after(async () => {
@@ -238,12 +249,11 @@ describe("[kobo-task-lifecycle-tools] merging のタスクを降ろす", () => {
   });
 
   /**
-   * **いまの限界をそのまま固定する。** `reopen` / `abandon` は failed 専用で、
-   * merging には届かない（`Daemon.reopenTask` / `Daemon.abandonTask` の `status !== "failed"`）。
-   * inc-0063 で PO が HTTP を直叩きする羽目になったのはここ。
+   * **`reopen` は failed 専用のまま。** 戻す先（implementing / approved）は落ちた理由で
+   * 選ぶものなので、落ちていないタスクには意味を持たない。
    *
-   * この2件が**通るように**なったら、それは Kobo 側で緩めたということなので、
-   * このテストを直すときに「何をどこまで緩めたか」を書くこと。
+   * 対の `abandon` は **2026-08-14 の PO 裁定でどの状態からでも通るようになった**
+   * （下の1件）。緩めたのは「畳む」だけで、「戻す」は緩めていない。
    */
   it("kobo.reopen は merging に届かない（failed 専用・いまの限界）", async () => {
     const refusal = await callToolExpectingRefusal(base, "kobo.reopen", {
@@ -257,18 +267,45 @@ describe("[kobo-task-lifecycle-tools] merging のタスクを降ろす", () => {
     assert.equal(await statusOf(base, PROJ, "task-0001"), "merging", "断ったなら動かないこと");
   });
 
-  it("kobo.abandon も merging に届かない（failed 専用・いまの限界）", async () => {
+  /**
+   * **限界を1つ外した**（PO 裁定 2026-08-14）。以前ここは
+   * 「`kobo.abandon` も merging に届かない（failed 専用・いまの限界）」を固定していた。
+   *
+   * 何をどこまで緩めたか：`Daemon.abandonTask` の `status !== "failed"` を外し、
+   * `closed` を `StateMachine.abandon()` という**横断の遷移**にした（`fail` / `supersede`
+   * と同じ形）。断るのは `closed` / `superseded` の2つだけ。遷移表（REGULAR_TRANSITIONS）は
+   * 触っていない——`transition()` を呼ぶ誰でも閉じられる、にはしていない。
+   *
+   * 緩めた理由：実運用で宙に浮くのは failed ではなく queued / paused / review-ready で、
+   * 実機の工場に14本が二度と動かないまま凍っていた。
+   */
+  it("kobo.abandon は merging のタスクを畳める（どの状態からでも・PO 裁定 2026-08-14）", async () => {
+    const result = await callTool(base, "kobo.abandon", {
+      projectTag: PROJ,
+      taskId: "task-0002",
+      reason: "テスト: merging から畳む",
+    });
+    assert.match(result.content[0]!.text, /畳みました/);
+    assert.equal(
+      result.details?.["from"],
+      "merging",
+      "**どこから畳んだか**を返すこと（経緯を辿る手がかり）"
+    );
+    assert.equal(await statusOf(base, PROJ, "task-0002"), "closed", "merging から降りていること");
+  });
+
+  it("既に畳んだものは畳み直せない（いまの状態を名指しで断る・I2）", async () => {
     const refusal = await callToolExpectingRefusal(base, "kobo.abandon", {
       projectTag: PROJ,
-      taskId: "task-0001",
-      reason: "テスト: merging から畳もうとする",
+      taskId: "task-0002",
+      reason: "テスト: 二度目",
     });
-    assert.match(refusal, /failed/, "failed 専用であることを理由に言うこと");
-    assert.equal(await statusOf(base, PROJ, "task-0001"), "merging", "断ったなら動かないこと");
+    assert.match(refusal, /closed/, "いまの状態を名指しで言うこと");
+    assert.equal(await statusOf(base, PROJ, "task-0002"), "closed", "断っても動かないこと");
   });
 
   /**
-   * **merging に届く唯一の口。** `Daemon.transition` は `superseded` を
+   * **別の依頼で置き換えて降ろす口。** `Daemon.transition` は `superseded` を
    * `StateMachine.supersede` へ回し、それは**終端以外のどの状態からでも**通る
    * （`TERMINAL_STATES` = closed / merged / failed / superseded）。
    * 新しい遷移は増やしていない——既にある道が、提示されていなかっただけである。

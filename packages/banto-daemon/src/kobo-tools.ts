@@ -16,7 +16,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Type } from "typebox";
-import { StringEnum, defineNamespacedTool, validateTaskFrontmatter } from "@banto/core";
+import { StringEnum, defineNamespacedTool, formatDwell, validateTaskFrontmatter } from "@banto/core";
 import type { NamespacedToolDefinition } from "@banto/core";
 import type { Daemon } from "./daemon.js";
 import { taskPayload } from "./task-watcher.js";
@@ -64,6 +64,18 @@ const DEFAULT_LIST_STATES = new Set([...ACTIVE_STATES, "failed"]);
  * 「道具定義の書き直し」と書かれると、Kobo は無い札を指されたことしか分からない。
  */
 const ID_HINT = "\nprojectTag・taskId は英語の識別子で埋める。";
+
+/**
+ * 「工場の外で決着した」の言い換え（realign 第2便・imp-0019）。
+ *
+ * **分類は3つに絞る。** 自由文だけにすると、あとから「どういう終わり方が多いか」を
+ * 数えられない——第3便で既定を反転したあと、降ろされ方の内訳は測る対象になる。
+ */
+const SETTLE_OUTCOME_LABEL: Record<string, string> = {
+  landed_elsewhere: "中身は別の経路で入った",
+  no_longer_needed: "もう要らなくなった",
+  handled_directly: "番頭が直接片づけた",
+};
 
 export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
   /** プロジェクトを引く。I2: 知らないプロジェクトは、知っているものを添えて止まる。 */
@@ -145,12 +157,18 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
       const total = matched.length;
       const rows = matched
         .slice(0, limit)
-        .map((task) => ({
-          taskId: task.id,
-          projectTag: task.projectTag,
-          status: task.status,
-          title: String(task["title"] ?? ""),
-        }));
+        .map((task) => {
+          // **いつからこの状態なのか**（realign 第2便）。帳簿から導出する（D3：保存しない）。
+          // 一覧に無いと、詰まっているものと通り過ぎているものが同じ顔で並ぶ
+          const dwelt = daemon.dwellOf(task.projectTag, task.id);
+          return {
+            taskId: task.id,
+            projectTag: task.projectTag,
+            status: task.status,
+            title: String(task["title"] ?? ""),
+            ...(dwelt !== undefined ? { dwellMs: dwelt, since: formatDwell(dwelt) } : {}),
+          };
+        });
 
       const text =
         rows.length === 0
@@ -158,7 +176,10 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
             ? `状態 "${params.state}" のタスクはありません`
             : "見る必要のあるタスクはありません（片が付いたものは state: \"all\" で出ます）"
           : [
-              ...rows.map((r) => `${r.status.padEnd(12)} ${r.taskId} ${r.title}`),
+              ...rows.map(
+                (r) =>
+                  `${r.status.padEnd(12)} ${(r.since ?? "-").padStart(8)} ${r.taskId} ${r.title}`
+              ),
               ...(total > rows.length
                 ? [`… 全 ${total} 件のうち ${rows.length} 件（limit を上げれば ${MAX_ROWS} 件まで）`]
                 : []),
@@ -219,10 +240,19 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
                       : e.type === "merge_gate_evaluated"
                       // **なぜ落ちたかが読めないと直せない**（task-0081）。
                       // ここが空文字だったので、経緯を見ても番号すら出なかった
-                      ? e.passed
-                        ? "通過"
-                        : `不通過: ${(e.reasons ?? []).join(", ")}`
-                      : "",
+                      ? (e.passed ? "通過" : `不通過: ${(e.reasons ?? []).join(", ")}`) +
+                        // 段1: **何に対して通ったのか**。土台のコミットと検証環境の指紋
+                        (e.baseCommit ? `［base ${e.baseCommit.slice(0, 8)}］` : "") +
+                        (e.environmentDigest ? `［env ${e.environmentDigest}］` : "")
+                      : e.type === "task_stalled"
+                        // **止まっている**（realign 第2便）。同じ状態のあいだ1回だけ出る
+                        ? `${e.status} のまま ${formatDwell(e.dwellMs)}` +
+                          (e.blockedBy.length > 0 ? `（待ち: ${e.blockedBy.join(", ")}）` : "")
+                        : e.type === "task_settled_outside"
+                          // **失敗ではなく、工場の外で決着した**（imp-0019）
+                          ? `${e.settled_from} から畳んだ` +
+                            `（${SETTLE_OUTCOME_LABEL[e.outcome]}）: ${e.reason}`
+                          : "",
         }));
 
       // **レビューの段は Kobo が決める**（決定57・66）。番頭ホストに判定させると、
@@ -237,8 +267,11 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
       // 決定59: 判断が要るものは**触れる状態**で差し出す。生きている公開URLだけを出す
       const envUrl = daemon.reviewEnvUrl(project.id, params.taskId);
       const scope = (found["scope"] as { paths?: string[] } | undefined)?.paths ?? [];
+      // **この状態になってから N**（realign 第2便）。滞留は帳簿から導出する（D3）
+      const dwelt = daemon.dwellOf(project.id, params.taskId);
       const text = [
         `${params.taskId} [${found.status}] ${String(found["title"] ?? "")}`,
+        ...(dwelt !== undefined ? [`この状態になってから ${formatDwell(dwelt)}`] : []),
         `レビュー: ${stage}${stage === "po" ? "（PO の判断が要る）" : stage === "auto" ? "（人も番頭も見ない）" : "（あなたが一次受け）"}`,
         ...(envUrl ? [`触れる場所: ${envUrl}`] : []),
         scope.length > 0 ? `スコープ: ${scope.join(", ")}` : "",
@@ -256,7 +289,7 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
                 ? `※ このタスクは既に ${failure.reopenCount} 回 戻している。` +
                   "同じところで落ち続けているなら、直し方ではなく前提を疑うこと（P6）"
                 : "直せるなら kobo.reopen（中身なら rework / 検証環境なら reverify）、" +
-                  "どうしようもなければ kobo.abandon で畳む",
+                  "どうしようもなければ kobo.abandon で畳む（どの状態のタスクでも畳める）",
             ]
           : []),
       ]
@@ -473,7 +506,8 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
       "止めると `work/tasks/*.md` を工場が読まなくなる——定義ファイルが増えても積まれません。" +
       "**プロジェクト単位**なので、片方を止めても他は回り続けます。" +
       "**設定は保存され、Kobo を再起動しても残ります。** いまの状態は kobo.projects で読めます。" +
-      "既に積まれたタスクは止まりません（それを止めるのは kobo.set_merge_queue と kobo.abandon）。",
+      "既に積まれたタスクは止まりません（それを止めるのは kobo.set_merge_queue と、" +
+      "どの状態のタスクでも畳める kobo.abandon）。",
     "タスクの取り込みを**止めました**（work/tasks/*.md は読まれません）",
     "タスクの取り込みを**動かしました**（work/tasks/*.md をまた読みます）"
   );
@@ -733,16 +767,21 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
   });
 
   /**
-   * どうしようもないものを、**落ちたまま畳む**（task-0081・PO 要望 2026-08-08）。
+   * どうしようもないものを畳む（task-0081・PO 要望 2026-08-08、**PO 裁定 2026-08-14 で拡張**）。
    */
   const abandon = defineNamespacedTool({
     name: "kobo.abandon",
     label: "Kobo: Abandon",
     description:
-      "落ちたタスクを**畳む**（諦める）。直せる見込みが無いときだけ。" +
-      "**記録は消えない**——経緯には落ちたことも畳んだ理由も残る。" +
+      "二度と動かないタスクを**畳む**（諦める）。**どの状態からでも畳める**" +
+      "——queued / gating / implementing / auditing / review-ready / merging / paused / failed のどれでも closed になる。" +
+      "直せる見込みが無いときだけ。**記録は消えない**——経緯には畳む前の状態も畳んだ理由も残る。" +
       "畳むと既定の一覧から外れるので、「まだ見る必要がある」ふりをしなくなる。" +
-      "直せるなら先に kobo.reopen を考えること。",
+      "**動いている職人は止める**（止まらなければ、どのセッションが残ったかを返す）。" +
+      "既に closed / superseded のものは断る。" +
+      "**畳む理由が「諦める」ならこの口、「外で決着した（失敗ではない）」なら kobo.settle。**" +
+      "どちらもどの状態からでも畳めるので、選ぶ基準は状態ではなく理由——帳簿には別々に残り、別々に数える。" +
+      "落ちたものを直せるなら先に kobo.reopen、依頼が別物になったなら kobo.supersede を考えること。",
     parameters: Type.Object({
       projectTag: Type.String({ description: "どのプロジェクトか" }),
       taskId: Type.String({ description: "畳むタスクの id" }),
@@ -750,16 +789,109 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     }),
     async execute(params) {
       requireProject(params.projectTag);
-      const r = daemon.abandonTask(params.projectTag, params.taskId, {
+      const r = await daemon.abandonTask(params.projectTag, params.taskId, {
         reason: params.reason,
         by: "banto",
       });
       if (!r.ok) throw new Error(r.reason);
+      // I2: 止まらなかった職人を黙って落とさない。**名指しで**番頭に返す
+      const leftovers =
+        r.unstoppedSessions.length > 0
+          ? `\n**止まらなかった職人が居ます**（工房の口で追ってください）: ` +
+            r.unstoppedSessions.map((w) => `${w.sessionId}（${w.error}）`).join(" / ")
+          : "";
       return {
         content: [
-          { type: "text" as const, text: `${params.taskId} を畳みました（落ちたまま・理由は帳簿に残ります）` },
+          {
+            type: "text" as const,
+            text:
+              `${params.taskId} を畳みました（${r.from} から closed へ・理由は帳簿に残ります）` +
+              (r.stoppedSessions.length > 0
+                ? `。職人を ${r.stoppedSessions.length} 人止めました`
+                : "") +
+              leftovers,
+          },
         ],
-        details: { taskId: params.taskId, projectTag: params.projectTag, status: "closed" },
+        details: {
+          taskId: params.taskId,
+          projectTag: params.projectTag,
+          status: "closed",
+          from: r.from,
+          stoppedSessions: r.stoppedSessions,
+          unstoppedSessions: r.unstoppedSessions,
+        },
+      };
+    },
+  });
+
+  /**
+   * **工場の外で決着したものを畳む**（realign 第2便・imp-0019 の4番）。
+   *
+   * `kobo.abandon` の隣。違うのは**失敗ではない**ということ——中身が別の経路で
+   * 入った・もう要らなくなった・番頭が直接片づけた、のどれか。
+   *
+   * **分かれ目は畳める状態の広さではなく、帳簿に何を書くか。** この口を足した当初は
+   * `abandon` が failed 専用で、queued / paused / review-ready のまま決着したものを
+   * 降ろす道が無かった（2026-08-13、番頭が実際にここで詰まった）。その穴は PO 裁定
+   * 2026-08-14 で `abandon` が横断遷移になったことで塞がり、**畳める範囲は重なった**。
+   * それでも口を分けたままにしてあるのは、`settle` は `task_settled_outside`
+   * （outcome・settled_from つき）、`abandon` は諦めた記録、と**別々に数えられるように
+   * するため**——1つにまとめると「どれだけ捨てたか」と「どれだけ工場の外で片付いたか」が
+   * 混ざり、統治を測れなくなる（PO 裁定 2026-08-14）。
+   */
+  const settle = defineNamespacedTool({
+    name: "kobo.settle",
+    label: "Kobo: Settle outside",
+    description:
+      "**工場の外で決着したタスクを畳む**（失敗ではない）。中身が別の経路で main に入った・" +
+      "もう要らなくなった・あなたが職人へ直接投げて片づけた、のいずれか。" +
+      "queued / paused / review-ready など、**どの途中の状態からでも畳める**。" +
+      "\n例: {projectTag: \"banto\", taskId: \"task-0092\", outcome: \"landed_elsewhere\", " +
+      "reason: \"マージ 539bdb0 で main に入っている\"} → 畳んだ旨" +
+      "\n**記録は消えない**——それまでの経緯も、どう決着したかも帳簿に残る。" +
+      "\n**畳む理由が「外で決着した（失敗ではない）」ならこの口、「諦める」なら kobo.abandon。**" +
+      "どちらもどの状態からでも畳めるので、選ぶ基準は状態ではなく理由——帳簿には別々に残り、別々に数える。" +
+      "着地の最中（merging）のものを降ろすのは kobo.supersede。" +
+      "**まだ中身が要るなら畳まないこと**——kobo.reopen / kobo.send_back を先に考える。" +
+      ID_HINT,
+    parameters: Type.Object({
+      projectTag: Type.String(),
+      taskId: Type.String(),
+      outcome: StringEnum(["landed_elsewhere", "no_longer_needed", "handled_directly"], {
+        description:
+          "どう決着したか。landed_elsewhere＝中身は別の経路で入った／" +
+          "no_longer_needed＝もう要らない／handled_directly＝番頭が直接片づけた",
+      }),
+      reason: Type.String({
+        description:
+          "**なぜそう言えるのか**。マージコミット・置き換わった先など、根拠を書く（帳簿に残る）",
+      }),
+    }),
+    async execute(params) {
+      requireProject(params.projectTag);
+      const r = daemon.settleTaskOutside(params.projectTag, params.taskId, {
+        reason: params.reason,
+        by: "banto",
+        outcome: params.outcome,
+      });
+      // I2: 畳めなかったことを成功に見せない
+      if (!r.ok) throw new Error(r.reason);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `${params.taskId} を畳みました（${r.from} から・${SETTLE_OUTCOME_LABEL[params.outcome]}）。` +
+              "**失敗としては記録していません**——理由も経緯も帳簿に残ります",
+          },
+        ],
+        details: {
+          taskId: params.taskId,
+          projectTag: params.projectTag,
+          status: "closed",
+          from: r.from,
+          outcome: params.outcome,
+        },
       };
     },
   });
@@ -820,7 +952,7 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
 
   return [
     enqueue, list, task, projects, events, approve, supersede, registerProject,
-    reopen, sendBack, abandon, amend,
+    reopen, sendBack, abandon, settle, amend,
     // 制御の口（PO 裁定 2026-08-13・inc-0063）
     unregisterProject, setWatch, setMergeQueue,
   ];
