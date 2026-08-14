@@ -72,7 +72,11 @@ export { createHandoffTools } from "./handoff-tools.js";
 export {
   createLlmChapterSummarizer,
   parseHandoff,
+  trimTranscript,
+  DEFAULT_CHAPTER_MAX_TOKENS,
   type ChapterSummarizerOptions,
+  type ChapterCompleter,
+  type ChapterCompletion,
 } from "./chapter-summarizer.js";
 // 記憶の評価セット（提案§3.6）。測らなければ静かに腐る
 export {

@@ -27,6 +27,8 @@ import {
   HandoffStore,
   createBantoHostSession,
   createHandoffTools,
+  createLlmChapterSummarizer,
+  DEFAULT_CHAPTER_MAX_TOKENS,
   PiHarness,
   parseHandoff,
   renderChapterOpening,
@@ -566,5 +568,167 @@ describe("[提案§3.1+§3.2] 章を畳んでも、退避した観測の在り�
 
     assert.doesNotMatch(JSON.stringify(session.agent.state.messages), /観測を退避してある/);
     assert.doesNotMatch(store.read(record!.id), /この章で退避した観測/);
+  });
+});
+
+// ── 上限に当たったときのやり直し（inc-0068）────────────────────────────────
+
+/**
+ * inc-0068。**要約器が上限に当たって空を返しても、そのまま諦めない。**
+ *
+ * 実機（thread-59）で起きた形はこう:
+ *
+ * - `BANTO_CHAPTER_MODEL` は未設定。会話のモデル（`claude/opus`・Agent SDK）は
+ *   pi の台帳で解決できないので、要約器は**番頭の標準**（ローカルの
+ *   `huihui/deepseek-v4-flash-abliterated`）へ黙って落ちていた
+ * - そのモデルは思考（`reasoning_content`）を既定で出し、思考と本文は同じ
+ *   `max_tokens` を分け合う。資料本文は実測 5,800字前後＝3,000〜4,800トークンで、
+ *   当時の予算 4000 では思考ゼロでも天井——`stopReason: length` で返る
+ * - 本文が1文字も出ないまま上限に当たると、機構は（正しく）畳まない。しかし
+ *   **やり直しが無かった**ので、章を畳む道が塞がったまま文脈だけが伸びた
+ *
+ * ここで押さえるのは「もう一度やる」ことと「断るときに何が使われていたかを言う」こと。
+ * 本物のモデルは叩かない——LLM を呼ぶ口（`complete`）を差し替えて筋書きで確かめる。
+ */
+describe("[inc-0068] 出力上限に当たって空で返ったら、一度はやり直す", () => {
+  /** pi の Model のうち、要約器が見る欄だけ。 */
+  const fakeModel = { provider: "huihui", id: "deepseek-v4-flash", maxTokens: 16384 };
+  /** `complete` を渡すので認証は解決しに行かない（呼ばれたら失敗させる）。 */
+  const noAuth = async () => {
+    throw new Error("認証を解決しに行ってはいけない");
+  };
+
+  /** 出力上限に当たって本文ゼロで返る応答。 */
+  const emptyOnLength = { stopReason: "length", content: [{ type: "thinking", thinking: "…" }] };
+  const goodBody = [
+    "TOPIC: 章立ての不具合",
+    "DECIDED:",
+    "- やり直しを入れる",
+    "NEXT:",
+    "- 受け入れ試験",
+    "---BODY---",
+    "詳細な引き継ぎ。inc-0068 の経緯。",
+  ].join("\n");
+
+  function summarizer(
+    responses: unknown[],
+    seen: Array<{ prompt: string; maxTokens: number }>,
+    overrides: Record<string, unknown> = {}
+  ) {
+    return createLlmChapterSummarizer({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 偽のモデル。
+      // 要約器が読むのは provider / id / maxTokens だけ（意図的な絞り込み）
+      model: fakeModel as any,
+      auth: noAuth,
+      complete: async (request) => {
+        seen.push({ prompt: request.prompt, maxTokens: request.maxTokens });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 同上
+        return responses[seen.length - 1] as any;
+      },
+      ...overrides,
+    });
+  }
+
+  it("1回目が空（stopReason: length）なら、やり直して資料を書く", async () => {
+    const seen: Array<{ prompt: string; maxTokens: number }> = [];
+    const summarize = summarizer([emptyOnLength, { stopReason: "stop", content: [{ type: "text", text: goodBody }] }], seen);
+
+    const handoff = await summarize({ transcript: "PO: やあ\n\n番頭: どうも", chapter: 3 });
+
+    assert.equal(seen.length, 2, "やり直しが走っていない");
+    assert.equal(handoff.summary.topic, "章立ての不具合");
+    assert.match(handoff.body, /inc-0068 の経緯/);
+    assert.match(handoff.body, /2回目の試み/, "やり直しで書いたことを資料に残す");
+  });
+
+  it("やり直しでは出力予算を上げ、より短い形式で頼む", async () => {
+    const seen: Array<{ prompt: string; maxTokens: number }> = [];
+    const summarize = summarizer([emptyOnLength, { stopReason: "stop", content: [{ type: "text", text: goodBody }] }], seen);
+
+    await summarize({ transcript: "PO: やあ\n\n番頭: どうも", chapter: 1 });
+
+    assert.equal(seen[0]!.maxTokens, DEFAULT_CHAPTER_MAX_TOKENS, "1回目は既定の予算");
+    assert.ok(seen[1]!.maxTokens > seen[0]!.maxTokens, "やり直しで予算が上がっていない");
+    assert.ok(
+      seen[1]!.maxTokens <= fakeModel.maxTokens,
+      "モデル自身の上限を超えて頼んではいけない"
+    );
+    assert.match(seen[1]!.prompt, /2000字以内/, "より短い形式で頼んでいない");
+    assert.doesNotMatch(seen[0]!.prompt, /2000字以内/, "1回目は密度を落とさない");
+  });
+
+  it("やり直しでは書き起こしを削る（新しい側を残す）", async () => {
+    const seen: Array<{ prompt: string; maxTokens: number }> = [];
+    const summarize = summarizer([emptyOnLength, { stopReason: "stop", content: [{ type: "text", text: goodBody }] }], seen);
+
+    // 60,000字の上限を超える長さ。頭に古い印・末尾に新しい印を置く
+    const transcript = `PO: 古い話カワセミ\n${"あ".repeat(70_000)}\n番頭: 新しい話ヤマセミ`;
+    await summarize({ transcript, chapter: 9 });
+
+    assert.ok(seen[1]!.prompt.length < seen[0]!.prompt.length, "書き起こしが削られていない");
+    assert.match(seen[1]!.prompt, /ヤマセミ/, "新しい側が残っていない");
+    assert.doesNotMatch(seen[1]!.prompt, /カワセミ/, "古い側から削る");
+    assert.match(seen[1]!.prompt, /前略/, "削ったことを本人に伝えていない");
+  });
+
+  it("やり直しても空なら畳まず、断りに使ったモデル・入力の大きさ・出力上限を載せる", async () => {
+    const seen: Array<{ prompt: string; maxTokens: number }> = [];
+    const summarize = summarizer([emptyOnLength, emptyOnLength], seen);
+
+    await assert.rejects(
+      () => summarize({ transcript: "PO: やあ\n\n番頭: どうも", chapter: 4 }),
+      (err: Error) => {
+        assert.equal(seen.length, 2, "やり直しは1回だけ");
+        assert.match(err.message, /畳みません/);
+        assert.match(err.message, /huihui\/deepseek-v4-flash/, "使ったモデルが分からない");
+        assert.match(err.message, /16384/, "モデルの出力上限が分からない");
+        assert.match(err.message, /1回目/, "1回目の記録が無い");
+        assert.match(err.message, /2回目/, "やり直したことが分からない");
+        assert.match(err.message, /字/, "入力の大きさが分からない");
+        assert.match(err.message, /length/, "止まった理由が分からない");
+        return true;
+      }
+    );
+  });
+
+  it("LLM 自体が落ちたときは、やり直さずそのまま止まる（I2）", async () => {
+    const seen: Array<{ prompt: string; maxTokens: number }> = [];
+    const summarize = summarizer(
+      [{ stopReason: "error", errorMessage: "429 Too Many Requests", content: [] }],
+      seen
+    );
+
+    await assert.rejects(
+      () => summarize({ transcript: "PO: やあ", chapter: 1 }),
+      /429 Too Many Requests/
+    );
+    assert.equal(seen.length, 1, "エラーは要約器のやり直しで直る類ではない");
+  });
+
+  it("1回で書けたなら、やり直さない（余計に呼ばない）", async () => {
+    const seen: Array<{ prompt: string; maxTokens: number }> = [];
+    const summarize = summarizer([{ stopReason: "stop", content: [{ type: "text", text: goodBody }] }], seen);
+
+    const handoff = await summarize({ transcript: "PO: やあ", chapter: 1 });
+
+    assert.equal(seen.length, 1);
+    assert.doesNotMatch(handoff.body, /2回目の試み/);
+  });
+
+  it("やり直しで書けたなら、章はちゃんと畳まれる", async () => {
+    const seen: Array<{ prompt: string; maxTokens: number }> = [];
+    const summarize = summarizer([emptyOnLength, { stopReason: "stop", content: [{ type: "text", text: goodBody }] }], seen);
+
+    const messages = [userMsg("合言葉はカワセミ"), assistantMsg("B"), userMsg("C"), assistantMsg("D", 700)];
+    const session = fakeSession(messages, SessionManager.inMemory());
+    const record = await keeper(session, { summarize }).closeChapter();
+
+    assert.ok(record, "畳めていない");
+    assert.deepEqual(store.list("thread-1"), ["thread-1/ch-0001"]);
+    assert.doesNotMatch(
+      JSON.stringify(session.agent.state.messages),
+      /カワセミ/,
+      "資料が書けたのだから文脈は畳まれる"
+    );
   });
 });
