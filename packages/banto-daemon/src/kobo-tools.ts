@@ -617,7 +617,10 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     name: "kobo.approve",
     label: "Kobo: Approve",
     description:
-      "レビュー待ちのタスクを通してマージキューへ入れる。\n例: {projectTag: \"banto\", taskId: \"task-0042\", note: \"受け入れ基準を確かめた\"} → 通した旨" + ID_HINT + "\n**関所は飛ばない**（この後にマージ前ゲートが回る）。",
+      "レビュー待ちのタスクを通してマージキューへ入れる。\n例: {projectTag: \"banto\", taskId: \"task-0042\", note: \"受け入れ基準を確かめた\"} → 通した旨" + ID_HINT + "\n**関所は飛ばない**（この後にマージ前ゲートが回る）。" +
+      "\n**既定は自動着地**（realign 第3便）なので、ここへ来ているのは条件を満たさなかったものだけ" +
+      "——刻みが無い／契約に検査コマンドが1本も無い／`manual` や `po` を名乗っている、のいずれか。" +
+      "理由は札と `kobo.task` の遷移理由に書いてある。",
     parameters: Type.Object({
       projectTag: Type.String(),
       taskId: Type.String(),

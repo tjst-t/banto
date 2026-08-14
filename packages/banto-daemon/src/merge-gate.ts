@@ -32,6 +32,8 @@ import {
   DEFAULT_VERIFY_PROFILE,
   DEFAULT_VERIFY_TIMEOUT_MINUTES,
   MAX_VERIFY_TIMEOUT_MINUTES,
+  gateEvidenceBlockers,
+  landedWithoutHumanApproval,
 } from "./review-policy.js";
 
 const execFileAsync = promisify(execFile);
@@ -496,8 +498,6 @@ export async function runMergeGate(
     }
   }
 
-  const passed = reasons.length === 0;
-
   /**
    * **どのコミットの上で検査したか**（realign 第2便・段1）。
    *
@@ -506,6 +506,23 @@ export async function runMergeGate(
    * I2: 解決できなければ**付けない**。嘘の SHA を書くより「無い」と言う。
    */
   const baseCommit = await resolveCommit(repoPath, base);
+
+  /**
+   * **自動着地で来たものは、刻めていなければ通さない**（realign 第3便・番頭裁定 2026-08-14）。
+   *
+   * この2つ（`baseCommit` / `environmentDigest`）はゲートの出力なので、監査の分岐の
+   * 時点には無い。だから自動着地の可否の**入力**ではなく、**ゲートの成立条件**として
+   * ここで見る——状態機械を作り替えてゲートを前倒しするより影響が小さい。
+   *
+   * **人の承認を経た経路には効かせない**（`landedWithoutHumanApproval`）。人が見ている
+   * ものと機械だけで通すものを同じ基準にすると、**既存の緑が理由なく落ちる**。
+   * この非対称は意図であって漏れではない。
+   */
+  if (landedWithoutHumanApproval(log.readAllEvents(), projectTag, taskId)) {
+    reasons.push(...gateEvidenceBlockers({ baseCommit, environmentDigest }));
+  }
+
+  const passed = reasons.length === 0;
 
   const result: MergeGateResult = {
     passed,
@@ -573,8 +590,13 @@ function getScopePaths(task: TaskRecord): string[] {
   return paths.filter((p): p is string => typeof p === "string");
 }
 
-/** Extract acceptance criteria (with optional verify) from a TaskRecord. */
-function getAcceptance(task: TaskRecord): Array<{ id: string; text: string; verify?: string }> {
+/**
+ * Extract acceptance criteria (with optional verify) from a TaskRecord.
+ *
+ * 公開しているのは、**契約に検査があるか**を監査の分岐でも見るため（realign 第3便）。
+ * 読み方を2つ持つと、ゲートが回す本数と分岐が数える本数がずれる（D3）。
+ */
+export function getAcceptance(task: TaskRecord): Array<{ id: string; text: string; verify?: string }> {
   const acceptance = task["acceptance"];
   if (!Array.isArray(acceptance)) return [];
   return acceptance

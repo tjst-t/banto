@@ -37,8 +37,13 @@ export interface HostVerifyRunner extends GateVerifyRunner {
  * ホストの worktree でそのまま走らせる偽の検証環境（試験専用）。
  *
  * @param options.failProvision 立てるのに失敗させる（「環境が無い」経路の検査用）
+ * @param options.profileDigest 立てた環境の指紋を返す。**既定は返さない**——本物の
+ *   Environment Pool も返さないことがあり（`profileDigest?`）、そのときゲートが
+ *   自動着地を止められるかを見たいのが既定の側だから
  */
-export function hostVerifyRunner(options: { failProvision?: string } = {}): HostVerifyRunner {
+export function hostVerifyRunner(
+  options: { failProvision?: string; profileDigest?: string } = {}
+): HostVerifyRunner {
   const provisioned: string[] = [];
   const tornDown: string[] = [];
   const ran: Array<{ envId: string; cmd: string; timeoutMs: number }> = [];
@@ -58,7 +63,7 @@ export function hostVerifyRunner(options: { failProvision?: string } = {}): Host
       const envId = `fake-env-${counter}`;
       provisioned.push(envId);
       workdirs.set(envId, opts.workdir);
-      return { envId };
+      return { envId, ...(options.profileDigest ? { profileDigest: options.profileDigest } : {}) };
     },
 
     async run(opts) {

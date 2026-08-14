@@ -24,13 +24,28 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { parseYamlFrontmatter } from "@banto/core";
-import type { TaskRecord } from "@banto/core";
+import type { OrchestrationEvent, TaskRecord } from "@banto/core";
 
 /** レビューの段（決定57）。 */
 export type ReviewStage = "auto" | "banto" | "po";
 
-/** 既定は `banto`——監査を通ったものは番頭が一次受けする（決定57）。 */
-export const DEFAULT_REVIEW_STAGE: ReviewStage = "banto";
+/** 取りうる段。層B設定の綴りを照合するために並びとしても持つ。 */
+export const REVIEW_STAGES: readonly ReviewStage[] = ["auto", "banto", "po"];
+
+/**
+ * 既定は `auto`——**証拠の揃ったものは人を通さず着地させる**（PO 裁定 2026-08-14）。
+ *
+ * 反転前は `banto`（監査を通ったものを番頭が一次受けする）だった。反転したのは、
+ * 番頭が一次受けする形だと番頭の文脈が工場の中継で埋まり、D10（細かい仕事をしない）
+ * が守れないため。
+ *
+ * **既定が `auto` でも、そのまま着地するわけではない。** `autoLandBlockers` が
+ * 証拠を要求し、欠けていれば `banto` へ落とす。ここが緩んで見えるのは policy の
+ * 解決までで、着地の可否はその先で決まる。
+ *
+ * 戻すときは層Bの `review.default_policy: banto`（ビルドも再起動も要らない）。
+ */
+export const DEFAULT_REVIEW_STAGE: ReviewStage = "auto";
 
 /** 層B設定ファイル（プロジェクトのリポジトリの中）。 */
 export const PROJECT_CONFIG_PATH = path.join("meta", "config.yaml");
@@ -46,6 +61,20 @@ export interface ProjectConfig {
      * ゲートは通らない**——受け持たせるリポジトリには必ず1つ要る。
      */
     profile: string;
+    /**
+     * **自動生成のコンフリクト解消タスクに持たせる検査コマンド**（realign 第3便・段3）。
+     *
+     * `conflict-filer.ts` が書き出す契約の受け入れ条件すべてに載る。上の `profile` の
+     * 環境の中で回るので、2つは組で読む。
+     *
+     * **既定は無い。** 書かなければ解消タスクは今までどおり検査ゼロの契約になり、
+     * 自動着地の条件（→ `spec-daemon-core` §2.5）を満たさず人の承認を通る——
+     * **これは正しい挙動なので塞がない**。設定した人だけが自動復旧を得る。
+     *
+     * コードに直書きしないのは、プロジェクトごとにテストの打ち方が違うから
+     * （banto の `npm test` を埋め込むと他のプロジェクトで破綻する）。
+     */
+    conflictCommand?: string;
   };
   review: {
     /**
@@ -66,6 +95,18 @@ export interface ProjectConfig {
      * 触れる面を持つかを知っているのは Environment Pool なので、Kobo は名前だけを扱う。
      */
     envProfile?: string;
+    /**
+     * **`review.policy` を書かなかったタスクの既定**（realign 第3便）。
+     *
+     * 省略時は `DEFAULT_REVIEW_STAGE`。**これが反転の後戻りの口**——`projectConfig()` は
+     * 毎回ファイルを読み直す（写しを持たない・D3）ので、`meta/config.yaml` を1行直せば
+     * 再起動もビルドも要らずに次の判定から元へ戻せる。
+     *
+     * **緩い側の口を足しても緩みは増えない。** `governance` と `po_required_paths` は
+     * これより手前で効き、`manual` の読み替えもこれとは独立なので、ここを `auto` に
+     * しても厳しい側の上書きは必ず勝つ（下の `resolveReviewStage` の並び順）。
+     */
+    defaultPolicy?: ReviewStage;
   };
   limits: {
     /**
@@ -144,6 +185,30 @@ export function loadProjectConfig(repoPath: string): ProjectConfig {
   if (verifyProfile !== undefined && typeof verifyProfile !== "string") {
     throw new Error(`${PROJECT_CONFIG_PATH}: verify.profile はプロファイル名（文字列）で書いてください`);
   }
+  /**
+   * 解消タスクに持たせる検査コマンド（realign 第3便・段3）。
+   *
+   * I2: **契約に書き出せない値は、設定を読んだ時点で断る。** 層Bの YAML パーサは
+   * エスケープを扱わない（`stripQuotes` / `splitRespectingQuotes`）ので、引用符を
+   * 両方含む文字列は受け入れ条件の inline map に載せると壊れる。壊れた契約を黙って
+   * 書くより、書いた人が直せる場所で断る方がよい。
+   */
+  const conflictCommand = verify["conflict_command"];
+  if (conflictCommand !== undefined) {
+    if (typeof conflictCommand !== "string" || conflictCommand.trim().length === 0) {
+      throw new Error(
+        `${PROJECT_CONFIG_PATH}: verify.conflict_command は検査コマンド（空でない文字列）で書いてください` +
+          "。回すものが無いなら、欄ごと書かないでください（そのとき解消タスクは人の承認を通ります）"
+      );
+    }
+    if (conflictCommand.includes('"') && conflictCommand.includes("'")) {
+      throw new Error(
+        `${PROJECT_CONFIG_PATH}: verify.conflict_command に引用符を両方（" と '）含めることはできません` +
+          "——タスク定義の受け入れ条件に書き出せません。どちらか一方に寄せてください"
+      );
+    }
+  }
+
   const review = (parsed["review"] ?? {}) as Record<string, unknown>;
   const limits = (parsed["limits"] ?? {}) as Record<string, unknown>;
   const rawPaths = review["po_required_paths"];
@@ -153,6 +218,15 @@ export function loadProjectConfig(repoPath: string): ProjectConfig {
   const envProfile = review["env_profile"];
   if (envProfile !== undefined && typeof envProfile !== "string") {
     throw new Error(`${PROJECT_CONFIG_PATH}: review.env_profile はプロファイル名（文字列）で書いてください`);
+  }
+  // I2: 知らない綴りを黙って既定へ落とさない。落とすと「auto にしたのに人へ来る」
+  //     （あるいはその逆）が静かに起き、設定したのに効いていないことに気づけない
+  const defaultPolicy = review["default_policy"];
+  if (defaultPolicy !== undefined && !REVIEW_STAGES.includes(String(defaultPolicy) as ReviewStage)) {
+    throw new Error(
+      `${PROJECT_CONFIG_PATH}: review.default_policy は ${REVIEW_STAGES.join(" / ")} のいずれか` +
+        `（got "${String(defaultPolicy)}"）`
+    );
   }
   const tier = limits["max_model_tier"];
   if (tier !== undefined && !["fast", "standard", "reasoning"].includes(String(tier))) {
@@ -220,10 +294,14 @@ export function loadProjectConfig(repoPath: string): ProjectConfig {
   }
 
   return {
-    verify: { profile: (verifyProfile as string | undefined) ?? DEFAULT_VERIFY_PROFILE },
+    verify: {
+      profile: (verifyProfile as string | undefined) ?? DEFAULT_VERIFY_PROFILE,
+      ...(conflictCommand !== undefined ? { conflictCommand: conflictCommand as string } : {}),
+    },
     review: {
       poRequiredPaths: Array.isArray(rawPaths) ? rawPaths.map(String) : [],
       ...(envProfile !== undefined ? { envProfile } : {}),
+      ...(defaultPolicy !== undefined ? { defaultPolicy: defaultPolicy as ReviewStage } : {}),
     },
     limits: {
       ...(tier !== undefined ? { maxModelTier: tier as ProjectConfig["limits"]["maxModelTier"] } : {}),
@@ -252,8 +330,118 @@ export function resolveReviewStage(task: TaskRecord, config: ProjectConfig): Rev
   if (declared === "auto") return "auto";
   if (declared === "po") return "po";
   if (declared === "banto") return "banto";
-  // 旧称 `manual` は `banto` へ読み替える（決定57：人＝PO 直行だった経路に番頭が入る）
-  return DEFAULT_REVIEW_STAGE;
+  /**
+   * 旧称 `manual` は `banto` へ読み替える（決定57：人＝PO 直行だった経路に番頭が入る）。
+   *
+   * **明示的に写す。** ここを「知らない値は既定へ落とす」で済ませていると、既定を
+   * 反転した瞬間（realign 第3便）に**「人が見る」と書いたタスクが黙って機械通過になる**
+   * ——帳簿には `manual` 宣言が13本あった。読み替えの向きは既定と独立でなければならない。
+   */
+  if (declared === "manual") return "banto";
+  // 既定は層Bで差し替えられる（後戻りの口）。ここまで来ているということは、厳しい側の
+  // 上書き（`governance` / `po_required_paths`）にも `manual` にも当たっていない
+  return config.review.defaultPolicy ?? DEFAULT_REVIEW_STAGE;
+}
+
+// ── 自動着地の証拠（realign 第3便・PO 裁定 2026-08-14）─────────────────────────
+
+/**
+ * 監査の側の証拠。`handleAuditVerdict` が判定を刻むのと同じ時点で全部手に入る。
+ */
+export interface AutoLandEvidence {
+  /** どの契約に対して監査したか（`audit_verdict.contractVersion`）。 */
+  contractVersion?: number;
+  /** どの基準で監査したか（`audit_verdict.checklistVersion`）。 */
+  checklistVersion?: string;
+  /**
+   * そのときの契約の受け入れ条件。**見るのは `verify` だけ**（他の欄は無視する）
+   * ——`id` や `text` まで要求すると、呼ぶ側が判定と関係ない形合わせを強いられる。
+   */
+  acceptance: ReadonlyArray<{ verify?: string; [key: string]: unknown }>;
+}
+
+/**
+ * **自動着地を止める理由**。空なら人を通さず着地させてよい（PO 裁定 2026-08-14）。
+ *
+ * 真偽値ではなく理由の並びを返すのは、**落とした原因が帳簿から読めるようにする**ため
+ * （I2：握り潰さない）。欠けが複数あれば複数返す——1つ直せば通ると読ませない。
+ *
+ * ## なぜ刻みを要求するのか
+ *
+ * 帳簿にある過去の監査 pass は、**判定基準が監査人に一度も届いていない状態**で、
+ * **D1 を知らない実装役**の成果に対して出されたもの（realign 第2便で両方塞いだ）。
+ * 刻みの無い判定は、その混在した過去のものと区別が付かない。「証拠のあるものだけを
+ * 機械に通させる」ために刻みを要求したのだから、証拠が無いものを黙って通すなら
+ * 要求した意味がなくなる。→ `spec-daemon-core` §2.4
+ *
+ * ## なぜ検査を要求するのか
+ *
+ * マージ前ゲートは**契約が書いた `verify` を回すだけ**なので、1本も無ければ
+ * 「何も確かめずに passed」になる。実測で帳簿の契約72本中50本がこれだった。
+ * 人が見るならその目が検査の代わりになるが、機械だけで通すならならない。
+ */
+export function autoLandBlockers(evidence: AutoLandEvidence): string[] {
+  const blockers: string[] = [];
+  if (evidence.contractVersion === undefined) {
+    blockers.push("auto_land_unmarked:contractVersion（どの契約に対して監査したかが刻まれていない）");
+  }
+  if (evidence.checklistVersion === undefined) {
+    blockers.push("auto_land_unmarked:checklistVersion（どの基準で監査したかが刻まれていない）");
+  }
+  // 空文字は「有る」に数えない——回すものが無いのは 1本も無いのと同じ
+  if (!evidence.acceptance.some((ac) => typeof ac.verify === "string" && ac.verify.length > 0)) {
+    blockers.push("auto_land_no_verify（契約に検査コマンドが1本も無く、ゲートが素通りする）");
+  }
+  return blockers;
+}
+
+/**
+ * ゲートの側の証拠。**自動着地のときだけ要求する**（番頭裁定 2026-08-14）。
+ *
+ * この2つは `runMergeGate` の**出力**で、監査の分岐の時点にはまだ存在しない
+ * （ゲートが回るのは `merging` に入ったあと）。だから「自動着地の入力」ではなく
+ * **ゲートの成立条件**として扱う——状態機械を作り替えてゲートを前倒しするより、
+ * 通す側の条件を1つ足す方が影響が小さい。
+ *
+ * **人の承認を経た経路には効かせない。** 人が見ているものと機械だけで通すものを
+ * 同じ基準にすると、既存の緑が理由なく落ちる。この非対称は意図。
+ */
+export function gateEvidenceBlockers(marks: {
+  baseCommit?: string;
+  environmentDigest?: string;
+}): string[] {
+  const blockers: string[] = [];
+  if (marks.baseCommit === undefined) {
+    blockers.push("auto_land_unmarked:baseCommit（どのコミットの上で検査したかを刻めなかった）");
+  }
+  if (marks.environmentDigest === undefined) {
+    blockers.push("auto_land_unmarked:environmentDigest（どの環境で検査したかを刻めなかった）");
+  }
+  return blockers;
+}
+
+/**
+ * そのタスクは**人の承認を経ずに** `merging` へ入ったか（D3：帳簿から導く）。
+ *
+ * `auditing → merging` が自動着地の道、`approved → merging` が人を通した道
+ * （`state-machine.ts` の遷移表）。**直近の入り方**で決める——過去に一度承認された
+ * ことを、いまの着地の証拠に流用しない（落ちて差し戻し、次は自動、が起こりうる）。
+ *
+ * 別に持たない：真実は `state_transitioned` の並びだけ（D3）。
+ */
+export function landedWithoutHumanApproval(
+  events: readonly OrchestrationEvent[],
+  projectTag: string,
+  taskId: string
+): boolean {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type !== "state_transitioned") continue;
+    if (e.projectTag !== projectTag || e.taskId !== taskId) continue;
+    if (e.to !== "merging") continue;
+    return e.from === "auditing";
+  }
+  return false;
 }
 
 /**

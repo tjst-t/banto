@@ -35,6 +35,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { loadProjectConfig } from "./review-policy.js";
+
 // ── Task number assignment ────────────────────────────────────────────────────
 
 /**
@@ -157,9 +159,36 @@ export function fileConflictTask(spec: ConflictTaskSpec): FiledConflictTask {
   // that YAML would misparse without quotes (e.g. "0004" as integer, "a:b" as map).
   const refsYaml = `["${originTaskId}"]`;
 
-  // review.policy: auto — conflict tasks skip hypothesis/evaluation (kind:conflict merged→closed)
-  // auto means: audit pass → directly to merging (no manual PO review needed for conflict resolution)
-  const reviewPolicy = "auto";
+  /**
+   * **解消タスクに持たせる検査**（realign 第3便・段3）。
+   *
+   * 層Bから取る（`verify.conflict_command`）。コードに直書きしないのは、プロジェクト
+   * ごとにテストの打ち方が違うから——banto の `npm test` を埋め込むと他のプロジェクトで
+   * 破綻する。書かれていなければ**持たせない**（今までどおり）。
+   */
+  const conflictVerify = loadProjectConfig(repoPath).verify.conflictCommand;
+
+  /**
+   * **名乗りと実態をずらさない**（realign 第3便・段3）。
+   *
+   * 既定の反転（→ `spec-daemon-core` §2.5）以降、`auto` を名乗っても**検査が1本も
+   * 無い契約は必ず人の承認を通る**。検査を持たせられないときに `auto` と書くと、
+   * 帳簿には「auto」と残るのに一度も自動着地しない——読む側が判断できない嘘になる。
+   *
+   * だから名乗りは検査の有無に従わせる。`kind: conflict` を判定の例外にはしない
+   * （番頭裁定 2026-08-14：例外を作ると「証拠のあるものだけ機械に通す」に穴が開く）。
+   */
+  const reviewPolicy = conflictVerify ? "auto" : "banto";
+
+  /**
+   * 受け入れ条件の inline map に書ける形へ包む。
+   *
+   * 層Bの YAML パーサはエスケープを扱わないので、**含まれていない方の引用符で囲む**。
+   * 両方含むものは `loadProjectConfig` が既に断っている（ここへは来ない）。
+   */
+  const verifyField = conflictVerify
+    ? `, verify: ${conflictVerify.includes('"') ? `'${conflictVerify}'` : `"${conflictVerify}"`}`
+    : "";
 
   // Build the task body (D8: resolution session must be able to judge standalone)
   const conflictedFilesSection =
@@ -211,9 +240,11 @@ export function fileConflictTask(spec: ConflictTaskSpec): FiledConflictTask {
       ? conflictedFiles.map((f, i) => {
           const id = `a${i + 1}`;
           const text = `\`${f}\` のコンフリクトが解消されており、両ブランチの意図が統合されている`;
-          return `  - { id: ${id}, text: "${text}" }`;
+          return `  - { id: ${id}, text: "${text}"${verifyField} }`;
         })
-      : [`  - { id: a1, text: "コンフリクトが解消されており、${originTaskId} の意図が mainline と統合されている" }`];
+      : [
+          `  - { id: a1, text: "コンフリクトが解消されており、${originTaskId} の意図が mainline と統合されている"${verifyField} }`,
+        ];
 
   const frontmatter = [
     `---`,

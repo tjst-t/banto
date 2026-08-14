@@ -32,7 +32,6 @@ import { execFileSync, execSync } from "node:child_process";
 import { Daemon } from "@banto/daemon";
 import { deriveQueue } from "@banto/daemon";
 import { hostVerifyRunner } from "./gate-verify-runner.js";
-import { EventLog } from "@banto/core";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -203,31 +202,52 @@ describe("[AC-S75f66b-5-3] Queue derived from event log; restart resumes process
     );
   });
 
-  it("[AC-S75f66b-5-3b] deriveQueue correctly derives queue from event log replay", async () => {
-    // Wait a tick so at least one task is processing (D1 should be in merging or merged)
-    await new Promise((r) => setTimeout(r, 400));
+  /**
+   * **止まっている帳簿に当てる**（inc-0070）。
+   *
+   * もとは稼働中のデーモンを 400ms 待ってから覗き、**その瞬間の並び順**を主張していた。
+   * `deriveQueue` は純関数なので工場は要らないのに、裏でキューが動いていると順番が
+   * 変わって落ちる——realign 第3便で `merging` へ進むタスクが増えたら実際に落ちた。
+   *
+   * ついでに**主張が空振りしなくなる**：live な帳簿では待ち行列が0本や1本のことがあり、
+   * そのとき下の2つのループは何も確かめずに通っていた。作った並びなら必ず両方入る。
+   *
+   * 主張そのもの（並び順と merging 優先）は変えていない。
+   */
+  it("[AC-S75f66b-5-3b] deriveQueue correctly derives queue from event log replay", () => {
+    /** `state_transitioned` を1行作る（`deriveQueue` が見るのはこの型だけ）。 */
+    const st = (taskId: string, from: string, to: string, eventId: number): never =>
+      ({
+        type: "state_transitioned",
+        projectTag: PROJ,
+        taskId,
+        from,
+        to,
+        eventId,
+        timestamp: new Date(Date.UTC(2026, 7, 14)).toISOString(),
+      }) as never;
 
-    // Directly derive the queue from the event log (the pure function)
-    const log = EventLog.open(dataDir);
-    const events = log.readAllEvents();
+    // 3本を**わざと入り交じった順**で並べる：
+    //   task-Q1  approved(10) → merging(40)   … 承認は先だが merging は後
+    //   task-Q2  auditing → merging(20)       … 自動着地の道（承認を経ない）
+    //   task-Q3  approved(30) のまま           … まだ merging に入っていない
+    const events = [
+      st("task-Q1", "in-review", "approved", 10),
+      st("task-Q2", "auditing", "merging", 20),
+      st("task-Q3", "in-review", "approved", 30),
+      st("task-Q1", "approved", "merging", 40),
+    ];
 
-    // The queue should contain approved/merging tasks for this project
-    // (at least task-D2 should be in approved; task-D1 might be merging or merged by now)
     const queue = deriveQueue(events);
 
-    // Verify: queue entries are ordered by mergingEntryEventId (covers both policy paths:
-    // manual approved→merging and auto-audit auditing→merging, S75f66b-5 reconcile)
-    for (let i = 0; i < queue.length - 1; i++) {
-      assert.ok(
-        queue[i]!.mergingEntryEventId <= queue[i + 1]!.mergingEntryEventId,
-        `queue entries must be ordered by mergingEntryEventId (idx ${i} > ${i + 1})`
-      );
-    }
-
-    // Verify: merging tasks come before approved tasks
     const mergingEntries = queue.filter((e) => e.status === "merging");
     const approvedEntries = queue.filter((e) => e.status === "approved");
-    if (mergingEntries.length > 0 && approvedEntries.length > 0) {
+    // 空振り防止：両方の組が入っていて初めて、下の3つが意味を持つ
+    assert.ok(mergingEntries.length > 1, "merging が2本以上入っていること");
+    assert.ok(approvedEntries.length > 0, "approved が入っていること");
+
+    // Verify: merging tasks come before approved tasks
+    {
       // Find last merging index (findLastIndex not available in ES2022)
       let lastMergingIdx = -1;
       for (let i = queue.length - 1; i >= 0; i--) {
@@ -241,6 +261,28 @@ describe("[AC-S75f66b-5-3] Queue derived from event log; restart resumes process
         lastMergingIdx < firstApprovedIdx,
         "merging entries must precede approved entries in queue"
       );
+    }
+
+    /**
+     * Verify: 各組の中が mergingEntryEventId 順（covers both policy paths:
+     * manual approved→merging and auto-audit auditing→merging, S75f66b-5 reconcile）。
+     *
+     * **「組をまたいで」ではない**（inc-0070 で判明）。`deriveQueue` は merging と
+     * approved を**別々に整列してから連結する**ので、まだ merging に入っていない
+     * approved の並び順キー（approved になった eventId）が、先に merging へ入った
+     * タスクのキーより小さいことは普通に起きる——上の例では Q1 が 40、Q3 が 30。
+     *
+     * もとの試験はこれを**全体の整列**として主張していたが、実は待ち行列が1本以下の
+     * ときしか通っていなかった（2本以上並んだ瞬間に落ちる＝間欠の正体）。ここでは
+     * コードが実際に約束している「組の中の順」と「組の前後」に分けて主張する。
+     */
+    for (const group of [mergingEntries, approvedEntries]) {
+      for (let i = 0; i < group.length - 1; i++) {
+        assert.ok(
+          group[i]!.mergingEntryEventId <= group[i + 1]!.mergingEntryEventId,
+          `queue entries must be ordered by mergingEntryEventId (idx ${i} > ${i + 1})`
+        );
+      }
     }
   });
 
