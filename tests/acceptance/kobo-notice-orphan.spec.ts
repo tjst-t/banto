@@ -12,10 +12,12 @@
  * if (!origin) return undefined;   // ← 黙って捨てる
  * ```
  *
- * `origin` が付くのは `kobo.enqueue` を通ったものだけ。**タスク定義ファイルを watcher が
- * 取り込んだもの（決定64 の正規の入口）には付かない**。loamium の2本はどちらもファイル
- * 経由だったので、`origins` は空のまま——`task_failed` も `review-ready` も、1通残らず
- * 捨てられていた。
+ * `origin` が付くのは会話から積まれたものだけ。当時の正規の入口だったファイル経由
+ * （watcher）には付かず、loamium の2本はどちらもそれだったので `origins` は空のまま
+ * ——`task_failed` も `review-ready` も、1通残らず捨てられていた。
+ *
+ * **第4便で入口が1つになり、会話から積めば宛先は必ず付く。** それでも捨てないことは
+ * 確かめ続ける：Kobo の内部口（`POST /api/v1/…/tasks`）から載ったものには宛先が無い。
  *
  * 宛先が分からないことは、知らせなくてよい理由にならない（I2）。**既定のスレッドへ返す。**
  */
@@ -63,7 +65,7 @@ interface Harness {
   tools: NamespacedToolDefinition[];
   tmpDir: string;
   proj: string;
-  writeTask(taskId: string): void;
+  createWithoutOrigin(taskId: string): void;
 }
 
 async function harness(): Promise<Harness> {
@@ -81,7 +83,6 @@ async function harness(): Promise<Harness> {
   const daemon = Daemon.create({
     port,
     dataDir: path.join(tmpDir, "data"),
-    // **watcher に拾わせる**（決定64 の正規の入口）。ここが origin の付かない経路
     tickIntervalMs: 200,
     disableAutoSpawn: true,
     disableAuditSpawn: true,
@@ -96,12 +97,22 @@ async function harness(): Promise<Harness> {
     tools: module.tools as unknown as NamespacedToolDefinition[],
     tmpDir,
     proj,
-    writeTask(taskId) {
-      fs.writeFileSync(
-        path.join(repoDir, "work", "tasks", `${taskId}.md`),
-        `---\nid: ${taskId}\ntype: task\nkind: feature\ntitle: ファイルから積んだ仕事\nstatus: queued\nscope:\n  paths:\n    - src/**\nacceptance:\n  - { id: a1, text: 動くこと }\n---\n\n本文。\n`,
-        "utf-8"
-      );
+    /**
+     * **宛先の付かない経路**でタスクを載せる（第4便）。
+     *
+     * もとは `work/tasks/*.md` を watcher に拾わせていた。watcher は廃止したので、
+     * いまその役をするのは Kobo の内部口（`POST /api/v1/projects/:proj/tasks` と同じ
+     * `createTask`）である。**番頭の入口ではない**が、CLI や試験はここから載せられるので、
+     * 「宛先が分からないものを捨てない」ことは確かめ続ける必要がある。
+     */
+    createWithoutOrigin(taskId) {
+      daemon.createTask(proj, taskId, "内部の口から載せた仕事", {
+        kind: "feature",
+        body: "本文。",
+        scope: { paths: ["src/**"] },
+        acceptance: [{ id: "a1", text: "動くこと" }],
+      });
+      daemon.transition(proj, taskId, "queued", "test");
     },
   };
 }
@@ -111,11 +122,11 @@ async function teardown(h: Harness): Promise<void> {
   fs.rmSync(h.tmpDir, { recursive: true, force: true });
 }
 
-describe("[task-0070] ファイルから取り込んだタスクの知らせも会話へ返る", () => {
-  it("watcher が取り込んだタスクには origin が付かない（この検体の前提）", async () => {
+describe("[task-0070] 宛先の無いタスクの知らせも会話へ返る", () => {
+  it("内部の口から載せたタスクには origin が付かない（この検体の前提）", async () => {
     const h = await harness();
     try {
-      h.writeTask("task-0100");
+      h.createWithoutOrigin("task-0100");
       await until(() => h.daemon.getTask(h.proj, "task-0100") !== undefined);
 
       const tool = h.tools.find((t) => t.name === "kobo.events")!;
@@ -138,7 +149,7 @@ describe("[task-0070] ファイルから取り込んだタスクの知らせも�
     const delivered: Array<{ message: string; threadId?: string }> = [];
     let stop: (() => void) | undefined;
     try {
-      h.writeTask("task-0101");
+      h.createWithoutOrigin("task-0101");
       await until(() => h.daemon.getTask(h.proj, "task-0101") !== undefined);
 
       stop = startKoboNotices({
@@ -179,7 +190,7 @@ describe("[task-0070] ファイルから取り込んだタスクの知らせも�
     const delivered: string[] = [];
     let stop: (() => void) | undefined;
     try {
-      h.writeTask("task-0102");
+      h.createWithoutOrigin("task-0102");
       await until(() => h.daemon.getTask(h.proj, "task-0102") !== undefined);
 
       stop = startKoboNotices({
@@ -215,7 +226,7 @@ describe("[task-0070] ファイルから取り込んだタスクの知らせも�
     const delivered: string[] = [];
     let stop: (() => void) | undefined;
     try {
-      h.writeTask("task-0104");
+      h.createWithoutOrigin("task-0104");
       await until(() => h.daemon.getTask(h.proj, "task-0104") !== undefined);
 
       stop = startKoboNotices({
@@ -257,12 +268,21 @@ describe("[task-0070] ファイルから取り込んだタスクの知らせも�
     const delivered: Array<{ message: string; threadId?: string }> = [];
     let stop: (() => void) | undefined;
     try {
-      h.writeTask("task-0103");
       const enqueue = h.tools.find((t) => t.name === "kobo.enqueue")!;
-      await enqueue.execute(
-        { projectTag: h.proj, taskId: "task-0103", origin: threadOrigin("thread-9") } as never,
+      const enqueued = await enqueue.execute(
+        {
+          projectTag: h.proj,
+          title: "会話から積んだ仕事",
+          kind: "feature",
+          body: "本文。",
+          scope: { paths: ["src/**"] },
+          acceptance: [{ text: "動くこと" }],
+          originRef: "試験",
+          origin: threadOrigin("thread-9"),
+        } as never,
         { toolCallId: "t" }
       );
+      const taskId = String((enqueued.details as { taskId: string }).taskId);
 
       stop = startKoboNotices({
         tools: h.tools,
@@ -274,102 +294,17 @@ describe("[task-0070] ファイルから取り込んだタスクの知らせも�
         log: () => undefined,
       });
 
-      await until(() => h.daemon.getTask(h.proj, "task-0103")?.status === "ready");
+      await until(() => h.daemon.getTask(h.proj, taskId)?.status === "ready");
       for (const to of ["planning", "implementing", "auditing"]) {
-        h.daemon.transition(h.proj, "task-0103", to, "test");
+        h.daemon.transition(h.proj, taskId, to, "test");
       }
-      h.daemon.transition(h.proj, "task-0103", "failed", "何かで止まった");
+      h.daemon.transition(h.proj, taskId, "failed", "何かで止まった");
 
       await until(() => delivered.some((d) => /止まりました/.test(d.message)));
       const notice = delivered.find((d) => /止まりました/.test(d.message))!;
       assert.equal(notice.threadId, "thread-9", "積んだスレッドへ返る（決定35a）");
     } finally {
       stop?.();
-      await teardown(h);
-    }
-  });
-});
-
-/**
- * **watcher に先を越されても、宛先は付く**（PO報告 2026-08-11）。
- *
- * 番頭は「定義ファイルを書く → `kobo.enqueue`」の順で積む。その間に watcher が
- * `status: queued` を見つけて取り込むと、enqueue は「既に積まれています」と断られ、
- * **origin が永久に付かなかった**——ひらがなの task-0001/0002 の失敗が、積んだ幹
- * （ひらがな学習アプリ構想）ではなく帳場に出たのはこれ。
- */
-describe("[PO報告 2026-08-11] watcher が先に取り込んでも、積んだ幹へ返る", () => {
-  it("取り込み済みのタスクでも enqueue が宛先を引き受ける", async () => {
-    const h = await harness();
-    const delivered: Array<{ message: string; threadId?: string }> = [];
-    let stop: (() => void) | undefined;
-    try {
-      // **先に watcher に取らせる**（実機で起きた順序をそのまま作る）
-      h.writeTask("task-0104");
-      await until(() => h.daemon.getTask(h.proj, "task-0104") !== undefined);
-      assert.equal(
-        h.daemon.originOfTask(h.proj, "task-0104"),
-        undefined,
-        "この時点では宛先が無い（穴の再現）"
-      );
-
-      // 番頭が後から積む。**断られずに宛先だけ引き受ける**
-      const enqueue = h.tools.find((t) => t.name === "kobo.enqueue")!;
-      await enqueue.execute(
-        {
-          projectTag: h.proj,
-          taskId: "task-0104",
-          origin: threadOrigin("thread-50"),
-          originRef: "PO の報告（2026-08-11）",
-        } as never,
-        { toolCallId: "t" }
-      );
-      assert.equal(h.daemon.originOfTask(h.proj, "task-0104"), threadOrigin("thread-50"));
-
-      stop = startKoboNotices({
-        tools: h.tools,
-        notify: async (message, target) => {
-          delivered.push({ message, ...(target.threadId ? { threadId: target.threadId } : {}) });
-        },
-        cursorPath: path.join(h.tmpDir, "kobo-cursor.json"),
-        intervalMs: 100,
-        log: () => undefined,
-      });
-
-      await until(() => h.daemon.getTask(h.proj, "task-0104")?.status === "ready");
-      h.daemon.transition(h.proj, "task-0104", "failed", "worktree creation failed");
-
-      await until(() => delivered.some((d) => /止まりました/.test(d.message)));
-      const notice = delivered.find((d) => /止まりました/.test(d.message))!;
-      assert.equal(notice.threadId, "thread-50", "帳場ではなく、積んだ幹へ返る");
-      // 経緯も一緒に引き受ける（無いと札に「起きたこと」しか書けない・D8）
-      assert.match(notice.message, /PO の報告（2026-08-11）/u);
-    } finally {
-      stop?.();
-      await teardown(h);
-    }
-  });
-
-  it("既に宛先があるものは横取りさせない", async () => {
-    const h = await harness();
-    try {
-      h.writeTask("task-0105");
-      const enqueue = h.tools.find((t) => t.name === "kobo.enqueue")!;
-      await enqueue.execute(
-        { projectTag: h.proj, taskId: "task-0105", origin: threadOrigin("thread-1") } as never,
-        { toolCallId: "t" }
-      );
-      // 2度目は別の宛先。**契約は凍っている**ので断る（決定62c）
-      await assert.rejects(
-        () =>
-          enqueue.execute(
-            { projectTag: h.proj, taskId: "task-0105", origin: threadOrigin("thread-2") } as never,
-            { toolCallId: "t" }
-          ),
-        /既に積まれています/u
-      );
-      assert.equal(h.daemon.originOfTask(h.proj, "task-0105"), threadOrigin("thread-1"));
-    } finally {
       await teardown(h);
     }
   });

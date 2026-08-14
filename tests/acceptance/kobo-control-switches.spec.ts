@@ -2,7 +2,7 @@
  * 工場（Kobo）の**制御の口3つ**（PO 裁定 2026-08-13・inc-0063）。
  *
  *   - `kobo.unregister_project` — 受け持ちを外す（`register_project` の対）
- *   - `kobo.set_watch`          — プロジェクト単位でタスクの取り込みを止める
+ *   - `kobo.set_watch`          — プロジェクト単位で**仕事を積む口**を止める（第4便で意味が変わった）
  *   - `kobo.set_merge_queue`    — プロジェクト単位でマージキューを止める（非常停止）
  *
  * inc-0063 では、マージキューが空 rebase を「コンフリクト未解消」と読んで解消タスクを
@@ -104,29 +104,21 @@ async function taskWasIngested(
   );
 }
 
-function writeTaskFile(repoDir: string, taskId: string, title: string): void {
-  const dir = path.join(repoDir, "work", "tasks");
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, `${taskId}.md`),
-    `---
-id: ${taskId}
-type: task
-kind: feature
-title: ${title}
-status: queued
-scope:
-  paths: [src/**]
-acceptance:
-  - { id: a1, text: 動作確認 }
----
-
-## 背景
-
-制御の口のテスト用。
-`,
-    "utf-8"
-  );
+/**
+ * 積む（第4便：入口は `kobo.enqueue` だけ）。**id は Kobo が振る**ので返す。
+ * 断られたら例外なので、`callToolExpectingRefusal` と使い分ける。
+ */
+async function enqueue(base: string, projectTag: string, title: string): Promise<string> {
+  const r = await callTool(base, "kobo.enqueue", {
+    projectTag,
+    title,
+    kind: "feature",
+    body: "制御の口のテスト用。",
+    scope: { paths: ["src/**"] },
+    acceptance: [{ text: "動作確認" }],
+    originRef: "試験",
+  });
+  return String((r.details as { taskId: string }).taskId);
 }
 
 /** work/tasks に置かれた .md の名前（ディレクトリが無ければ空）。 */
@@ -183,9 +175,9 @@ describe("[kobo-control-switches] 3つの口が番頭へ配られる", () => {
   });
 });
 
-// ── 1. 受け持ちを外す口・取り込みを止める口 ───────────────────────────────────
+// ── 1. 受け持ちを外す口・積む口を止める弁 ─────────────────────────────────────
 
-describe("[kobo-control-switches] 受け持ちを外す口と、取り込みを止める口", () => {
+describe("[kobo-control-switches] 受け持ちを外す口と、積む口を止める弁", () => {
   let tmpDir: string;
   let alphaRepo: string;
   let canaryRepo: string;
@@ -193,6 +185,7 @@ describe("[kobo-control-switches] 受け持ちを外す口と、取り込みを�
   let base: string;
   const ALPHA = "proj-alpha";
   const CANARY = "proj-canary";
+  let aliveId: string;
 
   before(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-ctrl-watch-"));
@@ -221,30 +214,24 @@ describe("[kobo-control-switches] 受け持ちを外す口と、取り込みを�
   });
 
   it("動いているタスクがあると、force 無しでは外れない（理由に名前が出る）", async () => {
-    writeTaskFile(alphaRepo, "task-0001", "動いている仕事");
-    // 取り込まれ、ゲートを通って ready まで進む（＝動いている状態）
-    const ingested = await pollUntil(
-      () => taskWasIngested(base, ALPHA, "task-0001"),
-      (v) => v,
-      8000
-    );
-    assert.ok(ingested, "task-0001 が取り込まれること（前提）");
+    aliveId = await enqueue(base, ALPHA, "動いている仕事");
+    // ゲートを通って ready まで進む（＝動いている状態）
     const status = await pollUntil(
       async () => {
-        const r = await fetch(`${base}/api/v1/projects/${ALPHA}/tasks/task-0001`);
+        const r = await fetch(`${base}/api/v1/projects/${ALPHA}/tasks/${aliveId}`);
         if (r.status !== 200) return "";
         return ((await r.json()) as { task: { status: string } }).task.status;
       },
       (s) => s === "ready",
       8000
     );
-    assert.equal(status, "ready", "task-0001 が ready であること（前提）");
+    assert.equal(status, "ready", `${aliveId} が ready であること（前提）`);
 
     const refusal = await callToolExpectingRefusal(base, "kobo.unregister_project", {
       projectTag: ALPHA,
       reason: "テスト: 動いているのに外そうとする",
     });
-    assert.match(refusal, /task-0001/, "何が動いているかを名指しすること");
+    assert.match(refusal, new RegExp(aliveId), "何が動いているかを名指しすること");
     assert.match(refusal, /ready/, "その状態も言うこと");
     assert.match(refusal, /force/, "force で外せることを言うこと");
 
@@ -258,7 +245,7 @@ describe("[kobo-control-switches] 受け持ちを外す口と、取り込みを�
     );
   });
 
-  it("force を明示すれば外れる。外したプロジェクトは watcher に取り込まれない", async () => {
+  it("force を明示すれば外れる。外したプロジェクトへは積めない", async () => {
     const result = await callTool(base, "kobo.unregister_project", {
       projectTag: ALPHA,
       reason: "テスト: 承知の上で外す",
@@ -267,7 +254,7 @@ describe("[kobo-control-switches] 受け持ちを外す口と、取り込みを�
     assert.match(result.content[0]!.text, /受け持ちを外しました/);
     assert.deepEqual(
       (result.details as { activeTaskIds: string[] }).activeTaskIds,
-      ["task-0001"],
+      [aliveId],
       "置き去りにしたものを名指しで返すこと"
     );
 
@@ -276,28 +263,26 @@ describe("[kobo-control-switches] 受け持ちを外す口と、取り込みを�
     };
     assert.ok(!projects.projects.some((p) => p.id === ALPHA), "一覧から消えていること");
 
-    // 外したあとに置いた定義ファイルは取り込まれない。
-    // P6: 時間で祈らず、**同じ周回を通った canary** に同期する
-    writeTaskFile(alphaRepo, "task-0002", "外した後に置いた仕事");
-    writeTaskFile(canaryRepo, "task-0002", "canary の仕事");
-    const canaryIn = await pollUntil(
-      () => taskWasIngested(base, CANARY, "task-0002"),
-      (v) => v,
-      8000
-    );
-    assert.ok(canaryIn, "canary は取り込まれること（watcher が回っている証拠）");
+    // 外したあとは積めない。**断る**のであって、黙って捨てるのではない（I2）
+    const refusal = await callToolExpectingRefusal(base, "kobo.enqueue", {
+      projectTag: ALPHA,
+      title: "外した後に積もうとする仕事",
+      kind: "feature",
+      body: "本文。",
+      scope: { paths: ["src/**"] },
+      acceptance: [{ text: "動作確認" }],
+      originRef: "試験",
+    });
+    assert.match(refusal, /知りません/, "受け持っていないプロジェクトへは積めないこと");
 
-    assert.equal(
-      await taskWasIngested(base, ALPHA, "task-0002"),
-      false,
-      "外したプロジェクトの定義ファイルは取り込まれないこと"
-    );
+    // 止めていない側は積めること（プロジェクト単位である証拠）
+    await enqueue(base, CANARY, "canary の仕事");
   });
 
   it("外しても帳簿は消えない——同じ id で登録し直すと経緯がそのまま繋がる", async () => {
     await registerProject(base, ALPHA, alphaRepo);
 
-    const r = await fetch(`${base}/api/v1/projects/${ALPHA}/tasks/task-0001`);
+    const r = await fetch(`${base}/api/v1/projects/${ALPHA}/tasks/${aliveId}`);
     assert.equal(r.status, 200, "外す前のタスクがまだ引けること");
     const body = (await r.json()) as { task: { status: string; title?: string } };
     assert.equal(body.task.status, "ready", "状態もそのまま");
@@ -311,52 +296,49 @@ describe("[kobo-control-switches] 受け持ちを外す口と、取り込みを�
     );
   });
 
-  it("取り込みを止めたプロジェクトの work/tasks/*.md は取り込まれない（他は回り続ける）", async () => {
+  it("積む口を止めたプロジェクトへは積めない。**止めた理由がそのまま返る**（他は回り続ける）", async () => {
     const stopped = await callTool(base, "kobo.set_watch", {
       projectTag: ALPHA,
       enabled: false,
-      reason: "テスト: 取り込みを止める",
+      reason: "テスト: 積む口を止める",
     });
-    assert.match(stopped.content[0]!.text, /取り込みを\*\*止めました\*\*/);
+    assert.match(stopped.content[0]!.text, /仕事を積む口を\*\*止めました\*\*/);
 
-    writeTaskFile(alphaRepo, "task-0003", "止めている間に置いた仕事");
-    writeTaskFile(canaryRepo, "task-0003", "canary の仕事2");
-    const canaryIn = await pollUntil(
-      () => taskWasIngested(base, CANARY, "task-0003"),
-      (v) => v,
-      8000
-    );
-    assert.ok(canaryIn, "止めていない側は取り込まれること（プロジェクト単位である証拠）");
+    // **断られること**。黙って受け付けて何も起きない経路を作らない（I2）
+    const refusal = await callToolExpectingRefusal(base, "kobo.enqueue", {
+      projectTag: ALPHA,
+      title: "止めている間に積もうとした仕事",
+      kind: "feature",
+      body: "本文。",
+      scope: { paths: ["src/**"] },
+      acceptance: [{ text: "動作確認" }],
+      originRef: "試験",
+    });
+    assert.match(refusal, /積む口が止まっています/);
+    assert.match(refusal, /テスト: 積む口を止める/, "**なぜ止まっているか**がそのまま返ること");
 
-    assert.equal(
-      await taskWasIngested(base, ALPHA, "task-0003"),
-      false,
-      "止めた側は取り込まれないこと"
-    );
+    // 止めていない側は積めること（プロジェクト単位である証拠）
+    await enqueue(base, CANARY, "canary の仕事2");
 
     // 止まっていることが読み口で分かること（**黙って止まっているのが一番困る**）
     const listed = await callTool(base, "kobo.projects", {});
-    assert.match(listed.content[0]!.text, /取り込み停止/);
-    assert.match(listed.content[0]!.text, /テスト: 取り込みを止める/);
+    assert.match(listed.content[0]!.text, /積む口を停止/);
+    assert.match(listed.content[0]!.text, /テスト: 積む口を止める/);
 
-    // 戻せば取り込まれる（弁であって、壊したのではない）
+    // 戻せば積める（弁であって、壊したのではない）
     await callTool(base, "kobo.set_watch", {
       projectTag: ALPHA,
       enabled: true,
       reason: "テスト: 戻す",
     });
-    const resumed = await pollUntil(
-      () => taskWasIngested(base, ALPHA, "task-0003"),
-      (v) => v,
-      8000
-    );
-    assert.ok(resumed, "動かし直せば、止めている間に置いたものも取り込まれること");
+    const resumedId = await enqueue(base, ALPHA, "弁を開けた後の仕事");
+    assert.match(resumedId, /^task-\d{4}$/, "動かし直せば積めること");
   });
 });
 
 // ── 2. マージキューを止める口（inc-0063 の非常停止）─────────────────────────
 
-describe("[kobo-control-switches] マージキューを止める口（自動起票が起きない）", () => {
+describe("[kobo-control-switches] マージキューを止める口（衝突の戻しも起きない）", () => {
   let tmpDir: string;
   let repoDir: string;
   let worktreeBaseDir: string;
@@ -424,7 +406,7 @@ describe("[kobo-control-switches] マージキューを止める口（自動起�
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("止めている間は rebase も自動起票も状態遷移も回らない／動かすと回る", async () => {
+  it("止めている間は rebase も衝突の戻しも状態遷移も回らない／動かすと回る", async () => {
     // task-A と task-B は同じ行を書き換える（A がマージされると B の rebase が必ず割れる）
     setupTaskBranch("task-A", "// shared\nexport const VERSION = 1; // A\n");
     setupTaskBranch("task-B", "// shared\nexport const VERSION = 2; // B\n");
@@ -451,8 +433,6 @@ describe("[kobo-control-switches] マージキューを止める口（自動起�
     });
     assert.match(stopped.content[0]!.text, /マージキューを\*\*止めました\*\*/);
 
-    const filesBefore = listTaskFiles(repoDir);
-
     for (const id of ["task-A", "task-B"]) {
       for (const to of [
         "queued",
@@ -478,8 +458,8 @@ describe("[kobo-control-switches] マージキューを止める口（自動起�
     assert.equal(await getStatus("task-B"), "approved", "止めている間は merging へ進まないこと");
     assert.deepEqual(
       listTaskFiles(repoDir),
-      filesBefore,
-      "止めている間はコンフリクト解消タスクが自動起票されないこと"
+      [],
+      "止めている間は記録ファイルが1本も増えないこと（機構は契約を作らない）"
     );
 
     // 止まっていることが読み口で分かること
@@ -501,17 +481,32 @@ describe("[kobo-control-switches] マージキューを止める口（自動起�
     );
     assert.ok(finalA === "merged" || finalA === "closed", `task-A がマージされること（${finalA}）`);
 
-    const finalB = await pollUntil(
-      () => getStatus("task-B"),
-      (s) => s === "paused" || s === "failed",
+    // 第4便: 衝突は**同じ契約の次の試行**。解消タスクは起票せず implementing へ戻る。
+    // **状態ではなく遷移で見る**——ここには Worker Pool が居ないので、戻した直後に
+    // 職人を起こせず failed まで進むことがある（P6: 状態で見ると間欠的に割れる）
+    const retried = await pollUntil(
+      async () => {
+        const res = await fetch(`${base}/api/v1/projects/${PROJ}/tasks/task-B/events`);
+        const events = ((await res.json()) as { events: Array<Record<string, unknown>> }).events;
+        return events.find(
+          (e) =>
+            e["type"] === "state_transitioned" &&
+            e["from"] === "merging" &&
+            e["to"] === "implementing" &&
+            String(e["reason"] ?? "").startsWith("rebase_conflict")
+        );
+      },
+      (e) => e !== undefined,
       20000
     );
-    assert.equal(finalB, "paused", "task-B は rebase が割れて paused になること");
-
-    const filesAfter = listTaskFiles(repoDir);
     assert.ok(
-      filesAfter.length > filesBefore.length,
-      "動かすとコンフリクト解消タスクが起票されること（止まっていたのは弁のせいだと分かる）"
+      retried,
+      "task-B は rebase が割れて implementing へ戻ること（止まっていたのは弁のせいだと分かる）"
+    );
+    assert.deepEqual(
+      listTaskFiles(repoDir),
+      [],
+      "衝突しても新しいタスクは起票されないこと（機構は契約を作らない）"
     );
   });
 });
@@ -597,31 +592,33 @@ describe("[kobo-control-switches] 3つの口は再起動しても残る", () => 
 
     assert.equal(projects.length, 1, "外した受け持ちは戻ってこないこと");
     assert.equal(projects[0]!.id, KEPT);
-    assert.equal(projects[0]!.watch?.enabled, false, "取り込みは止まったままであること");
+    assert.equal(projects[0]!.watch?.enabled, false, "積む口は止まったままであること");
     assert.equal(projects[0]!.mergeQueue?.enabled, false, "マージキューは止まったままであること");
     assert.match(projects[0]!.watch?.reason ?? "", /再起動/, "理由も残っていること");
-    assert.match(listed.content[0]!.text, /取り込み停止/);
+    assert.match(listed.content[0]!.text, /積む口を停止/);
     assert.match(listed.content[0]!.text, /マージキュー停止/);
 
-    // 止まったままなのだから、再起動後に置いた定義ファイルも取り込まれない。
-    // watcher が 200ms ごとに回っていることは、この後で弁を開けたら同じファイルが
-    // 取り込まれることで示す（待ち時間そのものを根拠にしない）
-    writeTaskFile(repoDir, "task-0009", "再起動後に置いた仕事");
-    await new Promise((r) => setTimeout(r, 1500));
-    assert.equal(
-      await taskWasIngested(base, KEPT, "task-0009"),
-      false,
-      "再起動しても取り込みは止まったままであること"
-    );
+    // 止まったままなのだから、再起動後も積めない
+    const refusal = await callToolExpectingRefusal(base, "kobo.enqueue", {
+      projectTag: KEPT,
+      title: "再起動後に積もうとした仕事",
+      kind: "feature",
+      body: "本文。",
+      scope: { paths: ["src/**"] },
+      acceptance: [{ text: "動作確認" }],
+      originRef: "試験",
+    });
+    assert.match(refusal, /積む口が止まっています/, "再起動しても止まったままであること");
 
     await callTool(base, "kobo.set_watch", {
       projectTag: KEPT,
       enabled: true,
       reason: "テスト: 戻す",
     });
-    assert.ok(
-      await pollUntil(() => taskWasIngested(base, KEPT, "task-0009"), (v) => v, 8000),
-      "弁を開ければ取り込まれること（止めていたのは弁だと分かる）"
+    assert.match(
+      await enqueue(base, KEPT, "弁を開けた後の仕事"),
+      /^task-\d{4}$/,
+      "弁を開ければ積めること（止めていたのは弁だと分かる）"
     );
   });
 });

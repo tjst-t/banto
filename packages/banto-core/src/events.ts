@@ -268,6 +268,10 @@ export interface TaskContractAmendedEvent extends EventBase {
 /**
  * Task definition file was rejected during watcher ingest (I2: rejection recorded, not swallowed).
  * The file is NOT added to the task registry. reason describes the validation failure.
+ *
+ * **第4便でこの型は積まれなくなった。** watcher（`work/tasks/*.md` を読む入口）を廃止し、
+ * 検証は `kobo.enqueue` の時点で同期に返るようになったので、非同期の拒否は起きない。
+ * **型は残す**——過去の帳簿に実在し、消すとリプレイが落ちる（D3）。
  */
 export interface TaskIngestRejectedEvent extends EventBase {
   type: "task_ingest_rejected";

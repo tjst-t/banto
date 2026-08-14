@@ -1,11 +1,20 @@
 /**
- * AC-Scc9152-1-3: daemonがタスクファイルのfrontmatterへ実行時状態を書き戻さない
+ * AC-Scc9152-1-3 の**書き直し**（第4便）: 積んだ後は記録ファイルを更新しない。
  *
- * After ingest: file content and mtime are unchanged.
- * After additional transitions via API: file is still untouched.
+ * ## 何が変わったか
  *
- * Uses a real Daemon instance (port 0) with real tmpRepoDir.
- * Polling interval 500ms.
+ * もとは「watcher が取り込んだ md に、daemon が実行時状態を書き戻さないこと」だった。
+ * 第4便で watcher は無くなり、**md は Kobo が書く記録**になった——書き手が入れ替わった
+ * ので、試験の言い方も入れ替える。**趣旨は変わらない**：
+ *
+ *   **状態の真実は帳簿だけ**（D3）。タスクが queued → ready → … と進んでも、
+ *   記録ファイルは積んだ時点の契約のまま**1バイトも動かない**。
+ *
+ * ここが崩れると、記録ファイルと帳簿という2つの「現在の状態」ができ、
+ * 食い違ったときどちらが正しいか決められなくなる。
+ *
+ * **書き直すのは改訂のときだけ**（`kobo.amend`）。それも「状態」ではなく「契約」で、
+ * 帳簿に `task_contract_amended` が残る——黙っては動かない。
  */
 
 import { describe, it, before, after } from "node:test";
@@ -15,84 +24,48 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { Daemon } from "@banto/daemon";
 
-async function pollUntil<T>(
-  fn: () => Promise<T>,
-  pred: (val: T) => boolean,
-  timeoutMs: number = 5000,
-  intervalMs: number = 200
-): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  while (true) {
-    const val = await fn();
-    if (pred(val)) return val;
-    if (Date.now() >= deadline) return val;
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-}
+const PROJ = "nw-proj";
 
-describe("[AC-Scc9152-1-3] Daemon never writes runtime state back to task file", () => {
+describe("[AC-Scc9152-1-3] 積んだ後、記録ファイルは動かない（状態は帳簿だけ）", () => {
   let tmpDataDir: string;
   let tmpRepoDir: string;
   let daemon: Daemon;
-  let base: string;
-  let taskFile: string;
+  let taskId: string;
+  let recordPath: string;
   let originalContent: string;
   let originalMtimeMs: number;
 
   before(async () => {
     tmpDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-nw-data-"));
     tmpRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-nw-repo-"));
-
     fs.mkdirSync(path.join(tmpRepoDir, "work", "tasks"), { recursive: true });
 
-    await daemon.start();
-    base = `http://localhost:${daemon.port}`;
-
-    const res = await fetch(`${base}/api/v1/projects`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: "proj-nw", repoPath: tmpRepoDir }),
+    daemon = Daemon.create({
+      port: 0,
+      dataDir: tmpDataDir,
+      tickIntervalMs: 100_000,
+      disableAutoSpawn: true,
     });
-    assert.equal(res.status, 201);
+    await daemon.start();
+    daemon.registerProject(PROJ, tmpRepoDir, "default");
 
-    // Write the task file and record original state.
-    // status: queued — only queued files are ingested by the watcher (imp-0001 PO decision).
-    taskFile = path.join(tmpRepoDir, "work", "tasks", "task-0001-nw.md");
-    originalContent = `---
-id: task-0001
-type: task
-kind: feature
-title: ノーライトバックテスト
-status: queued
-scope:
-  paths: [src/**]
-acceptance:
-  - { id: a1, text: 動作確認 }
----
-
-## 背景
-
-ファイルへの書き戻し禁止確認用タスク。
-`;
-    fs.writeFileSync(taskFile, originalContent, "utf-8");
-    originalMtimeMs = fs.statSync(taskFile).mtimeMs;
-
-    // Wait for watcher to ingest and task to be registered (any status past queued).
-    // With Scc9152-2, a task with no deps and no overlapping ancestors may be
-    // promoted from queued → ready immediately, so we accept 'queued' OR 'ready'.
-    const INGESTED_STATUSES = new Set(["queued", "ready", "planning", "implementing",
-      "auditing", "review-ready", "in-review", "approved", "merging", "merged",
-      "evaluating", "closed"]);
-    await pollUntil(
-      async () => {
-        const r = await fetch(`${base}/api/v1/projects/proj-nw/tasks/task-0001`);
-        if (r.status !== 200) return null;
-        const b = await r.json() as { task: { status: string } };
-        return b.task;
+    const result = daemon.enqueueTask(
+      PROJ,
+      {
+        title: "書き戻さないことの確認",
+        kind: "fix",
+        body: "積んだ後にファイルが動かないことを確かめる。",
+        scope: { paths: ["src/**"] },
+        acceptance: [{ text: "動かない" }],
       },
-      (t) => t !== null && INGESTED_STATUSES.has(t.status),
-      5000
+      { originRef: "試験" }
     );
+    if (!result.ok) throw new Error(`積めなかった: ${result.reason}`);
+
+    taskId = result.taskId;
+    recordPath = path.join(tmpRepoDir, result.path);
+    originalContent = fs.readFileSync(recordPath, "utf-8");
+    originalMtimeMs = fs.statSync(recordPath).mtimeMs;
   });
 
   after(async () => {
@@ -101,63 +74,44 @@ acceptance:
     fs.rmSync(tmpRepoDir, { recursive: true, force: true });
   });
 
-  it("[AC-Scc9152-1-3] frontmatter status is still 'queued' after ingest (not written back)", () => {
-    const contentAfter = fs.readFileSync(taskFile, "utf-8");
-    assert.equal(contentAfter, originalContent, "file content must be byte-for-byte identical");
-    assert.ok(
-      contentAfter.includes("status: queued"),
-      "frontmatter status must remain 'queued' — daemon must not write runtime state back to file"
-    );
+  it("積んだ直後の記録には、積んだ時点の契約が載っている（status は queued のまま）", () => {
+    assert.match(originalContent, /^status: queued$/m);
+    assert.match(originalContent, /^id: task-\d{4}$/m);
   });
 
-  it("[AC-Scc9152-1-3] mtime is unchanged after ingest", () => {
-    const mtimeAfter = fs.statSync(taskFile).mtimeMs;
-    assert.equal(
-      mtimeAfter,
-      originalMtimeMs,
-      "file mtime must not change — daemon must not write to the file"
-    );
-  });
-
-  it("[AC-Scc9152-1-3] file unchanged after additional API transition to planning", async () => {
-    // Advance the task further (ready → planning) to verify the file is not
-    // modified even after multiple state changes.
-    // First ensure the task is in 'ready' (it may already be, due to Scc9152-2
-    // immediate gate evaluation).
-    const readyRes = await fetch(`${base}/api/v1/projects/proj-nw/tasks/task-0001`);
-    const readyBody = await readyRes.json() as { task: { status: string } };
-    if (readyBody.task.status !== "ready") {
-      // Task is queued (gate hasn't fired yet) — advance to ready first
-      const toReady = await fetch(`${base}/api/v1/projects/proj-nw/tasks/task-0001/transition`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: "ready" }),
-      });
-      assert.equal(toReady.status, 200, "queued→ready transition must succeed");
+  it("状態が進んでも記録ファイルは1バイトも変わらない", () => {
+    for (const to of ["ready", "planning", "implementing"]) {
+      const r = daemon.transition(PROJ, taskId, to, "test");
+      assert.equal(r.ok, true, `${to} へ進められること`);
     }
+    assert.equal(daemon.getTask(PROJ, taskId)?.status, "implementing", "帳簿は進んでいること");
 
-    // Advance ready → planning
-    const res = await fetch(`${base}/api/v1/projects/proj-nw/tasks/task-0001/transition`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ to: "planning" }),
-    });
-    assert.equal(res.status, 200, "ready→planning transition must succeed");
-    const body = await res.json() as { task: { status: string } };
-    assert.equal(body.task.status, "planning", "task must be in planning after transition");
+    assert.equal(fs.readFileSync(recordPath, "utf-8"), originalContent, "中身が変わっていない");
+    assert.equal(fs.statSync(recordPath).mtimeMs, originalMtimeMs, "触ってもいない");
+  });
 
-    // File must still be byte-for-byte identical — no write-back ever
-    const contentAfterTransition = fs.readFileSync(taskFile, "utf-8");
-    assert.equal(
-      contentAfterTransition,
-      originalContent,
-      "file content must be byte-for-byte identical after API transition"
+  it("進んだ後も、記録の status は queued のまま（実行時状態を書き戻さない）", () => {
+    assert.match(fs.readFileSync(recordPath, "utf-8"), /^status: queued$/m);
+  });
+
+  it("**契約の改訂だけ**は書き直す。ただし帳簿に残る（黙っては動かない）", () => {
+    const r = daemon.amendTask(
+      PROJ,
+      taskId,
+      { acceptance: [{ id: "a1", text: "動かない", verify: "npm test" }] },
+      { reason: "検証コマンドを付け忘れていた", by: "banto" }
     );
-    const mtimeAfterTransition = fs.statSync(taskFile).mtimeMs;
-    assert.equal(
-      mtimeAfterTransition,
-      originalMtimeMs,
-      "mtime must be unchanged after API-triggered transition"
-    );
+    assert.equal(r.ok, true, r.ok ? "" : r.reason);
+
+    const after = fs.readFileSync(recordPath, "utf-8");
+    assert.notEqual(after, originalContent, "改訂は記録に反映される");
+    assert.match(after, /verify: npm test/);
+    // それでも状態は書かれない
+    assert.match(after, /^status: queued$/m);
+
+    const amended = daemon
+      .getTaskEvents(PROJ, taskId)
+      .filter((e) => e.type === "task_contract_amended");
+    assert.equal(amended.length, 1, "改訂が帳簿に1件残ること");
   });
 });

@@ -129,31 +129,16 @@ describe("[段1] 監査の判定に「何に対して」が刻まれる", () => 
       .find((e) => e.type === "audit_verdict") as unknown as Record<string, unknown>;
     assert.equal(verdict["contractVersion"], before_, "改訂前は版が一致する");
 
-    // 定義ファイルを置いて、基準を1つ増やす（＝締める方向。番頭が通せる）
-    fs.mkdirSync(path.join(repoDir, "work", "tasks"), { recursive: true });
-    fs.writeFileSync(
-      path.join(repoDir, "work", "tasks", `${id}.md`),
-      [
-        "---",
-        `id: ${id}`,
-        "type: task",
-        "kind: feature",
-        `title: ${id}`,
-        "status: queued",
-        "scope:",
-        "  paths:",
-        `    - src/${id}/**`,
-        "acceptance:",
-        '  - { id: a1, text: "動く" }',
-        '  - { id: a2, text: "落ちたら止まる" }',
-        "---",
-        "",
-        "本文。",
-        "",
-      ].join("\n"),
-      "utf-8"
+    // 基準を1つ増やす（＝締める方向。番頭が通せる）。第4便: 変える中身は引数で渡す
+    const acceptance = (daemon.getTask(PROJ, id)!["acceptance"] as Array<Record<string, unknown>>).map(
+      (a) => ({ id: String(a["id"]), text: String(a["text"]) })
     );
-    const amended = daemon.amendTask(PROJ, id, { reason: "基準を1つ増やす", by: "banto" });
+    const amended = daemon.amendTask(
+      PROJ,
+      id,
+      { acceptance: [...acceptance, { id: "a2", text: "落ちたら止まる" }] },
+      { reason: "基準を1つ増やす", by: "banto" }
+    );
     assert.equal(amended.ok, true, JSON.stringify(amended));
 
     const after_ = contractVersionOf(daemon.getProjectEvents(PROJ), PROJ, id);

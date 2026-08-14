@@ -22,7 +22,7 @@ refs: [spec-document-system, spec-daemon-core, spec-improvement-loop, spec-envir
 | `type` | `task` | ✓ | |
 | `kind` | enum | ✓ | `feature` / `fix` / `batch` / `refactor` / `conflict`（解消タスク）/ `improvement` |
 | `title` | string | ✓ | 1行 |
-| `status` | enum | ✓ | `draft` / `queued` / `done` / `failed` / `superseded` / `cancelled`。Koboが書くのは終端3種＋`failed` のみ |
+| `status` | enum | ✓ | `draft` / `queued` / `done` / `failed` / `superseded` / `cancelled`。**記録には積んだ時点の `queued` が載るだけで、以後動かない**——状態の真実は帳簿（第4便・D3） |
 | `resolution` | string | | 終端時にKoboが記録する1行（supersede先ID等） |
 | `parent` | id | | 所属Epic |
 | `depends` | id[] | | 明示的依存。依存駆動ゲートの入力 |
@@ -31,7 +31,7 @@ refs: [spec-document-system, spec-daemon-core, spec-improvement-loop, spec-envir
 | `acceptance` | list | ✓ | `{id, text, verify?}`。`verify` は機械検証コマンド（あればマージ前ゲートでKoboが実行。→ I1） |
 | `items` | list | batch時✓ | `{id, text, done}`。バッチの内訳チェックリスト |
 | `environment` | string | | 環境プロファイル名（→ spec-environment §1）。レビュー・ゲートで使用 |
-| `review.policy` | enum | | `auto` / `sampled` / `mandatory`。省略時は kind × governance × 実績から`meta/config.yaml` の規則で導出。明示は上書き |
+| `review.policy` | enum | | レビューの3段（決定57）：`auto` / `banto` / `po`（`manual` は `banto` の旧称）。省略時は `meta/config.yaml` の規則で導出。明示は上書き——ただし統治コードや PO 必須パスに触るなら `po` が機械的に勝つ |
 | `governance` | bool | | 統治コード変更フラグ。trueは強制mandatory・バッチ混載禁止 |
 | `hypothesis` | object | improvement時✓ | `{expect, metric, horizon}`。`metric: none` 可（→ spec-improvement-loop §5） |
 | `order` | number | | Nextレーン内の並び順（GUI/検討セッションが編集） |
@@ -120,8 +120,8 @@ order: 3
 ## 7. 検証と運用
 
 - JSON Schema（`meta/schemas/`）はプロダクト既定として配布し、プロジェクトは拡張フィールドの追加のみ可（既定フィールドの削除・型変更は不可）
-- `work/` 配下：watcherがスキーマ検証＋必須見出しチェックを行い、不正コミットを拒否する。`docs/` 配下：検証はするが拒否はしない（警告のみ）
-- 生成ツール（`enqueue_task` 等）は雛形（`meta/templates/`）から生成し、採番・検証を通してからコミットする
+- `work/tasks/` 配下：**Kobo が書き手**（第4便）。検証は積む時点で同期に行い、通らないものは積まない（→ spec-daemon-core §1.3）。`work/` のそれ以外と `docs/` 配下：検証はするが拒否はしない（警告のみ）
+- タスク定義は `kobo.enqueue` の入力から Kobo が生成する。**採番も検証も Kobo が持つ**（雛形からの手書き生成はしない）
 - スキーマ変更は層B変更として改善ループの正規フローに乗せる。フィールド昇格（散文→frontmatter）はその代表例
 
 ## 8. 未決事項

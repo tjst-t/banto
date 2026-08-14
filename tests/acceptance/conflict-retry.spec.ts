@@ -258,29 +258,33 @@ describe("[第4便] rebase の衝突は同じタスクの次の試行になる",
     );
     assert.ok(finalA === "merged" || finalA === "closed", `task-A must merge (got ${finalA})`);
 
-    // ── 1. task-B は implementing へ戻る（paused ではない）────────────────────
-    const afterConflict = await pollUntil(
-      () => getStatus(base, PROJ, "task-B"),
-      (s) => s === "implementing" || s === "paused" || s === "failed",
+    // ── 1. task-B は implementing へ戻る（paused でも新タスクでもない）─────────
+    //
+    // **状態ではなくイベントで見る。** ここには Worker Pool が居ないので、戻した直後に
+    // 起こす職人が生まれず、`spawnReworkSession` は I2 のとおり task_failed を積む
+    // ——「戻した」ことの証拠は遷移そのものであって、その後の状態ではない
+    // （P6: 状態で見ると Worker Pool の有無で結果が割れ、間欠的に落ちる）
+    const retried = await pollUntil(
+      async () => {
+        const res = await fetch(`${base}/api/v1/projects/${PROJ}/tasks/task-B/events`);
+        const events = ((await res.json()) as { events: Array<Record<string, unknown>> }).events;
+        return events.find(
+          (e) =>
+            e["type"] === "state_transitioned" &&
+            e["from"] === "merging" &&
+            e["to"] === "implementing" &&
+            String(e["reason"] ?? "").startsWith("rebase_conflict")
+        );
+      },
+      (e) => e !== undefined,
       15000
     );
-    assert.equal(
-      afterConflict,
-      "implementing",
-      `衝突した task-B は implementing へ戻ること（got ${afterConflict}）`
+    assert.ok(retried, "衝突した task-B は merging → implementing へ戻ること");
+    assert.match(
+      String(retried?.["reason"]),
+      /shared\.ts/,
+      "どのファイルが衝突したかが帳簿から読めること"
     );
-
-    // 戻した理由が帳簿に残っていること（**新しいイベント型は足していない**）
-    const eventsRes = await fetch(`${base}/api/v1/projects/${PROJ}/tasks/task-B/events`);
-    const events = ((await eventsRes.json()) as { events: Array<Record<string, unknown>> }).events;
-    const retry = events.find(
-      (e) =>
-        e["type"] === "state_transitioned" &&
-        e["to"] === "implementing" &&
-        String(e["reason"] ?? "").startsWith("rebase_conflict")
-    );
-    assert.ok(retry, "state_transitioned(→implementing, reason: rebase_conflict…) が残ること");
-    assert.match(String(retry?.["reason"]), /shared\.ts/, "どのファイルが衝突したかが読めること");
 
     // ── 2. 新しいタスクは生まれない（機構は契約を作らない）────────────────────
     const listRes = await fetch(`${base}/api/v1/projects/${PROJ}/tasks`);
@@ -306,14 +310,33 @@ describe("[第4便] rebase の衝突は同じタスクの次の試行になる",
     );
 
     // ── 4. 2回目の衝突で failed（同じところを何度も叩かない・P6）─────────────
-    // 職人が直さないまま merging へ戻すと、同じ衝突がもう一度起きる
-    await advanceTo(base, PROJ, "task-B", "auditing", "review-ready", "in-review", "approved");
-    const twice = await pollUntil(
-      () => getStatus(base, PROJ, "task-B"),
-      (s) => s === "failed" || s === "merged" || s === "closed",
+    //
+    // 職人が直さないまま merging へ戻すと、同じ衝突がもう一度起きる。
+    // **理由で見る**——ここに至るまでに職人を起こせず failed になっている場合があるので、
+    // 「failed であること」ではなく「**2度目の衝突で**落ちたこと」を確かめる
+    await advanceTo(
+      base,
+      PROJ,
+      "task-B",
+      "implementing",
+      "auditing",
+      "review-ready",
+      "in-review",
+      "approved"
+    );
+    const failedTwice = await pollUntil(
+      async () => {
+        const res = await fetch(`${base}/api/v1/projects/${PROJ}/tasks/task-B/events`);
+        const events = ((await res.json()) as { events: Array<Record<string, unknown>> }).events;
+        return events.find(
+          (e) => e["type"] === "task_failed" && /rebase_conflict_twice/.test(String(e["reason"] ?? ""))
+        );
+      },
+      (e) => e !== undefined,
       20000
     );
-    assert.equal(twice, "failed", `2回目の衝突は failed で止まること（got ${twice}）`);
+    assert.ok(failedTwice, "2回目の衝突は failed で止まること（同じところを叩き続けない）");
+    assert.equal(await getStatus(base, PROJ, "task-B"), "failed");
 
     const gitLog = execFileSync("git", ["log", "main", "--oneline"], { cwd: repoDir })
       .toString()
