@@ -71,12 +71,28 @@ afterEach(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-async function startHost(): Promise<{ url: string; threads: ThreadRegistry; inbox: Inbox }> {
+async function startHost(): Promise<{
+  url: string;
+  threads: ThreadRegistry;
+  inbox: Inbox;
+  /** スレッドIDごとのハーネス偽物。ターンが回ったかは `prompts` の増減で見る。 */
+  sessions: Map<string, FakeSession>;
+}> {
   const inbox = new Inbox(path.join(dir, "inbox.jsonl"));
-  const threads = new ThreadRegistry(async () => ({ harness: new FakeSession(), tools: [] }));
+  const sessions = new Map<string, FakeSession>();
+  const threads = new ThreadRegistry(async (threadId) => {
+    const session = new FakeSession();
+    sessions.set(threadId, session);
+    return { harness: session, tools: [] };
+  });
   await threads.open(TRUNK);
   server = await BantoHostServer.start({ threads, inbox, port: 0 });
-  return { url: `ws://localhost:${server.port}${BANTO_WS_PATH}`, threads, inbox };
+  return { url: `ws://localhost:${server.port}${BANTO_WS_PATH}`, threads, inbox, sessions };
+}
+
+/** いま生きているどの会話にも発話が増えていないか。 */
+function totalPrompts(sessions: Map<string, FakeSession>): number {
+  return [...sessions.values()].reduce((sum, s) => sum + s.prompts.length, 0);
 }
 
 /** 条件が満たされるまで待つ（イベントの到着を待ち合わせる）。 */
@@ -163,6 +179,59 @@ describe("[task-0100/a2] 幹の帯の branch_result はそのまま（ADR-0017 �
       | undefined;
     assert.equal(result?.conclusion, "決まった");
     assert.equal(result?.hasDetail, undefined, "詳細は幹へ流さない（決定108）");
+    client.close();
+  });
+});
+
+describe("[task-0100/a3] 知らせに答えても番頭のターンは回らない（PO裁定 2026-08-14）", () => {
+  it("notice に「読んだ」と答えても、どの会話にも発話が増えず turn_start も飛ばない", async () => {
+    const { url, threads, inbox, sessions } = await startHost();
+    const branch = await threads.open(branchSpec("調査"));
+    threads.merge(branch.id, "結論");
+    const itemId = inbox.list().find((i) => i.opens?.threadId === branch.id)!.id;
+
+    const promptsBefore = totalPrompts(sessions);
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    client.send({ type: "inbox_answer", itemId, actionId: "read" });
+
+    await until(
+      () =>
+        events.some(
+          (e) => e.type === "inbox_state" && e.items.some((i) => i.id === itemId && i.resolvedAt)
+        ),
+      "知らせが「読んだ」で畳まれること"
+    );
+    // resolve は非同期の後処理を持たないので、ここまで届けば notify を呼ぶかどうかは決着している
+    assert.equal(totalPrompts(sessions), promptsBefore, "どの会話にも発話が増えない");
+    assert.ok(!events.some((e) => e.type === "turn_start"), "ターンが回った印（turn_start）が出ない");
+    client.close();
+  });
+
+  it("判断（notice でない一通）に答えたときは今までどおりターンが回る（決定73の回帰）", async () => {
+    const { url, threads, inbox, sessions } = await startHost();
+    const trunk = threads.trunk()!;
+    // merge を経由しない、素の「判断」札（decision109 以前からある形）
+    const item = inbox.post({
+      source: { id: "banto", label: "番頭" },
+      kind: "確かめたいこと",
+      title: "この進め方でよいですか",
+      what: "A案とB案がある",
+      ask: "どちらで進めますか",
+      actions: [{ id: "a", label: "A案で" }],
+      opens: { threadId: trunk.id },
+    });
+    assert.equal(item.notice, undefined, "これは知らせではなく判断");
+
+    const events: ServerEvent[] = [];
+    const client = await BantoHostClient.connect(url, (e) => events.push(e));
+    client.send({ type: "inbox_answer", itemId: item.id, actionId: "a" });
+
+    await until(() => events.some((e) => e.type === "turn_start"), "判断ではターンが回ること");
+    await until(
+      () => (sessions.get(trunk.id)?.prompts.length ?? 0) > 0,
+      "番頭に答えの事実が伝わること（決定73）"
+    );
     client.close();
   });
 });
