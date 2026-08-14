@@ -508,6 +508,16 @@ describe("[task-0065] 判断待ちは積んだスレッドへ返る（決定58�
       assert.match(notice.message, /起きたこと[\s\S]*監査を通りました/, "起きたことが書いてある");
       assert.match(notice.message, /求める判断[\s\S]*kobo\.approve/, "求める判断が書いてある");
       assert.match(notice.message, /関所は飛びません/, "承認しても検査は残ることが書いてある");
+      /**
+       * realign 第3便: 既定は自動着地になった。**ここへ来たということは例外**なので、
+       * 何が足りなくて人へ回ったのかを札に書く——書かないと、番頭は「なぜ自分に
+       * 来たのか」を毎回 kobo.task で調べ直すことになる（D10：細かい仕事をさせない）。
+       */
+      assert.match(
+        notice.message,
+        /検査コマンドが1本も無/,
+        "何が足りなくて人へ回ったのかが札から読めること"
+      );
     } finally {
       stop?.();
       await teardown(h);
