@@ -155,6 +155,15 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 }
 .room-back:hover { background: var(--paper-2); color: var(--murasaki); }
 .room-merge { flex: none; padding: 0 var(--s6) var(--s3); }
+/*
+ * いま見ている幹の枝（ADR-0022 決定112）。流れない一覧——時系列の帯（chat-scroll）とは別。
+ * 中身は `.bcard` / `.bresult` をそのまま並べるだけで、新しい見た目は作らない。
+ */
+.room-branches {
+  flex: none; display: flex; flex-direction: column; gap: var(--s2);
+  padding: var(--s3) var(--s5); border-bottom: 1px solid var(--rule);
+  max-height: 240px; overflow-y: auto;
+}
 
 /* 背表紙。**消さない——押せば戻る**（モーダルより良いのはここ） */
 .spine {
@@ -754,6 +763,8 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 .history-row-title { font-weight: 500; font-size: var(--t-body); }
 .history-row-at { font-size: var(--t-note); font-family: var(--mono); color: var(--sumi-3); white-space: nowrap; }
 .history-row-preview { font-size: var(--t-meta); color: var(--sumi-3); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 畳んだ枝の結論（ADR-0022 決定111）。一覧のまま結末が読めることが要点なので地の色で出す */
+.history-row-conclusion { font-size: var(--t-meta); color: var(--sumi); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .history-row-actions { margin-top: var(--s2); }
 .history-row-resume, .history-read-resume {
   border: 0; background: var(--ai); color: var(--paper-1);

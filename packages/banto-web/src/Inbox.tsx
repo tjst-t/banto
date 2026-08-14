@@ -56,12 +56,18 @@ export function InboxFace({ items, onAnswer, onOpen, onBack }: InboxFaceProps): 
   /** 出所での絞り込み。undefined は「すべて」。 */
   const [only, setOnly] = useState<string>();
 
-  const pending = items.filter((i) => !i.resolvedAt);
+  /**
+   * 3段に分ける（ADR-0022 決定110）。**判断**（上・数える）→**知らせ**（下・数えない、
+   * 読めば片付く）→**答えの出たもの**（最下段）。知らせを判断に混ぜると、上段の
+   * フィルタ・件数が「判断待ち」を意味しなくなる。
+   */
+  const decisions = items.filter((i) => !i.resolvedAt && !i.notice);
+  const notices = items.filter((i) => !i.resolvedAt && i.notice);
   const done = items.filter((i) => i.resolvedAt);
   // 出所は**届いているものから作る**——固定の一覧を持つと、新しい出所が増えたときに
   // 絞り込めない面が出る（モジュールは増える前提）
-  const sources = [...new Map(pending.map((i) => [i.source.id, i.source])).values()];
-  const shown = only ? pending.filter((i) => i.source.id === only) : pending;
+  const sources = [...new Map(decisions.map((i) => [i.source.id, i.source])).values()];
+  const shown = only ? decisions.filter((i) => i.source.id === only) : decisions;
 
   return (
     <div className="ib">
@@ -78,14 +84,14 @@ export function InboxFace({ items, onAnswer, onOpen, onBack }: InboxFaceProps): 
           <p className="ib-lede">
             番頭に用があるものが、出所を問わずここに集まります。<b>押すと、その件の会話と面が同時に開きます。</b>
           </p>
-          {pending.length > 0 && (
+          {decisions.length > 0 && (
             <div className="ib-filters">
               <button
                 className={`cv-chip ${only === undefined ? "is-on" : ""}`}
                 type="button"
                 onClick={() => setOnly(undefined)}
               >
-                すべて<span className="ib-c">{pending.length}</span>
+                すべて<span className="ib-c">{decisions.length}</span>
               </button>
               {sources.map((s) => (
                 <button
@@ -95,7 +101,7 @@ export function InboxFace({ items, onAnswer, onOpen, onBack }: InboxFaceProps): 
                   onClick={() => setOnly(s.id)}
                 >
                   {s.label}
-                  <span className="ib-c">{pending.filter((i) => i.source.id === s.id).length}</span>
+                  <span className="ib-c">{decisions.filter((i) => i.source.id === s.id).length}</span>
                 </button>
               ))}
             </div>
@@ -105,7 +111,7 @@ export function InboxFace({ items, onAnswer, onOpen, onBack }: InboxFaceProps): 
 
       <div className="ib-scroll">
         <div className="ib-inner">
-          {pending.length === 0 ? (
+          {decisions.length === 0 && notices.length === 0 ? (
             /* 空の姿。**この列が何かは、0 件のときの姿がいちばん語る** */
             <div className="ib-empty">
               <Icon name="inbox" size={30} stroke={1.2} className="ib-empty-icon" />
@@ -120,6 +126,16 @@ export function InboxFace({ items, onAnswer, onOpen, onBack }: InboxFaceProps): 
             shown.map((item) => (
               <Letter key={item.id} item={item} onAnswer={onAnswer} onOpen={onOpen} />
             ))
+          )}
+
+          {/* 知らせ（決定109・110）。判断ではないので数えない・下段——答えは「読んだ」の1つでよい */}
+          {notices.length > 0 && (
+            <>
+              <div className="ib-sep">これより下は、知らせ（読めば片付きます）</div>
+              {notices.map((item) => (
+                <Letter key={item.id} item={item} onAnswer={onAnswer} onOpen={onOpen} />
+              ))}
+            </>
           )}
 
           {done.length > 0 && (
@@ -178,7 +194,8 @@ function Letter({
         )}
         <dt>起きたこと</dt>
         <dd>{item.what}</dd>
-        <dt>求める判断</dt>
+        {/* 知らせ（決定109）は判断を求めていない。ラベルで嘘をつかない */}
+        <dt>{item.notice ? "確認" : "求める判断"}</dt>
         <dd>{item.ask}</dd>
       </dl>
 

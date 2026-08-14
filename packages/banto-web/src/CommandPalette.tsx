@@ -35,7 +35,11 @@ export interface CommandPaletteProps {
   catalog: CatalogEntryView[];
   inbox: InboxItemView[];
   onOpenThread(threadId: string): void;
-  onReopenThread(threadId: string): void;
+  /**
+   * 畳んだ会話を読む（ADR-0022 決定111）。**開き直さない**——確認しに行っただけで
+   * `state` が open に戻るのは事故。再開したければ、開いた履歴の中で明示に押す。
+   */
+  onReadThread(threadId: string): void;
   onOpenView(kind: string): void;
   onOpenInbox(itemId: string): void;
   onFace(face: "chat" | "history" | "settings" | "inbox"): void;
@@ -64,8 +68,13 @@ export function CommandPalette(props: CommandPaletteProps): React.ReactElement |
   const entries = useMemo<Entry[]>(() => {
     const out: Entry[] = [];
 
-    // 判断待ちを**先頭に置く**。横断して引くとき、POを待たせているものが最初に出る
-    for (const item of props.inbox.filter((i) => !i.resolvedAt)) {
+    /**
+     * 判断待ちを**先頭に置く**。横断して引くとき、POを待たせているものが最初に出る。
+     * **知らせ（ADR-0022 決定109・110）は含めない**——朱の `is-waiting` は「あなたの
+     * 判断を待っている」印なので、読めば片付く知らせに付けると意味が壊れる。
+     * 知らせの行き先（畳んだ枝）は下の「畳んだ会話」から引ける。
+     */
+    for (const item of props.inbox.filter((i) => !i.resolvedAt && !i.notice)) {
       out.push({
         id: `inbox:${item.id}`,
         icon: "inbox",
@@ -91,8 +100,9 @@ export function CommandPalette(props: CommandPaletteProps): React.ReactElement |
         icon: "history",
         group: "畳んだ会話",
         label: t.title,
-        hint: "開き直す",
-        run: () => props.onReopenThread(t.threadId),
+        // 結論があれば先に見せる（ADR-0022 決定111）。押しても開き直さない——読むだけ
+        hint: t.conclusion ? `結論：${t.conclusion}` : "読む",
+        run: () => props.onReadThread(t.threadId),
       });
     }
     for (const c of props.catalog) {

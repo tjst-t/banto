@@ -853,6 +853,8 @@ export interface InboxItemView {
     settings?: { section?: string };
   };
   blocking?: number;
+  /** 判断ではなく知らせ（ADR-0022 決定109・110）。判断待ちの数（`inboxPending`）に数えない。 */
+  notice?: boolean;
   createdAt: string;
   resolvedAt?: string;
   resolution?: string;

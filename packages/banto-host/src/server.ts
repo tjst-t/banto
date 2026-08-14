@@ -421,6 +421,26 @@ export class BantoHostServer {
     this.threads.onBranchResult = (trunk, entry) =>
       this.broadcast({ type: "branch_result", threadId: trunk.id, ...entry });
     /**
+     * 枝を畳んだことを取次へ知らせる（ADR-0022 決定109）。**求めるのは判断ではない**ので、
+     * `notice: true` を付けて判断待ちの数（`inboxPending`）から外す（決定110）。
+     * 詳細（調べた・決めた・残った）は幹へ流さないのと同じ理由で本文には出さず、
+     * 在ることだけを言う——読むのは押して枝を開いてから。
+     */
+    this.threads.onBranchMerged = (thread) => {
+      if (!this.inbox) return;
+      const detailNote = thread.conclusionDetail ? "（詳細は開けば読めます）" : "";
+      this.inbox.post({
+        source: { id: "banto", label: "番頭" },
+        kind: "枝を回収しました",
+        notice: true,
+        title: `枝「${thread.title}」を幹に回収しました`,
+        what: `${thread.conclusion ?? ""}${detailNote}`,
+        ask: "確認したら押してください（再開したければ、開いてから話しかけてください）",
+        actions: [{ id: "read", label: "読んだ", tone: "plain" }],
+        opens: { threadId: thread.id },
+      });
+    };
+    /**
      * 枝から幹への相談・報告（決定107）。**同じ列に並べる**ので、札と結論と同じ扱いで配る
      * ——知らせに混ぜると、幹を読み返したときにどの枝の話か辿れない。
      */

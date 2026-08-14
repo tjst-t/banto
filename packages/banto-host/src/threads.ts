@@ -936,6 +936,8 @@ export class ThreadRegistry {
       trunk.record(entry);
       this.onBranchResult?.(trunk, entry);
     }
+    // 取次への知らせ（決定109）。幹の帯とは別の置き場——親を引けなくても枝は畳まれている
+    this.onBranchMerged?.(thread);
     // 畳むときは間引かず今すぐ書く（畳んだ直後に落ちても会話が残るように）
     this.flush(thread);
     this.refreshDefault();
@@ -1062,6 +1064,15 @@ export class ThreadRegistry {
         }
       ) => void)
     | undefined;
+  /**
+   * 枝が畳まれたときに呼ばれる（ADR-0022 決定109）。
+   *
+   * `onBranchResult` の隣——ただし宛先は違う。あちらは幹の帯（記録）へ、こちらは
+   * **取次**（知らせ）へ積むためのフック。帳簿は配信も取次も知らない（D5）ので、
+   * サーバが差し込む。親を引けなかった枝（`trunk` が無い）でも、枝自体は畳まれている
+   * ので呼ぶ——知らせの宛先は枝そのもの（`opens.threadId`）であって幹ではない。
+   */
+  onBranchMerged: ((thread: Thread) => void) | undefined;
   /** 枝から幹へ札が1枚立ったときに呼ばれる（決定107）。 */
   onBranchNote: ((trunk: Thread, entry: BranchNote) => void) | undefined;
 

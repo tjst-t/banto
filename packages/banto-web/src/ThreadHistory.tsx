@@ -76,8 +76,8 @@ export function ThreadHistory(props: ThreadHistoryProps): React.ReactElement {
         <div className="history-list-scroll">
           {closedThreads.length === 0 ? (
             <p className="history-empty">
-              終えた幹はまだありません。プロジェクトが終わったら番頭に「この幹は終い」と
-              伝えてください——持って出る記憶を選んでから終います。
+              畳んだ会話はまだありません。枝を畳むか、プロジェクトが終わったら番頭に
+              「この幹は終い」と伝えてください——幹は持って出る記憶を選んでから終います。
             </p>
           ) : (
             closedThreads.map((thread) => (
@@ -90,7 +90,15 @@ export function ThreadHistory(props: ThreadHistoryProps): React.ReactElement {
                   <span className="history-row-title">{thread.title}</span>
                   <span className="history-row-at">{formatClosedAt(thread.closedAt)}</span>
                 </div>
-                <div className="history-row-preview">{preview(thread)}</div>
+                {/* 枝は畳むと結論が付く（決定77）。一覧のまま結末が読めることが要点（ADR-0022 決定111） */}
+                {thread.conclusion ? (
+                  <div className="history-row-conclusion">
+                    <span className="bres-label">結論：</span>
+                    {thread.conclusion}
+                  </div>
+                ) : (
+                  <div className="history-row-preview">{preview(thread)}</div>
+                )}
                 <div className="history-row-actions">
                   <button
                     className="history-row-resume"

@@ -919,8 +919,12 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
       renameThread,
       closeChapter,
       inbox,
-      /** まだ答えの出ていない数。レールの札に出る唯一の数字（導出なので持たない） */
-      inboxPending: inbox.filter((i) => !i.resolvedAt).length,
+      /**
+       * まだ答えの出ていない**判断**の数。レールの札に出る唯一の数字（導出なので持たない）。
+       * 知らせ（ADR-0022 決定109・110）は数えない——読めば片付くだけのものを混ぜると、
+       * この数字が「判断待ち」を意味しなくなる。
+       */
+      inboxPending: inbox.filter((i) => !i.resolvedAt && !i.notice).length,
       answerInbox,
       openInbox,
     }),

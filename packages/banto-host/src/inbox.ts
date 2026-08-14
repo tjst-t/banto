@@ -102,6 +102,12 @@ export interface InboxItem {
   opens?: InboxOpens;
   /** この判断が止めている後続の数。並び順の第二の軸。 */
   blocking?: number;
+  /**
+   * **判断ではなく知らせ**（ADR-0022 決定109・110）。求めるのは「読んだ」の1つだけ。
+   * `pendingCount` に数えず、`list` でも判断より下・答えの出たものより上に置く
+   * ——ここを判断と混ぜると、判断待ちの数が意味を失う。
+   */
+  notice?: boolean;
   createdAt: string;
   /** 答えたら埋まる。埋まった一通は数に入らず、下の段へ落ちる。 */
   resolvedAt?: string;
@@ -148,6 +154,8 @@ export interface PostInput {
   actions: InboxAction[];
   opens?: InboxOpens;
   blocking?: number;
+  /** 判断ではなく知らせ（決定109・110）。 */
+  notice?: boolean;
 }
 
 /**
@@ -223,25 +231,33 @@ export class Inbox {
 
   /**
    * いま積まれているもの。**並び順は滞留 × 止めている後続**（spec-ui §1）。
-   * 答えの出たものは後ろにまとめる。
+   *
+   * 3段に分ける（決定110）：**判断**（上）→**知らせ**（下、未読）→**答えの出たもの**
+   * （最下段）。知らせを判断と同じ段に混ぜると、上段が「読めば片付くもの」で埋まり、
+   * 本当に判断が要るものが埋没する。
    */
   list(): InboxItemView[] {
     const weight = (i: InboxItem): number => {
       const ageMin = (Date.now() - Date.parse(i.createdAt)) / 60000;
       return ageMin * (1 + (i.blocking ?? 0));
     };
+    const bucket = (i: InboxItem): number => (i.resolvedAt ? 2 : i.notice ? 1 : 0);
     return [...this.items.values()]
       .sort((a, b) => {
-        if (!a.resolvedAt !== !b.resolvedAt) return a.resolvedAt ? 1 : -1;
+        const byBucket = bucket(a) - bucket(b);
+        if (byBucket !== 0) return byBucket;
         if (a.resolvedAt && b.resolvedAt) return b.resolvedAt.localeCompare(a.resolvedAt);
         return weight(b) - weight(a);
       })
       .map(toView);
   }
 
-  /** まだ答えの出ていない数。上段の札に出る唯一の数字。 */
+  /**
+   * まだ答えの出ていない**判断**の数。上段の札に出る唯一の数字。
+   * 知らせは数えない（決定110）——読めば片付くだけのものを混ぜると数の意味が壊れる。
+   */
   pendingCount(): number {
-    return [...this.items.values()].filter((i) => !i.resolvedAt).length;
+    return [...this.items.values()].filter((i) => !i.resolvedAt && !i.notice).length;
   }
 
   private emit(): void {

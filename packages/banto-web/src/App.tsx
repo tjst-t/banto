@@ -255,6 +255,24 @@ export function App(): React.ReactElement {
   );
 
   /**
+   * 畳んだ会話を**読む**（ADR-0022 決定111）。⌘K の「畳んだ会話」から。
+   *
+   * **`state` を書き換えない**——確認しに行っただけで開き直るのは事故（PO裁定）。
+   * 履歴の面へ移り、その会話を選ぶだけ（`ThreadHistory` の一覧行を押したのと同じ）。
+   * 再開したいときは、開いた履歴の中の「再開する」を明示に押す。
+   */
+  const readThread = useCallback(
+    (threadId: string) => {
+      navigate((prev) => ({
+        face: "history",
+        ...(prev.threadId ? { threadId: prev.threadId } : {}),
+        readThreadId: threadId,
+      }));
+    },
+    [navigate]
+  );
+
+  /**
    * 取次の一通を開く（決定73・75）。
    * **会話と面はホストが動かす**。画面が受け持つのは「どの面を出すか」だけ。
    */
@@ -375,6 +393,9 @@ export function App(): React.ReactElement {
       session.inbox.filter(
         (i) =>
           !i.resolvedAt &&
+          // 知らせ（ADR-0022 決定109・110）は判断待ちではない。ここに混ぜると、
+          // 畳んだ枝を読んでいるだけなのに「あなたの判断を待っています」が朱で立つ
+          !i.notice &&
           (i.opens?.threadId === undefined
             ? threadId === trunk?.threadId
             : i.opens.threadId === threadId)
@@ -541,7 +562,7 @@ export function App(): React.ReactElement {
         catalog={openableCatalog}
         inbox={session.inbox}
         onOpenThread={(id) => openThread(id, { focus: true })}
-        onReopenThread={(id) => session.reopenThread(id)}
+        onReadThread={readThread}
         onOpenView={(kind) => {
           backToChat();
           openView(kind);
@@ -845,9 +866,13 @@ export function App(): React.ReactElement {
             )}
             {historyOpen && (
               <ThreadHistory
-                /* 履歴は**終えた幹の一覧**（PO裁定 2026-08-10）。畳んだ枝は幹の記録に
-                   結論1行として残るので、ここへは並べない */
-                closedThreads={session.closedThreads.filter((t) => t.kind === "trunk")}
+                /**
+                 * 履歴は**畳んだものの置き場**（決定30c・ADR-0022 決定111で復元）。
+                 * 幹だけに絞っていたのは「畳んだ枝は幹の記録に結論1行として残るので、
+                 * ここへは並べない」という意図だったが、その1行は流れる場所（幹の帯）
+                 * にしか無く、他の話題が挟まると読めなくなる。結論つきで並べる。
+                 */
+                closedThreads={session.closedThreads}
                 chatOf={session.chatOf}
                 ensureHistory={session.ensureHistory}
                 historyLoaded={session.historyLoaded}
