@@ -779,6 +779,8 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
       "畳むと既定の一覧から外れるので、「まだ見る必要がある」ふりをしなくなる。" +
       "**動いている職人は止める**（止まらなければ、どのセッションが残ったかを返す）。" +
       "既に closed / superseded のものは断る。" +
+      "**畳む理由が「諦める」ならこの口、「外で決着した（失敗ではない）」なら kobo.settle。**" +
+      "どちらもどの状態からでも畳めるので、選ぶ基準は状態ではなく理由——帳簿には別々に残り、別々に数える。" +
       "落ちたものを直せるなら先に kobo.reopen、依頼が別物になったなら kobo.supersede を考えること。",
     parameters: Type.Object({
       projectTag: Type.String({ description: "どのプロジェクトか" }),
@@ -827,8 +829,15 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
    *
    * `kobo.abandon` の隣。違うのは**失敗ではない**ということ——中身が別の経路で
    * 入った・もう要らなくなった・番頭が直接片づけた、のどれか。
-   * `abandon` は failed にしか効かず、queued / paused / review-ready のまま
-   * 決着したものを降ろす道が無かった（2026-08-13、番頭が実際にここで詰まった）。
+   *
+   * **分かれ目は畳める状態の広さではなく、帳簿に何を書くか。** この口を足した当初は
+   * `abandon` が failed 専用で、queued / paused / review-ready のまま決着したものを
+   * 降ろす道が無かった（2026-08-13、番頭が実際にここで詰まった）。その穴は PO 裁定
+   * 2026-08-14 で `abandon` が横断遷移になったことで塞がり、**畳める範囲は重なった**。
+   * それでも口を分けたままにしてあるのは、`settle` は `task_settled_outside`
+   * （outcome・settled_from つき）、`abandon` は諦めた記録、と**別々に数えられるように
+   * するため**——1つにまとめると「どれだけ捨てたか」と「どれだけ工場の外で片付いたか」が
+   * 混ざり、統治を測れなくなる（PO 裁定 2026-08-14）。
    */
   const settle = defineNamespacedTool({
     name: "kobo.settle",
@@ -840,7 +849,8 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
       "\n例: {projectTag: \"banto\", taskId: \"task-0092\", outcome: \"landed_elsewhere\", " +
       "reason: \"マージ 539bdb0 で main に入っている\"} → 畳んだ旨" +
       "\n**記録は消えない**——それまでの経緯も、どう決着したかも帳簿に残る。" +
-      "\n落ちた（failed）ものを諦めるのは kobo.abandon（失敗として残す）。" +
+      "\n**畳む理由が「外で決着した（失敗ではない）」ならこの口、「諦める」なら kobo.abandon。**" +
+      "どちらもどの状態からでも畳めるので、選ぶ基準は状態ではなく理由——帳簿には別々に残り、別々に数える。" +
       "着地の最中（merging）のものを降ろすのは kobo.supersede。" +
       "**まだ中身が要るなら畳まないこと**——kobo.reopen / kobo.send_back を先に考える。" +
       ID_HINT,

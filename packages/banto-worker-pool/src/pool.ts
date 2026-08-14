@@ -1892,12 +1892,23 @@ export class WorkerPool {
    * **どのリポジトリを見るかは、職人の作業場所から決める。** 取り置きは共有の `.git` 側に
    * 出来るので、そのリポジトリのワークツリーが1つでも残っていれば全部見える。
    * `repoPath` を渡せばそこだけを見る（畳んだ職人しか居ないときの逃げ道）。
+   *
+   * **返りは `lastKeptAt` の降順＝先頭が最新。リポジトリを跨いでもそう。**
+   * `listKeepBranches` の並べ替えはリポジトリ1本の中でしか効かないので、連結しただけでは
+   * 「それぞれの中では降順、全体では走査した順」になる。番頭の知らせは**先頭だけを読んで**
+   * 在り処を案内するため、崩れると**いちばん古い枝を案内する**——`f56c43e` で一度直した
+   * のと同じ間違いを、多プロジェクト構成で開け直すことになる。
    */
   keeps(
     filter: { projectTag?: string; taskId?: string; repoPath?: string } = {}
   ): KeepBranchInfo[] {
     // 同じ枝を2度返さないのは `keepRepos` の受け持ち（`.git` ごとに1回しか見に行かない）
-    return this.keepRepos(filter.repoPath).flatMap((repo) => listKeepBranches(repo, filter));
+    const found = this.keepRepos(filter.repoPath).flatMap((repo) =>
+      listKeepBranches(repo, filter)
+    );
+    // 連結したあとに**全体で**並べ直す（`listKeepBranches` と同じ向き・同じ比べ方）
+    found.sort((a, b) => b.lastKeptAt.localeCompare(a.lastKeptAt));
+    return found;
   }
 
   /**
