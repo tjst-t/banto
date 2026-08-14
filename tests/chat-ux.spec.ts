@@ -985,6 +985,8 @@ test.describe("履歴の会話ログ", () => {
       ],
     });
     await page.locator(".rail-btn[data-key='h']").click();
+    // 履歴を開いた直後に出ているのは「枝」（PO報告 2026-08-14）。終えた幹は隣のタブ
+    await page.locator(".history-tabs .cv-seg-opt", { hasText: "幹" }).click();
     await page.locator(".history-row", { hasText: "別の会話" }).click();
 
     const log = page.locator(".history-read-scroll");

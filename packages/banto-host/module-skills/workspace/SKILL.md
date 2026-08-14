@@ -20,7 +20,7 @@ metadata:
 2. **場所を選んで見る**
    - `file.*` も `git.*` も**どの場所か `place` 引数で選ぶ**（呼び出しごとに選ぶ。場所が1つしかなければ省略できる）
    - ファイル閲覧: `file.list` / `file.read` / `file.stat` / `file.find` / `file.grep`
-   - git 閲覧: `git.status`（変更の有無）/ `git.diff`（差分）/ `git.log`（履歴）/ `git.show`（特定のコミット）/ `git.blame`（行の出所）/ `git.branches`（ブランチ一覧）
+   - git 閲覧: `git.status`（変更の有無）/ `git.diff`（差分）/ `git.log`（履歴）/ `git.show`（特定のコミット）。**閲覧はこの4本**——行の出所やブランチの一覧が要るときは職人へ委譲する（D10）
 3. **書きたいときは、まず書けるか確かめる。** `place.list` の writable に範囲が無ければ `file.write` は失敗する——それが既定
 4. **書こうとして断られた・範囲が無いときは `place.request_write` で範囲を頼む**
    - `place` に場所、`patterns` に**必要な分だけ狭い**範囲（例: `docs/**`）、`reason` に一言
