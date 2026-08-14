@@ -40,26 +40,6 @@ function git(args: string[], cwd: string): void {
   if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`);
 }
 
-const FM = (id: string, tier?: string) =>
-  [
-    "---",
-    `id: ${id}`,
-    "type: task",
-    "kind: feature",
-    `title: ${id}`,
-    "status: queued",
-    ...(tier ? [`model_tier: ${tier}`] : []),
-    "scope:",
-    "  paths:",
-    "    - src/**",
-    "acceptance:",
-    '  - { id: a1, text: "動くこと" }',
-    "---",
-    "",
-    "依頼の本文。",
-    "",
-  ].join("\n");
-
 interface Harness {
   daemon: Daemon;
   repoDir: string;
@@ -83,7 +63,6 @@ async function harness(config: string): Promise<Harness> {
   const daemon = Daemon.create({
     port: await freePort(),
     dataDir: path.join(tmpDir, "data"),
-    watchIntervalMs: 99999,
     tickIntervalMs: 99999,
     disableAutoSpawn: true,
     disableAuditSpawn: true,
@@ -99,8 +78,23 @@ async function teardown(h: Harness): Promise<void> {
   fs.rmSync(h.tmpDir, { recursive: true, force: true });
 }
 
-function writeTask(h: Harness, id: string, tier?: string): void {
-  fs.writeFileSync(path.join(h.repoDir, "work", "tasks", `${id}.md`), FM(id, tier), "utf-8");
+/**
+ * 第4便：積むのは道具の入力から。**定義ファイルを先に書く経路は無くなった**
+ * （Kobo が採番して記録を書く）ので、等級だけを渡して積む。
+ */
+function enqueue(h: Harness, tier?: string): ReturnType<Daemon["enqueueTask"]> {
+  return h.daemon.enqueueTask(
+    h.proj,
+    {
+      title: "上限の確認",
+      kind: "fix",
+      body: "等級の上限を確かめる。",
+      scope: { paths: ["src/**"] },
+      acceptance: [{ text: "確かめられる" }],
+      ...(tier ? { model_tier: tier as "reasoning" | "standard" | "fast" } : {}),
+    },
+    { originRef: "試験" }
+  );
 }
 
 describe("[task-0063] 等級の上限（決定67）", () => {
@@ -118,8 +112,7 @@ describe("[task-0063] 等級の上限（決定67）", () => {
   });
 
   it("[a2] 上限を超える model_tier のタスクは**拒否**される。黙って丸めない", () => {
-    writeTask(h, "task-0200", "reasoning");
-    const result = h.daemon.enqueueTaskFile(h.proj, "task-0200");
+    const result = enqueue(h, "reasoning");
     assert.equal(result.ok, false);
     assert.match(
       (result as { reason: string }).reason,
@@ -131,21 +124,19 @@ describe("[task-0063] 等級の上限（決定67）", () => {
       /黙って丸めません/,
       "下の等級で勝手に走らせないことが分かる"
     );
-    assert.equal(h.daemon.getTask(h.proj, "task-0200"), undefined, "積まれていないこと");
+    assert.equal(h.daemon.getTasksByProject(h.proj).length, 0, "積まれていないこと");
   });
 
   it("[a3] 拒否の理由は呼び出し側に返る（積んだのに動かない、が黙って起きない）", () => {
     // enqueue の返りがそのまま kobo.enqueue の例外になる（Tool 側で throw する）
-    const result = h.daemon.enqueueTaskFile(h.proj, "task-0200");
+    const result = enqueue(h, "reasoning");
     assert.equal(result.ok, false);
     assert.ok((result as { reason: string }).reason.length > 20, "理由が具体的であること");
   });
 
   it("上限の内側なら通る", () => {
-    writeTask(h, "task-0201", "standard");
-    assert.equal(h.daemon.enqueueTaskFile(h.proj, "task-0201").ok, true);
-    writeTask(h, "task-0202", "fast");
-    assert.equal(h.daemon.enqueueTaskFile(h.proj, "task-0202").ok, true);
+    assert.equal(enqueue(h, "standard").ok, true);
+    assert.equal(enqueue(h, "fast").ok, true);
   });
 
   it("[a5] 設定に現れるのは数と等級だけ（Kobo はモデル名も金額も知らない）", () => {
@@ -169,8 +160,7 @@ describe("[task-0063/a4] 監査は上限の対象外（検査を費用のつま�
   it("上限が standard でも、監査は reasoning のまま回る", async () => {
     const h = await harness("limits:\n  max_model_tier: standard\n");
     try {
-      writeTask(h, "task-0210", "fast");
-      assert.equal(h.daemon.enqueueTaskFile(h.proj, "task-0210").ok, true);
+      assert.equal(enqueue(h, "fast").ok, true);
 
       // 監査の等級は spec-daemon-core §3.5 の固定値（reasoning）。上限では下がらない
       // ——下げられる形にすると「安くするために検査を弱める」ができてしまう（決定57）
@@ -199,8 +189,7 @@ describe("[task-0063/a4] 監査は上限の対象外（検査を費用のつま�
   it("失敗駆動の昇格は上限で据え置かれる（積んだ後に止めない）", async () => {
     const h = await harness("limits:\n  max_model_tier: standard\n");
     try {
-      writeTask(h, "task-0211", "standard");
-      assert.equal(h.daemon.enqueueTaskFile(h.proj, "task-0211").ok, true);
+      assert.equal(enqueue(h, "standard").ok, true);
       // 昇格の判断は rework の起こし方に効く。上限を超える昇格は据え置く（拒否ではない）
       // ——積む時点で上限内だったタスクを途中で止めるのは筋が違う
       assert.equal(h.daemon.projectConfig(h.proj).limits.maxModelTier, "standard");

@@ -348,7 +348,6 @@ describe("[AC-S75f66b-5-4] Pipeline E2E: drop → auto-spawn → implement → R
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
-      watchIntervalMs: 500,
       tickIntervalMs: 500,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
       workerPoolUrl: workerService.baseUrl,

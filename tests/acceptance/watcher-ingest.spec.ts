@@ -51,7 +51,6 @@ describe("[AC-Scc9152-1-1] Watcher ingests valid task definition → draft→que
     // Create work/tasks/ directory
     fs.mkdirSync(path.join(tmpRepoDir, "work", "tasks"), { recursive: true });
 
-    daemon = Daemon.create({ port: 0, dataDir: tmpDataDir, watchIntervalMs: 500, disableAutoSpawn: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
 

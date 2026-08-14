@@ -73,7 +73,6 @@ before(async () => {
   daemon = Daemon.create({
     port: 0,
     dataDir: path.join(tmpDir, "data"),
-    watchIntervalMs: 99999,
     // **定期の掃きは止める。** 遷移後のフックだけで昇格が起きる状況にする
     tickIntervalMs: 99999,
     worktreeBaseDir: path.join(tmpDir, "worktrees"),

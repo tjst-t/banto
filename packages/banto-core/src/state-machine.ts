@@ -89,6 +89,16 @@ const REGULAR_TRANSITIONS: ReadonlySet<string> = new Set<string>([
   "review-ready:implementing",
   "in-review:implementing",
   "approved:implementing",
+
+  // ── コンフリクトは「同じ契約の次の試行」（第4便・PO 採用 2026-08-14）────────
+  //
+  // rebase が衝突したとき、以前は機構が `kind: conflict` の**新しいタスクを起票**して
+  // いた。やめた——**機構は契約を作らない**。同じタスクのまま実装へ戻し、衝突の中身を
+  // 指摘として渡して解かせる。監査もマージ前ゲートも**元の契約で**やり直しになるので、
+  // 「解消タスクの基準（衝突が解けたこと）だけを見て main に入る」穴が閉じる。
+  //
+  // ここも**後ろへ戻る道**である（番頭は進められるが飛ばせない・決定62c）。
+  "merging:implementing",
 ]);
 
 /**

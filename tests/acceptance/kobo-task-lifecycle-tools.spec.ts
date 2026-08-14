@@ -207,7 +207,6 @@ describe("[kobo-task-lifecycle-tools] merging のタスクを降ろす", () => {
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
-      watchIntervalMs: 200,
       tickIntervalMs: 200,
       disableAutoSpawn: true,
       disableAuditSpawn: true,

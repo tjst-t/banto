@@ -265,7 +265,6 @@ describe("[AC-S75f66b-6-3-A] resolution task merged → origin resumed and reach
 
     daemon = Daemon.create({
       port: 0, dataDir: path.join(tmpDir, "data"), worktreeBaseDir,
-      tickIntervalMs: 200, watchIntervalMs: 200,
       disableAuditSpawn: true, maxConcurrentSessions: 0,
       // task-0060: 職人を要らないので Worker Pool に頼まない
       disableAutoSpawn: true,
@@ -436,7 +435,6 @@ describe("[AC-S75f66b-6-3-B] resolution task failed → origin chain-fails (I2)"
 
     daemon = Daemon.create({
       port: 0, dataDir: path.join(tmpDir, "data"), worktreeBaseDir,
-      tickIntervalMs: 200, watchIntervalMs: 200,
       disableAuditSpawn: true, maxConcurrentSessions: 0,
       // task-0060: 職人を要らないので Worker Pool に頼まない
       disableAutoSpawn: true,
@@ -699,7 +697,6 @@ describe("[inc-0063] 片付いた解消タスクで origin を何度も再開し
 
     daemon = Daemon.create({
       port: 0, dataDir: path.join(tmpDir, "data"), worktreeBaseDir,
-      tickIntervalMs: 200, watchIntervalMs: 200,
       disableAuditSpawn: true, maxConcurrentSessions: 0,
       disableAutoSpawn: true,
     });

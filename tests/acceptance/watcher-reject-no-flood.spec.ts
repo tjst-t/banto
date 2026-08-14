@@ -31,7 +31,6 @@ describe("[Fix-1] Rejected file does not re-emit task_ingest_rejected on every p
     tmpRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-noflood-repo-"));
     fs.mkdirSync(path.join(tmpRepoDir, "work", "tasks"), { recursive: true });
 
-    daemon = Daemon.create({ port: 0, dataDir: tmpDataDir, watchIntervalMs: INTERVAL_MS, disableAutoSpawn: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
 

@@ -222,7 +222,6 @@ describe("[AC-S75f66b-6-2] Conflict task flows through normal pipeline", () => {
       dataDir,
       worktreeBaseDir,
       tickIntervalMs: 200,
-      watchIntervalMs: 200, // fast watcher
       disableAuditSpawn: true,
       // Prevent auto-spawn: we drive the conflict task manually via HTTP transitions.
       // This avoids pi CLI resolution failures in CI environments.

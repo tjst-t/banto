@@ -26,7 +26,8 @@ export {
   koboSkillsDir,
   KOBO_MODULE_NAME,
 } from "./kobo-module.js";
-export { createKoboTools, taskFilePath, readTaskDefinition } from "./kobo-tools.js";
+export { createKoboTools } from "./kobo-tools.js";
+export { taskFilePath } from "./task-record.js";
 // 決定41: 工場も設定画面に区画を出す（役割ごとの職人の当て方。PO裁定 2026-08-10）
 export {
   createKoboSettings,
@@ -67,16 +68,21 @@ export type {
   MergeGateOptions,
 } from "./merge-gate.js";
 
-// ConflictFiler — 解消タスクの起票と、origin↔解消タスクの対応づけ（S75f66b-6）。
-// inc-0063 の周回を止める判定はここに置いてあるので、試験から直に叩けるようにする
+// タスクの記録ファイル（`work/tasks/task-NNNN.md`）——第4便で Kobo が書き手になった。
+// 採番・書き出し・読み戻しの確認は試験から直に叩けるようにする
 export {
-  deriveOriginResolutionPairs,
-  hasOpenResolutionTask,
-} from "./conflict-filer.js";
-export type {
-  OriginResolutionPair,
-  DeriveOriginResolutionOptions,
-} from "./conflict-filer.js";
+  nextTaskNumber,
+  assignAcceptanceIds,
+  renderTaskRecord,
+  checkWritable,
+  verifyRoundTrip,
+  writeTaskRecord,
+  contractPayload,
+  contractFromRecord,
+  extractTaskBody,
+  TASKS_DIR,
+} from "./task-record.js";
+export type { TaskContractInput, TaskContract, TaskContractAmendment } from "./task-record.js";
 
 // MergeQueue — serial merge processor (S75f66b-5, spec-daemon-core §4.1)
 export { deriveQueue, processMergeQueue } from "./merge-queue.js";

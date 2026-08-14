@@ -130,7 +130,6 @@ before(async () => {
   daemon = Daemon.create({
     port: await freePort(),
     dataDir: path.join(tmpDir, "data"),
-    watchIntervalMs: 99999,
     tickIntervalMs: 300,
     disableAutoSpawn: true,
     disableAuditSpawn: true,

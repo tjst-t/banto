@@ -64,7 +64,6 @@ describe("[task-0001] いま着手できる仕事（ready クエリ）", () => {
     daemon = Daemon.create({
       port: 0,
       dataDir: tmpDir,
-      watchIntervalMs: 99999,
       tickIntervalMs: 99999,
       disableAutoSpawn: true,
     });

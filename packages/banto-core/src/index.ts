@@ -79,7 +79,7 @@ export type {
 } from "./env-profile-parser.js";
 
 // Task frontmatter parser + validator
-export { validateTaskFrontmatter, extractFrontmatter, parseYamlFrontmatter } from "./task-frontmatter.js";
+export { validateTaskFrontmatter, extractFrontmatter, parseYamlFrontmatter, VALID_TASK_KINDS } from "./task-frontmatter.js";
 export type { TaskFrontmatter, FrontmatterValidation } from "./task-frontmatter.js";
 
 // EventLog

@@ -85,7 +85,6 @@ async function harness(options: { config?: string } = {}): Promise<Harness> {
     port,
     dataDir: path.join(tmpDir, "data"),
     // 定義ファイルは **明示的に積む**（watcher に拾わせない）——入口の検査なので
-    watchIntervalMs: 99999,
     tickIntervalMs: 200,
     disableAutoSpawn: true,
     disableAuditSpawn: true,

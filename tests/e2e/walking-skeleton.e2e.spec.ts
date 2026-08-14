@@ -287,7 +287,6 @@ describe("[AC-S254276-4-2] Walking skeleton E2E — task drop → auditing (exec
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
-      watchIntervalMs: 500,
       tickIntervalMs: 500,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
       workerPoolUrl: workerService.baseUrl,

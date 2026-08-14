@@ -133,7 +133,6 @@ before(async () => {
   daemon = Daemon.create({
     port: 0,
     dataDir,
-    watchIntervalMs: 99999,
     tickIntervalMs: 99999,
     disableAutoSpawn: true,
     disableAuditSpawn: true,
@@ -210,7 +209,6 @@ describe("[task-0081] 落ちた理由が読める", () => {
 
     // 帳簿を読み直す（再起動と同じ道）。番頭が見るのは常にこの読み直したもの
     daemon = Daemon.create({
-      port: 0, dataDir, watchIntervalMs: 99999, tickIntervalMs: 99999,
       disableAutoSpawn: true, disableAuditSpawn: true,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
       workerPoolUrl: workers.url,

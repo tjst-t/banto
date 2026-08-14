@@ -94,7 +94,6 @@ describe("[task-0062] 積んだ後にファイルを直しても反映されな�
       port: await freePort(),
       dataDir: path.join(tmpDir, "data"),
       // watcher を**速く**回す：ここで見たいのは「書き換えを検知したときに何が残るか」
-      watchIntervalMs: 100,
       tickIntervalMs: 200,
       disableAutoSpawn: true,
       disableAuditSpawn: true,

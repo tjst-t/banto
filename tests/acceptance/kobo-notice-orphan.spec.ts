@@ -82,7 +82,6 @@ async function harness(): Promise<Harness> {
     port,
     dataDir: path.join(tmpDir, "data"),
     // **watcher に拾わせる**（決定64 の正規の入口）。ここが origin の付かない経路
-    watchIntervalMs: 100,
     tickIntervalMs: 200,
     disableAutoSpawn: true,
     disableAuditSpawn: true,

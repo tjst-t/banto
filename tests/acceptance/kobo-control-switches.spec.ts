@@ -204,7 +204,6 @@ describe("[kobo-control-switches] 受け持ちを外す口と、取り込みを�
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
-      watchIntervalMs: 200,
       tickIntervalMs: 200,
       disableAutoSpawn: true,
       disableAuditSpawn: true,
@@ -410,7 +409,6 @@ describe("[kobo-control-switches] マージキューを止める口（自動起�
       dataDir: path.join(tmpDir, "data"),
       worktreeBaseDir,
       tickIntervalMs: 200,
-      watchIntervalMs: 200,
       disableAutoSpawn: true,
       disableAuditSpawn: true,
       // 明示する——環境変数（BANTO_DISABLE_MERGE_QUEUE）でこのテストの意味が変わらないように
@@ -545,7 +543,6 @@ describe("[kobo-control-switches] 3つの口は再起動しても残る", () => 
     daemon = Daemon.create({
       port: 0,
       dataDir,
-      watchIntervalMs: 200,
       tickIntervalMs: 200,
       disableAutoSpawn: true,
       disableAuditSpawn: true,

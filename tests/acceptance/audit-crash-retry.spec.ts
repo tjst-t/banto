@@ -72,7 +72,6 @@ before(async () => {
   daemon = Daemon.create({
     port: 0,
     dataDir: path.join(tmpDir, "data"),
-    watchIntervalMs: 99999,
     // 職人のイベントは tick で引き取る（決定29c）
     tickIntervalMs: 200,
     worktreeBaseDir: path.join(tmpDir, "worktrees"),

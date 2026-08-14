@@ -212,7 +212,6 @@ describe("[AC-S75f66b-2-2] Physical quota caps concurrent spawns; freed slot unb
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
-      watchIntervalMs: 99999,
       tickIntervalMs: 300,
       maxConcurrentSessions: 1,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),

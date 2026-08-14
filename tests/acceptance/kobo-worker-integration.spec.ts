@@ -96,7 +96,6 @@ async function harness(options: { tickIntervalMs?: number } = {}): Promise<Harne
   const daemon = Daemon.create({
     port: 0,
     dataDir,
-    watchIntervalMs: 99999,
     tickIntervalMs: options.tickIntervalMs ?? 99999,
     // 明示の置き場（テスト用リポジトリにはリモートが無く gwq が場所を決められない）
     worktreeBaseDir: path.join(tmpDir, "worktrees"),
@@ -593,7 +592,6 @@ describe("[task-0060/a1] Kobo の再起動：職人は畳まず、落ちてい�
     const restarted = Daemon.create({
       port: 0,
       dataDir: h.dataDir,
-      watchIntervalMs: 99999,
       tickIntervalMs: 200,
       worktreeBaseDir: path.join(h.tmpDir, "worktrees"),
       workerPoolUrl: h.workers.url,
@@ -693,7 +691,6 @@ describe("[task-0060/a1] 本物の pi を Worker Pool 越しに起こす", () =>
     const daemon = Daemon.create({
       port: 0,
       dataDir,
-      watchIntervalMs: 99999,
       tickIntervalMs: 99999,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
       workerPoolUrl: workers.url,

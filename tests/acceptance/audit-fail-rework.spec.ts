@@ -182,7 +182,6 @@ describe("[AC-S75f66b-3-4] 1st audit fail: task back to implementing, rework ses
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
-      watchIntervalMs: 99999,
       tickIntervalMs: 99999,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
       workerPoolUrl: workers.url,
@@ -335,7 +334,6 @@ describe("[AC-S75f66b-3-4] 2nd consecutive audit fail: task becomes 'failed'", (
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
-      watchIntervalMs: 99999,
       tickIntervalMs: 99999,
       worktreeBaseDir: path.join(tmpDir, "worktrees"),
       workerPoolUrl: workers.url,
@@ -496,7 +494,6 @@ describe("[F2-governance] disableAuditSpawn flag emits audit_spawn_disabled even
     daemon = Daemon.create({
       port: 0,
       dataDir: path.join(tmpDir, "data"),
-      watchIntervalMs: 99999,
       tickIntervalMs: 99999,
       // F2 test: disableAuditSpawn must emit observable event, not silently skip.
       disableAuditSpawn: true,

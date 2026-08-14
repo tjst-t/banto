@@ -110,7 +110,6 @@ async function harness(profileBody: string): Promise<Harness> {
   const daemon = Daemon.create({
     port: await freePort(),
     dataDir,
-    watchIntervalMs: 99999,
     tickIntervalMs: 300,
     disableAutoSpawn: true,
     disableAuditSpawn: true,
