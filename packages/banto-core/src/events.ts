@@ -111,6 +111,17 @@ export interface TaskApprovedEvent extends EventBase {
   approvedBy: string;
   /** 何を見て良しとしたか（ADR-0013 決定57：判断の理由を帳簿に残す）。 */
   note?: string;
+  /**
+   * **POの意思表示がどこから来たか**（ADR-0023 決定113）。
+   *
+   * `approvedBy: "po"` の口が合言葉を要求しなくなった代わりに、監査可能性はここが担う
+   * ——「PO 本人か」を名乗りで確かめるのをやめ、「どの画面のどの操作で通ったか」を
+   * 記録で残す形へ移した。取次の札なら `inbox:in-xxxxxxxx#approve`、
+   * レビュー面の押下なら `ui:kobo.review`。
+   *
+   * 番頭（`approvedBy: "banto"`）には付かない——Tool の口は経路が1つしかないため。
+   */
+  via?: string;
 }
 
 /**

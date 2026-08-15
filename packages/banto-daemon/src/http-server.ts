@@ -19,10 +19,13 @@
  * 届く（`DaemonConfig.bindHost`）。広げるのは明示のときだけで、そのときは起動ログに
  * 警告が出る——番頭側を 127.0.0.1 に閉じた隣で、無認証の口が黙って開いている状態を作らない。
  *
- * **例外は1つだけ**（PO裁定 2026-08-11・第0波 0-3）：
- *   POST {KOBO_MODULE_PATH}/projects/:proj/tasks/:id/approve   → PO 専用（合言葉が要る）
- * ここは「番頭ではなく PO が通した」を帳簿に書く口なので、届くこと＝名乗れることでは困る。
- * 合言葉は `BANTO_PO_TOKEN`（`DaemonConfig.poToken`）。未設定なら口は閉じたまま（503）。
+ * **例外は無くなった**（ADR-0023 決定113）。以前は
+ *   POST {KOBO_MODULE_PATH}/projects/:proj/tasks/:id/approve
+ * だけが合言葉（`BANTO_PO_TOKEN`）を要求していたが、PO からは「自分専用の画面でなぜ
+ * 毎回名乗らされるのか」＝**OK を出せないのと同じ**と見えていた（imp-0034）。
+ * 分ける境界を「合言葉の有無」から「**Tool の経路か、人が押した経路か**」へ移し、
+ * 監査可能性は名乗りではなく**記録**（`task_approved.via`）で担保する。
+ * この口は他の口と同じく前段と待ち受けアドレスで守る。
  *
  * D5: all logic delegated to Daemon class; this file is pure routing.
  * D6: node:http (no framework dependency).
@@ -30,7 +33,6 @@
  */
 
 import * as http from "node:http";
-import * as crypto from "node:crypto";
 import { MODULE_TOOL_PATH, createSettingsTools } from "@banto/core";
 import type { Daemon } from "./daemon.js";
 import { createKoboTools } from "./kobo-tools.js";
@@ -66,34 +68,6 @@ class BadRequestError extends Error {
     super(message);
     this.name = "BadRequestError";
   }
-}
-
-/**
- * PO が名乗れているか（PO裁定 2026-08-11・第0波 0-3）。
- *
- * **決定40 の唯一の例外**。この口は「番頭ではなく PO が通した」を帳簿に書くので、
- * 待ち受けアドレスだけでは足りない——同じ機械に届く者はみな PO を名乗れてしまう。
- *
- * 合言葉が未設定なら口は**閉じたまま**（`unconfigured`）。無設定を「素通し」にすると、
- * 設定し忘れた本番で誰でも承認できる状態が黙って出来上がる（I2）。
- */
-function checkPoAuth(
-  req: http.IncomingMessage,
-  expected: string | undefined
-): "ok" | "unconfigured" | "denied" {
-  if (!expected) return "unconfigured";
-  const header = req.headers["authorization"];
-  const bearer = typeof header === "string" && /^Bearer\s+/i.test(header)
-    ? header.replace(/^Bearer\s+/i, "")
-    : undefined;
-  const raw = req.headers["x-banto-po-token"];
-  const presented = bearer ?? (typeof raw === "string" ? raw : undefined);
-  if (!presented) return "denied";
-  // 長さが違えば timingSafeEqual は投げる。先に長さで弾く（漏れるのは長さだけ）
-  const a = Buffer.from(presented, "utf-8");
-  const b = Buffer.from(expected, "utf-8");
-  if (a.length !== b.length) return "denied";
-  return crypto.timingSafeEqual(a, b) ? "ok" : "denied";
 }
 
 async function readBody(req: http.IncomingMessage): Promise<unknown> {
@@ -409,35 +383,27 @@ export function createHttpServer(daemon: Daemon): http.Server {
       },
     },
 
-    // PO が自分で通す口（PO裁定 2026-08-11・第0波 0-3）。
+    // PO が自分で通す口（PO裁定 2026-08-11・第0波 0-3、ADR-0023 決定113）。
     //
     // **番頭の `kobo.approve` とは名乗る者が違う**。レビュー段が `po` と判定されたタスク
-    // （統治コード・PO 必須の面）は番頭には通せず、いままで PO 自身がブラウザから通す経路が
-    // 無かった——ここが `approvedBy: "po"` として帳簿に書く唯一の口になる。
+    // （統治コード・PO 必須の面）は番頭には通せず、ここが `approvedBy: "po"` として
+    // 帳簿に書く唯一の口になる。
+    //
+    // **合言葉は要求しない**（決定113）。番頭（LLM）を分けているのは名乗りではなく
+    // **経路**——`kobo.approve` の Tool は `by: "banto"` しか渡さず、この口は Tool の
+    // 名前空間（`/tools/*`）の外にあり、番頭ホストの中継はそこを通さない。合言葉を
+    // 条件にすると PO にとっては「OK を出せない」のと同じだった（imp-0034）。
+    //
+    // 代わりに **`via` を要る形にする**——どの画面のどの操作から来た意思表示かを
+    // 帳簿へ書く。監査可能性は名乗りではなく記録で担保する（決定113）。
     //
     // 通しても関所は飛ばない（決定57）。この後にマージ前ゲートが回るのは番頭経由と同じ。
     //
-    // D5: 判断は `daemon.approveTask` にある。ここがするのは名乗りの照合と routing だけ。
+    // D5: 判断は `daemon.approveTask` にある。ここがするのは routing だけ。
     {
       method: "POST",
       pattern: new RegExp(`^${KOBO_MODULE_PATH}/projects/([^/]+)/tasks/([^/]+)/approve$`),
       handler: async (req, res, match) => {
-        const auth = checkPoAuth(req, daemon.poToken());
-        if (auth === "unconfigured") {
-          sendJson(res, 503, {
-            error: "po_token_not_configured",
-            message:
-              "PO の合言葉が設定されていないため、この口は閉じています。" +
-              "BANTO_PO_TOKEN を設定して Kobo を起動し直してください",
-          });
-          return;
-        }
-        if (auth === "denied") {
-          res.setHeader("WWW-Authenticate", 'Bearer realm="kobo-po"');
-          sendJson(res, 401, { error: "unauthorized" });
-          return;
-        }
-
         const proj = decodeURIComponent(match[1] ?? "");
         const taskId = decodeURIComponent(match[2] ?? "");
         if (!daemon.projectExists(proj)) {
@@ -451,9 +417,22 @@ export function createHttpServer(daemon: Daemon): http.Server {
         }
         const body = (await readBody(req)) as Record<string, unknown>;
         const note = typeof body["note"] === "string" ? body["note"] : undefined;
+        const via = typeof body["via"] === "string" ? body["via"].trim() : "";
+        // I2: 出どころ不明の PO 承認を黙って受けない。合言葉をやめた以上、
+        //     帳簿に何も残らない承認は「誰が通したか分からない」を作る
+        if (!via) {
+          sendJson(res, 400, {
+            error: "via_required",
+            message:
+              "via（どの画面のどの操作から来た承認か）を添えてください" +
+              "——PO の承認は出どころを帳簿に残します（決定113）",
+          });
+          return;
+        }
 
         const result = daemon.approveTask(proj, taskId, {
           by: "po",
+          via,
           ...(note ? { note } : {}),
         });
         // I2: 通せなかったことを success:true で包まない。理由をそのまま返す

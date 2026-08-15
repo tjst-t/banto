@@ -517,7 +517,10 @@ async function renderNotice(
         ? "これは **PO の判断が要る**もの（統治コード、または PO 必須の面に触る）です。" +
           "あなたは通せません——`inbox.post` で取次へ上げてください（決定57）。" +
           "札には**経緯**（このタスクを積んだときの originRef）・起きたこと・求める判断を書き、" +
-          "`canvasKind: \"kobo.review\"` を添えると、POが押したときに会話と面が同時に開きます。" +
+          `\`canvasKind: "kobo.review"\`・\`canvasParams: {projectTag: "${event.projectTag}", taskId: "${taskId}"}\`・` +
+          "`approveAction`（「通してよい」に当たる選択肢の id）を添えること。" +
+          "**この3つが揃って初めて、POが押した答えが工場の承認まで届きます**（決定113）" +
+          "——添え忘れると、POは押したのにレビュー面でもう一度押す羽目になります。" +
           "書き方は SKILL `kobo-review` に。"
         : "成果を確かめて、良ければ `kobo.approve` で通してください。" +
           "**通しても関所は飛びません**——この後マージ前ゲートが回ります。" +

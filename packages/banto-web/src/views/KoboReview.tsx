@@ -8,8 +8,9 @@
  * 3段のレビュー（決定57）がそのまま出る：
  *   - `po` と判定されたものは**番頭には通せない**。判定は工場が機械的に行い、
  *     この画面は結果を描くだけ（D5）——「気づいた人が上げる」形にしない。
- *     **PO 自身は合言葉を入れて通せる**（task-0147）——番頭の口（`kobo.approve`）ではなく
- *     PO 専用の HTTP の口を叩く。合言葉は画面が預かるだけで、番頭ホストは保存しない
+ *     **PO 自身は押すだけで通せる**（task-0147、ADR-0023 決定113）——番頭の口
+ *     （`kobo.approve`）ではなく PO 専用の HTTP の口を叩く。合言葉は要求せず、
+ *     どこから通したか（`via`）を帳簿に残す
  *   - それ以外は通せる。ただし**通しても関所は飛ばない**（マージ前ゲートが後に回る）
  *   - どちらの段でも**差し戻せる**（段2）。通すか差し戻すかが判断で、通すしか押せない面は
  *     判断の片側しか受け取れない
@@ -63,47 +64,21 @@ interface TaskDetail {
 const WAITING = ["review-ready", "in-review"];
 
 /**
- * PO の合言葉を置く場所（task-0147 の縛り4）。
- *
- * **`localStorage` には置かない。** 持つとしても最長でタブを閉じるまで——`sessionStorage`
- * はタブごとに消える。ここに置くのは「タスクを数本続けて通すのに毎回打ち直させない」ためだけで、
- * 番頭ホストにも Kobo にも送られた合言葉は残らない（照合して捨てる）。
- */
-const PO_TOKEN_KEY = "banto.kobo.po_token";
-
-/** 押したときだけ読む（描画のたびに触らない）。 */
-function readPoToken(): string {
-  try {
-    return window.sessionStorage.getItem(PO_TOKEN_KEY) ?? "";
-  } catch {
-    // sessionStorage が使えない（プライベート閲覧等）。手で入れてもらえば足りる
-    return "";
-  }
-}
-
-function rememberPoToken(token: string): void {
-  try {
-    window.sessionStorage.setItem(PO_TOKEN_KEY, token);
-  } catch {
-    // 覚えられなくても通せる。ここで失敗を画面に出すと、通ったことが埋もれる
-  }
-}
-
-/**
  * PO 専用の承認口（`http-server.ts` の `POST {baseUrl}/projects/:proj/tasks/:id/approve`）。
  *
  * **番頭の Tool 経路ではない**（task-0147 の縛り3）。`kobo.approve` は決定57 により
  * `po` 段のタスクを通せず、この口だけが `approvedBy: "po"` を帳簿に書く。
- * 名乗りはリクエストごとにブラウザから渡し、**どこにも保存されない**（縛り2）。
  *
- * I2: 「閉じている」（合言葉が未設定）と「名乗りが違う」と「通せない状態」を区別して返す
- * ——全部「失敗しました」に潰すと、PO は自分が何を直せばよいか分からない。
+ * **合言葉は要求しない**（ADR-0023 決定113）。この画面はもともと PO のものなのに
+ * 毎回名乗らされるのは「OK を出せない」のと同じだった（imp-0034）。代わりに
+ * **どこから通したか**（`via`）を帳簿へ残す——監査可能性は名乗りではなく記録が担う。
+ *
+ * I2: 断られた理由はそのまま出す。「失敗しました」に潰すと PO は何を直せばよいか分からない。
  */
 async function approveAsPo(
   endpoint: string,
   projectTag: string,
   taskId: string,
-  token: string,
   note?: string
 ): Promise<void> {
   const url =
@@ -111,24 +86,12 @@ async function approveAsPo(
     `/tasks/${encodeURIComponent(taskId)}/approve`;
   const res = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(note ? { note } : {}),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ via: "ui:kobo.review", ...(note ? { note } : {}) }),
   });
   if (res.ok) return;
 
   const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
-  if (res.status === 503 && body.error === "po_token_not_configured") {
-    throw new Error(
-      "PO の合言葉が工場に設定されていないため、この口は閉じています" +
-        "（BANTO_PO_TOKEN を設定して Kobo を起動し直してください）"
-    );
-  }
-  if (res.status === 401) {
-    throw new Error("合言葉が違います（名乗りが通りませんでした）");
-  }
   throw new Error(body.message ?? body.error ?? res.statusText);
 }
 
@@ -141,7 +104,6 @@ export function KoboReview({ params, endpoint }: CanvasViewProps): React.ReactEl
   );
   const [note, setNote] = useState("");
   const [reason, setReason] = useState("");
-  const [poToken, setPoToken] = useState(() => readPoToken());
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
   /** 片が付いたもの（通した／差し戻した）。どちらを押したかで出す言葉が違う */
@@ -228,15 +190,7 @@ export function KoboReview({ params, endpoint }: CanvasViewProps): React.ReactEl
     setBusy(true);
     setActionError(undefined);
     try {
-      await approveAsPo(
-        endpoint,
-        selected.projectTag,
-        selected.taskId,
-        poToken,
-        note.trim() || undefined
-      );
-      // 通ったときだけ覚える（間違った合言葉を覚えても打ち直しが要るだけ）
-      rememberPoToken(poToken);
+      await approveAsPo(endpoint, selected.projectTag, selected.taskId, note.trim() || undefined);
       finish(selected.taskId, "approved");
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
@@ -428,23 +382,14 @@ export function KoboReview({ params, endpoint }: CanvasViewProps): React.ReactEl
                     placeholder="何を見て良しとしたか（帳簿に残ります）"
                   />
                   {forPo ? (
-                    <>
-                      {/* task-0147: 合言葉は押すときに入れる。番頭ホストは預からない */}
-                      <TextInput
-                        type="password"
-                        value={poToken}
-                        onChange={(event) => setPoToken(event.target.value)}
-                        placeholder="PO の合言葉"
-                        autoComplete="off"
-                      />
-                      <Button
-                        variant="primary"
-                        onClick={() => void approveAsPoAction()}
-                        disabled={busy || poToken.length === 0}
-                      >
-                        {busy ? "通しています…" : "PO として通す"}
-                      </Button>
-                    </>
+                    /* 決定113: 合言葉は要らない。押した事実が `via` として帳簿に残る */
+                    <Button
+                      variant="primary"
+                      onClick={() => void approveAsPoAction()}
+                      disabled={busy}
+                    >
+                      {busy ? "通しています…" : "PO として通す"}
+                    </Button>
                   ) : (
                     <Button variant="primary" onClick={() => void approve()} disabled={busy}>
                       {busy ? "通しています…" : "通す"}

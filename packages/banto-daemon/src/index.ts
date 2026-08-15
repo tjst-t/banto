@@ -7,7 +7,9 @@
  * Configuration (environment variables or command line):
  *   BANTO_PORT     - HTTP port (default: 4500)
  *   BANTO_DATA_DIR - data directory for event log + registry (default: ./data)
- *   BANTO_PO_TOKEN - PO 専用の承認口の合言葉（未設定ならその口は閉じたまま）
+ *
+ * かつてあった BANTO_PO_TOKEN は廃止した（ADR-0023 決定113）。PO 専用の承認口を
+ * 分けるのは合言葉ではなく経路で、出どころは `task_approved.via` に残る。
  */
 
 export { Daemon } from "./daemon.js";

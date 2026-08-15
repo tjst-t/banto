@@ -235,9 +235,13 @@ export interface BantoHostServerOptions {
    * 引くのはホストではなくモジュールの帳簿（決定27：Banto をブローカーにしない）。
    * ここは渡された宛先をそのまま呼ぶだけで、何が起きるかは知らない（D5）。
    *
+   * @param origin どの札のどの回答で押されたか。`effect.originArg` に載せて渡す（決定113）
    * @returns 実行結果の一行。番頭への知らせに載る
    */
-  runInboxEffect?(effect: InboxEffect): Promise<string>;
+  runInboxEffect?(
+    effect: InboxEffect,
+    origin: { itemId: string; actionId: string }
+  ): Promise<string>;
   /**
    * 持ち込みのテーマ置き場（spec-design §6.4）。渡すと `/api/themes` で台帳を、
    * `/api/themes/<name>.css` で中身を配る。作り直さずにテーマを足せる。
@@ -1556,7 +1560,10 @@ export class BantoHostServer {
         return;
       }
       try {
-        effectText = await this.runInboxEffect(action.effect);
+        effectText = await this.runInboxEffect(action.effect, {
+          itemId: item.id,
+          actionId: action.id,
+        });
       } catch (err) {
         this.send(ws, { type: "error", message: `「${action.label}」を実行できません: ${String(err)}` });
         return;

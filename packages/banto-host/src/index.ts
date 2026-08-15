@@ -258,6 +258,14 @@ export {
   type PostInput,
 } from "./inbox.js";
 export { createInboxTools, type InboxToolOptions } from "./inbox-tools.js";
+// 決定113: 取次の札の回答を、工場の PO 専用の承認口へ結ぶ（番頭には渡さない口）
+export {
+  createKoboPoApproveTool,
+  koboApproveEffect,
+  koboReviewTarget,
+  KOBO_PO_APPROVE_TOOL,
+  KOBO_REVIEW_CANVAS_KIND,
+} from "./kobo-po-approve.js";
 export { createGitTools } from "./git-tools.js";
 export { workspaceRoot, resolveInWorkspace, toWorkspaceRelative } from "./workspace.js";
 export {

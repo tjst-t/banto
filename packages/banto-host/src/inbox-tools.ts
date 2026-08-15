@@ -10,7 +10,7 @@
 
 import { Type } from "typebox";
 import { OpenObject, StringEnum } from "@banto/core";
-import type { Inbox } from "./inbox.js";
+import type { Inbox, InboxAction, InboxEffect } from "./inbox.js";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 
 const Action = Type.Object({
@@ -30,6 +30,21 @@ export interface InboxToolOptions {
    * 取次の札から**その話をしていた会話へ戻れる**（PO要望 2026-08-09）。
    */
   threadId?: string;
+  /**
+   * 「この選択肢が押されたら通してよい」を、実際に効く処理へ翻訳する口（決定113）。
+   *
+   * **番頭に `effect` そのものは書かせない**（決定73 が `inbox.post` に出していない理由）
+   * ——書かせれば札を経由して任意の内部の口を叩けることになる。番頭が書けるのは
+   * 「どの面の・どの選択肢が承認に当たるか」までで、呼ぶ先を決めるのはホスト。
+   *
+   * ここに Kobo の知識は無い（D5）。渡す側（`bin.ts`）が結線を持つ。
+   *
+   * @returns 結べないなら `undefined`（呼び出し側が理由を添えて断る）
+   */
+  resolveApproveEffect?(input: {
+    canvasKind?: string;
+    canvasParams?: Record<string, unknown>;
+  }): InboxEffect | undefined;
 }
 
 export function createInboxTools(
@@ -54,12 +69,52 @@ export function createInboxTools(
       blocking: Type.Optional(Type.Number({ description: "止めている後続の数（並びに効く）" })),
       threadId: Type.Optional(Type.String()),
       canvasKind: Type.Optional(Type.String()),
-      canvasParams: Type.Optional(OpenObject())
+      canvasParams: Type.Optional(OpenObject()),
+      approveAction: Type.Optional(
+        Type.String({
+          description:
+            "「そのまま通してよい」に当たる選択肢の id。" +
+            'canvasKind: "kobo.review" と canvasParams: {projectTag, taskId} を添えたときだけ効く。' +
+            "POがこれを押すと、そのタスクが工場で PO 承認まで進む（あなたは押せません・決定57）。",
+        })
+      ),
     }),
     async execute(p) {
       // 宛先を書かなかったら**この会話**。積んだ札から話の続きへ戻れるようにするため、
       // 「どの会話でもない札」を作らない（決定73）
       const threadId = p.threadId ?? options.threadId;
+
+      /**
+       * 「押されたら通す」を結ぶ（決定113）。
+       *
+       * I2: 結べないのに黙って積まない——PO が押しても何も起きない札が出来るのが
+       *     imp-0034 そのもの。どこが足りないかを添えて、その場で断る。
+       */
+      let actions = p.actions as InboxAction[];
+      if (p.approveAction !== undefined) {
+        const target = actions.find((a) => a.id === p.approveAction);
+        if (!target) {
+          throw new Error(
+            `approveAction "${p.approveAction}" は actions にありません` +
+              `（${actions.map((a) => a.id).join(" / ")}）。`
+          );
+        }
+        const effect = options.resolveApproveEffect?.({
+          ...(p.canvasKind !== undefined ? { canvasKind: p.canvasKind } : {}),
+          ...(p.canvasParams !== undefined
+            ? { canvasParams: p.canvasParams as Record<string, unknown> }
+            : {}),
+        });
+        if (!effect) {
+          throw new Error(
+            "approveAction を結べません。" +
+              'canvasKind: "kobo.review" と canvasParams: {projectTag, taskId} を添えてください' +
+              "——どのタスクの承認かが札に載っていないと、POが押しても工場へ届きません。"
+          );
+        }
+        actions = actions.map((a) => (a.id === target.id ? { ...a, effect } : a));
+      }
+
       const item = inbox.post({
         source: { id: p.sourceId, label: p.sourceLabel },
         kind: p.kind,
@@ -68,7 +123,7 @@ export function createInboxTools(
         ...(p.why ? { why: p.why } : {}),
         what: p.what,
         ask: p.ask,
-        actions: p.actions,
+        actions,
         ...(p.blocking !== undefined ? { blocking: p.blocking } : {}),
         ...(threadId || p.canvasKind
           ? {
@@ -122,12 +177,31 @@ export function createInboxTools(
     label: "Inbox: Resolve",
     description:
       "取次の一通に答えを入れて畳む。**POが会話の中で答えたときにだけ**使う——" +
-      "画面のボタンで答えたぶんは自動で畳まれるので、ここで二重に畳まない。",
+      "画面のボタンで答えたぶんは自動で畳まれるので、ここで二重に畳まない。" +
+      "処理を伴う選択肢（工場の承認など）はここでは畳めない——POが画面で押す必要がある。",
     parameters: Type.Object({
       id: Type.String({ description: "一通の id（inbox.list で分かる）" }),
       action: Type.String({ description: "POが選んだ選択肢の id" }),
     }),
     async execute(p) {
+      /**
+       * **処理を伴う選択肢はここでは畳めない**（決定113）。
+       *
+       * 効果を走らせるのは画面から押されたときだけ（`BantoHostServer.handleInbox`）で、
+       * ここで畳めてしまうと2つのことが起きる——効果が走らないまま「答えが出た」札に
+       * なり、POが後から押しても「既に答えが出ています」で断られる。承認のように
+       * 番頭には通せないものは、**畳む口からも遠ざけておく**（決定57）。
+       *
+       * I2: 知らない id は `inbox.get` が undefined を返すので、そのまま
+       *     `inbox.resolve` に投げさせて理由の出所を1つにする。
+       */
+      const pending = inbox.get(p.id);
+      if (pending?.actions.find((a) => a.id === p.action)?.effect) {
+        throw new Error(
+          `「${pending.title}」の "${p.action}" は処理を伴う選択肢です。` +
+            "あなたは畳めません——POが画面で押すまで待ってください（決定57・111）。"
+        );
+      }
       // I2: 知らない id・知らない選択肢は Inbox が例外にする。ここで握りつぶさない
       const item = inbox.resolve(p.id, p.action);
       return {

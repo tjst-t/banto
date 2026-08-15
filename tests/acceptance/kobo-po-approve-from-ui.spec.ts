@@ -1,9 +1,9 @@
 /**
- * 段3（凍結中の task-0147 そのもの）: **PO が画面から通せるようにする。**
+ * 段3（task-0147）: **PO が画面から通せるようにする。**
  *
  * **困っていたこと**（報告 A 表 8・11a）：`po` と判定されたタスク（統治コード・PO 必須の面）は
  * 決定57 により番頭には通せない。にもかかわらずレビュー面には PO 用のボタンが無く、
- * PO が通す手段は**サーバへ入って合言葉つきの curl を手打ちする**しかなかった
+ * PO が通す手段は**サーバへ入って curl を手打ちする**しかなかった
  * （帳簿でも `approvedBy: "po"` は 17 件中 2 件）。
  *
  * 直し方は**口を増やすことではない**——`http-server.ts` の PO 専用の承認口は既にある。
@@ -12,10 +12,16 @@
  *      検証環境で先に踏んだのと同じ中継（決定39）に乗せる
  *   2. 画面の**押す場所**（`KoboReview.tsx`）
  *
- * 守ること（task-0147 の縛り）：
- *   - 番頭ホストは合言葉を**保存しない**（保存すると「番頭が自分で通せる」状態になり決定57 が空文になる）
+ * **合言葉は廃止した**（ADR-0023 決定113・imp-0034）。task-0147 の当時は「PO 本人か」を
+ * 名乗りで確かめていたが、PO からは「自分専用の画面でなぜ毎回名乗らされるのか」＝
+ * **OK を出せないのと同じ**と見えていた。分ける境界を「合言葉の有無」から
+ * 「**Tool の経路か、人が押した経路か**」へ移し、監査可能性は記録（`via`）で担保する。
+ *
+ * 守ること：
+ *   - 番頭（LLM）の口（`kobo.approve`）は PO 必須のタスクを断り続ける（決定57）
  *   - Tool の口（`/tools/*`）は中継しない（同じ結果に2つの経路を作らない・D3）
  *   - 通しても関所は飛ばない（この後にマージ前ゲートが回るのは番頭経由と同じ）
+ *   - **出どころの無い PO 承認は受けない**（`via` が要る）
  */
 
 import { describe, it, before, after } from "node:test";
@@ -30,8 +36,6 @@ import * as path from "node:path";
 import { Daemon, KOBO_MODULE_PATH } from "../../packages/banto-daemon/src/index.js";
 import { createRemoteRelay } from "../../packages/banto-host/src/remote-module.js";
 
-// 合言葉は HTTP ヘッダに載るので ASCII（非 ASCII は fetch が ByteString に変換できない）
-const PO_TOKEN = "po-secret-2026-08-13";
 const PROJ = "po-approve-proj";
 
 async function freePort(): Promise<number> {
@@ -66,9 +70,9 @@ interface Harness {
  * Kobo（127.0.0.1）と、その面を中継する番頭ホストを立てる。
  *
  * **中継は本物**（`createRemoteRelay`。bin.ts が工場に付けているのと同じもの）。
- * 偽物にすると「ホストが合言葉を預かっていないか」が検査できない。
+ * 偽物にすると「ブラウザからの経路が本当に通っているか」が検査できない。
  */
-async function harness(options: { poToken?: string } = {}): Promise<Harness> {
+async function harness(): Promise<Harness> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kobo-po-approve-"));
   const repoDir = path.join(tmpDir, "repo");
   fs.mkdirSync(repoDir, { recursive: true });
@@ -96,7 +100,6 @@ async function harness(options: { poToken?: string } = {}): Promise<Harness> {
     worktreeBaseDir: path.join(tmpDir, "worktrees"),
     // 稼働中の Environment Pool に触らせない（判断待ちに入ると頼みに行く・段11c）
     environmentPoolUrl: "http://127.0.0.1:1/api/environment-pool",
-    ...(options.poToken !== undefined ? { poToken: options.poToken } : {}),
   });
   await daemon.start();
   daemon.registerProject(PROJ, repoDir);
@@ -135,25 +138,24 @@ function driveToReviewReady(daemon: Daemon, taskId: string): void {
 async function approveViaHost(
   h: Harness,
   taskId: string,
-  headers: Record<string, string>,
-  note?: string
+  body: Record<string, unknown>
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const res = await fetch(
     `${h.hostUrl}${KOBO_MODULE_PATH}/projects/${PROJ}/tasks/${taskId}/approve`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...headers },
-      body: JSON.stringify(note ? { note } : {}),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     }
   );
-  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-  return { status: res.status, body };
+  const parsed = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  return { status: res.status, body: parsed };
 }
 
 describe("[段3/task-0147] PO はブラウザから通せる（番頭には通せないものを）", () => {
   let h: Harness;
   before(async () => {
-    h = await harness({ poToken: PO_TOKEN });
+    h = await harness();
   });
   after(async () => {
     await teardown(h);
@@ -170,31 +172,38 @@ describe("[段3/task-0147] PO はブラウザから通せる（番頭には通�
     );
   });
 
-  it("合言葉つきなら中継を通って届き、**PO の名前で**帳簿に残る", async () => {
-    const r = await approveViaHost(
-      h,
-      "task-3001",
-      { Authorization: `Bearer ${PO_TOKEN}` },
-      "実物を触って確かめた"
-    );
+  it("**合言葉なしで**中継を通って届き、PO の名前で帳簿に残る（決定113）", async () => {
+    const r = await approveViaHost(h, "task-3001", {
+      via: "ui:kobo.review",
+      note: "実物を触って確かめた",
+    });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.equal(h.daemon.getTask(PROJ, "task-3001")?.status, "approved");
 
     const approved = h.daemon
       .getTaskEvents(PROJ, "task-3001")
-      .find((e) => e.type === "task_approved") as { approvedBy: string; note?: string };
+      .find((e) => e.type === "task_approved") as {
+      approvedBy: string;
+      note?: string;
+      via?: string;
+    };
     assert.equal(approved.approvedBy, "po", "書き手の名前を変えない（task-0147 の縛り5）");
     assert.equal(approved.note, "実物を触って確かめた");
+    assert.equal(
+      approved.via,
+      "ui:kobo.review",
+      "どこから通したかが帳簿に無い（合言葉をやめた代わりの担保・決定113）"
+    );
   });
 
-  it("名乗りが無い／違うときは 401。状態は動かない", async () => {
+  it("出どころ（via）が無ければ 400。状態は動かない（決定113）", async () => {
     driveToReviewReady(h.daemon, "task-3002");
 
     const none = await approveViaHost(h, "task-3002", {});
-    assert.equal(none.status, 401);
-    const wrong = await approveViaHost(h, "task-3002", { Authorization: "Bearer wrong-secret" });
-    assert.equal(wrong.status, 401);
-    assert.equal(wrong.body["error"], "unauthorized", "画面が理由で出し分けられる形であること");
+    assert.equal(none.status, 400);
+    assert.equal(none.body["error"], "via_required", "画面が理由で出し分けられる形であること");
+    const blank = await approveViaHost(h, "task-3002", { via: "   " });
+    assert.equal(blank.status, 400, "空白だけの出どころを通さない");
 
     assert.equal(
       h.daemon.getTask(PROJ, "task-3002")?.status,
@@ -217,15 +226,18 @@ describe("[段3/task-0147] PO はブラウザから通せる（番頭には通�
   });
 });
 
-describe("[段3/task-0147] 合言葉が未設定なら口は閉じたまま（I2）", () => {
-  it("503 と `po_token_not_configured` が返る（「失敗しました」に潰さない）", async () => {
+/**
+ * **合言葉の設定は要らなくなった**（決定113）。かつては `BANTO_PO_TOKEN` が未設定だと
+ * この口が 503 で閉じており、設定を持たない環境では PO が一切通せなかった。
+ */
+describe("[決定113] 合言葉を設定しなくても PO は通せる", () => {
+  it("何も設定していないホストで通り、`approvedBy: \"po\"` が残る", async () => {
     const h = await harness();
     try {
       driveToReviewReady(h.daemon, "task-3003");
-      const r = await approveViaHost(h, "task-3003", { Authorization: "Bearer anything" });
-      assert.equal(r.status, 503);
-      assert.equal(r.body["error"], "po_token_not_configured");
-      assert.equal(h.daemon.getTask(PROJ, "task-3003")?.status, "review-ready");
+      const r = await approveViaHost(h, "task-3003", { via: "ui:kobo.review" });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.equal(h.daemon.getTask(PROJ, "task-3003")?.status, "approved");
     } finally {
       await teardown(h);
     }
@@ -245,22 +257,21 @@ describe("[段3・段2] レビュー面に押す場所が在る", () => {
 
   it("PO 専用の承認口へ配線されている（番頭の Tool ではない）", () => {
     assert.match(source, /\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/approve/);
-    assert.match(source, /Authorization: `Bearer \$\{token\}`/);
     assert.match(source, /PO として通す/, "PO が押せるボタンが無い");
   });
 
-  it("合言葉を `localStorage` に置いていない（task-0147 の縛り4）", () => {
-    assert.doesNotMatch(
-      source,
-      /localStorage\s*\.\s*(get|set)Item/,
-      "タブを閉じても残る場所に合言葉を置かない"
-    );
-    assert.match(source, /sessionStorage\s*\.\s*setItem/);
+  /**
+   * **合言葉を画面から要求しない**（決定113・PO の明確な要望）。
+   * 名乗りを条件にするなら、PO にとっては「OK を出せない」のと同じ。
+   */
+  it("合言葉の入力も保存もしていない", () => {
+    assert.doesNotMatch(source, /Bearer/, "画面が合言葉を送っている");
+    assert.doesNotMatch(source, /PO の合言葉/, "合言葉の入力欄が残っている");
+    assert.doesNotMatch(source, /(local|session)Storage/, "合言葉を置く場所が残っている");
   });
 
-  it("閉じている（503）と名乗り違い（401）を区別して出す", () => {
-    assert.match(source, /po_token_not_configured/);
-    assert.match(source, /res\.status === 401/);
+  it("どこから通したかを添えている（監査は記録で担保・決定113）", () => {
+    assert.match(source, /via: "ui:kobo\.review"/);
   });
 
   it("[段2] 差し戻すボタンが在り、`kobo.send_back` を呼んでいる", () => {

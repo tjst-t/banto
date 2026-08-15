@@ -269,16 +269,6 @@ export interface DaemonConfig {
    * 外から使うなら前段（Caddy 等）で守る。`BANTO_DAEMON_BIND` で差し替えられる。
    */
   bindHost?: string;
-  /**
-   * PO だけが持つ合言葉（PO裁定 2026-08-11・第0波 0-3）。既定は `BANTO_PO_TOKEN`。
-   *
-   * **決定40 の唯一の例外**。Kobo の口は基本的に認証を持たず、待ち受けアドレスと前段で
-   * 守る——が、`POST {KOBO_MODULE_PATH}/projects/:proj/tasks/:id/approve` だけは
-   * 「番頭ではなく PO が通した」を帳簿に書く口なので、**誰でも名乗れては意味がない**。
-   *
-   * 未設定なら口は閉じたまま（503）。開いていない方が、黙って誰でも PO を名乗れるより良い。
-   */
-  poToken?: string;
   /** Root data directory (event log + registry). Default: ./data */
   dataDir: string;
   /**
@@ -603,14 +593,11 @@ export class Daemon {
   }
 
   static create(config: Partial<DaemonConfig> = {}): Daemon {
-    // 空文字は「設定されていない」と同じに扱う（空の合言葉で開くと、閉じたつもりの口が開く）
-    const poToken = config.poToken || process.env["BANTO_PO_TOKEN"] || undefined;
     const resolved: DaemonConfig = {
       port: config.port ?? parseInt(process.env["BANTO_PORT"] ?? "4500", 10),
       // 決定40: 既定は 127.0.0.1。広げるのは明示だけ（この口は帳簿を書き換えられる）
       bindHost: config.bindHost ?? process.env["BANTO_DAEMON_BIND"] ?? "127.0.0.1",
       dataDir: config.dataDir ?? process.env["BANTO_DATA_DIR"] ?? "./data",
-      ...(poToken !== undefined ? { poToken } : {}),
       tickIntervalMs:
         config.tickIntervalMs ??
         parseInt(process.env["BANTO_TICK_INTERVAL_MS"] ?? "60000", 10),
@@ -1960,26 +1947,22 @@ export class Daemon {
   }
 
   /**
-   * PO だけが持つ合言葉（PO裁定 2026-08-11・第0波 0-3）。未設定なら `undefined`。
-   *
-   * D3: 別に持たない。設定の値をそのまま読む——HTTP 面が照合に使う。
-   */
-  poToken(): string | undefined {
-    return this.config.poToken;
-  }
-
-  /**
    * レビューを通す（`kobo.approve` の実体・決定57）。
    *
    * **番頭が通しても関所は飛ばない。** ここがするのは `approved` まで進めることだけで、
    * その後マージキューがマージ前ゲート（スコープ違反の検査と検証コマンド）を回す。
    *
    * `po` と判定されたタスクは番頭には通せない（I2：黙って通さず、理由を返す）。
+   * **これは経路ではなく名乗りで断っている**——`by` が誰かだけを見る。「番頭（LLM）の
+   * Tool からは `by: "po"` を渡せない」ことは呼ぶ側で担保する（ADR-0023 決定113）。
+   *
+   * `by: "po"` のときは `via`（どの画面のどの操作から来たか）を要る形にしている
+   * ——合言葉をやめた代わりに、監査可能性を記録で担保するため（決定113）。
    */
   approveTask(
     projectTag: string,
     taskId: string,
-    options: { by: "banto" | "po"; note?: string }
+    options: { by: "banto"; note?: string } | { by: "po"; note?: string; via: string }
   ): { ok: true; status: string } | { ok: false; reason: string } {
     const task = this.store.getTask(taskId, projectTag);
     if (!task) return { ok: false, reason: `task_not_found: ${projectTag}/${taskId}` };
@@ -2011,6 +1994,8 @@ export class Daemon {
       taskId,
       approvedBy: options.by,
       ...(options.note ? { note: options.note } : {}),
+      // 決定113: PO が通したときは**どこから来た意思表示か**を帳簿に残す
+      ...("via" in options && options.via ? { via: options.via } : {}),
     });
     this.applyAndBroadcast(approved);
 

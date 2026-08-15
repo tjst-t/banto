@@ -55,6 +55,11 @@ import { Canvas, createCanvasCatalog } from "./canvas.js";
 import { createCanvasTools } from "./canvas-tools.js";
 import { Inbox } from "./inbox.js";
 import { createInboxTools } from "./inbox-tools.js";
+import {
+  createKoboPoApproveTool,
+  koboApproveEffect,
+  koboReviewTarget,
+} from "./kobo-po-approve.js";
 import { UserThemes } from "./user-themes.js";
 import {
   assembleStewardContext,
@@ -794,6 +799,15 @@ async function serve(options: ServeOptions): Promise<void> {
   const koboModule = {
     ...koboContract,
     settings: createRemoteSettings(koboContract.settings, "kobo", koboContract.name, koboUrl),
+    /**
+     * **取次の札の回答を、その PO 専用の承認口へ結ぶ**（ADR-0023 決定113・imp-0034）。
+     *
+     * `internalTools` なので `ModuleRegistry.tools()` には出ず、番頭の在庫にも提示にも
+     * 載らない——**モデルからは呼べない**。呼ぶのは PO が札を押したときのホストだけ
+     * （`runInboxEffect`）。番頭に渡っている `kobo.approve` は今までどおり
+     * PO 必須のタスクを断る（決定57 はここで保たれる）。
+     */
+    internalTools: [createKoboPoApproveTool(koboUrl)],
     serve: (req: http.IncomingMessage, res: http.ServerResponse) => koboRelay.serve(req, res),
   };
 
@@ -1093,7 +1107,15 @@ async function serve(options: ServeOptions): Promise<void> {
       }),
       // 取次は会話に紐づかないが、積むのは会話の中の番頭なので Tool は各会話に配る。
       // 宛先を渡すのは、積んだ札から**その話をしていた会話へ戻れる**ようにするため（決定73）
-      ...createInboxTools(inbox, { threadId }),
+      ...createInboxTools(inbox, {
+        threadId,
+        // 決定113: 「通してよい」の札を、工場の PO 専用の承認口へ結ぶ。
+        // 番頭が書けるのはどの選択肢が承認かまでで、呼ぶ先を決めるのはここ
+        resolveApproveEffect: ({ canvasKind, canvasParams }) => {
+          const target = koboReviewTarget(canvasKind, canvasParams);
+          return target ? koboApproveEffect(target) : undefined;
+        },
+      }),
       // 決定98f: 番頭が持つのは読みと診断の4本だけ（設定変更は GUI とファイルの担当）
       ...llmTools.tools,
       ...createThreadTools({
@@ -1656,7 +1678,7 @@ async function serve(options: ServeOptions): Promise<void> {
      * I2: 知らないモジュール・知らない Tool は黙って成功にしない。押した側は
      *     効いたつもりでいるので、効かなかったことは必ず返す。
      */
-    runInboxEffect: async (effect) => {
+    runInboxEffect: async (effect, origin) => {
       const tools =
         effect.module === CORE_ORIGIN
           ? llmAllTools
@@ -1669,7 +1691,20 @@ async function serve(options: ServeOptions): Promise<void> {
       if (!tool) {
         throw new Error(`"${effect.module}" に Tool "${effect.tool}" はありません`);
       }
-      const result = await tool.execute((effect.args ?? {}) as never, {
+      /**
+       * **どの札のどの回答で押されたか**を、効果が望んだ名前の引数として渡す（決定113）。
+       *
+       * 積む時点では札の id が無いので、埋められるのはここだけ。工場の PO 承認は
+       * これを `task_approved.via` として帳簿へ書く——合言葉をやめた代わりに、
+       * 監査可能性はこの記録が担う。
+       */
+      const args = {
+        ...(effect.args ?? {}),
+        ...(effect.originArg
+          ? { [effect.originArg]: `inbox:${origin.itemId}#${origin.actionId}` }
+          : {}),
+      };
+      const result = await tool.execute(args as never, {
         toolCallId: `inbox-${Date.now()}`,
       });
       return result.content.map((c) => c.text ?? "").join("").trim();
