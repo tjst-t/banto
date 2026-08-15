@@ -9,6 +9,7 @@ refs:
   - packages/banto-host/src/host-session.ts
   - deploy/banto.service
   - imp-0061
+  - inc-0073
 created: 2026-08-15
 ---
 
@@ -51,3 +52,61 @@ created: 2026-08-15
   **「走行中のターンを持つ枝」**へ）。手順3(PO の承認)は残す。
 - 構成が変わったら記述も変わる性質のものなので、**試験で固定できるか**を検討する
   （`deploy/*.service` の `BindsTo`/`PartOf` が空であることを見る受け入れ試験など）。
+
+---
+
+## 追記（2026-08-15・枝「器で試験が通らない」／inc-0073 の作業から）
+
+**`system.restart` だけでは反映できないコードがある。** ここが SKILL `safe-restart` に
+まったく書かれていない。
+
+`system.restart` が起こし直すのは `banto.service`（番頭本体）**1つだけ**。しかし banto は
+**3つの常駐サービス**に分かれていて、それぞれ別のコードを読んでいる：
+
+| unit | 何を持つ | どのコード |
+|---|---|---|
+| `banto.service` | 番頭本体・会話 | `packages/banto-host/src/bin.ts` |
+| `banto-worker-pool.service` | 職人の親 | `packages/banto-worker-pool/src/bin.ts` |
+| `banto-environment-pool.service` | **検証環境の台帳・ドライバ・Caddy 公開** | `packages/banto-environment-pool/src/bin.ts` |
+
+**3つとも `WorkingDirectory=/home/ubuntu/ghq/github.com/tjst-t/banto` で、`--import tsx` により
+main のチェックアウトの .ts を直接実行している**（ビルド成果物は経由しない）。つまり
+**main にマージしただけでは、そのプロセスを起こし直すまで反映されない**。
+
+実際に踏んだ形（inc-0073）：検証環境のドライバ（`banto-environment-pool` 側）を直して main に
+入れたのに、番頭の `env.verify` はいつまでも古い挙動のままだった。`system.restart` を撃っても
+直らない——**そこは別のサービスだから**。
+
+### 起こし直し方（2026-08-15 実測）
+
+`sudo` は通らない（`sudo: The "no new privileges" flag is set` — 職人の砂箱からは特に）。
+`banto-environment-pool.service` は `Restart=on-failure` / `RestartSec=5` なので、
+**主プロセスを `kill -9` すれば systemd が5秒後に拾って起こし直す**。
+
+```
+systemctl show banto-environment-pool.service -p MainPID -p ActiveState
+kill -9 <MainPID>
+sleep 15
+systemctl show banto-environment-pool.service -p MainPID -p ActiveState -p SubState -p NRestarts
+```
+
+**巻き添えは無い**（このファイルの上の表と同じ理由で、実測でも確かめた）：
+
+- 立っていた検証環境2つ（`env-898eb2aac9` / `env-d6ca9c424b`）は `Up` のまま。docker の
+  コンテナは `/system.slice/docker-<id>.scope` に居て、pool の cgroup（中身は node 1本だけ）
+  とは**兄弟**なので `KillMode=control-group` の一掃が届かない
+- Caddy の公開 route は `caddy.service` 自身の実行時設定として保持されているので、pool の
+  生死とは独立。入れ替え後も両方の `@id` が残り、公開 URL は 200 を返した
+- 起動時のコードも確認済み：`sweep()` は生きている環境に触らず、`reconcile()` は孤児を
+  **知らせるだけで畳まない**（畳む口は名指しの `env.teardown_orphan` だけ）。台帳はディスクに
+  残るので、立っている環境は孤児にすらならない
+
+### だから何を直すか（この追記の分）
+
+- **SKILL `safe-restart` に「どのサービスを起こし直すのか」を足す。** いまは「banto を再起動する」
+  話しか無く、**環境まわり・職人まわりの直しは `system.restart` では反映されない**ことが
+  どこにも書いていない。「直したファイルがどの package の下か → どの unit か」の対応表を置くこと。
+- `banto-environment-pool.service` / `banto-worker-pool.service` の起こし直し手順（上の `kill -9`）と
+  **巻き添えの有無**を、`system.restart` の説明文と同じ精度で書く。
+- 番頭が自分で踏めるようにするかは別の判断（いまは職人へ委譲して `kill -9` させている）。
+  少なくとも**「反映が要る＝system.restart」だと思い込ませない**書き方にすること。
