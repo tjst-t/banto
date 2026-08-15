@@ -298,9 +298,18 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
                       // **なぜ落ちたかが読めないと直せない**（task-0081）。
                       // ここが空文字だったので、経緯を見ても番号すら出なかった
                       ? (e.passed ? "通過" : `不通過: ${(e.reasons ?? []).join(", ")}`) +
-                        // 段1: **何に対して通ったのか**。土台のコミットと検証環境の指紋
+                        // 段1: **何に対して通ったのか**。土台のコミットと検証環境
                         (e.baseCommit ? `［base ${e.baseCommit.slice(0, 8)}］` : "") +
-                        (e.environmentDigest ? `［env ${e.environmentDigest}］` : "")
+                        // **envId（立てた実体）と指紋（作りの型）は別物**（dentaku
+                        // task-0020 の誤誘導）。「env」という語を指紋に掛けない——
+                        // envId が無い古い帳簿では指紋だけを「指紋」と明示して出す
+                        (e.environmentId
+                          ? `［env ${e.environmentId}` +
+                            (e.environmentDigest ? `／指紋 ${e.environmentDigest}` : "") +
+                            `］`
+                          : e.environmentDigest
+                            ? `［指紋 ${e.environmentDigest}］`
+                            : "")
                       : e.type === "task_stalled"
                         // **止まっている**（realign 第2便）。同じ状態のあいだ1回だけ出る
                         ? `${e.status} のまま ${formatDwell(e.dwellMs)}` +
