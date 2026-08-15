@@ -132,6 +132,17 @@ export interface TurnBudgetOptions {
   callWarnAgainLimit?: number;
   /** ターン全体の上限＝**断る回数**（既定 `DEFAULT_CALL_LIMIT`）。 */
   callLimit?: number;
+  /**
+   * ターンの切れ目に**一緒に数え直すもの**（T4）。`reset()` の中で呼ぶ。
+   *
+   * ターンの切れ目は1本しかない。同じ切れ目を使う数え（幹の促し・台帳の回数）が
+   * 自前で `reset()` を掛けにいくと、**掛ける場所を1つ増やす**ことになり、
+   * バックエンドを増やしたときに片方だけ数え直されない形（2026-08-13 の不具合）を
+   * 作り直してしまう。ここに相乗りさせれば、切れ目は最後まで1箇所のままになる。
+   *
+   * **既存の 60/100/120 の判定には触らない**——数え直しの通知を1本足すだけ。
+   */
+  onReset?: () => void;
 }
 
 export function createTurnBudget(options: TurnBudgetOptions = {}): TurnBudget {
@@ -207,6 +218,8 @@ export function createTurnBudget(options: TurnBudgetOptions = {}): TurnBudget {
     reset(): void {
       asked = new Map();
       calls = 0;
+      // 同じ切れ目で数え直すもの（T4 の促し）。ここが投げても予算の数え直しは済んでいる
+      options.onReset?.();
     },
   };
 }

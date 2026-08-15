@@ -28,6 +28,7 @@ import { CORE_ORIGIN, resolveSkills, type SkillEntry } from "./module.js";
 import { LEARNED_ORIGIN, type LearnedSkillStore } from "./skill-learning.js";
 import { createSkillTools } from "./skill-tools.js";
 import { guardTurn, type TurnBudget } from "./turn-budget.js";
+import { nudgeTrunkWork, type TrunkWorkNudge } from "./trunk-nudge.js";
 import { loadBantoSkills, renderSkillsForPrompt } from "./skills.js";
 import { toPiTool, type NamespacedToolDefinition } from "./tool-registry.js";
 import {
@@ -81,6 +82,14 @@ export interface CreateBantoHostSessionOptions {
    * 渡さないと掛からない（試験や、別の使い方をする呼び出し元のため）。
    */
   turnBudget?: TurnBudget;
+  /**
+   * **幹で手を動かしたときの促し**（T4）。渡すと、番頭が呼べる道具すべてに掛かる。
+   *
+   * ターン予算と**同じ場所で掛ける**——呼び出し側で道具を選んで掛けると、足し忘れた
+   * 道具が抜け道になる（ターン予算がその失敗を一度している）。促しが出るのは幹だけで、
+   * 枝では数えるだけ（`createTrunkWorkNudge` の `kind`）。
+   */
+  trunkNudge?: TrunkWorkNudge;
   /**
    * Tool 名からモジュール名を引く（ADR-0017 決定81(d)）。
    *
@@ -219,10 +228,18 @@ export function assembleStewardContext(options: CreateBantoHostSessionOptions): 
       })
     : tools;
 
+  /**
+   * T4: 幹で手を動かしたら枝へ促す。**予算より内側**に掛ける——予算が断った呼び出し
+   * （120 回超・同じ問いの4回目）は実行されないので、促しの数えにも入れない。
+   */
+  const nudged = options.trunkNudge
+    ? offloaded.map((tool) => nudgeTrunkWork(tool, options.trunkNudge!))
+    : offloaded;
+
   // ターンの予算を**番頭が呼べる道具すべてに**掛ける（呼び出し側で選ぶと抜け道になる）
   const budgeted = options.turnBudget
-    ? offloaded.map((tool) => guardTurn(tool, options.turnBudget!))
-    : offloaded;
+    ? nudged.map((tool) => guardTurn(tool, options.turnBudget!))
+    : nudged;
 
   return { tools: budgeted, systemPrompt: sections.join("\n\n") };
 }

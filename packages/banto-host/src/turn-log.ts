@@ -13,6 +13,20 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+/**
+ * そのターンで番頭が道具を何回呼んだか（T4）。
+ *
+ * **閾値を決める材料**。「幹で調べ物が始まったら促す」の線をどこに引くかは、幹の
+ * ターンが実際に何回道具を呼んでいるかを見ないと決められない——ここが無いと、
+ * その材料が永久に手に入らない（数字は当てずっぽうで置かない）。
+ */
+export interface TurnToolCounts {
+  /** そのターンの道具呼び出し回数（全部）。 */
+  total: number;
+  /** うち `file.*` / `git.*`（自分の手で調べ物・手仕事をした回数）。 */
+  browse: number;
+}
+
 /** ターン1本分の記録。1ターン＝1行。 */
 export interface TurnLogEntry {
   /** ターンが**始まった**時刻（ISO8601）。 */
@@ -35,6 +49,10 @@ export interface TurnLogEntry {
   ok: boolean;
   /** 失敗したときだけ。 */
   errorMessage?: string;
+  /** そのターンの道具呼び出し回数（T4）。数えが取れなかったときは省略。 */
+  toolCalls?: number;
+  /** うち `file.*` / `git.*` の回数（T4）。数えが取れなかったときは省略。 */
+  browseCalls?: number;
 }
 
 /** 台帳の既定の置き場。`dataDir()`（bin.ts）と同じ規則。 */
@@ -51,14 +69,28 @@ export function defaultTurnLogPath(): string {
  * 高くない。
  */
 export class TurnLog {
-  constructor(private readonly file: string) {}
+  /**
+   * @param counts そのターンの道具呼び出し回数を引く口（T4）。**書く直前にここで足す**
+   *   ——数えを持っているのは会話ごとの器（`TrunkWorkNudge`・bin.ts のクロージャ）で、
+   *   台帳を書くホストはそれを知らない。引けない会話（試験・数えを渡していない
+   *   呼び出し元）では単に項目が出ないだけで、台帳は今までどおり書ける。
+   */
+  constructor(
+    private readonly file: string,
+    private readonly counts?: (threadId: string) => TurnToolCounts | undefined
+  ) {}
 
   /** 1ターン＝1行で追記する。失敗しても呼び出し側（会話）は壊さない。 */
   append(entry: TurnLogEntry): void {
+    const counted = this.counts?.(entry.threadId);
+    const line: TurnLogEntry =
+      counted === undefined
+        ? entry
+        : { ...entry, toolCalls: counted.total, browseCalls: counted.browse };
     try {
       // ディレクトリが無ければ作る（初回起動時）
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
-      fs.appendFileSync(this.file, JSON.stringify(entry) + "\n", "utf-8");
+      fs.appendFileSync(this.file, JSON.stringify(line) + "\n", "utf-8");
     } catch (err) {
       // 観測のための台帳。書けなくても会話を止めない——黙らせるのは I2 に反するので
       // console.error には出す（計測が会話を壊すのは本末転倒）

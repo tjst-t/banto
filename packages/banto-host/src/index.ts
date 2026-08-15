@@ -320,6 +320,20 @@ export {
   type TurnBudgetOptions,
   type TurnBudgetVerdict,
 } from "./turn-budget.js";
+// T4: 幹で手を動かしたら枝へ促す（断らない）
+export {
+  createTrunkWorkNudge,
+  nudgeTrunkWork,
+  browseNudgeLimitFromEnv,
+  browseNudgeMessage,
+  delegateNudgeMessage,
+  isBrowseTool,
+  isDelegateTool,
+  DEFAULT_TRUNK_BROWSE_NUDGE_LIMIT,
+  TRUNK_BROWSE_NUDGE_LIMIT_ENV,
+  type TrunkWorkNudge,
+  type TrunkWorkNudgeOptions,
+} from "./trunk-nudge.js";
 export { withWorkerCard, WORKER_VIEW } from "./worker-card.js";
 export {
   withTierUnassignedNotice,

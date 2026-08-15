@@ -50,7 +50,8 @@ import { guardWorkerOrigin } from "./worker-guard.js";
 import { startKoboNotices } from "./kobo-notice.js";
 import { createRemoteRelay, createRemoteSettings } from "./remote-module.js";
 import { startEnvNotices } from "./env-notice.js";
-import { TurnLog, defaultTurnLogPath } from "./turn-log.js";
+import { TurnLog, defaultTurnLogPath, type TurnToolCounts } from "./turn-log.js";
+import { createTrunkWorkNudge } from "./trunk-nudge.js";
 
 import { Canvas, createCanvasCatalog } from "./canvas.js";
 import { createCanvasTools } from "./canvas-tools.js";
@@ -1082,6 +1083,15 @@ async function serve(options: ServeOptions): Promise<void> {
       releaseClaude: () => void;
     }
   >();
+  /**
+   * 会話ごとの「そのターンの道具呼び出し回数」（T4）。台帳（T1）へ出すために持つ。
+   *
+   * 数えているのは会話ごとの器（`TrunkWorkNudge`）だが、台帳を書くのはホスト。
+   * 間を結ぶのがここ——1本の Map で足りるので、`Thread` にも `server` にも
+   * 数えの都合を持ち込まない（D3: 導出できる値を二重に持たない）。会話1本につき
+   * 小さな器が1つ増えるだけなので、畳んでも消さない（開き直しで同じ id が戻る）。
+   */
+  const turnCounts = new Map<string, { counts(): TurnToolCounts }>();
   let server: BantoHostServer;
   const threadFactory: ThreadFactory = async (
     threadId,
@@ -1092,10 +1102,19 @@ async function serve(options: ServeOptions): Promise<void> {
   ) => {
     const canvas = new Canvas(catalog);
     /**
+     * T4: 幹で手を動かしたら枝へ促す器。**会話ごと**——ここで `identity` を渡すので、
+     * 促されるのは幹だけになる（枝は数えるだけ）。数えは台帳（T1）へ出す。
+     */
+    const trunkNudge = createTrunkWorkNudge({ kind: identity?.kind });
+    turnCounts.set(threadId, trunkNudge);
+    /**
      * ターンの予算（PO報告 2026-08-11）。**会話ごと**に持つ——隣の会話の数えと混ぜると、
      * 正常な1回目の確認まで断ることになる。
+     *
+     * T4 の促しも**同じ切れ目**で数え直す（`onReset`）。切れ目を2つに増やすと、
+     * バックエンドを足したときに片方だけ数え直されない形に戻る。
      */
-    const turnBudget = createTurnBudget();
+    const turnBudget = createTurnBudget({ onReset: () => trunkNudge.reset() });
     // 提案§3.1: ツール出力の退避先。**会話ごと**——別の会話の観測を引けると、
     // スレッドごとに文脈を分けている意味（決定35a）が崩れる。
     // ADR-0017 決定81(a): 器に載せるのはここに退避済みの結果だけ（データを再送させない）
@@ -1304,6 +1323,8 @@ async function serve(options: ServeOptions): Promise<void> {
       presentSelectedTools: true,
       // 番頭が呼べる道具すべてに掛かる（抜け道を作らない）
       turnBudget,
+      // T4: 幹で委譲・調べ物をしたら枝へ促す。**断らない**（促すだけ）。枝では何も変わらない
+      trunkNudge,
       memory,
       memoryTrunks: here,
       /**
@@ -1671,7 +1692,9 @@ async function serve(options: ServeOptions): Promise<void> {
   server = await BantoHostServer.start({
     threads,
     // T1: ターンの台帳。幹のターンが何本回り、どの出所から来たかを後から数える
-    turnLog: new TurnLog(defaultTurnLogPath()),
+    // T4: そのターンで道具を何回呼んだか（うち閲覧系が何回か）も一緒に残す
+    //     ——促しの閾値をどこに引くかは、この実測が出てから PO が決める
+    turnLog: new TurnLog(defaultTurnLogPath(), (threadId) => turnCounts.get(threadId)?.counts()),
     inbox,
     userThemes,
     port: settings.all().network?.port ?? options.port,

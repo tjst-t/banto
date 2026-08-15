@@ -199,10 +199,22 @@ describe("[PO報告 2026-08-11] 番頭が呼べる道具すべてに掛かる", 
       new URL("../../packages/banto-host/src/host-session.ts", import.meta.url).pathname,
       "utf-8"
     );
+    /**
+     * **理由**（T4・2026-08-15）: 掛ける対象の名前が `offloaded` から `nudged` に変わった。
+     * 幹の促し（`nudgeTrunkWork`）を退避と予算の**間**に挟んだためで、**予算を掛ける点は
+     * 依然としてここ1箇所**、対象も**道具箱の全部**のまま（`.map` で漏れなく掛かる）。
+     * 促しを予算の内側に置いたのは、**断られた呼び出しを促しの数えに入れない**ため。
+     */
     assert.match(
       src,
-      /offloaded\.map\(\(tool\) => guardTurn\(tool, options\.turnBudget!\)\)/u,
+      /nudged\.map\(\(tool\) => guardTurn\(tool, options\.turnBudget!\)\)/u,
       "番頭へ渡す最後の1点で掛けること（ここが動いたら、この検査を直す前に理由を書くこと）"
+    );
+    // 促しも同じ1箇所で、同じく道具箱の全部に掛かること（T4）
+    assert.match(
+      src,
+      /offloaded\.map\(\(tool\) => nudgeTrunkWork\(tool, options\.trunkNudge!\)\)/u,
+      "幹の促しも最後の1点で掛けること（選んで掛けると足し忘れが抜け道になる）"
     );
     // 呼び出し側（bin.ts）で個別に掛け直していないこと＝足し忘れの余地を作らない
     const bin = fs.readFileSync(
