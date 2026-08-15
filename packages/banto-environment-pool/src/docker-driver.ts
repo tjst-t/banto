@@ -209,6 +209,199 @@ function composeArgs(
   return args;
 }
 
+// ── 常駐しているか（検証プロファイルの成立条件・imp-0028）────────────────────
+//
+// **走り終えて終了するサービス定義は、検証プロファイルとして成立しない。**
+// 実機（dentaku）で踏んだ形：`command: ["npm","test"]` と書かれた compose は
+//   1. provision はコンテナが起きた直後に返る（その瞬間はまだ running。嘘ではないが
+//      **一瞬の写し**でしかない）
+//   2. 数十秒後にコンテナが終了する
+//   3. 以後の `run` は `no running containers found` で exit 1
+// マージ前ゲート（1つの環境で受け入れ基準の本数ぶんコマンドを走らせる）では
+// 「a1 だけ通って a2 以降が全滅」という紛らわしい落ち方になり、`env.verify`
+// （立てて1コマンド走らせて畳む）では露見しない——**プロファイルを作った時点の
+// 確認をすり抜ける**。機構が一度もそれを教えていなかったのがこの直しの対象。
+//
+// 捕まえ方は2段構え。ここ（provision）で捕まえられるのは「起動直後に終わる」もの
+// だけで、`npm test` のように数十秒走るものは provision の時点ではまだ生きている。
+// だから消えたあとの `run` / `healthcheck` が**理由を名指しする**（deadEnvironmentDetail）。
+
+/**
+ * 起動直後の状態が落ち着くまでの猶予。
+ *
+ * **待ちを延ばして誤魔化すための値ではない**（P6）。`docker compose up -d` が
+ * 返った直後は、既に終了したコンテナでも daemon がまだ `running` と答える
+ * ——実測で 0ms 時点は `running`、100ms 時点で `exited 3` になった。
+ * その反映を待つための、上限つきの落ち着き待ち。running が1本も無いと分かった
+ * 時点で即座に打ち切るので、失敗側でこの時間を丸ごと使うことはない。
+ */
+const LIVENESS_SETTLE_MS = 1_500;
+const LIVENESS_POLL_MS = 250;
+
+/** 同期の待ち（このドライバは spawnSync だけで組んである。D6: 標準機能のみ）。 */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * `docker compose ps --format json` を配列に均す。
+ *
+ * compose のバージョンによって「1行1オブジェクト（NDJSON）」と「配列1つ」の
+ * 両方があるので、どちらも読む。1行だけ壊れていても他の行は読む。
+ */
+function parseComposePsRows(raw: string): Array<Record<string, unknown>> {
+  const text = raw.trim();
+  if (!text) return [];
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (Array.isArray(parsed)) return parsed as Array<Record<string, unknown>>;
+    if (parsed && typeof parsed === "object") return [parsed as Record<string, unknown>];
+    return [];
+  } catch {
+    const rows: Array<Record<string, unknown>> = [];
+    for (const line of text.split("\n")) {
+      const t = line.trim();
+      if (!t) continue;
+      try {
+        const parsed: unknown = JSON.parse(t);
+        if (parsed && typeof parsed === "object") rows.push(parsed as Record<string, unknown>);
+      } catch { /* 壊れた1行のために全部を捨てない */ }
+    }
+    return rows;
+  }
+}
+
+/** 停止済みも含めた一覧（`ps -a`）。引けなければ `undefined`——「分からない」を空と混同しない。 */
+function composePsAll(
+  project: string,
+  composeFile: string | undefined,
+  workdir?: string
+): Array<Record<string, unknown>> | undefined {
+  const r = runCmd("docker", composeArgs(project, composeFile, ["ps", "-a", "--format", "json"]), {
+    timeoutMs: QUERY_TIMEOUT_MS,
+    ...(workdir ? { cwd: workdir } : {}),
+  });
+  if (r.exitCode !== 0) return undefined;
+  return parseComposePsRows(r.stdout);
+}
+
+function rowState(row: Record<string, unknown>): string {
+  return (row["State"] as string | undefined)?.toLowerCase() ?? "";
+}
+
+function rowService(row: Record<string, unknown>): string {
+  return String(row["Service"] ?? row["Name"] ?? "?");
+}
+
+/** 「app は exit 0 で終了」の並び。終了していないものは状態をそのまま言う。 */
+function describeStoppedRows(rows: readonly Record<string, unknown>[]): string {
+  return rows
+    .map((row) => {
+      const state = rowState(row);
+      if (state === "exited" || state === "dead") {
+        return `${rowService(row)} は exit ${String(row["ExitCode"] ?? "?")} で終了`;
+      }
+      return `${rowService(row)} は ${state || "?"}`;
+    })
+    .join("、");
+}
+
+/**
+ * 環境が消えているときの理由。`run` と `healthcheck` が同じ文言を使う。
+ *
+ * 今まではどちらも `no running containers found` としか言わなかったので、
+ * **踏んだ側が原因（compose の `command` が走り終わる定義だったこと）に辿り着けなかった**。
+ */
+function deadEnvironmentDetail(
+  project: string,
+  composeFile: string | undefined,
+  workdir?: string
+): string {
+  const rows = composePsAll(project, composeFile, workdir);
+  if (rows === undefined || rows.length === 0) {
+    return (
+      `環境のコンテナが1つも見つかりません（project "${project}"）。` +
+      `既に畳まれたか、まだ立てていない可能性があります。` +
+      `検証プロファイルのサービスは環境が畳まれるまで常駐している必要があります` +
+      `——走って終わるコマンドを compose の command に書いていないか確認してください`
+    );
+  }
+  return (
+    `環境のコンテナは全て終了しています（${describeStoppedRows(rows)}）。` +
+    `検証プロファイルのサービスは常駐している必要があります。` +
+    `走って終わるコマンドを compose の command に書いていないか確認してください`
+  );
+}
+
+/**
+ * 立てた直後に「もう終わっているサービス」を見つけて断る（imp-0028）。
+ *
+ * 判定は「**running が1本も無ければ落とす**」。「全部 running でなければ落とす」に
+ * すると、短命な init コンテナと常駐サービスが混じった compose を巻き添えにする
+ * ——1本でも常駐していれば環境としては成立するので、終了しているものは注記に留める。
+ *
+ * 断るときは畳んでから exit する。**まだ台帳に載っていない**（rememberOwned の前）ので、
+ * ここで畳まないと誰も畳めない（I3）。setup の失敗と同じ後始末を使う。
+ */
+function assertServicesStayUp(opts: {
+  project: string;
+  composeFile: string;
+  workdir?: string;
+  timeoutMs: number | undefined;
+}): readonly Record<string, unknown>[] {
+  const { project, composeFile, workdir, timeoutMs } = opts;
+
+  const deadline = Date.now() + LIVENESS_SETTLE_MS;
+  let rows: Array<Record<string, unknown>> | undefined;
+  for (;;) {
+    rows = composePsAll(project, composeFile, workdir);
+    // 引けないなら判定しない（見えないことを「落ちた」に化けさせない・I2）
+    if (rows === undefined) return [];
+    const running = rows.filter((r) => rowState(r) === "running");
+    if (running.length === 0) break;          // 確定：これ以上待っても戻らない
+    if (Date.now() >= deadline) return rows;  // 落ち着いたうえで常駐している
+    sleepSync(LIVENESS_POLL_MS);
+  }
+
+  cleanupAfterFailedSetup(project, composeFile, timeoutMs);
+  const detail =
+    rows.length > 0
+      ? `サービス ${rows
+          .map((r) => {
+            const state = rowState(r);
+            return state === "exited" || state === "dead"
+              ? `${rowService(r)}（exit ${String(r["ExitCode"] ?? "?")}）`
+              : `${rowService(r)}（${state || "?"}）`;
+          })
+          .join("、")}が起動直後に終了しました`
+      : "コンテナが1つも立ち上がりませんでした";
+  process.stderr.write(
+    `docker-driver provision: ${detail}。\n` +
+      `検証プロファイルのサービスは環境が畳まれるまで**常駐**している必要があります` +
+      `（例: command: ["sleep","infinity"]）。\n` +
+      `走り終えて終了するコマンドを compose の command に書くと、provision の直後に環境が消え、` +
+      `env.run やマージ前ゲートの2本目以降が全滅します。\n` +
+      `検証したいコマンドは compose の command ではなく env.verify / 受け入れ基準の verify に書いてください。\n`
+  );
+  process.exit(1);
+}
+
+/**
+ * 常駐は足りているが終わっているものが混じっている、を注記に残す（落とさない）。
+ *
+ * 行は `assertServicesStayUp` が最後に見たものを使い回す——同じことを二度 docker に
+ * 訊かない（provision は既に何本もコマンドを起こしている）。
+ */
+function noticeStoppedServices(rows: readonly Record<string, unknown>[]): void {
+  const stopped = rows.filter((r) => rowState(r) !== "running");
+  if (stopped.length === 0) return;
+  process.stderr.write(
+    `docker-driver provision: 常駐しているサービスがあるので環境は立ちましたが、` +
+      `終了しているものが混じっています（${describeStoppedRows(stopped)}）。` +
+      `短命な init なら問題ありませんが、意図せず終わっているなら compose の command を確認してください。\n`
+  );
+}
+
 // ── stdin reader ──────────────────────────────────────────────────────────────
 
 function readStdinSync(): unknown {
@@ -339,8 +532,19 @@ function handleProvision(input: Record<string, unknown>): void {
     process.exit(1);
   }
 
+  // **立ったことと、立ち続けることは別**（imp-0028）。compose が 0 で返っても、
+  // `command` が走り終わる定義なら環境はこの直後に消える。ここで断らないと、
+  // 「立った」と返した先で run が全滅する。台帳に載せる前に確かめる
+  const liveRows = assertServicesStayUp({
+    project,
+    composeFile,
+    ...(workdir ? { workdir } : {}),
+    timeoutMs: clock.remaining(),
+  });
+
   // 立ったものを自分のものとして覚える（所有の真実。名前から推測しない）
   rememberOwned(project);
+  noticeStoppedServices(liveRows);
 
   const created = new Date().toISOString();
   const handle: DockerHandle = {
@@ -608,9 +812,13 @@ function handleHealthcheck(input: Record<string, unknown>): void {
 
   const raw = r.stdout.trim();
   if (!raw) {
-    // No containers running
+    // 動いているものが1つも無い。**なぜ無いのかを言う**（imp-0028）——`ps -a` で
+    // 停止済みを引き直し、終了したサービス名と終了コードを理由に載せる
     process.stdout.write(
-      JSON.stringify({ ok: false, detail: "no containers found for project" }) + "\n"
+      JSON.stringify({
+        ok: false,
+        detail: deadEnvironmentDetail(project, composeFile, handle.workdir),
+      }) + "\n"
     );
     return;
   }
@@ -647,7 +855,10 @@ function handleHealthcheck(input: Record<string, unknown>): void {
 
   if (containers.length === 0) {
     process.stdout.write(
-      JSON.stringify({ ok: false, detail: "no containers found for project" }) + "\n"
+      JSON.stringify({
+        ok: false,
+        detail: deadEnvironmentDetail(project, composeFile, handle.workdir),
+      }) + "\n"
     );
     return;
   }
@@ -725,9 +936,13 @@ function handleRun(input: Record<string, unknown>): void {
 
   if (runningCount === 0) {
     // I2: environment not alive → fail with non-zero exit
+    //
+    // **原因を名指しする**（imp-0028）。以前は `no running containers found` だけで、
+    // 踏んだ側は「なぜ消えたか」に辿り着けなかった——いちばん多い原因は
+    // compose の `command` が走り終わる定義だったこと。停止済みも含めて引き直し、
+    // 終了したサービス名と終了コードを言う
     process.stderr.write(
-      `docker-driver run: no running containers found for project "${project}" ` +
-        `(environment may have been torn down or not yet provisioned)\n`
+      `docker-driver run: ${deadEnvironmentDetail(project, composeFile, handle.workdir)}\n`
     );
     process.exit(1);
   }
