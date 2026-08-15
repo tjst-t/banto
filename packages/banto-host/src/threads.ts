@@ -244,6 +244,28 @@ export class Thread {
    */
   conclusionDetail: string | undefined;
   /**
+   * 畳むときに書かれた**残作業の件数**（imp-0036）。
+   *
+   * 中身は `conclusionDetail` の「## 残ったこと」に潰れて入っている。ここに持つのは
+   * **件数だけ**——幹へ出すのは「未処理がある」という事実と件数までで、中身は
+   * `thread.read` で読む（決定108 の縛りは動かさない）。
+   *
+   * なぜ要るか：`remaining` に書いた仕事が誰にも渡らないまま消える事故が起きた
+   * （2026-08-15・thread-86）。畳んだ枝は `thread.list` の既定から外れるので、
+   * **残作業を抱えた枝と、きれいに片付いた枝が一覧で区別できなかった**。
+   */
+  remainingCount = 0;
+  /** 残作業に所在が付いた時刻（`thread.settle`）。付くまで一覧から消えない。 */
+  settledAt: string | undefined;
+  /** 残作業の**所在**——起票 id・職人の sessionId・幹での委譲先。 */
+  settledWhere: string | undefined;
+  /**
+   * **未処理を抱えたまま畳んだ枝か。** 一覧に出し続けるかの判定はここ1つ（D3）。
+   */
+  get hasUnsettledRemaining(): boolean {
+    return this.remainingCount > 0 && this.settledAt === undefined;
+  }
+  /**
    * 畳んだスレッドは**消えない**（Worker Pool の決定30c と同じ発想）。
    * 一覧から外れるだけで、履歴として読めるし同じ会話のまま再開できる。
    */
@@ -348,6 +370,9 @@ export class Thread {
     openReason?: string;
     conclusion?: string;
     conclusionDetail?: string;
+    remainingCount?: number;
+    settledAt?: string;
+    settledWhere?: string;
     harness: BantoHarness;
     canvas?: Canvas;
     tools: NamespacedToolDefinition[];
@@ -368,6 +393,9 @@ export class Thread {
     this.openReason = params.openReason;
     this.conclusion = params.conclusion;
     this.conclusionDetail = params.conclusionDetail;
+    this.remainingCount = params.remainingCount ?? 0;
+    this.settledAt = params.settledAt;
+    this.settledWhere = params.settledWhere;
     // I2: 枝に還す条件と親が無いのは帳簿の壊れ。黙って幹のように振る舞わせない
     if (params.kind === "branch" && (!params.parentId || !params.returnCondition)) {
       throw new Error(`枝 ${params.id} に親か還す条件がありません（決定77）`);
@@ -396,6 +424,9 @@ export class Thread {
       ...(this.conclusion ? { conclusion: this.conclusion } : {}),
       // 一覧には出さない（幅を食う）。**あることだけ**を出して、開けば読める形にする（決定108）
       ...(this.conclusionDetail ? { hasConclusionDetail: true } : {}),
+      // 未処理も同じ扱い——**件数だけ**出す。中身は thread.read（imp-0036）
+      ...(this.hasUnsettledRemaining ? { unsettledRemaining: this.remainingCount } : {}),
+      ...(this.settledWhere ? { settledWhere: this.settledWhere } : {}),
       sessionId: this.harness.sessionId,
       isDefault: this.isDefault,
       state: this.state,
@@ -565,6 +596,11 @@ export class ThreadRegistry {
           // 決定108: 詳細も読み戻す。畳んだ枝を開いて読めるのが要点なので、
           // 再起動で消えると「開けば読める」が成り立たなくなる
           ...(saved.conclusionDetail ? { conclusionDetail: saved.conclusionDetail } : {}),
+          // imp-0036: 未処理も読み戻す。**片付くまで消えない**のが要点なので、
+          // 再起動で降りてしまうと、いちばん忘れやすい形に戻る
+          ...(saved.remainingCount ? { remainingCount: saved.remainingCount } : {}),
+          ...(saved.settledAt ? { settledAt: saved.settledAt } : {}),
+          ...(saved.settledWhere ? { settledWhere: saved.settledWhere } : {}),
           harness: parts.harness,
           ...(parts.model ? { model: parts.model } : {}),
           ...(parts.canvas ? { canvas: parts.canvas } : {}),
@@ -692,6 +728,13 @@ export class ThreadRegistry {
       ...(thread.openReason ? { openReason: thread.openReason } : {}),
       ...(thread.conclusion ? { conclusion: thread.conclusion } : {}),
       ...(thread.conclusionDetail ? { conclusionDetail: thread.conclusionDetail } : {}),
+      /**
+       * 未処理の件数と所在（imp-0036）。**落とすと再起動で未処理が消える**
+       * ——それが今回直している事故そのものなので、ここは必ず書く。
+       */
+      ...(thread.remainingCount > 0 ? { remainingCount: thread.remainingCount } : {}),
+      ...(thread.settledAt ? { settledAt: thread.settledAt } : {}),
+      ...(thread.settledWhere ? { settledWhere: thread.settledWhere } : {}),
       state: thread.state,
       createdAt: thread.createdAt,
       ...(thread.closedAt ? { closedAt: thread.closedAt } : {}),
@@ -892,7 +935,7 @@ export class ThreadRegistry {
   merge(
     threadId: string,
     conclusion: string,
-    options: { detail?: string; now?: Date } = {}
+    options: { detail?: string; remainingCount?: number; now?: Date } = {}
   ): Thread {
     const now = options.now ?? new Date();
     const thread = this.threads.get(threadId);
@@ -907,6 +950,18 @@ export class ThreadRegistry {
     thread.conclusion = text;
     // 空の詳細で既にある詳細を消さない（畳み直しで中身が痩せるのを防ぐ）
     if (detail) thread.conclusionDetail = detail;
+    /**
+     * 残作業を非空で受け取ったら**未処理として立てる**（imp-0036）。
+     *
+     * 詳細と同じく**空では消さない**——畳み直しで痩せない、が決定108 から引き継ぐ扱い。
+     * 改めて残作業を書いたなら、それは**新しい言明**なので所在は降ろし直させる
+     * （前に降ろした所在は、いま書かれた残作業を指していない）。
+     */
+    if (options.remainingCount !== undefined && options.remainingCount > 0) {
+      thread.remainingCount = options.remainingCount;
+      thread.settledAt = undefined;
+      thread.settledWhere = undefined;
+    }
     thread.state = "closed";
     thread.closedAt = now.toISOString();
     /**
@@ -941,6 +996,54 @@ export class ThreadRegistry {
     // 畳むときは間引かず今すぐ書く（畳んだ直後に落ちても会話が残るように）
     this.flush(thread);
     this.refreshDefault();
+    this.emit();
+    return thread;
+  }
+
+  /**
+   * 畳んだ枝の**未処理を降ろす**（imp-0036・番頭裁定 2026-08-15）。
+   *
+   * 未処理は「片付いた」と言うだけでは降りない——**所在**（起票 id・立てた職人の
+   * sessionId・幹での委譲先）を書かせる。降ろす口を所在なしで開けると、
+   * ただの消しゴムになって、一覧から消えたのに誰も持っていない状態が復活する。
+   *
+   * 所在は**自由文字列**（番頭裁定）。`imp-NNNN` の形に縛ると「幹で委譲予定」
+   * 「PO 判断待ち」のような、id を持たない正当な所在が書けなくなる。
+   * ただし**空白のみは断る**——素通しさせるとこの口の意味が無い。
+   *
+   * **所在は枝の記録に残す**（番頭裁定）。あとから「これはどこへ行ったのか」を
+   * 辿れなければ、降ろしたことの裏が取れない。
+   *
+   * I2: 未処理の無い枝・幹・未知のID・空の所在は、黙って成功にしない。
+   */
+  settle(threadId: string, where: string, now = new Date()): Thread {
+    const thread = this.threads.get(threadId);
+    if (!thread) throw this.unknownThread(threadId);
+    if (thread.kind !== "branch") {
+      throw new Error("未処理を降ろせるのは枝だけです（幹は畳むときに残作業を書きません）");
+    }
+    const text = where.replace(/\s+/gu, " ").trim();
+    if (text === "") {
+      throw new Error(
+        "所在は空にできません（imp-0036 / task-0091 / 職人の sessionId /「幹で委譲予定」など、" +
+          "**どこへ行ったか**を書いてください）"
+      );
+    }
+    if (thread.remainingCount === 0) {
+      throw new Error(
+        `枝「${thread.title}」に未処理はありません（畳むときに remaining が書かれていません）`
+      );
+    }
+    // 冪等：同じ所在で二度降ろしても足さない
+    if (thread.settledAt !== undefined && thread.settledWhere === text) return thread;
+    thread.settledAt = now.toISOString();
+    thread.settledWhere = text;
+    thread.record({
+      role: "notice",
+      source: "thread",
+      text: `未処理 ${thread.remainingCount}件の所在：${text}`,
+    });
+    this.flush(thread);
     this.emit();
     return thread;
   }

@@ -188,6 +188,12 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
   "thread.consult",
   "thread.merge",
   /**
+   * **未処理を降ろす口**（imp-0036）。`thread.merge` で `remaining` を書いた枝は、
+   * 所在が付くまで既定の一覧に出続ける。降ろす口を提示しないと、番頭の手には
+   * 「消えない行」だけが在って**降ろす道が無い**——一覧はすぐ信用を失い、読み飛ばされる。
+   */
+  "thread.settle",
+  /**
    * **名を付ける口**（実地の穴 2026-08-14）。プロンプトは「`thread.rename` で名前を付けろ」
    * と指示している。無ければ会話は開いたときの仮の題のまま並び、番頭にも PO にも
    * どれが何の話か分からなくなる——迂回は無い（題を変えられるのは画面＝PO の手だけ）。

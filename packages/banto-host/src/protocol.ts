@@ -295,6 +295,15 @@ export interface ThreadView {
    * 詳細は枝を開いて（番頭なら `thread.read`）読む。
    */
   hasConclusionDetail?: boolean;
+  /**
+   * **未処理を抱えたまま畳んだ枝の、残作業の件数**（imp-0036）。所在が付くと消える。
+   *
+   * 中身は載せない——詳細と同じ扱いで、出すのは「未処理がある」という事実と件数まで。
+   * 読むのは枝を開いて（番頭なら `thread.read`）から。
+   */
+  unsettledRemaining?: number;
+  /** 未処理を降ろしたときの**所在**（起票 id・職人の sessionId・幹での委譲先）。 */
+  settledWhere?: string;
   /** ハーネス側のセッションID。デバッグと突き合わせ用。 */
   sessionId: string;
   /** 既定スレッド（threadId 省略時の宛先）＝幹。 */
