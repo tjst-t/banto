@@ -127,24 +127,24 @@ describe("[imp-0043/a1] ボリュームの載り先が symlink なら provision 
     const pool = makePool();
 
     const taskId = `t-symlink-${Date.now()}`;
+
+    // I3: **立ってしまったら畳んでから落ちる。** 直しが外れているときこそ環境が立つので、
+    // 畳むのを assert のあとに置くと「直しを外して確かめる」たびに器が外に残る（実際に残した）
     let env: { envId: string } | undefined;
-    await assert.rejects(
-      async () => {
-        env = await pool.provision({ repoPath: repo, workdir: repo, profile: "test", taskId });
-      },
-      (err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        // **理由が読めること**まで見る。断るだけで理由が無いと、踏んだ側は直せない
-        assert.match(msg, /symlink/, `symlink だと言っていない: ${msg}`);
-        assert.match(
-          msg,
-          /node_modules/,
-          `どのパスが悪いのか名指ししていない: ${msg}`
-        );
-        return true;
-      }
-    );
-    if (env) await pool.teardown(env.envId).catch(() => undefined);
+    let raised: unknown;
+    try {
+      env = await pool.provision({ repoPath: repo, workdir: repo, profile: "test", taskId });
+    } catch (err) {
+      raised = err;
+    } finally {
+      if (env) await pool.teardown(env.envId).catch(() => undefined);
+    }
+
+    assert.ok(raised, "symlink の載り先なのに provision が通ってしまった");
+    const msg = raised instanceof Error ? raised.message : String(raised);
+    // **理由が読めること**まで見る。断るだけで理由が無いと、踏んだ側は直せない
+    assert.match(msg, /symlink/, `symlink だと言っていない: ${msg}`);
+    assert.match(msg, /node_modules/, `どのパスが悪いのか名指ししていない: ${msg}`);
   });
 });
 
