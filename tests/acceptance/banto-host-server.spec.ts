@@ -88,6 +88,8 @@ let dir: string;
 let store: JsonlMemoryStore;
 let server: BantoHostServer | undefined;
 let session: FakeSession;
+/** いま立てているホストのスレッド帳簿（試験から枝を開くのに使う）。 */
+let threads: ThreadRegistry | undefined;
 
 async function startHost(
   getLastError?:
@@ -99,7 +101,7 @@ async function startHost(
   const lastError = typeof getLastError === "function" ? getLastError : undefined;
   const tools = createMemoryTools(new ScopedMemory(store));
   // task-0035: サーバはスレッドの帳簿を受け取る。既定スレッドを1本開いてから立てる
-  const threads = new ThreadRegistry(async () => {
+  threads = new ThreadRegistry(async () => {
     session = new FakeSession();
     return { harness: session, tools, ...(lastError ? { getLastError: lastError } : {}) };
   });
@@ -1178,9 +1180,15 @@ describe("[task-0026/a6] 番頭が職人の報告・質問に気づく", () => {
     await server!.notify("職人から報告が届きました");
 
     const notice = await waitFor(events, "notice");
-    assert.ok(notice.type === "notice" && notice.text === "職人から報告が届きました");
-    // 会話に積むだけでは気づかない。番頭のターンが実際に回ること
-    assert.deepEqual(session.prompts, ["職人から報告が届きました"]);
+    assert.ok(notice.type === "notice" && notice.text.startsWith("職人から報告が届きました"));
+    /**
+     * 会話に積むだけでは気づかない。番頭のターンが実際に回ること。
+     *
+     * **回るのは用件の枝**（T3）——知らせで幹のターンは起こさない。`session` は帳簿が
+     * 最後に組んだハーネス＝機構が立てた枝のもので、そこへ知らせが渡っている。
+     */
+    assert.equal(session.prompts.length, 1);
+    assert.ok(session.prompts[0]?.startsWith("職人から報告が届きました"));
     client.close();
   });
 
@@ -1190,22 +1198,43 @@ describe("[task-0026/a6] 番頭が職人の報告・質問に気づく", () => {
     const a = await BantoHostClient.connect(url, (e) => first.push(e));
     await waitFor(first, "welcome");
     await server!.notify("職人から質問です", { source: "worker" });
+    // T3: 知らせは用件の枝で捌く。幹には札が1行立つだけ
+    const card = await waitFor(first, "branch_card");
+    assert.ok(card.type === "branch_card");
     a.close();
 
     const second: ServerEvent[] = [];
     const b = await BantoHostClient.connect(url, (e) => second.push(e));
-    const history = await waitFor(second, "history");
+    await waitFor(second, "welcome");
+    b.send({ type: "history_request", threadId: card.branchId });
+    const history = await waitFor(
+      second,
+      "history",
+      2000,
+      (e) => e.type === "history" && e.threadId === card.branchId
+    );
     assert.ok(history.type === "history");
     // 出所が載る（外からの知らせを全部「職人」で出さないため。PO報告 2026-07-31）
-    assert.deepEqual(history.entries, [
-      { role: "notice", source: "worker", text: "職人から質問です" },
-    ]);
+    assert.equal(history.entries.length, 1);
+    const entry = history.entries[0]!;
+    assert.equal(entry.role, "notice");
+    assert.ok(entry.role === "notice" && entry.source === "worker");
+    assert.ok(entry.role === "notice" && entry.text.startsWith("職人から質問です"));
     b.close();
   });
 
   it("[task-0026/a6] 知らせが重なってもターンは1本ずつ進む", async () => {
     await startHost();
-    await Promise.all([server!.notify("1人目"), server!.notify("2人目"), server!.notify("3人目")]);
+    /**
+     * **同じ会話の中で1本ずつ**。T3 で知らせは用件の枝へ回るので、直列化を見るなら
+     * 宛先を1本に固定する——鍵の無い知らせは3本の別々の枝になり、そこには並びが無い。
+     */
+    const branch = await threads!.open(branchSpec("職人3人の報告"));
+    await Promise.all([
+      server!.notify("1人目", { threadId: branch.id }),
+      server!.notify("2人目", { threadId: branch.id }),
+      server!.notify("3人目", { threadId: branch.id }),
+    ]);
     assert.deepEqual(session.prompts, ["1人目", "2人目", "3人目"]);
   });
 });

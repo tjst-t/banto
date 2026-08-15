@@ -179,7 +179,13 @@ describe("[imp-0048] 幹は走っている最中でも入力を受ける", () =>
   });
 });
 
-describe("[imp-0048] 中断のあと、PO の発話は知らせの列より先", () => {
+/**
+ * **出所は「言伝」にしてある**（T3・2026-08-15）。職人・工房・環境の知らせは、いまは
+ * 幹ではなく用件の枝で捌かれる——幹の列に並ぶのは、他の幹からの言伝（`thread.send`）と
+ * 枝からの相談だけになった。見ているのは `deliverToThread` の列と場（`poFloor`）で、
+ * そこは出所によらず1本道なので、確かめていることは変わらない。
+ */
+describe("[imp-0048] 中断のあと、PO の発話は列の知らせより先", () => {
   it("列に残った知らせは PO が話すまで待つ", async () => {
     const url = await startHost();
     const events: ServerEvent[] = [];
@@ -189,8 +195,8 @@ describe("[imp-0048] 中断のあと、PO の発話は知らせの列より先",
     await until("最初のターンが走る", () => harness.received.length === 1);
 
     // 知らせA は走っているターンへ融合する。知らせB はその後ろの列で待つ
-    void server?.notify("知らせA", { source: "worker" });
-    void server?.notify("知らせB", { source: "worker" });
+    void server?.notify("知らせA", { source: "thread" });
+    void server?.notify("知らせB", { source: "thread" });
     await until("知らせAが融合する", () => harness.received.length === 2);
     assert.deepEqual(harness.received, ["はじめの話", "知らせA"], "前提：Bはまだ列の中");
 
@@ -232,8 +238,8 @@ describe("[imp-0048] 中断のあと、PO の発話は知らせの列より先",
 
     client.send({ type: "prompt", text: "はじめの話" });
     await until("最初のターンが走る", () => harness.received.length === 1);
-    void server?.notify("知らせA", { source: "worker" });
-    void server?.notify("知らせB", { source: "worker" });
+    void server?.notify("知らせA", { source: "thread" });
+    void server?.notify("知らせB", { source: "thread" });
     await until("知らせAが融合する", () => harness.received.length === 2);
 
     client.send({ type: "abort" });

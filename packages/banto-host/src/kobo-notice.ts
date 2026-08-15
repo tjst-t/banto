@@ -18,6 +18,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { threadIdOfOrigin } from "./worker-notice.js";
 import type { NamespacedToolDefinition } from "./tool-registry.js";
+import type { NoticeSubject } from "./server.js";
 
 /**
  * 止まった理由ごとに、番頭に求める判断を変える（PO裁定 2026-08-07・task-0071）。
@@ -88,7 +89,7 @@ const NOTICEWORTHY = new Set([
 const NOTICEWORTHY_STATES = new Set(["review-ready", "paused"]);
 
 /** Kobo の1イベント（この層に要るところだけ）。 */
-interface KoboEventView {
+export interface KoboEventView {
   eventId: number;
   type: string;
   timestamp: string;
@@ -121,8 +122,8 @@ interface KoboTaskView {
 export interface KoboNoticeOptions {
   /** `kobo.*` Tool（モジュールから束ねたもの）。 */
   tools: NamespacedToolDefinition[];
-  /** 会話へ知らせる（宛先スレッドつき）。 */
-  notify(message: string, target: { threadId?: string }): Promise<void>;
+  /** 会話へ知らせる（宛先スレッドと、用件の鍵つき）。 */
+  notify(message: string, target: { threadId?: string; subject?: NoticeSubject }): Promise<void>;
   /** どこまで読んだかの置き場。 */
   cursorPath: string;
   /** 引く間隔（ms）。 */
@@ -153,15 +154,21 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
   let stopped = false;
 
   /** 1通届ける。宛先が畳まれていたら既定の宛先へ逃がす（**消えたことにしない**・I2）。 */
-  const deliver = async (notice: { origin: string; text: string }): Promise<void> => {
+  const deliver = async (notice: {
+    origin: string;
+    text: string;
+    subject?: NoticeSubject;
+  }): Promise<void> => {
     const threadId = threadIdOfOrigin(notice.origin);
+    // T3: 用件の鍵はタスク。幹へ配られようとしたときだけ、そのタスクの枝へ回る
+    const subject = notice.subject;
     try {
-      await options.notify(notice.text, threadId ? { threadId } : {});
+      await options.notify(notice.text, { ...(threadId ? { threadId } : {}), subject });
     } catch (err) {
       // 決定68: 宛先が畳まれていたら起こし直して届ける——のが本筋だが、起こし直せない
       // ときは既定の宛先へ逃がす
       log(`[banto] 工場の知らせの宛先 ${String(threadId)} へ届きません: ${String(err)}`);
-      await options.notify(notice.text, {}).catch(() => undefined);
+      await options.notify(notice.text, { subject }).catch(() => undefined);
     }
   };
 
@@ -187,7 +194,9 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
         if (event.type === "task_stalled") continue;
         const notice = await renderNotice(event, origins, invoke);
         if (!notice) continue;
-        await deliver(notice);
+        // T3: 鍵はタスク1件
+        const subject = subjectOfKoboEvent(event);
+        await deliver({ ...notice, ...(subject ? { subject } : {}) });
       }
       for (const bundle of bundleStalled(stalled, origins)) {
         await deliver(bundle);
@@ -224,7 +233,7 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
 export function bundleStalled(
   events: KoboEventView[],
   origins: Record<string, string>
-): Array<{ origin: string; text: string }> {
+): Array<{ origin: string; text: string; subject?: NoticeSubject }> {
   const byOrigin = new Map<string, KoboEventView[]>();
   for (const event of events) {
     if (!event.taskId) continue;
@@ -234,7 +243,7 @@ export function bundleStalled(
     else byOrigin.set(origin, [event]);
   }
 
-  const bundles: Array<{ origin: string; text: string }> = [];
+  const bundles: Array<{ origin: string; text: string; subject?: NoticeSubject }> = [];
   for (const [origin, group] of byOrigin) {
     const sorted = [...group].sort((a, b) => (b.dwellMs ?? 0) - (a.dwellMs ?? 0));
     const lines = sorted.map((e) => {
@@ -245,8 +254,17 @@ export function bundleStalled(
       sorted.length === 1
         ? `${sorted[0]!.taskId} が止まっています`
         : `${sorted.length} 件が止まっています`;
+    /**
+     * T3: 束ねた知らせの鍵。**1件だけのときはそのタスク**——同じタスクの続報（マージ・
+     * 失敗）と同じ枝に集まる。**複数を跨ぐ束は鍵を持たない**：どのタスクの枝でもない
+     * ので、その1件だけの枝で捌いてもらう（無理に代表のタスクへ寄せると、無関係な
+     * タスクの知らせがその枝に混ざる）。
+     */
+    const only = sorted.length === 1 ? sorted[0]! : undefined;
+    const subject = only ? subjectOfKoboEvent(only) : undefined;
     bundles.push({
       origin,
+      ...(subject ? { subject } : {}),
       text: [
         head,
         "",
@@ -264,6 +282,28 @@ export function bundleStalled(
     });
   }
   return bundles;
+}
+
+/**
+ * **その知らせが指す用件**（T3）。工房の知らせの鍵はタスク——同じタスクの進捗・監査・
+ * マージは1本の枝に集まる。
+ *
+ * **プロジェクトも込みで一意にする**（`kobo:banto/task-0001`）。工房は複数プロジェクトを
+ * 抱えるので、`task-0001` だけだと別プロジェクトの同番号が同じ枝へ混ざる。
+ *
+ * 終端と言い切れるのは `task_merged` だけ：マージされたタスクはもう動かない。
+ * **`task_failed` は終端にしない**——落ちたタスクは作り直して進むことがあり、その続報は
+ * 同じ枝で読めた方がよい。closed への遷移は、そもそも知らせに乗らない
+ * （`NOTICEWORTHY_STATES` は review-ready と paused だけ）ので判定できない（I1）。
+ */
+export function subjectOfKoboEvent(event: KoboEventView): NoticeSubject | undefined {
+  if (!event.taskId) return undefined;
+  const label = `${event.projectTag}/${event.taskId}`;
+  return {
+    key: `kobo:${label}`,
+    label,
+    ...(event.type === "task_merged" ? { terminal: true } : {}),
+  };
 }
 
 /** 人が読む長さ。`banto-core` の `formatDwell` と同じ形（この層は Kobo に依存しない）。 */

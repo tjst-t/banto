@@ -1866,7 +1866,7 @@ async function serve(options: ServeOptions): Promise<void> {
   // 宛先は既定スレッド——置き場全体の話で、特定の会話のものではない
   const stopEnvNotices = startEnvNotices({
     tools: modules.tools(),
-    notify: (message) => server.notify(message, { source: "env" }),
+    notify: (message, target) => server.notify(message, { ...target, source: "env" }),
     cursorPath: path.join(dataDir(), "env-cursor.json"),
   });
   /**

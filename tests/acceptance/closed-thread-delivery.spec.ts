@@ -240,6 +240,11 @@ describe("[T2] 畳んだ枝への配達", () => {
     assert.deepEqual(sessionOf(trunk).prompts, []);
   });
 
+  /**
+   * T3 が入って、**幹宛ての知らせは幹の下の枝で捌く**ようになった。畳んだ幹でも同じ
+   * ——ただし枝は開いている幹にしかぶら下げられない（決定77 の不変条件）ので、
+   * 幹は開き直す。**ターンは回らない**：回るのは枝である。
+   */
   it("[T2] 畳んだ幹に届いたら、その幹を開き直す（帳場など別の幹は起こさない）", async () => {
     // 帳場（宛先を省いたときの落ち先）と、終えた幹
     const main = await threads.open({ kind: "trunk", main: true });
@@ -261,8 +266,13 @@ describe("[T2] 畳んだ枝への配達", () => {
       (e) => e.role === "notice" && e.source === "system" && e.text.includes("開き直しました")
     );
     assert.ok(note?.role === "notice" && note.text.includes("終えた幹"));
-    assert.deepEqual(sessionOf(finished).prompts, ["終えた案件に遅れて報告が届きました"]);
-    assert.equal(turnsOf(finished.id), 1);
+    // 知らせを捌くのは、その幹の下に立った枝（T3）。**幹のターンは回らない**
+    assert.deepEqual(sessionOf(finished).prompts, []);
+    assert.equal(turnsOf(finished.id), 0);
+    const branch = threads.list({ kind: "branch" }).find((t) => t.parentId === finished.id);
+    assert.ok(branch, "終えた幹の下に用件の枝が立つこと");
+    assert.ok(sessionOf(branch).prompts[0]?.startsWith("終えた案件に遅れて報告が届きました"));
+    assert.equal(turnsOf(branch.id), 1);
 
     // 帳場は起きない（黙って消えもしない）
     assert.deepEqual(sessionOf(main).prompts, []);

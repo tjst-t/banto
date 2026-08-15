@@ -179,6 +179,14 @@ export type ThreadSpec =
       openedBy: BranchOpener;
       /** 開いた理由。札に必ず出す。 */
       reason: string;
+      /**
+       * **用件の鍵**（T3）。知らせが指す対象——職人の `sessionId`・`projectTag/taskId`・
+       * `envId`——を1本の枝に結びつける。同じ鍵の知らせは同じ枝へ入る。
+       *
+       * 番頭が手で開く枝には無い（`thread.open` は渡さない）。機構が知らせのために
+       * 開いた枝だけが持つ。**題では引かない**——改名で壊れるため（PO 指示 2026-08-15）。
+       */
+      subjectKey?: string;
     };
 
 /**
@@ -231,6 +239,15 @@ export class Thread {
   readonly openedBy: BranchOpener | undefined;
   /** 開いた理由。札に出す。 */
   readonly openReason: string | undefined;
+  /**
+   * **用件の鍵**（T3）。この枝がどの対象（職人の `sessionId`・`projectTag/taskId`・
+   * `envId`）の知らせを捌く場かを指す。**索引に保存され、再起動しても残る**
+   * ——ここが消えると、再起動後の1通目が同じ用件の枝を見つけられず、新しい枝が立つ。
+   *
+   * 鍵の割り出せない知らせ（system の再起動通知など）の枝には**無い**：続きが来ても
+   * 同じ枝に結びつけようが無い＝その1件で終わる用件だから（PO 指示 2026-08-15）。
+   */
+  readonly subjectKey: string | undefined;
   /**
    * 畳んだときの結論（決定77）。**保留も結論の一種**として「保留：理由」で畳める。
    * 開き直すと消えない——幹に還した1行は記録なので、そのまま残る。
@@ -385,6 +402,7 @@ export class Thread {
     returnCondition?: string;
     openedBy?: BranchOpener;
     openReason?: string;
+    subjectKey?: string;
     conclusion?: string;
     conclusionDetail?: string;
     remainingCount?: number;
@@ -408,6 +426,7 @@ export class Thread {
     this.returnCondition = params.returnCondition;
     this.openedBy = params.openedBy;
     this.openReason = params.openReason;
+    this.subjectKey = params.subjectKey;
     this.conclusion = params.conclusion;
     this.conclusionDetail = params.conclusionDetail;
     this.remainingCount = params.remainingCount ?? 0;
@@ -716,6 +735,8 @@ export class ThreadRegistry {
                 ...(saved.returnCondition ? { returnCondition: saved.returnCondition } : {}),
                 ...(saved.openedBy ? { openedBy: saved.openedBy } : {}),
                 ...(saved.openReason ? { openReason: saved.openReason } : {}),
+                // T3: 用件の鍵も読み戻す。**再起動をまたいで同じ枝へ集める**のが要点
+                ...(saved.subjectKey ? { subjectKey: saved.subjectKey } : {}),
               }
             : {}),
           ...(saved.conclusion ? { conclusion: saved.conclusion } : {}),
@@ -917,6 +938,11 @@ export class ThreadRegistry {
       ...(thread.returnCondition ? { returnCondition: thread.returnCondition } : {}),
       ...(thread.openedBy ? { openedBy: thread.openedBy } : {}),
       ...(thread.openReason ? { openReason: thread.openReason } : {}),
+      /**
+       * **用件の鍵**（T3）。落とすと、再起動したあとの1通目が同じ用件の枝を見つけられず、
+       * 同じ職人・同じタスクの枝が二重に立つ——用件ごとに1本という前提がその場で崩れる。
+       */
+      ...(thread.subjectKey ? { subjectKey: thread.subjectKey } : {}),
       ...(thread.conclusion ? { conclusion: thread.conclusion } : {}),
       ...(thread.conclusionDetail ? { conclusionDetail: thread.conclusionDetail } : {}),
       /**
@@ -1028,6 +1054,8 @@ export class ThreadRegistry {
             returnCondition: spec.returnCondition,
             openedBy: spec.openedBy,
             openReason: spec.reason,
+            // T3: 用件の鍵。次の同じ鍵の知らせがこの枝を見つけるための唯一の手掛かり
+            ...(spec.subjectKey ? { subjectKey: spec.subjectKey } : {}),
           }
         : {}),
       harness: parts.harness,
@@ -1504,6 +1532,29 @@ export class ThreadRegistry {
 
   get(threadId: string): Thread | undefined {
     return this.threads.get(threadId);
+  }
+
+  /**
+   * **用件の枝を鍵で引く**（T3）。同じ対象（職人・タスク・検証環境）の知らせを
+   * 1本の枝に集めるための逆引き。
+   *
+   * **畳んだ枝も返す**。返さないと、鍵が終端に達して畳んだあとに遅れて届いた1通が
+   * 新しい枝を立ててしまい、「畳んだ枝への配達は開き直す」（T2）が働かない。
+   * 開いているものを先に返す——同じ鍵で2本ある（畳んだ古い枝と、いまの枝）ときは、
+   * いま開いている側が正しい宛先。
+   *
+   * 引き当てるのは**鍵と親の組**。題では引かない（改名で壊れる・PO 指示 2026-08-15）。
+   */
+  findBySubject(parentId: string, subjectKey: string): Thread | undefined {
+    let closed: Thread | undefined;
+    for (const thread of this.threads.values()) {
+      if (thread.kind !== "branch") continue;
+      if (thread.parentId !== parentId) continue;
+      if (thread.subjectKey !== subjectKey) continue;
+      if (thread.state === "open") return thread;
+      closed = thread;
+    }
+    return closed;
   }
 
   /**

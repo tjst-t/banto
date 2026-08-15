@@ -39,6 +39,12 @@ export interface StoredThread {
   openedBy?: "banto" | "po";
   /** 開いた理由。 */
   openReason?: string;
+  /**
+   * **用件の鍵**（T3）。機構が知らせのために開いた枝だけが持つ（職人の `sessionId`・
+   * `projectTag/taskId`・`envId`）。ここが落ちると、再起動した直後の1通目が
+   * 同じ用件の枝を見つけられず、同じ対象の枝が二重に立つ。
+   */
+  subjectKey?: string;
   /** 畳んだときの結論。 */
   conclusion?: string;
   /**

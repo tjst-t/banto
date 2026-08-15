@@ -40,7 +40,7 @@ import {
 } from "./protocol.js";
 import { openUtsuwa } from "./canvas-utsuwa.js";
 import { fromWireToolName } from "@banto/core";
-import type { Thread, ThreadRegistry } from "./threads.js";
+import type { Thread, ThreadRegistry, ThreadSpec } from "./threads.js";
 import { workspaceRoot } from "./workspace.js";
 import { TurnLog } from "./turn-log.js";
 
@@ -231,11 +231,45 @@ export interface ModelInfo {
 }
 
 /** `notify` の宛先と出所。 */
+/**
+ * **知らせが指す対象**（T3）。用件ごとの枝を引き当てる鍵。
+ *
+ * 出所（worker / kobo / env）ごとの常設1本でも、知らせ1件ごとでもない——**用件**が単位。
+ * 同じ職人・同じタスク・同じ検証環境の知らせは、同じ枝に集まる。
+ */
+export interface NoticeSubject {
+  /**
+   * 鍵。**出所を含めて一意にする**（`worker:sess-3` / `kobo:banto/task-0151` /
+   * `env:env-12`）——番号だけだと、別の出所の同じ番号が同じ枝に混ざる。
+   */
+  key: string;
+  /** 画面に出す名前（枝の題と還す条件に使う）。 */
+  label: string;
+  /**
+   * **この鍵の最後の知らせか**（職人が落ちた・タスクがマージされた・環境が畳まれた）。
+   * 真のときだけ「畳んでよい」と分かる印を添える。**機構は畳まない**——結論は番頭が書く。
+   */
+  terminal?: boolean;
+}
+
 export interface NotifyOptions {
   /** 宛先のスレッド（決定35a）。省略時は既定スレッド。 */
   threadId?: string;
   /** 誰からの知らせか。省略時は `system`。 */
   source?: NoticeSource;
+  /**
+   * 知らせが指す対象（T3）。**幹へ配られようとしている知らせだけ**、ここを鍵に
+   * 用件の枝へ回す。省略すると「鍵の割り出せない知らせ」＝その1件だけの枝が立つ。
+   */
+  subject?: NoticeSubject;
+  /**
+   * **これは会話であって知らせではない**（T3）。真のときは幹のまま配る。
+   *
+   * PO が取次で答えた一通がこれ——`notify` で入れているが、喋っているのは PO 本人で
+   * ある。枝へ移すと、PO は自分が押したボタンの続きを別の会話で探すことになる。
+   * 他の幹からの言伝（`thread.send`・出所 `thread`）も同じ理由で幹のまま。
+   */
+  conversation?: boolean;
 }
 
 export interface BantoHostServerOptions {
@@ -390,6 +424,13 @@ export class BantoHostServer {
   private readonly attached = new Set<string>();
   /** ターンの台帳（T1）。無ければ観測しない（既存の挙動に触れない）。 */
   private readonly turnLog: TurnLog | undefined;
+  /**
+   * いま開いている最中の用件の枝（T3）。鍵ごとに1つの約束を持つ。
+   *
+   * 同じ職人から2通が続けて来ると、どちらも「枝が無い」を見て**2本立てて**しまう
+   * ——1通目の約束をここで待たせる。開き終わったら消す（残すと畳んだ枝を掴み続ける）。
+   */
+  private readonly openingSubjects = new Map<string, Promise<Thread>>();
 
   /**
    * 番頭の標準モデル（会話がまだ自分のモデルを持たないときに使う）。
@@ -793,13 +834,103 @@ export class BantoHostServer {
    *
    * 知らせ同士はスレッドごとに直列化する。同時に3人の職人が報告してきても、
    * そのスレッドのターンは1本ずつ進む。
+   *
+   * **幹へ配られようとした知らせは、用件の枝へ回る**（T3 → `routeNotice`）。宛先が
+   * 既に枝なら何も変わらない。回した知らせで**幹のターンは回らない**——幹はいつでも
+   * PO の入力を受けられる待ち状態でいる、というのが T3 の全部である。
    */
-  notify(text: string, options: NotifyOptions = {}): Promise<void> {
+  async notify(text: string, options: NotifyOptions = {}): Promise<void> {
     const source = options.source ?? "system";
-    return this.deliverToThread(text, options.threadId, source, (thread) => {
-      thread.record({ role: "notice", source, text });
-      this.broadcast({ type: "notice", threadId: thread.id, source, text });
+    // T3: 幹へ配られようとしている知らせだけ、用件の枝へ回す
+    const routed = await this.routeNotice(text, options, source);
+    return this.deliverToThread(routed.text, routed.threadId, source, (thread) => {
+      thread.record({ role: "notice", source, text: routed.text });
+      this.broadcast({ type: "notice", threadId: thread.id, source, text: routed.text });
     });
+  }
+
+  /**
+   * **知らせで幹のターンを起こさない**（T3・PO 方針 2026-08-15）。
+   *
+   * 対応をやめるのではなく、**対応の場所を幹から枝へ移す**。幹はいつでも PO の入力を
+   * 受けられる待ち状態でいてほしい——職人の報告・工房の進捗・環境の知らせで塞がるのは、
+   * PO が「私が会話できない」と名指しで挙げた形そのもの。幹へ返るのは、枝を畳むときの
+   * 結論1行だけになる。
+   *
+   * 回すのは**幹へ配られようとしている知らせだけ**。
+   *
+   * - 宛先が**枝**なら、そのまま配る。枝の中で委譲した職人の報告がその枝へ返るのは、
+   *   既に正しい形（`origin=banto:<threadId>`）——ここに用件の枝を挟むと二重になる
+   * - **他の幹からの言伝**（`thread.send`・出所 `thread`）は幹のまま。これは会話その
+   *   ものであって知らせではない。PO の発話も同じ（そもそもこの経路を通らない）
+   * - 宛先が幹で**鍵が割り出せる**なら、その鍵の枝へ。無ければ機構が立てる
+   * - 宛先が幹で**鍵が割り出せない**なら、**その1件のための枝**を立てる。続きが来ても
+   *   同じ枝へ結びつけようが無い＝1件で終わる用件だから（PO 指示 2026-08-15：
+   *   常設の落ち先は作らない。溜め place になり、古い文脈で知らせに対応する形へ戻る）
+   *
+   * I2: 枝を立てられなかったら知らせを捨てず、元の宛先へ配る。幹が1本回るのは、
+   * 知らせが消えるより遥かにましである。
+   */
+  private async routeNotice(
+    text: string,
+    options: NotifyOptions,
+    source: NoticeSource
+  ): Promise<{ text: string; threadId: string | undefined }> {
+    const asIs = { text, threadId: options.threadId };
+    // 会話は幹のまま。PO が取次で答えた一通と、他の幹からの言伝（`thread.send`）
+    if (options.conversation === true || source === "thread") return asIs;
+    let target: Thread;
+    try {
+      target = this.threads.resolve(options.threadId);
+    } catch {
+      // 宛先が引けないことはここでは決めない。`deliverToThread` が I2 のまま投げる
+      return asIs;
+    }
+    // 枝が宛先なら、既に幹の外。用件の枝を重ねない
+    if (target.kind !== "trunk") return asIs;
+
+    try {
+      /**
+       * **畳んだ幹に枝は生やさない**（T2 との継ぎ目）。開いている枝の親は開いている幹、
+       * が決定77 の前提——畳んだ幹にぶら下げると、レールにも幹の面にも出ない枝ができる。
+       * 終えた幹を開き直す（印は残る）が、**ターンは回さない**：回るのは枝である。
+       */
+      this.reopenClosedTarget(target);
+      const branch = await this.subjectBranch(target, options.subject, text);
+      return { text: appendCloseHint(text, options.subject), threadId: branch.id };
+    } catch (err) {
+      // I2: 枝を立てられなかったことを黙らせない。知らせ自体は元の宛先へ配る
+      console.error(`[banto] 用件の枝を開けませんでした（幹へ配ります）: ${String(err)}`);
+      return asIs;
+    }
+  }
+
+  /**
+   * 用件の枝を引き当てる。無ければ立てる（T3）。
+   *
+   * 鍵があるものは `findBySubject` で引く——**題では引かない**（改名で壊れる）。鍵は
+   * 索引に保存され、再起動をまたいで残る。**畳んだ枝も引き当てる**：そこへ配れば
+   * T2 が開き直すので、遅れて届いた1通で二重に枝が立たない。
+   *
+   * 同じ鍵の知らせが同時に2通来ると、どちらも「枝が無い」を見て2本立ててしまう
+   * ——開いている最中の約束を鍵で覚えておき、2通目はそれを待つ。
+   */
+  private async subjectBranch(
+    trunk: Thread,
+    subject: NoticeSubject | undefined,
+    text: string
+  ): Promise<Thread> {
+    // 鍵が無い＝続きが来ても結びつけようが無い。**その1件だけの枝**を立てて畳んでもらう
+    if (!subject) return this.threads.open(oneShotBranchSpec(text), trunk.id);
+    const existing = this.threads.findBySubject(trunk.id, subject.key);
+    if (existing) return existing;
+    const opening = this.openingSubjects.get(`${trunk.id}::${subject.key}`);
+    if (opening) return opening;
+    const started = this.threads
+      .open(subjectBranchSpec(subject), trunk.id)
+      .finally(() => this.openingSubjects.delete(`${trunk.id}::${subject.key}`));
+    this.openingSubjects.set(`${trunk.id}::${subject.key}`, started);
+    return started;
   }
 
   /**
@@ -1850,8 +1981,18 @@ export class BantoHostServer {
       `（求めていた判断：${answered.ask}）` +
       (effectText ? `\n結果：${effectText}` : "") +
       "\n\nこの答えを踏まえて、待っていた作業を続けてください。";
-    // 待たない：ターンの完走を待つとボタンの反応が返らない。失敗は notify 側が記録する
-    void this.notify(text, { threadId: thread.id, source: answered.source.id }).catch((err) => {
+    /**
+     * 待たない：ターンの完走を待つとボタンの反応が返らない。失敗は notify 側が記録する。
+     *
+     * **`conversation` を立てる**（T3）：`notify` で入れてはいるが、喋っているのは
+     * PO 本人である。用件の枝へ回すと、PO は自分が押したボタンの続きを別の会話で
+     * 探すことになる——幹を空けておく話とは無関係な一通。
+     */
+    void this.notify(text, {
+      threadId: thread.id,
+      source: answered.source.id,
+      conversation: true,
+    }).catch((err) => {
       this.send(ws, { type: "error", message: `番頭へ答えを伝えられません: ${String(err)}` });
     });
   }
@@ -1874,4 +2015,60 @@ export class BantoHostServer {
 function isBusyError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
   return /already processing|in progress|steer\(\)|busy/iu.test(message);
+}
+
+/**
+ * **用件の枝**の作り（T3）。題・還す条件・理由を鍵から機械的に作る。
+ *
+ * 番頭が手で開く枝と同じ経路（`ThreadRegistry.open`）を通す——別口を作ると、幹の札・
+ * 保存・レールの扱いが二重になる。`openedBy` は `banto`：PO の指示ではなく、番頭の側の
+ * 都合（幹を空けておく）で開いた枝だから。
+ */
+function subjectBranchSpec(subject: NoticeSubject): ThreadSpec {
+  return {
+    kind: "branch",
+    title: subject.label,
+    returnCondition: `${subject.label} の件が終わったら、結論を1行で幹へ還す`,
+    openedBy: "banto",
+    reason: `${subject.label} の知らせを幹ではなくここで捌くため、機構が開きました（T3）`,
+    subjectKey: subject.key,
+  };
+}
+
+/**
+ * **その1件だけの枝**の作り（T3・PO 指示 2026-08-15）。
+ *
+ * 鍵が割り出せない知らせ（system の再起動通知など）は、続きが来ても同じ枝へ結びつけ
+ * ようが無い＝1件で終わる用件である。だから**常設の落ち先は作らない**——1本に積み続けると
+ * 古い文脈を抱えたまま次の知らせに対応することになり、PO が名指しで否定した形へ戻る。
+ *
+ * 題は知らせの見出し（1行目）。**鍵は持たせない**ので、次の鍵無しの知らせは別の枝になる。
+ */
+function oneShotBranchSpec(text: string): ThreadSpec {
+  const headline = text.split("\n", 1)[0]?.trim();
+  const title = headline && headline.length > 0 ? headline : "宛先のない知らせ";
+  return {
+    kind: "branch",
+    title,
+    returnCondition: "この知らせを捌いたら、結論を1行で幹へ還す",
+    openedBy: "banto",
+    reason: `鍵の割り出せない知らせ1件のために機構が開きました（T3）：${title}`,
+  };
+}
+
+/**
+ * **畳んでよいと分かる印**を知らせの末尾に添える（T3）。
+ *
+ * 機構は枝を勝手に畳まない——畳むときの1行は結論であり、機構が書けば**結論の捏造**に
+ * なる。代わりに「もう続きは来ない」と機構が言い切れるときだけ、そう伝える。
+ *
+ * - 鍵があるもの: その鍵が終端に達した知らせ（職人が落ちた・タスクがマージされた・
+ *   環境が畳まれた）だけ。**1件捌くたびには添えない**——次の完了報告が「自分の答えを
+ *   知らない枝」に入るため
+ * - 鍵が無いもの: その1件で終わる用件なので、必ず添える
+ */
+function appendCloseHint(text: string, subject: NoticeSubject | undefined): string {
+  if (subject && subject.terminal !== true) return text;
+  const what = subject ? `「${subject.label}」の最後の知らせです` : "この1件で終わる知らせです";
+  return `${text}\n\n---\nこれは${what}。捌き終えたら \`thread.merge\` でこの枝を畳み、結論を1行で幹へ還してください（T3）。`;
 }

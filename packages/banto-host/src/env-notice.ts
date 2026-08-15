@@ -23,12 +23,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { EnvEvent } from "@banto/environment-pool";
 import type { NamespacedToolDefinition } from "./tool-registry.js";
+import type { NoticeSubject } from "./server.js";
 
 export interface EnvNoticeOptions {
   /** `env.*` Tool（モジュールから束ねたもの）。 */
   tools: NamespacedToolDefinition[];
-  /** 会話へ知らせる。 */
-  notify(message: string): Promise<void>;
+  /** 会話へ知らせる（用件の鍵つき）。 */
+  notify(message: string, target?: { subject?: NoticeSubject }): Promise<void>;
   /** どこまで読んだかの置き場。 */
   cursorPath: string;
   /** 引く間隔（ms）。既定 30 秒——検証環境の掃除は毎分の tick なので、これより細かくしても何も出ない */
@@ -70,7 +71,9 @@ export function startEnvNotices(options: EnvNoticeOptions): () => void {
         cursor = Math.max(cursor, event.id ?? 0);
         const notice = renderEnvNotice(event);
         if (!notice) continue;
-        await options.notify(notice);
+        // T3: 用件の鍵は検証環境（envId）。持たない知らせ（孤児の照合）は鍵無しのまま
+        const subject = subjectOfEnvEvent(event);
+        await options.notify(notice, subject ? { subject } : {});
       }
       writeCursor(options.cursorPath, cursor);
     } catch (err) {
@@ -89,6 +92,26 @@ export function startEnvNotices(options: EnvNoticeOptions): () => void {
   return () => {
     stopped = true;
     clearInterval(timer);
+  };
+}
+
+/**
+ * **その知らせが指す用件**（T3）。検証環境の知らせの鍵は `envId`——`EnvEvent` が持って
+ * いるので、`env.provision` に origin を通さなくても引ける（宛先スレッドは今も持てない）。
+ *
+ * **孤児の照合（`env_orphans_found`）には envId が無い**：置き場全体の話であって
+ * 環境1つの話ではないため、鍵は割り出せない＝その1件で終わる用件として扱う。
+ *
+ * 終端は `env_expired`：機構が畳んだので、その環境の続報はもう来ない。
+ * **`env_teardown_failed` は終端にしない**——畳めていない＝外にリソースが残っており、
+ * 次の試行の知らせが同じ枝で読めた方がよい。
+ */
+export function subjectOfEnvEvent(event: EnvEvent): NoticeSubject | undefined {
+  if (!event.envId) return undefined;
+  return {
+    key: `env:${event.envId}`,
+    label: `検証環境 ${event.envId}`,
+    ...(event.type === "env_expired" ? { terminal: true } : {}),
   };
 }
 

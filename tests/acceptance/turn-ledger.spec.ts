@@ -84,11 +84,13 @@ let server: BantoHostServer | undefined;
 let session: FakeSession;
 let ledger: TurnLog;
 let ledgerFile: string;
+/** いま立てているホストのスレッド帳簿（試験から枝を開くのに使う）。 */
+let threads: ThreadRegistry | undefined;
 
 /** 台帳つきでサーバを立てる。既定スレッド（幹）を1本開いてから立つ。 */
 async function startHost(): Promise<{ url: string }> {
   const tools = createMemoryTools(new ScopedMemory(store));
-  const threads = new ThreadRegistry(async () => {
+  threads = new ThreadRegistry(async () => {
     session = new FakeSession();
     return { harness: session, tools };
   });
@@ -141,13 +143,20 @@ describe("[T1] ターンの台帳", () => {
     await startHost();
     assert.equal(fs.existsSync(ledgerFile), false);
 
+    const trunk = threads!.resolve();
     await server!.notify("職人から報告が届きました", { source: "worker" });
     // notify はターンの完走を待って返る（thread.notices の列）
 
     const entries = ledger.readAll();
     assert.equal(entries.length, 1);
     assert.equal(entries[0]!.source, "worker");
-    assert.equal(entries[0]!.threadKind, "trunk");
+    /**
+     * T3: 知らせで**幹のターンは回らない**。1行は用件の枝のもので、親が幹になる
+     * ——「幹の行が0本」を数で示せるのが T1 の台帳の役目。
+     */
+    assert.equal(entries[0]!.threadKind, "branch");
+    assert.equal(entries[0]!.parentId, trunk.id);
+    assert.equal(entries.filter((e) => e.threadId === trunk.id).length, 0);
     assert.equal(entries[0]!.ok, true);
     assert.equal(entries[0]!.errorMessage, undefined);
     assert.ok(entries[0]!.threadId.length > 0);
@@ -208,9 +217,11 @@ describe("[T1] ターンの台帳", () => {
 
   it("[T1] ターンが失敗したとき ok: false と errorMessage が残る", async () => {
     await startHost();
-    session.failNext = true;
+    // T3: 知らせは用件の枝で捌かれる。壊すのは**その枝を回すハーネス**
+    const branch = await threads!.open(branchSpec("壊れる知らせの枝"));
+    session.failNext = true; // `session` は帳簿が最後に組んだ＝この枝のもの
 
-    await server!.notify("壊れる知らせ", { source: "kobo" });
+    await server!.notify("壊れる知らせ", { threadId: branch.id, source: "kobo" });
 
     const entries = ledger.readAll();
     assert.equal(entries.length, 1);

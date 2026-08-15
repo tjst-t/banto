@@ -374,7 +374,18 @@ describe("[inc-0069/1] 1度転んだだけで、その会話の知らせが以�
         throw new Error("ハーネスが一時的に転んだ");
       },
     }));
-    const thread = await threads.open({ kind: "trunk" });
+    await threads.open({ kind: "trunk" });
+    /**
+     * 宛先は**枝**にする（T3）。幹宛ての知らせは用件ごとの枝へ回るので、幹へ2通送ると
+     * 別々の枝＝**別々の列**になり、ここで見たい「1本の列が毒される」形が作れない。
+     */
+    const thread = await threads.open({
+      kind: "branch",
+      title: "報告の宛先",
+      returnCondition: "報告を捌いたら",
+      openedBy: "banto",
+      reason: "列が毒されないことを見るため",
+    });
     const server = await BantoHostServer.start({ threads, port: 0 });
     try {
       await server.notify("1通目", { threadId: thread.id, source: "worker" });

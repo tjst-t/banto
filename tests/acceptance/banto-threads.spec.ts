@@ -1452,12 +1452,24 @@ describe("[task-0035/a7] 知らせの宛先（決定35a）", () => {
     );
   });
 
-  it("[task-0035/a7] threadId 省略時は既定スレッドへ（起動元との互換）", async () => {
+  /**
+   * T3: 宛先を省いた知らせは**既定の幹の下**へ来る（起動元との互換）。**幹そのものでは
+   * ない**——知らせで幹のターンを起こさないため、鍵の割り出せない1件は、その1件のための
+   * 枝が受ける。無関係な枝には入らない。
+   */
+  it("[task-0035/a7] threadId 省略時は既定の幹の下へ（起動元との互換）", async () => {
     await start();
     await threads.open(branchSpec("枝1"));
     await server!.notify("宛先なしの報告");
-    assert.deepEqual(made[0]!.harness.prompts, ["宛先なしの報告"]);
-    assert.deepEqual(made[1]!.harness.prompts, []);
+
+    const trunk = threads.resolve();
+    assert.deepEqual(made[0]!.harness.prompts, [], "幹のターンは回らない");
+    assert.deepEqual(made[1]!.harness.prompts, [], "無関係な枝には入らない");
+    assert.ok(made[2]!.harness.prompts[0]?.startsWith("宛先なしの報告"));
+    // 立った枝は既定の幹にぶら下がる（レールと幹の札から辿れる）
+    const opened = threads.list({ kind: "branch" }).filter((t) => t.title !== "枝1");
+    assert.equal(opened.length, 1);
+    assert.equal(opened[0]!.parentId, trunk.id);
   });
 });
 

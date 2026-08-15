@@ -13,6 +13,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import type { WorkerEvent } from "@banto/worker-pool";
+import type { NoticeSubject } from "./server.js";
 
 /** 番頭が起動元として名乗る名前（決定29の宛先）。 */
 export const BANTO_ORIGIN = "banto";
@@ -250,14 +251,32 @@ export function renderWorkerNotice(event: WorkerEvent, later?: WorkerEvent[]): s
   return lines.join("\n");
 }
 
+/**
+ * **その知らせが指す用件**（T3）。職人の知らせの鍵は `sessionId`——同じ職人の報告・質問は
+ * 1本の枝に集まる。
+ *
+ * 終端と言い切れるのは `worker_exited` だけ：その `sessionId` はもう二度と喋らない。
+ * **完了の報告は終端にしない**——「終わりました」は職人の主張であって、番頭が確かめて
+ * `worker.close` するまで続きがありうる（I1: 主張を完了と言い換えない）。番頭が自分で
+ * 畳んだ職人の `worker_exited` は、そもそも知らせにならない（`isNoticeworthy`）。
+ */
+export function subjectOfWorkerEvent(event: WorkerEvent): NoticeSubject | undefined {
+  if (!event.sessionId) return undefined;
+  return {
+    key: `worker:${event.sessionId}`,
+    label: `職人 ${event.sessionId}`,
+    ...(event.type === "worker_exited" ? { terminal: true } : {}),
+  };
+}
+
 // ── 引きに行く形（task-0066）──────────────────────────────────────────────────
 
 /** 職人のイベントを引く口（`worker.events` を持つ Tool 群）。 */
 export interface WorkerNoticeOptions {
   /** `worker.*` Tool（モジュールから束ねたもの）。 */
   tools: Array<{ name: string; execute(args: never, ctx?: { toolCallId: string }): Promise<unknown> }>;
-  /** 会話へ知らせる（宛先スレッドつき）。 */
-  notify(message: string, target: { threadId?: string }): Promise<void>;
+  /** 会話へ知らせる（宛先スレッドと、用件の鍵つき）。 */
+  notify(message: string, target: { threadId?: string; subject?: NoticeSubject }): Promise<void>;
   /** 引く間隔（ms）。既定 1500——職人の質問を待たせすぎない値 */
   intervalMs?: number;
   /**
@@ -348,12 +367,14 @@ export function startWorkerNotices(options: WorkerNoticeOptions): () => void {
     }
     const notice = renderWorkerNotice(event, later);
     if (!notice) return;
+    // T3: 用件の鍵は職人（sessionId）。幹へ配られようとしたときだけ、この職人の枝へ回る
+    const subject = subjectOfWorkerEvent(event);
     try {
-      await options.notify(notice, threadId ? { threadId } : {});
+      await options.notify(notice, { ...(threadId ? { threadId } : {}), subject });
     } catch (err) {
       // 決定35b: 宛先スレッドが畳まれていたら既定へ逃がす。**消えたことにしない**（I2）
       log(`[banto] 知らせの宛先 ${String(threadId)} が見つかりません: ${String(err)}`);
-      await options.notify(notice, {});
+      await options.notify(notice, { subject });
     }
   };
 
