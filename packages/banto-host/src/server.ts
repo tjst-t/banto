@@ -865,6 +865,8 @@ export class BantoHostServer {
          * 知らせが会話に並び、PO の発話の前にあったように見える。
          */
         await thread.poFloor;
+        // T2: 畳んだ宛先へ遅れて届いた知らせは、宛先を開き直してから配る
+        this.reopenClosedTarget(thread);
         record(thread);
         // 職人の報告でも番頭は喋り出す。ここを知らせないと画面から中断する手段が消える
         turnStartedAt = Date.now(); // T1: 開始時刻は turn_start の直前（実測の起点）
@@ -898,6 +900,40 @@ export class BantoHostServer {
       }
     });
     return thread.notices;
+  }
+
+  /**
+   * 畳んだ宛先へ知らせが届いたら、**その宛先を開き直してから配る**（T2）。
+   *
+   * `resolve` は畳んだスレッドも返す（決定35b・threads.ts）。**そこは変えない**
+   * ——知らせを届けるための意図的な設計である。変えるのは配り方のほう：畳んだまま
+   * ターンを回すと、**レールのどこにも出ていない会話が独りでに喋る**。番頭は畳んだ
+   * つもりの枝で作業を続け、PO はそれを見る手立てがない。
+   *
+   * 手は3つしかない。捨てる（I2 に反する）、親の幹へ回す（幹を待ち状態に保つという
+   * 狙いに真っ向から反する）、**宛先自身を開き直す**。3つ目を採る——決定68 が本来
+   * 意図していた形でもある（kobo-notice.ts の「起こし直して届ける」コメント）。
+   *
+   * 開き直したことは会話の1行と `thread.list`（開いている側に出る）に残る。
+   * **既に開いていれば何もしない**ので、同じ枝への2件目以降で印が積み上がらない。
+   *
+   * **畳んだ幹も同じ扱いにする。** 幹は「終えたプロジェクト」なので躊躇はあるが、
+   * 幹には還す親が無く、ほかへ逃がせば必ず**別の幹（帳場）のターンが回る**
+   * ——それは今回塞ぎたいものそのものである。だから宛先本人を開き直し、
+   * **印の文言だけ分けて**「終えた幹が動き出した」と読めるようにする。畳み直すのは
+   * `thread.close_trunk` で、いつでもできる。
+   */
+  private reopenClosedTarget(thread: Thread): void {
+    if (thread.state !== "closed") return;
+    this.threads.reopen(thread.id);
+    const note =
+      thread.kind === "trunk"
+        ? "終えた幹に知らせが届いたので開き直しました。" +
+          "捌いたら `thread.close_trunk` で畳み直してください（T2）"
+        : "畳んだ枝に知らせが届いたので開き直しました。" +
+          "捌いたら `thread.merge` で還してください（T2）";
+    thread.record({ role: "notice", source: "system", text: note });
+    this.broadcast({ type: "notice", threadId: thread.id, source: "system", text: note });
   }
 
   /**
