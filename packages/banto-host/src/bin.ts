@@ -1163,7 +1163,10 @@ async function serve(options: ServeOptions): Promise<void> {
        * `state:"running"` の道具が永久に残っていた。
        */
       createRestartTool({
-        notify: (text) => server.notify(text, { source: "system" }),
+        // PO裁定 2026-08-15: 再起動の一言は**呼んだ会話の続き**。知らせとして枝へ回さない
+        threadId,
+        notify: (text, target) =>
+          server.notify(text, { ...target, source: "system", conversation: true }),
         close: async () => {
           // 落ちる直前の取りこぼしを防ぐ。`tool_end` の保存は間引かれている（SAVE_DELAY_MS）
           threads.flushAll();

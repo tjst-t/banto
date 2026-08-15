@@ -40,6 +40,7 @@ import {
   BantoHostClient,
   BANTO_WS_PATH,
   createMemoryTools,
+  createRestartTool,
   type Thread,
   type ServerEvent,
 } from "@banto/host";
@@ -316,6 +317,71 @@ describe("[T3] 会話は幹のまま", () => {
     assert.deepEqual(sessionOf(trunk).prompts, ["電卓の件、進んでる？"]);
     assert.equal(ledger.readAll()[0]!.source, "po");
     client.close();
+  });
+});
+
+/**
+ * `system.restart` の一言は**知らせではなく、番頭が自分で叩いた道具の続き**（PO裁定
+ * 2026-08-15）。幹に固定すれば枝から呼んだときに幹が鳴り、用件の枝を立てれば呼んだ
+ * 本人が続きを読めない（しかもその枝は直後にプロセスが落ちて宙に浮く）。
+ *
+ * 配線は bin.ts と同じ形（`threadId` を渡し、`conversation` を立てる）を組んで確かめる
+ * ——bin.ts は読み込むと `main()` が走るので試験から呼べない（imp-0037 で切り出した理由）。
+ */
+describe("[T3] 番頭が叩いた道具の続きは、呼んだ会話へ返る", () => {
+  /** bin.ts の `createRestartTool` の配線をそのまま組む。落ちる代わりに控えるだけ。 */
+  function restartToolFor(threadId: string | undefined) {
+    return createRestartTool({
+      ...(threadId !== undefined ? { threadId } : {}),
+      notify: (text, target) =>
+        server!.notify(text, { ...target, source: "system", conversation: true }),
+      close: async () => {},
+      exit: () => {},
+      graceMs: 60_000, // 試験の間に落とさない（unref 済みなので待たない）
+    });
+  }
+
+  it("[T3] 幹から呼べば幹へ届く（枝は立たない）", async () => {
+    const trunk = await threads.open(TRUNK);
+    await startHost();
+
+    await restartToolFor(trunk.id).execute({}, { toolCallId: "t1" });
+    await until("再起動の一言が届く", () => sessionOf(trunk).prompts.length === 1);
+
+    assert.deepEqual(branchesOf(trunk.id), [], "叩いた道具の続きで枝が立っている");
+    assert.deepEqual(sessionOf(trunk).prompts, [
+      "これから再起動します。会話は保存済みで、再起動後に続きから話せます。",
+    ]);
+  });
+
+  it("[T3] 枝から呼べばその枝へ届く（幹は鳴らない・枝も増えない）", async () => {
+    const trunk = await threads.open(TRUNK);
+    const branch = await threads.open(branchSpec("枝で作業中"));
+    await startHost();
+
+    await restartToolFor(branch.id).execute({}, { toolCallId: "t1" });
+    await until("再起動の一言が届く", () => sessionOf(branch).prompts.length === 1);
+
+    assert.deepEqual(branchesOf(trunk.id), [branch], "用件の枝が余計に立っている");
+    assert.ok(sessionOf(branch).prompts[0]?.startsWith("これから再起動します"));
+    assert.deepEqual(sessionOf(trunk).prompts, []);
+    assert.equal(turnsOf(trunk.id), 0);
+  });
+
+  it("[T3] 呼んだ会話が分からないときは幹へ固定せず、その1件の枝で捌く", async () => {
+    const trunk = await threads.open(TRUNK);
+    await startHost();
+
+    await restartToolFor(undefined).execute({}, { toolCallId: "t1" });
+    await until(
+      "1件の枝が立って知らせが届く",
+      () => (branchesOf(trunk.id)[0]?.harness as unknown as FakeSession)?.prompts.length === 1
+    );
+
+    const branch = branchesOf(trunk.id)[0]!;
+    assert.ok(sessionOf(branch).prompts[0]?.startsWith("これから再起動します"));
+    assert.deepEqual(sessionOf(trunk).prompts, []);
+    assert.equal(turnsOf(trunk.id), 0);
   });
 });
 

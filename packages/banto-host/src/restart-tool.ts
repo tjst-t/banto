@@ -10,8 +10,19 @@ import { Type } from "typebox";
 import { defineNamespacedTool } from "@banto/core";
 
 export interface RestartToolDeps {
+  /**
+   * **この道具を呼んだ会話**（PO裁定 2026-08-15）。
+   *
+   * 「これから再起動します」は知らせではなく、**番頭が自分で叩いた道具の続き**である。
+   * だから幹に固定するのも（枝から再起動したときに幹が鳴る）、用件の枝を立てるのも
+   * （呼んだ本人が続きを読めず、その枝は直後にプロセスが落ちて宙に浮く）間違いで、
+   * 呼んだ会話へそのまま返すのが筋——幹から呼べば幹、枝から呼べばその枝。
+   *
+   * 取れないときだけ、宛先の無い知らせと同じ扱いに落ちる（I2: 幹へ固定しない）。
+   */
+  threadId?: string;
   /** 全クライアントへ「これから再起動する」と知らせる。 */
-  notify(text: string): Promise<void>;
+  notify(text: string, target: { threadId?: string }): Promise<void>;
   /** WS/HTTP と全スレッドの後始末。 */
   close(): Promise<void>;
   /** プロセスを終える。systemd（Restart=always）が起動し直す。 */
@@ -39,11 +50,15 @@ export function createRestartTool(deps: RestartToolDeps) {
        * 往復が終わるまで戻らない——その間にプロセスが死ぬので `tool_end` が書けない。
        * I2: 配れなかったことは握りつぶさずログへ残す。
        */
-      void deps.notify("これから再起動します。会話は保存済みで、再起動後に続きから話せます。").catch(
-        (err: unknown) => {
+      void deps
+        .notify(
+          "これから再起動します。会話は保存済みで、再起動後に続きから話せます。",
+          // 呼んだ会話へ返す（上の `threadId` の注記）。取れなければ宛先なしのまま
+          deps.threadId !== undefined ? { threadId: deps.threadId } : {}
+        )
+        .catch((err: unknown) => {
           console.error(`[banto] 再起動の知らせを配れませんでした: ${String(err)}`);
-        }
-      );
+        });
       /**
        * **落ちるのはターンの外**（imp-0037 原因1の本体）。
        *

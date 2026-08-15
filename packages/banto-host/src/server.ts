@@ -263,11 +263,18 @@ export interface NotifyOptions {
    */
   subject?: NoticeSubject;
   /**
-   * **これは会話であって知らせではない**（T3）。真のときは幹のまま配る。
+   * **これは会話であって知らせではない**（T3）。真のときは用件の枝へ回さず、
+   * `threadId` の指す会話へそのまま配る。
    *
-   * PO が取次で答えた一通がこれ——`notify` で入れているが、喋っているのは PO 本人で
-   * ある。枝へ移すと、PO は自分が押したボタンの続きを別の会話で探すことになる。
-   * 他の幹からの言伝（`thread.send`・出所 `thread`）も同じ理由で幹のまま。
+   * 2つある。**PO が取次で答えた一通**——`notify` で入れているが喋っているのは PO 本人
+   * で、枝へ移すと自分が押したボタンの続きを別の会話で探すことになる。そして
+   * **番頭が自分で叩いた道具の続き**（`system.restart` の「これから再起動します」）
+   * ——呼んだ会話へ返るのが筋である（PO裁定 2026-08-15）。他の幹からの言伝
+   * （`thread.send`・出所 `thread`）も同じ理由で幹のまま。
+   *
+   * **宛先を名指ししていないときは効かない。** 「この会話へ」は会話を指していなければ
+   * 意味を成さず、既定の幹へ落とせば結局そこのターンを起こす——それは T3 が塞ぎたい
+   * ものそのもの。名指しの無い一通は、鍵の無い知らせと同じくその1件の枝で捌く。
    */
   conversation?: boolean;
 }
@@ -877,8 +884,15 @@ export class BantoHostServer {
     source: NoticeSource
   ): Promise<{ text: string; threadId: string | undefined }> {
     const asIs = { text, threadId: options.threadId };
-    // 会話は幹のまま。PO が取次で答えた一通と、他の幹からの言伝（`thread.send`）
-    if (options.conversation === true || source === "thread") return asIs;
+    /**
+     * 会話はその会話のまま。PO が取次で答えた一通・番頭が叩いた道具の続き
+     * （`conversation`）と、他の幹からの言伝（`thread.send`・出所 `thread`）。
+     *
+     * `conversation` は**宛先を名指ししているときだけ**効く——名指しの無い一通を
+     * 素通しすると既定の幹へ落ち、そこのターンが回る（T3 が塞ぎたいものそのもの）。
+     */
+    if (options.conversation === true && options.threadId !== undefined) return asIs;
+    if (source === "thread") return asIs;
     let target: Thread;
     try {
       target = this.threads.resolve(options.threadId);
