@@ -6,7 +6,7 @@ kind: improvement
 origin: imp-0043 の職人からの申し送り（案 b を意図的に入れずに残した部分）
 refs:
   - packages/banto-environment-pool/src/docker-driver.ts
-  - docs/adr/adr-0023-one-entrance-contract-from-the-tool.md
+  - docs/adr/adr-0026-one-entrance-contract-from-the-tool.md
 created: 2026-08-15
 ---
 
@@ -40,4 +40,4 @@ provision の成功条件にする。imp-0043 の試験 a2 が既にその形を
   （`docker compose config` が引けないときは確認を飛ばして続行する）。
   ただし**この関所は「見えなければ落とす」側**——用意の成果が見えないなら、
   検証は必ず落ちるのだから、先に読める理由で断る方がよい。
-- ADR-0023（道具からの一本の入口）の線と衝突しないか確認すること。
+- ADR-0026（道具からの一本の入口）の線と衝突しないか確認すること。

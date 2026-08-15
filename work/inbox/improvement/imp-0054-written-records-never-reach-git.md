@@ -19,8 +19,8 @@ refs: [imp-0055, task-0151, 決定38b, 決定62c]
 内訳（この起票の時点で cfab21dc / c70dc2ad / 86346af1 / 895da7fe として履歴に入れた）:
 
 - `work/inbox/improvement/` の imp-0023〜0053 のうち 25 件
-- `work/inbox/incident/inc-0070-model-select-e2e-broken.md`
-- `docs/adr/adr-0023-one-entrance-contract-from-the-tool.md`、`docs/adr/adr-0025-notices-do-not-wake-the-trunk.md`
+- `work/inbox/incident/inc-0074-model-select-e2e-broken.md`
+- `docs/adr/adr-0026-one-entrance-contract-from-the-tool.md`、`docs/adr/adr-0025-notices-do-not-wake-the-trunk.md`
 - `docs/proposals/2026-08-15-trunk-availability-plan.md`（未コミットの改訂）
 - `work/tasks/task-0151.md`
 

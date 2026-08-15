@@ -1,12 +1,12 @@
 ---
-id: adr-0023
+id: adr-0026
 type: adr
 status: accepted
 refs: [adr-0010, adr-0013, adr-0014, spec-daemon-core, spec-improvement-loop]
 amends: adr-0010, adr-0013, adr-0014
 ---
 
-# ADR-0023: 入口は1つ。契約は**道具の入力から**凍り、**機構は契約を作らない**
+# ADR-0026: 入口は1つ。契約は**道具の入力から**凍り、**機構は契約を作らない**
 
 > status: **accepted**（2026-08-14。PO 指示 2026-08-13「Kobo の入口を一本化」＝ realign 第4便）。
 > 決定番号は 112（ADR-0022）の続きから採る。

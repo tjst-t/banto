@@ -1,5 +1,5 @@
 ---
-id: imp-0041
+id: imp-0065
 title: thread.steer が走り切った枝に間に合わず、済んだ作業を取り消す指示になる
 status: open
 severity: P2

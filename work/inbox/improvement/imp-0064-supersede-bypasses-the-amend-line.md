@@ -1,5 +1,5 @@
 ---
-id: imp-0040
+id: imp-0064
 title: kobo.amend で PO 判断に留めている「緩める向き」が、kobo.supersede では素通しできる
 status: open
 severity: P2

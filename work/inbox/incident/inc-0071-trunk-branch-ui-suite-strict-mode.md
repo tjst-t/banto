@@ -36,4 +36,4 @@ created: 2026-08-15
 ## 参照
 
 - `docs/principles.md` I1（自己申告を信頼しない）・P6（間欠的に落ちる試験は機構が壊れている合図）
-- 同じ「試験が恒常的に赤い」系: `work/inbox/incident/inc-0070-model-select-e2e-broken.md`
+- 同じ「試験が恒常的に赤い」系: `work/inbox/incident/inc-0074-model-select-e2e-broken.md`
