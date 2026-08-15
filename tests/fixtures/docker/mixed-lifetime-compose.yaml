@@ -1,0 +1,19 @@
+# 短命な init と常駐サービスが混じった compose の検体（imp-0028）。
+#
+# 常駐チェックの判定を「全部 running でなければ落とす」にすると**この形が落ちる**。
+# 判定は「**running が1本も無ければ落とす**」——1本でも常駐していれば環境は成立する。
+# 終わっている init は詰まりの手掛かりなので、落とさずに stderr の注記に残す。
+#
+# `app` を先に書いてあるのは、docker ドライバが compose の**最初のサービス**を
+# `run` の相手に選ぶため（resolveServiceName）。
+services:
+  app:
+    image: busybox:latest
+    command: ["sh", "-c", "while true; do sleep 1; done"]
+    security_opt:
+      - apparmor=unconfined
+  init:
+    image: busybox:latest
+    command: ["true"]
+    security_opt:
+      - apparmor=unconfined

@@ -1,0 +1,18 @@
+# 「走り終えて終了する」検証プロファイルの検体（imp-0028）。
+#
+# 実機（dentaku）で踏んだ形そのもの。`command` に走り終わるコマンド
+# （`npm test` など）を書くと、compose 自体は成功するのに:
+#
+#   provision は「立った」と返る（その瞬間はまだ running）
+#   → 数十秒後にコンテナが終了
+#   → 以後の env.run は全滅（マージ前ゲートでは a1 だけ通って a2 以降が全滅）
+#
+# ここでは `true` にして「起動直後に終わる」まで縮めてある——provision の
+# 常駐チェックが捕まえられるのはこの範囲だけで、それより長く走るものは
+# run 側の名指しの文言で拾う（2段構え）。
+services:
+  app:
+    image: busybox:latest
+    command: ["true"]
+    security_opt:
+      - apparmor=unconfined
