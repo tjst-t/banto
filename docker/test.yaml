@@ -28,6 +28,33 @@
 # **タスクごとに別物**になり、毎タスク `npm ci`（実測60秒）を払い直していた。
 # ドライバが鍵（package-lock.json 等の中身のハッシュ）ごとの場所を渡してくるので、
 # 同じ鍵のタスクは用意済みのものを掴む。渡されないときは従来どおりタスク限りの場所。
+#
+# **置き場は `setup` が書くものを全部覆う**（2026-08-15）。`npm ci` の出力は
+# ルートの `node_modules` だけでは終わらない——**巻き上げ（hoist）られない依存は
+# `packages/<pkg>/node_modules` に書かれる**（この repo では banto-host と
+# banto-worker-pool の `@anthropic-ai/*`。`package-lock.json` に
+# `packages/banto-host/node_modules/...` という鍵で並んでいる）。そこが置き場に
+# 載っていないと、書き先は**ワークツリー側の bind mount（`..:/app`）**になる。
+# 置き場は環境より長生きするので、
+#   「置き場が温まっている（`.banto-primed` が在る）＋ ワークツリーが素（node_modules 無し）」
+# の組み合わせで **`npm ci` が飛ばされ、ルートだけ置き場から現れて入れ子だけが黙って欠ける**。
+# 実測：素のワークツリーで `ls node_modules | wc -l` は 350 なのに
+# `packages/banto-host/node_modules` は無く、テストが理由の分からない形で大量に落ちた。
+# ——だから置き場を**小部屋に分けて**、`npm ci` が書く場所をひとつ残らず載せる。
+# 入れ子の依存を持つ workspace が増えたら、ここに小部屋を足すこと
+# （足し忘れは `tests/acceptance/env-cache-covers-nested-node-modules.spec.ts` が断る）。
+#
+# **git の共通ディレクトリを、ホストと同じ絶対パスで見せる**（2026-08-15）。
+# リンクされたワークツリーの `.git` は**ファイル**で、中身は
+# `gitdir: <本体>/.git/worktrees/<名前>`——ホストの絶対パスなので、`..:/app` しか
+# 渡していない器の中では辿れず、`git ls-files` は exit 128（`fatal: not a git repository`）。
+# git を呼ぶテストは**全部**これで落ちる（`tests/acceptance/source-hygiene.spec.ts` 等）。
+# 同じ絶対パスに置けば `gitdir:` はそのまま辿れるので、ドライバが
+# `BANTO_GIT_COMMON_DIR`（`git rev-parse --git-common-dir` の絶対パス）を渡す。
+# **read-only** なのは、検証は読む仕事だから——器がリポジトリ本体の履歴を書き換えられては困る。
+# 既定値（ドライバを通さず手で `docker compose` を叩いたとき）は compose ファイルの隣から
+# 見た `../.git`＝リポジトリ自身の `.git`。**既に `..:/app` に入っているものの二重写し**なので、
+# 新しく見せるものは無い（＝手で叩いても余計な穴が開かない）。
 services:
   test:
     build:
@@ -38,5 +65,8 @@ services:
     working_dir: /app
     volumes:
       - ..:/app
-      - ${BANTO_CACHE_DIR:-./.banto-node-modules}:/app/node_modules
+      - ${BANTO_CACHE_DIR:-./.banto-node-modules}/root:/app/node_modules
+      - ${BANTO_CACHE_DIR:-./.banto-node-modules}/pkg-banto-host:/app/packages/banto-host/node_modules
+      - ${BANTO_CACHE_DIR:-./.banto-node-modules}/pkg-banto-worker-pool:/app/packages/banto-worker-pool/node_modules
+      - ${BANTO_GIT_COMMON_DIR:-../.git}:${BANTO_GIT_COMMON_DIR:-/app/.git}:ro
     command: ["sleep", "infinity"]

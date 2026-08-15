@@ -49,8 +49,16 @@ profiles:
     # 鍵はドライバ名とプロファイル名も含めて作られる（pool.ts の resolveCache）ので、
     # **同じ材料でも test と dev の置き場は別物**。検証用の node_modules を、
     # 人が触る環境が書き換えることはない
+    #
+    # **compose ファイルも材料に入れる**（2026-08-15）。理由は2つ:
+    # (a) node_modules の**置き場所を決めているのはこの compose ファイル**
+    #     （どの小部屋をどこに載せるか）。配置が変われば置き場は別物でなければならない。
+    # (b) 移行の事故を鍵で断つ。既に温まっている置き場は古い配置（ルート1本）のままなので、
+    #     鍵が変わらないと**この直しを入れた瞬間に空の小部屋を掴んで全部落ちる**
+    #     （`.banto-primed` が在るので `npm ci` は飛ばされる）。鍵が変われば
+    #     新しい置き場は素＝印が無い＝用意し直しになる
     cache:
-      key:  [package-lock.json, docker/Dockerfile.test]
+      key:  [package-lock.json, docker/Dockerfile.test, docker/test.yaml]
       path: /app/node_modules
     # マージ前ゲートは直列なので、居座らせない。検証が終われば畳まれる
     ttl: 45m
@@ -124,9 +132,11 @@ profiles:
     # devDependency なので、devDependencies が落ちればこの器は `vite: not found` で立たない
     setup: "npm ci --include=dev"
     # 土台（Dockerfile.test）は test と共用なので、鍵の材料も同じものを挙げる。
-    # 置き場そのものはプロファイル名込みの鍵で別に切られる（test 側の注記のとおり）
+    # 置き場そのものはプロファイル名込みの鍵で別に切られる（test 側の注記のとおり）。
+    # **compose ファイルを材料に入れる理由も test と同じ**（置き場の配置を決めているのは
+    # docker/dev.yaml で、古い配置のまま温まっている置き場を掴ませない）
     cache:
-      key:  [package-lock.json, docker/Dockerfile.test]
+      key:  [package-lock.json, docker/Dockerfile.test, docker/dev.yaml]
       path: /app/node_modules
     # レビューで触ってもらうための環境なので、十分な時間を残す（安全弁。使い終わったら畳む）
     ttl: 8h
