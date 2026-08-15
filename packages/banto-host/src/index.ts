@@ -335,7 +335,22 @@ export {
   TRUNK_BROWSE_NUDGE_LIMIT_ENV,
   type TrunkWorkNudge,
   type TrunkWorkNudgeOptions,
+  // imp-0036(c): 未処理を抱えた枝の件数を幹の文脈へ1行（ターンは起こさない）
+  withUnsettledRemainingNotice,
+  unsettledRemainingLine,
+  UNSETTLED_BRANCHES_NAMED,
+  type UnsettledBranchSummary,
+  type UnsettledRemainingNoticeOptions,
 } from "./trunk-nudge.js";
+// imp-0036(d): 所在の無い残作業では畳ませない
+export {
+  hasWhereabouts,
+  remainingWithoutWhereabouts,
+  remainingWhereaboutsRefusal,
+  WHEREABOUTS_WORDS,
+  WHEREABOUTS_TICKET_PATTERN,
+  WHEREABOUTS_SESSION_ID_PATTERN,
+} from "./remaining-whereabouts.js";
 export { withWorkerCard, WORKER_VIEW } from "./worker-card.js";
 export {
   withTierUnassignedNotice,

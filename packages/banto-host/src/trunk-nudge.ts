@@ -35,6 +35,8 @@
  * D5: 判断は無い。数えて、添えるかどうかだけ。
  */
 
+import type { BantoHarness, HarnessPromptOptions } from "@banto/core";
+
 import type { NamespacedToolDefinition } from "./tool-registry.js";
 import type { TurnNudgeKind, TurnToolCounts } from "./turn-log.js";
 
@@ -218,4 +220,98 @@ export function nudgeTrunkWork(
       };
     },
   };
+}
+
+/**
+ * imp-0036(c): **未処理を抱えた枝の件数を、幹の文脈に1行**（番頭裁定 2026-08-15）。
+ *
+ * ## 保険であって、知らせではない
+ *
+ * 本筋は (d)（所在の無い残作業では畳ませない）。それでも所在が「幹で委譲予定」のまま
+ * 誰も動かないことは起こるので、**幹が既に起こしたターンの文脈に1行だけ足す**。
+ *
+ * **ターンは起こさない。** 札も立てず、取次にも積まず、`prompt` も呼ばない
+ * ——ADR-0025 決定120「知らせは幹のターンを起こさない」。ここがやるのは、
+ * **もう始まっているターンの入力に文字を足すこと**だけである。
+ *
+ * ## 出さない場合を先に決める
+ *
+ * - **0件では出さない。** 毎ターン「0件」と出る行は読み飛ばされ、非0のときも読まれなくなる
+ * - **枝には出さない。** 未処理を降ろせるのはその枝を持つ幹の番頭だけ（`settle` と同じ線）
+ *
+ * ## 画面の記録は汚さない
+ *
+ * PO の発話は `thread.record({role:"po"})` で**別に**残っている。ここで足すのは
+ * ハーネスへ渡す本文だけなので、会話の帯には出ない（＝読み返したとき、言っていない
+ * ことを PO が言ったように見えない）。
+ */
+export interface UnsettledBranchSummary {
+  id: string;
+  title: string;
+  remainingCount: number;
+}
+
+/** 1行に名前を挙げる枝の数。多いときは先頭これだけ＋残り件数にする。 */
+export const UNSETTLED_BRANCHES_NAMED = 3;
+
+/**
+ * 幹の文脈へ足す1行。0件なら `undefined`（＝何も足さない）。
+ *
+ * 件数と枝の id まで出す——読んだ番頭が `thread.read` / `thread.settle` を
+ * そのまま引ける形にする（D8: 気づかせるだけでなく、次の一手を打てるようにする）。
+ */
+export function unsettledRemainingLine(
+  branches: readonly UnsettledBranchSummary[]
+): string | undefined {
+  if (branches.length === 0) return undefined;
+  const named = branches
+    .slice(0, UNSETTLED_BRANCHES_NAMED)
+    .map((b) => `${b.id}「${b.title}」（未処理${b.remainingCount}件）`)
+    .join("・");
+  const rest = branches.length - Math.min(branches.length, UNSETTLED_BRANCHES_NAMED);
+  return (
+    `［覚え書き・この件で返事は要りません］**未処理を抱えたまま畳んだ枝が ${branches.length}件** あります：` +
+    `${named}${rest > 0 ? `・ほか${rest}件` : ""}。` +
+    "中身は `thread.read`、全部の一覧は `thread.list`。行き先が決まったものから " +
+    '`thread.settle({threadId: "…", where: "…"})` で降ろしてください（`where` は所在＝どこへ行ったか）。'
+  );
+}
+
+export interface UnsettledRemainingNoticeOptions {
+  /** その会話が幹か枝か。**`"trunk"` 以外では出さない**（分からないときも出さない）。 */
+  kind?: "trunk" | "branch" | undefined;
+  /** いま未処理を抱えている枝。**呼ぶたびに数え直す**（降ろした直後から消える）。 */
+  branches: () => readonly UnsettledBranchSummary[];
+}
+
+/**
+ * ハーネスの `prompt` に、上の1行を**後ろから**足す皮。
+ *
+ * **足す場所はハーネスの継ぎ目**（`withTurnBudgetReset` と同じ）——番頭のターンを回す
+ * 入力は出所（PO の発話・知らせ・言伝）に依らず全部ここを通るので、バックエンドを
+ * 増やしても片方だけ抜けることがない。
+ *
+ * **後ろに置く**のは、先頭に置くと PO の言葉より先に読まれ、用件そのものが機構の
+ * 覚え書きに見えるため（道具の促しを結果の後ろに置くのと同じ理由）。
+ */
+export function withUnsettledRemainingNotice(
+  harness: BantoHarness,
+  options: UnsettledRemainingNoticeOptions
+): BantoHarness {
+  const isTrunk = options.kind === "trunk";
+  return new Proxy(harness, {
+    get(target, prop) {
+      if (prop === "prompt") {
+        return (text: string, promptOptions?: HarnessPromptOptions): Promise<void> => {
+          const line = isTrunk ? unsettledRemainingLine(options.branches()) : undefined;
+          return target.prompt(line ? `${text}\n\n${line}` : text, promptOptions);
+        };
+      }
+      const value = Reflect.get(target, prop, target) as unknown;
+      // getter（`isStreaming` 等）は Reflect.get が解決済み。関数だけ this を束ね直す
+      return typeof value === "function"
+        ? (value as (...args: never[]) => unknown).bind(target)
+        : value;
+    },
+  });
 }

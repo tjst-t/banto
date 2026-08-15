@@ -51,7 +51,7 @@ import { startKoboNotices } from "./kobo-notice.js";
 import { createRemoteRelay, createRemoteSettings } from "./remote-module.js";
 import { startEnvNotices } from "./env-notice.js";
 import { TurnLog, defaultTurnLogPath, type TurnToolCounts } from "./turn-log.js";
-import { createTrunkWorkNudge } from "./trunk-nudge.js";
+import { createTrunkWorkNudge, withUnsettledRemainingNotice } from "./trunk-nudge.js";
 
 import { Canvas, createCanvasCatalog } from "./canvas.js";
 import { createCanvasTools } from "./canvas-tools.js";
@@ -409,7 +409,7 @@ Conversations are not parallel tabs. Each project has one **trunk** that lives o
 - **Starting a new trunk** (thread.open_trunk): the test is whether you would want this work's accumulated memory mixed into an existing trunk's conversations. If you would, it belongs in that trunk. If mixing it would be noise, start a trunk. Repeated back-and-forth alone is a branch, not a trunk.
 - **Ending a trunk** (thread.close_trunk): when the project is over. You choose what memory to carry out of it — rewrite anything that still holds elsewhere so it makes sense outside this project. What you do not carry stays with the folded trunk. Open branches must be folded first.
 - **Passing word between trunks** (thread.send): memory and context are split per trunk, which is exactly why things sometimes need to cross. Send the fact and why it matters over there — do not give instructions; what happens in that trunk is its steward's call. Trunks only — another trunk's branches are none of your business, and you cannot read inside them either. Do not go back and forth: if two or three messages do not settle it, raise it to the user or move to that trunk.
-- **Work left over in a branch does not reach the trunk by itself.** Before you fold, every line of remaining must say where it went — an issue id (imp-NNNN / task-NNNN), the sessionId of a worker you started, or an explicit "to be delegated in the trunk". Say the next move and its whereabouts in the conclusion too; a conclusion that ends at "I recommend X" leaves nobody holding the work. A branch folded with remaining stays in thread.list as 未処理 N件 until you take it off with thread.settle (threadId, where) — where is required, and "done" is not a whereabouts.
+- **Work left over in a branch does not reach the trunk by itself.** Before you fold, every line of remaining must say where it went — an issue id (imp-NNNN / task-NNNN), the sessionId of a worker you started, or an explicit "to be delegated in the trunk". **thread.merge refuses to fold a branch when a line of remaining has no whereabouts** — and a judgement you need from the trunk is not remaining work: ask for it with thread.consult while the branch is still alive, because remaining never reaches the trunk and never wakes it. Say the next move and its whereabouts in the conclusion too; a conclusion that ends at "I recommend X" leaves nobody holding the work. A branch folded with remaining stays in thread.list as 未処理 N件 until you take it off with thread.settle (threadId, where) — where is required, and "done" is not a whereabouts.
 - thread.list shows every open conversation, which one you are in, and what each branch is waiting on — plus any folded branch that still carries unsettled work. Add includeClosed to find a folded branch you want to read back.
 - Once you know what a conversation is about, name it with thread.rename, and rename it again when the topic moves on. The user picks conversations by name, so a stale name — or "会話 3" — tells them nothing. Keep it short, around 15 characters. Do not rename for a brief digression.
 
@@ -1392,6 +1392,18 @@ async function serve(options: ServeOptions): Promise<void> {
     let claudeResume: string | undefined = resumeBackendSession;
     /** いま生きている Claude のハーネス。**1本だけ持つ**（畳まないと子プロセスが積み上がる）。 */
     let claudeHarness: ClaudeAgentHarness | undefined;
+    /**
+     * imp-0036(c): 未処理を抱えた枝の件数を、**幹の文脈に1行**足す皮。
+     *
+     * **両バックエンドに掛ける**——片方だけに掛かる形は、ターン予算が一度やった失敗。
+     * 幹でなければ何も足さない（`kind` を渡すのはそのため）。
+     */
+    const unsettledNotice = (harness: BantoHarness): BantoHarness =>
+      withUnsettledRemainingNotice(harness, {
+        kind: identity?.kind,
+        // 呼ぶたびに数え直す（降ろした次のターンからは出ない）
+        branches: () => threads.unsettledBranches(threadId),
+      });
     const makeClaudeHarness = (model?: string): BantoHarness => {
       /**
        * **前のものを畳んでから作る**（task-0104 の3番）。`PromptQueue` は「空になっても
@@ -1412,7 +1424,7 @@ async function serve(options: ServeOptions): Promise<void> {
         ...(model ? { model } : {}),
         ...(claudeResume ? { resume: claudeResume } : {}),
       });
-      return withTurnBudgetReset(claudeHarness, turnBudget);
+      return unsettledNotice(withTurnBudgetReset(claudeHarness, turnBudget));
     };
 
     /**
@@ -1422,24 +1434,30 @@ async function serve(options: ServeOptions): Promise<void> {
      * pi にしか渡らず、Agent SDK 側では**一度も数え直されなかった**——本番の既定が
      * そちらで、PO が話しかけるほど数えが積み上がり、新しい指示ごと断られた。
      * ここで包めば、番頭のターンを回す入力は出所に依らず全部 `prompt()` を通る。
+     *
+     * imp-0036(c) の「未処理 N件」の1行も**同じ継ぎ目**で足す（`unsettledNotice`）。
+     * **ターンは起こさない**（ADR-0025 決定120）：既に起きたターンの入力に足すだけで、
+     * 札も取次も `prompt` の呼び出しも増やさない。
      */
-    const piHarness: BantoHarness = withTurnBudgetReset(
-      new PiHarness({
-        // 会話の口は皮を通す（空応答ガード）
-        session: guardedSession,
-        // 文脈と章の操作は pi の本体でしか出来ない。**皮では届かない**
-        agentSession: session,
-        toLogicalName: (wireName) => {
-          try {
-            return fromWireToolName(wireName);
-          } catch {
-            // 名前空間規則に従わない名前（pi 組み込み等）はそのまま通す
-            return wireName;
-          }
-        },
-        renderTranscript,
-      }),
-      turnBudget
+    const piHarness: BantoHarness = unsettledNotice(
+      withTurnBudgetReset(
+        new PiHarness({
+          // 会話の口は皮を通す（空応答ガード）
+          session: guardedSession,
+          // 文脈と章の操作は pi の本体でしか出来ない。**皮では届かない**
+          agentSession: session,
+          toLogicalName: (wireName) => {
+            try {
+              return fromWireToolName(wireName);
+            } catch {
+              // 名前空間規則に従わない名前（pi 組み込み等）はそのまま通す
+              return wireName;
+            }
+          },
+          renderTranscript,
+        }),
+        turnBudget
+      )
     );
 
     /**

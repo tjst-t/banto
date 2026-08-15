@@ -588,20 +588,29 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     name: "thread.merge",
     label: "Thread: Merge",
     description:
-      "**いまのこの枝**を畳んで幹へ還す（幹の末尾に結論が1行積まれる）。\n例: {conclusion: \"inc-0048 を起票し task-0091 を積んだ\", investigated: [\"10回走らせて3回落ちた\"], decided: [\"待ちを延ばさず機構を直す\"], remaining: [\"task-0092 を積んだ\"]} → 畳んだ旨\n**出口は結論であって実装ではない。** 幹は畳めない。決めきれないものは「保留：理由」で畳んでよい。\n調べた・決めた・残った（investigated / decided / remaining）は**幹へは流れず枝に残る**——`thread.read` で開いたときに読める。\n**だから畳む前に、残作業には所在を持たせること。** `remaining` の各行に「どこへ行ったか」（`imp-NNNN` / `task-NNNN` の起票 id・立てた職人の sessionId・幹での委譲予定）を書く。`conclusion` にも判断の要約だけでなく**次の一手とその所在**を書く（「〜を推す」で終わらせない）。\n`remaining` を書いて畳むと、この枝は**未処理ありとして `thread.list` に出続ける**（所在が付いて `thread.settle` で降ろすまで消えない）。",
+      "**いまのこの枝**を畳んで幹へ還す（幹の末尾に結論が1行積まれる）。\n例: {conclusion: \"inc-0048 を起票し task-0091 を積んだ\", investigated: [\"10回走らせて3回落ちた\"], decided: [\"待ちを延ばさず機構を直す\"], remaining: [\"task-0092 を積んだ\"]} → 畳んだ旨\n**出口は結論であって実装ではない。** 幹は畳めない。決めきれないものは「保留：理由」で畳んでよい。\n調べた・決めた・残った（investigated / decided / remaining）は**幹へは流れず枝に残る**——`thread.read` で開いたときに読める。\n**だから畳む前に、残作業には所在を持たせること。** `remaining` の各行に「どこへ行ったか」（`imp-NNNN` / `task-NNNN` の起票 id・立てた職人の sessionId・幹での委譲予定）を書く。`conclusion` にも判断の要約だけでなく**次の一手とその所在**を書く（「〜を推す」で終わらせない）。\n**所在の無い行が1つでもあると、この道具は畳むのを断る**（imp-0036）。\n**幹の判断が要ることは `remaining` に書いても誰にも届かない**（幹へ流れず、幹のターンも起きない）。畳む前に、枝が生きているうちに `thread.consult` で幹へ聞くこと。\n`remaining` を書いて畳むと、この枝は**未処理ありとして `thread.list` に出続ける**（所在が付いて `thread.settle` で降ろすまで消えない）。",
     parameters: Type.Object({
       conclusion: Type.String(),
       investigated: Type.Optional(Type.Array(Type.String())),
       decided: Type.Optional(Type.Array(Type.String())),
-      remaining: Type.Optional(Type.Array(Type.String())),
+      remaining: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            "残った作業。**1行につき所在（どこへ行ったか）を書く**——起票 id（imp-NNNN / " +
+            "inc-NNNN / task-NNNN）・職人の sessionId・「幹で委譲予定」「PO 判断待ち」など。" +
+            "所在の無い行があると畳めない。判断を仰ぐことはここに書かず thread.consult で聞く",
+        })
+      ),
     }),
     async execute(params) {
       const detail = renderMergeDetail(params);
-      // 空行・空白だけの行は数えない（描画と同じ数え方にする——一覧の件数と中身がずれる）
-      const remainingCount = (params.remaining ?? []).filter((t) => t.trim() !== "").length;
+      /**
+       * 残作業は**行のまま帳簿へ渡す**（imp-0036(d)）。件数だけ渡していた頃は、
+       * 所在があるかどうかを帳簿が見られなかった——数えるのも断るのも帳簿の側でやる。
+       */
       const thread = options.threads.merge(options.threadId, params.conclusion, {
         ...(detail ? { detail } : {}),
-        ...(remainingCount > 0 ? { remainingCount } : {}),
+        ...(params.remaining ? { remaining: params.remaining } : {}),
       });
       return {
         content: [

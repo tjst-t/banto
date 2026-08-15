@@ -174,7 +174,8 @@ describe("[imp-0036] 畳んだその場で未処理を言う", () => {
 
     const out = await text(branch.id, "thread.merge", {
       conclusion: "器の寛容化を推す",
-      remaining: ["本命1本を幹で kobo.enqueue", "SKILL の誤例も直す"],
+      // 所在つきで書く（所在の無い行は (d) が畳ませない——それは下の describe で見る）
+      remaining: ["本命1本を幹で kobo.enqueue", "SKILL の誤例も直す（imp-0035 に足した）"],
     });
 
     assert.match(out, /未処理 2件/u);
@@ -300,7 +301,7 @@ describe("[imp-0036] 降ろすには所在が要る（thread.settle）", () => {
     await threads.reopen(branch.id);
     await text(branch.id, "thread.merge", {
       conclusion: "やはりもう1本要る",
-      remaining: ["器の寛容化は別途"],
+      remaining: ["器の寛容化は別途 imp-0037 として起票した"],
     });
 
     assert.equal(branch.hasUnsettledRemaining, true, "新しい言明には新しい所在が要る");

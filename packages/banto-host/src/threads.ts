@@ -32,6 +32,10 @@ import type {
 } from "./protocol.js";
 import type { ThreadStore } from "./thread-store.js";
 import type { PostInput } from "./inbox.js";
+import {
+  remainingWhereaboutsRefusal,
+  remainingWithoutWhereabouts,
+} from "./remaining-whereabouts.js";
 
 /** 枝から幹へ立てる札1枚（決定107）。記録なので凍る。 */
 export type BranchNote = Extract<TranscriptEntry, { role: "branch_note" }>;
@@ -1181,7 +1185,7 @@ export class ThreadRegistry {
   merge(
     threadId: string,
     conclusion: string,
-    options: { detail?: string; remainingCount?: number; now?: Date } = {}
+    options: { detail?: string; remaining?: readonly string[]; now?: Date } = {}
   ): Thread {
     const now = options.now ?? new Date();
     const thread = this.threads.get(threadId);
@@ -1192,6 +1196,18 @@ export class ThreadRegistry {
     const text = conclusion.replace(/\s+/gu, " ").trim();
     if (text === "") throw new Error("結論は空にできません（保留なら「保留：理由」と書く）");
     const detail = options.detail?.trim();
+    /**
+     * imp-0036(d): **所在の無い残作業では畳ませない**（番頭裁定 2026-08-15）。
+     *
+     * **帳簿で断る**——道具の側だけで見ると、`merge` を呼ぶ経路が増えたときに素通りする。
+     * 空白だけの行は数えない（描画・一覧の件数と同じ数え方）。
+     *
+     * 検査は**状態を触る前**。畳み直し（冪等の早期 return）より手前に置く——
+     * 同じ結論で畳み直したときだけ所在なしが通る、という抜け道を作らない。
+     */
+    const remaining = (options.remaining ?? []).map((t) => t.trim()).filter((t) => t !== "");
+    const missing = remainingWithoutWhereabouts(remaining);
+    if (missing.length > 0) throw new Error(remainingWhereaboutsRefusal(missing));
     if (thread.state === "closed" && thread.conclusion === text) return thread; // 冪等
     thread.conclusion = text;
     // 空の詳細で既にある詳細を消さない（畳み直しで中身が痩せるのを防ぐ）
@@ -1203,8 +1219,8 @@ export class ThreadRegistry {
      * 改めて残作業を書いたなら、それは**新しい言明**なので所在は降ろし直させる
      * （前に降ろした所在は、いま書かれた残作業を指していない）。
      */
-    if (options.remainingCount !== undefined && options.remainingCount > 0) {
-      thread.remainingCount = options.remainingCount;
+    if (remaining.length > 0) {
+      thread.remainingCount = remaining.length;
       thread.settledAt = undefined;
       thread.settledWhere = undefined;
     }
@@ -1593,6 +1609,18 @@ export class ThreadRegistry {
     if (filter.state) all = all.filter((t) => t.state === filter.state);
     if (filter.kind) all = all.filter((t) => t.kind === filter.kind);
     return all;
+  }
+
+  /**
+   * その幹の枝のうち、**未処理を抱えたまま畳まれたもの**（imp-0036(c)）。
+   *
+   * 幹を跨がない——降ろせるのはその枝を持つ幹の番頭だけ（`settle` と同じ線）なので、
+   * 隣の幹の未処理を数えると、自分では降ろせないものを毎ターン見せることになる。
+   */
+  unsettledBranches(trunkId: string): Thread[] {
+    return this.list({ state: "closed", kind: "branch" }).filter(
+      (t) => t.parentId === trunkId && t.hasUnsettledRemaining
+    );
   }
 
   /** `threadId` 省略時の宛先＝幹。幹がまだ無ければ undefined（起動直後の一瞬）。 */
