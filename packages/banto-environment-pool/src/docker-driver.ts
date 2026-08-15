@@ -528,12 +528,17 @@ function handleProvision(input: Record<string, unknown>): void {
   //
   // 用意を先に済ませれば、長命のコマンドは最初から揃った状態で起きる。
   // 待つだけのプロファイルにとっては順序が変わるだけで、見える振る舞いは同じ。
+  // **用意の成果が検証コンテナから見えない形を、立てる前に断る**（imp-0043）。
+  // 何を見ているかは `assertVolumeTargetsAreNotSymlinks` に書いた。
+  assertVolumeTargetsAreNotSymlinks(project, composeFile, workdir, cacheEnv);
+
   const setup = readSetup(input);
   let setupRan = false;
   if (setup && !cache?.primed) {
     runSetupBeforeUp({
       project,
       composeFile,
+      taskId,
       setup: setup.cmd,
       ...(workdir ? { workdir } : {}),
       ...(cacheEnv ? { env: cacheEnv } : {}),
@@ -675,12 +680,13 @@ function findPublishedPort(
 function runSetupBeforeUp(opts: {
   project: string;
   composeFile: string;
+  taskId: string;
   setup: string;
   workdir?: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs: number | undefined;
 }): void {
-  const { project, composeFile, setup, workdir, env, timeoutMs } = opts;
+  const { project, composeFile, taskId, setup, workdir, env, timeoutMs } = opts;
 
   // **先にビルドする**（inc-0037 と同じ理由）。`up -d --build` まで待つと、用意だけが
   // 古いイメージで走る——道具立ての契約は Dockerfile なので、そこがずれたら意味が無い。
@@ -723,6 +729,13 @@ function runSetupBeforeUp(opts: {
       ...(env ? { env } : {}),
     }
   );
+
+  // **通った用意の出力も残す**（imp-0043）。以前は成功したら捨てていたので、
+  // 「あの回、setup は本当に走ったのか」を後から追えなかった——実際 dentaku では
+  // `.package-lock.json` のバイト数と所有者から逆算する羽目になった。
+  // 落ちたときの書き方（stderr へ全文）はそのまま。ここは**通った回の目**。
+  writeSetupLog(taskId, setup, r);
+
   if (r.timedOut || r.exitCode !== 0) {
     cleanupAfterFailedSetup(project, composeFile, timeoutMs);
     process.stderr.write(
@@ -749,6 +762,181 @@ function cleanupAfterFailedSetup(
   ], { timeoutMs: QUERY_TIMEOUT_MS });
   const ids = leftovers.stdout.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
   if (ids.length > 0) runCmd("docker", ["rm", "-f", ...ids], { timeoutMs });
+}
+
+/**
+ * **通った用意の出力を残す**（imp-0043）。置き場と綴りは `run` と揃える
+ * （`<taskId>-setup-<時刻>-<乱数>.log`）——同じ場所を見れば両方揃う。
+ *
+ * 書けなくても provision は続ける。**目が無いのは困るが、目のために立たないのはもっと困る**。
+ */
+function writeSetupLog(taskId: string, setup: string, r: CmdResult): void {
+  try {
+    const logDir = path.join(os.tmpdir(), "banto-docker-driver-logs");
+    fs.mkdirSync(logDir, { recursive: true });
+    pruneOldLogs(logDir);
+    const logPath = path.join(
+      logDir,
+      `${taskId}-setup-${Date.now()}-${Math.random().toString(36).slice(2)}.log`
+    );
+    const body =
+      `$ ${setup}\n` +
+      `--- exit ${r.timedOut ? "時間切れ" : r.exitCode} ---\n` +
+      r.stdout +
+      (r.stderr ? `\n--- stderr ---\n${r.stderr}` : "");
+    fs.writeFileSync(logPath, body, "utf8");
+  } catch (err) {
+    process.stderr.write(`docker-driver: setup のログを書けませんでした: ${String(err)}\n`);
+  }
+}
+
+/** compose が解決した、1サービス分のマウントの見取り図。 */
+type ComposeMounts = {
+  /** `type: bind`（ホストの場所をそのまま見せているもの） */
+  binds: { source: string; target: string }[];
+  /** `type: volume`（名前つきボリュームを載せている先） */
+  volumeTargets: string[];
+};
+
+/**
+ * **ボリュームの載り先が symlink になっていないか**を、立てる前に確かめる（imp-0043）。
+ *
+ * docker は**マウント先のパスを解決してから**載せる。bind mount の下にある
+ * `node_modules` のようなパスが**ホスト側で symlink だった**とき、名前つきボリュームは
+ * `/app/node_modules` ではなく**symlink の指す先**に載る（実測した mountinfo）:
+ *
+ *   /var/lib/docker/volumes/<proj>_dentaku_test_node_modules/_data
+ *     → /home/ubuntu/ghq/.../dentaku/node_modules      ← /app/node_modules ではない
+ *
+ * そこで `npm ci` を打つと、npm は `/app/node_modules`（＝symlink 自身。**unlink は
+ * EBUSY にならない**）を消し、同じ場所に実体のディレクトリを作る。用意の成果は
+ * bind mount＝**ホストの作業ツリー**へ落ち、ボリュームは空のまま。**setup は exit 0**。
+ * 次に立つ検証コンテナでは、その実体ディレクトリの上に**空のボリューム**が被さり、
+ * `vitest: not found`（exit 127）になる——**用意は成功したのに、検証からは何も見えない**。
+ *
+ * dentaku で3タスク連続で踏んだ（task-0020・0021・0023）。しかも**1回目だけ落ちて
+ * 再試行では通る**——1回目の setup が symlink を実体ディレクトリに化けさせるので、
+ * 2回目は素直にボリュームへ入る。間欠に見えるが、機構としては決定的（再現 6/6）。
+ *
+ * I2: 用意できていない環境を「立った」と言わない。ここで断る。
+ */
+function assertVolumeTargetsAreNotSymlinks(
+  project: string,
+  composeFile: string,
+  workdir: string | undefined,
+  env: NodeJS.ProcessEnv | undefined
+): void {
+  const services = readComposeMounts(project, composeFile, workdir, env);
+  if (!services) return; // 引けなかった理由は readComposeMounts が出している
+
+  for (const svc of services) {
+    for (const target of svc.volumeTargets) {
+      for (const bind of svc.binds) {
+        const hostPath = hostPathUnderBind(bind, target);
+        if (!hostPath) continue;
+        const link = firstSymlinkUnder(bind.source, hostPath);
+        if (!link) continue;
+        process.stderr.write(
+          `docker-driver provision: ${link} が symlink です` +
+            `（${composeFile} が ${target} に載せるボリュームの置き場）。\n` +
+            `docker はマウント先のパスを解決してから載せるので、ボリュームは ${target} ではなく ` +
+            `symlink の指す先に載ります。用意（setup）の成果は bind mount＝ホストの作業ツリーへ落ち、` +
+            `検証コンテナからは空のボリュームしか見えません（imp-0043）。\n` +
+            `直し方: ${link} を実体のディレクトリにしてください` +
+            `（symlink を消して、用意に作らせるのが確実です）。\n`
+        );
+        process.exit(1);
+      }
+    }
+  }
+}
+
+/**
+ * compose が解決したマウントを引く。
+ *
+ * **compose 自身に解かせる**（D6: YAML パーサを足さない）。`config --format json` は
+ * 相対パスも `${VAR}` も解決済みの姿を返すので、こちらで綴りを推測しなくて済む。
+ *
+ * 引けなければ `undefined`。**そのことは黙らせないが、provision は止めない**——
+ * この確認は関所であって契約ではないので、確認できないことを「壊れている」とは言わない。
+ */
+function readComposeMounts(
+  project: string,
+  composeFile: string,
+  workdir: string | undefined,
+  env: NodeJS.ProcessEnv | undefined
+): ComposeMounts[] | undefined {
+  const r = runCmd("docker", composeArgs(project, composeFile, ["config", "--format", "json"]), {
+    timeoutMs: QUERY_TIMEOUT_MS,
+    ...(workdir ? { cwd: workdir } : {}),
+    ...(env ? { env } : {}),
+  });
+  if (r.exitCode !== 0) {
+    process.stderr.write(
+      `docker-driver provision: compose の解決（config）が引けないので、` +
+        `ボリュームの載り先の確認を飛ばします（exit ${r.exitCode}）: ${r.stderr}\n`
+    );
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(r.stdout) as {
+      services?: Record<string, { volumes?: { type?: string; source?: string; target?: string }[] }>;
+    };
+    return Object.values(parsed.services ?? {}).map((svc) => {
+      const mounts: ComposeMounts = { binds: [], volumeTargets: [] };
+      for (const v of svc.volumes ?? []) {
+        if (typeof v.target !== "string") continue;
+        if (v.type === "bind" && typeof v.source === "string") {
+          mounts.binds.push({ source: v.source, target: v.target });
+        } else if (v.type === "volume") {
+          mounts.volumeTargets.push(v.target);
+        }
+      }
+      return mounts;
+    });
+  } catch (err) {
+    process.stderr.write(
+      `docker-driver provision: compose の解決（config）が読めないので、` +
+        `ボリュームの載り先の確認を飛ばします: ${String(err)}\n`
+    );
+    return undefined;
+  }
+}
+
+/**
+ * bind mount の下にある `target` が、ホストのどこに当たるかを返す。
+ *
+ * **bind の根そのものは見ない**（`target === bind.target`）。根が symlink でも docker は
+ * 素直に解決して見せるので、壊れるのは「根の**下**が symlink」のときだけ。
+ */
+function hostPathUnderBind(
+  bind: { source: string; target: string },
+  target: string
+): string | undefined {
+  const prefix = bind.target.endsWith("/") ? bind.target : `${bind.target}/`;
+  if (!target.startsWith(prefix)) return undefined;
+  return path.join(bind.source, target.slice(prefix.length));
+}
+
+/**
+ * `root` から `full` までの途中に symlink があれば、**最初のもの**を返す。
+ *
+ * 無いものは symlink ではない（docker が実体のディレクトリを作る）ので飛ばす。
+ */
+function firstSymlinkUnder(root: string, full: string): string | undefined {
+  const rel = path.relative(root, full);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return undefined;
+  let cur = root;
+  for (const part of rel.split(path.sep)) {
+    if (part.length === 0) continue;
+    cur = path.join(cur, part);
+    try {
+      if (fs.lstatSync(cur).isSymbolicLink()) return cur;
+    } catch {
+      return undefined; // 途中が無い＝これから作られる。symlink ではない
+    }
+  }
+  return undefined;
 }
 
 /** provision の入力から `setup`（と、それに掛ける持ち時間）を読む。 */

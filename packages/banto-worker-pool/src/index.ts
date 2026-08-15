@@ -193,6 +193,7 @@ export {
 } from "./backends.js";
 export { claudeAgentAvailability } from "./claude-agent/availability.js";
 export { resumeWorkers } from "./resume.js";
+export { workerSpawnEnv, ENV_NOT_INHERITED_BY_WORKER } from "./worker-env.js";
 export { createHandleGrip } from "./pi-rpc-driver.js";
 export type { HandleGrip } from "./pi-rpc-driver.js";
 export type { ResumeOptions, ResumeOutcome } from "./resume.js";
