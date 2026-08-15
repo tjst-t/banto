@@ -36,11 +36,26 @@ export function createRestartTool(deps: RestartToolDeps) {
   return defineNamespacedTool({
     name: "system.restart",
     label: "System: Restart",
+    /**
+     * **落ちるものを事実どおりに書く**（imp-0062。2026-08-15 実測）。
+     *
+     * 以前は「職人は中断される・検証環境は cgroup の巻き添えで落ちる」と書いていたが、
+     * どちらも**嘘**だった。職人は `banto-worker-pool.service`、検証環境のコンテナは
+     * `docker-<id>.scope` に居り、`banto.service` は `BindsTo` も `PartOf` も持たない
+     * ——シグナルは自分の cgroup の外へ出ない。落ちるのは**この会話を含む走行中のターン**
+     * （会話セッションは `banto.service` の子）だけである。
+     *
+     * この嘘には実害が出た：番頭が「職人5件・検証環境2件を巻き込む」と要らない PO 判断を
+     * 上げ、いちばん危ない「走行中のターン」には触れなかった。
+     */
     description:
       "banto ホスト自身を再起動する。全クライアントに通知してから graceful に終了し、" +
-      "systemd（Restart=always）が起動し直す。会話は保存済みで、再起動後に続きから話せる。" +
-      "稼働中の職人は中断されるが、記録は残り worker.wake で再開できる。" +
-      "検証環境は cgroup の巻き添えで落ちるので、事前に env.list で確認すること",
+      "systemd が起動し直す（数秒）。会話は保存済みで、再起動後に続きから話せる。" +
+      "落ちるのは**走行中のターンだけ**——この会話を含め、いま回っているターンはそこで切れる" +
+      "（切れた会話は次の起動で自動的に起こし直される）。" +
+      "職人（banto-worker-pool.service）も検証環境（docker のコンテナ）も**別ユニットなので落ちない**" +
+      "——止める必要も、巻き込みの承認を取る必要もない。職人の報告は再起動をまたいで拾い直される。" +
+      "撃つ前にやることは、いまの段取りを会話へ書き残すこと（切れるのは自分のターンである）",
     parameters: Type.Object({}),
     async execute() {
       /**

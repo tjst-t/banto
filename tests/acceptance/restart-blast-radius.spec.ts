@@ -1,0 +1,102 @@
+/**
+ * **再起動で落ちる範囲を、説明文と構成の両側から固定する**（imp-0062）。
+ *
+ * `system.restart` の説明文は「稼働中の職人は中断される」「検証環境は cgroup の巻き添えで
+ * 落ちる」と言っていたが、どちらも嘘だった（2026-08-15 実測）。職人は
+ * `banto-worker-pool.service`、検証環境のコンテナは `docker-<id>.scope` に居り、
+ * `banto.service` は `BindsTo` も `PartOf` も持たない——シグナルは自分の cgroup の外へ
+ * 出ない。落ちるのは**走行中のターン**だけである。
+ *
+ * 嘘には実害が出た：番頭が「職人5件・検証環境2件を巻き込む」と要らない PO 判断を上げ、
+ * いちばん危ない走行中のターンには触れなかった。**危険の在り処が入れ替わっていた。**
+ *
+ * ここで見るのは2つ:
+ *
+ * 1. **構成**（`deploy/*.service`）が、いまも「別ユニットで、縛られていない」こと
+ *    ——`PartOf`／`BindsTo`／`Requires` で結ぶと、番頭ホストの再起動が本当に職人や
+ *    環境を巻き込むようになる。そのときは説明文も SKILL も書き換えないと嘘に戻る
+ * 2. **説明の側**（道具の `description` と SKILL `safe-restart`）が、その事実を
+ *    言っていること
+ *
+ * ## この試験の限界（隠さない・I1）
+ *
+ * 見ているのは**リポジトリの `deploy/*.service`** であって、稼働機にインストール済みの
+ * ユニット（`/etc/systemd/system/`）ではない。実際、2026-08-15 時点で稼働機の
+ * `banto.service` は `Restart=always`、リポジトリの `deploy/banto.service` は
+ * `Restart=on-failure` で**食い違っている**。つまりここが緑でも「稼働機がそうなっている」
+ * 証拠にはならない——**変更の意図**を固定するだけである。稼働機を見る試験は、この
+ * 器（コンテナ）からは systemd に届かないので書けない。
+ */
+
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+function read(relative: string): string {
+  return fs.readFileSync(path.join(repoRoot, relative), "utf8");
+}
+
+/** `Key=` の値を全部拾う（同じ鍵が複数行あってもよい）。 */
+function values(unit: string, key: string): string[] {
+  return unit
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith(`${key}=`))
+    .map((line) => line.slice(key.length + 1).trim())
+    .filter((value) => value.length > 0);
+}
+
+const UNITS = [
+  "deploy/banto.service",
+  "deploy/banto-worker-pool.service",
+  "deploy/banto-environment-pool.service",
+] as const;
+
+describe("[imp-0062] 番頭ホストの再起動は、職人と検証環境を巻き込まない", () => {
+  it("どのユニットも BindsTo / PartOf を持たない（持てば巻き添えが本当になる）", () => {
+    for (const unit of UNITS) {
+      const text = read(unit);
+      assert.deepEqual(values(text, "BindsTo"), [], `${unit} に BindsTo が増えています`);
+      assert.deepEqual(values(text, "PartOf"), [], `${unit} に PartOf が増えています`);
+    }
+  });
+
+  it("職人と検証環境は、番頭ホストのユニットに縛られていない", () => {
+    for (const unit of UNITS.slice(1)) {
+      const text = read(unit);
+      const bound = [...values(text, "Requires"), ...values(text, "Requisite")];
+      assert.deepEqual(
+        bound.filter((v) => v.includes("banto.service")),
+        [],
+        `${unit} が banto.service に縛られています`
+      );
+    }
+  });
+
+  it("道具の説明文が、落ちるものと落ちないものを事実どおりに言う", () => {
+    const source = read("packages/banto-host/src/restart-tool.ts");
+    // 説明文の本体（description: の並び）だけを見る——注記のコメントには昔の嘘も引用してある
+    const description = source.slice(
+      source.indexOf("    description:"),
+      source.indexOf("    parameters:")
+    );
+    assert.match(description, /走行中のターン/u, "何が切れるのかを言っていません");
+    assert.match(description, /別ユニットなので\*\*落ちない\*\*|別ユニットなので落ちない/u);
+    // 昔の嘘が戻っていないこと
+    assert.doesNotMatch(description, /巻き添え/u);
+    assert.doesNotMatch(description, /職人は中断/u);
+  });
+
+  it("SKILL safe-restart も同じ向きで、PO の承認の手順は残っている", () => {
+    const skill = read("packages/banto-host/skills/safe-restart/SKILL.md");
+    assert.match(skill, /走行中のターン/u);
+    assert.match(skill, /banto-worker-pool\.service/u, "職人の所属を名指ししていません");
+    assert.match(skill, /docker-<id>\.scope/u, "検証環境の所属を名指ししていません");
+    // 手順3（PO の承認）は残す——落ちる範囲が狭くなっても、反映の可否は PO の裁定
+    assert.match(skill, /\*\*PO の承認を得る\*\*/u, "PO の承認の手順が消えています");
+  });
+});

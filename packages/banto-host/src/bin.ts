@@ -1175,8 +1175,13 @@ async function serve(options: ServeOptions): Promise<void> {
         },
       }),
       /**
-       * レベル1（PO裁定）: banto 自身の再起動。exit(0) で終わり、systemd の Restart=always が
-       * 起動し直す。職人・検証環境の始末は KillMode=control-group の cgroup 巻き添えで成立する。
+       * レベル1（PO裁定）: banto 自身の再起動。exit(0) で終わり、systemd が起動し直す。
+       *
+       * **巻き添えで落ちるものは無い**（imp-0062。2026-08-15 実測）。職人は
+       * `banto-worker-pool.service`、検証環境のコンテナは `docker-<id>.scope` に居り、
+       * `banto.service` は `BindsTo`／`PartOf` を持たない——落ちるのは自分の cgroup、
+       * すなわち**走行中のターン**（会話セッションはこのプロセスの子）だけである。
+       * 「職人・検証環境の始末は cgroup 巻き添えで成立する」と書いてあったのは嘘だった。
        *
        * 中身は `restart-tool.ts`（imp-0037）。**返事を返してから、ターンの外で落ちる**
        * ——ここで exit まで済ませていたので `tool_end` が書けず、会話に
