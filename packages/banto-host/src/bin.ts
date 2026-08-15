@@ -120,18 +120,19 @@ import { createTurnBudget, withTurnBudgetReset } from "./turn-budget.js";
 import { withWorkerCard } from "./worker-card.js";
 import { withTierUnassignedNotice } from "./worker-tier-notice.js";
 import { bindToolArgs, createThreadTools } from "./thread-tools.js";
-import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
+import { type NamespacedToolDefinition } from "./tool-registry.js";
 import { fromWireToolName, type BantoHarness } from "@banto/core";
 import { PiHarness } from "./pi-harness.js";
 import { ClaudeAgentHarness } from "./claude-agent-harness.js";
 import { selectPresentedTools } from "./presented-tools.js";
-import { Type } from "typebox";
 import {
+  RESTART_RESUME_NOTICE,
   ThreadRegistry,
   watchStaleBranches,
   type ThreadFactory,
   type ThreadIdentity,
 } from "./threads.js";
+import { createRestartTool } from "./restart-tool.js";
 import { loadBantoSkills } from "./skills.js";
 
 /**
@@ -1127,31 +1128,23 @@ async function serve(options: ServeOptions): Promise<void> {
           return texts.length;
         },
       }),
-      // レベル1（PO裁定）: banto 自身の再起動。exit(0) で終わり、systemd の Restart=always が
-      // 起動し直す。職人・検証環境の始末は KillMode=control-group の cgroup 巻き添えで成立する
-      // （ユニットの Restart=always への変更は PO が実施する——ここでは exit(0) するだけでよい）
-      defineNamespacedTool({
-        name: "system.restart",
-        label: "System: Restart",
-        description:
-          "banto ホスト自身を再起動する。全クライアントに通知してから graceful に終了し、" +
-          "systemd（Restart=always）が起動し直す。会話は保存済みで、再起動後に続きから話せる。" +
-          "稼働中の職人は中断されるが、記録は残り worker.wake で再開できる。" +
-          "検証環境は cgroup の巻き添えで落ちるので、事前に env.list で確認すること",
-        parameters: Type.Object({}),
-        async execute() {
-          // 通知を必ず届けてから終わる——送信が終わる前に死なない（I2）
-          await server.notify(
-            "これから再起動します。会話は保存済みで、再起動後に続きから話せます。",
-            { source: "system" }
-          );
-          // notify は broadcast を直ちに流すが、クライアントに届く猶予を少し残す
-          await new Promise((resolve) => setTimeout(resolve, 300));
+      /**
+       * レベル1（PO裁定）: banto 自身の再起動。exit(0) で終わり、systemd の Restart=always が
+       * 起動し直す。職人・検証環境の始末は KillMode=control-group の cgroup 巻き添えで成立する。
+       *
+       * 中身は `restart-tool.ts`（imp-0037）。**返事を返してから、ターンの外で落ちる**
+       * ——ここで exit まで済ませていたので `tool_end` が書けず、会話に
+       * `state:"running"` の道具が永久に残っていた。
+       */
+      createRestartTool({
+        notify: (text) => server.notify(text, { source: "system" }),
+        close: async () => {
+          // 落ちる直前の取りこぼしを防ぐ。`tool_end` の保存は間引かれている（SAVE_DELAY_MS）
+          threads.flushAll();
           // graceful に閉じる（全スレッドの後始末＋WS/HTTPのclose。SIGTERM の shutdown と同じ）
           await server.close();
-          // Restart=always なら systemd が起動し直す。テスト環境では単に終了する
-          process.exit(0);
         },
+        exit: (code) => process.exit(code),
       }),
       // 決定35a: 職人の報告は**起こしたスレッド**へ返る。番頭に自分の threadId を
       // 書かせず、ここで固定して渡す（番頭は自分がどのスレッドかを知らない）
@@ -1624,7 +1617,14 @@ async function serve(options: ServeOptions): Promise<void> {
   // task-0036: 会話はホストの再起動を越えて残る
   const threadStore = new ThreadStore(path.join(dataDir(), "threads"));
   threads = new ThreadRegistry(threadFactory, threadStore);
-  await threads.restore();
+  /**
+   * 読み戻しは**中断されたターンの後片付けも兼ねる**（imp-0037）。
+   *
+   * 落ちる前に走っていた道具を `ok`/`failed` に確定させ、再起動を呼んだ会話へは
+   * 「続きを進めてください」を1件記録し、PO へは取次で1件知らせる。返るのは
+   * **ターンを回す宛先**——回すのはサーバが立ってからなので、ここでは受け取るだけ。
+   */
+  const resumeAfterRestart = await threads.restore(inbox);
   /**
    * 帳場（メインの幹）が無ければ**新しく開く**（PO裁定 2026-08-10）。
    *
@@ -1773,6 +1773,26 @@ async function serve(options: ServeOptions): Promise<void> {
   // 購読を張る前に resumePendingTurn を済ませておく
   for (const thread of threads.list()) {
     await thread.resumePendingTurn?.();
+  }
+
+  /**
+   * **再起動をまたいだ会話を、番頭の側から起こす**（imp-0037）。
+   *
+   * `system.restart` を呼んだターンは、返事を返す前にプロセスが消えていた。誰も
+   * 話しかけなければ番頭は黙ったままで、PO には「固まった」に見えていた
+   * ——SKILL `safe-restart` の手順5「再起動後を確かめる」が実行不可能だった理由がこれ。
+   *
+   * 知らせの行は読み戻し（`threads.restore`）が既に記録しているので、ここは
+   * **ターンを回すだけ**（決定107 の `nudge` と同じ分担。`notify` を使うと同じ一言が
+   * 二重に積まれる）。待たない——起動を1ターン分ぶら下げる理由がない。
+   */
+  for (const threadId of resumeAfterRestart) {
+    void server.nudge(threadId, RESTART_RESUME_NOTICE).catch(
+      (err: unknown) => {
+        // I2: 起こせなかったことを黙らせない（また番頭が黙ったままになる）
+        console.error(`[banto] ${threadId} の続きを起こせませんでした: ${String(err)}`);
+      }
+    );
   }
 
   // 決定29: 番頭が起こした職人のイベントだけを受ける。他の起動元（Kobo 等）の分は届かない。

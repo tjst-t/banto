@@ -31,6 +31,7 @@ import type {
   TranscriptEntry,
 } from "./protocol.js";
 import type { ThreadStore } from "./thread-store.js";
+import type { PostInput } from "./inbox.js";
 
 /** 枝から幹へ立てる札1枚（決定107）。記録なので凍る。 */
 export type BranchNote = Extract<TranscriptEntry, { role: "branch_note" }>;
@@ -516,6 +517,68 @@ export class Thread {
 /** 保存を間引く間隔。長くすると落ちたときの取りこぼしが増える。 */
 const SAVE_DELAY_MS = 400;
 
+/** ホスト自身を落とす道具。**これだけは中断が意図されたもの**なので `ok` に確定させる。 */
+const RESTART_TOOL_NAME = "system.restart";
+
+/** 結果の分からない道具に書く理由。I2: 成功と書かない。 */
+const INTERRUPTED_TOOL_REASON = "ホストの再起動で中断されました。";
+
+/**
+ * 再起動を呼んだ会話へ入れる知らせ。番頭はこれを読んで自分から続きを話す。
+ *
+ * 記録するのは読み戻し、ターンを回すのは起動側（`nudge`）——**同じ一言**でなければ
+ * 記録と番頭が聞いた話がずれるので、文言はここに1つだけ置く。
+ */
+export const RESTART_RESUME_NOTICE = "再起動が完了しました。中断した続きを進めてください。";
+
+/**
+ * 取次へ積む口（`Inbox` の一部だけ）。
+ *
+ * 帳簿は取次の全部を知らなくてよい——**積める**ことだけが要る。
+ */
+export interface InboxPoster {
+  post(input: PostInput): unknown;
+}
+
+/**
+ * 再起動を取次へ1件出す（PO要望 2026-08-15）。
+ *
+ * **PO がどの会話を開いているかは分からない。** 呼び出し元の会話へ入れる知らせだけでは、
+ * その会話を見ていなければ再起動に気づけない。取次はレールに常に出ているので確実に目に入る。
+ *
+ * - `notice: true`（ADR-0022 決定109・110）。**判断ではなく報告**なので、判断待ちの数に
+ *   入れない——報告で `pendingCount` を膨らませると、判断待ちの数が意味を失う
+ * - 差出人は**機構**として名乗る（imp-0026: ホストの知らせが PO の発言に化けた）
+ * - 選択肢は「了解」の1つだけ。判断を迫る文言にしない
+ */
+function postRestartReport(
+  inbox: InboxPoster,
+  interrupted: ReadonlyArray<{ thread: Thread; restarted: boolean }>,
+  failedTotal: number
+): void {
+  const caller = interrupted.find((e) => e.restarted);
+  const failedNote =
+    failedTotal > 0 ? `中断した道具 ${failedTotal} 件は failed として記録しました。` : "";
+  const target = caller ?? interrupted[0]!;
+  const what = caller
+    ? `banto を再起動しました。` +
+      `呼び出し元は会話「${caller.thread.title}」（${caller.thread.id}）です。${failedNote}`
+    : // `system.restart` が無いのに running が残っていた＝番頭が意図せず落ちた
+      `banto が予期せず終了し、再起動しました。` +
+      `中断した道具 ${failedTotal} 件は failed として記録しました` +
+      `（会話「${interrupted[0]!.thread.title}」${interrupted.length > 1 ? "ほか" : ""}）。`;
+  inbox.post({
+    source: { id: "system", label: "banto ホスト" },
+    kind: caller ? "再起動しました" : "予期せず終了しました",
+    notice: true,
+    title: caller ? "banto を再起動しました" : "banto が予期せず終了し、再起動しました",
+    what,
+    ask: "確認したら押してください",
+    actions: [{ id: "ack", label: "了解", tone: "plain" }],
+    opens: { threadId: target.thread.id },
+  });
+}
+
 export class ThreadRegistry {
   private readonly threads = new Map<string, Thread>();
   private readonly factory: ThreadFactory;
@@ -541,8 +604,8 @@ export class ThreadRegistry {
    * I2: 1本の復元に失敗しても他は開く。ただし黙らせない——会話が1本消えたことに
    *     気づけないのが一番困る。
    */
-  async restore(): Promise<void> {
-    if (!this.store) return;
+  async restore(inbox?: InboxPoster): Promise<string[]> {
+    if (!this.store) return [];
     const stored = this.store.threads();
     /**
      * 幹を先に読む——枝は親を指すので、順序が逆だと親が居ない。
@@ -634,9 +697,74 @@ export class ThreadRegistry {
         console.error(`[banto] 会話 ${saved.id} を開き直せませんでした: ${String(err)}`);
       }
     }
+    const resume = this.settleInterrupted(inbox);
     this.refreshDefault();
     this.repairTrunkCards();
     this.emit();
+    return resume;
+  }
+
+  /**
+   * **落ちる前に走っていた道具を、起動時に確定させる**（imp-0037 原因1）。
+   *
+   * `tool_start` は履歴へ `state:"running"` で入り、`tool_end` が来て初めて `ok`/`failed`
+   * になる。ところが `system.restart` はその `tool_end` を書く前にプロセスを落としていた
+   * ため、履歴に `running` が**永久に**残っていた。突き合わせは後から結果が届いたときに
+   * しか動かないので、ここで残りを確定させる。
+   *
+   * - 一般の道具は `failed`。**黙って `ok` にしない**（I2: 結果が分からないなら分からない
+   *   ほうへ倒す。半端に成功と書くと、番頭が「やった」前提で続きを組み立てる）
+   * - `system.restart` だけは `ok`。これは**意図した中断**で、いま起動しているのがその結果
+   *
+   * 呼び出し元の会話には「続きを進めてください」を1件入れ、**取次にも報告を1件**出す
+   * （PO要望 2026-08-15）——PO がどの会話を開いているかは分からないので、レールに常に
+   * 出ている取次に置かないと再起動に気づけない。
+   *
+   * @returns ターンを回す宛先（＝再起動を呼んだ会話）。知らせを記録するのはここ、
+   *          ターンを回すのはサーバの役目（決定107 の `nudge` と同じ分担）
+   */
+  private settleInterrupted(inbox?: InboxPoster): string[] {
+    const interrupted: Array<{ thread: Thread; restarted: boolean; failed: number }> = [];
+    for (const thread of this.threads.values()) {
+      let restarted = false;
+      let failed = 0;
+      thread.transcript = thread.transcript.map((entry) => {
+        if (entry.role !== "tool" || entry.state !== "running") return entry;
+        if (entry.name === RESTART_TOOL_NAME) {
+          restarted = true;
+          return { ...entry, state: "ok" as const, output: "再起動しました。" };
+        }
+        failed++;
+        return { ...entry, state: "failed" as const, output: INTERRUPTED_TOOL_REASON };
+      });
+      if (restarted || failed > 0) interrupted.push({ thread, restarted, failed });
+    }
+    // 何も残っていない＝普通の起動。**毎回知らせを出さない**（出せばすぐ読み飛ばされる）
+    if (interrupted.length === 0) return [];
+
+    const resume: string[] = [];
+    for (const { thread, restarted } of interrupted) {
+      if (!restarted) continue;
+      thread.record({ role: "notice", source: "system", text: RESTART_RESUME_NOTICE });
+      resume.push(thread.id);
+    }
+
+    const failedTotal = interrupted.reduce((sum, e) => sum + e.failed, 0);
+    if (inbox) {
+      try {
+        postRestartReport(inbox, interrupted, failedTotal);
+      } catch (err) {
+        // I2: 取次へ出せなかったことを黙らせない。会話の読み戻しは止めない
+        console.error(`[banto] 再起動の報告を取次へ出せませんでした: ${String(err)}`);
+      }
+    }
+
+    // 書き換えた記録と足した知らせを、間引かずに今すぐ書き戻す（次の起動で running へ戻さない）
+    for (const { thread } of interrupted) this.flush(thread);
+    console.log(
+      `[banto] 中断されたまま残っていた道具を確定させました（会話 ${interrupted.length} 本・failed ${failedTotal} 件）`
+    );
+    return resume;
   }
 
   /**

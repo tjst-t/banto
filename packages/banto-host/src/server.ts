@@ -112,6 +112,43 @@ const TOOL_PAYLOAD_MAX_CHARS = 4000;
 const WS_HEARTBEAT_MS = 30_000;
 
 /**
+ * 閉じるときに待つ上限（imp-0037 原因3）。
+ *
+ * ws の既定は close フレームの返事を **30秒** 待ち、`httpServer.close()` は中継の
+ * upgrade が1本でも残っていれば**返らない**。どちらも「閉じると決めた後」の待ちなので、
+ * 短く区切って先へ進む。
+ */
+const WSS_CLOSE_DEADLINE_MS = 2000;
+const HTTP_CLOSE_DEADLINE_MS = 3000;
+
+/**
+ * 期限つきで待つ。超えたら**諦めた事実を残して**先へ進む（I2: 握りつぶさない）。
+ *
+ * 元の promise は捨てない（reject しても unhandled にならないよう受けておく）——
+ * 後から返ってきても、こちらは既に次へ進んでいるだけでよい。
+ */
+function withDeadline(work: Promise<void>, ms: number, what: string): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      console.error(`[banto-host] ${what} を ${ms}ms で閉じられませんでした。先へ進みます`);
+      resolve();
+    }, ms);
+    timer.unref?.();
+    work.then(
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        console.error(`[banto-host] ${what} を閉じるときに転びました: ${String(err)}`);
+        resolve();
+      }
+    );
+  });
+}
+
+/**
  * ツールの引数・結果を履歴に載せられる大きさへ収める。
  * 長すぎるときは文字列に落として切り詰める（構造を保ったまま部分的に消すと、
  * 何が欠けたのか読み取れなくなる）。
@@ -305,6 +342,13 @@ export class BantoHostServer {
    * 接続そのものが鍵なので、close で clients から外れれば一緒に消える WeakSet でよい。
    */
   private readonly alive = new WeakSet<WebSocket>();
+  /**
+   * モジュールへ渡した upgrade の socket（imp-0037 原因3）。
+   *
+   * **中身はモジュールのもの、入口を開けたのはこちら。** 渡した時点で http サーバの
+   * 管理から外れるので、閉じるときに断てるよう控えを持つ。閉じたら自分で抜ける。
+   */
+  private readonly relayed = new Set<Duplex>();
   /** 死活確認のタイマー。close で止める。 */
   private readonly heartbeat: ReturnType<typeof setInterval>;
   private readonly unsubscribeThreads: () => void;
@@ -855,15 +899,46 @@ export class BantoHostServer {
     return address.port;
   }
 
-  /** サーバを止める。セッションの後始末は呼び出し側の責務。 */
+  /**
+   * サーバを止める。セッションの後始末は呼び出し側の責務。
+   *
+   * **必ず返る**（imp-0037 原因3）。ここは「閉じると決めた後」なので、相手の都合で
+   * 待たない——実測（Node v24 / ws 8.21）で2つの無期限が居た:
+   *
+   * - `ws.close()` は相手の close フレームを待つ。無応答のクライアント1本で **30秒**
+   * - モジュール中継の upgrade ソケットは `this.clients` に入らないので、
+   *   `httpServer.close()` が **70秒待っても返らない**（＝実質無期限）
+   *
+   * I2: 期限を超えたことは握りつぶさず `console.error` に残し、先へ進む。
+   */
   async close(): Promise<void> {
     clearInterval(this.heartbeat);
     this.unsubscribeThreads();
     for (const thread of this.threads.list()) thread.dispose();
-    for (const ws of this.clients) ws.close();
+    /**
+     * **中継の socket もここで断つ。** `this.clients` は `/ws` に来たものだけで、
+     * モジュールが自分で捌いた upgrade（kobo・worker-pool・環境台帳・pi）は入らない。
+     * それを残したまま `httpServer.close()` を待つのが原因3の正体だった。
+     *
+     * `closeAllConnections()` は**まだ upgrade されていない**接続に効く。既にモジュールへ
+     * 渡した socket は http サーバの管理から外れているので、こちらで覚えていた分を destroy する。
+     */
+    this.httpServer.closeAllConnections();
+    for (const socket of this.relayed) socket.destroy();
+    this.relayed.clear();
+    // 待たずに断つ。close フレームの往復を待つ相手ではない（上の30秒）
+    for (const ws of this.clients) ws.terminate();
     this.clients.clear();
-    await new Promise<void>((resolve) => this.wss.close(() => resolve()));
-    await new Promise<void>((resolve) => this.httpServer.close(() => resolve()));
+    await withDeadline(
+      new Promise<void>((resolve) => this.wss.close(() => resolve())),
+      WSS_CLOSE_DEADLINE_MS,
+      "WebSocket サーバ"
+    );
+    await withDeadline(
+      new Promise<void>((resolve) => this.httpServer.close(() => resolve())),
+      HTTP_CLOSE_DEADLINE_MS,
+      "HTTP サーバ"
+    );
   }
 
   // ── 接続とクライアントメッセージ ───────────────────────────────────────────
@@ -893,7 +968,19 @@ export class BantoHostServer {
         if (!module.endpoint.baseUrl.startsWith("/")) continue;
         const base = module.endpoint.baseUrl.replace(/\/$/, "");
         if (!(req.url ?? "").startsWith(base)) continue;
-        if (module.handleUpgrade?.(req, socket, head)) return;
+        if (module.handleUpgrade?.(req, socket, head)) {
+          /**
+           * **渡した socket は覚えておく**（imp-0037 原因3）。
+           *
+           * `upgrade` を捌かせた時点でこの socket は http サーバの管理から外れるので、
+           * `closeAllConnections()` では届かない。実測でも、中継が1本あるだけで
+           * `httpServer.close()` は70秒待っても返らなかった。中身はモジュールのものだが、
+           * **入口を開けたのはこちら**なので、店を閉めるときに断つのはこちらの役目。
+           */
+          this.relayed.add(socket);
+          socket.once("close", () => this.relayed.delete(socket));
+          return;
+        }
       }
     }
 

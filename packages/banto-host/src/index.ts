@@ -261,6 +261,7 @@ export {
   type PostInput,
 } from "./inbox.js";
 export { createInboxTools, type InboxToolOptions } from "./inbox-tools.js";
+export { createRestartTool, type RestartToolDeps } from "./restart-tool.js";
 export { createGitTools } from "./git-tools.js";
 export { workspaceRoot, resolveInWorkspace, toWorkspaceRelative } from "./workspace.js";
 export {
