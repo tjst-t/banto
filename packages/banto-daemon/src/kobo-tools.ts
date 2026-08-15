@@ -751,7 +751,10 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
       projectTag: Type.String(),
       taskId: Type.String(),
       mode: StringEnum(["rework", "reverify"] as const, {
-        description: "rework=中身から直す / reverify=中身は触らずゲートを回し直す"
+        description:
+          "rework=中身から直す / reverify=中身は触らずゲートを回し直す" +
+          "（**監査を通った実績が要る**。合格でも承認でもよく、自動着地したタスクにも使える。" +
+          "そのあと契約の改訂で監査が無効になっていたら使えない）"
       }),
       reason: Type.String({ description: "**何が悪くて、どう直すのか**。職人にそのまま渡る" }),
       origin: Type.Optional(Type.String({ description: "**番頭は書かない**" }))

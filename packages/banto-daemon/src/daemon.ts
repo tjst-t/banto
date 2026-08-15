@@ -1446,7 +1446,7 @@ export class Daemon {
    * - `rework`:   中身の問題。職人をもう一度起こして直させる（落ちた理由を渡す）
    * - `reverify`: 検証環境の問題。**中身は触らず**マージ前ゲートをもう一度回す
    *
-   * I2: `reverify` は**承認まで行った実績があるときだけ**許す。監査を飛ばして
+   * I2: `reverify` は**監査を通った実績があるときだけ**許す。監査を飛ばして
    * マージ待ちに置けてしまうと、番頭の取り違えで未監査のものがマージされる。
    */
   async reopenTask(
@@ -1466,32 +1466,47 @@ export class Daemon {
     const to = options.mode === "rework" ? "implementing" : "approved";
 
     if (options.mode === "reverify") {
-      // I2: 監査を飛ばさせない。承認まで行った実績が要る
+      /**
+       * I2: 監査を飛ばさせない。**監査を通った実績**が要る。
+       *
+       * **「承認を通ったか」で見てはいけない**（imp-0029・実機 dentaku task-0001）。
+       * レビューの既定が自動着地に反転して以降、監査に通ったタスクは
+       * `auditing → merging（audit_passed:auto）` と直に進み、**approved を一度も通らない**。
+       * `state_transitioned → approved` だけを条件にしていたので、
+       * 「監査に通り、マージ前ゲートで検証環境の不備に当たって落ちた」——まさに
+       * reverify のための状況——のタスクが断られ、中身を1行も直す必要が無いのに
+       * rework で職人を起こすしかなかった。
+       *
+       * 守るのは「approve を通ったか」ではなく「**未監査のものをマージ待ちに置かない**」。
+       * だから監査の合格そのもの（`audit_verdict` の pass）も実績として数える。
+       */
       const events = this.getTaskEvents(projectTag, taskId);
-      let approvedAt = -1;
+      // 後ろから探すので、監査の合格と承認のうち**新しい方**が「実績が立った時点」になる
+      let auditedAt = -1;
       for (let i = events.length - 1; i >= 0; i--) {
         const e = events[i]!;
-        if (e.type === "state_transitioned" && e.to === "approved") { approvedAt = i; break; }
+        if (e.type === "audit_verdict" && e.verdict === "pass") { auditedAt = i; break; }
+        if (e.type === "state_transitioned" && e.to === "approved") { auditedAt = i; break; }
       }
-      if (approvedAt < 0) {
+      if (auditedAt < 0) {
         return {
           ok: false,
           reason:
-            `${taskId} は承認まで行っていないので「検証しなおし」はできません` +
+            `${taskId} は監査を通った実績が無いので「検証しなおし」はできません` +
             "（監査を飛ばしてマージ待ちに置くことになります）。中身から直すなら mode: \"rework\" を使ってください",
         };
       }
-      // **承認のあとに基準が動いていたら、その承認はもう使えない**（task-0082）。
-      // 契約を改訂できるようにした以上、「承認まで行った実績」だけでは足りない
+      // **実績のあとに基準が動いていたら、その実績はもう使えない**（task-0082）。
+      // 契約を改訂できるようにした以上、「監査を通った実績」だけでは足りない
       // ——改訂で監査が無効になったあとに reverify を通すと、**変わった基準を誰も見ていない**
       const invalidatedAfter = events
-        .slice(approvedAt)
+        .slice(auditedAt)
         .some((e) => e.type === "task_contract_amended" && e.auditInvalidated);
       if (invalidatedAfter) {
         return {
           ok: false,
           reason:
-            `${taskId} は承認のあとに**基準が変わっています**（契約の改訂で監査が無効になりました）。` +
+            `${taskId} は監査のあとに**基準が変わっています**（契約の改訂で監査が無効になりました）。` +
             "変わった基準を誰も見ていない状態でマージ待ちに置けません——mode: \"rework\" で監査からやり直してください",
         };
       }
@@ -1526,7 +1541,17 @@ export class Daemon {
       this.applyAndBroadcast(amended);
     }
 
-    const result = this.transition(projectTag, taskId, to, `reopened_by:${options.by}（${options.reason}）`);
+    /**
+     * **なぜ戻したかが帳簿で読めること。** `reverify` の戻し先が `approved` なのは
+     * マージキューが approved を拾うからであって、**誰かが承認したからではない**
+     * ——言い分けないと、自動着地で approved を一度も通っていないタスクが、
+     * 帳簿では「承認された」ように見えてしまう
+     */
+    const why =
+      options.mode === "reverify"
+        ? `reopened_by:${options.by}:reverify（監査の実績は据え置き、マージ前ゲートだけ回し直す：${options.reason}）`
+        : `reopened_by:${options.by}:rework（中身から直す：${options.reason}）`;
+    const result = this.transition(projectTag, taskId, to, why);
     if (!result.ok) return { ok: false, reason: `${to} へ戻せませんでした: ${result.reason}` };
 
     if (options.mode === "rework") {
