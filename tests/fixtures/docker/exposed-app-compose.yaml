@@ -1,0 +1,23 @@
+# 公開する口を**本当に持っている** compose の検体（imp-0033）。
+#
+# `test-compose.yaml`（sleep で待つだけ）や `published-port-compose.yaml` は
+# **ポートを publish するが中で誰も listen していない**。docker はホスト側に中継役
+# （docker-proxy）を置くので、その形でも TCP の握手だけは通ってしまう
+# ——「公開ポートを叩いて確かめる」を試すには、中に本物の待ち受けが要る。
+#
+# busybox の httpd を使う（イメージを増やさない・D6）。ホスト側の番号は書かない
+# （`- "4200"` はコンテナ側の宣言だけ）ので、docker が空きから選ぶ。
+#
+# security_opt: apparmor=unconfined — このホストでは /sys/kernel/security が
+# 見えないため（他の docker fixture と同じ理由）。
+services:
+  app:
+    image: busybox:latest
+    command:
+      - "sh"
+      - "-c"
+      - "mkdir -p /www && echo ok > /www/index.html && exec httpd -f -p 4200 -h /www"
+    security_opt:
+      - apparmor=unconfined
+    ports:
+      - "4200"

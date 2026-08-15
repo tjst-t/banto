@@ -10,10 +10,10 @@
  * Exit:   0 = success, 1 = failure (I2: failures are never swallowed as exit 0)
  *
  * Handle shape: { project: string, composeFile: string, name: string, taskId: string, created: string }
- *   - project:     docker compose project name (taskID-prefixed, I3)
+ *   - project:     docker compose project name (`banto-env-<envId>` — imp-0033)
  *   - composeFile: absolute path to the compose YAML file
- *   - name:        same as project (taskID-prefixed resource name — I3)
- *   - taskId:      the task this environment belongs to
+ *   - name:        same as project (I3: 名前で自分の資源だと分かる)
+ *   - taskId:      the task this environment belongs to（**名前には入らない**・ラベル）
  *   - created:     ISO-8601 timestamp of provision
  *
  * D6: node:child_process, node:fs, node:path only (no npm deps). docker CLI is
@@ -27,7 +27,7 @@
  *   - setupTimeoutMs: 用意に掛ける持ち時間（予算と厳しい方を採る）
  *   出力の `setup.ran` が「用意はこちらで済ませた」の申告。プールはこれを見て二度走らせない
  *
- * I3: all managed resources carry a `<taskId>-docker` project name prefix.
+ * I3: all managed resources carry a `banto-env-` project name prefix（中身は envId）.
  * I2: teardown is idempotent — already-gone project is a success (exit 0).
  * I2: a failed compose command is always surfaced as a non-zero exit (never silent skip).
  *
@@ -50,7 +50,7 @@ import { DRIVER_TIMEOUT_EXIT, QUERY_TIMEOUT_MS, innerBudgetMs } from "./driver-b
 // ── Handle shape ──────────────────────────────────────────────────────────────
 
 interface DockerHandle {
-  project: string;      // docker compose project name (taskID-prefixed)
+  project: string;      // docker compose project name (`banto-env-<envId>`)
   composeFile: string;  // absolute path to compose YAML
   name: string;         // same as project (I3: named resource identifier)
   taskId: string;
@@ -61,17 +61,37 @@ interface DockerHandle {
 
 // ── Docker compose project naming (I3) ────────────────────────────────────────
 //
-// プロジェクト名は `banto-env-<taskId>`。
+// プロジェクト名は `banto-env-<envId>`。**環境1つに名前1つ**。
 //
-// **以前は `<taskId>-docker` だった。** 名前の綴りだけで「自分のもの」を見分けていたので、
-// **たまたま `-docker` で終わる他人のプロジェクトを自分のものとして数えていた**
+// **以前は `banto-env-<taskId>` だった**（imp-0033・2026-08-15 に PO が2度踏んだ）。
+// taskId は環境の識別子ではない——同じタスクで環境をいくつ立ててもよいし、実際に立つ：
+//
+//   - Kobo はレビュー待ちのタスクに dev 環境を自動で立てる。番頭はそれを知らずに
+//     レビュー用にもう1つ立てた → **compose プロジェクトが同じ**なので、あとから来た
+//     `compose up` が前のコンテナを作り直し、**先に立てた env の公開ポートが実体を失う**
+//     （caddy 経由で 502。台帳には2件とも生きて見える）
+//   - プロファイルも名前に入っていなかったので、衝突は**プロファイルをまたいでも**起きた。
+//     dev 環境が立っている最中に同じ taskId で `env.verify`（test プロファイル）を回すと、
+//     使い捨て側の後始末の `compose down` が**dev のレビュー環境のコンテナごと消した**
+//
+// envId は環境そのものの主キー（Pool が provision のたびに1つ振る）なので、どちらも起きない。
+// **綴りは caddy の route id（`banto-env-<envId>`）と同一**にしてある——1つの環境は
+// どこで見ても同じ名前で呼ばれる（`banto-env-env-…` と env が二重に見えるのはこのため）。
+//
+// taskId は**名前から降ろした**。「何の検証か」は台帳（`env.list`）と handle が持つ。
+//
+// **さらに以前は `<taskId>-docker` だった。** 名前の綴りだけで「自分のもの」を見分けて
+// いたので、**たまたま `-docker` で終わる他人のプロジェクトを自分のものとして数えていた**
 // ——`myapp-docker`（compose は既定でディレクトリ名をプロジェクト名にする）で実測。
 // 照合はそれを「台帳に無い実リソース（孤児）」として挙げ、畳む口を作れば**POの無関係な
 // コンテナを壊す**ところだった（PO指摘 2026-08-08）。
 //
 // 名前は二重の守りの片方。所有の真実は §list の台帳（`STATE_FILE`）が持つ。
-function projectName(taskId: string): string {
-  return `banto-env-${taskId}`;
+// **旧名（`banto-env-task-*`）で立っている環境はそのまま動く**——以降の動詞は handle に
+// 保存された `project` で操作し、`list` は記録（STATE_FILE）と実在の積を返すので、
+// 綴りが新旧どちらでも拾える。
+function projectName(envId: string): string {
+  return `banto-env-${envId}`;
 }
 
 // ── 自分が作ったものの記録（所有の真実）──────────────────────────────────────
@@ -425,6 +445,19 @@ function handleProvision(input: Record<string, unknown>): void {
     process.exit(1);
   }
 
+  // **envId は必須**（imp-0033）。compose プロジェクト名はこれだけで決まる。
+  //
+  // 「無ければ taskId で代用」にはしない。代用は**衝突する名前へ黙って落ちる**ことを
+  // 意味していて、それが今回の事故そのものだった（同じ taskId の env が互いのコンテナを
+  // 作り直す・消す）。渡し忘れは名前が壊れるのではなく provision が失敗する形で出す（I2）。
+  const envId = input["envId"] as string | undefined;
+  if (!envId) {
+    process.stderr.write(
+      "docker-driver provision: envId が要ります（compose プロジェクト名は envId から決めます・imp-0033）\n"
+    );
+    process.exit(1);
+  }
+
   const composePath = config["compose"] as string | undefined;
   if (!composePath) {
     process.stderr.write("docker-driver provision: config.compose (path to compose YAML) is required\n");
@@ -453,7 +486,7 @@ function handleProvision(input: Record<string, unknown>): void {
     process.exit(1);
   }
 
-  const project = projectName(taskId);
+  const project = projectName(envId);
 
   // `docker compose up -d --build` — starts all services in the background.
   //

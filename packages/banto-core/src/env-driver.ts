@@ -55,10 +55,21 @@ export interface ProvisionInput {
   /** Driver-specific configuration (from the profile's `config` block). */
   config: Record<string, unknown>;
   /**
-   * taskID used for prefixed resource naming (I3: all managed resources carry
-   * the taskID prefix so they can be identified and cleaned up later).
+   * 「何の検証か」を示すラベル。台帳・ログ・handle に残る。
+   *
+   * **資源の名前には使わない**（imp-0033）。同じタスクで環境は複数立つ（Kobo が
+   * レビュー用に自動で立てた dev と、番頭が別に立てたもの、プロファイル違いの verify）。
+   * taskId で名付けると、それらが**同じ compose プロジェクトを共有して互いを壊す**。
    */
   taskId: string;
+  /**
+   * この環境の主キー。**資源の名前はこれで決める**（I3・imp-0033）。
+   *
+   * Pool が provision のたびに1つ振り、台帳の `envId` と同じものをドライバへ渡す。
+   * ドライバはこれを名前に織り込む（docker なら compose プロジェクト `banto-env-<envId>`）
+   * ので、**名前から環境を一意に辿れる**——caddy の route id とも同じ綴りになる。
+   */
+  envId: string;
   /**
    * どこで動かすか（絶対パス）。ADR-0010 決定34(d)・task-0034 で足した。
    *

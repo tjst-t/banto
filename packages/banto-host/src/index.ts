@@ -43,6 +43,7 @@ export {
   outlineOf,
   renderStub,
   renderArtifactIndex,
+  describeDetails,
   DEFAULT_ARTIFACT_THRESHOLD_CHARS,
   type ArtifactRef,
   type ArtifactSlice,
@@ -195,6 +196,8 @@ export {
   buildUtsuwa,
   brokenUtsuwa,
   pickPath,
+  describeKeys,
+  rowArrayKeys,
   SHOWABLE_UTSUWA_KINDS,
   UTSUWA_NOT_SHOWABLE,
   type UtsuwaOrigin,
@@ -267,6 +270,7 @@ export {
   KOBO_REVIEW_CANVAS_KIND,
   type KoboPoDecision,
 } from "./kobo-po-decision.js";
+export { createRestartTool, type RestartToolDeps } from "./restart-tool.js";
 export { createGitTools } from "./git-tools.js";
 export { workspaceRoot, resolveInWorkspace, toWorkspaceRelative } from "./workspace.js";
 export {

@@ -22,6 +22,7 @@ import {
   buildUtsuwa,
   createCanvasCatalog,
   createCanvasTools,
+  describeDetails,
   pickPath,
   withArtifactOffload,
   type UtsuwaView,
@@ -280,5 +281,273 @@ describe("[task-0088/a9] 描けない戻り値は会話に出し、番頭にも�
     const built = buildUtsuwa("barchart", {}, ORIGIN);
     assert.ok(!built.ok);
     assert.match(built.missing, /list/u, "使える器を並べる");
+  });
+});
+
+/**
+ * imp-0035: 器が道具の戻り値を描けない。
+ *
+ * **道具は1本も変えない**（決定81(a) が書き換えを明文で却下している）ので、直すのは器の側。
+ * 下の `details` は実物の道具の戻り値の形（`worker.list` は `pool.find()` を、`env.list` は
+ * `{ environments, limits, orphans, artifacts, maintaining }` を、`kobo.list` は
+ * `{ tasks, total, truncated }` をそのまま返す）に合わせてある。
+ */
+const REAL_DETAILS: Record<string, unknown> = {
+  "worker.list": {
+    workers: [
+      {
+        taskId: "task-0093",
+        projectTag: "banto",
+        state: "closed",
+        alive: false,
+        runtime: "pi",
+        pid: 1234,
+        sessionId: "s-1",
+      },
+      {
+        taskId: "task-0094",
+        projectTag: "banto",
+        state: "running",
+        alive: true,
+        runtime: "pi",
+        pid: 1235,
+        sessionId: "s-2",
+      },
+    ],
+    total: 2,
+    closedTotal: 1,
+    limit: 20,
+    offset: 0,
+  },
+  "env.list": {
+    environments: [
+      {
+        envId: "env-31",
+        profile: "web",
+        state: "live",
+        taskId: "task-0093",
+        url: "https://x.example",
+        ttlDeadline: "2026-08-16",
+      },
+    ],
+    limits: { maxInstancesTotal: 8, maxInstancesPerProfile: 3, defaultRunTimeoutMs: 600000 },
+    orphans: [],
+    artifacts: { count: 0, bytes: 0 },
+    maintaining: true,
+  },
+  "kobo.list": {
+    tasks: [
+      { taskId: "task-0093", projectTag: "banto", status: "review-ready", title: "ゲートを直す" },
+      { taskId: "task-0094", projectTag: "banto", status: "queued", title: "器を直す" },
+    ],
+    total: 2,
+    truncated: false,
+  },
+  "git.log": {
+    commits: [
+      { hash: "b9e6cde", date: "2026-08-15", author: "tjst-t", subject: "docs: 規約を書く" },
+      { hash: "fc0da30", date: "2026-08-15", author: "tjst-t", subject: "fix: 固定しない" },
+    ],
+  },
+  "file.grep": {
+    pattern: "buildUtsuwa",
+    hits: [
+      { path: "packages/banto-host/src/canvas-tools.ts", line: 204, text: "const built = buildUtsuwa(" },
+      { path: "packages/banto-host/src/index.ts", line: 181, text: "  buildUtsuwa," },
+    ],
+    truncated: false,
+  },
+};
+
+describe("[imp-0035] 器が実物の道具の戻り値を描ける", () => {
+  it("[imp-0035] 5本の戻り値が list に載り、見出しが「—」にならない", () => {
+    for (const [tool, details] of Object.entries(REAL_DETAILS)) {
+      const built = buildUtsuwa("list", details, ORIGIN);
+      assert.ok(built.ok, `${tool} が list に載らない: ${built.ok ? "" : built.missing}`);
+      if (built.utsuwa.kind !== "list") return;
+      assert.ok(built.utsuwa.items.length > 0, `${tool} の行が空`);
+      for (const item of built.utsuwa.items) {
+        assert.notEqual(item.label, "—", `${tool} の見出しが「—」`);
+      }
+    }
+  });
+
+  it("[imp-0035] 5本の戻り値が table に載り、列の名前と行が出る", () => {
+    for (const [tool, details] of Object.entries(REAL_DETAILS)) {
+      const built = buildUtsuwa("table", details, ORIGIN);
+      assert.ok(built.ok, `${tool} が table に載らない: ${built.ok ? "" : built.missing}`);
+      if (built.utsuwa.kind !== "table") return;
+      assert.ok(built.utsuwa.cols.length > 0, `${tool} の列が空`);
+      assert.ok(built.utsuwa.rows.length > 0, `${tool} の行が空`);
+      for (const col of built.utsuwa.cols) assert.notEqual(col.label, "—");
+      // 先頭の列は**その行を人が識別できる値**（識別子や題）で、空にならない
+      for (const row of built.utsuwa.rows) assert.ok(row[0] !== null, `${tool} の1列目が空`);
+    }
+  });
+
+  it("[imp-0035] path を書いても同じところに着く（配列を直接指す）", () => {
+    const details = REAL_DETAILS["worker.list"];
+    const auto = buildUtsuwa("list", details, ORIGIN);
+    const pointed = buildUtsuwa("list", pickPath(details, "workers"), ORIGIN);
+    assert.ok(auto.ok && pointed.ok);
+    assert.deepEqual(
+      auto.utsuwa.kind === "list" && auto.utsuwa.items,
+      pointed.utsuwa.kind === "list" && pointed.utsuwa.items
+    );
+  });
+
+  it("[imp-0035] 行の配列が一意でないときは黙って選ばず、鍵を名指しして断る", () => {
+    const built = buildUtsuwa(
+      "list",
+      { environments: [{ envId: "env-31" }], orphans: [{ envId: "env-9" }], maintaining: true },
+      ORIGIN
+    );
+    assert.ok(!built.ok, "どちらを出すかは器が決めることではない");
+    assert.match(built.missing, /environments/u, "候補を名指しする");
+    assert.match(built.missing, /orphans/u);
+    assert.match(built.missing, /path/u, "次に何を書けばよいかまで書く");
+  });
+
+  it("[imp-0035] 行の配列が無いときは在る鍵を並べて断る", () => {
+    const built = buildUtsuwa("list", { total: 3, limit: 20, offset: 0 }, ORIGIN);
+    assert.ok(!built.ok);
+    assert.match(built.missing, /total/u, "在る鍵を名指しする（番頭が path を書けるように）");
+  });
+
+  it("[imp-0035] 行が文字列そのものでも見出しになる", () => {
+    const built = buildUtsuwa("list", { items: ["docs/adr", "docs/spec"] }, ORIGIN);
+    assert.ok(built.ok);
+    assert.deepEqual(
+      built.utsuwa.kind === "list" && built.utsuwa.items.map((i) => i.label),
+      ["docs/adr", "docs/spec"]
+    );
+  });
+});
+
+describe("[imp-0035] facts は入れ子を黙って捨てない（I1）", () => {
+  it("[imp-0035] 中身の入った鍵が落ちるくらいなら描かない", () => {
+    // 直す前は `total` / `closedTotal` / `limit` / `offset` だけで「成功」していた——
+    // **中身が無いのに成功して見える**のがいちばん質が悪い
+    const built = buildUtsuwa("facts", REAL_DETAILS["worker.list"], ORIGIN);
+    assert.ok(!built.ok, "workers が消えたまま成功してはいけない");
+    assert.match(built.missing, /workers/u, "落ちる鍵を名指しする");
+    assert.match(built.missing, /list/u, "どの器なら出せるかまで書く");
+    assert.match(built.missing, /path/u);
+  });
+
+  it("[imp-0035] 平たい値だけなら今までどおり通る", () => {
+    const built = buildUtsuwa("facts", { 置き場: "banto", 公開URL: null }, ORIGIN);
+    assert.ok(built.ok);
+    assert.deepEqual(built.utsuwa.kind === "facts" && built.utsuwa.facts, [
+      ["置き場", "banto"],
+      ["公開URL", null],
+    ]);
+  });
+
+  it("[imp-0035] path で下の階層を指せば描ける（断り文の言うとおりにすると通る）", () => {
+    const details = REAL_DETAILS["env.list"];
+    const built = buildUtsuwa("facts", pickPath(details, "limits"), ORIGIN);
+    assert.ok(built.ok, `断り文の案内どおりにして描けないのは案内が嘘: ${built.ok ? "" : built.missing}`);
+  });
+});
+
+describe("[imp-0035] 当たらない状態の語で嘘の色が点かない", () => {
+  it("[imp-0035] 実データの語は無色で素通しする（勝手に warn へ倒さない）", () => {
+    // 器の語彙は5役だけ。誰が写すのかはまだ決まっていないので、ここでは写さない
+    const words = ["closed", "running", "idle", "live", "open", "failed", "queued", "review-ready"];
+    for (const word of words) {
+      const built = buildUtsuwa("list", { items: [{ label: "x", state: word }] }, ORIGIN);
+      assert.ok(built.ok);
+      assert.equal(
+        built.utsuwa.kind === "list" && built.utsuwa.items[0]?.state,
+        undefined,
+        `"${word}" に色が点いた（当たらない語は無色）`
+      );
+    }
+  });
+
+  it("[imp-0035] 5役の語はそのまま通る", () => {
+    for (const word of ["run", "turn", "stop", "warn", "done"]) {
+      const built = buildUtsuwa("list", { items: [{ label: "x", state: word }] }, ORIGIN);
+      assert.ok(built.ok);
+      assert.equal(built.utsuwa.kind === "list" && built.utsuwa.items[0]?.state, word);
+    }
+  });
+});
+
+describe("[imp-0035] 落とした列は書く（table）", () => {
+  it("[imp-0035] 列を切ったこと・入れ子を載せていないことを添え書きに出す", () => {
+    const built = buildUtsuwa(
+      "table",
+      { rows: [{ id: "a", one: 1, two: 2, three: 3, four: 4, nest: { x: 1 } }] },
+      ORIGIN
+    );
+    assert.ok(built.ok);
+    if (built.utsuwa.kind !== "table") return;
+    assert.equal(built.utsuwa.cols.length, 4, "膳に載るのは4列まで");
+    assert.match(built.utsuwa.note ?? "", /列は/u, "切ったことを隠さない");
+    assert.match(built.utsuwa.note ?? "", /nest/u, "入れ子を載せていないことも書く");
+  });
+
+  it("[imp-0035] 番頭の添え書きを消さずに足す", () => {
+    const items = Array.from({ length: 25 }, (_, i) => ({ label: `env-${i}` }));
+    const built = buildUtsuwa("list", { items, total: 25 }, ORIGIN, { note: "手で選んだ分" });
+    assert.ok(built.ok);
+    assert.match(built.utsuwa.note ?? "", /手で選んだ分/u);
+    assert.match(built.utsuwa.note ?? "", /25 件のうち先頭/u);
+  });
+});
+
+describe("[imp-0035] 栞が details の鍵名を教える", () => {
+  it("[imp-0035] どの鍵があり、どれが行の配列かが読める", () => {
+    assert.match(describeDetails(REAL_DETAILS["worker.list"]) ?? "", /workers\[2\]/u);
+    assert.match(describeDetails(REAL_DETAILS["worker.list"]) ?? "", /path: "workers"/u);
+    // 候補が複数なら「どれか1つを指す」と言う（器は勝手に選ばない）
+    const many = describeDetails({ a: [1], b: [2] }) ?? "";
+    assert.match(many, /`a`/u);
+    assert.match(many, /`b`/u);
+  });
+
+  it("[imp-0035] 小さい結果の栞に鍵名が載る（番頭は他に知る手段が無い）", async () => {
+    const store = new ArtifactStore(dir);
+    const tool = defineNamespacedTool({
+      name: "worker.list",
+      label: "Worker: List",
+      description: "テスト用",
+      parameters: Type.Object({}),
+      async execute() {
+        return {
+          content: [{ type: "text" as const, text: "2件" }],
+          details: REAL_DETAILS["worker.list"],
+        };
+      },
+    });
+    const [wrapped] = withArtifactOffload([tool], store, { moduleOf: () => "worker-pool" });
+    const result = await wrapped!.execute({}, { toolCallId: "t1" });
+    const text = result.content.map((c) => c.text).join("\n");
+    assert.match(text, /観測 a-\d+/u);
+    assert.match(text, /workers/u, "鍵名が読める");
+    assert.match(text, /path: "workers"/u, "どれが行の配列かまで読める");
+  });
+
+  it("[imp-0035] 退避された（大きい）結果の栞にも載る", async () => {
+    const store = new ArtifactStore(dir);
+    const tool = defineNamespacedTool({
+      name: "kobo.list",
+      label: "Kobo: List",
+      description: "テスト用",
+      parameters: Type.Object({}),
+      async execute() {
+        return {
+          content: [{ type: "text" as const, text: "x".repeat(5000) }],
+          details: REAL_DETAILS["kobo.list"],
+        };
+      },
+    });
+    const [wrapped] = withArtifactOffload([tool], store, { moduleOf: () => "kobo" });
+    const result = await wrapped!.execute({}, { toolCallId: "t1" });
+    const text = result.content.map((c) => c.text).join("\n");
+    assert.match(text, /器に載せるなら/u);
+    assert.match(text, /path: "tasks"/u);
   });
 });

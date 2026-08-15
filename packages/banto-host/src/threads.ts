@@ -31,6 +31,7 @@ import type {
   TranscriptEntry,
 } from "./protocol.js";
 import type { ThreadStore } from "./thread-store.js";
+import type { PostInput } from "./inbox.js";
 
 /** 枝から幹へ立てる札1枚（決定107）。記録なので凍る。 */
 export type BranchNote = Extract<TranscriptEntry, { role: "branch_note" }>;
@@ -244,6 +245,28 @@ export class Thread {
    */
   conclusionDetail: string | undefined;
   /**
+   * 畳むときに書かれた**残作業の件数**（imp-0036）。
+   *
+   * 中身は `conclusionDetail` の「## 残ったこと」に潰れて入っている。ここに持つのは
+   * **件数だけ**——幹へ出すのは「未処理がある」という事実と件数までで、中身は
+   * `thread.read` で読む（決定108 の縛りは動かさない）。
+   *
+   * なぜ要るか：`remaining` に書いた仕事が誰にも渡らないまま消える事故が起きた
+   * （2026-08-15・thread-86）。畳んだ枝は `thread.list` の既定から外れるので、
+   * **残作業を抱えた枝と、きれいに片付いた枝が一覧で区別できなかった**。
+   */
+  remainingCount = 0;
+  /** 残作業に所在が付いた時刻（`thread.settle`）。付くまで一覧から消えない。 */
+  settledAt: string | undefined;
+  /** 残作業の**所在**——起票 id・職人の sessionId・幹での委譲先。 */
+  settledWhere: string | undefined;
+  /**
+   * **未処理を抱えたまま畳んだ枝か。** 一覧に出し続けるかの判定はここ1つ（D3）。
+   */
+  get hasUnsettledRemaining(): boolean {
+    return this.remainingCount > 0 && this.settledAt === undefined;
+  }
+  /**
    * 畳んだスレッドは**消えない**（Worker Pool の決定30c と同じ発想）。
    * 一覧から外れるだけで、履歴として読めるし同じ会話のまま再開できる。
    */
@@ -348,6 +371,9 @@ export class Thread {
     openReason?: string;
     conclusion?: string;
     conclusionDetail?: string;
+    remainingCount?: number;
+    settledAt?: string;
+    settledWhere?: string;
     harness: BantoHarness;
     canvas?: Canvas;
     tools: NamespacedToolDefinition[];
@@ -368,6 +394,9 @@ export class Thread {
     this.openReason = params.openReason;
     this.conclusion = params.conclusion;
     this.conclusionDetail = params.conclusionDetail;
+    this.remainingCount = params.remainingCount ?? 0;
+    this.settledAt = params.settledAt;
+    this.settledWhere = params.settledWhere;
     // I2: 枝に還す条件と親が無いのは帳簿の壊れ。黙って幹のように振る舞わせない
     if (params.kind === "branch" && (!params.parentId || !params.returnCondition)) {
       throw new Error(`枝 ${params.id} に親か還す条件がありません（決定77）`);
@@ -396,6 +425,9 @@ export class Thread {
       ...(this.conclusion ? { conclusion: this.conclusion } : {}),
       // 一覧には出さない（幅を食う）。**あることだけ**を出して、開けば読める形にする（決定108）
       ...(this.conclusionDetail ? { hasConclusionDetail: true } : {}),
+      // 未処理も同じ扱い——**件数だけ**出す。中身は thread.read（imp-0036）
+      ...(this.hasUnsettledRemaining ? { unsettledRemaining: this.remainingCount } : {}),
+      ...(this.settledWhere ? { settledWhere: this.settledWhere } : {}),
       sessionId: this.harness.sessionId,
       isDefault: this.isDefault,
       state: this.state,
@@ -485,6 +517,68 @@ export class Thread {
 /** 保存を間引く間隔。長くすると落ちたときの取りこぼしが増える。 */
 const SAVE_DELAY_MS = 400;
 
+/** ホスト自身を落とす道具。**これだけは中断が意図されたもの**なので `ok` に確定させる。 */
+const RESTART_TOOL_NAME = "system.restart";
+
+/** 結果の分からない道具に書く理由。I2: 成功と書かない。 */
+const INTERRUPTED_TOOL_REASON = "ホストの再起動で中断されました。";
+
+/**
+ * 再起動を呼んだ会話へ入れる知らせ。番頭はこれを読んで自分から続きを話す。
+ *
+ * 記録するのは読み戻し、ターンを回すのは起動側（`nudge`）——**同じ一言**でなければ
+ * 記録と番頭が聞いた話がずれるので、文言はここに1つだけ置く。
+ */
+export const RESTART_RESUME_NOTICE = "再起動が完了しました。中断した続きを進めてください。";
+
+/**
+ * 取次へ積む口（`Inbox` の一部だけ）。
+ *
+ * 帳簿は取次の全部を知らなくてよい——**積める**ことだけが要る。
+ */
+export interface InboxPoster {
+  post(input: PostInput): unknown;
+}
+
+/**
+ * 再起動を取次へ1件出す（PO要望 2026-08-15）。
+ *
+ * **PO がどの会話を開いているかは分からない。** 呼び出し元の会話へ入れる知らせだけでは、
+ * その会話を見ていなければ再起動に気づけない。取次はレールに常に出ているので確実に目に入る。
+ *
+ * - `notice: true`（ADR-0022 決定109・110）。**判断ではなく報告**なので、判断待ちの数に
+ *   入れない——報告で `pendingCount` を膨らませると、判断待ちの数が意味を失う
+ * - 差出人は**機構**として名乗る（imp-0026: ホストの知らせが PO の発言に化けた）
+ * - 選択肢は「了解」の1つだけ。判断を迫る文言にしない
+ */
+function postRestartReport(
+  inbox: InboxPoster,
+  interrupted: ReadonlyArray<{ thread: Thread; restarted: boolean }>,
+  failedTotal: number
+): void {
+  const caller = interrupted.find((e) => e.restarted);
+  const failedNote =
+    failedTotal > 0 ? `中断した道具 ${failedTotal} 件は failed として記録しました。` : "";
+  const target = caller ?? interrupted[0]!;
+  const what = caller
+    ? `banto を再起動しました。` +
+      `呼び出し元は会話「${caller.thread.title}」（${caller.thread.id}）です。${failedNote}`
+    : // `system.restart` が無いのに running が残っていた＝番頭が意図せず落ちた
+      `banto が予期せず終了し、再起動しました。` +
+      `中断した道具 ${failedTotal} 件は failed として記録しました` +
+      `（会話「${interrupted[0]!.thread.title}」${interrupted.length > 1 ? "ほか" : ""}）。`;
+  inbox.post({
+    source: { id: "system", label: "banto ホスト" },
+    kind: caller ? "再起動しました" : "予期せず終了しました",
+    notice: true,
+    title: caller ? "banto を再起動しました" : "banto が予期せず終了し、再起動しました",
+    what,
+    ask: "確認したら押してください",
+    actions: [{ id: "ack", label: "了解", tone: "plain" }],
+    opens: { threadId: target.thread.id },
+  });
+}
+
 export class ThreadRegistry {
   private readonly threads = new Map<string, Thread>();
   private readonly factory: ThreadFactory;
@@ -510,8 +604,8 @@ export class ThreadRegistry {
    * I2: 1本の復元に失敗しても他は開く。ただし黙らせない——会話が1本消えたことに
    *     気づけないのが一番困る。
    */
-  async restore(): Promise<void> {
-    if (!this.store) return;
+  async restore(inbox?: InboxPoster): Promise<string[]> {
+    if (!this.store) return [];
     const stored = this.store.threads();
     /**
      * 幹を先に読む——枝は親を指すので、順序が逆だと親が居ない。
@@ -565,6 +659,11 @@ export class ThreadRegistry {
           // 決定108: 詳細も読み戻す。畳んだ枝を開いて読めるのが要点なので、
           // 再起動で消えると「開けば読める」が成り立たなくなる
           ...(saved.conclusionDetail ? { conclusionDetail: saved.conclusionDetail } : {}),
+          // imp-0036: 未処理も読み戻す。**片付くまで消えない**のが要点なので、
+          // 再起動で降りてしまうと、いちばん忘れやすい形に戻る
+          ...(saved.remainingCount ? { remainingCount: saved.remainingCount } : {}),
+          ...(saved.settledAt ? { settledAt: saved.settledAt } : {}),
+          ...(saved.settledWhere ? { settledWhere: saved.settledWhere } : {}),
           harness: parts.harness,
           ...(parts.model ? { model: parts.model } : {}),
           ...(parts.canvas ? { canvas: parts.canvas } : {}),
@@ -598,9 +697,74 @@ export class ThreadRegistry {
         console.error(`[banto] 会話 ${saved.id} を開き直せませんでした: ${String(err)}`);
       }
     }
+    const resume = this.settleInterrupted(inbox);
     this.refreshDefault();
     this.repairTrunkCards();
     this.emit();
+    return resume;
+  }
+
+  /**
+   * **落ちる前に走っていた道具を、起動時に確定させる**（imp-0037 原因1）。
+   *
+   * `tool_start` は履歴へ `state:"running"` で入り、`tool_end` が来て初めて `ok`/`failed`
+   * になる。ところが `system.restart` はその `tool_end` を書く前にプロセスを落としていた
+   * ため、履歴に `running` が**永久に**残っていた。突き合わせは後から結果が届いたときに
+   * しか動かないので、ここで残りを確定させる。
+   *
+   * - 一般の道具は `failed`。**黙って `ok` にしない**（I2: 結果が分からないなら分からない
+   *   ほうへ倒す。半端に成功と書くと、番頭が「やった」前提で続きを組み立てる）
+   * - `system.restart` だけは `ok`。これは**意図した中断**で、いま起動しているのがその結果
+   *
+   * 呼び出し元の会話には「続きを進めてください」を1件入れ、**取次にも報告を1件**出す
+   * （PO要望 2026-08-15）——PO がどの会話を開いているかは分からないので、レールに常に
+   * 出ている取次に置かないと再起動に気づけない。
+   *
+   * @returns ターンを回す宛先（＝再起動を呼んだ会話）。知らせを記録するのはここ、
+   *          ターンを回すのはサーバの役目（決定107 の `nudge` と同じ分担）
+   */
+  private settleInterrupted(inbox?: InboxPoster): string[] {
+    const interrupted: Array<{ thread: Thread; restarted: boolean; failed: number }> = [];
+    for (const thread of this.threads.values()) {
+      let restarted = false;
+      let failed = 0;
+      thread.transcript = thread.transcript.map((entry) => {
+        if (entry.role !== "tool" || entry.state !== "running") return entry;
+        if (entry.name === RESTART_TOOL_NAME) {
+          restarted = true;
+          return { ...entry, state: "ok" as const, output: "再起動しました。" };
+        }
+        failed++;
+        return { ...entry, state: "failed" as const, output: INTERRUPTED_TOOL_REASON };
+      });
+      if (restarted || failed > 0) interrupted.push({ thread, restarted, failed });
+    }
+    // 何も残っていない＝普通の起動。**毎回知らせを出さない**（出せばすぐ読み飛ばされる）
+    if (interrupted.length === 0) return [];
+
+    const resume: string[] = [];
+    for (const { thread, restarted } of interrupted) {
+      if (!restarted) continue;
+      thread.record({ role: "notice", source: "system", text: RESTART_RESUME_NOTICE });
+      resume.push(thread.id);
+    }
+
+    const failedTotal = interrupted.reduce((sum, e) => sum + e.failed, 0);
+    if (inbox) {
+      try {
+        postRestartReport(inbox, interrupted, failedTotal);
+      } catch (err) {
+        // I2: 取次へ出せなかったことを黙らせない。会話の読み戻しは止めない
+        console.error(`[banto] 再起動の報告を取次へ出せませんでした: ${String(err)}`);
+      }
+    }
+
+    // 書き換えた記録と足した知らせを、間引かずに今すぐ書き戻す（次の起動で running へ戻さない）
+    for (const { thread } of interrupted) this.flush(thread);
+    console.log(
+      `[banto] 中断されたまま残っていた道具を確定させました（会話 ${interrupted.length} 本・failed ${failedTotal} 件）`
+    );
+    return resume;
   }
 
   /**
@@ -692,6 +856,13 @@ export class ThreadRegistry {
       ...(thread.openReason ? { openReason: thread.openReason } : {}),
       ...(thread.conclusion ? { conclusion: thread.conclusion } : {}),
       ...(thread.conclusionDetail ? { conclusionDetail: thread.conclusionDetail } : {}),
+      /**
+       * 未処理の件数と所在（imp-0036）。**落とすと再起動で未処理が消える**
+       * ——それが今回直している事故そのものなので、ここは必ず書く。
+       */
+      ...(thread.remainingCount > 0 ? { remainingCount: thread.remainingCount } : {}),
+      ...(thread.settledAt ? { settledAt: thread.settledAt } : {}),
+      ...(thread.settledWhere ? { settledWhere: thread.settledWhere } : {}),
       state: thread.state,
       createdAt: thread.createdAt,
       ...(thread.closedAt ? { closedAt: thread.closedAt } : {}),
@@ -892,7 +1063,7 @@ export class ThreadRegistry {
   merge(
     threadId: string,
     conclusion: string,
-    options: { detail?: string; now?: Date } = {}
+    options: { detail?: string; remainingCount?: number; now?: Date } = {}
   ): Thread {
     const now = options.now ?? new Date();
     const thread = this.threads.get(threadId);
@@ -907,6 +1078,18 @@ export class ThreadRegistry {
     thread.conclusion = text;
     // 空の詳細で既にある詳細を消さない（畳み直しで中身が痩せるのを防ぐ）
     if (detail) thread.conclusionDetail = detail;
+    /**
+     * 残作業を非空で受け取ったら**未処理として立てる**（imp-0036）。
+     *
+     * 詳細と同じく**空では消さない**——畳み直しで痩せない、が決定108 から引き継ぐ扱い。
+     * 改めて残作業を書いたなら、それは**新しい言明**なので所在は降ろし直させる
+     * （前に降ろした所在は、いま書かれた残作業を指していない）。
+     */
+    if (options.remainingCount !== undefined && options.remainingCount > 0) {
+      thread.remainingCount = options.remainingCount;
+      thread.settledAt = undefined;
+      thread.settledWhere = undefined;
+    }
     thread.state = "closed";
     thread.closedAt = now.toISOString();
     /**
@@ -941,6 +1124,54 @@ export class ThreadRegistry {
     // 畳むときは間引かず今すぐ書く（畳んだ直後に落ちても会話が残るように）
     this.flush(thread);
     this.refreshDefault();
+    this.emit();
+    return thread;
+  }
+
+  /**
+   * 畳んだ枝の**未処理を降ろす**（imp-0036・番頭裁定 2026-08-15）。
+   *
+   * 未処理は「片付いた」と言うだけでは降りない——**所在**（起票 id・立てた職人の
+   * sessionId・幹での委譲先）を書かせる。降ろす口を所在なしで開けると、
+   * ただの消しゴムになって、一覧から消えたのに誰も持っていない状態が復活する。
+   *
+   * 所在は**自由文字列**（番頭裁定）。`imp-NNNN` の形に縛ると「幹で委譲予定」
+   * 「PO 判断待ち」のような、id を持たない正当な所在が書けなくなる。
+   * ただし**空白のみは断る**——素通しさせるとこの口の意味が無い。
+   *
+   * **所在は枝の記録に残す**（番頭裁定）。あとから「これはどこへ行ったのか」を
+   * 辿れなければ、降ろしたことの裏が取れない。
+   *
+   * I2: 未処理の無い枝・幹・未知のID・空の所在は、黙って成功にしない。
+   */
+  settle(threadId: string, where: string, now = new Date()): Thread {
+    const thread = this.threads.get(threadId);
+    if (!thread) throw this.unknownThread(threadId);
+    if (thread.kind !== "branch") {
+      throw new Error("未処理を降ろせるのは枝だけです（幹は畳むときに残作業を書きません）");
+    }
+    const text = where.replace(/\s+/gu, " ").trim();
+    if (text === "") {
+      throw new Error(
+        "所在は空にできません（imp-0036 / task-0091 / 職人の sessionId /「幹で委譲予定」など、" +
+          "**どこへ行ったか**を書いてください）"
+      );
+    }
+    if (thread.remainingCount === 0) {
+      throw new Error(
+        `枝「${thread.title}」に未処理はありません（畳むときに remaining が書かれていません）`
+      );
+    }
+    // 冪等：同じ所在で二度降ろしても足さない
+    if (thread.settledAt !== undefined && thread.settledWhere === text) return thread;
+    thread.settledAt = now.toISOString();
+    thread.settledWhere = text;
+    thread.record({
+      role: "notice",
+      source: "thread",
+      text: `未処理 ${thread.remainingCount}件の所在：${text}`,
+    });
+    this.flush(thread);
     this.emit();
     return thread;
   }

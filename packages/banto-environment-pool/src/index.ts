@@ -79,6 +79,10 @@ export type { ProfileLookup } from "./profiles.js";
 export { EnvLedger, countLiveByProfile } from "./env-ledger.js";
 export type { EnvLedgerEntry } from "./env-ledger.js";
 
+// 公開している環境を実際に叩いて確かめる（imp-0033）。healthcheck の独立した防壁
+export { probeExposedPort, EXPOSED_PROBE_TIMEOUT_MS } from "./exposed-probe.js";
+export type { ExposedProbeResult } from "./exposed-probe.js";
+
 // 衛生に関わる出来事のログ（task-0067）。番頭は `env.events` でここを引きに来る
 export { EnvEventLog } from "./event-log.js";
 export type { EnvEvent, EnvEventInput, EnvEventType } from "./event-log.js";

@@ -1177,7 +1177,15 @@ export class Daemon {
    */
   private classifyAmendment(
     current: TaskRecord,
-    next: Record<string, unknown>
+    next: Record<string, unknown>,
+    /**
+     * 契約が `review` を名乗っていないときに、**いま効いている段**を答える（imp-0039）。
+     *
+     * **要るときにだけ読む。** 層B設定（`meta/config.yaml`）が壊れていれば
+     * `reviewStageOf` は投げる——それは正しい（I2）が、`review` に触らない改訂まで
+     * 巻き添えで止める理由は無い
+     */
+    currentReviewStage: () => ReviewStage
   ): {
     changes: string[];
     auditInvalidated: boolean;
@@ -1238,7 +1246,69 @@ export class Daemon {
       }
     }
 
+    /**
+     * **ここから3つは、渡せるのに効かなかった項目**（imp-0039・実機 dentaku task-0015）。
+     * `amendTask` は契約へ重ねていたのに差分として数えていなかったので、中身が違っても
+     * 「渡された中身と同じです」で断っていた——**断り文が嘘**だと、番頭は取次へ上げる
+     * 判断ができない。「緩める方向なので PO の判断が要ります」まで届かせるのが要点。
+     */
+    const curPolicy = (current["review"] as { policy?: unknown } | undefined)?.policy;
+    const nextPolicy = (next["review"] as { policy?: unknown } | undefined)?.policy;
+    if (curPolicy !== nextPolicy) {
+      changes.push(
+        `レビュー方針を変更: ${curPolicy === undefined ? "(未指定)" : String(curPolicy)} → ` +
+          `${nextPolicy === undefined ? "(未指定)" : String(nextPolicy)}`
+      );
+      // **監査は無効にしない**——誰が見るかが変わるだけで、何に対して監査したかは動かない
+      if (
+        this.reviewStrictness(nextPolicy, currentReviewStage) <
+        this.reviewStrictness(curPolicy, currentReviewStage)
+      ) {
+        loosens = true; // 見る人が減る方向（po→banto→auto）は PO の判断
+      }
+    }
+
+    const curEnv = current["environment"];
+    const nextEnv = next["environment"];
+    if (String(curEnv ?? "") !== String(nextEnv ?? "")) {
+      // 「何を確かめるか」ではなく「**どこで**確かめるか」なので、検証コマンドの訂正と
+      // 同じで番頭が通してよい。ただし**監査は無効**——前の監査は別の環境で取った証拠で、
+      // その証拠がこの環境でも成り立つかは誰も見ていない（安全側に倒す・I2）
+      changes.push(
+        `検証環境を変更: ${curEnv === undefined ? "(既定)" : String(curEnv)} → ` +
+          `${nextEnv === undefined ? "(既定)" : String(nextEnv)}`
+      );
+      auditInvalidated = true;
+    }
+
+    const curTier = current["model_tier"];
+    const nextTier = next["model_tier"];
+    if (String(curTier ?? "") !== String(nextTier ?? "")) {
+      // 誰にやらせるかの話。基準も範囲も動かないので、緩めでも監査の無効化でもない
+      changes.push(
+        `モデルの段を変更: ${curTier === undefined ? "(既定)" : String(curTier)} → ` +
+          `${nextTier === undefined ? "(既定)" : String(nextTier)}`
+      );
+    }
+
     return { changes, auditInvalidated, loosens };
+  }
+
+  /**
+   * レビューの段の厳しさ（決定57）: `po` > `banto` > `auto`。
+   *
+   * 名乗っていない値を「いちばん厳しい」で埋めない。既定が `auto` の契約へ `banto` を
+   * 足すのは**厳しくする**向きなのに、それを「緩める方向です」と断るのは imp-0039 で
+   * 直したのと同じ嘘になる——**いま効いている段**（層Bの既定・`governance` などの
+   * 機械判定こみ）を答えにする。
+   */
+  private reviewStrictness(policy: unknown, effective: () => ReviewStage): number {
+    const rank: Record<ReviewStage, number> = { auto: 1, banto: 2, po: 3 };
+    if (policy === "auto" || policy === "banto" || policy === "po") return rank[policy];
+    // 旧称 `manual` は `banto`（review-policy.ts の読み替えと同じ向き。ここだけ別の向きに
+    // すると、帳簿に残る `manual` 宣言の扱いが2箇所で食い違う）
+    if (policy === "manual") return rank.banto;
+    return rank[effective()];
   }
 
   /**
@@ -1304,7 +1374,9 @@ export class Daemon {
     // ——実際に踏んだ。帳簿に嘘の改訂が残るところだった
     const next = { ...contractPayload(amended), title: amended.title };
 
-    const { changes, auditInvalidated, loosens } = this.classifyAmendment(task, next);
+    const { changes, auditInvalidated, loosens } = this.classifyAmendment(task, next, () =>
+      this.reviewStageOf(projectTag, task)
+    );
     // I2: 何も変わっていないのに「改訂した」と記録しない（帳簿が嘘になる）
     if (changes.length === 0) {
       return { ok: false, reason: `${taskId} は渡された中身と同じです（改訂するものがありません）` };
