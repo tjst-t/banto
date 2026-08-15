@@ -43,9 +43,16 @@ services:
       BANTO_WEB_ALLOWED_HOSTS: "true"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # **置き場は `setup`（npm ci）が書くものを全部覆う**。理由と背景は docker/test.yaml に
+    # 詳しく書いた——要点は「巻き上げられない依存は `packages/<pkg>/node_modules` に書かれ、
+    # そこを置き場に載せていないと、置き場が温まっているワークツリーで黙って欠ける」。
+    # **banto-web 自身に入れ子の依存は今のところ無い**が、test と同じ穴を開けたまま
+    # 残さない——器が違うだけで `npm ci` の振る舞いは同じなのだから、配置も揃える。
     volumes:
       - ..:/app
-      - ${BANTO_CACHE_DIR:-./.banto-node-modules}:/app/node_modules
+      - ${BANTO_CACHE_DIR:-./.banto-node-modules}/root:/app/node_modules
+      - ${BANTO_CACHE_DIR:-./.banto-node-modules}/pkg-banto-host:/app/packages/banto-host/node_modules
+      - ${BANTO_CACHE_DIR:-./.banto-node-modules}/pkg-banto-worker-pool:/app/packages/banto-worker-pool/node_modules
     command: ["npm", "--prefix", "packages/banto-web", "run", "dev"]
     # ホスト側は書かない＝docker が空きを割り当てる（上のコメント参照）
     ports:
