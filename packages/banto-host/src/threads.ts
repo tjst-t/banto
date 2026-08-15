@@ -350,6 +350,22 @@ export class Thread {
    * 職人が同時に複数報告してきても、そのスレッドのターンは1本ずつ進む。
    */
   notices: Promise<void> = Promise.resolve();
+  /**
+   * **PO が場を取っている間、知らせの列は待つ**（imp-0048・提案 §4 案I）。
+   *
+   * 中断は「番頭を黙らせて、こちらが話す」ためのもの。だが `abort` は列に触らないので、
+   * 止めた次の瞬間に残りの知らせが走り出し、**話そうとした隙がそのまま埋まっていた**。
+   * PO の発話は列に並ばず直に入る（`promptEvenWhileBusy`）ので、優先させるには
+   * **知らせ側を待たせる**しかない。
+   *
+   * 未解決の間だけ知らせが止まる。既定は解決済み＝いつもどおり流れる。
+   */
+  poFloor: Promise<void> = Promise.resolve();
+  private floorRelease: (() => void) | undefined;
+  private floorTimer: ReturnType<typeof setTimeout> | undefined;
+  /** いま取られている場の札。**引き受けた者だけが返せる**ようにするために持つ。 */
+  private floorToken = 0;
+  private floorClaimed = false;
   /** 購読解除と後始末。閉じるときに呼ぶ。 */
   readonly disposers: Array<() => void> = [];
   /**
@@ -410,6 +426,53 @@ export class Thread {
     this.resumePendingTurn = params.resumePendingTurn;
     this.closeChapter = params.closeChapter;
     if (params.dispose) this.disposers.push(params.dispose);
+  }
+
+  /**
+   * **PO に場を渡す**（imp-0048）。渡している間、知らせの列は `poFloor` で待つ。
+   *
+   * **待たせっぱなしにはしない**——`holdMs` を過ぎたら自分で返す。PO が中断だけして
+   * 席を立ったとき、知らせが永久に止まると職人の報告が届かなくなる（I2：消さない）。
+   * 二重に取らない：中断してから話す流れでは、中断で取った場をその発話が返す。
+   */
+  takeFloorForPo(holdMs: number): void {
+    if (this.floorRelease) return;
+    const token = ++this.floorToken;
+    this.floorClaimed = false;
+    this.poFloor = new Promise<void>((resolve) => {
+      this.floorRelease = resolve;
+    });
+    this.floorTimer = setTimeout(() => this.releaseFloor(token), holdMs);
+    // 場を待つだけのタイマーでプロセスを生かし続けない
+    this.floorTimer.unref?.();
+  }
+
+  /**
+   * **いま取られている場を引き受ける**（imp-0048）。返ってきた札で `releaseFloor` する。
+   *
+   * 札で縛るのは、**中断で止まったターンの後始末に返させない**ため。中断は走っている
+   * ターンを終わらせるので、そのターンを持っていた発話の `finally` がそのまま走る
+   * ——札が無いと、取ったばかりの場をその場で返してしまい、知らせが走り出す。
+   *
+   * @returns 引き受けた札。場が取られていない／もう誰かが引き受けているなら `undefined`
+   */
+  claimFloor(): number | undefined {
+    if (!this.floorRelease || this.floorClaimed) return undefined;
+    this.floorClaimed = true;
+    return this.floorToken;
+  }
+
+  /** 引き受けた場を返す（PO のターンが終わった・待ち時間が過ぎた）。札が古ければ何もしない。 */
+  releaseFloor(token: number): void {
+    if (token !== this.floorToken || !this.floorRelease) return;
+    if (this.floorTimer) {
+      clearTimeout(this.floorTimer);
+      this.floorTimer = undefined;
+    }
+    const release = this.floorRelease;
+    this.floorRelease = undefined;
+    this.floorClaimed = false;
+    release?.();
   }
 
   view(): ThreadView {

@@ -132,7 +132,18 @@ export interface BantoSession {
   ensureHistory(threadId: string): void;
   /** その会話の履歴が手元にあるか。「発言が無い」と「まだ取っていない」を分ける。 */
   historyLoaded(threadId: string): boolean;
-  send(threadId: string, text: string, attachments?: Attachment[]): void;
+  /**
+   * 番頭に話す。**走っている最中でも送れる**（imp-0048）。
+   *
+   * @param options.interrupt `true` で「止めて話す」——走っているターンを中断してから
+   *        新しいターンで話す。省略すると「いまの作業に足す」（走行中のターンへ融合）。
+   */
+  send(
+    threadId: string,
+    text: string,
+    attachments?: Attachment[],
+    options?: { interrupt?: boolean }
+  ): void;
   abort(threadId: string): void;
   setDraft(threadId: string, text: string): void;
   setModel(threadId: string, provider: string, model: string, backend?: string): void;
@@ -757,13 +768,21 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
   }, [activeThreadId, allThreads, byThread, ensureHistory]);
 
   const send = useCallback(
-    (threadId: string, text: string, attachments?: Attachment[]) => {
+    (
+      threadId: string,
+      text: string,
+      attachments?: Attachment[],
+      options?: { interrupt?: boolean }
+    ) => {
       update(threadId, (prev) => ({ ...prev, busy: true }));
       post({
         type: "prompt",
         threadId,
         text,
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
+        // 「止めて話す」。**中断も送信もホストが1通で捌く**——画面から abort と prompt を
+        // 別々に送ると、届く順で融合したり中断したりが変わる（D5・imp-0048）
+        ...(options?.interrupt === true ? { interrupt: true } : {}),
       });
     },
     [post, update]

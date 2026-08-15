@@ -609,6 +609,93 @@ describe("[決定97] 走っている query の後始末", () => {
   });
 });
 
+/**
+ * [imp-0048・提案 §2.6-2] **中断の直後に届いた発話が、閉じられる直前の行列へ消える。**
+ *
+ * `abort()` は待っている `prompt()` を放すが、`this.run` も待ち行列もそのまま残していた。
+ * 放された側の続き——サーバでいえば `thread.notices` の鎖の次の1通、あるいは
+ * 「止めて話す」の発話——が、**中断された query の行列へ** push される。`start()` は
+ * `this.run` がまだ残っているので何もしない。その直後に中断された query のループが
+ * 抜け、`finally` がその行列を閉じて作り直す＝**積んだばかりの一言ごと捨てる**。
+ *
+ * 消えるかどうかは「ループが抜けるのが先か、放された続きが走るのが先か」という
+ * マイクロタスクの順で決まる。だから実機では「たまに知らせが届かない」という形で出る
+ * ——P6：まれに落ちるで済ませず、順序を固定して見る。
+ */
+describe("[imp-0048] 中断の直後に届いた発話が消えない（提案 §2.6-2）", () => {
+  it("中断されたターンの行列へ積まれず、新しい query で走る", async () => {
+    const { harness, spawned } = withFakeQuery();
+    const running = harness.prompt("長いターン");
+    await settle();
+    assert.equal(spawned.length, 1, "前提：ターンが1本走っている");
+
+    /**
+     * **放された `prompt()` の続きが、その場で次を送る。** サーバの `thread.notices` は
+     * `.then` の鎖なので、放された瞬間にこの形で `prompt()` を呼ぶ。
+     */
+    const chained = running.then(() => {
+      void harness.prompt("止めたあとの一言");
+    });
+    await harness.abort();
+    await chained;
+
+    /**
+     * **中断された query のループがここで抜ける。** 本物では `abortController` が
+     * 効いてから実際に抜けるまでに間がある——その間に届いた一言が消えていた。
+     */
+    spawned[0]!.end();
+    await settle(8);
+
+    assert.equal(spawned.length, 2, "止めたあとの発話は新しい query で走る（消えていない）");
+    assert.deepEqual(
+      spawned[1]!.received,
+      ["止めたあとの一言"],
+      "閉じられる直前の行列ではなく、生きている行列へ載っている"
+    );
+    assert.deepEqual(
+      spawned[0]!.received,
+      ["長いターン"],
+      "中断した query へ渡していない（渡してもモデルはもう聞いていない）"
+    );
+  });
+
+  /**
+   * 畳んだ／中断した**古いループの `finally`** は、その後に始まった新しいターンの
+   * `prompt()` まで放していた。世代を進める側（`abort`・`startChapter`・`dispose`）は
+   * 自分で放してから進めているので、ここで放し直す理由は無い。
+   *
+   * 見るのは `startChapter` 経由——世代の掛け金は前からあるので、**放しの掛け金だけ**を
+   * 外したときに落ちる形にできる（中断経由だと、上の直しと二重になって切り分かない）。
+   */
+  it("畳んだ古いループは、次のターンの prompt() を放さない", async () => {
+    const { harness, spawned } = withFakeQuery();
+    void harness.prompt("前の章の話");
+    await settle();
+
+    await harness.startChapter({ text: "種", tokensBefore: 9, chapter: 2, handoffId: "h-2" });
+    let ended = false;
+    void harness.prompt("新しい章の話").then(() => (ended = true));
+    await settle();
+    assert.equal(spawned.length, 2, "前提：新しい query が立っている");
+
+    // 畳まれた query の後始末がここで届く
+    spawned[0]!.end();
+    await settle(8);
+    assert.equal(
+      ended,
+      false,
+      "古いループの finally が新しいターンを放さない" +
+        "（放すと、返事の前に turn_end が飛び、次の知らせが走り出して幹が二重に埋まる）"
+    );
+    assert.deepEqual(spawned[1]!.received, ["新しい章の話"], "発話そのものは届いている");
+
+    // 新しいターンは、自分の run_end でだけ終わる
+    spawned[1]!.emit({ type: "result", subtype: "success" });
+    await settle();
+    assert.equal(ended, true);
+  });
+});
+
 describe("[ADR-0020 決定91] 本物の道具100本のスキーマが zod へ写せる", () => {
   const REAL = "/home/ubuntu/banto-desk/reports/tap/req-0007.json";
 

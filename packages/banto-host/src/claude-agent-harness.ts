@@ -391,9 +391,17 @@ export class ClaudeAgentHarness implements BantoHarness {
            */
           this.queue.close();
           this.queue = new PromptQueue();
+          // 走りが終わった＝もう `run_end` は来ない。待っている `prompt()` を放す
+          this.releaseTurn();
         }
-        // 走りが終わった＝もう `run_end` は来ない。待っている `prompt()` を放す
-        this.releaseTurn();
+        /**
+         * **世代が進んでいたら放さない**（imp-0048）。
+         *
+         * `abort`・`startChapter`・`dispose` は、自分で放してから世代を進めている。
+         * ここで放し直すと、その後に始まった**新しいターンの `prompt()`** まで一緒に
+         * 放してしまう——サーバは `prompt()` の解決を `turn_end` の合図にしているので、
+         * 返事が来る前に「終わった」が飛び、次の知らせが走り出して幹が二重に埋まる。
+         */
       }
     })();
   }
@@ -436,8 +444,26 @@ export class ClaudeAgentHarness implements BantoHarness {
     await new Promise<void>((resolve) => this.turnWaiters.push(resolve));
   }
 
+  /**
+   * **止める**（imp-0048・提案 §2.6-2）。
+   *
+   * 走っている `query()` を止めるだけでは足りない。**待ち行列もその場で畳む**
+   * ——中断の直後に届いた発話は `this.run` がまだ残っているせいで `start()` に
+   * 拾われず、**中断された query の行列へ push されて消えていた**。
+   *
+   * 消えるかどうかは「中断された query のループが抜けるのが先か、放された
+   * `prompt()` の続きが走るのが先か」というマイクロタスクの順で決まる。だから
+   * 「たまに発話が届かない」という形で出る（P6：まれに落ちるで済ませない）。
+   *
+   * 世代を進めてから畳むのは `startChapter` と同じ理由——中断された query の
+   * `finally` に、**ここで作り直した新しい行列を閉じさせない**ため。
+   */
   async abort(): Promise<void> {
+    this.generation++;
     this.abortController?.abort();
+    this.queue.close();
+    this.queue = new PromptQueue();
+    this.run = undefined;
     this.streaming = false;
     // 中断では `run_end` が出ない。放さないと画面が「回答中」のまま戻らない
     this.releaseTurn();

@@ -322,7 +322,22 @@ export interface BantoHostServerOptions {
   ) => Promise<ModelInfo>;
   /** いま使っているモデルのプロバイダ。`model_state` に載せる。 */
   modelProvider?: string;
+  /**
+   * **PO に場を渡しておく長さ**（ミリ秒・imp-0048）。既定 {@link PO_FLOOR_HOLD_MS}。
+   *
+   * 中断した直後、PO が話し出すまで知らせの列を待たせる。返さないと知らせが永久に
+   * 止まるので必ず期限を切る（試験からは短く差し替える）。
+   */
+  poFloorHoldMs?: number;
 }
+
+/**
+ * 中断してから PO が話し出すまで、知らせを待たせる既定の長さ（imp-0048）。
+ *
+ * **2分**。止めた直後に何を言うか考える時間より長く、席を立ったまま知らせが
+ * 止まり続けるには短い。決め打ちの値なので、直すなら計測してから（P6）。
+ */
+export const PO_FLOOR_HOLD_MS = 120_000;
 
 /**
  * 番頭ホストサーバ。
@@ -360,6 +375,8 @@ export class BantoHostServer {
   private modelInfo: ModelInfo | undefined;
   /** 現在のモデルのプロバイダ。切替で入れ替わる。 */
   private modelProvider: string | undefined;
+  /** PO に場を渡しておく長さ（imp-0048）。 */
+  private readonly poFloorHoldMs: number;
   /** モデルを切り替える口（無ければ切替不可）。 */
   private readonly selectModel: BantoHostServerOptions["onSelectModel"];
   /** 購読を張り終えたスレッド。開くたびに増える。 */
@@ -490,6 +507,7 @@ export class BantoHostServer {
     }
     this.modelInfo = options.model;
     this.modelProvider = options.modelProvider;
+    this.poFloorHoldMs = options.poFloorHoldMs ?? PO_FLOOR_HOLD_MS;
     this.selectModel = options.onSelectModel;
     this.httpServer = httpServer;
     this.wss = new WebSocketServer({
@@ -815,6 +833,14 @@ export class BantoHostServer {
      */
     thread.notices = thread.notices.then(async () => {
       try {
+        /**
+         * **PO が場を取っている間は待つ**（imp-0048）。中断した直後に列の続きが
+         * 走り出すと、PO が話そうとした隙がそのまま埋まる——中断の意味が消える。
+         *
+         * 待つのは**ここ**（記録より前）。記録してから待つと、番頭がまだ読んでいない
+         * 知らせが会話に並び、PO の発話の前にあったように見える。
+         */
+        await thread.poFloor;
         record(thread);
         // 職人の報告でも番頭は喋り出す。ここを知らせないと画面から中断する手段が消える
         this.broadcast({ type: "turn_start", threadId: thread.id });
@@ -1281,6 +1307,12 @@ export class BantoHostServer {
     }
 
     if (message?.type === "abort") {
+      /**
+       * **止めるのは「こちらが話す」ため**（imp-0048）。場を先に取ってから止める
+       * ——`abort()` は待っている `prompt()` を放し、その続きが**同じマイクロタスクの
+       * 波で**次の知らせを走らせる。await の後に取ったのでは間に合わない。
+       */
+      thread.takeFloorForPo(this.poFloorHoldMs);
       await thread.harness.abort();
       return;
     }
@@ -1413,6 +1445,31 @@ export class BantoHostServer {
               ?.map((a) => (a.kind === "image" ? "画像" : "ファイル"))
               .join("・") ?? "添付"}を添付]`;
       const withAttachments = recorded.length > 0 ? { attachments: recorded } : {};
+      /**
+       * **「止めて話す」**（imp-0048・提案 §4 案I）。
+       *
+       * 走行中に送ると既定では**いまのターンに融合**する（`steer`）。割り込んで先に
+       * 答えさせたいときは、止めてから新しいターンで話す。**どちらにするかの判断は
+       * ここが持つ**（D5）——画面が `abort` と `prompt` を別々に送ると、届く順や
+       * 中断が効くまでの間で「融合した／しなかった」が変わる。
+       */
+      if (message.interrupt === true) {
+        thread.takeFloorForPo(this.poFloorHoldMs);
+        await thread.harness.abort();
+      }
+      /**
+       * **場は取らない——返すだけ**（imp-0048）。
+       *
+       * 取るのは中断したときだけ（`abort` と `interrupt`）。走っているターンへ普通に
+       * 足したときまで知らせを止めると、**PO が話している間ずっと職人の報告が止まる**
+       * ——直したいのは「止めたのに、話す前に塞がる」であって、知らせを溜めることではない。
+       *
+       * 中断で取った場は**この発話が引き受ける**（`claimFloor`）。引き受けた者だけが
+       * 返せる——中断は走っていたターンを終わらせるので、そのターンを持っていた
+       * 発話の `finally` がここより先に走る。札で縛らないと、取ったばかりの場を
+       * その古い `finally` が返してしまい、知らせが走り出して幹がまた塞がる。
+       */
+      const floor = thread.claimFloor();
       thread.record({ role: "po", text: displayText, ...withAttachments });
       this.broadcast({
         type: "po_message",
@@ -1432,6 +1489,9 @@ export class BantoHostServer {
         thread.record({ role: "error", text: String(err) });
         this.broadcast({ type: "turn_end", threadId: thread.id, errorMessage: String(err) });
         return;
+      } finally {
+        // 引き受けた場は、PO が話し終えたここで返す。待たせていた知らせが流れ出す
+        if (floor !== undefined) thread.releaseFloor(floor);
       }
       const lastError = thread.getLastError();
       if (lastError) thread.record({ role: "error", text: lastError });

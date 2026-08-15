@@ -409,6 +409,13 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 /* 直前が失敗したときは紫（止まった） */
 .composer-submit.is-error { background: var(--murasaki); }
 .composer-submit-stop { width: 10px; height: 10px; background: currentColor; border-radius: 1px; }
+/* 止める（走っている間だけ出る。送るボタンと**並ぶ**——imp-0048） */
+.composer-stop {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: var(--r-ctl); cursor: pointer;
+  border: 0; background: var(--paper-1); color: var(--sumi-2); line-height: 1;
+}
+.composer-stop:hover { color: var(--sumi); }
 .chat-hint { font-size: var(--t-note); color: var(--sumi-3); margin-right: auto; }
 
 .attach-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: var(--s2); }

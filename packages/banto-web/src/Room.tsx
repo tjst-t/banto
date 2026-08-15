@@ -464,6 +464,8 @@ export function Room({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
+  /** 送るものがあるか。走行中の「足す／止めて話す」の出し分けもここで決まる（imp-0048）。 */
+  const hasDraft = draft.trim().length > 0 || pendingFiles.length > 0;
   const [attachError, setAttachError] = useState<string>();
   const [dismissedErrors, setDismissedErrors] = useState<ReadonlySet<number>>(new Set());
   const [merging, setMerging] = useState(false);
@@ -615,9 +617,19 @@ export function Room({
       reader.readAsDataURL(file);
     });
 
-  const submit = async (): Promise<void> => {
+  /**
+   * 送る。**走っている最中でも送れる**（imp-0048・提案 §4 案I）。
+   *
+   * 以前はここに `|| busy` の門番があり、走行中の発話を**黙って捨てていた**。
+   * サーバは前から受けられる（`promptEvenWhileBusy`）ので、止めていたのは画面だけ
+   * ——「幹で会話できない」の直接原因はこの1行だった（提案 §2.2）。
+   *
+   * 既定は**「いまの作業に足す」**。走っているターンへ融合する（`steer`）のであって、
+   * 割り込んで先に答えさせるのではない。止めて話すときは `interrupt` を渡す。
+   */
+  const submit = async (options?: { interrupt?: boolean }): Promise<void> => {
     const text = draft.trim();
-    if ((text.length === 0 && pendingFiles.length === 0) || busy) return;
+    if (text.length === 0 && pendingFiles.length === 0) return;
     setAttachError(undefined);
     try {
       const attachments: Attachment[] = [];
@@ -635,7 +647,12 @@ export function Room({
           attachments.push({ kind: "file", name: att.name, content });
         }
       }
-      session.send(threadId, text, attachments);
+      session.send(
+        threadId,
+        text,
+        attachments,
+        options?.interrupt === true ? { interrupt: true } : undefined
+      );
       void stick.scrollToBottom();
       session.setDraft(threadId, "");
       for (const att of pendingFiles) if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
@@ -885,8 +902,10 @@ export function Room({
             ref={inputRef}
             value={draft}
             placeholder={
+              // **走行中でも入る**（imp-0048）。「考えています」だけだと、打てるのに
+              // 打てないと読める——**足すのか、止めるのか**をここで言い切る
               busy
-                ? "番頭が考えています…"
+                ? "考えています（そのまま送ると、いまの作業に足します）"
                 : isBranch
                   ? "この枝で番頭に話す"
                   : "番頭に相談する（幹）"
@@ -955,22 +974,51 @@ export function Room({
             >
               <Icon name="chapter" size={14} />
             </button>
-            {!slim && <span className="chat-hint">Enter で送信</span>}
+            {!slim && (
+              <span className="chat-hint">{busy ? "Enter で今の作業に足す" : "Enter で送信"}</span>
+            )}
+            {/*
+              **止めるのと送るのを併存させる**（imp-0048・提案 §4 案I）。
+              1つのボタンが「送る」と「中断」を兼ねていたので、走っている間は
+              送る手段が画面から消えていた。
+              下書きがあれば**止めて話す**——中断と発話をホストへ1通で渡すので、
+              「止めたつもりが融合していた」が起きない（D5：判断は画面に持たせない）。
+            */}
+            {busy && (
+              <button
+                className="composer-stop"
+                type="button"
+                onClick={() =>
+                  hasDraft ? void submit({ interrupt: true }) : session.abort(threadId)
+                }
+                aria-label={hasDraft ? "止めて話す" : "止める"}
+                title={
+                  hasDraft
+                    ? "止めて話す（いまのターンを中断してから、この発言で始め直します）"
+                    : "止める（いまのターンを中断します）"
+                }
+              >
+                <span className="composer-submit-stop" />
+              </button>
+            )}
             <button
               className={`composer-submit is-${chatStatus}`}
               type="button"
-              onClick={() => (chatStatus === "streaming" ? session.abort(threadId) : void submit())}
-              disabled={
-                chatStatus === "ready" && draft.trim().length === 0 && pendingFiles.length === 0
+              onClick={() => void submit()}
+              disabled={!hasDraft}
+              aria-label={busy ? "いまの作業に足す" : "送る"}
+              title={
+                busy
+                  ? "いまの作業に足す（走っているターンへ渡します。割り込んで先に答えるのではありません）"
+                  : "送る"
               }
-              aria-label={chatStatus === "streaming" ? "中断" : "送る"}
-              title={chatStatus === "streaming" ? "中断" : "送る"}
             >
-              {chatStatus === "submitted" ? (
-                <Loader />
-              ) : chatStatus === "streaming" ? (
-                <span className="composer-submit-stop" />
-              ) : chatStatus === "error" ? (
+              {/*
+                走行中も**送るボタンのまま**にする。考えている印は会話側の独楽
+                （`ThinkingRow`）と、隣に出る止めるボタンが担う——ここに独楽を置くと
+                「押せない」に見える
+              */}
+              {chatStatus === "error" ? (
                 <Icon name="close" size={15} />
               ) : (
                 <Icon name="enter" size={15} />

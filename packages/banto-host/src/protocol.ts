@@ -42,6 +42,14 @@ export interface PromptMessage extends ThreadTarget {
   text: string;
   /** 添付ファイル。省略時は無し（添付を知らないクライアントとの互換）。 */
   attachments?: Attachment[];
+  /**
+   * **止めてから話す**（imp-0048・提案 §4 案I）。
+   *
+   * 省略（既定）だと、走っているターンがあれば**そこへ融合する**（`steer`）
+   * ——割り込んで先に答えさせるのではなく、いまの作業に足す。`true` を渡すと
+   * 先にそのターンを中断してから、新しいターンとして話す。
+   */
+  interrupt?: boolean;
 }
 
 /** 実行中のターンを中断する。 */
