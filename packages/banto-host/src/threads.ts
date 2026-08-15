@@ -135,8 +135,11 @@ export type ThreadFactory = (
    * 復元されたセッションが「ツール結果で終わっていた」（＝ツール結果後の継続応答が
    * 生成されずに中断。imp-0016 主対策）とき、ターンを再開する処理。
    * **サーバが購読を張ってから**呼ばれる——配信が始まってから再開するため。
+   *
+   * @returns 再開したなら true。**失われたターンの回収（`lost-turn.ts`）と二重に
+   *   起こさない**ために要る——ここで再開した会話は、そちらでは拾わない。
    */
-  resumePendingTurn?: () => Promise<void>;
+  resumePendingTurn?: () => Promise<boolean>;
   /**
    * **いま章を畳む**（提案§3.2 の人側）。閾値に達していなくても畳む。
    *
@@ -312,7 +315,14 @@ export class Thread {
    * 一覧から外れるだけで、履歴として読めるし同じ会話のまま再開できる。
    */
   state: "open" | "closed" = "open";
-  /** 開いた時刻。保存した会話を並べるのに要る（task-0036）。 */
+  /**
+   * 開いた時刻。保存した会話を並べるのに要る（task-0036）。
+   *
+   * **読み戻しでは索引の値をそのまま入れる**（`restore` が `params.createdAt` を渡す）。
+   * ここを既定値のままにしていた頃は、再起動のたびに「開いた時刻」が振り直されていた
+   * ——不具合を調べているとき、実際には再起動の**前**に開かれた会話が「再起動の後に
+   * 開かれた」と読め、原因の切り分けを誤らせた（inc: thread-104）。
+   */
   readonly createdAt: string = new Date().toISOString();
   /**
    * 最後に何かが記録された時刻。**滞留の検出に使う**（決定77）。
@@ -378,7 +388,7 @@ export class Thread {
    * 復元された中断ターンを再開する処理（imp-0016 主対策）。
    * サーバ起動後に open スレッドだけ呼ばれる（畳んだスレッドは開き直すまで話さない）。
    */
-  readonly resumePendingTurn: (() => Promise<void>) | undefined;
+  readonly resumePendingTurn: (() => Promise<boolean>) | undefined;
   /**
    * **いま章を畳む**（提案§3.2 の人側）。章立てが働いていない会話では `undefined`。
    * サーバはこれが無いことを「畳めない理由」としてそのまま PO に出す（I2）。
@@ -434,13 +444,18 @@ export class Thread {
     remainingCount?: number;
     settledAt?: string;
     settledWhere?: string;
+    /**
+     * 開いた時刻。**読み戻すときは索引に入っている値をそのまま渡す**——渡さないと
+     * 既定値（いまの時刻）が入り、再起動のたびに「開いた時刻」が振り直される。
+     */
+    createdAt?: string;
     harness: BantoHarness;
     canvas?: Canvas;
     tools: NamespacedToolDefinition[];
     getLastError?: () => string | undefined;
     sessionFile?: string;
     model?: { backend?: string; provider: string; id: string; vision: boolean; contextWindow?: number };
-    resumePendingTurn?: () => Promise<void>;
+    resumePendingTurn?: () => Promise<boolean>;
     closeChapter?: () => Promise<boolean>;
     chapterGate?: ChapterGate;
     dispose?: () => void;
@@ -459,6 +474,8 @@ export class Thread {
     this.remainingCount = params.remainingCount ?? 0;
     this.settledAt = params.settledAt;
     this.settledWhere = params.settledWhere;
+    // 読み戻しなら索引の値。新規なら既定値（いまの時刻）のまま
+    if (params.createdAt) this.createdAt = params.createdAt;
     // I2: 枝に還す条件と親が無いのは帳簿の壊れ。黙って幹のように振る舞わせない
     if (params.kind === "branch" && (!params.parentId || !params.returnCondition)) {
       throw new Error(`枝 ${params.id} に親か還す条件がありません（決定77）`);
@@ -756,6 +773,9 @@ export class ThreadRegistry {
           id: saved.id,
           title: saved.title,
           kind,
+          // **開いた時刻は索引の値をそのまま戻す**。渡さないと既定値（いまの時刻）が
+          // 入り、再起動のたびに振り直される＝「いつ開いたか」が事実でなくなる
+          ...(saved.createdAt ? { createdAt: saved.createdAt } : {}),
           ...(saved.isMain ? { isMain: true } : {}),
           ...(kind === "branch"
             ? {

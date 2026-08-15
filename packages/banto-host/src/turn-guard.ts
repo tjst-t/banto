@@ -48,12 +48,24 @@ export const EMPTY_RESPONSE_MAX_RETRIES = 3;
  * @returns ターンを再開したら true。対象外（履歴なし・最後が assistant/user 等）なら false。
  */
 export async function resumeInterruptedTurn(session: GuardableSession): Promise<boolean> {
+  if (!hasInterruptedTurn(session)) return false;
+  await session.agent.continue();
+  return true;
+}
+
+/**
+ * **再開するかどうかの判定だけ**を取り出したもの。`continue()` は呼ばない。
+ *
+ * `resumeInterruptedTurn` は待たずに投げられる（`bin.ts` の `resumePendingTurn` は
+ * `void` で流す——起動を1ターン分ぶら下げないため）ので、戻り値では「再開したか」を
+ * 起動時に知れない。**失われたターンの回収（`lost-turn.ts`）と二重に起こさない**ために、
+ * 判定だけ先に引ける口が要る。
+ */
+export function hasInterruptedTurn(session: GuardableSession): boolean {
   const messages = session.agent.state.messages;
   const last = messages[messages.length - 1];
   if (!last) return false;
-  if ((last as Message).role !== "toolResult") return false;
-  await session.agent.continue();
-  return true;
+  return (last as Message).role === "toolResult";
 }
 
 /**
