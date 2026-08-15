@@ -69,7 +69,8 @@ import {
   createBantoHostSession,
   type CreateBantoHostSessionOptions,
 } from "./host-session.js";
-import { resumeInterruptedTurn, withEmptyResponseGuard } from "./turn-guard.js";
+import { hasInterruptedTurn, resumeInterruptedTurn, withEmptyResponseGuard } from "./turn-guard.js";
+import { recoverLostTurns } from "./lost-turn.js";
 import { BantoHostClient } from "./client.js";
 import { BANTO_DEFAULT_PORT, type ServerEvent } from "./protocol.js";
 import { BantoHostServer } from "./server.js";
@@ -1652,7 +1653,12 @@ async function serve(options: ServeOptions): Promise<void> {
       // 復元時に再開する。resumeInterruptedTurn は「最後が toolResult のときだけ continue()
       // する」ので、新規スレッド（履歴なし）では何もしない
       resumePendingTurn: async () => {
+        // 再開するかは**先に**引く。`resumeInterruptedTurn` は待たずに流すので（起動を
+        // 1ターン分ぶら下げない）、戻り値では間に合わない——失われたターンの回収と
+        // 二重に起こさないために、判定だけここで取る
+        const resuming = hasInterruptedTurn(session);
         void resumeInterruptedTurn(session);
+        return resuming;
       },
       dispose: () => {
         chapters?.stop();
@@ -1843,8 +1849,9 @@ async function serve(options: ServeOptions): Promise<void> {
 
   // 決定36g: 再起動で中断したターンを復元——server.start() 後に配信が始まるので、
   // 購読を張る前に resumePendingTurn を済ませておく
+  const resumedPending = new Set<string>();
   for (const thread of threads.list()) {
-    await thread.resumePendingTurn?.();
+    if (await thread.resumePendingTurn?.()) resumedPending.add(thread.id);
   }
 
   /**
@@ -1866,6 +1873,16 @@ async function serve(options: ServeOptions): Promise<void> {
       }
     );
   }
+
+  /**
+   * **道具を1回も呼ぶ前に落ちたターンを起こし直す**（inc: thread-104）。上の2つの回収の
+   * 3つ目で、そこで既に起こした会話は外す。判定と方針は `lost-turn.ts`（D5: ここは配線）。
+   */
+  recoverLostTurns({
+    threads: threads.list(),
+    alreadyResumed: new Set([...resumedPending, ...resumeAfterRestart]),
+    nudge: (threadId, message) => server.nudge(threadId, message),
+  });
 
   // 決定29: 番頭が起こした職人のイベントだけを受ける。他の起動元（Kobo 等）の分は届かない。
   // 起動前に溜まっていた古い報告は今さら流さない（最初の1回で今の位置まで進める）。

@@ -306,10 +306,19 @@ export {
   isEmptyResponse,
   isRetryableEmptyResponse,
   findLastEmptyAssistantIndex,
+  hasInterruptedTurn,
   resumeInterruptedTurn,
   withEmptyResponseGuard,
   type GuardableSession,
 } from "./turn-guard.js";
+// 道具を1回も呼ぶ前に落ちたターンの回収（inc: thread-104）。判定は純関数で、配線は bin.ts
+export {
+  findLostTurn,
+  recoverLostTurns,
+  LOST_TURN_PREFIX,
+  LOST_TURN_RECOVERED_NOTICE,
+  type LostTurn,
+} from "./lost-turn.js";
 export {
   createTurnBudget,
   guardTurn,

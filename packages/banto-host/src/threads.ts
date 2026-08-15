@@ -131,8 +131,11 @@ export type ThreadFactory = (
    * 復元されたセッションが「ツール結果で終わっていた」（＝ツール結果後の継続応答が
    * 生成されずに中断。imp-0016 主対策）とき、ターンを再開する処理。
    * **サーバが購読を張ってから**呼ばれる——配信が始まってから再開するため。
+   *
+   * @returns 再開したなら true。**失われたターンの回収（`lost-turn.ts`）と二重に
+   *   起こさない**ために要る——ここで再開した会話は、そちらでは拾わない。
    */
-  resumePendingTurn?: () => Promise<void>;
+  resumePendingTurn?: () => Promise<boolean>;
   /**
    * **いま章を畳む**（提案§3.2 の人側）。閾値に達していなくても畳む。
    *
@@ -374,7 +377,7 @@ export class Thread {
    * 復元された中断ターンを再開する処理（imp-0016 主対策）。
    * サーバ起動後に open スレッドだけ呼ばれる（畳んだスレッドは開き直すまで話さない）。
    */
-  readonly resumePendingTurn: (() => Promise<void>) | undefined;
+  readonly resumePendingTurn: (() => Promise<boolean>) | undefined;
   /**
    * **いま章を畳む**（提案§3.2 の人側）。章立てが働いていない会話では `undefined`。
    * サーバはこれが無いことを「畳めない理由」としてそのまま PO に出す（I2）。
@@ -436,7 +439,7 @@ export class Thread {
     getLastError?: () => string | undefined;
     sessionFile?: string;
     model?: { backend?: string; provider: string; id: string; vision: boolean; contextWindow?: number };
-    resumePendingTurn?: () => Promise<void>;
+    resumePendingTurn?: () => Promise<boolean>;
     closeChapter?: () => Promise<boolean>;
     chapterGate?: ChapterGate;
     dispose?: () => void;
