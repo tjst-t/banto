@@ -89,6 +89,12 @@ export interface MergeGateResult {
    */
   environmentDigest?: string;
   /**
+   * **どの環境の実体で検査したか**。`verifyRunner.provision()` が返した envId。
+   * `environmentDigest`（プロファイルの指紋）とは別物——`merge_gate_evaluated.environmentId`
+   * にそのまま入る。
+   */
+  environmentId?: string;
+  /**
    * **どのコミットの上で検査したか**（realign 第2便・段1）。`base` を解決した SHA。
    * `merge_gate_evaluated.baseCommit` にそのまま入る。
    */
@@ -393,6 +399,8 @@ export async function runMergeGate(
 
   /** **どの環境で検査したか**（realign 第2便・段1）。立てられたときだけ付く。 */
   let environmentDigest: string | undefined;
+  /** **どの環境の実体で検査したか**。`envId` そのもの。立てられたときだけ付く。 */
+  let environmentId: string | undefined;
 
   if (withCommands.length > 0) {
     if (!verifyRunner) {
@@ -412,6 +420,9 @@ export async function runMergeGate(
           taskId,
           projectTag,
         }));
+        // **証拠に刻むのは、立った環境の実体そのもの**——指紋だけでは
+        // 「どの回か」を後から一意に辿れない（dentaku task-0020 の誤誘導）
+        environmentId = envId;
       } catch (err) {
         // I2: 立てられないことを「検証が落ちた」と混同しない。**確かめていない**と言う
         verifyBlocked =
@@ -531,6 +542,7 @@ export async function runMergeGate(
     reasons,
     logPaths,
     ...(environmentDigest !== undefined ? { environmentDigest } : {}),
+    ...(environmentId !== undefined ? { environmentId } : {}),
     ...(baseCommit !== undefined ? { baseCommit } : {}),
   };
 
@@ -545,6 +557,7 @@ export async function runMergeGate(
     // 段1: **何に対して通ったのか**。この2つが無いと、通った判定がまだ有効かを
     // 計算できず、第3便（人の承認なしの着地）を安全に倒せない
     ...(environmentDigest !== undefined ? { environmentDigest } : {}),
+    ...(environmentId !== undefined ? { environmentId } : {}),
     ...(baseCommit !== undefined ? { baseCommit } : {}),
   });
 
