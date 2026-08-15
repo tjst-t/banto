@@ -160,6 +160,18 @@ function renderThreadHead(thread: Thread, registry: ThreadRegistry): string[] {
     // どこにも無いのと同じになる
     lines.push("詳細：", thread.conclusionDetail);
   }
+  /**
+   * 未処理の在処（imp-0036）。**読みに来たときが降ろす好機**なので、ここでも言う
+   * ——一覧で気づいて枝を開いた番頭に、降ろす道をその場で示す。
+   */
+  if (thread.hasUnsettledRemaining) {
+    lines.push(
+      `未処理：${thread.remainingCount}件（所在はまだ書かれていません。` +
+        `決まったら thread.settle({threadId: "${thread.id}", where: "…"}) で降ろしてください）`
+    );
+  } else if (thread.settledWhere) {
+    lines.push(`未処理の所在：${thread.settledWhere}`);
+  }
   lines.push(`最後に何かが記録されたのは ${thread.lastActivityAt}`);
   return lines;
 }
@@ -576,7 +588,7 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     name: "thread.merge",
     label: "Thread: Merge",
     description:
-      "**いまのこの枝**を畳んで幹へ還す（幹の末尾に結論が1行積まれる）。\n例: {conclusion: \"inc-0048 を起票し task-0091 を積んだ\", investigated: [\"10回走らせて3回落ちた\"], decided: [\"待ちを延ばさず機構を直す\"], remaining: [\"task-0092 を積んだ\"]} → 畳んだ旨\n**出口は結論であって実装ではない。** 幹は畳めない。決めきれないものは「保留：理由」で畳んでよい。\n調べた・決めた・残った（investigated / decided / remaining）は**幹へは流れず枝に残る**——`thread.read` で開いたときに読める。",
+      "**いまのこの枝**を畳んで幹へ還す（幹の末尾に結論が1行積まれる）。\n例: {conclusion: \"inc-0048 を起票し task-0091 を積んだ\", investigated: [\"10回走らせて3回落ちた\"], decided: [\"待ちを延ばさず機構を直す\"], remaining: [\"task-0092 を積んだ\"]} → 畳んだ旨\n**出口は結論であって実装ではない。** 幹は畳めない。決めきれないものは「保留：理由」で畳んでよい。\n調べた・決めた・残った（investigated / decided / remaining）は**幹へは流れず枝に残る**——`thread.read` で開いたときに読める。\n**だから畳む前に、残作業には所在を持たせること。** `remaining` の各行に「どこへ行ったか」（`imp-NNNN` / `task-NNNN` の起票 id・立てた職人の sessionId・幹での委譲予定）を書く。`conclusion` にも判断の要約だけでなく**次の一手とその所在**を書く（「〜を推す」で終わらせない）。\n`remaining` を書いて畳むと、この枝は**未処理ありとして `thread.list` に出続ける**（所在が付いて `thread.settle` で降ろすまで消えない）。",
     parameters: Type.Object({
       conclusion: Type.String(),
       investigated: Type.Optional(Type.Array(Type.String())),
@@ -585,8 +597,11 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     }),
     async execute(params) {
       const detail = renderMergeDetail(params);
+      // 空行・空白だけの行は数えない（描画と同じ数え方にする——一覧の件数と中身がずれる）
+      const remainingCount = (params.remaining ?? []).filter((t) => t.trim() !== "").length;
       const thread = options.threads.merge(options.threadId, params.conclusion, {
         ...(detail ? { detail } : {}),
+        ...(remainingCount > 0 ? { remainingCount } : {}),
       });
       return {
         content: [
@@ -596,7 +611,68 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
               `枝「${thread.title}」を畳んで幹へ還しました。結論：${thread.conclusion}` +
               (thread.conclusionDetail
                 ? "。詳細はこの枝に残ります（幹からは thread.read で読めます）"
+                : "") +
+              /**
+               * 畳んだ**その場で**未処理を言う（imp-0036 補強(a)・番頭裁定 2026-08-15）。
+               * 残作業を思い出しやすいのは畳んだ直後で、次のターンには別件へ移っている。
+               */
+              (thread.hasUnsettledRemaining
+                ? `。**未処理 ${thread.remainingCount}件として記録しました**——` +
+                  `幹の thread.list に出続けます。所在（起票 id・職人の sessionId・委譲先）が` +
+                  `決まったら thread.settle({threadId: "${thread.id}", where: "…"}) で降ろしてください`
                 : ""),
+          },
+        ],
+        details: thread.view(),
+      };
+    },
+  });
+
+  /**
+   * 畳んだ枝の**未処理を降ろす**（imp-0036・番頭裁定 2026-08-15）。
+   *
+   * `thread.merge` の対になる口。残作業を書いて畳んだ枝は既定の一覧に出続けるので、
+   * **降りる道**が要る——降りないと一覧が信用できなくなり、結局読み飛ばされる。
+   *
+   * **「片付いた」と言うだけでは降りない。所在（`where`）を必須にする。**
+   * 形は検査しない（`imp-NNNN` に縛ると「幹で委譲予定」が書けない）が、空は断る。
+   *
+   * **降ろせるのはその枝を持つ幹の番頭だけ**（番頭裁定）。隣の幹から降ろせると、
+   * 自分の帳簿に無い未処理を消せてしまう。
+   */
+  const settle = defineNamespacedTool({
+    name: "thread.settle",
+    label: "Thread: Settle",
+    description:
+      "畳んだ枝の**未処理を降ろす**（`thread.merge` で `remaining` を書いた枝が対象）。\n" +
+      '例: {threadId: "thread-86", where: "imp-0035 として起票し職人へ委譲した"} → 降ろした旨\n' +
+      "**所在（where）は必須**——`imp-NNNN` / `task-NNNN` の起票 id、立てた職人の sessionId、" +
+      "「幹で委譲予定」「PO 判断待ち」など、**どこへ行ったか**を書く。" +
+      "「片付いた」とだけ書いて降ろさないこと（降ろすと一覧から消えるので、辿れる先が要る）。\n" +
+      "所在はその枝の記録に残る。降ろせるのは**この幹から生えた枝**だけ。",
+    parameters: Type.Object({
+      threadId: Type.String({ description: "未処理を降ろす枝の id（thread.list に出ている）" }),
+      where: Type.String({
+        description: "残作業の所在。起票 id・職人の sessionId・委譲先のいずれかを1行で",
+      }),
+    }),
+    async execute(params) {
+      const branch = options.threads.get(params.threadId);
+      // I2: 自分が持っていない枝は降ろさせない（黙って降ろすと、帳簿を跨いで未処理が消える）
+      if (branch && branch.kind === "branch" && branch.parentId !== options.threadId) {
+        throw new Error(
+          `枝 ${branch.id}「${branch.title}」はこの会話の枝ではありません` +
+            "（未処理を降ろせるのは、その枝を持つ幹の番頭だけ）"
+        );
+      }
+      const thread = options.threads.settle(params.threadId, params.where);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `枝「${thread.title}」の未処理 ${thread.remainingCount}件を降ろしました。` +
+              `所在：${thread.settledWhere}（この枝の記録に残ります）`,
           },
         ],
         details: thread.view(),
@@ -736,14 +812,26 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     name: "thread.list",
     label: "Thread: List",
     description:
-      "幹と、開いている枝の一覧（**還す条件**つき）。「＊」が**いまのこの会話**。\n例: {} → \"thread-7 道具定義の圧縮 — 還す条件: 前後の対比較が出たら ＊いまのこの会話\"\n`{includeClosed: true}` で畳んだ枝と幹も並ぶ（中身は thread.read で読める）。",
+      "幹と、開いている枝の一覧（**還す条件**つき）。「＊」が**いまのこの会話**。\n例: {} → \"thread-7 道具定義の圧縮 — 還す条件: 前後の対比較が出たら ＊いまのこの会話\"\n**未処理を抱えたまま畳んだ枝も既定で出る**（［畳んである・未処理 N件］）——所在が決まったら `thread.settle` で降ろすまで消えない。中身は `thread.read` で読む。\n`{includeClosed: true}` で畳んだ枝と幹も並ぶ。",
     parameters: Type.Object({
       includeClosed: Type.Optional(Type.Boolean()),
     }),
     async execute(params) {
+      /**
+       * **未処理を抱えた枝は、畳んでも既定の一覧から消えない**（imp-0036 補強(b)）。
+       *
+       * 畳んだ枝が既定から外れるせいで、残作業を抱えた枝ときれいに片付いた枝が
+       * 区別できず、`remaining` に書いた仕事が誰にも渡らないまま消えた
+       * （2026-08-15・thread-86）。**幹の番頭が次に一覧を引いたとき必ず目に入る**形に置く。
+       */
       const threads = params.includeClosed
         ? options.threads.list()
-        : options.threads.list({ state: "open" });
+        : [
+            ...options.threads.list({ state: "open" }),
+            ...options.threads
+              .list({ state: "closed", kind: "branch" })
+              .filter((t) => t.hasUnsettledRemaining),
+          ];
       const text =
         threads.length === 0
           ? "開いている会話はありません"
@@ -751,7 +839,8 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
               .map(
                 (t) =>
                   `${t.isMain ? "帳場" : t.kind === "trunk" ? "幹" : "枝"} ${t.title} (threadId: ${t.id})` +
-                  `${t.state === "closed" ? "［畳んである］" : ""}` +
+                  // 中身は出さない——出すのは**未処理があるという事実と件数**まで（決定108）
+                  `${t.state === "closed" ? (t.hasUnsettledRemaining ? `［畳んである・未処理 ${t.remainingCount}件］` : "［畳んである］") : ""}` +
                   `${t.returnCondition ? ` — 還す条件：${t.returnCondition}` : ""}` +
                   `${t.conclusion ? ` — 結論：${t.conclusion}` : ""}` +
                   `${t.id === options.threadId ? " ＊いまのこの会話" : ""}`
@@ -835,6 +924,8 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     open,
     openTrunk,
     merge,
+    // 畳むことの対（imp-0036）。未処理を降ろす口が無いと一覧が信用を失う
+    settle,
     rename,
     list,
     // 幹と枝の対話（決定105〜107）。読む口は常に生える——配信を要らないので

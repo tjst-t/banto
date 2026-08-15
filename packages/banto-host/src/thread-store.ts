@@ -46,6 +46,15 @@ export interface StoredThread {
    * ——落とすと、再起動した瞬間に「開けば読める」が嘘になる。
    */
   conclusionDetail?: string;
+  /**
+   * 畳むときに書かれた**残作業の件数**（imp-0036）。中身は `conclusionDetail` の中。
+   * ここが落ちると、再起動で未処理が消える＝直そうとしている事故そのものに戻る。
+   */
+  remainingCount?: number;
+  /** 残作業に所在が付いた時刻（`thread.settle`）。 */
+  settledAt?: string;
+  /** 残作業の所在（起票 id・職人の sessionId・幹での委譲先）。 */
+  settledWhere?: string;
   state: "open" | "closed";
   createdAt: string;
   closedAt?: string;
