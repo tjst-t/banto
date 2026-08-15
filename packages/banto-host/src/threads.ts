@@ -644,8 +644,12 @@ export class Thread {
 /** 保存を間引く間隔。長くすると落ちたときの取りこぼしが増える。 */
 const SAVE_DELAY_MS = 400;
 
-/** ホスト自身を落とす道具。**これだけは中断が意図されたもの**なので `ok` に確定させる。 */
-const RESTART_TOOL_NAME = "system.restart";
+/**
+ * ホスト自身を落とす道具。**これだけは中断が意図されたもの**なので `ok` に確定させる。
+ *
+ * 回収の判定（`lost-turn.ts`）も同じ名前で見分けるので、文字列はここに1つだけ置く。
+ */
+export const RESTART_TOOL_NAME = "system.restart";
 
 /** 結果の分からない道具に書く理由。I2: 成功と書かない。 */
 const INTERRUPTED_TOOL_REASON = "ホストの再起動で中断されました。";
@@ -842,20 +846,37 @@ export class ThreadRegistry {
    * **落ちる前に走っていた道具を、起動時に確定させる**（imp-0037 原因1）。
    *
    * `tool_start` は履歴へ `state:"running"` で入り、`tool_end` が来て初めて `ok`/`failed`
-   * になる。ところが `system.restart` はその `tool_end` を書く前にプロセスを落としていた
-   * ため、履歴に `running` が**永久に**残っていた。突き合わせは後から結果が届いたときに
-   * しか動かないので、ここで残りを確定させる。
+   * になる。突き合わせは後から結果が届いたときにしか動かないので、落ちたぶんは
+   * ここで確定させないと `running` が**永久に**残る。
    *
    * - 一般の道具は `failed`。**黙って `ok` にしない**（I2: 結果が分からないなら分からない
    *   ほうへ倒す。半端に成功と書くと、番頭が「やった」前提で続きを組み立てる）
    * - `system.restart` だけは `ok`。これは**意図した中断**で、いま起動しているのがその結果
    *
+   * ## いまの事実（imp-0061 で書き直した）
+   *
+   * 「`system.restart` が `tool_end` を書く前に落ちている」は**もう常態ではない**。
+   * `restart-tool.ts` は imp-0037 の直しで**結果を返してから graceMs 後に落ちる**ので、
+   * 普通の再起動では `system.restart` は `ok` で記録され、ここの `restarted` は立たない。
+   * つまりこの入口だけでは**再起動を呼んだ会話は起こせない**（thread-105 がそれで黙った）。
+   *
+   * - `ok` で終わっている形の回収は **`findLostTurn`（`lost-turn.ts`）が持つ**。判定を
+   *   純関数1か所に集めたほうが境目を試験で書けるので、そちらへ寄せた
+   * - ここの `restarted` は**猶予の中で殺された形**（`kill -9`／クラッシュが `tool_start` と
+   *   `tool_end` の間に入った）だけに残す。稀だが起き得る以上、握りつぶさない
+   * - **二重に起こさない**のは呼び出し側の責任: `bin.ts` が返り値（`resumeAfterRestart`）を
+   *   `alreadyResumed` に入れて `recoverLostTurns` へ渡す
+   *
+   * 併せて分かったこと（**まだ直していない**・別件）: `restarted` も `failed` も無ければ
+   * `interrupted` が空になり、**取次への報告も出ない**。普通の再起動では走っている道具が
+   * 残らないので、「banto を再起動しました」の札は実際には出なくなっている。
+   *
    * 呼び出し元の会話には「続きを進めてください」を1件入れ、**取次にも報告を1件**出す
    * （PO要望 2026-08-15）——PO がどの会話を開いているかは分からないので、レールに常に
    * 出ている取次に置かないと再起動に気づけない。
    *
-   * @returns ターンを回す宛先（＝再起動を呼んだ会話）。知らせを記録するのはここ、
-   *          ターンを回すのはサーバの役目（決定107 の `nudge` と同じ分担）
+   * @returns ターンを回す宛先（＝猶予の中で殺された再起動を呼んだ会話）。知らせを記録
+   *          するのはここ、ターンを回すのはサーバの役目（決定107 の `nudge` と同じ分担）
    */
   private settleInterrupted(inbox?: InboxPoster): string[] {
     const interrupted: Array<{ thread: Thread; restarted: boolean; failed: number }> = [];

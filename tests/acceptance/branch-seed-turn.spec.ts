@@ -34,6 +34,7 @@ import { JsonlMemoryStore } from "@banto/core";
 import {
   BantoHostServer,
   LOST_TURN_RECOVERED_NOTICE,
+  RESTART_RESUME_NOTICE,
   ThreadRegistry,
   createThreadTools,
   recoverLostTurns,
@@ -352,6 +353,40 @@ describe("[inc] 失われたターンを次の起動で回収する", () => {
     assert.deepEqual(recover([resumed.id]), []);
     assert.deepEqual(sessionOf(resumed).prompts, []);
     assert.deepEqual(sessionOf(closed).prompts, []);
+  });
+
+  /**
+   * **自分で再起動を撃った会話**（imp-0061）。`restart-tool.ts` は結果を返してから落ちるので
+   * 記録は `道具 system.restart（ok）` で止まる——`settleInterrupted` の running は発生しない。
+   */
+  it("自分で撃った再起動で終わっている会話は、再起動用の文で起こし直す", async () => {
+    const trunk = await threads.open(TRUNK);
+    const branch = await lostTurnBranch(trunk, "再起動を撃った枝");
+    branch.record({ role: "notice", source: "thread", text: "反映してください" });
+    branch.record({ role: "banto", text: "再起動します" });
+    branch.record({ role: "tool", name: "system.restart", state: "ok" });
+
+    assert.deepEqual(recover(), [branch.id]);
+    await waitFor("回収のターン", () => sessionOf(branch).prompts.length > 0);
+    // 意図した中断なので、失われた一言の投げ直しではなく再起動の断りが渡る
+    assert.deepEqual(sessionOf(branch).prompts, [RESTART_RESUME_NOTICE]);
+    assert.equal(
+      branch.transcript.filter((e) => e.role === "notice" && e.text === RESTART_RESUME_NOTICE)
+        .length,
+      1
+    );
+  });
+
+  it("settleInterrupted が既に起こした会話は、道具で終わっていても二度起こさない", async () => {
+    const trunk = await threads.open(TRUNK);
+    const branch = await lostTurnBranch(trunk, "もう起きている再起動の枝");
+    branch.record({ role: "notice", source: "thread", text: "反映してください" });
+    branch.record({ role: "tool", name: "system.restart", state: "ok" });
+    // `threads.restore` が返した宛先（bin.ts の resumeAfterRestart）がここに入る
+    branch.record({ role: "notice", source: "system", text: RESTART_RESUME_NOTICE });
+
+    assert.deepEqual(recover([branch.id]), []);
+    assert.deepEqual(sessionOf(branch).prompts, []);
   });
 
   it("起こしてもまだ番頭が返さなければ、次の起動でまた拾う（回収の印は判定を塞がない）", async () => {
