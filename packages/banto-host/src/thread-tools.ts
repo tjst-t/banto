@@ -326,7 +326,8 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
               `枝「${thread.title}」を開きました (threadId: ${thread.id})。` +
               `還す条件：${params.returnCondition}。幹に札を立てました。` +
               (params.message
-                ? "**この枝はもう自分で動いています**——同じ調べ物をここで始めないこと。" +
+                ? "**最初の一言は渡しました**——同じ調べ物をここで始めないこと。" +
+                  "枝が動き出したかは thread.read で確かめられます。" +
                   "結論は畳まれたときに幹へ1行還ります"
                 : "まだ誰も話しかけていません"),
           },
@@ -786,10 +787,16 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     }),
     async execute(params) {
       const thread = await options.threads.open({ kind: "trunk", title: params.title });
-      // 開いた理由は幹の1行目に残す（あとから「なぜ分けたか」を読めるように）
+      /**
+       * 開いた理由は幹の1行目に残す（あとから「なぜ分けたか」を読めるように）。
+       *
+       * 出所は `system`——**これはホスト自身の書き置きで、誰かが話しかけた一言ではない**
+       * （`thread` を名乗っていると、失われたターンの回収がこれを「返事を待っている
+       * 一言」と読み、`message` 無しで開いた幹を起動のたびに起こしてしまう）。
+       */
       thread.record({
         role: "notice",
-        source: "thread",
+        source: "system",
         text: `この幹を起こしました。理由：${params.reason}`,
       });
       // 枝と同じく**待たない**——待つと、起こした側の会話が向こうのターンの間止まる
