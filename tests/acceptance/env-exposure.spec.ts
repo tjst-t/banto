@@ -175,22 +175,58 @@ describe("[決定39/d] 畳むときは公開も取り下げる（I3）", () => {
   });
 });
 
-describe("[決定39/c] Caddy 実装（admin API を差し替えて見る）", () => {
-  /** admin API の呼び出しを記録する偽物。 */
-  function fakeCaddy(): { calls: Array<{ method: string; path: string; body?: string }>; impl: typeof fetch } {
-    const calls: Array<{ method: string; path: string; body?: string }> = [];
-    const impl = (async (input: string | URL | Request, init?: RequestInit) => {
-      const url = new URL(String(input));
-      calls.push({
-        method: init?.method ?? "GET",
-        path: url.pathname,
-        ...(init?.body ? { body: String(init.body) } : {}),
-      });
-      return new Response("[]", { status: 200 });
-    }) as unknown as typeof fetch;
-    return { calls, impl };
-  }
+/**
+ * admin API の呼び出しを記録する偽物。
+ *
+ * imp-0009: **待ち受けも答える**——案内する URL のスキームは実際の listen から
+ * 決めるので、偽物も本物と同じ形（`/config/apps/http/servers/srv0/listen` が
+ * `[":80"]` のような配列。鍵が無ければ 200 で `null`）で答える。
+ */
+function fakeCaddy(server: { listen?: unknown; tls?: unknown; routes?: unknown } = {}): {
+  calls: Array<{ method: string; path: string; body?: string }>;
+  impl: typeof fetch;
+} {
+  const calls: Array<{ method: string; path: string; body?: string }> = [];
+  const state = { listen: [":80"] as unknown, ...server };
+  const impl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const method = init?.method ?? "GET";
+    calls.push({
+      method,
+      path: url.pathname,
+      ...(init?.body ? { body: String(init.body) } : {}),
+    });
+    if (method === "GET") {
+      const srv = "/config/apps/http/servers/srv0";
+      if (url.pathname === `${srv}/listen`) {
+        return new Response(JSON.stringify(state.listen ?? null), { status: 200 });
+      }
+      if (url.pathname === `${srv}/tls_connection_policies`) {
+        return new Response(JSON.stringify(state.tls ?? null), { status: 200 });
+      }
+      if (url.pathname === `${srv}/routes`) {
+        return new Response(JSON.stringify(state.routes ?? []), { status: 200 });
+      }
+    }
+    return new Response("[]", { status: 200 });
+  }) as unknown as typeof fetch;
+  return { calls, impl };
+}
 
+/** 偽物の待ち受けを後から変えられる形（設定変更に追随するかを見る）。 */
+function mutableCaddy(listen: unknown): { set(next: unknown): void; impl: typeof fetch } {
+  const state = { listen };
+  const impl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if ((init?.method ?? "GET") === "GET" && url.pathname.endsWith("/listen")) {
+      return new Response(JSON.stringify(state.listen ?? null), { status: 200 });
+    }
+    return new Response("[]", { status: 200 });
+  }) as unknown as typeof fetch;
+  return { set: (next: unknown) => (state.listen = next), impl };
+}
+
+describe("[決定39/c] Caddy 実装（admin API を差し替えて見る）", () => {
   it("同じ @id で消してから入れ直す（冪等な upsert）", async () => {
     const caddy = fakeCaddy();
     const exposer = createCaddyExposer({
@@ -200,17 +236,19 @@ describe("[決定39/c] Caddy 実装（admin API を差し替えて見る）", ()
     });
 
     const exposed = await exposer.expose({ envId: "env-abc", port: 5173 });
-    assert.equal(exposed.url, "https://5173--env-abc.env.example.com/");
+    // :80 しか待ち受けていない偽物なので http（imp-0009）
+    assert.equal(exposed.url, "http://5173--env-abc.env.example.com/");
 
     assert.deepEqual(
-      caddy.calls.map((c) => [c.method, c.path]),
+      caddy.calls.filter((c) => c.method !== "GET").map((c) => [c.method, c.path]),
       [
         ["DELETE", "/id/banto-env-env-abc"],
         ["PUT", "/config/apps/http/servers/srv0/routes/0"],
       ],
       "先に消してから入れること（二重登録を作らない）"
     );
-    const body = JSON.parse(caddy.calls[1]!.body!) as {
+    const put = caddy.calls.find((c) => c.method === "PUT");
+    const body = JSON.parse(put!.body!) as {
       "@id": string;
       handle: Array<{ upstreams: Array<{ dial: string }> }>;
     };
@@ -237,6 +275,108 @@ describe("[決定39/c] Caddy 実装（admin API を差し替えて見る）", ()
       fetchImpl: failing,
     });
     await assert.rejects(() => exposer.expose({ envId: "env-x", port: 80 }), /Caddy admin API/);
+  });
+});
+
+/**
+ * imp-0009（決めること3）：**案内する URL のスキームを決め打ちにしない。**
+ *
+ * この機械の Caddy は :80 しか待ち受けていないのに `https://` を返していたので、
+ * 番頭が案内した URL は必ず接続拒否になった（dentaku task-0004・env-1142455d10）。
+ * https を生やすかどうかは別の裁定（imp-0009 の 1・2）で、ここで直すのは
+ * 「作っていないものを作ったと言う」ことだけ（I1）。
+ */
+describe("[imp-0009] 案内する URL のスキームは Caddy の待ち受けから決める", () => {
+  function exposerOn(impl: typeof fetch): EnvExposer {
+    return createCaddyExposer({
+      adminUrl: "http://localhost:2019",
+      baseDomain: "env.example.com",
+      fetchImpl: impl,
+    });
+  }
+
+  it(":80 だけなら http で案内する（開けない https を名乗らない）", async () => {
+    const caddy = fakeCaddy({ listen: [":80"] });
+    const exposed = await exposerOn(caddy.impl).expose({ envId: "env-a", port: 5173 });
+    assert.equal(exposed.url, "http://5173--env-a.env.example.com/");
+  });
+
+  it("443 を待ち受けていれば https", async () => {
+    const caddy = fakeCaddy({ listen: [":80", ":443"] });
+    const exposed = await exposerOn(caddy.impl).expose({ envId: "env-b", port: 5173 });
+    assert.equal(exposed.url, "https://5173--env-b.env.example.com/");
+  });
+
+  it("待ち受けの書き方が違っても 443 は 443（`192.168.1.47:443`・範囲）", async () => {
+    const one = fakeCaddy({ listen: ["192.168.1.47:443"] });
+    assert.equal(
+      (await exposerOn(one.impl).expose({ envId: "env-c", port: 1 })).url,
+      "https://1--env-c.env.example.com/"
+    );
+    const range = fakeCaddy({ listen: [":440-450"] });
+    assert.equal(
+      (await exposerOn(range.impl).expose({ envId: "env-d", port: 1 })).url,
+      "https://1--env-d.env.example.com/"
+    );
+  });
+
+  it("TLS が設定されていれば 443 以外の口でも https", async () => {
+    const caddy = fakeCaddy({ listen: [":8443"], tls: [{}] });
+    const exposed = await exposerOn(caddy.impl).expose({ envId: "env-e", port: 5173 });
+    assert.equal(exposed.url, "https://5173--env-e.env.example.com/");
+  });
+
+  it("list も同じ規則に従う（expose の戻り値とだけ揃っても意味がない）", async () => {
+    const routes = [
+      {
+        "@id": "banto-env-env-f",
+        match: [{ host: ["5173--env-f.env.example.com"] }],
+      },
+    ];
+    const http80 = fakeCaddy({ listen: [":80"], routes });
+    assert.deepEqual(await exposerOn(http80.impl).list(), [
+      {
+        envId: "env-f",
+        url: "http://5173--env-f.env.example.com/",
+        port: 5173,
+        exposer: "caddy",
+      },
+    ]);
+
+    const https443 = fakeCaddy({ listen: [":443"], routes });
+    assert.equal((await exposerOn(https443.impl).list())[0]!.url, "https://5173--env-f.env.example.com/");
+  });
+
+  it("待ち受けを変えたら次の案内から追随する（古いスキームを返し続けない）", async () => {
+    const caddy = mutableCaddy([":80"]);
+    const exposer = exposerOn(caddy.impl);
+    assert.equal(
+      (await exposer.expose({ envId: "env-g", port: 1 })).url,
+      "http://1--env-g.env.example.com/"
+    );
+    caddy.set([":80", ":443"]);
+    assert.equal(
+      (await exposer.expose({ envId: "env-g", port: 1 })).url,
+      "https://1--env-g.env.example.com/",
+      "443 を生やしたら勝手に追随すること"
+    );
+  });
+
+  it("待ち受けを読めないときは https と名乗らず、route も入れずに断る（I1）", async () => {
+    // 鍵が無いときの Caddy は 200 で null を返す＝「待ち受けが分からない」
+    const caddy = fakeCaddy({ listen: null });
+    await assert.rejects(
+      () => exposerOn(caddy.impl).expose({ envId: "env-h", port: 5173 }),
+      /待ち受け/,
+      "分からないまま URL を名乗らないこと"
+    );
+    // 断るなら何も置いていかない（消し忘れた route が残ると他の環境の邪魔になる）
+    assert.deepEqual(
+      caddy.calls.filter((c) => c.method !== "GET"),
+      [],
+      "スキームが分からないうちは route を触らないこと"
+    );
+    await assert.rejects(() => exposerOn(caddy.impl).list(), /待ち受け/);
   });
 });
 

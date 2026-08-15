@@ -40,6 +40,26 @@ function dnsLabel(raw: string): string {
   return raw.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
 }
 
+/** route を入れる先。スキームもここの待ち受けから読む（同じサーバを指す）。 */
+const SERVER_PATH = "/config/apps/http/servers/srv0";
+
+/**
+ * 待ち受けの住所に 443 が含まれるか。
+ *
+ * Caddy の listen は `":443"` `"192.168.1.47:443"` `"tcp/:443"` `"[::1]:443"` `":440-450"`
+ * のいろいろな形で書ける。末尾のポート（範囲なら区間）だけ見る。
+ */
+function listensOnTls(address: string): boolean {
+  const withoutNetwork = address.replace(/^[a-z0-9]+\//i, ""); // `tcp/` `udp/` の接頭辞
+  const colon = withoutNetwork.lastIndexOf(":");
+  if (colon < 0) return false; // `unix//path` などポートを持たない形
+  const [start, end] = withoutNetwork.slice(colon + 1).split("-");
+  const from = Number.parseInt(start ?? "", 10);
+  const to = end === undefined ? from : Number.parseInt(end, 10);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return false;
+  return from <= 443 && 443 <= to;
+}
+
 export function createCaddyExposer(options: CaddyExposerOptions): EnvExposer {
   const admin = options.adminUrl.replace(/\/$/, "");
   const upstreamHost = options.upstreamHost ?? "127.0.0.1";
@@ -58,12 +78,54 @@ export function createCaddyExposer(options: CaddyExposerOptions): EnvExposer {
     return response;
   }
 
+  /** config を1鍵だけ引く。鍵が無いとき Caddy は 200 で `null`、経路ごと無ければ 404。 */
+  async function readConfig(path: string): Promise<unknown> {
+    const response = await call(path);
+    if (!response.ok) return undefined; // 404（call が通す唯一の非 200）
+    return await response.json().catch(() => undefined);
+  }
+
+  /**
+   * 案内する URL のスキームを、**実際の待ち受けから決める**（imp-0009 決めること3）。
+   *
+   * 以前は `https://` 決め打ちだった。この機械の Caddy は :80 しか待ち受けておらず
+   * （静的な Caddyfile が `http://…` とスキームを明示＝自動HTTPSを切る設計）、
+   * 番頭が案内した URL は必ず接続拒否になった。**443 を生やせば勝手に追随する**よう、
+   * route を入れているのと同じサーバの listen と TLS 設定を読んで決める。
+   *
+   * 毎回読む——設定を変えたのに古いスキームを案内し続けないため（expose も list も
+   * 頻度が低いので、admin API への GET 2本は無視できる）。
+   */
+  async function resolveScheme(): Promise<"http" | "https"> {
+    const [listen, policies] = await Promise.all([
+      readConfig(`${SERVER_PATH}/listen`),
+      readConfig(`${SERVER_PATH}/tls_connection_policies`),
+    ]);
+
+    // TLS の方針が付いているなら、口が 443 でなくとも https で終端している
+    if (Array.isArray(policies) && policies.length > 0) return "https";
+
+    // I1: 読めなかったら「たぶん https」で名乗らない。開けない URL を配るくらいなら断る。
+    // ここで断れば route はまだ入れていない＝取り残しも作らない
+    if (!Array.isArray(listen) || listen.length === 0) {
+      throw new Error(
+        `Caddy admin API の ${SERVER_PATH}/listen を読めませんでした（返り値: ${JSON.stringify(listen)}）。` +
+          "待ち受けが分からないので、案内できる URL のスキームを決められません。"
+      );
+    }
+
+    return listen.some((a) => typeof a === "string" && listensOnTls(a)) ? "https" : "http";
+  }
+
   return {
     name: "caddy",
 
     async expose(request: ExposeRequest): Promise<ExposedEnv> {
       const host = hostFor(request.envId, request.port);
       const id = routeId(request.envId);
+
+      // **入れる前にスキームを決める**——名乗れない URL のために route を残さない
+      const scheme = await resolveScheme();
 
       // 冪等にするため、同じ id の route があれば先に消してから入れ直す
       await call(`/id/${id}`, { method: "DELETE" });
@@ -81,13 +143,18 @@ export function createCaddyExposer(options: CaddyExposerOptions): EnvExposer {
       };
 
       // 既定のHTTPサーバの route 一覧の先頭へ入れる（apex の設定より先に当てる）
-      await call("/config/apps/http/servers/srv0/routes/0", {
+      await call(`${SERVER_PATH}/routes/0`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(route),
       });
 
-      return { envId: request.envId, url: `https://${host}/`, port: request.port, exposer: "caddy" };
+      return {
+        envId: request.envId,
+        url: `${scheme}://${host}/`,
+        port: request.port,
+        exposer: "caddy",
+      };
     },
 
     async unexpose(envId: string): Promise<void> {
@@ -96,7 +163,9 @@ export function createCaddyExposer(options: CaddyExposerOptions): EnvExposer {
     },
 
     async list(): Promise<ExposedEnv[]> {
-      const response = await call("/config/apps/http/servers/srv0/routes");
+      // expose と同じ規則で名乗る（片方だけ直しても、見る場所を変えれば嘘に戻る）
+      const scheme = await resolveScheme();
+      const response = await call(`${SERVER_PATH}/routes`);
       if (!response.ok) return [];
       const routes = (await response.json().catch(() => [])) as Array<Record<string, unknown>>;
       if (!Array.isArray(routes)) return [];
@@ -111,7 +180,7 @@ export function createCaddyExposer(options: CaddyExposerOptions): EnvExposer {
         const port = Number.parseInt(host.split("--")[0] ?? "", 10);
         exposed.push({
           envId: id.slice("banto-env-".length),
-          url: `https://${host}/`,
+          url: `${scheme}://${host}/`,
           port: Number.isFinite(port) ? port : 0,
           exposer: "caddy",
         });

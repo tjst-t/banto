@@ -37,8 +37,10 @@ refs: [task-0102-banto-live, spec-environment, adr-0010]
    得られるのは盗聴防止のみ。本番 banto も現在 http のため、非対称にならない方針が要る。
 2. **アクセス制御**：Caddy の IP 制限（例：`192.168.1.0/24` からのみ許可）を入れるか。
    認証なし公開の実リスク（誰でもアクセスできる）を塞ぐのは https よりこちらが先。
-3. **caddy-exposer の URL が `https://` 固定で返る件**：http 環境では PO 側で `http://` に読み替える
-   必要がある。URL スキームを設定可能にするか（コード変更＝D1 相当、PO 裁定が必要）。
+3. ~~**caddy-exposer の URL が `https://` 固定で返る件**~~：**片付いた（2026-08-15）**。設定可能にはせず、
+   `/config/apps/http/servers/srv0` の `listen`（と `tls_connection_policies`）を admin API から読んで
+   スキームを導く形にした——443 を生やせば案内も勝手に https へ追随し、読めないときは https と名乗らず断る。
+   1（https 化）・2（アクセス制御）は backlog のまま。
 
 ## 現状の措置（2026-08-01）
 
