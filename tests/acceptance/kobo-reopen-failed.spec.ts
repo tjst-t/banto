@@ -13,7 +13,9 @@
  *      ——**どの状態からでも**（PO 裁定 2026-08-14。当初は failed 専用だった）
  *
  * 守ること（I2）:
- *   - `reverify` は**承認まで行った実績があるときだけ**。監査を飛ばさせない
+ *   - `reverify` は**監査を通った実績があるときだけ**。監査を飛ばさせない
+ *     （実績は「監査の合格」か「承認」。承認だけを見ていたので、自動着地したタスクに
+ *     一切使えなかった——imp-0029）
  *   - 落ちていないタスクは戻せない（`reopen` は failed 専用のまま）
  *   - **もう畳んであるもの（closed / superseded）は畳み直さない**。いまの状態を名指しで断る
  *
@@ -111,6 +113,43 @@ function driveToFailed(taskId: string, opts: { viaApproved: boolean; origin?: st
     assert.equal(r.ok, true, `${taskId} → ${to}: ${JSON.stringify(r)}`);
   }
   const f = daemon.transition(PROJ, taskId, "failed", "テスト：落とす");
+  assert.equal(f.ok, true, `${taskId} → failed: ${JSON.stringify(f)}`);
+}
+
+/**
+ * **自動着地の経路**でゲートに落ちた形にする（imp-0029・実機 dentaku task-0001）。
+ *
+ * レビューの既定が反転して以降、監査に通ったタスクは `auditing → merging`
+ * （`audit_passed:auto`）と直に進み、**approved を一度も通らない**。
+ * `handleAuditVerdict` を本物どおりに通すのが要点——遷移を手で並べると
+ * 「approve を通っていない」という肝心の前提を、テストの側で作り替えてしまう。
+ */
+function driveToAutoLandedFailed(taskId: string): void {
+  daemon.createTask(PROJ, taskId, taskId, {
+    kind: "fix",
+    scope: { paths: ["src/**"] },
+    // 検査が1本も無い契約は自動着地の条件を満たさない（`auto_land_no_verify`）
+    acceptance: [{ id: "a1", text: "テストが通る", verify: "npm test" }],
+  });
+  for (const to of ["queued", "ready", "planning", "implementing", "auditing"]) {
+    const r = daemon.transition(PROJ, taskId, to, "テスト：進める");
+    assert.equal(r.ok, true, `${taskId} → ${to}: ${JSON.stringify(r)}`);
+  }
+  daemon.handleAuditVerdict(PROJ, taskId, "pass", []);
+  assert.equal(
+    daemon.getTask(PROJ, taskId)?.status,
+    "merging",
+    "前提が崩れている：監査に通っても自動着地していない（レビュー既定を確かめること）"
+  );
+  assert.equal(
+    daemon
+      .getTaskEvents(PROJ, taskId)
+      .some((e) => e.type === "state_transitioned" && e.to === "approved"),
+    false,
+    "前提が崩れている：この経路では approved を一度も通らないはず"
+  );
+  // マージ前ゲートで落ちる（検証環境の不備。中身は1行も直す必要が無い）
+  const f = daemon.transition(PROJ, taskId, "failed", "merge_gate_failed: 検証環境が立たなかった");
   assert.equal(f.ok, true, `${taskId} → failed: ${JSON.stringify(f)}`);
 }
 
@@ -330,7 +369,40 @@ describe("[task-0081] 同じタスクのまま戻せる（切り直さない）"
     assert.equal(daemon.getTask(PROJ, id)?.status, "approved");
   });
 
-  it("**承認まで行っていないタスクは reverify できない**（監査を飛ばさせない・I2）", async () => {
+  /**
+   * **これが imp-0029 の再現**（実機 dentaku task-0001）。
+   *
+   * 監査に通り、マージ前ゲートで検証環境の不備に当たって落ちた——reverify が
+   * 想定しているそのものの状況なのに、条件が「承認を通ったか」だったので断られ、
+   * 中身を1行も直す必要が無いのに rework で職人を起こすしかなかった。
+   */
+  it("reverify: **自動着地したタスク**（approve を通らない）も検証しなおせる", async () => {
+    const id = "task-1011";
+    driveToAutoLandedFailed(id);
+
+    const r = await call("kobo.reopen", {
+      projectTag: PROJ,
+      taskId: id,
+      mode: "reverify",
+      reason: "検証環境が壊れていて a2〜a5 がコマンドを実行すらできなかった。中身は変わっていない",
+    });
+    // マージキューは approved を拾うので、自動着地のタスクもここへ戻せば着地の列に戻る
+    assert.equal(r["to"], "approved");
+    assert.equal(daemon.getTask(PROJ, id)?.status, "approved");
+
+    // **なぜ戻したかが帳簿で読めること**——戻し先が approved でも「承認した」ではない
+    const back = daemon
+      .getTaskEvents(PROJ, id)
+      .filter((e) => e.type === "state_transitioned" && e.from === "failed" && e.to === "approved")
+      .at(-1) as { reason?: string } | undefined;
+    assert.match(
+      String(back?.reason),
+      /reverify/,
+      "何をしに戻したのかが帳簿から読めない（承認されたように見えてしまう）"
+    );
+  });
+
+  it("**監査を通っていないタスクは reverify できない**（監査を飛ばさせない・I2）", async () => {
     const id = "task-1005";
     driveToFailed(id, { viaApproved: false });
 
@@ -342,8 +414,41 @@ describe("[task-0081] 同じタスクのまま戻せる（切り直さない）"
           mode: "reverify",
           reason: "環境のせいだと思う",
         }),
-      /承認まで行っていない|監査を飛ばして/,
+      /監査を通った実績が無い|監査を飛ばして/,
       "未監査のタスクをマージ待ちに置けてしまうと、番頭の取り違えでそのままマージされる"
+    );
+    assert.equal(daemon.getTask(PROJ, id)?.status, "failed", "拒否したのに状態が動いている");
+  });
+
+  /**
+   * 実績の基準時点が**監査そのもの**になっても、task-0082 のガードは生きていること。
+   * （承認を通る経路のぶんは `kobo-contract-amend.spec.ts` が見ている）
+   */
+  it("自動着地のあとに基準が変わったら reverify は通らない（変わった基準を誰も見ていない）", async () => {
+    const id = "task-1012";
+    driveToAutoLandedFailed(id);
+
+    const amended = daemon.amendTask(
+      PROJ,
+      id,
+      { acceptance: [
+        { id: "a1", text: "テストが通る", verify: "npm test" },
+        { id: "a2", text: "型検査が通る", verify: "npm run typecheck" },
+      ] },
+      { reason: "条件が足りていなかった", by: "banto" }
+    );
+    assert.equal(amended.ok, true, `改訂できるはず: ${JSON.stringify(amended)}`);
+    assert.equal(
+      (amended as { ok: true; auditInvalidated: boolean }).auditInvalidated,
+      true,
+      "前提が崩れている：条件を増やしたのに監査が無効になっていない"
+    );
+    assert.equal(daemon.getTask(PROJ, id)?.status, "failed", "終端のものを勝手に動かさない");
+
+    await assert.rejects(
+      () => call("kobo.reopen", { projectTag: PROJ, taskId: id, mode: "reverify", reason: "環境のせい" }),
+      /基準が変わって/,
+      "基準が変わったあとに検証だけやり直すと、変わった基準を誰も見ないままマージされる"
     );
     assert.equal(daemon.getTask(PROJ, id)?.status, "failed", "拒否したのに状態が動いている");
   });
