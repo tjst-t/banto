@@ -144,7 +144,7 @@ export {
   type ThreadFactory,
   type ThreadSpec,
 } from "./threads.js";
-export { watchStaleBranches } from "./threads.js";
+export { watchStaleBranches, RESTART_RESUME_NOTICE } from "./threads.js";
 export {
   createThreadTools,
   bindToolArgs,
@@ -317,7 +317,10 @@ export {
   recoverLostTurns,
   LOST_TURN_PREFIX,
   LOST_TURN_RECOVERED_NOTICE,
+  INTERRUPTED_TOOL_PREFIX,
+  INTERRUPTED_TOOL_RECOVERED_NOTICE,
   type LostTurn,
+  type LostTurnKind,
 } from "./lost-turn.js";
 export {
   createTurnBudget,

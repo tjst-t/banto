@@ -8,12 +8,23 @@
  *
  * ここで見るのは**境目**だけ——プロセスもハーネスも要らない。配線（畳んだ会話を外す・
  * 二重に起こさない）は `branch-seed-turn.spec.ts` で見る。
+ *
+ * imp-0061 で**道具で終わっている会話**を足した。番頭が `system.restart` を自分で撃った
+ * thread-105 は、記録が `道具 system.restart（ok）` で止まったまま黙り続けた——
+ * `settleInterrupted` は `state:"running"` を探すが、`restart-tool.ts` は結果を返してから
+ * 落ちるので `ok` で残る。ここの判定も末尾の `tool` を「番頭が動いた証拠」に数えていた。
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { findLostTurn, LOST_TURN_PREFIX, type TranscriptEntry } from "@banto/host";
+import {
+  findLostTurn,
+  INTERRUPTED_TOOL_PREFIX,
+  LOST_TURN_PREFIX,
+  RESTART_RESUME_NOTICE,
+  type TranscriptEntry,
+} from "@banto/host";
 
 /** 外から入った一言（`thread.open` の seed・`thread.steer`・他の幹からの言伝）。 */
 function seed(text: string): TranscriptEntry {
@@ -57,13 +68,73 @@ describe("[inc] 失われたターンの判定", () => {
     assert.match(lost?.original ?? "", /thread-42/u);
   });
 
+  // ── 道具で終わっている会話（imp-0061）──
+
+  it("自分で撃った再起動で終わっていれば、再起動用の文で起こし直す", () => {
+    // 実際に起きた形（thread-105）。`restart-tool.ts` は結果を返してから落ちるので、
+    // 記録は **ok** で残る——`settleInterrupted` が探す running はもう発生しない
+    const lost = findLostTurn([
+      seed("反映してください"),
+      { role: "banto", text: "再起動します" },
+      { role: "tool", name: "system.restart", state: "ok" },
+    ]);
+    assert.equal(lost?.kind, "restart");
+    // 意図した中断なので、他の回収とは文言を分ける（番頭は自分が撃った再起動を知っている）
+    assert.equal(lost?.message, RESTART_RESUME_NOTICE);
+    assert.equal(lost?.notice, RESTART_RESUME_NOTICE);
+  });
+
+  it("普通の道具で終わっていれば、中断されたものとして起こし直す（ok・failed・running）", () => {
+    for (const state of ["ok", "failed", "running"] as const) {
+      const lost = findLostTurn([
+        seed("調べてください"),
+        { role: "tool", name: "worker.delegate", state },
+      ]);
+      assert.equal(lost?.kind, "tool", `state:${state} を拾えていません`);
+      assert.ok(lost?.message.startsWith(INTERRUPTED_TOOL_PREFIX), `state:${state} の文が違います`);
+      // どの道具で切れたのかが番頭に見える（やり直すかどうかの判断材料）
+      assert.match(lost.message, /worker\.delegate/u);
+      // 再起動用の文とは分ける
+      assert.notEqual(lost.message, RESTART_RESUME_NOTICE);
+    }
+  });
+
+  it("器（canvas.show）で終わっていても同じ扱い", () => {
+    const lost = findLostTurn([
+      seed("一覧を出して"),
+      {
+        role: "utsuwa",
+        utsuwa: {
+          kind: "facts",
+          title: "職人の一覧",
+          at: "2026-08-15T00:00:00.000Z",
+          from: { module: "worker", tool: "worker.list", artifact: "a-0001" },
+          facts: [["名", "値"]],
+        },
+      },
+    ]);
+    assert.equal(lost?.kind, "tool");
+    assert.ok(lost?.message.startsWith(INTERRUPTED_TOOL_PREFIX));
+    // 器に載せた道具の名が名指しできる（決定81(d) の `from`）
+    assert.equal(lost.original, "worker.list");
+  });
+
+  it("道具のあとに印だけ積まれていても、道具で終わっているものとして拾う", () => {
+    // `settleInterrupted` が足した知らせ・章の区切りは読み飛ばす
+    const lost = findLostTurn([
+      seed("反映してください"),
+      { role: "tool", name: "system.restart", state: "ok" },
+      { role: "notice", source: "system", text: "再起動が完了しました。中断した続きを進めてください。" },
+    ]);
+    assert.equal(lost?.kind, "restart");
+  });
+
   // ── ここから「拾わない」側 ──
 
   it("番頭が何か返していれば拾わない", () => {
     for (const answered of [
       { role: "banto", text: "承知しました" },
       { role: "reasoning", text: "考え中" },
-      { role: "tool", name: "file.read", state: "ok" },
       { role: "error", text: "落ちました" },
       { role: "branch", branchId: "thread-9" },
     ] satisfies TranscriptEntry[]) {
@@ -75,9 +146,13 @@ describe("[inc] 失われたターンの判定", () => {
     }
   });
 
-  it("道具の途中で落ちた形は拾わない（そちらは resumeInterruptedTurn の担当）", () => {
+  it("道具のあとに番頭が答えていれば拾わない（普通に終わったターン）", () => {
     assert.equal(
-      findLostTurn([seed("調べてください"), { role: "tool", name: "file.read", state: "running" }]),
+      findLostTurn([
+        seed("調べてください"),
+        { role: "tool", name: "file.read", state: "ok" },
+        { role: "banto", text: "読みました" },
+      ]),
       undefined
     );
   });
