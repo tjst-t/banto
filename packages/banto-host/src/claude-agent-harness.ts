@@ -115,8 +115,18 @@ export interface ClaudeAgentHarnessOptions {
   spawnQuery?: (args: {
     prompt: AsyncIterable<SDKUserMessage>;
     options: Options;
-  }) => AsyncIterable<unknown>;
+  }) => RunningQuery;
 }
+
+/**
+ * 走っている `query()` のうち、翻訳が使う口だけを写したもの。
+ *
+ * `getContextUsage` を任意にしてあるのは、試験の贋物が持っていなくても
+ * **壊れずに落とし先へ回る**ようにするため（実装は下の `measureContext`）。
+ */
+export type RunningQuery = AsyncIterable<unknown> & {
+  getContextUsage?: () => Promise<{ totalTokens?: number; maxTokens?: number }>;
+};
 
 /**
  * 指示の待ち行列（streaming input）。
@@ -233,6 +243,11 @@ export class ClaudeAgentHarness implements BantoHarness {
   private tokens: number | undefined;
   /** モデルの文脈長。**SDK が返したものを使う**（自前の表を持たない・D3）。 */
   private window: number | undefined;
+  /**
+   * いま話しているモデルの識別子（`init` が名乗ったもの）。
+   * `modelUsage` から**副モデルではない方**の窓を選ぶのに要る（imp-0051）。
+   */
+  private activeModel: string | undefined;
   private thinkingStartedAt: number | undefined;
 
   constructor(options: ClaudeAgentHarnessOptions) {
@@ -364,7 +379,12 @@ export class ClaudeAgentHarness implements BantoHarness {
         for await (const message of session) {
           // 畳んだ後に届く古い query の残響は流さない（章を跨いで前の章の発話が出る）
           if (generation !== this.generation) break;
-          this.translate(message as Record<string, unknown>);
+          /**
+           * **待つ**。翻訳は `result` のときだけ `query()` へ文脈長を訊きに行き、
+           * それは control request なので**イテレータを畳む前**でないと通らない
+           * （imp-0051・「Query closed before response received」で落ちる）。
+           */
+          await this.translate(message as Record<string, unknown>, session);
         }
       } catch (error) {
         // I2: 落ちたことを握りつぶさない。会話に出して、番頭とPOの両方に見えるようにする
@@ -547,12 +567,14 @@ export class ClaudeAgentHarness implements BantoHarness {
 
   // ── 語彙の翻訳（SDK のメッセージ → HarnessEvent） ──────────────────────
 
-  private translate(message: Record<string, unknown>): void {
+  private async translate(message: Record<string, unknown>, session: RunningQuery): Promise<void> {
     const type = message["type"];
 
     if (type === "system" && message["subtype"] === "init") {
       const id = message["session_id"];
       if (typeof id === "string") this.sdkSessionId = id;
+      const model = message["model"];
+      if (typeof model === "string" && model) this.activeModel = model;
       // ここまで来れば SDK 側に記録が始まっている＝次からは `resume` で戻れる（決定97）
       this.sessionExists = true;
       this.sawInit = true;
@@ -656,10 +678,22 @@ export class ClaudeAgentHarness implements BantoHarness {
        * 持つと世代が上がるたびに書き換えて回ることになり、忘れれば黙ってずれる（D3）。
        */
       const modelUsage = message["modelUsage"] as Record<string, unknown> | undefined;
-      for (const entry of Object.values(modelUsage ?? {})) {
-        const w = (entry as Record<string, unknown> | undefined)?.["contextWindow"];
-        if (typeof w === "number" && w > 0) this.window = w;
-      }
+      const declared = pickContextWindow(modelUsage, this.activeModel);
+      if (declared !== undefined) this.window = declared;
+      /**
+       * **文脈長はハーネスに訊く。`result.usage` を足し算しない**（imp-0051）。
+       *
+       * `result.usage` は「そのターン中に走った**全 API 呼び出しの累計**」であって、
+       * いま窓に載っている量ではない。道具を n 回呼ぶターンでは同じキャッシュ済み
+       * プレフィクスが n 回足し込まれる——実測で 4.98 倍（116,615 に対して実文脈長
+       * 23,422）、実際の事故では 9.7 倍に膨れて要らない章畳みを起こした。
+       *
+       * ここは `result` を処理し切る前でなければならない。control request は
+       * `query()` が生きている間しか通らず、畳んだ後は
+       * 「Query closed before response received」で落ちる（実測）。
+       */
+      const measured = await measureContext(session);
+      if (measured?.window !== undefined) this.window = measured.window;
       /**
        * **エラーで終わったターンを黙って通さない**（I2・task-0104）。
        *
@@ -690,19 +724,12 @@ export class ClaudeAgentHarness implements BantoHarness {
         }
       }
       const usage = message["usage"] as Record<string, unknown> | undefined;
-      if (usage) {
-        const total =
-          num(usage["input_tokens"]) +
-          num(usage["cache_read_input_tokens"]) +
-          num(usage["cache_creation_input_tokens"]) +
-          num(usage["output_tokens"]);
-        if (total > 0) {
-          this.tokens = total;
-          this.emit({ type: "turn_end", contextTokens: total });
-        } else {
-          this.emit({ type: "turn_end" });
-        }
+      const total = measured?.tokens ?? lastIterationTokens(usage);
+      if (total !== undefined && total > 0) {
+        this.tokens = total;
+        this.emit({ type: "turn_end", contextTokens: total });
       } else {
+        // 測れなかったターンは**前の値を捨てない**（黙って 0 に戻すと目盛りが消える）
         this.emit({ type: "turn_end" });
       }
       this.streaming = false;
@@ -716,4 +743,81 @@ export class ClaudeAgentHarness implements BantoHarness {
 
 function num(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * **いま窓に載っている量を、ハーネスに直接訊く**（imp-0051 の本命）。
+ *
+ * 実測（`tools/measure-context-tokens.ts`）では `totalTokens` が実文脈長そのもの、
+ * `maxTokens` がそのモデルの窓。足し算で出した値は同じターンで 4.98 倍だった。
+ *
+ * 取れなくても**会話は続ける**。control request は `query()` が生きている間しか
+ * 通らず、贋物の query（試験）は口すら持たない——どちらも落とし先
+ * （`lastIterationTokens`）があるので回復不能ではない（I2）。
+ */
+async function measureContext(
+  session: RunningQuery
+): Promise<{ tokens?: number; window?: number } | undefined> {
+  const ask = session.getContextUsage;
+  if (typeof ask !== "function") return undefined;
+  try {
+    const usage = await ask.call(session);
+    const tokens = num(usage?.totalTokens);
+    const window = num(usage?.maxTokens);
+    if (tokens <= 0 && window <= 0) return undefined;
+    return {
+      ...(tokens > 0 ? { tokens } : {}),
+      ...(window > 0 ? { window } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * **落とし先**（imp-0051 の (a)）: `result.usage.iterations` の最後の1件。
+ *
+ * 実測で `getContextUsage()` の値と 3 トークン差。ただし `iterations` の意味は
+ * 型定義に書かれておらず「常に最後の1往復ぶん」という確証が無いので、本命にはしない。
+ * `usage` そのものを足してはいけない——あれはターン中の累計（この関数がある理由）。
+ */
+function lastIterationTokens(usage: Record<string, unknown> | undefined): number | undefined {
+  const iterations = usage?.["iterations"];
+  if (!Array.isArray(iterations) || iterations.length === 0) return undefined;
+  const last = iterations[iterations.length - 1] as Record<string, unknown> | undefined;
+  if (!last) return undefined;
+  const total =
+    num(last["input_tokens"]) +
+    num(last["cache_read_input_tokens"]) +
+    num(last["cache_creation_input_tokens"]) +
+    num(last["output_tokens"]);
+  return total > 0 ? total : undefined;
+}
+
+/**
+ * **窓を後勝ちで上書きしない**（imp-0051）。
+ *
+ * `modelUsage` には副モデルが混ざる——実測では `claude-haiku-4-5` の 200,000 と
+ * `claude-opus-5[1m]` の 1,000,000 が同居していた。オブジェクトの鍵順は保証されない
+ * ので、回して代入していると haiku が後に来た回だけ窓が 200,000 になり、章を畳む
+ * 閾値もそのぶん落ちて**早すぎる畳み**を起こす。
+ *
+ * `init` が名乗ったモデルの鍵を採り、見つからなければ最大値へ落ちる
+ * （小さい方を選ぶ事故だけは起こさない）。
+ */
+function pickContextWindow(
+  modelUsage: Record<string, unknown> | undefined,
+  model: string | undefined
+): number | undefined {
+  const windows = new Map<string, number>();
+  for (const [key, entry] of Object.entries(modelUsage ?? {})) {
+    const w = (entry as Record<string, unknown> | undefined)?.["contextWindow"];
+    if (typeof w === "number" && w > 0) windows.set(key, w);
+  }
+  if (windows.size === 0) return undefined;
+  if (model !== undefined) {
+    const exact = windows.get(model);
+    if (exact !== undefined) return exact;
+  }
+  return Math.max(...windows.values());
 }

@@ -18,6 +18,7 @@ import { Type } from "typebox";
 
 import type { HarnessEvent } from "@banto/core";
 import { defineNamespacedTool } from "@banto/core";
+import type { RunningQuery } from "@banto/host";
 import { ClaudeAgentHarness, jsonSchemaToZodShape } from "@banto/host";
 
 function stub(name: `${string}.${string}`, parameters = Type.Object({})) {
@@ -32,23 +33,42 @@ function stub(name: `${string}.${string}`, parameters = Type.Object({})) {
   });
 }
 
-/** 翻訳だけを見るために、SDK のメッセージを直接流し込む。 */
-function feed(harness: ClaudeAgentHarness, messages: unknown[]): HarnessEvent[] {
+/** 走っている `query()` の代わり。`getContextUsage` を持たない＝落とし先へ回る形。 */
+const NO_QUERY = {
+  [Symbol.asyncIterator]: async function* () {
+    // 翻訳だけを見る試験なので、メッセージは流さない
+  },
+} as unknown as RunningQuery;
+
+/**
+ * 翻訳だけを見るために、SDK のメッセージを直接流し込む。
+ *
+ * `translate` は `result` のとき `query()` へ文脈長を訊きに行く（imp-0051）ので
+ * **非同期**。待たずに次を流すと `turn_end` の順が崩れる。
+ */
+async function feed(
+  harness: ClaudeAgentHarness,
+  messages: unknown[],
+  session: RunningQuery = NO_QUERY
+): Promise<HarnessEvent[]> {
   const out: HarnessEvent[] = [];
   harness.subscribe((e) => out.push(e));
-  const translate = (harness as unknown as { translate(m: Record<string, unknown>): void })
-    .translate;
-  for (const m of messages) translate.call(harness, m as Record<string, unknown>);
+  const translate = (
+    harness as unknown as {
+      translate(m: Record<string, unknown>, s: RunningQuery): Promise<void>;
+    }
+  ).translate;
+  for (const m of messages) await translate.call(harness, m as Record<string, unknown>, session);
   return out;
 }
 
 describe("[ADR-0020 決定91] 道具は wire 名で載り、論理名へ戻る", () => {
-  it("MCP の名前は mcp__banto__<wire名>。ドットは使わない", () => {
+  it("MCP の名前は mcp__banto__<wire名>。ドットは使わない", async () => {
     const harness = new ClaudeAgentHarness({
       systemPrompt: "sp",
       tools: [stub("worker.delegate"), stub("place.request_write")],
     });
-    const out = feed(harness, [
+    const out = await feed(harness, [
       {
         type: "assistant",
         message: {
@@ -63,9 +83,9 @@ describe("[ADR-0020 決定91] 道具は wire 名で載り、論理名へ戻る",
     assert.equal(start.name, "worker.delegate", "論理名へ戻す（決定22）");
   });
 
-  it("ツール結果は呼び出しIDで名前を引く（SDK は名前を持たない）", () => {
+  it("ツール結果は呼び出しIDで名前を引く（SDK は名前を持たない）", async () => {
     const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [stub("file.read")] });
-    const out = feed(harness, [
+    const out = await feed(harness, [
       {
         type: "assistant",
         message: {
@@ -87,9 +107,9 @@ describe("[ADR-0020 決定91] 道具は wire 名で載り、論理名へ戻る",
     assert.equal(end.isError, false);
   });
 
-  it("知らない名前はそのまま通す（黙って落とさない）", () => {
+  it("知らない名前はそのまま通す（黙って落とさない）", async () => {
     const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [] });
-    const out = feed(harness, [
+    const out = await feed(harness, [
       { type: "assistant", message: { content: [{ type: "tool_use", id: "x", name: "Bash" }] } },
     ]);
     assert.ok(out[0]?.type === "tool_start" && out[0].name === "Bash");
@@ -190,17 +210,11 @@ describe("[ADR-0020 決定93] 章の切れ目は種から始め直す", () => {
    */
   it("[事実確定] 畳んだ直後の contextTokens() は前章の実測を引きずらない", async () => {
     const { harness } = withFakeQuery({ systemPrompt: "元の人格" });
-    const out = feed(harness, [
-      {
-        type: "result",
-        usage: {
-          input_tokens: 100,
-          cache_read_input_tokens: 400,
-          cache_creation_input_tokens: 0,
-          output_tokens: 50,
-        },
-      },
-    ]);
+    const out = await feed(
+      harness,
+      [{ type: "result", usage: { input_tokens: 100, output_tokens: 50 } }],
+      queryThatReports({ totalTokens: 550 })
+    );
     assert.ok(out[0]?.type === "turn_end" && out[0].contextTokens === 550);
     assert.equal(harness.contextTokens(), 550, "前提：畳む前は前章の実測が出る");
 
@@ -211,16 +225,21 @@ describe("[ADR-0020 決定93] 章の切れ目は種から始め直す", () => {
 });
 
 describe("[ADR-0020 決定89] ターンの終わりは1回だけ", () => {
-  it("result で turn_end と run_end が1回ずつ出る", () => {
+  it("result で turn_end と run_end が1回ずつ出る", async () => {
     const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [] });
-    const out = feed(harness, [
+    const out = await feed(harness, [
       {
         type: "result",
         usage: {
-          input_tokens: 100,
-          cache_read_input_tokens: 400,
+          // ターン全体の累計。**これを足しても文脈長にはならない**（imp-0051）
+          input_tokens: 300,
+          cache_read_input_tokens: 1200,
           cache_creation_input_tokens: 0,
-          output_tokens: 50,
+          output_tokens: 150,
+          iterations: [
+            { input_tokens: 100, cache_read_input_tokens: 0, output_tokens: 50 },
+            { input_tokens: 100, cache_read_input_tokens: 400, output_tokens: 50 },
+          ],
         },
       },
     ]);
@@ -229,18 +248,18 @@ describe("[ADR-0020 決定89] ターンの終わりは1回だけ", () => {
       ["turn_end", "run_end"]
     );
     assert.ok(out[0]?.type === "turn_end" && out[0].contextTokens === 550);
-    assert.equal(harness.contextTokens(), 550);
+    assert.equal(harness.contextTokens(), 550, "累計の 1650 ではなく最後の1往復ぶん");
   });
 
-  it("使用量が無いターンは量を名乗らない（0 と偽らない・I1）", () => {
+  it("使用量が無いターンは量を名乗らない（0 と偽らない・I1）", async () => {
     const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [] });
-    const out = feed(harness, [{ type: "result" }]);
+    const out = await feed(harness, [{ type: "result" }]);
     assert.deepEqual(out, [{ type: "turn_end" }, { type: "run_end" }]);
   });
 
-  it("思考は本文と別のチャネルで出る（決定90）", () => {
+  it("思考は本文と別のチャネルで出る（決定90）", async () => {
     const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [] });
-    const out = feed(harness, [
+    const out = await feed(harness, [
       {
         type: "assistant",
         message: {
@@ -255,6 +274,145 @@ describe("[ADR-0020 決定89] ターンの終わりは1回だけ", () => {
       out.map((e) => e.type),
       ["reasoning_delta", "text_delta", "reasoning_end"]
     );
+  });
+});
+
+/** `getContextUsage` を持つ贋物の query（本物と同じ形の control 応答を返す）。 */
+function queryThatReports(usage: { totalTokens?: number; maxTokens?: number }): RunningQuery {
+  return {
+    [Symbol.asyncIterator]: async function* () {},
+    getContextUsage: async () => usage,
+  } as unknown as RunningQuery;
+}
+
+/**
+ * **文脈長は累計ではない**（imp-0051）。
+ *
+ * 実機（Agent SDK 0.3.229・2026-08-15）で確かめた前提:
+ *   - 道具を4回呼ぶ1ターンで、`result.usage` の4項を足すと **116,560**。
+ *     同じターンの `getContextUsage().totalTokens` は **23,411**（4.98 倍のずれ）
+ *   - `result.usage.iterations` の最後の1件は **23,414**（3 トークン差）
+ *   - `modelUsage` には `claude-haiku-4-5` の 200,000 と
+ *     `claude-opus-5[1m]` の 1,000,000 が**同居**していた
+ */
+describe("[imp-0051] 文脈長は足し算では出ない", () => {
+  it("走っている query が答えられるなら、その実測を採る（累計を足さない）", async () => {
+    const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [] });
+    const out = await feed(
+      harness,
+      [
+        {
+          type: "result",
+          usage: {
+            input_tokens: 3000,
+            cache_read_input_tokens: 90000,
+            cache_creation_input_tokens: 0,
+            output_tokens: 500,
+            iterations: [{ input_tokens: 20000, output_tokens: 100 }],
+          },
+        },
+      ],
+      queryThatReports({ totalTokens: 23411, maxTokens: 1_000_000 })
+    );
+    assert.ok(out[0]?.type === "turn_end" && out[0].contextTokens === 23411);
+    assert.equal(harness.contextTokens(), 23411, "93,500 の足し算でも iterations でもない");
+    assert.equal(harness.contextWindow(), 1_000_000, "窓も実測から採る");
+  });
+
+  it("実測が取れないときは iterations の最後へ落ちる（壊れない）", async () => {
+    const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [] });
+    const out = await feed(harness, [
+      {
+        type: "result",
+        usage: {
+          input_tokens: 3000,
+          cache_read_input_tokens: 90000,
+          output_tokens: 500,
+          iterations: [
+            { input_tokens: 100, output_tokens: 10 },
+            { input_tokens: 20000, cache_read_input_tokens: 3000, output_tokens: 414 },
+          ],
+        },
+      },
+    ]);
+    assert.ok(out[0]?.type === "turn_end" && out[0].contextTokens === 23414);
+    assert.equal(harness.contextTokens(), 23414);
+  });
+
+  it("control request が落ちてもターンは終わる（I2: 落とし先がある）", async () => {
+    const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [] });
+    const broken = {
+      [Symbol.asyncIterator]: async function* () {},
+      getContextUsage: async () => {
+        // 実機の文言。`query()` を畳んだ後の control request はこれで落ちる
+        throw new Error("Query closed before response received");
+      },
+    } as unknown as RunningQuery;
+    const out = await feed(
+      harness,
+      [{ type: "result", usage: { iterations: [{ input_tokens: 777 }] } }],
+      broken
+    );
+    assert.deepEqual(
+      out.map((e) => e.type),
+      ["turn_end", "run_end"],
+      "測れなかっただけで会話は死なない"
+    );
+    assert.equal(harness.contextTokens(), 777);
+  });
+
+  it("どちらも取れなければ量を名乗らない（0 と偽らない・I1）", async () => {
+    const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [] });
+    const out = await feed(harness, [
+      { type: "result", usage: { input_tokens: 3000, cache_read_input_tokens: 90000 } },
+    ]);
+    assert.deepEqual(out, [{ type: "turn_end" }, { type: "run_end" }]);
+    assert.equal(harness.contextTokens(), undefined);
+  });
+});
+
+/**
+ * **窓は後勝ちで決めない**（imp-0051）。
+ *
+ * `modelUsage` に副モデル（haiku 200,000）が混ざる。鍵の順は保証されないので、
+ * 回して代入していると haiku が後に来た回だけ窓が 1/5 になり、章を畳む閾値も
+ * そのぶん落ちる＝**要らない章畳み**が起きる。
+ */
+describe("[imp-0051] 副モデルの窓を掴まない", () => {
+  const HAIKU = "claude-haiku-4-5-20251001";
+  const OPUS = "claude-opus-5[1m]";
+  const usageFor = (keys: string[]) =>
+    Object.fromEntries(
+      keys.map((k) => [k, { contextWindow: k === HAIKU ? 200_000 : 1_000_000 }])
+    ) as Record<string, unknown>;
+
+  for (const order of [
+    [OPUS, HAIKU],
+    [HAIKU, OPUS],
+  ]) {
+    it(`init が名乗ったモデルの窓を採る（鍵の順が ${order.join(" → ")} でも）`, async () => {
+      const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [] });
+      await feed(harness, [
+        { type: "system", subtype: "init", session_id: "s1", model: OPUS },
+        { type: "result", modelUsage: usageFor(order) },
+      ]);
+      assert.equal(harness.contextWindow(), 1_000_000);
+    });
+
+    it(`名乗りが無ければ最大値へ落ちる（鍵の順が ${order.join(" → ")} でも）`, async () => {
+      const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [] });
+      await feed(harness, [{ type: "result", modelUsage: usageFor(order) }]);
+      assert.equal(harness.contextWindow(), 1_000_000, "小さい方を選ぶ事故だけは起こさない");
+    });
+  }
+
+  it("副モデルで話しているなら、その窓を採る（無条件に最大ではない）", async () => {
+    const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [] });
+    await feed(harness, [
+      { type: "system", subtype: "init", session_id: "s1", model: HAIKU },
+      { type: "result", modelUsage: usageFor([OPUS, HAIKU]) },
+    ]);
+    assert.equal(harness.contextWindow(), 200_000);
   });
 });
 
@@ -289,10 +447,10 @@ describe("[決定97] 復元の札（resume）と、新しく立てる（sessionI
     assert.equal(options.sessionId, undefined, "resume と sessionId は両立しない（SDK の型注釈）");
   });
 
-  it("一度も往復していない会話は札を名乗らない（保存すると次の起動で必ず失敗する）", () => {
+  it("一度も往復していない会話は札を名乗らない（保存すると次の起動で必ず失敗する）", async () => {
     const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [] });
     assert.equal(harness.resumeToken(), undefined);
-    feed(harness, [{ type: "system", subtype: "init", session_id: "sdk-1" }]);
+    await feed(harness, [{ type: "system", subtype: "init", session_id: "sdk-1" }]);
     assert.equal(harness.resumeToken(), "sdk-1", "init が来た＝SDK 側に記録がある");
   });
 
@@ -305,33 +463,33 @@ describe("[決定97] 復元の札（resume）と、新しく立てる（sessionI
 });
 
 describe("[決定97] 黙って終わるターンを作らない（I2）", () => {
-  it("読み戻せなかったときは知らせを出し、札を捨てて立て直す", () => {
+  it("読み戻せなかったときは知らせを出し、札を捨てて立て直す", async () => {
     const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [], resume: "gone" });
     // `start()` を通らない試験なので、この run で resume に渡した状態を作る
     Object.assign(harness as unknown as Record<string, unknown>, {
       resumedFrom: "gone",
       sawInit: false,
     });
-    const out = feed(harness, [{ type: "result", subtype: "error_during_execution" }]);
+    const out = await feed(harness, [{ type: "result", subtype: "error_during_execution" }]);
     const notice = out.find((e) => e.type === "notice");
     assert.ok(notice?.type === "notice", "黙って turn_end だけ出さない");
     assert.match(notice.text, /gone/, "何を読み戻せなかったかを名指しする");
     assert.equal(harness.resumeToken(), undefined, "死んだ札を握り続けない（会話が永久に死ぬ）");
   });
 
-  it("成功したターンでは知らせを出さない", () => {
+  it("成功したターンでは知らせを出さない", async () => {
     const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [] });
-    const out = feed(harness, [{ type: "result", subtype: "success" }]);
+    const out = await feed(harness, [{ type: "result", subtype: "success" }]);
     assert.deepEqual(
       out.map((e) => e.type),
       ["turn_end", "run_end"]
     );
   });
 
-  it("文脈長は SDK が返したものを使う（自前の表を持たない）", () => {
+  it("文脈長は SDK が返したものを使う（自前の表を持たない）", async () => {
     const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [] });
     assert.equal(harness.contextWindow(), undefined);
-    feed(harness, [
+    await feed(harness, [
       { type: "result", subtype: "success", modelUsage: { opus: { contextWindow: 200_000 } } },
     ]);
     assert.equal(harness.contextWindow(), 200_000);
@@ -339,9 +497,9 @@ describe("[決定97] 黙って終わるターンを作らない（I2）", () => 
 });
 
 describe("[決定97] 本文の差分（includePartialMessages）", () => {
-  it("差分で流したものを、後から届く全文でもう一度流さない", () => {
+  it("差分で流したものを、後から届く全文でもう一度流さない", async () => {
     const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [] });
-    const out = feed(harness, [
+    const out = await feed(harness, [
       {
         type: "stream_event",
         event: { type: "content_block_delta", delta: { type: "text_delta", text: "こん" } },
@@ -360,9 +518,9 @@ describe("[決定97] 本文の差分（includePartialMessages）", () => {
     assert.equal(harness.messageCount(), 1, "記録は全文から作る（章の要約器へ渡すため）");
   });
 
-  it("思考も差分で流れ、終わりに時間が出る（決定90）", () => {
+  it("思考も差分で流れ、終わりに時間が出る（決定90）", async () => {
     const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [] });
-    const out = feed(harness, [
+    const out = await feed(harness, [
       {
         type: "stream_event",
         event: { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "うむ" } },
@@ -375,9 +533,9 @@ describe("[決定97] 本文の差分（includePartialMessages）", () => {
     );
   });
 
-  it("道具を挟んだ2つ目の発話も流れる（掛け金を戻し忘れると消える）", () => {
+  it("道具を挟んだ2つ目の発話も流れる（掛け金を戻し忘れると消える）", async () => {
     const harness = new ClaudeAgentHarness({ systemPrompt: "sp", tools: [] });
-    const out = feed(harness, [
+    const out = await feed(harness, [
       {
         type: "stream_event",
         event: { type: "content_block_delta", delta: { type: "text_delta", text: "調べます" } },
