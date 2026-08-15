@@ -432,7 +432,8 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     description:
       "開いている**自分の枝**へ、途中から言伝を渡す（方針が変わった・前提が崩れた・返事）。\n" +
       '入: `{ threadId: "thread-12", message: "計測は不要になった。再現条件だけで畳んでよい" }`' +
-      " → 出: 「枝「…」へ渡しました」。枝は知らせとして受け取り、そのまま動き出す。\n" +
+      " → 出: 「枝「…」へ渡しました」。**渡すだけで待たない**ので、枝が動き出したかは" +
+      " thread.read で確かめる。\n" +
       "他の幹の枝へは渡せない。幹へ渡すなら thread.send。",
     parameters: Type.Object({
       threadId: Type.String({ description: "宛先の枝の id（thread.list・幹の札で分かる）" }),
@@ -489,8 +490,9 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
           {
             type: "text" as const,
             text:
-              `枝「${to.title}」へ渡しました。あちらの番頭が読んで続けます` +
-              "（結論は畳まれたときに幹へ還ります）",
+              `枝「${to.title}」へ渡しました` +
+              "（渡すだけで待たないので、動き出したかは thread.read で確かめられます）。" +
+              "結論は畳まれたときに幹へ還ります",
           },
         ],
         details: { threadId: to.id, title: to.title },
@@ -918,8 +920,11 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
           {
             type: "text" as const,
             text:
-              `幹「${to.title}」へ渡しました。あちらの番頭が読みます` +
-              "（返事が要るなら、あちらから言伝で返ってきます）",
+              `幹「${to.title}」へ渡しました` +
+              // 別の幹は thread.read で覗けない（幹をまたいで読ませない）ので、
+              // 確かめる道は示せない。**分からないことは分からないと言う**
+              "（渡すだけで待たないので、読まれたかはこちらでは分かりません）。" +
+              "返事が要るなら、あちらから言伝で返ってきます",
           },
         ],
         details: { threadId: to.id, title: to.title },
