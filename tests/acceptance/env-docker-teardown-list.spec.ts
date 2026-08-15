@@ -146,7 +146,7 @@ describe("[AC-S9d7fdb-3-3] docker driver teardown idempotency, list prefix, and 
     // Provision our docker environment via driver subprocess
     const r = invokeDriver(
       "provision",
-      { config: { compose: COMPOSE_FIXTURE }, taskId },
+      { config: { compose: COMPOSE_FIXTURE }, taskId, envId: taskId },
       120_000
     );
     assert.equal(
@@ -302,7 +302,7 @@ describe("[AC-S9d7fdb-3-3] docker driver full contract suite (7 verbs, real dock
   it("provision exits 0 and returns {handle: {...}}", () => {
     const r = invokeDriver(
       "provision",
-      { config: { compose: COMPOSE_FIXTURE }, taskId },
+      { config: { compose: COMPOSE_FIXTURE }, taskId, envId: taskId },
       120_000
     );
     assert.equal(r.exitCode, 0, `provision exited ${r.exitCode}: ${r.stderr}`);
@@ -510,7 +510,7 @@ describe("[task-0074] 相対 compose パスの解決", () => {
       const taskId = `task-compose-base-${Date.now()}`;
       const r = invokeDriver(
         "provision",
-        { config: { compose: "docker/probe.yaml" }, taskId, repoPath: repoDir },
+        { config: { compose: "docker/probe.yaml" }, taskId, envId: taskId, repoPath: repoDir },
         120_000
       );
       try {
@@ -555,7 +555,7 @@ describe("[task-0074] teardown は one-off コンテナも消す（I3）", () =>
   it("run のあとに teardown すると、oneoff ラベルのコンテナも残らない", () => {
     assertDockerAvailable();
     const taskId = `task-oneoff-${Date.now()}`;
-    const r = invokeDriver("provision", { config: { compose: COMPOSE_FIXTURE }, taskId }, 120_000);
+    const r = invokeDriver("provision", { config: { compose: COMPOSE_FIXTURE }, taskId, envId: taskId }, 120_000);
     assert.equal(r.exitCode, 0, `provision failed: ${r.stderr}`);
     const handle = (JSON.parse(r.stdout) as { handle: { project: string } }).handle;
 

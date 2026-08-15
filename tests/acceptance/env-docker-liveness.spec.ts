@@ -122,7 +122,7 @@ describe("[imp-0028] docker provision — 起動直後に終わるサービス�
   it("command が走り終えて終了する compose では provision が失敗し、原因と直し方を日本語で言う", () => {
     const r = invokeDriver(
       "provision",
-      { config: { compose: SHORT_LIVED_COMPOSE }, taskId },
+      { config: { compose: SHORT_LIVED_COMPOSE }, taskId, envId: taskId },
       120_000
     );
 
@@ -187,7 +187,7 @@ describe("[imp-0028] docker provision — 常駐するサービスは従来ど�
   it("sleep で待つだけの compose は provision が通る（既存プロファイルを壊さない）", () => {
     const r = invokeDriver(
       "provision",
-      { config: { compose: LONG_LIVED_COMPOSE }, taskId },
+      { config: { compose: LONG_LIVED_COMPOSE }, taskId, envId: taskId },
       120_000
     );
     assert.equal(r.exitCode, 0, `常駐する compose の provision は通ること: ${r.stderr}`);
@@ -215,7 +215,7 @@ describe("[imp-0028] docker provision — 短命な init が混じっていて�
   it("init が終了していても running が1本あれば provision は通り、終了は注記に残る", () => {
     const r = invokeDriver(
       "provision",
-      { config: { compose: MIXED_COMPOSE }, taskId },
+      { config: { compose: MIXED_COMPOSE }, taskId, envId: taskId },
       120_000
     );
     assert.equal(
@@ -248,7 +248,7 @@ describe("[imp-0028] docker run/healthcheck — 環境が消えたら終了し�
 
     const r = invokeDriver(
       "provision",
-      { config: { compose: LONG_LIVED_COMPOSE }, taskId },
+      { config: { compose: LONG_LIVED_COMPOSE }, taskId, envId: taskId },
       120_000
     );
     assert.equal(r.exitCode, 0, `provision failed: ${r.stderr}`);

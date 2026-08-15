@@ -165,15 +165,23 @@ describe("[spec-environment §5] 所有の記録は置き場ごとに分かれ�
 });
 
 describe("[spec-environment §5] 名前空間", () => {
-  it("プロジェクト名は banto のものと分かる形（`banto-env-<taskId>`）", async () => {
+  it("プロジェクト名は banto のものと分かる形（`banto-env-<envId>`）", async () => {
     const src = fs.readFileSync(
       path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../packages/banto-environment-pool/src/docker-driver.ts"),
       "utf-8"
     );
     assert.match(
       src,
-      /return `banto-env-\$\{taskId\}`/,
+      /return `banto-env-\$\{envId\}`/,
       "名前は二重の守りの片方。`<taskId>-docker` は他人と衝突しうる綴りだった"
+    );
+    // imp-0033: **taskId で名付けない**。同じタスクに環境は複数あり、名前を共有すると
+    // 互いのコンテナを作り直す／消す（実際に PO が 502 を2度踏んだ）。
+    // 振る舞いで見るのは env-docker-project-per-env.spec.ts
+    assert.doesNotMatch(
+      src,
+      /projectName\(taskId\)/,
+      "taskId から名前を作る経路が残っている（同じタスクの2つ目の環境が1つ目を壊す）"
     );
   });
 });

@@ -88,7 +88,7 @@ describe("[task-0084] Dockerfile を直したら、立て直したとき効く",
     writeFixture("OLD");
     const first = invoke(
       "provision",
-      { config: { compose: path.join(dir, "compose.yaml") }, taskId, workdir: dir, timeoutMs: 280_000 }
+      { config: { compose: path.join(dir, "compose.yaml") }, taskId, envId: taskId, workdir: dir, timeoutMs: 280_000 }
     );
     assert.equal(first.exitCode, 0, `1回目の provision が失敗: ${first.stderr}`);
     handle = (JSON.parse(first.stdout.trim()) as { handle: Record<string, unknown> }).handle;
@@ -105,7 +105,7 @@ describe("[task-0084] Dockerfile を直したら、立て直したとき効く",
 
     const second = invoke(
       "provision",
-      { config: { compose: path.join(dir, "compose.yaml") }, taskId, workdir: dir, timeoutMs: 280_000 }
+      { config: { compose: path.join(dir, "compose.yaml") }, taskId, envId: taskId, workdir: dir, timeoutMs: 280_000 }
     );
     assert.equal(second.exitCode, 0, `2回目の provision が失敗: ${second.stderr}`);
     handle = (JSON.parse(second.stdout.trim()) as { handle: Record<string, unknown> }).handle;
@@ -175,7 +175,7 @@ describe("[task-0084] worktree の中でも git が動く（inc-0038）", () => 
     const wtTaskId = `task-wt-${Date.now()}`;
     const prov = invoke(
       "provision",
-      { config: { compose: path.join(wtDir, "compose.yaml") }, taskId: wtTaskId, workdir: wtDir, timeoutMs: 280_000 }
+      { config: { compose: path.join(wtDir, "compose.yaml") }, taskId: wtTaskId, envId: wtTaskId, workdir: wtDir, timeoutMs: 280_000 }
     );
     assert.equal(prov.exitCode, 0, `provision が失敗: ${prov.stderr}`);
     wtHandle = (JSON.parse(prov.stdout.trim()) as { handle: Record<string, unknown> }).handle;

@@ -235,7 +235,7 @@ describe("docker ドライバの run は予算で切り、one-off を残さな�
     const r = invokeDriver(
       DOCKER_DRIVER_PATH,
       "provision",
-      { config: { compose: COMPOSE_FIXTURE }, taskId, timeoutMs: 180_000 },
+      { config: { compose: COMPOSE_FIXTURE }, taskId, envId: taskId, timeoutMs: 180_000 },
       190_000
     );
     assert.equal(r.exitCode, 0, `provision が失敗した: ${r.stderr}`);
