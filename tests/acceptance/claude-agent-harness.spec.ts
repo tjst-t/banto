@@ -397,8 +397,21 @@ describe("[決定97] 本文の差分（includePartialMessages）", () => {
  * **走らせてみないと出ない3つ**（task-0104）。翻訳だけを流し込む試験では1件も落ちない
  * ——`query()` が実際に立って終わるところにしか現れないため、起こす手続きを差し替える。
  */
+/** `message.content` の要素（本文か画像）。 */
+interface ContentBlock {
+  type: string;
+  text?: string;
+  source?: { type: string; media_type: string; data: string };
+}
+
 class FakeQuery {
+  /** **本文だけ**を取り出した写し（大半の試験はここを見れば足りる）。 */
   readonly received: string[] = [];
+  /**
+   * `message.content` を**そのまま**。画像ブロックが実際に入っているかは、
+   * 平らにした本文からは見えないのでこちらで見る。
+   */
+  readonly receivedContent: Array<string | ContentBlock[]> = [];
   /** 入力の生成器が返り切ったか（＝本物なら子プロセスが終わる）。 */
   inputClosed = false;
   private readonly pending: unknown[] = [];
@@ -407,10 +420,21 @@ class FakeQuery {
 
   constructor(
     readonly options: Record<string, unknown>,
-    prompt: AsyncIterable<{ message: { content: string } }>
+    prompt: AsyncIterable<{ message: { content: string | ContentBlock[] } }>
   ) {
     void (async () => {
-      for await (const message of prompt) this.received.push(message.message.content);
+      for await (const message of prompt) {
+        const content = message.message.content;
+        this.receivedContent.push(content);
+        this.received.push(
+          typeof content === "string"
+            ? content
+            : content
+                .filter((b) => b.type === "text")
+                .map((b) => b.text ?? "")
+                .join("")
+        );
+      }
       // 入力が尽きたら query も終わる（本物と同じ）
       this.inputClosed = true;
       this.end();
@@ -622,5 +646,152 @@ describe("[ADR-0020 決定91] 本物の道具100本のスキーマが zod へ写
       required: ["weird"],
     } as never);
     assert.equal(shape["weird"]!.safeParse({ anything: 1 }).success, true);
+  });
+});
+
+/**
+ * **画像を実際に渡す**（PO報告 2026-08-15「画像が貼れなくて困る」）。
+ *
+ * 以前は `options.images` を受け取っておきながら SDK へ渡さず、本文の末尾に
+ * 「渡せませんでした」と書き足していた。**運ぶ経路が最後の一歩で切れていた**。
+ *
+ * `SDKUserMessage.message` は Anthropic の `MessageParam` なので `content` に
+ * コンテンツブロック配列を置ける（`sdk.d.ts` → `@anthropic-ai/sdk` の `MessageParam`）。
+ * 実測（2026-08-15）：`pathToClaudeCodeExecutable` を stdin を写すだけの偽物へ
+ * 差し替えたところ、画像ブロックは一字も変えられずに子プロセスへ届いた。
+ *
+ * だから見るのは「例外が出ないこと」ではなく**中身が入っていること**。
+ */
+describe("画像の入力（claude-agent-sdk）", () => {
+  /** 1x1 の png。`data:` 接頭辞を除いた実データ（`protocol.ts` の約束どおり）。 */
+  const PNG_1X1 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+  /** 実際に SDK へ流れた `content` を取り出す。 */
+  function contentOf(spawned: FakeQuery[]): string | ContentBlock[] {
+    assert.equal(spawned.length, 1, "query が1本立っている");
+    assert.equal(spawned[0]!.receivedContent.length, 1, "発話が1つ届いている");
+    return spawned[0]!.receivedContent[0]!;
+  }
+
+  it("画像ブロックが実際に SDK へ流し込まれる（本文と一緒に）", async () => {
+    const { harness, spawned } = withFakeQuery();
+    void harness.prompt("この画面は何がおかしい？", {
+      images: [{ type: "image", data: PNG_1X1, mimeType: "image/png" }],
+    });
+    await settle();
+
+    const content = contentOf(spawned);
+    assert.ok(Array.isArray(content), "画像があるときはブロック配列で渡す");
+    assert.deepEqual(content, [
+      { type: "text", text: "この画面は何がおかしい？" },
+      {
+        type: "image",
+        source: { type: "base64", media_type: "image/png", data: PNG_1X1 },
+      },
+    ]);
+    // base64 を二重に剥がしたり `data:` を足したりしていない
+    assert.equal(
+      (content[1] as ContentBlock).source!.data,
+      PNG_1X1,
+      "受け取った実データをそのまま渡す"
+    );
+  });
+
+  it("複数枚でも全部入る（順番も保つ）", async () => {
+    const { harness, spawned } = withFakeQuery();
+    void harness.prompt("2枚見て", {
+      images: [
+        { type: "image", data: "AAAA", mimeType: "image/png" },
+        { type: "image", data: "BBBB", mimeType: "image/jpeg" },
+      ],
+    });
+    await settle();
+
+    const content = contentOf(spawned) as ContentBlock[];
+    assert.deepEqual(
+      content.filter((b) => b.type === "image").map((b) => b.source!.data),
+      ["AAAA", "BBBB"]
+    );
+  });
+
+  // Anthropic が受ける4種すべて。1つでも落ちると「貼れたのに見えない」が復活する
+  for (const mimeType of ["image/png", "image/jpeg", "image/gif", "image/webp"]) {
+    it(`${mimeType} は通る`, async () => {
+      const { harness, spawned } = withFakeQuery();
+      void harness.prompt("見て", { images: [{ type: "image", data: PNG_1X1, mimeType }] });
+      await settle();
+
+      const content = contentOf(spawned) as ContentBlock[];
+      const image = content.find((b) => b.type === "image");
+      assert.ok(image, `${mimeType} が画像ブロックとして渡っている`);
+      assert.equal(image.source!.media_type, mimeType);
+    });
+  }
+
+  it("綴りが揃っていなくても（大文字・前後の空白）落とさない", async () => {
+    const { harness, spawned } = withFakeQuery();
+    void harness.prompt("見て", {
+      images: [{ type: "image", data: PNG_1X1, mimeType: " Image/PNG " }],
+    });
+    await settle();
+
+    const content = contentOf(spawned) as ContentBlock[];
+    const image = content.find((b) => b.type === "image");
+    assert.ok(image, "綴りの揺れで画像を捨てない");
+    assert.equal(image.source!.media_type, "image/png", "SDK の綴りへ正規化して渡す");
+  });
+
+  /**
+   * I2: 渡せないものは**黙って消さない**。Anthropic が受けるのは4種だけなので、
+   * svg はここで弾かれる——弾いたことを本文で言わないと、貼った側からは
+   * 「見えているはずなのに何も言わない」に見える（一番困る形）。
+   */
+  it("対応外の形式（svg）は黙って消えず、本文で断る", async () => {
+    const { harness, spawned } = withFakeQuery();
+    void harness.prompt("この図を見て", {
+      images: [{ type: "image", data: "PHN2Zz48L3N2Zz4=", mimeType: "image/svg+xml" }],
+    });
+    await settle();
+
+    const content = contentOf(spawned);
+    // 画像ブロックが1つも無い＝渡せていない。ならば本文が理由を言っていること
+    const text = typeof content === "string" ? content : JSON.stringify(content);
+    assert.ok(!text.includes("PHN2Zz48L3N2Zz4="), "渡せない画像を無理に載せない");
+    assert.match(text, /image\/svg\+xml/, "何が弾かれたのかを名指しする");
+    assert.match(text, /渡せませんでした/, "黙って消さない");
+    assert.match(text, /png/, "次にどうすればよいかまで書く（I2）");
+    assert.match(text, /この図を見て/, "本文そのものは失わない");
+  });
+
+  it("通る画像と通らない画像が混じったら、通るぶんは渡して残りを断る", async () => {
+    const { harness, spawned } = withFakeQuery();
+    void harness.prompt("2枚", {
+      images: [
+        { type: "image", data: PNG_1X1, mimeType: "image/png" },
+        { type: "image", data: "PHN2Zz4=", mimeType: "image/svg+xml" },
+      ],
+    });
+    await settle();
+
+    const content = contentOf(spawned) as ContentBlock[];
+    assert.equal(content.filter((b) => b.type === "image").length, 1, "通るぶんは渡す");
+    assert.match(content[0]!.text!, /image\/svg\+xml/, "通らなかったぶんは本文で断る");
+  });
+
+  it("画像が0件のときは今までどおり——文字列のまま渡し、余計な注記も付けない", async () => {
+    const { harness, spawned } = withFakeQuery();
+    void harness.prompt("ただの発話");
+    await settle();
+
+    assert.equal(contentOf(spawned), "ただの発話", "ブロック配列へ変えるのは画像があるときだけ");
+  });
+
+  it("images に空配列を渡しても 0 件と同じ（注記が湧かない）", async () => {
+    const { harness, spawned } = withFakeQuery();
+    void harness.prompt("ただの発話", { images: [] });
+    await settle();
+
+    assert.equal(contentOf(spawned), "ただの発話");
   });
 });

@@ -1729,8 +1729,13 @@ async function serve(options: ServeOptions): Promise<void> {
         if (!switcher) throw new Error("この会話はバックエンドを差し替えられません");
         const harness = switcher.claude(nextId);
         console.log(`[banto] backend(${thread.id}): claude-agent-sdk / ${nextId}`);
-        // I1: このバックエンドは画像を渡せない。できないことを true と名乗らない
-        return { id: nextId, vision: false, backend, harness };
+        /**
+         * 画像は渡せる。harness が画像ブロックを SDK へ流し込む
+         * （`claude-agent-harness.ts` の `toSdkImageBlocks`／実測 2026-08-15）。
+         * **`hostModelInfo()` と揃えること**——片方だけだとモデルを選び直した
+         * 瞬間に名乗りが嘘に戻る。文脈長は依然として名乗らない（分からないので）
+         */
+        return { id: nextId, vision: true, backend, harness };
       }
 
       // ここまで来れば pi が解決できることは `supports` が確かめている

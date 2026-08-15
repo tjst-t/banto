@@ -73,8 +73,9 @@ export function toBackendOption(backend: HarnessBackendDescriptor): HarnessBacke
  * 代打（`huihui/deepseek-v4-flash-abliterated`）に pi が付けた既定値で、
  * 実際の `opus`（`claude-opus-5`）は 1,000,000 だった——名前は標準、中身は別モデル。
  *
- * だから**代打のときは能力を名乗らない**。文脈長は欄ごと落とす（「分からない」を
- * 数で埋めない・I1）。正しい値をここに定数で書くこともしない——Anthropic 側の
+ * だから**代打のときは代打の能力を名乗らない**。文脈長は欄ごと落とす（「分からない」を
+ * 数で埋めない・I1）。ただし vision は代打から借りる値ではなく**こちら側の事実**なので
+ * 別扱いにする（下の分岐を見よ）。正しい値をここに定数で書くこともしない——Anthropic 側の
  * 仕様・プラン・`CLAUDE_CODE_DISABLE_1M_CONTEXT` で変わるので、書いた瞬間に嘘になる。
  * 実測が要る経路（章の畳み）は `BantoHarness.contextWindow()` から本物を受け取っている。
  */
@@ -100,9 +101,19 @@ export function hostModelInfo(options: {
     exact.provider === resolved.provider &&
     exact.id === resolved.id;
   if (!isHostDefault || !resolved) {
-    // I1: できないほうへ倒す。`claude-agent-sdk` は実際に画像を渡せない
-    // （`onSelectModel` も同じく `vision: false` を返す）
-    return { id: options.steward.model, vision: false };
+    /**
+     * 文脈長は名乗らない（上の実測のとおり、代打の数は標準と無関係）。
+     *
+     * vision だけは別。これは**代打の能力値ではなく、こちら側が持っている事実**
+     * ——`claude-agent-sdk` バックエンドのときは harness が画像ブロックを SDK へ
+     * 実際に流し込む（`claude-agent-harness.ts` の `toSdkImageBlocks`／実測 2026-08-15）。
+     * 渡せるようになったから真を返すのであって、代打から借りてきた値ではない。
+     * pi の代打へ落ちたときは、渡せる保証がこちらに無いので false のまま（I1）。
+     *
+     * `onSelectModel`（`bin.ts`）も同じ判断で揃えること——**片方だけ直すと
+     * モデルを選び直した瞬間に嘘に戻る**。
+     */
+    return { id: options.steward.model, vision: backend === "claude-agent-sdk" };
   }
   return {
     id: options.steward.model,

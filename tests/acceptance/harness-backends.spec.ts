@@ -186,8 +186,8 @@ describe("番頭の標準モデルの能力（/api/model）", () => {
     assert.equal(info.id, "opus");
     assert.equal(info.contextWindow, undefined);
     assert.ok(!("contextWindow" in info), "分からない文脈長は欄ごと落とす（数で埋めない）");
-    // I1: このバックエンドは画像を渡せない
-    assert.equal(info.vision, false);
+    // vision は代打から借りる値ではなく、harness が画像を渡せるという**こちら側の事実**
+    assert.equal(info.vision, true);
   });
 
   // opus 固有でないことの回帰確認——このバックエンドで動く3モデルすべてに等しく効く
@@ -200,17 +200,26 @@ describe("番頭の標準モデルの能力（/api/model）", () => {
       });
       assert.equal(info.id, model);
       assert.ok(!("contextWindow" in info), "分からない文脈長は欄ごと落とす（数で埋めない）");
-      assert.equal(info.vision, false);
+      assert.equal(info.vision, true);
     });
   }
 
-  it("代打が vision を持っていても、それを標準の能力として名乗らない", () => {
+  /**
+   * **代打の能力値を借りない。**
+   *
+   * もとは claude-agent-sdk で書かれていて「代打が `vision: true` でも false を返す」を
+   * 見ていた。画像を実際に渡せるようになった今、そのバックエンドの答えは true になる
+   * ——が、それは**代打から借りたのではなくこちら側の事実**なので、借りない性質は
+   * 別の場所で見張る必要がある。pi の代打なら渡せる保証がこちらに無いので、
+   * 代打が何を名乗っていようと false のまま。ここが本来の見張り所。
+   */
+  it("pi の代打が vision を持っていても、それを標準の能力として名乗らない", () => {
     const info = hostModelInfo({
-      steward: { backend: "claude-agent-sdk", provider: "anthropic", model: "opus" },
+      steward: { backend: "pi", provider: "opencode-go", model: "消えたモデル" },
       resolved: { ...standIn, vision: true },
       resolveExact: () => undefined,
     });
-    assert.equal(info.vision, false);
+    assert.equal(info.vision, false, "代打の vision を標準の能力として借りてこない");
     assert.equal(info.contextWindow, undefined);
   });
 
@@ -223,6 +232,21 @@ describe("番頭の標準モデルの能力（/api/model）", () => {
     });
     assert.equal(info.id, "消えたモデル");
     assert.equal(info.contextWindow, undefined);
+    assert.equal(info.vision, false);
+  });
+
+  /**
+   * PO報告（2026-08-15）：「Claude Code のモデルが画像非対応扱いになっている」。
+   * 直したのは名乗りだけではない——harness が画像を SDK へ渡すようになったうえでの true。
+   * **文脈長は相変わらず名乗らない**（そちらは今も分からない）。この2つを一度に見る。
+   */
+  it("claude-agent-sdk では vision を名乗り、contextWindow は名乗らない", () => {
+    const info = hostModelInfo({
+      steward: { backend: "claude-agent-sdk", provider: "anthropic", model: "opus" },
+      resolved: { ...standIn, vision: false, contextWindow: 128_000 },
+      resolveExact: () => undefined,
+    });
+    assert.deepEqual(info, { id: "opus", vision: true });
   });
 
   it("pi で標準そのものを解けたときは、その能力をそのまま出す", () => {
@@ -260,6 +284,7 @@ describe("番頭の標準モデルの能力（/api/model）", () => {
       resolved: undefined,
       resolveExact: () => undefined,
     });
-    assert.deepEqual(info, { id: "opus", vision: false });
+    // 名前は標準のまま、文脈長は伏せ、vision はバックエンドの事実として true
+    assert.deepEqual(info, { id: "opus", vision: true });
   });
 });

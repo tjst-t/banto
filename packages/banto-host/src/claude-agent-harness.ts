@@ -34,6 +34,7 @@ import type {
   BantoHarness,
   ChapterOpening,
   HarnessEvent,
+  HarnessImage,
   HarnessPromptOptions,
   NamespacedToolDefinition,
 } from "@banto/core";
@@ -42,6 +43,50 @@ import { jsonSchemaToZodShape } from "./schema-to-zod.js";
 
 /** banto の道具を載せる MCP サーバの名前。Tool の wire 名は `mcp__banto__<name>`。 */
 export const BANTO_MCP_SERVER = "banto";
+
+/**
+ * Anthropic の `Base64ImageSource.media_type` が受ける4種**そのもの**。
+ *
+ * 増やす前に `@anthropic-ai/sdk` の `messages.d.ts`（`interface Base64ImageSource`）を見ること
+ * ——ここは推測ではなく型の写し。載っていないものを足すと API が 400 で断る。
+ */
+const SDK_IMAGE_MEDIA_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"] as const;
+
+type SdkImageMediaType = (typeof SDK_IMAGE_MEDIA_TYPES)[number];
+
+/** 画像ブロック（`SDKUserMessage.message.content` の要素）。 */
+interface SdkImageBlock {
+  type: "image";
+  source: { type: "base64"; media_type: SdkImageMediaType; data: string };
+}
+
+/**
+ * 添付画像を SDK のコンテンツブロックへ写す。**渡せないものは黙って落とさず返す**（I2）。
+ *
+ * `data` は `data:` 接頭辞を除いた実データが入っている前提（`protocol.ts` の `image` の注）。
+ * だからここで剥がしも足しもしない——二重に触ると壊れる。
+ */
+export function toSdkImageBlocks(images: readonly HarnessImage[]): {
+  blocks: SdkImageBlock[];
+  rejected: string[];
+} {
+  const blocks: SdkImageBlock[] = [];
+  const rejected: string[] = [];
+  for (const image of images) {
+    // ブラウザは `image/PNG` のような綴りも寄越す。突き合わせる前に揃える
+    const mediaType = image.mimeType.trim().toLowerCase();
+    const accepted = SDK_IMAGE_MEDIA_TYPES.find((t) => t === mediaType);
+    if (!accepted) {
+      rejected.push(image.mimeType);
+      continue;
+    }
+    blocks.push({
+      type: "image",
+      source: { type: "base64", media_type: accepted, data: image.data },
+    });
+  }
+  return { blocks, rejected };
+}
 
 export interface ClaudeAgentHarnessOptions {
   /** 系プロンプト。記憶・SKILL・道具の一覧は番頭が組んで渡す（seam の外）。 */
@@ -84,10 +129,16 @@ class PromptQueue {
   private waiting: ((v: IteratorResult<SDKUserMessage>) => void) | undefined;
   private closed = false;
 
-  push(text: string): void {
+  /**
+   * @param images 画像ブロック。**空のときは今までどおり文字列のまま**積む
+   *               ——ブロック配列へ変えるのは画像があるときだけ（振る舞いを増やさない）
+   */
+  push(text: string, images: readonly SdkImageBlock[] = []): void {
+    const content =
+      images.length > 0 ? [{ type: "text" as const, text }, ...images] : text;
     const message = {
       type: "user" as const,
-      message: { role: "user" as const, content: text },
+      message: { role: "user" as const, content },
       parent_tool_use_id: null,
     } as SDKUserMessage;
     const waiter = this.waiting;
@@ -353,18 +404,27 @@ export class ClaudeAgentHarness implements BantoHarness {
       throw new Error("このハーネスは畳まれています（dispose 済み）。新しく組み立ててください");
     }
     /**
-     * I2: **黙って落とさない。** 画像はまだ載せられないので、その旨を本文に足して
-     * 番頭に伝える——添付したのに何も言われないのが一番困る。
+     * 画像は**そのまま SDK へ渡す**。`SDKUserMessage.message` は Anthropic の
+     * `MessageParam` なので、`content` にコンテンツブロック配列を置ける
+     * （`sdk.d.ts` の `SDKUserMessage` → `@anthropic-ai/sdk` の `interface MessageParam`）。
+     *
+     * 実測（2026-08-15）：`pathToClaudeCodeExecutable` を stdin を写すだけの偽物に
+     * 差し替えて確かめたところ、画像ブロックは**一字も変えられずに**子プロセスへ届いた。
+     * 以前ここに「このバックエンドは画像を渡せない」と書いてあったのは誤り——
+     * 渡していなかっただけで、渡せないわけではなかった。
+     *
+     * I2: それでも**受けない形式は黙って落とさない**。Anthropic が受けるのは
+     * png/jpeg/gif/webp の4種だけなので（svg 等はここで弾かれる）、本文で断る。
      */
-    const images = options?.images ?? [];
+    const { blocks, rejected } = toSdkImageBlocks(options?.images ?? []);
     const body =
-      images.length > 0
-        ? `${text}\n\n（このバックエンドでは画像 ${images.length} 件を渡せませんでした。` +
-          "内容が要るなら、文章で伝えるか pi のバックエンドへ切り替えてください）"
+      rejected.length > 0
+        ? `${text}\n\n（画像 ${rejected.length} 件は形式が対応外のため渡せませんでした：` +
+          `${rejected.join("・")}。png / jpeg / gif / webp のいずれかにしてください）`
         : text;
     this.turns.push({ role: "user", text: body });
     this.streaming = true;
-    this.queue.push(body);
+    this.queue.push(body, blocks);
     this.start();
     /**
      * **ターンが終わるまで返らない**（pi と同じ約束）。
