@@ -22,6 +22,7 @@ export {
   ClaudeAgentHarness,
   BANTO_MCP_SERVER,
   type ClaudeAgentHarnessOptions,
+  type RunningQuery,
 } from "./claude-agent-harness.js";
 export { jsonSchemaToZod, jsonSchemaToZodShape } from "./schema-to-zod.js";
 export {
@@ -139,6 +140,7 @@ export {
   normalizeThreadTitle,
   trunkIdOf,
   type BranchNote,
+  type ChapterGate,
   type ThreadFactory,
   type ThreadSpec,
 } from "./threads.js";

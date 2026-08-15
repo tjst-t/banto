@@ -127,7 +127,32 @@ export class ChapterKeeper {
     return typeof h === "function" ? h() : h;
   }
   private closing = false;
+  /**
+   * **畳んでいる間だけ未解決**の掛け金（imp-0052）。
+   *
+   * 畳みには要約で30秒ほどかかる。その最中に届いた発話を**これから捨てるセッション**へ
+   * 渡すと、答えかけたところで `startChapter` に切られる（トランスクリプトの末尾が
+   * `[Request interrupted by user]` になる・thread-85 第9章で実際に起きた）。
+   * 待たせる側（server）はこれを待ってから流す。
+   */
+  private settled: { promise: Promise<void>; release: () => void } | undefined;
   private unsubscribe: (() => void) | undefined;
+
+  /** いま章を畳んでいるか（imp-0052：畳み中の発話を待たせるのに使う）。 */
+  isClosing(): boolean {
+    return this.closing;
+  }
+
+  /**
+   * **畳み終わるまで待つ。** 畳んでいなければ即座に返る（imp-0052）。
+   *
+   * 解けるのは `startChapter` が済んで**新しい章のセッションが立った後**。
+   * 畳みが失敗したときも解ける——I2：待たせたまま消さない。
+   */
+  async whenSettled(): Promise<void> {
+    const gate = this.settled;
+    if (gate) await gate.promise;
+  }
 
   constructor(options: ChapterKeeperOptions) {
     this.options = options;
@@ -208,6 +233,15 @@ export class ChapterKeeper {
   async closeChapter(): Promise<HandoffRecord | undefined> {
     if (this.closing) return undefined;
     this.closing = true;
+    // 掛け金を掛けてから畳む。**掛ける前に await を挟まない**——挟むと、その隙に
+    // 届いた発話が「畳んでいない」と見て古いセッションへ入る（imp-0052）
+    let release: () => void = () => {};
+    this.settled = {
+      promise: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+      release: () => release(),
+    };
     try {
       const { store, threadId, summarize } = this.options;
       const harness = this.harness;
@@ -254,6 +288,14 @@ export class ChapterKeeper {
       return record;
     } finally {
       this.closing = false;
+      /**
+       * **必ず放す**（I2）。畳めなかったとき・要約器が投げたときも待たせたままにしない
+       * ——放さないと、畳み中に届いた発話がどこへも届かずに消える（imp-0052）。
+       * 順序は `finally` のここ1点でしか解かないので、待っている発話は届いた順に流れる。
+       */
+      const gate = this.settled;
+      this.settled = undefined;
+      gate?.release();
     }
   }
 }

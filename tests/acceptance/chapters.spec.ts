@@ -809,3 +809,89 @@ describe("[inc-0068] 出力上限に当たって空で返ったら、一度は�
     );
   });
 });
+
+/**
+ * imp-0052「畳んでいる最中の発話が止まらない」の掛け金。
+ *
+ * `ChapterKeeper` 側の受け持ちは**掛け金の開け閉てだけ**——待たせるのはサーバ
+ * （`chapter-close-holds-speech.spec.ts`）。ここで見るのは、掛け金が
+ *   - 畳んでいる間だけ掛かること
+ *   - 解けるのが `startChapter` の**後**（新しい章のセッションが立ってから）であること
+ *   - 畳めなかったときも**必ず解ける**こと（I2：待たせたまま消さない）
+ * の3つ。
+ */
+describe("[imp-0052] 畳んでいる間だけ掛け金が掛かる", () => {
+  it("畳んでいない間は掛かっておらず、待っても素通りする", async () => {
+    const k = keeper(fakeSession([], SessionManager.inMemory()));
+    assert.equal(k.isClosing(), false);
+    // 解決しなければここで時間切れになる（node:test の既定）
+    await k.whenSettled();
+  });
+
+  it("要約している間は掛かっていて、済むと解ける", async () => {
+    const session = fakeSession([userMsg("A"), assistantMsg("B", 700)], SessionManager.inMemory());
+    let releaseSummarizer: () => void = () => {};
+    const slow = new Promise<void>((r) => (releaseSummarizer = r));
+    const k = keeper(session, {
+      summarize: async () => {
+        await slow;
+        return { summary: { topic: "話題", decisions: [], next: [] }, body: "本文" };
+      },
+    });
+
+    const closing = k.closeChapter();
+    await new Promise((r) => setImmediate(r));
+    assert.equal(k.isClosing(), true, "要約の最中は畳んでいると名乗る");
+
+    let settled = false;
+    void k.whenSettled().then(() => (settled = true));
+    await new Promise((r) => setImmediate(r));
+    assert.equal(settled, false, "要約が済むまでは解けない（ここで解くと古い方へ流れる）");
+
+    releaseSummarizer();
+    await closing;
+    await k.whenSettled();
+    assert.equal(k.isClosing(), false);
+  });
+
+  it("解けるのは startChapter の後——新しい章のセッションが立ってから", async () => {
+    const session = fakeSession([userMsg("A"), assistantMsg("B", 700)], SessionManager.inMemory());
+    const order: string[] = [];
+    let releaseSummarizer: () => void = () => {};
+    const slow = new Promise<void>((r) => (releaseSummarizer = r));
+    // `onChapterClosed` は `startChapter` の直後に呼ばれる＝新しい章が立った印
+    const k = keeper(session, {
+      onChapterClosed: () => order.push("章が立った"),
+      summarize: async () => {
+        await slow;
+        return { summary: { topic: "話題", decisions: [], next: [] }, body: "本文" };
+      },
+    });
+
+    // **畳んでいる最中に**待ち始める（畳む前に訊けば素通りするのが正しい）
+    const closing = k.closeChapter();
+    await new Promise((r) => setImmediate(r));
+    void k.whenSettled().then(() => order.push("解けた"));
+
+    releaseSummarizer();
+    await closing;
+    await new Promise((r) => setImmediate(r));
+
+    // 「解けた」が先に並ぶことは無い——先に解けると、待っていた発話が
+    // まだ立っていないセッションへ入る（＝直す前と同じ壊れ方に戻る）
+    assert.deepEqual(order, ["章が立った", "解けた"]);
+  });
+
+  it("[I2] 畳めなかったときも掛け金は解ける（待たせたまま消さない）", async () => {
+    const session = fakeSession([userMsg("A"), assistantMsg("B", 700)], SessionManager.inMemory());
+    const k = keeper(session, {
+      summarize: async () => {
+        throw new Error("要約器が落ちた");
+      },
+    });
+
+    await assert.rejects(() => k.closeChapter(), /要約器が落ちた/);
+    assert.equal(k.isClosing(), false, "掛かったままだと以後の発話が全部止まる");
+    await k.whenSettled();
+  });
+});

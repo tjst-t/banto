@@ -425,6 +425,11 @@ export class BantoHostServer {
   private modelProvider: string | undefined;
   /** PO に場を渡しておく長さ（imp-0048）。 */
   private readonly poFloorHoldMs: number;
+  /**
+   * 「章を畳んでいます」を出した会話（imp-0052）。**1回の畳みにつき1回**だけ出す
+   * ——畳み中に3つ発話が届いても、同じ文が3行並ぶのは知らせではなく雑音になる。
+   */
+  private readonly chapterHoldNoticed = new Set<string>();
   /** モデルを切り替える口（無ければ切替不可）。 */
   private readonly selectModel: BantoHostServerOptions["onSelectModel"];
   /** 購読を張り終えたスレッド。開くたびに増える。 */
@@ -809,6 +814,35 @@ export class BantoHostServer {
    * 見るのをやめて**やってみて、駄目なら steer で積み直す**。状態を覗いて分岐するより、
    * 実際の返事で決めるほうが競走に強い（I1：自己申告ではなく結果で判断する）。
    */
+  /**
+   * **畳んでいる間の発話は、捨てず・答えさせず・待たせる**（imp-0052）。
+   *
+   * 章の要約には30秒ほどかかる。その最中に届いた発話をそのまま流すと、
+   * **これから捨てるセッション**が答え始め、`startChapter` が走った瞬間に途中で切られる
+   * ——PO から見ると「返事が出かかって消える」（thread-85 第9章で実際に起きた）。
+   *
+   * 門番は戻していない（imp-0048）。走行中の入力は今までどおり受ける——待たせるのは
+   * **畳んでいる 30 秒だけ**で、待った発話は新しい章のセッションへそのまま流れる。
+   *
+   * 待っている間を無反応にしない：`announce` が真なら画面に理由を出す（PO の発話用。
+   * 知らせの経路では出さない——知らせは番頭あての用件で、待ちは PO に見せる話ではない）。
+   */
+  private async holdWhileClosingChapter(thread: Thread, announce: boolean): Promise<void> {
+    const gate = thread.chapterGate;
+    if (!gate?.isClosing()) return;
+    if (announce && !this.chapterHoldNoticed.has(thread.id)) {
+      // 待たせる理由は**この畳みにつき1回**だけ出す（発話ごとに出すと同じ文が並ぶ）
+      this.chapterHoldNoticed.add(thread.id);
+      const note =
+        "章を畳んでいます（ここまでの会話をまとめ直しています）。" +
+        "**いただいた言葉は消えていません**——畳み終わってから、新しい章でお答えします。";
+      thread.record({ role: "notice", source: "system", text: note });
+      this.broadcast({ type: "notice", threadId: thread.id, source: "system", text: note });
+    }
+    await gate.whenSettled();
+    this.chapterHoldNoticed.delete(thread.id);
+  }
+
   private async promptEvenWhileBusy(
     thread: Thread,
     text: string,
@@ -1010,6 +1044,9 @@ export class BantoHostServer {
          * 知らせが会話に並び、PO の発話の前にあったように見える。
          */
         await thread.poFloor;
+        // imp-0052: 知らせも、畳んでいる最中は待つ。これから捨てるセッションへ渡すと
+        // 番頭が答えかけたところで切られる（PO の発話と同じ壊れ方）。画面には出さない
+        await this.holdWhileClosingChapter(thread, false);
         // T2: 畳んだ宛先へ遅れて届いた知らせは、宛先を開き直してから配る
         this.reopenClosedTarget(thread);
         record(thread);
@@ -1718,6 +1755,14 @@ export class BantoHostServer {
         logged = true;
         this.recordTurn(thread, "po", turnStartedAt, ok, errorMessage);
       };
+      /**
+       * **畳んでいるなら、ここで待つ**（imp-0052）。
+       *
+       * 待つのは**発話を記録して配った後・`turn_start` の前**。記録より前で待つと
+       * PO の言葉が30秒だけ画面から消えて「届かなかった」に見え、`turn_start` より後で
+       * 待つと、まだ始まっていないターンが30秒「回答中」に見える。
+       */
+      await this.holdWhileClosingChapter(thread, true);
       turnStartedAt = Date.now(); // T1: 開始時刻は turn_start の直前（実測の起点）
       this.broadcast({ type: "turn_start", threadId: thread.id });
 
