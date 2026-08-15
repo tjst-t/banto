@@ -46,6 +46,7 @@ import {
 import { loadProfile, listProfiles } from "./profiles.js";
 import { markPrimed, PRIMED_MARKER } from "./cache-dir.js";
 import { destructiveSetupName } from "./process-guard.js";
+import { probeExposedPort } from "./exposed-probe.js";
 
 /** ログの返し方。全文は番頭の文脈を埋め、パスだけでは番頭が結果を判断できない。 */
 const DEFAULT_LOG_TAIL_LINES = 40;
@@ -788,7 +789,21 @@ export class EnvironmentPool {
    */
   async provision(request: ProvisionRequest): Promise<ProvisionResult> {
     const resolved = this.resolveRequest(request);
-    const taskId = request.taskId ?? `env-${shortId()}`;
+    /**
+     * **envId はドライバを呼ぶ前に決める**（imp-0033）。
+     *
+     * 以前は台帳に載せるとき（provision が返ってから）に振っていたので、**ドライバは
+     * 自分が今どの環境を立てているのかを知らなかった**。docker ドライバは仕方なく
+     * taskId で compose プロジェクト名を作り、同じタスクの2つ目の環境が1つ目の
+     * コンテナを作り直す／消す、という事故になった。名前の材料をここで渡す。
+     *
+     * `taskId` を渡さない呼びには、これまで**別の乱数**（`env-<shortId()>`）が
+     * taskId の代わりに立っていた。envId と綴りが似ているだけの無関係な id で、
+     * 「命名は envId 由来になっている」という誤読の元だったので envId に揃える
+     * ——ラベルが1つ減るだけで、意味は変わらない。
+     */
+    const envId = `env-${shortId()}`;
+    const taskId = request.taskId ?? envId;
     const projectTag = request.projectTag ?? "banto";
 
     // D3: quota は台帳から導出する（別カウンタを持たない）
@@ -854,6 +869,8 @@ export class EnvironmentPool {
       {
         config: resolved.config,
         taskId,
+        // imp-0033: 資源の名前は**環境ごと**に決める。taskId は「何の検証か」のラベルに戻す
+        envId,
         ...(request.workdir ? { workdir: path.resolve(request.workdir) } : {}),
         // task-0074: プロファイルを読んだ場所。ドライバは `config` の中の相対パスを
         // これを基点に解ける（`config` の中身は Pool が解釈しない・spec §2 のまま）
@@ -889,7 +906,9 @@ export class EnvironmentPool {
 
     const createdAt = new Date();
     const entry: EnvLedgerEntry = {
-      envId: `env-${shortId()}`,
+      // ドライバに渡したものと同じ id（imp-0033）。ここで振り直すと、
+      // 台帳の envId と資源の名前が別物になり、名前から環境を辿れなくなる
+      envId,
       projectTag,
       taskId,
       profileName: resolved.profileName,
@@ -1183,14 +1202,59 @@ export class EnvironmentPool {
     await this.verb(entry, "deploy", { handle: entry.handle, artifact_path: artifactPath });
   }
 
-  /** 使える状態か確かめる。 */
+  /**
+   * 使える状態か確かめる。
+   *
+   * **ドライバの申告だけでは足りない**（imp-0033）。docker の healthcheck は
+   * `docker compose ps` を見ており、それは「コンテナが動いている」ことしか言えない
+   * ——*この*環境のコンテナかどうかを言えない。実際、compose プロジェクトを共有して
+   * いた env の片方は実体を奪われたまま `ok: true` を返し、**PO は「使えます」と
+   * 言われた URL で 502 を踏んだ**。
+   *
+   * そこで、**公開している環境については公開している番号を実際に叩く**。中継（caddy）が
+   * 上流として dial する相手そのものなので、ここが繋がらなければ人も開けない。
+   * 公開していない環境（`env.verify` の使い捨て等）には叩く先が無いので、
+   * ドライバの申告がそのまま答えになる。
+   */
   async healthcheck(envId: string): Promise<{ ok: boolean; detail?: string }> {
     const entry = this.requireLive(envId);
     const output = await this.verb(entry, "healthcheck", { handle: entry.handle });
     const shaped = output as { ok?: unknown; detail?: unknown };
-    return {
+    const driverSaid = {
       ok: shaped.ok === true,
       ...(typeof shaped.detail === "string" ? { detail: shaped.detail } : {}),
+    };
+
+    // ドライバが既に「駄目」と言っているなら、叩き直しても答えは変わらない
+    if (!driverSaid.ok || entry.exposedPort === undefined) return driverSaid;
+
+    /**
+     * **起きかけを「壊れている」と言わない。**
+     *
+     * healthcheck は provision の直後にも回る（spec §3.1）。docker はコンテナが起きた
+     * 時点でホスト側の口を開けるので、中のアプリ（vite 等）がまだ bind していない一瞬は
+     * 「繋がった直後に切られる」形になる。これを一発で「使えません」と言うと、
+     * **立ち上がりの速さで答えが変わる**——それは P6 の「まれに落ちる」を機構の返り値で
+     * 作ることになる。数回・数秒だけ見直す。
+     *
+     * **無限には待たない。** 死んでいる環境は何度叩いても死んでいるので、上限を超えたら
+     * 見たままを答える（隠すのではなく、遅らせるだけ）。
+     */
+    let probe = await probeExposedPort(entry.exposedPort);
+    for (let attempt = 0; !probe.ok && attempt < 2; attempt++) {
+      await new Promise((r) => setTimeout(r, 750));
+      probe = await probeExposedPort(entry.exposedPort);
+    }
+    if (probe.ok) return driverSaid;
+
+    // I1: ドライバの「動いています」と、実際に叩いた結果の**両方**を残す。
+    // 食い違い自体が手掛かり（コンテナは動いているのに、この env の口は死んでいる）
+    return {
+      ok: false,
+      detail:
+        probe.detail +
+        `。ドライバ（${entry.driver}）は動いていると言っています` +
+        (driverSaid.detail ? `: ${driverSaid.detail}` : ""),
     };
   }
 

@@ -102,7 +102,7 @@ describe("[inc-0053] docker driver teardown cleans up leaked networks", () => {
     assertDockerAvailable();
     const taskId = `task-net-clean-${Date.now()}`;
 
-    const prov = invokeDriver("provision", { config: { compose: COMPOSE_FIXTURE }, taskId }, 120_000);
+    const prov = invokeDriver("provision", { config: { compose: COMPOSE_FIXTURE }, taskId, envId: taskId }, 120_000);
     assert.equal(prov.exitCode, 0, `provision failed: ${prov.stderr}`);
     const handle = (parseOutput(prov.stdout) as ProvisionOutput).handle as { project: string };
 
@@ -132,7 +132,7 @@ describe("[inc-0053] docker driver teardown cleans up leaked networks", () => {
     assertDockerAvailable();
     const taskId = `task-net-clean-killed-${Date.now()}`;
 
-    const prov = invokeDriver("provision", { config: { compose: COMPOSE_FIXTURE }, taskId }, 120_000);
+    const prov = invokeDriver("provision", { config: { compose: COMPOSE_FIXTURE }, taskId, envId: taskId }, 120_000);
     assert.equal(prov.exitCode, 0, `provision failed: ${prov.stderr}`);
     const handle = (parseOutput(prov.stdout) as ProvisionOutput).handle as { project: string };
 

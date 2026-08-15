@@ -66,6 +66,9 @@ function provision(taskId: string): { publishedPort?: number; handle: Record<str
   const r = invokeDriver("provision", {
     config: { compose: COMPOSE_FIXTURE, port: CONTAINER_PORT },
     taskId,
+    // imp-0033: compose プロジェクト名は envId で決まる。ここでは taskId と同じ値を渡して
+    // 従来と同じ綴り（`banto-env-<TASK_A>`）にし、この試験が見たいものだけを見る
+    envId: taskId,
   });
   assert.equal(r.exitCode, 0, `provision が失敗: ${r.stderr}`);
   const out = JSON.parse(r.stdout.trim().split("\n").pop() ?? "{}") as {

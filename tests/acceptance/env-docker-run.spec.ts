@@ -108,7 +108,7 @@ describe("[AC-S9d7fdb-3-2] docker driver run — executes in container, non-zero
     // Provision via driver subprocess
     const r = invokeDriver(
       "provision",
-      { config: { compose: COMPOSE_FIXTURE }, taskId },
+      { config: { compose: COMPOSE_FIXTURE }, taskId, envId: taskId },
       120_000
     );
     assert.equal(
@@ -267,7 +267,7 @@ describe("[AC-S9d7fdb-3-2-collect-isolation] collect log isolation — taskId-sc
     // Provision two separate environments
     const rA = invokeDriver(
       "provision",
-      { config: { compose: COMPOSE_FIXTURE }, taskId: taskIdA },
+      { config: { compose: COMPOSE_FIXTURE }, taskId: taskIdA, envId: taskIdA },
       120_000
     );
     assert.equal(rA.exitCode, 0, `provision A failed: ${rA.stderr}`);
@@ -275,7 +275,7 @@ describe("[AC-S9d7fdb-3-2-collect-isolation] collect log isolation — taskId-sc
 
     const rB = invokeDriver(
       "provision",
-      { config: { compose: COMPOSE_FIXTURE }, taskId: taskIdB },
+      { config: { compose: COMPOSE_FIXTURE }, taskId: taskIdB, envId: taskIdB },
       120_000
     );
     assert.equal(rB.exitCode, 0, `provision B failed: ${rB.stderr}`);
