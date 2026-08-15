@@ -42,6 +42,7 @@
 
 import * as fs from "node:fs";
 import { ensureCacheDir, listCacheDirs, removeCacheDir } from "./cache-dir.js";
+import { resolveGitCommonDir } from "./git-common-dir.js";
 import * as path from "node:path";
 import * as childProcess from "node:child_process";
 import * as os from "node:os";
@@ -57,6 +58,15 @@ interface DockerHandle {
   created: string;      // ISO-8601
   /** どこで動かすか（決定34d）。compose の相対パス解決と run の cwd に使う */
   workdir?: string;
+  /**
+   * 共通 git ディレクトリの絶対パス（2026-08-15）。compose へ `BANTO_GIT_COMMON_DIR` として
+   * 渡し、器の中でも git が動くようにする（`git-common-dir.ts` を見よ）。
+   *
+   * **provision で決めて持ち回る**のが要点。`run` は `workdir` を渡されないことがあり
+   * （`env.verify` の `workdir` は任意）、そのとき求め直そうとしても基点が無い。
+   * 立てたときの器と、あとから走らせる one-shot が**同じものを見る**ためにも handle が真。
+   */
+  gitCommonDir?: string;
 }
 
 // ── Docker compose project naming (I3) ────────────────────────────────────────
@@ -513,9 +523,30 @@ function handleProvision(input: Record<string, unknown>): void {
     cache = ensureCacheDir(cacheRoot, cacheKey);
   }
 
+  // **git の共通ディレクトリを、ホストと同じ絶対パスで器へ見せる**（inc-0038・2026-08-15）。
+  //
+  // リンクされたワークツリーの `.git` は `gitdir: <本体>/.git/worktrees/<名前>` と書かれた
+  // **ファイル**で、その先はホストの絶対パス。compose が渡すのは `..:/app` だけなので、
+  // 器の中では辿れず `git ls-files` は exit 128 で落ちる——**検証環境はワークツリーを
+  // 写したものであるべきで、git だけ欠けているのは器の不備**（テスト側を弱めて合わせない）。
+  //
+  // 置き場（`BANTO_CACHE_DIR`）と同じ渡し方にしてある。compose 側は
+  // `${BANTO_GIT_COMMON_DIR:-…}` で受けるので、**書いていない compose では何も起きない**。
+  //
+  // 基点は compose を解決した場所と同じ（`workdir ?? repoPath`）。`..:/app` に載るのは
+  // その場所なのだから、`.git` を読むのもそこでなければ噛み合わない。
+  const gitCommonDir = resolveGitCommonDir(workdir ?? repoPath);
+
   const budget = innerBudgetMs(input);
   const clock = startBudget(budget);
-  const cacheEnv = cache ? { ...process.env, BANTO_CACHE_DIR: cache.dir } : undefined;
+  const composeEnv =
+    cache || gitCommonDir
+      ? {
+          ...process.env,
+          ...(cache ? { BANTO_CACHE_DIR: cache.dir } : {}),
+          ...(gitCommonDir ? { BANTO_GIT_COMMON_DIR: gitCommonDir } : {}),
+        }
+      : undefined;
 
   // **用意（`setup`）は `up` の前に済ませる**（task-0089・実機で踏んだ）。
   //
@@ -530,7 +561,7 @@ function handleProvision(input: Record<string, unknown>): void {
   // 待つだけのプロファイルにとっては順序が変わるだけで、見える振る舞いは同じ。
   // **用意の成果が検証コンテナから見えない形を、立てる前に断る**（imp-0043）。
   // 何を見ているかは `assertVolumeTargetsAreNotSymlinks` に書いた。
-  assertVolumeTargetsAreNotSymlinks(project, composeFile, workdir, cacheEnv);
+  assertVolumeTargetsAreNotSymlinks(project, composeFile, workdir, composeEnv);
 
   const setup = readSetup(input);
   let setupRan = false;
@@ -541,7 +572,7 @@ function handleProvision(input: Record<string, unknown>): void {
       taskId,
       setup: setup.cmd,
       ...(workdir ? { workdir } : {}),
-      ...(cacheEnv ? { env: cacheEnv } : {}),
+      ...(composeEnv ? { env: composeEnv } : {}),
       timeoutMs: capBudget(clock.remaining(), setup.timeoutMs),
     });
     setupRan = true;
@@ -553,7 +584,7 @@ function handleProvision(input: Record<string, unknown>): void {
   const r = runCmd("docker", composeArgs(project, composeFile, ["up", "-d", "--build"]), {
     timeoutMs: upTimeout,
     ...(workdir ? { cwd: workdir } : {}),
-    ...(cacheEnv ? { env: cacheEnv } : {}),
+    ...(composeEnv ? { env: composeEnv } : {}),
   });
   if (r.timedOut) {
     // I2: 時間切れを「compose が落ちた」と混同しない。何秒で切ったかまで言う
@@ -592,6 +623,7 @@ function handleProvision(input: Record<string, unknown>): void {
     taskId,
     created,
     ...(workdir ? { workdir } : {}),
+    ...(gitCommonDir ? { gitCommonDir } : {}),
   };
 
   /**
@@ -1222,7 +1254,17 @@ function handleRun(input: Record<string, unknown>): void {
   //
   // 本体の `.git` を**同じ絶対パスに**読み取り専用で見せれば解ける。読み取り専用なのは、
   // 検証コマンドが他人のリポジトリの履歴を書き換えられては困るため（検証は読む仕事）。
+  //
+  // **見せ方は2つあり、どちらも要る**（2026-08-15）:
+  // 1. compose の `${BANTO_GIT_COMMON_DIR}` へ渡す（下の env）——**自分たちの compose**
+  //    （docker/test.yaml・docker/dev.yaml）はこれで、立てた器も one-shot も同じものを見る。
+  //    `workdir` を渡されない `run` でも handle が値を持っているので効く
+  // 2. `-v` で直に足す——**その行を書いていない他所の compose** に効かせるため。
+  //    1 と重なっても compose が同じ mount 先を1つに畳むので害はない（実測 2026-08-15）
   const gitdirMount = resolveWorktreeGitdirMount(runWorkdir);
+  // provision で決めた値が真。古い handle（この直しより前に立てた環境）には無いので、
+  // そのときだけ workdir から求め直す
+  const runGitCommonDir = handle.gitCommonDir ?? resolveGitCommonDir(runWorkdir);
   const runCacheKey = input["cacheKey"] as string | undefined;
   const runCacheRoot = input["cacheRoot"] as string | undefined;
   const runCacheDir =
@@ -1240,9 +1282,17 @@ function handleRun(input: Record<string, unknown>): void {
     {
       timeoutMs: budget,
       ...(runWorkdir ? { cwd: runWorkdir } : {}),
-      // provision と同じ置き場を見せる。渡さないと compose は既定の場所を掴み、
-      // **用意したものが `run` から見えない**（spec §5.2）
-      ...(runCacheDir ? { env: { ...process.env, BANTO_CACHE_DIR: runCacheDir } } : {}),
+      // provision と同じ置き場・同じ git ディレクトリを見せる。渡さないと compose は
+      // 既定の場所を掴み、**用意したものが `run` から見えない**（spec §5.2）
+      ...(runCacheDir || runGitCommonDir
+        ? {
+            env: {
+              ...process.env,
+              ...(runCacheDir ? { BANTO_CACHE_DIR: runCacheDir } : {}),
+              ...(runGitCommonDir ? { BANTO_GIT_COMMON_DIR: runGitCommonDir } : {}),
+            },
+          }
+        : {}),
     }
   );
 
@@ -1285,30 +1335,15 @@ function handleRun(input: Record<string, unknown>): void {
  */
 function resolveWorktreeGitdirMount(workdir: string | undefined): string | undefined {
   if (!workdir) return undefined;
-  const dotGit = path.join(workdir, ".git");
   let stat: fs.Stats;
   try {
-    stat = fs.statSync(dotGit);
+    stat = fs.statSync(path.join(workdir, ".git"));
   } catch {
     return undefined; // git 管理下ではない
   }
   if (stat.isDirectory()) return undefined; // 普通のリポジトリ。既に見えている
-
-  let text: string;
-  try {
-    text = fs.readFileSync(dotGit, "utf8");
-  } catch {
-    return undefined;
-  }
-  const match = /^gitdir:\s*(.+?)\s*$/m.exec(text);
-  if (!match) return undefined;
-
-  // `<本体>/.git/worktrees/<名前>` から `<本体>/.git` を取り出す
-  const gitdir = match[1]!;
-  const idx = gitdir.indexOf(`${path.sep}worktrees${path.sep}`);
-  const mainGitDir = idx >= 0 ? gitdir.slice(0, idx) : gitdir;
-  if (!path.isAbsolute(mainGitDir) || !fs.existsSync(mainGitDir)) return undefined;
-  return mainGitDir;
+  // 綴りは `git-common-dir.ts` が真（同じものを2度書かない）
+  return resolveGitCommonDir(workdir);
 }
 
 /**

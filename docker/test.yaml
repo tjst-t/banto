@@ -43,6 +43,18 @@
 # ——だから置き場を**小部屋に分けて**、`npm ci` が書く場所をひとつ残らず載せる。
 # 入れ子の依存を持つ workspace が増えたら、ここに小部屋を足すこと
 # （足し忘れは `tests/acceptance/env-cache-covers-nested-node-modules.spec.ts` が断る）。
+#
+# **git の共通ディレクトリを、ホストと同じ絶対パスで見せる**（2026-08-15）。
+# リンクされたワークツリーの `.git` は**ファイル**で、中身は
+# `gitdir: <本体>/.git/worktrees/<名前>`——ホストの絶対パスなので、`..:/app` しか
+# 渡していない器の中では辿れず、`git ls-files` は exit 128（`fatal: not a git repository`）。
+# git を呼ぶテストは**全部**これで落ちる（`tests/acceptance/source-hygiene.spec.ts` 等）。
+# 同じ絶対パスに置けば `gitdir:` はそのまま辿れるので、ドライバが
+# `BANTO_GIT_COMMON_DIR`（`git rev-parse --git-common-dir` の絶対パス）を渡す。
+# **read-only** なのは、検証は読む仕事だから——器がリポジトリ本体の履歴を書き換えられては困る。
+# 既定値（ドライバを通さず手で `docker compose` を叩いたとき）は compose ファイルの隣から
+# 見た `../.git`＝リポジトリ自身の `.git`。**既に `..:/app` に入っているものの二重写し**なので、
+# 新しく見せるものは無い（＝手で叩いても余計な穴が開かない）。
 services:
   test:
     build:
@@ -56,4 +68,5 @@ services:
       - ${BANTO_CACHE_DIR:-./.banto-node-modules}/root:/app/node_modules
       - ${BANTO_CACHE_DIR:-./.banto-node-modules}/pkg-banto-host:/app/packages/banto-host/node_modules
       - ${BANTO_CACHE_DIR:-./.banto-node-modules}/pkg-banto-worker-pool:/app/packages/banto-worker-pool/node_modules
+      - ${BANTO_GIT_COMMON_DIR:-../.git}:${BANTO_GIT_COMMON_DIR:-/app/.git}:ro
     command: ["sleep", "infinity"]
