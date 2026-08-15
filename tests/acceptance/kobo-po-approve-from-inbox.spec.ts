@@ -14,7 +14,7 @@
  *
  * 逆向きの確認も同じだけ大事：**LLM からは通せないままであること**（決定57 は変えていない）。
  *   - `kobo.approve`（番頭に渡っている Tool）は PO 必須のタスクを断り続ける
- *   - 承認の口（`kobo.po_approve`）は `internalTools`——番頭の在庫に載らない
+ *   - PO の判断を届ける口（`kobo.po_decide`）は `internalTools`——番頭の在庫に載らない
  *   - `inbox.resolve`（番頭に渡っている Tool）では、処理を伴う選択肢を畳めない
  *   - 配る形（`InboxItemView`）に呼び出し先は載らない
  */

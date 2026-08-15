@@ -93,7 +93,7 @@ task-0147 は「番頭ホストは合言葉を保存しない」を縛りとし�
 | どこで切れているか | 何が起きるか |
 |---|---|
 | `kobo.approve`（番頭に渡っている Tool）は `by: "banto"` しか渡さない | `Daemon.approveTask` が `po` 段のタスクを断る（**今までどおり**・試験も残す） |
-| 承認を効かせる口（`kobo.po_approve`）は `internalTools` | `ModuleRegistry.tools()` に出ない＝番頭の在庫にも提示にも載らない。モデルからは呼べない |
+| PO の判断を届ける口（`kobo.po_decide`）は `internalTools` | `ModuleRegistry.tools()` に出ない＝番頭の在庫にも提示にも載らない。モデルからは呼べない |
 | `inbox.post` に `effect` を書かせない（決定73 のまま） | 番頭が書けるのは「どの選択肢が承認か」まで。呼ぶ先を決めるのはホスト |
 | `inbox.resolve`（番頭の口）は処理を伴う選択肢を畳めない | 番頭が札を畳んで PO の押下を先回りできない。押すのは PO |
 
@@ -125,7 +125,7 @@ task-0147 は「番頭ホストは合言葉を保存しない」を縛りとし�
    前段（Caddy 等）の認証の後ろにある。中継は**その認証を継承した先**にある（決定39）
 
 **`internalTools` は番頭ホストの HTTP 面にも出る**（決定29e のまま・`module-serve.ts`）ので、
-`POST /api/kobo/tools/kobo.po_approve` も前段の認証の後ろで叩ける。ここも `via` が要るので、
+`POST /api/kobo/tools/kobo.po_decide` も前段の認証の後ろで叩ける。ここも `via` が要るので、
 通れば帳簿に出どころが残る——**隠すのではなく残す**という決定113(b) の考え方はここでも同じ。
 
 ただし**番頭のハーネスは shell を持ちうる**ので、番頭が「自分の判断で curl する」ことは
@@ -145,7 +145,7 @@ task-0147 は「番頭ホストは合言葉を保存しない」を縛りとし�
 | `packages/banto-host/src/inbox-tools.ts` | `approveAction` / `sendBackAction` / `sendBackReason`／処理を伴う選択肢は `inbox.resolve` で畳めない |
 | `packages/banto-host/src/inbox.ts` | `InboxEffect.originArg`（決定113(b)） |
 | `packages/banto-host/src/server.ts` | `runInboxEffect` に押された札と回答を渡す |
-| `packages/banto-host/src/bin.ts` | 結線の登録（`internalTools` と `resolveApproveEffect`） |
+| `packages/banto-host/src/bin.ts` | 結線の登録（`internalTools` と `resolvePoDecisionEffect`） |
 | `packages/banto-web/src/views/KoboReview.tsx` | 合言葉の入力欄を外し、`via` を添える |
 | `packages/banto-daemon/skills/kobo-review/SKILL.md` | `approveAction` を書く手順 |
 
