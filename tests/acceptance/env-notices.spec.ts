@@ -27,38 +27,42 @@ import { renderEnvNotice, startEnvNotices } from "../../packages/banto-host/src/
 import type { NamespacedToolDefinition } from "../../packages/banto-host/src/tool-registry.js";
 
 // imp-0012: テスト用の一時 state に隔離（本番のドライバ state を汚さない）
-const TEST_DRIVER_STATE = path.join(
-  os.tmpdir(),
-  "banto-process-driver-state-acceptance-env-notices.json"
-);
-const FAILING_DRIVER_STATE = path.join(
-  os.tmpdir(),
-  "banto-failing-driver-state-acceptance-env-notices.json"
-);
-process.env["BANTO_PROCESS_DRIVER_STATE"] = TEST_DRIVER_STATE;
-process.env["BANTO_FAILING_DRIVER_STATE_FILE"] = FAILING_DRIVER_STATE;
+//
+// imp-0040: **試験ごとに分ける。** 以前は `os.tmpdir()` 直下の固定パス1本を全試験で共有し、
+// `beforeEach` で rm していた。機械が混んでいるとドライバの子プロセス（tsx の起動が遅い）の
+// 読み書きが次の試験の rm を跨ぎ、**state が消える（ENOENT）／前の試験の環境が漏れる**の
+// どちらかになった——負荷をかければ単体でも落ちる、機構の穴。固定パスをやめれば踏み合わない。
+const RUN_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "env-notices-run-"));
+/** プール経由でないドライバ起動のための既定（この走行だけのもの）。試験ごとに上書きする。 */
+process.env["BANTO_PROCESS_DRIVER_STATE"] = path.join(RUN_ROOT, "process-driver-state.json");
+process.env["BANTO_FAILING_DRIVER_STATE_FILE"] = path.join(RUN_ROOT, "failing-driver-state.json");
 
 const _thisDir = path.dirname(fileURLToPath(import.meta.url));
 /** teardown が必ず失敗する本物のドライバ（偽物ではない）。 */
 const FAILING_DRIVER = path.resolve(_thisDir, "../fixtures/failing-teardown-driver.ts");
 
 after(() => {
-  fs.rmSync(TEST_DRIVER_STATE, { force: true });
-  fs.rmSync(FAILING_DRIVER_STATE, { force: true });
+  fs.rmSync(RUN_ROOT, { recursive: true, force: true });
 });
 
 let dir: string;
 let dataDir: string;
 let repo: string;
+/** この試験のドライバ state。試験ごとに変わる（固定パスにしない） */
+let failingDriverState: string;
 const pools: EnvironmentPool[] = [];
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), "env-notices-"));
+  dir = fs.mkdtempSync(path.join(RUN_ROOT, "case-"));
   dataDir = path.join(dir, "data");
   repo = path.join(dir, "repo");
   fs.mkdirSync(path.join(repo, "meta"), { recursive: true });
-  // ドライバの state が前のテストから残っていると、身に覚えのない孤児が出る
-  fs.rmSync(FAILING_DRIVER_STATE, { force: true });
+  // imp-0040: ドライバの state もこの試験専用にする。ドライバは spawn の時点の
+  // `process.env` を読むので、ここで差し替えれば以降に起きる子だけが新しい方を使う
+  // （前の試験の遅れてきた子は前の試験のファイルへ書き、こちらには届かない）
+  failingDriverState = path.join(dir, "failing-driver-state.json");
+  process.env["BANTO_FAILING_DRIVER_STATE_FILE"] = failingDriverState;
+  process.env["BANTO_PROCESS_DRIVER_STATE"] = path.join(dir, "process-driver-state.json");
 });
 
 afterEach(() => {
@@ -137,9 +141,9 @@ describe("[task-0067/a1] 衛生の出来事が Environment Pool に残る", () =
     await pool.provision({ repoPath: repo, profile: "badneck", taskId: "t-2b" });
 
     // ドライバの管理下に、台帳が知らないリソースを1つ置く（クラッシュ中に生じた孤児と同じ形）
-    const state = JSON.parse(fs.readFileSync(FAILING_DRIVER_STATE, "utf-8")) as unknown[];
+    const state = JSON.parse(fs.readFileSync(failingDriverState, "utf-8")) as unknown[];
     state.push({ name: "lost-1", taskId: "t-lost", created: new Date().toISOString() });
-    fs.writeFileSync(FAILING_DRIVER_STATE, JSON.stringify(state), "utf-8");
+    fs.writeFileSync(failingDriverState, JSON.stringify(state), "utf-8");
 
     await pool.runMaintenance();
 
@@ -175,7 +179,7 @@ describe("[task-0067/a1] 衛生の出来事が Environment Pool に残る", () =
      * 名前は同じまま、他の欄だけずらす——これで孤児と判定されるなら、立っている環境が
      * 全部孤児になる。
      */
-    const state = JSON.parse(fs.readFileSync(FAILING_DRIVER_STATE, "utf-8")) as Array<
+    const state = JSON.parse(fs.readFileSync(failingDriverState, "utf-8")) as Array<
       Record<string, unknown>
     >;
     for (const entry of state) {
@@ -183,7 +187,7 @@ describe("[task-0067/a1] 衛生の出来事が Environment Pool に残る", () =
       entry["created"] = "2000-01-01T00:00:00.000Z";
       entry["workdir"] = "/どこか/別の場所";
     }
-    fs.writeFileSync(FAILING_DRIVER_STATE, JSON.stringify(state), "utf-8");
+    fs.writeFileSync(failingDriverState, JSON.stringify(state), "utf-8");
 
     const orphans = await pool.reconcile();
     assert.deepEqual(
@@ -206,11 +210,11 @@ describe("[task-0067/a1] 衛生の出来事が Environment Pool に残る", () =
     const pool = makePool();
     // 台帳と突き合わせる相手（ドライバの管理下）を1つ増やす。**台帳には載せない**
     const addOrphan = (name: string): void => {
-      const state = fs.existsSync(FAILING_DRIVER_STATE)
-        ? (JSON.parse(fs.readFileSync(FAILING_DRIVER_STATE, "utf-8")) as unknown[])
+      const state = fs.existsSync(failingDriverState)
+        ? (JSON.parse(fs.readFileSync(failingDriverState, "utf-8")) as unknown[])
         : [];
       state.push({ name, taskId: `t-${name}`, created: new Date().toISOString() });
-      fs.writeFileSync(FAILING_DRIVER_STATE, JSON.stringify(state), "utf-8");
+      fs.writeFileSync(failingDriverState, JSON.stringify(state), "utf-8");
     };
     // 照合はドライバごとに走る＝そのドライバの環境が台帳に1つ要る（無いと list を呼ばない）
     await pool.provision({ repoPath: repo, profile: "badneck", taskId: "t-anchor" });
@@ -238,7 +242,7 @@ describe("[task-0067/a1] 衛生の出来事が Environment Pool に残る", () =
     );
 
     // 消えた孤児は忘れる（また現れたら改めて知らせる）
-    fs.writeFileSync(FAILING_DRIVER_STATE, JSON.stringify([]), "utf-8");
+    fs.writeFileSync(failingDriverState, JSON.stringify([]), "utf-8");
     await pool.runMaintenance();
     addOrphan("lost-a");
     await pool.runMaintenance();
