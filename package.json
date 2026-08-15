@@ -11,6 +11,7 @@
   "scripts": {
     "dev": "npm run dev:host & npm run dev:web",
     "dev:host": "node --import tsx packages/banto-host/src/bin.ts serve",
+    "turn-report": "node --import tsx packages/banto-host/src/turn-report.ts",
     "dev:web": "npm --prefix packages/banto-web run dev",
     "build": "tsc -b",
     "build:web": "npm --prefix packages/banto-web run build",

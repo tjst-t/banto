@@ -42,6 +42,7 @@ import { openUtsuwa } from "./canvas-utsuwa.js";
 import { fromWireToolName } from "@banto/core";
 import type { Thread, ThreadRegistry } from "./threads.js";
 import { workspaceRoot } from "./workspace.js";
+import { TurnLog } from "./turn-log.js";
 
 /**
  * 同じ面への口が既に立っているか（PO報告 2026-08-10）。
@@ -243,6 +244,12 @@ export interface BantoHostServerOptions {
    * `threadId` を省略したメッセージを捌けない。
    */
   threads: ThreadRegistry;
+  /**
+   * ターンの台帳（T1）。渡すと `turn_start`〜`turn_end` の1ターンを1行で追記する。
+   * **観測を足すだけで、ターンの扱いは変えない**。渡さなければ何もしない（no-op）——
+   * 既存の試験が素のまま組んでも壊れない。
+   */
+  turnLog?: TurnLog;
   /** 待ち受けポート。0 を渡すと空きポートが割り当てられる（テスト用）。 */
   port?: number;
   /** GUIカタログ。welcome でクライアントへ渡し、UIがコンポーネントを解決する。 */
@@ -381,6 +388,8 @@ export class BantoHostServer {
   private readonly selectModel: BantoHostServerOptions["onSelectModel"];
   /** 購読を張り終えたスレッド。開くたびに増える。 */
   private readonly attached = new Set<string>();
+  /** ターンの台帳（T1）。無ければ観測しない（既存の挙動に触れない）。 */
+  private readonly turnLog: TurnLog | undefined;
 
   /**
    * 番頭の標準モデル（会話がまだ自分のモデルを持たないときに使う）。
@@ -496,6 +505,7 @@ export class BantoHostServer {
 
   private constructor(options: BantoHostServerOptions, httpServer: http.Server) {
     this.threads = options.threads;
+    this.turnLog = options.turnLog;
     this.catalog = options.catalog;
     this.modules = options.modules;
     this.inbox = options.inbox;
@@ -786,7 +796,7 @@ export class BantoHostServer {
    */
   notify(text: string, options: NotifyOptions = {}): Promise<void> {
     const source = options.source ?? "system";
-    return this.deliverToThread(text, options.threadId, (thread) => {
+    return this.deliverToThread(text, options.threadId, source, (thread) => {
       thread.record({ role: "notice", source, text });
       this.broadcast({ type: "notice", threadId: thread.id, source, text });
     });
@@ -800,7 +810,8 @@ export class BantoHostServer {
    * ——記録の形は呼び出し側が決め、ターンを回す仕掛けはここが持つ。
    */
   nudge(threadId: string | undefined, text: string): Promise<void> {
-    return this.deliverToThread(text, threadId, () => {});
+    // 枝からの相談（決定107）。出所は「枝」なので台帳では "nudge" として残す
+    return this.deliverToThread(text, threadId, "nudge", () => {});
   }
 
   /**
@@ -809,10 +820,15 @@ export class BantoHostServer {
    * **記録の形だけが呼び出しごとに違う**（知らせの行か、枝の札か）ので、そこを渡して
    * もらう。直列化・turn_start/turn_end・失敗の記録はどの経路でも同じでなければ
    * ならない——別々に書くと、片方だけ turn_start を出さない、といった食い違いが出る。
+   *
+   * `source` は**誰がこのターンを起こしたか**（台帳 T1 の出所）。知らせは `notify` が
+   * 持っている（省略時 `system`）。枝からの相談は `nudge` が `"nudge"` を渡す。
+   * 渡ってこなかったときは台帳側で `unknown` になる。
    */
   private deliverToThread(
     text: string,
     threadId: string | undefined,
+    source: string | undefined,
     record: (thread: Thread) => void
   ): Promise<void> {
     let thread: Thread;
@@ -832,6 +848,14 @@ export class BantoHostServer {
      * 受け止め、列は必ず fulfilled で次へ渡す（I2: 消えたことにしない）。
      */
     thread.notices = thread.notices.then(async () => {
+      // T1: ターン1本を台帳へ書く口。開始時刻は turn_start の直前で取る
+      let turnStartedAt = 0;
+      let logged = false;
+      const logTurn = (ok: boolean, errorMessage?: string): void => {
+        if (logged) return; // 二重に書かない（外側の catch が拾ったとき用）
+        logged = true;
+        this.recordTurn(thread, source, turnStartedAt, ok, errorMessage);
+      };
       try {
         /**
          * **PO が場を取っている間は待つ**（imp-0048）。中断した直後に列の続きが
@@ -843,17 +867,20 @@ export class BantoHostServer {
         await thread.poFloor;
         record(thread);
         // 職人の報告でも番頭は喋り出す。ここを知らせないと画面から中断する手段が消える
+        turnStartedAt = Date.now(); // T1: 開始時刻は turn_start の直前（実測の起点）
         this.broadcast({ type: "turn_start", threadId: thread.id });
         try {
           await this.promptEvenWhileBusy(thread, text);
         } catch (err) {
           // I2: 知らせが番頭に届かなかったことを黙らせない
           thread.record({ role: "error", text: String(err) });
+          logTurn(false, String(err));
           this.broadcast({ type: "turn_end", threadId: thread.id, errorMessage: String(err) });
           return;
         }
         const lastError = thread.getLastError();
         if (lastError) thread.record({ role: "error", text: lastError });
+        logTurn(lastError === undefined, lastError);
         this.broadcast({
           type: "turn_end",
           threadId: thread.id,
@@ -866,10 +893,35 @@ export class BantoHostServer {
         } catch {
           // 記録すら書けないなら、上のログだけが痕跡になる
         }
+        logTurn(false, String(err));
         this.broadcast({ type: "turn_end", threadId: thread.id, errorMessage: String(err) });
       }
     });
     return thread.notices;
+  }
+
+  /**
+   * ターン1本を台帳へ書く（T1）。**観測を足すだけ**——書けなくてもターンは壊さない
+   * （書き込みの失敗は TurnLog 側が console.error に出すだけ）。`source` が渡って
+   * こなかったときは `unknown`。
+   */
+  private recordTurn(
+    thread: Thread,
+    source: string | undefined,
+    turnStartedAt: number,
+    ok: boolean,
+    errorMessage?: string
+  ): void {
+    this.turnLog?.append({
+      at: new Date(turnStartedAt).toISOString(),
+      threadId: thread.id,
+      threadKind: thread.kind,
+      ...(thread.parentId !== undefined ? { parentId: thread.parentId } : {}),
+      source: source ?? "unknown",
+      durationMs: Date.now() - turnStartedAt,
+      ok,
+      ...(errorMessage !== undefined ? { errorMessage } : {}),
+    });
   }
 
   /**
@@ -1477,6 +1529,15 @@ export class BantoHostServer {
         text: displayText,
         ...withAttachments,
       });
+      // T1: ターン1本を台帳へ書く口（PO の発話＝ source "po"）
+      let turnStartedAt = 0;
+      let logged = false;
+      const logTurn = (ok: boolean, errorMessage?: string): void => {
+        if (logged) return;
+        logged = true;
+        this.recordTurn(thread, "po", turnStartedAt, ok, errorMessage);
+      };
+      turnStartedAt = Date.now(); // T1: 開始時刻は turn_start の直前（実測の起点）
       this.broadcast({ type: "turn_start", threadId: thread.id });
 
       try {
@@ -1487,6 +1548,7 @@ export class BantoHostServer {
       } catch (err) {
         // I2: ターンの失敗はクライアントへ伝える。握りつぶすと会話が無応答に見える
         thread.record({ role: "error", text: String(err) });
+        logTurn(false, String(err));
         this.broadcast({ type: "turn_end", threadId: thread.id, errorMessage: String(err) });
         return;
       } finally {
@@ -1495,6 +1557,7 @@ export class BantoHostServer {
       }
       const lastError = thread.getLastError();
       if (lastError) thread.record({ role: "error", text: lastError });
+      logTurn(lastError === undefined, lastError);
       this.broadcast({
         type: "turn_end",
         threadId: thread.id,

@@ -50,6 +50,7 @@ import { guardWorkerOrigin } from "./worker-guard.js";
 import { startKoboNotices } from "./kobo-notice.js";
 import { createRemoteRelay, createRemoteSettings } from "./remote-module.js";
 import { startEnvNotices } from "./env-notice.js";
+import { TurnLog, defaultTurnLogPath } from "./turn-log.js";
 
 import { Canvas, createCanvasCatalog } from "./canvas.js";
 import { createCanvasTools } from "./canvas-tools.js";
@@ -1666,6 +1667,8 @@ async function serve(options: ServeOptions): Promise<void> {
 
   server = await BantoHostServer.start({
     threads,
+    // T1: ターンの台帳。幹のターンが何本回り、どの出所から来たかを後から数える
+    turnLog: new TurnLog(defaultTurnLogPath()),
     inbox,
     userThemes,
     port: settings.all().network?.port ?? options.port,
