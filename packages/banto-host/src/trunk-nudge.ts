@@ -36,7 +36,7 @@
  */
 
 import type { NamespacedToolDefinition } from "./tool-registry.js";
-import type { TurnToolCounts } from "./turn-log.js";
+import type { TurnNudgeKind, TurnToolCounts } from "./turn-log.js";
 
 /**
  * 幹で「自分の手で調べ物・手仕事をした」と数える道具。
@@ -123,7 +123,8 @@ export function createTrunkWorkNudge(options: TrunkWorkNudgeOptions = {}): Trunk
   let total = 0;
   let browse = 0;
   let delegateNudged = false;
-  let browseNudged = false;
+  /** 閲覧の促しを出した**時点**の回数。出していなければ undefined（0 と混ぜない・I1）。 */
+  let browseNudgeAt: number | undefined;
 
   return {
     check(tool): string | undefined {
@@ -137,20 +138,28 @@ export function createTrunkWorkNudge(options: TrunkWorkNudgeOptions = {}): Trunk
         delegateNudged = true;
         return delegateNudgeMessage(tool);
       }
-      if (browsing && browseLimit > 0 && browse >= browseLimit && !browseNudged) {
-        browseNudged = true;
+      if (browsing && browseLimit > 0 && browse >= browseLimit && browseNudgeAt === undefined) {
+        browseNudgeAt = browse;
         return browseNudgeMessage(browse);
       }
       return undefined;
     },
     counts(): TurnToolCounts {
-      return { total, browse };
+      const nudges: TurnNudgeKind[] = [];
+      if (delegateNudged) nudges.push("delegate");
+      if (browseNudgeAt !== undefined) nudges.push("browse");
+      return {
+        total,
+        browse,
+        ...(nudges.length > 0 ? { nudges } : {}),
+        ...(browseNudgeAt !== undefined ? { browseNudgeAt } : {}),
+      };
     },
     reset(): void {
       total = 0;
       browse = 0;
       delegateNudged = false;
-      browseNudged = false;
+      browseNudgeAt = undefined;
     },
   };
 }

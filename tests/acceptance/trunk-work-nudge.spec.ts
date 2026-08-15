@@ -33,7 +33,8 @@ import {
   DEFAULT_CALL_LIMIT,
 } from "@banto/host";
 import type { NamespacedToolDefinition, TrunkWorkNudge, TurnBudget } from "@banto/host";
-import { TurnLog } from "../../packages/banto-host/src/turn-log.js";
+import { TurnLog, type TurnLogEntry } from "../../packages/banto-host/src/turn-log.js";
+import { renderTurnReport, summarize } from "../../packages/banto-host/src/turn-report.js";
 // 番頭の道具箱の組み立て（本番と同じ経路で掛かっているかを見るため、ここだけ直に引く）
 import { assembleStewardContext } from "../../packages/banto-host/src/host-session.js";
 import type {
@@ -287,6 +288,173 @@ describe("[T4] 台帳にそのターンの道具呼び出し回数が残る", ()
   });
 });
 
+describe("[T4] 促しが効いたかを台帳から数えられる", () => {
+  it("**促しの種類と、出た時点の回数が残る**（委譲と閲覧は別に数えられる）", async () => {
+    const calls: string[] = [];
+    const nudge = nudgeFor("trunk", 3);
+    const read = nudgeTrunkWork(echoTool("file.read", calls), nudge);
+    const delegate = nudgeTrunkWork(echoTool("worker.delegate", calls), nudge);
+
+    await run(read);
+    await run(read);
+    assert.equal(nudge.counts().nudges, undefined, "促していないのに印が付いている");
+    assert.equal(nudge.counts().browseNudgeAt, undefined, "出ていない促しの時点が入っている");
+
+    await run(read); // 3回目＝閾値
+    await run(read); // 促されたあとも触った1回
+    await run(delegate);
+
+    const counts = nudge.counts();
+    assert.deepEqual([...(counts.nudges ?? [])], ["delegate", "browse"]);
+    assert.equal(counts.browseNudgeAt, 3, "促しが出た時点の回数が違う");
+    assert.equal(counts.browse, 4);
+    // 「促されたあとも触り続けた回数」は browse - browseNudgeAt で引ける
+    assert.equal(counts.browse - counts.browseNudgeAt!, 1);
+  });
+
+  it("**枝には促しの印が付かない**（促しが出ないのだから当然）", async () => {
+    const calls: string[] = [];
+    const nudge = nudgeFor("branch", 2);
+    const read = nudgeTrunkWork(echoTool("file.read", calls), nudge);
+    const delegate = nudgeTrunkWork(echoTool("worker.delegate", calls), nudge);
+    await run(read);
+    await run(read);
+    await run(delegate);
+    assert.equal(nudge.counts().nudges, undefined);
+    assert.equal(nudge.counts().browseNudgeAt, undefined);
+    assert.equal(nudge.counts().browse, 2, "枝でも数えはする（幹と比べるため）");
+  });
+
+  it("**ターンを跨いで持ち越さない**", async () => {
+    const calls: string[] = [];
+    const nudge = nudgeFor("trunk", 1);
+    const read = nudgeTrunkWork(echoTool("file.read", calls), nudge);
+    await run(read);
+    assert.deepEqual([...(nudge.counts().nudges ?? [])], ["browse"]);
+    nudge.reset();
+    assert.equal(nudge.counts().nudges, undefined, "前のターンの促しが残っている");
+    assert.equal(nudge.counts().browseNudgeAt, undefined);
+  });
+
+  it("**台帳の1行に `nudges` / `browseNudgeAt` が出る**（出ていないターンには出さない）", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-t4-nudge-ledger-"));
+    const file = path.join(dir, "turns.jsonl");
+    const calls: string[] = [];
+    const nudged = nudgeFor("trunk", 2);
+    const quiet = nudgeFor("trunk", 2);
+    const read = nudgeTrunkWork(echoTool("file.read", calls), nudged);
+    const quietRead = nudgeTrunkWork(echoTool("file.read", calls), quiet);
+    await run(read);
+    await run(read);
+    await run(read);
+    await run(quietRead);
+
+    const ledger = new TurnLog(file, (threadId) =>
+      threadId === "thread-1" ? nudged.counts() : quiet.counts()
+    );
+    for (const threadId of ["thread-1", "thread-2"]) {
+      ledger.append({
+        at: "2026-08-15T10:00:00.000Z",
+        threadId,
+        threadKind: "trunk",
+        source: "po",
+        durationMs: 100,
+        ok: true,
+      });
+    }
+
+    const [loud, silent] = ledger.readAll();
+    assert.deepEqual(loud?.nudges, ["browse"]);
+    assert.equal(loud?.browseNudgeAt, 2);
+    assert.equal(loud?.browseCalls, 3, "促しの後の1回が数えられていない");
+    assert.equal(silent?.nudges, undefined, "促していないターンに項目が出ている");
+    assert.equal(silent?.browseNudgeAt, undefined);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("[T4] レポート（turn-report）に促しの回数が出る", () => {
+  /** 台帳の1行を組み立てる小道具。 */
+  function entry(over: Partial<TurnLogEntry> & { threadId: string }): TurnLogEntry {
+    return {
+      at: "2026-08-15T10:00:00.000Z",
+      threadKind: "trunk",
+      source: "po",
+      durationMs: 100,
+      ok: true,
+      ...over,
+    };
+  }
+
+  it("**幹の促しが種類別に数えられる／促し後も続けたぶんが引ける**", () => {
+    const summary = summarize([
+      // 閲覧の促しが出て、そのあとも2回触った
+      entry({ threadId: "thread-1", toolCalls: 9, browseCalls: 6, nudges: ["browse"], browseNudgeAt: 4 }),
+      // 委譲の促しだけ。閲覧は促していない
+      entry({ threadId: "thread-1", toolCalls: 3, browseCalls: 0, nudges: ["delegate"] }),
+      // 促しが出て、そこで止まった（＝促しが効いた）
+      entry({ threadId: "thread-1", toolCalls: 5, browseCalls: 4, nudges: ["browse"], browseNudgeAt: 4 }),
+      // 促されていないターン
+      entry({ threadId: "thread-1", toolCalls: 2, browseCalls: 1 }),
+      // 枝は促されない
+      entry({ threadId: "thread-2", threadKind: "branch", parentId: "thread-1", toolCalls: 30, browseCalls: 28 }),
+    ]);
+
+    const trunk = summary.days[0]!.threads.find((t) => t.threadId === "thread-1")!;
+    assert.deepEqual(trunk.nudgedTurns, { delegate: 1, browse: 2 });
+    // 促し後も続けたのは1ターン・2回だけ（止まったターンは数えない）
+    assert.deepEqual(trunk.afterBrowseNudge, { turns: 1, calls: 2 });
+
+    const branch = summary.days[0]!.threads.find((t) => t.threadId === "thread-2")!;
+    assert.deepEqual(branch.nudgedTurns, { delegate: 0, browse: 0 });
+    assert.deepEqual(branch.afterBrowseNudge, { turns: 0, calls: 0 });
+  });
+
+  it("**T4 以前の行は 0 として数える**（項目が無いものを「促した」に化けさせない・I1）", () => {
+    const summary = summarize([
+      entry({ threadId: "thread-1" }),
+      entry({ threadId: "thread-1", toolCalls: 12, browseCalls: 12 }),
+    ]);
+    const trunk = summary.days[0]!.threads[0]!;
+    assert.deepEqual(trunk.nudgedTurns, { delegate: 0, browse: 0 });
+    assert.deepEqual(trunk.afterBrowseNudge, { turns: 0, calls: 0 });
+  });
+
+  it("**`--json` にも入る**（機械で読む側が同じ数字を引ける）", () => {
+    const summary = summarize([
+      entry({ threadId: "thread-1", toolCalls: 9, browseCalls: 6, nudges: ["browse", "delegate"], browseNudgeAt: 4 }),
+    ]);
+    const round = JSON.parse(JSON.stringify(summary)) as typeof summary;
+    const trunk = round.days[0]!.threads[0]!;
+    assert.deepEqual(trunk.nudgedTurns, { delegate: 1, browse: 1 });
+    assert.deepEqual(trunk.afterBrowseNudge, { turns: 1, calls: 2 });
+  });
+
+  it("**画面（--json でない側）の幹の行に出る**——促されていない幹も「なし」と読める", () => {
+    const printed = renderTurnReport(
+      summarize([
+        entry({ threadId: "thread-1", toolCalls: 9, browseCalls: 6, nudges: ["browse"], browseNudgeAt: 4 }),
+        entry({ threadId: "thread-2", toolCalls: 2, browseCalls: 0 }),
+      ])
+    );
+    assert.match(printed, /thread-1.*促し 委譲:0 閲覧:1\(促し後も 2回\/1ターン\)/u);
+    assert.match(printed, /thread-2.*促し なし/u, "促されていない幹が読めない");
+  });
+
+  it("**既存の集計（本数・busy・source 別）は変わらない**", () => {
+    const summary = summarize([
+      entry({ threadId: "thread-1", source: "worker", durationMs: 300 }),
+      entry({ threadId: "thread-1", source: "po", durationMs: 200, nudges: ["browse"], browseNudgeAt: 4, browseCalls: 9 }),
+    ]);
+    const trunk = summary.days[0]!.threads[0]!;
+    assert.equal(trunk.turns, 2);
+    assert.equal(trunk.busyMs, 500);
+    assert.deepEqual(trunk.bySource, { worker: 1, po: 1 });
+    // 合計の形は変えない（読む側が壊れる）
+    assert.deepEqual(summary.total, { turns: 2, busyMs: 500 });
+  });
+});
+
 describe("[T4] 既存のターン予算（60/100/120）は1ミリも変わらない", () => {
   /** 予算と促しの両方を掛けた道具箱（本番と同じ組み立て）。 */
   function assembled(
@@ -359,7 +527,12 @@ describe("[T4] 既存のターン予算（60/100/120）は1ミリも変わらな
 
     await tool.execute({ i: 1 }, {} as never);
     await tool.execute({ i: 2 }, {} as never);
-    assert.deepEqual(nudge.counts(), { total: 2, browse: 2 });
+    assert.deepEqual(nudge.counts(), {
+      total: 2,
+      browse: 2,
+      nudges: ["browse"],
+      browseNudgeAt: 2,
+    });
 
     // ハーネスの継ぎ目（新しい入力）で数え直る。促しも同じ切れ目に乗っている
     const harness = withTurnBudgetReset(new FakeHarness(), budget);

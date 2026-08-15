@@ -5,6 +5,10 @@
  * **日付ごと・スレッドごとのターン本数・busy 合計（durationMs の和）・source 別内訳**を
  * 標準出力へ出す。幹と枝は `threadKind` で見分けられる。
  *
+ * T4 から**促しの回数**も出す：幹の行に「委譲の促し／閲覧の促しが出たターン本数」と
+ * 「促されたあとも同じターンで触り続けた回数」。**促すだけで足りるのか、断る側へ
+ * 寄せるのか**は、この数字が縮まるかどうかで決める（`--json` にも同じものが入る）。
+ *
  * 集計は純粋関数 `summarize` に任せ、ここは読み出しと表示だけ（試験は関数を直接叩く）。
  * 台帳が無い・1行も無いときは「まだ1行も無い」と言って exit 0（落ちない）。
  *
@@ -32,6 +36,22 @@ export interface ThreadTurnStats {
   busyMs: number;
   /** source 別のターン本数。 */
   bySource: Record<string, number>;
+  /**
+   * **促しが出たターン本数**（T4）。種類別に数える——効き方が違うので混ぜない。
+   * 促しは幹でしか出ないので、枝の行は 0 のまま。
+   */
+  nudgedTurns: { delegate: number; browse: number };
+  /**
+   * **閲覧の促しが効かなかった量**（T4）。促しが出たあとも同じターンで触り続けたぶん。
+   *
+   *   - `turns`: 促しが出たあと、さらに1回以上触ったターン本数
+   *   - `calls`: その追加の呼び出し回数の合計（`browseCalls - browseNudgeAt` の和）
+   *
+   * ここが縮まらないなら「促すだけ」では足りない＝断る側へ寄せる根拠になる。
+   * **古い台帳の行（T4 以前）には項目が無い**ので、その行は 0 として数える
+   * ——「促したのに続けた」に化けさせない（I1）。
+   */
+  afterBrowseNudge: { turns: number; calls: number };
 }
 
 /** 日付1日分の集計。 */
@@ -77,12 +97,24 @@ export function summarize(
         turns: 0,
         busyMs: 0,
         bySource: {},
+        nudgedTurns: { delegate: 0, browse: 0 },
+        afterBrowseNudge: { turns: 0, calls: 0 },
       };
       threads.set(entry.threadId, stats);
     }
     stats.turns += 1;
     stats.busyMs += entry.durationMs;
     stats.bySource[entry.source] = (stats.bySource[entry.source] ?? 0) + 1;
+    // T4: 促しが出たか（種類別）と、促されたあとも触り続けたか
+    if (entry.nudges?.includes("delegate")) stats.nudgedTurns.delegate += 1;
+    if (entry.nudges?.includes("browse")) stats.nudgedTurns.browse += 1;
+    if (entry.browseNudgeAt !== undefined && entry.browseCalls !== undefined) {
+      const after = entry.browseCalls - entry.browseNudgeAt;
+      if (after > 0) {
+        stats.afterBrowseNudge.turns += 1;
+        stats.afterBrowseNudge.calls += after;
+      }
+    }
     totalTurns += 1;
     totalBusyMs += entry.durationMs;
   }
@@ -120,9 +152,32 @@ function sourceLine(bySource: Record<string, number>): string {
   return parts.length > 0 ? parts.join(" ") : "—";
 }
 
-function printText(summary: TurnSummary): void {
+/**
+ * 促しの表示（T4）。**幹の行には必ず出す**——「1回も促されていない」は良い報せで、
+ * 出ていないと「そもそも数えていないのか」と区別が付かない。枝の行は促しが出ない
+ * 前提なので、0 のときは黙る（出ていたら機構の不具合なので、そのときだけ見える）。
+ */
+function nudgeLine(thread: ThreadTurnStats): string {
+  const { delegate, browse } = thread.nudgedTurns;
+  if (delegate === 0 && browse === 0) {
+    return thread.threadKind === "trunk" ? "  促し なし" : "";
+  }
+  const after =
+    thread.afterBrowseNudge.turns > 0
+      ? `(促し後も ${thread.afterBrowseNudge.calls}回/${thread.afterBrowseNudge.turns}ターン)`
+      : "";
+  return `  促し 委譲:${delegate} 閲覧:${browse}${after}`;
+}
+
+/**
+ * 画面へ出す文字列を組み立てる（純粋関数）。**出力と表示を分ける**——ここを
+ * `console.log` に直書きしていると、出た形を試験で確かめる手段が無い（I1: 出ているはず、
+ * では確かめたことにならない）。
+ */
+export function renderTurnReport(summary: TurnSummary): string {
+  const lines: string[] = [];
   for (const day of summary.days) {
-    console.log(day.date);
+    lines.push(day.date);
     for (const thread of day.threads) {
       const kind =
         thread.threadKind === "branch"
@@ -130,12 +185,13 @@ function printText(summary: TurnSummary): void {
           : thread.threadKind === "trunk"
             ? "幹"
             : "?";
-      console.log(
-        `  ${thread.threadId} [${kind}]  ${thread.turns}ターン  busy ${thread.busyMs}ms  ${sourceLine(thread.bySource)}`
+      lines.push(
+        `  ${thread.threadId} [${kind}]  ${thread.turns}ターン  busy ${thread.busyMs}ms  ${sourceLine(thread.bySource)}${nudgeLine(thread)}`
       );
     }
   }
-  console.log(`合計: ${summary.total.turns}ターン / busy ${summary.total.busyMs}ms`);
+  lines.push(`合計: ${summary.total.turns}ターン / busy ${summary.total.busyMs}ms`);
+  return lines.join("\n");
 }
 
 function main(): void {
@@ -150,7 +206,7 @@ function main(): void {
   if (options.json) {
     console.log(JSON.stringify(summary, null, 2));
   } else {
-    printText(summary);
+    console.log(renderTurnReport(summary));
   }
 }
 

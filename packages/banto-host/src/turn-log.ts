@@ -25,7 +25,25 @@ export interface TurnToolCounts {
   total: number;
   /** うち `file.*` / `git.*`（自分の手で調べ物・手仕事をした回数）。 */
   browse: number;
+  /**
+   * そのターンで出た促しの種類（T4）。**促しは幹でしか出ない**ので、枝の行では常に空。
+   * 出ていないターンでは省略（空配列を毎行書かない）。
+   */
+  nudges?: readonly TurnNudgeKind[];
+  /**
+   * 閲覧の促しが出た**時点**の `browse` 回数（＝その時の閾値）。
+   *
+   * `browse - browseNudgeAt` が「**促されたあとも幹で触り続けた回数**」になる。
+   * 促しを「断る側へ寄せるか」の判断は、この差が縮まるかどうかで測る。
+   */
+  browseNudgeAt?: number;
 }
+
+/**
+ * 促しの種類（T4）。**委譲と閲覧は別に数える**——効き方が違うので、混ぜると
+ * 「どちらの促しが効いていないのか」が読めなくなる。
+ */
+export type TurnNudgeKind = "delegate" | "browse";
 
 /** ターン1本分の記録。1ターン＝1行。 */
 export interface TurnLogEntry {
@@ -53,6 +71,15 @@ export interface TurnLogEntry {
   toolCalls?: number;
   /** うち `file.*` / `git.*` の回数（T4）。数えが取れなかったときは省略。 */
   browseCalls?: number;
+  /**
+   * そのターンで出た促しの種類（T4）。出なかったターンでは省略。
+   *
+   * **促しが効いたかを後から数えるための項目**。「促すだけ」で足りるのか、断る側へ
+   * 寄せるのかは計測が出てから決める——ここが無いと、その判断が永久にできない。
+   */
+  nudges?: TurnNudgeKind[];
+  /** 閲覧の促しが出た時点の `browseCalls`（T4）。出なかったターンでは省略。 */
+  browseNudgeAt?: number;
 }
 
 /** 台帳の既定の置き場。`dataDir()`（bin.ts）と同じ規則。 */
@@ -86,7 +113,18 @@ export class TurnLog {
     const line: TurnLogEntry =
       counted === undefined
         ? entry
-        : { ...entry, toolCalls: counted.total, browseCalls: counted.browse };
+        : {
+            ...entry,
+            toolCalls: counted.total,
+            browseCalls: counted.browse,
+            // 促しが出なかったターンでは項目ごと出さない（空配列を毎行書かない）
+            ...(counted.nudges !== undefined && counted.nudges.length > 0
+              ? { nudges: [...counted.nudges] }
+              : {}),
+            ...(counted.browseNudgeAt !== undefined
+              ? { browseNudgeAt: counted.browseNudgeAt }
+              : {}),
+          };
     try {
       // ディレクトリが無ければ作る（初回起動時）
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
