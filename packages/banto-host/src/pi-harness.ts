@@ -250,6 +250,14 @@ export class PiHarness implements BantoHarness {
 
     // ターンの終わりに、そのターンで運んだトークン数が分かる。
     // **入力＋キャッシュ＋出力**＝次のターンで運ぶ量の目安（文脈の使用量として出す）
+    //
+    // **pi の usage はターンの累計ではない**——imp-0051 で claude 側が踏んだ穴（`result.usage`
+    // が全 API 呼び出しの累計で、道具の回数だけ膨れる）は、ここには無い。pi の `turn_end` は
+    // provider へ1回投げるごとに出て（`AgentLoopHooks.prepareNextTurn` の注：「after `turn_end`
+    // and before the loop decides whether another provider request should start」）、
+    // `message.usage` はその1回ぶんを `=` で入れている（pi-ai `api/anthropic-messages.js`:
+    // `output.usage.input = event.message.usage.input_tokens`）。だからこの足し算は
+    // 「いま窓に載っている量」で、claude 側と見比べて直しに来る必要は無い。
     if (e?.type === "turn_end") {
       const usage = (e as { message?: { usage?: Record<string, unknown> } }).message?.usage;
       if (usage) {
