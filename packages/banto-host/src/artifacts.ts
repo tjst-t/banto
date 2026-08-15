@@ -32,6 +32,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AnyBantoTool, BantoToolResult, NamespacedToolDefinition } from "@banto/core";
+import { describeKeys, rowArrayKeys } from "./canvas-utsuwa.js";
 
 /** 退避した1件。 */
 export interface ArtifactRef {
@@ -331,6 +332,8 @@ export function renderStub(params: {
   args: unknown;
   ref: ArtifactRef;
   outline: string;
+  /** 器に載せるときの鍵の案内（`describeDetails`）。 */
+  shape?: string;
 }): string {
   const args = summarizeArgs(params.args);
   return [
@@ -338,9 +341,38 @@ export function renderStub(params: {
     "",
     params.outline,
     "",
+    ...(params.shape ? [`器に載せるなら: ${params.shape}`, ""] : []),
     `全文・部分読み: artifact.read({ id: "${params.ref.id}", offset, limit }) / 語で絞るなら grep`,
     "**この出力は文脈に載せていない。必要な箇所だけ artifact.read で読むこと。**",
   ].join("\n");
+}
+
+/**
+ * 栞に添える「この観測の中身の形」（imp-0035）。
+ *
+ * **番頭は `details` の鍵名を知る手段を他に持たない。** `artifact.read` が読むのは本文
+ * （`.md`）だけで、器が見るのは素性（`details`）のほう——鍵名が分からなければ
+ * `canvas.show` の `path` は書けず、器はほぼ必ず外れる。だからここで名前を渡す。
+ *
+ * これは番頭への案内であって PO が見る観測ではないので、件数のような具体を書いてよい。
+ */
+export function describeDetails(details: unknown): string | undefined {
+  if (Array.isArray(details)) {
+    return `そのものが ${details.length} 件の配列（path は要らない）`;
+  }
+  const keys = describeKeys(details);
+  if (!keys) return undefined;
+  const arrays = rowArrayKeys(details);
+  if (arrays.length === 1) {
+    return `鍵は ${keys}・行の配列は \`${arrays[0]}\`（path: "${arrays[0]}"）`;
+  }
+  if (arrays.length > 1) {
+    return (
+      `鍵は ${keys}・行の配列になり得るのは ${arrays.map((k) => `\`${k}\``).join(" / ")}` +
+      "（path でどれか1つを指す）"
+    );
+  }
+  return `鍵は ${keys}（行の配列は無し）`;
 }
 
 /** 引数を1行に潰す。長いものは切る（栞が長くては意味がない）。 */
@@ -418,13 +450,22 @@ export function withArtifactOffload(
           text,
           ...(result.details !== undefined ? { details: result.details } : {}),
         });
+        // **鍵名を栞に載せる**（imp-0035）。器は素性（`details`）から作るのに、番頭は
+        // その中身を覗く口を持っていない——名前が分からなければ `path` は書けない
+        const shape =
+          result.details !== undefined ? describeDetails(result.details) : undefined;
         if (text.length <= threshold) {
           // 小さい結果は本文をそのまま返す。**引換番号だけ1行添える**——これが無いと
           // 番頭は「どのツール結果を」を指せず、器に載せるためにデータを言い直す
           return {
             content: [
               ...result.content,
-              { type: "text" as const, text: `［観測 ${ref.id}｜canvas.show で器に載せられる］` },
+              {
+                type: "text" as const,
+                text:
+                  `［観測 ${ref.id}｜canvas.show で器に載せられる` +
+                  `${shape ? `｜${shape}` : ""}］`,
+              },
             ],
             ...(result.details !== undefined ? { details: result.details } : {}),
           };
@@ -435,6 +476,7 @@ export function withArtifactOffload(
           args,
           ref,
           outline: outlineOf(text),
+          ...(shape ? { shape } : {}),
         });
         // details（GUI 向け）はそのまま通す。画面では今までどおり全部見える
         return {

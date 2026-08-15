@@ -160,7 +160,7 @@ export function createCanvasTools(
     name: "canvas.show",
     label: "Canvas: Show",
     description:
-      "**Tool の戻り値（退避済みの観測）を器に載せて会話に出す**。データは書き直さない。\n例: {utsuwa: \"table\", artifact: \"a-0007\", path: \"envs.items\", title: \"立っている環境\"} → 器を1つ\nutsuwa と path は英語で埋める。判断を求めるものは器ではなく inbox.post へ。",
+      "**Tool の戻り値（退避済みの観測）を器に載せて会話に出す**。データは書き直さない。\n例: {utsuwa: \"list\", artifact: \"a-0007\", path: \"workers\", title: \"動いている職人\"} → 器を1つ\npath に書く鍵名は栞（［観測 …］の行）に出ている。行の配列が1つだけなら省ける。\nutsuwa と path は英語で埋める。判断を求めるものは器ではなく inbox.post へ。",
     parameters: Type.Object({
       utsuwa: StringEnum(SHOWABLE_UTSUWA_KINDS),
       artifact: Type.Optional(
