@@ -340,10 +340,12 @@ describe("[Scc9152-2-fix2] gate_evaluated events are deduplicated", () => {
     const blockedBeforeCount = eventsBeforeResolve.filter((e) => e.passed === false).length;
     assert.equal(blockedBeforeCount, 1, "should have exactly 1 blocked event before any change");
 
-    // Partially resolve: advance dep-a to approved (resolved), dep-b stays implementing
+    // Partially resolve: advance dep-a to merged (resolved), dep-b stays implementing.
+    // imp-0041: 'approved' no longer resolves a dependency — only a landed merge does,
+    // so the walk has to go all the way to 'merged' to leave the blocking set.
     await transitionTask(
       base, "proj-fix2", "dep-a-fix2",
-      "auditing", "review-ready", "in-review", "approved"
+      "auditing", "review-ready", "in-review", "approved", "merging", "merged"
     );
 
     // Wait a moment for gate re-evaluation
