@@ -1606,6 +1606,11 @@ async function serve(options: ServeOptions): Promise<void> {
       // **畳めたかどうかを返す**——溜まっていない章は畳みようがなく、黙って何も
       // 起きないと押した側からは壊れて見える（PO報告 2026-08-11）
       closeChapter: async () => (await chapters.closeChapter()) !== undefined,
+      /**
+       * **畳んでいる間の発話を待たせる口**（imp-0052）。サーバはこれを見て、
+       * これから捨てるセッションへ発話を渡さない——渡すと答えかけたところで切られる。
+       */
+      chapterGate: chapters,
       // この会話が実際に使っているモデル。画面と索引へ出す（会話ごとに持つ）
       ...(threadModel && wanted
         ? {

@@ -140,6 +140,7 @@ export {
   normalizeThreadTitle,
   trunkIdOf,
   type BranchNote,
+  type ChapterGate,
   type ThreadFactory,
   type ThreadSpec,
 } from "./threads.js";

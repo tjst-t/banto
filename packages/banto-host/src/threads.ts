@@ -37,6 +37,19 @@ import type { PostInput } from "./inbox.js";
 export type BranchNote = Extract<TranscriptEntry, { role: "branch_note" }>;
 
 /**
+ * **章を畳んでいる最中かを訊く口**（imp-0052）。実装は `ChapterKeeper`。
+ *
+ * ここに置くのは、サーバが `ChapterKeeper` そのものを知らないため（D5：サーバは
+ * 章立ての中身を持たない。畳んでいるかどうかだけ訊ければ、待たせる判断はできる）。
+ */
+export interface ChapterGate {
+  /** いま畳んでいるか。 */
+  isClosing(): boolean;
+  /** 畳み終わるまで待つ。畳んでいなければ即座に返る。 */
+  whenSettled(): Promise<void>;
+}
+
+/**
  * その会話が属する幹（幹なら自分、枝なら親）。
  *
  * **記憶が分かれる単位と同じ**（ADR-0003 追補・`ThreadIdentity.trunkId`）。幹をまたいで
@@ -130,6 +143,13 @@ export type ThreadFactory = (
    * 黙って何も起きなかった（PO報告 2026-08-11）——押した側からは壊れて見える。
    */
   closeChapter?: () => Promise<boolean>;
+  /**
+   * **畳んでいる最中かを訊く口**（imp-0052）。章立てが働いていない会話では渡らない。
+   *
+   * サーバはこれを見て、畳んでいる間に届いた発話を**待たせて**から流す
+   * ——これから捨てるセッションに答えさせると、途中で切られる。
+   */
+  chapterGate?: ChapterGate;
   /**
    * 対話ループの後始末。スレッドを閉じるとき・ホストを終うときに呼ばれる。
    *
@@ -360,6 +380,8 @@ export class Thread {
    * サーバはこれが無いことを「畳めない理由」としてそのまま PO に出す（I2）。
    */
   readonly closeChapter: (() => Promise<boolean>) | undefined;
+  /** 畳んでいる最中かを訊く口（imp-0052）。章立てが働いていない会話では `undefined`。 */
+  readonly chapterGate: ChapterGate | undefined;
   /** 会話の真実。接続時にまとめて配り、以後は差分イベントで追随させる（D3）。 */
   transcript: TranscriptEntry[] = [];
   /**
@@ -416,6 +438,7 @@ export class Thread {
     model?: { backend?: string; provider: string; id: string; vision: boolean; contextWindow?: number };
     resumePendingTurn?: () => Promise<void>;
     closeChapter?: () => Promise<boolean>;
+    chapterGate?: ChapterGate;
     dispose?: () => void;
   }) {
     this.id = params.id;
@@ -444,6 +467,7 @@ export class Thread {
     this.model = params.model;
     this.resumePendingTurn = params.resumePendingTurn;
     this.closeChapter = params.closeChapter;
+    this.chapterGate = params.chapterGate;
     if (params.dispose) this.disposers.push(params.dispose);
   }
 
@@ -756,7 +780,9 @@ export class ThreadRegistry {
           ...(parts.sessionFile ? { sessionFile: parts.sessionFile } : {}),
           ...(parts.resumePendingTurn ? { resumePendingTurn: parts.resumePendingTurn } : {}),
       ...(parts.closeChapter ? { closeChapter: parts.closeChapter } : {}),
+      ...(parts.chapterGate ? { chapterGate: parts.chapterGate } : {}),
           ...(parts.closeChapter ? { closeChapter: parts.closeChapter } : {}),
+      ...(parts.chapterGate ? { chapterGate: parts.chapterGate } : {}),
           ...(parts.dispose ? { dispose: parts.dispose } : {}),
         });
         thread.transcript = this.store.transcript(saved.id);
@@ -1066,6 +1092,7 @@ export class ThreadRegistry {
       ...(parts.sessionFile ? { sessionFile: parts.sessionFile } : {}),
       ...(parts.resumePendingTurn ? { resumePendingTurn: parts.resumePendingTurn } : {}),
       ...(parts.closeChapter ? { closeChapter: parts.closeChapter } : {}),
+      ...(parts.chapterGate ? { chapterGate: parts.chapterGate } : {}),
       ...(parts.dispose ? { dispose: parts.dispose } : {}),
     });
     this.attach(thread);
