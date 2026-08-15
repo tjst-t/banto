@@ -57,7 +57,14 @@ interface Acceptance {
 
 /** 積んで、監査済み（approved）まで進める。**id は Kobo が振る**ので返す。 */
 function enqueueAndApprove(
-  opts: { scope?: string[]; a1Text?: string; a1Verify?: string } = {}
+  opts: {
+    scope?: string[];
+    a1Text?: string;
+    a1Verify?: string;
+    review?: { policy: "auto" | "banto" | "po" };
+    environment?: string;
+    model_tier?: "reasoning" | "standard" | "fast";
+  } = {}
 ): string {
   const { scope = ["src/**"], a1Text = "テストが通る", a1Verify = "npm test" } = opts;
   const r = daemon.enqueueTask(
@@ -68,6 +75,9 @@ function enqueueAndApprove(
       body: "本文。",
       scope: { paths: scope },
       acceptance: [{ text: a1Text, verify: a1Verify }],
+      ...(opts.review !== undefined ? { review: opts.review } : {}),
+      ...(opts.environment !== undefined ? { environment: opts.environment } : {}),
+      ...(opts.model_tier !== undefined ? { model_tier: opts.model_tier } : {}),
     },
     { originRef: "試験" }
   );
@@ -329,6 +339,146 @@ describe("[task-0082] 改訂と reopen の噛み合わせ", () => {
       reason: "検証コマンドを直したので、もう一度ゲートを回す",
     });
     assert.equal(r["to"], "approved");
+    assert.equal(daemon.getTask(PROJ, id)?.status, "approved");
+  });
+});
+
+/**
+ * **渡せるのに効かない項目が3つあった**（imp-0039・実機 dentaku task-0015 / task-0016）。
+ *
+ * `amendTask` は `review` / `environment` / `model_tier` を契約へ重ねていたが、差分を
+ * 数える `classifyAmendment` は acceptance / scope / title / body しか見ていなかった。
+ * よって `changes` が空になり、**中身は違うのに「渡された中身と同じです」**で断られる
+ * ——理由が嘘になっていた。断り文が嘘だと、番頭は取次へ上げる判断ができない。
+ */
+describe("[imp-0039] review / environment / model_tier も差分として読む", () => {
+  it("**`po` → `auto` は「緩める方向」で断る**（「同じ中身です」ではない）", async () => {
+    const id = enqueueAndApprove({ review: { policy: "po" } });
+
+    await assert.rejects(
+      () =>
+        call("kobo.amend", {
+          projectTag: PROJ,
+          taskId: id,
+          reason: "PO の方針が変わり、連作は自動着地でよくなった",
+          review: { policy: "auto" },
+        }),
+      (err: Error) => {
+        assert.match(err.message, /緩める方向|PO の判断/, "断る理由が「緩める方向」になっていない");
+        assert.doesNotMatch(
+          err.message,
+          /同じです/,
+          "違うものを「同じ」と言っている——番頭はこれを読んでも取次へ上げられない"
+        );
+        return true;
+      }
+    );
+    // 断ったなら契約は動いていないこと
+    assert.equal(
+      (daemon.getTask(PROJ, id)!["review"] as { policy: string }).policy,
+      "po"
+    );
+  });
+
+  it("同じ改訂を **PO として**渡すと通り、契約も記録ファイルも `auto` になる", () => {
+    const id = enqueueAndApprove({ review: { policy: "po" } });
+
+    const r = daemon.amendTask(
+      PROJ,
+      id,
+      { review: { policy: "auto" } },
+      { reason: "PO が「連作は自動着地でよい」と決めた", by: "po" }
+    );
+    assert.equal(r.ok, true, `PO なら通るはず: ${JSON.stringify(r)}`);
+    assert.match((r as { ok: true; changes: string[] }).changes.join(" "), /レビュー方針/);
+
+    assert.equal((daemon.getTask(PROJ, id)!["review"] as { policy: string }).policy, "auto");
+    const record = fs.readFileSync(path.join(repoDir, "work", "tasks", `${id}.md`), "utf-8");
+    assert.match(record, /^ {2}policy: auto$/m, "記録ファイルが古い方針のまま");
+  });
+
+  it("**`auto` → `po`（厳しくする向き）は番頭でも通る**。監査は無効にしない", async () => {
+    const id = enqueueAndApprove({ review: { policy: "auto" } });
+
+    const r = await call("kobo.amend", {
+      projectTag: PROJ,
+      taskId: id,
+      reason: "統治に触るので PO に見てもらう",
+      review: { policy: "po" },
+    });
+    assert.match((r["changes"] as string[]).join(" "), /レビュー方針を変更/);
+    // 何に対して監査したかは変わっていない——やり直させない
+    assert.equal(r["auditInvalidated"], false);
+    assert.equal(daemon.getTask(PROJ, id)?.status, "approved");
+  });
+
+  it("方針を名乗っていない契約へ `po` を足すのも番頭でよい（いま効いている段より厳しい）", async () => {
+    const id = enqueueAndApprove();
+
+    const r = await call("kobo.amend", {
+      projectTag: PROJ,
+      taskId: id,
+      reason: "PO に見てもらうことにした",
+      review: { policy: "po" },
+    });
+    assert.match((r["changes"] as string[]).join(" "), /レビュー方針/);
+    assert.equal((daemon.getTask(PROJ, id)!["review"] as { policy: string }).policy, "po");
+  });
+
+  it("**`environment` は番頭が通せるが、監査は無効**（前の監査は別の環境で取った証拠）", async () => {
+    const id = enqueueAndApprove({ environment: "test" });
+
+    const r = await call("kobo.amend", {
+      projectTag: PROJ,
+      taskId: id,
+      reason: "docker の要る検証なのでプロファイルを変える",
+      environment: "test-docker",
+    });
+    assert.match((r["changes"] as string[]).join(" "), /検証環境を変更/);
+    assert.equal(r["auditInvalidated"], true);
+    assert.equal(
+      daemon.getTask(PROJ, id)?.status,
+      "implementing",
+      "別の環境で取った証拠のまま approved に残ると、誰も見ていない環境でマージされる"
+    );
+    assert.equal(daemon.getTask(PROJ, id)!["environment"], "test-docker");
+  });
+
+  it("**`model_tier` は通るが監査は無効にしない**（何を確かめるかは変わらない）", async () => {
+    const id = enqueueAndApprove({ model_tier: "standard" });
+
+    const r = await call("kobo.amend", {
+      projectTag: PROJ,
+      taskId: id,
+      reason: "難しい仕事だったので段を上げる",
+      model_tier: "reasoning",
+    });
+    assert.match((r["changes"] as string[]).join(" "), /モデルの段を変更/);
+    assert.equal(r["auditInvalidated"], false);
+    assert.equal(daemon.getTask(PROJ, id)?.status, "approved");
+    assert.equal(daemon.getTask(PROJ, id)!["model_tier"], "reasoning");
+  });
+
+  it("3項目のどれも実際には変わらないなら、これまでどおり「同じです」で断る（I2）", async () => {
+    const id = enqueueAndApprove({
+      review: { policy: "banto" },
+      environment: "test",
+      model_tier: "standard",
+    });
+
+    await assert.rejects(
+      () =>
+        call("kobo.amend", {
+          projectTag: PROJ,
+          taskId: id,
+          reason: "変えていない",
+          review: { policy: "banto" },
+          environment: "test",
+          model_tier: "standard",
+        }),
+      /同じです/,
+      "差分が無いのに改訂を記録すると、帳簿に嘘の改訂が残る"
+    );
     assert.equal(daemon.getTask(PROJ, id)?.status, "approved");
   });
 });
