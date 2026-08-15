@@ -35,9 +35,9 @@ import {
   Inbox,
   ThreadRegistry,
   createInboxTools,
-  createKoboPoApproveTool,
+  createKoboPoDecisionTool,
   createModuleRegistry,
-  koboApproveEffect,
+  koboPoDecisionEffect,
   koboReviewTarget,
   type InboxEffect,
   type NamespacedToolDefinition,
@@ -48,6 +48,7 @@ import {
   createKoboModule,
   createKoboTools,
 } from "@banto/daemon";
+import { deriveQueue } from "../../packages/banto-daemon/src/merge-queue.js";
 import { TRUNK } from "./threadSpecs.js";
 
 const PROJ = "inbox-approve-proj";
@@ -142,8 +143,13 @@ async function harness(): Promise<Harness> {
     disableAutoSpawn: true,
     disableAuditSpawn: true,
     worktreeBaseDir: path.join(tmpDir, "worktrees"),
-    // 稼働中の Environment Pool に触らせない
+    // **稼働中の器に触らせない**（`npm test` 以外の走らせ方でも同じであること）。
+    // 差し戻しは職人を起こす道を通る（`spawnReworkSession`）——ここを塞がないと、
+    // 試験が本物の Worker Pool に職人を1本残し、番頭からは正体不明の職人に見える
     environmentPoolUrl: "http://127.0.0.1:1/api/environment-pool",
+    workerPoolUrl: "http://127.0.0.1:1/api/worker-pool",
+    // マージキューは approved を拾って実際に rebase しに行く。ここでは列に載ることだけを見る
+    disableMergeQueue: true,
   });
   await daemon.start();
   daemon.registerProject(PROJ, repoDir);
@@ -151,8 +157,8 @@ async function harness(): Promise<Harness> {
   const koboUrl = `http://127.0.0.1:${koboPort}${KOBO_MODULE_PATH}`;
   const koboModule = {
     ...createKoboModule(koboUrl),
-    // bin.ts と同じ：承認の口は internalTools（番頭には渡らない）
-    internalTools: [createKoboPoApproveTool(koboUrl)],
+    // bin.ts と同じ：PO の判断を届ける口は internalTools（番頭には渡らない）
+    internalTools: [createKoboPoDecisionTool(koboUrl)],
   };
   const modules = createModuleRegistry([koboModule]);
 
@@ -160,9 +166,11 @@ async function harness(): Promise<Harness> {
   const inboxToolList = createInboxTools(inbox, {
     threadId: "t-1",
     // bin.ts と同じ結線（決定113）
-    resolveApproveEffect: ({ canvasKind, canvasParams }) => {
+    resolvePoDecisionEffect: ({ canvasKind, canvasParams, decision, detail }) => {
       const target = koboReviewTarget(canvasKind, canvasParams);
-      return target ? koboApproveEffect(target) : undefined;
+      if (!target) return undefined;
+      if (decision !== "approve" && decision !== "send_back") return undefined;
+      return koboPoDecisionEffect(target, decision, detail);
     },
   });
   const inboxTools = Object.fromEntries(inboxToolList.map((t) => [t.name, t]));
@@ -245,12 +253,14 @@ async function postReviewCard(
     what: "実装が終わり、監査を通った",
     ask: "マージしてよいか",
     actions: [
-      { id: "approve", label: "マージしてよい", tone: "call" },
-      { id: "hold", label: "いまはやめる" },
+      { id: "approve", label: "通す（マージへ）", tone: "call" },
+      { id: "send_back", label: "差し戻す" },
     ],
     canvasKind: "kobo.review",
     canvasParams: { projectTag: PROJ, taskId },
     approveAction: "approve",
+    sendBackAction: "send_back",
+    sendBackReason: "受け入れ基準 a1 を満たしていない",
     ...overrides,
   } as never);
   return (result.details as { id: string }).id;
@@ -265,8 +275,10 @@ async function until(check: () => boolean, what: string, timeoutMs = 5000): Prom
   }
 }
 
-describe("[imp-0034/決定113] 札で出した「マージしてよい」が工場の帳簿まで届く", () => {
+describe("[imp-0034/決定113] 札で出した PO の答えが工場の帳簿まで届く", () => {
   let h: Harness;
+  /** 通す方の札。畳まれたことを名指しで確かめるために覚えておく */
+  let approveCard: string;
   before(async () => {
     h = await harness();
   });
@@ -287,11 +299,11 @@ describe("[imp-0034/決定113] 札で出した「マージしてよい」が工�
     assert.equal(h.daemon.getTask(PROJ, "task-4001")?.status, "review-ready");
   });
 
-  it("POが札の「マージしてよい」を押すと、工場で `approved` まで進む", async () => {
-    const itemId = await postReviewCard(h, "task-4001");
+  it("POが札の「通す」を押すと、工場で `approved`（＝マージ待ち）へ進む", async () => {
+    approveCard = await postReviewCard(h, "task-4001");
 
     const client = await BantoHostClient.connect(h.wsUrl, () => {});
-    client.send({ type: "inbox_answer", itemId, actionId: "approve" });
+    client.send({ type: "inbox_answer", itemId: approveCard, actionId: "approve" });
 
     await until(
       () => h.daemon.getTask(PROJ, "task-4001")?.status === "approved",
@@ -312,6 +324,17 @@ describe("[imp-0034/決定113] 札で出した「マージしてよい」が工�
     );
   });
 
+  /**
+   * **マージ待ちの列に載ること**（PO要望 2026-08-15）。`approved` は状態機械の
+   * 終点ではなく、直列マージキューの**入口**——ここに載って初めて `merging` へ進む。
+   * 「承認は記録されたが誰も拾わない」を通さないために、列そのものを見る。
+   */
+  it("マージ待ちの列に載る（承認が帳簿に残るだけで終わらない）", () => {
+    const queued = deriveQueue(h.daemon.getAllEvents()).find((e) => e.taskId === "task-4001");
+    assert.ok(queued, "承認したのにマージキューに載っていない");
+    assert.equal(queued.status, "approved", "マージ待ちとして並んでいない");
+  });
+
   it("関所は飛ばない（承認の後にマージ前ゲートが回る・決定57）", () => {
     // `approved` は**マージではない**。ここから先はマージキューがゲートを回す
     assert.equal(h.daemon.getTask(PROJ, "task-4001")?.status, "approved");
@@ -321,10 +344,37 @@ describe("[imp-0034/決定113] 札で出した「マージしてよい」が工�
     assert.equal(merged, false, "承認だけでゲートを通ったことにしている");
   });
 
+  /**
+   * **戻す側を落とさない**（PO要望 2026-08-15）。通す側だけ結ぶと、PO が「駄目だ」と
+   * 押しても何も起きない札になる——imp-0034 の形が半分だけ残る。
+   */
+  it("POが札の「差し戻す」を押すと、工場が実装へ戻す", async () => {
+    driveToReviewReady(h.daemon, "task-4003");
+    const itemId = await postReviewCard(h, "task-4003");
+
+    const client = await BantoHostClient.connect(h.wsUrl, () => {});
+    client.send({ type: "inbox_answer", itemId, actionId: "send_back" });
+
+    await until(
+      () => h.daemon.getTask(PROJ, "task-4003")?.status === "implementing",
+      "工場のタスクが implementing へ戻ること"
+    );
+    // 指摘は帳簿に残り、どこから来た判断かも分かる
+    const back = h.daemon
+      .getTaskEvents(PROJ, "task-4003")
+      .filter((e) => e.type === "state_transitioned")
+      .map((e) => (e as { reason?: string }).reason ?? "")
+      .find((r) => r.startsWith("sent_back_by:"));
+    assert.match(back ?? "", /^sent_back_by:po@inbox:in-[0-9a-f]+#send_back/, back ?? "差し戻しの記録が無い");
+    assert.match(back ?? "", /受け入れ基準 a1 を満たしていない/, "指摘が職人へ渡っていない");
+    client.close();
+  });
+
   it("札は畳まれ、番頭には答えが伝わる（同じことをもう一度訊かせない）", async () => {
-    await until(() => h.inbox.list().every((i) => i.resolvedAt !== undefined), "札が畳まれること");
+    await until(() => h.inbox.get(approveCard)?.resolvedAt !== undefined, "札が畳まれること");
+    assert.equal(h.inbox.get(approveCard)?.resolution, "approve");
     await until(() => h.session.prompts.length > 0, "番頭のターンが回ること");
-    assert.match(h.session.prompts[0]!, /マージしてよい/);
+    assert.match(h.session.prompts[0]!, /通す（マージへ）/);
   });
 });
 
@@ -337,11 +387,11 @@ describe("[imp-0034/決定113] 番頭（LLM）からは通せないまま", () =
     await teardown(h);
   });
 
-  it("承認の口は番頭の在庫に載らない（`internalTools`）", () => {
+  it("PO の判断を届ける口は番頭の在庫に載らない（`internalTools`）", () => {
     assert.equal(
-      h.bantoTools.some((t) => t.name === "kobo.po_approve"),
+      h.bantoTools.some((t) => t.name === "kobo.po_decide"),
       false,
-      "番頭が呼べる一覧に PO 承認の口が載っている"
+      "番頭が呼べる一覧に PO の口が載っている"
     );
     assert.equal(
       h.bantoTools.some((t) => t.name === "kobo.approve"),
@@ -370,6 +420,8 @@ describe("[imp-0034/決定113] 番頭（LLM）からは通せないまま", () =
   it("処理を伴わない選択肢は今までどおり畳める（POが会話の中で答えたとき）", async () => {
     const itemId = await postReviewCard(h, "task-4002", {
       approveAction: undefined,
+      sendBackAction: undefined,
+      sendBackReason: undefined,
       title: "呼び方をどちらにするか",
     });
     await h.inboxTools["inbox.resolve"]!.execute({ id: itemId, action: "approve" } as never);
@@ -384,7 +436,7 @@ describe("[imp-0034/決定113] 番頭（LLM）からは通せないまま", () =
         `選択肢 ${action.id} に呼び出し先が載っている`
       );
     }
-    assert.equal(h.inbox.get(view.id)!.actions[0]!.effect?.tool, "kobo.po_approve");
+    assert.equal(h.inbox.get(view.id)!.actions[0]!.effect?.tool, "kobo.po_decide");
   });
 
   /**

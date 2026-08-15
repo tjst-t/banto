@@ -6,7 +6,7 @@ refs: [adr-0013, adr-0015, adr-0010, imp-0034, task-0147, spec-daemon-core, spec
 amends: adr-0013
 ---
 
-# ADR-0023: PO と番頭を分けるのは**合言葉ではなく経路**。取次の札の答えを承認まで届かせる
+# ADR-0023: PO と番頭を分けるのは**合言葉ではなく経路**。取次の札の答えを工場まで届かせる
 
 > status: **accepted**（2026-08-15。PO 裁定）。決定番号は 112（ADR-0022）の続きから採る。
 > **ADR-0013 決定57 は変えていない。** 変えたのは「番頭が通せない」を機構でどう担保するか
@@ -32,6 +32,19 @@ PO の訴え（2026-08-15、幹「電卓開発」で dentaku task-0005 を通す
 
 結果、番頭が続けて `kobo.approve` を呼ぶと 500（「番頭は通せません——取次へ上げてください」）で、
 **PO はレビュー面をもう一度開いて承認ボタンを押す二度手間**を踏んだ。
+
+### 三すくみで永久に止まる（dentaku task-0007・2026-08-15 04:15Z 実測）
+
+別のプロジェクトでは二度手間では済まず、**行き止まり**になった：
+
+- `task-0007`（`review: po`）が review-ready まで来た
+- PO は取次の札 `in-b1e691dc` に「通す（マージへ）」と答えた
+- **Kobo 側は review-ready のまま。** イベント列は 04:02:18 の `audit_passed:po` が最後で、
+  その後 1 本も積まれていない
+- 番頭が `kobo.approve` を呼ぶと 500
+
+**「PO は通すと答えた／番頭は通せない／Kobo には答えが届かない」**——このタスクは
+誰の操作でも動かない。これが本 ADR の受け入れ条件の中心である。
 
 判断を仰ぐ道具が `canvasKind: "kobo.review"` を添えられる以上、繋がっていると読むのが自然で、
 実際には繋がっていない——**道具の見かけと実体の食い違い**（I1）でもある。
@@ -61,10 +74,19 @@ task-0147 は「番頭ホストは合言葉を保存しない」を縛りとし�
 意思表示か）を足し、無い承認は 400 で断る。**監査可能性は名乗りではなく記録で担保する。**
 レビュー面からなら `ui:kobo.review`、取次の札からなら `inbox:in-xxxxxxxx#approve`。
 
-**(c) 取次の札の回答を、その既存の承認口へ結ぶ。** 番頭は `inbox.post` に
-`canvasKind` / `canvasParams: {projectTag, taskId}` に加えて **`approveAction`**（「通してよい」に
-当たる選択肢の id）を書く。押されたときに Kobo を叩くのは取次の処理（`InboxEffect`・決定73）で、
-LLM ではない。**口は増やさない**——足したのは結線であって3つ目の承認経路ではない。
+**(c) 取次の札の回答を、その既存の口へ結ぶ。** 番頭は `inbox.post` に
+`canvasKind` / `canvasParams: {projectTag, taskId}` に加えて **`approveAction`**（通す選択肢の id）と
+**`sendBackAction` / `sendBackReason`**（戻す方）を書く。押されたときに Kobo を叩くのは
+取次の処理（`InboxEffect`・決定73）で、LLM ではない。**口は増やさない**——足したのは結線であって
+3つ目の経路ではない。
+
+**(c-2) 橋は承認専用にしない**（PO要望 2026-08-15）。運ぶのは「**PO がどう答えたか**」であって
+承認ではない。工場側の口は `POST .../po-decision`（`{decision, via, ...}`）1つに集め、
+ホスト側の口は `kobo.po_decide` 1つにする。理由は2つ：
+
+- **通す側だけ繋ぐと、PO が「駄目だ」を押しても何も起きない**——imp-0034 の形が半分残る
+- `kobo.amend` にも同じ穴がある（道具が `by: "banto"` を直書きしていて、PO 権限で呼ぶ経路が
+  無い）。**amend は本 ADR のスコープ外**だが、`decision` を1つ足せば同じ橋に乗る形にしてある
 
 **(d) LLM からは通せないことは、次の4点で機構が担保する**（名乗りではなく構造で）：
 
@@ -74,6 +96,10 @@ LLM ではない。**口は増やさない**——足したのは結線であっ
 | 承認を効かせる口（`kobo.po_approve`）は `internalTools` | `ModuleRegistry.tools()` に出ない＝番頭の在庫にも提示にも載らない。モデルからは呼べない |
 | `inbox.post` に `effect` を書かせない（決定73 のまま） | 番頭が書けるのは「どの選択肢が承認か」まで。呼ぶ先を決めるのはホスト |
 | `inbox.resolve`（番頭の口）は処理を伴う選択肢を畳めない | 番頭が札を畳んで PO の押下を先回りできない。押すのは PO |
+
+**番頭が自分で PO を名乗れる口は作っていない。** 上の4点は「番頭が `by: "po"` を渡せる経路が
+1本も無い」ことを言っている——`by: "po"` を書くのは工場の HTTP 面（人の操作を受けた
+ホストが叩く）だけで、番頭に渡っている Tool からはその値に到達できない。
 
 **(e) 通しても関所は飛ばない。** ここまでは決定57 と同じ——承認の後にマージ前ゲートが回る。
 
@@ -113,15 +139,22 @@ LLM ではない。**口は増やさない**——足したのは結線であっ
 |---|---|
 | `packages/banto-core/src/events.ts` | `task_approved.via`（決定113(b)） |
 | `packages/banto-daemon/src/daemon.ts` | `approveTask` が `by: "po"` のとき `via` を要る形に。`poToken` を廃止 |
-| `packages/banto-daemon/src/http-server.ts` | PO 承認口から合言葉の照合を外し、`via` の検査を足す |
-| `packages/banto-host/src/kobo-po-approve.ts` | 札の回答 → 既存の承認口の結線（新規・`internalTools`） |
-| `packages/banto-host/src/inbox-tools.ts` | `approveAction`／処理を伴う選択肢は `inbox.resolve` で畳めない |
+| `packages/banto-daemon/src/http-server.ts` | PO の口から合言葉の照合を外し、`/approve` を `/po-decision`（`decision` で分岐）へ。`via` の検査を足す |
+| `packages/banto-daemon/src/daemon.ts` | `sendBackTask` も `via` を受ける（承認と同じ扱い） |
+| `packages/banto-host/src/kobo-po-decision.ts` | 札の回答 → 既存の口の結線（新規・`internalTools`） |
+| `packages/banto-host/src/inbox-tools.ts` | `approveAction` / `sendBackAction` / `sendBackReason`／処理を伴う選択肢は `inbox.resolve` で畳めない |
 | `packages/banto-host/src/inbox.ts` | `InboxEffect.originArg`（決定113(b)） |
 | `packages/banto-host/src/server.ts` | `runInboxEffect` に押された札と回答を渡す |
 | `packages/banto-host/src/bin.ts` | 結線の登録（`internalTools` と `resolveApproveEffect`） |
 | `packages/banto-web/src/views/KoboReview.tsx` | 合言葉の入力欄を外し、`via` を添える |
 | `packages/banto-daemon/skills/kobo-review/SKILL.md` | `approveAction` を書く手順 |
 
-試験は `tests/acceptance/kobo-po-approve-from-inbox.spec.ts`（端から端まで）と
-`tests/acceptance/kobo-po-approve-from-ui.spec.ts`（画面からの経路）。
-**「番頭では通せない」の試験は消していない**——決定57 が生きていることの見張りだから。
+試験は `tests/acceptance/kobo-po-approve-from-inbox.spec.ts`（端から端まで。通す／戻すの両方と、
+**承認がマージ待ちの列に載るところまで**）と `tests/acceptance/kobo-po-approve-from-ui.spec.ts`
+（画面からの経路）。**「番頭では通せない」の試験は消していない**
+——決定57 が生きていることの見張りだから。
+
+## 残った穴（本 ADR のスコープ外）
+
+`kobo.amend` は `by: "banto"` を直書きしていて、PO 権限で呼ぶ経路が無い。同じ穴だが
+今回は直していない——直すときは `po-decision` に `decision: "amend"` を足すのが筋。

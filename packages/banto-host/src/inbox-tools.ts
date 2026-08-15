@@ -31,19 +31,25 @@ export interface InboxToolOptions {
    */
   threadId?: string;
   /**
-   * 「この選択肢が押されたら通してよい」を、実際に効く処理へ翻訳する口（決定113）。
+   * 「この選択肢が押されたら、こう答えたことにする」を、実際に効く処理へ翻訳する口（決定113）。
    *
    * **番頭に `effect` そのものは書かせない**（決定73 が `inbox.post` に出していない理由）
    * ——書かせれば札を経由して任意の内部の口を叩けることになる。番頭が書けるのは
-   * 「どの面の・どの選択肢が承認に当たるか」までで、呼ぶ先を決めるのはホスト。
+   * 「どの面の・どの選択肢がどの判断に当たるか」までで、呼ぶ先を決めるのはホスト。
    *
-   * ここに Kobo の知識は無い（D5）。渡す側（`bin.ts`）が結線を持つ。
+   * **承認専用にしない**（PO要望 2026-08-15）。運ぶのは「PO がどう答えたか」で、
+   * 通す／戻すはその値でしかない。ここに Kobo の知識は無い（D5）
+   * ——渡す側（`bin.ts`）が結線を持つ。
    *
    * @returns 結べないなら `undefined`（呼び出し側が理由を添えて断る）
    */
-  resolveApproveEffect?(input: {
+  resolvePoDecisionEffect?(input: {
     canvasKind?: string;
     canvasParams?: Record<string, unknown>;
+    /** `approve`（通す）／`send_back`（差し戻す）。 */
+    decision: string;
+    /** 通すなら何を見て良しとしたか、戻すなら何が駄目でどう直すのか。 */
+    detail?: string;
   }): InboxEffect | undefined;
 }
 
@@ -78,6 +84,20 @@ export function createInboxTools(
             "POがこれを押すと、そのタスクが工場で PO 承認まで進む（あなたは押せません・決定57）。",
         })
       ),
+      sendBackAction: Type.Optional(
+        Type.String({
+          description:
+            "「実装へ差し戻す」に当たる選択肢の id。approveAction と対で書く" +
+            "——通す側だけ結ぶと、POは「駄目だ」を押しても何も起きない。",
+        })
+      ),
+      sendBackReason: Type.Optional(
+        Type.String({
+          description:
+            "差し戻すときに職人へ渡す指摘（sendBackAction と対で必須）。" +
+            "**何が駄目で、どう直すのか**。POが選択肢を押しただけで伝わる文にすること。",
+        })
+      ),
     }),
     async execute(p) {
       // 宛先を書かなかったら**この会話**。積んだ札から話の続きへ戻れるようにするため、
@@ -85,34 +105,48 @@ export function createInboxTools(
       const threadId = p.threadId ?? options.threadId;
 
       /**
-       * 「押されたら通す」を結ぶ（決定113）。
+       * 「押されたら、こう答えたことにする」を結ぶ（決定113）。
        *
        * I2: 結べないのに黙って積まない——PO が押しても何も起きない札が出来るのが
        *     imp-0034 そのもの。どこが足りないかを添えて、その場で断る。
        */
       let actions = p.actions as InboxAction[];
-      if (p.approveAction !== undefined) {
-        const target = actions.find((a) => a.id === p.approveAction);
+      const bind = (actionId: string, field: string, decision: string, detail?: string): void => {
+        const target = actions.find((a) => a.id === actionId);
         if (!target) {
           throw new Error(
-            `approveAction "${p.approveAction}" は actions にありません` +
+            `${field} "${actionId}" は actions にありません` +
               `（${actions.map((a) => a.id).join(" / ")}）。`
           );
         }
-        const effect = options.resolveApproveEffect?.({
+        const effect = options.resolvePoDecisionEffect?.({
           ...(p.canvasKind !== undefined ? { canvasKind: p.canvasKind } : {}),
           ...(p.canvasParams !== undefined
             ? { canvasParams: p.canvasParams as Record<string, unknown> }
             : {}),
+          decision,
+          ...(detail ? { detail } : {}),
         });
         if (!effect) {
           throw new Error(
-            "approveAction を結べません。" +
+            `${field} を結べません。` +
               'canvasKind: "kobo.review" と canvasParams: {projectTag, taskId} を添えてください' +
-              "——どのタスクの承認かが札に載っていないと、POが押しても工場へ届きません。"
+              "——どのタスクの判断かが札に載っていないと、POが押しても工場へ届きません。"
           );
         }
         actions = actions.map((a) => (a.id === target.id ? { ...a, effect } : a));
+      };
+
+      if (p.approveAction !== undefined) bind(p.approveAction, "approveAction", "approve");
+      if (p.sendBackAction !== undefined) {
+        // I2: 理由の無い差し戻しは職人に何も伝わらない。積む時点で断る
+        if (!p.sendBackReason?.trim()) {
+          throw new Error(
+            "sendBackAction には sendBackReason（何が駄目で、どう直すのか）が要ります" +
+              "——POが押したときに職人へそのまま渡ります。"
+          );
+        }
+        bind(p.sendBackAction, "sendBackAction", "send_back", p.sendBackReason.trim());
       }
 
       const item = inbox.post({

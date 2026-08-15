@@ -1593,7 +1593,7 @@ export class Daemon {
   async sendBackTask(
     projectTag: string,
     taskId: string,
-    options: { reason: string; by: "banto" | "po"; origin?: string }
+    options: { reason: string; by: "banto" | "po"; origin?: string; via?: string }
   ): Promise<{ ok: true; to: string } | { ok: false; reason: string }> {
     const task = this.store.getTask(taskId, projectTag);
     if (!task) return { ok: false, reason: `${taskId} は ${projectTag} の工場にありません` };
@@ -1626,7 +1626,8 @@ export class Daemon {
       projectTag,
       taskId,
       "implementing",
-      `sent_back_by:${options.by}（${options.reason}）`
+      // 決定113: PO の判断なら**どこから来た意思表示か**も帳簿に残す（承認と同じ扱い）
+      `sent_back_by:${options.by}${options.via ? `@${options.via}` : ""}（${options.reason}）`
     );
     if (!result.ok) return { ok: false, reason: `implementing へ戻せませんでした: ${result.reason}` };
 

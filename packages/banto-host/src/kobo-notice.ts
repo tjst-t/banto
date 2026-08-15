@@ -518,8 +518,8 @@ async function renderNotice(
           "あなたは通せません——`inbox.post` で取次へ上げてください（決定57）。" +
           "札には**経緯**（このタスクを積んだときの originRef）・起きたこと・求める判断を書き、" +
           `\`canvasKind: "kobo.review"\`・\`canvasParams: {projectTag: "${event.projectTag}", taskId: "${taskId}"}\`・` +
-          "`approveAction`（「通してよい」に当たる選択肢の id）を添えること。" +
-          "**この3つが揃って初めて、POが押した答えが工場の承認まで届きます**（決定113）" +
+          "`approveAction`（通す選択肢の id）・`sendBackAction` と `sendBackReason`（戻す方）を添えること。" +
+          "**これが揃って初めて、POが押した答えが工場まで届きます**（決定113）" +
           "——添え忘れると、POは押したのにレビュー面でもう一度押す羽目になります。" +
           "書き方は SKILL `kobo-review` に。"
         : "成果を確かめて、良ければ `kobo.approve` で通してください。" +

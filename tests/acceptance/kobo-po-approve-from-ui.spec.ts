@@ -98,8 +98,11 @@ async function harness(): Promise<Harness> {
     disableAutoSpawn: true,
     disableAuditSpawn: true,
     worktreeBaseDir: path.join(tmpDir, "worktrees"),
-    // 稼働中の Environment Pool に触らせない（判断待ちに入ると頼みに行く・段11c）
+    // 稼働中の器に触らせない（判断待ちに入ると頼みに行く・段11c）。
+    // `npm test` は env で塞いでいるが、1本だけ走らせたときも同じであること
     environmentPoolUrl: "http://127.0.0.1:1/api/environment-pool",
+    workerPoolUrl: "http://127.0.0.1:1/api/worker-pool",
+    disableMergeQueue: true,
   });
   await daemon.start();
   daemon.registerProject(PROJ, repoDir);
@@ -135,13 +138,13 @@ function driveToReviewReady(daemon: Daemon, taskId: string): void {
 }
 
 /** ブラウザがするのと同じ呼び出し（中継を通す）。 */
-async function approveViaHost(
+async function decideViaHost(
   h: Harness,
   taskId: string,
   body: Record<string, unknown>
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const res = await fetch(
-    `${h.hostUrl}${KOBO_MODULE_PATH}/projects/${PROJ}/tasks/${taskId}/approve`,
+    `${h.hostUrl}${KOBO_MODULE_PATH}/projects/${PROJ}/tasks/${taskId}/po-decision`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -173,7 +176,8 @@ describe("[段3/task-0147] PO はブラウザから通せる（番頭には通�
   });
 
   it("**合言葉なしで**中継を通って届き、PO の名前で帳簿に残る（決定113）", async () => {
-    const r = await approveViaHost(h, "task-3001", {
+    const r = await decideViaHost(h, "task-3001", {
+      decision: "approve",
       via: "ui:kobo.review",
       note: "実物を触って確かめた",
     });
@@ -199,11 +203,16 @@ describe("[段3/task-0147] PO はブラウザから通せる（番頭には通�
   it("出どころ（via）が無ければ 400。状態は動かない（決定113）", async () => {
     driveToReviewReady(h.daemon, "task-3002");
 
-    const none = await approveViaHost(h, "task-3002", {});
+    const none = await decideViaHost(h, "task-3002", { decision: "approve" });
     assert.equal(none.status, 400);
     assert.equal(none.body["error"], "via_required", "画面が理由で出し分けられる形であること");
-    const blank = await approveViaHost(h, "task-3002", { via: "   " });
+    const blank = await decideViaHost(h, "task-3002", { decision: "approve", via: "   " });
     assert.equal(blank.status, 400, "空白だけの出どころを通さない");
+
+    // I2: 知らない判断を承認へ倒さない（緩い側へ落ちるのが一番たちが悪い）
+    const unknown = await decideViaHost(h, "task-3002", { decision: "merge", via: "ui:kobo.review" });
+    assert.equal(unknown.status, 400);
+    assert.equal(unknown.body["error"], "unknown_decision");
 
     assert.equal(
       h.daemon.getTask(PROJ, "task-3002")?.status,
@@ -235,7 +244,10 @@ describe("[決定113] 合言葉を設定しなくても PO は通せる", () => 
     const h = await harness();
     try {
       driveToReviewReady(h.daemon, "task-3003");
-      const r = await approveViaHost(h, "task-3003", { via: "ui:kobo.review" });
+      const r = await decideViaHost(h, "task-3003", {
+        decision: "approve",
+        via: "ui:kobo.review",
+      });
       assert.equal(r.status, 200, JSON.stringify(r.body));
       assert.equal(h.daemon.getTask(PROJ, "task-3003")?.status, "approved");
     } finally {
@@ -255,8 +267,8 @@ describe("[段3・段2] レビュー面に押す場所が在る", () => {
     "utf-8"
   );
 
-  it("PO 専用の承認口へ配線されている（番頭の Tool ではない）", () => {
-    assert.match(source, /\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/approve/);
+  it("PO 専用の口へ配線されている（番頭の Tool ではない）", () => {
+    assert.match(source, /\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/po-decision/);
     assert.match(source, /PO として通す/, "PO が押せるボタンが無い");
   });
 
@@ -272,6 +284,7 @@ describe("[段3・段2] レビュー面に押す場所が在る", () => {
 
   it("どこから通したかを添えている（監査は記録で担保・決定113）", () => {
     assert.match(source, /via: "ui:kobo\.review"/);
+    assert.match(source, /decision: "approve"/);
   });
 
   it("[段2] 差し戻すボタンが在り、`kobo.send_back` を呼んでいる", () => {

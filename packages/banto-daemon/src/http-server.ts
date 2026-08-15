@@ -24,8 +24,12 @@
  * だけが合言葉（`BANTO_PO_TOKEN`）を要求していたが、PO からは「自分専用の画面でなぜ
  * 毎回名乗らされるのか」＝**OK を出せないのと同じ**と見えていた（imp-0034）。
  * 分ける境界を「合言葉の有無」から「**Tool の経路か、人が押した経路か**」へ移し、
- * 監査可能性は名乗りではなく**記録**（`task_approved.via`）で担保する。
+ * 監査可能性は名乗りではなく**記録**（`via`）で担保する。
  * この口は他の口と同じく前段と待ち受けアドレスで守る。
+ *
+ * **PO の判断はこの1つの口に集める**：
+ *   POST {KOBO_MODULE_PATH}/projects/:proj/tasks/:id/po-decision   {decision, via, ...}
+ * 承認だけでなく差し戻しも通る——PO の意思表示の口を判断の種類ごとに増やさない（D3）。
  *
  * D5: all logic delegated to Daemon class; this file is pure routing.
  * D6: node:http (no framework dependency).
@@ -383,14 +387,18 @@ export function createHttpServer(daemon: Daemon): http.Server {
       },
     },
 
-    // PO が自分で通す口（PO裁定 2026-08-11・第0波 0-3、ADR-0023 決定113）。
+    // **PO の判断を工場へ届ける口**（PO裁定 2026-08-11・第0波 0-3、ADR-0023 決定113）。
     //
-    // **番頭の `kobo.approve` とは名乗る者が違う**。レビュー段が `po` と判定されたタスク
-    // （統治コード・PO 必須の面）は番頭には通せず、ここが `approvedBy: "po"` として
-    // 帳簿に書く唯一の口になる。
+    // **番頭の `kobo.*` とは名乗る者が違う**。レビュー段が `po` と判定されたタスク
+    // （統治コード・PO 必須の面）は番頭には通せず、ここが `by: "po"` として帳簿に書く
+    // 唯一の口になる。
+    //
+    // **承認専用にしない**（PO要望 2026-08-15）。届けたいのは「PO がどう答えたか」であって
+    // 承認だけではない——差し戻しも同じ経路に乗る。`kobo.amend` のように `by: "banto"` を
+    // 直書きしている道具にも、後から `decision` を足せばこの経路を再利用できる。
     //
     // **合言葉は要求しない**（決定113）。番頭（LLM）を分けているのは名乗りではなく
-    // **経路**——`kobo.approve` の Tool は `by: "banto"` しか渡さず、この口は Tool の
+    // **経路**——番頭に渡っている Tool は `by: "banto"` しか渡さず、この口は Tool の
     // 名前空間（`/tools/*`）の外にあり、番頭ホストの中継はそこを通さない。合言葉を
     // 条件にすると PO にとっては「OK を出せない」のと同じだった（imp-0034）。
     //
@@ -399,10 +407,10 @@ export function createHttpServer(daemon: Daemon): http.Server {
     //
     // 通しても関所は飛ばない（決定57）。この後にマージ前ゲートが回るのは番頭経由と同じ。
     //
-    // D5: 判断は `daemon.approveTask` にある。ここがするのは routing だけ。
+    // D5: 判断は `daemon.approveTask` / `daemon.sendBackTask` にある。ここは routing だけ。
     {
       method: "POST",
-      pattern: new RegExp(`^${KOBO_MODULE_PATH}/projects/([^/]+)/tasks/([^/]+)/approve$`),
+      pattern: new RegExp(`^${KOBO_MODULE_PATH}/projects/([^/]+)/tasks/([^/]+)/po-decision$`),
       handler: async (req, res, match) => {
         const proj = decodeURIComponent(match[1] ?? "");
         const taskId = decodeURIComponent(match[2] ?? "");
@@ -416,33 +424,63 @@ export function createHttpServer(daemon: Daemon): http.Server {
           return;
         }
         const body = (await readBody(req)) as Record<string, unknown>;
-        const note = typeof body["note"] === "string" ? body["note"] : undefined;
         const via = typeof body["via"] === "string" ? body["via"].trim() : "";
-        // I2: 出どころ不明の PO 承認を黙って受けない。合言葉をやめた以上、
+        // I2: 出どころ不明の PO 判断を黙って受けない。合言葉をやめた以上、
         //     帳簿に何も残らない承認は「誰が通したか分からない」を作る
         if (!via) {
           sendJson(res, 400, {
             error: "via_required",
             message:
-              "via（どの画面のどの操作から来た承認か）を添えてください" +
-              "——PO の承認は出どころを帳簿に残します（決定113）",
+              "via（どの画面のどの操作から来た判断か）を添えてください" +
+              "——PO の判断は出どころを帳簿に残します（決定113）",
           });
           return;
         }
 
-        const result = daemon.approveTask(proj, taskId, {
-          by: "po",
-          via,
-          ...(note ? { note } : {}),
-        });
-        // I2: 通せなかったことを success:true で包まない。理由をそのまま返す
-        if (!result.ok) {
-          sendJson(res, 409, { error: "not_approvable", message: result.reason });
+        const decision = body["decision"];
+        if (decision === "approve") {
+          const note = typeof body["note"] === "string" ? body["note"] : undefined;
+          const result = daemon.approveTask(proj, taskId, {
+            by: "po",
+            via,
+            ...(note ? { note } : {}),
+          });
+          // I2: 通せなかったことを success:true で包まない。理由をそのまま返す
+          if (!result.ok) {
+            sendJson(res, 409, { error: "not_approvable", message: result.reason });
+            return;
+          }
+          sendJson(res, 200, { success: true, state: result.status });
           return;
         }
-        sendJson(res, 200, { success: true, state: result.status });
+
+        if (decision === "send_back") {
+          const reason = typeof body["reason"] === "string" ? body["reason"].trim() : "";
+          // I2: 理由の無い差し戻しは職人に何も伝わらない。黙って戻さない
+          if (!reason) {
+            sendJson(res, 400, {
+              error: "reason_required",
+              message: "reason（何が駄目で、どう直すのか）を添えてください——職人にそのまま渡ります",
+            });
+            return;
+          }
+          const result = await daemon.sendBackTask(proj, taskId, { by: "po", via, reason });
+          if (!result.ok) {
+            sendJson(res, 409, { error: "not_sendable_back", message: result.reason });
+            return;
+          }
+          sendJson(res, 200, { success: true, state: result.to });
+          return;
+        }
+
+        // I2: 知らない判断を黙って承認に倒さない（緩い側へ落ちるのが一番たちが悪い）
+        sendJson(res, 400, {
+          error: "unknown_decision",
+          message: `decision は "approve" か "send_back" です（受け取った値: ${String(decision)}）`,
+        });
       },
     },
+
 
     // モジュール規約の口（決定27b・ADR-0013 の帰結）。`{baseUrl}/tools/{名前}` への POST で
     // `kobo.*` を公開する。番頭ホストはここへ繋いで積む・読む——REST を継ぎ足すのではなく、

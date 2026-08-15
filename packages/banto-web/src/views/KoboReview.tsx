@@ -64,10 +64,10 @@ interface TaskDetail {
 const WAITING = ["review-ready", "in-review"];
 
 /**
- * PO 専用の承認口（`http-server.ts` の `POST {baseUrl}/projects/:proj/tasks/:id/approve`）。
+ * PO 専用の口（`http-server.ts` の `POST {baseUrl}/projects/:proj/tasks/:id/po-decision`）。
  *
  * **番頭の Tool 経路ではない**（task-0147 の縛り3）。`kobo.approve` は決定57 により
- * `po` 段のタスクを通せず、この口だけが `approvedBy: "po"` を帳簿に書く。
+ * `po` 段のタスクを通せず、この口だけが `by: "po"` を帳簿に書く。
  *
  * **合言葉は要求しない**（ADR-0023 決定113）。この画面はもともと PO のものなのに
  * 毎回名乗らされるのは「OK を出せない」のと同じだった（imp-0034）。代わりに
@@ -75,24 +75,24 @@ const WAITING = ["review-ready", "in-review"];
  *
  * I2: 断られた理由はそのまま出す。「失敗しました」に潰すと PO は何を直せばよいか分からない。
  */
-async function approveAsPo(
+async function decideAsPo(
   endpoint: string,
   projectTag: string,
   taskId: string,
-  note?: string
+  body: { decision: "approve" | "send_back"; note?: string; reason?: string }
 ): Promise<void> {
   const url =
     `${endpoint.replace(/\/$/, "")}/projects/${encodeURIComponent(projectTag)}` +
-    `/tasks/${encodeURIComponent(taskId)}/approve`;
+    `/tasks/${encodeURIComponent(taskId)}/po-decision`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ via: "ui:kobo.review", ...(note ? { note } : {}) }),
+    body: JSON.stringify({ via: "ui:kobo.review", ...body }),
   });
   if (res.ok) return;
 
-  const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
-  throw new Error(body.message ?? body.error ?? res.statusText);
+  const parsed = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
+  throw new Error(parsed.message ?? parsed.error ?? res.statusText);
 }
 
 export function KoboReview({ params, endpoint }: CanvasViewProps): React.ReactElement {
@@ -190,7 +190,10 @@ export function KoboReview({ params, endpoint }: CanvasViewProps): React.ReactEl
     setBusy(true);
     setActionError(undefined);
     try {
-      await approveAsPo(endpoint, selected.projectTag, selected.taskId, note.trim() || undefined);
+      await decideAsPo(endpoint, selected.projectTag, selected.taskId, {
+        decision: "approve",
+        ...(note.trim() ? { note: note.trim() } : {}),
+      });
       finish(selected.taskId, "approved");
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));

@@ -65,11 +65,14 @@ actions:     押せる答えを2〜4つ（「通す」「差し戻す」「保�
 canvasKind:  "kobo.review"                   # 押すと会話と面が同時に開く
 canvasParams: { projectTag, taskId }
 approveAction: "approve"                     # 「通してよい」に当たる選択肢の id
+sendBackAction: "send_back"                  # 「差し戻す」に当たる選択肢の id
+sendBackReason: 何が駄目で、どう直すのか      # 押されたら職人にそのまま渡る
 ```
 
-- **`approveAction` を省かない**（決定113）。これと `canvasKind` / `canvasParams` が揃って初めて、
-  **POが札で押した「通してよい」が工場の承認まで届く**。省くと札は積めても何にも繋がらず、
-  PO はレビュー面を開いてもう一度押す羽目になる（imp-0034 がそれ）。
+- **`approveAction` と `sendBackAction` を省かない**（決定113）。これらと `canvasKind` /
+  `canvasParams` が揃って初めて、**POが札で押した答えが工場まで届く**。省くと札は積めても
+  何にも繋がらず、PO はレビュー面を開いてもう一度押す羽目になる（imp-0034 がそれ）。
+  **通す側だけ結ばない**——PO が「駄目だ」を押しても何も起きない札になる。
   結んだ選択肢は**あなたには畳めない**（押すのは PO 本人だけ・決定57）
 - **`why` を省かない。** 工場は経緯を知らないので、あなたが積むときに渡した `originRef` が
   唯一の出どころ。ここが空だと、PO は「起きたこと」しか読めない札を受け取る（D8）

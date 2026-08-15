@@ -56,10 +56,11 @@ import { createCanvasTools } from "./canvas-tools.js";
 import { Inbox } from "./inbox.js";
 import { createInboxTools } from "./inbox-tools.js";
 import {
-  createKoboPoApproveTool,
-  koboApproveEffect,
+  createKoboPoDecisionTool,
+  koboPoDecisionEffect,
   koboReviewTarget,
-} from "./kobo-po-approve.js";
+  type KoboPoDecision,
+} from "./kobo-po-decision.js";
 import { UserThemes } from "./user-themes.js";
 import {
   assembleStewardContext,
@@ -800,14 +801,14 @@ async function serve(options: ServeOptions): Promise<void> {
     ...koboContract,
     settings: createRemoteSettings(koboContract.settings, "kobo", koboContract.name, koboUrl),
     /**
-     * **取次の札の回答を、その PO 専用の承認口へ結ぶ**（ADR-0023 決定113・imp-0034）。
+     * **取次の札の回答を、その PO 専用の口へ結ぶ**（ADR-0023 決定113・imp-0034）。
      *
      * `internalTools` なので `ModuleRegistry.tools()` には出ず、番頭の在庫にも提示にも
      * 載らない——**モデルからは呼べない**。呼ぶのは PO が札を押したときのホストだけ
      * （`runInboxEffect`）。番頭に渡っている `kobo.approve` は今までどおり
      * PO 必須のタスクを断る（決定57 はここで保たれる）。
      */
-    internalTools: [createKoboPoApproveTool(koboUrl)],
+    internalTools: [createKoboPoDecisionTool(koboUrl)],
     serve: (req: http.IncomingMessage, res: http.ServerResponse) => koboRelay.serve(req, res),
   };
 
@@ -1109,11 +1110,13 @@ async function serve(options: ServeOptions): Promise<void> {
       // 宛先を渡すのは、積んだ札から**その話をしていた会話へ戻れる**ようにするため（決定73）
       ...createInboxTools(inbox, {
         threadId,
-        // 決定113: 「通してよい」の札を、工場の PO 専用の承認口へ結ぶ。
-        // 番頭が書けるのはどの選択肢が承認かまでで、呼ぶ先を決めるのはここ
-        resolveApproveEffect: ({ canvasKind, canvasParams }) => {
+        // 決定113: 札の回答を、工場の PO 専用の口へ結ぶ（通す／戻すの両方）。
+        // 番頭が書けるのはどの選択肢がどの判断かまでで、呼ぶ先を決めるのはここ
+        resolvePoDecisionEffect: ({ canvasKind, canvasParams, decision, detail }) => {
           const target = koboReviewTarget(canvasKind, canvasParams);
-          return target ? koboApproveEffect(target) : undefined;
+          if (!target) return undefined;
+          if (decision !== "approve" && decision !== "send_back") return undefined;
+          return koboPoDecisionEffect(target, decision as KoboPoDecision, detail);
         },
       }),
       // 決定98f: 番頭が持つのは読みと診断の4本だけ（設定変更は GUI とファイルの担当）
