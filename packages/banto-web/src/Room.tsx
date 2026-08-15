@@ -25,6 +25,7 @@ import { Icon } from "./icons.js";
 import { Modal, SearchField } from "./views/ui.js";
 import { callModuleTool } from "./views/useModuleTool.js";
 import { useListNav } from "./listNav.js";
+import { prefersNoAutoFocus } from "./prefersNoAutoFocus.js";
 import type { BantoSession, CurrentModel } from "./useBantoSession.js";
 
 /**
@@ -508,9 +509,14 @@ export function Room({
    *
    * **次のフレームでもう一度掴む。** 押した先（レールの点）へブラウザが焦点を戻すことが
    * あり、1回だけだと押した直後に奪われる——実際に符牒（⌥→数字）で踏んだ。
+   *
+   * **タッチ端末では移らない**（PO報告 2026-08-15）。切り替えるたびにソフトウェア
+   * キーボードが開くと鬱陶しい。入力欄をタップして打つのは `.composer-box` の onClick が
+   * 別に持っているので、ここを塞いでも「打ちたいときに打てない」にはならない。
    */
   useEffect(() => {
     if (focusSeq <= 0) return;
+    if (prefersNoAutoFocus()) return;
     inputRef.current?.focus();
     const frame = requestAnimationFrame(() => inputRef.current?.focus());
     return () => cancelAnimationFrame(frame);
