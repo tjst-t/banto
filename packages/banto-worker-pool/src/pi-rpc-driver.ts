@@ -25,6 +25,7 @@ import * as path from "node:path";
 import type { RuntimeDriver, SpawnOptions, SessionHandle, DriverEvent, DriverEventHandler } from "@banto/core";
 import type { LlmCatalog, ModelConstraints, ModelTier } from "@banto/core";
 import { attachJsonlReader, createHandleGrip, waitForSpawnError, type HandleGrip } from "./child-session.js";
+import { workerSpawnEnv } from "./worker-env.js";
 
 // 職人と JSONL で話す枠組みは Claude Code のドライバと共通（child-session.ts）。
 // 公開の口を変えないよう、ここから再輸出しておく
@@ -357,7 +358,8 @@ export class PiRpcDriver implements RuntimeDriver {
     // Spawn pi as a child process (node CLI entry-point).
     const proc = childProcess.spawn("node", args, {
       cwd: worktreePath,
-      env: { ...process.env, ...extraEnv },
+      // imp-0043: 工房の実行環境（NODE_ENV=production）を職人へ押し付けない
+      env: workerSpawnEnv(process.env, extraEnv),
       stdio: ["pipe", "pipe", "pipe"],
     });
 

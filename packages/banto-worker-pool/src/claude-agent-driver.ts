@@ -28,6 +28,7 @@ import type {
   SpawnOptions,
 } from "@banto/core";
 import { attachJsonlReader, createHandleGrip, waitForSpawnError, type HandleGrip } from "./child-session.js";
+import { workerSpawnEnv } from "./worker-env.js";
 import {
   CLAUDE_DEFAULT_MODEL,
   CLAUDE_KOBO_TOOL_NAMES,
@@ -214,7 +215,8 @@ export class ClaudeAgentDriver implements RuntimeDriver {
 
     const proc = childProcess.spawn(this.nodePath, args, {
       cwd: opts.worktreePath,
-      env: { ...process.env, ...extraEnv },
+      // imp-0043: 工房の実行環境（NODE_ENV=production）を職人へ押し付けない
+      env: workerSpawnEnv(process.env, extraEnv),
       stdio: ["pipe", "pipe", "pipe"],
     });
 

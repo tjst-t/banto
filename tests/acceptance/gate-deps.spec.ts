@@ -2,9 +2,13 @@
  * AC-Scc9152-2-1: Dependency gate — queued task stays blocked until dependency
  * resolves, then gets promoted to ready.
  *
- * Resolved states (unblock): approved | merging | merged | evaluating | closed
+ * Resolved states (unblock): merged | evaluating | closed — the output is on main.
  * Unresolved states (keep blocked): queued | ready | planning | implementing |
- *   auditing | review-ready | in-review
+ *   auditing | review-ready | in-review | approved | merging
+ *
+ * imp-0041: `approved` and `merging` do NOT unblock. `merging` is not terminal
+ * (rebase conflict sends the task back to `implementing`), and `approved` has not
+ * started merging at all — in neither case is the dependency's output on main.
  *
  * Uses a real Daemon (port=0, tickIntervalMs=500) and HTTP API only.
  * Gate re-evaluation fires both on tick AND immediately after state transitions,
@@ -54,6 +58,14 @@ async function transitionTask(
       body: JSON.stringify({ to }),
     });
     if (res.status !== 200) {
+      // The gate promotes queued→ready on its own, and it can win the race against
+      // the check above. Landing on the requested state by that route is a success,
+      // not an invalid_transition. Anything else is a real failure (I2).
+      const after = await fetch(`${base}/api/v1/projects/${proj}/tasks/${taskId}`);
+      if (after.ok) {
+        const body = await after.json() as { task: { status: string } };
+        if (body.task.status === to) continue;
+      }
       const body = await res.text();
       throw new Error(`Transition ${taskId}→'${to}' failed (${res.status}): ${body}`);
     }
@@ -65,6 +77,20 @@ async function getStatus(base: string, proj: string, taskId: string): Promise<st
   return (await r.json() as { task: { status: string } }).task.status;
 }
 
+/** gate_evaluated events for a task, oldest first. */
+async function getGateEvents(
+  base: string,
+  proj: string,
+  taskId: string
+): Promise<Array<{ passed?: boolean; blockedBy?: string[] }>> {
+  const r = await fetch(`${base}/api/v1/projects/${proj}/tasks/${taskId}/events`);
+  if (!r.ok) throw new Error(`GET events failed: ${r.status}`);
+  const body = await r.json() as {
+    events: Array<{ type: string; passed?: boolean; blockedBy?: string[] }>;
+  };
+  return body.events.filter((e) => e.type === "gate_evaluated");
+}
+
 describe("[AC-Scc9152-2-1] Gate condition 1: dependency-driven queued→ready", () => {
   let tmpDir: string;
   let daemon: Daemon;
@@ -74,7 +100,11 @@ describe("[AC-Scc9152-2-1] Gate condition 1: dependency-driven queued→ready", 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-gate-deps-"));
     // disableAuditSpawn: this suite tests gate logic and transitions tasks through
     // implementing→auditing→merging etc. as state placeholders, not to trigger audit sessions.
-    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 500, disableAuditSpawn: true, disableAutoSpawn: true });
+    // disableMergeQueue (imp-0041): `approved` / `merging` are used here as state
+    // placeholders to assert the gate keeps blocking. A live merge queue picks tasks up
+    // out of exactly those two states and would drive them out from under the assertion
+    // (and the outcome would depend on whether /repos/proj-gate happens to exist).
+    daemon = Daemon.create({ port: 0, dataDir: tmpDir, tickIntervalMs: 500, disableAuditSpawn: true, disableAutoSpawn: true, disableMergeQueue: true });
     await daemon.start();
     base = `http://localhost:${daemon.port}`;
 
@@ -203,7 +233,7 @@ describe("[AC-Scc9152-2-1] Gate condition 1: dependency-driven queued→ready", 
     );
   });
 
-  it("[AC-Scc9152-2-1d] 'approved' state counts as resolved (promotes dependent)", async () => {
+  it("[AC-Scc9152-2-1d] 'approved' state does NOT count as resolved (imp-0041)", async () => {
     // Advance dep to 'approved'
     await fetch(`${base}/api/v1/projects/proj-gate/tasks`, {
       method: "POST",
@@ -232,15 +262,14 @@ describe("[AC-Scc9152-2-1] Gate condition 1: dependency-driven queued→ready", 
     });
     await transitionTask(base, "proj-gate", "task-0121", "queued");
 
-    const finalStatus = await pollUntil(
-      () => getStatus(base, "proj-gate", "task-0121"),
-      (s) => s === "ready",
-      3000
-    );
+    // Give the gate more than one tick (tickIntervalMs=500) to evaluate.
+    await new Promise((r) => setTimeout(r, 1200));
+
+    const finalStatus = await getStatus(base, "proj-gate", "task-0121");
     assert.equal(
       finalStatus,
-      "ready",
-      "task-0121 must promote to ready when dep is 'approved' (resolved)"
+      "queued",
+      "task-0121 must stay queued: dep is 'approved' — the merge has not even started"
     );
   });
 
@@ -266,6 +295,119 @@ describe("[AC-Scc9152-2-1] Gate condition 1: dependency-driven queued→ready", 
       finalStatus,
       "ready",
       "standalone task with no deps must be promoted to ready by gate"
+    );
+  });
+
+  // ── imp-0041: `merging` は終端ではない ──────────────────────────────────────
+  //
+  // dentaku で実測した筋（2026-08-15）：依存が merging に入った瞬間に後続が ready へ
+  // 上がり、その後 rebase 衝突で依存が implementing に差し戻された。main に成果が
+  // 無いまま後続の職人が走り出す。
+
+  it("[AC-Scc9152-2-1f] dependency in 'merging' keeps the dependent blocked", async () => {
+    await fetch(`${base}/api/v1/projects/proj-gate/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "task-0130",
+        title: "Dep parked at merging",
+        scope: { paths: ["mmm/**"] },
+      }),
+    });
+    await transitionTask(
+      base, "proj-gate", "task-0130",
+      "queued", "ready", "planning", "implementing", "auditing", "merging"
+    );
+
+    await fetch(`${base}/api/v1/projects/proj-gate/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "task-0131",
+        title: "Depends on a merging task",
+        depends: ["task-0130"],
+        scope: { paths: ["nnn/**"] },
+      }),
+    });
+    await transitionTask(base, "proj-gate", "task-0131", "queued");
+
+    // Wait past a full tick (tickIntervalMs=500) so the gate has certainly evaluated.
+    await new Promise((r) => setTimeout(r, 1200));
+
+    assert.equal(
+      await getStatus(base, "proj-gate", "task-0131"),
+      "queued",
+      "task-0131 must stay queued: 'merging' is not terminal — the merge can still fail"
+    );
+
+    const gateEvents = await getGateEvents(base, "proj-gate", "task-0131");
+    const lastBlocked = gateEvents.filter((e) => e.passed === false).at(-1);
+    assert.ok(lastBlocked, "a gate_evaluated(passed=false) must have been recorded");
+    assert.ok(
+      lastBlocked.blockedBy?.includes("task-0130(unresolved:merging)"),
+      `blockedBy must name the merging dependency, got ${JSON.stringify(lastBlocked.blockedBy)}`
+    );
+  });
+
+  it("[AC-Scc9152-2-1g] dependent promotes to ready once the dependency reaches 'merged'", async () => {
+    // task-0130 is still 'merging' from the previous test. Land it.
+    await transitionTask(base, "proj-gate", "task-0130", "merged");
+
+    const finalStatus = await pollUntil(
+      () => getStatus(base, "proj-gate", "task-0131"),
+      (s) => s === "ready",
+      5000
+    );
+    assert.equal(
+      finalStatus,
+      "ready",
+      "task-0131 must promote to ready as soon as task-0130 is 'merged' (output is on main)"
+    );
+  });
+
+  it("[AC-Scc9152-2-1h] dependency rolled back merging→implementing never releases the dependent", async () => {
+    await fetch(`${base}/api/v1/projects/proj-gate/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "task-0140",
+        title: "Dep that loses the rebase",
+        scope: { paths: ["ppp/**"] },
+      }),
+    });
+    await transitionTask(
+      base, "proj-gate", "task-0140",
+      "queued", "ready", "planning", "implementing", "auditing", "merging"
+    );
+
+    await fetch(`${base}/api/v1/projects/proj-gate/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "task-0141",
+        title: "Depends on the rolled-back task",
+        depends: ["task-0140"],
+        scope: { paths: ["qqq/**"] },
+      }),
+    });
+    await transitionTask(base, "proj-gate", "task-0141", "queued");
+    await new Promise((r) => setTimeout(r, 1200));
+
+    // rebase_conflict: the merge queue sends task-0140 back to implementing.
+    await transitionTask(base, "proj-gate", "task-0140", "implementing");
+    await new Promise((r) => setTimeout(r, 1200));
+
+    assert.equal(
+      await getStatus(base, "proj-gate", "task-0141"),
+      "queued",
+      "task-0141 must never have left queued: task-0140's output never reached main"
+    );
+
+    // And it must never have been promoted at any point in between, either.
+    const gateEvents = await getGateEvents(base, "proj-gate", "task-0141");
+    assert.ok(
+      gateEvents.every((e) => e.passed !== true),
+      `no gate_evaluated(passed=true) may exist for task-0141, got ${JSON.stringify(gateEvents)}`
     );
   });
 });

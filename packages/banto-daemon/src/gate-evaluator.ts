@@ -3,7 +3,7 @@
  *
  * Implements spec-multi-project §3: three conditions only.
  *   1. Dependency graph: all depends[] tasks must be "resolved"
- *      - Resolved: approved | merging | merged | evaluating | closed
+ *      - Resolved: merged | evaluating | closed (output is on main)
  *      - Permanent block: failed | superseded (unrecoverable, never resolves)
  *   2. Scope overlap × unreviewed temporal ancestor (実質依存):
  *      - A temporal ancestor is a task in the same project that was created BEFORE
@@ -38,11 +38,15 @@ import type { WsEventServer } from "./ws-server.js";
 
 /**
  * States that count as "dependency resolved" for gate condition 1.
- * A task in one of these states has passed PO review and its output is stable.
+ * A task in one of these states has landed on main — its output is something a
+ * dependent task may build on.
+ *
+ * `approved` and `merging` are deliberately NOT here (imp-0041): neither means
+ * the output is on main. `merging` is not terminal — the merge queue sends a
+ * task back to `implementing` on rebase conflict, and a pre-merge gate failure
+ * makes it `failed`; `approved` has not even started merging.
  */
 const RESOLVED_STATES: ReadonlySet<string> = new Set([
-  "approved",
-  "merging",
   "merged",
   "evaluating",
   "closed",

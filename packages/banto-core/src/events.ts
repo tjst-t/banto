@@ -339,6 +339,17 @@ export interface MergeGateEvaluatedEvent extends EventBase {
    */
   environmentDigest?: string;
   /**
+   * **どの環境の実体で検査したか**（inc: dentaku task-0020 の誤誘導・2026-08-15）。
+   * `verifyRunner.provision()` が返した envId ——`environmentDigest` はプロファイルの
+   * 指紋（作りが同じなら何度立てても同じ値）で、**立てた実体の識別ではない**。
+   * この2つを取り違えると、「別の環境で2回検証した」を「同じ環境で2回検証した」と
+   * 誤読できてしまう（実際に1日ぶん誤誘導した）。
+   *
+   * 任意なのは `environmentDigest` と同じ理由：検証コマンドを1本も持たないタスクでは
+   * 環境を立てないので、そのときも付かない。
+   */
+  environmentId?: string;
+  /**
    * **どのコミットの上で検査したか**（realign 第2便・段1）。`base` を解決した SHA。
    *
    * `passed` は「この土台の上でなら通る」という主張でしかない。メインラインが進めば
