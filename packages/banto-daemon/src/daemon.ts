@@ -328,6 +328,56 @@ interface WorkerEventView {
   data: Record<string, unknown>;
 }
 
+/**
+ * 番頭ホストの会話の索引の1件（task-0224）。**読むのに要るぶんだけ**写した形。
+ *
+ * 正典は `packages/banto-host/src/thread-store.ts` の `StoredThread`。別プロセスの
+ * ファイルなので型は共有できない——`id` 以外はどれも欠けうるものとして扱う。
+ */
+export interface StoredThreadView {
+  id: string;
+  title?: string;
+  kind?: "trunk" | "branch";
+  isMain?: boolean;
+  parentId?: string;
+  subjectKey?: string;
+  state?: "open" | "closed";
+}
+
+/**
+ * 知らせの宛先が**どう決まったか**（task-0224）。
+ *
+ * - `branch`          — origin が枝。そのまま届く
+ * - `trunk-subject`   — origin が幹。同じ鍵の用件の枝が既にあり、そこへ回る
+ * - `trunk-pending`   — origin が幹。用件の枝はまだ無く、知らせが来たときに立つ
+ * - `fallback-trunk`  — origin の会話が索引に無い。`deliver()` の catch が幹へ逃がす
+ * - `unknown-origin`  — そのタスクに origin が記録されていない
+ * - `no-trunk`        — origin も辿れず、幹も引けない
+ * - `index-unreadable`— 索引そのものが読めない（`problem` に理由）
+ */
+export type NoticeDestinationVia =
+  | "branch"
+  | "trunk-subject"
+  | "trunk-pending"
+  | "fallback-trunk"
+  | "unknown-origin"
+  | "no-trunk"
+  | "index-unreadable";
+
+export interface NoticeDestination {
+  via: NoticeDestinationVia;
+  /** 知らせが実際に届く会話。`unknown-origin` / `no-trunk` / `index-unreadable` では無い */
+  threadId?: string;
+  title?: string;
+  state?: "open" | "closed";
+  /** 用件の枝の鍵（origin が幹のとき）。 */
+  subjectKey?: string;
+  /** 用件の枝を提げている幹（`trunk-subject` のとき）。 */
+  trunk?: { id: string; title?: string };
+  /** 索引を読めなかった理由（`index-unreadable` のとき）。 */
+  problem?: string;
+}
+
 export interface DaemonConfig {
   /**
    * Port to listen on. Default: 4500.
@@ -349,6 +399,18 @@ export interface DaemonConfig {
   bindHost?: string;
   /** Root data directory (event log + registry). Default: ./data */
   dataDir: string;
+  /**
+   * **番頭ホストの会話の索引の在り処**（task-0224）。`<ここ>/index.json` を読む。
+   *
+   * `kobo.task` に「この知らせが誰に届くか」を出すためだけに使う——**読むだけ**で、
+   * Kobo は会話を作らないし書き換えもしない。配達そのものは番頭ホストの領分のまま。
+   *
+   * **導出せず明示で渡す**。実機では番頭ホストの `BANTO_DATA_DIR`（`/var/lib/banto`）と
+   * Kobo の `BANTO_DATA_DIR`（`/var/lib/banto/data`）が**別の場所を指している**——
+   * 自分の dataDir から導くと必ず外す。既定（未指定）は `BANTO_THREADS_DIR` 環境変数、
+   * それも無ければ `<dataDir>/threads`（単一ディレクトリで動かす開発・試験向け）。
+   */
+  threadsDir?: string;
   /**
    * 役割ごとの職人の当て方（設定画面が書く。PO裁定 2026-08-10）。
    *
@@ -676,6 +738,10 @@ export class Daemon {
       // 決定40: 既定は 127.0.0.1。広げるのは明示だけ（この口は帳簿を書き換えられる）
       bindHost: config.bindHost ?? process.env["BANTO_DAEMON_BIND"] ?? "127.0.0.1",
       dataDir: config.dataDir ?? process.env["BANTO_DATA_DIR"] ?? "./data",
+      // task-0224: 会話の索引は**番頭ホストの持ち物**で、置き場が自分の dataDir と
+      // 揃っている保証が無い（実機では親子で別の場所を指している）。渡っていなければ
+      // `threadsDir()` が `BANTO_THREADS_DIR` → `<dataDir>/threads` の順で決める
+      ...(config.threadsDir !== undefined ? { threadsDir: config.threadsDir } : {}),
       tickIntervalMs:
         config.tickIntervalMs ??
         parseInt(process.env["BANTO_TICK_INTERVAL_MS"] ?? "60000", 10),
@@ -2234,6 +2300,154 @@ export class Daemon {
     const task = this.store.getTask(taskId, projectTag);
     const origin = task?.["origin"];
     return typeof origin === "string" && origin.length > 0 ? origin : undefined;
+  }
+
+  /** 会話の索引の在り処（task-0224）。明示 > 環境変数 > `<dataDir>/threads`。 */
+  private threadsDir(): string {
+    return (
+      this.config.threadsDir ??
+      process.env["BANTO_THREADS_DIR"] ??
+      path.join(this.config.dataDir, "threads")
+    );
+  }
+
+  /**
+   * **そのタスクの知らせが、どの会話へ配られるか**（task-0224）。
+   *
+   * 幹（番頭）から宛先が見えないと、「この基準も見てほしい」を一次受けの枝へ伝える道が無い。
+   * ここは**写して見せるだけ**——配達の経路（番頭ホストの `routeNotice` / `deliver`）には
+   * 一切触らない。過去に知らせが消えた事故（inc-0069）があるので、見せるための都合で
+   * 配達側を動かさないことを守る。
+   *
+   * 番頭ホストの決まりをそのまま辿る:
+   *   - origin が**枝**なら、その枝へ（畳んであっても開き直して配られる）
+   *   - origin が**幹**なら、鍵 `kobo:<projectTag>/<taskId>` の枝へ回る。
+   *     同じ鍵の枝は**開いている方を優先し、無ければ畳んだ方**（`findBySubject` と同じ）。
+   *     まだ無ければ、知らせが来たときに機構が立てる
+   *   - origin が**引けない**なら、`deliver()` の catch が既定の宛先（幹）へ逃がす
+   *
+   * I2: 索引が読めなかったことを「不明」で誤魔化さない——読めなかった旨を返して、
+   * 呼ぶ側がそう書けるようにする。そのうえで**決して投げない**（`kobo.task` が
+   * 索引のせいで死んだら本末転倒）。索引は呼ばれるたびに読み直す（会話は増える）。
+   */
+  noticeDestinationOf(projectTag: string, taskId: string): NoticeDestination {
+    try {
+      const origin = this.originOfTask(projectTag, taskId);
+      if (origin === undefined) return { via: "unknown-origin" };
+
+      const index = this.readThreadsIndex();
+      if (!index.ok) return { via: "index-unreadable", problem: index.reason };
+      const threads = index.threads;
+
+      // 古い索引には `kind` が無い——親を持たないものを幹として扱う（`threads.ts` と同じ）
+      const isTrunk = (t: StoredThreadView): boolean =>
+        t.kind === "trunk" || (t.kind === undefined && t.parentId === undefined);
+      const mainTrunk = (): StoredThreadView | undefined =>
+        threads.find((t) => isTrunk(t) && t.isMain === true) ?? threads.find(isTrunk);
+
+      /** 元の枝が辿れないときの逃げ先。`deliver()` の catch が既定の幹へ配る。 */
+      const fallback = (): NoticeDestination => {
+        const trunk = mainTrunk();
+        if (!trunk) return { via: "no-trunk" };
+        return {
+          via: "fallback-trunk",
+          threadId: trunk.id,
+          title: trunk.title ?? trunk.id,
+          state: trunk.state ?? "open",
+        };
+      };
+
+      const threadId = origin.startsWith("banto:") ? origin.slice("banto:".length) : undefined;
+      if (threadId === undefined || threadId.length === 0) return fallback();
+      const target = threads.find((t) => t.id === threadId);
+      if (!target) return fallback();
+
+      // 枝が宛先なら、そのまま。畳んであっても開き直して配られる（既存の振る舞い）
+      if (!isTrunk(target)) {
+        return {
+          via: "branch",
+          threadId: target.id,
+          title: target.title ?? target.id,
+          state: target.state ?? "open",
+        };
+      }
+
+      // 幹が宛先なら、用件の枝へ回る（T3）
+      const subjectKey = `kobo:${projectTag}/${taskId}`;
+      let closed: StoredThreadView | undefined;
+      let open: StoredThreadView | undefined;
+      for (const t of threads) {
+        if (isTrunk(t)) continue;
+        if (t.parentId !== target.id) continue;
+        if (t.subjectKey !== subjectKey) continue;
+        if ((t.state ?? "open") === "open") {
+          open = t;
+          break;
+        }
+        closed ??= t;
+      }
+      const subjectBranch = open ?? closed;
+      if (subjectBranch) {
+        return {
+          via: "trunk-subject",
+          threadId: subjectBranch.id,
+          title: subjectBranch.title ?? subjectBranch.id,
+          state: subjectBranch.state ?? "open",
+          subjectKey,
+          trunk: { id: target.id, title: target.title ?? target.id },
+        };
+      }
+      // まだ立っていない。知らせが来たときに機構が立てる
+      return {
+        via: "trunk-pending",
+        threadId: target.id,
+        title: target.title ?? target.id,
+        state: target.state ?? "open",
+        subjectKey,
+      };
+    } catch (err) {
+      // ここで投げると `kobo.task` ごと落ちる。読めなかったことは返して伝える（I2）
+      return { via: "index-unreadable", problem: String(err) };
+    }
+  }
+
+  /**
+   * 会話の索引を**読むだけ**（task-0224）。作らない・書かない。
+   *
+   * 番頭ホストは別プロセス（別 systemd ユニット）なので、置き場が渡っていない・
+   * まだ書かれていない・壊れている・権限が無い、のどれもあり得る。**どれも「不明」に
+   * 丸めず理由を返す**（I2）。
+   */
+  private readThreadsIndex():
+    | { ok: true; threads: StoredThreadView[] }
+    | { ok: false; reason: string } {
+    const file = path.join(this.threadsDir(), "index.json");
+    let raw: string;
+    try {
+      raw = fs.readFileSync(file, "utf-8");
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return { ok: false, reason: `${file} がありません` };
+      if (code === "EACCES" || code === "EPERM") {
+        return { ok: false, reason: `${file} を読む権限がありません` };
+      }
+      return { ok: false, reason: `${file}: ${String(err)}` };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      return { ok: false, reason: `${file} が壊れています: ${String(err)}` };
+    }
+    const threads = (parsed as { threads?: unknown } | null)?.threads;
+    if (!Array.isArray(threads)) return { ok: false, reason: `${file} に会話の一覧がありません` };
+    return {
+      ok: true,
+      threads: threads.filter(
+        (t): t is StoredThreadView =>
+          typeof t === "object" && t !== null && typeof (t as { id?: unknown }).id === "string"
+      ),
+    };
   }
 
   /** 最後に振られたイベントID。ここを起点に読むと重複なく続けられる。 */
