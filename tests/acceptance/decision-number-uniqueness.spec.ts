@@ -1,5 +1,5 @@
 /**
- * 決定番号（「決定NNN」）は `docs/adr/**` の中で一意である（task-0159 / imp-0070）。
+ * 決定番号（「決定NNN」）は `docs/adr/**` の中で一意である（task-0159 / imp-0073）。
  *
  * 記録の id（imp / inc / prop / adr）の重複は `record-id-uniqueness.spec.ts` が押さえた。
  * だがその**内側**、ADR の中で採られる「決定NNN」には採番の検査が無く、並走した枝が
@@ -214,7 +214,7 @@ describe("[AC-T0159-1] 決定番号は docs/adr/** の中で一意", () => {
       dups.length,
       0,
       `別内容の同番号がある。参照の少ない側を空き番号（いま使われている最大 +1）へ移し、\n` +
-        `参照も付け替えること。旧→新の対応は work/inbox/improvement/ に残す（imp-0070）:\n` +
+        `参照も付け替えること。旧→新の対応は work/inbox/improvement/ に残す（imp-0073）:\n` +
         dups.join("\n"),
     );
   });
