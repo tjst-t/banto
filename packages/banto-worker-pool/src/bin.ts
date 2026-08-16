@@ -34,6 +34,11 @@
  *                            上限に達しているときの委譲は**待たせずに断る**（task-0216）。
  *                            既定 6 の根拠は `pool.ts` の
  *                            `DEFAULT_MAX_CONCURRENT_WORKERS`（実測ベースで置いた理由つき）
+ *   BANTO_WORKER_AUDIT_RESERVED
+ *                            そのうち監査・判定のために空けておく席（既定 2。0 で
+ *                            取り置かない）。実装の職人は「上限 − ここ」までしか
+ *                            取れない——埋め尽くされると監査が起こせず、タスクが
+ *                            `auditing` から出られなくなるため（task-0223）
  *
  * **既定では 127.0.0.1 しか待ち受けない。** この面は**任意のディレクトリで任意のコマンドを
  * 実行できる職人**を起こせるので、認証の無いまま外へ出すと最も危ない口になる（決定40）。
@@ -53,7 +58,12 @@ import { PiRpcDriver } from "./pi-rpc-driver.js";
 import { ClaudeAgentDriver, CLAUDE_AGENT_DRIVER_ID } from "./claude-agent-driver.js";
 import { CLAUDE_KNOWN_MODELS, CLAUDE_TIER_MODELS } from "./claude-agent/naming.js";
 import { claudeAgentAvailability } from "./claude-agent/availability.js";
-import { WorkerPool, DEFAULT_IDLE_TIMEOUT_MS, resolveMaxConcurrentWorkers } from "./pool.js";
+import {
+  WorkerPool,
+  DEFAULT_IDLE_TIMEOUT_MS,
+  resolveAuditReservedWorkers,
+  resolveMaxConcurrentWorkers,
+} from "./pool.js";
 import { createWorkerModuleTools, createWorkerReportTools, createWorkerTools } from "./worker-tools.js";
 import { WorkerPoolService, WORKER_POOL_DEFAULT_PORT } from "./service.js";
 import { createWorkerPoolSettings } from "./settings.js";
@@ -229,6 +239,14 @@ async function main(): Promise<void> {
   const maxConcurrentWorkers = resolveMaxConcurrentWorkers(process.env);
 
   /**
+   * 上限の内訳（task-0223）。監査・判定のために空けておく席。
+   *
+   * 読み方は上限と同じ流儀（読むのは入口・意味を知っているのは工房）。ここで渡さないと
+   * **取り置きが 0 のまま立つ**——つまり早い者勝ちに戻り、実装が埋めると監査が起きない。
+   */
+  const auditReservedWorkers = resolveAuditReservedWorkers(process.env);
+
+  /**
    * inc-0066 第2段：職人1本ごとの隔離。**能力判定はここで1回だけ**（宣言的）。
    *
    * 判定そのものが本番の cgroup を書き換える（`+memory` を配り、工房本体を葉へ退かす）ので、
@@ -274,6 +292,8 @@ async function main(): Promise<void> {
     ...(Number.isFinite(idleTimeoutMs) ? { idleTimeoutMs } : {}),
     // task-0216: 同時本数の栓。判定は工房の中（決定23：Kobo に依存しない）
     maxConcurrentWorkers,
+    // task-0223: その内訳。判定のための席を早い者勝ちから守る
+    auditReservedWorkers,
   });
 
   // 決定44: 落ちる前に生きていた職人を起こし直す。**同居していたときは番頭ホストが
