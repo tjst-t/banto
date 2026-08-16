@@ -1526,7 +1526,11 @@ describe("[task-0088/a3] 畳んだ枝は履歴に残り、再開できる", () =
     threads.merge(second.id, "結論");
 
     await server!.notify("職人からの報告", { threadId: second.id, source: "worker" });
-    assert.deepEqual(made[1]!.harness.prompts, ["職人からの報告"]);
+    // 知らせは1通のまま届く。ただし畳んだ枝を開き直したときは、機構からの前置きが
+    // 本文の前に付く（task-0227）——見るのは**本文が届いていること**（inc-0069）
+    const prompts = made[1]!.harness.prompts;
+    assert.equal(prompts.length, 1, "知らせが分かれて届いている");
+    assert.ok(prompts[0]!.includes("職人からの報告"), `知らせ本文が届いていない: ${prompts[0]}`);
   });
 
   it("[task-0088/a3] thread_merge / thread_reopen がプロトコルから使える", async () => {

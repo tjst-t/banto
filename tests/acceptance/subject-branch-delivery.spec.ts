@@ -18,7 +18,8 @@
  *   - **枝宛ての知らせはそのまま**（枝の中で委譲した報告は、既に正しい場所へ返っている）
  *   - 鍵の無い知らせ2件で、**別々の枝が2本**立つ（1本に相乗りしない）
  *   - 他の幹からの言伝と PO の発話は**幹のまま**（会話であって知らせではない）
- *   - 畳んだ用件の枝に同じ鍵が来たら、T2 で**その枝が開き直る**（幹は回らない）
+ *   - 畳んだ用件の枝に同じ鍵が来たら、T2 で**その枝が開き直って捌き**、ターンの後に
+ *     **機構が畳み直す**（幹は回らない・task-0227）
  *   - 終端の知らせにだけ「畳んでよい」と分かる印が付く
  *   - 鍵は**再起動をまたいで残る**（索引に保存される）
  *
@@ -103,6 +104,13 @@ async function startHost(): Promise<string> {
 /** その幹にぶら下がっている枝（開いている・畳んだの両方）。 */
 function branchesOf(trunkId: string): Thread[] {
   return threads.list({ kind: "branch" }).filter((t) => t.parentId === trunkId);
+}
+
+/** 開き直しの印（`reopenForNotice` が積む system の知らせ）の本数（task-0227）。 */
+function reopenNotes(thread: Thread): number {
+  return thread.transcript.filter(
+    (e) => e.role === "notice" && e.source === "system" && e.text.includes("開き直しました")
+  ).length;
 }
 
 /** そのスレッドで回ったターンの本数（T1 の台帳から）。 */
@@ -400,7 +408,7 @@ describe("[T3] 閉じ方——鍵の終端まで畳まない", () => {
     assert.match(prompts[1]!, /thread\.merge/u);
   });
 
-  it("[T3] 畳んだ用件の枝に同じ鍵が来たら、その枝が開き直る（幹は回らない）", async () => {
+  it("[T3] 畳んだ用件の枝に同じ鍵が来たら、その枝が開き直って捌き、ターンの後に畳み直る（幹は回らない）", async () => {
     const trunk = await threads.open(TRUNK);
     await startHost();
 
@@ -414,8 +422,13 @@ describe("[T3] 閉じ方——鍵の終端まで畳まない", () => {
     await workerNotice("sess-3", "遅れて届いた最後の一言");
 
     assert.equal(branchesOf(trunk.id).length, 1, "畳んだ枝の代わりに新しい枝が立っている");
-    assert.equal(branch.state, "open", "T2 で開き直っていない");
+    // T2: 開き直って**その枝で**捌く（知らせは捨てない・inc-0069）
+    assert.equal(reopenNotes(branch), 1, "T2 で開き直っていない");
     assert.equal(sessionOf(branch).prompts.length, 2);
+    assert.match(sessionOf(branch).prompts[1]!, /遅れて届いた最後の一言/u, "知らせ本文が届いていない");
+    // task-0227: 開いたままにはしない。捌き終えたら機構が畳み直す
+    assert.equal(branch.state, "closed", "知らせで開き直した枝が開いたまま残っている");
+    assert.equal(branch.conclusion, "落ちた職人は立て直した", "畳み直しで結論が痩せている");
     assert.deepEqual(sessionOf(trunk).prompts, []);
     assert.equal(turnsOf(trunk.id), 0);
   });
