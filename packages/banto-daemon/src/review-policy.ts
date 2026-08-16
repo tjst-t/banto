@@ -278,6 +278,25 @@ export function loadProjectConfig(repoPath: string): ProjectConfig {
  *
  * **`po` は機械的**。タスクが `auto` を名乗っていても、統治コードや PO 必須のパスに
  * 触るなら `po` が勝つ——**緩い方へは倒れない**。
+ *
+ * **ここが返すのは宣言そのもの**（`banto` を名乗れば `banto`）。自動着地の条件
+ * （`autoLandBlockers`）は `handleAuditVerdict` が **`stage === "auto"` のときだけ**見るので、
+ * `banto` を名乗ったタスクは刻みも検査コマンドも揃っていても review-ready へ来る。
+ *
+ * ── 「自動着地したのか、人が通したのか」は帳簿の遷移だけで判別できる（task-0157）──
+ *
+ * | 何が起きたか | 帳簿に出るもの |
+ * |---|---|
+ * | 自動着地（realign 第3便） | `auditing → merging` を理由 `audit_passed:auto` で1回。`review_opened` も `task_approved` も**書かない** |
+ * | 人（番頭）が通した | `auditing → review-ready`（`audit_passed:banto`）→ `review_opened:banto` → `task_approved` → `approved_by:banto` |
+ * | 自動着地の条件を満たさず落ちた | `auditing → review-ready` を理由 `audit_passed:auto→banto（自動着地の条件を満たさない: …）` で |
+ * | PO が通した | `task_approved` の `approvedBy` が `po`、`via`（どの画面から来たか）付き |
+ *
+ * **`approved_by:banto` を書ける口は `kobo.approve` 道具ひとつだけ**である（`by: "banto"` を
+ * 渡す実装はそこだけ。HTTP の `po-decision` は `by: "po"` で `via` 必須、自動承認の実装は
+ * 存在しない）。だから `approved_by:banto` が帳簿にあるなら、**必ずどれかの番頭セッションが
+ * `kobo.approve` を呼んでいる**——呼んだ覚えが無いなら疑うべきは機構ではなく別の枝である
+ * （task-0152 の実例：観測していた枝ではなく、機構が自動で開いた用件枝が通していた）。
  */
 export function resolveReviewStage(task: TaskRecord, config: ProjectConfig): ReviewStage {
   if (task["governance"] === true) return "po";
