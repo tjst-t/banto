@@ -90,9 +90,48 @@ interface IndexFile {
 
 const EMPTY: IndexFile = { version: 1, counter: 0, threads: [] };
 
+/**
+ * **このプロセスが把握している記録の姿**（inc-0075・task-0164）。
+ *
+ * 中身は持たない——役（`role`）の並びと、最後に書いた／読んだときのファイルの姿だけ。
+ * 縮小拒否に要るのはこの2つで、全文を抱えるとメモリが会話の長さぶん二重になる。
+ */
+interface KnownTranscript {
+  /** 役の並び。件数（`roles.length`）が縮小拒否の基準になる。 */
+  roles: string[];
+  /** 最後にこのプロセスが書いた／読んだときのファイルの姿。合っていれば他は触っていない。 */
+  stamp?: { size: number; mtimeMs: number };
+}
+
+/**
+ * 書き戻しが不変条件を破っていれば、その理由を返す（破っていなければ `undefined`）。
+ *
+ * 不変条件は2つ:
+ * - **縮まない**（a1）——件数が減る書き戻しは、古いメモリが新しい記録を潰しにきている
+ * - **前方一致**（a5）——件数が同じか多くても、既にある行の役が食い違っていれば別物。
+ *   33時間ぶんが消えた事故は、この検査1つで発生時点で止まっていた
+ */
+function shrinkReason(known: readonly string[], entries: readonly TranscriptEntry[]): string | undefined {
+  if (entries.length < known.length) {
+    return `${known.length} 本の記録が ${entries.length} 本に縮もうとしました`;
+  }
+  for (let i = 0; i < known.length; i++) {
+    const incoming = entries[i]?.role;
+    if (incoming === known[i]) continue;
+    return (
+      `${known.length} 本の記録の前方一致になっていません` +
+      `（${i + 1} 行目: 記録は "${known[i]}" なのに書き戻しは "${String(incoming)}"）。` +
+      `書き戻しは ${entries.length} 本`
+    );
+  }
+  return undefined;
+}
+
 export class ThreadStore {
   private readonly dir: string;
   private index: IndexFile;
+  /** スレッドごとの「知っている姿」。縮む書き戻しを拒む基準（task-0164）。 */
+  private readonly known = new Map<string, KnownTranscript>();
 
   constructor(dir: string) {
     this.dir = dir;
@@ -147,6 +186,9 @@ export class ThreadStore {
   remove(threadId: string): void {
     const stored = this.index.threads.find((t) => t.id === threadId);
     this.index.threads = this.index.threads.filter((t) => t.id !== threadId);
+    // 消した記録の姿は忘れる（task-0164）。残すと、同じ id が再び現れたときに
+    // 存在しない過去の件数で書き戻しを拒んでしまう
+    this.known.delete(threadId);
     this.writeIndex();
     for (const file of [this.transcriptPath(threadId), stored?.sessionFile]) {
       if (!file) continue;
@@ -167,6 +209,8 @@ export class ThreadStore {
   append(threadId: string, entry: TranscriptEntry): void {
     fs.mkdirSync(this.dir, { recursive: true });
     fs.appendFileSync(this.transcriptPath(threadId), `${JSON.stringify(entry)}\n`, "utf-8");
+    const known = this.knownFor(threadId);
+    this.remember(threadId, [...known.roles, entry.role]);
   }
 
   /**
@@ -174,15 +218,39 @@ export class ThreadStore {
    *
    * `Thread.record` は直前の発言に連結したり実行中の行を更新したりする（画面と同じ形に
    * 揃えるため）。**追記だけでは表現できない更新**があるので、その場合はここで揃える。
+   *
+   * **縮む書き戻しは拒む**（inc-0075・task-0164）。詳細は `accepts()` を参照。
    */
   replace(threadId: string, entries: readonly TranscriptEntry[]): void {
     fs.mkdirSync(this.dir, { recursive: true });
+    if (!this.accepts(threadId, entries)) return;
     const body = entries.map((e) => JSON.stringify(e)).join("\n");
     fs.writeFileSync(this.transcriptPath(threadId), body.length > 0 ? `${body}\n` : "", "utf-8");
+    this.remember(
+      threadId,
+      entries.map((e) => e.role)
+    );
   }
 
   /** 記録を読む。 */
   transcript(threadId: string): TranscriptEntry[] {
+    const entries = this.readTranscript(threadId);
+    // 読んだ内容が、このプロセスの知っている記録の姿になる（縮小拒否の基準・task-0164）
+    this.remember(
+      threadId,
+      entries.map((e) => e.role)
+    );
+    return entries;
+  }
+
+  /**
+   * 記録をファイルから読む（`known` を触らない素の読み）。
+   *
+   * 壊れた行は飛ばす。**飛ばした行のぶん、返る件数は実ファイルの行数より少ない**
+   * ——だから縮小拒否の基準はここが返した件数（＝メモリに載った件数）であって、
+   * 実ファイルの行数ではない（task-0164 a1）。
+   */
+  private readTranscript(threadId: string): TranscriptEntry[] {
     const file = this.transcriptPath(threadId);
     if (!fs.existsSync(file)) return [];
     const entries: TranscriptEntry[] = [];
@@ -197,6 +265,117 @@ export class ThreadStore {
       }
     }
     return entries;
+  }
+
+  /**
+   * **書き戻しを通してよいか**（inc-0075・task-0164）。
+   *
+   * 2026-08-16、幹の記録から33時間ぶんが消えた。`replace()` が無条件の全文上書きで、
+   * **メモリが真実・ファイルはその写し**だったため、メモリに無いものは次の書き戻しで
+   * ファイルからも消えた。原因（なぜ書き戻しが止まったか）は未確定だが、原因が何であれ
+   * **縮む書き戻しを1回でも拒めば、被害は33時間ではなく0で止まっていた**。
+   *
+   * `Thread.record()` が記録に加える変更は次の3つだけで、どれも
+   * **件数を減らさず、既にある行の「役」を変えない**（`threads.ts` の `recordInner` /
+   * `settleInterrupted` / `repairTrunkCards` が全ての書き換え箇所）:
+   *
+   * - 末尾に足す（`push`）
+   * - 末尾の発話・思考に文字を継ぎ足す（役は同じ）
+   * - 走っている道具の行を結果で埋める（位置も役も同じ）
+   *
+   * つまり「**役の並びが前方一致で、件数が減らない**」がこの記録の不変条件である。
+   * これを破る書き戻しは、古い（または別の）メモリで新しい記録を潰しにきた合図なので通さない。
+   *
+   * I2: 黙って拒まない。拒んだ内容は `<threadId>.jsonl.rejected-<ISO8601>` へ退避し、
+   * 何本が何本になろうとしたかを `[banto]` 付きで出す（journal で追える）。
+   */
+  private accepts(threadId: string, entries: readonly TranscriptEntry[]): boolean {
+    const known = this.refreshed(threadId);
+    const reason = shrinkReason(known.roles, entries);
+    if (reason === undefined) return true;
+    const saved = this.quarantine(threadId, entries);
+    console.error(
+      `[banto] ${threadId} の記録が縮む書き戻しを拒みました（${reason}）。` +
+        `書き戻そうとした内容は ${saved ?? "（退避できませんでした）"} に退避しました`
+    );
+    return false;
+  }
+
+  /**
+   * このプロセスが知っている記録の姿。
+   *
+   * **他が書いていればディスクから取り直す。** 事故の形は「古いメモリが、新しく育った
+   * ファイルを上書きし続ける」なので、自分の書いた姿とファイルの姿がずれていたら
+   * ファイルのほうを真実として測る。毎回読み直すと長い会話で重いので、
+   * 大きさと更新時刻が自分の書いたままなら読まない。
+   */
+  private refreshed(threadId: string): KnownTranscript {
+    const known = this.knownFor(threadId);
+    const stamp = this.stampOf(threadId);
+    if (stamp === undefined) return known;
+    if (known.stamp && stamp.size === known.stamp.size && stamp.mtimeMs === known.stamp.mtimeMs) {
+      return known;
+    }
+    const onDisk = this.readTranscript(threadId);
+    this.remember(
+      threadId,
+      onDisk.map((e) => e.role)
+    );
+    return this.knownFor(threadId);
+  }
+
+  private knownFor(threadId: string): KnownTranscript {
+    let known = this.known.get(threadId);
+    if (!known) {
+      known = { roles: [] };
+      this.known.set(threadId, known);
+    }
+    return known;
+  }
+
+  /**
+   * 知っている姿を更新する。
+   *
+   * **短いほうへは下げない**——記録は減らないものなので、いちど知った件数は基準として
+   * 持ち続ける。壊れた行を飛ばして読んだ回（実ファイルより少なく読めた回）に基準が
+   * 下がると、そのぶん縮小を見逃す。
+   */
+  private remember(threadId: string, roles: readonly string[]): void {
+    const known = this.knownFor(threadId);
+    if (roles.length >= known.roles.length) known.roles = [...roles];
+    known.stamp = this.stampOf(threadId);
+  }
+
+  private stampOf(threadId: string): { size: number; mtimeMs: number } | undefined {
+    try {
+      const stat = fs.statSync(this.transcriptPath(threadId));
+      return { size: stat.size, mtimeMs: stat.mtimeMs };
+    } catch {
+      // ファイルがまだ無いのは失敗ではない（初回の書き戻し）
+      return undefined;
+    }
+  }
+
+  /**
+   * 拒んだ書き戻しを別名で残す。復旧にも原因調査にも要る——捨てたら、拒んだこと自体は
+   * 分かっても「何を書こうとしていたか」が永久に分からない。
+   */
+  private quarantine(threadId: string, entries: readonly TranscriptEntry[]): string | undefined {
+    const body = entries.map((e) => JSON.stringify(e)).join("\n");
+    const at = new Date().toISOString();
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const file = `${this.transcriptPath(threadId)}.rejected-${at}${attempt === 0 ? "" : `-${attempt}`}`;
+      if (fs.existsSync(file)) continue;
+      try {
+        fs.writeFileSync(file, body.length > 0 ? `${body}\n` : "", "utf-8");
+        return file;
+      } catch (err) {
+        // I2: 退避できなかったことも黙らせない。ただし元の記録は守れている（書いていない）
+        console.error(`[banto] ${file} へ退避できませんでした: ${String(err)}`);
+        return undefined;
+      }
+    }
+    return undefined;
   }
 
   private readIndex(): IndexFile {
