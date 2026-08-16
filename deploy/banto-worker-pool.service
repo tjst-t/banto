@@ -56,11 +56,18 @@ StandardError=journal
 #                        1本が OOM kill されると unit ごと畳む——事故当時、暴れたのは
 #                        1本で、道連れにされた他の8本は正常だった。continue なら
 #                        暴れた1本だけが死に、残りは生き続ける
-#   MemoryMax=9G         実測: 平常 4.43GB / 本 boot の peak 7.94GB / 事故時 13.0GB。
-#                        導出は 15.62GiB − OS 1.5G − 番頭 3G − Kobo 1G − 検証環境 1G
-#                        = 9.1GiB → 切り下げて 9G。
+#   MemoryMax=8G         **2026-08-16 に 9G から引き下げた（inc-0077）。**
+#                        番頭を 3G → 5G に上げた分をここから引いている。理由は総和:
+#                        番頭 5G + 工房 8G + Kobo 1G + 検証環境 1G =
+#                        **15 GiB ≦ MemTotal 15.6 GiB**。
+#                        **工房を 9G のままにすると 16 GiB になり、MemTotal を超える。**
+#                        上限は予約ではないので普段は動くが、4つが同時に上限近くまで
+#                        伸びた瞬間に **VM ごと死ぬ**（2026-08-14 の global OOM がその形）。
 #                        **「職人1本あたり」ではなく「工房全体」の上限**。
-#                        4G だと今すぐ破綻する（実測 4.43GB）
+#                        4G だと今すぐ破綻する（実測 4.43GB）。
+#                        旧根拠: 実測 平常 4.43GB / 本 boot の peak 7.94GB / 事故時 13.0GB、
+#                        導出は 15.62GiB − OS 1.5G − 番頭 3G − Kobo 1G − 検証環境 1G
+#                        = 9.1GiB → 切り下げて 9G（番頭が 3G だった頃の内訳）
 #   OOMScoreAdjust=500   万一の global OOM でカーネルが**まず職人を選ぶ**。
 #                        子（node → claude）に spawn 時に継承される
 #   TasksMax=2048        プロセス数の暴走も止める（実測 299。既定 19145 は実質無制限）
@@ -69,16 +76,27 @@ StandardError=journal
 #   Delegate=yes / DelegateSubgroup=supervisor で、工房本体を supervisor/ に退避させ、
 #   その隣に職人ごとの子 cgroup を工房自身が切れるようにする（cgroup v2 の
 #   「内部ノードにプロセスを置けない」制約を避ける形）。BANTO_WORKER_CGROUP=auto で有効化。
-#   これで 1本の暴走が 2G で止まり、9G の unit 上限まで到達しなくなる
-#   （unit の 9G は最終の防波堤として残す）
+#   これで 1本の暴走が 2G で止まり、8G の unit 上限まで到達しなくなる
+#   （unit の 8G は最終の防波堤として残す）
 #
-# **稼働機には 2026-08-16 時点で `systemctl set-property --runtime MemoryMax=7G` の
-# 一時の上限が乗っている**（/run/systemd/system.control/banto-worker-pool.service.d/）。
-# あれは凌ぎで、恒久の値はここの 9G。--runtime はサービス再起動では消えないが、
-# **機械の再起動で消える**。
+# **8G で足りる、とは書かない。** 2026-08-16 の実測では**工房は 8G でも落ちている**
+# （memory.events の oom_kill が 116 → 139）。この値の改訂は総和を MemTotal に収め、
+# 「**もう当たっている状態を解く**」ためのもので、根治ではない。根治は次の3本:
+#   task-0186  検証を袋の外で回し、結果も切り詰める
+#   task-0165  アイドルな会話のセッションを畳む
+#   task-0168  同時に走る職人の本数の上限
+#
+# **恒久側（ここと /etc/systemd/system/<unit>.d/oom.conf）が古いままだと、
+# `--runtime` の一時の上限が消えるたびに再発する。** drop-in は同じキーなら後勝ちで、
+# 適用順は /run/systemd/system.control/... （--runtime＝一時）が先、
+# /etc/systemd/system/<unit>.service.d/oom.conf（恒久）が後＝**勝つ**。
+# 実際 2026-08-16 06:34:58 の `systemctl daemon-reload` の1秒後、番頭では一時の 5G が
+# 恒久の 3G に上書きされて OOM した（inc-0077）。**/run にファイルが残っていても
+# 効いていない**——「ファイルが在る＝効いている」ではない。
+# --runtime の drop-in はサービス再起動では消えないが、**機械の再起動で消える**。
 OOMPolicy=continue
 MemoryAccounting=yes
-MemoryMax=9G
+MemoryMax=8G
 OOMScoreAdjust=500
 TasksMax=2048
 Delegate=yes
