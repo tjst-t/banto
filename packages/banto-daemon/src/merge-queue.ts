@@ -256,6 +256,15 @@ export interface MergeProcessorOptions {
    * trigger gate re-evaluation for dependent tasks.
    */
   onMergeComplete?: (taskId: string, projectTag: string) => void;
+
+  /**
+   * fast-forward を試みる直前に呼ばれる（task-0197）。`attempt` は 1 始まり。
+   *
+   * **観測と再現のための継ぎ目**（`onRebaseConflict` と同じ性格）。ff の直前に
+   * mainline が動く状況は本番では偶然にしか起きないので、試験からそこへ割り込めないと
+   * 「同じ tick の中で1回だけ再試行する」上限を確かめられない。既定では誰も渡さない。
+   */
+  onFastForwardAttempt?: (attempt: number) => void | Promise<void>;
 }
 
 // ── Serial merge processor ────────────────────────────────────────────────────
@@ -485,27 +494,75 @@ export async function processMergeQueue(
   }
 
   // ── 3. Fast-forward merge into mainline ──────────────────────────────────
+  //
+  // **1 の rebase と 3 の ff は同じ main を見ていない。** あいだの関所は全量の
+  // `npm test` を含むと6〜8分かかり、その間に main が1コミットでも進めば枝はもう
+  // main の子孫ではなく、`--ff-only` は必ず失敗する。実例（task-0159, 2026-08-16）は
+  // 2回ともゲートを通過したうえで `fast_forward_merge_failed` に落ちている——
+  // **中身も契約も無罪で、負けたのは時間**。
+  //
+  // ここには元々「rebase とゲートが通ったあとの ff 失敗は想定外」と書いてあったが、
+  // **その前提が誤り**だった。rebase とゲートの成功は *その時点の main に対する主張*
+  // でしかない。だから ff の直前に **いまの** main を取り直し、枝が子孫でなければ
+  // もう一度乗せ直してから ff する。
+  //
+  // a2: 再試行は同じ tick の中で **1回だけ**。回り続けさせない——main が進み続ける
+  //     ような状況は、待ち行列を回すより先に人が見るべき合図（次の tick で拾い直す）。
+  // a3: 乗せ直しが**本物の衝突**で解けないときは握り潰さず落とす（I2）。理由には
+  //     衝突したファイル名を入れる——「ff できません」だけでは誰も動けない。
 
-  let commitSha: string;
-  try {
-    commitSha = await fastForwardMerge({
-      repoPath,
-      taskBranch,
-      mainline,
-    });
-  } catch (err) {
-    // Fast-forward merge failure is unexpected after a successful rebase+gate.
+  /** 初回 + 同じ tick の中での再試行1回（a2）。 */
+  const MAX_FF_ATTEMPTS = 2;
+
+  let commitSha: string | undefined;
+  let ffError: unknown;
+  let ffConflictedFiles: string[] = [];
+
+  for (let attempt = 1; attempt <= MAX_FF_ATTEMPTS; attempt++) {
+    // 枝が **いまの** mainline の子孫か。子孫でなければ ff は成立しないので乗せ直す。
+    if (!(await mainlineIsAncestorOfBranch({ repoPath, taskBranch, mainline }))) {
+      try {
+        await rebaseTaskBranch({ repoPath, worktreePath, taskBranch, mainline });
+      } catch (err) {
+        // 本物の衝突（同じ行を両方が直している）。取り直しても解けないのでここで打ち切る
+        ffError = err;
+        ffConflictedFiles = parseConflictedFilesFromError(
+          err instanceof Error ? err.message : String(err)
+        );
+        break;
+      }
+    }
+
+    await opts.onFastForwardAttempt?.(attempt);
+
+    try {
+      commitSha = await fastForwardMerge({ repoPath, taskBranch, mainline });
+      ffError = undefined;
+      break;
+    } catch (err) {
+      // 次の周回で mainline を取り直す。上限に当たったらそのまま落ちる
+      ffError = err;
+    }
+  }
+
+  if (commitSha === undefined) {
     // I2: record and fail the task.
-    const errMsg = err instanceof Error ? err.message : String(err);
+    const errMsg = ffError instanceof Error ? ffError.message : String(ffError);
+    const conflictNote =
+      ffConflictedFiles.length > 0
+        ? ` (乗せ直しが衝突: ${ffConflictedFiles.join(", ")})`
+        : "";
     StateMachine.fail(log, taskId, {
       currentStatus: "merging",
-      reason: `fast_forward_merge_failed: ${errMsg}`,
+      reason: `fast_forward_merge_failed: ${errMsg}${conflictNote}`,
     }, projectTag);
     log.append({
       type: "tick_job_failed",
       projectTag: "daemon",
       jobName: "merge-queue",
-      error: `merge-queue: fast-forward merge failed for ${projectTag}/${taskId}: ${errMsg}`,
+      error:
+        `merge-queue: fast-forward merge failed for ${projectTag}/${taskId} ` +
+        `after ${MAX_FF_ATTEMPTS} attempt(s): ${errMsg}${conflictNote}`,
     });
     if (opts.onMergeComplete) {
       opts.onMergeComplete(taskId, projectTag);
@@ -723,6 +780,34 @@ function parseConflictedFilesFromError(errorMessage: string): string[] {
     if (file) files.add(file);
   }
   return Array.from(files);
+}
+
+/**
+ * `mainline` が `taskBranch` の祖先か——すなわち **いま** ff できる形か（task-0197）。
+ *
+ * 関所の6〜8分のあいだに mainline が進むと、rebase 済みの枝はもう子孫ではなくなる。
+ * ff を試して失敗の文面から読むのではなく、**先に聞く**。
+ *
+ * 非ゼロ終了（＝祖先でない）も、参照が引けないなどの git のエラーも、どちらも false に
+ * 倒す。false は「乗せ直せ」でしかなく、乗せ直しが本当に駄目なら rebase 側が理由つきで
+ * 落ちる——ここで握り潰しているのは分岐の材料だけで、失敗そのものではない（I2）。
+ *
+ * D6: git CLI（stdlib）。
+ */
+async function mainlineIsAncestorOfBranch(opts: {
+  repoPath: string;
+  taskBranch: string;
+  mainline: string;
+}): Promise<boolean> {
+  const { repoPath, taskBranch, mainline } = opts;
+  try {
+    await execFileAsync("git", ["merge-base", "--is-ancestor", mainline, taskBranch], {
+      cwd: repoPath,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
