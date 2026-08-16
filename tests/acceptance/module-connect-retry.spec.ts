@@ -117,6 +117,9 @@ async function captureWarnings<T>(
 
 describe("[task-0235/a1] 接続確立の失敗（ECONNREFUSED/ENOTFOUND/EAI_AGAIN）は短く再試行される", () => {
   it("ECONNREFUSED が2回続いても、3回目で相手が起き直っていれば成功する", async () => {
+    // 既定は1回だけ（Kobo の tick を詰まらせないため）。ここでは2回再試行できることを
+    // 明示的に確かめたいので、回数だけオプトインで広げる（既定値そのものは a3 で見る）。
+    process.env["BANTO_MODULE_CONNECT_RETRY_ATTEMPTS"] = "2";
     process.env["BANTO_MODULE_CONNECT_RETRY_DELAYS_MS"] = "5,5,5";
     const { fetchImpl, callCount } = scriptedFetch([
       failWith(connectError("ECONNREFUSED")),
@@ -196,6 +199,24 @@ describe("[task-0235/a3] 再試行の回数・間隔には上限があり、環�
 
     assert.ok(callCount() >= 2, "1回きりではなく再試行している");
     assert.ok(elapsedMs < 5000, `既定の合計待ちは数秒を超えないはず（実測 ${elapsedMs}ms）`);
+  });
+
+  it("既定は「1回・50ms後」に留まる（Kobo の tick は200msごとに呼ぶため、待ちを伸ばすと詰まる）", async () => {
+    // tests/acceptance/tick-jobs.spec.ts が実測で踏んだ制約をここに固定する：
+    // gate-reeval は 200ms ごとに env.list を呼ぶので、既定の再試行がこれに近い
+    // 長さまで伸びると tick が間に合わなくなる（実際に旧既定 [100,300,900] で落ちた）。
+    const { fetchImpl, callCount } = scriptedFetch([failWith(connectError("ECONNREFUSED"))]);
+    const client = createModuleClient(REGISTRY, fetchImpl);
+
+    const started = Date.now();
+    await assert.rejects(() => client.invoke("flaky", "any.tool"), /Failed to reach module "flaky"/);
+    const elapsedMs = Date.now() - started;
+
+    assert.equal(callCount(), 2, "既定は初回 + 再試行1回 = 2回で打ち切り");
+    assert.ok(
+      elapsedMs < 150,
+      `既定の合計待ちは Kobo の tick 間隔（200ms）より十分短いはず（実測 ${elapsedMs}ms）`
+    );
   });
 
   it("BANTO_MODULE_CONNECT_RETRY_ATTEMPTS / _DELAYS_MS で回数と間隔を変えられる", async () => {

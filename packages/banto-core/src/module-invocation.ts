@@ -203,6 +203,18 @@ export function longCallFetch(idleTimeoutMs = 65 * 60_000): ModuleFetch {
 // 中身と無関係に failed になった（実測：failed の24〜47秒前に worker-pool の OOM）。
 // 数十秒後には同じ操作が通っている——一瞬の途切れを、一度きりの例外で終わらせない。
 //
+// **既定をうんと小さく（1回・50ms後）に留めている。根拠は2つ：**
+//   (a) このクライアントは Kobo の tick からも呼ばれる（例：gate-reeval が 200ms
+//       ごとに `env.list` を叩く）。相手が落ちている間、呼び出し1本あたりの待ちを
+//       伸ばすと、その間ずっと tick が詰まる——製品の話であって試験の都合ではない。
+//       実際、既定を [100, 300, 900]（合計1.3秒）にしていたときは
+//       `tests/acceptance/tick-jobs.spec.ts` が本当に落ちた（tickIntervalMs=200ms
+//       に対し gate-reeval 1回だけで1.3秒待つようになり、間に合わなくなった）。
+//   (b) 元の事故は OOM の+24〜47秒後に failed になっている。100+300+900msの
+//       再試行では、どのみちこの停止を救えていない。短い再試行が本当に救えるのは
+//       「ちょうどソケットの差し替えに当たった一瞬（数十ms）」だけ——これは停止
+//       対策ではなく、一瞬の途切れだけを拾う保険に留める。
+//
 // **再試行してよいのは「要求が相手に届いていないと言い切れる」失敗だけ。**
 //   - ECONNREFUSED / ENOTFOUND / EAI_AGAIN：接続確立そのものの失敗。相手は何も
 //     受け取っていないので、再試行しても二重には走らない。既定で再試行する。
@@ -238,33 +250,35 @@ function classifyRetryableFailure(err: unknown, idempotent: boolean): "connect" 
 }
 
 /**
- * 接続段の再試行の最大回数（初回は含まない）。既定3回。
+ * 接続段の再試行の最大回数（初回は含まない）。既定1回。
  *
- * 根拠：観測した OOM 再起動からの復帰は24〜47秒後（task-0235実測）だが、ここでの
- * 再試行は「一瞬の途切れ」だけを拾う短い保険に留める——長い停止まで呼び出し元を
- * ブロックし続けるのは筋が違う（タスクの再実行など、上位の回復に任せる）。
- * `BANTO_MODULE_CONNECT_RETRY_ATTEMPTS` で変えられる。
+ * 根拠：このクライアントは Kobo の tick（200msごと）からも呼ばれる。再試行を
+ * 長く取ると、相手が落ちている間じゅう tick 側の待ちが伸びる——実測で
+ * `tests/acceptance/tick-jobs.spec.ts` を壊した（詳細は上のコメント）。
+ * また元の事故（OOM 再起動）は+24〜47秒後の復帰で、どんな短い再試行でも
+ * 救えない停止だった。ここで拾えるのはソケット差し替えの一瞬（数十ms）だけで
+ * 十分——だから1回・短い間隔に留める。`BANTO_MODULE_CONNECT_RETRY_ATTEMPTS` で変えられる。
  */
 function connectRetryMaxAttempts(): number {
   const raw = process.env["BANTO_MODULE_CONNECT_RETRY_ATTEMPTS"];
-  if (raw === undefined) return 3;
+  if (raw === undefined) return 1;
   const n = Number(raw);
-  return Number.isInteger(n) && n >= 0 ? n : 3;
+  return Number.isInteger(n) && n >= 0 ? n : 1;
 }
 
 /**
- * 再試行の間隔（ms）。既定 [100, 300, 900]（指数的に後退、合計待ち1.3秒）——
- * a3「合計の待ちが数秒を超えない」の根拠。再試行回数が配列の長さを超えたら、
+ * 再試行の間隔（ms）。既定 [50]（合計待ち最大50ms）——ソケット差し替えの一瞬を
+ * 拾うだけの短さに留める（上のコメント参照）。再試行回数が配列の長さを超えたら、
  * 最後の値を繰り返す。`BANTO_MODULE_CONNECT_RETRY_DELAYS_MS`（カンマ区切り）で変えられる。
  */
 function connectRetryDelaysMs(): number[] {
   const raw = process.env["BANTO_MODULE_CONNECT_RETRY_DELAYS_MS"];
-  if (!raw) return [100, 300, 900];
+  if (!raw) return [50];
   const parsed = raw
     .split(",")
     .map((s) => Number(s.trim()))
     .filter((n) => Number.isFinite(n) && n >= 0);
-  return parsed.length > 0 ? parsed : [100, 300, 900];
+  return parsed.length > 0 ? parsed : [50];
 }
 
 function sleep(ms: number): Promise<void> {
