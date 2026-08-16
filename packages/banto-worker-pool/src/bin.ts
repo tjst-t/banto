@@ -29,6 +29,11 @@
  *                            ——試験や開発機が黙って稼働中の袋を触りに行かないよう、
  *                            有効化は systemd の drop-in など明示の場所でだけ行う
  *   BANTO_WORKER_MEMORY_MAX  職人1本あたりの上限（既定 2G。`2G` / `1536M` / バイト数）
+ *   BANTO_WORKER_MAX_CONCURRENT
+ *                            同時に走ってよい職人の本数（既定 6。0 で上限なし）。
+ *                            上限に達しているときの委譲は**待たせずに断る**（task-0216）。
+ *                            既定 6 の根拠は `pool.ts` の
+ *                            `DEFAULT_MAX_CONCURRENT_WORKERS`（実測ベースで置いた理由つき）
  *
  * **既定では 127.0.0.1 しか待ち受けない。** この面は**任意のディレクトリで任意のコマンドを
  * 実行できる職人**を起こせるので、認証の無いまま外へ出すと最も危ない口になる（決定40）。
@@ -48,7 +53,7 @@ import { PiRpcDriver } from "./pi-rpc-driver.js";
 import { ClaudeAgentDriver, CLAUDE_AGENT_DRIVER_ID } from "./claude-agent-driver.js";
 import { CLAUDE_KNOWN_MODELS, CLAUDE_TIER_MODELS } from "./claude-agent/naming.js";
 import { claudeAgentAvailability } from "./claude-agent/availability.js";
-import { WorkerPool, DEFAULT_IDLE_TIMEOUT_MS } from "./pool.js";
+import { WorkerPool, DEFAULT_IDLE_TIMEOUT_MS, resolveMaxConcurrentWorkers } from "./pool.js";
 import { createWorkerModuleTools, createWorkerReportTools, createWorkerTools } from "./worker-tools.js";
 import { WorkerPoolService, WORKER_POOL_DEFAULT_PORT } from "./service.js";
 import { createWorkerPoolSettings } from "./settings.js";
@@ -215,6 +220,15 @@ async function main(): Promise<void> {
       : Number.parseInt(process.env["BANTO_WORKER_IDLE_MS"] ?? String(DEFAULT_IDLE_TIMEOUT_MS), 10);
 
   /**
+   * 同時本数の上限（task-0216）。設定画面には出さない——**機械の大きさで決まる値**で、
+   * 会話の途中で動かすものではないため（`BANTO_WORKER_MEMORY_MAX` と同じ扱い）。
+   *
+   * I2: 読めない値を黙って既定に落とさない。落とすと「変えたつもりで効いていない」が
+   * 例外にならず、上限が無いまま走り出す（それが今回の事故の形そのもの）。
+   */
+  const maxConcurrentWorkers = resolveMaxConcurrentWorkers(process.env);
+
+  /**
    * inc-0066 第2段：職人1本ごとの隔離。**能力判定はここで1回だけ**（宣言的）。
    *
    * 判定そのものが本番の cgroup を書き換える（`+memory` を配り、工房本体を葉へ退かす）ので、
@@ -258,6 +272,8 @@ async function main(): Promise<void> {
     defaultOrigin: "unknown",
     reportUrl,
     ...(Number.isFinite(idleTimeoutMs) ? { idleTimeoutMs } : {}),
+    // task-0216: 同時本数の栓。判定は工房の中（決定23：Kobo に依存しない）
+    maxConcurrentWorkers,
   });
 
   // 決定44: 落ちる前に生きていた職人を起こし直す。**同居していたときは番頭ホストが

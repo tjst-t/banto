@@ -282,6 +282,17 @@ export interface WorkerPoolOptions {
   /** 安全弁の点検間隔。既定は idleTimeoutMs の1/4。 */
   idleCheckMs?: number;
   /**
+   * 同時に走ってよい職人の本数の上限（task-0216）。
+   *
+   * **上限を持つのは工房自身**（ADR-0010 決定23）。Kobo にも同時実行数の上限はあるが、
+   * それは Kobo が回すセッションの数であって、**番頭が直に起こす職人は数えていない**。
+   * Kobo 側に一本化すると「Kobo 無しでも職人へ委譲できる」が壊れる。
+   *
+   * 0 以下を渡すと上限を切る（試験・単発の道具立て用）。既定は
+   * {@link DEFAULT_MAX_CONCURRENT_WORKERS}。
+   */
+  maxConcurrentWorkers?: number;
+  /**
    * 職人の下の実プロセスを突き止める走査の加減（inc-0066）。
    *
    * 既定は「する」。`false` にすると走査しない——子を持たないランタイムしか使わないと
@@ -304,6 +315,99 @@ export const DEFAULT_PAGE_SIZE = 20;
 
 /** 安全弁の既定。番頭が畳むより十分に長くとる（決定30b）。 */
 export const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+
+/**
+ * 同時に走ってよい職人の本数の既定（task-0216）。
+ *
+ * **なぜ栓が要るか**：2026-08-16 に 9 本が同時に走り、`banto-worker-pool.service`
+ * （工房全体）が1日で少なくとも7回 OOM で揺れた。職人1本には 2 GiB の子 cgroup が
+ * 貼られていて（`memory.oom.group`）、当たるとその職人の袋ごと全プロセスが死ぬ。
+ * 巻き添えで「中身は無罪なのに落ちた」タスクが7本出ている。
+ *
+ * **どちらの考え方で 6 を選んだか（数字だけ置かないための記録）**：
+ *
+ *   (A) 最悪値で置く：`上限本数 × 職人1本の cgroup 上限（2 GiB）≦ 工房の MemoryMax
+ *       （実測 7〜8 GiB）`。理屈としては正しいが、これだと **3〜4 本**で頭打ちになる。
+ *       Kobo だけで 5 本（`limits.max_concurrent_sessions` の既定）走るので、工場が
+ *       自分の上限に届く前に工房が断ることになり、**栓ではなく仕事を止める道具**になる。
+ *   (B) 実測値で置く（**こちらを採った**）：平常時の職人1本は **0.23〜0.56 GiB**。
+ *       6 本なら平常時 6 × 0.56 ≒ **3.4 GiB**。重いのが 2 本同時に上限（2 GiB）へ
+ *       張り付いても `2×2 + 4×0.56 ≒ 6.2 GiB` で、工房の 7 GiB に収まる。
+ *
+ * 6 という本数そのものの根拠は「Kobo の 5 本 ＋ 番頭が直に起こす 1 本」。工場が回す分を
+ * 工房が断らずに済む最小の値であり、事故のあった 9 本より確実に下にある。
+ *
+ * (B) を採った以上、**これは最悪値の保証ではない**——6 本全部が 2 GiB へ張り付けば
+ * 12 GiB で、やはり工房は落ちる。そこまでの守りは職人1本ごとの cgroup（2 GiB）が受け持ち、
+ * ここが受け持つのは「常識的な混み方で工房を殺さない」ところまでである。
+ * 機械を替える・`MemoryMax` を変えるときは `BANTO_WORKER_MAX_CONCURRENT` で動かす。
+ */
+export const DEFAULT_MAX_CONCURRENT_WORKERS = 6;
+
+/**
+ * **同時本数の上限で断った**ことの合印（{@link TIER_UNASSIGNED_CODE} と同じ流儀）。
+ *
+ * モジュール間の呼び出しは失敗を文字列にして返すので、構造を渡す口が無い。日本語の
+ * 言い回しで見分けると文言を直した日に黙って壊れるため、契約として輸出した合印で見分ける。
+ */
+export const WORKER_LIMIT_CODE = "BANTO_WORKER_LIMIT";
+
+/** 上限を変える環境変数の名前（断りの文面と設定画面が同じ名前を指すため）。 */
+export const MAX_CONCURRENT_ENV = "BANTO_WORKER_MAX_CONCURRENT";
+
+/**
+ * 環境変数から同時本数の上限を読む（`bin.ts` が使う）。
+ *
+ * 読む場所は `bin.ts` の流儀（`BANTO_WORKER_IDLE_MS` などと同じ入口）だが、**読み方は
+ * ここに置く**——上限の意味を知っているのは工房の側で、入口は組み立てるだけだから（D5）。
+ *
+ * I2: 読めない値を黙って既定に落とさない。落とすと「変えたつもりで効いていない」が
+ * 例外にならず、上限が無いつもりのまま走り出す（それが inc の形そのもの）。
+ *
+ * @param env 読み元（試験は偽の環境を渡す）
+ * @returns 本数。0 は「上限なし」
+ */
+export function resolveMaxConcurrentWorkers(
+  env: Record<string, string | undefined> = process.env
+): number {
+  const raw = env[MAX_CONCURRENT_ENV];
+  if (raw === undefined || raw.trim() === "") return DEFAULT_MAX_CONCURRENT_WORKERS;
+  const parsed = Number(raw.trim());
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(
+      `${MAX_CONCURRENT_ENV} を読み取れません: "${raw}"（0以上の整数。0 で上限なし。既定 ${DEFAULT_MAX_CONCURRENT_WORKERS}）`
+    );
+  }
+  return parsed;
+}
+
+/** いま走っている職人1本分（同時本数の数え上げに出る形）。 */
+export interface ConcurrencySlot {
+  taskId: string;
+  projectTag: string;
+  /** 起動中でまだ台帳に載っていない枠は未定義（`starting` が立つ）。 */
+  sessionId?: string;
+  spawnedAt: string;
+  /** 起こしている最中（spawn が返る前）の枠か。 */
+  starting?: boolean;
+}
+
+/**
+ * 同時に走っている職人の本数と上限（覗き窓と断りの文面の元・task-0216）。
+ *
+ * D3: 本数は保存しない。台帳と pid の生存から**毎回導く**——数え間違いが上限を
+ * 無意味にするので、別の場所に数を持たせない。
+ */
+export interface ConcurrencyStatus {
+  /** いま走っている本数（起こしている最中の枠を含む）。 */
+  running: number;
+  /** 上限。0 なら上限なし。 */
+  limit: number;
+  /** 誰が・いつから走っているか（起動順）。 */
+  slots: ConcurrencySlot[];
+  /** 上限を変える環境変数の名前。 */
+  env: string;
+}
 
 /**
  * **等級に割り当てが無くて断った**ことの合印（ADR-0021 決定104）。
@@ -436,6 +540,17 @@ export class WorkerPool {
   private readonly unsubscribeDriver: () => void;
   private idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
   private idleSweeper: NodeJS.Timeout | undefined;
+  /** 同時本数の上限（task-0216）。0 なら上限なし。 */
+  private maxConcurrentWorkers = DEFAULT_MAX_CONCURRENT_WORKERS;
+  /**
+   * 起こしている最中の枠（token → 誰を・いつから）。
+   *
+   * **台帳に載るのは spawn が返ったあと**なので、数えるのが台帳だけだと、同時に頼まれた
+   * 2本が**どちらも「まだ 0 本」を見て**通り抜ける。上限は事故を防ぐ栓なので、混んでいる
+   * ときに限って効かないのでは意味がない——枠は数える前に取り、決着したら必ず返す。
+   */
+  private readonly starting = new Map<number, { taskId: string; projectTag: string; at: string }>();
+  private startingSeq = 0;
   /** 前に取り置きを掃除した時刻（0 は「まだ一度もしていない」）。 */
   private lastKeepPruneAt = 0;
 
@@ -524,6 +639,50 @@ export class WorkerPool {
 
     // 決定30b: 安全弁。主たる契機は番頭が畳むことで、これは取りこぼしを拾うだけ
     this.setIdleTimeout(options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, options.idleCheckMs);
+    // task-0216: 同時本数の栓。上限を持つのは工房自身（決定23）
+    this.maxConcurrentWorkers = Math.max(
+      0,
+      Math.floor(options.maxConcurrentWorkers ?? DEFAULT_MAX_CONCURRENT_WORKERS)
+    );
+  }
+
+  /**
+   * いま走っている職人の本数と上限（task-0216）。
+   *
+   * D3: 数は持たない。**台帳と pid の生存**から毎回導き、起こしている最中の枠を足す。
+   * 数えるのは生きている職人だけ——畳んだ・落ちた・安全弁で畳まれた分は自然に減る。
+   */
+  concurrency(): ConcurrencyStatus {
+    const live = this.list({ includeClosed: false })
+      .filter((w) => w.alive)
+      .map(
+        (w): ConcurrencySlot => ({
+          taskId: w.taskId,
+          projectTag: w.projectTag,
+          sessionId: w.sessionId,
+          spawnedAt: w.spawnedAt,
+        })
+      );
+    const starting = [...this.starting.values()].map(
+      (s): ConcurrencySlot => ({
+        taskId: s.taskId,
+        projectTag: s.projectTag,
+        spawnedAt: s.at,
+        starting: true,
+      })
+    );
+    const slots = [...live, ...starting].sort((a, b) => a.spawnedAt.localeCompare(b.spawnedAt));
+    return {
+      running: slots.length,
+      limit: this.maxConcurrentWorkers,
+      slots,
+      env: MAX_CONCURRENT_ENV,
+    };
+  }
+
+  /** いまの同時本数の上限（設定画面・覗き窓に見せる）。0 なら上限なし。 */
+  currentMaxConcurrentWorkers(): number {
+    return this.maxConcurrentWorkers;
   }
 
   /** いまの安全弁の時間（設定画面に見せる）。 */
@@ -1017,7 +1176,60 @@ export class WorkerPool {
     );
   }
 
+  /**
+   * 職人を1本起こす。
+   *
+   * **同時本数の栓はここ**（task-0216・決定23）。上限に達していたら、待たせずに断る
+   * ——待ち行列を作ると「受理したが動いていない職人」が生まれ、覗き窓に**待ち状態**を
+   * 足すことになる（D3：状態の真実は一箇所）。
+   */
   async delegate(input: DelegateInput): Promise<WorkerInfo> {
+    const token = this.reserveSlot(input.taskId, input.projectTag ?? this.defaultProjectTag);
+    try {
+      return await this.spawnWorker(input);
+    } finally {
+      // 起きても・断られても・転んでも枠を返す。返し忘れると上限が目減りしていく
+      this.starting.delete(token);
+    }
+  }
+
+  /**
+   * 同時本数の枠を1つ取る。取れなければ**次の手が選べる断り方で**投げる（task-0216）。
+   *
+   * 「上限です」だけでは番頭は何を畳めばいいのか分からない。いま何本走っていて、上限が
+   * 何本で、**それぞれ誰が・いつから走っているか**を文面に載せる——番頭はこれを読んで
+   * 畳む相手（`worker.close`）を選べる。
+   */
+  private reserveSlot(taskId: string, projectTag: string): number {
+    const status = this.concurrency();
+    if (status.limit > 0 && status.running >= status.limit) {
+      const now = Date.now();
+      const lines = status.slots.map((s) => {
+        const started = Date.parse(s.spawnedAt);
+        const minutes = Number.isFinite(started)
+          ? `${Math.max(0, Math.round((now - started) / 60_000))}分前から`
+          : "起動時刻不明";
+        const where = s.starting ? "起動中" : `sessionId=${s.sessionId ?? "不明"}`;
+        return `  - ${s.taskId} [${s.projectTag}] ${s.spawnedAt}（${minutes}） ${where}`;
+      });
+      throw new Error(
+        `${WORKER_LIMIT_CODE}:${status.running}/${status.limit}\n` +
+          `同時に走れる職人は ${status.limit} 本までで、いま ${status.running} 本走っています。` +
+          `そのため "${taskId}" は起こしませんでした。**待たせていません**（待ち行列は作りません）。\n` +
+          "いま走っている職人:\n" +
+          `${lines.join("\n")}\n` +
+          "終わったもの・止まっているものを `worker.close` で畳んでから頼み直してください。\n" +
+          `上限がある理由は、職人1本ごとに 2 GiB の袋（cgroup）が貼られていて、` +
+          `本数が増えると工房全体が上限に当たり、**無関係な職人まで巻き添えで殺される**ためです。\n` +
+          `上限を変えるには工房の ${MAX_CONCURRENT_ENV}（既定 ${DEFAULT_MAX_CONCURRENT_WORKERS}）を変えて立て直します。`
+      );
+    }
+    const token = ++this.startingSeq;
+    this.starting.set(token, { taskId, projectTag, at: new Date().toISOString() });
+    return token;
+  }
+
+  private async spawnWorker(input: DelegateInput): Promise<WorkerInfo> {
     const projectTag = input.projectTag ?? this.defaultProjectTag;
     const origin = input.origin ?? this.defaultOrigin;
     /**

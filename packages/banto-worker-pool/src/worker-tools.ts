@@ -45,7 +45,7 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     name: "worker.delegate",
     label: "Worker: Delegate",
     description:
-      `職人に実作業（調査・実装・修正）を任せる。手を動かす仕事は自分でやらず渡す（D10）。\n例: {taskId: "task-0042", worktreePath: "/home/ubuntu/worktrees/banto/task-0042", instruction: "落ちる原因を調べて報告する"} → sessionId "${EXAMPLE_SESSION_ID}"\ninstruction 以外の値は英語（識別子・パス）で埋める。\n**渡したら手を離してターンを終える**（知らせは自動で届く。attach で待たない）。`,
+      `職人に実作業（調査・実装・修正）を任せる。手を動かす仕事は自分でやらず渡す（D10）。\n例: {taskId: "task-0042", worktreePath: "/home/ubuntu/worktrees/banto/task-0042", instruction: "落ちる原因を調べて報告する"} → sessionId "${EXAMPLE_SESSION_ID}"\ninstruction 以外の値は英語（識別子・パス）で埋める。\n**渡したら手を離してターンを終える**（知らせは自動で届く。attach で待たない）。\n同時に走れる本数には上限がある。満杯のときは待たされず断られ、断りに「いま誰が走っているか」が載る——読んで畳む相手を選ぶ。`,
     parameters: Type.Object({
       taskId: Type.String(),
       origin: Type.Optional(Type.String()),
@@ -175,7 +175,25 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
               ? `\n\n⚠ この工房は職人を隔離していません（cgroup 不可: ` +
                 `${pool.isolationStatus().reason ?? "理由不明"}）。1本の暴走が機械全体を巻き込みます`
               : "");
-      return { content: [{ type: "text" as const, text }], details: result };
+      /**
+       * いま何本走っていて上限が何本か（task-0216）。
+       *
+       * **一覧の末尾に必ず出す**——職人が1人も居ないときも出す。番頭が「あと何本頼めるか」を
+       * 知るのに一覧以外の口を覚えなくてよいようにするため。断られてから知るのでは遅い。
+       */
+      const concurrency = pool.concurrency();
+      const capacity =
+        concurrency.limit > 0
+          ? `\n\n同時に走っている職人: ${concurrency.running} / ${concurrency.limit} 本` +
+            `（上限。工房の ${concurrency.env} で変える）` +
+            (concurrency.running >= concurrency.limit
+              ? "。**満杯です**——次を頼む前に、終わった職人を worker.close で畳んでください"
+              : "")
+          : `\n\n同時に走っている職人: ${concurrency.running} 本（上限なし）`;
+      return {
+        content: [{ type: "text" as const, text: text + capacity }],
+        details: { ...result, concurrency },
+      };
     },
   });
 

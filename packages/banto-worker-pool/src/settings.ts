@@ -24,6 +24,14 @@ const MINUTE = 60_000;
 /** 画面へ渡す値の形（`WorkerSettings` がそのまま描く）。 */
 export interface WorkerSettingsValues extends Record<string, unknown> {
   idleTimeoutMinutes: number;
+  /**
+   * 同時に走れる職人の本数と、いま走っている本数（task-0216）。**読むだけ。**
+   *
+   * 画面から変えられないのは、これが機械の大きさ（工房の `MemoryMax`）で決まる値で、
+   * 会話の途中で動かすものではないため。変えるのは工房の `BANTO_WORKER_MAX_CONCURRENT`。
+   */
+  maxConcurrentWorkers: number;
+  runningWorkers: number;
   defaultTier: WorkerTier | "";
   tiers: readonly WorkerTier[];
   assignments: Partial<Record<WorkerTier, string>>;
@@ -74,6 +82,9 @@ export function createWorkerPoolSettings(
     fields: [],
     read: (): WorkerSettingsValues => ({
       idleTimeoutMinutes: Math.round(pool.currentIdleTimeoutMs() / MINUTE),
+      // task-0216: 上限は読むだけ（変えるのは工房の環境変数）。本数は毎回導く（D3）
+      maxConcurrentWorkers: pool.currentMaxConcurrentWorkers(),
+      runningWorkers: pool.concurrency().running,
       // **いま実際に効いているもの**を映す（核の台帳 → 工房の残骸 の順）。画面は読むだけ
       defaultTier: (pool.resolvedDefaultTier() ?? "") as WorkerTier | "",
       tiers: WORKER_TIERS,
