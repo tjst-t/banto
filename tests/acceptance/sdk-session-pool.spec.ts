@@ -61,8 +61,11 @@ class FakeInner implements BantoHarness {
   emit(event: HarnessEvent): void {
     for (const l of [...this.listeners]) l(event);
   }
+  /** 話した中身。**放す前の発話が再開後にも読めるか**を見るために覚える（a9）。 */
+  readonly said: string[] = [];
   async prompt(text: string): Promise<void> {
     this.turns++;
+    this.said.push(text);
     // 一度往復すれば SDK 側のセッションは実在する＝札が取れる
     this.exists = true;
     this.streaming = true;
@@ -90,7 +93,7 @@ class FakeInner implements BantoHarness {
     return this.turns;
   }
   transcript(): string {
-    return `turns=${this.turns}`;
+    return [`turns=${this.turns}`, ...this.said].join("\n");
   }
   /** 掛かった章の種。**掛け直されたか**を見るために覚える。 */
   seededWith: ChapterOpening | undefined;
@@ -98,6 +101,7 @@ class FakeInner implements BantoHarness {
   private exists = true;
   async startChapter(opening: ChapterOpening): Promise<void> {
     this.turns = 0;
+    this.said.length = 0;
     this.seededWith = opening;
     this.exists = false;
   }
@@ -358,6 +362,27 @@ describe("SDK セッションの安全弁（task-0165）", () => {
     await harnesses[0]!.prompt("戻す");
     assert.ok(pool.liveCount() <= maxLive);
     assert.ok(pool.liveIds().includes("t-0"));
+  });
+
+  it("a9: 放したあと戻しても、放す前に話した内容が読める（札の引き継ぎと文脈の連続は別）", async () => {
+    const { pool, clock, open } = wire({ idleMs: 60_000 });
+    const harness = open("t-1");
+    await harness.prompt("味噌の樽は蔵の奥に置きました");
+
+    clock.advance(120_000);
+    await pool.sweep();
+    // **本当に落ちている**（落ちていなければ、この試験は何も守っていない）
+    assert.equal(pool.liveCount(), 0);
+    assert.equal(FakeInner.built[0]!.disposed, true);
+
+    await harness.prompt("さっきの樽はどこでしたか");
+    // 中身は別のプロセスに入れ替わっているのに、文章は続いている
+    assert.notEqual(FakeInner.built[1], FakeInner.built[0]);
+    const text = harness.transcript();
+    assert.match(text, /味噌の樽は蔵の奥に置きました/, "放す前の発話が消えている＝文脈が切れている");
+    assert.match(text, /さっきの樽はどこでしたか/, "戻したあとの発話が読めない");
+    // 順番も入れ替わらない（畳んだ区間が後ろに付くと、時系列の読めない文章になる）
+    assert.ok(text.indexOf("蔵の奥") < text.indexOf("さっきの樽"), `前後が入れ替わっている: ${text}`);
   });
 
   it("a10: 放した会話を起こし直すのにかかった時間が数字で読める", async () => {
