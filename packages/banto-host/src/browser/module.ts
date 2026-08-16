@@ -8,8 +8,8 @@
  * noVNC による画面共有と mitmproxy による復号は**両方とも捨てた**。ここは **CDP だけ**で
  * 組んである：画面は `Page.startScreencast`、操作は `Input.*`。追加依存はゼロ。
  *
- * この版でやること：**面で見て、面から触れる**ところまで。番頭が操作する Tool
- * （navigate・click・snapshot 等）・通信の記録・本物の chromium を起こす実装は、
+ * 面で見て、面から触れる（K1）・本物の chromium を起こす（K2・`chromium-launcher.ts`）
+ * ところまでは入っている。番頭が操作する Tool（navigate・click・snapshot 等）・通信の記録は
  * それぞれ別の作業で積む（混ぜない）。
  *
  * D5: 判断は無い。Tool と面の登録、経路の受け口だけ。中身は `session.ts`。
@@ -22,7 +22,8 @@ import type { Duplex } from "node:stream";
 import type { BantoModule } from "../module.js";
 import type { CanvasViewSpec } from "../canvas.js";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "../tool-registry.js";
-import { createUnimplementedLauncher, type BrowserLauncher } from "./launcher.js";
+import type { BrowserLauncher } from "./launcher.js";
+import { createChromiumLauncher } from "./chromium-launcher.js";
 import { createBrowserSession, type BrowserSession, type ScreencastOptions } from "./session.js";
 
 /** 組み込みモジュールの到達先は Banto ホスト自身。UI は自分のオリジンに解決する。 */
@@ -32,10 +33,7 @@ export const BROWSER_BASE_URL = "/api/browser";
 export const BROWSER_VIEWER_WS_PATH = `${BROWSER_BASE_URL}/viewer`;
 
 export interface BrowserModuleOptions {
-  /**
-   * ブラウザの起こし手。省略すると「まだ実装が無い」と言って失敗する既定が入る
-   * （本物の chromium を起こすアダプタは後続の作業）。
-   */
+  /** ブラウザの起こし手。省略すると本物の chromium を起こす既定（K2）が入る。 */
   launcher?: BrowserLauncher;
   screencast?: ScreencastOptions;
 }
@@ -119,7 +117,7 @@ function createBrowserTools(session: BrowserSession): NamespacedToolDefinition[]
 
 export function createBrowserModule(options: BrowserModuleOptions = {}): BantoModule {
   const session = createBrowserSession({
-    launcher: options.launcher ?? createUnimplementedLauncher(),
+    launcher: options.launcher ?? createChromiumLauncher(),
     ...(options.screencast ? { screencast: options.screencast } : {}),
   });
 

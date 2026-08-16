@@ -38,6 +38,7 @@ import { EnvironmentPool, createEnvironmentPoolModule } from "@banto/environment
 import {
   BROWSER_VIEWER_WS_PATH,
   createBrowserModule,
+  createUnimplementedLauncher,
   toCdpCalls,
   toPageCoordinates,
   type BrowserLauncher,
@@ -323,14 +324,45 @@ describe("[task-0156] 偽の launcher と偽の CDP に対して起こす・落�
     assert.equal((await callTool(module, "browser.stop")).state, "stopped");
   });
 
-  it("既定の launcher は「まだ実装が無い」と分かる形で失敗する", async () => {
-    const module = createBrowserModule();
-    await assert.rejects(
-      () => callTool(module, "browser.start"),
-      /実装はまだありません/,
-      "既定の launcher が黙って成功している"
-    );
-    assert.equal((await callTool(module, "browser.status")).state, "stopped");
+  it("既定の launcher は chromium を名乗り、見つからなければ探した場所を添えて失敗する（黙って成功しない）", async () => {
+    // K2 で既定が createUnimplementedLauncher() から createChromiumLauncher() に替わった。
+    // このホストには本物の chromium が（playwright キャッシュ等に）居ることがあるため、
+    // 既定のまま呼ぶと本物を起こしてしまいかねない。HOME/PATH/BANTO_BROWSER_EXECUTABLE を
+    // 差し替えて「どこにも無い」状態を作り、探索が尽きて失敗する経路を確定させる。
+    const savedEnv = {
+      BANTO_BROWSER_EXECUTABLE: process.env["BANTO_BROWSER_EXECUTABLE"],
+      HOME: process.env["HOME"],
+      PATH: process.env["PATH"],
+    };
+    const emptyHome = fs.mkdtempSync(path.join(os.tmpdir(), "banto-no-chromium-home-"));
+    delete process.env["BANTO_BROWSER_EXECUTABLE"];
+    process.env["HOME"] = emptyHome;
+    process.env["PATH"] = "";
+    try {
+      const module = createBrowserModule();
+      assert.equal(
+        (await callTool(module, "browser.status")).launcher,
+        "chromium",
+        "既定の launcher が chromium を名乗っていない"
+      );
+      await assert.rejects(
+        () => callTool(module, "browser.start"),
+        /chromium の実行ファイルが見つかりません/,
+        "既定の launcher が黙って成功している"
+      );
+      assert.equal((await callTool(module, "browser.status")).state, "stopped");
+    } finally {
+      for (const [key, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      fs.rmSync(emptyHome, { recursive: true, force: true });
+    }
+  });
+
+  it("createUnimplementedLauncher は消えていない（K1 の口として残っている）", async () => {
+    const module = createBrowserModule({ launcher: createUnimplementedLauncher() });
+    await assert.rejects(() => callTool(module, "browser.start"), /実装はまだありません/);
   });
 });
 
