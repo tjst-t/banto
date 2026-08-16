@@ -23,6 +23,7 @@ export {
   buildChromiumArgs,
   parseDevToolsActivePort,
   discoverPageWebSocketUrl,
+  resolveSandboxEnv,
   DEFAULT_WINDOW_WIDTH,
   DEFAULT_WINDOW_HEIGHT,
   CHROMIUM_HANDSHAKE_TIMEOUT_MS,
@@ -34,6 +35,8 @@ export {
   type DevToolsActivePort,
   type SpawnChromiumContext,
   type SpawnChromiumFn,
+  type ProcessExitInfo,
+  type ResolveSandboxEnvOptions,
 } from "./chromium-launcher.js";
 export { connectCdp, type CdpConnection, type CdpEventHandler, type CdpParams } from "./cdp.js";
 export {

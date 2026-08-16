@@ -150,6 +150,8 @@ export interface BuildChromiumArgsOptions {
   url?: string;
   /** `DISPLAY` の値。無ければ（`undefined`）headless にする。 */
   display?: string | undefined;
+  /** true のときだけ `--no-sandbox` を足す。既定 false。 */
+  allowNoSandbox?: boolean;
 }
 
 /**
@@ -173,6 +175,10 @@ export function buildChromiumArgs(options: BuildChromiumArgsOptions): string[] {
   // DISPLAY があれば headful（PO が窓を見て触る）。無ければ headless。
   // Xvfb をここで起こすことはしない——あるものに乗るだけ
   if (!options.display) args.push("--headless=new");
+  // 2026-08-16 の判定：既定では絶対に付けない。BANTO_BROWSER_ALLOW_NO_SANDBOX=1 が
+  // 明示的に立っているときだけ（launch() 側で判定済みのものを受け取るだけ）——
+  // 黙って危ない側に倒れない
+  if (options.allowNoSandbox) args.push("--no-sandbox");
   args.push(options.url ?? "about:blank");
   return args;
 }
@@ -260,17 +266,60 @@ export interface SpawnChromiumContext {
   executablePath: string;
   args: string[];
   userDataDir: string;
+  /** 子プロセスへ渡す環境変数。`CHROME_DEVEL_SANDBOX`（分かるときだけ）等が乗る。 */
+  env: NodeJS.ProcessEnv;
 }
 
 export type SpawnChromiumFn = (ctx: SpawnChromiumContext) => childProcess.ChildProcess;
 
 function defaultSpawnChromium(ctx: SpawnChromiumContext): childProcess.ChildProcess {
   // detached: true でプロセスグループを作る。chromium はレンダラ等の子を生やすので、
-  // 親だけを落としても孤児が残る——close() はグループごと落とす
+  // 親だけを落としても孤児が残る——close() はグループごと落とす。
+  // stderr は pipe——起動に失敗したとき「本当の理由」を言うのに要る（I2）
   return childProcess.spawn(ctx.executablePath, ctx.args, {
     detached: true,
-    stdio: ["ignore", "ignore", "ignore"],
+    stdio: ["ignore", "ignore", "pipe"],
+    env: ctx.env,
   });
+}
+
+const SETUID_BIT = 0o4000;
+
+export interface ResolveSandboxEnvOptions {
+  /** 実行ファイルの隣の `chrome_sandbox` を確かめる。既定は `fs.statSync`。試験用。 */
+  stat?: (candidate: string) => fs.Stats;
+  /** 呼び出し元に既にある env（`CHROME_DEVEL_SANDBOX` があれば尊重して上書きしない）。既定は `process.env`。 */
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * 同梱の setuid sandbox helper（`chrome_sandbox`）の在り処を chromium に教える。
+ *
+ * chromium は実行ファイルの隣を**自動では探さない**——見るのは環境変数
+ * `CHROME_DEVEL_SANDBOX` か、ビルド時に埋め込まれた既定（`/usr/local/sbin/chrome-devel-sandbox`）
+ * だけ。だから「隣に置いてあるだけ」では使われない（2026-08-16 に実機で踏んだ）。
+ *
+ * **setuid root でないヘルパを指すと、chromium は「SUID サンドボックスが正しくない」と言って
+ * 起動を拒む**——だから root 所有かつ setuid ビットが立っているときだけ足す（純関数、試験可能）。
+ */
+export function resolveSandboxEnv(
+  executablePath: string,
+  options: ResolveSandboxEnvOptions = {}
+): Record<string, string> {
+  const env = options.env ?? process.env;
+  if (env["CHROME_DEVEL_SANDBOX"]) return {}; // 呼び出し元の指定を尊重し、上書きしない
+
+  const stat = options.stat ?? ((candidate: string) => fs.statSync(candidate));
+  const sandboxHelper = path.join(path.dirname(executablePath), "chrome_sandbox");
+  let stats: fs.Stats;
+  try {
+    stats = stat(sandboxHelper);
+  } catch {
+    return {};
+  }
+  const isSetuidRoot = stats.uid === 0 && (stats.mode & SETUID_BIT) !== 0;
+  if (!isSetuidRoot) return {};
+  return { CHROME_DEVEL_SANDBOX: sandboxHelper };
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -328,13 +377,70 @@ function ensureExitHookInstalled(): void {
   });
 }
 
+/** `proc.exit` の中身。子が終了していなければ `undefined`。 */
+export interface ProcessExitInfo {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+}
+
+/** chromium の stderr を末尾だけ溜める（全部は持たない）。 */
+function tailStderr(proc: childProcess.ChildProcess, maxChars = 4_000): () => string {
+  let buf = "";
+  proc.stderr?.on("data", (chunk: Buffer | string) => {
+    buf += chunk.toString();
+    if (buf.length > maxChars) buf = buf.slice(buf.length - maxChars);
+  });
+  return () => buf;
+}
+
+const NO_SANDBOX_ERROR_PATTERN = /No usable sandbox/;
+
+/** 「選ばれた実行ファイルの隣の chrome_sandbox」を実行時に解決した絶対パスで案内する。 */
+function buildSandboxHint(executablePath: string): string {
+  const sandboxHelper = path.join(path.dirname(executablePath), "chrome_sandbox");
+  return (
+    "サンドボックスが使えません。次のどちらかで対処してください:\n" +
+    `  1) 同梱の setuid ヘルパを有効にする（要 root）: ` +
+    `sudo chown root:root ${sandboxHelper} && sudo chmod 4755 ${sandboxHelper}\n` +
+    "  2) 危険性を理解した上で、環境変数 BANTO_BROWSER_ALLOW_NO_SANDBOX=1 を立てて " +
+    "--no-sandbox を明示的に許可する"
+  );
+}
+
+/** stderr の末尾（あれば）と、サンドボックス絡みならその逃げ道を失敗メッセージへ足す。 */
+function appendStderrDetail(message: string, stderr: string, executablePath: string): string {
+  if (!stderr) return message;
+  let detail = `${message}\n--- chromium stderr（末尾） ---\n${stderr}`;
+  if (NO_SANDBOX_ERROR_PATTERN.test(stderr)) {
+    detail += `\n${buildSandboxHint(executablePath)}`;
+  }
+  return detail;
+}
+
 async function waitForDevToolsActivePort(
   userDataDir: string,
-  timeoutMs: number
+  timeoutMs: number,
+  executablePath: string,
+  checkExited: () => ProcessExitInfo | undefined,
+  readStderrTail: () => string
 ): Promise<{ port: number; browserPath: string }> {
   const file = path.join(userDataDir, "DevToolsActivePort");
   const deadline = Date.now() + timeoutMs;
   for (;;) {
+    // I2: 30秒待たず、死んだと分かった時点ですぐ・本当の理由で失敗する
+    const exitInfo = checkExited();
+    if (exitInfo) {
+      const reason = exitInfo.signal
+        ? `シグナル ${exitInfo.signal} で終了`
+        : `終了コード ${exitInfo.code} で終了`;
+      throw new Error(
+        appendStderrDetail(
+          `chromium が CDP の口を掴む前に${reason}しました`,
+          readStderrTail(),
+          executablePath
+        )
+      );
+    }
     let content: string | undefined;
     try {
       content = fs.readFileSync(file, "utf8");
@@ -347,7 +453,11 @@ async function waitForDevToolsActivePort(
     }
     if (Date.now() >= deadline) {
       throw new Error(
-        `chromium が ${timeoutMs}ms 以内に DevToolsActivePort を書きませんでした（${file}）`
+        appendStderrDetail(
+          `chromium が ${timeoutMs}ms 以内に DevToolsActivePort を書きませんでした（${file}）`,
+          readStderrTail(),
+          executablePath
+        )
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -365,6 +475,8 @@ export interface ChromiumLauncherOptions {
   handshakeTimeoutMs?: number;
   /** `SIGTERM` → `SIGKILL` の猶予。既定 `CHROMIUM_CLOSE_GRACE_MS`。 */
   closeGraceMs?: number;
+  /** `BANTO_BROWSER_ALLOW_NO_SANDBOX` の値。既定は `process.env.BANTO_BROWSER_ALLOW_NO_SANDBOX`。試験用。 */
+  allowNoSandboxEnv?: string | undefined;
 }
 
 /**
@@ -388,17 +500,42 @@ export function createChromiumLauncher(options: ChromiumLauncherOptions = {}): B
         fs.rmSync(userDataDir, { recursive: true, force: true });
       };
 
+      // 2026-08-16 の判定：既定はサンドボックス有効。BANTO_BROWSER_ALLOW_NO_SANDBOX=1 が
+      // 明示的に立っているときだけ --no-sandbox を許す（黙って危ない側に倒れない）
+      const allowNoSandboxEnv =
+        options.allowNoSandboxEnv ?? process.env["BANTO_BROWSER_ALLOW_NO_SANDBOX"];
+      const sandboxDisabled = allowNoSandboxEnv === "1";
+      if (sandboxDisabled) {
+        console.warn(
+          "[browser] サンドボックス無効で起動しています（BANTO_BROWSER_ALLOW_NO_SANDBOX=1）"
+        );
+      }
+
       const args = buildChromiumArgs({
         userDataDir,
         display: process.env["DISPLAY"],
+        allowNoSandbox: sandboxDisabled,
         ...(request.width !== undefined ? { width: request.width } : {}),
         ...(request.height !== undefined ? { height: request.height } : {}),
         ...(request.url !== undefined ? { url: request.url } : {}),
       });
 
-      const proc = spawnChromium({ executablePath, args, userDataDir });
+      // 同梱の setuid sandbox helper が使えるなら、chromium に教える（隣に置くだけでは
+      // chromium は見ない——CHROME_DEVEL_SANDBOX で明示する必要がある）
+      const sandboxEnv = resolveSandboxEnv(executablePath);
+      const proc = spawnChromium({
+        executablePath,
+        args,
+        userDataDir,
+        env: { ...process.env, ...sandboxEnv },
+      });
       proc.on("error", (err: Error) => {
         console.error(`[browser] chromium プロセスで異常: ${err.message}`);
+      });
+      const readStderrTail = tailStderr(proc);
+      let exitInfo: ProcessExitInfo | undefined;
+      proc.once("exit", (code, signal) => {
+        exitInfo = { code, signal };
       });
 
       const pid = proc.pid;
@@ -418,12 +555,22 @@ export function createChromiumLauncher(options: ChromiumLauncherOptions = {}): B
       };
 
       try {
-        const { port } = await waitForDevToolsActivePort(userDataDir, handshakeTimeoutMs);
+        const { port } = await waitForDevToolsActivePort(
+          userDataDir,
+          handshakeTimeoutMs,
+          executablePath,
+          () => exitInfo,
+          readStderrTail
+        );
         const webSocketDebuggerUrl = await discoverPageWebSocketUrl(
           `http://127.0.0.1:${port}`,
           request.url
         );
-        return { webSocketDebuggerUrl, close };
+        return {
+          webSocketDebuggerUrl,
+          close,
+          sandbox: sandboxDisabled ? "disabled" : "enabled",
+        };
       } catch (err) {
         // I2: 期限内に口を掴めなかった／page ターゲットが取れなかったら、
         // 起こしたプロセスを残さず片付けてから失敗させる

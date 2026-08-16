@@ -25,6 +25,11 @@ export interface LaunchedBrowser {
   webSocketDebuggerUrl: string;
   /** 落とす。冪等（既に落ちていても成功する）ように実装すること。 */
   close(): Promise<void>;
+  /**
+   * サンドボックスを有効にして起動したか。分かる launcher だけが載せる（省略可）。
+   * `session.ts` はこれを `BrowserStatus.sandbox` へそのまま写す。
+   */
+  sandbox?: "enabled" | "disabled";
 }
 
 /** 起こすときの注文。ブラウザ側で解釈できないものは無視してよい。 */

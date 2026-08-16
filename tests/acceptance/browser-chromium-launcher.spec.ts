@@ -32,6 +32,7 @@ import {
   buildChromiumArgs,
   parseDevToolsActivePort,
   discoverPageWebSocketUrl,
+  resolveSandboxEnv,
   DEFAULT_WINDOW_WIDTH,
   DEFAULT_WINDOW_HEIGHT,
   type BrowserLauncher,
@@ -250,6 +251,72 @@ describe("buildChromiumArgs", () => {
       "https://example.com/"
     );
   });
+
+  it("allowNoSandbox を指定しなければ --no-sandbox は付かない（既定は安全側）", () => {
+    const args = buildChromiumArgs({ userDataDir: "/tmp/banto-x" });
+    assert.ok(!args.includes("--no-sandbox"));
+  });
+
+  it("allowNoSandbox: true のときだけ --no-sandbox が付く", () => {
+    const args = buildChromiumArgs({ userDataDir: "/tmp/banto-x", allowNoSandbox: true });
+    assert.ok(args.includes("--no-sandbox"));
+  });
+});
+
+// ── 2b. resolveSandboxEnv（setuid sandbox helper を CHROME_DEVEL_SANDBOX で教える） ──
+
+describe("resolveSandboxEnv", () => {
+  it("隣の chrome_sandbox が root 所有・setuid ビット有りなら CHROME_DEVEL_SANDBOX を足す", () => {
+    const result = resolveSandboxEnv("/opt/chromium/chrome-linux64/chrome", {
+      env: {},
+      stat: (candidate) => {
+        assert.equal(candidate, "/opt/chromium/chrome-linux64/chrome_sandbox");
+        return { uid: 0, mode: 0o4755 } as fs.Stats;
+      },
+    });
+    assert.deepEqual(result, {
+      CHROME_DEVEL_SANDBOX: "/opt/chromium/chrome-linux64/chrome_sandbox",
+    });
+  });
+
+  it("setuid ビットが立っていなければ足さない", () => {
+    const result = resolveSandboxEnv("/opt/chromium/chrome-linux64/chrome", {
+      env: {},
+      stat: () => ({ uid: 0, mode: 0o0755 }) as fs.Stats,
+    });
+    assert.deepEqual(result, {});
+  });
+
+  it("root 所有でなければ（setuid ビットがあっても）足さない", () => {
+    const result = resolveSandboxEnv("/opt/chromium/chrome-linux64/chrome", {
+      env: {},
+      stat: () => ({ uid: 1000, mode: 0o4755 }) as fs.Stats,
+    });
+    assert.deepEqual(result, {});
+  });
+
+  it("chrome_sandbox が無ければ（stat が投げれば）足さない", () => {
+    const result = resolveSandboxEnv("/opt/chromium/chrome-linux64/chrome", {
+      env: {},
+      stat: () => {
+        throw new Error("ENOENT");
+      },
+    });
+    assert.deepEqual(result, {});
+  });
+
+  it("呼び出し元に既に CHROME_DEVEL_SANDBOX があれば、それを尊重して上書きしない", () => {
+    let statCalled = false;
+    const result = resolveSandboxEnv("/opt/chromium/chrome-linux64/chrome", {
+      env: { CHROME_DEVEL_SANDBOX: "/already/set" },
+      stat: () => {
+        statCalled = true;
+        return { uid: 0, mode: 0o4755 } as fs.Stats;
+      },
+    });
+    assert.deepEqual(result, {});
+    assert.equal(statCalled, false, "既に指定があるのに stat まで見に行っている");
+  });
 });
 
 // ── 3. DevToolsActivePort の解析 ─────────────────────────────────────────
@@ -394,7 +461,11 @@ const { spawn } = require("child_process");
 const userDataDir = process.argv[2];
 const mode = process.argv[3] || "normal";
 
-if (mode === "hang") {
+if (mode === "die") {
+  // CDP の口を掴む前に、何か stderr へ吐いてすぐ終了する（本当の理由を言う試験用）
+  process.stderr.write(process.argv[4] || "");
+  process.exit(1);
+} else if (mode === "hang") {
   // DevToolsActivePort をわざと書かない（ハンドシェイクのタイムアウト試験用）
   setInterval(() => {}, 1000);
 } else {
@@ -437,28 +508,38 @@ describe("createChromiumLauncher: 寿命と後始末（偽のプロセス）", (
   });
 
   function spawnFake(
-    mode: "normal" | "hang"
+    mode: "normal" | "hang" | "die",
+    extraArgs: string[] = []
   ): {
     spawn: (ctx: { executablePath: string; args: string[]; userDataDir: string }) => childProcess.ChildProcess;
     userDataDir(): string | undefined;
     mainPid(): number | undefined;
+    args(): string[] | undefined;
   } {
     let userDataDir: string | undefined;
     let mainPid: number | undefined;
+    let capturedArgs: string[] | undefined;
     return {
       spawn(ctx) {
         userDataDir = ctx.userDataDir;
+        capturedArgs = ctx.args;
         // detached: true が要る——プロセスグループ kill の試験がこれに依存する
-        // （本番の既定挙動と同じにしておかないと、close() が偽プロセスの木を落とせない）
-        const child = childProcess.spawn(process.execPath, [scriptPath, ctx.userDataDir, mode], {
-          detached: true,
-          stdio: "ignore",
-        });
+        // （本番の既定挙動と同じにしておかないと、close() が偽プロセスの木を落とせない）。
+        // stderr は pipe——本番の defaultSpawnChromium と同じにして、失敗理由が拾えることを試験する
+        const child = childProcess.spawn(
+          process.execPath,
+          [scriptPath, ctx.userDataDir, mode, ...extraArgs],
+          {
+            detached: true,
+            stdio: ["ignore", "ignore", "pipe"],
+          }
+        );
         mainPid = child.pid;
         return child;
       },
       userDataDir: () => userDataDir,
       mainPid: () => mainPid,
+      args: () => capturedArgs,
     };
   }
 
@@ -532,6 +613,84 @@ describe("createChromiumLauncher: 寿命と後始末（偽のプロセス）", (
     assert.ok(mainPid && userDataDir, "偽プロセスの pid / user-data-dir が取れていません");
     await waitUntil(() => !isAlive(mainPid!));
     assert.equal(fs.existsSync(userDataDir!), false);
+  });
+
+  it("CDP の口を掴む前にプロセスが終了したら、期限まで待たずに・本当の理由（stderr）を添えて失敗する", async () => {
+    const marker = "FAKE-STDERR-MARKER-9F3A1C";
+    const fake = spawnFake("die", [marker]);
+    const launcher = createChromiumLauncher({
+      executablePath: process.execPath,
+      spawn: fake.spawn,
+      // 十分に長い上限を与える——それでも待たずに落ちることを見るのが本題
+      handshakeTimeoutMs: 5_000,
+    });
+
+    const t0 = Date.now();
+    await assert.rejects(launcher.launch({}), (err) => {
+      assert.ok(err instanceof Error);
+      assert.ok(
+        err.message.includes(marker),
+        `偽プロセスの stderr がエラー文面に載っていない: ${err.message}`
+      );
+      return true;
+    });
+    const elapsedMs = Date.now() - t0;
+    assert.ok(
+      elapsedMs < 5_000,
+      `期限（5000ms）まで待ってしまっている（実測 ${elapsedMs}ms）——理由が分かった時点で` +
+        "即座に失敗するはず"
+    );
+  });
+
+  it("stderr に No usable sandbox があれば、setuid の道と環境変数名の両方を案内する", async () => {
+    const fake = spawnFake("die", ["FATAL: ...\nNo usable sandbox! ...\n"]);
+    const launcher = createChromiumLauncher({
+      executablePath: process.execPath,
+      spawn: fake.spawn,
+      handshakeTimeoutMs: 5_000,
+    });
+
+    await assert.rejects(launcher.launch({}), (err) => {
+      assert.ok(err instanceof Error);
+      assert.ok(err.message.includes("chrome_sandbox"), `setuid の道が無い: ${err.message}`);
+      assert.ok(
+        err.message.includes("BANTO_BROWSER_ALLOW_NO_SANDBOX"),
+        `環境変数名が無い: ${err.message}`
+      );
+      return true;
+    });
+  });
+
+  it("BANTO_BROWSER_ALLOW_NO_SANDBOX が無ければ --no-sandbox は入らず、status も enabled", async () => {
+    const fake = spawnFake("normal");
+    const launcher = createChromiumLauncher({
+      executablePath: process.execPath,
+      spawn: fake.spawn,
+      allowNoSandboxEnv: undefined,
+    });
+    const browser = await launcher.launch({});
+    try {
+      assert.ok(!fake.args()?.includes("--no-sandbox"), "既定なのに --no-sandbox が入っている");
+      assert.equal(browser.sandbox, "enabled");
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("BANTO_BROWSER_ALLOW_NO_SANDBOX=1 のときだけ --no-sandbox が入り、status が disabled になる", async () => {
+    const fake = spawnFake("normal");
+    const launcher = createChromiumLauncher({
+      executablePath: process.execPath,
+      spawn: fake.spawn,
+      allowNoSandboxEnv: "1",
+    });
+    const browser = await launcher.launch({});
+    try {
+      assert.ok(fake.args()?.includes("--no-sandbox"), "明示したのに --no-sandbox が入っていない");
+      assert.equal(browser.sandbox, "disabled");
+    } finally {
+      await browser.close();
+    }
   });
 });
 

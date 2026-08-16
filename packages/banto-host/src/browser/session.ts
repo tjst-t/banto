@@ -75,6 +75,8 @@ export interface BrowserStatus {
   launcher: string;
   /** CDP の口（起きているときだけ）。 */
   webSocketDebuggerUrl?: string;
+  /** サンドボックスを有効にして起動したか（launcher が分かるときだけ）。 */
+  sandbox?: "enabled" | "disabled";
   /** いま面を開いている数。 */
   viewers: number;
   /** screencast を流しているか。 */
@@ -115,6 +117,7 @@ export function createBrowserSession(options: BrowserSessionOptions): BrowserSes
     state: cdp && !cdp.closed ? "running" : "stopped",
     launcher: options.launcher.name,
     ...(launched ? { webSocketDebuggerUrl: launched.webSocketDebuggerUrl } : {}),
+    ...(launched?.sandbox ? { sandbox: launched.sandbox } : {}),
     viewers: viewers.size,
     streaming,
   });
