@@ -27,6 +27,8 @@
 import * as fs from "node:fs";
 import { ensureCacheDir, listCacheDirs, removeCacheDir } from "./cache-dir.js";
 import * as path from "node:path";
+import * as crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
 import * as net from "node:net";
 import * as childProcess from "node:child_process";
 import * as os from "node:os";
@@ -45,6 +47,29 @@ import { refuseDestructiveSetup, renderProtectedRefusal } from "./process-guard.
 
 const STATE_FILE = process.env["BANTO_PROCESS_DRIVER_STATE"]
   ?? path.join(os.tmpdir(), "banto-process-driver-state.json");
+
+// ── 検証ログの置き場（task-0220）──────────────────────────────────────────────
+//
+// **機械に1つではなく、作業ツリーごとに分ける。** banto は同じ機械の複数の worktree で
+// 同時に試験を回す。置き場が os.tmpdir() 直下の固定名だと、別の worktree の掃除
+// （`pruneOldLogs`）や後始末が、走っている試験のログを消す——実際に `npm test` の
+// 並走で緑が揺れた（task-0220 で実測）。置き場を分ければ互いに触らない。
+//
+// 名前に混ぜるのは**このファイル自身の在り処**から作った短いハッシュ。cwd ではなく
+// モジュールの場所を使うのは、`run` の作業場所が呼び出しごとに変わるため（決定34d の
+// workdir）——同じ worktree なら常に同じ、別の worktree とは必ず違う値になる。
+// 後続の `collect` は別プロセスだが、同じ worktree のドライバなので同じ場所を見る。
+//
+// BANTO_PROCESS_DRIVER_LOG_DIR で明示的に差せる（既定は上のハッシュ入り）。
+// ログの**中身の形式**（1実行1ファイル・`run-*.log`）は変えていない。
+const LOG_DIR = process.env["BANTO_PROCESS_DRIVER_LOG_DIR"]
+  ?? path.join(os.tmpdir(), `banto-process-driver-logs-${workspaceTag()}`);
+
+/** この worktree を指す短い印。ドライバ自身の置かれた場所から作る。 */
+function workspaceTag(): string {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  return crypto.createHash("sha256").update(here).digest("hex").slice(0, 12);
+}
 
 interface ProcessEntry {
   pid: number;
@@ -489,9 +514,8 @@ async function handleRun(input: Record<string, unknown>): Promise<void> {
   }
 
   // Write output to a temp log file.
-  // Log file cleanup is deferred to Story S9d7fdb-5 (reconcile/TTL wave) — files accumulate
-  // in os.tmpdir() until that story's TTL reconciler removes them.
-  const logDir = path.join(os.tmpdir(), "banto-process-driver-logs");
+  // 置き場は worktree ごと（`LOG_DIR`・task-0220）。古いものは `pruneOldLogs` が捨てる。
+  const logDir = LOG_DIR;
   fs.mkdirSync(logDir, { recursive: true });
   pruneOldLogs(logDir);
   const logPath = path.join(logDir, `run-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
@@ -539,7 +563,7 @@ async function handleCollect(input: Record<string, unknown>): Promise<void> {
   // D3: the driver writes to the dest directory provided; daemon decides the path.
   fs.mkdirSync(dest, { recursive: true });
 
-  const logDir = path.join(os.tmpdir(), "banto-process-driver-logs");
+  const logDir = LOG_DIR;
   if (fs.existsSync(logDir)) {
     const taskId = handle["taskId"] as string | undefined;
     const files = fs.readdirSync(logDir).filter((f) => f.startsWith("run-"));

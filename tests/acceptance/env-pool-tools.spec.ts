@@ -14,6 +14,7 @@ import * as childProcess from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   EnvironmentPool,
@@ -28,15 +29,19 @@ import {
 } from "@banto/environment-pool";
 import type { NamespacedToolDefinition } from "@banto/core";
 
-// imp-0012: テスト用の一時 state に隔離（本番の /tmp/banto-process-driver-state.json を汚さない）
-const TEST_DRIVER_STATE = path.join(
-  os.tmpdir(),
-  "banto-process-driver-state-acceptance-env-pool-tools.json"
-);
+// imp-0012 / task-0220: この試験が触る一時物は**この実行が作った場所だけ**に閉じる。
+//
+// 固定名（`/tmp/banto-process-driver-logs` 等）を使うと、同じ機械の別の作業ツリーで走る
+// `npm test` と置き場を共有し、互いのログを消し合って緑が揺れた（task-0220 で実測）。
+// mkdtemp なので名前は毎回別——後始末もこの下だけを消す＝他人のものには触らない。
+const TEST_TMP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "env-pool-tools-"));
+const TEST_DRIVER_STATE = path.join(TEST_TMP_ROOT, "process-driver-state.json");
+const TEST_DRIVER_LOG_DIR = path.join(TEST_TMP_ROOT, "process-driver-logs");
 process.env["BANTO_PROCESS_DRIVER_STATE"] = TEST_DRIVER_STATE;
+process.env["BANTO_PROCESS_DRIVER_LOG_DIR"] = TEST_DRIVER_LOG_DIR;
 
 after(() => {
-  fs.rmSync(TEST_DRIVER_STATE, { force: true });
+  fs.rmSync(TEST_TMP_ROOT, { recursive: true, force: true });
 });
 
 let dir: string;
@@ -699,7 +704,8 @@ describe("[PO指摘] 溜まったものが捨てられる（際限なく増え�
   });
 
   it("ドライバは自分の古いログを捨てる", async () => {
-    const logDir = path.join(os.tmpdir(), "banto-process-driver-logs");
+    // 置き場はこの実行専用（task-0220）。共有の場所を掃除すると他人のログまで消える
+    const logDir = TEST_DRIVER_LOG_DIR;
     fs.mkdirSync(logDir, { recursive: true });
     const old = path.join(logDir, "run-とても古い.log");
     fs.writeFileSync(old, "古いログ");
@@ -712,6 +718,67 @@ describe("[PO指摘] 溜まったものが捨てられる（際限なく増え�
 
     assert.equal(fs.existsSync(old), false, "保存期間を過ぎたログが捨てられること");
     await p.teardown(created.envId);
+  });
+
+  it("**検証ログの置き場は作業ツリーごとに分かれる**（並走しても消し合わない・task-0220）", () => {
+    // 既定の決まり方を見たいので、この試験だけは置き場の指定を外してドライバを直に回す。
+    // 同じ機械の**別のパス**に置いたドライバが、別の置き場を使うことを固定する。
+    const srcDir = path.resolve(
+      fileURLToPath(import.meta.url),
+      "../../../packages/banto-environment-pool/src"
+    );
+    const copyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "env-pool-driver-copy-"));
+    fs.cpSync(srcDir, path.join(copyRoot, "src"), { recursive: true });
+    // tsx に ESM として読ませる（複製先には package.json が無いため）
+    fs.writeFileSync(
+      path.join(copyRoot, "package.json"),
+      JSON.stringify({ type: "module" }),
+      "utf-8"
+    );
+
+    const runDirect = (driverPath: string): string => {
+      const env = { ...process.env };
+      delete env["BANTO_PROCESS_DRIVER_LOG_DIR"];
+      const r = childProcess.spawnSync(
+        process.execPath,
+        ["--import", "tsx", driverPath, "run"],
+        {
+          input: JSON.stringify({
+            handle: { pid: process.pid, name: "task-0220-env", taskId: "task-0220" },
+            cmd: "echo 置き場の確認",
+          }),
+          encoding: "utf-8",
+          cwd: path.resolve(srcDir, "../../.."),
+          env,
+        }
+      );
+      assert.equal(r.status, 0, `ドライバが失敗しました: ${r.stderr}`);
+      return (JSON.parse(r.stdout.trim()) as { log_path: string }).log_path;
+    };
+
+    const here = runDirect(path.join(srcDir, "process-driver.ts"));
+    const there = runDirect(path.join(copyRoot, "src", "process-driver.ts"));
+    const dirHere = path.dirname(here);
+    const dirThere = path.dirname(there);
+
+    assert.notEqual(dirHere, dirThere, "別のパスから使えば置き場も別になること");
+    assert.notEqual(
+      dirHere,
+      path.join(os.tmpdir(), "banto-process-driver-logs"),
+      "機械に1つの共有の置き場を使わないこと"
+    );
+    // ログの中身の形式は変わっていない（読む側が壊れない）
+    assert.match(fs.readFileSync(here, "utf-8"), /置き場の確認/);
+    assert.match(path.basename(here), /^run-.*\.log$/);
+
+    // 後始末は**自分が作ったものだけ**。置き場ごと消さない——他人のログが入っている
+    fs.rmSync(here, { force: true });
+    fs.rmSync(there, { force: true });
+    fs.rmSync(copyRoot, { recursive: true, force: true });
+    try {
+      // 複製専用の置き場は空になったはず。空でなければ触らない
+      fs.rmdirSync(dirThere);
+    } catch { /* 空でないなら残す */ }
   });
 });
 
