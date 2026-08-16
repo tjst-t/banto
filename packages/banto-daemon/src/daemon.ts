@@ -49,7 +49,7 @@ import { WsEventServer } from "./ws-server.js";
 import { createHttpServer } from "./http-server.js";
 import { Scheduler } from "./scheduler.js";
 import type { TickJob } from "./scheduler.js";
-import { GateEvaluator, evaluatePendingGates } from "./gate-evaluator.js";
+import { GateEvaluator, evaluatePendingGates, fileMatchesGlob } from "./gate-evaluator.js";
 import type { QuotaCheck } from "./gate-evaluator.js";
 import { addTaskWorktree, createWorktree } from "@banto/repo-manager";
 import { processMergeQueue } from "./merge-queue.js";
@@ -1233,7 +1233,7 @@ export class Daemon {
     const curScope = ((current["scope"] as { paths?: string[] } | undefined)?.paths ?? []).slice();
     const nextScope = ((next["scope"] as { paths?: string[] } | undefined)?.paths ?? []).slice();
     if (JSON.stringify(curScope) !== JSON.stringify(nextScope)) {
-      const widened = nextScope.some((p) => !curScope.includes(p));
+      const widened = nextScope.some((p) => !this.scopePatternCovered(p, curScope));
       changes.push(`スコープを変更: [${curScope.join(", ")}] → [${nextScope.join(", ")}]`);
       auditInvalidated = true;
       if (widened) loosens = true;
@@ -1292,6 +1292,43 @@ export class Daemon {
     }
 
     return { changes, auditInvalidated, loosens };
+  }
+
+  /**
+   * 改訂後のスコープの1本が、**いまのスコープのどれかに覆われている**か（task-0209）。
+   *
+   * 以前は「文字列がいまの一覧に無ければ広げた」と読んでいたので、
+   * `["tests/acceptance/**"]` → `["tests/acceptance/foo.spec.ts"]` という
+   * **明らかな絞り込み**まで「緩める方向」に落ちて番頭が通せなかった（実測・task-0203）。
+   *
+   * glob 同士の包含は一般には解けない。**機械で判断できないものは「覆われていない」**
+   * ＝広げた＝PO の判断へ回す側に倒す（I2・安全側）。読めるのは次の3つだけ:
+   *   1. 完全一致（これまでどおり）
+   *   2. 改訂後がワイルドカードを含まない実パス → `fileMatchesGlob` にそのまま訊く
+   *   3. 改訂後も glob のとき → いまのパターンが `<接頭辞>/**` 形の総取りで、
+   *      改訂後のリテラル接頭辞がその接頭辞の下にあるときだけ覆われている扱い。
+   *      （`fileMatchesGlob` は第1引数を**実パス**として読むので、`src/**` を
+   *        `src/*` に照合させると `**` が `[^/]*` に食われて真になってしまう。
+   *        glob を実パスのふりで渡してはいけない）
+   */
+  private scopePatternCovered(nextPattern: string, curScope: string[]): boolean {
+    if (curScope.includes(nextPattern)) return true;
+
+    const isGlob = (p: string): boolean => /[*?[\]{}]/.test(p);
+    if (!isGlob(nextPattern)) {
+      return curScope.some((cur) => fileMatchesGlob(nextPattern, cur));
+    }
+
+    // 改訂後もパターン。リテラル接頭辞（最初のワイルドカードより手前）は、
+    // そのパターンに当たるどのファイルも必ず持っている
+    const nextLiteralPrefix = nextPattern.slice(0, nextPattern.search(/[*?[\]{}]/));
+    return curScope.some((cur) => {
+      const m = /^([^*?[\]{}]*)\*\*$/.exec(cur);
+      if (!m) return false; // 総取り以外は読めない → 覆われていない扱い
+      const prefix = m[1]!;
+      if (prefix !== "" && !prefix.endsWith("/")) return false; // `src/ba**` 等は別物
+      return nextLiteralPrefix.startsWith(prefix);
+    });
   }
 
   /**
