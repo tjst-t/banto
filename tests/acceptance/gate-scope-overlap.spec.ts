@@ -21,6 +21,89 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { Daemon } from "@banto/daemon";
+import {
+  globsOverlap,
+  scopePathsOverlap,
+} from "../../packages/banto-daemon/src/gate-evaluator.js";
+
+/**
+ * [AC-Scc9152-2-3] Pure-function tests for the overlap decision itself.
+ *
+ * These call globsOverlap / scopePathsOverlap directly: no daemon is started,
+ * no sleep or polling is used, so the decision is testable in isolation from
+ * the queue machinery that consumes it.
+ *
+ * Background: the gate blocked 17 tasks into a 2-hour serial queue because the
+ * prefix was cut at the first *segment* containing a wildcard. That made
+ * `tests/acceptance/backlog-*.spec.ts` claim the whole of `tests/acceptance/`,
+ * so every task holding any file under that directory collided with every
+ * other one, and max_concurrent_sessions was effectively 1.
+ */
+describe("[AC-Scc9152-2-3] scope overlap decision (pure function)", () => {
+  // a1 — provably disjoint: the gate must NOT block these.
+  const DISJOINT: Array<[string, string]> = [
+    ["tests/acceptance/child-stdin-epipe.spec.ts", "tests/acceptance/backlog-*.spec.ts"],
+    [
+      "tests/acceptance/gate-scope-overlap.spec.ts",
+      "tests/acceptance/pi-rpc-system-prompt-tools.spec.ts",
+    ],
+    ["packages/banto-daemon/src/gate-evaluator.ts", "packages/banto-host/src/bin.ts"],
+  ];
+
+  // a2 — genuinely intersecting: the gate must keep blocking these.
+  const OVERLAPPING: Array<[string, string]> = [
+    ["packages/**", "packages/banto-host/src/x.ts"],
+    ["tests/acceptance/**", "tests/acceptance/foo.spec.ts"],
+    ["docs/adr/**", "docs/**"],
+    ["packages/banto-daemon/src/gate-evaluator.ts", "packages/banto-daemon/src/gate-evaluator.ts"],
+    ["src/*/a.ts", "src/b/a.ts"],
+  ];
+
+  for (const [a, b] of DISJOINT) {
+    it(`[AC-Scc9152-2-3a] '${a}' does not overlap '${b}'`, () => {
+      assert.equal(globsOverlap(a, b), false, `${a} vs ${b} must be provably disjoint`);
+      assert.equal(globsOverlap(b, a), false, "overlap must be symmetric");
+    });
+  }
+
+  for (const [a, b] of OVERLAPPING) {
+    it(`[AC-Scc9152-2-3b] '${a}' overlaps '${b}'`, () => {
+      assert.equal(globsOverlap(a, b), true, `${a} vs ${b} must still be blocked`);
+      assert.equal(globsOverlap(b, a), true, "overlap must be symmetric");
+    });
+  }
+
+  it("[AC-Scc9152-2-3c] a catch-all pattern still collides with everything", () => {
+    // Undecidable at prefix granularity → block. Never loosen this.
+    assert.equal(globsOverlap("**", "packages/banto-daemon/src/gate-evaluator.ts"), true);
+    assert.equal(globsOverlap("*", "docs/adr/adr-0009.md"), true);
+  });
+
+  it("[AC-Scc9152-2-3d] scopePathsOverlap: disjoint file lists run in parallel", () => {
+    const a = [
+      "tests/acceptance/child-stdin-epipe.spec.ts",
+      "packages/banto-daemon/src/gate-evaluator.ts",
+    ];
+    const b = [
+      "tests/acceptance/backlog-order.spec.ts",
+      "packages/banto-host/src/bin.ts",
+    ];
+    assert.equal(scopePathsOverlap(a, b), false);
+  });
+
+  it("[AC-Scc9152-2-3e] scopePathsOverlap: a single shared entry blocks the whole set", () => {
+    const a = [
+      "tests/acceptance/child-stdin-epipe.spec.ts",
+      "packages/banto-daemon/src/gate-evaluator.ts",
+    ];
+    const b = ["packages/banto-host/src/bin.ts", "tests/acceptance/**"];
+    assert.equal(scopePathsOverlap(a, b), true, "tests/acceptance/** covers the first entry");
+  });
+
+  it("[AC-Scc9152-2-3f] an empty scope never claims anything", () => {
+    assert.equal(scopePathsOverlap([], ["packages/**"]), false);
+  });
+});
 
 /** Poll until predicate passes or timeout. Returns last value. */
 async function pollUntil<T>(

@@ -103,51 +103,66 @@ export class AlwaysPassQuota implements QuotaCheck {
 
 /**
  * Normalise a glob pattern to a comparable prefix form.
- * Cuts at the first `**` or single `*` wildcard to get the deepest known
- * literal path component. Returns the normalised segment prefix
- * (empty string = matches everything).
  *
- * Strategy: find the first `**` or `*` component and take the path up to
- * (but not including) that segment. A mid-path wildcard like `src / ** / b.ts`
- * means the prefix is `src/`, which is the deepest portion we can reliably
- * compare.  This is intentionally conservative (may say "overlap" when none
- * actually exists), which is the safe direction per D6.
+ * WHEN IN DOUBT, BLOCK. This returns the longest prefix every path matched by
+ * `pattern` is guaranteed to start with. Returning a SHORTER prefix than
+ * necessary is always safe (it can only make `globsOverlap` say "overlap");
+ * returning a longer one is not, because it would let two tasks edit the same
+ * file at once. Never lengthen a prefix past a construct this cannot prove.
+ *
+ * Strategy: cut at the first `*`, by CHARACTER, not by path segment. Every
+ * literal character before the first wildcard is common to all matches, so
+ * keeping them is provably sound. Anything from the wildcard on is unknown.
+ *
+ * This used to cut at the first path SEGMENT containing a wildcard, which
+ * threw away the literal head of that segment: `tests/acceptance/backlog-*`
+ * collapsed to `tests/acceptance/`, i.e. a claim on the whole directory. Every
+ * task naming any file under a shared directory then collided with every
+ * other one, so the gate serialised 17 tasks for 2 hours and
+ * `max_concurrent_sessions: 5` had an effective value of 1. Note the change is
+ * only about how much *literal* text is kept — the comparison below stays
+ * intentionally over-conservative, and a pattern whose first character is a
+ * wildcard still collapses to "" (collides with everything).
  *
  * Examples:
- *   "src/**"              → "src/"
- *   "src/shared/**"       → "src/shared/"
- *   "src/[**]/b.ts"       → "src/"      (mid-path ** cut here; bracket notation avoids comment close)
- *   "src/a/**"            → "src/a/"
- *   "src/a/b.ts"          → "src/a/b.ts"
- *   "**"                  → ""          (matches everything)
- *   "*"                   → ""          (matches anything at this level)
- *   "src/[*]/b.ts"        → "src/"      (mid-path * cut here)
+ *   "src/**"                      → "src/"
+ *   "src/shared/**"               → "src/shared/"
+ *   "src/[**]/b.ts"               → "src/"      (mid-path ** cut here; bracket notation avoids comment close)
+ *   "src/a/**"                    → "src/a/"
+ *   "src/a/b.ts"                  → "src/a/b.ts"
+ *   "**"                          → ""          (matches everything)
+ *   "*"                           → ""          (matches anything at this level)
+ *   "src/[*]/b.ts"                → "src/"      (mid-path * cut here)
+ *   "tests/acc/backlog-[*].ts"    → "tests/acc/backlog-"  (literal head kept)
  */
 function globPrefix(pattern: string): string {
   // Remove trailing slash first
   const p = pattern.replace(/\/+$/, "");
 
-  // Split on '/' and find the first segment containing a wildcard (* or **)
-  const segments = p.split("/");
-  const wildcardIdx = segments.findIndex((seg) => seg.includes("*"));
+  // Cut at the first wildcard character. Everything before it is literal and
+  // therefore shared by every path the pattern can match.
+  const wildcardAt = p.indexOf("*");
 
-  if (wildcardIdx === -1) {
+  if (wildcardAt === -1) {
     // No wildcard — exact path
     return p;
   }
 
-  if (wildcardIdx === 0) {
-    // Wildcard in the first segment → matches from root → catch-all
-    return "";
-  }
-
-  // Return the literal prefix up to (not including) the wildcard segment,
-  // with a trailing "/" so startsWith comparisons work correctly.
-  return segments.slice(0, wildcardIdx).join("/") + "/";
+  // Wildcard at position 0 → matches from root → catch-all (returns "").
+  // Otherwise: the literal head. Note this may end mid-segment
+  // ("tests/acceptance/backlog-") rather than at a "/" — that is the point,
+  // and startsWith comparisons remain correct either way.
+  return p.slice(0, wildcardAt);
 }
 
 /**
  * Conservative glob intersection test.
+ *
+ * WHEN IN DOUBT, BLOCK. The goal here is not an accurate intersection test —
+ * it is to unblock only the pairs we can PROVE never touch the same file.
+ * Every undecidable case must fall on the blocking side. The asymmetry is
+ * deliberate: a false "disjoint" puts two tasks on the same file at the same
+ * time, while a false "overlap" only costs wall-clock in the queue.
  *
  * Returns true iff the two glob patterns MIGHT match an overlapping set of paths.
  * Returns false ONLY when we can prove they are disjoint.
