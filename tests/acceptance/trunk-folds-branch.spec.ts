@@ -20,8 +20,19 @@ import {
   ThreadRegistry,
   createCanvasCatalog,
   createThreadTools,
+  type TranscriptEntry,
 } from "@banto/host";
 import { TRUNK, branchSpec } from "./threadSpecs.js";
+
+/** 「幹が畳みました」の知らせ行だけを型で絞り込む。 */
+function findFoldNotice(
+  transcript: readonly TranscriptEntry[]
+): Extract<TranscriptEntry, { role: "notice" }> | undefined {
+  return transcript.find(
+    (e): e is Extract<TranscriptEntry, { role: "notice" }> =>
+      e.role === "notice" && /幹が畳みました/u.test(e.text)
+  );
+}
 
 /** 対話ループの偽物。プロバイダは呼ばない（帳簿と道具の振る舞いだけを見る）。 */
 class FakeSession implements BantoHarness {
@@ -189,9 +200,7 @@ describe("[task-0234/a6] 幹が畳んだことが枝の記録に残る", () => {
       conclusion: "幹の判断で終了",
     });
 
-    const notice = branch.transcript.find(
-      (e) => e.role === "notice" && /幹が畳みました/u.test(e.text)
-    );
+    const notice = findFoldNotice(branch.transcript);
     assert.ok(notice, "枝の記録に「幹が畳みました」が残っていること");
     assert.match(notice!.text, /幹の判断で終了/u);
   });
@@ -207,9 +216,7 @@ describe("[task-0234/a6] 幹が畳んだことが枝の記録に残る", () => {
       conclusion: "幹の判断で終了",
     });
 
-    const notice = branch.transcript.find(
-      (e) => e.role === "notice" && /幹が畳みました/u.test(e.text)
-    );
+    const notice = findFoldNotice(branch.transcript);
     assert.ok(notice, "枝の結論が残る場合でも、幹が畳んだ記録は別に残ること");
     assert.match(notice!.text, /幹の判断で終了/u);
     assert.match(notice!.text, /枝自身の結論/u, "上書きされた枝の結論も併せて読めること");
