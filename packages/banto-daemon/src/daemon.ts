@@ -207,6 +207,61 @@ const PRE_AUDIT_VERIFY_FAILED = "pre_audit_verify_failed";
  */
 const PRE_AUDIT_SEND_BACK_LIMIT = 2;
 
+/**
+ * **相手に声が届かなかった**ことの印（task-0215）。
+ *
+ * 「中身が悪くて落ちた」と「声が届かなかった」は、読む人が次にやることが違う
+ * ——前者は直す（rework・契約の訂正・原因の調査）、後者は**待てばよい**（相手が
+ * 起き直れば同じ操作が通る）。どちらも `failed` のままだと、毎回人が調べ直すことになる。
+ * 実際 2026-08-16 は Worker Pool の OOM に巻き込まれて7回そうなった。
+ *
+ * **状態は増やさず、理由の側で区別する。** 状態機械を膨らませると既存の遷移の意味が
+ * 全部揺れる（一覧・再開・集計）。`failed` は `failed` のままにして、`reason` の先頭に
+ * この接頭辞＋モジュール名を置く——帳簿を読むだけで機械にも人にも区別が付く。
+ * 新しいイベント型を足さない理由は `CONFLICT_RETRY_REASON` と同じ（帳簿の形は one-way・D9）。
+ *
+ * **振る舞いは変えない。** 自動で再試行・自動で復帰は別タスクの担当。ここは見え方だけ。
+ */
+const UNREACHABLE_REASON_PREFIX = "unreachable:";
+
+/**
+ * 「届かなかった」の唯一の印は、`banto-core` のモジュール呼び出しが投げるこの文言
+ * （`module-invocation.ts`: `Failed to reach module "<name>" at <url>: ...`）。
+ *
+ * **ツール側が返したエラー**（HTTP のエラー応答＝`Module "x" tool "y" failed (500): ...`）は
+ * **相手には届いている**ので中身の失敗であり、ここでは拾わない。
+ */
+const UNREACHABLE_MODULE_PATTERN = /Failed to reach module "([^"]+)"/;
+
+/**
+ * 失敗の理由（`task_failed` / `state_transitioned` の `reason`）から、
+ * 「どのモジュールへ届かなかったか」を取り出す。届いていたなら `null`。
+ *
+ * 帳簿を読む側（番頭・PO・次に見る人）が使う入口。
+ */
+export function unreachableModuleOf(reason: string): string | null {
+  if (!reason.startsWith(UNREACHABLE_REASON_PREFIX)) return null;
+  return UNREACHABLE_MODULE_PATTERN.exec(reason)?.[1] ?? null;
+}
+
+/**
+ * 失敗の理由を組み立てる。届かなかったときだけ、機械が読む印と人が読む一文を足す。
+ *
+ * **元の文言はそのまま残す**（I2：握り潰さない）。既にこの文言で拾っている読み手
+ * （試験・番頭）が壊れないように、後ろへ足すだけにする。
+ */
+function taskFailureReason(context: string, err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const moduleName = UNREACHABLE_MODULE_PATTERN.exec(message)?.[1];
+  if (!moduleName) return `${context}: ${message}`;
+  return (
+    `${UNREACHABLE_REASON_PREFIX}${moduleName} ${context}: ${message}` +
+    `（モジュール "${moduleName}" へ声が届きませんでした。**中身の失敗ではありません**` +
+    "——相手が起き直れば同じ操作が通ります。原因を調べ直す前に、しばらく置いてから" +
+    "kobo.reopen で動かし直してください）"
+  );
+}
+
 /** モデルの等級。Kobo が知ってよいのはここまで（決定60a）。 */
 type ModelTier = "reasoning" | "standard" | "fast";
 
@@ -2587,8 +2642,9 @@ export class Daemon {
         extension: "banto-executor",
       });
     } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      this.recordTaskFailed(projectTag, taskId, `spawn failed: ${reason}`);
+      // task-0215: 職人を起こすのは Worker Pool への呼び出し——**届かなかった**のか
+      // **断られた**のかで、読む人が次にやることが違う（待つ／直す）
+      this.recordTaskFailed(projectTag, taskId, taskFailureReason("spawn failed", err));
       throw err;
     }
 
@@ -2991,6 +3047,10 @@ export class Daemon {
       process.stderr.write(
         `[banto-daemon] 実装の職人が報告せずに終わりました（${projectTag}/${taskId}）\n`
       );
+      // task-0215: ここには「届かなかった」の印を付けない。この道へ来られたということは
+      // 職人の終了の知らせが Worker Pool から**届いている**（＝声は通っている）。
+      // 職人が外から殺された（OOM など）ことを見分けるのは別の話で、いまの帳簿からは
+      // 区別が付かない——分からないものを「待てばよい」と書く方が害が大きい
       this.recordTaskFailed(projectTag, taskId, "agent_exited_without_report");
     }
   }
@@ -3470,8 +3530,8 @@ export class Daemon {
         extension: "banto-auditor",
       });
     } catch (err) {
-      const reason = `audit session spawn failed: ${err instanceof Error ? err.message : String(err)}`;
-      this.recordTaskFailed(projectTag, taskId, reason);
+      // task-0215: 届かなかっただけなら中身は無罪。理由の側でそれが分かるようにする
+      this.recordTaskFailed(projectTag, taskId, taskFailureReason("audit session spawn failed", err));
       return;
     }
 
@@ -3723,8 +3783,8 @@ export class Daemon {
         extension: "banto-executor",
       });
     } catch (err) {
-      const reason = `rework session spawn failed: ${err instanceof Error ? err.message : String(err)}`;
-      this.recordTaskFailed(projectTag, taskId, reason);
+      // task-0215: 届かなかっただけなら中身は無罪。理由の側でそれが分かるようにする
+      this.recordTaskFailed(projectTag, taskId, taskFailureReason("rework session spawn failed", err));
       return;
     }
 
