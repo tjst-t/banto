@@ -21,11 +21,16 @@
  * ## この試験の限界（隠さない・I1）
  *
  * 見ているのは**リポジトリの `deploy/*.service`** であって、稼働機にインストール済みの
- * ユニット（`/etc/systemd/system/`）ではない。実際、2026-08-15 時点で稼働機の
- * `banto.service` は `Restart=always`、リポジトリの `deploy/banto.service` は
- * `Restart=on-failure` で**食い違っている**。つまりここが緑でも「稼働機がそうなっている」
- * 証拠にはならない——**変更の意図**を固定するだけである。稼働機を見る試験は、この
+ * ユニット（`/etc/systemd/system/`）ではない。**ここが緑でも「稼働機がそうなっている」
+ * 証拠にはならない**——固定できるのは**変更の意図**だけである。稼働機を見る試験は、この
  * 器（コンテナ）からは systemd に届かないので書けない。
+ *
+ * かつてここに書いていた `Restart=` の食い違い（稼働機は `always`、リポジトリは
+ * `on-failure`）は inc-0072 / task-0154 で決着し、`deploy/banto.service` も `always` に
+ * 揃っている（`Restart=` の値そのものを固定するのは `deploy-unit-restart-policy.spec.ts`、
+ * 突き合わせの全表は `work/inbox/incident/inc-0072-deployed-unit-differs-from-repo.md`）。
+ * ただし**限界は消えていない**：稼働機の実効値はドロップイン
+ * （`/etc/systemd/system/<unit>.d/*.conf`）を重ねた結果で、本体ファイルだけでは決まらない。
  */
 
 import { describe, it } from "node:test";
