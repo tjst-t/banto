@@ -305,6 +305,24 @@ export class Thread {
   /** 残作業の**所在**——起票 id・職人の sessionId・幹での委譲先。 */
   settledWhere: string | undefined;
   /**
+   * 畳むときに渡された**幹が次に踏む一手**（imp-0070）。
+   *
+   * `remaining`（残った作業）とは**寿命が違う**ので別の欄に持つ。残作業は
+   * `thread.settle` で降ろすまで未処理として残り続けるもの、一手は**幹が1回受け取れば
+   * 消えるもの**。同じ欄に載せると、どちらの検査も意味が濁る。
+   *
+   * これが非空のときだけ、畳んだあとに**幹のターンが1本だけ**回る——知らせは幹を
+   * 起こさない（ADR-0025 決定120）を保ったまま、仕事の受け渡しだけを通す穴。
+   */
+  handoff: string | undefined;
+  /**
+   * その一手を幹へ渡した時刻。**二度と起こさないための札**。
+   *
+   * 一度きりの保証を**帳簿に置く**のは、道具の側だけで見ると `merge` を呼ぶ経路が
+   * 増えたときに素通りするから（imp-0036(d) で残作業の検査を帳簿へ寄せたのと同じ理由）。
+   */
+  handoffDeliveredAt: string | undefined;
+  /**
    * **未処理を抱えたまま畳んだ枝か。** 一覧に出し続けるかの判定はここ1つ（D3）。
    */
   get hasUnsettledRemaining(): boolean {
@@ -444,6 +462,8 @@ export class Thread {
     remainingCount?: number;
     settledAt?: string;
     settledWhere?: string;
+    handoff?: string;
+    handoffDeliveredAt?: string;
     /**
      * 開いた時刻。**読み戻すときは索引に入っている値をそのまま渡す**——渡さないと
      * 既定値（いまの時刻）が入り、再起動のたびに「開いた時刻」が振り直される。
@@ -474,6 +494,8 @@ export class Thread {
     this.remainingCount = params.remainingCount ?? 0;
     this.settledAt = params.settledAt;
     this.settledWhere = params.settledWhere;
+    this.handoff = params.handoff;
+    this.handoffDeliveredAt = params.handoffDeliveredAt;
     // 読み戻しなら索引の値。新規なら既定値（いまの時刻）のまま
     if (params.createdAt) this.createdAt = params.createdAt;
     // I2: 枝に還す条件と親が無いのは帳簿の壊れ。黙って幹のように振る舞わせない
@@ -669,6 +691,18 @@ export const RESTART_RESUME_NOTICE = "再起動が完了しました。中断し
  */
 export interface InboxPoster {
   post(input: PostInput): unknown;
+}
+
+/**
+ * `ThreadRegistry.merge` の返り（imp-0070）。
+ *
+ * 畳んだ枝そのものと、**まだ渡していない「幹の一手」**。`handoffToDeliver` が付いて
+ * 返るのは**初回だけ**——畳み直しても二度は付かないので、道具はこれが在るときだけ
+ * 幹のターンを起こせばよい（一度きりの判断を道具の側に持たせない）。
+ */
+export interface MergeOutcome {
+  thread: Thread;
+  handoffToDeliver?: string;
 }
 
 /**
@@ -1221,13 +1255,22 @@ export class ThreadRegistry {
    * 何が残ったかは**枝に残り**、`thread.read` で開いたときにだけ読める。幹に積むのは
    * 1行のまま——両方を幹へ流すと、決定77 が守っていた「幹は端から端まで読める帯」が壊れる。
    *
+   * **`handoff`（幹が次に踏む一手）だけは幹を起こす**（imp-0070）。渡されたら
+   * `handoffToDeliver` として**初回だけ**返し、二度目からは返さない——実際に渡す口
+   * （`nudge`）を持つのは道具の側だが、**一度きりの保証は帳簿が持つ**。
+   *
    * I2: 幹・未知のID・空の結論は黙って成功にせずエラーにする。
    */
   merge(
     threadId: string,
     conclusion: string,
-    options: { detail?: string; remaining?: readonly string[]; now?: Date } = {}
-  ): Thread {
+    options: {
+      detail?: string;
+      remaining?: readonly string[];
+      handoff?: string;
+      now?: Date;
+    } = {}
+  ): MergeOutcome {
     const now = options.now ?? new Date();
     const thread = this.threads.get(threadId);
     if (!thread) throw this.unknownThread(threadId);
@@ -1249,7 +1292,23 @@ export class ThreadRegistry {
     const remaining = (options.remaining ?? []).map((t) => t.trim()).filter((t) => t !== "");
     const missing = remainingWithoutWhereabouts(remaining);
     if (missing.length > 0) throw new Error(remainingWhereaboutsRefusal(missing));
-    if (thread.state === "closed" && thread.conclusion === text) return thread; // 冪等
+    /**
+     * 幹の一手（imp-0070）。**畳み直し（下の冪等）より手前**に置く——同じ結論で
+     * 畳み直したときに一手だけ後から書き足す、という書き方を黙って落とさないため。
+     *
+     * 二度渡さない札は `handoffDeliveredAt`。空では消さない（詳細・残作業と同じ扱い）。
+     */
+    const handoff = options.handoff?.replace(/\s+/gu, " ").trim();
+    if (handoff) thread.handoff = handoff;
+    const handoffToDeliver =
+      thread.handoff !== undefined && thread.handoffDeliveredAt === undefined
+        ? thread.handoff
+        : undefined;
+    // 渡すのは道具（nudge を持っているのは向こう）。渡せなかったときは向こうがログに残す
+    if (handoffToDeliver !== undefined) thread.handoffDeliveredAt = now.toISOString();
+    if (thread.state === "closed" && thread.conclusion === text) {
+      return { thread, ...(handoffToDeliver ? { handoffToDeliver } : {}) }; // 冪等
+    }
     thread.conclusion = text;
     // 空の詳細で既にある詳細を消さない（畳み直しで中身が痩せるのを防ぐ）
     if (detail) thread.conclusionDetail = detail;
@@ -1300,7 +1359,7 @@ export class ThreadRegistry {
     this.flush(thread);
     this.refreshDefault();
     this.emit();
-    return thread;
+    return { thread, ...(handoffToDeliver ? { handoffToDeliver } : {}) };
   }
 
   /**

@@ -412,6 +412,7 @@ Conversations are not parallel tabs. Each project has one **trunk** that lives o
 - **Ending a trunk** (thread.close_trunk): when the project is over. You choose what memory to carry out of it — rewrite anything that still holds elsewhere so it makes sense outside this project. What you do not carry stays with the folded trunk. Open branches must be folded first.
 - **Passing word between trunks** (thread.send): memory and context are split per trunk, which is exactly why things sometimes need to cross. Send the fact and why it matters over there — do not give instructions; what happens in that trunk is its steward's call. Trunks only — another trunk's branches are none of your business, and you cannot read inside them either. Do not go back and forth: if two or three messages do not settle it, raise it to the user or move to that trunk.
 - **Work left over in a branch does not reach the trunk by itself.** Before you fold, every line of remaining must say where it went — an issue id (imp-NNNN / task-NNNN), the sessionId of a worker you started, or an explicit "to be delegated in the trunk". **thread.merge refuses to fold a branch when a line of remaining has no whereabouts** — and a judgement you need from the trunk is not remaining work: ask for it with thread.consult while the branch is still alive, because remaining never reaches the trunk and never wakes it. Say the next move and its whereabouts in the conclusion too; a conclusion that ends at "I recommend X" leaves nobody holding the work. A branch folded with remaining stays in thread.list as 未処理 N件 until you take it off with thread.settle (threadId, where) — where is required, and "done" is not a whereabouts.
+- **If folding a branch leaves a move for the trunk to make, write it in handoff (thread.merge).** That is the one thing a folded branch can hand over: 幹が次に踏む一手 — "task-0152 landed, restart banto so it takes effect". With handoff the trunk gets exactly one turn and reads it; without it the trunk does not move at all, because a conclusion line is a notice and notices never wake the trunk (ADR-0025 決定120). Folding again does not wake it twice. Do not confuse the three: a question while the branch is alive is thread.consult, work someone still has to do is remaining, and a move the trunk itself takes now is handoff. Also: **whoever you ask for a signal must be the branch that actually holds the task** — a branch that is only watching the factory has no moment at which to signal.
 - thread.list shows every open conversation, which one you are in, and what each branch is waiting on — plus any folded branch that still carries unsettled work. Add includeClosed to find a folded branch you want to read back.
 - Once you know what a conversation is about, name it with thread.rename, and rename it again when the topic moves on. The user picks conversations by name, so a stale name — or "会話 3" — tells them nothing. Keep it short, around 15 characters. Do not rename for a brief digression.
 
@@ -494,7 +495,12 @@ function describeThread(identity: ThreadIdentity | undefined): string {
       "",
       "Stay on this one question. **You cannot open a branch from here** — if it needs one,",
       "fold this branch back first. When the condition is met, fold it with thread.merge and",
-      "give the conclusion in one line; that line is all the trunk will see."
+      "give the conclusion in one line; that line is all the trunk will see.",
+      "",
+      "**If folding leaves a move for the trunk to make, write it in handoff.** The conclusion",
+      "line is a notice and notices never wake the trunk — so a conclusion alone stops here.",
+      "handoff (幹が次に踏む一手, e.g. \"task-0152 landed, restart banto so it takes effect\")",
+      "wakes the trunk exactly once and hands the work over. Nothing to hand over: leave it out."
     );
   }
   return lines.join("\n");

@@ -120,11 +120,15 @@ export function renderMergeDetail(params: {
   investigated?: readonly string[];
   decided?: readonly string[];
   remaining?: readonly string[];
+  handoff?: string;
 }): string | undefined {
+  const handoff = params.handoff?.trim();
   const sections: Array<[string, readonly string[] | undefined]> = [
     ["調べたこと", params.investigated],
     ["決めたこと", params.decided],
     ["残ったこと", params.remaining],
+    // 幹へ渡した一手も枝に残す（imp-0070）。**あとから「何を渡したのか」が読めること**
+    ["幹へ渡した一手", handoff ? [handoff] : undefined],
   ];
   const out: string[] = [];
   for (const [heading, items] of sections) {
@@ -585,17 +589,31 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
    * ——幹に積むのは結論1行のままで、詳細は枝に残り `thread.read` で開いたときに読める。
    * 一覧が読めなくなる作りにはしない、が決定77 から引き継ぐ縛り。
    *
+   * **`handoff`（幹が次に踏む一手）を書いたときだけ、畳んだあと幹のターンが1本回る**
+   * （imp-0070）。知らせ（職人・工房・env・system）は幹を起こさない（決定120）を保った
+   * まま、**仕事の受け渡しだけ**を通す。書かなければ従来どおり結論1行が積まれるだけ。
+   *
    * 宛先は**自分の枝に固定**する（決定35a と同じ理由）。
    */
   const merge = defineNamespacedTool({
     name: "thread.merge",
     label: "Thread: Merge",
     description:
-      "**いまのこの枝**を畳んで幹へ還す（幹の末尾に結論が1行積まれる）。\n例: {conclusion: \"inc-0048 を起票し task-0091 を積んだ\", investigated: [\"10回走らせて3回落ちた\"], decided: [\"待ちを延ばさず機構を直す\"], remaining: [\"task-0092 を積んだ\"]} → 畳んだ旨\n**出口は結論であって実装ではない。** 幹は畳めない。決めきれないものは「保留：理由」で畳んでよい。\n調べた・決めた・残った（investigated / decided / remaining）は**幹へは流れず枝に残る**——`thread.read` で開いたときに読める。\n**だから畳む前に、残作業には所在を持たせること。** `remaining` の各行に「どこへ行ったか」（`imp-NNNN` / `task-NNNN` の起票 id・立てた職人の sessionId・幹での委譲予定）を書く。`conclusion` にも判断の要約だけでなく**次の一手とその所在**を書く（「〜を推す」で終わらせない）。\n**所在の無い行が1つでもあると、この道具は畳むのを断る**（imp-0036）。\n**幹の判断が要ることは `remaining` に書いても誰にも届かない**（幹へ流れず、幹のターンも起きない）。畳む前に、枝が生きているうちに `thread.consult` で幹へ聞くこと。\n`remaining` を書いて畳むと、この枝は**未処理ありとして `thread.list` に出続ける**（所在が付いて `thread.settle` で降ろすまで消えない）。",
+      "**いまのこの枝**を畳んで幹へ還す（幹の末尾に結論が1行積まれる）。\n例: {conclusion: \"inc-0048 を起票し task-0091 を積んだ\", investigated: [\"10回走らせて3回落ちた\"], decided: [\"待ちを延ばさず機構を直す\"], remaining: [\"task-0092 を積んだ\"]} → 畳んだ旨\n**出口は結論であって実装ではない。** 幹は畳めない。決めきれないものは「保留：理由」で畳んでよい。\n調べた・決めた・残った（investigated / decided / remaining）は**幹へは流れず枝に残る**——`thread.read` で開いたときに読める。\n**だから畳む前に、残作業には所在を持たせること。** `remaining` の各行に「どこへ行ったか」（`imp-NNNN` / `task-NNNN` の起票 id・立てた職人の sessionId・幹での委譲予定）を書く。`conclusion` にも判断の要約だけでなく**次の一手とその所在**を書く（「〜を推す」で終わらせない）。\n**所在の無い行が1つでもあると、この道具は畳むのを断る**（imp-0036）。\n**幹の判断が要ることは `remaining` に書いても誰にも届かない**（幹へ流れず、幹のターンも起きない）。畳む前に、枝が生きているうちに `thread.consult` で幹へ聞くこと。\n`remaining` を書いて畳むと、この枝は**未処理ありとして `thread.list` に出続ける**（所在が付いて `thread.settle` で降ろすまで消えない）。\n**畳むときに幹が次に踏む一手があるなら `handoff` に書く。書かなければ幹は動かない**（結論の1行では幹のターンは起きない）。使い分けは、**枝が生きているうちの問い＝`thread.consult`／畳むときの受け渡し＝`handoff`**。",
     parameters: Type.Object({
       conclusion: Type.String(),
       investigated: Type.Optional(Type.Array(Type.String())),
       decided: Type.Optional(Type.Array(Type.String())),
+      handoff: Type.Optional(
+        Type.String({
+          description:
+            "**幹が次に踏む一手**。書かないと幹は動かない（結論の1行では幹のターンは" +
+            "起きない）。書くと、畳んだあと幹のターンが1本だけ回り、番頭がこれを受け取る。" +
+            '例：「task-0152 が着地したので banto を再起動して反映してほしい」。' +
+            "残作業（remaining）とは別——あちらは所在を書いて置いておくもの、こちらは" +
+            "幹がいま踏むもの",
+        })
+      ),
       remaining: Type.Optional(
         Type.Array(Type.String(), {
           description:
@@ -608,13 +626,56 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     async execute(params) {
       const detail = renderMergeDetail(params);
       /**
+       * 一手を渡すなら**畳む前に断る**（imp-0070・I2）。渡す口（`nudge`）が無い構成で
+       * 畳んでしまうと、枝は閉じたのに一手はどこへも行かない——「渡したつもり」で
+       * 仕事が消える。**状態は触らない**（枝は開いたまま）ので、書き直して畳み直せる。
+       *
+       * `thread.consult` の往復上限（`allowSend`）は**掛けない**。畳むのは1枝1回で、
+       * 上限で弾くと畳めなくなる——弾くべきは往復であって受け渡しではない。
+       */
+      const handoff = params.handoff?.trim();
+      if (handoff && !options.nudge) {
+        throw new Error(
+          "この構成では幹へ一手を還せません（nudge が渡されていません）。" +
+            "枝は畳んでいません——handoff を外して畳むか、渡せる構成で畳んでください"
+        );
+      }
+      /**
        * 残作業は**行のまま帳簿へ渡す**（imp-0036(d)）。件数だけ渡していた頃は、
        * 所在があるかどうかを帳簿が見られなかった——数えるのも断るのも帳簿の側でやる。
        */
-      const thread = options.threads.merge(options.threadId, params.conclusion, {
-        ...(detail ? { detail } : {}),
-        ...(params.remaining ? { remaining: params.remaining } : {}),
-      });
+      const { thread, handoffToDeliver } = options.threads.merge(
+        options.threadId,
+        params.conclusion,
+        {
+          ...(detail ? { detail } : {}),
+          ...(params.remaining ? { remaining: params.remaining } : {}),
+          ...(handoff ? { handoff } : {}),
+        }
+      );
+      /**
+       * **幹のターンを1本だけ起こす**（imp-0070）。二度目からは帳簿が
+       * `handoffToDeliver` を返さないので、畳み直しても増えない。
+       *
+       * **待たない**（handOff）。待つと、幹が読んで喋り終えるまでこの枝が固まる。
+       * 幹はこの枝の中を見ていないので、題・結論・一手・読み返し方を本文に書く。
+       */
+      const trunk = thread.parentId ? options.threads.get(thread.parentId) : undefined;
+      if (handoffToDeliver && options.nudge && trunk) {
+        handOff(
+          options.nudge,
+          trunk.id,
+          `枝「${thread.title}」を畳みました。**幹が次に踏む一手が渡されています**：\n\n` +
+            `結論：${thread.conclusion}\n` +
+            `幹の一手：${handoffToDeliver}\n\n` +
+            `（この枝は畳んであります。経緯は thread.read({ threadId: "${thread.id}" })）`,
+          "枝からの幹の一手"
+        );
+      }
+      // I2: 渡せなかったのに「渡した」と答えない（親が引けない＝帳簿の壊れ）
+      if (handoff && !trunk) {
+        console.error(`[banto] 枝 ${thread.id} の親を引けず、幹の一手を渡せませんでした`);
+      }
       return {
         content: [
           {
@@ -632,6 +693,15 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
                 ? `。**未処理 ${thread.remainingCount}件として記録しました**——` +
                   `幹の thread.list に出続けます。所在（起票 id・職人の sessionId・委譲先）が` +
                   `決まったら thread.settle({threadId: "${thread.id}", where: "…"}) で降ろしてください`
+                : "") +
+              /**
+               * I2: 渡ったかどうかを言い分ける。既に渡してある枝を畳み直したときに
+               * 「渡しました」と答えると、幹が2度起きたと読める。
+               */
+              (handoff
+                ? handoffToDeliver && trunk
+                  ? `。**幹へ一手を渡しました**（幹「${trunk.title}」のターンが1本回ります）：${handoffToDeliver}`
+                  : "。この枝は既に一手を渡してあります——重ねて幹は起こしません"
                 : ""),
           },
         ],
