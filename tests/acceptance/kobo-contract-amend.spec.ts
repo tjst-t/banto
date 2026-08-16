@@ -226,21 +226,28 @@ describe("[task-0082] 基準やスコープが動いたら監査は無効", () =
     assert.deepEqual((daemon.getTask(PROJ, id)!["scope"] as { paths: string[] }).paths, ["src/**"]);
   });
 
-  it("**意味としては狭いスコープでも、新しい文字列なら PO 扱い**（glob は文字列で解けない）", async () => {
+  /**
+   * **[task-0209] ここは task-0082 から向きを変えた。**
+   * 元は「新しい文字列なら意味が狭くても PO 扱い」——`src/**` → `src/narrow/**` を
+   * 断っていた。だが `src/narrow/**` に当たるファイルは1本残らず `src/**` にも当たる。
+   * 「覆われている＝そのパターンで許される範囲の中にある」なら、触れる範囲は増えていない。
+   * 断る理由が無いのに断ると、番頭が絞り込みを通せない（実測・task-0203 で2回）。
+   * 機械で読めない形はいままでどおり PO へ倒す——下の「読めない glob」の試験がその境目。
+   */
+  it("[task-0209] **配下へ絞る glob は番頭でよい**（`src/**` → `src/narrow/**` は範囲が増えない）", async () => {
     const id = enqueueAndApprove({ scope: ["src/**"] });
 
-    // `src/narrow/**` は `src/**` より狭いが、機械には判定させない
-    await assert.rejects(
-      () =>
-        call("kobo.amend", {
-          projectTag: PROJ,
-          taskId: id,
-          reason: "絞れると分かった",
-          scope: { paths: ["src/narrow/**"] },
-        }),
-      /緩める方向|PO の判断/,
-      "包含関係を機械に推させると、必ずどこかで緩い側に取り違える——厳しすぎる側に倒す"
-    );
+    const r = await call("kobo.amend", {
+      projectTag: PROJ,
+      taskId: id,
+      reason: "絞れると分かった",
+      scope: { paths: ["src/narrow/**"] },
+    });
+    assert.match((r["changes"] as string[]).join(" "), /スコープを変更/);
+    assert.equal(r["auditInvalidated"], true, "狭めてもスコープが動いた以上、監査は無効");
+    assert.deepEqual((daemon.getTask(PROJ, id)!["scope"] as { paths: string[] }).paths, [
+      "src/narrow/**",
+    ]);
   });
 });
 
@@ -290,6 +297,112 @@ describe("[task-0082] 緩める方向は PO だけ", () => {
     assert.equal(r.ok, true, `PO なら通るはず: ${JSON.stringify(r)}`);
     assert.equal((r as { ok: true; auditInvalidated: boolean }).auditInvalidated, true);
     assert.equal(daemon.getTask(PROJ, id)?.status, "implementing");
+  });
+});
+
+/**
+ * [task-0209] スコープの改訂を「文字列が一覧に無いか」で裁いていたので、
+ * `["tests/acceptance/**"]` → `["tests/acceptance/kobo-contract-amend.spec.ts"]` という
+ * **明らかな絞り込み**まで「緩める方向」に落ちて番頭が通せなかった（実測・task-0203 で2回）。
+ * 読み方を変えた：**新しいパスがいまのどれかのパターンに覆われているなら広げていない**。
+ * 覆われないパスが1本でもあれば、いままでどおり PO の判断。
+ */
+describe("[task-0209] スコープの絞り込みは番頭でよい（覆われているかで読む）", () => {
+  it("**広い glob → その配下の名指しファイル**は通る（task-0203 の実測そのまま）", async () => {
+    const id = enqueueAndApprove({ scope: ["tests/acceptance/**"] });
+
+    const r = await call("kobo.amend", {
+      projectTag: PROJ,
+      taskId: id,
+      reason: "触るのはこの1本だけだと分かった",
+      scope: { paths: ["tests/acceptance/kobo-contract-amend.spec.ts"] },
+    });
+    assert.match((r["changes"] as string[]).join(" "), /スコープを変更/);
+    // 性質3：狭めても「何に対して監査したか」は動くので、監査は無効のまま据え置き
+    assert.equal(r["auditInvalidated"], true, "狭めたら監査は無効のまま据え置くこと");
+    assert.deepEqual((daemon.getTask(PROJ, id)!["scope"] as { paths: string[] }).paths, [
+      "tests/acceptance/kobo-contract-amend.spec.ts",
+    ]);
+  });
+
+  it("総取り `**` の下へ絞るのも通る（どのパスも覆われている）", async () => {
+    const id = enqueueAndApprove({ scope: ["**"] });
+
+    const r = await call("kobo.amend", {
+      projectTag: PROJ,
+      taskId: id,
+      reason: "範囲が見えたので絞る",
+      scope: { paths: ["packages/banto-daemon/src/**", "docs/notes/handoff.md"] },
+    });
+    assert.match((r["changes"] as string[]).join(" "), /スコープを変更/);
+    assert.deepEqual((daemon.getTask(PROJ, id)!["scope"] as { paths: string[] }).paths, [
+      "packages/banto-daemon/src/**",
+      "docs/notes/handoff.md",
+    ]);
+  });
+
+  it("**どのパターンにも覆われないパスを足すのは、いままでどおり PO 判断**", async () => {
+    const id = enqueueAndApprove({ scope: ["src/**"] });
+
+    await assert.rejects(
+      () =>
+        call("kobo.amend", {
+          projectTag: PROJ,
+          taskId: id,
+          reason: "docs も触りたい",
+          scope: { paths: ["src/**", "docs/**"] },
+        }),
+      /緩める方向|PO の判断/,
+      "覆われていないパスが増えるのは、番頭がマージ前ゲートを緩めるのと同じ"
+    );
+    assert.deepEqual((daemon.getTask(PROJ, id)!["scope"] as { paths: string[] }).paths, ["src/**"]);
+  });
+
+  it("**1本でも覆われないものが混ざれば PO 判断**（残りが絞り込みでも通さない）", async () => {
+    const id = enqueueAndApprove({ scope: ["src/**"] });
+
+    await assert.rejects(
+      () =>
+        call("kobo.amend", {
+          projectTag: PROJ,
+          taskId: id,
+          reason: "src は絞るが docs を1枚だけ足したい",
+          scope: { paths: ["src/daemon.ts", "docs/x.md"] },
+        }),
+      /緩める方向|PO の判断/,
+      "絞り込みに紛れて範囲外が1本入ると、事後に正当化できてしまう"
+    );
+  });
+
+  it("**機械で読めない glob 同士は覆われていない扱い**（保守側に倒す）", async () => {
+    const id = enqueueAndApprove({ scope: ["src/**/*.ts"] });
+
+    // 人が読めば `src/deep/**/*.ts` は `src/**/*.ts` の内側だが、glob 同士の包含は
+    // 一般には解けない。読めないものを「覆われている」と言い張ると必ず緩い側で外す
+    await assert.rejects(
+      () =>
+        call("kobo.amend", {
+          projectTag: PROJ,
+          taskId: id,
+          reason: "deep だけだと分かった",
+          scope: { paths: ["src/deep/**/*.ts"] },
+        }),
+      /緩める方向|PO の判断/,
+      "読めない形は PO へ回す——緩い側に取り違えるより止まる方が安全"
+    );
+  });
+
+  it("スコープ以外の訂正の扱いは変えていない（検証コマンドは監査を無効にしない）", async () => {
+    const id = enqueueAndApprove({ scope: ["src/**"], a1Verify: "npm ci && npm test" });
+
+    const r = await call("kobo.amend", {
+      projectTag: PROJ,
+      taskId: id,
+      reason: "検証コマンドだけ直す",
+      acceptance: [{ id: "a1", text: "テストが通る", verify: "npm test" }],
+    });
+    assert.equal(r["auditInvalidated"], false, "スコープを触っていないのに監査を無効にしている");
+    assert.equal(daemon.getTask(PROJ, id)?.status, "approved");
   });
 });
 
