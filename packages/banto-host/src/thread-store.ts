@@ -21,6 +21,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { writeFileAtomicSync, nodeAtomicWriteOps, type AtomicWriteOps } from "@banto/core";
 import type { TranscriptEntry } from "./protocol.js";
+import type { Inbox } from "./inbox.js";
 
 /** スレッド1本ぶんの索引。中身（発言）は別ファイル。 */
 export interface StoredThread {
@@ -134,15 +135,29 @@ export class ThreadStore {
   private index: IndexFile;
   /** スレッドごとの「知っている姿」。縮む書き戻しを拒む基準（task-0164）。 */
   private readonly known = new Map<string, KnownTranscript>();
+  /** 取次（人に届ける口・task-0236）。渡されなければ何もしない——既存の呼び出し元は変えなくてよい。 */
+  private readonly inbox: Pick<Inbox, "post"> | undefined;
+  /** 壊れた行が見つかったスレッド。次の `replace()` が上書きする前に元ファイルごと退避する（task-0236 a2）。 */
+  private readonly corruptThreads = new Set<string>();
+  /** 退避が起きたことを取次へ積んだか。起動（このインスタンス）あたり1件に絞る（task-0236 a4）。 */
+  private corruptionNoticePosted = false;
 
   /**
    * `writeOps` は**書き込みが途中で失敗したときに元のファイルが無傷か**を測るための口
    * （task-0161）。本番は既定の `nodeAtomicWriteOps` のまま——ここを渡すのは試験だけ。
    * 権限で失敗を作ると root で走る検証環境では再現しないので、口を通して失敗させる。
+   *
+   * `inbox` は壊れた行の退避を人へ届ける口（task-0236）。渡さなければ届けないだけで、
+   * 退避そのものは今までどおり行う。
    */
-  constructor(dir: string, writeOps: AtomicWriteOps = nodeAtomicWriteOps) {
+  constructor(
+    dir: string,
+    writeOps: AtomicWriteOps = nodeAtomicWriteOps,
+    inbox?: Pick<Inbox, "post">
+  ) {
     this.dir = dir;
     this.writeOps = writeOps;
+    this.inbox = inbox;
     this.index = this.readIndex();
   }
 
@@ -232,6 +247,12 @@ export class ThreadStore {
   replace(threadId: string, entries: readonly TranscriptEntry[]): void {
     fs.mkdirSync(this.dir, { recursive: true });
     if (!this.accepts(threadId, entries)) return;
+    if (this.corruptThreads.has(threadId)) {
+      // 壊れた行が見つかっていたスレッド。上書きで「壊れた行以外の、読めたが古い内容」まで
+      // 消さないよう、上書きする前に元ファイルを丸ごと退避する（task-0236 a2）
+      this.backupBeforeOverwrite(threadId);
+      this.corruptThreads.delete(threadId);
+    }
     const body = entries.map((e) => JSON.stringify(e)).join("\n");
     // 原子的に置き換える（task-0161）。全文置換の最中に殺されると数MBの会話が飛ぶ
     writeFileAtomicSync(
@@ -268,6 +289,7 @@ export class ThreadStore {
     const file = this.transcriptPath(threadId);
     if (!fs.existsSync(file)) return [];
     const entries: TranscriptEntry[] = [];
+    const corruptLines: string[] = [];
     for (const line of fs.readFileSync(file, "utf-8").split("\n")) {
       const trimmed = line.trim();
       if (trimmed.length === 0) continue;
@@ -276,8 +298,10 @@ export class ThreadStore {
       } catch {
         // I2 の例外ではない: 1行壊れても残りは読める。1行のために会話全部を失わない
         console.error(`[banto] ${threadId} の記録に読めない行があります（その行は飛ばします）`);
+        corruptLines.push(line);
       }
     }
+    if (corruptLines.length > 0) this.onCorruptLines(threadId, corruptLines);
     return entries;
   }
 
@@ -391,6 +415,101 @@ export class ThreadStore {
       }
     }
     return undefined;
+  }
+
+  /**
+   * 壊れた行を見つけたときの後始末(task-0236・inc-0075 続報)。
+   *
+   * 2026-08-16 00:48、OOM 直後の読み戻しで壊れた行が `console.error` にしか出ず、
+   * 中身はどこにも残らないまま直後の書き戻しで永久に消えた。誰も気づかなかった。
+   *
+   * ここでやるのは3つ: ①生テキストを退避する(a1) ②次の `replace()` が上書きする前に
+   * 元ファイルごと退避するよう印を付ける(`corruptThreads`・a2) ③人に届く場所(取次)へ
+   * 知らせる(a4)。どれか失敗しても読み自体は止めない(a5)——`quarantineText` と
+   * `notifyCorruption` は例外を外へ出さない。
+   */
+  private onCorruptLines(threadId: string, lines: readonly string[]): void {
+    this.corruptThreads.add(threadId);
+    const savedTo = this.quarantineText(threadId, `${lines.join("\n")}\n`);
+    this.notifyCorruption(threadId, lines.length, savedTo);
+  }
+
+  /**
+   * 壊れが見つかっていたスレッドの、上書き直前の元ファイルを丸ごと退避する(a2)。
+   *
+   * 壊れた行だけでなく読めた行も含めた全体を残す——壊れた行だけを退避すると、
+   * 壊れた行以外の「読めたが古い内容」が次の上書きで消える。
+   */
+  private backupBeforeOverwrite(threadId: string): void {
+    const file = this.transcriptPath(threadId);
+    let body: string;
+    try {
+      if (!fs.existsSync(file)) return;
+      body = fs.readFileSync(file, "utf-8");
+    } catch (err) {
+      // I2: 読めなかったことも黙らない。ただし書き戻し自体は止めない(a5 と同じ考え)
+      console.error(`[banto] ${threadId} の元の記録を読めず、退避できませんでした: ${String(err)}`);
+      return;
+    }
+    this.quarantineText(threadId, body);
+  }
+
+  /**
+   * 退避ファイルへ書く(`<threadId>.corrupt-<ISO8601>.jsonl`。task-0236)。
+   *
+   * `quarantine()`(task-0164・拒んだ書き戻しの退避)と同じ通し番号の流儀。
+   * 失敗しても投げない——退避が新しい落とし穴にならないようにする(a5)。
+   */
+  private quarantineText(threadId: string, body: string): string | undefined {
+    const at = new Date().toISOString();
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const file = path.join(
+        this.dir,
+        `${threadId}.corrupt-${at}${attempt === 0 ? "" : `-${attempt}`}.jsonl`
+      );
+      if (fs.existsSync(file)) continue;
+      try {
+        writeFileAtomicSync(file, body, this.writeOps);
+        return file;
+      } catch (err) {
+        // I2: 退避できなかったことも黙らない。ただし呼び出し側は続ける(a5)
+        console.error(`[banto] ${threadId} の記録を ${file} へ退避できませんでした: ${String(err)}`);
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * 退避が起きたことを取次へ知らせる(a4)。`console.error` だけでは誰も気づかないと
+   * 8/16 の実例で分かっている。起動あたり1件だけにする——スレッドごと・行ごとに
+   * 積むと札で溢れる。届けられたときだけ済んだ扱いにする(積めなければ次の機会に再挑戦する)。
+   */
+  private notifyCorruption(
+    threadId: string,
+    lineCount: number,
+    savedTo: string | undefined
+  ): void {
+    if (!this.inbox || this.corruptionNoticePosted) return;
+    try {
+      this.inbox.post({
+        source: { id: "banto", label: "番頭" },
+        kind: "記録の一部が壊れていました",
+        rule: "I2",
+        notice: true,
+        title: `スレッド「${threadId}」の記録に読めない行がありました（${lineCount}行）`,
+        what: savedTo
+          ? `壊れた行は読み飛ばして残りは読めるようにし、生テキストを ${savedTo} へ退避しました。`
+          : "壊れた行は読み飛ばして残りは読めるようにしましたが、退避には失敗しました。",
+        ask: "確認したら押してください（復旧が要るかは退避ファイルを見て判断してください）。",
+        actions: [{ id: "read", label: "読んだ", tone: "plain" }],
+        opens: { threadId },
+      });
+      this.corruptionNoticePosted = true;
+    } catch (err) {
+      // I2: 積めなかったことも黙らない
+      console.error(`[banto] ${threadId} の記録の壊れを取次へ積めませんでした: ${String(err)}`);
+    }
   }
 
   private readIndex(): IndexFile {
