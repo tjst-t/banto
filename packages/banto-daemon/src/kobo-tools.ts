@@ -19,8 +19,43 @@ import * as path from "node:path";
 import { Type } from "typebox";
 import { StringEnum, defineNamespacedTool, formatDwell, VALID_TASK_KINDS } from "@banto/core";
 import type { NamespacedToolDefinition } from "@banto/core";
-import type { Daemon } from "./daemon.js";
+import type { Daemon, NoticeDestination } from "./daemon.js";
 import type { TaskContractAmendment, TaskContractInput } from "./task-record.js";
+
+/**
+ * **このタスクの知らせが、どの会話へ届くか**を1行にする（task-0224）。
+ *
+ * 幹から宛先が見えないと、「この基準も見てほしい」を一次受けの枝へ伝える道が無い。
+ *
+ * 書かないことを2つ決めている:
+ *   - **空欄にしない**。宛先が記録されていなければ「不明」と書く（a3）
+ *   - **読めなかったことを「不明」で誤魔化さない**。索引が読めないなら理由を添える（I2）。
+ *     推測で「幹へ行く」と言い切らない——読めていないのだから幹かどうかも分かっていない
+ */
+function formatNoticeDestination(dest: NoticeDestination): string {
+  const named = `${dest.threadId}「${dest.title}」`;
+  switch (dest.via) {
+    case "branch":
+    case "trunk-subject":
+      return dest.state === "closed"
+        ? `知らせの宛先: ${named}（畳んである・知らせが来たら開き直る）`
+        : `知らせの宛先: ${named}`;
+    case "trunk-pending":
+      // 幹が origin。知らせが来た時点で、この鍵の枝が機構の手で立つ
+      return (
+        `知らせの宛先: 幹 ${named}` +
+        `（知らせが来たら用件の枝 ${dest.subjectKey} が立つ。まだ無い）`
+      );
+    case "fallback-trunk":
+      return `知らせの宛先: 幹 ${named}（元の枝が見つからないため）`;
+    case "unknown-origin":
+      return "知らせの宛先: 不明（この会話は記録されていません）";
+    case "no-trunk":
+      return "知らせの宛先: 不明（元の会話も幹も引けません）";
+    case "index-unreadable":
+      return `知らせの宛先: 不明（会話の索引を読めません: ${dest.problem}）`;
+  }
+}
 
 /** 一覧・経緯で1度に返す上限。番頭の文脈を埋め尽くさないため。 */
 const MAX_ROWS = 100;
@@ -335,12 +370,16 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
       const scope = (found["scope"] as { paths?: string[] } | undefined)?.paths ?? [];
       // **この状態になってから N**（realign 第2便）。滞留は帳簿から導出する（D3）
       const dwelt = daemon.dwellOf(project.id, params.taskId);
+      // task-0224: **この知らせが誰に届くか**。幹からはここが見えず、一次受けの枝へ
+      // 補足を伝える道が無かった。索引は毎回読み直す（会話は増える）が、1回だけでよい
+      const noticeDestination = daemon.noticeDestinationOf(project.id, params.taskId);
       const text = [
         `${params.taskId} [${found.status}] ${String(found["title"] ?? "")}`,
         ...(dwelt !== undefined ? [`この状態になってから ${formatDwell(dwelt)}`] : []),
         `レビュー: ${stage}${stage === "po" ? "（PO の判断が要る）" : stage === "auto" ? "（人も番頭も見ない）" : "（あなたが一次受け）"}`,
         ...(envUrl ? [`触れる場所: ${envUrl}`] : []),
         scope.length > 0 ? `スコープ: ${scope.join(", ")}` : "",
+        formatNoticeDestination(noticeDestination),
         "",
         ...history.map((h) => `${h.at} ${h.type}${h.detail ? ` — ${h.detail}` : ""}`),
         ...(failure
@@ -367,6 +406,7 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
           task: found,
           reviewStage: stage,
           ...(envUrl ? { envUrl } : {}),
+          noticeDestination,
           history,
           ...(failure ? { failure } : {}),
         },
