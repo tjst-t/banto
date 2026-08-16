@@ -295,3 +295,6 @@ export type {
   ModuleRegistryConfig,
   ModuleClient,
 } from "./module-invocation.js";
+// 落ちても壊れない書き込み（task-0161）。tmp + fsync + rename
+export { writeFileAtomicSync, nodeAtomicWriteOps } from "./atomic-write.js";
+export type { AtomicWriteOps } from "./atomic-write.js";

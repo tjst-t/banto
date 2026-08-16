@@ -14,11 +14,12 @@
  *
  * D3: 索引と記録は導出できない事実なので持つ。開いている／畳んだの別も同じ。
  * I2: 壊れた記録で黙って空から始めない——気づかないまま過去の会話を失うのが一番困る。
- * D6: node:fs / node:path のみ。
+ * D6: node:fs / node:path と、原子的書き込みのヘルパ（@banto/core）のみ。
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { writeFileAtomicSync } from "@banto/core";
 import type { TranscriptEntry } from "./protocol.js";
 
 /** スレッド1本ぶんの索引。中身（発言）は別ファイル。 */
@@ -225,7 +226,9 @@ export class ThreadStore {
     fs.mkdirSync(this.dir, { recursive: true });
     if (!this.accepts(threadId, entries)) return;
     const body = entries.map((e) => JSON.stringify(e)).join("\n");
-    fs.writeFileSync(this.transcriptPath(threadId), body.length > 0 ? `${body}\n` : "", "utf-8");
+    // 原子的に置き換える（task-0161）。全文置換の最中に殺されると数MBの会話が飛ぶ
+    writeFileAtomicSync(this.transcriptPath(threadId), body.length > 0 ? `${body}\n` : "");
+    // 書けたあとに知っている姿を更新する（task-0164）。書けなかったときは基準を動かさない
     this.remember(
       threadId,
       entries.map((e) => e.role)
@@ -397,6 +400,7 @@ export class ThreadStore {
 
   private writeIndex(): void {
     fs.mkdirSync(this.dir, { recursive: true });
-    fs.writeFileSync(this.indexPath, `${JSON.stringify(this.index, null, 2)}\n`, "utf-8");
+    // 索引が半端に書かれると readIndex() が throw してホストが起動しない（task-0161）
+    writeFileAtomicSync(this.indexPath, `${JSON.stringify(this.index, null, 2)}\n`);
   }
 }
