@@ -1,7 +1,7 @@
 ---
 id: imp-0062
 title: system.restart の説明文が現構成と食い違う——「職人が落ちる・環境が落ちる」は嘘
-status: inbox
+status: resolved
 kind: improvement
 origin: 枝「未反映分の反映」(thread-110)。説明文を信じて「職人5件・検証環境2件を巻き込む」と取次を上げたが、現物を見たら巻き込まないと分かった
 refs:
@@ -110,3 +110,32 @@ systemctl show banto-environment-pool.service -p MainPID -p ActiveState -p SubSt
   **巻き添えの有無**を、`system.restart` の説明文と同じ精度で書く。
 - 番頭が自分で踏めるようにするかは別の判断（いまは職人へ委譲して `kill -9` させている）。
   少なくとも**「反映が要る＝system.restart」だと思い込ませない**書き方にすること。
+
+---
+
+## 直した（2026-08-16・task-0155）
+
+前半（落ちる範囲を事実に合わせる）は先行して着地済み。ここでは**追記ぶん（届く範囲）**を入れた。
+
+- **SKILL `safe-restart`**（`packages/banto-host/skills/safe-restart/SKILL.md`）
+  - 「どのサービスを起こし直すのか」の節を新設。**直したファイルの package → unit → 起こし直し方**の
+    対応表（3ユニット）を置き、**`system.restart` が起こし直すのは `banto.service` だけ**だと明記した
+  - `banto-worker-pool.service` / `banto-environment-pool.service` の `kill -9` 手順（`Restart=on-failure`
+    / `RestartSec=5` による自動復帰）と、**巻き添えが無いこと**（コンテナ・Caddy の route・台帳）を、
+    「何が落ちて、何が落ちないか」の表と同じ精度の表で書いた
+  - inc-0073 の実例（環境まわりを直したのに `env.verify` が古いままだった）を添えた
+  - 手順に「0. 宛先を確かめる」を足し、「やってはいけないこと」に
+    **「反映が要る＝`system.restart`」と決めつけない**を足した。手順1〜5（とくに**手順3 の PO の承認**）は
+    そのまま残っている
+- **`system.restart` の説明文**（`packages/banto-host/src/restart-tool.ts`）
+  - 起こし直すのは `banto.service`（＝`packages/banto-host`）だけで、職人・検証環境まわりの変更は
+    **これでは反映されない**（別サービスなので別に起こし直す。手順は SKILL `safe-restart`）を1文足した
+  - 既存の正しい記述は残し、**切れた会話は次の起動で新しいプロセスが自動的に起こし直す（ただし
+    直前に叩いた道具はやり直さず続きから進む）**を明確にした。昔の嘘（巻き添え・職人は中断）は戻していない
+- **試験**（`tests/acceptance/restart-blast-radius.spec.ts`）：既存の it は残し、2件足した
+  ——説明文が別サービスを名指しして「反映されない」と言っていること／SKILL に3つの unit と package の
+  対応・`kill -9`・`Restart=on-failure`・inc-0073 が揃っていること
+
+**やっていないこと**：`deploy/*.service` は触っていない（task-0154 の担当）。番頭が自分で `kill -9` を
+踏める道具は作っていない（別の判断。いまは職人へ委譲する形のまま）。稼働機のサービスは起こし直して
+いない（反映の段取りは幹が持つ）。

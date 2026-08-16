@@ -99,4 +99,44 @@ describe("[imp-0062] 番頭ホストの再起動は、職人と検証環境を�
     // 手順3（PO の承認）は残す——落ちる範囲が狭くなっても、反映の可否は PO の裁定
     assert.match(skill, /\*\*PO の承認を得る\*\*/u, "PO の承認の手順が消えています");
   });
+
+  /**
+   * **落ちない＝反映もされない**（imp-0062 の追記ぶん・inc-0073）。
+   *
+   * 3つの常駐サービスはどれも `--import tsx` で main のチェックアウトを直に読むので、
+   * 番頭本体を起こし直しても職人・検証環境のコードは古いまま残る。上の it 群が
+   * 「巻き込まない」を固定するのと対で、ここは**届かない**ことを固定する。
+   */
+  it("道具の説明文が、起こし直すのは banto.service だけだと言う", () => {
+    const source = read("packages/banto-host/src/restart-tool.ts");
+    const description = source.slice(
+      source.indexOf("    description:"),
+      source.indexOf("    parameters:")
+    );
+    assert.match(description, /banto-environment-pool/u, "検証環境が別サービスだと言っていません");
+    assert.match(description, /banto\.service/u, "起こし直す先を名指ししていません");
+    assert.match(
+      description,
+      /反映されない/u,
+      "別サービスの変更が反映されないことを言っていません"
+    );
+    // 切れた会話が自動で起こし直されること（imp-0037・imp-0061）は残す
+    assert.match(description, /起こし直す/u);
+    // 昔の嘘は戻さない（上の it と同じ二重の網）
+    assert.doesNotMatch(description, /巻き添え/u);
+  });
+
+  it("SKILL safe-restart に3つの unit と kill -9 の手順が揃っている", () => {
+    const skill = read("packages/banto-host/skills/safe-restart/SKILL.md");
+    for (const unit of ["banto.service", "banto-worker-pool.service", "banto-environment-pool.service"]) {
+      assert.ok(skill.includes(unit), `SKILL に ${unit} がありません`);
+    }
+    // 直した package → unit の対応が引けること
+    for (const pkg of ["packages/banto-host", "packages/banto-worker-pool", "packages/banto-environment-pool"]) {
+      assert.ok(skill.includes(pkg), `SKILL に ${pkg} の対応がありません`);
+    }
+    assert.match(skill, /kill -9/u, "kill -9 の手順がありません");
+    assert.match(skill, /Restart=on-failure/u, "自動復帰の根拠（Restart=on-failure）がありません");
+    assert.match(skill, /inc-0073/u, "反映されなかった実例（inc-0073）がありません");
+  });
 });
