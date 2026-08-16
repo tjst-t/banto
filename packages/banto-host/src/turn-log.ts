@@ -82,6 +82,33 @@ export interface TurnLogEntry {
   browseNudgeAt?: number;
 }
 
+/**
+ * 読みのときに見つかった不具合1件（fix: task-0162）。
+ *
+ * ホストは OOM killer に殺されることがあり、**書き込みの途中で死ぬと最終行が千切れる**。
+ * 黙って飛ばすと壊れたことに誰も気づけない（I2）ので、何行目がどう読めなかったかを
+ * ここに残して警告に出す。
+ */
+export interface TurnLogReadProblem {
+  /** 何行目か（1始まり）。ファイルごと読めなかったときだけ 0。 */
+  line: number;
+  kind:
+    | /** JSON として読めない行（途中のどこか）。 */ "unparsable"
+    | /** 末尾に改行が無く、しかも JSON として読めない＝書き込みの途中で死んだ行。 */ "truncated"
+    | /** 末尾に改行が無いが中身は読める＝改行だけ落ちた疑い。行自体は返す。 */ "no-trailing-newline"
+    | /** ファイルそのものが読めなかった。 */ "unreadable";
+  /** 人が読む理由（パースの例外など）。 */
+  detail: string;
+  /** その行の抜粋（長ければ切る）。ファイルごと読めなかったときは無い。 */
+  preview?: string;
+}
+
+/** 読みの結果。読めた行と、読めなかった行の記録。 */
+export interface TurnLogReadResult {
+  entries: TurnLogEntry[];
+  problems: TurnLogReadProblem[];
+}
+
 /** 台帳の既定の置き場。`dataDir()`（bin.ts）と同じ規則。 */
 export function defaultTurnLogPath(): string {
   return path.join(
@@ -136,18 +163,110 @@ export class TurnLog {
     }
   }
 
-  /** 台帳を読む。壊れた行は無視する（1行の破損で台帳全体を失わない）。 */
-  readAll(): TurnLogEntry[] {
-    if (!fs.existsSync(this.file)) return [];
-    const out: TurnLogEntry[] = [];
-    for (const line of fs.readFileSync(this.file, "utf-8").split("\n")) {
-      if (line.trim().length === 0) continue;
-      try {
-        out.push(JSON.parse(line) as TurnLogEntry);
-      } catch {
-        // 途中で死んだ行があっても、残りは読める（I2: 台帳ごと落とさない）
-      }
+  /**
+   * 台帳を読む。読めた行は全件返しつつ、読めなかった行は**必ず警告に出す**。
+   *
+   * 集計側（turn-report）は行の配列だけあればよいので `readAll()` はそのまま残し、
+   * 何が起きたかを機械的に見たい呼び出し側（試験）のためにこちらを足す。
+   */
+  read(): TurnLogReadResult {
+    if (!fs.existsSync(this.file)) return { entries: [], problems: [] };
+    let raw: string;
+    try {
+      raw = fs.readFileSync(this.file, "utf-8");
+    } catch (err) {
+      // 読めなくてもホストは立つ（起動を止めるのは本末転倒）。ただし黙らない（I2）
+      const problem: TurnLogReadProblem = {
+        line: 0,
+        kind: "unreadable",
+        detail: String(err),
+      };
+      this.warn([problem]);
+      return { entries: [], problems: [problem] };
     }
-    return out;
+
+    const entries: TurnLogEntry[] = [];
+    const problems: TurnLogReadProblem[] = [];
+    const lines = raw.split("\n");
+    /**
+     * 末尾に改行が無い＝書き込みの途中でプロセスが殺された疑い（OOM killer）。
+     * `split("\n")` の最後は改行で終わっていれば空文字列になるので、空でなければ千切れ。
+     */
+    const truncatedIndex =
+      lines.length > 0 && lines[lines.length - 1]!.length > 0 ? lines.length - 1 : -1;
+
+    for (const [index, line] of lines.entries()) {
+      if (line.trim().length === 0) continue;
+      const lineNo = index + 1;
+      let entry: TurnLogEntry;
+      try {
+        entry = JSON.parse(line) as TurnLogEntry;
+      } catch (err) {
+        // 途中で死んだ行があっても、残りは読める（I2: 台帳ごと落とさない）
+        problems.push({
+          line: lineNo,
+          kind: index === truncatedIndex ? "truncated" : "unparsable",
+          detail: String(err),
+          preview: preview(line),
+        });
+        continue;
+      }
+      if (index === truncatedIndex) {
+        /**
+         * 読めてはいるが改行が無い＝最後の1バイトだけ落ちた形。中身は揃っているので
+         * 捨てない（1行を惜しんで実データを失わない）が、千切れた疑いは警告に出す。
+         */
+        problems.push({
+          line: lineNo,
+          kind: "no-trailing-newline",
+          detail: "末尾に改行がありません（書き込みの途中で止まった疑い）",
+          preview: preview(line),
+        });
+      }
+      entries.push(entry);
+    }
+
+    if (problems.length > 0) this.warn(problems);
+    return { entries, problems };
+  }
+
+  /** 台帳を読む。壊れた行は飛ばすが、飛ばしたことは警告に出る（1行の破損で台帳全体を失わない）。 */
+  readAll(): TurnLogEntry[] {
+    return this.read().entries;
+  }
+
+  /** 読めなかった行を console.error に出す（既存のログの流儀に合わせる）。 */
+  private warn(problems: readonly TurnLogReadProblem[]): void {
+    // 壊れた行が大量にあるときに console を埋めない。先頭だけ出して残りは件数で示す
+    const shown = problems.slice(0, WARN_LIMIT);
+    for (const p of shown) {
+      const where = p.line > 0 ? `${p.line}行目` : "ファイル全体";
+      console.error(
+        `[banto] ターン台帳の${where}を読めませんでした（${this.file}, ${REASON[p.kind]}）: ` +
+          `${p.detail}${p.preview === undefined ? "" : ` / 行の中身: ${p.preview}`}`
+      );
+    }
+    if (problems.length > shown.length) {
+      console.error(
+        `[banto] ターン台帳の読めない行は他に ${problems.length - shown.length} 行あります（${this.file}）`
+      );
+    }
   }
 }
+
+/** 1回の読みで個別に出す警告の上限。これを超えた分は件数だけ出す。 */
+const WARN_LIMIT = 10;
+
+const REASON: Record<TurnLogReadProblem["kind"], string> = {
+  unparsable: "JSON として読めない行",
+  truncated: "千切れた最終行",
+  "no-trailing-newline": "最終行に改行が無い",
+  unreadable: "ファイルを読めない",
+};
+
+/** 警告に載せる行の抜粋。長い行で console を埋めない。 */
+function preview(line: string): string {
+  return line.length <= PREVIEW_LIMIT ? line : `${line.slice(0, PREVIEW_LIMIT)}…`;
+}
+
+const PREVIEW_LIMIT = 120;
