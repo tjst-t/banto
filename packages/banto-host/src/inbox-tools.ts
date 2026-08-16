@@ -53,6 +53,53 @@ export interface InboxToolOptions {
   }): InboxEffect | undefined;
 }
 
+/** 判断の届け先を読むのに要る欄（`kobo.review` の面がそのまま受け取るもの）。 */
+const PO_DECISION_CANVAS_KIND = "kobo.review";
+const PO_DECISION_PARAM_KEYS = ["projectTag", "taskId"] as const;
+
+/**
+ * 「結べない」を**名指しで**返す（task-0169）。
+ *
+ * 前の断り文は、`canvasKind` が無いのか・別の値なのか・`canvasParams` が無いのか・
+ * `taskId` だけ欠けているのかを区別せず**全部同じ**だった。だから
+ * 「添えているのに添えろと言われる」を3人が別々に踏んで、誰も原因に辿り着けなかった
+ * （実際には引数が空になって届いていた）。**受け取った値をそのまま文言に出す**
+ * ——次に踏んだ人がその場で「送ったはずのものが空で着いている」と気づける。
+ */
+function whyUnbindable(canvasKind: unknown, canvasParams: unknown): string {
+  const forWhat = "——どのタスクの判断かが分からないと、POが押しても工場へ届きません。";
+  if (canvasKind === undefined) {
+    return `canvasKind を添えていません（"${PO_DECISION_CANVAS_KIND}" が要ります）${forWhat}`;
+  }
+  if (canvasKind !== PO_DECISION_CANVAS_KIND) {
+    return (
+      `canvasKind が "${PO_DECISION_CANVAS_KIND}" ではありません` +
+      `（受け取った値: ${JSON.stringify(canvasKind)}）${forWhat}`
+    );
+  }
+  if (canvasParams === undefined) {
+    return `canvasParams を添えていません（{projectTag, taskId} が要ります）${forWhat}`;
+  }
+  if (typeof canvasParams !== "object" || canvasParams === null || Array.isArray(canvasParams)) {
+    return `canvasParams が object ではありません（受け取った値: ${JSON.stringify(canvasParams)}）${forWhat}`;
+  }
+  const params = canvasParams as Record<string, unknown>;
+  const missing = PO_DECISION_PARAM_KEYS.filter(
+    (key) => typeof params[key] !== "string" || (params[key] as string).length === 0
+  );
+  if (missing.length > 0) {
+    return (
+      `${missing.map((key) => `canvasParams.${key}`).join(" / ")} が空です` +
+      `（受け取った canvasParams: ${JSON.stringify(params)}）${forWhat}`
+    );
+  }
+  // 欄は揃っているのに結べない＝結線の側の話。番頭が書き直しても直らないので、そう言う
+  return (
+    `canvasKind / canvasParams は揃っています（受け取った canvasParams: ${JSON.stringify(params)}）が、` +
+    "ホストが判断の届け先を決められませんでした。書き直しでは直りません。"
+  );
+}
+
 export function createInboxTools(
   inbox: Inbox,
   options: InboxToolOptions = {}
@@ -75,7 +122,11 @@ export function createInboxTools(
       blocking: Type.Optional(Type.Number({ description: "止めている後続の数（並びに効く）" })),
       threadId: Type.Optional(Type.String()),
       canvasKind: Type.Optional(Type.String()),
-      canvasParams: Type.Optional(OpenObject()),
+      // 開いた object なので中身は数え上げない（決定84-3）。ただし approveAction を
+      // 結ぶには決まった2つが要るので、そこだけ1行で言う
+      canvasParams: Type.Optional(
+        OpenObject({ description: 'canvasKind: "kobo.review" なら {projectTag, taskId}' })
+      ),
       approveAction: Type.Optional(
         Type.String({
           description:
@@ -128,11 +179,7 @@ export function createInboxTools(
           ...(detail ? { detail } : {}),
         });
         if (!effect) {
-          throw new Error(
-            `${field} を結べません。` +
-              'canvasKind: "kobo.review" と canvasParams: {projectTag, taskId} を添えてください' +
-              "——どのタスクの判断かが札に載っていないと、POが押しても工場へ届きません。"
-          );
+          throw new Error(`${field} を結べません。${whyUnbindable(p.canvasKind, p.canvasParams)}`);
         }
         actions = actions.map((a) => (a.id === target.id ? { ...a, effect } : a));
       };

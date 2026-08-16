@@ -27,6 +27,8 @@ interface JsonSchemaNode {
   anyOf?: JsonSchemaNode[];
   oneOf?: JsonSchemaNode[];
   default?: unknown;
+  /** `true`（または部分スキーマ）なら**中身を数え上げていない開いた object**（`OpenObject()`）。 */
+  additionalProperties?: boolean | JsonSchemaNode;
 }
 
 function describe<T extends z.ZodTypeAny>(schema: T, node: JsonSchemaNode): T {
@@ -72,8 +74,27 @@ export function jsonSchemaToZod(node: JsonSchemaNode | undefined): z.ZodTypeAny 
       return describe(z.null(), node);
     case "array":
       return describe(z.array(jsonSchemaToZod(node.items)), node);
-    case "object":
-      return describe(z.object(jsonSchemaToZodShape(node)), node);
+    case "object": {
+      /**
+       * **開いた object は開いたまま写す**（task-0169）。`OpenObject()` は
+       * `{type:"object", additionalProperties:true}` で `properties` を持たないので、
+       * 素直に `z.object({})` にすると shape が空になり、zod の既定（strip）が
+       * `{projectTag, taskId}` を**黙って `{}` に**して execute へ渡す。
+       * これが「添えているのに『添えてください』と断られる」の正体だった。
+       *
+       * `z.looseObject` を使うのは、SDK が zod から JSON Schema へ戻すときに
+       * `additionalProperties` 1つの**平らな**形になるから（`z.record` は
+       * `propertyNames` の入れ子が増え、`OpenObject()` が避けている形に戻ってしまう。
+       * ADR-0019 決定84-3）。実測: `z.object({})` → `{"properties":{},"type":"object"}`、
+       * `z.looseObject({})` → `{"properties":{},"additionalProperties":{},"type":"object"}`。
+       *
+       * 逆に、中身を数え上げた普通の object は**締まったまま**にする——ここまで開くと
+       * 綴り違いの引数が黙って通る。
+       */
+      const shape = jsonSchemaToZodShape(node);
+      const open = node.additionalProperties !== undefined && node.additionalProperties !== false;
+      return describe(open ? z.looseObject(shape) : z.object(shape), node);
+    }
     default:
       // I2: 知らない形でも引数の口は残す
       return describe(z.unknown(), node);
