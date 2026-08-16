@@ -200,17 +200,44 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
   const prompts = new Map<string, string>(Object.entries(ledger.prompts));
   let running = false;
   let stopped = false;
+  /**
+   * **まだ配っていない滞留の知らせの、いちばん若い id**（task-0217）。
+   *
+   * 滞留は1件ずつではなく束にして配るので（`bundleStalled`）、**ループを抜けた後**に
+   * 配られる。ところが読み位置はループの中で1通ごとに書かれる——そのまま進めると
+   * 「滞留の id を追い越した読み位置」がディスクに残り、束を配る前（`notify` は番頭の
+   * ターンが空くまで返らない）に kill -9 されると、**その滞留の知らせは一度も配られない
+   * まま消える**。落としてよいのは「同じ出来事の2回目以降」だけ（inc-0069）。
+   *
+   * だから束を配り終えて印を付けるまで、**ディスクに書く読み位置をこの手前で止める**
+   * （`worker-notice.ts` の `oldestPending` と同じ考え方）。多く届く方が、消えるよりよい。
+   */
+  let holdBefore: number | undefined;
+
+  /**
+   * 催促の覚えを書く。**書くたびに新しい方へ回す**。
+   *
+   * Map の挿入順は既存 key への `set` では動かない。素直に `set` だけにすると、
+   * よく催促が来ている（＝いちばん抑えたい）タスクほど溢れたときに先に捨てられ、
+   * 抑制が効かなくなる向きに倒れる——だから一度消してから入れ直す。
+   */
+  const rememberPrompt = (key: string, mark: string): void => {
+    prompts.delete(key);
+    prompts.set(key, mark);
+  };
 
   /** 読み位置と印をまとめて書く。**1通配るごとに**呼ぶ。 */
   const persist = (): void => {
-    for (const id of delivered) if (id <= cursor - DELIVERED_WINDOW) delivered.delete(id);
+    // 束を配り終えるまでは、滞留の手前で止める（配っていない知らせを追い越さない）
+    const lastEventId = holdBefore === undefined ? cursor : Math.min(cursor, holdBefore - 1);
+    for (const id of delivered) if (id <= lastEventId - DELIVERED_WINDOW) delivered.delete(id);
     while (prompts.size > PROMPT_WINDOW) {
       const oldest = prompts.keys().next();
       if (oldest.done === true) break;
       prompts.delete(oldest.value);
     }
     writeLedger(options.cursorPath, {
-      lastEventId: cursor,
+      lastEventId,
       delivered: [...delivered],
       prompts: Object.fromEntries(prompts),
     });
@@ -281,6 +308,11 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
       const stalled = events.filter(
         (e) => e.type === "task_stalled" && !delivered.has(e.eventId ?? 0)
       );
+      // **束を配り終えるまで、ディスクの読み位置を滞留の手前で止める。**
+      // ループの中の persist() が滞留の id を追い越して書くと、束を配る前に落ちたとき
+      // その知らせが一度も配られないまま消える（task-0217 の監査指摘）
+      const stalledIds = stalled.map((e) => e.eventId ?? 0).filter((id) => id > 0);
+      holdBefore = stalledIds.length > 0 ? Math.min(...stalledIds) : undefined;
       for (const event of events) {
         cursor = Math.max(cursor, event.eventId ?? 0);
         if (event.type === "task_stalled") continue;
@@ -303,10 +335,12 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
                 `——同じ催促（${kind}・event #${eventId}）は配りません`
             );
             delivered.add(eventId);
+            // 抑えたこと自体も「新しく使った」——溢れたときに先に捨てられないよう回す
+            rememberPrompt(key, mark);
             persist();
             continue;
           }
-          prompts.set(key, mark);
+          rememberPrompt(key, mark);
         } else {
           // 札が下りた（または端から立っていない）なら覚えを捨てる。次は必ず配る
           prompts.delete(key);
@@ -325,12 +359,20 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
       for (const bundle of bundleStalled(stalled, origins)) {
         await deliver(bundle);
       }
+      // 配り終えた。ここで初めて印を付け、止めていた読み位置を解く
       for (const event of stalled) delivered.add(event.eventId ?? 0);
+      holdBefore = undefined;
       persist();
     } catch (err) {
       // I2: 引けなかったことを黙って握らない。写しを進めないので次の tick で取り直す
       log(`[banto] 工場の知らせを引けませんでした: ${String(err)}`);
     } finally {
+      if (holdBefore !== undefined) {
+        // 束を配らずに抜けた（途中で落ちた）。次の tick で拾い直せるよう読み位置も戻す
+        // ——配り終えた分には印があるので、戻しても二度は配られない
+        cursor = Math.min(cursor, holdBefore - 1);
+        holdBefore = undefined;
+      }
       running = false;
     }
   };

@@ -199,6 +199,98 @@ describe("[a2] 配達済みの印は、起こし直しをまたいで残る", ()
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  /**
+   * **印を付ける向きを間違えると、今度は知らせが消える。**
+   *
+   * 滞留（`task_stalled`）は1件ずつではなく束にして配るので、配られるのは
+   * ループを抜けた後。ところが読み位置はループの中で1通ごとに書かれる——
+   * そのまま進めると「滞留の id を追い越した読み位置」が先にディスクへ残り、
+   * 束を配る前（`notify` は番頭のターンが空くまで返らない）に kill -9 されると、
+   * **その滞留の知らせは一度も配られないまま消える**。
+   * 落としてよいのは「同じ出来事の2回目以降」だけである（inc-0069）。
+   */
+  it("束を配っている最中に落とされても、起こし直しで滞留の知らせは届く", async () => {
+    const dir = tmpDir();
+    const cursorPath = path.join(dir, "cursor.json");
+    const stalledEvent = (eventId: number): Record<string, unknown> => ({
+      eventId,
+      type: "task_stalled",
+      timestamp: new Date(0).toISOString(),
+      projectTag: "banto",
+      taskId: "task-0042",
+      status: "failed",
+      dwellMs: 3_600_000,
+      thresholdMs: 1_800_000,
+    });
+    try {
+      const delivered: string[] = [];
+      let hanging = false;
+      const tools = [
+        {
+          name: "kobo.events",
+          async execute() {
+            return {
+              content: [],
+              details: {
+                events: [stalledEvent(1), failed(2, ECONNRESET)],
+                origins: { "banto/task-0042": threadOrigin("th-1") },
+              },
+            };
+          },
+        },
+        {
+          name: "kobo.task",
+          async execute() {
+            return {
+              content: [],
+              details: { task: { status: "failed" }, reviewStage: "banto" },
+            };
+          },
+        },
+      ] as unknown as NamespacedToolDefinition[];
+
+      const stop = startKoboNotices({
+        tools,
+        async notify(message) {
+          if (/止まっています/.test(message)) {
+            // 番頭のターンが空かないまま落とされる（＝ kill -9 の窓）
+            hanging = true;
+            await new Promise<void>(() => undefined);
+            return;
+          }
+          delivered.push(message);
+        },
+        cursorPath,
+        intervalMs: 10_000,
+        log: () => undefined,
+      });
+      const deadline = Date.now() + 5000;
+      while (!hanging && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+      stop();
+      assert.ok(hanging, "滞留の束を配るところまで進まなかった（試験の前提が崩れている）");
+      assert.equal(delivered.length, 1, "落ちた知らせが配られていない");
+
+      const ledger = JSON.parse(fs.readFileSync(cursorPath, "utf-8")) as {
+        lastEventId: number;
+        delivered: number[];
+      };
+      assert.ok(
+        ledger.lastEventId < 1,
+        `まだ配っていない滞留 #1 を読み位置が追い越した（lastEventId=${ledger.lastEventId}）`
+      );
+      assert.ok(!ledger.delivered.includes(1), "配っていない滞留に配達済みの印が付いた");
+
+      // 起こし直し：滞留は届き、配り終えていた分は再送されない
+      const again = await runKobo(cursorPath, {
+        events: [stalledEvent(1), failed(2, ECONNRESET)],
+      });
+      assert.equal(again.delivered.length, 1, "滞留が消えた、または配り終えた分が再送された");
+      assert.match(again.delivered[0]!, /止まっています/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("[a3] 新しい出来事は必ず配る（抑制が新着を食わない）", () => {
