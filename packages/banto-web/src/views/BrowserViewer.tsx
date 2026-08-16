@@ -43,8 +43,39 @@ function viewerWsUrl(endpoint: string): string {
   return base.toString();
 }
 
+/** 面の中の座標と、いま映している大きさ。実座標への変換はホスト側の純関数がやる。 */
+interface PointerPayload {
+  x: number;
+  y: number;
+  view: { width: number; height: number };
+}
+
+/**
+ * ホストが受け取る操作の形（`packages/banto-host/src/browser/viewer-protocol.ts` の
+ * `ViewerInput` の写し）。banto-web からホストのパッケージは引けないので写しだが、
+ * ここを union で置いておけば、面が送る言葉の綴り違い・欠けは型検査で落ちる
+ * ——`Record<string, unknown>` のままだと何を送っても通ってしまう。
+ */
+type ViewerCommand =
+  | (PointerPayload & {
+      type: "click";
+      button?: "left" | "middle" | "right";
+      clickCount?: number;
+      modifiers?: number;
+    })
+  | (PointerPayload & { type: "wheel"; deltaX?: number; deltaY?: number; modifiers?: number })
+  | { type: "text"; text: string }
+  | {
+      type: "key";
+      key: string;
+      code?: string;
+      text?: string;
+      windowsVirtualKeyCode?: number;
+      modifiers?: number;
+    };
+
 /** 面の中の座標。画像の実際の表示サイズも一緒に送る（実座標への変換はホスト側）。 */
-function pointerPayload(event: { clientX: number; clientY: number }, img: HTMLImageElement) {
+function pointerPayload(event: { clientX: number; clientY: number }, img: HTMLImageElement): PointerPayload {
   const rect = img.getBoundingClientRect();
   return {
     x: event.clientX - rect.left,
@@ -106,7 +137,7 @@ export function BrowserViewer({ endpoint }: CanvasViewProps): React.ReactElement
     };
   }, [status?.state, wsUrl, refresh]);
 
-  const send = useCallback((message: Record<string, unknown>): void => {
+  const send = useCallback((message: ViewerCommand): void => {
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify(message));
