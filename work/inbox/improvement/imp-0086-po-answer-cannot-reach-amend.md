@@ -1,5 +1,5 @@
 ---
-id: imp-0070
+id: imp-0086
 title: PO が取次で「緩めてよい」と答えても、その答えが kobo.amend へ届く口が無い
 status: open
 severity: P2
