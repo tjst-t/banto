@@ -40,7 +40,12 @@ import {
 } from "./protocol.js";
 import { openUtsuwa } from "./canvas-utsuwa.js";
 import { fromWireToolName } from "@banto/core";
-import type { Thread, ThreadRegistry, ThreadSpec } from "./threads.js";
+import type {
+  NoticeReopenOutcome,
+  Thread,
+  ThreadRegistry,
+  ThreadSpec,
+} from "./threads.js";
 import { workspaceRoot } from "./workspace.js";
 import { TurnLog } from "./turn-log.js";
 
@@ -1047,14 +1052,19 @@ export class BantoHostServer {
         // imp-0052: 知らせも、畳んでいる最中は待つ。これから捨てるセッションへ渡すと
         // 番頭が答えかけたところで切られる（PO の発話と同じ壊れ方）。画面には出さない
         await this.holdWhileClosingChapter(thread, false);
-        // T2: 畳んだ宛先へ遅れて届いた知らせは、宛先を開き直してから配る
-        this.reopenClosedTarget(thread);
+        // T2: 畳んだ宛先へ遅れて届いた知らせは、宛先を開き直してから配る。
+        // 開き直したときだけ、機構からの一文が知らせの前に付く（task-0227）
+        // ——文面も、畳み直すかどうかの判断も帳簿の側（D5：ここは繋ぐだけ）
+        const reopened = this.reopenClosedTarget(thread, { source: source ?? "system", text });
         record(thread);
         // 職人の報告でも番頭は喋り出す。ここを知らせないと画面から中断する手段が消える
         turnStartedAt = Date.now(); // T1: 開始時刻は turn_start の直前（実測の起点）
         this.broadcast({ type: "turn_start", threadId: thread.id });
         try {
-          await this.promptEvenWhileBusy(thread, text);
+          await this.promptEvenWhileBusy(
+            thread,
+            reopened?.context ? `${reopened.context}\n\n${text}` : text
+          );
         } catch (err) {
           // I2: 知らせが番頭に届かなかったことを黙らせない
           thread.record({ role: "error", text: String(err) });
@@ -1079,6 +1089,15 @@ export class BantoHostServer {
         }
         logTurn(false, String(err));
         this.broadcast({ type: "turn_end", threadId: thread.id, errorMessage: String(err) });
+      } finally {
+        /**
+         * **ターンの終わりは、ここしか知らない**（task-0227）。知らせで開き直した枝を
+         * 畳み直す合図をここで1回出す——枝が「畳んでください」と自分で言うのを待たない。
+         *
+         * `finally` に置くのは、転んだターンでも枝を開いたまま残さないため。
+         * 判断（畳み直すのか・枝が自分で `merge` したのか）は帳簿の側にある。
+         */
+        this.closeAfterNoticeTurn(thread);
       }
     });
     return thread.notices;
@@ -1099,23 +1118,42 @@ export class BantoHostServer {
    * 開き直したことは会話の1行と `thread.list`（開いている側に出る）に残る。
    * **既に開いていれば何もしない**ので、同じ枝への2件目以降で印が積み上がらない。
    *
+   * **開いたままにはしない**（task-0227）。開き直した枝は、そのターンが終わったら
+   * `closeAfterNoticeTurn` が畳み直す——枝は自分が開き直されたことを知らないので、
+   * 「捌いたら `thread.merge` で還してください」と書いても誰も還さなかった。
+   * 判断と文面は `ThreadRegistry.reopenForNotice` / `closeAfterNotice` の側にある（D5）。
+   *
    * **畳んだ幹も同じ扱いにする。** 幹は「終えたプロジェクト」なので躊躇はあるが、
    * 幹には還す親が無く、ほかへ逃がせば必ず**別の幹（帳場）のターンが回る**
    * ——それは今回塞ぎたいものそのものである。だから宛先本人を開き直し、
    * **印の文言だけ分けて**「終えた幹が動き出した」と読めるようにする。畳み直すのは
    * `thread.close_trunk` で、いつでもできる。
    */
-  private reopenClosedTarget(thread: Thread): void {
-    if (thread.state !== "closed") return;
-    this.threads.reopen(thread.id);
-    const note =
-      thread.kind === "trunk"
-        ? "終えた幹に知らせが届いたので開き直しました。" +
-          "捌いたら `thread.close_trunk` で畳み直してください（T2）"
-        : "畳んだ枝に知らせが届いたので開き直しました。" +
-          "捌いたら `thread.merge` で還してください（T2）";
-    thread.record({ role: "notice", source: "system", text: note });
-    this.broadcast({ type: "notice", threadId: thread.id, source: "system", text: note });
+  private reopenClosedTarget(
+    thread: Thread,
+    notice?: { source: string; text: string }
+  ): NoticeReopenOutcome | undefined {
+    const reopened = this.threads.reopenForNotice(thread.id, notice);
+    if (!reopened) return undefined;
+    this.broadcast({ type: "notice", threadId: thread.id, source: "system", text: reopened.note });
+    return reopened;
+  }
+
+  /**
+   * **知らせで開き直した枝を、ターンの後に畳み直す**（task-0227）。ここは繋ぎだけ
+   * ——畳み直すかどうか・何を残すかは `ThreadRegistry.closeAfterNotice` が決める（D5）。
+   *
+   * I2 の但し書き：畳み直しは後始末なので、ここで転んでもターンは壊さない
+   * （転んだことはログに残す。黙って畳んだことにはしない）。
+   */
+  private closeAfterNoticeTurn(thread: Thread): void {
+    try {
+      const closed = this.threads.closeAfterNotice(thread.id);
+      if (!closed) return;
+      this.broadcast({ type: "notice", threadId: thread.id, source: "system", text: closed.note });
+    } catch (err) {
+      console.error(`[banto] ${thread.id} を畳み直せませんでした: ${String(err)}`);
+    }
   }
 
   /**

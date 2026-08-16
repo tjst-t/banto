@@ -352,6 +352,22 @@ export class Thread {
   lastActivityAt: string = new Date().toISOString();
   closedAt: string | undefined;
   /**
+   * **知らせで一時的に開き直されている印**（task-0227）。
+   *
+   * 畳んだ枝へ知らせが届くと、その枝は開き直ってターンを1本回す（T2）。**畳み直す口を
+   * 叩く者が居ない**のがこれまでの穴だった——枝に渡るのは畳んだときまでの記録なので、
+   * 枝は「私はもう畳んだ枝だ」と思ったまま返事をし、`thread.merge` を呼ばない。
+   * 結果、畳んだはずの枝が一覧に開いたまま残り続ける（PO 実観測 2026-08-16）。
+   *
+   * だから**枝の自己申告に頼らない**：機構が印を立て、ターンが終わったら
+   * `closeAfterNotice` で畳み直す。印には**畳んであったときの時刻**を控えておく
+   * ——畳み直しで `closedAt` が振り直されると、いつ片付いた枝なのかが読めなくなる。
+   *
+   * **保存しない**（`persistIndex` に出さない）。これはターン1本の間だけ立つ印で、
+   * 再起動をまたいで残ると「誰も回していないのに畳み直しを待っている枝」になる。
+   */
+  noticeReopen: NoticeReopen | undefined;
+  /**
    * 会話を回しているハーネス。**差し替えられる**（ADR-0020 決定88・PO要望 2026-08-13）
    * ——モデルを会話の途中で変えられるのと同じく、バックエンドも変えられる。
    * 差し替えは `replaceHarness` を通すこと（購読を張り直す必要があるため）。
@@ -703,6 +719,68 @@ export interface InboxPoster {
 export interface MergeOutcome {
   thread: Thread;
   handoffToDeliver?: string;
+}
+
+/**
+ * **知らせで一時的に開き直した印の中身**（task-0227）。`Thread.noticeReopen` に立つ。
+ *
+ * 控えるのは「何の知らせで開いたか」と「畳んであったときの時刻」だけ。結論・詳細・
+ * 未処理は**触らない**ので控える必要が無い（畳み直しでも元のまま残る＝上書きしない）。
+ */
+export interface NoticeReopen {
+  /** 知らせの出所（`worker` / `kobo` / `env` / `system` / `nudge` …）。 */
+  readonly source: string;
+  /** 知らせの本文。枝の文脈に「何で起こされたか」を出すのに使う。 */
+  readonly text: string;
+  /** 畳んであったときの時刻。畳み直しでここへ戻す。 */
+  readonly closedAt: string | undefined;
+  /** 開き直した時刻。 */
+  readonly at: string;
+}
+
+/**
+ * `reopenForNotice` の返り。**判断はここ（帳簿）で済ませ、呼び出し側は繋ぐだけ**（D5）。
+ *
+ * - `note`: 会話に積む system の印（記録は帳簿が済ませてある。配信だけ呼び出し側）
+ * - `context`: 番頭へ渡す一文。**畳み直しを機構が引き受けると明示する**——付くのは
+ *   自動で畳み直す枝のときだけ（幹には付かない）
+ */
+export interface NoticeReopenOutcome {
+  thread: Thread;
+  note: string;
+  context: string | undefined;
+}
+
+/** `closeAfterNotice` の返り。畳み直した枝と、会話へ積んだ印。 */
+export interface NoticeCloseOutcome {
+  thread: Thread;
+  note: string;
+}
+
+/** 知らせの出所を、番頭に読める言葉へ。知らない出所はそのまま出す（I2: 黙って潰さない）。 */
+function noticeSourceLabel(source: string): string {
+  switch (source) {
+    case "worker":
+      return "職人";
+    case "kobo":
+      return "工房";
+    case "env":
+      return "検証環境";
+    case "system":
+      return "機構";
+    case "nudge":
+      return "幹からの声かけ";
+    case "po":
+      return "PO";
+    default:
+      return source;
+  }
+}
+
+/** 知らせの本文を、文脈の1行に収まる長さへ。 */
+function noticeDigest(text: string): string {
+  const line = text.replace(/\s+/gu, " ").trim();
+  return line.length > 60 ? `${line.slice(0, 60)}…` : line;
 }
 
 /**
@@ -1324,6 +1402,12 @@ export class ThreadRegistry {
       thread.settledAt = undefined;
       thread.settledWhere = undefined;
     }
+    /**
+     * **枝が自分で畳んだなら、枝の結論が勝つ**（task-0227）。知らせで一時的に開き直した
+     * 印はここで降ろす——降ろさないと、ターンの終わりに機構がもう一度畳み直しに来て、
+     * 畳み直しが二重に走る（印が1行余計に積まれ、`closedAt` も元へ巻き戻る）。
+     */
+    thread.noticeReopen = undefined;
     thread.state = "closed";
     thread.closedAt = now.toISOString();
     /**
@@ -1642,6 +1726,12 @@ export class ThreadRegistry {
   reopen(threadId: string): Thread {
     const thread = this.threads.get(threadId);
     if (!thread) throw this.unknownThread(threadId);
+    /**
+     * **人が開き直したなら、それは一時的ではない**（task-0227）。機構の印を降ろす
+     * ——降ろさないと、たまたま回っていた知らせのターンの終わりに、開けたばかりの枝が
+     * 機構の手で畳み直される。
+     */
+    thread.noticeReopen = undefined;
     thread.state = "open";
     thread.closedAt = undefined;
     thread.lastActivityAt = new Date().toISOString();
@@ -1649,6 +1739,125 @@ export class ThreadRegistry {
     this.persistIndex(thread);
     this.emit();
     return thread;
+  }
+
+  /**
+   * **畳んだ宛先へ知らせが届いたときの開き直し**（T2 → task-0227）。
+   *
+   * 開き直すこと自体は前からの仕組みで、**知らせを捨てないための土台**である（inc-0069）
+   * ——変えない。足りていなかったのは**その先**：開き直した枝に渡るのは畳んだときまでの
+   * 記録だけなので、枝は「私はもう畳んだ枝だ」と思ったまま返事をし、`thread.merge` を
+   * 呼ばない。畳む口を叩く者が誰も居らず、**畳んだはずの枝が一覧に開いたまま残る**。
+   *
+   * だから**枝の自己申告に頼らない**。ここで
+   *
+   * 1. 開き直し、**印（`noticeReopen`）を立てる**——ターンの終わりに `closeAfterNotice`
+   *    が畳み直す。判断もデータも帳簿の側に置く（D5）
+   * 2. 会話に積む system の印（`note`）と、**番頭へ渡す一文**（`context`）を返す。
+   *    「あなたは〈何の知らせ〉で一時的に開き直された。用が済んでいれば何もしなくてよい」
+   *    を**機構が明示する**——これが無いと枝は自分の状況を知りようがない
+   *
+   * **幹は畳み直さない**（`context` も付けない）。幹には還す親が無く、開いている枝は
+   * 開いている幹にぶら下がっているという決定77 の前提もある——機構が勝手に畳むと、
+   * レールにも幹の面にも出ない枝ができる。終えた幹は `thread.close_trunk` で畳み直す
+   * （印の文言でそう伝える。ここは今までどおり）。
+   *
+   * **既に開いていれば何もしない**（`undefined` を返す）ので、同じ枝への2件目以降で
+   * 印が積み上がらないし、開いている枝が知らせのたびに畳まれることもない。
+   *
+   * @param notice 何の知らせで開き直すか。`undefined` なら開き直すだけで印は立てない
+   *   （幹の下に用件の枝を立てるための開き直しなど、**その枝でターンが回らない**経路）
+   */
+  reopenForNotice(
+    threadId: string,
+    notice?: { source: string; text: string },
+    now: Date = new Date()
+  ): NoticeReopenOutcome | undefined {
+    const thread = this.threads.get(threadId);
+    if (!thread) throw this.unknownThread(threadId);
+    if (thread.state !== "closed") return undefined;
+    const closedAt = thread.closedAt;
+    const note =
+      thread.kind === "trunk"
+        ? "終えた幹に知らせが届いたので開き直しました。" +
+          "捌いたら `thread.close_trunk` で畳み直してください（T2）"
+        : "畳んだ枝に知らせが届いたので開き直しました。" +
+          "捌いたら `thread.merge` で還してください（T2）";
+    this.reopen(threadId); // 印を立てるのはこの後（`reopen` は印を降ろす）
+    const autoClose = thread.kind === "branch" && notice !== undefined;
+    if (autoClose && notice) {
+      thread.noticeReopen = {
+        source: notice.source,
+        text: notice.text,
+        closedAt,
+        at: now.toISOString(),
+      };
+    }
+    thread.record({ role: "notice", source: "system", text: note });
+    return {
+      thread,
+      note,
+      context: autoClose && notice ? this.noticeReopenContext(thread, notice) : undefined,
+    };
+  }
+
+  /**
+   * 開き直した枝へ**機構から渡す一文**（task-0227）。知らせの本文の前に付く。
+   *
+   * 言いたいことは3つだけ：**畳んである枝であること**・**何で起こされたか**・
+   * **用が済んでいれば何もしなくてよい（機構が畳み直す）**。長く書かない——ここは
+   * 知らせ本体の前置きで、番頭が読むべきは知らせのほうである。
+   */
+  private noticeReopenContext(thread: Thread, notice: { source: string; text: string }): string {
+    const conclusion = thread.conclusion ? `「${thread.conclusion}」` : "（結論の記録なし）";
+    return [
+      `［機構より］この枝は結論${conclusion}で畳んであります。` +
+        `いま届いた${noticeSourceLabel(notice.source)}の知らせ（${noticeDigest(notice.text)}）で` +
+        `一時的に開き直しました。`,
+      "用が済んでいれば何もしなくて構いません——このターンが終わったら機構が自動で畳み直します" +
+        "（結論・調べたこと・決めたこと・残ったことはそのまま残ります）。" +
+        "**結論そのものを書き換えるときだけ** `thread.merge` を呼んでください。",
+    ].join("\n");
+  }
+
+  /**
+   * **知らせで開き直した枝を、ターンの後に畳み直す**（task-0227）。
+   *
+   * 印（`noticeReopen`）が立っている枝だけが対象。**枝が自分で `thread.merge` を
+   * 呼んでいたら何もしない**——印は `merge` が降ろしているので、ここへ来た時点で
+   * `undefined` になっている＝畳み直しが二重に走らない（枝の結論が勝つ）。
+   *
+   * 畳み直しで**触るのは状態と時刻だけ**。結論・詳細（調べたこと／決めたこと／
+   * 残ったこと）・未処理の件数と所在は**そのまま残す**——ここを書き換えると、
+   * 知らせが1通届いただけで枝の結論が痩せる。`closedAt` は**畳んであったときの値へ戻す**：
+   * 振り直すと、いつ片付いた枝なのかが知らせのたびにずれていく。
+   *
+   * **幹へ結論の行は積み直さない**（幹は追記のみ・D3）。積むと、知らせが届くたびに
+   * 同じ結論が幹の帯に並ぶ。還す1行は最初に畳んだときのものが既に在る。
+   *
+   * 開き直したターンの中で枝が `thread.consult` した／職人を起こしたときも、
+   * **その所在は消えない**——札も帳簿も触らないので、続きの知らせが来ればこの枝が
+   * また開き直って受け取る（用件の鍵は残っている）。
+   */
+  closeAfterNotice(threadId: string, now: Date = new Date()): NoticeCloseOutcome | undefined {
+    const thread = this.threads.get(threadId);
+    if (!thread) return undefined; // 畳み直しは後始末。宛先が消えていても転ばせない
+    const mark = thread.noticeReopen;
+    if (!mark) return undefined;
+    thread.noticeReopen = undefined;
+    // 枝が自分で畳んだ（`merge` が印を降ろしている）／人が開き直した後——機構は入らない
+    if (thread.state !== "open") return undefined;
+    thread.state = "closed";
+    thread.closedAt = mark.closedAt ?? now.toISOString();
+    const note =
+      `知らせを捌いたので畳み直しました（${noticeSourceLabel(mark.source)}の知らせ・T2）。` +
+      "結論はそのままです。続きが要るときは、また知らせが届けば開き直ります";
+    thread.record({ role: "notice", source: "system", text: note });
+    // 畳むときは間引かず今すぐ書く（畳んだ直後に落ちても会話が残るように・`merge` と同じ）
+    this.flush(thread);
+    this.refreshDefault();
+    this.emit();
+    return { thread, note };
   }
 
   /**
