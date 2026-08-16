@@ -105,14 +105,28 @@ export interface ModuleClient {
    * 別のモジュールの Tool を呼ぶ。呼び出しは当事者間で直接行われ、Banto を経由しない。
    * @param moduleName レジストリに登録されたモジュール名
    * @param toolName   論理Tool名（例 `file.list`）
+   * @param options    `idempotent: true` を渡すと、送信後に起きた失敗
+   *        （ECONNRESET・socket hang up）も再試行の対象になる（既定は off）。
+   *        既定の呼び出しは何も書かなくてよい——書き方を変えずに動く（task-0235 a5）。
    */
   invoke(
     moduleName: string,
     toolName: string,
-    args?: Record<string, unknown>
+    args?: Record<string, unknown>,
+    options?: ModuleInvokeOptions
   ): Promise<ModuleToolResult>;
   /** そのモジュールの到達先（診断用）。 */
   endpointOf(moduleName: string): string;
+}
+
+/** `ModuleClient.invoke` の呼び出しごとのオプション（task-0235）。 */
+export interface ModuleInvokeOptions {
+  /**
+   * この呼び出しが冪等（同じ操作を二重に走らせても安全）だと呼び出し側が知っているとき
+   * だけ `true` にする。既定は `false`——職人を起こす（spawn）ような呼び出しがここに
+   * 乗っているため、既定で二重発火を許すわけにいかない。
+   */
+  idempotent?: boolean;
 }
 
 /**
@@ -183,6 +197,80 @@ export function longCallFetch(idleTimeoutMs = 65 * 60_000): ModuleFetch {
     });
 }
 
+// ── 接続段だけの短い再試行（task-0235）───────────────────────────────────────
+//
+// 2026-08-16、worker-pool の OOM 再起動の最中に呼び出しが接続段で失敗し、タスクが
+// 中身と無関係に failed になった（実測：failed の24〜47秒前に worker-pool の OOM）。
+// 数十秒後には同じ操作が通っている——一瞬の途切れを、一度きりの例外で終わらせない。
+//
+// **再試行してよいのは「要求が相手に届いていないと言い切れる」失敗だけ。**
+//   - ECONNREFUSED / ENOTFOUND / EAI_AGAIN：接続確立そのものの失敗。相手は何も
+//     受け取っていないので、再試行しても二重には走らない。既定で再試行する。
+//   - ECONNRESET / socket hang up：**送ったあとにも起きる。** 相手が処理を始めて
+//     から切れた場合、再試行すると同じ操作（職人を起こす spawn など、冪等でない
+//     ものが乗る）が二度走りかねない。既定では再試行せず、呼び出し側が
+//     `idempotent: true` を渡したときだけ対象にする（オプトイン、既定 off）。
+//   - それ以外（ツール側のエラー応答・非2xx）は再試行の対象にしない——ここで
+//     見るのは「相手に届いたかどうか」だけで、届いた先の結果は関知しない。
+
+/** 接続確立段の失敗（相手に何も届いていないと言い切れる）。 */
+const CONNECT_FAILURE_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
+
+function errorCode(err: unknown): string | undefined {
+  return typeof err === "object" && err !== null && "code" in err
+    ? String((err as { code: unknown }).code)
+    : undefined;
+}
+
+function isPostSendFailure(err: unknown): boolean {
+  const code = errorCode(err);
+  if (code === "ECONNRESET") return true;
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes("socket hang up");
+}
+
+/** 再試行してよい失敗なら理由を、してはいけない失敗なら `undefined` を返す。 */
+function classifyRetryableFailure(err: unknown, idempotent: boolean): "connect" | "post-send" | undefined {
+  const code = errorCode(err);
+  if (code !== undefined && CONNECT_FAILURE_CODES.has(code)) return "connect";
+  if (isPostSendFailure(err)) return idempotent ? "post-send" : undefined;
+  return undefined;
+}
+
+/**
+ * 接続段の再試行の最大回数（初回は含まない）。既定3回。
+ *
+ * 根拠：観測した OOM 再起動からの復帰は24〜47秒後（task-0235実測）だが、ここでの
+ * 再試行は「一瞬の途切れ」だけを拾う短い保険に留める——長い停止まで呼び出し元を
+ * ブロックし続けるのは筋が違う（タスクの再実行など、上位の回復に任せる）。
+ * `BANTO_MODULE_CONNECT_RETRY_ATTEMPTS` で変えられる。
+ */
+function connectRetryMaxAttempts(): number {
+  const raw = process.env["BANTO_MODULE_CONNECT_RETRY_ATTEMPTS"];
+  if (raw === undefined) return 3;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : 3;
+}
+
+/**
+ * 再試行の間隔（ms）。既定 [100, 300, 900]（指数的に後退、合計待ち1.3秒）——
+ * a3「合計の待ちが数秒を超えない」の根拠。再試行回数が配列の長さを超えたら、
+ * 最後の値を繰り返す。`BANTO_MODULE_CONNECT_RETRY_DELAYS_MS`（カンマ区切り）で変えられる。
+ */
+function connectRetryDelaysMs(): number[] {
+  const raw = process.env["BANTO_MODULE_CONNECT_RETRY_DELAYS_MS"];
+  if (!raw) return [100, 300, 900];
+  const parsed = raw
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isFinite(n) && n >= 0);
+  return parsed.length > 0 ? parsed : [100, 300, 900];
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * モジュール間呼び出しのクライアント。
  *
@@ -197,20 +285,49 @@ export function createModuleClient(
   return {
     endpointOf: (moduleName) => resolveModuleEndpoint(config, moduleName),
 
-    async invoke(moduleName, toolName, args = {}) {
+    async invoke(moduleName, toolName, args = {}, options = {}) {
       const baseUrl = resolveModuleEndpoint(config, moduleName);
       const url = `${baseUrl.replace(/\/$/, "")}${MODULE_TOOL_PATH}${encodeURIComponent(toolName)}`;
+      const idempotent = options.idempotent ?? false;
+      const maxRetries = connectRetryMaxAttempts();
+      const delays = connectRetryDelaysMs();
 
       let response: Awaited<ReturnType<ModuleFetch>>;
-      try {
-        response = await fetchImpl(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ args } satisfies ModuleToolRequest),
-        });
-      } catch (err) {
-        // I2: 到達できない相手を「結果なし」と混同しない
-        throw new Error(`Failed to reach module "${moduleName}" at ${url}: ${String(err)}`);
+      let attempt = 0;
+      for (;;) {
+        try {
+          response = await fetchImpl(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ args } satisfies ModuleToolRequest),
+          });
+          if (attempt > 0) {
+            // task-0235 a4: 再試行が起きたことを記録に残す（何回目で通ったか）
+            console.warn(
+              `[banto] module "${moduleName}" への接続が${attempt}回の再試行の後に成功しました`
+            );
+          }
+          break;
+        } catch (err) {
+          const kind = classifyRetryableFailure(err, idempotent);
+          if (kind === undefined || attempt >= maxRetries) {
+            if (attempt > 0) {
+              // task-0235 a4: 何回試して駄目だったかを記録に残す
+              console.warn(
+                `[banto] module "${moduleName}" への接続を${attempt}回再試行しましたが失敗しました: ${String(err)}`
+              );
+            }
+            // I2: 到達できない相手を「結果なし」と混同しない
+            throw new Error(`Failed to reach module "${moduleName}" at ${url}: ${String(err)}`);
+          }
+          const delay = delays[Math.min(attempt, delays.length - 1)] as number;
+          console.warn(
+            `[banto] module "${moduleName}" への接続に失敗（${kind}、${attempt + 1}回目）。` +
+              `${delay}ms後に再試行します: ${String(err)}`
+          );
+          await sleep(delay);
+          attempt += 1;
+        }
       }
 
       if (!response.ok) {
