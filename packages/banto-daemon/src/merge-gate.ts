@@ -309,6 +309,61 @@ async function runVerifyInEnv(opts: {
   return { exitCode: result.exit, logDirPath, stretchedTo };
 }
 
+/**
+ * **同じ検証コマンドを持つ受け入れ条件を束ねる**（task-0219）。
+ *
+ * 同じコミット・同じ環境で同じコマンドを12回回しても、返ってくる答えは12回とも同じ
+ * ——費用だけ12倍で、得られる情報は1倍。task-0165 は全量 `npm test` を12本ぶん回そうとして
+ * 検証環境の寿命（45分）を越え、3周まわして一度も判定に到達しなかった。
+ *
+ * 束ねる鍵は**コマンド文字列の完全一致**。正規化して「意味が同じもの」まで畳もうとしない
+ * ——取り違えのほうが害が大きい。並びは**最初に現れた条件の順**（走らせる順を変えない）。
+ */
+function groupAcceptanceByCommand(
+  withCommands: Array<{ id: string; verify?: string }>
+): Map<string, string[]> {
+  const groups = new Map<string, string[]>();
+  for (const ac of withCommands) {
+    const command = ac.verify!;
+    const acIds = groups.get(command);
+    if (acIds) acIds.push(ac.id);
+    else groups.set(command, [ac.id]);
+  }
+  return groups;
+}
+
+/**
+ * 束ねた側（2本目以降）の受け入れ条件にも、**自分の名前の置き場**を残す（task-0219）。
+ *
+ * 結果を配るだけだと `gate-logs/<taskId>/` に先頭の条件のディレクトリしか無く、証拠に
+ * 並んだ acId から辿ろうとした人が「この条件の検証ログが無い」と読む。中身は共有した実行を
+ * 指す1行——**どの実行をもって通した（落とした）のか**が後から辿れることだけが要る。
+ */
+function writeSharedRunPointer(opts: {
+  logBaseDir: string;
+  acId: string;
+  sharedWith: string;
+  logDirPath: string;
+}): void {
+  const safeDirName = opts.acId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const dirPath = path.join(opts.logBaseDir, safeDirName);
+  try {
+    fs.mkdirSync(dirPath, { recursive: true });
+    fs.writeFileSync(
+      path.join(dirPath, "shared-run.txt"),
+      `[banto-gate] ${opts.sharedWith} と同じ検証コマンドのため、1回にまとめて走らせました。\n` +
+        `この条件の検証ログ: ${opts.logDirPath}\n`,
+      "utf-8"
+    );
+  } catch (err) {
+    // I2: 目印を残せなかったことは黙らせない。ただし**判定そのものは既に出ている**
+    // ——ここで throw して検証全体を落とすほうが害が大きい
+    process.stderr.write(
+      `[banto-gate] ${opts.acId}: 束ねた実行への目印を書けませんでした: ${String(err)}\n`
+    );
+  }
+}
+
 // ── 受け入れ条件の検証（共有）─────────────────────────────────────────────────
 
 /** 検証環境の中で走った受け入れ条件1本の結果。 */
@@ -363,6 +418,10 @@ export interface AcceptanceVerifyOptions {
  *
  * **立てるのは1回**。受け入れ条件ごとに立て直すと、テスト一式を何度も用意することになる。
  * 畳むのは finally——途中で落ちても畳む（I3）。
+ *
+ * **走らせるのも、コマンドが同じなら1回**（task-0219）。詳しくは `groupAcceptanceByCommand`。
+ * 畳むのは実行の回数だけで、`runs` には acId が全件並ぶ——条件ごとの合否が欠けると、
+ * 後から「何をもって通した（落とした）のか」を条件の単位で言えなくなる。
  */
 export async function runAcceptanceVerify(
   opts: AcceptanceVerifyOptions
@@ -418,24 +477,31 @@ export async function runAcceptanceVerify(
   }
 
   try {
-    for (const ac of withCommands) {
+    // 走らせるのは**コマンドごとに1回**（task-0219）。結果は同じコマンドを持つ全条件へ配る。
+    // 畳むのは走らせる回数だけで、`runs` には従来どおり acId が全件並ぶ
+    for (const [command, acIds] of groupAcceptanceByCommand(withCommands)) {
       const outcome = await runVerifyInEnv({
         runner,
         envId,
-        acId: ac.id,
-        command: ac.verify!,
+        acId: acIds[0]!,
+        command,
         logBaseDir,
         timeoutMs,
         maxTimeoutMs,
         taskId,
       });
       if (outcome.stretchedTo > 0) stretchedTo = Math.max(stretchedTo, outcome.stretchedTo);
-      runs.push({
-        acId: ac.id,
-        command: ac.verify!,
-        exitCode: outcome.exitCode,
-        logDirPath: outcome.logDirPath,
-      });
+      for (const acId of acIds) {
+        if (acId !== acIds[0]) {
+          writeSharedRunPointer({ logBaseDir, acId, sharedWith: acIds[0]!, logDirPath: outcome.logDirPath });
+        }
+        runs.push({
+          acId,
+          command,
+          exitCode: outcome.exitCode,
+          logDirPath: outcome.logDirPath,
+        });
+      }
     }
   } finally {
     // I3: 途中で落ちても畳む。畳めなかったことは黙らせない

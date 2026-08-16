@@ -133,10 +133,12 @@ describe("[task-0075] 検証環境が無ければゲートは通らない", () =
     const runner = hostVerifyRunner();
     const many = {
       ...task("task-many"),
+      // task-0219: **コマンドが違うもの**を3本。同じコマンドなら1回に束ねられるため、
+      // 同文だと「立てるのは1回」ではなく「束ねたこと」を見てしまう
       acceptance: [
         { id: "a1", text: "1", verify: "true" },
-        { id: "a2", text: "2", verify: "true" },
-        { id: "a3", text: "3", verify: "true" },
+        { id: "a2", text: "2", verify: "echo a2" },
+        { id: "a3", text: "3", verify: "sh -c \"exit 0\"" },
       ],
     };
     const result = await runMergeGate(log, many as never, {

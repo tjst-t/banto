@@ -211,10 +211,12 @@ describe("[a5][a6] 検証はゲートと同じ経路で回り、環境は1回し
     const outcome = await runAcceptanceVerify({
       taskId: "task-many-ac",
       projectTag: "bagproj",
+      // task-0219: **コマンドが違うもの**を3本並べる。同じコマンドは1回に束ねられるので、
+      // 同文だと「環境を立て直していないこと」ではなく「束ねたこと」を見る試験になってしまう
       acceptance: [
         { id: "a1", verify: 'sh -c "exit 0"' },
-        { id: "a2", verify: 'sh -c "exit 0"' },
-        { id: "a3", verify: 'sh -c "exit 0"' },
+        { id: "a2", verify: 'sh -c "true"' },
+        { id: "a3", verify: 'sh -c "echo a3"' },
       ],
       worktreePath: dir,
       logBaseDir: path.join(dir, "logs-a6"),
