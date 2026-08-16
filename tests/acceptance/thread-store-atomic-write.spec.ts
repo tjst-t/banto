@@ -7,6 +7,10 @@
  *
  * ここで見るのは「落ちても元の記録が1バイトも変わらない」こと。
  * 実データ（/var/lib/banto）には触らない——必ず一時ディレクトリで測る。
+ *
+ * **失敗は権限（chmod）ではなく `AtomicWriteOps` の差し替えで起こす。** マージ前ゲートの
+ * 検証コンテナは root で走るので、書き込み権を落としても失敗しない——権限に頼ると
+ * 「手元では通るのにゲートで落ちる」環境依存の試験になる。ここは走らせる利用者に依らない。
  */
 
 import { describe, it, beforeEach, afterEach } from "node:test";
@@ -30,12 +34,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // 読めない権限のまま終わると後片付けが失敗する（読み取り専用にする試験がある）
-  try {
-    fs.chmodSync(dir, 0o700);
-  } catch {
-    // 既に消えている場合は何もしない
-  }
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -125,29 +123,43 @@ describe("[task-0161] 会話の記録と索引を原子的に書く", () => {
   });
 
   it("[a1] ThreadStore.replace() が途中で失敗しても、元の記録は1バイトも変わらない", () => {
-    const store = new ThreadStore(dir);
-    store.replace("thread-1", ENTRIES);
+    // まず本物の書き込みで記録を作る
+    new ThreadStore(dir).replace("thread-1", ENTRIES);
     const file = path.join(dir, "thread-1.jsonl");
     const before = fs.readFileSync(file);
 
-    // 書けない状況を本物で作る。**古い実装（O_TRUNC の全文置換）はここを素通りして
-    // 元ファイルを潰す**——書き込み権のあるディレクトリでは差が出ないので、
-    // 新しいファイルを作れないディレクトリで測る
-    assert.notEqual(process.getuid?.(), 0, "root だと権限による失敗を作れない");
-    fs.chmodSync(dir, 0o500);
-    try {
-      assert.throws(() => store.replace("thread-1", [{ role: "po", text: "上書き" }]));
-    } finally {
-      fs.chmodSync(dir, 0o700);
-    }
+    // 書けない状況を口の差し替えで作る。**古い実装（O_TRUNC の全文置換）は、
+    // 中身を書き終える前に落ちると元ファイルを潰す**——ここでは tmp が潰れるだけ。
+    // 権限ではなく注入で失敗させるので、root で走っても結果は同じ
+    const calls: Array<{ op: string; arg: string | number }> = [];
+    const store = new ThreadStore(
+      dir,
+      recordingOps(calls, { op: "writeSync", error: new Error("書き込みの途中で落ちた") })
+    );
+
+    assert.throws(
+      () => store.replace("thread-1", [{ role: "po", text: "上書き" }]),
+      /書き込みの途中で落ちた/,
+      "I2: 書けなかったら握り潰さず投げること"
+    );
 
     assert.deepEqual(fs.readFileSync(file), before, "元の記録が変わっていないこと");
     assert.deepEqual(tmpLeftovers(dir), []);
+    // 潰れかけたのは tmp であって記録そのものではない
+    assert.ok(
+      calls.some((c) => c.op === "openSync" && String(c.arg).includes(".tmp-")),
+      "書き込み先が同じディレクトリの tmp であること"
+    );
+    assert.ok(
+      !calls.some((c) => c.op === "renameSync"),
+      "失敗したら rename まで進まないこと"
+    );
+    // 読み戻しも元のまま
+    assert.deepEqual(new ThreadStore(dir).transcript("thread-1"), ENTRIES);
   });
 
   it("[a2] ThreadStore.writeIndex() が途中で失敗しても、元の index.json は1バイトも変わらない", () => {
-    const store = new ThreadStore(dir);
-    store.upsert({
+    new ThreadStore(dir).upsert({
       id: "thread-1",
       title: "最初の相談",
       state: "open",
@@ -156,20 +168,22 @@ describe("[task-0161] 会話の記録と索引を原子的に書く", () => {
     const file = path.join(dir, "index.json");
     const before = fs.readFileSync(file);
 
-    assert.notEqual(process.getuid?.(), 0, "root だと権限による失敗を作れない");
-    fs.chmodSync(dir, 0o500);
-    try {
-      assert.throws(() =>
+    const calls: Array<{ op: string; arg: string | number }> = [];
+    const store = new ThreadStore(
+      dir,
+      recordingOps(calls, { op: "writeSync", error: new Error("書き込みの途中で落ちた") })
+    );
+
+    assert.throws(
+      () =>
         store.upsert({
           id: "thread-2",
           title: "あとの相談",
           state: "open",
           createdAt: "2026-08-16T01:00:00.000Z",
-        })
-      );
-    } finally {
-      fs.chmodSync(dir, 0o700);
-    }
+        }),
+      /書き込みの途中で落ちた/
+    );
 
     assert.deepEqual(fs.readFileSync(file), before, "元の索引が変わっていないこと");
     // 索引が壊れていない＝読み戻せる（壊れていると readIndex() が throw してホストが起動しない）

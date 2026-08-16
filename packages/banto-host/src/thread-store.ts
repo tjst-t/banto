@@ -19,7 +19,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { writeFileAtomicSync } from "@banto/core";
+import { writeFileAtomicSync, nodeAtomicWriteOps, type AtomicWriteOps } from "@banto/core";
 import type { TranscriptEntry } from "./protocol.js";
 
 /** スレッド1本ぶんの索引。中身（発言）は別ファイル。 */
@@ -130,12 +130,19 @@ function shrinkReason(known: readonly string[], entries: readonly TranscriptEntr
 
 export class ThreadStore {
   private readonly dir: string;
+  private readonly writeOps: AtomicWriteOps;
   private index: IndexFile;
   /** スレッドごとの「知っている姿」。縮む書き戻しを拒む基準（task-0164）。 */
   private readonly known = new Map<string, KnownTranscript>();
 
-  constructor(dir: string) {
+  /**
+   * `writeOps` は**書き込みが途中で失敗したときに元のファイルが無傷か**を測るための口
+   * （task-0161）。本番は既定の `nodeAtomicWriteOps` のまま——ここを渡すのは試験だけ。
+   * 権限で失敗を作ると root で走る検証環境では再現しないので、口を通して失敗させる。
+   */
+  constructor(dir: string, writeOps: AtomicWriteOps = nodeAtomicWriteOps) {
     this.dir = dir;
+    this.writeOps = writeOps;
     this.index = this.readIndex();
   }
 
@@ -227,7 +234,11 @@ export class ThreadStore {
     if (!this.accepts(threadId, entries)) return;
     const body = entries.map((e) => JSON.stringify(e)).join("\n");
     // 原子的に置き換える（task-0161）。全文置換の最中に殺されると数MBの会話が飛ぶ
-    writeFileAtomicSync(this.transcriptPath(threadId), body.length > 0 ? `${body}\n` : "");
+    writeFileAtomicSync(
+      this.transcriptPath(threadId),
+      body.length > 0 ? `${body}\n` : "",
+      this.writeOps
+    );
     // 書けたあとに知っている姿を更新する（task-0164）。書けなかったときは基準を動かさない
     this.remember(
       threadId,
@@ -401,6 +412,10 @@ export class ThreadStore {
   private writeIndex(): void {
     fs.mkdirSync(this.dir, { recursive: true });
     // 索引が半端に書かれると readIndex() が throw してホストが起動しない（task-0161）
-    writeFileAtomicSync(this.indexPath, `${JSON.stringify(this.index, null, 2)}\n`);
+    writeFileAtomicSync(
+      this.indexPath,
+      `${JSON.stringify(this.index, null, 2)}\n`,
+      this.writeOps
+    );
   }
 }
