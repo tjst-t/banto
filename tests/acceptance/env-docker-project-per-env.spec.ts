@@ -47,6 +47,7 @@ import {
   createEnvProxyExposer,
   probeExposedPort,
 } from "@banto/environment-pool";
+import { createComposeCleanup } from "../helpers/compose-cleanup.js";
 
 const _thisDir = path.dirname(fileURLToPath(import.meta.url));
 /** 中で本当に listen している compose（公開ポートを叩く試験に要る）。 */
@@ -66,8 +67,11 @@ const TASK_ID = "task-imp0033";
 let dir: string;
 let repo: string;
 let pool: EnvironmentPool;
-/** 片付ける先（I3: 作った者が片付ける）。 */
-const provisioned: string[] = [];
+/**
+ * 片付ける先（I3: 作った者が片付ける）。**立てたら即座にここへ控える**——
+ * 控えは名前だけなので、途中で落ちても `after` が畳める（inc-0083・task-0214）。
+ */
+const cleanup = createComposeCleanup();
 
 function projectOf(envId: string): string {
   // docker ドライバの命名規則（`docker-driver.ts` の `projectName`）。
@@ -150,16 +154,18 @@ before(() => {
 });
 
 after(async () => {
-  pool?.stopMaintenance();
-  for (const envId of provisioned) {
-    // 冪等。1つ失敗しても残りは畳む
-    await pool.teardown(envId).catch(() => undefined);
-    childProcess.spawnSync("docker", ["compose", "-p", projectOf(envId), "down", "-v"], {
-      encoding: "utf8",
-      timeout: 120_000,
-    });
+  try {
+    pool?.stopMaintenance();
+    // 台帳に生きたまま残っているものも控えに足す（`pool.verify` のように
+    // envId を試験が握っていない経路の畳み損ねを、ここで拾う）
+    for (const env of pool?.list() ?? []) {
+      cleanup.trackEnv(env.envId, () => pool.teardown(env.envId));
+    }
+    // 1件が投げても残りは畳む。畳み損ねたらここで落ちる（I2: 残骸を黙って通さない）
+    await cleanup.teardownAll();
+  } finally {
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
   }
-  if (dir) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 async function provisionDev(): Promise<{ envId: string; exposedPort?: number; ok: boolean; detail?: string }> {
@@ -170,7 +176,8 @@ async function provisionDev(): Promise<{ envId: string; exposedPort?: number; ok
     projectTag: "imp0033",
     exposeProfilePort: true,
   });
-  provisioned.push(env.envId);
+  // 立った直後に控える（畳むのは `after`。本文の最後の行に置かない）
+  cleanup.track(projectOf(env.envId), () => pool.teardown(env.envId));
   return {
     envId: env.envId,
     ...(env.exposedPort !== undefined ? { exposedPort: env.exposedPort } : {}),
@@ -242,18 +249,25 @@ describe("[imp-0033/移行] 旧名（banto-env-task-*）の環境は、そのま
     const legacyProject = `banto-env-${legacyId}`;
     const stateFile = path.join(dir, "legacy-driver-state.json");
 
+    // **立てる前に控える**。provision が途中でこけて実体だけ残る形も、
+    // 下の assert が落ちて finally に届かない形も、これで `after` が拾う
+    cleanup.track(legacyProject);
+
     const prov = invokeDriver(
       "provision",
       { config: { compose: WAITING_COMPOSE }, taskId: legacyId, envId: legacyId },
       stateFile
     );
-    assert.equal(prov.exitCode, 0, `旧名での provision が失敗: ${prov.stderr}`);
-    const handle = (JSON.parse(prov.stdout.trim().split("\n").pop() ?? "{}") as {
-      handle: Record<string, unknown>;
-    }).handle;
-    assert.equal(handle["project"], legacyProject, "この試験が旧い綴りを作れていない（前提が崩れている）");
+
+    let handle: Record<string, unknown> | undefined;
 
     try {
+      assert.equal(prov.exitCode, 0, `旧名での provision が失敗: ${prov.stderr}`);
+      handle = (JSON.parse(prov.stdout.trim().split("\n").pop() ?? "{}") as {
+        handle: Record<string, unknown>;
+      }).handle;
+      assert.equal(handle["project"], legacyProject, "この試験が旧い綴りを作れていない（前提が崩れている）");
+
       // ① handle に入っている名前で操作できる（新しい綴りで探しに行っていない）
       const health = invokeDriver("healthcheck", { handle }, stateFile);
       assert.equal(health.exitCode, 0, `旧名の healthcheck が失敗: ${health.stderr}`);
@@ -276,10 +290,13 @@ describe("[imp-0033/移行] 旧名（banto-env-task-*）の環境は、そのま
         "新旧どちらの綴りも banto-env- で始まること（接頭辞での照合が両方を拾える）"
       );
     } finally {
-      // ③ 旧名のまま畳める（I3: 作った者が片付ける）
-      const down = invokeDriver("teardown", { handle }, stateFile);
-      assert.equal(down.exitCode, 0, `旧名の teardown が失敗: ${down.stderr}`);
-      assert.deepEqual(containersOf(legacyProject), [], "畳んだのにコンテナが残っている");
+      // ③ 旧名のまま畳める（I3: 作った者が片付ける）。
+      //    handle を握れていなければ機構の口は試せない——控えてあるので `after` が畳む
+      if (handle) {
+        const down = invokeDriver("teardown", { handle }, stateFile);
+        assert.equal(down.exitCode, 0, `旧名の teardown が失敗: ${down.stderr}`);
+        assert.deepEqual(containersOf(legacyProject), [], "畳んだのにコンテナが残っている");
+      }
     }
   });
 });
@@ -293,6 +310,9 @@ describe("[imp-0033/b] 実体を失った環境は「使えます」と答えな
     assert.equal(env.ok, true, `立った時点で使えない: ${env.detail ?? ""}`);
 
     const project = projectOf(env.envId);
+    // 直に `compose up` する先も控える（provisionDev の控えと同じ名前だが、
+    // 「この試験が立てたもの」を読み手にも番人にも見えるようにしておく）
+    cleanup.track(project);
     const before = containersOf(project);
 
     /**
@@ -369,6 +389,8 @@ describe("[imp-0033/c] 使い捨ての検証が、レビュー環境を巻き込
       cmd: "echo verified",
       timeoutMs: 60_000,
     });
+    // 使い捨て側は自分で畳む建前だが、**畳み損ねたときの受け皿**を控えておく
+    cleanup.trackEnv(verify.envId);
     assert.equal(verify.exit, 0, `検証コマンドが失敗した: ${verify.logTail ?? ""}`);
     assert.equal(verify.tornDown, true, `使い捨て側が畳まれていない: ${verify.teardownError ?? ""}`);
 

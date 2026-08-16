@@ -25,6 +25,7 @@ import * as childProcess from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { EnvironmentPool } from "@banto/environment-pool";
+import { createComposeCleanup } from "../helpers/compose-cleanup.js";
 
 const _thisDir = path.dirname(fileURLToPath(import.meta.url));
 const DEV_SERVER_COMPOSE = path.resolve(_thisDir, "../fixtures/docker/dev-server-compose.yaml");
@@ -34,6 +35,11 @@ let dir: string;
 let dataDir: string;
 let repo: string;
 const pools: EnvironmentPool[] = [];
+/**
+ * 立てた compose プロジェクトの控え（inc-0083・task-0214）。
+ * 畳むのは `afterEach`——本文の中で畳むと、アサーションが落ちた回だけ残る。
+ */
+const cleanup = createComposeCleanup();
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "env-setup-order-docker-"));
@@ -42,9 +48,14 @@ beforeEach(() => {
   fs.mkdirSync(path.join(repo, "meta"), { recursive: true });
 });
 
-afterEach(() => {
-  for (const p of pools.splice(0)) p.stopMaintenance();
-  fs.rmSync(dir, { recursive: true, force: true });
+afterEach(async () => {
+  try {
+    // 1件が投げても残りは畳む。畳み損ねたらここで落ちる（I2）
+    await cleanup.teardownAll();
+  } finally {
+    for (const p of pools.splice(0)) p.stopMaintenance();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 function writeProfiles(body: string): void {
@@ -91,30 +102,29 @@ describe("[task-0089/a1] 用意は compose up の前に済む（docker）", () =
 
     const taskId = `t-devsrv-${Date.now()}`;
     const env = await pool.provision({ repoPath: repo, profile: "dev", taskId });
-    try {
-      // 直す前はここが `ok: false`（containers not running: ...=exited）になるか、
-      // 落ちる直前の running を掴んで `ok: true` と誤報告するかのどちらかだった
-      assert.equal(
-        env.healthcheck.ok,
-        true,
-        `立てた直後に使えなければならない: ${JSON.stringify(env.healthcheck)}`
-      );
+    // 立った直後に控える。畳むのは afterEach（ここで畳むと、下が落ちた回だけ残る）
+    cleanup.trackEnv(env.envId, () => pool.teardown(env.envId));
 
-      // **一瞬ではなく生きていること**を、時間を置いた疎通と実際の run で確かめる
-      await new Promise((r) => setTimeout(r, 1_500));
-      const later = await pool.healthcheck(env.envId);
-      assert.equal(
-        later.ok,
-        true,
-        `起動直後に落ちている（exit 127 の再現）: ${JSON.stringify(later)}`
-      );
+    // 直す前はここが `ok: false`（containers not running: ...=exited）になるか、
+    // 落ちる直前の running を掴んで `ok: true` と誤報告するかのどちらかだった
+    assert.equal(
+      env.healthcheck.ok,
+      true,
+      `立てた直後に使えなければならない: ${JSON.stringify(env.healthcheck)}`
+    );
 
-      const out = await pool.run(env.envId, "cat /work/deps/marker");
-      assert.equal(out.exit, 0, `用意の成果が見えなければならない: ${out.logTail}`);
-      assert.match(out.logTail, /prepared/);
-    } finally {
-      await pool.teardown(env.envId).catch(() => undefined);
-    }
+    // **一瞬ではなく生きていること**を、時間を置いた疎通と実際の run で確かめる
+    await new Promise((r) => setTimeout(r, 1_500));
+    const later = await pool.healthcheck(env.envId);
+    assert.equal(
+      later.ok,
+      true,
+      `起動直後に落ちている（exit 127 の再現）: ${JSON.stringify(later)}`
+    );
+
+    const out = await pool.run(env.envId, "cat /work/deps/marker");
+    assert.equal(out.exit, 0, `用意の成果が見えなければならない: ${out.logTail}`);
+    assert.match(out.logTail, /prepared/);
   });
 });
 
@@ -136,14 +146,12 @@ describe("[task-0089/a2] 待つだけの test プロファイルは従来どお�
 
     const taskId = `t-wait-${Date.now()}`;
     const env = await pool.provision({ repoPath: repo, profile: "test", taskId });
-    try {
-      assert.equal(env.healthcheck.ok, true, JSON.stringify(env.healthcheck));
-      const out = await pool.run(env.envId, "echo alive");
-      assert.equal(out.exit, 0, out.logTail);
-      assert.match(out.logTail, /alive/);
-    } finally {
-      await pool.teardown(env.envId).catch(() => undefined);
-    }
+    cleanup.trackEnv(env.envId, () => pool.teardown(env.envId));
+
+    assert.equal(env.healthcheck.ok, true, JSON.stringify(env.healthcheck));
+    const out = await pool.run(env.envId, "echo alive");
+    assert.equal(out.exit, 0, out.logTail);
+    assert.match(out.logTail, /alive/);
   });
 
   it("setup つきの test プロファイルも従来どおり通る（順序が変わっただけ）", async () => {
@@ -162,12 +170,10 @@ describe("[task-0089/a2] 待つだけの test プロファイルは従来どお�
 
     const taskId = `t-wait-setup-${Date.now()}`;
     const env = await pool.provision({ repoPath: repo, profile: "test", taskId });
-    try {
-      assert.equal(env.healthcheck.ok, true, JSON.stringify(env.healthcheck));
-      const out = await pool.run(env.envId, "echo alive");
-      assert.equal(out.exit, 0, out.logTail);
-    } finally {
-      await pool.teardown(env.envId).catch(() => undefined);
-    }
+    cleanup.trackEnv(env.envId, () => pool.teardown(env.envId));
+
+    assert.equal(env.healthcheck.ok, true, JSON.stringify(env.healthcheck));
+    const out = await pool.run(env.envId, "echo alive");
+    assert.equal(out.exit, 0, out.logTail);
   });
 });

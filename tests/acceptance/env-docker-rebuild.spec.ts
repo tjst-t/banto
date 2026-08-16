@@ -23,6 +23,8 @@ import * as path from "node:path";
 import * as childProcess from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import { createComposeCleanup } from "../helpers/compose-cleanup.js";
+
 const _thisDir = path.dirname(fileURLToPath(import.meta.url));
 const DOCKER_DRIVER = path.resolve(
   _thisDir,
@@ -33,6 +35,14 @@ const NODE = process.execPath;
 let dir: string;
 const taskId = `task-rebuild-${Date.now()}`;
 let handle: Record<string, unknown> | undefined;
+
+/**
+ * 立てた compose プロジェクトの控え（inc-0083・task-0214）。
+ * ここの取り残しは実測で3件あった（`/tmp/banto-rebuild-*` 由来）——
+ * `handle` を握れたときだけ畳んでいたので、**provision がこけた分が丸ごと残っていた**。
+ * プロジェクト名は taskId から先に決まるので、**立てる前に控えられる**。
+ */
+const cleanup = createComposeCleanup();
 
 function invoke(
   verb: string,
@@ -77,13 +87,22 @@ before(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-rebuild-"));
 });
 
-after(() => {
-  if (handle) invoke("teardown", { handle, timeoutMs: 120_000 }, 130_000);
-  fs.rmSync(dir, { recursive: true, force: true });
+after(async () => {
+  try {
+    await cleanup.teardownAll();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 describe("[task-0084] Dockerfile を直したら、立て直したとき効く", () => {
   it("**書き換えた Dockerfile の中身で立ち直る**（古いイメージを使い回さない）", () => {
+    // **立てる前に控える**（畳むのは after）。ここが handle 頼みだったせいで
+    // `banto-env-task-rebuild-*` が3件残っていた（inc-0083）
+    cleanup.trackEnv(taskId, () => {
+      if (handle) invoke("teardown", { handle, timeoutMs: 120_000 }, 130_000);
+    });
+
     // 1回目：marker=OLD で立てる
     writeFixture("OLD");
     const first = invoke(
@@ -130,6 +149,8 @@ describe("[task-0084] worktree の中でも git が動く（inc-0038）", () => 
   let repoDir: string;
   let wtDir: string;
   let wtHandle: Record<string, unknown> | undefined;
+  /** この describe が立てるぶんの控え（上の describe とは別勘定）。 */
+  const wtCleanup = createComposeCleanup();
 
   before(() => {
     repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-wt-repo-"));
@@ -165,14 +186,23 @@ describe("[task-0084] worktree の中でも git が動く（inc-0038）", () => 
     );
   });
 
-  after(() => {
-    if (wtHandle) invoke("teardown", { handle: wtHandle, timeoutMs: 120_000 }, 130_000);
-    fs.rmSync(wtDir, { recursive: true, force: true });
-    fs.rmSync(repoDir, { recursive: true, force: true });
+  after(async () => {
+    // コンテナを先に畳んでから、bind mount 元のディレクトリを消す
+    try {
+      await wtCleanup.teardownAll();
+    } finally {
+      fs.rmSync(wtDir, { recursive: true, force: true });
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
   });
 
   it("**worktree でも `git check-ignore` が git として答える**（128 で落ちない）", () => {
     const wtTaskId = `task-wt-${Date.now()}`;
+    // 立てる前に控える（provision がこけて実体だけ残る形も拾う）
+    wtCleanup.trackEnv(wtTaskId, () => {
+      if (wtHandle) invoke("teardown", { handle: wtHandle, timeoutMs: 120_000 }, 130_000);
+    });
+
     const prov = invoke(
       "provision",
       { config: { compose: path.join(wtDir, "compose.yaml") }, taskId: wtTaskId, envId: wtTaskId, workdir: wtDir, timeoutMs: 280_000 }

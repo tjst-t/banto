@@ -27,6 +27,7 @@ import * as childProcess from "node:child_process";
 
 import { EnvironmentPool } from "@banto/environment-pool";
 import { validateProfile } from "../../packages/banto-core/src/env-profile-parser.js";
+import { createComposeCleanup } from "../helpers/compose-cleanup.js";
 
 const TEST_DRIVER_STATE = path.join(
   os.tmpdir(),
@@ -42,6 +43,13 @@ let dir: string;
 let dataDir: string;
 let repo: string;
 const pools: EnvironmentPool[] = [];
+/**
+ * 立てたものの控え（inc-0083・task-0214）。畳むのは `afterEach`——
+ * 本文の最後の行で畳むと、**アサーションが落ちた回だけ残る**。
+ * process ドライバの環境は compose を持たないので `composeDown: false`
+ * （docker が無くても回る試験を、後片付けのせいで docker 必須にしない）。
+ */
+const cleanup = createComposeCleanup();
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "env-setup-"));
@@ -50,9 +58,14 @@ beforeEach(() => {
   fs.mkdirSync(path.join(repo, "meta"), { recursive: true });
 });
 
-afterEach(() => {
-  for (const p of pools.splice(0)) p.stopMaintenance();
-  fs.rmSync(dir, { recursive: true, force: true });
+afterEach(async () => {
+  try {
+    // 1件が投げても残りは畳む。畳み損ねたらここで落ちる（I2）
+    await cleanup.teardownAll();
+  } finally {
+    for (const p of pools.splice(0)) p.stopMaintenance();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 function writeProfiles(body: string): void {
@@ -112,6 +125,8 @@ describe("[task-0080] プロファイルの setup — provision の一部とし�
     const pool = makePool();
 
     const env = await pool.provision({ repoPath: repo, profile: "test", taskId: "t-setup" });
+    // 立った直後に控える。畳むのは afterEach（最後の行で畳むと、落ちた回だけ残る）
+    cleanup.trackEnv(env.envId, () => pool.teardown(env.envId), { composeDown: false });
 
     // **provision が返った時点で用意が済んでいること**。
     // 直す前は setup という概念が無く、このファイルは作られなかった
@@ -126,8 +141,6 @@ describe("[task-0080] プロファイルの setup — provision の一部とし�
     const out = await pool.run(env.envId, `cat ${marker}`);
     assert.equal(out.exit, 0);
     assert.match(out.logTail, /ready/);
-
-    await pool.teardown(env.envId);
   });
 
   it("setup は1環境につき1回だけ走る（run のたびに繰り返さない）", async () => {
@@ -143,6 +156,7 @@ describe("[task-0080] プロファイルの setup — provision の一部とし�
     );
     const pool = makePool();
     const env = await pool.provision({ repoPath: repo, profile: "test", taskId: "t-once" });
+    cleanup.trackEnv(env.envId, () => pool.teardown(env.envId), { composeDown: false });
 
     await pool.run(env.envId, "true");
     await pool.run(env.envId, "true");
@@ -150,8 +164,6 @@ describe("[task-0080] プロファイルの setup — provision の一部とし�
     // **受け入れ条件ごとに繰り返さないこと**が要点（loamium は a3/a4 で各100秒払っていた）
     const lines = fs.readFileSync(counter, "utf-8").trim().split("\n").filter(Boolean);
     assert.equal(lines.length, 1, `setup は1回だけのはず。走った回数: ${lines.length}`);
-
-    await pool.teardown(env.envId);
   });
 
   it("setup がこけたら provision が失敗し、環境を残さない（I2・I3）", async () => {
@@ -167,6 +179,8 @@ describe("[task-0080] プロファイルの setup — provision の一部とし�
     const pool = makePool();
 
     await assert.rejects(
+      // cleanup-exempt: **立たないことを見る試験**。provision は失敗し、
+      // 環境を残さないことを下の `pool.list` で確かめている（控える先が無い）
       () => pool.provision({ repoPath: repo, profile: "test", taskId: "t-fail" }),
       (err: Error) => {
         // 「用意できなかった」と分かる言葉であること。
@@ -188,8 +202,9 @@ describe("[task-0080] プロファイルの setup — provision の一部とし�
     );
     const pool = makePool();
     const env = await pool.provision({ repoPath: repo, profile: "test", taskId: "t-nosetup" });
+    cleanup.trackEnv(env.envId, () => pool.teardown(env.envId), { composeDown: false });
+
     assert.equal(pool.list({ taskId: "t-nosetup" }).length, 1);
-    await pool.teardown(env.envId);
   });
 });
 
@@ -223,6 +238,9 @@ describe("[task-0080] docker の setup は名前付きボリュームを通し�
       profile: "test",
       taskId: `t-dockersetup-${Date.now()}`,
     });
+    // ここは docker ドライバ。compose まで畳む（畳むのは afterEach）
+    cleanup.trackEnv(env.envId, () => pool.teardown(env.envId));
+
     try {
       // **`run` は毎回まっさらな one-off コンテナ**（`compose run --rm`）。本体の書き込み層は
       // 共有されないので、setup の成果が次の run から見えるのは**ボリュームのぶんだけ**。
