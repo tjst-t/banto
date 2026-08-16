@@ -1051,6 +1051,10 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 .ib-go:hover { color: var(--ai); }
 .ib-sep { display: flex; align-items: center; gap: var(--s3); margin: var(--s6) 0 var(--s3); font-size: var(--t-note); color: var(--sumi-3); }
 .ib-sep::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
+/* 知らせの区切りは、左に文言・右に「まとめて閉じる」の1行（PO要望 2026-08-16）。
+   罫線は擬似要素＝子より後ろに置かれるので、ボタンだけ order で線の右へ回す */
+.ib-sep-label, .ib-sep-btn { flex: none; }
+.ib-sep-btn { order: 1; height: var(--h-ctl-sm); padding: 0 var(--s3); }
 .ib-empty { text-align: center; padding: 70px var(--s5); }
 .ib-empty-icon { display: block; margin: 0 auto var(--s2); color: var(--sumi-3); }
 .ib-empty b { display: block; font-family: var(--sho); font-size: var(--t-head); font-weight: 600; margin-bottom: 6px; }

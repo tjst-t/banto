@@ -69,6 +69,20 @@ export function InboxFace({ items, onAnswer, onOpen, onBack }: InboxFaceProps): 
   const sources = [...new Map(decisions.map((i) => [i.source.id, i.source])).values()];
   const shown = only ? decisions.filter((i) => i.source.id === only) : decisions;
 
+  /**
+   * まとめて閉じられる知らせ（PO要望 2026-08-16）。
+   *
+   * 線引きは**あるもので切る**——`notice` は既に機構が持つ区別（決定109）なので、
+   * ここに新しい印を足さない。さらに**選択肢が1つのものだけ**を対象にする：機械が
+   * 「どれを選んだことにするか」を決めてよいのは、選ぶ余地が無いときだけ。
+   * 巻き込まないものは件数にも数えない——押す前の数字と、押したあとの結果を
+   * 食い違わせない。
+   */
+  const closable = notices.filter((i) => i.actions.length === 1);
+  const closeAll = (): void => {
+    for (const item of closable) onAnswer(item.id, item.actions[0]!.id);
+  };
+
   return (
     <div className="ib">
       <div className="ib-head">
@@ -131,7 +145,16 @@ export function InboxFace({ items, onAnswer, onOpen, onBack }: InboxFaceProps): 
           {/* 知らせ（決定109・110）。判断ではないので数えない・下段——答えは「読んだ」の1つでよい */}
           {notices.length > 0 && (
             <>
-              <div className="ib-sep">これより下は、知らせ（読めば片付きます）</div>
+              <div className="ib-sep">
+                <span className="ib-sep-label">これより下は、知らせ（読めば片付きます）</span>
+                {/* 読めば片付くものを一通ずつ押させない。**何件消えるかを押す前に出す** */}
+                {closable.length > 0 && (
+                  <button className="btn btn--ghost ib-sep-btn" type="button" onClick={closeAll}>
+                    <Icon name="check" size={13} />
+                    {closable.length}件をまとめて閉じる
+                  </button>
+                )}
+              </div>
               {notices.map((item) => (
                 <Letter key={item.id} item={item} onAnswer={onAnswer} onOpen={onOpen} />
               ))}
