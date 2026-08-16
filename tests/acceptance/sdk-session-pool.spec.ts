@@ -120,12 +120,20 @@ interface Wired {
   pool: SdkSessionPool;
   logs: string[];
   clock: ReturnType<typeof makeClock>;
+  /** 中身を組むのにかかる時間。試験の途中で書き換えられる（a10）。 */
+  wakeCost: { ms: number };
   open(threadId: string, model?: string): PooledSdkHarness;
 }
 
 function wire(options: { idleMs?: number; maxLive?: number } = {}): Wired {
   const clock = makeClock();
   const logs: string[] = [];
+  /**
+   * 中身を組むのにかかる時間（a10）。**試験の中で書き換えられる**——初回の起動と
+   * 起こし直しで別の値を入れると、測っているのがどちらなのかが見分けられる。
+   * 既定は 0＝時計を進めない（他の試験の勘定を狂わせない）。
+   */
+  const wakeCost = { ms: 0 };
   const pool = new SdkSessionPool({
     ...(options.idleMs !== undefined ? { idleMs: options.idleMs } : {}),
     ...(options.maxLive !== undefined ? { maxLive: options.maxLive } : {}),
@@ -139,14 +147,17 @@ function wire(options: { idleMs?: number; maxLive?: number } = {}): Wired {
       pool,
       ...(model ? { model } : {}),
       log: (m) => logs.push(m),
-      create: ({ resume, model: chosen }) =>
-        new FakeInner({
+      create: ({ resume, model: chosen }) => {
+        // 子プロセスの立ち上がりぶん。測る側から見れば「待たされる時間」そのもの
+        if (wakeCost.ms > 0) clock.advance(wakeCost.ms);
+        return new FakeInner({
           ...(resume !== undefined ? { resume } : {}),
           ...(chosen !== undefined ? { model: chosen } : {}),
           token: `${threadId}#${++seq}`,
-        }),
+        });
+      },
     });
-  return { pool, logs, clock, open };
+  return { pool, logs, clock, open, wakeCost };
 }
 
 beforeEach(() => {
@@ -347,6 +358,49 @@ describe("SDK セッションの安全弁（task-0165）", () => {
     await harnesses[0]!.prompt("戻す");
     assert.ok(pool.liveCount() <= maxLive);
     assert.ok(pool.liveIds().includes("t-0"));
+  });
+
+  it("a10: 放した会話を起こし直すのにかかった時間が数字で読める", async () => {
+    const { pool, logs, clock, open, wakeCost } = wire({ idleMs: 60_000, maxLive: 4 });
+    const harness = open("t-1");
+
+    // 初回の起動。ここも測れるが、判断材料にしたいのは「畳んだせいで増えた待ち」
+    wakeCost.ms = 40;
+    await harness.prompt("一言目");
+    assert.equal(harness.lastWakeMs(), 40);
+    assert.equal(pool.wakeStats().count, 0, "初回の起動を「起こし直し」に数えている");
+
+    clock.advance(120_000);
+    await pool.sweep();
+    assert.equal(pool.liveCount(), 0);
+
+    // 起こし直しは子プロセスを立て直すぶん重い。その重さが読めること
+    wakeCost.ms = 1_800;
+    await harness.prompt("二言目");
+
+    // 皮からも器からも数字で読める
+    assert.equal(harness.lastWakeMs(), 1_800, "起こし直しにかかった時間が読めない");
+    const stats = pool.wakeStats();
+    assert.equal(stats.count, 1);
+    assert.equal(stats.lastMs, 1_800);
+    assert.equal(stats.maxMs, 1_800);
+    assert.equal(stats.totalMs, 1_800);
+
+    // 記録にも数字が載っている（体感が悪いときに「放す条件」を緩める材料になる形）
+    const revived = logs.find((l) => l.includes("札から戻しました"));
+    assert.ok(revived, `戻した記録が無い: ${logs.join(" / ")}`);
+    assert.match(revived, /起こし直しに 1800ms/, `戻すのにかかった時間が数字で載っていない: ${revived}`);
+
+    // 二度目の起こし直しが速ければ、最長と直近が分かれて見える
+    clock.advance(120_000);
+    await pool.sweep();
+    wakeCost.ms = 120;
+    await harness.prompt("三言目");
+    const after = pool.wakeStats();
+    assert.equal(after.count, 2);
+    assert.equal(after.lastMs, 120);
+    assert.equal(after.maxMs, 1_800);
+    assert.equal(after.totalMs, 1_920);
   });
 
   it("章を畳んだ直後に安全弁が働いても、章の種（引き継ぎ資料）が落ちない", async () => {

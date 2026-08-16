@@ -60,6 +60,9 @@ export const DEFAULT_SDK_MAX_LIVE = 8;
 /** アイドルを見に行く間隔の既定。安全弁なので細かく刻む必要はない。 */
 export const DEFAULT_SDK_SWEEP_MS = 60 * 1000;
 
+/** 起こし直しの実績をどこまで遡って持つか。傾向が読めれば足りるので直近ぶんだけ。 */
+const MAX_WAKE_SAMPLES = 100;
+
 /** 器が畳む相手。会話1本につき1つ登録される。 */
 export interface SdkSession {
   readonly threadId: string;
@@ -99,6 +102,8 @@ export class SdkSessionPool {
   private readonly sessions = new Map<string, SdkSession>();
   /** 最後に触られた時刻。会話ごと。 */
   private readonly touchedAt = new Map<string, number>();
+  /** 起こし直しにかかった時間の控え（a10）。直近 `MAX_WAKE_SAMPLES` 件。 */
+  private readonly wakes: { threadId: string; elapsedMs: number; revived: boolean }[] = [];
   private readonly idleMs: number;
   private readonly maxLive: number;
   private readonly sweepMs: number;
@@ -122,6 +127,44 @@ export class SdkSessionPool {
   /** アイドルと見なすまでの時間。 */
   idleTimeout(): number {
     return this.idleMs;
+  }
+
+  /**
+   * 器の時計。**皮が「起こし直しにかかった時間」を測るのに使う**（a10）。
+   *
+   * 触った印と同じ時計を使う——別の時計を持つと、試験で時間を進めたときに
+   * 片方だけが動いて、測った数字が誰にも確かめられなくなる。
+   */
+  nowMs(): number {
+    return this.now();
+  }
+
+  /**
+   * **起こし直しにかかった時間を控える**（a10）。
+   *
+   * 畳んだ会話へ話しかけたとき、利用者が待たされるのはここの時間だけである。
+   * 数字が残っていれば「体感が悪い」を計測で裁ける——遅ければ `idleMs` を伸ばす
+   * `maxLive` を上げる、という判断の材料になる（勘で緩めない）。
+   */
+  noteWake(threadId: string, elapsedMs: number, revived: boolean): void {
+    this.wakes.push({ threadId, elapsedMs, revived });
+    // 直近ぶんだけ持つ（帳簿を無限に伸ばさない）
+    if (this.wakes.length > MAX_WAKE_SAMPLES) this.wakes.splice(0, this.wakes.length - MAX_WAKE_SAMPLES);
+  }
+
+  /**
+   * 起こし直しの実績。**札から戻したぶんだけ**を数える（初回の起動は待たされたうちに
+   * 入らない——畳んだせいで増えた待ちだけを見たい）。
+   */
+  wakeStats(): { count: number; lastMs: number | undefined; maxMs: number | undefined; totalMs: number } {
+    const revived = this.wakes.filter((w) => w.revived);
+    const last = revived.at(-1);
+    return {
+      count: revived.length,
+      lastMs: last?.elapsedMs,
+      maxMs: revived.length > 0 ? Math.max(...revived.map((w) => w.elapsedMs)) : undefined,
+      totalMs: revived.reduce((sum, w) => sum + w.elapsedMs, 0),
+    };
   }
 
   /** 会話を登録する。返り値は登録の解除。 */
@@ -326,6 +369,8 @@ export class PooledSdkHarness implements BantoHarness {
    * 覚えておき、札が無いまま起こし直すときに掛け直す。
    */
   private pendingOpening: ChapterOpening | undefined;
+  /** 直近で起こす（戻す）のにかかった時間（a10）。 */
+  private wakeMs: number | undefined;
 
   constructor(options: PooledSdkHarnessOptions) {
     this.options = options;
@@ -366,6 +411,14 @@ export class PooledSdkHarness implements BantoHarness {
   }
 
   /**
+   * 直近でこの会話を起こす（畳んであったなら戻す）のにかかったミリ秒（a10）。
+   * 一度も起こしていなければ `undefined`。器ぜんたいの傾向は `pool.wakeStats()`。
+   */
+  lastWakeMs(): number | undefined {
+    return this.wakeMs;
+  }
+
+  /**
    * **モデルを選び直す**。生きていれば畳んで、次の発話で組み直す。
    *
    * 同期で済ませる——呼び出し側（`onSelectModel`）はハーネスを受け取ってすぐ返すので、
@@ -388,6 +441,13 @@ export class PooledSdkHarness implements BantoHarness {
       throw new Error("この会話は畳まれています（dispose 済み）。新しく組み立ててください");
     }
     const revived = this.token !== undefined;
+    /**
+     * **起こし直しにかかった時間を測る**（a10）。畳んだ会話へ話しかけたとき、
+     * 利用者が余計に待たされるのはここ——子プロセスを立て直し、札の文脈を
+     * 読み戻すまでの間である。数字が残らないと「畳むのが早すぎる」を計測で
+     * 裁けず、体感の話に落ちる。
+     */
+    const startedAt = this.options.pool.nowMs();
     const inner = this.options.create({
       ...(this.token !== undefined ? { resume: this.token } : {}),
       ...(this.model !== undefined ? { model: this.model } : {}),
@@ -403,10 +463,19 @@ export class PooledSdkHarness implements BantoHarness {
      * 文脈をその場で捨てる（章を畳んだ意味と逆のことをする）。
      */
     if (!revived && this.pendingOpening) await inner.startChapter(this.pendingOpening);
+    // 時計が巻き戻っても負の数を出さない（記録を読む人が意味を取り違える）
+    const elapsedMs = Math.max(0, this.options.pool.nowMs() - startedAt);
+    this.wakeMs = elapsedMs;
+    this.options.pool.noteWake(this.options.threadId, elapsedMs, revived);
+    /**
+     * **黙って起き直さない**（a12）。静かに起きることは静かに壊れることと
+     * 見分けが付かない——遅れの原因が「畳んであったのを起こしていた」なら、
+     * その旨と何ミリ秒かかったかが記録に出ていないと誰にも読めない。
+     */
     this.log(
-      `[banto] SDK セッションを${revived ? "札から戻しました" : "起こしました"}（${
-        this.options.threadId
-      }）。生存 ${this.options.pool.liveCount()}/${this.options.pool.limit()} 本`
+      `[banto] SDK セッションを${
+        revived ? `札から戻しました（${this.options.threadId}／起こし直しに ${elapsedMs}ms）` : `起こしました（${this.options.threadId}／起こすのに ${elapsedMs}ms）`
+      }。生存 ${this.options.pool.liveCount()}/${this.options.pool.limit()} 本`
     );
     return inner;
   }
