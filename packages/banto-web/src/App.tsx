@@ -297,25 +297,48 @@ export function App(): React.ReactElement {
 
   /**
    * 取次の一通を開く（決定73・75）。
-   * **会話と面はホストが動かす**。画面が受け持つのは「どの面を出すか」だけ。
+   *
+   * **会話を移すのはこの画面側**（task-0175）。ホストへ投げる `inbox_open` が動かすのは
+   * その会話の**キャンバス**だけで、「この会話へ移れ」を伝える型はプロトコルに無い——
+   * ここで `openThread` を呼ばないと、面を閉じても**いま見ている会話のまま**になる。
+   *
+   * 指す会話が**畳まれている**ときは開き直さない（PO裁定・`readThread` と同じ）。
+   * 会話と設定の両方を指す札は、**会話へ移ったうえで**設定の面を出す。
    */
   const openInboxItem = useCallback(
     (itemId: string) => {
       const item = session.inbox.find((i) => i.id === itemId);
       session.openInbox(itemId);
-      if (item?.opens?.settings) {
-        const section = item.opens.settings.section;
-        navigate((prev) => ({
-          face: "settings",
-          ...(prev.threadId ? { threadId: prev.threadId } : {}),
-          ...(prev.tabId ? { tabId: prev.tabId } : {}),
-          ...(section ? { section } : {}),
-        }));
+      const opens = item?.opens;
+      const target = opens?.threadId ? session.threadOf(opens.threadId) : undefined;
+      /** 移れる会話＝**開いているもの**。畳んだ会話へは移らない（開き直さない）。 */
+      const moveTo = target?.state === "open" ? target.threadId : undefined;
+
+      if (opens?.settings) {
+        const section = opens.settings.section;
+        // 会話を先に移し、面はそのあと設定へ。`navigate` の `prev` は前の描画の位置なので、
+        // 移った先は `prev` から読まず `moveTo` を直に渡す（片方だけ効く事故を防ぐ）
+        if (moveTo) openThread(moveTo);
+        navigate((prev) => {
+          const threadId = moveTo ?? prev.threadId;
+          return {
+            face: "settings",
+            ...(threadId ? { threadId } : {}),
+            ...(prev.tabId ? { tabId: prev.tabId } : {}),
+            ...(section ? { section } : {}),
+          };
+        });
         return;
       }
-      backToChat();
+      if (moveTo) {
+        openThread(moveTo);
+        return;
+      }
+      // 畳んだ会話は履歴の面で読む。どこにも無い会話なら、面を閉じるだけ
+      if (target) readThread(target.threadId);
+      else backToChat();
     },
-    [session, navigate, backToChat]
+    [session, navigate, backToChat, openThread, readThread]
   );
 
   useEffect(() => {

@@ -16,7 +16,7 @@
  * 前提: `npm run build:web` 済み。実行: npx playwright test tests/inbox-decisions.spec.ts
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -28,7 +28,13 @@ const WEB_DIST = path.join(here, "..", "packages", "banto-web", "dist");
 const THREAD_ID = "t-1";
 const OTHER_THREAD_ID = "t-2";
 
-const thread = (threadId: string, title: string, isDefault: boolean): Record<string, unknown> => ({
+const thread = (
+  threadId: string,
+  title: string,
+  isDefault: boolean,
+  /** 畳んだ会話にするか（決定111 の「読むだけ」を見るため）。 */
+  closed = false
+): Record<string, unknown> => ({
   threadId,
   title,
   sessionId: "fake",
@@ -44,7 +50,9 @@ const thread = (threadId: string, title: string, isDefault: boolean): Record<str
         openedBy: "po",
         openReason: "往復が続く",
       }),
-  state: "open",
+  ...(closed
+    ? { state: "closed", closedAt: new Date().toISOString(), conclusion: "ひとまず畳んだ" }
+    : { state: "open" }),
   streaming: false,
 });
 
@@ -90,7 +98,11 @@ class FakeHost {
   /** クライアントから届いたメッセージ（押した結果の検証に使う）。 */
   readonly received: Record<string, unknown>[] = [];
 
-  static async start(): Promise<FakeHost> {
+  /**
+   * @param options.otherClosed 別の会話（`OTHER_THREAD_ID`）を**畳んだ状態**で配る。
+   *   取次の札から押しても開き直らないことを見るため（決定111）。
+   */
+  static async start(options: { otherClosed?: boolean } = {}): Promise<FakeHost> {
     const server = http.createServer((req, res) => {
       const url = (req.url ?? "/").split("?")[0] ?? "/";
       const json = (details: unknown): void => {
@@ -176,7 +188,7 @@ class FakeHost {
         sessionId: "fake",
         threads: [
           thread(THREAD_ID, "会話", true),
-          thread(OTHER_THREAD_ID, "別の会話", false),
+          thread(OTHER_THREAD_ID, "別の会話", false, options.otherClosed === true),
         ],
         defaultThreadId: THREAD_ID,
         tools: [],
@@ -209,6 +221,16 @@ test.beforeEach(async () => {
   host = await FakeHost.start();
 });
 
+/** URL のクエリ（どこを見ているかの真実は URL。`viewLocation.ts`）。 */
+function query(page: Page): URLSearchParams {
+  return new URLSearchParams(new URL(page.url()).search);
+}
+
+/** いま前面に出ている会話の頭（＝どの会話に居るか）。 */
+function roomTitle(page: Page) {
+  return page.locator(".room").last().locator(".room-title");
+}
+
 test.afterEach(async () => {
   await host.close();
 });
@@ -235,6 +257,15 @@ test.describe("判断待ちは会話の横にも出る（決定73）", () => {
     await expect(page.locator(".pend--chat")).not.toContainText("別の会話で頼まれた判断");
   });
 
+  test("その会話宛の札に「この件の会話へ」は出ない（既にそこにいる）", async ({ page }) => {
+    await page.goto(`http://127.0.0.1:${host.port}/`);
+    const go = page.locator(".pend--chat .pend-go");
+    await expect(go).toHaveCount(1);
+    // 押しても何も動かない導線は出さない。設定への導線だけが残る
+    await expect(go).not.toContainText("この件の会話へ");
+    await expect(go).toContainText("設定で細かく決める");
+  });
+
   test("押すとホストへ答えが飛ぶ（取次で押したのと同じ）", async ({ page }) => {
     await page.goto(`http://127.0.0.1:${host.port}/`);
     await page.locator(".pend--chat").getByRole("button", { name: "この範囲で許す" }).click();
@@ -259,10 +290,74 @@ test.describe("取次の一通から飛べる（決定73・75）", () => {
     // 面が設定に変わり、区画は URL に残る（リロードしても戻ってこられる）
     await expect(page.locator(".sp-title")).toContainText("場所と書き込み許可");
     expect(page.url()).toContain("section=places");
-    // ホストにも「開いた」ことは伝わる（会話と面はホストが動かす）
+    // ホストにも「開いた」ことは伝わる（キャンバスを開くのはホスト側）
     await expect
       .poll(() => host.received.some((m) => m["type"] === "inbox_open"))
       .toBe(true);
+  });
+
+  /**
+   * 会話を移すのは**画面側**（task-0175）。ホストの `inbox_open` はキャンバスを開くだけで、
+   * 「この会話へ移れ」を伝える型はプロトコルに無い——ここが落ちると、面は閉じるのに
+   * **いま見ている会話のまま**になる（PO報告：押しても違う会話が出る）。
+   */
+  test("別の会話を指す札を押すと、面が閉じてその会話が前面になる", async ({ page }) => {
+    await page.goto(`http://127.0.0.1:${host.port}/`);
+    await expect(roomTitle(page)).toHaveText("会話");
+
+    await page.locator(".rail-btn[data-key='i']").click();
+    await page
+      .locator(".ib-letter", { hasText: "別の会話で頼まれた判断" })
+      .locator(".ib-go")
+      .click();
+
+    // 取次の面は畳まれ、札が指していた会話が前面に出る
+    await expect(page.locator(".ib")).toHaveCount(0);
+    await expect(roomTitle(page)).toHaveText("別の会話");
+    await expect.poll(() => query(page).get("thread")).toBe(OTHER_THREAD_ID);
+    expect(query(page).get("view")).toBe(null);
+    // 開いたことはホストにも伝わる（キャンバスはホストが開く）
+    await expect
+      .poll(() => host.received.some((m) => m["type"] === "inbox_open" && m["itemId"] === "in-other"))
+      .toBe(true);
+  });
+
+  test("会話と設定の両方を指す札は、その会話へ移ったうえで設定が出る", async ({ page }) => {
+    // 別の会話を見ているところから押す（移ったことが見えるように）
+    await page.goto(`http://127.0.0.1:${host.port}/?thread=${OTHER_THREAD_ID}`);
+    await expect(roomTitle(page)).toHaveText("別の会話");
+
+    await page.locator(".rail-btn[data-key='i']").click();
+    await page
+      .locator(".ib-letter", { hasText: "リポジトリ の docs/** に書かせてほしい" })
+      .locator(".ib-go")
+      .click();
+
+    // 設定の面が出る
+    await expect(page.locator(".sp-title")).toContainText("場所と書き込み許可");
+    await expect.poll(() => query(page).get("section")).toBe("places");
+    // **会話も移っている**——片方だけ効かせない
+    await expect.poll(() => query(page).get("thread")).toBe(THREAD_ID);
+    await page.keyboard.press("Escape");
+    await expect(roomTitle(page)).toHaveText("会話");
+  });
+
+  test("畳まれた会話を指す札を押しても、その会話は開き直らない（履歴で読む）", async ({ page }) => {
+    await host.close();
+    host = await FakeHost.start({ otherClosed: true });
+    await page.goto(`http://127.0.0.1:${host.port}/`);
+    await page.locator(".rail-btn[data-key='i']").click();
+    await page
+      .locator(".ib-letter", { hasText: "別の会話で頼まれた判断" })
+      .locator(".ib-go")
+      .click();
+
+    // 履歴の面でその会話を読む形になる（決定111・確認しに行っただけで開き直るのは事故）
+    await expect.poll(() => query(page).get("view")).toBe("history");
+    await expect.poll(() => query(page).get("read")).toBe(OTHER_THREAD_ID);
+    // 見ている会話は動かず、ホストへ「開き直せ」も飛ばない
+    expect(query(page).get("thread")).not.toBe(OTHER_THREAD_ID);
+    expect(host.received.some((m) => m["type"] === "thread_reopen")).toBe(false);
   });
 });
 
