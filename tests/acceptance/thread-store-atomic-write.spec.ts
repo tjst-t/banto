@@ -137,8 +137,10 @@ describe("[task-0161] 会話の記録と索引を原子的に書く", () => {
       recordingOps(calls, { op: "writeSync", error: new Error("書き込みの途中で落ちた") })
     );
 
+    // 書き戻しは**縮まない・前方一致**でなければ手前で拒まれる（inc-0075・task-0164）。
+    // ここで測りたいのは書き込みの失敗なので、通る形（末尾に足す）で落とす
     assert.throws(
-      () => store.replace("thread-1", [{ role: "po", text: "上書き" }]),
+      () => store.replace("thread-1", [...ENTRIES, { role: "po", text: "続き" }]),
       /書き込みの途中で落ちた/,
       "I2: 書けなかったら握り潰さず投げること"
     );
@@ -230,10 +232,11 @@ describe("[task-0161] 会話の記録と索引を原子的に書く", () => {
     assert.equal(raw, `${ENTRIES.map((e) => JSON.stringify(e)).join("\n")}\n`);
     assert.deepEqual(store.transcript("thread-1"), ENTRIES);
 
-    // 空の記録は空のファイル（従来どおり）
-    store.replace("thread-1", []);
-    assert.equal(fs.readFileSync(path.join(dir, "thread-1.jsonl"), "utf-8"), "");
-    assert.deepEqual(store.transcript("thread-1"), []);
+    // 空の記録は空のファイル（従来どおり）。既にある記録を空にするのは縮小として
+    // 拒まれる形（task-0164）なので、まだ何も無いスレッドで測る
+    store.replace("thread-2", []);
+    assert.equal(fs.readFileSync(path.join(dir, "thread-2.jsonl"), "utf-8"), "");
+    assert.deepEqual(store.transcript("thread-2"), []);
 
     // 索引は2スペース字下げの JSON ＋ 末尾改行、読み戻しも同じ
     store.upsert({

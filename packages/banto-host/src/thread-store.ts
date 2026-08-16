@@ -381,7 +381,8 @@ export class ThreadStore {
       const file = `${this.transcriptPath(threadId)}.rejected-${at}${attempt === 0 ? "" : `-${attempt}`}`;
       if (fs.existsSync(file)) continue;
       try {
-        fs.writeFileSync(file, body.length > 0 ? `${body}\n` : "", "utf-8");
+        // 退避も原子的に書く（task-0161）。半端に書けた退避は復旧の役に立たない
+        writeFileAtomicSync(file, body.length > 0 ? `${body}\n` : "", this.writeOps);
         return file;
       } catch (err) {
         // I2: 退避できなかったことも黙らせない。ただし元の記録は守れている（書いていない）
