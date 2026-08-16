@@ -71,21 +71,39 @@
 
 ## 5. 実装計画（Kobo へ積む粒）
 
-**検証環境についての制約（実測で踏んだ）**：`env.verify` は**稼働中の作業ツリーに process ドライバを打つと弾かれる**（`npm ci` 保護。2026-08-13 の事故に由来）。Kobo のタスクはタスク専用ワークツリーで回るので、**ブラウザを実際に起動する試験は `environment: test-docker`（process ドライバ）で通る**（chromium はホームの `~/.cache/ms-playwright` にあるため）。ブラウザを起動しない純ロジックの本は docker の `test` で足りる。
+### 5-0. 検証の方針（先に確定させる）
 
-各タスクは scope（触ってよいパス）・受け入れ（機械で確かめられる形）・環境・目安時間の順で書く。
+- 「ブラウザを実際に起動する試験は `environment: test-docker`（process ドライバ）で通る」と一度書いたが、**取り消す**。`test-docker` は**名指ししない**——inc-0073 で直しきれていない穴が残っている。
+- `test` プロファイルの器は **`node:24-alpine`**（`docker/Dockerfile.test`）で、**chromium は入っていない**うえ、playwright が落としてくる chromium は glibc 版なので **musl の alpine では動かない**。`~/.cache/ms-playwright` も器に載っていない（`docker/test.yaml` の volumes は node_modules の3小部屋と `.git` だけ）。**＝Kobo の受け入れ検証では本物のブラウザを起動できない。**
+- そこで**試験は「偽の CDP エンドポイント」に対して行う**。CDP はただの WebSocket + JSON-RPC なので、`ws`（既に依存にある）で偽のブラウザ側を立て、こちらが送ったコマンド列を記録し、任意のイベント（`Page.screencastFrame` / `Network.requestWillBeSent` / `requestWillBeSentExtraInfo` / `webSocketFrameReceived` / `eventSourceMessageReceived` など）を投げ返す。**これで、実装が守るべき作法（購読の順序・到着直後の本文取得・ExtraInfo の合流・伏字・入力の変換）はすべて機械で固定できる。**
+- **本物の chromium で動くこと**は Kobo の受け入れでは確かめられないので、**番頭が面で確認する**（だから `review: banto`）。この線引きはここに明記して以後の各タスクでも前提とする。
 
-- **T1 モジュールの骨格（Kobo の動作確認を兼ねる）**／scope: `packages/banto-browser/**`, `packages/banto-host/src/bin.ts`／内容: 新パッケージを作り `createBrowserModule()` が `BantoModule` を返す。Tool は `browser.status` 1本のみ（常に `stopped` を返す固定実装）。bin.ts で register。**ブラウザは起動しない**／受け入れ: モジュール名が `browser`・tools が `["browser.status"]`・`createModuleRegistry` へ登録して衝突例外が出ないことの単体試験が通る（`npm test`）／環境: test／30分〜1h
-- **T2 BrowserManager（起動・停止・寿命）**／scope: `packages/banto-browser/**`／内容: 状態機械 stopped→starting→running→stopping、playwright で chromium を起動（`DISPLAY` があれば Xvfb 上で headful、無ければ headless）、**CDP は `--remote-debugging-port` へ生で接続**、アイドル TTL で自動停止、`browser.start` / `browser.stop` / `browser.status`／受け入: 遷移の単体試験＋**実起動試験**（start→status が running、stop 後に stopped でプロセスが残らない）／環境: test-docker／2〜3h
-- **T3 面に映す（人が見る）**／scope: `packages/banto-browser/**`, `packages/banto-web/src/**`／内容: canvas kind `browser.viewer`、`handleUpgrade` で WS を生やし screencast フレームを配信（`Page.screencastFrameAck` を返す）／受け入: WS に接続してフレームが1枚以上届く試験＋ registry.tsx に kind が登録されている試験／環境: test-docker／2〜3h
-- **T4 面から触る（人が操作する）**／scope: 同上／内容: 面のマウス・キー・ホイール・日本語入力（`Input.insertText`）を CDP の `Input.*` へ流す。表示倍率と実座標の変換／受け入: 入力イベント→CDP コマンド変換の純関数試験（座標変換込み）＋ローカル HTML のボタンを面経由の経路で押せる試験／環境: test-docker／2〜3h
-- **T5 AI が操作する Tool**／scope: `packages/banto-browser/**`／内容: `browser.navigate` / `click` / `type` / `snapshot` / `extract_text` / `screenshot` / `wait_for`／受け入: ローカル HTML に対する操作試験／環境: test-docker／2〜3h
-- **T6 通信を記録する（中核）**／scope: `packages/banto-browser/**`／内容: `Network` と **ExtraInfo 系**、WebSocket、SSE を購読し、**本文は到着直後に都度取得して溜める**。service worker は `Target.setAutoAttach({flatten:true})` で個別に `Network.enable`。保存先はデータ領域の JSONL／受け入: 試験用サーバに対し fetch/XHR/WS/SSE/multipart/redirect が記録される試験、**別ページへ遷移した後でも本文が残っている**試験（＝都度取得の担保）、`Network.enable` 前の取りこぼしが無い試験／環境: test-docker／3h〜（大きければ「基本」と「service worker + WS/SSE」に割る）
-- **T7 秘密の伏字と2つの口**／scope: `packages/banto-browser/**`／内容: `browser.requests`（要約のみ：URL・メソッド・状態・サイズ・時間）と、本文まで返す別 Tool（**既定オフ**、説明文に永続化の但し書き）／受け入: **`Cookie` / `Set-Cookie` / `Authorization` / `Proxy-Authorization` が要約側の戻り値に絶対に含まれない**試験、既定オフの試験、説明文に但し書きの文字列が含まれる試験／環境: test／1〜2h
-- **T8 通信を面で見る**／scope: `packages/banto-web/src/**`, `packages/banto-browser/**`／内容: 一覧・詳細・フィルタ・HAR 出力／受け入: 一覧描画の試験、HAR 出力が妥当な JSON である試験／環境: test／2〜3h
-- **T9 SKILL と設定**／scope: `packages/banto-browser/**`, `docs/**`／内容: SKILL `browser`（人と画面を共有していること・操作の作法）と `browser-traffic-analysis`（何が取れて何が取れないか・3-2 の「取れないもの3つ」と 3-3 の条件をそのまま書く）、設定の既定値（記録は既定 OFF・アイドル TTL・同時1インスタンス）／受け入: skills が2本返る試験、既定値の試験／環境: test／1〜2h
+### 5-1. Kobo へ積むときの決まり
 
-**T1 が Kobo の動作確認を兼ねられる理由**：新パッケージ1つと bin.ts 1行の追加だけで、受け入れは既存の `npm test` だけで確かめられ、ブラウザを一切起動しないため。
+- `environment` は**すべて `test`**（`test-docker` は使わない）
+- `review` は**すべて `banto`**（当面は自動着地させない）
+- scope は**狭く**列挙する
+
+### 5-2. タスクの粒（K1〜K8）
+
+最初の1本（K1）は「人が面でブラウザを見て操作できる」最小の縦串にする。PO に早く触ってもらう方が判断が早いため。
+
+- **K1 面で見て触れる最小の往復**／scope: `packages/banto-browser/**`, `packages/banto-web/src/views/**`, `packages/banto-host/src/bin.ts`／内容: モジュールの骨格（`createBrowserModule`）、`browser.start`/`stop`/`status`、生 CDP 接続（**起動そのものは差し替え可能な launcher 契約にし、試験では偽 launcher を挿す**）、canvas kind `browser.viewer`、`handleUpgrade` の WS でフレーム配信と入力受け／受け入れ: ①`createModuleRegistry` へ登録して名前・Tool・kind が衝突しない ②偽 CDP に対し start→status が running、stop→stopped ③WS 接続で `Page.startScreencast` が送られ、偽 CDP が投げた `screencastFrame` が WS へ流れ `screencastFrameAck` が返る ④面からの入力が `Input.dispatchMouseEvent` / `Input.insertText` へ変換され、**表示倍率に応じた座標変換が正しい** ⑤`packages/banto-web/src/views/registry.tsx` に `browser.viewer` が載っている／3〜4h
+- **K2 本物の chromium を起こすアダプタ**／scope: `packages/banto-browser/**`／内容: chromium の探索（`~/.cache/ms-playwright` 優先）、`--remote-debugging-port` 等の起動引数、`DISPLAY` があれば Xvfb 上で headful・無ければ headless、アイドル TTL、stop でプロセスを残さない／受け入れ: 探索順と起動引数の組み立ての純関数試験＋偽プロセスでの寿命・後始末の試験（**実起動は番頭が面で確認**）／1〜2h
+- **K3 AI が操作する Tool**／scope: `packages/banto-browser/**`／内容: `browser.navigate`/`click`/`type`/`snapshot`/`extract_text`/`screenshot`/`wait_for`／受け入れ: 偽 CDP に対し、各 Tool が送る CDP コマンド列と戻り値の形が固定される試験／2〜3h
+- **K4 通信を記録する**／scope: `packages/banto-browser/**`／内容: `Network` と **ExtraInfo 系**、WebSocket フレーム、SSE を購読。**本文はレスポンス到着直後に都度取得して溜める**。multipart は `Network.getRequestPostData`。リダイレクトは同一 requestId の連鎖として畳む／受け入れ: ①偽 CDP が `loadingFinished` の後に**別ページへ遷移**し、以後 `getResponseBody` がエラーを返すようにしても**記録された本文が失われない** ②`requestWillBeSentExtraInfo` の Cookie が記録に合流する ③`hasPostData` かつ `postData` 空のとき `getRequestPostData` を呼ぶ ④302 と最終応答が1件の連鎖として記録される ⑤`Network.enable` が最初のナビゲーションより前に送られている／3h
+- **K5 service worker の通信も見る**／scope: `packages/banto-browser/**`／内容: `Target.setAutoAttach({flatten:true})` と、worker ターゲットごとの `Network.enable`／受け入れ: 偽 CDP が service_worker ターゲットを attach させたとき、**その sessionId 宛に `Network.enable` が送られる**こと、そのターゲットのイベントが記録に入ることの試験／1〜2h
+- **K6 伏字と、2つの口**／scope: `packages/banto-browser/**`／内容: `browser.requests` は要約のみ（URL・メソッド・状態・サイズ・時間）。本文まで返す口は**別 Tool・既定オフ**／受け入れ: ①`Cookie`・`Set-Cookie`・`Authorization`・`Proxy-Authorization` が**要約側の戻り値に絶対に含まれない**（ExtraInfo 由来のものも含めて） ②同じ記録が**面側の payload には出る** ③本文の口は既定オフで、有効化しない限り断る ④その Tool の説明文に決められた文言が含まれる／1〜2h
+- **K7 通信を面で見る**／scope: `packages/banto-web/src/views/**`, `packages/banto-browser/**`／内容: 一覧・詳細・フィルタ・HAR 出力／受け入れ: 一覧描画の試験と、HAR 出力が妥当な JSON である試験／2〜3h
+- **K8 SKILL と設定**／scope: `packages/banto-browser/**`, `docs/**`／内容: SKILL `browser` と `browser-traffic-analysis`（§3-2 の「取れないもの3つ」と §3-3 の条件をそのまま書く）、既定値（記録は既定 OFF・アイドル TTL・同時1インスタンス）／受け入れ: skills が2本返る試験、既定値の試験／1〜2h
+
+K6 で本文まで返す Tool の説明文に載せる文言は一字一句このとおりとする：
+
+> この Tool の戻り値は会話の記録に永続化される。ADR-0007 は秘密をエージェントの文脈に出さないと定めており、これは承知の上で開ける例外の口である
+
+### 5-3. 実測スクリプトの置き場所
+
+この判定のために動かした実測スクリプトは `prototype/browser-probe/` にそのまま残してある（使い捨てで製品コードではない。詳細は同ディレクトリの README.md を参照）。
 
 ## 6. 捨てたものと、それによって失うもの
 
