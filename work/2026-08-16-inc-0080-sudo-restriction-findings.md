@@ -1,6 +1,7 @@
 # inc-0080 — 自動エージェントの `sudo systemctl` を読み取り系に絞る：調査結果（フェーズ1）
 
 - 日付: 2026-08-16
+- 状態: **PO 判断待ちで保留**（案は用意済み・未配置）
 - 出所: 枝「sudo を読み取り系に絞る」（幹「banto開発」）／職人 `9b54ef19` の実測
 - 関連: `work/inbox/incident/inc-0080-agent-restarted-the-host-mid-conversation.md`, `work/inbox/improvement/imp-0080-workers-can-sudo-systemctl.md`
 
@@ -48,15 +49,29 @@
 
 ## 入れる案（作成済み・未配置）
 
-`/etc/sudoers.d/50-systemctl-write-requires-tty`（ファイル名にドットを入れない＝入れると sudo に無視される）
+配置先: `/etc/sudoers.d/50-systemctl-write-requires-tty`
+**ファイル名にドットを入れないこと**（`.` や `~` を含むファイルは sudo に無視される）。所有 `root:root`・パーミッション `0440`。
+
+**本文（これが全文。`/tmp` にしか無いと消えるのでここに貼る）**
 
 ```
-Cmnd_Alias SYSTEMCTL_WRITE = /usr/bin/systemctl restart *, /usr/bin/systemctl stop *, ... （書き込み系を列挙）
+# inc-0080: 書き込み系の systemctl は TTY のあるときだけ許す（自動エージェントの誤射を止める）
+Cmnd_Alias SYSTEMCTL_WRITE = \
+    /usr/bin/systemctl restart *, /usr/bin/systemctl stop *, /usr/bin/systemctl start *, \
+    /usr/bin/systemctl reload *, /usr/bin/systemctl try-restart *, /usr/bin/systemctl reload-or-restart *, \
+    /usr/bin/systemctl kill *, /usr/bin/systemctl mask *, /usr/bin/systemctl unmask *, \
+    /usr/bin/systemctl enable *, /usr/bin/systemctl disable *, /usr/bin/systemctl isolate *, \
+    /usr/bin/systemctl set-property *, /usr/bin/systemctl edit *, /usr/bin/systemctl revert *, \
+    /usr/bin/systemctl reset-failed *, /usr/bin/systemctl daemon-reload, /usr/bin/systemctl daemon-reexec, \
+    /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff, /usr/bin/systemctl halt, \
+    /bin/systemctl restart *, /bin/systemctl stop *, /bin/systemctl start *, /bin/systemctl daemon-reload, \
+    /bin/systemctl daemon-reexec, /bin/systemctl kill *, /bin/systemctl mask *
 Defaults!SYSTEMCTL_WRITE requiretty
 ```
 
 - **文法の確定事項**: 引数つきコマンドを `Defaults!` に直書きするのは文法違反。`Cmnd_Alias` を定義して参照するのが唯一の書き方（man 5 sudoers に明記）。
-- `visudo -c -f /tmp/50-systemctl-write-requires-tty` → `parsed OK`（sudo 1.9.15p5 / grammar 50）。**非 root でも構文検査だけは通る。**
+- `visudo -c -f <file>` → `parsed OK`（sudo 1.9.15p5 / grammar 50）。**非 root でも構文検査だけは通る。**
+- 読み取り系（`show` / `status` / `cat` / `list-units` / `is-active` / `is-enabled`）には **requiretty を当てない**（当てると自動の観測が死ぬ）。
 - **既存の `Defaults !requiretty`（cloud-init が置くことがある）の有無は未確認**。配置前に `sudo grep -rn requiretty /etc/sudoers /etc/sudoers.d/` で確かめること。
 
 ## 限界（この案が守れないもの）
@@ -75,15 +90,24 @@ Defaults!SYSTEMCTL_WRITE requiretty
 ```sh
 # 0) 現状を控える（既存 requiretty の確認もここで）
 sudo cp -a /etc/sudoers /tmp/sudoers.bak.$(date +%s); sudo ls -la /etc/sudoers.d/; sudo grep -rn requiretty /etc/sudoers /etc/sudoers.d/
-# 1) デッドマン（15分で自動的に外れる。sudo を壊しても戻る）
-sudo setsid sh -c 'sleep 900; [ -f /tmp/sudo-guard-ok ] || rm -f /etc/sudoers.d/50-systemctl-write-requires-tty' >/dev/null 2>&1 &
-# 2) 配置
-sudo install -m 0440 -o root -g root /tmp/50-systemctl-write-requires-tty /etc/sudoers.d/50-systemctl-write-requires-tty \
-  && sudo visudo -c && sudo -n true && touch /tmp/sudo-guard-ok
+# 1) 上の本文を書く
+sudo install -m 0440 -o root -g root /dev/stdin /etc/sudoers.d/50-systemctl-write-requires-tty <<'EOF'
+（上の「本文」をそのまま貼る）
+EOF
+# 2) 配置直後に全体の構文検査。通らなければ即座に rm すること
+sudo visudo -c && sudo -n true
 # 3) 実測（的は存在しないユニット名なので実害ゼロ）
 setsid --wait sh -c 'sudo systemctl restart banto-sudo-probe-nonexistent.service; echo exit=$?' </dev/null  # → "must have a tty" なら効いている
 sudo systemctl restart banto-sudo-probe-nonexistent.service                                                  # → "Unit not found" なら PO の経路は生きている
 sudo systemctl show banto.service -p MemoryMax; sudo systemctl status banto.service --no-pager | head -3     # → 読み取り系は通る
+```
+
+**デッドマン装置**（sudo 自体を壊しても15分で自動的に外れる。配置の前に張る）:
+
+```sh
+sudo setsid sh -c 'sleep 900; [ -f /tmp/sudo-guard-ok ] || rm -f /etc/sudoers.d/50-systemctl-write-requires-tty' >/dev/null 2>&1 &
+# 全部確認できたら解除
+touch /tmp/sudo-guard-ok
 ```
 
 戻し方（1行）:
@@ -92,8 +116,8 @@ sudo systemctl show banto.service -p MemoryMax; sudo systemctl status banto.serv
 sudo rm -f /etc/sudoers.d/50-systemctl-write-requires-tty && sudo visudo -c
 ```
 
-## PO 判断待ち（枝から幹へ相談中）
+## PO 判断待ち（この3点が決まれば撃てる）
 
-1. 誰が撃つか（PO の手元 / opencode に一度だけ打たせる）
-2. `set-property --runtime` も塞ぐか（opencode が今日3回、OOM 対処に使っている）
-3. `requiretty` で行くか、`opencode.service` に `NoNewPrivileges=true` を入れるか（番頭の推し: まず requiretty、NNP は用途を洗ってから第2段）
+1. **誰が撃つか** — PO の手元 ssh / opencode に一度だけ打たせる
+2. **`set-property --runtime` も塞ぐか** — opencode が今日3回、OOM 対処に使っている
+3. **`requiretty` か `opencode` への `NoNewPrivileges=true` か** — 番頭の推し: まず requiretty で誤射を止め、NNP は特権用途を洗ってから第2段
