@@ -71,6 +71,34 @@ model tier で調整する（決定62b）——つまみは既にある。
 **判断待ちが返ってきたら SKILL `kobo-review` を読むこと。** 通すか、取次で PO へ上げるかの
 判断と、その積み方（`inbox.post` に何を書くか）がそこにある。
 
+## 1本だけ回す verify の書き方
+
+**`npm test -- tests/acceptance/foo.spec.ts` は絞り込みになりません。** `test` スクリプトは
+`node --import tsx --test $(ls tests/acceptance/*.spec.ts | …)` の形で**ファイル一覧をすでに
+渡し切っている**ので、`--` の後ろに書いたパスは**引数として足されるだけ**。結果、毎回
+全量（2400件超・約400秒）が走ります。
+
+1本だけ確かめたいときは **`npm run test:one`** を使ってください。
+
+```
+acceptance: [
+  { text: "マージゲートの不通過が failed になる",
+    verify: "npm run test:one -- tests/acceptance/merge-gate-fail.spec.ts" },
+  { text: "全量と型検査が通る", verify: "npm test && npm run typecheck" }
+]
+```
+
+- **`node --import tsx --test <file>` を素で書かないこと。** `test:one` は全量と同じ
+  `BANTO_WORKER_POOL_URL` / `BANTO_ENV_POOL_URL` を立てます。素で呼ぶとこの2つが立たず、
+  試験が**本物の Worker Pool / Environment Pool を掴みに行きます**
+- **走った本数を verify の中で数えるなら `--test-reporter=tap` を足すこと**
+  （`npm run test:one -- --test-reporter=tap tests/acceptance/foo.spec.ts`）。Node 24 は
+  パイプ越しでも既定が spec 表示（`ℹ tests 1`）なので、`# tests` を grep する書き方は
+  そのままでは当たりません
+- **条件ごとに全量を回さないこと。** 全量（`npm test`）と型検査は**最後の1条にまとめる**。
+  理由：全量を条件の数だけ回すと時間と負荷がその倍になり、間欠失敗（`inc-0070` の
+  `write EPIPE`）を**自分から誘発します**
+
 ## 積んだ後に「やっぱり違った」となったら
 
 **契約は訂正できます**（ADR-0014・決定69〜72）。**変えたい中身を `kobo.amend` に渡す**と、
