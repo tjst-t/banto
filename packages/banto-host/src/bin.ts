@@ -134,6 +134,7 @@ import { type NamespacedToolDefinition } from "./tool-registry.js";
 import { fromWireToolName, type BantoHarness } from "@banto/core";
 import { PiHarness } from "./pi-harness.js";
 import { ClaudeAgentHarness } from "./claude-agent-harness.js";
+import { PooledSdkHarness, SdkSessionPool } from "./sdk-sessions.js";
 import { selectPresentedTools } from "./presented-tools.js";
 import {
   RESTART_RESUME_NOTICE,
@@ -288,6 +289,38 @@ function chapterThresholdRatio(): number | undefined {
     return undefined;
   }
   return parsed;
+}
+
+/**
+ * 環境変数から正の整数を読む。**読めない値は黙って既定に落とさない**（I2）。
+ *
+ * `chapterThresholdRatio` と同じ流儀——設定したつもりの値と違う値で動くのが一番困る。
+ */
+function positiveIntFromEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    console.warn(`[banto] ${name} は正の整数です（${raw}）。既定を使います`);
+    return undefined;
+  }
+  return parsed;
+}
+
+/**
+ * アイドルな SDK セッションを畳むまでの時間（ミリ秒）。`BANTO_SDK_IDLE_MS` で変えられる。
+ * 既定は `DEFAULT_SDK_IDLE_MS`（15分。職人側の安全弁と同じ）。
+ */
+function sdkIdleMs(): number | undefined {
+  return positiveIntFromEnv("BANTO_SDK_IDLE_MS");
+}
+
+/**
+ * 同時に生かす SDK セッションの上限。`BANTO_SDK_MAX_SESSIONS` で変えられる。
+ * 既定は `DEFAULT_SDK_MAX_LIVE`（8本。根拠は `sdk-sessions.ts` の注釈）。
+ */
+function sdkMaxSessions(): number | undefined {
+  return positiveIntFromEnv("BANTO_SDK_MAX_SESSIONS");
 }
 
 // 章の要約に使うモデルの解決は `chapter-model.ts` の `resolveChapterModel`（task-0151）。
@@ -1084,6 +1117,18 @@ async function serve(options: ServeOptions): Promise<void> {
    * 差し替える**ために、両方の作り手を覚えておく。pi 側は同じものを返す——章立てが
    * その pi セッションに紐づいているので、戻ったときに文脈が残っている必要がある。
    */
+  /**
+   * **常駐する SDK セッションの本数を抑える安全弁**（task-0165）。
+   *
+   * ホストが 4 回 OOM で殺された直接の原因が、畳まれないまま積み上がった
+   * Claude Code の子プロセス（12〜13本で 2.3〜2.4 GiB／unit の上限は 3.00 GiB）。
+   * アイドルと本数の上限で畳み、次の発話が来たら札で戻す（会話は失われない）。
+   */
+  const sdkSessions = new SdkSessionPool({
+    ...(sdkIdleMs() !== undefined ? { idleMs: sdkIdleMs()! } : {}),
+    ...(sdkMaxSessions() !== undefined ? { maxLive: sdkMaxSessions()! } : {}),
+  });
+  sdkSessions.start();
   const harnessSwitchers = new Map<
     string,
     {
@@ -1401,12 +1446,21 @@ async function serve(options: ServeOptions): Promise<void> {
      * D11・決定47a・暴走を止めるターン予算は、**どのバックエンドでも同じように効く**必要がある。
      */
     /**
-     * **この会話の Claude 側の札**（決定97・task-0104）。復元で渡ってきたものから始め、
-     * 差し替えのたびに引き継ぐ——モデルを替えても会話は続く（別セッションにしない）。
+     * **この会話の Claude 側の皮**（task-0165）。
+     *
+     * 中身（`ClaudeAgentHarness` ＝ Claude Code の子プロセス）は**遅らせて組み、
+     * 触られなくなったら畳む**。畳んでも札（決定97・task-0104）は皮が持つので、
+     * 次の発話で同じ会話の続きとして戻る——モデルを替えても会話は続く。
+     * 皮そのものは会話の生涯で1本のまま（`Thread.harness` の差し替えを起こさない）。
      */
-    let claudeResume: string | undefined = resumeBackendSession;
-    /** いま生きている Claude のハーネス。**1本だけ持つ**（畳まないと子プロセスが積み上がる）。 */
-    let claudeHarness: ClaudeAgentHarness | undefined;
+    let claudeHarness: PooledSdkHarness | undefined;
+    /** 皮に被せた分（未処理の1行・ターン予算）。**組み直しても同じものを返す**。 */
+    let claudeWrapped: BantoHarness | undefined;
+    /**
+     * 章を畳んでいる最中かを訊く口。**`chapters` はこの下で組まれる**ので、後から差す
+     * ——畳み中の会話を安全弁に畳ませないための掛け金（imp-0052 と同じ理由）。
+     */
+    let chapterGateRef: { isClosing(): boolean } | undefined;
     /**
      * imp-0036(c): 未処理を抱えた枝の件数を、**幹の文脈に1行**足す皮。
      *
@@ -1421,25 +1475,41 @@ async function serve(options: ServeOptions): Promise<void> {
       });
     const makeClaudeHarness = (model?: string): BantoHarness => {
       /**
-       * **前のものを畳んでから作る**（task-0104 の3番）。`PromptQueue` は「空になっても
-       * 終わらせない」ので、参照を落とすだけでは `query()` が生き続け、バックエンドを
-       * 往復するたびに Claude Code の子プロセスが積み上がる。
+       * **皮は1本しか作らない**（task-0165）。
+       *
+       * 以前はここで毎回 `ClaudeAgentHarness` を組み直していた（`PromptQueue` は
+       * 「空になっても終わらせない」ので、前のものを畳んでから作る必要がある）。
+       * いまはその「畳んで組み直す」を皮の中へ入れてある——組み直しの理由が
+       * モデルの選び直しでも、安全弁でも、上限でも同じ形になる。
        */
-      const previous = claudeHarness;
-      if (previous) {
-        // 札は引き継ぐ（畳む前に取る）。取らないとモデルを替えるたびに文脈が消える
-        claudeResume = previous.resumeToken() ?? claudeResume;
-        void previous.dispose();
+      if (!claudeHarness) {
+        claudeHarness = new PooledSdkHarness({
+          threadId,
+          pool: sdkSessions,
+          ...(resumeBackendSession ? { resume: resumeBackendSession } : {}),
+          ...(model ? { model } : {}),
+          // 章を畳んでいる最中は安全弁に畳ませない（返事と要約の相手が消える）
+          held: () => chapterGateRef?.isClosing() === true,
+          /**
+           * **組み立ては起こすたびにやり直す**——記憶も SKILL も、畳んでいる間に
+           * 増えていることがある（`assembleStewardContext` は毎回読み直す）。
+           */
+          create: ({ resume, model: chosen }) => {
+            const assembled = assembleStewardContext(stewardContextOptions);
+            return new ClaudeAgentHarness({
+              systemPrompt: assembled.systemPrompt,
+              // 提示する集合だけを載せる（ADR-0019 決定82）。組み込みは `tools: []` で0本
+              tools: selectPresentedTools(assembled.tools),
+              ...(chosen ? { model: chosen } : {}),
+              ...(resume ? { resume } : {}),
+            });
+          },
+        });
+        claudeWrapped = unsettledNotice(withTurnBudgetReset(claudeHarness, turnBudget));
       }
-      const assembled = assembleStewardContext(stewardContextOptions);
-      claudeHarness = new ClaudeAgentHarness({
-        systemPrompt: assembled.systemPrompt,
-        // 提示する集合だけを載せる（ADR-0019 決定82）。組み込みは `tools: []` で0本
-        tools: selectPresentedTools(assembled.tools),
-        ...(model ? { model } : {}),
-        ...(claudeResume ? { resume: claudeResume } : {}),
-      });
-      return unsettledNotice(withTurnBudgetReset(claudeHarness, turnBudget));
+      // 選び直しなら生きている中身を畳む（次の発話で新しいモデルの側が起きる）
+      claudeHarness.selectModel(model);
+      return claudeWrapped!;
     };
 
     /**
@@ -1506,10 +1576,13 @@ async function serve(options: ServeOptions): Promise<void> {
        * 選べば同じ文脈から続く——畳むのは走っているプロセスだけ。
        */
       releaseClaude: () => {
-        if (!claudeHarness) return;
-        claudeResume = claudeHarness.resumeToken() ?? claudeResume;
-        void claudeHarness.dispose();
-        claudeHarness = undefined;
+        // 皮は残す（札もそこに残る）。畳むのは走っている中身だけ
+        void claudeHarness?.release("pi へ戻した").catch((err: unknown) => {
+          console.error(
+            `[banto] ${threadId} の SDK セッションを畳めませんでした: ${String(err)}` +
+              "——会話はそのまま続きます"
+          );
+        });
       },
     });
 
@@ -1633,6 +1706,13 @@ async function serve(options: ServeOptions): Promise<void> {
       },
     });
     chapters.start();
+    /**
+     * **章を畳んでいる最中は SDK セッションを畳ませない**（task-0165 a4）。
+     *
+     * `chapters` はハーネスの後に組まれるので、掛け金はここで差す
+     * ——畳み中に安全弁が中身を捨てると、要約の相手も `startChapter` の相手も消える。
+     */
+    chapterGateRef = chapters;
 
     // server はイベントの wire名→論理名 逆引きに、登録した論理名のToolを必要とする
       const tools = [
@@ -2046,6 +2126,8 @@ async function serve(options: ServeOptions): Promise<void> {
       stopKoboNotices();
       stopEnvNotices();
       stopStaleBranches();
+      // 安全弁の見回りも止める（畳むのはこの下の `threads.dispose()` が全部やる）
+      sdkSessions.stop();
       // server.close() が全スレッドの後始末（購読解除＋対話ループの dispose）まで行う
       await server.close();
       threads.dispose();

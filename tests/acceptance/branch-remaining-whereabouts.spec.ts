@@ -375,7 +375,12 @@ describe("[imp-0036] 配線", () => {
     );
     // pi と claude-agent-sdk の両方（片方だけに掛かる形は、過去に一度やっている）
     assert.match(bin, /const piHarness: BantoHarness = unsettledNotice\(/u);
-    assert.match(bin, /return unsettledNotice\(withTurnBudgetReset\(claudeHarness, turnBudget\)\)/u);
+    /**
+     * 掛ける形は「返り値」から「1本だけ組んで覚える」へ変わった（task-0165：SDK
+     * セッションの皮は会話の生涯で1本）。**見るのは掛かっているかどうか**で、
+     * `return` で返しているかどうかではない。
+     */
+    assert.match(bin, /unsettledNotice\(withTurnBudgetReset\(claudeHarness, turnBudget\)\)/u);
   });
 
   it("道具の説明が「所在が無ければ断る」「判断は thread.consult」と言う", async () => {

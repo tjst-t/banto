@@ -24,6 +24,17 @@ export {
   type ClaudeAgentHarnessOptions,
   type RunningQuery,
 } from "./claude-agent-harness.js";
+// 常駐する SDK セッションの本数を抑える安全弁（task-0165）。畳んでも札で戻る
+export {
+  SdkSessionPool,
+  PooledSdkHarness,
+  DEFAULT_SDK_IDLE_MS,
+  DEFAULT_SDK_MAX_LIVE,
+  DEFAULT_SDK_SWEEP_MS,
+  type SdkSession,
+  type SdkSessionPoolOptions,
+  type PooledSdkHarnessOptions,
+} from "./sdk-sessions.js";
 export { jsonSchemaToZod, jsonSchemaToZodShape } from "./schema-to-zod.js";
 export {
   PRESENTED_TOOL_NAMES,
