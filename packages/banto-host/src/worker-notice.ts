@@ -326,13 +326,20 @@ export function startWorkerNotices(options: WorkerNoticeOptions): () => void {
    * 読んだ位置。未設定なら最初の tick で今の位置まで進める（起動前の分を流さないため）。
    * **配った位置とは別物**——配るのは番頭のターンなので、読むより遥かに遅い。
    */
-  let cursor: number | undefined = options.cursorPath
-    ? readCursor(options.cursorPath)
-    : undefined;
+  const ledger = options.cursorPath ? readLedger(options.cursorPath) : undefined;
+  let cursor: number | undefined = ledger?.lastEventId;
   /** 読み終えた最大の id（配り終えていれば、ここまで位置を進めてよい）。 */
   let maxSeen = cursor ?? 0;
   /** 積んだが、まだ配り終えていない知らせの id。 */
   const pending = new Set<number>();
+  /**
+   * **配り終えた印**（task-0217）。読み位置より先で配り終えた分を覚えておく。
+   *
+   * 読み位置は「まだ配れていない一番古い知らせの手前」で止まる。会話ごとに別の列で配るので、
+   * **後ろの知らせが先に配り終わる**ことがあり、その分は読み位置より先にある——起こし直すと
+   * そこから読み直して**もう一度届く**。印があれば二度目は落とせる。
+   */
+  const delivered = new Set<number>(ledger?.delivered ?? []);
   /**
    * 会話ごとの配送列。
    *
@@ -348,7 +355,10 @@ export function startWorkerNotices(options: WorkerNoticeOptions): () => void {
   const persist = (): void => {
     if (!options.cursorPath) return;
     const oldestPending = pending.size > 0 ? Math.min(...pending) : undefined;
-    writeCursor(options.cursorPath, oldestPending === undefined ? maxSeen : oldestPending - 1, log);
+    const lastEventId = oldestPending === undefined ? maxSeen : oldestPending - 1;
+    // 読み位置より手前の分は位置そのものが守るので、印は先の分だけ残す
+    for (const id of delivered) if (id <= lastEventId) delivered.delete(id);
+    writeLedger(options.cursorPath, { lastEventId, delivered: [...delivered] }, log);
   };
 
   /** 1通を実際に配る。**配る瞬間の事実**で書き直してから渡す（inc-0069）。 */
@@ -385,6 +395,8 @@ export function startWorkerNotices(options: WorkerNoticeOptions): () => void {
     pending.add(event.id);
     const done = (err?: unknown): void => {
       if (err !== undefined) log(`[banto] 職人の知らせを配れませんでした: ${String(err)}`);
+      // 配れなかったものには印を付けない（次の起動でもう一度配る・I2）
+      else delivered.add(event.id);
       pending.delete(event.id);
       persist();
     };
@@ -414,6 +426,11 @@ export function startWorkerNotices(options: WorkerNoticeOptions): () => void {
         maxSeen = Math.max(maxSeen, event.id ?? 0);
         if (!isBantoOrigin(event.origin)) continue;
         if (!isNoticeworthy(event)) continue;
+        if (delivered.has(event.id)) {
+          // I2: 落としたことを黙らせない
+          log(`[banto] 職人の知らせ #${String(event.id)}（${event.type}）は配達済みです——配りません`);
+          continue;
+        }
         enqueue(event);
       }
       persist();
@@ -436,25 +453,41 @@ export function startWorkerNotices(options: WorkerNoticeOptions): () => void {
 }
 
 /**
- * どこまで**配り終えた**か。無ければ undefined＝「今の位置から始める」。
+ * どこまで**配り終えた**か（と、その先で配り終えた分の印・task-0217）。
+ * 位置が無ければ undefined＝「今の位置から始める」。
  *
  * 壊れていたら undefined を返す——0 から読み直すと、溜まった履歴を全部会話へ流し込む。
  * 検証環境（`env-notice.ts`）は 0 に倒しているが、あちらは1日に数件で、こちらは
  * 数千件ある（実測 6600 超）。**多く届く方がよい**の限度を超える。
  */
-function readCursor(cursorPath: string): number | undefined {
+function readLedger(
+  cursorPath: string
+): { lastEventId: number | undefined; delivered: number[] } {
   try {
-    const parsed = JSON.parse(fs.readFileSync(cursorPath, "utf-8")) as { lastEventId?: number };
-    return typeof parsed.lastEventId === "number" ? parsed.lastEventId : undefined;
+    const parsed = JSON.parse(fs.readFileSync(cursorPath, "utf-8")) as {
+      lastEventId?: number;
+      delivered?: unknown;
+    };
+    return {
+      lastEventId: typeof parsed.lastEventId === "number" ? parsed.lastEventId : undefined,
+      // 印を持たない古い形（`{ lastEventId }` だけ）もそのまま読める
+      delivered: Array.isArray(parsed.delivered)
+        ? parsed.delivered.filter((id): id is number => typeof id === "number")
+        : [],
+    };
   } catch {
-    return undefined;
+    return { lastEventId: undefined, delivered: [] };
   }
 }
 
-function writeCursor(cursorPath: string, lastEventId: number, log: (m: string) => void): void {
+function writeLedger(
+  cursorPath: string,
+  ledger: { lastEventId: number; delivered: number[] },
+  log: (m: string) => void
+): void {
   try {
     fs.mkdirSync(path.dirname(cursorPath), { recursive: true });
-    fs.writeFileSync(cursorPath, JSON.stringify({ lastEventId }), "utf-8");
+    fs.writeFileSync(cursorPath, JSON.stringify(ledger), "utf-8");
   } catch (err) {
     // 書けなくても知らせは届いている。次の起動で読み直すと重複するだけ
     log(`[banto] 職人の読み位置を保存できません: ${String(err)}`);

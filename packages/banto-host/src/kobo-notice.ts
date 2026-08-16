@@ -14,6 +14,7 @@
  * I2: 到達できないことを「何も起きていない」と混同しない——理由をログに出して次の tick へ。
  */
 
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { threadIdOfOrigin } from "./worker-notice.js";
@@ -88,6 +89,21 @@ const NOTICEWORTHY = new Set([
  */
 const NOTICEWORTHY_STATES = new Set(["review-ready", "paused"]);
 
+/**
+ * **PO の判断が付くまで動かない状態**（task-0217）。
+ *
+ * ここに居るタスクは、誰かが手を入れるまで先へ進まない——だから「進めない件について
+ * 催促だけが増える」形になりうる。動いている状態（implementing 等）は含めない：
+ * そちらは知らせが増えても、実際に何かが進んでいる。
+ */
+const WAITING_STATES = new Set(["review-ready", "in-review", "paused", "failed"]);
+
+/** 配達済みとして覚えておく件数（読み位置からこの幅だけ遡って印を持つ）。 */
+const DELIVERED_WINDOW = 500;
+
+/** 催促の抑制を覚えておく件数。溢れたら古い順に捨てる（捨てた分は次に必ず配られる）。 */
+const PROMPT_WINDOW = 200;
+
 /** Kobo の1イベント（この層に要るところだけ）。 */
 export interface KoboEventView {
   eventId: number;
@@ -148,10 +164,57 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
     const result = await tool.execute(args as never, { toolCallId: `kobo-notice-${Date.now()}` });
     return (result.details ?? {}) as Record<string, unknown>;
   };
+  /** 人向けの文だけが要るとき（`inbox.list` は details に一覧を載せない）。 */
+  const invokeText = async (name: string, args: Record<string, unknown>): Promise<string> => {
+    const tool = options.tools.find((t) => t.name === name);
+    if (!tool) throw new Error(`${name} が登録されていません`);
+    const result = (await tool.execute(args as never, { toolCallId: `kobo-notice-${Date.now()}` })) as {
+      content?: Array<{ text?: string }>;
+    };
+    return (result.content ?? []).map((c) => String(c.text ?? "")).join("\n");
+  };
 
-  let cursor = readCursor(options.cursorPath);
+  const ledger = readLedger(options.cursorPath);
+  let cursor = ledger.lastEventId;
+  /**
+   * **配達済みの印**（task-0217）。読み位置とは別に持つ。
+   *
+   * 読み位置は tick の終わりにしか書かれない。ところが `notify` は番頭のターンが空くまで
+   * 返らないので、100件を捌く間ずっと書かれないことがある——その途中で落ちる
+   * （起こし直しは kill -9）と、**配り終えた分が丸ごと再送**される。2026-08-16 に
+   * dentaku/task-0042 で、既に配った失敗の札が3回届いたのがこの形。
+   *
+   * だから**1通配るごとに**印を書き、印のある event id は二度と配らない。
+   */
+  const delivered = new Set<number>(ledger.delivered);
+  /**
+   * **PO 判断待ちのあいだに配った催促**（task-0217）。
+   *
+   * key は `<projectTag>/<taskId>#<種類>`、値は札の指紋（`<状態>#<本文のダイジェスト>`）。
+   * 同じ指紋の催促は2回目から配らない——**進めない件について、判断を促す知らせだけが
+   * 増える**のを止める（inc-0063 と同じ周回）。
+   *
+   * **指紋が変われば配る。** 状態が動いた知らせと、中身の違う知らせは今までどおり届く
+   * ——落とすのは「同じ出来事の2回目以降」だけである（inc-0069：知らせを消さない）。
+   */
+  const prompts = new Map<string, string>(Object.entries(ledger.prompts));
   let running = false;
   let stopped = false;
+
+  /** 読み位置と印をまとめて書く。**1通配るごとに**呼ぶ。 */
+  const persist = (): void => {
+    for (const id of delivered) if (id <= cursor - DELIVERED_WINDOW) delivered.delete(id);
+    while (prompts.size > PROMPT_WINDOW) {
+      const oldest = prompts.keys().next();
+      if (oldest.done === true) break;
+      prompts.delete(oldest.value);
+    }
+    writeLedger(options.cursorPath, {
+      lastEventId: cursor,
+      delivered: [...delivered],
+      prompts: Object.fromEntries(prompts),
+    });
+  };
 
   /** 1通届ける。宛先が畳まれていたら既定の宛先へ逃がす（**消えたことにしない**・I2）。 */
   const deliver = async (notice: {
@@ -175,6 +238,33 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
   const tick = async (): Promise<void> => {
     if (running || stopped) return;
     running = true;
+    /**
+     * **PO の判断待ちの札が立っているか。**
+     *
+     * 見どころは2つ。①レビューの段が `po`——番頭では通せないので、PO が押すまで動かない
+     * （決定57）。②取次に**そのタスクの未解決の一通が積まれている**——番頭が自分で
+     * 上げた札である。②は `inbox.list` の文から読む：取次は details に一覧を載せない
+     * ので、ここは文を読むしかない（**読めなければ「札は無い」側に倒す**＝抑えない）。
+     *
+     * `inbox.list` は Tool 名で引くだけなので、この層は取次のコードを読み込まない（決定27）。
+     * その tick のあいだは1回だけ引く。
+     */
+    let board: string | undefined;
+    const poWaiting = async (taskId: string, stage: string, status: string): Promise<boolean> => {
+      if (!WAITING_STATES.has(status)) return false;
+      if (stage === "po") return true;
+      if (board === undefined) {
+        try {
+          board = await invokeText("inbox.list", {});
+        } catch {
+          // 取次が引けないことを「札が立っている」と読まない（届く方へ倒す・inc-0069）
+          board = "";
+        }
+      }
+      return board
+        .split("\n")
+        .some((line) => line.includes("【判断待ち】") && taskId.length > 0 && line.includes(taskId));
+    };
     try {
       const details = await invoke("kobo.events", { afterEventId: cursor, limit: 100 });
       const events = (details["events"] ?? []) as KoboEventView[];
@@ -188,20 +278,55 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
        * 束ねてよいのは「同じことが並んでいるだけ」のもの＝滞留の知らせ。
        * 「止まった」「落ちた」は1件ずつ理由が違うので、今までどおり1通ずつ。
        */
-      const stalled = events.filter((e) => e.type === "task_stalled");
+      const stalled = events.filter(
+        (e) => e.type === "task_stalled" && !delivered.has(e.eventId ?? 0)
+      );
       for (const event of events) {
         cursor = Math.max(cursor, event.eventId ?? 0);
         if (event.type === "task_stalled") continue;
+        const eventId = event.eventId ?? 0;
+        if (delivered.has(eventId)) {
+          // I2: 落としたことを黙らせない。何を配らなかったかは記録から読める
+          log(`[banto] 工場の知らせ #${eventId}（${event.type}）は配達済みです——配りません`);
+          continue;
+        }
         const notice = await renderNotice(event, origins, invoke);
         if (!notice) continue;
+        const taskId = event.taskId ?? "";
+        const kind = kindOfKoboEvent(event);
+        const key = `${event.projectTag}/${taskId}#${kind}`;
+        if (await poWaiting(taskId, notice.stage, notice.status)) {
+          const mark = `${notice.status}#${digestOf(notice.text)}`;
+          if (prompts.get(key) === mark) {
+            log(
+              `[banto] ${event.projectTag}/${taskId} は PO の判断待ちです` +
+                `——同じ催促（${kind}・event #${eventId}）は配りません`
+            );
+            delivered.add(eventId);
+            persist();
+            continue;
+          }
+          prompts.set(key, mark);
+        } else {
+          // 札が下りた（または端から立っていない）なら覚えを捨てる。次は必ず配る
+          prompts.delete(key);
+        }
         // T3: 鍵はタスク1件
         const subject = subjectOfKoboEvent(event);
-        await deliver({ ...notice, ...(subject ? { subject } : {}) });
+        await deliver({
+          origin: notice.origin,
+          text: notice.text,
+          ...(subject ? { subject } : {}),
+        });
+        // **配った直後に印を書く。** ここで落ちても、次の起動で再送しない
+        delivered.add(eventId);
+        persist();
       }
       for (const bundle of bundleStalled(stalled, origins)) {
         await deliver(bundle);
       }
-      writeCursor(options.cursorPath, cursor);
+      for (const event of stalled) delivered.add(event.eventId ?? 0);
+      persist();
     } catch (err) {
       // I2: 引けなかったことを黙って握らない。写しを進めないので次の tick で取り直す
       log(`[banto] 工場の知らせを引けませんでした: ${String(err)}`);
@@ -306,6 +431,25 @@ export function subjectOfKoboEvent(event: KoboEventView): NoticeSubject | undefi
   };
 }
 
+/**
+ * **その知らせの種類**（task-0217）。同じ種類の催促を数えるための鍵。
+ *
+ * 遷移だけは行き先まで込みにする——`review-ready` と `paused` は別の催促である。
+ */
+export function kindOfKoboEvent(event: KoboEventView): string {
+  return event.type === "state_transitioned" ? `state:${event.to ?? ""}` : event.type;
+}
+
+/**
+ * 本文の指紋。**中身が1文字でも違えば別の知らせ**として扱う（＝配る）。
+ *
+ * 抑制を「同じ出来事の繰り返し」だけに閉じ込めるための担保。文面そのものを持つと
+ * 記録が肥るので、短いダイジェストにする。
+ */
+function digestOf(text: string): string {
+  return crypto.createHash("sha1").update(text).digest("hex").slice(0, 16);
+}
+
 /** 人が読む長さ。`banto-core` の `formatDwell` と同じ形（この層は Kobo に依存しない）。 */
 function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60_000);
@@ -392,7 +536,7 @@ async function renderNotice(
   event: KoboEventView,
   origins: Record<string, string>,
   invoke: (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>
-): Promise<{ origin: string; text: string } | undefined> {
+): Promise<{ origin: string; text: string; stage: string; status: string } | undefined> {
   if (!NOTICEWORTHY.has(event.type)) return undefined;
   if (event.type === "state_transitioned" && !NOTICEWORTHY_STATES.has(event.to ?? "")) return undefined;
   if (event.type === "audit_verdict" && event.verdict !== "fail") return undefined;
@@ -430,6 +574,8 @@ async function renderNotice(
     // 詳細が引けなくても知らせは出す（届かないより粗い方がまし）
   }
   const title = task?.title ? `：${task.title}` : "";
+  /** 判断待ちの見分けに使う（`kobo.task` が引けなければ空＝抑えない）。 */
+  const status = task?.status ?? "";
 
   if (event.type === "task_failed") {
     const reason = event.reason ?? "";
@@ -446,6 +592,8 @@ async function renderNotice(
     const keep = await keepBranchLine(invoke, event.projectTag, taskId);
     return {
       origin,
+      stage,
+      status,
       text: [
         `${taskId} が止まりました${title}`,
         "",
@@ -463,6 +611,8 @@ async function renderNotice(
   if (event.type === "audit_verdict") {
     return {
       origin,
+      stage,
+      status,
       text: [
         `${taskId} が監査に落ちました${title}`,
         "",
@@ -479,6 +629,8 @@ async function renderNotice(
   if (event.type === "task_merged") {
     return {
       origin,
+      stage,
+      status,
       text: [
         `${taskId} がマージされました${title}`,
         "",
@@ -491,6 +643,8 @@ async function renderNotice(
   if (event.type === "state_transitioned" && event.to === "paused") {
     return {
       origin,
+      stage,
+      status,
       text: [
         `${taskId} が止まって待っています${title}`,
         "",
@@ -533,6 +687,8 @@ async function renderNotice(
 
   return {
     origin,
+    stage,
+    status,
     text: [
       `${taskId} がレビュー待ちです${title}`,
       "",
@@ -584,22 +740,53 @@ async function renderNotice(
   };
 }
 
-/** どこまで読んだか。壊れていたら 0 から読み直す（多く届く方が、消えるよりよい）。 */
-function readCursor(cursorPath: string): number {
+/**
+ * 配達の帳面（task-0217）。読み位置・配達済みの印・催促の覚えを1つのファイルに置く。
+ *
+ * D3: 置き場を増やさない。どれも「配り役がどこまでやったか」という同じ1つの状態で、
+ * 会話の記録からは導けない。
+ */
+interface NoticeLedger {
+  /** どこまで読んだか。 */
+  lastEventId: number;
+  /** もう配った（または抑えた）出来事の id。**再起動をまたいで効く印**。 */
+  delivered: number[];
+  /** PO 判断待ちのあいだに配った催促の指紋（key: `<projectTag>/<taskId>#<種類>`）。 */
+  prompts: Record<string, string>;
+}
+
+/**
+ * 帳面を読む。壊れていたら空から読み直す（多く届く方が、消えるよりよい）。
+ *
+ * 印を持たない古い形（`{ lastEventId }` だけ）もそのまま読める。
+ */
+function readLedger(cursorPath: string): NoticeLedger {
+  const empty: NoticeLedger = { lastEventId: 0, delivered: [], prompts: {} };
   try {
-    const parsed = JSON.parse(fs.readFileSync(cursorPath, "utf-8")) as { lastEventId?: number };
-    return typeof parsed.lastEventId === "number" ? parsed.lastEventId : 0;
+    const parsed = JSON.parse(fs.readFileSync(cursorPath, "utf-8")) as Partial<NoticeLedger>;
+    return {
+      lastEventId: typeof parsed.lastEventId === "number" ? parsed.lastEventId : 0,
+      delivered: Array.isArray(parsed.delivered)
+        ? parsed.delivered.filter((id): id is number => typeof id === "number")
+        : [],
+      prompts:
+        parsed.prompts !== null && typeof parsed.prompts === "object"
+          ? Object.fromEntries(
+              Object.entries(parsed.prompts).filter(([, v]) => typeof v === "string")
+            )
+          : {},
+    };
   } catch {
-    return 0;
+    return empty;
   }
 }
 
-function writeCursor(cursorPath: string, lastEventId: number): void {
+function writeLedger(cursorPath: string, ledger: NoticeLedger): void {
   try {
     fs.mkdirSync(path.dirname(cursorPath), { recursive: true });
-    fs.writeFileSync(cursorPath, JSON.stringify({ lastEventId }), "utf-8");
+    fs.writeFileSync(cursorPath, JSON.stringify(ledger), "utf-8");
   } catch (err) {
     // 書けなくても知らせは届いている。次の起動で読み直すと重複するだけ
-    console.error(`[banto] 工場の読み位置を保存できません: ${String(err)}`);
+    console.error(`[banto] 工場の配達の帳面を保存できません: ${String(err)}`);
   }
 }
