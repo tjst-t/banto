@@ -164,6 +164,18 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
   "canvas.show",
   "canvas.close",
   /**
+   * **面と対になる道具**（K2・実地の穴 2026-08-16）。共有ブラウザ Module を稼働機へ入れて
+   * 再起動したところ、面（canvas kind `browser.viewer`）は現れたのに、番頭が `browser.start`
+   * を呼べなかった——モジュールは読み込まれ Tool の在庫にはあったが、ここに載っていなかった。
+   * 結果は完全な行き止まり：面を開くと「ブラウザが起きていません。browser.start で
+   * 起こしてから開いてください」と出て閉じるのに、その `browser.start` を呼ぶ手段が
+   * 番頭にも面にも HTTP にも無かった。在庫に足すだけでは足りない。**ここに載せないと
+   * モデルには見えない**（決定82）。
+   */
+  "browser.start",
+  "browser.stop",
+  "browser.status",
+  /**
    * 会話の仕切り（決定77）と、**幹と枝の対話**（決定105〜108・PO指示 2026-08-13）。
    *
    * `thread.read` / `thread.steer` / `thread.consult` は在庫に足すだけでは届かない
@@ -247,6 +259,7 @@ const DOMAIN_BLURB: Record<string, string> = {
   git: "read history in a place (viewing only — no commit/push/branch)",
   kobo: "put work on the factory queue, read it, approve it, send it back",
   canvas: "show things to the user in the conversation; list_catalog says what can be opened",
+  browser: "drive the shared browser the user can also see and touch",
   thread:
     "run the conversation — raise and close trunks, name them, open branches, read what is happening inside one, steer it mid-flight, consult the trunk, merge back",
   inbox: "the one place to ask the user for a decision",
