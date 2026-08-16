@@ -46,6 +46,79 @@ function readConstraints(driverOptions: Record<string, unknown> | undefined): Mo
   return out;
 }
 
+// ── 子の stdin への書き込み（EPIPE 対策） ─────────────────────────────────────
+//
+// 3箇所（起動直後の get_state 問い合わせ／inject／kill の abort）が同じ形で
+// 子の stdin へ書いていた。書く前に子の生存を見ずに書けば、既に死んだ子には
+// EPIPE になる——だが EPIPE は結果であって原因ではない。exit code / signal /
+// 直前までの stderr を添えて、何が起きたか分かる失敗にする。
+
+/** 子がまだ生きているか（exit も signal も観測されていなければ生きている）。 */
+function isChildAlive(proc: childProcess.ChildProcess): boolean {
+  return proc.exitCode === null && proc.signalCode === null;
+}
+
+/** 子が先に死んでいた場合の失敗理由。stderr の末尾を添える。 */
+function describeChildDeath(
+  exitCode: number | null,
+  signal: NodeJS.Signals | null,
+  stderrTail: string
+): string {
+  const tail = stderrTail.trim();
+  return (
+    `子が exit=${exitCode ?? "null"} / signal=${signal ?? "null"} で先に終わっている` +
+    (tail ? `\nstderr: ${tail}` : "")
+  );
+}
+
+/**
+ * 書き込み失敗後、Node 側の exitCode 反映を待つ上限。
+ * timers フェーズが poll フェーズより先に回るため、write の失敗コールバックの時点では
+ * まだ exitCode が null のことがある（実測で数ms）。理由を出すまでの猶予。
+ */
+const WRITE_FAILURE_EXIT_WAIT_MS = 2000;
+
+/**
+ * 子の stdin へ書く。書く前に生存を見て、既に死んでいれば理由を添えて失敗させる。
+ * 書いた直後に失敗した場合も、Node 側の exitCode 反映が exit イベントよりわずかに
+ * 遅れることがあるため、少しだけ待ってから理由を組み立てる。
+ *
+ * `proc.stdin` への `error` リスナーは呼び出し側（spawn 直後）で別途つける——
+ * write() のコールバックとは別に、stream 自体の `error` イベントが独立して上がるため。
+ */
+function writeToChildStdin(
+  proc: childProcess.ChildProcess,
+  data: string,
+  stderrTail: { value: string }
+): Promise<void> {
+  if (!isChildAlive(proc)) {
+    return Promise.reject(
+      new Error(describeChildDeath(proc.exitCode, proc.signalCode, stderrTail.value))
+    );
+  }
+  return new Promise((resolve, reject) => {
+    proc.stdin?.write(data, (err) => {
+      if (!err) {
+        resolve();
+        return;
+      }
+      if (!isChildAlive(proc)) {
+        reject(new Error(describeChildDeath(proc.exitCode, proc.signalCode, stderrTail.value)));
+        return;
+      }
+      const onExit = () => {
+        clearTimeout(waitTimer);
+        reject(new Error(describeChildDeath(proc.exitCode, proc.signalCode, stderrTail.value)));
+      };
+      const waitTimer = setTimeout(() => {
+        proc.off("exit", onExit);
+        reject(new Error(`write to pi stdin failed: ${err.message}`));
+      }, WRITE_FAILURE_EXIT_WAIT_MS);
+      proc.once("exit", onExit);
+    });
+  });
+}
+
 // ── Session record ──────────────────────────────────────────────────────────
 
 interface ActiveSession {
@@ -56,6 +129,8 @@ interface ActiveSession {
   stopReader: () => void;
   /** 応答を待つあいだだけ handle を掴む（inc-0020）。 */
   grip: HandleGrip;
+  /** 子の stderr の末尾（子が先に死んだときの理由に添える）。 */
+  stderrTail: { value: string };
 }
 
 // ── PiRpcDriver ─────────────────────────────────────────────────────────────
@@ -377,6 +452,16 @@ export class PiRpcDriver implements RuntimeDriver {
       process.stderr.write(`[pi-rpc] 職人のプロセスで異常: ${err.message}\n`);
     });
 
+    /**
+     * `proc.stdin`（Socket）の `error` は `proc` 自体の `error` とは別に上がる。
+     * listener が無い `error` は Node の決まりで uncaughtException になり、
+     * 親プロセスごと落ちる——死んだ子の stdin へ書いたときの EPIPE がまさにこれ。
+     * 握り潰すのではなく、そういう状態であると記録して受け止める（I2）。
+     */
+    proc.stdin?.on("error", (err: Error) => {
+      process.stderr.write(`[pi-rpc] 職人の stdin でエラー: ${err.message}\n`);
+    });
+
     // Unreference the child process and its stdio sockets so they do NOT
     // prevent the parent Node.js event loop from exiting when tests/daemon
     // are shutting down. The daemon tracks the process via the sessions map
@@ -402,9 +487,13 @@ export class PiRpcDriver implements RuntimeDriver {
       );
     }
 
-    // Forward stderr to daemon's stderr for diagnostics.
+    // Forward stderr to daemon's stderr for diagnostics, and keep the tail so a
+    // premature death can explain itself (write EPIPE is a symptom, not a cause).
+    const STDERR_TAIL_MAX = 4096;
+    const stderrTail = { value: "" };
     proc.stderr?.on("data", (chunk: Buffer) => {
       process.stderr.write(chunk);
+      stderrTail.value = (stderrTail.value + chunk.toString("utf8")).slice(-STDERR_TAIL_MAX);
     });
 
     // Session ID: we'll read it from pi's get_state response once started.
@@ -421,12 +510,14 @@ export class PiRpcDriver implements RuntimeDriver {
       let settled = false;
       let stopReader: (() => void) | null = null;
       let stateQueried = false;
+      let queryTimer: NodeJS.Timeout | null = null;
+      let fallbackTimer: NodeJS.Timeout | null = null;
 
       // Cleanup functions — registered during startup, removed after settle
       const onEarlyExit = (code: number | null, signal: NodeJS.Signals | null) => {
         settle({
           ok: false,
-          error: `pi process exited immediately (code=${code}, signal=${signal}). Check API key / provider config.`,
+          error: `[pi-rpc] ${describeChildDeath(code, signal, stderrTail.value)}`,
         });
       };
       const onSpawnError = (err: Error) => {
@@ -443,6 +534,9 @@ export class PiRpcDriver implements RuntimeDriver {
           // Remove startup listeners immediately to avoid dangling references
           proc.off("exit", onEarlyExit);
           proc.off("error", onSpawnError);
+          // 決着後に走り残ったタイマーが同じ書き込みをやり直さないよう止める
+          if (queryTimer) clearTimeout(queryTimer);
+          if (fallbackTimer) clearTimeout(fallbackTimer);
           resolve(val);
         }
       }
@@ -488,18 +582,20 @@ export class PiRpcDriver implements RuntimeDriver {
       });
 
       // After a brief startup delay, send get_state to obtain the session ID.
-      setTimeout(() => {
+      queryTimer = setTimeout(() => {
         if (settled) return;
         stateQueried = true;
         const cmd = JSON.stringify({ type: "get_state" }) + "\n";
-        proc.stdin?.write(cmd, (err) => {
-          if (err && !settled) {
-            settle({ ok: false, error: `Failed to write to pi stdin: ${err.message}` });
+        // 書く前に子の生存を見て、既に死んでいれば理由を添えて失敗させる
+        // （EPIPE は結果であって原因ではない）。
+        writeToChildStdin(proc, cmd, stderrTail).catch((err: Error) => {
+          if (!settled) {
+            settle({ ok: false, error: `[pi-rpc] ${err.message}` });
           }
         });
 
         // If we don't get a response within 3 s, fall back to the synthetic session ID.
-        setTimeout(() => {
+        fallbackTimer = setTimeout(() => {
           if (!settled) {
             settle({
               ok: true,
@@ -530,6 +626,7 @@ export class PiRpcDriver implements RuntimeDriver {
       proc,
       stopReader,
       grip,
+      stderrTail,
     };
     this.sessions.set(sessionId, session);
 
@@ -583,15 +680,11 @@ export class PiRpcDriver implements RuntimeDriver {
     // ——放したままだと、他に ref された handle が無いとき親が黙って畳まれる（inc-0020）
     const result = await session.grip.hold(async () => {
       try {
-        await new Promise<void>((resolve, reject) => {
-          session.proc.stdin?.write(cmd, (err) => {
-            if (err) reject(new Error(`[pi-rpc] inject write error: ${err.message}`));
-            else resolve();
-          });
-        });
+        await writeToChildStdin(session.proc, cmd, session.stderrTail);
       } catch (err) {
-        this.settlePending(id, { success: false, error: String(err) });
-        throw err;
+        const wrapped = err instanceof Error ? err : new Error(String(err));
+        this.settlePending(id, { success: false, error: wrapped.message });
+        throw new Error(`[pi-rpc] inject write error: ${wrapped.message}`);
       }
       return response;
     });
@@ -648,12 +741,14 @@ export class PiRpcDriver implements RuntimeDriver {
     // Detach stdout reader to release the stream reference
     session.stopReader();
 
-    // Send RPC abort first (graceful), then close stdin (EOF)
-    try {
+    // Send RPC abort first (graceful), then close stdin (EOF).
+    // 書く前に子の生存を見る——既に死んでいれば、書かずに諦める（EPIPE を起こさない）。
+    if (isChildAlive(proc)) {
       const cmd = JSON.stringify({ type: "abort" }) + "\n";
-      proc.stdin?.write(cmd);
-    } catch {
-      // Ignore write errors on shutdown path
+      writeToChildStdin(proc, cmd, session.stderrTail).catch((err: Error) => {
+        // シャットダウン経路なので投げはしないが、握り潰さず残す（I2）
+        process.stderr.write(`[pi-rpc] kill: abort 書き込み失敗: ${err.message}\n`);
+      });
     }
     // Close stdin so pi sees EOF
     try {
