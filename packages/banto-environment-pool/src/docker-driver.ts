@@ -561,6 +561,15 @@ function handleProvision(input: Record<string, unknown>): void {
   // 待つだけのプロファイルにとっては順序が変わるだけで、見える振る舞いは同じ。
   // **用意の成果が検証コンテナから見えない形を、立てる前に断る**（imp-0043）。
   // 何を見ているかは `assertVolumeTargetsAreNotSymlinks` に書いた。
+
+  // **職人が「袋の中で試験を回すため」に張った node_modules の symlink を、compose を
+  // 読む前に外す**（task-0240・2026-08-16）。本体チェックアウトを指す symlink が
+  // ワークツリー直下に残ったまま検証環境を立てると、コンテナの中からはそのホストの絶対パスを
+  // 指せないので `@banto/*`（npm workspaces のリンク）が1つも解決できず、対象外の spec まで
+  // 巻き添えで `ERR_MODULE_NOT_FOUND` になる（実測：task-0222・task-0230）。
+  // ここで機械的に外す——指示だけでは職人が消し忘れることがある。
+  stripWorktreeNodeModulesSymlink(workdir ?? repoPath);
+
   assertVolumeTargetsAreNotSymlinks(project, composeFile, workdir, composeEnv);
 
   const setup = readSetup(input);
@@ -829,6 +838,70 @@ type ComposeMounts = {
   /** `type: volume`（名前つきボリュームを載せている先） */
   volumeTargets: string[];
 };
+
+/**
+ * **基点直下の `node_modules` が symlink なら、外す**（task-0240・2026-08-16）。
+ *
+ * ## 何が起きたか
+ *
+ * 職人が「手元で緑にしたい」ために、ワークツリー直下の `node_modules` を本体チェックアウト
+ * （`/home/…/banto/node_modules`）への symlink にすることがある。`.gitignore` 済みなので
+ * git では見えず、報告後も残ることがある（指示（`buildExecutorInstruction`）で「張るな」と
+ * 言うだけでは足りない——2026-08-16、task-0222 の職人は「消しました」と報告したのに
+ * task-0230 のワークツリーには残っていた）。
+ *
+ * 検証環境（docker）はワークツリーを bind mount で見せるだけなので、コンテナの中からは
+ * **ホストのそのパス**（symlink の指し先）を指せない。`@banto/*`（npm workspaces のリンク）
+ * が1つも解決できず、対象外の spec まで巻き添えで `ERR_MODULE_NOT_FOUND` になる
+ * ——task-0222・task-0230 で、無関係な既存 spec を含む48件が同じ形で落ちた。
+ * 番頭がリンクを外しただけで通ることも実測済み。
+ *
+ * ## 直し方
+ *
+ * **リンクだけを外す**（`fs.unlinkSync`）。**リンク先の実体は絶対に消さない**——本体
+ * チェックアウトの `node_modules` を消すと機械全体が止まる。unlink はリンク自身を消すだけで
+ * 指し先には触れないので、これで両方満たせる。
+ *
+ * **本物のディレクトリなら何もしない**（`fs.lstatSync` で見分ける。`fs.existsSync` では
+ * symlink と実体を見分けられない）。用意（`npm ci`）が作った実体を巻き添えにしない。
+ *
+ * **黙って外さない**（I2）。外した理由をログへ残す。
+ *
+ * 立てる前（`assertVolumeTargetsAreNotSymlinks` の直前）に置く。同じ流儀の門番が既に
+ * このファイルにあり（imp-0043）、両方とも「立てる前に断る／直す」なので隣が自然。
+ *
+ * `cache`（`ensureCacheDir` の `primed`）には一切触れない——setup を飛ばすかどうかの
+ * 判断はこことは独立していて、外したことが `if (setup && !cache?.primed)` の判定を
+ * 曲げることは無い（用意が飛ばされない、a5）。
+ */
+function stripWorktreeNodeModulesSymlink(root: string | undefined): void {
+  if (!root) return;
+  const target = path.join(root, "node_modules");
+
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(target);
+  } catch {
+    return; // 無ければ何もしない（これから用意が作る）
+  }
+  if (!stat.isSymbolicLink()) return; // 本物のディレクトリには触れない
+
+  let linkTarget: string | undefined;
+  try {
+    linkTarget = fs.readlinkSync(target);
+  } catch {
+    linkTarget = undefined;
+  }
+
+  fs.unlinkSync(target); // リンクだけを外す。指し先の実体は消さない
+
+  process.stderr.write(
+    `docker-driver provision: ${target} が symlink だったので外しました` +
+      `${linkTarget ? `（指し先: ${linkTarget}）` : ""}（task-0240）。\n` +
+      `検証コンテナの中からはホストのそのパスを指せないため、外さないまま立てると ` +
+      `@banto/* が解決できず ERR_MODULE_NOT_FOUND になります。指し先の実体は消していません。\n`
+  );
+}
 
 /**
  * **ボリュームの載り先が symlink になっていないか**を、立てる前に確かめる（imp-0043）。
