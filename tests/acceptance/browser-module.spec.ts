@@ -27,6 +27,7 @@ import type { AddressInfo } from "node:net";
 import {
   PlaceRegistry,
   PlaceGrantStore,
+  PRESENTED_TOOL_NAMES,
   createModuleRegistry,
   createStaticPlaceProvider,
   createWorkspaceModule,
@@ -277,6 +278,17 @@ describe("[task-0156] browser モジュールを登録できる", () => {
     const kinds = registry.views().map((v) => v.kind);
     assert.ok(kinds.includes("browser.viewer"), `browser.viewer が無い: ${kinds.join(", ")}`);
     assert.equal(registry.moduleForView("browser.viewer")?.name, "browser");
+  });
+
+  it("在庫にある browser の Tool は、すべて番頭への提示（PRESENTED_TOOL_NAMES）にも載っている", () => {
+    // 実地の穴（2026-08-16）: 面（browser.viewer）は現れたのに browser.start が
+    // 提示に無く、番頭には呼べなかった。名前をべた書きすると Tool が増えても
+    // 足し忘れに気づけないので、モジュール自身の tools から取って突き合わせる。
+    const module = createBrowserModule();
+    const missing = module.tools
+      .map((t) => t.name)
+      .filter((name) => !PRESENTED_TOOL_NAMES.includes(name));
+    assert.deepEqual(missing, [], `提示から漏れている browser の Tool: ${missing.join(", ")}`);
   });
 });
 
