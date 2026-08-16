@@ -309,6 +309,207 @@ async function runVerifyInEnv(opts: {
   return { exitCode: result.exit, logDirPath, stretchedTo };
 }
 
+// ── 受け入れ条件の検証（共有）─────────────────────────────────────────────────
+
+/** 検証環境の中で走った受け入れ条件1本の結果。 */
+export interface AcceptanceVerifyRun {
+  acId: string;
+  command: string;
+  exitCode: number;
+  /** stdout.txt / stderr.txt の写しがある場所。全文の置き場所はこの中に書いてある。 */
+  logDirPath: string;
+}
+
+/** `runAcceptanceVerify` の結果。 */
+export interface AcceptanceVerifyOutcome {
+  /**
+   * **検証に到達できなかった理由**（環境が用意できない等）。`undefined` なら到達した。
+   *
+   * I2: 到達できなかったことを「通った」とも「落ちた」とも言わない。呼び出し側が
+   * それぞれの立場で裁く——ゲートは通さない、前倒しの検証は先へ進める。
+   */
+  blocked?: string;
+  runs: AcceptanceVerifyRun[];
+  /** 時間切れで延ばしたときの、実際に使った一番長い制限時間（0 なら延ばしていない）。 */
+  stretchedTo: number;
+  environmentId?: string;
+  environmentDigest?: string;
+}
+
+/** `runAcceptanceVerify` に渡すもの。 */
+export interface AcceptanceVerifyOptions {
+  taskId: string;
+  projectTag: string;
+  /** 走らせる受け入れ条件（`verify` を持たないものは無視する）。 */
+  acceptance: Array<{ id: string; verify?: string }>;
+  /** 検証環境に映すディレクトリ（タスクのワークツリー）。 */
+  worktreePath: string;
+  /** 写しを置く場所。`<ここ>/<acId>/stdout.txt` に書く。 */
+  logBaseDir: string;
+  runner?: GateVerifyRunner;
+  profile?: string;
+  repoPathForProfile?: string;
+  timeoutMs?: number;
+  maxTimeoutMs?: number;
+}
+
+/**
+ * **受け入れ条件の検証を検証環境の中で回す**（task-0213 で `runMergeGate` から切り出した）。
+ *
+ * 切り出した理由は**同じことを2箇所に実装しないため**。マージ前ゲートと、職人が
+ * 「終わった」と言った時点の前倒しの検証は、**同じ経路で同じコマンドを回す**必要がある
+ * ——別実装にすると「ゲートは通るのに職人のところでは落ちる」（およびその逆）が起きて、
+ * どちらが本当なのか誰にも言えなくなる。
+ *
+ * **立てるのは1回**。受け入れ条件ごとに立て直すと、テスト一式を何度も用意することになる。
+ * 畳むのは finally——途中で落ちても畳む（I3）。
+ */
+export async function runAcceptanceVerify(
+  opts: AcceptanceVerifyOptions
+): Promise<AcceptanceVerifyOutcome> {
+  const {
+    taskId,
+    projectTag,
+    acceptance,
+    worktreePath,
+    logBaseDir,
+    runner,
+    profile = DEFAULT_VERIFY_PROFILE,
+    repoPathForProfile,
+    timeoutMs = DEFAULT_VERIFY_TIMEOUT_MINUTES * 60_000,
+    maxTimeoutMs = MAX_VERIFY_TIMEOUT_MINUTES * 60_000,
+  } = opts;
+
+  const withCommands = acceptance.filter((ac) => ac.verify);
+  const runs: AcceptanceVerifyRun[] = [];
+  let stretchedTo = 0;
+
+  if (withCommands.length === 0) return { runs, stretchedTo };
+
+  if (!runner) {
+    // I2: **ホストへ落とさない。** 落とすと「たまたま通った」が戻る
+    return { blocked: "verify_runner_missing（Kobo に検証環境が配線されていない）", runs, stretchedTo };
+  }
+  if (!repoPathForProfile) {
+    return { blocked: "verify_repo_unknown（プロファイルの在り処が分からない）", runs, stretchedTo };
+  }
+
+  let envId: string | undefined;
+  let environmentDigest: string | undefined;
+  try {
+    // 段1: 立てた環境の指紋も受け取る。**証拠に刻むのは、立った環境のもの**
+    // ——プロファイル名だけでは、名前が同じまま中身が変わったことを言えない
+    ({ envId, profileDigest: environmentDigest } = await runner.provision({
+      repoPath: repoPathForProfile,
+      workdir: worktreePath,
+      profile,
+      taskId,
+      projectTag,
+    }));
+  } catch (err) {
+    // I2: 立てられないことを「検証が落ちた」と混同しない。**確かめていない**と言う
+    return {
+      blocked:
+        `verify_env_unavailable:${profile}` +
+        `（${err instanceof Error ? err.message : String(err)}）`,
+      runs,
+      stretchedTo,
+    };
+  }
+
+  try {
+    for (const ac of withCommands) {
+      const outcome = await runVerifyInEnv({
+        runner,
+        envId,
+        acId: ac.id,
+        command: ac.verify!,
+        logBaseDir,
+        timeoutMs,
+        maxTimeoutMs,
+        taskId,
+      });
+      if (outcome.stretchedTo > 0) stretchedTo = Math.max(stretchedTo, outcome.stretchedTo);
+      runs.push({
+        acId: ac.id,
+        command: ac.verify!,
+        exitCode: outcome.exitCode,
+        logDirPath: outcome.logDirPath,
+      });
+    }
+  } finally {
+    // I3: 途中で落ちても畳む。畳めなかったことは黙らせない
+    try {
+      await runner.teardown(envId);
+    } catch (err) {
+      process.stderr.write(
+        `[banto-gate] ${taskId}: 検証環境 ${envId} を畳めませんでした: ${String(err)}\n`
+      );
+    }
+  }
+
+  return {
+    runs,
+    stretchedTo,
+    environmentId: envId,
+    ...(environmentDigest !== undefined ? { environmentDigest } : {}),
+  };
+}
+
+// ── 検証ログの切り詰め ────────────────────────────────────────────────────────
+
+/** 職人へ返すログの既定の上限（行）。 */
+export const VERIFY_LOG_MAX_LINES = 60;
+
+/** 「失敗した箇所」として拾う行の目印。 */
+const FAILURE_MARKERS =
+  /(FAIL|FAILED|✗|✘|×|not ok|AssertionError|Error:|error TS\d+|npm ERR!|Exception|panic:|Killed|SIGKILL|failing|failed)/;
+
+/**
+ * **検証の出力を、職人の文脈へ載せられる大きさに切り詰める**（task-0213・a7）。
+ *
+ * 検証は一式（`npm test`）なので、出力は数千行になる。それを丸ごと指示文へ入れると、
+ * 職人の文脈が出力で埋まる——袋の外へ追い出した意味が半分無くなる。
+ *
+ * 残すのは**失敗した箇所と末尾**：どこで落ちたかは失敗行に、なぜ止まったかは末尾
+ * （集計・スタック）に出る。真ん中の「通った行」は捨ててよい。
+ *
+ * I2: **切ったことは黙らせない。** 何行落としたかと、全文がどこにあるかを必ず添える
+ * ——添えないと、職人は「これが全部だ」と読んで、見えていない失敗を無いことにする。
+ */
+export function summarizeVerifyLog(
+  text: string,
+  opts: { maxLines?: number; fullLogPath?: string } = {}
+): string {
+  const maxLines = opts.maxLines ?? VERIFY_LOG_MAX_LINES;
+  const where = opts.fullLogPath ? `全文: ${opts.fullLogPath}` : "全文の置き場所は不明";
+  const lines = text.replace(/\s+$/, "").split("\n");
+  if (lines.length <= maxLines) return lines.join("\n");
+
+  // 末尾は必ず残す。残りの枠で失敗行を頭から拾う（上限の 1/3 まで）
+  const failureQuota = Math.max(1, Math.floor(maxLines / 3));
+  const tailCount = maxLines - failureQuota;
+  const tailStart = lines.length - tailCount;
+  const failures: Array<{ index: number; line: string }> = [];
+  for (let i = 0; i < tailStart && failures.length < failureQuota; i++) {
+    const line = lines[i] ?? "";
+    if (FAILURE_MARKERS.test(line)) failures.push({ index: i, line });
+  }
+
+  const kept = failures.length + tailCount;
+  const out: string[] = [
+    `（全 ${lines.length} 行のうち ${lines.length - kept} 行を切り詰めました。${where}）`,
+  ];
+  if (failures.length > 0) {
+    out.push("── 失敗した箇所 ──");
+    for (const f of failures) out.push(`${f.index + 1}: ${f.line}`);
+    out.push(`（失敗した箇所はここまで。全部見るなら ${where}）`);
+  }
+  out.push(`── 末尾 ${tailCount} 行 ──`);
+  out.push(...lines.slice(tailStart));
+  return out.join("\n");
+}
+
 // ── Main gate function ────────────────────────────────────────────────────────
 
 /**
@@ -389,81 +590,47 @@ export async function runMergeGate(
   //
   // **立てるのは1回**。受け入れ条件ごとに立て直すと、テスト一式を何度も用意することになる。
   // 畳むのは finally——途中で落ちても畳む（I3）。
+  //
+  // task-0213: ここの中身は `runAcceptanceVerify` へ切り出した。**前倒しの検証
+  // （職人が「終わった」と言った時点で Kobo が袋の外で回すもの）と同じ経路を使うため**
+  // ——別実装にすると「ゲートは通るのに職人のところでは落ちる」が起きる。
   const acceptance = getAcceptance(task);
   const logBaseDir = path.join(dataDir, "gate-logs", taskId);
   const verifyResults: VerifyResult[] = [];
-  const withCommands = acceptance.filter((ac) => ac.verify);
+
+  const verified = await runAcceptanceVerify({
+    taskId,
+    projectTag,
+    acceptance,
+    worktreePath,
+    logBaseDir,
+    ...(verifyRunner ? { runner: verifyRunner } : {}),
+    profile: verifyProfile,
+    ...(repoPathForProfile !== undefined ? { repoPathForProfile } : {}),
+    timeoutMs: verifyTimeoutMs,
+    maxTimeoutMs: maxVerifyTimeoutMs,
+  });
 
   /** 検証に到達できなかった理由（環境が用意できない等）。空なら到達した。 */
-  let verifyBlocked: string | undefined;
+  const verifyBlocked = verified.blocked;
+  if (verified.stretchedTo > 0) stretchedTo = Math.max(stretchedTo, verified.stretchedTo);
+  for (const run of verified.runs) {
+    verifyResults.push({
+      acId: run.acId,
+      command: run.command,
+      exitCode: run.exitCode,
+      logDirPath: run.logDirPath,
+    });
+  }
 
   /** **どの環境で検査したか**（realign 第2便・段1）。立てられたときだけ付く。 */
-  let environmentDigest: string | undefined;
-  /** **どの環境の実体で検査したか**。`envId` そのもの。立てられたときだけ付く。 */
-  let environmentId: string | undefined;
-
-  if (withCommands.length > 0) {
-    if (!verifyRunner) {
-      // I2: **ホストへ落とさない。** 落とすと「たまたま通った」が戻る
-      verifyBlocked = "verify_runner_missing（Kobo に検証環境が配線されていない）";
-    } else if (!repoPathForProfile) {
-      verifyBlocked = "verify_repo_unknown（プロファイルの在り処が分からない）";
-    } else {
-      let envId: string | undefined;
-      try {
-        // 段1: 立てた環境の指紋も受け取る。**証拠に刻むのは、立った環境のもの**
-        // ——プロファイル名だけでは、名前が同じまま中身が変わったことを言えない
-        ({ envId, profileDigest: environmentDigest } = await verifyRunner.provision({
-          repoPath: repoPathForProfile,
-          workdir: worktreePath,
-          profile: verifyProfile,
-          taskId,
-          projectTag,
-        }));
-        // **証拠に刻むのは、立った環境の実体そのもの**——指紋だけでは
-        // 「どの回か」を後から一意に辿れない（dentaku task-0020 の誤誘導）
-        environmentId = envId;
-      } catch (err) {
-        // I2: 立てられないことを「検証が落ちた」と混同しない。**確かめていない**と言う
-        verifyBlocked =
-          `verify_env_unavailable:${verifyProfile}` +
-          `（${err instanceof Error ? err.message : String(err)}）`;
-      }
-
-      if (envId !== undefined) {
-        try {
-          for (const ac of withCommands) {
-            const outcome = await runVerifyInEnv({
-              runner: verifyRunner,
-              envId,
-              acId: ac.id,
-              command: ac.verify!,
-              logBaseDir,
-              timeoutMs: verifyTimeoutMs,
-              maxTimeoutMs: maxVerifyTimeoutMs,
-              taskId,
-            });
-            if (outcome.stretchedTo > 0) stretchedTo = Math.max(stretchedTo, outcome.stretchedTo);
-            verifyResults.push({
-              acId: ac.id,
-              command: ac.verify,
-              exitCode: outcome.exitCode,
-              logDirPath: outcome.logDirPath,
-            });
-          }
-        } finally {
-          // I3: 途中で落ちても畳む。畳めなかったことは黙らせない
-          try {
-            await verifyRunner.teardown(envId);
-          } catch (err) {
-            process.stderr.write(
-              `[banto-gate] ${taskId}: 検証環境 ${envId} を畳めませんでした: ${String(err)}\n`
-            );
-          }
-        }
-      }
-    }
-  }
+  const environmentDigest = verified.environmentDigest;
+  /**
+   * **どの環境の実体で検査したか**。`envId` そのもの。立てられたときだけ付く。
+   * **証拠に刻むのは、立った環境の実体そのもの**——指紋だけでは
+   * 「どの回か」を後から一意に辿れない（dentaku task-0020 の誤誘導）
+   */
+  const environmentId = verified.environmentId;
 
   // verify を持たない受け入れ条件は、そのまま「走らせるものが無い」として並べる
   for (const ac of acceptance) {

@@ -56,7 +56,16 @@ import { processMergeQueue } from "./merge-queue.js";
 // `getAcceptance` は第3便（自動着地の証拠）が使う。`readTaskDefinition` は main 側で
 // 解消タスクへ検査コマンドを写すために入れたものだが、**第4便で解消タスクごと消えた**
 // ——定義ファイルを読む経路も無くなったので、ここでは取らない
-import { getAcceptance, type GateVerifyRunner } from "./merge-gate.js";
+// task-0213: `runAcceptanceVerify` / `summarizeVerifyLog` は**マージ前ゲートと同じ経路**を
+// 前倒しで使うためのもの。職人の袋（cgroup 2 GiB）の中で `npm test` を回させないために、
+// Kobo が検証環境で回して結果だけを返す
+import {
+  getAcceptance,
+  runAcceptanceVerify,
+  summarizeVerifyLog,
+  VERIFY_TIMEOUT_EXIT,
+  type GateVerifyRunner,
+} from "./merge-gate.js";
 import {
   DEFAULT_VERIFY_PROFILE,
   autoLandBlockers,
@@ -183,6 +192,20 @@ const AUDIT_ATTEMPT_LIMIT = 2;
  * **古い版の Kobo が帳簿を再生できず起動できない**。
  */
 const CONFLICT_RETRY_REASON = "rebase_conflict";
+
+/**
+ * 前倒しの検証（task-0213）で差し戻したことの印。**新しいイベント型は足さない**
+ * ——理由は `CONFLICT_RETRY_REASON` と同じ（帳簿の形は one-way・D9）。
+ */
+const PRE_AUDIT_VERIFY_FAILED = "pre_audit_verify_failed";
+
+/**
+ * 前倒しの検証で実装者へ戻す回数の上限。
+ *
+ * 直らない検証で回し続けると、職人と検証環境を無限に食う。上限まで来たら監査へ回し、
+ * 最終の関所（マージ前ゲート）に任せる。
+ */
+const PRE_AUDIT_SEND_BACK_LIMIT = 2;
 
 /** モデルの等級。Kobo が知ってよいのはここまで（決定60a）。 */
 type ModelTier = "reasoning" | "standard" | "fast";
@@ -3174,8 +3197,11 @@ export class Daemon {
           // the 200/auditing response.
           // Tracked in _backgroundOps (registered synchronously before setImmediate fires)
           // so Daemon.stop() can drain it before log.close() (D3/I2: no events dropped).
+          // task-0213: **監査へ回す前に、検証を袋の外で回す**。落ちていれば
+          // 監査人を起こさずに実装者へ差し戻す（既存の findings の経路）——落ちている
+          // ものを監査させるのは、監査人の時間も袋も無駄に使う
           this._trackBackground(new Promise<void>((resolve) => {
-            setImmediate(() => void this.spawnAuditSession(projectTag, taskId).then(resolve, resolve));
+            setImmediate(() => void this.auditOrSendBack(projectTag, taskId).then(resolve, resolve));
           }));
         }
       }
@@ -3238,6 +3264,183 @@ export class Daemon {
    *
    * I2: 起こせなかったら task_failed にして止まる。
    */
+  /**
+   * **検証を職人の袋の外で回し、落ちていたら実装者へ返す**（task-0213）。
+   *
+   * 職人は1本ごとに cgroup の袋（既定 2 GiB）に入っている。その中で `npm ci` /
+   * `npm test` / `npm run typecheck` を回すと袋の上限に当たって職人ごと殺される
+   * ——2026-08-16 に実測で7回起き、中身は無罪のタスクが7本落ちた。
+   * **袋を破っているのは職人の会話ではなく、袋の中で回している `npm` である。**
+   *
+   * だから検証をやめるのではなく、**回す場所を袋の外（検証環境）へ移す**。I1 は緩めない：
+   * 職人は確かめる。確かめる場所が変わるだけ。
+   *
+   * **「職人が呼べる口を足す」ではなく「Kobo が節目で回す」を選んだ理由**：
+   * 職人の道具は工房が決めており（`claude-agent/options.ts` の claude_code プリセット＋
+   * 報告口）、口を足すとランタイムごとに載る／載らないが分かれる——監査チェックリストが
+   * SDK 経路の監査人に一度も届いていなかったのと同じ形（realign 第2便）。
+   * **節目で Kobo が回せば経路に依らない。** 節目は職人が「終わった」と言った瞬間
+   * （implementing → auditing）で、落ちていれば既存の findings の経路で差し戻す。
+   *
+   * I2: **確かめられなかったこと（環境が立たない等）は「落ちた」にしない。** 空を返して
+   * 監査へ進める——ここで止めると、検証環境が無いプロジェクトのタスクが全部詰まる。
+   * 確かめていないものを通さない責任は、これまで通りマージ前ゲートが持つ。
+   *
+   * @returns 実装者へ差し戻す指摘。空なら監査へ進んでよい。
+   */
+  private async preAuditVerify(projectTag: string, taskId: string): Promise<string[]> {
+    const task = this.store.getTask(taskId, projectTag);
+    if (!task) return [];
+
+    const acceptance = getAcceptance(task);
+    if (!acceptance.some((ac) => ac.verify)) return [];
+
+    const proj = this.registry.get(projectTag);
+    if (!proj) return [];
+
+    let profile = DEFAULT_VERIFY_PROFILE;
+    let timeoutMs: number | undefined;
+    try {
+      const config = this.projectConfig(projectTag);
+      profile = config.verify.profile;
+      const minutes = config.limits.verifyTimeoutMinutes;
+      if (typeof minutes === "number") timeoutMs = minutes * 60_000;
+    } catch {
+      // 設定が壊れているなら既定で試す。壊れていること自体は他の経路が言う
+    }
+
+    let outcome: Awaited<ReturnType<typeof runAcceptanceVerify>>;
+    try {
+      outcome = await runAcceptanceVerify({
+        taskId,
+        projectTag,
+        acceptance,
+        worktreePath: await this.worktreeFor(projectTag, taskId),
+        // ゲートの写しとは別の場所へ置く。**同じ場所に書くと、あとで回るゲートの
+        // 証拠を前倒しの結果が上書きする**（どちらの結果なのか言えなくなる）
+        logBaseDir: path.join(this.config.dataDir, "pre-audit-logs", taskId),
+        // **ゲートと同じ runner**。別の runner を作ると2箇所実装になる
+        runner: this.config.verifyRunner ?? this.gateVerifyRunner(),
+        profile,
+        repoPathForProfile: proj.repoPath,
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      });
+    } catch (err) {
+      // I2: 回せなかったことを黙らせない。ただし「落ちた」とも言わない
+      process.stderr.write(
+        `[banto-daemon] ${projectTag}/${taskId}: 前倒しの検証を回せませんでした: ${String(err)}\n`
+      );
+      return [];
+    }
+
+    if (outcome.blocked) {
+      process.stderr.write(
+        `[banto-daemon] ${projectTag}/${taskId}: 前倒しの検証に到達できませんでした` +
+          `（${outcome.blocked}）。監査へ進めます——確かめていないものを通さない責任は` +
+          "マージ前ゲートが持ちます\n"
+      );
+      return [];
+    }
+
+    const failed = outcome.runs.filter((r) => r.exitCode !== 0);
+    if (failed.length === 0) return [];
+
+    const findings: string[] = [
+      `\`report_done\` を受けて、Kobo が**検証環境の中で**受け入れ基準の検証コマンドを` +
+        `回したところ、${failed.length} 本落ちました` +
+        `${outcome.environmentId ? `（環境: ${outcome.environmentId}）` : ""}。`,
+      "**同じタスクの続き**です。契約（スコープ・受け入れ基準）は変わっていません。",
+      "直したら、また `report_done` を呼んでください（Kobo がもう一度同じ経路で回します）。" +
+        "**検証コマンドの一式を自分の環境で叩かないでください**——袋の上限に当たって殺されます。",
+      "",
+    ];
+    for (const run of failed) {
+      const why =
+        run.exitCode === VERIFY_TIMEOUT_EXIT
+          ? "時間切れ（exit=124）"
+          : `exit=${run.exitCode}`;
+      findings.push(`[${run.acId}] \`${run.command}\` が落ちました（${why}）`);
+      const logFile = path.join(run.logDirPath, "stdout.txt");
+      let body: string;
+      try {
+        // a7: **全出力をそのまま渡さない。** 上限を超える分は切り詰めて、
+        // 失敗した箇所と末尾だけを載せる（切ったことと全文の置き場所は添える）
+        body = summarizeVerifyLog(fs.readFileSync(logFile, "utf-8"), { fullLogPath: logFile });
+      } catch (err) {
+        body = `（ログを読めませんでした: ${String(err)}。置き場所: ${run.logDirPath}）`;
+      }
+      findings.push("```", body, "```", `（この検証の全文: ${run.logDirPath}）`, "");
+    }
+    return findings;
+  }
+
+  /**
+   * **前倒しの検証を回してから、監査へ回すか実装者へ戻すかを決める**（task-0213）。
+   *
+   * 落ちていたら `auditing → implementing` へ戻して rework を起こす。使うのは
+   * 監査落ちの差し戻しと**同じ機構**（`spawnReworkSession`）——新しい状態も新しい
+   * イベント種も足さない（D3：導出できるものを増やさない）。
+   */
+  private async auditOrSendBack(projectTag: string, taskId: string): Promise<void> {
+    /**
+     * **同じ検証で何度も差し戻さない**（D3：数えて持たない。印は遷移の理由そのもの）。
+     *
+     * 直らない検証で回し続けると、職人と検証環境を無限に食う。上限まで来たら監査へ回す
+     * ——検証が落ちたままのものを通さない責任は、これまで通りマージ前ゲートが持つ。
+     */
+    const sentBack = this.getTaskEvents(projectTag, taskId).filter(
+      (ev) =>
+        ev.type === "state_transitioned" &&
+        ev.to === "implementing" &&
+        typeof ev.reason === "string" &&
+        ev.reason.startsWith(PRE_AUDIT_VERIFY_FAILED)
+    ).length;
+    if (sentBack >= PRE_AUDIT_SEND_BACK_LIMIT) {
+      process.stderr.write(
+        `[banto-daemon] ${projectTag}/${taskId}: 前倒しの検証で ${sentBack} 回戻しています` +
+          "——これ以上は戻さず監査へ回します（マージ前ゲートが最終の関所です）\n"
+      );
+      await this.spawnAuditSession(projectTag, taskId);
+      return;
+    }
+
+    const findings = await this.preAuditVerify(projectTag, taskId);
+    if (findings.length === 0) {
+      await this.spawnAuditSession(projectTag, taskId);
+      return;
+    }
+
+    // 検証が終わるまでの間にタスクが先へ進んでいたら、何もしない（I2: 割り込まない）
+    const current = this.store.getTask(taskId, projectTag);
+    if (!current || current.status !== "auditing") {
+      process.stderr.write(
+        `[banto-daemon] ${projectTag}/${taskId}: 前倒しの検証は落ちましたが、` +
+          `タスクは既に ${current?.status ?? "不明"} です——差し戻しません\n`
+      );
+      return;
+    }
+
+    const back = this.transition(
+      projectTag,
+      taskId,
+      "implementing",
+      `${PRE_AUDIT_VERIFY_FAILED}: Kobo が検証環境で回した検証コマンドが落ちました`
+    );
+    if (!back.ok) {
+      // I2: 戻せなかったことを黙らせない。戻せないなら監査へ回す（止めない）
+      process.stderr.write(
+        `[banto-daemon] ${projectTag}/${taskId} を implementing へ戻せません: ${back.reason}` +
+          "——監査へ回します\n"
+      );
+      await this.spawnAuditSession(projectTag, taskId);
+      return;
+    }
+
+    this.refreshState();
+    this.broadcastLatest();
+    await this.spawnReworkSession(projectTag, taskId, findings, "検証で落ちた箇所（Kobo が検証環境で回した結果）");
+  }
+
   private async spawnAuditSession(projectTag: string, taskId: string): Promise<void> {
     const task = this.store.getTask(taskId, projectTag);
     if (!task) {
@@ -4505,14 +4708,58 @@ export class Daemon {
 // tmux は使わない（決定59）。職人の様子を覗くのはセッションビューア（決定18）で、
 // Kobo から tmux 依存は消えている。
 
-/** 受け入れ基準を読める形に並べる。 */
+/**
+ * 検証を回す場所の説明（task-0213）。**実装者にも監査人にも同じものを渡す。**
+ *
+ * 以前は実装者の手順に「検証コマンドがあれば自分で実行して」とだけ書き、監査人には
+ * 何も書いていなかった。結果、**両方とも袋の中で `npm test` / `npm run typecheck` /
+ * `npm ci` を回し**、cgroup の上限（既定 2 GiB）に当たって職人ごと殺された
+ * ——2026-08-16 の実測で7回、中身は無罪のタスクが7本落ちている。
+ *
+ * **I1 は緩めない。** 確かめないで出すのは駄目のままで、確かめる場所が変わるだけ。
+ * だから「回すな」だけでなく**「ではどう確かめるのか」まで書く**——書かないと、
+ * 確かめずに終える職人が出る。
+ *
+ * 線引きも書く。曖昧にすると各自の判断に戻る（監査人がそうなっていた）。
+ */
+const VERIFY_PLACE_NOTE: string[] = [
+  `## 検証コマンドをどこで回すか（必ず読むこと）`,
+  ``,
+  `**受け入れ基準に添えた検証コマンドは、Kobo が検証環境（あなたの外）で回します。**`,
+  `あなた自身の環境で叩かないでください。`,
+  ``,
+  `- **自分で叩いてはいけないもの＝「一式」**: \`npm ci\` / \`npm test\` / \`npm run typecheck\` /`,
+  `  \`npm run build\` のような、**リポジトリ全体を回すもの**。`,
+  `  あなたは 2 GiB のメモリ上限の中にいます。一式を回すと上限に当たって**あなたごと**`,
+  `  強制終了されます（2026-08-16 に実測で7回起きています）。`,
+  `- **自分で叩いてよいもの＝「軽い確認」**: 1ファイルだけの型検査、1本だけの spec 実行`,
+  `  （\`npm run test:one <1ファイル>\`）、\`grep\` / \`git diff\` などの読み取り。`,
+  ``,
+  `**では一式はどう確かめるのか。**`,
+  `\`report_done\` を呼ぶと、Kobo が監査へ回す前に受け入れ基準の検証コマンドを`,
+  `**検証環境の中で**回します。落ちていれば、落ちた基準・終了コード・ログ（失敗した箇所と`,
+  `末尾。長い分は切り詰めて全文の置き場所を添えます）を**あなたへ差し戻します**。`,
+  `つまり、**確かめるのをやめるのではなく、回す場所が変わるだけ**です（I1）。`,
+  ``,
+  `**「一式はゲートに任せるから自分は確かめない」は駄目です。** 変更の意図が通っている`,
+  `ことは、軽い確認と読み合わせで自分で確かめてから \`report_done\` を呼んでください。`,
+];
+
+/**
+ * 受け入れ基準を読める形に並べる。
+ *
+ * task-0213: 検証コマンドは**どこが回すのか**まで書く。以前は「（検証コマンド: `npm test`）」
+ * とだけ添えていたが、それは「自分で叩け」と読める——実際そう読まれて袋が破れた。
+ */
 function formatAcceptance(task: TaskRecord): string[] {
   const raw = (task as Record<string, unknown>)["acceptance"];
   if (!Array.isArray(raw)) return ["- (基準未指定)"];
   const rows = (raw as Array<Record<string, unknown>>).map((a) => {
     const id = String(a["id"] ?? "");
     const text = String(a["text"] ?? "");
-    const verify = a["verify"] ? ` （検証コマンド: \`${String(a["verify"])}\`）` : "";
+    const verify = a["verify"]
+      ? ` （検証コマンド: \`${String(a["verify"])}\` — **Kobo が検証環境で回します。自分で叩かないこと**）`
+      : "";
     return `- [${id}] ${text}${verify}`;
   });
   return rows.length > 0 ? rows : ["- (基準未指定)"];
@@ -4586,6 +4833,9 @@ export function buildExecutorInstruction(
     ``,
     `**受け入れ基準**:`,
     ...formatAcceptance(task),
+    ``,
+    // task-0213: 検証をどこで回すかは**契約の一部**。依頼本文より前に置く
+    ...VERIFY_PLACE_NOTE,
   ];
 
   // 依頼そのもの（タスク定義の本文）。**ここが本題**で、上は契約
@@ -4609,7 +4859,13 @@ export function buildExecutorInstruction(
     ``,
     `1. \`report_phase\` を phase="implementing" で呼び、着手を知らせる`,
     `2. 受け入れ基準を満たす実装を、**スコープ内のパスだけ**で行う`,
-    `3. 検証コマンドがあれば自分で実行して、通ることを確かめる（I1：通ったつもりで出さない）`,
+    // task-0213: 「自分で実行して」と書いていたのを直した。**一式は袋の中で叩かない**
+    // ——叩くと 2 GiB の上限に当たって職人ごと殺される（2026-08-16 の実測で7回）。
+    // ただし「回すな」だけでは I1 が壊れるので、**代わりの確かめ方まで書く**
+    `3. 軽い確認（1ファイルの型検査・\`npm run test:one <1ファイル>\`）で自分の変更を確かめる。`,
+    `   **一式（\`npm ci\` / \`npm test\` / \`npm run typecheck\` / \`npm run build\`）は自分で叩かない**`,
+    `   ——上の「検証コマンドをどこで回すか」の通り、Kobo が \`report_done\` の後に検証環境で`,
+    `   回して、落ちていればあなたへ差し戻します（I1：通ったつもりで出さない／確かめる場所が変わるだけ）`,
     `4. \`git add\` して \`task/${taskId}\` ブランチにコミットする`,
     `   （必要なら \`git config user.email\` / \`user.name\` を先に設定する）`,
     ``,
@@ -4680,11 +4936,20 @@ export function buildAuditInstruction(
     `**受け入れ基準 (acceptance criteria)**:`,
     ...formatAcceptance(task),
     ``,
+    // task-0213: **監査人にも同じことを明示する。** 以前はここに何も書いておらず、
+    // 各自の判断に委ねられていた——実測では監査人も袋の中で `npm test` /
+    // `npm run typecheck` を回しており、`memory.oom.group` で袋ごと 15 プロセスが死んだ
+    ...VERIFY_PLACE_NOTE,
+    ``,
     `## 監査手順`,
     ``,
     `1. ワークツリーパス (${worktreePath}) に移動して実装内容を確認してください`,
     `2. scope.paths に指定されたファイルが存在し、acceptance criteria を満たしているか検証してください`,
-    `3. verify コマンドがある場合はそれを実行して結果を確認してください`,
+    `3. verify コマンドの**一式は自分で実行しないでください**（Kobo が検証環境で回します）。`,
+    `   実装者が \`report_done\` を呼んだ時点の結果は帳簿にあり、落ちていればここへは来ません`,
+    `   （落ちたまま監査へ来た場合は、差し戻しの上限に達したときだけです）。`,
+    `   マージ前ゲートが同じ経路でもう一度回します。あなたが見るのは**中身が基準を満たすか**で、`,
+    `   確かめるなら軽い確認（1ファイルの型検査・\`npm run test:one <1ファイル>\`）に留めてください`,
     `4. すべての基準を満たしていれば \`audit_report\` ツールを呼び出し verdict="pass" を報告してください`,
     `5. 問題があれば verdict="fail" と具体的な findings を報告してください`,
     ``,
