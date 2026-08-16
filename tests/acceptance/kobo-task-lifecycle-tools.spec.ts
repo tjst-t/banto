@@ -190,6 +190,20 @@ describe("[kobo-task-lifecycle-tools] 後始末の3本が番頭へ配られる",
       assert.ok(presented.has(name), `助言文が名指しする ${name} が提示されていること`);
     }
   });
+
+  it("kobo.amend の説明が、覆われている絞り込みは通せると書いてある（説明と実装を食い違わせない）", () => {
+    // task-0209 で `classifyAmendment` は「いまのスコープのどれかに覆われているパスは
+    // 広げたと読まない」に直った。道具の説明は**番頭にとっての仕様書**なので、旧仕様
+    // （一覧に無い文字列を足したら PO）が残っていると通せる改訂まで取次へ上がる
+    const amend = inventory().find((t) => t.name === "kobo.amend");
+    assert.ok(amend, "kobo.amend が在庫にあること");
+    const description = amend.description ?? "";
+    assert.ok(
+      !description.includes("いまの一覧に無い文字列を足すなら"),
+      "旧仕様の文言が残っていないこと"
+    );
+    assert.ok(description.includes("覆われている"), "覆われていれば通せる、と書いてあること");
+  });
 });
 
 // ── 1. merging に居座ったタスクに、どの口が届くか ─────────────────────────────
