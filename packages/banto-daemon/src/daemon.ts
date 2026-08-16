@@ -245,13 +245,76 @@ export function unreachableModuleOf(reason: string): string | null {
 }
 
 /**
- * 失敗の理由を組み立てる。届かなかったときだけ、機械が読む印と人が読む一文を足す。
+ * **工房が満杯で断った**ことの合印（task-0222）。値の正は Worker Pool の
+ * `WORKER_LIMIT_CODE`（`packages/banto-worker-pool/src/pool.ts`）。
+ *
+ * ここでは**文字列として持つ**——工房は Kobo を読み込まない向きの依存で作られており
+ * （task-0216 の a6）、Kobo から工房を import すると輪になる。ずれたら黙って壊れるので、
+ * 同じ値であることは試験（`kobo-worker-pool-busy.spec.ts`）が両方を import して固定する。
+ *
+ * **日本語の言い回しでは判定しない**（断りの文面を直した日に黙って壊れるため）。
+ */
+export const WORKER_POOL_BUSY_CODE = "BANTO_WORKER_LIMIT";
+
+/**
+ * 合印に添えられた「いま走っている本数／上限」（`BANTO_WORKER_LIMIT:3/6`）。
+ * 合印そのものは上の定数から組む——**書き写しを2箇所に増やさない**。
+ */
+const WORKER_POOL_BUSY_COUNTS = new RegExp(`${WORKER_POOL_BUSY_CODE}:(\\d+)/(\\d+)`);
+
+/**
+ * **満杯で断られた**ことの印（task-0222）。`unreachable:` と同じ流儀で、状態は増やさず
+ * 理由の先頭に置く。
+ *
+ * 満杯は「中身が悪くて落ちた」でも「声が届かなかった」でもない第三の形で、
+ * 読む人が次にやることは `unreachable:` と同じ——**待てばよい**。
+ */
+const BUSY_REASON_PREFIX = "busy:worker-pool ";
+
+/** 工房が満杯で断ったときの本数。合印はあるのに数が読めなければ `null` で埋める。 */
+export interface WorkerPoolBusy {
+  running: number | null;
+  limit: number | null;
+}
+
+/**
+ * 文言（例外のメッセージ、または帳簿に残った `reason`）から「工房が満杯だった」を読む。
+ * 満杯でなければ `null`。
+ *
+ * 帳簿を読む側（番頭・PO・次に見る人）が使う入口。`unreachableModuleOf` と対になる。
+ */
+export function workerPoolBusyOf(text: string): WorkerPoolBusy | null {
+  if (!text.includes(WORKER_POOL_BUSY_CODE)) return null;
+  const counts = WORKER_POOL_BUSY_COUNTS.exec(text);
+  if (!counts) return { running: null, limit: null };
+  return { running: Number(counts[1]), limit: Number(counts[2]) };
+}
+
+/** 本数／上限を人が読む形にする（合印から数が読めなかったときも黙らせない）。 */
+function busyCounts(busy: WorkerPoolBusy): string {
+  return `${busy.running ?? "?"}/${busy.limit ?? "?"} 本`;
+}
+
+/**
+ * 失敗の理由を組み立てる。届かなかったとき・満杯で断られたときだけ、機械が読む印と
+ * 人が読む一文を足す。
  *
  * **元の文言はそのまま残す**（I2：握り潰さない）。既にこの文言で拾っている読み手
  * （試験・番頭）が壊れないように、後ろへ足すだけにする。
  */
 function taskFailureReason(context: string, err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
+  // task-0222: 満杯の断りは**届いている**（HTTP 500）ので `unreachable:` では拾えない。
+  // それでも読む人が次にやることは同じ（待つ）ので、先に見分けて印を分ける
+  const busy = workerPoolBusyOf(message);
+  if (busy) {
+    return (
+      `${BUSY_REASON_PREFIX}${context}: ${message}` +
+      `（工房が満杯だっただけで、**中身の失敗ではありません**——同時に走れる職人が` +
+      `${busyCounts(busy)}で埋まっていました。原因を調べ直す前に、しばらく置いてから` +
+      "kobo.reopen で動かし直してください）"
+    );
+  }
   const moduleName = UNREACHABLE_MODULE_PATTERN.exec(message)?.[1];
   if (!moduleName) return `${context}: ${message}`;
   return (
@@ -2856,6 +2919,17 @@ export class Daemon {
         extension: "banto-executor",
       });
     } catch (err) {
+      // task-0222: 工房が満杯で断ったなら、**中身は無罪で、待てば通る**。ここで failed に
+      // 落とすと巡回（`ready` のタスクを毎回拾う）が二度と拾わなくなるので、`ready` のまま
+      // 残して次の周回に起こし直させる。**黙って見送らない**——本数／上限をログに残す
+      const busy = workerPoolBusyOf(err instanceof Error ? err.message : String(err));
+      if (busy) {
+        process.stdout.write(
+          `[banto-daemon] ${projectTag}/${taskId}: 工房が満杯だったので見送りました` +
+            `（${busyCounts(busy)}）。ready のまま次の周回で起こし直します（task-0222）\n`
+        );
+        throw err;
+      }
       // task-0215: 職人を起こすのは Worker Pool への呼び出し——**届かなかった**のか
       // **断られた**のかで、読む人が次にやることが違う（待つ／直す）
       this.recordTaskFailed(projectTag, taskId, taskFailureReason("spawn failed", err));
@@ -3745,6 +3819,7 @@ export class Daemon {
       });
     } catch (err) {
       // task-0215: 届かなかっただけなら中身は無罪。理由の側でそれが分かるようにする
+      // task-0222: 工房が満杯だったときも同じ（ここは巡回が拾い直さないので状態は failed のまま）
       this.recordTaskFailed(projectTag, taskId, taskFailureReason("audit session spawn failed", err));
       return;
     }
@@ -3998,6 +4073,7 @@ export class Daemon {
       });
     } catch (err) {
       // task-0215: 届かなかっただけなら中身は無罪。理由の側でそれが分かるようにする
+      // task-0222: 工房が満杯だったときも同じ（ここは巡回が拾い直さないので状態は failed のまま）
       this.recordTaskFailed(projectTag, taskId, taskFailureReason("rework session spawn failed", err));
       return;
     }
@@ -4693,6 +4769,8 @@ export class Daemon {
         // so it won't appear in the next tick's ready list.
         // After a failed spawn the task transitions to "failed" (also no longer "ready").
         // Either way, no re-spawn loop is possible.
+        // 例外は**工房が満杯**（task-0222）——中身は無罪なので `ready` のまま残し、
+        // 次の周回でここが拾い直す。満杯が続く限り見送られるだけで、帳簿は汚れない
         try {
           await this.spawnTask(task.projectTag, task.id);
         } catch {
