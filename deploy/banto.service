@@ -40,6 +40,21 @@ Environment=BANTO_ENV_POOL_URL=http://127.0.0.1:4400/api/environment-pool
 # （banto-environment-pool.service の BANTO_ENV_POOL_DATA と同じ値にすること）
 Environment=BANTO_ENV_POOL_DATA=/var/lib/banto/environment-pool
 
+# 共有ブラウザ（K2, task-0178）：このホストで本物の chromium をサンドボックス有効のまま
+# 起こす経路は、2つとも実測で塞がっていた——①この Unit 自身の NoNewPrivileges=true が
+# setuid サンドボックス（chrome_sandbox）を prctl(PR_SET_NO_NEW_PRIVS) で無効化する
+# ②setuid が仮に効いても、chromium が次に落ちる namespace サンドボックスはこのホストの
+# AppArmor（apparmor_restrict_unprivileged_userns=1）に阻まれる。どちらも「このホストや
+# このUnitのハードニングを緩めないと外せない」壁で、今回はどちらも緩めない判断（PO,
+# 2026-08-16）。そのため既定ではサンドボックス無しでしか起動できず、共有ブラウザは
+# 「サンドボックスが使えません」と言って起動を拒む（安全側に倒れる）。
+# PO が承知の上で明示的に許可する場合だけ、次の1行を有効にする——
+# **この行を消せば、共有ブラウザは何もしなくても安全側（起動拒否）に戻る**。
+# 共有ブラウザは PO と番頭が任意の URL を開く口であり、サンドボックス無効の状態で
+# 開いたページのレンダラ脆弱性はそのままこのホスト（ubuntu ユーザ）に届きうる
+# ——そのトレードオフの記録は docs/proposals/2026-08-15-shared-browser-module-assessment.md
+Environment=BANTO_BROWSER_ALLOW_NO_SANDBOX=1
+
 ExecStart=/usr/local/bin/node --import tsx packages/banto-host/src/bin.ts serve --port 4100
 
 # **always でなければならない**（inc-0072）。`system.restart` は自分を落として systemd に

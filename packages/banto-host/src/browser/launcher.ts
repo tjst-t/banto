@@ -16,10 +16,20 @@
 
 /** 起きているブラウザ1つ分。 */
 export interface LaunchedBrowser {
-  /** CDP の口。`ws://127.0.0.1:<port>/devtools/browser/<id>` のような URL。 */
+  /**
+   * **page ターゲットの CDP の口**（`ws://127.0.0.1:<port>/devtools/page/<id>` のような URL）。
+   * ブラウザ級のエンドポイント（`/devtools/browser/<id>`）ではない——`session.ts` は繋いだ
+   * 接続に `sessionId` を付けず `Page.*` を送るため、page ターゲットでなければ通らず
+   * 面が真っ黒のままになる（K2 実測）。
+   */
   webSocketDebuggerUrl: string;
   /** 落とす。冪等（既に落ちていても成功する）ように実装すること。 */
   close(): Promise<void>;
+  /**
+   * サンドボックスを有効にして起動したか。分かる launcher だけが載せる（省略可）。
+   * `session.ts` はこれを `BrowserStatus.sandbox` へそのまま写す。
+   */
+  sandbox?: "enabled" | "disabled";
 }
 
 /** 起こすときの注文。ブラウザ側で解釈できないものは無視してよい。 */

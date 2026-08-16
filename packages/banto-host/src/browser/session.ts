@@ -41,11 +41,31 @@ const SCREENCAST_DEFAULTS: Required<ScreencastOptions> = {
   everyNthFrame: 1,
 };
 
+/** 面が0のまま、最後の操作からこの時間が経つと自動で落とす。定数はここ1箇所（D3）。 */
+export const BROWSER_IDLE_TTL_MS = 30 * 60_000;
+
+function defaultScheduleIdleTimer(callback: () => void, ms: number): unknown {
+  const handle = setTimeout(callback, ms);
+  // 見張りのために host プロセスを生かし続けない（K2）
+  handle.unref?.();
+  return handle;
+}
+
+function defaultCancelIdleTimer(handle: unknown): void {
+  clearTimeout(handle as NodeJS.Timeout);
+}
+
 export interface BrowserSessionOptions {
   launcher: BrowserLauncher;
   screencast?: ScreencastOptions;
   /** CDP へ繋ぐ手立て。試験で差し替えられるようにしてあるだけで、既定が本番の経路。 */
   connect?: (url: string) => Promise<CdpConnection>;
+  /** 面が0のまま最後の操作から経つと自動で落とすまでの時間。既定 `BROWSER_IDLE_TTL_MS`。 */
+  idleTtlMs?: number;
+  /** アイドル TTL のタイマーを張る（試験から差し替える）。既定は `setTimeout`。 */
+  scheduleIdleTimer?: (callback: () => void, ms: number) => unknown;
+  /** 上と対になる解除。既定は `clearTimeout`。 */
+  cancelIdleTimer?: (handle: unknown) => void;
 }
 
 /** `browser.status` が返す形。面も同じものを見る（D3：状態の真実は1つ）。 */
@@ -55,6 +75,8 @@ export interface BrowserStatus {
   launcher: string;
   /** CDP の口（起きているときだけ）。 */
   webSocketDebuggerUrl?: string;
+  /** サンドボックスを有効にして起動したか（launcher が分かるときだけ）。 */
+  sandbox?: "enabled" | "disabled";
   /** いま面を開いている数。 */
   viewers: number;
   /** screencast を流しているか。 */
@@ -78,6 +100,9 @@ function send(socket: WebSocket, message: ViewerMessage): void {
 export function createBrowserSession(options: BrowserSessionOptions): BrowserSession {
   const connect = options.connect ?? ((url: string) => connectCdp(url));
   const screencast = { ...SCREENCAST_DEFAULTS, ...options.screencast };
+  const idleTtlMs = options.idleTtlMs ?? BROWSER_IDLE_TTL_MS;
+  const scheduleIdleTimer = options.scheduleIdleTimer ?? defaultScheduleIdleTimer;
+  const cancelIdleTimer = options.cancelIdleTimer ?? defaultCancelIdleTimer;
 
   let launched: LaunchedBrowser | undefined;
   let cdp: CdpConnection | undefined;
@@ -86,11 +111,13 @@ export function createBrowserSession(options: BrowserSessionOptions): BrowserSes
   /** 最後に見たフレームの metadata。面から来た座標を実座標へ直すのに要る。 */
   let lastMetadata: ScreencastMetadata = {};
   const viewers = new Set<WebSocket>();
+  let idleTimerHandle: unknown;
 
   const status = (): BrowserStatus => ({
     state: cdp && !cdp.closed ? "running" : "stopped",
     launcher: options.launcher.name,
     ...(launched ? { webSocketDebuggerUrl: launched.webSocketDebuggerUrl } : {}),
+    ...(launched?.sandbox ? { sandbox: launched.sandbox } : {}),
     viewers: viewers.size,
     streaming,
   });
@@ -133,8 +160,61 @@ export function createBrowserSession(options: BrowserSessionOptions): BrowserSes
     fire("Page.stopScreencast");
   };
 
+  const clearIdleWatch = (): void => {
+    if (idleTimerHandle !== undefined) {
+      cancelIdleTimer(idleTimerHandle);
+      idleTimerHandle = undefined;
+    }
+  };
+
+  /**
+   * アイドル TTL の見張りをかけ直す。**面が0のときだけ**時計を進める——面が1つでも
+   * あれば判定しない（K2）。呼ぶたびにいったん解除してから条件を見るので、
+   * 「起動した」「最後の面が閉じた」の両方をここ1本に通せる。
+   */
+  const armIdleWatch = (): void => {
+    clearIdleWatch();
+    if (!cdp || cdp.closed || viewers.size > 0) return;
+    idleTimerHandle = scheduleIdleTimer(() => {
+      idleTimerHandle = undefined;
+      if (cdp && !cdp.closed && viewers.size === 0) {
+        console.log(
+          `[browser] アイドル TTL（${idleTtlMs}ms）に達したため、共有ブラウザを自動で落とします`
+        );
+        void stop();
+      }
+    }, idleTtlMs);
+  };
+
+  const stop = async (): Promise<BrowserStatus> => {
+    clearIdleWatch();
+    // 接続ごと閉じるので `Page.stopScreencast` は送らない——送っても、閉じたあとに
+    // 「送れませんでした」が出るだけで、正常な停止が失敗のように見える
+    streaming = false;
+    unsubscribeFrame?.();
+    unsubscribeFrame = undefined;
+
+    for (const socket of Array.from(viewers)) {
+      send(socket, { type: "status", state: "stopped" });
+      socket.close();
+    }
+    viewers.clear();
+    lastMetadata = {};
+
+    const connection = cdp;
+    cdp = undefined;
+    if (connection) await connection.close();
+
+    const browser = launched;
+    launched = undefined;
+    if (browser) await browser.close();
+
+    return status();
+  };
+
   return {
     status,
+    stop,
 
     async start(request: LaunchRequest = {}): Promise<BrowserStatus> {
       // 既に起きているなら起こし直さない（同時に1つ。冪等に扱う）
@@ -157,31 +237,8 @@ export function createBrowserSession(options: BrowserSessionOptions): BrowserSes
 
       // 既に面が開いていたなら、そのまま流し始める
       if (viewers.size > 0) startStreaming();
-      return status();
-    },
-
-    async stop(): Promise<BrowserStatus> {
-      // 接続ごと閉じるので `Page.stopScreencast` は送らない——送っても、閉じたあとに
-      // 「送れませんでした」が出るだけで、正常な停止が失敗のように見える
-      streaming = false;
-      unsubscribeFrame?.();
-      unsubscribeFrame = undefined;
-
-      for (const socket of Array.from(viewers)) {
-        send(socket, { type: "status", state: "stopped" });
-        socket.close();
-      }
-      viewers.clear();
-      lastMetadata = {};
-
-      const connection = cdp;
-      cdp = undefined;
-      if (connection) await connection.close();
-
-      const browser = launched;
-      launched = undefined;
-      if (browser) await browser.close();
-
+      // 面がまだ無ければ、ここからアイドル TTL の時計が進み始める
+      armIdleWatch();
       return status();
     },
 
@@ -197,6 +254,8 @@ export function createBrowserSession(options: BrowserSessionOptions): BrowserSes
       }
 
       viewers.add(socket);
+      // 面が付いた——アイドル判定を止める
+      clearIdleWatch();
       send(socket, { type: "status", state: "running" });
       startStreaming();
 
@@ -213,7 +272,11 @@ export function createBrowserSession(options: BrowserSessionOptions): BrowserSes
       socket.on("close", () => {
         viewers.delete(socket);
         // 誰も見ていないのに送らせ続けない（静止時は来ないが、動いていれば流れ続ける）
-        if (viewers.size === 0) stopStreaming();
+        if (viewers.size === 0) {
+          stopStreaming();
+          // 最後の面が閉じた——ここからアイドル TTL の時計が進み始める
+          armIdleWatch();
+        }
       });
       socket.on("error", (err: Error) => {
         console.error(`[browser] 面の接続でエラーが起きました: ${err.message}`);

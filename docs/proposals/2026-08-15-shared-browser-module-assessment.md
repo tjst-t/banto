@@ -117,3 +117,45 @@ K6 で本文まで返す Tool の説明文に載せる文言は一字一句こ�
 - SSE で `Network.streamResourceContent` を呼ぶと `bufferedData` が空文字だった（`dataReceived` 側で配信済みのためと推測。**深掘りしていない**）。
 - 拡張機能経由の通信は未検証（service worker と同じくターゲットが別なので、同じ対処が要ると見込まれるが**未確認**）。
 - 面での体感（フレーム転送の粗さ・遅延）は人が見るまで分からない。T3/T4 の後に PO が実際に触って確かめる段を置く。
+
+## 8. 追記（2026-08-16、K2 実装時に判明）
+
+### 8-1. 3-1 の実測は、実はサンドボックス無効の上で取られていた
+
+3-1 の headless/headful の起動時間・RSS は playwright の `chromium.launch()` を使って測っていたが、**このレポートは playwright が実際にどんな引数で chromium を起こしていたかに触れていなかった**。K2 実装時に `child_process.spawn` をフックして実引数を採取したところ、playwright は明示的に `--no-sandbox` を渡していた（末尾近くに `"--no-sandbox"` が含まれる）。**つまり 3-1 の数字はサンドボックス無効の上で取られたもので、有効時の起動時間・RSS は未計測。**
+
+### 8-2. このホストではサンドボックスを有効にできない——壁は2つある
+
+K2（本物の chromium を起こすアダプタ）で既定をサンドボックス有効のまま起動しようとしたところ、**独立した2つの壁**で塞がれていることが実機で分かった。
+
+**壁1：`NoNewPrivileges=true`。** banto を動かす systemd unit（`banto.service`、およびこの検証を走らせた `banto-worker-pool.service`）はどちらも `NoNewPrivileges=true`（`deploy/banto.service` 参照）。これは `prctl(PR_SET_NO_NEW_PRIVS)` を立て、**setuid ビットを問答無用で無効化する**。だから同梱の `chrome_sandbox` を setuid root にしても（`chown root:root` + `chmod 4755` を PO が実施・`-rwsr-xr-x root root` になったことを確認済み）、これらの unit 配下では使えない。
+
+**壁2：AppArmor の非特権 user namespace 制限。** setuid が仮に効いたとしても、chromium は次に namespace ベースのサンドボックスへ落ちる。このホストは `apparmor_restrict_unprivileged_userns=1` で、非特権プロセスの user namespace 作成を塞いでいる。
+
+実機で確認した stderr の全文（`BANTO_BROWSER_ALLOW_NO_SANDBOX` を立てず、`CHROME_DEVEL_SANDBOX` で setuid root の `chrome_sandbox` を指した状態で起動を試みたとき）：
+
+```
+The setuid sandbox is not running as root. Common causes:
+  * An unprivileged process using ptrace on it, like a debugger.
+  * A parent process set prctl(PR_SET_NO_NEW_PRIVS, ...)
+Failed to move to new namespace: PID namespaces supported, Network namespace supported, but failed: errno = Operation not permitted
+[...] FATAL:content/browser/zygote_host/zygote_host_impl_linux.cc:207] Check failed: . : No such file or directory (2)
+```
+
+このメッセージ自体が「壁1」の指紋を含んでいる（`A parent process set prctl(PR_SET_NO_NEW_PRIVS, ...)` を common causes の1つとして挙げている）。setuid が機能していないため chromium は namespace サンドボックスへフォールバックし、そちらが「壁2」（AppArmor）の `Operation not permitted` で止まる——**最初の切り分けでは「AppArmor だけが原因」と誤認したが、実際は壁1（NoNewPrivileges）が先に効いていて、壁2（AppArmor）はそのフォールバック経路で踏んだもの。両方が独立に効いている。**
+
+**どちらの壁も「banto 側またはホスト側のハードニングを緩めないと外せない」：**
+- 壁1を外すには `banto.service`（および `banto-worker-pool.service`）の `NoNewPrivileges=true` を外す必要がある
+- 壁2を外すには、ホストの AppArmor 設定（`apparmor_restrict_unprivileged_userns`）を緩める必要がある
+
+**どちらも今回は緩めない**、というのが PO の判断（2026-08-16）。
+
+### 8-3. PO の判断とその結果
+
+まず setuid root 化を試す（サンドボックス維持を優先）→ 上記の理由で効かず → その場で粘らず、明示的な opt-in `BANTO_BROWSER_ALLOW_NO_SANDBOX=1` へ切り替え、そちらで実機検証（`/devtools/page/` の CDP 接続・screencast・入力・後始末）を通した（2026-08-16）。既定では `--no-sandbox` を付けない。開いていることは①起動時のログ1行、②`browser.status` の `sandbox` フィールド（`"enabled" | "disabled"`）の両方に出る。`deploy/banto.service` にも、なぜこの変数が要るかをコメントで残してある。
+
+### 8-4. 次の人へ
+
+- **`chrome_sandbox` を実行ファイルの隣に置くだけでは chromium は使わない。** chromium が見るのは環境変数 `CHROME_DEVEL_SANDBOX` か、ビルド時の既定パス（`/usr/local/sbin/chrome-devel-sandbox`）だけ。K2 の実装（`resolveSandboxEnv()`、`packages/banto-host/src/browser/chromium-launcher.ts`）は、隣の `chrome_sandbox` が root 所有かつ setuid ビット持ちのときだけ `CHROME_DEVEL_SANDBOX` を子プロセスの環境に足す。
+- **setuid を試す前に、まず自分が動いている systemd unit の `NoNewPrivileges` を確認すること。** `true` なら setuid はどう頑張っても効かない——AppArmor やその他の要因を疑う前に、まずここを見る。
+- 将来別の環境（`NoNewPrivileges` の無い unit、あるいは unit の外）でサンドボックス有効化を再検討する場合も、壁は2つあるので**両方**確認すること。
