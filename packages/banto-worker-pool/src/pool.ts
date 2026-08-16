@@ -293,6 +293,17 @@ export interface WorkerPoolOptions {
    */
   maxConcurrentWorkers?: number;
   /**
+   * 監査・判定のために空けておく席の数（task-0223）。
+   *
+   * 実装（`executor`）は「上限 − ここ」までしか取れない。既定は環境変数
+   * {@link AUDIT_RESERVED_ENV}（既定 {@link DEFAULT_AUDIT_RESERVED_WORKERS}）から読む。
+   * 0 を渡すと取り置かない＝task-0216 のままの早い者勝ちになる。
+   *
+   * 上限（`maxConcurrentWorkers`）以上を渡すと**実装が1本も起こせなくなる**ので、
+   * その組み合わせは受け取らずに投げる（I2：黙って直さない・黙って落とさない）。
+   */
+  auditReservedWorkers?: number;
+  /**
    * 職人の下の実プロセスを突き止める走査の加減（inc-0066）。
    *
    * 既定は「する」。`false` にすると走査しない——子を持たないランタイムしか使わないと
@@ -334,8 +345,16 @@ export const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
  *       6 本なら平常時 6 × 0.56 ≒ **3.4 GiB**。重いのが 2 本同時に上限（2 GiB）へ
  *       張り付いても `2×2 + 4×0.56 ≒ 6.2 GiB` で、工房の 7 GiB に収まる。
  *
- * 6 という本数そのものの根拠は「Kobo の 5 本 ＋ 番頭が直に起こす 1 本」。工場が回す分を
- * 工房が断らずに済む最小の値であり、事故のあった 9 本より確実に下にある。
+ * **6 の内訳（task-0223 で書き直した）**：置いた当初の内訳は「Kobo の 5 本 ＋ 番頭が直に
+ * 起こす 1 本」だったが、その数え方には**役の区別が無い**。実装の職人が 6 本で埋めると
+ * 監査の職人が起きられず、タスクが `auditing` から永久に出られなくなる（2026-08-16 に
+ * 「監査が起動できない」で3回落ちている）。いまの内訳は
+ * **「実装 4 本 ＋ 監査・判定のために空けておく 2 本」**（{@link DEFAULT_AUDIT_RESERVED_WORKERS}）。
+ * 実装の取り分は 5 から 4 へ減るが、**判定が永久に待つ**より、実装が1本待つ方が安い
+ * ——判定が進まなければ、その 4 本が作ったものは1つも着地しない。
+ *
+ * 6 そのものは動かさない。事故のあった 9 本より確実に下にある値で、上げるかどうかは
+ * メモリの実測（上記 (B)）から別に判断する。
  *
  * (B) を採った以上、**これは最悪値の保証ではない**——6 本全部が 2 GiB へ張り付けば
  * 12 GiB で、やはり工房は落ちる。そこまでの守りは職人1本ごとの cgroup（2 GiB）が受け持ち、
@@ -381,6 +400,84 @@ export function resolveMaxConcurrentWorkers(
   return parsed;
 }
 
+/**
+ * 席の配分で使う役（task-0223）。**この2つで足りる。**
+ *
+ * 起動元（Kobo）はもっと細かい役を持っている（`executor` / `audit` / `rework`）が、
+ * 工房が知る必要があるのは「作る側か、判定する側か」だけ——増やすと、役が増えるたびに
+ * 工房の席の配分表を書き直すことになる。手直し（rework）は作る側なので `executor`。
+ */
+export const WORKER_SEAT_ROLES = ["executor", "auditor"] as const;
+
+/** {@link WORKER_SEAT_ROLES} の型。 */
+export type WorkerSeatRole = (typeof WORKER_SEAT_ROLES)[number];
+
+/**
+ * 役を渡されなかった依頼の扱い（task-0223）。
+ *
+ * 番頭が `worker.delegate` で直に起こす職人も**実装側として数える**——数えないと、
+ * 番頭が起こした分だけ監査の席が黙って食われる。「役を渡さない＝制限しない」にすると、
+ * 役を渡す呼び出し側だけが損をする（そして皆が役を渡さなくなる）。
+ */
+export const DEFAULT_WORKER_SEAT_ROLE: WorkerSeatRole = "executor";
+
+/** 断りの文面・一覧に出す役の呼び名（読むのは番頭＝人と同じ日本語の側）。 */
+function seatRoleLabel(role: WorkerSeatRole): string {
+  return role === "auditor" ? "監査・判定" : "実装";
+}
+
+/** 値が席の役として読めれば返す。読めなければ既定（実装側）。 */
+function asSeatRole(value: unknown): WorkerSeatRole {
+  return typeof value === "string" && (WORKER_SEAT_ROLES as readonly string[]).includes(value)
+    ? (value as WorkerSeatRole)
+    : DEFAULT_WORKER_SEAT_ROLE;
+}
+
+/**
+ * 監査・判定のために空けておく席の数の既定（task-0223）。
+ *
+ * **なぜ席を取り置くか**：task-0216 の栓は完全な早い者勝ちで、誰の依頼かを見ていない。
+ * 実装の職人が上限まで埋めると監査の職人が起こせず、タスクは `auditing` から出られない
+ * ——レビューにも着地にも進めないまま、実装だけが席を取り続ける。上限がある限り、
+ * 早い者勝ちのままではこれが**恒常化する**（一時的な混雑ではない）。
+ *
+ * **なぜ 2 か**：Kobo は1つのタスクにつき監査を1本立てる。同時に判定へ入るタスクが
+ * 2つあっても詰まらないのが 2 本で、既定の上限 6 に対して実装の取り分は 4 本残る。
+ * 1 だと「監査中に別のタスクが監査へ入る」だけで待ちになり、3 以上にすると実装が
+ * 3 本まで落ちて、今度は作る側が慢性的に断られる。
+ *
+ * これは**上限を増やす仕掛けではない**。合計は {@link DEFAULT_MAX_CONCURRENT_WORKERS}
+ * のままで、その内訳を決めるだけ——監査だからといって上限を超えては起こさない。
+ */
+export const DEFAULT_AUDIT_RESERVED_WORKERS = 2;
+
+/** 予約席の数を変える環境変数の名前（{@link MAX_CONCURRENT_ENV} と同じ流儀）。 */
+export const AUDIT_RESERVED_ENV = "BANTO_WORKER_AUDIT_RESERVED";
+
+/**
+ * 環境変数から予約席の数を読む。
+ *
+ * I2: {@link resolveMaxConcurrentWorkers} と同じく、**読めない値を黙って既定に落とさない**。
+ * 落とすと「監査の席を空けたつもりで空いていない」が例外にならず、上限だけが効いた状態
+ * ——つまり task-0223 以前に戻ったまま走り出す。
+ *
+ * @param env 読み元（試験は偽の環境を渡す）
+ * @returns 席数。0 は「取り置かない」（＝task-0216 のままの早い者勝ち）
+ */
+export function resolveAuditReservedWorkers(
+  env: Record<string, string | undefined> = process.env
+): number {
+  const raw = env[AUDIT_RESERVED_ENV];
+  if (raw === undefined || raw.trim() === "") return DEFAULT_AUDIT_RESERVED_WORKERS;
+  const parsed = Number(raw.trim());
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(
+      `${AUDIT_RESERVED_ENV} を読み取れません: "${raw}"（0以上の整数。0 で取り置かない。既定 ${DEFAULT_AUDIT_RESERVED_WORKERS}）`
+    );
+  }
+  return parsed;
+}
+
 /** いま走っている職人1本分（同時本数の数え上げに出る形）。 */
 export interface ConcurrencySlot {
   taskId: string;
@@ -390,6 +487,8 @@ export interface ConcurrencySlot {
   spawnedAt: string;
   /** 起こしている最中（spawn が返る前）の枠か。 */
   starting?: boolean;
+  /** どちらの枠で座っているか（task-0223）。役を渡さずに起こされた分は `executor`。 */
+  role: WorkerSeatRole;
 }
 
 /**
@@ -407,6 +506,21 @@ export interface ConcurrencyStatus {
   slots: ConcurrencySlot[];
   /** 上限を変える環境変数の名前。 */
   env: string;
+  /**
+   * 役ごとの内訳（task-0223）。`running` と同じく毎回数え直す（D3）。
+   */
+  byRole: Record<WorkerSeatRole, number>;
+  /** 監査・判定のために空けてある席の数。0 なら取り置かない。 */
+  auditReserved: number;
+  /**
+   * 実装（`executor`）が取れる本数＝`limit - auditReserved`。
+   *
+   * `limit` が 0（上限なし）のときは 0 で、その場合は**上限なしの意味**
+   * ——上限が無いのに取り置く席は無い。
+   */
+  executorLimit: number;
+  /** 予約席を変える環境変数の名前。 */
+  reservedEnv: string;
 }
 
 /**
@@ -443,6 +557,14 @@ export interface DelegateInput {
   origin?: string;
   /** 何の仕事か。台帳・ログの識別子になる。 */
   taskId: string;
+  /**
+   * どちらの枠で席を取るか（task-0223）。省略時は {@link DEFAULT_WORKER_SEAT_ROLE}＝実装側。
+   *
+   * 実装は「上限 − 予約席」まで、監査・判定は上限まで取れる。**役は起動元しか知らない**
+   * ので、工房は言われたとおりに数えるだけ（D5）——嘘をつかれれば監査の席は埋まるが、
+   * 起動元は決定的コードのモジュールであり、ここで疑うと誰も席を取れなくなる。
+   */
+  role?: WorkerSeatRole;
   /** 作業させるディレクトリ（worktree 等）。 */
   worktreePath: string;
   /** 職人に渡す指示。spawn 後に inject で送られる（これが無いと職人は何もしない）。 */
@@ -542,6 +664,18 @@ export class WorkerPool {
   private idleSweeper: NodeJS.Timeout | undefined;
   /** 同時本数の上限（task-0216）。0 なら上限なし。 */
   private maxConcurrentWorkers = DEFAULT_MAX_CONCURRENT_WORKERS;
+  /** 監査・判定のために空けてある席の数（task-0223）。0 なら取り置かない。 */
+  private auditReservedWorkers = 0;
+  /**
+   * 席に座っている職人の役（sessionId → 役・task-0223）。
+   *
+   * **台帳には持たない。** 役を足すと台帳の形（保存する構造）が変わり、古い台帳を読む
+   * 経路まで巻き込む（D1）。役が要るのは「いま何本走っているか」を数える瞬間だけなので、
+   * 起こした事実（`worker_started` イベント）から引いて、ここに覚えておく。
+   * 覚えが無ければ実装側として数える——工房を立て直した直後（`resume`）がそれで、
+   * **多く数える側へ倒す**のが監査の席を守る向き。
+   */
+  private readonly seatRoles = new Map<string, WorkerSeatRole>();
   /**
    * 起こしている最中の枠（token → 誰を・いつから）。
    *
@@ -549,7 +683,10 @@ export class WorkerPool {
    * 2本が**どちらも「まだ 0 本」を見て**通り抜ける。上限は事故を防ぐ栓なので、混んでいる
    * ときに限って効かないのでは意味がない——枠は数える前に取り、決着したら必ず返す。
    */
-  private readonly starting = new Map<number, { taskId: string; projectTag: string; at: string }>();
+  private readonly starting = new Map<
+    number,
+    { taskId: string; projectTag: string; at: string; role: WorkerSeatRole }
+  >();
   private startingSeq = 0;
   /** 前に取り置きを掃除した時刻（0 は「まだ一度もしていない」）。 */
   private lastKeepPruneAt = 0;
@@ -644,6 +781,16 @@ export class WorkerPool {
       0,
       Math.floor(options.maxConcurrentWorkers ?? DEFAULT_MAX_CONCURRENT_WORKERS)
     );
+    // task-0223: 上限の内訳。判定のための席を早い者勝ちから守る
+    this.auditReservedWorkers = Math.max(0, Math.floor(options.auditReservedWorkers ?? 0));
+    if (this.maxConcurrentWorkers > 0 && this.auditReservedWorkers >= this.maxConcurrentWorkers) {
+      // I2: 黙って直さない。この組み合わせは「実装が1本も起こせない工房」で、
+      //     起きてから断りの文面で気づくのでは遅い
+      throw new Error(
+        `${AUDIT_RESERVED_ENV}（${this.auditReservedWorkers}）が同時本数の上限（${this.maxConcurrentWorkers}）以上です。` +
+          "これでは実装の職人を1本も起こせません。予約席は上限より小さくしてください。"
+      );
+    }
   }
 
   /**
@@ -661,6 +808,7 @@ export class WorkerPool {
           projectTag: w.projectTag,
           sessionId: w.sessionId,
           spawnedAt: w.spawnedAt,
+          role: this.seatRoleOf(w.sessionId),
         })
       );
     const starting = [...this.starting.values()].map(
@@ -669,15 +817,49 @@ export class WorkerPool {
         projectTag: s.projectTag,
         spawnedAt: s.at,
         starting: true,
+        role: s.role,
       })
     );
     const slots = [...live, ...starting].sort((a, b) => a.spawnedAt.localeCompare(b.spawnedAt));
+    const byRole: Record<WorkerSeatRole, number> = { executor: 0, auditor: 0 };
+    for (const slot of slots) byRole[slot.role] += 1;
     return {
       running: slots.length,
       limit: this.maxConcurrentWorkers,
       slots,
       env: MAX_CONCURRENT_ENV,
+      byRole,
+      auditReserved: this.auditReservedWorkers,
+      executorLimit: this.executorLimit(),
+      reservedEnv: AUDIT_RESERVED_ENV,
     };
+  }
+
+  /**
+   * 実装が取れる本数（上限 − 予約席）。上限なし（0）のときは 0＝上限なしのまま。
+   *
+   * D3: 保存しない。上限と予約席から毎回導く——2つの数から導ける値を3つ目として
+   * 持つと、片方だけ変えた日に食い違う。
+   */
+  private executorLimit(): number {
+    if (this.maxConcurrentWorkers <= 0) return 0;
+    return Math.max(0, this.maxConcurrentWorkers - this.auditReservedWorkers);
+  }
+
+  /**
+   * 席に座っている職人の役（task-0223）。覚えが無ければ起こした事実から引き直す。
+   *
+   * 引けなければ実装側（{@link DEFAULT_WORKER_SEAT_ROLE}）。工房を立て直した直後は
+   * 覚えもイベントも辿れないことがあり、そのときは**実装として多めに数える**
+   * ——監査の席を守る向きに倒す。
+   */
+  private seatRoleOf(sessionId: string): WorkerSeatRole {
+    const known = this.seatRoles.get(sessionId);
+    if (known) return known;
+    const started = this.log.last({ sessionId, type: "worker_started" });
+    const role = asSeatRole(started?.data["role"]);
+    this.seatRoles.set(sessionId, role);
+    return role;
   }
 
   /** いまの同時本数の上限（設定画面・覗き窓に見せる）。0 なら上限なし。 */
@@ -1184,7 +1366,11 @@ export class WorkerPool {
    * 足すことになる（D3：状態の真実は一箇所）。
    */
   async delegate(input: DelegateInput): Promise<WorkerInfo> {
-    const token = await this.reserveSlot(input.taskId, input.projectTag ?? this.defaultProjectTag);
+    const token = await this.reserveSlot(
+      input.taskId,
+      input.projectTag ?? this.defaultProjectTag,
+      input.role ?? DEFAULT_WORKER_SEAT_ROLE
+    );
     try {
       return await this.spawnWorker(input);
     } finally {
@@ -1206,14 +1392,18 @@ export class WorkerPool {
    * 従来どおり断る——待ち行列は作らない（task-0216・D3）。
    * 満杯でないときに掃かないのは、普段の `delegate` を重くしないため。
    */
-  private async reserveSlot(taskId: string, projectTag: string): Promise<number> {
+  private async reserveSlot(
+    taskId: string,
+    projectTag: string,
+    role: WorkerSeatRole
+  ): Promise<number> {
     let status = this.concurrency();
-    if (this.isFull(status)) {
+    if (this.isFull(status, role)) {
       // 安全弁が切ってある（idleTimeoutMs <= 0）ときは sweepIdle が 0 を返して何もしない
       await this.sweepIdle();
       status = this.concurrency();
     }
-    if (this.isFull(status)) {
+    if (this.isFull(status, role)) {
       const now = Date.now();
       const lines = status.slots.map((s) => {
         const started = Date.parse(s.spawnedAt);
@@ -1221,29 +1411,81 @@ export class WorkerPool {
           ? `${Math.max(0, Math.round((now - started) / 60_000))}分前から`
           : "起動時刻不明";
         const where = s.starting ? "起動中" : `sessionId=${s.sessionId ?? "不明"}`;
-        return `  - ${s.taskId} [${s.projectTag}] ${s.spawnedAt}（${minutes}） ${where}`;
+        return `  - [${seatRoleLabel(s.role)}] ${s.taskId} [${s.projectTag}] ${s.spawnedAt}（${minutes}） ${where}`;
       });
-      this.recordDecline(taskId, projectTag, status);
+      this.recordDecline(taskId, projectTag, role, status);
       throw new Error(
-        `${WORKER_LIMIT_CODE}:${status.running}/${status.limit}\n` +
-          `同時に走れる職人は ${status.limit} 本までで、いま ${status.running} 本走っています。` +
+        `${WORKER_LIMIT_CODE}:${this.declineTally(status, role)}\n` +
+          `${this.declineHeadline(status, role)}` +
           `そのため "${taskId}" は起こしませんでした。**待たせていません**（待ち行列は作りません）。\n` +
           "いま走っている職人:\n" +
           `${lines.join("\n")}\n` +
           "終わったもの・止まっているものを `worker.close` で畳んでから頼み直してください。\n" +
           `上限がある理由は、職人1本ごとに 2 GiB の袋（cgroup）が貼られていて、` +
           `本数が増えると工房全体が上限に当たり、**無関係な職人まで巻き添えで殺される**ためです。\n` +
-          `上限を変えるには工房の ${MAX_CONCURRENT_ENV}（既定 ${DEFAULT_MAX_CONCURRENT_WORKERS}）を変えて立て直します。`
+          `上限を変えるには工房の ${MAX_CONCURRENT_ENV}（既定 ${DEFAULT_MAX_CONCURRENT_WORKERS}）を、` +
+          `監査用に空けてある席を変えるには ${AUDIT_RESERVED_ENV}（既定 ${DEFAULT_AUDIT_RESERVED_WORKERS}）を変えて立て直します。`
       );
     }
     const token = ++this.startingSeq;
-    this.starting.set(token, { taskId, projectTag, at: new Date().toISOString() });
+    this.starting.set(token, { taskId, projectTag, at: new Date().toISOString(), role });
     return token;
   }
 
-  /** 満杯か。上限 0 は「上限なし」（試験・単発の道具立て）。 */
-  private isFull(status: ConcurrencyStatus): boolean {
-    return status.limit > 0 && status.running >= status.limit;
+  /**
+   * 満杯か。上限 0 は「上限なし」（試験・単発の道具立て）。
+   *
+   * **どちらの枠で見るかが役で変わる**（task-0223）。実装は「上限 − 予約席」で頭打ちに
+   * なるが、合計の上限も同時に効く——監査が予約席以上に走っているとき、実装の数が
+   * 取り分に届いていなくても合計は超えられない。
+   */
+  private isFull(status: ConcurrencyStatus, role: WorkerSeatRole): boolean {
+    if (status.limit <= 0) return false;
+    if (status.running >= status.limit) return true;
+    return role === "executor" && status.byRole.executor >= status.executorLimit;
+  }
+
+  /** 合印に載せる「いま／上限」。どちらの枠で断ったかで数え方が変わる。 */
+  private declineTally(status: ConcurrencyStatus, role: WorkerSeatRole): string {
+    return this.declinedByExecutorFrame(status, role)
+      ? `${status.byRole.executor}/${status.executorLimit}`
+      : `${status.running}/${status.limit}`;
+  }
+
+  /**
+   * 実装の枠で断ったか（合計の上限で断ったか、ではなく）。
+   *
+   * **予約席が 0 なら枠は1つしかない**ので、常に合計の上限で断ったことにする
+   * ——枠が1つしかないのに「実装の枠が埋まっています」と言うと、番頭は空いていない
+   * 監査の席を探しにいく。
+   */
+  private declinedByExecutorFrame(status: ConcurrencyStatus, role: WorkerSeatRole): boolean {
+    return (
+      status.auditReserved > 0 &&
+      role === "executor" &&
+      status.byRole.executor >= status.executorLimit
+    );
+  }
+
+  /**
+   * 断りの1行目（task-0223）。**どちらの枠で断ったか**を先に言う。
+   *
+   * 「上限です」だけだと、番頭は「実装をもう1本頼めるのか、監査なら通るのか」を
+   * 読み取れない。次の手（実装を畳む／監査は頼んでよい）が選べる形にする。
+   */
+  private declineHeadline(status: ConcurrencyStatus, role: WorkerSeatRole): string {
+    if (this.declinedByExecutorFrame(status, role)) {
+      return (
+        `実装の枠が埋まっています（${status.byRole.executor}/${status.executorLimit}。` +
+        `監査・判定用に ${status.auditReserved} 席空けてあります）。` +
+        `合計は ${status.running}/${status.limit} 本です。監査の依頼（role: auditor）ならまだ通ります。`
+      );
+    }
+    return (
+      `${role === "auditor" ? "監査・判定の枠を含めて" : ""}` +
+      `同時に走れる職人は ${status.limit} 本までで、いま ${status.running} 本走っています` +
+      `（内訳: 実装 ${status.byRole.executor} 本 / 監査・判定 ${status.byRole.auditor} 本）。`
+    );
   }
 
   /**
@@ -1254,17 +1496,25 @@ export class WorkerPool {
    * sessionId が無く（`WorkerEvent.sessionId` は必須）、新しい状態も足さないため、
    * `sweepIdle` の失敗と同じ流儀のログ行で残す。
    */
-  private recordDecline(taskId: string, projectTag: string, status: ConcurrencyStatus): void {
+  private recordDecline(
+    taskId: string,
+    projectTag: string,
+    role: WorkerSeatRole,
+    status: ConcurrencyStatus
+  ): void {
     console.error(
-      `[worker-pool] declined ${taskId} [${projectTag}] at ${new Date().toISOString()}: ` +
-        `${WORKER_LIMIT_CODE}:${status.running}/${status.limit}` +
-        `（同時に走れる職人は ${status.limit} 本までで、いま ${status.running} 本走っています）`
+      `[worker-pool] declined ${taskId} [${projectTag}] (${role}) at ${new Date().toISOString()}: ` +
+        `${WORKER_LIMIT_CODE}:${this.declineTally(status, role)}` +
+        `（同時に走れる職人は ${status.limit} 本までで、いま ${status.running} 本走っています` +
+        `。内訳: 実装 ${status.byRole.executor}/${status.executorLimit} 本、監査・判定 ${status.byRole.auditor} 本）`
     );
   }
 
   private async spawnWorker(input: DelegateInput): Promise<WorkerInfo> {
     const projectTag = input.projectTag ?? this.defaultProjectTag;
     const origin = input.origin ?? this.defaultOrigin;
+    // task-0223: 席を取ったときと同じ役で数え続ける（`reserveSlot` と同じ既定）
+    const seatRole = input.role ?? DEFAULT_WORKER_SEAT_ROLE;
     /**
      * 使うモデルを決める順番（PO要望 2026-08-10 で**ここに一本化**）:
      *
@@ -1450,6 +1700,8 @@ export class WorkerPool {
       isolation: this.cgroups.status.mode,
       ...(bag ? { cgroupDir: bag.dir } : {}),
     });
+    // 台帳に載った瞬間から、この職人は役つきで数えられる（`concurrency` が引く）
+    this.seatRoles.set(handle.sessionId, seatRole);
 
     this.log.append({
       type: "worker_started",
@@ -1474,6 +1726,9 @@ export class WorkerPool {
         runtime: runtime.id,
         ...(chosenModel ? { model: chosenModel } : {}),
         ...(input.modelTier ? { modelTier: input.modelTier } : {}),
+        // task-0223: どちらの枠で席を取ったか。台帳には持たない（形を変えない）ので、
+        // 立て直したあとに役を引き直せるのはここだけ
+        role: seatRole,
         // inc-0066 第2段: どう隔離して起こしたか。台帳が消えたあとも履歴から引ける（決定30c）
         isolation: this.cgroups.status.mode,
         ...(bag
@@ -1981,6 +2236,8 @@ export class WorkerPool {
     // ドライバが取りこぼしたプロセスが残ることがあるので、台帳の pid でも念押しする
     if (isProcessAlive(worker.pid)) await killOrphanProcess(worker.pid);
     this.ledger.remove(worker.projectTag, worker.taskId);
+    // 畳んだ職人の役は覚えておかない（数えるのは走っている職人だけ・D3）
+    this.seatRoles.delete(sessionId);
     this.log.append({
       type: "worker_closed",
       origin: worker.origin,
@@ -2044,6 +2301,9 @@ export class WorkerPool {
       worktreePath: past.worktree,
       instruction,
       resumeSessionPath: past.sessionPath,
+      // task-0223: 起こし直しでも同じ枠。落とすと、監査の職人が実装の枠で起き直って
+      // 「監査だけ復帰できない」が混雑時に出る
+      role: asSeatRole(started?.data["role"]),
       ...(Array.isArray(tools) ? { tools: tools as string[] } : {}),
       ...(started?.data["network"] === true ? { network: true } : {}),
       // **同じランタイム・同じモデルで起こし直す。** ここを落とすと、Claude Code で

@@ -2757,6 +2757,13 @@ export class Daemon {
       worktreePath: opts.worktreePath,
       instruction: opts.instruction,
       modelTier,
+      /**
+       * どちらの枠で席を取るか（task-0223）。**Kobo は役を知っているのに渡していなかった**
+       * ので、実装が同時本数の上限を埋めると監査が起こせず、タスクが `auditing` から
+       * 出られなくなっていた。工房が分けているのは「作る側／判定する側」の2つだけなので、
+       * 手直し（rework）は実装として渡す。
+       */
+      role: opts.role === "audit" ? "auditor" : "executor",
       ...(assigned.model ? { model: assigned.model } : {}),
       driverOptions: {
         // 職人が Kobo の口を叩くための到達先（拡張が環境変数で受け取る）

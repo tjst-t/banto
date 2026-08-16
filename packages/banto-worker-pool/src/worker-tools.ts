@@ -182,13 +182,31 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
        * 知るのに一覧以外の口を覚えなくてよいようにするため。断られてから知るのでは遅い。
        */
       const concurrency = pool.concurrency();
+      /**
+       * 実装と判定の内訳（task-0223）。
+       *
+       * 合計だけだと「あと2本頼める」に見えて実装は断られる、が起きる——実装の枠は
+       * 上限より小さい。**次に何を頼めるか**は内訳を見ないと決められないので、
+       * 合計と同じ行で読めるようにする。予約席が 0 のときは枠が1つしかないので書かない。
+       */
+      const breakdown =
+        concurrency.auditReserved > 0
+          ? `\n  - 実装（executor）: ${concurrency.byRole.executor} / ${concurrency.executorLimit} 本` +
+            (concurrency.byRole.executor >= concurrency.executorLimit
+              ? "（**この枠は満杯**。監査・判定の依頼なら通ります）"
+              : "") +
+            `\n  - 監査・判定（auditor）: ${concurrency.byRole.auditor} 本` +
+            `（合計 ${concurrency.limit} 本まで。うち ${concurrency.auditReserved} 席は判定のために空けてあり、` +
+            `工房の ${concurrency.reservedEnv} で変える）`
+          : "";
       const capacity =
         concurrency.limit > 0
           ? `\n\n同時に走っている職人: ${concurrency.running} / ${concurrency.limit} 本` +
             `（上限。工房の ${concurrency.env} で変える）` +
             (concurrency.running >= concurrency.limit
               ? "。**満杯です**——次を頼む前に、終わった職人を worker.close で畳んでください"
-              : "")
+              : "") +
+            breakdown
           : `\n\n同時に走っている職人: ${concurrency.running} 本（上限なし）`;
       return {
         content: [{ type: "text" as const, text: text + capacity }],
@@ -559,6 +577,20 @@ export function createWorkerModuleTools(pool: WorkerPool): NamespacedToolDefinit
       projectTag: Type.Optional(Type.String({ description: "利用者の名前空間" })),
       tools: Type.Optional(Type.Array(Type.String(), { description: "道具の許可リスト" })),
       network: Type.Optional(Type.Boolean({ description: "外を読む口を渡すか（既定 false）" })),
+      /**
+       * どちらの枠で席を取るか（task-0223）。
+       *
+       * 起動元は役を知っている（Kobo は `executor` / `audit` / `rework` で職人を起こす）が、
+       * **工房へは渡していなかった**——そのため実装が上限まで埋めると監査が起きられず、
+       * タスクが `auditing` から出られなくなる。渡さなければ実装として数える。
+       */
+      role: Type.Optional(
+        Type.Union([Type.Literal("executor"), Type.Literal("auditor")], {
+          description:
+            "実装なら executor、監査・判定なら auditor（既定 executor）。" +
+            "実装は「上限 − 予約席」まで、監査・判定は上限まで席を取れる",
+        })
+      ),
       modelTier: Type.Optional(
         Type.Union([Type.Literal("reasoning"), Type.Literal("standard"), Type.Literal("fast")], {
           description:
@@ -605,6 +637,7 @@ export function createWorkerModuleTools(pool: WorkerPool): NamespacedToolDefinit
         ...(params.network !== undefined ? { network: params.network } : {}),
         ...(params.modelTier ? { modelTier: params.modelTier } : {}),
         ...(params.model ? { model: params.model } : {}),
+        ...(params.role ? { role: params.role } : {}),
         ...(params.driverOptions
           ? { driverOptions: params.driverOptions as Record<string, unknown> }
           : {}),
