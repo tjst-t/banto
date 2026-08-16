@@ -30,7 +30,7 @@ import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-regi
  *
  * **全件を運ばない**——OpenRouter のように337件あるプロバイダでは、開くたびに数十KBを
  * 運ぶうえ、画面に並べても選べない。既定は採用しているものだけを返し、探すときは
- * 検索で絞る（ADR-0011 決定47）。
+ * 検索で絞る（ADR-0011 決定138）。
  */
 const LIST_DEFAULT_LIMIT = 50;
 const LIST_MAX_LIMIT = 200;

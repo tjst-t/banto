@@ -223,7 +223,7 @@ function ModelCaps({
 export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactElement {
   /**
    * 採用しているモデルだけを取る。**全件は取りに行かない**——プロバイダによっては
-   * 数百あり、開くたびに数十KBを運んだうえ、並べても選べない（ADR-0011 決定47）。
+   * 数百あり、開くたびに数十KBを運んだうえ、並べても選べない（ADR-0011 決定138）。
    */
   const catalog = useModuleTool<CatalogData>(endpoint, "llm.list", { adopted: true, limit: 200 });
   const data = catalog.data ?? EMPTY;
@@ -744,7 +744,7 @@ export function LlmRegistryViewer({ endpoint }: CanvasViewProps): React.ReactEle
 
                         {/*
                           探して採用。**一覧を全部並べない**——数百あるプロバイダでは、
-                          並べた時点で選べなくなる。絞ってから採用する（ADR-0011 決定47）
+                          並べた時点で選べなくなる。絞ってから採用する（ADR-0011 決定138）
                         */}
                         <div className="llm-sub-head">
                           <span className="llm-sub-label">探して採用</span>
