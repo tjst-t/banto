@@ -763,6 +763,69 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
   });
 
   /**
+   * **幹が、自分の枝を畳む**（PO実観測 2026-08-16・task-0234）。
+   *
+   * `thread.merge` は枝が自分で畳む口で、幹からは呼べない。幹にできたのは
+   * `thread.steer` で「畳んでください」と頼むことだけで、枝は知らせが来ないと動かないので
+   * 頼んでも動くとは限らなかった。**幹の判断で終わらせたい枝**（もう追わないと決めた調査、
+   * 前提が変わって無意味になった枝）のための口をここに置く。
+   *
+   * 宛先は**この幹から生えた枝**に限る（`thread.settle` と同じ制約——他の幹の枝は畳めない）。
+   */
+  const fold = defineNamespacedTool({
+    name: "thread.fold",
+    label: "Thread: Fold",
+    description:
+      "**幹の判断で、自分の枝を畳む**（枝の返事を待たない）。\n" +
+      '例: {threadId: "thread-86", conclusion: "前提が崩れたため打ち切り"} → 畳んだ旨\n' +
+      "**結論（conclusion）は必須**——畳んだ理由が空の枝を作らない。" +
+      "枝が自分で `thread.merge` していて既に結論を書いている場合、それは**消さない**" +
+      "（幹が畳んだことは別行として枝の記録に残る）。\n" +
+      "**走行中（ターンが回っている最中）の枝は畳めない**——その枝が起こした職人や" +
+      "書きかけの記録の所在が消えるため、終わるまで待ってから呼び直すこと。\n" +
+      "**未処理（`thread.merge` の `remaining`）を抱えた枝を畳むときは `where`（所在）が必須**" +
+      "——`thread.settle` と同じで、書かないと所在の無い残作業が残る。\n" +
+      "畳めるのは**この幹から生えた枝**だけ。他の幹の枝は畳めない。幹自身も畳めない。",
+    parameters: Type.Object({
+      threadId: Type.String({ description: "畳む枝の id（thread.list に出ている）" }),
+      conclusion: Type.String({
+        description: "幹がこの枝を畳む結論（1行）。「保留：理由」でもよい",
+      }),
+      where: Type.Optional(
+        Type.String({
+          description:
+            "未処理（remaining）を抱えた枝を畳むときの所在。起票 id・職人の sessionId・" +
+            "委譲先のいずれかを1行で。未処理が無い枝には不要",
+        })
+      ),
+    }),
+    async execute(params) {
+      const branch = options.threads.get(params.threadId);
+      // I2: 他の幹の枝は畳めない（settle と同じ制約——帳簿を跨いで枝を消せてしまう）
+      if (branch && branch.kind === "branch" && branch.parentId !== options.threadId) {
+        throw new Error(
+          `枝 ${branch.id}「${branch.title}」はこの会話の枝ではありません` +
+            "（畳めるのは、その枝を持つ幹の番頭だけ）"
+        );
+      }
+      const thread = options.threads.fold(params.threadId, options.threadId, params.conclusion, {
+        ...(params.where ? { where: params.where } : {}),
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `枝「${thread.title}」を幹の判断で畳みました。結論：${thread.conclusion}` +
+              (thread.settledWhere ? `。未処理の所在：${thread.settledWhere}` : ""),
+          },
+        ],
+        details: thread.view(),
+      };
+    },
+  });
+
+  /**
    * 会話に名前を付け直す口（PO要望 2026-08-05）。
    *
    * **判断はここに無い**（D5）。「いつ付け直すか」——話が変わったかどうか——は番頭が決め、
@@ -1017,6 +1080,8 @@ export function createThreadTools(options: ThreadToolsOptions): NamespacedToolDe
     merge,
     // 畳むことの対（imp-0036）。未処理を降ろす口が無いと一覧が信用を失う
     settle,
+    // 幹の判断で枝を終わらせる口（task-0234）。頼む（steer）しかなかった穴を埋める
+    fold,
     rename,
     list,
     // 幹と枝の対話（決定105〜107）。読む口は常に生える——配信を要らないので

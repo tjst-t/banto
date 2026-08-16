@@ -1495,6 +1495,87 @@ export class ThreadRegistry {
   }
 
   /**
+   * **幹が、自分の枝を畳む**（PO実観測 2026-08-16・task-0234）。
+   *
+   * `thread.merge` は枝が自分で畳む口で、幹からは呼べない。幹にできたのは
+   * `thread.steer` で「畳んでください」と頼むことだけだったが、**枝は知らせが来ないと
+   * 動かない**ので、頼んでも動くとは限らず、幹は待つしかなかった。
+   * ここは**幹の判断で終わらせる口**——もう追わないと決めた調査、前提が変わって
+   * 無意味になった枝を、返事を待たずに畳める。
+   *
+   * 対象は**この幹から生えた枝**に限る（他の幹の枝は畳めない・`settle` と同じ制約）。
+   * 幹自身は対象にできない（`kind !== "branch"` で断る・幹は永続・決定77は動かさない）。
+   * **走行中（`harness.isStreaming`）の枝は畳まない**——途中で切ると、その枝が
+   * 起こした職人や書きかけの記録の所在が消える。
+   *
+   * **枝が自分で書いた結論（`thread.merge` 済み）は上書きしない。** 幹の結論は
+   * 枝の記録に別行として残す——「幹が畳んだ」ことが読めればよく、枝の言葉を
+   * 消す理由が無い（task-0227 と同じ「自分で畳んだ結論が勝つ」考え方）。
+   *
+   * **未処理（remaining）を抱えたまま畳むときは `where`（所在）が要る**
+   * （`thread.settle` と同じ考え方）。書かせずに畳めると、所在の無い残作業が生まれる。
+   *
+   * I2: 未知のID・幹・他の幹の枝・走行中・空の結論・所在の無い未処理は、黙って成功にしない。
+   */
+  fold(
+    branchId: string,
+    trunkId: string,
+    conclusion: string,
+    options: { where?: string; now?: Date } = {}
+  ): Thread {
+    const now = options.now ?? new Date();
+    const thread = this.threads.get(branchId);
+    if (!thread) throw this.unknownThread(branchId);
+    if (thread.kind !== "branch") {
+      throw new Error("幹は畳めません（畳めるのは枝だけです・決定77）");
+    }
+    if (thread.parentId !== trunkId) {
+      throw new Error(
+        `枝「${thread.title}」はこの幹の枝ではありません（他の幹の枝は畳めません）`
+      );
+    }
+    if (thread.state === "closed") {
+      throw new Error(
+        `枝「${thread.title}」は既に畳んであります（結論：${thread.conclusion ?? "なし"}）`
+      );
+    }
+    if (thread.harness.isStreaming) {
+      throw new Error(
+        `枝「${thread.title}」はいまターンが動いています。終わってから畳んでください`
+      );
+    }
+    const text = conclusion.replace(/\s+/gu, " ").trim();
+    if (text === "") throw new Error("結論は空にできません（保留なら「保留：理由」と書く）");
+    if (thread.hasUnsettledRemaining) {
+      const where = options.where?.replace(/\s+/gu, " ").trim();
+      if (!where) {
+        throw new Error(
+          `枝「${thread.title}」には未処理 ${thread.remainingCount}件があります。` +
+            "所在（where）を書いてから畳んでください"
+        );
+      }
+      thread.settledAt = now.toISOString();
+      thread.settledWhere = where;
+    }
+    const hadOwnConclusion = thread.conclusion !== undefined;
+    if (!hadOwnConclusion) thread.conclusion = text;
+    thread.noticeReopen = undefined;
+    thread.state = "closed";
+    thread.closedAt = now.toISOString();
+    thread.record({
+      role: "notice",
+      source: "thread",
+      text: hadOwnConclusion
+        ? `幹が畳みました：${text}（枝自身の結論は残ります：${thread.conclusion}）`
+        : `幹が畳みました：${text}`,
+    });
+    this.flush(thread);
+    this.refreshDefault();
+    this.emit();
+    return thread;
+  }
+
+  /**
    * **枝から幹へ、畳む前に一言を還す**（決定107・PO指示 2026-08-13）。
    *
    * 決定77 は「幹に還るのは開いた1行と結論1行だけ」としていたが、**枝の途中で幹の判断が
