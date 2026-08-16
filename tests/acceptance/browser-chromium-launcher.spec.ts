@@ -51,7 +51,24 @@ function makeTmpDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+/**
+ * `kill(pid, 0)` は zombie（死んでいるが親が `wait()` していない）にも成功する——
+ * カーネルの pid スロットがまだ残っているため。init の居ない検証コンテナでは、
+ * close() が正しく殺した孤児（グループ経由で殺されるので親と同時に死ぬ）が誰にも
+ * reap されず zombie のまま残り続け、「殺せていない」と誤読させる（実機で確認済み：
+ * `/proc/<pid>/status` が `State: Z (zombie)` でも `kill(pid,0)` は成功する）。
+ * `/proc` が読めれば zombie を「生きていない」として扱う。読めない（非Linux／既に
+ * 消えている）ときは `kill(pid,0)` の判定に落ちる——D6：既存の `process-driver.ts`
+ * の `isOurs()` と同じ姿勢。
+ */
 function isAlive(pid: number): boolean {
+  try {
+    const status = fs.readFileSync(`/proc/${pid}/status`, "utf8");
+    const state = /^State:\s+(\S)/m.exec(status)?.[1];
+    if (state === "Z") return false;
+  } catch {
+    // /proc/<pid>/status が読めない。以下の kill(pid, 0) 判定に任せる
+  }
   try {
     process.kill(pid, 0);
     return true;
