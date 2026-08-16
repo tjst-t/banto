@@ -98,6 +98,7 @@ import {
 import { CORE_ORIGIN, createModuleRegistry, resolveSkills, type SkillEntry } from "./module.js";
 import { createStudioModule } from "./modules/studio.js";
 import { createPiAgentModule } from "./modules/pi-agent.js";
+import { createBrowserModule } from "./browser/index.js";
 import { createLlmTools } from "./llm-tools.js";
 import { refreshModelCatalog } from "./model-catalog.js";
 import { createWorkspaceModule } from "./modules/workspace.js";
@@ -841,6 +842,8 @@ async function serve(options: ServeOptions): Promise<void> {
     createRemoteEnvironmentPoolModule(envPoolUrl),
     // task-0050: pi coding agent の接続情報表示（LLM 管理は llm-registry が担当）
     createPiAgentModule(),
+    // 番頭とPOが同じブラウザを触る（2026-08-15 の判定）。起こす実装は後続で入る
+    createBrowserModule(),
   ]);
 
   // 設定モジュールは他モジュールの宣言を集めるので、レジストリが揃ってから登録する（決定41）

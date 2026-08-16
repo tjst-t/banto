@@ -26,6 +26,7 @@ import { WorkerSettings } from "./WorkerSettings.js";
 import { LlmRegistryViewer } from "./LlmRegistryViewer.js";
 import { KoboBoard } from "./KoboBoard.js";
 import { KoboReview } from "./KoboReview.js";
+import { BrowserViewer } from "./BrowserViewer.js";
 
 /** キャンバスビューが受け取る props。params は canvas.open で渡されたもの。 */
 export interface CanvasViewProps {
@@ -103,6 +104,8 @@ const REGISTRY: Record<string, ComponentType<CanvasViewProps>> = {
   // 工場（kobo モジュール提供。ADR-0013 決定56・57・59）
   KoboBoard,
   KoboReview,
+  // 共有ブラウザ（browser モジュール提供。canvas kind は `browser.viewer`）
+  BrowserViewer,
 };
 
 export function resolveCanvasView(component: string): ComponentType<CanvasViewProps> | undefined {

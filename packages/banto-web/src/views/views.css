@@ -2021,3 +2021,27 @@
 .ws-minutes { width: 96px; }
 /* 「ここでは決めない」の断り書き。地の文より弱く、しかし読み飛ばされない程度に */
 .llm-moved { margin: 0; font-size: var(--t-note); line-height: 1.8; }
+
+/* ── 共有ブラウザ（面で見て、面から触る） ─────────────────────────────────── */
+
+/* フレームは**入る大きさに縮める**。原寸で溢れさせると、押したい所へ届かない */
+.cv-browser-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+.cv-browser-frame {
+  flex: 1;
+  min-height: 0;
+  object-fit: contain;
+  align-self: center;
+  max-width: 100%;
+  background: var(--sumi-6, #111);
+  border-radius: 6px;
+  cursor: crosshair;
+}
+.cv-browser-input { display: flex; align-items: center; gap: 6px; }
+.cv-browser-input input { flex: 1; min-width: 0; }
