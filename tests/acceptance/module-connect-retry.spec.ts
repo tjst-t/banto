@@ -217,9 +217,11 @@ describe("[task-0235/a4] 再試行しても届かなければ、これまでと�
     const { fetchImpl } = scriptedFetch([failWith(connectError("ECONNREFUSED"))]);
     const client = createModuleClient(REGISTRY, fetchImpl);
 
+    // assert.rejects は RegExp を渡すと `String(error)`（= `Error: ` 接頭辞つき）と照合する
+    // （node:assert の挙動。`error.message` 単体ではない）。
     await assert.rejects(
       () => client.invoke("flaky", "worker.delegate"),
-      /^Failed to reach module "flaky" at http:\/\/127\.0\.0\.1:1\/tools\/worker\.delegate: .*ECONNREFUSED/s
+      /^Error: Failed to reach module "flaky" at http:\/\/127\.0\.0\.1:1\/tools\/worker\.delegate: .*ECONNREFUSED/s
     );
   });
 
