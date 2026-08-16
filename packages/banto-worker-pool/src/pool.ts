@@ -1184,7 +1184,7 @@ export class WorkerPool {
    * 足すことになる（D3：状態の真実は一箇所）。
    */
   async delegate(input: DelegateInput): Promise<WorkerInfo> {
-    const token = this.reserveSlot(input.taskId, input.projectTag ?? this.defaultProjectTag);
+    const token = await this.reserveSlot(input.taskId, input.projectTag ?? this.defaultProjectTag);
     try {
       return await this.spawnWorker(input);
     } finally {
@@ -1199,10 +1199,21 @@ export class WorkerPool {
    * 「上限です」だけでは番頭は何を畳めばいいのか分からない。いま何本走っていて、上限が
    * 何本で、**それぞれ誰が・いつから走っているか**を文面に載せる——番頭はこれを読んで
    * 畳む相手（`worker.close`）を選べる。
+   *
+   * **断る前に席を作る**（task-0221）。安全弁（`sweepIdle`）は `idleTimeoutMs / 4` ごとの
+   * 点検でしか回らないので、「15分以上触られていない職人が席を占めているのに次が断られる」
+   * 窓が構造的に開く。満杯と分かった**そのときだけ**掃いて、空いたら通す。空かなければ
+   * 従来どおり断る——待ち行列は作らない（task-0216・D3）。
+   * 満杯でないときに掃かないのは、普段の `delegate` を重くしないため。
    */
-  private reserveSlot(taskId: string, projectTag: string): number {
-    const status = this.concurrency();
-    if (status.limit > 0 && status.running >= status.limit) {
+  private async reserveSlot(taskId: string, projectTag: string): Promise<number> {
+    let status = this.concurrency();
+    if (this.isFull(status)) {
+      // 安全弁が切ってある（idleTimeoutMs <= 0）ときは sweepIdle が 0 を返して何もしない
+      await this.sweepIdle();
+      status = this.concurrency();
+    }
+    if (this.isFull(status)) {
       const now = Date.now();
       const lines = status.slots.map((s) => {
         const started = Date.parse(s.spawnedAt);
@@ -1212,6 +1223,7 @@ export class WorkerPool {
         const where = s.starting ? "起動中" : `sessionId=${s.sessionId ?? "不明"}`;
         return `  - ${s.taskId} [${s.projectTag}] ${s.spawnedAt}（${minutes}） ${where}`;
       });
+      this.recordDecline(taskId, projectTag, status);
       throw new Error(
         `${WORKER_LIMIT_CODE}:${status.running}/${status.limit}\n` +
           `同時に走れる職人は ${status.limit} 本までで、いま ${status.running} 本走っています。` +
@@ -1227,6 +1239,27 @@ export class WorkerPool {
     const token = ++this.startingSeq;
     this.starting.set(token, { taskId, projectTag, at: new Date().toISOString() });
     return token;
+  }
+
+  /** 満杯か。上限 0 は「上限なし」（試験・単発の道具立て）。 */
+  private isFull(status: ConcurrencyStatus): boolean {
+    return status.limit > 0 && status.running >= status.limit;
+  }
+
+  /**
+   * 断ったことを工房の記録に残す（task-0221）。
+   *
+   * 例外を投げるだけだと、呼び出し側がその文言を捨てた時点で「なぜ遅いのか」が
+   * 誰にも読めなくなる。**黙って断らない。** イベントログには積まない——断りには
+   * sessionId が無く（`WorkerEvent.sessionId` は必須）、新しい状態も足さないため、
+   * `sweepIdle` の失敗と同じ流儀のログ行で残す。
+   */
+  private recordDecline(taskId: string, projectTag: string, status: ConcurrencyStatus): void {
+    console.error(
+      `[worker-pool] declined ${taskId} [${projectTag}] at ${new Date().toISOString()}: ` +
+        `${WORKER_LIMIT_CODE}:${status.running}/${status.limit}` +
+        `（同時に走れる職人は ${status.limit} 本までで、いま ${status.running} 本走っています）`
+    );
   }
 
   private async spawnWorker(input: DelegateInput): Promise<WorkerInfo> {

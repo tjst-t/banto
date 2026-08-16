@@ -74,6 +74,11 @@ describe("[task-0216] 同時に走る職人の本数に上限を持たせる", (
     fs.rmSync(workDir, { recursive: true, force: true });
   };
 
+  const sleep = (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
+
   const delegate = (taskId: string): Promise<unknown> =>
     pool.delegate({ taskId, worktreePath: workDir, instruction: `${taskId} をやる` });
 
@@ -338,6 +343,101 @@ describe("[task-0216] 同時に走る職人の本数に上限を持たせる", (
       }
       assert.equal(pool.concurrency().running, DEFAULT_MAX_CONCURRENT_WORKERS);
       await assert.rejects(() => delegate("task-0999"), new RegExp(WORKER_LIMIT_CODE));
+    });
+  });
+
+  /**
+   * task-0221: **満杯で断る前に、アイドルの職人を畳んで席を作る（断りも帳簿に残す）。**
+   *
+   * 工房には15分の安全弁（`sweepIdle`）が元からあるが、点検は `idleTimeoutMs / 4` ごとの
+   * `setInterval` でしか回らない。`reserveSlot` がそれを呼ばないので、「15分以上触られて
+   * いない職人が席を占めているのに次が断られる」窓が構造的に開いていた（実際に 2026-08-16、
+   * 待機中の職人が1本 約300MB を掴んだまま残っていた）。加えて、断りは例外を投げるだけで
+   * 工房の記録に何も残らず、呼び出し側が文言を捨てれば「なぜ遅いのか」が読めなくなる。
+   *
+   *   b1 満杯でもアイドルが居れば、畳んでから起こす（断らない）
+   *   b2 掃いても空かなければ、従来どおり合印つきで断る（待ち行列は作らない）
+   *   b3 断ったことが記録に残り、いつ・どのタスクを・何本／上限何本で断ったかが読める
+   *   b4 満杯でないときは掃かない（普段の delegate を重くしない）
+   */
+  describe("[task-0221] 満杯で断る前に、アイドルの職人を畳んで席を作る", () => {
+    beforeEach(() => start(2));
+    afterEach(stop);
+
+    it("b1: アイドルが居れば、その場で畳んでから起こす（断らない）", async () => {
+      await delegate("task-1101");
+      await delegate("task-1102");
+      assert.equal(pool.concurrency().running, 2, "満杯にした");
+
+      // 安全弁を入れる。点検の interval は十分先にして、**掃くのは delegate 自身だけ**にする
+      // （1ms に対して 50ms 待つので、時刻の揺らぎで判定が変わる幅ではない）
+      pool.setIdleTimeout(1, 60_000);
+      await sleep(50);
+
+      const worker = (await delegate("task-1103")) as { taskId: string };
+      assert.equal(worker.taskId, "task-1103", "断られずに起きた");
+      assert.deepEqual(
+        pool.list({ includeClosed: false }).map((w) => w.taskId),
+        ["task-1103"],
+        "アイドル2本は畳まれ、新しい1本だけが走っている"
+      );
+      assert.equal(pool.concurrency().running, 1, "席は作られ、上限も超えていない");
+    });
+
+    it("b2: 掃いても空かなければ、従来どおり合印つきで断る（待ち行列は作らない）", async () => {
+      await delegate("task-1201");
+      await delegate("task-1202");
+
+      // 安全弁は入っているが、どれもまだ 10 分は経っていない＝1本も掃けない
+      pool.setIdleTimeout(10 * 60_000, 60_000);
+
+      const startedAt = Date.now();
+      await assert.rejects(() => delegate("task-1203"), new RegExp(`${WORKER_LIMIT_CODE}:2/2`));
+      assert.ok(Date.now() - startedAt < 3000, "断りは即座に返る（待ち行列を作っていない）");
+      assert.equal(pool.concurrency().running, 2, "掃けていないし、増えてもいない");
+      assert.deepEqual(
+        pool.list({ includeClosed: false }).map((w) => w.taskId),
+        ["task-1201", "task-1202"],
+        "掃く条件を満たさない職人が巻き添えで畳まれていない"
+      );
+    });
+
+    it("b3: 断ったことが記録に残る（いつ・どのタスクを・何本／上限何本で）", async () => {
+      await delegate("task-1301");
+      await delegate("task-1302");
+
+      const recorded: string[] = [];
+      const realError = console.error;
+      console.error = (...args: unknown[]): void => {
+        recorded.push(args.map((a) => String(a)).join(" "));
+      };
+      try {
+        await delegate("task-1303").catch(() => undefined);
+      } finally {
+        console.error = realError;
+      }
+
+      const line = recorded.find((l) => l.includes("task-1303"));
+      assert.ok(line, `断りが記録に残る（残っていたのは ${JSON.stringify(recorded)}）`);
+      assert.match(line, new RegExp(`${WORKER_LIMIT_CODE}:2/2`), "何本／上限何本で断ったか");
+      assert.match(line, /\d{4}-\d{2}-\d{2}T[\d:.]+Z/, "いつ断ったか");
+    });
+
+    it("b4: 満杯でないときは掃かない（普段の delegate を重くしない）", async () => {
+      let sweeps = 0;
+      const realSweep = pool.sweepIdle.bind(pool);
+      pool.sweepIdle = async (now) => {
+        sweeps++;
+        return realSweep(now);
+      };
+
+      await delegate("task-1401");
+      assert.equal(sweeps, 0, "空きがあるうちは掃かない");
+      await delegate("task-1402");
+      assert.equal(sweeps, 0, "上限ちょうどまで埋めるところでも掃かない");
+
+      await delegate("task-1403").catch(() => undefined);
+      assert.equal(sweeps, 1, "満杯になって初めて、1回だけ掃く");
     });
   });
 });
