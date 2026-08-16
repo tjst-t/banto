@@ -44,6 +44,22 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
+# --- OOM 封じ込め（inc-0066 / 2026-08-14）------------------------------------
+# 根拠: reports/2026-08-14-oom-containment-plan.md
+#       reports/2026-08-16-oom-host-facts.md
+#       ※ 置き場は /home/ubuntu/banto-desk/reports/
+#
+# **Kobo（統治基盤）とそのイベントログを、工房の暴走から守るための枠。**
+#   MemoryMax=1G     実測 MemoryCurrent 0.13GB / peak 0.14GB。約7倍の余裕
+#   MemoryMin=256M   この分は回収対象から外れる。
+#                    **親の system.slice の MemoryMin が無いと黙って効かない**
+#                    （deploy/system.slice.d/oom.conf）
+#   OOMScoreAdjust=-500  global OOM でカーネルが Kobo を最後に選ぶ
+MemoryAccounting=yes
+MemoryMax=1G
+MemoryMin=256M
+OOMScoreAdjust=-500
+
 # **KillMode は control-group にしない。** 職人は Worker Pool 側の子プロセスなので
 # Kobo の巻き添えでは畳まないが、Kobo 自身の後始末（イベントログの書き切り）に猶予がいる
 KillMode=mixed

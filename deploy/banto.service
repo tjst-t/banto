@@ -52,6 +52,35 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
+# --- OOM 封じ込め（inc-0066 / 2026-08-14）------------------------------------
+# 根拠: reports/2026-08-14-oom-containment-plan.md（値の導出と却下した案）
+#       reports/2026-08-16-oom-host-facts.md（入った後の実測と kill の一次記録）
+#       ※ 置き場は /home/ubuntu/banto-desk/reports/
+#
+# 2026-08-14 00:27 UTC、職人が起こした claude CLI 1本が anon-rss 10.7GiB に膨らみ、
+# 15.62GiB の VM が **global OOM** で停止した。上限が1つも無かったのが原因。
+# 入れた後は、カーネルの OOM kill が**全件 cgroup 上限に当たったもの**
+# （constraint=CONSTRAINT_MEMCG）になり、VM 全体の枯渇は 1件も起きていない。
+#
+# 番頭を巻き添えにしないための3点セット:
+#   MemoryMax=3G      実測 MemoryCurrent 1.90GB / peak 1.92GB の約1.6倍
+#   MemoryMin=1G      この分は回収対象から外れる。
+#                     **親の system.slice にも MemoryMin が要る**——cgroup v2 は
+#                     親に無い保護を子に配れないので、無いとこの行は黙って効かない
+#                     （deploy/system.slice.d/oom.conf）
+#   OOMScoreAdjust=-500  万一の global OOM でカーネルが番頭を最後に選ぶ
+#
+# 上限の総和: OS 1.5G + 番頭 3G + Kobo 1G + 検証環境 1G + 工房 9G = 15.5GiB < 15.62GiB
+#
+# **稼働機には 2026-08-16 時点で `systemctl set-property --runtime` の一時の上限が
+# 乗っている**（banto 5G / banto-worker-pool 7G。/run/systemd/system.control/ 以下）。
+# あれは凌ぎであって恒久の値ではない。ここに書いてあるのが恒久の側。
+# --runtime の drop-in はサービス再起動では消えないが、**機械の再起動で消える**。
+MemoryAccounting=yes
+MemoryMax=3G
+MemoryMin=1G
+OOMScoreAdjust=-500
+
 NoNewPrivileges=true
 PrivateTmp=false
 ProtectSystem=full
