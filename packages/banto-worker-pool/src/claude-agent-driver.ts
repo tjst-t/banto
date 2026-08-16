@@ -44,11 +44,63 @@ import { readSessionIdFromLines } from "./claude-agent/session-log.js";
 // 名指しからランタイムを言い当てるのに要り、ドライバ本体を読み込ませたくないため
 export { CLAUDE_AGENT_DRIVER_ID } from "./claude-agent/naming.js";
 
-/** inject の応答を待つ上限。届いたか分からないまま進まないため（I2）。 */
-const INJECT_TIMEOUT_MS = 10_000;
+/**
+ * 起動直後の状態問い合わせ（get_state）に答えが返るまでの既定の待ち。
+ *
+ * **既定 10s の根拠**: 実機（banto・dentaku 双方）で新規起動の名乗りは通常 1〜3s で返る観測から、
+ * 詰まった環境でも一呼吸待てるだけの余裕を見て据え置いた（2026-08-16時点）。この待ちを伸ばす
+ * こと自体は詰まりの原因（いまだ未特定・調査ノート参照）を直しはしない——**時間を買うだけの
+ * 手当て**である。環境ごとに変えられるよう `BANTO_CLAUDE_START_TIMEOUT_MS` で上書きできる。
+ */
+const DEFAULT_START_TIMEOUT_MS = 10_000;
 
-/** 起動直後の状態問い合わせに答えが返るまでの待ち。 */
-const START_TIMEOUT_MS = 10_000;
+/**
+ * inject（指示の差し込み）の応答を待つ既定の上限。
+ *
+ * 既定は起動と同じ 10s——「届いたか分からないまま進まない」ための待ちで、起動より短くする
+ * 理由も長くする理由も無い。`BANTO_CLAUDE_INJECT_TIMEOUT_MS` で上書きできる。
+ */
+const DEFAULT_INJECT_TIMEOUT_MS = 10_000;
+
+/**
+ * 環境変数からミリ秒の待ちを読む（`resolveMaxConcurrentWorkers` と同じ流儀）。
+ *
+ * I2: 読めない値を黙って既定へ落とさない——「変えたつもりで効いていない」を例外にする。
+ */
+function readTimeoutMs(envName: string, defaultMs: number): number {
+  const raw = process.env[envName];
+  if (raw === undefined || raw.trim() === "") return defaultMs;
+  const parsed = Number.parseInt(raw.trim(), 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${envName} を読み取れません: "${raw}"（正の整数ミリ秒。既定 ${defaultMs}）`);
+  }
+  return parsed;
+}
+
+/** 呼び出し時点の環境変数を読む（モジュール読込時に固定しない——試験が per-call で上書きできる）。 */
+function startTimeoutMs(): number {
+  return readTimeoutMs("BANTO_CLAUDE_START_TIMEOUT_MS", DEFAULT_START_TIMEOUT_MS);
+}
+
+function injectTimeoutMs(): number {
+  return readTimeoutMs("BANTO_CLAUDE_INJECT_TIMEOUT_MS", DEFAULT_INJECT_TIMEOUT_MS);
+}
+
+/**
+ * 子が既に終わっているかを見る（task-0192 系・a6）。
+ *
+ * **書く前にここを見る。** 死んだ子の stdin へ書こうとすると `write EPIPE` になり、
+ * `proc.stdin` に `error` の受け手が居なければプロセスごと落ちる（Node の決まり）。
+ * 終わっていれば、書かずに「exit=N / signal=S で先に終わっている」と分かる理由を返す。
+ */
+function deadChildReason(proc: childProcess.ChildProcess, stderrTail: { value: string }): string | undefined {
+  if (proc.exitCode === null && proc.signalCode === null) return undefined;
+  const tail = stderrTail.value.trim().slice(-500);
+  return (
+    `子が exit=${proc.exitCode ?? "null"} / signal=${proc.signalCode ?? "null"} で先に終わっています` +
+    (tail ? `（stderr 末尾: ${tail}）` : "")
+  );
+}
 
 export interface ClaudeAgentDriverOptions {
   /** セッションJSONL の置き場（spawn 時に個別指定が無いとき）。 */
@@ -82,7 +134,23 @@ interface ActiveSession {
   proc: childProcess.ChildProcess;
   stopReader: () => void;
   grip: HandleGrip;
+  /** 死活判定の材料（a6）。起動から持ち越し、inject / kill でも同じ理由付けに使う。 */
+  stderrTail: { value: string };
 }
+
+/** 起動を1回試みた結果。失敗した子プロセスはここで既に始末済み（孤児を残さない）。 */
+type StartAttemptResult =
+  | {
+      ok: true;
+      pid: number;
+      sessionId: string;
+      sessionPath: string;
+      proc: childProcess.ChildProcess;
+      grip: HandleGrip;
+      stopReader: () => void;
+      stderrTail: { value: string };
+    }
+  | { ok: false; error: string };
 
 export class ClaudeAgentDriver implements RuntimeDriver {
   private readonly sessionBaseDir: string;
@@ -168,26 +236,9 @@ export class ClaudeAgentDriver implements RuntimeDriver {
         ? (driverOptions["resumeSessionPath"] as string)
         : undefined;
     const resume = resumeFrom ? this.readResumeSessionId(resumeFrom) : undefined;
-
-    const args = [
-      ...this.resolveNodeArgs(),
-      this.hostPath,
-      "--session-file",
-      sessionPath,
-      "--model",
-      model,
-      "--setting-sources",
-      this.settingSources.join(","),
-    ];
-    if (opts.systemPrompt.trim().length > 0) {
-      args.push("--append-system-prompt", opts.systemPrompt);
-    }
-    // imp-0004: 空配列は「ランタイムの既定のまま」。絞るときだけ渡す
-    if (opts.tools.length > 0) {
-      args.push("--tools", this.resolveTools(opts.tools, network).join(","));
-    }
-    if (network) args.push("--network");
-    if (resume) args.push("--resume", resume);
+    // a5: 切り分けの材料として記録するだけ。「大きすぎると再開できない」はまだ確かめていない
+    // 仮説——ここでは条件に使わず、その場で安く取れる値（jsonl のバイト数）を残すだけ
+    const resumeSessionBytes = resumeFrom ? this.safeFileSize(resumeFrom) : undefined;
 
     // 職人が報告・質問を返すための到達先（決定29e。pi 側と同じ環境変数）
     const extraEnv: Record<string, string> = {};
@@ -212,6 +263,104 @@ export class ClaudeAgentDriver implements RuntimeDriver {
     if (typeof driverOptions["cgroupProcs"] === "string") {
       extraEnv["BANTO_WORKER_CGROUP_PROCS"] = driverOptions["cgroupProcs"] as string;
     }
+
+    const MAX_START_ATTEMPTS = 2;
+
+    const attempt1 = await this.startAttempt(opts, sessionPath, model, network, resume, extraEnv);
+    if (attempt1.ok) return this.finishSpawn(attempt1);
+
+    const hadResume = Boolean(resume);
+    this.logStartAttempt({
+      attempt: 1,
+      maxAttempts: MAX_START_ATTEMPTS,
+      resumed: hadResume,
+      fellBackFromResume: false,
+      resumeSessionBytes,
+      outcome: "failed",
+      detail: attempt1.error,
+    });
+
+    /**
+     * a2/a4: 起こし直すのは**ここ1回だけ**。まだ職人に何の指示も渡していない段階
+     * （get_state の名乗り待ちで止まっただけ）なので、起こし直しても仕事が二重に走らない。
+     * `--resume` 付きの起動が失敗した場合は、退路として `--resume` を外す——袋小路
+     * （再開が失敗し続けると rework が永久に通らない。dentaku task-0042 で実際に起きた）を
+     * 避けるほうが、会話の続きを失うより安い。
+     */
+    const attempt2 = await this.startAttempt(opts, sessionPath, model, network, undefined, extraEnv);
+    if (attempt2.ok) {
+      this.logStartAttempt({
+        attempt: 2,
+        maxAttempts: MAX_START_ATTEMPTS,
+        resumed: false,
+        fellBackFromResume: hadResume,
+        resumeSessionBytes,
+        outcome: "succeeded",
+      });
+      return this.finishSpawn(attempt2);
+    }
+
+    this.logStartAttempt({
+      attempt: 2,
+      maxAttempts: MAX_START_ATTEMPTS,
+      resumed: false,
+      fellBackFromResume: hadResume,
+      resumeSessionBytes,
+      outcome: "failed",
+      detail: attempt2.error,
+    });
+
+    // a3: 2回目も名乗りが返らなければ、これまでと同じ形（spawn_failed → 例外）で失敗を返す。
+    // 無限に粘らない・握り潰さない。診断（a5）は文面にも添えて、journal を辿らなくても分かるようにする
+    const finalError =
+      `${attempt2.error}（試行 2/${MAX_START_ATTEMPTS}、` +
+      `resume=${hadResume ? "退路で新規セッションへ切替" : "なし"}` +
+      (resumeSessionBytes !== undefined ? `、再開元セッション ${resumeSessionBytes} bytes` : "") +
+      `）`;
+    this.emit({ type: "spawn_failed", error: finalError });
+    throw new Error(finalError);
+  }
+
+  /**
+   * 職人の起動を1回だけ試みる。名乗り（get_state の応答）が返らなければ
+   * `{ ok: false }` を返す——**失敗した子プロセスはここで始末してから返す**（孤児を残さない）。
+   * 呼び出し側（`spawn`）が「1回だけ起こし直す」を組み立てる。
+   *
+   * `pid` が取れない（`spawn` 自体の失敗、例: ワークツリーが無い）場合はここで投げる。
+   * 同じ引数で起こし直しても結果は変わらないので、この失敗は retry の対象にしない
+   * （呼び出し側で catch しないので、そのまま外へ抜ける）。
+   */
+  private async startAttempt(
+    opts: SpawnOptions,
+    sessionPath: string,
+    model: string,
+    network: boolean,
+    resumeId: string | undefined,
+    extraEnv: Record<string, string>
+  ): Promise<StartAttemptResult> {
+    // I2: 読めない環境変数は、子を起こす**前**に落とす。起こしたあとで投げると、この
+    // 関数の外（`grip.hold` の外）へ例外が抜けて後始末（SIGKILL）を通らず孤児になる
+    const ms = startTimeoutMs();
+
+    const args = [
+      ...this.resolveNodeArgs(),
+      this.hostPath,
+      "--session-file",
+      sessionPath,
+      "--model",
+      model,
+      "--setting-sources",
+      this.settingSources.join(","),
+    ];
+    if (opts.systemPrompt.trim().length > 0) {
+      args.push("--append-system-prompt", opts.systemPrompt);
+    }
+    // imp-0004: 空配列は「ランタイムの既定のまま」。絞るときだけ渡す
+    if (opts.tools.length > 0) {
+      args.push("--tools", this.resolveTools(opts.tools, network).join(","));
+    }
+    if (network) args.push("--network");
+    if (resumeId) args.push("--resume", resumeId);
 
     const proc = childProcess.spawn(this.nodePath, args, {
       cwd: opts.worktreePath,
@@ -260,8 +409,24 @@ export class ClaudeAgentDriver implements RuntimeDriver {
       throw new Error(errMsg);
     }
 
-    // 子の標準エラーは親へ流す（認証切れ・設定不足はここに出る）
-    proc.stderr?.on("data", (chunk: Buffer) => process.stderr.write(chunk));
+    // 子の標準エラーは親へ流す（認証切れ・設定不足はここに出る）。末尾は死活理由の材料として残す（a6）
+    const stderrTail = { value: "" };
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      process.stderr.write(chunk);
+      stderrTail.value = (stderrTail.value + chunk.toString("utf-8")).slice(-4000);
+    });
+
+    /**
+     * task-0192 系（a6）: 死んだ子への write は `write EPIPE` として `proc.stdin` から
+     * 非同期に飛ぶことがある。受け手が居なければプロセスごと落ちる——書く側は書く前に
+     * 生死を見るが（下記）、それでも間に合わない分の受け皿としてここに置く。揉み消すのでは
+     * なく記録する（I2）。本体の失敗は書き込み側の catch/callback が扱う。
+     */
+    proc.stdin?.on("error", (err: Error) => {
+      process.stderr.write(
+        `[claude-agent] stdin error（記録のみ・書き込み側が本体の失敗を扱う）: ${err.message}\n`
+      );
+    });
 
     const start = await grip.hold(
       () =>
@@ -321,17 +486,23 @@ export class ClaudeAgentDriver implements RuntimeDriver {
             }
           });
 
-          proc.stdin?.write(JSON.stringify({ type: "get_state" }) + "\n", (err) => {
-            if (err) settle({ ok: false, error: `[claude-agent] 標準入力へ書けません: ${err.message}` });
-          });
+          // a6: 書く前に生死を見る。子が既に終わっていれば EPIPE を起こさせず、理由を添えて断る
+          const dead = deadChildReason(proc, stderrTail);
+          if (dead) {
+            settle({ ok: false, error: `[claude-agent] ${dead}` });
+          } else {
+            proc.stdin?.write(JSON.stringify({ type: "get_state" }) + "\n", (err) => {
+              if (err) settle({ ok: false, error: `[claude-agent] 標準入力へ書けません: ${err.message}` });
+            });
+          }
 
           // I2: 名乗りが返らないまま「起きたつもり」で進まない。掴んだ handle も外す
           const timer = setTimeout(() => {
             settle({
               ok: false,
-              error: `[claude-agent] ホストが ${START_TIMEOUT_MS}ms 以内に応答しませんでした。`,
+              error: `[claude-agent] ホストが ${ms}ms 以内に応答しませんでした。`,
             });
-          }, START_TIMEOUT_MS);
+          }, ms);
           timer.unref?.();
         })
     );
@@ -342,42 +513,81 @@ export class ClaudeAgentDriver implements RuntimeDriver {
       } catch {
         // 既に終わっている
       }
-      this.emit({ type: "spawn_failed", error: start.error });
-      throw new Error(start.error);
+      return { ok: false, error: start.error };
     }
 
-    const session: ActiveSession = {
+    return {
+      ok: true,
       pid,
       sessionId: start.sessionId,
       sessionPath: start.sessionPath,
       proc,
-      stopReader: start.stopReader,
       grip,
+      stopReader: start.stopReader,
+      stderrTail,
     };
-    this.sessions.set(start.sessionId, session);
+  }
+
+  /** 起動に成功した1回分から、稼働中セッションを組み立てて登録する。 */
+  private finishSpawn(attempt: Extract<StartAttemptResult, { ok: true }>): SessionHandle {
+    const { pid, sessionId, sessionPath, proc, grip, stopReader, stderrTail } = attempt;
+    const session: ActiveSession = { pid, sessionId, sessionPath, proc, stopReader, grip, stderrTail };
+    this.sessions.set(sessionId, session);
 
     proc.once("exit", (code, signal) => {
       grip.release();
       this.emit({
         type: "process_exited",
         pid,
-        sessionId: start.sessionId,
+        sessionId,
         exitCode: code,
         signal,
       });
-      this.sessions.delete(start.sessionId);
-      start.stopReader();
+      this.sessions.delete(sessionId);
+      stopReader();
       proc.removeAllListeners();
     });
 
     this.emit({
       type: "process_started",
       pid,
-      sessionId: start.sessionId,
-      sessionPath: start.sessionPath,
+      sessionId,
+      sessionPath,
     });
 
-    return { pid, sessionId: start.sessionId, sessionPath: start.sessionPath };
+    return { pid, sessionId, sessionPath };
+  }
+
+  /**
+   * 起動の試行・失敗・退路を、次の切り分けに使える形で残す（a5）。
+   *
+   * `DriverEvent`（`spawn_failed` 等、`@banto/core`）は `error: string` しか運べない契約
+   * ——ここは番頭ホストの見た目には出ない、工房の journal（stderr）向けの記録。**大きさは
+   * 記録するだけで、条件（分岐）には使わない**——「大きすぎると再開できない」はまだ
+   * 確かめていない仮説であり、それを判断に混ぜると仮説が検証もされず既成事実化する。
+   */
+  private logStartAttempt(info: {
+    attempt: number;
+    maxAttempts: number;
+    resumed: boolean;
+    fellBackFromResume: boolean;
+    resumeSessionBytes: number | undefined;
+    outcome: "failed" | "succeeded";
+    detail?: string;
+  }): void {
+    process.stderr.write(
+      "[claude-agent] 起動診断 " +
+        JSON.stringify({
+          attempt: info.attempt,
+          maxAttempts: info.maxAttempts,
+          resumed: info.resumed,
+          fellBackFromResume: info.fellBackFromResume,
+          resumeSessionBytes: info.resumeSessionBytes ?? null,
+          outcome: info.outcome,
+          ...(info.detail ? { detail: info.detail } : {}),
+        }) +
+        "\n"
+    );
   }
 
   // ── RuntimeDriver.inject ────────────────────────────────────────────────
@@ -386,6 +596,11 @@ export class ClaudeAgentDriver implements RuntimeDriver {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new Error(`[claude-agent] inject: session '${sessionId}' が居ません（既に終わっている？）。`);
+    }
+    // a6: 書く前に生死を見る。EPIPE ではなく理由が分かる失敗にする
+    const dead = deadChildReason(session.proc, session.stderrTail);
+    if (dead) {
+      throw new Error(`[claude-agent] inject: ${dead}`);
     }
     const id = `inject-${++this.requestCounter}`;
     const command = JSON.stringify({ id, type: "prompt", message }) + "\n";
@@ -421,10 +636,14 @@ export class ClaudeAgentDriver implements RuntimeDriver {
     const proc = session.proc;
     session.stopReader();
 
-    try {
-      proc.stdin?.write(JSON.stringify({ type: "abort" }) + "\n");
-    } catch {
-      // 終了経路の書き込み失敗は無視する
+    // a6: 死んでいれば abort を書こうとしない（EPIPE を起こさせない）
+    const alreadyDead = Boolean(deadChildReason(proc, session.stderrTail));
+    if (!alreadyDead) {
+      try {
+        proc.stdin?.write(JSON.stringify({ type: "abort" }) + "\n");
+      } catch {
+        // 終了経路の書き込み失敗は無視する
+      }
     }
     try {
       proc.stdin?.destroy();
@@ -433,7 +652,7 @@ export class ClaudeAgentDriver implements RuntimeDriver {
       // 同上
     }
 
-    if (proc.exitCode !== null || proc.signalCode !== null) {
+    if (alreadyDead) {
       try {
         proc.stdout?.destroy();
       } catch {
@@ -517,7 +736,16 @@ export class ClaudeAgentDriver implements RuntimeDriver {
     return sessionId;
   }
 
-  private awaitResponse(id: string, timeoutMs = INJECT_TIMEOUT_MS): Promise<Record<string, unknown>> {
+  /** 再開しようとしたセッションの大きさ（bytes）。切り分けの材料として持つだけの best-effort。 */
+  private safeFileSize(filePath: string): number | undefined {
+    try {
+      return fs.statSync(filePath).size;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private awaitResponse(id: string, timeoutMs = injectTimeoutMs()): Promise<Record<string, unknown>> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
