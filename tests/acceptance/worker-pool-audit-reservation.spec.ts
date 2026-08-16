@@ -1,5 +1,6 @@
 /**
- * task-0223: **同時本数の上限に、監査・判定のための席を確保する（早い者勝ちにしない）。**
+ * task-0230（task-0223 をスコープ訂正して置き換え）:
+ * **同時本数の上限に、監査・判定のための席を確保する（早い者勝ちにしない）。**
  *
  * task-0216 で工房に同時本数の栓（既定6本）が入ったが、`reserveSlot` は**誰の依頼かを
  * 見ていない**——完全な早い者勝ちだった。そのため実装の職人が上限まで埋めると監査の
@@ -7,18 +8,26 @@
  * 実装だけが席を取り続ける。2026-08-16 は「監査が起動できない」で3回落ちており、
  * 上限がある限り、早い者勝ちのままではこれが**恒常化する**（一時的な混雑ではない）。
  *
- * Kobo は役（`executor` / `audit` / `rework`）を知っているのに、工房へ渡していなかった。
- * ここで固定するのは5つ:
+ * Kobo は役（`executor` / `audit` / `rework`）を知っているのに、工房へ渡していなかった
+ * （a3）。それを直しても、**入口（`bin.ts`）が環境変数を読んで工房へ渡さなければ
+ * 予約席は既定 0 のまま立ち、稼働では1ミリも効かない**——task-0223 はその配線を
+ * スコープ外に置いたまま着地し、稼働で3回落ちた（PO裁定・取次 in-491f752a）。
+ * task-0230 はその配線（`bin.ts`）をスコープに入れて置き換える。
+ *
+ * ここで固定するのは6つ:
  *
  *   a1 実装の職人だけで埋めても、監査（auditor）の職人は起こせる
  *   a2 実装は「上限 − 予約席」で断られ、断りに**どちらの枠で断ったか**が載る
  *   a3 役を渡さない依頼は実装（executor）として数えられる
  *   a4 予約席は環境変数で変えられ、読めない値は黙って既定に落ちない（I2）
- *   a5 `worker.list` から実装と判定の内訳が読める
+ *   a5 入口（`bin.ts`）が予約席を読んで工房へ渡している（配線漏れの再発防止）
+ *   a6 `worker.list` から実装と判定の内訳が読める
  *
- * **この試験は Kobo を1つも立てない**（決定23・task-0216 の a6）。席の配分は工房が
- * 単体で持つもので、Kobo を立てないと確かめられないなら依存の向きが壊れている。
- * Kobo 側（役を渡している）だけは工房から起こせないので、源で確かめる。
+ * **この試験は Kobo も worker-pool の独立プロセスも1つも立てない**（決定23・task-0216
+ * の a6）。席の配分は工房（`WorkerPool`）が単体で持つもので、それを確かめるのに Kobo や
+ * 独立プロセスを立てないと確かめられないなら依存の向きが壊れている。Kobo 側（役を渡して
+ * いる）と入口側（環境変数を渡している）はどちらも工房から起こせないので、源（ソースの
+ * 文字列）で確かめる。
  */
 
 import { describe, it, beforeEach, afterEach } from "node:test";
@@ -45,8 +54,9 @@ import { FakeRuntimeDriver } from "./worker-pool-harness.js";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const POOL_SOURCE = path.join(HERE, "../../packages/banto-worker-pool/src/pool.ts");
 const DAEMON_SOURCE = path.join(HERE, "../../packages/banto-daemon/src/daemon.ts");
+const BIN_SOURCE = path.join(HERE, "../../packages/banto-worker-pool/src/bin.ts");
 
-describe("[task-0223] 同時本数の上限に、監査・判定のための席を確保する", () => {
+describe("[task-0230] 同時本数の上限に、監査・判定のための席を確保する", () => {
   let dataDir: string;
   let workDir: string;
   let pool: WorkerPool;
@@ -342,7 +352,33 @@ describe("[task-0223] 同時本数の上限に、監査・判定のための席�
     });
   });
 
-  describe("a5: worker.list から実装と判定の内訳が読める", () => {
+  describe("a5: 入口（bin.ts）が予約席を読んで工房へ渡している", () => {
+    it("BANTO_WORKER_AUDIT_RESERVED を読んで WorkerPool へ渡している（配線漏れの再発防止）", () => {
+      /**
+       * 実物の独立プロセスは起こさない（ファイル冒頭の通り、ここは配線の有無を確かめる
+       * 場）。この配線が抜けたまま2026-08-16に3回稼働に出て、予約席が既定 0 のまま
+       * 立った（task-0223→task-0230）。次に同じ抜けが起きても検知できるよう、源で
+       * 確かめる。
+       */
+      const source = fs.readFileSync(BIN_SOURCE, "utf-8");
+      assert.match(
+        source,
+        /resolveAuditReservedWorkers\(process\.env\)/,
+        "入口が環境変数を読んでいる"
+      );
+
+      const poolAt = source.indexOf("new WorkerPool({");
+      assert.ok(poolAt > 0, "工房を組み立てている");
+      const construction = source.slice(poolAt, source.indexOf("});", poolAt));
+      assert.match(
+        construction,
+        /auditReservedWorkers,/,
+        "読んだ値を WorkerPool へ渡している——渡さないと既定 0 のまま立ち、予約席が1ミリも効かない"
+      );
+    });
+  });
+
+  describe("a6: worker.list から実装と判定の内訳が読める", () => {
     beforeEach(() => start(4, 2));
     afterEach(stop);
 

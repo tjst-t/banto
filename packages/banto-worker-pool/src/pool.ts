@@ -295,9 +295,12 @@ export interface WorkerPoolOptions {
   /**
    * 監査・判定のために空けておく席の数（task-0223）。
    *
-   * 実装（`executor`）は「上限 − ここ」までしか取れない。既定は環境変数
-   * {@link AUDIT_RESERVED_ENV}（既定 {@link DEFAULT_AUDIT_RESERVED_WORKERS}）から読む。
-   * 0 を渡すと取り置かない＝task-0216 のままの早い者勝ちになる。
+   * 実装（`executor`）は「上限 − ここ」までしか取れない。**省略時は 0（取り置かない）
+   * ＝task-0216 のままの早い者勝ち**——工房自身（このクラス）は `process.env` を
+   * 一切読まない。環境変数 {@link AUDIT_RESERVED_ENV}（既定
+   * {@link DEFAULT_AUDIT_RESERVED_WORKERS}）を読んで解決するのは呼び出し側（`bin.ts` の
+   * `resolveAuditReservedWorkers`）の仕事——既定を工房側に埋めると、既定値を渡さずに
+   * 立てる task-0216 の試験が黙って壊れるため、ここでは分けてある。
    *
    * 上限（`maxConcurrentWorkers`）以上を渡すと**実装が1本も起こせなくなる**ので、
    * その組み合わせは受け取らずに投げる（I2：黙って直さない・黙って落とさない）。
