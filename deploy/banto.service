@@ -42,7 +42,12 @@ Environment=BANTO_ENV_POOL_DATA=/var/lib/banto/environment-pool
 
 ExecStart=/usr/local/bin/node --import tsx packages/banto-host/src/bin.ts serve --port 4100
 
-Restart=on-failure
+# **always でなければならない**（inc-0072）。`system.restart` は自分を落として systemd に
+# 拾わせる道具で、その終わり方は `exit(0)`＝正常終了である（packages/banto-host/src/restart-tool.ts）。
+# 正常終了での自己再起動が設計上の前提なので、`on-failure` にすると**撃った瞬間に
+# banto が上がってこない**——しかも撃つまで分からない。終了コードを変えるのではなく
+# ここを always にする、が 2026-08-16 の裁定。
+Restart=always
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
