@@ -3137,19 +3137,21 @@ export class Daemon {
        * 監査人が**判定の口を使わずに**「終わった」と言ってきた。
        *
        * 自由文から通す／通さないを決めない（決定57 の一次受けは判定表であって作文ではない）。
-       * 黙って待つと安全弁の時間まで止まるので、**その場で理由を出して止める**——
-       * 監査の口が載っていないランタイムで監査を回している、という機構の問題だから。
+       * 黙って待つと安全弁の時間まで止まるので、**その場で理由を出して止める**。
+       * 判定の口が呼ばれなかった**原因はここでは決め打ちしない**（実測 2026-08-11：
+       * roleAssignments のモデルが道具呼び出しに乗れなかっただけで、audit_report 自体は
+       * pi にも claude にも載っている。だから「ランタイムに口が無い」とは言い切れない）。
        */
       if (current.status !== "auditing") return;
       process.stderr.write(
         `[banto-daemon] ${projectTag}/${taskId}: 監査人が判定を出さずに報告しました` +
-          "（このランタイムに audit_report が載っていません）\n"
+          "（監査人が audit_report を一度も呼ばずに終えました）\n"
       );
       this.recordTaskFailed(
         projectTag,
         taskId,
         "audit_reported_without_verdict: 監査人が判定の口（audit_report）を使わずに報告しました。" +
-          "このランタイムには監査の口が載っていません" +
+          "監査人が audit_report を一度も呼ばずに終えました" +
           (summary ? `。監査人の言い分: ${summary}` : "")
       );
       return;
