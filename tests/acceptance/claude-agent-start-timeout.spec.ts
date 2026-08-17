@@ -237,7 +237,7 @@ describe("[claude-agent] 起動の待ちと起こし直し（task-0233）", () =
   // ── a2/a3: 1回だけ起こし直す ────────────────────────────────────────────
 
   it("[a2] 名乗りが返らなくても1回目で失敗した子は始末され、起こし直しで職人は使える状態になる", async () => {
-    process.env["BANTO_CLAUDE_START_TIMEOUT_MS"] = "150";
+    process.env["BANTO_CLAUDE_START_TIMEOUT_MS"] = "1000";
     process.env["STUB_HANG_START_ATTEMPTS"] = "1"; // 1回目だけハングし、2回目は普通に答える
 
     const events: DriverEvent[] = [];
@@ -263,7 +263,7 @@ describe("[claude-agent] 起動の待ちと起こし直し（task-0233）", () =
   });
 
   it("[a2] 失敗した1回目の子プロセスは始末され、孤児が残らない", async () => {
-    process.env["BANTO_CLAUDE_START_TIMEOUT_MS"] = "150";
+    process.env["BANTO_CLAUDE_START_TIMEOUT_MS"] = "1000"; // P6: 上記 a2 と同理由でフルスイート負荷に耐える値
     process.env["STUB_HANG_START_ATTEMPTS"] = "1";
 
     const handle = await driver.spawn(spawnOptions());
@@ -307,7 +307,7 @@ describe("[claude-agent] 起動の待ちと起こし直し（task-0233）", () =
   // ── a4: resume の退路 ──────────────────────────────────────────────────
 
   it("[a4] --resume 付きの起動が失敗したら、--resume を外して新しいセッションとして起こし直す", async () => {
-    process.env["BANTO_CLAUDE_START_TIMEOUT_MS"] = "150";
+    process.env["BANTO_CLAUDE_START_TIMEOUT_MS"] = "1000"; // P6: 退路（2回目の起動成功）を待つため、負荷に耐える値
     process.env["STUB_HANG_START_ATTEMPTS"] = "1"; // resume 付きの1回目だけ落とす
 
     const previous = path.join(stubDir, "previous.jsonl");
