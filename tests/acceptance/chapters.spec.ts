@@ -197,6 +197,108 @@ describe("[提案§3.2] 畳むのはターン境界で、閾値に達したと�
   });
 });
 
+// ── 判定は畳まなかったときも外から読める（inc-0075） ────────────────────────
+
+describe("[a1/a3] shouldClose の判定は、畳まなかったときも外から読める（inc-0075）", () => {
+  it("まだ一度も判定していなければ undefined（「判定したか」自体が読める）", () => {
+    const messages = [userMsg("A"), assistantMsg("B", 100)];
+    const k = keeper(fakeSession(messages, SessionManager.inMemory()));
+    assert.equal(k.evaluation(), undefined, "shouldClose を呼ぶ前は判定していないはず");
+  });
+
+  it("畳まなかったときも、いまの文脈長・窓・閾値・結果が読める", () => {
+    // contextWindow 1000 × 既定 0.6 = 600。100 は届かないので畳まない
+    const messages = [userMsg("A"), assistantMsg("B"), userMsg("C"), assistantMsg("D", 100)];
+    const k = keeper(fakeSession(messages, SessionManager.inMemory()));
+
+    assert.equal(k.shouldClose(), false);
+    const ev = k.evaluation();
+    assert.ok(ev, "判定したことが読めない");
+    assert.equal(ev.tokens, 100, "いまの文脈長が読めない");
+    assert.equal(ev.window, 1000, "窓が読めない");
+    assert.equal(ev.thresholdRatio, 0.6, "閾値が読めない");
+    assert.equal(ev.willClose, false, "畳むと判断したかが読めない");
+  });
+
+  it("畳んだときも同じ形で読める", () => {
+    const messages = [userMsg("A"), assistantMsg("B"), userMsg("C"), assistantMsg("D", 700)];
+    const k = keeper(fakeSession(messages, SessionManager.inMemory()));
+
+    assert.equal(k.shouldClose(), true);
+    const ev = k.evaluation();
+    assert.ok(ev, "判定したことが読めない");
+    assert.equal(ev.tokens, 700, "いまの文脈長が読めない");
+    assert.equal(ev.window, 1000, "窓が読めない");
+    assert.equal(ev.thresholdRatio, 0.6, "閾値が読めない");
+    assert.equal(ev.willClose, true, "畳むと判断したかが読めない");
+  });
+
+  it("文脈長が測れないときも、判定したこと自体は読める", () => {
+    const messages = [userMsg("A"), assistantMsg("B"), userMsg("C"), assistantMsg("D", 9999)];
+    const k = keeper(fakeSession(messages, SessionManager.inMemory()), { contextWindow: undefined });
+
+    assert.equal(k.shouldClose(), false);
+    const ev = k.evaluation();
+    assert.ok(ev, "窓が無いだけで、判定自体はしているはず");
+    assert.equal(ev.window, undefined);
+    assert.equal(ev.willClose, false);
+  });
+});
+
+// ── 長く畳めていないことに気づける（inc-0075） ──────────────────────────────
+
+describe("[a2] 長く章が畳めていないことに気づける（inc-0075）", () => {
+  it("最後に閉じてからのしきい値を過ぎたら知らせる", () => {
+    const messages = [userMsg("A"), assistantMsg("B"), userMsg("C"), assistantMsg("D", 100)];
+    const calls: Array<{ threadId: string; sinceMs: number }> = [];
+    const k = keeper(fakeSession(messages, SessionManager.inMemory()), {
+      staleAfterMs: 0,
+      onLongWithoutClose: (info: { threadId: string; sinceMs: number }) => calls.push(info),
+    });
+
+    k.shouldClose();
+    assert.equal(calls.length, 1, "長く畳めていないことが知らされない");
+    assert.equal(calls[0].threadId, "thread-1");
+    assert.ok(calls[0].sinceMs >= 0, "経過時間が読めない");
+  });
+
+  it("しきい値の内側では知らせない（畳まないこと自体は異常ではない・過検知しない）", () => {
+    const messages = [userMsg("A"), assistantMsg("B"), userMsg("C"), assistantMsg("D", 100)];
+    const calls: unknown[] = [];
+    const k = keeper(fakeSession(messages, SessionManager.inMemory()), {
+      staleAfterMs: 60 * 60 * 1000,
+      onLongWithoutClose: (info: unknown) => calls.push(info),
+    });
+
+    k.shouldClose();
+    assert.equal(calls.length, 0, "しきい値に達していないのに知らせている（過検知）");
+  });
+
+  it("章を閉じると、知らせの起点がリセットされる", async () => {
+    const messages = [userMsg("A"), assistantMsg("B"), userMsg("C"), assistantMsg("D", 700)];
+    const calls: unknown[] = [];
+    const staleAfterMs = 50;
+    const k = keeper(fakeSession(messages, SessionManager.inMemory()), {
+      staleAfterMs,
+      onLongWithoutClose: (info: unknown) => calls.push(info),
+    });
+
+    await new Promise((r) => setTimeout(r, staleAfterMs + 50));
+    k.shouldClose();
+    assert.equal(calls.length, 1, "しきい値を過ぎたのに知らせない");
+
+    await k.closeChapter();
+    calls.length = 0;
+
+    k.shouldClose();
+    assert.equal(
+      calls.length,
+      0,
+      "畳んだ直後なのに知らせている（「長く畳めていない」の起点がリセットされていない）",
+    );
+  });
+});
+
 // ── 畳んだあと ──────────────────────────────────────────────────────────────
 
 describe("[提案§3.2] 畳んだあとの文脈", () => {
