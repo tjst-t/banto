@@ -866,4 +866,38 @@ describe("[kobo-roles] 実装・レビューを、どの等級／どのモデル
       "huihui/deepseek-v4-flash-abliterated"
     );
   });
+
+  it("[kobo-roles] 監査の役に未実証モデルを当てたままでも、起こすときに実証済みの標準モデルへ読み替える（task-0268）", async () => {
+    // 保存の口が生える前に書かれた設定や、コード経由で当てられた分は write の弾きを
+    // 通らない。監査の口（audit_report）が載ってもモデルが呼べず audit_reported_without_verdict
+    // になるのを防ぐため、監査を起こす前に実証済みモデルへ読み替える。
+    h.daemon.setRoleAssignments({
+      audit: { model: "huihui/deepseek-v4-flash-abliterated" },
+    });
+    readyTask(h, "task-0026");
+    const executor = await h.daemon.spawnTask(h.proj, "task-0026");
+    h.daemon.transition(h.proj, "task-0026", "implementing", "test");
+    h.daemon.transition(h.proj, "task-0026", "auditing", "test");
+
+    await until(() => h.driver.byTaskId("task-0026:audit") !== undefined);
+    await until(() => h.workers.pool.get(executor.sessionId)?.state === "closed");
+
+    const audit = h.driver.byTaskId("task-0026:audit")!;
+    // 未実証モデルがそのまま渡らず、実証済みの標準モデルへ読み替わっている（provider/model に割れて届く）
+    assert.equal(
+      audit.driverOptions["provider"],
+      "opencode-go",
+      "未実証の監査モデルは実証済み標準モデルへ読み替えられる（provider）"
+    );
+    assert.equal(
+      audit.driverOptions["model"],
+      "deepseek-v4-flash",
+      "未実証の監査モデルは実証済み標準モデルへ読み替えられる（model）"
+    );
+    const extensions = audit.driverOptions["extensionPaths"] as string[] | undefined;
+    assert.ok(
+      extensions?.some((p) => p.endsWith("banto-auditor.ts")),
+      "読み替えた先でも banto-auditor 拡張（audit_report の口）が載る"
+    );
+  });
 });

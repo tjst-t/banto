@@ -2774,18 +2774,27 @@ export class Daemon {
       );
     }
 
+    // 監査の口（audit_report）が実証済みの pi 系標準モデル。監査の役に名指しされたモデルが
+    // 道具呼び出し未実証なら、**判定を一度も出せず誤った failed になるのを防ぐ**ために
+    // これへ読み替える（task-0268）。`toolCallProvenModelNames` 白リストと同じ出自。
+    const PROVEN_AUDIT_FALLBACK_MODEL = "opencode-go/deepseek-v4-flash";
+
     // 監査の役に名指しされたモデルが道具呼び出し（audit_report）実証済みでなければ
-    // 起こす前に警告する。保存の時点（kobo-settings の write）で弾くのが主だが、
-    // `setRoleAssignments`（コード経由）で当てられた分はここが最後の関所になる。
+    // 起こす前に**警告し、実証済みの標準モデルへ読み替える**。保存の時点
+    // （kobo-settings の write）で弾くのが主だが、`setRoleAssignments`（コード経由）で
+    // 当てられた分や、保存の口が生える前に書かれた設定はここが最後の関所になる。
     // 確かめられないとき（一覧が空）は黙って起こす——弾けないことを失敗にしない。
-    if (opts.role === "audit" && assigned.model) {
+    let modelName = assigned.model;
+    if (opts.role === "audit" && modelName) {
       try {
         const proven = await this.toolCallProvenModelNames();
-        if (proven.length > 0 && !proven.includes(assigned.model)) {
+        if (proven.length > 0 && !proven.includes(modelName)) {
           process.stdout.write(
             `[banto-daemon] ${opts.projectTag}/${opts.taskId}: 監査の役に道具呼び出しが` +
-              `実証されていないモデルを当てています（${assigned.model}）。実証済み: ${proven.join(", ")}\n`
+              `実証されていないモデルを当てています（${modelName}）。実証済みの` +
+              `${PROVEN_AUDIT_FALLBACK_MODEL} へ読み替えて起こします（実証済み一覧: ${proven.join(", ")}）\n`
           );
+          modelName = PROVEN_AUDIT_FALLBACK_MODEL;
         }
       } catch {
         // 確かめられないだけなら黙って起こす（ここで弾くと設定を直せなくなる）
@@ -2806,7 +2815,7 @@ export class Daemon {
        * 手直し（rework）は実装として渡す。
        */
       role: opts.role === "audit" ? "auditor" : "executor",
-      ...(assigned.model ? { model: assigned.model } : {}),
+      ...(modelName ? { model: modelName } : {}),
       driverOptions: {
         // 職人が Kobo の口を叩くための到達先（拡張が環境変数で受け取る）
         daemonUrl: `http://localhost:${this.port}`,
