@@ -89,6 +89,13 @@ async function harness(options: { tickIntervalMs?: number } = {}): Promise<Harne
           tier: "standard",
           policy: ["worker"],
         },
+        {
+          providerId: "opencode-go",
+          id: "kimi-k2.7-code",
+          name: "Kimi K2.7 Code",
+          tier: "standard",
+          policy: ["worker"],
+        },
       ],
     },
   });
@@ -891,7 +898,7 @@ describe("[kobo-roles] 実装・レビューを、どの等級／どのモデル
     );
     assert.equal(
       audit.driverOptions["model"],
-      "deepseek-v4-flash",
+      "kimi-k2.7-code",
       "未実証の監査モデルは実証済み標準モデルへ読み替えられる（model）"
     );
     const extensions = audit.driverOptions["extensionPaths"] as string[] | undefined;

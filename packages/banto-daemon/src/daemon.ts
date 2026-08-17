@@ -2741,8 +2741,15 @@ export class Daemon {
       "opus",
       "sonnet",
       "haiku",
-      // 標準の worker 等級。判定の受け渡し（監査の口）に実際に使われている
+      // 標準の worker 等級。判定の受け渡し（監査の口）に実際に使われている（実証済み）
       "opencode-go/deepseek-v4-flash",
+      // opencode-go プロバイダの Kimi 系。task-0268 の監査で実証済みの
+      // kimi-k2.7-code（PO 裁定 2026-08-17）を含む同一ファミリー。読み替えで
+      // 未実証扱いされて上書きされないよう白リストに載せる
+      "opencode-go/kimi-k2.5",
+      "opencode-go/kimi-k2.6",
+      "opencode-go/kimi-k2.7-code",
+      "opencode-go/kimi-k3",
     ];
   }
 
@@ -2777,7 +2784,7 @@ export class Daemon {
     // 監査の口（audit_report）が実証済みの pi 系標準モデル。監査の役に名指しされたモデルが
     // 道具呼び出し未実証なら、**判定を一度も出せず誤った failed になるのを防ぐ**ために
     // これへ読み替える（task-0268）。`toolCallProvenModelNames` 白リストと同じ出自。
-    const PROVEN_AUDIT_FALLBACK_MODEL = "opencode-go/deepseek-v4-flash";
+    const PROVEN_AUDIT_FALLBACK_MODEL = "opencode-go/kimi-k2.7-code";
 
     // 監査の役に名指しされたモデルが道具呼び出し（audit_report）実証済みでなければ
     // 起こす前に**警告し、実証済みの標準モデルへ読み替える**。保存の時点
