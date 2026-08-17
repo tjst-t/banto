@@ -166,6 +166,81 @@ describe("[決定104] 工房は、割り当ての無い等級で黙って起こ�
   });
 });
 
+/**
+ * **名指しはモデルだけを上書きする——バックエンドは名前から決まる**（決定99a）。
+ *
+ * 実測 2026-08-17：Kobo の設定で監査だけ `opus` に当てたら、監査の spawn が**全部**
+ * 「モデル "opus" は Claude Code のものです（runtime: pi と食い違っています）」で落ちた。
+ * 等級（reasoning）に当たっていたのが pi のモデルで、名指しがモデルだけを差し替え、
+ * **ランタイムだけ等級側の pi が残った**ため。名指しした瞬間に必ず落ちるので、
+ * 「監査だけ別のバックエンドに当てる」という設定が成立しなかった。
+ */
+describe("[決定99a] 名指しは、等級に当たっているバックエンドを引き継がない", () => {
+  /** 等級は pi に当たっている台帳（実機の `model-roles.json` と同じ形）。 */
+  const piTier = fakeLedger(
+    { "worker.fast": { backend: "pi", provider: "cloud", model: "small" } },
+    "fast"
+  );
+
+  function poolWithClaude(claude: FakeDriver): WorkerPool {
+    pool = new WorkerPool({
+      driver,
+      dataDir: dir,
+      defaultProjectTag: "test",
+      idleTimeoutMs: 0,
+      modelLedger: piTier,
+      runtimes: {
+        "claude-agent-sdk": {
+          driver: claude,
+          title: "Claude Code",
+          models: () => [{ name: "opus", label: "opus" }],
+        },
+      },
+    });
+    return pool;
+  }
+
+  it("等級が pi でも、claude のモデルを名指しすれば claude で起きる", async () => {
+    const claude = new FakeDriver();
+    try {
+      const p = poolWithClaude(claude);
+      await p.delegate({ ...JOB, model: "opus" });
+      assert.equal(driver.spawned.length, 0, "等級の pi へ流さない");
+      assert.equal(claude.spawned.length, 1, "名前が指すバックエンドで起こす");
+      assert.equal(claude.spawned[0]?.driverOptions?.["model"], "opus");
+    } finally {
+      claude.cleanup();
+    }
+  });
+
+  it("runtime を明記したときは、これまでどおり食い違いを断る", async () => {
+    const claude = new FakeDriver();
+    try {
+      const p = poolWithClaude(claude);
+      // 併記は呼び出し側の意思表示。黙ってどちらかを勝たせない（I2）
+      await assert.rejects(
+        () => p.delegate({ ...JOB, model: "opus", runtime: "pi" }),
+        /食い違っています/
+      );
+      assert.equal(driver.spawned.length + claude.spawned.length, 0);
+    } finally {
+      claude.cleanup();
+    }
+  });
+
+  it("pi のモデルを名指ししたときは、これまでどおり pi で起きる", async () => {
+    const claude = new FakeDriver();
+    try {
+      const p = poolWithClaude(claude);
+      await p.delegate({ ...JOB, model: "cloud/big" });
+      assert.equal(claude.spawned.length, 0);
+      assert.equal(driver.spawned[0]?.driverOptions?.["model"], "big");
+    } finally {
+      claude.cleanup();
+    }
+  });
+});
+
 /** `worker.delegate` の形だけを持つ、断る／通る偽の Tool。 */
 function delegateTool(behavior: () => Promise<void>): NamespacedToolDefinition {
   return {

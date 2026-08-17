@@ -1566,7 +1566,20 @@ export class WorkerPool {
           `${tier} にモデルを当てるか、頼むときに model を名指ししてください。`
       );
     }
-    const planned = this.planModel(input.runtime ?? assigned?.runtime, chosenModel);
+    /**
+     * **名指しがあるときは、等級に当たっているバックエンドを引き継がない**（決定99a）。
+     *
+     * `assigned` は等級の割り当て＝モデルとバックエンドの組。名指し（`input.model`）が
+     * 上書きするのはモデルだけなので、ランタイムだけ等級側が残ると必ず食い違う——
+     * 監査を `opus` に当てた途端、等級 reasoning に当たっている pi が残って
+     * 「モデル opus は Claude Code のものです（runtime: pi と食い違っています）」で
+     * spawn が全部落ちた（実測 2026-08-17。Kobo の audit が連続 failed）。
+     *
+     * ランタイムは名前から決まる（`planModel` の但し書き）ので、名指しのときは名前に従う。
+     * 呼び出し側が `runtime` を明記したときだけ、これまでどおり食い違いを見て断る。
+     */
+    const inheritedRuntime = input.model ? undefined : assigned?.runtime;
+    const planned = this.planModel(input.runtime ?? inheritedRuntime, chosenModel);
     const runtime = this.driverFor(planned.runtime);
     const sessionPath = path.join(
       this.dataDir,
