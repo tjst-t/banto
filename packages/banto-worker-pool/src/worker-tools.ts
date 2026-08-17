@@ -215,9 +215,32 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
             breakdown +
             resource
           : `\n\n同時に走っている職人: ${concurrency.running} 本（上限なし）` + resource;
+      /**
+       * task-0263 第2段: ランタイム別の実測ピーク（校正のための可視化）。
+       *
+       * 想定消費値（タスクA〜E の仮置き）を `memory.peak` の実測と突き合わせる。
+       * 実測/想定 の比が 1 を超えたランタイムは、想定より多く抱える職人が居る合図。
+       * 自動更新は行わない——まずここで見えるようにする。
+       */
+      const peaks = pool.runtimePeakSummary();
+      const peakText =
+        peaks.length === 0
+          ? ""
+          : `\n\nランタイム別 実測ピーク（校正用・memory.peak）:\n` +
+            peaks
+              .map(
+                (p) =>
+                  `  ${p.runtime}: ${formatBytes(p.peakBytes)} / ${p.samples}本` +
+                  (p.assumedBytes !== undefined
+                    ? `（想定 ${formatBytes(p.assumedBytes)}` +
+                      (p.ratio !== undefined ? `・実測/想定 ${p.ratio.toFixed(2)}` : "") +
+                      "）"
+                    : "")
+              )
+              .join("\n");
       return {
-        content: [{ type: "text" as const, text: text + capacity }],
-        details: { ...result, concurrency },
+        content: [{ type: "text" as const, text: text + capacity + peakText }],
+        details: { ...result, concurrency, peaks },
       };
     },
   });

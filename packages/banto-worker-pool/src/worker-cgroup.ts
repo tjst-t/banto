@@ -98,6 +98,20 @@ export interface IsolationStatus {
   memoryMax: number;
 }
 
+/**
+ * ランタイム別の想定消費ピーク（MiB）。
+ *
+ * タスクA〜E で仮置きした値。task-0263 はこれを `memory.peak` の実測と突き合わせて
+ * **可視化**するところまで——自動更新（想定値を実測で上書きする）は PO 判断を伴うので
+ * このタスクでは行わない。実測/想定 の比を出すための参照値としてだけ使う。
+ */
+export const ASSUMED_PEAK_MIB: Readonly<Record<string, number>> = {
+  /** pi 経路（既定ランタイム）。タスクA〜E の仮置き。 */
+  "pi-rpc": 300,
+  /** Claude Agent SDK 経路。タスクA〜E の仮置き。 */
+  "claude-agent-sdk": 1200,
+};
+
 /** 職人1本の袋。 */
 export interface WorkerBag {
   /** 袋のディレクトリ（絶対パス）。 */
