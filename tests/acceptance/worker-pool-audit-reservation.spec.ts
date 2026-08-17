@@ -423,4 +423,56 @@ describe("[task-0230] 同時本数の上限に、監査・判定のための席�
       assert.match(text, /実装（executor）: 2 \/ 2 本（\*\*この枠は満杯\*\*/);
     });
   });
+
+  describe("a7: リソース不足の断りと worker.list の空きメモリ・想定消費表示（task-0255）", () => {
+    /**
+     * 空きメモリを固定して立てる（実際にメモリを消費せず「少ない」を決定的に作る）。
+     *
+     * リソース不足の断りはホストの空きメモリに依存するため、実機の空きに左右されると
+     * 間欠的に落ちる（P6）。{@link WorkerPoolOptions.resourceReader} で固定して再現する。
+     */
+    const startResource = (maxConcurrentWorkers: number, availableMemoryMiB: number): void => {
+      dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "worker-resource-"));
+      workDir = fs.mkdtempSync(path.join(os.tmpdir(), "worker-resource-wt-"));
+      driver = new FakeRuntimeDriver();
+      pool = new WorkerPool({
+        driver,
+        dataDir,
+        defaultProjectTag: "banto",
+        defaultOrigin: "banto",
+        idleTimeoutMs: 0,
+        maxConcurrentWorkers,
+        auditReservedWorkers: 2,
+        resourceReader: () => ({ memoryMiB: availableMemoryMiB }),
+      });
+    };
+    afterEach(stop);
+
+    it("空きメモリが足りないと、その理由（空き・想定消費・合印）が文面に載って断る", async () => {
+      startResource(4, 500);
+      await executor("task-r1"); // 想定 300 → 空き 500 にはまだ収まる（本数は 1/4）
+
+      // 本数の上限（4）には余りがあるのに、想定消費 300+300=600 が空き 500 を超える
+      const err = await executor("task-r2").catch((e: Error) => e);
+      assert.ok(err instanceof Error, "断られる");
+      // 機械が見分けるための合印。本数の断り（`本数/上限`）と別に、`:resource` を使う
+      assert.match(err.message, new RegExp(`${WORKER_LIMIT_CODE}:resource`));
+      // 人が読んで次の手を選ぶための中身
+      assert.match(err.message, /空きメモリが足りません/, "理由がリソース不足だと分かる");
+      assert.ok(err.message.includes("task-r2"), "起こせなかったのは誰か");
+      assert.equal(pool.concurrency().running, 1, "断っても本数は増えない（枠は返っている）");
+    });
+
+    it("worker.list に空きメモリと想定消費合計が載る（断られる前に読める）", async () => {
+      startResource(4, 500);
+      await executor("task-r1");
+
+      const tools = createWorkerTools(pool);
+      const list = tools.find((t) => t.name === "worker.list")!;
+      const result = await list.execute({}, { toolCallId: "t1" });
+      const text = result.content[0]!.text!;
+      assert.match(text, /ホストの空き 500 MiB/);
+      assert.match(text, /職人の想定消費の合計 300 MiB/);
+    });
+  });
 });
