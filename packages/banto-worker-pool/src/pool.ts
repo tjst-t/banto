@@ -69,6 +69,7 @@ import {
 } from "./child-pids.js";
 import {
   WorkerCgroups,
+  ASSUMED_PEAK_MIB,
   formatBytes,
   type CgroupUsage,
   type IsolationMode,
@@ -688,6 +689,25 @@ const RUNTIME_ALIASES: Readonly<Record<string, string>> = {
   "claude-agent-sdk": "claude-agent-sdk",
 };
 
+/**
+ * ランタイム別の実測ピークの集計レコード（task-0263 第2段）。
+ *
+ * 校正（想定値を実測で上書きする）はこのタスクではせず、まず可視化する。
+ * `ratio` は 実測/想定 で、1 を超えたら想定より多く抱える職人が居ることを示す。
+ */
+export interface RuntimePeakRecord {
+  /** ランタイムの識別子（`pi-rpc` / `claude-agent-sdk` …）。 */
+  runtime: string;
+  /** 記録した職人（サンプル）の本数。 */
+  samples: number;
+  /** これまでの実測ピークの最大（バイト）。 */
+  peakBytes: number;
+  /** 想定消費ピーク（タスクA〜E の仮置き・バイト）。無ければ無い。 */
+  assumedBytes?: number;
+  /** 実測 / 想定 の比。1 を超えたら想定より上回っている。 */
+  ratio?: number;
+}
+
 export class WorkerPool {
   private readonly driver: RuntimeDriver;
   private readonly driverId: string;
@@ -721,8 +741,17 @@ export class WorkerPool {
    */
   private readonly bags = new Map<
     string,
-    { bag: WorkerBag; usage?: CgroupUsage; retired?: boolean }
+    { bag: WorkerBag; runtime: string; usage?: CgroupUsage; retired?: boolean }
   >();
+  /**
+   * ランタイム別の実測ピークの集計（task-0263 第2段）。
+   *
+   * 職人を畳むときに `memory.peak` を読み、ランタイムごとに最大と本数を積む。
+   * 想定値（タスクA〜E の仮置き）を校正するための可視化であって、**自動更新はしない**
+   * （PO 判断を伴うため）。D3: 稼働中は導出できるので保存しない——この集計は
+   * 畳んだ事実（`worker_exited` / `worker_closed` の memory）から作る一時持ち。
+   */
+  private readonly runtimePeaks = new Map<string, { samples: number; peakBytes: number }>();
   private readonly unsubscribeDriver: () => void;
   private idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
   private idleSweeper: NodeJS.Timeout | undefined;
@@ -849,6 +878,7 @@ export class WorkerPool {
         if (entry.cgroupDir) {
           this.bags.set(entry.sessionId, {
             bag: { dir: entry.cgroupDir, procsFile: path.join(entry.cgroupDir, "cgroup.procs") },
+            runtime: entry.driverId ?? this.driverId,
           });
         }
       }
@@ -1872,7 +1902,7 @@ export class WorkerPool {
             `隔離なしで働かせると1本の暴走が機械全体を巻き込みます（inc-0066）`
         );
       }
-      this.bags.set(handle.sessionId, { bag });
+      this.bags.set(handle.sessionId, { bag, runtime: runtime.id });
     }
 
     // spawn は起こすだけ。ここで指示を送らないと職人は何もしない
@@ -2096,6 +2126,11 @@ export class WorkerPool {
     const usage = this.takeUsage(sessionId);
     if (held.retired) return usage; // 既に畳んである
     held.retired = true;
+    /**
+     * task-0263 第2段: ランタイム別の実測ピークを集計する（校正のための可視化）。
+     * 畳むのは1回きりなのでここで積む。集計は `memory.peak` が読めたときだけ。
+     */
+    this.recordRuntimePeak(held.runtime, usage?.peakBytes);
 
     this.cgroups.killAll(held.bag);
     const removed = await this.cgroups.remove(held.bag);
@@ -2125,6 +2160,50 @@ export class WorkerPool {
     if (!held) return undefined;
     if (!held.usage) held.usage = this.cgroups.usage(held.bag);
     return held.usage;
+  }
+
+  /**
+   * task-0263 第2段: 実測ピークをランタイム別に集計し、機械のログへ残す。
+   *
+   * I2: `peakBytes` が読めなかった（`memory.peak` が無い環境）なら黙ってスキップする。
+   * 読めたときだけ積むので、本数は「読めた職人の本数」として読む。
+   */
+  private recordRuntimePeak(runtime: string, peakBytes: number | undefined): void {
+    if (peakBytes === undefined) return;
+    const cur = this.runtimePeaks.get(runtime) ?? { samples: 0, peakBytes: 0 };
+    cur.samples += 1;
+    cur.peakBytes = Math.max(cur.peakBytes, peakBytes);
+    this.runtimePeaks.set(runtime, cur);
+    const assumed = ASSUMED_PEAK_MIB[runtime];
+    console.error(
+      `[worker-pool] 実測ピーク runtime=${runtime} peak=${formatBytes(peakBytes)}` +
+        (assumed !== undefined ? ` 想定=${assumed}MiB（実測/想定 ${(peakBytes / (assumed * 1024 * 1024)).toFixed(2)}）` : "") +
+        ` 累計 ${cur.samples}本・最大 ${formatBytes(cur.peakBytes)}`
+    );
+  }
+
+  /**
+   * task-0263 第2段: ランタイム別の実測ピークの集計（校正のための可視化）。
+   *
+   * 番頭が `worker.list` で見られるように。実測の大きい順に返す。
+   */
+  runtimePeakSummary(): RuntimePeakRecord[] {
+    return [...this.runtimePeaks.entries()]
+      .map(([runtime, v]) => {
+        const assumedBytes =
+          ASSUMED_PEAK_MIB[runtime] !== undefined
+            ? ASSUMED_PEAK_MIB[runtime] * 1024 * 1024
+            : undefined;
+        return {
+          runtime,
+          samples: v.samples,
+          peakBytes: v.peakBytes,
+          ...(assumedBytes !== undefined
+            ? { assumedBytes, ratio: v.peakBytes / assumedBytes }
+            : {}),
+        };
+      })
+      .sort((a, b) => b.peakBytes - a.peakBytes);
   }
 
   private resolveTools(requested: string[] | undefined, network = false): string[] {
