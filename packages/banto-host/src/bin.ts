@@ -1789,7 +1789,7 @@ async function serve(options: ServeOptions): Promise<void> {
   warnStrandedPlaceMemory();
 
   // task-0036: 会話はホストの再起動を越えて残る
-  const threadStore = new ThreadStore(path.join(dataDir(), "threads"));
+  const threadStore = new ThreadStore(path.join(dataDir(), "threads"), undefined, inbox);
   threads = new ThreadRegistry(threadFactory, threadStore);
   /**
    * 読み戻しは**中断されたターンの後片付けも兼ねる**（imp-0037）。
