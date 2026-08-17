@@ -250,6 +250,16 @@ export {
   type HarnessBackendDescriptor,
   type BackendModelRef,
 } from "./harness-backends.js";
+// Claude Code のサブスク枠の監視は worker-pool の claude-agent/ 単位が持つ（host から再輸出）
+export {
+  createClaudeQuotaMonitor,
+  parseUsagePayload,
+  DEFAULT_CLAUDE_STOP_REMAINING_PCT,
+  type ClaudeQuotaMonitor,
+  type ClaudeQuotaSnapshot,
+  type ClaudeQuotaOptions,
+  type ClaudeCredentials,
+} from "@banto/worker-pool";
 export {
   createSettingsModule,
   settingsSection,

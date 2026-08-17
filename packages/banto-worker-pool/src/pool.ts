@@ -75,6 +75,7 @@ import {
   type IsolationStatus,
   type WorkerBag,
 } from "./worker-cgroup.js";
+import { readHostResources, type HostResources } from "./host-resources.js";
 
 /**
  * 職人の既定のシステムプロンプト（立場の伝達）。やることは instruction で渡す。
@@ -317,6 +318,20 @@ export interface WorkerPoolOptions {
    */
   auditReservedWorkers?: number;
   /**
+   * リソースベース並行制御を有効にするか（設計書 タスクC）。
+   *
+   * 有効（既定 `true`）だと、本数判定の**さらに**空きメモリの判定が効く。無効なら
+   * 旧来の本数のみ判定。環境変数 {@link RESOURCE_BASED_ENV}（既定
+   * {@link DEFAULT_RESOURCE_BASED}）で切替えるのは呼び出し側（`bin.ts` の
+   * `resolveResourceBased`）の仕事。
+   */
+  resourceBased?: boolean;
+  /**
+   * ホストの空きリソースを読む口（設計書 タスクA・タスクC）。既定は `readHostResources`。
+   * 試験では固定値を返す口に差し替える。**工房は `process.env` を読まない**（これも同じ）。
+   */
+  resourceReader?: () => HostResources;
+  /**
    * 職人の下の実プロセスを突き止める走査の加減（inc-0066）。
    *
    * 既定は「する」。`false` にすると走査しない——子を持たないランタイムしか使わないと
@@ -491,6 +506,27 @@ export function resolveAuditReservedWorkers(
   return parsed;
 }
 
+/**
+ * リソースベース並行制御を有効にするか（設計書 決定5・タスクC）。
+ *
+ * 有効（既定）だとメモリ判定が本数判定に加わる。`=0`（または `false`）で旧来の
+ * **本数のみ**判定へ戻せる。読めない値は黙って既定に落とさない（I2）。
+ */
+export const DEFAULT_RESOURCE_BASED = true;
+/** リソース判定を切り替える環境変数の名前。 */
+export const RESOURCE_BASED_ENV = "BANTO_WORKER_RESOURCE_BASED";
+
+export function resolveResourceBased(env: Record<string, string | undefined> = process.env): boolean {
+  const raw = env[RESOURCE_BASED_ENV];
+  if (raw === undefined || raw.trim() === "") return DEFAULT_RESOURCE_BASED;
+  const v = raw.trim().toLowerCase();
+  if (v === "0" || v === "false" || v === "off") return false;
+  if (v === "1" || v === "true" || v === "on") return true;
+  throw new Error(
+    `${RESOURCE_BASED_ENV} を読み取れません: "${raw}"（0/1 または true/false。既定 ${DEFAULT_RESOURCE_BASED}）`
+  );
+}
+
 /** いま走っている職人1本分（同時本数の数え上げに出る形）。 */
 export interface ConcurrencySlot {
   taskId: string;
@@ -502,6 +538,10 @@ export interface ConcurrencySlot {
   starting?: boolean;
   /** どちらの枠で座っているか（task-0223）。役を渡さずに起こされた分は `executor`。 */
   role: WorkerSeatRole;
+  /** どのランタイムで起こした/起こすか（リソース判定・設計書 タスクC）。 */
+  runtimeId?: string;
+  /** この枠が想定して消費するメモリ（MiB）。分からなければ未定義。 */
+  assumedMemoryMiB?: number;
 }
 
 /**
@@ -534,6 +574,17 @@ export interface ConcurrencyStatus {
   executorLimit: number;
   /** 予約席を変える環境変数の名前。 */
   reservedEnv: string;
+  /**
+   * リソースベース判定が有効か（設計書 タスクC）。無効なら本数のみ。
+   * 有効のときは {@link assumedMemoryMiB} が入り、断り・一覧に資源の事情が出る。
+   */
+  resourceBased: boolean;
+  /** いま走っている枠の想定消費メモリの合計（MiB）。未計測なら 0。 */
+  assumedMemoryMiB: number;
+  /** ホストの空きメモリ（MiB）。計測できなければ未定義。 */
+  availableMemoryMiB?: number;
+  /** リソース判定を切り替える環境変数の名前。 */
+  resourceEnv: string;
 }
 
 /**
@@ -679,6 +730,10 @@ export class WorkerPool {
   private maxConcurrentWorkers = DEFAULT_MAX_CONCURRENT_WORKERS;
   /** 監査・判定のために空けてある席の数（task-0223）。0 なら取り置かない。 */
   private auditReservedWorkers = 0;
+  /** リソースベース並行制御を有効にするか（設計書 タスクC）。 */
+  private resourceBased = DEFAULT_RESOURCE_BASED;
+  /** ホストの空きリソースの読み口（設計書 タスクC）。誰かが差し替えなければ /proc を読む。 */
+  private readonly resourceReader: () => HostResources;
   /**
    * 席に座っている職人の役（sessionId → 役・task-0223）。
    *
@@ -698,7 +753,14 @@ export class WorkerPool {
    */
   private readonly starting = new Map<
     number,
-    { taskId: string; projectTag: string; at: string; role: WorkerSeatRole }
+    {
+      taskId: string;
+      projectTag: string;
+      at: string;
+      role: WorkerSeatRole;
+      runtimeId: string;
+      memoryMiB: number;
+    }
   >();
   private startingSeq = 0;
   /** 前に取り置きを掃除した時刻（0 は「まだ一度もしていない」）。 */
@@ -811,6 +873,9 @@ export class WorkerPool {
     );
     // task-0223: 上限の内訳。判定のための席を早い者勝ちから守る
     this.auditReservedWorkers = Math.max(0, Math.floor(options.auditReservedWorkers ?? 0));
+    // 設計書 タスクC: リソースベース判定の入切と、空きリソースの読み口
+    this.resourceBased = options.resourceBased ?? DEFAULT_RESOURCE_BASED;
+    this.resourceReader = options.resourceReader ?? (() => readHostResources());
     if (this.maxConcurrentWorkers > 0 && this.auditReservedWorkers >= this.maxConcurrentWorkers) {
       // I2: 黙って直さない。この組み合わせは「実装が1本も起こせない工房」で、
       //     起きてから断りの文面で気づくのでは遅い
@@ -842,6 +907,10 @@ export class WorkerPool {
    * 数えるのは生きている職人だけ——畳んだ・落ちた・安全弁で畳まれた分は自然に減る。
    */
   concurrency(): ConcurrencyStatus {
+    const memoryOf = (runtimeId: string | undefined): number | undefined =>
+      runtimeId
+        ? (this.runtimes.get(runtimeId)?.assumedResources?.memoryMiB ?? undefined)
+        : undefined;
     const live = this.list({ includeClosed: false })
       .filter((w) => w.alive)
       .map(
@@ -851,6 +920,8 @@ export class WorkerPool {
           sessionId: w.sessionId,
           spawnedAt: w.spawnedAt,
           role: this.seatRoleOf(w.sessionId),
+          runtimeId: w.runtime,
+          ...(memoryOf(w.runtime) !== undefined ? { assumedMemoryMiB: memoryOf(w.runtime) } : {}),
         })
       );
     const starting = [...this.starting.values()].map(
@@ -860,11 +931,16 @@ export class WorkerPool {
         spawnedAt: s.at,
         starting: true,
         role: s.role,
+        runtimeId: s.runtimeId,
+        assumedMemoryMiB: s.memoryMiB,
       })
     );
     const slots = [...live, ...starting].sort((a, b) => a.spawnedAt.localeCompare(b.spawnedAt));
     const byRole: Record<WorkerSeatRole, number> = { executor: 0, auditor: 0 };
     for (const slot of slots) byRole[slot.role] += 1;
+    let assumedMemoryMiB = 0;
+    for (const slot of slots) assumedMemoryMiB += slot.assumedMemoryMiB ?? 0;
+    const availableMemoryMiB = this.resourceBased ? this.resourceReader().memoryMiB : undefined;
     return {
       running: slots.length,
       limit: this.maxConcurrentWorkers,
@@ -872,6 +948,10 @@ export class WorkerPool {
       env: MAX_CONCURRENT_ENV,
       byRole,
       auditReserved: this.auditReservedWorkers,
+      resourceBased: this.resourceBased,
+      assumedMemoryMiB,
+      ...(availableMemoryMiB !== undefined ? { availableMemoryMiB } : {}),
+      resourceEnv: RESOURCE_BASED_ENV,
       executorLimit: this.executorLimit(),
       reservedEnv: AUDIT_RESERVED_ENV,
     };
@@ -1411,7 +1491,8 @@ export class WorkerPool {
     const token = await this.reserveSlot(
       input.taskId,
       input.projectTag ?? this.defaultProjectTag,
-      input.role ?? DEFAULT_WORKER_SEAT_ROLE
+      input.role ?? DEFAULT_WORKER_SEAT_ROLE,
+      this.candidateOf(input)
     );
     try {
       return await this.spawnWorker(input);
@@ -1419,6 +1500,33 @@ export class WorkerPool {
       // 起きても・断られても・転んでも枠を返す。返し忘れると上限が目減りしていく
       this.starting.delete(token);
     }
+  }
+
+  /**
+   * これから起こそうとしている職人が「どこの席を取るか」の見積もり（設計書 タスクC）。
+   *
+   * 起動可否の**リソース判定**にだけ使う。起こす実体（`spawnWorker`）は自分でランタイムを
+   * 解決する——ここはその写しではなく「今の込み具合で足りるか」を見るための見積もりで、
+   * 解けなかったりぜんぶ落ちたりしても**咎めない**（デフォルトの想定に倒す）。決定104 の
+   * 断り（等級未割り当て）は spawnWorker の担当のまま。
+   */
+  private candidateOf(input: DelegateInput): { runtimeId: string; memoryMiB: number } {
+    let runtimeId = this.driverId;
+    try {
+      const tier = (input.modelTier ??
+        this.modelLedger?.defaultTier() ??
+        this.backendRegistry.defaultTier()) as WorkerTier | undefined;
+      const assigned = input.model ? undefined : this.assignedFromLedger(tier);
+      const chosenModel = input.model ?? assigned?.model;
+      const inherited = input.model ? undefined : assigned?.runtime;
+      const planned = this.planModel(input.runtime ?? inherited, chosenModel);
+      runtimeId = planned.runtime ?? this.driverId;
+    } catch {
+      // モデルの名前が壊れている等は spawnWorker が咎める。ここでは既定の想定で見積もる
+    }
+    const memoryMiB =
+      this.runtimes.get(runtimeId)?.assumedResources?.memoryMiB ?? DEFAULT_ASSUMED_RESOURCES.memoryMiB;
+    return { runtimeId, memoryMiB };
   }
 
   /**
@@ -1437,10 +1545,11 @@ export class WorkerPool {
   private async reserveSlot(
     taskId: string,
     projectTag: string,
-    role: WorkerSeatRole
+    role: WorkerSeatRole,
+    candidate: { runtimeId: string; memoryMiB: number }
   ): Promise<number> {
     let status = this.concurrency();
-    if (this.isFull(status, role)) {
+    if (this.isFull(status, role) || this.resourceExceeded(status, candidate.memoryMiB, role)) {
       // 安全弁が切ってある（idleTimeoutMs <= 0）ときは sweepIdle が 0 を返して何もしない
       await this.sweepIdle();
       status = this.concurrency();
@@ -1469,9 +1578,48 @@ export class WorkerPool {
           `監査用に空けてある席を変えるには ${AUDIT_RESERVED_ENV}（既定 ${DEFAULT_AUDIT_RESERVED_WORKERS}）を変えて立て直します。`
       );
     }
+    if (this.resourceExceeded(status, candidate.memoryMiB, role)) {
+      const reason =
+        `${WORKER_LIMIT_CODE}:resource\n` +
+        `空きメモリが足りません（いま使っている職人の想定合計 ${status.assumedMemoryMiB} MiB ＋ ` +
+        `この職人（${candidate.runtimeId}）の想定 ${candidate.memoryMiB} MiB で、` +
+        `ホストの空きは ${status.availableMemoryMiB ?? "?"} MiB）。\n` +
+        `本数はまだ空いています（${status.running}/${status.limit} 本）が、` +
+        `重いランタイム（Claude 等）は空きリソースに応じて抑えられています。\n` +
+        `"${taskId}" は起こしませんでした。**待たせていません**。` +
+        `戻すには ${RESOURCE_BASED_ENV}=0 でリソース判定を切るか、` +
+        `${status.slots.length > 0 ? "走っている職人を `worker.close` で畳んで" : "（今は誰も走っていません）"}頼み直してください。`;
+      this.recordDecline(taskId, projectTag, role, status);
+      throw new Error(reason);
+    }
     const token = ++this.startingSeq;
-    this.starting.set(token, { taskId, projectTag, at: new Date().toISOString(), role });
+    this.starting.set(token, {
+      taskId,
+      projectTag,
+      at: new Date().toISOString(),
+      role,
+      runtimeId: candidate.runtimeId,
+      memoryMiB: candidate.memoryMiB,
+    });
     return token;
+  }
+
+  /**
+   * 空きリソースで職人が収まるか（設計書 タスクC）。リソース判定が無効なら常に収まる。
+   *
+   * **本数判定（`isFull`）が先に通ったあとに呼ぶ。** ここが効くのは「本数は空いているが
+   * 重いランタイムの想定消費が空きメモリを超える」ときだけ——軽い Pi は多数起動できる。
+   * 監査・判定の席（`auditReservedWorkers`）は本数側が守るので、ここでは全枠を対象にする。
+   */
+  private resourceExceeded(
+    status: ConcurrencyStatus,
+    candidateMemoryMiB: number,
+    _role: WorkerSeatRole
+  ): boolean {
+    if (!this.resourceBased) return false;
+    const available = status.availableMemoryMiB;
+    if (available === undefined) return false;
+    return status.assumedMemoryMiB + candidateMemoryMiB > available;
   }
 
   /**

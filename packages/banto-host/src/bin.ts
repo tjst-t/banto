@@ -36,6 +36,11 @@ import {
 } from "@banto/core";
 
 import type { WorkerInfo } from "@banto/worker-pool";
+import {
+  DEFAULT_CLAUDE_STOP_REMAINING_PCT,
+  createClaudeQuotaMonitor,
+  type ClaudeQuotaMonitor,
+} from "@banto/worker-pool";
 // Claude Code バックエンドの選択肢（PO裁定 2026-08-13）。認証の有無もここで見る
 import {
   createClaudeBackend,
@@ -321,6 +326,26 @@ function sdkIdleMs(): number | undefined {
  */
 function sdkMaxSessions(): number | undefined {
   return positiveIntFromEnv("BANTO_SDK_MAX_SESSIONS");
+}
+
+/**
+ * Claude サブスクの枠を止める残量 % のしきい値。`BANTO_CLAUDE_STOP_REMAINING_PCT` で
+ * 変えられる。既定は `DEFAULT_CLAUDE_STOP_REMAINING_PCT`（20）——残り 20% を切ったら
+ * Claude Agent SDK を止めて pi へフォールバックする。
+ *
+ * I2: 読めない値・範囲外は黙って既定に落とさず知らせる。
+ */
+function claudeStopRemainingPct(): number {
+  const raw = process.env["BANTO_CLAUDE_STOP_REMAINING_PCT"];
+  if (raw === undefined || raw.trim() === "") return DEFAULT_CLAUDE_STOP_REMAINING_PCT;
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+    console.warn(
+      `[banto] BANTO_CLAUDE_STOP_REMAINING_PCT は 0〜100 の数値です（${raw}）。既定（${DEFAULT_CLAUDE_STOP_REMAINING_PCT}）を使います`
+    );
+    return DEFAULT_CLAUDE_STOP_REMAINING_PCT;
+  }
+  return parsed;
 }
 
 // 章の要約に使うモデルの解決は `chapter-model.ts` の `resolveChapterModel`（task-0151）。
@@ -899,13 +924,22 @@ async function serve(options: ServeOptions): Promise<void> {
    * ——`CLAUDE_KNOWN_MODELS` を直に読んでいた頃は、バックエンドが増えるたびに
    * ここと `onSelectModel` の2箇所を直して回ることになっていた。
    */
+  /**
+   * **Claude のサブスク枠の監視**（クオータ節約）。残りがしきい値を切ったら
+   * `shouldStop()` が真になり、Claude Agent SDK 経路（会話・章の要約）を pi へ落とす。
+   * 枠がリセットされれば自動でまた使えるようになる。監視は裏で定期に動かす。
+   */
+  const claudeQuota: ClaudeQuotaMonitor = createClaudeQuotaMonitor({
+    stopRemainingPct: claudeStopRemainingPct(),
+  });
+
   const harnessBackends: HarnessBackendDescriptor[] = [
     createPiBackend({
       // 番頭に許しているモデルだけ（採用の方針・決定98b）
       hostModels: () => llmCatalog.models().filter((m) => m.policy.includes("host")),
       resolve: (provider, id) => resolveModel(provider, id),
     }),
-    createClaudeBackend(),
+    createClaudeBackend({ quota: claudeQuota }),
   ];
   const backendById = new Map(harnessBackends.map((b) => [b.id, b]));
 
@@ -1563,8 +1597,25 @@ async function serve(options: ServeOptions): Promise<void> {
     const startBackend = wantedModel
       ? (wantedModel.backend ?? "pi")
       : (stewardRole?.backend ?? "pi");
+    /**
+     * **クオータ節約**: Claude で始まるはずの会話でも、枠が尽きかけていたら pi で始める。
+     * 会話を黙って別のバックエンドで起こし直すのは避けたいが（上の注記）、これは
+     * Claude が「選べない」状態なので、選べないものを選ばせない（I2・決定98a）の形。
+     * ログに理由を出し、画面（`unavailable()`）も同じ事情を映す。
+     */
+    const claudeStopped = claudeQuota.shouldStop();
+    const effectiveBackend =
+      startBackend === "claude-agent-sdk" && claudeStopped ? "pi" : startBackend;
+    if (effectiveBackend !== startBackend) {
+      const s = claudeQuota.snapshot();
+      console.log(
+        `[banto] Claude サブスクの枠が尽きかけました（残り ${
+          s.remainingPct === undefined ? "?" : `${s.remainingPct.toFixed(0)}%`
+        }）—— ${threadId} は pi で始めます`
+      );
+    }
     const harness: BantoHarness =
-      startBackend === "claude-agent-sdk"
+      effectiveBackend === "claude-agent-sdk"
         ? makeClaudeHarness(
             wantedModel?.backend === "claude-agent-sdk" ? wantedModel.id : stewardRole?.model
           )
@@ -1586,6 +1637,28 @@ async function serve(options: ServeOptions): Promise<void> {
         });
       },
     });
+    /**
+     * 実行中に枠が尽きかけたら、**その場で pi へ差し替える**（自動フォールバック）。
+     *
+     * 起きるのは定期の再計測（数分に一度）。既に pi の会話は何もしない。`server` は
+     * この下（`BantoHostServer.start`）でしか使えないが、契機はその後にしか来ないので
+     * クロージャから参照して良い。差し替えと同時に Claude 側の子プロセスを畳む。
+     */
+    let stopSub: (() => void) | undefined;
+    if (claudeQuota.onStopCrossing) {
+      stopSub = claudeQuota.onStopCrossing((snap) => {
+        const thread = threads.get(threadId);
+        if (!thread || thread.harness !== claudeWrapped) return;
+        server?.swapHarness(threadId, piHarness, () =>
+          harnessSwitchers.get(threadId)?.releaseClaude()
+        );
+        console.log(
+          `[banto] Claude サブスクの枠が尽きかけました（残り ${
+            snap.remainingPct === undefined ? "?" : `${snap.remainingPct.toFixed(0)}%`
+          }）—— ${threadId} を pi に切り替えました`
+        );
+      });
+    }
 
     // 提案§3.2: 自動コンパクションを切り（ハーネスが済ませた）、章立てに置き換える。
     //
@@ -1609,7 +1682,28 @@ async function serve(options: ServeOptions): Promise<void> {
         )}）を使います`
       );
     }
-    const chapterRef = chapterModelResolution.ref;
+    let chapterRef = chapterModelResolution.ref;
+    /**
+     * **クオータ節約**: 枠が尽きかけていたら、章の要約も Claude を使わず pi へ落とす
+     * （PO裁定：両方止める）。会話と同じ pi モデル（`model`）で足りる——要約は安い
+     * モデルで書く方針（task-0151）だが、会話を回しているモデルなら必ず解ける。
+     * pi のモデルが1つも無い環境では Claude のまま（できる範囲のベスト）。pi の登録で
+     * 解けない場合は黙って Claude を落とさない（I2）。
+     */
+    if (claudeQuota.shouldStop() && chapterRef.backend === "claude-agent-sdk") {
+      const fallback =
+        model?.provider && model?.id && resolveModel(model.provider, model.id)
+          ? ({ backend: "pi", provider: model.provider, model: model.id } as const)
+          : undefined;
+      if (fallback) {
+        console.log(
+          `[banto] ${threadId}: 章の要約も pi へ切り替えます（${chapterModelLabel(
+            chapterRef
+          )} → ${chapterModelLabel(fallback)}／クオータ節約）`
+        );
+        chapterRef = fallback;
+      }
+    }
     // pi 経由なら、この会話とは無関係にモデル実体を解決する（記憶抽出にも使う）。
     // `resolveChapterModel` が既に `supports()` で確かめているので、pi のときは必ず解ける
     const chapterPiModel =
@@ -1779,6 +1873,8 @@ async function serve(options: ServeOptions): Promise<void> {
         // 決定97: 会話を畳んだら Claude 側も畳む（`Thread.dispose` はいまのハーネスしか
         // 知らない——pi へ戻したあとに残っている Claude のセッションはここでしか届かない）
         void claudeHarness?.dispose();
+        // クオータの契機の購読も外す（畳んだ会話を掴んだままにしない）
+        stopSub?.();
         // 作り手の表からも外す（残すと畳んだ会話の作り手を掴んだままになる）
         harnessSwitchers.delete(threadId);
       },
@@ -1791,6 +1887,14 @@ async function serve(options: ServeOptions): Promise<void> {
   // task-0036: 会話はホストの再起動を越えて残る
   const threadStore = new ThreadStore(path.join(dataDir(), "threads"), undefined, inbox);
   threads = new ThreadRegistry(threadFactory, threadStore);
+  /**
+   * **会話を起こす前に、まずクオータの残量を測る**（起動時のフォールバックを効かせる）。
+   * 残量が分からないまま `startBackend` を決めると、枠が尽きていても Claude で起きて
+   * 消費を始めてしまう。認証が無い環境ではそのまま即返る（計測しない・I2）。測ったら
+   * 背後での定期監視も始める——実行中に枠を切ったときの自動フォールバック用。
+   */
+  await claudeQuota.refresh();
+  claudeQuota.start();
   /**
    * 読み戻しは**中断されたターンの後片付けも兼ねる**（imp-0037）。
    *

@@ -63,6 +63,7 @@ import {
   DEFAULT_IDLE_TIMEOUT_MS,
   resolveAuditReservedWorkers,
   resolveMaxConcurrentWorkers,
+  resolveResourceBased,
 } from "./pool.js";
 import type { ResourceEstimate } from "./backends.js";
 import { createWorkerModuleTools, createWorkerReportTools, createWorkerTools } from "./worker-tools.js";
@@ -354,6 +355,8 @@ async function main(): Promise<void> {
     auditReservedWorkers,
     // task-0253: ランタイムごとの想定消費リソース（bin が環境変数から決めて渡す）
     assumedResources: runtimeResources,
+    // 設計書 タスクC: リソースベース判定の入切（BANTO_WORKER_RESOURCE_BASED で無効化できる）
+    resourceBased: resolveResourceBased(process.env),
   });
 
   // 決定44: 落ちる前に生きていた職人を起こし直す。**同居していたときは番頭ホストが

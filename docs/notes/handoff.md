@@ -2708,3 +2708,72 @@ tests/acceptance/model-ledger.spec.ts（+5本）
 2. **task-0110** `spec-daemon-core` §3.5 のモデル tier 表を ADR-0021 の形へ（P3）
 3. **task-0105** ADR-0019 実装後の実測 ／ **task-0111** サブスクリプション消費の計測
 4. **inc-0062**（バックエンドを替えると章立ての購読が古いハーネスに残る）・inc-0059/0060/0061
+
+---
+
+# ここから読む — 2026-08-17 引き継ぎ（PO の別セッションで作業）
+
+## このセッションで入れたもの（main 反映待ち・**まだデプロイしていない**）
+
+### 1. Claude サブスクのクオータ節約（自動フォールバック）
+
+PO が「Claude の Max 枠を banto が食い潰す」ので banto を止めていた。**残りが 20% を切ったら
+Claude Agent SDK 経路を自動で止め、pi へフォールバック**する機構を入れた。実測で現在
+**残り 2%**（`api.anthropic.com/api/oauth/usage` の `seven_day.utilization`）なので、
+そのまま立てると自動で pi で動く（Claude を食わない）。
+
+- **監視モジュール**: `packages/banto-worker-pool/src/claude-agent/quota.ts`（availability と同居）
+  - `GET {base}/api/oauth/usage` を `~/.claude/.credentials.json` のトークンで読む。token 更新は
+    `POST {base}/v1/oauth/token` をベストエフォート（失敗しても古いトークンで続ける・I2）
+  - **計測できないときは「尽きた」と混同しない**（`shouldStop()` は false）
+- **判定の継ぎ目**（banto-host）:
+  - `harness-backends.ts` の `createClaudeBackend({ quota })` → 枠切れなら `unavailable()`
+  - `bin.ts` の `startBackend` → 枠切れなら pi で開始。**実行中に枠切れを検知したら
+    `server.swapHarness` でその場で pi へ差し替え＋Claude 子プロセスを畳む**
+  - 章の要約（haiku も）枠切れなら pi へ（PO 裁定：両方止める）
+  - 枠が復帰（リセット）すれば自動でまた選べる
+- しきい値: `BANTO_CLAUDE_STOP_REMAINING_PCT`（0〜100・既定 20）
+
+### 2. Worker Pool 並行制御のリソースベース化（設計書 accepted・タスクC〜E）
+
+`work/reports/2026-08-17-worker-resource-based-concurrency.md`（accepted）の第1段 A〜E を実装。
+基底（`assumedResources`・bin の既定値 Pi 300 / Claude 1200・`BANTO_WORKER_PI_MEMORY_MB` 等）は
+**task-0253 で main に既入り**。本セッションでその上の判定・無効化スイッチ・一覧表示・テストを足した。
+
+- `packages/banto-worker-pool/src/host-resources.ts`: `/proc/meminfo` の `MemAvailable`（読めなければ
+  `os.freemem()`）。判定は **メモリのみ**（CPU は第2段）
+- `pool.ts`: `resourceBased`（`BANTO_WORKER_RESOURCE_BASED` で切替、既定有効・0 で本数のみ）＋
+  `candidateOf`/`resourceExceeded`。**軽い Pi は多数、重い Claude は空きに応じて抑制**。
+  断りは `WORKER_LIMIT_CODE:resource` で合印
+- `worker-tools.ts` の `worker.list` 末尾に想定消費合計／空き／有効・無効 を追加
+- タスク台帳: **task-0247〜0251・0256〜0260・0262 → done**
+
+## デプロイ（反映）の順（工房 → 番頭ホスト）
+
+1. **このツリーは main**。クオータ・リソース判定は**まだ実機へ入っていない**（banto は止めたまま）
+2. 退避を取ってから再起動（systemd サービス・`kill -9`）
+3. 起動ログに「Claude の枠が尽きかけ…pi で始めます」が出るのを確認（残り2%なので）
+   - 併せて `worker.list` に「リソースベース判定が有効」＋空きメモリが出る
+
+## 未解決・次にやるタスク（queued のまま）
+
+- **task-0252 / 0261 / 0263（第2段=実測値校正）**: `memory.peak` を収集して想定値（Pi 300/Claude 1200）
+  を校正する。cgroup が有効な環境でしか実測は立たない（テストは disabled 前提）
+- **task-0265 / 0266（監査関連）**: 監査ロールに道具呼び出し未実証のモデルを当てられなくする／
+  監査の失敗文言を実態に合わせる
+- **設計書 決定3**: `BANTO_WORKER_AUDIT_RESERVED` を「席の数」→「予約リソース量(MiB)」に再解釈
+  （既存監査予約テスト a1〜a6 の修正を伴う・今回は本数のまま追加ゲート方式にした）
+- **設計書 決定2**: CPU 判定（`/proc/loadavg` から空きコア推定）は第2段
+
+## 触っていない未コミット（PO のもの・都度コミット済み）
+
+- `work/tasks/*.md`（台帳）と `work/reports/2026-08-17-worker-resource-based-concurrency.md` を
+  含めてコミット済みにする（この引き継ぎも同梱）
+
+## 注意（級に効くこと）
+
+- **クオータ判定は「測れない＝止めない」**（I2）。認証が無い・API が返さない環境では Claude は
+  そのまま使える
+- **リソースベース判定は既定有効**。本数の絶対上限は安全弁として残っている。
+  既存監査予約は**本数**のままで、リソース判定は追加ゲート（a1〜a6 は未改修）
+- `BANTO_WORKER_RESOURCE_BASED=0` で旧来の本数のみ判定へ戻せる（決断の地点）

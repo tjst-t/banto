@@ -21,7 +21,11 @@
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { NotSupported } from "@banto/core";
-import { CLAUDE_KNOWN_MODELS, claudeAgentAvailability } from "@banto/worker-pool";
+import {
+  CLAUDE_KNOWN_MODELS,
+  claudeAgentAvailability,
+  type ClaudeQuotaMonitor,
+} from "@banto/worker-pool";
 import type { HarnessBackendOption } from "./settings-module.js";
 
 /** モデルの座標（バックエンドは呼び出し側が知っている）。 */
@@ -203,9 +207,21 @@ const ASK_TIMEOUT_MS = 20_000;
  * 「この経路では回せない」と言えることが、決定98a の狙いそのもの。
  */
 export function createClaudeBackend(
-  options: { now?: () => number; ask?: () => Promise<Array<{ id: string; name?: string }>> } = {}
+  options: {
+    now?: () => number;
+    ask?: () => Promise<Array<{ id: string; name?: string }>>;
+    /**
+     * サブスクの7日枠の残量を監視する口（既定は無し＝監視しない）。
+     *
+     * **枠が尽きかけたら `unavailable()` を返し、Claude Agent SDK を選べなくする。**
+     * 認証はあるが残量がしきい値を切った、という「いま回せるか」の判断をここで足す。
+     * 残量が復帰（リセット）すれば自動でまた選べるようになる。
+     */
+    quota?: ClaudeQuotaMonitor;
+  } = {}
 ): HarnessBackendDescriptor {
   const now = options.now ?? (() => Date.now());
+  const quota = options.quota; // 無ければ監視しない（バックエンドとしての挙動は元のまま）
   let cached: Array<{ id: string; name?: string; vision: boolean }> | undefined;
   let askedAt = 0;
   let inFlight = false;
@@ -264,7 +280,19 @@ export function createClaudeBackend(
     label: "Claude Code（手元のサブスクリプション・Claude 専用）",
     unavailable: () => {
       const availability = claudeAgentAvailability();
-      return availability.ok ? undefined : availability.detail;
+      if (!availability.ok) return availability.detail;
+      // 残量がしきい値を切ったら、認証はあっても「いまは使わない」を名乗る。
+      // 理由に残量を載せて、PO に復帰する目安（リセット時刻）が分かるようにする
+      if (quota?.shouldStop()) {
+        const s = quota.snapshot();
+        const remaining =
+          s.remainingPct === undefined
+            ? ""
+            : `（残り ${s.remainingPct.toFixed(0)}%）`;
+        const reset = s.resetsAt ? ` 枠は ${s.resetsAt} に戻ります。` : "";
+        return `Claude サブスクの枠が尽きかけました${remaining}。${reset}自動で pi に切り替えています`;
+      }
+      return undefined;
     },
     providers: () => {
       // 聞くのは裏で。**いまある答えをすぐ返す**（起動も画面も待たせない）

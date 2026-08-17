@@ -72,9 +72,24 @@ export {
   DEFAULT_PAGE_SIZE,
   TIER_UNASSIGNED_CODE,
   tierFromUnassignedError,
+  // リソースベース並行制御（設計書 タスクC）
+  DEFAULT_MAX_CONCURRENT_WORKERS,
+  MAX_CONCURRENT_ENV,
+  resolveMaxConcurrentWorkers,
+  DEFAULT_AUDIT_RESERVED_WORKERS,
+  AUDIT_RESERVED_ENV,
+  resolveAuditReservedWorkers,
+  DEFAULT_RESOURCE_BASED,
+  RESOURCE_BASED_ENV,
+  resolveResourceBased,
   type WorkerExitDetail,
   type DelegateInput,
 } from "./pool.js";
+export {
+  readHostResources,
+  parseMemAvailableMiB,
+  type HostResources,
+} from "./host-resources.js";
 export {
   WorkerEventLog,
   type WorkerEvent,
@@ -192,6 +207,17 @@ export {
   type WorkerTier,
 } from "./backends.js";
 export { claudeAgentAvailability } from "./claude-agent/availability.js";
+// Claude Code のサブスク枠の監視（`claude-agent/` 単位）。枠が尽きかけなら
+// `shouldStop()` が真になり、Claude Agent SDK 経路を止める判断材料になる
+export {
+  createClaudeQuotaMonitor,
+  parseUsagePayload,
+  DEFAULT_CLAUDE_STOP_REMAINING_PCT,
+  type ClaudeQuotaMonitor,
+  type ClaudeQuotaSnapshot,
+  type ClaudeQuotaOptions,
+  type ClaudeCredentials,
+} from "./claude-agent/quota.js";
 export { resumeWorkers } from "./resume.js";
 export { workerSpawnEnv, ENV_NOT_INHERITED_BY_WORKER } from "./worker-env.js";
 export { createHandleGrip } from "./pi-rpc-driver.js";

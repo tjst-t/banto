@@ -708,6 +708,22 @@ export class BantoHostServer {
     thread.disposers.push(() => this.attached.delete(thread.id));
   }
 
+  /**
+   * 会話のハーネスを差し替える（`set_model` と同じ継ぎ目）。購読を張り直す。
+   *
+   * クオータ節約（Claude の枠が尽きかけたら pi へ戻す）のように、モデル選択を経ずに
+   * バックエンドを替えたいときに使う。`release` は差し替える側（いまのハーネスが
+   * 抱える中身）の後始末。**既に pi のときは何もしない**——無駄に差し替えたり、
+   * 慌てて Claude を畳んだりしない。
+   */
+  swapHarness(threadId: string, next: BantoHarness, release: () => void): void {
+    const thread = this.threads.get(threadId);
+    if (!thread) return;
+    if (thread.harness === next) return;
+    thread.replaceHarness(next, (event) => this.handleHarnessEvent(thread, event));
+    release();
+  }
+
   /** サーバを起動し、待ち受け開始まで待つ。 */
   static async start(options: BantoHostServerOptions): Promise<BantoHostServer> {
     // 組み込みモジュールのデータAPI（決定25：組み込みの提供元は Banto ホスト自身）。

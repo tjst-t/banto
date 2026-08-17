@@ -199,6 +199,12 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
             `（合計 ${concurrency.limit} 本まで。うち ${concurrency.auditReserved} 席は判定のために空けてあり、` +
             `工房の ${concurrency.reservedEnv} で変える）`
           : "";
+      // 設計書 タスクC: リソースベース判定が有効なら、想定消費と空きを一覧にも出す
+      const resource =
+        concurrency.resourceBased && concurrency.availableMemoryMiB !== undefined
+          ? `\n  - メモリ: 職人の想定消費の合計 ${concurrency.assumedMemoryMiB} MiB / ホストの空き ${concurrency.availableMemoryMiB} MiB` +
+            `（リソースベース判定が有効。${concurrency.resourceEnv}=0 で切れる）`
+          : `\n  - リソースベース判定: 無効（本数のみ・${concurrency.resourceEnv} で有効化）`;
       const capacity =
         concurrency.limit > 0
           ? `\n\n同時に走っている職人: ${concurrency.running} / ${concurrency.limit} 本` +
@@ -206,8 +212,9 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
             (concurrency.running >= concurrency.limit
               ? "。**満杯です**——次を頼む前に、終わった職人を worker.close で畳んでください"
               : "") +
-            breakdown
-          : `\n\n同時に走っている職人: ${concurrency.running} 本（上限なし）`;
+            breakdown +
+            resource
+          : `\n\n同時に走っている職人: ${concurrency.running} 本（上限なし）` + resource;
       return {
         content: [{ type: "text" as const, text: text + capacity }],
         details: { ...result, concurrency },
