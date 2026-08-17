@@ -10,6 +10,7 @@
 
 import { Type } from "typebox";
 import { OpenObject, StringEnum } from "@banto/core";
+import type { TaskContractAmendment } from "@banto/daemon";
 import type { Inbox, InboxAction, InboxEffect } from "./inbox.js";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "./tool-registry.js";
 
@@ -46,15 +47,20 @@ export interface InboxToolOptions {
   resolvePoDecisionEffect?(input: {
     canvasKind?: string;
     canvasParams?: Record<string, unknown>;
-    /** `approve`（通す）／`send_back`（差し戻す）。 */
+    /** `approve`（通す）／`send_back`（差し戻す）／`amend`（改訂を適用する）。 */
     decision: string;
     /** 通すなら何を見て良しとしたか、戻すなら何が駄目でどう直すのか。 */
     detail?: string;
+    /** `amend` のときに適用する契約の改訂（task-0273）。 */
+    changes?: TaskContractAmendment;
   }): InboxEffect | undefined;
 }
 
-/** 判断の届け先を読むのに要る欄（`kobo.review` の面がそのまま受け取るもの）。 */
-const PO_DECISION_CANVAS_KIND = "kobo.review";
+/**
+ * 判断の届け先を読むのに足る面の kinds（`kobo.review` は通す／戻す、`kobo.amend` は改訂）。
+ * どちらも `canvasParams` に `projectTag` / `taskId` を添えて初めて結べる。
+ */
+const PO_DECISION_CANVAS_KINDS = new Set(["kobo.review", "kobo.amend"]);
 const PO_DECISION_PARAM_KEYS = ["projectTag", "taskId"] as const;
 
 /**
@@ -69,11 +75,11 @@ const PO_DECISION_PARAM_KEYS = ["projectTag", "taskId"] as const;
 function whyUnbindable(canvasKind: unknown, canvasParams: unknown): string {
   const forWhat = "——どのタスクの判断かが分からないと、POが押しても工場へ届きません。";
   if (canvasKind === undefined) {
-    return `canvasKind を添えていません（"${PO_DECISION_CANVAS_KIND}" が要ります）${forWhat}`;
+    return `canvasKind を添えていません（"${[...PO_DECISION_CANVAS_KINDS].join('" か "')}" が要ります）${forWhat}`;
   }
-  if (canvasKind !== PO_DECISION_CANVAS_KIND) {
+  if (typeof canvasKind !== "string" || !PO_DECISION_CANVAS_KINDS.has(canvasKind)) {
     return (
-      `canvasKind が "${PO_DECISION_CANVAS_KIND}" ではありません` +
+      `canvasKind が "${[...PO_DECISION_CANVAS_KINDS].join('" か "')}" ではありません` +
       `（受け取った値: ${JSON.stringify(canvasKind)}）${forWhat}`
     );
   }
@@ -125,7 +131,7 @@ export function createInboxTools(
       // 開いた object なので中身は数え上げない（決定84-3）。ただし approveAction を
       // 結ぶには決まった2つが要るので、そこだけ1行で言う
       canvasParams: Type.Optional(
-        OpenObject({ description: 'canvasKind: "kobo.review" なら {projectTag, taskId}' })
+        OpenObject({ description: 'canvasKind: "kobo.review" または "kobo.amend" なら {projectTag, taskId}' })
       ),
       approveAction: Type.Optional(
         Type.String({
@@ -149,6 +155,26 @@ export function createInboxTools(
             "**何が駄目で、どう直すのか**。POが選択肢を押しただけで伝わる文にすること。",
         })
       ),
+      amendAction: Type.Optional(
+        Type.String({
+          description:
+            "「この改訂を適用してよい」に当たる選択肢の id（task-0273）。" +
+            'canvasKind: "kobo.amend" と canvasParams: {projectTag, taskId} と' +
+            " amendChanges を添えたときだけ効く。POがこれを押すと、緩める向きの契約改訂が" +
+            " 工場で PO 承認（daemon.amendTask by: \"po\"）として適用される（あなたは押せません）。",
+        })
+      ),
+      amendChanges: Type.Optional(
+        OpenObject({
+          description:
+            'amendAction と対で、適用する契約の改訂（title / body / scope.paths / acceptance / environment / model_tier / review）。',
+        })
+      ),
+      amendReason: Type.Optional(
+        Type.String({
+          description: "amendAction と対で、なぜ直すのか（帳簿に残る理由）。",
+        })
+      ),
     }),
     async execute(p) {
       // 宛先を書かなかったら**この会話**。積んだ札から話の続きへ戻れるようにするため、
@@ -162,7 +188,13 @@ export function createInboxTools(
        *     imp-0034 そのもの。どこが足りないかを添えて、その場で断る。
        */
       let actions = p.actions as InboxAction[];
-      const bind = (actionId: string, field: string, decision: string, detail?: string): void => {
+      const bind = (
+        actionId: string,
+        field: string,
+        decision: string,
+        detail?: string,
+        changes?: TaskContractAmendment
+      ): void => {
         const target = actions.find((a) => a.id === actionId);
         if (!target) {
           throw new Error(
@@ -177,6 +209,7 @@ export function createInboxTools(
             : {}),
           decision,
           ...(detail ? { detail } : {}),
+          ...(changes ? { changes } : {}),
         });
         if (!effect) {
           throw new Error(`${field} を結べません。${whyUnbindable(p.canvasKind, p.canvasParams)}`);
@@ -194,6 +227,20 @@ export function createInboxTools(
           );
         }
         bind(p.sendBackAction, "sendBackAction", "send_back", p.sendBackReason.trim());
+      }
+      if (p.amendAction !== undefined) {
+        // I2: 中身の無い改訂の承認は何も変えない。積む時点で断る
+        if (
+          !p.amendChanges ||
+          typeof p.amendChanges !== "object" ||
+          Array.isArray(p.amendChanges)
+        ) {
+          throw new Error(
+            "amendAction には amendChanges（適用する契約の改訂）が要ります" +
+              "——POが押しても何も変えられない札にはしない。"
+          );
+        }
+        bind(p.amendAction, "amendAction", "amend", p.amendReason?.trim() || "PO が改訂を承認", p.amendChanges as TaskContractAmendment);
       }
 
       const item = inbox.post({

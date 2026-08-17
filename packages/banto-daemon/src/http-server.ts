@@ -474,10 +474,33 @@ export function createHttpServer(daemon: Daemon): http.Server {
           return;
         }
 
+        // **緩める向きの契約改訂を PO の判断で適用する**（task-0273・穴1）。
+        // 番頭の `kobo.amend` は `by: "banto"` しか渡せず、緩める向きを断る
+        // （daemon.ts の `if (loosens && options.by !== "po")`）。ここは `by: "po"` で
+        // 呼び、PO の判断として通す。**守りは壊さない**——`via` は必須（決定113）で
+        // 出どころ不明の改訂は受けない。中身が渡されないままの改訂は、工場の
+        // `amendTask` が「渡された中身と同じ」で断る（I2）。
+        if (decision === "amend") {
+          const reason = typeof body["reason"] === "string" ? body["reason"].trim() : "PO が改訂を承認";
+          const changes = (body["changes"] ?? {}) as Record<string, unknown>;
+          const result = daemon.amendTask(proj, taskId, changes, { by: "po", reason, via });
+          if (!result.ok) {
+            sendJson(res, 409, { error: "not_amendable", message: result.reason });
+            return;
+          }
+          sendJson(res, 200, {
+            success: true,
+            state: daemon.getTask(proj, taskId)?.status,
+            changes: result.changes,
+            auditInvalidated: result.auditInvalidated,
+          });
+          return;
+        }
+
         // I2: 知らない判断を黙って承認に倒さない（緩い側へ落ちるのが一番たちが悪い）
         sendJson(res, 400, {
           error: "unknown_decision",
-          message: `decision は "approve" か "send_back" です（受け取った値: ${String(decision)}）`,
+          message: `decision は "approve" か "send_back" か "amend" です（受け取った値: ${String(decision)}）`,
         });
       },
     },

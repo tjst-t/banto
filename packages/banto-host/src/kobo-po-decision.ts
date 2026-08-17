@@ -17,7 +17,10 @@
  *
  * **承認専用にしない**（PO要望 2026-08-15）。橋が運ぶのは「PO がどう答えたか」であって
  * 承認ではない——差し戻しも同じ橋を渡る。`kobo.amend` のように `by: "banto"` を直書き
- * している道具も、`decision` を1つ足せば同じ橋に乗せられる。
+ * している道具も、`decision` を1つ足せば同じ橋に乗せられる。**緩める向きの契約改訂
+ * （task-0273）も同じ橋で届ける**——`kobo.amend` が `by: "po"` を渡せない以上、
+ * PO の判断を工場の `po-decision`（`decision: "amend"`）へ届けて `amendTask(by: "po")`
+ * に結ぶのは、この橋の役目である。
  *
  * **決定57 はどこで守られるか**：
  *
@@ -28,16 +31,21 @@
  *   - 押すのは PO。ホストは `InboxEffect` として**押されたときにだけ**呼ぶ
  *   - 誰の・どの札のどの回答で動いたかは `via` として工場の帳簿に残る
  *
- * D5: 判断は無い。通せるか・戻せるかを決めるのは工場（レビュー段の判定を持つ）。
+ * D5: 判断は無い。通せるか・戻せるか・改訂できるかを決めるのは工場（レビュー段の判定・
+ *     amendTask の by 判定を持つ）。
  * D6: node の fetch のみ。
  */
 
 import { Type } from "typebox";
 import { StringEnum, defineNamespacedTool, type NamespacedToolDefinition } from "@banto/core";
-import type { InboxEffect } from "./inbox.js";
+import type { TaskContractAmendment } from "@banto/daemon";
+import type { Inbox, InboxEffect } from "./inbox.js";
 
 /** 工場が出しているレビュー面の kind。この札だけが工場の判断へ結ばれる。 */
 export const KOBO_REVIEW_CANVAS_KIND = "kobo.review";
+
+/** 契約の改訂を PO に確認する面の kind（task-0273）。 */
+export const KOBO_AMEND_CANVAS_KIND = "kobo.amend";
 
 /** PO の判断を届ける口の論理名（番頭には渡さない）。 */
 export const KOBO_PO_DECIDE_TOOL = "kobo.po_decide";
@@ -45,20 +53,17 @@ export const KOBO_PO_DECIDE_TOOL = "kobo.po_decide";
 /** `originArg` に使う名前。工場の帳簿へ `via` として残る。 */
 const VIA_ARG = "via";
 
-/** 橋が運べる判断。増やすときは工場の口（`po-decision`）と対で足す。 */
-export type KoboPoDecision = "approve" | "send_back";
-
 /**
- * 札に添えられた面の指定から、判断を届ける先のタスクを読む。
- *
- * `canvasParams` は `kobo.review` の面がそのまま受け取るもの（`projectTag` / `taskId`）。
- * **D3: 別に持たない**——札に既に載っている値を使い、番頭に同じことを二度書かせない。
+ * 橋が運べる判断。増やすときは工場の口（`po-decision`）と対で足す。
+ * `amend` は**緩める向きの契約改訂を適用してよい**という PO の承認（task-0273）。
  */
-export function koboReviewTarget(
+export type KoboPoDecision = "approve" | "send_back" | "amend";
+
+/** 札に添えられた面の指定から、判断を届ける先のタスクを読む。 */
+function koboTarget(
   canvasKind: string | undefined,
   canvasParams: Record<string, unknown> | undefined
 ): { projectTag: string; taskId: string } | undefined {
-  if (canvasKind !== KOBO_REVIEW_CANVAS_KIND) return undefined;
   const projectTag = canvasParams?.["projectTag"];
   const taskId = canvasParams?.["taskId"];
   if (typeof projectTag !== "string" || !projectTag) return undefined;
@@ -67,16 +72,42 @@ export function koboReviewTarget(
 }
 
 /**
+ * `canvasParams` は `kobo.review` の面がそのまま受け取るもの（`projectTag` / `taskId`）。
+ * **D3: 別に持たない**——札に既に載っている値を使い、番頭に同じことを二度書かせない。
+ */
+export function koboReviewTarget(
+  canvasKind: string | undefined,
+  canvasParams: Record<string, unknown> | undefined
+): { projectTag: string; taskId: string } | undefined {
+  if (canvasKind !== KOBO_REVIEW_CANVAS_KIND) return undefined;
+  return koboTarget(canvasKind, canvasParams);
+}
+
+/** `kobo.amend` の面（task-0273）。レビューの面とは kind で分ける。 */
+export function koboAmendTarget(
+  canvasKind: string | undefined,
+  canvasParams: Record<string, unknown> | undefined
+): { projectTag: string; taskId: string } | undefined {
+  if (canvasKind !== KOBO_AMEND_CANVAS_KIND) return undefined;
+  return koboTarget(canvasKind, canvasParams);
+}
+
+/**
  * 「この選択肢が押されたら、工場へこう答える」を表す効果を作る。
  *
  * 番頭が書けるのは**どの選択肢がどの判断に当たるか**だけで、呼ぶ先はここが決める
  * ——`InboxEffect` をそのまま番頭に書かせると、札を経由して任意の内部の口を
  * 叩けることになる（決定73 が `inbox.post` に `effect` を出していない理由）。
+ *
+ * `decision: "amend"` のときは、契約の改訂（`changes`）と適用理由（`detail`）も運ぶ
+ * （task-0273）。工場の `amendTask(by: "po")` は**引数で渡された改訂だけ**を適用し、
+ * 緩める向きであっても PO の判断として通してよい。
  */
 export function koboPoDecisionEffect(
   target: { projectTag: string; taskId: string },
   decision: KoboPoDecision,
-  detail?: string
+  detail?: string,
+  changes?: TaskContractAmendment
 ): InboxEffect {
   return {
     module: "kobo",
@@ -85,8 +116,10 @@ export function koboPoDecisionEffect(
       projectTag: target.projectTag,
       taskId: target.taskId,
       decision,
-      // 差し戻しの理由は職人にそのまま渡る。承認の note も同じ場所に入る
+      // 差し戻しの理由は職人にそのまま渡る。承認の note / 改訂の理由も同じ場所に入る
       ...(detail ? { detail } : {}),
+      // 改訂の承認は、何を・なぜ直すのか（契約の改訂）を共に運ぶ
+      ...(decision === "amend" && changes ? { changes } : {}),
     },
     // 出どころ（`in-xxxxxxxx#approve`）は押された時にホストが埋める
     originArg: VIA_ARG,
@@ -111,17 +144,36 @@ export function createKoboPoDecisionTool(
     name: KOBO_PO_DECIDE_TOOL,
     label: "Kobo: PO の判断を届ける",
     description:
-      "PO が画面で押した判断（通す／差し戻す）を工場の帳簿へ書く（`by: \"po\"`）。" +
-      "**番頭には渡さない**——決定57 により、PO 必須のタスクを通せるのは PO 本人の操作だけ。",
+      "PO が画面で押した判断（通す／差し戻す／契約の改訂を適用する）を工場の帳簿へ書く" +
+      "（`by: \"po\"`）。**番頭には渡さない**——決定57 により、PO 必須のタスクを通せるのは" +
+      " PO 本人の操作だけ。緩める向きの契約改訂も、PO の判断としてここで適用される（task-0273）。",
     parameters: Type.Object({
       projectTag: Type.String(),
       taskId: Type.String(),
-      decision: StringEnum(["approve", "send_back"] as const),
+      decision: StringEnum(["approve", "send_back", "amend"] as const),
       [VIA_ARG]: Type.String({ description: "どの札のどの回答から来た判断か" }),
       detail: Type.Optional(
         Type.String({
-          description: "通すなら何を見て良しとしたか、戻すなら何が駄目でどう直すのか",
+          description:
+            "通すなら何を見て良しとしたか、戻すなら何が駄目でどう直すのか、" +
+            "改訂ならなぜ直すのか",
         })
+      ),
+      changes: Type.Optional(
+        Type.Object(
+          {
+            title: Type.Optional(Type.String()),
+            body: Type.Optional(Type.String()),
+            scope: Type.Optional(Type.Object({ paths: Type.Array(Type.String()) })),
+            acceptance: Type.Optional(
+              Type.Array(Type.Object({ id: Type.String(), text: Type.String(), verify: Type.Optional(Type.String()) }))
+            ),
+            environment: Type.Optional(Type.String()),
+            model_tier: Type.Optional(StringEnum(["reasoning", "standard", "fast"])),
+            review: Type.Optional(Type.Object({ policy: StringEnum(["auto", "banto", "po", "manual"]) })),
+          },
+          { description: "decision: \"amend\" のときに適用する契約の改訂" }
+        )
       ),
     }),
     async execute(params) {
@@ -134,12 +186,15 @@ export function createKoboPoDecisionTool(
         body: JSON.stringify({
           decision: params.decision,
           via: params[VIA_ARG],
-          // 通すときは判断の記録（note）、戻すときは職人へ渡す指摘（reason）
-          ...(params.detail
-            ? params.decision === "approve"
-              ? { note: params.detail }
-              : { reason: params.detail }
-            : {}),
+          // 通すときは判断の記録（note）、戻すときは職人へ渡す指摘（reason）、
+          // 改訂のときは適用理由（reason）と適用する中身（changes）
+          ...(params.decision === "approve" && params.detail
+            ? { note: params.detail }
+            : params.decision === "amend"
+              ? { reason: params.detail ?? "PO が改訂を承認", changes: params.changes }
+              : params.detail
+                ? { reason: params.detail }
+                : {}),
         }),
       });
       const body = (await res.json().catch(() => ({}))) as {
@@ -153,7 +208,13 @@ export function createKoboPoDecisionTool(
             `${body.message ?? body.error ?? res.statusText}`
         );
       }
-      const state = body.state ?? (params.decision === "approve" ? "approved" : "implementing");
+      const state =
+        body.state ??
+        (params.decision === "approve"
+          ? "approved"
+          : params.decision === "amend"
+            ? "implementing"
+            : "implementing");
       return {
         content: [
           {
@@ -162,12 +223,45 @@ export function createKoboPoDecisionTool(
               params.decision === "approve"
                 ? `${params.projectTag}/${params.taskId} を PO として通しました` +
                   `（いまの状態: ${state}）。この後マージ前ゲートが回ります。`
-                : `${params.projectTag}/${params.taskId} を PO として差し戻しました` +
-                  `（いまの状態: ${state}）。指摘は職人へ渡してあります。`,
+                : params.decision === "amend"
+                  ? `${params.projectTag}/${params.taskId} の契約改訂を PO として適用しました` +
+                    `（いまの状態: ${state}）。基準が動いたので監査はやり直しです。`
+                  : `${params.projectTag}/${params.taskId} を PO として差し戻しました` +
+                    `（いまの状態: ${state}）。指摘は職人へ渡してあります。`,
           },
         ],
         details: { taskId: params.taskId, decision: params.decision, state },
       };
     },
   }) as NamespacedToolDefinition;
+}
+
+/**
+ * タスクが終端（supersede / settle / abandon / close）に入ったとき、そのタスクに紐づく
+ * 未解決の取次を**自動で古い札として畳む**（task-0273・穴2）。
+ *
+ * **黙って消さない。** `Inbox.resolveStale` が履歴に `stale:<marker>` として残すので、
+ * あとから「どの札が、なぜ古くなったか」が追える。
+ *
+ * 対象は、`opens.canvas.params` に `projectTag` / `taskId` を持つ未解決の札（Kobo の
+ * レビュー面・改訂面はどちらもここに載せる）。それ以外の札（別のタスク・会話にだけ
+ * 紐づくもの）は触らない。`marker` は終端の状態名（`superseded` / `closed`）を渡す。
+ *
+ * 戻り値は畳んだ札の id 一覧（テストや動作確認に使う。D5: 判断は無い）。
+ */
+export function resolveStaleInboxForTask(
+  inbox: Inbox,
+  projectTag: string,
+  taskId: string,
+  marker: string
+): string[] {
+  const closed: string[] = [];
+  for (const item of inbox.list()) {
+    if (item.resolvedAt) continue;
+    const params = item.opens?.canvas?.params;
+    if (!params || params["projectTag"] !== projectTag || params["taskId"] !== taskId) continue;
+    inbox.resolveStale(item.id, marker);
+    closed.push(item.id);
+  }
+  return closed;
 }

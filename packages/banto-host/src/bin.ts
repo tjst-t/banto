@@ -66,6 +66,8 @@ import {
   createKoboPoDecisionTool,
   koboPoDecisionEffect,
   koboReviewTarget,
+  koboAmendTarget,
+  resolveStaleInboxForTask,
   type KoboPoDecision,
 } from "./kobo-po-decision.js";
 import { UserThemes } from "./user-themes.js";
@@ -1224,11 +1226,20 @@ async function serve(options: ServeOptions): Promise<void> {
         threadId,
         // 決定113: 札の回答を、工場の PO 専用の口へ結ぶ（通す／戻すの両方）。
         // 番頭が書けるのはどの選択肢がどの判断かまでで、呼ぶ先を決めるのはここ
-        resolvePoDecisionEffect: ({ canvasKind, canvasParams, decision, detail }) => {
-          const target = koboReviewTarget(canvasKind, canvasParams);
-          if (!target) return undefined;
-          if (decision !== "approve" && decision !== "send_back") return undefined;
-          return koboPoDecisionEffect(target, decision as KoboPoDecision, detail);
+        resolvePoDecisionEffect: ({ canvasKind, canvasParams, decision, detail, changes }) => {
+          // レビュー面（通す／戻す）と改訂面（適用する）は、届け先の読み方が違うので分ける。
+          const review = koboReviewTarget(canvasKind, canvasParams);
+          if (review) {
+            if (decision === "approve" || decision === "send_back") {
+              return koboPoDecisionEffect(review, decision, detail);
+            }
+            return undefined;
+          }
+          const amend = koboAmendTarget(canvasKind, canvasParams);
+          if (amend && decision === "amend") {
+            return koboPoDecisionEffect(amend, "amend", detail, changes);
+          }
+          return undefined;
         },
       }),
       // 決定98f: 番頭が持つのは読みと診断の4本だけ（設定変更は GUI とファイルの担当）
@@ -2124,6 +2135,12 @@ async function serve(options: ServeOptions): Promise<void> {
     notify: (message, target) =>
       server.notify(message, { ...target, source: "kobo" }),
     cursorPath: path.join(dataDir(), "kobo-cursor.json"),
+    // 決定57・task-0273 穴2: タスクが終端（supersede / settle / abandon / close）に
+    // 入ったら、そのタスクに紐づく未解決の取次（PO レビュー依頼・改訂の確認など）を
+    // 「古い」として自動で畳む。黙って消さず、履歴に stale:<状態> として残す。
+    onTaskClosed: ({ projectTag, taskId, to }) => {
+      resolveStaleInboxForTask(inbox, projectTag, taskId, to);
+    },
   });
 
   // task-0067: 検証環境の衛生（畳み忘れ・畳み損ね・孤児）も引きに行く。**外に残ったものは

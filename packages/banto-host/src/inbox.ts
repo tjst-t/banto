@@ -235,6 +235,28 @@ export class Inbox {
     return next;
   }
 
+  /**
+   * **判断の前提が古くなった**札を、選択肢を押したのではなく「古くなった」として畳む
+   * （task-0273）。タスクが supersede / settle / abandon / close されたとき、そのタスクに
+   * 紐づく未解決の取次は答えが要らなくなる——PO はその札に答えられない（タスクは既に降りている）。
+   *
+   * `resolve(id, action)` と違って**選択肢の検証はしない**——`marker` は押された答えでは
+   * なく、畳んだ理由（`stale:superseded` の形）で、履歴に「誰も押さずに古くなった」と
+   * 残す。黙って消さない（I2）。
+   */
+  resolveStale(id: string, marker: string): InboxItem {
+    const item = this.items.get(id);
+    // I2: 知らない id を黙って捨てない
+    if (!item) throw new Error(`取次に "${id}" という一通はありません。`);
+    if (item.resolvedAt) return item; // 既に答えが出ているなら、古くなった記録を上書きしない
+    const at = new Date().toISOString();
+    const next: InboxItem = { ...item, resolvedAt: at, resolution: `stale:${marker}` };
+    this.items.set(id, next);
+    this.append({ v: 1, at, resolve: { id: id, action: `stale:${marker}`, at } });
+    this.emit();
+    return next;
+  }
+
   get(id: string): InboxItem | undefined {
     return this.items.get(id);
   }

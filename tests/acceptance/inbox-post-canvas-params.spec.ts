@@ -205,7 +205,7 @@ describe("a3: 添え忘れの断り文が、何が足りないのかを名指し
     {
       name: "canvasKind が別の値",
       extra: { canvasKind: "file.viewer", canvasParams: { projectTag: PROJ, taskId: TASK } },
-      expect: /canvasKind が "kobo\.review" ではありません（受け取った値: "file\.viewer"）/,
+      expect: /canvasKind が "kobo\.review" か "kobo\.amend" ではありません（受け取った値: "file\.viewer"）/,
     },
     {
       name: "canvasParams が無い",

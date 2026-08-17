@@ -289,8 +289,11 @@ export {
   createKoboPoDecisionTool,
   koboPoDecisionEffect,
   koboReviewTarget,
+  koboAmendTarget,
+  resolveStaleInboxForTask,
   KOBO_PO_DECIDE_TOOL,
   KOBO_REVIEW_CANVAS_KIND,
+  KOBO_AMEND_CANVAS_KIND,
   type KoboPoDecision,
 } from "./kobo-po-decision.js";
 export { createRestartTool, type RestartToolDeps } from "./restart-tool.js";

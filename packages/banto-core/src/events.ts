@@ -268,6 +268,14 @@ export interface TaskContractAmendedEvent extends EventBase {
   /** この改訂で監査が無効になったか */
   auditInvalidated: boolean;
   /**
+   * **どの札のどの回答で改訂したか**（task-0273・決定113）。
+   *
+   * `amendedBy: "po"` の改訂は取次の札（`kobo.amend`）から来る。PO の意思表示の
+   * 出どころを帳簿に残す——`inbox:in-xxxxxxxx#apply` の形。番頭（`amendedBy: "banto"`）
+   * の改訂には付かない（Tool の口は経路が1つしかないため）。
+   */
+  via?: string;
+  /**
    * **改訂後の契約そのもの**（`acceptance` / `scope` / `title` / `body` …）。
    *
    * D3: 状態はイベントログから作り直せなければならない。要約（`changes`）だけ載せると、

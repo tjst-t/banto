@@ -1579,7 +1579,7 @@ export class Daemon {
     projectTag: string,
     taskId: string,
     changesInput: TaskContractAmendment,
-    options: { reason: string; by: "banto" | "po" }
+    options: { reason: string; by: "banto" | "po"; via?: string }
   ): { ok: true; changes: string[]; auditInvalidated: boolean } | { ok: false; reason: string } {
     const task = this.store.getTask(taskId, projectTag);
     if (!task) return { ok: false, reason: `${taskId} は ${projectTag} の工場にありません` };
@@ -1645,6 +1645,7 @@ export class Daemon {
       projectTag,
       taskId,
       amendedBy: options.by,
+      ...(options.via ? { via: options.via } : {}),
       reason: options.reason,
       changes,
       auditInvalidated,

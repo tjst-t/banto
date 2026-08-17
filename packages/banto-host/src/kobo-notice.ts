@@ -145,6 +145,14 @@ export interface KoboNoticeOptions {
   /** 引く間隔（ms）。 */
   intervalMs?: number;
   log?(message: string): void;
+  /**
+   * タスクが終端（superseded / closed）へ入ったときに呼ばれる（task-0273・穴2）。
+   *
+   * 呼び出し側（bin.ts）は `resolveStaleInboxForTask` を繋ぎ、そのタスクに紐づく
+   * 未解決の取次を「古い」として解決する。**判断は無い**——ここは「終端に入った」を
+   * 伝えるだけ（D5）。知らせの配信とは独立に動く（終端は知らせにならないことがある）。
+   */
+  onTaskClosed?(info: { projectTag: string; taskId: string; to: string }): void;
 }
 
 /**
@@ -313,9 +321,39 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
       // その知らせが一度も配られないまま消える（task-0217 の監査指摘）
       const stalledIds = stalled.map((e) => e.eventId ?? 0).filter((id) => id > 0);
       holdBefore = stalledIds.length > 0 ? Math.min(...stalledIds) : undefined;
+      /**
+       * 畳み（`onTaskClosed`）に失敗したイベントの読み位置。
+       *
+       * cursor はループの頭で先へ進んでしまうので、失敗を見つけたらここに覚え、最後の書き込みで
+       * 巻き戻す——印（`delivered`）は既に書いてあるので、読み直しても知らせは二度配らず、
+       * 畳みだけがやり直される（I2: 畳み損ねを黙らせない）。
+       */
+      let rewindTo: number | undefined;
       for (const event of events) {
         cursor = Math.max(cursor, event.eventId ?? 0);
         if (event.type === "task_stalled") continue;
+        // タスクが終端（superseded / closed）に入ったことを伝える（task-0273・穴2）。
+        // 知らせの配信と独立に動かす——終端は知らせにならないことがあり、判断待ちの札が
+        // 古いまま残るのが問題だから。I2: 畳み損ねを黙らせず、次の読み取りでやり直す。
+        if (
+          event.type === "state_transitioned" &&
+          (event.to === "superseded" || event.to === "closed") &&
+          options.onTaskClosed
+        ) {
+          try {
+            await options.onTaskClosed({
+              projectTag: event.projectTag,
+              taskId: event.taskId ?? "",
+              to: event.to,
+            });
+          } catch (err) {
+            log(`[banto] ${event.projectTag}/${event.taskId ?? "?"} の古い札を畳めませんでした: ${String(err)}`);
+            // 読み位置をこのイベントの手前へ戻し、次の tick で畳みをやり直す
+            // （cursor は既に進んでいるので、ここから最後の書き込みまで保てない——
+            // 末尾の共通処理で巻き戻す）
+            rewindTo = Math.min(rewindTo ?? Number.POSITIVE_INFINITY, (event.eventId ?? 0) - 1);
+          }
+        }
         const eventId = event.eventId ?? 0;
         if (delivered.has(eventId)) {
           // I2: 落としたことを黙らせない。何を配らなかったかは記録から読める
@@ -359,6 +397,9 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
       for (const bundle of bundleStalled(stalled, origins)) {
         await deliver(bundle);
       }
+      // 畳み損ねがあれば読み位置をそのイベントの手前へ戻す。次の tick でそのイベントを
+      // 読み直し、畳みだけをやり直す（知らせの二重配信は印が防ぐ）。I2: 黙って捨てない。
+      if (rewindTo !== undefined) cursor = Math.min(cursor, rewindTo);
       // 配り終えた。ここで初めて印を付け、止めていた読み位置を解く
       for (const event of stalled) delivered.add(event.eventId ?? 0);
       holdBefore = undefined;
