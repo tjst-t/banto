@@ -2722,6 +2722,30 @@ export class Daemon {
     }
   }
 
+  /**
+   * 監査の口（`audit_report`）の道具呼び出しを**実証済み**のモデル名。
+   *
+   * 道具呼び出しの対応は、provider の `/models` のようなデータからは確認できない
+   * （`huihui/deepseek-v4-flash-abliterated` は普通のチャットはできるが、判定の口に
+   * 乗れなかった・task-0246/0242）。だから**実際に判定の口を呼べることが確かめられた
+   * モデルだけ**をここに列挙する（I1——たぶんの推測で入れると白リストの意味が無くなる）。
+   *
+   * ここに載っていないモデルを監査の役に当てるのは `kobo-settings`（`createKoboSettings`
+   * の `write`）が保存の時点で弾き、当てたい場合は `allowUnprovenAuditModel` で
+   * 明示的に許可する。**未検証は白リストに載せない**——載せると、監査人が判定の口を
+   * 呼べずに誤った failed になるのを黙って許すことになる。
+   */
+  async toolCallProvenModelNames(): Promise<string[]> {
+    return [
+      // Claude Code（claude-agent-sdk）の別名——エージェントループで道具を回す実証済み
+      "opus",
+      "sonnet",
+      "haiku",
+      // 標準の worker 等級。判定の受け渡し（監査の口）に実際に使われている
+      "opencode-go/deepseek-v4-flash",
+    ];
+  }
+
   private async delegateWorker(opts: {
     projectTag: string;
     taskId: string;
@@ -2748,6 +2772,24 @@ export class Daemon {
         `[banto-daemon] ${opts.projectTag}/${opts.taskId}: ${opts.role} は設定の当て方で起こします` +
           `（${assigned.model ? `モデル ${assigned.model}` : `等級 ${modelTier}`}）\n`
       );
+    }
+
+    // 監査の役に名指しされたモデルが道具呼び出し（audit_report）実証済みでなければ
+    // 起こす前に警告する。保存の時点（kobo-settings の write）で弾くのが主だが、
+    // `setRoleAssignments`（コード経由）で当てられた分はここが最後の関所になる。
+    // 確かめられないとき（一覧が空）は黙って起こす——弾けないことを失敗にしない。
+    if (opts.role === "audit" && assigned.model) {
+      try {
+        const proven = await this.toolCallProvenModelNames();
+        if (proven.length > 0 && !proven.includes(assigned.model)) {
+          process.stdout.write(
+            `[banto-daemon] ${opts.projectTag}/${opts.taskId}: 監査の役に道具呼び出しが` +
+              `実証されていないモデルを当てています（${assigned.model}）。実証済み: ${proven.join(", ")}\n`
+          );
+        }
+      } catch {
+        // 確かめられないだけなら黙って起こす（ここで弾くと設定を直せなくなる）
+      }
     }
 
     const details = await this.workerInvoke("worker.delegate_toolkit", {

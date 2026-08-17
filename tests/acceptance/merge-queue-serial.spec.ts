@@ -75,16 +75,32 @@ async function transitionTo(base: string, proj: string, taskId: string, to: stri
   });
   if (r.status !== 200) {
     const body = await r.text();
-    throw new Error(`Transition ${taskId}→'${to}' failed (${r.status}): ${body}`);
+    const cur = await getStatus(base, proj, taskId).catch(() => "?");
+    throw new Error(`Transition ${taskId}→'${to}' failed (${r.status}): ${body} [current_status=${cur}]`);
   }
 }
 
-/** Advance a task through multiple states. */
+/**
+ * Advance a task through multiple states.
+ *
+ * The backlog dependency gate（依存ゲート）は並行してタスクを後段へ昇格させることがあり、
+ * advanceTo が transitionTo を発行した瞬間に目的状態へ既に達していた（＝通り越した）場合、
+ * 状態遷移は 400 invalid_transition で失敗する。ここではその失敗を許容し、
+ * 現在状態を読み直して目的状態またはそれ以降に達していれば無視して次へ進む。
+ */
 async function advanceTo(base: string, proj: string, taskId: string, ...steps: string[]): Promise<void> {
   for (const to of steps) {
-    const current = await getStatus(base, proj, taskId);
-    if (current === to) continue;
-    await transitionTo(base, proj, taskId, to);
+    const targetIdx = steps.indexOf(to);
+    // 既に目的状態以上に進んでいれば遷移は不要（初回判定）
+    if (steps.indexOf(await getStatus(base, proj, taskId)) >= targetIdx) continue;
+    try {
+      await transitionTo(base, proj, taskId, to);
+    } catch (err) {
+      // 並行する依存ゲート昇格で通り越した可能性がある。読み直して目的以上なら無視して進む。
+      const after = await getStatus(base, proj, taskId).catch(() => to);
+      if (steps.indexOf(after) >= targetIdx) continue;
+      throw err;
+    }
   }
 }
 

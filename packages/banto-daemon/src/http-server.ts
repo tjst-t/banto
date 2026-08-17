@@ -108,6 +108,7 @@ export function createHttpServer(daemon: Daemon): http.Server {
         setRoleAssignments: (next) => daemon.setRoleAssignments(next),
         selectableModelNames: () => daemon.selectableModelNames(),
         selectableModels: () => daemon.selectableModels(),
+        toolCallProvenModelNames: () => daemon.toolCallProvenModelNames(),
       })
     )];
 

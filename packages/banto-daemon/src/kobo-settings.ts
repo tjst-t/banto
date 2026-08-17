@@ -66,6 +66,18 @@ export interface RoleAssignmentStore {
    * そのときだけ自由入力に落ちる（工房が落ちていても設定画面は開けるように）。
    */
   selectableModels?(): Promise<Array<{ name: string; label: string }>>;
+  /**
+   * 監査の口（`audit_report`）の道具呼び出しを**実証済み**のモデル名。
+   *
+   * 能力は（provider の `/models` などからは）取れないので、実際に判定の口を呼べる／
+   * 呼んだことが確かめられているものだけを列挙する（I1）。task-0246/0242 では
+   * `huihui/deepseek-v4-flash-abliterated` を監査の役に当てた結果、監査人が
+   * 判定の口（`audit_report`）を一度も呼べずに誤った failed が出た。
+   *
+   * 空・未定義＝確かめられない。そのときは**通す**（`selectableModelNames` と
+   * 同じ方針——確かめられないことを「未実証」と混同しない）。
+   */
+  toolCallProvenModelNames?(): Promise<string[]> | string[];
 }
 
 const TIER_OPTIONS = [
@@ -80,7 +92,8 @@ const modelKey = (role: KoboRole): string => `${role}Model`;
 
 export function createKoboSettings(
   store: RoleAssignmentStore,
-  section?: SettingsSection
+  section?: SettingsSection,
+  options: { allowUnprovenAuditModel?: boolean } = {}
 ): ModuleSettingsSpec {
   return {
     title: "工場（職人の当て方）",
@@ -176,6 +189,30 @@ export function createKoboSettings(
               `知らないモデルです: ${unknown.join(", ")}\n選べるのは: ${available.join(", ")}`
             );
           }
+        }
+      }
+
+      // 監査の役に、道具呼び出し（audit_report）を実証していないモデルを当てるのは、
+      // 「監査人が判定の口を一度も呼べずに誤った failed になる」（task-0246/0242）を
+      // それと気づかずに許すことと同じ。**実際に職人を起こす前に弾く**。
+      //
+      // 監査の役だけが対象——実装・手直しは判定の口を呼ばない。実証済みが分かって
+      // いるとき（一覧が届いているとき）だけ厳しくし、確かめられないときは通す
+      // （selectableModelNames と同じ方針。工房が落ちているだけのときに設定を保存
+      // できなくなる方が困る）。それでも当てたい場合は `allowUnprovenAuditModel`
+      // で明示的に許可する（「当てるなら明示的に許可する形」）。
+      const auditModel = next.audit?.model;
+      if (
+        auditModel !== undefined &&
+        !options?.allowUnprovenAuditModel
+      ) {
+        const proven = await store.toolCallProvenModelNames?.();
+        if (proven !== undefined && proven.length > 0 && !proven.includes(auditModel)) {
+          throw new Error(
+            `監査の口（audit_report）の道具呼び出しが実証されていないモデルです: ${auditModel}\n` +
+              `実証済み: ${proven.join(", ")}\n` +
+              `（それでも当てたい場合は allowUnprovenAuditModel で明示的に許可して）`
+          );
         }
       }
 

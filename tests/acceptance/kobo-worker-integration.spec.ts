@@ -802,4 +802,68 @@ describe("[kobo-roles] 実装・レビューを、どの等級／どのモデル
       "opencode-go/deepseek-v4-flash"
     );
   });
+
+  it("[kobo-roles] 監査の役に、道具呼び出し（audit_report）が実証されていないモデルを当てると保存の時点で断る（task-0268）", async () => {
+    // 実証済みの一覧が届いているときだけ厳しくする（届かなければ従来どおり通す）
+    const proven = ["opus", "sonnet", "haiku"];
+    const settings = createKoboSettings({
+      roleAssignments: () => h.daemon.roleAssignments(),
+      setRoleAssignments: (next) => h.daemon.setRoleAssignments(next),
+      // 名前の照合（worker.models）は実物を使う——task-0246 で名指しされた代打を含める
+      selectableModelNames: () =>
+        Promise.resolve([...proven, "huihui/deepseek-v4-flash-abliterated"]),
+      toolCallProvenModelNames: () => proven,
+    });
+
+    // 実証されていないモデルを監査の役に当てようとすると、起こす前に弾く
+    await assert.rejects(
+      () =>
+        Promise.resolve(
+          settings.write({ auditModel: "huihui/deepseek-v4-flash-abliterated" })
+        ),
+      /audit_report.*実証|判定の口.*実証|実証されていないモデル/
+    );
+    // 弾いたなら保存されていない（前の値のまま）
+    const before = await settings.read();
+    assert.notEqual(
+      before["auditModel"],
+      "huihui/deepseek-v4-flash-abliterated"
+    );
+
+    // 実証済みのモデルは通る
+    await settings.write({ auditModel: "opus" });
+    assert.equal((await settings.read())["auditModel"], "opus");
+
+    // それでも当てたい場合は、明示的に許可して通せる（当てるなら明示的に許可する形）
+    const loose = createKoboSettings(
+      {
+        roleAssignments: () => h.daemon.roleAssignments(),
+        setRoleAssignments: (next) => h.daemon.setRoleAssignments(next),
+        selectableModelNames: () =>
+          Promise.resolve([...proven, "huihui/deepseek-v4-flash-abliterated"]),
+        toolCallProvenModelNames: () => proven,
+      },
+      undefined,
+      { allowUnprovenAuditModel: true }
+    );
+    await loose.write({ auditModel: "huihui/deepseek-v4-flash-abliterated" });
+    assert.equal(
+      (await loose.read())["auditModel"],
+      "huihui/deepseek-v4-flash-abliterated"
+    );
+
+    // 実証済みが分からない（空）ときは弾かずに通す——工房が落ちているだけのときに
+    // 設定を保存できなくなる方が困る
+    const unsure = createKoboSettings({
+      roleAssignments: () => h.daemon.roleAssignments(),
+      setRoleAssignments: (next) => h.daemon.setRoleAssignments(next),
+      selectableModelNames: () => Promise.resolve([]),
+      toolCallProvenModelNames: () => Promise.resolve([]),
+    });
+    await unsure.write({ auditModel: "huihui/deepseek-v4-flash-abliterated" });
+    assert.equal(
+      (await unsure.read())["auditModel"],
+      "huihui/deepseek-v4-flash-abliterated"
+    );
+  });
 });
