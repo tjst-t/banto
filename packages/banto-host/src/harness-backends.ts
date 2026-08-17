@@ -211,6 +211,13 @@ export function createClaudeBackend(
     now?: () => number;
     ask?: () => Promise<Array<{ id: string; name?: string }>>;
     /**
+     * 認証・可用性の判定口（既定は実環境の判定＝`claudeAgentAvailability`）。
+     *
+     * `unavailable()` は quota 判定より先にこれを実行する。テストではここを差し替えて
+     * 認証が無い環境でも自己完結させる（task-0267）。
+     */
+    availability?: () => ReturnType<typeof claudeAgentAvailability>;
+    /**
      * サブスクの7日枠の残量を監視する口（既定は無し＝監視しない）。
      *
      * **枠が尽きかけたら `unavailable()` を返し、Claude Agent SDK を選べなくする。**
@@ -222,6 +229,7 @@ export function createClaudeBackend(
 ): HarnessBackendDescriptor {
   const now = options.now ?? (() => Date.now());
   const quota = options.quota; // 無ければ監視しない（バックエンドとしての挙動は元のまま）
+  const availability = options.availability ?? claudeAgentAvailability;
   let cached: Array<{ id: string; name?: string; vision: boolean }> | undefined;
   let askedAt = 0;
   let inFlight = false;
@@ -279,8 +287,8 @@ export function createClaudeBackend(
     id: "claude-agent-sdk",
     label: "Claude Code（手元のサブスクリプション・Claude 専用）",
     unavailable: () => {
-      const availability = claudeAgentAvailability();
-      if (!availability.ok) return availability.detail;
+      const a = availability();
+      if (!a.ok) return a.detail;
       // 残量がしきい値を切ったら、認証はあっても「いまは使わない」を名乗る。
       // 理由に残量を載せて、PO に復帰する目安（リセット時刻）が分かるようにする
       if (quota?.shouldStop()) {

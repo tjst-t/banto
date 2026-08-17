@@ -120,13 +120,16 @@ describe("[クオータ] shouldStop と契機", () => {
 });
 
 describe("[決定98a] 枠が尽きかけた Claude バックエンド", () => {
+  // 認証・可用性の判定口から差し替え、認証が無い検証環境でも自己完結させる（task-0267）
+  const authOk = () => ({ ok: true, detail: "mocked" });
+
   it("認証はあるが枠が尽きかけなら unavailable を返し、理由に残量を書く", async () => {
     const quota = makeMonitor({
       stopRemainingPct: 20,
       fetched: () => ({ status: 200, payload: { seven_day: { utilization: 98 } } }),
     });
     await quota.refresh();
-    const backend = createClaudeBackend({ quota, ask: async () => [] });
+    const backend = createClaudeBackend({ quota, ask: async () => [], availability: authOk });
     const unavailable = backend.unavailable();
     assert.ok(unavailable, "枠が尽きかけなら選べなくする");
     assert.match(unavailable, /残り 2%/, "理由に残量を載せる");
@@ -139,12 +142,12 @@ describe("[決定98a] 枠が尽きかけた Claude バックエンド", () => {
       fetched: () => ({ status: 200, payload: { seven_day: { utilization: 10 } } }),
     });
     await quota.refresh();
-    const backend = createClaudeBackend({ quota, ask: async () => [] });
+    const backend = createClaudeBackend({ quota, ask: async () => [], availability: authOk });
     assert.equal(backend.unavailable(), undefined);
   });
 
   it("監視を渡さなければ元の挙動のまま（認証の有無だけを見る）", () => {
-    const withAuth = createClaudeBackend({ ask: async () => [] });
+    const withAuth = createClaudeBackend({ ask: async () => [], availability: authOk });
     assert.equal(withAuth.unavailable(), undefined);
   });
 });
