@@ -64,6 +64,7 @@ import {
   resolveAuditReservedWorkers,
   resolveMaxConcurrentWorkers,
 } from "./pool.js";
+import type { ResourceEstimate } from "./backends.js";
 import { createWorkerModuleTools, createWorkerReportTools, createWorkerTools } from "./worker-tools.js";
 import { WorkerPoolService, WORKER_POOL_DEFAULT_PORT } from "./service.js";
 import { createWorkerPoolSettings } from "./settings.js";
@@ -100,6 +101,43 @@ function usage(): never {
       "  職人を起こせるので、広げるときは前段（Caddy 等）で守ること。\n"
   );
   process.exit(1);
+}
+
+/**
+ * ランタイムの想定消費メモリ（MiB）を環境変数から読む（task-0253 リソースベース並行制御）。
+ *
+ * I2: 読めない値を黙って既定に落とさない。落とすと「想定を変えたつもりで変わっていない」
+ * が例外にならず、起動判定が勘違いで過密を許す（task-0216 と同じ事故の形の第2段）。
+ *
+ * @param envVar 環境変数名
+ * @param fallback 未設定・空のときの既定（Pi 300 / Claude 1200。PO 確定 2026-08-17）
+ */
+function resolvePositiveIntEnv(envVar: string, fallback: number): number {
+  const raw = process.env[envVar];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const parsed = Number(raw.trim());
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(
+      `${envVar} を読み取れません: "${raw}"（1 以上の整数。既定 ${fallback}）`
+    );
+  }
+  return parsed;
+}
+
+/**
+ * CPU の想定消費（0〜1 の割合）を環境変数から読む（task-0253 第2段）。
+ *
+ * この段では**枠だけ用意**する——未設定なら undefined（判定にはまだ使わない）。
+ * 読めない値は I2 に従って黙って null にしない。
+ */
+function resolveOptionalFractionEnv(envVar: string): number | undefined {
+  const raw = process.env[envVar];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const parsed = Number(raw.trim());
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1) {
+    throw new Error(`${envVar} を読み取れません: "${raw}"（0 より大きく 1 以下）`);
+  }
+  return parsed;
 }
 
 /**
@@ -247,6 +285,26 @@ async function main(): Promise<void> {
   const auditReservedWorkers = resolveAuditReservedWorkers(process.env);
 
   /**
+   * task-0253（リソースベース並行制御 第1段）: 各ランタイムの想定消費リソース。
+   *
+   * 既定値は PO 確定（2026-08-17）: Pi 300 MiB / Claude 1200 MiB。環境変数で上書きできる。
+   * 判定ロジック自体はタスクCで行う——ここは**値の枠だけ**を運ぶ。CPU も第2段の枠だけで、
+   * この段の起動判定にはまだ使わない。
+   */
+  const piCpuFraction = resolveOptionalFractionEnv("BANTO_WORKER_PI_CPU_FRACTION");
+  const claudeCpuFraction = resolveOptionalFractionEnv("BANTO_WORKER_CLAUDE_CPU_FRACTION");
+  const runtimeResources: Record<string, ResourceEstimate> = {
+    ["pi-rpc"]: {
+      memoryMiB: resolvePositiveIntEnv("BANTO_WORKER_PI_MEMORY_MB", 300),
+      ...(piCpuFraction !== undefined ? { cpuFraction: piCpuFraction } : {}),
+    },
+    [CLAUDE_AGENT_DRIVER_ID]: {
+      memoryMiB: resolvePositiveIntEnv("BANTO_WORKER_CLAUDE_MEMORY_MB", 1200),
+      ...(claudeCpuFraction !== undefined ? { cpuFraction: claudeCpuFraction } : {}),
+    },
+  };
+
+  /**
    * inc-0066 第2段：職人1本ごとの隔離。**能力判定はここで1回だけ**（宣言的）。
    *
    * 判定そのものが本番の cgroup を書き換える（`+memory` を配り、工房本体を葉へ退かす）ので、
@@ -294,6 +352,8 @@ async function main(): Promise<void> {
     maxConcurrentWorkers,
     // task-0223: その内訳。判定のための席を早い者勝ちから守る
     auditReservedWorkers,
+    // task-0253: ランタイムごとの想定消費リソース（bin が環境変数から決めて渡す）
+    assumedResources: runtimeResources,
   });
 
   // 決定44: 落ちる前に生きていた職人を起こし直す。**同居していたときは番頭ホストが

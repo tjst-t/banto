@@ -25,8 +25,10 @@ import type {
 } from "@banto/core";
 import {
   BackendRegistry,
+  DEFAULT_ASSUMED_RESOURCES,
   WORKER_TIERS,
   type BackendView,
+  type ResourceEstimate,
   type RuntimeRegistration,
   type WorkerTier,
 } from "./backends.js";
@@ -240,6 +242,14 @@ export interface WorkerPoolOptions {
    * 起こし直し（wake）は起こしたときと同じランタイムへ届く。
    */
   runtimes?: Record<string, RuntimeDriver | RuntimeRegistration>;
+  /**
+   * ランタイムごとの想定消費リソース（task-0253）。鍵は `driverId` / `runtimes` の識別子。
+   *
+   * 登録側（`driverRegistration` / `runtimes` の各エントリ）が `assumedResources` を明示して
+   * いなければ、この値（無ければ {@link DEFAULT_ASSUMED_RESOURCES}）を自動登録分に当てる。
+   * 本番値は bin が環境変数から決めて渡す（Pi 300 MiB / Claude 1200 MiB）。
+   */
+  assumedResources?: Record<string, ResourceEstimate>;
   /**
    * 名指しできるモデルを一覧するための登録（`worker.models`）。
    *
@@ -702,11 +712,26 @@ export class WorkerPool {
     this.runtimes.set(this.driverId, {
       driver: this.driver,
       title: "pi",
+      // task-0253: リソース量を積む。登録側が明示していなければ `assumedResources` の
+      // 既定（または WorkerPoolOptions の受け皿）を当てる。判定（タスクC）が読む段で
+      // 0・undefined のままにならないように。
+      assumedResources: this.fallbackResources(this.driverId, options),
       ...(options.driverRegistration ?? {}),
     });
     for (const [id, entry] of Object.entries(options.runtimes ?? {})) {
-      // ドライバだけ渡す形も受ける（既存の呼び出しを壊さない）
-      this.runtimes.set(id, "driver" in entry ? entry : { driver: entry as RuntimeDriver });
+      // ドライバだけ渡す旧い形も受ける（既存の呼び出しを壊さない）
+      this.runtimes.set(
+        id,
+        "driver" in entry
+          ? {
+              // 完全な登録（RuntimeRegistration）。assumedResources が無ければ受け皿を当てる
+              // （task-0253）——判定（タスクC）が読む段で undefined のまま立たせない。
+              ...entry,
+              assumedResources:
+                entry.assumedResources ?? this.fallbackResources(id, options),
+            }
+          : { driver: entry as RuntimeDriver, assumedResources: this.fallbackResources(id, options) }
+      );
     }
     this.backendRegistry = new BackendRegistry(
       this.runtimes,
@@ -794,6 +819,20 @@ export class WorkerPool {
           "これでは実装の職人を1本も起こせません。予約席は上限より小さくしてください。"
       );
     }
+  }
+
+  /**
+   * task-0253: ランタイムの想定消費リソースの受け皿を決める（D5: 判定は無い。引きを読むだけ）。
+   *
+   * 登録側が明示し、`WorkerPoolOptions.assumedResources` に無い id には
+   * {@link DEFAULT_ASSUMED_RESOURCES} を当てる——判定（タスクC）が読む段で undefined の
+   * まま立つことを防ぐため。bin は本番値（Pi 300 / Claude 1200）を環境変数から渡す。
+   */
+  private fallbackResources(
+    id: string,
+    options: WorkerPoolOptions
+  ): ResourceEstimate {
+    return options.assumedResources?.[id] ?? DEFAULT_ASSUMED_RESOURCES;
   }
 
   /**

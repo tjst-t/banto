@@ -21,6 +21,29 @@
 
 import type { RuntimeDriver, SettingsSection } from "@banto/core";
 
+/**
+ * ランタイムが職人1本を起こしたときに想定で消費するリソース量（task-0253）。
+ *
+ * 並行制御をリソースベースに寄せる設計（work/reports/2026-08-17-worker-resource-based-concurrency.md）
+ * の一部。起動判定の「席」を測るために使う——判定ロジック自体（タスクC）はこの値を読んで
+ * 将来決める。この段では**値を積むだけ**で、判定にはまだ使わない。
+ */
+export interface ResourceEstimate {
+  /** 想定のピーク消費メモリ（MiB）。 */
+  memoryMiB: number;
+  /** CPU の想定消費（0〜1 の割合）。第2段で判定に使う。この段では枠だけ。 */
+  cpuFraction?: number;
+}
+
+/**
+ * リソース量が引数・登録で渡されなかったときの受け皿（Pi 相当 300 MiB）。
+ *
+ * 本番の値は bin が環境変数（`BANTO_WORKER_PI_MEMORY_MB` 等）から決めて渡す。
+ * ここは「渡し忘れて立っても、想定が 0 のまま（＝後で判定が全員 0 になる）にならない」
+ * ための安全側の既定。
+ */
+export const DEFAULT_ASSUMED_RESOURCES: ResourceEstimate = { memoryMiB: 300 };
+
 /** 等級（`@banto/core` の ModelTier と同じ並び）。 */
 export type WorkerTier = "reasoning" | "standard" | "fast";
 
@@ -51,6 +74,16 @@ export interface RuntimeRegistration {
    * 工房が代表して答えると**既定を切り替えたときに嘘になる**——実機でそれを出していた。
    */
   resolveTier?: (tier: WorkerTier) => string | undefined;
+  /**
+   * このランタイムが職人1本で想定して消費するリソース量（task-0253）。
+   *
+   * 既定値（Pi 300 MiB / Claude 1200 MiB）は bin が環境変数から決めて渡す（受け入れ基準 a1）。
+   * 省略されたまま立ったときは pool が {@link DEFAULT_ASSUMED_RESOURCES}（または
+   * `WorkerPoolOptions.assumedResources`）を当てる——省略を許すのは、この値をまだ使わない
+   * 試験や旧い構築（ドライバだけ渡す形）を壊さないため。判定ロジック（タスクC）が
+   * 読む段では必ず値が積まれている。
+   */
+  assumedResources?: ResourceEstimate;
 }
 
 /** 画面に出す1つ分。 */

@@ -185,9 +185,11 @@ export { createWorkerPoolSettings } from "./settings.js";
 export type { WorkerSettingsValues, WorkerSettingsUpdate } from "./settings.js";
 export {
   BackendRegistry,
+  DEFAULT_ASSUMED_RESOURCES,
   WORKER_TIERS,
   type BackendView,
   type BackendState,
+  type ResourceEstimate,
   type RuntimeRegistration,
   type WorkerTier,
 } from "./backends.js";
