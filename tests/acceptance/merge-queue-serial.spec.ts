@@ -36,6 +36,10 @@ import { hostVerifyRunner } from "./gate-verify-runner.js";
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Poll until predicate passes or timeout. */
+// 依存ゲートの並行昇格を待つ上限・ポーリング間隔（advanceTo 用）。
+const GATE_WAIT_MS = 5000;
+const GATE_POLL_MS = 100;
+
 async function pollUntil<T>(
   fn: () => Promise<T>,
   pred: (v: T) => boolean,
@@ -84,22 +88,31 @@ async function transitionTo(base: string, proj: string, taskId: string, to: stri
  * Advance a task through multiple states.
  *
  * The backlog dependency gate（依存ゲート）は並行してタスクを後段へ昇格させることがあり、
- * advanceTo が transitionTo を発行した瞬間に目的状態へ既に達していた（＝通り越した）場合、
- * 状態遷移は 400 invalid_transition で失敗する。ここではその失敗を許容し、
- * 現在状態を読み直して目的状態またはそれ以降に達していれば無視して次へ進む。
+ * advanceTo の transitionTo が目的状態へ達する前に発行されると invalid_transition で失敗する
+ * （通り越しだけでなく、ゲート昇格がまだ追いついていない遅延も含む）。
+ * ここではその失敗を許容し、現在状態が目的状態（またはそれ以降）に達するまで
+ * 短い間隔でポーリングして待つ。期限が来ても達しないときだけ throw する。
  */
 async function advanceTo(base: string, proj: string, taskId: string, ...steps: string[]): Promise<void> {
   for (const to of steps) {
     const targetIdx = steps.indexOf(to);
-    // 既に目的状態以上に進んでいれば遷移は不要（初回判定）
+    // 既に目的状態以上に進んでいれば遷移は不要（初回判定／通り越し耐性）
     if (steps.indexOf(await getStatus(base, proj, taskId)) >= targetIdx) continue;
     try {
       await transitionTo(base, proj, taskId, to);
     } catch (err) {
-      // 並行する依存ゲート昇格で通り越した可能性がある。読み直して目的以上なら無視して進む。
-      const after = await getStatus(base, proj, taskId).catch(() => to);
-      if (steps.indexOf(after) >= targetIdx) continue;
-      throw err;
+      // 遷移失敗（400 invalid_transition）は「並行する依存ゲートの昇格がまだ追いついていない」
+      // ことが多い。ゲートの自動昇格は非同期で進むため単発再読では足りず、
+      // 現在状態が目的状態（またはそれ以降）に達するまで短い間隔で待つ。
+      // 達したら（通り越しを含む）無視して次へ進み、期限（GATE_WAIT_MS）が来ても
+      // 達しないときだけ throw する。
+      const after = await pollUntil(
+        () => getStatus(base, proj, taskId),
+        (s) => steps.indexOf(s) >= targetIdx,
+        GATE_WAIT_MS,
+        GATE_POLL_MS
+      );
+      if (steps.indexOf(after) < targetIdx) throw err;
     }
   }
 }
