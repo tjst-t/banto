@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   resolveReviewStage,
@@ -25,6 +26,8 @@ import {
   type ProjectConfig,
 } from "../../packages/banto-daemon/src/review-policy.js";
 import type { TaskRecord } from "@banto/core";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** 最小のタスク。`extra` で契約の欄を足す。 */
 function task(extra: Record<string, unknown> = {}): TaskRecord {
@@ -208,5 +211,63 @@ describe("[realign-3] review.policy の解決", () => {
         "po"
       );
     });
+  });
+});
+
+/**
+ * **2026-08-16、PO の恒久指示を機械で守る**（ADR-0013 決定66 の同日追記）。
+ *
+ * > 私が明示的にお願いするとき以外、banto の開発でもユーザのレビューは
+ * > 省略してくれないかな。あんまり意味ないし。
+ *
+ * これを受けて `meta/config.yaml` の `review.po_required_paths` を空にした
+ * （task-0183）。空にしても PO へ上がる道（判定1の `governance: true`・判定3の
+ * 宣言 `po`）は残ることは下の「一覧が空でも」で確かめる——ここで確かめるのは
+ * **設定ファイル側**、実リポジトリの `meta/config.yaml` が実際に空であることだけ。
+ *
+ * **パスを戻すときはこの試験も一緒に直すこと**——それが「恒久指示を上書きする」
+ * という意思表示になる（`meta/config.yaml` 側のコメントにも同じ趣旨が書いてある）。
+ */
+describe("[task-0238] PO 必須の面（実リポジトリ設定）", () => {
+  it("meta/config.yaml の review.poRequiredPaths は空である", () => {
+    const loaded = loadProjectConfig(repoRoot);
+    assert.deepEqual(loaded.review.poRequiredPaths, []);
+  });
+});
+
+/**
+ * **一覧が空でも、PO へ上がる残り2つの道は塞がっていないこと**（純関数）。
+ *
+ * `po_required_paths` を空にしたのは「差分を見て通す」形式のレビューだけを
+ * 省く判断であって、`governance: true` や宣言 `po` まで巻き込んで自動着地に
+ * 倒すものではない。ここが崩れると、空にした瞬間に PO への道そのものが
+ * 無くなっていたことになる。
+ */
+describe("[task-0238] 一覧が空でも残る道（純関数）", () => {
+  it("一覧が空なら scope が PO 必須のパスに触れても宣言 `banto` はそのまま", () => {
+    assert.equal(
+      resolveReviewStage(
+        task({
+          review: { policy: "banto" },
+          scope: { paths: ["packages/banto-web/src/views/ui.tsx"] },
+        }),
+        config({ poRequiredPaths: [] })
+      ),
+      "banto"
+    );
+  });
+
+  it("一覧が空でも宣言 `po` は `po` のまま", () => {
+    assert.equal(
+      resolveReviewStage(task({ review: { policy: "po" } }), config({ poRequiredPaths: [] })),
+      "po"
+    );
+  });
+
+  it("一覧が空でも `governance: true` は `po`", () => {
+    assert.equal(
+      resolveReviewStage(task({ governance: true }), config({ poRequiredPaths: [] })),
+      "po"
+    );
   });
 });
