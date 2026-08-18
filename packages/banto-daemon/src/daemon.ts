@@ -596,6 +596,12 @@ export class Daemon {
    * **PO が決めるもので、Kobo は当てはめるだけ**（D5）。決定60a はモデル名を Kobo から
    * 遠ざけていたが、PO裁定 2026-08-10 で名指しの口が開いた——解決（provider・鍵・
    * tier→モデルの表）は Worker Pool のままで、ここが持つのは**渡す名前**だけ。
+   *
+   * **起動時の写しではない**（PO指示 2026-08-18）。真実は設定ファイル1つ
+   * （`roleAssignmentsSection`）で、使うたびに読み直す——設定画面で変えた分や直接直した
+   * 分が、**再起動を待たず**次に起こす職人から効く（層Bの `meta/config.yaml` を毎回読む
+   * のと同じ考え方、D3）。ここに残るのは `roleAssignmentsSection` が無いとき
+   * （単体テスト等）だけのフォールバック。
    */
   private _roleAssignments: RoleAssignments = {};
 
@@ -661,11 +667,8 @@ export class Daemon {
 
   private constructor(config: DaemonConfig) {
     this.config = config;
-    // 役割ごとの当て方は、渡されていれば前回の設定を読み戻す（D3：真実はファイル1つ）
-    const savedRoles = config.roleAssignmentsSection?.read()["roleAssignments"];
-    if (savedRoles && typeof savedRoles === "object") {
-      this._roleAssignments = savedRoles as RoleAssignments;
-    }
+    // 役割ごとの当て方は **起動時に写しを取らない**——使うたびに設定ファイルを読み直す
+    // （PO指示 2026-08-18）。設定を直しても daemon を起こし直すまで効かない、を無くす
     this.log = EventLog.open(config.dataDir);
     this.store = StateStore.replay(this.log);
     this.index = EventIndex.build(this.log);
@@ -2668,14 +2671,30 @@ export class Daemon {
    * （banto-executor / banto-auditor が `report_phase` / `audit_report` を提供する。決定29e）。
    * 番頭にこの口は渡らない——LLM に任意のコードを載せさせないため。
    */
-  /** いまの役割ごとの当て方（設定画面が読む）。 */
+  /**
+   * いまの役割ごとの当て方を読む（設定画面が読む）。
+   *
+   * **使うたびに設定ファイルから読み直す**（D3・PO指示 2026-08-18）。`roleAssignmentsSection`
+   * があればそれが真実——起動時に読んだ写しではなく、いまファイルにある値を返す。
+   * section が無い（単体テスト等）ときだけメモリ上の写し（`setRoleAssignments` が直した
+   * 分）に落ちる。
+   */
   roleAssignments(): RoleAssignments {
+    const section = this.config.roleAssignmentsSection;
+    if (section) {
+      const saved = section.read()["roleAssignments"];
+      if (saved && typeof saved === "object") return saved as RoleAssignments;
+      return {};
+    }
     return { ...this._roleAssignments };
   }
 
   /**
    * 役割ごとの当て方を差し替える（決定41：設定画面から）。**次に起こす職人から**効く。
    * 動いている職人はそのまま——途中でモデルが変わる方が分かりにくい。
+   *
+   * 保存先は設定ファイル1つ。メモリ上の写しも直す（section が無いときのフォールバック用。
+   * 直したのに `roleAssignments()` が古い値を返し続けると設定画面と実態が食い違う）。
    */
   setRoleAssignments(next: RoleAssignments): void {
     this._roleAssignments = { ...next };
@@ -2724,33 +2743,25 @@ export class Daemon {
   }
 
   /**
-   * 監査の口（`audit_report`）の道具呼び出しを**実証済み**のモデル名。
+   * 監査の口（`audit_report`）の道具呼び出しを**させない**モデル名（ブラックリスト）。
    *
    * 道具呼び出しの対応は、provider の `/models` のようなデータからは確認できない
    * （`huihui/deepseek-v4-flash-abliterated` は普通のチャットはできるが、判定の口に
-   * 乗れなかった・task-0246/0242）。だから**実際に判定の口を呼べることが確かめられた
-   * モデルだけ**をここに列挙する（I1——たぶんの推測で入れると白リストの意味が無くなる）。
+   * 乗れなかった・task-0246/0242）。だから**白リスト**で「実証済みだけ通す」のではなく、
+   * **実際に判定の口を呼べない・誤った failed を出したことが確かめられたモデルだけ**を
+   * ここに列挙して弾く（I1——たぶんの推測で広げるとブラックリストの意味が無くなる）。
    *
-   * ここに載っていないモデルを監査の役に当てるのは `kobo-settings`（`createKoboSettings`
-   * の `write`）が保存の時点で弾き、当てたい場合は `allowUnprovenAuditModel` で
-   * 明示的に許可する。**未検証は白リストに載せない**——載せると、監査人が判定の口を
-   * 呼べずに誤った failed になるのを黙って許すことになる。
+   * **載っていないモデル（未実証でも）は監査の役に当てられる**——POが決めた当て方を
+   * Kobo が勝手に読み替えない（PO指示 2026-08-18）。ブラックリストのモデルだけ
+   * `kobo-settings`（`createKoboSettings` の `write`）が保存の時点で弾き、`delegateWorker`
+   * が起こすときに標準モデルへ読み替える。
    */
-  async toolCallProvenModelNames(): Promise<string[]> {
+  async toolCallBlacklistedModels(): Promise<string[]> {
     return [
-      // Claude Code（claude-agent-sdk）の別名——エージェントループで道具を回す実証済み
-      "opus",
-      "sonnet",
-      "haiku",
-      // 標準の worker 等級。判定の受け渡し（監査の口）に実際に使われている（実証済み）
-      "opencode-go/deepseek-v4-flash",
-      // opencode-go プロバイダの Kimi 系。task-0268 の監査で実証済みの
-      // kimi-k2.7-code（PO 裁定 2026-08-17）を含む同一ファミリー。読み替えで
-      // 未実証扱いされて上書きされないよう白リストに載せる
-      "opencode-go/kimi-k2.5",
-      "opencode-go/kimi-k2.6",
-      "opencode-go/kimi-k2.7-code",
-      "opencode-go/kimi-k3",
+      // 判定の口（audit_report）を一度も呼べず誤った failed を出した実績（task-0246/0242）。
+      // 未認証・改変版・道具を呼べない実証済みの悪。読み替えの関所（delegateWorker）で
+      // 標準モデルへ読み替え、保存の時点（kobo-settings write）でも弾く
+      "huihui/deepseek-v4-flash-abliterated",
     ];
   }
 
@@ -2773,7 +2784,10 @@ export class Daemon {
      * 名指しがあれば等級より優先する——「監査は opus で」と決めたのに、昇格や
      * タスクの `model_tier` で別のモデルに化けるなら、決めた意味が無い。
      */
-    const assigned = this._roleAssignments[opts.role as KoboRole] ?? {};
+    // **使うたびに設定ファイルから読み直す**（PO指示 2026-08-18・層Bと同じ考え方）。
+    // 起動時に写した `_roleAssignments` を使うと、直した設定が daemon を起こし直すまで
+    // 効かない——設定画面・直接編集どちらで変えた分も、次に起こす職人から効く
+    const assigned = this.roleAssignments()[opts.role as KoboRole] ?? {};
     const modelTier = assigned.tier ?? opts.modelTier;
     if (assigned.tier || assigned.model) {
       process.stdout.write(
@@ -2782,25 +2796,29 @@ export class Daemon {
       );
     }
 
-    // 監査の口（audit_report）が実証済みの pi 系標準モデル。監査の役に名指しされたモデルが
-    // 道具呼び出し未実証なら、**判定を一度も出せず誤った failed になるのを防ぐ**ために
-    // これへ読み替える（task-0268）。`toolCallProvenModelNames` 白リストと同じ出自。
+    // 監査の口（audit_report）がブラックリストのモデル。監査の役に名指しされたモデルが
+    // 道具呼び出しできないことが**確かめられている**なら、判定を一度も出せず誤った
+    // failed になるのを防ぐためにこれへ読み替える（task-0268 の読み替え先を維持）。
     const PROVEN_AUDIT_FALLBACK_MODEL = "opencode-go/kimi-k2.7-code";
 
-    // 監査の役に名指しされたモデルが道具呼び出し（audit_report）実証済みでなければ
-    // 起こす前に**警告し、実証済みの標準モデルへ読み替える**。保存の時点
-    // （kobo-settings の write）で弾くのが主だが、`setRoleAssignments`（コード経由）で
-    // 当てられた分や、保存の口が生える前に書かれた設定はここが最後の関所になる。
-    // 確かめられないとき（一覧が空）は黙って起こす——弾けないことを失敗にしない。
+    // 監査の役に名指しされたモデルがブラックリストに載っていれば起こす前に**警告し、
+    // 標準モデルへ読み替える**。保存の時点（kobo-settings の write）で弾くのが主だが、
+    // `setRoleAssignments`（コード経由）で当てられた分や、保存の口が生える前に書かれた
+    // 設定はここが最後の関所になる。
+    //
+    // **読み替えるのはブラックリストのモデルだけ**（PO指示 2026-08-18）。未実証でも
+    // それ以外のモデルは PO が当てた割り当てをそのまま使う——白リストをやめたので、
+    // 「実証済み一覧に無い」だけでは読み替えない。確かめられないとき（一覧が空）は
+    // 黙って起こす——弾くべきものも分からないのに失敗にしない。
     let modelName = assigned.model;
     if (opts.role === "audit" && modelName) {
       try {
-        const proven = await this.toolCallProvenModelNames();
-        if (proven.length > 0 && !proven.includes(modelName)) {
+        const blacklisted = await this.toolCallBlacklistedModels();
+        if (blacklisted.includes(modelName)) {
           process.stdout.write(
-            `[banto-daemon] ${opts.projectTag}/${opts.taskId}: 監査の役に道具呼び出しが` +
-              `実証されていないモデルを当てています（${modelName}）。実証済みの` +
-              `${PROVEN_AUDIT_FALLBACK_MODEL} へ読み替えて起こします（実証済み一覧: ${proven.join(", ")}）\n`
+            `[banto-daemon] ${opts.projectTag}/${opts.taskId}: 監査の役にブラックリストの` +
+              `モデルを当てています（${modelName}）。${PROVEN_AUDIT_FALLBACK_MODEL} へ` +
+              `読み替えて起こします（ブラックリスト: ${blacklisted.join(", ")}）\n`
           );
           modelName = PROVEN_AUDIT_FALLBACK_MODEL;
         }

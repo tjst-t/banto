@@ -810,25 +810,26 @@ describe("[kobo-roles] 実装・レビューを、どの等級／どのモデル
     );
   });
 
-  it("[kobo-roles] 監査の役に、道具呼び出し（audit_report）が実証されていないモデルを当てると保存の時点で断る（task-0268）", async () => {
-    // 実証済みの一覧が届いているときだけ厳しくする（届かなければ従来どおり通す）
-    const proven = ["opus", "sonnet", "haiku"];
+  it("[kobo-roles] 監査の役にブラックリストのモデルを当てると保存の時点で断る（task-0268 改）", async () => {
+    // 白リストはやめた（PO指示 2026-08-18）——弾くのは「確実に判定の口（audit_report）を
+    // 呼べない」と分かっているブラックリストのモデルだけ。未実証でもそれ以外は通す
+    const blacklisted = ["huihui/deepseek-v4-flash-abliterated"];
     const settings = createKoboSettings({
       roleAssignments: () => h.daemon.roleAssignments(),
       setRoleAssignments: (next) => h.daemon.setRoleAssignments(next),
       // 名前の照合（worker.models）は実物を使う——task-0246 で名指しされた代打を含める
       selectableModelNames: () =>
-        Promise.resolve([...proven, "huihui/deepseek-v4-flash-abliterated"]),
-      toolCallProvenModelNames: () => proven,
+        Promise.resolve([...blacklisted, "opencode-go/deepseek-v4-flash"]),
+      toolCallBlacklistedModels: () => blacklisted,
     });
 
-    // 実証されていないモデルを監査の役に当てようとすると、起こす前に弾く
+    // ブラックリストのモデルを監査の役に当てようとすると、起こす前に弾く
     await assert.rejects(
       () =>
         Promise.resolve(
           settings.write({ auditModel: "huihui/deepseek-v4-flash-abliterated" })
         ),
-      /audit_report.*実証|判定の口.*実証|実証されていないモデル/
+      /audit_report.*できない|判定の口.*できない|ブラックリスト/
     );
     // 弾いたなら保存されていない（前の値のまま）
     const before = await settings.read();
@@ -837,9 +838,9 @@ describe("[kobo-roles] 実装・レビューを、どの等級／どのモデル
       "huihui/deepseek-v4-flash-abliterated"
     );
 
-    // 実証済みのモデルは通る
-    await settings.write({ auditModel: "opus" });
-    assert.equal((await settings.read())["auditModel"], "opus");
+    // ブラックリストに載っていないモデル（未実証でも）は通る——白リスト制はやめた
+    await settings.write({ auditModel: "opencode-go/deepseek-v4-flash" });
+    assert.equal((await settings.read())["auditModel"], "opencode-go/deepseek-v4-flash");
 
     // それでも当てたい場合は、明示的に許可して通せる（当てるなら明示的に許可する形）
     const loose = createKoboSettings(
@@ -847,11 +848,11 @@ describe("[kobo-roles] 実装・レビューを、どの等級／どのモデル
         roleAssignments: () => h.daemon.roleAssignments(),
         setRoleAssignments: (next) => h.daemon.setRoleAssignments(next),
         selectableModelNames: () =>
-          Promise.resolve([...proven, "huihui/deepseek-v4-flash-abliterated"]),
-        toolCallProvenModelNames: () => proven,
+          Promise.resolve([...blacklisted, "opencode-go/deepseek-v4-flash"]),
+        toolCallBlacklistedModels: () => blacklisted,
       },
       undefined,
-      { allowUnprovenAuditModel: true }
+      { allowBlacklistedAuditModel: true }
     );
     await loose.write({ auditModel: "huihui/deepseek-v4-flash-abliterated" });
     assert.equal(
@@ -859,13 +860,13 @@ describe("[kobo-roles] 実装・レビューを、どの等級／どのモデル
       "huihui/deepseek-v4-flash-abliterated"
     );
 
-    // 実証済みが分からない（空）ときは弾かずに通す——工房が落ちているだけのときに
+    // ブラックリストが分からない（空）ときは弾かずに通す——工房が落ちているだけのときに
     // 設定を保存できなくなる方が困る
     const unsure = createKoboSettings({
       roleAssignments: () => h.daemon.roleAssignments(),
       setRoleAssignments: (next) => h.daemon.setRoleAssignments(next),
       selectableModelNames: () => Promise.resolve([]),
-      toolCallProvenModelNames: () => Promise.resolve([]),
+      toolCallBlacklistedModels: () => Promise.resolve([]),
     });
     await unsure.write({ auditModel: "huihui/deepseek-v4-flash-abliterated" });
     assert.equal(
@@ -874,10 +875,11 @@ describe("[kobo-roles] 実装・レビューを、どの等級／どのモデル
     );
   });
 
-  it("[kobo-roles] 監査の役に未実証モデルを当てたままでも、起こすときに実証済みの標準モデルへ読み替える（task-0268）", async () => {
+  it("[kobo-roles] 監査の役にブラックリストのモデルを当てたままでも、起こすときに標準モデルへ読み替える（task-0268）", async () => {
     // 保存の口が生える前に書かれた設定や、コード経由で当てられた分は write の弾きを
-    // 通らない。監査の口（audit_report）が載ってもモデルが呼べず audit_reported_without_verdict
-    // になるのを防ぐため、監査を起こす前に実証済みモデルへ読み替える。
+    // 通らない。ブラックリストのモデルが監査の口（audit_report）に載っても呼べず
+    // audit_reported_without_verdict になるのを防ぐため、監査を起こす前に標準モデルへ
+    // 読み替える。
     h.daemon.setRoleAssignments({
       audit: { model: "huihui/deepseek-v4-flash-abliterated" },
     });
@@ -890,21 +892,54 @@ describe("[kobo-roles] 実装・レビューを、どの等級／どのモデル
     await until(() => h.workers.pool.get(executor.sessionId)?.state === "closed");
 
     const audit = h.driver.byTaskId("task-0026:audit")!;
-    // 未実証モデルがそのまま渡らず、実証済みの標準モデルへ読み替わっている（provider/model に割れて届く）
+    // ブラックリストのモデルがそのまま渡らず、標準モデルへ読み替わっている（provider/model に割れて届く）
     assert.equal(
       audit.driverOptions["provider"],
       "opencode-go",
-      "未実証の監査モデルは実証済み標準モデルへ読み替えられる（provider）"
+      "ブラックリストの監査モデルは標準モデルへ読み替えられる（provider）"
     );
     assert.equal(
       audit.driverOptions["model"],
       "kimi-k2.7-code",
-      "未実証の監査モデルは実証済み標準モデルへ読み替えられる（model）"
+      "ブラックリストの監査モデルは標準モデルへ読み替えられる（model）"
     );
     const extensions = audit.driverOptions["extensionPaths"] as string[] | undefined;
     assert.ok(
       extensions?.some((p) => p.endsWith("banto-auditor.ts")),
       "読み替えた先でも banto-auditor 拡張（audit_report の口）が載る"
+    );
+  });
+
+  it("[kobo-roles] 監査の役にブラックリスト以外のモデルを当てても読み替えない（そのまま渡す）", async () => {
+    // PO指示 2026-08-18：白リストはやめた。未実証でもブラックリストに載っていなければ、
+    // PO が当てた割り当てをそのまま使う——読み替えるのはブラックリストのモデルだけ
+    h.daemon.setRoleAssignments({
+      audit: { model: "opencode-go/deepseek-v4-flash" },
+    });
+    readyTask(h, "task-0027");
+    const executor = await h.daemon.spawnTask(h.proj, "task-0027");
+    h.daemon.transition(h.proj, "task-0027", "implementing", "test");
+    h.daemon.transition(h.proj, "task-0027", "auditing", "test");
+
+    await until(() => h.driver.byTaskId("task-0027:audit") !== undefined);
+    await until(() => h.workers.pool.get(executor.sessionId)?.state === "closed");
+
+    const audit = h.driver.byTaskId("task-0027:audit")!;
+    // 名指ししたモデルがそのまま渡る（読み替えが起きない）
+    assert.equal(
+      audit.driverOptions["provider"],
+      "opencode-go",
+      "ブラックリスト以外の監査モデルは読み替えられない（provider）"
+    );
+    assert.equal(
+      audit.driverOptions["model"],
+      "deepseek-v4-flash",
+      "ブラックリスト以外の監査モデルは読み替えられない（model）"
+    );
+    const extensions = audit.driverOptions["extensionPaths"] as string[] | undefined;
+    assert.ok(
+      extensions?.some((p) => p.endsWith("banto-auditor.ts")),
+      "監査の拡張（audit_report の口）がそのまま載る"
     );
   });
 });
