@@ -248,6 +248,19 @@ export const PRESENTED_TOOL_NAMES: readonly NamespacedToolDefinition["name"][] =
    */
   "llm.list",
   /**
+   * **計画的デプロイの正式な口**（task-0274 / PO裁定 2026-08-17）。
+   *
+   * `system.restart`（素通し）と違い、main に対して検証一式（`npm test`）を回して
+   * **通ったときだけ**起こし直す。落ちていれば拒否して失敗内容を返す（再起動しない）。
+   * force は明示的にだけゲートを迂回し、迂回したことは記録に残る。
+   *
+   * SKILL `safe-restart` が手順に「計画的デプロイは `system.deploy`（ゲート付き）が正式な口」
+   * と書いている。在庫にはあったのに提示していないと、番頭は素通しの `system.restart` か
+   * 職人への `kill -9` 委譲しか選べない——ゲートが機能しない（task-0274 で仕組化した口が
+   * 番頭の手に無い）。
+   */
+  "system.deploy",
+  /**
    * **自分を起こし直す口**（実地の穴 2026-08-14）。`kobo.set_watch` と同じで、頻度で選ぶと
    * 必ず落ちる——平時は 0 回である。それでも渡すのは**無いと自分では直せない**から。
    *
