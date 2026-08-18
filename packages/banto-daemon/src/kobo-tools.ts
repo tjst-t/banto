@@ -229,10 +229,14 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
     parameters: Type.Object({
       projectTag: Type.Optional(Type.String()),
       state: Type.Optional(Type.String()),
-      limit: Type.Optional(Type.Number())
+      limit: Type.Optional(Type.Number()),
+      offset: Type.Optional(
+        Type.Number({ description: "何件目から返すか（0始まり）。全件を順に取るときに進める" })
+      )
     }),
     async execute(params) {
       const limit = Math.max(1, Math.min(params.limit ?? MAX_ROWS, MAX_ROWS));
+      const offset = Math.max(0, params.offset ?? 0);
       const projects = params.projectTag
         ? [requireProject(params.projectTag).id]
         : daemon.listProjects().map((p) => p.id);
@@ -248,7 +252,7 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
       // 積み上がる一方（保持期間による削除は未実装）なので、いずれ必ずここに当たる
       const total = matched.length;
       const rows = matched
-        .slice(0, limit)
+        .slice(offset, offset + limit)
         .map((task) => {
           // **いつからこの状態なのか**（realign 第2便）。帳簿から導出する（D3：保存しない）。
           // 一覧に無いと、詰まっているものと通り過ぎているものが同じ顔で並ぶ
@@ -272,13 +276,13 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
                 (r) =>
                   `${r.status.padEnd(12)} ${(r.since ?? "-").padStart(8)} ${r.taskId} ${r.title}`
               ),
-              ...(total > rows.length
-                ? [`… 全 ${total} 件のうち ${rows.length} 件（limit を上げれば ${MAX_ROWS} 件まで）`]
+              ...(offset + rows.length < total
+                ? [`… 全 ${total} 件のうち ${offset + rows.length} 件まで（limit を上げれば ${MAX_ROWS} 件まで）`]
                 : []),
             ].join("\n");
       return {
         content: [{ type: "text" as const, text }],
-        details: { tasks: rows, total, truncated: total > rows.length },
+        details: { tasks: rows, total, truncated: offset + rows.length < total },
       };
     },
   });

@@ -2148,12 +2148,26 @@ async function serve(options: ServeOptions): Promise<void> {
     // 将来の終端遷移は上の `onTaskClosed` が受け持つ——掃くのは起動時の1回だけ。
     sweepStaleOnStartup: async (invoke) => {
       await sweepStaleInboxForTerminalTasks(inbox, async (state) => {
-        const details = await invoke("kobo.list", { state });
-        return ((details["tasks"] ?? []) as Array<{
-          taskId: string;
-          projectTag: string;
-          status: string;
-        }>);
+        // task-0277: kobo.list は MAX_ROWS=100 で切り詰めるため、閉じたタスクが100件を
+        // 超えると offset 無しでは終端タスクの一部が一覧に載らず、紐づく未解決の取次が
+        // 畳まれず残る。offset を進めて**全部**を引き切るまで列挙する（a1・a2）。
+        const tasks: Array<{ taskId: string; projectTag: string; status: string }> = [];
+        let offset = 0;
+        while (true) {
+          const details = await invoke("kobo.list", { state, offset });
+          const rows = ((details["tasks"] ?? []) as Array<{
+            taskId: string;
+            projectTag: string;
+            status: string;
+          }>);
+          tasks.push(...rows);
+          if (rows.length === 0) break;
+          const total = details["total"] as number | undefined;
+          offset += rows.length;
+          // 引き切った（この state の全件に達した、または進まなくなった）ら終わり（I2）
+          if (total === undefined || offset >= total) break;
+        }
+        return tasks;
       });
     },
   });
