@@ -15,9 +15,13 @@
  *        were created simultaneously and each blocked the other: the later-created task
  *        defers to the earlier-created task, never vice versa.
  *      - If any unreviewed temporal ancestor's scope.paths overlaps with the candidate's
- *        scope.paths, spawn is deferred.
+ *        scope.paths, the overlap is recorded as a NON-BLOCKING warning and the task
+ *        still proceeds to ready.
+ *      - PO 裁定 2026-08-17: 並行度を上げるため待ち→警告に緩和。衝突はマージ時の
+ *        rebase と差戻（rebase_conflict → rework）で処理する。ゲート自体は残す——
+ *        重複で止めず警告するだけ（警告は gate_evaluated.warnings に記録される）。
  *      - Overlap detection is conservative: only when paths are provably disjoint
- *        is parallel execution allowed.
+ *        is parallel execution allowed (and no warning is raised).
  *   3. Physical quota: QuotaCheck hook. Current implementation always passes
  *      (real environment quota is Sprint S9d7fdb). The interface is defined here.
  *
@@ -277,6 +281,12 @@ export interface GateResult {
   passed: boolean;
   /** Reasons for blocking. Human-readable IDs + descriptions. */
   blockedBy: string[];
+  /**
+   * Non-blocking warnings.
+   * PO 裁定 2026-08-17: scope_overlap は待ち→警告に緩和。重複してもタスクは進める
+   * （passed=true）。警告は gate_evaluated イベントに載せてログに残す。
+   */
+  warnings: string[];
 }
 
 // ── GateEvaluator ─────────────────────────────────────────────────────────────
@@ -297,6 +307,7 @@ export class GateEvaluator {
    */
   evaluate(task: TaskRecord, allTasks: TaskRecord[]): GateResult {
     const blockedBy: string[] = [];
+    const warnings: string[] = [];
 
     // ── Condition 1: dependency graph ─────────────────────────────────────────
     const depends = task["depends"];
@@ -324,6 +335,9 @@ export class GateEvaluator {
     }
 
     // ── Condition 2: scope overlap × unreviewed temporal ancestor ────────────
+    // PO 裁定 2026-08-17: 並行度を上げるため待ち→警告に緩和。衝突はマージ時の
+    // rebase と差戻（rebase_conflict → rework）で処理する。重複は blockedBy に
+    // 入れず warnings に記録し、タスクはそのまま進める（ready へ）。ゲート自体は残す。
     const taskPaths = this.getScopePaths(task);
     if (taskPaths.length > 0) {
       // Temporal ancestors: tasks in the same project that were created BEFORE
@@ -349,7 +363,8 @@ export class GateEvaluator {
       for (const ancestor of ancestors) {
         const ancestorPaths = this.getScopePaths(ancestor);
         if (ancestorPaths.length > 0 && scopePathsOverlap(taskPaths, ancestorPaths)) {
-          blockedBy.push(`${ancestor.id}(scope_overlap:${ancestor.status})`);
+          // 待ちではなく警告（PO 裁定 2026-08-17）。タスクは進めてよい。
+          warnings.push(`${ancestor.id}(scope_overlap:${ancestor.status})`);
         }
       }
     }
@@ -362,6 +377,7 @@ export class GateEvaluator {
     return {
       passed: blockedBy.length === 0,
       blockedBy,
+      warnings,
     };
   }
 
@@ -398,7 +414,15 @@ function gateResultKey(result: GateResult): string {
       return parenIdx === -1 ? entry : entry.slice(0, parenIdx);
     })
     .sort();
-  return `${result.passed}:${ids.join(",")}`;
+  // Warnings are part of the result: a change in which scope ancestors are
+  // overlapping (e.g. they resolve, or a new one appears) must be re-recorded.
+  const warnIds = result.warnings
+    .map((entry) => {
+      const parenIdx = entry.indexOf("(");
+      return parenIdx === -1 ? entry : entry.slice(0, parenIdx);
+    })
+    .sort();
+  return `${result.passed}:${ids.join(",")}|w:${warnIds.join(",")}`;
 }
 
 // ── evaluatePendingGates: the main loop ───────────────────────────────────────
@@ -456,6 +480,8 @@ export function evaluatePendingGates(
         taskId: task.id,
         passed: result.passed,
         blockedBy: result.blockedBy,
+        // PO 裁定 2026-08-17: scope_overlap は待ち→警告。ログに残して進める。
+        warnings: result.warnings,
       });
       wsServer.broadcast(gateEvent);
     }

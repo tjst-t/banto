@@ -323,7 +323,10 @@ export function createKoboTools(daemon: Daemon): NamespacedToolDefinition[] {
                   ? e.reason
                   : e.type === "gate_evaluated"
                     ? e.passed
-                      ? "通過"
+                      ? e.warnings && e.warnings.length > 0
+                        // PO 裁定 2026-08-17: scope_overlap は待ち→警告。進めるがログに残す
+                        ? `通過（警告: ${e.warnings.join(", ")}）`
+                        : "通過"
                       : `待ち: ${e.blockedBy.join(", ")}`
                     : e.type === "task_contract_amended"
                       // **版が読めないと「何に対して監査したか」が答えられない**（task-0082）

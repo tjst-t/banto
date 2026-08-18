@@ -97,6 +97,11 @@ export interface GateEvaluatedEvent extends EventBase {
   taskId: string;
   passed: boolean;
   blockedBy: string[];
+  /**
+   * 非ブロックの警告（PO 裁定 2026-08-17: scope_overlap は待ち→警告に緩和）。
+   * 重複しても passed=true で進める。古い帳簿のイベントには無いため optional。
+   */
+  warnings?: string[];
 }
 
 /**

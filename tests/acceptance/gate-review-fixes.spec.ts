@@ -2,9 +2,11 @@
 //
 // Fix 1 (temporal ancestor ordering / deadlock):
 //   Two tasks with overlapping scope enter queued at the same time.
-//   The earlier-created task (T1) must be promoted to ready immediately.
-//   The later-created task (T2) must stay queued until T1 passes review.
-//   After T1 is approved, T2 must be promoted. No deadlock must occur.
+//   The earlier-created task (T1) is promoted to ready immediately.
+//   The later-created task (T2) is ALSO promoted — PO 裁定 2026-08-17: スコープ重複は
+//   待ち→警告に緩和。デッドロックはそもそも発生しない（重複で止めることが無い）。
+//   T2 のゲート判定には warnings=[t1(scope_overlap:...)] が載る。
+//   T1 が approved になると、以後の重複タスクには T1 由来の警告が付かない。
 //
 // Fix 2 (gate_evaluated dedup):
 //   A blocked task that remains blocked across multiple ticks must NOT
@@ -75,6 +77,8 @@ interface GateEvent {
   taskId?: string;
   passed?: boolean;
   blockedBy?: string[];
+  /** PO 裁定 2026-08-17: scope_overlap は待ち→警告。passed=true の側に載る */
+  warnings?: string[];
 }
 
 async function getGateEvents(base: string, proj: string, taskId: string): Promise<GateEvent[]> {
@@ -88,7 +92,7 @@ async function getGateEvents(base: string, proj: string, taskId: string): Promis
 // Fix 1: Temporal ancestor ordering / deadlock prevention
 // ────────────────────────────────────────────────────────────────────────────
 
-describe("[Scc9152-2-fix1] Temporal ancestor ordering prevents deadlock", () => {
+describe("[Scc9152-2-fix1] 重複スコープの同時投入がデッドロックしない（待ち→警告, PO 裁定 2026-08-17）", () => {
   let tmpDir: string;
   let daemon: Daemon;
   let base: string;
@@ -118,10 +122,10 @@ describe("[Scc9152-2-fix1] Temporal ancestor ordering prevents deadlock", () => 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("[fix1-a] earlier-created task (T1) promotes to ready; later-created (T2) stays queued", async () => {
+  it("[fix1-a] 同時に積んだ重複タスクはどちらも ready へ（待ちが発生しない）", async () => {
     // Create T1 first, then T2. Both have overlapping scope (src/shared/**).
-    // T1 was created before T2, so T1 has no temporal ancestors → promoted.
-    // T2 sees T1 as a temporal ancestor → deferred.
+    // PO 裁定 2026-08-17: 重複は待ち→警告。T2 は T1 を temporal ancestor として
+    // warnings に載せるが、待たずに ready へ進む。
     await fetch(`${base}/api/v1/projects/proj-fix1/tasks`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -156,25 +160,7 @@ describe("[Scc9152-2-fix1] Temporal ancestor ordering prevents deadlock", () => 
     );
     assert.equal(t1Status, "ready", "T1 (earlier-created) must be promoted to ready");
 
-    // T2 should remain queued (T1 is a temporal ancestor with overlapping scope)
-    // Give the gate enough time to evaluate T2 too
-    await new Promise((r) => setTimeout(r, 500));
-    const t2Status = await getStatus(base, "proj-fix1", "t2-fix1");
-    assert.equal(
-      t2Status,
-      "queued",
-      "T2 (later-created) must stay queued: T1 is an overlapping temporal ancestor"
-    );
-  });
-
-  it("[fix1-b] after T1 passes review, T2 is promoted (no deadlock)", async () => {
-    // Advance T1 through to approved (passes review)
-    await transitionTask(
-      base, "proj-fix1", "t1-fix1",
-      "planning", "implementing", "auditing", "review-ready", "in-review", "approved"
-    );
-
-    // T2 must now be promoted to ready
+    // PO 裁定 2026-08-17: 重複しても待たない——T2 も ready へ進む
     const t2Status = await pollUntil(
       () => getStatus(base, "proj-fix1", "t2-fix1"),
       (s) => s === "ready",
@@ -183,7 +169,73 @@ describe("[Scc9152-2-fix1] Temporal ancestor ordering prevents deadlock", () => 
     assert.equal(
       t2Status,
       "ready",
-      "T2 must be promoted to ready after T1 is approved (temporal ancestor resolved)"
+      "T2 (later-created) must also be ready: 重複は待ちでなく警告（PO 裁定 2026-08-17）"
+    );
+
+    // T2 のゲート判定は passed=true で、警告に T1(scope_overlap) が載っている
+    const evtRes = await fetch(`${base}/api/v1/projects/proj-fix1/tasks/t2-fix1/events`);
+    const evtBody = await evtRes.json() as { events: GateEvent[] };
+    const gateEvents = evtBody.events.filter((e) => e.type === "gate_evaluated");
+    const passedEvent = gateEvents.find((e) => e.passed === true);
+    assert.ok(passedEvent !== undefined, "T2 must have a gate_evaluated(passed=true)");
+    assert.ok(
+      passedEvent.warnings?.some(
+        (w) => w.startsWith("t1-fix1") && w.includes("scope_overlap")
+      ),
+      `T2 warnings must mention t1-fix1(scope_overlap:...), got: ${JSON.stringify(passedEvent.warnings)}`
+    );
+    // 待ち（blockedBy / passed=false）には載らない
+    assert.equal(
+      gateEvents.some(
+        (e) => (e.blockedBy ?? []).some((b) => b.includes("scope_overlap"))
+      ),
+      false,
+      "scope_overlap must never appear in blockedBy"
+    );
+  });
+
+  it("[fix1-b] 祖先が approved になると、その祖先からの警告は付かなくなる", async () => {
+    // Advance T1 through to approved (passes review)
+    await transitionTask(
+      base, "proj-fix1", "t1-fix1",
+      "planning", "implementing", "auditing", "review-ready", "in-review", "approved"
+    );
+
+    // T3 は T1 と同じ src/shared/** を持つ。T1 は approved（レビュー済み）＝
+    // unreviewed 祖先ではない → T1 由来の警告は付かない。
+    // ただし T2（未レビューのまま ready）とは重なる → T2 由来の警告は付く。
+    await fetch(`${base}/api/v1/projects/proj-fix1/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "t3-fix1",
+        title: "T3 - created after T1 approved",
+        scope: { paths: ["src/shared/**"] },
+      }),
+    });
+    await transitionTask(base, "proj-fix1", "t3-fix1", "queued");
+
+    const t3Status = await pollUntil(
+      () => getStatus(base, "proj-fix1", "t3-fix1"),
+      (s) => s === "ready",
+      5000
+    );
+    assert.equal(t3Status, "ready", "T3 must be ready");
+
+    const evtRes = await fetch(`${base}/api/v1/projects/proj-fix1/tasks/t3-fix1/events`);
+    const evtBody = await evtRes.json() as { events: GateEvent[] };
+    const passedEvent = evtBody.events
+      .filter((e) => e.type === "gate_evaluated")
+      .find((e) => e.passed === true);
+    assert.ok(passedEvent !== undefined, "T3 must have a gate_evaluated(passed=true)");
+    const warns = passedEvent.warnings ?? [];
+    assert.ok(
+      !warns.some((w) => w.startsWith("t1-fix1")),
+      `T3 must NOT warn about t1-fix1 (approved), got: ${JSON.stringify(warns)}`
+    );
+    assert.ok(
+      warns.some((w) => w.startsWith("t2-fix1") && w.includes("scope_overlap")),
+      `T3 must warn about t2-fix1 (still unreviewed), got: ${JSON.stringify(warns)}`
     );
   });
 });

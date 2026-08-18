@@ -1,14 +1,19 @@
 /**
  * AC-Scc9152-2-2: Gate condition 2 — scope.paths overlap with unreviewed ancestor
- * causes spawn deferral; non-overlapping scope allows parallel execution.
+ * is now a WARNING, not a block (PO 裁定 2026-08-17): the task proceeds to ready.
+ * Non-overlapping scope runs in parallel without any warning.
+ *
+ * PO 裁定 2026-08-17: 並行度を上げるため待ち→警告に緩和。衝突はマージ時の rebase と
+ * 差戻（rebase_conflict → rework）で処理する。ゲート自体は残す——重複で止めず、
+ * gate_evaluated(passed=true, warnings=[...scope_overlap...]) に載せて進める。
  *
  * Spec-multi-project §3 condition 2:
  *   - If there exists an unreviewed ancestor (queued/ready/.../in-review) in the
  *     same project whose scope.paths overlaps with the candidate's scope.paths,
- *     the candidate stays in queued.
- *   - If no such overlap, the candidate is promoted to ready (parallel OK).
- *   - When the ancestor passes review (reaches approved/merging/merged/etc.),
- *     the blocked task is re-evaluated and promoted.
+ *     the overlap is recorded as a warning and the candidate is promoted to ready.
+ *   - If no such overlap, the candidate is promoted to ready with no warning.
+ *   - Overlap detection itself (globsOverlap / scopePathsOverlap) is unchanged —
+ *     only the consequence changed from "stay queued" to "warn and proceed".
  *
  * Uses real Daemon (port=0) with HTTP API. No watcher (tasks created via API).
  * Tick interval is set large (60s) to confirm promotion is driven by state
@@ -50,7 +55,8 @@ describe("[AC-Scc9152-2-3] scope overlap decision (pure function)", () => {
     ["packages/banto-daemon/src/gate-evaluator.ts", "packages/banto-host/src/bin.ts"],
   ];
 
-  // a2 — genuinely intersecting: the gate must keep blocking these.
+  // a2 — genuinely intersecting: the detector must keep flagging these.
+  //      (PO 裁定 2026-08-17: 待ち→警告に緩和。検出自体は変えない)
   const OVERLAPPING: Array<[string, string]> = [
     ["packages/**", "packages/banto-host/src/x.ts"],
     ["tests/acceptance/**", "tests/acceptance/foo.spec.ts"],
@@ -68,13 +74,14 @@ describe("[AC-Scc9152-2-3] scope overlap decision (pure function)", () => {
 
   for (const [a, b] of OVERLAPPING) {
     it(`[AC-Scc9152-2-3b] '${a}' overlaps '${b}'`, () => {
-      assert.equal(globsOverlap(a, b), true, `${a} vs ${b} must still be blocked`);
+      assert.equal(globsOverlap(a, b), true, `${a} vs ${b} must still overlap (warn, not wait)`);
       assert.equal(globsOverlap(b, a), true, "overlap must be symmetric");
     });
   }
 
   it("[AC-Scc9152-2-3c] a catch-all pattern still collides with everything", () => {
-    // Undecidable at prefix granularity → block. Never loosen this.
+    // Undecidable at prefix granularity → always flag. Never loosen this:
+    // the warning must remain honest, or parallel tasks will silently collide.
     assert.equal(globsOverlap("**", "packages/banto-daemon/src/gate-evaluator.ts"), true);
     assert.equal(globsOverlap("*", "docs/adr/adr-0009.md"), true);
   });
@@ -180,7 +187,7 @@ describe("[AC-Scc9152-2-2] Gate condition 2: scope.paths overlap with unreviewed
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("[AC-Scc9152-2-2a] overlapping scope with unreviewed ancestor → spawn deferred (queued)", async () => {
+  it("[AC-Scc9152-2-2a] overlapping scope with unreviewed ancestor → 警告のみで ready（PO 裁定 2026-08-17）", async () => {
     // Create and advance ancestor task-0020 to 'implementing' (unreviewed)
     // scope: src/shared/**
     await fetch(`${base}/api/v1/projects/proj-scope/tasks`, {
@@ -214,14 +221,16 @@ describe("[AC-Scc9152-2-2] Gate condition 2: scope.paths overlap with unreviewed
     });
     await transitionTask(base, "proj-scope", "task-0021", "queued");
 
-    // Wait a moment for gate to evaluate (transition-driven, fires immediately)
-    await new Promise((r) => setTimeout(r, 400));
-
-    const status21 = await getStatus(base, "proj-scope", "task-0021");
+    // PO 裁定 2026-08-17: スコープ重複は待ちではなく警告。即座に ready へ進む
+    const status21 = await pollUntil(
+      () => getStatus(base, "proj-scope", "task-0021"),
+      (s) => s === "ready",
+      3000
+    );
     assert.equal(
       status21,
-      "queued",
-      "task-0021 must stay queued: scope overlaps with unreviewed ancestor task-0020"
+      "ready",
+      "task-0021 must proceed to ready despite scope overlap with unreviewed ancestor task-0020 (PO 裁定 2026-08-17: 待ち→警告)"
     );
   });
 
@@ -252,25 +261,38 @@ describe("[AC-Scc9152-2-2] Gate condition 2: scope.paths overlap with unreviewed
     );
   });
 
-  it("[AC-Scc9152-2-2c] task promotes to ready after ancestor passes review (approved)", async () => {
-    // Advance task-0020 to 'approved' (passes review)
-    await transitionTask(
-      base, "proj-scope", "task-0020",
-      "auditing", "review-ready", "in-review", "approved"
-    );
+  it("[AC-Scc9152-2-2c] scope_overlap は gate_evaluated(passed=true, warnings) に載る（待ちではない）", async () => {
+    // task-0021 は 2-2a で重複のまま ready へ昇格済み。PO 裁定 2026-08-17:
+    // 重複は待ち（blockedBy / passed=false）でなく警告（warnings / passed=true）として
+    // ログに残して進める。その証跡をイベントログで検証する。
+    const statusRes = await fetch(`${base}/api/v1/projects/proj-scope/tasks/task-0021`);
+    const statusBody = await statusRes.json() as { task: { status: string } };
+    assert.equal(statusBody.task.status, "ready", "task-0021 must be ready");
 
-    // task-0021 was blocked by scope overlap. Now the ancestor is approved → resolved.
-    // Gate re-evaluation fires on the transition call above → task-0021 should promote.
-    const finalStatus = await pollUntil(
-      () => getStatus(base, "proj-scope", "task-0021"),
-      (s) => s === "ready",
-      5000
+    const evtRes = await fetch(`${base}/api/v1/projects/proj-scope/tasks/task-0021/events`);
+    const evtBody = await evtRes.json() as {
+      events: Array<{ type: string; passed?: boolean; blockedBy?: string[]; warnings?: string[] }>;
+    };
+    const gateEvents = evtBody.events.filter((e) => e.type === "gate_evaluated");
+    const passedEvent = gateEvents.find((e) => e.passed === true);
+    assert.ok(passedEvent !== undefined, "a gate_evaluated(passed=true) must be recorded");
+
+    // 警告に祖先（task-0020）と理由（scope_overlap）が載っている
+    assert.ok(
+      Array.isArray(passedEvent.warnings) && passedEvent.warnings.length > 0,
+      `warnings must be non-empty, got: ${JSON.stringify(passedEvent.warnings)}`
     );
-    assert.equal(
-      finalStatus,
-      "ready",
-      "task-0021 must be promoted to ready once ancestor task-0020 passes review (approved)"
+    assert.ok(
+      passedEvent.warnings!.some(
+        (w) => w.startsWith("task-0020") && w.includes("scope_overlap")
+      ),
+      `warnings must mention task-0020(scope_overlap:...), got: ${JSON.stringify(passedEvent.warnings)}`
     );
+    // 待ち（blockedBy / passed=false）には scope_overlap が載らない
+    const blockedWithScope = gateEvents.some(
+      (e) => e.passed === false && (e.blockedBy ?? []).some((b) => b.includes("scope_overlap"))
+    );
+    assert.equal(blockedWithScope, false, "scope_overlap must never appear in blockedBy");
   });
 
   it("[AC-Scc9152-2-2d] glob intersection: 'src/**' overlaps with 'src/a/b.ts'", async () => {
@@ -289,7 +311,8 @@ describe("[AC-Scc9152-2-2] Gate condition 2: scope.paths overlap with unreviewed
       "queued", "ready", "planning", "implementing"
     );
 
-    // Task with narrow scope inside src/ — should be blocked by overlap
+    // Task with narrow scope inside src/ — overlaps src/**, but that is now only
+    // a warning (PO 裁定 2026-08-17): the task proceeds to ready
     await fetch(`${base}/api/v1/projects/proj-scope/tasks`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -301,17 +324,19 @@ describe("[AC-Scc9152-2-2] Gate condition 2: scope.paths overlap with unreviewed
     });
     await transitionTask(base, "proj-scope", "task-0031", "queued");
 
-    await new Promise((r) => setTimeout(r, 400));
-
-    const status31 = await getStatus(base, "proj-scope", "task-0031");
+    const finalStatus31 = await pollUntil(
+      () => getStatus(base, "proj-scope", "task-0031"),
+      (s) => s === "ready",
+      3000
+    );
     assert.equal(
-      status31,
-      "queued",
-      "task-0031 (src/a/b.ts) must be blocked by task-0030 (src/**) — overlap detected"
+      finalStatus31,
+      "ready",
+      "task-0031 (src/a/b.ts) must proceed to ready despite overlapping task-0030 (src/**) — 警告のみ（PO 裁定 2026-08-17）"
     );
   });
 
-  it("[AC-Scc9152-2-2e] 'src/**' and 'src/**' overlap (same prefix)", async () => {
+  it("[AC-Scc9152-2-2e] 'src/**' and 'src/**' overlap (same prefix) → 警告のみで ready", async () => {
     // Create another task with scope src/** while task-0030 is still implementing
     await fetch(`${base}/api/v1/projects/proj-scope/tasks`, {
       method: "POST",
@@ -324,13 +349,15 @@ describe("[AC-Scc9152-2-2] Gate condition 2: scope.paths overlap with unreviewed
     });
     await transitionTask(base, "proj-scope", "task-0032", "queued");
 
-    await new Promise((r) => setTimeout(r, 400));
-
-    const status32 = await getStatus(base, "proj-scope", "task-0032");
+    const finalStatus32 = await pollUntil(
+      () => getStatus(base, "proj-scope", "task-0032"),
+      (s) => s === "ready",
+      3000
+    );
     assert.equal(
-      status32,
-      "queued",
-      "task-0032 (src/**) must be blocked by task-0030 (src/**) — identical prefix overlap"
+      finalStatus32,
+      "ready",
+      "task-0032 (src/**) must proceed to ready despite identical-prefix overlap with task-0030 (src/**) — 警告のみ（PO 裁定 2026-08-17）"
     );
   });
 

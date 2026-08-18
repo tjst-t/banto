@@ -8,6 +8,8 @@
  *   - blockedBy entries identify both the blocking task ID and the reason
  *   - Multiple evaluations may appear; the sequence shows the progression
  *     from blocked → passed when a block is resolved
+ *   - scope_overlap は待ち→警告（PO 裁定 2026-08-17）: gate_evaluated(passed=true,
+ *     warnings=[...scope_overlap...]) に載り、blockedBy には入らない
  *
  * Uses real Daemon (port=0). All observation via HTTP API.
  */
@@ -65,6 +67,8 @@ interface GateEvent {
   taskId?: string;
   passed?: boolean;
   blockedBy?: string[];
+  /** PO 裁定 2026-08-17: scope_overlap が待ち→警告に緩和され、ここに載る */
+  warnings?: string[];
 }
 
 async function getGateEvents(base: string, proj: string, taskId: string): Promise<GateEvent[]> {
@@ -282,7 +286,7 @@ describe("[AC-Scc9152-2-3] Gate evaluation is recorded as gate_evaluated events"
     );
   });
 
-  it("[AC-Scc9152-2-3d] scope-overlap block records gate_evaluated with scope ancestor reference", async () => {
+  it("[AC-Scc9152-2-3d] scope overlap records gate_evaluated(passed=true, warnings) with scope ancestor reference（PO 裁定 2026-08-17）", async () => {
     // Create ancestor task-0080 with scope src/shared/**
     await fetch(`${base}/api/v1/projects/proj-events/tasks`, {
       method: "POST",
@@ -317,30 +321,39 @@ describe("[AC-Scc9152-2-3] Gate evaluation is recorded as gate_evaluated events"
     });
     await transitionTask(base, "proj-events", "task-0081", "queued");
 
-    // Wait for gate_evaluated(passed=false) event
+    // PO 裁定 2026-08-17: 重複は待ち→警告。gate_evaluated(passed=true, warnings=[...]) を待つ
     const gateEvents = await pollUntil(
       () => getGateEvents(base, "proj-events", "task-0081"),
-      (evts) => evts.some((e) => e.passed === false),
+      (evts) => evts.some((e) => e.passed === true),
       3000
     );
 
-    const blockedEvent = gateEvents.find((e) => e.passed === false);
-    assert.ok(blockedEvent !== undefined, "must have a blocked gate event");
+    const passedEvent = gateEvents.find((e) => e.passed === true);
+    assert.ok(passedEvent !== undefined, "must have a passed gate event");
+    // task-0081 は重複でも ready へ進む（待ちではない）
+    const statusRes = await fetch(`${base}/api/v1/projects/proj-events/tasks/task-0081`);
+    const statusBody = await statusRes.json() as { task: { status: string } };
+    assert.equal(statusBody.task.status, "ready", "task-0081 must be ready despite overlap");
+
+    // warnings は空でなく、祖先 task-0080 と理由 scope_overlap を載せる
     assert.ok(
-      Array.isArray(blockedEvent.blockedBy) && blockedEvent.blockedBy.length > 0,
-      "blockedBy must be non-empty"
+      Array.isArray(passedEvent.warnings) && passedEvent.warnings.length > 0,
+      `warnings must be non-empty, got: ${JSON.stringify(passedEvent.warnings)}`
     );
-    // blockedBy must mention task-0080 (the scope ancestor)
-    const mentionsAncestor = blockedEvent.blockedBy!.some((b) => b.startsWith("task-0080"));
+    const mentionsAncestor = passedEvent.warnings!.some((w) => w.startsWith("task-0080"));
     assert.ok(
       mentionsAncestor,
-      `blockedBy must mention task-0080 (scope ancestor), got: ${JSON.stringify(blockedEvent.blockedBy)}`
+      `warnings must mention task-0080 (scope ancestor), got: ${JSON.stringify(passedEvent.warnings)}`
     );
-    // Reason must mention scope_overlap
-    const mentionsScope = blockedEvent.blockedBy!.some((b) => b.includes("scope_overlap"));
+    const mentionsScope = passedEvent.warnings!.some((w) => w.includes("scope_overlap"));
     assert.ok(
       mentionsScope,
-      `blockedBy must mention scope_overlap reason, got: ${JSON.stringify(blockedEvent.blockedBy)}`
+      `warnings must mention scope_overlap reason, got: ${JSON.stringify(passedEvent.warnings)}`
     );
+    // 待ち（blockedBy）には scope_overlap が載らない
+    const scopeInBlockedBy = gateEvents.some(
+      (e) => (e.blockedBy ?? []).some((b) => b.includes("scope_overlap"))
+    );
+    assert.equal(scopeInBlockedBy, false, "scope_overlap must never appear in blockedBy");
   });
 });
