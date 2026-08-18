@@ -153,6 +153,22 @@ export interface KoboNoticeOptions {
    * 伝えるだけ（D5）。知らせの配信とは独立に動く（終端は知らせにならないことがある）。
    */
   onTaskClosed?(info: { projectTag: string; taskId: string; to: string }): void;
+  /**
+   * 起動時スイープ（task-0276）: **仕組導入前に残った stale 取次を一度だけ掃く**。
+   *
+   * task-0273（`onTaskClosed`）は今後タスクが終端遷移した**イベント**でしか発火しない。
+   * その仕組の導入前に閉じたタスク（task-0270 / task-0271 等）に紐づく未解決の取次は
+   * 誰にも解決されないまま残る——PO UI で押してもタスクが review-ready でないためエラーになる。
+   *
+   * ここは起動時に一度だけ、工場が終端としているタスクを `kobo.list` で列挙し、
+   * それぞれに紐づく未解決の取次を `sweepStaleInboxForTerminalTasks`（`Inbox.resolveStale`）
+   * で「古い」として畳む（呼び出し側・bin.ts がその結線を持つ。D5）。
+   *
+   * 失敗しても起動は止めない——畳み損ねは次に起動したときに掃き直す（I2）。
+   */
+  sweepStaleOnStartup?(
+    invoke: (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>
+  ): Promise<void>;
 }
 
 /**
@@ -422,6 +438,14 @@ export function startKoboNotices(options: KoboNoticeOptions): () => void {
   timer.unref?.();
   // 起動直後に一度引く（落ちている間に溜まったものを待たせない）
   void tick();
+  // 起動時スイープ（task-0276）: 仕組導入前に残った stale 取次を一度だけ掃く。
+  // 将来の終端遷移は tick 内の `onTaskClosed` が受け持つので、掃くのは起動時の1回だけ。
+  // I2: 失敗しても起動は止めない（畳み損ねは次に起動したときに掃き直す）
+  if (options.sweepStaleOnStartup) {
+    void options
+      .sweepStaleOnStartup(invoke)
+      .catch((err) => log(`[banto] 起動時の残存取次スイープに失敗しました: ${String(err)}`));
+  }
 
   return () => {
     stopped = true;

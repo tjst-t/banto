@@ -68,6 +68,7 @@ import {
   koboReviewTarget,
   koboAmendTarget,
   resolveStaleInboxForTask,
+  sweepStaleInboxForTerminalTasks,
   type KoboPoDecision,
 } from "./kobo-po-decision.js";
 import { UserThemes } from "./user-themes.js";
@@ -2140,6 +2141,20 @@ async function serve(options: ServeOptions): Promise<void> {
     // 「古い」として自動で畳む。黙って消さず、履歴に stale:<状態> として残す。
     onTaskClosed: ({ projectTag, taskId, to }) => {
       resolveStaleInboxForTask(inbox, projectTag, taskId, to);
+    },
+    // task-0276: 仕組導入前に残った stale 取次を起動時に掃く。工場が終端（closed /
+    // superseded）としているタスクを全部挙げ、それぞれに紐づく未解決の取次を
+    // `resolveStaleInboxForTask` で「古い」として畳む（黙って消さず、履歴に理由を残す）。
+    // 将来の終端遷移は上の `onTaskClosed` が受け持つ——掃くのは起動時の1回だけ。
+    sweepStaleOnStartup: async (invoke) => {
+      await sweepStaleInboxForTerminalTasks(inbox, async (state) => {
+        const details = await invoke("kobo.list", { state });
+        return ((details["tasks"] ?? []) as Array<{
+          taskId: string;
+          projectTag: string;
+          status: string;
+        }>);
+      });
     },
   });
 

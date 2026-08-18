@@ -291,6 +291,8 @@ export {
   koboReviewTarget,
   koboAmendTarget,
   resolveStaleInboxForTask,
+  sweepStaleInboxForTerminalTasks,
+  type TerminalTaskRow,
   KOBO_PO_DECIDE_TOOL,
   KOBO_REVIEW_CANVAS_KIND,
   KOBO_AMEND_CANVAS_KIND,

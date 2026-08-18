@@ -265,3 +265,65 @@ export function resolveStaleInboxForTask(
   }
   return closed;
 }
+
+/** `kobo.list` が `details.tasks` に載せる、スイープに足る1行分の形。 */
+export interface TerminalTaskRow {
+  taskId: string;
+  projectTag: string;
+  status: string;
+}
+
+/**
+ * 終端と見なして掃く状態（task-0276）。
+ *
+ * settle / abandon / close はいずれも工場では `status: "closed"` になるため、ここに列挙する
+ * 2状態で「closed / superseded / settled」のすべてに届く。生きているタスク（queued /
+ * gating / implementing / auditing / review-ready / merging / approved）はここに入らないので、
+ * 判断待ちの札は巻き込まれない（a2）。
+ */
+const TERMINAL_STATES = ["closed", "superseded"] as const;
+
+/**
+ * 起動時スイープ: **仕組導入前に残った stale 取次をまとめて掃く**（task-0276）。
+ *
+ * task-0273（`resolveStaleInboxForTask`）は「今後タスクが終端遷移したイベント」が来たとき
+ * にしか発火しない——task-0270 / task-0271 などはその仕組の導入前に閉じたので、紐づく
+ * 取次（PO レビュー依頼・amend 依頼）が誰にも解決されずに残っていた。PO UI で
+ * 「通す／差し戻す」を押しても、タスクが review-ready でないためエラーになる。
+ *
+ * ここは起動時に一度だけ、工場が終端としているタスクを**全部**挙げ、それぞれに紐づく
+ * 未解決の取次を `resolveStaleInboxForTask`（`Inbox.resolveStale`）で「古い」として畳む。
+ *
+ * **黙って消さない**（I2）。解決の記録は取次の履歴に `stale:<状態>` として残るので、
+ * あとから「どの札が、なぜ古くなったか」が追える（a3）。
+ *
+ * `listTerminalTasks` は呼び出し側（bin.ts）が `kobo.list`（`state` を指定）に結ぶ。
+ * **引けなかったことを「掃けた」で包まない**——ログに残して起動は止めず、次に起動した
+ * ときに掃き直す（I2）。
+ *
+ * 戻り値は畳んだ札の id 一覧（テストや動作確認に使う。D5: 判断は無い）。
+ */
+export async function sweepStaleInboxForTerminalTasks(
+  inbox: Inbox,
+  listTerminalTasks: (state: string) => Promise<TerminalTaskRow[]>,
+  log: (message: string) => void = () => {}
+): Promise<string[]> {
+  const resolved: string[] = [];
+  for (const state of TERMINAL_STATES) {
+    let tasks: TerminalTaskRow[];
+    try {
+      tasks = await listTerminalTasks(state);
+    } catch (err) {
+      log(`[banto] ${state} タスクの残存取次スイープが引けませんでした: ${String(err)}`);
+      continue;
+    }
+    for (const task of tasks) {
+      // marker はタスクの現状（settled / abandoned は status: "closed"）——履歴に残る理由。
+      // `status` を信用せず空なら state を代わりに使う（空行から掛け離れないように）
+      resolved.push(
+        ...resolveStaleInboxForTask(inbox, task.projectTag, task.taskId, task.status || state)
+      );
+    }
+  }
+  return resolved;
+}
