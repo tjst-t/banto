@@ -733,6 +733,39 @@ export function formatTime(iso: string | undefined): string {
 }
 
 /**
+ * 会話の日時表示に使う **JST 固定** のフォーマッタ（task-0279）。
+ *
+ * 記録は UTC ISO（ホスト側）、表示は出口で JST に直す（task-0180 の方針）。
+ * ブラウザ任せの既存 `formatTime` とは別物——会話の時刻は誰の環境で見ても同じ見え方にする。
+ * タイムゾーン名はここに1箇所だけ置く。
+ */
+const JST_TIME_ZONE = "Asia/Tokyo";
+
+/** 時刻のみ（`14:05`・JST 固定）。読めないものは空文字。 */
+export function formatJstTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("ja-JP", {
+    timeZone: JST_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+}
+
+/** 日付（`8/18(火)`・JST 固定）。区切り線の「日付が変わったか」の判定にも使う。 */
+export function formatJstDate(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("ja-JP", {
+    timeZone: JST_TIME_ZONE,
+    month: "numeric",
+    day: "numeric",
+    weekday: "short",
+  }).format(date);
+}
+
+/**
  * 狭いとき、読んでいる間だけ道具立てを退かせる（`spec-canvas-ui` §3.1・PO報告 2026-08-08）。
  *
  * 390×780 でファイルを開くと、本文に残るのは 411px＝画面の 53% だった。畳めるものを

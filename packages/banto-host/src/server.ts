@@ -1821,12 +1821,15 @@ export class BantoHostServer {
        * その古い `finally` が返してしまい、知らせが走り出して幹がまた塞がる。
        */
       const floor = thread.claimFloor();
-      thread.record({ role: "po", text: displayText, ...withAttachments });
+      // 記録と配信で同じ時刻を使う（task-0279）——発話が積まれた瞬間を1つ作り、両方に載せる
+      const at = new Date().toISOString();
+      thread.record({ role: "po", text: displayText, ...withAttachments, at });
       this.broadcast({
         type: "po_message",
         threadId: thread.id,
         text: displayText,
         ...withAttachments,
+        at,
       });
       // T1: ターン1本を台帳へ書く口（PO の発話＝ source "po"）
       let turnStartedAt = 0;

@@ -28,6 +28,7 @@ import {
   threadOrigin,
   type HostSession,
   type ServerEvent,
+  type TranscriptEntry,
 } from "@banto/host";
 import { TRUNK, branchSpec } from "./threadSpecs.js";
 import type { BantoHarness, HarnessEvent } from "@banto/core";
@@ -154,6 +155,25 @@ function waitFor(
   });
 }
 
+/**
+ * task-0279: 会話の各行に記録時刻 `at`（UTC ISO）が付くようになった。
+ * 中身の比較からは `at` を除き、付いていること自体は `assertAllHaveAt` で確かめる。
+ */
+function withoutAt(entries: readonly TranscriptEntry[]): Array<Record<string, unknown>> {
+  return entries.map(({ at: _at, ...rest }) => rest);
+}
+
+/** どの行にも `at`（UTC ISO）が付いていること。 */
+function assertAllHaveAt(entries: readonly TranscriptEntry[]): void {
+  assert.ok(entries.length > 0, "at を確かめる対象の行があること");
+  for (const entry of entries) {
+    assert.ok(
+      typeof entry.at === "string" && !Number.isNaN(new Date(entry.at).getTime()),
+      `${entry.role} の行に at（UTC ISO）が付くこと（実際: ${JSON.stringify(entry.at)}）`
+    );
+  }
+}
+
 describe("[task-0088/a1] 幹はプロジェクトの単位で、畳めない（ADR-0017 決定77）", () => {
   it("[task-0088/a1] 幹は何本でも開ける（幹＝プロジェクト・PO裁定 2026-08-09）", async () => {
     const a = await threads.open({ kind: "trunk", title: "banto" });
@@ -172,7 +192,7 @@ describe("[task-0088/a1] 幹はプロジェクトの単位で、畳めない（A
     assert.equal(onB.parentId, b.id);
     // 札が立つのは**その幹**だけ
     assert.deepEqual(
-      b.transcript.filter((e) => e.role === "branch"),
+      withoutAt(b.transcript.filter((e) => e.role === "branch")),
       [{ role: "branch", branchId: onB.id }]
     );
     assert.deepEqual(a.transcript, []);
@@ -587,7 +607,8 @@ describe("[task-0035/a3] イベントとメッセージがスレッドで分か�
     try {
       await waitFor(events, (e) => e.type === "history" && e.threadId === second.id);
       const forSecond = events.find((e) => e.type === "history" && e.threadId === second.id);
-      assert.deepEqual(forSecond?.type === "history" && forSecond.entries, [
+      assertAllHaveAt(forSecond?.type === "history" ? forSecond.entries : []);
+      assert.deepEqual(forSecond?.type === "history" && withoutAt(forSecond.entries), [
         { role: "po", text: "あっちの話" },
       ]);
       assert.equal(
@@ -603,7 +624,8 @@ describe("[task-0035/a3] イベントとメッセージがスレッドで分か�
         (e) => e.type === "history" && e.threadId === threads.resolve().id
       );
       // 幹には枝の札も立っている（決定77）
-      assert.deepEqual(forFirst?.type === "history" && forFirst.entries, [
+      assertAllHaveAt(forFirst?.type === "history" ? forFirst.entries : []);
+      assert.deepEqual(forFirst?.type === "history" && withoutAt(forFirst.entries), [
         { role: "branch", branchId: second.id },
         { role: "po", text: "こっちの話" },
       ]);
@@ -668,7 +690,7 @@ describe("[task-0035/a3] イベントとメッセージがスレッドで分か�
       assert.deepEqual(made[0]!.harness.prompts, [], "別のスレッドには入らない");
       // 幹に立つのは枝の札だけ。**枝の中身は幹に流さない**（決定77）
       assert.deepEqual(
-        threads.resolve().transcript,
+        withoutAt(threads.resolve().transcript),
         [{ role: "branch", branchId: second.id }],
         "幹の履歴に枝の発話は流れない"
       );
@@ -718,9 +740,9 @@ describe("[task-0035/a3] イベントとメッセージがスレッドで分か�
       const delta = await waitFor(events, (e) => e.type === "text_delta");
       assert.equal(delta.type === "text_delta" && delta.threadId, second.id);
       // 履歴も宛先スレッドにだけ積まれる
-      assert.deepEqual(second.transcript, [{ role: "banto", text: "はい" }]);
+      assert.deepEqual(withoutAt(second.transcript), [{ role: "banto", text: "はい" }]);
       // 幹には枝の札しか立たない（枝の中身は幹に流さない・決定77）
-    assert.deepEqual(threads.resolve().transcript, [{ role: "branch", branchId: second.id }]);
+    assert.deepEqual(withoutAt(threads.resolve().transcript), [{ role: "branch", branchId: second.id }]);
     } finally {
       client.close();
     }
@@ -747,7 +769,7 @@ describe("[task-0035] スレッドの開閉（プロトコル）", () => {
 
       // 「目の前の話は壊れない」（決定2）
       // 幹には枝の札が1行増えるだけ。前の発話はそのまま（追記のみ・D3）
-      assert.deepEqual(threads.resolve().transcript[0], { role: "po", text: "元の話" });
+      assert.deepEqual(withoutAt([threads.resolve().transcript[0]]), [{ role: "po", text: "元の話" }]);
       assert.equal(threads.resolve().transcript.length, 2);
       assert.equal(made[0]!.canvas.snapshot().tabs.length, 1);
     } finally {
@@ -772,7 +794,7 @@ describe("[task-0035] スレッドの開閉（プロトコル）", () => {
           e.threads.some((t) => t.threadId === second.id && t.title === "認証の設計")
       );
       assert.equal(state.type, "thread_state");
-      assert.deepEqual(second.transcript, [{ role: "po", text: "元の話" }], "会話は変わらない");
+      assert.deepEqual(withoutAt(second.transcript), [{ role: "po", text: "元の話" }], "会話は変わらない");
     } finally {
       client.close();
     }
@@ -827,9 +849,9 @@ describe("[task-0035] スレッドの開閉（プロトコル）", () => {
       );
       assert.equal(branch.state, "closed");
       assert.equal(other.state, "open");
-      assert.deepEqual(other.transcript, [{ role: "po", text: "別件は残る" }]);
+      assert.deepEqual(withoutAt(other.transcript), [{ role: "po", text: "別件は残る" }]);
       // 幹は追記のみ。最初の発話は残っている
-      assert.deepEqual(trunk.transcript[0], { role: "po", text: "幹の話" });
+      assert.deepEqual(withoutAt([trunk.transcript[0]]), [{ role: "po", text: "幹の話" }]);
     } finally {
       client.close();
     }
@@ -1437,11 +1459,11 @@ describe("[task-0035/a7] 知らせの宛先（決定35a）", () => {
 
     assert.deepEqual(made[1]!.harness.prompts, ["職人からの報告"], "宛先のターンが回る");
     assert.deepEqual(made[0]!.harness.prompts, [], "別のスレッドには届かない");
-    assert.deepEqual(second.transcript.slice(0, 1), [
+    assert.deepEqual(withoutAt(second.transcript.slice(0, 1)), [
       { role: "notice", source: "worker", text: "職人からの報告" },
     ]);
     // 幹には枝の札しか立たない（枝の中身は幹に流さない・決定77）
-    assert.deepEqual(threads.resolve().transcript, [{ role: "branch", branchId: second.id }]);
+    assert.deepEqual(withoutAt(threads.resolve().transcript), [{ role: "branch", branchId: second.id }]);
   });
 
   it("[task-0035/a7] 宛先不明の知らせを黙って捨てない（I2）", async () => {
@@ -1491,7 +1513,7 @@ describe("[task-0088/a3] 畳んだ枝は履歴に残り、再開できる", () =
 
     assert.equal(second.state, "closed");
     assert.ok(second.closedAt, "畳んだ時刻が残る");
-    assert.deepEqual(second.transcript, [{ role: "po", text: "調べて" }], "会話は読める");
+    assert.deepEqual(withoutAt(second.transcript), [{ role: "po", text: "調べて" }], "会話は読める");
     assert.equal(made[1]!.canvas.snapshot().tabs.length, 1, "キャンバスもそのまま");
   });
 
@@ -1505,7 +1527,7 @@ describe("[task-0088/a3] 畳んだ枝は履歴に残り、再開できる", () =
     assert.equal(reopened.id, second.id, "新しいスレッドを作らない");
     assert.equal(reopened.state, "open");
     assert.equal(reopened.closedAt, undefined);
-    assert.deepEqual(reopened.transcript, [{ role: "po", text: "前の話" }]);
+    assert.deepEqual(withoutAt(reopened.transcript), [{ role: "po", text: "前の話" }]);
   });
 
   it("[task-0037] 畳むのは冪等。未知のIDはエラー（I2）", async () => {

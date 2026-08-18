@@ -223,6 +223,8 @@ function applyDelta(prev: TranscriptEntry[], event: ServerEvent): TranscriptEntr
         {
           role: "po",
           text: event.text,
+          // 即時表示用の時刻（task-0279）。届かなければ後で履歴から取り直す
+          ...(event.at !== undefined ? { at: event.at } : {}),
           ...(event.attachments ? { attachments: event.attachments } : {}),
         },
       ];

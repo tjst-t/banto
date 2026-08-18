@@ -26,6 +26,7 @@ import {
   renderWorkerNotice,
   type HostSession,
   type ServerEvent,
+  type TranscriptEntry,
 } from "@banto/host";
 import { TRUNK, branchSpec } from "./threadSpecs.js";
 import type { WorkerEvent } from "@banto/worker-pool";
@@ -172,6 +173,25 @@ function waitFor(
       }
     }, 10);
   });
+}
+
+/**
+ * task-0279: 会話の各行に記録時刻 `at`（UTC ISO）が付くようになった。
+ * 中身の比較からは `at` を除き、付いていること自体は `assertAllHaveAt` で確かめる。
+ */
+function withoutAt(entries: readonly TranscriptEntry[]): Array<Record<string, unknown>> {
+  return entries.map(({ at: _at, ...rest }) => rest);
+}
+
+/** どの行にも `at`（UTC ISO）が付いていること。 */
+function assertAllHaveAt(entries: readonly TranscriptEntry[]): void {
+  assert.ok(entries.length > 0, "at を確かめる対象の行があること");
+  for (const entry of entries) {
+    assert.ok(
+      typeof entry.at === "string" && !Number.isNaN(new Date(entry.at).getTime()),
+      `${entry.role} の行に at（UTC ISO）が付くこと（実際: ${JSON.stringify(entry.at)}）`
+    );
+  }
 }
 
 beforeEach(() => {
@@ -447,6 +467,13 @@ describe("[task-0014] 会話履歴のホスト保持（リロードで消えな�
     clientA.send({ type: "prompt", text: "在庫を確認して" });
     const poOnB = await waitFor(b, "po_message");
     assert.ok(poOnB.type === "po_message" && poOnB.text === "在庫を確認して");
+    // task-0279: 配信にも記録と同時刻の at（UTC ISO）が載る——画面が即時に時刻を出せるように
+    assert.ok(
+      poOnB.type === "po_message" &&
+        typeof poOnB.at === "string" &&
+        !Number.isNaN(new Date(poOnB.at).getTime()),
+      "po_message に at（UTC ISO）が載ること"
+    );
     await waitFor(a, "turn_end");
     clientA.close();
     clientB.close();
@@ -456,7 +483,8 @@ describe("[task-0014] 会話履歴のホスト保持（リロードで消えな�
     const clientC = await BantoHostClient.connect(url, (e) => c.push(e));
     const history = await waitFor(c, "history");
     assert.ok(history.type === "history");
-    assert.deepEqual(history.entries, [{ role: "po", text: "在庫を確認して" }]);
+    assertAllHaveAt(history.entries);
+    assert.deepEqual(withoutAt(history.entries), [{ role: "po", text: "在庫を確認して" }]);
     clientC.close();
   });
 
@@ -477,7 +505,8 @@ describe("[task-0014] 会話履歴のホスト保持（リロードで消えな�
     const clientC = await BantoHostClient.connect(url, (e) => c.push(e));
     const history = await waitFor(c, "history");
     assert.ok(history.type === "history");
-    assert.deepEqual(history.entries, [
+    assertAllHaveAt(history.entries);
+    assert.deepEqual(withoutAt(history.entries), [
       { role: "banto", text: "はい、確認します" },
       { role: "tool", name: "memory.save", state: "ok" },
     ]);
@@ -553,7 +582,8 @@ describe("会話面が要る材料の配信", () => {
     const history = await waitFor(c, "history");
     assert.ok(history.type === "history");
     // 引数は開始のときにしか来ない。終わりで上書きされていないこと
-    assert.deepEqual(history.entries, [
+    assertAllHaveAt(history.entries);
+    assert.deepEqual(withoutAt(history.entries), [
       {
         role: "tool",
         name: "memory.save",

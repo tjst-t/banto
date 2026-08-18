@@ -25,7 +25,7 @@
 import { useEffect, useState } from "react";
 import type { ThreadView, TranscriptEntry } from "@banto/host/protocol";
 import { Icon } from "./icons.js";
-import { ChatRow } from "./messages.js";
+import { ChatRow, DayDivider, isNewDay } from "./messages.js";
 import { Segmented } from "./views/ui.js";
 
 /** 出している一覧。**URL には載せない**——下の `useState` のコメントを見よ。 */
@@ -245,7 +245,23 @@ export function ThreadHistory(props: ThreadHistoryProps): React.ReactElement {
                   {loaded ? "この会話には発言がありません。" : "読み込んでいます…"}
                 </p>
               ) : (
-                entries.map((entry, i) => <ChatRow key={i} entry={entry} />)
+                (() => {
+                  const nodes: React.ReactNode[] = [];
+                  // 直前行の at。**at のある行だけ更新する**——at の無い行は区切り判定の
+                  // 対象にしない（task-0279）。日付が変わったら横線＋日付を挟む。
+                  let prevAt: string | undefined;
+                  entries.forEach((entry, i) => {
+                    const at = entry.at;
+                    if (at !== undefined) {
+                      if (isNewDay(at, prevAt)) {
+                        nodes.push(<DayDivider key={`day-${i}`} at={at} />);
+                      }
+                      prevAt = at;
+                    }
+                    nodes.push(<ChatRow key={i} entry={entry} />);
+                  });
+                  return nodes;
+                })()
               )}
             </div>
           </>

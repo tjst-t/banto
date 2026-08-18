@@ -496,6 +496,27 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 /* 何の話だったか。長い見出しは省略する——線を押し出すと仕切りに見えなくなる */
 .chapter-mark-topic { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
+/* ── 発言の時刻（task-0279）─────────────────────────────────────────
+   JST 固定（HH:mm）。`at` が無い行には出さない——過去の記録・ストリーミング途中は
+   時刻なしで壊れない。発言（po / banto / notice / error）専用で、思考・道具には付けない。 */
+.msg-time {
+  flex: none; font-family: var(--ui); font-size: var(--t-note); color: var(--sumi-3);
+}
+.msg--po .msg-time { display: block; margin-top: 4px; text-align: right; }
+.msg--banto .msg-time { display: block; margin-top: 4px; }
+.msg--error .msg-time { margin-left: auto; }
+.notice-head .msg-time { margin-left: auto; }
+
+/* ── 日付の区切り線（Slack 風・task-0279）────────────────────────────
+   日にちをまたいだら横線を入れて、日にちが変わったことを分かるようにする。
+   章の仕切り（`.chapter-mark`）と同じく**切るのではなく仕切る**。 */
+.day-divider {
+  display: flex; align-items: center; gap: var(--s3);
+  margin: var(--s3) 0; color: var(--sumi-3); font-size: var(--t-meta);
+}
+.day-divider-rule { flex: 1 1 auto; height: 1px; background: var(--rule); min-width: 12px; }
+.day-divider-date { flex: 0 1 auto; font-family: var(--ui); white-space: nowrap; }
+
 /* ── モデル選択 ─────────────────────────────────────────────────────── */
 .model-select { position: relative; flex: none; min-width: 0; }
 .model-select-trigger {

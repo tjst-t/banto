@@ -15,6 +15,7 @@ import remarkGfm from "remark-gfm";
 import remend from "remend";
 import type { TranscriptAttachment, TranscriptEntry } from "@banto/host/protocol";
 import { highlightToHtml, useColorScheme } from "./views/fileHighlight.js";
+import { formatJstDate, formatJstTime } from "./views/ui.js";
 import { Icon } from "./icons.js";
 import { MarkdownLink } from "./links.js";
 import { Linkify, rehypeLinkify, splitPathAndLine, type LinkTargets } from "./linkify.js";
@@ -23,6 +24,51 @@ import { BranchCard, BranchNoteRow, BranchResultRow } from "./Branch.js";
 
 /** 考え終わってから思考を畳むまで（AI Elements の `AUTO_CLOSE_DELAY`）。 */
 const REASONING_AUTO_CLOSE_MS = 1000;
+
+/**
+ * 発言の行に付ける時刻（`14:05`・JST 固定・task-0279）。
+ *
+ * **`at` が無ければ何も出さない**——過去の記録（at が付く前の JSONL）や
+ * ストリーミング途中の行は時刻を出さないだけで、壊れない。
+ */
+function TimeStamp({ at }: { at?: string }): React.ReactElement | null {
+  if (at === undefined) return null;
+  const time = formatJstTime(at);
+  if (time.length === 0) return null;
+  return (
+    <span className="msg-time" title={formatJstDate(at)}>
+      {time}
+    </span>
+  );
+}
+
+/**
+ * 日付が変わったところに出す横線＋日付（Slack 風・task-0279）。
+ *
+ * 「今日 / 昨日」のような相対ラベルは付けない（素朴に日付だけ）。
+ */
+export function DayDivider({ at }: { at: string }): React.ReactElement {
+  return (
+    <div className="day-divider" role="separator" aria-label={formatJstDate(at)}>
+      <span className="day-divider-rule" aria-hidden="true" />
+      <span className="day-divider-date">{formatJstDate(at)}</span>
+      <span className="day-divider-rule" aria-hidden="true" />
+    </div>
+  );
+}
+
+/**
+ * 直前行との間（および最初の行の前）に日付の区切り線を挟むか（task-0279）。
+ *
+ * **`at` が無い行は区切り判定の対象にしない**——直前行の `at` と比べ、
+ * `at` が無い行は何も挟まず、直前行にも数えない（呼び出し側は `at` のある行だけ
+ * `prevAt` を更新する）。
+ */
+export function isNewDay(at: string | undefined, prevAt: string | undefined): boolean {
+  if (at === undefined) return false;
+  if (prevAt === undefined) return true;
+  return formatJstDate(at) !== formatJstDate(prevAt);
+}
 
 /**
  * 応答待ちの独楽（AI Elements の `Loader`）。
@@ -349,7 +395,7 @@ const NOTICE_LABELS: Record<string, string> = {
  * POでも番頭でもない知らせ（決定29）。**既定は畳んでおく**——番頭の報告と違い長くなりがちで、
  * 会話を追う邪魔になるため（PO フィードバック）。クリックで開く。
  */
-function NoticeRow({ source, text }: { source: string; text: string }): React.ReactElement {
+function NoticeRow({ source, text, at }: { source: string; text: string; at?: string }): React.ReactElement {
   const [open, setOpen] = useState(false);
   // 1行目を要約として出す。Markdownの強調記号は畳んだ状態では邪魔なので落とす
   const summary = (text.split("\n").find((l) => l.trim().length > 0) ?? "")
@@ -362,6 +408,8 @@ function NoticeRow({ source, text }: { source: string; text: string }): React.Re
         <span className="notice-tag">{NOTICE_LABELS[source] ?? source}</span>
         <span className="notice-caret">{open ? "▾" : "▸"}</span>
         {!open && <span className="notice-summary">{summary}</span>}
+        {/* 時刻は畳んだ状態でも見えるよう頭に置く（task-0279） */}
+        <TimeStamp at={at} />
       </button>
       {open && (
         <div className="markdown notice-body">
@@ -441,6 +489,7 @@ export const ChatRow = React.memo(
             )}
             {/* PO の発言は Markdown で描かない（書いたとおりに出す）。URL とパスだけ押せる */}
             <PlainText text={entry.text} />
+            <TimeStamp at={entry.at} />
           </div>
         );
       case "reasoning":
@@ -461,11 +510,12 @@ export const ChatRow = React.memo(
         return (
           <div className="msg msg--banto markdown">
             <StreamingMarkdown text={entry.text} />
+            <TimeStamp at={entry.at} />
           </div>
         );
       case "notice":
         // 外からの知らせ（決定29）。番頭の発話と混ざらないよう見た目を分け、出所も出す
-        return <NoticeRow source={entry.source} text={entry.text} />;
+        return <NoticeRow source={entry.source} text={entry.text} at={entry.at} />;
       case "chapter":
         /**
          * ここで章を畳んだ（PO要望 2026-08-11）。**細い線1本と、何の話だったか**。
@@ -534,6 +584,7 @@ export const ChatRow = React.memo(
           <div className="msg msg--error">
             <Icon name="error" size={14} />
             <span className="msg-error-text">{entry.text}</span>
+            <TimeStamp at={entry.at} />
             {onDismissError && (
               <button
                 className="msg-error-close"

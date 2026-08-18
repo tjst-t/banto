@@ -578,13 +578,18 @@ export type UtsuwaView =
     });
 
 export type TranscriptEntry =
-  | { role: "po"; text: string; attachments?: TranscriptAttachment[] }
-  | { role: "banto"; text: string }
+  /**
+   * `at`（記録された時刻・UTC ISO）は**新しい行を記録したときに付く**（task-0279）。
+   * 古い記録（この変更より前の JSONL）には無い——画面は無ければ時刻を出さないだけでよい。
+   * 既に `at` を持つ行（`branch_result` / `branch_note` / `chapter`）は上書きしない。
+   */
+  | { role: "po"; text: string; attachments?: TranscriptAttachment[]; at?: string }
+  | { role: "banto"; text: string; at?: string }
   /**
    * 枝の札（ADR-0017 決定77）。**写しではなく参照**なので、題も状態も生きている
    * ——画面は `branchId` から枝を引いて描く。幹に残るのはこの1行だけ。
    */
-  | { role: "branch"; branchId: string }
+  | { role: "branch"; branchId: string; at?: string }
   /**
    * 枝が幹へ還った1行（決定77）。**こちらは記録なので凍る**——畳んだ時点の結論を
    * そのまま持つ。幹は追記のみ（D3）なので、既存の行は書き換わらない。
@@ -617,7 +622,7 @@ export type TranscriptEntry =
       at: string;
     }
   /** 番頭が器に載せた Tool の戻り値（決定78・81）。**凍る**。 */
-  | { role: "utsuwa"; utsuwa: UtsuwaView }
+  | { role: "utsuwa"; utsuwa: UtsuwaView; at?: string }
   /**
    * **ここで章を畳んだ**という印（提案§3.2・PO要望 2026-08-11）。
    *
@@ -632,9 +637,9 @@ export type TranscriptEntry =
    * どこまでが考えでどこからが答えなのか読めなくなる。
    * `durationMs` は考え終わったときに入る（「X秒間考えました」の表示に使う）。
    */
-  | { role: "reasoning"; text: string; durationMs?: number }
+  | { role: "reasoning"; text: string; durationMs?: number; at?: string }
   /** POでも番頭でもない知らせ（職人からの報告・質問、別の会話からの引き継ぎ等）。 */
-  | { role: "notice"; source: NoticeSource; text: string }
+  | { role: "notice"; source: NoticeSource; text: string; at?: string }
   /**
    * ツールの呼び出し。`input`／`output` は**ハーネスが出したものをそのまま**載せる
    * （大きすぎるものは切り詰める。`TOOL_PAYLOAD_MAX_CHARS`）。
@@ -645,8 +650,9 @@ export type TranscriptEntry =
       state: "running" | "ok" | "failed";
       input?: unknown;
       output?: unknown;
+      at?: string;
     }
-  | { role: "error"; text: string };
+  | { role: "error"; text: string; at?: string };
 
 /**
  * 会話履歴。接続直後に**スレッドごとに1通ずつ**送られる。
@@ -675,6 +681,11 @@ export interface PoMessageEvent extends ThreadScope {
   text: string;
   /** 一緒に送られた添付（表示用の参照。実体は URL の先）。 */
   attachments?: TranscriptAttachment[];
+  /**
+   * 記録された時刻（UTC ISO・task-0279）。**記録と配信で同じ時刻**——ホストが
+   * 発話を積むときに1つ作り、記録と broadcast の両方に載せる。
+   */
+  at?: string;
 }
 
 /** アシスタント応答のテキスト差分。 */

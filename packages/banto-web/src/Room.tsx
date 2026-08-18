@@ -18,7 +18,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { useStickToBottom } from "use-stick-to-bottom";
 import type { Attachment, InboxItemView, ThreadView } from "@banto/host/protocol";
 import type { LlmModelInfo } from "@banto/core";
-import { ChatRow, Loader } from "./messages.js";
+import { ChatRow, DayDivider, isNewDay, Loader } from "./messages.js";
 import { PendingDecisions } from "./Inbox.js";
 import { MergeBranchForm } from "./Branch.js";
 import { Icon } from "./icons.js";
@@ -810,28 +810,42 @@ export function Room({
               以前の発言を読む（残り {shownFrom} 件）
             </button>
           )}
-          {shownChat.map((entry, offset) => {
-            const i = shownFrom + offset;
-            if (entry.role === "error" && dismissedErrors.has(i)) return null;
-            return (
-              <ChatRow
-                key={(entry as { id?: string }).id ?? i}
-                entry={entry}
-                isStreaming={chatStatus === "streaming" && i === chat.length - 1}
-                {...(entry.role === "error"
-                  ? {
-                      onDismissError: () =>
-                        setDismissedErrors((prev) => new Set(prev).add(i)),
-                    }
-                  : {})}
-                branchOf={branchOf}
-                branchHasTurn={branchHasTurn}
-                {...(activeBranchId ? { activeBranchId } : {})}
-                onOpenBranch={onOpenBranch}
-                onOpenView={onOpenView}
-              />
-            );
-          })}
+          {(() => {
+            const nodes: React.ReactNode[] = [];
+            // 直前行の at。**at のある行だけ更新する**——at の無い行は区切り判定の
+            // 対象にしない（task-0279）。日付が変わったら横線＋日付を挟む。
+            let prevAt: string | undefined;
+            shownChat.forEach((entry, offset) => {
+              const i = shownFrom + offset;
+              if (entry.role === "error" && dismissedErrors.has(i)) return;
+              const at = entry.at;
+              if (at !== undefined) {
+                if (isNewDay(at, prevAt)) {
+                  nodes.push(<DayDivider key={`day-${i}`} at={at} />);
+                }
+                prevAt = at;
+              }
+              nodes.push(
+                <ChatRow
+                  key={(entry as { id?: string }).id ?? i}
+                  entry={entry}
+                  isStreaming={chatStatus === "streaming" && i === chat.length - 1}
+                  {...(entry.role === "error"
+                    ? {
+                        onDismissError: () =>
+                          setDismissedErrors((prev) => new Set(prev).add(i)),
+                      }
+                    : {})}
+                  branchOf={branchOf}
+                  branchHasTurn={branchHasTurn}
+                  {...(activeBranchId ? { activeBranchId } : {})}
+                  onOpenBranch={onOpenBranch}
+                  onOpenView={onOpenView}
+                />
+              );
+            });
+            return nodes;
+          })()}
           {chatStatus === "submitted" && <ThinkingRow />}
 
           {/*

@@ -633,7 +633,12 @@ export class Thread {
   private recordInner(entry: TranscriptEntry): void {
     const last = this.transcript[this.transcript.length - 1];
     if (entry.role === "banto" && last?.role === "banto") {
-      this.transcript[this.transcript.length - 1] = { role: "banto", text: last.text + entry.text };
+      this.transcript[this.transcript.length - 1] = {
+        role: "banto",
+        text: last.text + entry.text,
+        // 時刻は最初の差分のものを使い続ける（task-0279）——継ぎ足すたびに新しくしない
+        ...(last.at !== undefined ? { at: last.at } : {}),
+      };
       return;
     }
     // 思考も差分で届く。**考えていた時間は後から来る**ので、既に入っていれば消さない
@@ -642,6 +647,8 @@ export class Thread {
       this.transcript[this.transcript.length - 1] = {
         role: "reasoning",
         text: last.text + entry.text,
+        // 時刻は最初の差分のものを使い続ける（task-0279）
+        ...(last.at !== undefined ? { at: last.at } : {}),
         ...(durationMs !== undefined ? { durationMs } : {}),
       };
       return;
@@ -655,11 +662,21 @@ export class Thread {
         // 引数は開始のときにしか来ない。終わりで上書きすると、開いても何を渡したか分からなくなる
         const input =
           entry.input ?? (running?.role === "tool" ? running.input : undefined);
-        this.transcript[index] = { ...entry, ...(input !== undefined ? { input } : {}) };
+        this.transcript[index] = {
+          ...entry,
+          ...(input !== undefined ? { input } : {}),
+          // 時刻は道具を呼び出したときのもの（開始の行が持つ）。終了の差分には付けない（task-0279）
+          ...(running?.role === "tool" && running.at !== undefined ? { at: running.at } : {}),
+        };
         return;
       }
     }
-    this.transcript.push(entry);
+    // 新しい1行には記録した時刻（UTC ISO）を付ける（task-0279）。
+    // 既に `at` を持つ行（`branch_result` / `branch_note` / `chapter` 等）は上書きしない。
+    this.transcript.push({
+      ...entry,
+      ...(entry.at === undefined ? { at: new Date().toISOString() } : {}),
+    });
   }
 
   dispose(): void {

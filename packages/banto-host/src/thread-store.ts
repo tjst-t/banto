@@ -231,9 +231,14 @@ export class ThreadStore {
    */
   append(threadId: string, entry: TranscriptEntry): void {
     fs.mkdirSync(this.dir, { recursive: true });
-    fs.appendFileSync(this.transcriptPath(threadId), `${JSON.stringify(entry)}\n`, "utf-8");
+    /** 新しい1行には記録した時刻（UTC ISO）を付ける（task-0279）。既に `at` を持つ
+        行（`branch_result` 等）は上書きしない。呼ばれた経路（記録・配信）に依らず
+        一貫して付くよう、付与はここ（保存の入口）で行う。 */
+    const stamped =
+      entry.at !== undefined ? entry : { ...entry, at: new Date().toISOString() };
+    fs.appendFileSync(this.transcriptPath(threadId), `${JSON.stringify(stamped)}\n`, "utf-8");
     const known = this.knownFor(threadId);
-    this.remember(threadId, [...known.roles, entry.role]);
+    this.remember(threadId, [...known.roles, stamped.role]);
   }
 
   /**
