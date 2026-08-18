@@ -84,6 +84,17 @@ export interface MergeGateResult {
   /** Log directory paths for verify commands (path references only, per spec §2.1). */
   logPaths: string[];
   /**
+   * マージ前ゲートの守りを狭めた結果（task-0274 / PO裁定 2026-08-17）。
+   *
+   * マージ前ゲートは変更対象 spec + typecheck だけを回す（フル回帰はデプロイゲートが
+   * 起こし直しの前に回す）。ここに acceptance の verify が**フルスイート相当**
+   * （npm test / test:all 等）を含むとき、明示的な警告を並べる。この警告は**通しは
+   * 変えない**——フルスイートを回しても害ではないが、マージキューが直列で遅れる
+   * 原因になり得るので、PO がそれを見て引き続きフルを回すのか決められるように残す
+   * （警告のみ・PO 承認は要らない。要るときは PO が accept する）。
+   */
+  warnings: string[];
+  /**
    * **どの環境で検査したか**（realign 第2便・段1）。検証環境を立てたときだけ付く。
    * `merge_gate_evaluated.environmentDigest` にそのまま入る。
    */
@@ -522,6 +533,29 @@ export async function runAcceptanceVerify(
   };
 }
 
+// ── フルスイートの検出 ──────────────────────────────────────────────────────────
+
+/**
+ * acceptance の verify が**フルスイート相当**（npm test / test:all 等）かどうか
+ * （task-0274 / PO裁定 2026-08-17）。
+ *
+ * マージ前ゲートは変更対象 spec + typecheck だけを回す（フル回帰はデプロイゲートが
+ * 起こし直しの直前に行う）。マージ前ゲートにフルスイートを持ち込むと、マージキューが
+ * 直列で累積の待ちを払う——だから inclusion は検出して**明示的に警告する**（a1）。
+ *
+ * 判定はコマンドの先頭に限る：`npm test` / `npm run test:*` の形だけを拾う。
+ * これに当てはまらない（`npm run test:one ...` 等）のは**変更対象の限定**なので警告しない。
+ */
+export function isFullSuiteCommand(command: string): boolean {
+  const c = command.trim().toLowerCase();
+  return (
+    /^npm\s+test(\s|$)/.test(c) ||
+    /^npm\s+run\s+(test|test:all|test:acceptance|test:docker|test:e2e)(\s|$)/.test(c) ||
+    /^yarn\s+(test|run\s+test)(\s|$)/.test(c) ||
+    /^pnpm\s+(test|run\s+test)(\s|$)/.test(c)
+  );
+}
+
 // ── 検証ログの切り詰め ────────────────────────────────────────────────────────
 
 /** 職人へ返すログの既定の上限（行）。 */
@@ -704,6 +738,26 @@ export async function runMergeGate(
     verifyResults.push({ acId: ac.id, command: undefined, exitCode: null, logDirPath: undefined });
   }
 
+  /**
+   * フルスイート（npm test / test:all 等）がマージ前ゲートに混ざっているときは
+   * **明示的な警告**を残す（task-0274 / PO裁定 2026-08-17）。
+   *
+   * マージ前ゲートは変更対象 spec + typecheck だけを回すのが正（フル回帰は
+   * デプロイゲートが起こし直しの前に行う）。警告は**通しは変えない**——回しても害は
+   * ないし、accepted な回帰を壊さない。残すのは、マージキューが直列でフル回帰を
+   * 払っていることを PO が見て、引き続き回すのか（承認）・限定へ寄せるのかを
+   * 判断できる情報として。
+   */
+  const warnings: string[] = [];
+  for (const ac of acceptance) {
+    if (ac.verify && isFullSuiteCommand(ac.verify)) {
+      warnings.push(
+        `full_suite_verify:${ac.id}(${ac.verify})——マージ前ゲートにフルスイートが含まれます。` +
+          "フル回帰はデプロイゲート（起こし直し前）が担います。"
+      );
+    }
+  }
+
   // ── 3. Aggregate result ───────────────────────────────────────────────────
   const reasons: string[] = [];
   const logPaths: string[] = [];
@@ -774,6 +828,7 @@ export async function runMergeGate(
     verifyResults,
     reasons,
     logPaths,
+    warnings,
     ...(environmentDigest !== undefined ? { environmentDigest } : {}),
     ...(environmentId !== undefined ? { environmentId } : {}),
     ...(baseCommit !== undefined ? { baseCommit } : {}),
@@ -787,6 +842,7 @@ export async function runMergeGate(
     passed,
     reasons,
     logPaths,
+    warnings,
     // 段1: **何に対して通ったのか**。この2つが無いと、通った判定がまだ有効かを
     // 計算できず、第3便（人の承認なしの着地）を安全に倒せない
     ...(environmentDigest !== undefined ? { environmentDigest } : {}),

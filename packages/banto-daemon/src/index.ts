@@ -61,6 +61,7 @@ export { addTaskWorktree, createWorktree, removeWorktree } from "@banto/repo-man
 export {
   checkScopeViolations,
   runMergeGate,
+  isFullSuiteCommand,
 } from "./merge-gate.js";
 export type {
   ScopeCheckInput,

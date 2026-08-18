@@ -340,6 +340,15 @@ export interface MergeGateEvaluatedEvent extends EventBase {
    */
   logPaths: string[];
   /**
+   * マージ前ゲートの守りを狭めた結果の警告（task-0274 / PO裁定 2026-08-17）。
+   *
+   * acceptance の verify が**フルスイート相当**（npm test / test:all 等）を含むとき、
+   * 明示的な警告を並べる。マージ前にフル回帰を回すのは、マージキューが直列で
+   * 累積の待ちを払うため——フル回帰はデプロイゲート（起こし直し前）が担う。
+   * 警告は通しを変えない（PO が引き続きフルを回すことを承認できる）。
+   */
+  warnings: string[];
+  /**
    * **どの環境で検査したか**（realign 第2便・段1）。検証環境プロファイルの中身から
    * 作った短い指紋（`envProfileDigest`）。
    *

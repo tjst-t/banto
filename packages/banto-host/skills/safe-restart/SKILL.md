@@ -1,6 +1,6 @@
 ---
 name: safe-restart
-description: コード更新を反映するために常駐サービスを起こし直すときの手順。banto は3つのユニットに分かれていて、system.restart が起こし直すのは banto.service だけ。落ちるのは走行中のターンだけ（職人と検証環境は別ユニットなので落ちない）。段取りを書き残し、PO の承認を得てから撃つ。
+description: コード更新を反映するために常駐サービスを起こし直すときの手順。banto は4つのユニットに分かれていて、system.restart / system.deploy が起こし直すのは banto.service だけ。計画的デプロイは system.deploy（main に npm test を回して通ったときだけ再起動）。クラッシュ復旧（Restart=on-failure）はゲートを通らない。落ちるのは走行中のターンだけ（職人と検証環境は別ユニットなので落ちない）。段取りを書き残し、PO の承認を得てから撃つ。
 ---
 
 # Safe Restart（banto の常駐サービスを安全に起こし直す）
@@ -16,19 +16,29 @@ PO の承認を得て撃つ」こと。会話は保存済み（task-0036 の永�
 
 ## どのサービスを起こし直すのか（imp-0062 追記・inc-0073）
 
-banto は**3つの常駐サービス**に分かれている。3つとも
+banto は**4つの常駐サービス**に分かれている。4つとも
 `WorkingDirectory=/home/ubuntu/ghq/github.com/tjst-t/banto` で `--import tsx` により
 **main のチェックアウトの .ts を直に読む**（ビルド成果物を経由しない）。つまり
 **main にマージしただけでは、そのプロセスを起こし直すまで反映されない**。
 
 | 直したファイル | unit | 何を持つ | 起こし直し方 |
 |---|---|---|---|
-| `packages/banto-host/**` | `banto.service` | 番頭本体・会話 | `system.restart` |
+| `packages/banto-host/**` | `banto.service` | 番頭本体・会話 | `system.deploy`（ゲート付き）／`system.restart`（素通し） |
+| `packages/banto-daemon/**` | `banto-daemon.service` | Kobo（イベントログ・ゲート・マージキュー） | `kill -9`（下記）。起動: `node --import tsx packages/banto-daemon/src/index.ts` |
 | `packages/banto-worker-pool/**` | `banto-worker-pool.service` | 職人の親 | `kill -9`（下記） |
 | `packages/banto-environment-pool/**` | `banto-environment-pool.service` | 検証環境の台帳・ドライバ・Caddy 公開 | `kill -9`（下記） |
 
-**`system.restart` が起こし直すのは `banto.service` だけである。** 職人まわり・検証環境まわりの
-変更は、これを何度撃っても反映されない。
+**`system.restart` / `system.deploy` が起こし直すのは `banto.service` だけである。**
+職人まわり・検証環境まわり・Kobo まわりの変更は、これを何度撃っても反映されない。
+
+**計画的デプロイは `system.deploy`（ゲート付き）が正式な口（task-0274）。**
+main に対して検証一式（`npm test`）を回し、**通ったときだけ**起こし直す。落ちていれば
+拒否して失敗内容を返す（再起動しない）。`force:true` で明示的にだけゲートを迂回でき、
+迂回したことは記録に残る。素通しの `system.restart` は**緊急/強制のみ**・明示的に使う。
+
+**クラッシュ復旧はゲートを通らない（task-0274 / 設計の中心）。**
+`Restart=on-failure` による自動再起動はデプロイではなく復旧——テストしてから起こすことは
+できないので、**従来どおり即復旧**する。ゲートを通るのは計画的デプロイだけ。
 
 実際に踏んだ形（inc-0073）：検証環境のドライバ（`banto-environment-pool` 側）を直して main に
 入れたのに、番頭の `env.verify` はいつまでも古い挙動のままだった。`system.restart` を撃っても

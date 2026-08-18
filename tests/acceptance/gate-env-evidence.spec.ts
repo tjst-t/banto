@@ -223,6 +223,7 @@ describe("[表示] kobo.task が envId と指紋を取り違えない形で出�
       passed: true,
       reasons: [],
       logPaths: [],
+      warnings: [],
       environmentId: "env-03a6b9ce17",
       environmentDigest: "04b7a6595c58",
     });
@@ -277,6 +278,7 @@ describe("[表示] kobo.task が envId と指紋を取り違えない形で出�
       passed: false,
       reasons: ["verify_failed:a1(exit=127)"],
       logPaths: [],
+      warnings: [],
       environmentDigest: "04b7a6595c58",
     });
     log.close();

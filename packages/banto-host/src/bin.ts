@@ -156,8 +156,8 @@ import {
   ThreadWatchdog,
   DEFAULT_WATCHDOG_INTERVAL_MS,
   type ThreadWatchdogFacts,
-} from "./watchdog.js";
-import { loadBantoSkills } from "./skills.js";
+} from "./watchdog.js";import { createDeployTool } from "./deploy-gate.js";
+import { runDeployVerify } from "./deploy-verify.js";import { loadBantoSkills } from "./skills.js";
 
 /**
  * 番頭が作業してよい場所の設定（決定36d・38b）。
@@ -1348,6 +1348,33 @@ async function serve(options: ServeOptions): Promise<void> {
         },
         exit: (code) => process.exit(code),
       }),
+      /**
+       * デプロイゲート付き再起動（task-0274 / PO裁定 2026-08-17）。
+       *
+       * `system.restart`（素通し）と違い、計画的デプロイは main に対して検証一式
+       * （npm test）を回して**通ったときだけ**起こし直す。落ちていれば拒否する。
+       * force は明示的にだけゲートを迂回し、記録に残る。クラッシュ復旧
+       * （Restart=on-failure）はこの口を通らない——即復旧（従来どおり）。
+       */
+      createDeployTool({
+        threadId,
+        notify: (text, target) =>
+          server.notify(text, { ...target, source: "system", conversation: true }),
+        close: async () => {
+          threads.flushAll();
+          await server.close();
+        },
+        exit: (code) => process.exit(code),
+        runVerify: (command) => runDeployVerify(command, process.cwd()),
+        restart: async ({ units }) => {
+          // この会話を含むターンはここで切れるが、systemd が起こし直す。
+          // banto.service（自分）以外の unit は `system.restart` 同様に別サービスなので
+          // 落ちない——`kill -9` で systemd（Restart=on-failure）に拾わせる手順は
+          // SKILL `safe-restart` が持つ。
+        },
+        record: (line) => console.log(`[banto-deploy] ${line}`),
+      }),
+
       // 決定35a: 職人の報告は**起こしたスレッド**へ返る。番頭に自分の threadId を
       // 書かせず、ここで固定して渡す（番頭は自分がどのスレッドかを知らない）
       /**

@@ -408,4 +408,14 @@ export {
   type ThreadWatchdogFacts,
   type ThreadWatchdogOptions,
   type WatchdogTickOutcome,
-} from "./watchdog.js";
+} from "./watchdog.js";// デプロイゲート付き再起動（task-0274）。計画的デプロイの正式な口はゲート付き
+export {
+  createDeployTool,
+  evaluateDeployGate,
+  DEPLOY_UNITS,
+  DEFAULT_DEPLOY_UNITS,
+  DEFAULT_DEPLOY_VERIFY_COMMAND,
+  type DeployVerifyResult,
+  type DeployOutcome,
+  type DeployVerifyRunner,
+} from "./deploy-gate.js";
