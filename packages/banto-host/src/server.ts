@@ -382,6 +382,14 @@ export interface BantoHostServerOptions {
    * 止まるので必ず期限を切る（試験からは短く差し替える）。
    */
   poFloorHoldMs?: number;
+  /**
+   * ターンの開始／終了を外部へ知らせる口：watchdog（task-0278）が
+   * imp-0059「返らないターンに見張りが無い」を塞ぐために使う。
+   *
+   * `finally` で `end` を出すので、転んだターンにも必ず `end` が返る（端から見れば
+   * 「返っていない・返った」しか無い）。渡さなければ何もしない（既存の試験はそのまま）。
+   */
+  onTurnChange?: (threadId: string, phase: "start" | "end") => void;
 }
 
 /**
@@ -430,6 +438,8 @@ export class BantoHostServer {
   private modelProvider: string | undefined;
   /** PO に場を渡しておく長さ（imp-0048）。 */
   private readonly poFloorHoldMs: number;
+  /** ターンの開始／終了を外部へ知らせる口（watchdog・task-0278）。無ければ no-op。 */
+  private readonly onTurnChange: (threadId: string, phase: "start" | "end") => void;
   /**
    * 「章を畳んでいます」を出した会話（imp-0052）。**1回の畳みにつき1回**だけ出す
    * ——畳み中に3つ発話が届いても、同じ文が3行並ぶのは知らせではなく雑音になる。
@@ -576,6 +586,7 @@ export class BantoHostServer {
     this.modelInfo = options.model;
     this.modelProvider = options.modelProvider;
     this.poFloorHoldMs = options.poFloorHoldMs ?? PO_FLOOR_HOLD_MS;
+    this.onTurnChange = options.onTurnChange ?? (() => {});
     this.selectModel = options.onSelectModel;
     this.httpServer = httpServer;
     this.wss = new WebSocketServer({
@@ -1076,6 +1087,8 @@ export class BantoHostServer {
         // 職人の報告でも番頭は喋り出す。ここを知らせないと画面から中断する手段が消える
         turnStartedAt = Date.now(); // T1: 開始時刻は turn_start の直前（実測の起点）
         this.broadcast({ type: "turn_start", threadId: thread.id });
+        // task-0278: watchdog に「この枝のターンが始まった」と知らせる（imp-0059）
+        this.onTurnChange(thread.id, "start");
         try {
           await this.promptEvenWhileBusy(
             thread,
@@ -1113,6 +1126,9 @@ export class BantoHostServer {
          * `finally` に置くのは、転んだターンでも枝を開いたまま残さないため。
          * 判断（畳み直すのか・枝が自分で `merge` したのか）は帳簿の側にある。
          */
+        // task-0278: watchdog にターンの終わりを知らせる。転んだターンも必ず
+        // ここに辿り着く（end なしで止まったままにしない・imp-0059）。
+        this.onTurnChange(thread.id, "end");
         this.closeAfterNoticeTurn(thread);
       }
     });

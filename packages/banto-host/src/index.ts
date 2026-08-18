@@ -394,3 +394,18 @@ export {
   withTierUnassignedNotice,
   type WorkerTierNoticeOptions,
 } from "./worker-tier-notice.js";
+// task-0278: 幹・枝の定期監視（watchdog）と終端枝の自動畳み
+export {
+  ThreadWatchdog,
+  DEFAULT_WATCHDOG_INTERVAL_MS,
+  DEFAULT_TURN_STALL_MS,
+  DEFAULT_NUDGE_COOLDOWN_MS,
+  workerGoneMessage,
+  turnStallMessage,
+  unsettledRemainingFoldMessage,
+  inactivityMessage,
+  isWorkerSubjectKey,
+  type ThreadWatchdogFacts,
+  type ThreadWatchdogOptions,
+  type WatchdogTickOutcome,
+} from "./watchdog.js";

@@ -152,6 +152,11 @@ import {
   type ThreadIdentity,
 } from "./threads.js";
 import { createRestartTool } from "./restart-tool.js";
+import {
+  ThreadWatchdog,
+  DEFAULT_WATCHDOG_INTERVAL_MS,
+  type ThreadWatchdogFacts,
+} from "./watchdog.js";
 import { loadBantoSkills } from "./skills.js";
 
 /**
@@ -239,6 +244,48 @@ async function lookupWorker(
   const workers = ((result.details ?? {}) as { workers?: WorkerInfo[] }).workers ?? [];
   return workers.find((w) => w.sessionId === sessionId);
 }
+
+/**
+ * task-0278: watchdog が検知に使う**事実**を帳簿から集める。
+ *
+ * 測れなかった口は undefined のまま——watchdog は「測れない＝検知しない」側に倒す
+ * （旧規律 I2）。worker.list が届かない（工房が立っていない）ときは worker 系の検知
+ * を止めるだけで、他は動かし続ける。
+ */
+async function gatherWatchdogFacts(
+  tools: NamespacedToolDefinition[]
+): Promise<ThreadWatchdogFacts> {
+  const facts: ThreadWatchdogFacts = {};
+  const list = tools.find((t) => t.name === "worker.list");
+  if (!list) return facts;
+  try {
+    const result = await list.execute({ includeClosed: true } as never, {
+      toolCallId: `watchdog-worker-list-${Date.now()}`,
+    });
+    const workers = ((result.details ?? {}) as { workers?: WorkerInfo[] }).workers ?? [];
+    /** 生きている session だけを「待ち先が在る」と数える。 */
+    const aliveWorkerSessions = new Set(
+      workers.filter((w) => w.alive).map((w) => w.sessionId)
+    );
+    facts.aliveWorkerSessions = aliveWorkerSessions;
+    /** 閉じた職人（終端）の鍵。自動畳みに使う（事実から一意に導ける）。 */
+    const terminalKeys = new Map<string, string>();
+    for (const w of workers) {
+      if (w.state === "closed") {
+        terminalKeys.set(
+          `worker:${w.sessionId}`,
+          `worker ${w.sessionId}（${w.projectTag}/${w.taskId}）は closed になりました`
+        );
+      }
+    }
+    if (terminalKeys.size > 0) facts.terminalKeys = terminalKeys;
+  } catch {
+    // 工房に届かない＝ worker 系の検知は止める。I2: 壊れたことを黙らせない
+    // 次の gather で取り直す（ログは watchdog の log には出さない——頻度が高い）
+  }
+  return facts;
+}
+
 
 /**
  * Kobo の帳簿の置き場所（決定63）。番頭には**どの設定でも書かせない**。
@@ -1929,6 +1976,24 @@ async function serve(options: ServeOptions): Promise<void> {
     console.log(`[banto] 会話を ${threads.list().length} 本読み戻しました`);
   }
 
+  // task-0278: 幹・枝の定期監視（watchdog）。
+  // **検知ロジックと起こし方は watchdog.ts にある（D5）。ここは繋ぐだけ。**
+  //
+  // - nudge は既存の server.nudge（決定107 と同じ経路）を再利用する。`server` は
+  //   次の `BantoHostServer.start` で埋まる——tick は `start()` で起動時1回走るが、
+  //   その `start()` は server が埋まった後で呼ぶ（下の `stopWatchdog` の直前）。
+  // - fold は `ThreadRegistry.fold`（規律：走行中・未処理・親を帳簿が守る・D5）。
+  // - 事実（aliveWorker など）は `gatherWatchdogFacts` が後ろの interval で更新する。
+  //   初期値は空＝**測れない＝検知しない**（I2）。
+  let watchdogFacts: ThreadWatchdogFacts = {};
+  const watchdog = new ThreadWatchdog({
+    threads,
+    nudge: (threadId, text) => server.nudge(threadId, text),
+    fold: (branchId, trunkId, conclusion) => threads.fold(branchId, trunkId, conclusion, { now: new Date() }),
+    facts: () => watchdogFacts,
+    log: (m) => console.error(`[banto] watchdog: ${m}`),
+  });
+
   server = await BantoHostServer.start({
     threads,
     // T1: ターンの台帳。幹のターンが何本回り、どの出所から来たかを後から数える
@@ -2071,6 +2136,12 @@ async function serve(options: ServeOptions): Promise<void> {
     // 決定40: 既定は localhost のみ。Banto は認証を持たず、守るのは前段の役目——
     // 全インターフェースで待つと前段を素通りできてしまい、その裁定が成り立たない
     host: bindHost,
+    // task-0278: watchdog（imp-0059 の見張り）へターンの開始／終了を知らせる。
+    // 終了は finally で必ず届くので、返らないターンはここから検知できる。
+    onTurnChange: (threadId, phase) => {
+      if (phase === "start") watchdog.watchTurnStart(threadId);
+      else watchdog.watchTurnEnd(threadId);
+    },
   });
 
   // 待ち受け始めた＝サーバのソケットがイベントループを保つので、掴みを放す（inc-0020）
@@ -2238,6 +2309,26 @@ async function serve(options: ServeOptions): Promise<void> {
     workerPoolUrl,
     "職人への委譲（worker.*）は失敗します——banto-worker-pool.service を起動してください"
   );
+
+  // task-0278: watchdog を**起動時にも1回**走らせ、周期で回す（a1・冪等）。
+  // 事実は `gatherWatchdogFacts` の interval で定期的に更新する——watchdog 自身は
+  // 毎 tick で `facts()` を読み、最新の帳簿を見る。
+  const stopWatchdog = watchdog.start();
+  const watchdogFactsTimer = setInterval(() => {
+    void gatherWatchdogFacts(modules.tools())
+      .then((f) => {
+        watchdogFacts = f;
+      })
+      .catch(() => {
+        // 測れないまま → 空のまま（検知しない・I2）。次の interval で取り直す
+      });
+  }, DEFAULT_WATCHDOG_INTERVAL_MS);
+  watchdogFactsTimer.unref?.();
+  void gatherWatchdogFacts(modules.tools())
+    .then((f) => {
+      watchdogFacts = f;
+    })
+    .catch(() => {});
   probe(
     "environment pool",
     envPoolUrl,
@@ -2277,6 +2368,8 @@ async function serve(options: ServeOptions): Promise<void> {
       stopKoboNotices();
       stopEnvNotices();
       stopStaleBranches();
+      stopWatchdog();
+      clearInterval(watchdogFactsTimer);
       // 安全弁の見回りも止める（畳むのはこの下の `threads.dispose()` が全部やる）
       sdkSessions.stop();
       // server.close() が全スレッドの後始末（購読解除＋対話ループの dispose）まで行う
