@@ -122,10 +122,38 @@ export class WorkerEventLog {
   private readonly filePath: string;
   private readonly events: WorkerEvent[] = [];
   private readonly handlers = new Set<{ handler: WorkerEventHandler; filter?: WorkerEventFilter }>();
+  /**
+   * `since`/`last` の高速化用インデックス（P6 根拠: 実測で worker.list が 2.3s 掛かっていた）。
+   *
+   * ボトルネックは `describe` が職人ごとに `since`/`last` を ~7 回呼び、それぞれが
+   * `this.events` 全体を O(E) で走査していたこと。E≈8千 × 職人669 で職人一覧1回が
+   * ~0.8s（`find` が2回＋`concurrency` が1回で計 ~2.3s）に達していた（2026-08 実測）。
+   *
+   * ここに `sessionId 〇 type` で引いた配列を保持する（D3: 導出値だが index なので保存扱い）。
+   * `since`/`last` は両方指定されたときこの配列だけを見て、それ以外の絞り込み（afterEventId・
+   * origin・projectTag）は件数が限られた列に対して適用する。セマンティクスは変わらない。
+   */
+  private readonly bySessionType = new Map<string, WorkerEvent[]>();
 
   private constructor(filePath: string, events: WorkerEvent[]) {
     this.filePath = filePath;
     this.events = events;
+    // open 時の全走査は1回だけ（起動時に既に O(E) で解析しているので追加コストは無視できる）。
+    // I4 any は要らない。列挙は読み取り専用。
+    for (const event of this.events) {
+      this.indexAdd(event);
+    }
+  }
+
+  private indexKey(sessionId: string, type: WorkerEventType): string {
+    return `${sessionId}\u0000${type}`;
+  }
+
+  private indexAdd(event: WorkerEvent): void {
+    const key = this.indexKey(event.sessionId, event.type);
+    let bucket = this.bySessionType.get(key);
+    if (bucket === undefined) this.bySessionType.set(key, (bucket = []));
+    bucket.push(event);
   }
 
   /**
@@ -168,6 +196,7 @@ export class WorkerEventLog {
       ...input,
     };
     this.events.push(event);
+    this.indexAdd(event);
     fs.appendFileSync(this.filePath, `${JSON.stringify(event)}\n`);
 
     for (const { handler, filter } of this.handlers) {
@@ -187,14 +216,24 @@ export class WorkerEventLog {
    * @param afterEventId これより大きい id のものを返す（省略時は最初から）
    */
   since(afterEventId = 0, filter?: WorkerEventFilter, limit?: number): WorkerEvent[] {
-    const found = this.events.filter((e) => e.id > afterEventId && matches(e, filter));
+    const base = filter && filter.sessionId !== undefined && filter.type !== undefined
+      ? this.bySessionType.get(this.indexKey(filter.sessionId, filter.type)) ?? []
+      : this.events;
+    // インデックスを引けたときも列は id 昇順（append 順）なので、ロジックは全走査と同じ。
+    const found = base.filter((e) => e.id > afterEventId && matches(e, filter));
     return limit === undefined ? found : found.slice(0, limit);
   }
 
   /** 直近のイベント。 */
   last(filter?: WorkerEventFilter): WorkerEvent | undefined {
-    for (let i = this.events.length - 1; i >= 0; i--) {
-      const event = this.events[i]!;
+    // 逆走査の代わりに、インデックス列の末尾から後ろ向きに探す。
+    // `since` と違い id で区切れないので、条件を全部満たす直前の1件を返す（全走査と同じ意味）。
+    const base =
+      filter && filter.sessionId !== undefined && filter.type !== undefined
+        ? (this.bySessionType.get(this.indexKey(filter.sessionId, filter.type)) ?? [])
+        : this.events;
+    for (let i = base.length - 1; i >= 0; i--) {
+      const event = base[i]!;
       if (matches(event, filter)) return event;
     }
     return undefined;
