@@ -22,9 +22,6 @@ import { Linkify, rehypeLinkify, splitPathAndLine, type LinkTargets } from "./li
 import { UtsuwaRow } from "./Utsuwa.js";
 import { BranchCard, BranchNoteRow, BranchResultRow } from "./Branch.js";
 
-/** 考え終わってから思考を畳むまで（AI Elements の `AUTO_CLOSE_DELAY`）。 */
-const REASONING_AUTO_CLOSE_MS = 1000;
-
 /**
  * 発言の行に付ける時刻（`14:05`・JST 固定・task-0279）。
  *
@@ -251,45 +248,30 @@ function thoughtLabel(durationMs: number | undefined): string {
 /**
  * 思考（AI Elements の `<Reasoning>`）。
  *
- * **考えている間は開いておき、終わったら1秒後に一度だけ畳む**——進んでいることが
- * 見えるのが大事で、読み終わる頃には本文の邪魔になるため。畳んだあとは自分で開ける。
- * 一度でも自分で開け閉めしたら、そこから先は自動で動かさない（勝手に閉じられると
- * 読んでいる途中で消える）。
+ * **本文は常に既定で畳んでおく**——考えている間も・考え終わった後も・履歴でも
+ * 同じ。進捗は見えなくてよい（見出しの「考えています／X秒間考えました」で分かる）。
+ * 読みたいときは見出しを押して自分で開ける。開けたら開けたまま（勝手に閉じない）。
  */
 export function ReasoningRow({
   text,
   durationMs,
   isStreaming,
-  defaultOpen = true,
+  defaultOpen = false,
 }: {
   text: string;
   durationMs?: number;
   isStreaming: boolean;
-  /** 済んだ記録を読むとき（職人の出力）は畳んで始める。 */
+  /** 例外的に開いて始めたいときだけ true にする（通常は使わない）。 */
   defaultOpen?: boolean;
 }): React.ReactElement {
   const [open, setOpen] = useState(defaultOpen);
-  const [touched, setTouched] = useState(false);
-  const [autoClosed, setAutoClosed] = useState(false);
-
-  useEffect(() => {
-    if (isStreaming || touched || autoClosed || !open) return;
-    const timer = setTimeout(() => {
-      setOpen(false);
-      setAutoClosed(true);
-    }, REASONING_AUTO_CLOSE_MS);
-    return () => clearTimeout(timer);
-  }, [isStreaming, touched, autoClosed, open]);
 
   return (
     <div className={`msg msg--reasoning ${open ? "is-open" : ""}`}>
       <button
         className="reasoning-head"
         type="button"
-        onClick={() => {
-          setTouched(true);
-          setOpen(!open);
-        }}
+        onClick={() => setOpen(!open)}
       >
         <span className="reasoning-mark" aria-hidden="true">
           <Icon name="sparkle" size={13} />
@@ -501,8 +483,9 @@ export const ChatRow = React.memo(
                `reasoning_end` で終わっている。busy だけで見ると、本文を喋り出すまで
                「考えています」と言い続ける */
             isStreaming={isStreaming === true && entry.durationMs === undefined}
-            /* 済んだ記録（履歴）は畳んで始める。読み返したいのは本文のほう */
-            defaultOpen={isStreaming === true || entry.durationMs === undefined}
+            /* **本文は常に既定で畳む**（PO 2026-08：考えている間も見えなくてよい）。
+               読みたいときは見出しを押して開く。 */
+            defaultOpen={false}
           />
         );
       case "banto":

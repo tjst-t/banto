@@ -1053,6 +1053,7 @@ test.describe("履歴の会話ログ", () => {
     await expect(log.locator(".msg--po")).toContainText("これを調べてください");
     // 思考と道具の呼び出しも、チャット欄と同じ畳んだ姿で出る
     await expect(log.locator(".msg--reasoning")).toContainText("2秒間考えました");
+    await expect(log.locator(".msg--reasoning .reasoning-body")).toBeHidden();
     await expect(log.locator(".msg--tool .tool-name")).toHaveText("file.read");
     // 畳んである道具を開くと、引数と結果まで読める
     await log.locator(".tool-head").click();
@@ -1061,21 +1062,27 @@ test.describe("履歴の会話ログ", () => {
 });
 
 test.describe("思考の表示（AI Elements の Reasoning）", () => {
-  test("考えている間は開いて出し、終わったら1秒ほどで畳む", async ({ page }) => {
+  test("考えている間も本文は畳んで出し、見出しで開け閉めできる", async ({ page }) => {
     host.emit({ type: "turn_start" });
     host.emit({ type: "reasoning_delta", delta: "まず前提を確かめる。" });
     await expect(page.locator(".msg--reasoning")).toBeVisible();
-    // 考えている間は見出しが光り、中身が見えている
+    // 考えている間は見出しが光る。本文は既定で畳んだまま（PO 2026-08）
     await expect(page.locator(".shimmer")).toHaveText("考えています");
+    await expect(page.locator(".reasoning-body")).toBeHidden();
+
+    // 見出しを押すと開き、もう一度押すと閉じる（手動トグル）
+    await page.locator(".reasoning-head").click();
     await expect(page.locator(".reasoning-body")).toBeVisible();
+    await expect(page.locator(".reasoning-body")).toHaveText("まず前提を確かめる。");
+    await page.locator(".reasoning-head").click();
+    await expect(page.locator(".reasoning-body")).toBeHidden();
 
     host.emit({ type: "reasoning_end", durationMs: 3200 });
     host.emit({ type: "turn_end" });
 
-    // 考えていた時間が出る
+    // 考えていた時間が出る。本文は閉じたまま（既定）
     await expect(page.locator(".reasoning-head")).toContainText("4秒間考えました");
-    // 1秒後に畳まれる（読み終わる頃には本文の邪魔になるため）
-    await expect(page.locator(".reasoning-body")).toBeHidden({ timeout: 3000 });
+    await expect(page.locator(".reasoning-body")).toBeHidden();
   });
 });
 
@@ -1137,6 +1144,8 @@ test.describe("届いた分がそのまま出る", () => {
   test("思考も差分が届くたびに伸びる", async ({ page }) => {
     host.emit({ type: "turn_start" });
     host.emit({ type: "reasoning_delta", delta: "まず" });
+    // 本文は既定で畳んでいるので、見出しを押して開けてから差分を見る
+    await page.locator(".reasoning-head").click();
     await expect(page.locator(".reasoning-body")).toHaveText("まず");
     host.emit({ type: "reasoning_delta", delta: "前提を確かめる。" });
     await expect(page.locator(".reasoning-body")).toHaveText("まず前提を確かめる。");
