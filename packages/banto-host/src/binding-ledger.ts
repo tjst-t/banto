@@ -21,6 +21,8 @@ export interface BindingDecisionEntry {
   origin: string;
   /** 当てたモデル（`backend|provider|model`）。空なら割り当て解除。 */
   model: string;
+  /** 思考レベル（未指定＝サービス既定に従う）。 */
+  thinking?: string;
 }
 
 /** モデル束縛の変更を追記ログへ1行付ける（なければ作る）。 */

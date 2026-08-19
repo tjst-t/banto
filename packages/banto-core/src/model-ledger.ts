@@ -86,6 +86,13 @@ export interface RoleBinding {
   only?: LedgerModelRef[];
   /** この役の条件（`local` のみ等）。**制約は決して緩めない**（決定101b）。 */
   constraints?: ModelConstraints;
+  /**
+   * 思考レベル（2026-08-19 提案）。`off / low / medium / high / xhigh / max`
+   * （pi のレベル）と `disabled / adaptive`（Claude の config）のどちらかを保存する。
+   * **未指定（undefined）＝サービス（バックエンド）の既定に従う＝継承**。
+   * 指定あり＝バックエンド基準の思考レベルを上書きする。
+   */
+  thinking?: string;
 }
 
 export interface ModelLedgerData {
@@ -243,6 +250,10 @@ export class ModelLedger {
     if ("constraints" in patch) {
       if (patch.constraints) next.constraints = { ...patch.constraints };
       else delete next.constraints;
+    }
+    if ("thinking" in patch) {
+      if (patch.thinking) next.thinking = patch.thinking;
+      else delete next.thinking;
     }
     d.roles[role] = next;
     this.save(d);

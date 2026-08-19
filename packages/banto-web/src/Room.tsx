@@ -980,9 +980,6 @@ export function Room({
             >
               <Icon name="chapter" size={14} />
             </button>
-            {!slim && (
-              <span className="chat-hint">{busy ? "Enter で今の作業に足す" : "Enter で送信"}</span>
-            )}
             {/*
               **止めるのと送るのを併存させる**（imp-0048・提案 §4 案I）。
               1つのボタンが「送る」と「中断」を兼ねていたので、走っている間は

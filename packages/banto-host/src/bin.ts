@@ -1043,6 +1043,8 @@ async function serve(options: ServeOptions): Promise<void> {
     createSettingsModule({
       core: createCoreSettingsSections(settings, {
         llmCatalog,
+        // 思考レベルの保存先（役の台帳。核が書き手）
+        modelLedger,
         // 設定画面の選択肢も**会話の画面と同じ元**から作る（D3）
         harnessChoices: () =>
           harnessBackendOptions()

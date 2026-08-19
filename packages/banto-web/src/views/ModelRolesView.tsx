@@ -23,6 +23,8 @@ interface RoleRow {
   effective: string;
   note: string;
   options: Array<{ value: string; label: string }>;
+  thinking: string;
+  thinkingOptions: Array<{ value: string; label: string }>;
 }
 
 export function ModelRolesView(props: CanvasViewProps): React.ReactElement {
@@ -77,6 +79,7 @@ export function ModelRolesView(props: CanvasViewProps): React.ReactElement {
             <tr>
               <th className="roles-th-role">役割</th>
               <th>モデル指定</th>
+              <th>思考レベル</th>
               <th>割り当てモデル</th>
             </tr>
           </thead>
@@ -103,6 +106,21 @@ export function ModelRolesView(props: CanvasViewProps): React.ReactElement {
                     onChange={(e) => void save(row.key, e.target.value)}
                   >
                     {row.options.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+                <td>
+                  <select
+                    className="sp-input"
+                    value={row.thinking}
+                    disabled={busy}
+                    aria-label={`${row.label}の思考レベル`}
+                    onChange={(e) => void save(`${row.key}.thinking`, e.target.value)}
+                  >
+                    {(row.thinkingOptions ?? []).map((o) => (
                       <option key={o.value} value={o.value}>
                         {o.label}
                       </option>

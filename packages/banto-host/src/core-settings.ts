@@ -11,9 +11,10 @@
  * その面が使う `llm.*` は中核の Tool なので、区画は `view` で描き先だけを宣言する。
  */
 
-import { MODEL_TIERS, TIER_LABELS, workerRoleOf } from "@banto/core";
+import { MODEL_TIERS, TIER_LABELS, isLedgerRole, workerRoleOf } from "@banto/core";
 import type {
   LlmCatalog,
+  ModelLedger,
   ModelTier,
   ModuleSettingsSpec,
   SettingField,
@@ -89,6 +90,33 @@ export interface RoleTableRow {
   note: string;
   /** モデル指定の選択肢（先頭は「継承」）。 */
   options: Array<{ value: string; label: string }>;
+  /**
+   * 思考レベル（2026-08-19 提案）。空＝サービス既定に従う（継承）。指定あり＝上書き。
+   * 選択肢は `thinkingOptions`。pi のレベル（off/low/…/max）と Claude の config
+   * （disabled/adaptive）を共通の値で扱う。
+   */
+  thinking: string;
+  /** 思考レベルの選択肢（先頭は「継承：サービス既定」）。 */
+  thinkingOptions: Array<{ value: string; label: string }>;
+}
+
+/** 思考レベルの選択肢（統合表・チャット共通）。値はバックエンド側で解釈・変換する。 */
+export const THINKING_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "", label: "継承（サービス既定に従う）" },
+  { value: "off", label: "off" },
+  { value: "low", label: "low" },
+  { value: "medium", label: "medium" },
+  { value: "high", label: "high" },
+  { value: "xhigh", label: "xhigh" },
+  { value: "max", label: "max" },
+  { value: "disabled", label: "disabled（Claude）" },
+  { value: "adaptive", label: "adaptive（Claude）" },
+];
+
+/** 思考レベルを人が読む形（空＝継承）。 */
+export function thinkingLabel(value: string): string {
+  if (value === "") return "（継承：サービス既定）";
+  return THINKING_OPTIONS.find((o) => o.value === value)?.label ?? value;
 }
 
 /**
@@ -125,6 +153,11 @@ export interface CoreSettingsOptions {
   effectivePlaces?: () => PlaceSetting[];
   /** LLM の区画を出すためのカタログ。渡さなければ区画ごと出ない。 */
   llmCatalog?: LlmCatalog;
+  /**
+   * 役の台帳（ModelLedger）。思考レベルの保存に使う（`updateRole`）。
+   * 番頭ホストが書き手として持つ。
+   */
+  modelLedger?: ModelLedger;
   /** 職人の既定 tier が変わったときに Worker Pool へ伝える口。 */
   onWorkerTierChanged?: (tier: ModelTier) => void;
   /**
@@ -337,6 +370,8 @@ export function createCoreSettingsSections(
             effective: toDisplayModel(steward) || "（未指定）",
             note: steward ? "指定" : "未指定",
             options: [{ value: "", label: "（継承：未指定なら既定に従う）" }, ...harnessOptions],
+            thinking: (roles.steward as { thinking?: string } | undefined)?.thinking ?? "",
+            thinkingOptions: THINKING_OPTIONS,
           });
 
           // 章の要約（本編とは別呼び出し）
@@ -350,6 +385,8 @@ export function createCoreSettingsSections(
             effective: toDisplayModel(chapter) || "（継承：既定 claude-agent-sdk/haiku）",
             note: chapter ? "指定" : "既定に従う",
             options: [{ value: "", label: "（継承：既定に従う）" }, ...harnessOptions],
+            thinking: "",
+            thinkingOptions: THINKING_OPTIONS,
           });
 
           // ── 職人 ──
@@ -366,6 +403,8 @@ export function createCoreSettingsSections(
               { value: "", label: "（継承：指定なし）" },
               ...MODEL_TIERS.map((t) => ({ value: t, label: TIER_LABELS[t] })),
             ],
+            thinking: "",
+            thinkingOptions: THINKING_OPTIONS,
           });
           for (const tier of MODEL_TIERS) {
             const binding = asValue(roles[workerRoleOf(tier)]);
@@ -378,6 +417,9 @@ export function createCoreSettingsSections(
               effective: toDisplayModel(binding) || "（継承：バックエンド既定に従う）",
               note: binding ? "等級既定" : "継承",
               options: [{ value: "", label: "（継承：バックエンド既定に従う）" }, ...workerOptions],
+              thinking:
+                (roles[workerRoleOf(tier)] as { thinking?: string } | undefined)?.thinking ?? "",
+              thinkingOptions: THINKING_OPTIONS,
             });
           }
 
@@ -400,6 +442,8 @@ export function createCoreSettingsSections(
                 effective: toDisplayModel(binding) || "（継承：等級既定に従う）",
                 note: binding ? "上書き" : "継承",
                 options: [{ value: "", label: "（継承：等級既定に従う）" }, ...moduleOptions],
+                thinking: String(values[`${role.id}Thinking`] ?? ""),
+                thinkingOptions: THINKING_OPTIONS,
               });
             }
           }
@@ -425,6 +469,46 @@ export function createCoreSettingsSections(
         write: async (values) => {
           const applied: string[] = [];
           for (const [key, raw] of Object.entries(values)) {
+            // 思考レベル（`.thinking` で終わるキー）。モデル指定とセットで、各束縛へ保存する
+            if (key.endsWith(".thinking")) {
+              const baseKey = key.slice(0, -".thinking".length);
+              const thinking = String(raw ?? "");
+              const sep = baseKey.split(":");
+              const source =
+                sep.length === 2 && options.modelRoleSources
+                  ? options.modelRoleSources().find((s) => s.origin === sep[0])
+                  : undefined;
+              const role = source?.spec.modelRoles?.find((r) => r.id === sep[1]);
+              if (source && role) {
+                // モジュール役（例 kobo:executor.thinking → kobo の write へ）
+                await source.spec.write({ [`${role.id}Thinking`]: thinking });
+                applied.push(
+                  `${source.originTitle}・${role.label} の思考 → ${thinkingLabel(thinking)}`
+                );
+                options.onModelBindingChanged?.({
+                  at: new Date().toISOString(),
+                  role: role.id,
+                  origin: source.origin,
+                  model: "",
+                  thinking,
+                });
+                continue;
+              }
+              const roleName = baseKey;
+              if (options.modelLedger && (roleName === "steward" || isLedgerRole(roleName))) {
+                // 核役（steward / worker.<tier>）
+                options.modelLedger.updateRole(roleName as never, { thinking });
+                applied.push(`${roleName} の思考 → ${thinkingLabel(thinking)}`);
+                options.onModelBindingChanged?.({
+                  at: new Date().toISOString(),
+                  role: roleName,
+                  origin: "core",
+                  model: "",
+                  thinking,
+                });
+                continue;
+              }
+            }
             // モジュール役（origin:role.id）。それぞれのモジュールの settings.write へ委譲（決定27）
             const sep = key.split(":");
             if (sep.length === 2 && options.modelRoleSources) {

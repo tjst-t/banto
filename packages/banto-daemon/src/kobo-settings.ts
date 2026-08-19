@@ -49,6 +49,8 @@ export interface RoleAssignment {
   tier?: "reasoning" | "standard" | "fast";
   /** モデルの名指し。**あれば等級より優先**し、昇格も効かない。 */
   model?: string;
+  /** 思考レベル（未指定＝サービス/等級既定に従う）。サービス既定を上書きする（2026-08-19）。 */
+  thinking?: string;
 }
 
 export type RoleAssignments = Partial<Record<KoboRole, RoleAssignment>>;
@@ -92,6 +94,7 @@ const TIER_OPTIONS = [
 
 const tierKey = (role: KoboRole): string => `${role}Tier`;
 const modelKey = (role: KoboRole): string => `${role}Model`;
+const thinkingKey = (role: KoboRole): string => `${role}Thinking`;
 
 export function createKoboSettings(
   store: RoleAssignmentStore,
@@ -158,6 +161,7 @@ export function createKoboSettings(
         KOBO_ROLES.flatMap((r) => [
           [tierKey(r.role), current[r.role]?.tier ?? ""],
           [modelKey(r.role), current[r.role]?.model ?? ""],
+          [thinkingKey(r.role), current[r.role]?.thinking ?? ""],
         ])
       );
     },
@@ -185,7 +189,17 @@ export function createKoboSettings(
             named.push(model);
           }
         }
-        if (assignment.tier === undefined && assignment.model === undefined) delete next[r.role];
+        if (thinkingKey(r.role) in values) {
+          const thinking = String(values[thinkingKey(r.role)] ?? "").trim();
+          if (thinking.length === 0) delete assignment.thinking;
+          else assignment.thinking = thinking;
+        }
+        if (
+          assignment.tier === undefined &&
+          assignment.model === undefined &&
+          assignment.thinking === undefined
+        )
+          delete next[r.role];
         else next[r.role] = assignment;
       }
 
