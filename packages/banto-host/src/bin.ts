@@ -114,6 +114,7 @@ import { PlaceGrantStore } from "./place-grants.js";
 import { ThreadStore } from "./thread-store.js";
 import { SettingsStore } from "./settings-store.js";
 import { createCoreSettingsSections } from "./core-settings.js";
+import { appendBindingDecision } from "./binding-ledger.js";
 import { type HarnessBackendOption, createSettingsModule, settingsSection } from "./settings-module.js";
 import { createRepoManagerModule, createRepoManagerPlaceProvider } from "@banto/repo-manager";
 import { createCollectedPlaceProvider } from "@banto/environment-pool";
@@ -1090,6 +1091,9 @@ async function serve(options: ServeOptions): Promise<void> {
             .list()
             .filter((m) => m.settings?.modelRoles && m.settings.modelRoles.length > 0)
             .map((m) => ({ origin: m.name, originTitle: m.title, spec: m.settings! })),
+        // 決定 ledger：統合表（役割とモデル）を経由したモデル束縛の変更を追記ログへ（監査・履歴）
+        onModelBindingChanged: (entry) =>
+          appendBindingDecision(path.join(dataDir(), "binding-decisions.jsonl"), entry),
       }),
       modules,
       store: settings,

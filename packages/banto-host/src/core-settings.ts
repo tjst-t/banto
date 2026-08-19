@@ -15,6 +15,7 @@ import { MODEL_TIERS, TIER_LABELS, workerRoleOf } from "@banto/core";
 import type { LlmCatalog, ModelTier, ModuleSettingsSpec, SettingField } from "@banto/core";
 import type { ChapterModelResolution } from "./chapter-model.js";
 import type { PlaceSetting, SettingsStore } from "./settings-store.js";
+import type { BindingDecisionEntry } from "./binding-ledger.js";
 
 /** 場所は1行1件のテキストで扱う（`id:/path:glob,glob`）。表形式は画面が育ってから。 */
 function placesToLines(places: readonly PlaceSetting[]): string[] {
@@ -127,6 +128,11 @@ export interface CoreSettingsOptions {
     originTitle: string;
     spec: ModuleSettingsSpec;
   }>;
+  /**
+   * モデル束縛の変更を記録する口（決定 ledger・2026-08-19 提案）。監査・履歴のため。
+   * 無ければ記録しない（テスト等）。
+   */
+  onModelBindingChanged?: (entry: BindingDecisionEntry) => void;
 }
 
 /**
@@ -373,6 +379,12 @@ export function createCoreSettingsSections(
                 applied.push(
                   `${source.originTitle}・${role.label} → ${String(raw ?? "") || "割り当てなし"}`
                 );
+                options.onModelBindingChanged?.({
+                  at: new Date().toISOString(),
+                  role: role.id,
+                  origin: source.origin,
+                  model: String(raw ?? ""),
+                });
                 continue;
               }
             }
@@ -392,6 +404,12 @@ export function createCoreSettingsSections(
             if (text === "") {
               options.llmCatalog?.clearRole(role as never);
               applied.push(`${role} の割り当てを外しました`);
+              options.onModelBindingChanged?.({
+                at: new Date().toISOString(),
+                role,
+                origin: "core",
+                model: "",
+              });
               continue;
             }
             const [backend, provider, model] = text.split("|");
@@ -401,6 +419,12 @@ export function createCoreSettingsSections(
             }
             options.llmCatalog?.setRole(role as never, provider, model, backend);
             applied.push(`${role} → ${backend}/${provider}/${model}`);
+            options.onModelBindingChanged?.({
+              at: new Date().toISOString(),
+              role,
+              origin: "core",
+              model: `${backend}|${provider}|${model}`,
+            });
           }
           return {
             applied: true,

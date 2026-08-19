@@ -242,6 +242,9 @@ export { createPlaceTools } from "./place-tools.js";
 export { ThreadStore, type StoredThread } from "./thread-store.js";
 export { SettingsStore, type BantoSettings, type PlaceSetting } from "./settings-store.js";
 export { createCoreSettingsSections } from "./core-settings.js";
+// 決定 ledger：モデル束縛の変更記録（ADR-0021 の続き・2026-08-19 提案）
+export { appendBindingDecision } from "./binding-ledger.js";
+export type { BindingDecisionEntry } from "./binding-ledger.js";
 // バックエンドの名乗り（ADR-0020 決定98a・98d）。回せないことを値で返す
 export {
   createClaudeBackend,

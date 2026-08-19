@@ -315,3 +315,31 @@ export class ModelLedger {
     return true;
   }
 }
+
+/**
+ * 役の束縛を優先順位で解く（single resolver の核・ADR-0021 決定99a・2026-08-19 提案）。
+ *
+ * 上書き（モジュールの名指し）＞ 等級既定（worker.\<tier\>）＞ フォールバック（バックエンド既定）。
+ * 何も無ければ none。**実際のモデル存在確認（供給）は呼び出し側が担う**——ここは
+ * 「誰が何を使うか」の優先順位だけを、呼び出し側（Kobo / 番頭 / 設定画面）が共通に使う形で解く。
+ * 黙って先頭に落とさない（ADR-0021 決定104）：解けないときは none を理由付きで返す。
+ */
+export type ModelRoleResolutionSource = "override" | "tier" | "fallback" | "none";
+
+export interface ModelRoleResolution {
+  /** 実効モデル（`backend|provider|model` または空）。 */
+  model: string;
+  /** どの段から解決されたか（出所）。 */
+  source: ModelRoleResolutionSource;
+}
+
+export function resolveModelRole(opts: {
+  override?: string;
+  tierDefault?: string;
+  fallback?: string;
+}): ModelRoleResolution {
+  if (opts.override) return { model: opts.override, source: "override" };
+  if (opts.tierDefault) return { model: opts.tierDefault, source: "tier" };
+  if (opts.fallback) return { model: opts.fallback, source: "fallback" };
+  return { model: "", source: "none" };
+}

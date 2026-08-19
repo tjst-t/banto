@@ -200,6 +200,7 @@ export {
   ledgerWorkerRole,
   sameRef,
   refKey,
+  resolveModelRole,
 } from "./model-ledger.js";
 export type {
   LedgerRole,
@@ -207,6 +208,8 @@ export type {
   RoleBinding,
   ModelLedgerData,
   ModelLedgerOptions,
+  ModelRoleResolution,
+  ModelRoleResolutionSource,
 } from "./model-ledger.js";
 
 // 場所（Place）— 番頭が作業してよい場所の契約（決定36c）

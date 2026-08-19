@@ -24,9 +24,10 @@ import {
   withDefaultDesk,
   type BantoModule,
   type PlaceSetting,
+  type BindingDecisionEntry,
 } from "@banto/host";
 import { EnvironmentPool, createEnvironmentPoolModule } from "@banto/environment-pool";
-import { resolveSettingsFields } from "@banto/core";
+import { resolveModelRole, resolveSettingsFields } from "@banto/core";
 import type { ModuleSettingsSpec } from "@banto/core";
 
 let dir: string;
@@ -382,5 +383,39 @@ describe("[modelRoles] 役割とモデル統合表（2026-08-19 提案 model-rol
     const keys = (await resolveSettingsFields(roles.spec)).map((f) => f.key);
     assert.ok(keys.includes("steward"), "核の役は残る");
     assert.ok(!keys.some((k) => k.includes(":")), "モジュール役が並ばない");
+  });
+
+  it("single resolver：上書き ＞ 等級既定 ＞ フォールバック の順で実効を解く", () => {
+    assert.deepEqual(
+      resolveModelRole({ override: "a", tierDefault: "b", fallback: "c" }),
+      { model: "a", source: "override" }
+    );
+    assert.deepEqual(resolveModelRole({ tierDefault: "b", fallback: "c" }), {
+      model: "b",
+      source: "tier",
+    });
+    assert.deepEqual(resolveModelRole({ fallback: "c" }), { model: "c", source: "fallback" });
+    assert.deepEqual(resolveModelRole({}), { model: "", source: "none" });
+  });
+
+  it("決定 ledger：統合表の write がモデル束縛の変更を記録する", async () => {
+    const decisions: BindingDecisionEntry[] = [];
+    const kobo: ModuleSettingsSpec = {
+      title: "工場",
+      modelRoles: [{ id: "executor", key: "executorModel", label: "実装", tierDependent: true }],
+      fields: [],
+      read: () => ({}),
+      write: () => ({ applied: true }),
+    };
+    const core = createCoreSettingsSections(store, {
+      modelRoleSources: () => [{ origin: "kobo", originTitle: "工場", spec: kobo }],
+      onModelBindingChanged: (e) => decisions.push(e),
+    });
+    const roles = core.find((c) => c.id === "roles")!.spec;
+    await roles.write({ "kobo:executor": "OpenRouter|deepseek|deepseek-v4-flash-0731" });
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0].origin, "kobo");
+    assert.equal(decisions[0].role, "executor");
+    assert.equal(decisions[0].model, "OpenRouter|deepseek|deepseek-v4-flash-0731");
   });
 });
