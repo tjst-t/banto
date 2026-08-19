@@ -26,6 +26,7 @@ import {
   type PlaceSetting,
 } from "@banto/host";
 import { EnvironmentPool, createEnvironmentPoolModule } from "@banto/environment-pool";
+import { resolveSettingsFields } from "@banto/core";
 import type { ModuleSettingsSpec } from "@banto/core";
 
 let dir: string;
@@ -334,5 +335,52 @@ describe("[決定41] 設定に入れたもの（VM設置に要るもの）", () 
     );
     await update.execute({ section: "network", values: { port: 4200 } });
     assert.equal(store.all().network?.port, 4200);
+  });
+});
+
+describe("[modelRoles] 役割とモデル統合表（2026-08-19 提案 model-roles-module-offer）", () => {
+  it("モジュールが modelRoles 宣言した役が統合表（roles 区画）に並び、read/write はモジュールへ委譲される", async () => {
+    const wrote: { value?: Record<string, unknown> } = {};
+    const kobo: ModuleSettingsSpec = {
+      title: "工場（職人の当て方）",
+      modelRoles: [
+        { id: "executor", key: "executorModel", label: "実装", tierDependent: true },
+        { id: "audit", key: "auditModel", label: "監査", tierDependent: true },
+      ],
+      fields: [],
+      read: () => ({ executorModel: "opencode-go|deepseek-v4-flash" }),
+      write: (v) => {
+        wrote.value = v;
+        return { applied: true };
+      },
+    };
+    const core = createCoreSettingsSections(store, {
+      modelRoleSources: () => [{ origin: "kobo", originTitle: "工場", spec: kobo }],
+    });
+    const roles = core.find((c) => c.id === "roles")!;
+
+    // 宣言した役が「役割とモデル」統合表のフィールドに並ぶ
+    const fields = await resolveSettingsFields(roles.spec);
+    const execField = fields.find((f) => f.key === "kobo:executor");
+    assert.ok(execField, "工場の役（executor）が統合表に並ぶ");
+    assert.equal(execField!.label, "工場・実装");
+
+    // 値はモジュールの read() から来る（核は保持しない・D3）＋ 核の役も残る
+    const values = await roles.spec.read();
+    assert.equal(values["kobo:executor"], "opencode-go|deepseek-v4-flash");
+    assert.equal(values["kobo:audit"], "");
+    assert.ok("steward" in values, "核の役も残っている");
+
+    // 変更はそのモジュールの settings.write へ委譲される（保存先はモジュール・決定27・99a）
+    await roles.spec.write({ "kobo:executor": "OpenRouter|deepseek|deepseek-v4-flash-0731" });
+    assert.deepEqual(wrote.value, { executorModel: "OpenRouter|deepseek|deepseek-v4-flash-0731" });
+  });
+
+  it("modelRoles を宣言しないモジュールは統合表に出ない（核の役は残る）", async () => {
+    const core = createCoreSettingsSections(store, { modelRoleSources: () => [] });
+    const roles = core.find((c) => c.id === "roles")!;
+    const keys = (await resolveSettingsFields(roles.spec)).map((f) => f.key);
+    assert.ok(keys.includes("steward"), "核の役は残る");
+    assert.ok(!keys.some((k) => k.includes(":")), "モジュール役が並ばない");
   });
 });

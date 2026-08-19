@@ -1081,6 +1081,15 @@ async function serve(options: ServeOptions): Promise<void> {
             settingsValue: settings.all().chapterModel,
             backends: harnessBackends,
           }),
+        /**
+         * 「役割とモデル」統合表に載るモジュール（`modelRoles` を宣言した settings を持つもの）。
+         * Kobo は executor / rework / audit を宣言する。WorkerPool は宣言しないので統合表に出ない。
+         */
+        modelRoleSources: () =>
+          modules
+            .list()
+            .filter((m) => m.settings?.modelRoles && m.settings.modelRoles.length > 0)
+            .map((m) => ({ origin: m.name, originTitle: m.title, spec: m.settings! })),
       }),
       modules,
       store: settings,
