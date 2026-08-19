@@ -100,6 +100,14 @@ export function createKoboSettings(
 ): ModuleSettingsSpec {
   return {
     title: "工場（職人の当て方）",
+    // 統合表「役割とモデル」に載せるための宣言（2026-08-19 提案 model-roles-module-offer）。
+    // これらの役はタスクの等級（worker.<tier>）に従う（tierDependent）。
+    modelRoles: KOBO_ROLES.map(({ role, label, hint }) => ({
+      id: role,
+      key: `${role}Model`,
+      label,
+      tierDependent: true,
+    })),
     description:
       "実装・手直し・監査を、どの等級／どのモデルの職人にやらせるか。" +
       "**名指しがあれば等級より優先**され、監査に落ちたときの昇格も効かない" +

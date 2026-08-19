@@ -105,6 +105,23 @@ export interface ModuleSettingsSpec {
    * I2: 受け付けられない値は例外にする。黙って丸めると、画面の表示と実際が食い違う。
    */
   write(values: Record<string, unknown>): SettingsWriteResult | Promise<SettingsWriteResult>;
+  /**
+   * この区画が「モデルを使う役」の束縛を表すときに宣言する
+   * （ADR-0021 の続き・2026-08-19 提案 `model-roles-module-offer`）。
+   *
+   * 核の「役割とモデル」統合表がこれを読み、等級既定（`ModelLedger` の worker.\<tier\>）
+   * と併せて実効モデルを導出表示する。宣言しなければ統合表には出ない
+   * （設定画面の区画としてのみ表示される）。
+   *
+   * `id` は表の行の識別子。`key` は `read()` / `write()` がこの役の束縛を持つキー
+   * （例 `executorModel`）。`tierDependent` はタスクの等級（`worker.<tier>`）に従う役か。
+   */
+  modelRoles?: Array<{
+    id: string;
+    key: string;
+    label: string;
+    tierDependent?: boolean;
+  }>;
 }
 
 /**
