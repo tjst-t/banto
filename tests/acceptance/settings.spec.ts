@@ -94,7 +94,7 @@ describe("[決定41/a] モジュールが宣言した区画が設定画面に集
     };
 
     const ids = details.sections.map((s) => s.id);
-    assert.deepEqual(ids, ["places", "network", "roles", "chapterModel", "よそのモジュール"]);
+    assert.deepEqual(ids, ["places", "network", "roles", "よそのモジュール"]);
     // 由来が分かること（画面が「どのモジュールの設定か」を出せる）
     assert.equal(details.sections.find((s) => s.id === "よそのモジュール")!.origin, "よそのモジュール");
     // いまの値も一緒に来る（画面は宣言と値の両方が要る）
@@ -133,9 +133,8 @@ describe("[決定41/a] モジュールが宣言した区画が設定画面に集
     ]);
     const { describe: tool } = settingsToolsOf(modules);
     const details = (await tool.execute({})).details as { sections: Array<{ id: string }> };
-    // 中核は places / network / roles（ADR-0021 決定102：役の面1枚）/ chapterModel（task-0151）
-    // ＋ 読める側のモジュール1つ
-    assert.equal(details.sections.length, 5, "他の区画は出ること");
+    // 中核は places / network / roles（役割とモデル、chapterModel・章要約もこの中に統合）＋ モジュール
+    assert.equal(details.sections.length, 4, "他の区画は出ること");
   });
 });
 
@@ -349,7 +348,8 @@ describe("[modelRoles] 役割とモデル統合表（2026-08-19 提案 model-rol
         { id: "audit", key: "auditModel", label: "監査", tierDependent: true },
       ],
       fields: [],
-      read: () => ({ executorModel: "opencode-go|deepseek-v4-flash" }),
+      // Kobo の値は provider/model 形式（selectableModelNames で照合するため）
+      read: () => ({ executorModel: "opencode-go/deepseek-v4-flash" }),
       write: (v) => {
         wrote.value = v;
         return { applied: true };
@@ -360,25 +360,39 @@ describe("[modelRoles] 役割とモデル統合表（2026-08-19 提案 model-rol
     });
     const roles = core.find((c) => c.id === "roles")!;
 
-    // 専用の表形式 view で描く（決定43）——fields は持たず、表の行データを read が返す
+    // 専用の表形式 view で描く（決定43）——read が行データを返す
     assert.equal(roles.spec.view, "ModelRolesView");
     const values = (await roles.spec.read()) as Record<string, unknown>;
     const table = (values["_rolesTable"] ?? []) as Array<{
       key: string;
       label: string;
-      binding: string;
-      source: string;
+      value: string;
+      note: string;
+      group: string;
     }>;
     const exec = table.find((r) => r.key === "kobo:executor");
     assert.ok(exec, "工場の役（executor）が統合表に並ぶ");
     assert.equal(exec!.label, "工場・実装");
-    assert.equal(exec!.binding, "opencode-go|deepseek-v4-flash");
-    assert.equal(exec!.source, "override");
-    assert.ok(table.some((r) => r.key === "steward"), "核の役も残っている");
+    assert.equal(exec!.value, "opencode-go/deepseek-v4-flash");
+    assert.equal(exec!.note, "上書き");
 
-    // 変更はそのモジュールの settings.write へ委譲される（保存先はモジュール・決定27・99a）
-    await roles.spec.write({ "kobo:executor": "OpenRouter|deepseek|deepseek-v4-flash-0731" });
-    assert.deepEqual(wrote.value, { executorModel: "OpenRouter|deepseek|deepseek-v4-flash-0731" });
+    // 並び順: 番頭 → 職人 → 工場、かつ章の要約も統合表に並ぶ
+    const keys = table.map((r) => r.key);
+    assert.ok(keys.includes("steward"), "番頭が並ぶ");
+    assert.ok(keys.includes("chapterModel"), "章の要約が統合表に並ぶ");
+    const firstModuleIdx = table.findIndex((r) => r.group === "module");
+    assert.ok(
+      table.slice(0, firstModuleIdx).every((r) => r.group !== "module"),
+      "工場（module）は職人より後に並ぶ"
+    );
+
+    // 変更はそのモジュールの settings.write へ委譲される（値はモジュール保存形式のまま）
+    await roles.spec.write({
+      "kobo:executor": "OpenRouter/deepseek/deepseek-v4-flash-0731",
+    });
+    assert.deepEqual(wrote.value, {
+      executorModel: "OpenRouter/deepseek/deepseek-v4-flash-0731",
+    });
   });
 
   it("modelRoles を宣言しないモジュールは統合表に出ない（核の役は残る）", async () => {
@@ -417,10 +431,10 @@ describe("[modelRoles] 役割とモデル統合表（2026-08-19 提案 model-rol
       onModelBindingChanged: (e) => decisions.push(e),
     });
     const roles = core.find((c) => c.id === "roles")!.spec;
-    await roles.write({ "kobo:executor": "OpenRouter|deepseek|deepseek-v4-flash-0731" });
+    await roles.write({ "kobo:executor": "OpenRouter/deepseek/deepseek-v4-flash-0731" });
     assert.equal(decisions.length, 1);
     assert.equal(decisions[0].origin, "kobo");
     assert.equal(decisions[0].role, "executor");
-    assert.equal(decisions[0].model, "OpenRouter|deepseek|deepseek-v4-flash-0731");
+    assert.equal(decisions[0].model, "OpenRouter/deepseek/deepseek-v4-flash-0731");
   });
 });

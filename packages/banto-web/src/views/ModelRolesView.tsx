@@ -1,12 +1,13 @@
 /**
  * 「役割とモデル」統合表（ADR-0021 の続き・2026-08-19 提案 model-roles-module-offer）。
  *
- * 行＝役割（番頭 / 職人・等級 / 工場などモジュールの役）、欄＝いま効いている / 出所 / 設定。
- * 値と選択肢は区画の read() が構造化した `_rolesTable` を受け取り、変更は設定画面の口
- * （settings.update）で保存する（D5：判断は持たない。描くだけ）。
+ * 3列: **役割｜モデル指定｜割り当てモデル**。
+ * - モデル指定: この役にモデルを明示するか「継承（上位の設定に従う）」を選ぶ
+ * - 割り当てモデル: 指定があればそのモデル、継承なら上（等級既定/バックエンド既定）の解決結果
  *
- * モジュールが `modelRoles` で宣言した役は、この表に自動で並ぶ——Kobo の executor /
- * rework / audit、将来のモジュールの役も同じ行として現れる。
+ * 行と値・選択肢は区画の read() が構造化した `_rolesTable` を受け取り、変更は設定画面の口
+ * （settings.update）で保存する（D5：判断は持たない。描くだけ）。
+ * 並び順は区画側が「番頭 → 職人 → 工場」に揃えている。
  */
 
 import { useState } from "react";
@@ -15,21 +16,14 @@ import { Button, ErrorNote, Note, ViewBar, ViewShell } from "./ui.js";
 
 interface RoleRow {
   key: string;
+  group: string;
   label: string;
-  origin: string;
   tierDependent: boolean;
-  binding: string;
+  value: string;
   effective: string;
-  source: "override" | "tier" | "fallback" | "none";
+  note: string;
   options: Array<{ value: string; label: string }>;
 }
-
-const SOURCE_LABELS: Record<RoleRow["source"], string> = {
-  override: "上書き（名指し）",
-  tier: "等級既定",
-  fallback: "バックエンド既定",
-  none: "未指定",
-};
 
 export function ModelRolesView(props: CanvasViewProps): React.ReactElement {
   const bridge = props.settings;
@@ -77,38 +71,52 @@ export function ModelRolesView(props: CanvasViewProps): React.ReactElement {
       {error && <ErrorNote onRetry={() => setError(undefined)}>{error}</ErrorNote>}
       {notice && <Note tone="ok">{notice}</Note>}
 
-      <div className="roles-grid">
-        {rows.length === 0 && (
-          <div className="cv-muted">役の一覧を読み込めませんでした（区画の read を確認してください）。</div>
-        )}
-        {rows.map((row) => (
-          <div key={row.key} className="roles-row">
-            <div className="roles-cell roles-role">
-              <div className="roles-role-name">{row.label}</div>
-              {row.origin !== "core" && <div className="roles-origin">（{row.origin}）</div>}
-              {row.tierDependent && <div className="roles-hint">タスクの等級に従う</div>}
-            </div>
-            <div className="roles-cell roles-effective">
-              <div className="roles-effective-value">{row.effective}</div>
-              <div className="roles-source">{SOURCE_LABELS[row.source]}</div>
-            </div>
-            <div className="roles-cell roles-select">
-              <select
-                className="sp-input"
-                value={row.binding}
-                disabled={busy}
-                aria-label={`${row.label}のモデル`}
-                onChange={(e) => void save(row.key, e.target.value)}
-              >
-                {row.options.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-        ))}
+      <div className="roles-table-scroll">
+        <table className="roles-table">
+          <thead>
+            <tr>
+              <th className="roles-th-role">役割</th>
+              <th>モデル指定</th>
+              <th>割り当てモデル</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={3} className="cv-muted">
+                  役の一覧を読み込めませんでした（区画の read を確認してください）。
+                </td>
+              </tr>
+            )}
+            {rows.map((row) => (
+              <tr key={row.key}>
+                <td className="roles-td-role">
+                  <div className="roles-role-name">{row.label}</div>
+                  {row.tierDependent && <span className="roles-hint">タスクの等級に従う</span>}
+                </td>
+                <td>
+                  <select
+                    className="sp-input"
+                    value={row.value}
+                    disabled={busy}
+                    aria-label={`${row.label}のモデル指定`}
+                    onChange={(e) => void save(row.key, e.target.value)}
+                  >
+                    {row.options.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+                <td>
+                  <div className="roles-effective">{row.effective}</div>
+                  <div className="roles-note">{row.note}</div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </ViewShell>
   );

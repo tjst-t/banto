@@ -56,31 +56,53 @@ function refValue(ref?: { backend?: string; provider: string; model: string }): 
   return ref ? `${ref.backend ?? "pi"}|${ref.provider}|${ref.model}` : "";
 }
 
-/** 束縛を人が読む形へ（`backend › provider › model`）。 */
-function refLabel(ref: { backend: string; provider: string; model: string }): string {
-  return `${ref.backend} › ${ref.provider} › ${ref.model}`;
+/** 束縛の文字列（`backend|provider|model`）を人が読む形（`backend › provider › model`）へ。 */
+function toDisplayModel(value: string): string {
+  return value ? value.replace(/\|/g, " › ") : "";
+}
+
+/**
+ * 統合表の選択肢（`backend|provider|model`）を、モジュールの保存形式へ変換する
+ * （2026-08-19 提案）。Kobo の `selectableModelNames`（worker.models）は `provider/model`
+ * で照合する——pi の値は backend を落とし、Claude Code は別名（`opus` 等）だけ残す。
+ */
+function toModuleValue(value: string): string {
+  const [backend, provider, model] = value.split("|");
+  if (backend === "claude-agent-sdk") return model ?? "";
+  return provider && model ? `${provider}/${model}` : "";
+}
+
+/** 統合表の行の並びグループ（並び順: 番頭 → 職人 → 工場）。 */
+export type RoleTableGroup = "steward" | "worker" | "module";
+
+/** 統合表の1行（専用 view `ModelRolesView` が描く形）。 */
+export interface RoleTableRow {
+  key: string;
+  group: RoleTableGroup;
+  label: string;
+  tierDependent: boolean;
+  /** モデル指定（保存形式。空＝継承＝上位に従う）。 */
+  value: string;
+  /** 割り当てモデル（解決後の表示）。 */
+  effective: string;
+  /** 出所・継承の注記。 */
+  note: string;
+  /** モデル指定の選択肢（先頭は「継承」）。 */
+  options: Array<{ value: string; label: string }>;
 }
 
 /**
  * **いまの値が一覧に無ければ足す**（I2：画面と実態を食い違わせない）。
  *
  * 供給に聞いた一覧は「いま選べるもの」で、**いま効いているもの**とは限らない
- * ——実機では番頭が `claude/opus` なのに、聞いた一覧には `opus[1m]` しか無かった。
- * 黙って先頭の項目が選ばれているように見せると、開いただけで別のモデルに見える。
+ * ——黙って先頭の項目が選ばれているように見せると、開いただけで別のモデルに見える。
  */
-function withCurrent(
+function withCurrentValue(
   options: Array<{ value: string; label: string }>,
   current: string
 ): Array<{ value: string; label: string }> {
   if (current === "" || options.some((o) => o.value === current)) return options;
-  const [backend, provider, model] = current.split("|");
-  return [
-    {
-      value: current,
-      label: `${backend} › ${provider} › ${model}（いま効いている・一覧にはまだ出ていない）`,
-    },
-    ...options,
-  ];
+  return [{ value: current, label: `${toDisplayModel(current)}（いまの値）` }, ...options];
 }
 
 export interface CoreSettingsOptions {
@@ -284,67 +306,82 @@ export function createCoreSettingsSections(
           const roles = options.llmCatalog?.roles() ?? {};
           const asValue = (r?: { backend?: string; provider: string; model: string }): string =>
             r ? `${r.backend ?? "pi"}|${r.provider}|${r.model}` : "";
-          const workerChoices = options.workerChoices?.() ?? [];
 
-          const rows: Array<{
-            key: string;
-            label: string;
-            origin: string;
-            tierDependent: boolean;
-            binding: string;
-            effective: string;
-            source: ModelRoleResolutionSource;
-            options: Array<{ value: string; label: string }>;
-          }> = [];
+          // 選択肢。value は各役の保存形式、label は統一表示（backend › provider › model）
+          const workerChoices = options.workerChoices?.() ?? []; // value: backend|provider|model
+          const workerOptions = workerChoices.map((c) => ({
+            value: c.value,
+            label: toDisplayModel(c.value),
+          }));
+          // 工場（モジュール）は保存形式が違う（provider/model か Claude 別名）。label は統一
+          const moduleOptions = workerChoices.map((c) => ({
+            value: toModuleValue(c.value),
+            label: toDisplayModel(c.value),
+          }));
+          const harnessChoices = options.harnessChoices?.() ?? [];
+          const harnessOptions = harnessChoices.map((c) => ({
+            value: c.value,
+            label: toDisplayModel(c.value),
+          }));
 
-          // 職人の既定の等級（頼む側が等級を言わなかったとき）
-          const defaultTier = options.workerDefaultTier?.() ?? "";
-          rows.push({
-            key: "defaultTier",
-            label: "職人の既定の等級",
-            origin: "core",
-            tierDependent: false,
-            binding: defaultTier,
-            effective: defaultTier ? TIER_LABELS[defaultTier as ModelTier] : "（指定なし）",
-            source: "tier",
-            options: [
-              { value: "", label: "（指定なし）" },
-              ...MODEL_TIERS.map((t) => ({ value: t, label: TIER_LABELS[t] })),
-            ],
-          });
+          const rows: Array<RoleTableRow> = [];
 
-          // 番頭
+          // ── 番頭 ──
           const steward = asValue(roles.steward);
           rows.push({
             key: "steward",
+            group: "steward",
             label: "番頭",
-            origin: "core",
             tierDependent: false,
-            binding: steward,
-            effective: steward || "（未指定）",
-            source: steward ? "tier" : "none",
-            options: withCurrent(options.harnessChoices?.() ?? [], steward),
+            value: steward,
+            effective: toDisplayModel(steward) || "（未指定）",
+            note: steward ? "指定" : "未指定",
+            options: [{ value: "", label: "（継承：未指定なら既定に従う）" }, ...harnessOptions],
           });
 
-          // 職人・等級
+          // 章の要約（本編とは別呼び出し）
+          const chapter = String(store.all().chapterModel ?? "");
+          rows.push({
+            key: "chapterModel",
+            group: "steward",
+            label: "章の要約",
+            tierDependent: false,
+            value: chapter,
+            effective: toDisplayModel(chapter) || "（継承：既定 claude-agent-sdk/haiku）",
+            note: chapter ? "指定" : "既定に従う",
+            options: [{ value: "", label: "（継承：既定に従う）" }, ...harnessOptions],
+          });
+
+          // ── 職人 ──
+          const defaultTier = options.workerDefaultTier?.() ?? "";
+          rows.push({
+            key: "defaultTier",
+            group: "worker",
+            label: "職人の既定の等級",
+            tierDependent: false,
+            value: defaultTier,
+            effective: defaultTier ? TIER_LABELS[defaultTier as ModelTier] : "（指定なし）",
+            note: defaultTier ? "等級既定の既定" : "指定なし",
+            options: [
+              { value: "", label: "（継承：指定なし）" },
+              ...MODEL_TIERS.map((t) => ({ value: t, label: TIER_LABELS[t] })),
+            ],
+          });
           for (const tier of MODEL_TIERS) {
             const binding = asValue(roles[workerRoleOf(tier)]);
             rows.push({
               key: `worker.${tier}`,
+              group: "worker",
               label: `職人（${TIER_LABELS[tier]}）`,
-              origin: "core",
               tierDependent: false,
-              binding,
-              effective: binding || "（未指定 → バックエンド既定）",
-              source: binding ? "tier" : "fallback",
-              options: withCurrent(
-                [{ value: "", label: "（割り当てなし）" }, ...workerChoices],
-                binding
-              ),
+              value: binding,
+              effective: toDisplayModel(binding) || "（継承：バックエンド既定に従う）",
+              note: binding ? "等級既定" : "継承",
+              options: [{ value: "", label: "（継承：バックエンド既定に従う）" }, ...workerOptions],
             });
           }
 
-          // モジュールの役（Kobo の executor / rework / audit 等）
+          // ── 工場（モジュールの役：Kobo の executor / rework / audit 等）──
           for (const source of options.modelRoleSources?.() ?? []) {
             let values: Record<string, unknown> = {};
             try {
@@ -356,24 +393,28 @@ export function createCoreSettingsSections(
               const binding = String(values[role.key] ?? "");
               rows.push({
                 key: `${source.origin}:${role.id}`,
+                group: "module",
                 label: `${source.originTitle}・${role.label}`,
-                origin: source.origin,
                 tierDependent: role.tierDependent === true,
-                binding,
-                effective: binding || "（なし → 等級既定に従う）",
-                source: binding ? "override" : "tier",
-                options: withCurrent(
-                  [{ value: "", label: "（割り当てなし・等級既定に従う）" }, ...workerChoices],
-                  binding
-                ),
+                value: binding,
+                effective: toDisplayModel(binding) || "（継承：等級既定に従う）",
+                note: binding ? "上書き" : "継承",
+                options: [{ value: "", label: "（継承：等級既定に従う）" }, ...moduleOptions],
               });
             }
           }
 
+          // 並び順: 番頭 → 職人 → 工場（グループ内は宣言順を保つ安定ソート）
+          const order: Record<RoleTableGroup, number> = { steward: 0, worker: 1, module: 2 };
+          rows.sort((a, b) => order[a.group] - order[b.group]);
+
+          // 現在値が選択肢に無いときも選ばれているように見せる（I2）
+          for (const row of rows) {
+            row.options = withCurrentValue(row.options, row.value);
+          }
+
           return {
-            // 表の行（専用 view が描く）
             _rolesTable: rows,
-            // 従来のキーも残す（直接読む側のため）
             steward: asValue(roles.steward),
             defaultTier: options.workerDefaultTier?.() ?? "",
             ...Object.fromEntries(
@@ -414,6 +455,12 @@ export function createCoreSettingsSections(
               }
               continue;
             }
+            if (key === "chapterModel") {
+              const text = String(raw ?? "");
+              store.update("chapterModel", text.length > 0 ? text : undefined);
+              applied.push(`章の要約 → ${text || "既定に従う"}`);
+              continue;
+            }
             const role = key === "steward" ? "steward" : key;
             const text = String(raw ?? "");
             if (text === "") {
@@ -447,67 +494,6 @@ export function createCoreSettingsSections(
               `${applied.join("、")}。\n\n` +
               "**優先順位：①上書き（名指し） ②等級既定 ③バックエンド既定**\n" +
               "番頭は新しい会話から、職人は次の委譲から効きます。",
-          };
-        },
-      } as ModuleSettingsSpec,
-    },
-    {
-      id: "chapterModel",
-      spec: {
-        title: "章の要約に使うモデル",
-        description:
-          "会話が長くなったとき、引き継ぎ資料を書くために使うモデルです（本編とは別の呼び出し・" +
-          "決定28）。会話のモデルとは独立に選べます——安いモデルで足ります。" +
-          "未指定なら既定（claude-agent-sdk の haiku）を使います。" +
-          "環境変数 BANTO_CHAPTER_MODEL が設定されている間は、そちらがここより優先されます（互換のため）。",
-        fields: () => [
-          {
-            key: "chapterModel",
-            label: "要約モデル",
-            type: "select",
-            get options() {
-              return withCurrent(options.harnessChoices?.() ?? [], store.all().chapterModel ?? "");
-            },
-            description: (() => {
-              const effective = options.effectiveChapterModel?.();
-              if (!effective) return "";
-              const label = refLabel(effective.ref);
-              if (effective.source === "env") {
-                return `いま実際に使われているのは ${label}（環境変数 BANTO_CHAPTER_MODEL）です。`;
-              }
-              const fallbackNote = effective.fallback
-                ? `指定（${
-                    "raw" in effective.fallback.requested
-                      ? effective.fallback.requested.raw
-                      : refLabel(effective.fallback.requested)
-                  }）を解決できず、既定へ落としています（${effective.fallback.reason}）。`
-                : "";
-              return `${fallbackNote}いま実際に使われているのは ${label} です。`;
-            })(),
-          },
-        ],
-        read: () => ({ chapterModel: store.all().chapterModel ?? "" }),
-        write: (values) => {
-          const raw = values["chapterModel"];
-          const text = String(raw ?? "");
-          if (text === "") {
-            store.update("chapterModel", undefined);
-            return {
-              applied: false,
-              message: "章の要約モデルの指定を外しました。次の会話から既定を使います。",
-            };
-          }
-          const [backend, provider, model] = text.split("|");
-          // I2: 壊れた値を黙って既定に落とさない
-          if (!backend || !provider || !model) {
-            throw new Error(`モデルの指定が不正です: ${text}`);
-          }
-          store.update("chapterModel", text);
-          return {
-            applied: false,
-            message:
-              `保存しました（${backend}/${provider}/${model}）。次の会話から効きます` +
-              "（いま開いている会話は、次に章を畳むときから）。",
           };
         },
       } as ModuleSettingsSpec,

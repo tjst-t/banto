@@ -91,10 +91,12 @@ export function createSettingsModule(options: SettingsModuleOptions): BantoModul
       originTitle: "Banto 本体",
       spec: c.spec,
     })),
-    // モジュールが宣言した区画。宣言していないモジュールは出ない
+    // モジュールが宣言した区画。宣言していないモジュールは出ない。
+    // `modelRoles` を持つ区画は「役割とモデル」統合表に統合したので、独立区画としては出さない
+    // （2026-08-19 提案 model-roles-module-offer）。統合表経由でのみ編集する。
     ...options.modules
       .list()
-      .filter((m) => m.settings)
+      .filter((m) => m.settings && !m.settings.modelRoles)
       .map((m) => ({ id: m.name, origin: m.name, originTitle: m.title, spec: m.settings! })),
   ];
 

@@ -2047,26 +2047,34 @@
 .cv-browser-input input { flex: 1; min-width: 0; }
 
 /* 「役割とモデル」統合表（ModelRolesView・ADR-0021 の続き・2026-08-19 提案） */
-.roles-view .roles-grid {
-  display: grid;
-  gap: 8px;
+.roles-view .roles-table-scroll {
   padding: 12px;
+  overflow-x: auto;
 }
-.roles-view .roles-row {
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.1fr) minmax(240px, 1.3fr);
-  gap: 12px;
-  align-items: center;
+.roles-view .roles-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.roles-view .roles-table th,
+.roles-view .roles-table td {
   padding: 10px 12px;
-  border: 1px solid var(--sumi-5, #2a2a2a);
-  border-radius: 8px;
+  border-bottom: 1px solid var(--sumi-5, #2a2a2a);
+  text-align: left;
+  vertical-align: top;
+}
+.roles-view .roles-table th {
+  font-weight: 600;
+  opacity: 0.8;
+}
+.roles-view .roles-th-role,
+.roles-view .roles-td-role {
+  width: 220px;
 }
 .roles-view .roles-role-name { font-weight: 600; }
-.roles-view .roles-origin,
-.roles-view .roles-hint {
+.roles-view .roles-hint,
+.roles-view .roles-note {
   font-size: 12px;
   opacity: 0.7;
 }
-.roles-view .roles-effective-value { word-break: break-all; }
-.roles-view .roles-source { font-size: 12px; opacity: 0.7; }
-.roles-view .roles-select select { width: 100%; }
+.roles-view .roles-effective { word-break: break-all; }
+.roles-view .roles-table select { width: 100%; }
