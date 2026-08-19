@@ -100,8 +100,8 @@ export interface RoleTableRow {
   thinkingOptions: Array<{ value: string; label: string }>;
 }
 
-/** 思考レベルの選択肢（統合表・チャット共通）。値はバックエンド側で解釈・変換する。 */
-export const THINKING_OPTIONS: Array<{ value: string; label: string }> = [
+/** pi モデルの思考レベル選択肢（継承 + pi のレベル）。 */
+export const PI_THINKING_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "", label: "継承（サービス既定に従う）" },
   { value: "off", label: "off" },
   { value: "low", label: "low" },
@@ -109,14 +109,34 @@ export const THINKING_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "high", label: "high" },
   { value: "xhigh", label: "xhigh" },
   { value: "max", label: "max" },
-  { value: "disabled", label: "disabled（Claude）" },
-  { value: "adaptive", label: "adaptive（Claude）" },
 ];
+
+/** Claude Code の思考レベル選択肢（継承 + config）。 */
+export const CLAUDE_THINKING_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "", label: "継承（サービス既定に従う）" },
+  { value: "disabled", label: "disabled（思考なし）" },
+  { value: "adaptive", label: "adaptive（Claude が決める）" },
+];
+
+/**
+ * モデルの値（`backend|provider|model` または `provider/model`）からバックエンドを判定して、
+ * そのモデルに合った思考レベルの選択肢を返す（2026-08-19 提案）。Claude Code は
+ * config（disabled/adaptive）、それ以外（pi）はレベル（off/low/…/max）。
+ */
+export function thinkingOptionsFor(modelValue: string): Array<{ value: string; label: string }> {
+  const isClaude =
+    modelValue.startsWith("claude-agent-sdk") ||
+    modelValue === "opus" ||
+    modelValue === "sonnet" ||
+    modelValue === "haiku";
+  return isClaude ? CLAUDE_THINKING_OPTIONS : PI_THINKING_OPTIONS;
+}
 
 /** 思考レベルを人が読む形（空＝継承）。 */
 export function thinkingLabel(value: string): string {
   if (value === "") return "（継承：サービス既定）";
-  return THINKING_OPTIONS.find((o) => o.value === value)?.label ?? value;
+  const all = [...PI_THINKING_OPTIONS, ...CLAUDE_THINKING_OPTIONS];
+  return all.find((o) => o.value === value)?.label ?? value;
 }
 
 /**
@@ -371,7 +391,7 @@ export function createCoreSettingsSections(
             note: steward ? "指定" : "未指定",
             options: [{ value: "", label: "（継承：未指定なら既定に従う）" }, ...harnessOptions],
             thinking: (roles.steward as { thinking?: string } | undefined)?.thinking ?? "",
-            thinkingOptions: THINKING_OPTIONS,
+            thinkingOptions: thinkingOptionsFor(steward),
           });
 
           // 章の要約（本編とは別呼び出し）
@@ -386,7 +406,7 @@ export function createCoreSettingsSections(
             note: chapter ? "指定" : "既定に従う",
             options: [{ value: "", label: "（継承：既定に従う）" }, ...harnessOptions],
             thinking: "",
-            thinkingOptions: THINKING_OPTIONS,
+            thinkingOptions: thinkingOptionsFor(chapter),
           });
 
           // ── 職人 ──
@@ -404,7 +424,7 @@ export function createCoreSettingsSections(
               ...MODEL_TIERS.map((t) => ({ value: t, label: TIER_LABELS[t] })),
             ],
             thinking: "",
-            thinkingOptions: THINKING_OPTIONS,
+            thinkingOptions: thinkingOptionsFor(defaultTier),
           });
           for (const tier of MODEL_TIERS) {
             const binding = asValue(roles[workerRoleOf(tier)]);
@@ -419,7 +439,7 @@ export function createCoreSettingsSections(
               options: [{ value: "", label: "（継承：バックエンド既定に従う）" }, ...workerOptions],
               thinking:
                 (roles[workerRoleOf(tier)] as { thinking?: string } | undefined)?.thinking ?? "",
-              thinkingOptions: THINKING_OPTIONS,
+              thinkingOptions: thinkingOptionsFor(binding),
             });
           }
 
@@ -443,7 +463,7 @@ export function createCoreSettingsSections(
                 note: binding ? "上書き" : "継承",
                 options: [{ value: "", label: "（継承：等級既定に従う）" }, ...moduleOptions],
                 thinking: String(values[`${role.id}Thinking`] ?? ""),
-                thinkingOptions: THINKING_OPTIONS,
+                thinkingOptions: thinkingOptionsFor(binding),
               });
             }
           }

@@ -404,6 +404,41 @@ describe("[modelRoles] 役割とモデル統合表（2026-08-19 提案 model-rol
     assert.ok(!table.some((r) => r.key.includes(":")), "モジュール役が並ばない");
   });
 
+  it("思考レベルの選択肢はモデル（バックエンド）に応じて変わる：pi はレベル、Claude は config", async () => {
+    type Row = { key: string; thinkingOptions: Array<{ value: string }> };
+    const piKobo: ModuleSettingsSpec = {
+      title: "工場",
+      modelRoles: [{ id: "executor", key: "executorModel", label: "実装", tierDependent: true }],
+      fields: [],
+      read: () => ({ executorModel: "opencode-go/deepseek-v4-flash" }),
+      write: () => ({ applied: true }),
+    };
+    const core = createCoreSettingsSections(store, {
+      modelRoleSources: () => [{ origin: "kobo", originTitle: "工場", spec: piKobo }],
+    });
+    const roles = core.find((c) => c.id === "roles")!.spec;
+    const execTable = ((await roles.read()) as Record<string, unknown>)["_rolesTable"] as Row[];
+    const exec = execTable.find((r) => r.key === "kobo:executor")!;
+    assert.ok(exec.thinkingOptions.some((o) => o.value === "high"), "pi のレベルが選べる");
+    assert.ok(!exec.thinkingOptions.some((o) => o.value === "adaptive"), "Claude 用の選択肢は出ない");
+
+    const claudeKobo: ModuleSettingsSpec = {
+      title: "工場",
+      modelRoles: [{ id: "audit", key: "auditModel", label: "監査", tierDependent: true }],
+      fields: [],
+      read: () => ({ auditModel: "opus" }),
+      write: () => ({ applied: true }),
+    };
+    const core2 = createCoreSettingsSections(store, {
+      modelRoleSources: () => [{ origin: "kobo", originTitle: "工場", spec: claudeKobo }],
+    });
+    const roles2 = core2.find((c) => c.id === "roles")!.spec;
+    const auditTable = ((await roles2.read()) as Record<string, unknown>)["_rolesTable"] as Row[];
+    const audit = auditTable.find((r) => r.key === "kobo:audit")!;
+    assert.ok(audit.thinkingOptions.some((o) => o.value === "adaptive"), "Claude の config が選べる");
+    assert.ok(!audit.thinkingOptions.some((o) => o.value === "high"), "pi のレベルは出ない");
+  });
+
   it("single resolver：上書き ＞ 等級既定 ＞ フォールバック の順で実効を解く", () => {
     assert.deepEqual(
       resolveModelRole({ override: "a", tierDefault: "b", fallback: "c" }),

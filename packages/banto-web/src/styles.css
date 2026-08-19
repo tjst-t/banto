@@ -507,6 +507,14 @@ code { font-family: var(--mono); font-size: var(--t-note); }
 .model-select-trigger:hover { background: var(--paper-1); color: var(--sumi); }
 .model-select-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-select-caret { flex: none; display: inline-flex; }
+/* チャット欄の思考レベル選択（モデル選択と見た目を揃える・2026-08-19） */
+.chat-thinking {
+  flex: none; min-width: 0; max-width: 150px; height: 28px;
+  border: 0; background: none; color: var(--sumi-2);
+  border-radius: var(--r-ctl); padding: 0 var(--s2); cursor: pointer;
+  font: inherit; font-family: var(--mono); font-size: var(--t-note);
+}
+.chat-thinking:hover { background: var(--paper-1); color: var(--sumi); }
 /**
  * 一覧は画面に対して置く（`Modal`）。**押した脇に開かない**——チャット欄は右端にあって
  * 幅も可変なので、脇に開くと画面からはみ出し、横スクロールが生えて画面全体が横へずれる

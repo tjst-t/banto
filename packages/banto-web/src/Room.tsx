@@ -40,7 +40,7 @@ const SETTINGS_TOOL_ENDPOINT = "/api/settings";
 const MAX_COMPOSER_HEIGHT_PX = 192;
 
 /** 思考レベルの選択肢（2026-08-19 提案）。空＝サービス既定に従う。バックエンド側で解釈・変換する。 */
-const THINKING_CHOICES: Array<{ value: string; label: string }> = [
+const PI_THINKING_CHOICES: Array<{ value: string; label: string }> = [
   { value: "", label: "思考: 既定" },
   { value: "off", label: "思考: off" },
   { value: "low", label: "思考: low" },
@@ -48,9 +48,19 @@ const THINKING_CHOICES: Array<{ value: string; label: string }> = [
   { value: "high", label: "思考: high" },
   { value: "xhigh", label: "思考: xhigh" },
   { value: "max", label: "思考: max" },
+];
+
+/** Claude Code の思考レベルの選択肢。 */
+const CLAUDE_THINKING_CHOICES: Array<{ value: string; label: string }> = [
+  { value: "", label: "思考: 既定" },
   { value: "disabled", label: "思考: disabled" },
   { value: "adaptive", label: "思考: adaptive" },
 ];
+
+/** バックエンドに合った思考レベルの選択肢（pi はレベル、Claude Code は config）。 */
+function thinkingChoicesFor(backend?: string): Array<{ value: string; label: string }> {
+  return backend === "claude-agent-sdk" ? CLAUDE_THINKING_CHOICES : PI_THINKING_CHOICES;
+}
 
 /**
  * チャットに一度に描く発話の数。
@@ -976,7 +986,7 @@ export function Room({
                 }
               }}
             >
-              {THINKING_CHOICES.map((o) => (
+              {thinkingChoicesFor(model?.backend).map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
                 </option>
