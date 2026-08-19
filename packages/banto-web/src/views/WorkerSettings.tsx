@@ -20,8 +20,6 @@ import type { CanvasViewProps } from "./registry.js";
 import { Badge, Button, Card, EmptyState, ErrorNote, Note, Scroll, Select, StatusDot, ViewBar, ViewShell } from "./ui.js";
 import { Icon } from "../icons.js";
 
-type Tier = "reasoning" | "standard" | "fast";
-
 interface BackendView {
   id: string;
   title: string;
@@ -42,22 +40,11 @@ interface ModelOption {
 }
 
 interface Values {
+  /** 何もしていない職人を畳むまでの時間（分）。 */
   idleTimeoutMinutes: number;
-  defaultTier: Tier | "";
-  tiers: Tier[];
-  assignments: Partial<Record<Tier, string>>;
   backends: BackendView[];
   models: ModelOption[];
-  fallbacks: Partial<Record<Tier, string>>;
-  /** 指定しなかった等級を解くバックエンドの名前。 */
-  fallbackBackend?: string;
 }
-
-const TIER_LABELS: Record<Tier, string> = {
-  reasoning: "高精度（reasoning）",
-  standard: "通常（standard）",
-  fast: "高速（fast）",
-};
 
 /** 使えるかどうかの見え方。**確かめていないものを「使える」と言わない**（I1）。 */
 function availabilityOf(b: BackendView): { tone: "ok" | "warn" | "neutral"; text: string } {
@@ -83,7 +70,6 @@ export function WorkerSettings(props: CanvasViewProps): React.ReactElement {
   const values = bridge.values as unknown as Values;
   const backends = values.backends ?? [];
   const models = values.models ?? [];
-  const tiers = values.tiers ?? (["reasoning", "standard", "fast"] as Tier[]);
 
   const send = async (update: Record<string, unknown>): Promise<void> => {
     setError(undefined);
@@ -162,50 +148,9 @@ export function WorkerSettings(props: CanvasViewProps): React.ReactElement {
             )}
           </section>
 
-          {/* ② どの等級に何を当てるか */}
+          {/* モデルの当て方・既定の等級は「役割とモデル」で決める（ADR-0021・2026-08-19）。
+              ここが持つのは供給（バックエンド）と安全弁だけ。 */}
           <section className="llm-sec">
-            <div className="llm-sec-head">
-              <span className="llm-sec-label">等級ごとのモデル</span>
-              <span className="llm-add-note">
-                「役ごとのモデル」へ移りました——割り当てはバックエンドを跨ぐ問いなので、
-                番頭と一緒に1枚で選びます。ここに出るのは<strong>いま効いている割り当て</strong>です。
-              </span>
-            </div>
-            <div className="llm-tiers">
-              {tiers.map((tier) => (
-                <div key={tier} className="llm-tier-card">
-                  <div className="llm-tier-head">
-                    <Badge className={`is-tier-${tier}`}>{TIER_LABELS[tier]}</Badge>
-                    {values.defaultTier === tier && <Badge tone="ok">職人の既定</Badge>}
-                  </div>
-                  <div className="llm-tier-pick">
-                    {values.assignments?.[tier] ? (
-                      <>
-                        いま: <code>{values.assignments[tier]}</code>
-                      </>
-                    ) : (
-                      <span className="cv-muted">（割り当てなし）</span>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="llm-sec">
-            <div className="llm-role">
-              <span className="llm-role-mark">等</span>
-              <div className="llm-role-main">
-                <div className="llm-role-name">既定の等級</div>
-                <div className="llm-role-sub">
-                  タスクにも番頭にも指定が無いときに使う等級
-                </div>
-              </div>
-              <span className="llm-tier-pick">
-                {values.defaultTier ? TIER_LABELS[values.defaultTier] : "（指定なし）"}
-                <span className="cv-muted">　→「役ごとのモデル」で変えます</span>
-              </span>
-            </div>
             <div className="llm-role">
               <span className="llm-role-mark">弁</span>
               <div className="llm-role-main">
