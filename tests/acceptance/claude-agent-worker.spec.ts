@@ -28,6 +28,7 @@ import type {
   SessionHandle,
   SpawnOptions,
 } from "@banto/core";
+import { resolveSettingsFields } from "@banto/core";
 import {
   ClaudeAgentDriver,
   CLAUDE_AGENT_DRIVER_ID,
@@ -767,8 +768,9 @@ describe("[claude-worker] モデルの名指しから、ランタイムが決ま
       }),
     });
     try {
-      const settings = createWorkerPoolSettings(withCatalog);
-      settings.write({ backends: { [CLAUDE_AGENT_DRIVER_ID]: { makeDefault: true } } });
+      // 既定の差し替えは工房の口（setBackend）。設定区画（createWorkerPoolSettings）が持つのは
+      // アイドルの安全弁だけ——モデルの当て方は「役割とモデル」へ統合された（63cd3239）
+      withCatalog.setBackend(CLAUDE_AGENT_DRIVER_ID, { makeDefault: true });
 
       const worker = await withCatalog.delegate({
         ...JOB,
@@ -829,27 +831,42 @@ describe("[claude-worker] モデルの名指しから、ランタイムが決ま
   });
 });
 
-describe("[claude-worker] 職人の設定（バックエンドと等級ごとのモデル）", () => {
+describe("[claude-worker] 職人の設定（アイドルの安全弁と工房の口）", () => {
   /** 設定の区画を、実体の工房に対して組み立てる。 */
   const settingsOf = (target: WorkerPool = pool) => createWorkerPoolSettings(target);
 
-  it("[claude-worker] 項目ではなく描き先を宣言する（決定43 をモジュールへ開放）", () => {
-    // 一覧と状態が絡むので平たい項目にはしない。**読み書きは設定画面の口のまま**
+  it("[claude-worker] 区画が持つのはアイドルの安全弁だけ（モデルの当て方は『役割とモデル』へ）", async () => {
+    // モデルの当て方（等級既定・工場の上書き）は「役割とモデル」の統合表が担う（63cd3239）。
+    // 工房の区画が持つのは、アイドルの安全弁だけの平たい項目（専用 view は持たない）
     const spec = settingsOf();
-    assert.equal(spec.view, "WorkerSettings");
-    assert.deepEqual(spec.fields, []);
+    assert.equal(spec.view, undefined);
+    const fields = await resolveSettingsFields(spec);
+    assert.deepEqual(
+      fields.map((f) => ({ key: f.key, type: f.type, label: f.label })),
+      [{ key: "idleTimeoutMinutes", type: "number", label: "アイドルの安全弁（分）" }]
+    );
   });
 
-  it("[claude-worker] バックエンドの一覧が状態つきで出る", async () => {
+  it("[claude-worker] read はアイドルの安全弁（分）を返し、write でその場で効く", async () => {
     const spec = settingsOf();
-    const values = (await spec.read()) as Record<string, unknown>;
-    const backends = values["backends"] as Array<Record<string, unknown>>;
-    assert.deepEqual(
-      backends.map((b) => b["id"]).sort(),
-      ["claude-agent-sdk", "pi-rpc"]
-    );
-    assert.equal(backends.find((b) => b["id"] === "pi-rpc")?.["isDefault"], true);
-    assert.equal(backends.every((b) => b["enabled"] === true), true);
+    const before = (await spec.read()) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(before), ["idleTimeoutMinutes"]);
+    assert.equal(before["idleTimeoutMinutes"], Math.round(pool.currentIdleTimeoutMs() / 60_000));
+
+    const result = await spec.write({ idleTimeoutMinutes: 30 });
+    assert.equal(result.applied, true);
+    assert.equal(pool.currentIdleTimeoutMs(), 30 * 60_000, "その場で効く");
+    assert.equal(((await spec.read()) as Record<string, unknown>)["idleTimeoutMinutes"], 30);
+
+    // 0 で安全弁を切れる（何もしていない職人を畳まない）
+    await spec.write({ idleTimeoutMinutes: 0 });
+    assert.equal(pool.currentIdleTimeoutMs(), 0);
+  });
+
+  it("[claude-worker] 安全弁は0以上の数でないと断る（I2：黙って丸めない）", () => {
+    const spec = settingsOf();
+    assert.throws(() => spec.write({ idleTimeoutMinutes: -1 }), /0以上の数/);
+    assert.throws(() => spec.write({ idleTimeoutMinutes: "とても長く" }), /0以上の数/);
   });
 
   it("[claude-worker] 等級にモデルを当てると、その等級の職人がそのモデルで起きる", async () => {
@@ -868,25 +885,25 @@ describe("[claude-worker] 職人の設定（バックエンドと等級ごとの
     assert.equal(claudeDriver.spawned[0]?.driverOptions?.["model"], "haiku");
   });
 
-  it("[claude-worker] 等級の割り当ては工房では受けない（同じ問いに2箇所が答えない）", async () => {
+  it("[claude-worker] モデルの当て方は工房の区画では受け付けない（『役割とモデル』へ統合）", () => {
     /**
-     * **ここで受けると二重管理に戻る**（ADR-0021 決定101d・102）。台帳を持つのは核で、
-     * 工房は読むだけ。I2: 黙って捨てず、行き先を言う。
+     * **ここで受けると二重管理に戻る**（ADR-0021 決定101d・102）。等級の割り当ては
+     * 「役割とモデル」の統合表（roles 区画）が担う。区画の write が読むのはアイドルの
+     * 安全弁だけ——割り当てのキーを渡しても、設定として解釈されず弾かれる
      */
     assert.throws(
       () => settingsOf().write({ assignments: { fast: "gpt-9" } }),
-      /役ごとのモデル/
+      /アイドルの安全弁/
     );
-    assert.throws(() => settingsOf().write({ defaultTier: "fast" }), /役ごとのモデル/);
+    assert.throws(() => settingsOf().write({ defaultTier: "fast" }), /アイドルの安全弁/);
   });
 
   it("[claude-worker] 切ったバックエンドでは起こさない。モデルの一覧からも消える", async () => {
-    const spec = settingsOf();
-    await spec.write({ backends: { "claude-agent-sdk": { enabled: false } } });
+    // 供給の入切は工房の口（setBackend）。区画はアイドルの安全弁だけを宣言する
+    pool.setBackend(CLAUDE_AGENT_DRIVER_ID, { enabled: false });
 
-    const values = (await spec.read()) as Record<string, unknown>;
-    const models = values["models"] as Array<Record<string, unknown>>;
-    assert.equal(models.some((m) => m["runtime"] === CLAUDE_AGENT_DRIVER_ID), false);
+    const models = pool.selectableModels();
+    assert.equal(models.some((m) => m.runtime === CLAUDE_AGENT_DRIVER_ID), false);
 
     await assert.rejects(
       () => pool.delegate({ ...JOB, taskId: "task-0152", runtime: "claude-code" }),
@@ -894,26 +911,22 @@ describe("[claude-worker] 職人の設定（バックエンドと等級ごとの
     );
 
     // 入れ直せる（切ったら消える、では戻せない）
-    await spec.write({ backends: { "claude-agent-sdk": { enabled: true } } });
-    const back = (await spec.read()) as Record<string, unknown>;
+    pool.setBackend(CLAUDE_AGENT_DRIVER_ID, { enabled: true });
     assert.equal(
-      (back["models"] as Array<Record<string, unknown>>).some(
-        (m) => m["runtime"] === CLAUDE_AGENT_DRIVER_ID
-      ),
+      pool.selectableModels().some((m) => m.runtime === CLAUDE_AGENT_DRIVER_ID),
       true
     );
   });
 
-  it("[claude-worker] 最後のバックエンドは切れない（職人を起こせなくなる）", async () => {
-    const spec = settingsOf();
-    await spec.write({ backends: { "claude-agent-sdk": { enabled: false } } });
+  it("[claude-worker] 最後のバックエンドは切れない（職人を起こせなくなる）", () => {
+    pool.setBackend(CLAUDE_AGENT_DRIVER_ID, { enabled: false });
     assert.throws(
-      () => spec.write({ backends: { "pi-rpc": { enabled: false } } }),
+      () => pool.setBackend("pi-rpc", { enabled: false }),
       /最後のバックエンド/
     );
   });
 
-  it("[claude-worker] 「指定なしのときの実際」は、既定のバックエンド自身が答える", async () => {
+  it("[claude-worker] 「指定なしのときの実際」は、既定のバックエンド自身が答える", () => {
     // 工房が代表して答えると、既定を切り替えた瞬間に画面が嘘をつく（実機で出していた）
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-fallback-"));
     const withResolvers = new WorkerPool({
@@ -932,15 +945,16 @@ describe("[claude-worker] 職人の設定（バックエンドと等級ごとの
       idleTimeoutMs: 0,
     });
     try {
-      const settings = createWorkerPoolSettings(withResolvers);
-      const asPi = (await settings.read()) as Record<string, unknown>;
-      assert.equal(asPi["fallbackBackend"], "pi");
-      assert.deepEqual(asPi["fallbacks"], { reasoning: "opencode-go/kimi-k3" });
+      // 問いかけるのは工房の口（fallbackModels）。設定区画の read はアイドルの安全弁だけ
+      const asPi = withResolvers.fallbackModels();
+      assert.equal(asPi.backendTitle, "pi");
+      assert.deepEqual(asPi.models, { reasoning: "opencode-go/kimi-k3" });
 
-      settings.write({ backends: { [CLAUDE_AGENT_DRIVER_ID]: { makeDefault: true } } });
-      const asClaude = (await settings.read()) as Record<string, unknown>;
-      assert.equal(asClaude["fallbackBackend"], "Claude Code");
-      assert.deepEqual(asClaude["fallbacks"], {
+      withResolvers.setBackend(CLAUDE_AGENT_DRIVER_ID, { makeDefault: true });
+      const asClaude = withResolvers.fallbackModels();
+      assert.equal(asClaude.backend, CLAUDE_AGENT_DRIVER_ID);
+      assert.equal(asClaude.backendTitle, "Claude Code");
+      assert.deepEqual(asClaude.models, {
         reasoning: "opus",
         standard: "sonnet",
         fast: "haiku",
@@ -952,15 +966,14 @@ describe("[claude-worker] 職人の設定（バックエンドと等級ごとの
   });
 
   it("[claude-worker] 既定のバックエンドを差し替えられる", async () => {
-    const spec = settingsOf();
-    await spec.write({ backends: { "claude-agent-sdk": { makeDefault: true } } });
+    pool.setBackend(CLAUDE_AGENT_DRIVER_ID, { makeDefault: true });
     assert.equal(pool.defaultRuntime, CLAUDE_AGENT_DRIVER_ID);
 
     const worker = await pool.delegate({ ...JOB, taskId: "task-0153" });
     assert.equal(worker.runtime, CLAUDE_AGENT_DRIVER_ID);
   });
 
-  it("[claude-worker] 決めたことは保存され、次の起動でも効く", async () => {
+  it("[claude-worker] 決めた安全弁は保存され、次の起動でも効く", async () => {
     const stored: Record<string, unknown> = {};
     const section = {
       read: () => ({ ...stored }),
@@ -977,22 +990,21 @@ describe("[claude-worker] 職人の設定（バックエンドと等級ごとの
       settingsSection: section,
       idleTimeoutMs: 0,
     });
-    // **供給の入切**は工房が持つ（決定99a：既定は核、供給の入切は工房）
-    createWorkerPoolSettings(first).write({
-      backends: { [CLAUDE_AGENT_DRIVER_ID]: { makeDefault: true } },
-    });
+    // 区画の決定は保存先へ落ちる（bin.ts が起動時に読み、WorkerPool へ渡す）
+    createWorkerPoolSettings(first, section).write({ idleTimeoutMinutes: 45 });
+    assert.equal(section.read()["idleTimeoutMs"], 45 * 60_000, "区画の決定が保存される");
     first.dispose();
 
-    // 立ち上げ直しても、決めた当て方は残っている
+    // 立ち上げ直しても（保存された値で起動すれば）、決めた安全弁は効いている
     const second = new WorkerPool({
       driver: piDriver,
       runtimes: { [CLAUDE_AGENT_DRIVER_ID]: claudeBackend(claudeDriver) },
       dataDir,
       settingsSection: section,
-      idleTimeoutMs: 0,
+      idleTimeoutMs: section.read()["idleTimeoutMs"] as number,
     });
     try {
-      assert.equal(second.defaultRuntime, CLAUDE_AGENT_DRIVER_ID, "決めた既定のバックエンドが残る");
+      assert.equal(second.currentIdleTimeoutMs(), 45 * 60_000, "決めた安全弁が残る");
     } finally {
       second.dispose();
       fs.rmSync(dataDir, { recursive: true, force: true });

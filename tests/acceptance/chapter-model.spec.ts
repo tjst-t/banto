@@ -24,7 +24,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { resolveSettingsFields } from "@banto/core";
+import type { ModuleSettingsSpec } from "@banto/core";
 import {
   DEFAULT_CHAPTER_MODEL,
   SettingsStore,
@@ -282,66 +282,95 @@ describe("[task-0151 a3] 画面から選んで保存でき、再起動をまた�
     assert.equal(store2.all().chapterModel, "claude-agent-sdk|claude|haiku");
   });
 
-  it("設定の区画「章の要約に使うモデル」で保存・読み出しができる", async () => {
+  /** roles 区画の統合表から、章の要約（chapterModel）の行を引く。 */
+  const chapterRow = async (
+    roles: { spec: ModuleSettingsSpec }
+  ): Promise<{ value: string; label: string; group: string; effective: string; note: string }> => {
+    const values = (await roles.spec.read()) as Record<string, unknown>;
+    const table = (values["_rolesTable"] ?? []) as Array<{
+      key: string;
+      group: string;
+      label: string;
+      value: string;
+      effective: string;
+      note: string;
+    }>;
+    const row = table.find((r) => r.key === "chapterModel");
+    assert.ok(row, "章の要約が統合表（roles 区画）に並ばない");
+    return row!;
+  };
+
+  it("役割とモデルの統合表（roles 区画・章の要約の行）で保存・読み出しができる", async () => {
     const store = new SettingsStore(path.join(dir, "settings.json"));
     const sections = createCoreSettingsSections(store, {
       harnessChoices: () => [
         { value: "claude-agent-sdk|claude|haiku", label: "Claude Code › claude › haiku" },
       ],
     });
-    const section = sections.find((s) => s.id === "chapterModel");
-    assert.ok(section, "chapterModel 区画が無い");
+    const roles = sections.find((s) => s.id === "roles");
+    assert.ok(roles, "roles 区画が無い");
+    assert.equal(roles!.spec.title, "役割とモデル");
 
-    assert.deepEqual(await section!.spec.read(), { chapterModel: "" }, "保存前は空");
+    // 章の要約は独立した区画ではなく、統合表（roles）の1行（6eb62825）
+    const row = await chapterRow(roles!);
+    assert.equal(row.group, "steward");
+    assert.equal(row.label, "章の要約");
+    assert.equal(row.value, "", "保存前は継承（空）");
 
-    const result = await section!.spec.write({ chapterModel: "claude-agent-sdk|claude|haiku" });
-    assert.equal(result.applied, false, "次の会話から効く旨を正しく申告していない");
-    assert.deepEqual(await section!.spec.read(), { chapterModel: "claude-agent-sdk|claude|haiku" });
+    const result = await roles!.spec.write({ chapterModel: "claude-agent-sdk|claude|haiku" });
+    assert.equal(result.applied, true);
+    assert.equal((await chapterRow(roles!)).value, "claude-agent-sdk|claude|haiku", "統合表の行に映る");
 
     // 保存先そのもの（settings.json）にも残る
     assert.equal(store.all().chapterModel, "claude-agent-sdk|claude|haiku");
   });
 
-  it("壊れた値は黙って保存しない（I2）", async () => {
+  it("壊れた値は保存されても、解決時には「設定なし」として扱われる（検証は resolveChapterModel が担う）", async () => {
     const store = new SettingsStore(path.join(dir, "settings.json"));
     const sections = createCoreSettingsSections(store, { harnessChoices: () => [] });
-    const section = sections.find((s) => s.id === "chapterModel")!;
+    const roles = sections.find((s) => s.id === "roles")!;
 
-    assert.throws(() => section.spec.write({ chapterModel: "壊れた値" }));
-    assert.equal(store.all().chapterModel, undefined, "壊れた値のまま保存されてはいけない");
+    // 統合表の write は座標の検証を持たない（I2 の検証は解決時）。形式の正しい指定だけが
+    // 設定として効き、壊れた値は「設定なし」扱いで既定へ落ちる
+    await roles.spec.write({ chapterModel: "壊れた値" });
+
+    const result = resolveChapterModel({
+      envRaw: undefined,
+      settingsValue: store.all().chapterModel,
+      backends: [fakeBackend("pi"), fakeBackend("claude-agent-sdk")],
+    });
+    assert.deepEqual(result.ref, DEFAULT_CHAPTER_MODEL);
+    assert.equal(result.source, "default");
   });
 
   it("空文字を書けば指定を外せる（既定へ戻る）", async () => {
     const store = new SettingsStore(path.join(dir, "settings.json"));
     store.update("chapterModel", "claude-agent-sdk|claude|haiku");
     const sections = createCoreSettingsSections(store, { harnessChoices: () => [] });
-    const section = sections.find((s) => s.id === "chapterModel")!;
+    const roles = sections.find((s) => s.id === "roles")!;
 
-    await section.spec.write({ chapterModel: "" });
+    await roles.spec.write({ chapterModel: "" });
     assert.equal(store.all().chapterModel, undefined);
   });
 
-  it("画面には「いま実際に使われているもの」が出る（指定と実態の食い違いも見える）", async () => {
+  it("統合表の行には「いま実際に使われているもの」が出る（指定・継承が見える）", async () => {
     const store = new SettingsStore(path.join(dir, "settings.json"));
     const sections = createCoreSettingsSections(store, {
-      harnessChoices: () => [],
-      effectiveChapterModel: () => ({
-        ref: DEFAULT_CHAPTER_MODEL,
-        source: "default",
-        fallback: {
-          requested: { backend: "pi", provider: "huihui", model: "does-not-exist" },
-          reason: "使えるモデルの一覧にありません",
-          from: "settings",
-        },
-      }),
+      harnessChoices: () => [
+        { value: "claude-agent-sdk|claude|haiku", label: "Claude Code › claude › haiku" },
+      ],
     });
-    const section = sections.find((s) => s.id === "chapterModel")!;
-    const fields = await resolveSettingsFields(section.spec);
-    const field = fields.find((f) => f.key === "chapterModel");
+    const roles = sections.find((s) => s.id === "roles")!;
 
-    assert.ok(field, "chapterModel の項目が無い");
-    assert.match(field!.description ?? "", /いま実際に使われているのは/);
-    assert.match(field!.description ?? "", /claude-agent-sdk/);
-    assert.match(field!.description ?? "", /使えるモデルの一覧にありません/, "指定との食い違いが見えない");
+    // 指定が無ければ「継承：既定 claude-agent-sdk/haiku」と出る
+    let row = await chapterRow(roles);
+    assert.equal(row.effective, "（継承：既定 claude-agent-sdk/haiku）");
+    assert.equal(row.note, "既定に従う");
+
+    // 指定すれば「claude-agent-sdk › claude › haiku」と出る
+    await roles.spec.write({ chapterModel: "claude-agent-sdk|claude|haiku" });
+    row = await chapterRow(roles);
+    assert.equal(row.effective, "claude-agent-sdk › claude › haiku");
+    assert.equal(row.note, "指定");
   });
 });
