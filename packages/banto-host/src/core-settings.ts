@@ -12,7 +12,13 @@
  */
 
 import { MODEL_TIERS, TIER_LABELS, workerRoleOf } from "@banto/core";
-import type { LlmCatalog, ModelTier, ModuleSettingsSpec, SettingField } from "@banto/core";
+import type {
+  LlmCatalog,
+  ModelTier,
+  ModuleSettingsSpec,
+  SettingField,
+  ModelRoleResolutionSource,
+} from "@banto/core";
 import type { ChapterModelResolution } from "./chapter-model.js";
 import type { PlaceSetting, SettingsStore } from "./settings-store.js";
 import type { BindingDecisionEntry } from "./binding-ledger.js";
@@ -267,104 +273,113 @@ export function createCoreSettingsSections(
       spec: {
         title: "役割とモデル",
         description:
-          "誰が何のモデルを使うかを1枚で見える化します。いま効いているものと、その出所" +
-          "（等級既定／工場などモジュールの上書き）を併記します。" +
-          "等級既定はここで、モジュールの上書きはそのモジュールの区画で編集できます。" +
+          "誰が何のモデルを使うかを1枚の表で見える化します。いま効いているものと、その出所" +
+          "（等級既定／工場などモジュールの上書き）を併記します。編集はこの表で行えます。" +
           "**優先順位：①上書き（名指し） ②等級既定 ③バックエンド既定**。" +
           "モデルそのものの登録（プロバイダ・鍵・取り込み）は「使えるモデル」の面で行います。",
-        fields: async () => {
-          const coreFields: SettingField[] = [
-            {
-              key: "steward",
-              label: "番頭",
-              type: "select",
-              options: withCurrent(
-                options.harnessChoices?.() ?? [],
-                refValue(options.llmCatalog?.roles().steward)
-              ),
-              description: "新しい会話の既定。会話ごとの切り替えは会話の画面で",
-            },
-            {
-              key: "defaultTier",
-              label: "職人の既定の等級",
-              type: "select",
-              options: [
-                { value: "", label: "（指定なし）" },
-                ...MODEL_TIERS.map((t) => ({ value: t, label: TIER_LABELS[t] })),
-              ],
-              description: "頼む側が等級を言わなかったときに使う（等級既定の既定）",
-            },
-            ...MODEL_TIERS.map(
-              (tier): SettingField => ({
-                key: `worker.${tier}`,
-                label: `職人（${TIER_LABELS[tier]}）`,
-                type: "select",
-                options: withCurrent(
-                  [{ value: "", label: "（割り当てなし）" }, ...(options.workerChoices?.() ?? [])],
-                  refValue(options.llmCatalog?.roles()[workerRoleOf(tier)])
-                ),
-                description: `${TIER_LABELS[tier]}で頼まれたときに使うモデル（等級既定）`,
-              })
-            ),
-          ];
+        // 項目の羅列では表せない（行＝役割・欄＝既定/上書き/実効）ため、専用 view で描く（決定43）
+        view: "ModelRolesView",
+        fields: [],
+        read: async () => {
+          const roles = options.llmCatalog?.roles() ?? {};
+          const asValue = (r?: { backend?: string; provider: string; model: string }): string =>
+            r ? `${r.backend ?? "pi"}|${r.provider}|${r.model}` : "";
+          const workerChoices = options.workerChoices?.() ?? [];
 
-          // 各モジュールが modelRoles で宣言した役（Kobo は executor / rework / audit）
-          const moduleFields: SettingField[] = [];
+          const rows: Array<{
+            key: string;
+            label: string;
+            origin: string;
+            tierDependent: boolean;
+            binding: string;
+            effective: string;
+            source: ModelRoleResolutionSource;
+            options: Array<{ value: string; label: string }>;
+          }> = [];
+
+          // 職人の既定の等級（頼む側が等級を言わなかったとき）
+          const defaultTier = options.workerDefaultTier?.() ?? "";
+          rows.push({
+            key: "defaultTier",
+            label: "職人の既定の等級",
+            origin: "core",
+            tierDependent: false,
+            binding: defaultTier,
+            effective: defaultTier ? TIER_LABELS[defaultTier as ModelTier] : "（指定なし）",
+            source: "tier",
+            options: [
+              { value: "", label: "（指定なし）" },
+              ...MODEL_TIERS.map((t) => ({ value: t, label: TIER_LABELS[t] })),
+            ],
+          });
+
+          // 番頭
+          const steward = asValue(roles.steward);
+          rows.push({
+            key: "steward",
+            label: "番頭",
+            origin: "core",
+            tierDependent: false,
+            binding: steward,
+            effective: steward || "（未指定）",
+            source: steward ? "tier" : "none",
+            options: withCurrent(options.harnessChoices?.() ?? [], steward),
+          });
+
+          // 職人・等級
+          for (const tier of MODEL_TIERS) {
+            const binding = asValue(roles[workerRoleOf(tier)]);
+            rows.push({
+              key: `worker.${tier}`,
+              label: `職人（${TIER_LABELS[tier]}）`,
+              origin: "core",
+              tierDependent: false,
+              binding,
+              effective: binding || "（未指定 → バックエンド既定）",
+              source: binding ? "tier" : "fallback",
+              options: withCurrent(
+                [{ value: "", label: "（割り当てなし）" }, ...workerChoices],
+                binding
+              ),
+            });
+          }
+
+          // モジュールの役（Kobo の executor / rework / audit 等）
           for (const source of options.modelRoleSources?.() ?? []) {
             let values: Record<string, unknown> = {};
             try {
               values = await source.spec.read();
             } catch {
-              // 読めないモジュールは飛ばすが黙らない（I2：値の捏造はしない）。1件で表全体を壊さない
+              // 読めないモジュールは飛ばすが黙らない（I2：値の捏造はしない）
             }
             for (const role of source.spec.modelRoles ?? []) {
-              const current = String(values[role.key] ?? "");
-              const currentLabel =
-                current === "" ? "（なし → 等級既定に従う）" : current.replace(/\|/g, " › ");
-              moduleFields.push({
+              const binding = String(values[role.key] ?? "");
+              rows.push({
                 key: `${source.origin}:${role.id}`,
                 label: `${source.originTitle}・${role.label}`,
-                type: "select",
+                origin: source.origin,
+                tierDependent: role.tierDependent === true,
+                binding,
+                effective: binding || "（なし → 等級既定に従う）",
+                source: binding ? "override" : "tier",
                 options: withCurrent(
-                  [
-                    { value: "", label: "（割り当てなし・等級既定に従う）" },
-                    ...(options.workerChoices?.() ?? []),
-                  ],
-                  current
+                  [{ value: "", label: "（割り当てなし・等級既定に従う）" }, ...workerChoices],
+                  binding
                 ),
-                description:
-                  (role.tierDependent
-                    ? `${role.label}の上書き（名指し）。無ければそのタスクの等級の既定。`
-                    : `${role.label}の上書き（名指し）。`) +
-                  ` いま効いている: ${currentLabel}`,
               });
             }
           }
 
-          return [...coreFields, ...moduleFields];
-        },
-        read: async () => {
-          const roles = options.llmCatalog?.roles() ?? {};
-          const asValue = (r?: { backend?: string; provider: string; model: string }): string =>
-            r ? `${r.backend ?? "pi"}|${r.provider}|${r.model}` : "";
-          const out: Record<string, unknown> = {
+          return {
+            // 表の行（専用 view が描く）
+            _rolesTable: rows,
+            // 従来のキーも残す（直接読む側のため）
             steward: asValue(roles.steward),
             defaultTier: options.workerDefaultTier?.() ?? "",
             ...Object.fromEntries(
               MODEL_TIERS.map((t) => [`worker.${t}`, asValue(roles[workerRoleOf(t)])])
             ),
           };
-          for (const source of options.modelRoleSources?.() ?? []) {
-            try {
-              const values = await source.spec.read();
-              for (const role of source.spec.modelRoles ?? []) {
-                out[`${source.origin}:${role.id}`] = String(values[role.key] ?? "");
-              }
-            } catch {
-              // 読み込めないモジュールの役は空（I2：値を捏造しない）
-            }
-          }
-          return out;
         },
         write: async (values) => {
           const applied: string[] = [];

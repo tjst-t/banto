@@ -2045,3 +2045,28 @@
 }
 .cv-browser-input { display: flex; align-items: center; gap: 6px; }
 .cv-browser-input input { flex: 1; min-width: 0; }
+
+/* 「役割とモデル」統合表（ModelRolesView・ADR-0021 の続き・2026-08-19 提案） */
+.roles-view .roles-grid {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+.roles-view .roles-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.1fr) minmax(240px, 1.3fr);
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--sumi-5, #2a2a2a);
+  border-radius: 8px;
+}
+.roles-view .roles-role-name { font-weight: 600; }
+.roles-view .roles-origin,
+.roles-view .roles-hint {
+  font-size: 12px;
+  opacity: 0.7;
+}
+.roles-view .roles-effective-value { word-break: break-all; }
+.roles-view .roles-source { font-size: 12px; opacity: 0.7; }
+.roles-view .roles-select select { width: 100%; }

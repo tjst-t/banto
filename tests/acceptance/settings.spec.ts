@@ -27,7 +27,7 @@ import {
   type BindingDecisionEntry,
 } from "@banto/host";
 import { EnvironmentPool, createEnvironmentPoolModule } from "@banto/environment-pool";
-import { resolveModelRole, resolveSettingsFields } from "@banto/core";
+import { resolveModelRole } from "@banto/core";
 import type { ModuleSettingsSpec } from "@banto/core";
 
 let dir: string;
@@ -360,17 +360,21 @@ describe("[modelRoles] 役割とモデル統合表（2026-08-19 提案 model-rol
     });
     const roles = core.find((c) => c.id === "roles")!;
 
-    // 宣言した役が「役割とモデル」統合表のフィールドに並ぶ
-    const fields = await resolveSettingsFields(roles.spec);
-    const execField = fields.find((f) => f.key === "kobo:executor");
-    assert.ok(execField, "工場の役（executor）が統合表に並ぶ");
-    assert.equal(execField!.label, "工場・実装");
-
-    // 値はモジュールの read() から来る（核は保持しない・D3）＋ 核の役も残る
-    const values = await roles.spec.read();
-    assert.equal(values["kobo:executor"], "opencode-go|deepseek-v4-flash");
-    assert.equal(values["kobo:audit"], "");
-    assert.ok("steward" in values, "核の役も残っている");
+    // 専用の表形式 view で描く（決定43）——fields は持たず、表の行データを read が返す
+    assert.equal(roles.spec.view, "ModelRolesView");
+    const values = (await roles.spec.read()) as Record<string, unknown>;
+    const table = (values["_rolesTable"] ?? []) as Array<{
+      key: string;
+      label: string;
+      binding: string;
+      source: string;
+    }>;
+    const exec = table.find((r) => r.key === "kobo:executor");
+    assert.ok(exec, "工場の役（executor）が統合表に並ぶ");
+    assert.equal(exec!.label, "工場・実装");
+    assert.equal(exec!.binding, "opencode-go|deepseek-v4-flash");
+    assert.equal(exec!.source, "override");
+    assert.ok(table.some((r) => r.key === "steward"), "核の役も残っている");
 
     // 変更はそのモジュールの settings.write へ委譲される（保存先はモジュール・決定27・99a）
     await roles.spec.write({ "kobo:executor": "OpenRouter|deepseek|deepseek-v4-flash-0731" });
@@ -380,9 +384,10 @@ describe("[modelRoles] 役割とモデル統合表（2026-08-19 提案 model-rol
   it("modelRoles を宣言しないモジュールは統合表に出ない（核の役は残る）", async () => {
     const core = createCoreSettingsSections(store, { modelRoleSources: () => [] });
     const roles = core.find((c) => c.id === "roles")!;
-    const keys = (await resolveSettingsFields(roles.spec)).map((f) => f.key);
-    assert.ok(keys.includes("steward"), "核の役は残る");
-    assert.ok(!keys.some((k) => k.includes(":")), "モジュール役が並ばない");
+    const values = (await roles.spec.read()) as Record<string, unknown>;
+    const table = (values["_rolesTable"] ?? []) as Array<{ key: string }>;
+    assert.ok(table.some((r) => r.key === "steward"), "核の役は残る");
+    assert.ok(!table.some((r) => r.key.includes(":")), "モジュール役が並ばない");
   });
 
   it("single resolver：上書き ＞ 等級既定 ＞ フォールバック の順で実効を解く", () => {

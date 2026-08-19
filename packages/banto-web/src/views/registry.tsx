@@ -23,6 +23,7 @@ import { WorkerViewer } from "./WorkerViewer.js";
 import { MemoryViewer } from "./MemoryViewer.js";
 import { SkillViewer } from "./SkillViewer.js";
 import { WorkerSettings } from "./WorkerSettings.js";
+import { ModelRolesView } from "./ModelRolesView.js";
 import { LlmRegistryViewer } from "./LlmRegistryViewer.js";
 import { KoboBoard } from "./KoboBoard.js";
 import { KoboReview } from "./KoboReview.js";
@@ -99,6 +100,8 @@ const REGISTRY: Record<string, ComponentType<CanvasViewProps>> = {
   // 中核の設定区画が名指しで描く面（ADR-0011 決定43）。キャンバスには出ない
   LlmRegistryViewer,
   PlaceSettings,
+  // 役割とモデルの統合表（決定43 view。ADR-0021 の続き・2026-08-19 提案）
+  ModelRolesView,
   // 職人（worker-pool モジュール提供）。バックエンドと等級ごとのモデルの当て方
   WorkerSettings,
   // 工場（kobo モジュール提供。ADR-0013 決定56・57・59）
