@@ -12,7 +12,6 @@
 import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ModuleSettingsSpec, SettingsWriteResult } from "@banto/core";
 import type { BantoModule } from "../module.js";
 import { defineNamespacedTool, type NamespacedToolDefinition } from "../tool-registry.js";
 import type { CanvasViewSpec } from "../canvas.js";
@@ -212,36 +211,6 @@ export function createPiAgentModule(): BantoModule {
     tools: [describe],
     internalTools: [authRead, modelsRead] as NamespacedToolDefinition[],
     views: piAgentViews,
-    settings: {
-      title: "pi.agent 接続情報",
-      description:
-        "pi coding agent の接続情報（表示専用）。APIキーとモデル一覧を確認できます。" +
-        "LLM の設定（プロバイダ・モデルの選択）は「LLM 管理」で行ってください。",
-      fields: [
-        {
-          key: "authCount",
-          label: "API キー数",
-          type: "text",
-          description: "設定済みの API キーの数（表示専用）",
-        },
-        {
-          key: "providerCount",
-          label: "プロバイダ数",
-          type: "text",
-          description: "登録済みのプロバイダの数（表示専用）",
-        },
-      ],
-      read: (): Record<string, unknown> => {
-        const data = readData();
-        return {
-          authCount: `${data.auth.length} 件`,
-          providerCount: `${data.providers.length} 件`,
-        };
-      },
-      write: (): SettingsWriteResult => {
-        return { applied: false, message: "この区画は表示専用です。" };
-      },
-    } as ModuleSettingsSpec,
     skills: [],
   };
 }

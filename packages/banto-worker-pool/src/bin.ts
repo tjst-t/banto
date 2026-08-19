@@ -378,7 +378,7 @@ async function main(): Promise<void> {
       ...createWorkerReportTools(pool),
       ...createWorkerModuleTools(pool),
       // 設定画面（決定41）は番頭ホスト側に出る。別プロセスなので読み書きを口で受ける
-      ...createSettingsTools("worker", createWorkerPoolSettings(pool, { section: settings })),
+      ...createSettingsTools("worker", createWorkerPoolSettings(pool, settings)),
     ],
     port,
     host,

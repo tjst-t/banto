@@ -197,7 +197,7 @@ export {
 } from "./pi-extension/web-tools.js";
 export { createWorkerTools, createWorkerReportTools, createWorkerModuleTools } from "./worker-tools.js";
 export { createWorkerPoolSettings } from "./settings.js";
-export type { WorkerSettingsValues, WorkerSettingsUpdate } from "./settings.js";
+export type { WorkerSettingsValues } from "./settings.js";
 export {
   BackendRegistry,
   WORKER_TIERS,
