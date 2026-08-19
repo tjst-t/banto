@@ -2121,7 +2121,13 @@ async function serve(options: ServeOptions): Promise<void> {
      * 既定は `roles.steward`（設定画面「番頭が使うモデル」）が持つ。
      * I2: 解決できない・ハーネスが対応していないときは throw して、画面を前のままにする。
      */
-    onSelectModel: async (thread, nextProvider: string, nextId: string, nextBackend?: string) => {
+    onSelectModel: async (
+      thread,
+      nextProvider: string,
+      nextId: string,
+      nextBackend?: string,
+      nextThinking?: string
+    ) => {
       const backend = nextBackend ?? thread.model?.backend ?? "pi";
       const switcher = harnessSwitchers.get(thread.id);
 
@@ -2143,6 +2149,10 @@ async function serve(options: ServeOptions): Promise<void> {
       if (backend === "claude-agent-sdk") {
         if (!switcher) throw new Error("この会話はバックエンドを差し替えられません");
         const harness = switcher.claude(nextId);
+        // 思考レベル（サービス既定を上書きする指定）を Claude ハーネスへ（2026-08-19）
+        if (nextThinking) {
+          (harness as { setThinking?: (t: string) => void }).setThinking?.(nextThinking);
+        }
         console.log(`[banto] backend(${thread.id}): claude-agent-sdk / ${nextId}`);
         /**
          * 画像は渡せる。harness が画像ブロックを SDK へ流し込む
@@ -2165,7 +2175,7 @@ async function serve(options: ServeOptions): Promise<void> {
         throw new Error("このハーネスは動作中のモデル切替に対応していません");
       }
       // **その会話だけ**に効かせる。他の会話は自分のモデルのまま（PO裁定 2026-08-04）
-      await target.setModel(next);
+      await target.setModel(next, nextThinking);
       console.log(`[banto] model(${thread.id}): ${backend} / ${nextProvider}/${nextId}`);
       return {
         id: nextId,

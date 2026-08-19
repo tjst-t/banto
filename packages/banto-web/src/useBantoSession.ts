@@ -86,6 +86,8 @@ export interface CurrentModel {
   vision: boolean;
   /** 文脈に入る最大トークン数（分かるときだけ）。使用率の分母。 */
   contextWindow?: number;
+  /** 思考レベル（2026-08-19 提案）。未指定＝サービス既定に従う。 */
+  thinking?: string;
 }
 
 export interface BantoSession {
@@ -146,7 +148,7 @@ export interface BantoSession {
   ): void;
   abort(threadId: string): void;
   setDraft(threadId: string, text: string): void;
-  setModel(threadId: string, provider: string, model: string, backend?: string): void;
+  setModel(threadId: string, provider: string, model: string, backend?: string, thinking?: string): void;
   switchTab(tabId: string): void;
   closeTab(tabId: string): void;
   /** タブをドラッグで並べ替える。順序の真実はホスト側（D3）。 */
@@ -602,6 +604,7 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
               provider: event.provider,
               id: event.id,
               vision: event.vision,
+              ...(event.thinking ? { thinking: event.thinking } : {}),
               ...(event.contextWindow ? { contextWindow: event.contextWindow } : {}),
             },
           }));
@@ -806,8 +809,21 @@ export function useBantoSession(url: string, options: BantoSessionOptions): Bant
 
   // モデルは会話ごと
   const setModel = useCallback(
-    (threadId: string, provider: string, model: string, backend?: string) =>
-      post({ type: "set_model", threadId, provider, model, ...(backend ? { backend } : {}) }),
+    (
+      threadId: string,
+      provider: string,
+      model: string,
+      backend?: string,
+      thinking?: string
+    ) =>
+      post({
+        type: "set_model",
+        threadId,
+        provider,
+        model,
+        ...(backend ? { backend } : {}),
+        ...(thinking ? { thinking } : {}),
+      }),
     [post]
   );
 

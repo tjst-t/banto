@@ -65,6 +65,17 @@ function numberOf(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+/**
+ * 共通の思考レベル指定（`off/low/…/max`、Claude の `disabled/adaptive`）を、
+ * pi の thinkingLevel へ変換する（2026-08-19 提案）。pi に無い値は外す（既定に従う）。
+ */
+function piThinkingLevel(thinking: string): string {
+  const PI_LEVELS = ["off", "low", "medium", "high", "xhigh", "max"];
+  if (PI_LEVELS.includes(thinking)) return thinking;
+  if (thinking === "disabled") return "off"; // 思考を切る
+  return ""; // adaptive 等、pi に無いものは指定しない（既定に従う）
+}
+
 export class PiHarness implements BantoHarness {
   readonly backendId = "pi";
   private readonly session: PiConversationFacade;
@@ -120,7 +131,19 @@ export class PiHarness implements BantoHarness {
     await this.session.abort();
   }
 
-  async setModel(model: unknown): Promise<void> {
+  async setModel(model: unknown, thinking?: string): Promise<void> {
+    // 思考レベル（サービス既定を上書きする指定）を pi のセッションへ先に適用する。
+    // pi は独自のレベル（off/low/…/max）で解釈する。Claude 用の値（disabled/adaptive）は
+    // pi には合わない——disabled は思考を切る（off）、adaptive は pi では指定しない（既定）。
+    if (thinking) {
+      const level = piThinkingLevel(thinking);
+      const withThinking = this.pi as unknown as {
+        setThinkingLevel?: (level: string) => void | Promise<void>;
+      };
+      if (withThinking.setThinkingLevel) {
+        await withThinking.setThinkingLevel(level);
+      }
+    }
     const withSetModel = this.session as unknown as {
       setModel?: (m: unknown) => Promise<void> | void;
     };

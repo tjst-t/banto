@@ -39,6 +39,19 @@ const SETTINGS_TOOL_ENDPOINT = "/api/settings";
 /** 入力欄の最大の高さ（AI Elements の `max-h-48`）。最低の高さは CSS の min-height。 */
 const MAX_COMPOSER_HEIGHT_PX = 192;
 
+/** 思考レベルの選択肢（2026-08-19 提案）。空＝サービス既定に従う。バックエンド側で解釈・変換する。 */
+const THINKING_CHOICES: Array<{ value: string; label: string }> = [
+  { value: "", label: "思考: 既定" },
+  { value: "off", label: "思考: off" },
+  { value: "low", label: "思考: low" },
+  { value: "medium", label: "思考: medium" },
+  { value: "high", label: "思考: high" },
+  { value: "xhigh", label: "思考: xhigh" },
+  { value: "max", label: "思考: max" },
+  { value: "disabled", label: "思考: disabled" },
+  { value: "adaptive", label: "思考: adaptive" },
+];
+
 /**
  * チャットに一度に描く発話の数。
  *
@@ -952,6 +965,23 @@ export function Room({
               current={model}
               onSelect={(provider, id, backend) => session.setModel(threadId, provider, id, backend)}
             />
+            <select
+              className="chat-thinking"
+              value={model?.thinking ?? ""}
+              aria-label="思考レベル"
+              title="思考レベル（サービス既定を上書き。未指定＝既定に従う）"
+              onChange={(e) => {
+                if (model) {
+                  session.setModel(threadId, model.provider, model.id, model.backend, e.target.value);
+                }
+              }}
+            >
+              {THINKING_CHOICES.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
             <ContextMeter tokens={session.contextTokensOf(threadId)} contextWindow={model?.contextWindow} />
             {/*
               **区切りは人にも分かる**（提案§3.2 の人側）。自動で畳むのは文脈の量が

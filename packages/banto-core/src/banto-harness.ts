@@ -143,7 +143,7 @@ export interface BantoHarness {
    * 型が `unknown` なのは、モデルの実体がハーネスのものだから——呼ぶ側は中身を
    * 知らないまま、解決した実体を受け取って渡すだけ（ADR-0010 決定3）。
    */
-  setModel?(model: unknown): Promise<void>;
+  setModel?(model: unknown, thinking?: string): Promise<void>;
 
   // ── 章（ADR-0003 / 提案§3.2） ──────────────────────────────────────────
 

@@ -45,6 +45,18 @@ import { jsonSchemaToZodShape } from "./schema-to-zod.js";
 export const BANTO_MCP_SERVER = "banto";
 
 /**
+ * 共通の思考レベル指定を Claude の ThinkingConfig へ変換する（2026-08-19 提案）。
+ * `off` / `disabled` は思考を切り、それ以外（low/medium/high/adaptive 等）は
+ * adaptive（Claude が決める）にする。未指定（undefined）はここを通らない＝サービス既定。
+ */
+function claudeThinking(
+  thinking: string
+): { type: "disabled" } | { type: "adaptive" } {
+  if (thinking === "off" || thinking === "disabled") return { type: "disabled" };
+  return { type: "adaptive" };
+}
+
+/**
  * Anthropic の `Base64ImageSource.media_type` が受ける4種**そのもの**。
  *
  * 増やす前に `@anthropic-ai/sdk` の `messages.d.ts`（`interface Base64ImageSource`）を見ること
@@ -95,6 +107,11 @@ export interface ClaudeAgentHarnessOptions {
   tools: NamespacedToolDefinition[];
   /** `opus` / `sonnet` / `haiku` 等の別名か、完全なモデル ID。 */
   model?: string;
+  /**
+   * 思考レベル（2026-08-19 提案）。未指定＝サービス既定に従う。
+   * `off` / `disabled` → 思考を切る、それ以外 → adaptive（Claude が決める）。
+   */
+  thinking?: string;
   /**
    * **前の会話の札**（`resumeToken()` が返したもの・決定97）。
    *
@@ -195,6 +212,8 @@ interface Turn {
 export class ClaudeAgentHarness implements BantoHarness {
   readonly backendId = "claude-agent-sdk";
   private readonly options: ClaudeAgentHarnessOptions;
+  /** 思考レベル（2026-08-19 提案）。未指定＝サービス既定。動的切替は `setThinking` で変える。 */
+  private thinking: string | undefined;
   private readonly listeners = new Set<(event: HarnessEvent) => void>();
   /** 論理名 ↔ この背後での名前（決定91）。両方向をハーネスが持つ。 */
   private readonly logicalByWire = new Map<string, string>();
@@ -253,6 +272,7 @@ export class ClaudeAgentHarness implements BantoHarness {
   constructor(options: ClaudeAgentHarnessOptions) {
     this.options = options;
     this.systemPrompt = options.systemPrompt;
+    this.thinking = options.thinking;
     // **札があれば続きから、無ければ新しく立てる**（決定97）。ここを一本化していたのが
     // task-0104 の1番——新規にも `resume` を渡していた
     this.sdkSessionId = options.resume ?? randomUUID();
@@ -344,6 +364,8 @@ export class ClaudeAgentHarness implements BantoHarness {
        */
       abortController: this.abortController ?? new AbortController(),
       ...(this.options.model ? { model: this.options.model } : {}),
+      // 思考レベル（2026-08-19 提案）。未指定＝サービス既定に従う
+      ...(this.thinking ? { thinking: claudeThinking(this.thinking) } : {}),
       /**
        * **続きから起こすのか、新しく立てるのか**（決定97）。
        *
@@ -538,6 +560,14 @@ export class ClaudeAgentHarness implements BantoHarness {
    */
   resumeToken(): string | undefined {
     return this.sessionExists ? this.sdkSessionId : undefined;
+  }
+
+  /**
+   * 思考レベルを動的に変える（2026-08-19 提案）。空文字＝サービス既定に戻す。
+   * 次のクエリ（`buildOptions`）から効く。
+   */
+  setThinking(thinking?: string): void {
+    this.thinking = thinking && thinking.length > 0 ? thinking : undefined;
   }
 
   /** モデルの文脈長。SDK が `result` で返した値（自前の表を持たない）。 */

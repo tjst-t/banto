@@ -75,6 +75,8 @@ export interface SetModelMessage extends ThreadTarget {
   backend?: string;
   provider: string;
   model: string;
+  /** 思考レベル（2026-08-19 提案）。未指定＝サービス既定に従う（継承）。 */
+  thinking?: string;
 }
 
 /** POが直接タブを切り替える。番頭の canvas.switch と同じ結果になる。 */
@@ -825,6 +827,8 @@ export interface ModelStateEvent extends ThreadScope {
   id: string;
   /** 画像を読めるか。添付の可否判定に使う。 */
   vision: boolean;
+  /** 思考レベル（2026-08-19 提案）。未指定＝サービス既定に従う。 */
+  thinking?: string;
   /** 文脈に入る最大トークン数。分かるときだけ載る（使用量の分母になる）。 */
   contextWindow?: number;
 }

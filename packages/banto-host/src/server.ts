@@ -371,7 +371,9 @@ export interface BantoHostServerOptions {
     provider: string,
     model: string,
     /** **provider の上位の階層**（PO裁定 2026-08-13）。省略なら会話のいまのバックエンド。 */
-    backend?: string
+    backend?: string,
+    /** 思考レベル（2026-08-19 提案）。未指定＝サービス既定に従う。 */
+    thinking?: string
   ) => Promise<ModelInfo>;
   /** いま使っているモデルのプロバイダ。`model_state` に載せる。 */
   modelProvider?: string;
@@ -1613,7 +1615,14 @@ export class BantoHostServer {
         return;
       }
       try {
-        const next = await this.selectModel(thread, message.provider, message.model, message.backend);
+        const thinking = typeof message.thinking === "string" ? message.thinking : "";
+        const next = await this.selectModel(
+          thread,
+          message.provider,
+          message.model,
+          message.backend,
+          thinking
+        );
         // バックエンドごと変わったなら、会話のハーネスを差し替える（購読も張り直す）
         if (next.harness && next.harness !== thread.harness) {
           thread.replaceHarness(next.harness, (event) => this.handleHarnessEvent(thread, event));
@@ -1623,6 +1632,7 @@ export class BantoHostServer {
           provider: message.provider,
           id: next.id,
           vision: next.vision,
+          ...(thinking ? { thinking } : {}),
           ...(next.contextWindow ? { contextWindow: next.contextWindow } : {}),
         };
         // **前のモデルで測った文脈長は捨てる**——別のモデルの分母を使い回さない。
@@ -1637,6 +1647,7 @@ export class BantoHostServer {
           provider: message.provider,
           id: next.id,
           vision: next.vision,
+          ...(thinking ? { thinking } : {}),
           ...(next.contextWindow ? { contextWindow: next.contextWindow } : {}),
         });
       } catch (err) {
