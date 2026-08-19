@@ -9,16 +9,43 @@
 # 待ちの spec がコンテナ側だけイベントループごと死ぬ）。検証環境が Node の版で
 # ホストと食い違うと、その差が「テストの失敗」に化ける。package.json の engines は
 # `>=20` だが、ここはホストと同じ 24 系に固定する。
-FROM node:24-alpine
+#
+# **土台は Debian（bookworm-slim）に切り替えた**（task-0285）。Playwright の
+# chromium バイナリは **glibc 版しか配布されず**（ELF の interpreter が
+# `/lib64/ld-linux-x86-64.so.2`）、alpine（musl）では execve が ENOENT で失敗する。
+# `--with-deps` も alpine 非対応で（「OS は未対応、ubuntu 用にフォールバック」して
+# apt-get を呼び失敗する）、chrome-headless-shell を手動で落としても起動しない
+# （2026-08-19 実測）。Debian なら `playwright install --with-deps`（apt）が
+# 公式対応の道で、起動も描画も通る。
+FROM node:24-bookworm-slim
 
 # git: テストが実物の git リポジトリを作って検査するため（受け入れテストの多く）
 # make / g++ / python3: ネイティブ依存のビルドに要ることがある
 # docker-cli: 検証環境の docker ドライバ自身の受け入れテストが docker を呼ぶ
-RUN apk add --no-cache git make g++ python3 docker-cli
+#   （apk の docker-cli に当たるのは Debian の docker.io パッケージ）
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git make g++ python3 docker.io \
+ && rm -rf /var/lib/apt/lists/*
+
+# **Playwright のブラウザ（chromium）をイメージに焼き込む**（task-0285）。
+# 検証のたびに再ダウンロードさせない（acceptance の2条）。置き場（BANTO_CACHE_DIR）は
+# node_modules 専用でブラウザを載せない設計なので、イメージ由来で使える形にする。
+# `--with-deps` が apt でシステム依存（libnss3 等）もまとめて入れてくれる。
+# @playwright/test はブラウザの導入にだけ使い、済んだら消す（実行時は setup の
+# `npm ci` が /app/node_modules に入れる）。
+#
+# **バージョンは package.json の @playwright/test と揃えること。** キャッシュ鍵は
+# package-lock.json と Dockerfile.test の両方で作られるが、lock が先に変わって
+# Dockerfile が変わらない間は**古いブラウザを持つイメージが使い回される**——
+# ずれは「Executable doesn't exist」として検証が落ちて気づける。上げるときは
+# package.json とこの ARG を一緒に上げる。
+ARG PLAYWRIGHT_VERSION=1.62.1
+RUN npm install -g @playwright/test@${PLAYWRIGHT_VERSION} \
+ && npx playwright install --with-deps chromium \
+ && npm uninstall -g @playwright/test
 
 # **bind mount したリポジトリを git が触れるようにする**（task-0084・実機で踏んだ）。
 # `/app` はホストのリポジトリを bind mount したもので所有者はホストのユーザ、
 # コンテナは root。git は所有者違いを見て `detected dubious ownership` で止まり、
 # **git が動いていないことがテストの失敗に化ける**（loamium で実際に2件がそうだった）。
 RUN git config --system --add safe.directory '*'
-

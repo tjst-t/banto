@@ -57,6 +57,11 @@ profiles:
     #     鍵が変わらないと**この直しを入れた瞬間に空の小部屋を掴んで全部落ちる**
     #     （`.banto-primed` が在るので `npm ci` は飛ばされる）。鍵が変われば
     #     新しい置き場は素＝印が無い＝用意し直しになる
+    #
+    # **Playwright のブラウザはここに入れない**（task-0285）。検証のたびに
+    # 再ダウンロードさせないため、chromium は土台のイメージ（docker/Dockerfile.test）に
+    # 焼き込んであり、置き場は node_modules 専用のまま。@playwright/test の上げと
+    # イメージ内のブラウザは Dockerfile.test の ARG と一緒に揃える（そちらを参照）
     cache:
       key:  [package-lock.json, docker/Dockerfile.test, docker/test.yaml]
       path: /app/node_modules

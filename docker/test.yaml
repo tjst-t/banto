@@ -8,6 +8,10 @@
 # 土台のイメージ（`docker/Dockerfile.test`）は dev と共用する。道具立ての契約はそちらが真で、
 # **置き場の鍵にも土台を入れてある**（下の cache）ので、土台が変われば両方が用意し直す。
 #
+# **Playwright のブラウザ（chromium）は土台のイメージに焼き込んである**（task-0285）——
+# 検証のたびに再ダウンロードしない。置き場（BANTO_CACHE_DIR）は node_modules 専用で
+# ブラウザを載せないので、ここで volume を足す必要はない。
+#
 # ドライバは provision で `docker compose up -d`、run で
 # `docker compose run --rm <先頭サービス> sh -c <cmd>` を実行する。
 #
