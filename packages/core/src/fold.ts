@@ -36,7 +36,18 @@ export interface ThreadState {
   /** 自分の追記後の版。fork 元から継承した版を起点に増える。 */
   baseVersion: number;
   readonly forkedFrom: ForkOrigin | null;
+  /**
+   * このスレッドのターン数。**次の turnIndex はここから続ける。**
+   *
+   * run() ごとに 0 から振り直すと、observer が index で並べ替えたときに
+   * 2回目以降のターンが1回目に混ざり、文脈サイズの系列が壊れる。
+   */
   turnCount: number;
+  /**
+   * 直近のランタイムのセッション識別子。**不透明な文字列。解釈しない。**
+   * これがあれば続きから走れる。無ければ新しく始まる。
+   */
+  sessionHandle: string | null;
 }
 
 export interface PendingDecision {
@@ -85,6 +96,7 @@ export function fold(events: readonly BantoEvent[]): State {
           baseVersion: 0,
           forkedFrom: null,
           turnCount: 0,
+          sessionHandle: null,
         });
         attach(event.channelId, event.threadId);
         break;
@@ -104,6 +116,7 @@ export function fold(events: readonly BantoEvent[]): State {
             mode: event.mode,
           },
           turnCount: 0,
+          sessionHandle: null,
         });
         attach(event.channelId, event.threadId);
         break;
@@ -126,6 +139,12 @@ export function fold(events: readonly BantoEvent[]): State {
       case 'turn.usage': {
         const thread = threads.get(event.threadId);
         if (thread) thread.turnCount += 1;
+        break;
+      }
+
+      case 'thread.session': {
+        const thread = threads.get(event.threadId);
+        if (thread) thread.sessionHandle = event.handle;
         break;
       }
 

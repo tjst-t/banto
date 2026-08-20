@@ -50,7 +50,23 @@ export interface RunInput {
   readonly skills: readonly string[];
   /** スレッドに紐づく。変更＝新スレッド。 */
   readonly model: string;
-  readonly forkFrom?: { readonly threadId: ThreadId; readonly baseVersion: number };
+  /**
+   * 前のターンの続きから走る（要件 A2）。ランタイムのセッション識別子を渡す。
+   * **渡さなければ新しく始まる**——base から切る fork がこれ（要件 R1 の既定）。
+   */
+  readonly resumeFrom?: string;
+  /**
+   * 続きから走りつつ、**別のセッションとして枝分かれする**（要件 R1 の明示オプション）。
+   * `resumeFrom` と一緒に使う。単独では意味を持たない。
+   */
+  readonly forkSession?: boolean;
+  /**
+   * このスレッドで既に済んでいるターン数。**turnIndex はここから続ける。**
+   *
+   * run() ごとに 0 から振り直すと、observer が index で並べ替えたときに
+   * 2回目以降のターンが1回目に混ざり、文脈サイズの系列が壊れる。
+   */
+  readonly startTurnIndex?: number;
   readonly prompt: string;
   /** ランタイムに渡す作業ディレクトリ。 */
   readonly cwd?: string;
@@ -88,7 +104,9 @@ export class AgentSdkRunner implements Runner {
      * 同じ文脈サイズが繰り返されて分位点まで歪む。
      */
     const seenMessageIds = new Set<string>();
-    let turnIndex = 0;
+    let turnIndex = input.startTurnIndex ?? 0;
+    // セッション識別子は一度だけ記録する。毎ターン同じものが載っているため。
+    let recordedSession: string | null = null;
 
     const options: Options = {
       model: input.model,
@@ -108,10 +126,25 @@ export class AgentSdkRunner implements Runner {
             ),
           }),
       ...(input.allowedTools === undefined ? {} : { allowedTools: [...input.allowedTools] }),
+      ...(input.resumeFrom === undefined ? {} : { resume: input.resumeFrom }),
+      ...(input.forkSession === true ? { forkSession: true } : {}),
     };
 
     try {
       for await (const message of query({ prompt: input.prompt, options })) {
+        // ランタイムのセッション識別子。**解釈せず、そのまま記録する。**
+        // これが無いと次のターンを続きから走らせられない（要件 A2）。
+        const handle = (message as { session_id?: unknown }).session_id;
+        if (recordedSession === null && typeof handle === 'string' && handle !== '') {
+          recordedSession = handle;
+          yield {
+            type: 'thread.session',
+            threadId: input.threadId,
+            runId: input.runId,
+            handle,
+          };
+        }
+
         const event = this.translate(input, message, seenMessageIds, () => turnIndex++);
         if (event) yield event;
       }

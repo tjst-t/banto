@@ -119,6 +119,23 @@ export interface CompactionReported extends Envelope {
   readonly detail: string;
 }
 
+/**
+ * ランタイムのセッション識別子。**不透明な文字列として扱い、解釈しない。**
+ *
+ * 決定6 は「ランタイム固有の**型・語彙**を外に出さない」と言っている。これは型でも
+ * 語彙でもなく、**導出できない事実そのもの**——次のターンを前の続きから走らせるには、
+ * これを覚えているしかない。Runner の中のメモリに置くと、落ちた時点で会話が切れる
+ * （要件 B5「落ちた地点から再開できる」に反する）ので、ログに残す。
+ *
+ * 解釈しないことは型でも示している：中身は string で、構造を持たせていない。
+ */
+export interface ThreadSessionRecorded extends Envelope {
+  readonly type: 'thread.session';
+  readonly threadId: ThreadId;
+  readonly runId: RunId;
+  readonly handle: string;
+}
+
 export interface RunStep extends Envelope {
   readonly type: 'run.step';
   readonly runId: RunId;
@@ -149,6 +166,7 @@ export type BantoEvent =
   | ThreadStatusChanged
   | BaseAppended
   | TurnUsageRecorded
+  | ThreadSessionRecorded
   | CompactionReported
   | RunStep
   | DecisionRequested
@@ -168,6 +186,7 @@ const KNOWN_TYPES: ReadonlySet<string> = new Set<EventType>([
   'thread.status',
   'base.appended',
   'turn.usage',
+  'thread.session',
   'compaction.reported',
   'run.step',
   'decision.requested',

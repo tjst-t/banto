@@ -17,7 +17,7 @@ import path from 'node:path';
 
 import { passes } from './gate.js';
 
-import { EventLog, fold, pendingQueue, type NewEvent } from '@banto/core';
+import { EventLog, effectiveBase, fold, pendingQueue, type NewEvent } from '@banto/core';
 import { AgentSdkRunner, allowedToolNames, type McpServerSpec } from '@banto/runner';
 
 export interface ServerOptions {
@@ -171,6 +171,12 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
       };
 
       const runId = randomUUID();
+      // **毎回畳んで決める。写しを持たない**（規則3）。
+      // セッション識別子があれば続きから、無ければ base から新しく始まる。
+      const before = fold(await log.read());
+      const thread = before.threads.get(body.threadId);
+      const baseText = effectiveBase(before, body.threadId).join('\n');
+
       await log.append({ type: 'thread.status', threadId: body.threadId, status: 'working' });
       let failed = false;
 
@@ -178,13 +184,19 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
         for await (const event of new AgentSdkRunner().run({
           threadId: body.threadId,
           runId,
-          systemPrompt: 'You are banto. Answer in the user’s language. Be concise.',
+          // base はシステムプロンプトに入る。**走行中は変えられない**（決定6）ので、
+          // 追記があった場合に効くのは次のスレッド／次の fork から（要件 R2・R4）。
+          systemPrompt:
+            'You are banto. Answer in the user’s language. Be concise.' +
+            (baseText === '' ? '' : `\n\n# この会話で決まっていること\n${baseText}`),
           mcpServers: options.modules,
           skills: [],
           model: options.model,
           allowedTools: allowed,
           maxTurns: 20,
           prompt: body.text,
+          ...(thread?.sessionHandle == null ? {} : { resumeFrom: thread.sessionHandle }),
+          startTurnIndex: thread?.turnCount ?? 0,
         })) {
           const stamped = await log.append(event as NewEvent);
           send(stamped);
@@ -202,6 +214,18 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
       });
       send(status);
       res.end();
+      return;
+    }
+
+    // 会話を読み返す（要件 A8）。**イベントログを畳まずそのまま返す**
+    // ——画面用に別の形を作らない（規則3）。並べ替えも解釈も画面側でやる。
+    if (req.method === 'GET' && url.pathname === '/api/events') {
+      const threadId = url.searchParams.get('threadId');
+      const all = await log.read();
+      const events = threadId === null
+        ? all
+        : all.filter((e) => 'threadId' in e && e.threadId === threadId);
+      json(res, 200, { events });
       return;
     }
 

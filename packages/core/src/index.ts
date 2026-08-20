@@ -20,6 +20,7 @@ export {
   type ThreadForked,
   type ThreadId,
   type ThreadStatus,
+  type ThreadSessionRecorded,
   type ThreadStatusChanged,
   type TurnUsage,
   type TurnUsageRecorded,
