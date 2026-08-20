@@ -24,7 +24,7 @@ import type { NamespacedToolDefinition } from "../../packages/banto-host/src/too
 import { WorkerPool } from "../../packages/banto-worker-pool/src/pool.js";
 import { createWorkerTools } from "../../packages/banto-worker-pool/src/worker-tools.js";
 import { FakeRuntimeDriver } from "./worker-pool-harness.js";
-import { emptyStateText, originsOfFamily } from "../../packages/banto-web/src/views/WorkerViewer.js";
+import { emptyStateText, originsOfFamily } from "../../packages/banto-web/src/views/workerViewerScope.js";
 
 describe("[task-0310/a4] originsOfFamily（threadFamily → worker.list の絞り込み条件）", () => {
   it("threadId の一族を、Worker Pool 側の起動元の形（banto:<threadId>）へ変換する", () => {
