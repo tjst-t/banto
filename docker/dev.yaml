@@ -33,6 +33,20 @@
 # 本体（`packages/banto-environment-pool/src/pool.ts`）は今も
 # 「compose up → healthcheck → setup」の順で回るので、**この枝を単独で先に入れると
 # dev の provision が `vite: not found` で再び壊れる**。
+#
+# **node_modules の置き場は web と host の両方が同じ中身を要る**（同じリポジトリの
+# 同じ workspace を読むだけで、`npm ci` を書くのは web だけ）。素直に2つのサービスへ
+# 同じ mount 行を書くと、`env-cache-covers-nested-node-modules.spec.ts` の「小部屋を
+# 2度載せない」検査（コピペ事故の見張り）に文字面としてひっかかる。YAML アンカーで
+# 定義を1箇所にまとめ、両サービスがそれを参照する形にする——テキスト上は1度しか
+# 現れないが、docker compose は展開後に両方のコンテナへ同じホストディレクトリを
+# bind mount する（Docker は同じホストパスの複数コンテナへの同時マウントを問題なく扱う）。
+x-node-modules-cache: &node-modules-cache
+  - ..:/app
+  - ${BANTO_CACHE_DIR:-./.banto-node-modules}/root:/app/node_modules
+  - ${BANTO_CACHE_DIR:-./.banto-node-modules}/pkg-banto-host:/app/packages/banto-host/node_modules
+  - ${BANTO_CACHE_DIR:-./.banto-node-modules}/pkg-banto-worker-pool:/app/packages/banto-worker-pool/node_modules
+  - ${BANTO_GIT_COMMON_DIR:-../.git}:${BANTO_GIT_COMMON_DIR:-/app/.git}:ro
 services:
   web:
     build:
@@ -59,12 +73,8 @@ services:
     #
     # git の共通ディレクトリを同じ絶対パスで read-only に見せるのも test と同じ理由
     # （リンクされたワークツリーの `.git` はホストの絶対パスを指すファイル）。
-    volumes:
-      - ..:/app
-      - ${BANTO_CACHE_DIR:-./.banto-node-modules}/root:/app/node_modules
-      - ${BANTO_CACHE_DIR:-./.banto-node-modules}/pkg-banto-host:/app/packages/banto-host/node_modules
-      - ${BANTO_CACHE_DIR:-./.banto-node-modules}/pkg-banto-worker-pool:/app/packages/banto-worker-pool/node_modules
-      - ${BANTO_GIT_COMMON_DIR:-../.git}:${BANTO_GIT_COMMON_DIR:-/app/.git}:ro
+    # mount 一式は上の `x-node-modules-cache` アンカーを参照する（理由はそちらのコメント）。
+    volumes: *node-modules-cache
     command: ["npm", "--prefix", "packages/banto-web", "run", "dev"]
     # ホスト側は書かない＝docker が空きを割り当てる（上のコメント参照）
     ports:
@@ -98,10 +108,5 @@ services:
       BANTO_DATA_DIR: /tmp/banto-review-data
       BANTO_WORKER_POOL_URL: http://127.0.0.1:1/api/worker-pool
       BANTO_ENV_POOL_URL: http://127.0.0.1:1/api/environment-pool
-    volumes:
-      - ..:/app
-      - ${BANTO_CACHE_DIR:-./.banto-node-modules}/root:/app/node_modules
-      - ${BANTO_CACHE_DIR:-./.banto-node-modules}/pkg-banto-host:/app/packages/banto-host/node_modules
-      - ${BANTO_CACHE_DIR:-./.banto-node-modules}/pkg-banto-worker-pool:/app/packages/banto-worker-pool/node_modules
-      - ${BANTO_GIT_COMMON_DIR:-../.git}:${BANTO_GIT_COMMON_DIR:-/app/.git}:ro
+    volumes: *node-modules-cache
     command: ["node", "--import", "tsx", "packages/banto-host/src/bin.ts", "serve", "--port", "4100"]
