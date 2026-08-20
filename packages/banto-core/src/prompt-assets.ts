@@ -30,6 +30,19 @@ function resolveRepoRoot(): string {
 }
 
 /**
+ * Resolve the skills/ directory to read prompt assets from.
+ *
+ * BANTO_SKILLS_DIR overrides the default so callers (tests) can point
+ * loadPromptAsset at an isolated copy instead of the tracked repo files —
+ * without it, the default is unchanged: <repoRoot>/skills.
+ */
+function resolveSkillsDir(): string {
+  const override = process.env["BANTO_SKILLS_DIR"];
+  if (override) return override;
+  return path.join(resolveRepoRoot(), "skills");
+}
+
+/**
  * Load a prompt asset by name from the skills/ directory.
  *
  * @param name - asset filename without extension (e.g. "executor-system")
@@ -37,8 +50,7 @@ function resolveRepoRoot(): string {
  * @throws Error if the asset file does not exist (I2: not swallowed)
  */
 export function loadPromptAsset(name: string): string {
-  const repoRoot = resolveRepoRoot();
-  const assetPath = path.join(repoRoot, "skills", `${name}.md`);
+  const assetPath = path.join(resolveSkillsDir(), `${name}.md`);
   if (!fs.existsSync(assetPath)) {
     throw new Error(
       `Prompt asset not found: "${name}" (looked at ${assetPath}). ` +

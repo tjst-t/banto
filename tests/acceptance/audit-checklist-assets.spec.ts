@@ -168,6 +168,19 @@ describe("[AC-S75f66b-3-2] Audit prompt assets are layer-A text files (skills/ d
     const loaded = loadPromptAsset("audit-checklist");
     assert.equal(loaded, fileContent, "loadPromptAsset must return the exact file contents");
   });
+
+  it("[AC-S75f66b-3-2] BANTO_SKILLS_DIR が立っていなければ <repoRoot>/skills を読む", () => {
+    const saved = process.env["BANTO_SKILLS_DIR"];
+    delete process.env["BANTO_SKILLS_DIR"];
+    try {
+      const fileContent = fs.readFileSync(checklistPath, "utf-8");
+      const loaded = loadPromptAsset("audit-checklist");
+      assert.equal(loaded, fileContent, "既定は <repoRoot>/skills から読むこと");
+    } finally {
+      if (saved === undefined) delete process.env["BANTO_SKILLS_DIR"];
+      else process.env["BANTO_SKILLS_DIR"] = saved;
+    }
+  });
 });
 
 // ── [a8] 監査は合否の門ではなく補助の目である、という位置づけ ─────────────────────
@@ -252,22 +265,25 @@ describe("[a8] skills/audit-checklist.md が「監査は補助の目」の位置
 // だからここで見るのも指示文になる。拡張が担うのは役の説明（audit-system）だけ。
 
 describe("[AC-S75f66b-3-2] Checklist edit propagates to the audit agent", () => {
-  let originalChecklist: string;
+  // このテストは skills/audit-checklist.md への追記を検証したいが、追跡下の
+  // 実ファイルを書き換えると並行して走る他 spec（kobo-evidence-versions,
+  // kobo-role-prompts）と読みが競合する。BANTO_SKILLS_DIR で隔離した
+  // コピーへ差し替え、実ファイルには一度も書かない（task-0323）。
+  let tempSkillsDir: string;
+  let savedSkillsDir: string | undefined;
 
   before(() => {
-    originalChecklist = fs.readFileSync(checklistPath, "utf-8");
-    function restoreChecklist(): void {
-      try { fs.writeFileSync(checklistPath, originalChecklist); } catch { /* best-effort */ }
-    }
-    process.once("exit", restoreChecklist);
-    process.once("SIGTERM", () => { restoreChecklist(); process.exit(143); });
-    process.once("SIGINT", () => { restoreChecklist(); process.exit(130); });
-
-    fs.writeFileSync(checklistPath, originalChecklist + "\nCHECK-MARKER-42\n");
+    savedSkillsDir = process.env["BANTO_SKILLS_DIR"];
+    tempSkillsDir = fs.mkdtempSync(path.join(os.tmpdir(), "banto-skills-"));
+    fs.cpSync(path.join(repoRoot, "skills"), tempSkillsDir, { recursive: true });
+    fs.appendFileSync(path.join(tempSkillsDir, "audit-checklist.md"), "\nCHECK-MARKER-42\n");
+    process.env["BANTO_SKILLS_DIR"] = tempSkillsDir;
   });
 
   after(() => {
-    fs.writeFileSync(checklistPath, originalChecklist);
+    if (savedSkillsDir === undefined) delete process.env["BANTO_SKILLS_DIR"];
+    else process.env["BANTO_SKILLS_DIR"] = savedSkillsDir;
+    fs.rmSync(tempSkillsDir, { recursive: true, force: true });
   });
 
   it("[AC-S75f66b-3-2] scenario-2-api step-1: CHECK-MARKER-42 が監査人に届く（経路に依らず）", async () => {
