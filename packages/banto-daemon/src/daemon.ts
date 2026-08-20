@@ -1678,6 +1678,20 @@ export class Daemon {
     // 終端（failed）にいるものは動かさない——戻し方は `kobo.reopen` が決める
     const active = task.status !== "failed";
     if (auditInvalidated && active && task.status !== "implementing" && task.status !== "planning") {
+      // task-0297: このタスクに付いていた前の職人（executor / rework / audit のどれでも）が
+      // 生きたまま新しい職人を起こすと、同じワークツリーを2人が同時に編集する
+      // （実測 task-0292）。新しい職人を起こす前に畳む——`spawnAuditSession` が監査を起こす
+      // 前に executor と rework を畳むのと同じ形（新しい流儀を発明しない）。
+      // ここは番頭には畳めない（決定63）ので、畳むのは Kobo 自身。amendTask は同期のままなので
+      // 畳みは背景で追う——`closeWorkerFor` は畳めなかったことを自分でログに残す（I2）
+      this._trackBackground(
+        (async () => {
+          for (const role of ["executor", "audit", "rework"] as const) {
+            await this.closeWorkerFor(projectTag, poolTaskId(taskId, role));
+          }
+        })()
+      );
+
       const back = this.transition(
         projectTag,
         taskId,

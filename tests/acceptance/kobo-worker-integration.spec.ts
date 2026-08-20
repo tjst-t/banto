@@ -703,6 +703,54 @@ describe("[task-0060/a1] 役目を終えた職人は Kobo が畳む（番頭に�
   });
 });
 
+// ── task-0297: 契約改訂で implementing へ戻すとき、前の職人を畳んでから戻す ──────
+
+describe("[task-0297] 契約改訂で implementing へ戻すとき、前の職人を先に畳む", () => {
+  let h: Harness;
+  before(async () => {
+    h = await harness();
+  });
+  after(async () => {
+    await teardown(h);
+  });
+
+  it("[a1/a2/a3] 監査中に基準が変わって implementing へ戻ると、監査人を畳んでから戻す（同じワークツリーに2人並ばない）", async () => {
+    readyTask(h, "task-0293");
+    const executor = await h.daemon.spawnTask(h.proj, "task-0293");
+    h.daemon.transition(h.proj, "task-0293", "implementing", "test");
+    h.daemon.transition(h.proj, "task-0293", "auditing", "test");
+
+    await until(() => h.driver.byTaskId("task-0293:audit") !== undefined);
+    // 実装者はもう畳まれているはず（既存の道）。監査人が生きた状態を作ってから改訂する
+    await until(() => h.workers.pool.get(executor.sessionId)?.state === "closed");
+    const findAudit = () => h.workers.pool.list().find((w) => w.taskId === "task-0293:audit");
+    assert.notEqual(
+      findAudit()?.state,
+      "closed",
+      "改訂の前提: 監査人はまだ生きている（畳まれていたら再現になっていない）"
+    );
+
+    // 番頭は通せない改訂（絞り込みは緩めていないので banto で通る）で基準を動かし、監査を無効にする
+    const r = h.daemon.amendTask(
+      h.proj,
+      "task-0293",
+      { scope: { paths: ["src/task-0293/index.ts"] } },
+      { reason: "触るのはこの1本だけだと分かった", by: "banto" }
+    );
+    assert.equal(r.ok, true, `改訂が通るはず: ${JSON.stringify(r)}`);
+    assert.equal((r as { ok: true; auditInvalidated: boolean }).auditInvalidated, true);
+    assert.equal(h.daemon.getTask(h.proj, "task-0293")?.status, "implementing");
+
+    // [a1/a2] 前に付いていた監査人が畳まれている（同じタスクに職人が2人並ばない）
+    await until(() => findAudit()?.state === "closed");
+    assert.equal(
+      findAudit()?.state,
+      "closed",
+      "改訂で implementing へ戻すとき、前の職人（監査人）を畳んでから戻すこと（task-0292 の実測）"
+    );
+  });
+});
+
 // ── 本物の pi で1本通す（偽ドライバだけで済ませない）─────────────────────────
 
 describe("[task-0060/a1] 本物の pi を Worker Pool 越しに起こす", () => {
