@@ -10,14 +10,34 @@
  */
 
 import { query, type Options, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 import type { NewEvent, RunId, ThreadId, TurnUsage } from '@banto/core';
 
-/** モジュールのツールインターフェース。Phase 0 ではまだ誰も渡さない。 */
-export interface McpServerSpec {
-  readonly name: string;
-  readonly command: string;
-  readonly args?: readonly string[];
+/**
+ * モジュールのツールインターフェース。
+ *
+ * **境界はモジュールごとに選ぶ**（要件 C8b）。契約は MCP のままで、
+ * in-process と subprocess のどちらでも同じツールが見える。
+ *
+ * ここがベンダ形式へ写す唯一の場所。module-kit は標準の MCP サーバを作るだけで、
+ * Agent SDK を知らない（決定6）。
+ */
+export type McpServerSpec =
+  | { readonly name: string; readonly kind: 'in-process'; readonly server: McpServer }
+  | {
+      readonly name: string;
+      readonly kind: 'subprocess';
+      readonly command: string;
+      readonly args?: readonly string[];
+    };
+
+/**
+ * ツールの許可（要件 D4）。**明示的に許した範囲に限られる。**
+ * 既定では MCP のツールは1つも通らない——実測で、渡さないと権限で断られる。
+ */
+export function allowedToolNames(specs: readonly McpServerSpec[], tools: ReadonlyMap<string, readonly string[]>): string[] {
+  return specs.flatMap((spec) => (tools.get(spec.name) ?? []).map((t) => `mcp__${spec.name}__${t}`));
 }
 
 export interface RunInput {
@@ -35,6 +55,8 @@ export interface RunInput {
   /** ランタイムに渡す作業ディレクトリ。 */
   readonly cwd?: string;
   readonly maxTurns?: number;
+  /** 明示的に許すツール名（`mcp__<server>__<tool>`）。渡さなければ MCP ツールは通らない。 */
+  readonly allowedTools?: readonly string[];
 }
 
 export interface Runner {
@@ -79,10 +101,13 @@ export class AgentSdkRunner implements Runner {
             mcpServers: Object.fromEntries(
               input.mcpServers.map((s) => [
                 s.name,
-                { command: s.command, args: [...(s.args ?? [])] },
+                s.kind === 'in-process'
+                  ? ({ type: 'sdk', name: s.name, instance: s.server } as const)
+                  : ({ type: 'stdio', command: s.command, args: [...(s.args ?? [])] } as const),
               ]),
             ),
           }),
+      ...(input.allowedTools === undefined ? {} : { allowedTools: [...input.allowedTools] }),
     };
 
     try {
