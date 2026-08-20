@@ -488,6 +488,212 @@ describe("[a2・a4] 監査セッションの spawn 自体が失敗しても、�
   });
 });
 
+// ── task-0294: auditing なのに監査人が居ないタスクを、巡回が拾い直す ─────────
+//
+// task-0289 の実測（2026-08-20）: implementing → auditing の遷移直後に daemon が落ち、
+// `audit_started` が一件も積まれないまま auditing に居座り続けた（25分以上）。
+// 既存の3つのフェイルオープンの起点（判定なし報告・落ちた・spawn失敗）は、どれも
+// 「監査人が一度は起きたあと」にぶら下がっている——一度も起きていない状態には
+// 引き金が無かった。ここはその穴を埋める巡回（audit-watchdog）を確かめる。
+//
+// 本物の crash-during-spawn は synchronous な2行の間という極めて狭い窓でしか起きない
+// ため、テストでは同じ**観測できる帳簿の形**（auditing だが audit_started が伴っていない
+// ／その回の監査人が Worker Pool のどこにも見つからない）を、disableAuditSpawn と
+// Worker Pool の入れ替えで直接作る。
+
+function auditStartedCountOn(daemon: Daemon, proj: string, taskId: string): number {
+  return daemon.getTaskEvents(proj, taskId).filter((e) => e.type === "audit_started").length;
+}
+
+function auditVerdictOn(
+  daemon: Daemon,
+  proj: string,
+  taskId: string
+): { verdict?: string; byDefault?: boolean; defaultReason?: string } | undefined {
+  return daemon
+    .getTaskEvents(proj, taskId)
+    .findLast((e) => e.type === "audit_verdict") as
+    | { verdict?: string; byDefault?: boolean; defaultReason?: string }
+    | undefined;
+}
+
+/** watchdog 試験専用の使い捨て daemon + Worker Pool の組。 */
+async function spinUpWatchdogDaemon(
+  dataDir: string,
+  worktreeBaseDir: string,
+  poolDriver: FakeRuntimeDriver,
+  opts: { disableAuditSpawn: boolean }
+): Promise<{ daemon: Daemon; pool: WorkerPoolHarness }> {
+  const pool = await startWorkerPool(poolDriver);
+  const daemon = Daemon.create({
+    port: 0,
+    dataDir,
+    tickIntervalMs: 100,
+    worktreeBaseDir,
+    workerPoolUrl: pool.url,
+    disableAutoSpawn: true,
+    disableAuditSpawn: opts.disableAuditSpawn,
+  });
+  await daemon.start();
+  return { daemon, pool };
+}
+
+describe("[task-0294 a1] auditing に居るのに生きた監査人が居ないタスクを、巡回が起こし直す", () => {
+  it("audit_started が一度も積まれないまま auditing に居座っても、次に起きた daemon の巡回が起こし直す", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "audit-watchdog-a1-"));
+    const repoDir = path.join(tmpDir, "repo");
+    initRepo(repoDir);
+    const dataDir = path.join(tmpDir, "data");
+    const worktreeBaseDir = path.join(tmpDir, "worktrees");
+    const proj = "audit-watchdog-a1-proj";
+    const driver = new FakeRuntimeDriver();
+    const taskId = "task-watchdog-a1";
+
+    try {
+      // 1段目: disableAuditSpawn な daemon で「auditing だが監査人ゼロ」を作る
+      // （実際の crash-during-spawn の代わりに、audit-spawn 側の副作用そのものを
+      //   切って同じ帳簿の形——0件の audit_started のまま auditing——を作る）
+      {
+        const { daemon, pool } = await spinUpWatchdogDaemon(dataDir, worktreeBaseDir, driver, {
+          disableAuditSpawn: true,
+        });
+        daemon.registerProject(proj, repoDir);
+        daemon.createTask(proj, taskId, `作業 ${taskId}`, {
+          kind: "feature",
+          scope: { paths: [`src/${taskId}/**`] },
+          acceptance: [{ id: "a1", text: "動くこと", verify: "npm test" }],
+        });
+        daemon.transition(proj, taskId, "queued", "test");
+        daemon.transition(proj, taskId, "ready", "test");
+        await daemon.spawnTask(proj, taskId);
+        daemon.transition(proj, taskId, "implementing", "test");
+        daemon.transition(proj, taskId, "auditing", "test");
+        assert.equal(
+          auditStartedCountOn(daemon, proj, taskId),
+          0,
+          "前提が崩れている（audit_started が積まれてしまっている）"
+        );
+        await daemon.stop();
+        await pool.close();
+      }
+
+      // 2段目: 別の（disableAuditSpawn ではない）daemon が同じ帳簿を読み直す。
+      // 起こし直しは巡回（scheduler の tick）からしか起きない——明示の再照合は呼ばず、
+      // tick の自然な発火だけを待つことで「巡回のたびに効く」ことを確かめる
+      {
+        const { daemon, pool } = await spinUpWatchdogDaemon(dataDir, worktreeBaseDir, driver, {
+          disableAuditSpawn: false,
+        });
+        try {
+          await until(() => auditStartedCountOn(daemon, proj, taskId) >= 1);
+          const task = daemon.getTask(proj, taskId);
+          assert.equal(task?.status, "auditing", "起こし直した直後は auditing のはず");
+        } finally {
+          await daemon.stop();
+          await pool.close();
+        }
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("[task-0294 a2] 上限まで起こし直しても監査人が立たないなら、既定で通す（既存3つと混ざらない接頭辞）", () => {
+  it("audit_never_started: の接頭辞で既定通過し、既存の3つの接頭辞とは混ざらない", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "audit-watchdog-a2-"));
+    const repoDir = path.join(tmpDir, "repo");
+    initRepo(repoDir);
+    const dataDir = path.join(tmpDir, "data");
+    const worktreeBaseDir = path.join(tmpDir, "worktrees");
+    const proj = "audit-watchdog-a2-proj";
+    const driver = new FakeRuntimeDriver();
+    const taskId = "task-watchdog-a2";
+
+    try {
+      // 0回目: 監査人ゼロのまま auditing に居座る状態を作る（a1 と同じ手筋）
+      {
+        const { daemon, pool } = await spinUpWatchdogDaemon(dataDir, worktreeBaseDir, driver, {
+          disableAuditSpawn: true,
+        });
+        daemon.registerProject(proj, repoDir);
+        daemon.createTask(proj, taskId, `作業 ${taskId}`, {
+          kind: "feature",
+          scope: { paths: [`src/${taskId}/**`] },
+          acceptance: [{ id: "a1", text: "動くこと", verify: "npm test" }],
+        });
+        daemon.transition(proj, taskId, "queued", "test");
+        daemon.transition(proj, taskId, "ready", "test");
+        await daemon.spawnTask(proj, taskId);
+        daemon.transition(proj, taskId, "implementing", "test");
+        daemon.transition(proj, taskId, "auditing", "test");
+        await daemon.stop();
+        await pool.close();
+      }
+
+      // 1・2回目（= AUDIT_ATTEMPT_LIMIT）: 起こし直すたびに Worker Pool を丸ごと
+      // 入れ替える——起こした監査人の生死を「誰も二度と見に行けない」形にして、
+      // 既存の3つの起点（判定なし報告・落ちた・spawn失敗）のどれも引けないまま
+      // 試行回数だけを上限まで重ねる（本物の「起きたことをこの帳簿は一度も確かめられ
+      // ていない」状態は再現しにくいので、その観測できる結果——生きた監査人が
+      // 見つからない——を直接作る）
+      for (let round = 1; round <= 2; round++) {
+        const { daemon, pool } = await spinUpWatchdogDaemon(dataDir, worktreeBaseDir, driver, {
+          disableAuditSpawn: false,
+        });
+        await until(() => auditStartedCountOn(daemon, proj, taskId) >= round);
+        await daemon.stop();
+        await pool.close();
+      }
+
+      // 3段目: さらに別の Worker Pool（前段までの監査人はここからは見えない）。
+      // 試行回数はもう上限——起こし直さず、既定で通すはず
+      {
+        const { daemon, pool } = await spinUpWatchdogDaemon(dataDir, worktreeBaseDir, driver, {
+          disableAuditSpawn: false,
+        });
+        try {
+          await until(() => daemon.getTask(proj, taskId)?.status !== "auditing");
+          const task = daemon.getTask(proj, taskId);
+          assert.ok(
+            task?.status === "merging" || task?.status === "review-ready",
+            `既定通過後の状態が想定外: ${task?.status}`
+          );
+          assert.equal(
+            daemon.getTaskEvents(proj, taskId).some((e) => e.type === "task_failed"),
+            false,
+            "上限まで起こし直しても failed にしてはいけない"
+          );
+          assert.equal(
+            auditStartedCountOn(daemon, proj, taskId),
+            2,
+            "起こし直しの回数が AUDIT_ATTEMPT_LIMIT の数え方と揃っていない"
+          );
+
+          const verdict = auditVerdictOn(daemon, proj, taskId);
+          assert.equal(verdict?.byDefault, true, "既定通過の印が付いていない");
+          assert.match(
+            verdict?.defaultReason ?? "",
+            /^audit_never_started:/,
+            "新しい接頭辞（audit_never_started:）になっていない"
+          );
+          assert.ok(
+            !/audit_reported_without_verdict|audit_session_exited_without_verdict|audit session spawn failed/.test(
+              verdict?.defaultReason ?? ""
+            ),
+            "既存の3つの接頭辞と混ざっている"
+          );
+        } finally {
+          await daemon.stop();
+          await pool.close();
+        }
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("[a3] verdict=\"fail\" を明示したときだけ、これまでどおり差し戻しになる", () => {
   let h: Harness;
   before(async () => {

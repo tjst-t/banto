@@ -663,6 +663,45 @@ export class Daemon {
   private readonly _inFlightSpawns: Map<string, Promise<SpawnedSession>> = new Map();
 
   /**
+   * Re-entrancy guard for the audit-watchdog tick (task-0294).
+   *
+   * 監査の spawn は HTTP 往復を挟むので、次の tick が先に走ると同じ「auditing なのに
+   * 監査人が居ない」タスクを2つの tick が見て二重に起こしてしまう——`_autoSpawnRunning`
+   * と同じ理由・同じ形。
+   */
+  private _auditWatchdogRunning = false;
+
+  /**
+   * In-flight spawn map: deduplicates concurrent spawnAuditSession() calls for the same task
+   * (task-0294)。
+   *
+   * `spawnAuditSession` は既に4か所から呼ばれている（transition hook・監査落ちの再試行・
+   * 前倒し検証の差し戻し・巡回の起こし直し）。巡回が「監査人が居ない」と見た瞬間に、
+   * 別の経路も同じ理由で起こし直していることがある——待っている間に二重に起こすと、
+   * 台帳の鍵（projectTag+poolId）が1つしかない Worker Pool 側で片方が溢れる。
+   * 最初の呼び出しの Promise を共有して1人に保つ（`_inFlightSpawns` と同じ形）。
+   *
+   * Invariant: key is `${projectTag}/${taskId}`. Removed in finally{} of spawnAuditSession().
+   */
+  private readonly _inFlightAuditSpawns: Map<string, Promise<void>> = new Map();
+
+  /**
+   * 「implementing → auditing」の遷移フックが `auditOrSendBack`（前倒し検証込み）を
+   * 走らせている間だけ立つ印（task-0294）。
+   *
+   * `auditOrSendBack` は監査人を起こす**前**に実際の検証コマンドを回す区間を持ち、
+   * 数秒〜数分かかり得る。その間は「監査人がまだ居ない」のが正常であり、
+   * audit-watchdog（巡回）が早合点して二重に起こさないための除外リスト。
+   *
+   * Invariant: key is `${projectTag}/${taskId}`。`auditOrSendBack` が state_transitioned
+   * と同じ同期区間で立て、その完了（成功・例外いずれも）で必ず外す。
+   * D3 に反しない：これは「進行中の非同期処理」を指す実行時の一時状態であって、
+   * 状態の真実（帳簿）ではない——daemon が落ちれば消え、再起動後の巡回はそのぶん
+   * 素直に「居なければ起こす」へ戻る（それが task-0294 の直したい穴そのもの）。
+   */
+  private readonly _auditOrSendBackInFlight: Set<string> = new Set();
+
+  /**
    * Set of in-flight background async operations deferred via setImmediate
    * (e.g. audit session spawn, rework session spawn triggered by handleAuditVerdict).
    *
@@ -802,6 +841,24 @@ export class Daemon {
      */
     this.scheduler.registerJob("dwell-watch", () => {
       this.runDwellWatch();
+    });
+
+    /**
+     * Built-in job: audit watchdog（task-0289・task-0294）。
+     *
+     * 既存のフェイルオープンの3つの起点（判定を出さずに報告／落ちた／spawn 自体が失敗）は
+     * どれも「監査人が一度は起きたあと」にぶら下がっている——**一度も起きていない**タスクを
+     * 助ける引き金がどこにも無かった（`spawnAuditSession` は implementing→auditing の
+     * 遷移のときにしか呼ばれず、その非同期処理の途中で daemon が落ちると、audit_started
+     * すら積まれないまま auditing に居座り続ける。実測 task-0289: 25分以上）。
+     *
+     * ここは起動直後の1回だけでなく、**巡回のたびに**同じ照合をする（`registerJob` は
+     * 毎 tick 呼ばれる——再起動以外の経路で監査人を見失っても拾える）。
+     *
+     * disableAuditSpawn: 既存の audit-spawn 側の副作用と同じ扱い（試験がここも切れる）。
+     */
+    this.scheduler.registerJob("audit-watchdog", () => {
+      void this.runAuditWatchdog();
     });
 
     // 期限の執行（TTL）と照合は **Environment Pool が持つ**（ADR-0013 決定60）。
@@ -2273,6 +2330,85 @@ export class Daemon {
   }
 
   /**
+   * 巡回のたびに、auditing に居るのに生きた監査人が居ないタスクを見つけて起こし直す
+   * （task-0289・task-0294）。
+   *
+   * 既存のフェイルオープンの3つの起点（`applyWorkerReport` の判定なし報告・
+   * `handleAgentExited` の role=audit 落ち・`spawnAuditSession` の catch）は、どれも
+   * 「監査人が一度は起きたあと」に付いている。**一度も起きていない**（あるいは起きたことを
+   * Kobo が一度も帳簿に残せていない）タスクには、そのどれも引き金にならない——
+   * `spawnAuditSession` は `implementing → auditing` の遷移フックからしか呼ばれず、
+   * その非同期処理（`worktreeFor` → `delegateWorker` の HTTP 往復 → `audit_started` 記帳）の
+   * 途中で daemon が落ちると、`audit_started` すら一件も積まれないまま auditing に居座る
+   * （実測 task-0289: 25分以上・原因は決め打ちしない——`keepWorkerIfStillWanted` が
+   * 静かに戻る経路でも同じ形になり得る）。
+   *
+   * 判定材料は帳簿と Worker Pool の両方から取る（D3：真実は一箇所——生死は Worker Pool、
+   * 試行回数は帳簿）。生きた監査人が居れば何もしない。居なければ、いまの回の試行回数
+   * （`countAuditAttempts` と同じ数え方）を上限と比べ、下回っていれば起こし直し、
+   * 上限に達していれば `recordAuditPassByDefault` で通す——理由は既存の3つ
+   * （`audit_reported_without_verdict:` / `audit_session_exited_without_verdict` /
+   * `audit session spawn failed`）と混ざらない `audit_never_started:` 接頭辞で残す
+   * （ADR-0027 決定143：内訳を読み分けられること）。
+   *
+   * `spawnAuditSession` 自体が in-flight で重複排除するので（task-0294）、他の経路
+   * （落ちたイベントの再試行など）と同時に「居ない」と見ても二重には起こさない。
+   */
+  private async runAuditWatchdog(): Promise<void> {
+    if (this.config.disableAuditSpawn) return; // 既存の audit-spawn 側の副作用と同じ扱い
+    if (this._auditWatchdogRunning) return;
+    this._auditWatchdogRunning = true;
+    try {
+      let workers: WorkerView[];
+      try {
+        workers = await this.liveKoboWorkers();
+      } catch (err) {
+        process.stderr.write(
+          `[banto-daemon] 職人の一覧を引けないので audit-watchdog を見送ります: ${String(err)}\n`
+        );
+        return;
+      }
+      const liveAuditKeys = new Set<string>();
+      for (const w of workers) {
+        const { taskId, role } = splitPoolTaskId(w.taskId);
+        if (role === "audit") liveAuditKeys.add(`${w.projectTag}/${taskId}`);
+      }
+
+      for (const task of this.store.getAllTasks()) {
+        if (task.status !== "auditing") continue;
+        // 受け持っていないプロジェクトのタスクは触らない（auto-spawn と同じ絞り）
+        if (!this.registry.has(task.projectTag)) continue;
+        const key = `${task.projectTag}/${task.id}`;
+        if (liveAuditKeys.has(key)) continue; // 生きた監査人が居る
+        // 前倒し検証（`auditOrSendBack`）がまだ進行中——監査人がまだ居ないのは正常。
+        // 早合点して二重に起こさない（このタスク独自の in-flight 印。task-0294）
+        if (this._auditOrSendBackInFlight.has(key)) continue;
+
+        const attempts = this.countAuditAttempts(task.projectTag, task.id);
+        if (attempts < AUDIT_ATTEMPT_LIMIT) {
+          process.stderr.write(
+            `[banto-daemon] ${key}: auditing なのに生きた監査人が居ません（巡回が見つけました）。` +
+              `${attempts}/${AUDIT_ATTEMPT_LIMIT} 回目——起こし直します\n`
+          );
+          await this.spawnAuditSession(task.projectTag, task.id);
+          continue;
+        }
+        process.stderr.write(
+          `[banto-daemon] ${key}: ${attempts} 回起こし直しても監査人が見つかりません——既定で通します\n`
+        );
+        this.recordAuditPassByDefault(
+          task.projectTag,
+          task.id,
+          `audit_never_started: 巡回で ${attempts} 回起こし直しましたが、監査人が一度も` +
+            "生きて見つかりませんでした（監査人が起きたことをこの帳簿は一度も確かめられていません）"
+        );
+      }
+    } finally {
+      this._auditWatchdogRunning = false;
+    }
+  }
+
+  /**
    * そのタスクのレビューの段（決定57・66）。
    *
    * 判定表はプロジェクトのリポジトリにある（`meta/config.yaml`）。**読めなければ止まる**
@@ -3684,8 +3820,21 @@ export class Daemon {
           // task-0213: **監査へ回す前に、検証を袋の外で回す**。落ちていれば
           // 監査人を起こさずに実装者へ差し戻す（既存の findings の経路）——落ちている
           // ものを監査させるのは、監査人の時間も袋も無駄に使う
+          //
+          // task-0294: `auditOrSendBack`（検証込み）は監査人を起こすより**前**に、
+          // 実際の検証コマンドを回す区間を持つ——数秒〜数分かかり得る。この区間は
+          // 「監査人がまだ居ない」が正常な状態なので、audit-watchdog の巡回が誤って
+          // 「見失った」と早合点して二重に起こさないよう、**この処理が生きている間だけ**
+          // 印を立てる（`_auditOrSendBackInFlight`）。印は state_transitioned と
+          // 同期して立てる——setImmediate の中で立てると、その間隙を巡回が拾える
+          const watchdogKey = `${projectTag}/${taskId}`;
+          this._auditOrSendBackInFlight.add(watchdogKey);
           this._trackBackground(new Promise<void>((resolve) => {
-            setImmediate(() => void this.auditOrSendBack(projectTag, taskId).then(resolve, resolve));
+            setImmediate(() =>
+              void this.auditOrSendBack(projectTag, taskId)
+                .finally(() => this._auditOrSendBackInFlight.delete(watchdogKey))
+                .then(resolve, resolve)
+            );
           }));
         }
       }
@@ -3926,6 +4075,21 @@ export class Daemon {
   }
 
   private async spawnAuditSession(projectTag: string, taskId: string): Promise<void> {
+    // In-flight deduplication（task-0294）: 複数の経路（遷移フック・監査落ちの再試行・
+    // 巡回の起こし直し）が同時に「監査人が居ない」と見て、同じタスクへ二重に呼ぶことがある。
+    // 待っている間に来た2つ目の呼び出しは、同じ Promise に相乗りさせる（_inFlightSpawns と同じ形）
+    const key = `${projectTag}/${taskId}`;
+    const existing = this._inFlightAuditSpawns.get(key);
+    if (existing) return existing;
+
+    const spawnPromise = this._spawnAuditSessionBody(projectTag, taskId).finally(() => {
+      this._inFlightAuditSpawns.delete(key);
+    });
+    this._inFlightAuditSpawns.set(key, spawnPromise);
+    return spawnPromise;
+  }
+
+  private async _spawnAuditSessionBody(projectTag: string, taskId: string): Promise<void> {
     const task = this.store.getTask(taskId, projectTag);
     if (!task) {
       process.stderr.write(
