@@ -35,6 +35,7 @@ import {
   DEFAULT_ARTIFACT_THRESHOLD_CHARS,
   type Thread,
   type ServerEvent,
+  type TranscriptEntry,
 } from "@banto/host";
 import { TRUNK, branchSpec } from "./threadSpecs.js";
 
@@ -146,7 +147,9 @@ describe("[task-0307] 知らせ（notice）の全文注入をやめ、大きい�
     const big = `# 職人の報告\n${"あ".repeat(DEFAULT_ARTIFACT_THRESHOLD_CHARS)}`;
     await server!.notify(big, { threadId: branch.id, source: "worker" });
 
-    const recorded = branch.transcript.find((e) => e.role === "notice" && e.source === "worker");
+    const recorded = branch.transcript.find(
+      (e): e is Extract<TranscriptEntry, { role: "notice" }> => e.role === "notice" && e.source === "worker"
+    );
     assert.ok(recorded, "notice が記録に無い");
     assert.notEqual(recorded!.text, big, "全文がそのまま記録に積まれている（退避されていない）");
     assert.ok(recorded!.text.length < 1000, `記録に積まれた本文が大きすぎる（${recorded!.text.length}字）`);
@@ -166,7 +169,9 @@ describe("[task-0307] 知らせ（notice）の全文注入をやめ、大きい�
     assert.ok(small.length <= DEFAULT_ARTIFACT_THRESHOLD_CHARS);
     await server!.notify(small, { threadId: branch.id, source: "worker" });
 
-    const recorded = branch.transcript.find((e) => e.role === "notice" && e.source === "worker");
+    const recorded = branch.transcript.find(
+      (e): e is Extract<TranscriptEntry, { role: "notice" }> => e.role === "notice" && e.source === "worker"
+    );
     assert.ok(recorded, "notice が記録に無い");
     assert.equal(recorded!.text, small, "しきい値以下の notice は退避せず全文のまま積むこと");
 
@@ -187,7 +192,7 @@ describe("[task-0307] 知らせ（notice）の全文注入をやめ、大きい�
     const big = `# PO向け\n${"い".repeat(DEFAULT_ARTIFACT_THRESHOLD_CHARS * 2)}`;
     await server!.notify(big, { threadId: branch.id, source: "worker" });
 
-    const notice = await waitFor(events, "notice", 2000, (e) => e.threadId === branch.id);
+    const notice = await waitFor(events, "notice", 2000, (e) => e.type === "notice" && e.threadId === branch.id);
     assert.ok(notice.type === "notice");
     assert.equal(notice.text, big, "画面へ流す本文は全文であること（PO が読めなくなってはいけない）");
 
@@ -206,7 +211,9 @@ describe("[task-0307] 知らせ（notice）の全文注入をやめ、大きい�
     const big = `# 知らせ\n${"う".repeat(DEFAULT_ARTIFACT_THRESHOLD_CHARS + 1)}`;
     await server!.notify(big, { threadId: branch.id, source: "worker" });
 
-    const recorded = branch.transcript.find((e) => e.role === "notice" && e.source === "worker");
+    const recorded = branch.transcript.find(
+      (e): e is Extract<TranscriptEntry, { role: "notice" }> => e.role === "notice" && e.source === "worker"
+    );
     assert.ok(recorded);
     // 道具の退避と同じ書式（renderStub）を使っている
     assert.match(recorded!.text, /notice\(worker\)/);
@@ -222,7 +229,9 @@ describe("[task-0307] 知らせ（notice）の全文注入をやめ、大きい�
     const { branch: branch2 } = await openBranch("ちょうどしきい値");
     const exact = "え".repeat(DEFAULT_ARTIFACT_THRESHOLD_CHARS);
     await server!.notify(exact, { threadId: branch2.id, source: "worker" });
-    const recorded2 = branch2.transcript.find((e) => e.role === "notice" && e.source === "worker");
+    const recorded2 = branch2.transcript.find(
+      (e): e is Extract<TranscriptEntry, { role: "notice" }> => e.role === "notice" && e.source === "worker"
+    );
     assert.equal(recorded2!.text, exact, "しきい値ちょうどは退避しないこと（<= 判定）");
   });
 });
