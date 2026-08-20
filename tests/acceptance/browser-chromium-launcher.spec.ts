@@ -666,7 +666,7 @@ describe("createChromiumLauncher: 寿命と後始末（偽のプロセス）", (
     const launcher = createChromiumLauncher({
       executablePath: process.execPath,
       spawn: fake.spawn,
-      allowNoSandboxEnv: undefined,
+      env: {},
     });
     const browser = await launcher.launch({});
     try {
@@ -682,12 +682,32 @@ describe("createChromiumLauncher: 寿命と後始末（偽のプロセス）", (
     const launcher = createChromiumLauncher({
       executablePath: process.execPath,
       spawn: fake.spawn,
-      allowNoSandboxEnv: "1",
+      env: { BANTO_BROWSER_ALLOW_NO_SANDBOX: "1" },
     });
     const browser = await launcher.launch({});
     try {
       assert.ok(fake.args()?.includes("--no-sandbox"), "明示したのに --no-sandbox が入っていない");
       assert.equal(browser.sandbox, "disabled");
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("env も allowNoSandboxEnv も渡さなければ実行環境の process.env を読む（本番の経路）", async () => {
+    const fake = spawnFake("normal");
+    const launcher = createChromiumLauncher({
+      executablePath: process.execPath,
+      spawn: fake.spawn,
+    });
+    const expectNoSandbox = process.env["BANTO_BROWSER_ALLOW_NO_SANDBOX"] === "1";
+    const browser = await launcher.launch({});
+    try {
+      assert.equal(
+        fake.args()?.includes("--no-sandbox"),
+        expectNoSandbox,
+        "process.env を読んでいれば実行環境の値と一致するはず"
+      );
+      assert.equal(browser.sandbox, expectNoSandbox ? "disabled" : "enabled");
     } finally {
       await browser.close();
     }

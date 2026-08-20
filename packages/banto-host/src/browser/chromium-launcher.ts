@@ -477,6 +477,8 @@ export interface ChromiumLauncherOptions {
   closeGraceMs?: number;
   /** `BANTO_BROWSER_ALLOW_NO_SANDBOX` の値。既定は `process.env.BANTO_BROWSER_ALLOW_NO_SANDBOX`。試験用。 */
   allowNoSandboxEnv?: string | undefined;
+  /** `allowNoSandboxEnv` 省略時に読む env。既定は `process.env`。試験用。 */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -503,7 +505,7 @@ export function createChromiumLauncher(options: ChromiumLauncherOptions = {}): B
       // 2026-08-16 の判定：既定はサンドボックス有効。BANTO_BROWSER_ALLOW_NO_SANDBOX=1 が
       // 明示的に立っているときだけ --no-sandbox を許す（黙って危ない側に倒れない）
       const allowNoSandboxEnv =
-        options.allowNoSandboxEnv ?? process.env["BANTO_BROWSER_ALLOW_NO_SANDBOX"];
+        options.allowNoSandboxEnv ?? (options.env ?? process.env)["BANTO_BROWSER_ALLOW_NO_SANDBOX"];
       const sandboxDisabled = allowNoSandboxEnv === "1";
       if (sandboxDisabled) {
         console.warn(
