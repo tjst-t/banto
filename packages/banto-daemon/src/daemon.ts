@@ -2346,13 +2346,17 @@ export class Daemon {
    * 判定材料は帳簿と Worker Pool の両方から取る（D3：真実は一箇所——生死は Worker Pool、
    * 試行回数は帳簿）。生きた監査人が居れば何もしない。居なければ、いまの回の試行回数
    * （`countAuditAttempts` と同じ数え方）を上限と比べ、下回っていれば起こし直し、
-   * 上限に達していれば `recordAuditPassByDefault` で通す——理由は既存の3つ
-   * （`audit_reported_without_verdict:` / `audit_session_exited_without_verdict` /
-   * `audit session spawn failed`）と混ざらない `audit_never_started:` 接頭辞で残す
-   * （ADR-0027 決定143：内訳を読み分けられること）。
+   * 上限に達していれば `recordAuditPassByDefault` で通す——理由は
+   * `auditRetryLimitReason`（task-0318）が帳簿の事実から決める。exited ハンドラ
+   * （`applyWorkerEvent` の role=audit 落ち）も同じ上限到達で同じメソッドを呼ぶので、
+   * どちらが先に着火しても理由は変わらない（以前は着火した経路で
+   * `audit_never_started:` / `audit_session_exited_without_verdict` に分かれ、
+   * 実行のたびに変わっていた）。
    *
    * `spawnAuditSession` 自体が in-flight で重複排除するので（task-0294）、他の経路
    * （落ちたイベントの再試行など）と同時に「居ない」と見ても二重には起こさない。
+   * `recordAuditPassByDefault` 自体も `status !== "auditing"` なら何もしないので
+   * （I2）、先に着火した側が状態を進めたあとの遅れた到達は無害（task-0318 a2）。
    */
   private async runAuditWatchdog(): Promise<void> {
     if (this.config.disableAuditSpawn) return; // 既存の audit-spawn 側の副作用と同じ扱い
@@ -2399,8 +2403,7 @@ export class Daemon {
         this.recordAuditPassByDefault(
           task.projectTag,
           task.id,
-          `audit_never_started: 巡回で ${attempts} 回起こし直しましたが、監査人が一度も` +
-            "生きて見つかりませんでした（監査人が起きたことをこの帳簿は一度も確かめられていません）"
+          this.auditRetryLimitReason(task.projectTag, task.id, attempts)
         );
       }
     } finally {
@@ -3596,7 +3599,7 @@ export class Daemon {
       this.recordAuditPassByDefault(
         projectTag,
         taskId,
-        `audit_session_exited_without_verdict (${attempts}回試行)`
+        this.auditRetryLimitReason(projectTag, taskId, attempts)
       );
       return;
     }
@@ -4580,6 +4583,59 @@ export class Daemon {
       if (ev?.type === "state_transitioned" && ev.to === "auditing") break;
     }
     return attempts;
+  }
+
+  /**
+   * この回（最後に auditing へ入ってから）に起こした監査人のうち、誰か1人でも
+   * 終了（`agent_exited`）がこの帳簿に記録されているか。
+   *
+   * task-0318: 監査の再試行上限に達したときに `recordAuditPassByDefault` を呼ぶ経路が
+   * `runAuditWatchdog`（巡回）と exited ハンドラの2本あり、どちらが先に着火するかは
+   * 実行のたびに変わる競合状態だった。理由文字列を「どちらの経路から来たか」ではなく
+   * 「実際に何が起きたか」から決めるため（PO 裁定 (b)）、`agent_spawned` と
+   * `agent_exited` の対応をここで読む——`audit_started` の起票（≒spawn を試みた）
+   * だけでは「起こしたが動いて終わったことは見届けていない」（audit-advisory-layer
+   * a2・Worker Pool ごと入れ替えて生死を確かめられなくした場合）と区別できない。
+   */
+  private auditExitObservedThisCycle(projectTag: string, taskId: string): boolean {
+    const events = this.index.getTaskHistory(taskId, projectTag);
+    let cycleStart = 0;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i];
+      if (ev?.type === "state_transitioned" && ev.to === "auditing") {
+        cycleStart = i;
+        break;
+      }
+    }
+    const spawnedIds = new Set<string>();
+    const exitedIds = new Set<string>();
+    for (let i = cycleStart; i < events.length; i++) {
+      const ev = events[i];
+      if (ev?.type === "agent_spawned" && ev.sessionId) spawnedIds.add(ev.sessionId);
+      if (ev?.type === "agent_exited" && ev.sessionId) exitedIds.add(ev.sessionId);
+    }
+    for (const id of exitedIds) {
+      if (spawnedIds.has(id)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 監査の再試行上限に達して既定通過させるときの理由を、着火した経路ではなく
+   * `auditExitObservedThisCycle` の事実だけから決める（task-0318）。
+   * `runAuditWatchdog` と exited ハンドラのどちらから呼んでも同じ文字列になる。
+   * 既存の他3つの接頭辞（`audit_reported_without_verdict:` /
+   * `audit session spawn failed` / このメソッドが返す2つ自身）とは混ざらない
+   * （ADR-0027 決定143）。文言そのものは既存2本のものをそのまま使う。
+   */
+  private auditRetryLimitReason(projectTag: string, taskId: string, attempts: number): string {
+    if (this.auditExitObservedThisCycle(projectTag, taskId)) {
+      return `audit_session_exited_without_verdict (${attempts}回試行)`;
+    }
+    return (
+      `audit_never_started: ${attempts} 回起こし直しましたが、監査人が一度も` +
+      "生きて見つかりませんでした（監査人が起きたことをこの帳簿は一度も確かめられていません）"
+    );
   }
 
   private countConsecutiveAuditFails(projectTag: string, taskId: string): number {

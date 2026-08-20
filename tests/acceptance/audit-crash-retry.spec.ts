@@ -268,6 +268,45 @@ describe("[task-0070] 監査人が判定を出さずに落ちたら、もう一�
     assert.equal(auditStartedCount(taskId), 2, "上限を超えて起こしている");
   });
 
+  /**
+   * task-0318: `runAuditWatchdog`（巡回）と exited ハンドラ（`worker_exited` 処理）の
+   * どちらが先に「上限まで落ちた」と判定するかは、Worker Pool への2本の独立した
+   * HTTP 往復（イベント取得・生死照会）の実時間の前後関係で決まる——以前はその
+   * 競争の勝敗によって理由文字列（`audit_never_started` / `audit_session_exited_without_verdict`）
+   * が変わっていた（task-0307 の検証で1本だけ落ちた実例）。
+   *
+   * 理由はいまや着火順ではなく帳簿の事実（`auditExitObservedThisCycle`）から決まるので、
+   * 何度繰り返しても同じ理由になるはず。1回だけでは競り勝った側にしか当たらないことが
+   * あるため、繰り返して押さえる（期待をゆるめて `audit_never_started` も許容する、
+   * という直し方はしていないことの裏付け）。ついでに、同じタスクへ二重に記録されない
+   * こと（a2）も毎回確かめる。
+   */
+  it("上限到達の理由は、何度繰り返しても決定的である（task-0318：着火順で変わらない）", async () => {
+    for (let i = 0; i < 5; i++) {
+      const taskId = `task-crash-deterministic-${i}`;
+      await taskInAuditing(taskId);
+
+      driver.exit(latestAuditSession(taskId), null, "SIGKILL");
+      await until(() => auditStartedCount(taskId) === 2);
+      driver.exit(latestAuditSession(taskId), null, "SIGKILL");
+      await until(() => daemon.getTask(proj, taskId)?.status !== "auditing");
+
+      const verdicts = daemon
+        .getTaskEvents(proj, taskId)
+        .filter((e) => e.type === "audit_verdict") as Array<{ defaultReason?: string }>;
+      assert.equal(
+        verdicts.length,
+        1,
+        `${i}回目の実行で recordAuditPassByDefault が同じタスクへ二重に記録された（a2）`
+      );
+      assert.equal(
+        verdicts[0]?.defaultReason,
+        "audit_session_exited_without_verdict (2回試行)",
+        `${i}回目の実行で理由が変わった（着火順に依存している証拠）`
+      );
+    }
+  });
+
   it("やり直し後の再監査では、試行回数が数え直される", async () => {
     const taskId = "task-crash-3";
     await taskInAuditing(taskId);
