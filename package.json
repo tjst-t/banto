@@ -1,0 +1,21 @@
+{
+  "name": "banto",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "tsc --build packages/core packages/runner packages/observer apps/host",
+    "typecheck": "tsc --build packages/core packages/runner packages/observer apps/host --force",
+    "test": "vitest run",
+    "clean": "tsc --build packages/core packages/runner packages/observer apps/host --clean"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
