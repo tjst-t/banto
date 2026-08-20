@@ -12,6 +12,10 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+
+import { passes } from './gate.js';
 
 import { EventLog, fold, pendingQueue, type NewEvent } from '@banto/core';
 import { AgentSdkRunner, allowedToolNames, type McpServerSpec } from '@banto/runner';
@@ -19,11 +23,55 @@ import { AgentSdkRunner, allowedToolNames, type McpServerSpec } from '@banto/run
 export interface ServerOptions {
   readonly dataDir: string;
   readonly port: number;
+  /**
+   * bind するアドレス。既定は 127.0.0.1。
+   *
+   * **外に出すときは前段（Caddy 等）に認証を置き、ここは localhost のままにする。**
+   * この口は認証を持たず、叩けば Claude の枠を使い、fs のツールでファイルを触れる。
+   * 全インターフェースに出すと、前段の認証を迂回されて直接叩ける。
+   */
+  readonly host?: string;
   /** そのスレッドに紐づけるモジュール。Phase 1.5 では起動時に固定。 */
   readonly modules: readonly McpServerSpec[];
   /** モジュール id → ツール名。許可の一覧を組み立てるのに使う（要件 D4）。 */
   readonly toolsByModule: ReadonlyMap<string, readonly string[]>;
   readonly model: string;
+  /**
+   * 合言葉。**指定すると門が立つ**（gate.ts）。
+   * 前段に認証があるなら省いてよいが、外へ出すのに省いてはいけない。
+   */
+  readonly secret?: string;
+  /** 画面の静的ファイルの置き場。省くと /api だけを出す。 */
+  readonly webRoot?: string;
+}
+
+const CONTENT_TYPES: ReadonlyMap<string, string> = new Map([
+  ['.html', 'text/html; charset=utf-8'],
+  ['.js', 'text/javascript; charset=utf-8'],
+  ['.css', 'text/css; charset=utf-8'],
+  ['.svg', 'image/svg+xml'],
+  ['.json', 'application/json; charset=utf-8'],
+  ['.png', 'image/png'],
+  ['.webmanifest', 'application/manifest+json'],
+]);
+
+/**
+ * 画面の静的ファイルを返す。見つからなければ index.html
+ * ——単一ページなので、経路の解決はブラウザ側でやる。
+ *
+ * **root の外へは出さない。** fs モジュールと同じ理由で、正規化してから確かめる。
+ */
+async function serveStatic(webRoot: string, pathname: string, res: ServerResponse): Promise<void> {
+  const root = path.resolve(webRoot);
+  const wanted = path.resolve(root, `.${pathname === '/' ? '/index.html' : pathname}`);
+  const inside = !path.relative(root, wanted).startsWith('..');
+  const target = inside ? wanted : path.join(root, 'index.html');
+
+  const body = await readFile(target).catch(() => readFile(path.join(root, 'index.html')));
+  res.writeHead(200, {
+    'content-type': CONTENT_TYPES.get(path.extname(target)) ?? 'application/octet-stream',
+  });
+  res.end(body);
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -74,6 +122,9 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
   });
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // 門は何よりも先。ここを通らないものは /api にも静的にも触れない。
+    if (options.secret !== undefined && !passes(req, res, options.secret)) return;
+
     const url = new URL(req.url ?? '/', 'http://localhost');
 
     if (req.method === 'GET' && url.pathname === '/api/state') {
@@ -154,9 +205,14 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
       return;
     }
 
+    if (req.method === 'GET' && options.webRoot !== undefined && !url.pathname.startsWith('/api/')) {
+      await serveStatic(options.webRoot, url.pathname, res);
+      return;
+    }
+
     json(res, 404, { error: `見つからない: ${req.method ?? '?'} ${url.pathname}` });
   }
 
-  server.listen(options.port);
+  server.listen(options.port, options.host ?? '127.0.0.1');
   return server;
 }

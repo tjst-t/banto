@@ -188,8 +188,11 @@ async function main(): Promise<void> {
         modules: [{ name: fsModule.manifest.id, kind: 'in-process', server: fsModule.createServer() }],
         toolsByModule: new Map([['fs', ['read', 'write', 'list']]]),
         model: flag(argv, 'model', 'claude-haiku-4-5'),
+        host: flag(argv, 'host', '127.0.0.1'),
+        ...(flag(argv, 'secret', '') === '' ? {} : { secret: flag(argv, 'secret', '') }),
+        ...(flag(argv, 'web', '') === '' ? {} : { webRoot: flag(argv, 'web', '') }),
       });
-      process.stdout.write(`http://localhost:${port}\n`);
+      process.stdout.write(`http://${flag(argv, 'host', '127.0.0.1')}:${port}\n`);
       break;
     }
 
