@@ -51,7 +51,12 @@ export function App() {
   };
 
   const handleSend = (text: string) => {
-    if (!selectedThreadId) return;
+    if (!selectedThreadId) {
+      // 黙って捨てない（教訓13）。捨てると「送ったのに何も起きない」になり、
+      // 何が悪いのか本人にも分からなくなる。
+      setCreateError('会話が選ばれていません。「新しい会話」を押してから送ってください。');
+      return;
+    }
     void send(selectedThreadId, text, () => void refetch());
   };
 

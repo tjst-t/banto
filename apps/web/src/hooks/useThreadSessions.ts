@@ -3,6 +3,22 @@ import { useCallback, useState } from 'react';
 import { streamPrompt } from '../lib/api';
 import type { StreamEvent } from '../lib/types';
 
+/**
+ * 画面の中でだけ使う一意な id。
+ *
+ * **`crypto.randomUUID` を直接呼ばない。** これは secure context（HTTPS か localhost）
+ * でしか存在せず、素の HTTP でドメインを開くと `undefined` になって落ちる。
+ * 開発は localhost（secure context）なので、そこでは絶対に露見しない
+ * ——実際に露見したのは本物のドメインで開いたときだった（教訓1）。
+ *
+ * ここで作る id は表示の並びを保つためだけのもので、推測されて困るものではない。
+ */
+function localId(): string {
+  const c: Crypto | undefined = globalThis.crypto;
+  if (typeof c?.randomUUID === 'function') return c.randomUUID();
+  return `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export type TimelineItem =
   | { readonly kind: 'user'; readonly id: string; readonly text: string; readonly at: string }
   | { readonly kind: 'stream'; readonly id: string; readonly event: StreamEvent };
@@ -33,7 +49,7 @@ export function useThreadSessions() {
   const send = useCallback(async (threadId: string, text: string, onSettled?: () => void) => {
     const userItem: TimelineItem = {
       kind: 'user',
-      id: crypto.randomUUID(),
+      id: localId(),
       text,
       at: new Date().toISOString(),
     };
@@ -49,7 +65,7 @@ export function useThreadSessions() {
       for await (const event of streamPrompt(threadId, text)) {
         setSessions((prev) => {
           const current = prev[threadId] ?? EMPTY_SESSION;
-          const item: TimelineItem = { kind: 'stream', id: crypto.randomUUID(), event };
+          const item: TimelineItem = { kind: 'stream', id: localId(), event };
           return { ...prev, [threadId]: { ...current, items: [...current.items, item] } };
         });
       }
