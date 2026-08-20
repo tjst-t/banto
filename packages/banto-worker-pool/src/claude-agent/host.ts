@@ -42,6 +42,7 @@ import { createClaudeToolOffload } from "./tool-offload.js";
 import { createClaudeWorkKeep } from "./work-keep.js";
 import { buildHostOptions } from "./options.js";
 import { SessionTranscript } from "./session-log.js";
+import { ContextWatch } from "./context-watch.js";
 
 // ── 起動時の指定 ────────────────────────────────────────────────────────────
 
@@ -221,6 +222,13 @@ async function main(): Promise<void> {
   /** このターンで呼ばれた Tool（安全弁の判定）と、最後の発話（安全弁の中身）。 */
   let calledTools = new Set<string>();
   let lastAssistantText = "";
+
+  /**
+   * 文脈が伸びたことを知らせる係。**セッションのファイル名で呼ぶ**——
+   * `banto-task-0307-….jsonl` のようにタスクが読めるので、どの仕事が伸びたかを
+   * journal から数え直せる（可視化の目的そのもの）。
+   */
+  const contextWatch = new ContextWatch(path.basename(config.sessionFile));
 
   const mcpServers = report
     ? {
@@ -434,6 +442,7 @@ async function main(): Promise<void> {
     appendLines(transcript.fromSdkMessage(message as Record<string, unknown>));
 
     if (message.type === "assistant") {
+      contextWatch.observe((message.message as { usage?: unknown }).usage);
       const blocks = Array.isArray(message.message.content) ? message.message.content : [];
       for (const block of blocks) {
         if (block.type === "tool_use") calledTools.add(block.name);
