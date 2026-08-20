@@ -26,7 +26,8 @@ describe('observe', () => {
   });
 
   it('単調増加なら発火 0 で、不在の警報が立つ', () => {
-    // 実測で起きていた形：1,210 ターン 33K→913K、一度も下がらない。
+    // 実測で起きていた形：長い会話 38 本中 35 本が、最大 60 万トークンを超えても
+    // 一度も下がらなかった。
     const result = observe(series('t1', [10, 20, 30, 40, 50, 60]), options);
     expect(result.totals.compactionFirings).toBe(0);
     expect(result.totals.decreases).toBe(0);

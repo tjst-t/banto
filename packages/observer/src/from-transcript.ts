@@ -28,12 +28,28 @@ export interface TranscriptScanResult {
   /**
    * type:"assistant" の**行数**（重複を落とす前）。
    *
-   * `turns.length` と必ず併記する。ADR-0001 に載っている「88,711 ターン」は
-   * この行数のほうなので、片方だけ出すと過去の計測と突き合わせられなくなる。
+   * `turns.length` と必ず併記する。ADR-0001 の前の版が「88,711 ターン」と書いていたのは
+   * この行数のほうなので、片方だけ出すと過去の計測と突き合わせられなくなる
+   * （経緯は docs/notes/2026-08-20-turn-count-discrepancy.md）。
    */
   readonly rawAssistantLines: number;
   /** 同じ message.id の2通目以降として落とした行数。 */
   readonly duplicateLines: number;
+  /** 期間の指定で範囲外として除いたファイル数。 */
+  readonly filesOutOfRange: number;
+}
+
+/**
+ * 期間で絞る。**セッションの開始時刻**（ファイル内で最初に現れる timestamp）で判定する。
+ *
+ * 過去の計測と突き合わせるときに要る。母集団が変わっていることに気づかないまま
+ * 数字だけ比べると、実装の変化とコーパスの増加を取り違える。
+ */
+export interface ScanOptions {
+  /** これ以降に始まったセッションだけ。ISO 8601 の先頭一致で比較（例 '2026-08-20'）。 */
+  readonly since?: string;
+  /** これより前に始まったセッションだけ。境界は含まない。 */
+  readonly until?: string;
 }
 
 const DEFAULT_ROOT = path.join(os.homedir(), '.claude', 'projects');
@@ -107,6 +123,7 @@ async function scanFile(file: string): Promise<{
   malformedLines: number;
   rawAssistantLines: number;
   duplicateLines: number;
+  firstTimestamp: string | undefined;
 }> {
   const seriesId = path.basename(file, '.jsonl');
   const text = await readFile(file, 'utf8');
@@ -118,6 +135,7 @@ async function scanFile(file: string): Promise<{
   let malformedLines = 0;
   let rawAssistantLines = 0;
   let duplicateLines = 0;
+  let firstTimestamp: string | undefined;
   const seenMessageIds = new Set<string>();
 
   for (const raw of lines) {
@@ -129,6 +147,11 @@ async function scanFile(file: string): Promise<{
     } catch {
       malformedLines += 1;
       continue;
+    }
+
+    if (firstTimestamp === undefined && typeof parsed === 'object' && parsed !== null) {
+      const t = (parsed as { timestamp?: unknown }).timestamp;
+      if (typeof t === 'string') firstTimestamp = t;
     }
 
     if (!isAssistantLine(parsed)) continue;
@@ -154,7 +177,15 @@ async function scanFile(file: string): Promise<{
     turns.push({ seriesId, index: turns.length, usage });
   }
 
-  return { turns, skippedNoUsage, sidechainTurns, malformedLines, rawAssistantLines, duplicateLines };
+  return {
+    turns,
+    skippedNoUsage,
+    sidechainTurns,
+    malformedLines,
+    rawAssistantLines,
+    duplicateLines,
+    firstTimestamp,
+  };
 }
 
 /** root 配下を再帰的に走査して *.jsonl を探す。 */
@@ -181,7 +212,10 @@ async function findJsonlFiles(root: string): Promise<string[]> {
  * root（既定 ~/.claude/projects）配下の全 *.jsonl を読み、observe() にそのまま渡せる
  * Turn[] にする。読み取り専用——書き込みは一切しない。
  */
-export async function scanTranscripts(root: string = DEFAULT_ROOT): Promise<TranscriptScanResult> {
+export async function scanTranscripts(
+  root: string = DEFAULT_ROOT,
+  options: ScanOptions = {},
+): Promise<TranscriptScanResult> {
   const files = await findJsonlFiles(root);
 
   const turns: Turn[] = [];
@@ -190,10 +224,26 @@ export async function scanTranscripts(root: string = DEFAULT_ROOT): Promise<Tran
   let malformedLines = 0;
   let rawAssistantLines = 0;
   let duplicateLines = 0;
+  let filesOutOfRange = 0;
   const sessionsWithTurns = new Set<string>();
 
   for (const file of files) {
     const result = await scanFile(file);
+
+    // 開始時刻が分からないファイルは、期間を指定しているときだけ除く。
+    // 「分からない」と「範囲外」を混ぜないため、除いた数は必ず数える。
+    if (options.since !== undefined || options.until !== undefined) {
+      const at = result.firstTimestamp;
+      const outside =
+        at === undefined ||
+        (options.since !== undefined && at < options.since) ||
+        (options.until !== undefined && at >= options.until);
+      if (outside) {
+        filesOutOfRange += 1;
+        continue;
+      }
+    }
+
     turns.push(...result.turns);
     skippedNoUsage += result.skippedNoUsage;
     sidechainTurns += result.sidechainTurns;
@@ -215,5 +265,6 @@ export async function scanTranscripts(root: string = DEFAULT_ROOT): Promise<Tran
     sessions: sessionsWithTurns.size,
     rawAssistantLines,
     duplicateLines,
+    filesOutOfRange,
   };
 }

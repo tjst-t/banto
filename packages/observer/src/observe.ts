@@ -22,7 +22,7 @@ export interface Turn {
 export interface ObserveOptions {
   /**
    * 量の警報：1ターンの文脈がこれを超えたら立てる。
-   * 実測（2026-08-20）では 200k 超のターンが 25.4% だった。
+   * 実測（2026-08-20 測り直し）では 200k 超のターンが 30.1% だった。
    */
   readonly contextLimit: number;
   /**

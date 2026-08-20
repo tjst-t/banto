@@ -4,6 +4,8 @@
  *
  * 2つのモード：
  *  --transcripts [rootDir]  Claude Code のトランスクリプトを読んで畳む（検算用）
+ *  --since / --until        セッションの開始時刻で母集団を絞る。過去の計測と
+ *                           突き合わせるとき、コーパスの増加と実装の変化を取り違えないため
  *  --log <dataDir>          banto 自身のイベントログを読んで畳む
  *
  * ここは「見るだけ」。畳み込みは observe.ts、読み込みは from-transcript.ts /
@@ -12,18 +14,22 @@
 
 import { observe, percentile, DEFAULT_OPTIONS, type Observation } from './observe.js';
 import { readLogSource } from './from-log.js';
-import { scanTranscripts, type TranscriptScanResult } from './from-transcript.js';
+import { scanTranscripts, type ScanOptions, type TranscriptScanResult } from './from-transcript.js';
 
 function parseArgs(argv: readonly string[]): {
   mode: 'transcripts' | 'log' | null;
   rootDir: string | undefined;
   dataDir: string | undefined;
   json: boolean;
+  since: string | undefined;
+  until: string | undefined;
 } {
   let mode: 'transcripts' | 'log' | null = null;
   let rootDir: string | undefined;
   let dataDir: string | undefined;
   let json = false;
+  let since: string | undefined;
+  let until: string | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -44,10 +50,18 @@ function parseArgs(argv: readonly string[]): {
       i += 1;
     } else if (arg === '--json') {
       json = true;
+    } else if (arg === '--since' || arg === '--until') {
+      const next = argv[i + 1];
+      if (next === undefined || next.startsWith('--')) {
+        throw new Error(`${arg} には日付が要る（例 ${arg} 2026-08-20）`);
+      }
+      if (arg === '--since') since = next;
+      else until = next;
+      i += 1;
     }
   }
 
-  return { mode, rootDir, dataDir, json };
+  return { mode, rootDir, dataDir, json, since, until };
 }
 
 function pct(n: number, total: number): string {
@@ -113,8 +127,12 @@ function renderReport(observation: Observation, title: string): string {
   return lines.join('\n');
 }
 
-async function runTranscripts(rootDir: string | undefined, json: boolean): Promise<void> {
-  const scan: TranscriptScanResult = await scanTranscripts(rootDir);
+async function runTranscripts(
+  rootDir: string | undefined,
+  json: boolean,
+  options: ScanOptions,
+): Promise<void> {
+  const scan: TranscriptScanResult = await scanTranscripts(rootDir, options);
   const observation = observe(scan.turns, DEFAULT_OPTIONS);
 
   if (json) {
@@ -125,8 +143,9 @@ async function runTranscripts(rootDir: string | undefined, json: boolean): Promi
   process.stdout.write(`${renderReport(observation, 'transcripts')}\n`);
   process.stdout.write('\n-- scan (第三者ファイル: 壊れていても投げずに数える) --\n');
   process.stdout.write(`files                          ${fmt(scan.files)}\n`);
-  // 生の行数を必ず併記する。ADR-0001 の「88,711 ターン」はこちらの数なので、
+  // 生の行数を必ず併記する。ADR-0001 の前の版の「88,711 ターン」はこちらの数なので、
   // 畳んだ数だけ出すと過去の計測と突き合わせられなくなる。
+  process.stdout.write(`filesOutOfRange (期間で除外)   ${fmt(scan.filesOutOfRange)}\n`);
   process.stdout.write(`rawAssistantLines              ${fmt(scan.rawAssistantLines)}\n`);
   process.stdout.write(`duplicateLines (同 message.id) ${fmt(scan.duplicateLines)}\n`);
   process.stdout.write(`sessions (turns が1件以上)     ${fmt(scan.sessions)}\n`);
@@ -157,10 +176,13 @@ async function runLog(dataDir: string, json: boolean): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const { mode, rootDir, dataDir, json } = parseArgs(process.argv.slice(2));
+  const { mode, rootDir, dataDir, json, since, until } = parseArgs(process.argv.slice(2));
 
   if (mode === 'transcripts') {
-    await runTranscripts(rootDir, json);
+    await runTranscripts(rootDir, json, {
+      ...(since === undefined ? {} : { since }),
+      ...(until === undefined ? {} : { until }),
+    });
     return;
   }
   if (mode === 'log') {
@@ -170,7 +192,8 @@ async function main(): Promise<void> {
   }
 
   process.stderr.write(
-    'usage: cli.js --transcripts [rootDir] [--json] | --log <dataDir> [--json]\n',
+    'usage: cli.js --transcripts [rootDir] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]\n' +
+      '       cli.js --log <dataDir> [--json]\n',
   );
   process.exitCode = 1;
 }
