@@ -1,0 +1,13 @@
+{
+  "name": "@banto/host",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@banto/core": "*",
+    "@banto/runner": "*",
+    "@banto/observer": "*"
+  }
+}
