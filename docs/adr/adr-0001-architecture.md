@@ -359,9 +359,15 @@ Phase 1 の終わりまでに決定する。
 
 - 検証の題は1点：**`self_hosted` 環境で Outcomes（rubric で採点→修正→再採点）が
   決定10 の受け入れを置き換えられるか**
-- Banto はローカルの git リポジトリで作業するので `self_hosted` 一択。
-  そこでは Memory Stores と環境変数資格情報が**未対応**であり、Environments の価値も薄い。
-  残るのは Outcomes / threads / Deployments / Skills
+- Banto はローカルの git リポジトリで作業するので `self_hosted` 一択。この判断は変わらない
+  （下の下調べのあとも）。**ただし前提は2026-08-20 に当たり直した**
+  （`docs/notes/2026-08-20-managed-agents-self-hosted.md`）：
+  - Memory Stores は**対応済みになった**（ADR の「未対応」は古い）。ただし banto は
+    記憶ストアを作らないと決めている（要件 R7）ので、使わない
+  - 環境変数資格情報は**いまも未対応**
+  - **`file` と `github_repository` の resource は 400 で拒否される**（ADR に書いていなかった）。
+    banto の worker はローカルの作業ツリーの上で動くので、mount してもらう必要が無い
+  - 残るのは Outcomes / threads / Deployments / Skills
 - 線が引けるなら **会話＝Agent SDK ／ Factory＝Managed Agents**。
   ロックインの単位が分かれ、低レイテンシの会話と投げっぱなしの自律作業に、それぞれ合う
 
