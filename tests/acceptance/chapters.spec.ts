@@ -181,6 +181,42 @@ describe("[提案§3.2] 畳むのはターン境界で、閾値に達したと�
     assert.equal(k.shouldClose(), false);
   });
 
+  /**
+   * 割合だけで測ると、窓の広いモデルへ差し替えたとき畳む位置がそのまま伸びる。
+   * `opus[1m]` で窓が 1,000,000 になり、0.6 は **60万トークン**を意味していた——
+   * 実測ログに `tokens=478818 window=1000000 threshold=0.6 willClose=false` が並び、
+   * 畳まれない文脈が毎ターン丸ごと読み直されていた（cache read が費用の 62%）。
+   */
+  it("窓が広いモデルでも、畳む位置は絶対値で決まる（上限を掛ける）", () => {
+    const messages = [userMsg("A"), assistantMsg("B"), userMsg("C"), assistantMsg("D", 130_000)];
+    const k = keeper(fakeSession(messages, SessionManager.inMemory()), {
+      contextWindow: 1_000_000,
+    });
+
+    // 上限が無ければ 1,000,000 × 0.6 = 600,000 なので 13万では畳まれない
+    assert.equal(k.shouldClose(), true, "20万 × 0.6 = 12万 を超えたら畳むはず");
+    assert.equal(k.evaluation()?.window, 200_000, "判定に使った窓は上限側であるべき");
+  });
+
+  it("上限より狭い窓は、そのまま割合で測る（上限は狭い側を広げない）", () => {
+    const messages = [userMsg("A"), assistantMsg("B"), userMsg("C"), assistantMsg("D", 700)];
+    const k = keeper(fakeSession(messages, SessionManager.inMemory()), { contextWindow: 1000 });
+
+    assert.equal(k.shouldClose(), true, "1000 × 0.6 = 600 を超えている");
+    assert.equal(k.evaluation()?.window, 1000, "狭い窓はそのまま使うべき");
+  });
+
+  it("上限は差し替えられる（BANTO_CHAPTER_WINDOW_CAP 相当）", () => {
+    const messages = [userMsg("A"), assistantMsg("B"), userMsg("C"), assistantMsg("D", 130_000)];
+    const k = keeper(fakeSession(messages, SessionManager.inMemory()), {
+      contextWindow: 1_000_000,
+      windowCap: 500_000,
+    });
+
+    assert.equal(k.shouldClose(), false, "500,000 × 0.6 = 300,000 には届かない");
+    assert.equal(k.evaluation()?.window, 500_000, "渡した上限が使われるべき");
+  });
+
   it("ターンの途中では畳まない——agent_end だけを見る", async () => {
     const messages = [userMsg("A"), assistantMsg("B"), userMsg("C"), assistantMsg("D", 700)];
     const session = fakeSession(messages, SessionManager.inMemory());

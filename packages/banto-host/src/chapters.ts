@@ -101,6 +101,21 @@ export interface ChapterKeeperOptions {
   /** モデルの文脈長。分からなければ章立ては働かない（閾値を判定できない）。 */
   contextWindow?: number;
   /**
+   * **判定に使う文脈長の上限**（既定 `DEFAULT_CHAPTER_WINDOW_CAP`）。
+   *
+   * `thresholdRatio` は割合なので、文脈窓が伸びると畳む位置もそのまま伸びる。
+   * `opus[1m]` を採ったとき窓が 1,000,000 になり、0.6 の閾値は **60万トークン**を
+   * 意味していた——実測ログに `tokens=478818 window=1000000 threshold=0.6
+   * willClose=false` が並んでいる。畳まれないまま伸びた文脈は、**毎ターン丸ごと
+   * 読み直される**（cache read）ので、費用は文脈長に比例して増える。実測では
+   * cache read だけで全体の 62%、番頭の文脈長は中央値12万・p90 40万だった。
+   *
+   * 割合を下げるのではなく上限を掛けるのは、**割合が窓ごとに意味を変えてしまう**から。
+   * 0.6 は 20万窓なら 12万で妥当だが、1M窓では 60万になる。上限を置けば、
+   * どのモデルへ差し替えても畳む位置が絶対値で決まる。
+   */
+  windowCap?: number;
+  /**
    * これ未満のやり取りでは閉じない。既定4（＝2往復）。
    * 始まったばかりの会話を畳んでも、引き継ぐものが無い。
    */
@@ -147,6 +162,13 @@ export interface ChapterKeeperOptions {
 
 /** 既定の閾値。提案§6 論点2。 */
 export const DEFAULT_CHAPTER_THRESHOLD_RATIO = 0.6;
+/**
+ * 既定の「判定に使う文脈長の上限」。理由は `ChapterKeeperOptions.windowCap`。
+ *
+ * 20万 × 0.6 ＝ **12万トークンで畳む**。0.6 が置かれた当時の窓（20万級）での
+ * 意味をそのまま保つ値であり、新しく選び直した数ではない。
+ */
+export const DEFAULT_CHAPTER_WINDOW_CAP = 200_000;
 /** 既定の下限。task-0056 a2「数往復未満の短い会話では引き継ぎを生成しない」。 */
 export const DEFAULT_MIN_MESSAGES = 4;
 /** 既定の「長く畳めていない」しきい値。a2・inc-0075 の理由は `ChapterKeeperOptions.staleAfterMs` 参照。 */
@@ -260,9 +282,16 @@ export class ChapterKeeper {
    *
    * 渡される既定はこの会話の pi モデルのもの——バックエンドを Claude に替えても
    * ローカルモデルの文脈長で測っていて、区切る位置がまるで違っていた。
+   *
+   * **上限を掛けてから返す**（`windowCap`）。ここで掛けるのは、この値を引くのが
+   * `shouldClose()` だけだから——判定・記録（`ChapterEvaluation.window`）・ログの
+   * どれもが同じ「実際に予算として使った窓」を指し、食い違わない（D3）。
    */
   private contextWindow(): number | undefined {
-    return this.harness.contextWindow?.() ?? this.options.contextWindow;
+    const window = this.harness.contextWindow?.() ?? this.options.contextWindow;
+    if (window === undefined) return undefined;
+    const cap = this.options.windowCap ?? DEFAULT_CHAPTER_WINDOW_CAP;
+    return Math.min(window, cap);
   }
 
   /**

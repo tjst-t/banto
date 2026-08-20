@@ -352,6 +352,17 @@ function chapterThresholdRatio(): number | undefined {
 }
 
 /**
+ * 章を閉じる判定に使う文脈長の**上限**。`BANTO_CHAPTER_WINDOW_CAP` で変えられる。
+ *
+ * 既定は `DEFAULT_CHAPTER_WINDOW_CAP`（20万）。閾値は割合なので、窓が伸びると
+ * 畳む位置もそのまま伸びる——`opus[1m]` で窓が 1M になり、0.6 が 60万を意味していた。
+ * 理由と実測は `ChapterKeeperOptions.windowCap` を参照。
+ */
+function chapterWindowCap(): number | undefined {
+  return positiveIntFromEnv("BANTO_CHAPTER_WINDOW_CAP");
+}
+
+/**
  * 環境変数から正の整数を読む。**読めない値は黙って既定に落とさない**（I2）。
  *
  * `chapterThresholdRatio` と同じ流儀——設定したつもりの値と違う値で動くのが一番困る。
@@ -1970,6 +1981,7 @@ async function serve(options: ServeOptions): Promise<void> {
       ...(chapterThresholdRatio() !== undefined
         ? { thresholdRatio: chapterThresholdRatio()! }
         : {}),
+      ...(chapterWindowCap() !== undefined ? { windowCap: chapterWindowCap()! } : {}),
       onChapterClosed: (record) => {
         /**
          * 畳んだことは隠さない——が、**番頭には言わない**（PO報告 2026-08-11）。
