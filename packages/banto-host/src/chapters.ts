@@ -68,12 +68,27 @@ export interface ChapterEvaluation {
   at: number;
   /** いまの文脈長（トークン）。測れなければ undefined。 */
   tokens: number | undefined;
-  /** 文脈窓。測れなければ undefined（＝章立てはそもそも働かない）。 */
+  /**
+   * 判定に使った文脈窓。harness も `options.contextWindow` も答えないときは
+   * `DEFAULT_CONTEXT_WINDOW_FALLBACK` に落ちる（task-0308）——「窓が分からない」を
+   * 「無制限に伸ばしてよい」にしないための保険。フォールバックしたかは
+   * `windowIsFallback` で分かる。
+   */
   window: number | undefined;
   /** 閾値（比率）。この仕事では変えない——見直すときの材料は下記 `checkStale` を参照。 */
   thresholdRatio: number;
   /** 畳むと判断したか。 */
   willClose: boolean;
+  /**
+   * `window` が harness/options の実測ではなく `DEFAULT_CONTEXT_WINDOW_FALLBACK`
+   * だったか（task-0308 a4）。true のときは保険の経路で判定している。
+   */
+  windowIsFallback: boolean;
+  /**
+   * `tokens` が harness の実測ではなく、書き起こしの字数からの概算
+   * （`ESTIMATED_CHARS_PER_TOKEN`）だったか（task-0308 a4）。
+   */
+  tokensAreEstimated: boolean;
 }
 
 export interface ChapterKeeperOptions {
@@ -98,7 +113,10 @@ export interface ChapterKeeperOptions {
    * （そこがコンパクションの失敗そのもの）。
    */
   thresholdRatio?: number;
-  /** モデルの文脈長。分からなければ章立ては働かない（閾値を判定できない）。 */
+  /**
+   * モデルの文脈長。分からなければ（harness も答えないとき）
+   * `DEFAULT_CONTEXT_WINDOW_FALLBACK` に落ちる（task-0308）。
+   */
   contextWindow?: number;
   /**
    * **判定に使う文脈長の上限**（既定 `DEFAULT_CHAPTER_WINDOW_CAP`）。
@@ -173,6 +191,27 @@ export const DEFAULT_CHAPTER_WINDOW_CAP = 200_000;
 export const DEFAULT_MIN_MESSAGES = 4;
 /** 既定の「長く畳めていない」しきい値。a2・inc-0075 の理由は `ChapterKeeperOptions.staleAfterMs` 参照。 */
 export const DEFAULT_STALE_AFTER_MS = 4 * 60 * 60 * 1000;
+/**
+ * 文脈窓が引けない（harness も `options.contextWindow` も答えない）ときの既定値
+ * （task-0308）。
+ *
+ * 根拠: `BantoHarness.contextWindow()` のドキュメント（banto-harness.ts）が例に挙げる
+ * Claude の実際の窓＝200,000トークン。**畳みすぎは畳まなすぎより悪い**——窓が分からない
+ * バックエンドのほうが小さいモデルということもあり得るが、それを見越して小さめの既定を
+ * 置くと、窓が分かっているのと同じ頻度で（時にはそれ以上に）畳まれ始める。分からないときは
+ * 大きめに倒し、実測が来る構成へ揃えるほうを優先する。
+ */
+export const DEFAULT_CONTEXT_WINDOW_FALLBACK = 200_000;
+/**
+ * トークン数の実測が無いときに、字数から概算するための換算率（字/トークン）
+ * （task-0308 a3）。
+ *
+ * 本番記録（threads/*.jsonl 218本・LLMリクエスト29,337回）の実測値。CJK比率28.6%、
+ * 日本語1.5字/トークン・英数4.0字/トークンの目安から算出した加重平均。**概算であって
+ * 実測ではない**——プロバイダの usage が取れるときは常にそちらを優先する
+ * （`ChapterKeeper.contextTokens()` 参照）。
+ */
+export const ESTIMATED_CHARS_PER_TOKEN = 2.71;
 
 export class ChapterKeeper {
   private readonly options: ChapterKeeperOptions;
@@ -286,6 +325,10 @@ export class ChapterKeeper {
    * **上限を掛けてから返す**（`windowCap`）。ここで掛けるのは、この値を引くのが
    * `shouldClose()` だけだから——判定・記録（`ChapterEvaluation.window`）・ログの
    * どれもが同じ「実際に予算として使った窓」を指し、食い違わない（D3）。
+   *
+   * harness も `options.contextWindow` も答えないときは `undefined` を返す
+   * （上限は掛けようがない）。その先の保険（`DEFAULT_CONTEXT_WINDOW_FALLBACK`）は
+   * `shouldClose()` 側の役目（task-0308）。
    */
   private contextWindow(): number | undefined {
     const window = this.harness.contextWindow?.() ?? this.options.contextWindow;
@@ -297,24 +340,64 @@ export class ChapterKeeper {
   /**
    * 閾値を超えているか。
    *
-   * **判定の分岐は変えていない**（a4）——早期 return の位置・条件は元のまま。
-   * 変えたのは、どの分岐で return するときも `evaluate()` を通して結果を憶える
-   * ようにしたところだけ（a1）。
+   * **窓もトークン数も実測できるときの判定は変えていない**（task-0308 a1）——
+   * 早期 return の位置・`tokens >= window * ratio` の式は元のまま。変えたのは、
+   * 窓・トークン数のどちらかが実測できないときに保険（既定の窓・字数からの概算）へ
+   * 落ちるようにしたところ（a2・a3）と、どの分岐で return するときも `evaluate()` を
+   * 通して結果を憶えるところ（a1・a6）。保険を使ったかどうかは `evaluate()` の記録
+   * （`windowIsFallback` / `tokensAreEstimated`）から後で辨別できる（a4）。
    */
   shouldClose(): boolean {
-    const window = this.contextWindow();
+    // 窓は contextWindow()（決定97・task-0104。上限込み・task-0312）を引く。
+    // それも undefined のとき（harness も options.contextWindow も答えない）だけ、
+    // 保険の既定（task-0308）へ落ちる。
+    const reportedWindow = this.contextWindow();
+    const windowIsFallback = reportedWindow === undefined;
+    const window = reportedWindow ?? DEFAULT_CONTEXT_WINDOW_FALLBACK;
     const ratio = this.options.thresholdRatio ?? DEFAULT_CHAPTER_THRESHOLD_RATIO;
     if (!window || window <= 0) {
-      return this.evaluate({ tokens: undefined, window, thresholdRatio: ratio, willClose: false });
+      return this.evaluate({
+        tokens: undefined,
+        window,
+        thresholdRatio: ratio,
+        willClose: false,
+        windowIsFallback,
+        tokensAreEstimated: false,
+      });
     }
+    // a5: 短い会話は、保険（窓・トークン数のフォールバック）を使っていても畳まない。
+    // ここで willClose:false を確定させるので、この先の見積もりの有無に依らない。
     if (this.harness.messageCount() < (this.options.minMessages ?? DEFAULT_MIN_MESSAGES)) {
-      return this.evaluate({ tokens: this.contextTokens(), window, thresholdRatio: ratio, willClose: false });
+      return this.evaluate({
+        tokens: this.contextTokens(),
+        window,
+        thresholdRatio: ratio,
+        willClose: false,
+        windowIsFallback,
+        tokensAreEstimated: false,
+      });
     }
-    const tokens = this.contextTokens();
-    if (tokens === undefined) {
-      return this.evaluate({ tokens: undefined, window, thresholdRatio: ratio, willClose: false });
-    }
-    return this.evaluate({ tokens, window, thresholdRatio: ratio, willClose: tokens >= window * ratio });
+    const measuredTokens = this.contextTokens();
+    const tokensAreEstimated = measuredTokens === undefined;
+    const tokens = measuredTokens ?? this.estimateTokensFromTranscript();
+    return this.evaluate({
+      tokens,
+      window,
+      thresholdRatio: ratio,
+      willClose: tokens >= window * ratio,
+      windowIsFallback,
+      tokensAreEstimated,
+    });
+  }
+
+  /**
+   * トークン数の実測が無いときの保険（task-0308 a3）。**概算であって実測ではない**
+   * ——`ESTIMATED_CHARS_PER_TOKEN` の由来はそこを参照。`transcript()` はツール出力を
+   * 含まない（決定28）ぶん実際の文脈量より低めに出るが、畳みすぎより畳まなすぎの
+   * ほうが安全という前提には沿う。
+   */
+  private estimateTokensFromTranscript(): number {
+    return Math.round(this.harness.transcript().length / ESTIMATED_CHARS_PER_TOKEN);
   }
 
   /**

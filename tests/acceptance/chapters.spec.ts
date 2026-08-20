@@ -21,6 +21,7 @@ import * as path from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
+import type { BantoHarness } from "@banto/core";
 import {
   ArtifactStore,
   ChapterKeeper,
@@ -175,7 +176,9 @@ describe("[提案§3.2] 畳むのはターン境界で、閾値に達したと�
     assert.equal(k.shouldClose(), false, "2件では畳まない（既定の下限は4件）");
   });
 
-  it("文脈長が分からなければ畳まない（閾値を判定できない）", () => {
+  it("[task-0308] 窓が分からなくても、既定の窓へ落ちるので過剰には畳まない", () => {
+    // 窓が無くても既定値（200,000）へ落ちて判定する（a2）——9999 トークン程度では
+    // 既定値でも届かず、畳みすぎにはならない
     const messages = [userMsg("A"), assistantMsg("B"), userMsg("C"), assistantMsg("D", 9999)];
     const k = keeper(fakeSession(messages, SessionManager.inMemory()), { contextWindow: undefined });
     assert.equal(k.shouldClose(), false);
@@ -269,15 +272,127 @@ describe("[a1/a3] shouldClose の判定は、畳まなかったときも外か�
     assert.equal(ev.willClose, true, "畳むと判断したかが読めない");
   });
 
-  it("文脈長が測れないときも、判定したこと自体は読める", () => {
+  it("[task-0308] 窓が引けなくても、既定の窓へ落ちて判定したこと自体は読める", () => {
+    // 窓の既定値（chapters.ts の DEFAULT_CONTEXT_WINDOW_FALLBACK = 200,000）×
+    // 閾値 0.6 = 120,000。9999 トークンでは届かない
     const messages = [userMsg("A"), assistantMsg("B"), userMsg("C"), assistantMsg("D", 9999)];
     const k = keeper(fakeSession(messages, SessionManager.inMemory()), { contextWindow: undefined });
 
     assert.equal(k.shouldClose(), false);
     const ev = k.evaluation();
     assert.ok(ev, "窓が無いだけで、判定自体はしているはず");
-    assert.equal(ev.window, undefined);
+    assert.equal(ev.window, 200_000, "既定の窓へ落ちているはず");
+    assert.equal(ev.windowIsFallback, true, "保険（既定の窓）を使ったことが読めない");
     assert.equal(ev.willClose, false);
+  });
+});
+
+// ── 窓・トークン数が引けないときの保険（task-0308） ──────────────────────────
+//
+// `keeper()`（ひいては PiHarness）は「トークン数を一切報告しない harness」を
+// 直接には作れない——usage の無い assistant メッセージがあっても、PiHarness 自身が
+// 内部で見積もり（pi の estimateTokens）に落ちるので、ChapterKeeper から見ると
+// 常にトークン数「実測」に見える。ここだけは `BantoHarness` を直に実装した最小の
+// stub を使い、ChapterKeeper.shouldClose() が受け取る契約だけで保険を確かめる。
+
+function stubHarness(opts: {
+  messageCount: number;
+  transcript: string;
+  contextTokens: number | undefined;
+  contextWindow?: number;
+}): BantoHarness {
+  const base: BantoHarness = {
+    backendId: "test-stub",
+    sessionId: "stub",
+    isStreaming: false,
+    async prompt() {},
+    async abort() {},
+    subscribe: () => () => {},
+    contextTokens: () => opts.contextTokens,
+    messageCount: () => opts.messageCount,
+    transcript: () => opts.transcript,
+    async startChapter() {},
+  };
+  if (opts.contextWindow === undefined) return base;
+  return { ...base, contextWindow: () => opts.contextWindow };
+}
+
+function stubKeeper(harness: BantoHarness): ChapterKeeper {
+  return new ChapterKeeper({ harness, store, threadId: "thread-1", summarize: goodSummarizer });
+}
+
+describe("[task-0308 a2/a3/a4/a5/a6] 窓・トークン数が引けないときの保険", () => {
+  it("[a2] 窓が引けなくても、十分に伸びた会話なら畳む（既定の窓へ落ちる）", () => {
+    // 既定の窓 200,000 × 0.6 = 120,000。実測トークンがそれを超える
+    const k = stubKeeper(stubHarness({ messageCount: 4, transcript: "x", contextTokens: 150_000 }));
+
+    assert.equal(k.shouldClose(), true, "窓が分からないまま無制限に伸ばしてはいけない");
+    const ev = k.evaluation();
+    assert.ok(ev);
+    assert.equal(ev.windowIsFallback, true, "既定の窓を使ったことが読めない");
+    assert.equal(ev.tokensAreEstimated, false, "トークン数は実測のはず");
+  });
+
+  it("[a3] トークン数が実測できなくても、字数からの概算で畳む", () => {
+    // 窓は実測できる（1000）ことにして、トークン数の概算だけを確かめる
+    const longTranscript = "あ".repeat(400_000); // 概算: 400,000 / 2.71 ≈ 147,600 トークン
+    const k = stubKeeper(
+      stubHarness({ messageCount: 4, transcript: longTranscript, contextTokens: undefined, contextWindow: 1000 }),
+    );
+
+    assert.equal(k.shouldClose(), true, "字数からの概算でも畳めるはず（1000 × 0.6 = 600 を大きく超える）");
+    const ev = k.evaluation();
+    assert.ok(ev);
+    assert.equal(ev.tokensAreEstimated, true, "概算で判定したことが読めない");
+    assert.equal(ev.windowIsFallback, false, "窓は実測できているはず");
+  });
+
+  it("[a4] 保険で判定したことが、正規の判定と区別できる", () => {
+    // 正規の判定（窓・トークン数とも実測）
+    const normal = stubKeeper(stubHarness({ messageCount: 4, transcript: "x", contextTokens: 700, contextWindow: 1000 }));
+    normal.shouldClose();
+    const normalEv = normal.evaluation();
+    assert.ok(normalEv);
+    assert.equal(normalEv.windowIsFallback, false);
+    assert.equal(normalEv.tokensAreEstimated, false);
+
+    // 保険（窓が既定へ落ちる）
+    const fallbackWindow = stubKeeper(stubHarness({ messageCount: 4, transcript: "x", contextTokens: 150_000 }));
+    fallbackWindow.shouldClose();
+    const fw = fallbackWindow.evaluation();
+    assert.ok(fw);
+    assert.equal(fw.windowIsFallback, true, "保険（既定の窓）を使ったことが正規の判定と見分けられない");
+
+    // 保険（トークン数が概算）
+    const estimatedTokens = stubKeeper(
+      stubHarness({ messageCount: 4, transcript: "あ".repeat(400_000), contextTokens: undefined, contextWindow: 1000 }),
+    );
+    estimatedTokens.shouldClose();
+    const et = estimatedTokens.evaluation();
+    assert.ok(et);
+    assert.equal(et.tokensAreEstimated, true, "保険（字数からの概算）を使ったことが正規の判定と見分けられない");
+  });
+
+  it("[a5] 短い会話は、保険の経路でも畳まれない", () => {
+    // 窓もトークン数も引けず、字数だけは長大——それでも minMessages 未満なら畳まない
+    const k = stubKeeper(
+      stubHarness({ messageCount: 2, transcript: "あ".repeat(400_000), contextTokens: undefined }),
+    );
+
+    assert.equal(k.shouldClose(), false, "2件では畳まない（既定の下限は4件）");
+    const ev = k.evaluation();
+    assert.ok(ev);
+    assert.equal(ev.willClose, false);
+  });
+
+  it("[a6] 保険の分岐でも evaluate() を通っている（判定の出口が1つ）", () => {
+    const k = stubKeeper(
+      stubHarness({ messageCount: 4, transcript: "あ".repeat(400_000), contextTokens: undefined }),
+    );
+
+    assert.equal(k.evaluation(), undefined, "呼ぶ前は判定していないはず");
+    k.shouldClose();
+    assert.ok(k.evaluation(), "保険の分岐を通ったのに evaluate() の記録が無い");
   });
 });
 
