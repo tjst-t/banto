@@ -141,3 +141,25 @@ export function describeProblem(problem: ManifestProblem): string {
       return `${problem.moduleId}: secrets を扱うと宣言したモジュールは in-process にできない（鍵が AI 実行と同居する）`;
   }
 }
+
+/**
+ * 作業範囲の根を、環境変数から**必須で**受け取る。
+ *
+ * `?? process.cwd()` と書いてはいけない。**既定値は「忘れられる」機構そのもの**で、
+ * これは `isolation` に既定値を置かない理由（C8c）とまったく同じである。
+ *
+ * 実際に事故が起きた（2026-08-20）：repo モジュールの root が cwd に落ち、
+ * 試験を走らせただけで banto 自身のリポジトリに対して `git push` が実行され、
+ * 本物のリモートに到達した。内容が同一だったので実害は無かったが、
+ * **黙って既定に落ちる**という一点だけで、そこまで行ける。
+ */
+export function requiredRoot(envName: string): string {
+  const value = process.env[envName];
+  if (value === undefined || value.trim() === '') {
+    throw new Error(
+      `${envName} が設定されていない。作業範囲の根に既定値は無い` +
+        `——cwd に落とすと、そのとき居たディレクトリに対して操作が走る`,
+    );
+  }
+  return value;
+}

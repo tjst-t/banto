@@ -8,6 +8,7 @@
   "dependencies": {
     "@banto/core": "*",
     "@banto/runner": "*",
-    "@banto/observer": "*"
+    "@banto/observer": "*",
+    "@banto/module-fs": "*"
   }
 }

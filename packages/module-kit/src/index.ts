@@ -2,6 +2,7 @@ export {
   checkManifest,
   describeProblem,
   NOT_IN_THE_CONTRACT,
+  requiredRoot,
   type BantoModule,
   type Dependency,
   type Handles,

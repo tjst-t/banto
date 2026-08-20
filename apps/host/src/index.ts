@@ -1,22 +1,23 @@
 /**
- * Banto Core（最小）。
+ * Banto Core。
  *
- * Phase 0 でここがやることは3つだけ：
  *  1. Channel / Thread を作る
  *  2. Runner を回して、出てきたイベントをログに積む
  *  3. 判断待ちを1本の列として出す
+ *  4. 画面のために口を開ける（`serve`。中身は server.ts）
  *
  * **観測はここに置かない。** 観測を機構の中に置くと、機構が止まったとき
  * 観測も一緒に止まる（ADR-0001 決定8）。観測は @banto/observer に、別プロセスとして居る。
- *
- * HTTP / WS はまだ無い。Phase 0 の完了条件に要らないものは作らない。
  */
 
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 
 import { EventLog, fold, pendingQueue, type NewEvent } from '@banto/core';
+import { fsModule } from '@banto/module-fs';
 import { AgentSdkRunner } from '@banto/runner';
+
+import { startServer } from './server.js';
 
 interface RunArgs {
   dataDir: string;
@@ -177,6 +178,21 @@ async function main(): Promise<void> {
       });
       break;
 
+    case 'serve': {
+      const port = Number(flag(argv, 'port', '4300'));
+      // Phase 1.5 では fs だけを繋ぐ。shell / repo は subprocess なので、
+      // 台帳から解決する経路を通してから足す（要件 C11）。
+      startServer({
+        dataDir,
+        port,
+        modules: [{ name: fsModule.manifest.id, kind: 'in-process', server: fsModule.createServer() }],
+        toolsByModule: new Map([['fs', ['read', 'write', 'list']]]),
+        model: flag(argv, 'model', 'claude-haiku-4-5'),
+      });
+      process.stdout.write(`http://localhost:${port}\n`);
+      break;
+    }
+
     case 'queue': {
       const out = flag(argv, 'html', '');
       if (out === '') await showQueue(dataDir);
@@ -188,6 +204,7 @@ async function main(): Promise<void> {
       process.stderr.write(
         'usage:\n' +
           '  host run   --data <dir> [--model m] [--prompt p] [--max-turns n] [--title t]\n' +
+          '  host serve  --data <dir> [--port n] [--model m]\n' +
           '  host queue --data <dir> [--html <file>]\n',
       );
       process.exitCode = 2;
