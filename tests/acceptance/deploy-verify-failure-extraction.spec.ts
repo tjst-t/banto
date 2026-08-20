@@ -208,4 +208,59 @@ describe("[task-0311] runDeployVerify の失敗抽出・生ログ保存", () => 
       fs.unlinkSync(script);
     }
   });
+
+  // task-0313: 2026-08-20 のデプロイ拒否の生ログ（13,566行）から採った実物の9行。
+  // ノイズ3行・`▶` 見出し行・`✔` 合格行3行は落ち、`✖` の行と AssertionError の行だけが
+  // 報告に残ることを固定する（`▶` の見出し誤検知と `✖`（U+2716）の目印漏れの穴塞ぎ）。
+  it("実物の生ログ9行から ▶ 見出しと ✔ 合格行を除き、✖ の行だけを本物の失敗として報告する", async () => {
+    const rawLogDir = makeTempDir("deploy-verify-heading-and-x-mark");
+    const rawLines = [
+      '[banto-daemon] 検証環境の写しを取り直せませんでした: Failed to reach module "environment-pool" at http://127.0.0.1:1/api/environment-pool/tools/env.list: Error: connect ECONNREFUSED 127.0.0.1:1',
+      '[banto-daemon] audit-advisory-proj/task-a1-1: 前倒しの検証に到達できませんでした（verify_env_unavailable:test（Failed to reach module "environment-pool"',
+      '[banto] module "environment-pool" への接続に失敗（connect、1回目）。50ms後に再試行します: Error: connect ECONNREFUSED 127.0.0.1:1',
+      '▶ [a1・a4] 判定を出さずに報告しても failed にならず、次段へ進む',
+      '  ✔ audit_report を呼ばずに done:true で報告 → failed にならず review.policy 通りに進む (290.158383ms)',
+      '✔ [a1・a4] 判定を出さずに報告しても failed にならず、次段へ進む (409.852873ms)',
+      '  ✔ 本物の not ok 行がログの後方（30行目以降）にあっても報告に現れる（a3） (50.204191ms)',
+      '✖ BANTO_BROWSER_ALLOW_NO_SANDBOX が無ければ --no-sandbox は入らず、status も enabled (118.203175ms)',
+      '  AssertionError [ERR_ASSERTION]: 既定なのに --no-sandbox が入っている',
+    ];
+    const script = writeScript(
+      rawLines.map((line) => `console.log(${JSON.stringify(line)});`).join("\n") + "\nprocess.exit(1);\n"
+    );
+    const result = await runDeployVerify(`node ${script}`, process.cwd(), { rawLogDir });
+    assert.equal(result.passed, false);
+
+    assert.ok(
+      !result.report.includes("Failed to reach module"),
+      `既知ノイズ（Failed to reach module）が報告に混ざっています: ${result.report}`
+    );
+    assert.ok(
+      !result.report.includes("verify_env_unavailable"),
+      `既知ノイズ（verify_env_unavailable）が報告に混ざっています: ${result.report}`
+    );
+    assert.ok(
+      !result.report.includes("への接続に失敗"),
+      `既知ノイズ（への接続に失敗）が報告に混ざっています: ${result.report}`
+    );
+    assert.ok(
+      !result.report.includes("▶ [a1・a4] 判定を出さずに報告しても failed にならず、次段へ進む"),
+      `▶ の見出し行が失敗として報告に混ざっています: ${result.report}`
+    );
+    assert.ok(
+      !result.report.includes("✔"),
+      `✔ の合格行が報告に混ざっています: ${result.report}`
+    );
+    assert.ok(
+      result.report.includes(
+        "✖ BANTO_BROWSER_ALLOW_NO_SANDBOX が無ければ --no-sandbox は入らず、status も enabled (118.203175ms)"
+      ),
+      `✖（U+2716）の失敗行が報告に出ていません: ${result.report}`
+    );
+    assert.ok(
+      result.report.includes("AssertionError [ERR_ASSERTION]: 既定なのに --no-sandbox が入っている"),
+      `AssertionError の行が報告に出ていません: ${result.report}`
+    );
+    fs.unlinkSync(script);
+  });
 });

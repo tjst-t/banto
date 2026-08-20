@@ -23,13 +23,21 @@ const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 const MAX_SHOWN_FAILURES = 30;
 
 /** 失敗した spec を拾う目印（node:test / 一般のテストランナー双方）。素の `Error:` は
- *  意図的な接続失敗（例 `Error: connect ECONNREFUSED`）にもヒットするため含めない。 */
-const FAILURE_MARKERS = /(fail [0-9]+|# fail|not ok|✗|FAILED|AssertionError|npm ERR!|failing tests?)/i;
+ *  意図的な接続失敗（例 `Error: connect ECONNREFUSED`）にもヒットするため含めない。
+ *  `✖`（U+2716）は node:test が実際に使う失敗記号——見た目が似た `✗`（U+2717、他ランナー用）
+ *  とは別字なので両方要る。 */
+const FAILURE_MARKERS = /(fail [0-9]+|# fail|not ok|✗|✖|FAILED|AssertionError|npm ERR!|failing tests?)/i;
 
 /** 合格行（✔/✓ 始まり、TAP の `ok ` 始まり）は本文に何が書いてあっても失敗行とみなさない。
  *  `ok ` は前方一致——`not ok` を巻き込まないよう `trim` 済みの行頭でのみ判定する。 */
 function isPassLine(trimmedLine: string): boolean {
   return trimmedLine.startsWith("✔") || trimmedLine.startsWith("✓") || trimmedLine.startsWith("ok ");
+}
+
+/** node:test の describe/suite 見出し（`▶` 始まり）は、本文に "failed" 等が含まれていても
+ *  失敗行ではない——見出しは配下のテストの集計を書くだけで、それ自体は落ちていない。 */
+function isSuiteHeading(trimmedLine: string): boolean {
+  return trimmedLine.startsWith("▶");
 }
 
 /** 既知のノイズ（環境未到達など、実失敗ではない定型行）。増えたらここに足す。 */
@@ -50,6 +58,7 @@ function extractFailures(output: string, exitCode: number): string {
   const hit = lines.filter((line) => {
     const trimmed = line.trim();
     if (isPassLine(trimmed)) return false;
+    if (isSuiteHeading(trimmed)) return false;
     if (isKnownNoise(line)) return false;
     return FAILURE_MARKERS.test(trimmed);
   });
