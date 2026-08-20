@@ -7,12 +7,27 @@
  * 「そのはず」で終わらせない（規則1：自己申告を信頼しない）。
  */
 
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { Availability } from '@banto/module-kit';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import { repoModule } from './index.js';
+
+/**
+ * **根は使い捨てのディレクトリに向ける。**
+ *
+ * これを怠ると、`createCore` が banto 自身のリポジトリを掴む。実際に事故が起きた
+ * ——試験を走らせただけで本物のリモートへ `git push` が飛んだ（2026-08-20）。
+ * いまは `requiredRoot` が既定値を持たないので、設定を忘れれば起動時に落ちる。
+ */
+beforeAll(async () => {
+  process.env['BANTO_REPO_ROOT'] = await mkdtemp(path.join(tmpdir(), 'banto-repo-wiring-'));
+});
 
 const vaultUnavailable: Availability = {
   has: () => false,

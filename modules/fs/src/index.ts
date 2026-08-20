@@ -4,7 +4,7 @@
  * この層に条件分岐や整形以上のものが出てきたら、それは core に置くべきもの。
  */
 
-import { defineModule, ok, type BantoModule } from '@banto/module-kit';
+import { defineModule, ok, requiredRoot, type BantoModule } from '@banto/module-kit';
 import { z } from 'zod';
 
 import { FileSystemCore } from './core.js';
@@ -19,7 +19,7 @@ export const manifest: BantoModule = {
 
 export const fsModule = defineModule({
   manifest,
-  createCore: () => new FileSystemCore(process.env['BANTO_FS_ROOT'] ?? process.cwd()),
+  createCore: () => new FileSystemCore(requiredRoot('BANTO_FS_ROOT')),
   tools: (tool) => [
     tool({
       name: 'read',

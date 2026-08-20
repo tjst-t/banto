@@ -4,7 +4,7 @@
  * この層に条件分岐や整形以上のものが出てきたら、それは core に置くべきもの。
  */
 
-import { defineModule, ok, type BantoModule } from '@banto/module-kit';
+import { defineModule, ok, requiredRoot, type BantoModule } from '@banto/module-kit';
 import { z } from 'zod';
 
 import { RepoCore } from './core.js';
@@ -28,7 +28,7 @@ export const manifest: BantoModule = {
 
 export const repoModule = defineModule({
   manifest,
-  createCore: () => new RepoCore(process.env['BANTO_REPO_ROOT'] ?? process.cwd()),
+  createCore: () => new RepoCore(requiredRoot('BANTO_REPO_ROOT')),
   tools: (tool) => [
     tool({
       name: 'log',
