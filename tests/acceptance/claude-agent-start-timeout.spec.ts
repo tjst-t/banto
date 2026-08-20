@@ -140,6 +140,31 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 2_000, intervalMs
   }
 }
 
+/** attempts ログの行数を、ファイルがまだ無ければ 0 として返す（＝まだ1件も書かれていない）。 */
+function countAttempts(logFile: string): number {
+  if (!fs.existsSync(logFile)) return 0;
+  return fs
+    .readFileSync(logFile, "utf-8")
+    .split("\n")
+    .filter((l) => l.trim().length > 0).length;
+}
+
+/**
+ * 本物のスタブ子プロセスが attempts ログへ書き込む（＝実際に起動が進んだ）のを待つ。
+ *
+ * `startTimeoutScheduler.schedule()` が呼ばれた時点（`pendingCount() > 0`）では、
+ * `child_process.spawn()` は呼ばれていても OS がその子を実際に fork/exec し、node
+ * ランタイムを起動してスクリプト冒頭（attempts ログへの書き込み）まで進めるには、
+ * ある程度の実時間がかかる。ここで待たずに `fireNext()` すると、子プロセスが一度も
+ * 走らないまま試行が終わり、attempts ログが1件も書かれない（ENOENT）。
+ * 合否そのものは `fireNext()` で作るので、ここで待つのは「子が生きて動き出したか」
+ * という下ごしらえの同期であり、負荷が高ければ長くかかるだけで、通る／落ちるを
+ * 実時間の締切に依存させるものではない（P6）。
+ */
+async function waitForAttemptCount(logFile: string, n: number): Promise<void> {
+  await waitUntil(() => countAttempts(logFile) >= n);
+}
+
 /**
  * `ClaudeAgentDriver` の起動タイムアウトを壁時計から切り離す試験用 scheduler（task-0291）。
  *
@@ -343,10 +368,15 @@ describe("[claude-agent] 起動の待ちと起こし直し（task-0233）", () =
     const spawnPromise = manualDriver.spawn(spawnOptions());
     // 1回目・2回目、それぞれの起動待ちが scheduler に仕掛けられるのを待ってから発火する。
     // ここで待つのは「非同期処理が schedule() まで進んだこと」であって、150ms という
-    // 締切そのものではない——本物の締切は fireNext() が作る
+    // 締切そのものではない——本物の締切は fireNext() が作る。
+    // 加えて、スタブ子プロセスが実際に attempts ログへ書き込むのも待つ（理由は
+    // waitForAttemptCount のコメント）。そうしないと、負荷下では子が一度も走らないうちに
+    // fireNext() してしまい、attempts ログが空のまま試行が終わる
     await waitUntil(() => pendingCount() > 0);
+    await waitForAttemptCount(attemptsLog, 1);
     fireNext();
     await waitUntil(() => pendingCount() > 0);
+    await waitForAttemptCount(attemptsLog, 2);
     fireNext();
     await assert.rejects(() => spawnPromise, /ホストが 150ms 以内に応答しませんでした/u);
 
@@ -435,9 +465,12 @@ describe("[claude-agent] 起動の待ちと起こし直し（task-0233）", () =
           driverOptions: { resumeSessionPath: previous },
         })
       );
+      // task-0291: a3 と同じ理由で、子プロセスが attempts ログへ書き込むのを待ってから発火する
       await waitUntil(() => pendingCount() > 0);
+      await waitForAttemptCount(attemptsLog, 1);
       fireNext();
       await waitUntil(() => pendingCount() > 0);
+      await waitForAttemptCount(attemptsLog, 2);
       fireNext();
       await assert.rejects(() => spawnPromise);
     } finally {
