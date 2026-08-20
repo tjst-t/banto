@@ -1,0 +1,10 @@
+{
+  "id": "hello-py",
+  "description": "契約が TypeScript でない言語を運べることを示す、最小の Python モジュール",
+  "isolation": "subprocess",
+  "mcp": {
+    "kind": "subprocess",
+    "command": "python3",
+    "args": ["modules/hello-py/server.py"]
+  }
+}
