@@ -321,12 +321,17 @@ export class SdkSessionPool {
 export interface PooledSdkHarnessOptions {
   threadId: string;
   pool: SdkSessionPool;
-  /** 中身を組む。`resume` は前に畳んだときの札、`model` は選ばれているモデル。 */
-  create(params: { resume?: string; model?: string }): BantoHarness;
+  /**
+   * 中身を組む。`resume` は前に畳んだときの札、`model` は選ばれているモデル、
+   * `thinking` は選ばれている思考レベル（未指定＝サービス既定）。
+   */
+  create(params: { resume?: string; model?: string; thinking?: string }): BantoHarness;
   /** 起動時に索引から渡ってきた札（決定97）。 */
   resume?: string;
   /** 走り出しのモデル。 */
   model?: string;
+  /** 走り出しの思考レベル（2026-08-19 提案）。未指定＝サービス既定に従う。 */
+  thinking?: string;
   /**
    * **いま畳んではいけない**外側の事情。章を畳んでいる最中（`ChapterKeeper.isClosing()`）。
    * 走行中（`isStreaming`）は皮が自分で見るので、ここに書かなくてよい。
@@ -361,6 +366,16 @@ export class PooledSdkHarness implements BantoHarness {
   /** 前の中身の札。畳む前に取る——取らないと戻したときに文脈が消える。 */
   private token: string | undefined;
   private model: string | undefined;
+  /**
+   * **思考レベルは皮が持つ**（PO報告 2026-08-20）。
+   *
+   * 中身（`ClaudeAgentHarness`）だけが `setThinking` を持っていたので、`onSelectModel`
+   * が皮へ呼んでも**素通りして何も起きなかった**——画面で思考レベルを変えても
+   * Claude Code には一度も届いていない。持たせる先は皮でなければならない：中身は
+   * アイドルや上限で畳まれ、次の発話で組み直されるので、覚えていないと**畳んだ瞬間に
+   * 指定が消える**（`model` を皮が持っているのと同じ理由）。
+   */
+  private thinking: string | undefined;
   /** 畳む前の名乗り。戻すまでの間これを答える。 */
   private lastSessionId = "";
   private lastTokens: number | undefined;
@@ -384,6 +399,7 @@ export class PooledSdkHarness implements BantoHarness {
     this.log = options.log ?? ((message) => console.error(message));
     this.token = options.resume;
     this.model = options.model;
+    this.thinking = options.thinking;
     this.unregister = options.pool.register({
       threadId: options.threadId,
       isLive: () => this.inner !== undefined,
@@ -440,6 +456,20 @@ export class PooledSdkHarness implements BantoHarness {
     });
   }
 
+  /**
+   * **思考レベルを選び直す**（2026-08-19 提案の Claude 側）。
+   *
+   * 空文字はサービス既定に戻す指定なので、`selectModel` と違って**素通ししない**
+   * （`undefined` だけが「触らない」）。生きている中身にはその場で伝える
+   * ——`ClaudeAgentHarness.setThinking` は次の `query()` から効くので、
+   * モデルと違って畳んで組み直す必要が無い。
+   */
+  setThinking(thinking?: string): void {
+    if (thinking === undefined || thinking === this.thinking) return;
+    this.thinking = thinking;
+    (this.inner as { setThinking?: (t: string) => void } | undefined)?.setThinking?.(thinking);
+  }
+
   /** 中身を用意する。無ければ札から組み直す（＝戻す）。 */
   private async ensure(): Promise<BantoHarness> {
     if (this.inner) return this.inner;
@@ -458,6 +488,8 @@ export class PooledSdkHarness implements BantoHarness {
     const inner = this.options.create({
       ...(this.token !== undefined ? { resume: this.token } : {}),
       ...(this.model !== undefined ? { model: this.model } : {}),
+      // 組み直しでも思考レベルを持ち越す（畳んだ瞬間に指定が消えないように）
+      ...(this.thinking !== undefined ? { thinking: this.thinking } : {}),
     });
     // 出来事は皮の購読者へそのまま流す。**皮の購読は生涯そのまま**
     this.innerOff = inner.subscribe((event) => {

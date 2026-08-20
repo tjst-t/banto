@@ -472,6 +472,8 @@ export class BantoHostServer {
     // 実測が届いていればそれが真実（I1）。届くまでは欄ごと落とす——数で埋めない
     const contextWindow = this.hostMeasuredWindow ?? this.modelInfo.contextWindow;
     return {
+      // 標準がどのバックエンドのものかも映す（会話ごとの指定が無いときはこれが出る）
+      ...(this.modelInfo.backend ? { backend: this.modelInfo.backend } : {}),
       provider: this.modelProvider ?? "",
       id: this.modelInfo.id,
       vision: this.modelInfo.vision,
@@ -488,7 +490,14 @@ export class BantoHostServer {
   private modelOf(
     thread: Thread
   ):
-    | { backend?: string; provider: string; id: string; vision: boolean; contextWindow?: number }
+    | {
+        backend?: string;
+        provider: string;
+        id: string;
+        vision: boolean;
+        contextWindow?: number;
+        thinking?: string;
+      }
     | undefined {
     const model = thread.model ?? this.hostDefaultModel();
     if (!model) return undefined;
@@ -1439,9 +1448,19 @@ export class BantoHostServer {
         this.send(ws, {
           type: "model_state",
           threadId: thread.id,
+          /**
+           * **バックエンドと思考レベルもここで配る**（PO報告 2026-08-20）。
+           *
+           * 配り直し（`broadcast`）の側は載せていたのに、**繋いだ直後のこの1通だけ
+           * 落としていた**。画面が最初に受け取るのはこれなので、開き直すたびに
+           * 会話のバックエンドが分からなくなり、モデルの札も思考レベルの欄も
+           * 「選んでいないもの」に見える——PO から見れば「切り替えたのに戻っている」。
+           */
+          ...(model.backend ? { backend: model.backend } : {}),
           provider: model.provider,
           id: model.id,
           vision: model.vision,
+          ...(model.thinking ? { thinking: model.thinking } : {}),
           ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
         });
       }

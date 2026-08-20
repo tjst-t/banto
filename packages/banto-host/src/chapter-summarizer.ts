@@ -107,7 +107,12 @@ export type ChapterCompleter = (request: {
   maxTokens: number;
 }) => Promise<ChapterCompletion>;
 
-export interface ChapterSummarizerOptions {
+/**
+ * **1回の要約に使う口一式**（座標・呼ぶ口・落ちた記録）。
+ *
+ * `ChapterSummarizerOptions.resolve` で渡すと、**畳むたびにこれを引き直す**。
+ */
+export interface ChapterSummarizerPlan {
   /**
    * 要約に使うモデルの座標（決定103と同じ3成分）。**本セッションと別のものを
    * 指定してよい**（決定28）——断りの文言・資料に残す名前（a6）に使う。
@@ -117,8 +122,6 @@ export interface ChapterSummarizerOptions {
   modelMaxTokens?: number;
   /** LLM を呼ぶ口。バックエンドごとの実装は `chapter-completers.ts`。 */
   complete: ChapterCompleter;
-  /** 資料の長さの上限（トークン）。既定 `DEFAULT_CHAPTER_MAX_TOKENS`。 */
-  maxTokens?: number;
   /**
    * 指定されたモデルが解決できず、既定へ落ちたときの記録（task-0151 a4・I2）。
    * 章を畳めなかったときの断りに「指定された名前・解決の結果・実際に使ったもの」を
@@ -129,6 +132,26 @@ export interface ChapterSummarizerOptions {
     reason: string;
   };
 }
+
+interface ChapterSummarizerCommon {
+  /** 資料の長さの上限（トークン）。既定 `DEFAULT_CHAPTER_MAX_TOKENS`。 */
+  maxTokens?: number;
+}
+
+/**
+ * **どのモデルで書くかは、畳む直前に引く**（PO報告 2026-08-20）。
+ *
+ * 以前は座標と呼ぶ口を**組み立て時に一度だけ**受け取っていた。会話の器は会話の生涯
+ * そのままなので、設定画面で「章の要約」を変えても**走っている会話には最後まで
+ * 効かなかった**——新しい会話を開く（実際にはホストを再起動する）まで反映されない。
+ * 設定は「保存された指定」であって起動時の写しではない（`settings-store.ts` の注記）。
+ *
+ * `resolve` を渡さない形（座標と呼ぶ口を直に渡す）も残す——試験のように、引き直す
+ * 相手がそもそも無い呼び出し側を巻き込まないため。
+ */
+export type ChapterSummarizerOptions =
+  | (ChapterSummarizerCommon & ChapterSummarizerPlan)
+  | (ChapterSummarizerCommon & { resolve: () => ChapterSummarizerPlan });
 
 /** 1回分の試みの記録。断りの文言に載せる（inc-0068 の4番）。 */
 interface Attempt {
@@ -142,12 +165,19 @@ interface Attempt {
 export function createLlmChapterSummarizer(
   options: ChapterSummarizerOptions
 ): (input: ChapterInput) => Promise<ChapterHandoff> {
-  const complete = options.complete;
-  // モデル自身の出力上限。これを超えて頼んでも通らない（プロバイダによっては弾かれる）
-  const modelCap = positiveNumber(options.modelMaxTokens);
-  const modelName = chapterModelLabel(options.modelRef);
+  /**
+   * **使う直前に引く**（上の注記）。固定で渡された場合は、その値を返すだけの口にする
+   * ——ここから先は「毎回引く」1本の筋になり、呼び出し側の形で振る舞いが分かれない。
+   */
+  const resolve: () => ChapterSummarizerPlan =
+    "resolve" in options ? options.resolve : (): ChapterSummarizerPlan => options;
 
   return async (input) => {
+    const plan = resolve();
+    const complete = plan.complete;
+    // モデル自身の出力上限。これを超えて頼んでも通らない（プロバイダによっては弾かれる）
+    const modelCap = positiveNumber(plan.modelMaxTokens);
+    const modelName = chapterModelLabel(plan.modelRef);
     const attempts: Attempt[] = [];
 
     /**
@@ -234,7 +264,7 @@ export function createLlmChapterSummarizer(
       return { summary: handoff.summary, body: withModelNote(`${handoff.body}${note}`, modelName) };
     }
 
-    throw new Error(describeEmpty(modelName, modelCap, attempts, options.fallback));
+    throw new Error(describeEmpty(modelName, modelCap, attempts, plan.fallback));
   };
 }
 
@@ -271,7 +301,7 @@ function describeEmpty(
   modelName: string,
   modelCap: number | undefined,
   attempts: readonly Attempt[],
-  fallback: ChapterSummarizerOptions["fallback"]
+  fallback: ChapterSummarizerPlan["fallback"]
 ): string {
   const detail = attempts
     .map(

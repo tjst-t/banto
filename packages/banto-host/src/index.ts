@@ -75,6 +75,7 @@ export {
 export {
   ChapterKeeper,
   renderTranscript,
+  renderBackendHandover,
   DEFAULT_CHAPTER_THRESHOLD_RATIO,
   DEFAULT_MIN_MESSAGES,
   type ChapterKeeperOptions,
@@ -88,6 +89,7 @@ export {
   trimTranscript,
   DEFAULT_CHAPTER_MAX_TOKENS,
   type ChapterSummarizerOptions,
+  type ChapterSummarizerPlan,
   type ChapterCompleter,
   type ChapterCompletion,
 } from "./chapter-summarizer.js";

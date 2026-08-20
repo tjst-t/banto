@@ -246,7 +246,7 @@ describe("番頭の標準モデルの能力（/api/model）", () => {
       resolved: { ...standIn, vision: false, contextWindow: 128_000 },
       resolveExact: () => undefined,
     });
-    assert.deepEqual(info, { id: "opus", vision: true });
+    assert.deepEqual(info, { id: "opus", backend: "claude-agent-sdk", vision: true });
   });
 
   it("pi で標準そのものを解けたときは、その能力をそのまま出す", () => {
@@ -263,6 +263,7 @@ describe("番頭の標準モデルの能力（/api/model）", () => {
     });
     assert.deepEqual(info, {
       id: "deepseek-v4-flash",
+      backend: "pi",
       vision: true,
       contextWindow: 200_000,
     });
@@ -275,7 +276,26 @@ describe("番頭の標準モデルの能力（/api/model）", () => {
       resolveExact: (provider, model) => ({ provider, id: model }),
     });
     assert.equal(info.id, "deepseek-v4-flash");
+    assert.equal(info.backend, "pi");
     assert.equal(info.contextWindow, undefined);
+  });
+
+  /**
+   * **どのバックエンドの標準かも名乗る**（PO報告 2026-08-20）。
+   *
+   * 会話がまだ自分のモデルを持たないとき、画面はこの標準をそのまま映す
+   * （`BantoHostServer.hostDefaultModel`）。バックエンドが抜けていると、Claude Code で
+   * 動いている会話が画面では「どちらか分からない」ものとして出て、思考レベルの選択肢
+   * （pi のレベル／Claude の config）まで取り違える。実測では 211 本のうち 3 本が
+   * この経路で backend 無しになっていた。
+   */
+  it("標準を解けても解けなくても、バックエンドは必ず名乗る", () => {
+    const unresolved = hostModelInfo({
+      steward: { backend: "pi", provider: "opencode-go", model: "消えたモデル" },
+      resolved: standIn,
+      resolveExact: () => undefined,
+    });
+    assert.equal(unresolved.backend, "pi", "代打へ落ちても、どの経路の標準かは変わらない");
   });
 
   it("何も解決できなかったときも、名前だけは標準のまま返す", () => {
@@ -285,6 +305,6 @@ describe("番頭の標準モデルの能力（/api/model）", () => {
       resolveExact: () => undefined,
     });
     // 名前は標準のまま、文脈長は伏せ、vision はバックエンドの事実として true
-    assert.deepEqual(info, { id: "opus", vision: true });
+    assert.deepEqual(info, { id: "opus", backend: "claude-agent-sdk", vision: true });
   });
 });

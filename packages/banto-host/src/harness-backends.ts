@@ -90,7 +90,7 @@ export function hostModelInfo(options: {
   resolved: { provider: string; id: string; vision: boolean; contextWindow?: number } | undefined;
   /** 標準そのものを pi の登録で解けるか（`LlmCatalog.resolveExact`）。 */
   resolveExact: (provider: string, model: string) => { provider: string; id: string } | undefined;
-}): { id: string; vision: boolean; contextWindow?: number } {
+}): { id: string; backend: string; vision: boolean; contextWindow?: number } {
   const backend = options.steward.backend ?? "pi";
   // `resolveHostDefault()` と同じ条件で「標準そのものを解けたか」を判定する。
   // 解けた結果と食い違っていれば、返ってきたのは代打
@@ -117,10 +117,17 @@ export function hostModelInfo(options: {
      * `onSelectModel`（`bin.ts`）も同じ判断で揃えること——**片方だけ直すと
      * モデルを選び直した瞬間に嘘に戻る**。
      */
-    return { id: options.steward.model, vision: backend === "claude-agent-sdk" };
+    return { id: options.steward.model, backend, vision: backend === "claude-agent-sdk" };
   }
   return {
     id: options.steward.model,
+    /**
+     * **どのバックエンドの標準かも名乗る**（PO報告 2026-08-20）。会話がまだ自分の
+     * モデルを持たないとき、画面はこの標準をそのまま映す——バックエンドが抜けていると
+     * 「Claude Code で動いているのに、画面ではどちらか分からない」状態になり、
+     * 思考レベルの選択肢（pi のレベル／Claude の config）まで取り違える。
+     */
+    backend,
     vision: resolved.vision,
     ...(resolved.contextWindow ? { contextWindow: resolved.contextWindow } : {}),
   };

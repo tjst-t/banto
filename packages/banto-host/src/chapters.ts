@@ -31,6 +31,8 @@
 
 import type { BantoHarness } from "@banto/core";
 import { renderArtifactIndex, type ArtifactStore } from "./artifacts.js";
+import { trimTranscript } from "./chapter-summarizer.js";
+import type { TranscriptEntry } from "./protocol.js";
 import {
   renderChapterOpening,
   type HandoffRecord,
@@ -463,6 +465,57 @@ export function renderTranscript(messages: readonly unknown[]): string {
     lines.push(`${message.role === "user" ? "PO" : "番頭"}: ${text}`);
   }
   return lines.join("\n\n");
+}
+
+/**
+ * **バックエンドを替えるときの引き継ぎの種**（決定93 の呼び出し側・PO裁定 2026-08-20）。
+ *
+ * pi と Claude Code は別のセッションなので、替えた先は**空から始まる**——PO から見ると
+ * 会話の途中で番頭が記憶を失う。`Thread.replaceHarness` の注記どおり、引き継ぐなら
+ * 呼び出し側が種を渡すしかないので、ここで書き起こしを作る。
+ *
+ * **元にするのは会話の記録（`Thread.transcript`）で、ハーネスの `transcript()` ではない。**
+ * 器ごとの書き起こしは自分の分しか持たないため、pi→Claude→pi と行き来した会話では
+ * 並びが狂う（古い Claude の分が新しい pi の分より後ろに来る）。会話の記録だけが
+ * バックエンドを跨いで順序どおりに並んでいる。
+ *
+ * **いまの章のぶんだけ**を渡す（最後の区切り線より後ろ）。それより前は章を畳んだときに
+ * 意図して落とした文脈で、ここで蘇らせると畳んだ意味が消える。
+ *
+ * D5: 判断は無い。どこから切るかと、書き起こしの体裁だけ。
+ */
+export function renderBackendHandover(
+  entries: readonly TranscriptEntry[],
+  options: { from: string; to: string; limit?: number }
+): string {
+  // 章の区切りより後ろだけ。区切りが無ければ全部（まだ1章目）
+  let start = 0;
+  for (const [index, entry] of entries.entries()) {
+    if (entry.role === "chapter") start = index + 1;
+  }
+  const lines: string[] = [];
+  for (const entry of entries.slice(start)) {
+    // PO の発言・番頭の発話・知らせだけ。思考・ツールの入出力・器は載せない（決定28 と同じ理由）
+    if (entry.role === "po") lines.push(`PO: ${entry.text}`);
+    else if (entry.role === "banto") lines.push(`番頭: ${entry.text}`);
+    else if (entry.role === "notice") lines.push(`知らせ（${entry.source}）: ${entry.text}`);
+  }
+  const body = lines.join("\n\n").trim();
+  if (body === "") return "";
+  const transcript =
+    options.limit === undefined ? body : trimTranscript(body, options.limit);
+  return [
+    `# ここまでの会話（${options.from} から ${options.to} へ引き継ぎ）`,
+    "",
+    "この会話は途中でバックエンドを替えている。**下は同じ会話の続き**であって、" +
+      "誰かの要約でも別の会話でもない。話の前提・決めたこと・呼びかけ方をここから引き継ぎ、" +
+      "**改めて挨拶し直したり、最初から聞き直したりしない**。",
+    "ツールの呼び出しと結果は書き写していないので、必要なら道具で引き直すこと。",
+    "",
+    transcript,
+    "",
+    "# ここから先が続き",
+  ].join("\n");
 }
 
 /** メッセージの本文を取り出す。ツール呼び出し・ツール結果は落とす。 */

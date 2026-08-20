@@ -417,7 +417,20 @@ export class Thread {
    * **会話ごとに持つ**——話題ごとに向いたモデルが違うので、切り替えても他の会話は変わらない。
    * 索引に保存され、再起動しても同じモデルで再開する。
    */
-  model: { backend?: string; provider: string; id: string; vision: boolean; contextWindow?: number } | undefined;
+  /**
+   * `thinking` は思考レベル（2026-08-19 提案）。**型に書いておく**——スプレッドで
+   * 足していたので型には現れず、繋いだ直後の `model_state` から落ちても誰も気づかなかった。
+   */
+  model:
+    | {
+        backend?: string;
+        provider: string;
+        id: string;
+        vision: boolean;
+        contextWindow?: number;
+        thinking?: string;
+      }
+    | undefined;
   /**
    * 復元された中断ターンを再開する処理（imp-0016 主対策）。
    * サーバ起動後に open スレッドだけ呼ばれる（畳んだスレッドは開き直すまで話さない）。

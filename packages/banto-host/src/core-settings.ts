@@ -20,7 +20,7 @@ import type {
   SettingField,
   ModelRoleResolutionSource,
 } from "@banto/core";
-import type { ChapterModelResolution } from "./chapter-model.js";
+import type { ChapterModelRef, ChapterModelResolution } from "./chapter-model.js";
 import type { PlaceSetting, SettingsStore } from "./settings-store.js";
 import type { BindingDecisionEntry } from "./binding-ledger.js";
 
@@ -71,6 +71,31 @@ function toModuleValue(value: string): string {
   const [backend, provider, model] = value.split("|");
   if (backend === "claude-agent-sdk") return model ?? "";
   return provider && model ? `${provider}/${model}` : "";
+}
+
+/** 章の要約の座標を、表の他の行と同じ体裁（`backend › provider › model`）にする。 */
+function displayChapterModel(ref: ChapterModelRef): string {
+  return `${ref.backend} › ${ref.provider} › ${ref.model}`;
+}
+
+/**
+ * 章の要約が**なぜそのモデルなのか**を1行で（I2：黙って落ちたことを隠さない）。
+ *
+ * 「保存した値」と「実際に効いているもの」は食い違いうる——環境変数が勝つ設計なので、
+ * 出所を書かないと画面を見た人が触る先を決められない（inc-0068 の教訓）。
+ */
+function chapterModelNote(resolution: ChapterModelResolution): string {
+  if (resolution.fallback) {
+    const requested =
+      "raw" in resolution.fallback.requested
+        ? resolution.fallback.requested.raw
+        : displayChapterModel(resolution.fallback.requested);
+    const from =
+      resolution.fallback.from === "env" ? "BANTO_CHAPTER_MODEL" : "この指定";
+    return `${from}（${requested}）を解決できないため既定：${resolution.fallback.reason}`;
+  }
+  if (resolution.source === "env") return "BANTO_CHAPTER_MODEL が優先（この指定より強い）";
+  return resolution.source === "settings" ? "指定" : "既定に従う";
 }
 
 /** 統合表の行の並びグループ（並び順: 番頭 → 職人 → 工場）。 */
@@ -394,16 +419,27 @@ export function createCoreSettingsSections(
             thinkingOptions: thinkingOptionsFor(steward),
           });
 
-          // 章の要約（本編とは別呼び出し）
+          /**
+           * 章の要約（本編とは別呼び出し）。
+           *
+           * **「割り当てモデル」は解決した結果を映す**（task-0151 a3 の実装漏れ・
+           * PO報告 2026-08-20）。`effectiveChapterModel` は渡されていたのに使っておらず、
+           * 保存値をそのまま映していた——`BANTO_CHAPTER_MODEL` が勝っているときや、
+           * 指定が解決できず既定へ落ちているときに**画面が実態と食い違う**（I2）。
+           * 判断はここで再現しない（呼び手が同じ元から解いたものをもらう）。
+           */
           const chapter = String(store.all().chapterModel ?? "");
+          const chapterEffective = options.effectiveChapterModel?.();
           rows.push({
             key: "chapterModel",
             group: "steward",
             label: "章の要約",
             tierDependent: false,
             value: chapter,
-            effective: toDisplayModel(chapter) || "（継承：既定 claude-agent-sdk/haiku）",
-            note: chapter ? "指定" : "既定に従う",
+            effective: chapterEffective
+              ? displayChapterModel(chapterEffective.ref)
+              : toDisplayModel(chapter) || "（継承：既定 claude-agent-sdk/haiku）",
+            note: chapterEffective ? chapterModelNote(chapterEffective) : chapter ? "指定" : "既定に従う",
             options: [{ value: "", label: "（継承：既定に従う）" }, ...harnessOptions],
             thinking: "",
             thinkingOptions: thinkingOptionsFor(chapter),

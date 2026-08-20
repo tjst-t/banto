@@ -84,14 +84,18 @@ import { BANTO_DEFAULT_PORT, type ServerEvent } from "./protocol.js";
 import { BantoHostServer } from "./server.js";
 import { createArtifactTools } from "./artifact-tools.js";
 import { ArtifactStore } from "./artifacts.js";
-import { createLlmChapterSummarizer, type ChapterCompleter } from "./chapter-summarizer.js";
+import {
+  createLlmChapterSummarizer,
+  type ChapterCompleter,
+  type ChapterSummarizerPlan,
+} from "./chapter-summarizer.js";
 import { createClaudeChapterCompleter, createPiChapterCompleter } from "./chapter-completers.js";
 import {
   DEFAULT_CHAPTER_MODEL,
   chapterModelLabel,
   resolveChapterModel,
 } from "./chapter-model.js";
-import { ChapterKeeper, renderTranscript } from "./chapters.js";
+import { ChapterKeeper, renderBackendHandover, renderTranscript } from "./chapters.js";
 import { createHandoffTools } from "./handoff-tools.js";
 import { HandoffStore } from "./handoffs.js";
 import { applyMemoryDeltas, createLlmMemoryExtractor } from "./memory-extraction.js";
@@ -400,6 +404,16 @@ function claudeStopRemainingPct(): number {
 }
 
 // 章の要約に使うモデルの解決は `chapter-model.ts` の `resolveChapterModel`（task-0151）。
+
+/**
+ * **バックエンドを替えるときに引き継ぐ書き起こしの上限**（文字・PO裁定 2026-08-20）。
+ *
+ * 切るのは古い側で、新しい側を残す（`trimTranscript`）。上限を置くのは、種が
+ * 系プロンプトへ入るため——入力の文脈長に対して大きすぎると、替えた先の最初の
+ * ターンで出力の予算が押し潰される（inc-0068 で要約器が踏んだのと同じ形）。
+ * 章の要約のやり直しと同じ 60,000 字にしてある（そこで足りることが実測で分かっている）。
+ */
+const BACKEND_HANDOVER_MAX_CHARS = 60_000;
 
 /**
  * 陳腐化した学習層について incident を積む（P3・決定26・task-0017 a4）。
@@ -1199,9 +1213,25 @@ async function serve(options: ServeOptions): Promise<void> {
    * 設定画面で標準を変えたら、次に開く会話からその場で効く（PO報告 2026-08-04：
    * 以前は起動時に解決した1つを使い回していて、設定が配線されていなかった）。
    */
-  function defaultModelForNewThread(): { provider: string; id: string } | undefined {
+  // 返りは `wantedModel`（索引に残る指定）と同じ形。**バックエンドの欄を揃えておく**
+  // ——揃っていないと、呼び手が「指定が無いとき」だけ別の書き方を強いられる
+  function defaultModelForNewThread():
+    | { backend?: string; provider: string; id: string }
+    | undefined {
     const fromCatalog = llmCatalog.defaults().host;
-    if (fromCatalog) return { provider: fromCatalog.provider, id: fromCatalog.model };
+    /**
+     * **バックエンドも一緒に持ってくる**（PO報告 2026-08-20）。落としていたので、
+     * 番頭の標準が Claude Code のとき、まだ自分のモデルを持たない会話は毎回
+     * 「claude/opus[1m] を解決できない」と警告されていた——pi の登録に載らないのは
+     * 当たり前で、直しようのない指摘が起動のたびに 200 行積まれていた。
+     */
+    if (fromCatalog) {
+      return {
+        ...(fromCatalog.backend ? { backend: fromCatalog.backend } : {}),
+        provider: fromCatalog.provider,
+        id: fromCatalog.model,
+      };
+    }
     // カタログに標準が無ければ、起動時に解決したもので始める
     if (currentProvider && currentModelId) return { provider: currentProvider, id: currentModelId };
     return undefined;
@@ -1233,7 +1263,8 @@ async function serve(options: ServeOptions): Promise<void> {
     string,
     {
       pi: () => BantoHarness;
-      claude: (model?: string) => BantoHarness;
+      /** `thinking` は思考レベル（未指定＝いまの指定のまま。空文字＝サービス既定へ戻す）。 */
+      claude: (model?: string, thinking?: string) => BantoHarness;
       /** Claude 側を畳む（pi へ戻すとき）。札は残るので選び直せば続きから戻る。 */
       releaseClaude: () => void;
     }
@@ -1466,8 +1497,15 @@ async function serve(options: ServeOptions): Promise<void> {
      */
     const wanted = wantedModel ?? defaultModelForNewThread();
     const threadModel = wanted ? resolveModel(wanted.provider, wanted.id) : undefined;
-    // I2: 保存されていたモデルが使えなくなっていたら黙って別のモデルで開かない
-    if (wanted && !threadModel) {
+    /**
+     * I2: 保存されていたモデルが使えなくなっていたら黙って別のモデルで開かない。
+     *
+     * **ただし Claude Code の会話には言わない**（PO報告 2026-08-20）。`resolveModel` は
+     * pi の登録を引くので、`claude/opus` のような Agent SDK 側の別名は**そもそも
+     * 載っていない**——毎回この警告が出て、直しようのない指摘がログを埋めていた。
+     * そのバックエンドで回せるかは `harnessBackends` の `supports()` が見ている。
+     */
+    if (wanted && !threadModel && (wanted.backend ?? "pi") === "pi") {
       console.warn(
         `[banto] ${threadId}: ${wanted.provider}/${wanted.id} を解決できないため、` +
           "起動時のモデルで開きます"
@@ -1609,7 +1647,7 @@ async function serve(options: ServeOptions): Promise<void> {
         // 呼ぶたびに数え直す（降ろした次のターンからは出ない）
         branches: () => threads.unsettledBranches(threadId),
       });
-    const makeClaudeHarness = (model?: string): BantoHarness => {
+    const makeClaudeHarness = (model?: string, thinking?: string): BantoHarness => {
       /**
        * **皮は1本しか作らない**（task-0165）。
        *
@@ -1624,19 +1662,22 @@ async function serve(options: ServeOptions): Promise<void> {
           pool: sdkSessions,
           ...(resumeBackendSession ? { resume: resumeBackendSession } : {}),
           ...(model ? { model } : {}),
+          ...(thinking ? { thinking } : {}),
           // 章を畳んでいる最中は安全弁に畳ませない（返事と要約の相手が消える）
           held: () => chapterGateRef?.isClosing() === true,
           /**
            * **組み立ては起こすたびにやり直す**——記憶も SKILL も、畳んでいる間に
            * 増えていることがある（`assembleStewardContext` は毎回読み直す）。
            */
-          create: ({ resume, model: chosen }) => {
+          create: ({ resume, model: chosen, thinking: level }) => {
             const assembled = assembleStewardContext(stewardContextOptions);
             return new ClaudeAgentHarness({
               systemPrompt: assembled.systemPrompt,
               // 提示する集合だけを載せる（ADR-0019 決定82）。組み込みは `tools: []` で0本
               tools: selectPresentedTools(assembled.tools),
               ...(chosen ? { model: chosen } : {}),
+              // 思考レベルは皮が覚えている（畳んで組み直しても指定が消えない）
+              ...(level ? { thinking: level } : {}),
               ...(resume ? { resume } : {}),
             });
           },
@@ -1645,6 +1686,8 @@ async function serve(options: ServeOptions): Promise<void> {
       }
       // 選び直しなら生きている中身を畳む（次の発話で新しいモデルの側が起きる）
       claudeHarness.selectModel(model);
+      // 思考レベルは畳まなくてよい（次の `query()` から効く）。皮が覚える
+      claudeHarness.setThinking(thinking);
       return claudeWrapped!;
     };
 
@@ -1715,12 +1758,14 @@ async function serve(options: ServeOptions): Promise<void> {
         }）—— ${threadId} は pi で始めます`
       );
     }
+    /**
+     * Claude Code で始めるときのモデル（別名）。**会話の記録が勝ち**、無ければ番頭の標準。
+     * 会話が名乗るモデル（`thread.model`）もこれ——下の返り値で同じ値を使う。
+     */
+    const claudeStartModel =
+      wantedModel?.backend === "claude-agent-sdk" ? wantedModel.id : stewardRole?.model;
     const harness: BantoHarness =
-      effectiveBackend === "claude-agent-sdk"
-        ? makeClaudeHarness(
-            wantedModel?.backend === "claude-agent-sdk" ? wantedModel.id : stewardRole?.model
-          )
-        : piHarness;
+      effectiveBackend === "claude-agent-sdk" ? makeClaudeHarness(claudeStartModel) : piHarness;
     harnessSwitchers.set(threadId, {
       pi: () => piHarness,
       claude: makeClaudeHarness,
@@ -1767,70 +1812,115 @@ async function serve(options: ServeOptions): Promise<void> {
     // （task-0151・inc-0068）——既定は claude-agent-sdk の haiku で固定。指定は
     // 環境変数 BANTO_CHAPTER_MODEL > 画面の設定「章の要約に使うモデル」> 既定の順
     // （README を参照）。指定が解決できないときも黙って別物へ落とさない（I2・a4）。
-    const chapterModelResolution = resolveChapterModel({
-      envRaw: process.env["BANTO_CHAPTER_MODEL"],
-      settingsValue: settings.all().chapterModel,
-      backends: harnessBackends,
-    });
-    if (chapterModelResolution.fallback) {
-      const { requested, reason, from } = chapterModelResolution.fallback;
-      const requestedLabel = "raw" in requested ? requested.raw : chapterModelLabel(requested);
-      console.warn(
-        `[banto] ${threadId}: 章の要約モデルの指定（${
-          from === "env" ? "BANTO_CHAPTER_MODEL" : "設定「章の要約に使うモデル」"
-        }: ${requestedLabel}）を解決できません（${reason}）。既定（${chapterModelLabel(
-          DEFAULT_CHAPTER_MODEL
-        )}）を使います`
-      );
-    }
-    let chapterRef = chapterModelResolution.ref;
-    /**
-     * **クオータ節約**: 枠が尽きかけていたら、章の要約も Claude を使わず pi へ落とす
-     * （PO裁定：両方止める）。会話と同じ pi モデル（`model`）で足りる——要約は安い
-     * モデルで書く方針（task-0151）だが、会話を回しているモデルなら必ず解ける。
-     * pi のモデルが1つも無い環境では Claude のまま（できる範囲のベスト）。pi の登録で
-     * 解けない場合は黙って Claude を落とさない（I2）。
-     */
-    if (claudeQuota.shouldStop() && chapterRef.backend === "claude-agent-sdk") {
-      const fallback =
-        model?.provider && model?.id && resolveModel(model.provider, model.id)
-          ? ({ backend: "pi", provider: model.provider, model: model.id } as const)
-          : undefined;
-      if (fallback) {
-        console.log(
-          `[banto] ${threadId}: 章の要約も pi へ切り替えます（${chapterModelLabel(
-            chapterRef
-          )} → ${chapterModelLabel(fallback)}／クオータ節約）`
-        );
-        chapterRef = fallback;
+    //
+    // **畳む直前に引き直す**（PO報告 2026-08-20）。以前はここで一度だけ解決して要約器へ
+    // 焼き付けていたので、設定画面で「章の要約」を変えても**走っている会話には最後まで
+    // 効かなかった**——PO から見れば「設定が反映されない」。会話の器は会話の生涯そのまま
+    // なので、器の組み立て時に引くかぎり必ずこうなる。設定は「保存された指定」であって
+    // 起動時の写しではない（`settings-store.ts` の注記）ので、引くのは使うときにする。
+    /** 直近で出した断りの文言。同じものを畳むたびに出さないため（ログを荒らさない）。 */
+    let lastChapterWarning: string | undefined;
+    const resolveChapterPlan = (): {
+      plan: ChapterSummarizerPlan;
+      /** pi 経由で解けたモデル実体（記憶の抽出にも使う）。 */
+      piModel: ReturnType<typeof resolveModel>;
+    } => {
+      const resolution = resolveChapterModel({
+        envRaw: process.env["BANTO_CHAPTER_MODEL"],
+        settingsValue: settings.all().chapterModel,
+        backends: harnessBackends,
+      });
+      if (resolution.fallback) {
+        const { requested, reason, from } = resolution.fallback;
+        const requestedLabel = "raw" in requested ? requested.raw : chapterModelLabel(requested);
+        const warning =
+          `[banto] ${threadId}: 章の要約モデルの指定（${
+            from === "env" ? "BANTO_CHAPTER_MODEL" : "設定「章の要約に使うモデル」"
+          }: ${requestedLabel}）を解決できません（${reason}）。既定（${chapterModelLabel(
+            DEFAULT_CHAPTER_MODEL
+          )}）を使います`;
+        // I2: 黙らせない。ただし毎回同じ行を積まない（直った・変わったときは必ず出る）
+        if (warning !== lastChapterWarning) {
+          lastChapterWarning = warning;
+          console.warn(warning);
+        }
+      } else {
+        lastChapterWarning = undefined;
       }
-    }
-    // pi 経由なら、この会話とは無関係にモデル実体を解決する（記憶抽出にも使う）。
-    // `resolveChapterModel` が既に `supports()` で確かめているので、pi のときは必ず解ける
-    const chapterPiModel =
-      chapterRef.backend === "pi" ? resolveModel(chapterRef.provider, chapterRef.model) : undefined;
-    const chapterComplete: ChapterCompleter =
-      chapterRef.backend === "claude-agent-sdk"
-        ? createClaudeChapterCompleter(chapterRef.model)
-        : createPiChapterCompleter(chapterPiModel!, (m) => modelRegistry.getApiKeyAndHeaders(m));
+      let chapterRef = resolution.ref;
+      /**
+       * **クオータ節約**: 枠が尽きかけていたら、章の要約も Claude を使わず pi へ落とす
+       * （PO裁定：両方止める）。会話と同じ pi モデル（`model`）で足りる——要約は安い
+       * モデルで書く方針（task-0151）だが、会話を回しているモデルなら必ず解ける。
+       * pi のモデルが1つも無い環境では Claude のまま（できる範囲のベスト）。pi の登録で
+       * 解けない場合は黙って Claude を落とさない（I2）。
+       */
+      if (claudeQuota.shouldStop() && chapterRef.backend === "claude-agent-sdk") {
+        const fallback =
+          model?.provider && model?.id && resolveModel(model.provider, model.id)
+            ? ({ backend: "pi", provider: model.provider, model: model.id } as const)
+            : undefined;
+        if (fallback) {
+          console.log(
+            `[banto] ${threadId}: 章の要約も pi へ切り替えます（${chapterModelLabel(
+              chapterRef
+            )} → ${chapterModelLabel(fallback)}／クオータ節約）`
+          );
+          chapterRef = fallback;
+        }
+      }
+      // pi 経由なら、この会話とは無関係にモデル実体を解決する（記憶抽出にも使う）
+      const piModel =
+        chapterRef.backend === "pi"
+          ? resolveModel(chapterRef.provider, chapterRef.model)
+          : undefined;
+      // I2: `supports()` を通ったのに実体が引けないなら、黙って別のモデルで書かない
+      if (chapterRef.backend !== "claude-agent-sdk" && !piModel) {
+        throw new Error(
+          `章の要約に使うモデル ${chapterModelLabel(chapterRef)} を pi の登録で解決できません` +
+            "（設定の「使えるモデル」で採用されているか確かめてください）"
+        );
+      }
+      const complete: ChapterCompleter =
+        chapterRef.backend === "claude-agent-sdk"
+          ? createClaudeChapterCompleter(chapterRef.model)
+          : createPiChapterCompleter(piModel!, (m) => modelRegistry.getApiKeyAndHeaders(m));
+      return {
+        plan: {
+          modelRef: chapterRef,
+          ...(piModel?.maxTokens ? { modelMaxTokens: piModel.maxTokens } : {}),
+          complete,
+          ...(resolution.fallback ? { fallback: resolution.fallback } : {}),
+        },
+        piModel,
+      };
+    };
     /**
      * 記憶の抽出（`createLlmMemoryExtractor`）は今のところ pi 経由でしか呼べない
      * （このタスクの範囲外・別途 inc として追う論点）。章の要約が claude-agent-sdk を
-     * 選んでいるときは、記憶の抽出だけ会話のモデルへ戻す——以前からの fallback と同じ形
+     * 選んでいるときは、記憶の抽出だけ会話のモデルへ戻す——以前からの fallback と同じ形。
+     *
+     * **こちらは会話の器を組むときの1回のまま**。抽出器はモデル実体を掴んで組むので、
+     * 要約と同じ形（毎回引き直す）にするなら抽出器の側から直す必要がある。
      */
-    const memoryModel = chapterPiModel ?? sessionModel;
+    const memoryModel =
+      (() => {
+        try {
+          return resolveChapterPlan().piModel;
+        } catch (err) {
+          // 起動を止めない。要約が実際に走るときに同じ理由で断られる（I2 はそちらで果たす）
+          console.warn(`[banto] ${threadId}: 章の要約モデルを解決できません: ${String(err)}`);
+          return undefined;
+        }
+      })() ?? sessionModel;
 
     const chapters = new ChapterKeeper({
       // **いまのハーネスを毎回引く**——差し替えに追随する（PO要望 2026-08-13）
       harness: () => threads.get(threadId)?.harness ?? harness,
       store: handoffs,
       threadId,
-      summarize: createLlmChapterSummarizer({
-        modelRef: chapterRef,
-        ...(chapterPiModel?.maxTokens ? { modelMaxTokens: chapterPiModel.maxTokens } : {}),
-        complete: chapterComplete,
-        ...(chapterModelResolution.fallback ? { fallback: chapterModelResolution.fallback } : {}),
-      }),
+      // **畳む直前に引く**（上の注記）。設定を変えたら、走っている会話の次の1回から効く
+      summarize: createLlmChapterSummarizer({ resolve: () => resolveChapterPlan().plan }),
       // 閾値は**会話のモデル**の文脈長で測る（要約器の文脈長ではない）
       ...(sessionModel?.contextWindow ? { contextWindow: sessionModel.contextWindow } : {}),
       // PO指摘 2026-08-05: 退避した観測の索引を引き継ぎ資料へ書く。
@@ -1944,17 +2034,44 @@ async function serve(options: ServeOptions): Promise<void> {
        * これから捨てるセッションへ発話を渡さない——渡すと答えかけたところで切られる。
        */
       chapterGate: chapters,
-      // この会話が実際に使っているモデル。画面と索引へ出す（会話ごとに持つ）
-      ...(threadModel && wanted
-        ? {
-            model: {
-              provider: wanted.provider,
-              id: wanted.id,
-              vision: threadModel.input.includes("image"),
-              ...(threadModel.contextWindow ? { contextWindow: threadModel.contextWindow } : {}),
-            },
-          }
-        : {}),
+      /**
+       * この会話が実際に使っているモデル。画面と索引へ出す（会話ごとに持つ）。
+       *
+       * **バックエンドを必ず入れる**（PO報告 2026-08-20）。以前は落としていたので:
+       * ①索引の `model` はキーごと置き換わるため、保存済みの `backend` が消えていた
+       * （`threads.ts` の `persistIndex` の注記が警告しているそのもの）
+       * ②`onSelectModel` が「いまどちらで動いているか」を `thread.model.backend` で
+       * 判定していたため、Claude で動いている会話から pi のモデルを選ぶと
+       * 「動作中のモデル切替に対応していません」で断られた（判定は `backendId` へ移した）
+       *
+       * **Claude Code の会話は pi の解決を要さない**。Agent SDK の別名（`opus` 等）は
+       * pi の登録に載らないので、`threadModel` を条件にすると**Claude の会話だけ
+       * モデルを名乗れなくなる**（実機がその状態だった）。画像は渡せる
+       * （`hostModelInfo()` と揃える・`harness-backends.ts` の注記）。文脈長は
+       * 名乗らない——最初のターンでハーネスが測るまで分からない。
+       */
+      ...(effectiveBackend === "claude-agent-sdk"
+        ? claudeStartModel
+          ? {
+              model: {
+                backend: "claude-agent-sdk",
+                provider: wanted?.provider ?? "claude",
+                id: claudeStartModel,
+                vision: true,
+              },
+            }
+          : {}
+        : threadModel && wanted
+          ? {
+              model: {
+                backend: "pi",
+                provider: wanted.provider,
+                id: wanted.id,
+                vision: threadModel.input.includes("image"),
+                ...(threadModel.contextWindow ? { contextWindow: threadModel.contextWindow } : {}),
+              },
+            }
+          : {}),
       /**
        * **pi が今も能動ハーネスのときだけ読む**（task-0288・幽霊402）。
        *
@@ -2145,8 +2262,45 @@ async function serve(options: ServeOptions): Promise<void> {
       nextBackend?: string,
       nextThinking?: string
     ) => {
-      const backend = nextBackend ?? thread.model?.backend ?? "pi";
+      /**
+       * **いまどちらで動いているかは、器に聞く**（D3：状態の真実は一箇所・PO報告 2026-08-20）。
+       *
+       * 以前は `thread.model?.backend` で判定していたが、その値は会話を組み立てるときに
+       * **入れていなかった**（`threadFactory` の返り値）。実際は Claude Code で動いている
+       * 会話でも `undefined` になり、pi のモデルを選ぶと「pi のまま」と誤判定して
+       * `PooledSdkHarness`（`setModel` を持たない）へ渡り、
+       * 「このハーネスは動作中のモデル切替に対応していません」で断られていた。
+       * `backendId` はハーネス自身の名乗りなので、記録の入れ忘れに左右されない。
+       */
+      const currentBackend = thread.harness.backendId;
+      const backend = nextBackend ?? currentBackend;
       const switcher = harnessSwitchers.get(thread.id);
+
+      /**
+       * **バックエンドを跨ぐときは、ここまでの会話を種として渡す**（決定93・PO裁定 2026-08-20）。
+       *
+       * pi と Claude Code は別のセッションなので、替えた先は空から始まる——PO から見ると
+       * 会話の途中で番頭が記憶を失う。`Thread.replaceHarness` の注記どおり、引き継ぐのは
+       * 呼び出し側の仕事。**扱いは章の切れ目と同じ**：書き起こしを種にして始め直す
+       * （ツールの呼び出しと結果は落ちる。必要なら道具で引き直せる）。
+       */
+      const handOver = async (to: BantoHarness): Promise<void> => {
+        const text = renderBackendHandover(thread.transcript, {
+          from: currentBackend,
+          to: backend,
+          limit: BACKEND_HANDOVER_MAX_CHARS,
+        });
+        // 話していない会話には引き継ぐものが無い（空の種で始め直さない）
+        if (text === "") return;
+        await to.startChapter({
+          text,
+          tokensBefore: thread.harness.contextTokens() ?? 0,
+          // 章を畳んだわけではない。**いまの章の番号**をそのまま名乗る（記録用・D3）
+          chapter: thread.transcript.filter((e) => e.role === "chapter").length + 1,
+          // `PiHarness` はこれを「どのエントリとも一致しない値」として使う（境界より前を残さない）
+          handoffId: `backend-switch:${thread.id}:${Date.now()}`,
+        });
+      };
 
       /**
        * **回せるかはバックエンドに聞く**（決定98a）。`undefined` ではなく
@@ -2165,11 +2319,15 @@ async function serve(options: ServeOptions): Promise<void> {
        */
       if (backend === "claude-agent-sdk") {
         if (!switcher) throw new Error("この会話はバックエンドを差し替えられません");
-        const harness = switcher.claude(nextId);
-        // 思考レベル（サービス既定を上書きする指定）を Claude ハーネスへ（2026-08-19）
-        if (nextThinking) {
-          (harness as { setThinking?: (t: string) => void }).setThinking?.(nextThinking);
-        }
+        /**
+         * 思考レベルは**皮に渡す**（`switcher.claude` の第2引数）。以前は返ってきた
+         * ハーネスへ `setThinking` を呼んでいたが、それを持つのは中身
+         * （`ClaudeAgentHarness`）だけで、間の `PooledSdkHarness` には無い
+         * ——素通りして**一度も届いていなかった**（PO報告 2026-08-20）。
+         */
+        const harness = switcher.claude(nextId, nextThinking);
+        // pi から移ってきたなら、ここまでの会話を種として渡す（上の `handOver`）
+        if (currentBackend !== "claude-agent-sdk") await handOver(harness);
         console.log(`[banto] backend(${thread.id}): claude-agent-sdk / ${nextId}`);
         /**
          * 画像は渡せる。harness が画像ブロックを SDK へ流し込む
@@ -2183,8 +2341,18 @@ async function serve(options: ServeOptions): Promise<void> {
       // ここまで来れば pi が解決できることは `supports` が確かめている
       const next = resolveModel(nextProvider, nextId)!;
 
-      // pi へ戻す（あるいは pi のまま）。**同じ pi セッションへ戻る**ので文脈も戻る
-      const back = thread.model?.backend === "claude-agent-sdk" ? switcher?.pi() : undefined;
+      // pi へ戻す（あるいは pi のまま）。判定は器の名乗りで（上の `currentBackend`）
+      const back = currentBackend === "claude-agent-sdk" ? switcher?.pi() : undefined;
+      /**
+       * **Claude 側で話した分も持って帰る**（PO裁定 2026-08-20）。pi のセッションは
+       * 生きているが、その間に Claude で話したことは1件も入っていない——このまま戻すと
+       * 番頭は「途中の話だけ知らない」状態になる。種は会話の記録から作るので、
+       * pi の分と Claude の分が**並び順どおり**に入る（`renderBackendHandover`）。
+       *
+       * 代償: pi が抱えていた生の文脈（ツールの呼び出しと結果を含む）はここで畳まれ、
+       * 書き起こしに置き換わる。章の切れ目と同じ扱いにする、というのが PO の裁定。
+       */
+      if (back) await handOver(back);
       // 決定97: 戻ったら Claude 側は畳む（放すだけでは子プロセスが残る）
       if (back) switcher?.releaseClaude();
       const target = back ?? thread.harness;
