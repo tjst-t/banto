@@ -32,3 +32,9 @@ export {
   type RegistryProblem,
   type Resolution,
 } from './registry.js';
+
+export {
+  inProcessSource,
+  loadManifest,
+  subprocessSource,
+} from './load.js';

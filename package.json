@@ -9,10 +9,10 @@
     "modules/*"
   ],
   "scripts": {
-    "build": "tsc --build packages/core packages/module-kit packages/runner packages/observer modules/fs apps/host",
-    "typecheck": "tsc --build packages/core packages/module-kit packages/runner packages/observer modules/fs apps/host --force",
+    "build": "tsc --build packages/core packages/module-kit packages/runner packages/observer modules/fs modules/shell modules/repo apps/host",
+    "typecheck": "tsc --build packages/core packages/module-kit packages/runner packages/observer modules/fs modules/shell modules/repo apps/host --force",
     "test": "vitest run",
-    "clean": "tsc --build packages/core packages/module-kit packages/runner packages/observer modules/fs apps/host --clean"
+    "clean": "tsc --build packages/core packages/module-kit packages/runner packages/observer modules/fs modules/shell modules/repo apps/host --clean"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

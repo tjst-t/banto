@@ -25,17 +25,31 @@ export type McpSpec =
   | { readonly kind: 'subprocess'; readonly command: string; readonly args?: readonly string[] }
   | { readonly kind: 'url'; readonly url: string };
 
-/** 依存の宣言（要件 C11）。モジュール id ＋ **実際に呼ぶツール名**。 */
+/**
+ * 依存の宣言（要件 C11）。
+ *
+ * **2つの名前空間を混ぜない。** ここは一度混ざっていて、3本目のモジュールを
+ * 書いたときに露見した（教訓6：契約の言葉が同じでも、意味が同じとは限らない）。
+ * `tools` は**相手の**ツール名、`usedBy` は**自分の**ツール名で、別のもの。
+ */
 export interface Dependency {
   readonly module: ModuleId;
   /**
-   * 呼ぶツールの名前（名前空間を付けない素の名前）。
+   * **相手の**ツールの名前（名前空間を付けない素の名前）。
    *
-   * ここを書かせるのは、接続時に `tools/list` で実在を確かめるため。
+   * 接続時に `tools/list` で実在を確かめるために使う。
    * 「そのモジュールに依存している」だけでは、相手がツール名を変えたときに
-   * push の瞬間まで気づけない。
+   * 使う瞬間まで気づけない。
    */
   readonly tools: readonly string[];
+  /**
+   * **自分の**ツールのうち、この依存が無いと成り立たないもの。
+   *
+   * 任意の依存でだけ意味を持つ——必須が欠けたときはそもそも起動しないので、
+   * どのツールが断るかを考える必要がない。省くと、依存が欠けても
+   * どのツールも断らない（＝黙って動いているように見える）。
+   */
+  readonly usedBy?: readonly string[];
 }
 
 export interface BantoModule {

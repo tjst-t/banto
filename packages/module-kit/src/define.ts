@@ -97,12 +97,13 @@ export function defineModule<Core>(spec: ModuleSpec<Core>): DefinedModule {
     const core = spec.createCore();
     const server = new McpServer({ name: spec.manifest.id, version: '0.0.0' });
 
-    // 任意の依存が欠けているとき、それを使うツールは断る。
+    // 任意の依存が欠けているとき、**それを使うと宣言した自分のツール**が断る。
+    // 引くのは `usedBy`（自分のツール名）であって `tools`（相手のツール名）ではない。
     // 一覧からは消さない——消すと「そんなツールは無い」に見えて、
     // 何が壊れているのか分からなくなる（要件 C12）。
     const missing = (spec.manifest.optional ?? [])
       .filter((dep) => !availability.has(dep.module))
-      .flatMap((dep) => dep.tools.map((tool) => [tool, dep.module] as const));
+      .flatMap((dep) => (dep.usedBy ?? []).map((tool) => [tool, dep.module] as const));
     const declineReason = new Map<string, ModuleId>(missing);
 
     for (const toolSpec of spec.tools(buildTool as ToolBuilder<Core>)) {
