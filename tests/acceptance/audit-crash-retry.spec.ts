@@ -46,13 +46,64 @@ function initRepo(dir: string): void {
   git(["commit", "-m", "init"], dir);
 }
 
-async function until(check: () => boolean, timeoutMs = 10_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (check()) return;
-    await new Promise((r) => setTimeout(r, 50));
+/**
+ * task-0296: Scheduler の周期 tick を、実時間の setInterval 任せにせず試験が
+ * 任意のタイミングで起こせるようにする（task-0291「壁時計依存を断つ」と同じ筋）。
+ *
+ * ## 何が起きていたか
+ * 直していた `until()` は「本物の200ms周期 tick が、10秒の壁時計予算の中で
+ * 実際に発火するか」に賭けていた。試験側の50msポーリングと Scheduler 側の
+ * 200ms周期という、**独立した2つの実時間タイマー**が両方ともイベントループの
+ * 混雑で遅延し得る状態で、片方の予算にもう片方の発火が間に合うことを祈って
+ * いた——一式2839本と職人が同時に走る負荷下では収まらない。数字を上げても
+ * 負荷が上がればまた破れる（task-0267, task-0269 と同じ轍）。
+ *
+ * ## 採った筋
+ * `Daemon.start()` が `Scheduler.start()` を呼ぶ、その一瞬だけ global.setInterval
+ * を横取りし、Scheduler が登録した周期コールバックそのものを掴んで、実インター
+ * バルは一度も発火させない（ダミーの Timeout を返すだけ）。以後、周期 tick は
+ * 試験が `fireSchedulerTick()` を呼んだ瞬間にだけ起こる——「本物の非同期処理が
+ * N 秒以内に終わるか」を実時間で測るのをやめ、「起こしたい瞬間に試験自身が
+ * 起こす」形にした。窓は `daemon.start()` の呼び出しだけに絞ってあるので、
+ * Worker Pool など他の setInterval 利用者には触れない。
+ *
+ * tick を起こした後に残る「本物の非同期処理（HTTP・プロセス起動）が片づくのを
+ * 待つ」部分だけは、なお実時間の短いポーリングが要る。ここは壁時計の**予算**
+ * ではなくポーリング**回数**で打ち切るようにした——1回あたりの実時間が負荷で
+ * 伸びても、打ち切りの根拠が経過時間ではなく試行回数なので、負荷そのもので
+ * 失敗しない（回数が尽きるのは本物のハングだけ）。
+ */
+let schedulerTick: (() => void) | undefined;
+
+/** `daemon.start()` の間だけ Scheduler の setInterval コールバックを奪う。 */
+async function startDaemonCapturingSchedulerTick(d: Daemon): Promise<void> {
+  const realSetInterval = global.setInterval;
+  global.setInterval = ((fn: (...args: unknown[]) => void, _ms?: number) => {
+    schedulerTick = fn as () => void;
+    return { unref() {}, ref() {} } as unknown as NodeJS.Timeout;
+  }) as unknown as typeof setInterval;
+  try {
+    await d.start();
+  } finally {
+    global.setInterval = realSetInterval;
   }
-  throw new Error("待っていた状態にならなかった");
+}
+
+/** 周期 tick を、実インターバルの発火を待たずにいま起こす。 */
+function fireSchedulerTick(): void {
+  schedulerTick?.();
+}
+
+async function until(check: () => boolean, maxAttempts = 400): Promise<void> {
+  for (let i = 0; i < maxAttempts; i++) {
+    if (check()) return;
+    fireSchedulerTick();
+    // tick で起こした本物の非同期処理（HTTP・プロセス起動）が片づくのを、
+    // ごく短い実時間だけ待って次の周に回す。打ち切りは回数（maxAttempts）で
+    // 行うので、この一回一回が負荷で伸びても失敗の理由にはならない。
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error(`待っていた状態にならなかった（${maxAttempts}回 tick を強制しても進まなかった）`);
 }
 
 let tmpDir: string;
@@ -72,13 +123,15 @@ before(async () => {
   daemon = Daemon.create({
     port: 0,
     dataDir: path.join(tmpDir, "data"),
-    // 職人のイベントは tick で引き取る（決定29c）
+    // 職人のイベントは tick で引き取る（決定29c）。実インターバルは
+    // startDaemonCapturingSchedulerTick が奪うので、この数値そのものは
+    // 使われない（試験は fireSchedulerTick() で明示的に起こす）
     tickIntervalMs: 200,
     worktreeBaseDir: path.join(tmpDir, "worktrees"),
     workerPoolUrl: workers.url,
     disableAutoSpawn: true,
   });
-  await daemon.start();
+  await startDaemonCapturingSchedulerTick(daemon);
   daemon.registerProject(proj, repoDir);
 });
 
@@ -217,8 +270,13 @@ describe("[task-0070] 監査人が判定を出さずに落ちたら、もう一�
     driver.exit(latestAuditSession(taskId), null, "SIGKILL");
     await until(() => auditStartedCount(taskId) === 2);
 
-    // 落ち着くのを待ってから数える（余分な起こし直しがあれば 3 以上になる）
-    await new Promise((r) => setTimeout(r, 800));
+    // task-0296: 「落ち着くのを待つ」を実時間の 800ms 待ちに賭けない。余分な
+    // 起こし直しがあるなら tick を重ねるほど顕在化する——強制的に何度も機会を
+    // 与える方が、漫然と実時間で待つより確かめる力が強く、負荷にも左右されない
+    for (let i = 0; i < 5; i++) {
+      fireSchedulerTick();
+      await new Promise((r) => setTimeout(r, 25));
+    }
     assert.equal(
       auditStartedCount(taskId),
       2,
