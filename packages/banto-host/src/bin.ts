@@ -1955,7 +1955,24 @@ async function serve(options: ServeOptions): Promise<void> {
             },
           }
         : {}),
-      getLastError: () => session.agent.state.errorMessage,
+      /**
+       * **pi が今も能動ハーネスのときだけ読む**（task-0288・幽霊402）。
+       *
+       * `session.agent.state.errorMessage` は pi の `HostSession` が抱える状態で、
+       * pi 自身は次に成功するまで消さない。Claude へ切り替えても `session` は同じ
+       * オブジェクトのままなので、素で読むと**切替前に pi へ残ったエラーが、
+       * 切替後の成功ターンにまで貼り付く**（実機 thread-61・thread-59 で確認）。
+       * `threads.get(threadId)?.harness` は `replaceHarness` で差し替わる「いま」の
+       * ハーネスなので、それが `piHarness` と同じ参照のときだけ pi の状態を信じる
+       * ——Claude 側は失敗を `prompt()` の throw で伝える別経路を持つので、ここが
+       * `undefined` を返しても握り潰しにはならない（I2）。まだ帳簿に載っていない
+       * （登録前の）呼び出しは、この会話が組み立て時に選んだ `harness` で判定する
+       * （`chapters` の `harness` 引き直しと同じ形）。
+       */
+      getLastError: () =>
+        (threads.get(threadId)?.harness ?? harness) === piHarness
+          ? session.agent.state.errorMessage
+          : undefined,
       ...(sessionManager.getSessionFile() ? { sessionFile: sessionManager.getSessionFile()! } : {}),
       // imp-0016 主対策: 再起動で進行中ターンが失われたスレッド（最後が toolResult）を
       // 復元時に再開する。resumeInterruptedTurn は「最後が toolResult のときだけ continue()
