@@ -352,12 +352,32 @@ Factory の一本の体験を磨き切るまで、生態系を作り始めない
 
 ---
 
-## 併走して判断すること
+## 判断した：Managed Agents は使わない（2026-08-20）
 
-**Managed Agents（Anthropic, beta）を Factory に使うか。** Phase 0 と並行して1日で試し、
-Phase 1 の終わりまでに決定する。
+**理由は設計ではなく前提条件。Managed Agents は Claude API の課金対象で、
+banto はそこに課金しない。**
 
-- 検証の題は1点：**`self_hosted` 環境で Outcomes（rubric で採点→修正→再採点）が
+出所は2つ：
+
+- Managed Agents の要件——「To get started, you need: **1. A Claude API key** …
+  3. Access to Claude Managed Agents (**enabled by default for all API accounts**)」
+- Anthropic ヘルプセンター——「A paid Claude subscription enhances your chat experience
+  but **doesn't include access to the Claude API or Console**」
+
+Claude のサブスクからは到達できない。**一方、決定1 の Claude Agent SDK は
+サブスクで動く**（Phase 0 で実際に動かして確認済み）。この非対称が、
+決定1「ランタイムは Agent SDK 一本」を裏から支えている。
+
+**したがって決定10 は自前のまま。** Factory の耐久ワークフローは banto が持つ
+——ただし教訓18 のとおり、これには **durable execution** という名前がある。
+自分で考えるのは配分と粒度だけで、機構は既知の答えに乗る。
+
+**覆すとき**：API アカウントを持つことになったら、この判断は変わりうる。そのときの
+検証の題と手順は `docs/notes/2026-08-20-managed-agents-self-hosted.md` にそのまま
+走らせられる形で残してある（下調べは済んでいて、決め手は
+「self_hosted で grader が採点対象をどう見るか」の1点だけ）。以下は当時の検討の記録。
+
+- 検証の題は1点だった：**`self_hosted` 環境で Outcomes（rubric で採点→修正→再採点）が
   決定10 の受け入れを置き換えられるか**
 - Banto はローカルの git リポジトリで作業するので `self_hosted` 一択。この判断は変わらない
   （下の下調べのあとも）。**ただし前提は2026-08-20 に当たり直した**
