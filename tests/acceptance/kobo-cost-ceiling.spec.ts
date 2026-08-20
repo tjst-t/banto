@@ -27,6 +27,13 @@ import {
   startWorkerPool,
   type WorkerPoolHarness,
 } from "./worker-pool-harness.js";
+import type {
+  RuntimeDriver,
+  SpawnOptions,
+  SessionHandle,
+  DriverEventHandler,
+  DriverEvent,
+} from "../../packages/banto-core/src/index.js";
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -182,7 +189,7 @@ describe("[task-0063] 等級の上限（決定67）", () => {
   });
 
   it("[a1] 同時実行数の上限が層B設定から読める", () => {
-    assert.equal(h.daemon.maxConcurrentSessions(), 2, "プロジェクトの設定が効く");
+    assert.equal(h.daemon.maxConcurrentSessions(h.proj), 2, "プロジェクトの設定が効く");
     assert.equal(loadProjectConfig(h.repoDir).limits.maxConcurrentSessions, 2);
   });
 
@@ -300,5 +307,224 @@ describe("[task-0292/ADR-0027 決定140] 監査も等級の上限に従う", () 
     } finally {
       await teardown(h);
     }
+  });
+});
+
+/**
+ * task-0295: `maxConcurrentSessions()` は全プロジェクトを回って最小値を採っていたため、
+ * 1プロジェクトの低い上限が工場全体を絞っていた。同時実行数の上限も「いま何人動いて
+ * いるか」も**そのプロジェクトのものだけ**を見る（決定67の趣旨はプロジェクト単位の
+ * 自己規律であって、工場全体への波及ではない）。
+ */
+
+// SleepDriver: 実プロセス（sleep）を起こす本物のランタイム（auto-spawn-quota.spec.ts と同じ形）。
+// pi バイナリも LLM 呼び出しも要らない——起こす／畳むの事実だけを見る。
+class SleepDriver implements RuntimeDriver {
+  private readonly sessions = new Map<
+    string,
+    { pid: number; proc: childProcess.ChildProcess }
+  >();
+  private readonly handlers: Set<DriverEventHandler> = new Set();
+
+  async spawn(opts: SpawnOptions): Promise<SessionHandle> {
+    const proc = childProcess.spawn("sleep", ["120"], { stdio: "ignore", detached: true });
+    proc.unref();
+    const pid = proc.pid;
+    if (!pid) throw new Error("SleepDriver: failed to get pid");
+    const sessionId = `${opts.taskId}-${pid}`;
+    this.sessions.set(sessionId, { pid, proc });
+    proc.once("exit", (code, signal) => {
+      const exitEv: DriverEvent = { type: "process_exited", pid, sessionId, exitCode: code, signal };
+      for (const h of this.handlers) {
+        try {
+          h(exitEv);
+        } catch {
+          /* ignore handler errors */
+        }
+      }
+      this.sessions.delete(sessionId);
+    });
+    const startEv: DriverEvent = { type: "process_started", pid, sessionId, sessionPath: opts.sessionPath };
+    for (const h of this.handlers) {
+      try {
+        h(startEv);
+      } catch {
+        /* ignore */
+      }
+    }
+    return { pid, sessionId, sessionPath: opts.sessionPath };
+  }
+
+  async inject(_sessionId: string, _message: string): Promise<void> {
+    // no-op
+  }
+
+  subscribe(handler: DriverEventHandler): () => void {
+    this.handlers.add(handler);
+    return () => {
+      this.handlers.delete(handler);
+    };
+  }
+
+  async kill(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    try {
+      process.kill(session.pid, "SIGTERM");
+    } catch {
+      /* already dead */
+    }
+  }
+
+  async killAll(): Promise<void> {
+    for (const [sid] of this.sessions) {
+      await this.kill(sid);
+    }
+    await new Promise<void>((r) => setTimeout(r, 200));
+  }
+}
+
+async function pollUntil<T>(
+  fn: () => T,
+  pred: (v: T) => boolean,
+  timeoutMs = 6000,
+  intervalMs = 50
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  let last = fn();
+  while (!pred(last) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+    last = fn();
+  }
+  return last;
+}
+
+/** Kobo が `[banto-daemon]` として stderr へ書いた行だけを、その間だけ写し取る。 */
+async function captureDaemonStderr(fn: () => Promise<void>): Promise<string> {
+  const chunks: string[] = [];
+  const original = process.stderr.write;
+  process.stderr.write = ((...args: Parameters<typeof process.stderr.write>): boolean => {
+    const chunk = args[0];
+    chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    return original.apply(process.stderr, args);
+  }) as typeof process.stderr.write;
+  try {
+    await fn();
+  } finally {
+    process.stderr.write = original;
+  }
+  return chunks
+    .join("")
+    .split("\n")
+    .filter((line) => line.includes("[banto-daemon]"))
+    .join("\n");
+}
+
+function initCeilingRepo(dir: string, config: string): void {
+  fs.mkdirSync(path.join(dir, "work", "tasks"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "meta"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "meta", "config.yaml"), config, "utf-8");
+  git(["init", "-b", "main"], dir);
+  git(["config", "user.email", "t@e"], dir);
+  git(["config", "user.name", "t"], dir);
+  fs.writeFileSync(path.join(dir, "README.md"), "x\n");
+  git(["add", "."], dir);
+  git(["commit", "-m", "init"], dir);
+}
+
+function createReadyTask(daemon: Daemon, proj: string, taskId: string): void {
+  daemon.createTask(proj, taskId, `作業 ${taskId}`, {
+    kind: "feature",
+    scope: { paths: [`src/${taskId}/**`] },
+    acceptance: [{ id: "a1", text: "動くこと", verify: "npm test" }],
+  });
+  daemon.transition(proj, taskId, "queued", "test");
+  daemon.transition(proj, taskId, "ready", "test");
+}
+
+describe("[task-0295] 同時上限はプロジェクトごとに見る", () => {
+  let tmpDir: string;
+  let daemon: Daemon;
+  let driver: SleepDriver;
+  let pool: WorkerPoolHarness;
+  const projTight = "ceiling-tight";
+  const projLoose = "ceiling-loose";
+
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kobo-ceiling-proj-"));
+    const repoTight = path.join(tmpDir, "repo-tight");
+    const repoLoose = path.join(tmpDir, "repo-loose");
+    // tight は自分の層B設定で1本に絞る。loose は層B設定を持たない（Kobo の既定に従う）
+    initCeilingRepo(repoTight, "limits:\n  max_concurrent_sessions: 1\n");
+    initCeilingRepo(repoLoose, "");
+
+    driver = new SleepDriver();
+    pool = await startWorkerPool(driver);
+
+    daemon = Daemon.create({
+      port: await freePort(),
+      dataDir: path.join(tmpDir, "data"),
+      tickIntervalMs: 100,
+      workerPoolUrl: pool.url,
+      disableAuditSpawn: true,
+    });
+    await daemon.start();
+    daemon.registerProject(projTight, repoTight);
+    daemon.registerProject(projLoose, repoLoose);
+  });
+
+  after(async () => {
+    await daemon.stop();
+    await pool.close();
+    await driver.killAll();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("[a1] 上限は、そのプロジェクトの層B設定だけを見る（他プロジェクトに引きずられない）", () => {
+    assert.equal(daemon.maxConcurrentSessions(projTight), 1, "絞っている側はその値");
+    assert.equal(
+      daemon.maxConcurrentSessions(projLoose),
+      5,
+      "設定を持たない側は Kobo の既定のまま（tight の 1 に引きずられない）"
+    );
+  });
+
+  it("[a2][a3][a4] 一方が上限に達しても他方の ready は進み、見送りはログに残る", async () => {
+    const out = await captureDaemonStderr(async () => {
+      createReadyTask(daemon, projTight, "tight-1");
+      createReadyTask(daemon, projTight, "tight-2");
+      createReadyTask(daemon, projLoose, "loose-1");
+
+      // [a2] tight-1 が tight の唯一の席を使って着手する
+      await pollUntil(
+        () => daemon.getTask(projTight, "tight-1")?.status,
+        (status) => status === "planning"
+      );
+      // [a3] tight が埋まっていても、loose は掃引を打ち切られず着手する
+      await pollUntil(
+        () => daemon.getTask(projLoose, "loose-1")?.status,
+        (status) => status === "planning"
+      );
+      // tight-2 が見送られたことがログに残るまで、もう一巡回らせる
+      await new Promise((r) => setTimeout(r, 250));
+    });
+
+    assert.equal(daemon.getTask(projTight, "tight-1")?.status, "planning");
+    assert.equal(
+      daemon.getTask(projTight, "tight-2")?.status,
+      "ready",
+      "[a2] tight は席が無いので tight-2 は着手できず ready のまま残る"
+    );
+    assert.equal(
+      daemon.getTask(projLoose, "loose-1")?.status,
+      "planning",
+      "[a3] 他プロジェクトの ready は見送られたプロジェクトに引きずられない"
+    );
+
+    // [a4] 黙って return しない——どのプロジェクトが・何人動いていて・上限がいくつだから
+    // 見送ったのかが、ログから読めること
+    assert.match(out, new RegExp(projTight), `見送ったプロジェクト名が読めること: ${out}`);
+    assert.match(out, /1\/1/, `稼働数と上限が読めること: ${out}`);
+    assert.match(out, /上限/, `上限に当たったことが読めること: ${out}`);
   });
 });

@@ -1329,24 +1329,24 @@ export class Daemon {
   }
 
   /**
-   * いま許されている同時実行数（決定67）。
+   * 指定したプロジェクトにいま許されている同時実行数（決定67・task-0295）。
    *
-   * 層B設定（プロジェクトの `meta/config.yaml`）が絞っていればそれを採る。複数プロジェクトを
-   * 受け持つので**いちばん厳しいものに合わせる**——1つでも絞っているなら、その意図を守る。
+   * 層B設定（そのプロジェクトの `meta/config.yaml`）が絞っていればそれを採る
+   * （`min(Kobo の既定, そのプロジェクトの層B設定)`）。**見るのはそのプロジェクトの設定だけ**
+   * ——他のプロジェクトが絞っていても、このプロジェクトの上限には影響しない。工場全体の
+   * 同時実行数は別の概念（工房の `BANTO_WORKER_MAX_CONCURRENT`）が担う。
    */
-  maxConcurrentSessions(): number {
+  maxConcurrentSessions(projectTag: string): number {
     const koboDefault = this.config.maxConcurrentSessions ?? 5;
     let limit = koboDefault;
-    for (const project of this.registry.list()) {
-      try {
-        const configured = this.projectConfig(project.id).limits.maxConcurrentSessions;
-        if (typeof configured === "number" && configured >= 0) limit = Math.min(limit, configured);
-      } catch (err) {
-        // I2: 壊れた設定を黙って無視しない。ただし1つの設定で工場全体を止めない
-        process.stderr.write(
-          `[banto-daemon] ${project.id} の層B設定を読めません: ${String(err)}\n`
-        );
-      }
+    try {
+      const configured = this.projectConfig(projectTag).limits.maxConcurrentSessions;
+      if (typeof configured === "number" && configured >= 0) limit = Math.min(limit, configured);
+    } catch (err) {
+      // I2: 壊れた設定を黙って無視しない。ただし1つの設定で工場全体を止めない
+      process.stderr.write(
+        `[banto-daemon] ${projectTag} の層B設定を読めません: ${String(err)}\n`
+      );
     }
     return limit;
   }
@@ -4959,11 +4959,13 @@ export class Daemon {
    * Auto-spawn tick job (S75f66b-2, spec-daemon-core §6).
    *
    * On every scheduler tick:
-   *   1. Check physical quota: if ledger.size >= maxConcurrentSessions, skip silently.
-   *      (No rejection event — just re-evaluated on the next tick.)
+   *   1. Check physical quota **per project**: if that project's live count >= its
+   *      maxConcurrentSessions, skip that project's ready tasks (log why — do not
+   *      return silently) but keep checking other projects' ready tasks.
    *   2. Enumerate all tasks whose derived state is "ready" AND that are not already
    *      in the spawn ledger (i.e. not yet spawned). D3: no extra bookkeeping.
-   *   3. Spawn each eligible task via spawnTask(), stopping when the quota is full.
+   *   3. Spawn each eligible task via spawnTask(), stopping when that task's project
+   *      quota is full.
    *   4. spawn failures are already routed to task_failed via recordTaskFailed inside
    *      spawnTask() — do NOT re-spawn failed tasks (they will no longer be "ready").
    *
@@ -4981,10 +4983,6 @@ export class Daemon {
     this._autoSpawnRunning = true;
 
     try {
-      // 上限は層B設定（プロジェクト）＞ Kobo の既定。**低い方を採る**——プロジェクトが
-      // 絞っているのに Kobo の既定で回すと、設定した意味が無い（決定67）
-      const maxSessions = this.maxConcurrentSessions();
-
       // 「いま何人動いているか」は Worker Pool に聞く（決定60：職人の真実は一箇所）。
       // I2: 聞けないときは起こさない——数えられないまま起こすと、上限が効かない
       let workers: WorkerView[];
@@ -4996,12 +4994,14 @@ export class Daemon {
         );
         return;
       }
-      let live = workers.length;
       const busy = new Set(workers.map((w) => `${w.projectTag}/${w.taskId}`));
 
-      // Check quota FIRST — if already at limit, skip the whole sweep.
-      if (live >= maxSessions) {
-        return;
+      // 稼働数は**プロジェクトごと**に数える（task-0295）——他プロジェクトの職人は
+      // このプロジェクトの席を食わない。上限も `maxConcurrentSessions(projectTag)` で
+      // そのプロジェクトの層B設定だけを見る（min(Kobo既定, そのプロジェクトの設定)）
+      const liveByProject = new Map<string, number>();
+      for (const w of workers) {
+        liveByProject.set(w.projectTag, (liveByProject.get(w.projectTag) ?? 0) + 1);
       }
 
       // Enumerate ready tasks from derived state (D3: no extra flag).
@@ -5011,17 +5011,34 @@ export class Daemon {
         .getAllTasks()
         .filter((t) => t.status === "ready" && this.registry.has(t.projectTag));
 
+      // あるプロジェクトが上限に達していても、**掃引ごと打ち切らない**——他プロジェクトの
+      // ready はそのまま見る（task-0295）。上限で見送ったプロジェクトは1回だけログに残す
+      const loggedAsFull = new Set<string>();
+
       for (const task of readyTasks) {
-        // Re-check quota each iteration — previous spawns in this loop count.
+        const maxSessions = this.maxConcurrentSessions(task.projectTag);
+        const live = liveByProject.get(task.projectTag) ?? 0;
+
+        // Re-check this project's quota each iteration — previous spawns in this
+        // loop for the same project count.
         if (live >= maxSessions) {
-          break;
+          // I2/task-0295: 黙って return しない——どのプロジェクトが・何人動いていて・
+          // 上限がいくつだから見送ったのかをログに残す（外から原因が読めるように）
+          if (!loggedAsFull.has(task.projectTag)) {
+            loggedAsFull.add(task.projectTag);
+            process.stderr.write(
+              `[banto-daemon] ${task.projectTag} は同時実行数の上限（稼働 ${live}/${maxSessions}）` +
+                `に達しているので見送ります: ${task.id}\n`
+            );
+          }
+          continue;
         }
 
         // 既に職人が付いているタスクは飛ばす（起動の途中で ready のまま見えるため）
         if (busy.has(`${task.projectTag}/${task.id}`)) {
           continue;
         }
-        live++;
+        liveByProject.set(task.projectTag, live + 1);
 
         // spawnTask() handles all failure paths via recordTaskFailed (I2).
         // After a successful spawn the task transitions to "planning" (no longer "ready"),
