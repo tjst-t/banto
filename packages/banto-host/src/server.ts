@@ -48,6 +48,16 @@ import type {
 } from "./threads.js";
 import { workspaceRoot } from "./workspace.js";
 import { TurnLog } from "./turn-log.js";
+import {
+  detectLlmUnavailable,
+  formatLlmUnavailableCard,
+  formatLlmUnavailableLog,
+  formatModelCoordinate,
+  llmUnavailableCooldownKey,
+  noticeHead,
+  shouldEscalateLlmUnavailable,
+  withinLlmUnavailableCooldown,
+} from "./llm-unavailable.js";
 
 /**
  * 同じ面への口が既に立っているか（PO報告 2026-08-10）。
@@ -460,6 +470,11 @@ export class BantoHostServer {
    * ——1通目の約束をここで待たせる。開き終わったら消す（残すと畳んだ枝を掴み続ける）。
    */
   private readonly openingSubjects = new Map<string, Promise<Thread>>();
+  /**
+   * 「モデルを呼べない」札を最後に立てた時刻（会話×理由）（task-0289・a3）。
+   * 連打を防ぐ履歴——watchdog.ts の `nudgedAt` と同じ持ち方。
+   */
+  private readonly llmUnavailableEscalatedAt = new Map<string, number>();
 
   /**
    * 番頭の標準モデル（会話がまだ自分のモデルを持たないときに使う）。
@@ -1109,12 +1124,14 @@ export class BantoHostServer {
           // I2: 知らせが番頭に届かなかったことを黙らせない
           thread.record({ role: "error", text: String(err) });
           logTurn(false, String(err));
+          this.handleLlmUnavailable(thread, source, String(err), text);
           this.broadcast({ type: "turn_end", threadId: thread.id, errorMessage: String(err) });
           return;
         }
         const lastError = thread.getLastError();
         if (lastError) thread.record({ role: "error", text: lastError });
         logTurn(lastError === undefined, lastError);
+        if (lastError) this.handleLlmUnavailable(thread, source, lastError, text);
         this.broadcast({
           type: "turn_end",
           threadId: thread.id,
@@ -1220,6 +1237,100 @@ export class BantoHostServer {
       durationMs: Date.now() - turnStartedAt,
       ok,
       ...(errorMessage !== undefined ? { errorMessage } : {}),
+    });
+  }
+
+  /**
+   * ターンが「モデルを呼べない」系のエラーで落ちたときの後始末（task-0289）。
+   *
+   * 判定は `llm-unavailable.ts` の純粋関数に任せる（D5：ここは繋ぐだけ）。
+   * journal（console.error）へは**出所を問わず**出す（a1）。親の幹への札は
+   * 出所が自分以外（kobo/worker/nudge/thread）のときだけ（a2）——PO 自身の発話は
+   * 還す相手も PO 自身なので、札にしても意味が無い。
+   *
+   * @param noticeText そのターンへ渡した知らせ・言伝の本文（札の頭200字に使う）
+   */
+  private handleLlmUnavailable(
+    thread: Thread,
+    source: string | undefined,
+    errorMessage: string,
+    noticeText: string
+  ): void {
+    const reason = detectLlmUnavailable(errorMessage);
+    if (!reason) return; // a4: 呼べない系でなければ何もしない（誤検知の害の方が大きい）
+    const model = formatModelCoordinate(thread.model);
+    console.error(
+      formatLlmUnavailableLog({ threadId: thread.id, source: source ?? "unknown", model, reason })
+    );
+    if (!shouldEscalateLlmUnavailable(source)) return;
+
+    const key = llmUnavailableCooldownKey(thread.id, reason);
+    const now = Date.now();
+    if (withinLlmUnavailableCooldown(this.llmUnavailableEscalatedAt.get(key), now)) return; // a3
+    this.llmUnavailableEscalatedAt.set(key, now);
+
+    const card = formatLlmUnavailableCard({
+      threadTitle: thread.title,
+      threadId: thread.id,
+      noticeHead: noticeHead(noticeText),
+      model,
+      reason,
+    });
+    this.escalateLlmUnavailable(thread, card);
+  }
+
+  /**
+   * 札を親の幹へ立てる（枝なら親・幹なら帳場）。立てたら幹のターンを起こす
+   * ——気づかせるのが目的で、札を積むだけでは幹はいつまでも気づかない。
+   *
+   * I2: 親を引けない（枝の親が消えている・帳場が無い）ときは黙って諦める。
+   * ここは「呼べない」ことを伝えようとした副産物のエラー処理なので、
+   * これ以上のエラーの連鎖は起こさない。
+   */
+  private escalateLlmUnavailable(thread: Thread, card: string): void {
+    if (thread.kind === "branch") {
+      if (!thread.parentId) return;
+      let trunk: Thread;
+      try {
+        ({ trunk } = this.threads.consult(thread.id, { kind: "report", message: card }));
+      } catch (err) {
+        console.error(`[banto] 呼べないことを幹へ伝えられませんでした: ${String(err)}`);
+        return;
+      }
+      this.wakeForLlmUnavailableCard(trunk.id);
+      return;
+    }
+    // 幹（trunk）自身が落ちた: 帳場へ（帳場自身が落ちたときは上げ先が無い）
+    const main = this.threads.main();
+    if (!main || main.id === thread.id) return;
+    const at = new Date().toISOString();
+    main.record({
+      role: "branch_note",
+      branchId: thread.id,
+      title: thread.title,
+      kind: "report",
+      text: card,
+      at,
+    });
+    this.broadcast({
+      type: "branch_note",
+      threadId: main.id,
+      branchId: thread.id,
+      title: thread.title,
+      kind: "report",
+      text: card,
+      at,
+    });
+    this.wakeForLlmUnavailableCard(main.id);
+  }
+
+  /** 札を読んで動けるよう、幹のターンを1本起こす。**待たない**（handOff と同じ形）。 */
+  private wakeForLlmUnavailableCard(trunkId: string): void {
+    void this.nudge(
+      trunkId,
+      "［呼べない］モデルを呼べないため知らせを捌けなかった会話があります。上に積まれた札を確かめてください。"
+    ).catch((err) => {
+      console.error(`[banto] 呼べない札で幹を起こせませんでした: ${String(err)}`);
     });
   }
 
@@ -1878,6 +1989,7 @@ export class BantoHostServer {
         // I2: ターンの失敗はクライアントへ伝える。握りつぶすと会話が無応答に見える
         thread.record({ role: "error", text: String(err) });
         logTurn(false, String(err));
+        this.handleLlmUnavailable(thread, "po", String(err), text);
         this.broadcast({ type: "turn_end", threadId: thread.id, errorMessage: String(err) });
         return;
       } finally {
@@ -1887,6 +1999,7 @@ export class BantoHostServer {
       const lastError = thread.getLastError();
       if (lastError) thread.record({ role: "error", text: lastError });
       logTurn(lastError === undefined, lastError);
+      if (lastError) this.handleLlmUnavailable(thread, "po", lastError, text);
       this.broadcast({
         type: "turn_end",
         threadId: thread.id,
