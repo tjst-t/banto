@@ -171,6 +171,39 @@ function latestAuditSession(taskId: string): string {
   return last!;
 }
 
+/**
+ * task-0296: **やり直し前に、前の回の監査人を畳んでおく**（本物の `spawnReworkSession` /
+ * `closeWorkerFor` と同じ順序を試験でも再現する）。
+ *
+ * 実装（daemon.ts の `handleAuditVerdict`）は fail 判定を受けたとき、①先に
+ * `auditing → implementing` へ遷移し、②そのあと（別の非同期経路で）前の監査人を
+ * `closeWorkerFor` で畳む。**畳んだという知らせ（exit）が Kobo に届くのは、状態が
+ * もう auditing を離れたあと**——だから畳んだ監査人の exit を「auditing 中の事故」
+ * と読み違えることがない（`daemon.ts:3411` の `current.status === "auditing"` 判定）。
+ *
+ * この試験は `daemon.transition()` を直接呼んで rework を模しているだけなので、
+ * 前の回の監査人（まだ「生きている」ことになっている）を明示的には畳んでいなかった。
+ * 畳まないまま `auditing` へ戻すと、次の監査人の spawn（`auditOrSendBack` 経由、
+ * 検証を挟むぶん遅い）より**先に**、工房が「同じ枠に新しい監査人を立てるので前の1人を
+ * 畳む」通知の exit を届けてしまうことがある——その時点でまだ状態が `auditing` に
+ * 戻っていなければ問題ないが、戻った直後だと「いま動いている監査人が事故で落ちた」と
+ * 誤認され、数え直されるはずの試行回数に**数えられるべきでない1回**が混ざる
+ * （`latestSpawnedSessionId` の判定は「新しい spawn が先に記録されている」前提に
+ * 立っており、逆順で届くとすり抜ける）。決まった回数（400回のtick）を重ねても
+ * 「進まない」のではなく、**進みすぎて数が食い違う**——同じ `until()` の失敗として
+ * 表面化するだけで、原因は待ち方ではなく試験がここを省略していたこと。
+ *
+ * 本物の順序（畳む→状態が変わる→次を起こす）をここでも守れば、この誤認は起きない。
+ */
+async function retireAuditSession(taskId: string, sessionId: string): Promise<void> {
+  driver.exit(sessionId, null, "SIGTERM");
+  await until(() =>
+    daemon
+      .getTaskEvents(proj, taskId)
+      .some((e) => e.type === "agent_exited" && (e as { sessionId?: string }).sessionId === sessionId)
+  );
+}
+
 describe("[task-0070] 監査人が判定を出さずに落ちたら、もう一度起こす", () => {
   it("1回落ちても failed にしない——起こし直す", async () => {
     const taskId = "task-crash-1";
@@ -243,8 +276,12 @@ describe("[task-0070] 監査人が判定を出さずに落ちたら、もう一�
     driver.exit(latestAuditSession(taskId), null, "SIGKILL");
     await until(() => auditStartedCount(taskId) === 2);
 
-    // 監査が fail の判定を出して、やり直しへ（auditing → implementing → auditing）
+    // 監査が fail の判定を出して、やり直しへ（auditing → implementing → auditing）。
+    // 本物の `handleAuditVerdict` と同じ順で、①implementing へ移してから②前の回の
+    // 監査人を畳む（`retireAuditSession` のコメント参照）——畳んだ知らせが auditing
+    // 中の事故と読み違えられるのを防ぐ
     daemon.transition(proj, taskId, "implementing", "rework");
+    await retireAuditSession(taskId, latestAuditSession(taskId));
     daemon.transition(proj, taskId, "auditing", "rework done");
     await until(() => auditStartedCount(taskId) === 3);
 
