@@ -134,8 +134,10 @@ export interface BantoModule {
   skills?: string
   settings?: JSONSchema
   handles?: ("secrets")[]            // 宣言すると in-process を拒否される
+  // tools は「相手の」ツール名（tools/list と突き合わせる）
+  // usedBy は「自分の」ツール名（欠けたときに断るもの）。**別の名前空間**
   requires?: { module: string; tools: string[] }[]
-  optional?: { module: string; tools: string[] }[]
+  optional?: { module: string; tools: string[]; usedBy?: string[] }[]
 }
 ```
 
@@ -162,7 +164,14 @@ Repo が Vault に鍵の提示を頼む）。
 ツール名）。**宣言は自己申告なので、接続時に MCP の `tools/list` で実在を確かめる**
 ——Vault がツール名を変えたら、Repo は push のときではなく接続のときに落ちる。
 必須が欠ければ起動せず何が足りないかを言い、任意が欠ければそれを使うツールだけが
-理由つきで断る。循環は起動時に検出して止まる。解決するのは**モジュール起動時と
+理由つきで断る。循環は起動時に検出して止まる。
+
+**`tools` と `usedBy` は別の名前空間である。** `tools` は相手のツール名で `tools/list` と
+突き合わせるもの、`usedBy` は自分のツール名で欠けたときに断るものを指す。ここは
+最初1つの配列に両方の意味を負わせていて、**3本目のモジュール（repo→vault）を書いた
+ときに衝突して露見した**——vault の実ツール名を書くと push が断らず、断らせようと
+自分のツール名を書くと `tools/list` との突き合わせが嘘になる。契約を先に決めて
+中身を後にする進めかたが、狙いどおりに効いた例（教訓6）。解決するのは**モジュール起動時と
 スレッドへの紐づけ時の2箇所だけ**で、実行中の追随はしない——常時追随する機構は、
 それ自体が「黙って壊れる」候補になる。
 
