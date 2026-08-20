@@ -26,7 +26,9 @@ import * as childProcess from "node:child_process";
 
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
 import { createKoboSettings } from "../../packages/banto-daemon/src/kobo-settings.js";
+import type { GateVerifyRunner } from "../../packages/banto-daemon/src/merge-gate.js";
 import { PiRpcDriver } from "../../packages/banto-worker-pool/src/pi-rpc-driver.js";
+import { hostVerifyRunner } from "./gate-verify-runner.js";
 import {
   FakeRuntimeDriver,
   startWorkerPool,
@@ -71,7 +73,9 @@ interface Harness {
   proj: string;
 }
 
-async function harness(options: { tickIntervalMs?: number } = {}): Promise<Harness> {
+async function harness(
+  options: { tickIntervalMs?: number; verifyRunner?: GateVerifyRunner } = {}
+): Promise<Harness> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kobo-worker-"));
   const repoDir = path.join(tmpDir, "repo");
   initRepo(repoDir);
@@ -108,6 +112,7 @@ async function harness(options: { tickIntervalMs?: number } = {}): Promise<Harne
     worktreeBaseDir: path.join(tmpDir, "worktrees"),
     workerPoolUrl: workers.url,
     disableAutoSpawn: true,
+    ...(options.verifyRunner ? { verifyRunner: options.verifyRunner } : {}),
   });
   await daemon.start();
 
@@ -301,6 +306,106 @@ describe("[task-0060/a1] 職人が報告せずに終わったら、Kobo が止�
       .getTaskEvents(h.proj, "task-0010")
       .filter((e) => e.type === "agent_exited").length;
     assert.equal(after, before, "agent_exited は1回だけ（帳簿から重複を弾く）");
+  });
+});
+
+/**
+ * task-0305: **古い実装役の終了が、新しい職人が立ったあとに届いてもタスクを殺さない。**
+ *
+ * 監査側にはずっと前から「置き換えられた古い監査人の終了で余分に数えない」ガード
+ * （`event.sessionId !== latestSpawnedSessionId(history)` なら無視する）があったが、
+ * 実装役（executor / rework）の分岐には同じガードが無かった。前倒し検証
+ * （`auditOrSendBack`）が rework を起こすとき、それより前の実装役（旧職人）は畳まれない
+ * ——その旧職人の終了が、新しい rework の agent_spawned より**後**に届くと、旧に
+ * ついての事故を「いま働いている職人が黙って終わった」と誤認して failed にしていた
+ * （実測 2026-08-20 / task-0301：工房の再起動で複数の職人が入れ替わるときに表面化）。
+ *
+ * 前倒し検証を確実に落とす（`verify: "exit 1"`）ことで、監査人を起こさず
+ * `implementing → auditing → implementing` と戻して rework（新しい職人B）を立てる
+ * ——このとき旧職人（A）は畳まれない（`auditOrSendBack` の差し戻し経路は
+ * `closeWorkerFor` を呼ばない）。Aの終了を**Bが立ったあとに**手で届けることで、
+ * 「順序が逆に届く」を試験として明示的に作る（a2）。
+ */
+describe("[task-0305] 古い実装役の終了が、新しい職人が立ったあとに届いてもタスクを殺さない", () => {
+  let h: Harness;
+  const taskId = "task-0305-1";
+  let sessionAId: string;
+  let sessionBId: string;
+
+  before(async () => {
+    h = await harness({ tickIntervalMs: 200, verifyRunner: hostVerifyRunner() });
+  });
+  after(async () => {
+    await teardown(h);
+  });
+
+  it("[a1/a2/a4] 職人Aを立て、Bで置き換えたあとにAの終了が届いても failed にしない", async () => {
+    readyTask(h, taskId, {
+      // 前倒し検証（`auditOrSendBack`）を確実に落として rework 経路を通す
+      acceptance: [{ id: "a1", text: "動くこと", verify: "exit 1" }],
+    });
+    const sessionA = await h.daemon.spawnTask(h.proj, taskId);
+    sessionAId = sessionA.sessionId;
+    assert.equal(h.daemon.getTask(h.proj, taskId)?.status, "planning");
+    h.daemon.transition(h.proj, taskId, "implementing", "test");
+
+    // implementing → auditing: 前倒し検証が必ず落ちるので、監査人を起こさず
+    // rework（職人B）へ差し戻す。このとき職人Aは畳まれない
+    h.daemon.transition(h.proj, taskId, "auditing", "test");
+
+    await until(
+      () =>
+        h.daemon
+          .getTaskEvents(h.proj, taskId)
+          .filter((e) => e.type === "agent_spawned").length >= 2
+    );
+    assert.equal(
+      h.daemon.getTask(h.proj, taskId)?.status,
+      "implementing",
+      "前倒し検証が落ちたので rework へ差し戻されていること"
+    );
+
+    const spawns = h.daemon
+      .getTaskEvents(h.proj, taskId)
+      .filter((e) => e.type === "agent_spawned") as Array<{ sessionId?: string }>;
+    assert.equal(spawns.length, 2, "職人Aに続けて職人B（rework）が立っていること");
+    sessionBId = spawns[1]!.sessionId!;
+    assert.notEqual(sessionBId, sessionAId, "職人Bは職人Aとは別のセッションであること");
+
+    // [a2] 順序が逆に届くことを明示的に作る：Bが立ったあとに、Aの終了を届ける
+    h.driver.exit(sessionAId, null, "SIGKILL");
+    await until(() =>
+      h.daemon
+        .getTaskEvents(h.proj, taskId)
+        .some((e) => e.type === "agent_exited" && (e as { sessionId?: string }).sessionId === sessionAId)
+    );
+
+    // [a1] 置き換えられた古い職人（A）の終了で、いま働いている職人（B）ごとタスクを殺さない
+    assert.equal(
+      h.daemon.getTask(h.proj, taskId)?.status,
+      "implementing",
+      "古い職人の終了で failed にしてはいけない（latestSpawnedSessionId で弾く）"
+    );
+    assert.equal(
+      h.daemon.getTaskEvents(h.proj, taskId).some((e) => e.type === "task_failed"),
+      false,
+      "古い職人の終了を理由に task_failed が積まれてはいけない"
+    );
+  });
+
+  it("[a3] いま働いている職人（B）が報告せずに終わったら、これまでどおり failed になる", async () => {
+    // 前のテストの続き：Bはまだ生きている。ここで気づかない方へ倒していないことを確かめる
+    h.driver.exit(sessionBId, null, "SIGKILL");
+    await until(() => h.daemon.getTask(h.proj, taskId)?.status === "failed");
+
+    const failed = h.daemon
+      .getTaskEvents(h.proj, taskId)
+      .find((e) => e.type === "task_failed") as { reason?: string } | undefined;
+    assert.match(
+      failed?.reason ?? "",
+      /agent_exited_without_report/,
+      "いま働いている職人が報告せずに終わったら、これまでどおり failed になること"
+    );
   });
 });
 

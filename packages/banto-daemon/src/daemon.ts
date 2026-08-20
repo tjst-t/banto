@@ -3604,6 +3604,11 @@ export class Daemon {
       (role === "executor" || role === "rework") &&
       (current.status === "planning" || current.status === "implementing")
     ) {
+      // **いま動いている職人の分だけ数える。** 置き換えられた古い職人の終了も
+      // ここへ来る（同じ taskId で起こし直すと、工房が前の1人を畳む）——それで
+      // failed にすると、いま働いている職人ごとタスクを殺す（task-0305・監査側の
+      // 同じガードと同じ理由づけ）
+      if (event.sessionId !== latestSpawnedSessionId(history)) return;
       process.stderr.write(
         `[banto-daemon] 実装の職人が報告せずに終わりました（${projectTag}/${taskId}）\n`
       );
