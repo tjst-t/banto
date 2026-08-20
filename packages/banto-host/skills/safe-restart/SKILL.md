@@ -1,6 +1,6 @@
 ---
 name: safe-restart
-description: コード更新を反映するために常駐サービスを起こし直すときの手順。banto は4つのユニットに分かれていて、system.restart / system.deploy が起こし直すのは banto.service だけ。計画的デプロイは system.deploy（main に npm test を回して通ったときだけ再起動）。クラッシュ復旧（Restart=on-failure）はゲートを通らない。落ちるのは走行中のターンだけ（職人と検証環境は別ユニットなので落ちない）。段取りを書き残し、PO の承認を得てから撃つ。
+description: コード更新を反映するために常駐サービスを起こし直すときの手順。banto は4つのユニットに分かれていて、system.restart / system.deploy が起こし直すのは banto.service だけ。計画的デプロイは system.deploy（main に npm test を回して通ったときだけ再起動。banto.service を含む対象では画面 packages/banto-web の dist も自動で作り直す）。packages/banto-web の変更は再起動だけでは反映されない——dist の作り直し（npm run build:web）が要る。クラッシュ復旧（Restart=on-failure）はゲートを通らない。落ちるのは走行中のターンだけ（職人と検証環境は別ユニットなので落ちない）。段取りを書き残し、PO の承認を得てから撃つ。
 ---
 
 # Safe Restart（banto の常駐サービスを安全に起こし直す）
@@ -27,9 +27,36 @@ banto は**4つの常駐サービス**に分かれている。4つとも
 | `packages/banto-daemon/**` | `banto-daemon.service` | Kobo（イベントログ・ゲート・マージキュー） | `kill -9`（下記）。起動: `node --import tsx packages/banto-daemon/src/index.ts` |
 | `packages/banto-worker-pool/**` | `banto-worker-pool.service` | 職人の親 | `kill -9`（下記） |
 | `packages/banto-environment-pool/**` | `banto-environment-pool.service` | 検証環境の台帳・ドライバ・Caddy 公開 | `kill -9`（下記） |
+| `packages/banto-web/**` | `banto.service` が配信するが**再起動では反映されない** | 画面（会話UI） | `system.deploy`（画面ビルドも自動で回す。下記）／手動なら `npm run build:web` のあとページ再読み込み（再起動は不要） |
 
 **`system.restart` / `system.deploy` が起こし直すのは `banto.service` だけである。**
 職人まわり・検証環境まわり・Kobo まわりの変更は、これを何度撃っても反映されない。
+
+**画面（`packages/banto-web/**`）は「起こし直し」の対象ですらない（task-0304）。**
+banto.service が配信しているのは `packages/banto-web/dist` という**ビルド成果物**であって、
+`packages/banto-web/src/**` の .ts/.tsx ではない。`system.restart` / `system.deploy` は
+`banto.service` プロセスを起こし直すだけで、`dist` を作り直しはしない——**画面を変えた
+タスクが main へ着地して、`banto.service` を何度再起動しても、画面には1バイトも反映されない**
+（task-0279。着地から4時間後まで気づかれなかった）。dist を作る唯一の口は
+`npm run build:web`（= `npm --prefix packages/banto-web run build`）。
+
+正式な口は `system.deploy`（task-0304 でこの手順に組み込み済み）——main の検証（`npm test`）
+に通ったあと・ユニットを起こし直す前に、対象に `banto.service` を含む限り
+`npm run build:web` を自動で回す。画面ビルドが失敗すれば検証の失敗と同じ扱いで**拒否**し、
+再起動しない（古い dist を配り続ける方が半端な状態より安全）。成否は返答と記録
+（`deploy-build-pass` / `deploy-build-rejected` / `deploy-build-skip`）に出る。
+
+手で確かめたいとき（`system.deploy` を待たず、いま配信中の画面が最新か見たい）:
+
+```
+npm run build:web
+curl -s http://127.0.0.1:4100/ | grep -o '/assets/[^"]*\.\(js\|css\)'   # 参照されているアセット名
+curl -s http://127.0.0.1:4100/assets/<上で出た js ファイル名> | grep '<入れたはずの文字列>'
+```
+
+grep がヒットすれば変更は配信物に入っている。`index.html` は no-cache + ETag なので、
+**`banto.service` の再起動は要らない**——PO がブラウザでページを読み込み直せば新しい
+アセット参照に切り替わる。
 
 **計画的デプロイは `system.deploy`（ゲート付き）が正式な口（task-0274）。**
 main に対して検証一式（`npm test`）を回し、**通ったときだけ**起こし直す。落ちていれば
