@@ -118,11 +118,20 @@ export class DaemonClient {
     projectTag: string,
     taskId: string,
     verdict: "pass" | "fail",
-    findings: string[]
+    findings: string[],
+    /**
+     * task-0287 a11（PO裁定 2026-08-20）: diff の外を読んだファイルと理由の自己申告。
+     * I1: pass/fail の判断材料ではない——daemon はそのまま `audit_verdict` へ刻むだけ。
+     */
+    consultedBeyondDiff?: string[]
   ): Promise<{ ok: boolean }> {
     const result = await this.post<{ ok: boolean }>(
       `/api/v1/projects/${encodeURIComponent(projectTag)}/tasks/${encodeURIComponent(taskId)}/audit-report`,
-      { verdict, findings }
+      {
+        verdict,
+        findings,
+        ...(consultedBeyondDiff && consultedBeyondDiff.length > 0 ? { consultedBeyondDiff } : {}),
+      }
     );
     return result;
   }

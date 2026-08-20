@@ -18,6 +18,7 @@
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 import {
   EventLog,
   StateStore,
@@ -3214,21 +3215,32 @@ export class Daemon {
        * 監査人が**判定の口を使わずに**「終わった」と言ってきた。
        *
        * 自由文から通す／通さないを決めない（決定57 の一次受けは判定表であって作文ではない）。
-       * 黙って待つと安全弁の時間まで止まるので、**その場で理由を出して止める**。
        * 判定の口が呼ばれなかった**原因はここでは決め打ちしない**（実測 2026-08-11：
        * roleAssignments のモデルが道具呼び出しに乗れなかっただけで、audit_report 自体は
        * pi にも claude にも載っている。だから「ランタイムに口が無い」とは言い切れない）。
+       *
+       * **task-0287・ADR-0027: ここで failed にしない（フェイルオープン）。** 監査は
+       * 合否の門ではなく補助の目にした——判定の出し忘れで工程を止める方が実害が大きい
+       * （task-0219 で3回連続の実例）。**明示の `verdict: "fail"` だけがブロックする。**
+       * 実装の正しさはマージ前ゲートの機械検証が担保する、という承知の上のリスク
+       * （PO 裁定 2026-08-20）。見張りは `audit_verdict.byDefault` の印だけなので、
+       * ここで必ず刻む（`recordAuditPassByDefault` 内）。
        */
       if (current.status !== "auditing") return;
       process.stderr.write(
         `[banto-daemon] ${projectTag}/${taskId}: 監査人が判定を出さずに報告しました` +
-          "（監査人が audit_report を一度も呼ばずに終えました）\n"
+          "（既定で通します。ADR-0027：監査は補助の目、明示の fail だけがブロック）\n"
       );
-      this.recordTaskFailed(
+      /**
+       * task-0287 PO裁定 2026-08-20（③の条件①）: 既定通過の理由は3つの起点
+       * （判定を出さずに報告／判定を出さずに再試行の上限まで落ちた／spawn 自体が失敗）
+       * を**混ぜない**。`audit_reported_without_verdict:` の接頭辞で区別する——
+       * これが無いと、あとで「監査が実質回っていない」件数の内訳を読み分けられない。
+       */
+      this.recordAuditPassByDefault(
         projectTag,
         taskId,
-        "audit_reported_without_verdict: 監査人が判定の口（audit_report）を使わずに報告しました。" +
-          "監査人が audit_report を一度も呼ばずに終えました" +
+        "audit_reported_without_verdict: 監査人が判定の口（audit_report）を一度も呼ばずに終えました" +
           (summary ? `。監査人の言い分: ${summary}` : "")
       );
       return;
@@ -3404,10 +3416,17 @@ export class Daemon {
         return;
       }
       process.stderr.write(
-        `[banto-daemon] 監査が ${attempts} 回とも判定を出さずに終わりました（${projectTag}/${taskId}）\n`
+        `[banto-daemon] 監査が ${attempts} 回とも判定を出さずに終わりました（${projectTag}/${taskId}）` +
+          "——既定で通します（ADR-0027）\n"
       );
-      // I2: 何回試したのかを理由に残す。「1回で諦めた」と「粘って駄目だった」は別の話
-      this.recordTaskFailed(
+      /**
+       * **task-0287・ADR-0027: 再試行を使い切っても failed にしない（フェイルオープン）。**
+       * 「判定を出さずに落ちる」は「判断」ではなく「事故」——事故を尽くしてもタスクを
+       * 止めない方が、忘れによる工程停止を根絶する PO の狙いに合う（承知の上のリスク、
+       * PO 裁定 2026-08-20）。何回試したのかは `defaultReason` に残す
+       * （「1回で諦めた」と「粘って駄目だった」は別の話・I2）。
+       */
+      this.recordAuditPassByDefault(
         projectTag,
         taskId,
         `audit_session_exited_without_verdict (${attempts}回試行)`
@@ -3904,9 +3923,29 @@ export class Daemon {
         extension: "banto-auditor",
       });
     } catch (err) {
-      // task-0215: 届かなかっただけなら中身は無罪。理由の側でそれが分かるようにする
-      // task-0222: 工房が満杯だったときも同じ（ここは巡回が拾い直さないので状態は failed のまま）
-      this.recordTaskFailed(projectTag, taskId, taskFailureReason("audit session spawn failed", err));
+      /**
+       * task-0215: 届かなかっただけなら中身は無罪。理由の側でそれが分かるようにする。
+       * task-0222: 工房が満杯だったときも同じ——**その事実の記録は消さない**
+       * （`taskFailureReason` が付ける `busy:worker-pool ` の印はそのまま `defaultReason` に
+       * 乗る。落とすのは failed への遷移だけで、満杯だったこと自体は帳簿から読める）。
+       *
+       * **task-0287・ADR-0027: ここも failed にしない（フェイルオープン）——工房が満杯の
+       * ときも含む。**（PO裁定 2026-08-20、旧: task-0222 は満杯を `failed`＋`kobo.reopen`
+       * 待ちとしていたが、それも「監査のせいで工程が止まる」の一種なのでここに合わせた）
+       *
+       * **なぜ満杯まで通してよいと判断したか**：工房は監査・判定のために2席を予約している
+       * （`DEFAULT_AUDIT_RESERVED_WORKERS` / `BANTO_WORKER_AUDIT_RESERVED`、既定2）ので、
+       * 監査の spawn が満杯で断られること自体が本来まれ——まれだからこそ通してよい。
+       * **もし `audit_verdict.defaultReason` の内訳で「満杯による既定通過」が高い割合を
+       * 占めるなら、この前提が崩れているということ**。そのときは通す代わりに待ち・再試行を
+       * 入れ直す（承知の上のリスクを見張る手段は defaultReason の内訳だけなので、
+       * ここで理由を混ぜない——`taskFailureReason` の busy 判定・接頭辞はそのまま活かす）。
+       */
+      this.recordAuditPassByDefault(
+        projectTag,
+        taskId,
+        taskFailureReason("audit session spawn failed", err)
+      );
       return;
     }
 
@@ -3967,7 +4006,18 @@ export class Daemon {
     projectTag: string,
     taskId: string,
     verdict: "pass" | "fail",
-    findings: string[]
+    findings: string[],
+    /**
+     * task-0287 a11（PO裁定 2026-08-20）: 監査人が diff の外を読んだファイルと理由の自己申告。
+     *
+     * **これは監査人の自己申告であって、機械が検出した事実ではない（I1）。**
+     * pass/fail の判断には使わない——ここでは `audit_verdict` イベントへそのまま
+     * 刻むだけで、着地先（merging/review-ready/rework/failed）の判断には一切関わらない。
+     * 狙いは2つ：(1) 「監査は diff だけで足りる」がいまは仮説なので、どれくらいの頻度で
+     * 足りないのかを帳簿から数えられるようにする、(2) 理由を書かせることで、監査人が
+     * 漫然とリポジトリを読み歩くのを抑える。
+     */
+    consultedBeyondDiff?: string[]
   ): { ok: boolean } {
     const task = this.store.getTask(taskId, projectTag);
     if (!task) {
@@ -4013,46 +4063,13 @@ export class Daemon {
       findings,
       ...(contractVersion !== undefined ? { contractVersion } : {}),
       ...(checklistVersion !== undefined ? { checklistVersion } : {}),
+      // a11: 自己申告をそのまま刻む。空/未指定は「diff の外を読まなかった」と同じ扱い
+      ...(consultedBeyondDiff && consultedBeyondDiff.length > 0 ? { consultedBeyondDiff } : {}),
     });
     this.applyAndBroadcast(verdictEvent);
 
     if (verdict === "pass") {
-      // レビューは3段（決定57）。`auto` だけが人も番頭も見ずにマージへ進む。
-      // **`po` は機械的に判定される**ので、タスクが auto を名乗っていても統治コードや
-      // PO 必須の面に触るなら止まる——緩い方へは倒れない
-      const stage = this.reviewStageOf(projectTag, task);
-
-      /**
-       * **証拠の無いものは自動着地させない**（realign 第3便・PO 裁定 2026-08-14）。
-       *
-       * `auto` は「人を通さなくてよい」という宣言でしかなく、**通してよい根拠**は別に要る。
-       * 刻み（どの契約に・どの基準で監査したか）と、ゲートが回すべき検査が契約にあること。
-       * どちらかを欠けば `banto` へ落として人の目を通す——**緩い方へは倒れない**。
-       *
-       * タスクが `auto` を名乗っていても同じに見る。検査ゼロの契約はゲートが素通りするので、
-       * 宣言の有無に関わらず「何も確かめずに着地した」が起きる。
-       *
-       * I2: 落とした理由を遷移の `reason` に書き切る。帳簿だけを見て原因が分かること。
-       */
-      const blockers =
-        stage === "auto"
-          ? autoLandBlockers({
-              ...(contractVersion !== undefined ? { contractVersion } : {}),
-              ...(checklistVersion !== undefined ? { checklistVersion } : {}),
-              acceptance: getAcceptance(task),
-            })
-          : [];
-      const landed = stage === "auto" && blockers.length === 0;
-      const targetStatus = landed ? "merging" : "review-ready";
-      const reason = landed
-        ? "audit_passed:auto"
-        : blockers.length > 0
-          ? `audit_passed:auto→banto（自動着地の条件を満たさない: ${blockers.join("; ")}）`
-          : `audit_passed:${stage}`;
-
-      this.transition(projectTag, taskId, targetStatus, reason);
-      // 監査人の役目は終わり。畳む（I3：起こした者が片付ける・決定63）
-      this._trackBackground(this.closeWorkerFor(projectTag, poolTaskId(taskId, "audit")));
+      this.landAuditPass(projectTag, taskId, task, contractVersion, checklistVersion);
     } else {
       // Fail path: count consecutive audit fails from event log (D3: no stored counter).
       const consecutiveFails = this.countConsecutiveAuditFails(projectTag, taskId);
@@ -4096,6 +4113,114 @@ export class Daemon {
     }
 
     return { ok: true };
+  }
+
+  /**
+   * 監査 pass の着地処理（task-0287：`handleAuditVerdict` から切り出し）。
+   *
+   * 明示の pass（監査人が `audit_report` で verdict="pass" を出したとき）と、
+   * 既定通過（`recordAuditPassByDefault`：判定を出さずに報告／再試行の上限まで判定を
+   * 出せず落ちた／監査セッションの spawn 自体が失敗した）の**両方から同じ経路で呼ぶ**。
+   * 着地の可否（`review.policy` の段・自動着地の証拠）は判定の出所を問わない——
+   * 既定通過でも「刻みが無ければ auto へは着地させない」（`autoLandBlockers`）が
+   * そのまま効くので、証拠の無いものを機械だけで通してしまうことはない。
+   */
+  private landAuditPass(
+    projectTag: string,
+    taskId: string,
+    task: TaskRecord,
+    contractVersion: number | undefined,
+    checklistVersion: string | undefined
+  ): void {
+    // レビューは3段（決定57）。`auto` だけが人も番頭も見ずにマージへ進む。
+    // **`po` は機械的に判定される**ので、タスクが auto を名乗っていても統治コードや
+    // PO 必須の面に触るなら止まる——緩い方へは倒れない
+    const stage = this.reviewStageOf(projectTag, task);
+
+    /**
+     * **証拠の無いものは自動着地させない**（realign 第3便・PO 裁定 2026-08-14）。
+     *
+     * `auto` は「人を通さなくてよい」という宣言でしかなく、**通してよい根拠**は別に要る。
+     * 刻み（どの契約に・どの基準で監査したか）と、ゲートが回すべき検査が契約にあること。
+     * どちらかを欠けば `banto` へ落として人の目を通す——**緩い方へは倒れない**。
+     *
+     * タスクが `auto` を名乗っていても同じに見る。検査ゼロの契約はゲートが素通りするので、
+     * 宣言の有無に関わらず「何も確かめずに着地した」が起きる。
+     *
+     * I2: 落とした理由を遷移の `reason` に書き切る。帳簿だけを見て原因が分かること。
+     */
+    const blockers =
+      stage === "auto"
+        ? autoLandBlockers({
+            ...(contractVersion !== undefined ? { contractVersion } : {}),
+            ...(checklistVersion !== undefined ? { checklistVersion } : {}),
+            acceptance: getAcceptance(task),
+          })
+        : [];
+    const landed = stage === "auto" && blockers.length === 0;
+    const targetStatus = landed ? "merging" : "review-ready";
+    const reason = landed
+      ? "audit_passed:auto"
+      : blockers.length > 0
+        ? `audit_passed:auto→banto（自動着地の条件を満たさない: ${blockers.join("; ")}）`
+        : `audit_passed:${stage}`;
+
+    this.transition(projectTag, taskId, targetStatus, reason);
+    // 監査人の役目は終わり。畳む（I3：起こした者が片付ける・決定63）
+    this._trackBackground(this.closeWorkerFor(projectTag, poolTaskId(taskId, "audit")));
+  }
+
+  /**
+   * **監査を既定で通す（フェイルオープン）**（task-0287・ADR-0027・PO 裁定 2026-08-20）。
+   *
+   * 「監査はプラスアルファの層にする。監査のせいで工程が止まる方が、いまは問題である。
+   * 取りこぼしが出たら、そのとき別途直せばよい」。明示の `verdict: "fail"` だけが
+   * 差し戻しをブロックする——それ以外（判定を出さずに報告・判定を出さずに再試行の上限まで
+   * 落ちた・監査セッションの spawn 自体が失敗した）は、忘れや事故でタスクを止めない。
+   *
+   * **承知の上のリスク**：監査が実質1回も回っていないのに通る経路ができる（起動自体が
+   * 壊れていても通る）。PO の判断は「実装の正しさはマージ前ゲートの機械検証が担保する。
+   * 監査は補助の目に留め、忘れによる停止を根絶する方を取る」——知らずに踏んだ穴ではなく、
+   * 承知で選んだ設計である。見張りの手段は `audit_verdict.byDefault` の印だけ：
+   * これが無いとリスクを承知したことにならないので、必ず刻む（I2：黙って通さない）。
+   *
+   * 判定と同じ経路（`audit_verdict` イベント→`landAuditPass`）を通すので、`review.policy`
+   * と自動着地の証拠要求（`autoLandBlockers`）はそのまま効く——既定通過でも刻みが
+   * 無ければ `banto`（人の目）へ落ちる。新しいイベント種は増やさない（D3）。
+   */
+  private recordAuditPassByDefault(
+    projectTag: string,
+    taskId: string,
+    defaultReason: string
+  ): void {
+    const task = this.store.getTask(taskId, projectTag);
+    if (!task) return;
+    if (task.status !== "auditing") return; // I2: 割り込まない（既に先へ進んでいたら何もしない）
+
+    const contractVersion = contractVersionOf(this.getTaskEvents(projectTag, taskId), projectTag, taskId);
+    let checklistVersion: string | undefined;
+    try {
+      checklistVersion = promptAssetDigest("audit-checklist");
+    } catch (err) {
+      process.stderr.write(
+        `[banto-daemon] ${projectTag}/${taskId}: 監査基準の版を刻めませんでした: ${String(err)}\n`
+      );
+    }
+
+    const verdictEvent = this.log.append({
+      type: "audit_verdict",
+      projectTag,
+      taskId,
+      verdict: "pass",
+      findings: [],
+      byDefault: true,
+      defaultReason,
+      ...(contractVersion !== undefined ? { contractVersion } : {}),
+      ...(checklistVersion !== undefined ? { checklistVersion } : {}),
+    });
+    this.applyAndBroadcast(verdictEvent);
+
+    this.landAuditPass(projectTag, taskId, task, contractVersion, checklistVersion);
   }
 
   /**
@@ -5323,6 +5448,90 @@ export function buildExecutorInstruction(
  * ここに書くのはそれに加えて**このタスクを見るために要る事実**
  * ——どこに何があり、何を満たすべきか。
  */
+
+/**
+ * 監査人に渡す diff の行数上限（task-0287・ADR-0027）。
+ *
+ * 大きすぎる diff をそのまま渡すと文脈を食い潰す。打ち切ったことは黙らせない
+ * （I2）——ここで打ち切った旨と、残りはファイル名だけであることを本文に明記する。
+ */
+export const AUDIT_DIFF_MAX_LINES = 1200;
+
+/**
+ * diff の分岐元。マージキュー（`runMergeQueueTick`）の mainline と同じ固定値 `main` を
+ * 再利用する——ここだけ別の解決方法を発明しない（D6・PO指示）。
+ */
+const AUDIT_DIFF_BASE_REF = "main";
+
+/**
+ * **そのタスクの diff を組み立てる**（task-0287①・PO裁定 2026-08-20）。
+ *
+ * 監査の役割は「受け入れ基準への内容の適合」の判断であって、リポジトリ全体を
+ * 読み直すことではない。渡すのは実装者のワークツリーでの `main...HEAD`——
+ * `merge-gate.ts` の `checkScopeViolations`（`git diff --name-only base...branch`）と
+ * **同じ三点リーダ記法・同じ base 解決**を踏む（D6：新しい取り方を発明しない）。
+ * ワークツリーの HEAD は職人のタスクブランチを指しているので、branch 名を
+ * 別に渡す必要がない。
+ *
+ * 取れなかったとき（ワークツリーがまだ git リポジトリでない・git が無い等）は、
+ * **黙って空の diff を渡さない**（I2）——取れなかったと書いた上で、従来どおり
+ * ワークツリーを直接見てよいと案内する。
+ *
+ * 大きすぎる diff は `AUDIT_DIFF_MAX_LINES` で打ち切り、残りは変更ファイル名だけ
+ * 列挙する。打ち切ったことは本文に明記する（無言で切らない）。
+ */
+function buildAuditDiffSection(worktreePath: string): string[] {
+  const heading = `## 差分（diff）`;
+  let diffOutput: string;
+  try {
+    diffOutput = execFileSync("git", ["diff", `${AUDIT_DIFF_BASE_REF}...HEAD`], {
+      cwd: worktreePath,
+      encoding: "utf-8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch (err) {
+    return [
+      heading,
+      ``,
+      `**diff を取得できませんでした**（${String(err instanceof Error ? err.message : err)}）。`,
+      `代わりに、ワークツリーパス (${worktreePath}) を直接見て確認してください。`,
+    ];
+  }
+
+  const trimmed = diffOutput.trim();
+  if (trimmed.length === 0) {
+    return [heading, ``, `（このタスクブランチに main との差分はありません）`];
+  }
+
+  const lines = diffOutput.split("\n");
+  if (lines.length <= AUDIT_DIFF_MAX_LINES) {
+    return [heading, ``, "```diff", diffOutput.replace(/\n$/u, ""), "```"];
+  }
+
+  // task-0287: 打ち切り。残りはファイル名だけ渡す（無言で切らない・I2）
+  let fileNames: string;
+  try {
+    fileNames = execFileSync("git", ["diff", "--name-only", `${AUDIT_DIFF_BASE_REF}...HEAD`], {
+      cwd: worktreePath,
+      encoding: "utf-8",
+    }).trim();
+  } catch {
+    fileNames = "（変更ファイルの一覧も取得できませんでした）";
+  }
+  return [
+    heading,
+    ``,
+    `**diff が大きいため、先頭 ${AUDIT_DIFF_MAX_LINES} 行で打ち切りました。** 残りの変更は`,
+    `ファイル名だけ載せます（内容はワークツリーパス (${worktreePath}) で直接確認してください）:`,
+    "```",
+    fileNames,
+    "```",
+    "```diff",
+    lines.slice(0, AUDIT_DIFF_MAX_LINES).join("\n"),
+    "```",
+  ];
+}
+
 export function buildAuditInstruction(
   task: TaskRecord,
   projectTag: string,
@@ -5374,6 +5583,8 @@ export function buildAuditInstruction(
     `**受け入れ基準 (acceptance criteria)**:`,
     ...formatAcceptance(task),
     ``,
+    ...buildAuditDiffSection(worktreePath),
+    ``,
     // task-0213: **監査人にも同じことを明示する。** 以前はここに何も書いておらず、
     // 各自の判断に委ねられていた——実測では監査人も袋の中で `npm test` /
     // `npm run typecheck` を回しており、`memory.oom.group` で袋ごと 15 プロセスが死んだ
@@ -5381,17 +5592,41 @@ export function buildAuditInstruction(
     ``,
     `## 監査手順`,
     ``,
-    `1. ワークツリーパス (${worktreePath}) に移動して実装内容を確認してください`,
-    `2. scope.paths に指定されたファイルが存在し、acceptance criteria を満たしているか検証してください`,
-    `3. verify コマンドの**一式は自分で実行しないでください**（Kobo が検証環境で回します）。`,
-    `   実装者が \`report_done\` を呼んだ時点の結果は帳簿にあり、落ちていればここへは来ません`,
-    `   （落ちたまま監査へ来た場合は、差し戻しの上限に達したときだけです）。`,
-    `   マージ前ゲートが同じ経路でもう一度回します。あなたが見るのは**中身が基準を満たすか**で、`,
-    `   確かめるなら軽い確認（1ファイルの型検査・\`npm run test:one <1ファイル>\`）に留めてください`,
-    `4. すべての基準を満たしていれば \`audit_report\` ツールを呼び出し verdict="pass" を報告してください`,
+    // task-0287・ADR-0027: 監査は合否の門ではなく補助の目。見るのは diff と受け入れ基準の
+    // 対応であって、コードベースの健全性一般ではない。
+    `**監査は合否の門ではなく、補助の目です。** 見るのは上の diff と受け入れ基準の対応で、`,
+    `コードベース全体の健全性ではありません。実装の正しさはマージ前ゲートが検証環境で担保します`,
+    ``,
+    // a10・PO裁定 2026-08-20（言葉のまま）:「監査はまず diff をみて、diff だけだと
+    // 分からなければ、ファイルもみる」。「diff だけ」に倒さない（判断できない変更で
+    // 監査が嘘をつく）が、リポジトリを読み直すことも既定にしない（元の「ワークツリーへ
+    // 移動して実装内容を確認せよ」は落とす）。3段の順序をそのまま指示文にする。
+    `1. **まず diff を読んでください。** 最初に見るのは上の「## 差分（diff）」と、`,
+    `   上に挙げた受け入れ基準の text だけです`,
+    `2. **diff だけで受け入れ基準を満たすか判断できるなら、そこで判定してください。**`,
+    `   ワークツリー全体を読み直す必要はありません`,
+    `3. **判断できないときだけ**、その箇所に関係するファイルへ遡って読んでください`,
+    `   （ワークツリーパス: ${worktreePath}）。ファイルを読むこと自体は禁じません——`,
+    `   判断できないのに diff だけで判定を出す方が害です。ただし遡ったら、`,
+    `   \`audit_report\`（引数名 \`consultedBeyondDiff\`）に読んだファイルと理由を必ず`,
+    `   書いてください（例:「a2 の判断に thread-store.ts の既存の振る舞いが要ったため」）。`,
+    `   これは自己申告で、pass/fail の判断材料にはしません——diff だけでどれくらい`,
+    `   足りるかの傾向を数えるためだけのものです`,
+    ``,
+    `**テストを回すのはあなたの仕事ではありません。** verify コマンドの一式は自分で実行`,
+    `しないでください——検証はマージ前ゲートが検証環境の中でもう一度機械的に回します。`,
+    `二重に回すと、判定を出さないまま一式の完了を待ってターンが終わり、工程が止まります`,
+    `（実際にこの型で何度も止まっています）。確かめるとしても軽い確認`,
+    `（1ファイルの型検査・\`npm run test:one <1ファイル>\`）に留めてください`,
+    ``,
+    `4. すべての基準を満たしていれば \`audit_report\`（Claude 環境では`,
+    `   \`mcp__banto__audit_report\` という名前で現れます）を呼び出し verdict="pass" を`,
+    `   報告してください`,
     `5. 問題があれば verdict="fail" と具体的な findings を報告してください`,
     ``,
-    `**重要**: 検査が完了したら必ず \`audit_report\` ツールを呼び出してください。呼び出さないと監査が完了しません。`,
+    `**重要**: 判断が終わったら必ず \`audit_report\` を呼び出してください。呼び出さなくても`,
+    `Kobo は既定で通します（フェイルオープン）が、通したことは「監査の目を通っていない」`,
+    `既定通過として帳簿に残ります——判定を出すのはあなたの仕事です`,
     ``,
     `## 監査チェックリスト`,
     ``,

@@ -28,8 +28,18 @@ export interface KoboChannel {
   reportPhase(phase: "planning" | "implementing", note?: string): Promise<string>;
   /** 実装が終わった。**完了の宣言ではなく、監査へ回す合図**。 */
   reportDone(summary: string): Promise<string>;
-  /** 監査の判定。**自由文ではなく pass / fail** で出す。 */
-  auditReport(verdict: "pass" | "fail", findings: string[]): Promise<string>;
+  /**
+   * 監査の判定。**自由文ではなく pass / fail** で出す。
+   *
+   * `consultedBeyondDiff`: task-0287 a11（PO裁定 2026-08-20）。diff の外を読んだファイルと
+   * 理由の自己申告。**I1: pass/fail の判断材料ではない**——工場は `audit_verdict` へ
+   * そのまま刻むだけ。
+   */
+  auditReport(
+    verdict: "pass" | "fail",
+    findings: string[],
+    consultedBeyondDiff?: string[]
+  ): Promise<string>;
 }
 
 /**
@@ -78,8 +88,12 @@ export function createKoboChannel(env: NodeJS.ProcessEnv = process.env): KoboCha
       await post("/transition", { to: "auditing", reason: summary });
       return "実装の完了を工場に伝えました（次は監査です。あなたが review-ready へ進めることはできません）";
     },
-    async auditReport(verdict, findings) {
-      await post("/audit-report", { verdict, findings });
+    async auditReport(verdict, findings, consultedBeyondDiff) {
+      await post("/audit-report", {
+        verdict,
+        findings,
+        ...(consultedBeyondDiff && consultedBeyondDiff.length > 0 ? { consultedBeyondDiff } : {}),
+      });
       return `監査の判定（${verdict}）を工場に伝えました`;
     },
   };

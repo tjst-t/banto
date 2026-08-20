@@ -385,7 +385,13 @@ describe("[PO報告 2026-08-11] 職人が終わったと言えば、口が違っ
     );
   });
 
-  it("監査人が判定を出さずに報告したら、黙って待たずに止める（I2）", async () => {
+  /**
+   * task-0287・ADR-0027: **判定を出さずに報告しても failed にしない（フェイルオープン）。**
+   * 監査は補助の目にした——自由文から通す／通さないを決めることはしない（決定57のまま）が、
+   * 判定を出し忘れたことで工程を止めるのはやめた。既定で通し、印（byDefault）を帳簿に残す
+   * （詳しくは `audit-advisory-layer.spec.ts` の a1・a4）。
+   */
+  it("監査人が判定を出さずに報告しても、既定で通す（ADR-0027）", async () => {
     readyTask(h, "task-0031");
     const executor = await h.daemon.spawnTask(h.proj, "task-0031");
     h.workers.pool.report(executor.sessionId, "実装しました", { done: true });
@@ -396,19 +402,28 @@ describe("[PO報告 2026-08-11] 職人が終わったと言えば、口が違っ
     const audit = h.workers.pool.list().find((w) => w.taskId === "task-0031:audit")!;
     h.workers.pool.report(audit.sessionId, "見ました。良さそうです", { done: true });
 
-    await until(() => h.daemon.getTask(h.proj, "task-0031")?.status === "failed");
-    const failed = h.daemon
-      .getTaskEvents(h.proj, "task-0031")
-      .findLast((e) => e.type === "task_failed") as { reason?: string } | undefined;
-    assert.match(
-      failed?.reason ?? "",
-      /audit_reported_without_verdict/u,
-      "自由文から通す／通さないを決めてはいけない（決定57）"
+    await until(() => h.daemon.getTask(h.proj, "task-0031")?.status !== "auditing");
+    const task = h.daemon.getTask(h.proj, "task-0031");
+    assert.ok(
+      task?.status === "merging" || task?.status === "review-ready",
+      `既定通過後の状態が想定外: ${task?.status}`
     );
-    // 実態に合わせた失敗理由が残ること（ランタイムに口が無い、とは言い切らない）
+    assert.equal(
+      h.daemon.getTaskEvents(h.proj, "task-0031").some((e) => e.type === "task_failed"),
+      false,
+      "判定を出し忘れただけで failed にしてはいけない（ADR-0027）"
+    );
+
+    const verdict = h.daemon
+      .getTaskEvents(h.proj, "task-0031")
+      .findLast((e) => e.type === "audit_verdict") as
+      | { verdict?: string; byDefault?: boolean; defaultReason?: string }
+      | undefined;
+    assert.equal(verdict?.verdict, "pass");
+    assert.equal(verdict?.byDefault, true, "既定通過の印（a4）が付いていない");
     assert.match(
-      failed?.reason ?? "",
-      /監査人が audit_report を一度も呼ばずに終えました/u,
+      verdict?.defaultReason ?? "",
+      /audit_report.*一度も呼ばずに終えました/u,
       "監査人が判定の口を一度も呼ばずに終えた、と実態どおり書くこと"
     );
   });

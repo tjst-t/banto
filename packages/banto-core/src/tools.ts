@@ -135,14 +135,32 @@ export function createAuditTools(client: DaemonClient): AnyBantoTool[] {
       taskId: Type.String({
         description: "Task ID being audited. pi adapter文脈ではBANTO_TASK_ID envで上書きされる。",
       }),
+      /**
+       * task-0287 契約改訂 a11（PO裁定 2026-08-20）: 監査は「まず diff を読み、
+       * 判断できないときだけファイルへ遡ってよい」。遡ったなら、ここへ理由を書く。
+       *
+       * **自己申告であって機械検出ではない（I1）。pass/fail の判断材料にはしない**
+       * ——数えるのは「diff だけでどれくらい足りるか」の傾向であって、判定の正しさではない。
+       */
+      consultedBeyondDiff: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            "Files read beyond the diff, and why (self-reported). Empty/omitted means the diff " +
+            "alone was enough to judge. This is NOT used as pass/fail evidence — it only lets " +
+            "banto count how often diff-only review is insufficient (I1).",
+        })
+      ),
     }),
     async execute(args) {
       // I2: DaemonClient のエラーはそのまま伝播させる
+      // a11: consultedBeyondDiff はそのまま daemon へ渡す。pass/fail の判断には使わない
+      // （daemon 側も audit_verdict へ刻むだけ——着地の判断ロジックには一切関わらない）
       const result = await client.auditReport(
         args.projectTag,
         args.taskId,
         args.verdict,
-        args.findings
+        args.findings,
+        args.consultedBeyondDiff
       );
       return {
         content: [

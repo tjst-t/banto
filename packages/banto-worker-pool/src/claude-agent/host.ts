@@ -314,12 +314,26 @@ async function main(): Promise<void> {
                       findings: z
                         .array(z.string())
                         .describe("見つけた問題（pass なら空、fail なら必須）"),
+                      // task-0287 a11（PO裁定 2026-08-20）: diff の外を読んだファイルと理由の
+                      // 自己申告。I1: pass/fail の判断材料ではない——工場は audit_verdict へ
+                      // そのまま刻むだけ
+                      consultedBeyondDiff: z
+                        .array(z.string())
+                        .optional()
+                        .describe(
+                          "diff の外で読んだファイルとその理由（自己申告）。diff だけで判断" +
+                            "できたなら省略してよい。pass/fail の判断には使われない"
+                        ),
                     },
                     async (args) => ({
                       content: [
                         {
                           type: "text" as const,
-                          text: await kobo.auditReport(args.verdict, args.findings),
+                          text: await kobo.auditReport(
+                            args.verdict,
+                            args.findings,
+                            args.consultedBeyondDiff
+                          ),
                         },
                       ],
                     })

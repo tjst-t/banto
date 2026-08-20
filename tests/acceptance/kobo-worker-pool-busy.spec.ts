@@ -271,7 +271,15 @@ describe("工房が満杯で断ったタスクを failed にしない（task-022
     assert.match(out, /ready/, `次の周回で起こし直すと読めること: ${out}`);
   });
 
-  it("[a3] 監査を起こせなかったときは、理由の先頭に「待てばよい」の印が付く", async () => {
+  /**
+   * task-0287・ADR-0027（PO裁定 2026-08-20）: **監査の spawn 失敗は満杯のときも既定で
+   * 通す。** 「満杯なら task_failed にして `kobo.reopen` を待つ」という task-0222 の
+   * 旧挙動は、「監査のせいで工程が止まる」の一種として、ここでは反転した——実装に
+   * 問題は無いのに、番頭が手動で戻すまで永久に動かないのは a2 が消しにいった失敗型と
+   * 同じ形である。**満杯だった事実そのものは消さない**（`taskFailureReason` の
+   * `busy:worker-pool ` 印は `audit_verdict.defaultReason` にそのまま乗る）。
+   */
+  it("[a3] 監査を起こせなかったときも、満杯だった事実を残したまま既定で通す（ADR-0027）", async () => {
     const taskId = "task-busy-audit";
     createReadyTask(taskId);
     // 職人は起こせないので、状態だけ auditing まで進めて監査の起こし損ないを作る
@@ -279,10 +287,24 @@ describe("工房が満杯で断ったタスクを failed にしない（task-022
     daemon.transition(proj, taskId, "implementing", "test");
     daemon.transition(proj, taskId, "auditing", "test");
 
-    // 監査人が起きるのは次の tick（fire-and-forget）——落ちるまで待つ
-    await until(() => failedCount(taskId) >= 1);
+    // 監査人が起きるのは次の tick（fire-and-forget）——既定で通るまで待つ
+    await until(() => daemon.getTask(proj, taskId)?.status !== "auditing");
 
-    const reason = lastFailureReason(taskId);
+    const task = daemon.getTask(proj, taskId);
+    assert.ok(
+      task?.status === "merging" || task?.status === "review-ready",
+      `既定通過後の状態が想定外: ${task?.status}`
+    );
+    assert.equal(failedCount(taskId), 0, "満杯で failed にしてはいけない（ADR-0027）");
+
+    const verdict = daemon
+      .getTaskEvents(proj, taskId)
+      .findLast((e) => e.type === "audit_verdict") as
+      | { verdict?: string; byDefault?: boolean; defaultReason?: string }
+      | undefined;
+    assert.equal(verdict?.verdict, "pass");
+    assert.equal(verdict?.byDefault, true, "既定通過の印が付いていない");
+    const reason = verdict?.defaultReason ?? "";
     assert.ok(
       reason.startsWith("busy:worker-pool "),
       `理由の先頭に印が付くこと（機械が見分けられる）: ${reason}`
@@ -291,19 +313,28 @@ describe("工房が満杯で断ったタスクを failed にしない（task-022
     // 元の文言は消していない（I2・既にこの文言で拾っている読み手を壊さない）
     assert.match(reason, /audit session spawn failed/, reason);
     assert.match(reason, new RegExp(WORKER_LIMIT_CODE), reason);
-    // 人が読んで、調べ直さずに「待てばよい」と分かる
+    // 人が読んで、満杯だっただけと分かる（既定で通ったので kobo.reopen の案内文は
+    // もう要らないが、taskFailureReason の元の文言は変えていない）
     assert.match(reason, /中身の失敗ではありません/, reason);
     assert.match(reason, new RegExp(`${RUNNING}/${LIMIT} 本`), `本数／上限が残ること: ${reason}`);
-    assert.match(reason, /kobo\.reopen/, `次にやることが書いてあること: ${reason}`);
     // 「届かなかった」とは別物（相手には届いている）
     assert.equal(unreachableModuleOf(reason), null, reason);
-
-    // 状態は従来どおり failed（監査は巡回が拾い直さないので、止まったことは止まったこととして残す）
-    assert.equal(daemon.getTask(proj, taskId)?.status, "failed");
   });
 
-  it("[a3] やり直しを起こせなかったときも同じ印が付く", async () => {
-    const taskId = "task-busy-audit";
+  /**
+   * **やり直し（rework）の spawn 失敗は、このタスクのスコープ外**（task-0287:
+   * 「職人（実装役）への指示は変えない。触るのは監査役の側だけ」）。task-0222 の旧挙動
+   * （満杯なら failed のまま・`kobo.reopen` 待ち）をそのまま確かめる——ここは変えていない。
+   */
+  it("[a3] やり直しを起こせなかったときは、これまでどおり failed のまま・同じ印が付く", async () => {
+    const taskId = "task-busy-rework";
+    createReadyTask(taskId);
+    // rework の起こし損ないを試すための前提：まず failed にしておく（実装は変えないので、
+    // 満杯以外の理由で落とす——ここでは直接 failed へ遷移させて、辿り着き方には依らない）
+    daemon.transition(proj, taskId, "planning", "test");
+    daemon.transition(proj, taskId, "implementing", "test");
+    daemon.transition(proj, taskId, "failed", "テスト：やり直しの起こし損ないを試す前提");
+
     const result = await daemon.reopenTask(proj, taskId, {
       by: "banto",
       reason: "工房が空いたので動かし直す",

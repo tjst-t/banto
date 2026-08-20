@@ -116,6 +116,9 @@ export interface KoboEventView {
   reason?: string;
   verdict?: string;
   findings?: string[];
+  /** `audit_verdict`：既定通過（フェイルオープン）の印と理由（task-0287・ADR-0027）。 */
+  byDefault?: boolean;
+  defaultReason?: string;
   commitSha?: string;
   /** `task_stalled`：どの状態で、どれだけ、何に阻まれて止まっているか。 */
   status?: string;
@@ -646,7 +649,13 @@ async function renderNotice(
 ): Promise<{ origin: string; text: string; stage: string; status: string } | undefined> {
   if (!NOTICEWORTHY.has(event.type)) return undefined;
   if (event.type === "state_transitioned" && !NOTICEWORTHY_STATES.has(event.to ?? "")) return undefined;
-  if (event.type === "audit_verdict" && event.verdict !== "fail") return undefined;
+  /**
+   * `audit_verdict` は普段 fail だけを知らせる（pass は「順調に進んだ」なので黙る）。
+   * **task-0287・ADR-0027: 既定通過（フェイルオープン）は例外**——`verdict: "pass"` でも
+   * `byDefault` が立っていれば知らせる。黙って通すと、番頭が「監査が見た」と誤解する
+   * （実際には判定を出さずに/落ちて/起動できずに既定で通っている）。
+   */
+  if (event.type === "audit_verdict" && event.verdict !== "fail" && !event.byDefault) return undefined;
   const taskId = event.taskId;
   if (!taskId) return undefined;
 
@@ -711,6 +720,31 @@ async function renderNotice(
         ...(keep ? [keep, ""] : []),
         "**求める判断**",
         adviceForFailure(reason),
+      ].join("\n"),
+    };
+  }
+
+  /**
+   * **既定通過（フェイルオープン）**（task-0287・ADR-0027）。判定を出さずに報告した／
+   * 判定を出さずに再試行の上限まで落ちた／監査セッションの spawn 自体が失敗した、
+   * のどれかで機構が既定で先へ進めた。**監査の目は通っていない**——番頭が「もう見た」と
+   * 誤解しないよう、fail とは別の文面で知らせる。
+   */
+  if (event.type === "audit_verdict" && event.byDefault) {
+    return {
+      origin,
+      stage,
+      status,
+      text: [
+        `${taskId} は監査が既定で通りました（監査の目は通っていません）${title}`,
+        "",
+        "**起きたこと**",
+        event.defaultReason || "（理由が記録されていません）",
+        "",
+        "**求める判断**",
+        "監査は補助の目であって合否の門ではありません（ADR-0027）——判定を出せなかった" +
+          "ので、機構が既定で先へ進めました。実装の正しさはマージ前ゲートの機械検証が" +
+          "担保しますが、監査人の目は通っていません。気になる変更なら、あなたが読んでください。",
       ].join("\n"),
     };
   }

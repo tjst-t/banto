@@ -136,7 +136,13 @@ describe("[task-0070] 監査人が判定を出さずに落ちたら、もう一�
     );
   });
 
-  it("上限まで落ちたら failed にし、何回試したかを理由に残す（I2）", async () => {
+  /**
+   * task-0287・ADR-0027: **上限まで落ちても failed にしない（フェイルオープン）。**
+   * 監査は補助の目にした——判定を出さずに落ちるのを尽くしてもタスクを止めない方が、
+   * 忘れ・事故による工程停止を根絶する PO の狙いに合う（承知の上のリスク、
+   * PO 裁定 2026-08-20）。見張りは `audit_verdict.byDefault` の印（a4）。
+   */
+  it("上限まで落ちても failed にせず既定で通し、何回試したかを理由に残す（I2）", async () => {
     const taskId = "task-crash-2";
     await taskInAuditing(taskId);
 
@@ -144,16 +150,31 @@ describe("[task-0070] 監査人が判定を出さずに落ちたら、もう一�
     driver.exit(latestAuditSession(taskId), null, "SIGKILL");
     await until(() => auditStartedCount(taskId) === 2);
 
-    // 2人目も落ちる → ここで諦める
+    // 2人目も落ちる → ここで諦めるが、failed にはしない
     driver.exit(latestAuditSession(taskId), null, "SIGKILL");
-    await until(() => daemon.getTask(proj, taskId)?.status === "failed");
+    await until(() => daemon.getTask(proj, taskId)?.status !== "auditing");
 
-    const failed = daemon
+    const task = daemon.getTask(proj, taskId);
+    assert.ok(
+      task?.status === "merging" || task?.status === "review-ready",
+      `既定通過後の状態が想定外: ${task?.status}`
+    );
+    assert.equal(
+      daemon.getTaskEvents(proj, taskId).some((e) => e.type === "task_failed"),
+      false,
+      "再試行を使い切っても failed にしてはいけない（ADR-0027）"
+    );
+
+    const verdict = daemon
       .getTaskEvents(proj, taskId)
-      .find((e) => e.type === "task_failed") as { reason?: string } | undefined;
-    assert.match(failed?.reason ?? "", /audit_session_exited_without_verdict/);
+      .findLast((e) => e.type === "audit_verdict") as
+      | { verdict?: string; byDefault?: boolean; defaultReason?: string }
+      | undefined;
+    assert.equal(verdict?.verdict, "pass");
+    assert.equal(verdict?.byDefault, true, "既定通過の印（a4）が付いていない");
+    assert.match(verdict?.defaultReason ?? "", /audit_session_exited_without_verdict/);
     assert.match(
-      failed?.reason ?? "",
+      verdict?.defaultReason ?? "",
       /2回試行/,
       "「1回で諦めた」と「粘って駄目だった」は別の話。回数が残らないと区別できない"
     );

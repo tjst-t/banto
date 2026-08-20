@@ -170,6 +170,72 @@ describe("[AC-S75f66b-3-2] Audit prompt assets are layer-A text files (skills/ d
   });
 });
 
+// ── [a8] 監査は合否の門ではなく補助の目である、という位置づけ ─────────────────────
+//
+// task-0287・ADR-0027: 監査からテスト実行を剥がし、見るのを diff と受け入れ基準の
+// 対応に絞った。この転換が skills/ 資産の文面そのものにも書かれていることを縛る
+// ——文面が古いままだと、指示文だけ変えても監査人の自己像（system prompt）が
+// 「合否の門」のままになり、次に読む人が迷う。
+
+describe("[a8] skills/audit-system.md が「監査は補助の目」の位置づけで書かれている", () => {
+  it("合否の門ではなく補助の目である、と明記されている", () => {
+    const content = loadPromptAsset("audit-system");
+    assert.match(
+      content,
+      /advisory|補助の目/,
+      "監査が補助の目であることが書かれていない"
+    );
+  });
+
+  it("見るのは diff と受け入れ基準の対応であって、コードベース全体の健全性ではない、と書かれている", () => {
+    const content = loadPromptAsset("audit-system");
+    assert.match(content, /diff/);
+    assert.match(
+      content,
+      /not the health of the\s+codebase|コードベース全体の健全性ではない/,
+      "見る範囲が diff と受け入れ基準の対応に絞られていない"
+    );
+  });
+
+  it("テストを回すのは監査人の仕事ではない、と明記されている", () => {
+    const content = loadPromptAsset("audit-system");
+    assert.match(
+      content,
+      /[Nn]ever running the test suite|テストを回すのはあなたの仕事ではありません/,
+      "テストを回さないことが書かれていない"
+    );
+  });
+});
+
+describe("[a8] skills/audit-checklist.md が「監査は補助の目」の位置づけで書かれている", () => {
+  it("合否の門ではなく補助の目である、と明記されている", () => {
+    const content = loadPromptAsset("audit-checklist");
+    assert.match(content, /補助の目/, "監査が補助の目であることが書かれていない");
+  });
+
+  it("見るのは diff と受け入れ基準の対応である、と明記されている", () => {
+    const content = loadPromptAsset("audit-checklist");
+    assert.match(
+      content,
+      /diff.*受け入れ基準|受け入れ基準.*diff/,
+      "見る範囲が diff と受け入れ基準の対応だと書かれていない"
+    );
+  });
+
+  it("検証コマンドを回すこと・全体を読むことを前提にした項目が無い", () => {
+    const content = loadPromptAsset("audit-checklist");
+    assert.ok(
+      !/その結果が正常か/.test(content),
+      "検証コマンドの実行結果を確認する項目が残っている——マージ前ゲートの担当のはず"
+    );
+    assert.match(
+      content,
+      /検証コマンド.*回すのはあなたの仕事ではありません|回すのはあなたの仕事ではありません/,
+      "検証コマンドを回さないことが明記されていない"
+    );
+  });
+});
+
 // ── Suite 2: CHECK-MARKER-42 propagation test ──────────────────────────────────
 //
 // **経路がもう一度変わった**（realign 第2便・段1）。

@@ -337,8 +337,20 @@ export function createHttpServer(daemon: Daemon): http.Server {
         const findings = Array.isArray(rawFindings)
           ? rawFindings.map(String)
           : [];
+        // a11 (task-0287, PO裁定 2026-08-20): 監査人が diff の外を読んだ自己申告。
+        // I1: 判定には使わない——そのまま daemon へ渡して audit_verdict に刻むだけ
+        const rawConsulted = body["consultedBeyondDiff"];
+        const consultedBeyondDiff = Array.isArray(rawConsulted)
+          ? rawConsulted.map(String)
+          : undefined;
         try {
-          const result = daemon.handleAuditVerdict(proj, taskId, verdict, findings);
+          const result = daemon.handleAuditVerdict(
+            proj,
+            taskId,
+            verdict,
+            findings,
+            consultedBeyondDiff
+          );
           sendJson(res, 200, result);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
