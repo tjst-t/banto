@@ -673,6 +673,11 @@ export interface NoticeEvent extends ThreadScope {
   /** 誰からの知らせか。UIの札に出す（出所を偽らない・I1）。 */
   source: NoticeSource;
   text: string;
+  /**
+   * 記録された時刻（UTC ISO・task-0279）。**記録と配信で同じ時刻**——ホストが
+   * 履歴へ積むときに帳簿へ確定した at をそのまま乗せる。
+   */
+  at?: string;
 }
 
 /** POの発話。送った本人以外のクライアントにも届く。 */
@@ -692,6 +697,13 @@ export interface PoMessageEvent extends ThreadScope {
 export interface TextDeltaEvent extends ThreadScope {
   type: "text_delta";
   delta: string;
+  /**
+   * 記録された時刻（UTC ISO・task-0279）。**発話（＝連続する差分の1本）の最初の
+   * 差分に確定した時刻**——帳簿（`Thread.recordInner`）は継ぎ足しでも最初の差分の
+   * at を保つので、途中の差分もこの同じ値を持つ（クライアント側は継ぎ足しでは
+   * event.at を見ず、既に持っている at をそのまま保つ）。
+   */
+  at?: string;
 }
 
 /**

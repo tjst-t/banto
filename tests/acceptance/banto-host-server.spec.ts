@@ -499,6 +499,16 @@ describe("[task-0014] 会話履歴のホスト保持（リロードで消えな�
     session.emit({ type: "tool_start", toolCallId: "t1", name: "memory.save", input: {} });
     session.emit({ type: "tool_end", toolCallId: "t1", name: "memory.save", output: {}, isError: false });
     await waitFor(events, "tool_end");
+
+    // task-0279: 番頭の発話は配信（text_delta）にも記録と同時刻の at が載る——
+    // リロード（history）を待たずに、届いた時点で画面が時刻を出せるように
+    const firstDelta = await waitFor(events, "text_delta", 2000, (e) => e.type === "text_delta" && e.delta === "はい");
+    assert.ok(
+      firstDelta.type === "text_delta" &&
+        typeof firstDelta.at === "string" &&
+        !Number.isNaN(new Date(firstDelta.at).getTime()),
+      "text_delta に at（UTC ISO）が載ること"
+    );
     client.close();
 
     const c: ServerEvent[] = [];
@@ -694,6 +704,11 @@ describe("会話面が要る材料の配信", () => {
     assert.ok(notice.type === "notice" && notice.source === "system");
     assert.ok(notice.text.includes("まとめ直しました"), notice.text);
     assert.ok(notice.text.includes("180,000"), "どれだけの量をまとめたか出す");
+    // task-0279: notice の配信にも記録と同時刻の at が載る
+    assert.ok(
+      typeof notice.at === "string" && !Number.isNaN(new Date(notice.at).getTime()),
+      "notice に at（UTC ISO）が載ること"
+    );
     client.close();
 
     // 再読み込みしても残る（番頭が細部を覚えていない理由が後から分かる）

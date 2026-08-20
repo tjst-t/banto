@@ -1930,8 +1930,14 @@ export class BantoHostServer {
       // まとめ直しの知らせ。**履歴にも残す**——再読み込みしたときに「なぜ番頭が
       // 前の話を覚えていないのか」が分からなくなる
       thread.record({ role: "notice", source: translated.source, text: translated.text });
+      // 記録と配信で同じ時刻を使う（task-0279）——帳簿（recordInner）が確定させた at を
+      // そのまま配信へ乗せる。リロード前の即時表示にも時刻が出る
+      translated.at = thread.transcript[thread.transcript.length - 1]?.at;
     } else if (translated.type === "text_delta") {
       thread.record({ role: "banto", text: translated.delta });
+      // 発話（連続する差分の1本）の最初の差分だけ at を持つ——継ぎ足しは帳簿側が
+      // 元の at を保つので、そのまま配信へ乗せれば良い（task-0279）
+      translated.at = thread.transcript[thread.transcript.length - 1]?.at;
     } else if (translated.type === "reasoning_delta") {
       thread.record({ role: "reasoning", text: translated.delta });
     } else if (translated.type === "reasoning_end") {

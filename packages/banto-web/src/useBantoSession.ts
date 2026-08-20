@@ -231,14 +231,32 @@ function applyDelta(prev: TranscriptEntry[], event: ServerEvent): TranscriptEntr
 
     // 職人からの報告・質問（決定29）。POの発話ではないので別の行として積む
     case "notice":
-      return [...prev, { role: "notice", source: event.source, text: event.text }];
+      return [
+        ...prev,
+        {
+          role: "notice",
+          source: event.source,
+          text: event.text,
+          // 即時表示用の時刻（task-0279）。届かなければ後で履歴から取り直す
+          ...(event.at !== undefined ? { at: event.at } : {}),
+        },
+      ];
 
     case "text_delta": {
       const last = prev[prev.length - 1];
       if (last?.role === "banto") {
         return replaceLast(prev, { ...last, text: last.text + event.delta });
       }
-      return [...prev, { role: "banto", text: event.delta }];
+      return [
+        ...prev,
+        {
+          role: "banto",
+          text: event.delta,
+          // 即時表示用の時刻（task-0279）。発話の最初の差分だけ乗る。届かなければ
+          // 後で履歴から取り直す
+          ...(event.at !== undefined ? { at: event.at } : {}),
+        },
+      ];
     }
 
     // 思考の差分。本文と同じく、最後の思考へ足す
