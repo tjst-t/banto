@@ -100,7 +100,7 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
     name: "env.verify",
     label: "Env: Verify",
     description:
-      "使い捨ての環境を立て、コマンドを走らせ、**必ず畳む**。結果は機構が返した事実。\n例: {repoPath: \"/home/ubuntu/ghq/github.com/tjst-t/banto\", profile: \"test\", cmd: \"npm test\"} → 通ったか＋終了コード＋ログ末尾\n値は英語（パス・プロファイル名・コマンド）で埋める。",
+      "使い捨ての環境を立て、コマンドを走らせ、**必ず畳む**。結果は機構が返した事実。\n例: {repoPath: \"/home/ubuntu/ghq/github.com/tjst-t/banto\", profile: \"test\", cmd: \"npm test\"} → 通ったか＋終了コード＋ログの場所（落ちたときだけ末尾）\n値は英語（パス・プロファイル名・コマンド）で埋める。",
     parameters: Type.Object({
       ...targetFields,
       cmd: Type.String(),
@@ -108,12 +108,14 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
       collect: Type.Optional(
         Type.Boolean()
       ),
+      logTailLines: Type.Optional(Type.Number()),
       timeoutMs: Type.Optional(Type.Number())
     }),
     async execute(params) {
       const result = await pool.verify({
         ...asRequest(params),
         cmd: params.cmd,
+        ...(params.logTailLines !== undefined ? { logTailLines: params.logTailLines } : {}),
         ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
         ...(params.collect ? { collect: true } : {}),
       });
@@ -123,11 +125,16 @@ export function createEnvTools(pool: EnvironmentPool): NamespacedToolDefinition[
       ];
       // I2: 走らせるところまで行かなかったことを「テストが落ちた」と読ませない
       if (result.failure) lines.push(`検証まで到達しませんでした: ${result.failure}`);
-      else {
-        lines.push(`コマンドの終了コード: ${result.exit}`);
-        if (result.logTail) {
-          lines.push(result.truncated ? "ログ（末尾のみ）:" : "ログ:", result.logTail);
-        }
+      else lines.push(`コマンドの終了コード: ${result.exit}`);
+      if (result.logPath) {
+        lines.push(
+          passed
+            ? `ログの場所: ${result.logPath}（通ったので末尾は載せていません。要るときだけ読んでください）`
+            : `ログの場所: ${result.logPath}`
+        );
+      }
+      if (!passed && result.logTail) {
+        lines.push(result.truncated ? "ログ（末尾のみ）:" : "ログ:", result.logTail);
       }
       // I3: 畳めなかったことを本文に出す。details だけだと番頭が気づかない
       if (result.collected) {
