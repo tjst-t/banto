@@ -96,29 +96,28 @@ export interface ArtifactSlice {
  */
 export class ArtifactStore {
   private readonly dir: string;
-  private counter: number | undefined;
 
   constructor(dir: string) {
     this.dir = dir;
   }
 
   /**
-   * 次の番号。**ディレクトリから導く**（D3：採番の台帳を別に持たない）。
-   * 一度数えたら覚えておく——1ターンに何度も走るので、毎回 readdir はしない。
+   * 次の番号。**毎回ディレクトリから導く**（D3：採番の台帳を別に持たない）。
+   *
+   * 同じディレクトリへ書く `ArtifactStore` のインスタンスは1つとは限らない
+   * （道具の結果用と、知らせの退避用で別インスタンスになる——番頭ホストは会話ごとの
+   * インスタンスを持ち回さない）。インスタンスごとに数を覚えてしまうと、もう一方が
+   * 書いた分を知らずに追い越し、同じ番号で上書きしてしまう。
    */
   private nextId(): string {
-    if (this.counter === undefined) {
-      let max = 0;
-      if (fs.existsSync(this.dir)) {
-        for (const name of fs.readdirSync(this.dir)) {
-          const m = /^a-(\d+)\.md$/u.exec(name);
-          if (m) max = Math.max(max, Number.parseInt(m[1]!, 10));
-        }
+    let max = 0;
+    if (fs.existsSync(this.dir)) {
+      for (const name of fs.readdirSync(this.dir)) {
+        const m = /^a-(\d+)\.md$/u.exec(name);
+        if (m) max = Math.max(max, Number.parseInt(m[1]!, 10));
       }
-      this.counter = max;
     }
-    this.counter += 1;
-    return `a-${String(this.counter).padStart(4, "0")}`;
+    return `a-${String(max + 1).padStart(4, "0")}`;
   }
 
   /** 本文を退避して栞を返す。 */
@@ -387,6 +386,41 @@ function summarizeArgs(args: unknown): string {
   }
   if (text === undefined || text === "{}") return "";
   return text.length > 120 ? `(${text.slice(0, 120)}…)` : `(${text})`;
+}
+
+/**
+ * 大きい本文を栞へ退避し、要約＋ポインタに差し替える。しきい値以下ならそのまま返す。
+ *
+ * `withArtifactOffload`（道具の戻り値の退避）が内部で使うのと同じ実装——「大きいものは
+ * 栞に置かれる」を、道具の結果と知らせ（notice）で共通の1つの規則にするため（二重実装
+ * にしない）。`writeMeta` を渡せば `ArtifactStore.writeResult` で素性つきに、
+ * 渡さなければ `ArtifactStore.write` で本文だけ退避する。
+ */
+export function offloadTextIfLarge(params: {
+  text: string;
+  store: ArtifactStore;
+  /** 栞の見出し1行に出す名前（Tool名や `notice(worker)` など）。 */
+  label: string;
+  args?: unknown;
+  /** 器に載せるときの鍵の案内（`describeDetails`）。 */
+  shape?: string;
+  thresholdChars?: number;
+  /** 渡すと `writeResult` で素性つきに退避する（canvas.show の対象になる）。 */
+  writeMeta?: { tool: string; module: string; args?: unknown; details?: unknown };
+}): { text: string; ref?: ArtifactRef } {
+  const threshold = params.thresholdChars ?? DEFAULT_ARTIFACT_THRESHOLD_CHARS;
+  if (params.text.length <= threshold) return { text: params.text };
+  const ref = params.writeMeta
+    ? params.store.writeResult({ ...params.writeMeta, text: params.text })
+    : params.store.write(params.text);
+  const stub = renderStub({
+    toolName: params.label,
+    args: params.args,
+    ref,
+    outline: outlineOf(params.text),
+    ...(params.shape ? { shape: params.shape } : {}),
+  });
+  return { text: stub, ref };
 }
 
 export interface ArtifactOffloadOptions {

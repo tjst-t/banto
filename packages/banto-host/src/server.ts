@@ -40,6 +40,7 @@ import {
   type UtsuwaView,
 } from "./protocol.js";
 import { openUtsuwa } from "./canvas-utsuwa.js";
+import { ArtifactStore, offloadTextIfLarge } from "./artifacts.js";
 import { fromWireToolName } from "@banto/core";
 import type {
   NoticeReopenOutcome,
@@ -439,6 +440,13 @@ export class BantoHostServer {
   /** 取次の選択肢に付いた処理を実行する口（決定73）。無ければ記録と知らせだけ。 */
   private readonly runInboxEffect: BantoHostServerOptions["runInboxEffect"];
   private readonly clients = new Set<WebSocket>();
+  /**
+   * 知らせ（notice）の退避先。**スレッドごと**——道具の結果の退避
+   * （`artifacts/<threadId>`、bin.ts の `threadFactory` が作る）と同じディレクトリ規約を
+   * 自前で導いて使い回す。`BantoHostServer` は会話ごとの `ArtifactStore` を持ち回らない
+   * ので（スレッド組み立ては bin.ts 側）、ここで遅延生成してキャッシュする。
+   */
+  private readonly noticeArtifactStores = new Map<string, ArtifactStore>();
   /**
    * 前回の ping に pong を返した接続。死んだ接続を畳むためだけに持つ（→ `heartbeat`）。
    * 接続そのものが鍵なので、close で clients から外れれば一緒に消える WeakSet でよい。
@@ -980,9 +988,27 @@ export class BantoHostServer {
     // T3: 幹へ配られようとしている知らせだけ、用件の枝へ回す
     const routed = await this.routeNotice(text, options, source);
     return this.deliverToThread(routed.text, routed.threadId, source, (thread) => {
-      thread.record({ role: "notice", source, text: routed.text });
+      // 大きい知らせは道具の戻り値と同じ仕組みで栞へ退避し、記録には要約＋ポインタだけを
+      // 積む（本タスク）。**画面（broadcast）には常に全文を送る**——PO は画面で読む。
+      // トークンを食っているのは番頭の文脈（記録）側だけなので、そこだけを切る
+      const offloaded = offloadTextIfLarge({
+        text: routed.text,
+        store: this.artifactStoreFor(thread.id),
+        label: `notice(${source})`,
+      });
+      thread.record({ role: "notice", source, text: offloaded.text });
       this.broadcast({ type: "notice", threadId: thread.id, source, text: routed.text });
     });
+  }
+
+  /** `notify` の退避先。`artifacts/<threadId>` は道具の結果の退避と同じ場所を指す。 */
+  private artifactStoreFor(threadId: string): ArtifactStore {
+    let store = this.noticeArtifactStores.get(threadId);
+    if (!store) {
+      store = new ArtifactStore(path.join(currentDataDir(), "artifacts", threadId));
+      this.noticeArtifactStores.set(threadId, store);
+    }
+    return store;
   }
 
   /**
