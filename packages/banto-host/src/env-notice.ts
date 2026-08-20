@@ -154,6 +154,39 @@ export function renderEnvNotice(event: EnvEvent): string | undefined {
     ].join("\n");
   }
 
+  if (event.type === "env_teardown_incomplete") {
+    const entries = (event.data["entries"] ?? []) as Array<{
+      driver?: string;
+      name?: string;
+      envId?: string;
+      profileName?: string;
+    }>;
+    return [
+      `畳んだはずの検証環境の実体が ${entries.length} 件、まだ残っています`,
+      "",
+      "**起きたこと**",
+      "Banto が作り、台帳には畳み済みと記録されているのに、ドライバの `list` には実体が" +
+        "まだ現れています。**外にリソースが残っている可能性があります**（費用が出続けます）。",
+      ...(entries.length > 0
+        ? [
+            "",
+            entries
+              .map((e) => {
+                const tags = [e.envId ? `envId=${e.envId}` : "", e.profileName ? `profile=${e.profileName}` : ""]
+                  .filter(Boolean)
+                  .join(" ");
+                return `- ${e.name ?? "(名前なし)"}（${e.driver ?? "?"}）${tags ? ` ${tags}` : ""}`;
+              })
+              .join("\n"),
+          ]
+        : []),
+      "",
+      "**求める判断**",
+      "`env.teardown` をもう一度試してください。それでも消えないなら、機構では片付かないので" +
+        "手で片付けてください。",
+    ].join("\n");
+  }
+
   if (event.type === "env_orphans_found") {
     const orphans = (event.data["orphans"] ?? []) as Array<{ driver?: string; name?: string }>;
     return [

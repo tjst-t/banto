@@ -433,6 +433,28 @@ describe("[task-0067/a2] 知らせの言い換え", () => {
     assert.match(text ?? "", /消しません/, "勝手に消えると期待させない");
   });
 
+  it("畳み損ね（task-0298）は残っている実体の名前を添え、費用の話として伝える", () => {
+    const text = renderEnvNotice(
+      event({
+        type: "env_teardown_incomplete",
+        data: {
+          entries: [
+            { driver: "process", name: "y-1", envId: "env-y", profileName: "badneck" },
+          ],
+        },
+      })
+    );
+    assert.match(text ?? "", /y-1/, "残っている実体の名前が無いと確かめようがない");
+    assert.match(text ?? "", /外にリソースが残っている/, "費用が出続ける話であることが落ちている");
+    assert.doesNotMatch(text ?? "", /Banto 以外/, "台帳に載っている＝持ち主は分かっている");
+    assert.match(text ?? "", /env\.teardown/, "次にどうするかが書いていない");
+    assert.doesNotMatch(
+      text ?? "",
+      /env\.teardown_orphan/,
+      "teardown_orphan は orphanList だけが対象で、畳み損ねには効かない"
+    );
+  });
+
   it("知らないものは黙って流さない", () => {
     assert.equal(renderEnvNotice(event({ type: "env_provisioned" as never })), undefined);
   });
