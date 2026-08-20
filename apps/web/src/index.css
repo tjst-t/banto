@@ -1,0 +1,63 @@
+@import 'tailwindcss';
+
+/*
+ * トークン。「考えられた」見た目にするための最小限。
+ * 装飾より抑制——値を読むための道具なので、色は状態を示すときだけ使う。
+ * 詳細は dataviz スキルの色式に沿わせてある（status 色は icon+text と必ず対にする）。
+ */
+@theme {
+  --font-sans: 'IBM Plex Sans', 'IBM Plex Sans JP', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
+
+  --color-paper: #f7f7f4;
+  --color-surface: #ffffff;
+  --color-surface-sunken: #f0f0ec;
+  --color-border: #e3e2dc;
+  --color-border-strong: #cfcec5;
+
+  --color-ink: #1b1b18;
+  --color-ink-secondary: #63615a;
+  --color-ink-muted: #96948a;
+
+  --color-accent: #3e4fd1;
+  --color-accent-soft: #edeffb;
+  --color-waiting: #a6650b;
+  --color-waiting-soft: #fbf1df;
+  --color-good: #29845a;
+  --color-good-soft: #e7f4ec;
+  --color-critical: #b3402a;
+  --color-critical-soft: #fbeae5;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* キーボードフォーカスは常に見える（frontend-design skill の品質基準）。 */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+::selection {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
