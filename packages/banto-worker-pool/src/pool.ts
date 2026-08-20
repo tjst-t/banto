@@ -2227,13 +2227,19 @@ export class WorkerPool {
    * イベントログから履歴として組み立てる。既定では履歴も含める——「さっき頼んだ仕事が
    * どうなったか」を見るのに、生きている職人だけでは足りないため。
    */
-  list(options: { projectTag?: string; includeClosed?: boolean; query?: string } = {}): WorkerInfo[] {
-    const { projectTag, includeClosed = true, query } = options;
+  list(
+    options: { projectTag?: string; includeClosed?: boolean; query?: string; origins?: string[] } = {}
+  ): WorkerInfo[] {
+    const { projectTag, includeClosed = true, query, origins } = options;
+    // 起動元で絞る（task-0310）。空配列は「該当なし」であって「絞らない」ではない
+    // ——渡した threadId の一族が誰も職人を起こしていないとき、全件が漏れて出ては意味がない
+    const byOrigin = (w: WorkerInfo): boolean => origins === undefined || origins.includes(w.origin);
     const live = this.ledger
       .list()
       .filter((entry) => projectTag === undefined || entry.projectTag === projectTag)
       .map((entry) => this.describe(entry.sessionId, entry))
-      .filter((w): w is WorkerInfo => w !== undefined);
+      .filter((w): w is WorkerInfo => w !== undefined)
+      .filter(byOrigin);
 
     if (!includeClosed) return live;
 
@@ -2242,7 +2248,8 @@ export class WorkerPool {
       .filter((sessionId) => !liveIds.has(sessionId))
       .map((sessionId) => this.describe(sessionId))
       .filter((w): w is WorkerInfo => w !== undefined)
-      .filter((w) => projectTag === undefined || w.projectTag === projectTag);
+      .filter((w) => projectTag === undefined || w.projectTag === projectTag)
+      .filter(byOrigin);
 
     // 新しいものが後ろに来るよう、起動順に並べる
     const all = [...live, ...closed].sort((a, b) => a.spawnedAt.localeCompare(b.spawnedAt));
@@ -2293,6 +2300,7 @@ export class WorkerPool {
       query?: string;
       limit?: number;
       offset?: number;
+      origins?: string[];
     } = {}
   ): { workers: WorkerInfo[]; total: number; closedTotal: number; limit: number; offset: number } {
     const { limit = DEFAULT_PAGE_SIZE, offset = 0, ...filter } = options;

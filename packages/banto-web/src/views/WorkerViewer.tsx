@@ -195,26 +195,83 @@ const PAGE_SIZE = 20;
 /** 稼働中の職人を見ているときの取り直し間隔。 */
 const REFRESH_MS = 3000;
 
-export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.ReactElement {
+/**
+ * `threadFamily`（threadId の一族）を worker.list の `origins` へ変換する。
+ *
+ * origin の形は `banto:<threadId>`（`packages/banto-host/src/worker-notice.ts` の
+ * `threadOrigin`）。Worker Pool 側はこの接頭辞の意味を知らず文字列一致でしか絞れない
+ * ——番頭が職人を起こすときに付けた値をそのまま組み立てて渡す（形は変えない・決定29）。
+ * コンポーネントから切り出してあるのは、DOM無しで（node:test で）確かめられるようにするため。
+ */
+export function originsOfFamily(threadFamily: string[] | undefined): string[] {
+  return (threadFamily ?? []).map((threadId) => `banto:${threadId}`);
+}
+
+/**
+ * 一覧が0件のときに出す文言（task-0310 a4）。
+ *
+ * PO報告の実害はここが直接の再発防止——「この会話には居ない」のか「そもそも誰も
+ * 頼んでいない」のかを区別できないと、また誤読を生む。DOM無しで確かめられるよう
+ * コンポーネントから切り出してある。
+ */
+export function emptyStateText(opts: {
+  query: string;
+  scopedToThread: boolean;
+  closedCount: number;
+  showClosed: boolean;
+}): { title: string; body: string } {
+  const { query, scopedToThread, closedCount, showClosed } = opts;
+  if (query) {
+    return { title: `「${query}」に当てはまる職人はいません`, body: "" };
+  }
+  const title = scopedToThread ? "この会話では職人を起こしていません" : "動いている職人はいません";
+  if (closedCount > 0 && !showClosed) {
+    return { title, body: `終わった職人が ${closedCount} 人います。「終わった職人も表示」で見られます。` };
+  }
+  const body = scopedToThread
+    ? "ほかの会話の職人を見るには「全部の会話」へ切り替えてください。"
+    : "番頭に仕事を頼むと、ここに職人が並びます。";
+  return { title, body };
+}
+
+export function WorkerViewer({ params, endpoint, threadFamily }: CanvasViewProps): React.ReactElement {
   const initialSessionId = typeof params["sessionId"] === "string" ? params["sessionId"] : undefined;
   const [selected, setSelected] = useState<string | undefined>(initialSessionId);
   const [showLog, setShowLog] = useState(initialSessionId !== undefined);
   const [autoRefresh, setAutoRefresh] = useState(true);
   /** 畳んだ職人を出すか。**既定は出さない**——いま動いているものが埋もれるため。 */
   const [showClosed, setShowClosed] = useState(false);
+  /**
+   * **既定は「いまの会話」に絞る**（PO報告 task-0310）——別の会話が起こした職人が
+   * 混ざって並んでいたせいで、`env.verify`（LLMを1本も起こさない）を疑う誤読を招いた。
+   * 「全部見る」は消さず、切り替えで残す。
+   */
+  const [scope, setScope] = useState<"thread" | "all">("thread");
   const [page, setPage] = useState(0);
   /** 入力中の文字。打つたびに問い合わせないよう、確定した query とは分けて持つ */
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
   const now = useTicker(30_000);
 
+  const origins = useMemo(() => originsOfFamily(threadFamily), [threadFamily]);
+  const scopedToThread = scope === "thread";
+  // 絞り込みが決まる前（幹の解決前）は呼ばない——一瞬でも全件を出してから絞ると、
+  // その一瞬に「別の会話の職人」が見えてしまい、直したい誤読をまた起こす
+  const listEnabled = !scopedToThread || origins.length > 0;
+
   // 絞り込みもページ送りも Worker Pool 側で行う。履歴が増えても全件を受け取らずに済む
-  const list = useModuleTool<WorkerList>(endpoint, "worker.list", {
-    includeClosed: showClosed,
-    query,
-    limit: PAGE_SIZE,
-    offset: page * PAGE_SIZE,
-  });
+  const list = useModuleTool<WorkerList>(
+    endpoint,
+    "worker.list",
+    {
+      includeClosed: showClosed,
+      query,
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
+      ...(scopedToThread ? { origins } : {}),
+    },
+    listEnabled
+  );
   const attach = useModuleTool<Attach>(
     endpoint,
     "worker.attach",
@@ -233,7 +290,7 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
   // 絞り込みを変えたら先頭のページへ戻す（空ページに取り残されないように）
   useEffect(() => {
     setPage(0);
-  }, [showClosed, query]);
+  }, [showClosed, query, scope]);
 
   // 何も選ばれていなければ、動いている職人を自動で選ぶ（見たいのは大抵それ）
   useEffect(() => {
@@ -249,17 +306,22 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
    * 稼働中は出力が伸びるので定期的に取り直す。止まっている職人では回さない。
    * 依存に置くのは**安定した reload だけ**——フックの返り値そのものを置くと、
    * 毎描画で参照が変わって間隔が張り直され、いつまでも発火しない。
+   *
+   * `anyRunning`（**絞り込んだ後の**一覧に稼働中の職人が居るか）も条件に足す（task-0310）
+   * ——選んだ職人が終わっていても、一覧の他の職人が動いていれば状態は動く。逆に、
+   * 絞り込みで一覧が空になったら、選んだ職人も無ければ回さない。
    */
+  const anyRunning = workers.some((w) => w.alive);
   const reloadAttach = attach.reload;
   const reloadList = list.reload;
   useEffect(() => {
-    if (!autoRefresh || !alive) return;
+    if (!autoRefresh || (!alive && !anyRunning)) return;
     const timer = setInterval(() => {
       reloadAttach();
       reloadList();
     }, REFRESH_MS);
     return () => clearInterval(timer);
-  }, [autoRefresh, alive, reloadAttach, reloadList]);
+  }, [autoRefresh, alive, anyRunning, reloadAttach, reloadList]);
 
   const rendered = useMemo(() => parseSession(attach.data?.lines ?? []), [attach.data]);
 
@@ -290,6 +352,14 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
         <Toggle checked={showClosed} onChange={setShowClosed} title="畳んだ職人も一覧に出す">
           終わった職人も表示{closedCount > 0 && !showClosed ? `（${closedCount}）` : ""}
         </Toggle>
+        {/* 既定は「いまの会話」。全部見たいときだけ切り替える（task-0310・PO報告） */}
+        <Toggle
+          checked={!scopedToThread}
+          onChange={(checked) => setScope(checked ? "all" : "thread")}
+          title="この会話に関係なく、全プロジェクト・全会話の職人を見る"
+        >
+          {scopedToThread ? "この会話だけ" : "全部の会話"}
+        </Toggle>
         <span className="cv-spacer" />
         <Button small variant="ghost" onClick={() => list.reload()} title="一覧を取り直す">
           ⟳
@@ -309,14 +379,14 @@ export function WorkerViewer({ params, endpoint }: CanvasViewProps): React.React
         {list.loading && !list.data ? (
           <Loading rows={5} />
         ) : workers.length === 0 ? (
-          <EmptyState
-            icon="worker"
-            title={query ? `「${query}」に当てはまる職人はいません` : "動いている職人はいません"}
-          >
-            {closedCount > 0 && !showClosed
-              ? `終わった職人が ${closedCount} 人います。「終わった職人も表示」で見られます。`
-              : "番頭に仕事を頼むと、ここに職人が並びます。"}
-          </EmptyState>
+          (() => {
+            const empty = emptyStateText({ query, scopedToThread, closedCount, showClosed });
+            return (
+              <EmptyState icon="worker" title={empty.title}>
+                {empty.body}
+              </EmptyState>
+            );
+          })()
         ) : (
           <ul className="cv-list">
             {workers.map((w) => {

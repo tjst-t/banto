@@ -104,12 +104,15 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
     name: "worker.list",
     label: "Worker: List",
     description:
-      "誰に何を任せているかの一覧（新しい順・生存確認つき）。畳んだ職人も既定で含む。\n例: {} → 全部／{includeClosed: false} → 稼働中だけ／{query: \"task-0042\"} → その仕事だけ\nquery は英語の識別子で埋める。",
+      "誰に何を任せているかの一覧（新しい順・生存確認つき）。畳んだ職人も既定で含む。\n例: {} → 全部／{includeClosed: false} → 稼働中だけ／{query: \"task-0042\"} → その仕事だけ／{origins: [\"banto:thread-1\"]} → その起動元だけ\nquery は英語の識別子で埋める。",
     parameters: Type.Object({
       projectTag: Type.Optional(Type.String()),
       includeClosed: Type.Optional(Type.Boolean()),
       query: Type.Optional(
         Type.String()
+      ),
+      origins: Type.Optional(
+        Type.Array(Type.String(), { description: "起動元（origin）で絞る。1つでも当てはまれば含む" })
       ),
       limit: Type.Optional(Type.Number()),
       offset: Type.Optional(Type.Number())
@@ -119,6 +122,7 @@ export function createWorkerTools(pool: WorkerPool): NamespacedToolDefinition[] 
         ...(params.projectTag ? { projectTag: params.projectTag } : {}),
         ...(params.includeClosed !== undefined ? { includeClosed: params.includeClosed } : {}),
         ...(params.query ? { query: params.query } : {}),
+        ...(params.origins && params.origins.length > 0 ? { origins: params.origins } : {}),
         ...(params.limit !== undefined ? { limit: params.limit } : {}),
         ...(params.offset !== undefined ? { offset: params.offset } : {}),
       });

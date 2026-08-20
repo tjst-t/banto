@@ -266,6 +266,18 @@ export function App(): React.ReactElement {
     ];
   }, [session.branches, session.closedThreads, trunk]);
 
+  /**
+   * いま見ている会話の一族（幹自身＋その配下の枝。決定77で深さ1段と決まっているので
+   * 「枝の枝」は無い）。`CanvasViewProps.threadFamily` として面へ渡す（task-0310）。
+   *
+   * `trunk`／`trunkBranches` は既に「見ている先が枝なら親の幹へ解決する」形で計算済み
+   * ——ここで作り直さず、その結果をそのまま threadId の配列にするだけでよい。
+   */
+  const threadFamily = useMemo(
+    () => (trunk ? [trunk.threadId, ...trunkBranches.map((b) => b.threadId)] : []),
+    [trunk, trunkBranches]
+  );
+
   /** 会話を移る（枝の札・レールの点・取次から）。 */
   const openThread = useCallback(
     (threadId: string, options: { focus?: boolean } = {}) => {
@@ -851,6 +863,7 @@ export function App(): React.ReactElement {
                     endpoint={activeSpec!.endpoint}
                     endpointOf={endpointOf}
                     openCanvas={openView}
+                    threadFamily={threadFamily}
                   />
                 ) : (
                   // I2: カタログにあるのにUIが解決できない＝配線漏れ。理由を出す
