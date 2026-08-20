@@ -19,8 +19,14 @@
  * D6: 汎用の YAML パーサは足さない。`docker-driver.ts` の `resolveServiceName` と同じ
  * 判断（「compose ファイルの形は決まっているので正規表現で足りる」）を、ここでは
  * インデント構造を読む最小限のパーサとして踏襲する——文字列比較ではなく構造として
- * 読みたいのはブロックのネストであって、YAML 全仕様（アンカー・複数ドキュメント等）
- * ではないため。
+ * 読みたいのはブロックのネストであって、YAML 全仕様（複数ドキュメント等）ではないため。
+ *
+ * **アンカー（`&name`）・エイリアス（`*name`）だけは読む**（task-0301 の後続直し）。
+ * `docker/dev.yaml` は web と host で同じ node_modules の置き場を mount するため
+ * `x-node-modules-cache: &node-modules-cache` / `volumes: *node-modules-cache` の形に
+ * なった（コピペで2つのサービスへ同じ mount 行を書くと、
+ * `env-cache-covers-nested-node-modules.spec.ts` の「小部屋を2度載せない」検査に
+ * 文字面としてひっかかるため）。ここを読めないと `services` 自体が読めなくなる。
  */
 
 import { describe, it } from "node:test";
@@ -48,6 +54,8 @@ function parseBlockYaml(text: string): { [key: string]: YamlValue } {
   }
 
   let pos = 0;
+  // アンカーで定義された値を名前で引けるようにする（`&name` で登録、`*name` で参照）
+  const anchors: { [name: string]: YamlValue } = {};
 
   function parseScalar(s: string): string {
     const v = s.trim();
@@ -59,6 +67,12 @@ function parseBlockYaml(text: string): { [key: string]: YamlValue } {
 
   function parseValue(valueStr: string): YamlValue {
     const v = valueStr.trim();
+    const alias = /^\*([a-zA-Z0-9_-]+)$/.exec(v);
+    if (alias) {
+      const name = alias[1]!;
+      assert.ok(Object.prototype.hasOwnProperty.call(anchors, name), `未定義のアンカーを参照している: *${name}`);
+      return anchors[name]!;
+    }
     if (v.startsWith("[")) {
       // フロースタイルの配列（`command: ["node", ...]`）。この repo では二重引用符で
       // 統一されているので、そのまま JSON として読める
@@ -87,18 +101,27 @@ function parseBlockYaml(text: string): { [key: string]: YamlValue } {
         continue;
       }
       const key = m[1]!.trim();
-      const valueStr = m[2]!;
+      let valueStr = m[2]!;
       pos++;
+
+      // アンカー定義（`key: &name` の形）。中身はこのあとのネストしたブロック
+      const anchorMatch = /^&([a-zA-Z0-9_-]+)\s*$/.exec(valueStr.trim());
+      const anchorName = anchorMatch?.[1];
+      if (anchorName) valueStr = "";
+
+      let value: YamlValue;
       if (valueStr.trim() === "") {
         if (pos < lines.length && lines[pos]!.indent > indent) {
           const nestedIndent = lines[pos]!.indent;
-          obj[key] = lines[pos]!.content.startsWith("- ") ? parseList(nestedIndent) : parseMap(nestedIndent);
+          value = lines[pos]!.content.startsWith("- ") ? parseList(nestedIndent) : parseMap(nestedIndent);
         } else {
-          obj[key] = null;
+          value = null;
         }
       } else {
-        obj[key] = parseValue(valueStr);
+        value = parseValue(valueStr);
       }
+      if (anchorName) anchors[anchorName] = value;
+      obj[key] = value;
     }
     return obj;
   }
