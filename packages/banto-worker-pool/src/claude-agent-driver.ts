@@ -87,6 +87,30 @@ function injectTimeoutMs(): number {
 }
 
 /**
+ * 起動待ち（get_state の応答待ち）の「時間切れ」を作る仕掛け。
+ *
+ * task-0291: 同じ間欠（フルスイート負荷下でだけ落ちる）に3度目の手当てを打つにあたり、
+ * 「タイムアウトの数字を上げる」をやめて壁時計依存そのものを断つ。ここを差し替え可能に
+ * しておけば、試験は実時間を1ミリ秒も待たずに「間に合わなかった」を作れる——かつ、
+ * 一度も `schedule` のコールバックを呼ばなければ、本物の応答がどれだけ遅れても
+ * レースに負けない＝「間に合った」側は実時間の上限そのものが無くなる。
+ *
+ * 既定（`REAL_START_TIMEOUT_SCHEDULER`）は今までどおり実時間の `setTimeout`
+ * ——番頭ホスト・Kobo からは何も変わらない。差し替えは試験専用。
+ */
+export interface StartTimeoutScheduler {
+  schedule(ms: number, onTimeout: () => void): { cancel: () => void };
+}
+
+const REAL_START_TIMEOUT_SCHEDULER: StartTimeoutScheduler = {
+  schedule(ms, onTimeout) {
+    const timer = setTimeout(onTimeout, ms);
+    timer.unref?.();
+    return { cancel: () => clearTimeout(timer) };
+  },
+};
+
+/**
  * 子が既に終わっているかを見る（task-0192 系・a6）。
  *
  * **書く前にここを見る。** 死んだ子の stdin へ書こうとすると `write EPIPE` になり、
@@ -125,6 +149,11 @@ export interface ClaudeAgentDriverOptions {
    * D11 に反しない：worktree の中にあり、外から読める。
    */
   settingSources?: ("user" | "project" | "local")[];
+  /**
+   * 起動待ちのタイムアウトを作る仕掛け（試験専用の差し替え口）。省略時は実時間の
+   * `setTimeout`。番頭ホスト・Kobo からは指定しない——本物の待ちはこれまでどおり。
+   */
+  startTimeoutScheduler?: StartTimeoutScheduler;
 }
 
 interface ActiveSession {
@@ -159,6 +188,7 @@ export class ClaudeAgentDriver implements RuntimeDriver {
   private readonly nodePath: string;
   private readonly nodeArgsOverride: string[] | undefined;
   private readonly settingSources: ("user" | "project" | "local")[];
+  private readonly startTimeoutScheduler: StartTimeoutScheduler;
   private readonly sessions = new Map<string, ActiveSession>();
   private readonly handlers = new Set<DriverEventHandler>();
   private readonly pending = new Map<
@@ -174,6 +204,7 @@ export class ClaudeAgentDriver implements RuntimeDriver {
     this.nodePath = opts.nodePath ?? process.execPath;
     this.nodeArgsOverride = opts.nodeArgs;
     this.settingSources = opts.settingSources ?? ["project"];
+    this.startTimeoutScheduler = opts.startTimeoutScheduler ?? REAL_START_TIMEOUT_SCHEDULER;
   }
 
   /**
@@ -435,6 +466,7 @@ export class ClaudeAgentDriver implements RuntimeDriver {
           | { ok: false; error: string }
         >((resolve) => {
           let settled = false;
+          let timeoutHandle: { cancel: () => void } | undefined;
           const settle = (
             value:
               | { ok: true; sessionId: string; sessionPath: string; stopReader: () => void }
@@ -444,6 +476,7 @@ export class ClaudeAgentDriver implements RuntimeDriver {
             settled = true;
             proc.off("exit", onEarlyExit);
             proc.off("error", onSpawnError);
+            timeoutHandle?.cancel();
             resolve(value);
           };
           const onEarlyExit = (code: number | null, signal: NodeJS.Signals | null): void => {
@@ -497,13 +530,14 @@ export class ClaudeAgentDriver implements RuntimeDriver {
           }
 
           // I2: 名乗りが返らないまま「起きたつもり」で進まない。掴んだ handle も外す
-          const timer = setTimeout(() => {
+          // task-0291: 実時間の setTimeout ではなく注入された scheduler 経由——既定は
+          // 変わらないが、試験は壁時計を待たずに「時間切れ」を作れる
+          timeoutHandle = this.startTimeoutScheduler.schedule(ms, () => {
             settle({
               ok: false,
               error: `[claude-agent] ホストが ${ms}ms 以内に応答しませんでした。`,
             });
-          }, ms);
-          timer.unref?.();
+          });
         })
     );
 

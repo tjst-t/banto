@@ -140,6 +140,49 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 2_000, intervalMs
   }
 }
 
+/**
+ * `ClaudeAgentDriver` の起動タイムアウトを壁時計から切り離す試験用 scheduler（task-0291）。
+ *
+ * **なぜこれを選んだか**: a3/a5 は「短いタイムアウト（150ms）で2回とも失敗させる」
+ * ことを実時間の `setTimeout` で作っていた。フルスイート負荷下では、150ms のうちに
+ * 本物の子プロセス（node がスタブ台本を読み込んで応答する）が起動しきれず、期待している
+ * 「間に合った」側まで巻き込まれて落ちた——3度目の再発（`BANTO_CLAUDE_START_TIMEOUT_MS`
+ * を1000ms へ上げる手当てを task-0267・task-0269 で既に2回打っている）。今回は数字を
+ * 上げるのをやめ、`ClaudeAgentDriver` に注入した `startTimeoutScheduler` 経由で
+ * 「時間切れ」そのものを試験が握る：`fireNext()` を呼べば実時間がどれだけ残っていようと
+ * 即座に時間切れにできる（＝間に合わなかった側は実時間に依存しない）。逆に一度も
+ * `fireNext()` を呼ばなければタイムアウトは永遠に発火しないので、本物の応答が
+ * どれだけ遅れてもレースに負けない（＝間に合った側にも実時間の上限が無くなる）。
+ * 「本物のサブプロセス起動自体を偽物にする」案もあったが、a2/a4 が検証している
+ * 「本物の子プロセスを実際に起こし直す」経路を土台から変えることになるため見送った。
+ */
+function createManualStartTimeoutScheduler(): {
+  scheduler: { schedule: (ms: number, onTimeout: () => void) => { cancel: () => void } };
+  fireNext: () => void;
+  pendingCount: () => number;
+} {
+  const pending: Array<{ cancelled: boolean; fire: () => void }> = [];
+  return {
+    scheduler: {
+      schedule(_ms: number, onTimeout: () => void) {
+        const entry = { cancelled: false, fire: onTimeout };
+        pending.push(entry);
+        return {
+          cancel: () => {
+            entry.cancelled = true;
+          },
+        };
+      },
+    },
+    fireNext: () => {
+      const entry = pending.shift();
+      if (!entry) throw new Error("fireNext: 保留中のタイムアウトがありません");
+      if (!entry.cancelled) entry.fire();
+    },
+    pendingCount: () => pending.length,
+  };
+}
+
 describe("[claude-agent] 起動の待ちと起こし直し（task-0233）", () => {
   let stubDir: string;
   let stubPath: string;
@@ -281,13 +324,31 @@ describe("[claude-agent] 起動の待ちと起こし直し（task-0233）", () =
   });
 
   it("[a3] 2回目も名乗りが返らなければ、同じ形（spawn_failed→例外）で失敗し、inject は再試行されない", async () => {
-    process.env["BANTO_CLAUDE_START_TIMEOUT_MS"] = "150";
+    process.env["BANTO_CLAUDE_START_TIMEOUT_MS"] = "150"; // 口は生きたまま——エラー文言に載ることで確かめる
     process.env["STUB_HANG_START_ATTEMPTS"] = "99"; // 何度起こしても名乗らない
 
-    const events: DriverEvent[] = [];
-    driver.subscribe((e) => events.push(e));
+    // task-0291: 時間切れは実時間の 150ms ではなく、手動 scheduler の fireNext() で作る
+    // （理由は createManualStartTimeoutScheduler のコメント）
+    const { scheduler, fireNext, pendingCount } = createManualStartTimeoutScheduler();
+    const manualDriver = new ClaudeAgentDriver({
+      hostPath: stubPath,
+      nodeArgs: [],
+      sessionBaseDir: path.join(stubDir, "sessions"),
+      startTimeoutScheduler: scheduler,
+    });
 
-    await assert.rejects(() => driver.spawn(spawnOptions()), /ホストが 150ms 以内に応答しませんでした/u);
+    const events: DriverEvent[] = [];
+    manualDriver.subscribe((e) => events.push(e));
+
+    const spawnPromise = manualDriver.spawn(spawnOptions());
+    // 1回目・2回目、それぞれの起動待ちが scheduler に仕掛けられるのを待ってから発火する。
+    // ここで待つのは「非同期処理が schedule() まで進んだこと」であって、150ms という
+    // 締切そのものではない——本物の締切は fireNext() が作る
+    await waitUntil(() => pendingCount() > 0);
+    fireNext();
+    await waitUntil(() => pendingCount() > 0);
+    fireNext();
+    await assert.rejects(() => spawnPromise, /ホストが 150ms 以内に応答しませんでした/u);
 
     const seen = attempts();
     assert.equal(seen.length, 2, "起こし直しは1回だけ試して、そこで止まる（無限に粘らない）");
@@ -296,12 +357,14 @@ describe("[claude-agent] 起動の待ちと起こし直し（task-0233）", () =
     const failures = events.filter((e) => e.type === "spawn_failed");
     assert.equal(failures.length, 1);
 
-    // 工房は生きている：次の職人はふつうに起こせる
+    // 工房は生きている：次の職人はふつうに起こせる。ここでは fireNext() を一度も
+    // 呼ばない——本物の応答がどれだけ遅れてもレースに負けない（実時間の上限が無い）
     process.env["STUB_HANG_START_ATTEMPTS"] = "0";
     fs.writeFileSync(counterFile, "0");
     fs.rmSync(attemptsLog, { force: true });
-    const handle = await driver.spawn(spawnOptions());
+    const handle = await manualDriver.spawn(spawnOptions());
     assert.ok(handle.pid > 0, "1人起こせなかっただけで工房が死んでいる");
+    await manualDriver.kill(handle.sessionId);
   });
 
   // ── a4: resume の退路 ──────────────────────────────────────────────────
@@ -347,7 +410,7 @@ describe("[claude-agent] 起動の待ちと起こし直し（task-0233）", () =
   // ── a5: 診断の中身 ──────────────────────────────────────────────────────
 
   it("[a5] 失敗と再試行の記録に、試行回数・再開か新規か・再開元の大きさが載る（条件には使わない）", async () => {
-    process.env["BANTO_CLAUDE_START_TIMEOUT_MS"] = "150";
+    process.env["BANTO_CLAUDE_START_TIMEOUT_MS"] = "150"; // 口は生きたまま——診断の中身で確かめる
     process.env["STUB_HANG_START_ATTEMPTS"] = "99";
 
     const previous = path.join(stubDir, "previous.jsonl");
@@ -355,16 +418,28 @@ describe("[claude-agent] 起動の待ちと起こし直し（task-0233）", () =
     fs.writeFileSync(previous, body);
     const expectedBytes = Buffer.byteLength(body, "utf-8");
 
+    // task-0291: a3 と同じ理由で、時間切れは手動 scheduler の fireNext() で作る
+    const { scheduler, fireNext, pendingCount } = createManualStartTimeoutScheduler();
+    const manualDriver = new ClaudeAgentDriver({
+      hostPath: stubPath,
+      nodeArgs: [],
+      sessionBaseDir: path.join(stubDir, "sessions"),
+      startTimeoutScheduler: scheduler,
+    });
+
     const stderr = captureStderr();
     try {
-      await assert.rejects(() =>
-        driver.spawn(
-          spawnOptions({
-            sessionPath: path.join(stubDir, "sessions", "resumed.jsonl"),
-            driverOptions: { resumeSessionPath: previous },
-          })
-        )
+      const spawnPromise = manualDriver.spawn(
+        spawnOptions({
+          sessionPath: path.join(stubDir, "sessions", "resumed.jsonl"),
+          driverOptions: { resumeSessionPath: previous },
+        })
       );
+      await waitUntil(() => pendingCount() > 0);
+      fireNext();
+      await waitUntil(() => pendingCount() > 0);
+      fireNext();
+      await assert.rejects(() => spawnPromise);
     } finally {
       stderr.restore();
     }
