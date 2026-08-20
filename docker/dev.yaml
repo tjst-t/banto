@@ -13,8 +13,11 @@
 #   固定していたころ（`"4201:4200"`）は、同じプロファイルで2つ立てると
 #   ①2本目が bind できず落ちる ②仮に立っても中継の上流が同じ番号なので
 #   **2つの URL が同じ環境を指す**（＝別タスクの画面を見て承認できる）の2つが起きた
-# - /ws と /api は本番 banto ホスト（127.0.0.1:4100）へ中継する（vite.config.ts の proxy）。
-#   コンテナからホストへは host.docker.internal 経由で到達する
+# - /ws と /api は同じ compose 内で立てた**このワークツリーの banto-host**（`host:4100`）へ
+#   中継する（vite.config.ts の proxy）。以前は `host.docker.internal:4100` で本番の banto
+#   （常駐サービス）へ抜けていたため、画面に映る中身が常に main のホストの応答になっていた
+#   （task-0301・PO 差し戻し2回の実害。task-0279 で職人が直した後もレビューで再現しなかった）。
+#   `host` サービスの定義は下を見よ。
 # - Host 検査（DNS リバインディング対策）は検証環境のため無効化（BANTO_WEB_ALLOWED_HOSTS=true）
 #
 # **command は vite を起こすだけ**。以前はここに
@@ -39,10 +42,15 @@ services:
       - apparmor=unconfined
     working_dir: /app
     environment:
-      BANTO_HOST_URL: http://host.docker.internal:4100
+      BANTO_HOST_URL: http://host:4100
       BANTO_WEB_ALLOWED_HOSTS: "true"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    # **`depends_on` は書かない**。ドライバの `up -d --build` はサービス名を指定せず
+    # プロジェクト全体を立てるので、`host` も一緒に立つ——`depends_on` を足すと、
+    # 用意（`npm ci`、`compose run --rm web ...`）の間に `host` が**依存先として道連れで
+    # 起動**してしまい、node_modules が空のまま `tsx` が立って task-0089 が塞いだのと
+    # 同じ即死を再現する（`web` 側では起きない事故が `host` 側で起きるだけ）。
+    # 中継先はこの compose の中にしか無い（host.docker.internal の綴りは web から消した）。
+    #
     # **置き場は `setup`（npm ci）が書くものを全部覆う**。理由と背景は docker/test.yaml に
     # 詳しく書いた——要点は「巻き上げられない依存は `packages/<pkg>/node_modules` に書かれ、
     # そこを置き場に載せていないと、置き場が温まっているワークツリーで黙って欠ける」。
@@ -61,3 +69,39 @@ services:
     # ホスト側は書かない＝docker が空きを割り当てる（上のコメント参照）
     ports:
       - "4200"
+  # **このワークツリーの banto-host**（task-0301）。web が中継する先はここだけ
+  # ——本番の常駐サービス（ホスト側 4100・`/var/lib/banto`）には触れない。
+  #
+  # - 土台・マウントは web と同じ（`..:/app` と node_modules の置き場、`.git` の read-only）。
+  #   イメージは web と共有される（同じ `build` 定義・同じレイヤ）ので、二重にビルドされない。
+  # - `command` はマウントされたワークツリーの `packages/banto-host/src/bin.ts` を
+  #   `tsx` でそのまま起こす——**このブランチの実装が動くこと**が要点（写しではない）。
+  # - `BANTO_HOST_BIND=0.0.0.0`：既定の 127.0.0.1 はコンテナ自身のループバックで、
+  #   web からは届かない（別コンテナ＝別ネットワーク名前空間）。compose のネットワークの
+  #   外へは `ports` を publish しない限り出ないので、ここで広げても外には漏れない。
+  # - `BANTO_DATA_DIR` はコンテナ内の使い捨てパス。本番のデータ置き場
+  #   （`/var/lib/banto` 配下）はマウントも参照もしない——レビュー環境のホストが
+  #   PO の実際の会話に触れないようにするため。
+  # - `BANTO_WORKER_POOL_URL` / `BANTO_ENV_POOL_URL` は到達しない先を渡す
+  #   （既存の docker 試験と同じ書き方）。レビュー環境のホストが実在の職人・環境プールを
+  #   動かせないようにするため——ここで立てた枝の番頭に実作業をやらせない。
+  # - `ports` は書かない（決定59の「人が触る環境」にしない）。web だけがこの口を使う
+  host:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.test
+    security_opt:
+      - apparmor=unconfined
+    working_dir: /app
+    environment:
+      BANTO_HOST_BIND: "0.0.0.0"
+      BANTO_DATA_DIR: /tmp/banto-review-data
+      BANTO_WORKER_POOL_URL: http://127.0.0.1:1/api/worker-pool
+      BANTO_ENV_POOL_URL: http://127.0.0.1:1/api/environment-pool
+    volumes:
+      - ..:/app
+      - ${BANTO_CACHE_DIR:-./.banto-node-modules}/root:/app/node_modules
+      - ${BANTO_CACHE_DIR:-./.banto-node-modules}/pkg-banto-host:/app/packages/banto-host/node_modules
+      - ${BANTO_CACHE_DIR:-./.banto-node-modules}/pkg-banto-worker-pool:/app/packages/banto-worker-pool/node_modules
+      - ${BANTO_GIT_COMMON_DIR:-../.git}:${BANTO_GIT_COMMON_DIR:-/app/.git}:ro
+    command: ["node", "--import", "tsx", "packages/banto-host/src/bin.ts", "serve", "--port", "4100"]

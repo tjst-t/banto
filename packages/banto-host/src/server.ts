@@ -16,6 +16,7 @@
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { randomUUID } from "node:crypto";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
 import type { BantoHarness, HarnessEvent, HarnessImage } from "@banto/core";
@@ -190,6 +191,15 @@ function clampToolPayload(value: unknown): unknown {
 /** ハーネスが返した数値をそのまま足せる形に。数でなければ 0（推測しない）。 */
 function numberOf(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * データの置き場所（task-0301）。bin.ts の `dataDir()` と同じ既定を、bin.ts を
+ * import せずに求める——ここは自分の同一性（`/api/instance`）を答えるためだけに要る値で、
+ * CLI 一式を引き込む理由にはならない。
+ */
+function currentDataDir(): string {
+  return process.env["BANTO_DATA_DIR"] ?? path.join(process.cwd(), ".banto");
 }
 
 /** 添付ファイル名から Content-Type を当てる。分からないものは汎用で返す。 */
@@ -464,6 +474,14 @@ export class BantoHostServer {
   /** ターンの台帳（T1）。無ければ観測しない（既存の挙動に触れない）。 */
   private readonly turnLog: TurnLog | undefined;
   /**
+   * 自分の同一性（task-0301）。`GET /api/instance` で答える——レビュー環境で
+   * 「映っているのがどのホストか」を機械で見分けるため（本番か、ブランチのホストか）。
+   * `instanceId` は起動ごとに変わる（構築のたびに振り直す）。
+   */
+  private readonly instanceId = randomUUID();
+  private readonly instanceDataDir = currentDataDir();
+  private readonly instanceStartedAt = new Date().toISOString();
+  /**
    * いま開いている最中の用件の枝（T3）。鍵ごとに1つの約束を持つ。
    *
    * 同じ職人から2通が続けて来ると、どちらも「枝が無い」を見て**2本立てて**しまう
@@ -531,6 +549,15 @@ export class BantoHostServer {
       id: this.modelInfo.id,
       vision: this.modelInfo.vision,
       ...(contextWindow ? { contextWindow } : {}),
+    };
+  }
+
+  /** `GET /api/instance` に出す自分の同一性（task-0301）。 */
+  private instanceInfo(): { instanceId: string; dataDir: string; startedAt: string } {
+    return {
+      instanceId: this.instanceId,
+      dataDir: this.instanceDataDir,
+      startedAt: this.instanceStartedAt,
     };
   }
 
@@ -784,6 +811,16 @@ export class BantoHostServer {
       void (async () => {
         if (req.method === "GET" && req.url === "/health") {
           const body = JSON.stringify({ ok: true });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(body);
+          return;
+        }
+        // 自分の同一性（task-0301）。`/health` と違い `/api` 配下なので vite の中継に乗る
+        // ——レビュー環境で「映っているのがどのホストか」を公開URL越しに確かめられる
+        if (req.method === "GET" && req.url === "/api/instance") {
+          const body = JSON.stringify(
+            live?.instanceInfo() ?? { instanceId: "", dataDir: "", startedAt: "" }
+          );
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(body);
           return;

@@ -120,6 +120,13 @@ profiles:
   # config.port を持つので「人が触る」環境として扱われる（決定59）。
   # compose は docker/dev.yaml——vite dev server を**コンテナ内 4200** で立てる。
   #
+  # **web だけでなく、このワークツリーの banto-host も一緒に立つ**（task-0301）。
+  # 以前は web だけを差し替え、ホストは本番の常駐サービス（127.0.0.1:4100）を
+  # 見ていたため、`packages/banto-host` を触るタスクは PO レビューで確認できなかった
+  # （task-0279 で実害）。docker/dev.yaml の `host` サービスがブランチの実装で
+  # `banto-host` を起こし、web はそこだけを中継する——本番の 4100 にも
+  # データ置き場（`/var/lib/banto`）にも触れない。
+  #
   # **`config.port` はコンテナ側／アプリ側のポート**（番頭判断 2026-08-13）。ホスト側の
   # 番号はもう固定しない——compose は `- "4200"` とだけ書き、docker が空きを選び、
   # Environment Pool が `docker compose ps` で実際の publish 先を引いてそこへ中継する。

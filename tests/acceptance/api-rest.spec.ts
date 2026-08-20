@@ -12,6 +12,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { Daemon } from "@banto/daemon";
+import type { BantoHarness, HarnessEvent } from "@banto/core";
+import { ThreadRegistry, BantoHostServer } from "@banto/host";
+import { TRUNK } from "./threadSpecs.js";
 
 describe("[AC-S654396-3-1] REST API: projects, tasks, events", () => {
   let tmpDir: string;
@@ -205,5 +208,81 @@ describe("[AC-S654396-3-1] REST API: projects, tasks, events", () => {
     assert.equal(res.status, 400, "invalid JSON body on transition must yield 400");
     const body = await res.json() as { error: string };
     assert.ok(typeof body.error === "string" && body.error.length > 0, 'response must have {"error":"..."}');
+  });
+});
+
+/**
+ * [task-0301/a4] banto-host が自分の同一性を名乗る口を持つ。
+ *
+ * `GET /api/instance` は `packages/banto-host/src/server.ts` の REST 面——Kobo の
+ * `Daemon` とは別物だが、この repo の REST API 面をまとめて確かめる場所としてここに置く。
+ *
+ * レビュー環境（`docker/dev.yaml`）で web が映しているのが本当にブランチのホストかを
+ * 機械で見分けるための口。`instanceId` が**起動ごとに変わる**ことまで確かめないと、
+ * 「口が存在する」だけでは同一性の証にならない（固定値を返しても素通りしてしまう）。
+ */
+class FakeSession implements BantoHarness {
+  readonly sessionId = "test-session";
+  isStreaming = false;
+  private listeners = new Set<(event: HarnessEvent) => void>();
+
+  subscribe(listener: (event: HarnessEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  async prompt(): Promise<void> {}
+  async abort(): Promise<void> {}
+
+  readonly backendId = "fake";
+  contextWindow(): number | undefined {
+    return undefined;
+  }
+  contextTokens(): number | undefined {
+    return undefined;
+  }
+  messageCount(): number {
+    return 0;
+  }
+  transcript(): string {
+    return "";
+  }
+  async startChapter(): Promise<void> {}
+}
+
+async function startFakeHost(): Promise<BantoHostServer> {
+  const threads = new ThreadRegistry(async () => ({ harness: new FakeSession(), tools: [] }));
+  await threads.open(TRUNK);
+  return BantoHostServer.start({ threads, port: 0 });
+}
+
+describe("[task-0301/a4] GET /api/instance — banto-host の同一性", () => {
+  it("instanceId・dataDir・startedAt を返す", async () => {
+    const server = await startFakeHost();
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/api/instance`);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { instanceId: string; dataDir: string; startedAt: string };
+      assert.ok(typeof body.instanceId === "string" && body.instanceId.length > 0, "instanceId が空");
+      assert.ok(typeof body.dataDir === "string" && body.dataDir.length > 0, "dataDir が空");
+      assert.ok(typeof body.startedAt === "string" && !Number.isNaN(Date.parse(body.startedAt)), "startedAt が日時になっていない");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("instanceId は起動ごとに変わる", async () => {
+    const serverA = await startFakeHost();
+    const serverB = await startFakeHost();
+    try {
+      const [bodyA, bodyB] = await Promise.all([
+        fetch(`http://127.0.0.1:${serverA.port}/api/instance`).then((r) => r.json()) as Promise<{ instanceId: string }>,
+        fetch(`http://127.0.0.1:${serverB.port}/api/instance`).then((r) => r.json()) as Promise<{ instanceId: string }>,
+      ]);
+      assert.notEqual(bodyA.instanceId, bodyB.instanceId, "2つの起動が同じ instanceId を名乗っている");
+    } finally {
+      await serverA.close();
+      await serverB.close();
+    }
   });
 });
