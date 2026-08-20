@@ -5,8 +5,11 @@
  * 「安く速く終わった」と読み、実際には要求水準を満たしていない成果を受け取る——
  * 拒否すれば、上限を上げるか要求を下げるかを人が決められる（決定34f と同じ形）。
  *
- * **監査は上限の対象外**。監査は費用のつまみではなく検査であり、上限で省ける形にすると
- * 「安くするために検査を外す」ができてしまう（決定57 が禁じた形）。そのことは起動時に言う。
+ * **監査も他の役と同じように上限に従う（ADR-0027 決定140、task-0292 で改訂）**。
+ * 監査はもう合否の門（検査）ではなく補助の目で、実装の正しさを担保するのはマージ前
+ * ゲートの機械検証——「監査だけ上限の対象外」にする理由は無い。名指し
+ * （`roleAssignments.audit`）があればそちらが最優先なのは変えていない。
+ * 上限が既定等級を下げるときは、そのことを起動時に言う。
  */
 
 import { describe, it, before, after } from "node:test";
@@ -19,6 +22,11 @@ import * as childProcess from "node:child_process";
 
 import { Daemon } from "../../packages/banto-daemon/src/daemon.js";
 import { loadProjectConfig } from "../../packages/banto-daemon/src/review-policy.js";
+import {
+  FakeRuntimeDriver,
+  startWorkerPool,
+  type WorkerPoolHarness,
+} from "./worker-pool-harness.js";
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -97,6 +105,73 @@ function enqueue(h: Harness, tier?: string): ReturnType<Daemon["enqueueTask"]> {
   );
 }
 
+/**
+ * 監査の実 spawn を見る試験用の器（task-0292）。
+ *
+ * 上の `harness()` は Worker Pool を持たない（積む時点の拒否だけを見るので要らない）。
+ * ここでは「監査が実際にどの等級で起こされるか」を、`kobo-worker-integration.spec.ts` と
+ * 同じ形（本物の Worker Pool ＋ 偽ランタイム）で確かめる——ソースの字面ではなく振る舞いで
+ * 縛る方が、無関係な整形やリファクタで壊れない。
+ */
+interface WorkerHarness extends Harness {
+  workers: WorkerPoolHarness;
+  driver: FakeRuntimeDriver;
+}
+
+async function harnessWithWorkers(config: string): Promise<WorkerHarness> {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kobo-ceiling-audit-"));
+  const repoDir = path.join(tmpDir, "repo");
+  fs.mkdirSync(path.join(repoDir, "work", "tasks"), { recursive: true });
+  fs.mkdirSync(path.join(repoDir, "meta"), { recursive: true });
+  fs.writeFileSync(path.join(repoDir, "meta", "config.yaml"), config, "utf-8");
+  git(["init", "-b", "main"], repoDir);
+  git(["config", "user.email", "t@e"], repoDir);
+  git(["config", "user.name", "t"], repoDir);
+  fs.writeFileSync(path.join(repoDir, "README.md"), "x\n");
+  git(["add", "."], repoDir);
+  git(["commit", "-m", "init"], repoDir);
+
+  const driver = new FakeRuntimeDriver();
+  const workers = await startWorkerPool(driver);
+
+  const daemon = Daemon.create({
+    port: await freePort(),
+    dataDir: path.join(tmpDir, "data"),
+    tickIntervalMs: 99999,
+    worktreeBaseDir: path.join(tmpDir, "worktrees"),
+    workerPoolUrl: workers.url,
+    disableAutoSpawn: true,
+  });
+  await daemon.start();
+  const proj = "ceiling-audit-proj";
+  daemon.registerProject(proj, repoDir);
+  return { daemon, repoDir, tmpDir, proj, workers, driver };
+}
+
+async function teardownWithWorkers(h: WorkerHarness): Promise<void> {
+  await h.daemon.stop();
+  await h.workers.close();
+  fs.rmSync(h.tmpDir, { recursive: true, force: true });
+}
+
+async function until(check: () => boolean, timeoutMs = 8000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error("待っていた状態にならなかった");
+}
+
+/** タスクを ready → planning → implementing → auditing まで進め、監査人が起こされるのを待つ。 */
+async function advanceToAuditing(h: WorkerHarness, taskId: string): Promise<void> {
+  h.daemon.transition(h.proj, taskId, "ready", "test");
+  await h.daemon.spawnTask(h.proj, taskId);
+  h.daemon.transition(h.proj, taskId, "implementing", "test");
+  h.daemon.transition(h.proj, taskId, "auditing", "test");
+  await until(() => h.driver.byTaskId(`${taskId}:audit`) !== undefined);
+}
+
 describe("[task-0063] 等級の上限（決定67）", () => {
   let h: Harness;
   before(async () => {
@@ -156,33 +231,62 @@ describe("[task-0063] 等級の上限（決定67）", () => {
   });
 });
 
-describe("[task-0063/a4] 監査は上限の対象外（検査を費用のつまみにしない）", () => {
-  it("上限が standard でも、監査は reasoning のまま回る", async () => {
-    const h = await harness("limits:\n  max_model_tier: standard\n");
+describe("[task-0292/ADR-0027 決定140] 監査も等級の上限に従う", () => {
+  it("[a1] 上限が standard なら、監査の既定等級（reasoning）も standard へ下がる", async () => {
+    const h = await harnessWithWorkers("limits:\n  max_model_tier: standard\n");
     try {
-      assert.equal(enqueue(h, "fast").ok, true);
+      const result = enqueue(h, "fast");
+      assert.equal(result.ok, true);
+      const taskId = (result as { taskId: string }).taskId;
+      await advanceToAuditing(h, taskId);
 
-      // 監査の等級は spec-daemon-core §3.5 の固定値（reasoning）。上限では下がらない
-      // ——下げられる形にすると「安くするために検査を弱める」ができてしまう（決定57）
-      const source = fs.readFileSync(
-        path.join(
-          path.dirname(new URL(import.meta.url).pathname),
-          "..",
-          "..",
-          "packages",
-          "banto-daemon",
-          "src",
-          "daemon.ts"
-        ),
-        "utf-8"
-      );
-      assert.match(
-        source,
-        /role: "audit",[\s\S]{0,200}modelTier: "reasoning"/,
-        "監査は reasoning 固定で起こされること"
+      // ソースの字面ではなく、実際に起こした監査人へ渡った等級を見る（振る舞いで縛る）。
+      // 監査は合否の門ではなく補助の目で、実装の正しさを担保するのはマージ前ゲートの
+      // 機械検証——「監査だけ上限の対象外」にする理由は無い（ADR-0027 決定140）。
+      const audit = h.driver.byTaskId(`${taskId}:audit`);
+      assert.ok(audit, "監査人が起こされていること");
+      assert.equal(
+        audit!.modelTier,
+        "standard",
+        "監査も他の役と同じように上限まで下がること"
       );
     } finally {
-      await teardown(h);
+      await teardownWithWorkers(h);
+    }
+  });
+
+  it("上限が無ければ、監査は既定の reasoning のまま回る", async () => {
+    const h = await harnessWithWorkers("limits:\n  max_concurrent_sessions: 5\n");
+    try {
+      const result = enqueue(h, "fast");
+      assert.equal(result.ok, true);
+      const taskId = (result as { taskId: string }).taskId;
+      await advanceToAuditing(h, taskId);
+
+      const audit = h.driver.byTaskId(`${taskId}:audit`);
+      assert.equal(audit?.modelTier, "reasoning", "上限が無いプロジェクトでは既定のまま");
+    } finally {
+      await teardownWithWorkers(h);
+    }
+  });
+
+  it("[a2] 名指し（roleAssignments.audit）があれば、上限より優先する（優先順は変えていない）", async () => {
+    const h = await harnessWithWorkers("limits:\n  max_model_tier: standard\n");
+    try {
+      h.daemon.setRoleAssignments({ audit: { tier: "reasoning" } });
+      const result = enqueue(h, "fast");
+      assert.equal(result.ok, true);
+      const taskId = (result as { taskId: string }).taskId;
+      await advanceToAuditing(h, taskId);
+
+      const audit = h.driver.byTaskId(`${taskId}:audit`);
+      assert.equal(
+        audit?.modelTier,
+        "reasoning",
+        "名指し > 等級 > 既定の順は変えていない（決定67・PO裁定2026-08-10）"
+      );
+    } finally {
+      await teardownWithWorkers(h);
     }
   });
 

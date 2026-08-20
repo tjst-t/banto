@@ -331,6 +331,16 @@ type ModelTier = "reasoning" | "standard" | "fast";
 
 const TIER_ORDER: ModelTier[] = ["fast", "standard", "reasoning"];
 
+/**
+ * 監査の既定等級（ADR-0027 決定140・141）。
+ *
+ * 監査は合否の門（検査）ではなく補助の目で、実装の正しさを担保するのはマージ前
+ * ゲートの機械検証。監査が読む量は実装の一部（diff 中心・task-0287）で、高い等級を
+ * 既定に固定する根拠は無いが、**下げる決定はこのタスクではしない**——ここでは
+ * 「監査だけ上限の対象外」をやめることに留め、既定値そのものは reasoning のまま残す。
+ */
+const AUDIT_DEFAULT_TIER: ModelTier = "reasoning";
+
 /** タスクが指定した等級。無効な値は既定（standard）に落とす。 */
 function taskModelTier(task: TaskRecord): ModelTier {
   const raw = task["model_tier"];
@@ -1342,11 +1352,14 @@ export class Daemon {
   }
 
   /**
-   * 上限と監査の関係を起動時に確かめる（決定67・task-0063 a4）。
+   * 上限と監査の関係を起動時に確かめる（決定67・ADR-0027 決定140）。
    *
-   * **監査は上限の対象外**（常に `reasoning`）。監査は費用のつまみではなく検査であり、
-   * 上限で省ける形にすると「安くするために検査を外す」ができてしまう（決定57 が禁じた形）。
-   * 上限が `reasoning` より下のときは、そのことを起動時に言う——黙って例外扱いしない。
+   * 監査はもう合否の門（検査）ではなく補助の目で、実装の正しさを担保するのは
+   * マージ前ゲートの機械検証——だから**監査だけを上限の対象外にする理由が無い**。
+   * 上限があるプロジェクトでは、監査の既定等級（`AUDIT_DEFAULT_TIER`）も他の役と
+   * 同じように上限まで下がる（名指し `roleAssignments.audit` があればそちらが最優先。
+   * ここは変えていない）。既定が上限で下がるときは、そのことを起動時に言う——
+   * 黙って下げない。
    */
   private warnAboutTierCeiling(): void {
     for (const project of this.registry.list()) {
@@ -1359,11 +1372,15 @@ export class Daemon {
         );
         continue;
       }
-      if (ceiling && TIER_ORDER.indexOf(ceiling as ModelTier) < TIER_ORDER.indexOf("reasoning")) {
+      if (
+        ceiling &&
+        TIER_ORDER.indexOf(ceiling as ModelTier) < TIER_ORDER.indexOf(AUDIT_DEFAULT_TIER)
+      ) {
         process.stdout.write(
           `[banto-daemon] ${project.id}: 等級の上限は ${ceiling} です。` +
-            "**監査は上限の対象外で常に reasoning で回ります**——監査は費用のつまみではなく" +
-            "検査だからです（決定57・67）。上限が効くのは着手する仕事の等級と、失敗駆動の昇格です\n"
+            `監査の既定等級（${AUDIT_DEFAULT_TIER}）も上限まで下がります——監査は補助の目で、` +
+            "実装の正しさを担保するのはマージ前ゲートの機械検証だからです（ADR-0027 決定140）。" +
+            "名指し（roleAssignments.audit）があればそちらが優先します（決定67）\n"
         );
       }
     }
@@ -3911,6 +3928,23 @@ export class Daemon {
     await this.closeWorkerFor(projectTag, poolTaskId(taskId, "executor"));
     await this.closeWorkerFor(projectTag, poolTaskId(taskId, "rework"));
 
+    // 決定67・ADR-0027 決定140: 監査も上限に従う。監査は合否の門ではなく補助の目で、
+    // 実装の正しさを担保するのはマージ前ゲートの機械検証——「監査だけ上限の対象外」に
+    // する理由は無い。名指し（roleAssignments.audit）があれば delegateWorker 側で
+    // そちらを優先する（ここでの上限クランプより先に効く。優先順は変えていない）。
+    const ceiling = this.projectConfig(projectTag).limits.maxModelTier;
+    const wantedTier = AUDIT_DEFAULT_TIER;
+    const modelTier =
+      ceiling && TIER_ORDER.indexOf(wantedTier) > TIER_ORDER.indexOf(ceiling)
+        ? ceiling
+        : wantedTier;
+    if (modelTier !== wantedTier) {
+      process.stdout.write(
+        `[banto-daemon] ${projectTag}/${taskId}: 監査の既定等級 ${wantedTier} は上限 ${ceiling} を` +
+          `超えるので ${modelTier} に据え置きます（決定67・ADR-0027 決定140）\n`
+      );
+    }
+
     let session: SpawnedSession;
     try {
       session = await this.delegateWorker({
@@ -3919,7 +3953,7 @@ export class Daemon {
         role: "audit",
         worktreePath,
         instruction: buildAuditInstruction(task, projectTag, taskId, worktreePath),
-        modelTier: "reasoning",
+        modelTier,
         extension: "banto-auditor",
       });
     } catch (err) {
@@ -3983,7 +4017,7 @@ export class Daemon {
       pid: session.pid,
       sessionPath: session.sessionPath,
       worktree: worktreePath,
-      modelTier: "reasoning",
+      modelTier,
       sessionId: session.sessionId,
     });
     this.applyAndBroadcast(spawnedEvent);
