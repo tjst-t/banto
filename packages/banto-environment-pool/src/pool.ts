@@ -280,6 +280,18 @@ export class EnvironmentPool {
    * 呼ぶ側に handle を組み立てさせると「不透明な handle」（spec §2）が崩れる。
    */
   private orphanList: Array<{ driver: string; name: string; created: string; handle?: EnvHandle }> = [];
+  /**
+   * 照合で畳み済みエントリに一致した実体（畳み損ね）。孤児ではない——持ち主は
+   * 台帳から分かっている。`orphanList` と分けるのは、`orphans()`（env.list の一覧・
+   * `env.teardown_orphan` の対象）を汚さないため（task-0293）。
+   */
+  private teardownIncompleteList: Array<{
+    driver: string;
+    name: string;
+    created: string;
+    envId: string;
+    profileName: string;
+  }> = [];
   /** 衛生に関わる出来事の追記専用ログ（task-0067）。番頭はここを引きに来る。 */
   private readonly eventLog: EnvEventLog;
   /** イベントログが壊れていた場合の説明（I2）。 */
@@ -307,8 +319,14 @@ export class EnvironmentPool {
    * 本番の孤児として上がり続けた——**片方だけ直すと直したつもりになる**。
    */
   private readonly driverEnv: Record<string, string>;
+  /**
+   * 台帳の置き場（照合の取りこぼし②対策で、`reconcile` がディスクから読み直すのに使う。
+   * task-0293）。
+   */
+  private readonly dataDir: string;
 
   constructor(options: EnvironmentPoolOptions) {
+    this.dataDir = options.dataDir;
     const opened = EnvLedger.open(options.dataDir);
     this.ledger = opened.ledger;
     this.ledgerCorruption = opened.corruptionError;
@@ -479,6 +497,39 @@ export class EnvironmentPool {
         this.onAttention?.(
           `台帳に無い検証環境のリソースが ${fresh.length} 件あります（${fresh
             .map((o) => o.name)
+            .join(", ")}）`
+        );
+      }
+
+      /**
+       * 畳み損ね（task-0293）。台帳には畳み済みと記録されているのに実体が残っている
+       * ——孤児（`orphan:` 鍵）とは別の鍵で数える。同じ実体が孤児→畳み損ねと
+       * 二重に鳴らないのは、`reconcile` が候補を必ずどちらか一方にしか分類しないため
+       * （`this.orphanList` と `this.teardownIncompleteList` は排他）。
+       */
+      const incomplete = this.teardownIncompleteList;
+      const incSeen = new Set(incomplete.map((o) => `teardown-incomplete:${o.envId}`));
+      for (const key of [...this.notified]) {
+        if (key.startsWith("teardown-incomplete:") && !incSeen.has(key)) this.notified.delete(key);
+      }
+      const freshIncomplete = incomplete.filter(
+        (o) => !this.notified.has(`teardown-incomplete:${o.envId}`)
+      );
+      if (freshIncomplete.length > 0) {
+        for (const o of freshIncomplete) this.notified.add(`teardown-incomplete:${o.envId}`);
+        this.eventLog.append({
+          type: "env_teardown_incomplete",
+          data: {
+            entries: freshIncomplete,
+            message:
+              `畳んだはずの検証環境の実体が ${freshIncomplete.length} 件、まだ残っています（${freshIncomplete
+                .map((o) => o.envId)
+                .join(", ")}）。台帳には畳み済みと記録されていますが、ドライバの list にはまだ現れています`,
+          },
+        });
+        this.onAttention?.(
+          `畳んだはずの検証環境の実体が ${freshIncomplete.length} 件、まだ残っています（${freshIncomplete
+            .map((o) => o.envId)
             .join(", ")}）`
         );
       }
@@ -655,10 +706,11 @@ export class EnvironmentPool {
       const name = typeof record?.["name"] === "string" ? record["name"] : fallbackName;
       return name !== undefined && name.length > 0 ? `name:${name}` : JSON.stringify(handle);
     };
-    const known = new Set(this.ledger.listLive().map((e) => identity(e.handle)));
     const drivers = new Set(this.ledger.list().map((e) => e.driver));
-    const found: Array<{ driver: string; name: string; created: string; handle?: EnvHandle }> = [];
 
+    // まず各ドライバの実体を集めるだけにして、台帳との突き合わせは後回しにする
+    // （下の TOCTOU 対策のため）。
+    const candidates: Array<{ driver: string; name: string; created: string; handle?: EnvHandle; id: string }> = [];
     for (const driver of drivers) {
       let result;
       try {
@@ -675,23 +727,81 @@ export class EnvironmentPool {
       }
       if (!result.ok || !Array.isArray(result.output)) continue;
       for (const item of result.output as Array<Record<string, unknown>>) {
-        const name = typeof item["name"] === "string" ? item["name"] : undefined;
-        if (known.has(identity(item["handle"], name))) continue;
         // ドライバが生死を添えているなら、死んだものは実リソースではない。
         // 添えていないドライバでは判断材料が無いので数える（黙って見逃すより良い）
         if (item["alive"] === false) continue;
-        found.push({
+        const name = typeof item["name"] === "string" ? item["name"] : undefined;
+        candidates.push({
           driver,
-          name: typeof item["name"] === "string" ? item["name"] : "(名前なし)",
+          name: name ?? "(名前なし)",
           created: typeof item["created"] === "string" ? item["created"] : "",
           ...(item["handle"] !== undefined ? { handle: item["handle"] as EnvHandle } : {}),
+          id: identity(item["handle"], name),
         });
       }
     }
+
+    /**
+     * 取りこぼし②（TOCTOU・task-0293）。上のドライバ呼び出しは実時間がかかる
+     * （子プロセスを起こして待つ）。その間に完了した `provision` を取りこぼさない
+     * よう、**突き合わせの直前に台帳をディスクから読み直す**——`this.ledger` は
+     * メモリ上の Map で、同一プロセス内の `provision` の `ledger.add` は同期的に
+     * 反映されるが、読み直しは「別プロセスが書いた分」も拾えるようにする保険を兼ねる。
+     * `this.ledger` 自体は差し替えない（他の操作はそのまま元の参照を使い続ける）。
+     */
+    let freshEntries: EnvLedgerEntry[] = this.ledger.list();
+    try {
+      const reopened = EnvLedger.open(this.dataDir);
+      if (!reopened.corruptionError) freshEntries = reopened.ledger.list();
+    } catch (err) {
+      console.error(`[env] 台帳の読み直しに失敗しました（直前の状態で照合を続けます）: ${String(err)}`);
+    }
+    const liveIds = new Set(freshEntries.filter((e) => !e.tornDownAt).map((e) => identity(e.handle)));
+    const tornDownById = new Map(
+      freshEntries.filter((e) => e.tornDownAt).map((e) => [identity(e.handle), e])
+    );
+
+    /**
+     * **直近作成時刻での保険は入れない**（task-0293）。「作られてから間もない実体は
+     * 孤児にしない」を足すと、本物の孤児（`created` が現在時刻に近いだけの、外に残った
+     * リソース）まで見逃す——既存の孤児試験（`env-notices.spec.ts`）はまさに
+     * `new Date().toISOString()` で孤児を作って検出を確かめている。上のディスク読み直しで
+     * 同一プロセス内の TOCTOU は塞げているので、二重の保険は要らない。
+     */
+    const found: Array<{ driver: string; name: string; created: string; handle?: EnvHandle }> = [];
+    const incomplete: Array<{
+      driver: string;
+      name: string;
+      created: string;
+      envId: string;
+      profileName: string;
+    }> = [];
+
+    for (const c of candidates) {
+      if (liveIds.has(c.id)) continue; // 生きているエントリに一致 → 何も言わない
+
+      // 取りこぼし①（task-0293）：畳み済みエントリに一致した実体は孤児ではない。
+      // 持ち主は台帳から分かっているので「畳み損ね」として記録する。
+      const tornDown = tornDownById.get(c.id);
+      if (tornDown) {
+        incomplete.push({
+          driver: c.driver,
+          name: c.name,
+          created: c.created,
+          envId: tornDown.envId,
+          profileName: tornDown.profileName,
+        });
+        continue;
+      }
+
+      found.push({ driver: c.driver, name: c.name, created: c.created, handle: c.handle });
+    }
+
     if (found.length > 0) {
       console.warn(`[env] 台帳に無い実リソースが ${found.length} 件あります（照合）`);
     }
     this.orphanList = found;
+    this.teardownIncompleteList = incomplete;
     return found.map(({ driver, name, created }) => ({ driver, name, created }));
   }
 

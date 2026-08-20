@@ -15,13 +15,14 @@
  * 無い機械では黙って消える**。
  */
 
-import { describe, it, before, after, beforeEach } from "node:test";
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import type { EnvironmentPool } from "@banto/environment-pool";
 
 const DRIVER = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -183,5 +184,258 @@ describe("[spec-environment §5] 名前空間", () => {
       /projectName\(taskId\)/,
       "taskId から名前を作る経路が残っている（同じタスクの2つ目の環境が1つ目を壊す）"
     );
+  });
+});
+
+/**
+ * 照合（`Pool.reconcile`）の2つの取りこぼし（task-0293）。
+ *
+ * ① 台帳の**畳み済み**エントリは `listLive()` に映らない。だから畳んだ印は付いているが
+ *    実体がまだドライバに見えている（畳みの実行中・畳み損ね）環境が「台帳に無い＝孤児」
+ *    と誤判定されていた——持ち主は台帳から分かっているので、これは孤児ではない。
+ * ② `reconcile` は先に台帳のスナップショットを取り、そのあとで各ドライバの `list` を
+ *    子プロセスとして待つ。その待ち時間の間に完了した `provision` は、スナップショットに
+ *    載っていない＝必ず孤児と判定されていた（TOCTOU）。
+ *
+ * **本物のドライバ・本物の Pool で見る**（env-notices.spec.ts と同じ流儀）。ただしこの
+ * ファイルの担当範囲は自分だけなので、新しい fixture ファイルは増やさず、ドライバの実体は
+ * このテストの実行時に一時ディレクトリへ書き出す（`tests/fixtures/` を増やさない）。
+ */
+describe("[spec-environment §5] 照合は畳み済みエントリと走行中の provision を取りこぼさない（task-0293）", () => {
+  /**
+   * 検査専用のドライバ。挙動は環境変数で切り替える：
+   *   - `BANTO_TEST_DRIVER_STATE`: 状態ファイル（配列: {name, taskId, envId, created}）
+   *   - `BANTO_TEST_DRIVER_TEARDOWN_MODE`: "lagging" なら teardown は成功を返しつつ
+   *     状態ファイルから消さない（＝畳んだと報告したのに実体が残る・畳み損ねの再現）
+   *   - `BANTO_TEST_DRIVER_LIST_GATE`: "1" なら `list` は状態ファイル横に `.list-started`
+   *     を書いてから `.list-go` が現れるまで待つ（TOCTOU を時間の擬装で作るための足場）
+   */
+  const FAKE_DRIVER_SOURCE = `
+import * as fs from "node:fs";
+
+const STATE_FILE = process.env.BANTO_TEST_DRIVER_STATE;
+const TEARDOWN_MODE = process.env.BANTO_TEST_DRIVER_TEARDOWN_MODE || "remove";
+const LIST_GATE = process.env.BANTO_TEST_DRIVER_LIST_GATE === "1";
+
+function readState() {
+  try {
+    if (!STATE_FILE || !fs.existsSync(STATE_FILE)) return [];
+    return JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
+  } catch (err) {
+    return [];
+  }
+}
+
+function writeState(entries) {
+  fs.writeFileSync(STATE_FILE, JSON.stringify(entries), "utf-8");
+}
+
+function readStdin() {
+  return new Promise(function (resolve) {
+    var data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", function (chunk) { data += chunk; });
+    process.stdin.on("end", function () {
+      try {
+        resolve(data.trim() ? JSON.parse(data) : {});
+      } catch (err) {
+        resolve({});
+      }
+    });
+    process.stdin.on("error", function () { resolve({}); });
+  });
+}
+
+function sleep(ms) {
+  return new Promise(function (resolve) { setTimeout(resolve, ms); });
+}
+
+async function main() {
+  var verb = process.argv[2];
+  var input = await readStdin();
+
+  if (verb === "provision") {
+    var taskId = String(input.taskId || "t");
+    var envId = String(input.envId || taskId);
+    var name = envId + "-fake-env";
+    var entries = readState().filter(function (e) { return e.envId !== envId; });
+    entries.push({ name: name, taskId: taskId, envId: envId, created: new Date().toISOString() });
+    writeState(entries);
+    process.stdout.write(JSON.stringify({ handle: { name: name, envId: envId } }) + "\\n");
+    return;
+  }
+
+  if (verb === "teardown") {
+    var handle = input.handle || {};
+    if (TEARDOWN_MODE !== "lagging") {
+      var remaining = readState().filter(function (e) { return e.envId !== handle.envId; });
+      writeState(remaining);
+    }
+    process.stdout.write(JSON.stringify({}) + "\\n");
+    return;
+  }
+
+  if (verb === "list") {
+    if (LIST_GATE) {
+      fs.writeFileSync(STATE_FILE + ".list-started", "1", "utf-8");
+      var deadline = Date.now() + 10000;
+      while (!fs.existsSync(STATE_FILE + ".list-go") && Date.now() < deadline) {
+        await sleep(20);
+      }
+    }
+    var items = readState().map(function (e) {
+      return { handle: { name: e.name, envId: e.envId }, name: e.name, created: e.created };
+    });
+    process.stdout.write(JSON.stringify(items) + "\\n");
+    return;
+  }
+
+  process.stderr.write("fake-driver: unsupported verb in test: " + verb + "\\n");
+  process.exit(1);
+}
+
+main().catch(function (err) {
+  process.stderr.write("fake-driver fatal: " + String(err) + "\\n");
+  process.exit(1);
+});
+`;
+
+  let root: string;
+  let fakeDriver: string;
+  let dir: string;
+  let dataDir: string;
+  let repo: string;
+  let stateFile: string;
+
+  before(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "env-reconcile-toctou-"));
+    fakeDriver = path.join(root, "fake-driver.ts");
+    fs.writeFileSync(fakeDriver, FAKE_DRIVER_SOURCE, "utf-8");
+  });
+
+  after(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(root, "case-"));
+    dataDir = path.join(dir, "data");
+    repo = path.join(dir, "repo");
+    fs.mkdirSync(path.join(repo, "meta"), { recursive: true });
+    fs.writeFileSync(
+      path.join(repo, "meta", "environments.yaml"),
+      `profiles:\n  fake:\n    driver: "${fakeDriver}"\n    ttl: 1h\n`,
+      "utf-8"
+    );
+    stateFile = path.join(dir, "driver-state.json");
+    process.env["BANTO_TEST_DRIVER_STATE"] = stateFile;
+    process.env["BANTO_TEST_DRIVER_TEARDOWN_MODE"] = "remove";
+    delete process.env["BANTO_TEST_DRIVER_LIST_GATE"];
+  });
+
+  afterEach(() => {
+    delete process.env["BANTO_TEST_DRIVER_STATE"];
+    delete process.env["BANTO_TEST_DRIVER_TEARDOWN_MODE"];
+    delete process.env["BANTO_TEST_DRIVER_LIST_GATE"];
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function makePool(): Promise<EnvironmentPool> {
+    const { EnvironmentPool: Pool } = await import("@banto/environment-pool");
+    return new Pool({ dataDir, driverTimeoutMs: 20_000 });
+  }
+
+  async function waitForFile(filePath: string, timeoutMs = 15_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (fs.existsSync(filePath)) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error(`ファイルが現れませんでした（待ちが機能していない）: ${filePath}`);
+  }
+
+  it("[a1・a3] 畳み済みエントリに一致する実体は孤児ではなく畳み損ねとして記録される", async () => {
+    process.env["BANTO_TEST_DRIVER_TEARDOWN_MODE"] = "lagging";
+    const pool = await makePool();
+    const env = await pool.provision({ repoPath: repo, profile: "fake", taskId: "t-lag" });
+    // ドライバは畳んだと報告するが（lagging）、状態ファイルからは消さない＝実体が残る
+    await pool.teardown(env.envId);
+
+    await pool.runMaintenance();
+
+    assert.deepEqual(
+      pool.orphans(),
+      [],
+      "畳み済みエントリに一致した実体を孤児として報告してはいけない（持ち主は台帳から分かっている）"
+    );
+    const events = pool.events();
+    assert.ok(
+      !events.some((e) => e.type === "env_orphans_found"),
+      "畳み損ねを孤児の出来事として鳴らしてはいけない"
+    );
+    const incomplete = events.find((e) => e.type === "env_teardown_incomplete");
+    assert.ok(incomplete, "畳み損ねが出来事として残っていない");
+    const message = String(incomplete!.data["message"] ?? "");
+    assert.ok(
+      !message.includes("Banto 以外"),
+      `畳み損ねの文面が「他人のもの」という言い方をしている（持ち主は分かっている）: ${message}`
+    );
+  });
+
+  it("[a2] 台帳のどのエントリにも無い実体は、これまでどおり孤児として報告される（生きているエントリは孤児にならないことも合わせて確かめる）", async () => {
+    const pool = await makePool();
+    const anchor = await pool.provision({ repoPath: repo, profile: "fake", taskId: "t-anchor" });
+
+    // ドライバの管理下に、台帳が知らない実体を1つ置く。
+    // 直近に作られたものは「照合の走行中の provision かもしれない」保険（a5）で
+    // 孤児にしないので、ここでは十分に古い created にして保険を踏ませない
+    const state = JSON.parse(fs.readFileSync(stateFile, "utf-8")) as Array<Record<string, unknown>>;
+    state.push({
+      name: "lost-x",
+      taskId: "t-lost",
+      envId: "env-lost-x",
+      created: new Date(Date.now() - 5 * 60_000).toISOString(),
+    });
+    fs.writeFileSync(stateFile, JSON.stringify(state), "utf-8");
+
+    await pool.runMaintenance();
+
+    const orphans = pool.orphans();
+    assert.ok(
+      orphans.some((o) => o.name === "lost-x"),
+      `台帳に無い実体を孤児として挙げていない: ${JSON.stringify(orphans)}`
+    );
+    assert.ok(
+      !orphans.some((o) => o.name === `${anchor.envId}-fake-env`),
+      "生きている（台帳にある）環境まで孤児として数えている"
+    );
+    const event = pool.events().find((e) => e.type === "env_orphans_found");
+    assert.ok(event, "孤児が出来事として残っていない");
+  });
+
+  it("[a5] 照合の走行中に provision された環境は孤児として報告されない（TOCTOU）", async () => {
+    process.env["BANTO_TEST_DRIVER_LIST_GATE"] = "1";
+    const pool = await makePool();
+    // このドライバを照合の対象にするため、先に1つ生きている環境が要る
+    // （台帳に載っていないドライバの list はそもそも呼ばれない）
+    await pool.provision({ repoPath: repo, profile: "fake", taskId: "t-base" });
+
+    const reconcilePromise = pool.reconcile();
+
+    // list が呼ばれて gate で止まったことを確かめてから、その最中に provision する
+    await waitForFile(`${stateFile}.list-started`);
+    const race = await pool.provision({ repoPath: repo, profile: "fake", taskId: "t-race" });
+
+    // list を先へ進める（この時点で台帳には race の分が既に足されている）
+    fs.writeFileSync(`${stateFile}.list-go`, "1", "utf-8");
+
+    const orphans = await reconcilePromise;
+    assert.deepEqual(
+      orphans,
+      [],
+      "照合の走行中に完了した provision を孤児として報告している（取りこぼし②・TOCTOU）"
+    );
+    assert.deepEqual(pool.orphans(), []);
+    assert.ok(pool.list().some((e) => e.envId === race.envId), "台帳には載っていること（前提）");
   });
 });
