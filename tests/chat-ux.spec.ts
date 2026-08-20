@@ -109,6 +109,42 @@ class FakeHost {
         );
         return;
       }
+      // モデル選択（PromptInputModelSelect）が取りに来る一覧。バックエンド → プロバイダ
+      // → モデル の3段（PO裁定 2026-08-13）。**番頭が使えるものだけ**を返す
+      // （職人専用は既にホスト側で弾かれている想定なので、ここにも載せない）
+      if (url === "/api/settings/tools/settings.harness_models") {
+        res.writeHead(200, { "Content-Type": "application/json" }).end(
+          JSON.stringify({
+            content: [{ type: "text", text: "1 個のバックエンド" }],
+            details: {
+              backends: [
+                {
+                  id: "pi",
+                  label: "pi",
+                  providers: [
+                    {
+                      id: "huihui",
+                      models: [
+                        {
+                          id: "qwen3.6-35b",
+                          name: "Qwen 3.6 35B",
+                          vision: false,
+                          contextWindow: 200000,
+                        },
+                      ],
+                    },
+                    {
+                      id: "anthropic",
+                      models: [{ id: "claude-opus-5", name: "Claude Opus 5", vision: true }],
+                    },
+                  ],
+                },
+              ],
+            },
+          })
+        );
+        return;
+      }
       const rel = url === "/" ? "index.html" : url.replace(/^\//, "");
       const file = path.join(WEB_DIST, rel);
       if (!file.startsWith(WEB_DIST) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
@@ -615,6 +651,7 @@ test.describe("会話ごとの状態", () => {
         threadId: OTHER_THREAD_ID,
         provider: "huihui",
         model: "qwen3.6-35b",
+        backend: "pi",
       });
   });
 });
@@ -760,7 +797,7 @@ test.describe("モデル選択（AI Elements の PromptInputModelSelect）", () 
     await expect(page.locator(".model-select-item")).toHaveCount(2);
     await expect(page.locator(".model-select-menu")).not.toContainText("職人専用");
     // プロバイダごとにまとまる
-    await expect(page.locator(".model-select-group")).toHaveText(["huihui", "anthropic"]);
+    await expect(page.locator(".model-select-group")).toHaveText(["pi › huihui", "pi › anthropic"]);
     // いま使っているものに印が付く
     await expect(page.locator(".model-select-item.is-current")).toContainText("Qwen 3.6 35B");
 
@@ -776,6 +813,7 @@ test.describe("モデル選択（AI Elements の PromptInputModelSelect）", () 
         threadId: THREAD_ID,
         provider: "anthropic",
         model: "claude-opus-5",
+        backend: "pi",
       });
     await expect(trigger).toHaveText(/qwen3\.6-35b/);
 
@@ -833,6 +871,7 @@ test.describe("モデル選択（AI Elements の PromptInputModelSelect）", () 
         threadId: THREAD_ID,
         provider: "anthropic",
         model: "claude-opus-5",
+        backend: "pi",
       });
     // 決めたら閉じる
     await expect(page.locator(".model-select-menu")).toHaveCount(0);
@@ -1126,26 +1165,34 @@ test.describe("届いた分がそのまま出る", () => {
 });
 
 test.describe("コンポーザ（AI Elements の PromptInput）", () => {
-  test("送信ボタンは状態で姿を変える（送る→独楽→中断）", async ({ page }) => {
+  /**
+   * 止めるのと送るのを併存させる（imp-0048・提案 §4 案I）。走っている間も
+   * `.composer-submit` は送るボタンのまま——独楽を置くと「押せない」に見えるので、
+   * 走行中の印は隣に出る `.composer-stop`（止める）が担う（`Room.tsx` のコメント参照）。
+   */
+  test("走行中は送るボタンの隣に止めるボタンが出る（送るボタン自体は変えない）", async ({ page }) => {
     const submit = page.locator(".composer-submit");
+    const stop = page.locator(".composer-stop");
     // 何も書いていなければ押せない
     await expect(submit).toBeDisabled();
     // 送るの姿。絵文字をやめて線の絵にした（spec-design §4）ので、字ではなく絵で見る
     await expect(submit.locator("svg.ico")).toBeVisible();
+    await expect(stop).toHaveCount(0);
 
     await page.locator(".chat-input").fill("お願いします");
     await expect(submit).toBeEnabled();
 
-    // 送ったが返事はまだ＝独楽
+    // 送ったが返事はまだ＝止めるボタンが並ぶ。送るボタン自体は変わらない
     host.emit({ type: "turn_start" });
-    await expect(submit.locator(".loader")).toBeVisible();
+    await expect(stop.locator(".composer-submit-stop")).toBeVisible();
+    await expect(submit.locator("svg.ico")).toBeVisible();
 
-    // 喋り始めたら中断（四角）に変わる
+    // 喋り始めても、止めるボタンは出続ける
     host.emit({ type: "text_delta", delta: "はい" });
-    await expect(submit.locator(".composer-submit-stop")).toBeVisible();
+    await expect(stop.locator(".composer-submit-stop")).toBeVisible();
 
     host.emit({ type: "turn_end" });
-    await expect(submit.locator(".composer-submit-stop")).toHaveCount(0);
+    await expect(stop).toHaveCount(0);
     await expect(submit.locator("svg.ico")).toBeVisible();
   });
 

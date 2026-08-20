@@ -186,6 +186,7 @@ interface Choice {
   provider: string;
   id: string;
   name: string;
+  contextWindow?: number;
 }
 
 function ModelSelect({
@@ -222,6 +223,7 @@ function ModelSelect({
           provider: p.id,
           id: m.id,
           name: m.name ?? m.id,
+          contextWindow: m.contextWindow,
         }))
       )
     );
@@ -321,6 +323,16 @@ function ModelSelect({
                         {...nav.rowProps(index)}
                       >
                         <span className="model-select-item-name">{c.name}</span>
+                        {c.contextWindow ? (
+                          <span className="model-select-badge">{formatTokens(c.contextWindow)}</span>
+                        ) : (
+                          <span
+                            className="model-select-badge is-unknown"
+                            title="文脈の長さが分かりません。選ぶと毎ターン要約が走る可能性があります"
+                          >
+                            長さ不明
+                          </span>
+                        )}
                         <span className="model-select-check">
                           {isCurrent && <Icon name="check" size={14} />}
                         </span>
