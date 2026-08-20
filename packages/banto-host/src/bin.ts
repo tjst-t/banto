@@ -1900,19 +1900,24 @@ async function serve(options: ServeOptions): Promise<void> {
      * （このタスクの範囲外・別途 inc として追う論点）。章の要約が claude-agent-sdk を
      * 選んでいるときは、記憶の抽出だけ会話のモデルへ戻す——以前からの fallback と同じ形。
      *
-     * **こちらは会話の器を組むときの1回のまま**。抽出器はモデル実体を掴んで組むので、
-     * 要約と同じ形（毎回引き直す）にするなら抽出器の側から直す必要がある。
+     * **抽出が走る直前に引く**（task-0303、PO報告 2026-08-20）。以前は会話の器を
+     * 組むときに一度だけ `resolveChapterPlan().piModel` を掴んでいたので、設定画面で
+     * モデルを変えても走っている会話の抽出には最後まで効かなかった——章の要約で
+     * 直った取り違えと同じ形。`createLlmMemoryExtractor` の `resolve` へ渡し、
+     * 章の境界（抽出の発火点）ごとに引き直す。
      */
-    const memoryModel =
-      (() => {
-        try {
-          return resolveChapterPlan().piModel;
-        } catch (err) {
-          // 起動を止めない。要約が実際に走るときに同じ理由で断られる（I2 はそちらで果たす）
-          console.warn(`[banto] ${threadId}: 章の要約モデルを解決できません: ${String(err)}`);
-          return undefined;
-        }
-      })() ?? sessionModel;
+    const resolveMemoryModel = (): ReturnType<typeof resolveModel> | undefined => {
+      try {
+        const piModel = resolveChapterPlan().piModel;
+        if (piModel) return piModel;
+      } catch (err) {
+        // 起動も抽出も止めない。断る理由だけは必ず出す（I2）
+        console.warn(
+          `[banto] ${threadId}: 記憶の抽出モデルを章の要約モデルから解決できません: ${String(err)}`
+        );
+      }
+      return sessionModel;
+    };
 
     const chapters = new ChapterKeeper({
       // **いまのハーネスを毎回引く**——差し替えに追随する（PO要望 2026-08-13）
@@ -1932,27 +1937,36 @@ async function serve(options: ServeOptions): Promise<void> {
       // ついての長生きする事実」を出すように書かれていて、差分に区画を持たない。
       // 幹へ入れるなら抽出器の出力形式から変わるので、ここでは変えない
       // （残っている論点：仕事に固有の話が横断層へ入りうる。→ handoff）
-      ...(memoryModel
-        ? {
-            extractMemories: async (transcript: string) => {
-              const person = memory.forPerson();
-              const deltas = await createLlmMemoryExtractor({
-                model: memoryModel,
-                auth: (m) => modelRegistry.getApiKeyAndHeaders(m),
-              })({ transcript, existing: person.list() });
-              const applied = applyMemoryDeltas(person, deltas);
-              for (const { delta, reason } of applied.skipped) {
-                console.warn(`[banto] 記憶を足しませんでした（${reason}）: ${JSON.stringify(delta)}`);
-              }
-              if (applied.added.length + applied.corrected.length > 0) {
-                console.log(
-                  `[banto] ${threadId}: 記憶を ${applied.added.length} 件追加・` +
-                    `${applied.corrected.length} 件訂正しました（次の章から効きます）`
-                );
-              }
-            },
-          }
-        : {}),
+      //
+      // 抽出器そのものは**抽出が走るたびに**組む（`extractMemories` はその都度呼ばれる）。
+      // `resolve` で `resolveMemoryModel` を渡し、モデルの解決だけを毎回引き直す
+      // （組み立て時に固定しない・上の注記）。
+      extractMemories: async (transcript: string) => {
+        const person = memory.forPerson();
+        const deltas = await createLlmMemoryExtractor({
+          resolve: () => {
+            const model = resolveMemoryModel();
+            // I2: モデルが無いまま黙って何も抽出しない——理由を持って断る
+            if (!model) {
+              throw new Error(
+                `[banto] ${threadId}: 記憶の抽出に使えるモデルがありません（会話のモデルも解決できません）`
+              );
+            }
+            return { model };
+          },
+          auth: (m) => modelRegistry.getApiKeyAndHeaders(m),
+        })({ transcript, existing: person.list() });
+        const applied = applyMemoryDeltas(person, deltas);
+        for (const { delta, reason } of applied.skipped) {
+          console.warn(`[banto] 記憶を足しませんでした（${reason}）: ${JSON.stringify(delta)}`);
+        }
+        if (applied.added.length + applied.corrected.length > 0) {
+          console.log(
+            `[banto] ${threadId}: 記憶を ${applied.added.length} 件追加・` +
+              `${applied.corrected.length} 件訂正しました（次の章から効きます）`
+          );
+        }
+      },
       ...(chapterThresholdRatio() !== undefined
         ? { thresholdRatio: chapterThresholdRatio()! }
         : {}),

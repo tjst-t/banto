@@ -58,14 +58,31 @@ FIX <既存のID> <kind> <訂正後の本文>
 - 既存の記憶と同じ内容は書かない
 - 事実を好みに入れない`;
 
-export interface MemoryExtractorOptions {
+/**
+ * **どのモデルで抽出するかは、抽出が走る直前に引く**（task-0303、PO報告 2026-08-20）。
+ *
+ * 章の要約（`ChapterSummarizerOptions`）と同じ取り違えがここにも残っていた。以前は
+ * `model` を組み立て時に一度だけ受け取っていたので、会話の器はそのモデル実体を掴んだまま
+ * 使い続け、設定画面でモデルを変えても走っている会話の抽出には最後まで効かなかった。
+ *
+ * `resolve` を渡さない形（モデルを直に渡す）も残す——試験のように、引き直す相手が
+ * そもそも無い呼び出し側を巻き込まないため（`chapter-summarizer.ts` と同じ作り）。
+ */
+export interface MemoryExtractorPlan {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pi の Model は Api で
   // 型付けされており、呼ぶ側はどの Api かを知らないまま解決した実体を渡す (I4)
   model: Model<any>;
+}
+
+interface MemoryExtractorCommon {
   /** モデルの認証を解決する（`ModelRegistry.getApiKeyAndHeaders` を渡す）。 */
   auth: AuthResolver;
   maxTokens?: number;
 }
+
+export type MemoryExtractorOptions =
+  | (MemoryExtractorCommon & MemoryExtractorPlan)
+  | (MemoryExtractorCommon & { resolve: () => MemoryExtractorPlan });
 
 export interface MemoryExtractionInput {
   /** PO の発言と番頭の発話だけの書き起こし。 */
@@ -78,7 +95,15 @@ export interface MemoryExtractionInput {
 export function createLlmMemoryExtractor(
   options: MemoryExtractorOptions
 ): (input: MemoryExtractionInput) => Promise<MemoryDelta[]> {
+  /**
+   * **使う直前に引く**（上の注記）。固定で渡された場合は、その値を返すだけの口にする
+   * ——ここから先は「毎回引く」1本の筋になり、呼び出し側の形で振る舞いが分かれない。
+   */
+  const resolve: () => MemoryExtractorPlan =
+    "resolve" in options ? options.resolve : (): MemoryExtractorPlan => options;
+
   return async (input) => {
+    const { model } = resolve();
     const existing =
       input.existing.length === 0
         ? "（まだ何も覚えていない）"
@@ -97,7 +122,7 @@ export function createLlmMemoryExtractor(
     ].join("\n");
 
     const response = await completeSimple(
-      options.model,
+      model,
       {
         systemPrompt: SYSTEM_PROMPT,
         messages: [
@@ -107,7 +132,7 @@ export function createLlmMemoryExtractor(
       {
         maxTokens: options.maxTokens ?? 1000,
         // I2: 鍵が無いまま呼びに行かない
-        ...(await requireAuth(options.auth, options.model, "記憶の抽出")),
+        ...(await requireAuth(options.auth, model, "記憶の抽出")),
       }
     );
 
