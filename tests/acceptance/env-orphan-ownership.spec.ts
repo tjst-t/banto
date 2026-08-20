@@ -44,9 +44,12 @@ function invoke(verb: string, input: unknown): unknown {
   return JSON.parse(line);
 }
 
+// `docker version` は通っても `docker compose ls` は通らない機械がある（compose プラグイン
+// 未搭載・socket 未到達）。ドライバが実際に叩くコマンドで確かめないと、「docker はある」と
+// 誤判定して走り出し、即座に落ちる（task-0293・監査の検証環境で実測）。
 function dockerAvailable(): boolean {
   try {
-    execFileSync("docker", ["version", "--format", "{{.Server.Version}}"], { stdio: "ignore" });
+    execFileSync("docker", ["compose", "ls", "--format", "json"], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -67,7 +70,11 @@ beforeEach(() => {
 });
 
 describe("[spec-environment §5] 孤児の判定は自分が作ったものに限る", () => {
-  it("**記録が空なら、何も自分のものと言わない**（安全側に倒れる）", () => {
+  it("**記録が空なら、何も自分のものと言わない**（安全側に倒れる）", (t) => {
+    if (!dockerAvailable()) {
+      t.skip("docker compose が使えない機械なので、実物での確認は飛ばす");
+      return;
+    }
     const listed = invoke("list", {});
     assert.ok(Array.isArray(listed));
     assert.equal((listed as unknown[]).length, 0, "記録が無いのに自分のものを名乗ってはいけない");
@@ -103,7 +110,11 @@ describe("[spec-environment §5] 孤児の判定は自分が作ったものに�
     }
   });
 
-  it("記録に在っても実在しなければ挙げない（外で消された分を溜めない）", () => {
+  it("記録に在っても実在しなければ挙げない（外で消された分を溜めない）", (t) => {
+    if (!dockerAvailable()) {
+      t.skip("docker compose が使えない機械なので、実物での確認は飛ばす");
+      return;
+    }
     fs.writeFileSync(stateFile, JSON.stringify(["banto-env-task-gone"]), "utf-8");
     const listed = invoke("list", {}) as unknown[];
     assert.equal(listed.length, 0, "実在しないものを孤児として挙げてはいけない");
@@ -112,7 +123,11 @@ describe("[spec-environment §5] 孤児の判定は自分が作ったものに�
     assert.deepEqual(owned, [], "実在しない記録は落とす");
   });
 
-  it("壊れた記録でも動く。ただし何も自分のものと言わない（I2）", () => {
+  it("壊れた記録でも動く。ただし何も自分のものと言わない（I2）", (t) => {
+    if (!dockerAvailable()) {
+      t.skip("docker compose が使えない機械なので、実物での確認は飛ばす");
+      return;
+    }
     fs.writeFileSync(stateFile, "{壊れている", "utf-8");
     const listed = invoke("list", {}) as unknown[];
     assert.equal(listed.length, 0);
