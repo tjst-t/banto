@@ -204,6 +204,39 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
       return;
     }
 
+    /**
+     * いまこのスレッドで**決まっていること**（要件 R2・R6・A8）。
+     *
+     * **fork の継承をここで解く。** 継承した行は親スレッドの `base.appended` なので、
+     * `/api/events?threadId=` では出てこない——画面側で継ぎ合わせると、
+     * **継承の規則が2箇所に書かれる**ことになる（規則3）。導出は `effectiveBase` に1つ。
+     */
+    if (req.method === 'GET' && url.pathname === '/api/base') {
+      const threadId = url.searchParams.get('threadId');
+      if (threadId === null) {
+        json(res, 400, { error: 'threadId が要る' });
+        return;
+      }
+      const state = fold(await log.read());
+      const thread = state.threads.get(threadId);
+      if (thread === undefined) {
+        json(res, 404, { error: `知らないスレッド: ${threadId}` });
+        return;
+      }
+      const lines = effectiveBase(state, threadId);
+      json(res, 200, {
+        threadId,
+        baseVersion: thread.baseVersion,
+        // **継承した行と、自分で足した行を分けて見せる。** 混ぜると
+        // 「どこから来た決まりごとか」が画面から消える（要件 R4）。
+        inherited: lines.length - thread.ownBase.length,
+        lines,
+        characters: baseCharacters(state, threadId),
+        limit: baseLimit,
+      });
+      return;
+    }
+
     // base への追記（要件 R2・R6）。**ゲートを通る唯一の入口**（要件 R8・決定4）。
     // 閾値を超えたら 409 で断り、選択肢としての R5 を判断待ちに立てる。
     // **ここで自動的に新しい会話へ切り替えない**——切り替えは規則2 に反する。

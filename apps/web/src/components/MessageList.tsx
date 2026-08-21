@@ -1,4 +1,4 @@
-import { AlertTriangle, HelpCircle, Loader2, PackageMinus } from 'lucide-react';
+import { AlertTriangle, GitFork, HelpCircle, Loader2, PackageMinus } from 'lucide-react';
 
 import { ScrollArea } from './ui/scroll-area';
 import { Badge } from './ui/badge';
@@ -161,6 +161,19 @@ export function MessageList({ items, running }: { items: TimelineItem[]; running
                   <p className="font-medium">{event.stage} で止まりました（人の判断待ち）</p>
                   <p>{event.detail}</p>
                 </div>
+              </div>
+            );
+          }
+
+          // **どこから分かれたかは、会話の最初に要る情報**（要件 A3・R4）。
+          // 継承した決まりごとは「決まったこと」の面に出るが、
+          // 分かれた事実そのものは年表にしか置き場が無い。
+          if (event.type === 'thread.forked') {
+            return (
+              <div key={item.id} className="flex items-center gap-1.5 self-start text-[11px] text-ink-muted">
+                <GitFork className="h-3 w-3" />
+                {event.mode === 'base' ? '決まったこと' : 'いまの続き'}から分岐（base v
+                {event.from.baseVersion} まで引き継ぎ）
               </div>
             );
           }

@@ -6,6 +6,7 @@
  */
 
 import type {
+  BaseResponse,
   CreateThreadResponse,
   RequestRunResponse,
   StateResponse,
@@ -71,6 +72,29 @@ export async function requestRun(body: {
 export async function advanceRuns(): Promise<StateResponse> {
   const res = await fetch('/api/runs/advance', { method: 'POST', body: '{}' });
   return asJson<StateResponse>(res);
+}
+
+/** いまそのスレッドで決まっていること（要件 R2・R6）。 */
+export async function fetchBase(threadId: string): Promise<BaseResponse> {
+  const res = await fetch(`/api/base?threadId=${encodeURIComponent(threadId)}`);
+  return asJson<BaseResponse>(res);
+}
+
+/**
+ * 決まったことに1行足す（要件 R2）。**R8 のゲートを通る唯一の入口**（決定4）。
+ *
+ * 閾値を超えていれば host は 409 を返す。**ここで握りつぶさない**——
+ * 断られたことと理由を、呼び手がそのまま画面に出す（規則2）。
+ * **黙って新しい会話へ切り替えない**（決定4）。
+ */
+export async function appendBase(body: { threadId: string; text: string }): Promise<BaseResponse> {
+  const res = await fetch('/api/base', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  await asJson<unknown>(res);
+  return fetchBase(body.threadId);
 }
 
 /**

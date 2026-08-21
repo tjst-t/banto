@@ -8,14 +8,15 @@ import type { ChannelSummary, ThreadSummary } from '../lib/types';
 export function ThreadPicker({
   threads,
   channels,
-  selectedThreadId,
+  openThreadIds,
   onSelect,
   onCreate,
   creating,
 }: {
   threads: ThreadSummary[];
   channels: ChannelSummary[];
-  selectedThreadId: string | null;
+  /** いま開いている会話。**選ぶのではなく開く**ので、1本に限らない（要件 A2）。 */
+  openThreadIds: readonly string[];
   onSelect: (threadId: string) => void;
   onCreate: (args: { channelName: string; title: string }) => void;
   creating: boolean;
@@ -35,13 +36,18 @@ export function ThreadPicker({
   return (
     <div className="relative flex items-center gap-2">
       {threads.length > 0 && (
-        <Select {...(selectedThreadId ? { value: selectedThreadId } : {})} onValueChange={onSelect}>
+        <Select value="" onValueChange={onSelect}>
           <SelectTrigger className="w-32 sm:w-56">
-            <SelectValue placeholder="会話を選ぶ" />
+            {/* **開いた数を出す。** 「いま何本並べているか」が見えないと、
+                開いたつもりで開いていないのに気づけない。 */}
+            <SelectValue
+              placeholder={openThreadIds.length === 0 ? '会話を開く' : `会話を開く（${openThreadIds.length}本）`}
+            />
           </SelectTrigger>
           <SelectContent>
             {threads.map((t) => (
               <SelectItem key={t.id} value={t.id}>
+                {openThreadIds.includes(t.id) ? '● ' : ''}
                 {channelNameOf(t.channelId)} / {t.title}
               </SelectItem>
             ))}

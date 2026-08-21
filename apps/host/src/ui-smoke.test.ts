@@ -117,6 +117,16 @@ beforeAll(async () => {
     threadId: 't1',
     question: '選択肢の無い判断',
   });
+  // **2本目**。1本目から fork しているので、決まったことを継承している（要件 R4）。
+  await log.append({
+    type: 'thread.forked',
+    threadId: 't2',
+    channelId: 'c1',
+    title: '2本目',
+    from: { threadId: 't1', baseVersion: 1 },
+    mode: 'base',
+  });
+  await log.append({ type: 'base.appended', threadId: 't2', baseVersion: 2, text: '2本目で決めたこと' });
   await log.append({ type: 'thread.status', threadId: 't1', status: 'done' });
 
   server = startServer({
@@ -159,6 +169,8 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
     try {
       await page.goto(origin, { waitUntil: 'networkidle' });
+      // 既定で開くのは直近の会話。**1本目を見たいので明示的に開く。**
+      await openThread(page, '煙試験');
       // 会話を開くと履歴を読みに行く（要件 A8）。描き終わるのを待つ。
       await page.waitForSelector('text=アシスタントの発言', { timeout: 15_000 });
       const body = await page.innerText('body');
@@ -202,6 +214,7 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
     try {
       await page.goto(origin, { waitUntil: 'networkidle' });
+      await openThread(page, '煙試験');
       // 選択肢の無い判断でも、自由に書く欄は出ている。
       await page.waitForSelector('text=選択肢の無い判断', { timeout: 15_000 });
       expect(await page.locator('input[placeholder="答えを書く"]').count()).toBe(1);
@@ -219,6 +232,162 @@ describe('画面の煙試験（本物のブラウザ）', () => {
     }
   }, 120_000);
 
+  /**
+   * **並べられることを、並べて確かめる**（要件 A2・A3）。
+   * 「会話を開く」が1本ずつの切り替えに戻っていたら、ここで落ちる。
+   */
+  it('会話を2本開くと、横に並ぶ', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await page.waitForSelector('text=2本目', { timeout: 15_000 });
+
+      // 1本開いている状態から、もう1本開く。
+      expect(await page.locator('[data-thread-column]').count()).toBe(1);
+      await openThread(page, '煙試験');
+
+      // **2列になり、左右に並ぶ。**
+      await expect
+        .poll(async () => page.locator('[data-thread-column]').count(), { timeout: 15_000 })
+        .toBe(2);
+      const columns = page.locator('[data-thread-column]');
+      const boxes = await Promise.all(
+        (await columns.all()).map(async (c) => (await c.boundingBox()) ?? { x: 0, y: 0 }),
+      );
+      expect(boxes[1]!.x).toBeGreaterThan(boxes[0]!.x);
+      expect(boxes[1]!.y).toBe(boxes[0]!.y);
+    } finally {
+      await browser.close();
+    }
+  }, 120_000);
+
+  /**
+   * **狭い画面では横に並べない**（要件 E2）。
+   * 列の数を inline style で書くと画面幅に関わらず効いて、3列に潰れる。
+   */
+  it('狭い画面では、2本開いても横に潰れない', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await page.waitForSelector('text=2本目', { timeout: 15_000 });
+      await openThread(page, '煙試験');
+      await expect
+        .poll(async () => page.locator('[data-thread-column]').count(), { timeout: 15_000 })
+        .toBe(2);
+
+      // **縦に並ぶ**（左右ではない）。横に潰れていたら left がずれる。
+      const columns = page.locator('[data-thread-column]');
+      const boxes = await Promise.all(
+        (await columns.all()).map(async (c) => (await c.boundingBox()) ?? { x: 0, y: 0, width: 0 }),
+      );
+      expect(boxes).toHaveLength(2);
+      expect(boxes[1]!.y).toBeGreaterThan(boxes[0]!.y);
+      expect(boxes[1]!.x).toBe(boxes[0]!.x);
+      // 幅は画面いっぱい（3列に潰れていない）。
+      for (const b of boxes) expect(b.width).toBeGreaterThan(300);
+    } finally {
+      await browser.close();
+    }
+  }, 120_000);
+
+  /**
+   * **いま決まっていることが読める**（要件 R2・R4・R6・R8）。
+   * ここまで base は年表の点でしか見えず、**読む手段が画面に無かった。**
+   */
+  it('決まったことが読めて、足せて、継承が分かる', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      // 既定で開くのは直近＝fork した2本目。**継承した行と自分の行が両方見える。**
+      await page.waitForSelector('text=2本目', { timeout: 15_000 });
+      await page.getByRole('tab', { name: /決まったこと/ }).first().click();
+      await page.waitForSelector('text=依頼: 煙を出す', { timeout: 15_000 });
+      await page.waitForSelector('text=2本目で決めたこと', { timeout: 15_000 });
+      // **残りを常に見せる**（要件 R8）。拒否されて初めて知る、を避ける。
+      await page.waitForSelector('text=/\\/ 20,000 文字/', { timeout: 15_000 });
+      await page.waitForSelector('text=/1 行は fork 元から/', { timeout: 15_000 });
+
+      // 足せる。**足したものがその場に出る。**
+      await page.getByPlaceholder('決まったことを1行で足す').fill('画面から足した決まりごと');
+      await page.getByRole('button', { name: '足す' }).click();
+      await page.waitForSelector('text=画面から足した決まりごと', { timeout: 15_000 });
+    } finally {
+      await browser.close();
+    }
+  }, 120_000);
+
+  /**
+   * **ゲートに当たったことが画面に出る**（要件 R8・決定4）。
+   *
+   * 断られたのに何も出ないと、「足したつもりで足さっていない」になる。
+   * **黙って新しい会話へ切り替えない**——切り替えは人が決めること。
+   */
+  it('上限を超える追記は断られ、理由が画面に出る', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    // 上限を小さくした別のホストを立てる。**同じ画面を、違うゲートで見る。**
+    const tightDir = await mkdtemp(path.join(tmpdir(), 'banto-ui-r8-'));
+    const tightLog = new EventLog(tightDir);
+    await tightLog.append({ type: 'channel.created', channelId: 'c1', channelName: 'r8' });
+    await tightLog.append({ type: 'thread.created', threadId: 'g1', channelId: 'c1', title: 'ゲート' });
+    await tightLog.append({
+      type: 'base.appended',
+      threadId: 'g1',
+      baseVersion: 1,
+      text: 'あ'.repeat(95),
+    });
+
+    const tight = startServer({
+      dataDir: tightDir,
+      port: 0,
+      modules: [],
+      toolsByModule: new Map(),
+      model: 'claude-haiku-4-5',
+      webRoot: WEB_ROOT,
+      baseLimit: 100,
+    });
+    await new Promise((r) => tight.once('listening', r));
+    const tightOrigin = `http://127.0.0.1:${(tight.address() as AddressInfo).port}`;
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 900, height: 700 } });
+
+    try {
+      await page.goto(tightOrigin, { waitUntil: 'networkidle' });
+      await page.getByRole('tab', { name: /決まったこと/ }).click();
+      // **残りが常に見えている**（拒否されて初めて存在を知る、を避ける）。
+      await page.waitForSelector('text=/95 \\/ 100 文字/', { timeout: 15_000 });
+
+      await page.getByPlaceholder('決まったことを1行で足す').fill('これは上限を超える');
+      await page.getByRole('button', { name: '足す' }).click();
+
+      // 断られた理由がその場に出る。**409 の中身をそのまま見せる。**
+      await page.waitForSelector('text=/409/', { timeout: 15_000 });
+      // **足さっていない。** 版も文字数も動いていない。
+      await page.waitForSelector('text=/95 \\/ 100 文字/', { timeout: 15_000 });
+      expect(await page.innerText('body')).not.toContain('これは上限を超える');
+    } finally {
+      await browser.close();
+      tight.close();
+    }
+  }, 120_000);
+
   it('無い静的ファイルは 404。index.html にすり替えない（規則2）', async () => {
     if (!built) throw new Error('画面がビルドされていないので測れない');
     const res = await fetch(`${origin}/assets/does-not-exist.js`);
@@ -226,3 +395,10 @@ describe('画面の煙試験（本物のブラウザ）', () => {
     expect(res.headers.get('content-type')).toContain('application/json');
   });
 });
+
+/** 会話を1本開く。**選ぶのではなく開く**ので、開いたものは並ぶ（要件 A2）。 */
+async function openThread(page: import('playwright').Page, title: string): Promise<void> {
+  await page.getByRole('combobox').click();
+  await page.getByRole('option', { name: new RegExp(title) }).click();
+  await page.waitForTimeout(200);
+}

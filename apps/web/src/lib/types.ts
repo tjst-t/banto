@@ -67,6 +67,18 @@ export interface PendingDecision {
   readonly since: string;
 }
 
+/** いまそのスレッドで決まっていること（要件 R2・R6）。**継承は host が解く。** */
+export interface BaseResponse {
+  readonly threadId: string;
+  readonly baseVersion: number;
+  /** 先頭から何行が fork 元から継承したものか（要件 R4）。 */
+  readonly inherited: number;
+  readonly lines: readonly string[];
+  readonly characters: number;
+  /** R8 のゲート。**常に見せる**——拒否されて初めて存在を知る、を避ける。 */
+  readonly limit: number;
+}
+
 export interface StateResponse {
   readonly channels: ChannelSummary[];
   readonly threads: ThreadSummary[];
@@ -156,6 +168,16 @@ export type ThreadCreated = EventEnvelope & {
   readonly title: string;
 };
 
+/** 分岐（要件 A3・R4）。**決まったことは、切った時点の版まで引き継がれる。** */
+export type ThreadForked = EventEnvelope & {
+  readonly type: 'thread.forked';
+  readonly threadId: string;
+  readonly channelId: string;
+  readonly title: string;
+  readonly from: { readonly threadId: string; readonly baseVersion: number };
+  readonly mode: 'base' | 'tip';
+};
+
 export type BaseAppended = EventEnvelope & {
   readonly type: 'base.appended';
   readonly threadId: string;
@@ -221,6 +243,7 @@ export type StreamEvent =
   | CompactionReported
   | ThreadSessionRecorded
   | ThreadCreated
+  | ThreadForked
   | BaseAppended
   | RunRequested
   | RunTested

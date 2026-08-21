@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { AlertTriangle, Radio } from 'lucide-react';
 
 import { useBantoState } from './hooks/useBantoState';
 import { useThreadSessions } from './hooks/useThreadSessions';
 import { advanceRuns, createThread, requestRun, resolveDecision } from './lib/api';
 import { ThreadPicker } from './components/ThreadPicker';
-import { ConversationPane } from './components/ConversationPane';
+import { ThreadColumn } from './components/ThreadColumn';
 import { Queue } from './components/Queue';
 import { Runs } from './components/Runs';
 import { Tabs, TabsList, TabsTrigger } from './components/ui/tabs';
@@ -14,11 +14,24 @@ type MobilePane = 'conversation' | 'side';
 /** 右側の面。**1画面に集める**（要件 A5）ので、増やすのではなく切り替える。 */
 type SidePane = 'queue' | 'factory';
 
+/**
+ * 横に並べる会話の上限。**画面の幅の話であって、機構の制限ではない。**
+ * これ以上開こうとしたら、いちばん古いものを閉じて場所を空ける。
+ */
+const MAX_OPEN = 3;
+
 export function App() {
   const { data, error, loading, refetch } = useBantoState();
   const { sessionFor, send, loadHistory } = useThreadSessions();
 
-  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  /**
+   * **開いている会話**（要件 A2・A3）。1本ではなく並び。
+   *
+   * 1本しか開けない画面では、**同時に走っている複数の試みを見比べられない**
+   * ——A2 も A3 も「並んでいるものを見る」ことが要点なので、
+   * 切り替え式では満たせない。狭い画面では順に並ぶ（要件 E2・E3）。
+   */
+  const [openThreadIds, setOpenThreadIds] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [mobilePane, setMobilePane] = useState<MobilePane>('conversation');
@@ -29,20 +42,32 @@ export function App() {
   const queue = data?.queue ?? [];
   const runs = data?.runs ?? [];
 
-  // 何も選ばれていなければ、直近のスレッドを既定にする。
+  // 何も開いていなければ、直近の会話を1本だけ開く。
   useEffect(() => {
-    if (selectedThreadId === null && threads.length > 0) {
-      setSelectedThreadId(threads[threads.length - 1]?.id ?? null);
+    if (openThreadIds.length === 0 && threads.length > 0) {
+      const latest = threads[threads.length - 1]?.id;
+      if (latest !== undefined) setOpenThreadIds([latest]);
     }
-  }, [selectedThreadId, threads]);
+  }, [openThreadIds.length, threads]);
 
-  // 選んだ会話の過去を読み直す（要件 A8）。**開き直しても会話が残る。**
+  // 開いた会話の過去を読み直す（要件 A8）。**開き直しても会話が残る。**
   useEffect(() => {
-    if (selectedThreadId !== null) void loadHistory(selectedThreadId);
-  }, [selectedThreadId, loadHistory]);
+    for (const id of openThreadIds) void loadHistory(id);
+  }, [openThreadIds, loadHistory]);
 
-  const selectedThread = threads.find((t) => t.id === selectedThreadId) ?? null;
-  const session = selectedThreadId ? sessionFor(selectedThreadId) : sessionFor('__none__');
+  /** 消えた会話（別の窓で消された等）を開いたままにしない。 */
+  const openThreads = openThreadIds
+    .map((id) => threads.find((t) => t.id === id))
+    .filter((t): t is (typeof threads)[number] => t !== undefined);
+
+  const openThread = (threadId: string) => {
+    setOpenThreadIds((prev) => {
+      if (prev.includes(threadId)) return [threadId, ...prev.filter((id) => id !== threadId)];
+      // **場所が無ければ、いちばん古いものを閉じる。** 黙って開かないのは避ける。
+      return [threadId, ...prev].slice(0, MAX_OPEN);
+    });
+    setMobilePane('conversation');
+  };
 
   /**
    * 判断に答える（要件 A6）。**失敗を握りつぶさない**——断られたら
@@ -55,7 +80,8 @@ export function App() {
     await refetch();
     // **force で読み直す。** 既読の会話は取り直さない作りなので、
     // ここを省くと「答えたのに会話に何も出ない」になる。
-    if (selectedThreadId !== null) await loadHistory(selectedThreadId, true);
+    // **開いている全部**——答えが返る先は、いま見ている1本とは限らない。
+    for (const id of openThreadIds) await loadHistory(id, true);
   };
 
   const handleCreate = async (args: { channelName: string; title: string }) => {
@@ -64,8 +90,7 @@ export function App() {
     try {
       const res = await createThread(args);
       await refetch();
-      setSelectedThreadId(res.threadId);
-      setMobilePane('conversation');
+      openThread(res.threadId);
     } catch (cause) {
       // 握りつぶさない。作成に失敗したことを画面に出す（規則2）。
       setCreateError(cause instanceof Error ? cause.message : String(cause));
@@ -74,19 +99,13 @@ export function App() {
     }
   };
 
-  const handleSend = (text: string) => {
-    if (!selectedThreadId) {
-      // 黙って捨てない（教訓13）。捨てると「送ったのに何も起きない」になり、
-      // 何が悪いのか本人にも分からなくなる。
-      setCreateError('会話が選ばれていません。「新しい会話」を押してから送ってください。');
-      return;
-    }
-    void send(selectedThreadId, text, () => void refetch());
+  /** **どの会話に送るかを取り違えない。** 送り先は列そのものが決める。 */
+  const handleSend = (threadId: string, text: string) => {
+    void send(threadId, text, () => void refetch());
   };
 
   const handleOpenThread = (threadId: string) => {
-    setSelectedThreadId(threadId);
-    setMobilePane('conversation');
+    openThread(threadId);
   };
 
   const handleRequestRun = async (request: string) => {
@@ -98,7 +117,7 @@ export function App() {
     await advanceRuns();
     await refetch();
     // 走ったぶんの会話が増えているので、開いている会話は読み直す。
-    if (selectedThreadId !== null) await loadHistory(selectedThreadId, true);
+    for (const id of openThreadIds) await loadHistory(id, true);
   };
 
   return (
@@ -119,11 +138,8 @@ export function App() {
         <ThreadPicker
           threads={threads}
           channels={channels}
-          selectedThreadId={selectedThreadId}
-          onSelect={(id) => {
-            setSelectedThreadId(id);
-            setMobilePane('conversation');
-          }}
+          openThreadIds={openThreadIds}
+          onSelect={openThread}
           onCreate={handleCreate}
           creating={creating}
         />
@@ -157,13 +173,40 @@ export function App() {
       </div>
 
       <main className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[1fr_340px]">
-        <section className={`flex min-h-0 flex-col ${mobilePane === 'conversation' ? 'flex' : 'hidden md:flex'}`}>
-          {loading ? (
+        <div
+          className={`grid min-h-0 grid-cols-1 md:[grid-template-columns:repeat(var(--cols),minmax(0,1fr))] ${
+            mobilePane === 'conversation' ? 'grid' : 'hidden md:grid'
+          }`}
+          /**
+           * **開いた数だけ列を作る**（要件 A2・A3・E3）。
+           *
+           * **狭い画面では横に並べない**（要件 E2）。数を inline style で書くと
+           * 画面幅に関わらず効いてしまい、スマートフォンで3列に潰れる。
+           * だから数はカスタムプロパティで渡し、**適用するかどうかは CSS に決めさせる**
+           * ——広い画面では横に、狭い画面では縦に並ぶ。
+           */
+          style={{ '--cols': Math.max(1, openThreads.length) } as CSSProperties}
+        >
+          {loading && openThreads.length === 0 ? (
             <div className="flex flex-1 items-center justify-center text-sm text-ink-muted">読み込み中…</div>
+          ) : openThreads.length === 0 ? (
+            <div className="flex flex-1 items-center justify-center p-8 text-center text-sm text-ink-muted">
+              右上の「新しい会話」で会話を始めてください。
+            </div>
           ) : (
-            <ConversationPane thread={selectedThread} session={session} onSend={handleSend} />
+            openThreads.map((thread) => (
+              <ThreadColumn
+                key={thread.id}
+                thread={thread}
+                session={sessionFor(thread.id)}
+                onSend={(text) => handleSend(thread.id, text)}
+                onClose={() => setOpenThreadIds((prev) => prev.filter((id) => id !== thread.id))}
+                onBaseChanged={() => void refetch()}
+                closable={openThreads.length > 1}
+              />
+            ))
           )}
-        </section>
+        </div>
 
         <aside
           className={`flex min-h-0 flex-col border-border md:border-l ${
