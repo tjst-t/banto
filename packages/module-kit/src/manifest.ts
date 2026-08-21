@@ -26,20 +26,36 @@ export type McpSpec =
   | { readonly kind: 'url'; readonly url: string };
 
 /**
+ * 役割（ADR-0001 決定16）。**実装ではなく、満たすべき口の名前。**
+ *
+ * `'environment'` / `'publish'` のように、**複数の実装が名乗れる**。Factory は
+ * 「環境をくれ」と言えるだけでよく、それが process なのか docker なのか
+ * Proxmox なのかを知らない。
+ *
+ * **閉じた union にしない。** 閉じると、第三者が新しい役割を足すのに banto 中核の
+ * コードを変えることになり、要件 C6 に反する。代わりに**綴り違いを構造で捕まえる**
+ * ——名乗る実装が1つも無い役割は `capability-no-provider` として起動を止める。
+ * 型で防げないぶんを、起動時の突き合わせで押さえる（規則1：自己申告を信頼しない）。
+ */
+export type Capability = string;
+
+/**
  * 依存の宣言（要件 C11）。
  *
  * **2つの名前空間を混ぜない。** ここは一度混ざっていて、3本目のモジュールを
  * 書いたときに露見した（教訓6：契約の言葉が同じでも、意味が同じとは限らない）。
  * `tools` は**相手の**ツール名、`usedBy` は**自分の**ツール名で、別のもの。
  */
-export interface Dependency {
-  readonly module: ModuleId;
+interface DependencyShape {
   /**
    * **相手の**ツールの名前（名前空間を付けない素の名前）。
    *
    * 接続時に `tools/list` で実在を確かめるために使う。
    * 「そのモジュールに依存している」だけでは、相手がツール名を変えたときに
    * 使う瞬間まで気づけない。
+   *
+   * **役割で依存するとき、この一覧が役割の実体になる。**「environment を名乗ってよいか」を
+   * 自己申告ではなく実測で確かめられるのは、これがあるから。
    */
   readonly tools: readonly string[];
   /**
@@ -52,6 +68,34 @@ export interface Dependency {
   readonly usedBy?: readonly string[];
 }
 
+/** 特定の実装に依存する。相手が1つしか在りえないとき（例：Repo → Vault）。 */
+export interface ModuleDependency extends DependencyShape {
+  readonly module: ModuleId;
+}
+
+/** 役割に依存する。**実装は設定で差し替わる**（決定16）。 */
+export interface CapabilityDependency extends DependencyShape {
+  readonly capability: Capability;
+}
+
+/**
+ * **union にして、両方書く／どちらも書かないを型で潰す。**
+ *
+ * `module?` と `capability?` を1つの型に並べると、両方欠けたマニフェストが
+ * 型を通ってしまい、「実行時に気づく」に落ちる。`ModuleId` と `Capability` は
+ * どちらも string なので、**区別できるのは形だけ**である。
+ */
+export type Dependency = ModuleDependency | CapabilityDependency;
+
+export function isCapabilityDependency(dep: Dependency): dep is CapabilityDependency {
+  return 'capability' in dep;
+}
+
+/** 人に見せるときの呼び名。問題の説明で使う。 */
+export function describeDependency(dep: Dependency): string {
+  return isCapabilityDependency(dep) ? `役割 ${dep.capability}` : dep.module;
+}
+
 export interface BantoModule {
   readonly id: ModuleId;
   /** 一行の説明。台帳に出る。 */
@@ -61,6 +105,13 @@ export interface BantoModule {
   /** GUI の接続先。任意（要件 C9：最小実装はツールインターフェースだけ）。 */
   readonly api?: { readonly url: string };
   readonly handles?: readonly Handles[];
+  /**
+   * このモジュールが名乗る役割（決定16）。
+   *
+   * **名乗るだけでは足りない。** 実際に満たしているかは、依存側が書いた `tools` を
+   * `tools/list` と突き合わせて確かめる（要件 C11 の機構がそのまま効く）。
+   */
+  readonly provides?: readonly Capability[];
   readonly requires?: readonly Dependency[];
   readonly optional?: readonly Dependency[];
 }

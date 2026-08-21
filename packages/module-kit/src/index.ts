@@ -1,10 +1,15 @@
 export {
   checkManifest,
+  describeDependency,
   describeProblem,
+  isCapabilityDependency,
   NOT_IN_THE_CONTRACT,
   requiredRoot,
   type BantoModule,
+  type Capability,
+  type CapabilityDependency,
   type Dependency,
+  type ModuleDependency,
   type Handles,
   type Isolation,
   type ManifestProblem,
@@ -26,8 +31,10 @@ export {
 
 export {
   assertStartable,
+  availabilityFor,
   describeRegistryProblem,
   resolve,
+  type Bindings,
   type Degradation,
   type ModuleSource,
   type RegistryProblem,

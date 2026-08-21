@@ -22,7 +22,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type * as z from 'zod';
 
-import type { BantoModule, ModuleId } from './manifest.js';
+import { describeDependency, type BantoModule, type Dependency } from './manifest.js';
 
 /** ツールの戻り。MCP の形そのまま。解釈しない。 */
 export interface ToolResult {
@@ -50,10 +50,16 @@ export interface ToolSpec<Core, Shape extends z.ZodRawShape> {
   run(core: Core, args: z.infer<z.ZodObject<Shape>>): Promise<ToolResult>;
 }
 
-/** 任意の依存が使えるかどうか。使えないツールだけが理由つきで断る（要件 C11）。 */
+/**
+ * 任意の依存が使えるかどうか。使えないツールだけが理由つきで断る（要件 C11）。
+ *
+ * **受け取るのは依存そのもので、モジュール id ではない。** 役割で依存できるように
+ * なった以上（決定16）、id を渡す形だと `ModuleId` と `Capability` という
+ * **どちらも string の別物**が同じ引数に入る。区別できるのは形だけなので、形を渡す。
+ */
 export interface Availability {
-  has(moduleId: ModuleId): boolean;
-  reasonFor(moduleId: ModuleId): string;
+  has(dep: Dependency): boolean;
+  reasonFor(dep: Dependency): string;
 }
 
 export const ALL_AVAILABLE: Availability = {
@@ -101,10 +107,12 @@ export function defineModule<Core>(spec: ModuleSpec<Core>): DefinedModule {
     // 引くのは `usedBy`（自分のツール名）であって `tools`（相手のツール名）ではない。
     // 一覧からは消さない——消すと「そんなツールは無い」に見えて、
     // 何が壊れているのか分からなくなる（要件 C12）。
-    const missing = (spec.manifest.optional ?? [])
-      .filter((dep) => !availability.has(dep.module))
-      .flatMap((dep) => (dep.usedBy ?? []).map((tool) => [tool, dep.module] as const));
-    const declineReason = new Map<string, ModuleId>(missing);
+    const declineReason = new Map<string, string>();
+    for (const dep of spec.manifest.optional ?? []) {
+      if (availability.has(dep)) continue;
+      const why = `${describeDependency(dep)} が使えない: ${availability.reasonFor(dep)}`;
+      for (const tool of dep.usedBy ?? []) declineReason.set(tool, why);
+    }
 
     for (const toolSpec of spec.tools(buildTool as ToolBuilder<Core>)) {
       server.registerTool(
@@ -114,9 +122,7 @@ export function defineModule<Core>(spec: ModuleSpec<Core>): DefinedModule {
         // ここでは Shape が不定。境界はこの1関数の中に閉じている。
         (async (args: any) => {
           const blockedBy = declineReason.get(toolSpec.name);
-          if (blockedBy !== undefined) {
-            return decline(`${blockedBy} が使えない: ${availability.reasonFor(blockedBy)}`);
-          }
+          if (blockedBy !== undefined) return decline(blockedBy);
           try {
             return await toolSpec.run(core, args);
           } catch (cause) {

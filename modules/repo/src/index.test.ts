@@ -13,7 +13,7 @@ import path from 'node:path';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { Availability } from '@banto/module-kit';
+import { describeDependency, type Availability } from '@banto/module-kit';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import { repoModule } from './index.js';
@@ -31,7 +31,7 @@ beforeAll(async () => {
 
 const vaultUnavailable: Availability = {
   has: () => false,
-  reasonFor: (moduleId) => `${moduleId} は Phase 1 の台帳に無い`,
+  reasonFor: (dep) => `${describeDependency(dep)} は Phase 1 の台帳に無い`,
 };
 
 describe('repo モジュールの配線', () => {
