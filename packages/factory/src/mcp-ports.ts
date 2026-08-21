@@ -18,7 +18,7 @@
 
 import type { ToolCaller } from '@banto/module-kit';
 
-import type { EnvironmentPort, Implementer, RepoPort } from './ports.js';
+import type { EnvironmentPort, Implementer, PublishPort, RepoPort } from './ports.js';
 
 /**
  * 役割 `repo`（決定17）。**worktree の持ち主は Repo**（決定5）で、
@@ -82,7 +82,23 @@ export function environmentPortOver(
         stderr: String(r['stderr'] ?? ''),
       };
     },
+    address: async (handle, port) =>
+      String((await caller.callStructured('address', { ...extra, handle, port }))['address']),
     destroy: (handle) => caller.call('destroy', { ...extra, handle }),
+  };
+}
+
+/**
+ * 役割 `publish`（仕様 §3）。**「公開した」と「届く」は別物**なので、
+ * 届く範囲も値で受け取って、そのまま人に見せる。
+ */
+export function publishPortOver(caller: ToolCaller): PublishPort {
+  return {
+    publish: async (hostPort, name) => {
+      const r = await caller.callStructured('publish', { hostPort, name });
+      return { url: String(r['url']), reachableFrom: String(r['reachableFrom']) };
+    },
+    unpublish: (name) => caller.call('unpublish', { name }),
   };
 }
 

@@ -33,12 +33,35 @@ export interface RepoPort {
 export interface EnvironmentPort {
   create(workdir: string): Promise<string>;
   status(handle: string): Promise<'ready' | 'gone'>;
+  /**
+   * 中の port へ、banto ホストから届く宛先（仕様 §2 の到達性の規則）。
+   *
+   * **環境にしか答えられないので、環境が持つ。** 公開手段（`publish`）は
+   * これを受け取るだけで、docker なのか VM なのかを知らない——
+   * その境目が N×M を N＋M にしている（仕様 §3.2）。
+   */
+  address(handle: string, port: number): Promise<string>;
   exec(
     handle: string,
     command: string,
     args: readonly string[],
   ): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }>;
   destroy(handle: string): Promise<string>;
+}
+
+/**
+ * 役割 `publish`（仕様 §3）。**環境を知らない**——受け取るのは `host:port` だけ。
+ *
+ * 実装は `none`（そのまま URL にする）・`caddy`・`cloudflared` など。
+ * **新しい公開手段を足すのに、環境実装は1つも触らない。**
+ */
+export interface PublishPort {
+  /** `name` は Factory が Run ごとに振る（仕様 §8-5）。畳むときの鍵になる。 */
+  publish(
+    hostPort: string,
+    name: string,
+  ): Promise<{ readonly url: string; readonly reachableFrom: string }>;
+  unpublish(name: string): Promise<string>;
 }
 
 export interface RunPlan {

@@ -28,9 +28,27 @@ import type { TestCommand } from './ports.js';
 /** リポジトリの宣言の置き場。**探し回らない**——1箇所だけ見る。 */
 export const DECLARATION_PATH = '.banto/repo.json';
 
+/**
+ * 動いているものを人に見せる方法（仕様 §5.2 の任意の枝）。
+ *
+ * **バックグラウンドに回すのはリポジトリの仕事。** `command` は
+ * すぐ返らなければならない（`exec` は返るまで待つ）ので、
+ * 例えば `{"command": "sh", "args": ["-c", "npm start &"]}` と書く。
+ * **Factory がここを組み立てない**——組み立てると Factory が
+ * プロジェクトの事情を知ることになる（仕様 §8-4 と同じ理由）。
+ */
+export interface PreviewCommand {
+  readonly command: string;
+  readonly args: readonly string[];
+  /** 立ち上がったものが待ち受ける port。**環境の中から見た番号。** */
+  readonly port: number;
+}
+
 /** いま読む項目。**増やすときは仕様 §6 の表に足してから。** */
 export interface RepoDeclaration {
   readonly test: TestCommand;
+  /** 省ける。**宣言していなければ、公開の枝には入らない。** */
+  readonly preview?: PreviewCommand;
 }
 
 /**
@@ -61,5 +79,33 @@ export function parseDeclaration(raw: string, where = DECLARATION_PATH): RepoDec
     throw new Error(`${where}: test.args が文字列の配列でない`);
   }
 
-  return { test: { command, args: (args as string[] | undefined) ?? [] } };
+  return {
+    test: { command, args: (args as string[] | undefined) ?? [] },
+    ...parsePreview(parsed, where),
+  };
+}
+
+/** 省けるが、**書いてあるなら正しくないといけない**（規則2）。 */
+function parsePreview(parsed: unknown, where: string): { preview?: PreviewCommand } {
+  const preview = (parsed as { preview?: unknown }).preview;
+  if (preview === undefined) return {};
+
+  const { command, args, port } = preview as {
+    command?: unknown;
+    args?: unknown;
+    port?: unknown;
+  };
+  if (typeof command !== 'string' || command.trim() === '') {
+    throw new Error(`${where}: preview.command が文字列でない`);
+  }
+  if (args !== undefined && (!Array.isArray(args) || args.some((a) => typeof a !== 'string'))) {
+    throw new Error(`${where}: preview.args が文字列の配列でない`);
+  }
+  if (!Number.isInteger(port) || (port as number) < 1 || (port as number) > 65535) {
+    throw new Error(`${where}: preview.port が port 番号でない`);
+  }
+
+  return {
+    preview: { command, args: (args as string[] | undefined) ?? [], port: port as number },
+  };
 }

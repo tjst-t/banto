@@ -32,11 +32,14 @@ export const publishNoneModule = defineModule({
         hostPort: z.string().describe('host:port, as returned by the environment address tool'),
         name: z.string().optional().describe('Ignored by this provider'),
       },
-      run: async (core, { hostPort }) => {
-        const published = core.publish(hostPort);
-        // **届く範囲を必ず添える。** URL だけ返すと、外から開けると誤解される。
-        return ok(`${published.url}\n（届く範囲: ${published.reachableFrom}）`);
+      // **届く範囲も型で返す**（要件 C13）。URL だけ返すと、外から開けると誤解される
+      // ——呼び手が文字列から読み取る形にすると、いつか読み落とされる。
+      output: {
+        url: z.string(),
+        reachableFrom: z.string().describe('Where this URL actually resolves from'),
       },
+      run: async (core, { hostPort }) => core.publish(hostPort),
+      summary: (v) => `${v.url}\n（届く範囲: ${v.reachableFrom}）`,
     }),
     tool({
       name: 'unpublish',

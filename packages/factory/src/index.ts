@@ -1,11 +1,13 @@
 export {
   DECLARATION_PATH,
   parseDeclaration,
+  type PreviewCommand,
   type RepoDeclaration,
 } from './declaration.js';
 
 export {
   environmentPortOver,
+  publishPortOver,
   repoPortOver,
   workerImplementerOver,
 } from './mcp-ports.js';
@@ -16,6 +18,7 @@ export {
   Factory,
   foldRuns,
   REVIEW_OPTIONS,
+  publishNameFor,
   reviewDecisionId,
   workdirOf,
   type FactoryOptions,
@@ -36,6 +39,7 @@ export {
 export type {
   EnvironmentPort,
   Implementer,
+  PublishPort,
   RepoPort,
   RunPlan,
   TestCommand,

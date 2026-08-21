@@ -21,6 +21,9 @@
       "path": "../../modules/env-docker"
     },
     {
+      "path": "../../modules/publish-none"
+    },
+    {
       "path": "../runner"
     },
     {

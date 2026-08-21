@@ -19,6 +19,7 @@ import { EventLog, fold, pendingQueue, type NewEvent } from '@banto/core';
 import {
   Factory,
   environmentPortOver,
+  publishPortOver,
   repoPortOver,
   workerImplementerOver,
 } from '@banto/factory';
@@ -32,6 +33,7 @@ import {
 import { fsModule } from '@banto/module-fs';
 import { envProcessModule } from '@banto/module-env-process';
 import { envDockerModule } from '@banto/module-env-docker';
+import { publishNoneModule } from '@banto/module-publish-none';
 import { repoModule } from '@banto/module-repo';
 import { workerModule } from '@banto/module-worker';
 import { AgentSdkRunner } from '@banto/runner';
@@ -188,6 +190,11 @@ async function buildFactory(
    * **既定は隔離しない `env-process`**——隔離を上げるのは明示的な選択にする。
    */
   environmentId: 'env-process' | 'env-docker' = 'env-process',
+  /**
+   * 公開手段（仕様 §3）。**渡さなければ公開の枝に入らない**——
+   * どこまで届く URL を生やすかは、運用者が1行書いて決めること。
+   */
+  publishId: 'publish-none' | undefined = undefined,
 ): Promise<Factory> {
   const log = new EventLog(dataDir);
 
@@ -213,6 +220,9 @@ async function buildFactory(
     ['repo', repoModule.createServer()],
     [environmentId, environment.createServer()],
     ['worker', worker.createServer()],
+    ...(publishId === undefined
+      ? []
+      : ([[publishId, publishNoneModule.createServer()]] as [string, ReturnType<typeof publishNoneModule.createServer>][])),
   ]);
   const callers = new Map<string, ToolCaller>();
   for (const [id, server] of servers) callers.set(id, await connectInProcess(server));
@@ -221,6 +231,14 @@ async function buildFactory(
     { manifest: repoModule.manifest, listTools: () => listToolsVia(callers, 'repo') },
     { manifest: environment.manifest, listTools: () => listToolsVia(callers, environmentId) },
     { manifest: worker.manifest, listTools: () => listToolsVia(callers, 'worker') },
+    ...(publishId === undefined
+      ? []
+      : [
+          {
+            manifest: publishNoneModule.manifest,
+            listTools: () => listToolsVia(callers, publishId),
+          },
+        ]),
     {
       // **Factory は実装の名前を1つも持たない。** 役割で頼むだけ（決定16）。
       manifest: {
@@ -235,6 +253,10 @@ async function buildFactory(
           },
           { capability: 'environment', tools: ['create', 'status', 'exec', 'address', 'destroy'] },
           { capability: 'worker', tools: ['work'] },
+          // **公開は任意。** 紐づけたときだけ役割として要求する（仕様 §5.2）。
+          ...(publishId === undefined
+            ? []
+            : [{ capability: 'publish', tools: ['publish', 'unpublish'] }]),
         ],
       },
       listTools: async () => ['request', 'advance'],
@@ -246,6 +268,7 @@ async function buildFactory(
     ['repo', 'repo'],
     ['environment', environmentId],
     ['worker', 'worker'],
+    ...(publishId === undefined ? [] : [['publish', publishId] as [string, string]]),
   ]);
 
   // 合わなければ起動しない。**何が足りないかを全部言ってから**止まる（要件 C11）。
@@ -264,6 +287,7 @@ async function buildFactory(
     implementer: workerImplementerOver(need('worker'), (workdir) =>
       path.resolve(repoRoot, workdir),
     ),
+    ...(publishId === undefined ? {} : { publish: publishPortOver(need(publishId)) }),
     // **テストの走らせ方は渡さない。** リポジトリが `.banto/repo.json` で
     // 宣言する（仕様 §6）。ここに既定を置くと、宣言していないリポジトリで
     // 「0件が通った」になる。
@@ -329,8 +353,17 @@ async function main(): Promise<void> {
         throw new Error(`知らない環境: ${environmentId}（env-process か env-docker）`);
       }
 
+      /** 公開手段（仕様 §3）。**知らない名前は断る**——黙って既定へ落ちない。 */
+      const publishFlag = flag(argv, 'publish', '');
+      if (publishFlag !== '' && publishFlag !== 'publish-none') {
+        throw new Error(`知らない公開手段: ${publishFlag}（いまは publish-none だけ）`);
+      }
+      const publishId = publishFlag === '' ? undefined : 'publish-none';
+
       const factory =
-        repoRoot === '' ? undefined : await buildFactory(dataDir, repoRoot, model, environmentId);
+        repoRoot === ''
+          ? undefined
+          : await buildFactory(dataDir, repoRoot, model, environmentId, publishId);
       // Phase 1.5 では fs だけを繋ぐ。shell / repo は subprocess なので、
       // 台帳から解決する経路を通してから足す（要件 C11）。
       startServer({

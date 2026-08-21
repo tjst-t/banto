@@ -63,6 +63,7 @@ beforeEach(async () => {
       create: (w) => env.create(w),
       status: (h) => env.status(h),
       exec: (h, c, a) => env.exec(h, c, a),
+      address: async (h, port) => env.address(h, port),
       destroy: (h) => env.destroy(h),
     },
     implementer: {

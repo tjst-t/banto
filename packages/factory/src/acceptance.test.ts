@@ -26,10 +26,11 @@ import { EventLog, fold } from '@banto/core';
 import { connectInProcess, type ToolCaller } from '@banto/module-kit';
 import { repoModule } from '@banto/module-repo';
 import { envProcessModule } from '@banto/module-env-process';
+import { publishNoneModule } from '@banto/module-publish-none';
 
 import { DECLARATION_PATH } from './declaration.js';
 import { Factory, foldRuns, reviewDecisionId, workdirOf } from './engine.js';
-import { environmentPortOver, repoPortOver } from './mcp-ports.js';
+import { environmentPortOver, publishPortOver, repoPortOver } from './mcp-ports.js';
 import type { Implementer } from './ports.js';
 
 const run = promisify(execFile);
@@ -124,8 +125,15 @@ async function inMain(file: string): Promise<boolean> {
 }
 
 /** 取り込み先の宣言を差し替える（仕様 §6）。**commit するまで効かない。** */
-async function declare(test: { command: string; args: string[] }): Promise<void> {
-  await writeFile(path.join(root, DECLARATION_PATH), JSON.stringify({ test }), 'utf8');
+async function declare(
+  test: { command: string; args: string[] },
+  preview?: { command: string; args: string[]; port: number },
+): Promise<void> {
+  await writeFile(
+    path.join(root, DECLARATION_PATH),
+    JSON.stringify({ test, ...(preview === undefined ? {} : { preview }) }),
+    'utf8',
+  );
   await run('git', ['add', '-A'], { cwd: root });
   await run('git', ['commit', '-q', '-m', '宣言を変える'], { cwd: root });
 }
@@ -364,6 +372,90 @@ describe.skipIf(process.env['BANTO_E2E'] !== '1')('環境を docker に差し替
       ]).catch(() => undefined);
     }
   }, 300_000);
+});
+
+/**
+ * **公開は段ではなく、確認を待つときに使う任意の枝**（仕様 §5.2）。
+ *
+ * ここも本物の MCP を通す——`publish-none` は「公開しないことを正直に言う」実装で、
+ * 返す URL に**届く範囲**が付いてくる。それが人の確認に出るところまで見る。
+ */
+describe('動いているものを人に見せる（仕様 §3・§5.2）', () => {
+  let publishCaller: ToolCaller;
+
+  beforeEach(async () => {
+    publishCaller = await connectInProcess(publishNoneModule.createServer());
+  });
+  afterEach(async () => {
+    await publishCaller.close();
+  });
+
+  const withPreview = () =>
+    declare(
+      { command: 'sh', args: ['-c', 'ls *.txt >/dev/null 2>&1'] },
+      { command: 'sh', args: ['-c', 'true'], port: 3000 },
+    );
+
+  it('確認に、見る URL と届く範囲が付く', async () => {
+    await withPreview();
+    const f = factory({ needsReview: true, publish: publishPortOver(publishCaller) });
+    await request(f, 'alpha');
+    await f.advanceAll();
+
+    const pending = fold(await log.read()).pendingDecisions.get(reviewDecisionId('run-alpha'));
+    expect(pending?.question).toContain('見る: http://127.0.0.1:3000');
+    // **「公開した」と「届く」は別物。** 範囲を書かないと、外から開けると誤解される。
+    expect(pending?.question).toContain('届く範囲: banto-host-only');
+  }, 60_000);
+
+  // 待たない既定（要件 B4）で URL を生やすと、誰も見ないものが残り続ける。
+  it('確認を待たない設定では、公開しない', async () => {
+    await withPreview();
+    const f = factory({ publish: publishPortOver(publishCaller) });
+    await request(f, 'alpha');
+    await f.advanceAll();
+
+    expect(await inMain('alpha.txt')).toBe(true);
+    expect((await log.read()).some((e) => e.type === 'decision.requested')).toBe(false);
+  }, 60_000);
+
+  // 宣言していないなら、枝には入らない。**空の URL を出さない。**
+  it('preview を宣言していなければ、確認に URL は付かない', async () => {
+    const f = factory({ needsReview: true, publish: publishPortOver(publishCaller) });
+    await request(f, 'alpha');
+    await f.advanceAll();
+
+    const pending = fold(await log.read()).pendingDecisions.get(reviewDecisionId('run-alpha'));
+    expect(pending?.question).not.toContain('見る');
+  }, 60_000);
+
+  // 仕様と実態の食い違いは、黙ってどちらかに寄せずに人へ上げる（規則8）。
+  it('preview は在るのに公開手段が無ければ、確認にそう書く', async () => {
+    await withPreview();
+    const f = factory({ needsReview: true });
+    await request(f, 'alpha');
+    await f.advanceAll();
+
+    const pending = fold(await log.read()).pendingDecisions.get(reviewDecisionId('run-alpha'));
+    expect(pending?.question).toContain('公開手段が紐づいていない');
+  }, 60_000);
+
+  // 取り込めるものを、前置きが失敗しただけで止めない。**理由は人に見せる。**
+  it('preview が落ちても Run は止まらない。理由が確認に出る', async () => {
+    await declare(
+      { command: 'sh', args: ['-c', 'ls *.txt >/dev/null 2>&1'] },
+      { command: 'sh', args: ['-c', 'echo こわれた >&2; exit 7'], port: 3000 },
+    );
+    const f = factory({ needsReview: true, publish: publishPortOver(publishCaller) });
+    await request(f, 'alpha');
+    await f.advanceAll();
+
+    const pending = fold(await log.read()).pendingDecisions.get(reviewDecisionId('run-alpha'));
+    expect(pending?.question).toContain('exit=7');
+    expect(pending?.question).toContain('こわれた');
+    // 確認は立っている＝人は取り込むかどうかを決められる。
+    expect(pending?.options?.map((o) => o.id)).toEqual(['approve', 'reject']);
+  }, 60_000);
 });
 
 describe('人を待つ設定（要件 B4）', () => {

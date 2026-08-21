@@ -14,7 +14,8 @@
     "@banto/module-repo": "*",
     "@banto/module-env-process": "*",
     "@banto/module-worker": "*",
-    "@banto/module-ledger": "*"
+    "@banto/module-ledger": "*",
+    "@banto/module-publish-none": "*"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

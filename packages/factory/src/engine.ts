@@ -23,8 +23,15 @@ import {
   type RunId,
 } from '@banto/core';
 
-import { DECLARATION_PATH, parseDeclaration } from './declaration.js';
-import type { EnvironmentPort, Implementer, RepoPort, RunPlan, TestCommand } from './ports.js';
+import { DECLARATION_PATH, parseDeclaration, type RepoDeclaration } from './declaration.js';
+import type {
+  EnvironmentPort,
+  Implementer,
+  PublishPort,
+  RepoPort,
+  RunPlan,
+  TestCommand,
+} from './ports.js';
 import {
   isSettled,
   nextStage,
@@ -39,6 +46,13 @@ export interface FactoryOptions {
   readonly repo: RepoPort;
   readonly environment: EnvironmentPort;
   readonly implementer: Implementer;
+  /**
+   * 公開手段（仕様 §3・§5.2）。**渡さなければ、公開の枝には入らない。**
+   *
+   * 既定を持たないのは、公開が**外向きの行為**だから——どこまで届く URL を
+   * 生やすかは、運用者が1行書いて決めることである（`env-script` の門①と同じ考え）。
+   */
+  readonly publish?: PublishPort;
   /**
    * テストの走らせ方の既定。**省くのが普通**——リポジトリの宣言から読む（仕様 §6）。
    *
@@ -77,6 +91,14 @@ export function workdirOf(branch: string): string {
 
 export function reviewDecisionId(runId: RunId): string {
   return `review:${runId}`;
+}
+
+/**
+ * 公開の名前。**Factory が Run ごとに振る**（仕様 §8-5）。
+ * 覚えないので、畳むときも同じ名前が導ける（規則3）。
+ */
+export function publishNameFor(runId: RunId): string {
+  return `run-${runId}`;
 }
 
 /**
@@ -243,6 +265,47 @@ export class Factory {
   }
 
   /**
+   * 動いているものを人に見せる（仕様 §5.2 の任意の枝）。**確認に添える1行**を返す。
+   *
+   * 宣言と公開手段の両方が揃ったときだけ生やす。**片方だけのときは黙らない**
+   * ——リポジトリが「見せたい」と書いているのに手段が無いのは、
+   * 仕様と実態の食い違いなので人に上げる（規則8）。
+   *
+   * **失敗しても Run を止めない。** 取り込めるものを、前置きが失敗しただけで
+   * 止めるのは目的に反する。代わりに**理由をそのまま確認に書く**
+   * ——見るのは、まさにそれを見るべき人である。
+   */
+  private async publishPreview(run: RunRecord): Promise<string | null> {
+    const declared = await this.declaration().catch(() => null);
+    const preview = declared?.preview;
+    const publish = this.options.publish;
+
+    if (preview === undefined) return null;
+    if (publish === undefined) {
+      return `（見る URL は出せない: ${DECLARATION_PATH} に preview が在るが、公開手段が紐づいていない）`;
+    }
+
+    try {
+      const handle = await this.options.environment.create(run.workdir);
+      // **バックグラウンドに回すのはリポジトリの仕事**（`declaration.ts` の注記）。
+      const started = await this.options.environment.exec(
+        handle,
+        preview.command,
+        preview.args,
+      );
+      if (started.exitCode !== 0) {
+        return `（見る URL は出せない: preview が exit=${started.exitCode} で終わった。${started.stderr.trim().slice(0, 200)}）`;
+      }
+      const hostPort = await this.options.environment.address(handle, preview.port);
+      const { url, reachableFrom } = await publish.publish(hostPort, publishNameFor(run.runId));
+      return `見る: ${url}（届く範囲: ${reachableFrom}）`;
+    } catch (cause) {
+      // 握りつぶさない（規則2）。ただし止めもしない——理由を人に見せる。
+      return `（見る URL は出せない: ${cause instanceof Error ? cause.message : String(cause)}）`;
+    }
+  }
+
+  /**
    * その Run の環境の handle。**作業ツリーの場所から決まる**ので、覚えない（規則3）。
    * 作業ツリーが無ければ、環境も無い。
    */
@@ -321,9 +384,15 @@ export class Factory {
    * （`declaration.ts` の注記）。宣言も設定も無ければ**止まる**——
    * 分からないまま既定を当てない（規則2）。
    */
-  private async testCommand(): Promise<TestCommand> {
+  /** 取り込み先の宣言。**作業ツリーではない**（`declaration.ts` の注記）。 */
+  private async declaration(): Promise<RepoDeclaration | null> {
     const raw = await this.options.repo.readFileAt(this.into, DECLARATION_PATH);
-    if (raw !== null) return parseDeclaration(raw).test;
+    return raw === null ? null : parseDeclaration(raw);
+  }
+
+  private async testCommand(): Promise<TestCommand> {
+    const declared = await this.declaration();
+    if (declared !== null) return declared.test;
 
     const fallback = this.options.test;
     if (fallback !== undefined) return fallback;
@@ -371,19 +440,25 @@ export class Factory {
         return;
       }
 
-      case 'review':
+      case 'review': {
         // 二重に立てない。立てるだけで待たない——待つのは次の pass。
-        if (!fold(await log.read()).pendingDecisions.has(reviewDecisionId(run.runId))) {
-          await log.append({
-            type: 'decision.requested',
-            decisionId: reviewDecisionId(run.runId),
-            source: 'factory',
-            threadId: run.threadId,
-            question: `${run.branch} を ${this.into} に入れてよいか: ${run.request}`,
-            options: REVIEW_OPTIONS,
-          });
-        }
+        if (fold(await log.read()).pendingDecisions.has(reviewDecisionId(run.runId))) return;
+
+        // **公開は段ではなく、ここで使う任意の枝**（仕様 §5.2）。
+        // 待たない既定（要件 B4）では誰も見ないので、確認を待つときだけ生やす。
+        const preview = await this.publishPreview(run);
+        await log.append({
+          type: 'decision.requested',
+          decisionId: reviewDecisionId(run.runId),
+          source: 'factory',
+          threadId: run.threadId,
+          question:
+            `${run.branch} を ${this.into} に入れてよいか: ${run.request}` +
+            (preview === null ? '' : `\n${preview}`),
+          options: REVIEW_OPTIONS,
+        });
         return;
+      }
 
       case 'merge':
         try {
@@ -396,6 +471,12 @@ export class Factory {
         return;
 
       case 'teardown': {
+        // **公開も同じ段で畳む**（仕様 §8-5）。期限を2つ持つと、いつか片方が残る。
+        // 立てていなければ何もしない——`unpublish` は名前で引くので、
+        // 生やしていない名前を畳んでも実装側は困らない（`none` はその形）。
+        if (this.options.publish !== undefined) {
+          await this.options.publish.unpublish(publishNameFor(run.runId)).catch(() => undefined);
+        }
         const handle = await environment.create(run.workdir).catch(() => null);
         if (handle !== null) await environment.destroy(handle);
         await repo.removeWorktree(run.workdir);

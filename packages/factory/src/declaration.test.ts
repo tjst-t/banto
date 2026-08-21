@@ -13,6 +13,34 @@ describe('リポジトリの宣言（仕様 §6）', () => {
     expect(parseDeclaration('{"test": {"command": "make"}}').test.args).toEqual([]);
   });
 
+  // 省ける。**宣言していなければ、公開の枝には入らない**（仕様 §5.2）。
+  it('preview は省ける', () => {
+    expect(parseDeclaration('{"test": {"command": "npm"}}').preview).toBeUndefined();
+  });
+
+  it('preview を読む', () => {
+    const d = parseDeclaration(
+      '{"test": {"command": "npm"}, "preview": {"command": "sh", "args": ["-c", "npm start &"], "port": 3000}}',
+    );
+    expect(d.preview).toEqual({ command: 'sh', args: ['-c', 'npm start &'], port: 3000 });
+  });
+
+  // 省けるが、**書いてあるなら正しくないといけない**（規則2）。
+  it.each([
+    ['{"test": {"command": "npm"}, "preview": {}}', 'preview.command が文字列でない'],
+    ['{"test": {"command": "npm"}, "preview": {"command": "sh"}}', 'preview.port が port 番号でない'],
+    [
+      '{"test": {"command": "npm"}, "preview": {"command": "sh", "port": 0}}',
+      'preview.port が port 番号でない',
+    ],
+    [
+      '{"test": {"command": "npm"}, "preview": {"command": "sh", "port": 3000, "args": "x"}}',
+      'preview.args が文字列の配列でない',
+    ],
+  ])('preview が壊れていたら止まる: %s', (raw, reason) => {
+    expect(() => parseDeclaration(raw)).toThrow(reason);
+  });
+
   // 黙って既定を当てると、テストの無いリポジトリで「0件が通った」になる（規則2）。
   it.each([
     ['{', 'JSON として読めない'],
