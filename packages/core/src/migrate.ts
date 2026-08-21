@@ -56,8 +56,20 @@ const v1ToV2: Step = (event) => {
   return next;
 };
 
+/**
+ * 版 2 → 3（2026-08-21）。判断に選択肢を持たせた。
+ *
+ * 古い `decision.resolved` は選択肢の無い世界で答えられているので、
+ * **`optionId` は `null`**（自由文）になる。**推測して id を作らない**
+ * ——答えた人が何を選んだかは、そこに無い情報である。
+ */
+const v2ToV3: Step = (event) => {
+  if (event['type'] !== 'decision.resolved') return event;
+  return { ...event, optionId: null };
+};
+
 /** `UPGRADES[n]` は版 n を版 n+1 にする。**穴を開けない**——開けると静かに素通りする。 */
-const UPGRADES: readonly Step[] = [v1ToV2];
+const UPGRADES: readonly Step[] = [v1ToV2, v2ToV3];
 
 /** この実装が読める一番古い版。 */
 export const OLDEST_READABLE_VERSION = 1;

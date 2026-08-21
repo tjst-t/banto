@@ -258,7 +258,8 @@ base・fork・セッション再開（`thread.session`）を持っている。**
 
 ```
 queued → worktree → environment → implement → test → 〔review〕→ merge → teardown → done
-                                                                            └→ failed
+                                                       │                    └→ failed
+                                                       └─ reject →  teardown → rejected
 ```
 
 | 段 | やること | 頼む先 |
@@ -267,9 +268,15 @@ queued → worktree → environment → implement → test → 〔review〕→ m
 | `environment` | 環境を立てる | capability `environment` |
 | `implement` | サブエージェントが実装し、コミットする | Runner |
 | `test` | テストを走らせる | `environment.exec` |
-| `review` | **既定では通過。** 待つ設定のときだけ判断待ちに立つ（B4） | A6 のキュー |
+| `review` | **既定では通過。** 待つ設定のときだけ判断待ちに立つ（B4）。選択肢は `approve` / `reject` | A6 のキュー |
 | `merge` | main へ入れる | Repo（§5.4 の順序づけに従う） |
 | `teardown` | 環境を畳む | `environment.destroy` |
+
+**進むのは `approve` を選んだときだけ**（ADR 決定18）。自由文の答えは
+**まだ答えではない**ものとして聞き直す——「何か答えが在る＝進んでよい」にしない（規則2）。
+`reject` は畳んで `rejected` で終わる。**`failed` と同じ語にしない**——
+直せば通るもの（failed）と、直しても通らないもの（rejected）は別である。
+枝は残るので、拾い直すことはできる。
 
 公開は段ではなく、**`review` で待つときに使う任意の枝**とする——動いているものを人が
 見たい場合だけ `publish` を呼ぶ。常に公開すると、待たない既定（B4）で誰も見ない URL が生える。

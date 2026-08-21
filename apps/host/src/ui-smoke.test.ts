@@ -99,6 +99,24 @@ beforeAll(async () => {
   });
   await log.append({ type: 'run.tested', runId: 'r1', commit: 'a'.repeat(40), passed: true, detail: 'ok' });
   await log.append({ type: 'run.failed', runId: 'r1', stage: 'merge', detail: '衝突した' });
+  await log.append({
+    type: 'decision.requested',
+    decisionId: 'd-options',
+    source: 'factory',
+    threadId: 't1',
+    question: 'factory/smoke を main に入れてよいか',
+    options: [
+      { id: 'approve', label: '取り込む', detail: 'merge して畳む' },
+      { id: 'reject', label: '取り込まない', detail: '畳んで終える' },
+    ],
+  });
+  await log.append({
+    type: 'decision.requested',
+    decisionId: 'd-free',
+    source: 'thread',
+    threadId: 't1',
+    question: '選択肢の無い判断',
+  });
   await log.append({ type: 'thread.status', threadId: 't1', status: 'done' });
 
   server = startServer({
@@ -164,6 +182,38 @@ describe('画面の煙試験（本物のブラウザ）', () => {
       expect(body).toContain('merge で止まりました');
 
       expect(problems).toEqual([]);
+    } finally {
+      await browser.close();
+    }
+  }, 120_000);
+
+  /**
+   * **選んだ答えが、実際に会話に着くところまで測る**（要件 A6）。
+   *
+   * 「ボタンが描けている」では足りない——押した先が繋がっていない画面は、
+   * 見た目には壊れていないので、人が押してみるまで分からない。
+   */
+  it('選択肢を押すと、答えが会話に返る', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      // 選択肢の無い判断でも、自由に書く欄は出ている。
+      await page.waitForSelector('text=選択肢の無い判断', { timeout: 15_000 });
+      expect(await page.locator('input[placeholder="答えを書く"]').count()).toBe(1);
+
+      const approve = page.getByRole('button', { name: '取り込む', exact: true });
+      await approve.click();
+
+      // 判断待ちの列から消える（答えが出たものは残らない）。
+      // **問いの文面では見ない**——会話にも同じ文が残るので、消えたことにならない。
+      await approve.waitFor({ state: 'detached', timeout: 15_000 });
+      // **会話に返っている。** 押した先が繋がっていることの、唯一の証拠。
+      await page.waitForSelector('text=取り込む（approve）', { timeout: 15_000 });
     } finally {
       await browser.close();
     }

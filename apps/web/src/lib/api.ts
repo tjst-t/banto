@@ -74,6 +74,26 @@ export async function advanceRuns(): Promise<StateResponse> {
 }
 
 /**
+ * 判断に答える（要件 A6）。**選ぶことも、自由に書くこともできる。**
+ *
+ * `optionId` を省くと自由文の答えになる。**選択肢が在っても、そうしてよい**——
+ * どれも選べないのは普通のことなので、画面もそれを塞がない。
+ */
+export async function resolveDecision(body: {
+  decisionId: string;
+  answer: string;
+  optionId?: string;
+}): Promise<StateResponse> {
+  const res = await fetch('/api/decisions/resolve', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const result = await asJson<{ state: StateResponse }>(res);
+  return result.state;
+}
+
+/**
  * `/api/prompt` は SSE をレスポンスボディとして返す（EventSource は使えない——
  * POST の応答なので `fetch` + ストリーム読みで自前でパースする。README の通り）。
  *

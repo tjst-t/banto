@@ -122,7 +122,7 @@ describe('fold', () => {
       ev({ type: 'decision.requested', decisionId: 'd1', source: 'thread', threadId: 't1', question: 'この方針でよいか' }),
       ev({ type: 'decision.requested', decisionId: 'd2', source: 'observer', threadId: null, question: '文脈が下がっていない' }),
       ev({ type: 'decision.requested', decisionId: 'd3', source: 'factory', threadId: 't1', question: 'マージしてよいか' }),
-      ev({ type: 'decision.resolved', decisionId: 'd2', answer: '見た' }),
+      ev({ type: 'decision.resolved', optionId: null, decisionId: 'd2', answer: '見た' }),
     ]);
 
     const queue = pendingQueue(state);

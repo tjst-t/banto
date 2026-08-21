@@ -5,6 +5,84 @@ import { ScrollArea } from './ui/scroll-area';
 import { elapsedLabel, stalenessLevel } from '../lib/time';
 import type { PendingDecision, ThreadSummary } from '../lib/types';
 
+/**
+ * 1件に答える口。**選択肢を押すか、自由に書くか。**
+ *
+ * 選択肢が在るときも書く欄を閉じないのは、**どれも選べないのが普通に起きる**から
+ * （立てた側は答えの形を全部は知らない）。押した／書いた答えは、その判断が属する
+ * 会話に返る——ここで「押されたときに効く口」を別に作らない。
+ */
+function Answer({
+  decision,
+  onAnswer,
+}: {
+  decision: PendingDecision;
+  onAnswer: (answer: string, optionId?: string) => Promise<void>;
+}) {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const send = async (answer: string, optionId?: string) => {
+    if (answer.trim() === '') return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onAnswer(answer, optionId);
+      setText('');
+    } catch (cause) {
+      // 握りつぶさない（規則2）。断られた理由をそのまま出す。
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const options = decision.options ?? [];
+
+  return (
+    <div className="mt-2 flex flex-col gap-2">
+      {options.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {options.map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              disabled={busy}
+              title={o.detail}
+              onClick={() => void send(o.label, o.id)}
+              className="rounded border border-border bg-surface px-2 py-1 text-xs font-medium text-ink hover:border-accent hover:text-accent disabled:opacity-50"
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-1.5">
+        <input
+          value={text}
+          disabled={busy}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing) void send(text);
+          }}
+          placeholder={options.length > 0 ? 'どれも選べないときは、ここに書く' : '答えを書く'}
+          className="min-w-0 flex-1 rounded border border-border bg-surface px-2 py-1 text-xs text-ink placeholder:text-ink-muted disabled:opacity-50"
+        />
+        <button
+          type="button"
+          disabled={busy || text.trim() === ''}
+          onClick={() => void send(text)}
+          className="rounded border border-border px-2 py-1 text-xs text-ink-secondary hover:border-accent hover:text-accent disabled:opacity-40"
+        >
+          送る
+        </button>
+      </div>
+      {error !== null && <p className="text-[11px] text-danger">{error}</p>}
+    </div>
+  );
+}
+
 const SOURCE_LABEL: Record<PendingDecision['source'], string> = {
   thread: '会話',
   factory: 'Factory',
@@ -26,10 +104,12 @@ export function Queue({
   queue,
   threads,
   onOpenThread,
+  onAnswer,
 }: {
   queue: PendingDecision[];
   threads: ThreadSummary[];
   onOpenThread: (threadId: string) => void;
+  onAnswer: (decisionId: string, answer: string, optionId?: string) => Promise<void>;
 }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -64,6 +144,10 @@ export function Queue({
                 </span>
               </div>
               <p className="mt-1.5 text-sm text-ink">{d.question}</p>
+              <Answer
+                decision={d}
+                onAnswer={(answer, optionId) => onAnswer(d.decisionId, answer, optionId)}
+              />
               {thread && (
                 <button
                   type="button"

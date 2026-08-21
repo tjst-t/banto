@@ -216,6 +216,36 @@ describe('版を上げても古いログが読める（ADR-0001 決定7）', () 
     expect(event).not.toHaveProperty('name');
   });
 
+  /**
+   * 版2 は選択肢の無い世界なので、そこで出た答えは全部「自由文」である。
+   * **推測して id を作らない**——何を選んだかは、そこに無い情報（規則3）。
+   */
+  it('版2 の答えは、選択肢を選んでいない答えとして読める', async () => {
+    const dataDir = await tempDataDir();
+    await writeRawLines(dataDir, [
+      JSON.stringify({
+        v: 2,
+        id: 'e-1',
+        at: '2026-08-20T00:00:00.000Z',
+        type: 'decision.resolved',
+        decisionId: 'd1',
+        answer: 'APPROVE',
+      }),
+    ]);
+
+    const [event] = await new EventLog(dataDir).read();
+    expect(event).toMatchObject({ type: 'decision.resolved', optionId: null, answer: 'APPROVE' });
+  });
+
+  // 版1 のログは2段（1→2→3）通る。**途中の段を飛ばさない。**
+  it('版1 の答えも、2段通って読める', async () => {
+    const dataDir = await tempDataDir();
+    await writeRawLines(dataDir, [v1({ type: 'decision.resolved', decisionId: 'd1', answer: 'x' })]);
+
+    const [event] = await new EventLog(dataDir).read();
+    expect(event).toMatchObject({ optionId: null, v: LOG_VERSION });
+  });
+
   // 道が在ることと、止まるべきときに止まることは両立していないといけない。
   it('未来の版ではやはり止まる', async () => {
     const dataDir = await tempDataDir();

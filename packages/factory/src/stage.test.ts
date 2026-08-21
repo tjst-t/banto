@@ -10,8 +10,7 @@ const fresh: Observation = {
   hasCommits: false,
   head: null,
   testedHead: null,
-  needsReview: false,
-  reviewApproved: true,
+  review: 'not-required',
   merged: false,
 };
 
@@ -83,13 +82,29 @@ describe('次の段を、世界を見て決める（仕様 §5.3）', () => {
       testedHead: { passed: true },
     });
     expect(nextStage(ready)).toBe('merge');
-    expect(nextStage({ ...ready, needsReview: true, reviewApproved: false })).toBe('review');
-    expect(nextStage({ ...ready, needsReview: true, reviewApproved: true })).toBe('merge');
+    expect(nextStage({ ...ready, review: 'waiting' })).toBe('review');
+    expect(nextStage({ ...ready, review: 'approved' })).toBe('merge');
   });
 
-  it('終端は2つだけ', () => {
+  // 「答えが出た＝進んでよい」にしない（規則2）。選ばれていないなら、まだ答えではない。
+  it('却下されたら、取り込まずに畳んで終わる', () => {
+    const reviewed = at({
+      hasWorktree: true,
+      environment: 'ready',
+      hasCommits: true,
+      head: 'abc',
+      testedHead: { passed: true },
+      review: 'rejected',
+    });
+    expect(nextStage(reviewed)).toBe('teardown');
+    // 畳んだあと、作業ツリーが無いのを見て**作り直しに戻らない**。
+    expect(nextStage({ ...reviewed, environment: 'gone', hasWorktree: false })).toBe('rejected');
+  });
+
+  it('終端は3つ。却下は失敗ではない', () => {
     expect(isSettled('done')).toBe(true);
     expect(isSettled('failed')).toBe(true);
+    expect(isSettled('rejected')).toBe(true);
     expect(isSettled('merge')).toBe(false);
   });
 });

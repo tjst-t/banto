@@ -3,7 +3,7 @@ import { AlertTriangle, Radio } from 'lucide-react';
 
 import { useBantoState } from './hooks/useBantoState';
 import { useThreadSessions } from './hooks/useThreadSessions';
-import { advanceRuns, createThread, requestRun } from './lib/api';
+import { advanceRuns, createThread, requestRun, resolveDecision } from './lib/api';
 import { ThreadPicker } from './components/ThreadPicker';
 import { ConversationPane } from './components/ConversationPane';
 import { Queue } from './components/Queue';
@@ -43,6 +43,20 @@ export function App() {
 
   const selectedThread = threads.find((t) => t.id === selectedThreadId) ?? null;
   const session = selectedThreadId ? sessionFor(selectedThreadId) : sessionFor('__none__');
+
+  /**
+   * 判断に答える（要件 A6）。**失敗を握りつぶさない**——断られたら
+   * 例外のまま Queue に返して、その場に出す（規則2）。
+   *
+   * 答えは会話にも返るので、開いている会話を読み直す。
+   */
+  const handleAnswer = async (decisionId: string, answer: string, optionId?: string) => {
+    await resolveDecision({ decisionId, answer, ...(optionId === undefined ? {} : { optionId }) });
+    await refetch();
+    // **force で読み直す。** 既読の会話は取り直さない作りなので、
+    // ここを省くと「答えたのに会話に何も出ない」になる。
+    if (selectedThreadId !== null) await loadHistory(selectedThreadId, true);
+  };
 
   const handleCreate = async (args: { channelName: string; title: string }) => {
     setCreating(true);
@@ -174,7 +188,12 @@ export function App() {
               <p className="border-b border-border px-4 py-2 text-[11px] text-ink-muted">
                 出所を問わず1つの列にしてある（要件 A6）
               </p>
-              <Queue queue={queue} threads={threads} onOpenThread={handleOpenThread} />
+              <Queue
+                queue={queue}
+                threads={threads}
+                onOpenThread={handleOpenThread}
+                onAnswer={handleAnswer}
+              />
             </>
           ) : (
             <Runs

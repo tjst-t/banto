@@ -23,8 +23,24 @@ export const STAGES = [
 
 export type Stage = (typeof STAGES)[number];
 
-/** 段の並びの外にある2つ。もう進めない／もう進む必要がない。 */
-export type Outcome = 'done' | 'failed';
+/**
+ * 段の並びの外にある3つ。もう進めない／もう進む必要がない／人が入れないと決めた。
+ *
+ * **却下は失敗ではない。** 機構は正しく動いて、答えが「入れない」だっただけである。
+ * 同じ語にすると、直せば通るもの（failed）と、直しても通らないもの（rejected）が混ざる。
+ */
+export type Outcome = 'done' | 'failed' | 'rejected';
+
+/**
+ * 人の確認がどこまで進んだか（要件 B4）。
+ *
+ * **boolean 2つ（needsReview / reviewApproved）を1つの語に寄せた**（決定7）。
+ * 2つに分けると「確認不要かつ未承認」という、意味の無い組み合わせが表せてしまう。
+ *
+ * `waiting` は「まだ聞いていない」と「聞いて、返事が選択でなかった」の両方を指す。
+ * **どちらも、まだ答えが出ていない**——区別しても次にやることは変わらない。
+ */
+export type Review = 'not-required' | 'waiting' | 'approved' | 'rejected';
 
 export type Next = Stage | Outcome;
 
@@ -45,9 +61,8 @@ export interface Observation {
   readonly head: string | null;
   /** **いまの先端に対する**テスト結果。古い sha の結果はここに現れない。 */
   readonly testedHead: { readonly passed: boolean } | null;
-  /** 人を待つ設定か（要件 B4）。既定は待たないので false。 */
-  readonly needsReview: boolean;
-  readonly reviewApproved: boolean;
+  /** 人の確認（要件 B4）。既定は待たないので `not-required`。 */
+  readonly review: Review;
   readonly merged: boolean;
 }
 
@@ -65,6 +80,10 @@ export function nextStage(o: Observation): Next {
   // これを先に見ないと、畳んだあとに「環境が無い」と言って作り直しに戻る。
   if (o.merged) return o.environment === 'ready' ? 'teardown' : 'done';
 
+  // **却下も同じ場所で見る。** 取り込まずに畳んで終わる（枝は残るので、拾い直せる）。
+  // 下の並びに置くと、畳んだあとに「作業ツリーが無い」と言って作り直しに戻る。
+  if (o.review === 'rejected') return o.environment === 'ready' ? 'teardown' : 'rejected';
+
   if (!o.hasWorktree) return 'worktree';
   if (o.environment !== 'ready') return 'environment';
   if (!o.hasCommits) return 'implement';
@@ -74,11 +93,11 @@ export function nextStage(o: Observation): Next {
   // 落ちたテストを黙って通さない。直すのは人か、次の依頼（規則2）。
   if (!o.testedHead.passed) return 'failed';
 
-  if (o.needsReview && !o.reviewApproved) return 'review';
+  if (o.review === 'waiting') return 'review';
   return 'merge';
 }
 
 /** 終端か。engine はこれで「もう触らない Run」を外す。 */
 export function isSettled(next: Next): next is Outcome {
-  return next === 'done' || next === 'failed';
+  return next === 'done' || next === 'failed' || next === 'rejected';
 }

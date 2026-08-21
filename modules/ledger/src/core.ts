@@ -18,17 +18,28 @@
  * `appendBase` に1本化されている**ため——ここに素の追記を生やすと迂回路になる。
  */
 
-import { EventLog, fold, type BantoEvent, type DecisionSource } from '@banto/core';
+import {
+  EventLog,
+  fold,
+  type BantoEvent,
+  type DecisionOption,
+  type DecisionSource,
+} from '@banto/core';
 
 export class LedgerCore {
   constructor(private readonly log: EventLog) {}
 
-  /** 判断を1つ立てる（要件 A6）。**同じ id では二重に立てない。** */
+  /**
+   * 判断を1つ立てる（要件 A6）。**同じ id では二重に立てない。**
+   *
+   * 選択肢は任意。**出しても、そこで閉じない**——「どれも選べない」は必ず起きる。
+   */
   async requestDecision(input: {
     decisionId: string;
     source: DecisionSource;
     threadId: string | null;
     question: string;
+    options?: readonly DecisionOption[];
   }): Promise<string> {
     const events = await this.log.read();
     const known = events.some(
@@ -44,17 +55,72 @@ export class LedgerCore {
       source: input.source,
       threadId: input.threadId,
       question: input.question,
+      ...(input.options === undefined ? {} : { options: input.options }),
     });
     return input.decisionId;
   }
 
-  /** 判断に答える。**立っていないものには答えさせない**（規則2）。 */
-  async resolveDecision(decisionId: string, answer: string): Promise<string> {
-    if (!fold(await this.log.read()).pendingDecisions.has(decisionId)) {
-      throw new Error(`立っていない判断には答えられない: ${decisionId}`);
+  /**
+   * 判断に答える。**立っていないものには答えさせない**（規則2）。
+   *
+   * ## 選ぶか、書くか
+   *
+   * `optionId` を渡せば選択肢を選んだことになり、**その id は実在しなければならない**
+   * ——知らない id を「たぶんこれ」と読ませない。渡さなければ自由文で、
+   * **選択肢が在っても自由文で答えられる**（どれも選べないことは起きる）。
+   *
+   * ## 答えは、そのスレッドの会話に返る
+   *
+   * v2 の取次は「押されたときに効く口」（`InboxEffect`）を持っていたが、
+   * v3 は**汎用の効果を作らない**。代わりに答えを会話に置く——
+   * エージェントは次のターンでそれを読むし、人も読み返せる（要件 A8）。
+   * **新しい機構を1つも増やさずに、答えが効く。**
+   */
+  async resolveDecision(
+    decisionId: string,
+    answer: string,
+    optionId?: string,
+  ): Promise<{ decisionId: string; optionId: string | null; deliveredTo: string | null }> {
+    const events = await this.log.read();
+    const pending = fold(events).pendingDecisions.get(decisionId);
+    if (!pending) throw new Error(`立っていない判断には答えられない: ${decisionId}`);
+
+    const requested = events.find(
+      (e): e is Extract<BantoEvent, { type: 'decision.requested' }> =>
+        e.type === 'decision.requested' && e.decisionId === decisionId,
+    );
+
+    if (optionId !== undefined) {
+      const known = (requested?.options ?? []).some((o) => o.id === optionId);
+      if (!known) {
+        const ids = (requested?.options ?? []).map((o) => o.id);
+        throw new Error(
+          `知らない選択肢: ${optionId}（在るのは ${ids.length === 0 ? 'なし' : ids.join(', ')}）` +
+            `。どれも選べないなら optionId を渡さず、自由文で答える`,
+        );
+      }
     }
-    await this.log.append({ type: 'decision.resolved', decisionId, answer });
-    return decisionId;
+
+    await this.log.append({
+      type: 'decision.resolved',
+      decisionId,
+      optionId: optionId ?? null,
+      answer,
+    });
+
+    // **答えを会話に返す。** スレッドに紐づいていない判断（機構の警報など）は返す先が無い。
+    const threadId = pending.threadId;
+    if (threadId !== null) {
+      await this.log.append({
+        type: 'message.recorded',
+        threadId,
+        queryId: `decision:${decisionId}`,
+        role: 'user',
+        text: optionId === undefined ? answer : `${answer}（${optionId}）`,
+      });
+    }
+
+    return { decisionId, optionId: optionId ?? null, deliveredTo: threadId };
   }
 
   /** いま立っている判断（要件 A5・A6）。古い順。 */

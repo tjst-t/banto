@@ -13,7 +13,8 @@
     "@banto/factory": "*",
     "@banto/module-repo": "*",
     "@banto/module-env-process": "*",
-    "@banto/module-worker": "*"
+    "@banto/module-worker": "*",
+    "@banto/module-ledger": "*"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

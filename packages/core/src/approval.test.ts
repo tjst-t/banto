@@ -37,6 +37,7 @@ describe('承認の台帳（決定16 の安全上の②）', () => {
     await log.append({
       type: 'decision.resolved',
       decisionId: approvalId('repo:script/env-create', print),
+      optionId: null,
       answer: APPROVE,
     });
 
@@ -50,7 +51,7 @@ describe('承認の台帳（決定16 の安全上の②）', () => {
   it('APPROVE 以外の答えは承認にならない', async () => {
     const log = await freshLog();
     const id = approvalId('s', fingerprint('body'));
-    await log.append({ type: 'decision.resolved', decisionId: id, answer: 'はい' });
+    await log.append({ type: 'decision.resolved', decisionId: id, optionId: null, answer: 'はい' });
     expect((await ledgerOfLog(log)).isApproved('s', fingerprint('body'))).toBe(false);
   });
 
@@ -58,8 +59,8 @@ describe('承認の台帳（決定16 の安全上の②）', () => {
     const log = await freshLog();
     const print = fingerprint('body');
     const id = approvalId('s', print);
-    await log.append({ type: 'decision.resolved', decisionId: id, answer: APPROVE });
-    await log.append({ type: 'decision.resolved', decisionId: id, answer: 'reject' });
+    await log.append({ type: 'decision.resolved', decisionId: id, optionId: null, answer: APPROVE });
+    await log.append({ type: 'decision.resolved', decisionId: id, optionId: null, answer: 'reject' });
     expect((await ledgerOfLog(log)).isApproved('s', print)).toBe(false);
   });
 
@@ -89,6 +90,7 @@ describe('承認の台帳（決定16 の安全上の②）', () => {
     await log.append({
       type: 'decision.resolved',
       decisionId: approvalId('s', print),
+      optionId: null,
       answer: 'reject',
     });
     await requestApproval(log, await log.read(), 's', print, '承認してよいか');

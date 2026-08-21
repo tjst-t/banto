@@ -18,12 +18,13 @@ import {
   fold,
   type BantoEvent,
   type ChannelId,
+  type DecisionResolved,
   type NewEvent,
   type RunId,
 } from '@banto/core';
 
 import type { EnvironmentPort, Implementer, RepoPort, RunPlan, TestCommand } from './ports.js';
-import { isSettled, nextStage, type Next, type Observation } from './stage.js';
+import { isSettled, nextStage, type Next, type Observation, type Review } from './stage.js';
 
 export interface FactoryOptions {
   readonly log: EventLog;
@@ -62,6 +63,17 @@ export function workdirOf(branch: string): string {
 export function reviewDecisionId(runId: RunId): string {
   return `review:${runId}`;
 }
+
+/**
+ * 確認の選択肢。**id で判定するので、表示名を変えても機構は動く**（決定7）。
+ *
+ * 選択肢を出すが、**答えはこれに限らない**——どれも選べないときは自由文で書ける。
+ * その場合は聞き直す（`reviewOf`）。「選ばせて、選ばなかったら黙って進む」にしない。
+ */
+export const REVIEW_OPTIONS = [
+  { id: 'approve', label: '取り込む', detail: '取り込み先へ merge して、作業ツリーを畳む' },
+  { id: 'reject', label: '取り込まない', detail: '作業ツリーを畳んで終える。枝は残るので拾い直せる' },
+] as const;
 
 /** ログを畳んで Run を作る（規則3）。 */
 export function foldRuns(events: readonly BantoEvent[]): RunRecord[] {
@@ -186,18 +198,33 @@ export class Factory {
       hasCommits,
       head,
       testedHead: passed === undefined ? null : { passed },
-      needsReview: this.needsReview,
-      // 立っていない＝まだ聞いていないか、答えが出たか。答えが出ていれば進んでよい。
-      reviewApproved: this.needsReview ? !reviewPending && (await this.reviewAnswered(run)) : true,
+      review: this.needsReview
+        ? reviewPending
+          ? 'waiting'
+          : this.reviewOf(await this.options.log.read(), run)
+        : 'not-required',
       merged,
     };
   }
 
-  private async reviewAnswered(run: RunRecord): Promise<boolean> {
+  /**
+   * 確認の答え。**選んだ選択肢だけを見る**（規則2）。
+   *
+   * 「答えが出ている＝進んでよい」にしない。人が `${REVIEW_OPTIONS}` のどれも選ばずに
+   * 自由文で書いたなら、それは**まだ答えではない**——`waiting` に戻して聞き直す。
+   * 書いた中身は ledger がスレッドの会話に返しているので、消えはしない。
+   */
+  private reviewOf(events: readonly BantoEvent[], run: RunRecord): Review {
     const id = reviewDecisionId(run.runId);
-    return (await this.options.log.read()).some(
+    // 答え直せる。**最後の答えが有効**（承認したものを、後から却下できる）。
+    const answers = events.filter(
       (e) => e.type === 'decision.resolved' && e.decisionId === id,
-    );
+    ) as readonly DecisionResolved[];
+    const last = answers.at(-1);
+    if (last === undefined) return 'waiting';
+    if (last.optionId === 'approve') return 'approved';
+    if (last.optionId === 'reject') return 'rejected';
+    return 'waiting';
   }
 
   /**
@@ -291,6 +318,7 @@ export class Factory {
             source: 'factory',
             threadId: run.threadId,
             question: `${run.branch} を ${this.into} に入れてよいか: ${run.request}`,
+            options: REVIEW_OPTIONS,
           });
         }
         return;

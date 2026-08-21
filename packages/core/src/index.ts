@@ -8,6 +8,7 @@ export {
   type ChannelId,
   type CompactionReported,
   type DecisionId,
+  type DecisionOption,
   type DecisionRequested,
   type DecisionResolved,
   type DecisionSource,

@@ -79,6 +79,7 @@ async function approveAll(core: ScriptEnvironmentCore, repo: string): Promise<Ap
     await log.append({
       type: 'decision.resolved',
       decisionId: `approval:${subject}:${print}`,
+      optionId: null,
       answer: APPROVE,
     });
   }

@@ -12,9 +12,10 @@
  *
  * - **1 → 2**（2026-08-21）：Factory を書く前に、語の重なりをまとめて外した
  *   （run→query、handle→sessionHandle、state→status、name→channelName、step の削除）。
+ * - **2 → 3**（2026-08-21）：判断に選択肢を持たせ、答えに `optionId` を足した。
  *   読む道は `migrate.ts`。
  */
-export const LOG_VERSION = 2;
+export const LOG_VERSION = 3;
 
 export type ChannelId = string;
 export type ThreadId = string;
@@ -248,17 +249,41 @@ export interface RunFailed extends Envelope {
   readonly detail: string;
 }
 
+/**
+ * 判断の選択肢。
+ *
+ * **選択肢を出しても、そこで閉じない**——「どれも選べない」は必ず起きるので、
+ * 自由文で答える道を常に開けておく（`DecisionResolved` を見よ）。
+ */
+export interface DecisionOption {
+  /** 立てた側が意味を読む鍵。**表示名ではなく id で判定する。** */
+  readonly id: string;
+  readonly label: string;
+  /** 選んだ結果どうなるかの1行。**帰結が分からない選択肢は、選べない選択肢である。** */
+  readonly detail?: string;
+}
+
 export interface DecisionRequested extends Envelope {
   readonly type: 'decision.requested';
   readonly decisionId: DecisionId;
   readonly source: DecisionSource;
   readonly threadId: ThreadId | null;
   readonly question: string;
+  /** 省くと自由文だけで答える判断になる。 */
+  readonly options?: readonly DecisionOption[];
 }
 
 export interface DecisionResolved extends Envelope {
   readonly type: 'decision.resolved';
   readonly decisionId: DecisionId;
+  /**
+   * 選んだ選択肢の id。**自由文で答えたときは `null`。**
+   *
+   * **省略可能にしない。** 「無い」と「書いていない」が混ざると、立てた側が
+   * 「たぶん既定」と読む道ができる（規則2）。どちらであるかを必ず言わせる。
+   */
+  readonly optionId: string | null;
+  /** 選択肢の label か、書かれた文そのもの。 */
   readonly answer: string;
 }
 

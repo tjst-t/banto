@@ -48,11 +48,21 @@ export interface RunSummary {
   readonly testedCommits: { readonly commit: string; readonly passed: boolean }[];
 }
 
+export interface DecisionOption {
+  /** 答えを読む側が見る鍵。**表示名で判定しない。** */
+  readonly id: string;
+  readonly label: string;
+  /** 選んだら何が起きるか。**帰結が分からない選択肢は、選べない選択肢である。** */
+  readonly detail?: string;
+}
+
 export interface PendingDecision {
   readonly decisionId: string;
   readonly source: DecisionSource;
   readonly threadId: string | null;
   readonly question: string;
+  /** 出された選択肢。**無いこともあるし、在っても自由文で答えてよい。** */
+  readonly options?: readonly DecisionOption[];
   /** ISO 8601。立った時刻。滞留の判定に使う（要件 A7）。 */
   readonly since: string;
 }
@@ -176,6 +186,24 @@ export type RunFailed = EventEnvelope & {
   readonly detail: string;
 };
 
+/** 判断が立った（要件 A6）。**会話の中にも見える**——列にしか出ないと文脈が切れる。 */
+export type DecisionRequested = EventEnvelope & {
+  readonly type: 'decision.requested';
+  readonly decisionId: string;
+  readonly source: DecisionSource;
+  readonly threadId: string | null;
+  readonly question: string;
+  readonly options?: readonly DecisionOption[];
+};
+
+/** 答えが出た。**答えの本文は `message.recorded` として会話にも返っている。** */
+export type DecisionResolved = EventEnvelope & {
+  readonly type: 'decision.resolved';
+  readonly decisionId: string;
+  readonly optionId: string | null;
+  readonly answer: string;
+};
+
 /**
  * ランタイム例外を握りつぶさず流すための、封筒を持たない特別なフレーム
  * （server.ts の catch 節。ログには積まれないので v/id/at が無い）。
@@ -197,6 +225,8 @@ export type StreamEvent =
   | RunRequested
   | RunTested
   | RunFailed
+  | DecisionRequested
+  | DecisionResolved
   | StreamErrorFrame;
 
 /** 文脈サイズ。input + cacheCreation + cacheRead の和だけ。他の式にしない。 */

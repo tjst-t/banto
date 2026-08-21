@@ -65,6 +65,8 @@ export async function raiseAlarms(
     if (wanted.has(decisionId)) continue;
     await log.append({
       type: 'decision.resolved',
+      // 機構が畳んだので、人は何も選んでいない。
+      optionId: null,
       decisionId,
       answer: '警報の条件が解消した',
     });

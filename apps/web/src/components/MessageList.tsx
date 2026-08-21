@@ -1,4 +1,4 @@
-import { AlertTriangle, Loader2, PackageMinus } from 'lucide-react';
+import { AlertTriangle, HelpCircle, Loader2, PackageMinus } from 'lucide-react';
 
 import { ScrollArea } from './ui/scroll-area';
 import { Badge } from './ui/badge';
@@ -161,6 +161,32 @@ export function MessageList({ items, running }: { items: TimelineItem[]; running
                   <p className="font-medium">{event.stage} で止まりました（人の判断待ち）</p>
                   <p>{event.detail}</p>
                 </div>
+              </div>
+            );
+          }
+
+          // 判断は列（Queue）で答えるが、**会話にも跡を残す**——
+          // どこで話が止まったのかが、会話を読み返すだけで分かるように（要件 A8）。
+          if (event.type === 'decision.requested') {
+            return (
+              <div
+                key={item.id}
+                className="flex items-start gap-2 self-start rounded-md border border-waiting/40 bg-waiting-soft/60 px-3 py-2 text-xs text-ink"
+              >
+                <HelpCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-waiting" />
+                <div>
+                  <p className="font-medium">判断待ち</p>
+                  <p>{event.question}</p>
+                </div>
+              </div>
+            );
+          }
+
+          if (event.type === 'decision.resolved') {
+            return (
+              <div key={item.id} className="flex items-center gap-1.5 self-start text-[11px] text-ink-muted">
+                <span className="h-1.5 w-1.5 rounded-full bg-border-strong" />
+                判断に答えた{event.optionId === null ? '' : `（${event.optionId}）`}
               </div>
             );
           }

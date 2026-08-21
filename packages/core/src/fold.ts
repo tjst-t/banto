@@ -9,6 +9,7 @@ import type {
   BantoEvent,
   ChannelId,
   DecisionId,
+  DecisionOption,
   DecisionSource,
   ThreadId,
   ThreadStatus,
@@ -55,6 +56,11 @@ export interface PendingDecision {
   readonly source: DecisionSource;
   readonly threadId: ThreadId | null;
   readonly question: string;
+  /**
+   * 出した選択肢。無ければ自由文だけ。**答えはここに限らない**——どれも選べないのは
+   * 普通のことなので、選択肢の有無で答え方を縛らない。
+   */
+  readonly options?: readonly DecisionOption[];
   /** 立った時刻（ISO）。滞留の判定に使う（要件 A7）。 */
   readonly since: string;
 }
@@ -154,6 +160,7 @@ export function fold(events: readonly BantoEvent[]): State {
           source: event.source,
           threadId: event.threadId,
           question: event.question,
+          ...(event.options === undefined ? {} : { options: event.options }),
           since: event.at,
         });
         break;

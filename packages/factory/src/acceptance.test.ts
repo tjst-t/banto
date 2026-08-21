@@ -258,15 +258,52 @@ describe('人を待つ設定（要件 B4）', () => {
 
     await f.advanceAll();
     expect(await inMain('alpha.txt')).toBe(false);
-    expect(fold(await log.read()).pendingDecisions.has(reviewDecisionId('run-alpha'))).toBe(true);
+    const pending = fold(await log.read()).pendingDecisions.get(reviewDecisionId('run-alpha'));
+    expect(pending).toBeDefined();
+    // 選択肢が出ている。**選ばせるが、これに限らない。**
+    expect(pending?.options?.map((o) => o.id)).toEqual(['approve', 'reject']);
 
-    // 人が答えたら、続きは同じ機構で進む。
+    // 選択肢を選ばない答えは、まだ答えではない——聞き直す（規則2）。
     await log.append({
       type: 'decision.resolved',
       decisionId: reviewDecisionId('run-alpha'),
-      answer: 'approve',
+      optionId: null,
+      answer: 'テストのカバレッジはどうなってる？',
+    });
+    await f.advanceAll();
+    expect(await inMain('alpha.txt')).toBe(false);
+    expect(fold(await log.read()).pendingDecisions.has(reviewDecisionId('run-alpha'))).toBe(true);
+
+    // 選択肢を選んだら、続きは同じ機構で進む。
+    await log.append({
+      type: 'decision.resolved',
+      decisionId: reviewDecisionId('run-alpha'),
+      optionId: 'approve',
+      answer: '取り込む',
     });
     await f.advanceAll();
     expect(await inMain('alpha.txt')).toBe(true);
+  }, 60_000);
+
+  it('却下されたら取り込まず、作業ツリーを畳んで終わる', async () => {
+    const f = factory({ needsReview: true });
+    await request(f, 'alpha');
+    await f.advanceAll();
+
+    await log.append({
+      type: 'decision.resolved',
+      decisionId: reviewDecisionId('run-alpha'),
+      optionId: 'reject',
+      answer: '取り込まない',
+    });
+    await f.advanceAll();
+    await f.advanceAll(); // teardown → rejected
+
+    expect(await inMain('alpha.txt')).toBe(false);
+    // 枝は残る。**捨てるのではなく、取り込まないだけ。**
+    const { stdout } = await run('git', ['branch', '--list', 'factory/alpha'], { cwd: root });
+    expect(stdout.trim()).toContain('factory/alpha');
+    // 失敗として記録しない——機構は正しく動いた。
+    expect((await log.read()).filter((e) => e.type === 'run.failed')).toHaveLength(0);
   }, 60_000);
 });

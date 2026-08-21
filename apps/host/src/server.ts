@@ -29,6 +29,7 @@ import {
 } from '@banto/core';
 import { AgentSdkRunner, allowedToolNames, type McpServerSpec } from '@banto/runner';
 import { foldRuns, type Factory } from '@banto/factory';
+import { LedgerCore } from '@banto/module-ledger';
 
 export interface ServerOptions {
   readonly dataDir: string;
@@ -256,6 +257,36 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
       }
       await options.factory.advanceAll();
       json(res, 200, await currentState(options.dataDir, baseLimit));
+      return;
+    }
+
+    /**
+     * 判断に答える（要件 A6）。**選ぶことも、自由に書くこともできる。**
+     *
+     * 中身は ledger の core をそのまま使う——画面用に別の判定を書くと、
+     * 「知らない選択肢を断る」が口ごとにずれる（規則3）。
+     */
+    if (req.method === 'POST' && url.pathname === '/api/decisions/resolve') {
+      const body = (await readBody(req)) as {
+        decisionId?: string;
+        answer?: string;
+        optionId?: string;
+      };
+      if (typeof body.decisionId !== 'string' || typeof body.answer !== 'string') {
+        json(res, 400, { error: 'decisionId と answer が要る' });
+        return;
+      }
+      try {
+        const result = await new LedgerCore(log).resolveDecision(
+          body.decisionId,
+          body.answer,
+          body.optionId,
+        );
+        json(res, 200, { ...result, state: await currentState(options.dataDir, baseLimit) });
+      } catch (cause) {
+        // 握りつぶさない（規則2）。断った理由をそのまま返す。
+        json(res, 409, { error: cause instanceof Error ? cause.message : String(cause) });
+      }
       return;
     }
 

@@ -9,6 +9,7 @@ export { AgentImplementer, type AgentImplementerOptions } from './agent-implemen
 export {
   Factory,
   foldRuns,
+  REVIEW_OPTIONS,
   reviewDecisionId,
   workdirOf,
   type FactoryOptions,
@@ -22,6 +23,7 @@ export {
   type Next,
   type Observation,
   type Outcome,
+  type Review,
   type Stage,
 } from './stage.js';
 
