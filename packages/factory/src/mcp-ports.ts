@@ -5,44 +5,42 @@
  * 役割（capability）の機構は決定16 で作ったのに、**本物の利用者がいなかった**
  * ——「実装は差し替えられる」は試験の中でしか成り立っていなかった。ここがその穴を塞ぐ。
  *
- * ## 口を跨ぐ代償：文字列を解くことになる
+ * ## 口を跨いでも、型は落ちない
  *
- * MCP のツールが返すのはテキストである。**その解析を1箇所に閉じ込める**のが
- * このファイルの役目で、engine には1文字も漏らさない。
+ * 最初の版はここで文字列を解いていた（`yes` / `no` の判定、`JSON.parse`）。
+ * **それは MCP の使い方が誤っていた**——`outputSchema` と `structuredContent` が
+ * 仕様にあり、SDK 1.30.0 が対応している。しかも**型は宣言ではなく強制**で、
+ * 合わないものを返すと `Output validation error` で断られる（実測 2026-08-21）。
  *
- * **知らない値を勝手に寄せない**（規則2）。`yes` でも `no` でもない返事は、
- * 「たぶん no」ではなく**失敗**である——寄せた瞬間に、壊れているのに動いて見える。
+ * だからこのファイルに解析は無い。**「代償として文字列を解く」は、払う必要の
+ * 無い代償だった**（規則1：確かめる前に決めない、を破ったところ）。
  */
 
 import type { ToolCaller } from '@banto/module-kit';
 
 import type { EnvironmentPort, Implementer, RepoPort } from './ports.js';
 
-/** `yes` / `no` だけを受ける。それ以外は**寄せずに投げる。** */
-function yesNo(where: string, printed: string): boolean {
-  const value = printed.trim();
-  if (value === 'yes') return true;
-  if (value === 'no') return false;
-  throw new Error(`${where} が yes でも no でもない: ${JSON.stringify(value)}`);
-}
-
 /**
  * 役割 `repo`（決定17）。**worktree の持ち主は Repo**（決定5）で、
  * Factory はここを通してしか git に触れない。
  */
 export function repoPortOver(caller: ToolCaller): RepoPort {
+  const str = async (tool: string, args: Record<string, unknown>, key: string): Promise<string> =>
+    String((await caller.callStructured(tool, args))[key]);
+  const bool = async (tool: string, args: Record<string, unknown>, key: string): Promise<boolean> =>
+    (await caller.callStructured(tool, args))[key] === true;
+
   return {
-    addWorktree: (branch, relative) => caller.call('add_worktree', { branch, path: relative }),
-    hasWorktree: async (relative) =>
-      yesNo('has_worktree', await caller.call('has_worktree', { path: relative })),
+    addWorktree: (branch, relative) => str('add_worktree', { branch, path: relative }, 'path'),
+    hasWorktree: (relative) => bool('has_worktree', { path: relative }, 'exists'),
     removeWorktree: (relative) => caller.call('remove_worktree', { path: relative }),
-    headOf: async (ref) => (await caller.call('head_of', { ref })).trim(),
-    isAhead: async (branch, base) =>
-      yesNo('is_ahead', await caller.call('is_ahead', { branch, ...(base ? { base } : {}) })),
+    headOf: (ref) => str('head_of', { ref }, 'commit'),
+    isAhead: (branch, base) =>
+      bool('is_ahead', { branch, ...(base ? { base } : {}) }, 'ahead'),
     // **取り込み済みかは `is_ahead` と測ったことから導く**（engine の注記）。
     // ここに `is_merged` を置くと、空のブランチで自明に真になる罠が戻ってくる。
     isMerged: async (branch, into) =>
-      !yesNo('is_ahead', await caller.call('is_ahead', { branch, ...(into ? { base: into } : {}) })),
+      !(await bool('is_ahead', { branch, ...(into ? { base: into } : {}) }, 'ahead')),
     merge: (branch, into) => caller.call('merge', { branch, ...(into ? { into } : {}) }),
     rebaseOnto: (relative, onto) =>
       caller.call('rebase_onto', { path: relative, ...(onto ? { onto } : {}) }),
@@ -56,31 +54,28 @@ export function environmentPortOver(
   extra: Record<string, unknown> = {},
 ): EnvironmentPort {
   return {
-    create: async (workdir) => (await caller.call('create', { ...extra, workdir })).trim(),
+    create: async (workdir) =>
+      String((await caller.callStructured('create', { ...extra, workdir }))['handle']),
     status: async (handle) => {
-      const printed = (await caller.call('status', { ...extra, handle })).trim();
-      if (printed !== 'ready' && printed !== 'gone') {
-        throw new Error(`status が ready でも gone でもない: ${JSON.stringify(printed)}`);
+      const status = (await caller.callStructured('status', { ...extra, handle }))['status'];
+      // **契約は MCP 側で強制されている**が、ここでも確かめる——
+      // 型が合っていても、値が2つのどちらでもない未来はありうる（規則2）。
+      if (status !== 'ready' && status !== 'gone') {
+        throw new Error(`status が ready でも gone でもない: ${JSON.stringify(status)}`);
       }
-      return printed;
+      return status;
     },
     exec: async (handle, command, args) => {
-      const printed = await caller.call('exec', { ...extra, handle, command, args: [...args] });
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(printed);
-      } catch {
-        // 握りつぶさない。**解けなかったことを、解けた顔で返さない。**
-        throw new Error(`exec の返事が JSON でない: ${printed.slice(0, 200)}`);
-      }
-      const r = parsed as { exitCode?: unknown; stdout?: unknown; stderr?: unknown };
-      if (typeof r.exitCode !== 'number') {
-        throw new Error(`exec の返事に exitCode が無い: ${printed.slice(0, 200)}`);
-      }
+      const r = await caller.callStructured('exec', {
+        ...extra,
+        handle,
+        command,
+        args: [...args],
+      });
       return {
-        exitCode: r.exitCode,
-        stdout: typeof r.stdout === 'string' ? r.stdout : '',
-        stderr: typeof r.stderr === 'string' ? r.stderr : '',
+        exitCode: Number(r['exitCode']),
+        stdout: String(r['stdout'] ?? ''),
+        stderr: String(r['stderr'] ?? ''),
       };
     },
     destroy: (handle) => caller.call('destroy', { ...extra, handle }),
@@ -99,7 +94,7 @@ export function workerImplementerOver(
 ): Implementer {
   return {
     implement: async (plan) => {
-      await caller.call('work', {
+      await caller.callStructured('work', {
         threadId: plan.threadId,
         // **同じ Run の仕事は同じ id になる。** 呼び手が決めるので、
         // 再開して二度呼んでも別の仕事に見えない。

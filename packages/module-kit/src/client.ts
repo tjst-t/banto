@@ -24,6 +24,16 @@ export interface ToolCaller {
    * すると「自己申告を自己申告で確かめる」ことになって何も証明しない（規則1）。
    */
   listTools(): Promise<string[]>;
+  /**
+   * **返り値の型が決まっているツールを呼ぶ**（MCP の `structuredContent`）。
+   *
+   * これがあるので、**呼ぶ側が文字列を解く必要は無い。** テキストで返してもらって
+   * `yes` / `no` を判定する、というのは MCP の使い方として誤りだった（2026-08-21 に訂正）。
+   *
+   * **構造が返らなければ止まる**（規則2）。テキストしか返さないツールを
+   * ここで呼んだのなら、それは呼び間違いであって「たぶん空」ではない。
+   */
+  callStructured(tool: string, args: Record<string, unknown>): Promise<Record<string, unknown>>;
   close(): Promise<void>;
 }
 
@@ -50,6 +60,15 @@ function callerOf(client: Client): ToolCaller {
     call: async (tool, args) =>
       textOf(await client.callTool({ name: tool, arguments: args }), tool),
     listTools: async () => (await client.listTools()).tools.map((t) => t.name),
+    callStructured: async (tool, args) => {
+      const result = await client.callTool({ name: tool, arguments: args });
+      const r = result as { isError?: boolean; structuredContent?: Record<string, unknown> };
+      if (r.isError === true) throw new Error(`${tool} が断った: ${textOf(result, tool)}`);
+      if (r.structuredContent === undefined) {
+        throw new Error(`${tool} は構造を返さない（outputSchema が宣言されていない）`);
+      }
+      return r.structuredContent;
+    },
     close: async () => {
       await client.close().catch(() => undefined);
     },

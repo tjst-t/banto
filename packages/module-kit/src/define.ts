@@ -42,13 +42,41 @@ export function decline(reason: string): ToolResult {
   return { content: [{ type: 'text', text: `断った: ${reason}` }], isError: true };
 }
 
-export interface ToolSpec<Core, Shape extends z.ZodRawShape> {
+interface ToolSpecBase<Shape extends z.ZodRawShape> {
   readonly name: string;
   readonly description: string;
   readonly input: Shape;
+}
+
+/** テキストだけを返すツール。**読み手が人か AI のときはこれでよい。** */
+export interface TextToolSpec<Core, Shape extends z.ZodRawShape> extends ToolSpecBase<Shape> {
   /** core だけを触る。ここにロジックを書かない（唯一の規約）。 */
   run(core: Core, args: z.infer<z.ZodObject<Shape>>): Promise<ToolResult>;
 }
+
+/**
+ * **返り値の型を決めるツール**（MCP の `outputSchema` / `structuredContent`）。
+ *
+ * **モジュールが他のモジュールを呼ぶとき（要件 C10・C13）は必ずこちら。**
+ * テキストで返すと、呼ぶ側が文字列を解くことになる——実際そう書いていて、
+ * `yes` / `no` を自前で判定していた。**MCP は最初から型を決められる。**
+ *
+ * 型は宣言ではなく**強制**である。実測（2026-08-21）：`outputSchema` に合わない
+ * `structuredContent` を返すと、SDK が `Output validation error` で断る。
+ * つまり**契約の形で破れないようにできる**——「気をつける」で担保しない。
+ *
+ * `content`（テキスト）も一緒に出す。同じ事実を AI が読む形にしただけで、
+ * **第二の真実ではない**——`summary` を省けば構造をそのまま JSON にする。
+ */
+export interface StructuredToolSpec<Core, Shape extends z.ZodRawShape, Out extends z.ZodRawShape>
+  extends ToolSpecBase<Shape> {
+  readonly output: Out;
+  run(core: Core, args: z.infer<z.ZodObject<Shape>>): Promise<z.infer<z.ZodObject<Out>>>;
+  /** AI が読む1行。省くと構造をそのまま JSON にする。 */
+  readonly summary?: (value: z.infer<z.ZodObject<Out>>) => string;
+}
+
+export type ToolSpec<Core, Shape extends z.ZodRawShape> = TextToolSpec<Core, Shape>;
 
 /**
  * 任意の依存が使えるかどうか。使えないツールだけが理由つきで断る（要件 C11）。
@@ -76,17 +104,24 @@ export interface DefinedModule {
 }
 
 /** 蓄えるときの形。Shape はここで一度だけ潰れる。 */
-export type AnyToolSpec<Core> = ToolSpec<Core, z.ZodRawShape>;
+export type AnyToolSpec<Core> =
+  | (TextToolSpec<Core, z.ZodRawShape> & { readonly output?: undefined })
+  | StructuredToolSpec<Core, z.ZodRawShape, z.ZodRawShape>;
 
 /**
  * ツールを1つ組み立てる。**`input` から `run` の引数の型が決まる。**
  *
  * 配列に入れた時点で Shape は潰れるので、潰す前に1つずつ通す必要がある
  * ——これを挟まないと `run` の引数が unknown になる。
+ *
+ * `output` を書くかどうかで、`run` が返すものが変わる。
  */
-export type ToolBuilder<Core> = <Shape extends z.ZodRawShape>(
-  spec: ToolSpec<Core, Shape>,
-) => AnyToolSpec<Core>;
+export interface ToolBuilder<Core> {
+  <Shape extends z.ZodRawShape, Out extends z.ZodRawShape>(
+    spec: StructuredToolSpec<Core, Shape, Out>,
+  ): AnyToolSpec<Core>;
+  <Shape extends z.ZodRawShape>(spec: TextToolSpec<Core, Shape>): AnyToolSpec<Core>;
+}
 
 export interface ModuleSpec<Core> {
   readonly manifest: BantoModule;
@@ -96,7 +131,7 @@ export interface ModuleSpec<Core> {
   tools(tool: ToolBuilder<Core>): readonly AnyToolSpec<Core>[];
 }
 
-const buildTool = <Core,>(spec: ToolSpec<Core, z.ZodRawShape>): AnyToolSpec<Core> => spec;
+const buildTool = <Core,>(spec: AnyToolSpec<Core>): AnyToolSpec<Core> => spec;
 
 export function defineModule<Core>(spec: ModuleSpec<Core>): DefinedModule {
   const build = (availability: Availability): McpServer => {
@@ -117,14 +152,26 @@ export function defineModule<Core>(spec: ModuleSpec<Core>): DefinedModule {
     for (const toolSpec of spec.tools(buildTool as ToolBuilder<Core>)) {
       server.registerTool(
         toolSpec.name,
-        { description: toolSpec.description, inputSchema: toolSpec.input },
+        {
+          description: toolSpec.description,
+          inputSchema: toolSpec.input,
+          ...(toolSpec.output === undefined ? {} : { outputSchema: toolSpec.output }),
+        },
         // any の理由（規則9）：MCP SDK の ToolCallback は Shape ごとに型が決まり、
         // ここでは Shape が不定。境界はこの1関数の中に閉じている。
         (async (args: any) => {
           const blockedBy = declineReason.get(toolSpec.name);
+          // **断りは outputSchema があっても通る**（実測 2026-08-21）。
+          // `isError` はそのまま呼び手に届く。
           if (blockedBy !== undefined) return decline(blockedBy);
           try {
-            return await toolSpec.run(core, args);
+            if (toolSpec.output === undefined) return await toolSpec.run(core, args);
+            const value = await toolSpec.run(core, args);
+            return {
+              structuredContent: value,
+              // AI が読む分。**同じ事実を別の形で出すだけ**で、第二の真実ではない。
+              content: [{ type: 'text', text: toolSpec.summary?.(value) ?? JSON.stringify(value) }],
+            };
           } catch (cause) {
             // 握りつぶさない（規則2）。理由を値にして返す。
             return decline(cause instanceof Error ? cause.message : String(cause));

@@ -27,6 +27,8 @@ export {
   type ModuleSpec,
   type ToolResult,
   type ToolSpec,
+  type TextToolSpec,
+  type StructuredToolSpec,
 } from './define.js';
 
 export {

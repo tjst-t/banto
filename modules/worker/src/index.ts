@@ -38,12 +38,10 @@ export function workerModule(options: WorkerOptions): DefinedModule {
           request: z.string().describe('What to do'),
           cwd: z.string().describe('Absolute path to work in'),
         },
-        run: async (core, order) => {
-          const result = await core.work(order);
-          return ok(
-            `turns=${result.turns} runtime=${result.succeeded ? 'succeeded' : 'failed'}\n${result.detail}`,
-          );
-        },
+        output: { turns: z.number(), succeeded: z.boolean(), detail: z.string() },
+        run: async (core, order) => core.work(order),
+        summary: (v) =>
+          `turns=${v.turns} runtime=${v.succeeded ? 'succeeded' : 'failed'}\n${v.detail}`,
       }),
     ],
   });
