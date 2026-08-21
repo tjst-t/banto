@@ -2,7 +2,12 @@
 """hello-py: 契約が TypeScript でないモジュールも運べることを示す最小の MCP サーバ。
 
 サードパーティ依存なし。MCP over stdio は改行区切りの JSON-RPC 2.0 なので、
-ループを手で書く（initialize / tools/list / tools/call の3つだけ支える）。
+ループを手で書く（initialize / tools/list / tools/call / resources/* を支える）。
+
+**自分の URI 空間を持つ**（要件 C14）。`banto://hello-py/greeting/<name>` を
+resources/read で返す。画面はこのモジュールが持ち込む（要件 C1）が、
+**subprocess で TypeScript でもないので `in-page` は名乗れない**（決定20）
+——`sandboxed`（iframe）で走る。第三者モジュールとまったく同じ立場である。
 """
 import json
 import sys
@@ -35,12 +40,52 @@ def handle(req: dict) -> dict | None:
             "id": req_id,
             "result": {
                 "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
+                "capabilities": {"tools": {}, "resources": {}},
                 "serverInfo": {"name": "hello-py", "version": "0.0.0"},
             },
         }
     if method == "notifications/initialized":
         return None  # 通知には応答しない
+    if method == "resources/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "resourceTemplates": [
+                    {
+                        "uriTemplate": "banto://hello-py/greeting/{name}",
+                        "name": "greeting",
+                        "description": "A greeting for someone",
+                        "mimeType": "text/plain",
+                    }
+                ],
+                "resources": [],
+            },
+        }
+    if method == "resources/read":
+        uri = req.get("params", {}).get("uri", "")
+        prefix = "banto://hello-py/greeting/"
+        if not uri.startswith(prefix):
+            # 握りつぶさない。持っていない URI は、持っていないと言う。
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32602, "message": f"持っていない uri: {uri}"},
+            }
+        who = uri[len(prefix):] or "world"
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "contents": [
+                    {
+                        "uri": uri,
+                        "mimeType": "text/plain",
+                        "text": f"Hello, {who}!\nPython {sys.version.split()[0]} から返している。",
+                    }
+                ]
+            },
+        }
     if method == "tools/list":
         return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOLS}}
     if method == "tools/call":

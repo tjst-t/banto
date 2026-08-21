@@ -11,6 +11,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 
 import path from 'node:path';
@@ -27,6 +28,7 @@ import {
   assertStartable,
   connectInProcess,
   resolve,
+  type BantoModule,
   type ModuleSource,
   type ToolCaller,
 } from '@banto/module-kit';
@@ -295,6 +297,16 @@ async function buildFactory(
 }
 
 /** 台帳の突き合わせも、**繋いだ口から**聞く（自己申告を自己申告で確かめない・規則1）。 */
+/**
+ * `hello-py` の台帳を読む（要件 C6）。**JSON をそのまま読む**——
+ * TypeScript でないモジュールの台帳は、TypeScript の外に在る。
+ */
+function helloPyManifest(): BantoModule {
+  const file = path.resolve('modules/hello-py/manifest.json');
+  // 握りつぶさない（規則2）。読めないなら、そう言って止まる。
+  return JSON.parse(readFileSync(file, 'utf8')) as BantoModule;
+}
+
 async function listToolsVia(callers: Map<string, ToolCaller>, id: string): Promise<string[]> {
   const caller = callers.get(id);
   if (!caller) throw new Error(`繋がっていないモジュール: ${id}`);
@@ -371,8 +383,14 @@ async function main(): Promise<void> {
         port,
         modules: [{ name: fsModule.manifest.id, kind: 'in-process', server: fsModule.createServer() }],
         toolsByModule: new Map([['fs', ['read', 'write', 'list']]]),
-        // 画面の割り当ては台帳から導く（決定20）。別表を持たない（規則3）。
-        manifests: [fsModule.manifest],
+        /**
+         * 画面の割り当ては台帳から導く（決定20）。別表を持たない（規則3）。
+         *
+         * **hello-py も載せる。** ツールは繋いでいないが、
+         * **subprocess で TypeScript でもないモジュールが `sandboxed` な面を
+         * 持ち込めること**が要件 C6 の中身なので、面だけは配る。
+         */
+        manifests: [fsModule.manifest, helloPyManifest()],
         model,
         host: flag(argv, 'host', '127.0.0.1'),
         ...(factory === undefined ? {} : { factory }),

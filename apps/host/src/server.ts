@@ -30,7 +30,12 @@ import {
 import { AgentSdkRunner, allowedToolNames, type McpServerSpec } from '@banto/runner';
 import { foldRuns, type Factory } from '@banto/factory';
 import { LedgerCore, conversationModule } from '@banto/module-ledger';
-import { connectInProcess, type BantoModule, type ToolCaller } from '@banto/module-kit';
+import {
+  connectInProcess,
+  connectSubprocess,
+  type BantoModule,
+  type ToolCaller,
+} from '@banto/module-kit';
 
 export interface ServerOptions {
   readonly dataDir: string;
@@ -127,6 +132,25 @@ async function serveStatic(webRoot: string, pathname: string, res: ServerRespons
   res.end(await readFile(path.join(root, 'index.html')));
 }
 
+/**
+ * `sandboxed` な面の入れ物（決定20）。**モジュールの JS をそのまま埋める。**
+ *
+ * ここに置くのは器だけで、描くのはモジュールの側である
+ * ——器が中身を知ると、モジュールごとに器が要ることになる。
+ */
+function sandboxShell(source: string): string {
+  return `<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; padding: 12px; font: 12px/1.6 ui-monospace, monospace; color: #24211d; }
+  .head { margin: 0 0 8px; font-size: 11px; color: #6b645c; }
+  .proof { margin: 8px 0 0; font-size: 11px; color: #6b645c; }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+</style></head>
+<body><div id="root"></div><script>${source}</script></body></html>`;
+}
+
 function json(res: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body);
   res.writeHead(status, {
@@ -208,14 +232,24 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
   /**
    * モジュール id → その URI 空間を読む口（要件 C14）。
    *
-   * **繋ぐのは in-process のものだけ。** subprocess のものは
-   * 立ち上げ方が違うので、要るようになってから足す——
-   * いま繋がないものは 404 で**繋がっていないと言う**（黙って空を返さない・規則2）。
+   * **境界に関わらず繋ぐ。** 契約は MCP なので、in-process でも subprocess でも
+   * 同じ `readResource` で読める（要件 C8b）——**TypeScript でないモジュールが
+   * 自分の URI 空間を持てる**ことが、要件 C6 の中身の半分である。
+   *
+   * 繋げなかったものは黙って落とさず、**理由を覚えておいて 404 に載せる**（規則2）。
    */
   const resourceCallers = new Map<string, ToolCaller>();
+  const resourceFailures = new Map<string, string>();
   for (const spec of options.modules) {
-    if (spec.kind !== 'in-process') continue;
-    void connectInProcess(spec.server).then((caller) => resourceCallers.set(spec.name, caller));
+    const connect =
+      spec.kind === 'in-process'
+        ? connectInProcess(spec.server)
+        : connectSubprocess(spec.command, spec.args ?? []);
+    void connect.then(
+      (caller) => resourceCallers.set(spec.name, caller),
+      (cause: unknown) =>
+        resourceFailures.set(spec.name, cause instanceof Error ? cause.message : String(cause)),
+    );
   }
 
   const server = createServer((req, res) => {
@@ -283,6 +317,50 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
     }
 
     /**
+     * `sandboxed` な面の中身を配る（要件 C1・C6、決定20）。
+     *
+     * **JS を丸ごと HTML に入れて返す。** 別ファイルにすると、iframe の側が
+     * それを取りに来ることになるが、**`allow-same-origin` を渡していない iframe は
+     * 生成元が不透明**なので、素直に取れない。入れてしまえば取りに行く必要が無い。
+     *
+     * **CSP でも縛る。** iframe の `sandbox` 属性と二重になるが、
+     * 片方が外れたときにもう片方が残る——安全は1枚では持たない。
+     */
+    if (req.method === 'GET' && url.pathname.startsWith('/api/modules/')) {
+      const [, , , moduleId, tail] = url.pathname.split('/');
+      if (tail !== 'view' || moduleId === undefined) {
+        json(res, 404, { error: `見つからない: ${url.pathname}` });
+        return;
+      }
+      const manifest = (options.manifests ?? []).find((m) => m.id === moduleId);
+      if (manifest?.gui === undefined) {
+        json(res, 404, { error: `${moduleId} は画面を持ち込んでいない` });
+        return;
+      }
+      if (manifest.gui.kind !== 'sandboxed') {
+        // in-page のものは束ねの中に在る。**ここから配らない**（配ると経路が2つになる）。
+        json(res, 400, { error: `${moduleId} の面は ${manifest.gui.kind}——ここからは配らない` });
+        return;
+      }
+
+      const source = await readFile(path.resolve(manifest.gui.entry), 'utf8').catch(() => null);
+      if (source === null) {
+        // 握りつぶさない（規則2）。**空の面を返さない**——何も出ない画面になる。
+        json(res, 404, { error: `面の実体が読めない: ${manifest.gui.entry}` });
+        return;
+      }
+
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        // 取りに行ける先を1つも持たせない。**渡されたものだけを描く。**
+        'content-security-policy':
+          "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'",
+      });
+      res.end(sandboxShell(source));
+      return;
+    }
+
+    /**
      * どの URI をどの面で開くか（要件 C1・C14、決定20）。
      *
      * **台帳から導くだけ。** 画面側が自分で表を持つと、載っているモジュールと
@@ -329,9 +407,13 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
 
       const caller = resourceCallers.get(owner);
       if (caller === undefined) {
-        // 握りつぶさない（規則2）。**誰が持っているはずだったかを言う。**
+        // 握りつぶさない（規則2）。**繋がらなかったなら、その理由まで言う。**
+        const why = resourceFailures.get(owner);
         json(res, 404, {
-          error: `${owner} は繋がっていない（この banto に載っていないモジュールの uri）`,
+          error:
+            why === undefined
+              ? `${owner} は繋がっていない（この banto に載っていないモジュールの uri）`
+              : `${owner} に繋がらなかった: ${why}`,
         });
         return;
       }

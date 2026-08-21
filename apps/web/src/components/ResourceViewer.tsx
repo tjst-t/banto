@@ -4,6 +4,7 @@ import { AlertTriangle, Loader2, RefreshCw, X } from 'lucide-react';
 import { ScrollArea } from './ui/scroll-area';
 import { fetchResource, fetchViews } from '../lib/api';
 import { inPageView } from '../views/registry';
+import { SandboxedView } from '../views/SandboxedView';
 import type { ResourceResponse, ViewAssignment } from '../lib/types';
 
 /**
@@ -129,12 +130,14 @@ function renderBody(assignment: ViewAssignment | null, resource: ResourceRespons
   }
 
   if (assignment?.kind === 'sandboxed') {
+    // **閉じ込めて走らせる**（決定20）。ページの権限は渡らない。
     return (
-      <div className="m-3 rounded-md border border-waiting/40 bg-waiting-soft px-3 py-2 text-xs text-ink">
-        {assignment.moduleId} の面は sandboxed（iframe）で走る約束だが、
-        <strong>その実行はまだ実装していない</strong>。素のまま出す：
-        <pre className="mt-2 whitespace-pre-wrap break-words font-mono">{resource.text}</pre>
-      </div>
+      <SandboxedView
+        moduleId={assignment.moduleId}
+        uri={resource.uri}
+        text={resource.text}
+        mimeType={resource.mimeType}
+      />
     );
   }
 

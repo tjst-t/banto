@@ -5,6 +5,18 @@
   "mcp": {
     "kind": "subprocess",
     "command": "python3",
-    "args": ["modules/hello-py/server.py"]
+    "args": [
+      "modules/hello-py/server.py"
+    ]
+  },
+  "gui": {
+    "kind": "sandboxed",
+    "entry": "modules/hello-py/view.js",
+    "views": [
+      {
+        "uriPrefix": "banto://hello-py/greeting/",
+        "title": "挨拶"
+      }
+    ]
   }
 }

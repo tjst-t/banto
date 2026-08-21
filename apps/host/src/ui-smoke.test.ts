@@ -23,7 +23,7 @@
  * **知らないイベントに落ちた印（「未対応のイベント」）が 0**。
  */
 
-import { access, mkdtemp, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -136,6 +136,15 @@ beforeAll(async () => {
     mimeType: 'text/markdown',
     note: '書き足しました',
   });
+  // **TypeScript でないモジュールが指したもの**（要件 C6・決定20）。
+  await log.append({
+    type: 'reference.recorded',
+    threadId: 't1',
+    uri: 'banto://hello-py/greeting/banto',
+    name: 'banto への挨拶',
+    mimeType: 'text/plain',
+    note: 'Python から返している',
+  });
   await log.append({ type: 'thread.status', threadId: 't1', status: 'done' });
 
   // **fs を本物で載せる。** 指された URI を実際に読ませないと、
@@ -144,13 +153,24 @@ beforeAll(async () => {
   await writeFile(path.join(fsRoot, 'note.md'), 'みかんと書いてある\n', 'utf8');
   process.env['BANTO_FS_ROOT'] = fsRoot;
   const { fsModule } = await import('@banto/module-fs');
+  const helloPyManifest = JSON.parse(
+    await readFile(path.resolve('modules/hello-py/manifest.json'), 'utf8'),
+  ) as Parameters<typeof startServer>[0]['manifests'] extends readonly (infer M)[] | undefined
+    ? M
+    : never;
 
   server = startServer({
     dataDir,
     port: 0,
-    modules: [{ name: fsModule.manifest.id, kind: 'in-process', server: fsModule.createServer() }],
+    modules: [
+      { name: fsModule.manifest.id, kind: 'in-process', server: fsModule.createServer() },
+      // **本物の Python を繋ぐ**（要件 C6）。偽物だと、この試験は何も証明しない。
+      { name: 'hello-py', kind: 'subprocess', command: 'python3', args: ['modules/hello-py/server.py'] },
+    ],
     // 画面の割り当ては台帳から導く（決定20）。渡さないと汎用の面に落ちる。
-    manifests: [fsModule.manifest],
+    // **hello-py も載せる**——subprocess で TypeScript でもないモジュールが
+    // `sandboxed` な面を持ち込めることが、要件 C6 の中身である。
+    manifests: [fsModule.manifest, helloPyManifest],
     toolsByModule: new Map(),
     model: 'claude-haiku-4-5',
     webRoot: WEB_ROOT,
@@ -422,12 +442,12 @@ describe('画面の煙試験（本物のブラウザ）', () => {
     try {
       await page.goto(origin, { waitUntil: 'networkidle' });
       await openThread(page, '煙試験');
-      await page.waitForSelector('[data-reference]', { timeout: 15_000 });
+      await page.waitForSelector('[data-reference="banto://fs/file/note.md"]', { timeout: 15_000 });
 
       // **押すまでは中身を読みに行っていない。**
       expect(await page.locator('[data-resource-viewer]').count()).toBe(0);
 
-      await page.locator('[data-reference]').click();
+      await page.locator('[data-reference="banto://fs/file/note.md"]').click();
       await page.waitForSelector('[data-resource-viewer]', { timeout: 15_000 });
       // fs モジュールが本当に読んだ中身が出る（seed で書いたファイル）。
       await page.waitForSelector('text=みかんと書いてある', { timeout: 15_000 });
@@ -479,6 +499,43 @@ describe('画面の煙試験（本物のブラウザ）', () => {
     }
   }, 120_000);
 
+  /**
+   * **第三者と同じ立場のモジュールが、画面を持ち込む**（要件 C6・決定20）。
+   *
+   * `hello-py` は subprocess で TypeScript でもないので、規則上 `in-page` を
+   * 名乗れない。**閉じ込めた iframe の中で走り、それでも中身を描ける**
+   * ——ここが C6（第三者が中核無変更で画面を持てる）の実物である。
+   */
+  it('sandboxed な面が、閉じ込められたまま描かれる', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await page.waitForSelector('[data-thread-column]', { timeout: 15_000 });
+      await openThread(page, '煙試験');
+      await page.waitForSelector('[data-reference="banto://hello-py/greeting/banto"]', {
+        timeout: 15_000,
+      });
+      await page.locator('[data-reference="banto://hello-py/greeting/banto"]').click();
+      await page.waitForSelector('[data-sandboxed-view="hello-py"]', { timeout: 15_000 });
+
+      const frame = page.frameLocator('[data-sandboxed-view="hello-py"] iframe');
+      // Python が返した中身が、モジュールの面で描かれている。
+      await frame.locator('text=Hello, banto!').waitFor({ timeout: 15_000 });
+      await frame.locator('text=/hello-py の面（sandboxed）/').waitFor({ timeout: 15_000 });
+
+      // **閉じ込めが効いていることを、中から見せる**（決定20）。
+      // `allow-same-origin` を渡していないので、cookie は届かない。
+      await frame.locator('text=/cookie は 見えない/').waitFor({ timeout: 15_000 });
+    } finally {
+      await browser.close();
+    }
+  }, 120_000);
+
   it('無い静的ファイルは 404。index.html にすり替えない（規則2）', async () => {
     if (!built) throw new Error('画面がビルドされていないので測れない');
     const res = await fetch(`${origin}/assets/does-not-exist.js`);
@@ -487,9 +544,15 @@ describe('画面の煙試験（本物のブラウザ）', () => {
   });
 });
 
-/** 会話を1本開く。**選ぶのではなく開く**ので、開いたものは並ぶ（要件 A2）。 */
+/**
+ * 会話を1本開く。**選ぶのではなく開く**ので、開いたものは並ぶ（要件 A2）。
+ *
+ * **末尾で合わせる。** 前の試験が「◯◯ から分岐」を作るので、
+ * 前方一致だと2件に当たって（strict mode で）止まる——
+ * 試験どうしが同じログを共有していることの現れである。
+ */
 async function openThread(page: import('playwright').Page, title: string): Promise<void> {
   await page.getByRole('combobox').click();
-  await page.getByRole('option', { name: new RegExp(title) }).click();
+  await page.getByRole('option', { name: new RegExp(`${title}$`) }).click();
   await page.waitForTimeout(200);
 }
