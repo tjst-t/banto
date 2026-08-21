@@ -21,6 +21,7 @@
   },
   "devDependencies": {
     "@banto/module-env-docker": "*",
-    "@banto/module-publish-none": "*"
+    "@banto/module-publish-none": "*",
+    "@banto/module-worker": "*"
   }
 }

@@ -24,6 +24,9 @@
       "path": "../../modules/publish-none"
     },
     {
+      "path": "../../modules/worker"
+    },
+    {
       "path": "../runner"
     },
     {

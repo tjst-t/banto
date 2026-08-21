@@ -194,6 +194,24 @@ describe('要件 B の受け入れ', () => {
     expect(stdout).toContain('gamma.txt');
   }, 60_000);
 
+  /**
+   * **平行数を上げた機構だけを見る**（規則6）。F4 の計測で
+   * 「6件中3件しか入らない」回があり、そこは実装者が LLM だったので
+   * **機構が壊れているのか、依存がぶれたのかが分からなかった。**
+   * ここは実装者を決まった動きにしてあるので、落ちたら機構の問題である。
+   */
+  it('6件を平行数6で投げても、6件とも入る', async () => {
+    const f = factory({ maxConcurrent: 6 });
+    await Promise.all(
+      Array.from({ length: 6 }, (_, i) => request(f, `n${i}`)),
+    );
+
+    await f.advanceAll();
+
+    for (let i = 0; i < 6; i += 1) expect(await inMain(`n${i}.txt`)).toBe(true);
+    expect((await log.read()).filter((e) => e.type === 'run.failed')).toEqual([]);
+  }, 120_000);
+
   it('1つ失敗させても、他の2つは進む', async () => {
     const f = factory({ implementer: implementer(new Set(['beta'])) });
     for (const n of ['alpha', 'beta', 'gamma']) await request(f, n);
