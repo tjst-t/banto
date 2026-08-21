@@ -4,26 +4,33 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '../../lib/cn';
 
 /**
- * 状態バッジ。**色だけに頼らない**——アイコン・文言と対にして使う
- * （dataviz スキルの status 色の規則。色弱の読み手も文言で判別できる）。
+ * 状態の札。**色だけに頼らない**——文言と必ず対で使う（色弱の読み手も判別できる）。
+ *
+ * **丸くしない**（角は3段だけ・要件 E9）。丸い札は数を入れる器のときだけ。
+ * 塗るのは `attention`（あなたの番）だけで、他は淡い地に字を置く。
  */
 const badgeVariants = cva(
-  'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
+  'inline-flex items-center gap-1 rounded-seal px-1.5 py-0.5 text-note font-medium',
   {
     variants: {
       tone: {
-        neutral: 'bg-surface-sunken text-ink-secondary',
+        neutral: 'bg-paper-sunken text-ink-secondary',
         accent: 'bg-accent-soft text-accent',
-        waiting: 'bg-waiting-soft text-waiting',
-        good: 'bg-good-soft text-good',
-        critical: 'bg-critical-soft text-critical',
+        attention: 'bg-attention text-on-attention',
+        caution: 'bg-caution-soft text-caution',
+        done: 'bg-done-soft text-done',
+        stopped: 'bg-stopped-soft text-stopped',
       },
     },
     defaultVariants: { tone: 'neutral' },
   },
 );
 
-export interface BadgeProps extends HTMLAttributes<HTMLSpanElement>, VariantProps<typeof badgeVariants> {}
+export type BadgeTone = NonNullable<VariantProps<typeof badgeVariants>['tone']>;
+
+export interface BadgeProps
+  extends HTMLAttributes<HTMLSpanElement>,
+    VariantProps<typeof badgeVariants> {}
 
 export function Badge({ className, tone, ...props }: BadgeProps) {
   return <span className={cn(badgeVariants({ tone }), className)} {...props} />;

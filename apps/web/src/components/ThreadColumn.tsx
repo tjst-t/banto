@@ -19,12 +19,12 @@ interface OpenResource {
 
 const STATUS_LABEL: Record<
   ThreadSummary['status'],
-  { text: string; tone: 'accent' | 'good' | 'critical' | 'waiting' }
+  { text: string; tone: 'accent' | 'done' | 'stopped' | 'attention' }
 > = {
   working: { text: '作業中', tone: 'accent' },
-  done: { text: '完了', tone: 'good' },
-  blocked: { text: '停止', tone: 'critical' },
-  'waiting-on-human': { text: '判断待ち', tone: 'waiting' },
+  done: { text: '完了', tone: 'done' },
+  blocked: { text: '停止', tone: 'stopped' },
+  'waiting-on-human': { text: '判断待ち', tone: 'attention' },
 };
 
 /**
@@ -69,14 +69,14 @@ export function ThreadColumn({
     <section
       // 画面の試験が列を数えるための印。**見た目には効かない。**
       data-thread-column={thread.id}
-      className="flex min-h-0 min-w-0 flex-col border-border [&:not(:first-child)]:border-l"
+      className="flex min-h-0 min-w-0 flex-col border-rule [&:not(:first-child)]:border-l"
     >
       {/* **どの会話の列かを、どの面でも出す。** 面を切り替えたときに
           見出しが消えると、並べたとたんにどれがどれだか分からなくなる。 */}
-      <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+      <div className="flex items-center justify-between gap-2 border-b border-rule px-3 py-2">
         <div className="min-w-0">
-          <h2 className="truncate text-sm font-semibold text-ink">{thread.title}</h2>
-          <p className="text-[11px] text-ink-muted">
+          <h2 className="truncate text-body font-semibold text-ink">{thread.title}</h2>
+          <p className="text-note text-ink-muted">
             ターン {thread.turnCount} ・ base v{thread.baseVersion}
             {thread.forkedFrom !== null ? ' ・ 分岐' : ''}
           </p>
@@ -84,7 +84,7 @@ export function ThreadColumn({
         <Badge tone={status.tone}>{status.text}</Badge>
       </div>
 
-      <div className="flex items-center gap-2 border-b border-border bg-surface px-3 py-1.5">
+      <div className="flex items-center gap-2 border-b border-rule bg-paper-raised px-3 py-1.5">
         <Tabs value={pane} onValueChange={(v) => setPane(v as Pane)}>
           <TabsList>
             <TabsTrigger value="conversation">会話</TabsTrigger>

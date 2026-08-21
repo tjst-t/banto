@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, GitFork, Loader2 } from 'lucide-react';
 
 import { ScrollArea } from './ui/scroll-area';
+import { Button } from './ui/button';
 import { appendBase, fetchBase } from '../lib/api';
 import type { BaseResponse } from '../lib/types';
 
@@ -57,26 +58,26 @@ export function BasePanel({ threadId, onChanged }: { threadId: string; onChanged
 
   if (base === null) {
     return (
-      <div className="flex flex-1 items-center justify-center gap-2 p-6 text-xs text-ink-muted">
+      <div className="flex flex-1 items-center justify-center gap-2 p-6 text-meta text-ink-muted">
         {error === null ? (
           <>
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             読み込み中…
           </>
         ) : (
-          <span className="text-critical">読めませんでした: {error}</span>
+          <span className="text-stopped">読めませんでした: {error}</span>
         )}
       </div>
     );
   }
 
   const ratio = base.limit === 0 ? 0 : base.characters / base.limit;
-  const tone = ratio >= 1 ? 'bg-critical' : ratio >= 0.8 ? 'bg-waiting' : 'bg-accent';
+  const tone = ratio >= 1 ? 'bg-stopped' : ratio >= 0.8 ? 'bg-attention' : 'bg-accent';
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="border-b border-border px-4 py-2.5">
-        <div className="flex items-baseline justify-between gap-2 text-[11px] text-ink-secondary">
+      <div className="border-b border-rule px-4 py-2.5">
+        <div className="flex items-baseline justify-between gap-2 text-note text-ink-secondary">
           <span>
             第 {base.baseVersion} 版 ・ {base.lines.length} 行
             {base.inherited > 0 && (
@@ -84,11 +85,11 @@ export function BasePanel({ threadId, onChanged }: { threadId: string; onChanged
             )}
           </span>
           {/* **残りを常に見せる**（要件 R8）。拒否されて初めて知る、を避ける。 */}
-          <span className={ratio >= 0.8 ? 'text-waiting' : 'text-ink-muted'}>
+          <span className={ratio >= 0.8 ? 'text-attention' : 'text-ink-muted'}>
             {base.characters.toLocaleString()} / {base.limit.toLocaleString()} 文字
           </span>
         </div>
-        <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-border">
+        <div className="mt-1.5 h-1 w-full overflow-hidden rounded-seal bg-paper-sunken">
           <div
             className={`h-full ${tone}`}
             style={{ width: `${Math.min(100, ratio * 100).toFixed(1)}%` }}
@@ -98,7 +99,7 @@ export function BasePanel({ threadId, onChanged }: { threadId: string; onChanged
 
       <ScrollArea className="min-h-0 flex-1">
         {base.lines.length === 0 ? (
-          <p className="p-6 text-center text-xs text-ink-muted">
+          <p className="p-6 text-center text-meta text-ink-muted">
             まだ何も決まっていません。ここに足したものは、以後のターンすべてに効きます。
           </p>
         ) : (
@@ -106,13 +107,13 @@ export function BasePanel({ threadId, onChanged }: { threadId: string; onChanged
             {base.lines.map((line, i) => (
               <li
                 key={`${i}-${line.slice(0, 24)}`}
-                className={`rounded-md border px-3 py-2 text-xs ${
+                className={`rounded-ctl px-3 py-2 text-meta ${
                   i < base.inherited
-                    ? 'border-border bg-paper text-ink-secondary'
-                    : 'border-border bg-surface text-ink'
+                    ? 'bg-paper text-ink-secondary shadow-[inset_2px_0_0_var(--rule-strong)]'
+                    : 'bg-paper-raised text-ink shadow-rest'
                 }`}
               >
-                <span className="mr-2 font-mono text-[10px] text-ink-muted">v{i + 1}</span>
+                <span className="mr-2 font-mono text-note text-ink-muted">v{i + 1}</span>
                 {i < base.inherited && (
                   <GitFork className="mr-1 inline h-3 w-3 align-[-1px] text-ink-muted" />
                 )}
@@ -124,14 +125,14 @@ export function BasePanel({ threadId, onChanged }: { threadId: string; onChanged
       </ScrollArea>
 
       {error !== null && (
-        <div className="mx-3 mb-2 flex items-start gap-2 rounded-md border border-critical/30 bg-critical-soft px-3 py-2 text-[11px] text-critical">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <div className="mx-3 mb-2 flex items-start gap-2 rounded-ctl bg-stopped-soft px-3 py-2 text-note text-ink shadow-[inset_2px_0_0_var(--stopped)]">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-stopped" />
           {/* **断られた理由をそのまま出す。** 自動で会話を切り替えない（決定4）。 */}
           <p className="whitespace-pre-wrap">{error}</p>
         </div>
       )}
 
-      <div className="flex gap-1.5 border-t border-border p-3">
+      <div className="flex gap-1.5 border-t border-rule p-3">
         <input
           value={text}
           disabled={busy}
@@ -140,16 +141,16 @@ export function BasePanel({ threadId, onChanged }: { threadId: string; onChanged
             if (e.key === 'Enter' && !e.nativeEvent.isComposing) void send();
           }}
           placeholder="決まったことを1行で足す"
-          className="min-w-0 flex-1 rounded border border-border bg-surface px-2 py-1.5 text-xs text-ink placeholder:text-ink-muted disabled:opacity-50"
+          className="h-[var(--h-ctl-sm)] min-w-0 flex-1 rounded-ctl border border-rule bg-paper px-2 text-meta text-ink outline-none placeholder:text-ink-muted focus:border-accent disabled:opacity-50"
         />
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="sm"
           disabled={busy || text.trim() === ''}
           onClick={() => void send()}
-          className="rounded border border-border px-2 py-1.5 text-xs text-ink-secondary hover:border-accent hover:text-accent disabled:opacity-40"
         >
           足す
-        </button>
+        </Button>
       </div>
     </div>
   );

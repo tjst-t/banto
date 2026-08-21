@@ -1,0 +1,133 @@
+/**
+ * **色・字・余白の唯一の出どころ**（要件 E9）。
+ *
+ * ここに無い値を面が持つことを禁じる。これは好みの話ではなく、**前の実装が
+ * 実際に失敗したところ**である——面ごとに値を作った結果、字が 17 段・枠が 107 箇所・
+ * 色が 39 種になり、「製品に見えない」の正体がそれだった。v3 は同じ状態へ戻っていた
+ * （`text-[10px]` `text-[11px]` `text-xs` `text-sm` が混在していた）。
+ *
+ * 明暗は `<html data-theme="...">` の 1 属性だけで切り替わる（要件 E7）。
+ * **面の側に分岐を書かない**——面が明暗を知っていると、足すたびに両方を直す必要が出る。
+ *
+ * ## 色は5役。塗ってよいのは1色だけ
+ *
+ * | 役 | 意味 | 塗り |
+ * |---|---|---|
+ * | `accent` | banto が動いている・選ばれている | 不可 |
+ * | `attention` | **あなたの番**（判断待ち） | **唯一、面を塗ってよい** |
+ * | `stopped` | 止まった（失敗・エラー） | 不可 |
+ * | `caution` | 気をつける（残りが少ない・逼迫） | 不可 |
+ * | `done` | 済んだ・繋がっている | 不可 |
+ *
+ * 他の役は**点・左罫・字**にしか出さない。だから画面でいちばん強い色は、
+ * 常に「あなたの番」を指す。エラーを赤にすると、この関係が崩れる
+ * ——**止まったものは紫**にしてあるのはそのため。
+ */
+
+/* ══ 明 ═══════════════════════════════════════════════════════════════════ */
+:root,
+:root[data-theme='light'] {
+  /* 紙は3段。枠を引かず、濃さの差で面を分ける */
+  --paper: #efebe1; /* 地 */
+  --paper-raised: #f8f6f0; /* 立つ面（上段・カード・会話の器） */
+  --paper-sunken: #e4dfd2; /* 沈む面（入力・溝・二次ボタン） */
+  --rule: #dcd6c7; /* 面と面が本当に接するところにだけ引く線 */
+  --rule-strong: #c6bfab;
+
+  /* 墨は3段 */
+  --ink: #191712;
+  --ink-secondary: #4a463d;
+  --ink-muted: #8a8474;
+
+  --accent: #1e3a5f;
+  --accent-soft: #e3e7ee;
+  --attention: #b03a26;
+  --attention-soft: #f5e4df;
+  --on-attention: #ffffff; /* 朱の上に載せる字。明暗で反転する */
+  --stopped: #5a3e63;
+  --stopped-soft: #e4dddf; /* 淡い地は白からでなく紙から作る（白から作ると地から浮く） */
+  --caution: #a05a12;
+  --caution-soft: #f7eddd;
+  --done: #4a6b45;
+  --done-soft: #e7ede5;
+
+  --code-bg: #26221a;
+  --code-ink: #e4dfd2;
+
+  --elev-rest: 0 1px 2px rgba(25, 23, 18, 0.06);
+  --elev-pop: 0 8px 24px rgba(25, 23, 18, 0.14);
+
+  color-scheme: light;
+  --scroll-thumb: #cec7b4;
+}
+
+/* ══ 暗 — 同じ役を裏返しただけ。役は増えも減りもしない ═══════════════════ */
+:root[data-theme='dark'] {
+  --paper: #14161a;
+  --paper-raised: #1b1e24;
+  --paper-sunken: #262b33;
+  --rule: #2e333c;
+  --rule-strong: #444b57;
+
+  --ink: #e9e7e2;
+  --ink-secondary: #a7acb5;
+  --ink-muted: #6e747e;
+
+  --accent: #8fb0d9;
+  --accent-soft: rgba(143, 176, 217, 0.15);
+  --attention: #e4674f;
+  --attention-soft: rgba(228, 103, 79, 0.15);
+  --on-attention: #23100b; /* 暗色の朱は明るいので、白を載せると読めない */
+  --stopped: #a98cb4;
+  --stopped-soft: rgba(169, 140, 180, 0.15);
+  --caution: #e0a24b;
+  --caution-soft: rgba(224, 162, 75, 0.15);
+  --done: #7fb08a;
+  --done-soft: rgba(127, 176, 138, 0.15);
+
+  --code-bg: #0f1114;
+  --code-ink: #d5d2cb;
+
+  --elev-rest: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --elev-pop: 0 8px 24px rgba(0, 0, 0, 0.45);
+
+  color-scheme: dark;
+  --scroll-thumb: #39404b;
+}
+
+/**
+ * 明暗に依らない値。**段を増やさない**ことがここの仕事である。
+ *
+ * 字は6段だけ。中間を作らない——`t-body` と `t-read` の間が欲しくなったら、
+ * それは字の大きさで解く問題ではない（余白か、置き方の問題である）。
+ */
+:root {
+  --t-note: 11px;
+  --t-meta: 12px;
+  --t-body: 13px;
+  --t-read: 15px;
+  --t-head: 19px;
+  --t-title: 26px;
+
+  --lh-body: 1.75;
+  --lh-read: 1.95; /* 相手の言葉。明朝は詰めると読めない */
+
+  /* 声の主が書体で分かる（要件 E6）。明朝は**相手の発話にだけ**使う */
+  --type-ui: 'Zen Kaku Gothic New', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP',
+    system-ui, sans-serif;
+  --type-read: 'Shippori Mincho', 'Hiragino Mincho ProN', 'Yu Mincho', YuMincho, serif;
+  --type-mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
+
+  /* 角は3つだけ。丸ボタン（999px）は使わない。例外は数の札だけ */
+  --r-seal: 2px;
+  --r-ctl: 6px;
+  --r-face: 10px;
+
+  /* 背丈も役。ここを変えれば画面全体の密度が変わる */
+  --h-bar: 52px; /* 上段 */
+  --h-ctl: 30px; /* ふつうの部品（ボタン・入力） */
+  --h-ctl-sm: 26px; /* 小さい部品（札・タブ） */
+
+  /* 読む幅の上限。**1行が長すぎると目が戻る先を見失う** */
+  --w-read: 720px;
+}

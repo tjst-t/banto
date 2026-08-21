@@ -45,7 +45,7 @@ export function SettingsPanel() {
 
   if (error !== null) {
     return (
-      <div className="m-3 flex items-start gap-2 rounded-md border border-critical/30 bg-critical-soft px-3 py-2 text-xs text-critical">
+      <div className="m-3 flex items-start gap-2 rounded-ctl border border-stopped/30 bg-stopped-soft px-3 py-2 text-meta text-stopped">
         <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <p className="whitespace-pre-wrap">台帳が読めません: {error}</p>
       </div>
@@ -54,7 +54,7 @@ export function SettingsPanel() {
 
   if (modules === null) {
     return (
-      <div className="flex flex-1 items-center justify-center gap-2 text-xs text-ink-muted">
+      <div className="flex flex-1 items-center justify-center gap-2 text-meta text-ink-muted">
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
         読み込み中…
       </div>
@@ -68,34 +68,34 @@ export function SettingsPanel() {
           <li
             key={m.id}
             data-module-row={m.id}
-            className="rounded-md border border-border bg-surface p-3"
+            className="rounded-ctl border border-rule bg-paper-raised p-3"
           >
             <div className="flex items-baseline justify-between gap-2">
-              <span className="font-mono text-xs font-semibold text-ink">{m.id}</span>
+              <span className="font-mono text-meta font-semibold text-ink">{m.id}</span>
               {/* **境界は常時表示**（要件 C8c）。折りたたまない。 */}
-              <span className="font-mono text-[10px] text-ink-muted">
+              <span className="font-mono text-note text-ink-muted">
                 {m.isolation}
                 {m.gui !== null && ` ・ 画面 ${m.gui.kind}`}
                 {m.handlesSecrets && ' ・ 鍵を扱う'}
               </span>
             </div>
-            <p className="mt-0.5 text-[11px] text-ink-secondary">{m.description}</p>
+            <p className="mt-0.5 text-note text-ink-secondary">{m.description}</p>
 
             {m.provides.length > 0 && (
-              <p className="mt-1 text-[10px] text-ink-muted">役割: {m.provides.join('・')}</p>
+              <p className="mt-1 text-note text-ink-muted">役割: {m.provides.join('・')}</p>
             )}
 
             {/* **外したら何が壊れるか**（要件 C12）。押す前に読める。 */}
             <p
               data-impact={m.id}
-              className={`mt-2 flex items-start gap-1.5 rounded border px-2 py-1.5 text-[11px] ${
+              className={`mt-2 flex items-start gap-1.5 rounded border px-2 py-1.5 text-note ${
                 m.impact.breakages.length === 0
-                  ? 'border-border bg-paper text-ink-muted'
-                  : 'border-waiting/40 bg-waiting-soft text-ink'
+                  ? 'border-rule bg-paper text-ink-muted'
+                  : 'border-attention/40 bg-attention-soft text-ink'
               }`}
             >
               {m.impact.breakages.length > 0 && (
-                <ShieldAlert className="mt-0.5 h-3 w-3 shrink-0 text-waiting" />
+                <ShieldAlert className="mt-0.5 h-3 w-3 shrink-0 text-attention" />
               )}
               無効化すると——{m.impact.summary}
             </p>
@@ -105,7 +105,7 @@ export function SettingsPanel() {
                 type="button"
                 data-settings-of={m.id}
                 onClick={() => setOpened({ uri: m.settingsUri as string, name: `${m.id} の設定` })}
-                className="mt-2 text-[11px] font-medium text-accent hover:underline"
+                className="mt-2 text-note font-medium text-accent hover:underline"
               >
                 このモジュールの設定を開く
               </button>
@@ -116,7 +116,7 @@ export function SettingsPanel() {
 
       {/* できないことを、できるかのように見せない（規則2）。
           **JSX は markdown を描かない**——強調は要素で書く。 */}
-      <p className="px-4 pb-4 text-[10px] leading-relaxed text-ink-muted">
+      <p className="px-4 pb-4 text-note leading-relaxed text-ink-muted">
         無効化する口はまだありません。ここに出しているのは
         <strong className="font-semibold text-ink-secondary">外したときに何が壊れるか</strong>
         で、実際に外すのは起動時の設定です——実行中に依存を組み替えると、

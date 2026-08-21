@@ -3,14 +3,60 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="color-scheme" content="light" />
     <title>Banto</title>
+
+    <!--
+      **明暗を、描く前に決める**（要件 E7）。
+
+      React が動いてから付けると、**一瞬だけ明るい画面が出てから暗くなる**
+      ——暗いほうを選んでいる人には、開くたびに目を刺す。だから
+      `<head>` の中で、描画が始まる前に属性を付ける。
+
+      出どころは1つ（localStorage）。**保存が無ければ端末の設定に従う**
+      ——選んでいない人に、こちらの好みを押し付けない。
+    -->
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('banto.theme');
+          var dark =
+            saved === 'dark' ||
+            (saved === null && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+        } catch (e) {
+          // localStorage が使えない（プライベート窓など）。**明で出す。**
+          document.documentElement.dataset.theme = 'light';
+        }
+      })();
+    </script>
+
+    <!--
+      意匠の書体（要件 E6）。声の主が書体で分かることは意匠の中身そのもので、
+      端末に無い書体だと成り立たない。読めなければトークンの後段（Hiragino 等）へ落ちる。
+
+      **描画を待たせない読み方にしてある**（前の実装で実際に踏んだ）。
+      素の `rel="stylesheet"` は**描画をブロックする**——日本語の書体の @font-face は
+      合わせて 800KB を超え、回線が遅いと**画面が出るまで丸ごと待たされる。**
+      「繋がらなくても壊れない」つもりで書いてあったが、**繋がりが遅いときに壊れていた**
+      （落ちるのは失敗したときだけで、遅いときは待つ）。
+
+      `preload` で取りに行き、届いてから `stylesheet` に変える。初回描画は端末の書体で出て、
+      届いた瞬間に入れ替わる（`display=swap` と同じ考えを link にも適用する）。
+    -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
-      rel="stylesheet"
+      rel="preload"
+      as="style"
+      href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Shippori+Mincho:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      onload="this.onload=null;this.rel='stylesheet'"
     />
+    <noscript>
+      <link
+        rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Shippori+Mincho:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      />
+    </noscript>
   </head>
   <body>
     <div id="root"></div>

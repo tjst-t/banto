@@ -42,6 +42,23 @@ let server: ReturnType<typeof startServer> | null = null;
 let origin = '';
 let built = false;
 
+/** 書式つきの返事（要件 E4）。**LLM の出力は Markdown なので、描けないのは読めないのと同じ。** */
+const MARKDOWN_REPLY = `直しました。
+
+## 直したところ
+
+1. 変換確定の Enter で送らない
+2. 末尾に追従する
+
+| ファイル | 内容 |
+|---|---|
+| Composer.tsx | isComposing を見る |
+
+\`\`\`typescript
+if (e.nativeEvent.isComposing) return;
+\`\`\`
+`;
+
 beforeAll(async () => {
   built = await access(path.join(WEB_ROOT, 'index.html')).then(
     () => true,
@@ -144,6 +161,21 @@ beforeAll(async () => {
     name: 'banto への挨拶',
     mimeType: 'text/plain',
     note: 'Python から返している',
+  });
+  // **書式つきの返事**（要件 E4）。素の文字列で出していると、ここが記号のまま並ぶ。
+  await log.append({
+    type: 'message.recorded',
+    threadId: 't1',
+    queryId: 'q2',
+    role: 'user',
+    text: '書式つきで答えてください',
+  });
+  await log.append({
+    type: 'message.recorded',
+    threadId: 't1',
+    queryId: 'q2',
+    role: 'assistant',
+    text: MARKDOWN_REPLY,
   });
   await log.append({ type: 'thread.status', threadId: 't1', status: 'done' });
 
@@ -568,6 +600,260 @@ describe('画面の煙試験（本物のブラウザ）', () => {
       await page.locator('[data-settings-of="fs"]').click();
       await page.waitForSelector('text=/fs モジュールの設定/', { timeout: 15_000 });
       await page.waitForSelector('text=/作業範囲の根/', { timeout: 15_000 });
+    } finally {
+      await browser.close();
+    }
+  }, 120_000);
+
+  /**
+   * **相手の言葉が Markdown として描かれる**（要件 E4）。
+   *
+   * ここまでは素の文字列で出していたので、**見出しも箇条も表も記号のまま**並んでいた。
+   * 「`##` という字が見えない」ではなく、**要素になっているか**で測る
+   * ——字面が消えるだけなら、消し方を間違えても気づけない。
+   */
+  it('相手の言葉が Markdown の要素になる（見出し・箇条・表・コード）', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await openThread(page, '煙試験');
+      await page.waitForSelector('.markdown h2', { timeout: 15_000 });
+
+      const md = page.locator('.markdown').last();
+      expect(await md.locator('h2').innerText()).toContain('直したところ');
+      // **番号つきの箇条**。印を消してしまうと、手順が「短い段落の列」になる。
+      expect(await md.locator('ol > li').count()).toBe(2);
+      expect(
+        await md.locator('ol').evaluate((el) => getComputedStyle(el).listStyleType),
+      ).toBe('decimal');
+      expect(await md.locator('table th').count()).toBe(2);
+
+      // コードに色が付いている（要件 E4）。shiki が描くと span が並ぶ。
+      await page.waitForSelector('.markdown pre.shiki', { timeout: 15_000 });
+      expect(await md.locator('pre.shiki span').count()).toBeGreaterThan(1);
+
+      // **写せる。** 押す口が在ることまで見る（色だけ付いても写せないと使えない）。
+      expect(await page.getByLabel('コードをコピー').count()).toBeGreaterThan(0);
+    } finally {
+      await browser.close();
+    }
+  }, 120_000);
+
+  /**
+   * **誰の言葉かが、書体と置き方で分かる**（要件 E6）。
+   *
+   * 色や札ではなく**書体**で分けているので、そこが崩れると「全部同じ声」に戻る。
+   */
+  it('相手の言葉は明朝＋印、人の言葉は角ゴシックの吹き出し', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await openThread(page, '煙試験');
+      await page.waitForSelector('[data-from="banto"]', { timeout: 15_000 });
+
+      const banto = page.locator('[data-from="banto"] .markdown').first();
+      const font = await banto.evaluate((el) => getComputedStyle(el).fontFamily);
+      expect(font).toContain('Shippori Mincho');
+
+      // 人の言葉は同じ書体では出ない（＝声が分かれている）。
+      const mine = page.locator('text=ユーザーの発言').first();
+      const mineFont = await mine.evaluate((el) => getComputedStyle(el).fontFamily);
+      expect(mineFont).not.toContain('Shippori Mincho');
+
+      // 印が在る（器を持たせない代わりに、誰の言葉かはこれが言う）。
+      expect(await page.locator('[data-from="banto"]').first().innerText()).toContain('番');
+    } finally {
+      await browser.close();
+    }
+  }, 120_000);
+
+  /**
+   * **会話は末尾に追従する**（要件 E5）。
+   *
+   * 開いた瞬間に**いちばん新しい発言が見えている**ことを測る。
+   * 追従が無いと、開くたびに自分でいちばん下まで運ぶことになる。
+   *
+   * **限界**：「遡って読んでいる間は飛ばない」の側は、ここでは測れていない
+   * ——途中でイベントを差し込む口が画面の外に無いため。仕掛け（`use-stick-to-bottom`）
+   * がその判定を持っている、というところまでしか言えない（規則1：測っていないことは言わない）。
+   */
+  it('開いた時点で、いちばん新しい発言が見えている', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    // **わざと低い窓**にして、会話が確実に溢れるようにする。
+    const page = await browser.newPage({ viewport: { width: 1280, height: 600 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await openThread(page, '煙試験');
+      await page.waitForSelector('.markdown pre.shiki', { timeout: 15_000 });
+      await page.waitForTimeout(600);
+
+      // 溢れていること自体を先に確かめる（溢れていなければ、この試験は何も言っていない）。
+      //
+      // **仕掛けのクラス名に頼らない。** 巻ける祖先を上へ辿って自分で見つける
+      // ——ライブラリが名前を変えても、この試験が測っているものは変わらない。
+      const overflow = await page.evaluate(() => {
+        let el: HTMLElement | null = document.querySelector<HTMLElement>('.markdown');
+        while (el !== null) {
+          const style = getComputedStyle(el);
+          if (
+            (style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+            el.scrollHeight > el.clientHeight
+          ) {
+            return {
+              scrollTop: el.scrollTop,
+              scrollHeight: el.scrollHeight,
+              clientHeight: el.clientHeight,
+            };
+          }
+          el = el.parentElement;
+        }
+        return null;
+      });
+      expect(overflow).not.toBeNull();
+      expect(overflow!.scrollHeight).toBeGreaterThan(overflow!.clientHeight);
+      // 下端に居る（数 px の誤差は許す）。
+      expect(overflow!.scrollHeight - overflow!.clientHeight - overflow!.scrollTop).toBeLessThan(8);
+    } finally {
+      await browser.close();
+    }
+  }, 120_000);
+
+  /**
+   * **変換確定の Enter で送らない**（要件 E8）。
+   *
+   * ここは不具合に近かった——**日本語を打つと、変換を確定するたびに送信されていた。**
+   * 「送信が始まったか」で測る（`/api/prompt` を叩いたか）。
+   */
+  it('変換中の Enter では送らない。確定後の Enter では送る', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+
+    const prompts: string[] = [];
+    page.on('request', (r) => {
+      if (r.url().includes('/api/prompt')) prompts.push(r.url());
+    });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await openThread(page, '煙試験');
+      const box = page.getByPlaceholder('メッセージを送る').first();
+      await box.fill('にほんご');
+
+      // **変換中の Enter**（IME が確定するときの押下）。
+      await box.evaluate((el) =>
+        el.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true }),
+        ),
+      );
+      await page.waitForTimeout(400);
+      expect(prompts).toEqual([]);
+      // **文面も消えていない**（消えていたら、送っていなくても打ち直しになる）。
+      expect(await box.inputValue()).toBe('にほんご');
+
+      // 確定後の Enter では送る。
+      await box.evaluate((el) =>
+        el.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: false }),
+        ),
+      );
+      await expect.poll(() => prompts.length, { timeout: 15_000 }).toBe(1);
+    } finally {
+      await browser.close();
+    }
+  }, 120_000);
+
+  /**
+   * **明暗を切り替えられ、選択が残る**（要件 E7）。
+   *
+   * 開き直しても暗いままであること（＝覚えていること）まで測る。
+   * 覚えないなら、暗いほうを選んでいる人は毎回選び直すことになる。
+   */
+  it('明暗を切り替えられ、開き直しても残る', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await page.waitForSelector('[data-theme-toggle]', { timeout: 15_000 });
+
+      const themeOf = () => page.evaluate(() => document.documentElement.dataset['theme']);
+      const before = await themeOf();
+      const bgBefore = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+
+      await page.locator('[data-theme-toggle]').click();
+      const after = await themeOf();
+      expect(after).not.toBe(before);
+      // **属性だけでなく、実際に地の色が変わっている。**
+      expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).not.toBe(
+        bgBefore,
+      );
+
+      await page.reload({ waitUntil: 'networkidle' });
+      expect(await themeOf()).toBe(after);
+    } finally {
+      await browser.close();
+    }
+  }, 120_000);
+
+  /**
+   * **字の段を数える**（要件 E9）。
+   *
+   * これは好みの話ではない。前の実装は自分の失敗を
+   * **「字 17 段・枠 107 箇所・色 39 種」**と記録しており、
+   * 「製品に見えない」の正体がそれだった。v3 も同じ状態に戻っていた
+   * （`text-[10px]` `text-[11px]` `text-xs` `text-sm` の混在）。
+   *
+   * **段の数は数えられる。** 数えられるものは、目視ではなく試験で守る。
+   */
+  it('画面に出ている字の段が、決めた6段を超えない', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await openThread(page, '煙試験');
+      await page.waitForSelector('.markdown h2', { timeout: 15_000 });
+
+      const sizes = await page.evaluate(() => {
+        const found = new Map<string, number>();
+        for (const el of document.querySelectorAll<HTMLElement>('body *')) {
+          // 文字が実際に出ているものだけ数える（空の器の段は誰にも見えない）。
+          const text = Array.from(el.childNodes).some(
+            (n) => n.nodeType === Node.TEXT_NODE && (n.textContent ?? '').trim() !== '',
+          );
+          if (!text || el.offsetParent === null) continue;
+          const size = getComputedStyle(el).fontSize;
+          found.set(size, (found.get(size) ?? 0) + 1);
+        }
+        return [...found.entries()].sort((a, b) => b[1] - a[1]);
+      });
+
+      // **数値を出す**（完了条件は「計測が走り、数値を返す」）。
+      console.log('字の段:', sizes.map(([s, n]) => `${s}×${n}`).join(' '));
+      expect(sizes.length).toBeLessThanOrEqual(6);
     } finally {
       await browser.close();
     }

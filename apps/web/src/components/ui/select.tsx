@@ -14,7 +14,7 @@ export const SelectTrigger = forwardRef<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      'flex h-9 w-full items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 text-sm text-ink outline-none hover:border-border-strong',
+      'flex h-[var(--h-ctl)] w-full items-center justify-between gap-2 rounded-ctl border border-rule bg-paper-raised px-2.5 text-meta text-ink outline-none hover:border-rule-strong',
       className,
     )}
     {...props}
@@ -37,7 +37,7 @@ export const SelectContent = forwardRef<
       position={position}
       sideOffset={4}
       className={cn(
-        'z-50 max-h-80 min-w-[--radix-select-trigger-width] overflow-hidden rounded-md border border-border bg-surface shadow-lg',
+        'z-50 max-h-80 min-w-[--radix-select-trigger-width] overflow-hidden rounded-ctl border border-rule bg-paper-raised shadow-pop',
         className,
       )}
       {...props}
@@ -55,7 +55,7 @@ export const SelectItem = forwardRef<
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
-      'relative flex cursor-pointer select-none items-center rounded px-2 py-1.5 pl-7 text-sm text-ink outline-none data-[highlighted]:bg-surface-sunken',
+      'relative flex cursor-pointer select-none items-center rounded-seal px-2 py-1.5 pl-7 text-meta text-ink outline-none data-[highlighted]:bg-paper-sunken',
       className,
     )}
     {...props}

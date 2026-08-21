@@ -1,7 +1,8 @@
-import { useEffect, useState, type CSSProperties } from 'react';
-import { AlertTriangle, Radio } from 'lucide-react';
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { AlertTriangle, Moon, Sun } from 'lucide-react';
 
 import { useBantoState } from './hooks/useBantoState';
+import { useTheme } from './hooks/useTheme';
 import { useThreadSessions } from './hooks/useThreadSessions';
 import { advanceRuns, createThread, forkThread, requestRun, resolveDecision } from './lib/api';
 import { ThreadPicker } from './components/ThreadPicker';
@@ -138,46 +139,43 @@ export function App() {
 
   return (
     <div className="flex h-dvh flex-col bg-paper">
-      <header className="relative flex items-center justify-between gap-3 border-b border-border bg-surface px-4 py-2.5">
+      <header className="relative flex h-[var(--h-bar)] shrink-0 items-center justify-between gap-3 border-b border-rule bg-paper-raised px-4">
         <div className="flex items-center gap-2">
-          <span className="font-mono text-sm font-semibold tracking-tight text-ink">banto</span>
+          <span className="text-read font-bold tracking-tight text-ink">banto</span>
+          {/* **繋がりは点だけで言う**（切れたことは分かる必要があるので消さない）。
+              色だけに頼らないので、文言も添える。 */}
           <span
-            className={`flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
-              error ? 'bg-critical-soft text-critical' : 'bg-good-soft text-good'
-            }`}
+            className="flex shrink-0 items-center gap-1.5 text-note text-ink-muted"
             title={error ?? '/api/state を取得できています'}
           >
-            <Radio className="h-2.5 w-2.5" />
-            {error ? '未接続' : 'live'}
+            <span
+              className={`h-1.5 w-1.5 shrink-0 rounded-seal ${error ? 'bg-stopped' : 'bg-done'}`}
+              aria-hidden
+            />
+            {/* **狭い画面では点だけにする。** 文字を残すと縦に割れて、繋がりの表示が
+                いちばん読みにくいものになる（撮って気づいた）。点は消さない。 */}
+            <span className="hidden whitespace-nowrap sm:inline">{error ? '未接続' : '接続'}</span>
           </span>
         </div>
-        <ThreadPicker
-          threads={threads}
-          channels={channels}
-          openThreadIds={openThreadIds}
-          onSelect={openThread}
-          onCreate={handleCreate}
-          creating={creating}
-        />
+        <div className="flex items-center gap-2">
+          <ThreadPicker
+            threads={threads}
+            channels={channels}
+            openThreadIds={openThreadIds}
+            onSelect={openThread}
+            onCreate={handleCreate}
+            creating={creating}
+          />
+          <ThemeToggle />
+        </div>
       </header>
 
       {error && (
-        <div className="flex items-center gap-2 border-b border-critical/30 bg-critical-soft px-4 py-2 text-xs text-critical">
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-          状態の取得に失敗しています: {error}
-          <button type="button" onClick={() => void refetch()} className="ml-auto underline">
-            再試行
-          </button>
-        </div>
+        <Banner onRetry={() => void refetch()}>状態の取得に失敗しています: {error}</Banner>
       )}
-      {createError && (
-        <div className="flex items-center gap-2 border-b border-critical/30 bg-critical-soft px-4 py-2 text-xs text-critical">
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-          会話の作成に失敗しました: {createError}
-        </div>
-      )}
+      {createError && <Banner>会話の作成に失敗しました: {createError}</Banner>}
 
-      <div className="flex items-center justify-center border-b border-border bg-surface px-3 py-2 md:hidden">
+      <div className="flex items-center justify-center border-b border-rule bg-paper-raised px-3 py-2 md:hidden">
         <Tabs value={mobilePane} onValueChange={(v) => setMobilePane(v as MobilePane)}>
           <TabsList>
             <TabsTrigger value="conversation">会話</TabsTrigger>
@@ -204,9 +202,9 @@ export function App() {
           style={{ '--cols': Math.max(1, openThreads.length) } as CSSProperties}
         >
           {loading && openThreads.length === 0 ? (
-            <div className="flex flex-1 items-center justify-center text-sm text-ink-muted">読み込み中…</div>
+            <div className="flex flex-1 items-center justify-center text-body text-ink-muted">読み込み中…</div>
           ) : openThreads.length === 0 ? (
-            <div className="flex flex-1 items-center justify-center p-8 text-center text-sm text-ink-muted">
+            <div className="flex flex-1 items-center justify-center p-8 text-center text-body text-ink-muted">
               右上の「新しい会話」で会話を始めてください。
             </div>
           ) : (
@@ -226,11 +224,11 @@ export function App() {
         </div>
 
         <aside
-          className={`flex min-h-0 flex-col border-border md:border-l ${
+          className={`flex min-h-0 flex-col border-rule md:border-l ${
             mobilePane === 'side' ? 'flex' : 'hidden md:flex'
           }`}
         >
-          <div className="border-b border-border px-3 py-2.5">
+          <div className="flex h-[var(--h-bar)] shrink-0 items-center border-b border-rule px-3">
             <Tabs value={sidePane} onValueChange={(v) => setSidePane(v as SidePane)}>
               <TabsList>
                 <TabsTrigger value="queue">
@@ -248,7 +246,7 @@ export function App() {
             <SettingsPanel />
           ) : sidePane === 'queue' ? (
             <>
-              <p className="border-b border-border px-4 py-2 text-[11px] text-ink-muted">
+              <p className="border-b border-rule px-4 py-2 text-note text-ink-muted">
                 出所を問わず1つの列にしてある（要件 A6）
               </p>
               <Queue
@@ -268,6 +266,48 @@ export function App() {
           )}
         </aside>
       </main>
+    </div>
+  );
+}
+
+/**
+ * 明暗の切り替え（要件 E7）。
+ *
+ * **いま何であるかではなく、押すと何になるかを言う。** 太陽の絵が出ているときに
+ * 「いま明るい」と読むか「押すと明るくなる」と読むかは人によって割れるので、
+ * 札（`title`）で断る。
+ */
+function ThemeToggle() {
+  const { theme, toggle } = useTheme();
+  const next = theme === 'dark' ? '明るく' : '暗く';
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      data-theme-toggle={theme}
+      title={`${next}する`}
+      aria-label={`${next}する`}
+      className="grid h-[var(--h-ctl)] w-[var(--h-ctl)] shrink-0 place-items-center rounded-ctl text-ink-muted hover:bg-paper-sunken hover:text-ink"
+    >
+      {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+    </button>
+  );
+}
+
+/**
+ * 上段の帯に出す不具合。**止まったものは紫**——朱は「あなたの番」に取ってある。
+ * 塗らずに左罫で言うので、判断待ちの札より強くならない。
+ */
+function Banner({ children, onRetry }: { children: ReactNode; onRetry?: () => void }) {
+  return (
+    <div className="flex shrink-0 items-center gap-2 border-b border-rule bg-stopped-soft px-4 py-2 text-meta text-ink shadow-[inset_3px_0_0_var(--stopped)]">
+      <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-stopped" />
+      {children}
+      {onRetry !== undefined && (
+        <button type="button" onClick={onRetry} className="ml-auto underline">
+          再試行
+        </button>
+      )}
     </div>
   );
 }

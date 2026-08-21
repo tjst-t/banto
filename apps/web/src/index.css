@@ -1,32 +1,59 @@
 @import 'tailwindcss';
+@import './theme/tokens.css';
 
-/*
- * トークン。「考えられた」見た目にするための最小限。
- * 装飾より抑制——値を読むための道具なので、色は状態を示すときだけ使う。
- * 詳細は dataviz スキルの色式に沿わせてある（status 色は icon+text と必ず対にする）。
+/**
+ * トークンを Tailwind の役に繋ぐだけの層（要件 E9）。
+ *
+ * **値はここに書かない。** 書けるようにすると、`theme/tokens.css` が
+ * 「唯一の出どころ」でなくなる——出どころが2つある時点で、いつか食い違う（規則3）。
+ *
+ * `inline` を付けているのは、明暗の切り替えを**実行時の変数**に任せるため。
+ * こうすると `bg-paper` は `var(--paper)` に落ちるので、`data-theme` を差し替えた
+ * 瞬間に全部の面が入れ替わる。面の側に明暗の分岐を書く必要がない。
  */
-@theme {
-  --font-sans: 'IBM Plex Sans', 'IBM Plex Sans JP', system-ui, sans-serif;
-  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
+@theme inline {
+  --color-paper: var(--paper);
+  --color-paper-raised: var(--paper-raised);
+  --color-paper-sunken: var(--paper-sunken);
+  --color-rule: var(--rule);
+  --color-rule-strong: var(--rule-strong);
 
-  --color-paper: #f7f7f4;
-  --color-surface: #ffffff;
-  --color-surface-sunken: #f0f0ec;
-  --color-border: #e3e2dc;
-  --color-border-strong: #cfcec5;
+  --color-ink: var(--ink);
+  --color-ink-secondary: var(--ink-secondary);
+  --color-ink-muted: var(--ink-muted);
 
-  --color-ink: #1b1b18;
-  --color-ink-secondary: #63615a;
-  --color-ink-muted: #96948a;
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-attention: var(--attention);
+  --color-attention-soft: var(--attention-soft);
+  --color-on-attention: var(--on-attention);
+  --color-stopped: var(--stopped);
+  --color-stopped-soft: var(--stopped-soft);
+  --color-caution: var(--caution);
+  --color-caution-soft: var(--caution-soft);
+  --color-done: var(--done);
+  --color-done-soft: var(--done-soft);
+  --color-code-bg: var(--code-bg);
+  --color-code-ink: var(--code-ink);
 
-  --color-accent: #3e4fd1;
-  --color-accent-soft: #edeffb;
-  --color-waiting: #a6650b;
-  --color-waiting-soft: #fbf1df;
-  --color-good: #29845a;
-  --color-good-soft: #e7f4ec;
-  --color-critical: #b3402a;
-  --color-critical-soft: #fbeae5;
+  /* 字は6段だけ。**`text-xs` `text-sm` は使わない**（段が増えるので） */
+  --text-note: var(--t-note);
+  --text-meta: var(--t-meta);
+  --text-body: var(--t-body);
+  --text-read: var(--t-read);
+  --text-head: var(--t-head);
+  --text-title: var(--t-title);
+
+  --font-ui: var(--type-ui);
+  --font-read: var(--type-read);
+  --font-mono: var(--type-mono);
+
+  --radius-seal: var(--r-seal);
+  --radius-ctl: var(--r-ctl);
+  --radius-face: var(--r-face);
+
+  --shadow-rest: var(--elev-rest);
+  --shadow-pop: var(--elev-pop);
 }
 
 html,
@@ -36,16 +63,55 @@ body,
 }
 
 body {
-  background: var(--color-paper);
-  color: var(--color-ink);
-  font-family: var(--font-sans);
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--type-ui);
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
   -webkit-font-smoothing: antialiased;
 }
 
-/* キーボードフォーカスは常に見える（frontend-design skill の品質基準）。 */
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+/* キーボードで辿れることは、見えていないと守られない */
 :focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
+  border-radius: var(--r-seal);
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+/**
+ * つまみの色も紙から作る。溝は透かして地をそのまま使う。
+ *
+ * **`::-webkit-scrollbar` は書かない**——1つでも書くと、macOS の「触ったときだけ
+ * 現れるスクロールバー」が、常時場所を取る古い形に変わる。`color-scheme` があれば
+ * OS 側が地の明暗に合った色で描く。
+ */
+:root {
+  scrollbar-color: var(--scroll-thumb) transparent;
+  scrollbar-width: thin;
+}
+
+/* 応答待ちの点。**一斉に点滅させない**（止まっているのか進んでいるのか読めない） */
+@keyframes banto-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -57,7 +123,133 @@ body {
   }
 }
 
-::selection {
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
+/**
+ * ══ 相手の言葉（Markdown）══════════════════════════════════════════════
+ *
+ * 要件 E4。**素の文字列として出していたので、見出しも箇条も表も潰れていた。**
+ *
+ * 字の段はここでも増やさない——本文は `--t-read`、見出しは1段だけ上げる。
+ * 見出しごとに大きさを変えると、それだけで6段では足りなくなる。
+ */
+.markdown {
+  font-family: var(--type-read);
+  font-size: var(--t-read);
+  line-height: var(--lh-read);
+  color: var(--ink);
+  word-break: break-word;
+}
+.markdown > :first-child {
+  margin-top: 0;
+}
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown table,
+.markdown pre {
+  margin: 0.75em 0;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  font-family: var(--type-ui);
+  font-size: var(--t-read);
+  font-weight: 700;
+  line-height: 1.5;
+  margin: 1.4em 0 0.5em;
+}
+/* いちばん上の見出しだけ一段上げる。**それ以下は太さで区別する** */
+.markdown h1 {
+  font-size: var(--t-head);
+}
+.markdown h3,
+.markdown h4 {
+  color: var(--ink-secondary);
+}
+/**
+ * **印を戻す。** Tailwind の preflight は `ul`/`ol` の印を消すので、
+ * 何もしないと箇条書きが「ただの短い段落の列」になる——番号つきの手順が
+ * 番号なしで出ていた（撮って気づいた）。
+ */
+.markdown ul {
+  list-style: disc;
+  padding-left: 1.4em;
+}
+.markdown ol {
+  list-style: decimal;
+  padding-left: 1.6em;
+}
+.markdown li {
+  margin: 0.25em 0;
+}
+.markdown li::marker {
+  color: var(--ink-muted);
+}
+.markdown a {
+  color: var(--accent);
+  text-underline-offset: 2px;
+}
+.markdown strong {
+  font-weight: 700;
+}
+/* 引用は左罫だけ。**塗らない**（塗ってよいのは「あなたの番」だけ） */
+.markdown blockquote {
+  padding-left: 0.9em;
+  border-left: 2px solid var(--rule-strong);
+  color: var(--ink-secondary);
+}
+.markdown hr {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  margin: 1.4em 0;
+}
+.markdown table {
+  border-collapse: collapse;
+  font-family: var(--type-ui);
+  font-size: var(--t-meta);
+  line-height: 1.6;
+  display: block;
+  overflow-x: auto;
+}
+.markdown th,
+.markdown td {
+  border: 1px solid var(--rule);
+  padding: 4px 8px;
+  text-align: left;
+}
+.markdown th {
+  background: var(--paper-sunken);
+  font-weight: 600;
+}
+/**
+ * コードブロックの地は**紙の体系に属させる**。
+ *
+ * shiki のテーマは自前の地（明では純白）を持っている。そのまま出すと、
+ * **紙の上に白い板が浮く**——地の色が1箇所だけ体系の外にあると、そこだけ穴に見える。
+ * 字の色はテーマのものを使う（github-light/dark は紙の明るさでも十分に読める）。
+ */
+.markdown pre.shiki,
+.markdown pre.shiki span {
+  background-color: transparent !important;
+}
+.markdown pre.shiki {
+  background: var(--paper-sunken) !important;
+}
+
+/* 文中のコードは地に沈める。ブロックのコードは `CodeBlock` が描く */
+.markdown :not(pre) > code {
+  font-family: var(--type-mono);
+  /* **`0.9em` にしない。** 相対で書くと段が1つ増える（要件 E9 は段の数の話である） */
+  font-size: var(--t-meta);
+  background: var(--paper-sunken);
+  border-radius: var(--r-seal);
+  padding: 0.1em 0.35em;
+}
+.markdown img {
+  max-width: 100%;
+  border-radius: var(--r-ctl);
 }

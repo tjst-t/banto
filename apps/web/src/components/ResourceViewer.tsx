@@ -57,11 +57,11 @@ export function ResourceViewer({ uri, name, onClose }: { uri: string; name: stri
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-resource-viewer={uri}>
-      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+      <div className="flex items-center gap-2 border-b border-rule px-3 py-2">
         <div className="min-w-0">
-          <h3 className="truncate text-sm font-semibold text-ink">{name}</h3>
+          <h3 className="truncate text-body font-semibold text-ink">{name}</h3>
           {/* **どこから来たものかを隠さない。** 持ち主は uri の先頭に書いてある。 */}
-          <p className="truncate font-mono text-[10px] text-ink-muted">{uri}</p>
+          <p className="truncate font-mono text-note text-ink-muted">{uri}</p>
         </div>
         <button
           type="button"
@@ -82,12 +82,12 @@ export function ResourceViewer({ uri, name, onClose }: { uri: string; name: stri
       </div>
 
       {error !== null ? (
-        <div className="m-3 flex items-start gap-2 rounded-md border border-critical/30 bg-critical-soft px-3 py-2 text-xs text-critical">
+        <div className="m-3 flex items-start gap-2 rounded-ctl border border-stopped/30 bg-stopped-soft px-3 py-2 text-meta text-stopped">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <p className="whitespace-pre-wrap">{error}</p>
         </div>
       ) : resource === null ? (
-        <div className="flex flex-1 items-center justify-center gap-2 text-xs text-ink-muted">
+        <div className="flex flex-1 items-center justify-center gap-2 text-meta text-ink-muted">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
           読み込み中…
         </div>
@@ -96,7 +96,7 @@ export function ResourceViewer({ uri, name, onClose }: { uri: string; name: stri
       )}
 
       {resource !== null && (
-        <p className="border-t border-border px-3 py-1.5 text-[10px] text-ink-muted">
+        <p className="border-t border-rule px-3 py-1.5 text-note text-ink-muted">
           {assignment === null
             ? 'banto の汎用の面'
             : `${assignment.moduleId} の面（${assignment.kind}）`}{' '}
@@ -121,7 +121,7 @@ function renderBody(assignment: ViewAssignment | null, resource: ResourceRespons
     }
     // 台帳には在るのに束ねに無い。**黙って汎用へ落ちない**（規則2）。
     return (
-      <div className="m-3 rounded-md border border-waiting/40 bg-waiting-soft px-3 py-2 text-xs text-ink">
+      <div className="m-3 rounded-ctl border border-attention/40 bg-attention-soft px-3 py-2 text-meta text-ink">
         {assignment.moduleId} の面「{assignment.entry}」が束ねに入っていない。
         素のまま出す：
         <pre className="mt-2 whitespace-pre-wrap break-words font-mono">{resource.text}</pre>
@@ -144,7 +144,7 @@ function renderBody(assignment: ViewAssignment | null, resource: ResourceRespons
   return (
     <ScrollArea className="min-h-0 flex-1">
       {/* 分からない形は素で出す。**整形して見せかけない。** */}
-      <pre className="whitespace-pre-wrap break-words p-3 font-mono text-xs text-ink">
+      <pre className="whitespace-pre-wrap break-words p-3 font-mono text-meta text-ink">
         {resource.text}
       </pre>
     </ScrollArea>

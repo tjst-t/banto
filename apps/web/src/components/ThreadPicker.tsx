@@ -61,22 +61,22 @@ export function ThreadPicker({
       </Button>
 
       {open && (
-        <div className="absolute right-0 top-full z-40 mt-2 w-72 rounded-md border border-border bg-surface p-3 shadow-lg">
-          <label className="mb-2 block text-xs text-ink-secondary">
+        <div className="absolute right-0 top-full z-40 mt-2 w-72 rounded-ctl border border-rule bg-paper-raised p-3 shadow-pop">
+          <label className="mb-2 block text-meta text-ink-secondary">
             プロジェクト名
             <input
               value={channelName}
               onChange={(e) => setChannelName(e.target.value)}
-              className="mt-1 w-full rounded border border-border px-2 py-1 text-sm outline-none focus:border-accent"
+              className="mt-1 w-full rounded border border-rule px-2 py-1 text-body outline-none focus:border-accent"
             />
           </label>
-          <label className="mb-3 block text-xs text-ink-secondary">
+          <label className="mb-3 block text-meta text-ink-secondary">
             タイトル
             <input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="新しい会話"
-              className="mt-1 w-full rounded border border-border px-2 py-1 text-sm outline-none focus:border-accent"
+              className="mt-1 w-full rounded border border-rule px-2 py-1 text-body outline-none focus:border-accent"
             />
           </label>
           <div className="flex justify-end gap-2">

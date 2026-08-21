@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Clock3, Inbox } from 'lucide-react';
 
 import { ScrollArea } from './ui/scroll-area';
+import { Button } from './ui/button';
 import { elapsedLabel, stalenessLevel } from '../lib/time';
 import type { PendingDecision, ThreadSummary } from '../lib/types';
 
@@ -45,16 +46,16 @@ function Answer({
       {options.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {options.map((o) => (
-            <button
+            <Button
               key={o.id}
-              type="button"
+              variant="secondary"
+              size="sm"
               disabled={busy}
               title={o.detail}
               onClick={() => void send(o.label, o.id)}
-              className="rounded border border-border bg-surface px-2 py-1 text-xs font-medium text-ink hover:border-accent hover:text-accent disabled:opacity-50"
             >
               {o.label}
-            </button>
+            </Button>
           ))}
         </div>
       )}
@@ -64,21 +65,23 @@ function Answer({
           disabled={busy}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
+            // 変換確定の Enter で送らない（要件 E8）。**入力欄はどこでも同じ約束にする。**
             if (e.key === 'Enter' && !e.nativeEvent.isComposing) void send(text);
           }}
           placeholder={options.length > 0 ? 'どれも選べないときは、ここに書く' : '答えを書く'}
-          className="min-w-0 flex-1 rounded border border-border bg-surface px-2 py-1 text-xs text-ink placeholder:text-ink-muted disabled:opacity-50"
+          className="h-[var(--h-ctl-sm)] min-w-0 flex-1 rounded-ctl border border-rule bg-paper px-2 text-meta text-ink outline-none placeholder:text-ink-muted focus:border-accent disabled:opacity-50"
         />
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
           disabled={busy || text.trim() === ''}
           onClick={() => void send(text)}
-          className="rounded border border-border px-2 py-1 text-xs text-ink-secondary hover:border-accent hover:text-accent disabled:opacity-40"
         >
           送る
-        </button>
+        </Button>
       </div>
-      {error !== null && <p className="text-[11px] text-danger">{error}</p>}
+      {/* 断られた理由をそのまま出す（規則2）。**止まったものは紫。** */}
+      {error !== null && <p className="text-note text-stopped">{error}</p>}
     </div>
   );
 }
@@ -89,10 +92,15 @@ const SOURCE_LABEL: Record<PendingDecision['source'], string> = {
   observer: '機構',
 };
 
+/**
+ * 待たせているほど濃くなる（要件 A7）。**発生では鳴らさず、滞留で目立たせる。**
+ *
+ * 濃くするのは**左罫と地**だけ。枠の色を変えると、並んだときに枠だけがちらつく。
+ */
 const STALE_STYLE: Record<'fresh' | 'aging' | 'stale', string> = {
-  fresh: 'border-border bg-surface',
-  aging: 'border-waiting/40 bg-waiting-soft/60',
-  stale: 'border-waiting bg-waiting-soft',
+  fresh: 'bg-paper-raised shadow-rest',
+  aging: 'bg-attention-soft/60 shadow-[inset_2px_0_0_var(--attention)]',
+  stale: 'bg-attention-soft shadow-[inset_3px_0_0_var(--attention)]',
 };
 
 /**
@@ -119,7 +127,7 @@ export function Queue({
 
   if (queue.length === 0) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center text-sm text-ink-muted">
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center text-body text-ink-muted">
         <Inbox className="h-6 w-6" />
         待っているものはありません
       </div>
@@ -133,17 +141,17 @@ export function Queue({
           const level = stalenessLevel(d.since, now);
           const thread = d.threadId ? threads.find((t) => t.id === d.threadId) : undefined;
           return (
-            <li key={d.decisionId} className={`rounded-md border p-3 ${STALE_STYLE[level]}`}>
+            <li key={d.decisionId} className={`rounded-ctl p-3 ${STALE_STYLE[level]}`}>
               <div className="flex items-center justify-between gap-2">
-                <span className="font-mono text-[10px] uppercase tracking-wide text-ink-muted">
+                <span className="font-mono text-note uppercase tracking-wide text-ink-muted">
                   {SOURCE_LABEL[d.source]}
                 </span>
-                <span className="flex items-center gap-1 text-[11px] text-ink-secondary">
+                <span className="flex items-center gap-1 text-note text-ink-secondary">
                   <Clock3 className="h-3 w-3" />
                   {elapsedLabel(d.since, now)}待ち
                 </span>
               </div>
-              <p className="mt-1.5 text-sm text-ink">{d.question}</p>
+              <p className="mt-1.5 text-body text-ink">{d.question}</p>
               <Answer
                 decision={d}
                 onAnswer={(answer, optionId) => onAnswer(d.decisionId, answer, optionId)}
@@ -152,7 +160,7 @@ export function Queue({
                 <button
                   type="button"
                   onClick={() => onOpenThread(thread.id)}
-                  className="mt-2 text-xs font-medium text-accent hover:underline"
+                  className="mt-2 text-meta font-medium text-accent hover:underline"
                 >
                   「{thread.title}」を開く
                 </button>
