@@ -181,6 +181,55 @@ export interface QueryStep extends Envelope {
   readonly detail?: string;
 }
 
+export type RunId = string;
+
+/**
+ * Factory の Run。**依頼1件ぶんの耐久ワークフロー**（要件 B1〜B7、決定10・16）。
+ * 1回の問い合わせ（`QueryId`）とは別物——`QueryId` の注記を見よ。
+ */
+export interface RunRequested extends Envelope {
+  readonly type: 'run.requested';
+  readonly runId: RunId;
+  readonly channelId: ChannelId;
+  /** この Run の会話。**Run は Thread を1つ持つ**（仕様 §5.1）。 */
+  readonly threadId: ThreadId;
+  /** 作業ブランチ。Repo に作らせる名前で、Factory は git を知らない。 */
+  readonly branch: string;
+  /** 依頼そのもの。base にも入るが、**依頼が在ったこと自体は導出できない。** */
+  readonly request: string;
+}
+
+/**
+ * テストの結果。**Run に関して唯一「導出できない」事実**（仕様 §5.3）。
+ *
+ * 他の段は現物を見れば済んだかどうかが分かる（作業ツリーが在る／main が
+ * そのブランチを含む）が、テストだけは**再実行しないと分からない**。
+ * だから記録するが、**commit の sha で鍵をつける**——sha が変われば無効になるので、
+ * 古い結果が生き残る経路が存在しない。
+ */
+export interface RunTested extends Envelope {
+  readonly type: 'run.tested';
+  readonly runId: RunId;
+  /** どの commit に対する結果か。**これが鍵。** */
+  readonly commit: string;
+  readonly passed: boolean;
+  readonly detail: string;
+}
+
+/**
+ * Run が失敗した。**これも導出できない**——「まだ着いていない」と
+ * 「もう進めない」は、世界を見ただけでは区別できない。
+ *
+ * 記録して**止める**。記録しないと、機構は永久に同じ段を試み続ける。
+ * 列は止めない（要件 B の受け入れ：1つ失敗させても他は進む）。
+ */
+export interface RunFailed extends Envelope {
+  readonly type: 'run.failed';
+  readonly runId: RunId;
+  readonly stage: string;
+  readonly detail: string;
+}
+
 export interface DecisionRequested extends Envelope {
   readonly type: 'decision.requested';
   readonly decisionId: DecisionId;
@@ -205,6 +254,9 @@ export type BantoEvent =
   | ThreadSessionRecorded
   | CompactionReported
   | QueryStep
+  | RunRequested
+  | RunTested
+  | RunFailed
   | DecisionRequested
   | DecisionResolved;
 
@@ -225,6 +277,9 @@ const KNOWN_TYPES: ReadonlySet<string> = new Set<EventType>([
   'thread.session',
   'compaction.reported',
   'query.step',
+  'run.requested',
+  'run.tested',
+  'run.failed',
   'decision.requested',
   'decision.resolved',
 ]);

@@ -1,8 +1,14 @@
 /**
  * repo モジュールの core。**ドメインロジックはここに1つだけ**（要件 C8a）。
  *
- * Phase 1 のスコープは「閲覧とコミット」だけ（要件 C5）——worktree（Phase 2）も
- * 鍵の割り当て（Phase 3）もここには置かない。
+ * Phase 2 で worktree を足した（要件 C5）。鍵の割り当て（Phase 3）はまだ置かない。
+ *
+ * **worktree の持ち主はここである**（決定5）。Factory は git を知らず、ここに頼む
+ * ——ワークフローエンジンに git の知識を持たせると、両方に git が散る。
+ *
+ * Factory の再開判定は**現物を見る**（仕様 §5.3・規則3）ので、
+ * 「済んだか」を答える問い（`hasWorktree` / `isMerged` / `headOf`）を口にする。
+ * フラグを持たないので、フラグと現実がずれない。
  */
 
 import { execFile } from 'node:child_process';
@@ -38,8 +44,13 @@ export class RepoCore {
   }
 
   private async git(args: readonly string[]): Promise<GitOutput> {
+    return this.gitIn(this.root, args);
+  }
+
+  /** 作業ツリーの中で走らせる。**rebase はブランチが出ている側でしかできない。** */
+  private async gitIn(cwd: string, args: readonly string[]): Promise<GitOutput> {
     return new Promise((resolve, reject) => {
-      execFile('git', [...args], { cwd: this.root }, (error, stdout, stderr) => {
+      execFile('git', [...args], { cwd }, (error, stdout, stderr) => {
         if (error !== null) {
           // 握りつぶさない。stderr があればそれを、無ければ error のメッセージを理由にする（教訓13）。
           reject(new Error(`git ${args.join(' ')} が失敗した: ${stderr.trim() || error.message}`));
@@ -95,6 +106,111 @@ export class RepoCore {
    * （ADR 決定5・要件 D5）。Phase 1 では optional 依存の vault が
    * 台帳に無いので、index.ts の push ツールが呼ぶ前に断る——ここへは届かない。
    */
+  /**
+   * 作業ツリーを1つ用意する。**何度呼んでも同じ状態に着く**（要件 B5）。
+   *
+   * ブランチも作業ツリーも既に在れば、作り直さずそのまま返す——耐久ワークフローは
+   * 落ちて再開したときに同じ段をもう一度呼ぶので、ここが冪等でないと再開できない。
+   */
+  async addWorktree(branch: string, relative: string, from = 'HEAD'): Promise<string> {
+    const target = this.resolveInside(relative);
+    if (await this.hasWorktree(relative)) return target;
+
+    const exists = await this.hasBranch(branch);
+    // ブランチが在るなら作らない。`-b` を付けて呼ぶと「既に在る」で失敗する。
+    const args = exists
+      ? ['worktree', 'add', target, branch]
+      : ['worktree', 'add', '-b', branch, target, from];
+    await this.git(args);
+    return target;
+  }
+
+  /** その作業ツリーが在るか。**保存した印ではなく git に聞く**（規則3）。 */
+  async hasWorktree(relative: string): Promise<boolean> {
+    const target = this.resolveInside(relative);
+    const { stdout } = await this.git(['worktree', 'list', '--porcelain']);
+    return stdout.split('\n').some((line) => line === `worktree ${target}`);
+  }
+
+  async hasBranch(branch: string): Promise<boolean> {
+    const { stdout } = await this.git(['branch', '--list', '--format=%(refname:short)']);
+    return stdout.split('\n').some((line) => line.trim() === branch);
+  }
+
+  /** 作業ツリーを畳む。**在らなければ何もしない**——再開で二度呼ばれても同じ。 */
+  async removeWorktree(relative: string): Promise<string> {
+    const target = this.resolveInside(relative);
+    if (!(await this.hasWorktree(relative))) return `${target} は無い`;
+    await this.git(['worktree', 'remove', '--force', target]);
+    return `${target} を畳んだ`;
+  }
+
+  /** その ref の指す commit。**テスト結果の鍵になる**（仕様 §5.3）。 */
+  async headOf(ref: string): Promise<string> {
+    const { stdout } = await this.git(['rev-parse', ref]);
+    return stdout.trim();
+  }
+
+  /**
+   * `branch` が `into` に取り込まれているか。
+   *
+   * **これが merge 段の「済んだか」の判定である**（仕様 §5.3）。
+   * `--is-ancestor` は含まれていれば 0、いなければ 1 を返す——後者は失敗ではないので、
+   * git の終了コードをそのまま例外にしてしまわないよう、ここだけ自前で見る。
+   */
+  async isMerged(branch: string, into = 'main'): Promise<boolean> {
+    return this.git(['merge-base', '--is-ancestor', branch, into]).then(
+      () => true,
+      () => false,
+    );
+  }
+
+  /**
+   * `branch` を `into` へ取り込む。**衝突したら止まる**（規則2）。
+   *
+   * 黙って `-X ours` などで解決しない——どちらを採るかは、機構が決めてよいことではない。
+   * 失敗したら merge を中断して、作業ツリーを元の状態へ戻す。
+   */
+  async merge(branch: string, into = 'main'): Promise<string> {
+    if (await this.isMerged(branch, into)) return `${branch} は既に ${into} に入っている`;
+    const before = await this.headOf(into);
+    await this.git(['checkout', into]);
+    try {
+      await this.git(['merge', '--no-ff', '-m', `Merge ${branch}`, branch]);
+    } catch (cause) {
+      // 中途半端な状態を残さない。戻せなければ、それも理由に含めて投げる。
+      await this.git(['merge', '--abort']).catch(() => undefined);
+      await this.git(['reset', '--hard', before]).catch(() => undefined);
+      throw cause;
+    }
+    return this.headOf(into);
+  }
+
+  /**
+   * 作業ツリーの中で、ブランチを `onto` の先端に載せ直す（要件 B7）。
+   *
+   * **衝突したら中断して止まる**（規則2）。載せ直すと commit の sha が変わるので、
+   * その sha に鍵を付けていたテスト結果は**自動的に無効になる**——
+   * 明示的に消す必要が無い（仕様 §5.3）。
+   */
+  async rebaseOnto(relative: string, onto = 'main'): Promise<string> {
+    const target = this.resolveInside(relative);
+    try {
+      await this.gitIn(target, ['rebase', onto]);
+    } catch (cause) {
+      await this.gitIn(target, ['rebase', '--abort']).catch(() => undefined);
+      throw cause;
+    }
+    const { stdout } = await this.gitIn(target, ['rev-parse', 'HEAD']);
+    return stdout.trim();
+  }
+
+  /** そのブランチが `base` より先に進んでいるか。**implement 段の「済んだか」。** */
+  async isAhead(branch: string, base = 'main'): Promise<boolean> {
+    const { stdout } = await this.git(['rev-list', '--count', `${base}..${branch}`]);
+    return Number(stdout.trim()) > 0;
+  }
+
   async push(remote: string, branch: string): Promise<string> {
     const { stdout } = await this.git(['push', remote, branch]);
     return stdout;
