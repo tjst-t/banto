@@ -64,10 +64,9 @@ export function envScriptModule(options: EnvScriptOptions): DefinedModule {
           command: z.array(z.string()).describe('Command and arguments, one per element'),
         },
         run: async (core, { repo, handle, command }) => {
-          const result = await core.exec(repo, handle, command);
-          return ok(
-            `exit=${result.exitCode}\n--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}`,
-          );
+          // env-process と同じ形で返す（役割が同じなら、返す形も同じでなければ
+          // 呼び手が実装ごとに解析を分けることになる）。
+          return ok(JSON.stringify(await core.exec(repo, handle, command)));
         },
       }),
       tool({

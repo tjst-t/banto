@@ -40,9 +40,10 @@ export const envProcessModule = defineModule({
         args: z.array(z.string()).optional().describe('Arguments, one per element'),
       },
       run: async (core, { handle, command, args }) => {
-        const result = await core.exec(handle, command, args ?? []);
-        // **終了コードを隠さない。** 落ちたことと走らせられなかったことは別の事実。
-        return ok(`exit=${result.exitCode}\n--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}`);
+        // **JSON で返す。** 口を跨ぐと呼び手は文字列を解くことになるので、
+        // 散文にすると解析がそこら中に散る。**終了コードは隠さない**——
+        // 落ちたことと走らせられなかったことは別の事実（教訓13）。
+        return ok(JSON.stringify(await core.exec(handle, command, args ?? [])));
       },
     }),
     tool({

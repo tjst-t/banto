@@ -7,6 +7,11 @@
  * **偽物を使わない**（教訓1）。git も、環境も、イベントログも本物である。
  * 置き換えるのは実装者（LLM）だけで、これは engine の**依存**であって
  * 試験の対象ではない——対象は「順序づけ・再開・衝突の解決」の機構である。
+ *
+ * **依存は本物の MCP を通す**（要件 C13・決定17）。以前はここで `RepoCore` と
+ * `ProcessEnvironmentCore` を直接握っていたので、**役割（capability）の機構に
+ * 本物の利用者がいなかった**——「実装は差し替えられる」が試験の中だけの話だった。
+ * いまは repo も environment も、他のモジュールと同じ口を通る。
  */
 
 import { execFile } from 'node:child_process';
@@ -15,21 +20,24 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { EventLog, fold } from '@banto/core';
-import { RepoCore } from '@banto/module-repo';
-import { ProcessEnvironmentCore } from '@banto/module-env-process';
+import { connectInProcess, type ToolCaller } from '@banto/module-kit';
+import { repoModule } from '@banto/module-repo';
+import { envProcessModule } from '@banto/module-env-process';
 
 import { Factory, foldRuns, reviewDecisionId, workdirOf } from './engine.js';
-import type { EnvironmentPort, Implementer, RepoPort } from './ports.js';
+import { environmentPortOver, repoPortOver } from './mcp-ports.js';
+import type { Implementer } from './ports.js';
 
 const run = promisify(execFile);
 
 let root: string;
 let log: EventLog;
-let repo: RepoCore;
-let env: ProcessEnvironmentCore;
+/** **本物の MCP サーバに繋いだ口。** ここを直接の呼び出しに戻すと、試験が何も証明しない。 */
+let repoCaller: ToolCaller;
+let envCaller: ToolCaller;
 
 /** 本物の git リポジトリを1つ用意する。 */
 async function makeRepo(): Promise<string> {
@@ -87,22 +95,18 @@ function lineEditor(lineOf: Record<string, number>): Implementer {
   };
 }
 
-/** 環境の口を、Factory が使う形に写す。写すのはここ1箇所（ports.ts の注記）。 */
-const environmentPort = (): EnvironmentPort => ({
-  create: (workdir) => env.create(workdir),
-  status: (handle) => env.status(handle),
-  exec: (handle, command, args) => env.exec(handle, command, args),
-  destroy: (handle) => env.destroy(handle),
-});
-
-const repoPort = (): RepoPort => repo;
-
 /**
  * **main に本当に入ったか**を、成果物で見る。
  *
  * `merge-base --is-ancestor` では見ない——**空のブランチでも真になる**ので、
  * 「まだ何もしていない」と「取り込み済み」を区別できない（engine の同じ注記を見よ）。
  */
+/** 作業ツリーが在るかを、**git に直接**聞く（試験の側は口を通さない）。 */
+async function hasWorktree(branch: string): Promise<boolean> {
+  const { stdout } = await run('git', ['worktree', 'list', '--porcelain'], { cwd: root });
+  return stdout.includes(path.join(root, workdirOf(branch)));
+}
+
 async function inMain(file: string): Promise<boolean> {
   return run('git', ['cat-file', '-e', `main:${file}`], { cwd: root }).then(
     () => true,
@@ -116,8 +120,8 @@ const TEST = { command: 'sh', args: ['-c', 'ls *.txt >/dev/null 2>&1'] };
 function factory(overrides: Partial<ConstructorParameters<typeof Factory>[0]> = {}): Factory {
   return new Factory({
     log,
-    repo: repoPort(),
-    environment: environmentPort(),
+    repo: repoPortOver(repoCaller),
+    environment: environmentPortOver(envCaller),
     implementer: implementer(),
     test: TEST,
     ...overrides,
@@ -137,8 +141,16 @@ async function request(f: Factory, name: string): Promise<void> {
 beforeEach(async () => {
   root = await makeRepo();
   log = new EventLog(await mkdtemp(path.join(tmpdir(), 'banto-factory-log-')));
-  repo = new RepoCore(root);
-  env = new ProcessEnvironmentCore(root);
+  // モジュールは root を環境変数から受け取る（既定値を持たない・requiredRoot）。
+  process.env['BANTO_REPO_ROOT'] = root;
+  process.env['BANTO_ENV_ROOT'] = root;
+  repoCaller = await connectInProcess(repoModule.createServer());
+  envCaller = await connectInProcess(envProcessModule.createServer());
+});
+
+afterEach(async () => {
+  await repoCaller.close();
+  await envCaller.close();
 });
 
 describe('要件 B の受け入れ', () => {
@@ -153,7 +165,7 @@ describe('要件 B の受け入れ', () => {
     }
     // 後片付けまで済んでいる。作業ツリーが残らない。
     for (const name of ['alpha', 'beta', 'gamma']) {
-      expect(await repo.hasWorktree(workdirOf(`factory/${name}`))).toBe(false);
+      expect(await hasWorktree(`factory/${name}`)).toBe(false);
     }
     // main に3つの変更が入っている。
     const { stdout } = await run('git', ['ls-files'], { cwd: root });

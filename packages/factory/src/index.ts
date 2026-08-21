@@ -1,3 +1,9 @@
+export {
+  environmentPortOver,
+  repoPortOver,
+  workerImplementerOver,
+} from './mcp-ports.js';
+
 export { AgentImplementer, type AgentImplementerOptions } from './agent-implementer.js';
 
 export {

@@ -16,10 +16,23 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { EventLog, fold, pendingQueue, type NewEvent } from '@banto/core';
-import { AgentImplementer, Factory } from '@banto/factory';
+import {
+  Factory,
+  environmentPortOver,
+  repoPortOver,
+  workerImplementerOver,
+} from '@banto/factory';
+import {
+  assertStartable,
+  connectInProcess,
+  resolve,
+  type ModuleSource,
+  type ToolCaller,
+} from '@banto/module-kit';
 import { fsModule } from '@banto/module-fs';
-import { ProcessEnvironmentCore } from '@banto/module-env-process';
-import { RepoCore } from '@banto/module-repo';
+import { envProcessModule } from '@banto/module-env-process';
+import { repoModule } from '@banto/module-repo';
+import { workerModule } from '@banto/module-worker';
 import { AgentSdkRunner } from '@banto/runner';
 
 import { startServer } from './server.js';
@@ -154,40 +167,101 @@ ${queue.length === 0 ? '<p class="none">（なし）</p>' : `<table>${rows}</tab
 }
 
 /**
- * Factory を1つ組み立てる（要件 B1）。
+ * Factory を1つ組み立てる（要件 B1・C13・決定17）。
  *
- * **役割の割り当てをここで書く**（決定16）。いまは `environment` に
- * `env-process` を、実装者にサブエージェントを結ぶ。docker に替えるときに
- * 変わるのはこの数行だけで、Factory 側は1文字も変わらない。
+ * **役割の割り当てをここで書く。** repo も environment も worker も、
+ * **他のモジュールと同じ口**を通って呼ばれる——中核とモジュールの違いは、
+ * 口ではなく出荷元だけ（要件 C13）。docker に替えるときに変わるのは
+ * 下の `bindings` の1行だけで、Factory 側は1文字も変わらない。
+ *
+ * **起動時に台帳で確かめる。** 名乗るだけでは足りないので、`resolve` が
+ * 本物の `tools/list` と突き合わせる（要件 C11）。合わなければ**起動しない**。
  */
-function buildFactory(dataDir: string, repoRoot: string, model: string): Factory {
+async function buildFactory(dataDir: string, repoRoot: string, model: string): Promise<Factory> {
   const log = new EventLog(dataDir);
-  const repo = new RepoCore(repoRoot);
-  // 環境の根はリポジトリの根。作業ツリーはその内側にできる。
-  const env = new ProcessEnvironmentCore(repoRoot);
+
+  /**
+   * モジュールの作業範囲は環境変数から渡す（`requiredRoot`：既定値を持たない）。
+   * **これは黙った既定ではない**——運用者が `--repo` と書いたことの言い換えである。
+   */
+  process.env['BANTO_REPO_ROOT'] = repoRoot;
+  process.env['BANTO_ENV_ROOT'] = repoRoot;
+
+  const worker = workerModule({
+    log,
+    model,
+    mcpServers: [],
+    toolsByModule: new Map(),
+    // **何を許したかを1行で残す**（要件 D4）。既定では1つも通らない。
+    extraAllowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+  });
+
+  const servers = new Map([
+    ['repo', repoModule.createServer()],
+    ['env-process', envProcessModule.createServer()],
+    ['worker', worker.createServer()],
+  ]);
+  const callers = new Map<string, ToolCaller>();
+  for (const [id, server] of servers) callers.set(id, await connectInProcess(server));
+
+  const sources: ModuleSource[] = [
+    { manifest: repoModule.manifest, listTools: () => listToolsVia(callers, 'repo') },
+    { manifest: envProcessModule.manifest, listTools: () => listToolsVia(callers, 'env-process') },
+    { manifest: worker.manifest, listTools: () => listToolsVia(callers, 'worker') },
+    {
+      // **Factory は実装の名前を1つも持たない。** 役割で頼むだけ（決定16）。
+      manifest: {
+        id: 'factory',
+        description: '依頼を耐久ワークフローとして進める',
+        isolation: 'in-process',
+        mcp: { kind: 'in-process' },
+        requires: [
+          {
+            capability: 'repo',
+            tools: ['add_worktree', 'has_worktree', 'remove_worktree', 'head_of', 'is_ahead', 'merge', 'rebase_onto'],
+          },
+          { capability: 'environment', tools: ['create', 'status', 'exec', 'address', 'destroy'] },
+          { capability: 'worker', tools: ['work'] },
+        ],
+      },
+      listTools: async () => ['request', 'advance'],
+    },
+  ];
+
+  // **候補が1つでも自動で選ばない**（要件 C8c と同じ理由）。ここが「その1行」。
+  const bindings = new Map([
+    ['repo', 'repo'],
+    ['environment', 'env-process'],
+    ['worker', 'worker'],
+  ]);
+
+  // 合わなければ起動しない。**何が足りないかを全部言ってから**止まる（要件 C11）。
+  assertStartable(await resolve(sources, bindings));
+
+  const need = (id: string): ToolCaller => {
+    const caller = callers.get(id);
+    if (!caller) throw new Error(`繋がっていないモジュール: ${id}`);
+    return caller;
+  };
 
   return new Factory({
     log,
-    repo,
-    environment: {
-      create: (workdir) => env.create(workdir),
-      status: (handle) => env.status(handle),
-      exec: (handle, command, args) => env.exec(handle, command, args),
-      destroy: (handle) => env.destroy(handle),
-    },
-    implementer: new AgentImplementer({
-      log,
-      modules: [],
-      toolsByModule: new Map(),
-      model,
-      absoluteWorkdir: (workdir) => path.resolve(repoRoot, workdir),
-      // **何を許したかを1行で残す**（要件 D4）。既定では1つも通らない。
-      extraAllowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
-    }),
+    repo: repoPortOver(need('repo')),
+    environment: environmentPortOver(need('env-process')),
+    implementer: workerImplementerOver(need('worker'), (workdir) =>
+      path.resolve(repoRoot, workdir),
+    ),
     // テストの走らせ方はリポジトリが決める（仕様 §6）。いまは1つ固定で、
     // リポジトリ側の宣言から読むのは docker provider と同じ回で入れる。
     test: { command: 'sh', args: ['-c', 'npm test --silent'] },
   });
+}
+
+/** 台帳の突き合わせも、**繋いだ口から**聞く（自己申告を自己申告で確かめない・規則1）。 */
+async function listToolsVia(callers: Map<string, ToolCaller>, id: string): Promise<string[]> {
+  const caller = callers.get(id);
+  if (!caller) throw new Error(`繋がっていないモジュール: ${id}`);
+  return caller.listTools();
 }
 
 function escapeHtml(s: string): string {
@@ -233,7 +307,7 @@ async function main(): Promise<void> {
        * ファイルを書き換え、git を動かす。どのリポジトリに対してそれを許すかは、
        * 運用者が1行書いて決めることであって、既定で決まっていてよいことではない。
        */
-      const factory = repoRoot === '' ? undefined : buildFactory(dataDir, repoRoot, model);
+      const factory = repoRoot === '' ? undefined : await buildFactory(dataDir, repoRoot, model);
       // Phase 1.5 では fs だけを繋ぐ。shell / repo は subprocess なので、
       // 台帳から解決する経路を通してから足す（要件 C11）。
       startServer({

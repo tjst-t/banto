@@ -28,6 +28,9 @@
     },
     {
       "path": "../../modules/env-process"
+    },
+    {
+      "path": "../../modules/worker"
     }
   ]
 }

@@ -46,3 +46,5 @@ export {
   loadManifest,
   subprocessSource,
 } from './load.js';
+
+export { connectInProcess, connectSubprocess, type ToolCaller } from './client.js';
