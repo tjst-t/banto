@@ -46,6 +46,12 @@ export const envProcessModule = defineModule({
       },
     }),
     tool({
+      name: 'status',
+      description: 'Report whether the environment is usable right now: "ready" or "gone".',
+      input: { handle: z.string().describe('Handle returned by create') },
+      run: async (core, { handle }) => ok(await core.status(handle)),
+    }),
+    tool({
       name: 'address',
       description:
         'Return a host:port reachable from the banto host for a port inside the environment.',

@@ -48,7 +48,7 @@ const factory: ModuleSource = {
     isolation: 'in-process',
     mcp: { kind: 'in-process' },
     requires: [
-      { capability: 'environment', tools: ['create', 'exec', 'address', 'destroy'] },
+      { capability: 'environment', tools: ['create', 'status', 'exec', 'address', 'destroy'] },
       { capability: 'publish', tools: ['publish', 'unpublish'] },
     ],
   },
@@ -77,7 +77,7 @@ describe('env-process と publish-none が役割を満たす（決定16）', () 
   it('実装がツール名を変えたら、使う瞬間ではなく起動時に落ちる', async () => {
     const renamed: ModuleSource = {
       manifest: { ...envProcessModule.manifest, id: 'env-process' },
-      listTools: async () => ['create', 'run', 'address', 'destroy'], // exec → run
+      listTools: async () => ['create', 'status', 'run', 'address', 'destroy'], // exec → run
     };
     const resolution = await resolve([renamed, liveSource(publishNoneModule), factory], bound);
     expect(resolution.problems).toContainEqual(

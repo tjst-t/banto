@@ -31,6 +31,17 @@ export { EventLog, EventLogError, type LogFailure } from './log.js';
 export { OLDEST_READABLE_VERSION, upgradeEvent } from './migrate.js';
 
 export {
+  APPROVE,
+  NOTHING_APPROVED,
+  approvalId,
+  fingerprint,
+  foldApprovals,
+  ledgerOf,
+  requestApproval,
+  type ApprovalLedger,
+} from './approval.js';
+
+export {
   DEFAULT_BASE_LIMIT_CHARACTERS,
   appendBase,
   baseCharacters,

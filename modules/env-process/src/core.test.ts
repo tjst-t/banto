@@ -78,3 +78,12 @@ describe('ProcessEnvironmentCore', () => {
     expect(await core.exists(handle)).toBe(true);
   });
 });
+
+/** 仕様 §8-3 の持ち越しの答え。Factory の再開判定（§5.3）がこれを見る。 */
+describe('status', () => {
+  it('在れば ready、消えれば gone', async () => {
+    const handle = await core.create('work');
+    expect(await core.status(handle)).toBe('ready');
+    expect(await core.status(path.join(root, 'gone-dir'))).toBe('gone');
+  });
+});

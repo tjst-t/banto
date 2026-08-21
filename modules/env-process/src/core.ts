@@ -77,6 +77,20 @@ export class ProcessEnvironmentCore {
   }
 
   /**
+   * いま使えるかを、**口の外から聞けるようにする**（決定16。仕様 §8-3 の持ち越しの答え）。
+   *
+   * これを口に入れないと、Factory の再開判定（仕様 §5.3）が成り立たない。
+   * `exec` で代用しようとすると「環境が無い」と「コマンドが落ちた」が混ざる
+   * ——後者は結果、前者は失敗で、**混ぜてはいけない2つの事実**である（教訓13）。
+   *
+   * 値は2つだけにする。`stopped` のような中間状態は `start` / `stop` を
+   * 呼び込むので、**要るようになってから3つ目を足す。**
+   */
+  async status(handle: string): Promise<'ready' | 'gone'> {
+    return (await this.exists(handle)) ? 'ready' : 'gone';
+  }
+
+  /**
    * 環境の中でコマンドを走らせる。
    *
    * **シェルを通さない。** `shell: true` にすると引数の連結でクォートが壊れ、
