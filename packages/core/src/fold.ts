@@ -81,7 +81,7 @@ export function fold(events: readonly BantoEvent[]): State {
       case 'channel.created':
         channels.set(event.channelId, {
           id: event.channelId,
-          name: event.name,
+          name: event.channelName,
           threadIds: [],
         });
         break;

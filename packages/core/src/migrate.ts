@@ -23,6 +23,11 @@ type Step = (event: Record<string, unknown>) => Record<string, unknown>;
  *    **鍵になる項目は名前だけで一意**でなければならない
  * 3. `run.step.step` を落とす。常に `'query'` で情報を持たず、しかも Factory は
  *    自分の「段」を持つ（規則3）
+ * 4. `run.step.state` → `status`。**同じ問い（どうなっているか）に2つの語**を
+ *    当てていた——スレッドは `status`、問い合わせは `state`。Factory が3つ目を
+ *    足すので、ここで1つに寄せる。値ではなく**語を揃える**のが目的
+ * 5. `channel.created.name` → `channelName`。**名前で引かれる項目**
+ *    （`find(c => c.name === …)`）なので、鍵と同じ扱いにする
  */
 const v1ToV2: Step = (event) => {
   const next = { ...event };
@@ -30,6 +35,10 @@ const v1ToV2: Step = (event) => {
   if (next['type'] === 'run.step') {
     next['type'] = 'query.step';
     delete next['step'];
+    if ('state' in next) {
+      next['status'] = next['state'];
+      delete next['state'];
+    }
   }
   if ('runId' in next) {
     next['queryId'] = next['runId'];
@@ -38,6 +47,10 @@ const v1ToV2: Step = (event) => {
   if (next['type'] === 'thread.session' && 'handle' in next) {
     next['sessionHandle'] = next['handle'];
     delete next['handle'];
+  }
+  if (next['type'] === 'channel.created' && 'name' in next) {
+    next['channelName'] = next['name'];
+    delete next['name'];
   }
 
   return next;

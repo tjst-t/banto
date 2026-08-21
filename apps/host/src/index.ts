@@ -37,7 +37,7 @@ async function runTurn(args: RunArgs): Promise<void> {
   let channelId = [...state.channels.values()].find((c) => c.name === args.channelName)?.id;
   if (channelId === undefined) {
     channelId = randomUUID();
-    await log.append({ type: 'channel.created', channelId, name: args.channelName });
+    await log.append({ type: 'channel.created', channelId, channelName: args.channelName });
   }
 
   const threadId = randomUUID();
@@ -63,7 +63,7 @@ async function runTurn(args: RunArgs): Promise<void> {
     })) {
       await log.append(event as NewEvent);
       if (event.type === 'turn.usage') turns += 1;
-      if (event.type === 'query.step' && event.state === 'failed') failed = true;
+      if (event.type === 'query.step' && event.status === 'failed') failed = true;
     }
   } catch (cause) {
     // 黙って別の経路へ落ちない（規則2）。状態を記録してから落ちる。

@@ -16,7 +16,7 @@ async function freshLog(): Promise<EventLog> {
 /** チャンネル1本・スレッド1本まで作った状態。 */
 async function withThread(): Promise<EventLog> {
   const log = await freshLog();
-  await log.append({ type: 'channel.created', channelId: 'c1', name: 'banto' });
+  await log.append({ type: 'channel.created', channelId: 'c1', channelName: 'banto' });
   await log.append({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '一本目' });
   return log;
 }

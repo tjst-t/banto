@@ -177,7 +177,7 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
       let channelId = [...state.channels.values()].find((c) => c.name === channelName)?.id;
       if (channelId === undefined) {
         channelId = randomUUID();
-        await log.append({ type: 'channel.created', channelId, name: channelName });
+        await log.append({ type: 'channel.created', channelId, channelName });
       }
       const threadId = randomUUID();
       await log.append({
@@ -238,7 +238,7 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
         })) {
           const stamped = await log.append(event as NewEvent);
           send(stamped);
-          if (event.type === 'query.step' && event.state === 'failed') failed = true;
+          if (event.type === 'query.step' && event.status === 'failed') failed = true;
         }
       } catch (cause) {
         failed = true;

@@ -26,7 +26,7 @@ describe('EventLog', () => {
 
   it('追記した順に読み戻せる', async () => {
     const log = new EventLog(await tempDataDir());
-    await log.append({ type: 'channel.created', channelId: 'c1', name: 'banto' });
+    await log.append({ type: 'channel.created', channelId: 'c1', channelName: 'banto' });
     await log.append({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '最初' });
 
     const events = await log.read();
@@ -39,13 +39,13 @@ describe('EventLog', () => {
   it('毎回 0 から読み直す（どこまで読んだかを保存しない）', async () => {
     const dataDir = await tempDataDir();
     const log = new EventLog(dataDir);
-    await log.append({ type: 'channel.created', channelId: 'c1', name: 'banto' });
+    await log.append({ type: 'channel.created', channelId: 'c1', channelName: 'banto' });
 
     expect((await log.read()).length).toBe(1);
     // 2回目も同じ件数。カーソルを持っていれば 0 件になるはず。
     expect((await log.read()).length).toBe(1);
 
-    await log.append({ type: 'channel.created', channelId: 'c2', name: 'other' });
+    await log.append({ type: 'channel.created', channelId: 'c2', channelName: 'other' });
     expect((await log.read()).length).toBe(2);
 
     // 別のインスタンスでも同じ。プロセス内の状態に依存していない。
@@ -57,7 +57,7 @@ describe('EventLog', () => {
     const log = new EventLog(dataDir);
     await Promise.all(
       Array.from({ length: 50 }, (_, i) =>
-        log.append({ type: 'channel.created', channelId: `c${i}`, name: `n${i}` }),
+        log.append({ type: 'channel.created', channelId: `c${i}`, channelName: `n${i}` }),
       ),
     );
     const events = await log.read();
@@ -72,8 +72,8 @@ describe('EventLog', () => {
   it('読めない版に当たったら止まる（黙って読み進めない）', async () => {
     const dataDir = await tempDataDir();
     await writeRawLines(dataDir, [
-      JSON.stringify({ v: LOG_VERSION, id: 'a', at: '2026-08-20T00:00:00.000Z', type: 'channel.created', channelId: 'c1', name: 'ok' }),
-      JSON.stringify({ v: LOG_VERSION + 1, id: 'b', at: '2026-08-20T00:00:01.000Z', type: 'channel.created', channelId: 'c2', name: '未来' }),
+      JSON.stringify({ v: LOG_VERSION, id: 'a', at: '2026-08-20T00:00:00.000Z', type: 'channel.created', channelId: 'c1', channelName: 'ok' }),
+      JSON.stringify({ v: LOG_VERSION + 1, id: 'b', at: '2026-08-20T00:00:01.000Z', type: 'channel.created', channelId: 'c2', channelName: '未来' }),
     ]);
 
     const error = await new EventLog(dataDir).read().then(
@@ -92,7 +92,7 @@ describe('EventLog', () => {
   it('JSON として読めない行で止まる（落ちた書き込みの残骸を勝手に捨てない）', async () => {
     const dataDir = await tempDataDir();
     await writeRawLines(dataDir, [
-      JSON.stringify({ v: LOG_VERSION, id: 'a', at: '2026-08-20T00:00:00.000Z', type: 'channel.created', channelId: 'c1', name: 'ok' }),
+      JSON.stringify({ v: LOG_VERSION, id: 'a', at: '2026-08-20T00:00:00.000Z', type: 'channel.created', channelId: 'c1', channelName: 'ok' }),
       '{"v":1,"type":"channel.created"',
     ]);
 
@@ -127,7 +127,7 @@ describe('EventLog', () => {
 
   it('版印が無い行で止まる', async () => {
     const dataDir = await tempDataDir();
-    await writeRawLines(dataDir, [JSON.stringify({ type: 'channel.created', channelId: 'c1', name: 'x' })]);
+    await writeRawLines(dataDir, [JSON.stringify({ type: 'channel.created', channelId: 'c1', channelName: 'x' })]);
 
     const error = await new EventLog(dataDir).read().then(
       (events) => {
@@ -142,7 +142,7 @@ describe('EventLog', () => {
   it('空行は読み飛ばす（末尾の改行で止まってはいけない）', async () => {
     const dataDir = await tempDataDir();
     await writeRawLines(dataDir, [
-      JSON.stringify({ v: LOG_VERSION, id: 'a', at: '2026-08-20T00:00:00.000Z', type: 'channel.created', channelId: 'c1', name: 'ok' }),
+      JSON.stringify({ v: LOG_VERSION, id: 'a', at: '2026-08-20T00:00:00.000Z', type: 'channel.created', channelId: 'c1', channelName: 'ok' }),
       '',
       '   ',
     ]);
@@ -166,7 +166,8 @@ describe('版を上げても古いログが読める（ADR-0001 決定7）', () 
 
     const [event] = await new EventLog(dataDir).read();
     expect(event?.type).toBe('query.step');
-    expect(event).toMatchObject({ queryId: 'r1', threadId: 't1', state: 'succeeded' });
+    expect(event).toMatchObject({ queryId: 'r1', threadId: 't1', status: 'succeeded' });
+    expect(event).not.toHaveProperty('state');
     expect(event).not.toHaveProperty('runId');
     // 常に 'query' で情報を持たない項目。残すと Factory の「段」と重なる。
     expect(event).not.toHaveProperty('step');
@@ -210,13 +211,16 @@ describe('版を上げても古いログが読める（ADR-0001 決定7）', () 
 
     const [event] = await new EventLog(dataDir).read();
     expect(event?.v).toBe(LOG_VERSION);
+    // 名前で引かれる項目なので、鍵と同じ扱いにする。
+    expect(event).toMatchObject({ channelName: 'banto' });
+    expect(event).not.toHaveProperty('name');
   });
 
   // 道が在ることと、止まるべきときに止まることは両立していないといけない。
   it('未来の版ではやはり止まる', async () => {
     const dataDir = await tempDataDir();
     await writeRawLines(dataDir, [
-      JSON.stringify({ v: LOG_VERSION + 1, id: 'a', at: '2026-08-20T00:00:00.000Z', type: 'channel.created', channelId: 'c1', name: 'x' }),
+      JSON.stringify({ v: LOG_VERSION + 1, id: 'a', at: '2026-08-20T00:00:00.000Z', type: 'channel.created', channelId: 'c1', channelName: 'x' }),
     ]);
 
     const error = await new EventLog(dataDir).read().then(

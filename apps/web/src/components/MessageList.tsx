@@ -48,8 +48,8 @@ export function MessageList({ items, running }: { items: TimelineItem[]; running
           const { event } = item;
 
           if (event.type === 'query.step') {
-            if (event.state === 'started') return null; // 下の running インジケータで表現する
-            if (event.state === 'succeeded') {
+            if (event.status === 'started') return null; // 下の running インジケータで表現する
+            if (event.status === 'succeeded') {
               return (
                 <div key={item.id} className="flex justify-start">
                   <div className="max-w-[85%] rounded-lg rounded-bl-sm border border-border bg-surface px-3 py-2 text-sm text-ink">

@@ -42,7 +42,7 @@ describe.skipIf(!enabled)('fs モジュールを本物の SDK で叩く', () => 
       maxTurns: 6,
       prompt: 'Read note.txt with the fs read tool and report the passphrase only.',
     })) {
-      if (event.type === 'query.step' && event.state === 'succeeded') answer = event.detail ?? '';
+      if (event.type === 'query.step' && event.status === 'succeeded') answer = event.detail ?? '';
     }
 
     expect(answer).toContain('MIKAN');

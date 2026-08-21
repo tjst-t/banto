@@ -18,7 +18,7 @@ function ev(event: NewEvent): BantoEvent {
 describe('fold', () => {
   it('Channel にスレッドがぶら下がる', () => {
     const state = fold([
-      ev({ type: 'channel.created', channelId: 'c1', name: 'banto' }),
+      ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
       ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '一本目' }),
       ev({ type: 'thread.created', threadId: 't2', channelId: 'c1', title: '二本目' }),
     ]);
@@ -28,7 +28,7 @@ describe('fold', () => {
 
   it('base は追記のみで積み上がる', () => {
     const state = fold([
-      ev({ type: 'channel.created', channelId: 'c1', name: 'banto' }),
+      ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
       ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '一本目' }),
       ev({ type: 'base.appended', threadId: 't1', baseVersion: 1, text: '依頼: Phase 0' }),
       ev({ type: 'base.appended', threadId: 't1', baseVersion: 2, text: '制約: モジュールを増やさない' }),
@@ -41,7 +41,7 @@ describe('fold', () => {
   // これが破れるとキャッシュの前方一致が壊れ、分岐が安いという前提そのものが崩れる。
   it('fork したスレッドは、切った後の親の追記を見ない', () => {
     const state = fold([
-      ev({ type: 'channel.created', channelId: 'c1', name: 'banto' }),
+      ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
       ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '親' }),
       ev({ type: 'base.appended', threadId: 't1', baseVersion: 1, text: '依頼' }),
       ev({ type: 'base.appended', threadId: 't1', baseVersion: 2, text: '制約' }),
@@ -65,7 +65,7 @@ describe('fold', () => {
 
   it('fork は既定で base から切る', () => {
     const state = fold([
-      ev({ type: 'channel.created', channelId: 'c1', name: 'banto' }),
+      ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
       ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '親' }),
       ev({ type: 'base.appended', threadId: 't1', baseVersion: 1, text: '依頼' }),
       ev({
@@ -86,7 +86,7 @@ describe('fold', () => {
 
   it('多段の fork でも継承が切れる位置を守る', () => {
     const state = fold([
-      ev({ type: 'channel.created', channelId: 'c1', name: 'banto' }),
+      ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
       ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '親' }),
       ev({ type: 'base.appended', threadId: 't1', baseVersion: 1, text: 'A' }),
       ev({ type: 'base.appended', threadId: 't1', baseVersion: 2, text: 'B' }),
@@ -117,7 +117,7 @@ describe('fold', () => {
 
   it('判断待ちは1本の列に集まり、解決すると消える', () => {
     const state = fold([
-      ev({ type: 'channel.created', channelId: 'c1', name: 'banto' }),
+      ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
       ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '一本目' }),
       ev({ type: 'decision.requested', decisionId: 'd1', source: 'thread', threadId: 't1', question: 'この方針でよいか' }),
       ev({ type: 'decision.requested', decisionId: 'd2', source: 'observer', threadId: null, question: '文脈が下がっていない' }),
@@ -135,7 +135,7 @@ describe('fold', () => {
 
   it('スレッドの状態が最後の宣言に従う', () => {
     const state = fold([
-      ev({ type: 'channel.created', channelId: 'c1', name: 'banto' }),
+      ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
       ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '一本目' }),
       ev({ type: 'thread.status', threadId: 't1', status: 'waiting-on-human' }),
       ev({ type: 'thread.status', threadId: 't1', status: 'done' }),

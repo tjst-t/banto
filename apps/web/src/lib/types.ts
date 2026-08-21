@@ -81,7 +81,7 @@ export type QueryStep = EventEnvelope & {
   readonly type: 'query.step';
   readonly queryId: string;
   readonly threadId: string;
-  readonly state: 'started' | 'succeeded' | 'failed';
+  readonly status: 'started' | 'succeeded' | 'failed';
   readonly detail?: string;
 };
 

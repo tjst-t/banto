@@ -80,7 +80,7 @@ banto 側で型づけると、型が実装の共通部分に縮み、providers �
 | 実装 | `address` の中身 |
 |---|---|
 | process | `127.0.0.1:N`（何もしない） |
-| docker | `-p` で publish した先 |
+| docker | `-p` で割り当てたホスト側の port |
 | VM（Proxmox / AWS / SSH） | VM の IP。届かなければ**環境実装が SSH トンネルを張る** |
 
 ### 2.3 実装は provider として差し替える
@@ -173,6 +173,10 @@ unpublish(name)
 | `caddy` | 経路を書いて `https://<name>.example.com` |
 | `cloudflared` | トンネルを掘って URL |
 | `tailscale` / `ngrok` | 同様 |
+
+> **`publish` という語を、port の割り当てに使わない。** docker の `-p` は
+> 慣用的に「publish」と呼ばれるが、ここでは **capability の名前**である。
+> port の話は「割り当て」と呼ぶ（ADR 決定7 の名前づけ 2）。
 
 ### 3.2 なぜ環境から割るか
 
@@ -309,6 +313,21 @@ Phase 2 では Factory 内で数える。
 
 Run のサブエージェントに渡すのは、**その Factory に紐づいたモジュールのツールだけ**。
 既定で何も通らない現在の実装（`allowedToolNames`）がそのまま効く。
+
+---
+
+## 5.8 語の使い分け（Factory を書く前に決めておく）
+
+ログはイベントの型を跨いで読まれるので、Factory が語を持ち込む前に決める
+（ADR 決定7 の名前づけ）。
+
+| 語 | Factory では | なぜ |
+|---|---|---|
+| **base** | **使わない。`targetBranch` と呼ぶ**（既定は `main`） | `base` は会話の base（要件 G）。git の base branch と重なる |
+| **queue** | 判断待ちは `pendingDecisions`、マージの列は `mergeQueue` | 素の `queue` は、A6 のキューと merge queue のどちらにも読める |
+| **status** | Run の状態も `status` | 「どうなっているか」は1語に寄せる |
+| **run / runId** | Factory の Run。**空けてある** | 問い合わせは `query` / `queryId`（§8-1） |
+| **handle** | 環境のものは `environmentHandle` | セッションのものは `sessionHandle` |
 
 ---
 

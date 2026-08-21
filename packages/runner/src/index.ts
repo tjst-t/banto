@@ -95,7 +95,7 @@ export class AgentSdkRunner implements Runner {
       type: 'query.step',
       queryId: input.queryId,
       threadId: input.threadId,
-      state: 'started',
+      status: 'started',
     };
 
     /**
@@ -157,7 +157,7 @@ export class AgentSdkRunner implements Runner {
         type: 'query.step',
         queryId: input.queryId,
         threadId: input.threadId,
-        state: 'failed',
+        status: 'failed',
         detail: cause instanceof Error ? cause.message : String(cause),
       };
       throw cause;
@@ -208,7 +208,7 @@ export class AgentSdkRunner implements Runner {
         type: 'query.step',
         queryId: input.queryId,
         threadId: input.threadId,
-        state: message.subtype === 'success' ? 'succeeded' : 'failed',
+        status: message.subtype === 'success' ? 'succeeded' : 'failed',
         detail:
           message.subtype === 'success'
             ? message.result

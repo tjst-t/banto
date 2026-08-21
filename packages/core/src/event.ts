@@ -10,7 +10,8 @@
  * 版印。読めない版に当たったら止まる（ADR-0001 決定7）。
  * 形を変えたら上げる。上げたら、古い版を読む道を明示的に書く。
  *
- * - **1 → 2**（2026-08-21）：run→query の改名、handle→sessionHandle、step の削除。
+ * - **1 → 2**（2026-08-21）：Factory を書く前に、語の重なりをまとめて外した
+ *   （run→query、handle→sessionHandle、state→status、name→channelName、step の削除）。
  *   読む道は `migrate.ts`。
  */
 export const LOG_VERSION = 2;
@@ -62,7 +63,12 @@ interface Envelope {
 export interface ChannelCreated extends Envelope {
   readonly type: 'channel.created';
   readonly channelId: ChannelId;
-  readonly name: string;
+  /**
+   * **`name` ではなく `channelName`。** これは表示名であると同時に**引くための名前**で
+   * （`find(c => c.channelName === …)`）、鍵と同じように型を見ずに読まれる。
+   * 公開モジュール（決定16）も経路の `name` を持つので、素の `name` は空けておく。
+   */
+  readonly channelName: string;
 }
 
 export interface ThreadCreated extends Envelope {
@@ -166,7 +172,12 @@ export interface QueryStep extends Envelope {
   readonly type: 'query.step';
   readonly queryId: QueryId;
   readonly threadId: ThreadId;
-  readonly state: 'started' | 'succeeded' | 'failed';
+  /**
+   * **`state` ではなく `status`。** 「どうなっているか」を問う項目は、スレッドも
+   * 問い合わせも Factory の Run も同じなので、**語を1つに寄せる**（値は別でよい）。
+   * 2つの語を使うと、ログを `status` で絞ったときに片方だけが落ちる。
+   */
+  readonly status: 'started' | 'succeeded' | 'failed';
   readonly detail?: string;
 }
 
