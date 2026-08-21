@@ -3,7 +3,7 @@ import { AlertTriangle, Radio } from 'lucide-react';
 
 import { useBantoState } from './hooks/useBantoState';
 import { useThreadSessions } from './hooks/useThreadSessions';
-import { advanceRuns, createThread, requestRun, resolveDecision } from './lib/api';
+import { advanceRuns, createThread, forkThread, requestRun, resolveDecision } from './lib/api';
 import { ThreadPicker } from './components/ThreadPicker';
 import { ThreadColumn } from './components/ThreadColumn';
 import { Queue } from './components/Queue';
@@ -82,6 +82,21 @@ export function App() {
     // ここを省くと「答えたのに会話に何も出ない」になる。
     // **開いている全部**——答えが返る先は、いま見ている1本とは限らない。
     for (const id of openThreadIds) await loadHistory(id, true);
+  };
+
+  /**
+   * ここから分岐する（要件 A3）。**新しい枝を開いて並べる**——
+   * 分岐は「並べて見比べる」ためのものなので、切って隠すのでは意味がない。
+   */
+  const handleFork = async (fromThreadId: string) => {
+    try {
+      const res = await forkThread({ fromThreadId });
+      await refetch();
+      openThread(res.threadId);
+    } catch (cause) {
+      // 握りつぶさない（規則2）。切れなかったことを画面に出す。
+      setCreateError(cause instanceof Error ? cause.message : String(cause));
+    }
   };
 
   const handleCreate = async (args: { channelName: string; title: string }) => {
@@ -202,6 +217,7 @@ export function App() {
                 onSend={(text) => handleSend(thread.id, text)}
                 onClose={() => setOpenThreadIds((prev) => prev.filter((id) => id !== thread.id))}
                 onBaseChanged={() => void refetch()}
+                onFork={() => void handleFork(thread.id)}
                 closable={openThreads.length > 1}
               />
             ))

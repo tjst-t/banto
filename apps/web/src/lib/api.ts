@@ -76,6 +76,23 @@ export async function advanceRuns(): Promise<StateResponse> {
 }
 
 /**
+ * 会話を分岐する（要件 A3）。**既定は base から切る**（決定3）——
+ * 「いまの続き」から切ると枝も肥えたまま始まり、A4「分岐が安い」が壊れる。
+ */
+export async function forkThread(body: {
+  fromThreadId: string;
+  title?: string;
+  mode?: 'base' | 'tip';
+}): Promise<CreateThreadResponse> {
+  const res = await fetch('/api/threads/fork', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return asJson<CreateThreadResponse>(res);
+}
+
+/**
  * AI が指したものを読む（要件 C14）。**持ち主のモジュールに聞く。**
  * 画面は中身を覚えない——開くたびに読むので、いつでも現物である（規則3）。
  */

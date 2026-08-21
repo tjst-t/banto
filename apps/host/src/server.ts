@@ -403,6 +403,53 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
       return;
     }
 
+    /**
+     * 会話を分岐する（要件 A3・R4、決定3）。
+     *
+     * **既定は base から切る**（決定3）。「いまの続き」から切ると、
+     * 枝も肥えたまま始まるので、分岐が安いという前提（要件 A4）が壊れる。
+     * `mode: 'tip'` は明示したときだけ。
+     *
+     * **決まったことは切った時点の版まで引き継ぐ**（要件 R4）。
+     * その後の親の追記は入らない——継承の解きかたは `effectiveBase` に1つだけある（規則3）。
+     */
+    if (req.method === 'POST' && url.pathname === '/api/threads/fork') {
+      const body = (await readBody(req)) as {
+        fromThreadId?: string;
+        title?: string;
+        mode?: string;
+      };
+      if (typeof body.fromThreadId !== 'string') {
+        json(res, 400, { error: 'fromThreadId が要る' });
+        return;
+      }
+      if (body.mode !== undefined && body.mode !== 'base' && body.mode !== 'tip') {
+        // 知らない値を黙って既定へ落とさない（規則2）。
+        json(res, 400, { error: `知らない mode: ${body.mode}（base か tip）` });
+        return;
+      }
+
+      const state = fold(await log.read());
+      const parent = state.threads.get(body.fromThreadId);
+      if (parent === undefined) {
+        json(res, 404, { error: `知らないスレッド: ${body.fromThreadId}` });
+        return;
+      }
+
+      const threadId = randomUUID();
+      await log.append({
+        type: 'thread.forked',
+        threadId,
+        channelId: parent.channelId,
+        title: body.title ?? `${parent.title} から分岐`,
+        // **切った時点の版を鍵にする。** 親がこの後で追記しても、この枝には入らない。
+        from: { threadId: parent.id, baseVersion: parent.baseVersion },
+        mode: body.mode ?? 'base',
+      });
+      json(res, 200, { threadId, channelId: parent.channelId });
+      return;
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/threads') {
       const body = (await readBody(req)) as { channelName?: string; title?: string };
       const state = fold(await log.read());

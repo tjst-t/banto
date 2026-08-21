@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X } from 'lucide-react';
+import { GitFork, X } from 'lucide-react';
 
 import { BasePanel } from './BasePanel';
 import { ResourceViewer } from './ResourceViewer';
@@ -43,6 +43,7 @@ export function ThreadColumn({
   onSend,
   onClose,
   onBaseChanged,
+  onFork,
   closable,
 }: {
   thread: ThreadSummary;
@@ -50,6 +51,8 @@ export function ThreadColumn({
   onSend: (text: string) => void;
   onClose: () => void;
   onBaseChanged: () => void;
+  /** ここから分岐する（要件 A3）。**決まったことは切った時点まで引き継ぐ。** */
+  onFork: () => void;
   closable: boolean;
 }) {
   const [pane, setPane] = useState<Pane>('conversation');
@@ -89,12 +92,22 @@ export function ThreadColumn({
             {opened !== null && <TabsTrigger value="resource">見ているもの</TabsTrigger>}
           </TabsList>
         </Tabs>
+        {/* **分岐は base から切る**（決定3）。押した時点の版を引き継ぐ（要件 R4）。 */}
+        <button
+          type="button"
+          onClick={onFork}
+          data-fork={thread.id}
+          title={`ここから分岐する（決まったこと v${thread.baseVersion} を引き継ぐ）`}
+          className="ml-auto rounded p-1 text-ink-muted hover:bg-paper hover:text-ink"
+        >
+          <GitFork className="h-3.5 w-3.5" />
+        </button>
         {closable && (
           <button
             type="button"
             onClick={onClose}
             title="この会話を閉じる（消えるのは表示だけ）"
-            className="ml-auto rounded p-1 text-ink-muted hover:bg-paper hover:text-ink"
+            className="rounded p-1 text-ink-muted hover:bg-paper hover:text-ink"
           >
             <X className="h-3.5 w-3.5" />
           </button>

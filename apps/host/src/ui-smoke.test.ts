@@ -434,6 +434,44 @@ describe('画面の煙試験（本物のブラウザ）', () => {
     }
   }, 120_000);
 
+  /**
+   * **画面から分岐できる**（要件 A3）。
+   *
+   * イベントも継承の解きかたも在ったのに、**作る口が画面に無かった**
+   * ——A3 は要件なので、機構だけ在って触れないのは満たしていないのと同じである。
+   */
+  it('分岐すると、決まったことを引き継いだ枝が横に並ぶ', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await openThread(page, '煙試験');
+      await expect
+        .poll(async () => page.locator('[data-thread-column]').count(), { timeout: 15_000 })
+        .toBe(2);
+
+      // 「煙試験」（base v1）から分岐する。
+      await page.locator('[data-fork]').first().click();
+
+      // **枝が開いて並ぶ**（切って隠すのでは、見比べられない）。
+      await expect
+        .poll(async () => page.locator('[data-thread-column]').count(), { timeout: 15_000 })
+        .toBe(3);
+      await page.waitForSelector('text=/煙試験 から分岐/', { timeout: 15_000 });
+
+      // **決まったことを引き継いでいる**（要件 R4）。継承分として出る。
+      await page.getByRole('tab', { name: /決まったこと/ }).first().click();
+      await page.waitForSelector('text=/1 行は fork 元から/', { timeout: 15_000 });
+      await page.waitForSelector('text=依頼: 煙を出す', { timeout: 15_000 });
+    } finally {
+      await browser.close();
+    }
+  }, 120_000);
+
   it('無い静的ファイルは 404。index.html にすり替えない（規則2）', async () => {
     if (!built) throw new Error('画面がビルドされていないので測れない');
     const res = await fetch(`${origin}/assets/does-not-exist.js`);
