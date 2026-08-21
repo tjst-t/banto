@@ -283,6 +283,18 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
       const thread = before.threads.get(body.threadId);
       const baseText = effectiveBase(before, body.threadId).join('\n');
 
+      // **人の発言もログに残す**（要件 A8）。残さないと、画面を開き直した瞬間に
+      // 会話の片側が消える。Runner が記録するのは相手の分だけである。
+      send(
+        await log.append({
+          type: 'message.recorded',
+          threadId: body.threadId,
+          queryId,
+          role: 'user',
+          text: body.text,
+        }),
+      );
+
       await log.append({ type: 'thread.status', threadId: body.threadId, status: 'working' });
       let failed = false;
 

@@ -1,6 +1,6 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 
-import { streamPrompt } from '../lib/api';
+import { fetchEvents, streamPrompt } from '../lib/api';
 import type { StreamEvent } from '../lib/types';
 
 /**
@@ -10,8 +10,6 @@ import type { StreamEvent } from '../lib/types';
  * でしか存在せず、素の HTTP でドメインを開くと `undefined` になって落ちる。
  * 開発は localhost（secure context）なので、そこでは絶対に露見しない
  * ——実際に露見したのは本物のドメインで開いたときだった（教訓1）。
- *
- * ここで作る id は表示の並びを保つためだけのもので、推測されて困るものではない。
  */
 function localId(): string {
   const c: Crypto | undefined = globalThis.crypto;
@@ -19,71 +17,95 @@ function localId(): string {
   return `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export type TimelineItem =
-  | { readonly kind: 'user'; readonly id: string; readonly text: string; readonly at: string }
-  | { readonly kind: 'stream'; readonly id: string; readonly event: StreamEvent };
+export interface TimelineItem {
+  readonly id: string;
+  readonly event: StreamEvent;
+}
 
 export interface ThreadSession {
   readonly items: TimelineItem[];
   readonly running: boolean;
+  readonly loading: boolean;
   readonly error: string | null;
 }
 
-const EMPTY_SESSION: ThreadSession = { items: [], running: false, error: null };
+const EMPTY_SESSION: ThreadSession = { items: [], running: false, loading: false, error: null };
 
 /**
- * この画面が開いている間に届いたイベントだけを覚える、送信中の会話の見え方。
+ * 会話の見え方。**真実はイベントログにあり、ここはその写しではない。**
  *
- * **これは「真実の写し」ではない**——host にはスレッドの会話ログを読み返す口が
- * 無いので（/api/state はサマリだけ）、ここに置くのはその場で流れた分の一時的な
- * バッファであって、他から導ける値ではない。ページを開き直すと消える。
+ * 開いたときに `/api/events` から読み直し、送信中は流れてくるものを継ぎ足す。
+ * どちらも**サーバが積んだのと同じイベント**なので、履歴と実況で形が変わらない
+ * （規則3：画面用の別形式を作らない）。
+ *
+ * **人の発言をここで作らない。** サーバが `message.recorded` として先に流すので、
+ * 画面側でも作ると同じ発言が2つ並ぶ——それが「写しを持つと、いつか食い違う」の
+ * いちばん小さい実例になる。
  */
 export function useThreadSessions() {
   const [sessions, setSessions] = useState<Record<string, ThreadSession>>({});
+  /** 読み込み済みのスレッド。**開くたびに取り直さない**が、覚えるのはこれだけ。 */
+  const loaded = useRef<Set<string>>(new Set());
 
   const sessionFor = useCallback(
     (threadId: string): ThreadSession => sessions[threadId] ?? EMPTY_SESSION,
     [sessions],
   );
 
-  const send = useCallback(async (threadId: string, text: string, onSettled?: () => void) => {
-    const userItem: TimelineItem = {
-      kind: 'user',
-      id: localId(),
-      text,
-      at: new Date().toISOString(),
-    };
-    setSessions((prev) => {
-      const current = prev[threadId] ?? EMPTY_SESSION;
-      return {
-        ...prev,
-        [threadId]: { items: [...current.items, userItem], running: true, error: null },
-      };
-    });
-
-    try {
-      for await (const event of streamPrompt(threadId, text)) {
-        setSessions((prev) => {
-          const current = prev[threadId] ?? EMPTY_SESSION;
-          const item: TimelineItem = { kind: 'stream', id: localId(), event };
-          return { ...prev, [threadId]: { ...current, items: [...current.items, item] } };
-        });
-      }
-      setSessions((prev) => {
-        const current = prev[threadId] ?? EMPTY_SESSION;
-        return { ...prev, [threadId]: { ...current, running: false } };
-      });
-    } catch (cause) {
-      // 握りつぶさない。ストリームが途中で切れても画面に理由を出す（規則2）。
-      const message = cause instanceof Error ? cause.message : String(cause);
-      setSessions((prev) => {
-        const current = prev[threadId] ?? EMPTY_SESSION;
-        return { ...prev, [threadId]: { ...current, running: false, error: message } };
-      });
-    } finally {
-      onSettled?.();
-    }
+  const patch = useCallback((threadId: string, next: Partial<ThreadSession>) => {
+    setSessions((prev) => ({ ...prev, [threadId]: { ...(prev[threadId] ?? EMPTY_SESSION), ...next } }));
   }, []);
 
-  return { sessionFor, send };
+  /** 過去を読み直す（要件 A8）。**開き直しても会話が残る**のはこれがあるから。 */
+  const loadHistory = useCallback(
+    async (threadId: string, force = false) => {
+      if (!force && loaded.current.has(threadId)) return;
+      loaded.current.add(threadId);
+      patch(threadId, { loading: true, error: null });
+      try {
+        const events = await fetchEvents(threadId);
+        patch(threadId, {
+          items: events.map((event) => ({ id: localId(), event })),
+          loading: false,
+        });
+      } catch (cause) {
+        // 握りつぶさない（規則2）。読めなかったことを画面に出す。
+        loaded.current.delete(threadId);
+        patch(threadId, {
+          loading: false,
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
+      }
+    },
+    [patch],
+  );
+
+  const send = useCallback(
+    async (threadId: string, text: string, onSettled?: () => void) => {
+      patch(threadId, { running: true, error: null });
+      try {
+        for await (const event of streamPrompt(threadId, text)) {
+          setSessions((prev) => {
+            const current = prev[threadId] ?? EMPTY_SESSION;
+            return {
+              ...prev,
+              [threadId]: { ...current, items: [...current.items, { id: localId(), event }] },
+            };
+          });
+        }
+        patch(threadId, { running: false });
+      } catch (cause) {
+        // 握りつぶさない。ストリームが途中で切れても画面に理由を出す（規則2）。
+        patch(threadId, {
+          running: false,
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
+      } finally {
+        onSettled?.();
+      }
+    },
+    [patch],
+  );
+
+  return { sessionFor, send, loadHistory };
 }

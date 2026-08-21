@@ -34,31 +34,34 @@ export function MessageList({ items, running }: { items: TimelineItem[]; running
         )}
 
         {items.map((item) => {
-          if (item.kind === 'user') {
+          const { event } = item;
+
+          // 文面は message.recorded が持つ（要件 A8）。**ログに在るので開き直しても残る。**
+          if (event.type === 'message.recorded') {
+            const mine = event.role === 'user';
             return (
-              <div key={item.id} className="flex justify-end">
-                <div className="max-w-[80%] rounded-lg rounded-br-sm bg-accent px-3 py-2 text-sm text-white">
-                  <p className="whitespace-pre-wrap">{item.text}</p>
-                  <p className="mt-1 text-right text-[10px] text-white/70">{timeLabel(item.at)}</p>
+              <div key={item.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
+                <div
+                  className={
+                    mine
+                      ? 'max-w-[80%] rounded-lg rounded-br-sm bg-accent px-3 py-2 text-sm text-white'
+                      : 'max-w-[85%] rounded-lg rounded-bl-sm border border-border bg-surface px-3 py-2 text-sm text-ink'
+                  }
+                >
+                  <p className="whitespace-pre-wrap">{event.text}</p>
+                  <p className={`mt-1 text-[10px] ${mine ? 'text-right text-white/70' : 'text-ink-muted'}`}>
+                    {timeLabel(event.at)}
+                  </p>
                 </div>
               </div>
             );
           }
 
-          const { event } = item;
-
           if (event.type === 'query.step') {
             if (event.status === 'started') return null; // 下の running インジケータで表現する
-            if (event.status === 'succeeded') {
-              return (
-                <div key={item.id} className="flex justify-start">
-                  <div className="max-w-[85%] rounded-lg rounded-bl-sm border border-border bg-surface px-3 py-2 text-sm text-ink">
-                    <p className="whitespace-pre-wrap">{event.detail ?? '（応答なし）'}</p>
-                    <p className="mt-1 text-[10px] text-ink-muted">{timeLabel(event.at)}</p>
-                  </div>
-                </div>
-              );
-            }
+            // **文面はここに出さない。** 同じ内容が message.recorded にも在るので、
+            // 両方出すと二重に見える（規則3：同じものを2箇所に持たない）。
+            if (event.status === 'succeeded') return null;
             return (
               <div key={item.id} className="flex items-start gap-2 rounded-md border border-critical/30 bg-critical-soft px-3 py-2 text-sm text-critical">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />

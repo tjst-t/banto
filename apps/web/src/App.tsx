@@ -3,26 +3,31 @@ import { AlertTriangle, Radio } from 'lucide-react';
 
 import { useBantoState } from './hooks/useBantoState';
 import { useThreadSessions } from './hooks/useThreadSessions';
-import { createThread } from './lib/api';
+import { advanceRuns, createThread, requestRun } from './lib/api';
 import { ThreadPicker } from './components/ThreadPicker';
 import { ConversationPane } from './components/ConversationPane';
 import { Queue } from './components/Queue';
+import { Runs } from './components/Runs';
 import { Tabs, TabsList, TabsTrigger } from './components/ui/tabs';
 
-type MobilePane = 'conversation' | 'queue';
+type MobilePane = 'conversation' | 'side';
+/** 右側の面。**1画面に集める**（要件 A5）ので、増やすのではなく切り替える。 */
+type SidePane = 'queue' | 'factory';
 
 export function App() {
   const { data, error, loading, refetch } = useBantoState();
-  const { sessionFor, send } = useThreadSessions();
+  const { sessionFor, send, loadHistory } = useThreadSessions();
 
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [mobilePane, setMobilePane] = useState<MobilePane>('conversation');
+  const [sidePane, setSidePane] = useState<SidePane>('queue');
 
   const threads = data?.threads ?? [];
   const channels = data?.channels ?? [];
   const queue = data?.queue ?? [];
+  const runs = data?.runs ?? [];
 
   // 何も選ばれていなければ、直近のスレッドを既定にする。
   useEffect(() => {
@@ -30,6 +35,11 @@ export function App() {
       setSelectedThreadId(threads[threads.length - 1]?.id ?? null);
     }
   }, [selectedThreadId, threads]);
+
+  // 選んだ会話の過去を読み直す（要件 A8）。**開き直しても会話が残る。**
+  useEffect(() => {
+    if (selectedThreadId !== null) void loadHistory(selectedThreadId);
+  }, [selectedThreadId, loadHistory]);
 
   const selectedThread = threads.find((t) => t.id === selectedThreadId) ?? null;
   const session = selectedThreadId ? sessionFor(selectedThreadId) : sessionFor('__none__');
@@ -63,6 +73,18 @@ export function App() {
   const handleOpenThread = (threadId: string) => {
     setSelectedThreadId(threadId);
     setMobilePane('conversation');
+  };
+
+  const handleRequestRun = async (request: string) => {
+    await requestRun({ request });
+    await refetch();
+  };
+
+  const handleAdvance = async () => {
+    await advanceRuns();
+    await refetch();
+    // 走ったぶんの会話が増えているので、開いている会話は読み直す。
+    if (selectedThreadId !== null) await loadHistory(selectedThreadId, true);
   };
 
   return (
@@ -113,7 +135,9 @@ export function App() {
         <Tabs value={mobilePane} onValueChange={(v) => setMobilePane(v as MobilePane)}>
           <TabsList>
             <TabsTrigger value="conversation">会話</TabsTrigger>
-            <TabsTrigger value="queue">待っているもの {queue.length > 0 ? `(${queue.length})` : ''}</TabsTrigger>
+            <TabsTrigger value="side">
+              待ち／Factory {queue.length > 0 ? `(${queue.length})` : ''}
+            </TabsTrigger>
           </TabsList>
         </Tabs>
       </div>
@@ -129,14 +153,37 @@ export function App() {
 
         <aside
           className={`flex min-h-0 flex-col border-border md:border-l ${
-            mobilePane === 'queue' ? 'flex' : 'hidden md:flex'
+            mobilePane === 'side' ? 'flex' : 'hidden md:flex'
           }`}
         >
-          <div className="border-b border-border px-4 py-3">
-            <h2 className="text-sm font-semibold text-ink">いま自分を待っているもの</h2>
-            <p className="text-[11px] text-ink-muted">出所を問わず1つの列にしてある</p>
+          <div className="border-b border-border px-3 py-2.5">
+            <Tabs value={sidePane} onValueChange={(v) => setSidePane(v as SidePane)}>
+              <TabsList>
+                <TabsTrigger value="queue">
+                  待っているもの {queue.length > 0 ? `(${queue.length})` : ''}
+                </TabsTrigger>
+                <TabsTrigger value="factory">
+                  Factory {runs.length > 0 ? `(${runs.length})` : ''}
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
           </div>
-          <Queue queue={queue} threads={threads} onOpenThread={handleOpenThread} />
+
+          {sidePane === 'queue' ? (
+            <>
+              <p className="border-b border-border px-4 py-2 text-[11px] text-ink-muted">
+                出所を問わず1つの列にしてある（要件 A6）
+              </p>
+              <Queue queue={queue} threads={threads} onOpenThread={handleOpenThread} />
+            </>
+          ) : (
+            <Runs
+              runs={runs}
+              onRequest={handleRequestRun}
+              onAdvance={handleAdvance}
+              onOpenThread={handleOpenThread}
+            />
+          )}
         </aside>
       </main>
     </div>

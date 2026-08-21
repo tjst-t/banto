@@ -148,8 +148,9 @@ export class AgentSdkRunner implements Runner {
           };
         }
 
-        const event = this.translate(input, message, seenMessageIds, () => turnIndex++);
-        if (event) yield event;
+        for (const event of this.translate(input, message, seenMessageIds, () => turnIndex++)) {
+          yield event;
+        }
       }
     } catch (cause) {
       // 握りつぶさない。失敗を記録してから、呼び手へ投げ直す（規則2）。
@@ -164,28 +165,72 @@ export class AgentSdkRunner implements Runner {
     }
   }
 
-  /** SDK のメッセージを banto のイベントに直す。関係ないものは null。 */
-  private translate(
+  /**
+   * SDK のメッセージを banto のイベントに直す。関係ないものは空。
+   *
+   * **1通から2つ出ることがある**（usage と文面）。usage は観測の材料、文面は
+   * 読み返しのため（要件 A8）で、**別の理由で要るものなので別のイベントにする。**
+   *
+   * **試験のために公開している。** ここは「同じ id の複数通をどう畳むか」という、
+   * 本物を1回走らせただけでは気づけない種類の間違いが起きる場所だった
+   * （下の注記）。壊れ方が目に見えなかったので、形を試験で固定する。
+   */
+  translate(
     input: QueryInput,
     message: SDKMessage,
     seenMessageIds: Set<string>,
     nextTurnIndex: () => number,
-  ): NewEvent | null {
+  ): NewEvent[] {
     if (message.type === 'assistant') {
+      const events: NewEvent[] = [];
+
+      /**
+       * **文面は「毎通から」拾い、usage は「id ごとに1回だけ」数える。**
+       *
+       * ここを同じ扱いにすると壊れる。実測（2026-08-21）：
+       * ```
+       * assistant id=msg_011Ce… blocks=[{"type":"thinking"}]
+       * assistant id=msg_011Ce… blocks=[{"type":"text","len":2}]
+       * ```
+       * **同じ id の1通目に本文が無い。** 最初に書いたときは id で重複除去してから
+       * 本文を見ていたので、`thinking` だけを見て「本文なし」と判断していた
+       * ——送信中は画面に出るのに、開き直すと相手の発言だけ消えていた。
+       *
+       * これは**ターン数を 1.81 倍に膨らませたのと同じ現象**（この上の注記）が、
+       * 逆向きに効いた例である。数えるものは畳み、拾うものは畳まない。
+       *
+       * `thinking` と `tool_use` / `tool_result` は入れない——前者は出すべきでなく、
+       * 後者は量が桁違いでログが肥える。
+       */
+      const text = message.message.content
+        .flatMap((block) => (block.type === 'text' ? [block.text] : []))
+        .join('\n')
+        .trim();
+      if (text !== '') {
+        events.push({
+          type: 'message.recorded',
+          threadId: input.threadId,
+          queryId: input.queryId,
+          role: 'assistant',
+          text,
+        });
+      }
+
       const id = message.message.id;
-      if (seenMessageIds.has(id)) return null;
-      seenMessageIds.add(id);
-
-      const usage = toTurnUsage(message.message.usage);
-      if (!usage) return null;
-
-      return {
-        type: 'turn.usage',
-        threadId: input.threadId,
-        queryId: input.queryId,
-        turnIndex: nextTurnIndex(),
-        usage,
-      };
+      if (!seenMessageIds.has(id)) {
+        seenMessageIds.add(id);
+        const usage = toTurnUsage(message.message.usage);
+        if (usage) {
+          events.push({
+            type: 'turn.usage',
+            threadId: input.threadId,
+            queryId: input.queryId,
+            turnIndex: nextTurnIndex(),
+            usage,
+          });
+        }
+      }
+      return events;
     }
 
     /**
@@ -195,16 +240,16 @@ export class AgentSdkRunner implements Runner {
      */
     if (message.type === 'system' && message.subtype === 'compact_boundary') {
       const meta = message.compact_metadata;
-      return {
+      return [{
         type: 'compaction.reported',
         threadId: input.threadId,
         queryId: input.queryId,
         detail: `trigger=${meta.trigger} pre_tokens=${meta.pre_tokens} post_tokens=${meta.post_tokens ?? 'unknown'}`,
-      };
+      }];
     }
 
     if (message.type === 'result') {
-      return {
+      return [{
         type: 'query.step',
         queryId: input.queryId,
         threadId: input.threadId,
@@ -213,10 +258,10 @@ export class AgentSdkRunner implements Runner {
           message.subtype === 'success'
             ? message.result
             : `subtype=${message.subtype} turns=${message.num_turns}`,
-      };
+      }];
     }
 
-    return null;
+    return [];
   }
 }
 

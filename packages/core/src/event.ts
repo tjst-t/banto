@@ -181,6 +181,24 @@ export interface QueryStep extends Envelope {
   readonly detail?: string;
 }
 
+/**
+ * 会話の文面（要件 A8「会話は閉じても残り、読み返せる」）。
+ *
+ * **導出できない。** ランタイムのトランスクリプトには残るが、それはベンダの持ち物で、
+ * 決定2 は「記録は自前の append-only イベントログ」を移植可能な資産に挙げている。
+ * ここに無ければ、**画面を開き直した瞬間に会話が消える**——実際そうなっていた。
+ *
+ * **ツールの入出力は入れない。** 量が桁違いで、base やキャッシュの議論と同じ理由で
+ * ログが肥える。要るようになったら、そのとき別の型で足す。
+ */
+export interface MessageRecorded extends Envelope {
+  readonly type: 'message.recorded';
+  readonly threadId: ThreadId;
+  readonly queryId: QueryId;
+  readonly role: 'user' | 'assistant';
+  readonly text: string;
+}
+
 export type RunId = string;
 
 /**
@@ -254,6 +272,7 @@ export type BantoEvent =
   | ThreadSessionRecorded
   | CompactionReported
   | QueryStep
+  | MessageRecorded
   | RunRequested
   | RunTested
   | RunFailed
@@ -277,6 +296,7 @@ const KNOWN_TYPES: ReadonlySet<string> = new Set<EventType>([
   'thread.session',
   'compaction.reported',
   'query.step',
+  'message.recorded',
   'run.requested',
   'run.tested',
   'run.failed',

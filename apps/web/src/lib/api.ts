@@ -5,7 +5,12 @@
  * （規則3）。失敗はここで飲み込まず、呼び手に投げる（規則2）。
  */
 
-import type { CreateThreadResponse, StateResponse, StreamEvent } from './types';
+import type {
+  CreateThreadResponse,
+  RequestRunResponse,
+  StateResponse,
+  StreamEvent,
+} from './types';
 
 async function asJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -30,6 +35,42 @@ export async function createThread(body: {
     body: JSON.stringify(body),
   });
   return asJson<CreateThreadResponse>(res);
+}
+
+/**
+ * その会話の**過去のイベントをそのまま**取る（要件 A8）。
+ *
+ * **畳んで返してもらわない。** サーバは生のイベントを返し、並べ替えも解釈も
+ * こちら側でやる——画面用の形をサーバに作らせると、それが第二の真実になる（規則3）。
+ */
+export async function fetchEvents(threadId: string): Promise<StreamEvent[]> {
+  const res = await fetch(`/api/events?threadId=${encodeURIComponent(threadId)}`);
+  const body = await asJson<{ events: StreamEvent[] }>(res);
+  return body.events;
+}
+
+/** 依頼を1件投げる（要件 B1）。**投げるだけで、進まない。** */
+export async function requestRun(body: {
+  request: string;
+  channelName?: string;
+}): Promise<RequestRunResponse> {
+  const res = await fetch('/api/runs', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return asJson<RequestRunResponse>(res);
+}
+
+/**
+ * Factory を進める。**押したときだけ動く。**
+ *
+ * 時計で回さないのは、画面を閉じている間に Claude の枠を使い続けることになるため。
+ * 「誰が動かしたか」が押した本人に分かる形にしてある。
+ */
+export async function advanceRuns(): Promise<StateResponse> {
+  const res = await fetch('/api/runs/advance', { method: 'POST', body: '{}' });
+  return asJson<StateResponse>(res);
 }
 
 /**

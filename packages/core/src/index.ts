@@ -13,6 +13,7 @@ export {
   type DecisionSource,
   type EventId,
   type EventType,
+  type MessageRecorded,
   type NewEvent,
   type QueryId,
   type QueryStep,

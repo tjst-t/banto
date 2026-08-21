@@ -27,7 +27,6 @@ export function ConversationPane({
   const points = useMemo<ContextPoint[]>(
     () =>
       session.items
-        .filter((i): i is Extract<typeof i, { kind: 'stream' }> => i.kind === 'stream')
         .map((i) => i.event)
         .filter((e): e is Extract<typeof e, { type: 'turn.usage' }> => e.type === 'turn.usage')
         .map((e) => ({ turnIndex: e.turnIndex, queryId: e.queryId, usage: e.usage })),

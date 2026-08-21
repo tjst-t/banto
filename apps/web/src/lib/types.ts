@@ -32,6 +32,20 @@ export interface ThreadSummary {
   readonly turnCount: number;
   readonly baseVersion: number;
   readonly forkedFrom: ForkOrigin | null;
+  /** base のいまの大きさと上限（要件 R8）。**拒否される前から見せる。** */
+  readonly baseCharacters: number;
+  readonly baseLimit: number;
+}
+
+/** Factory の Run（要件 B）。**畳んで作られたもの**で、保存された「段」は無い。 */
+export interface RunSummary {
+  readonly runId: string;
+  readonly threadId: string;
+  readonly branch: string;
+  readonly request: string;
+  readonly failed: boolean;
+  /** commit の sha つきのテスト結果。**sha が変われば無効になる。** */
+  readonly testedCommits: { readonly commit: string; readonly passed: boolean }[];
 }
 
 export interface PendingDecision {
@@ -46,7 +60,13 @@ export interface PendingDecision {
 export interface StateResponse {
   readonly channels: ChannelSummary[];
   readonly threads: ThreadSummary[];
+  readonly runs: RunSummary[];
   readonly queue: PendingDecision[];
+}
+
+export interface RequestRunResponse {
+  readonly runId: string;
+  readonly branch: string;
 }
 
 export interface CreateThreadResponse {
@@ -91,6 +111,15 @@ export type ThreadStatusChanged = EventEnvelope & {
   readonly status: ThreadStatus;
 };
 
+/** 会話の文面（要件 A8）。**これがログに在るから、開き直しても残る。** */
+export type MessageRecorded = EventEnvelope & {
+  readonly type: 'message.recorded';
+  readonly threadId: string;
+  readonly queryId: string;
+  readonly role: 'user' | 'assistant';
+  readonly text: string;
+};
+
 export type CompactionReported = EventEnvelope & {
   readonly type: 'compaction.reported';
   readonly threadId: string;
@@ -110,6 +139,7 @@ export interface StreamErrorFrame {
 export type StreamEvent =
   | TurnUsageRecorded
   | QueryStep
+  | MessageRecorded
   | ThreadStatusChanged
   | CompactionReported
   | StreamErrorFrame;
