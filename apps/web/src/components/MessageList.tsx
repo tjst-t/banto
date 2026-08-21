@@ -24,6 +24,21 @@ function ThreadStatusLabel(status: string): { text: string; tone: 'accent' | 'go
 }
 
 export function MessageList({ items, running }: { items: TimelineItem[]; running: boolean }) {
+  /**
+   * 文面が記録されている問い合わせの集合（要件 A8）。
+   *
+   * `message.recorded` を入れる前の会話では、相手の文面は `query.step` の `detail` に
+   * しか無い。出さないと**過去の会話が読めなくなる**ので、そのときはそちらから読む。
+   *
+   * **判定は「会話ごと」ではなく「問い合わせごと」。** 会話ごとにすると、
+   * **古い形と新しい形が混ざった会話で、古いほうが丸ごと消える**
+   * ——実際に消えた（自分で画面を見て気づいた）。同じ会話の中で形が変わりうる以上、
+   * 判定の単位も同じ細かさでないと合わない。
+   */
+  const recordedQueries = new Set(
+    items.flatMap((i) => (i.event.type === 'message.recorded' ? [i.event.queryId] : [])),
+  );
+
   return (
     <ScrollArea className="flex-1 min-h-0">
       <div className="flex flex-col gap-2 p-4">
@@ -59,9 +74,18 @@ export function MessageList({ items, running }: { items: TimelineItem[]; running
 
           if (event.type === 'query.step') {
             if (event.status === 'started') return null; // 下の running インジケータで表現する
-            // **文面はここに出さない。** 同じ内容が message.recorded にも在るので、
-            // 両方出すと二重に見える（規則3：同じものを2箇所に持たない）。
-            if (event.status === 'succeeded') return null;
+            if (event.status === 'succeeded') {
+              // その問い合わせの文面が記録済みなら出さない（同じものが2箇所に並ぶ）。
+              if (recordedQueries.has(event.queryId) || !event.detail) return null;
+              return (
+                <div key={item.id} className="flex justify-start">
+                  <div className="max-w-[85%] rounded-lg rounded-bl-sm border border-border bg-surface px-3 py-2 text-sm text-ink">
+                    <p className="whitespace-pre-wrap">{event.detail}</p>
+                    <p className="mt-1 text-[10px] text-ink-muted">{timeLabel(event.at)}</p>
+                  </div>
+                </div>
+              );
+            }
             return (
               <div key={item.id} className="flex items-start gap-2 rounded-md border border-critical/30 bg-critical-soft px-3 py-2 text-sm text-critical">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -96,23 +120,76 @@ export function MessageList({ items, running }: { items: TimelineItem[]; running
             );
           }
 
-          if (event.type === 'thread.status') {
-            const label = ThreadStatusLabel(event.status);
+          /**
+           * スレッドの状態は**見出しに出ている**ので、ここには出さない。
+           *
+           * 1往復ごとに「作業中」「完了」が積まれるため、出すと**会話より状態の札の
+           * ほうが多くなる**（自分で画面を見て気づいた）。同じことを2箇所に置かない（規則3）。
+           */
+          if (event.type === 'thread.status') return null;
+
+          // 会話の見た目には効かない記録。**出さないが、エラーでもない。**
+          if (event.type === 'thread.session' || event.type === 'thread.created') return null;
+          // 依頼の文面は base に入っているので、ここでは二重に出さない。
+          if (event.type === 'run.requested') return null;
+
+          // 「決まったこと」への追記（要件 R2・R6）。**静かに増えるものを見えるようにする。**
+          if (event.type === 'base.appended') {
             return (
-              <div key={item.id} className="flex justify-center py-1">
-                <Badge tone={label.tone}>状態: {label.text}</Badge>
+              <div key={item.id} className="flex items-center gap-1.5 self-start text-[11px] text-ink-muted">
+                <span className="h-1.5 w-1.5 rounded-full bg-accent/50" />
+                決まったことに追記（第 {event.baseVersion} 版）・{event.text.length} 文字
               </div>
             );
           }
 
-          // event.type === 'error'（封筒を持たない、ランタイム例外の生の通知）
-          return (
-            <div key={item.id} className="flex items-start gap-2 rounded-md border border-critical/30 bg-critical-soft px-3 py-2 text-sm text-critical">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-              <div>
-                <p className="font-medium">エラー</p>
-                <p className="text-xs">{event.detail}</p>
+          if (event.type === 'run.tested') {
+            return (
+              <div key={item.id} className="flex items-center gap-1.5 self-start text-[11px] text-ink-muted">
+                <span className="h-1.5 w-1.5 rounded-full bg-border-strong" />
+                テスト {event.passed ? '通過' : '失敗'} ・{' '}
+                <span className="font-mono">{event.commit.slice(0, 7)}</span>
               </div>
+            );
+          }
+
+          if (event.type === 'run.failed') {
+            return (
+              <div key={item.id} className="flex items-start gap-2 rounded-md border border-critical/30 bg-critical-soft px-3 py-2 text-xs text-critical">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <div>
+                  <p className="font-medium">{event.stage} で止まりました（人の判断待ち）</p>
+                  <p>{event.detail}</p>
+                </div>
+              </div>
+            );
+          }
+
+          if (event.type === 'error') {
+            return (
+              <div key={item.id} className="flex items-start gap-2 rounded-md border border-critical/30 bg-critical-soft px-3 py-2 text-sm text-critical">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  <p className="font-medium">エラー</p>
+                  <p className="text-xs">{event.detail}</p>
+                </div>
+              </div>
+            );
+          }
+
+          /**
+           * **知らないイベントを「エラー」と言わない。**
+           *
+           * ここは以前、当たらなかったもの全部をエラー枠に落としていた。
+           * サーバを新しくして `run.step` が `query.step` になった日、
+           * **画面が真っ赤になり、しかも理由が「エラー」としか出なかった**——
+           * 何が起きているのか画面から分からない、いちばん困る形である（規則2）。
+           *
+           * 知らないものは**知らないと言う。** 型を出しておけば、次に見た人が辿れる。
+           */
+          return (
+            <div key={item.id} className="self-start text-[11px] text-ink-muted">
+              未対応のイベント: <span className="font-mono">{(event as { type: string }).type}</span>
             </div>
           );
         })}

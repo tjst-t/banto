@@ -81,22 +81,43 @@ const CONTENT_TYPES: ReadonlyMap<string, string> = new Map([
 ]);
 
 /**
- * 画面の静的ファイルを返す。見つからなければ index.html
- * ——単一ページなので、経路の解決はブラウザ側でやる。
+ * 画面の静的ファイルを返す。
  *
  * **root の外へは出さない。** fs モジュールと同じ理由で、正規化してから確かめる。
+ *
+ * **無いファイルを index.html で置き換えない**（規則2）。以前はどんな経路でも
+ * index.html に落としていて、**`/assets/index-OLD.js` を頼むと HTML が
+ * `text/javascript` として返っていた**——ブラウザは HTML を JS として実行しようとし、
+ * 何が起きているのか画面からは分からない。**黙って別の経路へ落ちる**の典型だった。
+ *
+ * 落とすのは**拡張子を持たない経路だけ**にする。単一ページなので、
+ * `/threads/xxx` のような画面の経路はブラウザ側で解決される。
  */
 async function serveStatic(webRoot: string, pathname: string, res: ServerResponse): Promise<void> {
   const root = path.resolve(webRoot);
   const wanted = path.resolve(root, `.${pathname === '/' ? '/index.html' : pathname}`);
-  const inside = !path.relative(root, wanted).startsWith('..');
-  const target = inside ? wanted : path.join(root, 'index.html');
+  if (path.relative(root, wanted).startsWith('..')) {
+    json(res, 404, { error: `範囲の外: ${pathname}` });
+    return;
+  }
 
-  const body = await readFile(target).catch(() => readFile(path.join(root, 'index.html')));
-  res.writeHead(200, {
-    'content-type': CONTENT_TYPES.get(path.extname(target)) ?? 'application/octet-stream',
-  });
-  res.end(body);
+  const body = await readFile(wanted).catch(() => null);
+  if (body !== null) {
+    res.writeHead(200, {
+      'content-type': CONTENT_TYPES.get(path.extname(wanted)) ?? 'application/octet-stream',
+    });
+    res.end(body);
+    return;
+  }
+
+  // ファイルらしい経路が無いなら、それは 404 である。**中身をすり替えない。**
+  if (path.extname(pathname) !== '') {
+    json(res, 404, { error: `見つからない: ${pathname}` });
+    return;
+  }
+
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+  res.end(await readFile(path.join(root, 'index.html')));
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -340,10 +361,28 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
     if (req.method === 'GET' && url.pathname === '/api/events') {
       const threadId = url.searchParams.get('threadId');
       const all = await log.read();
-      const events = threadId === null
-        ? all
-        : all.filter((e) => 'threadId' in e && e.threadId === threadId);
-      json(res, 200, { events });
+      if (threadId === null) {
+        json(res, 200, { events: all });
+        return;
+      }
+
+      /**
+       * **Run のイベントは `threadId` を持たない。** `runId` から導けるので
+       * 持たせていない（規則3）。だが**導けるものを絞り込みで落とすと、
+       * Factory の失敗が会話に一度も出ない**——要件 B6「何が起きたかを後から追える」が
+       * そこで切れる。**保存する代わりに、ここで解く。**
+       */
+      const threadOfRun = new Map<string, string>();
+      for (const e of all) {
+        if (e.type === 'run.requested') threadOfRun.set(e.runId, e.threadId);
+      }
+      const belongs = (e: (typeof all)[number]): boolean => {
+        if ('threadId' in e) return e.threadId === threadId;
+        if ('runId' in e) return threadOfRun.get(e.runId) === threadId;
+        return false;
+      };
+
+      json(res, 200, { events: all.filter(belongs) });
       return;
     }
 

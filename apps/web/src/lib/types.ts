@@ -128,6 +128,55 @@ export type CompactionReported = EventEnvelope & {
 };
 
 /**
+ * `/api/events` はそのスレッドの**全イベント**を返す（要件 A8）。会話の見た目に
+ * 効かないものも混ざるので、画面が知っている型として並べておく——
+ * **知らない型に落ちると「未対応」と表示される**ので、意味のあるものはここに書く。
+ */
+export type ThreadSessionRecorded = EventEnvelope & {
+  readonly type: 'thread.session';
+  readonly threadId: string;
+  readonly queryId: string;
+  readonly sessionHandle: string;
+};
+
+export type ThreadCreated = EventEnvelope & {
+  readonly type: 'thread.created';
+  readonly threadId: string;
+  readonly channelId: string;
+  readonly title: string;
+};
+
+export type BaseAppended = EventEnvelope & {
+  readonly type: 'base.appended';
+  readonly threadId: string;
+  readonly baseVersion: number;
+  readonly text: string;
+};
+
+export type RunRequested = EventEnvelope & {
+  readonly type: 'run.requested';
+  readonly runId: string;
+  readonly threadId: string;
+  readonly branch: string;
+  readonly request: string;
+};
+
+export type RunTested = EventEnvelope & {
+  readonly type: 'run.tested';
+  readonly runId: string;
+  readonly commit: string;
+  readonly passed: boolean;
+  readonly detail: string;
+};
+
+export type RunFailed = EventEnvelope & {
+  readonly type: 'run.failed';
+  readonly runId: string;
+  readonly stage: string;
+  readonly detail: string;
+};
+
+/**
  * ランタイム例外を握りつぶさず流すための、封筒を持たない特別なフレーム
  * （server.ts の catch 節。ログには積まれないので v/id/at が無い）。
  */
@@ -142,6 +191,12 @@ export type StreamEvent =
   | MessageRecorded
   | ThreadStatusChanged
   | CompactionReported
+  | ThreadSessionRecorded
+  | ThreadCreated
+  | BaseAppended
+  | RunRequested
+  | RunTested
+  | RunFailed
   | StreamErrorFrame;
 
 /** 文脈サイズ。input + cacheCreation + cacheRead の和だけ。他の式にしない。 */

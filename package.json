@@ -12,11 +12,12 @@
     "build": "tsc --build packages/core packages/module-kit packages/runner packages/observer packages/factory modules/fs modules/shell modules/repo modules/env-process modules/publish-none modules/env-script modules/worker modules/ledger apps/host && npm run build:web",
     "build:web": "npm run build --workspace apps/web",
     "typecheck": "tsc --build packages/core packages/module-kit packages/runner packages/observer packages/factory modules/fs modules/shell modules/repo modules/env-process modules/publish-none modules/env-script modules/worker modules/ledger apps/host --force",
-    "test": "vitest run",
+    "test": "npm run build:web && vitest run",
     "clean": "tsc --build packages/core packages/module-kit packages/runner packages/observer packages/factory modules/fs modules/shell modules/repo modules/env-process modules/publish-none modules/env-script modules/worker modules/ledger apps/host --clean"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "playwright": "^1.62.1",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   },
