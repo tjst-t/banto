@@ -17,7 +17,16 @@ import path from 'node:path';
 
 import { passes } from './gate.js';
 
-import { EventLog, effectiveBase, fold, pendingQueue, type NewEvent } from '@banto/core';
+import {
+  DEFAULT_BASE_LIMIT_CHARACTERS,
+  EventLog,
+  appendBase,
+  baseCharacters,
+  effectiveBase,
+  fold,
+  pendingQueue,
+  type NewEvent,
+} from '@banto/core';
 import { AgentSdkRunner, allowedToolNames, type McpServerSpec } from '@banto/runner';
 
 export interface ServerOptions {
@@ -43,6 +52,12 @@ export interface ServerOptions {
   readonly secret?: string;
   /** 画面の静的ファイルの置き場。省くと /api だけを出す。 */
   readonly webRoot?: string;
+  /**
+   * base の上限（文字数）。超えたら**追記を拒否する**（要件 R8・決定4）。
+   * 省くと `DEFAULT_BASE_LIMIT_CHARACTERS`。**無効にする手段は置かない**——
+   * 切れるゲートは、いつか切られたまま忘れられる（C8c と同じ理由）。
+   */
+  readonly baseLimit?: number;
 }
 
 const CONTENT_TYPES: ReadonlyMap<string, string> = new Map([
@@ -91,7 +106,7 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
 }
 
 /** いまの状態。**畳んで作る。保存された「現在」は無い**（規則3）。 */
-async function currentState(dataDir: string): Promise<unknown> {
+async function currentState(dataDir: string, baseLimit: number): Promise<unknown> {
   const state = fold(await new EventLog(dataDir).read());
   return {
     channels: [...state.channels.values()],
@@ -103,6 +118,9 @@ async function currentState(dataDir: string): Promise<unknown> {
       turnCount: t.turnCount,
       baseVersion: t.baseVersion,
       forkedFrom: t.forkedFrom,
+      // ゲートの残りを**常に見せる**（要件 R8）。拒否されて初めて存在を知る、を避ける。
+      baseCharacters: baseCharacters(state, t.id),
+      baseLimit,
     })),
     queue: pendingQueue(state),
   };
@@ -111,6 +129,7 @@ async function currentState(dataDir: string): Promise<unknown> {
 export function startServer(options: ServerOptions): ReturnType<typeof createServer> {
   const log = new EventLog(options.dataDir);
   const allowed = allowedToolNames(options.modules, options.toolsByModule);
+  const baseLimit = options.baseLimit ?? DEFAULT_BASE_LIMIT_CHARACTERS;
 
   const server = createServer((req, res) => {
     void handle(req, res).catch((cause: unknown) => {
@@ -128,7 +147,26 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
     const url = new URL(req.url ?? '/', 'http://localhost');
 
     if (req.method === 'GET' && url.pathname === '/api/state') {
-      json(res, 200, await currentState(options.dataDir));
+      json(res, 200, await currentState(options.dataDir, baseLimit));
+      return;
+    }
+
+    // base への追記（要件 R2・R6）。**ゲートを通る唯一の入口**（要件 R8・決定4）。
+    // 閾値を超えたら 409 で断り、選択肢としての R5 を判断待ちに立てる。
+    // **ここで自動的に新しい会話へ切り替えない**——切り替えは規則2 に反する。
+    if (req.method === 'POST' && url.pathname === '/api/base') {
+      const body = (await readBody(req)) as { threadId?: string; text?: string };
+      if (typeof body.threadId !== 'string' || typeof body.text !== 'string') {
+        json(res, 400, { error: 'threadId と text が要る' });
+        return;
+      }
+      const state = fold(await log.read());
+      if (!state.threads.has(body.threadId)) {
+        json(res, 404, { error: `知らないスレッド: ${body.threadId}` });
+        return;
+      }
+      const gate = await appendBase(log, state, body.threadId, body.text, baseLimit);
+      json(res, gate.ok ? 200 : 409, gate);
       return;
     }
 

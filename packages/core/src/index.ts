@@ -29,6 +29,17 @@ export {
 export { EventLog, EventLogError, type LogFailure } from './log.js';
 
 export {
+  DEFAULT_BASE_LIMIT_CHARACTERS,
+  appendBase,
+  baseCharacters,
+  baseLimitDecisionId,
+  checkBaseAppend,
+  type BaseAccepted,
+  type BaseGate,
+  type BaseRefused,
+} from './base.js';
+
+export {
   effectiveBase,
   fold,
   pendingQueue,
