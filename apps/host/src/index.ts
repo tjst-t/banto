@@ -31,6 +31,7 @@ import {
 } from '@banto/module-kit';
 import { fsModule } from '@banto/module-fs';
 import { envProcessModule } from '@banto/module-env-process';
+import { envDockerModule } from '@banto/module-env-docker';
 import { repoModule } from '@banto/module-repo';
 import { workerModule } from '@banto/module-worker';
 import { AgentSdkRunner } from '@banto/runner';
@@ -171,13 +172,23 @@ ${queue.length === 0 ? '<p class="none">（なし）</p>' : `<table>${rows}</tab
  *
  * **役割の割り当てをここで書く。** repo も environment も worker も、
  * **他のモジュールと同じ口**を通って呼ばれる——中核とモジュールの違いは、
- * 口ではなく出荷元だけ（要件 C13）。docker に替えるときに変わるのは
- * 下の `bindings` の1行だけで、Factory 側は1文字も変わらない。
+ * 口ではなく出荷元だけ（要件 C13）。**docker に替えても変わるのは
+ * 下の `bindings` の1行だけ**で、Factory 側は1文字も変わらない
+ * （それを実物で確かめたのが `packages/factory` の受け入れ試験）。
  *
  * **起動時に台帳で確かめる。** 名乗るだけでは足りないので、`resolve` が
  * 本物の `tools/list` と突き合わせる（要件 C11）。合わなければ**起動しない**。
  */
-async function buildFactory(dataDir: string, repoRoot: string, model: string): Promise<Factory> {
+async function buildFactory(
+  dataDir: string,
+  repoRoot: string,
+  model: string,
+  /**
+   * どの環境実装を使うか（仕様 §6：**運用者が決める**、リポジトリではない）。
+   * **既定は隔離しない `env-process`**——隔離を上げるのは明示的な選択にする。
+   */
+  environmentId: 'env-process' | 'env-docker' = 'env-process',
+): Promise<Factory> {
   const log = new EventLog(dataDir);
 
   /**
@@ -196,9 +207,11 @@ async function buildFactory(dataDir: string, repoRoot: string, model: string): P
     extraAllowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
   });
 
+  const environment = environmentId === 'env-docker' ? envDockerModule : envProcessModule;
+
   const servers = new Map([
     ['repo', repoModule.createServer()],
-    ['env-process', envProcessModule.createServer()],
+    [environmentId, environment.createServer()],
     ['worker', worker.createServer()],
   ]);
   const callers = new Map<string, ToolCaller>();
@@ -206,7 +219,7 @@ async function buildFactory(dataDir: string, repoRoot: string, model: string): P
 
   const sources: ModuleSource[] = [
     { manifest: repoModule.manifest, listTools: () => listToolsVia(callers, 'repo') },
-    { manifest: envProcessModule.manifest, listTools: () => listToolsVia(callers, 'env-process') },
+    { manifest: environment.manifest, listTools: () => listToolsVia(callers, environmentId) },
     { manifest: worker.manifest, listTools: () => listToolsVia(callers, 'worker') },
     {
       // **Factory は実装の名前を1つも持たない。** 役割で頼むだけ（決定16）。
@@ -231,7 +244,7 @@ async function buildFactory(dataDir: string, repoRoot: string, model: string): P
   // **候補が1つでも自動で選ばない**（要件 C8c と同じ理由）。ここが「その1行」。
   const bindings = new Map([
     ['repo', 'repo'],
-    ['environment', 'env-process'],
+    ['environment', environmentId],
     ['worker', 'worker'],
   ]);
 
@@ -247,12 +260,10 @@ async function buildFactory(dataDir: string, repoRoot: string, model: string): P
   return new Factory({
     log,
     repo: repoPortOver(need('repo')),
-    environment: environmentPortOver(need('env-process')),
+    environment: environmentPortOver(need(environmentId)),
     implementer: workerImplementerOver(need('worker'), (workdir) =>
       path.resolve(repoRoot, workdir),
     ),
-    // テストの走らせ方はリポジトリが決める（仕様 §6）。いまは1つ固定で、
-    // リポジトリ側の宣言から読むのは docker provider と同じ回で入れる。
     // **テストの走らせ方は渡さない。** リポジトリが `.banto/repo.json` で
     // 宣言する（仕様 §6）。ここに既定を置くと、宣言していないリポジトリで
     // 「0件が通った」になる。
@@ -309,7 +320,17 @@ async function main(): Promise<void> {
        * ファイルを書き換え、git を動かす。どのリポジトリに対してそれを許すかは、
        * 運用者が1行書いて決めることであって、既定で決まっていてよいことではない。
        */
-      const factory = repoRoot === '' ? undefined : await buildFactory(dataDir, repoRoot, model);
+      /**
+       * 環境の実装（仕様 §6：**運用者が決める**）。**知らない名前は断る**
+       * ——黙って既定へ落ちると、隔離したつもりでしていないことになる（規則2）。
+       */
+      const environmentId = flag(argv, 'env', 'env-process');
+      if (environmentId !== 'env-process' && environmentId !== 'env-docker') {
+        throw new Error(`知らない環境: ${environmentId}（env-process か env-docker）`);
+      }
+
+      const factory =
+        repoRoot === '' ? undefined : await buildFactory(dataDir, repoRoot, model, environmentId);
       // Phase 1.5 では fs だけを繋ぐ。shell / repo は subprocess なので、
       // 台帳から解決する経路を通してから足す（要件 C11）。
       startServer({

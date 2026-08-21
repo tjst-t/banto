@@ -326,6 +326,46 @@ describe('テストの走らせ方は、リポジトリが宣言する（仕様 
   }, 60_000);
 });
 
+/**
+ * **同じ受け入れを、環境の実装を差し替えて通す**（決定16 の実装順）。
+ *
+ * 口が本当に実装から独立しているかは、`tools/list` が揃っていることでは分からない
+ * ——**同じ Factory が、本物のコンテナの上で最後まで走る**ところまで見て分かる。
+ * ここは docker を要るので、既定では走らせない：
+ *
+ *   BANTO_E2E=1 npx vitest run packages/factory
+ */
+describe.skipIf(process.env['BANTO_E2E'] !== '1')('環境を docker に差し替えても通る', () => {
+  it('依頼が、コンテナの中でテストされて main に入る', async () => {
+    process.env['BANTO_DOCKER_IMAGE'] ??= 'node:22-slim';
+    const { envDockerModule } = await import('@banto/module-env-docker');
+    const dockerCaller = await connectInProcess(envDockerModule.createServer());
+
+    try {
+      // **テストが本当にコンテナの中で走ったことを、テスト自身に証明させる。**
+      // `/.dockerenv` はコンテナには在り、ホストには無い。これを外すと、
+      // 環境を差し替えたつもりでホストで走っていても緑になる（規則1）。
+      await declare({ command: 'sh', args: ['-c', 'test -f /.dockerenv && ls *.txt'] });
+
+      const f = factory({ environment: environmentPortOver(dockerCaller) });
+      await request(f, 'alpha');
+      await f.advanceAll();
+
+      expect((await log.read()).filter((e) => e.type === 'run.tested')[0]?.passed).toBe(true);
+      expect(await inMain('alpha.txt')).toBe(true);
+      // **コンテナも畳まれている**（teardown が docker の側で効いた）。
+      expect(await hasWorktree('factory/alpha')).toBe(false);
+    } finally {
+      await dockerCaller.close();
+      // 自分が作ったものだけ消す。落ちた回のコンテナを残さない。
+      await run('sh', [
+        '-c',
+        `docker ps -aq --filter name=banto-alpha- | xargs -r docker rm -f`,
+      ]).catch(() => undefined);
+    }
+  }, 300_000);
+});
+
 describe('人を待つ設定（要件 B4）', () => {
   it('待つ設定なら、承認が出るまで取り込まない', async () => {
     const f = factory({ needsReview: true });

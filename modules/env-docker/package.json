@@ -1,5 +1,5 @@
 {
-  "name": "@banto/factory",
+  "name": "@banto/module-env-docker",
   "private": true,
   "type": "module",
   "version": "0.0.0",
@@ -12,14 +12,10 @@
     }
   },
   "dependencies": {
-    "@banto/core": "*",
-    "@banto/module-repo": "*",
-    "@banto/module-env-process": "*",
-    "@banto/runner": "*",
     "@banto/module-kit": "*",
-    "@modelcontextprotocol/sdk": "^1.30.0"
-  },
-  "devDependencies": {
-    "@banto/module-env-docker": "*"
+    "zod": "^4.0.0",
+    "@banto/module-publish-none": "*",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@banto/module-env-process": "*"
   }
 }
