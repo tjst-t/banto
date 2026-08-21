@@ -24,6 +24,13 @@ export const manifest: BantoModule = {
   // tools は**相手（vault）の**ツール名で、接続時に tools/list と突き合わせる。
   // usedBy は**自分の**ツール名で、欠けたときに断るものを指す。別の名前空間である。
   optional: [{ module: 'vault', tools: ['get_ssh_agent_socket'], usedBy: ['push'] }],
+  /**
+   * 作業ツリーと取り込みの役割（要件 C13・決定17）。
+   *
+   * **Factory はこれを役割で頼む。** 以前は Factory が `RepoCore` を直接握っていて、
+   * 「worktree の持ち主は Repo」（決定5）が**言葉の上でだけ**成り立っていた。
+   */
+  provides: ['repo'],
 };
 
 export const repoModule = defineModule({
@@ -62,6 +69,67 @@ export const repoModule = defineModule({
         paths: z.array(z.string()).describe('Paths to stage and commit'),
       },
       run: async (core, { message, paths }) => ok(await core.commit(message, paths)),
+    }),
+    // ---- 役割 `repo`：作業ツリーと取り込み（要件 B2・B7、決定17）----
+    //
+    // **どれも何度呼んでも同じ状態に着く。** 耐久ワークフローは再開のたびに同じ段を
+    // 呼ぶので、冪等でないと再開できない（要件 B5）。
+    tool({
+      name: 'add_worktree',
+      description:
+        'Create (or reuse) a branch and a working tree for it. Idempotent: returns the same path if it already exists.',
+      input: {
+        branch: z.string().describe('Branch name'),
+        path: z.string().describe('Working tree path, relative to the repo root'),
+      },
+      run: async (core, { branch, path: p }) => ok(await core.addWorktree(branch, p)),
+    }),
+    tool({
+      name: 'has_worktree',
+      description: 'Report whether a working tree exists at that path: "yes" or "no".',
+      input: { path: z.string().describe('Working tree path, relative to the repo root') },
+      run: async (core, { path: p }) => ok((await core.hasWorktree(p)) ? 'yes' : 'no'),
+    }),
+    tool({
+      name: 'remove_worktree',
+      description: 'Remove a working tree. Does nothing if it is not there.',
+      input: { path: z.string().describe('Working tree path, relative to the repo root') },
+      run: async (core, { path: p }) => ok(await core.removeWorktree(p)),
+    }),
+    tool({
+      name: 'head_of',
+      description: 'Return the commit sha a ref points at.',
+      input: { ref: z.string().describe('Branch name or any git ref') },
+      run: async (core, { ref }) => ok(await core.headOf(ref)),
+    }),
+    tool({
+      name: 'is_ahead',
+      description: 'Report whether a branch has commits the base does not: "yes" or "no".',
+      input: {
+        branch: z.string().describe('Branch to check'),
+        base: z.string().optional().describe('Base branch (default "main")'),
+      },
+      run: async (core, { branch, base }) => ok((await core.isAhead(branch, base)) ? 'yes' : 'no'),
+    }),
+    tool({
+      name: 'merge',
+      description:
+        'Merge a branch into the target branch with --no-ff. Conflicts abort the merge and are reported as an error — nothing is auto-resolved.',
+      input: {
+        branch: z.string().describe('Branch to merge'),
+        into: z.string().optional().describe('Target branch (default "main")'),
+      },
+      run: async (core, { branch, into }) => ok(await core.merge(branch, into)),
+    }),
+    tool({
+      name: 'rebase_onto',
+      description:
+        'Replay a working tree’s branch on top of another branch. Conflicts abort the rebase and are reported as an error.',
+      input: {
+        path: z.string().describe('Working tree path, relative to the repo root'),
+        onto: z.string().optional().describe('Branch to rebase onto (default "main")'),
+      },
+      run: async (core, { path: p, onto }) => ok(await core.rebaseOnto(p, onto)),
     }),
     tool({
       name: 'push',

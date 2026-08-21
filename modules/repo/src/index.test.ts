@@ -64,7 +64,22 @@ describe('repo モジュールの配線', () => {
     try {
       const { tools } = await client.listTools();
       const names = tools.map((t) => t.name);
-      expect(names).toEqual(['log', 'status', 'diff', 'branches', 'commit', 'push']);
+      // **一覧から消さない。** 消すと「そんなツールは無い」に見えて、
+      // 何が壊れているのか分からなくなる（要件 C12）。
+      expect(names).toContain('push');
+      // 役割 `repo` の口が揃っていること（決定17）。**名乗るだけでは足りない**ので、
+      // ここで実際の tools/list と突き合わせる。
+      expect(names).toEqual(
+        expect.arrayContaining([
+          'add_worktree',
+          'has_worktree',
+          'remove_worktree',
+          'head_of',
+          'is_ahead',
+          'merge',
+          'rebase_onto',
+        ]),
+      );
     } finally {
       await client.close();
     }
