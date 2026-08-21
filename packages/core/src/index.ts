@@ -14,8 +14,8 @@ export {
   type EventId,
   type EventType,
   type NewEvent,
-  type RunId,
-  type RunStep,
+  type QueryId,
+  type QueryStep,
   type ThreadCreated,
   type ThreadForked,
   type ThreadId,
@@ -27,6 +27,8 @@ export {
 } from './event.js';
 
 export { EventLog, EventLogError, type LogFailure } from './log.js';
+
+export { OLDEST_READABLE_VERSION, upgradeEvent } from './migrate.js';
 
 export {
   DEFAULT_BASE_LIMIT_CHARACTERS,

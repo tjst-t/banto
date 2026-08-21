@@ -41,7 +41,7 @@ async function runTurn(args: RunArgs): Promise<void> {
   }
 
   const threadId = randomUUID();
-  const runId = randomUUID();
+  const queryId = randomUUID();
   await log.append({ type: 'thread.created', threadId, channelId, title: args.threadTitle });
   await log.append({ type: 'thread.status', threadId, status: 'working' });
 
@@ -50,9 +50,9 @@ async function runTurn(args: RunArgs): Promise<void> {
   let failed = false;
 
   try {
-    for await (const event of runner.run({
+    for await (const event of runner.query({
       threadId,
-      runId,
+      queryId,
       systemPrompt: 'You are helping measure context growth. Answer briefly.',
       mcpServers: [],
       skills: [],
@@ -63,7 +63,7 @@ async function runTurn(args: RunArgs): Promise<void> {
     })) {
       await log.append(event as NewEvent);
       if (event.type === 'turn.usage') turns += 1;
-      if (event.type === 'run.step' && event.state === 'failed') failed = true;
+      if (event.type === 'query.step' && event.state === 'failed') failed = true;
     }
   } catch (cause) {
     // 黙って別の経路へ落ちない（規則2）。状態を記録してから落ちる。

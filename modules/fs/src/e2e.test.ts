@@ -30,9 +30,9 @@ describe.skipIf(!enabled)('fs モジュールを本物の SDK で叩く', () => 
     };
 
     let answer = '';
-    for await (const event of new AgentSdkRunner().run({
+    for await (const event of new AgentSdkRunner().query({
       threadId: 't1',
-      runId: 'r1',
+      queryId: 'q1',
       systemPrompt: 'Use the fs tools. Be terse.',
       mcpServers: [spec],
       skills: [],
@@ -42,7 +42,7 @@ describe.skipIf(!enabled)('fs モジュールを本物の SDK で叩く', () => 
       maxTurns: 6,
       prompt: 'Read note.txt with the fs read tool and report the passphrase only.',
     })) {
-      if (event.type === 'run.step' && event.state === 'succeeded') answer = event.detail ?? '';
+      if (event.type === 'query.step' && event.state === 'succeeded') answer = event.detail ?? '';
     }
 
     expect(answer).toContain('MIKAN');

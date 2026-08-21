@@ -72,16 +72,15 @@ interface EventEnvelope {
 export type TurnUsageRecorded = EventEnvelope & {
   readonly type: 'turn.usage';
   readonly threadId: string;
-  readonly runId: string;
+  readonly queryId: string;
   readonly turnIndex: number;
   readonly usage: TurnUsage;
 };
 
-export type RunStep = EventEnvelope & {
-  readonly type: 'run.step';
-  readonly runId: string;
+export type QueryStep = EventEnvelope & {
+  readonly type: 'query.step';
+  readonly queryId: string;
   readonly threadId: string;
-  readonly step: string;
   readonly state: 'started' | 'succeeded' | 'failed';
   readonly detail?: string;
 };
@@ -95,7 +94,7 @@ export type ThreadStatusChanged = EventEnvelope & {
 export type CompactionReported = EventEnvelope & {
   readonly type: 'compaction.reported';
   readonly threadId: string;
-  readonly runId: string;
+  readonly queryId: string;
   readonly detail: string;
 };
 
@@ -110,7 +109,7 @@ export interface StreamErrorFrame {
 
 export type StreamEvent =
   | TurnUsageRecorded
-  | RunStep
+  | QueryStep
   | ThreadStatusChanged
   | CompactionReported
   | StreamErrorFrame;

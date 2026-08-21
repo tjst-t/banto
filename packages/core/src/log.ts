@@ -13,6 +13,7 @@ import { appendFile, mkdir, readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { LOG_VERSION, isKnownEventType, type BantoEvent, type NewEvent } from './event.js';
+import { upgradeEvent } from './migrate.js';
 
 export type LogFailure =
   /** この実装より新しい版のイベントが混じっていた。読めないので止まる。 */
@@ -131,14 +132,26 @@ function parseLine(raw: string, file: string, line: number): BantoEvent {
     );
   }
 
-  if (typeof candidate.type !== 'string' || !isKnownEventType(candidate.type)) {
-    throw new EventLogError(
-      'unknown-type',
-      file,
-      line,
-      `知らない type: ${String(candidate.type)}`,
-    );
+  // **type を確かめる前に版を上げる。** 順序が逆だと、旧版にしか無い type が
+  // 「知らない type」に化けて、読める行を読めないと言うことになる。
+  let event = parsed as Record<string, unknown>;
+  if (candidate.v < LOG_VERSION) {
+    try {
+      event = upgradeEvent(event, candidate.v, LOG_VERSION);
+    } catch (cause) {
+      throw new EventLogError(
+        'unreadable-version',
+        file,
+        line,
+        cause instanceof Error ? cause.message : String(cause),
+      );
+    }
   }
 
-  return parsed as BantoEvent;
+  const type = event['type'];
+  if (typeof type !== 'string' || !isKnownEventType(type)) {
+    throw new EventLogError('unknown-type', file, line, `知らない type: ${String(type)}`);
+  }
+
+  return event as unknown as BantoEvent;
 }

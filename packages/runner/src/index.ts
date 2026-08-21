@@ -12,7 +12,7 @@
 import { query, type Options, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
-import type { NewEvent, RunId, ThreadId, TurnUsage } from '@banto/core';
+import type { NewEvent, QueryId, ThreadId, TurnUsage } from '@banto/core';
 
 /**
  * モジュールのツールインターフェース。
@@ -40,9 +40,9 @@ export function allowedToolNames(specs: readonly McpServerSpec[], tools: Readonl
   return specs.flatMap((spec) => (tools.get(spec.name) ?? []).map((t) => `mcp__${spec.name}__${t}`));
 }
 
-export interface RunInput {
+export interface QueryInput {
   readonly threadId: ThreadId;
-  readonly runId: RunId;
+  readonly queryId: QueryId;
   /** スレッド生存中は読み取り専用。 */
   readonly systemPrompt: string;
   /** そのスレッドに紐づくモジュールの分だけ。 */
@@ -75,8 +75,12 @@ export interface RunInput {
   readonly allowedTools?: readonly string[];
 }
 
+/**
+ * **`run` ではなく `query` である。** ここが指すのはランタイムへの1回の問い合わせで、
+ * Factory の Run（依頼1件ぶんの耐久ワークフロー）とは別物（`QueryId` を見よ）。
+ */
 export interface Runner {
-  run(input: RunInput): AsyncIterable<NewEvent>;
+  query(input: QueryInput): AsyncIterable<NewEvent>;
 }
 
 /**
@@ -86,12 +90,11 @@ export interface Runner {
  * 何も分からない（教訓1）。試験も本物のプロセスで叩く。
  */
 export class AgentSdkRunner implements Runner {
-  async *run(input: RunInput): AsyncIterable<NewEvent> {
+  async *query(input: QueryInput): AsyncIterable<NewEvent> {
     yield {
-      type: 'run.step',
-      runId: input.runId,
+      type: 'query.step',
+      queryId: input.queryId,
       threadId: input.threadId,
-      step: 'query',
       state: 'started',
     };
 
@@ -140,8 +143,8 @@ export class AgentSdkRunner implements Runner {
           yield {
             type: 'thread.session',
             threadId: input.threadId,
-            runId: input.runId,
-            handle,
+            queryId: input.queryId,
+            sessionHandle: handle,
           };
         }
 
@@ -151,10 +154,9 @@ export class AgentSdkRunner implements Runner {
     } catch (cause) {
       // 握りつぶさない。失敗を記録してから、呼び手へ投げ直す（規則2）。
       yield {
-        type: 'run.step',
-        runId: input.runId,
+        type: 'query.step',
+        queryId: input.queryId,
         threadId: input.threadId,
-        step: 'query',
         state: 'failed',
         detail: cause instanceof Error ? cause.message : String(cause),
       };
@@ -164,7 +166,7 @@ export class AgentSdkRunner implements Runner {
 
   /** SDK のメッセージを banto のイベントに直す。関係ないものは null。 */
   private translate(
-    input: RunInput,
+    input: QueryInput,
     message: SDKMessage,
     seenMessageIds: Set<string>,
     nextTurnIndex: () => number,
@@ -180,7 +182,7 @@ export class AgentSdkRunner implements Runner {
       return {
         type: 'turn.usage',
         threadId: input.threadId,
-        runId: input.runId,
+        queryId: input.queryId,
         turnIndex: nextTurnIndex(),
         usage,
       };
@@ -196,17 +198,16 @@ export class AgentSdkRunner implements Runner {
       return {
         type: 'compaction.reported',
         threadId: input.threadId,
-        runId: input.runId,
+        queryId: input.queryId,
         detail: `trigger=${meta.trigger} pre_tokens=${meta.pre_tokens} post_tokens=${meta.post_tokens ?? 'unknown'}`,
       };
     }
 
     if (message.type === 'result') {
       return {
-        type: 'run.step',
-        runId: input.runId,
+        type: 'query.step',
+        queryId: input.queryId,
         threadId: input.threadId,
-        step: 'query',
         state: message.subtype === 'success' ? 'succeeded' : 'failed',
         detail:
           message.subtype === 'success'

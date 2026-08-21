@@ -4,7 +4,7 @@ import { contextSize, type TurnUsage } from '../lib/types';
 
 export interface ContextPoint {
   readonly turnIndex: number;
-  readonly runId: string;
+  readonly queryId: string;
   readonly usage: TurnUsage;
 }
 

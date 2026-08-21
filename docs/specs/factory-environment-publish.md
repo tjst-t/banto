@@ -61,6 +61,8 @@ destroy(handle)                           畳む
 ```
 
 `handle` は**不透明な文字列。banto は解釈しない**（`thread.session` と同じ扱い）。
+ただし**ログに載せるときは `environmentHandle` と名乗る**——`thread.session` の
+`sessionHandle` と同じ理由で、**鍵になる項目は名前だけで一意**でなければならない（§8-1）。
 
 `spec` の中身は実装ごとに違うので、**banto は素通しする**。docker なら image 名、
 process なら作業ディレクトリ、script なら何も見ずにスクリプトへ渡す。ここを
@@ -344,16 +346,19 @@ Run のサブエージェントに渡すのは、**その Factory に紐づい�
 **5点とも解いて ADR-0001 決定16 に記録した。** 経緯を残すのは、後から読む人が
 「なぜこの形なのか」を辿れるようにするため。
 
-### 1. `run` という語が2つの意味を持っている → **Runner 側を改名する**
+### 1. `run` という語が2つの意味を持っている → **改名済み（版2）**
 
 `run.step` / `runId` はいま **Runner の1回の `query()`** を指しているが、Factory の Run は
 別物である。**`Dependency.tools` が2つの名前空間を背負っていた失敗と同じ形**（教訓6）で、
 あのときは3本目のモジュールを書くまで露見しなかった。今度は書く前に気づいている。
 
-→ **Runner 側を `query.step` / `queryId` に改め、`run` / `runId` を Factory に空ける。**
-ログの形が変わるので `LOG_VERSION` を 2 に上げ、1 を読む道を明示的に書く（決定7）。
-**Phase 2 の最初にやる**——Factory が `run.*` を書き始めてからでは、両方の意味の
-`runId` が同じログに混ざる。
+→ **`query.step` / `queryId` に改めた**（2026-08-21）。`LOG_VERSION` は 2 で、
+1 を読む道は `packages/core/src/migrate.ts`。あわせて `thread.session.handle` を
+`sessionHandle` に（環境モジュールも handle を返すため）、`step` を削除した
+（常に `'query'` で情報を持たず、Factory の「段」と重なる）。
+
+**基準は「鍵になるか」。** 型を見ずに読まれる鍵は名前だけで一意でなければならない。
+型の中に閉じた値（`state` など）は、イベントの型が分かれば意味も決まる。
 
 ### 2. 環境は Run ごとか、Factory ごとか → **Run ごと**
 

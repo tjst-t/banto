@@ -130,9 +130,19 @@ R5（書き換え＝ブランチを継承しない）を選ぶのは人である
 拒否と同時に、選択肢としての R5 を決定9 のキューに出す——肥大は滞留ではないので、
 A7 の段0/1 を飛ばして扱ってよい。
 
-**未実装（2026-08-21 時点）。** Phase 0 の完了条件に base サイズが入っていなかったため、
-observer は文脈サイズしか畳んでいない。決定8 の「base が肥えた」は**文書にだけ在って
-コードに無い**（規則8 の記録）。**Phase 2 に入る前に塞ぐ。**
+**実装済み**（2026-08-21・`packages/core/src/base.ts`）。Phase 0 の完了条件に base サイズが
+入っていなかったため、しばらく**文書にだけ在ってコードに無い**状態だった（規則8 の記録）。
+
+**追記の経路を `appendBase` に1本化してある**——`log.append({ type: 'base.appended' })` を
+直接呼ばせない。**ゲートは迂回できる場所に置くと迂回される。**
+
+- 判定は追記**後**の大きさで行う。前で見ると、1回の巨大な追記が素通りする
+- fork の継承分も数える（要件 R4）。数えないと fork のたびに上限が復活する
+- 判断の id はスレッドごとに決まるので、何度拒否されても1つしか立たない
+- 残量は `/api/state` に常時出す。**拒否されて初めて存在を知る、を避ける**
+- 大きさは**文字数**。トークナイザは依存が1つ増える（規則10）ので代理を使い、
+  返り値を `characters` と名乗らせて**代理であることを隠さない**
+- 閾値 20,000 文字は**計測値ではなく出発点**（規則1）。実際の base が溜まったら測り直す
 
 ### 5. モジュール：ロジックは1つ・契約は MCP・境界はモジュールごとに選ぶ
 
@@ -204,8 +214,9 @@ Repo が Vault に鍵の提示を頼む）。
 
 ```ts
 interface Runner {
-  run(input: {
+  query(input: {
     threadId: ThreadId
+    queryId: QueryId            // 1回の問い合わせ。Factory の Run とは別物
     systemPrompt: string          // スレッド生存中は読み取り専用
     mcpServers: McpServerSpec[]   // そのスレッドに紐づくモジュールの分だけ
     skills: string[]
@@ -238,7 +249,7 @@ interface Runner {
 ```
 thread.status      working | waiting-on-human | blocked | done
 decision.requested / decision.resolved
-run.step
+query.step         ← 1回の問い合わせ。Factory の Run ではない
 turn.usage         ← 決定8 の材料
 base.appended
 ```
@@ -467,14 +478,23 @@ devcontainer.json は**コンテナ系 provider の入力形式**として扱う
 **1つ目の実装では口の正しさは分からない。2つ目を足したときに分かる**ので、
 1つ目は一番安いものにして早く2つ目へ行く。
 
-**`run` の語が2つの意味を持っている。Phase 2 に入る前に直す。**
-`run.step` / `runId` はいま **Runner の1回の `query()`** を指しているが、Factory の Run は
+**`run` の語が2つの意味を持っていた。直した**（2026-08-21・版2）。
+`run.step` / `runId` は **Runner の1回の `query()`** を指していたが、Factory の Run は
 別物である。**これは `Dependency.tools` が2つの名前空間を背負っていた失敗と同じ形**
 （教訓6）。あのときは3本目のモジュールを書くまで露見しなかったが、今度は書く前に
-気づいている。**Runner 側を `query.step` / `queryId` に改め、`run` / `runId` を Factory に空ける。**
-ログの形が変わるので `LOG_VERSION` を 2 に上げ、**1 を読む道を明示的に書く**（決定7）。
-**いま直すのが一番安い**——Factory が `run.*` を書き始めてからでは、両方の意味の
-`runId` が同じログに混ざる。
+気づいている。**Runner 側を `query.step` / `queryId` に改め、`run` / `runId` を Factory に空けた。**
+`LOG_VERSION` を 2 に上げ、**1 を読む道を書いた**（`packages/core/src/migrate.ts`）。
+実データ（版1・26件、うち16件が `runId` 持ち）で読み戻しを確認済み。
+
+**同じ形の問題を洗い直して、2つ見つけたので同じ移行に畳んだ。**
+判定の基準は「**鍵になるか**」である——`runId` が危なかったのは、それが
+**型を見ずに読まれる鍵**だったから。型の中に閉じた値（`state` など）は、
+イベントの型が分かれば意味も決まるので、同じ危険を持たない。
+
+- **`thread.session.handle` → `sessionHandle`。** 環境モジュール（決定16）も
+  不透明な handle を返すので、鍵の名前が2つの意味を持つところだった
+- **`run.step.step` を落とした。** 常に `'query'` で情報を持たず（規則3）、
+  しかも Factory は自分の「段」を持つ。**要るようになったら、そのとき足す**
 
 ---
 

@@ -30,7 +30,7 @@ export function ConversationPane({
         .filter((i): i is Extract<typeof i, { kind: 'stream' }> => i.kind === 'stream')
         .map((i) => i.event)
         .filter((e): e is Extract<typeof e, { type: 'turn.usage' }> => e.type === 'turn.usage')
-        .map((e) => ({ turnIndex: e.turnIndex, runId: e.runId, usage: e.usage })),
+        .map((e) => ({ turnIndex: e.turnIndex, queryId: e.queryId, usage: e.usage })),
     [session.items],
   );
 

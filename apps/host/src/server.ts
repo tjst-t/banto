@@ -208,7 +208,7 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
         res.write(`data: ${JSON.stringify(event)}\n\n`);
       };
 
-      const runId = randomUUID();
+      const queryId = randomUUID();
       // **毎回畳んで決める。写しを持たない**（規則3）。
       // セッション識別子があれば続きから、無ければ base から新しく始まる。
       const before = fold(await log.read());
@@ -219,9 +219,9 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
       let failed = false;
 
       try {
-        for await (const event of new AgentSdkRunner().run({
+        for await (const event of new AgentSdkRunner().query({
           threadId: body.threadId,
-          runId,
+          queryId,
           // base はシステムプロンプトに入る。**走行中は変えられない**（決定6）ので、
           // 追記があった場合に効くのは次のスレッド／次の fork から（要件 R2・R4）。
           systemPrompt:
@@ -238,7 +238,7 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
         })) {
           const stamped = await log.append(event as NewEvent);
           send(stamped);
-          if (event.type === 'run.step' && event.state === 'failed') failed = true;
+          if (event.type === 'query.step' && event.state === 'failed') failed = true;
         }
       } catch (cause) {
         failed = true;

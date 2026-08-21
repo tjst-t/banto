@@ -149,3 +149,82 @@ describe('EventLog', () => {
     expect((await new EventLog(dataDir).read()).length).toBe(1);
   });
 });
+
+/**
+ * 決定7 は「読めない版で止まる」と同時に「上げたら古い版を読む道を書く」と定めている。
+ * **本物のログを版1で書いて、版2の実装で読み戻す**——道が在ることを、実際に通して確かめる。
+ */
+describe('版を上げても古いログが読める（ADR-0001 決定7）', () => {
+  const v1 = (event: Record<string, unknown>): string =>
+    JSON.stringify({ v: 1, id: `e-${String(event['type'])}`, at: '2026-08-20T00:00:00.000Z', ...event });
+
+  it('版1 の run.step は query.step / queryId になって読める', async () => {
+    const dataDir = await tempDataDir();
+    await writeRawLines(dataDir, [
+      v1({ type: 'run.step', runId: 'r1', threadId: 't1', step: 'query', state: 'succeeded' }),
+    ]);
+
+    const [event] = await new EventLog(dataDir).read();
+    expect(event?.type).toBe('query.step');
+    expect(event).toMatchObject({ queryId: 'r1', threadId: 't1', state: 'succeeded' });
+    expect(event).not.toHaveProperty('runId');
+    // 常に 'query' で情報を持たない項目。残すと Factory の「段」と重なる。
+    expect(event).not.toHaveProperty('step');
+  });
+
+  // 改名したのは type だけではない。runId は3つの type に載っていた。
+  it('版1 の turn.usage / thread.session の runId も付け替わる', async () => {
+    const dataDir = await tempDataDir();
+    await writeRawLines(dataDir, [
+      v1({
+        type: 'turn.usage',
+        runId: 'r1',
+        threadId: 't1',
+        turnIndex: 0,
+        usage: { inputTokens: 1, cacheCreationInputTokens: 2, cacheReadInputTokens: 3, outputTokens: 4 },
+      }),
+      v1({ type: 'thread.session', runId: 'r1', threadId: 't1', handle: 's1' }),
+    ]);
+
+    const events = await new EventLog(dataDir).read();
+    expect(events.map((e) => (e as unknown as Record<string, unknown>)['queryId'])).toEqual(['r1', 'r1']);
+    expect(events.some((e) => 'runId' in e)).toBe(false);
+  });
+
+  // 環境モジュールも handle を返すので、鍵になる項目は名前だけで一意にする。
+  it('版1 の thread.session.handle は sessionHandle になる', async () => {
+    const dataDir = await tempDataDir();
+    await writeRawLines(dataDir, [
+      v1({ type: 'thread.session', runId: 'r1', threadId: 't1', handle: 'sess-abc' }),
+    ]);
+
+    const [event] = await new EventLog(dataDir).read();
+    expect(event).toMatchObject({ type: 'thread.session', sessionHandle: 'sess-abc' });
+    expect(event).not.toHaveProperty('handle');
+  });
+
+  // 読んだ後の形は現行版なので、版印も現行版でなければ形と版が食い違う。
+  it('読み戻したイベントの版印は現行版になる', async () => {
+    const dataDir = await tempDataDir();
+    await writeRawLines(dataDir, [v1({ type: 'channel.created', channelId: 'c1', name: 'banto' })]);
+
+    const [event] = await new EventLog(dataDir).read();
+    expect(event?.v).toBe(LOG_VERSION);
+  });
+
+  // 道が在ることと、止まるべきときに止まることは両立していないといけない。
+  it('未来の版ではやはり止まる', async () => {
+    const dataDir = await tempDataDir();
+    await writeRawLines(dataDir, [
+      JSON.stringify({ v: LOG_VERSION + 1, id: 'a', at: '2026-08-20T00:00:00.000Z', type: 'channel.created', channelId: 'c1', name: 'x' }),
+    ]);
+
+    const error = await new EventLog(dataDir).read().then(
+      (events) => {
+        throw new Error(`止まらずに ${events.length} 件返した`);
+      },
+      (e: unknown) => e,
+    );
+    expect((error as EventLogError).failure).toBe('unreadable-version');
+  });
+});

@@ -9,12 +9,26 @@
 /**
  * 版印。読めない版に当たったら止まる（ADR-0001 決定7）。
  * 形を変えたら上げる。上げたら、古い版を読む道を明示的に書く。
+ *
+ * - **1 → 2**（2026-08-21）：run→query の改名、handle→sessionHandle、step の削除。
+ *   読む道は `migrate.ts`。
  */
-export const LOG_VERSION = 1;
+export const LOG_VERSION = 2;
 
 export type ChannelId = string;
 export type ThreadId = string;
-export type RunId = string;
+/**
+ * ランタイムへの**1回の問い合わせ**の識別子。
+ *
+ * **かつて `RunId` という名前だった。** Factory の Run（依頼1件ぶんの耐久ワークフロー。
+ * 何度も問い合わせ、落ちても再開する）とは別物なのに、同じ語を使っていた。
+ * `Dependency.tools` が2つの名前空間を背負っていたのと同じ形の間違いで（教訓6）、
+ * **あのときは3本目のモジュールを書くまで露見しなかった。** 今度は Factory を書く前に
+ * 直した——両方の意味の id が同じログに混ざってからでは、区別する手立てが無くなる。
+ *
+ * `run` / `RunId` は Factory のために空けてある。
+ */
+export type QueryId = string;
 export type DecisionId = string;
 export type EventId = string;
 
@@ -98,7 +112,7 @@ export interface BaseAppended extends Envelope {
 export interface TurnUsageRecorded extends Envelope {
   readonly type: 'turn.usage';
   readonly threadId: ThreadId;
-  readonly runId: RunId;
+  readonly queryId: QueryId;
   readonly turnIndex: number;
   readonly usage: TurnUsage;
 }
@@ -114,7 +128,7 @@ export interface TurnUsageRecorded extends Envelope {
 export interface CompactionReported extends Envelope {
   readonly type: 'compaction.reported';
   readonly threadId: ThreadId;
-  readonly runId: RunId;
+  readonly queryId: QueryId;
   /** ランタイムが返した生の説明。解釈しない。 */
   readonly detail: string;
 }
@@ -132,15 +146,26 @@ export interface CompactionReported extends Envelope {
 export interface ThreadSessionRecorded extends Envelope {
   readonly type: 'thread.session';
   readonly threadId: ThreadId;
-  readonly runId: RunId;
-  readonly handle: string;
+  readonly queryId: QueryId;
+  /**
+   * **`handle` ではなく `sessionHandle`。** 環境モジュール（決定16）も不透明な handle を
+   * 返すので、ログの中で `handle` が2つの意味を持つ。**鍵になる項目は、型を見ずに
+   * 読まれる**ので、名前だけで一意になっていないといけない（`QueryId` と同じ理由）。
+   */
+  readonly sessionHandle: string;
 }
 
-export interface RunStep extends Envelope {
-  readonly type: 'run.step';
-  readonly runId: RunId;
+/**
+ * ランタイムへの1回の問い合わせの進み具合。**Factory の段ではない**（`QueryId` を見よ）。
+ *
+ * **かつて `step: string` を持っていたが、常に `'query'` だった。** 値が1つしか無い項目は
+ * 情報を持たない（規則3）。しかも Factory は自分の「段」を持つので、残しておけば
+ * `step` がログの中で2つの意味を持つ。**要るようになったら、そのとき足す。**
+ */
+export interface QueryStep extends Envelope {
+  readonly type: 'query.step';
+  readonly queryId: QueryId;
   readonly threadId: ThreadId;
-  readonly step: string;
   readonly state: 'started' | 'succeeded' | 'failed';
   readonly detail?: string;
 }
@@ -168,7 +193,7 @@ export type BantoEvent =
   | TurnUsageRecorded
   | ThreadSessionRecorded
   | CompactionReported
-  | RunStep
+  | QueryStep
   | DecisionRequested
   | DecisionResolved;
 
@@ -188,7 +213,7 @@ const KNOWN_TYPES: ReadonlySet<string> = new Set<EventType>([
   'turn.usage',
   'thread.session',
   'compaction.reported',
-  'run.step',
+  'query.step',
   'decision.requested',
   'decision.resolved',
 ]);

@@ -47,7 +47,7 @@ export function MessageList({ items, running }: { items: TimelineItem[]; running
 
           const { event } = item;
 
-          if (event.type === 'run.step') {
+          if (event.type === 'query.step') {
             if (event.state === 'started') return null; // 下の running インジケータで表現する
             if (event.state === 'succeeded') {
               return (

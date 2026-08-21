@@ -144,7 +144,7 @@ export function fold(events: readonly BantoEvent[]): State {
 
       case 'thread.session': {
         const thread = threads.get(event.threadId);
-        if (thread) thread.sessionHandle = event.handle;
+        if (thread) thread.sessionHandle = event.sessionHandle;
         break;
       }
 
@@ -163,7 +163,7 @@ export function fold(events: readonly BantoEvent[]): State {
         break;
 
       case 'compaction.reported':
-      case 'run.step':
+      case 'query.step':
         // 状態には効かない。観測と追跡のための記録（要件 B6）。
         break;
     }
