@@ -149,6 +149,8 @@ beforeAll(async () => {
     dataDir,
     port: 0,
     modules: [{ name: fsModule.manifest.id, kind: 'in-process', server: fsModule.createServer() }],
+    // 画面の割り当ては台帳から導く（決定20）。渡さないと汎用の面に落ちる。
+    manifests: [fsModule.manifest],
     toolsByModule: new Map(),
     model: 'claude-haiku-4-5',
     webRoot: WEB_ROOT,
@@ -429,6 +431,11 @@ describe('画面の煙試験（本物のブラウザ）', () => {
       await page.waitForSelector('[data-resource-viewer]', { timeout: 15_000 });
       // fs モジュールが本当に読んだ中身が出る（seed で書いたファイル）。
       await page.waitForSelector('text=みかんと書いてある', { timeout: 15_000 });
+
+      // **モジュールが持ち込んだ面で描かれている**（要件 C1・決定20）。
+      // 汎用の面に落ちていたら、ここで落ちる。
+      await page.waitForSelector('[data-module-view="fs/FileView"]', { timeout: 15_000 });
+      await page.waitForSelector('text=/fs の面（in-page）/', { timeout: 15_000 });
     } finally {
       await browser.close();
     }

@@ -15,6 +15,19 @@ export const manifest: BantoModule = {
   // 鍵を扱わず、落ちてもホストを道連れにしない。in-process でよい（要件 C8b）。
   isolation: 'in-process',
   mcp: { kind: 'in-process' },
+  /**
+   * 持ち込む画面（要件 C1・C14、決定20）。
+   *
+   * **`in-page`** ——このモジュールは banto の束ねに入っていて、
+   * プロセスも内側（`in-process`）である。**プロセスで信用しているものを、
+   * 画面でも信用する**。第三者モジュールは束ねに入らないので、
+   * ここを名乗ろうとしても実体が無い（方針ではなく、構造で決まる）。
+   */
+  gui: {
+    kind: 'in-page',
+    entry: 'fs/FileView',
+    views: [{ uriPrefix: 'banto://fs/file/', title: 'ファイル' }],
+  },
 };
 
 export const fsModule = defineModule({

@@ -30,7 +30,7 @@ import {
 import { AgentSdkRunner, allowedToolNames, type McpServerSpec } from '@banto/runner';
 import { foldRuns, type Factory } from '@banto/factory';
 import { LedgerCore, conversationModule } from '@banto/module-ledger';
-import { connectInProcess, type ToolCaller } from '@banto/module-kit';
+import { connectInProcess, type BantoModule, type ToolCaller } from '@banto/module-kit';
 
 export interface ServerOptions {
   readonly dataDir: string;
@@ -47,6 +47,11 @@ export interface ServerOptions {
   readonly modules: readonly McpServerSpec[];
   /** モジュール id → ツール名。許可の一覧を組み立てるのに使う（要件 D4）。 */
   readonly toolsByModule: ReadonlyMap<string, readonly string[]>;
+  /**
+   * 載っているモジュールの台帳（要件 C1・C14）。**画面の割り当てはここから導く**——
+   * 「どの URI をどの面で開くか」を別表で持たない（規則3）。
+   */
+  readonly manifests?: readonly BantoModule[];
   readonly model: string;
   /**
    * 合言葉。**指定すると門が立つ**（gate.ts）。
@@ -273,6 +278,28 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
         lines,
         characters: baseCharacters(state, threadId),
         limit: baseLimit,
+      });
+      return;
+    }
+
+    /**
+     * どの URI をどの面で開くか（要件 C1・C14、決定20）。
+     *
+     * **台帳から導くだけ。** 画面側が自分で表を持つと、載っているモジュールと
+     * 割り当てが食い違う（規則3）。**境界も一緒に返す**——
+     * 画面は `in-page` と `sandboxed` を区別して描かなければならない。
+     */
+    if (req.method === 'GET' && url.pathname === '/api/views') {
+      json(res, 200, {
+        views: (options.manifests ?? []).flatMap((m) =>
+          (m.gui?.views ?? []).map((v) => ({
+            moduleId: m.id,
+            kind: m.gui?.kind ?? null,
+            entry: m.gui?.entry ?? null,
+            uriPrefix: v.uriPrefix,
+            title: v.title,
+          })),
+        ),
       });
       return;
     }

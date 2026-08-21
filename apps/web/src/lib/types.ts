@@ -241,6 +241,20 @@ export type ReferenceRecorded = EventEnvelope & {
   readonly note: string | null;
 };
 
+/**
+ * どの URI をどの面で開くか（要件 C1・C14、決定20）。**台帳から導いたもの。**
+ *
+ * `kind` は `isolation` と同じ2択（決定20）。画面は両者を**区別して描く**——
+ * `in-page` は束ねの中の React、`sandboxed` は iframe の中。
+ */
+export interface ViewAssignment {
+  readonly moduleId: string;
+  readonly kind: 'in-page' | 'sandboxed' | null;
+  readonly entry: string | null;
+  readonly uriPrefix: string;
+  readonly title: string;
+}
+
 /** `/api/resource` の返り。**読むたびに現物**。 */
 export interface ResourceResponse {
   readonly uri: string;

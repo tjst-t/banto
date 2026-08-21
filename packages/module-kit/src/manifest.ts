@@ -96,6 +96,45 @@ export function describeDependency(dep: Dependency): string {
   return isCapabilityDependency(dep) ? `役割 ${dep.capability}` : dep.module;
 }
 
+/**
+ * モジュールが持ち込む画面の境界（要件 C1・C6・C14、決定20）。
+ *
+ * **`isolation` と同じ2択にする。** 新しい軸を作らない——
+ * 「そのモジュールを自分のプロセスの中で走らせてよいか」と
+ * 「そのモジュールの画面を自分のページの中で走らせてよいか」は、同じ問いである。
+ *
+ * | | プロセス | 画面 |
+ * |---|---|---|
+ * | 内側 | `in-process` | `in-page` |
+ * | 外側 | `subprocess` | `sandboxed` |
+ *
+ * **既定値を持たない**（C8c と同じ理由）。既定値は「忘れられる」機構そのもので、
+ * ここで忘れられると**他人の JavaScript がページの権限で走る**
+ * ——合言葉の cookie も、他のモジュールの画面も触れてしまう。
+ */
+export type GuiBoundary = 'in-page' | 'sandboxed';
+
+/** どの URI をどの面で開くか（要件 C14）。**モジュールが宣言し、ホストが割り当てる。** */
+export interface ViewSpec {
+  /** この接頭辞の URI を開ける。`banto://<自分の id>/` の下だけを名乗れる。 */
+  readonly uriPrefix: string;
+  /** 人に見せる面の名前。 */
+  readonly title: string;
+}
+
+export interface ModuleGui {
+  readonly kind: GuiBoundary;
+  /**
+   * 画面の実体。
+   *
+   * **`in-page` は banto の束ねに入っているものしか指せない**——だから
+   * 第三者モジュールは構造的に `in-page` を名乗れない（方針ではなく、束ねに無い）。
+   * `sandboxed` はホストが配る URL で、iframe の中で走る。
+   */
+  readonly entry: string;
+  readonly views: readonly ViewSpec[];
+}
+
 export interface BantoModule {
   readonly id: ModuleId;
   /** 一行の説明。台帳に出る。 */
@@ -105,6 +144,8 @@ export interface BantoModule {
   /** GUI の接続先。任意（要件 C9：最小実装はツールインターフェースだけ）。 */
   readonly api?: { readonly url: string };
   readonly handles?: readonly Handles[];
+  /** 持ち込む画面（要件 C1・C14）。任意——**画面を持たないモジュールは普通にある**（C9）。 */
+  readonly gui?: ModuleGui;
   /**
    * このモジュールが名乗る役割（決定16）。
    *
@@ -141,7 +182,10 @@ export const NOT_IN_THE_CONTRACT = ['alwaysLoad'] as const;
 export type ManifestProblem =
   | { readonly kind: 'isolation-missing'; readonly moduleId: ModuleId }
   | { readonly kind: 'boundary-mismatch'; readonly moduleId: ModuleId; readonly detail: string }
-  | { readonly kind: 'secrets-in-process'; readonly moduleId: ModuleId };
+  | { readonly kind: 'secrets-in-process'; readonly moduleId: ModuleId }
+  | { readonly kind: 'gui-kind-missing'; readonly moduleId: ModuleId }
+  | { readonly kind: 'gui-in-page-outside'; readonly moduleId: ModuleId; readonly detail: string }
+  | { readonly kind: 'gui-view-outside-uri'; readonly moduleId: ModuleId; readonly uriPrefix: string };
 
 /**
  * マニフェスト単体の検査。
@@ -179,6 +223,47 @@ export function checkManifest(module: BantoModule): ManifestProblem[] {
     problems.push({ kind: 'secrets-in-process', moduleId: module.id });
   }
 
+  const gui = module.gui;
+  if (gui !== undefined) {
+    if (gui.kind !== 'in-page' && gui.kind !== 'sandboxed') {
+      problems.push({ kind: 'gui-kind-missing', moduleId: module.id });
+    }
+
+    /**
+     * **プロセスで信用していないものを、画面で信用しない。**
+     *
+     * `isolation` を外側にした（subprocess）モジュールや、鍵を扱うモジュールが
+     * ページの中で走ると、**プロセスを分けた意味が画面側で消える**——
+     * 同じページには合言葉の cookie も他モジュールの画面もある。
+     */
+    if (gui.kind === 'in-page' && module.isolation === 'subprocess') {
+      problems.push({
+        kind: 'gui-in-page-outside',
+        moduleId: module.id,
+        detail: 'isolation が subprocess なのに gui.kind が in-page',
+      });
+    }
+    if (gui.kind === 'in-page' && module.handles?.includes('secrets') === true) {
+      problems.push({
+        kind: 'gui-in-page-outside',
+        moduleId: module.id,
+        detail: 'secrets を扱うと宣言しているのに gui.kind が in-page',
+      });
+    }
+
+    // **自分の URI 空間の外は開けない**（要件 C14）。名乗れると、
+    // 他のモジュールが持っているものを横取りできてしまう。
+    for (const view of gui.views) {
+      if (!view.uriPrefix.startsWith(`banto://${module.id}/`)) {
+        problems.push({
+          kind: 'gui-view-outside-uri',
+          moduleId: module.id,
+          uriPrefix: view.uriPrefix,
+        });
+      }
+    }
+  }
+
   return problems;
 }
 
@@ -190,6 +275,18 @@ export function describeProblem(problem: ManifestProblem): string {
       return `${problem.moduleId}: 境界の宣言と繋ぎ先が食い違っている——${problem.detail}`;
     case 'secrets-in-process':
       return `${problem.moduleId}: secrets を扱うと宣言したモジュールは in-process にできない（鍵が AI 実行と同居する）`;
+    case 'gui-kind-missing':
+      return `${problem.moduleId}: gui.kind が無い。"in-page" か "sandboxed" を必ず書く（既定値は持たない）`;
+    case 'gui-in-page-outside':
+      return (
+        `${problem.moduleId}: この画面はページの中で走らせられない——${problem.detail}。` +
+        `プロセスで信用していないものを画面で信用しない（sandboxed にする）`
+      );
+    case 'gui-view-outside-uri':
+      return (
+        `${problem.moduleId}: 自分の URI 空間の外を開こうとしている: ${problem.uriPrefix}` +
+        `（banto://${problem.moduleId}/ の下だけを名乗れる）`
+      );
   }
 }
 

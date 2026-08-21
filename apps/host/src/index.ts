@@ -371,6 +371,8 @@ async function main(): Promise<void> {
         port,
         modules: [{ name: fsModule.manifest.id, kind: 'in-process', server: fsModule.createServer() }],
         toolsByModule: new Map([['fs', ['read', 'write', 'list']]]),
+        // 画面の割り当ては台帳から導く（決定20）。別表を持たない（規則3）。
+        manifests: [fsModule.manifest],
         model,
         host: flag(argv, 'host', '127.0.0.1'),
         ...(factory === undefined ? {} : { factory }),

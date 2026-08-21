@@ -52,4 +52,81 @@ describe('checkManifest', () => {
     };
     expect(checkManifest(broken)).toEqual([{ kind: 'secrets-in-process', moduleId: 'sample' }]);
   });
+
+  /**
+   * **プロセスで信用していないものを、画面で信用しない**（決定20）。
+   * `isolation` と同じ2択にしてあるので、規則も同じ形になる。
+   */
+  describe('画面の境界（要件 C1・C14）', () => {
+    const withGui = (gui: BantoModule['gui'], over: Partial<BantoModule> = {}): BantoModule => ({
+      ...base,
+      ...over,
+      ...(gui === undefined ? {} : { gui }),
+    });
+
+    it('in-process なモジュールの in-page な画面は通る', () => {
+      expect(
+        checkManifest(
+          withGui({ kind: 'in-page', entry: './views/Sample', views: [{ uriPrefix: 'banto://sample/file/', title: 'ファイル' }] }),
+        ),
+      ).toEqual([]);
+    });
+
+    it('kind が無いと gui-kind-missing（既定値を持たない）', () => {
+      const broken = withGui({ entry: './x', views: [] } as unknown as BantoModule['gui']);
+      expect(checkManifest(broken)).toContainEqual({ kind: 'gui-kind-missing', moduleId: 'sample' });
+    });
+
+    // プロセスを分けた意味が、画面側で消える。
+    it('subprocess なのに in-page だと断る', () => {
+      const broken = withGui(
+        { kind: 'in-page', entry: './x', views: [] },
+        { isolation: 'subprocess', mcp: { kind: 'subprocess', command: 'python3' } },
+      );
+      expect(checkManifest(broken)).toContainEqual({
+        kind: 'gui-in-page-outside',
+        moduleId: 'sample',
+        detail: 'isolation が subprocess なのに gui.kind が in-page',
+      });
+    });
+
+    // 鍵を扱うものの画面が、合言葉の cookie と同じページに居てはいけない。
+    it('secrets を扱うのに in-page だと断る', () => {
+      const broken = withGui(
+        { kind: 'in-page', entry: './x', views: [] },
+        { handles: ['secrets'], isolation: 'subprocess', mcp: { kind: 'subprocess', command: 'x' } },
+      );
+      expect(checkManifest(broken)).toContainEqual({
+        kind: 'gui-in-page-outside',
+        moduleId: 'sample',
+        detail: 'secrets を扱うと宣言しているのに gui.kind が in-page',
+      });
+    });
+
+    // 名乗れると、他のモジュールが持っているものを横取りできる。
+    it('自分の URI 空間の外は名乗れない', () => {
+      const broken = withGui({
+        kind: 'sandboxed',
+        entry: 'https://example.test/view.js',
+        views: [{ uriPrefix: 'banto://fs/file/', title: '横取り' }],
+      });
+      expect(checkManifest(broken)).toContainEqual({
+        kind: 'gui-view-outside-uri',
+        moduleId: 'sample',
+        uriPrefix: 'banto://fs/file/',
+      });
+    });
+
+    // sandboxed なら、外側のモジュールでも画面を持てる（要件 C6）。
+    it('subprocess でも sandboxed なら通る', () => {
+      expect(
+        checkManifest(
+          withGui(
+            { kind: 'sandboxed', entry: 'https://example.test/view.js', views: [] },
+            { isolation: 'subprocess', mcp: { kind: 'subprocess', command: 'python3' } },
+          ),
+        ),
+      ).toEqual([]);
+    });
+  });
 });

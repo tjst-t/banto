@@ -10,6 +10,7 @@ import type {
   CreateThreadResponse,
   RequestRunResponse,
   ResourceResponse,
+  ViewAssignment,
   StateResponse,
   StreamEvent,
 } from './types';
@@ -90,6 +91,12 @@ export async function forkThread(body: {
     body: JSON.stringify(body),
   });
   return asJson<CreateThreadResponse>(res);
+}
+
+/** どの URI をどの面で開くか（要件 C1・C14）。**台帳から導いたものを受け取るだけ。** */
+export async function fetchViews(): Promise<ViewAssignment[]> {
+  const res = await fetch('/api/views');
+  return (await asJson<{ views: ViewAssignment[] }>(res)).views;
 }
 
 /**
