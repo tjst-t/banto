@@ -9,6 +9,7 @@ import type {
   BaseResponse,
   CreateThreadResponse,
   RequestRunResponse,
+  ResourceResponse,
   StateResponse,
   StreamEvent,
 } from './types';
@@ -72,6 +73,15 @@ export async function requestRun(body: {
 export async function advanceRuns(): Promise<StateResponse> {
   const res = await fetch('/api/runs/advance', { method: 'POST', body: '{}' });
   return asJson<StateResponse>(res);
+}
+
+/**
+ * AI が指したものを読む（要件 C14）。**持ち主のモジュールに聞く。**
+ * 画面は中身を覚えない——開くたびに読むので、いつでも現物である（規則3）。
+ */
+export async function fetchResource(uri: string): Promise<ResourceResponse> {
+  const res = await fetch(`/api/resource?uri=${encodeURIComponent(uri)}`);
+  return asJson<ResourceResponse>(res);
 }
 
 /** いまそのスレッドで決まっていること（要件 R2・R6）。 */

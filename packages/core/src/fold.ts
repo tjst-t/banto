@@ -171,6 +171,8 @@ export function fold(events: readonly BantoEvent[]): State {
 
       case 'compaction.reported':
       case 'query.step':
+      // AI が指したもの（要件 C14）。**会話の年表には出るが、状態は変えない。**
+      case 'reference.recorded':
         // 状態には効かない。観測と追跡のための記録（要件 B6）。
         break;
     }

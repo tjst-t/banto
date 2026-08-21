@@ -29,7 +29,8 @@ import {
 } from '@banto/core';
 import { AgentSdkRunner, allowedToolNames, type McpServerSpec } from '@banto/runner';
 import { foldRuns, type Factory } from '@banto/factory';
-import { LedgerCore } from '@banto/module-ledger';
+import { LedgerCore, conversationModule } from '@banto/module-ledger';
+import { connectInProcess, type ToolCaller } from '@banto/module-kit';
 
 export interface ServerOptions {
   readonly dataDir: string;
@@ -168,10 +169,49 @@ async function currentState(dataDir: string, baseLimit: number): Promise<unknown
   };
 }
 
+/**
+ * 会話に渡す指示（要件 C14・決定19）。
+ *
+ * **モジュールの道具を使うことと、見せたいものを指すことを、明示的に言う。**
+ * 測って分かった（2026-08-21）：言わないと、モデルは**組み込みの道具**に手を伸ばす
+ * ——`fs` モジュールに `write` があるのに、素の `Write` で `/home/ubuntu/note.md` を
+ * 書こうとして権限で止まった。許可の一覧に無いものは通らないので実害は無いが、
+ * **仕事が進まない。** 道具の説明だけでは足りず、**どちらを使うかは方針**である。
+ *
+ * `show` も同じで、**「見せたいものは指す」と言わないと指さない。**
+ * 契約が伝わらないなら、契約の側を直す（説明を足す）のが筋である。
+ */
+export const SYSTEM_PROMPT = [
+  'You are banto. Answer in the user’s language. Be concise.',
+  '',
+  '# Tools',
+  'Use the mcp__ tools you are given, not the built-in file or shell tools —',
+  'the mcp__ ones are scoped to what this person allowed. If a task needs',
+  'something you have no mcp__ tool for, say so instead of reaching elsewhere.',
+  '',
+  '# Showing your work',
+  'When you produce or change something the person would want to look at,',
+  'call the show tool with the uri the tool gave you. This puts it in the',
+  'conversation for them to open — it does not open anything by itself.',
+].join('\n');
+
 export function startServer(options: ServerOptions): ReturnType<typeof createServer> {
   const log = new EventLog(options.dataDir);
   const allowed = allowedToolNames(options.modules, options.toolsByModule);
   const baseLimit = options.baseLimit ?? DEFAULT_BASE_LIMIT_CHARACTERS;
+
+  /**
+   * モジュール id → その URI 空間を読む口（要件 C14）。
+   *
+   * **繋ぐのは in-process のものだけ。** subprocess のものは
+   * 立ち上げ方が違うので、要るようになってから足す——
+   * いま繋がないものは 404 で**繋がっていないと言う**（黙って空を返さない・規則2）。
+   */
+  const resourceCallers = new Map<string, ToolCaller>();
+  for (const spec of options.modules) {
+    if (spec.kind !== 'in-process') continue;
+    void connectInProcess(spec.server).then((caller) => resourceCallers.set(spec.name, caller));
+  }
 
   const server = createServer((req, res) => {
     void handle(req, res).catch((cause: unknown) => {
@@ -234,6 +274,46 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
         characters: baseCharacters(state, threadId),
         limit: baseLimit,
       });
+      return;
+    }
+
+    /**
+     * AI が指したものを読む（要件 C14・決定19）。
+     *
+     * **持ち主は URI の先頭で決まる**（`banto://<モジュール id>/…`）ので、
+     * 「どの URI を誰が持っているか」の表を別に持たない（規則3）。
+     * **中身をここに写さない**——読むたびに持ち主へ聞くので、いつでも現物である。
+     */
+    if (req.method === 'GET' && url.pathname === '/api/resource') {
+      const uri = url.searchParams.get('uri');
+      if (uri === null) {
+        json(res, 400, { error: 'uri が要る' });
+        return;
+      }
+      let owner: string;
+      try {
+        const parsed = new URL(uri);
+        if (parsed.protocol !== 'banto:') throw new Error('banto:// ではない');
+        owner = parsed.hostname;
+      } catch (cause) {
+        json(res, 400, { error: `読めない uri: ${uri}（${String(cause)}）` });
+        return;
+      }
+
+      const caller = resourceCallers.get(owner);
+      if (caller === undefined) {
+        // 握りつぶさない（規則2）。**誰が持っているはずだったかを言う。**
+        json(res, 404, {
+          error: `${owner} は繋がっていない（この banto に載っていないモジュールの uri）`,
+        });
+        return;
+      }
+      try {
+        const { text, mimeType } = await caller.readResource(uri);
+        json(res, 200, { uri, text, mimeType });
+      } catch (cause) {
+        json(res, 404, { error: cause instanceof Error ? cause.message : String(cause) });
+      }
       return;
     }
 
@@ -384,18 +464,28 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
       let failed = false;
 
       try {
+        /**
+         * **その会話に束ねた面**（要件 C14・決定19）。スレッドを引数にせず束ねるので、
+         * AI は他人の会話を指せない（要件 D4 と同じ考え）。
+         * 会話ごとに立てるので、`options.modules` の固定分とは別に足す。
+         */
+        const face = conversationModule(log, body.threadId);
+        const faceSpec: McpServerSpec = {
+          name: face.manifest.id,
+          kind: 'in-process',
+          server: face.createServer(),
+        };
+
         for await (const event of new AgentSdkRunner().query({
           threadId: body.threadId,
           queryId,
           // base はシステムプロンプトに入る。**走行中は変えられない**（決定6）ので、
           // 追記があった場合に効くのは次のスレッド／次の fork から（要件 R2・R4）。
-          systemPrompt:
-            'You are banto. Answer in the user’s language. Be concise.' +
-            (baseText === '' ? '' : `\n\n# この会話で決まっていること\n${baseText}`),
-          mcpServers: options.modules,
+          systemPrompt: SYSTEM_PROMPT + (baseText === '' ? '' : `\n\n# この会話で決まっていること\n${baseText}`),
+          mcpServers: [...options.modules, faceSpec],
           skills: [],
           model: options.model,
-          allowedTools: allowed,
+          allowedTools: [...allowed, `mcp__${faceSpec.name}__show`],
           maxTurns: 20,
           prompt: body.text,
           ...(thread?.sessionHandle == null ? {} : { resumeFrom: thread.sessionHandle }),

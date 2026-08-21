@@ -18,6 +18,7 @@ export {
   type NewEvent,
   type QueryId,
   type QueryStep,
+  type ReferenceRecorded,
   type RunFailed,
   type RunId,
   type RunRequested,

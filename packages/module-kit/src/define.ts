@@ -18,7 +18,7 @@
  * インターフェース側に書くと、core を経由しない分だけ不自然になる。
  */
 
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type * as z from 'zod';
 
@@ -123,12 +123,35 @@ export interface ToolBuilder<Core> {
   <Shape extends z.ZodRawShape>(spec: TextToolSpec<Core, Shape>): AnyToolSpec<Core>;
 }
 
+/**
+ * モジュールが持つ **URI 空間**（要件 C14・決定19）。
+ *
+ * AI は画面の名前を知らない。**URI を指すだけ**で、その URI を読めるのは
+ * それを持っているモジュールである。**中身をどこかに写さない**——
+ * 指した時点の写しを持つと、現物と食い違う（規則3）。
+ *
+ * `uri` は RFC 6570 のテンプレートを書ける（`banto://fs/file/{+path}`）。
+ * **`banto://<モジュール id>/…` にする**——先頭を見るだけで持ち主が分かるので、
+ * 「どのモジュールがこの URI を持っているか」の表を別に持たずに済む（規則3）。
+ */
+export interface ResourceSpec<Core> {
+  readonly name: string;
+  readonly description: string;
+  /** 固定の URI か、RFC 6570 のテンプレート。 */
+  readonly uri: string;
+  readonly mimeType?: string;
+  /** core だけを触る。ツールと同じ規約（C8a）。 */
+  read(core: Core, uri: URL, params: Record<string, string | string[]>): Promise<string>;
+}
+
 export interface ModuleSpec<Core> {
   readonly manifest: BantoModule;
   /** ドメインロジック。**モジュールにつき1つだけ。** */
   createCore(): Core;
   /** `tool` を通して書く。Core は `createCore` から決まる。 */
   tools(tool: ToolBuilder<Core>): readonly AnyToolSpec<Core>[];
+  /** 持っている URI 空間（要件 C14）。省ける——**画面を持たないモジュールは普通にある**。 */
+  resources?: readonly ResourceSpec<Core>[];
 }
 
 const buildTool = <Core,>(spec: AnyToolSpec<Core>): AnyToolSpec<Core> => spec;
@@ -147,6 +170,37 @@ export function defineModule<Core>(spec: ModuleSpec<Core>): DefinedModule {
       if (availability.has(dep)) continue;
       const why = `${describeDependency(dep)} が使えない: ${availability.reasonFor(dep)}`;
       for (const tool of dep.usedBy ?? []) declineReason.set(tool, why);
+    }
+
+    for (const resource of spec.resources ?? []) {
+      const config = {
+        description: resource.description,
+        ...(resource.mimeType === undefined ? {} : { mimeType: resource.mimeType }),
+      };
+      // テンプレートかどうかは形で決まる。**両方を1つの書き方で受ける。**
+      const target = resource.uri.includes('{')
+        ? new ResourceTemplate(resource.uri, { list: undefined })
+        : resource.uri;
+      server.registerResource(
+        resource.name,
+        // any の理由（規則9）：`registerResource` は文字列とテンプレートで
+        // 別のオーバーロードを持ち、ここではどちらか静的に決まらない。
+        target as any,
+        config,
+        (async (uri: URL, params: Record<string, string | string[]>) => {
+          // 握りつぶさない（規則2）。読めない理由をそのまま投げる。
+          const text = await resource.read(core, uri, params ?? {});
+          return {
+            contents: [
+              {
+                uri: uri.href,
+                ...(resource.mimeType === undefined ? {} : { mimeType: resource.mimeType }),
+                text,
+              },
+            ],
+          };
+        }) as never,
+      );
     }
 
     for (const toolSpec of spec.tools(buildTool as ToolBuilder<Core>)) {

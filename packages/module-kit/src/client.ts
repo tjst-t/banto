@@ -34,6 +34,11 @@ export interface ToolCaller {
    * ここで呼んだのなら、それは呼び間違いであって「たぶん空」ではない。
    */
   callStructured(tool: string, args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  /**
+   * URI の中身を読む（要件 C14）。**持ち主のモジュールに聞く。**
+   * 呼び手が中身を写して持たないので、いつ読んでも現物である（規則3）。
+   */
+  readResource(uri: string): Promise<{ readonly text: string; readonly mimeType: string | null }>;
   close(): Promise<void>;
 }
 
@@ -68,6 +73,18 @@ function callerOf(client: Client): ToolCaller {
         throw new Error(`${tool} は構造を返さない（outputSchema が宣言されていない）`);
       }
       return r.structuredContent;
+    },
+    readResource: async (uri) => {
+      const result = await client.readResource({ uri });
+      const first = result.contents[0];
+      // 握りつぶさない（規則2）。**空を返さない**——読めなかったのか、
+      // 中身が空なのかを呼び手が区別できなくなる。
+      if (first === undefined) throw new Error(`読めるものが無い: ${uri}`);
+      // MCP は text と blob の union。**blob を黙って空文字にしない**（規則2）。
+      if (!('text' in first) || typeof first.text !== 'string') {
+        throw new Error(`テキストで読めない: ${uri}（いまは文字のものだけ扱う）`);
+      }
+      return { text: first.text, mimeType: first.mimeType ?? null };
     },
     close: async () => {
       await client.close().catch(() => undefined);

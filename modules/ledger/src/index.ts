@@ -102,3 +102,4 @@ export function ledgerModule(log: EventLog): DefinedModule {
 }
 
 export { LedgerCore } from './core.js';
+export { ConversationCore, conversationModule, manifest as conversationManifest } from './conversation.js';

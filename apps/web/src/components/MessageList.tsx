@@ -1,4 +1,4 @@
-import { AlertTriangle, GitFork, HelpCircle, Loader2, PackageMinus } from 'lucide-react';
+import { AlertTriangle, ExternalLink, GitFork, HelpCircle, Loader2, PackageMinus } from 'lucide-react';
 
 import { ScrollArea } from './ui/scroll-area';
 import { Badge } from './ui/badge';
@@ -23,7 +23,16 @@ function ThreadStatusLabel(status: string): { text: string; tone: 'accent' | 'go
   }
 }
 
-export function MessageList({ items, running }: { items: TimelineItem[]; running: boolean }) {
+export function MessageList({
+  items,
+  running,
+  onOpen,
+}: {
+  items: TimelineItem[];
+  running: boolean;
+  /** AI が指したものを開く（要件 C14）。**押すまで開かない。** */
+  onOpen: (uri: string, name: string) => void;
+}) {
   /**
    * 文面が記録されている問い合わせの集合（要件 A8）。
    *
@@ -175,6 +184,35 @@ export function MessageList({ items, running }: { items: TimelineItem[]; running
                 {event.mode === 'base' ? '決まったこと' : 'いまの続き'}から分岐（base v
                 {event.from.baseVersion} まで引き継ぎ）
               </div>
+            );
+          }
+
+          /**
+           * **AI が「これを見て」と指したもの**（要件 C14・決定19）。
+           *
+           * **押すまで開かない。** 指しは会話に並ぶだけで、開くのは人が決める
+           * ——要件 A7 の「発生では鳴らさない」と同じ考え。
+           */
+          if (event.type === 'reference.recorded') {
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => onOpen(event.uri, event.name)}
+                data-reference={event.uri}
+                className="flex max-w-[85%] items-start gap-2 self-start rounded-md border border-border bg-surface px-3 py-2 text-left text-xs text-ink hover:border-accent hover:text-accent"
+              >
+                <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span className="min-w-0">
+                  <span className="block font-medium">{event.name}</span>
+                  {event.note !== null && (
+                    <span className="block text-ink-secondary">{event.note}</span>
+                  )}
+                  <span className="block truncate font-mono text-[10px] text-ink-muted">
+                    {event.uri}
+                  </span>
+                </span>
+              </button>
             );
           }
 

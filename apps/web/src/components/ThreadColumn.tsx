@@ -2,13 +2,20 @@ import { useState } from 'react';
 import { X } from 'lucide-react';
 
 import { BasePanel } from './BasePanel';
+import { ResourceViewer } from './ResourceViewer';
 import { ConversationPane } from './ConversationPane';
 import { Badge } from './ui/badge';
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs';
 import type { ThreadSession } from '../hooks/useThreadSessions';
 import type { ThreadSummary } from '../lib/types';
 
-type Pane = 'conversation' | 'base';
+type Pane = 'conversation' | 'base' | 'resource';
+
+/** いま開いている「指されたもの」。**閉じれば消える**——覚えておく必要が無い。 */
+interface OpenResource {
+  readonly uri: string;
+  readonly name: string;
+}
 
 const STATUS_LABEL: Record<
   ThreadSummary['status'],
@@ -46,7 +53,14 @@ export function ThreadColumn({
   closable: boolean;
 }) {
   const [pane, setPane] = useState<Pane>('conversation');
+  const [opened, setOpened] = useState<OpenResource | null>(null);
   const status = STATUS_LABEL[thread.status];
+
+  /** 指されたものを開く（要件 C14）。**開くのは人が押したときだけ。** */
+  const open = (uri: string, name: string): void => {
+    setOpened({ uri, name });
+    setPane('resource');
+  };
 
   return (
     <section
@@ -72,6 +86,7 @@ export function ThreadColumn({
           <TabsList>
             <TabsTrigger value="conversation">会話</TabsTrigger>
             <TabsTrigger value="base">決まったこと v{thread.baseVersion}</TabsTrigger>
+            {opened !== null && <TabsTrigger value="resource">見ているもの</TabsTrigger>}
           </TabsList>
         </Tabs>
         {closable && (
@@ -86,10 +101,19 @@ export function ThreadColumn({
         )}
       </div>
 
-      {pane === 'conversation' ? (
-        <ConversationPane thread={thread} session={session} onSend={onSend} />
-      ) : (
+      {pane === 'resource' && opened !== null ? (
+        <ResourceViewer
+          uri={opened.uri}
+          name={opened.name}
+          onClose={() => {
+            setOpened(null);
+            setPane('conversation');
+          }}
+        />
+      ) : pane === 'base' ? (
         <BasePanel threadId={thread.id} onChanged={onBaseChanged} />
+      ) : (
+        <ConversationPane thread={thread} session={session} onSend={onSend} onOpen={open} />
       )}
     </section>
   );

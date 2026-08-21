@@ -227,6 +227,28 @@ export type DecisionResolved = EventEnvelope & {
 };
 
 /**
+ * **AI が「これを見て」と指したもの**（要件 C14・決定19）。
+ *
+ * 中身はここに無い。開くときに `/api/resource?uri=` で持ち主に読みに行く
+ * ——指した時点の写しを持つと、現物と食い違う（規則3）。
+ */
+export type ReferenceRecorded = EventEnvelope & {
+  readonly type: 'reference.recorded';
+  readonly threadId: string;
+  readonly uri: string;
+  readonly name: string;
+  readonly mimeType: string | null;
+  readonly note: string | null;
+};
+
+/** `/api/resource` の返り。**読むたびに現物**。 */
+export interface ResourceResponse {
+  readonly uri: string;
+  readonly text: string;
+  readonly mimeType: string | null;
+}
+
+/**
  * ランタイム例外を握りつぶさず流すための、封筒を持たない特別なフレーム
  * （server.ts の catch 節。ログには積まれないので v/id/at が無い）。
  */
@@ -250,6 +272,7 @@ export type StreamEvent =
   | RunFailed
   | DecisionRequested
   | DecisionResolved
+  | ReferenceRecorded
   | StreamErrorFrame;
 
 /** 文脈サイズ。input + cacheCreation + cacheRead の和だけ。他の式にしない。 */

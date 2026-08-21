@@ -23,7 +23,7 @@
  * **知らないイベントに落ちた印（「未対応のイベント」）が 0**。
  */
 
-import { access, mkdtemp } from 'node:fs/promises';
+import { access, mkdtemp, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -127,12 +127,28 @@ beforeAll(async () => {
     mode: 'base',
   });
   await log.append({ type: 'base.appended', threadId: 't2', baseVersion: 2, text: '2本目で決めたこと' });
+  // **AI が「これを見て」と指した**（要件 C14・決定19）。中身は持たない。
+  await log.append({
+    type: 'reference.recorded',
+    threadId: 't1',
+    uri: 'banto://fs/file/note.md',
+    name: 'note.md',
+    mimeType: 'text/markdown',
+    note: '書き足しました',
+  });
   await log.append({ type: 'thread.status', threadId: 't1', status: 'done' });
+
+  // **fs を本物で載せる。** 指された URI を実際に読ませないと、
+  // 「指しは出るが開けない」を見逃す（要件 C14）。
+  const fsRoot = await mkdtemp(path.join(tmpdir(), 'banto-ui-fs-'));
+  await writeFile(path.join(fsRoot, 'note.md'), 'みかんと書いてある\n', 'utf8');
+  process.env['BANTO_FS_ROOT'] = fsRoot;
+  const { fsModule } = await import('@banto/module-fs');
 
   server = startServer({
     dataDir,
     port: 0,
-    modules: [],
+    modules: [{ name: fsModule.manifest.id, kind: 'in-process', server: fsModule.createServer() }],
     toolsByModule: new Map(),
     model: 'claude-haiku-4-5',
     webRoot: WEB_ROOT,
@@ -385,6 +401,36 @@ describe('画面の煙試験（本物のブラウザ）', () => {
     } finally {
       await browser.close();
       tight.close();
+    }
+  }, 120_000);
+
+  /**
+   * **AI が指し、人が開くまでを通す**（要件 C14・決定19）。
+   *
+   * 指しただけでは開かない——**押して初めて中身を読みに行く。**
+   * 中身は指した時点の写しではなく、そのとき持ち主に聞いたものである（規則3）。
+   */
+  it('AI が指したものを、押すと開ける', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await openThread(page, '煙試験');
+      await page.waitForSelector('[data-reference]', { timeout: 15_000 });
+
+      // **押すまでは中身を読みに行っていない。**
+      expect(await page.locator('[data-resource-viewer]').count()).toBe(0);
+
+      await page.locator('[data-reference]').click();
+      await page.waitForSelector('[data-resource-viewer]', { timeout: 15_000 });
+      // fs モジュールが本当に読んだ中身が出る（seed で書いたファイル）。
+      await page.waitForSelector('text=みかんと書いてある', { timeout: 15_000 });
+    } finally {
+      await browser.close();
     }
   }, 120_000);
 

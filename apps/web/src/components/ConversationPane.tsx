@@ -11,10 +11,12 @@ export function ConversationPane({
   thread,
   session,
   onSend,
+  onOpen,
 }: {
   thread: ThreadSummary | null;
   session: ThreadSession;
   onSend: (text: string) => void;
+  onOpen: (uri: string, name: string) => void;
 }) {
   const points = useMemo<ContextPoint[]>(
     () =>
@@ -57,7 +59,7 @@ export function ConversationPane({
         </div>
       )}
 
-      <MessageList items={session.items} running={session.running} />
+      <MessageList items={session.items} running={session.running} onOpen={onOpen} />
       <Composer disabled={session.running} onSend={onSend} />
     </div>
   );

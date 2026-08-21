@@ -200,6 +200,32 @@ export interface MessageRecorded extends Envelope {
   readonly text: string;
 }
 
+/**
+ * **AI が「これを見て」と指したもの**（要件 C14・決定19）。
+ *
+ * `uri` はモジュールの URI 空間の中の1点（`banto://<モジュール>/…`）。
+ * **中身はここに持たない**——持つと、指した時点の写しと現物が食い違う（規則3）。
+ * 開くときにモジュールへ読みに行く。
+ *
+ * **なぜ道具の結果から拾わずに、独立したイベントにしたか**（実測 2026-08-21）：
+ * MCP の `resource_link` は正しい機構だが、**Agent SDK がテキストに潰す**
+ * （`[Resource link: name] uri` という文字列になる）。それを解くのは
+ * 「口を跨ぐ代償として文字列を解く」のやり直しなので採らない。
+ * **AI が指すことを明示的な行いにする**と、SDK の描き方に依存しなくなる。
+ * 要件の言葉も「AI が認識して提示できる」で、**AI が選んで見せる**ことそのものである。
+ */
+export interface ReferenceRecorded extends Envelope {
+  readonly type: 'reference.recorded';
+  readonly threadId: ThreadId;
+  readonly uri: string;
+  /** 人に見せる名前。無ければ URI をそのまま出す。 */
+  readonly name: string;
+  /** どう描くかの手がかり。**当てずっぽうで描かない**ので、無ければ素で出す。 */
+  readonly mimeType: string | null;
+  /** なぜ見せたいのか。AI の一言。 */
+  readonly note: string | null;
+}
+
 export type RunId = string;
 
 /**
@@ -298,6 +324,7 @@ export type BantoEvent =
   | CompactionReported
   | QueryStep
   | MessageRecorded
+  | ReferenceRecorded
   | RunRequested
   | RunTested
   | RunFailed
@@ -322,6 +349,7 @@ const KNOWN_TYPES: ReadonlySet<string> = new Set<EventType>([
   'compaction.reported',
   'query.step',
   'message.recorded',
+  'reference.recorded',
   'run.requested',
   'run.tested',
   'run.failed',
