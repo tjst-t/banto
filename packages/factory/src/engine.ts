@@ -14,6 +14,7 @@
 
 import {
   EventLog,
+  appendBase,
   fold,
   type BantoEvent,
   type ChannelId,
@@ -107,7 +108,16 @@ export class Factory {
     this.cap = options.maxConcurrent ?? 3;
   }
 
-  /** 依頼を1件投げる。**進めるのは `advanceAll`**——投げる側は待たない（要件 B4）。 */
+  /**
+   * 依頼を1件投げる。**進めるのは `advanceAll`**——投げる側は待たない（要件 B4）。
+   *
+   * **Run は Thread を1つ持つ**（仕様 §5.1）ので、ここで会話も作る。会話の器を
+   * 作り直さないので、セッション再開（要件 B5）も fork（要件 A3）もそのまま効く。
+   *
+   * **依頼は base に入る。** 要件 R3 の表に「依頼・制約」がそう書いてある。
+   * したがって **R8 のゲートを通る**——base が閾値を超えていれば、Run は始まらない。
+   * ここを迂回させると、ゲートに穴が1つ空く（決定4）。
+   */
   async request(input: {
     runId: RunId;
     channelId: ChannelId;
@@ -115,7 +125,24 @@ export class Factory {
     branch: string;
     request: string;
   }): Promise<void> {
-    await this.options.log.append({ type: 'run.requested', ...input });
+    const { log } = this.options;
+
+    if (!fold(await log.read()).threads.has(input.threadId)) {
+      await log.append({
+        type: 'thread.created',
+        threadId: input.threadId,
+        channelId: input.channelId,
+        title: input.request.slice(0, 80),
+      });
+    }
+
+    const gate = await appendBase(log, fold(await log.read()), input.threadId, input.request);
+    if (!gate.ok) {
+      // 握りつぶさない（規則2）。**Run を作らずに断る**——中途半端な Run を残さない。
+      throw new Error(`依頼を base に入れられないので Run を始めない: ${gate.reason}`);
+    }
+
+    await log.append({ type: 'run.requested', ...input });
   }
 
   /**

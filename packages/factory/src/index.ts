@@ -1,3 +1,5 @@
+export { AgentImplementer, type AgentImplementerOptions } from './agent-implementer.js';
+
 export {
   Factory,
   foldRuns,

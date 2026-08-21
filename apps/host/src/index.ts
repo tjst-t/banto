@@ -13,8 +13,13 @@
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 
+import path from 'node:path';
+
 import { EventLog, fold, pendingQueue, type NewEvent } from '@banto/core';
+import { AgentImplementer, Factory } from '@banto/factory';
 import { fsModule } from '@banto/module-fs';
+import { ProcessEnvironmentCore } from '@banto/module-env-process';
+import { RepoCore } from '@banto/module-repo';
 import { AgentSdkRunner } from '@banto/runner';
 
 import { startServer } from './server.js';
@@ -148,6 +153,43 @@ ${queue.length === 0 ? '<p class="none">（なし）</p>' : `<table>${rows}</tab
   process.stdout.write(`${out}\n`);
 }
 
+/**
+ * Factory を1つ組み立てる（要件 B1）。
+ *
+ * **役割の割り当てをここで書く**（決定16）。いまは `environment` に
+ * `env-process` を、実装者にサブエージェントを結ぶ。docker に替えるときに
+ * 変わるのはこの数行だけで、Factory 側は1文字も変わらない。
+ */
+function buildFactory(dataDir: string, repoRoot: string, model: string): Factory {
+  const log = new EventLog(dataDir);
+  const repo = new RepoCore(repoRoot);
+  // 環境の根はリポジトリの根。作業ツリーはその内側にできる。
+  const env = new ProcessEnvironmentCore(repoRoot);
+
+  return new Factory({
+    log,
+    repo,
+    environment: {
+      create: (workdir) => env.create(workdir),
+      status: (handle) => env.status(handle),
+      exec: (handle, command, args) => env.exec(handle, command, args),
+      destroy: (handle) => env.destroy(handle),
+    },
+    implementer: new AgentImplementer({
+      log,
+      modules: [],
+      toolsByModule: new Map(),
+      model,
+      absoluteWorkdir: (workdir) => path.resolve(repoRoot, workdir),
+      // **何を許したかを1行で残す**（要件 D4）。既定では1つも通らない。
+      extraAllowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
+    }),
+    // テストの走らせ方はリポジトリが決める（仕様 §6）。いまは1つ固定で、
+    // リポジトリ側の宣言から読むのは docker provider と同じ回で入れる。
+    test: { command: 'sh', args: ['-c', 'npm test --silent'] },
+  });
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] ?? c);
 }
@@ -180,6 +222,18 @@ async function main(): Promise<void> {
 
     case 'serve': {
       const port = Number(flag(argv, 'port', '4300'));
+      const repoRoot = flag(argv, 'repo', '');
+      const model = flag(argv, 'model', 'claude-haiku-4-5');
+
+      /**
+       * Factory は **`--repo` を渡したときだけ**紐づく（要件 B1）。
+       * 渡さなければ `/api/runs` は 501 を返す——「在るが何もしない口」を作らない。
+       *
+       * **既定で紐づけない理由**：Factory はサブエージェントを起動して
+       * ファイルを書き換え、git を動かす。どのリポジトリに対してそれを許すかは、
+       * 運用者が1行書いて決めることであって、既定で決まっていてよいことではない。
+       */
+      const factory = repoRoot === '' ? undefined : buildFactory(dataDir, repoRoot, model);
       // Phase 1.5 では fs だけを繋ぐ。shell / repo は subprocess なので、
       // 台帳から解決する経路を通してから足す（要件 C11）。
       startServer({
@@ -187,12 +241,16 @@ async function main(): Promise<void> {
         port,
         modules: [{ name: fsModule.manifest.id, kind: 'in-process', server: fsModule.createServer() }],
         toolsByModule: new Map([['fs', ['read', 'write', 'list']]]),
-        model: flag(argv, 'model', 'claude-haiku-4-5'),
+        model,
         host: flag(argv, 'host', '127.0.0.1'),
+        ...(factory === undefined ? {} : { factory }),
         ...(flag(argv, 'secret', '') === '' ? {} : { secret: flag(argv, 'secret', '') }),
         ...(flag(argv, 'web', '') === '' ? {} : { webRoot: flag(argv, 'web', '') }),
       });
       process.stdout.write(`http://${flag(argv, 'host', '127.0.0.1')}:${port}\n`);
+      if (factory === undefined) {
+        process.stdout.write('Factory は紐づいていない（--repo <path> で紐づく）\n');
+      }
       break;
     }
 

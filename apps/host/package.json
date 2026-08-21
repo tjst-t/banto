@@ -9,6 +9,9 @@
     "@banto/core": "*",
     "@banto/runner": "*",
     "@banto/observer": "*",
-    "@banto/module-fs": "*"
+    "@banto/module-fs": "*",
+    "@banto/factory": "*",
+    "@banto/module-repo": "*",
+    "@banto/module-env-process": "*"
   }
 }

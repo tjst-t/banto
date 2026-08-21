@@ -19,6 +19,15 @@
     },
     {
       "path": "../../modules/fs"
+    },
+    {
+      "path": "../../packages/factory"
+    },
+    {
+      "path": "../../modules/repo"
+    },
+    {
+      "path": "../../modules/env-process"
     }
   ]
 }

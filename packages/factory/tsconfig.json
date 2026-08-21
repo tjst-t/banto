@@ -16,6 +16,9 @@
     },
     {
       "path": "../../modules/env-process"
+    },
+    {
+      "path": "../runner"
     }
   ]
 }

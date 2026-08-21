@@ -28,6 +28,7 @@ import {
   type NewEvent,
 } from '@banto/core';
 import { AgentSdkRunner, allowedToolNames, type McpServerSpec } from '@banto/runner';
+import { foldRuns, type Factory } from '@banto/factory';
 
 export interface ServerOptions {
   readonly dataDir: string;
@@ -58,6 +59,15 @@ export interface ServerOptions {
    * 切れるゲートは、いつか切られたまま忘れられる（C8c と同じ理由）。
    */
   readonly baseLimit?: number;
+  /**
+   * Factory（要件 B）。**渡さなければ `/api/runs` は 501 を返す**——
+   * 「エンドポイントは在るが黙って何もしない」を作らない（規則2）。
+   *
+   * **自動では進めない。** `advanceAll` は実際に Claude の枠を使うので、
+   * 明示的に `POST /api/runs/advance` を叩いたときだけ動く。時計で回すと、
+   * 画面を閉じている間に費用が増えることになる。
+   */
+  readonly factory?: Factory;
 }
 
 const CONTENT_TYPES: ReadonlyMap<string, string> = new Map([
@@ -107,7 +117,8 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
 
 /** いまの状態。**畳んで作る。保存された「現在」は無い**（規則3）。 */
 async function currentState(dataDir: string, baseLimit: number): Promise<unknown> {
-  const state = fold(await new EventLog(dataDir).read());
+  const events = await new EventLog(dataDir).read();
+  const state = fold(events);
   return {
     channels: [...state.channels.values()],
     threads: [...state.threads.values()].map((t) => ({
@@ -121,6 +132,15 @@ async function currentState(dataDir: string, baseLimit: number): Promise<unknown
       // ゲートの残りを**常に見せる**（要件 R8）。拒否されて初めて存在を知る、を避ける。
       baseCharacters: baseCharacters(state, t.id),
       baseLimit,
+    })),
+    // Run も畳んで作る。**保存された「いまの段」は無い**（仕様 §5.3）。
+    runs: foldRuns(events).map((r) => ({
+      runId: r.runId,
+      threadId: r.threadId,
+      branch: r.branch,
+      request: r.request,
+      failed: r.failed,
+      testedCommits: [...r.tested.entries()].map(([commit, passed]) => ({ commit, passed })),
     })),
     queue: pendingQueue(state),
   };
@@ -139,6 +159,17 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
       else res.end();
     });
   });
+
+  /** その名前のチャンネルを1つに保つ。**二重に作らない。** */
+  async function ensureChannel(channelName: string): Promise<string> {
+    const found = [...fold(await log.read()).channels.values()].find(
+      (c) => c.name === channelName,
+    );
+    if (found) return found.id;
+    const channelId = randomUUID();
+    await log.append({ type: 'channel.created', channelId, channelName });
+    return channelId;
+  }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // 門は何よりも先。ここを通らないものは /api にも静的にも触れない。
@@ -167,6 +198,43 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
       }
       const gate = await appendBase(log, state, body.threadId, body.text, baseLimit);
       json(res, gate.ok ? 200 : 409, gate);
+      return;
+    }
+
+    // 依頼を1件投げる（要件 B1・B2）。**投げるだけ。進めない**（要件 B4：人を待たせない）。
+    if (req.method === 'POST' && url.pathname === '/api/runs') {
+      if (options.factory === undefined) {
+        json(res, 501, { error: 'この banto に Factory が紐づいていない' });
+        return;
+      }
+      const body = (await readBody(req)) as { request?: string; channelName?: string; branch?: string };
+      if (typeof body.request !== 'string' || body.request.trim() === '') {
+        json(res, 400, { error: 'request が要る' });
+        return;
+      }
+      const channelId = await ensureChannel(body.channelName ?? 'banto-v3');
+      const runId = randomUUID();
+      // ブランチ名は Run から決まる。**覚えないので、再開しても同じ名前に着く。**
+      const branch = body.branch ?? `factory/${runId.slice(0, 8)}`;
+      await options.factory.request({
+        runId,
+        channelId,
+        threadId: randomUUID(),
+        branch,
+        request: body.request,
+      });
+      json(res, 200, { runId, branch });
+      return;
+    }
+
+    // 進める。**明示的に叩かれたときだけ**（Claude の枠を使うため）。
+    if (req.method === 'POST' && url.pathname === '/api/runs/advance') {
+      if (options.factory === undefined) {
+        json(res, 501, { error: 'この banto に Factory が紐づいていない' });
+        return;
+      }
+      await options.factory.advanceAll();
+      json(res, 200, await currentState(options.dataDir, baseLimit));
       return;
     }
 
