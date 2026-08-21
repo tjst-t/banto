@@ -22,6 +22,11 @@ export interface RepoPort {
   merge(branch: string, into?: string): Promise<string>;
   /** 取り込み先の先端に載せ直す。**衝突したら投げる**（要件 B7）。 */
   rebaseOnto(relative: string, onto?: string): Promise<string>;
+  /**
+   * その ref に在るファイル。**作業ツリーではない**（`declaration.ts` の注記）。
+   * 無ければ `null`——宣言していないことは失敗ではない。
+   */
+  readFileAt(ref: string, relative: string): Promise<string | null>;
 }
 
 /** 役割 `environment`（決定16）。**実装は差し替わる。** */

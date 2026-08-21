@@ -23,16 +23,31 @@ import {
   type RunId,
 } from '@banto/core';
 
+import { DECLARATION_PATH, parseDeclaration } from './declaration.js';
 import type { EnvironmentPort, Implementer, RepoPort, RunPlan, TestCommand } from './ports.js';
-import { isSettled, nextStage, type Next, type Observation, type Review } from './stage.js';
+import {
+  isSettled,
+  nextStage,
+  type Next,
+  type Observation,
+  type Outcome,
+  type Review,
+} from './stage.js';
 
 export interface FactoryOptions {
   readonly log: EventLog;
   readonly repo: RepoPort;
   readonly environment: EnvironmentPort;
   readonly implementer: Implementer;
-  /** テストの走らせ方。**リポジトリが決める**（仕様 §6）。 */
-  readonly test: TestCommand;
+  /**
+   * テストの走らせ方の既定。**省くのが普通**——リポジトリの宣言から読む（仕様 §6）。
+   *
+   * 置いてあるのは試験のためではなく、**宣言を持たないリポジトリを
+   * 運用者が明示的に引き受けられる**ようにするため。既定値は持たせない
+   * （黙って `npm test` を当てると、テストの無いリポジトリで
+   * 「0件が通った」になる）。
+   */
+  readonly test?: TestCommand;
   /** 取り込み先。**`base` とは呼ばない**——会話の base と重なる（仕様 §5.8）。 */
   readonly targetBranch?: string;
   /** 人を待つか。**既定は待たない**（要件 B4）。 */
@@ -241,8 +256,13 @@ export class Factory {
 
   /** 1つの Run を1段だけ進める。**進めた段を返す**（何もしなければ終端を返す）。 */
   async step(run: RunRecord): Promise<Next> {
-    const next = nextStage(await this.observe(run));
-    if (isSettled(next)) return next;
+    const observed = await this.observe(run);
+    const next = nextStage(observed);
+
+    if (isSettled(next)) {
+      await this.settle(run, next, observed);
+      return next;
+    }
 
     try {
       await this.perform(run, next);
@@ -252,6 +272,28 @@ export class Factory {
       return 'failed';
     }
     return next;
+  }
+
+  /**
+   * 終端に着いた Run を締める。**黙って落とさない**（要件 A6・規則2）。
+   *
+   * `nextStage` が `failed` を返す道は2つある——`run.failed` が既に在るか、
+   * **先端のテストが落ちたか**。後者はここまで何も記録していなかったので、
+   * Run は止まるのに**判断待ちの列に何も立たなかった**。ログには
+   * `run.tested passed=false` が在るので画面には出るが、**人を呼ぶ経路が無かった**
+   * ——「見に行けば分かる」は A6 が禁じている形である。
+   *
+   * 記録済みなら二重に立てない（`run.failed` が真＝もう立っている）。
+   * **`step` と `advanceAll` の両方から呼ぶ**——`advanceAll` は終端の Run を
+   * `step` に渡さずに外すので、片方に置くと半分しか締まらない。
+   */
+  private async settle(run: RunRecord, next: Outcome, observed: Observation): Promise<void> {
+    if (next !== 'failed' || run.failed) return;
+    await this.fail(
+      run,
+      'test',
+      new Error(`テストが通らなかった: ${observed.head ?? '(先端が無い)'}`),
+    );
   }
 
   private async fail(run: RunRecord, stage: string, cause: unknown): Promise<void> {
@@ -272,8 +314,27 @@ export class Factory {
     });
   }
 
+  /**
+   * テストの走らせ方を決める。**リポジトリの宣言が先**（仕様 §6）。
+   *
+   * 読むのは**取り込み先のブランチ**であって、作業ツリーではない
+   * （`declaration.ts` の注記）。宣言も設定も無ければ**止まる**——
+   * 分からないまま既定を当てない（規則2）。
+   */
+  private async testCommand(): Promise<TestCommand> {
+    const raw = await this.options.repo.readFileAt(this.into, DECLARATION_PATH);
+    if (raw !== null) return parseDeclaration(raw).test;
+
+    const fallback = this.options.test;
+    if (fallback !== undefined) return fallback;
+    throw new Error(
+      `テストの走らせ方が分からない: ${this.into} に ${DECLARATION_PATH} が無い。` +
+        `リポジトリが宣言するか、banto 側の設定で明示的に引き受ける`,
+    );
+  }
+
   private async perform(run: RunRecord, stage: Next): Promise<void> {
-    const { repo, environment, implementer, test, log } = this.options;
+    const { repo, environment, implementer, log } = this.options;
 
     switch (stage) {
       case 'worktree':
@@ -295,6 +356,7 @@ export class Factory {
       }
 
       case 'test': {
+        const test = await this.testCommand();
         const handle = await environment.create(run.workdir);
         const commit = await repo.headOf(run.branch);
         const result = await environment.exec(handle, test.command, test.args);
@@ -354,8 +416,17 @@ export class Factory {
     for (let round = 0; round < maxRounds; round += 1) {
       const runs = foldRuns(await this.options.log.read());
       const observed = await Promise.all(
-        runs.map(async (run) => ({ run, next: nextStage(await this.observe(run)) })),
+        runs.map(async (run) => {
+          const observation = await this.observe(run);
+          return { run, observation, next: nextStage(observation) };
+        }),
       );
+
+      // **外す前に締める。** ここを飛ばすと、落ちたテストが誰にも届かない。
+      for (const r of observed) {
+        if (isSettled(r.next)) await this.settle(r.run, r.next, r.observation);
+      }
+
       const active = observed.filter((r) => !isSettled(r.next));
       if (active.length === 0) return;
 

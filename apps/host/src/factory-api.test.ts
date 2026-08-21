@@ -56,7 +56,9 @@ beforeEach(async () => {
 
   const factory = new Factory({
     log,
-    repo,
+    // `RepoCore` の口は `showFile`、Factory の口は `readFileAt`。
+    // **同じ問いに2つの語を当てない**（決定7）ので、ここで名前を合わせる。
+    repo: Object.assign(repo, { readFileAt: (ref: string, p: string) => repo.showFile(ref, p) }),
     environment: {
       create: (w) => env.create(w),
       status: (h) => env.status(h),
@@ -71,6 +73,7 @@ beforeEach(async () => {
         await exec('git', ['commit', '-m', plan.request], { cwd });
       },
     },
+    // 宣言を持たないリポジトリを、運用者が明示的に引き受ける形（仕様 §6）。
     test: { command: 'sh', args: ['-c', 'test -f work.txt'] },
   });
 

@@ -44,6 +44,10 @@ export function repoPortOver(caller: ToolCaller): RepoPort {
     merge: (branch, into) => caller.call('merge', { branch, ...(into ? { into } : {}) }),
     rebaseOnto: (relative, onto) =>
       caller.call('rebase_onto', { path: relative, ...(onto ? { onto } : {}) }),
+    readFileAt: async (ref, relative) => {
+      const r = await caller.callStructured('show_file', { ref, path: relative });
+      return r['found'] === true ? String(r['content']) : null;
+    },
   };
 }
 

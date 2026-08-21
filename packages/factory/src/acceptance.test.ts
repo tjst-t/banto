@@ -15,7 +15,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -27,6 +27,7 @@ import { connectInProcess, type ToolCaller } from '@banto/module-kit';
 import { repoModule } from '@banto/module-repo';
 import { envProcessModule } from '@banto/module-env-process';
 
+import { DECLARATION_PATH } from './declaration.js';
 import { Factory, foldRuns, reviewDecisionId, workdirOf } from './engine.js';
 import { environmentPortOver, repoPortOver } from './mcp-ports.js';
 import type { Implementer } from './ports.js';
@@ -47,6 +48,14 @@ async function makeRepo(): Promise<string> {
   await git('config', 'user.email', 'test@example.com');
   await git('config', 'user.name', 'test');
   await writeFile(path.join(dir, 'README.md'), '# test\n', 'utf8');
+  // **テストの走らせ方はリポジトリが宣言する**（仕様 §6）。ここが本物の経路。
+  // 中身は「そのファイルが在るか」——Factory はコマンドを組み立てない。
+  await mkdir(path.join(dir, '.banto'), { recursive: true });
+  await writeFile(
+    path.join(dir, DECLARATION_PATH),
+    JSON.stringify({ test: { command: 'sh', args: ['-c', 'ls *.txt >/dev/null 2>&1'] } }),
+    'utf8',
+  );
   // 離れた行を触らせるための下地。同じファイルでも region が違えば git が自動で解ける。
   await writeFile(
     path.join(dir, 'shared.txt'),
@@ -114,8 +123,12 @@ async function inMain(file: string): Promise<boolean> {
   );
 }
 
-/** テストは「そのファイルが在るか」。**コマンドはリポジトリが決める**（仕様 §6）。 */
-const TEST = { command: 'sh', args: ['-c', 'ls *.txt >/dev/null 2>&1'] };
+/** 取り込み先の宣言を差し替える（仕様 §6）。**commit するまで効かない。** */
+async function declare(test: { command: string; args: string[] }): Promise<void> {
+  await writeFile(path.join(root, DECLARATION_PATH), JSON.stringify({ test }), 'utf8');
+  await run('git', ['add', '-A'], { cwd: root });
+  await run('git', ['commit', '-q', '-m', '宣言を変える'], { cwd: root });
+}
 
 function factory(overrides: Partial<ConstructorParameters<typeof Factory>[0]> = {}): Factory {
   return new Factory({
@@ -123,7 +136,6 @@ function factory(overrides: Partial<ConstructorParameters<typeof Factory>[0]> = 
     repo: repoPortOver(repoCaller),
     environment: environmentPortOver(envCaller),
     implementer: implementer(),
-    test: TEST,
     ...overrides,
   });
 }
@@ -248,6 +260,69 @@ describe('順序づけと衝突の解決（要件 B7）', () => {
     expect(failed[0]).toMatchObject({ runId: 'run-beta', stage: 'merge' });
     // 判断待ちに立っている（要件 A6）。**黙って落ちない。**
     expect(fold(events).pendingDecisions.has('run-failed:run-beta')).toBe(true);
+  }, 60_000);
+});
+
+describe('テストの走らせ方は、リポジトリが宣言する（仕様 §6）', () => {
+  /**
+   * **これは安全の試験である。** 作業ツリーではエージェントが働いていて、
+   * そこには宣言のファイルも在る。そこから読んでいたら、
+   * `test` を `true` に書き換えるだけで何を壊しても緑になる。
+   */
+  it('作業ツリーで宣言を書き換えても効かない。読むのは取り込み先', async () => {
+    // 取り込み先の宣言を、**成果物が無ければ落ちる**ものに差し替える。
+    // 既定の `ls *.txt` は fixture の shared.txt で常に通ってしまい、
+    // 「読む先が違う」ことを区別できない。
+    await declare({ command: 'sh', args: ['-c', 'test -f alpha.txt'] });
+
+    const f = factory({
+      implementer: {
+        implement: async (plan) => {
+          const cwd = path.join(root, plan.workdir);
+          // 自分に都合のよい宣言に書き換え、**テストを通る成果物は作らない**。
+          await writeFile(
+            path.join(cwd, DECLARATION_PATH),
+            JSON.stringify({ test: { command: 'sh', args: ['-c', 'true'] } }),
+            'utf8',
+          );
+          await commit(cwd, 'テストを骨抜きにする');
+        },
+      },
+    });
+    await request(f, 'alpha');
+    await f.advanceAll();
+
+    // 取り込み先の宣言（*.txt が在るか）で測るので、落ちて止まる。
+    const events = await log.read();
+    const tested = events.filter((e) => e.type === 'run.tested');
+    expect(tested.map((e) => e.passed)).toEqual([false]);
+    expect(events.some((e) => e.type === 'run.failed')).toBe(true);
+  }, 60_000);
+
+  // 分からないまま `npm test` を当てると、テストの無いリポジトリで
+  // 「0件が通った」になる（規則2）。
+  it('宣言も設定も無ければ、テストの段で止まる', async () => {
+    await run('git', ['rm', '-q', DECLARATION_PATH], { cwd: root });
+    await run('git', ['commit', '-q', '-m', '宣言を消す'], { cwd: root });
+
+    const f = factory();
+    await request(f, 'alpha');
+    await f.advanceAll();
+
+    const failed = (await log.read()).filter((e) => e.type === 'run.failed');
+    expect(failed[0]).toMatchObject({ stage: 'test' });
+    expect(failed[0]?.detail).toContain('テストの走らせ方が分からない');
+  }, 60_000);
+
+  it('宣言が無くても、運用者が設定で引き受けられる', async () => {
+    await run('git', ['rm', '-q', DECLARATION_PATH], { cwd: root });
+    await run('git', ['commit', '-q', '-m', '宣言を消す'], { cwd: root });
+
+    const f = factory({ test: { command: 'sh', args: ['-c', 'ls *.txt >/dev/null 2>&1'] } });
+    await request(f, 'alpha');
+    await f.advanceAll();
+
+    expect(await inMain('alpha.txt')).toBe(true);
   }, 60_000);
 });
 

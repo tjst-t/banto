@@ -101,7 +101,25 @@ export const repoModule = defineModule({
       run: async (core, { path: p }) => ok(await core.removeWorktree(p)),
     }),
     tool({
-      name: 'head_of',
+        name: 'show_file',
+        description:
+          "Read a file as it exists at a git ref (not the working tree). Returns found=false if the ref has no such file — that is not an error.",
+        input: {
+          ref: z.string().describe('Branch, tag, or commit'),
+          path: z.string().describe('Path relative to the repository root'),
+        },
+        output: {
+          found: z.boolean(),
+          content: z.string().describe('Empty when found is false'),
+        },
+        run: async (core, { ref, path: p }) => {
+          const content = await core.showFile(ref, p);
+          return { found: content !== null, content: content ?? '' };
+        },
+        summary: (v) => (v.found ? `${v.content.length} 文字` : '無い'),
+      }),
+      tool({
+        name: 'head_of',
       description: 'Return the commit sha a ref points at.',
       input: { ref: z.string().describe('Branch name or any git ref') },
       output: { commit: z.string() },

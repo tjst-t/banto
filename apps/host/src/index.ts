@@ -253,7 +253,9 @@ async function buildFactory(dataDir: string, repoRoot: string, model: string): P
     ),
     // テストの走らせ方はリポジトリが決める（仕様 §6）。いまは1つ固定で、
     // リポジトリ側の宣言から読むのは docker provider と同じ回で入れる。
-    test: { command: 'sh', args: ['-c', 'npm test --silent'] },
+    // **テストの走らせ方は渡さない。** リポジトリが `.banto/repo.json` で
+    // 宣言する（仕様 §6）。ここに既定を置くと、宣言していないリポジトリで
+    // 「0件が通った」になる。
   });
 }
 

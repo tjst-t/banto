@@ -1,4 +1,10 @@
 export {
+  DECLARATION_PATH,
+  parseDeclaration,
+  type RepoDeclaration,
+} from './declaration.js';
+
+export {
   environmentPortOver,
   repoPortOver,
   workerImplementerOver,

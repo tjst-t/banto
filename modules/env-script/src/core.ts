@@ -53,8 +53,14 @@ export type Verb = keyof ScriptConfig;
 
 export const VERBS: readonly Verb[] = ['create', 'status', 'exec', 'address', 'destroy'];
 
-/** リポジトリの設定の置き場。**探し回らない**——1箇所だけ見る。 */
-export const CONFIG_PATH = '.banto/environment.json';
+/**
+ * リポジトリの宣言の置き場。**探し回らない**——1箇所だけ見る。
+ *
+ * **`environment.json` ではない。** 同じファイルにテストの走らせ方も入る
+ * （仕様 §6 の表は、環境とテストの両方をリポジトリ側に置いている）ので、
+ * 環境だけを指す名前にしない。読み手は `@banto/factory` の `DECLARATION_PATH` と同じ。
+ */
+export const CONFIG_PATH = '.banto/repo.json';
 
 /**
  * 承認されていないスクリプトを走らせようとした。

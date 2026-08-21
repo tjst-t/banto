@@ -50,7 +50,7 @@ async function makeRepo(overrides: Record<string, string> = {}): Promise<string>
   await mkdir(path.join(repo, '.banto'), { recursive: true });
   await mkdir(path.join(repo, 'script'), { recursive: true });
   await writeFile(
-    path.join(repo, '.banto/environment.json'),
+    path.join(repo, '.banto/repo.json'),
     JSON.stringify({
       environment: {
         kind: 'script',
@@ -185,7 +185,7 @@ describe('設定の検査', () => {
   it('動詞が欠けていたら止まる。黙って何もしない動詞を作らない', async () => {
     const repo = await makeRepo();
     await writeFile(
-      path.join(repo, '.banto/environment.json'),
+      path.join(repo, '.banto/repo.json'),
       JSON.stringify({ environment: { kind: 'script', create: 'script/env-create' } }),
       'utf8',
     );
@@ -196,7 +196,7 @@ describe('設定の検査', () => {
   it('kind が script でなければ止まる', async () => {
     const repo = await makeRepo();
     await writeFile(
-      path.join(repo, '.banto/environment.json'),
+      path.join(repo, '.banto/repo.json'),
       JSON.stringify({ environment: { kind: 'docker' } }),
       'utf8',
     );
@@ -207,7 +207,7 @@ describe('設定の検査', () => {
   it('スクリプトがリポジトリの外を指したら止まる', async () => {
     const repo = await makeRepo();
     await writeFile(
-      path.join(repo, '.banto/environment.json'),
+      path.join(repo, '.banto/repo.json'),
       JSON.stringify({
         environment: {
           kind: 'script',
