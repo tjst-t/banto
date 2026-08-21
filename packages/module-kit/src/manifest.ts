@@ -120,6 +120,14 @@ export interface ViewSpec {
   readonly uriPrefix: string;
   /** 人に見せる面の名前。 */
   readonly title: string;
+  /**
+   * どこに出すか。既定は会話の中（`canvas`）。
+   *
+   * **設定の区画（要件 C4）に、新しい機構を足さない**（規則12）。
+   * 「モジュールが自分の面を持ち、ホストが URI で開く」機構は C14 で作ってある。
+   * 設定はその**置き場が違うだけ**なので、印を1つ足して済ませる。
+   */
+  readonly slot?: 'canvas' | 'settings';
 }
 
 export interface ModuleGui {

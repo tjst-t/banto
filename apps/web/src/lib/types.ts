@@ -255,6 +255,28 @@ export interface ViewAssignment {
   readonly title: string;
 }
 
+/**
+ * モジュール台帳の1件（要件 C1・C8c・C12）。
+ *
+ * **境界も、外したときの影響も、隠さない。** 前者は C8c が常時表示を求めていて、
+ * 後者は C12 が「押す前に分かる」ことを求めている。
+ */
+export interface ModuleSummary {
+  readonly id: string;
+  readonly description: string;
+  readonly isolation: 'in-process' | 'subprocess';
+  readonly handlesSecrets: boolean;
+  readonly provides: readonly string[];
+  readonly gui: { readonly kind: 'in-page' | 'sandboxed'; readonly views: number } | null;
+  /** モジュール自身の設定の区画（要件 C4）。無ければ null。 */
+  readonly settingsUri: string | null;
+  readonly impact: {
+    readonly summary: string;
+    readonly breakages: readonly { readonly moduleId: string; readonly severity: string }[];
+    readonly orphanedCapabilities: readonly string[];
+  };
+}
+
 /** `/api/resource` の返り。**読むたびに現物**。 */
 export interface ResourceResponse {
   readonly uri: string;

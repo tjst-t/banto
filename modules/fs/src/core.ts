@@ -68,4 +68,20 @@ export class FileSystemCore {
     }
     return out.sort((a, b) => a.name.localeCompare(b.name));
   }
+
+  /**
+   * いまの設定（要件 C4）。**根がどこかは、いちばん知りたいこと**である
+   * ——ここを取り違えると、意図しない場所を読み書きすることになる。
+   */
+  describeSettings(): string {
+    return [
+      '# fs モジュールの設定',
+      '',
+      `作業範囲の根: ${this.root}`,
+      '',
+      'この根は BANTO_FS_ROOT で渡される（既定値は持たない）。',
+      '変えるには banto を起動し直す——実行中に作業範囲が動くと、',
+      '同じ相対パスが別のファイルを指すことになる。',
+    ].join('\n');
+  }
 }

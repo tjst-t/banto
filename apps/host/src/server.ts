@@ -33,6 +33,8 @@ import { LedgerCore, conversationModule } from '@banto/module-ledger';
 import {
   connectInProcess,
   connectSubprocess,
+  describeImpact,
+  impactOfDisabling,
   type BantoModule,
   type ToolCaller,
 } from '@banto/module-kit';
@@ -317,6 +319,39 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
     }
 
     /**
+     * モジュールの台帳と、**外したら何が壊れるか**（要件 C1・C11・C12）。
+     *
+     * **影響は台帳から導く**（規則3）。別表を持たないので、モジュールを足したときに
+     * 更新し忘れる場所が無い。**押す前に分かる**ことが要件 C12 の中身である。
+     *
+     * 境界（`isolation` と `gui.kind`）も一緒に返す——**台帳に常時表示する**（要件 C8c）。
+     */
+    if (req.method === 'GET' && url.pathname === '/api/modules') {
+      const manifests = options.manifests ?? [];
+      json(res, 200, {
+        modules: manifests.map((m) => {
+          const impact = impactOfDisabling(manifests, m.id);
+          return {
+            id: m.id,
+            description: m.description,
+            isolation: m.isolation,
+            handlesSecrets: m.handles?.includes('secrets') === true,
+            provides: m.provides ?? [],
+            gui: m.gui === undefined ? null : { kind: m.gui.kind, views: m.gui.views.length },
+            settingsUri:
+              m.gui?.views.find((v) => v.slot === 'settings')?.uriPrefix ?? null,
+            impact: {
+              summary: describeImpact(impact),
+              breakages: impact.breakages,
+              orphanedCapabilities: impact.orphanedCapabilities,
+            },
+          };
+        }),
+      });
+      return;
+    }
+
+    /**
      * `sandboxed` な面の中身を配る（要件 C1・C6、決定20）。
      *
      * **JS を丸ごと HTML に入れて返す。** 別ファイルにすると、iframe の側が
@@ -376,6 +411,7 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
             entry: m.gui?.entry ?? null,
             uriPrefix: v.uriPrefix,
             title: v.title,
+            slot: v.slot ?? 'canvas',
           })),
         ),
       });

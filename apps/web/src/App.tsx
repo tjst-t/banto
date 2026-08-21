@@ -8,11 +8,12 @@ import { ThreadPicker } from './components/ThreadPicker';
 import { ThreadColumn } from './components/ThreadColumn';
 import { Queue } from './components/Queue';
 import { Runs } from './components/Runs';
+import { SettingsPanel } from './components/SettingsPanel';
 import { Tabs, TabsList, TabsTrigger } from './components/ui/tabs';
 
 type MobilePane = 'conversation' | 'side';
 /** 右側の面。**1画面に集める**（要件 A5）ので、増やすのではなく切り替える。 */
-type SidePane = 'queue' | 'factory';
+type SidePane = 'queue' | 'factory' | 'settings';
 
 /**
  * 横に並べる会話の上限。**画面の幅の話であって、機構の制限ではない。**
@@ -238,11 +239,14 @@ export function App() {
                 <TabsTrigger value="factory">
                   Factory {runs.length > 0 ? `(${runs.length})` : ''}
                 </TabsTrigger>
+                <TabsTrigger value="settings">設定</TabsTrigger>
               </TabsList>
             </Tabs>
           </div>
 
-          {sidePane === 'queue' ? (
+          {sidePane === 'settings' ? (
+            <SettingsPanel />
+          ) : sidePane === 'queue' ? (
             <>
               <p className="border-b border-border px-4 py-2 text-[11px] text-ink-muted">
                 出所を問わず1つの列にしてある（要件 A6）

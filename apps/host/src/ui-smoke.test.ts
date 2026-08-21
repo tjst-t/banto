@@ -536,6 +536,43 @@ describe('画面の煙試験（本物のブラウザ）', () => {
     }
   }, 120_000);
 
+  /**
+   * **台帳と、外したときの影響**（要件 C1・C8c・C12・C4）。
+   *
+   * C12 の中身は「押す前に分かる」ことなので、**画面に出ているか**で測る。
+   */
+  it('設定に台帳が出て、外したら何が壊れるかが読める', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await page.getByRole('tab', { name: '設定' }).click();
+
+      await page.waitForSelector('[data-module-row="fs"]', { timeout: 15_000 });
+      await page.waitForSelector('[data-module-row="hello-py"]', { timeout: 15_000 });
+
+      // **境界を常時見せる**（要件 C8c）。折りたたまない。
+      const py = page.locator('[data-module-row="hello-py"]');
+      await py.locator('text=subprocess').waitFor({ timeout: 15_000 });
+      await py.locator('text=/画面 sandboxed/').waitFor({ timeout: 15_000 });
+
+      // **外したら何が壊れるか**（要件 C12）。押す前に読める。
+      await page.locator('[data-impact="fs"]').waitFor({ timeout: 15_000 });
+      expect(await page.locator('[data-impact="fs"]').innerText()).toContain('無効化すると');
+
+      // **モジュール自身の設定の区画**（要件 C4）。C14 の機構をそのまま使っている。
+      await page.locator('[data-settings-of="fs"]').click();
+      await page.waitForSelector('text=/fs モジュールの設定/', { timeout: 15_000 });
+      await page.waitForSelector('text=/作業範囲の根/', { timeout: 15_000 });
+    } finally {
+      await browser.close();
+    }
+  }, 120_000);
+
   it('無い静的ファイルは 404。index.html にすり替えない（規則2）', async () => {
     if (!built) throw new Error('画面がビルドされていないので測れない');
     const res = await fetch(`${origin}/assets/does-not-exist.js`);

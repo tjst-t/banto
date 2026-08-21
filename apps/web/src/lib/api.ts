@@ -8,6 +8,7 @@
 import type {
   BaseResponse,
   CreateThreadResponse,
+  ModuleSummary,
   RequestRunResponse,
   ResourceResponse,
   ViewAssignment,
@@ -91,6 +92,15 @@ export async function forkThread(body: {
     body: JSON.stringify(body),
   });
   return asJson<CreateThreadResponse>(res);
+}
+
+/**
+ * モジュールの台帳（要件 C1・C8c・C12）。
+ * **外したら何が壊れるかも、ホストが台帳から導いて返す**——画面は計算しない（規則3）。
+ */
+export async function fetchModules(): Promise<ModuleSummary[]> {
+  const res = await fetch('/api/modules');
+  return (await asJson<{ modules: ModuleSummary[] }>(res)).modules;
 }
 
 /** どの URI をどの面で開くか（要件 C1・C14）。**台帳から導いたものを受け取るだけ。** */

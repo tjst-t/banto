@@ -53,3 +53,10 @@ export {
 } from './load.js';
 
 export { connectInProcess, connectSubprocess, type ToolCaller } from './client.js';
+
+export {
+  describeImpact,
+  impactOfDisabling,
+  type Breakage,
+  type Impact,
+} from './impact.js';

@@ -26,7 +26,11 @@ export const manifest: BantoModule = {
   gui: {
     kind: 'in-page',
     entry: 'fs/FileView',
-    views: [{ uriPrefix: 'banto://fs/file/', title: 'ファイル' }],
+    views: [
+      { uriPrefix: 'banto://fs/file/', title: 'ファイル' },
+      // 設定の区画（要件 C4）。**置き場が違うだけで、機構は会話の面と同じ。**
+      { uriPrefix: 'banto://fs/settings', title: 'ファイル（fs）', slot: 'settings' },
+    ],
   },
 };
 
@@ -71,6 +75,19 @@ export const fsModule = defineModule({
   ],
   // **持っている URI 空間**（要件 C14）。人も AI も、同じ URI で同じものを見る（C2）。
   resources: [
+    {
+      name: 'settings',
+      description: 'What this module is configured with',
+      uri: 'banto://fs/settings',
+      mimeType: 'text/plain',
+      /**
+       * **いまの設定を、そのまま見せる**（要件 C4）。
+       *
+       * まだ変えられるものが無いので、変える口は出さない
+       * ——**押せるのに効かない**より、押せないほうがよい（規則2）。
+       */
+      read: async (core) => core.describeSettings(),
+    },
     {
       name: 'file',
       description: 'A text file under the module root',
