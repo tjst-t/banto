@@ -2,11 +2,23 @@
 /**
  * 観測の数値をプレーンテキストで出す CLI。
  *
- * 2つのモード：
+ * 3つのモード：
  *  --transcripts [rootDir]  Claude Code のトランスクリプトを読んで畳む（検算用）
  *  --since / --until        セッションの開始時刻で母集団を絞る。過去の計測と
  *                           突き合わせるとき、コーパスの増加と実装の変化を取り違えないため
  *  --log <dataDir>          banto 自身のイベントログを読んで畳む
+ *  --watch <dataDir>        繰り返し畳んで、**警報を判断待ちの列に流す**（要件 F1 → A6）
+ *
+ * ## `--watch` は banto の中で走らせてはいけない（規則4）
+ *
+ * > **観測は、観測される機構の外側に置く。中に置くと、機構が止まったとき
+ * > 観測も一緒に止まる。**
+ *
+ * `raiseAlarms` は最初から在ったのに、**どこからも呼ばれていなかった**
+ * ——要件 F1 の「増え続けていることを**機構が**検知する」は、人が手で
+ * CLI を叩いたときだけ成り立っていた（2026-08-21 に露見・規則8）。
+ * だからといってホストの中で回すと規則4 に反するので、**別のプロセス**にする。
+ * ホストが落ちたときに鳴らないのでは、いちばん鳴ってほしいときに鳴らない。
  *
  * ここは「見るだけ」。畳み込みは observe.ts、読み込みは from-transcript.ts /
  * from-log.ts に任せる——CLI 自身に集計ロジックを増やさない。
@@ -14,22 +26,26 @@
 
 import { observe, percentile, DEFAULT_OPTIONS, type Observation } from './observe.js';
 import { readLogSource } from './from-log.js';
+import { raiseAlarms } from './raise-alarms.js';
 import { scanTranscripts, type ScanOptions, type TranscriptScanResult } from './from-transcript.js';
 
 function parseArgs(argv: readonly string[]): {
-  mode: 'transcripts' | 'log' | null;
+  mode: 'transcripts' | 'log' | 'watch' | null;
   rootDir: string | undefined;
   dataDir: string | undefined;
   json: boolean;
   since: string | undefined;
   until: string | undefined;
+  intervalMs: number;
 } {
-  let mode: 'transcripts' | 'log' | null = null;
+  let mode: 'transcripts' | 'log' | 'watch' | null = null;
   let rootDir: string | undefined;
   let dataDir: string | undefined;
   let json = false;
   let since: string | undefined;
   let until: string | undefined;
+  /** 見に行く間隔。**短くしても壊れない**——読むだけで、書くのは警報が変わったときだけ。 */
+  let intervalMs = 60_000;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -48,6 +64,22 @@ function parseArgs(argv: readonly string[]): {
       }
       dataDir = next;
       i += 1;
+    } else if (arg === '--watch') {
+      mode = 'watch';
+      const next = argv[i + 1];
+      if (next === undefined || next.startsWith('--')) {
+        throw new Error('--watch には dataDir が要る: --watch <dataDir>');
+      }
+      dataDir = next;
+      i += 1;
+    } else if (arg === '--interval') {
+      const next = argv[i + 1];
+      const seconds = Number(next);
+      if (!Number.isFinite(seconds) || seconds <= 0) {
+        throw new Error(`--interval には秒数が要る（例 --interval 60）`);
+      }
+      intervalMs = seconds * 1000;
+      i += 1;
     } else if (arg === '--json') {
       json = true;
     } else if (arg === '--since' || arg === '--until') {
@@ -61,7 +93,7 @@ function parseArgs(argv: readonly string[]): {
     }
   }
 
-  return { mode, rootDir, dataDir, json, since, until };
+  return { mode, rootDir, dataDir, json, since, until, intervalMs };
 }
 
 function pct(n: number, total: number): string {
@@ -175,8 +207,41 @@ async function runLog(dataDir: string, json: boolean): Promise<void> {
   }
 }
 
+/**
+ * イベントログを繰り返し畳んで、警報を判断待ちの列に流す（要件 F1 → A6）。
+ *
+ * **書くのは警報が変わったときだけ。** `raiseAlarms` が「既に立っているなら
+ * 何もしない」を守るので、毎分呼んでも列は荒れないし、滞留の時計（要件 A7）も
+ * 巻き戻らない。
+ *
+ * **止まったら止まったと分かるように、毎回1行出す。** 黙って回る観測は、
+ * 死んでいるのか静かなのかが区別できない（規則4 の趣旨）。
+ */
+async function runWatch(dataDir: string, intervalMs: number): Promise<void> {
+  process.stdout.write(`watching ${dataDir}（${intervalMs / 1000} 秒ごと・Ctrl-C で止める）\n`);
+
+  for (;;) {
+    const at = new Date().toISOString();
+    try {
+      const source = await readLogSource(dataDir);
+      const observation = observe(source.turns, DEFAULT_OPTIONS);
+      const result = await raiseAlarms(dataDir, observation);
+      process.stdout.write(
+        `${at} turns=${source.turns.length} alarms=${observation.alarms.length}` +
+          ` raised=${result.raised.length} pending=${result.alreadyPending.length}` +
+          ` resolved=${result.resolved.length}\n`,
+      );
+    } catch (cause) {
+      // **握りつぶさない。ただし止まらない**（規則2）——観測が1回読めなかったことで
+      // 観測そのものが死ぬと、いちばん鳴ってほしいときに鳴らない。
+      process.stderr.write(`${at} 観測に失敗: ${cause instanceof Error ? cause.message : String(cause)}\n`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
 async function main(): Promise<void> {
-  const { mode, rootDir, dataDir, json, since, until } = parseArgs(process.argv.slice(2));
+  const { mode, rootDir, dataDir, json, since, until, intervalMs } = parseArgs(process.argv.slice(2));
 
   if (mode === 'transcripts') {
     await runTranscripts(rootDir, json, {
@@ -190,10 +255,18 @@ async function main(): Promise<void> {
     await runLog(dataDir, json);
     return;
   }
+  if (mode === 'watch') {
+    if (dataDir === undefined) throw new Error('--watch には dataDir が要る');
+    await runWatch(dataDir, intervalMs);
+    return;
+  }
 
   process.stderr.write(
     'usage: cli.js --transcripts [rootDir] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--json]\n' +
-      '       cli.js --log <dataDir> [--json]\n',
+      '       cli.js --log <dataDir> [--json]\n' +
+      '       cli.js --watch <dataDir> [--interval 秒]\n' +
+      '         警報を判断待ちの列に流し続ける。**banto とは別のプロセスで走らせる**\n' +
+      '         （規則4：観測を機構の中に置くと、機構が止まったとき観測も止まる）\n',
   );
   process.exitCode = 1;
 }
