@@ -31,30 +31,26 @@
     </script>
 
     <!--
-      意匠の書体（要件 E6）。声の主が書体で分かることは意匠の中身そのもので、
-      端末に無い書体だと成り立たない。読めなければトークンの後段（Hiragino 等）へ落ちる。
+      意匠の書体（`theme/tokens.css` の唯一の出どころに揃える）。
+      端末に無ければ、トークンの後段（system-ui 等）へ落ちる。
 
       **描画を待たせない読み方にしてある**（前の実装で実際に踏んだ）。
-      素の `rel="stylesheet"` は**描画をブロックする**——日本語の書体の @font-face は
-      合わせて 800KB を超え、回線が遅いと**画面が出るまで丸ごと待たされる。**
-      「繋がらなくても壊れない」つもりで書いてあったが、**繋がりが遅いときに壊れていた**
-      （落ちるのは失敗したときだけで、遅いときは待つ）。
-
-      `preload` で取りに行き、届いてから `stylesheet` に変える。初回描画は端末の書体で出て、
-      届いた瞬間に入れ替わる（`display=swap` と同じ考えを link にも適用する）。
+      素の `rel="stylesheet"` は**描画をブロックする**——回線が遅いと
+      画面が出るまで丸ごと待たされる（落ちるのは失敗したときだけで、遅いときは待つ、
+      という前提が崩れていた）。`preload` で取りに行き、届いてから `stylesheet` に変える。
     -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="preload"
       as="style"
-      href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Shippori+Mincho:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap"
       onload="this.onload=null;this.rel='stylesheet'"
     />
     <noscript>
       <link
         rel="stylesheet"
-        href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Shippori+Mincho:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap"
       />
     </noscript>
   </head>

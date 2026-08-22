@@ -226,6 +226,23 @@ export interface ReferenceRecorded extends Envelope {
   readonly note: string | null;
 }
 
+/**
+ * フォークを閉じて、親スレッドに畳む（PO裁定 2026-08-22：フォークが増えすぎて
+ * 分かりにくいので、たためるようにしてほしい）。
+ *
+ * **削除ではない。** イベントは書き換えない・消さない（規則3）ので、このスレッドの
+ * 会話やセッションはそのまま残る——ただ「開いているもの」の一覧からは外れる。
+ *
+ * **決まったこと（ownBase）自体はここに写さない。** 畳む前に、このスレッド自身の
+ * ownBase を通常の `base.appended` として親へ追記してから、この印を立てる
+ * ——写しを持つと、いつか食い違う（規則3）。ここは「畳んだ」という事実だけを持つ。
+ */
+export interface ThreadMerged extends Envelope {
+  readonly type: 'thread.merged';
+  readonly threadId: ThreadId;
+  readonly into: ThreadId;
+}
+
 export type RunId = string;
 
 /**
@@ -325,6 +342,7 @@ export type BantoEvent =
   | QueryStep
   | MessageRecorded
   | ReferenceRecorded
+  | ThreadMerged
   | RunRequested
   | RunTested
   | RunFailed
@@ -350,6 +368,7 @@ const KNOWN_TYPES: ReadonlySet<string> = new Set<EventType>([
   'query.step',
   'message.recorded',
   'reference.recorded',
+  'thread.merged',
   'run.requested',
   'run.tested',
   'run.failed',

@@ -72,10 +72,10 @@ export function Composer({
           onKeyDown={onKeyDown}
           rows={1}
           placeholder={disabled ? '返事を待っています（先に書いておけます）' : 'メッセージを送る'}
-          className="max-h-[200px] min-h-[var(--h-ctl)] flex-1 resize-none rounded-ctl border border-rule bg-paper px-3 py-1.5 text-body leading-relaxed text-ink outline-none placeholder:text-ink-muted focus:border-accent"
+          className="max-h-[200px] min-h-[var(--h-ctl)] flex-1 resize-none rounded-md border border-rule bg-paper px-3 py-1.5 text-md leading-relaxed text-ink outline-none placeholder:text-ink-muted focus:border-accent"
         />
         <Button
-          variant="primary"
+          variant="accent"
           size="md"
           disabled={disabled || empty}
           onClick={submit}
@@ -87,7 +87,7 @@ export function Composer({
         </Button>
       </div>
       {/* **押し方はその場に書く。** 覚えさせるより、見えているほうが安い */}
-      <p className="mx-auto mt-1 flex w-full max-w-[var(--w-read)] items-center gap-1 text-note text-ink-muted">
+      <p className="mx-auto mt-1 flex w-full max-w-[var(--w-read)] items-center gap-1 text-xs text-ink-muted">
         <CornerDownLeft className="h-3 w-3" />
         Enter で送信 ・ Shift+Enter で改行
       </p>

@@ -18,19 +18,19 @@ export function FileView({ uri, text, mimeType }: ModuleViewProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-module-view="fs/FileView">
       <div className="border-b border-rule px-3 py-1.5">
-        <p className="truncate font-mono text-note text-ink-secondary">{filePath}</p>
-        <p className="text-note text-ink-muted">
+        <p className="truncate font-mono text-xs text-ink-secondary">{filePath}</p>
+        <p className="text-xs text-ink-muted">
           {lines.length} 行 ・ {mimeType ?? '形は分からない'}
         </p>
       </div>
 
       <ScrollArea className="min-h-0 flex-1">
-        <table className="w-full border-collapse font-mono text-meta">
+        <table className="w-full border-collapse font-mono text-sm">
           <tbody>
             {lines.map((line, i) => (
               <tr key={`${i}-${line.slice(0, 16)}`} className="align-top">
                 {/* 行番号は**選択に入らない**ようにしておく（写して貼るときに邪魔になる）。 */}
-                <td className="w-10 select-none border-r border-rule px-2 py-0.5 text-right text-note text-ink-muted">
+                <td className="w-10 select-none border-r border-rule px-2 py-0.5 text-right text-xs text-ink-muted">
                   {i + 1}
                 </td>
                 <td className="whitespace-pre-wrap break-words px-2 py-0.5 text-ink">{line}</td>

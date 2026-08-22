@@ -22,6 +22,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { EventLog } from '@banto/core';
 import { AgentSdkRunner, allowedToolNames, type McpServerSpec } from '@banto/runner';
 import { conversationModule } from '@banto/module-ledger';
+import { connectInProcess } from '@banto/module-kit';
 
 import { SYSTEM_PROMPT } from './server.js';
 
@@ -45,7 +46,10 @@ describe.skipIf(!enabled)('AI がファイルを更新して、それを指す�
     await log.append({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '指す' });
 
     const { fsModule } = await import('@banto/module-fs');
-    const face = conversationModule(log, 't1');
+    // server.ts と同じ検証を通す（`show` が実在しない uri を記録しないことも、
+    // ここで一緒に確かめる）。
+    const fsCaller = await connectInProcess(fsModule.createServer());
+    const face = conversationModule(log, 't1', (uri) => fsCaller.readResource(uri));
 
     const servers: McpServerSpec[] = [
       { name: fsModule.manifest.id, kind: 'in-process', server: fsModule.createServer() },

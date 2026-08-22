@@ -76,7 +76,7 @@ export function SandboxedView({
         style={{ height }}
       />
       {!ready && (
-        <p className="px-3 py-2 text-note text-ink-muted">{moduleId} の面を読み込んでいます…</p>
+        <p className="px-3 py-2 text-xs text-ink-muted">{moduleId} の面を読み込んでいます…</p>
       )}
     </div>
   );

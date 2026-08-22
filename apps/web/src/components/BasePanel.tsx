@@ -58,7 +58,7 @@ export function BasePanel({ threadId, onChanged }: { threadId: string; onChanged
 
   if (base === null) {
     return (
-      <div className="flex flex-1 items-center justify-center gap-2 p-6 text-meta text-ink-muted">
+      <div className="flex flex-1 items-center justify-center gap-2 p-6 text-sm text-ink-muted">
         {error === null ? (
           <>
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -77,7 +77,7 @@ export function BasePanel({ threadId, onChanged }: { threadId: string; onChanged
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="border-b border-rule px-4 py-2.5">
-        <div className="flex items-baseline justify-between gap-2 text-note text-ink-secondary">
+        <div className="flex items-baseline justify-between gap-2 text-xs text-ink-secondary">
           <span>
             第 {base.baseVersion} 版 ・ {base.lines.length} 行
             {base.inherited > 0 && (
@@ -89,7 +89,7 @@ export function BasePanel({ threadId, onChanged }: { threadId: string; onChanged
             {base.characters.toLocaleString()} / {base.limit.toLocaleString()} 文字
           </span>
         </div>
-        <div className="mt-1.5 h-1 w-full overflow-hidden rounded-seal bg-paper-sunken">
+        <div className="mt-1.5 h-1 w-full overflow-hidden rounded-sm bg-paper-sunken">
           <div
             className={`h-full ${tone}`}
             style={{ width: `${Math.min(100, ratio * 100).toFixed(1)}%` }}
@@ -99,7 +99,7 @@ export function BasePanel({ threadId, onChanged }: { threadId: string; onChanged
 
       <ScrollArea className="min-h-0 flex-1">
         {base.lines.length === 0 ? (
-          <p className="p-6 text-center text-meta text-ink-muted">
+          <p className="p-6 text-center text-sm text-ink-muted">
             まだ何も決まっていません。ここに足したものは、以後のターンすべてに効きます。
           </p>
         ) : (
@@ -107,13 +107,13 @@ export function BasePanel({ threadId, onChanged }: { threadId: string; onChanged
             {base.lines.map((line, i) => (
               <li
                 key={`${i}-${line.slice(0, 24)}`}
-                className={`rounded-ctl px-3 py-2 text-meta ${
+                className={`rounded-md px-3 py-2 text-sm ${
                   i < base.inherited
                     ? 'bg-paper text-ink-secondary shadow-[inset_2px_0_0_var(--rule-strong)]'
                     : 'bg-paper-raised text-ink shadow-rest'
                 }`}
               >
-                <span className="mr-2 font-mono text-note text-ink-muted">v{i + 1}</span>
+                <span className="mr-2 font-mono text-xs text-ink-muted">v{i + 1}</span>
                 {i < base.inherited && (
                   <GitFork className="mr-1 inline h-3 w-3 align-[-1px] text-ink-muted" />
                 )}
@@ -125,7 +125,7 @@ export function BasePanel({ threadId, onChanged }: { threadId: string; onChanged
       </ScrollArea>
 
       {error !== null && (
-        <div className="mx-3 mb-2 flex items-start gap-2 rounded-ctl bg-stopped-soft px-3 py-2 text-note text-ink shadow-[inset_2px_0_0_var(--stopped)]">
+        <div className="mx-3 mb-2 flex items-start gap-2 rounded-md bg-stopped-soft px-3 py-2 text-xs text-ink shadow-[inset_2px_0_0_var(--stopped)]">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-stopped" />
           {/* **断られた理由をそのまま出す。** 自動で会話を切り替えない（決定4）。 */}
           <p className="whitespace-pre-wrap">{error}</p>
@@ -141,7 +141,7 @@ export function BasePanel({ threadId, onChanged }: { threadId: string; onChanged
             if (e.key === 'Enter' && !e.nativeEvent.isComposing) void send();
           }}
           placeholder="決まったことを1行で足す"
-          className="h-[var(--h-ctl-sm)] min-w-0 flex-1 rounded-ctl border border-rule bg-paper px-2 text-meta text-ink outline-none placeholder:text-ink-muted focus:border-accent disabled:opacity-50"
+          className="h-[var(--h-ctl-sm)] min-w-0 flex-1 rounded-md border border-rule bg-paper px-2 text-sm text-ink outline-none placeholder:text-ink-muted focus:border-accent disabled:opacity-50"
         />
         <Button
           variant="secondary"

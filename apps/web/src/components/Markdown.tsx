@@ -95,21 +95,21 @@ function CodeBlock({ children }: { children?: ReactNode }) {
         onClick={copy}
         title="コピー"
         aria-label="コードをコピー"
-        className="absolute right-1.5 top-1.5 z-10 rounded-ctl p-1.5 text-ink-muted opacity-0 transition-opacity hover:bg-paper-sunken hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+        className="absolute right-1.5 top-1.5 z-10 rounded-md p-1.5 text-ink-muted opacity-0 transition-opacity hover:bg-paper-sunken hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
       >
         {copied ? <Check className="h-3.5 w-3.5 text-done" /> : <Copy className="h-3.5 w-3.5" />}
       </button>
       {lang !== '' && (
-        <span className="absolute left-3 top-1.5 font-mono text-note text-ink-muted">{lang}</span>
+        <span className="absolute left-3 top-1.5 font-mono text-xs text-ink-muted">{lang}</span>
       )}
       {html === null ? (
-        <pre className="overflow-x-auto rounded-ctl bg-paper-sunken px-3 pb-3 pt-6 font-mono text-meta leading-relaxed text-ink">
+        <pre className="overflow-x-auto rounded-md bg-paper-sunken px-3 pb-3 pt-6 font-mono text-sm leading-relaxed text-ink">
           {children}
         </pre>
       ) : (
         // shiki が組み立てた HTML（外部入力をそのまま流していない）。
         <div
-          className="[&_pre]:overflow-x-auto [&_pre]:rounded-ctl [&_pre]:px-3 [&_pre]:pb-3 [&_pre]:pt-6 [&_pre]:font-mono [&_pre]:text-meta [&_pre]:leading-relaxed"
+          className="[&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:px-3 [&_pre]:pb-3 [&_pre]:pt-6 [&_pre]:font-mono [&_pre]:text-sm [&_pre]:leading-relaxed"
           dangerouslySetInnerHTML={{ __html: html }}
         />
       )}

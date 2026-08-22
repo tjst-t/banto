@@ -10,20 +10,21 @@ import { cn } from '../../lib/cn';
  * ——塗りを許すと、いちばん強い色が「あなたの番」を指さなくなる。
  */
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-1.5 rounded-ctl font-medium transition-colors disabled:pointer-events-none disabled:opacity-40 whitespace-nowrap',
+  'inline-flex items-center justify-center gap-1.5 rounded-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-40 whitespace-nowrap',
   {
     variants: {
       variant: {
-        /** ふつうの主ボタン。**塗らずに、枠と字で立てる** */
-        primary: 'border border-accent bg-accent-soft text-accent hover:bg-accent/10',
+        /** ふつうのボタン。既定 */
+        secondary: 'bg-paper-sunken text-ink-secondary hover:bg-paper-sunken-2 hover:text-ink',
+        /** banto を選ぶ・進める主ボタン */
+        accent: 'bg-accent text-paper-raised hover:bg-accent-strong',
         /** **あなたの番**。塗ってよいのはここだけ */
-        attention: 'bg-attention text-on-attention hover:opacity-90',
-        secondary: 'border border-rule bg-paper-raised text-ink hover:border-rule-strong',
-        ghost: 'text-ink-secondary hover:bg-paper-sunken hover:text-ink',
+        attention: 'bg-attention text-on-attention hover:brightness-105',
+        ghost: 'text-ink-muted hover:bg-paper-sunken hover:text-ink',
       },
       size: {
-        sm: 'h-[var(--h-ctl-sm)] px-2.5 text-meta',
-        md: 'h-[var(--h-ctl)] px-3 text-body',
+        sm: 'h-[var(--h-ctl-sm)] px-2.5 text-sm',
+        md: 'h-[var(--h-ctl)] px-3 text-md',
         icon: 'h-[var(--h-ctl)] w-[var(--h-ctl)]',
       },
     },

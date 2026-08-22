@@ -1,23 +1,31 @@
 import { Fragment, type ReactNode } from 'react';
-import { AlertTriangle, ExternalLink, GitFork, HelpCircle, PackageMinus } from 'lucide-react';
+import { AlertTriangle, GitFork, PackageMinus } from 'lucide-react';
 import { StickToBottom } from 'use-stick-to-bottom';
 
 import { Markdown } from './Markdown';
+import { ReferenceCard } from './ReferenceCard';
+import { DecisionCard } from './DecisionCard';
+import { JumpToBottom } from './JumpToBottom';
 import type { TimelineItem } from '../hooks/useThreadSessions';
 import type { StreamEvent } from '../lib/types';
 import { contextSize } from '../lib/types';
 import { dateLabel, isNewDay, timeLabel } from '../lib/time';
 
 /**
- * 会話の年表（要件 A8・E4・E5・E6）。
+ * 会話の年表（要件 A6・A8・E4・E5・E6）。
  *
- * ## 誰の言葉かを、書体と置き方で言う（要件 E6）
+ * ## 誰の言葉かを、印と置き方で言う（要件 E6）
  *
- * - **人の言葉**：沈んだ紙の吹き出し、右に寄せる。角ゴシック
- * - **相手の言葉**：**器を持たせない。明朝で、印を左に置く**
+ * - **人の言葉**：沈んだ紙の吹き出し、右に寄せる
+ * - **相手の言葉**：**器を持たせない。印を左に、字下げして置く**
  *
  * 相手に器を持たせないのは意匠の趣味ではない——**器があると、読むたびに枠が目に入る。**
  * 読ませたいのは中身であって枠ではないし、届いた分だけ箱が伸び縮みすることもなくなる。
+ *
+ * ## 判断待ちは、会話の最後尾にそのまま出す（要件 A6）
+ *
+ * 別立ての列を持たない。それが最新の発言なら、放っておいても一番下にある
+ * ——**常設の判断待ち欄は無い。** 遡ったときだけ、下端の浮き玉（`JumpToBottom`）が教える。
  *
  * ## 会話に属さない記録は、線1本に落とす
  *
@@ -29,11 +37,14 @@ export function MessageList({
   items,
   running,
   onOpen,
+  onAnswer,
 }: {
   items: TimelineItem[];
   running: boolean;
   /** AI が指したものを開く（要件 C14）。**押すまで開かない。** */
   onOpen: (uri: string, name: string) => void;
+  /** 判断待ちに答える（要件 A6）。答えは `message.recorded` として会話にも返る。 */
+  onAnswer: (decisionId: string, answer: string, optionId?: string) => Promise<void>;
 }) {
   /**
    * 文面が記録されている問い合わせの集合（要件 A8）。
@@ -50,8 +61,33 @@ export function MessageList({
     items.flatMap((i) => (i.event.type === 'message.recorded' ? [i.event.queryId] : [])),
   );
 
+  /**
+   * 答え済みの判断。**答えたものはもう押せる形で出さない。**
+   *
+   * `decision.resolved` では判定できない——**その型は `threadId` を持たない**
+   * （機構の警報など、スレッドに紐づかない判断もあるため）。host の
+   * `/api/events?threadId=` は `threadId` を持つ／`runId` から導けるイベントしか
+   * 返さないので、`decision.resolved` はここに届かない（実測）。
+   *
+   * 届くのは、答えを会話に返すために積まれる `message.recorded`
+   * （`queryId: "decision:<decisionId>"`、`modules/ledger/src/core.ts`）——
+   * こちらで判定する。
+   */
+  const resolvedDecisions = new Set(
+    items.flatMap((i) =>
+      i.event.type === 'message.recorded' && i.event.queryId.startsWith('decision:')
+        ? [i.event.queryId.slice('decision:'.length)]
+        : [],
+    ),
+  );
+
   /** 直前に日付を出した時刻。**出せた行だけ更新する**（時刻の無い行を挟まない）。 */
   let prevAt: string | undefined;
+
+  /** 未解決の判断待ちの件数。**浮き玉の朱色・件数はこれで決める。** */
+  const pendingCount = items.filter(
+    (i) => i.event.type === 'decision.requested' && !resolvedDecisions.has(i.event.decisionId),
+  ).length;
 
   return (
     /**
@@ -64,16 +100,15 @@ export function MessageList({
     <StickToBottom className="relative min-h-0 flex-1" resize="smooth" initial="instant">
       <StickToBottom.Content className="mx-auto flex w-full max-w-[var(--w-read)] flex-col gap-2 px-5 py-3">
         {items.length === 0 && !running && (
-          <p className="py-8 text-center text-meta leading-loose text-ink-muted">
+          <p className="py-8 text-center text-sm leading-loose text-ink-muted">
             メッセージを送るとここに会話が流れます。
           </p>
         )}
 
         {items.map((item) => {
-          const body = renderEvent(item.event, recordedQueries, onOpen);
+          const body = renderEvent(item.event, recordedQueries, resolvedDecisions, onOpen, onAnswer);
           const at = atOf(item.event);
-          const divider =
-            body !== null && at !== undefined && isNewDay(at, prevAt) ? at : null;
+          const divider = body !== null && at !== undefined && isNewDay(at, prevAt) ? at : null;
           if (at !== undefined && body !== null) prevAt = at;
           if (body === null) return null;
           return (
@@ -86,6 +121,7 @@ export function MessageList({
 
         {running && <Thinking />}
       </StickToBottom.Content>
+      <JumpToBottom pendingCount={pendingCount} />
     </StickToBottom>
   );
 }
@@ -98,7 +134,9 @@ function atOf(event: StreamEvent): string | undefined {
 function renderEvent(
   event: StreamEvent,
   recordedQueries: ReadonlySet<string>,
+  resolvedDecisions: ReadonlySet<string>,
   onOpen: (uri: string, name: string) => void,
+  onAnswer: (decisionId: string, answer: string, optionId?: string) => Promise<void>,
 ): ReactNode {
   // 文面は message.recorded が持つ（要件 A8）。**ログに在るので開き直しても残る。**
   if (event.type === 'message.recorded') {
@@ -177,49 +215,37 @@ function renderEvent(
   if (event.type === 'thread.forked') {
     return (
       <Aside icon={<GitFork className="h-3 w-3" />}>
-        {event.mode === 'base' ? '決まったこと' : 'いまの続き'}から分岐（base v
+        {event.mode === 'base' ? '決まったこと' : 'いまの続き'}からフォーク（base v
         {event.from.baseVersion} まで引き継ぎ）
       </Aside>
     );
   }
 
-  /**
-   * **AI が「これを見て」と指したもの**（要件 C14・決定19）。
-   *
-   * **押すまで開かない。** 指しは会話に並ぶだけで、開くのは人が決める
-   * ——要件 A7 の「発生では鳴らさない」と同じ考え。
-   */
+  // **AI が「これを見て」と指したもの**（要件 C14・決定19）。パネルを開くカード。
   if (event.type === 'reference.recorded') {
-    return (
-      <button
-        type="button"
-        onClick={() => onOpen(event.uri, event.name)}
-        data-reference={event.uri}
-        className="ml-8 flex max-w-[85%] items-start gap-2 self-start rounded-ctl border border-rule bg-paper-raised px-3 py-2 text-left text-meta text-ink shadow-rest transition-colors hover:border-accent hover:text-accent"
-      >
-        <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-        <span className="min-w-0">
-          <span className="block font-medium">{event.name}</span>
-          {event.note !== null && <span className="block text-ink-secondary">{event.note}</span>}
-          <span className="block truncate font-mono text-note text-ink-muted">{event.uri}</span>
-        </span>
-      </button>
-    );
+    return <ReferenceCard event={event} onOpen={onOpen} />;
   }
 
-  // 判断は列（Queue）で答えるが、**会話にも跡を残す**——
-  // どこで話が止まったのかが、会話を読み返すだけで分かるように（要件 A8）。
+  // **判断待ちは、会話の最後尾にそのまま出す**（要件 A6）。答え済みなら押せる形にしない。
   if (event.type === 'decision.requested') {
+    if (resolvedDecisions.has(event.decisionId)) {
+      return <Aside>判断待ちだった: {event.question}</Aside>;
+    }
     return (
-      <Note tone="attention" icon={<HelpCircle className="h-3.5 w-3.5" />}>
-        <span className="font-medium">判断待ち</span>
-        <span className="block">{event.question}</span>
-      </Note>
+      <div className="ml-8 max-w-[85%]">
+        <DecisionCard
+          question={event.question}
+          options={event.options}
+          onAnswer={(answer, optionId) => onAnswer(event.decisionId, answer, optionId)}
+        />
+      </div>
     );
   }
 
+  // **通常はここに届かない**（`threadId` を持たないため。`resolvedDecisions` の説明を見よ）。
+  // 届く経路が増えたときのために、型として在る以上は描いておく（規則2：知らない型に落とさない）。
   if (event.type === 'decision.resolved') {
-    return <Aside>判断に答えた{event.optionId === null ? '' : `（${event.optionId}）`}</Aside>;
+    return <Aside tone="done">判断に答えた{event.optionId === null ? '' : `（${event.optionId}）`}</Aside>;
   }
 
   if (event.type === 'error') {
@@ -247,16 +273,16 @@ function renderEvent(
 function FromPerson({ text, at }: { text: string; at: string }) {
   return (
     <div className="mt-6 flex flex-col items-end first:mt-0">
-      <div className="max-w-[88%] whitespace-pre-wrap break-words rounded-face rounded-br-seal bg-paper-sunken px-3.5 py-2.5 text-body text-ink">
+      <div className="max-w-[88%] whitespace-pre-wrap break-words rounded-lg rounded-br-sm bg-paper-sunken px-3.5 py-2.5 text-md text-ink">
         {text}
       </div>
-      <span className="mt-0.5 text-note text-ink-muted">{timeLabel(at)}</span>
+      <span className="mt-0.5 text-xs text-ink-muted">{timeLabel(at)}</span>
     </div>
   );
 }
 
 /**
- * banto の言葉。**明朝・器なし・印つき**（要件 E6）。
+ * banto の言葉。**器なし・印つき**（要件 E6）。
  *
  * 中身は Markdown として描く（要件 E4）。ここまで素の文字列で出していたので、
  * 見出しも箇条も表も**記号のまま**並んでいた。
@@ -266,12 +292,12 @@ function FromBanto({ text, at }: { text: string; at: string }) {
     <div className="group relative mt-6 pl-8 first:mt-0" data-from="banto">
       <span
         aria-hidden
-        className="absolute left-0 top-1 grid h-5 w-5 place-items-center rounded-seal bg-accent text-note font-semibold text-paper-raised"
+        className="absolute left-0 top-1 grid h-5 w-5 place-items-center rounded-sm bg-accent text-xs font-semibold text-paper-raised"
       >
         番
       </span>
       <Markdown text={text} />
-      <span className="mt-1 block text-note text-ink-muted opacity-0 transition-opacity group-hover:opacity-100">
+      <span className="mt-1 block text-xs text-ink-muted opacity-0 transition-opacity group-hover:opacity-100">
         {timeLabel(at)}
       </span>
     </div>
@@ -282,9 +308,9 @@ function FromBanto({ text, at }: { text: string; at: string }) {
 function DayDivider({ at }: { at: string }) {
   return (
     <div className="my-4 flex items-center gap-3" role="separator" aria-label={dateLabel(at)}>
-      <span className="h-px flex-1 bg-rule" />
-      <span className="text-note text-ink-muted">{dateLabel(at)}</span>
-      <span className="h-px flex-1 bg-rule" />
+      <span className="h-px flex-1 bg-rule-faint" />
+      <span className="text-xs text-ink-muted">{dateLabel(at)}</span>
+      <span className="h-px flex-1 bg-rule-faint" />
     </div>
   );
 }
@@ -306,10 +332,10 @@ function Aside({
         ? 'bg-done'
         : tone === 'stopped'
           ? 'bg-stopped'
-          : 'bg-rule-strong';
+          : 'bg-paper-sunken-2';
   return (
-    <div className="flex items-center gap-1.5 self-start pl-8 text-note text-ink-muted">
-      {icon ?? <span className={`h-1.5 w-1.5 rounded-seal ${dot}`} />}
+    <div className="flex items-center gap-1.5 self-start pl-8 text-xs text-ink-muted">
+      {icon ?? <span className={`h-1.5 w-1.5 rounded-sm ${dot}`} />}
       {children}
     </div>
   );
@@ -323,7 +349,7 @@ function Aside({
  */
 function Stopped({ title, detail }: { title: string; detail: string }) {
   return (
-    <div className="ml-8 flex items-start gap-2 self-start rounded-ctl bg-stopped-soft px-3 py-2 text-meta text-ink shadow-[inset_2px_0_0_var(--stopped)]">
+    <div className="ml-8 flex items-start gap-2 self-start rounded-md bg-stopped-soft px-3 py-2 text-sm text-ink shadow-[inset_2px_0_0_var(--stopped)]">
       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-stopped" />
       <div className="min-w-0">
         <p className="font-medium">{title}</p>
@@ -333,24 +359,22 @@ function Stopped({ title, detail }: { title: string; detail: string }) {
   );
 }
 
-/** あなたの番・気をつけること。**左罫で言う。** */
+/** 気をつけること。**左罫で言う。** */
 function Note({
   children,
   tone,
   icon,
 }: {
   children: ReactNode;
-  tone: 'attention' | 'caution';
+  tone: 'caution';
   icon: ReactNode;
 }) {
   const skin =
-    tone === 'attention'
-      ? 'bg-attention-soft shadow-[inset_2px_0_0_var(--attention)]'
-      : 'bg-caution-soft shadow-[inset_2px_0_0_var(--caution)]';
-  const mark = tone === 'attention' ? 'text-attention' : 'text-caution';
+    tone === 'caution' ? 'bg-caution-soft shadow-[inset_2px_0_0_var(--caution)]' : '';
+  const mark = 'text-caution';
   return (
     <div
-      className={`ml-8 flex max-w-[85%] items-start gap-2 self-start rounded-ctl px-3 py-2 text-meta text-ink ${skin}`}
+      className={`ml-8 flex max-w-[85%] items-start gap-2 self-start rounded-md px-3 py-2 text-sm text-ink ${skin}`}
     >
       <span className={`mt-0.5 shrink-0 ${mark}`}>{icon}</span>
       <div className="min-w-0">{children}</div>
@@ -364,12 +388,12 @@ function Note({
  */
 function Thinking() {
   return (
-    <div className="mt-6 flex items-center gap-2 pl-8 text-meta text-ink-muted">
+    <div className="mt-6 flex items-center gap-2 pl-8 text-sm text-ink-muted">
       <span className="flex gap-1" aria-hidden>
         {[0, 1, 2].map((i) => (
           <span
             key={i}
-            className="h-1.5 w-1.5 rounded-seal bg-accent animate-[banto-pulse_1.2s_ease-in-out_infinite]"
+            className="h-1.5 w-1.5 rounded-sm bg-accent animate-[banto-pulse_1.2s_ease-in-out_infinite]"
             style={{ animationDelay: `${i * 0.16}s` }}
           />
         ))}

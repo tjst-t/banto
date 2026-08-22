@@ -39,6 +39,7 @@ if [ ! -f "$CONFIG" ]; then
   BANTO_SECRET=<長い合言葉>
   # 任意: BANTO_REPO_ROOT=<Factory を紐づけるリポジトリ>
   # 任意: BANTO_ENV_KIND=env-process|env-docker
+  # 任意: BANTO_MODEL=<モデル id。省くと apps/host の既定（claude-haiku-4-5）>
 EOF
   exit 1
 fi
@@ -76,6 +77,14 @@ case "${1:-status}" in
     stop_one "$HOST_PID" ホスト
     stop_one "$WATCH_PID" 観測
 
+    # **起動ディレクトリを、呼び出し元がどこにいたかから切り離す**（規則8、実測 2026-08-22）。
+    # Agent SDK は既定で cwd の CLAUDE.md／.claude/settings.json を自動で読む
+    # （`settingSources` を渡さない限り）。このリポジトリの中から serve.sh を叩くと、
+    # 人向けの会話に開発者向け CLAUDE.md が紛れ込んだ実例があった。
+    # 本筋の遮断は Runner 側の `settingSources: []` だが、
+    # ここでも cwd を毎回同じ場所に固定しておく（多重の守り）。
+    cd "$HERE"
+
     BANTO_FS_ROOT="$BANTO_FS_ROOT" nohup node "$HERE/apps/host/dist/index.js" serve \
       --data "$BANTO_DATA_DIR" \
       --port "$BANTO_PORT" \
@@ -84,6 +93,7 @@ case "${1:-status}" in
       --web "$HERE/apps/web/dist" \
       ${BANTO_REPO_ROOT:+--repo "$BANTO_REPO_ROOT"} \
       ${BANTO_ENV_KIND:+--env "$BANTO_ENV_KIND"} \
+      ${BANTO_MODEL:+--model "$BANTO_MODEL"} \
       >> "$RUN_DIR/host.log" 2>&1 &
     echo $! > "$HOST_PID"
 

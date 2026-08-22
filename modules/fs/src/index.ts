@@ -40,9 +40,21 @@ export const fsModule = defineModule({
   tools: (tool) => [
     tool({
       name: 'read',
-      description: 'Read a UTF-8 text file, relative to the module root.',
+      description:
+        'Read a UTF-8 text file, relative to the module root. ' +
+        'Returns a uri for the file — pass it to the show tool if the person should see it.',
       input: { path: z.string().describe('Path relative to the root') },
-      run: async (core, { path: p }) => ok(await core.read(p)),
+      // **`write` と同じ形**（要件C14）。中身は summary でそのまま返す——
+      // structuredContent と会話に出す文字列で、事実を二重に作文しない（規則3）。
+      output: {
+        content: z.string(),
+        uri: z.string().describe('banto:// uri for this file'),
+      },
+      run: async (core, { path: p }) => ({
+        content: await core.read(p),
+        uri: uriFor(p),
+      }),
+      summary: (v) => v.content,
     }),
     tool({
       name: 'write',

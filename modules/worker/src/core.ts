@@ -107,6 +107,9 @@ export class WorkerCore {
         ...allowedToolNames(mcpServers, toolsByModule),
         ...(this.options.extraAllowedTools ?? []),
       ],
+      // **`allowedTools` は確認を省くだけで、見せるかどうかは別**（`packages/runner` 参照）。
+      // ここは実際にコードを書く役なので、許した組み込みツールをそのまま見せる。
+      builtinTools: this.options.extraAllowedTools ?? [],
       cwd: order.cwd,
       maxTurns: this.options.maxTurns ?? 40,
       ...(this.options.resumeConversation !== false && thread.sessionHandle !== null

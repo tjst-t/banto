@@ -381,7 +381,9 @@ async function main(): Promise<void> {
       startServer({
         dataDir,
         port,
-        modules: [{ name: fsModule.manifest.id, kind: 'in-process', server: fsModule.createServer() }],
+        // **インスタンスではなく、作る関数を渡す**（`server.ts` の `ModuleFactory` 参照）。
+        // 使い回すと2回目の問い合わせで `fs` の道具が消える（実測 2026-08-22）。
+        modules: [{ name: fsModule.manifest.id, kind: 'in-process', createServer: () => fsModule.createServer() }],
         toolsByModule: new Map([['fs', ['read', 'write', 'list']]]),
         /**
          * 画面の割り当ては台帳から導く（決定20）。別表を持たない（規則3）。

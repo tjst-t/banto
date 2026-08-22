@@ -26,6 +26,7 @@ export {
   type ThreadCreated,
   type ThreadForked,
   type ThreadId,
+  type ThreadMerged,
   type ThreadStatus,
   type ThreadSessionRecorded,
   type ThreadStatusChanged,

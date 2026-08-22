@@ -133,6 +133,26 @@ describe('fold', () => {
     expect(queue[0]?.since.localeCompare(queue[1]?.since ?? '')).toBeLessThan(0);
   });
 
+  it('畳んだフォークは mergedInto を持つが、status は変わらない', () => {
+    const state = fold([
+      ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
+      ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '親' }),
+      ev({
+        type: 'thread.forked',
+        threadId: 't2',
+        channelId: 'c1',
+        title: '枝',
+        from: { threadId: 't1', baseVersion: 0 },
+        mode: 'base',
+      }),
+      ev({ type: 'thread.merged', threadId: 't2', into: 't1' }),
+    ]);
+    expect(state.threads.get('t2')?.mergedInto).toBe('t1');
+    // status は畳んでも変わらない——「いま処理待ちか」とは別の事実（規則3）。
+    expect(state.threads.get('t2')?.status).toBe('working');
+    expect(state.threads.get('t1')?.mergedInto).toBeNull();
+  });
+
   it('スレッドの状態が最後の宣言に従う', () => {
     const state = fold([
       ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),

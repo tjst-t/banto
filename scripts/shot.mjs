@@ -20,46 +20,46 @@ await mkdir(outDir, { recursive: true });
 const dataDir = await mkdtemp(path.join(tmpdir(), 'banto-shot-'));
 const log = new EventLog(dataDir);
 
-const ASSISTANT = `依頼のとおり、**3箇所**を直しました。
+const ASSISTANT = `依頼のとおり、UX を見本の意匠で作り直しました。
 
-## 直したところ
+## 変えたところ
 
-1. \`Composer\` の Enter 判定（変換中は送らない）
-2. 会話の追従（遡って読んでいる間は飛ばない）
-3. 相手の言葉を Markdown で描く
+1. サイドバー（受信箱・プロジェクト・開いているもの）
+2. 会話パネル＋層で重なる作業パネル
+3. 判断待ちは会話の最後尾にそのまま出す
 
-| ファイル | 行 | 内容 |
-|---|---|---|
-| Composer.tsx | 58 | isComposing を見る |
-| MessageList.tsx | 62 | StickToBottom |
+| 用途 | ライブラリ |
+|---|---|
+| ダイアログ | @radix-ui/react-dialog |
+| 帯の幅 | react-resizable-panels |
 
 \`\`\`typescript
-const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-  if (e.nativeEvent.isComposing) return;
-  if (e.key === 'Enter' && !e.shiftKey) submit();
-};
+const resolvedDecisions = new Set(
+  items.flatMap((i) => (i.event.type === 'message.recorded' && i.event.queryId.startsWith('decision:')
+    ? [i.event.queryId.slice(9)] : [])),
+);
 \`\`\`
 
-> 変換確定で送信されるのは不具合に近い。毎日使う道では致命的です。
+> 用語は見本のものを持ち込まず、一般名に置き換えました。
 
-次は残りの標準モジュールに進みます。`;
+次はバックログの項目に進みます。`;
 
 await log.append({ type: 'channel.created', channelId: 'c1', channelName: 'banto-v3' });
-await log.append({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '画面をv2に合わせる' });
-await log.append({ type: 'base.appended', threadId: 't1', baseVersion: 1, text: '依頼: UX を v2 に合わせる' });
+await log.append({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: 'UXをv2の見本に合わせる' });
+await log.append({ type: 'base.appended', threadId: 't1', baseVersion: 1, text: '依頼: UXを見本の意匠で作り直す' });
 await log.append({
   type: 'message.recorded',
   threadId: 't1',
   queryId: 'q1',
   role: 'user',
-  text: '機能はいったんおいておいても、今実装した機能についての UX も v2 にしっかり合わせてもらえないでしょうか。',
+  text: 'いまの GUI は全部一度捨てて、意匠見本の UX で作ってください。',
 });
 await log.append({
   type: 'turn.usage',
   threadId: 't1',
   queryId: 'q1',
   turnIndex: 0,
-  usage: { inputTokens: 120, cacheCreationInputTokens: 0, cacheReadInputTokens: 42000, outputTokens: 640 },
+  usage: { inputTokens: 120, cacheCreationInputTokens: 0, cacheReadInputTokens: 58000, outputTokens: 900 },
 });
 await log.append({ type: 'message.recorded', threadId: 't1', queryId: 'q1', role: 'assistant', text: ASSISTANT });
 await log.append({
@@ -75,13 +75,41 @@ await log.append({
   decisionId: 'd1',
   source: 'factory',
   threadId: 't1',
-  question: 'factory/ux を main に入れてよいか',
+  question: 'factory/ux-redesign を main に入れてよいか',
   options: [
     { id: 'approve', label: '取り込む', detail: 'merge して畳む' },
     { id: 'reject', label: '取り込まない', detail: '畳んで終える' },
   ],
 });
 await log.append({ type: 'thread.status', threadId: 't1', status: 'waiting-on-human' });
+
+// 2本目（フォーク）。サイドバーの「開いているもの」に2点出る。
+// **既定で幹の横に並ぶ**（決定26）——開き直すたびに片方を選ばせない。
+await log.append({
+  type: 'thread.forked',
+  threadId: 't2',
+  channelId: 'c1',
+  title: 'モバイル幅の検証',
+  from: { threadId: 't1', baseVersion: 1 },
+  mode: 'base',
+});
+await log.append({
+  type: 'message.recorded',
+  threadId: 't2',
+  queryId: 'q2',
+  role: 'user',
+  text: '390px でも壊れていないか見て',
+});
+await log.append({ type: 'message.recorded', threadId: 't2', queryId: 'q2', role: 'assistant', text: '確認しました。' });
+await log.append({
+  type: 'reference.recorded',
+  threadId: 't2',
+  uri: 'banto://fs/file/note.md',
+  name: 'note.md',
+  mimeType: 'text/markdown',
+  note: '狭い画面での見え方',
+});
+await log.append({ type: 'thread.status', threadId: 't2', status: 'working' });
 
 const fsRoot = await mkdtemp(path.join(tmpdir(), 'banto-shot-fs-'));
 await writeFile(path.join(fsRoot, 'note.md'), '# みかん\n\nと書いてあります。\n', 'utf8');
@@ -92,7 +120,7 @@ const helloPy = JSON.parse(await readFile('modules/hello-py/manifest.json', 'utf
 const server = startServer({
   dataDir,
   port: 0,
-  modules: [{ name: 'fs', kind: 'in-process', server: fsModule.createServer() }],
+  modules: [{ name: 'fs', kind: 'in-process', createServer: () => fsModule.createServer() }],
   manifests: [fsModule.manifest, helloPy],
   toolsByModule: new Map(),
   model: 'claude-haiku-4-5',
@@ -104,30 +132,75 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 const { chromium } = await import('playwright');
 const browser = await chromium.launch();
 
-for (const [name, width, height] of [
-  ['wide', 1440, 900],
-  ['narrow', 390, 844],
-]) {
-  for (const theme of ['light', 'dark']) {
-    const page = await browser.newPage({ viewport: { width, height } });
-    await page.addInitScript((t) => localStorage.setItem('banto.theme', t), theme);
-    await page.goto(origin, { waitUntil: 'networkidle' });
-    await page.waitForSelector('[data-from="banto"]', { timeout: 15_000 });
-    await page.waitForTimeout(600);
-    await page.screenshot({ path: path.join(outDir, `${name}-${theme}.png`), fullPage: false });
-    // 会話の頭（人の発言と、相手の印）も見る。末尾だけ見ていると頭の崩れを見逃す。
-    await page.mouse.move(500, 400);
-    await page.mouse.wheel(0, -4000);
+for (const theme of ['light', 'dark']) {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await page.addInitScript((t) => localStorage.setItem('banto.theme', t), theme);
+  await page.goto(origin, { waitUntil: 'networkidle' });
+  await page.waitForSelector('[data-conversation-panel="t1"]', { timeout: 15_000 });
+  await page.waitForTimeout(500);
+  // **既定で幹（t1）とフォーク（t2）が横に並ぶ**（決定26）——開き直すたびに
+  // 片方だけを選ばせない。
+  await page.screenshot({ path: path.join(outDir, `wide-${theme}.png`) });
+
+  if (theme === 'light') {
+    // 幹から作業パネルを開く——開いていたフォークは表示から外れる（見本の workFrom）。
+    await page.locator('[data-conversation-panel="t1"] [data-reference="banto://fs/file/note.md"]').click();
+    await page.waitForSelector('[data-work-panel]', { timeout: 15_000 });
     await page.waitForTimeout(400);
-    await page.screenshot({ path: path.join(outDir, `${name}-${theme}-top.png`) });
-    if (name === 'wide' && theme === 'light') {
-      await page.getByRole('tab', { name: '設定' }).click();
-      await page.waitForSelector('[data-module-row="fs"]', { timeout: 15_000 });
-      await page.screenshot({ path: path.join(outDir, 'settings.png') });
-    }
-    await page.close();
+    await page.screenshot({ path: path.join(outDir, 'work-from-root.png') });
+    // ESC で閉じる（PO指摘 2026-08-22）。
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('[data-work-panel]', { state: 'detached', timeout: 5_000 });
+
+    // フォークを開き直し、フォーク側から作業パネルを開く——幹は背表紙に畳まれる。
+    await page.locator('[data-open-item="t2"]').click();
+    await page.waitForSelector('[data-conversation-panel="t2"]', { timeout: 15_000 });
+    await page.waitForTimeout(300);
+    await page.locator('[data-conversation-panel="t2"] [data-reference="banto://fs/file/note.md"]').click();
+    await page.waitForSelector('[data-work-panel]', { timeout: 15_000 });
+    await page.waitForSelector('[data-spine]', { timeout: 15_000 });
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: path.join(outDir, 'work-from-fork.png') });
+    // 背表紙を押すと、作業パネルとフォークが両方閉じて幹だけに戻る。
+    await page.locator('[data-spine]').click();
+    await page.waitForSelector('[data-conversation-panel="t2"]', { state: 'detached', timeout: 5_000 });
+    await page.waitForSelector('[data-work-panel]', { state: 'detached', timeout: 5_000 });
+
+    // フォークを開き直し、会話側クリックで作業パネルが閉じることを確かめる。
+    await page.locator('[data-open-item="t2"]').click();
+    await page.waitForSelector('[data-conversation-panel="t2"]', { timeout: 15_000 });
+    await page.locator('[data-conversation-panel="t2"] [data-reference="banto://fs/file/note.md"]').click();
+    await page.waitForSelector('[data-work-panel]', { timeout: 15_000 });
+    await page.locator('[data-conversation-panel="t2"] h1').click();
+    await page.waitForSelector('[data-work-panel]', { state: 'detached', timeout: 5_000 });
+
+    // 受信箱。
+    await page.locator('[data-open-item="t1"]').click();
+    await page.getByRole('button', { name: '受信箱' }).click();
+    await page.waitForSelector('[data-decision-card]', { timeout: 15_000 });
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: path.join(outDir, 'inbox.png') });
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
+
+    // 設定。
+    await page.getByRole('button', { name: '設定' }).click();
+    await page.waitForSelector('[data-module-row="fs"]', { timeout: 15_000 });
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: path.join(outDir, 'settings.png') });
   }
+
+  await page.close();
 }
+
+// 狭い画面。
+const narrow = await browser.newPage({ viewport: { width: 390, height: 844 } });
+await narrow.goto(origin, { waitUntil: 'networkidle' });
+await narrow.locator('[data-open-item="t1"]').click();
+await narrow.waitForSelector('[data-from="banto"]', { timeout: 15_000 });
+await narrow.waitForTimeout(500);
+await narrow.screenshot({ path: path.join(outDir, 'narrow.png') });
+await narrow.close();
 
 await browser.close();
 server.close();

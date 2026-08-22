@@ -1,5 +1,12 @@
+/// <reference lib="dom" />
+/// <reference lib="dom.iterable" />
 /**
  * 画面が本当に描けているかを、**本物のブラウザで**測る（要件 E1）。
+ *
+ * **`lib="dom"` をこのファイルにだけ足している。** `apps/host` は Node のサービスで
+ * DOM を持たない（`tsconfig.base.json` の `lib` は `ES2023` のみ）——正しい既定である。
+ * ここだけ例外なのは、`page.evaluate(() => ...)` の中身が**このプロセスでは動かず、
+ * ブラウザの中で動く**ため。型検査のためだけに、このファイルに限って足す。
  *
  * ## なぜ要るか
  *
@@ -16,11 +23,11 @@
  *
  * > **完了条件は「要件を満たす」ではなく「計測が実際に走り、数値を返す」**（CLAUDE.md）。
  *
- * ## 何を測るか
+ * ## 画面を作り直した（決定22・2026-08-22）
  *
- * **見た目の良し悪しは測らない。** 測るのは「壊れていないこと」だけ：
- * コンソールのエラーが 0、失敗した通信が 0、そして
- * **知らないイベントに落ちた印（「未対応のイベント」）が 0**。
+ * サイドバー＋会話パネル＋層で重なる作業パネルへ作り直したので、
+ * ここも新しい構えの言葉（`data-conversation-panel`・`data-work-panel`・
+ * `data-open-item` 等）で全シナリオを引き直した。
  */
 
 import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises';
@@ -127,23 +134,7 @@ beforeAll(async () => {
       { id: 'reject', label: '取り込まない', detail: '畳んで終える' },
     ],
   });
-  await log.append({
-    type: 'decision.requested',
-    decisionId: 'd-free',
-    source: 'thread',
-    threadId: 't1',
-    question: '選択肢の無い判断',
-  });
-  // **2本目**。1本目から fork しているので、決まったことを継承している（要件 R4）。
-  await log.append({
-    type: 'thread.forked',
-    threadId: 't2',
-    channelId: 'c1',
-    title: '2本目',
-    from: { threadId: 't1', baseVersion: 1 },
-    mode: 'base',
-  });
-  await log.append({ type: 'base.appended', threadId: 't2', baseVersion: 2, text: '2本目で決めたこと' });
+  await log.append({ type: 'thread.status', threadId: 't1', status: 'waiting-on-human' });
   // **AI が「これを見て」と指した**（要件 C14・決定19）。中身は持たない。
   await log.append({
     type: 'reference.recorded',
@@ -177,7 +168,41 @@ beforeAll(async () => {
     role: 'assistant',
     text: MARKDOWN_REPLY,
   });
-  await log.append({ type: 'thread.status', threadId: 't1', status: 'done' });
+
+  // **2本目**。1本目からフォークしているので、決まったことを継承している（要件 R4）。
+  await log.append({
+    type: 'thread.forked',
+    threadId: 't2',
+    channelId: 'c1',
+    title: '2本目',
+    from: { threadId: 't1', baseVersion: 1 },
+    mode: 'base',
+  });
+  await log.append({ type: 'base.appended', threadId: 't2', baseVersion: 2, text: '2本目で決めたこと' });
+  // **フォーク側にも指しを持たせる**（決定26の試験用）。作業パネルをフォーク側から
+  // 開いたときの背表紙（`Spine`）を試すには、フォーク自身の会話に指しが要る。
+  await log.append({
+    type: 'reference.recorded',
+    threadId: 't2',
+    uri: 'banto://fs/file/note.md',
+    name: 'note.md',
+    mimeType: 'text/markdown',
+    note: '2本目からも同じファイルを見る',
+  });
+  // **受信箱の試験専用。** 「会話の最後尾」の試験が d-options に答えてしまうので、
+  // ログを共有する試験どうしが同じ判断を取り合わないよう、別の判断を1件立てる。
+  await log.append({
+    type: 'decision.requested',
+    decisionId: 'd-inbox',
+    source: 'factory',
+    threadId: 't1',
+    question: '受信箱からの判断待ち',
+    options: [
+      { id: 'approve', label: '取り込む', detail: 'merge して畳む' },
+      { id: 'reject', label: '取り込まない', detail: '畳んで終える' },
+    ],
+  });
+  await log.append({ type: 'thread.status', threadId: 't2', status: 'done' });
 
   // **fs を本物で載せる。** 指された URI を実際に読ませないと、
   // 「指しは出るが開けない」を見逃す（要件 C14）。
@@ -195,13 +220,11 @@ beforeAll(async () => {
     dataDir,
     port: 0,
     modules: [
-      { name: fsModule.manifest.id, kind: 'in-process', server: fsModule.createServer() },
+      { name: fsModule.manifest.id, kind: 'in-process', createServer: () => fsModule.createServer() },
       // **本物の Python を繋ぐ**（要件 C6）。偽物だと、この試験は何も証明しない。
       { name: 'hello-py', kind: 'subprocess', command: 'python3', args: ['modules/hello-py/server.py'] },
     ],
     // 画面の割り当ては台帳から導く（決定20）。渡さないと汎用の面に落ちる。
-    // **hello-py も載せる**——subprocess で TypeScript でもないモジュールが
-    // `sandboxed` な面を持ち込めることが、要件 C6 の中身である。
     manifests: [fsModule.manifest, helloPyManifest],
     toolsByModule: new Map(),
     model: 'claude-haiku-4-5',
@@ -239,8 +262,8 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
     try {
       await page.goto(origin, { waitUntil: 'networkidle' });
-      // 既定で開くのは直近の会話。**1本目を見たいので明示的に開く。**
-      await openThread(page, '煙試験');
+      // 既定で開くのは最新（＝「2本目」）。**1本目を見たいので明示的に開く。**
+      await openThread(page, 't1');
       // 会話を開くと履歴を読みに行く（要件 A8）。描き終わるのを待つ。
       await page.waitForSelector('text=アシスタントの発言', { timeout: 15_000 });
       const body = await page.innerText('body');
@@ -270,12 +293,12 @@ describe('画面の煙試験（本物のブラウザ）', () => {
   }, 120_000);
 
   /**
-   * **選んだ答えが、実際に会話に着くところまで測る**（要件 A6）。
+   * **判断待ちは、会話の最後尾にそのまま出る**（要件 A6・E10）。常設の列は無い。
    *
    * 「ボタンが描けている」では足りない——押した先が繋がっていない画面は、
    * 見た目には壊れていないので、人が押してみるまで分からない。
    */
-  it('選択肢を押すと、答えが会話に返る', async () => {
+  it('会話の最後尾に判断待ちが出て、選ぶと会話に答えが返る', async () => {
     if (!built) throw new Error('画面がビルドされていないので測れない');
 
     const { chromium } = await import('playwright');
@@ -284,18 +307,22 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
     try {
       await page.goto(origin, { waitUntil: 'networkidle' });
-      await openThread(page, '煙試験');
-      // 選択肢の無い判断でも、自由に書く欄は出ている。
-      await page.waitForSelector('text=選択肢の無い判断', { timeout: 15_000 });
-      expect(await page.locator('input[placeholder="答えを書く"]').count()).toBe(1);
+      await openThread(page, 't1');
+      await page.waitForSelector('[data-decision-card]', { timeout: 15_000 });
 
-      const approve = page.getByRole('button', { name: '取り込む', exact: true });
-      await approve.click();
+      // **同じスレッドにもう1件（受信箱の試験用）判断待ちがあり、選択肢の文言も同じ**
+      // （どちらも「取り込む」）。**カードごと文面で絞る**——ボタンの名前だけで
+      // `.first()` を取ると、答えた瞬間に「残ったほうの取り込むボタン」を
+      // 指すようになって detached を待ち続ける（実際に踏んだ）。
+      const card = page.locator('[data-decision-card]', {
+        hasText: 'factory/smoke を main に入れてよいか',
+      });
+      await card.getByRole('button', { name: '取り込む', exact: true }).click();
 
-      // 判断待ちの列から消える（答えが出たものは残らない）。
-      // **問いの文面では見ない**——会話にも同じ文が残るので、消えたことにならない。
-      await approve.waitFor({ state: 'detached', timeout: 15_000 });
-      // **会話に返っている。** 押した先が繋がっていることの、唯一の証拠。
+      // 答えたら、**そのカードごと**消える（会話には残るが、押せる形は無くなる）。
+      await card.waitFor({ state: 'detached', timeout: 15_000 });
+      // **会話に返っている。** 答えは `message.recorded` としてそのまま吹き出しになる
+      // （`decision.resolved` は `threadId` を持たないので、ここには届かない——実測）。
       await page.waitForSelector('text=取り込む（approve）', { timeout: 15_000 });
     } finally {
       await browser.close();
@@ -303,44 +330,67 @@ describe('画面の煙試験（本物のブラウザ）', () => {
   }, 120_000);
 
   /**
-   * **並べられることを、並べて確かめる**（要件 A2・A3）。
-   * 「会話を開く」が1本ずつの切り替えに戻っていたら、ここで落ちる。
+   * **横断で見る受信箱**（要件 A5・A6・E11）。会話の中と同じ見た目（`DecisionCard`）で答えられる。
    */
-  it('会話を2本開くと、横に並ぶ', async () => {
+  it('受信箱から判断待ちに答えられる', async () => {
     if (!built) throw new Error('画面がビルドされていないので測れない');
 
     const { chromium } = await import('playwright');
     const browser = await chromium.launch();
-    const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 
     try {
       await page.goto(origin, { waitUntil: 'networkidle' });
-      await page.waitForSelector('text=2本目', { timeout: 15_000 });
+      await page.getByRole('button', { name: '受信箱' }).click();
+      await page.waitForSelector('[role=dialog] [data-decision-card]', { timeout: 15_000 });
+      // 出所・滞留時間・スレッド名が読める（実データにある項目だけ）。
+      await page.waitForSelector('text=FACTORY', { timeout: 15_000 });
+      await page.waitForSelector('text=/「煙試験」を開く/', { timeout: 15_000 });
 
-      // 1本開いている状態から、もう1本開く。
-      expect(await page.locator('[data-thread-column]').count()).toBe(1);
-      await openThread(page, '煙試験');
-
-      // **2列になり、左右に並ぶ。**
-      await expect
-        .poll(async () => page.locator('[data-thread-column]').count(), { timeout: 15_000 })
-        .toBe(2);
-      const columns = page.locator('[data-thread-column]');
-      const boxes = await Promise.all(
-        (await columns.all()).map(async (c) => (await c.boundingBox()) ?? { x: 0, y: 0 }),
-      );
-      expect(boxes[1]!.x).toBeGreaterThan(boxes[0]!.x);
-      expect(boxes[1]!.y).toBe(boxes[0]!.y);
+      await page.getByRole('button', { name: '取り込まない', exact: true }).click();
+      // 答えたら、**そのカードが受信箱から消える**（ダイアログは開いたまま——
+      // 他に待っているものを見続けられる。閉じるのは人が決めること）。
+      await page.waitForSelector('[role=dialog] [data-decision-card]', {
+        state: 'detached',
+        timeout: 15_000,
+      });
     } finally {
       await browser.close();
     }
   }, 120_000);
 
   /**
-   * **狭い画面では横に並べない**（要件 E2）。
-   * 列の数を inline style で書くと画面幅に関わらず効いて、3列に潰れる。
+   * **サイドバーの「開いているもの」**（要件 A2）。押さなくても本数と状態が点で分かり、
+   * 押すと開き直せる。
    */
-  it('狭い画面では、2本開いても横に潰れない', async () => {
+  it('サイドバーの点で、開いている会話を切り替えられる', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await page.waitForSelector('[data-open-item="t1"]', { timeout: 15_000 });
+      await page.waitForSelector('[data-open-item="t2"]', { timeout: 15_000 });
+
+      await openThread(page, 't1');
+      await page.waitForSelector('[data-conversation-panel="t1"]', { timeout: 15_000 });
+
+      await openThread(page, 't2');
+      await page.waitForSelector('[data-conversation-panel="t2"]', { timeout: 15_000 });
+      // t2 は t1 からのフォーク。頭の見出しにそれが出る（決まったことの中身は別試験で見る）。
+      await page.waitForSelector('text=煙試験 から', { timeout: 15_000 });
+    } finally {
+      await browser.close();
+    }
+  }, 120_000);
+
+  /**
+   * **狭い画面で崩れない**（要件 E2）。サイドバーが上端の横帯になる。
+   */
+  it('狭い画面では、サイドバーが横帯になり1列で読める', async () => {
     if (!built) throw new Error('画面がビルドされていないので測れない');
 
     const { chromium } = await import('playwright');
@@ -349,22 +399,18 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
     try {
       await page.goto(origin, { waitUntil: 'networkidle' });
-      await page.waitForSelector('text=2本目', { timeout: 15_000 });
-      await openThread(page, '煙試験');
-      await expect
-        .poll(async () => page.locator('[data-thread-column]').count(), { timeout: 15_000 })
-        .toBe(2);
+      await openThread(page, 't1');
+      await page.waitForSelector('[data-conversation-panel="t1"]', { timeout: 15_000 });
 
-      // **縦に並ぶ**（左右ではない）。横に潰れていたら left がずれる。
-      const columns = page.locator('[data-thread-column]');
-      const boxes = await Promise.all(
-        (await columns.all()).map(async (c) => (await c.boundingBox()) ?? { x: 0, y: 0, width: 0 }),
-      );
-      expect(boxes).toHaveLength(2);
-      expect(boxes[1]!.y).toBeGreaterThan(boxes[0]!.y);
-      expect(boxes[1]!.x).toBe(boxes[0]!.x);
-      // 幅は画面いっぱい（3列に潰れていない）。
-      for (const b of boxes) expect(b.width).toBeGreaterThan(300);
+      const sidebarBox = await page.locator('[data-sidebar]').boundingBox();
+      const panelBox = await page.locator('[data-conversation-panel]').boundingBox();
+      expect(sidebarBox).not.toBeNull();
+      expect(panelBox).not.toBeNull();
+      // **横帯**（幅いっぱい・高さが低い）になっている。縦のレールのままなら幅が狭いはず。
+      expect(sidebarBox!.width).toBeGreaterThan(300);
+      expect(sidebarBox!.height).toBeLessThan(80);
+      // 会話パネルは画面いっぱいの幅（3列に潰れていない）。
+      expect(panelBox!.width).toBeGreaterThan(300);
     } finally {
       await browser.close();
     }
@@ -372,7 +418,7 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
   /**
    * **いま決まっていることが読める**（要件 R2・R4・R6・R8）。
-   * ここまで base は年表の点でしか見えず、**読む手段が画面に無かった。**
+   * タブの置き場ではなく、頭の「v{N}」を押すと**作業パネルとして層で開く**。
    */
   it('決まったことが読めて、足せて、継承が分かる', async () => {
     if (!built) throw new Error('画面がビルドされていないので測れない');
@@ -383,9 +429,12 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
     try {
       await page.goto(origin, { waitUntil: 'networkidle' });
-      // 既定で開くのは直近＝fork した2本目。**継承した行と自分の行が両方見える。**
-      await page.waitForSelector('text=2本目', { timeout: 15_000 });
-      await page.getByRole('tab', { name: /決まったこと/ }).first().click();
+      await openThread(page, 't2');
+      await page.waitForSelector('[data-open-base="t2"]', { timeout: 15_000 });
+      await page.locator('[data-open-base="t2"]').click();
+
+      await page.waitForSelector('[data-base-panel="t2"]', { timeout: 15_000 });
+      // **継承した行と自分の行が両方見える**（要件 R4）。
       await page.waitForSelector('text=依頼: 煙を出す', { timeout: 15_000 });
       await page.waitForSelector('text=2本目で決めたこと', { timeout: 15_000 });
       // **残りを常に見せる**（要件 R8）。拒否されて初めて知る、を避ける。
@@ -396,6 +445,14 @@ describe('画面の煙試験（本物のブラウザ）', () => {
       await page.getByPlaceholder('決まったことを1行で足す').fill('画面から足した決まりごと');
       await page.getByRole('button', { name: '足す' }).click();
       await page.waitForSelector('text=画面から足した決まりごと', { timeout: 15_000 });
+
+      // **層で重なっている。** 会話パネルは帯に縮み、作業パネルが右に全幅で開く。
+      const conv = await page.locator('[data-conversation-panel="t2"]').boundingBox();
+      const work = await page.locator('[data-base-panel="t2"]').boundingBox();
+      expect(conv).not.toBeNull();
+      expect(work).not.toBeNull();
+      expect(work!.x).toBeGreaterThan(conv!.x);
+      expect(work!.width).toBeGreaterThan(conv!.width);
     } finally {
       await browser.close();
     }
@@ -440,7 +497,8 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
     try {
       await page.goto(tightOrigin, { waitUntil: 'networkidle' });
-      await page.getByRole('tab', { name: /決まったこと/ }).click();
+      await page.waitForSelector('[data-open-base="g1"]', { timeout: 15_000 });
+      await page.locator('[data-open-base="g1"]').click();
       // **残りが常に見えている**（拒否されて初めて存在を知る、を避ける）。
       await page.waitForSelector('text=/95 \\/ 100 文字/', { timeout: 15_000 });
 
@@ -462,9 +520,9 @@ describe('画面の煙試験（本物のブラウザ）', () => {
    * **AI が指し、人が開くまでを通す**（要件 C14・決定19）。
    *
    * 指しただけでは開かない——**押して初めて中身を読みに行く。**
-   * 中身は指した時点の写しではなく、そのとき持ち主に聞いたものである（規則3）。
+   * 開くのは「パネルを開くカード」で、押すと**作業パネルとして層で開く**。
    */
-  it('AI が指したものを、押すと開ける', async () => {
+  it('AI が指したものを、押すと作業パネルで開ける', async () => {
     if (!built) throw new Error('画面がビルドされていないので測れない');
 
     const { chromium } = await import('playwright');
@@ -473,13 +531,14 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
     try {
       await page.goto(origin, { waitUntil: 'networkidle' });
-      await openThread(page, '煙試験');
+      await openThread(page, 't1');
       await page.waitForSelector('[data-reference="banto://fs/file/note.md"]', { timeout: 15_000 });
 
       // **押すまでは中身を読みに行っていない。**
-      expect(await page.locator('[data-resource-viewer]').count()).toBe(0);
+      expect(await page.locator('[data-work-panel]').count()).toBe(0);
 
       await page.locator('[data-reference="banto://fs/file/note.md"]').click();
+      await page.waitForSelector('[data-work-panel]', { timeout: 15_000 });
       await page.waitForSelector('[data-resource-viewer]', { timeout: 15_000 });
       // fs モジュールが本当に読んだ中身が出る（seed で書いたファイル）。
       await page.waitForSelector('text=みかんと書いてある', { timeout: 15_000 });
@@ -494,12 +553,11 @@ describe('画面の煙試験（本物のブラウザ）', () => {
   }, 120_000);
 
   /**
-   * **画面から分岐できる**（要件 A3）。
-   *
-   * イベントも継承の解きかたも在ったのに、**作る口が画面に無かった**
-   * ——A3 は要件なので、機構だけ在って触れないのは満たしていないのと同じである。
+   * **作業パネルを閉じる3つの手（PO指摘 2026-08-22）**——閉じる(X)は左端、
+   * ESC、会話側（ボタン以外）のクリック。フォーク側から開いたときは、
+   * 幹が背表紙（`Spine`）に畳まれ、背表紙を押しても両方閉じる。
    */
-  it('分岐すると、決まったことを引き継いだ枝が横に並ぶ', async () => {
+  it('作業パネルは、X・ESC・会話側クリック・背表紙のどれでも閉じる', async () => {
     if (!built) throw new Error('画面がビルドされていないので測れない');
 
     const { chromium } = await import('playwright');
@@ -508,24 +566,131 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
     try {
       await page.goto(origin, { waitUntil: 'networkidle' });
-      await openThread(page, '煙試験');
-      await expect
-        .poll(async () => page.locator('[data-thread-column]').count(), { timeout: 15_000 })
-        .toBe(2);
+      await openThread(page, 't1');
 
-      // 「煙試験」（base v1）から分岐する。
-      await page.locator('[data-fork]').first().click();
+      // **閉じる(X)は左端**（PO指摘 2026-08-22）——読み直すより左に居る。
+      await page.locator('[data-conversation-panel="t1"] [data-reference="banto://fs/file/note.md"]').click();
+      await page.waitForSelector('[data-work-panel]', { timeout: 15_000 });
+      const closeBox = await page.locator('[data-work-panel] [title="閉じる"]').boundingBox();
+      const reloadBox = await page.locator('[data-work-panel] [title="読み直す"]').boundingBox();
+      if (closeBox === null || reloadBox === null) throw new Error('ヘッダーのボタンが見つからない');
+      expect(closeBox.x).toBeLessThan(reloadBox.x);
 
-      // **枝が開いて並ぶ**（切って隠すのでは、見比べられない）。
-      await expect
-        .poll(async () => page.locator('[data-thread-column]').count(), { timeout: 15_000 })
-        .toBe(3);
-      await page.waitForSelector('text=/煙試験 から分岐/', { timeout: 15_000 });
+      // **ESC で閉じる。**
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('[data-work-panel]', { state: 'detached', timeout: 15_000 });
+
+      // **幹から開いたときは背表紙が出ない**（隣に畳むフォークが無いので）。
+      await page.locator('[data-conversation-panel="t1"] [data-reference="banto://fs/file/note.md"]').click();
+      await page.waitForSelector('[data-work-panel]', { timeout: 15_000 });
+      expect(await page.locator('[data-spine]').count()).toBe(0);
+
+      // **会話側（見出しなど、ボタン以外）をクリックしても閉じる。**
+      await page.locator('[data-conversation-panel="t1"] h1').click();
+      await page.waitForSelector('[data-work-panel]', { state: 'detached', timeout: 15_000 });
+
+      // **フォークから開くと、幹が背表紙に畳まれる。**
+      await openThread(page, 't2');
+      await page.waitForSelector('[data-conversation-panel="t2"]', { timeout: 15_000 });
+      await page.locator('[data-conversation-panel="t2"] [data-reference="banto://fs/file/note.md"]').click();
+      await page.waitForSelector('[data-work-panel]', { timeout: 15_000 });
+      await page.waitForSelector('[data-spine]', { timeout: 15_000 });
+      // 幹（t1）はもう会話パネルとしては描かれていない——背表紙に畳まれている。
+      expect(await page.locator('[data-conversation-panel="t1"]').count()).toBe(0);
+
+      // **背表紙を押すと、作業パネルとフォークが両方閉じて幹だけに戻る。**
+      await page.locator('[data-spine]').click();
+      await page.waitForSelector('[data-work-panel]', { state: 'detached', timeout: 15_000 });
+      await page.waitForSelector('[data-conversation-panel="t2"]', { state: 'detached', timeout: 15_000 });
+      await page.waitForSelector('[data-conversation-panel="t1"]', { timeout: 15_000 });
+    } finally {
+      await browser.close();
+    }
+  }, 120_000);
+
+  /**
+   * **フォークできる**（要件 A3）。
+   *
+   * イベントも継承の解きかたも在ったのに、**作る口が画面に無かった**
+   * ——A3 は要件なので、機構だけ在って触れないのは満たしていないのと同じである。
+   * フォークした先は**開いた元（幹）の横に並んで開く**（決定26）。
+   * 頭の「戻る」を押すと、フォークが閉じて幹だけの表示に戻る。
+   */
+  it('フォークすると、決まったことを引き継いだ会話が幹の横に並ぶ', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await openThread(page, 't1');
+      await page.waitForSelector('[data-fork="t1"]', { timeout: 15_000 });
+      await page.locator('[data-fork="t1"]').click();
+
+      // **幹（t1）を消さず、横に並んで開く。**
+      await page.waitForSelector('[data-conversation-panel="t1"]', { timeout: 15_000 });
+      const fork = page.locator('[data-conversation-panel]:not([data-conversation-panel="t1"])');
+      await fork.waitFor({ timeout: 15_000 });
+      // **素性が題の上に出る**（PO裁定 2026-08-22：スレッドとフォークを見分けられるように）。
+      await page.waitForSelector('text=煙試験 から', { timeout: 15_000 });
 
       // **決まったことを引き継いでいる**（要件 R4）。継承分として出る。
-      await page.getByRole('tab', { name: /決まったこと/ }).first().click();
+      const id = await fork.getAttribute('data-conversation-panel');
+      await page.locator(`[data-open-base="${id}"]`).click();
       await page.waitForSelector('text=/1 行は fork 元から/', { timeout: 15_000 });
       await page.waitForSelector('text=依頼: 煙を出す', { timeout: 15_000 });
+
+      // **サイドバーの点も、フォークだけ縁取りを持つ**（見た目の見分け）。
+      const dataFork = await page.locator(`[data-open-item="${id}"]`).getAttribute('data-fork-item');
+      expect(dataFork).toBe('true');
+      const dataThread = await page.locator('[data-open-item="t1"]').getAttribute('data-fork-item');
+      expect(dataThread).toBe('false');
+
+      // **戻ると、フォークが閉じて幹だけの表示に戻る。**
+      await page.getByLabel('戻る').click();
+      await fork.waitFor({ state: 'detached', timeout: 15_000 });
+      await page.waitForSelector('[data-conversation-panel="t1"]', { timeout: 15_000 });
+    } finally {
+      await browser.close();
+    }
+  }, 120_000);
+
+  /**
+   * **フォークを畳んで閉じられる**（PO裁定 2026-08-22：フォークが増えすぎて分かりにくい）。
+   *
+   * 削除ではなく「開いているもの」から外れるだけ——マージすると親に戻り、
+   * 畳んだフォークのサイドバーの点は消える。
+   */
+  it('フォークをマージすると、開いているものから消えて親に戻る', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await openThread(page, 't1');
+      await page.waitForSelector('[data-fork="t1"]', { timeout: 15_000 });
+      await page.locator('[data-fork="t1"]').click();
+
+      const fork = page.locator('[data-conversation-panel]:not([data-conversation-panel="t1"])');
+      await fork.waitFor({ timeout: 15_000 });
+      const forkId = await fork.getAttribute('data-conversation-panel');
+      if (forkId === null) throw new Error('フォークの id が取れない');
+
+      // 畳む前は「開いているもの」に居る。
+      await page.waitForSelector(`[data-open-item="${forkId}"]`, { timeout: 15_000 });
+
+      await page.locator(`[data-merge="${forkId}"]`).click();
+
+      // **フォークが閉じて、親（幹）だけの表示に戻る。**
+      await fork.waitFor({ state: 'detached', timeout: 15_000 });
+      await page.waitForSelector('[data-conversation-panel="t1"]', { timeout: 15_000 });
+      // **削除ではないが、開いているものからは外れる。**
+      expect(await page.locator(`[data-open-item="${forkId}"]`).count()).toBe(0);
     } finally {
       await browser.close();
     }
@@ -547,8 +712,7 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
     try {
       await page.goto(origin, { waitUntil: 'networkidle' });
-      await page.waitForSelector('[data-thread-column]', { timeout: 15_000 });
-      await openThread(page, '煙試験');
+      await openThread(page, 't1');
       await page.waitForSelector('[data-reference="banto://hello-py/greeting/banto"]', {
         timeout: 15_000,
       });
@@ -569,7 +733,7 @@ describe('画面の煙試験（本物のブラウザ）', () => {
   }, 120_000);
 
   /**
-   * **台帳と、外したときの影響**（要件 C1・C8c・C12・C4）。
+   * **台帳と、外したときの影響**（要件 C1・C8c・C12・C4）。設定は被さるダイアログ。
    *
    * C12 の中身は「押す前に分かる」ことなので、**画面に出ているか**で測る。
    */
@@ -582,7 +746,7 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
     try {
       await page.goto(origin, { waitUntil: 'networkidle' });
-      await page.getByRole('tab', { name: '設定' }).click();
+      await page.getByRole('button', { name: '設定' }).click();
 
       await page.waitForSelector('[data-module-row="fs"]', { timeout: 15_000 });
       await page.waitForSelector('[data-module-row="hello-py"]', { timeout: 15_000 });
@@ -596,10 +760,35 @@ describe('画面の煙試験（本物のブラウザ）', () => {
       await page.locator('[data-impact="fs"]').waitFor({ timeout: 15_000 });
       expect(await page.locator('[data-impact="fs"]').innerText()).toContain('無効化すると');
 
-      // **モジュール自身の設定の区画**（要件 C4）。C14 の機構をそのまま使っている。
+      // **モジュール自身の設定の区画**（要件 C4）。押すとダイアログが閉じ、作業パネルで開く。
       await page.locator('[data-settings-of="fs"]').click();
+      await page.waitForSelector('[role=dialog]', { state: 'detached', timeout: 15_000 });
+      await page.waitForSelector('[data-work-panel]', { timeout: 15_000 });
       await page.waitForSelector('text=/fs モジュールの設定/', { timeout: 15_000 });
       await page.waitForSelector('text=/作業範囲の根/', { timeout: 15_000 });
+    } finally {
+      await browser.close();
+    }
+  }, 120_000);
+
+  /**
+   * **履歴（要件 A8）。** 終わったスレッドは消えない、読み返せる。
+   */
+  it('履歴から、終わったスレッドを開ける', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1200, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await page.getByRole('button', { name: '履歴' }).click();
+      await page.waitForSelector('[data-history-thread="t2"]', { timeout: 15_000 });
+
+      await page.locator('[data-history-thread="t2"]').click();
+      await page.waitForSelector('[role=dialog]', { state: 'detached', timeout: 15_000 });
+      await page.waitForSelector('[data-conversation-panel="t2"]', { timeout: 15_000 });
     } finally {
       await browser.close();
     }
@@ -621,7 +810,7 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
     try {
       await page.goto(origin, { waitUntil: 'networkidle' });
-      await openThread(page, '煙試験');
+      await openThread(page, 't1');
       await page.waitForSelector('.markdown h2', { timeout: 15_000 });
 
       const md = page.locator('.markdown').last();
@@ -645,11 +834,12 @@ describe('画面の煙試験（本物のブラウザ）', () => {
   }, 120_000);
 
   /**
-   * **誰の言葉かが、書体と置き方で分かる**（要件 E6）。
+   * **誰の言葉かが分かる**（要件 E6）。
    *
-   * 色や札ではなく**書体**で分けているので、そこが崩れると「全部同じ声」に戻る。
+   * いまの意匠は書体を1つに統一し、**印と置き方**で声を分ける
+   * （前回の「書体で分ける」からの変更・決定22）。
    */
-  it('相手の言葉は明朝＋印、人の言葉は角ゴシックの吹き出し', async () => {
+  it('相手の言葉には印が付き、人の言葉は右寄せの吹き出しになる', async () => {
     if (!built) throw new Error('画面がビルドされていないので測れない');
 
     const { chromium } = await import('playwright');
@@ -658,20 +848,20 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
     try {
       await page.goto(origin, { waitUntil: 'networkidle' });
-      await openThread(page, '煙試験');
+      await openThread(page, 't1');
       await page.waitForSelector('[data-from="banto"]', { timeout: 15_000 });
-
-      const banto = page.locator('[data-from="banto"] .markdown').first();
-      const font = await banto.evaluate((el) => getComputedStyle(el).fontFamily);
-      expect(font).toContain('Shippori Mincho');
-
-      // 人の言葉は同じ書体では出ない（＝声が分かれている）。
-      const mine = page.locator('text=ユーザーの発言').first();
-      const mineFont = await mine.evaluate((el) => getComputedStyle(el).fontFamily);
-      expect(mineFont).not.toContain('Shippori Mincho');
 
       // 印が在る（器を持たせない代わりに、誰の言葉かはこれが言う）。
       expect(await page.locator('[data-from="banto"]').first().innerText()).toContain('番');
+
+      // 人の言葉は右寄せの吹き出し（印は付かない）。
+      const mine = page.locator('text=ユーザーの発言').first();
+      const mineBox = await mine.boundingBox();
+      const bantoBox = await page.locator('[data-from="banto"]').first().boundingBox();
+      expect(mineBox).not.toBeNull();
+      expect(bantoBox).not.toBeNull();
+      // 人の言葉のほうが右にある（右寄せの吹き出し）。
+      expect(mineBox!.x).toBeGreaterThan(bantoBox!.x);
     } finally {
       await browser.close();
     }
@@ -697,7 +887,7 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
     try {
       await page.goto(origin, { waitUntil: 'networkidle' });
-      await openThread(page, '煙試験');
+      await openThread(page, 't1');
       await page.waitForSelector('.markdown pre.shiki', { timeout: 15_000 });
       await page.waitForTimeout(600);
 
@@ -752,7 +942,7 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
     try {
       await page.goto(origin, { waitUntil: 'networkidle' });
-      await openThread(page, '煙試験');
+      await openThread(page, 't1');
       const box = page.getByPlaceholder('メッセージを送る').first();
       await box.fill('にほんご');
 
@@ -794,13 +984,14 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
     try {
       await page.goto(origin, { waitUntil: 'networkidle' });
-      await page.waitForSelector('[data-theme-toggle]', { timeout: 15_000 });
+      await page.waitForSelector('[data-sidebar]', { timeout: 15_000 });
 
       const themeOf = () => page.evaluate(() => document.documentElement.dataset['theme']);
       const before = await themeOf();
       const bgBefore = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
 
-      await page.locator('[data-theme-toggle]').click();
+      const toggle = page.getByRole('button', { name: /明るくする|暗くする/ });
+      await toggle.click();
       const after = await themeOf();
       expect(after).not.toBe(before);
       // **属性だけでなく、実際に地の色が変わっている。**
@@ -820,12 +1011,13 @@ describe('画面の煙試験（本物のブラウザ）', () => {
    *
    * これは好みの話ではない。前の実装は自分の失敗を
    * **「字 17 段・枠 107 箇所・色 39 種」**と記録しており、
-   * 「製品に見えない」の正体がそれだった。v3 も同じ状態に戻っていた
-   * （`text-[10px]` `text-[11px]` `text-xs` `text-sm` の混在）。
+   * 「製品に見えない」の正体がそれだった。**段の数は数えられる。**
+   * 数えられるものは、目視ではなく試験で守る。
    *
-   * **段の数は数えられる。** 数えられるものは、目視ではなく試験で守る。
+   * いまの意匠見本（`ideal.css`）は**7段**（xs/sm/md/lg/xl/2xl/3xl）を持つ
+   * ——これが決めた段数で、6ではない（決定22で採用した意匠見本の実際の段数）。
    */
-  it('画面に出ている字の段が、決めた6段を超えない', async () => {
+  it('画面に出ている字の段が、決めた7段を超えない', async () => {
     if (!built) throw new Error('画面がビルドされていないので測れない');
 
     const { chromium } = await import('playwright');
@@ -834,7 +1026,7 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
     try {
       await page.goto(origin, { waitUntil: 'networkidle' });
-      await openThread(page, '煙試験');
+      await openThread(page, 't1');
       await page.waitForSelector('.markdown h2', { timeout: 15_000 });
 
       const sizes = await page.evaluate(() => {
@@ -853,7 +1045,7 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
       // **数値を出す**（完了条件は「計測が走り、数値を返す」）。
       console.log('字の段:', sizes.map(([s, n]) => `${s}×${n}`).join(' '));
-      expect(sizes.length).toBeLessThanOrEqual(6);
+      expect(sizes.length).toBeLessThanOrEqual(7);
     } finally {
       await browser.close();
     }
@@ -868,14 +1060,10 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 });
 
 /**
- * 会話を1本開く。**選ぶのではなく開く**ので、開いたものは並ぶ（要件 A2）。
- *
- * **末尾で合わせる。** 前の試験が「◯◯ から分岐」を作るので、
- * 前方一致だと2件に当たって（strict mode で）止まる——
- * 試験どうしが同じログを共有していることの現れである。
+ * サイドバーの「開いているもの」の点で、会話を開く（要件 A2）。
+ * **選ぶのではなく開く**——列やタブではなく、点を押すと開く。
  */
-async function openThread(page: import('playwright').Page, title: string): Promise<void> {
-  await page.getByRole('combobox').click();
-  await page.getByRole('option', { name: new RegExp(`${title}$`) }).click();
+async function openThread(page: import('playwright').Page, threadId: string): Promise<void> {
+  await page.locator(`[data-open-item="${threadId}"]`).click();
   await page.waitForTimeout(200);
 }

@@ -40,7 +40,7 @@ export function ContextChart({ points }: { points: readonly ContextPoint[] }) {
   if (points.length === 0) {
     // **無いことは言う。** 黙って消えると「壊れている」と見分けが付かない（規則2）。
     return (
-      <div className="flex h-7 items-center px-1 text-note text-ink-muted">
+      <div className="flex h-7 items-center px-1 text-xs text-ink-muted">
         まだターンが記録されていません
       </div>
     );
@@ -77,7 +77,7 @@ export function ContextChart({ points }: { points: readonly ContextPoint[] }) {
 
   return (
     <div
-      className="flex items-center gap-3 text-note text-ink-muted"
+      className="flex items-center gap-3 text-xs text-ink-muted"
       title={`入力 ${fmt(usage?.inputTokens ?? 0)} ・ キャッシュ作成 ${fmt(
         usage?.cacheCreationInputTokens ?? 0,
       )} ・ キャッシュ読み ${fmt(usage?.cacheReadInputTokens ?? 0)}`}

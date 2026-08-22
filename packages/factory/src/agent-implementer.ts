@@ -82,6 +82,9 @@ export class AgentImplementer implements Implementer {
         ...allowedToolNames(modules, toolsByModule),
         ...(this.options.extraAllowedTools ?? []),
       ],
+      // **`allowedTools` は確認を省くだけで、見せるかどうかは別**（`packages/runner` 参照）。
+      // ここは実際にコードを書く役なので、許した組み込みツールをそのまま見せる。
+      builtinTools: this.options.extraAllowedTools ?? [],
       // **作業ツリーの中で走らせる。** ここを間違えると、別の場所を触りに行く。
       cwd: absoluteWorkdir(plan.workdir),
       maxTurns: this.options.maxTurns ?? 40,

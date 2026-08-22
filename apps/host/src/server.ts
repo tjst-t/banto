@@ -27,6 +27,8 @@ import {
   pendingQueue,
   type NewEvent,
 } from '@banto/core';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+
 import { AgentSdkRunner, allowedToolNames, type McpServerSpec } from '@banto/runner';
 import { foldRuns, type Factory } from '@banto/factory';
 import { LedgerCore, conversationModule } from '@banto/module-ledger';
@@ -38,6 +40,27 @@ import {
   type BantoModule,
   type ToolCaller,
 } from '@banto/module-kit';
+
+/**
+ * in-process モジュールは、いつ・誰が使うかで**別のインスタンス**を要る
+ * （実測 2026-08-22）。MCP の `Server.connect()` は「1インスタンス=1接続」しか
+ * 許さず、2回目は `Already connected to a transport` で断る。
+ * `resourceCallers`（起動時に1回）と、会話ごとの Agent SDK 問い合わせが
+ * **同じ `McpServer` を取り合うと、後から繋いだ方が常に断られる**——
+ * 実際に `fs` の道具が会話から一度も見えなくなっていた（AI 自身は
+ * 「道具が無い」と正直に言っていたので、壊れ方は静かだった）。
+ *
+ * **だから固定インスタンスではなく、作る関数を渡す。** 使うたびに
+ * `createServer()` を呼び、独立した接続にする。
+ */
+export type ModuleFactory =
+  | { readonly name: string; readonly kind: 'in-process'; readonly createServer: () => McpServer }
+  | {
+      readonly name: string;
+      readonly kind: 'subprocess';
+      readonly command: string;
+      readonly args?: readonly string[];
+    };
 
 export interface ServerOptions {
   readonly dataDir: string;
@@ -51,7 +74,7 @@ export interface ServerOptions {
    */
   readonly host?: string;
   /** そのスレッドに紐づけるモジュール。Phase 1.5 では起動時に固定。 */
-  readonly modules: readonly McpServerSpec[];
+  readonly modules: readonly ModuleFactory[];
   /** モジュール id → ツール名。許可の一覧を組み立てるのに使う（要件 D4）。 */
   readonly toolsByModule: ReadonlyMap<string, readonly string[]>;
   /**
@@ -183,6 +206,7 @@ async function currentState(dataDir: string, baseLimit: number): Promise<unknown
       turnCount: t.turnCount,
       baseVersion: t.baseVersion,
       forkedFrom: t.forkedFrom,
+      mergedInto: t.mergedInto,
       // ゲートの残りを**常に見せる**（要件 R8）。拒否されて初めて存在を知る、を避ける。
       baseCharacters: baseCharacters(state, t.id),
       baseLimit,
@@ -211,6 +235,19 @@ async function currentState(dataDir: string, baseLimit: number): Promise<unknown
  *
  * `show` も同じで、**「見せたいものは指す」と言わないと指さない。**
  * 契約が伝わらないなら、契約の側を直す（説明を足す）のが筋である。
+ *
+ * **「作った・変えたもの」だけでは足りなかった**（実測 2026-08-22）。人が
+ * 「開いて」「見せて」と直接頼んだときに、道具で読んでその中身を本文へ
+ * 書き写すだけで `show` を呼ばない、という壊れ方があった——指示が
+ * 「自分から見せたくなったとき」しか想定しておらず、「頼まれて開くとき」を
+ * 書いていなかった。両方を明示した。
+ *
+ * **文章での説明だけでは、それも直らなかった**（実測 2026-08-22、2回目）。
+ * PO 裁定：read/write と show は別の判断のまま保つ（自動連動はしない）。
+ * その上で、指示は**具体例で見せる**——抽象的な規則の言い換えを重ねるより、
+ * 正しい振る舞いを1つの対話例として示すほうが効くというのは、tool use の
+ * 一般的な知見（Anthropic の設計指針。Claude Code 自体の内部プロンプトの
+ * 生の文面は検証していない——確かめていないことを確かめたことにしない）。
  */
 export const SYSTEM_PROMPT = [
   'You are banto. Answer in the user’s language. Be concise.',
@@ -221,9 +258,24 @@ export const SYSTEM_PROMPT = [
   'something you have no mcp__ tool for, say so instead of reaching elsewhere.',
   '',
   '# Showing your work',
-  'When you produce or change something the person would want to look at,',
-  'call the show tool with the uri the tool gave you. This puts it in the',
-  'conversation for them to open — it does not open anything by itself.',
+  'Two cases call for the show tool, using the uri another tool gave you:',
+  '(1) the person asks you to open, show, or look at something, and',
+  '(2) you produce or change something, unprompted, that they would likely want to see.',
+  '',
+  'These are two separate tool calls, not one — reading something does not show it.',
+  'Describing the content in your reply is not a substitute for calling show either;',
+  'the person cannot open what you only describe in words. show is what puts something',
+  'on their screen for them to open.',
+  '',
+  'Example — the person asks you to open something:',
+  '  person: "Open README.txt"',
+  '  you: call the read tool with path "README.txt" -> it returns {content, uri}',
+  '  you: call show with that uri -> now it is in the conversation for them to open',
+  '  you: "Opened README.txt — it describes ..."',
+  'Both tool calls happen before you answer in words. Skipping the second one is the',
+  'most common mistake here — notice the request was to open it, not just to summarize it.',
+  '',
+  'show does not open anything by itself — the person still decides whether to look.',
 ].join('\n');
 
 export function startServer(options: ServerOptions): ReturnType<typeof createServer> {
@@ -245,13 +297,55 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
   for (const spec of options.modules) {
     const connect =
       spec.kind === 'in-process'
-        ? connectInProcess(spec.server)
+        ? connectInProcess(spec.createServer())
         : connectSubprocess(spec.command, spec.args ?? []);
     void connect.then(
       (caller) => resourceCallers.set(spec.name, caller),
       (cause: unknown) =>
         resourceFailures.set(spec.name, cause instanceof Error ? cause.message : String(cause)),
     );
+  }
+
+  /**
+   * その問い合わせ**専用**の `McpServerSpec[]` を作る（同じコメントの理由）。
+   * `resourceCallers` が起動時に繋いだインスタンスとは別物——ここで毎回
+   * `createServer()` を呼ぶので、Agent SDK が `.connect()` するのは
+   * 常に「一度も繋いだことのない」新品の `McpServer` になる。
+   */
+  function freshModuleSpecs(): McpServerSpec[] {
+    return options.modules.map((spec) =>
+      spec.kind === 'in-process'
+        ? { name: spec.name, kind: 'in-process' as const, server: spec.createServer() }
+        : spec,
+    );
+  }
+
+  /**
+   * banto:// URI を、持ち主のモジュールに読みに行く（要件 C14）。
+   *
+   * **`/api/resource` と `show` の両方がここを通る**（規則3、実測 2026-08-22）。
+   * `show` がこれを通さずに記録すると、実在しない URI がそのまま会話に残り、
+   * 人が開いたときに初めて壊れていたと分かる——実際に AI が
+   * `banto://banto-v3/README.md` という、どのモジュールも持たない URI を
+   * 作文して `show` に渡していた。**指す前に確かめる**——存在を検証してから記録する。
+   */
+  async function resolveResource(
+    uri: string,
+  ): Promise<{ readonly text: string; readonly mimeType: string | null }> {
+    const parsed = new URL(uri);
+    if (parsed.protocol !== 'banto:') throw new Error(`banto:// ではない: ${uri}`);
+    const owner = parsed.hostname;
+
+    const caller = resourceCallers.get(owner);
+    if (caller === undefined) {
+      const why = resourceFailures.get(owner);
+      throw new Error(
+        why === undefined
+          ? `${owner} は繋がっていない（この banto に載っていないモジュールの uri）`
+          : `${owner} に繋がらなかった: ${why}`,
+      );
+    }
+    return caller.readResource(uri);
   }
 
   const server = createServer((req, res) => {
@@ -431,32 +525,11 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
         json(res, 400, { error: 'uri が要る' });
         return;
       }
-      let owner: string;
       try {
-        const parsed = new URL(uri);
-        if (parsed.protocol !== 'banto:') throw new Error('banto:// ではない');
-        owner = parsed.hostname;
-      } catch (cause) {
-        json(res, 400, { error: `読めない uri: ${uri}（${String(cause)}）` });
-        return;
-      }
-
-      const caller = resourceCallers.get(owner);
-      if (caller === undefined) {
-        // 握りつぶさない（規則2）。**繋がらなかったなら、その理由まで言う。**
-        const why = resourceFailures.get(owner);
-        json(res, 404, {
-          error:
-            why === undefined
-              ? `${owner} は繋がっていない（この banto に載っていないモジュールの uri）`
-              : `${owner} に繋がらなかった: ${why}`,
-        });
-        return;
-      }
-      try {
-        const { text, mimeType } = await caller.readResource(uri);
+        const { text, mimeType } = await resolveResource(uri);
         json(res, 200, { uri, text, mimeType });
       } catch (cause) {
+        // 握りつぶさない（規則2）。繋がらなかった／読めなかった理由をそのまま返す。
         json(res, 404, { error: cause instanceof Error ? cause.message : String(cause) });
       }
       return;
@@ -581,17 +654,70 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
         return;
       }
 
+      // フォークのフォークで「から分岐」が積み重ならないように、親の題からは
+      // 既に付いている分を剥がしてから付け直す（実測 2026-08-22：4連続で分岐すると
+      // 題が「〜 から分岐 から分岐 から分岐 から分岐」になっていた）。
+      const parentBaseTitle = parent.title.replace(/ から分岐$/, '');
       const threadId = randomUUID();
       await log.append({
         type: 'thread.forked',
         threadId,
         channelId: parent.channelId,
-        title: body.title ?? `${parent.title} から分岐`,
+        title: body.title ?? `${parentBaseTitle} から分岐`,
         // **切った時点の版を鍵にする。** 親がこの後で追記しても、この枝には入らない。
         from: { threadId: parent.id, baseVersion: parent.baseVersion },
         mode: body.mode ?? 'base',
       });
       json(res, 200, { threadId, channelId: parent.channelId });
+      return;
+    }
+
+    /**
+     * フォークを閉じて親に畳む（PO裁定 2026-08-22：フォークが増えすぎて分かりにくい）。
+     *
+     * **このスレッド自身の ownBase（継承分は含まない）だけを、親の base に
+     * 通常の追記として流し込んでから閉じる。** 空でもよい——BasePanel を一度も
+     * 使っていないフォークも畳める。親の base が上限に達していて追記が断られたら、
+     * **畳むのも進めない**（規則2）——見えなくなった決まったことが記録されないまま
+     * 消えることを避ける。理由は 409 でそのまま返す。
+     *
+     * 既に畳んだスレッドをもう一度畳もうとすると、ownBase をまるごと
+     * 二重に親へ流し込むことになるので断る。
+     */
+    if (req.method === 'POST' && url.pathname === '/api/threads/merge') {
+      const body = (await readBody(req)) as { threadId?: string };
+      if (typeof body.threadId !== 'string') {
+        json(res, 400, { error: 'threadId が要る' });
+        return;
+      }
+
+      const state = fold(await log.read());
+      const thread = state.threads.get(body.threadId);
+      if (thread === undefined) {
+        json(res, 404, { error: `知らないスレッド: ${body.threadId}` });
+        return;
+      }
+      if (thread.forkedFrom === null) {
+        json(res, 400, { error: 'ルートのスレッドには畳む先の親が無い' });
+        return;
+      }
+      if (thread.mergedInto !== null) {
+        json(res, 400, { error: 'すでに畳んである' });
+        return;
+      }
+
+      const parentId = thread.forkedFrom.threadId;
+      const mergedText = thread.ownBase.join('\n');
+      if (mergedText !== '') {
+        const gate = await appendBase(log, state, parentId, mergedText, baseLimit);
+        if (!gate.ok) {
+          json(res, 409, gate);
+          return;
+        }
+      }
+
+      await log.append({ type: 'thread.merged', threadId: body.threadId, into: parentId });
+      json(res, 200, { threadId: body.threadId, into: parentId });
       return;
     }
 
@@ -661,7 +787,7 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
          * AI は他人の会話を指せない（要件 D4 と同じ考え）。
          * 会話ごとに立てるので、`options.modules` の固定分とは別に足す。
          */
-        const face = conversationModule(log, body.threadId);
+        const face = conversationModule(log, body.threadId, resolveResource);
         const faceSpec: McpServerSpec = {
           name: face.manifest.id,
           kind: 'in-process',
@@ -674,7 +800,10 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
           // base はシステムプロンプトに入る。**走行中は変えられない**（決定6）ので、
           // 追記があった場合に効くのは次のスレッド／次の fork から（要件 R2・R4）。
           systemPrompt: SYSTEM_PROMPT + (baseText === '' ? '' : `\n\n# この会話で決まっていること\n${baseText}`),
-          mcpServers: [...options.modules, faceSpec],
+          // **`options.modules` を直接は渡さない**（実測 2026-08-22）。固定インスタンスを
+          // 使い回すと、2回目以降の問い合わせが「already connected」で断られ、
+          // `fs` の道具が会話から静かに消える。`freshModuleSpecs()` が毎回新品を作る。
+          mcpServers: [...freshModuleSpecs(), faceSpec],
           skills: [],
           model: options.model,
           allowedTools: [...allowed, `mcp__${faceSpec.name}__show`],

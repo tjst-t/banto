@@ -11,7 +11,7 @@ export const TabsList = forwardRef<
 >(({ className, ...props }, ref) => (
   <TabsPrimitive.List
     ref={ref}
-    className={cn('inline-flex items-center gap-0.5 rounded-ctl bg-paper-sunken p-0.5', className)}
+    className={cn('inline-flex items-center gap-0.5 rounded-md bg-paper-sunken p-0.5', className)}
     {...props}
   />
 ));
@@ -24,7 +24,7 @@ export const TabsTrigger = forwardRef<
   <TabsPrimitive.Trigger
     ref={ref}
     className={cn(
-      'inline-flex h-[var(--h-ctl-sm)] items-center rounded-seal px-2.5 text-meta font-medium text-ink-secondary transition-colors hover:text-ink data-[state=active]:bg-paper-raised data-[state=active]:text-ink data-[state=active]:shadow-rest',
+      'inline-flex h-[var(--h-ctl-sm)] items-center rounded-sm px-2.5 text-sm font-medium text-ink-secondary transition-colors hover:text-ink data-[state=active]:bg-paper-raised data-[state=active]:text-ink data-[state=active]:shadow-rest',
       className,
     )}
     {...props}

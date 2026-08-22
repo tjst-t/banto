@@ -38,6 +38,13 @@ export interface ThreadState {
   baseVersion: number;
   readonly forkedFrom: ForkOrigin | null;
   /**
+   * 畳んで閉じた先。畳んでいなければ `null`。
+   *
+   * `status` とは別の事実として持つ（規則3）——`done` は「いま処理待ち」の意味で
+   * 使われていて（ターンが終わるたびに立つ）、「もう二度と開かない」とは違う。
+   */
+  mergedInto: ThreadId | null;
+  /**
    * このスレッドのターン数。**次の turnIndex はここから続ける。**
    *
    * run() ごとに 0 から振り直すと、observer が index で並べ替えたときに
@@ -101,6 +108,7 @@ export function fold(events: readonly BantoEvent[]): State {
           ownBase: [],
           baseVersion: 0,
           forkedFrom: null,
+          mergedInto: null,
           turnCount: 0,
           sessionHandle: null,
         });
@@ -121,6 +129,7 @@ export function fold(events: readonly BantoEvent[]): State {
             baseVersion: event.from.baseVersion,
             mode: event.mode,
           },
+          mergedInto: null,
           turnCount: 0,
           sessionHandle: null,
         });
@@ -130,6 +139,12 @@ export function fold(events: readonly BantoEvent[]): State {
       case 'thread.status': {
         const thread = threads.get(event.threadId);
         if (thread) thread.status = event.status;
+        break;
+      }
+
+      case 'thread.merged': {
+        const thread = threads.get(event.threadId);
+        if (thread) thread.mergedInto = event.into;
         break;
       }
 

@@ -19,7 +19,18 @@ import type { ResourceResponse, ViewAssignment } from '../lib/types';
  * **描き方は mimeType だけを手がかりにする。** 分からないものは**素のまま出す**
  * ——当てずっぽうで整形すると、壊れているのか元からそうなのかが分からなくなる。
  */
-export function ResourceViewer({ uri, name, onClose }: { uri: string; name: string; onClose: () => void }) {
+export function ResourceViewer({
+  uri,
+  name,
+  onClose,
+  badge,
+}: {
+  uri: string;
+  name: string;
+  onClose: () => void;
+  /** 「会話は左に残しています」の札（`WorkPanel` から渡る。任意）。 */
+  badge?: string | undefined;
+}) {
   const [resource, setResource] = useState<ResourceResponse | null>(null);
   const [assignment, setAssignment] = useState<ViewAssignment | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -57,37 +68,46 @@ export function ResourceViewer({ uri, name, onClose }: { uri: string; name: stri
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-resource-viewer={uri}>
+      {/*
+        閉じるは左端（見本 `work-head` と同じ並び——規則12）。右端に置くと
+        会話側の「戻る」（同じく左端）と手の動きが逆になり、操作が一貫しない。
+      */}
       <div className="flex items-center gap-2 border-b border-rule px-3 py-2">
-        <div className="min-w-0">
-          <h3 className="truncate text-body font-semibold text-ink">{name}</h3>
-          {/* **どこから来たものかを隠さない。** 持ち主は uri の先頭に書いてある。 */}
-          <p className="truncate font-mono text-note text-ink-muted">{uri}</p>
-        </div>
-        <button
-          type="button"
-          onClick={() => void load()}
-          title="読み直す"
-          className="ml-auto rounded p-1 text-ink-muted hover:bg-paper hover:text-ink"
-        >
-          <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-        </button>
         <button
           type="button"
           onClick={onClose}
           title="閉じる"
+          className="grid h-[30px] w-[30px] shrink-0 place-items-center rounded-sm text-ink-muted hover:bg-paper hover:text-ink"
+        >
+          <X className="h-4 w-4" />
+        </button>
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-md font-semibold text-ink">{name}</h3>
+          {/* **どこから来たものかを隠さない。** 持ち主は uri の先頭に書いてある。 */}
+          <p className="truncate font-mono text-xs text-ink-muted">{uri}</p>
+        </div>
+        {badge !== undefined && (
+          <span className="shrink-0 rounded-full bg-accent-soft px-2.5 py-1 text-xs font-medium text-accent">
+            {badge}
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => void load()}
+          title="読み直す"
           className="rounded p-1 text-ink-muted hover:bg-paper hover:text-ink"
         >
-          <X className="h-3.5 w-3.5" />
+          <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
         </button>
       </div>
 
       {error !== null ? (
-        <div className="m-3 flex items-start gap-2 rounded-ctl border border-stopped/30 bg-stopped-soft px-3 py-2 text-meta text-stopped">
+        <div className="m-3 flex items-start gap-2 rounded-md border border-stopped/30 bg-stopped-soft px-3 py-2 text-sm text-stopped">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <p className="whitespace-pre-wrap">{error}</p>
         </div>
       ) : resource === null ? (
-        <div className="flex flex-1 items-center justify-center gap-2 text-meta text-ink-muted">
+        <div className="flex flex-1 items-center justify-center gap-2 text-sm text-ink-muted">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
           読み込み中…
         </div>
@@ -96,7 +116,7 @@ export function ResourceViewer({ uri, name, onClose }: { uri: string; name: stri
       )}
 
       {resource !== null && (
-        <p className="border-t border-rule px-3 py-1.5 text-note text-ink-muted">
+        <p className="border-t border-rule px-3 py-1.5 text-xs text-ink-muted">
           {assignment === null
             ? 'banto の汎用の面'
             : `${assignment.moduleId} の面（${assignment.kind}）`}{' '}
@@ -121,7 +141,7 @@ function renderBody(assignment: ViewAssignment | null, resource: ResourceRespons
     }
     // 台帳には在るのに束ねに無い。**黙って汎用へ落ちない**（規則2）。
     return (
-      <div className="m-3 rounded-ctl border border-attention/40 bg-attention-soft px-3 py-2 text-meta text-ink">
+      <div className="m-3 rounded-md border border-attention/40 bg-attention-soft px-3 py-2 text-sm text-ink">
         {assignment.moduleId} の面「{assignment.entry}」が束ねに入っていない。
         素のまま出す：
         <pre className="mt-2 whitespace-pre-wrap break-words font-mono">{resource.text}</pre>
@@ -144,7 +164,7 @@ function renderBody(assignment: ViewAssignment | null, resource: ResourceRespons
   return (
     <ScrollArea className="min-h-0 flex-1">
       {/* 分からない形は素で出す。**整形して見せかけない。** */}
-      <pre className="whitespace-pre-wrap break-words p-3 font-mono text-meta text-ink">
+      <pre className="whitespace-pre-wrap break-words p-3 font-mono text-sm text-ink">
         {resource.text}
       </pre>
     </ScrollArea>

@@ -36,7 +36,12 @@ export type McpServerSpec =
  * ツールの許可（要件 D4）。**明示的に許した範囲に限られる。**
  * 既定では MCP のツールは1つも通らない——実測で、渡さないと権限で断られる。
  */
-export function allowedToolNames(specs: readonly McpServerSpec[], tools: ReadonlyMap<string, readonly string[]>): string[] {
+// **`.name` しか見ない**——引数は `McpServerSpec` に限らず、名前を持つものなら何でもよい
+// （`apps/host` の `ModuleFactory` のように、まだ `McpServer` を作っていないものも渡せる）。
+export function allowedToolNames(
+  specs: readonly { readonly name: string }[],
+  tools: ReadonlyMap<string, readonly string[]>,
+): string[] {
   return specs.flatMap((spec) => (tools.get(spec.name) ?? []).map((t) => `mcp__${spec.name}__${t}`));
 }
 
@@ -73,6 +78,22 @@ export interface QueryInput {
   readonly maxTurns?: number;
   /** 明示的に許すツール名（`mcp__<server>__<tool>`）。渡さなければ MCP ツールは通らない。 */
   readonly allowedTools?: readonly string[];
+  /**
+   * 組み込みツール（`Read`／`Bash`／`Edit` など）のうち、モデルに**見せる**もの
+   * （要件 D4、実測 2026-08-22）。
+   *
+   * **`allowedTools` は見せる／見せないの話ではない**——SDK の型定義いわく
+   * "auto-allowed without prompting"、つまり確認を省くだけで、組み込みツール自体は
+   * `allowedTools` に無くてもモデルから見えたままになる。呼ぶと許可判定に回り、
+   * `canUseTool` を渡していない banto では即座に断られるだけなので、
+   * モデルは「人に許可を求めれば通る」と誤解し、チャットで許可を求め続ける
+   * ——実際に会話の相手が経験した壊れ方（README を開こうとして許可ループに入った）。
+   *
+   * **見せること自体を止めるのがここ**（SDK の `tools` オプション）。
+   * 渡さなければ空——banto と話す人向けの会話は組み込みツールを1つも見ない。
+   * Factory の worker のように実際にコードを書く役だけが、必要な名前を明示して渡す。
+   */
+  readonly builtinTools?: readonly string[];
 }
 
 /**
@@ -114,6 +135,24 @@ export class AgentSdkRunner implements Runner {
     const options: Options = {
       model: input.model,
       systemPrompt: input.systemPrompt,
+      /**
+       * **ホストの起動ディレクトリを信用しない**（規則8で見つかった食い違い、実測 2026-08-22）。
+       *
+       * SDK は既定で `cwd` の `CLAUDE.md`／`.claude/settings.json` を自動で読み、
+       * `allowedTools` を一切経由せずモデルの文脈に混ぜる（型定義：
+       * "When omitted, all sources are loaded"）。banto は「許した mcp__ ツールの
+       * 外には出ない」設計だが、この読み込みはその枠の外で起きるので、
+       * ホストをどこから起動したかで無関係な指示が漏れ入る
+       * ——実際に、この開発リポジトリ直下から起こしたら人向けの会話が
+       * 開発者向け CLAUDE.md を知ってしまった。
+       *
+       * **空配列で完全に切る。** banto が渡すのは `systemPrompt` と
+       * `mcpServers`／`allowedTools` だけ——文脈の入り口を1つに保つ（規則3）。
+       */
+      settingSources: [],
+      // **既定値を持たない**（`allowedTools` と同じ考え）。渡さなければ組み込みツールは
+      // 1つもモデルから見えない——安全側に倒れる既定（渡し忘れても穴が開かない）。
+      tools: input.builtinTools === undefined ? [] : [...input.builtinTools],
       ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
       ...(input.maxTurns === undefined ? {} : { maxTurns: input.maxTurns }),
       ...(input.mcpServers.length === 0

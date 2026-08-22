@@ -10,7 +10,7 @@ import { cn } from '../../lib/cn';
  * 塗るのは `attention`（あなたの番）だけで、他は淡い地に字を置く。
  */
 const badgeVariants = cva(
-  'inline-flex items-center gap-1 rounded-seal px-1.5 py-0.5 text-note font-medium',
+  'inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs font-medium',
   {
     variants: {
       tone: {

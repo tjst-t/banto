@@ -8,6 +8,7 @@
 import type {
   BaseResponse,
   CreateThreadResponse,
+  MergeThreadResponse,
   ModuleSummary,
   RequestRunResponse,
   ResourceResponse,
@@ -92,6 +93,21 @@ export async function forkThread(body: {
     body: JSON.stringify(body),
   });
   return asJson<CreateThreadResponse>(res);
+}
+
+/**
+ * フォークを閉じて親に畳む（PO裁定 2026-08-22：フォークが増えすぎて分かりにくい）。
+ *
+ * このスレッド自身の「決まったこと」を親へ流し込んでから閉じる。親の base が
+ * 上限に達していれば host は 409 を返す——ここで握りつぶさない（規則2）。
+ */
+export async function mergeThread(body: { threadId: string }): Promise<MergeThreadResponse> {
+  const res = await fetch('/api/threads/merge', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return asJson<MergeThreadResponse>(res);
 }
 
 /**

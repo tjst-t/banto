@@ -32,6 +32,8 @@ export interface ThreadSummary {
   readonly turnCount: number;
   readonly baseVersion: number;
   readonly forkedFrom: ForkOrigin | null;
+  /** 畳んで閉じた先。畳んでいなければ `null`（`packages/core` の `ThreadState` と同じ形）。 */
+  readonly mergedInto: string | null;
   /** base のいまの大きさと上限（要件 R8）。**拒否される前から見せる。** */
   readonly baseCharacters: number;
   readonly baseLimit: number;
@@ -94,6 +96,11 @@ export interface RequestRunResponse {
 export interface CreateThreadResponse {
   readonly threadId: string;
   readonly channelId: string;
+}
+
+export interface MergeThreadResponse {
+  readonly threadId: string;
+  readonly into: string;
 }
 
 /** 1ターンの usage。/api/prompt の turn.usage フレームが積む。 */

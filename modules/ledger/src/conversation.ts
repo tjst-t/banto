@@ -40,10 +40,16 @@ export const manifest: BantoModule = {
   provides: ['conversation'],
 };
 
+/** `banto://` URI を持ち主のモジュールへ読みに行く。存在しなければ投げる。 */
+export type ResolveReference = (
+  uri: string,
+) => Promise<{ readonly text: string; readonly mimeType: string | null }>;
+
 export class ConversationCore {
   constructor(
     private readonly log: EventLog,
     private readonly threadId: string,
+    private readonly resolve: ResolveReference,
   ) {}
 
   /**
@@ -51,6 +57,12 @@ export class ConversationCore {
    *
    * 開くかどうかは人が決める——指しは会話に並ぶだけである。
    * 中身はここに写さない。開くときに持ち主のモジュールへ読みに行く（規則3）。
+   *
+   * **記録する前に、実在するか確かめる**（規則1・2、実測 2026-08-22）。
+   * 確かめずに記録すると、AI が作文した uri（例：`banto://banto-v3/README.md`
+   * ——どのモジュールも持っていない）がそのまま会話に残り、人が開こうとした
+   * ときに初めて壊れていたと分かる。**自己申告を信頼しない**のは自分自身の
+   * 出力にも掛かる。
    */
   async show(input: {
     uri: string;
@@ -73,6 +85,15 @@ export class ConversationCore {
       );
     }
 
+    try {
+      await this.resolve(input.uri);
+    } catch (cause) {
+      throw new Error(
+        `${input.uri} は実在しない（${cause instanceof Error ? cause.message : String(cause)}）。` +
+          `道具が返した uri だけを渡せる——自分で作文しない。`,
+      );
+    }
+
     await this.log.append({
       type: 'reference.recorded',
       threadId: this.threadId,
@@ -88,18 +109,27 @@ export class ConversationCore {
 }
 
 /** その会話に束ねた面を1つ作る。**スレッドごとに立てる。** */
-export function conversationModule(log: EventLog, threadId: string): DefinedModule {
+export function conversationModule(
+  log: EventLog,
+  threadId: string,
+  resolve: ResolveReference,
+): DefinedModule {
   return defineModule({
     manifest,
-    createCore: () => new ConversationCore(log, threadId),
+    createCore: () => new ConversationCore(log, threadId, resolve),
     tools: (tool) => [
       tool({
         name: 'show',
         description:
-          'Point the person at something you produced or changed, so it appears in this conversation. ' +
-          'Pass a banto:// uri that a module owns (for example the uri another tool just returned). ' +
-          'This does not open anything — the person decides whether to look. Use it whenever you ' +
-          'change or produce something they would want to see.',
+          'Point the person at something so it appears in this conversation for them to open. ' +
+          'Call this both when they ask you to open, show, or look at something, and when you ' +
+          'produce or change something unprompted that they would want to see — describing the ' +
+          'content in your reply is not a substitute for calling this. Pass a banto:// uri that a ' +
+          'module owns — use the exact uri another tool just returned to you, never one you ' +
+          'construct yourself. This checks the uri resolves before recording it, so a made-up uri ' +
+          'is declined, not silently shown. This does not open anything — the person decides ' +
+          'whether to look. If you have no uri for something (you only read its content, or no ' +
+          'tool gave you one), say so instead of guessing one.',
         input: {
           uri: z.string().describe('banto:// uri owned by a module'),
           name: z.string().optional().describe('Short label for the person'),

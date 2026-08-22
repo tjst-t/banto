@@ -15,8 +15,9 @@
   --color-paper: var(--paper);
   --color-paper-raised: var(--paper-raised);
   --color-paper-sunken: var(--paper-sunken);
+  --color-paper-sunken-2: var(--paper-sunken-2);
   --color-rule: var(--rule);
-  --color-rule-strong: var(--rule-strong);
+  --color-rule-faint: var(--rule-faint);
 
   --color-ink: var(--ink);
   --color-ink-secondary: var(--ink-secondary);
@@ -24,6 +25,7 @@
 
   --color-accent: var(--accent);
   --color-accent-soft: var(--accent-soft);
+  --color-accent-strong: var(--accent-strong);
   --color-attention: var(--attention);
   --color-attention-soft: var(--attention-soft);
   --color-on-attention: var(--on-attention);
@@ -36,24 +38,59 @@
   --color-code-bg: var(--code-bg);
   --color-code-ink: var(--code-ink);
 
-  /* 字は6段だけ。**`text-xs` `text-sm` は使わない**（段が増えるので） */
-  --text-note: var(--t-note);
-  --text-meta: var(--t-meta);
-  --text-body: var(--t-body);
-  --text-read: var(--t-read);
-  --text-head: var(--t-head);
-  --text-title: var(--t-title);
+  /* 字は7段だけ。**`text-xs` 等の Tailwind 既定は使わない**（段の出どころが割れるので） */
+  --text-xs: var(--t-xs);
+  --text-sm: var(--t-sm);
+  --text-md: var(--t-md);
+  --text-lg: var(--t-lg);
+  --text-xl: var(--t-xl);
+  --text-2xl: var(--t-2xl);
+  --text-3xl: var(--t-3xl);
 
   --font-ui: var(--type-ui);
-  --font-read: var(--type-read);
   --font-mono: var(--type-mono);
 
-  --radius-seal: var(--r-seal);
-  --radius-ctl: var(--r-ctl);
-  --radius-face: var(--r-face);
+  --radius-sm: var(--r-sm);
+  --radius-md: var(--r-md);
+  --radius-lg: var(--r-lg);
 
   --shadow-rest: var(--elev-rest);
   --shadow-pop: var(--elev-pop);
+  --shadow-overlay: var(--elev-overlay);
+  --shadow-cascade: var(--elev-cascade);
+  --shadow-branch-cascade: var(--elev-branch-cascade);
+
+  /* enter/exit の動き。Tailwind v4 ネイティブの `--animate-*` ＋ `@keyframes`
+     （JS プラグインを足さない——規則10：足す前に既にある仕組みを見る） */
+  --animate-fade-in: fade-in var(--dur) var(--ease);
+  --animate-slide-in: slide-in var(--dur) var(--ease);
+  --animate-rise-in: rise-in var(--dur) var(--ease);
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes slide-in {
+  from {
+    opacity: 0.4;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 html,
@@ -67,7 +104,7 @@ body {
   background: var(--paper);
   color: var(--ink);
   font-family: var(--type-ui);
-  font-size: var(--t-body);
+  font-size: var(--t-md);
   line-height: var(--lh-body);
   -webkit-font-smoothing: antialiased;
 }
@@ -84,11 +121,23 @@ select {
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: var(--r-seal);
+  border-radius: var(--r-sm);
 }
 
 ::selection {
   background: var(--accent-soft);
+}
+
+/**
+ * **相対単位（`em`）で字の大きさを作らない**（要件 E9）。
+ *
+ * 以前ここに `font-size: 0.92em` があった——祖先の字の大きさによって
+ * 実際の px 値が揺れ、段の数を数える試験に **11.04px という8つ目の段**が
+ * 紛れ込んでいた（撮って気づいた）。`<code>` の大きさは、置かれる場所ごとに
+ * トークンの段（`.markdown :not(pre) > code` 等）で明示する。
+ */
+code {
+  font-family: var(--type-mono);
 }
 
 /**
@@ -128,13 +177,14 @@ select {
  *
  * 要件 E4。**素の文字列として出していたので、見出しも箇条も表も潰れていた。**
  *
- * 字の段はここでも増やさない——本文は `--t-read`、見出しは1段だけ上げる。
- * 見出しごとに大きさを変えると、それだけで6段では足りなくなる。
+ * 誰の言葉かは書体では言わない（要件 E6）——印＋字下げ＋行間で言う。
+ * だから本文は UI と同じ書体・同じ段（--t-md）。字の段はここでも増やさない
+ * ——見出しは1段だけ上げる。
  */
 .markdown {
-  font-family: var(--type-read);
-  font-size: var(--t-read);
-  line-height: var(--lh-read);
+  font-family: var(--type-ui);
+  font-size: var(--t-md);
+  line-height: 1.85;
   color: var(--ink);
   word-break: break-word;
 }
@@ -156,15 +206,14 @@ select {
 .markdown h2,
 .markdown h3,
 .markdown h4 {
-  font-family: var(--type-ui);
-  font-size: var(--t-read);
-  font-weight: 700;
+  font-size: var(--t-md);
+  font-weight: 650;
   line-height: 1.5;
   margin: 1.4em 0 0.5em;
 }
 /* いちばん上の見出しだけ一段上げる。**それ以下は太さで区別する** */
 .markdown h1 {
-  font-size: var(--t-head);
+  font-size: var(--t-lg);
 }
 .markdown h3,
 .markdown h4 {
@@ -172,8 +221,7 @@ select {
 }
 /**
  * **印を戻す。** Tailwind の preflight は `ul`/`ol` の印を消すので、
- * 何もしないと箇条書きが「ただの短い段落の列」になる——番号つきの手順が
- * 番号なしで出ていた（撮って気づいた）。
+ * 何もしないと箇条書きが「ただの短い段落の列」になる。
  */
 .markdown ul {
   list-style: disc;
@@ -194,12 +242,12 @@ select {
   text-underline-offset: 2px;
 }
 .markdown strong {
-  font-weight: 700;
+  font-weight: 600;
 }
 /* 引用は左罫だけ。**塗らない**（塗ってよいのは「あなたの番」だけ） */
 .markdown blockquote {
   padding-left: 0.9em;
-  border-left: 2px solid var(--rule-strong);
+  border-left: 2px solid var(--rule);
   color: var(--ink-secondary);
 }
 .markdown hr {
@@ -209,8 +257,7 @@ select {
 }
 .markdown table {
   border-collapse: collapse;
-  font-family: var(--type-ui);
-  font-size: var(--t-meta);
+  font-size: var(--t-sm);
   line-height: 1.6;
   display: block;
   overflow-x: auto;
@@ -228,28 +275,27 @@ select {
 /**
  * コードブロックの地は**紙の体系に属させる**。
  *
- * shiki のテーマは自前の地（明では純白）を持っている。そのまま出すと、
- * **紙の上に白い板が浮く**——地の色が1箇所だけ体系の外にあると、そこだけ穴に見える。
- * 字の色はテーマのものを使う（github-light/dark は紙の明るさでも十分に読める）。
+ * shiki のテーマは自前の地を持っている。そのまま出すと**紙の上に白い板が浮く**
+ * ——地の色が1箇所だけ体系の外にあると、そこだけ穴に見える。字の色はテーマのものを使う。
  */
 .markdown pre.shiki,
 .markdown pre.shiki span {
   background-color: transparent !important;
 }
 .markdown pre.shiki {
-  background: var(--paper-sunken) !important;
+  background: var(--code-bg) !important;
 }
 
 /* 文中のコードは地に沈める。ブロックのコードは `CodeBlock` が描く */
 .markdown :not(pre) > code {
   font-family: var(--type-mono);
-  /* **`0.9em` にしない。** 相対で書くと段が1つ増える（要件 E9 は段の数の話である） */
-  font-size: var(--t-meta);
+  /* **相対指定にしない。** 相対で書くと段の出どころが割れる（要件 E9 は段の数の話） */
+  font-size: var(--t-sm);
   background: var(--paper-sunken);
-  border-radius: var(--r-seal);
+  border-radius: var(--r-sm);
   padding: 0.1em 0.35em;
 }
 .markdown img {
   max-width: 100%;
-  border-radius: var(--r-ctl);
+  border-radius: var(--r-md);
 }
