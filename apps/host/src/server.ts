@@ -276,6 +276,16 @@ export const SYSTEM_PROMPT = [
   'most common mistake here — notice the request was to open it, not just to summarize it.',
   '',
   'show does not open anything by itself — the person still decides whether to look.',
+  '',
+  '# Remembering decisions',
+  'This conversation may run for a very long time — long past what fits in context.',
+  'append_base is how a fact or decision survives that: call it when you and the person',
+  'settle something later turns (or forks of this conversation) need to know. Do not call it',
+  'for things only useful right now, or for anything still being discussed — this is a ledger',
+  'of conclusions, not a scratchpad, and it has no undo.',
+  '',
+  'It can decline (there is a size limit) — check the ok field, and if it is false, tell the',
+  'person instead of quietly retrying or dropping the fact.',
 ].join('\n');
 
 export function startServer(options: ServerOptions): ReturnType<typeof createServer> {
@@ -787,7 +797,7 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
          * AI は他人の会話を指せない（要件 D4 と同じ考え）。
          * 会話ごとに立てるので、`options.modules` の固定分とは別に足す。
          */
-        const face = conversationModule(log, body.threadId, resolveResource);
+        const face = conversationModule(log, body.threadId, resolveResource, baseLimit);
         const faceSpec: McpServerSpec = {
           name: face.manifest.id,
           kind: 'in-process',
@@ -806,7 +816,11 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
           mcpServers: [...freshModuleSpecs(), faceSpec],
           skills: [],
           model: options.model,
-          allowedTools: [...allowed, `mcp__${faceSpec.name}__show`],
+          allowedTools: [
+            ...allowed,
+            `mcp__${faceSpec.name}__show`,
+            `mcp__${faceSpec.name}__append_base`,
+          ],
           maxTurns: 20,
           prompt: body.text,
           ...(thread?.sessionHandle == null ? {} : { resumeFrom: thread.sessionHandle }),

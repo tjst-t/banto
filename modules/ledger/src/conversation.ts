@@ -29,7 +29,12 @@
  */
 
 import { defineModule, type BantoModule, type DefinedModule } from '@banto/module-kit';
-import { EventLog } from '@banto/core';
+import {
+  EventLog,
+  appendBase as appendBaseGate,
+  fold,
+  type BaseGate,
+} from '@banto/core';
 import { z } from 'zod';
 
 export const manifest: BantoModule = {
@@ -50,6 +55,7 @@ export class ConversationCore {
     private readonly log: EventLog,
     private readonly threadId: string,
     private readonly resolve: ResolveReference,
+    private readonly baseLimit: number,
   ) {}
 
   /**
@@ -106,17 +112,39 @@ export class ConversationCore {
 
     return { uri: input.uri, shownIn: this.threadId };
   }
+
+  /**
+   * base への追記を、AI からも呼べる口にする（バックログ「AI が base へ自分で
+   * 書き込む」・2026-08-22）。**ゲートは `appendBase` に1本化されている**
+   * （`LedgerCore` の同じ注記を見よ）——ここで `log.append` を直に呼ばず、
+   * 人の追記（`POST /api/base`）と同じ入口を通す。二重の入口を作らない（規則3）。
+   *
+   * 断られても例外にしない。**閾値超えは「止まる」であって「壊れた」ではない**
+   * （`base.ts` の設計）——`appendBase` 自身が決定待ちを立てるので、ここは
+   * その結果をそのまま返すだけでよい。
+   */
+  async appendToBase(input: { text: string }): Promise<BaseGate> {
+    const state = fold(await this.log.read());
+    return appendBaseGate(this.log, state, this.threadId, input.text, this.baseLimit);
+  }
 }
 
-/** その会話に束ねた面を1つ作る。**スレッドごとに立てる。** */
+/**
+ * その会話に束ねた面を1つ作る。**スレッドごとに立てる。**
+ *
+ * `baseLimit` は呼び手（host）が持つ既定値をそのまま渡してもらう——ここで
+ * 独自の既定値は持たない。既定は `DEFAULT_BASE_LIMIT_CHARACTERS` の1箇所だけ
+ * （規則3）。
+ */
 export function conversationModule(
   log: EventLog,
   threadId: string,
   resolve: ResolveReference,
+  baseLimit: number,
 ): DefinedModule {
   return defineModule({
     manifest,
-    createCore: () => new ConversationCore(log, threadId, resolve),
+    createCore: () => new ConversationCore(log, threadId, resolve, baseLimit),
     tools: (tool) => [
       tool({
         name: 'show',
@@ -139,6 +167,35 @@ export function conversationModule(
         output: { uri: z.string(), shownIn: z.string() },
         run: async (core, input) => core.show(input),
         summary: (v) => `会話に出した: ${v.uri}`,
+      }),
+      tool({
+        name: 'append_base',
+        description:
+          "Permanently record a fact or decision for this conversation, separate from the " +
+          "message history. This is the durable record that survives context compaction and " +
+          "carries over when the person forks this conversation — call it when you and the " +
+          "person settle something that later turns (or forks) need to know, not for things " +
+          "that are only useful right now. This is append-only and has no undo, so keep entries " +
+          "concise and only write settled conclusions, not scratch notes or things still being " +
+          "discussed. There is a size limit: past it, the append is declined (not silently " +
+          "dropped) and the person is asked whether to start a fresh conversation instead — " +
+          "check the ok field and tell the person if it was declined.",
+        input: {
+          text: z.string().describe('The fact or decision to append, as one durable line'),
+        },
+        output: {
+          ok: z.boolean(),
+          baseVersion: z.number().optional().describe('Present when ok is true'),
+          reason: z.string().optional().describe('Present when ok is false'),
+          characters: z.number(),
+          wouldBe: z.number().optional().describe('Present when ok is false'),
+          limit: z.number(),
+        },
+        run: async (core, input) => core.appendToBase(input),
+        summary: (v) =>
+          v.ok
+            ? `決まったことに追記した（第${v.baseVersion}版、${v.characters}/${v.limit}文字）`
+            : `追記を断った: ${v.reason}`,
       }),
     ],
   });

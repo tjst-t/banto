@@ -19,7 +19,7 @@ import path from 'node:path';
 
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { EventLog } from '@banto/core';
+import { EventLog, DEFAULT_BASE_LIMIT_CHARACTERS } from '@banto/core';
 import { AgentSdkRunner, allowedToolNames, type McpServerSpec } from '@banto/runner';
 import { conversationModule } from '@banto/module-ledger';
 import { connectInProcess } from '@banto/module-kit';
@@ -49,7 +49,7 @@ describe.skipIf(!enabled)('AI がファイルを更新して、それを指す�
     // server.ts と同じ検証を通す（`show` が実在しない uri を記録しないことも、
     // ここで一緒に確かめる）。
     const fsCaller = await connectInProcess(fsModule.createServer());
-    const face = conversationModule(log, 't1', (uri) => fsCaller.readResource(uri));
+    const face = conversationModule(log, 't1', (uri) => fsCaller.readResource(uri), DEFAULT_BASE_LIMIT_CHARACTERS);
 
     const servers: McpServerSpec[] = [
       { name: fsModule.manifest.id, kind: 'in-process', server: fsModule.createServer() },

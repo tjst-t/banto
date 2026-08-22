@@ -8,9 +8,14 @@ import { EventLog } from '@banto/core';
 
 import { ConversationCore, type ResolveReference } from './conversation.js';
 
-async function fresh(resolve: ResolveReference): Promise<{ log: EventLog; core: ConversationCore }> {
+async function fresh(
+  resolve: ResolveReference,
+  baseLimit = 100,
+): Promise<{ log: EventLog; core: ConversationCore }> {
   const log = new EventLog(await mkdtemp(path.join(tmpdir(), 'banto-conversation-')));
-  return { log, core: new ConversationCore(log, 't1', resolve) };
+  await log.append({ type: 'channel.created', channelId: 'c1', channelName: 'banto' });
+  await log.append({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '一本目' });
+  return { log, core: new ConversationCore(log, 't1', resolve, baseLimit) };
 }
 
 describe('show（AI が指す・要件 C14・決定19）', () => {
@@ -38,5 +43,29 @@ describe('show（AI が指す・要件 C14・決定19）', () => {
     const { log, core } = await fresh(async () => ({ text: '', mimeType: null }));
     await expect(core.show({ uri: 'https://example.com' })).rejects.toThrow(/banto:\/\//);
     expect((await log.read()).filter((e) => e.type === 'reference.recorded')).toHaveLength(0);
+  });
+});
+
+/**
+ * AI が base へ自分で書き込む（バックログ「AI が base へ自分で書き込む」・2026-08-22）。
+ * **ゲートは `appendBase` に1本化されている**——ここでは、その入口へ正しく
+ * 繋がっていること（スレッドを取り違えない・二重の入口を作っていない）だけを測る。
+ * 閾値判定そのものの試験（境界・decision.requested が立つこと等）は
+ * `packages/core/src/base.test.ts` が持っている（規則3：同じことを2箇所で測らない）。
+ */
+describe('append_base（AI が決まったことに書き込む）', () => {
+  it('閾値の内側なら追記され、base.appended が残る', async () => {
+    const { log, core } = await fresh(async () => ({ text: '', mimeType: null }));
+    const gate = await core.appendToBase({ text: '合言葉はもも' });
+    expect(gate.ok).toBe(true);
+    const appended = (await log.read()).filter((e) => e.type === 'base.appended');
+    expect(appended).toMatchObject([{ threadId: 't1', text: '合言葉はもも', baseVersion: 1 }]);
+  });
+
+  it('閾値を超えると断り、base.appended を残さない', async () => {
+    const { log, core } = await fresh(async () => ({ text: '', mimeType: null }), 10);
+    const gate = await core.appendToBase({ text: '10文字を超える長さの文章' });
+    expect(gate.ok).toBe(false);
+    expect((await log.read()).filter((e) => e.type === 'base.appended')).toHaveLength(0);
   });
 });
