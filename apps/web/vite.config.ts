@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -9,6 +10,12 @@ import tailwindcss from '@tailwindcss/vite';
 // 向き先は VITE_HOST_URL で変えられる。
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  resolve: {
+    // shadcn/ui のベンダーした部品（`ui/message.tsx` 等）は `@/...` で
+    // 自分自身を参照する前提で生成される。**その生成物にだけ合わせる**
+    // ——既存コードの相対 import はそのままでよい（両方効く）。
+    alias: { '@': path.resolve(__dirname, './src') },
+  },
   server: {
     port: 4173,
     proxy: {

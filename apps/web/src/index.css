@@ -60,6 +60,26 @@
   --shadow-cascade: var(--elev-cascade);
   --shadow-branch-cascade: var(--elev-branch-cascade);
 
+  /**
+   * shadcn チャット部品（`ui/message.tsx` `ui/bubble.tsx` `ui/marker.tsx`）が使う
+   * 汎用の役名を、既存の5役にそのまま繋ぐだけの層（決定27）。**新しい値は作らない**
+   * ——`theme/tokens.css` 以外に値の出どころを増やすと規則3に反する。役の対応：
+   * primary→accent／secondary,muted,card→紙の沈み／border→rule／destructive→stopped。
+   */
+  --color-background: var(--paper);
+  --color-foreground: var(--ink);
+  --color-card: var(--paper-raised);
+  --color-card-foreground: var(--ink);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--paper-raised);
+  --color-secondary: var(--paper-sunken);
+  --color-secondary-foreground: var(--ink);
+  --color-muted: var(--paper-sunken);
+  --color-muted-foreground: var(--ink-muted);
+  --color-border: var(--rule);
+  --color-destructive: var(--stopped);
+  --color-ring: var(--accent);
+
   /* enter/exit の動き。Tailwind v4 ネイティブの `--animate-*` ＋ `@keyframes`
      （JS プラグインを足さない——規則10：足す前に既にある仕組みを見る） */
   --animate-fade-in: fade-in var(--dur) var(--ease);

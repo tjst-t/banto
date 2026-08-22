@@ -1,5 +1,5 @@
 import { ChevronDown } from 'lucide-react';
-import { useStickToBottomContext } from 'use-stick-to-bottom';
+import { useMessageScroller, useMessageScrollerScrollable } from '@shadcn/react/message-scroller';
 
 /**
  * 末尾へ戻る浮き玉（要件 A6・A7）。
@@ -9,16 +9,21 @@ import { useStickToBottomContext } from 'use-stick-to-bottom';
  * 「あなたの番」の色に変わって件数を言う。要件 A7 の「発生ではなく滞留」と同じ考え：
  * 遡っている間だけ思い出させればよく、常に画面を占領する必要は無い。
  *
- * `<StickToBottom>` の内側でだけ使える（`useStickToBottomContext`）。
+ * `MessageScroller.Root` の内側でだけ使える（決定27。以前は
+ * `use-stick-to-bottom` の `useStickToBottomContext` を使っていたが、
+ * `@shadcn/react/message-scroller` に載せ替えた）。`useMessageScrollerScrollable`
+ * の `end`（＝末尾方向へまだスクロールできるか）が `false` のとき、
+ * それが「もう末尾に居る」ということ。
  */
 export function JumpToBottom({ pendingCount }: { pendingCount: number }) {
-  const { isAtBottom, scrollToBottom } = useStickToBottomContext();
-  if (isAtBottom) return null;
+  const { end: canScrollToEnd } = useMessageScrollerScrollable();
+  const { scrollToEnd } = useMessageScroller();
+  if (!canScrollToEnd) return null;
 
   return (
     <button
       type="button"
-      onClick={() => void scrollToBottom()}
+      onClick={() => scrollToEnd()}
       data-jump-to-bottom
       className={`absolute bottom-4 right-5 z-10 flex h-[30px] items-center gap-1.5 rounded-full px-3 text-xs shadow-pop ${
         pendingCount > 0

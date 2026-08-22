@@ -314,9 +314,16 @@ Run:  queued → running → review → merging → done | failed
 
 ### 11. UI：Runtime だけ借りる。レイアウトと木は自前
 
-| 用途 | 採用 |
+> **この節は 2026-08-20（初日）の計画で、実装では一度も採用されなかった**
+> ——書いたまま2日、直されずに残っていた（PO の質問で気づいた。規則8）。
+> 実際に評価・採用したものは決定27を見よ：メッセージ列は assistant-ui ではなく
+> shadcn/ui のチャット部品、状態管理ライブラリ（TanStack Query / Zustand）も
+> 未採用（`useBantoState`/`useThreadSessions` の自前フックで足りている）。
+> 表の他の行（PWA・ターミナル等）は Phase 4 の範囲外でまだ手を付けていない。
+
+| 用途 | 採用（初日時点の計画。上の注記を見よ） |
 |---|---|
-| メッセージ列・ストリーミング・tool call 描画・添付 | **assistant-ui**（`ExternalStoreRuntime` で決定7 のイベントログを真実として繋ぐ） |
+| メッセージ列・ストリーミング・tool call 描画・添付 | ~~assistant-ui~~（`ExternalStoreRuntime` で決定7 のイベントログを真実として繋ぐ）——**不採用。決定27** |
 | 基盤 | shadcn/ui + Radix + Tailwind |
 | キャンバスのタブ・オーバービュー・スレッド木・レイアウト | **自前**（ui-kit） |
 | ターミナル / DIFF / ファイル木 / Markdown | xterm.js / `@git-diff-view/react` / react-arborist / streamdown |
@@ -1043,6 +1050,46 @@ requirements.md のバックログに記録した。
 場面では `threads` の再取得を待たず、状態を直接組み立てる**——新しいスレッドは常に
 ルート、新しいフォークの親は forkThreadId として渡した引数、畳んだ後の戻り先は
 常にいまの `rootThreadId`。
+
+### 決定27. React 19 へ上げ、会話の行の見た目は shadcn/ui のチャット部品を借りる。末尾追従は `@shadcn/react` の `MessageScroller`（2026-08-22）
+
+**出所**：PO の指摘（2026-08-22）。「番頭のAIチャットのところに使ってるUIライブラリって
+何ですか？」——調べたら、決定当初の ADR（本書 §11、2026-08-20）は「メッセージ列は
+assistant-ui に寄せる」だったのに、実装は一度も採用せず手組みのままだった
+（記録と実装が食い違ったまま気づかれていなかった。規則8）。
+
+**まず `@assistant-ui/react` を隔離した worktree で実際に組み込んで評価した**
+（規則1：ドキュメントの印象だけで採否を決めない）。結果は不採用——
+`ExternalStoreRuntime` は「メッセージ」への強制的なグルーピングを前提にするが、
+banto のイベント列は15種のうち4種しか `queryId` を持たず、しかも肝心のカード型
+（`ReferenceRecorded`・`DecisionRequested`）がまさにその4種に入っていない。
+加えて、システムメッセージの空 `content` で**アプリ全体が白画面になる**
+未文書化の不変条件を実測で踏んだ（バンドルは +225KB raw）。
+
+**次に shadcn/ui の新しいチャット部品（`Message`/`Bubble`/`Marker`、2026年6月リリース）
+を同じ方法で評価し、採用した。** これらはデータも状態も持たない見た目だけの置き場
+だと実際にソースを読んで確認済み——`ReferenceCard`/`DecisionCard` を無改造のまま
+子として渡せる。`react-markdown`・`shiki` 等の既存資産はそのまま使う（規則10）。
+
+**末尾追従は `@shadcn/react/message-scroller`（`MessageScroller`）に載せ替えた**
+（旧 `use-stick-to-bottom` を置き換え）。ただしこれは React 19 が peer dependency
+——ここで初めて React 18→19 を上げた（他の全依存は当時から19対応済みで、
+18 に留めていたことに設計上の理由は無かった。確認して初めて分かった）。
+
+**この部分だけ、採用の理由が弱いことを記録しておく。** `Message`/`Bubble`/`Marker`
+は「いま解決したい問題（カードの余白・字下げの重複）」に対する採用だが、
+`MessageScroller` は「将来 `scrollToMessage` 等が欲しくなるかもしれない」という
+投機的な理由で、枯れた `use-stick-to-bottom`（v1.1.6）を未熟な `@shadcn/react`
+（v0.3.0、1.0 未満）に置き換えている——規則10（依存を足すなら理由を1行）に
+厳密には沿っていない。実測（`ui-smoke.test.ts` 全件・実データでのスクリーンショット・
+ジャンプボタンの表示/非表示/クリックの実測）で壊れていないことは確認済みなので
+今回は一緒に採用したが、次に同種の判断をするときは「使う予定の無い能力のために
+枯れた依存を若い依存へ差し替える」を避ける側に倒す。
+
+**`npx shadcn add`/`init` は既定では上書きしない**（`-o/--overwrite` 既定 `false`、
+実測）。最初の評価で `button.tsx`／`index.css` が上書きされたのは、非対話環境で
+確認プロンプトを素通りさせたのが原因で、CLI 自体は `--dry-run`/`--diff`/`--view`
+という非対話向けの安全な手順を最初から持っていた（`docs/lessons.md` 教訓19）。
 
 ---
 

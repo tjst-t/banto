@@ -1,11 +1,14 @@
 import { Fragment, type ReactNode } from 'react';
 import { AlertTriangle, GitFork, PackageMinus } from 'lucide-react';
-import { StickToBottom } from 'use-stick-to-bottom';
+import { MessageScroller } from '@shadcn/react/message-scroller';
 
 import { Markdown } from './Markdown';
 import { ReferenceCard } from './ReferenceCard';
 import { DecisionCard } from './DecisionCard';
 import { JumpToBottom } from './JumpToBottom';
+import { Message, MessageAvatar, MessageContent, MessageFooter } from './ui/message';
+import { Bubble, BubbleContent } from './ui/bubble';
+import { Marker, MarkerContent } from './ui/marker';
 import type { TimelineItem } from '../hooks/useThreadSessions';
 import type { StreamEvent } from '../lib/types';
 import { contextSize } from '../lib/types';
@@ -32,6 +35,16 @@ import { dateLabel, isNewDay, timeLabel } from '../lib/time';
  * ターン境界・追記・テスト結果は「会話」ではなく「そのとき起きたこと」なので、
  * **点と細字だけ**にして本文の邪魔をしない。消しはしない——
  * 静かに起きていることが見えなくなるほうが困る（規則4）。
+ *
+ * ## 部品の出どころ（決定27。spike の結論を採用）
+ *
+ * 末尾追従・遡り検知は `@shadcn/react/message-scroller`（React 19、`MessageScroller`）
+ * が持つ。行の見た目は `ui/message.tsx`・`ui/bubble.tsx`・`ui/marker.tsx`
+ * （shadcn/ui のチャット部品、規則12）——どれもデータも状態も持たない見た目だけの
+ * 置き場なので、`ReferenceCard`/`DecisionCard` は無改造のまま子として渡せる。
+ * 先に `@assistant-ui/react` を試し、イベントを「メッセージ」へ強制的に
+ * まとめる仕組みが banto のイベント列（`queryId` を持たない型がある）に合わず
+ * 不採用にした——ここではその強制が無い。
  */
 export function MessageList({
   items,
@@ -97,32 +110,50 @@ export function MessageList({
      * 末尾へ入れる実装は、読み返している最中に引きずり戻す——それが「追従が無い」
      * より嫌われるのは、**自分の操作が奪われる**からである。
      */
-    <StickToBottom className="relative min-h-0 flex-1" resize="smooth" initial="instant">
-      <StickToBottom.Content className="mx-auto flex w-full max-w-[var(--w-read)] flex-col gap-2 px-5 py-3">
-        {items.length === 0 && !running && (
-          <p className="py-8 text-center text-sm leading-loose text-ink-muted">
-            メッセージを送るとここに会話が流れます。
-          </p>
-        )}
+    <MessageScroller.Provider autoScroll defaultScrollPosition="last-anchor">
+      <MessageScroller.Root className="relative flex min-h-0 flex-1 flex-col">
+        {/*
+          `MessageScrollerViewport` は本当に何もスタイルを持たない（実測、
+          `dist/message-scroller/index.js` に `overflow` の記述が無い）
+          ——巻けるようにするのはこちら側の仕事。
+        */}
+        <MessageScroller.Viewport className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+          <MessageScroller.Content className="mx-auto flex w-full max-w-[var(--w-read)] flex-col gap-2 px-5 py-3">
+            {items.length === 0 && !running && (
+              <p className="py-8 text-center text-sm leading-loose text-ink-muted">
+                メッセージを送るとここに会話が流れます。
+              </p>
+            )}
 
-        {items.map((item) => {
-          const body = renderEvent(item.event, recordedQueries, resolvedDecisions, onOpen, onAnswer);
-          const at = atOf(item.event);
-          const divider = body !== null && at !== undefined && isNewDay(at, prevAt) ? at : null;
-          if (at !== undefined && body !== null) prevAt = at;
-          if (body === null) return null;
-          return (
-            <Fragment key={item.id}>
-              {divider !== null && <DayDivider at={divider} />}
-              {body}
-            </Fragment>
-          );
-        })}
+            {items.map((item) => {
+              const body = renderEvent(item.event, recordedQueries, resolvedDecisions, onOpen, onAnswer);
+              const at = atOf(item.event);
+              const divider = body !== null && at !== undefined && isNewDay(at, prevAt) ? at : null;
+              if (at !== undefined && body !== null) prevAt = at;
+              if (body === null) return null;
+              // **ユーザーの発言だけを「往復の境目」にする**（末尾追従の基準点）。
+              // shadcn 自身の用例（ユーザー行を scrollAnchor にする）に合わせる。
+              const scrollAnchor = item.event.type === 'message.recorded' && item.event.role === 'user';
+              return (
+                <MessageScroller.Item key={item.id} messageId={item.id} scrollAnchor={scrollAnchor}>
+                  <Fragment>
+                    {divider !== null && <DayDivider at={divider} />}
+                    {body}
+                  </Fragment>
+                </MessageScroller.Item>
+              );
+            })}
 
-        {running && <Thinking />}
-      </StickToBottom.Content>
-      <JumpToBottom pendingCount={pendingCount} />
-    </StickToBottom>
+            {running && (
+              <MessageScroller.Item messageId="thinking">
+                <Thinking />
+              </MessageScroller.Item>
+            )}
+          </MessageScroller.Content>
+        </MessageScroller.Viewport>
+        <JumpToBottom pendingCount={pendingCount} />
+      </MessageScroller.Root>
+    </MessageScroller.Provider>
   );
 }
 
@@ -222,8 +253,18 @@ function renderEvent(
   }
 
   // **AI が「これを見て」と指したもの**（要件 C14・決定19）。パネルを開くカード。
+  //
+  // `ReferenceCard` は無改造。`Message`/`MessageContent`（ui/message.tsx）に
+  // 子として渡すだけで、banto の他の会話行と同じ字下げが付く——`Message` は
+  // データも状態も持たない置き場でしかないので、これができる（決定27）。
   if (event.type === 'reference.recorded') {
-    return <ReferenceCard event={event} onOpen={onOpen} />;
+    return (
+      <Message>
+        <MessageContent>
+          <ReferenceCard event={event} onOpen={onOpen} />
+        </MessageContent>
+      </Message>
+    );
   }
 
   // **判断待ちは、会話の最後尾にそのまま出す**（要件 A6）。答え済みなら押せる形にしない。
@@ -232,13 +273,15 @@ function renderEvent(
       return <Aside>判断待ちだった: {event.question}</Aside>;
     }
     return (
-      <div className="ml-8 max-w-[85%]">
-        <DecisionCard
-          question={event.question}
-          options={event.options}
-          onAnswer={(answer, optionId) => onAnswer(event.decisionId, answer, optionId)}
-        />
-      </div>
+      <Message className="max-w-[85%] pl-8">
+        <MessageContent>
+          <DecisionCard
+            question={event.question}
+            options={event.options}
+            onAnswer={(answer, optionId) => onAnswer(event.decisionId, answer, optionId)}
+          />
+        </MessageContent>
+      </Message>
     );
   }
 
@@ -269,15 +312,28 @@ function renderEvent(
   );
 }
 
-/** 人の言葉。**沈んだ紙に置く**——自分が打ったものだと分かればよい（要件 E6）。 */
+/**
+ * 人の言葉。**沈んだ紙に置く**——自分が打ったものだと分かればよい（要件 E6）。
+ *
+ * `ui/bubble.tsx` の `Bubble`/`BubbleContent` を使う。既定の色役（`bg-primary` 等）は
+ * banto の5役に合わないので `variant="ghost"`（色を持たない素通しの箱）にして、
+ * 見た目は元どおり `bg-paper-sunken` を `className` で載せている——**部品側の色は
+ * 使わず、banto のトークンだけを渡す形**（要件 E9・規則3）。
+ */
 function FromPerson({ text, at }: { text: string; at: string }) {
   return (
-    <div className="mt-6 flex flex-col items-end first:mt-0">
-      <div className="max-w-[88%] whitespace-pre-wrap break-words rounded-lg rounded-br-sm bg-paper-sunken px-3.5 py-2.5 text-md text-ink">
-        {text}
-      </div>
-      <span className="mt-0.5 text-xs text-ink-muted">{timeLabel(at)}</span>
-    </div>
+    <Message align="end" className="mt-6 flex-col items-end first:mt-0">
+      <MessageContent>
+        <Bubble align="end" variant="ghost">
+          <BubbleContent className="max-w-[88%] whitespace-pre-wrap break-words rounded-lg rounded-br-sm bg-paper-sunken px-3.5 py-2.5 text-md text-ink">
+            {text}
+          </BubbleContent>
+        </Bubble>
+      </MessageContent>
+      <MessageFooter className="justify-end px-0">
+        <span className="text-xs text-ink-muted">{timeLabel(at)}</span>
+      </MessageFooter>
+    </Message>
   );
 }
 
@@ -286,36 +342,48 @@ function FromPerson({ text, at }: { text: string; at: string }) {
  *
  * 中身は Markdown として描く（要件 E4）。ここまで素の文字列で出していたので、
  * 見出しも箇条も表も**記号のまま**並んでいた。
+ *
+ * `MessageAvatar` に「番」の印を置く——`Bubble` は使わない（banto の発言に
+ * 器を持たせないのは要件 E6 の中心なので、器を持つ部品を選ばない）。
  */
 function FromBanto({ text, at }: { text: string; at: string }) {
   return (
-    <div className="group relative mt-6 pl-8 first:mt-0" data-from="banto">
-      <span
-        aria-hidden
-        className="absolute left-0 top-1 grid h-5 w-5 place-items-center rounded-sm bg-accent text-xs font-semibold text-paper-raised"
-      >
+    <Message align="start" className="group mt-6 items-start first:mt-0" data-from="banto">
+      <MessageAvatar className="h-5 w-5 shrink-0 self-start rounded-sm bg-accent text-xs font-semibold text-paper-raised">
         番
-      </span>
-      <Markdown text={text} />
-      <span className="mt-1 block text-xs text-ink-muted opacity-0 transition-opacity group-hover:opacity-100">
-        {timeLabel(at)}
-      </span>
-    </div>
+      </MessageAvatar>
+      <MessageContent className="gap-0">
+        <Markdown text={text} />
+        <span className="mt-1 block text-xs text-ink-muted opacity-0 transition-opacity group-hover:opacity-100">
+          {timeLabel(at)}
+        </span>
+      </MessageContent>
+    </Message>
   );
 }
 
-/** 日付の境目。**遡って読むときの手がかり**になる。 */
+/**
+ * 日付の境目。**遡って読むときの手がかり**になる。
+ *
+ * `ui/marker.tsx` の `variant="separator"` がそのまま「線・字・線」の形を持っている
+ * ——shadcn 自身のドキュメントが挙げる用途（date breaks）と一致した数少ない箇所。
+ */
 function DayDivider({ at }: { at: string }) {
   return (
-    <div className="my-4 flex items-center gap-3" role="separator" aria-label={dateLabel(at)}>
-      <span className="h-px flex-1 bg-rule-faint" />
-      <span className="text-xs text-ink-muted">{dateLabel(at)}</span>
-      <span className="h-px flex-1 bg-rule-faint" />
-    </div>
+    <Marker variant="separator" className="my-4" role="separator" aria-label={dateLabel(at)}>
+      <MarkerContent className="text-xs text-ink-muted">{dateLabel(at)}</MarkerContent>
+    </Marker>
   );
 }
 
-/** 会話に属さない記録。**点と細字だけ**にして本文の邪魔をしない。 */
+/**
+ * 会話に属さない記録。**点と細字だけ**にして本文の邪魔をしない。
+ *
+ * `ui/marker.tsx` の `Marker`/`MarkerContent` に載せ替えた——shadcn 自身が
+ * 「システムの注記・状態の更新」用と説明している用途にちょうど合う（規則12：
+ * 名前のある形が既にあるなら、そこを自分で組み直さない）。`Marker` は
+ * `self-start` を含まないので、元の見た目に合わせて明示している。
+ */
 function Aside({
   children,
   tone = 'neutral',
@@ -334,10 +402,10 @@ function Aside({
           ? 'bg-stopped'
           : 'bg-paper-sunken-2';
   return (
-    <div className="flex items-center gap-1.5 self-start pl-8 text-xs text-ink-muted">
+    <Marker className="w-fit self-start gap-1.5 pl-8 text-xs text-ink-muted">
       {icon ?? <span className={`h-1.5 w-1.5 rounded-sm ${dot}`} />}
-      {children}
-    </div>
+      <MarkerContent>{children}</MarkerContent>
+    </Marker>
   );
 }
 
