@@ -8,6 +8,8 @@
 import { readFile, readdir, stat, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
+import { resolveInside } from '@banto/module-kit';
+
 export interface Entry {
   readonly name: string;
   readonly kind: 'file' | 'dir';
@@ -17,24 +19,28 @@ export interface Entry {
 /**
  * AI が触れる範囲は、明示的に許した範囲に限られる（要件 D4）。
  *
- * `root` の外へは出られない。**判定は正規化してから**行う——
- * `..` も symlink も、文字列の見た目では防げない。
+ * `root` の外へは出られない（境界チェックは `@banto/module-kit` の `resolveInside`
+ * に一本化——規則3）。
+ *
+ * **読み取りは広く、書き込みは狭く**（決定29）。会話には人が同席するので、
+ * 読み取り・一覧は既定の広い `root` のままでよい。書き込みだけ、
+ * `writeRoot`（そのスレッドが向いているリポジトリ）が渡されていれば、
+ * その内側に追加で縛る——プロンプトインジェクションで隣のリポジトリを
+ * 書き換えられる穴（レビュー指摘）を塞ぐ。`writeRoot` が無い（リポジトリに
+ * 紐づかない会話）ときは、今までどおり `root` のどこにでも書ける。
  */
 export class FileSystemCore {
   private readonly root: string;
+  private readonly writeRoot: string | null;
 
-  constructor(root: string) {
+  constructor(root: string, writeRoot: string | null = null) {
     this.root = path.resolve(root);
+    // writeRoot 自体も root の内側でなければならない——外を指されても広がらない。
+    this.writeRoot = writeRoot === null ? null : resolveInside(this.root, writeRoot);
   }
 
-  /** root の内側に閉じ込める。外へ出ようとしたら理由を付けて投げる。 */
   private resolveInside(relative: string): string {
-    const target = path.resolve(this.root, relative);
-    const rel = path.relative(this.root, target);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      throw new Error(`許された範囲の外: ${relative}（root=${this.root}）`);
-    }
-    return target;
+    return resolveInside(this.root, relative);
   }
 
   async read(relative: string, maxBytes = 200_000): Promise<string> {
@@ -49,6 +55,15 @@ export class FileSystemCore {
 
   async write(relative: string, content: string): Promise<number> {
     const target = this.resolveInside(relative);
+    if (this.writeRoot !== null) {
+      const rel = path.relative(this.writeRoot, target);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) {
+        throw new Error(
+          `この会話が書ける範囲の外: ${relative}` +
+            `（書き込みは ${path.relative(this.root, this.writeRoot) || '.'} の内側に限る。読むだけなら root 全体を見られる）`,
+        );
+      }
+    }
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, content, 'utf8');
     return Buffer.byteLength(content, 'utf8');
@@ -82,6 +97,10 @@ export class FileSystemCore {
       'この根は BANTO_FS_ROOT で渡される（既定値は持たない）。',
       '変えるには banto を起動し直す——実行中に作業範囲が動くと、',
       '同じ相対パスが別のファイルを指すことになる。',
+      '',
+      this.writeRoot === null
+        ? '書き込みの範囲: root 全体（このスレッドは対象リポジトリを宣言していない）'
+        : `書き込みの範囲: ${path.relative(this.root, this.writeRoot) || '.'}（読み取りは root 全体）`,
     ].join('\n');
   }
 }

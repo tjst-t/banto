@@ -19,6 +19,8 @@ import { spawn } from 'node:child_process';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
 
+import { resolveInside } from '@banto/module-kit';
+
 export interface ExecResult {
   readonly exitCode: number;
   readonly stdout: string;
@@ -41,14 +43,8 @@ export class ProcessEnvironmentCore {
     this.root = path.resolve(root);
   }
 
-  /** root の内側に閉じ込める。**判定は正規化してから**——`..` は見た目では防げない。 */
   private inside(workdir: string): string {
-    const target = path.resolve(this.root, workdir);
-    const rel = path.relative(this.root, target);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      throw new Error(`許された範囲の外: ${workdir}（root=${this.root}）`);
-    }
-    return target;
+    return resolveInside(this.root, workdir);
   }
 
   /**

@@ -25,8 +25,10 @@ import { repoModule } from './index.js';
  * ——試験を走らせただけで本物のリモートへ `git push` が飛んだ（2026-08-20）。
  * いまは `requiredRoot` が既定値を持たないので、設定を忘れれば起動時に落ちる。
  */
+let root: string;
+
 beforeAll(async () => {
-  process.env['BANTO_REPO_ROOT'] = await mkdtemp(path.join(tmpdir(), 'banto-repo-wiring-'));
+  root = await mkdtemp(path.join(tmpdir(), 'banto-repo-wiring-'));
 });
 
 const vaultUnavailable: Availability = {
@@ -36,7 +38,7 @@ const vaultUnavailable: Availability = {
 
 describe('repo モジュールの配線', () => {
   it('vault が使えないとき、push は理由付きで断る', async () => {
-    const server = repoModule.createServer(vaultUnavailable);
+    const server = repoModule(root).createServer(vaultUnavailable);
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: 'test-client', version: '0.0.0' });
 
@@ -56,7 +58,7 @@ describe('repo モジュールの配線', () => {
   });
 
   it('vault が使えないときも、push 以外のツールは一覧に残る（要件 C12：消さない）', async () => {
-    const server = repoModule.createServer(vaultUnavailable);
+    const server = repoModule(root).createServer(vaultUnavailable);
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: 'test-client', version: '0.0.0' });
 

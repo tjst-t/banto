@@ -1,4 +1,4 @@
-import { AlertTriangle, GitFork, GitMerge, ListChecks } from 'lucide-react';
+import { AlertTriangle, GitFork, GitMerge, ListChecks, Trash2 } from 'lucide-react';
 
 import { PanelHeader } from './PanelHeader';
 import { Badge } from '../ui/badge';
@@ -41,6 +41,7 @@ export function ConversationPanel({
   onFork,
   onMerge,
   onOpenBase,
+  onDelete,
   onBack,
   parentTitle,
   elevated = false,
@@ -56,6 +57,8 @@ export function ConversationPanel({
   /** フォークだけが持つ操作（PO裁定 2026-08-22）。ルートのスレッドには畳む先が無い。 */
   onMerge: () => void;
   onOpenBase: () => void;
+  /** 決定30：ルートでもフォークでも削除できる。未マージの子フォークは自動でマージされる。 */
+  onDelete: () => void;
   onBack?: (() => void) | undefined;
   /**
    * フォークの出所（`thread.forkedFrom`）が指す親の題。**スレッドとフォークが
@@ -98,7 +101,11 @@ export function ConversationPanel({
           // **矢は戻るボタン側にある**（`onBack`）。ここで重ねて描かない。
           thread.forkedFrom !== null ? `${parentTitle ?? '元のスレッド'} から` : undefined
         }
-        sub={`ターン ${thread.turnCount}`}
+        sub={
+          thread.workspaceRoot === null
+            ? `ターン ${thread.turnCount}`
+            : `ターン ${thread.turnCount} ・ ${thread.workspaceRoot}`
+        }
         onBack={onBack}
         actions={
           !slim ? (
@@ -135,6 +142,16 @@ export function ConversationPanel({
                   <GitMerge className="h-3.5 w-3.5" />
                 </Button>
               )}
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={onDelete}
+                aria-label="削除する"
+                title="このスレッドを削除する（未マージのフォークは先に自動でマージされる）"
+                data-delete={thread.id}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
             </div>
           ) : (
             <Badge tone={status.tone}>{status.text}</Badge>

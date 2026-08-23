@@ -4,6 +4,8 @@
  * `node modules/repo/dist/serve.js` として起動し、stdio 越しに繋ぐだけ。
  */
 
+import { requiredRoot } from '@banto/module-kit';
+
 import { repoModule } from './index.js';
 
-await repoModule.serve();
+await repoModule(requiredRoot('BANTO_REPO_ROOT')).serve();

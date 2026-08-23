@@ -5,7 +5,7 @@
  * 依存側が書いた `tools` と `tools/list` の突き合わせで実測される（要件 C11）。
  */
 
-import { defineModule, ok, requiredRoot, type BantoModule } from '@banto/module-kit';
+import { defineModule, ok, type BantoModule, type DefinedModule } from '@banto/module-kit';
 import { z } from 'zod';
 
 import { ProcessEnvironmentCore } from './core.js';
@@ -19,9 +19,11 @@ export const manifest: BantoModule = {
   provides: ['environment'],
 };
 
-export const envProcessModule = defineModule({
+/** `root` は呼び手が解いて渡す（決定29）——`repo` と同じ理由。ここでは環境変数を読まない。 */
+export function envProcessModule(root: string): DefinedModule {
+  return defineModule({
   manifest,
-  createCore: () => new ProcessEnvironmentCore(requiredRoot('BANTO_ENV_ROOT')),
+  createCore: () => new ProcessEnvironmentCore(root),
   tools: (tool) => [
     tool({
       name: 'create',
@@ -76,6 +78,7 @@ export const envProcessModule = defineModule({
       summary: (v) => v.detail,
     }),
   ],
-});
+  });
+}
 
 export { ProcessEnvironmentCore, type ExecResult } from './core.js';

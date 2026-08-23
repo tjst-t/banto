@@ -9,10 +9,11 @@ import {
   baseCharacters,
   baseLimitDecisionId,
   checkBaseAppend,
+  ensureSharedBaseThread,
   invalidateBase,
   reactivateBase,
 } from './base.js';
-import { effectiveBase, fold } from './fold.js';
+import { effectiveBase, fold, SHARED_BASE_THREAD_ID } from './fold.js';
 import { EventLog } from './log.js';
 
 /** 本物のログに書く。偽物は本物の制約を持たないので、偽物で通っても何も分からない（教訓1）。 */
@@ -165,5 +166,30 @@ describe('無効化・有効化（PO指摘 2026-08-22）', () => {
     await appendBase(log, await state(log), 't1', 'A', 100);
     const already = await reactivateBase(log, await state(log), 't1', 1);
     expect(already.ok).toBe(false);
+  });
+});
+
+describe('共有baseスレッド（決定30）', () => {
+  it('無ければ作る。作った後は appendBase が通る', async () => {
+    const log = await freshLog();
+    await ensureSharedBaseThread(log, await state(log));
+
+    const after = await state(log);
+    expect(after.threads.has(SHARED_BASE_THREAD_ID)).toBe(true);
+
+    const gate = await appendBase(log, after, SHARED_BASE_THREAD_ID, '一般的な事実', 100);
+    expect(gate.ok).toBe(true);
+  });
+
+  it('二重に作らない', async () => {
+    const log = await freshLog();
+    await ensureSharedBaseThread(log, await state(log));
+    await ensureSharedBaseThread(log, await state(log));
+
+    const events = await log.read();
+    const created = events.filter(
+      (e) => e.type === 'thread.created' && e.threadId === SHARED_BASE_THREAD_ID,
+    );
+    expect(created).toHaveLength(1);
   });
 });

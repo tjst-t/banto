@@ -47,12 +47,24 @@ export interface ThreadState {
   baseVersion: number;
   readonly forkedFrom: ForkOrigin | null;
   /**
+   * このスレッドが自分で宣言した作業対象（決定29）。**フォークはここを持たない**
+   * ——フォークは会話のみで、対象は fork 元と同じ（`effectiveWorkspaceRoot` で解く）。
+   */
+  readonly workspaceRoot: string | null;
+  /**
    * 畳んで閉じた先。畳んでいなければ `null`。
    *
    * `status` とは別の事実として持つ（規則3）——`done` は「いま処理待ち」の意味で
    * 使われていて（ターンが終わるたびに立つ）、「もう二度と開かない」とは違う。
    */
   mergedInto: ThreadId | null;
+  /**
+   * 削除された（決定30）。**トゥームストーン**——ログからは消えない。
+   * `mergedInto`（畳んで親に戻る）とは別の、もう一段強い扱い。
+   * `effectiveBaseEntries`／`effectiveWorkspaceRoot` は id で辿るだけなので、
+   * 削除されたスレッドを fork 元に持つ既存のフォークがあっても壊れない。
+   */
+  deleted: boolean;
   /**
    * このスレッドのターン数。**次の turnIndex はここから続ける。**
    *
@@ -88,6 +100,19 @@ export interface State {
   readonly pendingDecisions: Map<DecisionId, PendingDecision>;
 }
 
+/**
+ * 共有base専用の固定id（決定30）。
+ *
+ * **名前で引かない。id そのものを決め打ちにする**——channel のように
+ * 名前で検索して見つからなければ作る、という間接を挟まない。
+ * どのスレッドからも `threadId === SHARED_BASE_THREAD_ID` の比較だけで判定できる。
+ *
+ * このスレッドは**会話をしない**——`base` だけを持つ器。帳場（v2）の失敗
+ * （記憶が伸び続けて畳めない）は「実際の会話が積もる」ことが原因だったので、
+ * 会話をしないここには同じ壊れかたが起きない（`docs/adr` 決定30の調査）。
+ */
+export const SHARED_BASE_THREAD_ID: ThreadId = 'shared-base';
+
 export function fold(events: readonly BantoEvent[]): State {
   const channels = new Map<ChannelId, ChannelState>();
   const threads = new Map<ThreadId, ThreadState>();
@@ -117,7 +142,9 @@ export function fold(events: readonly BantoEvent[]): State {
           ownBase: [],
           baseVersion: 0,
           forkedFrom: null,
+          workspaceRoot: event.workspaceRoot ?? null,
           mergedInto: null,
+          deleted: false,
           turnCount: 0,
           sessionHandle: null,
         });
@@ -138,7 +165,10 @@ export function fold(events: readonly BantoEvent[]): State {
             baseVersion: event.from.baseVersion,
             mode: event.mode,
           },
+          // フォークは対象を持たない。fork元をたどって解決する。
+          workspaceRoot: null,
           mergedInto: null,
+          deleted: false,
           turnCount: 0,
           sessionHandle: null,
         });
@@ -154,6 +184,12 @@ export function fold(events: readonly BantoEvent[]): State {
       case 'thread.merged': {
         const thread = threads.get(event.threadId);
         if (thread) thread.mergedInto = event.into;
+        break;
+      }
+
+      case 'thread.deleted': {
+        const thread = threads.get(event.threadId);
+        if (thread) thread.deleted = true;
         break;
       }
 
@@ -239,22 +275,19 @@ export interface EffectiveBaseEntry extends BaseEntry {
 }
 
 /**
- * そのスレッドが実際に見る base を、行ごとの詳細つきで解く。
- *
- * fork 元から**切った時点の版まで**を継ぎ、その後に自分の追記を足す。
- * 親がその後に追記しても、このスレッドには入らない（要件 R4）。
- *
- * **境界は `baseVersion`（版番号）で判定する。配列の長さでは判定しない**
- * ——無効化された行も配列からは取り除かないが、`effectiveBase`（文字列版）は
- * それを読み飛ばす。版号ベースで切れば、無効化がいつ起きても fork の継承境界は動かない。
+ * fork 継承（凍結）＋自分の追記だけを解く。**共有base は含まない**
+ * ——ここを再帰する（`effectiveBaseEntries` ではなく）ことで、共有baseの
+ * `baseVersion` が fork の継承境界（`origin.baseVersion` との比較）に
+ * 混ざらないようにする。共有baseとfork継承は版号の意味する対象が違う
+ * （前者はそのスレッド、後者はfork元）ので、同じ版号空間で比較してはいけない。
  */
-export function effectiveBaseEntries(state: State, threadId: ThreadId): EffectiveBaseEntry[] {
+function ownAndInheritedBaseEntries(state: State, threadId: ThreadId): EffectiveBaseEntry[] {
   const thread = state.threads.get(threadId);
   if (!thread) return [];
 
   const origin = thread.forkedFrom;
   const inherited: EffectiveBaseEntry[] = origin
-    ? effectiveBaseEntries(state, origin.threadId)
+    ? ownAndInheritedBaseEntries(state, origin.threadId)
         .filter((e) => e.baseVersion <= origin.baseVersion)
         .map((e) => ({ ...e, own: false }))
     : [];
@@ -269,6 +302,33 @@ export function effectiveBaseEntries(state: State, threadId: ThreadId): Effectiv
 }
 
 /**
+ * そのスレッドが実際に見る base を、行ごとの詳細つきで解く。
+ *
+ * 3層——**共有base**（決定30。全スレッド共通、**凍結しない**——後から足しても
+ * 既存の会話にすぐ効く）、**fork継承**（切った時点の版で凍結。要件R4）、
+ * **自分の追記**——の順に重ねる。
+ *
+ * fork の継承境界は `baseVersion`（版番号）で判定する。配列の長さでは判定しない
+ * ——無効化された行も配列からは取り除かないが、`effectiveBase`（文字列版）は
+ * それを読み飛ばす。版号ベースで切れば、無効化がいつ起きても fork の継承境界は動かない。
+ */
+export function effectiveBaseEntries(state: State, threadId: ThreadId): EffectiveBaseEntry[] {
+  if (!state.threads.has(threadId)) return [];
+
+  // 共有base自身から見た共有baseは「継承」ではなく「自分の」なので、二重に足さない。
+  const shared: EffectiveBaseEntry[] =
+    threadId === SHARED_BASE_THREAD_ID
+      ? []
+      : (state.threads.get(SHARED_BASE_THREAD_ID)?.ownBase ?? []).map((e) => ({
+          ...e,
+          own: false,
+          ownerThreadId: SHARED_BASE_THREAD_ID,
+        }));
+
+  return [...shared, ...ownAndInheritedBaseEntries(state, threadId)];
+}
+
+/**
  * そのスレッドが実際に見る base を解く。**無効化された行は読み飛ばす。**
  *
  * 注：fork の `mode`（'base' / 'tip'）が変えるのは**以降のメッセージ**をどこから
@@ -279,6 +339,21 @@ export function effectiveBase(state: State, threadId: ThreadId): string[] {
   return effectiveBaseEntries(state, threadId)
     .filter((e) => !e.invalidated)
     .map((e) => e.text);
+}
+
+/**
+ * そのスレッドが実際に向いている作業対象を解く（決定29）。
+ *
+ * フォークは自分では持たず、fork元をたどって根まで遡る——`effectiveBaseEntries`
+ * と同じ「フォークは会話だけを分ける」考え方。根が宣言していなければ `null`
+ * ——リポジトリに紐づかない会話は普通にあるので、無いことは異常ではない。
+ */
+export function effectiveWorkspaceRoot(state: State, threadId: ThreadId): string | null {
+  const thread = state.threads.get(threadId);
+  if (!thread) return null;
+  if (thread.workspaceRoot !== null) return thread.workspaceRoot;
+  const origin = thread.forkedFrom;
+  return origin ? effectiveWorkspaceRoot(state, origin.threadId) : null;
 }
 
 /** 判断待ちを1画面に出すための一覧。古い順（待たせているものが上）。 */

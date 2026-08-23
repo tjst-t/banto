@@ -17,6 +17,7 @@ import { WorkPanel, type WorkTarget } from './components/panels/WorkPanel';
 import { InboxDialog } from './components/dialogs/InboxDialog';
 import { HistoryDialog } from './components/dialogs/HistoryDialog';
 import { SettingsDialog } from './components/dialogs/SettingsDialog';
+import { DeleteThreadDialog } from './components/dialogs/DeleteThreadDialog';
 import { TooltipProvider } from './components/ui/tooltip';
 import { Button } from './components/ui/button';
 import type { ThreadSummary } from './lib/types';
@@ -45,6 +46,13 @@ export function App() {
   const [workOrigin, setWorkOrigin] = useState<RoomKind>('root');
   const [dialog, setDialog] = useState<DialogKind>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  /** 削除の確認（決定30）。押した対象だけを持つ——ダイアログ自身が中身を読みに行く。 */
+  const [deleteTarget, setDeleteTarget] = useState<{ threadId: string; title: string } | null>(null);
+  /**
+   * 新しい会話が向くリポジトリ（決定29）。**ハードな壁ではなく宣言**——
+   * 空のままでもよい（リポジトリに紐づかない会話も普通にある）。
+   */
+  const [newWorkspaceRoot, setNewWorkspaceRoot] = useState('');
 
   const threads = data?.threads ?? [];
   const queue = data?.queue ?? [];
@@ -55,9 +63,11 @@ export function App() {
    */
   useEffect(() => {
     if (rootThreadId !== null && threads.some((t) => t.id === rootThreadId)) return;
+    // 共有baseスレッドは会話をしないので、自動で開く候補からも外す（決定30）。
+    const openable = threads.filter((t) => t.id !== data?.sharedBaseThreadId);
     // 畳んだフォークは自動では開かない（PO裁定 2026-08-22）——開いているものからも外れているので。
-    const openOnes = threads.filter((t) => t.mergedInto === null);
-    const latest = openOnes[openOnes.length - 1] ?? threads[threads.length - 1];
+    const openOnes = openable.filter((t) => t.mergedInto === null);
+    const latest = openOnes[openOnes.length - 1] ?? openable[openable.length - 1];
     if (latest === undefined) {
       setRootThreadId(null);
       setForkThreadId(null);
@@ -158,12 +168,17 @@ export function App() {
 
   const handleCreate = async (): Promise<void> => {
     try {
-      const res = await createThread({ title: '新しい会話' });
+      const workspaceRoot = newWorkspaceRoot.trim();
+      const res = await createThread({
+        title: '新しい会話',
+        ...(workspaceRoot === '' ? {} : { workspaceRoot }),
+      });
       await refetch();
       // 新しいスレッドは常にルート（親を持たない）。
       setRootThreadId(res.threadId);
       setForkThreadId(null);
       setWork(null);
+      setNewWorkspaceRoot('');
     } catch (cause) {
       setActionError(cause instanceof Error ? cause.message : String(cause));
     }
@@ -189,6 +204,23 @@ export function App() {
     openWork({ kind: 'base', threadId: thread.id, threadTitle: thread.title }, origin);
   };
 
+  const handleOpenDelete = (thread: ThreadSummary): void => {
+    setDeleteTarget({ threadId: thread.id, title: thread.title });
+  };
+
+  /** 削除できたら、開いていたなら閉じてから読み直す（決定30）。 */
+  const handleDeleted = async (): Promise<void> => {
+    const deletedId = deleteTarget?.threadId;
+    setDeleteTarget(null);
+    setWork(null);
+    if (deletedId === forkThreadId) setForkThreadId(null);
+    if (deletedId === rootThreadId) {
+      setRootThreadId(null);
+      setForkThreadId(null);
+    }
+    await refetch();
+  };
+
   const closeWork = (): void => setWork(null);
 
   /** 背表紙を押す・ESC：作業パネルとフォークを両方閉じて、幹だけの表示に戻る（見本の `data-spine`）。 */
@@ -211,7 +243,9 @@ export function App() {
   // **開いているもの**の点。フォークは、いま開いている幹に属するものだけに絞る
   // （PO指摘 2026-08-22）——見本の `mine()` が現在のプロジェクトで絞るのと同じ考え。
   // ルートのスレッドは絞らない（レールの `pj` に相当し、常に全部出す）。
+  // 共有baseスレッドは会話をしないので、ここには出さない（決定30）。
   const openItems: OpenItem[] = threads
+    .filter((t) => t.id !== data?.sharedBaseThreadId)
     .filter((t) => t.mergedInto === null)
     .filter((t) => t.forkedFrom === null || t.forkedFrom.threadId === rootThreadId)
     .map((t) => ({
@@ -256,9 +290,19 @@ export function App() {
             <div className="flex flex-1 items-center justify-center text-md text-ink-muted">
               読み込み中…
             </div>
+          ) : rootThread === null && work !== null ? (
+            // 会話が1本も無くても（例：共有baseしか無い）、作業パネルは単独で開ける
+            // ——`work` は会話とは別の状態なので、会話が無いことを理由に塞がない。
+            <WorkPanel work={work} onClose={closeWork} onBaseChanged={() => void refetch()} />
           ) : rootThread === null ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-md text-ink-muted">
               <p>まだ会話がありません。</p>
+              <input
+                value={newWorkspaceRoot}
+                onChange={(e) => setNewWorkspaceRoot(e.target.value)}
+                placeholder="対象のリポジトリ（任意。空でもよい）"
+                className="h-[var(--h-ctl-sm)] w-72 rounded-md border border-rule bg-paper px-2 text-sm text-ink outline-none placeholder:text-ink-muted focus:border-accent"
+              />
               <Button variant="accent" onClick={() => void handleCreate()}>
                 新しい会話をはじめる
               </Button>
@@ -279,6 +323,7 @@ export function App() {
                 onFork={() => void handleFork(forkThread.id)}
                 onMerge={() => void handleMerge(forkThread.id)}
                 onOpenBase={() => handleOpenBase(forkThread, 'fork')}
+                onDelete={() => handleOpenDelete(forkThread)}
                 onBack={() => setForkThreadId(null)}
                 parentTitle={rootThread.title}
               />
@@ -293,6 +338,7 @@ export function App() {
                 onFork={() => void handleFork(rootThread.id)}
                 onMerge={() => void handleMerge(rootThread.id)}
                 onOpenBase={() => handleOpenBase(rootThread, 'root')}
+                onDelete={() => handleOpenDelete(rootThread)}
               />
             )
           ) : work !== null ? (
@@ -319,6 +365,7 @@ export function App() {
                       onFork={() => void handleFork(forkThread.id)}
                       onMerge={() => void handleMerge(forkThread.id)}
                       onOpenBase={() => handleOpenBase(forkThread, 'fork')}
+                      onDelete={() => handleOpenDelete(forkThread)}
                       onBack={() => setForkThreadId(null)}
                       parentTitle={rootThread.title}
                       onPanelClick={slimClickGuard}
@@ -334,6 +381,7 @@ export function App() {
                       onFork={() => void handleFork(rootThread.id)}
                       onMerge={() => void handleMerge(rootThread.id)}
                       onOpenBase={() => handleOpenBase(rootThread, 'root')}
+                      onDelete={() => handleOpenDelete(rootThread)}
                       onPanelClick={slimClickGuard}
                     />
                   )}
@@ -364,6 +412,7 @@ export function App() {
                 onFork={() => void handleFork(rootThread.id)}
                 onMerge={() => void handleMerge(rootThread.id)}
                 onOpenBase={() => handleOpenBase(rootThread, 'root')}
+                onDelete={() => handleOpenDelete(rootThread)}
               />
               {forkThread !== null && forkSession !== null && (
                 <ConversationPanel
@@ -377,6 +426,7 @@ export function App() {
                   onFork={() => void handleFork(forkThread.id)}
                   onMerge={() => void handleMerge(forkThread.id)}
                   onOpenBase={() => handleOpenBase(forkThread, 'fork')}
+                onDelete={() => handleOpenDelete(forkThread)}
                   onBack={() => setForkThreadId(null)}
                   parentTitle={rootThread.title}
                 />
@@ -407,6 +457,15 @@ export function App() {
         open={dialog === 'settings'}
         onOpenChange={(open) => setDialog(open ? 'settings' : null)}
         onOpenResource={(uri, name) => handleOpenReference(uri, name, 'root')}
+        sharedBaseThreadId={data?.sharedBaseThreadId}
+        onOpenBase={(threadId, title) => openWork({ kind: 'base', threadId, threadTitle: title }, 'root')}
+      />
+      <DeleteThreadDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        threadId={deleteTarget?.threadId ?? null}
+        threadTitle={deleteTarget?.title ?? ''}
+        onDeleted={() => void handleDeleted()}
       />
     </TooltipProvider>
   );

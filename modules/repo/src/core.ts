@@ -14,6 +14,8 @@
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 
+import { resolveInside } from '@banto/module-kit';
+
 export interface GitOutput {
   readonly stdout: string;
   readonly stderr: string;
@@ -22,9 +24,9 @@ export interface GitOutput {
 /**
  * `root` の内側で git を操作する。
  *
- * pathspec に渡す文字列は、fs モジュールと同じ判定（正規化してから比較）で
- * root の内側に閉じ込める——「範囲の外を指した」という失敗を、
- * git の曖昧なエラーメッセージに任せない（要件 D4）。
+ * pathspec に渡す文字列は、`@banto/module-kit` の `resolveInside`（正規化してから
+ * 比較、fs/env-process/env-dockerと共通）で root の内側に閉じ込める——
+ * 「範囲の外を指した」という失敗を、git の曖昧なエラーメッセージに任せない（要件 D4）。
  */
 export class RepoCore {
   private readonly root: string;
@@ -33,14 +35,8 @@ export class RepoCore {
     this.root = path.resolve(root);
   }
 
-  /** root の内側に閉じ込める。外へ出ようとしたら理由を付けて投げる。 */
   private resolveInside(relative: string): string {
-    const target = path.resolve(this.root, relative);
-    const rel = path.relative(this.root, target);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      throw new Error(`許された範囲の外: ${relative}（root=${this.root}）`);
-    }
-    return target;
+    return resolveInside(this.root, relative);
   }
 
   private async git(args: readonly string[]): Promise<GitOutput> {

@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { EventLog } from '@banto/core';
+import { EventLog, SHARED_BASE_THREAD_ID, fold } from '@banto/core';
 
 import { ConversationCore, type ResolveReference } from './conversation.js';
 
@@ -97,6 +97,39 @@ describe('invalidate_base / reactivate_base（AI が訂正する）', () => {
   it('存在しない版は断る', async () => {
     const { core } = await fresh(async () => ({ text: '', mimeType: null }));
     const gate = await core.invalidateBase({ baseVersion: 99 });
+    expect(gate.ok).toBe(false);
+  });
+});
+
+/**
+ * 共有base（決定30）。**このスレッド自身の base ではなく、固定idの共有base
+ * スレッドへ書く**——`ConversationCore` から正しい入口（`SHARED_BASE_THREAD_ID`、
+ * 自分の threadId ではない）へ繋がっていることを測る。ゲート自体の試験は
+ * `packages/core/src/base.test.ts` が持っている（規則3）。
+ */
+describe('append_shared_base（全スレッド共通の base へ書く）', () => {
+  it('自分のスレッドではなく、共有baseスレッドへ base.appended が残る', async () => {
+    const { log, core } = await fresh(async () => ({ text: '', mimeType: null }));
+    const gate = await core.appendSharedBase({ text: 'PO はTypeScriptを好む' });
+    expect(gate.ok).toBe(true);
+
+    const appended = (await log.read()).filter((e) => e.type === 'base.appended');
+    expect(appended).toMatchObject([{ threadId: SHARED_BASE_THREAD_ID, baseVersion: 1 }]);
+    // 自分（t1）のownBaseには何も残らない。
+    const state = fold(await log.read());
+    expect(state.threads.get('t1')?.ownBase).toEqual([]);
+  });
+
+  it('共有baseスレッドが無ければ、初回呼び出しで自動的に作る', async () => {
+    const { log, core } = await fresh(async () => ({ text: '', mimeType: null }));
+    await core.appendSharedBase({ text: '一般的な事実' });
+    const state = fold(await log.read());
+    expect(state.threads.has(SHARED_BASE_THREAD_ID)).toBe(true);
+  });
+
+  it('閾値を超えると断る（全スレッド共通の上限を共有する）', async () => {
+    const { core } = await fresh(async () => ({ text: '', mimeType: null }), 10);
+    const gate = await core.appendSharedBase({ text: '10文字を超える長さの文章' });
     expect(gate.ok).toBe(false);
   });
 });

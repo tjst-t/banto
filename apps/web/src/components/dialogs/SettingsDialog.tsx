@@ -9,22 +9,30 @@ import type { ModuleSummary } from '../../lib/types';
 /**
  * 設定（要件 C1・C8c・C12・C4）。
  *
- * 3つを出す：
+ * 4つを出す：
  *
- * 1. **境界を常時見せる**（要件 C8c）。`isolation` と画面の `gui.kind` を隠さない
+ * 1. **共有base**（決定30）。全スレッド共通のbase——会話をしないスレッドなので
+ *    「開いているもの」には出ない。サイドバー固定部を使うほどの機能ではないので、
+ *    ここに置く
+ * 2. **境界を常時見せる**（要件 C8c）。`isolation` と画面の `gui.kind` を隠さない
  *    ——「落ちてもホストが生きる」「鍵が AI と同居しない」は、見えていないと守られない
- * 2. **外したら何が壊れるか**（要件 C12）。**押す前に**分かる
- * 3. **モジュール自身の設定**（要件 C4）。押すと作業パネルで開く
+ * 3. **外したら何が壊れるか**（要件 C12）。**押す前に**分かる
+ * 4. **モジュール自身の設定**（要件 C4）。押すと作業パネルで開く
  *    ——設定ダイアログの中にもう1枚別の面を作らない（規則3：置き場を増やさない）
  */
 export function SettingsDialog({
   open,
   onOpenChange,
   onOpenResource,
+  sharedBaseThreadId,
+  onOpenBase,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onOpenResource: (uri: string, name: string) => void;
+  /** 決定30：無ければまだ何も共有されていないだけで、区画自体は出す。 */
+  sharedBaseThreadId: string | undefined;
+  onOpenBase: (threadId: string, title: string) => void;
 }) {
   const [modules, setModules] = useState<ModuleSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -49,6 +57,26 @@ export function SettingsDialog({
         <div className="border-b border-rule-faint px-6 pb-3 pt-6">
           <DialogTitle className="text-2xl font-semibold tracking-tight text-ink">設定</DialogTitle>
           <p className="mt-0.5 text-sm text-ink-secondary">モジュールの台帳</p>
+        </div>
+
+        <div className="border-b border-rule-faint px-6 py-3">
+          <p className="text-sm font-semibold text-ink">共有base</p>
+          <p className="mt-0.5 text-xs text-ink-secondary">
+            会話をしない、全スレッド共通のbase。プロジェクトを問わず成り立つ事実だけを置く場所
+          </p>
+          <button
+            type="button"
+            data-open-shared-base
+            disabled={sharedBaseThreadId === undefined}
+            onClick={() => {
+              if (sharedBaseThreadId === undefined) return;
+              onOpenBase(sharedBaseThreadId, '共有base');
+              onOpenChange(false);
+            }}
+            className="mt-2 text-xs font-medium text-accent hover:underline disabled:text-ink-muted disabled:no-underline"
+          >
+            共有baseを開く
+          </button>
         </div>
 
         {error !== null ? (

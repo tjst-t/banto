@@ -51,13 +51,15 @@ const factory: ModuleSource = {
   listTools: async () => ['request'],
 };
 
+let root: string;
+
 beforeAll(async () => {
-  process.env['BANTO_ENV_ROOT'] = await mkdtemp(path.join(tmpdir(), 'banto-env-sub-'));
+  root = await mkdtemp(path.join(tmpdir(), 'banto-env-sub-'));
 });
 
 describe('環境の実装は差し替えられる（決定16）', () => {
   const sources = () => [
-    liveSource(envProcessModule),
+    liveSource(envProcessModule(root)),
     liveSource(envScriptModule({ allowedRepos: [] })),
     factory,
   ];
@@ -70,7 +72,7 @@ describe('環境の実装は差し替えられる（決定16）', () => {
   });
 
   it('どちらも同じ4つの動詞を、本物の tools/list で出す', async () => {
-    for (const module of [envProcessModule, envScriptModule({ allowedRepos: [] })]) {
+    for (const module of [envProcessModule(root), envScriptModule({ allowedRepos: [] })]) {
       const tools = await liveSource(module).listTools();
       expect([...tools].sort()).toEqual(['address', 'create', 'destroy', 'exec', 'status']);
     }

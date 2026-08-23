@@ -209,7 +209,7 @@ beforeAll(async () => {
   const fsRoot = await mkdtemp(path.join(tmpdir(), 'banto-ui-fs-'));
   await writeFile(path.join(fsRoot, 'note.md'), 'みかんと書いてある\n', 'utf8');
   process.env['BANTO_FS_ROOT'] = fsRoot;
-  const { fsModule } = await import('@banto/module-fs');
+  const { fsModule, manifest: fsManifest } = await import('@banto/module-fs');
   const helloPyManifest = JSON.parse(
     await readFile(path.resolve('modules/hello-py/manifest.json'), 'utf8'),
   ) as Parameters<typeof startServer>[0]['manifests'] extends readonly (infer M)[] | undefined
@@ -220,12 +220,16 @@ beforeAll(async () => {
     dataDir,
     port: 0,
     modules: [
-      { name: fsModule.manifest.id, kind: 'in-process', createServer: () => fsModule.createServer() },
+      {
+        name: fsManifest.id,
+        kind: 'in-process',
+        createServer: (writeRoot) => fsModule(fsRoot, writeRoot ?? null).createServer(),
+      },
       // **本物の Python を繋ぐ**（要件 C6）。偽物だと、この試験は何も証明しない。
       { name: 'hello-py', kind: 'subprocess', command: 'python3', args: ['modules/hello-py/server.py'] },
     ],
     // 画面の割り当ては台帳から導く（決定20）。渡さないと汎用の面に落ちる。
-    manifests: [fsModule.manifest, helloPyManifest],
+    manifests: [fsManifest, helloPyManifest],
     toolsByModule: new Map(),
     model: 'claude-haiku-4-5',
     webRoot: WEB_ROOT,
@@ -1128,12 +1132,134 @@ describe('画面の煙試験（本物のブラウザ）', () => {
     }
   }, 120_000);
 
+  /**
+   * 共有base（決定30）。「開いているもの」には出ず、設定から開ける。
+   * 人が直接足したものは、無効化・有効化も既存のBasePanelの機能でそのまま使える。
+   */
+  it('共有baseは設定から開けて、人が直接足せる。開いているものには出ない', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await openThread(page, 't1');
+
+      // 開いているものの一覧に「共有base」というタイトルの点は出ない。
+      expect(await page.locator('button', { hasText: '共有base' }).count()).toBe(0);
+
+      await page.getByRole('button', { name: '設定' }).click();
+      await page.getByRole('button', { name: '共有baseを開く' }).click();
+      await page.waitForSelector('[data-base-panel="shared-base"]', { timeout: 15_000 });
+      await page.waitForSelector('text=共有base', { timeout: 15_000 });
+
+      // 人が直接足せる。
+      await page.getByPlaceholder('決まったことを1行で足す').fill('全プロジェクト共通の事実');
+      await page.getByRole('button', { name: '足す' }).click();
+      await page.waitForSelector('text=全プロジェクト共通の事実', { timeout: 15_000 });
+    } finally {
+      await browser.close();
+    }
+  }, 60_000);
+
+  /**
+   * スレッド削除（決定30）。選んだ行は共有baseへ持ち出され、スレッド自体は
+   * 「開いているもの」から消える。
+   */
+  it('スレッドを削除でき、選んだ行が共有baseに残る', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const dir = await mkdtemp(path.join(tmpdir(), 'banto-ui-delete-'));
+    const delLog = new EventLog(dir);
+    await delLog.append({ type: 'channel.created', channelId: 'c1', channelName: 'del' });
+    await delLog.append({ type: 'thread.created', threadId: 'd1', channelId: 'c1', title: '消す予定' });
+    await delLog.append({ type: 'base.appended', threadId: 'd1', baseVersion: 1, text: '持ち出したい一般的事実' });
+
+    const server = startServer({
+      dataDir: dir,
+      port: 0,
+      modules: [],
+      toolsByModule: new Map(),
+      model: 'claude-haiku-4-5',
+      webRoot: WEB_ROOT,
+    });
+    await new Promise((r) => server.once('listening', r));
+    const delOrigin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+
+    try {
+      await page.goto(delOrigin, { waitUntil: 'networkidle' });
+      await openThread(page, 'd1');
+
+      await page.locator('[data-delete="d1"]').click();
+      await page.waitForSelector('text=「消す予定」を削除', { timeout: 15_000 });
+      await page
+        .locator('li', { hasText: '持ち出したい一般的事実' })
+        .locator('input[type="checkbox"]')
+        .check();
+      await page.getByRole('button', { name: '削除する' }).click();
+
+      // 「開いているもの」から消える。
+      await page.waitForSelector('[data-open-item="d1"]', { state: 'detached', timeout: 15_000 });
+
+      // 共有baseに残っている。
+      await page.getByRole('button', { name: '設定' }).click();
+      await page.getByRole('button', { name: '共有baseを開く' }).click();
+      await page.waitForSelector('text=持ち出したい一般的事実', { timeout: 15_000 });
+    } finally {
+      await browser.close();
+      server.close();
+    }
+  }, 60_000);
+
   it('無い静的ファイルは 404。index.html にすり替えない（規則2）', async () => {
     if (!built) throw new Error('画面がビルドされていないので測れない');
     const res = await fetch(`${origin}/assets/does-not-exist.js`);
     expect(res.status).toBe(404);
     expect(res.headers.get('content-type')).toContain('application/json');
   });
+
+  /**
+   * workspaceRoot（決定29）。**まだ何も無い状態から**確かめる——
+   * 会話が1本もないときだけ出る導線なので、専用の空のホストを立てる。
+   */
+  it('新しい会話に対象リポジトリを指定でき、会話の頭に出る', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const dir = await mkdtemp(path.join(tmpdir(), 'banto-ui-wsroot-'));
+    const server = startServer({
+      dataDir: dir,
+      port: 0,
+      modules: [],
+      toolsByModule: new Map(),
+      model: 'claude-haiku-4-5',
+      webRoot: WEB_ROOT,
+    });
+    await new Promise((r) => server.once('listening', r));
+    const wsOrigin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+
+    try {
+      await page.goto(wsOrigin, { waitUntil: 'networkidle' });
+      await page.waitForSelector('text=まだ会話がありません。', { timeout: 15_000 });
+      await page.getByPlaceholder('対象のリポジトリ（任意。空でもよい）').fill('repo-a');
+      await page.getByRole('button', { name: '新しい会話をはじめる' }).click();
+
+      // 作った会話の頭に、指定したリポジトリが出る。
+      await page.waitForSelector('text=/repo-a/', { timeout: 15_000 });
+    } finally {
+      await browser.close();
+      server.close();
+    }
+  }, 60_000);
 });
 
 /**

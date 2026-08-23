@@ -161,11 +161,9 @@ async function request(f: Factory, name: string): Promise<void> {
 beforeEach(async () => {
   root = await makeRepo();
   log = new EventLog(await mkdtemp(path.join(tmpdir(), 'banto-factory-log-')));
-  // モジュールは root を環境変数から受け取る（既定値を持たない・requiredRoot）。
-  process.env['BANTO_REPO_ROOT'] = root;
-  process.env['BANTO_ENV_ROOT'] = root;
-  repoCaller = await connectInProcess(repoModule.createServer());
-  envCaller = await connectInProcess(envProcessModule.createServer());
+  // モジュールは root を直接受け取る（決定29：呼び手が解いて渡す）。
+  repoCaller = await connectInProcess(repoModule(root).createServer());
+  envCaller = await connectInProcess(envProcessModule(root).createServer());
 });
 
 afterEach(async () => {
@@ -365,7 +363,7 @@ describe.skipIf(process.env['BANTO_E2E'] !== '1')('環境を docker に差し替
   it('依頼が、コンテナの中でテストされて main に入る', async () => {
     process.env['BANTO_DOCKER_IMAGE'] ??= 'node:22-slim';
     const { envDockerModule } = await import('@banto/module-env-docker');
-    const dockerCaller = await connectInProcess(envDockerModule.createServer());
+    const dockerCaller = await connectInProcess(envDockerModule(root).createServer());
 
     try {
       // **テストが本当にコンテナの中で走ったことを、テスト自身に証明させる。**

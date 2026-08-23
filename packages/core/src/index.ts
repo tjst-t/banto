@@ -26,6 +26,7 @@ export {
   type RunRequested,
   type RunTested,
   type ThreadCreated,
+  type ThreadDeleted,
   type ThreadForked,
   type ThreadId,
   type ThreadMerged,
@@ -53,10 +54,12 @@ export {
 
 export {
   DEFAULT_BASE_LIMIT_CHARACTERS,
+  SHARED_BASE_CHANNEL_ID,
   appendBase,
   baseCharacters,
   baseLimitDecisionId,
   checkBaseAppend,
+  ensureSharedBaseThread,
   invalidateBase,
   reactivateBase,
   type BaseAccepted,
@@ -68,8 +71,10 @@ export {
 export {
   effectiveBase,
   effectiveBaseEntries,
+  effectiveWorkspaceRoot,
   fold,
   pendingQueue,
+  SHARED_BASE_THREAD_ID,
   type BaseEntry,
   type ChannelState,
   type EffectiveBaseEntry,

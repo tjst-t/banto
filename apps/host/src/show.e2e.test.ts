@@ -45,14 +45,14 @@ describe.skipIf(!enabled)('AI がファイルを更新して、それを指す�
     await log.append({ type: 'channel.created', channelId: 'c1', channelName: 'show' });
     await log.append({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '指す' });
 
-    const { fsModule } = await import('@banto/module-fs');
+    const { fsModule, manifest: fsManifest } = await import('@banto/module-fs');
     // server.ts と同じ検証を通す（`show` が実在しない uri を記録しないことも、
     // ここで一緒に確かめる）。
-    const fsCaller = await connectInProcess(fsModule.createServer());
+    const fsCaller = await connectInProcess(fsModule(fsRoot).createServer());
     const face = conversationModule(log, 't1', (uri) => fsCaller.readResource(uri), DEFAULT_BASE_LIMIT_CHARACTERS);
 
     const servers: McpServerSpec[] = [
-      { name: fsModule.manifest.id, kind: 'in-process', server: fsModule.createServer() },
+      { name: fsManifest.id, kind: 'in-process', server: fsModule(fsRoot).createServer() },
       { name: face.manifest.id, kind: 'in-process', server: face.createServer() },
     ];
     const tools = new Map<string, readonly string[]>([

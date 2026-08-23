@@ -15,9 +15,9 @@
  * 直接呼ばず `appendBase` を通す——ゲートは、迂回できる場所に置くと迂回される。
  */
 
-import type { NewEvent, ThreadId } from './event.js';
+import type { ChannelId, NewEvent, ThreadId } from './event.js';
 import type { State } from './fold.js';
-import { effectiveBase } from './fold.js';
+import { effectiveBase, SHARED_BASE_THREAD_ID } from './fold.js';
 import type { EventLog } from './log.js';
 
 /**
@@ -31,6 +31,34 @@ import type { EventLog } from './log.js';
  * **実際の base が溜まったら測り直す。** そのときまで、この数字を根拠として引用しない。
  */
 export const DEFAULT_BASE_LIMIT_CHARACTERS = 20_000;
+
+/** 共有baseスレッドを束ねる、これも固定id（決定30）。名前検索を挟まない。 */
+export const SHARED_BASE_CHANNEL_ID: ChannelId = 'shared-base-channel';
+
+/**
+ * 共有baseスレッドを1つに保つ。**二重に作らない**——固定idなので、
+ * 在るかどうかは `state.threads.has` を見るだけで分かる（名前検索は要らない）。
+ *
+ * 呼び出し側（`append_shared_base` ツール・`/api/base` の共有base向け経路）が、
+ * 使う前に毎回これを通す——`ensureChannel`（`apps/host/src/server.ts`）と
+ * 同じ「無ければ作る」の形（規則12）。
+ */
+export async function ensureSharedBaseThread(log: EventLog, state: State): Promise<void> {
+  if (state.threads.has(SHARED_BASE_THREAD_ID)) return;
+  if (!state.channels.has(SHARED_BASE_CHANNEL_ID)) {
+    await log.append({
+      type: 'channel.created',
+      channelId: SHARED_BASE_CHANNEL_ID,
+      channelName: 'shared-base',
+    });
+  }
+  await log.append({
+    type: 'thread.created',
+    threadId: SHARED_BASE_THREAD_ID,
+    channelId: SHARED_BASE_CHANNEL_ID,
+    title: '共有base',
+  });
+}
 
 /**
  * 大きさを**文字数**で測る。

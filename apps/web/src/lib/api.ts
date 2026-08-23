@@ -33,6 +33,7 @@ export async function fetchState(): Promise<StateResponse> {
 export async function createThread(body: {
   channelName?: string;
   title?: string;
+  workspaceRoot?: string;
 }): Promise<CreateThreadResponse> {
   const res = await fetch('/api/threads', {
     method: 'POST',
@@ -108,6 +109,23 @@ export async function mergeThread(body: { threadId: string }): Promise<MergeThre
     body: JSON.stringify(body),
   });
   return asJson<MergeThreadResponse>(res);
+}
+
+/**
+ * スレッドを削除する（決定30）。**未マージのフォークは host 側が自動でマージする。**
+ * `shareToSharedBase` は、このスレッド自身の base のうち共有baseへ持ち出す
+ * `baseVersion` の一覧——省くと何も持ち出さない。
+ */
+export async function deleteThread(body: {
+  threadId: string;
+  shareToSharedBase?: number[];
+}): Promise<{ threadId: string; mergedForks: number; shared: number }> {
+  const res = await fetch('/api/threads/delete', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return asJson(res);
 }
 
 /**

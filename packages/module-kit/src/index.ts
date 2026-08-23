@@ -54,6 +54,8 @@ export {
 
 export { connectInProcess, connectSubprocess, type ToolCaller } from './client.js';
 
+export { resolveInside } from './boundary.js';
+
 export {
   describeImpact,
   impactOfDisabling,

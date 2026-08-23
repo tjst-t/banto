@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { contextSize, LOG_VERSION, type BantoEvent, type NewEvent } from './event.js';
-import { effectiveBase, fold, pendingQueue } from './fold.js';
+import {
+  effectiveBase,
+  effectiveBaseEntries,
+  effectiveWorkspaceRoot,
+  fold,
+  pendingQueue,
+  SHARED_BASE_THREAD_ID,
+} from './fold.js';
 
 let clock = 0;
 /** 封筒を埋める。試験では時刻を単調増加させ、順序が効くことを確かめられるようにする。 */
@@ -61,6 +68,180 @@ describe('fold', () => {
     expect(effectiveBase(state, 't1')).toEqual(['依頼', '制約', '親だけの決定']);
     expect(effectiveBase(state, 't2')).toEqual(['依頼', '制約', '枝だけの決定']);
     expect(effectiveBase(state, 't2')).not.toContain('親だけの決定');
+  });
+
+  // 決定29：workspaceRoot はハードな壁ではないが、書き込み系ツールがこれを境界に使う。
+  it('workspaceRoot を宣言していないスレッドは null', () => {
+    const state = fold([
+      ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
+      ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '一本目' }),
+    ]);
+    expect(effectiveWorkspaceRoot(state, 't1')).toBeNull();
+  });
+
+  it('root が宣言した workspaceRoot を、フォークは自分で持たずに引き継ぐ', () => {
+    const state = fold([
+      ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
+      ev({
+        type: 'thread.created',
+        threadId: 't1',
+        channelId: 'c1',
+        title: '親',
+        workspaceRoot: 'repo-a',
+      }),
+      ev({
+        type: 'thread.forked',
+        threadId: 't2',
+        channelId: 'c1',
+        title: '枝',
+        from: { threadId: 't1', baseVersion: 0 },
+        mode: 'base',
+      }),
+    ]);
+    expect(effectiveWorkspaceRoot(state, 't1')).toBe('repo-a');
+    expect(effectiveWorkspaceRoot(state, 't2')).toBe('repo-a');
+    // 自分では持っていない——親をたどって初めて分かる。
+    expect(state.threads.get('t2')?.workspaceRoot).toBeNull();
+  });
+
+  it('フォークのフォークも、根まで遡って workspaceRoot を引き継ぐ', () => {
+    const state = fold([
+      ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
+      ev({
+        type: 'thread.created',
+        threadId: 't1',
+        channelId: 'c1',
+        title: '親',
+        workspaceRoot: 'repo-a',
+      }),
+      ev({
+        type: 'thread.forked',
+        threadId: 't2',
+        channelId: 'c1',
+        title: '枝',
+        from: { threadId: 't1', baseVersion: 0 },
+        mode: 'base',
+      }),
+      ev({
+        type: 'thread.forked',
+        threadId: 't3',
+        channelId: 'c1',
+        title: '孫枝',
+        from: { threadId: 't2', baseVersion: 0 },
+        mode: 'base',
+      }),
+    ]);
+    expect(effectiveWorkspaceRoot(state, 't3')).toBe('repo-a');
+  });
+
+  // 決定30：共有base（帳場ではない別物。会話をしない、baseだけを持つ固定idのスレッド）。
+  describe('共有base（決定30）', () => {
+    it('共有baseの行は、どのスレッドの effectiveBase にも入る', () => {
+      const state = fold([
+        ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
+        ev({ type: 'thread.created', threadId: SHARED_BASE_THREAD_ID, channelId: 'c1', title: '共有base' }),
+        ev({ type: 'base.appended', threadId: SHARED_BASE_THREAD_ID, baseVersion: 1, text: '一般的な事実' }),
+        ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '一本目' }),
+      ]);
+      expect(effectiveBase(state, 't1')).toEqual(['一般的な事実']);
+    });
+
+    // ここがfork継承との決定的な違い——fork継承は要件R4で凍結するが、共有baseは凍結しない。
+    it('fork した後に共有baseへ足しても、既存のフォークにすぐ効く（凍結しない）', () => {
+      const state = fold([
+        ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
+        ev({ type: 'thread.created', threadId: SHARED_BASE_THREAD_ID, channelId: 'c1', title: '共有base' }),
+        ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '親' }),
+        ev({
+          type: 'thread.forked',
+          threadId: 't2',
+          channelId: 'c1',
+          title: '枝',
+          from: { threadId: 't1', baseVersion: 0 },
+          mode: 'base',
+        }),
+        // フォークを切った**後**に共有baseへ追記。
+        ev({ type: 'base.appended', threadId: SHARED_BASE_THREAD_ID, baseVersion: 1, text: '後から足した一般的事実' }),
+      ]);
+      expect(effectiveBase(state, 't2')).toContain('後から足した一般的事実');
+    });
+
+    it('共有baseスレッド自身から見ると、自分の行は own のまま（二重に足されない）', () => {
+      const state = fold([
+        ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
+        ev({ type: 'thread.created', threadId: SHARED_BASE_THREAD_ID, channelId: 'c1', title: '共有base' }),
+        ev({ type: 'base.appended', threadId: SHARED_BASE_THREAD_ID, baseVersion: 1, text: '一般的な事実' }),
+      ]);
+      const entries = effectiveBaseEntries(state, SHARED_BASE_THREAD_ID);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ own: true, ownerThreadId: SHARED_BASE_THREAD_ID });
+    });
+
+    it('他スレッドから見ると own は false、ownerThreadId は共有baseのid', () => {
+      const state = fold([
+        ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
+        ev({ type: 'thread.created', threadId: SHARED_BASE_THREAD_ID, channelId: 'c1', title: '共有base' }),
+        ev({ type: 'base.appended', threadId: SHARED_BASE_THREAD_ID, baseVersion: 1, text: '一般的な事実' }),
+        ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '一本目' }),
+      ]);
+      const entries = effectiveBaseEntries(state, 't1');
+      expect(entries[0]).toMatchObject({ own: false, ownerThreadId: SHARED_BASE_THREAD_ID });
+    });
+
+    // fork継承の版号比較（origin.baseVersion）と、共有baseの版号が混ざらないことの確認。
+    it('親の版号と共有baseの版号が別空間でも、fork継承の境界は正しく効く', () => {
+      const state = fold([
+        ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
+        ev({ type: 'thread.created', threadId: SHARED_BASE_THREAD_ID, channelId: 'c1', title: '共有base' }),
+        ev({ type: 'base.appended', threadId: SHARED_BASE_THREAD_ID, baseVersion: 1, text: '共有1' }),
+        ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '親' }),
+        ev({ type: 'base.appended', threadId: 't1', baseVersion: 1, text: '親1' }),
+        ev({
+          type: 'thread.forked',
+          threadId: 't2',
+          channelId: 'c1',
+          title: '枝',
+          from: { threadId: 't1', baseVersion: 1 },
+          mode: 'base',
+        }),
+        // フォーク後の親の追記（枝には入らないはず）。baseVersionが共有baseの1と重複することを確かめる。
+        ev({ type: 'base.appended', threadId: 't1', baseVersion: 2, text: '親2（フォーク後）' }),
+      ]);
+      expect(effectiveBase(state, 't2')).toEqual(['共有1', '親1']);
+      expect(effectiveBase(state, 't1')).toEqual(['共有1', '親1', '親2（フォーク後）']);
+    });
+  });
+
+  // 決定30：削除はトゥームストーン。ログからは消えない。
+  describe('thread.deleted（決定30）', () => {
+    it('deleted フラグが立つが、スレッド自体はマップに残る', () => {
+      const state = fold([
+        ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
+        ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '一本目' }),
+        ev({ type: 'thread.deleted', threadId: 't1' }),
+      ]);
+      expect(state.threads.get('t1')?.deleted).toBe(true);
+      expect(state.threads.has('t1')).toBe(true);
+    });
+
+    it('親を削除しても、既に存在するフォークの effectiveBase は壊れない', () => {
+      const state = fold([
+        ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
+        ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '親' }),
+        ev({ type: 'base.appended', threadId: 't1', baseVersion: 1, text: '親の決定' }),
+        ev({
+          type: 'thread.forked',
+          threadId: 't2',
+          channelId: 'c1',
+          title: '枝',
+          from: { threadId: 't1', baseVersion: 1 },
+          mode: 'base',
+        }),
+        ev({ type: 'thread.merged', threadId: 't2', into: 't1' }),
+        ev({ type: 'thread.deleted', threadId: 't1' }),
+      ]);
+      expect(effectiveBase(state, 't2')).toEqual(['親の決定']);
+    });
   });
 
   it('fork は既定で base から切る', () => {

@@ -16,7 +16,7 @@ import { writeFile } from 'node:fs/promises';
 
 import path from 'node:path';
 
-import { EventLog, fold, pendingQueue, type NewEvent } from '@banto/core';
+import { EventLog, fold, foldApprovals, ledgerOf, pendingQueue, type NewEvent } from '@banto/core';
 import {
   Factory,
   environmentPortOver,
@@ -27,20 +27,23 @@ import {
 import {
   assertStartable,
   connectInProcess,
+  requiredRoot,
   resolve,
+  resolveInside,
   type BantoModule,
   type ModuleSource,
   type ToolCaller,
 } from '@banto/module-kit';
-import { fsModule } from '@banto/module-fs';
+import { fsModule, manifest as fsManifest } from '@banto/module-fs';
 import { envProcessModule } from '@banto/module-env-process';
 import { envDockerModule } from '@banto/module-env-docker';
+import { envScriptModule } from '@banto/module-env-script';
 import { publishNoneModule } from '@banto/module-publish-none';
-import { repoModule } from '@banto/module-repo';
+import { repoModule, manifest as repoManifest } from '@banto/module-repo';
 import { workerModule } from '@banto/module-worker';
 import { AgentSdkRunner } from '@banto/runner';
 
-import { startServer } from './server.js';
+import { startServer, type FactoryPool } from './server.js';
 
 interface RunArgs {
   dataDir: string;
@@ -189,9 +192,19 @@ async function buildFactory(
   model: string,
   /**
    * どの環境実装を使うか（仕様 §6：**運用者が決める**、リポジトリではない）。
-   * **既定は隔離しない `env-process`**——隔離を上げるのは明示的な選択にする。
+   *
+   * **既定は隔離する `env-docker`。** Factory は人が見ていない状態で自律的に
+   * コマンドを実行する（決定29の2軸モデル：監督なし×構造で縛る）。`env-process` は
+   * ホストと同じ権限で任意コマンドを実行する無隔離の実装なので、既定にしない
+   * ——使うなら運用者が明示的に選ぶ（`--env env-process`）。
+   *
+   * `env-script` は**リポジトリが自前の環境を宣言できる**実装（`.banto/repo.json`）。
+   * これも監督なし×banto外に影響しうる操作なので、2つの門を維持する
+   * ——①ここで明示的に選んだ`repoRoot`だけが対象になる（リポジトリの中身だけでは
+   * 有効化されない）、②スクリプトの中身は承認台帳を通るまで実行されない
+   * （`ScriptEnvironmentCore`・`UnapprovedScriptError`）。
    */
-  environmentId: 'env-process' | 'env-docker' = 'env-process',
+  environmentId: 'env-process' | 'env-docker' | 'env-script' = 'env-docker',
   /**
    * 公開手段（仕様 §3）。**渡さなければ公開の枝に入らない**——
    * どこまで届く URL を生やすかは、運用者が1行書いて決めること。
@@ -199,13 +212,6 @@ async function buildFactory(
   publishId: 'publish-none' | undefined = undefined,
 ): Promise<Factory> {
   const log = new EventLog(dataDir);
-
-  /**
-   * モジュールの作業範囲は環境変数から渡す（`requiredRoot`：既定値を持たない）。
-   * **これは黙った既定ではない**——運用者が `--repo` と書いたことの言い換えである。
-   */
-  process.env['BANTO_REPO_ROOT'] = repoRoot;
-  process.env['BANTO_ENV_ROOT'] = repoRoot;
 
   const worker = workerModule({
     log,
@@ -216,10 +222,23 @@ async function buildFactory(
     extraAllowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep'],
   });
 
-  const environment = environmentId === 'env-docker' ? envDockerModule : envProcessModule;
+  /**
+   * モジュールの作業範囲は直接渡す（決定29）。**環境変数のグローバル書き込みはしない**
+   * ——`buildFactory` は複数リポジトリぶん並行で呼ばれうる（`factoryPool`）。
+   * 1つのプロセス内で `process.env` を書き換える方式だと、後から呼んだ
+   * `buildFactory` の `repoRoot` が先に呼んだものを上書きしてしまう。
+   */
+  const environment =
+    environmentId === 'env-docker'
+      ? envDockerModule(repoRoot)
+      : environmentId === 'env-script'
+        ? // **許可されるのはこの `repoRoot` だけ**（門①）。承認台帳は畳んで作る——
+          // 保存された「承認済み一覧」を持たない（規則3・approval.ts）。
+          envScriptModule({ allowedRepos: [repoRoot], ledger: ledgerOf(foldApprovals(await log.read())) })
+        : envProcessModule(repoRoot);
 
   const servers = new Map([
-    ['repo', repoModule.createServer()],
+    ['repo', repoModule(repoRoot).createServer()],
     [environmentId, environment.createServer()],
     ['worker', worker.createServer()],
     ...(publishId === undefined
@@ -230,7 +249,7 @@ async function buildFactory(
   for (const [id, server] of servers) callers.set(id, await connectInProcess(server));
 
   const sources: ModuleSource[] = [
-    { manifest: repoModule.manifest, listTools: () => listToolsVia(callers, 'repo') },
+    { manifest: repoManifest, listTools: () => listToolsVia(callers, 'repo') },
     { manifest: environment.manifest, listTools: () => listToolsVia(callers, environmentId) },
     { manifest: worker.manifest, listTools: () => listToolsVia(callers, 'worker') },
     ...(publishId === undefined
@@ -296,6 +315,37 @@ async function buildFactory(
   });
 }
 
+/**
+ * 複数のリポジトリを1つの banto で扱うための組み立て（決定29）。
+ *
+ * `reposRoot` は広い親（例: `$HOME/projects`）。`repo`（相対パス）ごとに
+ * `buildFactory` を1回だけ呼び、以後は使い回す——**作り直さない**のは
+ * `RepoCore.addWorktree` と同じ考え（要件 B5）。`repo` を省くと `'.'`
+ * ——`reposRoot` 自体が1つのリポジトリである、今までどおりの単一リポジトリ運用。
+ *
+ * `resolveInside` で境界を確かめる。**広い root の外を指しても広がらない**
+ * ——fs の書き込み境界（決定29）と同じ道具を使う。
+ */
+export function buildFactoryPool(
+  dataDir: string,
+  reposRoot: string,
+  model: string,
+  environmentId: 'env-process' | 'env-docker' | 'env-script',
+  publishId: 'publish-none' | undefined,
+): FactoryPool {
+  const built = new Map<string, Promise<Factory>>();
+  const factoryFor = (repo: string): Promise<Factory> => {
+    const absolute = resolveInside(reposRoot, repo);
+    let promise = built.get(absolute);
+    if (promise === undefined) {
+      promise = buildFactory(dataDir, absolute, model, environmentId, publishId);
+      built.set(absolute, promise);
+    }
+    return promise;
+  };
+  return { factoryFor, allBuilt: () => Promise.all(built.values()) };
+}
+
 /** 台帳の突き合わせも、**繋いだ口から**聞く（自己申告を自己申告で確かめない・規則1）。 */
 /**
  * `hello-py` の台帳を読む（要件 C6）。**JSON をそのまま読む**——
@@ -359,10 +409,12 @@ async function main(): Promise<void> {
       /**
        * 環境の実装（仕様 §6：**運用者が決める**）。**知らない名前は断る**
        * ——黙って既定へ落ちると、隔離したつもりでしていないことになる（規則2）。
+       *
+       * **既定は `env-docker`**（決定29）。`env-process` は明示的な選択でのみ使う。
        */
-      const environmentId = flag(argv, 'env', 'env-process');
-      if (environmentId !== 'env-process' && environmentId !== 'env-docker') {
-        throw new Error(`知らない環境: ${environmentId}（env-process か env-docker）`);
+      const environmentId = flag(argv, 'env', 'env-docker');
+      if (environmentId !== 'env-process' && environmentId !== 'env-docker' && environmentId !== 'env-script') {
+        throw new Error(`知らない環境: ${environmentId}（env-process か env-docker か env-script）`);
       }
 
       /** 公開手段（仕様 §3）。**知らない名前は断る**——黙って既定へ落ちない。 */
@@ -372,10 +424,18 @@ async function main(): Promise<void> {
       }
       const publishId = publishFlag === '' ? undefined : 'publish-none';
 
+      /**
+       * `--repo` は**広い親**（複数リポジトリの根）にもなれる（決定29）。
+       * `/api/runs` が `repo`（相対パス、省くと `'.'`）を指定すると、
+       * そのリポジトリ向けの Factory を**要求されて初めて**組み立てる
+       * ——先回りして全部には繋がない。単一リポジトリ運用（`repo` を指定しない）は
+       * 今までどおり、`reposRoot` 自体が唯一のリポジトリとして動く。
+       */
       const factory =
         repoRoot === ''
           ? undefined
-          : await buildFactory(dataDir, repoRoot, model, environmentId, publishId);
+          : buildFactoryPool(dataDir, repoRoot, model, environmentId, publishId);
+      const fsRoot = requiredRoot('BANTO_FS_ROOT');
       // Phase 1.5 では fs だけを繋ぐ。shell / repo は subprocess なので、
       // 台帳から解決する経路を通してから足す（要件 C11）。
       startServer({
@@ -383,7 +443,17 @@ async function main(): Promise<void> {
         port,
         // **インスタンスではなく、作る関数を渡す**（`server.ts` の `ModuleFactory` 参照）。
         // 使い回すと2回目の問い合わせで `fs` の道具が消える（実測 2026-08-22）。
-        modules: [{ name: fsModule.manifest.id, kind: 'in-process', createServer: () => fsModule.createServer() }],
+        //
+        // `writeRoot` は `server.ts` がスレッドごとに解いて渡す（決定29：読み取りは
+        // 広く、書き込みは狭く）。ここでは受け取って `fsModule` に流すだけ——
+        // 境界の判定そのものは `FileSystemCore` に1つだけある（規則3）。
+        modules: [
+          {
+            name: fsManifest.id,
+            kind: 'in-process',
+            createServer: (writeRoot) => fsModule(fsRoot, writeRoot ?? null).createServer(),
+          },
+        ],
         toolsByModule: new Map([['fs', ['read', 'write', 'list']]]),
         /**
          * 画面の割り当ては台帳から導く（決定20）。別表を持たない（規則3）。
@@ -392,7 +462,7 @@ async function main(): Promise<void> {
          * **subprocess で TypeScript でもないモジュールが `sandboxed` な面を
          * 持ち込めること**が要件 C6 の中身なので、面だけは配る。
          */
-        manifests: [fsModule.manifest, helloPyManifest()],
+        manifests: [fsManifest, helloPyManifest()],
         model,
         host: flag(argv, 'host', '127.0.0.1'),
         ...(factory === undefined ? {} : { factory }),

@@ -113,9 +113,6 @@ async function measure(level: number): Promise<Totals> {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'banto-f4-log-'));
   const log = new EventLog(dataDir);
 
-  process.env['BANTO_REPO_ROOT'] = root;
-  process.env['BANTO_ENV_ROOT'] = root;
-
   const worker = workerModule({
     log,
     model: 'claude-haiku-4-5',
@@ -134,8 +131,8 @@ async function measure(level: number): Promise<Totals> {
 
   const factory = new Factory({
     log,
-    repo: repoPortOver(await connect(repoModule.createServer())),
-    environment: environmentPortOver(await connect(envProcessModule.createServer())),
+    repo: repoPortOver(await connect(repoModule(root).createServer())),
+    environment: environmentPortOver(await connect(envProcessModule(root).createServer())),
     implementer: workerImplementerOver(await connect(worker.createServer()), (workdir) =>
       path.resolve(root, workdir),
     ),

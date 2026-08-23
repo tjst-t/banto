@@ -37,6 +37,11 @@ export interface ThreadSummary {
   /** base のいまの大きさと上限（要件 R8）。**拒否される前から見せる。** */
   readonly baseCharacters: number;
   readonly baseLimit: number;
+  /**
+   * このスレッドが向いているリポジトリ（決定29）。フォークは根から継承する
+   * （`effectiveWorkspaceRoot`）。宣言していなければ `null`。
+   */
+  readonly workspaceRoot: string | null;
 }
 
 /** Factory の Run（要件 B）。**畳んで作られたもの**で、保存された「段」は無い。 */
@@ -93,6 +98,8 @@ export interface BaseResponse {
 
 export interface StateResponse {
   readonly channels: ChannelSummary[];
+  /** 共有baseスレッドの固定id（決定30）。会話をしないので「開いているもの」には出さない。 */
+  readonly sharedBaseThreadId: string;
   readonly threads: ThreadSummary[];
   readonly runs: RunSummary[];
   readonly queue: PendingDecision[];
@@ -106,6 +113,7 @@ export interface RequestRunResponse {
 export interface CreateThreadResponse {
   readonly threadId: string;
   readonly channelId: string;
+  readonly workspaceRoot: string | null;
 }
 
 export interface MergeThreadResponse {

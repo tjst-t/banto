@@ -20,7 +20,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { resolve, type BantoModule, type ModuleSource } from '@banto/module-kit';
 import { publishNoneModule } from '@banto/module-publish-none';
 
-import { envProcessModule } from './index.js';
+import { envProcessModule, manifest as envProcessManifest } from './index.js';
 
 /** 本物のサーバに繋いで `tools/list` を聞く。ここを偽ると、試験が何も証明しない。 */
 function liveSource(module: { manifest: BantoModule; createServer: () => unknown }): ModuleSource {
@@ -55,13 +55,14 @@ const factory: ModuleSource = {
   listTools: async () => ['request'],
 };
 
+let root: string;
+
 beforeAll(async () => {
-  // createCore() が起動時に読む。既定値を持たないので、設定しないとここで落ちる。
-  process.env['BANTO_ENV_ROOT'] = await mkdtemp(path.join(tmpdir(), 'banto-env-cap-'));
+  root = await mkdtemp(path.join(tmpdir(), 'banto-env-cap-'));
 });
 
 describe('env-process と publish-none が役割を満たす（決定16）', () => {
-  const sources = () => [liveSource(envProcessModule), liveSource(publishNoneModule), factory];
+  const sources = () => [liveSource(envProcessModule(root)), liveSource(publishNoneModule), factory];
   const bound = new Map([
     ['environment', 'env-process'],
     ['publish', 'publish-none'],
@@ -76,7 +77,7 @@ describe('env-process と publish-none が役割を満たす（決定16）', () 
   // 名乗るだけでは足りない。口の名前を1つ変えれば、起動時に落ちなければならない。
   it('実装がツール名を変えたら、使う瞬間ではなく起動時に落ちる', async () => {
     const renamed: ModuleSource = {
-      manifest: { ...envProcessModule.manifest, id: 'env-process' },
+      manifest: { ...envProcessManifest, id: 'env-process' },
       listTools: async () => ['create', 'status', 'run', 'address', 'destroy'], // exec → run
     };
     const resolution = await resolve([renamed, liveSource(publishNoneModule), factory], bound);

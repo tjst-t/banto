@@ -13,6 +13,8 @@
     "@banto/factory": "*",
     "@banto/module-repo": "*",
     "@banto/module-env-process": "*",
+    "@banto/module-env-docker": "*",
+    "@banto/module-env-script": "*",
     "@banto/module-worker": "*",
     "@banto/module-ledger": "*",
     "@banto/module-publish-none": "*"

@@ -86,7 +86,8 @@ beforeEach(async () => {
     modules: [],
     toolsByModule: new Map(),
     model: 'claude-sonnet-5',
-    factory,
+    // このスイートは単一リポジトリのみ扱う。`FactoryPool` を1本の Factory で満たす。
+    factory: { factoryFor: async () => factory, allBuilt: async () => [factory] },
   });
   await new Promise((r) => server.once('listening', r));
   origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;

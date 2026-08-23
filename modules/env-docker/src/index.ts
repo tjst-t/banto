@@ -5,10 +5,10 @@
  * 引数も返り値も同じ形——差し替えられることが、ここで初めて実物で確かめられる。
  */
 
-import { defineModule, requiredRoot, type BantoModule } from '@banto/module-kit';
+import { defineModule, type BantoModule, type DefinedModule } from '@banto/module-kit';
 import { z } from 'zod';
 
-import { DockerEnvironmentCore } from './core.js';
+import { DEFAULT_NETWORK, DockerEnvironmentCore } from './core.js';
 
 export const manifest: BantoModule = {
   id: 'env-docker',
@@ -33,9 +33,20 @@ function requiredImage(): string {
   return value;
 }
 
-export const envDockerModule = defineModule({
+/**
+ * `--network`。**既定は `DEFAULT_NETWORK`**（`--internal` なブリッジ、決定29）。
+ * 運用者が明示的に指定したときだけ変わる——空文字と未設定を同じに扱う。
+ */
+function dockerNetwork(): string {
+  const value = process.env['BANTO_DOCKER_NETWORK'];
+  return value === undefined || value.trim() === '' ? DEFAULT_NETWORK : value;
+}
+
+/** `root` は呼び手が解いて渡す（決定29）——`repo`/`env-process` と同じ理由。 */
+export function envDockerModule(root: string): DefinedModule {
+  return defineModule({
   manifest,
-  createCore: () => new DockerEnvironmentCore(requiredRoot('BANTO_ENV_ROOT'), requiredImage()),
+  createCore: () => new DockerEnvironmentCore(root, requiredImage(), undefined, dockerNetwork()),
   tools: (tool) => [
     tool({
       name: 'create',
@@ -88,6 +99,7 @@ export const envDockerModule = defineModule({
       summary: (v) => v.detail,
     }),
   ],
-});
+  });
+}
 
-export { DockerEnvironmentCore, MOUNT_PATH, containerNameFor, type ExecResult } from './core.js';
+export { DEFAULT_NETWORK, DockerEnvironmentCore, MOUNT_PATH, containerNameFor, type ExecResult } from './core.js';

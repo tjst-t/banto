@@ -27,6 +27,8 @@ import { createHash } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
 
+import { resolveInside } from '@banto/module-kit';
+
 export interface ExecResult {
   readonly exitCode: number;
   readonly stdout: string;
@@ -38,6 +40,19 @@ const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** コンテナの中で作業ツリーが見える場所。**1箇所で決める**（規則3）。 */
 export const MOUNT_PATH = '/workspace';
+
+/**
+ * 既定のネットワーク名（決定29）。
+ *
+ * `--network none` は試して捨てた——ホストからコンテナへ届かなくなり、
+ * `address`（プレビュー用の到達性）が壊れる（実測。コンテナに IP が付かない）。
+ * 代わりに **`--internal` なブリッジ**を使う：実測で確かめたところ、
+ * ホスト↔コンテナは届く（`address` が生きる）が、コンテナ→外部インターネットは
+ * 塞がる（`docker network create --internal` の効果）。既定でこのネットワークを
+ * 使うときだけ、無ければここが作る（運用者が別名を指定したときは作らない
+ * ——その名前の用意は運用者の責任）。
+ */
+export const DEFAULT_NETWORK = 'banto-internal';
 
 /**
  * 作業ディレクトリから決まるコンテナ名。**覚えないための鍵**（規則3）。
@@ -65,19 +80,24 @@ export class DockerEnvironmentCore {
      */
     private readonly image: string,
     private readonly timeoutMs: number = DEFAULT_TIMEOUT_MS,
+    /**
+     * docker の `--network`。**既定は `DEFAULT_NETWORK`（`--internal` なブリッジ）**
+     * （決定29）。
+     *
+     * ここは人が見ていない状態で走る（Factory）。コンテナはファイルシステムこそ
+     * worktree に閉じるが、ネットワークも既定では外部インターネットに出られない
+     * ——持ち出しや内部ネットワークへの到達を、既定で塞ぐ。ホストからコンテナへの
+     * 到達（`address`、プレビュー用）は保つ。実際に外部通信が要るRunだけ、
+     * 運用者が明示的に緩める（`BANTO_DOCKER_NETWORK`）。
+     */
+    private readonly network: string = DEFAULT_NETWORK,
   ) {
     this.root = path.resolve(root);
     if (image.trim() === '') throw new Error('image が空——何の箱で走らせるかは決めておく');
   }
 
-  /** root の内側に閉じ込める。**判定は正規化してから**——`..` は見た目では防げない。 */
   private inside(workdir: string): string {
-    const target = path.resolve(this.root, workdir);
-    const rel = path.relative(this.root, target);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      throw new Error(`許された範囲の外: ${workdir}（root=${this.root}）`);
-    }
-    return target;
+    return resolveInside(this.root, workdir);
   }
 
   /** docker を1回叩く。**終了コードを結果として返す**——失敗にしない（教訓13）。 */
@@ -112,6 +132,20 @@ export class DockerEnvironmentCore {
   }
 
   /**
+   * 既定のネットワークだけ、無ければ作る。
+   *
+   * 運用者が別名を渡したときは何もしない——その名前を用意する責任は運用者側
+   * （`BANTO_DOCKER_IMAGE` と同じ考え方。決定29）。**何度呼んでも安全**
+   * （`docker network inspect` で在ることを確かめてから作る）。
+   */
+  private async ensureNetwork(): Promise<void> {
+    if (this.network !== DEFAULT_NETWORK) return;
+    const r = await this.docker(['network', 'inspect', DEFAULT_NETWORK]);
+    if (r.exitCode === 0) return;
+    await this.dockerOrThrow(['network', 'create', '--internal', DEFAULT_NETWORK]);
+  }
+
+  /**
    * 環境を1つ用意して handle（＝コンテナ名）を返す。
    *
    * **何度呼んでも同じ handle。** 名前が作業ディレクトリから決まるので、
@@ -136,6 +170,8 @@ export class DockerEnvironmentCore {
       return name;
     }
 
+    await this.ensureNetwork();
+
     await this.dockerOrThrow([
       'run',
       '--detach',
@@ -143,6 +179,9 @@ export class DockerEnvironmentCore {
       name,
       '--workdir',
       MOUNT_PATH,
+      // **既定で外部インターネットに出られない**（決定29）。
+      '--network',
+      this.network,
       // **作業ツリーだけを渡す。** ホストの他の場所は見えない。
       '--mount',
       `type=bind,source=${target},target=${MOUNT_PATH}`,

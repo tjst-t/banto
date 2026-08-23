@@ -77,6 +77,16 @@ export interface ThreadCreated extends Envelope {
   readonly threadId: ThreadId;
   readonly channelId: ChannelId;
   readonly title: string;
+  /**
+   * このスレッドが向いているリポジトリ（決定29）。**広いrootからの相対パス。**
+   *
+   * ハードな壁ではない——会話は人が同席するので、読み取りは既定で広いままでよい
+   * （決定29の2軸モデル）。これは「このスレッドはどこの仕事をしているか」という
+   * 宣言で、書き込み系ツール（fs write 等）だけがこれを境界として使う。
+   * 任意——リポジトリに紐づかない会話も普通にある。フォークはここを持たず、
+   * fork元をたどって解決する（`effectiveWorkspaceRoot`）。
+   */
+  readonly workspaceRoot?: string;
 }
 
 /**
@@ -269,6 +279,23 @@ export interface ThreadMerged extends Envelope {
   readonly into: ThreadId;
 }
 
+/**
+ * スレッドを削除する（決定30）。**トゥームストーン——ログは書き換えない・消さない**
+ * （`base.invalidated`・`thread.merged` と同じ形。規則12）。
+ *
+ * 「開いているもの」「履歴」のどちらからも外れる——`mergedInto` の「畳む」とは
+ * 別の、もう一段強い扱い。`fold` された `ThreadState.deleted` を見て隠すだけで、
+ * `base.appended` 等の元の記録は残る（他スレッドがforkedFromで参照していても、
+ * `effectiveBaseEntries` は id で辿るだけなので壊れない）。
+ *
+ * **持ち出したい行は、この印を立てる前に共有baseへ書いておく**（決定30）
+ * ——`thread.merged` が親へ流し込んでから畳むのと同じ考え。
+ */
+export interface ThreadDeleted extends Envelope {
+  readonly type: 'thread.deleted';
+  readonly threadId: ThreadId;
+}
+
 export type RunId = string;
 
 /**
@@ -371,6 +398,7 @@ export type BantoEvent =
   | MessageRecorded
   | ReferenceRecorded
   | ThreadMerged
+  | ThreadDeleted
   | RunRequested
   | RunTested
   | RunFailed
@@ -399,6 +427,7 @@ const KNOWN_TYPES: ReadonlySet<string> = new Set<EventType>([
   'message.recorded',
   'reference.recorded',
   'thread.merged',
+  'thread.deleted',
   'run.requested',
   'run.tested',
   'run.failed',

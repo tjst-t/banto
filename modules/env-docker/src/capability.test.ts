@@ -53,16 +53,18 @@ const factory: ModuleSource = {
   listTools: async () => ['request'],
 };
 
+let root: string;
+
 beforeAll(async () => {
-  process.env['BANTO_ENV_ROOT'] = await mkdtemp(path.join(tmpdir(), 'banto-env-sub-'));
+  root = await mkdtemp(path.join(tmpdir(), 'banto-env-sub-'));
   // core は image を要る（既定を持たない）。**役割の解決には走らせる必要が無い。**
   process.env['BANTO_DOCKER_IMAGE'] ??= 'node:22-slim';
 });
 
 describe('環境の実装は差し替えられる（決定16）', () => {
   const sources = () => [
-    liveSource(envProcessModule),
-    liveSource(envDockerModule),
+    liveSource(envProcessModule(root)),
+    liveSource(envDockerModule(root)),
     factory,
   ];
 
@@ -74,7 +76,7 @@ describe('環境の実装は差し替えられる（決定16）', () => {
   });
 
   it('どちらも同じ5つの動詞を、本物の tools/list で出す', async () => {
-    for (const module of [envProcessModule, envDockerModule]) {
+    for (const module of [envProcessModule(root), envDockerModule(root)]) {
       const tools = await liveSource(module).listTools();
       expect([...tools].sort()).toEqual(['address', 'create', 'destroy', 'exec', 'status']);
     }

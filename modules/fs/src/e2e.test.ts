@@ -20,13 +20,12 @@ describe.skipIf(!enabled)('fs モジュールを本物の SDK で叩く', () => 
   it('モデルが in-process の MCP ツール経由でファイルを読む', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'banto-fs-e2e-'));
     await writeFile(path.join(root, 'note.txt'), '合言葉は MIKAN。', 'utf8');
-    process.env['BANTO_FS_ROOT'] = root;
 
-    const { fsModule } = await import('./index.js');
+    const { fsModule, manifest } = await import('./index.js');
     const spec: McpServerSpec = {
-      name: fsModule.manifest.id,
+      name: manifest.id,
       kind: 'in-process',
-      server: fsModule.createServer(),
+      server: fsModule(root).createServer(),
     };
 
     let answer = '';

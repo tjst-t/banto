@@ -24,7 +24,10 @@ import {
   baseCharacters,
   effectiveBase,
   effectiveBaseEntries,
+  effectiveWorkspaceRoot,
+  ensureSharedBaseThread,
   fold,
+  SHARED_BASE_THREAD_ID,
   invalidateBase,
   pendingQueue,
   reactivateBase,
@@ -55,9 +58,18 @@ import {
  *
  * **だから固定インスタンスではなく、作る関数を渡す。** 使うたびに
  * `createServer()` を呼び、独立した接続にする。
+ *
+ * `createServer` は `writeRoot` を受け取れる（決定29）。**そのスレッドが
+ * 書き込みを許される範囲**——`fs` はこれで書き込みだけを狭める。
+ * 使わないモジュールは無視してよい。呼び手が省いたときは `undefined` になる
+ * （起動時の読み取り専用接続など、スレッドの文脈が無い場面）。
  */
 export type ModuleFactory =
-  | { readonly name: string; readonly kind: 'in-process'; readonly createServer: () => McpServer }
+  | {
+      readonly name: string;
+      readonly kind: 'in-process';
+      readonly createServer: (writeRoot?: string | null) => McpServer;
+    }
   | {
       readonly name: string;
       readonly kind: 'subprocess';
@@ -106,8 +118,17 @@ export interface ServerOptions {
    * **自動では進めない。** `advanceAll` は実際に Claude の枠を使うので、
    * 明示的に `POST /api/runs/advance` を叩いたときだけ動く。時計で回すと、
    * 画面を閉じている間に費用が増えることになる。
+   *
+   * **複数リポジトリぶん持てる**（決定29）。`factoryFor(repo)` がリポジトリごとに
+   * 1つだけ組み立てて使い回す——単一リポジトリ運用では `repo` を省き（`'.'`）、
+   * 今までどおり1つだけが立つ。
    */
-  readonly factory?: Factory;
+  readonly factory?: FactoryPool;
+}
+
+export interface FactoryPool {
+  readonly factoryFor: (repo: string) => Promise<Factory>;
+  readonly allBuilt: () => Promise<Factory[]>;
 }
 
 const CONTENT_TYPES: ReadonlyMap<string, string> = new Map([
@@ -201,7 +222,14 @@ async function currentState(dataDir: string, baseLimit: number): Promise<unknown
   const state = fold(events);
   return {
     channels: [...state.channels.values()],
-    threads: [...state.threads.values()].map((t) => ({
+    // フロントは Node パッケージを持てないので、固定id（決定30）は値として渡す
+    // ——ハードコードして2箇所で持つと、いつか食い違う（規則3）。
+    sharedBaseThreadId: SHARED_BASE_THREAD_ID,
+    // 削除されたスレッドは、フロントのどの一覧にも出さない（決定30）——
+    // 「開いているもの」からも「履歴」からも外れる、`mergedInto` より一段強い扱い。
+    threads: [...state.threads.values()]
+      .filter((t) => !t.deleted)
+      .map((t) => ({
       id: t.id,
       channelId: t.channelId,
       title: t.title,
@@ -210,6 +238,7 @@ async function currentState(dataDir: string, baseLimit: number): Promise<unknown
       baseVersion: t.baseVersion,
       forkedFrom: t.forkedFrom,
       mergedInto: t.mergedInto,
+      workspaceRoot: effectiveWorkspaceRoot(state, t.id),
       // ゲートの残りを**常に見せる**（要件 R8）。拒否されて初めて存在を知る、を避ける。
       baseCharacters: baseCharacters(state, t.id),
       baseLimit,
@@ -293,6 +322,16 @@ export const SYSTEM_PROMPT = [
   'If an entry turns out wrong, call invalidate_base on it (reactivate_base undoes that) —',
   'do not append a correction on top. A correction still leaves the wrong text counting',
   'against the size limit; invalidating frees it.',
+  '',
+  '# Shared vs conversation-specific',
+  'append_base records facts scoped to this conversation (and its forks). Separately,',
+  'append_shared_base records facts that hold everywhere, regardless of conversation or',
+  'project — durable things about the person themselves (their role, standing preferences,',
+  'constraints that always apply), not this task. It is shown to every conversation, not',
+  'just this one. When unsure which one fits, use append_base — writing something',
+  'conversation-specific to the shared one leaks it into unrelated conversations, which is',
+  'harder to undo than missing a genuinely general fact. You cannot retract or edit shared',
+  'entries yourself; only the person can, from the shared base view.',
 ].join('\n');
 
 export function startServer(options: ServerOptions): ReturnType<typeof createServer> {
@@ -328,11 +367,14 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
    * `resourceCallers` が起動時に繋いだインスタンスとは別物——ここで毎回
    * `createServer()` を呼ぶので、Agent SDK が `.connect()` するのは
    * 常に「一度も繋いだことのない」新品の `McpServer` になる。
+   *
+   * `writeRoot` はそのスレッドの `effectiveWorkspaceRoot` を渡す（決定29）。
+   * 使わないモジュールは無視する——`createServer` の引数は任意。
    */
-  function freshModuleSpecs(): McpServerSpec[] {
+  function freshModuleSpecs(writeRoot: string | null): McpServerSpec[] {
     return options.modules.map((spec) =>
       spec.kind === 'in-process'
-        ? { name: spec.name, kind: 'in-process' as const, server: spec.createServer() }
+        ? { name: spec.name, kind: 'in-process' as const, server: spec.createServer(writeRoot) }
         : spec,
     );
   }
@@ -408,6 +450,10 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
       if (threadId === null) {
         json(res, 400, { error: 'threadId が要る' });
         return;
+      }
+      // 共有baseは、AIがまだ一度も書いていなくても人が開ける（0件として見える）。
+      if (threadId === SHARED_BASE_THREAD_ID) {
+        await ensureSharedBaseThread(log, fold(await log.read()));
       }
       const state = fold(await log.read());
       const thread = state.threads.get(threadId);
@@ -584,6 +630,9 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
         json(res, 400, { error: 'threadId と text が要る' });
         return;
       }
+      if (body.threadId === SHARED_BASE_THREAD_ID) {
+        await ensureSharedBaseThread(log, fold(await log.read()));
+      }
       const state = fold(await log.read());
       if (!state.threads.has(body.threadId)) {
         json(res, 404, { error: `知らないスレッド: ${body.threadId}` });
@@ -600,7 +649,12 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
         json(res, 501, { error: 'この banto に Factory が紐づいていない' });
         return;
       }
-      const body = (await readBody(req)) as { request?: string; channelName?: string; branch?: string };
+      const body = (await readBody(req)) as {
+        request?: string;
+        channelName?: string;
+        branch?: string;
+        repo?: string;
+      };
       if (typeof body.request !== 'string' || body.request.trim() === '') {
         json(res, 400, { error: 'request が要る' });
         return;
@@ -609,7 +663,16 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
       const runId = randomUUID();
       // ブランチ名は Run から決まる。**覚えないので、再開しても同じ名前に着く。**
       const branch = body.branch ?? `factory/${runId.slice(0, 8)}`;
-      await options.factory.request({
+      // **`repo` を省くと `'.'`**（決定29）——`--repo` に渡した1本だけを扱う、
+      // 今までどおりの単一リポジトリ運用。
+      let factory: Factory;
+      try {
+        factory = await options.factory.factoryFor(body.repo ?? '.');
+      } catch (cause) {
+        json(res, 400, { error: cause instanceof Error ? cause.message : String(cause) });
+        return;
+      }
+      await factory.request({
         runId,
         channelId,
         threadId: randomUUID(),
@@ -626,7 +689,9 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
         json(res, 501, { error: 'この banto に Factory が紐づいていない' });
         return;
       }
-      await options.factory.advanceAll();
+      // **これまでに要求されたリポジトリぶんだけ**進める。まだ一度も
+      // `factoryFor` を呼ばれていないリポジトリは、先回りして繋がない。
+      for (const factory of await options.factory.allBuilt()) await factory.advanceAll();
       json(res, 200, await currentState(options.dataDir, baseLimit));
       return;
     }
@@ -766,8 +831,93 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
       return;
     }
 
+    /**
+     * スレッドを削除する（決定30）。**トゥームストーン**——`thread.merged` と同じく、
+     * ログからは何も消えない。「開いているもの」「履歴」のどちらからも外れるだけ。
+     *
+     * 1. **未マージのフォークを先に自動でマージする**（PO裁定）。`/api/threads/merge`
+     *    と同じ経路（`appendBase`のゲートを通す）を、子フォークの数だけ繰り返す
+     * 2. **共有baseへ持ち出す行があれば、削除の前に共有baseへ追記する**（決定30）。
+     *    `shareToSharedBase` は、このスレッド自身の `ownBase` の `baseVersion` の一覧
+     *    ——人が事前にBasePanelで選ぶ
+     * 3. `thread.deleted` を積む
+     *
+     * どこかでゲートに断られたら、そこで止めて理由を返す——**部分的に削除された
+     * 状態を残さない**わけではないが（フォークのマージまでは進んでいてよい）、
+     * 削除の印だけは、共有baseへの持ち出しが成功してから立てる。
+     */
+    if (req.method === 'POST' && url.pathname === '/api/threads/delete') {
+      const body = (await readBody(req)) as { threadId?: string; shareToSharedBase?: number[] };
+      if (typeof body.threadId !== 'string') {
+        json(res, 400, { error: 'threadId が要る' });
+        return;
+      }
+      if (body.threadId === SHARED_BASE_THREAD_ID) {
+        json(res, 400, { error: '共有baseスレッドは削除できない' });
+        return;
+      }
+
+      let state = fold(await log.read());
+      const thread = state.threads.get(body.threadId);
+      if (thread === undefined) {
+        json(res, 404, { error: `知らないスレッド: ${body.threadId}` });
+        return;
+      }
+      if (thread.deleted) {
+        json(res, 400, { error: 'すでに削除されている' });
+        return;
+      }
+
+      // 1. 未マージのフォークを先に畳む。
+      const liveForks = [...state.threads.values()].filter(
+        (t) => t.forkedFrom?.threadId === body.threadId && t.mergedInto === null && !t.deleted,
+      );
+      for (const fork of liveForks) {
+        const mergedText = fork.ownBase
+          .filter((e) => !e.invalidated)
+          .map((e) => e.text)
+          .join('\n');
+        if (mergedText !== '') {
+          const gate = await appendBase(log, state, body.threadId, mergedText, baseLimit);
+          if (!gate.ok) {
+            json(res, 409, { error: `フォーク「${fork.title}」の自動マージで断られた: ${gate.reason}` });
+            return;
+          }
+          state = fold(await log.read());
+        }
+        await log.append({ type: 'thread.merged', threadId: fork.id, into: body.threadId });
+        state = fold(await log.read());
+      }
+
+      // 2. 選ばれた行を、削除の前に共有baseへ持ち出す。
+      const shareVersions = body.shareToSharedBase ?? [];
+      if (shareVersions.length > 0) {
+        await ensureSharedBaseThread(log, state);
+        state = fold(await log.read());
+        const current = state.threads.get(body.threadId);
+        const toShare = (current?.ownBase ?? []).filter((e) => shareVersions.includes(e.baseVersion));
+        for (const entry of toShare) {
+          const gate = await appendBase(log, state, SHARED_BASE_THREAD_ID, entry.text, baseLimit);
+          if (!gate.ok) {
+            json(res, 409, { error: `共有baseへの持ち出しで断られた: ${gate.reason}` });
+            return;
+          }
+          state = fold(await log.read());
+        }
+      }
+
+      // 3. 削除の印を立てる。
+      await log.append({ type: 'thread.deleted', threadId: body.threadId });
+      json(res, 200, { threadId: body.threadId, mergedForks: liveForks.length, shared: shareVersions.length });
+      return;
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/threads') {
-      const body = (await readBody(req)) as { channelName?: string; title?: string };
+      const body = (await readBody(req)) as {
+        channelName?: string;
+        title?: string;
+        workspaceRoot?: string;
+      };
       const state = fold(await log.read());
       const channelName = body.channelName ?? 'banto-v3';
       let channelId = [...state.channels.values()].find((c) => c.name === channelName)?.id;
@@ -776,13 +926,18 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
         await log.append({ type: 'channel.created', channelId, channelName });
       }
       const threadId = randomUUID();
+      const workspaceRoot =
+        typeof body.workspaceRoot === 'string' && body.workspaceRoot.trim() !== ''
+          ? body.workspaceRoot.trim()
+          : undefined;
       await log.append({
         type: 'thread.created',
         threadId,
         channelId,
         title: body.title ?? '新しい会話',
+        ...(workspaceRoot === undefined ? {} : { workspaceRoot }),
       });
-      json(res, 200, { threadId, channelId });
+      json(res, 200, { threadId, channelId, workspaceRoot: workspaceRoot ?? null });
       return;
     }
 
@@ -838,6 +993,9 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
           kind: 'in-process',
           server: face.createServer(),
         };
+        // このスレッドが向いているリポジトリ（決定29）。フォークは根まで遡って解く。
+        // fs の書き込みだけがこれを境界に使う——読み取りは今までどおり広いまま。
+        const writeRoot = effectiveWorkspaceRoot(before, body.threadId);
 
         for await (const event of new AgentSdkRunner().query({
           threadId: body.threadId,
@@ -848,13 +1006,14 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
           // **`options.modules` を直接は渡さない**（実測 2026-08-22）。固定インスタンスを
           // 使い回すと、2回目以降の問い合わせが「already connected」で断られ、
           // `fs` の道具が会話から静かに消える。`freshModuleSpecs()` が毎回新品を作る。
-          mcpServers: [...freshModuleSpecs(), faceSpec],
+          mcpServers: [...freshModuleSpecs(writeRoot), faceSpec],
           skills: [],
           model: options.model,
           allowedTools: [
             ...allowed,
             `mcp__${faceSpec.name}__show`,
             `mcp__${faceSpec.name}__append_base`,
+            `mcp__${faceSpec.name}__append_shared_base`,
             `mcp__${faceSpec.name}__invalidate_base`,
             `mcp__${faceSpec.name}__reactivate_base`,
           ],

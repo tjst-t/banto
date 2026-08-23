@@ -4,7 +4,7 @@
  * この層に条件分岐や整形以上のものが出てきたら、それは core に置くべきもの。
  */
 
-import { defineModule, ok, requiredRoot, type BantoModule } from '@banto/module-kit';
+import { defineModule, ok, type BantoModule, type DefinedModule } from '@banto/module-kit';
 import { z } from 'zod';
 
 import { RepoCore } from './core.js';
@@ -33,9 +33,17 @@ export const manifest: BantoModule = {
   provides: ['repo'],
 };
 
-export const repoModule = defineModule({
+/**
+ * repo モジュールを1つ組み立てる。
+ *
+ * **`root` は呼び手（Factory を組む側）が解いて渡す**（決定29）——ここでは
+ * 環境変数を読まない。複数リポジトリを並行で扱えるようにするための変更で、
+ * `fs`/`conversation` と同じ「呼び手が対象を渡す」形に揃えた（規則3）。
+ */
+export function repoModule(root: string): DefinedModule {
+  return defineModule({
   manifest,
-  createCore: () => new RepoCore(requiredRoot('BANTO_REPO_ROOT')),
+  createCore: () => new RepoCore(root),
   tools: (tool) => [
     tool({
       name: 'log',
@@ -169,7 +177,8 @@ export const repoModule = defineModule({
       run: async (core, { remote, branch }) => ok(await core.push(remote, branch)),
     }),
   ],
-});
+  });
+}
 
 export { RepoCore } from './core.js';
 export type { GitOutput } from './core.js';

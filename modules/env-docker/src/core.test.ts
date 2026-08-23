@@ -105,6 +105,25 @@ describe.skipIf(!enabled)('docker 環境（決定16 の2つ目の実装）', () 
     expect(address.startsWith('127.0.0.1')).toBe(false);
   }, 180_000);
 
+  // **決定29の核心。** ホストからは届く（上のaddressテスト）が、コンテナから外部の
+  // インターネットへは出られない——`--internal` なブリッジが既定であることを実測する。
+  it('既定のネットワークでは外部インターネットに出られない', async () => {
+    const workdir = await mkdtemp(path.join(root, 'w-'));
+    const handle = await core.create(workdir);
+    started.push(handle);
+
+    const result = await core.exec(handle, 'node', [
+      '-e',
+      "const net=require('net');" +
+        "const s=net.createConnection({host:'8.8.8.8',port:53,timeout:3000});" +
+        "s.on('connect',()=>{console.log('CONNECTED');s.end();});" +
+        "s.on('timeout',()=>{console.log('BLOCKED-TIMEOUT');s.destroy();});" +
+        "s.on('error',(e)=>{console.log('BLOCKED-ERROR',e.code);});",
+    ]);
+    expect(result.stdout).not.toContain('CONNECTED');
+    expect(result.stdout).toMatch(/BLOCKED-/);
+  }, 180_000);
+
   it('畳むとコンテナは消えるが、作業ツリーは残る（持ち主は repo）', async () => {
     const workdir = await mkdtemp(path.join(root, 'w-'));
     await writeFile(path.join(workdir, 'keep.txt'), 'x', 'utf8');

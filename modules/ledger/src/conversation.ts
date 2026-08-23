@@ -31,7 +31,9 @@
 import { defineModule, type BantoModule, type DefinedModule } from '@banto/module-kit';
 import {
   EventLog,
+  SHARED_BASE_THREAD_ID,
   appendBase as appendBaseGate,
+  ensureSharedBaseThread,
   fold,
   invalidateBase as invalidateBaseGate,
   reactivateBase as reactivateBaseGate,
@@ -149,6 +151,25 @@ export class ConversationCore {
     const state = fold(await this.log.read());
     return reactivateBaseGate(this.log, state, this.threadId, input.baseVersion);
   }
+
+  /**
+   * この会話固有の base ではなく、**全スレッド共通の base**へ追記する（決定30）。
+   *
+   * **ターゲットは固定id（`SHARED_BASE_THREAD_ID`）で、引数にはしない**——
+   * `threadId` を引数にすると任意のスレッドへ書けてしまうのと同じ理由（要件D4）。
+   * ここは「共有base」という1箇所だけへの、閉じ込められた書き込み。
+   *
+   * 共有baseは会話をしないので、`invalidate_base`/`reactivate_base`（このスレッド
+   * 自身が追記した行だけを対象にできる）をそのまま共有baseへは使えない——
+   * 取り消し・編集は人が `BasePanel`（共有base用に開いたもの）から行う
+   * （決定30：AIには書く道だけを渡し、消す・直す判断は人に残す）。
+   */
+  async appendSharedBase(input: { text: string }): Promise<BaseGate> {
+    let state = fold(await this.log.read());
+    await ensureSharedBaseThread(this.log, state);
+    state = fold(await this.log.read());
+    return appendBaseGate(this.log, state, SHARED_BASE_THREAD_ID, input.text, this.baseLimit);
+  }
 }
 
 /**
@@ -219,6 +240,37 @@ export function conversationModule(
           v.ok
             ? `決まったことに追記した（第${v.baseVersion}版、${v.characters}/${v.limit}文字）`
             : `追記を断った: ${v.reason}`,
+      }),
+      tool({
+        name: 'append_shared_base',
+        description:
+          "Permanently record a fact that holds regardless of which conversation or project " +
+          "it came up in — durable information about the person themselves (their role, " +
+          "standing preferences, constraints that apply everywhere), not anything specific to " +
+          "this conversation's task. This is shown to every conversation, not just this one or " +
+          "its forks — use append_base instead for anything scoped to this piece of work. When " +
+          "unsure whether something is general enough, prefer append_base; it is easy to miss " +
+          "genuinely general facts here, but writing something conversation-specific here leaks " +
+          "it into every unrelated conversation, which is harder to undo. There is a size limit " +
+          "shared across all conversations — check the ok field and tell the person if declined. " +
+          "You cannot retract or edit entries here — only a person can, from the shared base " +
+          "view.",
+        input: {
+          text: z.string().describe('The generally-true fact to append, as one durable line'),
+        },
+        output: {
+          ok: z.boolean(),
+          baseVersion: z.number().optional().describe('Present when ok is true'),
+          reason: z.string().optional().describe('Present when ok is false'),
+          characters: z.number(),
+          wouldBe: z.number().optional().describe('Present when ok is false'),
+          limit: z.number(),
+        },
+        run: async (core, input) => core.appendSharedBase(input),
+        summary: (v) =>
+          v.ok
+            ? `共有baseに追記した（第${v.baseVersion}版、${v.characters}/${v.limit}文字）`
+            : `共有baseへの追記を断った: ${v.reason}`,
       }),
       tool({
         name: 'invalidate_base',
