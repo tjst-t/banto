@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, ChevronLeft, ChevronRight, GitFork, Loader2, RotateCcw, Undo2 } from 'lucide-react';
+import {
+  AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
+  GitFork,
+  Globe,
+  Loader2,
+  RotateCcw,
+  Undo2,
+} from 'lucide-react';
 
 import { ScrollArea } from './ui/scroll-area';
 import { Button } from './ui/button';
@@ -31,8 +40,20 @@ const PAGE_SIZE = 20;
  *    見たいときだけチェックボックスで呼び出す
  * 6. **検索・ページングは画面側だけで行う**（PO裁定 2026-08-22）。base は
  *    文字数の上限で頭打ちなので、サーバ側の対応するページング API は要らない
+ * 7. **共有base（決定30）由来の行には専用の印を付ける**（PO指摘 2026-08-23）。
+ *    fork継承もフォークのアイコンで「own でない」ことを示すが、共有baseは
+ *    fork継承と由来が違う——同じ印で混ぜると見分けがつかない
  */
-export function BasePanel({ threadId, onChanged }: { threadId: string; onChanged: () => void }) {
+export function BasePanel({
+  threadId,
+  onChanged,
+  sharedBaseThreadId,
+}: {
+  threadId: string;
+  onChanged: () => void;
+  /** 決定30。無ければ（旧いホスト等）印は付けない——`own` の見た目のまま。 */
+  sharedBaseThreadId?: string | undefined;
+}) {
   const [base, setBase] = useState<BaseResponse | null>(null);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -201,8 +222,15 @@ export function BasePanel({ threadId, onChanged }: { threadId: string; onChanged
               >
                 <div className="min-w-0 flex-1">
                   <span className="mr-2 font-mono text-xs text-ink-muted">v{entry.baseVersion}</span>
-                  {!entry.own && (
-                    <GitFork className="mr-1 inline h-3 w-3 align-[-1px] text-ink-muted" />
+                  {/* 共有base（決定30）由来と、fork継承は由来が違うので、印を分ける
+                      （PO指摘 2026-08-23：同じ印だと見分けがつかない）。 */}
+                  {!entry.own && entry.ownerThreadId === sharedBaseThreadId ? (
+                    <span className="mr-1 inline-flex items-center gap-0.5 rounded-sm bg-accent-soft px-1 py-0.5 font-mono text-xs text-accent">
+                      <Globe className="h-3 w-3" />
+                      共有
+                    </span>
+                  ) : (
+                    !entry.own && <GitFork className="mr-1 inline h-3 w-3 align-[-1px] text-ink-muted" />
                   )}
                   {entry.invalidated && (
                     <span className="mr-1 rounded-sm bg-paper-sunken px-1 py-0.5 font-mono text-xs text-ink-muted">

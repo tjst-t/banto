@@ -80,9 +80,12 @@ export interface BaseEntry {
   readonly text: string;
   /** 削除ではなく無効化——`effectiveBase`（会話に効く分）から外れているだけ。 */
   readonly invalidated: boolean;
-  /** このスレッド自身が追記したか。false なら fork 元からの継承（要件 R4）。
+  /** このスレッド自身が追記したか。false なら fork 元からの継承（要件 R4）か共有base（決定30）。
    * 無効化・有効化できるのは own のものだけ。 */
   readonly own: boolean;
+  /** 実際にこの行を追記したスレッド。own なら自分自身と同じ（決定30）。
+   * 共有baseスレッドのidと比べて、fork継承と共有baseを見分ける。 */
+  readonly ownerThreadId: string;
 }
 
 /** いまそのスレッドで決まっていること（要件 R2・R6）。**継承は host が解く。** */

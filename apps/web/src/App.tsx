@@ -27,6 +27,26 @@ type DialogKind = 'inbox' | 'history' | 'settings' | null;
 type RoomKind = 'root' | 'fork';
 
 /**
+ * フォーク鎖を**本当の頂点**まで遡る（決定31）。
+ *
+ * フォークからのフォークは決定31で作れなくする予定だが、**この番頭が本番で
+ * 実際に踏んだ壊れ方**——`t.forkedFrom.threadId` を1階層だけ辿って「幹」に
+ * していたため、その1階層先自体がフォークだった場合に、幹側のパネルにまで
+ * フォークの表示が出てしまっていた。既存データに残っている入れ子も
+ * 正しく表示できるよう、防御的に頂点まで遡る。
+ */
+function trueRootId(threadId: string, threads: readonly ThreadSummary[]): string {
+  const byId = new Map(threads.map((t) => [t.id, t]));
+  let current = byId.get(threadId);
+  const visited = new Set<string>();
+  while (current !== undefined && current.forkedFrom !== null && !visited.has(current.id)) {
+    visited.add(current.id);
+    current = byId.get(current.forkedFrom.threadId);
+  }
+  return current?.id ?? threadId;
+}
+
+/**
  * 最上位。**サイドバー＋間の重なり**を組む（決定22・決定26）。
  *
  * **幹（ルートのスレッド）は常に居る。フォークは開いた元の横に並ぶ**
@@ -74,7 +94,7 @@ export function App() {
       return;
     }
     if (latest.forkedFrom !== null) {
-      setRootThreadId(latest.forkedFrom.threadId);
+      setRootThreadId(trueRootId(latest.id, threads));
       setForkThreadId(latest.id);
     } else {
       setRootThreadId(latest.id);
@@ -94,13 +114,23 @@ export function App() {
   const forkThread = forkThreadId !== null ? (threads.find((t) => t.id === forkThreadId) ?? null) : null;
   const rootSession = rootThreadId !== null ? sessionFor(rootThreadId) : null;
   const forkSession = forkThreadId !== null ? sessionFor(forkThreadId) : null;
+  /**
+   * フォークの題の上に出す「◂ ○○ から」の○○（`ConversationPanel` の `parentTitle`）。
+   * **フォークの直接の親**であって、幹（`rootThread`）とは限らない
+   * ——フォークからのフォークは決定31で作れなくするが、既存データに残る
+   * 入れ子でも正しいラベルになるよう、常に直接の親を引く。
+   */
+  const forkParentTitle =
+    forkThread?.forkedFrom !== null && forkThread?.forkedFrom !== undefined
+      ? (threads.find((t) => t.id === forkThread.forkedFrom!.threadId)?.title ?? rootThread?.title)
+      : rootThread?.title;
 
   /** どのスレッドを開いても、その親（フォークなら）まで一緒に立てて開く。 */
   const openThread = (threadId: string): void => {
     const t = threads.find((x) => x.id === threadId);
     if (t === undefined) return;
     if (t.forkedFrom !== null) {
-      setRootThreadId(t.forkedFrom.threadId);
+      setRootThreadId(trueRootId(t.id, threads));
       setForkThreadId(t.id);
     } else {
       setRootThreadId(t.id);
@@ -293,7 +323,7 @@ export function App() {
           ) : rootThread === null && work !== null ? (
             // 会話が1本も無くても（例：共有baseしか無い）、作業パネルは単独で開ける
             // ——`work` は会話とは別の状態なので、会話が無いことを理由に塞がない。
-            <WorkPanel work={work} onClose={closeWork} onBaseChanged={() => void refetch()} />
+            <WorkPanel work={work} onClose={closeWork} onBaseChanged={() => void refetch()} sharedBaseThreadId={data?.sharedBaseThreadId} />
           ) : rootThread === null ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-md text-ink-muted">
               <p>まだ会話がありません。</p>
@@ -311,7 +341,7 @@ export function App() {
             // **狭い画面では、いちばん手前のものだけを丸ごと表示する**（要件 E2・E3）。
             // 横に並べる／重ねる余白が無いので、手前から順に丸ごと入れ替える。
             work !== null ? (
-              <WorkPanel work={work} onClose={closeWork} onBaseChanged={() => void refetch()} />
+              <WorkPanel work={work} onClose={closeWork} onBaseChanged={() => void refetch()} sharedBaseThreadId={data?.sharedBaseThreadId} />
             ) : forkThread !== null && forkSession !== null ? (
               <ConversationPanel
                 thread={forkThread}
@@ -325,7 +355,7 @@ export function App() {
                 onOpenBase={() => handleOpenBase(forkThread, 'fork')}
                 onDelete={() => handleOpenDelete(forkThread)}
                 onBack={() => setForkThreadId(null)}
-                parentTitle={rootThread.title}
+                parentTitle={forkParentTitle}
               />
             ) : (
               <ConversationPanel
@@ -367,7 +397,7 @@ export function App() {
                       onOpenBase={() => handleOpenBase(forkThread, 'fork')}
                       onDelete={() => handleOpenDelete(forkThread)}
                       onBack={() => setForkThreadId(null)}
-                      parentTitle={rootThread.title}
+                      parentTitle={forkParentTitle}
                       onPanelClick={slimClickGuard}
                     />
                   ) : (
@@ -393,6 +423,7 @@ export function App() {
                     onClose={closeWork}
                     onBaseChanged={() => void refetch()}
                     sideNote="会話は左に残しています"
+                    sharedBaseThreadId={data?.sharedBaseThreadId}
                   />
                 </Panel>
               </PanelGroup>
@@ -428,7 +459,7 @@ export function App() {
                   onOpenBase={() => handleOpenBase(forkThread, 'fork')}
                 onDelete={() => handleOpenDelete(forkThread)}
                   onBack={() => setForkThreadId(null)}
-                  parentTitle={rootThread.title}
+                  parentTitle={forkParentTitle}
                 />
               )}
             </div>

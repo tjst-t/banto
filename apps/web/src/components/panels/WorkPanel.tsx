@@ -25,11 +25,14 @@ export function WorkPanel({
    * （狭い画面での丸ごと入れ替えでは会話が見えていないので）だけ渡す。
    */
   sideNote,
+  /** 共有baseスレッドのid（決定30）。`BasePanel` が共有base由来の行に印を付けるのに使う。 */
+  sharedBaseThreadId,
 }: {
   work: WorkTarget;
   onClose: () => void;
   onBaseChanged: () => void;
   sideNote?: string | undefined;
+  sharedBaseThreadId?: string | undefined;
 }) {
   return (
     <section
@@ -59,7 +62,11 @@ export function WorkPanel({
               </span>
             )}
           </div>
-          <BasePanel threadId={work.threadId} onChanged={onBaseChanged} />
+          <BasePanel
+            threadId={work.threadId}
+            onChanged={onBaseChanged}
+            sharedBaseThreadId={sharedBaseThreadId}
+          />
         </div>
       )}
     </section>

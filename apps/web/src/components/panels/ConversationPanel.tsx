@@ -120,16 +120,20 @@ export function ConversationPanel({
               >
                 <ListChecks className="h-3.5 w-3.5" />v{thread.baseVersion}
               </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={onFork}
-                aria-label="ここからフォークする"
-                title="ここからフォークする（決まったことを引き継ぐ）"
-                data-fork={thread.id}
-              >
-                <GitFork className="h-3.5 w-3.5" />
-              </Button>
+              {/* フォークからのフォークは作れない（決定31）——幹（forkedFromが無い
+                  スレッド）だけがフォークボタンを持つ。 */}
+              {thread.forkedFrom === null && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={onFork}
+                  aria-label="ここからフォークする"
+                  title="ここからフォークする（決まったことを引き継ぐ）"
+                  data-fork={thread.id}
+                >
+                  <GitFork className="h-3.5 w-3.5" />
+                </Button>
+              )}
               {thread.forkedFrom !== null && (
                 <Button
                   variant="ghost"

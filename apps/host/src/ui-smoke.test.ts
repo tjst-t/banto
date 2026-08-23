@@ -1136,6 +1136,66 @@ describe('画面の煙試験（本物のブラウザ）', () => {
    * 共有base（決定30）。「開いているもの」には出ず、設定から開ける。
    * 人が直接足したものは、無効化・有効化も既存のBasePanelの機能でそのまま使える。
    */
+  /**
+   * 共有base由来の行と、fork継承の行は由来が違うので、印を分ける
+   * （PO指摘 2026-08-23：同じ印だと見分けがつかない）。
+   */
+  it('共有base由来の行には専用の印が付き、fork継承の印とは違う', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const dir = await mkdtemp(path.join(tmpdir(), 'banto-ui-shared-marker-'));
+    const markerLog = new EventLog(dir);
+    await markerLog.append({ type: 'channel.created', channelId: 'c1', channelName: 'marker' });
+    await markerLog.append({ type: 'thread.created', threadId: 'm1', channelId: 'c1', title: '幹' });
+    await markerLog.append({ type: 'base.appended', threadId: 'm1', baseVersion: 1, text: '幹固有の決定' });
+    await markerLog.append({
+      type: 'thread.forked',
+      threadId: 'm2',
+      channelId: 'c1',
+      title: '枝',
+      from: { threadId: 'm1', baseVersion: 1 },
+      mode: 'base',
+    });
+    await markerLog.append({ type: 'thread.created', threadId: 'shared-base', channelId: 'c1', title: '共有base' });
+    await markerLog.append({ type: 'base.appended', threadId: 'shared-base', baseVersion: 1, text: '共有の決定' });
+
+    const server = startServer({
+      dataDir: dir,
+      port: 0,
+      modules: [],
+      toolsByModule: new Map(),
+      model: 'claude-haiku-4-5',
+      webRoot: WEB_ROOT,
+    });
+    await new Promise((r) => server.once('listening', r));
+    const markerOrigin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+
+    try {
+      await page.goto(markerOrigin, { waitUntil: 'networkidle' });
+      await openThread(page, 'm2');
+      await page.locator('[data-open-base="m2"]').click();
+      await page.waitForSelector('[data-base-panel="m2"]', { timeout: 15_000 });
+
+      // 幹から継承した行（fork継承）には「共有」の印が付かない。
+      const inherited = page.locator('li', { hasText: '幹固有の決定' });
+      await inherited.waitFor({ timeout: 15_000 });
+      expect(await inherited.getByText('共有', { exact: true }).count()).toBe(0);
+
+      // 共有baseから来た行には「共有」の印が付く（badge の文字は完全一致で見分ける
+      // ——行の本文「共有の決定」自体が部分一致してしまうため）。
+      const shared = page.locator('li', { hasText: '共有の決定' });
+      await shared.waitFor({ timeout: 15_000 });
+      expect(await shared.getByText('共有', { exact: true }).count()).toBe(1);
+    } finally {
+      await browser.close();
+      server.close();
+    }
+  }, 60_000);
+
   it('共有baseは設定から開けて、人が直接足せる。開いているものには出ない', async () => {
     if (!built) throw new Error('画面がビルドされていないので測れない');
 
@@ -1211,6 +1271,75 @@ describe('画面の煙試験（本物のブラウザ）', () => {
       await page.getByRole('button', { name: '設定' }).click();
       await page.getByRole('button', { name: '共有baseを開く' }).click();
       await page.waitForSelector('text=持ち出したい一般的事実', { timeout: 15_000 });
+    } finally {
+      await browser.close();
+      server.close();
+    }
+  }, 60_000);
+
+  /**
+   * 決定31：フォークからのフォークは新規には作れないが、**既存データに残る
+   * 入れ子**（本番で実際に踏んだ壊れ方）を開いても、幹が正しく本当の頂点に
+   * なることを確かめる。API は拒否するので、ここではログへ直接イベントを積んで
+   * 「既に存在してしまっている」状態を再現する。
+   */
+  it('入れ子のフォーク（既存データ）を開いても、幹はフォーク鎖の頂点になる', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const dir = await mkdtemp(path.join(tmpdir(), 'banto-ui-nested-fork-'));
+    const nestedLog = new EventLog(dir);
+    await nestedLog.append({ type: 'channel.created', channelId: 'c1', channelName: 'nested' });
+    await nestedLog.append({ type: 'thread.created', threadId: 'n1', channelId: 'c1', title: '本当の幹' });
+    await nestedLog.append({
+      type: 'thread.forked',
+      threadId: 'n2',
+      channelId: 'c1',
+      title: '一段目',
+      from: { threadId: 'n1', baseVersion: 0 },
+      mode: 'base',
+    });
+    // API では拒否されるが、既存データとしてはこの形が実際にあった（PO報告）。
+    await nestedLog.append({
+      type: 'thread.forked',
+      threadId: 'n3',
+      channelId: 'c1',
+      title: '二段目',
+      from: { threadId: 'n2', baseVersion: 0 },
+      mode: 'base',
+    });
+
+    const server = startServer({
+      dataDir: dir,
+      port: 0,
+      modules: [],
+      toolsByModule: new Map(),
+      model: 'claude-haiku-4-5',
+      webRoot: WEB_ROOT,
+    });
+    await new Promise((r) => server.once('listening', r));
+    const nestedOrigin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+
+    try {
+      // n3（一番新しいスレッド）が、開いた時点で自動的に開く（決定23）。
+      // サイドバーの点は直接の子フォークしか出さないので（別の既知の制約）、
+      // ここではクリックせず、開いた直後の状態をそのまま見る。
+      await page.goto(nestedOrigin, { waitUntil: 'networkidle' });
+
+      // 幹側のパネル（data-conversation-panel="n1"）に、フォークを示す
+      // 「◂ ○○ から」の表示が出ていない——幹は本当の頂点であるべき。
+      await page.waitForSelector('[data-conversation-panel="n1"]', { timeout: 15_000 });
+      const rootEyebrow = await page.locator('[data-conversation-panel="n1"] .text-accent').count();
+      expect(rootEyebrow).toBe(0);
+
+      // フォーク側のパネルは、直接の親「一段目」からの分岐だと分かる。
+      await page.waitForSelector('text=一段目 から', { timeout: 15_000 });
+
+      // フォークのパネルにはフォークボタンが無い（決定31）。
+      expect(await page.locator('[data-fork="n3"]').count()).toBe(0);
     } finally {
       await browser.close();
       server.close();

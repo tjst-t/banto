@@ -758,17 +758,27 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
         json(res, 404, { error: `知らないスレッド: ${body.fromThreadId}` });
         return;
       }
+      /**
+       * フォークからのフォークは作らせない（決定31）。**想定していない状態**
+       * ——実際に本番で、幹の解決が1階層しか遡らない箇所があり、フォークの
+       * フォークを開くと幹側のパネルまでフォーク扱いに見える壊れ方が起きた。
+       * 表示側も直したが（`apps/web` の `trueRootId`）、そもそも作れないように
+       * 根から断つ。**フロント（ボタンを出さない）とここの両方で断る**
+       * ——フロントだけだと、直接APIを叩けば素通りする（規則1と同じ考え）。
+       */
+      if (parent.forkedFrom !== null) {
+        json(res, 400, {
+          error: 'フォークからのフォークは作れない（幹からだけフォークできる）',
+        });
+        return;
+      }
 
-      // フォークのフォークで「から分岐」が積み重ならないように、親の題からは
-      // 既に付いている分を剥がしてから付け直す（実測 2026-08-22：4連続で分岐すると
-      // 題が「〜 から分岐 から分岐 から分岐 から分岐」になっていた）。
-      const parentBaseTitle = parent.title.replace(/ から分岐$/, '');
       const threadId = randomUUID();
       await log.append({
         type: 'thread.forked',
         threadId,
         channelId: parent.channelId,
-        title: body.title ?? `${parentBaseTitle} から分岐`,
+        title: body.title ?? `${parent.title} から分岐`,
         // **切った時点の版を鍵にする。** 親がこの後で追記しても、この枝には入らない。
         from: { threadId: parent.id, baseVersion: parent.baseVersion },
         mode: body.mode ?? 'base',
