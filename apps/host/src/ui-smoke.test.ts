@@ -1340,6 +1340,11 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
       // フォークのパネルにはフォークボタンが無い（決定31）。
       expect(await page.locator('[data-fork="n3"]').count()).toBe(0);
+      // フォークのパネルには削除ボタンも無い（PO指摘 2026-08-24。マージして
+      // 閉じるボタンがその役目を持つので、削除は幹だけでよい）。
+      expect(await page.locator('[data-delete="n3"]').count()).toBe(0);
+      // 幹には削除ボタンがある。
+      expect(await page.locator('[data-delete="n1"]').count()).toBe(1);
     } finally {
       await browser.close();
       server.close();

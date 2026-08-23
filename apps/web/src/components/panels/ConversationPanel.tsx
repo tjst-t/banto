@@ -146,16 +146,20 @@ export function ConversationPanel({
                   <GitMerge className="h-3.5 w-3.5" />
                 </Button>
               )}
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={onDelete}
-                aria-label="削除する"
-                title="このスレッドを削除する（未マージのフォークは先に自動でマージされる）"
-                data-delete={thread.id}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
+              {/* フォークは「マージして閉じる」で消せるので、削除ボタンは
+                  幹（forkedFromが無いスレッド）だけに出す（PO指摘 2026-08-24）。 */}
+              {thread.forkedFrom === null && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={onDelete}
+                  aria-label="削除する"
+                  title="このスレッドを削除する（未マージのフォークは先に自動でマージされる）"
+                  data-delete={thread.id}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              )}
             </div>
           ) : (
             <Badge tone={status.tone}>{status.text}</Badge>
