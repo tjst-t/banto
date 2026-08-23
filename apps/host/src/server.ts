@@ -23,8 +23,11 @@ import {
   appendBase,
   baseCharacters,
   effectiveBase,
+  effectiveBaseEntries,
   fold,
+  invalidateBase,
   pendingQueue,
+  reactivateBase,
   type NewEvent,
 } from '@banto/core';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -282,10 +285,14 @@ export const SYSTEM_PROMPT = [
   'append_base is how a fact or decision survives that: call it when you and the person',
   'settle something later turns (or forks of this conversation) need to know. Do not call it',
   'for things only useful right now, or for anything still being discussed — this is a ledger',
-  'of conclusions, not a scratchpad, and it has no undo.',
+  'of conclusions, not a scratchpad.',
   '',
   'It can decline (there is a size limit) — check the ok field, and if it is false, tell the',
   'person instead of quietly retrying or dropping the fact.',
+  '',
+  'If an entry turns out wrong, call invalidate_base on it (reactivate_base undoes that) —',
+  'do not append a correction on top. A correction still leaves the wrong text counting',
+  'against the size limit; invalidating frees it.',
 ].join('\n');
 
 export function startServer(options: ServerOptions): ReturnType<typeof createServer> {
@@ -408,17 +415,40 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
         json(res, 404, { error: `知らないスレッド: ${threadId}` });
         return;
       }
-      const lines = effectiveBase(state, threadId);
+      // **行ごとの詳細をそのまま返す。** 継承したか（own）・無効化されているかを
+      // 画面側で作らない——導出は `effectiveBaseEntries` に1つ（規則3）。
       json(res, 200, {
         threadId,
         baseVersion: thread.baseVersion,
-        // **継承した行と、自分で足した行を分けて見せる。** 混ぜると
-        // 「どこから来た決まりごとか」が画面から消える（要件 R4）。
-        inherited: lines.length - thread.ownBase.length,
-        lines,
+        entries: effectiveBaseEntries(state, threadId),
         characters: baseCharacters(state, threadId),
         limit: baseLimit,
       });
+      return;
+    }
+
+    /**
+     * base の1行を無効化／有効化する（PO指摘 2026-08-22）。**削除ではない**——
+     * `POST /api/base` と同じく、人の操作もゲート（`invalidateBase`/`reactivateBase`）
+     * を1本だけ通る。AI 側の入口（`invalidate_base`/`reactivate_base` tool）も
+     * 同じ関数を呼ぶ——迂回できる場所に置くと迂回される（決定4と同じ考え）。
+     */
+    if (req.method === 'POST' && (url.pathname === '/api/base/invalidate' || url.pathname === '/api/base/reactivate')) {
+      const body = (await readBody(req)) as { threadId?: string; baseVersion?: number };
+      if (typeof body.threadId !== 'string' || typeof body.baseVersion !== 'number') {
+        json(res, 400, { error: 'threadId と baseVersion が要る' });
+        return;
+      }
+      const state = fold(await log.read());
+      if (!state.threads.has(body.threadId)) {
+        json(res, 404, { error: `知らないスレッド: ${body.threadId}` });
+        return;
+      }
+      const gate =
+        url.pathname === '/api/base/invalidate'
+          ? await invalidateBase(log, state, body.threadId, body.baseVersion)
+          : await reactivateBase(log, state, body.threadId, body.baseVersion);
+      json(res, gate.ok ? 200 : 409, gate);
       return;
     }
 
@@ -717,7 +747,12 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
       }
 
       const parentId = thread.forkedFrom.threadId;
-      const mergedText = thread.ownBase.join('\n');
+      // 無効化した行は畳んで戻すときにも運ばない——もう効いていないものを
+      // 親へ持ち込むと、無効化した意味が無くなる。
+      const mergedText = thread.ownBase
+        .filter((e) => !e.invalidated)
+        .map((e) => e.text)
+        .join('\n');
       if (mergedText !== '') {
         const gate = await appendBase(log, state, parentId, mergedText, baseLimit);
         if (!gate.ok) {
@@ -820,6 +855,8 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
             ...allowed,
             `mcp__${faceSpec.name}__show`,
             `mcp__${faceSpec.name}__append_base`,
+            `mcp__${faceSpec.name}__invalidate_base`,
+            `mcp__${faceSpec.name}__reactivate_base`,
           ],
           maxTurns: 20,
           prompt: body.text,

@@ -459,6 +459,83 @@ describe('画面の煙試験（本物のブラウザ）', () => {
   }, 120_000);
 
   /**
+   * **訂正は無効化で行う**（PO裁定 2026-08-22）。上書きではなく、自分の行だけ
+   * 無効化・有効化を切り替えられる——削除ではないので何度でも戻せる。
+   *
+   * あわせて：既定では無効化済みを隠す・チェックボックスで呼び出せる・
+   * 検索で絞れる・21行以上でページングが出る（要件、PO裁定）。
+   */
+  it('決まったことを無効化・有効化でき、既定は隠れて検索・ページングできる', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    // 専用の隔離ホスト。**21行**（PAGE_SIZE=20 を1行超える）用意して、
+    // ページングが実際に出ることも一緒に測る。
+    const dir = await mkdtemp(path.join(tmpdir(), 'banto-ui-invalidate-'));
+    const invLog = new EventLog(dir);
+    await invLog.append({ type: 'channel.created', channelId: 'c1', channelName: 'inv' });
+    await invLog.append({ type: 'thread.created', threadId: 'b1', channelId: 'c1', title: '無効化試験' });
+    for (let i = 1; i <= 21; i += 1) {
+      await invLog.append({
+        type: 'base.appended',
+        threadId: 'b1',
+        baseVersion: i,
+        text: `決定 第${i}版`,
+      });
+    }
+
+    const server = startServer({
+      dataDir: dir,
+      port: 0,
+      modules: [],
+      toolsByModule: new Map(),
+      model: 'claude-haiku-4-5',
+      webRoot: WEB_ROOT,
+    });
+    await new Promise((r) => server.once('listening', r));
+    const invOrigin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+
+    try {
+      await page.goto(invOrigin, { waitUntil: 'networkidle' });
+      await openThread(page, 'b1');
+      await page.locator('[data-open-base="b1"]').click();
+      await page.waitForSelector('[data-base-panel="b1"]', { timeout: 15_000 });
+
+      // **21行あるので2ページに分かれる。**
+      await page.waitForSelector('text=/1 \\/ 2 ページ/', { timeout: 15_000 });
+      await page.waitForSelector('text=決定 第1版', { timeout: 15_000 });
+
+      // 第1版を無効化する。
+      const row = page.locator('li', { hasText: '決定 第1版' });
+      await row.locator('button[title="無効化する"]').click();
+
+      // **既定では隠れる。** 版数の表示にも「無効化」が出る。
+      await page.waitForSelector('text=/無効化 1 行/', { timeout: 15_000 });
+      expect(await row.count()).toBe(0);
+
+      // チェックボックスを入れると、取り消し線つきで出てくる。
+      await page.getByText('無効化済みも表示').click();
+      await page.waitForSelector('text=決定 第1版', { timeout: 15_000 });
+      await page.waitForSelector('text=無効化済み', { timeout: 15_000 });
+
+      // 有効化すると、取り消し線が外れて既定表示にも戻る。
+      const restoredRow = page.locator('li', { hasText: '決定 第1版' });
+      await restoredRow.locator('button[title="有効化する"]').click();
+      await page.waitForSelector('text=/無効化 1 行/', { state: 'detached', timeout: 15_000 });
+
+      // 検索で絞り込める。
+      await page.getByPlaceholder('決まったことを検索').fill('第20版');
+      await page.waitForSelector('text=決定 第20版', { timeout: 15_000 });
+      expect(await page.locator('li', { hasText: '決定 第19版' }).count()).toBe(0);
+    } finally {
+      await browser.close();
+    }
+  }, 120_000);
+
+  /**
    * **ゲートに当たったことが画面に出る**（要件 R8・決定4）。
    *
    * 断られたのに何も出ないと、「足したつもりで足さっていない」になる。

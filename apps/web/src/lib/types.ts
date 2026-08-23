@@ -69,13 +69,23 @@ export interface PendingDecision {
   readonly since: string;
 }
 
+/** base の1行（要件 R2・R6、PO裁定 2026-08-22：無効化）。 */
+export interface BaseEntry {
+  readonly baseVersion: number;
+  readonly text: string;
+  /** 削除ではなく無効化——`effectiveBase`（会話に効く分）から外れているだけ。 */
+  readonly invalidated: boolean;
+  /** このスレッド自身が追記したか。false なら fork 元からの継承（要件 R4）。
+   * 無効化・有効化できるのは own のものだけ。 */
+  readonly own: boolean;
+}
+
 /** いまそのスレッドで決まっていること（要件 R2・R6）。**継承は host が解く。** */
 export interface BaseResponse {
   readonly threadId: string;
   readonly baseVersion: number;
-  /** 先頭から何行が fork 元から継承したものか（要件 R4）。 */
-  readonly inherited: number;
-  readonly lines: readonly string[];
+  readonly entries: readonly BaseEntry[];
+  /** 無効化した行を除いた文字数。 */
   readonly characters: number;
   /** R8 のゲート。**常に見せる**——拒否されて初めて存在を知る、を避ける。 */
   readonly limit: number;
@@ -190,6 +200,21 @@ export type BaseAppended = EventEnvelope & {
   readonly threadId: string;
   readonly baseVersion: number;
   readonly text: string;
+};
+
+/** 訂正は無効化で行う（PO裁定 2026-08-22）。削除ではない——`effectiveBase` が
+ * 読み飛ばすようになるだけで、元の `base.appended` はログに残る。 */
+export type BaseInvalidated = EventEnvelope & {
+  readonly type: 'base.invalidated';
+  readonly threadId: string;
+  readonly baseVersion: number;
+};
+
+/** `base.invalidated` の取り消し。 */
+export type BaseReactivated = EventEnvelope & {
+  readonly type: 'base.reactivated';
+  readonly threadId: string;
+  readonly baseVersion: number;
 };
 
 export type RunRequested = EventEnvelope & {
@@ -310,6 +335,8 @@ export type StreamEvent =
   | ThreadCreated
   | ThreadForked
   | BaseAppended
+  | BaseInvalidated
+  | BaseReactivated
   | RunRequested
   | RunTested
   | RunFailed

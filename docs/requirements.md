@@ -419,6 +419,12 @@ Thread = base（依頼・制約・決まったこと。小さく安定）
 書き込みは `appendBase`（決定4のゲート）に一本化——ここでも `log.append` を直に呼ばず、
 人の追記（`POST /api/base`）と同じ入口を通す。SYSTEM_PROMPT に「いつ呼ぶか」の節あり。
 
+**base の無効化・有効化も実装済み**（決定28・2026-08-22）。訂正は上書きではなく
+無効化で行う——`base.invalidated`/`base.reactivated` イベント、
+`POST /api/base/invalidate`・`/reactivate`、`invalidate_base`/`reactivate_base`
+tool、`BasePanel` の切り替えボタン（既定は有効な行だけ表示・チェックボックスで
+無効化済みも表示・検索・ページングつき）。無効化した行は閾値の予算からも外れる。
+
 | 項目 | いま無いもの | 埋めるなら |
 |---|---|---|
 | 汎用の構造化カード（tool の戻り値） | host が tool 呼び出しをイベント化していないので、`reference.recorded` 以外は作れない | tool 呼び出し・結果をイベントに記録する設計から |

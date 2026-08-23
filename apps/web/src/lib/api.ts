@@ -158,6 +158,37 @@ export async function appendBase(body: { threadId: string; text: string }): Prom
 }
 
 /**
+ * base の1行を無効化する（PO裁定 2026-08-22）。**削除ではなく訂正**——
+ * `appendBase` と同じ流儀で、断られたら 409 の中身をそのまま投げる（規則2）。
+ */
+export async function invalidateBase(body: {
+  threadId: string;
+  baseVersion: number;
+}): Promise<BaseResponse> {
+  const res = await fetch('/api/base/invalidate', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  await asJson<unknown>(res);
+  return fetchBase(body.threadId);
+}
+
+/** `invalidateBase` の逆。 */
+export async function reactivateBase(body: {
+  threadId: string;
+  baseVersion: number;
+}): Promise<BaseResponse> {
+  const res = await fetch('/api/base/reactivate', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  await asJson<unknown>(res);
+  return fetchBase(body.threadId);
+}
+
+/**
  * 判断に答える（要件 A6）。**選ぶことも、自由に書くこともできる。**
  *
  * `optionId` を省くと自由文の答えになる。**選択肢が在っても、そうしてよい**——

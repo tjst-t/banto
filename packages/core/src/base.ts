@@ -140,3 +140,65 @@ export async function appendBase(
   await log.append({ type: 'base.appended', threadId, baseVersion: gate.baseVersion, text });
   return gate;
 }
+
+export interface InvalidateGate {
+  readonly ok: boolean;
+  /** 断ったときの理由（教訓13）。 */
+  readonly reason?: string;
+}
+
+/**
+ * base の1行を無効化する／有効化する。**削除ではない**——`base.invalidated`／
+ * `base.reactivated` を積むだけで、元の `base.appended` はログに残ったまま
+ * （PO指摘 2026-08-22：訂正は上書きではなく無効化で行うべき）。
+ *
+ * **自分のスレッドが自分で追記した行だけを対象にできる。** 継承した行
+ * （fork 元のもの）はここでは見つからない——`thread.ownBase` にしか無いので、
+ * 見つからなければ「無い」として断る。持ち主のスレッドで無効化すれば、
+ * 継承している側にも `effectiveBaseEntries` 経由で自動的に反映される
+ * （写しを持たないので、二重に無効化する必要がない。規則3）。
+ */
+function findOwn(state: State, threadId: ThreadId, baseVersion: number) {
+  return state.threads.get(threadId)?.ownBase.find((e) => e.baseVersion === baseVersion);
+}
+
+export async function invalidateBase(
+  log: EventLog,
+  state: State,
+  threadId: ThreadId,
+  baseVersion: number,
+): Promise<InvalidateGate> {
+  const entry = findOwn(state, threadId, baseVersion);
+  if (!entry) {
+    return {
+      ok: false,
+      reason: `${threadId} の第${baseVersion}版は無い（自分のスレッドが追記した行だけを無効化できる）`,
+    };
+  }
+  if (entry.invalidated) {
+    return { ok: false, reason: `第${baseVersion}版はすでに無効化されている` };
+  }
+  await log.append({ type: 'base.invalidated', threadId, baseVersion });
+  return { ok: true };
+}
+
+/** `invalidateBase` の逆。無効化した行を、また効くようにする。 */
+export async function reactivateBase(
+  log: EventLog,
+  state: State,
+  threadId: ThreadId,
+  baseVersion: number,
+): Promise<InvalidateGate> {
+  const entry = findOwn(state, threadId, baseVersion);
+  if (!entry) {
+    return {
+      ok: false,
+      reason: `${threadId} の第${baseVersion}版は無い（自分のスレッドが追記した行だけを有効化できる）`,
+    };
+  }
+  if (!entry.invalidated) {
+    return { ok: false, reason: `第${baseVersion}版はすでに有効` };
+  }
+  await log.append({ type: 'base.reactivated', threadId, baseVersion });
+  return { ok: true };
+}

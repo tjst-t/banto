@@ -4,7 +4,14 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { appendBase, baseCharacters, baseLimitDecisionId, checkBaseAppend } from './base.js';
+import {
+  appendBase,
+  baseCharacters,
+  baseLimitDecisionId,
+  checkBaseAppend,
+  invalidateBase,
+  reactivateBase,
+} from './base.js';
 import { effectiveBase, fold } from './fold.js';
 import { EventLog } from './log.js';
 
@@ -103,5 +110,60 @@ describe('base のゲート（要件 R8・決定4）', () => {
     await expect(async () => appendBase(log, await state(log), 'nope', 'x')).rejects.toThrow(
       /知らないスレッド/,
     );
+  });
+});
+
+// PO指摘 2026-08-22：訂正は上書きではなく無効化で行うべき。無効化した分だけ
+// 閾値の予算が実際に空くことが、この機構の本題（「単調増加で文脈を食いつぶす」への答え）。
+describe('無効化・有効化（PO指摘 2026-08-22）', () => {
+  it('無効化すると閾値の予算が空き、以前は断られた追記が通るようになる', async () => {
+    const log = await withThread();
+    await appendBase(log, await state(log), 't1', 'x'.repeat(80), 100);
+
+    // 残り20文字しかないので、30文字の追記は断られる。
+    const refused = await appendBase(log, await state(log), 't1', 'y'.repeat(30), 100);
+    expect(refused.ok).toBe(false);
+
+    // 第1版を無効化すると、80文字ぶんの予算が空く。
+    const gate = await invalidateBase(log, await state(log), 't1', 1);
+    expect(gate.ok).toBe(true);
+    expect(baseCharacters(await state(log), 't1')).toBe(0);
+
+    // 今度は通る。
+    const accepted = await appendBase(log, await state(log), 't1', 'y'.repeat(30), 100);
+    expect(accepted.ok).toBe(true);
+  });
+
+  it('無効化しても base.appended 自体は消えない。有効化すればまた戻る', async () => {
+    const log = await withThread();
+    await appendBase(log, await state(log), 't1', '大事な決定', 100);
+    await invalidateBase(log, await state(log), 't1', 1);
+    expect(effectiveBase(await state(log), 't1')).toEqual([]);
+    expect((await log.read()).some((e) => e.type === 'base.appended')).toBe(true);
+
+    await reactivateBase(log, await state(log), 't1', 1);
+    expect(effectiveBase(await state(log), 't1')).toEqual(['大事な決定']);
+  });
+
+  it('無い版・他人の版・すでに無効化した版は断る（握りつぶさない）', async () => {
+    const log = await withThread();
+    await appendBase(log, await state(log), 't1', 'A', 100);
+
+    const noSuchVersion = await invalidateBase(log, await state(log), 't1', 99);
+    expect(noSuchVersion.ok).toBe(false);
+
+    const noSuchThread = await invalidateBase(log, await state(log), 'nope', 1);
+    expect(noSuchThread.ok).toBe(false);
+
+    await invalidateBase(log, await state(log), 't1', 1);
+    const already = await invalidateBase(log, await state(log), 't1', 1);
+    expect(already.ok).toBe(false);
+  });
+
+  it('有効な版をもう一度有効化しようとしたら断る', async () => {
+    const log = await withThread();
+    await appendBase(log, await state(log), 't1', 'A', 100);
+    const already = await reactivateBase(log, await state(log), 't1', 1);
+    expect(already.ok).toBe(false);
   });
 });

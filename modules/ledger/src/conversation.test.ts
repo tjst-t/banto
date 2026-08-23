@@ -69,3 +69,34 @@ describe('append_base（AI が決まったことに書き込む）', () => {
     expect((await log.read()).filter((e) => e.type === 'base.appended')).toHaveLength(0);
   });
 });
+
+/**
+ * 訂正は無効化で行う（PO指摘 2026-08-22）。ゲート自体の試験（境界・自分のスレッド
+ * にしか効かない等）は `packages/core/src/base.test.ts` が持っている——ここでは
+ * `ConversationCore` から正しい入口（自分の threadId）へ繋がっていることだけを測る。
+ */
+describe('invalidate_base / reactivate_base（AI が訂正する）', () => {
+  it('自分が追記した行を無効化でき、base.invalidated が残る', async () => {
+    const { log, core } = await fresh(async () => ({ text: '', mimeType: null }));
+    await core.appendToBase({ text: '間違えた決定' });
+    const gate = await core.invalidateBase({ baseVersion: 1 });
+    expect(gate.ok).toBe(true);
+    const invalidated = (await log.read()).filter((e) => e.type === 'base.invalidated');
+    expect(invalidated).toMatchObject([{ threadId: 't1', baseVersion: 1 }]);
+  });
+
+  it('無効化してから再有効化すると、また効くようになる', async () => {
+    const { log, core } = await fresh(async () => ({ text: '', mimeType: null }));
+    await core.appendToBase({ text: 'X' });
+    await core.invalidateBase({ baseVersion: 1 });
+    const gate = await core.reactivateBase({ baseVersion: 1 });
+    expect(gate.ok).toBe(true);
+    expect((await log.read()).filter((e) => e.type === 'base.reactivated')).toHaveLength(1);
+  });
+
+  it('存在しない版は断る', async () => {
+    const { core } = await fresh(async () => ({ text: '', mimeType: null }));
+    const gate = await core.invalidateBase({ baseVersion: 99 });
+    expect(gate.ok).toBe(false);
+  });
+});

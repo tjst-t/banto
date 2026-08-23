@@ -33,7 +33,10 @@ import {
   EventLog,
   appendBase as appendBaseGate,
   fold,
+  invalidateBase as invalidateBaseGate,
+  reactivateBase as reactivateBaseGate,
   type BaseGate,
+  type InvalidateGate,
 } from '@banto/core';
 import { z } from 'zod';
 
@@ -127,6 +130,25 @@ export class ConversationCore {
     const state = fold(await this.log.read());
     return appendBaseGate(this.log, state, this.threadId, input.text, this.baseLimit);
   }
+
+  /**
+   * 訂正は無効化で行う（PO指摘 2026-08-22）。**削除ではない**——`base.appended`
+   * はログに残ったまま、`effectiveBase` がこの行を読み飛ばすようになるだけ。
+   * 追記で訂正するより良い理由：無効化した行の文字数は閾値の予算から外れる
+   * ——訂正のたびに base が肥えていくのを避けられる。
+   *
+   * 自分のスレッドが自分で追記した行だけを対象にできる（`invalidateBase` が強制）。
+   */
+  async invalidateBase(input: { baseVersion: number }): Promise<InvalidateGate> {
+    const state = fold(await this.log.read());
+    return invalidateBaseGate(this.log, state, this.threadId, input.baseVersion);
+  }
+
+  /** `invalidateBase` の逆。無効化した行を、また効くようにする。 */
+  async reactivateBase(input: { baseVersion: number }): Promise<InvalidateGate> {
+    const state = fold(await this.log.read());
+    return reactivateBaseGate(this.log, state, this.threadId, input.baseVersion);
+  }
 }
 
 /**
@@ -175,11 +197,12 @@ export function conversationModule(
           "message history. This is the durable record that survives context compaction and " +
           "carries over when the person forks this conversation — call it when you and the " +
           "person settle something that later turns (or forks) need to know, not for things " +
-          "that are only useful right now. This is append-only and has no undo, so keep entries " +
-          "concise and only write settled conclusions, not scratch notes or things still being " +
-          "discussed. There is a size limit: past it, the append is declined (not silently " +
-          "dropped) and the person is asked whether to start a fresh conversation instead — " +
-          "check the ok field and tell the person if it was declined.",
+          "that are only useful right now. Keep entries concise and only write settled " +
+          "conclusions, not scratch notes or things still being discussed — if you get one " +
+          "wrong, call invalidate_base on it rather than appending a correction on top. There " +
+          "is a size limit: past it, the append is declined (not silently dropped) and the " +
+          "person is asked whether to start a fresh conversation instead — check the ok field " +
+          "and tell the person if it was declined.",
         input: {
           text: z.string().describe('The fact or decision to append, as one durable line'),
         },
@@ -196,6 +219,41 @@ export function conversationModule(
           v.ok
             ? `決まったことに追記した（第${v.baseVersion}版、${v.characters}/${v.limit}文字）`
             : `追記を断った: ${v.reason}`,
+      }),
+      tool({
+        name: 'invalidate_base',
+        description:
+          "Retract a fact you (or the person) previously recorded with append_base, because it " +
+          "turned out wrong or is no longer true. This does not delete it — it stops counting " +
+          "toward the size limit and stops being shown to future turns and forks, but the " +
+          "original record stays in history. Prefer this over appending a correction on top: " +
+          "a correction leaves the wrong fact still consuming budget, this frees it. You can " +
+          "only retract entries this conversation itself appended — pass the baseVersion number " +
+          "shown for that entry.",
+        input: {
+          baseVersion: z.number().describe('The baseVersion of the entry to retract'),
+        },
+        output: {
+          ok: z.boolean(),
+          reason: z.string().optional().describe('Present when ok is false'),
+        },
+        run: async (core, input) => core.invalidateBase(input),
+        summary: (v) => (v.ok ? '無効化した' : `無効化を断った: ${v.reason}`),
+      }),
+      tool({
+        name: 'reactivate_base',
+        description:
+          'Undo invalidate_base — make a previously retracted entry count again. Same ' +
+          'restriction: only entries this conversation itself appended.',
+        input: {
+          baseVersion: z.number().describe('The baseVersion of the entry to reactivate'),
+        },
+        output: {
+          ok: z.boolean(),
+          reason: z.string().optional().describe('Present when ok is false'),
+        },
+        run: async (core, input) => core.reactivateBase(input),
+        summary: (v) => (v.ok ? '有効化した' : `有効化を断った: ${v.reason}`),
       }),
     ],
   });

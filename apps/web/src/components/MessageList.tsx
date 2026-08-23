@@ -1,5 +1,5 @@
 import { Fragment, type ReactNode } from 'react';
-import { AlertTriangle, GitFork, PackageMinus } from 'lucide-react';
+import { AlertTriangle, GitFork, PackageMinus, RotateCcw, Undo2 } from 'lucide-react';
 import { MessageScroller } from '@shadcn/react/message-scroller';
 
 import { Markdown } from './Markdown';
@@ -225,6 +225,15 @@ function renderEvent(
         決まったことに追記（第 {event.baseVersion} 版）・{event.text.length} 文字
       </Aside>
     );
+  }
+
+  // 訂正は無効化で行う（PO裁定 2026-08-22）。削除ではないので、年表には
+  // 「何が起きたか」だけが残る——中身は「決まったこと」の面で読める。
+  if (event.type === 'base.invalidated') {
+    return <Aside icon={<Undo2 className="h-3 w-3" />}>決まったこと 第{event.baseVersion}版を無効化</Aside>;
+  }
+  if (event.type === 'base.reactivated') {
+    return <Aside tone="accent" icon={<RotateCcw className="h-3 w-3" />}>決まったこと 第{event.baseVersion}版を有効化</Aside>;
   }
 
   if (event.type === 'run.tested') {

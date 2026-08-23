@@ -113,6 +113,32 @@ export interface BaseAppended extends Envelope {
 }
 
 /**
+ * base の1行を無効化する（PO指摘 2026-08-22）。**削除ではない**——ログは何も消さない。
+ * `effectiveBase` がこの行を読み飛ばすようになるだけで、`base.appended` 自体は残る。
+ *
+ * **自分のスレッドが自分で追記した行だけを対象にできる**（host 側で強制）。
+ * 継承した行（fork 元のもの）は、fork 元のスレッドでしか無効化できない
+ * ——`append_base` が自分のスレッドにしか書けないのと同じ理由（要件 D4）。
+ *
+ * 無効化すると、その行の文字数は `baseCharacters`（閾値判定）から外れる。
+ * 「訂正のたびに base が肥える」を避けるための機構——追記で正すのではなく、
+ * 効かなくすることで正す。
+ */
+export interface BaseInvalidated extends Envelope {
+  readonly type: 'base.invalidated';
+  readonly threadId: ThreadId;
+  /** 無効化する対象の行の版（`base.appended` の `baseVersion` と同じもの）。 */
+  readonly baseVersion: number;
+}
+
+/** `base.invalidated` を取り消す。同じ行を何度でも無効化↔有効化できる。 */
+export interface BaseReactivated extends Envelope {
+  readonly type: 'base.reactivated';
+  readonly threadId: ThreadId;
+  readonly baseVersion: number;
+}
+
+/**
  * 1ターンの usage。決定8 の材料であり、観測はこれだけを畳む。
  * `turnIndex` はスレッド内の連番——外から系列を切り直せるようにする。
  */
@@ -336,6 +362,8 @@ export type BantoEvent =
   | ThreadForked
   | ThreadStatusChanged
   | BaseAppended
+  | BaseInvalidated
+  | BaseReactivated
   | TurnUsageRecorded
   | ThreadSessionRecorded
   | CompactionReported
@@ -362,6 +390,8 @@ const KNOWN_TYPES: ReadonlySet<string> = new Set<EventType>([
   'thread.forked',
   'thread.status',
   'base.appended',
+  'base.invalidated',
+  'base.reactivated',
   'turn.usage',
   'thread.session',
   'compaction.reported',

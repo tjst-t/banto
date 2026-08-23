@@ -115,6 +115,84 @@ describe('fold', () => {
     expect(effectiveBase(state, 't3')).toEqual(['A', 'B', 'D']);
   });
 
+  // PO指摘 2026-08-22：訂正は上書きではなく無効化で行うべき。
+  it('無効化した行は effectiveBase から抜ける。削除ではないので base.appended 自体は残る', () => {
+    const state = fold([
+      ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
+      ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '一本目' }),
+      ev({ type: 'base.appended', threadId: 't1', baseVersion: 1, text: '正しい決定' }),
+      ev({ type: 'base.appended', threadId: 't1', baseVersion: 2, text: '間違えた決定' }),
+      ev({ type: 'base.invalidated', threadId: 't1', baseVersion: 2 }),
+    ]);
+    expect(effectiveBase(state, 't1')).toEqual(['正しい決定']);
+    // 生のデータは残っている——削除ではないことの確認。
+    expect(state.threads.get('t1')?.ownBase).toEqual([
+      { baseVersion: 1, text: '正しい決定', invalidated: false },
+      { baseVersion: 2, text: '間違えた決定', invalidated: true },
+    ]);
+  });
+
+  it('base.reactivated で無効化を取り消せる', () => {
+    const state = fold([
+      ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
+      ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '一本目' }),
+      ev({ type: 'base.appended', threadId: 't1', baseVersion: 1, text: 'X' }),
+      ev({ type: 'base.invalidated', threadId: 't1', baseVersion: 1 }),
+      ev({ type: 'base.reactivated', threadId: 't1', baseVersion: 1 }),
+    ]);
+    expect(effectiveBase(state, 't1')).toEqual(['X']);
+  });
+
+  /**
+   * **fork の継承境界は版号で決まる。無効化された行があっても動かない**
+   * ——配列の長さ（有効な行の数）で切ると、親の途中の行を無効化した瞬間に
+   * fork の境界がずれる。ここが壊れていないことを確かめる。
+   */
+  it('親の行を無効化しても、fork の継承境界（版号）はずれない', () => {
+    const state = fold([
+      ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
+      ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '親' }),
+      ev({ type: 'base.appended', threadId: 't1', baseVersion: 1, text: 'A' }),
+      ev({ type: 'base.appended', threadId: 't1', baseVersion: 2, text: 'B' }),
+      ev({ type: 'base.appended', threadId: 't1', baseVersion: 3, text: 'C' }),
+      ev({
+        type: 'thread.forked',
+        threadId: 't2',
+        channelId: 'c1',
+        title: '枝',
+        from: { threadId: 't1', baseVersion: 3 },
+        mode: 'base',
+      }),
+      // fork の前に足した A を、fork の後で無効化する。
+      ev({ type: 'base.invalidated', threadId: 't1', baseVersion: 1 }),
+      // 親はさらに D を足す（fork の境界より後なので t2 には入らない）。
+      ev({ type: 'base.appended', threadId: 't1', baseVersion: 4, text: 'D' }),
+    ]);
+
+    expect(effectiveBase(state, 't1')).toEqual(['B', 'C', 'D']);
+    // t2 は A を無効化前に継承しているが、無効化は継承元をそのまま参照するので反映される。
+    // D（fork 後の親の追記）は入らない。
+    expect(effectiveBase(state, 't2')).toEqual(['B', 'C']);
+  });
+
+  it('無効化は自分のスレッドが追記した行にしか効かない（継承した行は見つからない）', () => {
+    const state = fold([
+      ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),
+      ev({ type: 'thread.created', threadId: 't1', channelId: 'c1', title: '親' }),
+      ev({ type: 'base.appended', threadId: 't1', baseVersion: 1, text: 'A' }),
+      ev({
+        type: 'thread.forked',
+        threadId: 't2',
+        channelId: 'c1',
+        title: '枝',
+        from: { threadId: 't1', baseVersion: 1 },
+        mode: 'base',
+      }),
+    ]);
+    // t2 の ownBase は空——継承した A はここには無い。無効化しようにも対象が見つからない。
+    expect(state.threads.get('t2')?.ownBase).toEqual([]);
+  });
+
   it('判断待ちは1本の列に集まり、解決すると消える', () => {
     const state = fold([
       ev({ type: 'channel.created', channelId: 'c1', channelName: 'banto' }),

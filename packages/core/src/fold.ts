@@ -27,13 +27,22 @@ export interface ForkOrigin {
   readonly mode: 'base' | 'tip';
 }
 
+/** base の1行。**配列からは取り除かない**——`baseVersion` は配列の添字ではなく
+ * 版番号そのものなので、無効化しても位置がずれてはいけない（fork の継承境界が
+ * この番号で決まるため）。 */
+export interface BaseEntry {
+  readonly baseVersion: number;
+  readonly text: string;
+  invalidated: boolean;
+}
+
 export interface ThreadState {
   readonly id: ThreadId;
   readonly channelId: ChannelId;
   readonly title: string;
   status: ThreadStatus;
   /** このスレッド自身が追記した base。継承分は含まない——`effectiveBase` で解く。 */
-  readonly ownBase: string[];
+  readonly ownBase: BaseEntry[];
   /** 自分の追記後の版。fork 元から継承した版を起点に増える。 */
   baseVersion: number;
   readonly forkedFrom: ForkOrigin | null;
@@ -151,9 +160,23 @@ export function fold(events: readonly BantoEvent[]): State {
       case 'base.appended': {
         const thread = threads.get(event.threadId);
         if (thread) {
-          thread.ownBase.push(event.text);
+          thread.ownBase.push({ baseVersion: event.baseVersion, text: event.text, invalidated: false });
           thread.baseVersion = event.baseVersion;
         }
+        break;
+      }
+
+      case 'base.invalidated': {
+        const thread = threads.get(event.threadId);
+        const entry = thread?.ownBase.find((e) => e.baseVersion === event.baseVersion);
+        if (entry) entry.invalidated = true;
+        break;
+      }
+
+      case 'base.reactivated': {
+        const thread = threads.get(event.threadId);
+        const entry = thread?.ownBase.find((e) => e.baseVersion === event.baseVersion);
+        if (entry) entry.invalidated = false;
         break;
       }
 
@@ -206,15 +229,56 @@ export function fold(events: readonly BantoEvent[]): State {
  * 引くかであって、base の解きかたではない。Phase 0 ではメッセージ列をまだ
  * 畳んでいないので、mode は記録するだけで、ここでは効かない。
  */
-export function effectiveBase(state: State, threadId: ThreadId): string[] {
+/** `effectiveBaseEntries` の1行。継承したものかどうか・実際の持ち主が付く。 */
+export interface EffectiveBaseEntry extends BaseEntry {
+  /** このスレッド自身が追記したか。**無効化できるのは own のものだけ**——
+   * 継承した行は、持ち主（`ownerThreadId`）のスレッドでしか無効化できない。 */
+  readonly own: boolean;
+  /** 実際にこの行を追記したスレッド。own なら threadId 自身と同じ。 */
+  readonly ownerThreadId: ThreadId;
+}
+
+/**
+ * そのスレッドが実際に見る base を、行ごとの詳細つきで解く。
+ *
+ * fork 元から**切った時点の版まで**を継ぎ、その後に自分の追記を足す。
+ * 親がその後に追記しても、このスレッドには入らない（要件 R4）。
+ *
+ * **境界は `baseVersion`（版番号）で判定する。配列の長さでは判定しない**
+ * ——無効化された行も配列からは取り除かないが、`effectiveBase`（文字列版）は
+ * それを読み飛ばす。版号ベースで切れば、無効化がいつ起きても fork の継承境界は動かない。
+ */
+export function effectiveBaseEntries(state: State, threadId: ThreadId): EffectiveBaseEntry[] {
   const thread = state.threads.get(threadId);
   if (!thread) return [];
 
   const origin = thread.forkedFrom;
-  if (!origin) return [...thread.ownBase];
+  const inherited: EffectiveBaseEntry[] = origin
+    ? effectiveBaseEntries(state, origin.threadId)
+        .filter((e) => e.baseVersion <= origin.baseVersion)
+        .map((e) => ({ ...e, own: false }))
+    : [];
 
-  const inherited = effectiveBase(state, origin.threadId).slice(0, origin.baseVersion);
-  return [...inherited, ...thread.ownBase];
+  const own: EffectiveBaseEntry[] = thread.ownBase.map((e) => ({
+    ...e,
+    own: true,
+    ownerThreadId: thread.id,
+  }));
+
+  return [...inherited, ...own];
+}
+
+/**
+ * そのスレッドが実際に見る base を解く。**無効化された行は読み飛ばす。**
+ *
+ * 注：fork の `mode`（'base' / 'tip'）が変えるのは**以降のメッセージ**をどこから
+ * 引くかであって、base の解きかたではない。Phase 0 ではメッセージ列をまだ
+ * 畳んでいないので、mode は記録するだけで、ここでは効かない。
+ */
+export function effectiveBase(state: State, threadId: ThreadId): string[] {
+  return effectiveBaseEntries(state, threadId)
+    .filter((e) => !e.invalidated)
+    .map((e) => e.text);
 }
 
 /** 判断待ちを1画面に出すための一覧。古い順（待たせているものが上）。 */
