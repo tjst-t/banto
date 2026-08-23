@@ -12,6 +12,16 @@
 export type ThreadStatus = 'working' | 'waiting-on-human' | 'blocked' | 'done';
 export type DecisionSource = 'thread' | 'factory' | 'observer';
 
+/** スレッド作成の場所の候補（決定32）。役割 `workspace-suggestions` を持つモジュールから集める。 */
+export interface WorkspaceCandidate {
+  /** `workspaceRoot` と同じ形（広いrootからの相対パス、決定29）。 */
+  readonly path: string;
+  readonly label: string;
+  readonly lastModified: string;
+  /** 既にどれかのスレッドがこの場所を使っているか（host が突き合わせる）。 */
+  readonly inUse: boolean;
+}
+
 export interface ForkOrigin {
   readonly threadId: string;
   readonly baseVersion: number;

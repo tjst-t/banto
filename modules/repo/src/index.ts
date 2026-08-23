@@ -29,8 +29,13 @@ export const manifest: BantoModule = {
    *
    * **Factory はこれを役割で頼む。** 以前は Factory が `RepoCore` を直接握っていて、
    * 「worktree の持ち主は Repo」（決定5）が**言葉の上でだけ**成り立っていた。
+   *
+   * `workspace-suggestions`（決定32）：スレッド作成時の場所の候補を出す役割。
+   * **`repo` はこの役割の実装の1つにすぎない**——他のモジュールも同じ役割を
+   * 名乗ってよい（例：将来のclone専用モジュール）。host はどのモジュールが
+   * 名乗っているかを知らずに、役割だけで候補を集める。
    */
-  provides: ['repo'],
+  provides: ['repo', 'workspace-suggestions'],
 };
 
 /**
@@ -175,6 +180,25 @@ export function repoModule(root: string): DefinedModule {
         branch: z.string().describe('Branch to push'),
       },
       run: async (core, { remote, branch }) => ok(await core.push(remote, branch)),
+    }),
+    // ---- 役割 `workspace-suggestions`（決定32）----
+    tool({
+      name: 'list_candidates',
+      description:
+        'List directories directly under the root that look like git repositories ' +
+        '(have a .git folder), as suggestions for where a new thread could work.',
+      input: {},
+      output: {
+        candidates: z.array(
+          z.object({
+            path: z.string().describe('Path relative to the root'),
+            label: z.string().describe('Human-readable name'),
+            lastModified: z.string().describe('ISO 8601'),
+          }),
+        ),
+      },
+      run: async (core) => ({ candidates: await core.listCandidates() }),
+      summary: (v) => `${v.candidates.length}件の候補`,
     }),
   ],
   });

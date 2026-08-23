@@ -15,6 +15,7 @@ import type {
   ViewAssignment,
   StateResponse,
   StreamEvent,
+  WorkspaceCandidate,
 } from './types';
 
 async function asJson<T>(res: Response): Promise<T> {
@@ -28,6 +29,15 @@ async function asJson<T>(res: Response): Promise<T> {
 export async function fetchState(): Promise<StateResponse> {
   const res = await fetch('/api/state');
   return asJson<StateResponse>(res);
+}
+
+/**
+ * スレッド作成の場所の候補（決定32）。**必要なときにだけ呼ぶ**——
+ * `/api/state` には含まれない（毎回モジュールへ問い合わせが飛ぶため）。
+ */
+export async function fetchWorkspaceCandidates(): Promise<WorkspaceCandidate[]> {
+  const res = await fetch('/api/workspace-candidates');
+  return (await asJson<{ candidates: WorkspaceCandidate[] }>(res)).candidates;
 }
 
 export async function createThread(body: {

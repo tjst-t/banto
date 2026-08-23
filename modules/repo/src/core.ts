@@ -12,9 +12,18 @@
  */
 
 import { execFile } from 'node:child_process';
+import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import { resolveInside } from '@banto/module-kit';
+
+/** スレッド作成の候補地（決定32）。**役割`workspace-suggestions`の1実装として返す形。** */
+export interface WorkspaceCandidate {
+  /** root からの相対パス。`ThreadCreated.workspaceRoot` と同じ形（決定29）。 */
+  readonly path: string;
+  readonly label: string;
+  readonly lastModified: string;
+}
 
 export interface GitOutput {
   readonly stdout: string;
@@ -227,5 +236,28 @@ export class RepoCore {
   async push(remote: string, branch: string): Promise<string> {
     const { stdout } = await this.git(['push', remote, branch]);
     return stdout;
+  }
+
+  /**
+   * root の直下で、`.git` を持つディレクトリを候補として返す（決定32）。
+   *
+   * **1階層だけ見る**——`workspaceRoot`（決定29）が広いrootからの相対パス1段で
+   * 表される形と揃える。新しい順（`lastModified` 降順）に並べる。
+   */
+  async listCandidates(): Promise<WorkspaceCandidate[]> {
+    const entries = await readdir(this.root, { withFileTypes: true });
+    const candidates: WorkspaceCandidate[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const dirPath = path.join(this.root, entry.name);
+      const hasGit = await stat(path.join(dirPath, '.git')).then(
+        () => true,
+        () => false,
+      );
+      if (!hasGit) continue;
+      const info = await stat(dirPath);
+      candidates.push({ path: entry.name, label: entry.name, lastModified: info.mtime.toISOString() });
+    }
+    return candidates.sort((a, b) => b.lastModified.localeCompare(a.lastModified));
   }
 }

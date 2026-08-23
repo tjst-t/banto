@@ -30,17 +30,22 @@
  * `data-open-item` 等）で全シナリオを引き直した。
  */
 
-import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { EventLog } from '@banto/core';
+import { repoModule } from '@banto/module-repo';
 
 import { startServer } from './server.js';
+
+const execFileAsync = promisify(execFile);
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = path.resolve(here, '../../web/dist');
@@ -1398,6 +1403,55 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
       // 作った会話の頭に、指定したリポジトリが出る。
       await page.waitForSelector('text=/repo-a/', { timeout: 15_000 });
+    } finally {
+      await browser.close();
+      server.close();
+    }
+  }, 60_000);
+
+  /**
+   * 場所の候補（決定32）。`repo` モジュールが実在するgitリポジトリを見つけて出し、
+   * 押すと入力欄に入り、そのまま作成できる。
+   */
+  it('場所の候補が出て、押すと選べる', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const dir = await mkdtemp(path.join(tmpdir(), 'banto-ui-wscand-'));
+    const fsRoot = await mkdtemp(path.join(tmpdir(), 'banto-ui-wscand-fs-'));
+    await mkdir(path.join(fsRoot, 'candidate-repo'), { recursive: true });
+    await execFileAsync('git', ['init', '-q', '-b', 'main'], { cwd: path.join(fsRoot, 'candidate-repo') });
+
+    const server = startServer({
+      dataDir: dir,
+      port: 0,
+      modules: [],
+      toolsByModule: new Map(),
+      model: 'claude-haiku-4-5',
+      webRoot: WEB_ROOT,
+      workspaceSuggestionModules: [
+        { name: 'repo', kind: 'in-process', createServer: () => repoModule(fsRoot).createServer() },
+      ],
+    });
+    await new Promise((r) => server.once('listening', r));
+    const wsOrigin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+
+    try {
+      await page.goto(wsOrigin, { waitUntil: 'networkidle' });
+      await page.waitForSelector('text=まだ会話がありません。', { timeout: 15_000 });
+      await page.waitForSelector('[data-workspace-candidate="candidate-repo"]', { timeout: 15_000 });
+
+      await page.locator('[data-workspace-candidate="candidate-repo"]').click();
+      await page
+        .getByPlaceholder('対象のリポジトリ（任意。空でもよい）')
+        .evaluate((el) => (el as HTMLInputElement).value)
+        .then((v) => expect(v).toBe('candidate-repo'));
+
+      await page.getByRole('button', { name: '新しい会話をはじめる' }).click();
+      await page.waitForSelector('text=/candidate-repo/', { timeout: 15_000 });
     } finally {
       await browser.close();
       server.close();

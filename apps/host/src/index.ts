@@ -463,6 +463,14 @@ async function main(): Promise<void> {
          * 持ち込めること**が要件 C6 の中身なので、面だけは配る。
          */
         manifests: [fsManifest, helloPyManifest()],
+        /**
+         * スレッド作成の場所の候補（決定32）。`repo` を、fsと同じ広い root
+         * （`fsRoot`）に向けたインスタンスとして渡す——AIには繋がない
+         * （`ServerOptions.workspaceSuggestionModules` のコメントを見よ）。
+         */
+        workspaceSuggestionModules: [
+          { name: 'repo', kind: 'in-process', createServer: () => repoModule(fsRoot).createServer() },
+        ],
         model,
         host: flag(argv, 'host', '127.0.0.1'),
         ...(factory === undefined ? {} : { factory }),

@@ -7,7 +7,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -72,5 +72,38 @@ describe('RepoCore', () => {
 
   it('root の外を指した commit は理由付きで断る', async () => {
     await expect(core.commit('escape', ['../outside.txt'])).rejects.toThrow(/許された範囲の外/);
+  });
+});
+
+// 決定32：スレッド作成の候補地。root の直下に複数リポジトリが並ぶ、という
+// 上の describe とは違う形の root を使うので、別立てにする。
+describe('RepoCore.listCandidates（決定32）', () => {
+  let root: string;
+
+  beforeAll(async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'banto-repo-candidates-'));
+    for (const name of ['repo-a', 'repo-b']) {
+      await mkdir(path.join(root, name), { recursive: true });
+      await execFileAsync('git', ['init', '-q', '-b', 'main'], { cwd: path.join(root, name) });
+    }
+    // git ではないただのディレクトリ。候補に出てはいけない。
+    await mkdir(path.join(root, 'not-a-repo'), { recursive: true });
+    // ディレクトリではないファイル。これも候補に出てはいけない。
+    await writeFile(path.join(root, 'note.txt'), 'x', 'utf8');
+  });
+
+  it('.git を持つディレクトリだけを候補として返す', async () => {
+    const core = new RepoCore(root);
+    const candidates = await core.listCandidates();
+    const paths = candidates.map((c) => c.path).sort();
+    expect(paths).toEqual(['repo-a', 'repo-b']);
+  });
+
+  it('候補は path・label・lastModified を持つ', async () => {
+    const core = new RepoCore(root);
+    const candidates = await core.listCandidates();
+    const a = candidates.find((c) => c.path === 'repo-a');
+    expect(a).toMatchObject({ path: 'repo-a', label: 'repo-a' });
+    expect(a?.lastModified).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 });

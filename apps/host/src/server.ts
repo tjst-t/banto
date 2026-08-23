@@ -124,6 +124,19 @@ export interface ServerOptions {
    * 今までどおり1つだけが立つ。
    */
   readonly factory?: FactoryPool;
+  /**
+   * スレッド作成の場所の候補を出せるモジュール（決定32・要件C13と同じ役割の考え方）。
+   *
+   * **host はどのモジュールが名乗っているかを知らない**——役割
+   * `workspace-suggestions` を持つモジュールなら何でもよい。今日は `repo`
+   * （root直下の.gitディレクトリを返す）だけだが、将来cloneするモジュールが
+   * 増えても、ここは1文字も変えずに済む。
+   *
+   * **AI向けの `modules`/`toolsByModule` とは別の場所に持つ**——ここに置いた
+   * モジュールは `/api/workspace-candidates` からしか呼ばれず、会話には
+   * 一切繋がない（AIに無関係なツール定義を見せてトークンを使わせない）。
+   */
+  readonly workspaceSuggestionModules?: readonly ModuleFactory[];
 }
 
 export interface FactoryPool {
@@ -254,6 +267,27 @@ async function currentState(dataDir: string, baseLimit: number): Promise<unknown
     })),
     queue: pendingQueue(state),
   };
+}
+
+/**
+ * `list_candidates` の返り値を検証しながら取り出す（決定32）。
+ *
+ * **自己申告を自己申告で確かめない**（規則1）——`callStructured` は zod で
+ * 型を検証済みだが、`Record<string, unknown>` として届く先の形までは
+ * 保証しないので、ここでもう一段確かめてから使う。
+ */
+function asWorkspaceCandidates(
+  value: unknown,
+): { path: string; label: string; lastModified: string }[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (c): c is { path: string; label: string; lastModified: string } =>
+      typeof c === 'object' &&
+      c !== null &&
+      typeof (c as Record<string, unknown>)['path'] === 'string' &&
+      typeof (c as Record<string, unknown>)['label'] === 'string' &&
+      typeof (c as Record<string, unknown>)['lastModified'] === 'string',
+  );
 }
 
 /**
@@ -435,6 +469,37 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
 
     if (req.method === 'GET' && url.pathname === '/api/state') {
       json(res, 200, await currentState(options.dataDir, baseLimit));
+      return;
+    }
+
+    /**
+     * スレッド作成の場所の候補（決定32）。**必要なときにだけ問い合わせる**
+     * ——`/api/state` には含めない。候補を持つモジュール全部に聞いて集める。
+     *
+     * **`inUse` はここで付ける。** 候補を出す側（`repo` 等）はスレッドの存在を
+     * 知らない——「どこかのスレッドが既にこの場所を使っているか」は host だけが
+     * 持つ情報なので、ここで一度だけ突き合わせる（規則3）。
+     */
+    if (req.method === 'GET' && url.pathname === '/api/workspace-candidates') {
+      const state = fold(await log.read());
+      const usedPaths = new Set(
+        [...state.threads.values()].flatMap((t) => (t.workspaceRoot === null ? [] : [t.workspaceRoot])),
+      );
+
+      const candidates: { path: string; label: string; lastModified: string; inUse: boolean }[] = [];
+      for (const spec of options.workspaceSuggestionModules ?? []) {
+        if (spec.kind !== 'in-process') continue;
+        const caller = await connectInProcess(spec.createServer());
+        try {
+          const result = await caller.callStructured('list_candidates', {});
+          for (const c of asWorkspaceCandidates(result['candidates'])) {
+            candidates.push({ ...c, inUse: usedPaths.has(c.path) });
+          }
+        } finally {
+          await caller.close();
+        }
+      }
+      json(res, 200, { candidates });
       return;
     }
 

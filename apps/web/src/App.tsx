@@ -6,6 +6,7 @@ import { useThreadSessions } from './hooks/useThreadSessions';
 import { useNarrow } from './hooks/useNarrow';
 import {
   createThread,
+  fetchWorkspaceCandidates,
   forkThread as apiForkThread,
   mergeThread,
   resolveDecision,
@@ -20,7 +21,8 @@ import { SettingsDialog } from './components/dialogs/SettingsDialog';
 import { DeleteThreadDialog } from './components/dialogs/DeleteThreadDialog';
 import { TooltipProvider } from './components/ui/tooltip';
 import { Button } from './components/ui/button';
-import type { ThreadSummary } from './lib/types';
+import type { ThreadSummary, WorkspaceCandidate } from './lib/types';
+import { elapsedLabel } from './lib/time';
 
 type DialogKind = 'inbox' | 'history' | 'settings' | null;
 /** 作業パネルを開いた元。会話が2本並んでいるとき、どちらを帯にするかを言う。 */
@@ -73,9 +75,19 @@ export function App() {
    * 空のままでもよい（リポジトリに紐づかない会話も普通にある）。
    */
   const [newWorkspaceRoot, setNewWorkspaceRoot] = useState('');
+  /** 場所の候補（決定32）。まだ読み込んでいなければ `null`。 */
+  const [workspaceCandidates, setWorkspaceCandidates] = useState<WorkspaceCandidate[] | null>(null);
 
   const threads = data?.threads ?? [];
   const queue = data?.queue ?? [];
+
+  // スレッド作成の画面（空状態）を出す一度だけ、候補を読みに行く（決定32）。
+  // 毎回の再取得では呼ばない——`/api/state` とは別のタイミングで問い合わせる口。
+  useEffect(() => {
+    if (!loading && threads.length === 0 && workspaceCandidates === null) {
+      void fetchWorkspaceCandidates().then(setWorkspaceCandidates);
+    }
+  }, [loading, threads.length, workspaceCandidates]);
 
   /**
    * 何も開いていなければ、いちばん新しい**幹**を開く（決定23・PO指摘 2026-08-24）。
@@ -329,6 +341,32 @@ export function App() {
                 placeholder="対象のリポジトリ（任意。空でもよい）"
                 className="h-[var(--h-ctl-sm)] w-72 rounded-md border border-rule bg-paper px-2 text-sm text-ink outline-none placeholder:text-ink-muted focus:border-accent"
               />
+              {/* 場所の候補（決定32）。役割 workspace-suggestions を持つモジュールが出す
+                  ——直接入力の代わりに押して選べる。無ければ何も出さない。 */}
+              {workspaceCandidates !== null && workspaceCandidates.length > 0 && (
+                <ul className="flex w-72 flex-col gap-1 text-left">
+                  {workspaceCandidates.map((c) => (
+                    <li key={c.path}>
+                      <button
+                        type="button"
+                        data-workspace-candidate={c.path}
+                        onClick={() => setNewWorkspaceRoot(c.path)}
+                        className={`flex w-full items-center justify-between gap-2 rounded-md border px-2 py-1 text-xs hover:bg-paper-sunken ${
+                          newWorkspaceRoot === c.path
+                            ? 'border-accent bg-accent-soft text-accent'
+                            : 'border-rule bg-paper text-ink-secondary'
+                        }`}
+                      >
+                        <span className="truncate">{c.label}</span>
+                        <span className="shrink-0 text-ink-muted">
+                          {c.inUse && '使用中・'}
+                          {elapsedLabel(c.lastModified, Date.now())}前
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
               <Button variant="accent" onClick={() => void handleCreate()}>
                 新しい会話をはじめる
               </Button>
