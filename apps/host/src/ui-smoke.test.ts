@@ -1398,8 +1398,9 @@ describe('画面の煙試験（本物のブラウザ）', () => {
     try {
       await page.goto(wsOrigin, { waitUntil: 'networkidle' });
       await page.waitForSelector('text=まだ会話がありません。', { timeout: 15_000 });
-      await page.getByPlaceholder('対象のリポジトリ（任意。空でもよい）').fill('repo-a');
       await page.getByRole('button', { name: '新しい会話をはじめる' }).click();
+      await page.getByPlaceholder('対象のリポジトリ（任意。空でもよい）').fill('repo-a');
+      await page.getByRole('button', { name: 'はじめる' }).click();
 
       // 作った会話の頭に、指定したリポジトリが出る。
       await page.waitForSelector('text=/repo-a/', { timeout: 15_000 });
@@ -1442,6 +1443,7 @@ describe('画面の煙試験（本物のブラウザ）', () => {
     try {
       await page.goto(wsOrigin, { waitUntil: 'networkidle' });
       await page.waitForSelector('text=まだ会話がありません。', { timeout: 15_000 });
+      await page.getByRole('button', { name: '新しい会話をはじめる' }).click();
       await page.waitForSelector('[data-workspace-candidate="candidate-repo"]', { timeout: 15_000 });
 
       await page.locator('[data-workspace-candidate="candidate-repo"]').click();
@@ -1450,11 +1452,38 @@ describe('画面の煙試験（本物のブラウザ）', () => {
         .evaluate((el) => (el as HTMLInputElement).value)
         .then((v) => expect(v).toBe('candidate-repo'));
 
-      await page.getByRole('button', { name: '新しい会話をはじめる' }).click();
+      await page.getByRole('button', { name: 'はじめる' }).click();
       await page.waitForSelector('text=/candidate-repo/', { timeout: 15_000 });
     } finally {
       await browser.close();
       server.close();
+    }
+  }, 60_000);
+
+  /**
+   * サイドバーの＋（PO指摘 2026-08-24：「作成の入口が空状態にしか無い」）。
+   * **会話がすでにある状態でも**、サイドバーから新しい会話をはじめられる。
+   */
+  it('サイドバーの＋から、会話がある状態でも新しい会話をはじめられる', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      // 既存の会話（t1・t2）が開いている状態から始める——空状態の導線とは別口であることを確かめる。
+      await page.waitForSelector('[data-conversation-panel]', { timeout: 15_000 });
+
+      await page.getByRole('button', { name: '新しい会話' }).click();
+      await page.getByRole('heading', { name: '新しい会話' }).waitFor({ timeout: 15_000 });
+      await page.getByRole('button', { name: 'はじめる' }).click();
+
+      // 新しい会話が開き、既存の会話とは別のパネルとして描かれる。
+      await page.waitForSelector('[data-conversation-panel]:has-text("新しい会話")', { timeout: 15_000 });
+    } finally {
+      await browser.close();
     }
   }, 60_000);
 });

@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { History, Inbox, Moon, Settings, Sun } from 'lucide-react';
+import { History, Inbox, Moon, Plus, Settings, Sun } from 'lucide-react';
 
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
@@ -51,6 +51,7 @@ export function Sidebar({
   onOpenInbox,
   onOpenHistory,
   onOpenSettings,
+  onNewThread,
 }: {
   /** いま開いているもの（会話パネル・作業パネル）。押すと開き直せる。 */
   openItems: readonly OpenItem[];
@@ -58,6 +59,8 @@ export function Sidebar({
   onOpenInbox: () => void;
   onOpenHistory: () => void;
   onOpenSettings: () => void;
+  /** 新しい会話をはじめる（決定32・PO指摘 2026-08-24：作成の入口が空状態にしか無かった）。 */
+  onNewThread: () => void;
 }) {
   const { theme, toggle } = useTheme();
   const [heldOpen, setHeldOpen] = useState(false);
@@ -100,6 +103,12 @@ export function Sidebar({
           </Popover>
         )}
       </div>
+
+      <RailButton
+        onClick={onNewThread}
+        label="新しい会話"
+        icon={<Plus className="h-[18px] w-[18px]" strokeWidth={1.7} />}
+      />
 
       <div className="flex-1 max-md:hidden" />
 
