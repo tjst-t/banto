@@ -78,28 +78,24 @@ export function App() {
   const queue = data?.queue ?? [];
 
   /**
-   * 何も開いていなければ、いちばん新しいスレッドを開く（決定23）。
-   * それがフォークなら、その親を幹として一緒に開く（決定26）。
+   * 何も開いていなければ、いちばん新しい**幹**を開く（決定23・PO指摘 2026-08-24）。
+   *
+   * **フォークは自動では開かない。** 以前はフォークも候補に入れ、フォークが
+   * 「一番新しい」なら幹と一緒に開いていた（決定26）が、実際には未マージの
+   * フォークが1つでも残っている限り——**フォークからのフォークが決定31で
+   * 増えなくなった今も、既存の入れ子フォーク（孫・曾孫……）は親をマージしても
+   * 自分自身は片付かない**ので、開くたびに毎回そのフォークが「最新」として
+   * 開いてしまっていた。フォークは、幹を開いてから明示的にクリックしたときだけ
+   * 開くようにする——自動で選ぶ候補には最初から入れない。
    */
   useEffect(() => {
     if (rootThreadId !== null && threads.some((t) => t.id === rootThreadId)) return;
-    // 共有baseスレッドは会話をしないので、自動で開く候補からも外す（決定30）。
-    const openable = threads.filter((t) => t.id !== data?.sharedBaseThreadId);
-    // 畳んだフォークは自動では開かない（PO裁定 2026-08-22）——開いているものからも外れているので。
-    const openOnes = openable.filter((t) => t.mergedInto === null);
-    const latest = openOnes[openOnes.length - 1] ?? openable[openable.length - 1];
-    if (latest === undefined) {
-      setRootThreadId(null);
-      setForkThreadId(null);
-      return;
-    }
-    if (latest.forkedFrom !== null) {
-      setRootThreadId(trueRootId(latest.id, threads));
-      setForkThreadId(latest.id);
-    } else {
-      setRootThreadId(latest.id);
-      setForkThreadId(null);
-    }
+    const openableRoots = threads.filter(
+      (t) => t.id !== data?.sharedBaseThreadId && t.forkedFrom === null,
+    );
+    const latest = openableRoots[openableRoots.length - 1];
+    setRootThreadId(latest?.id ?? null);
+    setForkThreadId(null);
   }, [threads, rootThreadId]);
 
   // 開いている会話の過去を読み直す（要件 A8）。**開き直しても会話が残る。**

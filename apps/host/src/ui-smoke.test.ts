@@ -1279,11 +1279,15 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
   /**
    * 決定31：フォークからのフォークは新規には作れないが、**既存データに残る
-   * 入れ子**（本番で実際に踏んだ壊れ方）を開いても、幹が正しく本当の頂点に
-   * なることを確かめる。API は拒否するので、ここではログへ直接イベントを積んで
-   * 「既に存在してしまっている」状態を再現する。
+   * 入れ子**（本番で実際に踏んだ壊れ方）はそのまま残る。API は拒否するので、
+   * ここではログへ直接イベントを積んで「既に存在してしまっている」状態を再現する。
+   *
+   * PO報告（2026-08-24）：親フォークをマージしても孫フォーク自身は片付かないので、
+   * 「一番新しいスレッドを自動で開く」がフォークも対象にしていたままだと、
+   * 開き直すたびに毎回その孫フォークが出てきてしまっていた。**自動で開くのは
+   * 幹だけ**にして、フォークは明示的に開いたときだけ出るようにした。
    */
-  it('入れ子のフォーク（既存データ）を開いても、幹はフォーク鎖の頂点になる', async () => {
+  it('入れ子のフォーク（既存データ）があっても、自動で開くのは幹だけ', async () => {
     if (!built) throw new Error('画面がビルドされていないので測れない');
 
     const dir = await mkdtemp(path.join(tmpdir(), 'banto-ui-nested-fork-'));
@@ -1324,25 +1328,30 @@ describe('画面の煙試験（本物のブラウザ）', () => {
     const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 
     try {
-      // n3（一番新しいスレッド）が、開いた時点で自動的に開く（決定23）。
-      // サイドバーの点は直接の子フォークしか出さないので（別の既知の制約）、
-      // ここではクリックせず、開いた直後の状態をそのまま見る。
+      // 開いた時点では**幹（n1）だけ**が自動で開く（PO指摘 2026-08-24）。
+      // フォークは、未マージの入れ子がどれだけ残っていても自動では開かない
+      // ——以前は「一番新しいスレッド」がフォークならそれも一緒に開いていて、
+      // 親をマージしても孫フォーク（n3）自身は片付かないので、
+      // 開くたびに毎回そのフォークが出てきてしまっていた。
       await page.goto(nestedOrigin, { waitUntil: 'networkidle' });
 
-      // 幹側のパネル（data-conversation-panel="n1"）に、フォークを示す
-      // 「◂ ○○ から」の表示が出ていない——幹は本当の頂点であるべき。
       await page.waitForSelector('[data-conversation-panel="n1"]', { timeout: 15_000 });
       const rootEyebrow = await page.locator('[data-conversation-panel="n1"] .text-accent').count();
       expect(rootEyebrow).toBe(0);
+      // フォークのパネルは出ていない。
+      expect(await page.locator('[data-conversation-panel="n2"]').count()).toBe(0);
+      expect(await page.locator('[data-conversation-panel="n3"]').count()).toBe(0);
 
-      // フォーク側のパネルは、直接の親「一段目」からの分岐だと分かる。
-      await page.waitForSelector('text=一段目 から', { timeout: 15_000 });
+      // 幹から明示的にフォーク（直接の子・n2）を開くことはできる。
+      await page.locator('[data-open-item="n2"]').click();
+      await page.waitForSelector('text=一段目', { timeout: 15_000 });
+      await page.waitForSelector('[data-conversation-panel="n2"]', { timeout: 15_000 });
 
       // フォークのパネルにはフォークボタンが無い（決定31）。
-      expect(await page.locator('[data-fork="n3"]').count()).toBe(0);
+      expect(await page.locator('[data-fork="n2"]').count()).toBe(0);
       // フォークのパネルには削除ボタンも無い（PO指摘 2026-08-24。マージして
       // 閉じるボタンがその役目を持つので、削除は幹だけでよい）。
-      expect(await page.locator('[data-delete="n3"]').count()).toBe(0);
+      expect(await page.locator('[data-delete="n2"]').count()).toBe(0);
       // 幹には削除ボタンがある。
       expect(await page.locator('[data-delete="n1"]').count()).toBe(1);
     } finally {
