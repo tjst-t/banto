@@ -531,3 +531,15 @@ export class Factory {
     throw new Error(`Factory が ${maxRounds} 巡しても収束しない——段の判定が進んでいない`);
   }
 }
+
+/**
+ * リポジトリごとに `Factory` を1つだけ組み立てて使い回す（決定29）。
+ *
+ * **要求されて初めて組み立てる**——先回りして全リポジトリぶん繋がない。
+ * `apps/host`（HTTP の口）と `modules/factory`（AI 向けの道具）の**両方が
+ * この形を要る**ので、host 側にだけ置かず、ここに1つだけ置く（規則3）。
+ */
+export interface FactoryPool {
+  readonly factoryFor: (repo: string) => Promise<Factory>;
+  readonly allBuilt: () => Promise<Factory[]>;
+}

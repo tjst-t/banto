@@ -1,5 +1,8 @@
 import type { ComponentType } from 'react';
 
+import { DirView } from './DirView';
+import { FactoryRunView } from './FactoryRunView';
+import { FactoryRunsView } from './FactoryRunsView';
 import { FileView } from './FileView';
 
 /**
@@ -16,11 +19,19 @@ export interface ModuleViewProps {
   readonly uri: string;
   readonly text: string;
   readonly mimeType: string | null;
+  /**
+   * 同じ作業パネルの中で、別のURIへ移動する（PO指摘 2026-08-25）。
+   * フォルダを辿るような面だけが使う——使わない面（`FileView`等）は無視してよい。
+   */
+  readonly onNavigate: (uri: string, name: string) => void;
 }
 
 /** `manifest.gui.entry` → 実体。**鍵は台帳の文字列そのもの**（規則3）。 */
 const IN_PAGE: ReadonlyMap<string, ComponentType<ModuleViewProps>> = new Map([
   ['fs/FileView', FileView],
+  ['fs/DirView', DirView],
+  ['factory/RunsView', FactoryRunsView],
+  ['factory/RunView', FactoryRunView],
 ]);
 
 /**

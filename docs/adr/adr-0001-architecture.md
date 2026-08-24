@@ -1476,6 +1476,98 @@ flatな候補、もう片方はオンデマンドの階層探索で本質的に�
 
 ---
 
+### 決定34. Factoryをツール化し、人が直接開けるモジュールGUIの汎用機構を作る（2026-08-25）
+
+**出所**：PO「次はFactoryのツール化かな。あとはFactoryを可視化するGUIもほしい」
+（2026-08-25）。設計の相談の中で、GUIの置き場について「①はAIのshowで
+開けるようにする、②画面のどこかにUIがあるといい、ただし設定画面ではない」
+の2点が決まり、②を検討する過程で「Factory以外にも、人が直接開くモジュール
+GUIは今後出てくる（例：Fileのディレクトリブラウザ）ので、Factoryだけに
+閉じない汎用の仕組みが欲しい」という指摘があり、スコープが広がった。
+
+**Factoryのツール化（要件C13を埋める）**：`requirements.md`のバックログに
+「Factoryと`worker`だけがMCPに乗らず、素のTypeScriptの口という第二の機構に
+なっている」という既知の食い違い（決定17の頃から）が書いてあった。
+今回はこれを**正しく埋める**形にした——`request_run`/`advance_runs`/
+`list_runs`をアドホックな関数として生やすのではなく、`modules/factory`という
+本物のモジュール（`@banto/module-factory`）を新設し、他のモジュールと同じ
+`defineModule`（`packages/module-kit`）に乗せた。中身は`packages/factory`の
+`Factory`/`FactoryPool`/`foldRuns`/`observe`/`nextStage`への薄い委譲だけ
+（規則C8a）——Runの進み方の判定は`packages/factory`に1つのまま。
+
+`FactoryPool`型は元々`apps/host/src/server.ts`にしかなかったが、
+`modules/factory`もこの形を要るので`@banto/factory`へ上げた（規則3。
+`server.ts`は今までの経路を崩さないよう`export type { FactoryPool }`で
+再輸出するだけにした）。`ensureChannel`（チャンネルを名前で1つに保つ）も
+同じ理由で`server.ts`のクロージャから`@banto/core`（`base.ts`、
+`ensureSharedBaseThread`の隣）へ上げた——`request_run`ツールも
+`POST /api/runs`と同じ「無ければ作る」を通る必要があった。
+
+**`channelName`は自由記入のまま**（`POST /api/runs`と同じ）。`show`の
+「スレッドは束ねる、引数にしない」（決定19）とは違う判断——Channelは
+プロジェクトの見出しであって、`threadId`のような所有権の境界（要件D4）
+ではないので、AIが自由に選べても実害が無い。Run自身のスレッド
+（`threadId`）は`request_run`の中で毎回新しく作るので、AIが他人の会話を
+指す余地はそのまま無い。
+
+**Factoryの可視化に必要な「段」は、保存されたフラグではなく毎回観測する**
+（`stage.ts`のコメントの通り）——`list_runs`/`banto://factory/runs`は
+`factory.observe(run)`を呼んでからその場で`nextStage`に通す。**複数
+リポジトリ運用時の既知の欠落**（`RunRecord`がどのリポジトリの依頼かを
+持たない。バックログに既に書いてあった）はここでも解決しない——単一の
+既定Factory（`factoryFor('.')`）で観測し、それが組み立てられなければ
+「観測できない」と正直に返す（規則8：黙ってどちらかに寄せない）。
+
+**汎用の機構：人が直接開ける入口（要件C3）**。C14は「AIが指す」
+（`show`・decision19）を作ったが、C3の「GUIは人が開くこともできる」は
+まだ機構が無かった。**名前を調べた**（規則12）——既存の`ViewSpec.slot`
+（`'canvas'`＝AIのshow用・`'settings'`＝設定の区画用、decision20・C4）が、
+まさに「同じURI割り当ての仕組みを、置き場所だけ変えて使う」という前例を
+既に持っていたので、`slot`にもう1つ値（`'launcher'`）を足すだけで済んだ
+——新しい機構は増やしていない。`/api/modules`の`ModuleSummary`に
+`launcherUri`を足し（`settingsUri`と同じ作り方）、サイドバーに「ツール」
+アイコンを1本足して、`launcherUri`を持つモジュールの一覧ダイアログ
+（`ToolsDialog`）から開く。**開いた先はAIの`show`と全く同じ経路
+（`ResourceViewer`）**——真実は一箇所（規則3・C2）。
+
+**1モジュールが複数のin-page面を持てるようにした**：`ModuleGui.entry`は
+元々モジュール単位で1つだけだった（`fs/FileView`のように）。fsが
+「ファイル」と「フォルダ一覧」の2つの面を持ちたくなったので、
+`ViewSpec`に`entry?`を足し、省けばモジュール既定にフォールバックする形にした
+（既存の1面だけのモジュールは無変更）。
+
+**`launcherUri`は`uriPrefix`と別に持てるようにした**（実測 2026-08-25）。
+`uriPrefix`は末尾スラッシュの接頭辞（`banto://fs/dir/`）であることが多いが、
+これは「根そのもの」を指すURIにはなれない——`.`や空文字で試したところ、
+**WHATWG URLパーサがドットセグメントとして正規化してしまい**
+（`new URL('banto://fs/dir/.').href` が `'banto://fs/dir/'` になる。
+percent-encode（`%2E`）でも同様）、MCPの`ResourceTemplate`の`{+path}`に
+届く前に消えていた。fsだけ根専用の固定リソース（`banto://fs/dir`、末尾
+スラッシュ無し）を別に持ち、`ViewSpec.launcherUri`でそれを明示する形にした。
+**この固定URIも、面の割り当て（`uriPrefix`への前方一致）だけでは拾えない**
+——`ResourceViewer`側の判定にも`uri === v.launcherUri`を足して補った
+（`/api/views`のレスポンスにも`launcherUri`を追加）。
+
+**実機で踏んだ不具合（規則1・6）**：パネルの中でURIを連続して移動する
+（`FactoryRunsView`の一覧行を押して`FactoryRunView`へ）と、まれに
+「新しい面＋古い中身」の組み合わせで描いてクラッシュした。`ResourceViewer`
+が面の割り当て（`fetchViews`）と中身（`fetchResource`）を**別々の
+`useEffect`**で取っていたため、移動を連続すると応答の到着順が入れ替わり、
+新しい`uri`向けの面（`FactoryRunView`）が古い`uri`の中身（一覧のJSON配列）
+を渡されて`run.testedCommits.length`のようなアクセスで落ちていた——
+本物のブラウザでUIテストを流すまで、単体試験でもビルドでも見えなかった。
+`load`を1本の`useCallback`にまとめ、`latestUri`（ref）と食い違う応答は
+捨てるようにして直した——同じ`uri`の面と中身の組でしか描かない。
+
+**fsのディレクトリブラウザ**（`banto://fs/dir/{+path}`・`DirView`）は
+汎用機構の最初の2例目（Factoryが1例目）として一緒に作った。中身は
+既存の`FileSystemCore.list()`（`list`ツールと同じ。規則3）をJSONにするだけ。
+フォルダを押すとパネルの中で移動し（`onNavigate`）、ファイルを押すと
+既存の`FileView`に切り替わる——`ResourceViewer`が`uri`の接頭辞で面を
+選び直すだけで、新しい仕組みは要らなかった。
+
+---
+
 ## 動かし方（2026-08-21）
 
 `scripts/serve.sh start|stop|status`。**ホストと観測を別プロセスで起こす**（規則4）。

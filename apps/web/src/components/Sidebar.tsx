@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { History, Inbox, Moon, Plus, Settings, Sun } from 'lucide-react';
+import { History, Inbox, Moon, Plus, Settings, Sun, Wrench } from 'lucide-react';
 
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
@@ -51,6 +51,7 @@ export function Sidebar({
   onOpenInbox,
   onOpenHistory,
   onOpenSettings,
+  onOpenTools,
   onNewThread,
 }: {
   /** いま開いているもの（会話パネル・作業パネル）。押すと開き直せる。 */
@@ -59,6 +60,8 @@ export function Sidebar({
   onOpenInbox: () => void;
   onOpenHistory: () => void;
   onOpenSettings: () => void;
+  /** モジュールが持ち込む画面を、AIのshowを待たずに直接開ける入口（要件C3・決定33）。 */
+  onOpenTools: () => void;
   /** 新しい会話をはじめる（決定32・PO指摘 2026-08-24：作成の入口が空状態にしか無かった）。 */
   onNewThread: () => void;
 }) {
@@ -116,6 +119,11 @@ export function Sidebar({
         onClick={onOpenHistory}
         label="履歴"
         icon={<History className="h-[17px] w-[17px]" strokeWidth={1.6} />}
+      />
+      <RailButton
+        onClick={onOpenTools}
+        label="ツール"
+        icon={<Wrench className="h-[17px] w-[17px]" strokeWidth={1.6} />}
       />
       <RailButton
         onClick={onOpenSettings}

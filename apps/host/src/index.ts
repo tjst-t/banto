@@ -38,6 +38,7 @@ import { fsModule, manifest as fsManifest } from '@banto/module-fs';
 import { envProcessModule } from '@banto/module-env-process';
 import { envDockerModule } from '@banto/module-env-docker';
 import { envScriptModule } from '@banto/module-env-script';
+import { factoryModule, manifest as factoryManifest } from '@banto/module-factory';
 import { publishNoneModule } from '@banto/module-publish-none';
 import { repoModule, manifest as repoManifest } from '@banto/module-repo';
 import { workerModule } from '@banto/module-worker';
@@ -436,6 +437,16 @@ async function main(): Promise<void> {
           ? undefined
           : buildFactoryPool(dataDir, repoRoot, model, environmentId, publishId);
       const fsRoot = requiredRoot('BANTO_FS_ROOT');
+      /**
+       * Factory モジュール（要件 C13・決定33）。**Factory が紐づいているときだけ**
+       * AI 向けの道具にも人向けの面にも出す——`/api/runs` が 501 を返すのと
+       * 同じ理由（Factory 自体が無いものを名乗らせない）。
+       *
+       * ログは `EventLog` を新しく持つ（`buildFactory` が Factory ごとに1つ持つのと
+       * 同じ形）——`dataDir` が同じなので、`server.ts` 内のものと食い違わない。
+       */
+      const factoryModuleSpec =
+        factory === undefined ? null : factoryModule(new EventLog(dataDir), factory);
       // Phase 1.5 では fs だけを繋ぐ。shell / repo は subprocess なので、
       // 台帳から解決する経路を通してから足す（要件 C11）。
       startServer({
@@ -453,8 +464,16 @@ async function main(): Promise<void> {
             kind: 'in-process',
             createServer: (writeRoot) => fsModule(fsRoot, writeRoot ?? null).createServer(),
           },
+          ...(factoryModuleSpec === null
+            ? []
+            : [{ name: factoryManifest.id, kind: 'in-process' as const, createServer: () => factoryModuleSpec.createServer() }]),
         ],
-        toolsByModule: new Map([['fs', ['read', 'write', 'list']]]),
+        toolsByModule: new Map([
+          ['fs', ['read', 'write', 'list']],
+          ...(factoryModuleSpec === null
+            ? []
+            : ([['factory', ['request_run', 'advance_runs', 'list_runs']]] as const)),
+        ]),
         /**
          * 画面の割り当ては台帳から導く（決定20）。別表を持たない（規則3）。
          *
@@ -462,7 +481,7 @@ async function main(): Promise<void> {
          * **subprocess で TypeScript でもないモジュールが `sandboxed` な面を
          * 持ち込めること**が要件 C6 の中身なので、面だけは配る。
          */
-        manifests: [fsManifest, helloPyManifest()],
+        manifests: [fsManifest, helloPyManifest(), ...(factoryModuleSpec === null ? [] : [factoryManifest])],
         /**
          * スレッド作成の場所の候補（決定32）。`repo` を、fsと同じ広い root
          * （`fsRoot`）に向けたインスタンスとして渡す——AIには繋がない

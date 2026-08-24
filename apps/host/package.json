@@ -11,6 +11,7 @@
     "@banto/observer": "*",
     "@banto/module-fs": "*",
     "@banto/factory": "*",
+    "@banto/module-factory": "*",
     "@banto/module-repo": "*",
     "@banto/module-env-process": "*",
     "@banto/module-env-docker": "*",

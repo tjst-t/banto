@@ -14,11 +14,12 @@ import { HistoryDialog } from './components/dialogs/HistoryDialog';
 import { SettingsDialog } from './components/dialogs/SettingsDialog';
 import { DeleteThreadDialog } from './components/dialogs/DeleteThreadDialog';
 import { NewThreadDialog } from './components/dialogs/NewThreadDialog';
+import { ToolsDialog } from './components/dialogs/ToolsDialog';
 import { TooltipProvider } from './components/ui/tooltip';
 import { Button } from './components/ui/button';
 import type { ThreadSummary } from './lib/types';
 
-type DialogKind = 'inbox' | 'history' | 'settings' | null;
+type DialogKind = 'inbox' | 'history' | 'settings' | 'tools' | null;
 /** 作業パネルを開いた元。会話が2本並んでいるとき、どちらを帯にするかを言う。 */
 type RoomKind = 'root' | 'fork';
 
@@ -293,6 +294,7 @@ export function App() {
           onOpenInbox={() => setDialog('inbox')}
           onOpenHistory={() => setDialog('history')}
           onOpenSettings={() => setDialog('settings')}
+          onOpenTools={() => setDialog('tools')}
           onNewThread={() => setNewThreadOpen(true)}
         />
 
@@ -472,6 +474,11 @@ export function App() {
         onOpenResource={(uri, name) => handleOpenReference(uri, name, 'root')}
         sharedBaseThreadId={data?.sharedBaseThreadId}
         onOpenBase={(threadId, title) => openWork({ kind: 'base', threadId, threadTitle: title }, 'root')}
+      />
+      <ToolsDialog
+        open={dialog === 'tools'}
+        onOpenChange={(open) => setDialog(open ? 'tools' : null)}
+        onOpenLauncher={(uri, name) => handleOpenReference(uri, name, 'root')}
       />
       <DeleteThreadDialog
         open={deleteTarget !== null}

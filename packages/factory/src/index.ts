@@ -22,6 +22,7 @@ export {
   reviewDecisionId,
   workdirOf,
   type FactoryOptions,
+  type FactoryPool,
   type RunRecord,
 } from './engine.js';
 

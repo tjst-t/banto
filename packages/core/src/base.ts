@@ -15,6 +15,8 @@
  * 直接呼ばず `appendBase` を通す——ゲートは、迂回できる場所に置くと迂回される。
  */
 
+import { randomUUID } from 'node:crypto';
+
 import type { ChannelId, NewEvent, ThreadId } from './event.js';
 import type { State } from './fold.js';
 import { effectiveBase, SHARED_BASE_THREAD_ID } from './fold.js';
@@ -40,8 +42,8 @@ export const SHARED_BASE_CHANNEL_ID: ChannelId = 'shared-base-channel';
  * 在るかどうかは `state.threads.has` を見るだけで分かる（名前検索は要らない）。
  *
  * 呼び出し側（`append_shared_base` ツール・`/api/base` の共有base向け経路）が、
- * 使う前に毎回これを通す——`ensureChannel`（`apps/host/src/server.ts`）と
- * 同じ「無ければ作る」の形（規則12）。
+ * 使う前に毎回これを通す——`ensureChannel`（下）と同じ「無ければ作る」の形
+ * （規則12）。こちらは固定idなので名前検索を挟まない。
  */
 export async function ensureSharedBaseThread(log: EventLog, state: State): Promise<void> {
   if (state.threads.has(SHARED_BASE_THREAD_ID)) return;
@@ -58,6 +60,25 @@ export async function ensureSharedBaseThread(log: EventLog, state: State): Promi
     channelId: SHARED_BASE_CHANNEL_ID,
     title: '共有base',
   });
+}
+
+/**
+ * その名前のチャンネルを1つに保つ。**二重に作らない**（元は
+ * `apps/host/src/server.ts` のクロージャだったが、Factory モジュール
+ * （AI 向けの `request_run` tool）も同じ「無ければ作る」を要るようになったので、
+ * ここへ上げた——真実は一箇所（規則3）。**名前で引く**（固定idを持たない、
+ * 任意の名前のチャンネル向け）。
+ */
+export async function ensureChannel(
+  log: EventLog,
+  state: State,
+  channelName: string,
+): Promise<ChannelId> {
+  const found = [...state.channels.values()].find((c) => c.name === channelName);
+  if (found !== undefined) return found.id;
+  const channelId = randomUUID() as ChannelId;
+  await log.append({ type: 'channel.created', channelId, channelName });
+  return channelId;
 }
 
 /**

@@ -37,6 +37,9 @@
     },
     {
       "path": "../../modules/worker"
+    },
+    {
+      "path": "../../modules/factory"
     }
   ]
 }

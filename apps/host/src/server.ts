@@ -25,6 +25,7 @@ import {
   effectiveBase,
   effectiveBaseEntries,
   effectiveWorkspaceRoot,
+  ensureChannel as ensureChannelCore,
   ensureSharedBaseThread,
   fold,
   SHARED_BASE_THREAD_ID,
@@ -36,7 +37,7 @@ import {
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 import { AgentSdkRunner, allowedToolNames, type McpServerSpec } from '@banto/runner';
-import { foldRuns, type Factory } from '@banto/factory';
+import { foldRuns, type Factory, type FactoryPool } from '@banto/factory';
 import { LedgerCore, conversationModule } from '@banto/module-ledger';
 import {
   connectInProcess,
@@ -149,10 +150,10 @@ export interface ServerOptions {
   readonly browseRoot?: string;
 }
 
-export interface FactoryPool {
-  readonly factoryFor: (repo: string) => Promise<Factory>;
-  readonly allBuilt: () => Promise<Factory[]>;
-}
+// `FactoryPool` の実体は `@banto/factory` に1つだけある（規則3）——
+// `modules/factory`（AI 向けの道具）も同じ形を要る。ここでは今まで通りの経路
+// （`import ... from './server.js'`）を崩さないよう、そのまま再輸出する。
+export type { FactoryPool };
 
 const CONTENT_TYPES: ReadonlyMap<string, string> = new Map([
   ['.html', 'text/html; charset=utf-8'],
@@ -460,15 +461,9 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
     });
   });
 
-  /** その名前のチャンネルを1つに保つ。**二重に作らない。** */
+  /** その名前のチャンネルを1つに保つ。**実体は`@banto/core`に1つだけ**（規則3）。 */
   async function ensureChannel(channelName: string): Promise<string> {
-    const found = [...fold(await log.read()).channels.values()].find(
-      (c) => c.name === channelName,
-    );
-    if (found) return found.id;
-    const channelId = randomUUID();
-    await log.append({ type: 'channel.created', channelId, channelName });
-    return channelId;
+    return ensureChannelCore(log, fold(await log.read()), channelName);
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -631,6 +626,14 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
             gui: m.gui === undefined ? null : { kind: m.gui.kind, views: m.gui.views.length },
             settingsUri:
               m.gui?.views.find((v) => v.slot === 'settings')?.uriPrefix ?? null,
+            // 人が、AI の指しを待たずに直接開ける入口（要件C3・PO指摘 2026-08-25）。
+            // `launcherUri` を明示していれば優先——テンプレートを持つ面は
+            // 接頭辞そのものが読める URI とは限らない（`ViewSpec.launcherUri` 参照）。
+            launcherUri:
+              (() => {
+                const view = m.gui?.views.find((v) => v.slot === 'launcher');
+                return view === undefined ? null : (view.launcherUri ?? view.uriPrefix);
+              })(),
             impact: {
               summary: describeImpact(impact),
               breakages: impact.breakages,
@@ -699,8 +702,15 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
           (m.gui?.views ?? []).map((v) => ({
             moduleId: m.id,
             kind: m.gui?.kind ?? null,
-            entry: m.gui?.entry ?? null,
+            // その面**だけ**の実体を優先する（PO指摘 2026-08-25）。省いたモジュールは
+            // 今まで通りモジュール既定（`gui.entry`）——1モジュール1面のときは無変更。
+            entry: v.entry ?? m.gui?.entry ?? null,
             uriPrefix: v.uriPrefix,
+            // **`launcherUri`も一緒に返す**（実測 2026-08-25）。`uriPrefix`が
+            // 末尾スラッシュの接頭辞だと、根そのもの（`launcherUri`）は
+            // `startsWith`だけでは面の割り当てに当たらない
+            // ——`ResourceViewer`はこれも突き合わせて割り当てを選ぶ。
+            launcherUri: v.launcherUri ?? null,
             title: v.title,
             slot: v.slot ?? 'canvas',
           })),

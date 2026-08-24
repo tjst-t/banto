@@ -59,6 +59,7 @@ export {
   baseCharacters,
   baseLimitDecisionId,
   checkBaseAppend,
+  ensureChannel,
   ensureSharedBaseThread,
   invalidateBase,
   reactivateBase,

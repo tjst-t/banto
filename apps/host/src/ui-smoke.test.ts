@@ -41,7 +41,10 @@ import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { EventLog } from '@banto/core';
-import { repoModule } from '@banto/module-repo';
+import { Factory } from '@banto/factory';
+import { factoryModule, manifest as factoryManifest } from '@banto/module-factory';
+import { ProcessEnvironmentCore } from '@banto/module-env-process';
+import { repoModule, RepoCore } from '@banto/module-repo';
 
 import { startServer } from './server.js';
 
@@ -1560,6 +1563,111 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
       await page.getByRole('button', { name: 'はじめる' }).click();
       await page.waitForSelector('text=/parent\\/child/', { timeout: 15_000 });
+    } finally {
+      await browser.close();
+      server.close();
+    }
+  }, 60_000);
+
+  /**
+   * 汎用のツール入口（要件C3・決定33・PO指摘 2026-08-25：「人が直接開ける入口が要る、
+   * 設定画面ではない」）。**fsのファイルブラウザを、AIのshowを待たずに開ける。**
+   * 開いた後、フォルダを押すとパネルの中で移動する（`onNavigate`）。
+   */
+  it('サイドバーのツールから、fsのファイル一覧を開いて辿れる', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await page.waitForSelector('[data-conversation-panel]', { timeout: 15_000 });
+
+      await page.getByRole('button', { name: 'ツール' }).click();
+      await page.waitForSelector('[data-tool="fs"]', { timeout: 15_000 });
+      await page.locator('[data-tool="fs"]').click();
+
+      // beforeAll で fsRoot 直下に置いた note.md が、根の一覧に見える。
+      await page.waitForSelector('[data-module-view="fs/DirView"]', { timeout: 15_000 });
+      await page.waitForSelector('[data-dir-entry="note.md"]', { timeout: 15_000 });
+    } finally {
+      await browser.close();
+    }
+  }, 60_000);
+
+  /**
+   * Factory を可視化するGUI（決定33・PO指摘 2026-08-25：「Factoryを可視化する
+   * GUIもほしい」）。ツールから開いた一覧に段が出て、押すと個別の詳細が読める。
+   */
+  it('サイドバーのツールから、Factoryの一覧と段が見える', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const repoRoot = await mkdtemp(path.join(tmpdir(), 'banto-ui-factory-repo-'));
+    const git = (...args: string[]) => execFileAsync('git', args, { cwd: repoRoot });
+    await git('init', '-b', 'main');
+    await git('config', 'user.email', 'test@example.com');
+    await git('config', 'user.name', 'test');
+    await writeFile(path.join(repoRoot, 'README.md'), '# test\n', 'utf8');
+    await git('add', '-A');
+    await git('commit', '-m', 'first');
+
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'banto-ui-factory-log-'));
+    const log = new EventLog(dataDir);
+    const repo = new RepoCore(repoRoot);
+    const env = new ProcessEnvironmentCore(repoRoot);
+    const factory = new Factory({
+      log,
+      repo: Object.assign(repo, { readFileAt: (ref: string, p: string) => repo.showFile(ref, p) }),
+      environment: {
+        create: (w) => env.create(w),
+        status: (h) => env.status(h),
+        exec: (h, c, a) => env.exec(h, c, a),
+        address: async (h, port) => env.address(h, port),
+        destroy: (h) => env.destroy(h),
+      },
+      implementer: { implement: async () => undefined },
+      test: { command: 'sh', args: ['-c', 'true'] },
+    });
+    const pool = { factoryFor: async () => factory, allBuilt: async () => [factory] };
+
+    const server = startServer({
+      dataDir,
+      port: 0,
+      modules: [
+        { name: factoryManifest.id, kind: 'in-process', createServer: () => factoryModule(log, pool).createServer() },
+      ],
+      manifests: [factoryManifest],
+      toolsByModule: new Map([['factory', ['request_run', 'advance_runs', 'list_runs']]]),
+      model: 'claude-haiku-4-5',
+      webRoot: WEB_ROOT,
+      factory: pool,
+    });
+    await new Promise((r) => server.once('listening', r));
+    const wsOrigin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    await fetch(`${wsOrigin}/api/runs`, { method: 'POST', body: JSON.stringify({ request: 'READMEを直す' }) });
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+
+    try {
+      await page.goto(wsOrigin, { waitUntil: 'networkidle' });
+      // Run が作った会話が幹として見える（要件B・仕様§5.1と同じ、Runは自分の会話を持つ）。
+      await page.waitForSelector('[data-conversation-panel]', { timeout: 15_000 });
+
+      await page.getByRole('button', { name: 'ツール' }).click();
+      await page.waitForSelector('[data-tool="factory"]', { timeout: 15_000 });
+      await page.locator('[data-tool="factory"]').click();
+
+      await page.waitForSelector('[data-module-view="factory/RunsView"]', { timeout: 15_000 });
+      await page.waitForSelector('text=作業ツリーを用意', { timeout: 15_000 });
+      await page.waitForSelector('text=READMEを直す', { timeout: 15_000 });
+
+      await page.locator('[data-factory-run]').click();
+      await page.waitForSelector('[data-module-view="factory/RunView"]', { timeout: 15_000 });
+      await page.waitForSelector('text=一覧へ', { timeout: 15_000 });
     } finally {
       await browser.close();
       server.close();

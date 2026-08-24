@@ -30,6 +30,24 @@ export const manifest: BantoModule = {
       { uriPrefix: 'banto://fs/file/', title: 'ファイル' },
       // 設定の区画（要件 C4）。**置き場が違うだけで、機構は会話の面と同じ。**
       { uriPrefix: 'banto://fs/settings', title: 'ファイル（fs）', slot: 'settings' },
+      /**
+       * **人が直接開けるファイルブラウザ**（要件C3・PO指摘 2026-08-25：
+       * 「フォルダをBANTO ROOTから開けるようなのがあるといい」）。
+       * `fs/FileView` とは別の面を持つので、この面だけ `entry` を上書きする
+       * （決定33）。
+       */
+      {
+        uriPrefix: 'banto://fs/dir/',
+        title: 'ファイル一覧',
+        slot: 'launcher',
+        entry: 'fs/DirView',
+        // 根だけ別の固定URI（`banto://fs/dir`、末尾スラッシュ無し）。
+        // `.`や空文字はURL正規化でドットセグメントとして消える
+        // （実測 2026-08-25：`new URL('banto://fs/dir/.').href` は
+        // `'banto://fs/dir/'`になり、テンプレートの`{+path}`に当たらなくなる）
+        // ので、根専用の固定リソースを別に持つ（`ViewSpec.launcherUri` 参照）。
+        launcherUri: 'banto://fs/dir',
+      },
     ],
   },
 };
@@ -123,6 +141,30 @@ export function fsModule(root: string, writeRoot: string | null = null): Defined
           const p = Array.isArray(raw) ? raw.join('/') : (raw ?? '');
           // 握りつぶさない（規則2）。読めない理由は core が投げる。
           return core.read(decodeURIComponent(p));
+        },
+      },
+      {
+        // **根専用の固定リソース**。テンプレート版（下）は空文字にマッチしない
+        // ——`launcherUri`（manifest 側のコメントを見よ）と同じ理由。
+        name: 'dir-root',
+        description: 'Directory entries at the module root',
+        uri: 'banto://fs/dir',
+        mimeType: 'application/vnd.banto.dir+json',
+        read: async (core) => JSON.stringify(await core.list('')),
+      },
+      {
+        name: 'dir',
+        description: 'Directory entries under the module root',
+        uri: 'banto://fs/dir/{+path}',
+        // JSON だが `application/json` は「汎用の面」ではなく空タブになるので、
+        // 素の json とは別の型名にして DirView にだけ割り当てる（決定20と同じ考え）。
+        mimeType: 'application/vnd.banto.dir+json',
+        read: async (core, _uri, params) => {
+          const raw = params['path'];
+          const p = Array.isArray(raw) ? raw.join('/') : (raw ?? '');
+          // **中身は `list` ツールと同じ core.list に一本化**（規則3）——
+          // 人向けの一覧とAI向けの一覧を、別のロジックで作らない。
+          return JSON.stringify(await core.list(decodeURIComponent(p)));
         },
       },
     ],

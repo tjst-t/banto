@@ -318,6 +318,12 @@ export interface ViewAssignment {
   readonly kind: 'in-page' | 'sandboxed' | null;
   readonly entry: string | null;
   readonly uriPrefix: string;
+  /**
+   * `uriPrefix`が末尾スラッシュの接頭辞のとき、根そのもの（例：`banto://fs/dir`）は
+   * `startsWith`だけでは自分自身の面に当たらない——`launcher`のURIと突き合わせて
+   * 補う（`ResourceViewer`参照）。無ければ`null`。
+   */
+  readonly launcherUri: string | null;
   readonly title: string;
 }
 
@@ -336,6 +342,8 @@ export interface ModuleSummary {
   readonly gui: { readonly kind: 'in-page' | 'sandboxed'; readonly views: number } | null;
   /** モジュール自身の設定の区画（要件 C4）。無ければ null。 */
   readonly settingsUri: string | null;
+  /** 人が、AIの指しを待たずに直接開ける入口（要件C3）。無ければ null。 */
+  readonly launcherUri: string | null;
   readonly impact: {
     readonly summary: string;
     readonly breakages: readonly { readonly moduleId: string; readonly severity: string }[];

@@ -436,13 +436,27 @@ baseは「共有base」（全スレッド共通、固定id `shared-base`、会�
 そのスレッド自身のbase行のうち共有baseへ持ち出す行を人が選べる（既定は未選択）。
 共有baseは「設定」ダイアログから開く（サイドバー固定部は使わない）。
 
+**スレッド作成の場所候補・GUI選択も実装済み**（決定32・33・2026-08-24〜25）。
+`workspace-suggestions`役割を持つモジュール（`repo`）が候補を出す
+（`GET /api/workspace-candidates`）のに加え、`GET /api/browse`でBANTOの
+ファイル領域をブラウザ的に辿って選べる。どちらも自由記入の欄と並ぶだけで、
+別の入力経路は増やしていない。
+
+**Factory のツール化・可視化GUIも実装済み**（決定34・2026-08-25）。
+`modules/factory`が`request_run`/`advance_runs`/`list_runs`をMCP toolとして
+持ち（要件C13——以前は素のTypeScriptの口だった食い違いをここで埋めた）、
+`banto://factory/runs`（一覧）・`banto://factory/run/{runId}`（個別）を
+AIの`show`でも人の直接操作でも同じ面で開ける。あわせて「人が、AIのshowを
+待たずにモジュールのGUIを直接開ける」汎用機構（要件C3・`ViewSpec.slot:
+'launcher'`）を作り、サイドバーに「ツール」を追加。fsのディレクトリ
+ブラウザ（`banto://fs/dir/{+path}`・`DirView`）もこの機構の実例として
+一緒に作った。
+
 | 項目 | いま無いもの | 埋めるなら |
 |---|---|---|
 | 汎用の構造化カード（tool の戻り値） | host が tool 呼び出しをイベント化していないので、`reference.recorded` 以外は作れない | tool 呼び出し・結果をイベントに記録する設計から |
-| Factory を人が直接動かす手段 | `requestRun`/`advanceRuns` が AI から呼べる道具（MCP tool）になっていない | Factory を tool として持つモジュールを設計してから |
 | 畳んだフォークの一覧 | マージ済みフォークは「開いているもの」からも履歴（`status===done` のみ）からも外れうるので、見失うと辿れない | 専用の一覧を足す。優先度は低い——必要になってから（規則7） |
-| Run がどのリポジトリを対象にしたか | `RunSummary`/イベントスキーマにリポジトリ情報が無い。`FactoryPool`（決定29）で複数リポジトリを扱えるようになったが、`/api/state` の一覧では見分けがつかない | Run関連イベントに `repo` を足す |
-| リポジトリを選ぶUI | スレッド作成の `workspaceRoot` は自由記述のテキスト欄のみ（決定29）。一覧から選べるブラウザ的なUIは無い | `BANTO_FS_ROOT` 配下のディレクトリ一覧を返すAPIを足してから |
+| Run がどのリポジトリを対象にしたか | `RunSummary`/イベントスキーマにリポジトリ情報が無い。`FactoryPool`（決定29）で複数リポジトリを扱えるようになったが、`/api/state`の一覧・`modules/factory`の`list_runs`のどちらでも見分けがつかない（決定34では既定の1リポジトリだけ観測する形で回避した） | Run関連イベントに `repo` を足す |
 | 本番の `BANTO_FS_ROOT` を広げる | 決定29でコード側は対応したが、実際にどこまで広げるかは運用者の判断（`~/.banto-v3/env` の変更） | 運用者が決めたら `scripts/serve.sh` で反映するだけ |
 | 削除したスレッドの一覧 | `thread.deleted` はトゥームストーンでログには残るが、それを一覧して見返す画面は無い（畳んだフォークの一覧と同じ理由） | 専用の一覧を足す。優先度は低い（規則7） |
 
