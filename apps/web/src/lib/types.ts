@@ -22,6 +22,19 @@ export interface WorkspaceCandidate {
   readonly inUse: boolean;
 }
 
+/**
+ * スレッド作成のディレクトリ選択（PO指摘 2026-08-25）。`GET /api/browse` の応答。
+ * `root` は host に `browseRoot` が設定されていなければ `null`（何も選べない）。
+ */
+export interface BrowseResponse {
+  readonly root: string | null;
+  /** いま見ている場所（`browseRoot` からの相対パス。根は `'.'`）。 */
+  readonly path: string;
+  /** 一段上の場所。根に居るなら `null`（これ以上は上がれない）。 */
+  readonly parent: string | null;
+  readonly entries: readonly { readonly name: string; readonly path: string }[];
+}
+
 export interface ForkOrigin {
   readonly threadId: string;
   readonly baseVersion: number;

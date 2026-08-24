@@ -7,6 +7,7 @@
 
 import type {
   BaseResponse,
+  BrowseResponse,
   CreateThreadResponse,
   MergeThreadResponse,
   ModuleSummary,
@@ -38,6 +39,15 @@ export async function fetchState(): Promise<StateResponse> {
 export async function fetchWorkspaceCandidates(): Promise<WorkspaceCandidate[]> {
   const res = await fetch('/api/workspace-candidates');
   return (await asJson<{ candidates: WorkspaceCandidate[] }>(res)).candidates;
+}
+
+/**
+ * スレッド作成のディレクトリをGUIで辿る（PO指摘 2026-08-25）。
+ * `path` を省くと根（`browseRoot` 自身）を返す。
+ */
+export async function fetchBrowse(dirPath?: string): Promise<BrowseResponse> {
+  const res = await fetch(`/api/browse${dirPath === undefined ? '' : `?path=${encodeURIComponent(dirPath)}`}`);
+  return asJson<BrowseResponse>(res);
 }
 
 export async function createThread(body: {

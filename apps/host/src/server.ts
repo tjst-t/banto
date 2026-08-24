@@ -12,7 +12,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import { passes } from './gate.js';
@@ -43,6 +43,7 @@ import {
   connectSubprocess,
   describeImpact,
   impactOfDisabling,
+  resolveInside,
   type BantoModule,
   type ToolCaller,
 } from '@banto/module-kit';
@@ -137,6 +138,15 @@ export interface ServerOptions {
    * 一切繋がない（AIに無関係なツール定義を見せてトークンを使わせない）。
    */
   readonly workspaceSuggestionModules?: readonly ModuleFactory[];
+  /**
+   * スレッド作成のダイアログで、対象ディレクトリをGUIで辿って選べるようにする
+   * （PO指摘 2026-08-25：自由記入の欄だけでは、何を入れればよいか伝わらない）。
+   *
+   * **`/api/browse` からしか使わない、AIには見せない口**（`workspaceSuggestionModules`
+   * と同じ理由）。ここの内側だけを見せる——境界チェックは `fs` モジュールと
+   * 同じ `resolveInside` を使う（規則3）。省くと `/api/browse` は空を返す。
+   */
+  readonly browseRoot?: string;
 }
 
 export interface FactoryPool {
@@ -500,6 +510,42 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
         }
       }
       json(res, 200, { candidates });
+      return;
+    }
+
+    /**
+     * スレッド作成のディレクトリ選択（PO指摘 2026-08-25）。**`browseRoot` の
+     * 内側だけを一段ずつ返す**——一覧を全部前もって送らず、開いたところだけ
+     * `readdir` する（大きな root でも軽い）。ディレクトリだけを返す
+     * （workspaceRoot はディレクトリを指すものなので、ファイルは要らない）。
+     */
+    if (req.method === 'GET' && url.pathname === '/api/browse') {
+      if (options.browseRoot === undefined) {
+        json(res, 200, { root: null, path: '.', parent: null, entries: [] });
+        return;
+      }
+      const browseRoot = path.resolve(options.browseRoot);
+      const wanted = url.searchParams.get('path') ?? '.';
+      let target: string;
+      try {
+        target = resolveInside(browseRoot, wanted);
+      } catch (cause) {
+        json(res, 400, { error: cause instanceof Error ? cause.message : String(cause) });
+        return;
+      }
+      const info = await stat(target).catch(() => null);
+      if (info === null || !info.isDirectory()) {
+        json(res, 404, { error: `ディレクトリが無い: ${wanted}` });
+        return;
+      }
+      const relative = path.relative(browseRoot, target) || '.';
+      const parent = relative === '.' ? null : path.relative(browseRoot, path.dirname(target)) || '.';
+      const dirEntries = await readdir(target, { withFileTypes: true });
+      const entries = dirEntries
+        .filter((e) => e.isDirectory())
+        .map((e) => ({ name: e.name, path: relative === '.' ? e.name : path.join(relative, e.name) }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      json(res, 200, { root: browseRoot, path: relative, parent, entries });
       return;
     }
 

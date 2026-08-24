@@ -471,6 +471,8 @@ async function main(): Promise<void> {
         workspaceSuggestionModules: [
           { name: 'repo', kind: 'in-process', createServer: () => repoModule(fsRoot).createServer() },
         ],
+        // フォルダ選択のGUI（PO指摘 2026-08-25）。同じ fsRoot の内側だけを見せる。
+        browseRoot: fsRoot,
         model,
         host: flag(argv, 'host', '127.0.0.1'),
         ...(factory === undefined ? {} : { factory }),

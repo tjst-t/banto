@@ -1399,7 +1399,7 @@ describe('画面の煙試験（本物のブラウザ）', () => {
       await page.goto(wsOrigin, { waitUntil: 'networkidle' });
       await page.waitForSelector('text=まだ会話がありません。', { timeout: 15_000 });
       await page.getByRole('button', { name: '新しい会話をはじめる' }).click();
-      await page.getByPlaceholder('対象のリポジトリ（任意。空でもよい）').fill('repo-a');
+      await page.getByPlaceholder('例: my-repo（空でもよい）').fill('repo-a');
       await page.getByRole('button', { name: 'はじめる' }).click();
 
       // 作った会話の頭に、指定したリポジトリが出る。
@@ -1448,7 +1448,7 @@ describe('画面の煙試験（本物のブラウザ）', () => {
 
       await page.locator('[data-workspace-candidate="candidate-repo"]').click();
       await page
-        .getByPlaceholder('対象のリポジトリ（任意。空でもよい）')
+        .getByPlaceholder('例: my-repo（空でもよい）')
         .evaluate((el) => (el as HTMLInputElement).value)
         .then((v) => expect(v).toBe('candidate-repo'));
 
@@ -1484,6 +1484,85 @@ describe('画面の煙試験（本物のブラウザ）', () => {
       await page.waitForSelector('[data-conversation-panel]:has-text("新しい会話")', { timeout: 15_000 });
     } finally {
       await browser.close();
+    }
+  }, 60_000);
+
+  /**
+   * タイトル入力（PO指摘 2026-08-25：「作成ダイアログで会話のタイトルを入れれる必要がある」）。
+   */
+  it('新しい会話にタイトルを付けられる', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+
+    try {
+      await page.goto(origin, { waitUntil: 'networkidle' });
+      await page.waitForSelector('[data-conversation-panel]', { timeout: 15_000 });
+
+      await page.getByRole('button', { name: '新しい会話' }).click();
+      await page.getByRole('heading', { name: '新しい会話' }).waitFor({ timeout: 15_000 });
+      await page.getByLabel('タイトル').fill('議事録の下書き');
+      await page.getByRole('button', { name: 'はじめる' }).click();
+
+      await page.waitForSelector('[data-conversation-panel]:has-text("議事録の下書き")', { timeout: 15_000 });
+    } finally {
+      await browser.close();
+    }
+  }, 60_000);
+
+  /**
+   * フォルダ選択のGUI（PO指摘 2026-08-25：「自由記入と合わせてブラウザ的にGUIで
+   * 指定できる機能があるべき」）。候補を出すモジュールが無くても、`/api/browse`
+   * を辿って対象ディレクトリを選べる。
+   */
+  it('参照ボタンからフォルダを辿って選べる', async () => {
+    if (!built) throw new Error('画面がビルドされていないので測れない');
+
+    const dir = await mkdtemp(path.join(tmpdir(), 'banto-ui-browse-'));
+    const fsRoot = await mkdtemp(path.join(tmpdir(), 'banto-ui-browse-fs-'));
+    await mkdir(path.join(fsRoot, 'parent', 'child'), { recursive: true });
+
+    const server = startServer({
+      dataDir: dir,
+      port: 0,
+      modules: [],
+      toolsByModule: new Map(),
+      model: 'claude-haiku-4-5',
+      webRoot: WEB_ROOT,
+      browseRoot: fsRoot,
+    });
+    await new Promise((r) => server.once('listening', r));
+    const wsOrigin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+
+    try {
+      await page.goto(wsOrigin, { waitUntil: 'networkidle' });
+      await page.waitForSelector('text=まだ会話がありません。', { timeout: 15_000 });
+      await page.getByRole('button', { name: '新しい会話をはじめる' }).click();
+      await page.getByRole('button', { name: '参照…' }).click();
+
+      await page.waitForSelector('[data-browse-entry="parent"]', { timeout: 15_000 });
+      await page.locator('[data-browse-entry="parent"]').click();
+      await page.waitForSelector('[data-browse-entry="parent/child"]', { timeout: 15_000 });
+      await page.locator('[data-browse-entry="parent/child"]').click();
+      await page.waitForSelector('[data-browse-pick]', { timeout: 15_000 });
+      await page.locator('[data-browse-pick]').click();
+
+      await page
+        .getByPlaceholder('例: my-repo（空でもよい）')
+        .evaluate((el) => (el as HTMLInputElement).value)
+        .then((v) => expect(v).toBe('parent/child'));
+
+      await page.getByRole('button', { name: 'はじめる' }).click();
+      await page.waitForSelector('text=/parent\\/child/', { timeout: 15_000 });
+    } finally {
+      await browser.close();
+      server.close();
     }
   }, 60_000);
 });
