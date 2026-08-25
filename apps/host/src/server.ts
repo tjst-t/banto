@@ -379,6 +379,32 @@ export const SYSTEM_PROMPT = [
   'entries yourself; only the person can, from the shared base view.',
 ].join('\n');
 
+/**
+ * このスレッドが向いているディレクトリを、システムプロンプトに書く（PO報告
+ * 2026-08-26：「LLM側には伝わらず、アプリのRootがスレッドのRootと認識している」）。
+ *
+ * `writeRoot`（`effectiveWorkspaceRoot`、決定29）はこれまで `fs` の書き込み境界
+ * にしか使っていなかった——**構造では縛っていたが、AI自身はその存在を知らなかった**。
+ * `fs` の `write` ツールの説明文はすでに「このスレッドが向いているリポジトリ」を
+ * 前提に書いてある（`modules/fs/src/index.ts`）が、その実体をどこにも書いて
+ * いなかったので、AIには参照先が無かった——広い root しか見えていなければ、
+ * それが会話のrootだと思うのは自然である。
+ *
+ * **読み取りの広さは変えない**（決定29のまま）。ここは「まずここを見る」という
+ * 案内であって、境界そのものの変更ではない。
+ */
+export function describeWorkspaceRoot(writeRoot: string | null): string {
+  if (writeRoot === null) return '';
+  return [
+    '',
+    '',
+    '# Working directory',
+    `This conversation is working on \`${writeRoot}\` (a path under the fs tools' root).`,
+    'Start there for reading and listing unless the person points elsewhere — you can still',
+    'read outside it if genuinely needed, but writes outside it will be declined.',
+  ].join('\n');
+}
+
 export function startServer(options: ServerOptions): ReturnType<typeof createServer> {
   const log = new EventLog(options.dataDir);
   const allowed = allowedToolNames(options.modules, options.toolsByModule);
@@ -1125,7 +1151,8 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
           server: face.createServer(),
         };
         // このスレッドが向いているリポジトリ（決定29）。フォークは根まで遡って解く。
-        // fs の書き込みだけがこれを境界に使う——読み取りは今までどおり広いまま。
+        // fs の書き込みの境界はこれを使う——読み取りは今までどおり広いまま
+        // （`describeWorkspaceRoot` で AI にも案内する。PO報告 2026-08-26）。
         const writeRoot = effectiveWorkspaceRoot(before, body.threadId);
 
         for await (const event of new AgentSdkRunner().query({
@@ -1133,7 +1160,10 @@ export function startServer(options: ServerOptions): ReturnType<typeof createSer
           queryId,
           // base はシステムプロンプトに入る。**走行中は変えられない**（決定6）ので、
           // 追記があった場合に効くのは次のスレッド／次の fork から（要件 R2・R4）。
-          systemPrompt: SYSTEM_PROMPT + (baseText === '' ? '' : `\n\n# この会話で決まっていること\n${baseText}`),
+          systemPrompt:
+            SYSTEM_PROMPT +
+            describeWorkspaceRoot(writeRoot) +
+            (baseText === '' ? '' : `\n\n# この会話で決まっていること\n${baseText}`),
           // **`options.modules` を直接は渡さない**（実測 2026-08-22）。固定インスタンスを
           // 使い回すと、2回目以降の問い合わせが「already connected」で断られ、
           // `fs` の道具が会話から静かに消える。`freshModuleSpecs()` が毎回新品を作る。
