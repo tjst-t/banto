@@ -1,0 +1,11 @@
+{
+  "name": "banto-poc-02-item13-parked-elicitation",
+  "private": true,
+  "type": "module",
+  "description": "捨てる。§10 item13(判断待ちの「後で答える」層)を決めるための使い捨てPoC。本実装には流れ込ませない。",
+  "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.237",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "4.4.3"
+  }
+}

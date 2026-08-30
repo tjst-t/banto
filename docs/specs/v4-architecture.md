@@ -344,8 +344,12 @@ Claude Agent SDK に触れる**唯一の口**。ベンダ固有の型・語彙�
 
 - **「人への問いが立った／解けた」は Event Store の一級の事実**である。
   core の外枠（受信箱）がこれを特別扱いして描くには、core が最初からその型を
-  知っている必要があるため。**型の名前と中身は未決**——**Elicitation を採ると
-  決めた以上、形はそちらに合わせる**（下記・§10）
+  知っている必要があるため。**Elicitation を採ると決めた以上、形はそちらに合わせる**
+  （下記）。**記録するタイミングと中身は決定済み**（item 13、2026-08-30、下記の
+  「後で答える」の実現方式）——`onElicitation` が呼ばれた時点で
+  `serverName` / `message` / `mode` / `requestedSchema` または `url` を
+  Event Store に記録する。**イベント型の正確なスキーマ（フィールド名の確定）は
+  未決のまま残る**（実装時に詰める）
 - **受信箱の UI（バッジ・件数・一覧）は core が持つ。** MCP Apps の見せ方
   （inline / fullscreen）は「どの tool 呼び出しから来たか」に紐づくが、受信箱が
   要求するのは**「どの Thread の会話でもない、常にそこにある入れ物」**
@@ -356,17 +360,18 @@ Claude Agent SDK に触れる**唯一の口**。ベンダ固有の型・語彙�
 **MCP には完成した機構がある**（2026-08-29 確認）。banto が独自の「判断を立てる
 tool」を発明しない（規則12）：
 
-- サーバが `InputRequiredResult` に `elicitation/create` を入れて返す →
-  クライアントが人に聞く → **同じ呼び出しを `inputResponses` 付きで再送する**
-  （MRTR＝multi round-trip requests）
-
-  > **未確認と判明**（実測 2026-08-30、規則1・規則8——PoC の下調べで発覚）。
-  > `@modelcontextprotocol/sdk@1.30.0` に `inputResponses` / `InputRequiredResult`
-  > は**存在しない**（grep 0件）。出荷されているのは実験的な **Tasks**
-  > （`ClientCapabilities.tasks.requests.elicitation.create`）だが、
-  > **Claude Code CLI 2.1.237 はこれを advertise しない**（実測、
-  > `poc/step0-host-mcp-client/`）。**この段落は実験B（§10 item 13）の結果を
-  > 見て書き直す。** 詳細は `docs/notes/2026-08-30-poc.md`
+- サーバが `Server.elicitInput()` を呼ぶ → クライアント（Runner）が
+  `onElicitation` コールバックを呼ぶ → **同じ呼び出しの中で** `accept` /
+  `decline` / `cancel` のいずれかを返す。**MRTR
+  （`InputRequiredResult` に `elicitation/create` を入れて返し、`inputResponses`
+  付きで呼び出しを再送する）は当初この文書が確定事項として書いていたが、
+  誤りだった**（規則1・規則8）——`@modelcontextprotocol/sdk@1.30.0` に
+  `inputResponses` / `InputRequiredResult` は**存在しない**（grep 0件）。
+  実際に出荷されている形は、`elicitInput()` の呼び出しが**そのリクエストの中で
+  完結する**同期的なものだけ。実験的な **Tasks**
+  （`ClientCapabilities.tasks.requests.elicitation.create`）も仕様上は
+  存在するが、**Claude Code CLI 2.1.237 は advertise しない**（実測、
+  `poc/step0-host-mcp-client/`）
 - **応答は3値**：`accept`（答えた）/ `decline`（明示的に断った）/
   `cancel`（黙って閉じた）。**「断る」と「閉じる」を分けている**
   ——自前で作ると落としがちな区別なので、そのまま使う
@@ -381,8 +386,9 @@ tool」を発明しない（規則12）：
   > **実測（2026-08-30）：Claude Code CLI は `elicitation.url` の capability も
   > advertise しない**（`{"elicitation":{"form":{}},"roots":{"listChanged":true}}`
   > のみ）。§2.8 の「サブスクへのログインは shell を走らせ、URL を
-  > `mode: "url"` で見せる」の前提が、この CLI 単体では成立しない可能性がある。
-  > **実験B で確定させる**（§10 item 13）
+  > `mode: "url"` で見せる」の前提は、**この CLI 単体では成立しない**——
+  > 別の経路（banto の host が自前で URL を提示する等）が要る。**まだ設計して
+  > いない。§10 に追加**（下記）
 
 **banto が足すのは「後で答える」だけ。** Elicitation は「いま走っている呼び出しの
 中で人に聞く」機構で、**人が数時間後に答える前提を持っていない**（仕様は
@@ -391,6 +397,40 @@ banto の受信箱は、この待ちを**イベントとして寝かせて、後
 層**である。**問いの形（`mode` / `message` / `requestedSchema` / `url`）と
 答えの3値（`accept` / `decline` / `cancel`）は Elicitation のものをそのまま使う**
 ——イベント型はそれを包むだけにして、banto 独自の問いの形を作らない。
+
+#### 「後で答える」の実現方式を決めた（item 13、決定・2026-08-30、実測 `poc/02-item13-parked-elicitation/`）
+
+**Elicitation プロトコル自体の継続では実現できないことが実測で確定した。**
+`Query.close()`（host・Runner の接続を閉じる）を呼ぶと、pending 中の
+`elicitInput()` は**即座に** `{"action":"cancel"}` として強制解決される
+（66ms）。つまり **host（banto）を落として上げ直すと、その時点の elicitation
+は自動的に「黙って閉じた」ものとして処理され、続きは無い。** §2.4.1 が未決として
+残していた2つの選択肢——「呼び出し自体を保留する」か「`requestState` を
+Event Store に持つ」か——のうち、**前者は実装として成立しないことが実測で
+分かった。**
+
+**したがって「後で答える」は次の形にする：**
+
+1. **`onElicitation` が呼ばれた時点で、その内容（`serverName` / `message` /
+   `mode` / `requestedSchema` または `url`）を Event Store に即座に記録する**
+   ——これが §2.4.1 の「人への問いが立った」という一級の事実
+2. **その場の `elicitInput()` 呼び出し自体はタイムアウトに委ねる**
+   （実測：Module 側が指定した秒数で `MCP error -32001: Request timed out` が
+   返る。既定は60秒、§2.3）。**`onElicitation` から `decline` や `cancel` を
+   即座に返さない**——タイムアウトに任せることで、Module 側の
+   「再試行/中止の手段を人に与えるべき（SHOULD）」という仕様の要求を、
+   Module 自身の実装に委ねたまま壊さない
+3. **人が受信箱から後で答えたら、その回答は元の Elicitation の応答としてではなく、
+   次のターンへの新しい入力として渡す**（§2.2「次に Runner へ何を渡すか」の
+   一種）。tool 呼び出し自体は既にタイムアウトで終わっているので、
+   Elicitation の枠の外——普通の会話ターンとして扱う
+
+**帰結：同じ問いが2箇所に出る問題（§2.4.1）は、設計の選択ではなく構造から来る。**
+Elicitation の応答（`accept`/`decline`/`cancel`）は、その tool 呼び出しの
+生存期間の中でしか意味を持てない。受信箱に表示される「問い」と、会話の中の
+tool part に一瞬だけ現れる「Elicitation」は、**プロトコル上不可避に別物**
+——後者は静かにタイムアウトし、前者（Event Store に記録された事実）だけが
+実際の「待ち」として生き続ける。
 
 **仕様が課している UI 要件**（MUST/SHOULD。作り込みではなく要求）：
 どのサーバが聞いているかを明示する・断る/取り消す手段を明確に出す・
@@ -759,6 +799,12 @@ Landlock で閉じ込められており、**資格情報の保存先は根の外
 form で聞いてはならない（MUST NOT）／URL モードを使う（MUST）」と定めている
 （§2.4）。**第三者の認可フローを URL モードで回す形は、仕様が想定している用途
 そのもの**である。
+
+> **前提が崩れた**（実測 2026-08-30、§2.4）：**Claude Code CLI 2.1.237 は
+> `elicitation.url` capability を advertise しない。** この CLI 経由では
+> `mode: "url"` の elicitation がそもそも成立しない可能性が高い。**代替の経路
+> （banto の host が Elicitation を介さず直接 URL を提示する等）を設計する
+> 必要がある——未着手。§10 に追加。**
 
 ### 2.9 記憶の全体像——どこに何が残るか
 
@@ -1848,7 +1894,7 @@ Elicitation の `requestedSchema` はフラットな primitive のみで、**for
 |---|---|---|
 | **A. 調べれば決まる** | 外部の仕様・参照実装を読む。**判断は要らない** | 16・21・22・23 |
 | **B. 決めれば済む** | 材料は揃っている。**選ぶだけ** | 3・5・6・8・12・17・20・24・26、modules 1・6 |
-| **C. 設計が要る** | 考える作業。数時間規模 | 1・2・9・11・13・25、modules 2・5（~~4~~・~~18~~ 決定済み） |
+| **C. 設計が要る** | 考える作業。数時間規模 | 1・2・9・11・25・27、modules 2・5（~~4~~・~~13~~・~~18~~ 決定済み） |
 | **D. 作らないと決まらない** | 画面は見ないと分からない。**プロトタイプが要る** | 14・15・19・10、modules 4 |
 
 **D を設計書の上で決めようとしない**——ダイアログを作り直すと決めたときと同じ姿勢
@@ -1869,10 +1915,11 @@ bootstrap config か Event Store か）。
 
 **② Event Store が先**
 ```
-~~4 read model の形~~ 済  →  13 判断待ちの「後で答える」層  →  6.1 の受信箱
+~~4 read model の形~~ 済  →  ~~13 判断待ちの「後で答える」層~~ 済  →  6.1 の受信箱
 ```
 **「畳んだ状態を安く得る」形が決まらないと、待ちを寝かせて再開する層が設計できない。**
-**4 は決定済み**（§2.1、2026-08-30）——次は 13（判断待ちの「後で答える」層）。
+**4・13 とも決定済み**（§2.1・§2.4、2026-08-30）——残るのは 6.1（受信箱の
+UI 実装）で、これは D 群（プロトタイプが要る）。
 
 **③ セキュリティは Module より先**
 ```
@@ -1890,7 +1937,7 @@ bootstrap config か Event Store か）。
 | Event Store | **5 を決める**（4 は済） |
 | Project / Thread ＋ Memory | **3・6 を決める** |
 | Runner | **済**（モデルB 本決まり、§2.3） |
-| 判断待ち | **13 を決める**（形は Elicitation で確定済み） |
+| 判断待ち | **済**（2026-08-30、§2.4） |
 | Configuration | **済**（2026-08-30、§2.6） |
 | 観測の材料 | **済**——`getContextUsage()` が内訳を返す（§8） |
 
@@ -1904,8 +1951,8 @@ Phase 1 は「**契約が確定し、その契約で3つ書けた。ツールを
 | セキュリティ境界 | **11 を決める**（fs/shell を書くなら先に） |
 | キャッシュが落ちないこと | **済**——tool 120個で `cache_read` 一定（§8） |
 
-**つまり Phase 0 に要る未決は 4件（3・5・6・13）、Phase 1 は 3件（9・2・11）。**
-（18・4 は決定済みなので、Phase 0 側から外れた。）
+**つまり Phase 0 に要る未決は 3件（3・5・6）、Phase 1 は 3件（9・2・11）。**
+（18・4・13 は決定済みなので、Phase 0 側から外れた。）
 残りは**その後でよい**。
 
 
@@ -1978,24 +2025,14 @@ Phase 1 は「**契約が確定し、その契約で3つ書けた。ツールを
    置くか（アプリ層の検査／OS の閉じ込め／隔離環境）・Project の根を誰が保持するか・
    第三者 Module に `in-process` を開くか・鍵の置き場・外部 Skill の `scripts/`
 12. Project / Thread の決定操作（畳む・やり直す・分岐・Module 追加削除）の呼び名と UI/API
-13. **判断待ちの「後で答える」層の設計**（§2.4・§6.4）——問いの形と応答の3値は
-   Elicitation をそのまま使うと決まった。残るのは2つ：
-   - **走っている呼び出しの中で完結しない待ち**（人が数時間後に答える）を
-     どう寝かせて再開するか——`requestState` を Event Store に持つのか、
-     呼び出し自体を保留するのか
-   - **同じ問いが2箇所に出る問題**——Elicitation は「その tool 呼び出しの中で
-     聞く」機構なので、素直に描くと**会話の中の tool part** に出る。一方 banto の
-     受信箱は**会話の外**にある。どちらを正とするか、両方出すなら状態をどう
-     揃えるか
-
-   > **実測（2026-08-30）：Claude Code CLI 2.1.237 は `tasks` capability も
-   > `elicitation.url` capability も advertise しない**
-   > （`clientCapabilities = {"elicitation":{"form":{}},"roots":{"listChanged":true}}`、
-   > `poc/step0-host-mcp-client/`）。§2.4 が確定事項として書いていた MRTR
-   > （`inputResponses`）も SDK に存在しない（grep 0件）。**「後で答える」は
-   > Tasks 経由では実現できない**——残る道は `onElicitation` コールバックの
-   > 挙動（既定タイムアウト・`null` 返却時の扱い・banto 再起動をまたげるか）を
-   > 実測して決める。詳細は `docs/notes/2026-08-30-poc.md`
+13. ~~判断待ちの「後で答える」層の設計~~ **→ 決定（2026-08-30、§2.4・§2.4.1、
+   実測 `poc/02-item13-parked-elicitation/`）。** `Query.close()` で pending 中の
+   `elicitInput()` が即座に `cancel` として強制解決されることを確認——
+   「呼び出し自体を保留する」は成立しない。**`requestState` を Event Store に
+   持つ形に確定**：`onElicitation` が呼ばれた時点で問いの内容を記録し、
+   その場の呼び出し自体はタイムアウトに委ね、人の回答は次のターンへの新しい
+   入力として渡す。「同じ問いが2箇所に出る問題」も、設計の選択ではなく
+   構造から来る不可避な帰結だと判明（詳細は §2.4）
 14. Project 単位の Module 管理 UI の具体設計・置き場（§6-7）
 15. 設定画面の2階層の具体的な UI 配置（§6.1）と、Module の設定面をそこへ
     どう並べるか（§6.2）——役割ごとにぶら下げるのか、Module 一覧として並べるのか
@@ -2036,3 +2073,9 @@ Phase 1 は「**契約が確定し、その契約で3つ書けた。ツールを
     ——旧 ADR は生きていないので、拾うなら**ここで改めて決めて、この文書に書く**。
     「決定N がある」は根拠にならない。§2〜§6 に書かれていない決定は、
     **まだ存在しない**とみなす
+27. **`elicitation.url` capability が無い CLI での、機微情報のやり取り**
+    （§2.4・§2.8）——実測（2026-08-30）で Claude Code CLI 2.1.237 が
+    `mode: "url"` の capability を advertise しないと判明。仕様が
+    「機微情報は URL モードを使う（MUST）」と定めている以上、この経路を
+    Elicitation に頼らない代替（banto の host が Elicitation を介さず直接
+    URL を提示する等）を設計する必要がある。未着手
