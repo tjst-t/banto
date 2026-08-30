@@ -792,7 +792,7 @@ banto が「覚えているもの」は**5つ**あり、層が違う。ここに
 
 ### 4.2 Thread 間のメッセージ
 
-Thread の AI が、**別の Thread の AI にメッセージを送れる**（要件：スレッド間の
+Thread の AI が、**別の Thread の AI にメッセージを送れる**（要件：Thread 間の
 AI 間メッセージング）。例：インフラ管理の Project と、アプリ開発の Project が
 やり取りする。
 
