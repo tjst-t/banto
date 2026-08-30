@@ -1,0 +1,11 @@
+{
+  "name": "banto-poc-03-item1-backend-interface",
+  "private": true,
+  "description": "捨てる。§10 item1(backend Module のインタフェース具体形)をopencodeで実測するPoC。本実装には流れ込ませない。",
+  "devDependencies": {
+    "opencode-ai": "1.18.25"
+  },
+  "allowScripts": {
+    "opencode-ai@1.18.25": true
+  }
+}
