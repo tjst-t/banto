@@ -1,0 +1,11 @@
+{
+  "name": "banto-poc-00-prior-2026-08-30",
+  "private": true,
+  "type": "module",
+  "description": "2026-08-30 に /tmp/banto-exp で行った実測（v4-architecture.md §8 の A-1〜A-9・B-1/B-2・Landlock・forkSession・tool数・Skill）の退避。捨てる前提の PoC コード。本実装には流れ込ませない。",
+  "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.237",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "4.4.3"
+  }
+}
