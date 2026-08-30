@@ -1,0 +1,10 @@
+{
+  "name": "banto-poc-01-item4-event-store-read-model",
+  "private": true,
+  "type": "module",
+  "description": "捨てる。§10 item4(Event Store の read model方式)を決めるための使い捨てPoC。本実装には流れ込ませない。",
+  "scripts": {
+    "test": "node --test rule3.test.mjs",
+    "bench": "node bench.mjs"
+  }
+}
