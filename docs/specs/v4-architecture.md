@@ -301,6 +301,14 @@ tool」を発明しない（規則12）：
 - サーバが `InputRequiredResult` に `elicitation/create` を入れて返す →
   クライアントが人に聞く → **同じ呼び出しを `inputResponses` 付きで再送する**
   （MRTR＝multi round-trip requests）
+
+  > **未確認と判明**（実測 2026-08-30、規則1・規則8——PoC の下調べで発覚）。
+  > `@modelcontextprotocol/sdk@1.30.0` に `inputResponses` / `InputRequiredResult`
+  > は**存在しない**（grep 0件）。出荷されているのは実験的な **Tasks**
+  > （`ClientCapabilities.tasks.requests.elicitation.create`）だが、
+  > **Claude Code CLI 2.1.237 はこれを advertise しない**（実測、
+  > `poc/step0-host-mcp-client/`）。**この段落は実験B（§10 item 13）の結果を
+  > 見て書き直す。** 詳細は `docs/notes/2026-08-30-poc.md`
 - **応答は3値**：`accept`（答えた）/ `decline`（明示的に断った）/
   `cancel`（黙って閉じた）。**「断る」と「閉じる」を分けている**
   ——自前で作ると落としがちな区別なので、そのまま使う
@@ -311,6 +319,12 @@ tool」を発明しない（規則12）：
 - **`mode: "url"` が別にある**：鍵・トークン・決済のような機微情報は
   **form で聞いてはならない（MUST NOT）／URL モードを使う（MUST）**。
   この境界は仕様が引いており、banto はそれに従う
+
+  > **実測（2026-08-30）：Claude Code CLI は `elicitation.url` の capability も
+  > advertise しない**（`{"elicitation":{"form":{}},"roots":{"listChanged":true}}`
+  > のみ）。§2.8 の「サブスクへのログインは shell を走らせ、URL を
+  > `mode: "url"` で見せる」の前提が、この CLI 単体では成立しない可能性がある。
+  > **実験B で確定させる**（§10 item 13）
 
 **banto が足すのは「後で答える」だけ。** Elicitation は「いま走っている呼び出しの
 中で人に聞く」機構で、**人が数時間後に答える前提を持っていない**（仕様は
@@ -333,6 +347,23 @@ form は送る前に人が見て直せる・URL は遷移前にドメインを�
   Project / Thread が決め（§2.2）、Runner が食える形にするのは host」という
   同じ構図
 - **(b) Module 同士**：役割ごとの呼び出し口を解決して配る
+
+**host は自分の MCP クライアントを持つ**（実測 2026-08-30、`poc/step0-host-mcp-client/`、
+`docs/notes/2026-08-30-poc.md`）。Runner（Claude Agent SDK）の `Query` は
+MCP 接続の**状態と制御**（`mcpServerStatus` / `setMcpServers` / `toggleMcpServer` /
+`reconnectMcpServer`）しか持たず、`resources/list` や `_meta` を読む口が無い。
+一方 §5.4・§5.7・§6.2 は host が Module の `_meta` を読み、`SKILL.md` を資源として
+取ることを前提にしている——**この前提を満たすには、host が
+`@modelcontextprotocol/sdk` の `Client` を自前で持つしかない**（実測で `_meta` が
+`Tool._meta` / `Resource._meta` としてそのまま届くことを確認済み）。
+
+**stdio Module では、この2つの接続（Runner が張るものと host が張るもの）が
+別プロセスになる。** stdio は1プロセスにつき1本の stdin/stdout しか持てないため
+（実測：2つの接続で `process.pid` が異なった）。ステートレスな Module では
+実害が無いが、**状態を持つ Module（`Environment`、`docs/specs/v4-modules.md` §2.1）
+では、2つのプロセスが別々の内部状態を持ちうる**——「AI が呼んだ側」と
+「host が `_meta` を読みに行った側」が食い違う。**対処は item 9（Module 契約の
+ライフサイクル）で詰める。ここでは事実として §10 に残す。**
 
 > **Skill の配線は Module にはできない。** Module は自分の Skill を配れるが、
 > **Runner を知らないし、他の Module の Skill も知らない**。「どの Skill を、
@@ -1840,7 +1871,11 @@ Phase 1 は「**契約が確定し、その契約で3つ書けた。ツールを
    - **ライフサイクル**——起動・停止・クラッシュ時の再接続。**MCP は「接続＝会話では
      ない」と明言している**（"Clients SHOULD NOT use an individual task, thread, or
      conversation as the lifetime boundary for the stdio process"）ので、
-     **Module プロセスの寿命を Project に紐づけない**
+     **Module プロセスの寿命を Project に紐づけない**。
+     **加えて（実測 2026-08-30、§2.5）：stdio Module は host 経路と Runner 経路で
+     2重に起動される**（`process.pid` が異なることを確認済み）。状態を持つ
+     Module（`Environment`）でこれをどう扱うか——プロセス外に状態を外部化するか、
+     host が中継するブリッジを作るか——が未決のまま残っている
 10. 具体的な Module 一覧・各 Module の設計 → **`docs/specs/v4-modules.md` に分離した。**
    そちらに残る大きな未決は、`Memory` を core の面にするか・Shell を Environment の
    中でだけ走らせるか・Backlog と Factory の順序
@@ -1857,6 +1892,15 @@ Phase 1 は「**契約が確定し、その契約で3つ書けた。ツールを
      聞く」機構なので、素直に描くと**会話の中の tool part** に出る。一方 banto の
      受信箱は**会話の外**にある。どちらを正とするか、両方出すなら状態をどう
      揃えるか
+
+   > **実測（2026-08-30）：Claude Code CLI 2.1.237 は `tasks` capability も
+   > `elicitation.url` capability も advertise しない**
+   > （`clientCapabilities = {"elicitation":{"form":{}},"roots":{"listChanged":true}}`、
+   > `poc/step0-host-mcp-client/`）。§2.4 が確定事項として書いていた MRTR
+   > （`inputResponses`）も SDK に存在しない（grep 0件）。**「後で答える」は
+   > Tasks 経由では実現できない**——残る道は `onElicitation` コールバックの
+   > 挙動（既定タイムアウト・`null` 返却時の扱い・banto 再起動をまたげるか）を
+   > 実測して決める。詳細は `docs/notes/2026-08-30-poc.md`
 14. Project 単位の Module 管理 UI の具体設計・置き場（§6-7）
 15. 設定画面の2階層の具体的な UI 配置（§6.1）と、Module の設定面をそこへ
     どう並べるか（§6.2）——役割ごとにぶら下げるのか、Module 一覧として並べるのか
