@@ -1,0 +1,308 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "tw-shimmer";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ══════════════════════════════════════════════════════════════════
+   層A：banto の生トークン（prototype/13-tsuzukima-kai.html の下敷き、
+   本体リポジトリ prototype/redesign/ideal.css の逐語移植）。
+   値の出どころはここ1箇所（要件E9）。
+   ══════════════════════════════════════════════════════════════════ */
+:root {
+  --banto-bg: #f5f6f8;
+  --banto-surface: #ffffff;
+  --banto-surface-2: #edeff3;
+  --banto-surface-3: #e3e6ec;
+  --banto-line: rgba(17, 22, 31, 0.1);
+  --banto-line-2: rgba(17, 22, 31, 0.06);
+  --banto-text: #14171c;
+  --banto-text-2: #545b66;
+  --banto-text-3: #8b93a0;
+
+  --banto-accent: #3b5bdb;
+  --banto-accent-soft: #e9eefc;
+  --banto-accent-ink: #2a44ac;
+  /* turn＝あなたの番。判断待ちを示す、面を塗ってよい唯一の役色（要件E9） */
+  --banto-turn: #ce4620;
+  --banto-turn-soft: #fcede7;
+  --banto-stop: #6e56cf;
+  --banto-stop-soft: #eeeafb;
+  --banto-ok: #2f7a57;
+  --banto-ok-soft: #e6f1eb;
+  --banto-warn: #9c6b12;
+  --banto-warn-soft: #faf0dc;
+  --banto-on-color: #ffffff;
+
+  --banto-sh-1: 0 1px 2px rgba(17, 22, 31, 0.05);
+  --banto-sh-2: 0 4px 16px rgba(17, 22, 31, 0.08), 0 1px 3px rgba(17, 22, 31, 0.05);
+  --banto-sh-3: 0 16px 48px rgba(17, 22, 31, 0.16), 0 2px 8px rgba(17, 22, 31, 0.08);
+  /* Base Thread（地）→ Fork Thread（10px 浮く紙）→ Canvas（20px 浮く紙）の重なり
+     （prototype 13-tsuzukima-kai の意匠）。左向きの影で「奥の続き間から手前に浮いている」
+     ことを言う。カードの影（--sh-*）とは別軸 */
+  --banto-sh-panel-fork: -14px 0 34px rgba(17, 22, 31, 0.09), -1px 0 0 var(--banto-line);
+  --banto-sh-panel-canvas: -24px 0 52px rgba(17, 22, 31, 0.17), -1px 0 0 var(--banto-line);
+}
+
+.dark {
+  --banto-bg: #0e1014;
+  --banto-surface: #16191f;
+  --banto-surface-2: #1d2128;
+  --banto-surface-3: #262b33;
+  --banto-line: rgba(255, 255, 255, 0.1);
+  --banto-line-2: rgba(255, 255, 255, 0.06);
+  --banto-text: #e8ebf0;
+  --banto-text-2: #a1a9b5;
+  --banto-text-3: #6b7380;
+
+  --banto-accent: #7c9cf5;
+  --banto-accent-soft: rgba(124, 156, 245, 0.14);
+  --banto-accent-ink: #a8befa;
+  --banto-turn: #f07b58;
+  --banto-turn-soft: rgba(240, 123, 88, 0.15);
+  --banto-stop: #a78bfa;
+  --banto-stop-soft: rgba(167, 139, 250, 0.14);
+  --banto-ok: #6bbf8a;
+  --banto-ok-soft: rgba(107, 191, 138, 0.14);
+  --banto-warn: #ddae55;
+  --banto-warn-soft: rgba(221, 174, 85, 0.14);
+  --banto-on-color: #11141a;
+
+  --banto-sh-1: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --banto-sh-2: 0 4px 16px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.3);
+  --banto-sh-3: 0 16px 48px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
+  --banto-sh-panel-fork: -14px 0 34px rgba(0, 0, 0, 0.5), -1px 0 0 var(--banto-line);
+  --banto-sh-panel-canvas: -24px 0 52px rgba(0, 0, 0, 0.65), -1px 0 0 var(--banto-line);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-inter), var(--font-noto-jp), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-heading: var(--font-sans);
+
+  /* 層C：banto 独自のトークンを Tailwind ユーティリティに露出する。
+     ここに無い段は使えない（scripts/check-tokens.mjs で機械的に強制する） */
+  --color-turn: var(--banto-turn);
+  --color-turn-soft: var(--banto-turn-soft);
+  --color-stop: var(--banto-stop);
+  --color-stop-soft: var(--banto-stop-soft);
+  --color-ok: var(--banto-ok);
+  --color-ok-soft: var(--banto-ok-soft);
+  --color-warn: var(--banto-warn);
+  --color-warn-soft: var(--banto-warn-soft);
+  --color-ink-2: var(--banto-text-2);
+  --color-ink-3: var(--banto-text-3);
+  --color-surface-2: var(--banto-surface-2);
+  --color-surface-3: var(--banto-surface-3);
+  --color-on-color: var(--banto-on-color);
+
+  --shadow-1: var(--banto-sh-1);
+  --shadow-2: var(--banto-sh-2);
+  --shadow-3: var(--banto-sh-3);
+  --shadow-panel-fork: var(--banto-sh-panel-fork);
+  --shadow-panel-canvas: var(--banto-sh-panel-canvas);
+
+  /* Fork・Canvas が幹の上に紙として現れる動き（150ms, 実測値をそのまま）。
+     prefers-reduced-motion は各要素側で motion-reduce:animate-none を添えて止める */
+  --animate-panel-in: panel-slide-in 150ms var(--ease-banto);
+  @keyframes panel-slide-in {
+    from {
+      opacity: 0.4;
+      transform: translateX(18px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  /* 字は7段だけ（要件E9：決めた段だけを使う）。--text-base は定義しない */
+  --text-xs: 11px;
+  --text-xs--line-height: 1.6;
+  --text-sm: 12px;
+  --text-sm--line-height: 1.7;
+  --text-md: 13px;
+  --text-md--line-height: 1.7;
+  --text-lg: 15px;
+  --text-lg--line-height: 1.55;
+  --text-xl: 17px;
+  --text-xl--line-height: 1.5;
+  --text-2xl: 22px;
+  --text-2xl--line-height: 1.4;
+  --text-3xl: 28px;
+  --text-3xl--line-height: 1.3;
+
+  --ease-banto: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --default-transition-duration: 180ms;
+  --default-transition-timing-function: var(--ease-banto);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  /* 角は3段だけ（要件E9）。sm/md/lg 以外は shadcn 既定のまま残すが、
+     components/banto/** ではこの3段しか使わない（check-tokens.mjs で強制） */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+  @keyframes collapsible-down {
+  from {
+    height: 0;
+    }
+  to {
+    height: var(--radix-collapsible-content-height, var(--collapsible-panel-height, auto));
+    }
+  }
+  @keyframes collapsible-up {
+  from {
+    height: var(--radix-collapsible-content-height, var(--collapsible-panel-height, auto));
+    }
+  to {
+    height: 0;
+    }
+  }
+}
+
+:root {
+  --background: var(--banto-bg);
+  --foreground: var(--banto-text);
+  --card: var(--banto-surface);
+  --card-foreground: var(--banto-text);
+  --popover: var(--banto-surface);
+  --popover-foreground: var(--banto-text);
+  --primary: var(--banto-accent);
+  --primary-foreground: #ffffff;
+  --secondary: var(--banto-surface-2);
+  --secondary-foreground: var(--banto-text-2);
+  --muted: var(--banto-surface-2);
+  --muted-foreground: var(--banto-text-3);
+  --accent: var(--banto-surface-3);
+  --accent-foreground: var(--banto-text);
+  --destructive: var(--banto-turn);
+  --border: var(--banto-line);
+  --input: var(--banto-line);
+  --ring: var(--banto-accent);
+  --chart-1: var(--banto-accent);
+  --chart-2: var(--banto-ok);
+  --chart-3: var(--banto-warn);
+  --chart-4: var(--banto-stop);
+  --chart-5: var(--banto-turn);
+  --radius: 0.625rem;
+  --sidebar: var(--banto-surface-2);
+  --sidebar-foreground: var(--banto-text-2);
+  --sidebar-primary: var(--banto-accent);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: var(--banto-surface-3);
+  --sidebar-accent-foreground: var(--banto-text);
+  --sidebar-border: var(--banto-line);
+  --sidebar-ring: var(--banto-accent);
+}
+
+.dark {
+  --background: var(--banto-bg);
+  --foreground: var(--banto-text);
+  --card: var(--banto-surface);
+  --card-foreground: var(--banto-text);
+  --popover: var(--banto-surface);
+  --popover-foreground: var(--banto-text);
+  --primary: var(--banto-accent);
+  --primary-foreground: var(--banto-on-color);
+  --secondary: var(--banto-surface-2);
+  --secondary-foreground: var(--banto-text-2);
+  --muted: var(--banto-surface-2);
+  --muted-foreground: var(--banto-text-3);
+  --accent: var(--banto-surface-3);
+  --accent-foreground: var(--banto-text);
+  --destructive: var(--banto-turn);
+  --border: var(--banto-line);
+  --input: var(--banto-line);
+  --ring: var(--banto-accent);
+  --chart-1: var(--banto-accent);
+  --chart-2: var(--banto-ok);
+  --chart-3: var(--banto-warn);
+  --chart-4: var(--banto-stop);
+  --chart-5: var(--banto-turn);
+  --sidebar: var(--banto-surface-2);
+  --sidebar-foreground: var(--banto-text-2);
+  --sidebar-primary: var(--banto-accent);
+  --sidebar-primary-foreground: var(--banto-on-color);
+  --sidebar-accent: var(--banto-surface-3);
+  --sidebar-accent-foreground: var(--banto-text);
+  --sidebar-border: var(--banto-line);
+  --sidebar-ring: var(--banto-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @theme inline {
+    --default-transition-duration: 0ms;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+
+  /* OS 既定の太いスクロールバーを、細く控えめなものに置き換える（E9 の色段の中で組む） */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--banto-line) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: var(--banto-line);
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background-clip: padding-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: var(--banto-text-3);
+  }
+}
+
+@custom-variant data-open (&:where([data-state="open"], [data-open]:not([data-open="false"])));
+
+@custom-variant data-closed (&:where([data-state="closed"], [data-closed]:not([data-closed="false"])));
