@@ -13,8 +13,30 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Input } from "@/components/ui/input";
-import { getClosedForksForProject, reopenThread } from "@/lib/mock/threads";
+import { getClosedForksForProject, getThreadOverview, reopenThread } from "@/lib/mock/threads";
+import type { MockThread } from "@/lib/mock/types";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
+
+function ThreadOverview({ thread }: { thread: MockThread }) {
+  const overview = getThreadOverview(thread);
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md bg-surface-2 p-2.5 text-xs text-ink-2">
+      <p className="text-ink-3">{overview.messageCount}件のやり取り</p>
+      {overview.firstMessage ? (
+        <p>
+          <span className="text-ink-3">最初：</span>
+          {overview.firstMessage}
+        </p>
+      ) : null}
+      {overview.lastMessage ? (
+        <p>
+          <span className="text-ink-3">最後：</span>
+          {overview.lastMessage}
+        </p>
+      ) : null}
+    </div>
+  );
+}
 
 export function ClosedForksPanel({
   projectId,
@@ -44,7 +66,7 @@ export function ClosedForksPanel({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="left" className="w-full gap-0 p-0 sm:max-w-md">
+      <SheetContent side="right" className="w-full gap-0 p-0 sm:max-w-md">
         <SheetHeader className="border-b border-border">
           <SheetTitle>閉じた Fork Thread</SheetTitle>
         </SheetHeader>
@@ -80,13 +102,7 @@ export function ClosedForksPanel({
                   </button>
                   {expanded ? (
                     <div className="mb-3 flex flex-col gap-2 pb-1 pl-6.5">
-                      <div className="flex flex-col gap-1.5 rounded-md bg-surface-2 p-2.5 text-xs text-ink-2">
-                        {thread.script.seed
-                          .filter((step) => step.t === "text")
-                          .map((step, i) => (
-                            <p key={i}>{step.text}</p>
-                          ))}
-                      </div>
+                      <ThreadOverview thread={thread} />
                       <button
                         type="button"
                         onClick={() => handleReopen(thread.id)}

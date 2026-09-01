@@ -10,7 +10,7 @@ import { ProjectSettingsOverlay } from "@/components/banto/settings/project-sett
 import { ClosedForksPanel } from "@/components/banto/thread/closed-forks-panel";
 import { ContextUsageMeter } from "@/components/banto/thread/context-usage-meter";
 import { ThreadActionsMenu } from "@/components/banto/thread/thread-actions-menu";
-import { ThreadPanel } from "@/components/banto/thread/thread-panel";
+import { ThreadPanel, type ThreadMarker } from "@/components/banto/thread/thread-panel";
 import { getProject } from "@/lib/mock/projects";
 import { closeThread, getThread } from "@/lib/mock/threads";
 
@@ -83,6 +83,14 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
   // 全画面トグルは無意味（押しても見た目が変わらない）——desktop だけに出す
   const isMobile = useIsMobile();
   const [showClosedForks, setShowClosedForks] = useState(false);
+  const [markersByThread, setMarkersByThread] = useState<Record<string, ThreadMarker[]>>({});
+
+  function addMarker(threadId: string, kind: ThreadMarker["kind"]) {
+    setMarkersByThread((prev) => ({
+      ...prev,
+      [threadId]: [...(prev[threadId] ?? []), { id: `${kind}-${(prev[threadId]?.length ?? 0) + 1}`, kind }],
+    }));
+  }
 
   return (
     <>
@@ -103,12 +111,16 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               label="Project 設定"
               onClick={() => stack.open({ overlay: "settings-project" })}
             />
-            <ThreadActionsMenu />
+            <ThreadActionsMenu
+              onClear={() => addMarker(project.baseThreadId, "clear")}
+              onCompact={() => addMarker(project.baseThreadId, "compact")}
+            />
           </PanelHeader>
           <div className="min-h-0 flex-1">
             <ThreadPanel
               threadId={project.baseThreadId}
               onOpenCanvas={(moduleId, viewId) => stack.open({ canvas: { moduleId, viewId } })}
+              markers={markersByThread[project.baseThreadId]}
             />
           </div>
         </div>
@@ -125,7 +137,10 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               trailing={
                 <div className="flex items-center gap-1.5">
                   <ContextUsageMeter threadId={threadId} />
-                  <ThreadActionsMenu />
+                  <ThreadActionsMenu
+                    onClear={() => addMarker(threadId, "clear")}
+                    onCompact={() => addMarker(threadId, "compact")}
+                  />
                   <IconHeaderButton
                     icon={GitMerge}
                     label="この Fork Thread を畳む"
@@ -138,7 +153,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               }
             />
             <div className="min-h-0 flex-1">
-              <ThreadPanel threadId={threadId} />
+              <ThreadPanel threadId={threadId} markers={markersByThread[threadId]} />
             </div>
           </div>
         );

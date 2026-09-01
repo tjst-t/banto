@@ -1,6 +1,7 @@
-import type { MockProject } from "./types";
+import type { MockProject, MockProjectOverrides } from "./types";
 import { notifyMockStoreChange } from "./store-events";
 import { createBaseThreadForProject } from "./threads";
+import { setProjectOverrides } from "./settings";
 
 let projects: MockProject[] = [
   {
@@ -57,11 +58,14 @@ export function getProject(id: string): MockProject {
 export interface NewProjectInput {
   name: string;
   basePath: string;
+  /** Advanced で選んだ Configuration の上書き（§2.2「設定のカスケード」） */
+  overrides?: Omit<MockProjectOverrides, "projectId" | "securityRoot">;
 }
 
 /**
- * 新規 Project を作る（§2.2）。モックなので Module 集合・Configuration の
- * 実配線は行わない——名前・根・Base Thread が揃った最小の入れ物だけを作る
+ * 新規 Project を作る（§2.2）。モックなので Module 集合の実配線は行わない——
+ * 名前・根・Base Thread が揃った最小の入れ物だけを作る。Advanced で選んだ
+ * runtime config の上書きは、そのまま Project 設定画面（§2.10）に反映する
  */
 export function createProject(input: NewProjectInput): MockProject {
   const id = `p-${Math.random().toString(36).slice(2, 8)}`;
@@ -75,6 +79,7 @@ export function createProject(input: NewProjectInput): MockProject {
   };
   projects = [...projects, project];
   createBaseThreadForProject(project.id, project.baseThreadId, project.name);
+  setProjectOverrides({ projectId: id, securityRoot: input.basePath, ...input.overrides });
   notifyMockStoreChange();
   return project;
 }

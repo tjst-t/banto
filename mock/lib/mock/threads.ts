@@ -229,6 +229,27 @@ export function getThread(id: string): MockThread | undefined {
   return mockThreads.find((t) => t.id === id);
 }
 
+export interface ThreadOverview {
+  messageCount: number;
+  firstMessage: string | null;
+  lastMessage: string | null;
+}
+
+/**
+ * 閉じた Thread 一覧の概要（レビュー指摘、2026-09-01）——**AI要約はしない**。
+ * Memory の自動要約を採らなかったのと同じ理由（§2.2「決まったことの意味を
+ * 静かに歪めるリスク」）がここにも当てはまる。安い・決定的に出せるもの
+ * （件数・最初と最後の発言）だけを見せる。全文を読みたければ「再度開く」
+ */
+export function getThreadOverview(thread: MockThread): ThreadOverview {
+  const texts = thread.script.seed.filter((s) => s.t === "text").map((s) => s.text);
+  return {
+    messageCount: thread.script.seed.length,
+    firstMessage: texts[0] ?? null,
+    lastMessage: texts.length > 1 ? texts[texts.length - 1] : null,
+  };
+}
+
 /** 既定は "open" だけ——閉じた Fork Thread は畳んで整理済みのもの、別の一覧で見る */
 export function getThreadsForProject(projectId: string): readonly MockThread[] {
   return mockThreads.filter((t) => t.projectId === projectId && t.status === "open");

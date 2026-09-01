@@ -186,7 +186,7 @@ export const mockCredentials: readonly MockCredential[] = [
 
 // Project 単位の runtime config 上書き（§2.2「設定のカスケード」）。
 // フィールドが無い項目は instance 既定を継承する。
-export const mockProjectOverrides: readonly MockProjectOverrides[] = [
+let mockProjectOverrides: MockProjectOverrides[] = [
   {
     projectId: "banto",
     credentialId: "cred.personal",
@@ -215,6 +215,14 @@ export function getProjectOverrides(projectId: ProjectId): MockProjectOverrides 
       securityRoot: "(未設定)",
     }
   );
+}
+
+/** createProject（projects.ts）専用。新規 Project の Advanced で選んだ上書きを保存する */
+export function setProjectOverrides(overrides: MockProjectOverrides): void {
+  const exists = mockProjectOverrides.some((o) => o.projectId === overrides.projectId);
+  mockProjectOverrides = exists
+    ? mockProjectOverrides.map((o) => (o.projectId === overrides.projectId ? overrides : o))
+    : [...mockProjectOverrides, overrides];
 }
 
 export const mockProjectModuleLinks: readonly MockProjectModuleLink[] = [
