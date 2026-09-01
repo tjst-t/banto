@@ -6,7 +6,7 @@
 // banto のモバイル意匠はそれではなく MobileTopBar なので、ここで明示的に避ける）。
 import { useState } from "react";
 import Link from "next/link";
-import { Bell, GitFork, Plus, Search, Settings } from "lucide-react";
+import { Bell, Clock, GitFork, Plus, Search, Settings } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -23,7 +23,6 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ClosedProjectsPanel } from "@/components/banto/project/closed-projects-panel";
 import { NewProjectDialog } from "@/components/banto/project/new-project-dialog";
 import { mockInboxItems } from "@/lib/mock/inbox";
 import { getActiveProjects } from "@/lib/mock/projects";
@@ -40,11 +39,13 @@ export function ProjectRail({
   activeProjectId,
   onOpenInbox,
   onOpenPalette,
+  onOpenArchive,
 }: {
   /** null＝いま instance 設定（/settings）を見ている */
   activeProjectId: string | null;
   onOpenInbox: () => void;
   onOpenPalette: () => void;
+  onOpenArchive: () => void;
 }) {
   const isMobile = useIsMobile();
   useMockStoreVersion();
@@ -182,7 +183,19 @@ export function ProjectRail({
       </SidebarContent>
 
       <div className="flex flex-col items-center gap-2 py-3">
-        <ClosedProjectsPanel />
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={onOpenArchive}
+              className="flex size-8 items-center justify-center rounded-md text-ink-3 hover:bg-accent hover:text-foreground"
+              aria-label="履歴"
+            >
+              <Clock className="size-4" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">履歴</TooltipContent>
+        </Tooltip>
         {/* 常設の入口（§10 item17、決定・2026-09-01）——Command Palette を知らないと
             設定に辿り着けない状態を避ける。instance 設定（階層1）は Project の
             外側にあるので、Project 一覧とは分けてここに置く */}

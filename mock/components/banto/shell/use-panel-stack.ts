@@ -16,7 +16,7 @@ export type PanelLayer =
   | { kind: "fork"; threadId: string; role: PanelRole }
   | { kind: "canvas"; moduleId: string; viewId: string; role: "primary" };
 
-export type OverlayKind = "inbox" | "palette" | "settings-project" | null;
+export type OverlayKind = "inbox" | "palette" | "settings-project" | "archive" | null;
 
 export interface PanelStackState {
   projectId: string;

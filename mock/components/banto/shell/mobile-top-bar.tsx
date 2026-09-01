@@ -4,7 +4,7 @@
 // <md でのみ表示する（≥md では ProjectRail が縦レールとして出る）。
 import { useState } from "react";
 import Link from "next/link";
-import { Bell, Plus, Search, Settings } from "lucide-react";
+import { Bell, Clock, Plus, Search, Settings } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { NewProjectDialog } from "@/components/banto/project/new-project-dialog";
 import { mockInboxItems } from "@/lib/mock/inbox";
@@ -19,11 +19,13 @@ export function MobileTopBar({
   activeProjectId,
   onOpenInbox,
   onOpenPalette,
+  onOpenArchive,
 }: {
   /** null＝いま instance 設定（/settings）を見ている */
   activeProjectId: string | null;
   onOpenInbox: () => void;
   onOpenPalette: () => void;
+  onOpenArchive: () => void;
 }) {
   const isMobile = useIsMobile();
   useMockStoreVersion();
@@ -52,6 +54,14 @@ export function MobileTopBar({
         aria-label="検索（Command Palette）"
       >
         <Search className="size-4" />
+      </button>
+      <button
+        type="button"
+        onClick={onOpenArchive}
+        className="flex size-9 items-center justify-center rounded-md text-ink-3"
+        aria-label="履歴"
+      >
+        <Clock className="size-4" />
       </button>
 
       <nav className="flex flex-1 items-center gap-1 overflow-x-auto">

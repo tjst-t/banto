@@ -5,6 +5,7 @@
 // <md: MobileTopBar（上部バー）+ PanelStack
 import { useEffect, type ReactNode } from "react";
 import { SidebarProvider } from "@/components/ui/sidebar";
+import { ArchiveDialog } from "@/components/banto/archive/archive-dialog";
 import { InboxOverlay } from "@/components/banto/inbox/inbox-overlay";
 import { CommandPalette } from "@/components/banto/palette/command-palette";
 import { usePanelStack } from "./use-panel-stack";
@@ -50,11 +51,13 @@ export function AppShell({
         activeProjectId={projectId}
         onOpenInbox={() => stack.open({ overlay: "inbox" })}
         onOpenPalette={() => stack.open({ overlay: "palette" })}
+        onOpenArchive={() => stack.open({ overlay: "archive" })}
       />
       <MobileTopBar
         activeProjectId={projectId}
         onOpenInbox={() => stack.open({ overlay: "inbox" })}
         onOpenPalette={() => stack.open({ overlay: "palette" })}
+        onOpenArchive={() => stack.open({ overlay: "archive" })}
       />
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{children}</div>
       <InboxOverlay
@@ -66,6 +69,12 @@ export function AppShell({
         stack={stack}
         open={stack.overlay === "palette"}
         onOpenChange={(open) => (open ? stack.open({ overlay: "palette" }) : stack.close("overlay"))}
+      />
+      <ArchiveDialog
+        projectId={projectId}
+        open={stack.overlay === "archive"}
+        onOpenChange={(open) => (open ? stack.open({ overlay: "archive" }) : stack.close("overlay"))}
+        onReopenFork={(threadId) => stack.open({ fork: threadId, overlay: null })}
       />
     </SidebarProvider>
   );

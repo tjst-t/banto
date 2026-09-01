@@ -107,18 +107,31 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
   「Canvas を開く」操作に残る
 - **「Forkを開く」をアイコンのみに。Fork Threadヘッダーに畳むアイコン（GitMerge）を追加**——
   押すと`closeThread()`で畳み、Base Threadに戻る。削除ではない
-- **閉じたFork Thread一覧**（Base Threadヘッダーの時計アイコン）——検索（タイトル前方一致）・
-  選択で会話ログを読み返し・再度開ける。**全文検索をやるなら索引が要る**（HermesAgentのような
-  形）——今回は手を出さず、§10に検討事項として残す価値がある
 - **Projectを終了するUI**（Project設定画面の「危険な操作」セクション）——確認ダイアログ経由。
   削除ではなく終了——閉じたThreadは畳まれた状態のまま保存される
-- **終了したProject一覧**（サイドバー下部の時計アイコン）——概要（Baseパス・終了日・Thread数）
-  を展開表示、再度開ける
 - **Thread の Clear / Compaction**（Base/Fork Threadヘッダーの「…」メニュー）——
-  「会話を畳む（Clear）」はBase Thread向け（§2.2、同じThreadのままresume-point無しで整理）、
-  Fork Threadを丸ごと閉じる操作（GitMergeアイコン）とは別物——同じ「畳む」という語でも
-  Base/Forkで意味が違う。「圧縮する（Compact）」は実際の発火はSDK側（§3）なので、
-  ここではモックの手動トリガー止まり
+  ラベルはClaude Code自身のコマンド名に統一（Clear／Compaction）。「畳む」という訳語は
+  Fork Threadを丸ごと閉じる操作（GitMergeアイコン）だけで使い、同じ語が2つの意味を持つ状態を
+  解消。結果はヘッダーに出さず、チャット欄（composerHint、Composerのすぐ上）に横線として残す
+
+### 履歴（レビュー反映：閉じたFork一覧とProject一覧のUIを統合）
+- 当初は別々（Sheet×2）で作ったが、**「削除ではなく終わっただけ、読み返して再度開ける」という
+  性質が同じ**なので、1つのモーダルダイアログ（`ArchiveDialog`）にセクション分けして統合した——
+  Chromeの「最近閉じたタブ」がタブとウィンドウを1つのリストに混在させアイコンで区別している
+  のと同じ発想（規則12）。入口はBase Threadヘッダーの時計アイコン・サイドバー下部の時計アイコン
+  の両方から、同じダイアログを開く（`use-panel-stack.ts`の`"archive"`overlay）
+- セクションは「このProjectの閉じたFork Thread」（Project外では非表示）と「終了したProject」
+  ——スコープの違い（Fork＝Projectの中、Project＝banto全体）はCommand Paletteの
+  「Moduleの入口はいまのProjectに限る」と同じ非対称として扱う
+- 検索は名前の前方一致のみ。**全文検索をやるなら索引が要る**（HermesAgentのような形）——
+  今回は手を出さず、§10に検討事項として残す価値がある
+- 「概要」はAI要約ではなく、件数＋最初/最後の発言（Thread）／Baseパス＋Thread数（Project）
+  という安く決定的に出せるものだけ——Memoryの自動要約を採らなかったのと同じ理由
+  （§2.2「決まったことの意味を静かに歪めるリスク」）
+- **実装中に踏んだ罠（再発）**：再度開くボタンで`onOpenChange(false)`と遷移を同じハンドラで
+  両方呼ぶと、Command Paletteで踏んだのと同じ`usePanelStack.open()`の競合を再び踏む。
+  Fork再オープンは呼び出し側がoverlayのクリアを1回のopen()にまとめ、Project再オープンは
+  新しいURL全体への遷移だけで済ませる（`onOpenChange(false)`を呼ばない）
 
 ## まだ実装していない
 
