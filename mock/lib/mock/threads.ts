@@ -1,4 +1,5 @@
 import type { MockThread } from "./types";
+import { notifyMockStoreChange } from "./store-events";
 
 const bantoBaseScript: MockThread["script"] = {
   seed: [
@@ -135,7 +136,7 @@ const bantoForkUiScript: MockThread["script"] = {
   ],
 };
 
-export const mockThreads: readonly MockThread[] = [
+let mockThreads: MockThread[] = [
   {
     id: "banto-base",
     projectId: "banto",
@@ -143,6 +144,7 @@ export const mockThreads: readonly MockThread[] = [
     title: "banto そのもの",
     parentThreadId: null,
     script: bantoBaseScript,
+    status: "open",
   },
   {
     id: "ui",
@@ -151,6 +153,39 @@ export const mockThreads: readonly MockThread[] = [
     title: "会話UIを一から見直す",
     parentThreadId: "banto-base",
     script: bantoForkUiScript,
+    status: "open",
+  },
+  {
+    id: "ui-perf",
+    projectId: "banto",
+    kind: "fork",
+    title: "初回描画のパフォーマンス調査",
+    parentThreadId: "banto-base",
+    script: {
+      seed: [
+        { t: "text", text: "この Fork では初回描画が遅い件を調べました。" },
+        { t: "text", text: "結論：react-resizable-panels の初期化コストが支配的でした。対処は見送り、実害が出たら再検討します。" },
+      ],
+      replies: [{ match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答）" }] }],
+    },
+    status: "closed",
+    closedAt: "2026-08-28",
+  },
+  {
+    id: "vault-migration-poc",
+    projectId: "banto",
+    kind: "fork",
+    title: "Vault バックエンド移行のPoC",
+    parentThreadId: "banto-base",
+    script: {
+      seed: [
+        { t: "text", text: "この Fork では HashiCorp Vault への移行を試しました。" },
+        { t: "text", text: "資格情報の切り替えでキャッシュが全損することを実測（§2.8）——本筋の作業に合流しました。" },
+      ],
+      replies: [{ match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答）" }] }],
+    },
+    status: "closed",
+    closedAt: "2026-08-30",
   },
   {
     id: "home-base",
@@ -162,6 +197,7 @@ export const mockThreads: readonly MockThread[] = [
       seed: [{ t: "text", text: "自宅サーバ Project の Base Thread です。Caddy・systemd・証明書まわりを扱います。" }],
       replies: [{ match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答）" }] }],
     },
+    status: "open",
   },
   {
     id: "hermes-base",
@@ -173,6 +209,19 @@ export const mockThreads: readonly MockThread[] = [
       seed: [{ t: "text", text: "記憶の検証 Project の Base Thread です。" }],
       replies: [{ match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答）" }] }],
     },
+    status: "open",
+  },
+  {
+    id: "old-migration-base",
+    projectId: "old-migration",
+    kind: "base",
+    title: "旧DBの移行検証",
+    parentThreadId: null,
+    script: {
+      seed: [{ t: "text", text: "旧DBの移行検証 Project の Base Thread です（終了済み）。" }],
+      replies: [{ match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答）" }] }],
+    },
+    status: "open",
   },
 ];
 
@@ -180,6 +229,43 @@ export function getThread(id: string): MockThread | undefined {
   return mockThreads.find((t) => t.id === id);
 }
 
+/** 既定は "open" だけ——閉じた Fork Thread は畳んで整理済みのもの、別の一覧で見る */
 export function getThreadsForProject(projectId: string): readonly MockThread[] {
+  return mockThreads.filter((t) => t.projectId === projectId && t.status === "open");
+}
+
+export function getClosedForksForProject(projectId: string): readonly MockThread[] {
+  return mockThreads.filter((t) => t.projectId === projectId && t.kind === "fork" && t.status === "closed");
+}
+
+export function getAllThreadsForProject(projectId: string): readonly MockThread[] {
   return mockThreads.filter((t) => t.projectId === projectId);
+}
+
+/** createProject（projects.ts）専用。新規 Project は空の Base Thread から始まる */
+export function createBaseThreadForProject(projectId: string, threadId: string, projectName: string): void {
+  const thread: MockThread = {
+    id: threadId,
+    projectId,
+    kind: "base",
+    title: projectName,
+    parentThreadId: null,
+    script: {
+      seed: [{ t: "text", text: `${projectName} の Base Thread です。ここから始めます。` }],
+      replies: [{ match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答）" }] }],
+    },
+    status: "open",
+  };
+  mockThreads = [...mockThreads, thread];
+}
+
+/** Fork Thread を畳む（§2.2「会話を畳む」と同じ性質——削除ではない） */
+export function closeThread(id: string): void {
+  mockThreads = mockThreads.map((t) => (t.id === id ? { ...t, status: "closed", closedAt: "たった今" } : t));
+  notifyMockStoreChange();
+}
+
+export function reopenThread(id: string): void {
+  mockThreads = mockThreads.map((t) => (t.id === id ? { ...t, status: "open", closedAt: undefined } : t));
+  notifyMockStoreChange();
 }

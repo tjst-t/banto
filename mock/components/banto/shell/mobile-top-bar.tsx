@@ -2,11 +2,14 @@
 
 // prototype の `@media (max-width:760px)` で `.rail` が上部バーになる挙動に対応。
 // <md でのみ表示する（≥md では ProjectRail が縦レールとして出る）。
+import { useState } from "react";
 import Link from "next/link";
-import { Bell, Search, Settings } from "lucide-react";
+import { Bell, Plus, Search, Settings } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { NewProjectDialog } from "@/components/banto/project/new-project-dialog";
 import { mockInboxItems } from "@/lib/mock/inbox";
-import { mockProjects } from "@/lib/mock/projects";
+import { getActiveProjects } from "@/lib/mock/projects";
+import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "./theme-toggle";
 
@@ -23,6 +26,8 @@ export function MobileTopBar({
   onOpenPalette: () => void;
 }) {
   const isMobile = useIsMobile();
+  useMockStoreVersion();
+  const [showNewProject, setShowNewProject] = useState(false);
   if (!isMobile) return null;
 
   return (
@@ -50,7 +55,7 @@ export function MobileTopBar({
       </button>
 
       <nav className="flex flex-1 items-center gap-1 overflow-x-auto">
-        {mockProjects.map((project) => {
+        {getActiveProjects().map((project) => {
           const active = project.id === activeProjectId;
           return (
             <Link
@@ -65,6 +70,14 @@ export function MobileTopBar({
             </Link>
           );
         })}
+        <button
+          type="button"
+          onClick={() => setShowNewProject(true)}
+          aria-label="新しい Project"
+          className="flex size-8 shrink-0 items-center justify-center rounded-md text-ink-3"
+        >
+          <Plus className="size-4" />
+        </button>
       </nav>
 
       <Link
@@ -78,6 +91,7 @@ export function MobileTopBar({
         <Settings className="size-4" />
       </Link>
       <ThemeToggle />
+      <NewProjectDialog open={showNewProject} onOpenChange={setShowNewProject} />
     </header>
   );
 }

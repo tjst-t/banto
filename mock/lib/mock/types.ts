@@ -14,6 +14,11 @@ export interface MockProject {
   /** rail に出す1文字（prototype の .pj、頭文字アバター） */
   initial: string;
   baseThreadId: ThreadId;
+  /** 作業対象の根（§2.7 セキュリティ境界・§9） */
+  basePath: string;
+  status: "active" | "closed";
+  /** status が "closed" のときだけ意味を持つ */
+  closedAt?: string;
 }
 
 export interface MockThread {
@@ -24,6 +29,13 @@ export interface MockThread {
   /** Fork Thread の場合、分岐元 */
   parentThreadId: ThreadId | null;
   script: MockScript;
+  /**
+   * Base Thread は常に "open"。Fork Thread は畳む（fold）と "closed" になる——
+   * 削除ではなく整理（§2.2「会話を畳む」と同じ性質）。閉じた Fork の一覧から
+   * 会話ログを読み返し、再度開ける
+   */
+  status: "open" | "closed";
+  closedAt?: string;
 }
 
 /** 会話の台本。ChatModelAdapter がこれを再生してダミー応答を作る。 */

@@ -9,7 +9,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { getProject, mockProjects } from "./projects";
+import { getActiveProjects, getProject } from "./projects";
 import { getThreadsForProject } from "./threads";
 import { mockInboxItems } from "./inbox";
 import { getLaunchersForProject } from "./settings";
@@ -66,7 +66,7 @@ export function buildPaletteGroups(currentProjectId: string | null, query: strin
   const groups: PaletteGroup[] = [];
 
   // Project / Thread ——banto 全体（Project を切り替える手段なので、§6.3）
-  const projectItems: PaletteItem[] = mockProjects
+  const projectItems: PaletteItem[] = getActiveProjects()
     .filter((p) => q === "" || p.name.toLowerCase().includes(q))
     .map((p) => ({
       id: `project:${p.id}`,
@@ -78,7 +78,7 @@ export function buildPaletteGroups(currentProjectId: string | null, query: strin
     }));
   if (projectItems.length > 0) groups.push({ kind: "project", label: "Project", items: projectItems });
 
-  const threadItems: PaletteItem[] = mockProjects
+  const threadItems: PaletteItem[] = getActiveProjects()
     .flatMap((p) => getThreadsForProject(p.id).map((t) => ({ thread: t, project: p })))
     .filter(({ thread }) => q === "" || thread.title.toLowerCase().includes(q))
     .map(({ thread, project }) => ({

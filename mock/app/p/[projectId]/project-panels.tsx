@@ -1,16 +1,18 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { ArrowLeft, GitFork, Maximize2, Minimize2, Settings, X } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { ArrowLeft, Clock, GitFork, GitMerge, Maximize2, Minimize2, Settings, X } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { CanvasContent } from "@/components/banto/canvas/canvas-content";
 import { PanelStack } from "@/components/banto/shell/panel-stack";
 import { usePanelStack } from "@/components/banto/shell/use-panel-stack";
 import { ProjectSettingsOverlay } from "@/components/banto/settings/project-settings-overlay";
+import { ClosedForksPanel } from "@/components/banto/thread/closed-forks-panel";
 import { ContextUsageMeter } from "@/components/banto/thread/context-usage-meter";
+import { ThreadActionsMenu } from "@/components/banto/thread/thread-actions-menu";
 import { ThreadPanel } from "@/components/banto/thread/thread-panel";
 import { getProject } from "@/lib/mock/projects";
-import { getThread } from "@/lib/mock/threads";
+import { closeThread, getThread } from "@/lib/mock/threads";
 
 function PanelHeader({ title, children }: { title: string; children?: ReactNode }) {
   return (
@@ -74,33 +76,13 @@ function IconHeaderButton({
   );
 }
 
-function HeaderButton({
-  onClick,
-  icon: Icon,
-  children,
-}: {
-  onClick: () => void;
-  icon?: typeof ArrowLeft;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-surface px-2 py-1 text-xs text-ink-2 hover:bg-accent"
-    >
-      {Icon ? <Icon className="size-3.5" /> : null}
-      {children}
-    </button>
-  );
-}
-
 export function ProjectPanels({ projectId }: { projectId: string }) {
   const stack = usePanelStack(projectId);
   const project = getProject(projectId);
   // モバイルはすでに MobileTopBar 以外の全画面を使っているので、
   // 全画面トグルは無意味（押しても見た目が変わらない）——desktop だけに出す
   const isMobile = useIsMobile();
+  const [showClosedForks, setShowClosedForks] = useState(false);
 
   return (
     <>
@@ -110,19 +92,18 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
         <div className="flex h-full min-h-0 flex-col">
           <PanelHeader title={`Base Thread — ${project.name}`}>
             <ContextUsageMeter threadId={project.baseThreadId} />
-            <HeaderButton icon={GitFork} onClick={() => stack.open({ fork: "ui" })}>
-              Fork を開く
-            </HeaderButton>
-            <HeaderButton
-              onClick={() => stack.open({ canvas: { moduleId: "banto.repo", viewId: "diff" } })}
-            >
-              Canvas を開く
-            </HeaderButton>
+            <IconHeaderButton icon={GitFork} label="Fork を開く" onClick={() => stack.open({ fork: "ui" })} />
+            <IconHeaderButton
+              icon={Clock}
+              label="閉じた Fork Thread"
+              onClick={() => setShowClosedForks(true)}
+            />
             <IconHeaderButton
               icon={Settings}
               label="Project 設定"
               onClick={() => stack.open({ overlay: "settings-project" })}
             />
+            <ThreadActionsMenu />
           </PanelHeader>
           <div className="min-h-0 flex-1">
             <ThreadPanel
@@ -141,7 +122,20 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               onClose={() => stack.close("fork")}
               closeLabel={`${project.name} の Base Thread に戻る`}
               title={`Fork Thread — ${thread?.title ?? threadId}`}
-              trailing={<ContextUsageMeter threadId={threadId} />}
+              trailing={
+                <div className="flex items-center gap-1.5">
+                  <ContextUsageMeter threadId={threadId} />
+                  <ThreadActionsMenu />
+                  <IconHeaderButton
+                    icon={GitMerge}
+                    label="この Fork Thread を畳む"
+                    onClick={() => {
+                      closeThread(threadId);
+                      stack.close("fork");
+                    }}
+                  />
+                </div>
+              }
             />
             <div className="min-h-0 flex-1">
               <ThreadPanel threadId={threadId} />
@@ -176,6 +170,12 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
       projectId={projectId}
       open={stack.overlay === "settings-project"}
       onOpenChange={(open) => (open ? stack.open({ overlay: "settings-project" }) : stack.close("overlay"))}
+    />
+    <ClosedForksPanel
+      projectId={projectId}
+      open={showClosedForks}
+      onOpenChange={setShowClosedForks}
+      onReopen={(threadId) => stack.open({ fork: threadId })}
     />
     </>
   );

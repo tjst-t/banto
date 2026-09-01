@@ -4,6 +4,7 @@
 // 別の置き場——会話ごとに中身が違うのでここは Project の overlay として出す
 // （use-panel-stack.ts の "settings-project"、既存の stub を実装する）。
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { KeyRound, Plus, ShieldAlert, Trash2 } from "lucide-react";
 import {
   Sheet,
@@ -11,6 +12,17 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -20,7 +32,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { getProject } from "@/lib/mock/projects";
+import { closeProject, getActiveProjects, getProject } from "@/lib/mock/projects";
 import {
   getImplementation,
   getProjectModuleLinks,
@@ -49,9 +61,19 @@ export function ProjectSettingsOverlay({
   const links = getProjectModuleLinks(projectId);
   const aliases = getVaultAliasesForProject(projectId);
   const [removeTarget, setRemoveTarget] = useState<MockModuleImplementation | null>(null);
+  const [confirmClose, setConfirmClose] = useState(false);
+  const router = useRouter();
 
   function patch(next: Partial<MockProjectOverrides>) {
     setOverrides((prev) => ({ ...prev, ...next }));
+  }
+
+  function handleClose() {
+    closeProject(projectId);
+    setConfirmClose(false);
+    onOpenChange(false);
+    const next = getActiveProjects().find((p) => p.id !== projectId);
+    router.push(next ? `/p/${next.id}` : "/settings");
   }
 
   return (
@@ -285,6 +307,17 @@ export function ProjectSettingsOverlay({
               </table>
             )}
           </section>
+
+          <section className="rounded-md border border-destructive/30 p-3">
+            <h3 className="mb-1 text-sm font-semibold text-foreground">危険な操作</h3>
+            <p className="mb-2 text-xs text-ink-3">
+              終了は削除ではない——閉じた Project の一覧（サイドバー下部の時計アイコン）から
+              概要を読み返し、再度開ける。
+            </p>
+            <Button type="button" variant="destructive" size="sm" onClick={() => setConfirmClose(true)}>
+              この Project を終了する
+            </Button>
+          </section>
         </div>
 
         <DisableImpactDialog
@@ -294,6 +327,22 @@ export function ProjectSettingsOverlay({
           breaks={removeTarget?.breaksIfDisabled ?? []}
           onConfirm={() => setRemoveTarget(null)}
         />
+
+        <AlertDialog open={confirmClose} onOpenChange={setConfirmClose}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{project.name} を終了しますか</AlertDialogTitle>
+              <AlertDialogDescription>
+                削除ではない——閉じた Project の一覧からいつでも再度開ける。
+                今開いている Thread は畳まれた状態で保存される。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>やめる</AlertDialogCancel>
+              <AlertDialogAction onClick={handleClose}>終了する</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </SheetContent>
     </Sheet>
   );

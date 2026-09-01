@@ -94,12 +94,40 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
 - **実装中に見つけた既存の不具合**：shadcnスカフォールドが最初から`--chart-1`〜`--chart-5`という**このためにある**CSS変数を用意していたが、`--banto-accent`/`--banto-ok`/`--banto-warn`/`--banto-stop`/`--banto-turn`のエイリアスのまま放置されていた。最初『層A』に別名で新トークンを足したが、後続の`@theme inline`ブロックの既存マッピング（`--color-chart-N: var(--chart-N)`）に踏みつぶされて、系列色が実質「accent/ok/warn/stop/turn」になっていた（Playwrightで実際の`background-color`を読むまで気づかなかった——スクリーンショットの見た目だけでは判別できなかった）。**既存の`--chart-N`を検証済みパレットで置き換える**形に直して解決
 - **`npm run lint`（`eslint && check-tokens.mjs`）を通していなかった**——`npx eslint`だけ実行しており、E9（色・字の大きさの段を守る機械検査）を素通りしていた。既存の`text-[10px]`/`text-[11px]`/`text-base`の混入（前回までのセッションで導入）もこの機会に修正——以降は`npm run lint`を使う
 
+### Project / Thread のライフサイクル操作（§6.0 item6・§2.2）
+- **共有state基盤を新設**（`lib/mock/store-events.ts` + `projects.ts`/`threads.ts`のミュータブル配列）——
+  Project/Threadの作成・終了・畳む・再開はモック全体で反映される必要があるため、
+  従来の静的readonly配列からgetter/mutator関数の組に変更した。`useSyncExternalStore`で
+  購読するコンポーネント（rail・パネル）だけが再描画される
+- **新規Project**：Project rail・モバイル上部バーの「+」ボタン→`NewProjectDialog`。
+  既定表示はProject名・Baseパス、Advancedで既定モデル/effortの上書き（値は保存のみ、
+  Project設定画面へは反映していない——モックの割り切り）
+- **右上「Canvasを表示」を削除**——モックのデモ用途以上の意義が無いボタンだったため。
+  Canvasを開く経路はlauncher・tool呼び出し（inline/fullscreen自動起動）・Command Paletteの
+  「Canvas を開く」操作に残る
+- **「Forkを開く」をアイコンのみに。Fork Threadヘッダーに畳むアイコン（GitMerge）を追加**——
+  押すと`closeThread()`で畳み、Base Threadに戻る。削除ではない
+- **閉じたFork Thread一覧**（Base Threadヘッダーの時計アイコン）——検索（タイトル前方一致）・
+  選択で会話ログを読み返し・再度開ける。**全文検索をやるなら索引が要る**（HermesAgentのような
+  形）——今回は手を出さず、§10に検討事項として残す価値がある
+- **Projectを終了するUI**（Project設定画面の「危険な操作」セクション）——確認ダイアログ経由。
+  削除ではなく終了——閉じたThreadは畳まれた状態のまま保存される
+- **終了したProject一覧**（サイドバー下部の時計アイコン）——概要（Baseパス・終了日・Thread数）
+  を展開表示、再度開ける
+- **Thread の Clear / Compaction**（Base/Fork Threadヘッダーの「…」メニュー）——
+  「会話を畳む（Clear）」はBase Thread向け（§2.2、同じThreadのままresume-point無しで整理）、
+  Fork Threadを丸ごと閉じる操作（GitMergeアイコン）とは別物——同じ「畳む」という語でも
+  Base/Forkで意味が違う。「圧縮する（Compact）」は実際の発火はSDK側（§3）なので、
+  ここではモックの手動トリガー止まり
+
 ## まだ実装していない
 
 §10.0のD群（プロトタイプが要る項目）のうち、以下は未着手：
 
 - **ライブ配信（SSE）**——複数クライアントが同じThreadを同時に見る場面
 - **通知**（item28、§10）——受信箱のバッジ止まり。実際のトースト/プッシュ通知は無い
+- **Threadの全文検索の索引**——閉じたFork Threadの検索は今のところタイトル前方一致のみ。
+  本文まで検索するならHermesAgentのような索引の仕組みが要る（要検討、§10未決候補）
 
 ## モック段の締めに残っていること
 

@@ -1,11 +1,91 @@
 import type { MockProject } from "./types";
+import { notifyMockStoreChange } from "./store-events";
+import { createBaseThreadForProject } from "./threads";
 
-export const mockProjects: readonly MockProject[] = [
-  { id: "banto", name: "banto", initial: "b", baseThreadId: "banto-base" },
-  { id: "home", name: "自宅サーバ", initial: "自", baseThreadId: "home-base" },
-  { id: "hermes", name: "記憶の検証", initial: "記", baseThreadId: "hermes-base" },
+let projects: MockProject[] = [
+  {
+    id: "banto",
+    name: "banto",
+    initial: "b",
+    baseThreadId: "banto-base",
+    basePath: "~/worktrees/banto-v4",
+    status: "active",
+  },
+  {
+    id: "home",
+    name: "自宅サーバ",
+    initial: "自",
+    baseThreadId: "home-base",
+    basePath: "~/srv/home-automation",
+    status: "active",
+  },
+  {
+    id: "hermes",
+    name: "記憶の検証",
+    initial: "記",
+    baseThreadId: "hermes-base",
+    basePath: "~/worktrees/hermes",
+    status: "active",
+  },
+  {
+    id: "old-migration",
+    name: "旧DBの移行検証",
+    initial: "旧",
+    baseThreadId: "old-migration-base",
+    basePath: "~/worktrees/old-migration",
+    status: "closed",
+    closedAt: "2026-08-15",
+  },
 ];
 
+export function getAllProjects(): readonly MockProject[] {
+  return projects;
+}
+
+export function getActiveProjects(): readonly MockProject[] {
+  return projects.filter((p) => p.status === "active");
+}
+
+export function getClosedProjects(): readonly MockProject[] {
+  return projects.filter((p) => p.status === "closed");
+}
+
 export function getProject(id: string): MockProject {
-  return mockProjects.find((p) => p.id === id) ?? mockProjects[0];
+  return projects.find((p) => p.id === id) ?? projects[0];
+}
+
+export interface NewProjectInput {
+  name: string;
+  basePath: string;
+}
+
+/**
+ * 新規 Project を作る（§2.2）。モックなので Module 集合・Configuration の
+ * 実配線は行わない——名前・根・Base Thread が揃った最小の入れ物だけを作る
+ */
+export function createProject(input: NewProjectInput): MockProject {
+  const id = `p-${Math.random().toString(36).slice(2, 8)}`;
+  const project: MockProject = {
+    id,
+    name: input.name,
+    initial: input.name.slice(0, 1),
+    baseThreadId: `${id}-base`,
+    basePath: input.basePath,
+    status: "active",
+  };
+  projects = [...projects, project];
+  createBaseThreadForProject(project.id, project.baseThreadId, project.name);
+  notifyMockStoreChange();
+  return project;
+}
+
+/** Project を終了する（削除ではない——閉じたProjectの一覧から読み返し、再開できる） */
+export function closeProject(id: string): void {
+  projects = projects.map((p) => (p.id === id ? { ...p, status: "closed", closedAt: "たった今" } : p));
+  notifyMockStoreChange();
+}
+
+export function reopenProject(id: string): void {
+  projects = projects.map((p) => (p.id === id ? { ...p, status: "active", closedAt: undefined } : p));
+  notifyMockStoreChange();
 }
