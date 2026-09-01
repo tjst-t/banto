@@ -222,13 +222,21 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
   Dialog＝Command Palette・履歴（Archive）・新規Project作成・確認ダイアログ、
   Sheet＝受信箱・Project設定
 
-### item14(a)「instanceが新しい実装を知る」（§5.1「Module の発見元は4つ」）
+### item14(a)「instanceが新しい実装を知る」（§5.1「Module の発見元は3つ」）
+- **初版は4分類（公式レジストリ・接続情報直接指定・Gitリポジトリ・ローカルパス）で作ったが、
+  ユーザーが調べた実在の規約（`server.json`・`mcpServers`）に乗せ直して3タブに訂正した**
+  （`docs/notes/2026-09-02-server-json-mcpservers.md`）——GitリポジトリもローカルパスもURL指定・
+  アップロードも、実は「server.jsonをどこから読むか」のバリエーションでしかなかったと判明
 - **`AddModuleDialog`**（instanceスコープ、`/settings`の`RoleList`から「＋ Module を追加」で開く）——
-  4タブ：公式レジストリ検索（モックの固定結果一覧）／接続情報直接指定（URL・起動コマンド＋役割を選ぶ入力欄）／
-  Gitリポジトリ（`owner/repo`＋役割）／ローカルパス（ディレクトリ＋役割）。
-  レジストリ以外の3つは実装がどのroleを名乗るか実際には分からない（モックなので接続して`_meta`を
-  読みには行けない）ため、人が役割をSelectで指定する形にした——本実装では banto が接続して
-  自動検出する想定（§2.5「role は Module 自身が宣言する」）だが、モックでは代わりに人の入力で代用
+  3タブ：**レジストリ**（公式MCPレジストリ検索、モックの固定結果一覧）／**server.json**
+  （URL指定、または`<input type=file>`での実ファイルアップロード——アップロード時は
+  `FileReader`で中身を読み`title`/`name`があれば表示名を自動で埋める）／**mcpServers**
+  （`{"name": {"command"/"args"/"env" または "url"/"headers"}}`形式のJSONを直接貼り付け、
+  不正なJSONならエラー表示）。いずれも実装がどのroleを名乗るか実際には分からない
+  （モックなので接続して`_meta`を読みには行けない。レジストリ結果だけは固定データとして
+  役割を持たせてある）ため、人が役割をSelectで指定する形にした——本実装では banto が
+  接続して`initialize`応答の`_meta`から自動検出する想定（§5.1「role・依存の宣言は
+  server.jsonの_metaに乗せ、接続時に自己申告と突き合わせる」）
 - **データ層を再びリアクティブ化**——前回item14を試作した際に一度作って巻き戻した
   `settings.ts`の`implementations`mutable化・`getRoles()`関数化のパターンをやり直した。
   今回は実際に使われる（`createImplementation`で追加・`removeImplementation`で削除）ので、
