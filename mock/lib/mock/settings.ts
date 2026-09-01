@@ -101,13 +101,13 @@ export const mockRoles: readonly MockRole[] = [
   {
     id: "filesystem",
     name: "FileSystem",
-    description: "ファイルを読む・書く。Project の根の外へ出さない（§3）。",
+    description: "ファイルを読む・書く。Project の根の外へ出さない。",
     implementations: implementations.filter((i) => i.roleId === "filesystem"),
   },
   {
     id: "shell",
     name: "Shell",
-    description: "コマンドを実行する。Landlock で Project の根に閉じ込める（§2.7）。",
+    description: "コマンドを実行する。Landlock で Project の根に閉じ込める。",
     implementations: implementations.filter((i) => i.roleId === "shell"),
   },
   {
@@ -125,8 +125,7 @@ export const mockRoles: readonly MockRole[] = [
   {
     id: "vault",
     name: "Vault",
-    description:
-      "鍵・トークンを預かる。必須 Module（決定・2026-09-01）——複数バックエンド可、組み込みローカルを同梱。",
+    description: "鍵・トークンを預かる。必須 Module——複数バックエンド可、組み込みローカルを同梱。",
     implementations: implementations.filter((i) => i.roleId === "vault"),
   },
   {

@@ -82,7 +82,7 @@ export function NewProjectDialog({
           <DialogHeader>
             <DialogTitle>新しい Project</DialogTitle>
             <DialogDescription>
-              Project は仕事の入れ物（§1.1）。Module 集合は後から足せる。
+              Project は仕事の入れ物。Module 集合は後から足せる。
             </DialogDescription>
           </DialogHeader>
 
@@ -107,7 +107,7 @@ export function NewProjectDialog({
                 className="font-mono text-xs"
               />
               <p className="text-xs text-ink-3">
-                Shell・FileSystem をこの根に閉じ込める（§2.7）
+                Shell・FileSystem をこの根に閉じ込める
               </p>
             </div>
 
@@ -182,7 +182,7 @@ export function NewProjectDialog({
                 <CascadeRow
                   id="new-project-credential"
                   label="使う資格情報"
-                  inheritedLabel="自動選択（使用率の低いものへ自動で移る、§2.8）"
+                  inheritedLabel="自動選択（使用率の低いものへ自動で移る）"
                   overridden={overrides.credentialId !== undefined}
                   onToggle={(on) => patch({ credentialId: on ? mockCredentials[0].id : undefined })}
                 >

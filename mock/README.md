@@ -107,6 +107,36 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
   Vault自身の`ModuleConfigPane`にProjectのalias一覧を出す形だけを実装した
   （「どのVault実装を使うか」をRepo・Shell自身の設定面で選ばせる詳細UIは未着手）
 
+### instance設定（`/settings`）もEscapeで閉じれるように（2026-09-02）
+- `/settings`はProject設定と違ってDialogではなく普通のroute（AppShellの
+  子として描画、ProjectRailは表示されたまま）なので、Escapeは自前で拾って
+  1つ前の画面へ`router.back()`する必要がある——`hooks/use-escape-navigate-back.ts`
+  を新設
+- **踏んだ罠**：`window.addEventListener("keydown", ...)`をbubbleフェーズ
+  （既定）で登録すると、RoleListの無効化確認（`AlertDialog`）が開いている
+  状態でEscapeを押したとき、**Radix側が同期的にダイアログを閉じてから**
+  このhookのハンドラが走っていた——判定した時点で既にダイアログが消えており、
+  「他のダイアログが開いているから何もしない」というガードが手遅れになって
+  二重にEscapeが効いてしまう（確認ダイアログを閉じたつもりが/settingsごと
+  離脱する）。**captureフェーズ**（`addEventListener`の第3引数`true`）で
+  登録すると解決した——captureはbubbleより先に上から下へ効くので、Radix側の
+  ハンドラが走る前に「まだダイアログがある」状態で判定できる。Playwrightで
+  before/after両方の挙動を実測して確認（規則1）
+
+### モック向けコメントの本文流出を除去（2026-09-02）
+- レビュー指摘：`SectionHeading`の`description`・`CascadeRow`の`inheritedLabel`・
+  `title`属性・段落テキストなど、**実際に画面に出る文字列**の中に`（§2.7）`
+  `（決定・2026-09-01）`のような仕様書の節番号・決定ログの引用がそのまま
+  混ざっていた——コード中の`//`コメント（開発者向け、画面に出ない）は問題ないが、
+  JSXのテキストノードやprops値として渡される文字列は実際にレンダリングされる
+  ので、本実装に流用したときに製品の文言として出てしまう
+- 全`.tsx`ファイルを`grep`で洗い出し（`§`・`決定・202`・`レビュー指摘`・
+  `item[0-9]`等）、JSXの可視文字列とコード中の`//`/`/* */`コメントを判別して
+  前者だけ修正。`lib/mock/settings.ts`の`mockRoles`の`description`フィールド
+  （RoleListがそのまま表示する）、`lib/mock/threads.ts`のデモ会話テキストにも
+  同じ混入があり、あわせて直した。Playwrightで`/settings`・Project設定の
+  画面テキストに`§`が残っていないことを確認
+
 ### Command Palette（§6.3、Ctrl-K）
 - `CommandPalette`（cmdkベースの`components/ui/command.tsx`を使用）。Ctrl-K/Cmd-Kでどこからでも開く（`AppShell`の`keydown`）ほか、Project rail・モバイル上部バーに検索アイコンを常設（Command Paletteの存在を知らないと辿り着けない、を避ける）
 - **自分の索引を持たない**（§6.3の決定どおり）——`lib/mock/palette.ts`が既存のmockデータ（Project・Thread・受信箱・Project単位のModule集合）から都度導出するだけで、パレット専用のデータストアは作っていない

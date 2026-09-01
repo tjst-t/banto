@@ -110,7 +110,7 @@ export function RoleList() {
                 <div className="pt-2">
                   <button
                     type="button"
-                    title="秘密情報を直接動かす操作なので人専用（AI には露出しない、§2.8）"
+                    title="秘密情報を直接動かす操作なので人専用"
                     className="rounded-md border border-border px-2.5 py-1.5 text-xs text-ink-2 hover:bg-accent"
                   >
                     他バックエンドへ移行…

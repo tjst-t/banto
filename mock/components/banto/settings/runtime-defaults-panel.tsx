@@ -65,8 +65,7 @@ export function RuntimeDefaultsPanel() {
         />
       </div>
       <p className="text-xs text-ink-3 sm:col-span-3">
-        Project は個別に上書きできる（既定で全項目が対象——上書きさせたくない項目だけ
-        ブラックリストで塞ぐ、§2.6）。この画面の値は上書きしていない Project に効く。
+        Project は個別に上書きできる。この画面の値は上書きしていない Project に効く。
       </p>
     </div>
   );

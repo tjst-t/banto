@@ -41,7 +41,7 @@ export function ModuleConfigPane({
             ·{" "}
             <span className="inline-flex items-center gap-1 rounded bg-surface-2 px-1.5 py-0.5 text-ink-2">
               <Folders className="size-3" />
-              Project の文脈：{getProject(projectId).name}
+              対象 Project：{getProject(projectId).name}
             </span>
           </>
         ) : null}
@@ -49,7 +49,7 @@ export function ModuleConfigPane({
       <div className="rounded-lg border border-dashed border-border bg-surface-2/60 p-4">
         <div className="mb-3 flex items-center gap-1.5 text-xs text-ink-3">
           <ShieldCheck className="size-3.5" />
-          sandboxed iframe（二重 iframe、`allow-same-origin` を含めない、§6.2）
+          sandboxed iframe
         </div>
         {/* この枠の中だけ、banto 自身の UI と質感を変える——背景・角丸・枠線を
             banto のカードとずらし、「ここから先は他人のコードの領域」を示す */}
@@ -74,10 +74,7 @@ export function ModuleConfigPane({
 
         {showProjectAliases ? (
           <div className="mt-3 rounded-md border border-border bg-card p-3">
-            <p className="mb-2 text-xs text-ink-3">
-              この Project の alias（§2.5「alias 方式」——値は出さない。Project の
-              文脈を受け取って初めて出せる、instance 全体の設定には無い中身）
-            </p>
+            <p className="mb-2 text-xs text-ink-3">この Project の alias（値は出さない）</p>
             {aliases.length === 0 ? (
               <p className="text-sm text-ink-3">この Project の alias はまだ無い</p>
             ) : (

@@ -101,9 +101,8 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
           <h1 className="mb-0.5 text-lg font-semibold text-foreground">接続している Module</h1>
           <p className="mb-4 text-xs text-ink-3">
             instance 全体の役割一覧（<a href="/settings" className="underline">/settings</a>）から、
-            この Project が Runner に直接繋ぐ実装を選ぶ——AI に直接サービスを提供する role
-            だけが対象。他 Module の裏方になるだけの role（Vault 等）はここに出てこない
-            （§2.5「role 依存の解決は Module の仕事」、2026-09-02）
+            この Project が使う実装を選ぶ。他の Module の裏方としてだけ使われる実装
+            （Vault 等）はここには出てこない——それぞれの Module 自身の設定から選ぶ。
           </p>
           <div className="flex flex-col gap-2">
             {mockRoles.map((role) => {
@@ -173,7 +172,7 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
           <h1 className="mb-0.5 text-lg font-semibold text-foreground">既定値の上書き</h1>
           <p className="mb-4 text-xs text-ink-3">
             instance 既定（<a href="/settings" className="underline">/settings</a>）を、この
-            Project だけ上書きする（§2.2「設定のカスケード」）。
+            Project だけ上書きする。
           </p>
           <div className="rounded-md border border-border px-3">
             <CascadeRow
@@ -237,7 +236,7 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
             <CascadeRow
               id="override-credential"
               label="使う資格情報"
-              inheritedLabel="自動選択（使用率の低いものへ自動で移る、§2.8）"
+              inheritedLabel="自動選択（使用率の低いものへ自動で移る）"
               overridden={overrides.credentialId !== undefined}
               onToggle={(on) => patch({ credentialId: on ? mockCredentials[0].id : undefined })}
             >
@@ -268,8 +267,7 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
             セキュリティ境界
           </h1>
           <p className="mb-3 text-xs text-ink-3">
-            Shell・FileSystem をこの根に閉じ込める（§2.7）。誰が根を決め、誰が保持するかは
-            まだ設計していない——ここでは Project が持つ値として仮に置く
+            Shell・FileSystem をこの根に閉じ込める。
           </p>
           <Input
             value={overrides.securityRoot}
@@ -318,9 +316,7 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
     return (
       <div>
         <h1 className="mb-0.5 text-lg font-semibold text-foreground">{impl?.name ?? implementationId}</h1>
-        <p className="mb-3 text-xs text-ink-3">
-          この Module 自身が持ち込む設定。banto の Configuration ではない（§6.2）。
-        </p>
+        <p className="mb-3 text-xs text-ink-3">この Module 自身が持ち込む設定。</p>
         <ModuleConfigPane implementationId={implementationId} projectId={projectId} />
       </div>
     );

@@ -46,7 +46,7 @@ export function CredentialsPanel() {
       ))}
       <button
         type="button"
-        title="対話的なログインを走らせる（shell 経由）。機微情報は Elicitation の URL モードで見せる（§2.8）"
+        title="対話的なログインを走らせる。機微情報は別ウィンドウで見せる"
         className="flex items-center justify-center gap-1.5 rounded-md border border-dashed border-border py-2 text-xs text-ink-3 hover:bg-accent hover:text-foreground"
       >
         <Plus className="size-3.5" /> 資格情報を登録

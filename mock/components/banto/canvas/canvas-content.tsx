@@ -46,7 +46,7 @@ function RepoDiffView() {
         ))}
       </div>
       <div className="shrink-0 border-t border-border px-4 py-2.5 text-xs text-ink-3">
-        Repo Module が描く差分ビュー——banto の core は差分ビューアを持たない（§2.4）
+        Repo Module が描く差分ビュー
       </div>
     </div>
   );
@@ -152,8 +152,7 @@ function FileBrowserView() {
         ))}
       </div>
       <div className="shrink-0 border-t border-border px-4 py-2.5 text-xs text-ink-3">
-        FileSystem Module が描くファイルブラウザ——launcher から人が直接開いた
-        （AI の tool 呼び出し結果ではない、§6.2）
+        FileSystem Module が描くファイルブラウザ——人が直接開いた
       </div>
     </div>
   );

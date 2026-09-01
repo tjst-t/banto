@@ -18,6 +18,7 @@ import {
   mockModuleConfigFields,
   mockRoles,
 } from "@/lib/mock/settings";
+import { useEscapeNavigateBack } from "@/hooks/use-escape-navigate-back";
 
 const CATEGORIES: readonly SettingsNavItem[] = [
   { section: "roles", label: "役割と Module", icon: Puzzle },
@@ -85,7 +86,7 @@ function renderSection(section: SettingsSection) {
       <div>
         <SectionHeading
           title="役割と Module"
-          description="役割ごとに、満たす実装・プロセス境界・無ければ何が断るかを表示する（§6.1）。中心は Module 一覧ではなく役割一覧——同じ役割を複数の実装が名乗ってよい。"
+          description="役割ごとに、満たす実装・プロセス境界・無ければ何が断るかを表示する。同じ役割を複数の実装が名乗ってよい。"
         />
         <RoleList />
       </div>
@@ -96,7 +97,7 @@ function renderSection(section: SettingsSection) {
       <div>
         <SectionHeading
           title="既定値（runtime config）"
-          description="新規 Project・新規 Thread の初期値（§2.6）。Project は個別に上書きできる。"
+          description="新規 Project・新規 Thread の初期値。Project は個別に上書きできる。"
         />
         <RuntimeDefaultsPanel />
       </div>
@@ -107,7 +108,7 @@ function renderSection(section: SettingsSection) {
       <div>
         <SectionHeading
           title="資格情報"
-          description="複数登録して使い分ける。鍵そのものは Vault が持ち、ここには出さない（§2.8）。"
+          description="複数登録して使い分ける。鍵そのものは Vault が持ち、ここには出さない。"
         />
         <CredentialsPanel />
       </div>
@@ -120,7 +121,7 @@ function renderSection(section: SettingsSection) {
     <div>
       <SectionHeading
         title={impl?.name ?? implementationId}
-        description="この Module 自身が持ち込む設定。banto の Configuration ではない（§6.2）。"
+        description="この Module 自身が持ち込む設定。"
       />
       <ModuleConfigPane implementationId={implementationId} />
     </div>
@@ -130,6 +131,7 @@ function renderSection(section: SettingsSection) {
 const SEARCH_ENTRIES = buildSearchEntries();
 
 export function SettingsContent() {
+  useEscapeNavigateBack();
   return (
     <div className="min-h-0 flex-1">
       <SettingsShell

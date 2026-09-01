@@ -180,7 +180,7 @@ let mockThreads: MockThread[] = [
     script: {
       seed: [
         { t: "text", text: "この Fork では HashiCorp Vault への移行を試しました。" },
-        { t: "text", text: "資格情報の切り替えでキャッシュが全損することを実測（§2.8）——本筋の作業に合流しました。" },
+        { t: "text", text: "資格情報の切り替えでキャッシュが全損することを実測——本筋の作業に合流しました。" },
       ],
       replies: [{ match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答）" }] }],
     },
