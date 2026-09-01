@@ -16,9 +16,10 @@ import {
   getImplementation,
   mockCredentials,
   mockModuleConfigFields,
-  mockRoles,
+  getRoles,
 } from "@/lib/mock/settings";
 import { useEscapeNavigateBack } from "@/hooks/use-escape-navigate-back";
+import { useMockStoreVersion } from "@/lib/mock/store-events";
 
 const CATEGORIES: readonly SettingsNavItem[] = [
   { section: "roles", label: "役割と Module", icon: Puzzle },
@@ -39,7 +40,7 @@ const RUNTIME_DEFAULT_ENTRIES = [
 ];
 
 function buildSearchEntries(): readonly SearchEntry[] {
-  const roleEntries = mockRoles.flatMap((role) => [
+  const roleEntries = getRoles().flatMap((role) => [
     { section: "roles" as const, label: role.name, anchorId: `anchor-role-${role.id}` },
     ...role.implementations.map((impl) => ({
       section: "roles" as const,
@@ -128,17 +129,18 @@ function renderSection(section: SettingsSection) {
   );
 }
 
-const SEARCH_ENTRIES = buildSearchEntries();
-
 export function SettingsContent() {
   useEscapeNavigateBack();
+  // item14でModuleが増減しうるので、索引は静的定数にせずバージョンが
+  // 変わるたびに組み直す（規則3——導出できる値を保存しない）
+  useMockStoreVersion();
   return (
     <div className="min-h-0 flex-1">
       <SettingsShell
         categories={CATEGORIES}
         moduleImplementations={getConfigurableImplementations()}
         renderContent={renderSection}
-        extraSearchEntries={SEARCH_ENTRIES}
+        extraSearchEntries={buildSearchEntries()}
       />
     </div>
   );

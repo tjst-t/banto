@@ -7,7 +7,9 @@ import type {
   MockRuntimeDefaults,
   MockVaultAlias,
   ProjectId,
+  RoleId,
 } from "./types";
+import { notifyMockStoreChange } from "./store-events";
 
 // 設定のモックデータ（§2.10・§6.1）。実装は捨てる前提ではないが、UI を固める
 // ことが目的——バックエンドとは繋がっていない（`mock/README.md`）。
@@ -18,7 +20,9 @@ export const mockRuntimeDefaults: MockRuntimeDefaults = {
   memoryLimitChars: 20000,
 };
 
-const implementations: readonly MockModuleImplementation[] = [
+// item14「instance が新しい実装を知る」（§5.1）で増えるので mutable。
+// projects.ts/threads.ts と同じパターン——`notifyMockStoreChange` で購読側に知らせる
+let implementations: MockModuleImplementation[] = [
   {
     id: "banto.fs",
     roleId: "filesystem",
@@ -97,44 +101,50 @@ const implementations: readonly MockModuleImplementation[] = [
   },
 ];
 
-export const mockRoles: readonly MockRole[] = [
+const roleDefs: readonly Omit<MockRole, "implementations">[] = [
   {
     id: "filesystem",
     name: "FileSystem",
     description: "ファイルを読む・書く。Project の根の外へ出さない。",
-    implementations: implementations.filter((i) => i.roleId === "filesystem"),
   },
   {
     id: "shell",
     name: "Shell",
     description: "コマンドを実行する。Landlock で Project の根に閉じ込める。",
-    implementations: implementations.filter((i) => i.roleId === "shell"),
   },
   {
     id: "skills",
     name: "Skill",
     description: "Skill を取り込む・作る・配る。複数の実装が同じ役割を名乗ってよい。",
-    implementations: implementations.filter((i) => i.roleId === "skills"),
   },
   {
     id: "subagent",
     name: "Subagent",
     description: "サブエージェントに仕事を頼む。どの backend で走らせるか選ぶだけの薄い層。",
-    implementations: implementations.filter((i) => i.roleId === "subagent"),
   },
   {
     id: "vault",
     name: "Vault",
     description: "鍵・トークンを預かる。必須 Module——複数バックエンド可、組み込みローカルを同梱。",
-    implementations: implementations.filter((i) => i.roleId === "vault"),
   },
   {
     id: "repo",
     name: "Repo",
     description: "複数リポジトリの一覧・worktree・clone/branch/log。GitHub 身元の割り当て。",
-    implementations: implementations.filter((i) => i.roleId === "repo"),
   },
 ];
+
+/** role → 実装 の辞書を毎回組み直す——`implementations` は増減するので、焼き込んだ配列にしない */
+export function getRoles(): readonly MockRole[] {
+  return roleDefs.map((role) => ({
+    ...role,
+    implementations: implementations.filter((i) => i.roleId === role.id),
+  }));
+}
+
+export function getRole(roleId: RoleId): MockRole | undefined {
+  return getRoles().find((r) => r.id === roleId);
+}
 
 export function getImplementation(id: string): MockModuleImplementation | undefined {
   return implementations.find((i) => i.id === id);
@@ -142,7 +152,39 @@ export function getImplementation(id: string): MockModuleImplementation | undefi
 
 export function getRoleForImplementation(implementationId: string): MockRole | undefined {
   const impl = getImplementation(implementationId);
-  return impl ? mockRoles.find((r) => r.id === impl.roleId) : undefined;
+  return impl ? getRole(impl.roleId) : undefined;
+}
+
+/**
+ * item14「instance が新しい実装を知る」（§5.1 の4つの発見元）で見つけた
+ * 実装を、instance の辞書に足す。Project への接続は別（`mockProjectModuleLinks`）——
+ * 「instance が知っている」と「この Project が使う」は別の操作（§6.1）
+ */
+export function createImplementation(
+  input: Omit<MockModuleImplementation, "enabled" | "breaksIfDisabled"> &
+    Partial<Pick<MockModuleImplementation, "enabled" | "breaksIfDisabled">>,
+): MockModuleImplementation {
+  const impl: MockModuleImplementation = {
+    enabled: true,
+    breaksIfDisabled: [],
+    ...input,
+  };
+  implementations = [...implementations, impl];
+  notifyMockStoreChange();
+  return impl;
+}
+
+/**
+ * instance の辞書から実装を削除する（アンインストール）。banto 組み込み
+ * （`builtin`）は削除できない——同梱物を消せると「起動直後から候補が必ず
+ * 1つある」という Vault の前提（§2.8）等が崩れる
+ */
+export function removeImplementation(id: string): void {
+  const impl = getImplementation(id);
+  if (!impl || impl.builtin) return;
+  implementations = implementations.filter((i) => i.id !== id);
+  mockProjectModuleLinks = mockProjectModuleLinks.filter((l) => l.implementationId !== id);
+  notifyMockStoreChange();
 }
 
 /**
@@ -224,7 +266,7 @@ export function setProjectOverrides(overrides: MockProjectOverrides): void {
     : [...mockProjectOverrides, overrides];
 }
 
-export const mockProjectModuleLinks: readonly MockProjectModuleLink[] = [
+let mockProjectModuleLinks: MockProjectModuleLink[] = [
   { projectId: "banto", implementationId: "banto.fs" },
   { projectId: "banto", implementationId: "banto.shell" },
   { projectId: "banto", implementationId: "banto.skills" },

@@ -222,6 +222,27 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
   Dialog＝Command Palette・履歴（Archive）・新規Project作成・確認ダイアログ、
   Sheet＝受信箱・Project設定
 
+### item14(a)「instanceが新しい実装を知る」（§5.1「Module の発見元は4つ」）
+- **`AddModuleDialog`**（instanceスコープ、`/settings`の`RoleList`から「＋ Module を追加」で開く）——
+  4タブ：公式レジストリ検索（モックの固定結果一覧）／接続情報直接指定（URL・起動コマンド＋役割を選ぶ入力欄）／
+  Gitリポジトリ（`owner/repo`＋役割）／ローカルパス（ディレクトリ＋役割）。
+  レジストリ以外の3つは実装がどのroleを名乗るか実際には分からない（モックなので接続して`_meta`を
+  読みには行けない）ため、人が役割をSelectで指定する形にした——本実装では banto が接続して
+  自動検出する想定（§2.5「role は Module 自身が宣言する」）だが、モックでは代わりに人の入力で代用
+- **データ層を再びリアクティブ化**——前回item14を試作した際に一度作って巻き戻した
+  `settings.ts`の`implementations`mutable化・`getRoles()`関数化のパターンをやり直した。
+  今回は実際に使われる（`createImplementation`で追加・`removeImplementation`で削除）ので、
+  巻き戻しの心配なく進めた。`mockRoles`（静的readonly配列）を参照していた4箇所
+  （`RoleList`・`SettingsContent`・`NewProjectDialog`・`ProjectSettingsContent`）を`getRoles()`に置換
+- **削除（アンインストール）も同じ画面に実装**——`RoleList`の各実装行に、banto組み込み
+  （`builtin`）以外はゴミ箱アイコンを表示。押すと確認ダイアログ→`removeImplementation()`で
+  instanceの辞書とProjectの接続リンクの両方から消える
+- **踏んだ罠（テスト側）**：Playwrightで`button:has-text("取り込む")`をスコープ無しで押すと
+  30秒タイムアウトした——Radix `Tabs`は非アクティブな`TabsContent`を`hidden`属性付きで
+  DOMに残したまま（アンマウントしない）ため、同じテキストのボタンが複数DOMに存在する。
+  `[role="tabpanel"][data-state="active"]`でスコープして解決——実際のユーザー操作には
+  影響しない（`hidden`要素はクリックできない）、テストコードだけの罠
+
 ## まだ実装していない
 
 §10.0のD群（プロトタイプが要る項目）のうち、以下は未着手：

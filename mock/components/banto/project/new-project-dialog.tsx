@@ -29,7 +29,7 @@ import {
 import { CascadeRow } from "@/components/banto/settings/cascade-row";
 import { cn } from "@/lib/utils";
 import { createProject } from "@/lib/mock/projects";
-import { mockCredentials, mockRoles, mockRuntimeDefaults } from "@/lib/mock/settings";
+import { getRoles, mockCredentials, mockRuntimeDefaults } from "@/lib/mock/settings";
 import type { MockProjectOverrides } from "@/lib/mock/types";
 
 type Overrides = Omit<MockProjectOverrides, "projectId" | "securityRoot">;
@@ -218,7 +218,7 @@ export function NewProjectDialog({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {mockRoles
+                      {getRoles()
                         .find((r) => r.id === "vault")
                         ?.implementations.map((i) => (
                           <SelectItem key={i.id} value={i.id}>

@@ -41,12 +41,13 @@ import {
 import { CascadeRow } from "@/components/banto/settings/cascade-row";
 import { DisableImpactDialog } from "@/components/banto/settings/disable-impact-dialog";
 import { closeProject, getActiveProjects, getProject } from "@/lib/mock/projects";
+import { useMockStoreVersion } from "@/lib/mock/store-events";
 import {
   getImplementation,
   getProjectModuleLinks,
   getProjectOverrides,
   mockCredentials,
-  mockRoles,
+  getRoles,
   mockRuntimeDefaults,
 } from "@/lib/mock/settings";
 import type { MockModuleImplementation, MockProjectOverrides } from "@/lib/mock/types";
@@ -60,7 +61,7 @@ const CATEGORIES: readonly SettingsNavItem[] = [
 
 function buildSearchEntries(projectId: string): readonly SearchEntry[] {
   const links = getProjectModuleLinks(projectId);
-  const moduleEntries = mockRoles.flatMap((role) =>
+  const moduleEntries = getRoles().flatMap((role) =>
     role.implementations
       .filter((impl) => links.some((l) => l.id === impl.id))
       .map((impl) => ({
@@ -73,6 +74,7 @@ function buildSearchEntries(projectId: string): readonly SearchEntry[] {
 }
 
 export function ProjectSettingsContent({ projectId }: { projectId: string }) {
+  useMockStoreVersion();
   const project = getProject(projectId);
   const baseline = getProjectOverrides(projectId);
   const [overrides, setOverrides] = useState<MockProjectOverrides>(baseline);
@@ -105,7 +107,7 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
             （Vault 等）はここには出てこない——それぞれの Module 自身の設定から選ぶ。
           </p>
           <div className="flex flex-col gap-2">
-            {mockRoles.map((role) => {
+            {getRoles().map((role) => {
               const active = links.filter((impl) => impl.roleId === role.id);
               return (
                 <div
