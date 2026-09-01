@@ -6,7 +6,7 @@
 // 決定が目的なので、実際の iframe/postMessage ハンドシェイクは作らず、
 // 各 Module の面を模した静的なコンポーネントで差し替える（規則7の範囲——
 // プロトコルの実装は本実装の仕事）。
-import { CheckCircle2, CircleDashed, Sparkles, XCircle } from "lucide-react";
+import { CheckCircle2, CircleDashed, File, Folder, Sparkles, XCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
@@ -113,6 +113,52 @@ function TestResultView() {
   );
 }
 
+// FileSystem Module の launcher（§6.2「人が、AI を介さずに面を開く」）が
+// 開くもの——tool の結果ではなく、人が直接開いた面なので fullscreen（Canvas）
+const FILE_TREE: readonly { kind: "dir" | "file"; depth: number; name: string; meta?: string }[] = [
+  { kind: "dir", depth: 0, name: "lib/mock" },
+  { kind: "file", depth: 1, name: "thread-panel.tsx", meta: "4.1 KB" },
+  { kind: "file", depth: 1, name: "adapter.ts", meta: "6.8 KB" },
+  { kind: "file", depth: 1, name: "settings.ts", meta: "5.2 KB" },
+  { kind: "dir", depth: 0, name: "app/settings" },
+  { kind: "file", depth: 1, name: "page.tsx", meta: "0.2 KB" },
+  { kind: "file", depth: 1, name: "settings-content.tsx", meta: "3.4 KB" },
+];
+
+function FileBrowserView() {
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5">
+        <Folder className="size-4 text-ink-3" />
+        <span className="font-mono text-xs text-ink-2">~/worktrees/banto-v4/mock</span>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-2">
+        {FILE_TREE.map((row) => (
+          <div
+            key={`${row.depth}:${row.name}`}
+            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent"
+            style={{ paddingLeft: 8 + row.depth * 20 }}
+          >
+            {row.kind === "dir" ? (
+              <Folder className="size-3.5 shrink-0 text-ink-3" />
+            ) : (
+              <File className="size-3.5 shrink-0 text-ink-3" />
+            )}
+            <span className={cn("truncate", row.kind === "dir" ? "text-foreground" : "text-ink-2")}>
+              {row.name}
+            </span>
+            {row.meta ? <span className="ml-auto shrink-0 text-xs text-ink-3">{row.meta}</span> : null}
+          </div>
+        ))}
+      </div>
+      <div className="shrink-0 border-t border-border px-4 py-2.5 text-xs text-ink-3">
+        FileSystem Module が描くファイルブラウザ——launcher から人が直接開いた
+        （AI の tool 呼び出し結果ではない、§6.2）
+      </div>
+    </div>
+  );
+}
+
 function UnknownCanvasView({ moduleId, viewId }: { moduleId: string; viewId: string }) {
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 overflow-auto bg-surface-2 p-4">
@@ -128,6 +174,8 @@ export function CanvasContent({ moduleId, viewId }: { moduleId: string; viewId: 
   switch (key) {
     case "banto.repo:diff":
       return <RepoDiffView />;
+    case "banto.fs:browser":
+      return <FileBrowserView />;
     case "banto.worker:report":
       return <WorkerReportView />;
     case "hermes.test:result":

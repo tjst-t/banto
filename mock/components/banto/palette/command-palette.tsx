@@ -77,11 +77,18 @@ export function CommandPalette({
   return (
     <CommandDialog
       open={open}
-      onOpenChange={(next) => (next ? onOpenChange(true) : close())}
+      onOpenChange={(next) => {
+        // Escape・外側クリックで CommandDialog 自身が閉じるときも検索語を
+        // 残さない（次に Ctrl-K で開いたとき、前回の検索が残ると紛らわしい）
+        if (!next) setQuery("");
+        onOpenChange(next);
+      }}
       title="Command Palette"
       description="Project・Thread・受信箱・Module の入口・操作を検索する"
     >
-      <Command shouldFilter={false} className="h-[420px]">
+      {/* 固定高さにしない——中身が短いと下に空白が残る。CommandList 側の
+          max-h-72（既定）＋overflow-y-auto が、多いときのスクロールを持つ */}
+      <Command shouldFilter={false}>
         <CommandInput
           value={query}
           onValueChange={setQuery}
