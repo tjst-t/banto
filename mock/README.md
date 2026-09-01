@@ -74,14 +74,21 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
   接続の上書き、セキュリティ境界の根、この ProjectのVault alias一覧（§2.5「alias方式」——値は出さない）。
   色は元から乱れが無かったため構造・配色とも変更していない（Sheetのまま）
 - **Disable impact dialog**（`DisableImpactDialog`）——役割の実装を無効化する前に、何が断るかを見せてから確定する。階層1・階層2の両方で共有
-- **常設の入口**（item17、決定）：Project rail・モバイルの上部バーに設定アイコンを常設。Command Palette（未実装）だけに頼らない
+- **常設の入口**（item17、決定）：Project rail・モバイルの上部バーに設定アイコンを常設。Command Palette だけに頼らない
 - Vaultバックエンドが複数あるときの「他バックエンドへ移行」ボタンは、人専用の操作であることが分かるUIだけ置いた（実際の移行ロジックは無い）
+
+### Command Palette（§6.3、Ctrl-K）
+- `CommandPalette`（cmdkベースの`components/ui/command.tsx`を使用）。Ctrl-K/Cmd-Kでどこからでも開く（`AppShell`の`keydown`）ほか、Project rail・モバイル上部バーに検索アイコンを常設（Command Paletteの存在を知らないと辿り着けない、を避ける）
+- **自分の索引を持たない**（§6.3の決定どおり）——`lib/mock/palette.ts`が既存のmockデータ（Project・Thread・受信箱・Project単位のModule集合）から都度導出するだけで、パレット専用のデータストアは作っていない
+- 範囲もspecどおり：Project/Thread・受信箱は**banto全体**、Moduleの入口（launcher）・資源は**いまのProjectのModule集合に限る**
+- **深い検索（§6.3「completion APIに乗せる」）はモックでは固定候補への前方一致に簡略化**——`resources/templates/list`+`completion/complete`の実装は本実装の仕事。クエリが空のときは出さない（「数えきれない資源を既定で全部出さない」という性質だけ再現）
+- **検索結果はメニュー項目のようにグループ化**——階層1の検索UIと同じ考え方を流用
+- **実装中に踏んだ罠**：`usePanelStack.open()`を同じイベントハンドラの中で2回続けて呼ぶと、2回目が1回目の変更をまだ知らない（間でReactが再レンダーしていない）ので1回目を踏みつぶす——「操作を実行する」と「パレットを閉じる（overlay を消す）」は必ず1回の`open()`呼び出しにまとめる必要がある（`{ fork: "ui", overlay: null }`のように）。href遷移の場合は新しいURL全体で置き換わるので、遷移だけで閉じたことになり追加の呼び出しは不要——ここを誤ると「操作は実行されるがURLが古い状態に巻き戻る」という分かりにくい壊れ方をする
 
 ## まだ実装していない
 
 §10.0のD群（プロトタイプが要る項目）のうち、以下は未着手：
 
-- **Command Palette**
 - **文脈内訳・使用量表示**（§2.8）
 - **ライブ配信（SSE）**——複数クライアントが同じThreadを同時に見る場面
 - **通知**（item28、§10）——受信箱のバッジ止まり。実際のトースト/プッシュ通知は無い

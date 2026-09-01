@@ -3,9 +3,10 @@
 // prototype の `.shell`（.rail + .rooms）に対応する外枠。
 // ≥md: ProjectRail（58px 縦レール）+ PanelStack
 // <md: MobileTopBar（上部バー）+ PanelStack
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { InboxOverlay } from "@/components/banto/inbox/inbox-overlay";
+import { CommandPalette } from "@/components/banto/palette/command-palette";
 import { usePanelStack } from "./use-panel-stack";
 import { ProjectRail } from "./project-rail";
 import { MobileTopBar } from "./mobile-top-bar";
@@ -22,6 +23,19 @@ export function AppShell({
   // どの Project を見ていても、同じ overlay 状態（searchParams）で開ける
   const stack = usePanelStack(projectId ?? "");
 
+  // Ctrl-K / Cmd-K でどこからでも開く（§6.3「探すときの入口も1つ」）。
+  // ブラウザ既定のショートカット（住所バーへのフォーカス等）を上書きする
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        stack.open({ overlay: "palette" });
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [stack]);
+
   return (
     <SidebarProvider
       defaultOpen={false}
@@ -32,12 +46,26 @@ export function AppShell({
       }
       className="h-svh flex-col overflow-hidden md:flex-row"
     >
-      <ProjectRail activeProjectId={projectId} onOpenInbox={() => stack.open({ overlay: "inbox" })} />
-      <MobileTopBar activeProjectId={projectId} onOpenInbox={() => stack.open({ overlay: "inbox" })} />
+      <ProjectRail
+        activeProjectId={projectId}
+        onOpenInbox={() => stack.open({ overlay: "inbox" })}
+        onOpenPalette={() => stack.open({ overlay: "palette" })}
+      />
+      <MobileTopBar
+        activeProjectId={projectId}
+        onOpenInbox={() => stack.open({ overlay: "inbox" })}
+        onOpenPalette={() => stack.open({ overlay: "palette" })}
+      />
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{children}</div>
       <InboxOverlay
         open={stack.overlay === "inbox"}
         onOpenChange={(open) => (open ? stack.open({ overlay: "inbox" }) : stack.close("overlay"))}
+      />
+      <CommandPalette
+        projectId={projectId}
+        stack={stack}
+        open={stack.overlay === "palette"}
+        onOpenChange={(open) => (open ? stack.open({ overlay: "palette" }) : stack.close("overlay"))}
       />
     </SidebarProvider>
   );

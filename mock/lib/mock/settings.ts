@@ -28,6 +28,7 @@ const implementations: readonly MockModuleImplementation[] = [
     enabled: true,
     breaksIfDisabled: ["ファイルの読み書き tool", "Repo の worktree 操作"],
     hasConfigSurface: true,
+    launchers: [{ id: "browser", label: "ファイルブラウザを開く", viewId: "browser" }],
   },
   {
     id: "banto.shell",
@@ -92,6 +93,7 @@ const implementations: readonly MockModuleImplementation[] = [
     enabled: true,
     breaksIfDisabled: ["clone / worktree / GitHub 身元の割り当て"],
     hasConfigSurface: true,
+    launchers: [{ id: "diff", label: "差分ビューを開く", viewId: "diff" }],
   },
 ];
 
@@ -238,6 +240,23 @@ export function getProjectModuleLinks(projectId: ProjectId): readonly MockModule
     mockProjectModuleLinks.filter((l) => l.projectId === projectId).map((l) => l.implementationId),
   );
   return implementations.filter((i) => ids.has(i.id));
+}
+
+/**
+ * この Project に繋がっている Module の launcher（§6.2「人が、AI を介さずに
+ * 面を開く」）。Command Palette の「Module の入口」はここから出す
+ * （§6.3——パレットは自分の索引を持たず、既にある Project の Module 集合から導出）
+ */
+export function getLaunchersForProject(
+  projectId: ProjectId,
+): readonly { implementationId: string; implementationName: string; id: string; label: string; viewId: string }[] {
+  return getProjectModuleLinks(projectId).flatMap((impl) =>
+    (impl.launchers ?? []).map((l) => ({
+      implementationId: impl.id,
+      implementationName: impl.name,
+      ...l,
+    })),
+  );
 }
 
 export const mockVaultAliases: readonly MockVaultAlias[] = [

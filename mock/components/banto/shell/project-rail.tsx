@@ -5,7 +5,7 @@
 // （Sidebar は isMobile のとき自動で Sheet オーバーレイになるが、
 // banto のモバイル意匠はそれではなく MobileTopBar なので、ここで明示的に避ける）。
 import Link from "next/link";
-import { Bell, GitFork, Settings } from "lucide-react";
+import { Bell, GitFork, Search, Settings } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -35,10 +35,12 @@ const judgmentCount = mockInboxItems.filter((item) => item.kind === "judgment").
 export function ProjectRail({
   activeProjectId,
   onOpenInbox,
+  onOpenPalette,
 }: {
   /** null＝いま instance 設定（/settings）を見ている */
   activeProjectId: string | null;
   onOpenInbox: () => void;
+  onOpenPalette: () => void;
 }) {
   const isMobile = useIsMobile();
   if (isMobile) return null;
@@ -63,6 +65,19 @@ export function ProjectRail({
             </button>
           </TooltipTrigger>
           <TooltipContent side="right">受信箱</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={onOpenPalette}
+              className="flex size-8 items-center justify-center rounded-md text-ink-3 hover:bg-accent hover:text-foreground"
+              aria-label="検索（Command Palette）"
+            >
+              <Search className="size-4" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">検索（⌘K / Ctrl-K）</TooltipContent>
         </Tooltip>
       </SidebarHeader>
 

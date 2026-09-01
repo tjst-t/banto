@@ -185,6 +185,12 @@ export interface MockModuleImplementation {
    * 無効化されている実装は並べない（決定・2026-09-01）
    */
   hasConfigSurface?: boolean;
+  /**
+   * launcher——人が AI を介さずに直接開ける入口（§6.2）。設定面
+   * （`hasConfigSurface`）とは別物——「繋ぐか繋がないか」ではなく
+   * 「繋いだ後、人が用事を済ませに直接開ける面」。開くと fullscreen（Canvas）
+   */
+  launchers?: readonly { id: string; label: string; viewId: string }[];
 }
 
 export interface MockRole {
