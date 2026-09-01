@@ -14,12 +14,13 @@ export function AppShell({
   projectId,
   children,
 }: {
-  projectId: string;
+  /** null＝Project の外（instance 設定 `/settings` 等）。ProjectRail のアクティブ表示だけに使う */
+  projectId: string | null;
   children: ReactNode;
 }) {
   // 受信箱は Project 単位の MCP 接続の外側にある入れ物（§2.4.1）——
   // どの Project を見ていても、同じ overlay 状態（searchParams）で開ける
-  const stack = usePanelStack(projectId);
+  const stack = usePanelStack(projectId ?? "");
 
   return (
     <SidebarProvider

@@ -1,11 +1,12 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { ArrowLeft, GitFork, Maximize2, Minimize2, X } from "lucide-react";
+import { ArrowLeft, GitFork, Maximize2, Minimize2, Settings, X } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { CanvasContent } from "@/components/banto/canvas/canvas-content";
 import { PanelStack } from "@/components/banto/shell/panel-stack";
 import { usePanelStack } from "@/components/banto/shell/use-panel-stack";
+import { ProjectSettingsOverlay } from "@/components/banto/settings/project-settings-overlay";
 import { ThreadPanel } from "@/components/banto/thread/thread-panel";
 import { getProject } from "@/lib/mock/projects";
 import { getThread } from "@/lib/mock/threads";
@@ -101,6 +102,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
   const isMobile = useIsMobile();
 
   return (
+    <>
     <PanelStack
       projectId={projectId}
       renderBase={() => (
@@ -114,6 +116,11 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             >
               Canvas を開く
             </HeaderButton>
+            <IconHeaderButton
+              icon={Settings}
+              label="Project 設定"
+              onClick={() => stack.open({ overlay: "settings-project" })}
+            />
           </PanelHeader>
           <div className="min-h-0 flex-1">
             <ThreadPanel
@@ -162,5 +169,11 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
         </div>
       )}
     />
+    <ProjectSettingsOverlay
+      projectId={projectId}
+      open={stack.overlay === "settings-project"}
+      onOpenChange={(open) => (open ? stack.open({ overlay: "settings-project" }) : stack.close("overlay"))}
+    />
+    </>
   );
 }

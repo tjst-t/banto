@@ -5,7 +5,7 @@
 // （Sidebar は isMobile のとき自動で Sheet オーバーレイになるが、
 // banto のモバイル意匠はそれではなく MobileTopBar なので、ここで明示的に避ける）。
 import Link from "next/link";
-import { Bell, GitFork } from "lucide-react";
+import { Bell, GitFork, Settings } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -36,7 +36,8 @@ export function ProjectRail({
   activeProjectId,
   onOpenInbox,
 }: {
-  activeProjectId: string;
+  /** null＝いま instance 設定（/settings）を見ている */
+  activeProjectId: string | null;
   onOpenInbox: () => void;
 }) {
   const isMobile = useIsMobile();
@@ -147,6 +148,26 @@ export function ProjectRail({
       </SidebarContent>
 
       <div className="flex flex-col items-center gap-2 py-3">
+        {/* 常設の入口（§10 item17、決定・2026-09-01）——Command Palette を知らないと
+            設定に辿り着けない状態を避ける。instance 設定（階層1）は Project の
+            外側にあるので、Project 一覧とは分けてここに置く */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Link
+              href="/settings"
+              aria-label="設定"
+              className={cn(
+                "flex size-8 items-center justify-center rounded-md",
+                activeProjectId === null
+                  ? "bg-accent-soft text-accent-ink"
+                  : "text-ink-3 hover:bg-accent hover:text-foreground",
+              )}
+            >
+              <Settings className="size-4" />
+            </Link>
+          </TooltipTrigger>
+          <TooltipContent side="right">設定</TooltipContent>
+        </Tooltip>
         <ThemeToggle />
       </div>
     </Sidebar>

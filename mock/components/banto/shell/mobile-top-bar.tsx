@@ -3,7 +3,7 @@
 // prototype の `@media (max-width:760px)` で `.rail` が上部バーになる挙動に対応。
 // <md でのみ表示する（≥md では ProjectRail が縦レールとして出る）。
 import Link from "next/link";
-import { Bell } from "lucide-react";
+import { Bell, Settings } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { mockInboxItems } from "@/lib/mock/inbox";
 import { mockProjects } from "@/lib/mock/projects";
@@ -16,7 +16,8 @@ export function MobileTopBar({
   activeProjectId,
   onOpenInbox,
 }: {
-  activeProjectId: string;
+  /** null＝いま instance 設定（/settings）を見ている */
+  activeProjectId: string | null;
   onOpenInbox: () => void;
 }) {
   const isMobile = useIsMobile();
@@ -56,6 +57,16 @@ export function MobileTopBar({
         })}
       </nav>
 
+      <Link
+        href="/settings"
+        aria-label="設定"
+        className={cn(
+          "flex size-9 items-center justify-center rounded-md",
+          activeProjectId === null ? "bg-accent-soft text-accent-ink" : "text-ink-3",
+        )}
+      >
+        <Settings className="size-4" />
+      </Link>
       <ThemeToggle />
     </header>
   );

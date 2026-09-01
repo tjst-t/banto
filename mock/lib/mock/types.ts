@@ -162,3 +162,83 @@ export interface MockInboxReviewThread {
 export type MockInboxReview = MockInboxReviewModule | MockInboxReviewThread;
 
 export type MockInboxItem = MockInboxJudgment | MockInboxReview;
+
+// 設定（§2.10・§6.1）。軸1「所有者」で3種——core（instance）／Project／Module。
+// Module 自身が持つ値は banto が保存しないので、ここには置かない（§6.2）。
+
+export type RoleId = string;
+
+/** 役割を満たす1つの実装。「役割→{名前:呼び出し口}の辞書」（§2.5）の1エントリ */
+export interface MockModuleImplementation {
+  id: string;
+  roleId: RoleId;
+  name: string;
+  isolation: "in-process" | "subprocess";
+  /** banto が同梱するデフォルト実装（例：Vault の組み込みローカルバックエンド） */
+  builtin?: boolean;
+  enabled: boolean;
+  /** 無効化すると何が断るか（Disable impact dialog に出す、§6.1） */
+  breaksIfDisabled: readonly string[];
+  /**
+   * `ui://<id>/config` を持つか（§6.2）。持つ実装だけが、階層1の左メニュー
+   * 下段（iOS の「設定アプリ下部のアプリ一覧」と同じ形）に並ぶ。
+   * 無効化されている実装は並べない（決定・2026-09-01）
+   */
+  hasConfigSurface?: boolean;
+}
+
+export interface MockRole {
+  id: RoleId;
+  name: string;
+  description: string;
+  implementations: readonly MockModuleImplementation[];
+}
+
+/**
+ * Vault の名前付き参照（§2.5「alias 方式」）。**Project 単位**で持つ
+ * （仕様どおり）。値は型に含めない——banto は値を持たない
+ */
+export interface MockVaultAlias {
+  id: string;
+  projectId: ProjectId;
+  name: string;
+  implementationId: string;
+  /** 接続内部でのパス。実装依存の名前空間（banto は統一しない） */
+  path: string;
+  usedBy: readonly string[];
+}
+
+export interface MockCredential {
+  id: string;
+  label: string;
+  kind: "subscription" | "api-key";
+  usagePercent?: number;
+  resetsAt?: string;
+}
+
+/** 層2 runtime config の instance 既定値（§2.6） */
+export interface MockRuntimeDefaults {
+  model: string;
+  effort: "low" | "medium" | "high";
+  memoryLimitChars: number;
+}
+
+/**
+ * Project による runtime config の上書き（§2.2「設定のカスケード」）。
+ * フィールドが無い（undefined）＝ instance 既定を継承。
+ */
+export interface MockProjectOverrides {
+  projectId: ProjectId;
+  model?: string;
+  effort?: "low" | "medium" | "high";
+  memoryLimitChars?: number;
+  credentialId?: string;
+  vaultImplementationId?: string;
+  securityRoot: string;
+}
+
+/** この Project にどの実装が繋がっているか（§6.1 階層2） */
+export interface MockProjectModuleLink {
+  projectId: ProjectId;
+  implementationId: string;
+}
