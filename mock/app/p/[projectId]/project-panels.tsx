@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import { ArrowLeft, GitFork, Maximize2, Minimize2, X } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { CanvasContent } from "@/components/banto/canvas/canvas-content";
 import { PanelStack } from "@/components/banto/shell/panel-stack";
 import { usePanelStack } from "@/components/banto/shell/use-panel-stack";
 import { ThreadPanel } from "@/components/banto/thread/thread-panel";
@@ -92,15 +93,6 @@ function HeaderButton({
   );
 }
 
-function PlaceholderPanel({ label, tint }: { label: string; tint: string }) {
-  return (
-    <div className={`flex h-full min-h-0 flex-col gap-3 overflow-auto p-4 ${tint}`}>
-      <p className="text-sm font-medium text-foreground">{label}</p>
-      <p className="text-xs text-ink-3">Step 5 でここに Module の面が入る</p>
-    </div>
-  );
-}
-
 export function ProjectPanels({ projectId }: { projectId: string }) {
   const stack = usePanelStack(projectId);
   const project = getProject(projectId);
@@ -124,7 +116,10 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             </HeaderButton>
           </PanelHeader>
           <div className="min-h-0 flex-1">
-            <ThreadPanel threadId={project.baseThreadId} />
+            <ThreadPanel
+              threadId={project.baseThreadId}
+              onOpenCanvas={(moduleId, viewId) => stack.open({ canvas: { moduleId, viewId } })}
+            />
           </div>
         </div>
       )}
@@ -162,7 +157,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             }
           />
           <div className="min-h-0 flex-1">
-            <PlaceholderPanel label={`${moduleId}:${viewId}`} tint="bg-surface-2" />
+            <CanvasContent moduleId={moduleId} viewId={viewId} />
           </div>
         </div>
       )}

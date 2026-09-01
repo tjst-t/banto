@@ -64,6 +64,7 @@ import {
   type ComponentType,
   type FC,
   type PropsWithChildren,
+  type ReactNode,
 } from "react";
 
 export type ThreadGroupPart = MessagePrimitive.GroupedParts.GroupPart;
@@ -94,6 +95,8 @@ export type ThreadProps = {
   placeholder?: string | undefined;
   /** composer の左下に出す、応答するモデルの表示名 */
   modelLabel?: string | undefined;
+  /** composer の直上に出す任意の内容（banto: モックのデモヒントに使う） */
+  composerHint?: ReactNode;
 };
 
 const EMPTY_COMPONENTS: ThreadComponents = {};
@@ -140,6 +143,7 @@ export const Thread: FC<ThreadProps> = ({
   autoFocus = true,
   placeholder,
   modelLabel,
+  composerHint,
 }) => {
   const isEmpty = useAuiState(isNewChatView);
 
@@ -150,6 +154,7 @@ export const Thread: FC<ThreadProps> = ({
         autoFocus={autoFocus}
         placeholder={placeholder}
         modelLabel={modelLabel}
+        composerHint={composerHint}
       />
     </ThreadComponentsContext.Provider>
   );
@@ -160,7 +165,8 @@ const ThreadRoot: FC<{
   autoFocus: boolean;
   placeholder?: string | undefined;
   modelLabel?: string | undefined;
-}> = ({ isEmpty, autoFocus, placeholder, modelLabel }) => {
+  composerHint?: ReactNode;
+}> = ({ isEmpty, autoFocus, placeholder, modelLabel, composerHint }) => {
   const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
 
   return (
@@ -209,6 +215,7 @@ const ThreadRoot: FC<{
           >
             <ThreadScrollToBottom />
             <ThreadFollowupSuggestions />
+            {composerHint}
             <Composer autoFocus={autoFocus} placeholder={placeholder} modelLabel={modelLabel} />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />

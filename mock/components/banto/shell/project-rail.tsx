@@ -22,12 +22,23 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { mockInboxItems } from "@/lib/mock/inbox";
 import { mockProjects } from "@/lib/mock/projects";
 import { getThreadsForProject } from "@/lib/mock/threads";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "./theme-toggle";
 
-export function ProjectRail({ activeProjectId }: { activeProjectId: string }) {
+// 判断待ちだけをバッジの件数にする——溜めてよくない（止まっている）方が
+// 急ぎだから（§2.4）。レビュー待ちは溜めてよいので件数に含めない
+const judgmentCount = mockInboxItems.filter((item) => item.kind === "judgment").length;
+
+export function ProjectRail({
+  activeProjectId,
+  onOpenInbox,
+}: {
+  activeProjectId: string;
+  onOpenInbox: () => void;
+}) {
   const isMobile = useIsMobile();
   if (isMobile) return null;
 
@@ -38,14 +49,16 @@ export function ProjectRail({ activeProjectId }: { activeProjectId: string }) {
           <TooltipTrigger asChild>
             <button
               type="button"
+              onClick={onOpenInbox}
               className="relative flex size-8 items-center justify-center rounded-md text-ink-3 hover:bg-accent hover:text-foreground"
               aria-label="受信箱"
             >
               <Bell className="size-4" />
-              {/* 判断待ち＋レビュー待ちの件数。Step 2 以降でストアから導出する */}
-              <span className="absolute -top-1 -right-1 flex size-4 items-center justify-center rounded-full bg-turn text-xs leading-none font-semibold text-on-color">
-                3
-              </span>
+              {judgmentCount > 0 ? (
+                <span className="absolute -top-1 -right-1 flex size-4 items-center justify-center rounded-full bg-turn text-xs leading-none font-semibold text-on-color">
+                  {judgmentCount}
+                </span>
+              ) : null}
             </button>
           </TooltipTrigger>
           <TooltipContent side="right">受信箱</TooltipContent>

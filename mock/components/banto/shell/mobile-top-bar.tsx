@@ -5,11 +5,20 @@
 import Link from "next/link";
 import { Bell } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { mockInboxItems } from "@/lib/mock/inbox";
 import { mockProjects } from "@/lib/mock/projects";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "./theme-toggle";
 
-export function MobileTopBar({ activeProjectId }: { activeProjectId: string }) {
+const judgmentCount = mockInboxItems.filter((item) => item.kind === "judgment").length;
+
+export function MobileTopBar({
+  activeProjectId,
+  onOpenInbox,
+}: {
+  activeProjectId: string;
+  onOpenInbox: () => void;
+}) {
   const isMobile = useIsMobile();
   if (!isMobile) return null;
 
@@ -17,13 +26,16 @@ export function MobileTopBar({ activeProjectId }: { activeProjectId: string }) {
     <header className="flex h-[50px] shrink-0 items-center gap-1 border-b border-border bg-surface-2 px-2">
       <button
         type="button"
+        onClick={onOpenInbox}
         className="relative flex size-9 items-center justify-center rounded-md text-ink-3"
         aria-label="受信箱"
       >
         <Bell className="size-4" />
-        <span className="absolute top-0.5 right-0.5 flex size-4 items-center justify-center rounded-full bg-turn text-xs leading-none font-semibold text-on-color">
-          3
-        </span>
+        {judgmentCount > 0 ? (
+          <span className="absolute top-0.5 right-0.5 flex size-4 items-center justify-center rounded-full bg-turn text-xs leading-none font-semibold text-on-color">
+            {judgmentCount}
+          </span>
+        ) : null}
       </button>
 
       <nav className="flex flex-1 items-center gap-1 overflow-x-auto">

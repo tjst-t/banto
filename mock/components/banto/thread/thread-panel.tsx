@@ -9,7 +9,10 @@
 import { useMemo } from "react";
 import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
-import { createMockChatModelAdapter } from "@/lib/mock/adapter";
+import { CanvasAutoOpen } from "@/components/banto/thread/canvas-auto-open";
+import { DemoHints } from "@/components/banto/thread/demo-hints";
+import { HumanAwareToolGroup, HumanToolCard } from "@/components/banto/thread/human-tool-card";
+import { APPROVAL_TOOL_NAME, createMockChatModelAdapter, HUMAN_TOOL_NAME } from "@/lib/mock/adapter";
 import { getProject } from "@/lib/mock/projects";
 import { seedToInitialMessages } from "@/lib/mock/seed";
 import { getThread } from "@/lib/mock/threads";
@@ -17,7 +20,14 @@ import { getThread } from "@/lib/mock/threads";
 // モックなので応答モデルは固定表示（実装では Configuration から読む値になる）
 const MOCK_MODEL_LABEL = "claude-opus-5";
 
-export function ThreadPanel({ threadId }: { threadId: string }) {
+export function ThreadPanel({
+  threadId,
+  onOpenCanvas,
+}: {
+  threadId: string;
+  /** MCP Apps の display mode "fullscreen"——tool 呼び出し自身が要求したら呼ばれる（§6.2） */
+  onOpenCanvas?: (moduleId: string, viewId: string) => void;
+}) {
   const thread = getThread(threadId);
 
   const adapter = useMemo(() => (thread ? createMockChatModelAdapter(thread) : null), [thread]);
@@ -40,7 +50,14 @@ export function ThreadPanel({ threadId }: { threadId: string }) {
       : `${getProject(thread.projectId).name} の Base Thread に送る`;
 
   return (
-    <ThreadRuntime adapter={adapter} initialMessages={initialMessages} placeholder={placeholder} />
+    <ThreadRuntime
+      adapter={adapter}
+      initialMessages={initialMessages}
+      placeholder={placeholder}
+      // デモの台本（threads.ts）は banto Project の Base Thread にしか無い
+      showDemoHints={threadId === "banto-base"}
+      onOpenCanvas={onOpenCanvas}
+    />
   );
 }
 
@@ -48,19 +65,29 @@ function ThreadRuntime({
   adapter,
   initialMessages,
   placeholder,
+  showDemoHints,
+  onOpenCanvas,
 }: {
   adapter: ReturnType<typeof createMockChatModelAdapter>;
   initialMessages: ReturnType<typeof seedToInitialMessages>;
   placeholder: string;
+  showDemoHints: boolean;
+  onOpenCanvas?: (moduleId: string, viewId: string) => void;
 }) {
   const runtime = useLocalRuntime(adapter, {
     initialMessages,
-    unstable_humanToolNames: ["banto_ask"],
+    unstable_humanToolNames: [HUMAN_TOOL_NAME, APPROVAL_TOOL_NAME],
   });
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread placeholder={placeholder} modelLabel={MOCK_MODEL_LABEL} />
+      {onOpenCanvas ? <CanvasAutoOpen onOpenCanvas={onOpenCanvas} /> : null}
+      <Thread
+        placeholder={placeholder}
+        modelLabel={MOCK_MODEL_LABEL}
+        components={{ ToolFallback: HumanToolCard, ToolGroup: HumanAwareToolGroup }}
+        composerHint={showDemoHints ? <DemoHints /> : undefined}
+      />
     </AssistantRuntimeProvider>
   );
 }
