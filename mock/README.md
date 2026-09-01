@@ -153,6 +153,15 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
   （実測で確認——`SettingsShell`の左メニューと`RoleList`のrole見出しは同じ
   ページに同居するが、矢印キーの移動先はそれぞれ自分のリスト内に閉じる）
 
+### Dialog / Sheet の使い分け（決定・2026-09-02、§6.6に記録）
+- レビューで「受信箱・Project設定もDialogに寄せられるか」と聞かれ、技術的には可能
+  （shadcnの`Sheet`は`Dialog`と同じRadixプリミティブが土台）と答えた上で、
+  「一度きりの操作か、読みながら長く滞在するか」という基準を明文化した
+  （`docs/specs/v4-architecture.md` §6.6）
+- 既存の実装はこの基準にすでに沿っていた（見直しは不要だった）：
+  Dialog＝Command Palette・履歴（Archive）・新規Project作成・確認ダイアログ、
+  Sheet＝受信箱・Project設定
+
 ## まだ実装していない
 
 §10.0のD群（プロトタイプが要る項目）のうち、以下は未着手：
