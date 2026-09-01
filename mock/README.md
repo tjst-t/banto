@@ -70,12 +70,42 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
   `anchor-*` のDOM idを振り、検索索引の`anchorId`と対応させた。役割を手動で畳んでいる場合、
   その中の実装への直接ジャンプは効かない（初期状態は全展開なので通常は問題にならない）——既知の制限
 - **階層2（Project、`?overlay=settings-project`）**：繋がっているModule一覧、runtime configのカスケード
-  上書き（`CascadeRow`——「instance既定を継承」⇄「この Projectで上書き」）、資格情報の割り当て、Vault
-  接続の上書き、セキュリティ境界の根、この ProjectのVault alias一覧（§2.5「alias方式」——値は出さない）。
-  色は元から乱れが無かったため構造・配色とも変更していない（Sheetのまま）
+  上書き（`CascadeRow`——「instance既定を継承」⇄「この Projectで上書き」）、資格情報の割り当て、
+  セキュリティ境界の根。
 - **Disable impact dialog**（`DisableImpactDialog`）——役割の実装を無効化する前に、何が断るかを見せてから確定する。階層1・階層2の両方で共有
 - **常設の入口**（item17、決定）：Project rail・モバイルの上部バーに設定アイコンを常設。Command Palette だけに頼らない
 - Vaultバックエンドが複数あるときの「他バックエンドへ移行」ボタンは、人専用の操作であることが分かるUIだけ置いた（実際の移行ロジックは無い）
+
+### 階層2をSheetから`SettingsShell`共有レイアウトへ（2026-09-02）
+- **発端**：`docs/notes/2026-09-02-role-dependency-resolution.md`の議論で、
+  「role に複数実装があるとき、どれを使うか」の選択は banto core が持たず、
+  依存している Module 自身の設定面（`ui://<id>/config`）に委ねる、と決定
+  （§2.5「role 依存の解決は Module の仕事」）。Module の設定面が Project ごとに
+  中身を変えうる以上、Project 設定（階層2）でも Module 自身の設定面を埋め込む
+  必要が出た——レビュー指摘のとおり、右から出てくる細い`Sheet`では収まる保証が
+  無い
+- **`SettingsShell`を汎用化**：instance専用に決め打ちしていた`CATEGORIES`・
+  `getConfigurableImplementations()`の直接参照をやめ、`categories`・
+  `moduleImplementations`・`defaultSection`を呼び出し側から渡す形に変更。
+  階層1（`settings-content.tsx`）と階層2（新設`project-settings-content.tsx`）が
+  同じ骨格を共有する——「role→実装の一覧＋Moduleの設定面」という形はinstance/
+  Projectどちらの粒度でも同じ、という気づきをそのままコンポーネントに落とした
+- **`ProjectSettingsOverlay`を`Sheet`から画面いっぱいの`Dialog`へ**：`DialogContent`に
+  `inset-0`相当のclassNameを当てて全画面化（`h-dvh`——`h-screen`はiOS Safariの
+  100vh問題でcheck-tokens.mjsに機械的に弾かれる、既知のルール）。§6.6の
+  Dialog/Sheet基準（one-shotか、背景を参照しながら作業するか）のどちらにも
+  綺麗には当てはまらないが、instance設定画面と同じ「独立した画面」という
+  扱いのほうが実態に合うと判断
+- **`ModuleConfigPane`に`projectId`を追加**：§6.2「設定面へのProjectの文脈」の
+  モック実装。渡すと、そのModuleが対応していれば中身を出し分けられる——
+  実例としてVault系実装（`roleId === "vault"`）だけが、Projectのalias一覧
+  （旧・階層2に直書きしていたセクション）を追加で出す。**instance側
+  （`/settings`、projectId無し）で同じModuleを開くと、この節は出ない**——
+  Playwrightで確認：instance側は「この Project の alias」を含まない
+- **Vault接続の上書き（`vaultImplementationId`のCascadeRow）は階層2から削除**——
+  §2.5の決定どおり、Vaultに依存するModule自身の設定面に委ねる。今のmockでは
+  Vault自身の`ModuleConfigPane`にProjectのalias一覧を出す形だけを実装した
+  （「どのVault実装を使うか」をRepo・Shell自身の設定面で選ばせる詳細UIは未着手）
 
 ### Command Palette（§6.3、Ctrl-K）
 - `CommandPalette`（cmdkベースの`components/ui/command.tsx`を使用）。Ctrl-K/Cmd-Kでどこからでも開く（`AppShell`の`keydown`）ほか、Project rail・モバイル上部バーに検索アイコンを常設（Command Paletteの存在を知らないと辿り着けない、を避ける）

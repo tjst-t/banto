@@ -18,14 +18,14 @@
 // すでにそのメニューが開いていても該当箇所までスクロール＋一瞬ハイライトする
 // ——「開いているから押しても何も起きないように見える」を避ける（レビュー指摘）
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Puzzle, Search, SlidersHorizontal, Sparkles } from "lucide-react";
+import { ArrowLeft, Puzzle, Search } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Input } from "@/components/ui/input";
 import { useRovingFocus } from "@/hooks/use-roving-focus";
 import { cn } from "@/lib/utils";
-import { getConfigurableImplementations } from "@/lib/mock/settings";
+import type { MockModuleImplementation } from "@/lib/mock/types";
 
-export type SettingsSection = "roles" | "defaults" | "credentials" | `module:${string}`;
+export type SettingsSection = string;
 
 /** 検索対象の1件。`anchorId` があれば、飛んだ先でその要素までスクロール＋ハイライトする */
 export interface SearchEntry {
@@ -34,27 +34,38 @@ export interface SearchEntry {
   anchorId?: string;
 }
 
-interface NavItem {
+export interface SettingsNavItem {
   section: SettingsSection;
   label: string;
   icon: typeof Puzzle;
 }
 
-const CATEGORIES: readonly NavItem[] = [
-  { section: "roles", label: "役割と Module", icon: Puzzle },
-  { section: "defaults", label: "既定値", icon: SlidersHorizontal },
-  { section: "credentials", label: "資格情報", icon: Sparkles },
-];
-
 const HIGHLIGHT_CLASSES = ["ring-2", "ring-accent", "ring-offset-2", "ring-offset-background"];
 
+/**
+ * 階層1（instance、`/settings`）と階層2（Project、`ProjectSettingsShell`）の
+ * 両方が使う共通の骨格——左メニュー＋右詳細＋上部検索。**カテゴリ・Module一覧は
+ * 呼び出し側が渡す**（決定・2026-09-02）——このShellは「banto全体の設定」に
+ * 固定されたものではなく、「role→実装の一覧＋Moduleの設定面」という同じ形が
+ * instance/Projectどちらの粒度でも成立する、という気づきをそのままコンポーネント
+ * に落としたもの。Project側の「実装ごとの設定面」も、instanceと同じ枠で
+ * 描ける（§6.2「設定面へのProjectの文脈」——渡す実装一覧が変わるだけ）
+ */
 export function SettingsShell({
+  categories,
+  moduleImplementations,
   renderContent,
   extraSearchEntries = [],
+  defaultSection,
 }: {
+  categories: readonly SettingsNavItem[];
+  /** 左メニュー下段にフラットに並ぶ、Module自身の設定面を持つ実装 */
+  moduleImplementations: readonly MockModuleImplementation[];
   renderContent: (section: SettingsSection) => ReactNode;
   /** 右側の中身が持つ設定項目。検索でヒットさせたいものを呼び出し側が渡す */
   extraSearchEntries?: readonly SearchEntry[];
+  /** デスクトップで最初に選んだ状態にするセクション（既定：categories の先頭） */
+  defaultSection?: SettingsSection;
 }) {
   const isMobile = useIsMobile();
   const [section, setSection] = useState<SettingsSection | null>(null);
@@ -66,17 +77,17 @@ export function SettingsShell({
   const anchorNonceRef = useRef(0);
   const { containerRef: navRef, onKeyDown: onNavKeyDown } = useRovingFocus<HTMLDivElement>();
 
-  const moduleItems: readonly NavItem[] = useMemo(
+  const moduleItems: readonly SettingsNavItem[] = useMemo(
     () =>
-      getConfigurableImplementations().map((impl) => ({
+      moduleImplementations.map((impl) => ({
         section: `module:${impl.id}` as SettingsSection,
         label: impl.name,
         icon: Puzzle,
       })),
-    [],
+    [moduleImplementations],
   );
 
-  const allNavItems = useMemo(() => [...CATEGORIES, ...moduleItems], [moduleItems]);
+  const allNavItems = useMemo(() => [...categories, ...moduleItems], [categories, moduleItems]);
 
   function goTo(target: SettingsSection, anchorId?: string) {
     setSection(target);
@@ -113,13 +124,14 @@ export function SettingsShell({
         nav: allNavItems.find((n) => n.section === section),
         items: contentMatches.filter((e) => e.section === section),
       }))
-      .filter((g): g is { nav: NavItem; items: SearchEntry[] } => g.nav !== undefined);
+      .filter((g): g is { nav: SettingsNavItem; items: SearchEntry[] } => g.nav !== undefined);
   }, [isSearching, q, extraSearchEntries, allNavItems]);
 
   // デスクトップは常に何かを選んだ状態にする（未選択の空白ペインを避ける）。
   // モバイルは選ぶまでメニューだけを見せる——2ペインが狭い画面で成立しないので、
   // 「一覧→タップで詳細」の1カラムに畳む（iOS 設定アプリと同じ）
-  const activeSection = section ?? (isMobile ? null : "roles");
+  const fallbackSection = defaultSection ?? categories[0]?.section;
+  const activeSection = section ?? (isMobile ? null : fallbackSection);
 
   const nav = (
     <div className="flex h-full min-h-0 flex-col">
@@ -177,7 +189,7 @@ export function SettingsShell({
         ) : (
           <>
             <div className="flex flex-col gap-0.5">
-              {CATEGORIES.map((c) => (
+              {categories.map((c) => (
                 <NavButton
                   key={c.section}
                   icon={c.icon}
@@ -235,7 +247,7 @@ export function SettingsShell({
   return (
     <div className="flex h-full min-h-0">
       <div className="w-64 shrink-0 border-r border-border">{nav}</div>
-      <div className="min-h-0 flex-1 overflow-auto p-6">{renderContent(activeSection ?? "roles")}</div>
+      <div className="min-h-0 flex-1 overflow-auto p-6">{renderContent(activeSection ?? fallbackSection)}</div>
     </div>
   );
 }

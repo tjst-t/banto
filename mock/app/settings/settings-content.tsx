@@ -1,5 +1,6 @@
 "use client";
 
+import { Puzzle, SlidersHorizontal, Sparkles } from "lucide-react";
 import { CredentialsPanel } from "@/components/banto/settings/credentials-panel";
 import { ModuleConfigPane } from "@/components/banto/settings/module-config-pane";
 import { RoleList } from "@/components/banto/settings/role-list";
@@ -7,6 +8,7 @@ import { RuntimeDefaultsPanel } from "@/components/banto/settings/runtime-defaul
 import {
   SettingsShell,
   type SearchEntry,
+  type SettingsNavItem,
   type SettingsSection,
 } from "@/components/banto/settings/settings-shell";
 import {
@@ -16,6 +18,12 @@ import {
   mockModuleConfigFields,
   mockRoles,
 } from "@/lib/mock/settings";
+
+const CATEGORIES: readonly SettingsNavItem[] = [
+  { section: "roles", label: "役割と Module", icon: Puzzle },
+  { section: "defaults", label: "既定値", icon: SlidersHorizontal },
+  { section: "credentials", label: "資格情報", icon: Sparkles },
+];
 
 // 検索が右側の中身も対象にするための索引（レビュー指摘、2026-09-01）。
 // ラベルはここで作らず、実際に描画している値をそのまま引く——真実は
@@ -124,7 +132,12 @@ const SEARCH_ENTRIES = buildSearchEntries();
 export function SettingsContent() {
   return (
     <div className="min-h-0 flex-1">
-      <SettingsShell renderContent={renderSection} extraSearchEntries={SEARCH_ENTRIES} />
+      <SettingsShell
+        categories={CATEGORIES}
+        moduleImplementations={getConfigurableImplementations()}
+        renderContent={renderSection}
+        extraSearchEntries={SEARCH_ENTRIES}
+      />
     </div>
   );
 }

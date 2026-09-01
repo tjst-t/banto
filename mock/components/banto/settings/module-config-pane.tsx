@@ -4,12 +4,28 @@
 // UIではなく、他人のコードが描いている」ことが一目で分かる見た目にする——
 // 設定面は常に sandboxed（in-page を許さない、§6.2）という決定を、モックでも
 // 崩さずに示す。
-import { ShieldCheck } from "lucide-react";
-import { getImplementation, mockModuleConfigFields } from "@/lib/mock/settings";
+//
+// `projectId` は §6.2「設定面への Project の文脈」（決定・2026-09-02）の
+// モック実装——Module プロセスは Project に紐づかないので、banto がこの面を
+// 埋め込むときに「今どの Project のために描いているか」を渡す。対応するかは
+// Module 次第（このモックでは Vault 系の実装だけが Project 単位の alias
+// 一覧を出す形で「対応している」例を示す）。渡さなければ instance 全体の
+// 既定を描くだけの Module と同じに見える——それが「対応しない Module」の姿
+import { Folders, ShieldCheck } from "lucide-react";
+import { getImplementation, getVaultAliasesForProject, mockModuleConfigFields } from "@/lib/mock/settings";
+import { getProject } from "@/lib/mock/projects";
 
-export function ModuleConfigPane({ implementationId }: { implementationId: string }) {
+export function ModuleConfigPane({
+  implementationId,
+  projectId,
+}: {
+  implementationId: string;
+  projectId?: string;
+}) {
   const impl = getImplementation(implementationId);
   const fields = mockModuleConfigFields[implementationId] ?? [];
+  const aliases = projectId ? getVaultAliasesForProject(projectId) : [];
+  const showProjectAliases = impl?.roleId === "vault" && projectId !== undefined;
   if (!impl) return null;
 
   return (
@@ -19,6 +35,16 @@ export function ModuleConfigPane({ implementationId }: { implementationId: strin
           ui://{implementationId}/config
         </code>{" "}
         ——banto の Configuration ではなく、{impl.name} 自身が持つ設定
+        {projectId ? (
+          <>
+            {" "}
+            ·{" "}
+            <span className="inline-flex items-center gap-1 rounded bg-surface-2 px-1.5 py-0.5 text-ink-2">
+              <Folders className="size-3" />
+              Project の文脈：{getProject(projectId).name}
+            </span>
+          </>
+        ) : null}
       </p>
       <div className="rounded-lg border border-dashed border-border bg-surface-2/60 p-4">
         <div className="mb-3 flex items-center gap-1.5 text-xs text-ink-3">
@@ -45,6 +71,37 @@ export function ModuleConfigPane({ implementationId }: { implementationId: strin
             </dl>
           )}
         </div>
+
+        {showProjectAliases ? (
+          <div className="mt-3 rounded-md border border-border bg-card p-3">
+            <p className="mb-2 text-xs text-ink-3">
+              この Project の alias（§2.5「alias 方式」——値は出さない。Project の
+              文脈を受け取って初めて出せる、instance 全体の設定には無い中身）
+            </p>
+            {aliases.length === 0 ? (
+              <p className="text-sm text-ink-3">この Project の alias はまだ無い</p>
+            ) : (
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-border text-left text-ink-3">
+                    <th className="py-1 font-medium">名前</th>
+                    <th className="py-1 font-medium">パス</th>
+                    <th className="py-1 font-medium">使いみち</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {aliases.map((a) => (
+                    <tr key={a.id} className="border-b border-border last:border-b-0">
+                      <td className="py-1.5 pr-2 font-mono text-ink-2">${a.name}</td>
+                      <td className="py-1.5 pr-2 text-ink-3">{a.path}</td>
+                      <td className="py-1.5 text-ink-3">{a.usedBy.join(", ")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        ) : null}
       </div>
     </div>
   );
