@@ -35,6 +35,17 @@
   --banto-warn-soft: #faf0dc;
   --banto-on-color: #ffffff;
 
+  /* 文脈内訳（§2.10 D群）等のカテゴリカルチャート色。dataviz スキルの
+     検証済み既定パレット（references/palette.md）のslot 1〜5をそのまま
+     採用——banto はまだ独自のカテゴリカルテーマを持たないため。
+     validate_palette.js で banto の実サーフェス（#ffffff）に対して
+     確認済み（2026-09-01）。層Bの --chart-1〜5（shadcn既定）から参照する */
+  --banto-chart-1: #2a78d6;
+  --banto-chart-2: #eb6834;
+  --banto-chart-3: #1baf7a;
+  --banto-chart-4: #eda100;
+  --banto-chart-5: #e87ba4;
+
   --banto-sh-1: 0 1px 2px rgba(17, 22, 31, 0.05);
   --banto-sh-2: 0 4px 16px rgba(17, 22, 31, 0.08), 0 1px 3px rgba(17, 22, 31, 0.05);
   --banto-sh-3: 0 16px 48px rgba(17, 22, 31, 0.16), 0 2px 8px rgba(17, 22, 31, 0.08);
@@ -68,6 +79,12 @@
   --banto-warn: #ddae55;
   --banto-warn-soft: rgba(221, 174, 85, 0.14);
   --banto-on-color: #11141a;
+
+  --banto-chart-1: #3987e5;
+  --banto-chart-2: #d95926;
+  --banto-chart-3: #199e70;
+  --banto-chart-4: #c98500;
+  --banto-chart-5: #d55181;
 
   --banto-sh-1: 0 1px 2px rgba(0, 0, 0, 0.3);
   --banto-sh-2: 0 4px 16px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.3);
@@ -213,11 +230,11 @@
   --border: var(--banto-line);
   --input: var(--banto-line);
   --ring: var(--banto-accent);
-  --chart-1: var(--banto-accent);
-  --chart-2: var(--banto-ok);
-  --chart-3: var(--banto-warn);
-  --chart-4: var(--banto-stop);
-  --chart-5: var(--banto-turn);
+  --chart-1: var(--banto-chart-1);
+  --chart-2: var(--banto-chart-2);
+  --chart-3: var(--banto-chart-3);
+  --chart-4: var(--banto-chart-4);
+  --chart-5: var(--banto-chart-5);
   --radius: 0.625rem;
   --sidebar: var(--banto-surface-2);
   --sidebar-foreground: var(--banto-text-2);
@@ -248,11 +265,11 @@
   --border: var(--banto-line);
   --input: var(--banto-line);
   --ring: var(--banto-accent);
-  --chart-1: var(--banto-accent);
-  --chart-2: var(--banto-ok);
-  --chart-3: var(--banto-warn);
-  --chart-4: var(--banto-stop);
-  --chart-5: var(--banto-turn);
+  --chart-1: var(--banto-chart-1);
+  --chart-2: var(--banto-chart-2);
+  --chart-3: var(--banto-chart-3);
+  --chart-4: var(--banto-chart-4);
+  --chart-5: var(--banto-chart-5);
   --sidebar: var(--banto-surface-2);
   --sidebar-foreground: var(--banto-text-2);
   --sidebar-primary: var(--banto-accent);

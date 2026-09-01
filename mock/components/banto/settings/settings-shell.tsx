@@ -186,7 +186,7 @@ export function SettingsShell({
             </div>
             {moduleItems.length > 0 ? (
               <>
-                <p className="mt-3 mb-1 px-2 text-[11px] font-medium tracking-wide text-ink-3 uppercase">
+                <p className="mt-3 mb-1 px-2 text-xs font-medium tracking-wide text-ink-3 uppercase">
                   Module の設定
                 </p>
                 <div className="flex flex-col gap-0.5">

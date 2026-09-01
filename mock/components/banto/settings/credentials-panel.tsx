@@ -33,12 +33,12 @@ export function CredentialsPanel() {
                   style={{ width: `${c.usagePercent}%` }}
                 />
               </div>
-              <Badge variant="outline" className="text-[10px]">
+              <Badge variant="outline" className="text-xs">
                 {c.usagePercent}% · {c.resetsAt}
               </Badge>
             </div>
           ) : (
-            <Badge variant="outline" className="text-[10px]">
+            <Badge variant="outline" className="text-xs">
               総額で計上
             </Badge>
           )}

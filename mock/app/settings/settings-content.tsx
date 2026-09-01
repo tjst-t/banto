@@ -65,7 +65,7 @@ function buildSearchEntries(): readonly SearchEntry[] {
 function SectionHeading({ title, description }: { title: string; description: string }) {
   return (
     <div className="mb-4">
-      <h1 className="text-base font-semibold text-foreground">{title}</h1>
+      <h1 className="text-lg font-semibold text-foreground">{title}</h1>
       <p className="mt-0.5 text-xs text-ink-3">{description}</p>
     </div>
   );

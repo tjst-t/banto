@@ -54,7 +54,7 @@ export function RoleList() {
             <span className="min-w-0 flex-1">
               <span className="flex items-center gap-2">
                 <span className="text-sm font-semibold text-foreground">{role.name}</span>
-                <Badge variant="outline" className="text-[10px]">
+                <Badge variant="outline" className="text-xs">
                   {role.implementations.length} 実装
                 </Badge>
               </span>
@@ -75,11 +75,11 @@ export function RoleList() {
                     <div className="min-w-0">
                       <p className="truncate text-sm text-foreground">{impl.name}</p>
                       <div className="mt-0.5 flex items-center gap-1.5 text-xs text-ink-3">
-                        <Badge variant="outline" className="gap-1 text-[10px]">
+                        <Badge variant="outline" className="gap-1 text-xs">
                           {impl.isolation}
                         </Badge>
                         {impl.builtin ? (
-                          <Badge variant="outline" className="gap-1 text-[10px]">
+                          <Badge variant="outline" className="gap-1 text-xs">
                             <Box className="size-3" />
                             組み込み
                           </Badge>

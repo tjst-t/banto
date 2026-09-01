@@ -85,11 +85,19 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
 - **検索結果はメニュー項目のようにグループ化**——階層1の検索UIと同じ考え方を流用
 - **実装中に踏んだ罠**：`usePanelStack.open()`を同じイベントハンドラの中で2回続けて呼ぶと、2回目が1回目の変更をまだ知らない（間でReactが再レンダーしていない）ので1回目を踏みつぶす——「操作を実行する」と「パレットを閉じる（overlay を消す）」は必ず1回の`open()`呼び出しにまとめる必要がある（`{ fork: "ui", overlay: null }`のように）。href遷移の場合は新しいURL全体で置き換わるので、遷移だけで閉じたことになり追加の呼び出しは不要——ここを誤ると「操作は実行されるがURLが古い状態に巻き戻る」という分かりにくい壊れ方をする
 
+### 文脈内訳・使用量表示（§10 item9、実測§8）
+- `ContextUsageMeter`——Base/Fork Thread ヘッダーにコンパクトなメーター（使用率%）を常設、クリックで内訳を開く。dataviz スキルの手順（form→color→validate→marks→interaction）に従って作った：単一比率は**meter**、part-to-wholeは**横向きstacked bar**
+- カテゴリ色は dataviz スキルの検証済み既定パレット（`references/palette.md`）のslot 1〜5を採用——banto はまだ独自のカテゴリカルテーマを持たない。`validate_palette.js`でbantoの実サーフェス（light `#ffffff`/dark `#16191f`）に対して確認済み（light modeは3色がcontrast 3:1未満のWARN——legend/tableのrelief必須という判定どおり、凡例に常時トークン数を出して満たしている）
+- **Autocompact buffer・Free spaceは中立色**（surface-2/3）——「中身」ではないので categorical色を使わない。カテゴリカル色は実質5系列に絞られ、7系列版よりCVD安全性に余裕が出た
+- Skill は名前+出所、MCP tool はサーバ、Memory はファイルごとに内訳をドリルダウンできる（§5.7の要求どおり）
+- `deferred`（窓の外にあるtool定義）は明確に別枠——windowTokensの合計に含めない
+- **実装中に見つけた既存の不具合**：shadcnスカフォールドが最初から`--chart-1`〜`--chart-5`という**このためにある**CSS変数を用意していたが、`--banto-accent`/`--banto-ok`/`--banto-warn`/`--banto-stop`/`--banto-turn`のエイリアスのまま放置されていた。最初『層A』に別名で新トークンを足したが、後続の`@theme inline`ブロックの既存マッピング（`--color-chart-N: var(--chart-N)`）に踏みつぶされて、系列色が実質「accent/ok/warn/stop/turn」になっていた（Playwrightで実際の`background-color`を読むまで気づかなかった——スクリーンショットの見た目だけでは判別できなかった）。**既存の`--chart-N`を検証済みパレットで置き換える**形に直して解決
+- **`npm run lint`（`eslint && check-tokens.mjs`）を通していなかった**——`npx eslint`だけ実行しており、E9（色・字の大きさの段を守る機械検査）を素通りしていた。既存の`text-[10px]`/`text-[11px]`/`text-base`の混入（前回までのセッションで導入）もこの機会に修正——以降は`npm run lint`を使う
+
 ## まだ実装していない
 
 §10.0のD群（プロトタイプが要る項目）のうち、以下は未着手：
 
-- **文脈内訳・使用量表示**（§2.8）
 - **ライブ配信（SSE）**——複数クライアントが同じThreadを同時に見る場面
 - **通知**（item28、§10）——受信箱のバッジ止まり。実際のトースト/プッシュ通知は無い
 

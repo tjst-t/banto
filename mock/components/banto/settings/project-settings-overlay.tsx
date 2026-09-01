@@ -93,7 +93,7 @@ export function ProjectSettingsOverlay({
                           >
                             <span className="flex items-center gap-1.5 text-ink-2">
                               {impl.name}
-                              <Badge variant="outline" className="text-[10px]">
+                              <Badge variant="outline" className="text-xs">
                                 {impl.isolation}
                               </Badge>
                             </span>

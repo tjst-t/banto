@@ -7,6 +7,7 @@ import { CanvasContent } from "@/components/banto/canvas/canvas-content";
 import { PanelStack } from "@/components/banto/shell/panel-stack";
 import { usePanelStack } from "@/components/banto/shell/use-panel-stack";
 import { ProjectSettingsOverlay } from "@/components/banto/settings/project-settings-overlay";
+import { ContextUsageMeter } from "@/components/banto/thread/context-usage-meter";
 import { ThreadPanel } from "@/components/banto/thread/thread-panel";
 import { getProject } from "@/lib/mock/projects";
 import { getThread } from "@/lib/mock/threads";
@@ -108,6 +109,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
       renderBase={() => (
         <div className="flex h-full min-h-0 flex-col">
           <PanelHeader title={`Base Thread — ${project.name}`}>
+            <ContextUsageMeter threadId={project.baseThreadId} />
             <HeaderButton icon={GitFork} onClick={() => stack.open({ fork: "ui" })}>
               Fork を開く
             </HeaderButton>
@@ -139,6 +141,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               onClose={() => stack.close("fork")}
               closeLabel={`${project.name} の Base Thread に戻る`}
               title={`Fork Thread — ${thread?.title ?? threadId}`}
+              trailing={<ContextUsageMeter threadId={threadId} />}
             />
             <div className="min-h-0 flex-1">
               <ThreadPanel threadId={threadId} />
