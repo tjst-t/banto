@@ -22,6 +22,7 @@ import { Input } from "@/components/ui/input";
 import { getClosedProjects, reopenProject } from "@/lib/mock/projects";
 import { getAllThreadsForProject, getClosedForksForProject, getThreadOverview, reopenThread } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
+import { useRovingFocus } from "@/hooks/use-roving-focus";
 import { cn } from "@/lib/utils";
 import type { MockProject, MockThread } from "@/lib/mock/types";
 
@@ -46,8 +47,9 @@ function ArchiveRow({
     <div className="border-b border-border last:border-b-0">
       <button
         type="button"
+        data-roving-item
         onClick={onToggle}
-        className="flex w-full items-start gap-2.5 py-2.5 text-left"
+        className="flex w-full items-start gap-2.5 py-2.5 text-left focus-visible:bg-accent focus-visible:outline-none"
       >
         <ChevronRight
           className={cn("mt-0.5 size-3.5 shrink-0 text-ink-3 transition-transform", expanded && "rotate-90")}
@@ -128,6 +130,7 @@ export function ArchiveDialog({
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const { containerRef, onKeyDown } = useRovingFocus<HTMLDivElement>();
 
   const q = query.trim().toLowerCase();
   const closedForks = projectId
@@ -180,7 +183,11 @@ export function ArchiveDialog({
             />
           </div>
         </div>
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
+        <div
+          ref={containerRef}
+          onKeyDown={onKeyDown}
+          className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3"
+        >
           {isEmpty ? <p className="px-2 py-6 text-center text-xs text-ink-3">見つからない</p> : null}
 
           {closedForks.length > 0 ? (

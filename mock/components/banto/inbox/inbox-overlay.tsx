@@ -16,6 +16,7 @@ import {
 import { getProject } from "@/lib/mock/projects";
 import { mockInboxItems } from "@/lib/mock/inbox";
 import type { MockInboxItem } from "@/lib/mock/types";
+import { useRovingFocus } from "@/hooks/use-roving-focus";
 import { cn } from "@/lib/utils";
 import { ElicitationFormView } from "./elicitation-form";
 
@@ -30,6 +31,7 @@ export function InboxOverlay({
   // 回答した判断待ちは一覧からその場で取り除く——Event Store の射影として、
   // 「解決済み」は状態として表示せず消える（§2.4.1、2026-08-31）
   const [answeredIds, setAnsweredIds] = useState<ReadonlySet<string>>(new Set());
+  const { containerRef, onKeyDown } = useRovingFocus<HTMLDivElement>();
 
   const items = [
     ...mockInboxItems.filter((i) => i.kind === "judgment" && !answeredIds.has(i.id)),
@@ -42,7 +44,7 @@ export function InboxOverlay({
         <SheetHeader className="border-b border-border">
           <SheetTitle>受信箱</SheetTitle>
         </SheetHeader>
-        <div className="flex min-h-0 flex-1 flex-col overflow-auto p-3">
+        <div ref={containerRef} onKeyDown={onKeyDown} className="flex min-h-0 flex-1 flex-col overflow-auto p-3">
           {items.map((item) => {
             const project = getProject(item.projectId);
             const expanded = expandedId === item.id;
@@ -50,6 +52,7 @@ export function InboxOverlay({
               <div key={item.id} className="border-b border-border last:border-b-0">
                 <button
                   type="button"
+                  data-roving-item
                   onClick={() => setExpandedId(expanded ? null : item.id)}
                   className="flex w-full items-start gap-2.5 py-3 text-left"
                 >

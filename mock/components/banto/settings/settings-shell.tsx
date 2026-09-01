@@ -21,6 +21,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Puzzle, Search, SlidersHorizontal, Sparkles } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Input } from "@/components/ui/input";
+import { useRovingFocus } from "@/hooks/use-roving-focus";
 import { cn } from "@/lib/utils";
 import { getConfigurableImplementations } from "@/lib/mock/settings";
 
@@ -63,6 +64,7 @@ export function SettingsShell({
   // 変化しないので、この nonce が effect の再発火を保証する）
   const [pendingAnchor, setPendingAnchor] = useState<{ id: string; nonce: number } | null>(null);
   const anchorNonceRef = useRef(0);
+  const { containerRef: navRef, onKeyDown: onNavKeyDown } = useRovingFocus<HTMLDivElement>();
 
   const moduleItems: readonly NavItem[] = useMemo(
     () =>
@@ -132,7 +134,7 @@ export function SettingsShell({
           />
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-2">
+      <div ref={navRef} onKeyDown={onNavKeyDown} className="min-h-0 flex-1 overflow-auto p-2">
         {isSearching ? (
           searchGroups.length === 0 ? (
             <p className="px-2 py-4 text-center text-xs text-ink-3">見つからない</p>
@@ -152,6 +154,7 @@ export function SettingsShell({
                         <button
                           key={`${item.section}:${item.label}:${i}`}
                           type="button"
+                          data-roving-item
                           onClick={() => goTo(item.section, item.anchorId)}
                           className={cn(
                             "rounded-md px-2 py-1 text-left text-xs",
@@ -251,6 +254,7 @@ function NavButton({
   return (
     <button
       type="button"
+      data-roving-item
       onClick={onClick}
       className={cn(
         "flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm",

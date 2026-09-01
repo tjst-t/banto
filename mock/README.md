@@ -133,6 +133,26 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
   Fork再オープンは呼び出し側がoverlayのクリアを1回のopen()にまとめ、Project再オープンは
   新しいURL全体への遷移だけで済ませる（`onOpenChange(false)`を呼ばない）
 
+### キーボードナビゲーション
+- まず計測（規則1）：Playwrightで実際にTab順・Escape・矢印キーを測った。Escapeは
+  既に全オーバーレイ（Inbox・Command Palette・Archive・NewProjectDialog・
+  ProjectSettingsOverlay）で機能済み——Radixの既定動作、Escape一発では閉じないように
+  見えたのは検証スクリプトの待ち時間が短すぎただけ（router.pushの往復に実際は1秒近く
+  掛かる場合がある）だった
+- 実際のギャップは**矢印キーでの一覧移動**——Command Paletteはcmdkが内蔵しているが、
+  banto自身で組んだ縦並びのbuttonリスト（Archive・Settings左メニュー・役割一覧・受信箱）は
+  Tabで1つずつしか移動できず、ArrowUp/Downが効かなかった
+- `hooks/use-roving-focus.ts`を新設（roving tabindexパターン、規則12）——リストの
+  コンテナに`ref`+`onKeyDown`、各行に`data-roving-item`を付けるだけで
+  ArrowUp/Down/Home/Endの移動が付く。適用先：`ArchiveDialog`（Fork・Project
+  両セクションを1つの連続したリストとして移動）・`SettingsShell`左メニュー
+  （カテゴリ・Module設定・検索結果）・`RoleList`（role見出し行）・`InboxOverlay`
+  （受信箱の項目）
+- 同じ`data-roving-item`属性を複数の独立したコンテナで使っても、各フックは
+  自分の`containerRef`配下だけを`querySelectorAll`するので混線しない
+  （実測で確認——`SettingsShell`の左メニューと`RoleList`のrole見出しは同じ
+  ページに同居するが、矢印キーの移動先はそれぞれ自分のリスト内に閉じる）
+
 ## まだ実装していない
 
 §10.0のD群（プロトタイプが要る項目）のうち、以下は未着手：

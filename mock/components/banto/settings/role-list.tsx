@@ -8,6 +8,7 @@ import { useState } from "react";
 import { Box, ChevronRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import { useRovingFocus } from "@/hooks/use-roving-focus";
 import { cn } from "@/lib/utils";
 import { mockRoles } from "@/lib/mock/settings";
 import type { MockModuleImplementation } from "@/lib/mock/types";
@@ -19,6 +20,7 @@ export function RoleList() {
     new Map(mockRoles.flatMap((r) => r.implementations.map((i) => [i.id, i.enabled] as const))),
   );
   const [disableTarget, setDisableTarget] = useState<MockModuleImplementation | null>(null);
+  const { containerRef, onKeyDown } = useRovingFocus<HTMLDivElement>();
 
   function toggleExpanded(roleId: string) {
     setExpanded((prev) => {
@@ -37,11 +39,12 @@ export function RoleList() {
   }
 
   return (
-    <div className="flex flex-col gap-3">
+    <div ref={containerRef} onKeyDown={onKeyDown} className="flex flex-col gap-3">
       {mockRoles.map((role) => (
         <div key={role.id} id={`anchor-role-${role.id}`} className="rounded-lg border border-border">
           <button
             type="button"
+            data-roving-item
             onClick={() => toggleExpanded(role.id)}
             className="flex w-full items-center gap-2 px-3 py-2.5 text-left"
           >
