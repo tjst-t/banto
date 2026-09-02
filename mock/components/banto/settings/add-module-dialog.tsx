@@ -180,7 +180,7 @@ function ServerJsonTab({ onDone }: { onDone: () => void }) {
       </div>
 
       {mode === "url" ? (
-        <div className="flex flex-col gap-1.5">
+        <div key="url" className="flex flex-col gap-1.5">
           <Label htmlFor="server-json-url" className="text-xs">
             server.json の URL
           </Label>
@@ -193,7 +193,7 @@ function ServerJsonTab({ onDone }: { onDone: () => void }) {
           />
         </div>
       ) : (
-        <div className="flex flex-col gap-1.5">
+        <div key="upload" className="flex flex-col gap-1.5">
           <Label htmlFor="server-json-file" className="text-xs">
             server.json ファイル
           </Label>
@@ -246,21 +246,43 @@ function ServerJsonTab({ onDone }: { onDone: () => void }) {
   );
 }
 
-const MCP_SERVERS_PLACEHOLDER = `{
+// role の宣言は _meta["dev.banto/module"] に乗る（§5.1、決定・2026-09-02）——
+// 別立ての role ドロップダウンを持たず、この1つの JSON がすべての出どころに
+// なる。書式を知らないと書けないので、動く値のまま最初から埋めておく
+// （placeholder ではなく初期値——空欄からこの形を思いつける人はいない）
+const MCP_SERVERS_SAMPLE = `{
   "my-server": {
     "command": "npx",
     "args": ["-y", "my-mcp-package"],
-    "env": { "API_KEY": "$my-alias" }
+    "env": { "API_KEY": "$my-alias" },
+    "_meta": {
+      "dev.banto/module": {
+        "satisfies": ["shell"],
+        "dependsOn": ["vault"]
+      }
+    }
   }
 }`;
 
-function McpServersTab({ onDone }: { onDone: () => void }) {
-  const [json, setJson] = useState("");
-  const [roleId, setRoleId] = useState<string | undefined>(undefined);
+/**
+ * role・依存の宣言も含めた mcpServers エントリの生JSONを読み書きするだけの
+ * フォーム。Module の追加（新規JSON）にも、インストール済み Module の設定変更
+ * （既存JSONの編集、§6.1）にも同じものを使う——banto は「書ける形」を1つに
+ * 絞る（§5.1、mcpServersが唯一の真実）。構造化フィールド編集は作らない。
+ */
+export function McpServersEditor({
+  initialJson,
+  submitLabel,
+  onSubmit,
+}: {
+  initialJson: string;
+  submitLabel: string;
+  onSubmit: (json: string, roleId: string, serverName: string) => void;
+}) {
+  const [json, setJson] = useState(initialJson);
   const [error, setError] = useState<string | null>(null);
-  const roles = getRoles();
 
-  function handleImport() {
+  function handleSubmit() {
     let parsed: unknown;
     try {
       parsed = JSON.parse(json);
@@ -273,28 +295,24 @@ function McpServersTab({ onDone }: { onDone: () => void }) {
       return;
     }
     const entries = Object.entries(parsed as Record<string, unknown>);
-    if (entries.length === 0 || !roleId) {
-      setError("サーバー名が無い、または role が未選択");
+    if (entries.length === 0) {
+      setError("サーバー名が無い");
       return;
     }
-    const [serverName] = entries[0];
+    const [serverName, entry] = entries[0];
+    const meta = (entry as { _meta?: Record<string, unknown> } | undefined)?._meta;
+    const moduleMeta = meta?.["dev.banto/module"] as { satisfies?: readonly string[] } | undefined;
+    const roleId = moduleMeta?.satisfies?.[0];
+    if (!roleId) {
+      setError('_meta["dev.banto/module"].satisfies に role が無い');
+      return;
+    }
     setError(null);
-    createImplementation({
-      id: `mcp-servers:${serverName}:${Date.now()}`,
-      roleId,
-      name: serverName,
-      isolation: "subprocess",
-    });
-    onDone();
+    onSubmit(json, roleId, serverName);
   }
 
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-xs text-ink-3">
-        server.json すら無い場合の最終手段——mcpServers 規約（Claude Desktop・Claude Code・
-        Cursor 等が共通して使う設定形式）のエントリを直接書く。
-      </p>
-
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="mcp-servers-json" className="text-xs">
           mcpServers エントリ
@@ -303,33 +321,43 @@ function McpServersTab({ onDone }: { onDone: () => void }) {
           id="mcp-servers-json"
           value={json}
           onChange={(e) => setJson(e.target.value)}
-          placeholder={MCP_SERVERS_PLACEHOLDER}
-          className="h-32 font-mono text-xs"
+          className="h-48 font-mono text-xs"
         />
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
       </div>
 
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="mcp-servers-role" className="text-xs">
-          この Module が名乗る role
-        </Label>
-        <Select value={roleId} onValueChange={setRoleId}>
-          <SelectTrigger id="mcp-servers-role" className="h-8 w-full">
-            <SelectValue placeholder="role を選ぶ" />
-          </SelectTrigger>
-          <SelectContent>
-            {roles.map((r) => (
-              <SelectItem key={r.id} value={r.id}>
-                {r.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      <Button type="button" size="sm" disabled={!json.trim() || !roleId} onClick={handleImport} className="self-end">
-        取り込む
+      <Button type="button" size="sm" disabled={!json.trim()} onClick={handleSubmit} className="self-end">
+        {submitLabel}
       </Button>
+    </div>
+  );
+}
+
+function McpServersTab({ onDone }: { onDone: () => void }) {
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-xs text-ink-3">
+        server.json すら無い場合の最終手段——mcpServers 規約（Claude Desktop・Claude Code・
+        Cursor 等が共通して使う設定形式）のエントリを直接書く。role の宣言も
+        <code className="mx-1 rounded bg-surface-2 px-1 py-0.5">
+          _meta[&quot;dev.banto/module&quot;]
+        </code>
+        としてこの JSON の中に書く（§5.1）——server.json 由来の発見元と同じ場所を見る。
+      </p>
+      <McpServersEditor
+        initialJson={MCP_SERVERS_SAMPLE}
+        submitLabel="取り込む"
+        onSubmit={(json, roleId, serverName) => {
+          createImplementation({
+            id: `mcp-servers:${serverName}:${Date.now()}`,
+            roleId,
+            name: serverName,
+            isolation: "subprocess",
+            mcpServersJson: json,
+          });
+          onDone();
+        }}
+      />
     </div>
   );
 }

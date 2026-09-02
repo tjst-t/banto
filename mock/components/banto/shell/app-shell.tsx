@@ -3,7 +3,7 @@
 // prototype の `.shell`（.rail + .rooms）に対応する外枠。
 // ≥md: ProjectRail（58px 縦レール）+ PanelStack
 // <md: MobileTopBar（上部バー）+ PanelStack
-import { useEffect, type ReactNode } from "react";
+import { Suspense, useEffect, type ReactNode } from "react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { ArchiveDialog } from "@/components/banto/archive/archive-dialog";
 import { InboxOverlay } from "@/components/banto/inbox/inbox-overlay";
@@ -12,11 +12,27 @@ import { usePanelStack } from "./use-panel-stack";
 import { ProjectRail } from "./project-rail";
 import { MobileTopBar } from "./mobile-top-bar";
 
-export function AppShell({
+// usePanelStack が useSearchParams を使う（searchParams 駆動、§3.1）ので、
+// AppShell 自身の中に Suspense 境界を持つ——呼び出し側（各 layout.tsx）に
+// 「Suspense で包む」を覚えさせない。これが無いと `/settings` のような
+// 静的にプリレンダーされるルートで build が失敗する
+// （"useSearchParams() should be wrapped in a suspense boundary"、実測で踏んだ）
+export function AppShell(props: {
+  /** null＝Project の外（instance 設定 `/settings` 等）。ProjectRail のアクティブ表示だけに使う */
+  projectId: string | null;
+  children: ReactNode;
+}) {
+  return (
+    <Suspense fallback={null}>
+      <AppShellInner {...props} />
+    </Suspense>
+  );
+}
+
+function AppShellInner({
   projectId,
   children,
 }: {
-  /** null＝Project の外（instance 設定 `/settings` 等）。ProjectRail のアクティブ表示だけに使う */
   projectId: string | null;
   children: ReactNode;
 }) {

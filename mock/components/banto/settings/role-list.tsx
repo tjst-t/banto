@@ -5,7 +5,7 @@
 // 役割ごとに、満たす実装・プロセス境界・無ければ何が断るか・Module 自身の
 // 設定を表示する。
 import { useState } from "react";
-import { Box, ChevronRight, Plus, Trash2 } from "lucide-react";
+import { Box, ChevronRight, Pencil, Plus, Trash2 } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,6 +26,7 @@ import { useMockStoreVersion } from "@/lib/mock/store-events";
 import type { MockModuleImplementation } from "@/lib/mock/types";
 import { AddModuleDialog } from "./add-module-dialog";
 import { DisableImpactDialog } from "./disable-impact-dialog";
+import { EditModuleDialog } from "./edit-module-dialog";
 
 export function RoleList() {
   useMockStoreVersion();
@@ -36,6 +37,7 @@ export function RoleList() {
   );
   const [disableTarget, setDisableTarget] = useState<MockModuleImplementation | null>(null);
   const [removeTarget, setRemoveTarget] = useState<MockModuleImplementation | null>(null);
+  const [editTarget, setEditTarget] = useState<MockModuleImplementation | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const { containerRef, onKeyDown } = useRovingFocus<HTMLDivElement>();
 
@@ -134,6 +136,16 @@ export function RoleList() {
                           {!impl.builtin ? (
                             <button
                               type="button"
+                              aria-label={`${impl.name} の設定を変える`}
+                              onClick={() => setEditTarget(impl)}
+                              className="flex size-7 items-center justify-center rounded text-ink-3 hover:bg-accent"
+                            >
+                              <Pencil className="size-3.5" />
+                            </button>
+                          ) : null}
+                          {!impl.builtin ? (
+                            <button
+                              type="button"
                               aria-label={`${impl.name} を削除`}
                               onClick={() => setRemoveTarget(impl)}
                               className="flex size-7 items-center justify-center rounded text-ink-3 hover:bg-destructive/10 hover:text-destructive"
@@ -198,6 +210,10 @@ export function RoleList() {
       </AlertDialog>
 
       <AddModuleDialog open={addOpen} onOpenChange={setAddOpen} />
+      <EditModuleDialog
+        implementation={editTarget}
+        onOpenChange={(open) => !open && setEditTarget(null)}
+      />
     </div>
   );
 }
