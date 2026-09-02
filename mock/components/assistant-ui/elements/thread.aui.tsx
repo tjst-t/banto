@@ -93,8 +93,8 @@ export type ThreadProps = {
   autoFocus?: boolean | undefined;
   /** composer の placeholder。「どこに向けて送るか」を文脈で示す（banto の幹／この枝） */
   placeholder?: string | undefined;
-  /** composer の左下に出す、応答するモデルの表示名 */
-  modelLabel?: string | undefined;
+  /** composer の左下、＋ボタンの右に出す任意の内容（banto: モデル／エフォート選択） */
+  composerActionSlot?: ReactNode;
   /** composer の直上に出す任意の内容（banto: モックのデモヒントに使う） */
   composerHint?: ReactNode;
 };
@@ -142,7 +142,7 @@ export const Thread: FC<ThreadProps> = ({
   components = EMPTY_COMPONENTS,
   autoFocus = true,
   placeholder,
-  modelLabel,
+  composerActionSlot,
   composerHint,
 }) => {
   const isEmpty = useAuiState(isNewChatView);
@@ -153,7 +153,7 @@ export const Thread: FC<ThreadProps> = ({
         isEmpty={isEmpty}
         autoFocus={autoFocus}
         placeholder={placeholder}
-        modelLabel={modelLabel}
+        composerActionSlot={composerActionSlot}
         composerHint={composerHint}
       />
     </ThreadComponentsContext.Provider>
@@ -164,9 +164,9 @@ const ThreadRoot: FC<{
   isEmpty: boolean;
   autoFocus: boolean;
   placeholder?: string | undefined;
-  modelLabel?: string | undefined;
+  composerActionSlot?: ReactNode;
   composerHint?: ReactNode;
-}> = ({ isEmpty, autoFocus, placeholder, modelLabel, composerHint }) => {
+}> = ({ isEmpty, autoFocus, placeholder, composerActionSlot, composerHint }) => {
   const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
 
   return (
@@ -216,7 +216,7 @@ const ThreadRoot: FC<{
             <ThreadScrollToBottom />
             <ThreadFollowupSuggestions />
             {composerHint}
-            <Composer autoFocus={autoFocus} placeholder={placeholder} modelLabel={modelLabel} />
+            <Composer autoFocus={autoFocus} placeholder={placeholder} composerActionSlot={composerActionSlot} />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />
             </AuiIf>
@@ -291,8 +291,8 @@ const ThreadSuggestionItem: FC = () => {
 const Composer: FC<{
   autoFocus: boolean;
   placeholder?: string | undefined;
-  modelLabel?: string | undefined;
-}> = ({ autoFocus, placeholder, modelLabel }) => {
+  composerActionSlot?: ReactNode;
+}> = ({ autoFocus, placeholder, composerActionSlot }) => {
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
       <ComposerPrimitive.AttachmentDropzone asChild>
@@ -309,21 +309,19 @@ const Composer: FC<{
             enterKeyHint="send"
             aria-label="Message input"
           />
-          <ComposerAction modelLabel={modelLabel} />
+          <ComposerAction composerActionSlot={composerActionSlot} />
         </div>
       </ComposerPrimitive.AttachmentDropzone>
     </ComposerPrimitive.Root>
   );
 };
 
-const ComposerAction: FC<{ modelLabel?: string | undefined }> = ({ modelLabel }) => {
+const ComposerAction: FC<{ composerActionSlot?: ReactNode }> = ({ composerActionSlot }) => {
   return (
     <div className="aui-composer-action-wrapper relative flex items-center justify-between">
       <div className="flex items-center gap-1.5">
         <ComposerAddAttachment />
-        {modelLabel ? (
-          <span className="text-ink-3 text-xs">{modelLabel}</span>
-        ) : null}
+        {composerActionSlot}
       </div>
       <div className="flex items-center gap-1.5">
         <AuiIf condition={(s) => s.thread.capabilities.dictation}>

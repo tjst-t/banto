@@ -203,6 +203,15 @@ export interface MockModuleImplementation {
    * 「繋いだ後、人が用事を済ませに直接開ける面」。開くと fullscreen（Canvas）
    */
   launchers?: readonly { id: string; label: string; viewId: string }[];
+  /**
+   * この実装の起動設定——mcpServers エントリ（command/args/env と、role の
+   * 宣言を乗せる `_meta["dev.banto/module"]`）を JSON 文字列のまま持つ
+   * （§5.1）。banto は自分の形式を発明せず、これが唯一の真実——インストール済み
+   * Module の設定を変える操作も、この文字列を編集して置き換えるだけになる。
+   * レジストリ／server.json 経由で取り込んだ実装も、取り込み時に同じ形へ
+   * 変換して持つ（決定・2026-09-02）
+   */
+  mcpServersJson: string;
 }
 
 export interface MockRole {
@@ -234,10 +243,13 @@ export interface MockCredential {
   resetsAt?: string;
 }
 
+/** Anthropic API の effort パラメータ（5段階） */
+export type MockEffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
 /** 層2 runtime config の instance 既定値（§2.6） */
 export interface MockRuntimeDefaults {
   model: string;
-  effort: "low" | "medium" | "high";
+  effort: MockEffortLevel;
   memoryLimitChars: number;
 }
 
@@ -248,7 +260,7 @@ export interface MockRuntimeDefaults {
 export interface MockProjectOverrides {
   projectId: ProjectId;
   model?: string;
-  effort?: "low" | "medium" | "high";
+  effort?: MockEffortLevel;
   memoryLimitChars?: number;
   credentialId?: string;
   vaultImplementationId?: string;

@@ -10,15 +10,14 @@ import { useMemo, type ReactNode } from "react";
 import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { CanvasAutoOpen } from "@/components/banto/thread/canvas-auto-open";
+import { ComposerModelEffortMenu } from "@/components/banto/thread/composer-model-effort-menu";
 import { DemoHints } from "@/components/banto/thread/demo-hints";
 import { HumanAwareToolGroup, HumanToolCard } from "@/components/banto/thread/human-tool-card";
 import { APPROVAL_TOOL_NAME, createMockChatModelAdapter, HUMAN_TOOL_NAME } from "@/lib/mock/adapter";
 import { getProject } from "@/lib/mock/projects";
+import { mockRuntimeDefaults } from "@/lib/mock/settings";
 import { seedToInitialMessages } from "@/lib/mock/seed";
 import { getThread } from "@/lib/mock/threads";
-
-// モックなので応答モデルは固定表示（実装では Configuration から読む値になる）
-const MOCK_MODEL_LABEL = "claude-opus-5";
 
 export interface ThreadMarker {
   id: string;
@@ -124,7 +123,12 @@ function ThreadRuntime({
       {onOpenCanvas ? <CanvasAutoOpen onOpenCanvas={onOpenCanvas} /> : null}
       <Thread
         placeholder={placeholder}
-        modelLabel={MOCK_MODEL_LABEL}
+        composerActionSlot={
+          <ComposerModelEffortMenu
+            defaultModel={mockRuntimeDefaults.model}
+            defaultEffort={mockRuntimeDefaults.effort}
+          />
+        }
         components={{ ToolFallback: HumanToolCard, ToolGroup: HumanAwareToolGroup }}
         composerHint={showDemoHints || markers.length > 0 ? hint : undefined}
       />

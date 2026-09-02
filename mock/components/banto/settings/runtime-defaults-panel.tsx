@@ -12,7 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { mockRuntimeDefaults } from "@/lib/mock/settings";
+import { MOCK_EFFORT_LEVELS, MOCK_MODELS, mockRuntimeDefaults } from "@/lib/mock/settings";
 
 export function RuntimeDefaultsPanel() {
   const [defaults, setDefaults] = useState(mockRuntimeDefaults);
@@ -28,9 +28,11 @@ export function RuntimeDefaultsPanel() {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="claude-opus-5">claude-opus-5</SelectItem>
-            <SelectItem value="claude-sonnet-5">claude-sonnet-5</SelectItem>
-            <SelectItem value="claude-haiku-4-5-20251001">claude-haiku-4-5-20251001</SelectItem>
+            {MOCK_MODELS.map((m) => (
+              <SelectItem key={m} value={m}>
+                {m}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>
@@ -46,9 +48,11 @@ export function RuntimeDefaultsPanel() {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="low">low</SelectItem>
-            <SelectItem value="medium">medium</SelectItem>
-            <SelectItem value="high">high</SelectItem>
+            {MOCK_EFFORT_LEVELS.map((e) => (
+              <SelectItem key={e} value={e}>
+                {e}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>

@@ -1,5 +1,6 @@
 import type {
   MockCredential,
+  MockEffortLevel,
   MockModuleImplementation,
   MockProjectModuleLink,
   MockProjectOverrides,
@@ -20,6 +21,41 @@ export const mockRuntimeDefaults: MockRuntimeDefaults = {
   memoryLimitChars: 20000,
 };
 
+/** Agent SDK の Options.model が受け付ける文字列（選択肢はモック用の代表例） */
+export const MOCK_MODELS: readonly string[] = [
+  "claude-opus-5",
+  "claude-sonnet-5",
+  "claude-haiku-4-5-20251001",
+];
+
+/** Agent SDK の Options.effort が受け付ける5段階（低い順） */
+export const MOCK_EFFORT_LEVELS: readonly MockEffortLevel[] = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
+
+/**
+ * mcpServersJson を組み立てる（§5.1）——role の宣言は `_meta["dev.banto/module"]`
+ * に乗せる、追加した Add Module ダイアログと同じ形。banto 組み込み実装も
+ * 見た目上は普通の mcpServers エントリとして持つ（実際にどう起動するかは
+ * 本実装の話、モックでは形だけ揃える）
+ */
+function sampleMcpServersJson(
+  serverName: string,
+  command: string,
+  args: readonly string[],
+  satisfies: readonly RoleId[],
+): string {
+  return JSON.stringify(
+    { [serverName]: { command, args, _meta: { "dev.banto/module": { satisfies } } } },
+    null,
+    2,
+  );
+}
+
 // item14「instance が新しい実装を知る」（§5.1）で増えるので mutable。
 // projects.ts/threads.ts と同じパターン——`notifyMockStoreChange` で購読側に知らせる
 let implementations: MockModuleImplementation[] = [
@@ -33,6 +69,7 @@ let implementations: MockModuleImplementation[] = [
     breaksIfDisabled: ["ファイルの読み書き tool", "Repo の worktree 操作"],
     hasConfigSurface: true,
     launchers: [{ id: "browser", label: "ファイルブラウザを開く", viewId: "browser" }],
+    mcpServersJson: sampleMcpServersJson("banto-fs", "node", ["./modules/fs/index.js"], ["filesystem"]),
   },
   {
     id: "banto.shell",
@@ -42,6 +79,7 @@ let implementations: MockModuleImplementation[] = [
     builtin: true,
     enabled: true,
     breaksIfDisabled: ["コマンド実行 tool", "alias 経由の秘密情報の注入"],
+    mcpServersJson: sampleMcpServersJson("banto-shell", "node", ["./modules/shell/index.js"], ["shell"]),
   },
   {
     id: "banto.skills",
@@ -51,6 +89,7 @@ let implementations: MockModuleImplementation[] = [
     builtin: true,
     enabled: true,
     breaksIfDisabled: ["Skill の取り込み・配布"],
+    mcpServersJson: sampleMcpServersJson("banto-skills", "node", ["./modules/skills/index.js"], ["skills"]),
   },
   {
     id: "community.skill-hub",
@@ -59,6 +98,7 @@ let implementations: MockModuleImplementation[] = [
     isolation: "subprocess",
     enabled: false,
     breaksIfDisabled: ["Skill Hub 経由で配られている Skill"],
+    mcpServersJson: sampleMcpServersJson("skill-hub", "npx", ["-y", "skill-hub-mcp"], ["skills"]),
   },
   {
     id: "banto.subagent",
@@ -68,6 +108,7 @@ let implementations: MockModuleImplementation[] = [
     builtin: true,
     enabled: true,
     breaksIfDisabled: ["サブエージェントへの依頼"],
+    mcpServersJson: sampleMcpServersJson("banto-subagent", "node", ["./modules/subagent/index.js"], ["subagent"]),
   },
   {
     id: "banto.vault-local",
@@ -78,6 +119,7 @@ let implementations: MockModuleImplementation[] = [
     enabled: true,
     breaksIfDisabled: ["資格情報の登録・切り替え", "alias 経由の秘密情報の注入"],
     hasConfigSurface: true,
+    mcpServersJson: sampleMcpServersJson("banto-vault-local", "node", ["./modules/vault-sops/index.js"], ["vault"]),
   },
   {
     id: "hashicorp.vault",
@@ -87,6 +129,12 @@ let implementations: MockModuleImplementation[] = [
     enabled: true,
     breaksIfDisabled: ["この接続を参照している alias（下記）"],
     hasConfigSurface: true,
+    mcpServersJson: sampleMcpServersJson(
+      "hashicorp-vault",
+      "npx",
+      ["-y", "@hashicorp/vault-mcp"],
+      ["vault"],
+    ),
   },
   {
     id: "banto.repo",
@@ -98,6 +146,7 @@ let implementations: MockModuleImplementation[] = [
     breaksIfDisabled: ["clone / worktree / GitHub 身元の割り当て"],
     hasConfigSurface: true,
     launchers: [{ id: "diff", label: "差分ビューを開く", viewId: "diff" }],
+    mcpServersJson: sampleMcpServersJson("banto-repo", "node", ["./modules/repo/index.js"], ["repo"]),
   },
 ];
 
@@ -161,17 +210,49 @@ export function getRoleForImplementation(implementationId: string): MockRole | u
  * 「instance が知っている」と「この Project が使う」は別の操作（§6.1）
  */
 export function createImplementation(
-  input: Omit<MockModuleImplementation, "enabled" | "breaksIfDisabled"> &
-    Partial<Pick<MockModuleImplementation, "enabled" | "breaksIfDisabled">>,
+  input: Omit<MockModuleImplementation, "enabled" | "breaksIfDisabled" | "mcpServersJson"> &
+    Partial<Pick<MockModuleImplementation, "enabled" | "breaksIfDisabled" | "mcpServersJson">>,
 ): MockModuleImplementation {
   const impl: MockModuleImplementation = {
     enabled: true,
     breaksIfDisabled: [],
+    // レジストリ／server.json 由来（mcpServers の生JSONを人が書いていない経路）
+    // は、この場で mcpServers 形式に変換して持つ——§5.1「mcpServersが唯一の
+    // 真実」を、取り込み元によらず維持する
+    mcpServersJson: sampleMcpServersJson(input.id, "npx", ["-y", input.name], [input.roleId]),
     ...input,
   };
   implementations = [...implementations, impl];
   notifyMockStoreChange();
   return impl;
+}
+
+/**
+ * 取り込み済みの実装の起動設定を書き換える（§6.1「インストール済み Module の
+ * 設定を変える」）。mcpServersJson を直接編集する——banto 独自の構造化編集
+ * フォームは持たない（§5.1、`AddModuleDialog` の mcpServers タブと同じ形）。
+ * JSON から role（`_meta["dev.banto/module"].satisfies`）と表示名（最初の
+ * キー）を再度導出し、`roleId`/`name` も一緒に更新する
+ */
+export function updateImplementationMcpServersJson(id: string, mcpServersJson: string): MockModuleImplementation | null {
+  const idx = implementations.findIndex((i) => i.id === id);
+  if (idx === -1) return null;
+  const parsed = JSON.parse(mcpServersJson) as Record<string, unknown>;
+  const [serverName, entry] = Object.entries(parsed)[0] ?? [];
+  if (!serverName) return null;
+  const meta = (entry as { _meta?: Record<string, unknown> } | undefined)?._meta;
+  const moduleMeta = meta?.["dev.banto/module"] as { satisfies?: readonly string[] } | undefined;
+  const roleId = moduleMeta?.satisfies?.[0];
+  if (!roleId) return null;
+  const updated: MockModuleImplementation = {
+    ...implementations[idx],
+    name: serverName,
+    roleId,
+    mcpServersJson,
+  };
+  implementations = implementations.map((i) => (i.id === id ? updated : i));
+  notifyMockStoreChange();
+  return updated;
 }
 
 /**
@@ -205,7 +286,7 @@ export const mockModuleConfigFields: Readonly<
     { label: "バイナリファイルの扱い", value: "diff を出さない" },
   ],
   "banto.vault-local": [
-    { label: "暗号化方式", value: "age（X25519）" },
+    { label: "暗号化方式", value: "SOPS（age鍵）" },
     { label: "バックアップ先", value: "~/.local/share/banto/vault-backup" },
   ],
   "hashicorp.vault": [
