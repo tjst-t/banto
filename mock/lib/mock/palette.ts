@@ -44,7 +44,15 @@ export interface PaletteGroup {
 // 固定の候補から前方一致で絞り込むだけに簡略化する——**クエリが空のときは
 // 一切出さない**（「数えきれない」ものを既定で全部出さない、という性質だけ再現する）
 const MOCK_FILES: Readonly<Record<string, readonly string[]>> = {
-  banto: ["lib/mock/thread-panel.tsx", "lib/mock/adapter.ts", "app/settings/page.tsx"],
+  banto: [
+    "lib/mock/thread-panel.tsx",
+    "lib/mock/adapter.ts",
+    "app/settings/page.tsx",
+    "docs/README.md",
+    "docs/spec.pdf",
+    "public/index.html",
+    "public/logo.png",
+  ],
   home: ["config/mqtt.yaml", "scripts/backup.sh"],
   hermes: ["docs/notes/2026-08-30-poc.md", "poc/01-item4-event-store-read-model/run.mjs"],
 };
@@ -129,7 +137,9 @@ export function buildPaletteGroups(currentProjectId: string | null, query: strin
           title: path,
           subtitle: "banto.fs の資源（completion 相当）",
           icon: Search,
-          href: `/p/${currentProjectId}?canvas=banto.fs:file&fullscreen=1`,
+          // フォルダツリーは畳んだ状態で開く（file-explorer-view.tsx）——
+          // 開いた後の遷移は fsFile/fsDir をブラウザ履歴に積む形に切り替わる
+          href: `/p/${currentProjectId}?canvas=banto.fs:browser&fsFile=${path}&fsCollapsed=1&fullscreen=1`,
           kind: "resource" as const,
         }));
       if (resourceItems.length > 0) groups.push({ kind: "resource", label: "資源", items: resourceItems });

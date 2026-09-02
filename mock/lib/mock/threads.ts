@@ -68,6 +68,50 @@ const bantoBaseScript: MockThread["script"] = {
       ],
     },
     {
+      // FileSystem Module の readFile（v4-modules.md §2.2）——非テキストも
+      // 含め、MIME で content block を出し分ける設計を実演。launcher
+      // （人が直接開く）と同じプレビューを、tool 呼び出し経由の fullscreen
+      // でも使う
+      match: /readme|プレビュー|画像|pdf/i,
+      steps: [
+        { t: "delay", ms: 300 },
+        {
+          t: "tool",
+          name: "banto_fs_read_file",
+          args: { path: "docs/README.md" },
+          result: { path: "docs/README.md", mimeType: "text/markdown", bytes: 1843 },
+          runMs: 350,
+          fullscreenView: { moduleId: "banto.fs", viewId: "preview:docs/README.md" },
+        },
+        { t: "delay", ms: 200 },
+        {
+          t: "text",
+          text: "README.md を開きました。Markdown はレンダリングとソースを切り替えて見られます——画像や PDF も同じ枠組みでプレビューします。",
+        },
+      ],
+    },
+    {
+      // FileSystem Module の editFile（v4-modules.md §2.2）——結果を Repo と
+      // 同じ材料（before/after）で inline カードに埋め込む
+      match: /ファイルを編集|編集して/i,
+      steps: [
+        { t: "delay", ms: 300 },
+        {
+          t: "tool",
+          name: "banto_fs_edit_file",
+          args: {
+            path: "docs/README.md",
+            edits: [{ find: "1. docs/vision.md", replace: "1. docs/vision.md — 何のためのものか" }],
+          },
+          result: { path: "docs/README.md", additions: 2, deletions: 1 },
+          runMs: 400,
+          inlineView: { moduleId: "banto.fs", viewId: "diff" },
+        },
+        { t: "delay", ms: 200 },
+        { t: "text", text: "docs/README.md を編集しました。変更点をこの場に埋め込んで表示しています。" },
+      ],
+    },
+    {
       // 受信箱のサンプル（inbox.ts の inbox-memory-limit）と同じ場面を、
       // 会話中のライブな Elicitation としても見せる——同じ問いが2箇所に出る
       // 構造（§2.4.1）を、実際の requires-action で確かめる
@@ -112,7 +156,7 @@ const bantoBaseScript: MockThread["script"] = {
         { t: "delay", ms: 400 },
         {
           t: "text",
-          text: "（ダミー応答）Step 2 の会話ビューはまだ台本を再生しているだけです。tool 呼び出しの表示を見るには「worktree を教えて」、判断待ちの表示を見るには「メモリの状況は？」、承認ゲートの表示を見るには「distを削除して」、inline表示を見るには「差分を見せて」のように送ってみてください。",
+          text: "（ダミー応答）Step 2 の会話ビューはまだ台本を再生しているだけです。tool 呼び出しの表示を見るには「worktree を教えて」、判断待ちの表示を見るには「メモリの状況は？」、承認ゲートの表示を見るには「distを削除して」、inline表示を見るには「差分を見せて」、ファイルプレビューを見るには「READMEを見せて」、FileSystem の編集差分を見るには「ファイルを編集して」のように送ってみてください。",
           charMs: 12,
         },
       ],

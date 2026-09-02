@@ -54,7 +54,11 @@ function CommandDialog({
       </DialogHeader>
       <DialogContent
         className={cn(
-          "top-1/3 translate-y-0 overflow-hidden rounded-xl! p-0",
+          // 位置は Dialog の既定（モバイル上部／sm以上は上下マージンが揃う中央）
+          // をそのまま使う——以前は top-1/3 に固定していたが、情報量を増やして
+          // 縦に伸びると上下のマージンが大きく崩れたため、他のダイアログと
+          // 同じ基準に統一した。サイズだけ Command Palette 用に大きくする
+          "max-h-[70vh] w-full max-w-2xl overflow-hidden rounded-xl! p-0",
           className
         )}
         showCloseButton={showCloseButton}
@@ -96,7 +100,7 @@ function CommandList({
     <CommandPrimitive.List
       data-slot="command-list"
       className={cn(
-        "no-scrollbar max-h-72 scroll-py-1 overflow-x-hidden overflow-y-auto outline-none",
+        "no-scrollbar max-h-[55vh] scroll-py-1 overflow-x-hidden overflow-y-auto outline-none",
         className
       )}
       {...props}

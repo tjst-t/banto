@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { ArrowLeft, Clock, GitFork, GitMerge, Maximize2, Minimize2, Settings, X } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { ArrowLeft, Clock, ExternalLink, GitFork, GitMerge, Maximize2, Minimize2, Settings, X } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { CanvasContent } from "@/components/banto/canvas/canvas-content";
 import { PanelStack } from "@/components/banto/shell/panel-stack";
@@ -78,6 +79,7 @@ function IconHeaderButton({
 export function ProjectPanels({ projectId }: { projectId: string }) {
   const stack = usePanelStack(projectId);
   const project = getProject(projectId);
+  const searchParams = useSearchParams();
   // モバイルはすでに MobileTopBar 以外の全画面を使っているので、
   // 全画面トグルは無意味（押しても見た目が変わらない）——desktop だけに出す
   const isMobile = useIsMobile();
@@ -88,6 +90,20 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
       ...prev,
       [threadId]: [...(prev[threadId] ?? []), { id: `${kind}-${(prev[threadId]?.length ?? 0) + 1}`, kind }],
     }));
+  }
+
+  // 「別タブで開く」——banto のクロム（ProjectRail・ヘッダ等）を持たない
+  // /canvas-window へ、その Canvas に要る状態（canvas・fsFile 等）だけを運ぶ。
+  // fork/overlay/fullscreen は banto 側のパネル状態なので運ばない
+  function openCanvasInNewTab() {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("fork");
+    params.delete("overlay");
+    params.delete("fullscreen");
+    window.open(`/canvas-window?${params.toString()}`, "_blank", "noopener,noreferrer");
+    // 別タブへ切り出したら、元の banto 側では畳む——同じものが2箇所に開いた
+    // ままだと紛らわしい
+    stack.close("canvas");
   }
 
   return (
@@ -164,13 +180,21 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             closeLabel="Canvas を閉じる"
             title={`Canvas — ${moduleId}:${viewId}`}
             trailing={
-              isMobile ? undefined : (
-                <IconHeaderButton
-                  icon={stack.canvasFullscreen ? Minimize2 : Maximize2}
-                  label={stack.canvasFullscreen ? "全画面を解除" : "全画面で表示"}
-                  onClick={() => stack.open({ canvasFullscreen: !stack.canvasFullscreen })}
-                />
-              )
+              <div className="flex items-center gap-1.5">
+                {stack.canvasFullscreen ? (
+                  // MCP Apps の fullscreen は「その面だけの独立した画面」という
+                  // 扱い（§6.2）——別タブでも banto のクロム無しでその Canvas
+                  // だけを表示し、元のタブ側は畳む
+                  <IconHeaderButton icon={ExternalLink} label="別タブで開く" onClick={openCanvasInNewTab} />
+                ) : null}
+                {isMobile ? null : (
+                  <IconHeaderButton
+                    icon={stack.canvasFullscreen ? Minimize2 : Maximize2}
+                    label={stack.canvasFullscreen ? "全画面を解除" : "全画面で表示"}
+                    onClick={() => stack.open({ canvasFullscreen: !stack.canvasFullscreen })}
+                  />
+                )}
+              </div>
             }
           />
           <div className="min-h-0 flex-1">

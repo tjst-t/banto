@@ -129,7 +129,7 @@ Phase 0/1 でも Vault を作り始める理由にはならない。
 |---|---|---|
 | **Subagent** | サブエージェントに仕事を頼む | アーキ仕様 §4.1 のとおり**薄い層**——「どの backend で走らせるか選ぶ」だけ。会話を走らせるのは core |
 | **Skill** | Skill を取り込む・作る・配る | アーキ仕様 §5.7。`skills` は**役割**なので、複数の Module が名乗ってよい。これはそのうちの1実装 |
-| **FileSystem** | ファイルを読む・書く | **Project の根の外へ出さない**（§3） |
+| **FileSystem** | ファイルを読む・書く | **Project の根の外へ出さない**（§3）。tool/resource の具体形は §2.2 |
 | **Shell** | コマンドを実行する | **FileSystem と同じ境界だが、強制できる層が違う**（§3）。**Environment とは別実装**（下記） |
 | **Vault** | 鍵・トークンを預かる | **必須に格上げ**（決定・2026-09-01、アーキ仕様 §2.8）——複数資格情報の使い分けが中核機能である以上、無いインストールは成立しない。**複数バックエンド可**（`vault` を役割として、複数の実装が名乗る形、アーキ仕様 §2.5）。**banto はローカルの組み込みバックエンドを同梱**し、追加インストール無しに動く。実行は他バックエンド同様 **core とは別プロセス**（`docs/requirements.md` C8b：鍵を持つものは subprocess）。他バックエンドを足したときの**移行操作は人専用**（AI には露出しない） |
 
@@ -330,6 +330,67 @@ KV v2 の `custom_metadata` が最初からこの用途を持つ、OS キーチ�
 
 **したがって Shell は自分で閉じ込める。** Environment の中でだけ走らせる形は採らない
 ——**必須 Module（Shell）が任意 Module（Environment）に依存しなくなる。**
+
+### 2.2 FileSystem の面（決定・2026-09-02）
+
+**tool の語彙はゼロから作らない**（規則12）。ファイル操作の tool 名・引数の形は
+MCP 公式の filesystem リファレンス実装で既に解かれているので、それに乗る。
+
+| tool（`agent` 可視性） | 内容 |
+|---|---|
+| `readFile({path})` | 読み取り。**返り値の型は MIME で出し分ける**（下記） |
+| `writeFile({path, content})` | 新規作成／全体上書き |
+| `editFile({path, edits})` | 部分編集。結果は Canvas の差分ビュー（下記）と対にする |
+| `listDirectory({path})` | 直下の一覧 |
+| `searchFiles({path, pattern})` | 名前／中身の検索 |
+| `createDirectory({path})` | mkdir -p 相当 |
+| `moveFile({from, to})` | 移動・リネーム |
+| `deleteFile({path})` | 削除 |
+| `getFileInfo({path})` | サイズ・更新時刻・種別 |
+
+**承認ゲートは独自に設計しない。** 「毎回確認すると承認依頼ストームになる」問題
+への対処は既に Agent SDK に委ねると決定済み（アーキ仕様 §6.0、2026-08-31：
+`canUseTool` ＋ `permissionMode`（`'auto'`＝モデル分類器が判定し、人に上げるのは
+本当に必要なものだけ））。`writeFile`/`deleteFile` もこの一般機構にそのまま乗る
+——FileSystem 固有のゲートを別に作ると、二重の確認 UX になる。
+
+**resource は `file:///{path}` テンプレート1本**——数えきれない資源なので
+`resources/list` ではなく `resources/templates/list` ＋ `completion/complete`
+（アーキ仕様 §6.3「深い検索は仕様の completion API に乗せる」）。**これは
+FileSystem 固有の決定ではなく、§6.3 の一般則がそのまま適用されるだけ**——
+資源を持つ Module はすべてこの経路に乗る。加えて、少数の「最近開いた／
+ピン留め」だけを `resources/list`（`annotations.priority`／`lastModified`つき）
+で別枠に出してよい。
+
+**`readFile` はテキスト以外もできる限り対応する。** MCP の tool 結果は
+`text`／`image`／`resource`（embedded、`blob`）の content block を持てる
+（規格が既に用意している型なので新設しない）：
+
+| ファイルの種類 | 返す content block | AI から見えるか |
+|---|---|---|
+| テキスト（コード等） | `text` | 見える |
+| 画像 | `image` | **見える**（モデルはそのまま画像入力として解釈できる） |
+| その他（PDF 等バイナリ） | `resource`（`blob`） | 見えない。Canvas 側でのみ使う |
+
+**Canvas のプレビューは拡張子／MIME→レンダラーの内部対応表を持つ**
+——Markdown はレンダリング＋「ソースを見る」トグル、HTML は sandboxed iframe
+＋ソース、画像は`<img>`、PDF は埋め込みビューア。**これは FileSystem Module
+自身の Canvas 実装の内部詳細**であり、tool/resource の契約には現れない。
+対応形式を増やすときは対応表に1行足すだけでよく、契約が決まっていることの
+恩恵で core・他 Module に影響しない。未対応の拡張子はソース表示のみに
+フォールバックする。
+
+`editFile` の結果は、Repo Module の差分ビューと同じ材料（before/after の
+行単位差分）で inline カードに埋め込む（§6.2「MCP Apps display mode」）。
+launcher（人が AI を介さず直接ファイルを開く、アーキ仕様 §6.2）で開いたときも
+同じプレビューを fullscreen で使う。
+
+**launcher が開くファイルブラウザ（fullscreen）には、人向けのダウンロード／
+アップロードを置く。** これは新しい AI 向け tool を要らない——Vault の
+「backend 自身の `ui://<id>/config` が自分の tool を呼ぶだけ」（§2.1 C節）と
+同じ形で、ブラウザ UI 自身が`readFile`/`writeFile`を内部的に呼ぶ（AI には
+出さない）。複数ファイルをまとめて ZIP でダウンロードする操作も同様——
+ZIP 化は launcher 側（Module の実装）の仕事であって、新しい tool の形は増やさない。
 
 ## 3. 境界の問題——FileSystem と Shell を同じ扱いにしない
 

@@ -6,9 +6,10 @@
 // 決定が目的なので、実際の iframe/postMessage ハンドシェイクは作らず、
 // 各 Module の面を模した静的なコンポーネントで差し替える（規則7の範囲——
 // プロトコルの実装は本実装の仕事）。
-import { CheckCircle2, CircleDashed, File, Folder, Sparkles, XCircle } from "lucide-react";
+import { CheckCircle2, CircleDashed, Sparkles, XCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { FileExplorerView } from "./file-explorer-view";
 import { VaultManageView } from "./vault-manage-view";
 
 const DIFF_LINES: readonly { kind: "context" | "add" | "remove"; text: string }[] = [
@@ -114,46 +115,40 @@ function TestResultView() {
   );
 }
 
-// FileSystem Module の launcher（§6.2「人が、AI を介さずに面を開く」）が
-// 開くもの——tool の結果ではなく、人が直接開いた面なので fullscreen（Canvas）
-const FILE_TREE: readonly { kind: "dir" | "file"; depth: number; name: string; meta?: string }[] = [
-  { kind: "dir", depth: 0, name: "lib/mock" },
-  { kind: "file", depth: 1, name: "thread-panel.tsx", meta: "4.1 KB" },
-  { kind: "file", depth: 1, name: "adapter.ts", meta: "6.8 KB" },
-  { kind: "file", depth: 1, name: "settings.ts", meta: "5.2 KB" },
-  { kind: "dir", depth: 0, name: "app/settings" },
-  { kind: "file", depth: 1, name: "page.tsx", meta: "0.2 KB" },
-  { kind: "file", depth: 1, name: "settings-content.tsx", meta: "3.4 KB" },
+const FS_DIFF_LINES: readonly { kind: "context" | "add" | "remove"; text: string }[] = [
+  { kind: "context", text: "  ## まず読む" },
+  { kind: "context", text: "" },
+  { kind: "remove", text: "- 1. docs/vision.md" },
+  { kind: "add", text: "+ 1. docs/vision.md — 何のためのものか" },
+  { kind: "context", text: "  2. docs/requirements.md — 要件（出所つき）" },
 ];
 
-function FileBrowserView() {
+function FsEditDiffView() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5">
-        <Folder className="size-4 text-ink-3" />
-        <span className="font-mono text-xs text-ink-2">~/worktrees/banto-v4/mock</span>
+        <Badge variant="outline" className="font-mono text-xs">
+          docs/README.md
+        </Badge>
+        <span className="text-xs text-ink-3">+2 -1</span>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-2">
-        {FILE_TREE.map((row) => (
+      <div className="min-h-0 flex-1 overflow-auto p-3 font-mono text-xs leading-relaxed">
+        {FS_DIFF_LINES.map((line, i) => (
           <div
-            key={`${row.depth}:${row.name}`}
-            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent"
-            style={{ paddingLeft: 8 + row.depth * 20 }}
-          >
-            {row.kind === "dir" ? (
-              <Folder className="size-3.5 shrink-0 text-ink-3" />
-            ) : (
-              <File className="size-3.5 shrink-0 text-ink-3" />
+            key={i}
+            className={cn(
+              "whitespace-pre rounded-sm px-2",
+              line.kind === "add" && "bg-ok-soft text-ok",
+              line.kind === "remove" && "bg-stop-soft text-stop",
+              line.kind === "context" && "text-ink-2",
             )}
-            <span className={cn("truncate", row.kind === "dir" ? "text-foreground" : "text-ink-2")}>
-              {row.name}
-            </span>
-            {row.meta ? <span className="ml-auto shrink-0 text-xs text-ink-3">{row.meta}</span> : null}
+          >
+            {line.text}
           </div>
         ))}
       </div>
       <div className="shrink-0 border-t border-border px-4 py-2.5 text-xs text-ink-3">
-        FileSystem Module が描くファイルブラウザ——人が直接開いた
+        FileSystem Module が描く差分——editFile の結果をその場に埋め込む
       </div>
     </div>
   );
@@ -170,12 +165,22 @@ function UnknownCanvasView({ moduleId, viewId }: { moduleId: string; viewId: str
 
 /** moduleId:viewId ごとの Canvas の中身。実装では ui:// を iframe で埋め込む（§6.2）。 */
 export function CanvasContent({ moduleId, viewId }: { moduleId: string; viewId: string }) {
+  // banto.fs:preview:<path> ——tool 呼び出し（fullscreenView、threads.ts）は
+  // moduleId/viewId の組しか持ち回せないので、パスは viewId に焼き込まれてくる。
+  // Command Palette 経由（palette.ts）は fsFile クエリパラメータを使うので
+  // 素の "browser" のまま——FileExplorerView 側で両方を受けられるようにしてある
+  if (moduleId === "banto.fs" && viewId.startsWith("preview:")) {
+    return <FileExplorerView initialPath={viewId.slice("preview:".length)} initialCollapsed />;
+  }
+
   const key = `${moduleId}:${viewId}`;
   switch (key) {
     case "banto.repo:diff":
       return <RepoDiffView />;
     case "banto.fs:browser":
-      return <FileBrowserView />;
+      return <FileExplorerView />;
+    case "banto.fs:diff":
+      return <FsEditDiffView />;
     case "banto.worker:report":
       return <WorkerReportView />;
     case "hermes.test:result":

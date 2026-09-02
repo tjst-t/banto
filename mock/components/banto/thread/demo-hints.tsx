@@ -14,6 +14,8 @@ const DEMO_PROMPTS: readonly { label: string; prompt: string }[] = [
   { label: "承認ゲート", prompt: "distを削除して" },
   { label: "inline 表示", prompt: "差分を見せて" },
   { label: "fullscreen 表示", prompt: "fullscreenで見せて" },
+  { label: "ファイルプレビュー", prompt: "READMEを見せて" },
+  { label: "ファイル編集の差分", prompt: "ファイルを編集して" },
 ];
 
 export function DemoHints() {

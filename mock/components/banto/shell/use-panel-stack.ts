@@ -40,7 +40,8 @@ export interface UsePanelStackResult extends PanelStackState {
   close(kind: "fork" | "canvas" | "overlay"): void;
 }
 
-function parseCanvasParam(
+/** canvas-window（別タブでの単独表示）でも同じ解釈をするために公開する（規則3） */
+export function parseCanvasParam(
   canvasParam: string | null,
 ): { moduleId: string; viewId: string } | null {
   if (!canvasParam) return null;
