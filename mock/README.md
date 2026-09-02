@@ -291,6 +291,56 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
   （`adapter.ts`の`human`ステップ等）とはまだ繋がっていない——台本再生と
   受信箱を連動させる設計は今回のスコープ外
 
+### VaultUI（Vault横断管理Module、2026-09-02）
+- `docs/specs/v4-modules.md` §2.1 C節の「別Moduleから横断してaliasを管理したい」
+  を、実際にModule（`banto.vault-ui`、role `vault-ui`）として追加した。launcher
+  （`manage`）からCanvas全画面で開く——FileSystemの`browser`・Repoの`diff`と同じ形
+- `MockVaultAlias`に`kind`（secret/ssh-identity/file）・`scope`
+  （instance/project）・`note`・`lastUsedAt`・`expiresAt`を追加。`vaultAliases`を
+  mutable化し`createVaultAlias`/`updateVaultAliasNote`/`deleteVaultAlias`を追加
+  （`lib/mock/settings.ts`）
+- **画面**（`components/banto/canvas/vault-manage-view.tsx`）：接続している
+  vault役割実装を横断してカード表示、alias一覧をテーブルで横断表示（scope・
+  backend・note・最終使用・期限）、note編集（Popover）・削除（AlertDialog）・
+  新規登録（Dialog）を実装
+- **新規登録フォームの「値」欄は、送信先が無いモックの制約上どこにも保存しない**
+  ——`createVaultAlias`の引数に値を含めない設計にして、D3（値を保存しない）を
+  モックのコード自体でも再現した
+- 既存の`ModuleConfigPane`（Project単位のalias一覧、各backend自身の
+  `ui://<id>/config`）とは別物として両方残した——§2.1 C節の決定どおり、
+  backend単体でも動く必要があるため
+- Playwrightで作成・note編集・削除のCRUDを実測して確認
+- 一覧の列「対象」と新規登録ダイアログのラベルが「scope」「Project」で不揃い
+  だった（レビュー指摘）——ダイアログ側を「対象」「どの Project か」に統一
+
+### Project ↔ backend グループの紐付け（2026-09-02）
+- `docs/specs/v4-modules.md` §2.1「Project ↔ backend グループの紐付け」——
+  複数ホストのbantoが同じbackend（同じHashiCorp Vaultサーバ・同じInfisical
+  アカウント等）を共有できるようにする決定をモックに反映
+- `MockVaultGroup`（backendが元々持つグルーピングの仕組み。Infisicalの
+  Folder・HashiCorp Vaultのpathプレフィックス等に相当）と
+  `MockVaultGroupBinding`（Project または instance全体 ↔ グループの紐付け）を
+  型として追加。`getVaultGroups`/`getVaultGroupBinding`/`createVaultGroup`/
+  `setVaultGroupBinding`を`lib/mock/settings.ts`に追加
+- **画面**：各backendの実装カードに「グループを管理」ボタン（`FolderCog`
+  アイコン）を追加、`GroupManageDialog`で開く。Project（＋instance全体）ごとに
+  行があり、既存グループから選ぶ／その場で新しいグループを作る、の両方に対応
+  ——「既定は自動生成された専用グループ」は Project 作成時の暗黙の1回きりの
+  作成にすぎず、人がいつでも明示的に切り替えられる必要がある、という指摘を
+  反映した
+- Playwrightで、既存グループの選択・新規グループ作成→紐付けの両方を実測して確認
+
+### 検索・フィルタ、「他バックエンドへ移行」の削除（2026-09-02）
+- **横断検索欄**（名前・種別・対象・backend・note を対象）＋**列ごとのフィルタ**
+  （種別／対象／backend、それぞれ Select）を追加。フィルタの選択肢はいま実際に
+  ある alias から導出する（存在しない選択肢は出さない）。フィルタが効いている
+  ときは「N / 全件」の表示に切り替え、該当0件なら空状態の行を出す
+- **「他バックエンドへ移行」ボタンを削除**——`docs/specs/v4-modules.md` §5 item 7
+  のとおり実行主体・失敗時の扱いが未設計のまま置いていたのはレビュー指摘で
+  発覚。**未定義のまま置いておくと「もう決まっている」ように見える**ので、
+  必要性が見えるまで一旦削除（規則7）
+- Playwrightで検索・種別フィルタ・対象フィルタの絞り込みを実測して確認
+
 ## まだ実装していない
 
 §10.0のD群（プロトタイプが要る項目）のうち、以下は未着手：

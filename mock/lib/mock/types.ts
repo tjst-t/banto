@@ -224,18 +224,50 @@ export interface MockRole {
   implementations: readonly MockModuleImplementation[];
 }
 
+/** alias の種別（v4-modules.md §2.1 A節） */
+export type MockVaultAliasKind = "secret" | "ssh-identity" | "file";
+
 /**
- * Vault の名前付き参照（§2.5「alias 方式」）。**Project 単位**で持つ
- * （仕様どおり）。値は型に含めない——banto は値を持たない
+ * Vault の名前付き参照（§2.5「alias 方式」、v4-modules.md §2.1）。
+ * 値は型に含めない——banto は値を持たない。`scope: "instance"` のときは
+ * `projectId` を持たない（instance 全体で共有、例：AI プロバイダの資格情報）
  */
 export interface MockVaultAlias {
   id: string;
-  projectId: ProjectId;
+  scope: "instance" | "project";
+  projectId?: ProjectId;
   name: string;
+  kind: MockVaultAliasKind;
   implementationId: string;
   /** 接続内部でのパス。実装依存の名前空間（banto は統一しない） */
   path: string;
+  /** 何用かの自由記述メモ（v4-modules.md §2.1、値ではないので AI にも見せてよい） */
+  note?: string;
   usedBy: readonly string[];
+  /** Vault 自身が持つ最終使用時刻（Event Store 由来ではない、§2.1 C節） */
+  lastUsedAt?: string;
+  expiresAt?: string;
+}
+
+/**
+ * backend が元々持つグルーピングの仕組み（Infisical の Folder、HashiCorp
+ * Vault の path プレフィックス等）の1つ（v4-modules.md §2.1「Project ↔
+ * backend グループの紐付け」）。`createVaultGroup` で人が明示的に作る
+ */
+export interface MockVaultGroup {
+  implementationId: string;
+  name: string;
+}
+
+/**
+ * Project（または instance 全体）が、ある backend のどのグループを使うかの
+ * 紐付け（同上）。**人が明示的に持つ設定**——複数ホストの banto が同じ
+ * backend・同じグループを割り当てれば、それが共有の合図になる
+ */
+export interface MockVaultGroupBinding {
+  implementationId: string;
+  target: "instance" | ProjectId;
+  groupName: string;
 }
 
 export interface MockCredential {

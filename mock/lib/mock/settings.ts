@@ -7,6 +7,8 @@ import type {
   MockRole,
   MockRuntimeDefaults,
   MockVaultAlias,
+  MockVaultGroup,
+  MockVaultGroupBinding,
   ProjectId,
   RoleId,
 } from "./types";
@@ -148,6 +150,19 @@ let implementations: MockModuleImplementation[] = [
     launchers: [{ id: "diff", label: "差分ビューを開く", viewId: "diff" }],
     mcpServersJson: sampleMcpServersJson("banto-repo", "node", ["./modules/repo/index.js"], ["repo"]),
   },
+  {
+    id: "banto.vault-ui",
+    roleId: "vault-ui",
+    name: "VaultUI（横断管理）",
+    isolation: "in-process",
+    builtin: true,
+    enabled: true,
+    // 自身は秘密を持たない（vault役割には依存するだけ）ので in-process でよい——
+    // 鍵を持つものだけ subprocess にする、という判定基準（requirements C8b）どおり
+    breaksIfDisabled: ["Vault を横断して管理する画面"],
+    launchers: [{ id: "manage", label: "Vault を管理", viewId: "manage" }],
+    mcpServersJson: sampleMcpServersJson("banto-vault-ui", "node", ["./modules/vault-ui/index.js"], ["vault-ui"]),
+  },
 ];
 
 const roleDefs: readonly Omit<MockRole, "implementations">[] = [
@@ -180,6 +195,12 @@ const roleDefs: readonly Omit<MockRole, "implementations">[] = [
     id: "repo",
     name: "Repo",
     description: "複数リポジトリの一覧・worktree・clone/branch/log。GitHub 身元の割り当て。",
+  },
+  {
+    id: "vault-ui",
+    name: "VaultUI",
+    description:
+      "複数の Vault 実装を横断して alias を確認・編集する。AI には公開せず、admin 可視性の tool を host 中継経由で呼ぶ（v4-modules.md §2.1）。",
   },
 ];
 
@@ -354,15 +375,18 @@ let mockProjectModuleLinks: MockProjectModuleLink[] = [
   { projectId: "banto", implementationId: "banto.subagent" },
   { projectId: "banto", implementationId: "banto.vault-local" },
   { projectId: "banto", implementationId: "banto.repo" },
+  { projectId: "banto", implementationId: "banto.vault-ui" },
   { projectId: "home", implementationId: "banto.fs" },
   { projectId: "home", implementationId: "banto.shell" },
   { projectId: "home", implementationId: "banto.subagent" },
   { projectId: "home", implementationId: "hashicorp.vault" },
+  { projectId: "home", implementationId: "banto.vault-ui" },
   { projectId: "hermes", implementationId: "banto.fs" },
   { projectId: "hermes", implementationId: "banto.skills" },
   { projectId: "hermes", implementationId: "banto.subagent" },
   { projectId: "hermes", implementationId: "banto.vault-local" },
   { projectId: "hermes", implementationId: "banto.repo" },
+  { projectId: "hermes", implementationId: "banto.vault-ui" },
 ];
 
 export function getProjectModuleLinks(projectId: ProjectId): readonly MockModuleImplementation[] {
@@ -389,33 +413,167 @@ export function getLaunchersForProject(
   );
 }
 
-export const mockVaultAliases: readonly MockVaultAlias[] = [
+// VaultUI（横断管理、§2.1 C節）で編集するので mutable。他の mock ストアと
+// 同じパターン——`notifyMockStoreChange` で購読側に知らせる
+let vaultAliases: MockVaultAlias[] = [
   {
     id: "alias.github-token",
+    scope: "project",
     projectId: "banto",
     name: "github-token",
+    kind: "secret",
     implementationId: "banto.vault-local",
     path: "github/identityA/token",
+    note: "GitHub identityA への push 用トークン",
     usedBy: ["Repo: identityA の push"],
+    lastUsedAt: "12分前",
+  },
+  {
+    id: "alias.identityA-ssh",
+    scope: "project",
+    projectId: "banto",
+    name: "identityA-ssh",
+    kind: "ssh-identity",
+    implementationId: "banto.vault-local",
+    path: "github/identityA",
+    note: "GitHub identityA の SSH 鍵（ssh-agent 経由、鍵そのものは出さない）",
+    usedBy: ["Repo: identityA の clone / push"],
+    lastUsedAt: "12分前",
   },
   {
     id: "alias.npm-token",
+    scope: "project",
     projectId: "banto",
     name: "npm-token",
+    kind: "secret",
     implementationId: "banto.vault-local",
     path: "npm/publish-token",
+    note: "npm publish 用トークン",
     usedBy: ["Shell: npm publish"],
+    lastUsedAt: "3日前",
+    expiresAt: "30日後に失効",
+  },
+  {
+    id: "alias.claude-work-oauth",
+    scope: "instance",
+    name: "claude-work-oauth",
+    kind: "secret",
+    implementationId: "banto.vault-local",
+    path: "claude/work-oauth",
+    note: "Claude Max（仕事用）の資格情報。§2.8——instance 全体で共有",
+    usedBy: ["core: Runner の資格情報選択"],
+    lastUsedAt: "5時間前",
   },
   {
     id: "alias.home-mqtt",
+    scope: "project",
     projectId: "home",
     name: "mqtt-password",
+    kind: "secret",
     implementationId: "hashicorp.vault",
     path: "secret/home/mqtt",
+    note: "自宅 MQTT ブローカーへの publish パスワード",
     usedBy: ["Shell: mosquitto_pub"],
+    lastUsedAt: "1時間前",
   },
 ];
 
 export function getVaultAliasesForProject(projectId: ProjectId): readonly MockVaultAlias[] {
-  return mockVaultAliases.filter((a) => a.projectId === projectId);
+  return vaultAliases.filter((a) => a.projectId === projectId);
+}
+
+/** VaultUI（横断管理）向け——scope・Project を問わず全 alias を返す */
+export function getAllVaultAliases(): readonly MockVaultAlias[] {
+  return vaultAliases;
+}
+
+/** `vault` role を満たす実装だけ（VaultUI が横断表示する対象、§2.1） */
+export function getVaultImplementations(): readonly MockModuleImplementation[] {
+  return implementations.filter((i) => i.roleId === "vault");
+}
+
+/**
+ * alias の新規登録（v4-modules.md §2.1 C節）。**値はこの関数の引数に含めない**
+ * ——実際の値は VaultUI の画面から host 中継を経由して backend へ渡るだけで、
+ * banto のどのストアにも残らない（D3・§2.5 の中継規律）。ここではその後に残る
+ * メタデータだけを保存する
+ */
+export function createVaultAlias(
+  input: Omit<MockVaultAlias, "id" | "usedBy" | "lastUsedAt">,
+): MockVaultAlias {
+  const alias: MockVaultAlias = {
+    ...input,
+    id: `alias.${input.name}-${Date.now()}`,
+    usedBy: [],
+  };
+  vaultAliases = [...vaultAliases, alias];
+  notifyMockStoreChange();
+  return alias;
+}
+
+/** note の書き換え（C節「note の記入」） */
+export function updateVaultAliasNote(id: string, note: string): void {
+  vaultAliases = vaultAliases.map((a) => (a.id === id ? { ...a, note } : a));
+  notifyMockStoreChange();
+}
+
+export function deleteVaultAlias(id: string): void {
+  vaultAliases = vaultAliases.filter((a) => a.id !== id);
+  notifyMockStoreChange();
+}
+
+// Project ↔ backend グループの紐付け（v4-modules.md §2.1）。既存グループは
+// backend ごとに元々あるものとして持たせ、`createVaultGroup` で人が増やせる
+let vaultGroups: MockVaultGroup[] = [
+  { implementationId: "banto.vault-local", name: "banto" },
+  { implementationId: "banto.vault-local", name: "home" },
+  { implementationId: "banto.vault-local", name: "hermes" },
+  { implementationId: "banto.vault-local", name: "instance-shared" },
+  { implementationId: "hashicorp.vault", name: "secret/home" },
+];
+
+let vaultGroupBindings: MockVaultGroupBinding[] = [
+  { implementationId: "banto.vault-local", target: "banto", groupName: "banto" },
+  { implementationId: "banto.vault-local", target: "instance", groupName: "instance-shared" },
+  { implementationId: "hashicorp.vault", target: "home", groupName: "secret/home" },
+];
+
+/** ある backend が持つグループの一覧（既存グループから選ぶ側の選択肢） */
+export function getVaultGroups(implementationId: string): readonly MockVaultGroup[] {
+  return vaultGroups.filter((g) => g.implementationId === implementationId);
+}
+
+/** Project（または `"instance"`）が、ある backend のどのグループを使っているか */
+export function getVaultGroupBinding(
+  implementationId: string,
+  target: "instance" | ProjectId,
+): MockVaultGroupBinding | undefined {
+  return vaultGroupBindings.find((b) => b.implementationId === implementationId && b.target === target);
+}
+
+/**
+ * 新しいグループを作る（v4-modules.md §2.1「既存グループを使い回すだけでなく、
+ * 新しくグループを作る仕組みも要る」）。backend によっては事前の作成 API 呼び
+ * 出しが要る（Infisical の Folder 等）——このモックでは一覧に足すだけで表現する
+ */
+export function createVaultGroup(implementationId: string, name: string): MockVaultGroup {
+  const group: MockVaultGroup = { implementationId, name };
+  vaultGroups = [...vaultGroups, group];
+  notifyMockStoreChange();
+  return group;
+}
+
+/** 紐付けを設定・上書きする。2台のホストで同じ backend・同じグループを割り当てれば、それが共有の合図になる */
+export function setVaultGroupBinding(
+  implementationId: string,
+  target: "instance" | ProjectId,
+  groupName: string,
+): void {
+  const exists = vaultGroupBindings.some((b) => b.implementationId === implementationId && b.target === target);
+  vaultGroupBindings = exists
+    ? vaultGroupBindings.map((b) =>
+        b.implementationId === implementationId && b.target === target ? { ...b, groupName } : b,
+      )
+    : [...vaultGroupBindings, { implementationId, target, groupName }];
+  notifyMockStoreChange();
 }

@@ -9,6 +9,7 @@
 import { CheckCircle2, CircleDashed, File, Folder, Sparkles, XCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { VaultManageView } from "./vault-manage-view";
 
 const DIFF_LINES: readonly { kind: "context" | "add" | "remove"; text: string }[] = [
   { kind: "context", text: "  export function ThreadPanel({ threadId }: { threadId: string }) {" },
@@ -179,6 +180,8 @@ export function CanvasContent({ moduleId, viewId }: { moduleId: string; viewId: 
       return <WorkerReportView />;
     case "hermes.test:result":
       return <TestResultView />;
+    case "banto.vault-ui:manage":
+      return <VaultManageView />;
     default:
       return <UnknownCanvasView moduleId={moduleId} viewId={viewId} />;
   }
