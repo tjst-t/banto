@@ -24,16 +24,12 @@ import {
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { NewProjectDialog } from "@/components/banto/project/new-project-dialog";
-import { mockInboxItems } from "@/lib/mock/inbox";
+import { getInboxItems } from "@/lib/mock/inbox";
 import { getActiveProjects } from "@/lib/mock/projects";
 import { getThreadsForProject } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "./theme-toggle";
-
-// 判断待ちだけをバッジの件数にする——溜めてよくない（止まっている）方が
-// 急ぎだから（§2.4）。レビュー待ちは溜めてよいので件数に含めない
-const judgmentCount = mockInboxItems.filter((item) => item.kind === "judgment").length;
 
 export function ProjectRail({
   activeProjectId,
@@ -50,6 +46,9 @@ export function ProjectRail({
   const isMobile = useIsMobile();
   useMockStoreVersion();
   const [showNewProject, setShowNewProject] = useState(false);
+  // 判断待ちだけをバッジの件数にする——溜めてよくない（止まっている）方が
+  // 急ぎだから（§2.4）。レビュー待ちは溜めてよいので件数に含めない
+  const judgmentCount = getInboxItems().filter((item) => item.kind === "judgment").length;
   if (isMobile) return null;
 
   return (

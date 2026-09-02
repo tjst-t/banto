@@ -7,13 +7,11 @@ import Link from "next/link";
 import { Bell, Clock, Plus, Search, Settings } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { NewProjectDialog } from "@/components/banto/project/new-project-dialog";
-import { mockInboxItems } from "@/lib/mock/inbox";
+import { getInboxItems } from "@/lib/mock/inbox";
 import { getActiveProjects } from "@/lib/mock/projects";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "./theme-toggle";
-
-const judgmentCount = mockInboxItems.filter((item) => item.kind === "judgment").length;
 
 export function MobileTopBar({
   activeProjectId,
@@ -30,6 +28,7 @@ export function MobileTopBar({
   const isMobile = useIsMobile();
   useMockStoreVersion();
   const [showNewProject, setShowNewProject] = useState(false);
+  const judgmentCount = getInboxItems().filter((item) => item.kind === "judgment").length;
   if (!isMobile) return null;
 
   return (

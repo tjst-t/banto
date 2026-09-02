@@ -14,7 +14,8 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { getProject } from "@/lib/mock/projects";
-import { mockInboxItems } from "@/lib/mock/inbox";
+import { getInboxItemHref, getInboxItems } from "@/lib/mock/inbox";
+import { useMockStoreVersion } from "@/lib/mock/store-events";
 import type { MockInboxItem } from "@/lib/mock/types";
 import { useRovingFocus } from "@/hooks/use-roving-focus";
 import { cn } from "@/lib/utils";
@@ -27,15 +28,17 @@ export function InboxOverlay({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  useMockStoreVersion();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // 回答した判断待ちは一覧からその場で取り除く——Event Store の射影として、
   // 「解決済み」は状態として表示せず消える（§2.4.1、2026-08-31）
   const [answeredIds, setAnsweredIds] = useState<ReadonlySet<string>>(new Set());
   const { containerRef, onKeyDown } = useRovingFocus<HTMLDivElement>();
 
+  const inboxItems = getInboxItems();
   const items = [
-    ...mockInboxItems.filter((i) => i.kind === "judgment" && !answeredIds.has(i.id)),
-    ...mockInboxItems.filter((i) => i.kind === "review"),
+    ...inboxItems.filter((i) => i.kind === "judgment" && !answeredIds.has(i.id)),
+    ...inboxItems.filter((i) => i.kind === "review"),
   ];
 
   return (
@@ -119,7 +122,7 @@ function InboxItemDetail({
   if (item.source === "module") {
     return (
       <Link
-        href={`/p/${item.projectId}?canvas=${item.moduleId}:${item.viewId}`}
+        href={getInboxItemHref(item)}
         className="inline-flex items-center rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm text-ink-2 hover:bg-accent"
       >
         Canvas を開く
@@ -128,10 +131,9 @@ function InboxItemDetail({
   }
 
   if (item.source === "thread") {
-    const href = item.threadKind === "fork" ? `/p/${item.projectId}?fork=${item.threadId}` : `/p/${item.projectId}`;
     return (
       <Link
-        href={href}
+        href={getInboxItemHref(item)}
         className="inline-flex items-center rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm text-ink-2 hover:bg-accent"
       >
         {item.kind === "judgment" ? "Thread を開いて返信する" : "Thread を開く"}

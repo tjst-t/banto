@@ -113,6 +113,9 @@ export interface MockInboxJudgmentElicitation {
   projectId: ProjectId;
   /** どの MCP サーバ（Module）が聞いているか。要件：明示する */
   serverName: string;
+  /** Elicitationが発生したThread。生きている間は同じtool呼び出しがそこにも表示される */
+  threadId: ThreadId;
+  threadKind: ThreadKind;
   message: string;
   age: string;
   elicitation: MockElicitationForm | MockElicitationUrl;

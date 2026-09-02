@@ -1,8 +1,9 @@
 "use client";
 
-import { Puzzle, SlidersHorizontal, Sparkles } from "lucide-react";
+import { Bell, Puzzle, SlidersHorizontal, Sparkles } from "lucide-react";
 import { CredentialsPanel } from "@/components/banto/settings/credentials-panel";
 import { ModuleConfigPane } from "@/components/banto/settings/module-config-pane";
+import { NotificationSettingsPanel } from "@/components/banto/settings/notification-settings-panel";
 import { RoleList } from "@/components/banto/settings/role-list";
 import { RuntimeDefaultsPanel } from "@/components/banto/settings/runtime-defaults-panel";
 import {
@@ -25,6 +26,7 @@ const CATEGORIES: readonly SettingsNavItem[] = [
   { section: "roles", label: "役割と Module", icon: Puzzle },
   { section: "defaults", label: "既定値", icon: SlidersHorizontal },
   { section: "credentials", label: "資格情報", icon: Sparkles },
+  { section: "notifications", label: "通知", icon: Bell },
 ];
 
 // 検索が右側の中身も対象にするための索引（レビュー指摘、2026-09-01）。
@@ -38,6 +40,8 @@ const RUNTIME_DEFAULT_ENTRIES = [
   { label: "既定 reasoning effort", anchorId: "anchor-default-effort" },
   { label: "Memory 上限文字数", anchorId: "anchor-default-memory" },
 ];
+
+const NOTIFICATION_ENTRIES = [{ label: "デスクトップ通知", anchorId: "anchor-notifications-permission" }];
 
 function buildSearchEntries(): readonly SearchEntry[] {
   const roleEntries = getRoles().flatMap((role) => [
@@ -61,6 +65,12 @@ function buildSearchEntries(): readonly SearchEntry[] {
     anchorId: `anchor-credential-${c.id}`,
   }));
 
+  const notificationEntries = NOTIFICATION_ENTRIES.map((e) => ({
+    section: "notifications" as const,
+    label: e.label,
+    anchorId: e.anchorId,
+  }));
+
   const moduleConfigEntries = getConfigurableImplementations().flatMap((impl) =>
     (mockModuleConfigFields[impl.id] ?? []).map((field, i) => ({
       section: `module:${impl.id}` as const,
@@ -69,7 +79,13 @@ function buildSearchEntries(): readonly SearchEntry[] {
     })),
   );
 
-  return [...roleEntries, ...defaultEntries, ...credentialEntries, ...moduleConfigEntries];
+  return [
+    ...roleEntries,
+    ...defaultEntries,
+    ...credentialEntries,
+    ...notificationEntries,
+    ...moduleConfigEntries,
+  ];
 }
 
 function SectionHeading({ title, description }: { title: string; description: string }) {
@@ -112,6 +128,17 @@ function renderSection(section: SettingsSection) {
           description="複数登録して使い分ける。鍵そのものは Vault が持ち、ここには出さない。"
         />
         <CredentialsPanel />
+      </div>
+    );
+  }
+  if (section === "notifications") {
+    return (
+      <div>
+        <SectionHeading
+          title="通知"
+          description="判断待ち・レビュー待ちが新着したとき、受信箱のバッジ以外にも気づけるようにする。"
+        />
+        <NotificationSettingsPanel />
       </div>
     );
   }

@@ -6,6 +6,7 @@
 // 同じ理由で、隠さず出す。ThreadPrimitive.Suggestion をそのまま使う
 // （thread.suggestions のような追加の状態は要らない）。
 import { ThreadPrimitive } from "@assistant-ui/react";
+import { NotificationDemoTrigger } from "./notification-demo-trigger";
 
 const DEMO_PROMPTS: readonly { label: string; prompt: string }[] = [
   { label: "tool 呼び出し", prompt: "worktree を教えて" },
@@ -30,6 +31,7 @@ export function DemoHints() {
           {d.label}
         </ThreadPrimitive.Suggestion>
       ))}
+      <NotificationDemoTrigger />
     </div>
   );
 }

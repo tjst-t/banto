@@ -11,7 +11,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { getActiveProjects, getProject } from "./projects";
 import { getThreadsForProject } from "./threads";
-import { mockInboxItems } from "./inbox";
+import { getInboxItemHref, getInboxItems } from "./inbox";
 import { getLaunchersForProject } from "./settings";
 
 // Command Palette（§6.3）。「自分の索引を持たない」——出るものは全部、
@@ -92,22 +92,16 @@ export function buildPaletteGroups(currentProjectId: string | null, query: strin
   if (threadItems.length > 0) groups.push({ kind: "thread", label: "Thread", items: threadItems });
 
   // 受信箱——banto 全体（Project の外にある、§2.4）
-  const inboxItems: PaletteItem[] = mockInboxItems
+  const inboxItems: PaletteItem[] = getInboxItems()
     .filter((i) => q === "" || i.message.toLowerCase().includes(q))
     .map((i) => {
       const project = getProject(i.projectId);
-      const href =
-        i.kind === "review" && i.source === "module"
-          ? `/p/${i.projectId}?canvas=${i.moduleId}:${i.viewId}`
-          : i.source === "thread" && i.threadKind === "fork"
-            ? `/p/${i.projectId}?fork=${i.threadId}`
-            : `/p/${i.projectId}?overlay=inbox`;
       return {
         id: `inbox:${i.id}`,
         title: i.message,
         subtitle: `${project.name} · ${i.kind === "judgment" ? "判断待ち" : "レビュー待ち"}`,
         icon: Inbox,
-        href,
+        href: getInboxItemHref(i),
         kind: "inbox" as const,
       };
     });

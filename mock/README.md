@@ -251,12 +251,51 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
   `[role="tabpanel"][data-state="active"]`でスコープして解決——実際のユーザー操作には
   影響しない（`hidden`要素はクリックできない）、テストコードだけの罠
 
+### 通知——トースト・デスクトップ通知（item28、2026-09-02）
+
+- **ライブ配信（SSE）はモックでは作らない**（ユーザー判断）——複数クライアントが
+  同じThreadを同時に見る場面はD群のまま持ち越し
+- `sonner`を追加し、`app/layout.tsx`に`<Toaster />`を常設
+- **トーストの行き先は受信箱ではなく、答えが完結する場所へ直接**（レビュー指摘
+  2026-09-02——受信箱を経由してさらに項目を探す「二度手間」を避ける）。
+  `lib/mock/inbox.ts`の`getInboxItemHref(item)`が判定を1箇所に集約：
+  Module発のレビューはCanvas、それ以外（Thread自身発・Elicitation発とも）は
+  そのThread。Command Palette（`lib/mock/palette.ts`）もこの関数に乗せ直した
+  ——3箇所に同じ分岐がバラバラに実装されていたのを1つにまとめた（規則3）
+- **`MockInboxJudgmentElicitation`に`threadId`/`threadKind`を追加**
+  （2回目のレビュー指摘——Elicitationも必ずどこかのThreadでのtool呼び出し中に
+  発生しており、生きている間は同じtool呼び出しがThread側にも表示される
+  （HumanToolCard）ので、受信箱を経由させる理由が無い）。当初は
+  「Elicitationは受信箱の中でしか答えられない」という前提で`?overlay=
+  inbox&focus=<id>`（受信箱をその項目が展開された状態で開く、`usePanelStack`
+  に`focus`パラメータを追加）を実装したが、この前提が誤りだったので撤回した
+  ——全4種の受信箱項目が具体的な行き先（Thread か Canvas）を持つようになり、
+  受信箱自体への直接ジャンプは不要になった
+- **ブラウザのNotification API**を`lib/mock/notifications.ts`で薄くラップ
+  （許可状態の取得・リクエスト・発火）。許可設定は`/settings`の新カテゴリ
+  「通知」（`NotificationSettingsPanel`）——他の階層1固定カテゴリと同じ並びに追加
+- **受信箱データを再びリアクティブ化**——item14で`implementations`を
+  やったのと同じ理由・同じパターンで、`lib/mock/inbox.ts`の
+  `mockInboxItems`（静的readonly配列）を`inboxItems`（mutable）+
+  `getInboxItems()`/`addInboxItem()`に変更。`addInboxItem()`が
+  `notifyMockStoreChange()`を呼ぶ
+- **既存の不具合を発見・修正**——`ProjectRail`/`MobileTopBar`の受信箱バッジ
+  （`judgmentCount`）が、`useMockStoreVersion()`を呼んでいるのにモジュール
+  スコープの定数として計算されていたため、実際には再描画されても値が変わら
+  なかった。コンポーネント本体に移し、レンダーのたびに`getInboxItems()`
+  から計算し直す形に直した
+- **発生源はモックの手動トリガーのみ**——`NotificationDemoTrigger`
+  （`components/banto/thread/notification-demo-trigger.tsx`）をBase Thread
+  の「モックのデモ」列に追加。押すと新しい判断待ちを`addInboxItem()`で積み、
+  トースト＋（許可済みなら）デスクトップ通知を出す。実際のElicitation発生
+  （`adapter.ts`の`human`ステップ等）とはまだ繋がっていない——台本再生と
+  受信箱を連動させる設計は今回のスコープ外
+
 ## まだ実装していない
 
 §10.0のD群（プロトタイプが要る項目）のうち、以下は未着手：
 
-- **ライブ配信（SSE）**——複数クライアントが同じThreadを同時に見る場面
-- **通知**（item28、§10）——受信箱のバッジ止まり。実際のトースト/プッシュ通知は無い
+- **ライブ配信（SSE）**——複数クライアントが同じThreadを同時に見る場面（作らないと決定、上記）
 - **Threadの全文検索の索引**——閉じたFork Threadの検索は今のところタイトル前方一致のみ。
   本文まで検索するならHermesAgentのような索引の仕組みが要る（要検討、§10未決候補）
 
