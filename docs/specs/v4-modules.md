@@ -133,6 +133,182 @@ Phase 0/1 でも Vault を作り始める理由にはならない。
 | **Shell** | コマンドを実行する | **FileSystem と同じ境界だが、強制できる層が違う**（§3）。**Environment とは別実装**（下記） |
 | **Vault** | 鍵・トークンを預かる | **必須に格上げ**（決定・2026-09-01、アーキ仕様 §2.8）——複数資格情報の使い分けが中核機能である以上、無いインストールは成立しない。**複数バックエンド可**（`vault` を役割として、複数の実装が名乗る形、アーキ仕様 §2.5）。**banto はローカルの組み込みバックエンドを同梱**し、追加インストール無しに動く。実行は他バックエンド同様 **core とは別プロセス**（`docs/requirements.md` C8b：鍵を持つものは subprocess）。他バックエンドを足したときの**移行操作は人専用**（AI には露出しない） |
 
+### 2.1 Vault の面（決定・2026-09-02）
+
+**実装構造は単一 Module 方式**——SOPS 実装・HashiCorp Vault 実装・OS キーチェーン
+実装は、それぞれ独立して `vault` 役割の全 tool／resource を実装する（アーキ仕様
+§2.5 のとおり）。共通ロジック（alias 管理・Elicitation 文言・Event Store への
+記録・下記 A/B/C の配線）は npm ライブラリ（例 `@banto/vault-kit`）で共有し、
+Module 間の MCP 契約にはしない——**Module を分けるとエンジン↔バックエンド間の
+中継が1ホップ増え、汎用シークレットの値がエンジンのプロセスメモリを余分に
+経由することになり、「秘密鍵は Vault のプロセスから一度も出ない」（D5）という
+保証が弱まる**ため。
+
+#### 可視性（`agent` / `module` / `admin`）の実現方法（決定・2026-09-02）
+
+下記 A〜C で使う3段の可視性は、**新しいマニフェストを作らず、アーキ仕様 §5.4
+で決めた `_meta` の banto 拡張キーにそのまま乗せる**——tool の `_meta` に
+`{バントの逆DNS接頭辞}/visibility: "agent" | "module" | "admin"` を持たせるだけ。
+banto host はこの値を見て、Runner に渡す tool 一覧（`agent` のみ）と、
+host 中継が取り次ぐ tool（`module`・`admin`）を分ける。**新しい仕組みではなく、
+既存の `_meta` 拡張の使い先が1つ増えるだけ**（role 宣言・設定面の印と同じ形）。
+
+**この区分は banto host による自主的な尊重であって、暗号的な強制ではない**
+——他の MCP ホストが `_meta` の意味を知らずに `module`/`admin` の tool も
+そのまま AI に晒す可能性は残る。**Module は他の MCP ホストでもそのまま動く**
+という独立性（アーキ仕様 §1）の代償として、この境界は「banto という行儀のよい
+host が守る」ところまでしか保証できない。同じ限界は §2.5 の Module 間中継
+（「core に先に聞く」という行儀のよい Module の前提に乗る）にも既にあり、
+新しい種類の弱さではない。**Vault を他ホストに繋ぐ場合の注意点として、
+Vault 自身のドキュメントに明記する**（実装時のTODO）。
+
+#### A. Agent（Runner）に直接見せる面——読み取り専用に絞る
+
+D3「鍵そのものが AI の文脈に出ない」を守るいちばん単純な方法は、**値を返す
+tool を AI には一切見せない**こと。AI 向けは「存在を知る」「無ければ人に頼む」
+だけに絞る。
+
+| 種別 | 名前 | 内容 |
+|---|---|---|
+| resource | `vault://aliases` | alias 一覧。**値は含まない**——`name` / `kind`（`secret`\|`ssh-identity`\|`file`）/ `scope`（`instance`\|`project`）/ `note`（自由記述、任意）/ `lastUsedAt` / `expiresAt`（あれば） |
+| resource | `vault://aliases/{name}` | 単一 alias のメタデータ（同上、詳細版） |
+| tool | `requestAlias({name, hint, kind})` | **値を渡さない。** 「このaliasが要るが無い」という判断待ちを起こす（受信箱／Elicitation経由で人に、設定面から追加してもらうよう頼む） |
+
+#### B. 他 Module（Repo・Shell 等）に対して——host 中継経由でのみ呼べる、`module` 限定
+
+| tool | 引数→戻り値 | 用途 |
+|---|---|---|
+| `resolveAlias({name})` | → 値（文字列 or バイト列）。**静的保存か動的発行かは Vault 内部の実装詳細**——呼び出し側はどちらでも同じ形で受け取る | 汎用シークレット注入（Shell の alias 方式、アーキ仕様 §2.5）、ファイル内容、動的短命トークン |
+| `startSshAgent({identity})` | → `{socketPath}` のみ。**秘密鍵は返さない** | ssh-agent 経由の git 認証（D5）。**旧名 `hostSshAgent` から改名**（2026-09-02）——「host」はアーキ仕様で core の配線・解決層を指す予約語（§2.5）であり、ここで別の意味（ssh-agentプロセスを起動する）に使うのは規則11（一般的な用語を使う）に反する紛らわしさがあった |
+| `generateKeypair({identity, kind: "ssh"\|"gpg"})` | → 公開鍵のみ。秘密鍵は Vault 内部に留まる | Repo が新しい identity をセットアップするとき（D5） |
+| `verify({alias, payload, signature})` | → true/false のみ。値は一切返さない | Webhook 署名検証など、値そのものが要らない検証 |
+
+いずれもアーキ仕様 §2.5 の中継の規律がそのままかかる：呼び出し元の依存宣言で
+許可確認 → 初回のみ承認ゲート → 以降 Project 内で自動許可 → Event Store には
+メタデータ（呼び出し元・宛先・tool 名・**alias 名などの識別子**・成否・時刻）
+だけ記録し、**値そのものは記録しない**（alias 名は「どの秘密が」を示す識別子で
+あって秘密の値ではないので、記録してもD3を破らない——むしろ記録しないと
+「どのaliasが使われたか」が一切追えなくなる）。
+
+**承認キャッシュの粒度は「呼び出し元・宛先・tool 名」までで、alias 名は含まない**
+——Shell→Vault の `resolveAlias` を一度承認すれば、以降どの alias でも
+再承認なしに解決される。**これは意図した設計**：個々の呼び出しに対する
+実質的な防波堤は、Shell 側の承認ゲート（コマンド文字列＋使う alias の一覧を
+人に見せる、アーキ仕様 §2.5「alias 方式」）であり、Module 間中継の承認は
+「この Module 同士がこの tool で話してよいか」という一段粗い、初回だけの確認
+にとどめる——alias 単位まで中継側で確認すると、Shell 側のゲートと二重になる。
+
+#### C. 管理操作——人専用だが、他 Module からも呼べる `admin` 限定（決定・2026-09-02）
+
+alias の新規登録・値の入力・編集・削除／鍵ペアの import／`note` の記入／
+scope（instance⇔project）の割り当て／バックエンド間の移行／alias 使用履歴の
+閲覧。
+
+**使用履歴の出所は2つあり、混同しない**——(1) 「いつ最後に使われたか」
+（`lastUsedAt`）は Vault 自身が A節の alias メタデータとして持つ（値を
+持つ場所と同じ Vault 内部の管理下）。(2) 「どの Module がいつ resolveAlias を
+呼んだか」という Module 間呼び出しの履歴は、host 中継が Event Store に記録する
+メタデータ（呼び出し元・alias 名・成否・時刻、B節末尾）から追える。**どちらも
+Event Store の「メタデータ射影」ではない**——(1) は Vault 内部の状態、(2) が
+Event Store 由来。C 節の管理画面は両方を並べて見せてよい。
+
+**「AI に見せない」と「他 Module から呼べない」は別軸。** 当初はこれらを
+「各 backend 自身の `ui://<id>/config` の中に閉じた話」としていたが、
+**Vault の管理だけをまとめて行う別 Module（例：VaultUI。§2.5 の「role→実装の
+一覧を依存する Module に渡す」を、1つ選ぶのではなく全部横断して使う側）を
+作りたい**という要望が出て、それには対応できない設計だった。
+
+- **これらの操作も B と同じ形で MCP tool として公開する**（`createAlias` /
+  `updateAlias` / `deleteAlias` / `migrateTo` / `listGroups` / `createGroup`
+  等）。ただし**可視性は `admin`**——AI（Runner）には出さない（A の原則は
+  そのまま）が、host 中継を経由して他 Module からは呼べる
+- **各 backend 自身の `ui://<id>/config` は残す。** Module は他の MCP ホストでも
+  単体で動く必要がある（アーキ仕様 §1）ので、VaultUI が無い環境でも
+  backend 単体の画面から同じ操作ができなければならない。**`ui://<id>/config`
+  自身も、この `admin` tool を呼ぶだけの薄い実装でよい**（自分の tool を
+  自分の GUI から使う、という形で C8a と整合する）
+- **新規登録時に人が入力する値は、VaultUI の画面から host 中継（一過性、
+  記録はメタデータのみ）を経由して backend へ渡る。** これは B で決めた
+  中継の規律（許可確認・Event Store にはメタデータのみ）と D3（AI の文脈に
+  出ない）のどちらも壊さない——人が人の画面に打ち込んで、人の管理下にある
+  別 Module へ渡るだけだから
+- **VaultUI 自体の画面構成（一覧の見せ方等）はここでは決めない。** モックで
+  作るときに詰める（§10 相当の未決事項）
+- **`migrateTo` の具体形（実行主体・失敗時の部分移行の扱い）は未設計。**
+  「人専用」という制約以外は決めていない——モックで VaultUI の画面を作る
+  ときに、この操作の呼び出し元・進捗表示・失敗時のロールバックを合わせて
+  詰める（下記 §5 item 7 に追記）
+- **`admin` tool への承認ゲートは、VaultUI 経由の呼び出しでは循環しうる**
+  ——人が VaultUI の画面上で操作した結果を、Module 間中継の初回承認ゲートで
+  もう一度確認させるのは冗長な UX になりうる。**`agent`/`module` 可視性の
+  承認ゲート運用（アーキ仕様 §2.5）を `admin` 可視性にそのまま適用してよいかは
+  未決**——VaultUI 設計時に合わせて詰める
+
+#### Project ↔ backend グループの紐付け（複数ホスト共有、決定・2026-09-02）
+
+**複数台のホストで動く banto インストールが、同じ backend（同じ HashiCorp Vault
+サーバ・同じ Infisical アカウント等）を共有できるようにする**ための決定。
+
+- **backend は自分の秘密情報をグルーピングする仕組みを元々持つ**
+  （Infisical の Folder、HashiCorp Vault の path プレフィックス／mount、
+  組み込み backend なら自分の内部実装が使う任意の区分け）。**banto は、
+  Project ごとにこのグループのどれを使うかを、人が明示的に紐付けられる
+  ようにする**——D5「どのリポジトリにどの身元を使うか」の割り当て表と
+  同じパターン（アーキ仕様 §2.5 の「role 依存の解決は Module の仕事」の
+  延長）
+- **既定は自動生成された専用グループ**（`projectId` をそのままグループ名に
+  使う等）。`projectId` は衝突しない値（UUID 等）なので、**別ホストの
+  banto インストールという概念を banto core に新たに持たせる必要は無い**
+  ——複数ホストを区別するための識別子（instanceId 相当）は不要と判断した
+- **人が2台のホストの Project に同じ backend・同じグループを割り当てれば、
+  それが共有の合図になる。** 自動的な衝突回避ではなく、**人の意図で共有が
+  起きる**——組み込み backend であっても、その保存の実体（ファイルか、
+  他の形か）を複数ホストから触れる場所に置くかどうかは、その backend
+  自身の実装の話であって、この「グループの紐付け」という概念とは別の層
+- **紐付けの選択肢は2つ：既存グループから選ぶ／新しいグループを作る。**
+  「既定は自動生成された専用グループ」と上で書いたが、それは Project
+  作成時の**暗黙の1回きりの作成**にすぎない。**人がいつでも明示的に
+  「新しいグループを作る」操作をできる必要がある**——例えば「共有していた
+  グループから離れて、この Project 専用の新しいグループに切り替えたい」
+  という場面は、既存グループの選択では表現できない
+- **訂正：`VaultBackend`（下記 D節）のインターフェースは変更が要る。**
+  当初「`path` 引数だけで足りるので変更不要」としたが誤りだった——
+  **backend によっては、書き込む前にグループそのものを明示的に作成する
+  API 呼び出しが要る**（例：Infisical の Folder は事前に作成しないと
+  秘密を置けない。HashiCorp Vault の path プレフィックスは逆に、
+  事前作成が要らない）。この違いを VaultUI 側で意識させないために、
+  `VaultBackend` に `listGroups()` / `createGroup(name)` を足す
+  （後者は、事前作成が不要な backend では単に何もしない no-op でよい）
+
+#### D. バックエンド実装者向けの内部インターフェース（MCP ではなく npm ライブラリ）
+
+単一 Module 方式なので、各実装は共通ライブラリを使い、alias 管理・
+Elicitation 文言・Event Store 記録・A/B/C の tool/resource 配線は共有コードが持つ。
+各実装が書くのはこれだけ：
+
+```
+interface VaultBackend {
+  getSecret(path): Promise<string | Buffer>
+  putSecret(path, value): Promise<void>
+  deleteSecret(path): Promise<void>
+  listPaths(prefix?): Promise<string[]>
+  generateKeypair(kind): Promise<{ publicKey, privateKeyRef }>
+  loadIntoAgent(privateKeyRef): Promise<{ socketPath }>  // このプロセス内でssh-agentを立てる
+  listGroups(): Promise<string[]>       // Project ↔ グループの紐付け用（上記）
+  createGroup(name): Promise<void>      // 事前作成が要らない backend では no-op でよい
+}
+```
+
+**`note` を含むメタデータ（`kind`／`scope`／`note`／`expiresAt`／`lastUsedAt`）は
+値と分離して持つ。** 値を復号・解錠せずに読める必要がある（`vault://aliases`
+は AI が毎回読みうるもので、そのたびに値を復号するのは最小露出の原則に反し、
+頻度的にも無駄）。候補にしているバックエンドはいずれも対応できる——組み込み
+（SOPS）はメタデータの持ち方自体を banto が決められる、HashiCorp Vault は
+KV v2 の `custom_metadata` が最初からこの用途を持つ、OS キーチェーンはコメント
+／ラベル属性を値本体と分離して読める。**これで新しいバックエンドを足す人
+（`docs/requirements.md` C6）は、alias 解決や Elicitation の作法を再実装せずに
+済む。**
+
 近く見えるが**用途が違う**。同じ Module にすると、片方の都合がもう片方を歪める。
 
 | | **Shell** | **Environment** |
@@ -296,8 +472,17 @@ Module の一覧には**2種類が混ざる**：
    閉じ込めの機構は共有ライブラリとして両方が使うので実装は重複しない。
    必須 Module が任意 Module に依存する問題も消えた
 4. 各 Module の tool の具体形（この文書に順次書く）
-5. `vault` の複数バックエンドの選び方——役割として解決する（アーキ仕様 §2.5）で
-   足りるか
+5. ~~`vault` の複数バックエンドの選び方~~ **→ §2.1 で決着。** 役割として解決する
+   （アーキ仕様 §2.5）だけで足り、単一 Module 方式・A〜D の面構成まで決めた
 6. **Backlog と Factory の関係**——要件には「Factory の並列モデルは依頼どうしの
    依存関係を見ていない。タスク管理機能と連携してから」という記録がある。
    **Backlog が先で Factory が後**の可能性
+7. **VaultUI（Vault 管理専用 Module）自体の画面構成**——§2.1 C節で「別 Module から
+   横断して alias を管理したい」という要望に応えられる形（`admin` tool 層）は
+   用意したが、**VaultUI というModuleを実際に作るか、どんな画面にするかは未決**
+   ——モックで作るときに詰める。合わせて詰めること：`migrateTo` の実行主体・
+   失敗時の部分移行の扱い、`admin` tool への承認ゲートの循環（人がVaultUIで
+   操作した結果をもう一度承認させるべきか）
+8. Vault の `note` フィールドの文字数上限
+9. `scope: "project"` の alias が、その Project が畳まれた（削除された）ときに
+   どうなるか——Vault 側に取り残されたままになる可能性がある
