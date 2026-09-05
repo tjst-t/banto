@@ -18,7 +18,16 @@ import type { ThreadGroupPart } from "@/components/assistant-ui/elements/thread.
 import { ApprovalToolCard } from "@/components/banto/thread/approval-tool-card";
 import { ElicitationFormView } from "@/components/banto/inbox/elicitation-form";
 import { InlineModuleView } from "@/components/banto/thread/inline-module-view";
-import { APPROVAL_TOOL_NAME, HUMAN_TOOL_NAME, getInlineView } from "@/lib/mock/adapter";
+import { RelayApprovalCard } from "@/components/banto/thread/relay-approval-card";
+import { ShellCommandCard } from "@/components/banto/thread/shell-command-card";
+import {
+  HUMAN_TOOL_NAME,
+  MODULE_RELAY_TOOL_NAME,
+  SHELL_RUN_COMMAND_TOOL_NAME,
+  getInlineView,
+  isApprovalGated,
+  wasApprovalBypassed,
+} from "@/lib/mock/adapter";
 import type { MockElicitationForm, MockElicitationUrl } from "@/lib/mock/types";
 
 interface HumanToolArgs {
@@ -28,7 +37,17 @@ interface HumanToolArgs {
 }
 
 export const HumanToolCard: ToolCallMessagePartComponent = (props) => {
-  if (props.toolName === APPROVAL_TOOL_NAME) {
+  // Shell は承認待ち・実行後の両方を1つの専用カードで出す（承認用の別 tool は
+  // 作らない、v4-modules.md §2.3「tool は runCommand 1本だけ」）
+  if (props.toolName === SHELL_RUN_COMMAND_TOOL_NAME) {
+    return <ShellCommandCard {...props} />;
+  }
+  // host 中継の承認（入れ子の承認）——外側の tool のハンドラの内側で起きる
+  if (props.toolName === MODULE_RELAY_TOOL_NAME) {
+    return <RelayApprovalCard {...props} />;
+  }
+  // 専用カードを持たない tool が承認ゲートに掛かったときの一般表示
+  if (isApprovalGated(props.toolCallId)) {
     return <ApprovalToolCard {...props} />;
   }
   if (props.toolName !== HUMAN_TOOL_NAME) {
@@ -82,7 +101,16 @@ export function HumanAwareToolGroup({
       return part?.type === "tool-call" && getInlineView(part.toolCallId) !== undefined;
     }),
   );
-  const shouldAutoOpen = isRequiresAction || hasInlineView;
+  // permissionMode が bypassPermissions のため確認を飛ばした呼び出しも自動で開く
+  // ——本来なら承認カードとして目に入っていたものが、畳まれて見えなくなるのは
+  // 「何が黙って実行されたか分からない」という一番避けたい状態になる
+  const hasBypassedApproval = useAuiState((s) =>
+    group.indices.some((i) => {
+      const part = s.message.parts[i];
+      return part?.type === "tool-call" && wasApprovalBypassed(part.toolCallId);
+    }),
+  );
+  const shouldAutoOpen = isRequiresAction || hasInlineView || hasBypassedApproval;
   const [open, setOpen] = useState(shouldAutoOpen);
   const [prevShouldAutoOpen, setPrevShouldAutoOpen] = useState(shouldAutoOpen);
   if (shouldAutoOpen !== prevShouldAutoOpen) {

@@ -39,6 +39,7 @@ const RUNTIME_DEFAULT_ENTRIES = [
   { label: "既定モデル", anchorId: "anchor-default-model" },
   { label: "既定 reasoning effort", anchorId: "anchor-default-effort" },
   { label: "Memory 上限文字数", anchorId: "anchor-default-memory" },
+  { label: "既定の permissionMode", anchorId: "anchor-default-permission-mode" },
 ];
 
 const NOTIFICATION_ENTRIES = [{ label: "デスクトップ通知", anchorId: "anchor-notifications-permission" }];

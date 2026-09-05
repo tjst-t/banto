@@ -74,7 +74,13 @@ export type MockStep =
   // をその場で確定させる形で模す）。banto は Agent SDK の canUseTool /
   // permissionMode に委ねる方針（2026-08-31、§6.4）だが、UI 側の見た目は
   // ここで先に固める
-  | { t: "approval"; name: string; args: ReadonlyJSONObject; result: unknown };
+  | { t: "approval"; name: string; args: ReadonlyJSONObject; result: unknown }
+  // host 中継の承認（入れ子の承認、v4-frontend.md「Module 間中継の承認」）。
+  // 直前の tool 呼び出しの**ハンドラの内側**で起きる——台本では直前の approval /
+  // tool ステップの次に置く。呼び出し元・宛先・tool 名の組み合わせごとに
+  // Project 内で1回だけ人に聞き、以降は自動承認される。直前の tool の結果は
+  // この中継が解決してから届く（外側は「電話を切らずに待つ」）
+  | { t: "relay"; caller: string; target: string; tool: string; reason: string };
 
 export interface MockScript {
   /** Thread を開いたときに最初から表示されている、既存のやり取り */
@@ -183,6 +189,27 @@ export type MockInboxItem = MockInboxJudgment | MockInboxReview;
 
 export type RoleId = string;
 
+/**
+ * tool 単位の可視性（v4-modules.md §2.1）。`agent` だけが Runner の tool 一覧に
+ * 載り、`module`/`admin` は host 中継経由でしか呼べない
+ */
+export type MockToolVisibility = "agent" | "module" | "admin";
+
+/** Module が公開する tool の1つ。`_meta` の可視性キーをそのまま型にした */
+export interface MockModuleTool {
+  name: string;
+  visibility: MockToolVisibility;
+}
+
+/**
+ * `_meta["dev.banto/module"].dependsOn` の1項目（§5.1）。`required: true` は
+ * 「無いと Module 自体が動けない」、`false` は「使う一部の tool だけが断る」
+ */
+export interface MockModuleDependency {
+  role: RoleId;
+  required: boolean;
+}
+
 /** 役割を満たす1つの実装。「役割→{名前:呼び出し口}の辞書」（§2.5）の1エントリ */
 export interface MockModuleImplementation {
   id: string;
@@ -192,8 +219,20 @@ export interface MockModuleImplementation {
   /** banto が同梱するデフォルト実装（例：Vault の組み込みローカルバックエンド） */
   builtin?: boolean;
   enabled: boolean;
-  /** 無効化すると何が断るか（Disable impact dialog に出す、§6.1） */
-  breaksIfDisabled: readonly string[];
+  /**
+   * `_meta["dev.banto/module"].dependsOn`（§5.1）。無効化したとき何が断るかは
+   * **ここから導出する**（`breaksIfDisabled` のような手書きの写しは持たない、規則3）
+   */
+  dependsOn: readonly MockModuleDependency[];
+  /** この実装が公開する tool と、その可視性（v4-modules.md §2.1） */
+  tools: readonly MockModuleTool[];
+  /**
+   * `_meta["dev.banto/module"].handlesSecrets`（自己申告、既定 false）。
+   * Module 自身のバックエンドコードが平文の値を変数・引数として受け取るか。
+   * **`true` かつ `isolation: "in-process"` の組み合わせは起動を拒否する**
+   * （要件 C8c、v4-modules.md §2.1）
+   */
+  handlesSecrets: boolean;
   /**
    * `ui://<id>/config` を持つか（§6.2）。持つ実装だけが、階層1の左メニュー
    * 下段（iOS の「設定アプリ下部のアプリ一覧」と同じ形）に並ぶ。
@@ -281,11 +320,29 @@ export interface MockCredential {
 /** Anthropic API の effort パラメータ（5段階） */
 export type MockEffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
+/**
+ * Claude Agent SDK の `permissionMode` の6値（v4-frontend.md §6.4）。
+ * 独自の値・独自の呼び名は作らない（規則11）——SDK がそのまま受け取る文字列。
+ */
+export type MockPermissionMode =
+  | "default"
+  | "acceptEdits"
+  | "bypassPermissions"
+  | "plan"
+  | "dontAsk"
+  | "auto";
+
 /** 層2 runtime config の instance 既定値（§2.6） */
 export interface MockRuntimeDefaults {
   model: string;
   effort: MockEffortLevel;
   memoryLimitChars: number;
+  /**
+   * 新しい Thread がここから始まる（v4-frontend.md §6.4「permissionMode は
+   * Thread 単位で選べる」）。Thread 側の切り替えはセッション内の一時的な上書きで、
+   * この既定値そのものは変わらない
+   */
+  defaultPermissionMode: MockPermissionMode;
 }
 
 /**
@@ -297,6 +354,7 @@ export interface MockProjectOverrides {
   model?: string;
   effort?: MockEffortLevel;
   memoryLimitChars?: number;
+  defaultPermissionMode?: MockPermissionMode;
   credentialId?: string;
   vaultImplementationId?: string;
   securityRoot: string;

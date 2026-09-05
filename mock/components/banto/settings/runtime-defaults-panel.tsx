@@ -12,7 +12,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { MOCK_EFFORT_LEVELS, MOCK_MODELS, mockRuntimeDefaults } from "@/lib/mock/settings";
+import {
+  MOCK_EFFORT_LEVELS,
+  MOCK_MODELS,
+  MOCK_PERMISSION_MODES,
+  mockRuntimeDefaults,
+} from "@/lib/mock/settings";
 
 export function RuntimeDefaultsPanel() {
   const [defaults, setDefaults] = useState(mockRuntimeDefaults);
@@ -67,6 +72,31 @@ export function RuntimeDefaultsPanel() {
           value={defaults.memoryLimitChars}
           onChange={(e) => setDefaults((d) => ({ ...d, memoryLimitChars: Number(e.target.value) }))}
         />
+      </div>
+      <div id="anchor-default-permission-mode" className="flex flex-col gap-1.5 rounded-md sm:col-span-2">
+        <Label htmlFor="default-permission-mode" className="text-xs text-ink-3">
+          既定の permissionMode
+        </Label>
+        <Select
+          value={defaults.defaultPermissionMode}
+          onValueChange={(v) =>
+            setDefaults((d) => ({ ...d, defaultPermissionMode: v as typeof d.defaultPermissionMode }))
+          }
+        >
+          <SelectTrigger id="default-permission-mode" className="h-8 w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {MOCK_PERMISSION_MODES.map((m) => (
+              <SelectItem key={m.value} value={m.value} className={m.danger ? "text-warn" : undefined}>
+                {m.label} — {m.description}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-ink-3">
+          新しい会話がここから始まる。会話ごとの切り替えは入力欄から行い、この既定は変わらない。
+        </p>
       </div>
       <p className="text-xs text-ink-3 sm:col-span-3">
         Project は個別に上書きできる。この画面の値は上書きしていない Project に効く。

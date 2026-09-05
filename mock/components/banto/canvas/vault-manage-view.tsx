@@ -103,7 +103,7 @@ function NoteEditor({ alias }: { alias: MockVaultAlias }) {
       </PopoverTrigger>
       <PopoverContent align="start">
         <Label htmlFor={`note-${alias.id}`} className="text-xs text-ink-3">
-          何用か——値ではないので AI にも見せてよい（§2.1 A節）
+          何用か——値ではないので AI にも見せてよい
         </Label>
         <Textarea
           id={`note-${alias.id}`}
@@ -327,7 +327,7 @@ function GroupManageDialog({
           <DialogTitle>{impl?.name ?? implementationId} のグループを管理</DialogTitle>
           <DialogDescription>
             Project（または instance 全体）ごとに、この backend のどのグループを使うか紐付ける。2台のホストで
-            同じ backend・同じグループを割り当てれば、それが共有の合図になる（v4-modules.md §2.1）。
+            同じ backend・同じグループを割り当てれば、それが共有の合図になる。
           </DialogDescription>
         </DialogHeader>
 
@@ -401,7 +401,7 @@ function GroupManageDialog({
         <p className="border-t border-border pt-3 text-xs text-ink-3">
           backend によっては、グループの作成自体に事前の API 呼び出しが要る（例：Infisical の Folder）。
           事前作成が不要な backend（HashiCorp Vault の path プレフィックス等）では、ここでの「作る」は
-          単に一覧に加わるだけで実質なにもしない（v4-modules.md §2.1 D節 `createGroup`）
+          単に一覧に加わるだけで実質なにもしない
         </p>
 
         <DialogFooter>
@@ -469,7 +469,7 @@ export function VaultManageView() {
           <p className="text-sm font-medium text-foreground">Vault を管理</p>
         </div>
         <p className="mt-1 text-xs text-ink-3">
-          複数の Vault 実装を横断して確認・編集する（v4-modules.md §2.1）。ここに出るのは alias の存在・種別・
+          複数の Vault 実装を横断して確認・編集する。ここに出るのは alias の存在・種別・
           用途・使用状況だけ——値はどの実装にも表示せず、banto にも残らない
         </p>
       </div>

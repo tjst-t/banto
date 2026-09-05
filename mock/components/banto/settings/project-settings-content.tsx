@@ -43,11 +43,13 @@ import { DisableImpactDialog } from "@/components/banto/settings/disable-impact-
 import { closeProject, getActiveProjects, getProject } from "@/lib/mock/projects";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import {
+  getBreaksIfDisabled,
   getImplementation,
   getProjectModuleLinks,
   getProjectOverrides,
   mockCredentials,
   getRoles,
+  MOCK_PERMISSION_MODES,
   mockRuntimeDefaults,
 } from "@/lib/mock/settings";
 import type { MockModuleImplementation, MockProjectOverrides } from "@/lib/mock/types";
@@ -161,7 +163,7 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
             open={removeTarget !== null}
             onOpenChange={(o) => !o && setRemoveTarget(null)}
             targetName={removeTarget ? `${removeTarget.name}（${project.name}）` : ""}
-            breaks={removeTarget?.breaksIfDisabled ?? []}
+            breaks={removeTarget ? getBreaksIfDisabled(removeTarget) : []}
             onConfirm={() => setRemoveTarget(null)}
           />
         </div>
@@ -233,6 +235,36 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
                 value={overrides.memoryLimitChars ?? mockRuntimeDefaults.memoryLimitChars}
                 onChange={(e) => patch({ memoryLimitChars: Number(e.target.value) })}
               />
+            </CascadeRow>
+
+            <CascadeRow
+              id="override-permission-mode"
+              label="既定の permissionMode"
+              inheritedLabel={mockRuntimeDefaults.defaultPermissionMode}
+              overridden={overrides.defaultPermissionMode !== undefined}
+              onToggle={(on) =>
+                patch({
+                  defaultPermissionMode: on ? mockRuntimeDefaults.defaultPermissionMode : undefined,
+                })
+              }
+            >
+              <Select
+                value={overrides.defaultPermissionMode}
+                onValueChange={(v) =>
+                  patch({ defaultPermissionMode: v as MockProjectOverrides["defaultPermissionMode"] })
+                }
+              >
+                <SelectTrigger className="h-8 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {MOCK_PERMISSION_MODES.map((m) => (
+                    <SelectItem key={m.value} value={m.value} className={m.danger ? "text-warn" : undefined}>
+                      {m.label} — {m.description}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </CascadeRow>
 
             <CascadeRow

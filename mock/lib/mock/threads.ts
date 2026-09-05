@@ -135,19 +135,62 @@ const bantoBaseScript: MockThread["script"] = {
     },
     {
       // 承認ゲート（§6.0・§6.4）の実演。Elicitation と違い、tool はまだ
-      // 呼ばれていない——承認して初めて実行される
+      // 呼ばれていない——承認して初めて実行される。承認用の別 tool は無い
+      // ——Shell の tool は runCommand 1本だけ（v4-modules.md §2.3）
       match: /dist|削除|rm -rf/i,
       steps: [
         { t: "delay", ms: 300 },
         { t: "text", text: "dist/ ディレクトリを削除します。破壊的な操作なので、実行前に確認します。" },
         {
           t: "approval",
-          name: "banto_shell_exec",
-          args: { command: "rm -rf dist/" },
-          result: { stdout: "", exitCode: 0 },
+          name: "banto_shell_run_command",
+          args: { command: "rm -rf dist/", cwd: "packages/core" },
+          result: { stdout: "", stderr: "", exitCode: 0, timedOut: false },
         },
         { t: "delay", ms: 300 },
         { t: "text", text: "了解しました。" },
+      ],
+    },
+    {
+      // Shell Module の runCommand（v4-modules.md §2.3）——tool はこれ1本だけで、
+      // 承認ゲートもこの tool 自身に掛かる。承認ゲートに見せるのは「コマンド
+      // 文字列＋使われる alias の一覧」まで：AI の文脈にも承認画面にも
+      // alias 名（NPM_TOKEN=alias:npm-registry-token）しか出ず、値は一度も出ない（D3）
+      match: /npm publish|npm install|shell|コマンドを実行/i,
+      steps: [
+        { t: "delay", ms: 300 },
+        { t: "text", text: "パッケージを公開します。公開に必要なトークンは Vault の alias から注入します。" },
+        {
+          t: "approval",
+          name: "banto_shell_run_command",
+          args: {
+            command: "npm publish",
+            cwd: "packages/core",
+            timeout: 120,
+            envSecrets: { NPM_TOKEN: "npm-registry-token" },
+            secretFiles: { ".npmrc": "npm-registry-npmrc" },
+          },
+          result: {
+            stdout: "npm notice Publishing to https://registry.npmjs.org/\n+ banto-mock@0.1.0",
+            stderr: "",
+            exitCode: 0,
+            timedOut: false,
+          },
+        },
+        {
+          // runCommand 自身の承認とは別の、もう1段の確認（v4-frontend.md
+          // 「Module 間中継の承認」）。alias から値を取るのは Shell ではなく
+          // Vault で、その呼び出しは host が中継する——中継は Runner の tool 一覧に
+          // 載らない tool（visibility: module）なので、AI ではなく host が発生源。
+          // 同じ組み合わせは Project 内で2回目から自動承認になる
+          t: "relay",
+          caller: "banto.shell",
+          target: "banto.vault",
+          tool: "resolveAlias",
+          reason: "runCommand に渡す alias（NPM_TOKEN・.npmrc）の値を、実行の直前に取り出すため",
+        },
+        { t: "delay", ms: 200 },
+        { t: "text", text: "公開しました。承認画面にもカードにも出ているのは alias 名だけで、トークンの値そのものはこの会話に一度も出ていません。" },
       ],
     },
     {
@@ -156,7 +199,7 @@ const bantoBaseScript: MockThread["script"] = {
         { t: "delay", ms: 400 },
         {
           t: "text",
-          text: "（ダミー応答）Step 2 の会話ビューはまだ台本を再生しているだけです。tool 呼び出しの表示を見るには「worktree を教えて」、判断待ちの表示を見るには「メモリの状況は？」、承認ゲートの表示を見るには「distを削除して」、inline表示を見るには「差分を見せて」、ファイルプレビューを見るには「READMEを見せて」、FileSystem の編集差分を見るには「ファイルを編集して」のように送ってみてください。",
+          text: "（ダミー応答）Step 2 の会話ビューはまだ台本を再生しているだけです。tool 呼び出しの表示を見るには「worktree を教えて」、判断待ちの表示を見るには「メモリの状況は？」、承認ゲートの表示を見るには「distを削除して」、inline表示を見るには「差分を見せて」、ファイルプレビューを見るには「READMEを見せて」、FileSystem の編集差分を見るには「ファイルを編集して」、alias を使う承認ゲートを見るには「npm publishして」のように送ってみてください。",
           charMs: 12,
         },
       ],

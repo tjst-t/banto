@@ -11,11 +11,12 @@ import { NotificationDemoTrigger } from "./notification-demo-trigger";
 const DEMO_PROMPTS: readonly { label: string; prompt: string }[] = [
   { label: "tool 呼び出し", prompt: "worktree を教えて" },
   { label: "判断待ち（Elicitation）", prompt: "メモリの状況は？" },
-  { label: "承認ゲート", prompt: "distを削除して" },
+  { label: "承認ゲート（Shell）", prompt: "distを削除して" },
   { label: "inline 表示", prompt: "差分を見せて" },
   { label: "fullscreen 表示", prompt: "fullscreenで見せて" },
   { label: "ファイルプレビュー", prompt: "READMEを見せて" },
   { label: "ファイル編集の差分", prompt: "ファイルを編集して" },
+  { label: "Shell の runCommand（alias 注入・入れ子の承認）", prompt: "npm publishして" },
 ];
 
 export function DemoHints() {

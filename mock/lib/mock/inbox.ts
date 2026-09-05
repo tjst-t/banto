@@ -164,3 +164,14 @@ export function addInboxItem(item: MockInboxItem): void {
   inboxItems = [item, ...inboxItems];
   notifyMockStoreChange();
 }
+
+/**
+ * 決着したので一覧から取り除く（解決済みは状態として保持しない、Event Store の射影）。
+ * 会話側のカードで答えた判断待ちが受信箱に残り続けないようにするために要る。
+ */
+export function removeInboxItem(id: string): void {
+  const next = inboxItems.filter((item) => item.id !== id);
+  if (next.length === inboxItems.length) return;
+  inboxItems = next;
+  notifyMockStoreChange();
+}

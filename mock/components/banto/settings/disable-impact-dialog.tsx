@@ -34,12 +34,24 @@ export function DisableImpactDialog({
           <AlertDialogTitle>{targetName} を無効化しますか</AlertDialogTitle>
           <AlertDialogDescription asChild>
             <div className="space-y-2">
-              <p>切り替えは今すぐ効きます。次の tool は、次に呼ばれた瞬間はっきり断ります：</p>
-              <ul className="list-disc space-y-0.5 pl-5 text-sm text-foreground">
-                {breaks.map((b) => (
-                  <li key={b}>{b}</li>
-                ))}
-              </ul>
+              {breaks.length === 0 ? (
+                <p>
+                  切り替えは今すぐ効きます。この役割を必須として依存している Module は
+                  いま無いので、断るものはありません。
+                </p>
+              ) : (
+                <>
+                  <p>
+                    切り替えは今すぐ効きます。次の Module は、この役割を必要とする操作を
+                    次に呼ばれた瞬間はっきり断ります：
+                  </p>
+                  <ul className="list-disc space-y-0.5 pl-5 text-sm text-foreground">
+                    {breaks.map((b) => (
+                      <li key={b}>{b}</li>
+                    ))}
+                  </ul>
+                </>
+              )}
             </div>
           </AlertDialogDescription>
         </AlertDialogHeader>

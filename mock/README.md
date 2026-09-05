@@ -8,6 +8,26 @@
 決まったことは `../docs/specs/v4-architecture.md` に書く。このREADMEは
 **モックの実装がどこまで進んだか**だけを追う——仕様の決定はここに書かない。
 
+## 位置づけの変化（Phase 1 着手後、決定・2026-09-03）
+
+**Phase 1（Vault・Shell・ファイル）の本実装ができた時点で、これら3 Module に
+関するこのモックの中身は「正」ではなくなる。** 真実は一箇所（規則3）——
+本物の実装ができれば、そちらが唯一の真実になり、このモックの該当部分は
+**当時どう決めたかを示す凍結された記録**として残るだけになる。以後、
+Vault・Shell・ファイルの部分を本物に追随させて更新し続けることはしない。
+
+**このモック自体は削除しない。** ただし主戦場ではなくなる：
+
+- **既存の Canvas・設定面・承認ゲートの型に乗るだけの新 Module**（Phase 3 以降）
+  は、このモックではなく**本物の banto に UI 専用のスタブ Module を繋いで検証する**
+  ——本物の MCP 契約・postMessage ハンドシェイク・承認ゲートの配線を実際に
+  通すことで、見た目だけでなく「契約として噛み合うか」も同時に確認できる。
+  日常使いのインスタンスを壊さないよう、別データディレクトリ・別ポートの
+  検証用インスタンスを使う
+- **本当に新しい UI パターン**（既存の型で表現できない画面）を模索する
+  段階でだけ、このモックを引っ張り出して使う——高速に何パターンも試せる
+  価値は変わらず残っている
+
 ## 起動
 
 ```bash
@@ -74,7 +94,10 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
   セキュリティ境界の根。
 - **Disable impact dialog**（`DisableImpactDialog`）——役割の実装を無効化する前に、何が断るかを見せてから確定する。階層1・階層2の両方で共有
 - **常設の入口**（item17、決定）：Project rail・モバイルの上部バーに設定アイコンを常設。Command Palette だけに頼らない
-- Vaultバックエンドが複数あるときの「他バックエンドへ移行」ボタンは、人専用の操作であることが分かるUIだけ置いた（実際の移行ロジックは無い）
+- Vaultバックエンドが複数あるときの「他バックエンドへ移行」ボタンは**置いていない**——
+  `migrateTo`は実行主体・失敗時の部分移行の扱いが未設計（`docs/specs/v4-modules.md` §5 item 7）
+  なので、UIだけ先に置くと「もう決まっている」ように見える（下記2026-09-02の削除、
+  および2026-09-03に`role-list`側に残っていた同じボタンの削除）
 
 ### 階層2をSheetから`SettingsShell`共有レイアウトへ（2026-09-02）
 - **発端**：`docs/notes/2026-09-02-role-dependency-resolution.md`の議論で、
@@ -217,7 +240,7 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
 - レビューで「受信箱・Project設定もDialogに寄せられるか」と聞かれ、技術的には可能
   （shadcnの`Sheet`は`Dialog`と同じRadixプリミティブが土台）と答えた上で、
   「一度きりの操作か、読みながら長く滞在するか」という基準を明文化した
-  （`docs/specs/v4-architecture.md` §6.6）
+  （`docs/specs/v4-frontend.md` §6.6——2026-09-02、`v4-architecture.md` §6 から分離）
 - 既存の実装はこの基準にすでに沿っていた（見直しは不要だった）：
   Dialog＝Command Palette・履歴（Archive）・新規Project作成・確認ダイアログ、
   Sheet＝受信箱・Project設定
@@ -339,7 +362,139 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
   のとおり実行主体・失敗時の扱いが未設計のまま置いていたのはレビュー指摘で
   発覚。**未定義のまま置いておくと「もう決まっている」ように見える**ので、
   必要性が見えるまで一旦削除（規則7）
+- **削除しきれていなかった**（2026-09-03のレビュー指摘）——VaultUI（`vault-manage-view.tsx`）
+  からは消えていたが、`/settings`のrole一覧（`role-list.tsx`、Vault役割に実装が
+  2つ以上あるときだけ出る）に同じボタンが残っていた。同じ理由でこちらも削除
 - Playwrightで検索・種別フィルタ・対象フィルタの絞り込みを実測して確認
+
+### Shell Module（2026-09-02）
+- `docs/specs/v4-modules.md`の Shell の面の決定を、既存の FileSystem Module と同じ
+  作り込みの型（2ペインのファイルブラウザ等）までは踏み込まず、設計の要点だけ画面で
+  確認できる最小限の形で追加した——ユーザー指示「一応追加しておいて」に合わせた分量。
+  tool は`runCommand`1本（会話中は`banto_shell_run_command`という名前で登場）で、
+  バックグラウンド実行用の複数toolは意図的に作っていない
+- **会話内のインラインカード**（`components/banto/thread/shell-command-card.tsx`）——
+  `command`/`cwd`/`timeout`をヘッダに、モノスペースの`$ command`ブロック、
+  `envSecrets`/`secretFiles`/`sshIdentity`はalias名だけをバッジで見せ「値はAIの文脈に
+  出ない」旨を添える、stdout/stderr/exitCodeは12行を超えたら折りたたむ。既存の
+  `ApprovalToolCard`/`InlineModuleView`と同じ置き場・呼び出し規約
+  （`human-tool-card.tsx`のtoolName分岐）に乗せた——Shellはresourceを持たないので
+  InlineModuleView（Module自身のCanvasコンテンツを埋め込む経路）は使わず専用カードにした
+- **launcherパネル**（`components/banto/canvas/shell-terminal-view.tsx`、
+  `banto.shell:terminal`としてCanvasに登録）——コマンド入力→実行→履歴に積む、を
+  繰り返すだけの簡易パネル。対話的PTYターミナルは作っていない（xterm.js等の重い依存も
+  追加していない）——`cd`が次のコマンドへ引き継がれないことをパネル上の注記と、
+  実際に`cd`を打つとその旨を返す振る舞いの両方で示した
+- **Command Palette**：`banto.shell`の`MockModuleImplementation`に`launchers`
+  （「ターミナルを開く」）を1件追加しただけで、既存の`getLaunchersForProject`→
+  `palette.ts`の導出経路にそのまま乗った——Shell専用のパレット連携コードは書いていない
+  （数えきれない資源が無いのでcompletion統合は元から無い、仕様どおり）
+- **デモ**：`lib/mock/threads.ts`に「npm publishして」等にマッチする台本を1本追加、
+  `envSecrets`で`NPM_TOKEN`をalias経由で注入する例を実演。`DemoHints`にも
+  ボタンを追加した
+
+### レビュー指摘の反映——承認ゲートとModule宣言（2026-09-03）
+
+`docs/notes/2026-09-02-implementation-readiness-review.md`のB2・B5・C2・C3。
+
+- **B2：承認用の別tool（`banto_shell_exec`）を廃止**——Shellのtoolは`runCommand`
+  1本だけ（`docs/specs/v4-modules.md` §2.3）なのに、承認ゲート用に別toolが併存し、
+  承認画面には生JSON（`{"command": "rm -rf dist/"}`）が出るだけだった。
+  **承認ゲートはtoolの種類ではなく呼び出しの状態**、と整理して
+  `ShellCommandCard`を2段階（承認待ち→実行後）にした——承認待ちでは
+  コマンド文字列と**使われるaliasの一覧だけ**（`envSecrets`/`secretFiles`/
+  `sshIdentity`のキーとalias名、値は出さない）を見せ、許可すると同じカードが
+  stdout/stderr/exitCodeに変わる。`adapter.ts`の`APPROVAL_TOOL_NAME`（単数の
+  固定名）は`APPROVAL_TOOL_NAMES`（承認ゲートを通りうるtool名の集合）に置き換え、
+  承認ステップは自分の`name`で解決する。専用カードを持たないtoolが承認ゲートに
+  掛かったときは、従来どおり汎用の`ApprovalToolCard`が出る（判別は
+  `isApprovalGated(toolCallId)`）。デモ会話は「distを削除して」（コマンドのみ）と
+  「npm publishして」（`envSecrets`＋`secretFiles`）の2本とも承認ゲート経由にした
+- **B5：`dependsOn`/`visibility`/`handlesSecrets`を型に入れた**——
+  `MockModuleImplementation`に`dependsOn: {role, required}[]`・
+  `tools: {name, visibility}[]`（`agent`/`module`/`admin`）・`handlesSecrets`を
+  追加し、既存の9実装すべてに実際の値を入れた。`mcpServersJson`の
+  `_meta["dev.banto/module"]`にも同じ3つを載せ、読み取りは
+  `parseMcpServersEntry()`（`lib/mock/settings.ts`）1箇所に集約——
+  `AddModuleDialog`（新規取り込み）と`EditModuleDialog`（既存の書き換え）が
+  同じ関数を通り、**`dependsOn`を実際に読んで格納する**（以前は`satisfies[0]`
+  しか読まず、サンプルJSONの`dependsOn`は無視されていた）。不正な形は黙って
+  捨てず理由を返す（規則2）
+- **B5：`breaksIfDisabled`（手書きの写し）を廃止し、`dependsOn`から導出**——
+  `getBreaksIfDisabled(impl, isEnabled?)`が「この役割を`required: true`で依存
+  している、いま有効なModule」を集める。同じ役割の別実装がまだ有効なら役割は
+  満たされたままなので、断るものは無い。役割一覧のトグルはローカル状態なので、
+  判定にはストアではなくその状態を渡す（渡さないと導出結果が常に空になる、
+  実際に踏んだ）。`handlesSecrets: true`＋`in-process`の機械チェックは
+  `getIsolationViolation()`として実装し、役割一覧の行に赤字で出す
+- **C2：画面に出る文字列の節番号を除去**——`vault-manage-view.tsx`4箇所・
+  `edit-module-dialog.tsx`・`add-module-dialog.tsx`・`lib/mock/settings.ts`
+  （role説明・aliasのnote）。`//`と`{/* */}`のコメントは対象外（画面に出ない）。
+  Playwrightで`/settings`・VaultUI Canvasの表示テキストに`§`が無いことを確認
+- **C3：`role-list`に残っていた「他バックエンドへ移行」ボタンを削除**（上記）
+
+### composer から permissionMode を選ぶ（2026-09-03）
+
+`docs/specs/v4-frontend.md` の「`permissionMode` は Thread 単位で選べる」を実装した。
+
+- **composer の常設インジケータ兼切り替え**（`components/banto/thread/composer-permission-mode-menu.tsx`）
+  ——既存の `ComposerModelEffortMenu` と同じ `composerActionSlot` に並べた。Agent SDK の6値
+  （`auto`/`default`/`acceptEdits`/`plan`/`dontAsk`/`bypassPermissions`）をドロップダウンで選ぶ。
+  各値の表示ラベル・説明・危険度は `MOCK_PERMISSION_MODES`（`lib/mock/settings.ts`）1箇所が出どころで、
+  composer・階層1・階層2が同じ配列を引く（規則3）
+- **状態は Thread 単位・セッション内**（`lib/mock/permission-mode.ts`）——保存するのは
+  「その Thread で人が明示的に切り替えた値」だけで、切り替えていない Thread は
+  Project 上書き → instance 既定のカスケードから毎回導出する（導出できる値を保存しない）。
+  他の Thread・新しい会話には影響しない
+- **危険な見た目は `bypassPermissions` だけ**——トリガーが warn 色（`bg-warn-soft`/`text-warn`＋盾アイコン）に変わり、
+  選ぶときに確認ダイアログを1枚挟む。他の5値は通常の見た目のまま
+- **承認ゲートのスキップ**——`lib/mock/adapter.ts` の `approval` ステップに分岐を1つ足しただけ：
+  `bypassPermissions` のときは承認カードを作らず、普通の tool 呼び出しとして即座に結果を返す。
+  何が黙って実行されたか分からなくならないよう、`wasApprovalBypassed(toolCallId)` を持たせて
+  `ShellCommandCard` に「確認をスキップ（bypassPermissions）」の警告バッジを出し、
+  `HumanAwareToolGroup` の自動展開条件にも足した（畳まれたままだと一番見えてほしいものが見えない）
+- **設定画面**——階層1（`/settings` の「既定値」に `defaultPermissionMode` の Select、
+  検索索引にも追加）と階層2（Project 設定の「既定値の上書き」に `CascadeRow`）の両方に置いた
+- Playwrightで確認：初期表示が `auto`／他の値への切り替え／`bypassPermissions` の確認ダイアログと
+  warn 色（`getComputedStyle` で実測）／「distを削除して」デモが bypass では承認待ちを飛ばして
+  `exit 0` まで出ること／`default` に戻すと承認ボタンが再び出ること／階層1・階層2の表示
+
+### Module 間中継の承認（入れ子の承認、2026-09-03）
+
+`docs/specs/v4-frontend.md` の「Module 間中継の承認（入れ子の承認）」を実装した。
+**新しい機構は作らず、既存の3つ（判断待ち・承認ゲートの見た目・hold-the-line）を組み合わせる**
+という仕様のとおり、承認ゲートと同じ経路（`unstable_humanToolNames` + `addResult`）に乗せた。
+
+- **台本のステップに `relay` を追加**（`lib/mock/types.ts`）——直前の tool 呼び出しの
+  **ハンドラの内側**で、host が別 Module の tool を中継する場面。「npm publishして」デモの
+  `runCommand`（`envSecrets`/`secretFiles`）の直後に1本置き、`banto.shell` → `banto.vault` の
+  `resolveAlias` を呼ぶ形にした
+- **キャッシュは `lib/mock/relay-approval.ts`**——鍵は「Project ＋ 呼び出し元・宛先・tool 名」
+  （アーキ仕様 §2.5 の粒度）。初回だけ人に聞き、2回目以降は自動承認。**このファイルは
+  `permission-mode.ts` を参照しない**——`bypassPermissions` が素通りさせるのは `canUseTool`
+  だけで、中継の承認は別の軸（決定・2026-09-03）。参照しない構造そのもので表現した
+- **カードは `RelayApprovalCard`**（`components/banto/thread/relay-approval-card.tsx`）——
+  承認ゲートと同じ warn 色の枠。呼び出し元・宛先・tool をバッジで出し、自動承認された回は
+  同じカードが「自動承認——この Project で承認済み」の見た目に変わる
+- **受信箱にも計上**——ゲートを作った時点で `addInboxItem`（Elicitation と同じ器、発生源は
+  host）。会話側で答えたら `removeInboxItem`（新設）で取り下げる。**id は toolCallId から
+  導出**して写しを持たない
+- **外側の結果は中継が決着してから届く**（hold-the-line）——承認された `runCommand` の
+  result にはいったん保留の印（`PENDING_RELAY_RESULT`）を置き、実際の stdout/exitCode は
+  中継の決着後に adapter 側の store から `ShellCommandCard` へ届ける。assistant-ui の
+  メッセージは**追記しかできず、過去の part の result を後から書き換えられない**ため、
+  後から届く値だけはこちら側で持つ必要がある（`getDeliveredResult`＋`useMockStoreVersion`）
+- **中継を拒否したらそこで止まる**（規則2）——外側の `runCommand` は「中継を拒否したので、
+  コマンドは実行していません」になり、台本の続き（「公開しました」）は再生しない
+- **踏んだ罠**：`run()` の再開位置を「最初の human/approval ステップを探す」形で求めていたのを、
+  **1つの応答に待ちが2つ以上ある**（runCommand の承認 → 内側の中継の承認）ようになったので
+  `gateResumeIndex`（待ちを作った時点で再開位置を持たせる）に置き換えた。**human ステップに
+  だけ登録を書き忘れ**、既存の Elicitation デモが「答えると最初から再生し直す」壊れ方をした
+  ——Playwright の回帰確認（既存デモを一通り流す）で見つかった。仕様の変更点だけを測ると
+  取りこぼす
+- Playwrightで確認：初回の入れ子承認→受信箱への計上→許可で結果が届く→受信箱から消える／
+  2回目は自動承認で待ちが出ない／中継の拒否で止まる／既存の Elicitation・承認ゲートのデモの回帰／
+  **`bypassPermissions` では `runCommand` 自身の承認は飛ぶが、入れ子の承認は出る**
 
 ## まだ実装していない
 

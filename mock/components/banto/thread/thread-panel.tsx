@@ -11,9 +11,10 @@ import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { CanvasAutoOpen } from "@/components/banto/thread/canvas-auto-open";
 import { ComposerModelEffortMenu } from "@/components/banto/thread/composer-model-effort-menu";
+import { ComposerPermissionModeMenu } from "@/components/banto/thread/composer-permission-mode-menu";
 import { DemoHints } from "@/components/banto/thread/demo-hints";
 import { HumanAwareToolGroup, HumanToolCard } from "@/components/banto/thread/human-tool-card";
-import { APPROVAL_TOOL_NAME, createMockChatModelAdapter, HUMAN_TOOL_NAME } from "@/lib/mock/adapter";
+import { APPROVAL_TOOL_NAMES, createMockChatModelAdapter, HUMAN_TOOL_NAME } from "@/lib/mock/adapter";
 import { getProject } from "@/lib/mock/projects";
 import { mockRuntimeDefaults } from "@/lib/mock/settings";
 import { seedToInitialMessages } from "@/lib/mock/seed";
@@ -83,6 +84,8 @@ export function ThreadPanel({
       adapter={adapter}
       initialMessages={initialMessages}
       placeholder={placeholder}
+      threadId={thread.id}
+      projectId={thread.projectId}
       // デモの台本（threads.ts）は banto Project の Base Thread にしか無い
       showDemoHints={threadId === "banto-base"}
       onOpenCanvas={onOpenCanvas}
@@ -95,6 +98,8 @@ function ThreadRuntime({
   adapter,
   initialMessages,
   placeholder,
+  threadId,
+  projectId,
   showDemoHints,
   onOpenCanvas,
   markers,
@@ -102,13 +107,15 @@ function ThreadRuntime({
   adapter: ReturnType<typeof createMockChatModelAdapter>;
   initialMessages: ReturnType<typeof seedToInitialMessages>;
   placeholder: string;
+  threadId: string;
+  projectId: string;
   showDemoHints: boolean;
   onOpenCanvas?: (moduleId: string, viewId: string) => void;
   markers: readonly ThreadMarker[];
 }) {
   const runtime = useLocalRuntime(adapter, {
     initialMessages,
-    unstable_humanToolNames: [HUMAN_TOOL_NAME, APPROVAL_TOOL_NAME],
+    unstable_humanToolNames: [HUMAN_TOOL_NAME, ...APPROVAL_TOOL_NAMES],
   });
 
   const hint: ReactNode = (
@@ -124,10 +131,13 @@ function ThreadRuntime({
       <Thread
         placeholder={placeholder}
         composerActionSlot={
-          <ComposerModelEffortMenu
-            defaultModel={mockRuntimeDefaults.model}
-            defaultEffort={mockRuntimeDefaults.effort}
-          />
+          <>
+            <ComposerModelEffortMenu
+              defaultModel={mockRuntimeDefaults.model}
+              defaultEffort={mockRuntimeDefaults.effort}
+            />
+            <ComposerPermissionModeMenu threadId={threadId} projectId={projectId} />
+          </>
         }
         components={{ ToolFallback: HumanToolCard, ToolGroup: HumanAwareToolGroup }}
         composerHint={showDemoHints || markers.length > 0 ? hint : undefined}

@@ -1,7 +1,10 @@
 import type {
   MockCredential,
   MockEffortLevel,
+  MockModuleDependency,
   MockModuleImplementation,
+  MockModuleTool,
+  MockPermissionMode,
   MockProjectModuleLink,
   MockProjectOverrides,
   MockRole,
@@ -21,7 +24,42 @@ export const mockRuntimeDefaults: MockRuntimeDefaults = {
   model: "claude-sonnet-5",
   effort: "medium",
   memoryLimitChars: 20000,
+  // 既定は auto（モデル分類器が判定し、人に上げるのは必要なものだけ）
+  // ——承認依頼ストーム対策を Agent SDK に委ねる方針（v4-frontend.md §6.4）
+  defaultPermissionMode: "auto",
 };
+
+/**
+ * `permissionMode` の6値と、人向けの見せ方（v4-frontend.md §6.4 の表）。
+ * 危険なのは `bypassPermissions` だけ——`danger` はその1つにしか立たない。
+ * 表示ラベルの出どころはここ1箇所（composer のインジケータ・設定画面の
+ * 選択欄・カスケード表示が同じ配列を引く、規則3）
+ */
+export const MOCK_PERMISSION_MODES: readonly {
+  value: MockPermissionMode;
+  label: string;
+  description: string;
+  danger: boolean;
+}[] = [
+  { value: "auto", label: "auto", description: "既定——モデルが判定し、必要なものだけ人に聞く", danger: false },
+  { value: "default", label: "default", description: "毎回確認する", danger: false },
+  { value: "acceptEdits", label: "acceptEdits", description: "ファイル編集は自動で承認する", danger: false },
+  { value: "plan", label: "plan", description: "計画を立てるだけ——実行しない", danger: false },
+  { value: "dontAsk", label: "dontAsk", description: "事前に許可されていないものは黙って拒否する", danger: false },
+  {
+    value: "bypassPermissions",
+    label: "bypassPermissions",
+    description: "確認をすべて飛ばして自動承認する",
+    danger: true,
+  },
+];
+
+export function getPermissionModeInfo(mode: MockPermissionMode): (typeof MOCK_PERMISSION_MODES)[number] {
+  const found = MOCK_PERMISSION_MODES.find((m) => m.value === mode);
+  // 6値は型で閉じているので実際には起きない——起きたら黙って既定へ落とさず止める（規則2）
+  if (!found) throw new Error(`unknown permissionMode: ${mode}`);
+  return found;
+}
 
 /** Agent SDK の Options.model が受け付ける文字列（選択肢はモック用の代表例） */
 export const MOCK_MODELS: readonly string[] = [
@@ -43,16 +81,26 @@ export const MOCK_EFFORT_LEVELS: readonly MockEffortLevel[] = [
  * mcpServersJson を組み立てる（§5.1）——role の宣言は `_meta["dev.banto/module"]`
  * に乗せる、追加した Add Module ダイアログと同じ形。banto 組み込み実装も
  * 見た目上は普通の mcpServers エントリとして持つ（実際にどう起動するかは
- * 本実装の話、モックでは形だけ揃える）
+ * 本実装の話、モックでは形だけ揃える）。`satisfies`／`dependsOn`／
+ * `handlesSecrets` は実装オブジェクトの同じフィールドから組む——JSON と型が
+ * 食い違わないように、出どころを1つにしておく（規則3）
  */
 function sampleMcpServersJson(
   serverName: string,
   command: string,
   args: readonly string[],
   satisfies: readonly RoleId[],
+  dependsOn: readonly MockModuleDependency[] = [],
+  handlesSecrets = false,
 ): string {
   return JSON.stringify(
-    { [serverName]: { command, args, _meta: { "dev.banto/module": { satisfies } } } },
+    {
+      [serverName]: {
+        command,
+        args,
+        _meta: { "dev.banto/module": { satisfies, dependsOn, handlesSecrets } },
+      },
+    },
     null,
     2,
   );
@@ -60,6 +108,17 @@ function sampleMcpServersJson(
 
 // item14「instance が新しい実装を知る」（§5.1）で増えるので mutable。
 // projects.ts/threads.ts と同じパターン——`notifyMockStoreChange` で購読側に知らせる
+const VAULT_TOOLS: readonly MockModuleTool[] = [
+  { name: "listAliases", visibility: "agent" },
+  { name: "resolveAlias", visibility: "module" },
+  { name: "startSshAgent", visibility: "module" },
+  { name: "createAlias", visibility: "admin" },
+  { name: "updateAlias", visibility: "admin" },
+  { name: "deleteAlias", visibility: "admin" },
+  { name: "listGroups", visibility: "admin" },
+  { name: "createGroup", visibility: "admin" },
+];
+
 let implementations: MockModuleImplementation[] = [
   {
     id: "banto.fs",
@@ -68,7 +127,14 @@ let implementations: MockModuleImplementation[] = [
     isolation: "in-process",
     builtin: true,
     enabled: true,
-    breaksIfDisabled: ["ファイルの読み書き tool", "Repo の worktree 操作"],
+    dependsOn: [],
+    tools: [
+      { name: "readFile", visibility: "agent" },
+      { name: "writeFile", visibility: "agent" },
+      { name: "editFile", visibility: "agent" },
+      { name: "listDirectory", visibility: "agent" },
+    ],
+    handlesSecrets: false,
     hasConfigSurface: true,
     launchers: [{ id: "browser", label: "ファイルブラウザを開く", viewId: "browser" }],
     mcpServersJson: sampleMcpServersJson("banto-fs", "node", ["./modules/fs/index.js"], ["filesystem"]),
@@ -80,8 +146,19 @@ let implementations: MockModuleImplementation[] = [
     isolation: "subprocess",
     builtin: true,
     enabled: true,
-    breaksIfDisabled: ["コマンド実行 tool", "alias 経由の秘密情報の注入"],
-    mcpServersJson: sampleMcpServersJson("banto-shell", "node", ["./modules/shell/index.js"], ["shell"]),
+    // envSecrets/secretFiles/sshIdentity は Vault の resolveAlias/startSshAgent
+    // 無しには成立しない——required: true
+    dependsOn: [{ role: "vault", required: true }],
+    tools: [{ name: "runCommand", visibility: "agent" }],
+    handlesSecrets: false,
+    launchers: [{ id: "terminal", label: "ターミナルを開く", viewId: "terminal" }],
+    mcpServersJson: sampleMcpServersJson(
+      "banto-shell",
+      "node",
+      ["./modules/shell/index.js"],
+      ["shell"],
+      [{ role: "vault", required: true }],
+    ),
   },
   {
     id: "banto.skills",
@@ -90,8 +167,19 @@ let implementations: MockModuleImplementation[] = [
     isolation: "in-process",
     builtin: true,
     enabled: true,
-    breaksIfDisabled: ["Skill の取り込み・配布"],
-    mcpServersJson: sampleMcpServersJson("banto-skills", "node", ["./modules/skills/index.js"], ["skills"]),
+    dependsOn: [{ role: "filesystem", required: false }],
+    tools: [
+      { name: "listSkills", visibility: "agent" },
+      { name: "installSkill", visibility: "agent" },
+    ],
+    handlesSecrets: false,
+    mcpServersJson: sampleMcpServersJson(
+      "banto-skills",
+      "node",
+      ["./modules/skills/index.js"],
+      ["skills"],
+      [{ role: "filesystem", required: false }],
+    ),
   },
   {
     id: "community.skill-hub",
@@ -99,7 +187,9 @@ let implementations: MockModuleImplementation[] = [
     name: "Skill Hub（第三者）",
     isolation: "subprocess",
     enabled: false,
-    breaksIfDisabled: ["Skill Hub 経由で配られている Skill"],
+    dependsOn: [],
+    tools: [{ name: "searchSkills", visibility: "agent" }],
+    handlesSecrets: false,
     mcpServersJson: sampleMcpServersJson("skill-hub", "npx", ["-y", "skill-hub-mcp"], ["skills"]),
   },
   {
@@ -109,7 +199,9 @@ let implementations: MockModuleImplementation[] = [
     isolation: "in-process",
     builtin: true,
     enabled: true,
-    breaksIfDisabled: ["サブエージェントへの依頼"],
+    dependsOn: [],
+    tools: [{ name: "delegate", visibility: "agent" }],
+    handlesSecrets: false,
     mcpServersJson: sampleMcpServersJson("banto-subagent", "node", ["./modules/subagent/index.js"], ["subagent"]),
   },
   {
@@ -119,9 +211,19 @@ let implementations: MockModuleImplementation[] = [
     isolation: "subprocess",
     builtin: true,
     enabled: true,
-    breaksIfDisabled: ["資格情報の登録・切り替え", "alias 経由の秘密情報の注入"],
+    dependsOn: [],
+    tools: VAULT_TOOLS,
+    // 平文の値を自分のコードで受け取る——したがって in-process は選べない
+    handlesSecrets: true,
     hasConfigSurface: true,
-    mcpServersJson: sampleMcpServersJson("banto-vault-local", "node", ["./modules/vault-sops/index.js"], ["vault"]),
+    mcpServersJson: sampleMcpServersJson(
+      "banto-vault-local",
+      "node",
+      ["./modules/vault-sops/index.js"],
+      ["vault"],
+      [],
+      true,
+    ),
   },
   {
     id: "hashicorp.vault",
@@ -129,13 +231,17 @@ let implementations: MockModuleImplementation[] = [
     name: "HashiCorp Vault",
     isolation: "subprocess",
     enabled: true,
-    breaksIfDisabled: ["この接続を参照している alias（下記）"],
+    dependsOn: [],
+    tools: VAULT_TOOLS,
+    handlesSecrets: true,
     hasConfigSurface: true,
     mcpServersJson: sampleMcpServersJson(
       "hashicorp-vault",
       "npx",
       ["-y", "@hashicorp/vault-mcp"],
       ["vault"],
+      [],
+      true,
     ),
   },
   {
@@ -145,10 +251,28 @@ let implementations: MockModuleImplementation[] = [
     isolation: "subprocess",
     builtin: true,
     enabled: true,
-    breaksIfDisabled: ["clone / worktree / GitHub 身元の割り当て"],
+    dependsOn: [
+      { role: "vault", required: true },
+      { role: "filesystem", required: false },
+    ],
+    tools: [
+      { name: "worktreeList", visibility: "agent" },
+      { name: "diff", visibility: "agent" },
+      { name: "clone", visibility: "agent" },
+    ],
+    handlesSecrets: false,
     hasConfigSurface: true,
     launchers: [{ id: "diff", label: "差分ビューを開く", viewId: "diff" }],
-    mcpServersJson: sampleMcpServersJson("banto-repo", "node", ["./modules/repo/index.js"], ["repo"]),
+    mcpServersJson: sampleMcpServersJson(
+      "banto-repo",
+      "node",
+      ["./modules/repo/index.js"],
+      ["repo"],
+      [
+        { role: "vault", required: true },
+        { role: "filesystem", required: false },
+      ],
+    ),
   },
   {
     id: "banto.vault-ui",
@@ -157,11 +281,20 @@ let implementations: MockModuleImplementation[] = [
     isolation: "in-process",
     builtin: true,
     enabled: true,
-    // 自身は秘密を持たない（vault役割には依存するだけ）ので in-process でよい——
-    // 鍵を持つものだけ subprocess にする、という判定基準（requirements C8b）どおり
-    breaksIfDisabled: ["Vault を横断して管理する画面"],
+    dependsOn: [{ role: "vault", required: true }],
+    tools: [],
+    // 値の発生源は Canvas（ブラウザの iframe）で、この Module のバックエンドは
+    // 経由しない——だから handlesSecrets: false のまま in-process でよい
+    // （要件 C8c の「扱う」の定義どおり）
+    handlesSecrets: false,
     launchers: [{ id: "manage", label: "Vault を管理", viewId: "manage" }],
-    mcpServersJson: sampleMcpServersJson("banto-vault-ui", "node", ["./modules/vault-ui/index.js"], ["vault-ui"]),
+    mcpServersJson: sampleMcpServersJson(
+      "banto-vault-ui",
+      "node",
+      ["./modules/vault-ui/index.js"],
+      ["vault-ui"],
+      [{ role: "vault", required: true }],
+    ),
   },
 ];
 
@@ -200,9 +333,49 @@ const roleDefs: readonly Omit<MockRole, "implementations">[] = [
     id: "vault-ui",
     name: "VaultUI",
     description:
-      "複数の Vault 実装を横断して alias を確認・編集する。AI には公開せず、admin 可視性の tool を host 中継経由で呼ぶ（v4-modules.md §2.1）。",
+      "複数の Vault 実装を横断して alias を確認・編集する。AI には公開せず、admin 可視性の tool を host 中継経由で呼ぶ。",
   },
 ];
+
+/**
+ * この実装を無効化すると何が断るか。**手書きの一覧は持たず、`dependsOn` から
+ * 導出する**（規則3：真実は一箇所）——「この役割に `required: true` で依存して
+ * いる、いま有効な Module」を集めるだけ。同じ役割を満たす別の実装がまだ有効なら
+ * 役割自体は満たされたままなので、断るものは無い。
+ */
+export function getBreaksIfDisabled(
+  impl: MockModuleImplementation,
+  /**
+   * 画面側が持っている「いまの有効/無効」（役割一覧のトグルは押した瞬間に
+   * ストアへ書き戻さないので、判定にはそちらを使う）。省略時はストアの値
+   */
+  isEnabled: (implementation: MockModuleImplementation) => boolean = (i) => i.enabled,
+): readonly string[] {
+  const roleStillSatisfied = implementations.some(
+    (i) => i.roleId === impl.roleId && i.id !== impl.id && isEnabled(i),
+  );
+  if (roleStillSatisfied) return [];
+  return implementations
+    .filter(
+      (i) =>
+        isEnabled(i) &&
+        i.id !== impl.id &&
+        i.dependsOn.some((d) => d.role === impl.roleId && d.required),
+    )
+    .map((i) => i.name);
+}
+
+/**
+ * 起動を拒否する組み合わせ（要件 C8c の機械チェック、v4-modules.md §2.1）——
+ * 平文の値を自分のコードで扱うと自己申告した Module は `in-process` で動かせない。
+ * 満たしていれば `null`、破っていれば理由の文字列を返す
+ */
+export function getIsolationViolation(impl: MockModuleImplementation): string | null {
+  if (impl.handlesSecrets && impl.isolation === "in-process") {
+    return "秘匿情報を扱うと申告している Module は in-process では起動できない";
+  }
+  return null;
+}
 
 /** role → 実装 の辞書を毎回組み直す——`implementations` は増減するので、焼き込んだ配列にしない */
 export function getRoles(): readonly MockRole[] {
@@ -231,21 +404,93 @@ export function getRoleForImplementation(implementationId: string): MockRole | u
  * 「instance が知っている」と「この Project が使う」は別の操作（§6.1）
  */
 export function createImplementation(
-  input: Omit<MockModuleImplementation, "enabled" | "breaksIfDisabled" | "mcpServersJson"> &
-    Partial<Pick<MockModuleImplementation, "enabled" | "breaksIfDisabled" | "mcpServersJson">>,
+  input: Omit<
+    MockModuleImplementation,
+    "enabled" | "dependsOn" | "tools" | "handlesSecrets" | "mcpServersJson"
+  > &
+    Partial<
+      Pick<
+        MockModuleImplementation,
+        "enabled" | "dependsOn" | "tools" | "handlesSecrets" | "mcpServersJson"
+      >
+    >,
 ): MockModuleImplementation {
   const impl: MockModuleImplementation = {
     enabled: true,
-    breaksIfDisabled: [],
+    dependsOn: [],
+    tools: [],
+    handlesSecrets: false,
     // レジストリ／server.json 由来（mcpServers の生JSONを人が書いていない経路）
     // は、この場で mcpServers 形式に変換して持つ——§5.1「mcpServersが唯一の
     // 真実」を、取り込み元によらず維持する
-    mcpServersJson: sampleMcpServersJson(input.id, "npx", ["-y", input.name], [input.roleId]),
+    mcpServersJson: sampleMcpServersJson(
+      input.id,
+      "npx",
+      ["-y", input.name],
+      [input.roleId],
+      input.dependsOn ?? [],
+      input.handlesSecrets ?? false,
+    ),
     ...input,
   };
   implementations = [...implementations, impl];
   notifyMockStoreChange();
   return impl;
+}
+
+/**
+ * `mcpServers` エントリの生JSONから、banto が要る宣言を1箇所で読み取る——
+ * `_meta["dev.banto/module"]` の `satisfies`／`dependsOn`／`handlesSecrets`
+ * （§5.1）。`AddModuleDialog`（新規取り込み）と `EditModuleDialog`（既存の
+ * 書き換え）が同じ関数を通る。読めない形は黙って捨てず、理由を返す（規則2）
+ */
+export type ParsedMcpServersEntry =
+  | {
+      ok: true;
+      serverName: string;
+      roleId: RoleId;
+      dependsOn: readonly MockModuleDependency[];
+      handlesSecrets: boolean;
+    }
+  | { ok: false; error: string };
+
+export function parseMcpServersEntry(json: string): ParsedMcpServersEntry {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return { ok: false, error: "JSON として読めない" };
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return { ok: false, error: "mcpServers のオブジェクトではない" };
+  }
+  const entries = Object.entries(parsed as Record<string, unknown>);
+  if (entries.length === 0) return { ok: false, error: "サーバー名が無い" };
+  const [serverName, entry] = entries[0];
+  const meta = (entry as { _meta?: Record<string, unknown> } | undefined)?._meta;
+  const moduleMeta = meta?.["dev.banto/module"] as
+    | { satisfies?: unknown; dependsOn?: unknown; handlesSecrets?: unknown }
+    | undefined;
+
+  const satisfies = moduleMeta?.satisfies;
+  const roleId = Array.isArray(satisfies) && typeof satisfies[0] === "string" ? satisfies[0] : undefined;
+  if (!roleId) return { ok: false, error: '_meta["dev.banto/module"].satisfies に role が無い' };
+
+  const rawDependsOn = moduleMeta?.dependsOn ?? [];
+  if (!Array.isArray(rawDependsOn)) {
+    return { ok: false, error: "dependsOn は配列で書く" };
+  }
+  const dependsOn: MockModuleDependency[] = [];
+  for (const d of rawDependsOn) {
+    if (typeof d !== "object" || d === null || typeof (d as { role?: unknown }).role !== "string") {
+      return { ok: false, error: 'dependsOn の各項目は { "role": "…", "required": true/false } の形で書く' };
+    }
+    const item = d as { role: string; required?: unknown };
+    dependsOn.push({ role: item.role, required: item.required === true });
+  }
+
+  const handlesSecrets = moduleMeta?.handlesSecrets === true;
+  return { ok: true, serverName, roleId, dependsOn, handlesSecrets };
 }
 
 /**
@@ -258,17 +503,14 @@ export function createImplementation(
 export function updateImplementationMcpServersJson(id: string, mcpServersJson: string): MockModuleImplementation | null {
   const idx = implementations.findIndex((i) => i.id === id);
   if (idx === -1) return null;
-  const parsed = JSON.parse(mcpServersJson) as Record<string, unknown>;
-  const [serverName, entry] = Object.entries(parsed)[0] ?? [];
-  if (!serverName) return null;
-  const meta = (entry as { _meta?: Record<string, unknown> } | undefined)?._meta;
-  const moduleMeta = meta?.["dev.banto/module"] as { satisfies?: readonly string[] } | undefined;
-  const roleId = moduleMeta?.satisfies?.[0];
-  if (!roleId) return null;
+  const parsed = parseMcpServersEntry(mcpServersJson);
+  if (!parsed.ok) return null;
   const updated: MockModuleImplementation = {
     ...implementations[idx],
-    name: serverName,
-    roleId,
+    name: parsed.serverName,
+    roleId: parsed.roleId,
+    dependsOn: parsed.dependsOn,
+    handlesSecrets: parsed.handlesSecrets,
     mcpServersJson,
   };
   implementations = implementations.map((i) => (i.id === id ? updated : i));
@@ -460,7 +702,7 @@ let vaultAliases: MockVaultAlias[] = [
     kind: "secret",
     implementationId: "banto.vault-local",
     path: "claude/work-oauth",
-    note: "Claude Max（仕事用）の資格情報。§2.8——instance 全体で共有",
+    note: "Claude Max（仕事用）の資格情報——instance 全体で共有",
     usedBy: ["core: Runner の資格情報選択"],
     lastUsedAt: "5時間前",
   },

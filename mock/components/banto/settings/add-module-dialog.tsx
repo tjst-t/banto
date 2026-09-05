@@ -28,7 +28,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { createImplementation, getRoles } from "@/lib/mock/settings";
+import {
+  createImplementation,
+  getRoles,
+  parseMcpServersEntry,
+  type ParsedMcpServersEntry,
+} from "@/lib/mock/settings";
 
 // 公式 MCP レジストリの検索結果（モック——実際には registry.modelcontextprotocol.io
 // への REST 呼び出しになる、§5.1）。role は `server.json` の `_meta` から分かる前提
@@ -258,7 +263,10 @@ const MCP_SERVERS_SAMPLE = `{
     "_meta": {
       "dev.banto/module": {
         "satisfies": ["shell"],
-        "dependsOn": ["vault"]
+        "dependsOn": [
+          { "role": "vault", "required": true }
+        ],
+        "handlesSecrets": false
       }
     }
   }
@@ -277,38 +285,21 @@ export function McpServersEditor({
 }: {
   initialJson: string;
   submitLabel: string;
-  onSubmit: (json: string, roleId: string, serverName: string) => void;
+  onSubmit: (json: string, parsed: Extract<ParsedMcpServersEntry, { ok: true }>) => void;
 }) {
   const [json, setJson] = useState(initialJson);
   const [error, setError] = useState<string | null>(null);
 
   function handleSubmit() {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(json);
-    } catch {
-      setError("JSON として読めない");
-      return;
-    }
-    if (typeof parsed !== "object" || parsed === null) {
-      setError("mcpServers のオブジェクトではない");
-      return;
-    }
-    const entries = Object.entries(parsed as Record<string, unknown>);
-    if (entries.length === 0) {
-      setError("サーバー名が無い");
-      return;
-    }
-    const [serverName, entry] = entries[0];
-    const meta = (entry as { _meta?: Record<string, unknown> } | undefined)?._meta;
-    const moduleMeta = meta?.["dev.banto/module"] as { satisfies?: readonly string[] } | undefined;
-    const roleId = moduleMeta?.satisfies?.[0];
-    if (!roleId) {
-      setError('_meta["dev.banto/module"].satisfies に role が無い');
+    // 読み取りは lib/mock/settings.ts の1箇所に寄せる（規則3）——satisfies だけ
+    // でなく dependsOn・handlesSecrets もここで実際に読む
+    const parsed = parseMcpServersEntry(json);
+    if (!parsed.ok) {
+      setError(parsed.error);
       return;
     }
     setError(null);
-    onSubmit(json, roleId, serverName);
+    onSubmit(json, parsed);
   }
 
   return (
@@ -342,17 +333,21 @@ function McpServersTab({ onDone }: { onDone: () => void }) {
         <code className="mx-1 rounded bg-surface-2 px-1 py-0.5">
           _meta[&quot;dev.banto/module&quot;]
         </code>
-        としてこの JSON の中に書く（§5.1）——server.json 由来の発見元と同じ場所を見る。
+        としてこの JSON の中に書く——server.json 由来の発見元と同じ場所を見る。
       </p>
       <McpServersEditor
         initialJson={MCP_SERVERS_SAMPLE}
         submitLabel="取り込む"
-        onSubmit={(json, roleId, serverName) => {
+        onSubmit={(json, parsed) => {
           createImplementation({
-            id: `mcp-servers:${serverName}:${Date.now()}`,
-            roleId,
-            name: serverName,
+            id: `mcp-servers:${parsed.serverName}:${Date.now()}`,
+            roleId: parsed.roleId,
+            name: parsed.serverName,
+            // 秘匿情報を扱うと申告した Module は in-process では起動できない
+            // （要件 C8c の機械チェック）——取り込み時点で subprocess に倒す
             isolation: "subprocess",
+            dependsOn: parsed.dependsOn,
+            handlesSecrets: parsed.handlesSecrets,
             mcpServersJson: json,
           });
           onDone();

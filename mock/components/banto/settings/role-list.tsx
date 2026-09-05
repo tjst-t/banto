@@ -5,7 +5,7 @@
 // 役割ごとに、満たす実装・プロセス境界・無ければ何が断るか・Module 自身の
 // 設定を表示する。
 import { useState } from "react";
-import { Box, ChevronRight, Pencil, Plus, Trash2 } from "lucide-react";
+import { Box, ChevronRight, KeyRound, Pencil, Plus, Trash2 } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -21,12 +21,23 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useRovingFocus } from "@/hooks/use-roving-focus";
 import { cn } from "@/lib/utils";
-import { getRoles, removeImplementation } from "@/lib/mock/settings";
+import {
+  getBreaksIfDisabled,
+  getIsolationViolation,
+  getRole,
+  getRoles,
+  removeImplementation,
+} from "@/lib/mock/settings";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import type { MockModuleImplementation } from "@/lib/mock/types";
 import { AddModuleDialog } from "./add-module-dialog";
 import { DisableImpactDialog } from "./disable-impact-dialog";
 import { EditModuleDialog } from "./edit-module-dialog";
+
+/** 依存先の role を人が読める名前で出す（未知の role は id のまま） */
+function roleName(roleId: string): string {
+  return getRole(roleId)?.name ?? roleId;
+}
 
 export function RoleList() {
   useMockStoreVersion();
@@ -49,6 +60,10 @@ export function RoleList() {
       return next;
     });
   }
+
+  // 「いまの有効/無効」は押した瞬間にストアへ書き戻さない（この画面のローカル
+  // 状態）ので、無効化の影響を導出するときもこちらを見る
+  const isEnabled = (impl: MockModuleImplementation) => enabled.get(impl.id) ?? impl.enabled;
 
   function requestToggle(impl: MockModuleImplementation, next: boolean) {
     // 無効化は「押す前に何が壊れるか」を見せてから確定する（§6.1）。
@@ -97,7 +112,7 @@ export function RoleList() {
                   <p className="py-2 text-xs text-ink-3">この role の実装はまだ無い</p>
                 ) : (
                   role.implementations.map((impl) => {
-                    const isEnabled = enabled.get(impl.id) ?? impl.enabled;
+                    const implEnabled = isEnabled(impl);
                     return (
                       <div
                         key={impl.id}
@@ -106,7 +121,7 @@ export function RoleList() {
                       >
                         <div className="min-w-0">
                           <p className="truncate text-sm text-foreground">{impl.name}</p>
-                          <div className="mt-0.5 flex items-center gap-1.5 text-xs text-ink-3">
+                          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
                             <Badge variant="outline" className="gap-1 text-xs">
                               {impl.isolation}
                             </Badge>
@@ -116,22 +131,48 @@ export function RoleList() {
                                 組み込み
                               </Badge>
                             ) : null}
+                            {impl.handlesSecrets ? (
+                              <Badge variant="outline" className="gap-1 text-xs">
+                                <KeyRound className="size-3" />
+                                秘匿情報を扱う
+                              </Badge>
+                            ) : null}
                             <span>·</span>
-                            <span className={isEnabled ? undefined : "text-turn"}>
-                              {isEnabled ? "有効" : "無効"}
+                            <span className={implEnabled ? undefined : "text-turn"}>
+                              {implEnabled ? "有効" : "無効"}
                             </span>
                           </div>
-                          {!isEnabled ? (
+                          {impl.dependsOn.length > 0 ? (
+                            <p className="mt-1 text-xs text-ink-3">
+                              依存：
+                              {impl.dependsOn
+                                .map((d) => `${roleName(d.role)}（${d.required ? "必須" : "任意"}）`)
+                                .join("、")}
+                            </p>
+                          ) : null}
+                          {impl.tools.length > 0 ? (
+                            <p className="mt-1 truncate text-xs text-ink-3">
+                              tool：{impl.tools.map((t) => `${t.name}（${t.visibility}）`).join("、")}
+                            </p>
+                          ) : null}
+                          {getIsolationViolation(impl) ? (
+                            <p className="mt-1 text-xs text-stop">
+                              起動できない——{getIsolationViolation(impl)}
+                            </p>
+                          ) : null}
+                          {!implEnabled ? (
                             <p className="mt-1 text-xs text-turn">
-                              無効化中——「{impl.breaksIfDisabled.join("」「")}」が使えなくなります
+                              {getBreaksIfDisabled(impl, isEnabled).length > 0
+                                ? `無効化中——「${getBreaksIfDisabled(impl, isEnabled).join("」「")}」が動かなくなります`
+                                : "無効化中——これを必須として依存している Module は無い"}
                             </p>
                           ) : null}
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
                           <Switch
-                            checked={isEnabled}
+                            checked={implEnabled}
                             onCheckedChange={(next) => requestToggle(impl, next)}
-                            aria-label={`${impl.name} を${isEnabled ? "無効化" : "有効化"}`}
+                            aria-label={`${impl.name} を${implEnabled ? "無効化" : "有効化"}`}
                           />
                           {!impl.builtin ? (
                             <button
@@ -158,17 +199,6 @@ export function RoleList() {
                     );
                   })
                 )}
-                {role.id === "vault" && role.implementations.length > 1 ? (
-                  <div className="pt-2">
-                    <button
-                      type="button"
-                      title="秘密情報を直接動かす操作なので人専用"
-                      className="rounded-md border border-border px-2.5 py-1.5 text-xs text-ink-2 hover:bg-accent"
-                    >
-                      他バックエンドへ移行…
-                    </button>
-                  </div>
-                ) : null}
               </div>
             ) : null}
           </div>
@@ -179,7 +209,7 @@ export function RoleList() {
         open={disableTarget !== null}
         onOpenChange={(o) => !o && setDisableTarget(null)}
         targetName={disableTarget?.name ?? ""}
-        breaks={disableTarget?.breaksIfDisabled ?? []}
+        breaks={disableTarget ? getBreaksIfDisabled(disableTarget, isEnabled) : []}
         onConfirm={() => {
           if (!disableTarget) return;
           setEnabled((prev) => new Map(prev).set(disableTarget.id, false));

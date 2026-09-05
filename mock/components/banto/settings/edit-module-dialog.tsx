@@ -31,7 +31,7 @@ export function EditModuleDialog({
           <DialogTitle>{implementation?.name} の設定を変える</DialogTitle>
           <DialogDescription>
             command・引数・環境変数（env）は mcpServers エントリで決まるので、この JSON を
-            直接書き換える——banto 独自の入力欄は作らない（§5.1）。
+            直接書き換える——banto 独自の入力欄は作らない。
           </DialogDescription>
         </DialogHeader>
 

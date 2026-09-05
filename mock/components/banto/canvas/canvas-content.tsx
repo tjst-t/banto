@@ -10,6 +10,7 @@ import { CheckCircle2, CircleDashed, Sparkles, XCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { FileExplorerView } from "./file-explorer-view";
+import { ShellTerminalView } from "./shell-terminal-view";
 import { VaultManageView } from "./vault-manage-view";
 
 const DIFF_LINES: readonly { kind: "context" | "add" | "remove"; text: string }[] = [
@@ -187,6 +188,8 @@ export function CanvasContent({ moduleId, viewId }: { moduleId: string; viewId: 
       return <TestResultView />;
     case "banto.vault-ui:manage":
       return <VaultManageView />;
+    case "banto.shell:terminal":
+      return <ShellTerminalView />;
     default:
       return <UnknownCanvasView moduleId={moduleId} viewId={viewId} />;
   }
