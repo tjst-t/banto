@@ -1,0 +1,326 @@
+kernel = 6.8.0-137-generic
+Landlock ABI = 4
+PATH = /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/snap/bin
+PATH 由来のディレクトリ = ['/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/snap/bin']
+ld.so.conf 由来のディレクトリ = ['/lib', '/lib64', '/usr/lib', '/usr/lib64', '/usr/local/lib', '/usr/local/lib/x86_64-linux-gnu', '/lib/x86_64-linux-gnu', '/usr/lib/x86_64-linux-gnu']
+  which node = /usr/local/bin/node
+  which npm = /usr/local/bin/npm
+  which git = /usr/bin/git
+
+=== baseline: 閉じ込め前（対照） ===
+  (Landlock なし)
+  -- ツール
+     node --version                                       -> OK: v24.18.1
+     npm --version                                        -> OK: 11.16.0
+     git --version                                        -> OK: git version 2.43.0
+     /bin/ls (Project 根)                                  -> OK: in.txt
+  -- Project の根
+     読 /tmp/ll-path-poc-kpm0l7lp/project-root/in.txt      -> 読めた
+     書 /tmp/ll-path-poc-kpm0l7lp/project-root/new.txt     -> 書けた
+  -- 根の外
+     読 /home/ubuntu/.claude/.credentials.json             -> 読めた
+     読 /home/ubuntu/.ll-poc-credentials.json              -> 読めた
+     読 /home/ubuntu/.bashrc                               -> 読めた
+     読 /tmp/ll-path-poc-kpm0l7lp/outside.txt              -> 読めた
+
+=== fixed: 固定リスト（landlock2.py と同じ /usr,/lib,/lib64,/bin,/etc,/proc,/dev） ===
+    許可 /usr  (0x000d)
+    許可 /lib  (0x000d)
+    許可 /lib64  (0x000d)
+    許可 /bin  (0x000d)
+    許可 /etc  (0x000d)
+    許可 /proc  (0x000d)
+    許可 /dev  (0x000f)
+    許可 /tmp/ll-path-poc-kpm0l7lp/project-root  (0x7fff)
+  -- ツール
+     node --version                                       -> OK: v24.18.1
+     npm --version                                        -> OK: 11.16.0
+     git --version                                        -> OK: git version 2.43.0
+     /bin/ls (Project 根)                                  -> OK: in.txt
+  -- Project の根
+     読 /tmp/ll-path-poc-kpm0l7lp/project-root/in.txt      -> 読めた
+     書 /tmp/ll-path-poc-kpm0l7lp/project-root/new.txt     -> 書けた
+  -- 根の外
+     読 /home/ubuntu/.claude/.credentials.json             -> 拒否(PermissionError)
+     読 /home/ubuntu/.ll-poc-credentials.json              -> 拒否(PermissionError)
+     読 /home/ubuntu/.bashrc                               -> 拒否(PermissionError)
+     読 /tmp/ll-path-poc-kpm0l7lp/outside.txt              -> 拒否(PermissionError)
+
+=== fixed-home: 固定リスト ＋ PATH にホーム配下（偽 nvm） ===
+    許可 /usr  (0x000d)
+    許可 /lib  (0x000d)
+    許可 /lib64  (0x000d)
+    許可 /bin  (0x000d)
+    許可 /etc  (0x000d)
+    許可 /proc  (0x000d)
+    許可 /dev  (0x000f)
+    許可 /tmp/ll-path-poc-kpm0l7lp/project-root  (0x7fff)
+  -- ツール
+     node --version                                       -> OK: v24.18.1
+     npm --version                                        -> OK: 11.16.0
+     git --version                                        -> OK: git version 2.43.0
+     /bin/ls (Project 根)                                  -> OK: in.txt
+  -- Project の根
+     読 /tmp/ll-path-poc-kpm0l7lp/project-root/in.txt      -> 読めた
+     書 /tmp/ll-path-poc-kpm0l7lp/project-root/new.txt     -> 書けた
+  -- 根の外
+     読 /home/ubuntu/.claude/.credentials.json             -> 拒否(PermissionError)
+     読 /home/ubuntu/.ll-poc-credentials.json              -> 拒否(PermissionError)
+     読 /home/ubuntu/.bashrc                               -> 拒否(PermissionError)
+     読 /tmp/ll-path-poc-kpm0l7lp/outside.txt              -> 拒否(PermissionError)
+  -- PATH に足したホーム配下ディレクトリ
+     偽 nvm bin の実行ファイル                                    -> 起動できず(PermissionError: [Errno 13] Permission denied: '/home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/bin/fakenode')
+     読 /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/bin/.npmrc-with-token -> 拒否(PermissionError)
+     読 /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/../lib/secret.txt -> 拒否(PermissionError)
+
+=== path: PATH 由来の動的許可リスト ===
+    許可 /usr/local/sbin  (0x000d)
+    許可 /usr/local/bin  (0x000d)
+    許可 /usr/sbin  (0x000d)
+    許可 /usr/bin  (0x000d)
+    許可 /lib  (0x000d)
+    許可 /lib64  (0x000d)
+    許可 /usr/lib  (0x000d)
+    許可 /usr/lib64  (0x000d)
+    許可 /usr/local/lib  (0x000d)
+    許可 /lib/x86_64-linux-gnu  (0x000d)
+    許可 /usr/lib/x86_64-linux-gnu  (0x000d)
+    許可 /etc  (0x000d)
+    許可 /proc  (0x000d)
+    許可 /dev  (0x000f)
+    許可 /tmp/ll-path-poc-kpm0l7lp/project-root  (0x7fff)
+    不在なので追加せず /snap/bin
+    不在なので追加せず /usr/local/lib/x86_64-linux-gnu
+  -- ツール
+     node --version                                       -> OK: v24.18.1
+     npm --version                                        -> OK: 11.16.0
+     git --version                                        -> OK: git version 2.43.0
+     /bin/ls (Project 根)                                  -> OK: in.txt
+  -- Project の根
+     読 /tmp/ll-path-poc-kpm0l7lp/project-root/in.txt      -> 読めた
+     書 /tmp/ll-path-poc-kpm0l7lp/project-root/new.txt     -> 書けた
+  -- 根の外
+     読 /home/ubuntu/.claude/.credentials.json             -> 拒否(PermissionError)
+     読 /home/ubuntu/.ll-poc-credentials.json              -> 拒否(PermissionError)
+     読 /home/ubuntu/.bashrc                               -> 拒否(PermissionError)
+     読 /tmp/ll-path-poc-kpm0l7lp/outside.txt              -> 拒否(PermissionError)
+
+=== path-nolocallib: PATH 由来 − /usr/local/lib（npm の JS 本体を落とすとどうなるか） ===
+    許可 /usr/local/sbin  (0x000d)
+    許可 /usr/local/bin  (0x000d)
+    許可 /usr/sbin  (0x000d)
+    許可 /usr/bin  (0x000d)
+    許可 /lib  (0x000d)
+    許可 /lib64  (0x000d)
+    許可 /usr/lib  (0x000d)
+    許可 /usr/lib64  (0x000d)
+    許可 /lib/x86_64-linux-gnu  (0x000d)
+    許可 /usr/lib/x86_64-linux-gnu  (0x000d)
+    許可 /etc  (0x000d)
+    許可 /proc  (0x000d)
+    許可 /dev  (0x000f)
+    許可 /tmp/ll-path-poc-kpm0l7lp/project-root  (0x7fff)
+    不在なので追加せず /snap/bin
+    不在なので追加せず /usr/local/lib/x86_64-linux-gnu
+  -- ツール
+     node --version                                       -> OK: v24.18.1
+     npm --version                                        -> 起動できず(PermissionError: [Errno 13] Permission denied: 'npm')
+     git --version                                        -> OK: git version 2.43.0
+     /bin/ls (Project 根)                                  -> OK: in.txt
+  -- Project の根
+     読 /tmp/ll-path-poc-kpm0l7lp/project-root/in.txt      -> 読めた
+     書 /tmp/ll-path-poc-kpm0l7lp/project-root/new.txt     -> 書けた
+  -- 根の外
+     読 /home/ubuntu/.claude/.credentials.json             -> 拒否(PermissionError)
+     読 /home/ubuntu/.ll-poc-credentials.json              -> 拒否(PermissionError)
+     読 /home/ubuntu/.bashrc                               -> 拒否(PermissionError)
+     読 /tmp/ll-path-poc-kpm0l7lp/outside.txt              -> 拒否(PermissionError)
+
+=== path-resolved: PATH 由来 − /usr/local/lib ＋ symlink の実体ディレクトリ ===
+    許可 /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin  (0x000d)
+    許可 /usr/local/lib/node_modules/npm/bin  (0x000d)
+    許可 /usr/local/lib/node_modules/corepack/dist  (0x000d)
+    許可 /usr/local/lib/node_modules/@cloudcli-ai/cloudcli/dist-server/server/modules/cli  (0x000d)
+    許可 /usr/sbin  (0x000d)
+    許可 /usr/bin  (0x000d)
+    許可 /usr/lib/systemd  (0x000d)
+    許可 /usr/lib/grub/i386-pc  (0x000d)
+    許可 /usr/share/netplan  (0x000d)
+    許可 /usr/lib/x86_64-linux-gnu/glib-2.0  (0x000d)
+    許可 /usr/lib/python3.12  (0x000d)
+    許可 /usr/share/python3  (0x000d)
+    許可 /usr/lib/snapd  (0x000d)
+    許可 /usr/lib/x86_64-linux-gnu  (0x000d)
+    許可 /usr/local/sbin  (0x000d)
+    許可 /usr/local/bin  (0x000d)
+    許可 /usr/sbin  (0x000d)
+    許可 /usr/bin  (0x000d)
+    許可 /lib  (0x000d)
+    許可 /lib64  (0x000d)
+    許可 /usr/lib  (0x000d)
+    許可 /usr/lib64  (0x000d)
+    許可 /lib/x86_64-linux-gnu  (0x000d)
+    許可 /usr/lib/x86_64-linux-gnu  (0x000d)
+    許可 /etc  (0x000d)
+    許可 /proc  (0x000d)
+    許可 /dev  (0x000f)
+    許可 /tmp/ll-path-poc-kpm0l7lp/project-root  (0x7fff)
+    不在なので追加せず /snap/bin
+    不在なので追加せず /usr/local/lib/x86_64-linux-gnu
+  -- ツール
+     node --version                                       -> OK: v24.18.1
+     npm --version                                        -> 失敗(rc=1) ['node:fs:441']
+     git --version                                        -> OK: git version 2.43.0
+     /bin/ls (Project 根)                                  -> OK: in.txt
+  -- Project の根
+     読 /tmp/ll-path-poc-kpm0l7lp/project-root/in.txt      -> 読めた
+     書 /tmp/ll-path-poc-kpm0l7lp/project-root/new.txt     -> 書けた
+  -- 根の外
+     読 /home/ubuntu/.claude/.credentials.json             -> 拒否(PermissionError)
+     読 /home/ubuntu/.ll-poc-credentials.json              -> 拒否(PermissionError)
+     読 /home/ubuntu/.bashrc                               -> 拒否(PermissionError)
+     読 /tmp/ll-path-poc-kpm0l7lp/outside.txt              -> 拒否(PermissionError)
+
+=== path-home: PATH 由来 ＋ PATH にホーム配下（偽 nvm） ===
+    許可 /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/bin  (0x000d)
+    許可 /usr/local/sbin  (0x000d)
+    許可 /usr/local/bin  (0x000d)
+    許可 /usr/sbin  (0x000d)
+    許可 /usr/bin  (0x000d)
+    許可 /lib  (0x000d)
+    許可 /lib64  (0x000d)
+    許可 /usr/lib  (0x000d)
+    許可 /usr/lib64  (0x000d)
+    許可 /usr/local/lib  (0x000d)
+    許可 /lib/x86_64-linux-gnu  (0x000d)
+    許可 /usr/lib/x86_64-linux-gnu  (0x000d)
+    許可 /etc  (0x000d)
+    許可 /proc  (0x000d)
+    許可 /dev  (0x000f)
+    許可 /tmp/ll-path-poc-kpm0l7lp/project-root  (0x7fff)
+    不在なので追加せず /snap/bin
+    不在なので追加せず /usr/local/lib/x86_64-linux-gnu
+  -- ツール
+     node --version                                       -> OK: v24.18.1
+     npm --version                                        -> OK: 11.16.0
+     git --version                                        -> OK: git version 2.43.0
+     /bin/ls (Project 根)                                  -> OK: in.txt
+  -- Project の根
+     読 /tmp/ll-path-poc-kpm0l7lp/project-root/in.txt      -> 読めた
+     書 /tmp/ll-path-poc-kpm0l7lp/project-root/new.txt     -> 書けた
+  -- 根の外
+     読 /home/ubuntu/.claude/.credentials.json             -> 拒否(PermissionError)
+     読 /home/ubuntu/.ll-poc-credentials.json              -> 拒否(PermissionError)
+     読 /home/ubuntu/.bashrc                               -> 拒否(PermissionError)
+     読 /tmp/ll-path-poc-kpm0l7lp/outside.txt              -> 拒否(PermissionError)
+  -- PATH に足したホーム配下ディレクトリ
+     偽 nvm bin の実行ファイル                                    -> OK: fakenode v99.0.0 が動いた
+     読 /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/bin/.npmrc-with-token -> 読めた
+     読 /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/../lib/secret.txt -> 拒否(PermissionError)
+
+=== path-prefix: PATH の .../bin の親（導入先）ごと許す案 ＋ ホーム配下の偽 nvm ===
+    許可 /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0  (0x000d)
+    許可 /usr/local  (0x000d)
+    許可 /usr/local  (0x000d)
+    許可 /usr  (0x000d)
+    許可 /usr  (0x000d)
+    許可 /snap  (0x000d)
+    許可 /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0  (0x000d)
+    許可 /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/bin  (0x000d)
+    許可 /usr/local/sbin  (0x000d)
+    許可 /usr/local/bin  (0x000d)
+    許可 /usr/sbin  (0x000d)
+    許可 /usr/bin  (0x000d)
+    許可 /lib  (0x000d)
+    許可 /lib64  (0x000d)
+    許可 /usr/lib  (0x000d)
+    許可 /usr/lib64  (0x000d)
+    許可 /lib/x86_64-linux-gnu  (0x000d)
+    許可 /usr/lib/x86_64-linux-gnu  (0x000d)
+    許可 /etc  (0x000d)
+    許可 /proc  (0x000d)
+    許可 /dev  (0x000f)
+    許可 /tmp/ll-path-poc-kpm0l7lp/project-root  (0x7fff)
+    不在なので追加せず /snap/bin
+    不在なので追加せず /usr/local/lib/x86_64-linux-gnu
+  -- ツール
+     node --version                                       -> OK: v24.18.1
+     npm --version                                        -> OK: 11.16.0
+     git --version                                        -> OK: git version 2.43.0
+     /bin/ls (Project 根)                                  -> OK: in.txt
+  -- Project の根
+     読 /tmp/ll-path-poc-kpm0l7lp/project-root/in.txt      -> 読めた
+     書 /tmp/ll-path-poc-kpm0l7lp/project-root/new.txt     -> 書けた
+  -- 根の外
+     読 /home/ubuntu/.claude/.credentials.json             -> 拒否(PermissionError)
+     読 /home/ubuntu/.ll-poc-credentials.json              -> 拒否(PermissionError)
+     読 /home/ubuntu/.bashrc                               -> 拒否(PermissionError)
+     読 /tmp/ll-path-poc-kpm0l7lp/outside.txt              -> 拒否(PermissionError)
+  -- PATH に足したホーム配下ディレクトリ
+     偽 nvm bin の実行ファイル                                    -> OK: fakenode v99.0.0 が動いた
+     読 /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/bin/.npmrc-with-token -> 読めた
+     読 /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/../lib/secret.txt -> 読めた
+
+=== path-siblings: PATH の .../bin の兄弟 lib/libexec/share だけ足す案 ＋ ホーム配下の偽 nvm ===
+    許可 /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/lib  (0x000d)
+    許可 /usr/local/lib  (0x000d)
+    許可 /usr/local/share  (0x000d)
+    許可 /usr/local/lib  (0x000d)
+    許可 /usr/local/share  (0x000d)
+    許可 /usr/lib  (0x000d)
+    許可 /usr/lib64  (0x000d)
+    許可 /usr/libexec  (0x000d)
+    許可 /usr/share  (0x000d)
+    許可 /usr/lib  (0x000d)
+    許可 /usr/lib64  (0x000d)
+    許可 /usr/libexec  (0x000d)
+    許可 /usr/share  (0x000d)
+    許可 /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/lib  (0x000d)
+    許可 /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/bin  (0x000d)
+    許可 /usr/local/sbin  (0x000d)
+    許可 /usr/local/bin  (0x000d)
+    許可 /usr/sbin  (0x000d)
+    許可 /usr/bin  (0x000d)
+    許可 /lib  (0x000d)
+    許可 /lib64  (0x000d)
+    許可 /usr/lib  (0x000d)
+    許可 /usr/lib64  (0x000d)
+    許可 /lib/x86_64-linux-gnu  (0x000d)
+    許可 /usr/lib/x86_64-linux-gnu  (0x000d)
+    許可 /etc  (0x000d)
+    許可 /proc  (0x000d)
+    許可 /dev  (0x000f)
+    許可 /tmp/ll-path-poc-kpm0l7lp/project-root  (0x7fff)
+    不在なので追加せず /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/lib64
+    不在なので追加せず /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/libexec
+    不在なので追加せず /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/share
+    不在なので追加せず /usr/local/lib64
+    不在なので追加せず /usr/local/libexec
+    不在なので追加せず /usr/local/lib64
+    不在なので追加せず /usr/local/libexec
+    不在なので追加せず /snap/lib
+    不在なので追加せず /snap/lib64
+    不在なので追加せず /snap/libexec
+    不在なので追加せず /snap/share
+    不在なので追加せず /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/lib64
+    不在なので追加せず /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/libexec
+    不在なので追加せず /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/share
+    不在なので追加せず /snap/bin
+    不在なので追加せず /usr/local/lib/x86_64-linux-gnu
+  -- ツール
+     node --version                                       -> OK: v24.18.1
+     npm --version                                        -> OK: 11.16.0
+     git --version                                        -> OK: git version 2.43.0
+     /bin/ls (Project 根)                                  -> OK: in.txt
+  -- Project の根
+     読 /tmp/ll-path-poc-kpm0l7lp/project-root/in.txt      -> 読めた
+     書 /tmp/ll-path-poc-kpm0l7lp/project-root/new.txt     -> 書けた
+  -- 根の外
+     読 /home/ubuntu/.claude/.credentials.json             -> 拒否(PermissionError)
+     読 /home/ubuntu/.ll-poc-credentials.json              -> 拒否(PermissionError)
+     読 /home/ubuntu/.bashrc                               -> 拒否(PermissionError)
+     読 /tmp/ll-path-poc-kpm0l7lp/outside.txt              -> 拒否(PermissionError)
+  -- PATH に足したホーム配下ディレクトリ
+     偽 nvm bin の実行ファイル                                    -> OK: fakenode v99.0.0 が動いた
+     読 /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/bin/.npmrc-with-token -> 読めた
+     読 /home/ubuntu/.ll-poc-nvm/versions/node/v99.0.0/../lib/secret.txt -> 読めた

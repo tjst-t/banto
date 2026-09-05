@@ -1,0 +1,11 @@
+{
+  "name": "banto-poc-05-module-relay-topology",
+  "private": true,
+  "type": "module",
+  "description": "捨てる。§10 item9（stdio 2重起動）と §2.5（host 中継）・modules §2.1（可視性）を、host の代理サーバ方式で同時に潰せるかの実測。",
+  "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.237",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "4.4.3"
+  }
+}
