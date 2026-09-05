@@ -1,0 +1,18 @@
+[package]
+name = "banto-landlock-exec"
+version = "0.1.0"
+edition = "2021"
+# 捨てる前提のPoCではない——banto本実装の一部。方針は持たず、TS側が渡した
+# ルールセットを忠実に実行するだけ（docs/specs/v4-security.md参照）。
+
+[[bin]]
+name = "banto-landlock-exec"
+path = "src/main.rs"
+
+[dependencies]
+landlock = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 2

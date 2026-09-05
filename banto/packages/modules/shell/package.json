@@ -1,0 +1,22 @@
+{
+  "name": "@banto/module-shell",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": { "banto-module-shell": "./dist/server.js" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test dist/**/*.test.js"
+  },
+  "dependencies": {
+    "@banto/module-contract": "*",
+    "@banto/landlock": "*",
+    "@modelcontextprotocol/sdk": "1.30.0"
+  },
+  "devDependencies": {
+    "@banto/core": "*",
+    "@banto/module-vault": "*"
+  }
+}

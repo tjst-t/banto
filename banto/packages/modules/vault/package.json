@@ -1,0 +1,17 @@
+{
+  "name": "@banto/module-vault",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": { "banto-module-vault": "./dist/server.js" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test dist/**/*.test.js"
+  },
+  "dependencies": {
+    "@banto/module-contract": "*",
+    "@modelcontextprotocol/sdk": "1.30.0"
+  }
+}

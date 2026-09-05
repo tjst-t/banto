@@ -1,0 +1,379 @@
+// 全ダミーデータの型の出どころ（規則3：真実は一箇所）。
+// Step 2 時点では会話ビューに要る最小限だけ。受信箱・Module・Skill 等の型は
+// 次段（Step 3 以降）で ProjectId 以下に足していく。
+import type { ReadonlyJSONObject } from "assistant-stream/utils";
+
+export type ProjectId = string;
+export type ThreadId = string;
+
+export type ThreadKind = "base" | "fork";
+
+export interface MockProject {
+  id: ProjectId;
+  name: string;
+  /** rail に出す1文字（prototype の .pj、頭文字アバター） */
+  initial: string;
+  baseThreadId: ThreadId;
+  /** 作業対象の根（§2.7 セキュリティ境界・§9） */
+  basePath: string;
+  status: "active" | "closed";
+  /** status が "closed" のときだけ意味を持つ */
+  closedAt?: string;
+  /** 実bantoホストのProject（決定・2026-09-03）。台本は持たず、実データで動く。 */
+  real?: boolean;
+}
+
+export interface MockThread {
+  id: ThreadId;
+  projectId: ProjectId;
+  kind: ThreadKind;
+  title: string;
+  /** Fork Thread の場合、分岐元 */
+  parentThreadId: ThreadId | null;
+  script: MockScript;
+  /**
+   * Base Thread は常に "open"。Fork Thread は畳む（fold）と "closed" になる——
+   * 削除ではなく整理（§2.2「会話を畳む」と同じ性質）。閉じた Fork の一覧から
+   * 会話ログを読み返し、再度開ける
+   */
+  status: "open" | "closed";
+  closedAt?: string;
+  /** 実bantoホストのThread（決定・2026-09-03）。scriptは使わない（空のプレースホルダ）。 */
+  real?: boolean;
+  /** real:trueのときだけ意味を持つ。リロード時の会話表示復元用（決定・2026-09-04）
+   *  ——banto hostのThreadState.messagesをそのまま保持する。 */
+  realMessages?: readonly { seq: number; role: "user" | "assistant"; text: string }[];
+  /** real:trueのときだけ意味を持つ。「Clear」マーカーの表示復元用（決定・2026-09-04）。 */
+  realMarkers?: readonly { seq: number; kind: "clear" }[];
+  /** real:trueのときだけ意味を持つ。F2/F3——ターンごとの文脈使用量（決定・2026-09-04）。
+   *  contextUsageはRunnerが返す形をそのまま持つ（規則12）。 */
+  realUsage?: readonly { seq: number; contextUsage: unknown; compactionCount: number }[];
+}
+
+/** 会話の台本。ChatModelAdapter がこれを再生してダミー応答を作る。 */
+export type MockStep =
+  | { t: "delay"; ms: number }
+  | { t: "text"; text: string; charMs?: number }
+  | {
+      t: "tool";
+      name: string;
+      args: ReadonlyJSONObject;
+      result: unknown;
+      runMs?: number;
+      /**
+       * MCP Apps の display mode（§6.2）の "inline"——tool 呼び出しの結果を
+       * 会話のカードの中に埋め込んで見せる。Canvas（"fullscreen"）とは
+       * 独立した、別の描画先というだけ——同じ Module の Canvas コンテンツを
+       * 小さく再利用する（"昇格"の仕組みは無い、2026-09-01の議論）。
+       */
+      inlineView?: { moduleId: string; viewId: string };
+      /**
+       * MCP Apps の display mode（§6.2）の "fullscreen"——AI の tool 呼び出し
+       * 自身が fullscreen を要求したケース（§6.2 軸2「AI の tool 呼び出し」
+       * 行：既定は inline、fullscreen を要求されたら Canvas）。inlineView とは
+       * 排他——tool 呼び出しの結果が揃ったら、banto が自動で Canvas を開く。
+       * 人が launcher やヘッダのボタンから開く場合とは起点が違う。
+       */
+      fullscreenView?: { moduleId: string; viewId: string };
+    }
+  // tool 呼び出しの中から人に聞く（Elicitation、§2.4）。toolName は
+  // useLocalRuntime の unstable_humanToolNames と合わせる——ランタイムがこの
+  // tool 呼び出しを requires-action のまま止め、addResult で続きを渡せる状態にする。
+  // 60秒以内に答えないとタイムアウトし、記録だけが受信箱に残る（item13の決定）
+  | { t: "human"; serverName: string; message: string; elicitation: MockElicitationForm | MockElicitationUrl }
+  // 呼ぶ前に人に見せて拒否できる承認ゲート（§6.0・§6.4）。Elicitation とは別の
+  // 機構——tool はまだ呼ばれておらず、承認されて初めて実行される（今回は result
+  // をその場で確定させる形で模す）。banto は Agent SDK の canUseTool /
+  // permissionMode に委ねる方針（2026-08-31、§6.4）だが、UI 側の見た目は
+  // ここで先に固める
+  | { t: "approval"; name: string; args: ReadonlyJSONObject; result: unknown }
+  // host 中継の承認（入れ子の承認、v4-frontend.md「Module 間中継の承認」）。
+  // 直前の tool 呼び出しの**ハンドラの内側**で起きる——台本では直前の approval /
+  // tool ステップの次に置く。呼び出し元・宛先・tool 名の組み合わせごとに
+  // Project 内で1回だけ人に聞き、以降は自動承認される。直前の tool の結果は
+  // この中継が解決してから届く（外側は「電話を切らずに待つ」）
+  | { t: "relay"; caller: string; target: string; tool: string; reason: string };
+
+export interface MockScript {
+  /** Thread を開いたときに最初から表示されている、既存のやり取り */
+  seed: readonly MockStep[];
+  /** ユーザーの発言にマッチしたら再生する応答 */
+  replies: readonly { match: RegExp | "*"; steps: readonly MockStep[] }[];
+}
+
+// 受信箱（§2.4）。判断待ちとレビュー待ちは性質が違うので型を分ける
+// ——判断待ちは AI が止まっていて答えを求める、レビュー待ちはもう終わっている確認待ち。
+
+/** Elicitation の mode:"form"（フラットな primitive のみ。enum＋自由記述で表す） */
+export interface MockElicitationForm {
+  mode: "form";
+  enumOptions: readonly string[];
+  allowFreeText: boolean;
+}
+
+/** Elicitation の mode:"url"（鍵・トークン等の機微情報はこちら。フォームで聞かない） */
+export interface MockElicitationUrl {
+  mode: "url";
+  url: string;
+  /** 遷移前に見せるドメイン（要件：ドメインを見せて同意を取る） */
+  domain: string;
+}
+
+/**
+ * 判断待ちの2つの発生源（§2.4「判定の軸を一般化した」、2026-08-31）。
+ * どちらも「AIが止まっていて、人の入力がないと先に進まない」という同じ状態——
+ * 発生源が Module（Elicitation）か、AI自身の発話（Base/Fork Thread自身）かが違うだけ。
+ */
+export interface MockInboxJudgmentElicitation {
+  kind: "judgment";
+  source: "elicitation";
+  id: string;
+  projectId: ProjectId;
+  /** どの MCP サーバ（Module）が聞いているか。要件：明示する */
+  serverName: string;
+  /** Elicitationが発生したThread。生きている間は同じtool呼び出しがそこにも表示される */
+  threadId: ThreadId;
+  threadKind: ThreadKind;
+  message: string;
+  age: string;
+  elicitation: MockElicitationForm | MockElicitationUrl;
+  /**
+   * "live"：Module 側のタイムアウトをまだ迎えていない。ここで答えると元の
+   * tool 呼び出しを直接解決できる。"timedOut"：期限切れ。答えても次のターンへの
+   * 新規入力として渡るだけ（§2.4.1、2026-08-31改訂）。解決済み（answered）は
+   * 状態として保持せず、その場で一覧から取り除く（Event Store の射影）。
+   */
+  status: "live" | "timedOut";
+}
+
+/**
+ * AI が Base/Fork Thread 自身の会話の中で、判断を求めて止まったもの（選択肢の
+ * 提示を含む）。Elicitation のような専用プロトコルは無い——行き先はそのThreadを
+ * 開いて普通に返信するだけ。
+ */
+export interface MockInboxJudgmentThread {
+  kind: "judgment";
+  source: "thread";
+  id: string;
+  projectId: ProjectId;
+  threadId: ThreadId;
+  threadKind: ThreadKind;
+  threadTitle: string;
+  message: string;
+  age: string;
+}
+
+export type MockInboxJudgment = MockInboxJudgmentElicitation | MockInboxJudgmentThread;
+
+/** Module（Factory/Subagent）が完了を転記したもの。中身は Module の Canvas で見る */
+export interface MockInboxReviewModule {
+  kind: "review";
+  source: "module";
+  id: string;
+  projectId: ProjectId;
+  serverName: string;
+  message: string;
+  age: string;
+  /** 開くと Module の Canvas が出る。core は一覧だけ持つ（§2.4） */
+  moduleId: string;
+  viewId: string;
+}
+
+/** Base/Fork Thread 自身が、判断を求めず純粋にタスクを完了させただけのもの */
+export interface MockInboxReviewThread {
+  kind: "review";
+  source: "thread";
+  id: string;
+  projectId: ProjectId;
+  threadId: ThreadId;
+  threadKind: ThreadKind;
+  threadTitle: string;
+  message: string;
+  age: string;
+}
+
+export type MockInboxReview = MockInboxReviewModule | MockInboxReviewThread;
+
+export type MockInboxItem = MockInboxJudgment | MockInboxReview;
+
+// 設定（§2.10・§6.1）。軸1「所有者」で3種——core（instance）／Project／Module。
+// Module 自身が持つ値は banto が保存しないので、ここには置かない（§6.2）。
+
+export type RoleId = string;
+
+/**
+ * tool 単位の可視性（v4-modules.md §2.1）。`agent` だけが Runner の tool 一覧に
+ * 載り、`module`/`admin` は host 中継経由でしか呼べない
+ */
+export type MockToolVisibility = "agent" | "module" | "admin";
+
+/** Module が公開する tool の1つ。`_meta` の可視性キーをそのまま型にした */
+export interface MockModuleTool {
+  name: string;
+  visibility: MockToolVisibility;
+}
+
+/**
+ * `_meta["dev.banto/module"].dependsOn` の1項目（§5.1）。`required: true` は
+ * 「無いと Module 自体が動けない」、`false` は「使う一部の tool だけが断る」
+ */
+export interface MockModuleDependency {
+  role: RoleId;
+  required: boolean;
+}
+
+/** 役割を満たす1つの実装。「役割→{名前:呼び出し口}の辞書」（§2.5）の1エントリ */
+export interface MockModuleImplementation {
+  id: string;
+  roleId: RoleId;
+  name: string;
+  isolation: "in-process" | "subprocess";
+  /** banto が同梱するデフォルト実装（例：Vault の組み込みローカルバックエンド） */
+  builtin?: boolean;
+  enabled: boolean;
+  /**
+   * `_meta["dev.banto/module"].dependsOn`（§5.1）。無効化したとき何が断るかは
+   * **ここから導出する**（`breaksIfDisabled` のような手書きの写しは持たない、規則3）
+   */
+  dependsOn: readonly MockModuleDependency[];
+  /** この実装が公開する tool と、その可視性（v4-modules.md §2.1） */
+  tools: readonly MockModuleTool[];
+  /**
+   * `_meta["dev.banto/module"].handlesSecrets`（自己申告、既定 false）。
+   * Module 自身のバックエンドコードが平文の値を変数・引数として受け取るか。
+   * **`true` かつ `isolation: "in-process"` の組み合わせは起動を拒否する**
+   * （要件 C8c、v4-modules.md §2.1）
+   */
+  handlesSecrets: boolean;
+  /**
+   * `ui://<id>/config` を持つか（§6.2）。持つ実装だけが、階層1の左メニュー
+   * 下段（iOS の「設定アプリ下部のアプリ一覧」と同じ形）に並ぶ。
+   * 無効化されている実装は並べない（決定・2026-09-01）
+   */
+  hasConfigSurface?: boolean;
+  /**
+   * launcher——人が AI を介さずに直接開ける入口（§6.2）。設定面
+   * （`hasConfigSurface`）とは別物——「繋ぐか繋がないか」ではなく
+   * 「繋いだ後、人が用事を済ませに直接開ける面」。開くと fullscreen（Canvas）
+   */
+  launchers?: readonly { id: string; label: string; viewId: string }[];
+  /**
+   * この実装の起動設定——mcpServers エントリ（command/args/env と、role の
+   * 宣言を乗せる `_meta["dev.banto/module"]`）を JSON 文字列のまま持つ
+   * （§5.1）。banto は自分の形式を発明せず、これが唯一の真実——インストール済み
+   * Module の設定を変える操作も、この文字列を編集して置き換えるだけになる。
+   * レジストリ／server.json 経由で取り込んだ実装も、取り込み時に同じ形へ
+   * 変換して持つ（決定・2026-09-02）
+   */
+  mcpServersJson: string;
+}
+
+export interface MockRole {
+  id: RoleId;
+  name: string;
+  description: string;
+  implementations: readonly MockModuleImplementation[];
+}
+
+/** alias の種別（v4-modules.md §2.1 A節） */
+export type MockVaultAliasKind = "secret" | "ssh-identity" | "file";
+
+/**
+ * Vault の名前付き参照（§2.5「alias 方式」、v4-modules.md §2.1）。
+ * 値は型に含めない——banto は値を持たない。`scope: "instance"` のときは
+ * `projectId` を持たない（instance 全体で共有、例：AI プロバイダの資格情報）
+ */
+export interface MockVaultAlias {
+  id: string;
+  scope: "instance" | "project";
+  projectId?: ProjectId;
+  name: string;
+  kind: MockVaultAliasKind;
+  implementationId: string;
+  /** 接続内部でのパス。実装依存の名前空間（banto は統一しない） */
+  path: string;
+  /** 何用かの自由記述メモ（v4-modules.md §2.1、値ではないので AI にも見せてよい） */
+  note?: string;
+  usedBy: readonly string[];
+  /** Vault 自身が持つ最終使用時刻（Event Store 由来ではない、§2.1 C節） */
+  lastUsedAt?: string;
+  expiresAt?: string;
+}
+
+/**
+ * backend が元々持つグルーピングの仕組み（Infisical の Folder、HashiCorp
+ * Vault の path プレフィックス等）の1つ（v4-modules.md §2.1「Project ↔
+ * backend グループの紐付け」）。`createVaultGroup` で人が明示的に作る
+ */
+export interface MockVaultGroup {
+  implementationId: string;
+  name: string;
+}
+
+/**
+ * Project（または instance 全体）が、ある backend のどのグループを使うかの
+ * 紐付け（同上）。**人が明示的に持つ設定**——複数ホストの banto が同じ
+ * backend・同じグループを割り当てれば、それが共有の合図になる
+ */
+export interface MockVaultGroupBinding {
+  implementationId: string;
+  target: "instance" | ProjectId;
+  groupName: string;
+}
+
+export interface MockCredential {
+  id: string;
+  label: string;
+  kind: "subscription" | "api-key";
+  usagePercent?: number;
+  resetsAt?: string;
+}
+
+/** Anthropic API の effort パラメータ（5段階） */
+export type MockEffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
+/**
+ * Claude Agent SDK の `permissionMode` の6値（v4-frontend.md §6.4）。
+ * 独自の値・独自の呼び名は作らない（規則11）——SDK がそのまま受け取る文字列。
+ */
+export type MockPermissionMode =
+  | "default"
+  | "acceptEdits"
+  | "bypassPermissions"
+  | "plan"
+  | "dontAsk"
+  | "auto";
+
+/** 層2 runtime config の instance 既定値（§2.6） */
+export interface MockRuntimeDefaults {
+  model: string;
+  effort: MockEffortLevel;
+  memoryLimitChars: number;
+  /**
+   * 新しい Thread がここから始まる（v4-frontend.md §6.4「permissionMode は
+   * Thread 単位で選べる」）。Thread 側の切り替えはセッション内の一時的な上書きで、
+   * この既定値そのものは変わらない
+   */
+  defaultPermissionMode: MockPermissionMode;
+}
+
+/**
+ * Project による runtime config の上書き（§2.2「設定のカスケード」）。
+ * フィールドが無い（undefined）＝ instance 既定を継承。
+ */
+export interface MockProjectOverrides {
+  projectId: ProjectId;
+  model?: string;
+  effort?: MockEffortLevel;
+  memoryLimitChars?: number;
+  defaultPermissionMode?: MockPermissionMode;
+  credentialId?: string;
+  vaultImplementationId?: string;
+  securityRoot: string;
+}
+
+/** この Project にどの実装が繋がっているか（§6.1 階層2） */
+export interface MockProjectModuleLink {
+  projectId: ProjectId;
+  implementationId: string;
+}

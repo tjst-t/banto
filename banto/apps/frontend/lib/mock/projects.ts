@@ -1,0 +1,159 @@
+import type { MockProject, MockProjectOverrides } from "./types";
+import { notifyMockStoreChange } from "./store-events";
+import { registerRealFork, registerRealThread } from "./threads";
+import { setProjectOverrides } from "./settings";
+import {
+  createRealProject as createRealProjectOnHost,
+  createRealBaseThread,
+  listRealProjects,
+  listRealThreads,
+  getBackendConfig,
+  closeRealProject,
+  reopenRealProject,
+} from "../backend/client";
+
+// デモ用の初期Projectは持たない（決定・2026-09-03、実機投入に伴いデモデータを撤去）。
+// 実Projectはアプリ起動時にhydrateRealProjects()（real-projects-bootstrap.tsx）が
+// banto hostから読み込んでここへ登録する
+let projects: MockProject[] = [];
+
+export function getAllProjects(): readonly MockProject[] {
+  return projects;
+}
+
+export function getActiveProjects(): readonly MockProject[] {
+  return projects.filter((p) => p.status === "active");
+}
+
+export function getClosedProjects(): readonly MockProject[] {
+  return projects.filter((p) => p.status === "closed");
+}
+
+/** 見つからない場合、デモの先頭Projectへの暗黙フォールバックはしない
+ *  （デモデータ撤去に伴う決定・2026-09-03）——呼び出し側が必ず何らかの
+ *  MockProjectを受け取れるよう、素性の分かるプレースホルダーを返す */
+export function getProject(id: string): MockProject {
+  return (
+    projects.find((p) => p.id === id) ?? {
+      id,
+      name: "(不明な Project)",
+      initial: "?",
+      baseThreadId: `${id}-base`,
+      basePath: "",
+      status: "active",
+    }
+  );
+}
+
+export interface NewProjectInput {
+  name: string;
+  basePath: string;
+  /** Advanced で選んだ Configuration の上書き（§2.2「設定のカスケード」） */
+  overrides?: Omit<MockProjectOverrides, "projectId" | "securityRoot">;
+}
+
+/**
+ * 実bantoホストにProjectとBase Threadを作る（決定・2026-09-03）。
+ */
+export async function createRealProject(input: NewProjectInput): Promise<MockProject> {
+  const realProject = await createRealProjectOnHost(input.name, input.basePath);
+  const realThread = await createRealBaseThread(realProject.id);
+  const project: MockProject = {
+    id: realProject.id,
+    name: realProject.name,
+    initial: realProject.name.slice(0, 1),
+    baseThreadId: realThread.id,
+    basePath: realProject.root,
+    status: realProject.status,
+    real: true,
+  };
+  projects = [...projects, project];
+  registerRealThread(
+    realThread.id,
+    realProject.id,
+    realProject.name,
+    realThread.messages,
+    realThread.markers,
+    realThread.usage,
+  );
+  setProjectOverrides({ projectId: project.id, securityRoot: input.basePath, ...input.overrides });
+  notifyMockStoreChange();
+  return project;
+}
+
+/**
+ * 実bantoホストから既存の実Project一覧を読み込み、ローカルのモジュール状態
+ * （`projects`）へ登録する（決定・2026-09-03）。`projects`はページの
+ * フルロードのたびに初期値へ戻る、純粋にクライアント側だけのメモリ状態
+ * ——直接そのProjectのURLへ来た（一覧画面を経由していない）ときでも
+ * 実データを引けるよう、アプリ起動時にこれを1回呼ぶ
+ * （components/banto/real-projects-bootstrap.tsx）。
+ */
+// React 19 StrictMode は開発時にeffectを2回呼ぶ——同時に2回
+// hydrateRealProjects()が走ると、awaitの間に両方とも同じProjectを
+// 「まだ無い」と読んでしまい重複登録する（実測で踏んだ）。進行中の
+// Promiseを使い回すことで、同時呼び出しを1回分に潰す。
+let hydrationInFlight: Promise<void> | null = null;
+
+export function hydrateRealProjects(): Promise<void> {
+  if (!hydrationInFlight) {
+    hydrationInFlight = hydrateRealProjectsUncached().finally(() => {
+      hydrationInFlight = null;
+    });
+  }
+  return hydrationInFlight;
+}
+
+async function hydrateRealProjectsUncached(): Promise<void> {
+  if (!getBackendConfig()) return;
+  const realProjects = await listRealProjects();
+  let changed = false;
+  for (const rp of realProjects) {
+    if (projects.some((p) => p.id === rp.id)) continue;
+    const realThreads = await listRealThreads(rp.id);
+    const base = realThreads.find((t) => t.kind === "base");
+    if (!base) continue;
+    const project: MockProject = {
+      id: rp.id,
+      name: rp.name,
+      initial: rp.name.slice(0, 1),
+      baseThreadId: base.id,
+      basePath: rp.root,
+      status: rp.status,
+      real: true,
+    };
+    projects = [...projects, project];
+    registerRealThread(base.id, rp.id, rp.name, base.messages, base.markers, base.usage);
+    // Fork Threadはhydrateの度に消えて見えなくなっていた——base同様、host側の
+    // 一覧をそのまま復元する（決定・2026-09-04、サイドバーに出ない不具合の修正）。
+    for (const fork of realThreads.filter((t) => t.kind === "fork")) {
+      registerRealFork(
+        fork.id,
+        rp.id,
+        fork.parentThreadId ?? base.id,
+        fork.messages,
+        fork.markers,
+        fork.status === "closed" ? "closed" : "open",
+        fork.usage,
+      );
+    }
+    changed = true;
+  }
+  if (changed) notifyMockStoreChange();
+}
+
+/** Project を終了する（削除ではない——閉じたProjectの一覧から読み返し、再開できる）。
+ *  実Projectはhostへも反映する（Clearのhandle Clearと同じ形、規則3）。 */
+export async function closeProject(id: string): Promise<void> {
+  const project = getProject(id);
+  if (project.real) await closeRealProject(id);
+  projects = projects.map((p) => (p.id === id ? { ...p, status: "closed", closedAt: "たった今" } : p));
+  notifyMockStoreChange();
+}
+
+export async function reopenProject(id: string): Promise<void> {
+  const project = getProject(id);
+  if (project.real) await reopenRealProject(id);
+  projects = projects.map((p) => (p.id === id ? { ...p, status: "active", closedAt: undefined } : p));
+  notifyMockStoreChange();
+}
