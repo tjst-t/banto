@@ -1,7 +1,8 @@
 node_modules/
 dist/
-.DS_Store
+target/
 *.log
+.DS_Store
 .next/
 .turbo/
 .venv/
