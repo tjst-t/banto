@@ -23,6 +23,16 @@ export interface MockProject {
   real?: boolean;
 }
 
+/** 画面つき tool の呼び出し1件（host の記録をそのまま受ける）。 */
+export interface RealUiToolCall {
+  toolCallId: string;
+  toolName: string;
+  server: string;
+  resourceUri: string;
+  args?: unknown;
+  result?: unknown;
+}
+
 export interface MockThread {
   id: ThreadId;
   projectId: ProjectId;
@@ -42,7 +52,14 @@ export interface MockThread {
   real?: boolean;
   /** real:trueのときだけ意味を持つ。リロード時の会話表示復元用（決定・2026-09-04）
    *  ——banto hostのThreadState.messagesをそのまま保持する。 */
-  realMessages?: readonly { seq: number; role: "user" | "assistant"; text: string }[];
+  realMessages?: readonly {
+    seq: number;
+    role: "user" | "assistant";
+    text: string;
+    /** 画面つき tool の呼び出し（§6.2、決定・2026-09-07）。リロード後に
+     *  Module の画面を出し直すのに使う——無いと画面だけが消える。 */
+    uiToolCalls?: readonly RealUiToolCall[];
+  }[];
   /** real:trueのときだけ意味を持つ。「Clear」マーカーの表示復元用（決定・2026-09-04）。 */
   realMarkers?: readonly { seq: number; kind: "clear" }[];
   /** real:trueのときだけ意味を持つ。F2/F3——ターンごとの文脈使用量（決定・2026-09-04）。

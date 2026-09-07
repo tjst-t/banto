@@ -6,6 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
+import { openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 
@@ -17,7 +18,7 @@ test.use({ viewport: { width: 390, height: 844 } });
 test("Project作成→Base Thread会話→Fork作成→Clear", async ({ page }) => {
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-"));
 
-  await page.goto(`/?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
+  await openApp(page);
 
   // Project作成
   await page.getByRole("button", { name: "新しい Project", exact: true }).click();
@@ -26,7 +27,11 @@ test("Project作成→Base Thread会話→Fork作成→Clear", async ({ page }) 
   await page.getByRole("button", { name: "作成する" }).click();
 
   // Base Threadパネルが開く
-  await expect(page.getByText(/Base Thread —/)).toBeVisible({ timeout: 15_000 });
+  // 「Base Thread —」だけで待つと、**別のProjectのBase Thread**にも一致して
+  // しまう——既に他のProjectが表示されている状態（スイート一括実行）では、
+  // 新Projectへの遷移を待たずに次の操作へ進み、前のProjectのcomposerに
+  // 入力してしまう（実測・2026-09-05）。**Project名まで見る**（規則14）
+  await expect(page.getByText("Base Thread — E2E Test Project")).toBeVisible({ timeout: 15_000 });
 
   // 会話（実Agent SDKを叩く）。ページ全体からgetByTextで待つと、送信直後に
   // 出るユーザー自身の発言エコー（プロンプト文字列そのもの）にもマッチして

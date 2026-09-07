@@ -8,7 +8,7 @@
 // メニューでは足りない」）。Module 自身の設定面には `projectId` を渡す
 // （§6.2「設定面への Project の文脈」）——instance 側の同じ Module の設定と
 // 見比べると、Project 単位の中身（Vault の alias 等）が増えているのが分かる
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BookMarked, Plus, Puzzle, ShieldAlert, SlidersHorizontal, Trash2, TriangleAlert } from "lucide-react";
 import {
@@ -54,6 +54,7 @@ import {
   mockRuntimeDefaults,
 } from "@/lib/mock/settings";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
+import { ModuleSettingsPanel, useModuleSettingsCanvases } from "@/components/banto/settings/module-settings-panel";
 import type { MockModuleImplementation, MockProjectOverrides } from "@/lib/mock/types";
 
 // project-modules/overrides/securityは実バックエンドに繋がっていない
@@ -105,9 +106,17 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
     router.push(next ? `/p/${next.id}` : "/settings");
   }
 
-  const moduleImplementations = links.filter((i) => i.hasConfigSurface && i.enabled);
-  // Memoryは実bantoホストのThreadに紐づく——mock Projectには対応するThreadが無い
-  // （規則13、繋がっていないものは見せない）
+  // **実 Module の設定面**（MCP Apps の設定 Canvas）。左メニューにも右側にも
+  // 同じ一覧を使う（規則3）。mock Project には対応する Module が無いので出ない
+  const { canvases: settingsCanvases } = useModuleSettingsCanvases(
+    useMemo(() => ({ kind: "project" as const, id: projectId }), [projectId]),
+  );
+  const moduleImplementations = [
+    ...(project?.real ? settingsCanvases.map((c) => ({ id: c.server, name: c.name ?? c.server })) : []),
+    ...links.filter((i) => i.hasConfigSurface && i.enabled),
+  ];
+  // Memoryは実bantoホストのProjectに紐づく（決定・2026-09-05）——mock Projectには
+  // 対応するProjectが無い（規則13、繋がっていないものは見せない）
   const showMemory = CONNECTED_FEATURES.memory && project?.real;
   const categories = [
     ...(CONNECTED_FEATURES.settings ? MOCK_CATEGORIES : []),
@@ -117,7 +126,7 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
 
   function renderSection(section: SettingsSection) {
     if (section === "project-memory" && project) {
-      return <ProjectMemoryPanel threadId={project.baseThreadId} />;
+      return <ProjectMemoryPanel projectId={project.id} />;
     }
     if (section === "project-modules") {
       return (
@@ -366,6 +375,13 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
     }
 
     const implementationId = section.slice("module:".length);
+    // **実 Module の設定面が先**（決定・2026-09-07、ユーザー指摘）
+    // ——モックが決めた枠（左メニューに Module、右側いっぱい）に本物を流し込む
+    const canvas = settingsCanvases.find((c) => c.server === implementationId);
+    if (canvas) {
+      return <ModuleSettingsPanel owner={{ kind: "project", id: projectId }} canvas={canvas} />;
+    }
+
     const impl = getImplementation(implementationId);
     return (
       <div>

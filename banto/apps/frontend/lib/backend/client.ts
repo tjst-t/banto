@@ -86,6 +86,19 @@ export interface RealThreadMessage {
   seq: number;
   role: "user" | "assistant";
   text: string;
+  /** 画面つき tool の呼び出し（§6.2、決定・2026-09-07）。リロードや別タブで
+   *  Module の画面を出し直すのに使う。 */
+  uiToolCalls?: RealUiToolCall[];
+}
+
+/** 画面つき tool の呼び出し1件（表示の復元に要る分だけ）。 */
+export interface RealUiToolCall {
+  toolCallId: string;
+  toolName: string;
+  server: string;
+  resourceUri: string;
+  args?: unknown;
+  result?: unknown;
 }
 
 export interface RealThreadMarker {
@@ -93,11 +106,14 @@ export interface RealThreadMarker {
   kind: "clear";
 }
 
-/** G1〜G3・G5——決定事項の記録。invalidated:trueは無効化（物理削除ではない、規則3）。 */
-export interface RealThreadMemory {
+/** G1〜G3・G5——決定事項の記録。**持ち主はProject**（決定・2026-09-05）。
+ *  invalidated:trueは無効化（物理削除ではない、規則3）。originThreadIdは
+ *  どのThreadで決まったかの出所（人が直接足したときは無し）。 */
+export interface RealProjectMemory {
   seq: number;
   text: string;
   invalidated: boolean;
+  originThreadId?: string;
 }
 
 /** F2/F3——ターンごとの文脈使用量。contextUsageはRunnerが返す形をそのまま
@@ -118,19 +134,57 @@ export interface RealThread {
   messages: RealThreadMessage[];
   markers: RealThreadMarker[];
   usage: RealThreadUsage[];
-  memory: RealThreadMemory[];
+  /** system promptに入れるMemoryの上限seq（§2.3）。これより後にProjectへ
+   *  増えた分はターンに添えて届く——Threadは写しを持たない（規則3）。 */
+  memoryBaselineSeq: number;
+  /** 人がこのThreadで明示的に選んだpermissionMode。選んでいなければ無い
+   *  ——その場合はConfigurationのカスケードから導く（規則3）。 */
+  permissionMode?: MockPermissionModeValue;
   createdAt: string;
 }
 
-export interface RealInboxItem {
-  kind: "judgment" | "review";
+/** v4-frontend.md §6.4 の6値。hostの`ThreadPermissionMode`と同じ集合。 */
+export type MockPermissionModeValue =
+  | "default"
+  | "acceptEdits"
+  | "bypassPermissions"
+  | "plan"
+  | "dontAsk"
+  | "auto";
+
+/** 判断待ち（§2.4）。hostの`JudgmentItem`をそのまま受け取る——ここで形を
+ *  作り替えない（規則3・規則12）。 */
+export interface RealInboxJudgment {
+  kind: "judgment";
   id: string;
   threadId: string;
-  message?: string;
-  summary?: string;
-  liveness?: string;
+  source: "elicitation" | "text" | "factory" | "alarm";
+  message: string;
+  /** Elicitationのform/urlモード（§2.4「自前で作らない」）。 */
+  mode?: "form" | "url";
+  requestedSchema?: unknown;
+  url?: string;
+  toolCallId?: string;
+  /** 承認する tool の引数（approvalのみ）。何を承認するのかを画面に出すため
+   *  （決定・2026-09-06、§6.0「サーバを呼ぶ前に人に見せる」）。 */
+  toolInput?: unknown;
+  /** どのサーバが聞いているか（§2.4.1 の MUST）。 */
+  serverName?: string;
+  liveness: "live" | "answered" | "timed_out";
   createdAt: string;
 }
+
+/** レビュー待ち。**生成元がまだ無い**——受信箱の画面では出さない（規則13）。 */
+export interface RealInboxReview {
+  kind: "review";
+  id: string;
+  threadId: string;
+  summary: string;
+  acknowledged: boolean;
+  createdAt: string;
+}
+
+export type RealInboxItem = RealInboxJudgment | RealInboxReview;
 
 export async function createRealProject(name: string, root: string): Promise<RealProject> {
   return request<RealProject>("/api/projects", { method: "POST", body: JSON.stringify({ name, root }) });
@@ -159,6 +213,18 @@ export async function createRealFork(parentThreadId: string): Promise<RealThread
 }
 
 /** UIの「Clear」——会話を畳む。次のターンはresume-pointなし（新規query()）で始まる。 */
+/** 人が選んだpermissionModeをhostに残す（決定・2026-09-06）——UI側だけに
+ *  持つとリロードで消える。 */
+export async function setRealThreadPermissionMode(
+  threadId: string,
+  mode: MockPermissionModeValue,
+): Promise<void> {
+  await request(`/api/threads/${threadId}/permission-mode`, {
+    method: "POST",
+    body: JSON.stringify({ mode }),
+  });
+}
+
 export async function clearRealThread(threadId: string): Promise<void> {
   await request(`/api/threads/${threadId}/clear`, { method: "POST" });
 }
@@ -172,13 +238,31 @@ export async function reopenRealThread(threadId: string): Promise<void> {
   await request(`/api/threads/${threadId}/reopen`, { method: "POST" });
 }
 
-/** G3「人が消せる」——物理削除ではなく無効化イベントの追記（規則3）。 */
-export async function appendRealMemory(threadId: string, text: string): Promise<void> {
-  await request(`/api/threads/${threadId}/memory`, { method: "POST", body: JSON.stringify({ text }) });
+export async function listRealMemory(projectId: string): Promise<RealProjectMemory[]> {
+  return request<RealProjectMemory[]>(`/api/projects/${projectId}/memory`);
 }
 
-export async function invalidateRealMemory(threadId: string, seq: number): Promise<void> {
-  await request(`/api/threads/${threadId}/memory/${seq}/invalidate`, { method: "POST" });
+export async function appendRealMemory(projectId: string, text: string): Promise<void> {
+  await request(`/api/projects/${projectId}/memory`, { method: "POST", body: JSON.stringify({ text }) });
+}
+
+/** G3「人が消せる」——物理削除ではなく無効化イベントの追記（規則3）。 */
+export async function invalidateRealMemory(projectId: string, seq: number): Promise<void> {
+  await request(`/api/projects/${projectId}/memory/${seq}/invalidate`, { method: "POST" });
+}
+
+/** Global Memory（§2.2、決定・2026-09-05）——banto全体で覚えていること。
+ *  形はProject Memoryと同じ（同じ規律を別の置き場に適用しただけ）。 */
+export async function listRealGlobalMemory(): Promise<RealProjectMemory[]> {
+  return request<RealProjectMemory[]>("/api/global/memory");
+}
+
+export async function appendRealGlobalMemory(text: string): Promise<void> {
+  await request("/api/global/memory", { method: "POST", body: JSON.stringify({ text }) });
+}
+
+export async function invalidateRealGlobalMemory(seq: number): Promise<void> {
+  await request(`/api/global/memory/${seq}/invalidate`, { method: "POST" });
 }
 
 /** Projectを終了する（削除ではない——履歴から読み返し、再度開ける）。 */
@@ -200,7 +284,15 @@ export async function answerRealInboxItem(id: string, answer: unknown): Promise<
 
 export type RealTurnEvent =
   | { type: "message"; message: unknown }
-  | { type: "judgment"; judgmentId: string; kind: "approval" | "elicitation"; toolName?: string; message: string }
+  | {
+      type: "judgment";
+      judgmentId: string;
+      kind: "approval" | "elicitation";
+      toolName?: string;
+      toolInput?: unknown;
+      serverName?: string;
+      message: string;
+    }
   | { type: "done"; sessionId?: string; contextUsage?: unknown; compactionCount: number }
   | { type: "error"; message: string };
 
@@ -209,33 +301,203 @@ export type RealTurnEvent =
  * EventSourceはPOST+bodyを送れないため使わない（apps/frontend/app.js、
  * Phase 0実測時に決めた方式をそのまま踏襲）。
  */
-export async function* streamRealTurn(
+/**
+ * ターンのSSEを読む。
+ *
+ * **読むのと、描くために渡すのを分ける**（改訂・2026-09-07、ユーザー報告が起点）。
+ * 以前は「ジェネレータが `read()` する→yield する」を1本でやっていたため、
+ * **描く側が最後まで引き取らないと、その先が読まれない**。実測すると
+ * ランタイムは最後の yield のあと次を要求しないことがあり、その結果
+ * **ターンの終了イベント（`done`）が一度も処理されなかった**
+ * ——ターンが「走行中」のまま残り、文脈使用量も記録されない。
+ *
+ * いまは受信を**独立した繰り返し**で回し、届いた端から `onEvent` に渡しつつ、
+ * 描画用には順番に取り出せるようにしてある。**描く側の都合で受信が止まらない。**
+ */
+export function streamRealTurn(
   threadId: string,
   prompt: string,
   permissionMode?: string,
+  onEvent?: (event: RealTurnEvent) => void,
 ): AsyncGenerator<RealTurnEvent> {
-  const config = requireConfig();
-  const res = await fetch(`${config.baseUrl}/api/threads/${threadId}/messages`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${config.token}`, "content-type": "application/json" },
-    body: JSON.stringify({ prompt, permissionMode }),
-  });
-  if (!res.ok || !res.body) {
-    yield { type: "error", message: `ターンの開始に失敗しました（${res.status}）` };
-    return;
-  }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    const parts = buf.split("\n\n");
-    buf = parts.pop() ?? "";
-    for (const part of parts) {
-      if (!part.startsWith("data: ")) continue;
-      yield JSON.parse(part.slice(6)) as RealTurnEvent;
+  const queue: RealTurnEvent[] = [];
+  let wake: (() => void) | null = null;
+  let finished = false;
+
+  const push = (event: RealTurnEvent): void => {
+    onEvent?.(event);
+    queue.push(event);
+    wake?.();
+    wake = null;
+  };
+
+  const pump = async (): Promise<void> => {
+    const config = requireConfig();
+    const res = await fetch(`${config.baseUrl}/api/threads/${threadId}/messages`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${config.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ prompt, permissionMode }),
+    });
+    if (!res.ok || !res.body) {
+      push({ type: "error", message: `ターンの開始に失敗しました（${res.status}）` });
+      return;
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop() ?? "";
+      for (const part of parts) {
+        if (!part.startsWith("data: ")) continue;
+        push(JSON.parse(part.slice(6)) as RealTurnEvent);
+      }
+    }
+  };
+
+  void pump()
+    .catch((err: unknown) => {
+      // **黙って終わらせない**（規則2）——読めなくなったことを描く側に伝える
+      push({ type: "error", message: err instanceof Error ? err.message : String(err) });
+    })
+    .finally(() => {
+      finished = true;
+      wake?.();
+      wake = null;
+    });
+
+  async function* drain(): AsyncGenerator<RealTurnEvent> {
+    for (;;) {
+      const next = queue.shift();
+      if (next !== undefined) {
+        yield next;
+        continue;
+      }
+      if (finished) return;
+      await new Promise<void>((resolve) => {
+        wake = resolve;
+      });
     }
   }
+
+  return drain();
+}
+
+// ---- Module の画面（MCP Apps、決定・2026-09-06、§6.2）----------------------
+//
+// banto は「どこに出すか」だけを決め、**中身は Module 発**。ここは
+// その中身を host 越しに取ってくるだけの薄い経路。
+
+/** どの tool が画面を持つか（`_meta.ui.resourceUri`）。 */
+export interface RealUiTool {
+  server: string;
+  tool: string;
+  resourceUri: string;
+}
+
+/** Module が申告した画面。CSP はサンドボックスの口へそのまま渡す。 */
+export interface RealUiResource {
+  html: string;
+  csp?: unknown;
+  permissions?: unknown;
+  prefersBorder?: boolean;
+}
+
+export async function fetchRealUiConfig(): Promise<{ sandboxUrl: string | null }> {
+  return request<{ sandboxUrl: string | null }>("/api/ui-config");
+}
+
+export async function listRealUiTools(threadId: string): Promise<RealUiTool[]> {
+  return request<RealUiTool[]>(`/api/threads/${threadId}/ui-tools`);
+}
+
+/** その画面が誰のものか。会話の中なら Thread、設定画面なら Project
+ *  （設定は Thread のものではない、決定・2026-09-07）。 */
+export type RealCanvasOwner =
+  | { kind: "thread"; id: string }
+  | { kind: "project"; id: string }
+  /** banto 全体（instance に1本の Module の設定、決定・2026-09-07）。 */
+  | { kind: "instance" };
+
+function ownerPath(owner: RealCanvasOwner): string {
+  if (owner.kind === "thread") return `/api/threads/${owner.id}`;
+  if (owner.kind === "project") return `/api/projects/${owner.id}`;
+  return "/api";
+}
+
+export async function fetchRealUiResource(
+  owner: RealCanvasOwner,
+  server: string,
+  uri: string,
+): Promise<RealUiResource> {
+  return request<RealUiResource>(
+    `${ownerPath(owner)}/ui-resource?server=${encodeURIComponent(server)}&uri=${encodeURIComponent(uri)}`,
+  );
+}
+
+/**
+ * 記録から、その tool 呼び出し1件を引く（決定・2026-09-07、ユーザー報告）。
+ *
+ * **別タブは手元の記憶を持たない**——同じ画面を別タブで開くには、どの Module の
+ * どの画面を、どんな引数で呼んで何が返ったかを**host の記録から**取り直す
+ * （真実は host、規則3）。
+ */
+export async function fetchRealUiToolCall(
+  threadId: string,
+  toolCallId: string,
+): Promise<RealUiToolCall | undefined> {
+  const thread = await getRealThread(threadId);
+  for (const message of thread.messages ?? []) {
+    const found = message.uiToolCalls?.find((c) => c.toolCallId === toolCallId);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/** 人が直接開ける入口（launcher、§6.2）。名前と説明は Module が名乗ったもの。 */
+export interface RealUiLauncher {
+  server: string;
+  resourceUri: string;
+  name?: string;
+  description?: string;
+}
+
+/**
+ * その Project に**繋がっている Module の入口**だけ。
+ * 一覧は host が Module 集合から導出する——画面は別の索引を持たない（規則3）。
+ */
+export async function listRealLaunchers(projectId: string): Promise<RealUiLauncher[]> {
+  return request<RealUiLauncher[]>(`/api/projects/${projectId}/ui-launchers`);
+}
+
+/**
+ * その相手の Module が名乗っている**設定 Canvas**の一覧。
+ *
+ * **どちらに出るかは Module の scope が決まる**（決定・2026-09-07、ユーザー指摘）
+ * ——instance に1本の Module（Vault 等）は banto 全体の設定に、Project ごとに
+ * 立つもの（Shell・FileSystem）は Project の設定に出る。
+ */
+export async function listRealUiSettings(
+  owner: RealCanvasOwner,
+): Promise<Array<{ server: string; resourceUri: string; name?: string }>> {
+  return request<Array<{ server: string; resourceUri: string; name?: string }>>(
+    `${ownerPath(owner)}/ui-settings`,
+  );
+}
+
+/** **画面からの tool 呼び出し**。host 側で必ず承認ゲートを通る——
+ *  返ってくるまでの間、人は受信箱で承認を求められている（§6.2 の決定）。 */
+export async function callRealUiTool(
+  owner: RealCanvasOwner,
+  server: string,
+  tool: string,
+  args: Record<string, unknown> | undefined,
+): Promise<unknown> {
+  return request<unknown>(`${ownerPath(owner)}/ui-tool-call`, {
+    method: "POST",
+    body: JSON.stringify({ server, tool, arguments: args }),
+  });
 }

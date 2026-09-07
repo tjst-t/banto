@@ -5,7 +5,15 @@
 // 「たまたま前回のデータが残っていたから通った」になりかねない。
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { CONFIG_PATH, DATA_DIR, PORT, AUTH_TOKEN } from "./config.ts";
+import {
+  CONFIG_PATH,
+  DATA_DIR,
+  PORT,
+  AUTH_TOKEN,
+  SANDBOX_PORT,
+  SANDBOX_BASE_URL,
+  FRONTEND_BASE_URL,
+} from "./config.ts";
 
 export default function globalSetup(): void {
   rmSync(DATA_DIR, { recursive: true, force: true });
@@ -14,6 +22,18 @@ export default function globalSetup(): void {
   mkdirSync(dirname(CONFIG_PATH), { recursive: true });
   writeFileSync(
     CONFIG_PATH,
-    JSON.stringify({ dataDir: DATA_DIR, port: PORT, authToken: AUTH_TOKEN }, null, 2),
+    JSON.stringify(
+      {
+        dataDir: DATA_DIR,
+        port: PORT,
+        authToken: AUTH_TOKEN,
+        // Module の画面（§6.2）。埋め込みを許すのは E2E の画面だけ
+        sandboxPort: SANDBOX_PORT,
+        sandboxPublicUrl: SANDBOX_BASE_URL,
+        allowedEmbedderOrigins: [FRONTEND_BASE_URL],
+      },
+      null,
+      2,
+    ),
   );
 }

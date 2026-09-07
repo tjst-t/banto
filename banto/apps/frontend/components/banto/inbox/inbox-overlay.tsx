@@ -15,6 +15,8 @@ import {
 } from "@/components/ui/sheet";
 import { getProject } from "@/lib/mock/projects";
 import { getInboxItemHref, getInboxItems } from "@/lib/mock/inbox";
+import { CONNECTED_FEATURES } from "@/lib/feature-flags";
+import { RealInboxList } from "./real-inbox-list";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import type { MockInboxItem } from "@/lib/mock/types";
 import { useRovingFocus } from "@/hooks/use-roving-focus";
@@ -47,6 +49,9 @@ export function InboxOverlay({
         <SheetHeader className="border-b border-border">
           <SheetTitle>受信箱</SheetTitle>
         </SheetHeader>
+        {CONNECTED_FEATURES.inbox ? (
+          <RealInboxList />
+        ) : (
         <div ref={containerRef} onKeyDown={onKeyDown} className="flex min-h-0 flex-1 flex-col overflow-auto p-3">
           {items.map((item) => {
             const project = getProject(item.projectId);
@@ -107,6 +112,7 @@ export function InboxOverlay({
             );
           })}
         </div>
+        )}
       </SheetContent>
     </Sheet>
   );

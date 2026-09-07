@@ -13,6 +13,11 @@
 import { query, type SDKMessage, type PermissionResult, type Options } from "@anthropic-ai/claude-agent-sdk";
 
 export interface PendingToolApproval {
+  /** SDKが渡してくる**本物の** tool_use id（`options.toolUseID`）。
+   *  以前は`approval-N`を自前で振っていたが、それはターンごとに1から振り直され
+   *  Thread内でも衝突するうえ、§2.4.1が「本実装で詰める」とした
+   *  「tool_use_id で Event Store のレコードと tool 呼び出し結果を紐づける」が
+   *  構造的に不可能だった（見直し・2026-09-06）。 */
   toolCallId: string;
   toolName: string;
   input: Record<string, unknown>;
@@ -31,12 +36,19 @@ export interface PendingElicitation {
 export interface RunnerTurnOptions {
   /** 前のターンの resume 識別子。新規Threadはundefined。 */
   resumeSessionId?: string;
+  /** trueなら、resumeしたセッションを**そのまま続けず新しいsession idへ分岐**する
+   *  （SDKの`forkSession`）。Fork Threadの最初のターンで使う——渡さないと親と
+   *  同じセッションを共有し、**両方の会話が1本に混ざる**（実測・2026-09-05、§2.2）。 */
+  forkSession?: boolean;
   prompt: string;
   mcpServers?: Options["mcpServers"];
   permissionMode?: Options["permissionMode"];
   cwd?: string;
-  /** G3——Memory toolを常時アタッチする際の使い方指示（turn-runner.tsが組み立てる）。 */
-  systemPromptAppend?: string;
+  /** coreが組み立てたsystem promptの全文（§2.3、決定・2026-09-05）。
+   *  `claude_code`プリセットは使わない——省略可能にすると、渡し忘れたときに
+   *  黙ってプリセット（＝banto に無いtoolの説明とSDK側の記憶）へ落ちる。
+   *  必須にして落ちる経路を塞ぐ（規則2）。 */
+  systemPrompt: string[];
   /** hold-the-lineモデル——呼び出し側がいつ解決するか決める。 */
   onToolApprovalRequested?(pending: PendingToolApproval): void;
   /** 発火時点でInboxに記録するだけ。呼び出し自体の保留はSDK/Moduleに委ねる。 */
@@ -50,6 +62,10 @@ export interface RunnerTurnResult {
    *  query.getContextUsage() をそのまま使う（規則12）。 */
   contextUsage?: unknown;
   compactionCount: number;
+  /** そのターンの入出力とキャッシュの内訳（`result`メッセージの`usage`をそのまま）。
+   *  **キャッシュが効いているかはここでしか分からない**——contextUsage は
+   *  「どれだけ積んだか」であって「いくらで読めたか」ではない（決定・2026-09-06）。 */
+  apiUsage?: unknown;
 }
 
 /**
@@ -130,10 +146,9 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
     prompt: promptStream(),
     options: {
       resume: opts.resumeSessionId,
+      forkSession: opts.forkSession,
       mcpServers: opts.mcpServers,
-      systemPrompt: opts.systemPromptAppend
-        ? { type: "preset", preset: "claude_code", append: opts.systemPromptAppend }
-        : undefined,
+      systemPrompt: opts.systemPrompt,
       // SDKの既定はopt-out（渡していないMCPも~/.claude.json等からマージされる）。
       // banto の Module境界はhostが渡すmcpServersだけで完結すべきなので、
       // OSユーザーの個人設定・project .mcp.json・pluginを一切混ぜない
@@ -151,10 +166,10 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
       permissionMode: opts.permissionMode ?? "auto",
       cwd: opts.cwd,
       abortController: opts.signal ? abortSignalToController(opts.signal) : undefined,
-      canUseTool: (toolName, input) =>
+      canUseTool: (toolName, input, options) =>
         new Promise<PermissionResult>((resolve) => {
           const pending: PendingToolApproval = {
-            toolCallId: `approval-${++approvalSeq}`,
+            toolCallId: options?.toolUseID ?? `approval-${++approvalSeq}`,
             toolName,
             input,
             resolve,
@@ -185,6 +200,7 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
 
   let compactionCount = 0;
   let contextUsage: unknown;
+  let apiUsage: unknown;
   // qのfor-awaitは、APIエラー（529 Overloaded等）で例外を投げうる。
   // ここでawaitせず投げっぱなしにすると、Node側でunhandled rejectionと
   // なりホスト全体が落ちる——1ターンの失敗が全Projectの接続を道連れに
@@ -202,6 +218,7 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
           compactionCount += 1;
         }
         if (message.type === "result") {
+          apiUsage = (message as { usage?: unknown }).usage;
           try {
             contextUsage = await q.getContextUsage();
           } catch {
@@ -221,7 +238,7 @@ export async function* runTurn(opts: RunnerTurnOptions): AsyncGenerator<RunTurnE
   yield* queue.iterate();
 
   if (capturedError) throw capturedError;
-  return { sessionId, contextUsage, compactionCount };
+  return { sessionId, contextUsage, compactionCount, apiUsage };
 }
 
 function abortSignalToController(signal: AbortSignal): AbortController {

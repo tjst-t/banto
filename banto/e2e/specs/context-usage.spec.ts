@@ -6,6 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
+import { openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.use({ viewport: { width: 390, height: 844 } });
@@ -13,13 +14,13 @@ test.use({ viewport: { width: 390, height: 844 } });
 test("会話を送る→文脈使用量メーターの数値が変わる→リロード→数値が復元される", async ({ page }) => {
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-context-usage-"));
 
-  await page.goto(`/?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
+  await openApp(page);
 
   await page.getByRole("button", { name: "新しい Project", exact: true }).click();
   await page.getByLabel("Project 名").fill("E2E Context Usage Project");
   await page.getByLabel("Base パス").fill(projectRoot);
   await page.getByRole("button", { name: "作成する" }).click();
-  await expect(page.getByText(/Base Thread —/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("Base Thread — E2E Context Usage Project")).toBeVisible({ timeout: 15_000 });
 
   // 会話前——まだ1ターンも走っていないので、メーターは「実データが無い」を
   // 示すダミー（windowTokens=0、resolveUsageのフォールバック）のまま。
@@ -53,7 +54,32 @@ test("会話を送る→文脈使用量メーターの数値が変わる→リ�
 
   // リロード後も直前の値が復元される（thread.usageの永続化、真実は一箇所）
   await page.reload();
-  await expect(page.getByText(/Base Thread —/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("Base Thread — E2E Context Usage Project")).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: /文脈使用量/ }).click();
   await expect(page.getByText(textAfterTurn!, { exact: true })).toBeVisible({ timeout: 15_000 });
+  await page.keyboard.press("Escape");
+
+  // SDK側の記憶（auto-memory・CLAUDE.md）が文脈に入っていないこと
+  // （§2.9・§2.3、決定・2026-09-05）。`claude_code`プリセットに戻ると
+  // 「Memory files」が復活する——bantoのMemoryと真実が二箇所になるので、
+  // ここで気づけるようにしておく（実測での見張り、規則1）。
+  const threads = await (
+    await page.request.get(`${CORE_BASE_URL}/api/projects`, {
+      headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    })
+  ).json();
+  const project = threads.find((p: { name: string }) => p.name === "E2E Context Usage Project");
+  const threadList = await (
+    await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, {
+      headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    })
+  ).json();
+  const thread = await (
+    await page.request.get(`${CORE_BASE_URL}/api/threads/${threadList[0].id}`, {
+      headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    })
+  ).json();
+  const usage = thread.usage.at(-1).contextUsage as { categories?: { name: string; tokens: number }[] };
+  const memoryFiles = usage.categories?.find((c) => c.name === "Memory files");
+  expect(memoryFiles?.tokens ?? 0).toBe(0);
 });

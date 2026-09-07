@@ -1,0 +1,753 @@
+{
+  "$comment": [
+    "いま何が残っているか・どの順でやるかの唯一の一覧（決定・2026-09-05）。",
+    "残りを知りたければ、まずこのファイルだけを見ればよい。",
+    "",
+    "他の文書との分担（規則3——同じことを2箇所に書かない）：",
+    "  docs/requirements.md   Phase と完了条件（滅多に変わらない）",
+    "  docs/specs/*.md        決まったこと",
+    "  docs/notes/*.md        なぜそうしたか・経緯・踏んだ罠",
+    "  banto/apps/frontend/lib/feature-flags.ts  コード上の接続状況（機械が読む一次情報）",
+    "  このファイル           いま残っている作業・順序・依存",
+    "",
+    "形は TaskMaster AI の骨（id / title / status / dependencies）だけ借りている。",
+    "ツール自体は入れていない——使うのは骨だけで、PRD パース・複雑度分析まで",
+    "抱えると specs/notes と真実が二重になるため（規則10「足すなら理由を1行」）。",
+    "JSON にしたのは、Phase 3 の Backlog Module がそのまま食えるようにするため。",
+    "",
+    "**完了条件は「計測」で書く**——requirements.md の「要件を満たす、ではなく",
+    "計測が実際に走り、数値を返す」に合わせる。「実装した」で閉じない。",
+    "",
+    "status: pending（未着手） / in_progress / done / backlog（やると決めたが順番待ち）",
+    "        / undecided（やるかどうかがまだ決まっていない——specs の未決に対応）"
+  ],
+  "updatedAt": "2026-09-06",
+  "currentPhase": "1",
+  "tasks": [
+    {
+      "id": "phase0-inbox",
+      "phase": "0",
+      "title": "受信箱を実データに繋ぐ",
+      "status": "done",
+      "dependencies": [],
+      "why": "Phase 0 の完了条件「判断待ちが1画面に出る」がこれ。",
+      "doneWhen": "実ブラウザで、判断待ちが一覧に出る（Project 名・Thread の別・本文）／バッジが件数を示す／行から Thread へ飛べる／答えるとその判断待ちが host 側で決着する。",
+      "verifiedBy": "banto/e2e/specs/inbox.spec.ts（7 spec 通し ×2回すべて通過、2026-09-05）",
+      "refs": [
+        "docs/specs/v4-architecture.md §2.4",
+        "docs/notes/2026-09-05-phase0-real-wiring-progress.md"
+      ],
+      "completedAt": "2026-09-05"
+    },
+    {
+      "id": "phase0-f1-threshold",
+      "phase": "2",
+      "title": "F1 しきい値検知——文脈が詰まってきたら人に上げる",
+      "status": "backlog",
+      "dependencies": [
+        "phase0-compaction-count"
+      ],
+      "why": "**Phase 0 の完了条件に入っていない**（完了条件はF2の観測と判断待ちの一覧だけ）。F1が要件になった経緯も「前の実装で文脈が十数倍に膨らんだので、まず観測を入れて測り直してから判断する」——観測（F2/F3）は入り、測った結果**圧縮は自動で効く**と分かった（2026-09-06）。よって警報は「圧縮という機構が壊れたときの保険」であって、いま無いと困るものではない。",
+      "decidedAt": "2026-09-06",
+      "decision": "Phase 2（人が見ていない長時間の自動実行）まで待つ。そこで初めて「誰も画面を見ていない間に詰まる」が現実の危険になる。",
+      "doneWhen": "文脈が詰まっているのに圧縮が起きていない状態を検知して人に上げる、を実測する。**単なる「◯%を越えた」にはしない**——自動圧縮は窓の83〜88%で正常に発火するので、それでは正常動作に鳴る（実測・2026-09-06）。",
+      "refs": [
+        "docs/specs/v4-architecture.md §2.4.1",
+        "docs/requirements.md F1",
+        "docs/notes/2026-09-06-compaction-measurement.md"
+      ]
+    },
+    {
+      "id": "phase0-stale-notify",
+      "phase": "2",
+      "title": "滞留通知（A7）",
+      "status": "backlog",
+      "dependencies": [],
+      "why": "判断待ちが出ても、人が画面を見ていなければ止まったままになる。",
+      "scope": [
+        "InboxStore.listOpen() のうち createdAt から閾値超えのものを定期チェック、judgment.notified イベントを追記",
+        "フロント：showBrowserNotification の呼び出し元（いま呼ばれていない）",
+        "本物の Web Push（Service Worker）はスコープ外——タブが開いている間だけ（ユーザー確認済み）"
+      ],
+      "doneWhen": "閾値を過ぎた判断待ちで通知が実際に出ることを実ブラウザで確認する。",
+      "refs": [
+        "docs/requirements.md A7"
+      ],
+      "decidedAt": "2026-09-06",
+      "decision": "Phase 0 の完了条件に入っていない（完了条件はF2の観測と判断待ちの一覧だけ）。人が画面を見ていない長時間の自動実行が現実になる Phase 2 まで待つ——F1 と同じ理由・同じ時期（ユーザー決定・2026-09-06）。"
+    },
+    {
+      "id": "judgment-liveness-after-host-restart",
+      "phase": "0以降",
+      "title": "host を再起動すると、判断待ちが永久に live のまま残る",
+      "status": "done",
+      "dependencies": [],
+      "why": "判断待ちを止めているのは走行中のプロセス（canUseTool の hold-the-line）。host を再起動するとその走行は消えるが、受信箱の記録は `live` のまま残り、画面には答えられるカードが出る——答えても続きは起きない（幽霊の判断待ち）。実測・2026-09-06、再起動のたびに手で拒否して片付けている。",
+      "doneWhen": "host 起動時に、前のプロセスが抱えていた判断待ちが `live` でなくなることを実測する（期限切れ扱いにするか、起動時に決着させるかはこのとき決める）。",
+      "refs": [
+        "docs/specs/v4-architecture.md §2.4.1"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "host 起動時に expireOrphanedJudgments() で、前のプロセスが抱えていた判断待ちを期限切れにするようにした。単体テストで押さえた。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "phase0-compaction-count",
+      "phase": "0",
+      "title": "圧縮を1回起こして数える",
+      "status": "done",
+      "dependencies": [],
+      "why": "Phase 0 の完了条件は「計測が実際に走り、数値を返す」。compactionCount は記録しているが、実測 16 ターンすべて 0——1M context なので自動コンパクションが一度も起きておらず、機構が動いた実績が無かった。",
+      "doneWhen": "意図的に長い会話を作って compact_boundary を発火させ、usage.recorded の compactionCount が 1 以上になることを実測する。",
+      "verifiedBy": "隔離ホスト（4199）で 200K 窓のモデルに 4 万トークン/ターンを送り、使用率 83%（175,840トークン）で trigger=auto の compact_boundary が発火。post_tokens=10,796、次のターンの使用率は 23% に下がった。Event Store の usage.recorded も seq=22 で compactionCount=1（2026-09-06）。既定モデル（1M窓）では 56%・56万トークンまで発火しないことも実測。",
+      "refs": [
+        "docs/requirements.md Phase 0 の完了条件",
+        "docs/specs/v4-architecture.md §3",
+        "docs/notes/2026-09-06-compaction-measurement.md"
+      ],
+      "completedAt": "2026-09-06"
+    },
+    {
+      "id": "app-shell-shared-layout",
+      "phase": "0以降",
+      "title": "AppShell を共有のlayoutへ引き上げる",
+      "status": "backlog",
+      "dependencies": [],
+      "why": "`/` と `/p/[id]` がそれぞれ AppShell を持っているため、ホームから Project 画面へ移るときにトップバー・レールが作り直される——開いているダイアログやオーバーレイが**入力ごと消える**（実測・2026-09-06。E2Eが後ろのspecから落ちていた原因でもある）。いまはリダイレクトを一度だけにし、E2E側で決着を待つことで回避している。",
+      "doneWhen": "ホームで「新しい Project」を入力している最中に自動リダイレクトが起きても、ダイアログと入力が残ることを実ブラウザで確認する。",
+      "refs": [
+        "docs/notes/2026-09-06-judgment-after-reload-and-home-redirect.md"
+      ],
+      "note": "`/canvas-window` はシェルを持たない（AppShellを被せない）ので、単純に root layout へ移すだけでは済まない"
+    },
+    {
+      "id": "turn-stream-reattach",
+      "phase": "未定",
+      "title": "走行中のターンに再接続できる口",
+      "status": "undecided",
+      "dependencies": [],
+      "why": "ターンのイベント列は `POST /api/threads/:id/messages` の応答の中にしか無く、リロードするとその走行の出力はUIから切れる。いまは「生きている判断待ちをカードとして描き直し、答えた後はhostの記録から取り直す」ことで実用上は塞いだが、**走行中の出力そのものは戻らない**（答えるまでの間、何が起きているか見えない）。",
+      "doneWhen": "（やると決まっていない。`GET /api/threads/:id/stream?from=seq` 等の形をまず決める）",
+      "refs": [
+        "docs/notes/2026-09-06-judgment-after-reload-and-home-redirect.md"
+      ]
+    },
+    {
+      "id": "project-instruction-ui",
+      "phase": "0以降",
+      "title": "Project 固有の指示（system prompt の層3）を人が書く画面",
+      "status": "backlog",
+      "dependencies": [],
+      "why": "組み立て（buildSystemPrompt）には入れてあるが、人が入力する場所が無い。いまは常に空で渡っている。",
+      "doneWhen": "Project 設定から入力して、次のターンの system prompt に実際に入ることを実測する。",
+      "refs": [
+        "docs/specs/v4-architecture.md §2.3",
+        "docs/notes/2026-09-05-system-prompt-and-memory-ownership.md"
+      ]
+    },
+    {
+      "id": "ai-writes-global-memory",
+      "phase": "未定",
+      "title": "AI から Global Memory に書く経路",
+      "status": "undecided",
+      "dependencies": [],
+      "why": "Phase 0 では開けないと決めた——AI が「人の名前」を勝手に書き換える経路を、観測の仕組みが揃う前に作らない。",
+      "doneWhen": "（やると決まっていない。決めるのが先）",
+      "refs": [
+        "docs/specs/v4-architecture.md §2.2「まだ決めていない」"
+      ]
+    },
+    {
+      "id": "review-turn-lifecycle",
+      "phase": "0",
+      "title": "ターンの生死を finally で必ず閉じる",
+      "status": "done",
+      "dependencies": [],
+      "why": "`live.done` は SSE の done/error を自分で読んだときだけ立つ。停止ボタン・パネルのアンマウント（Fork を畳む／別Projectへ移る／Canvasを開く）・接続断では立たず、その Thread は「判断待ちのカードが二度と出ない」「次の送信が host に届かず消える」状態で詰む。",
+      "doneWhen": "停止／Fork を畳む／別 Project へ移る、のいずれの後でも、その Thread で新しいターンが開始でき、生きている判断待ちのカードが復元されることを実測する。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md"
+      ],
+      "completedAt": "2026-09-06",
+      "verifiedBy": "e2e/specs/turn-lifecycle-abandoned.spec.ts（判断待ちを残して別Projectへ移り、戻って答え、次も送れるところまで）。壊れることを先に確認済み——修正前は「戻ると判断待ちのカードが出ない」で落ちた。10 spec 通し通過。",
+      "howFixed": "LiveTurn の `done` フラグを廃し「liveTurns に居る＝このブラウザが読んでいる」に一本化（規則3）。run() の finally に加え、**ThreadPanel の解体時に releaseRealRun() を呼ぶ**——判断待ちで中断しているジェネレータは捨てられても return() されず finally に到達しないため（実測）。host のターンは hold-the-line で生かしたままにする。"
+    },
+    {
+      "id": "review-block-send-while-pending",
+      "phase": "0",
+      "title": "判断待ち中の送信を塞ぐ",
+      "status": "done",
+      "dependencies": [
+        "review-turn-lifecycle"
+      ],
+      "why": "assistant-ui の isRunning は requires-action では false なので Send が押せる。押すと同じ SSE を2つの run が食い合い、プロンプトが消え、答えていない承認が「回答済み」表示になる。",
+      "doneWhen": "判断待ちが出ている間は送れないこと（または送ろうとしたら明示的に断られること）を実ブラウザで確認する。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "走行中のターンへ新しい発言を重ねられないようにした（adapter が「送っていません」と明示して落ちる。規則2——黙って消さない）。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "review-permission-mode-authoritative",
+      "phase": "0",
+      "title": "permissionMode の真実を host に寄せる",
+      "status": "done",
+      "dependencies": [],
+      "why": "host に保存した `thread.permissionMode` を**ターン実行が読んでいない**（turn-runner は HTTP ボディの値だけを見る）。未指定なら `\"auto\"` に黙って転落する。とくに Fork Thread は host 側に値が無いので毎回 auto に戻り、親で `default` にして承認ゲートを効かせていた人が自動承認で走らせることになる（規則2）。",
+      "doneWhen": "Fork Thread を作った直後のターンが、親で選んだモードで走ること／ボディに permissionMode を入れずに叩いたターンが auto に落ちないことを、host の記録で確認する。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md",
+        "docs/specs/v4-frontend.md §6.4"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "turn-runner の解決順を「ボディ（このターンだけの上書き）＞ Thread に残した値」にし、Fork は親の permissionMode を引き継ぐようにした。単体テスト（app.test.ts）で押さえた。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "review-answer-resolution-result",
+      "phase": "0",
+      "title": "答えられない承認に 200 を返さない",
+      "status": "done",
+      "dependencies": [],
+      "why": "`/api/inbox/:id/answer` が `pendingApprovals.resolve()` の戻り値を捨て、存在しない id・既に answered・解決先が無い場合でも 200 を返す。人には「承認した」と見えてターンは死んだまま（規則2）。host 再起動後・二重回答・Elicitation の3経路すべてでこれを踏む。",
+      "doneWhen": "解決先が無い承認に答えたとき、host が 409 を返し、画面にその旨が出ることを実測する。judgment-liveness-after-host-restart と一緒に直す。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "/api/inbox/:id/answer を、存在しない=404／決着済み=409／形が不正=400／解決先が無い=409(unresolvable) に分けた。**決着させる前に確かめる**ので「答えた」という嘘の記録も残らない。単体テスト3件。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "review-error-path-status",
+      "phase": "0",
+      "title": "エラー経路の status を他と揃える",
+      "status": "done",
+      "dependencies": [],
+      "why": "`lib/backend/adapter.ts` の error 分岐だけ `status: running` を固定で yield しており、判断待ちが未回答のままエラーが来ると答える口が消える（2026-09-06 に直したのと同じ形が1箇所残っている）。",
+      "doneWhen": "判断待ちが出ている最中にターンがエラーになっても、カードが答えられる状態のまま残ることを確認する。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "error 経路の status を他の yield と揃えた（答え待ちが残っていれば requires-action のまま）。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "review-clear-during-turn",
+      "phase": "0以降",
+      "title": "走行中の Clear が黙って取り消される",
+      "status": "done",
+      "dependencies": [],
+      "why": "`thread.cleared` で resumePoint を消しても、走行中のターンが終了時に `updateResumePoint` を無条件に追記して復活させる。画面には横線だけ残り、次のターンは畳む前の文脈を引き継ぐ——気づけない嘘（規則3・規則8）。",
+      "doneWhen": "走行中に Clear したとき、次のターンが本当に新しいセッションで始まることを host の記録で確認する（または走行中の Clear を明示的に断る）。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "Clear で切り離したセッションを ThreadState.abandonedSessions に覚え、走行中のターンが終了時に同じ session id で戻ってきても resume-point を復活させないようにした。単体テストで押さえた（スナップショット版 4→5）。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "review-elicitation-not-connected",
+      "phase": "0以降",
+      "title": "Elicitation の判断待ちが、答えても届かないのに答えられる",
+      "status": "done",
+      "dependencies": [
+        "review-answer-resolution-result"
+      ],
+      "why": "vault の requestAlias は実際に繋がっているのに、elicitation 由来の判断待ちは `pendingApprovals` に登録されない。UI は承認と同じカードを出し、答えると受信箱から消えて「回答：許可する」と表示するが、答えはどこにも届かず Module は60秒でタイムアウトする（規則13）。mode/requestedSchema/url/3値も未使用。",
+      "doneWhen": "elicitation 由来の判断待ちが、答えられないなら答える口を出さない（または本当に届く）ことを実測する。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md",
+        "docs/specs/v4-architecture.md §2.4.1"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "判断待ちに answerable を持たせ、Elicitation 由来（解決先を持たない）は**答える口を出さず**、その旨を書くようにした（規則13）。仕様 §2.4.1 にも明記。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "review-sync-restored-termination",
+      "phase": "0以降",
+      "title": "リロード後の続きを6秒で諦めない",
+      "status": "done",
+      "dependencies": [],
+      "why": "`syncRestoredThread` は「メッセージ件数が2秒×3回変わらなければ打ち切り」。host が assistant メッセージを追記するのはターン終了時なので、承認後の処理が6秒を超えると続きが永久に画面へ入らない。既存 E2E がこの窓に依存＝間欠の素地（規則6）。",
+      "doneWhen": "承認後に10秒以上かかるターンでも、続きが画面に入ることを実測する。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "打ち切りを「返事が増えたか」ではなく **assistant の返事が増えた＝ターンが終わった**で判定するようにした（以前は実質6秒で諦めていた）。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "review-spec-who-answers",
+      "phase": "0",
+      "title": "「どこで答えるか」を仕様で決め直す",
+      "status": "done",
+      "dependencies": [],
+      "why": "コードが引用している「受信箱に答える UI を作らない（§2.4 の決定）」という文言は仕様に存在せず、§2.4.1 はむしろ「受信箱・ライブカードのどちらから答えても」と書いている。今日の「誰も答えられない」の直接原因（規則8——黙ってどちらかに寄せない）。",
+      "doneWhen": "どちらに寄せるか決めて `docs/specs/v4-architecture.md §2.4/§2.4.1` を更新し、実装のコメントを実在する決定に差し替える。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "§2.4.1 に「答える口は Thread 側のカード1箇所／そのぶん Thread を開けば必ずカードがある（復元）」「届かないものには答える口を出さない」を明記し、実装のコメントを実在する決定に差し替えた。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "review-use-tooluseid",
+      "phase": "0以降",
+      "title": "canUseTool の toolUseID を使う",
+      "status": "done",
+      "dependencies": [],
+      "why": "SDK が本物の tool_use id を渡してくるのに捨てて `approval-N` を合成している。§2.4.1 が「本実装で詰める」とした tool_use_id 紐付けが構造的に不可能で、timed_out の検知（結果の到着で判定）もこれ待ち。合成 id は毎ターン1から振り直されるので Thread 内でも衝突する。",
+      "doneWhen": "判断待ちが本物の tool_use id を持ち、tool 呼び出しの結果と突き合わせられることを確認する。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "canUseTool の options.toolUseID をそのまま使うようにした（合成 approval-N はフォールバックのみ）。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "review-approval-shows-input",
+      "phase": "0以降",
+      "title": "承認カードに tool の引数を出す",
+      "status": "done",
+      "dependencies": [
+        "review-use-tooluseid"
+      ],
+      "why": "`PendingToolApproval.input` は手元にあるのに捨てており、判断待ちの本文は tool 名だけ。人は runCommand を、どんなコマンドか見ないまま許可することになる（§6.0「呼ぶ前に見せる」に反する）。",
+      "doneWhen": "承認する前に、実行される内容（コマンド・パス等）が画面に見えていることを実測する。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md",
+        "docs/specs/v4-frontend.md §6.0"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "判断待ちに toolInput を持たせ、承認カードに引数を出すようにした。E2E（judgment-deny）で**答える前にパスが見えている**ことを検証。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "review-judgment-servername",
+      "phase": "0以降",
+      "title": "どのサーバが聞いているかを出す（§2.4.1 の MUST）",
+      "status": "done",
+      "dependencies": [],
+      "why": "serverName は Runner で拾っているが SSE に載せておらず、画面は常に「banto があなたの判断を待っています」になる。MCP 仕様が課している UI 要件の未達。",
+      "doneWhen": "判断待ちのカードに、実際の発信元 Module 名が出ることを確認する。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md",
+        "docs/specs/v4-architecture.md §2.4.1"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "elicitation の serverName を SSE と判断待ちに載せ、カードの差出人に出すようにした（§2.4.1 の MUST）。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "review-bypass-dialog-wording",
+      "phase": "0",
+      "title": "bypassPermissions の確認文言が仕様と逆",
+      "status": "done",
+      "dependencies": [],
+      "why": "ダイアログが「Module 間の呼び出しの確認も出ません」と説明しているが、§6.4 は「中継の承認ゲートは permissionMode に関わらず常に初回確認する」と決めている。セキュリティ境界の説明が誤っており、§6.4 が防ごうとした事故（通知疲れで内部配線の承認まで飛ばす）をダイアログ自身が誘発する。",
+      "doneWhen": "文言を仕様に合わせる（1行）。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md",
+        "docs/specs/v4-frontend.md §6.4"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "「Module 間の呼び出しの確認も出ません」→「このモードでも出ます」に修正（§6.4 と逆だった）。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "review-e2e-proves-resolution",
+      "phase": "0",
+      "title": "承認が本当に解決したことを、tool の結果で見る",
+      "status": "done",
+      "dependencies": [],
+      "why": "`inbox.spec.ts` の最終検証「回答：許可する」はクライアントのローカル state だけで出るので、host から1バイト返らなくても緑になる——幽霊承認を素通りする（規則14）。",
+      "doneWhen": "承認した tool の結果（一意なファイル名等）が画面に出るまで見る形に変え、`pendingApprovals.resolve` を無効化すると落ちることを確認する。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "inbox.spec.ts で、承認した listDirectory の結果（一意なファイル名）が画面に出るまで見るようにした。ローカル state だけで緑になる穴を塞いだ。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "review-e2e-deny",
+      "phase": "0",
+      "title": "拒否の経路の回帰テスト",
+      "status": "done",
+      "dependencies": [],
+      "why": "specs 全体で「拒否」が0件。deny の分岐も、拒否後にターンがどう続くかも未検証（§2.4.1 の MUST「断る手段を明確に出す」に対応する回帰が無い）。",
+      "doneWhen": "拒否すると tool が実行されない（一意な中身が画面に出ない）ことと、ターンが正しく終わることを実測する。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "e2e/specs/judgment-deny.spec.ts を追加。拒否→決着→ターンは正常終了→**ファイルの中身が画面にも記録にも出ない**まで検証。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "review-unit-approval-resolution",
+      "phase": "0",
+      "title": "host 側に承認解決の単体テストを置く",
+      "status": "done",
+      "dependencies": [
+        "review-answer-resolution-result"
+      ],
+      "why": "`/api/inbox/:id/answer`・PendingApprovalRegistry・`/permission-mode` のいずれにも単体テストが無い。Phase 0 の中核（承認が元の呼び出しを解決する）が、単体でも E2E でも検証されていない。",
+      "doneWhen": "解決できる／できない／二重回答／不正な値、の4通りが単体テストで押さえられている。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "app.test.ts に3件（409/400/permissionMode の検証）、store.test.ts に2件（起動時の期限切れ・走行中Clear）を追加。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "review-sse-error-after-headers",
+      "phase": "0以降",
+      "title": "SSE 送出後の例外で host が落ちうる",
+      "status": "done",
+      "dependencies": [],
+      "why": "`app.ts` の catch はヘッダ送出後でも `json(res,500,…)` を呼ぶため ERR_HTTP_HEADERS_SENT を投げ、unhandled rejection で host プロセスごと落ちうる。1ターンの失敗が全 Project を道連れにする（規則2）。到達頻度は未測。",
+      "doneWhen": "ヘッダ送出後の例外で host が落ちないことを、再現テストで確認する。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "ヘッダ送出後は 500 を書かず、SSE の error イベントとして伝えて閉じるようにした（host プロセスごと落ちる経路を塞いだ）。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "review-snapshot-never-saved",
+      "phase": "0以降",
+      "title": "スナップショットが本番で一度も保存されない",
+      "status": "done",
+      "dependencies": [],
+      "why": "`SnapshotProjection.save()` の呼び出しがテストにしか無い。正しさは壊れない（毎回ログ全体を再fold）が、版管理・アトミック書き出しの機構が動いておらず、起動時間はイベント数に比例して伸び続ける。使うか外すかを決める（規則13の精神）。",
+      "doneWhen": "保存が実際に走ること（または機構を外したこと）を確認する。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "60秒ごと＋SIGTERM/SIGINT でスナップショットを保存するようにした（実装してあるのに本番で一度も動いていなかった）。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "review-input-validation",
+      "phase": "0以降",
+      "title": "境界で値を検証する（/answer と /permission-mode）",
+      "status": "done",
+      "dependencies": [],
+      "why": "どちらも body を無検証でキャストしている。`/permission-mode` は不正な値を Event Store に永続化しうる（型が嘘になる・規則9）。`/answer` は任意の値を SDK の承認応答として流せる。",
+      "doneWhen": "許容値から外れたら 400 を返すことを単体テストで押さえる。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "/answer は PermissionResult の形、/permission-mode は6値を検証して 400 を返す。単体テストで押さえた。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "review-small-fixes",
+      "phase": "0以降",
+      "title": "小さいずれ（復元の並び順・palette のフラグ）",
+      "status": "done",
+      "dependencies": [],
+      "why": "リロード復元の判断待ちが新しい順＝会話の時系列と逆に並ぶ。`lib/mock/palette.ts` が `CONNECTED_FEATURES.settings` を見ているため、Project 設定が gear からは開くのに Command Palette からは出ない（2026-09-04 のフラグ分離の直し漏れ）。",
+      "doneWhen": "並び順が時系列になり、Command Palette から Project 設定が開くことを確認する。",
+      "refs": [
+        "docs/notes/2026-09-06-tool-approval-review.md"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "復元した判断待ちを createdAt 昇順（会話の時系列）に並べ、Command Palette の Project 設定を projectSettings フラグで判定するよう直した。",
+      "verifiedBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+    },
+    {
+      "id": "phase1-module-contract",
+      "phase": "1",
+      "title": "Module の宣言・登録の契約を確定する",
+      "status": "done",
+      "dependencies": [],
+      "why": "Phase 1 の完了条件「**契約が確定し、その契約で3つ書けた**」の契約側。3本（vault/shell/filesystem）は書けているが、**どう宣言してどう起動するかは cli.ts に直書き**（vault は dist パス直指定、shell/filesystem は kind の literal union）。仕様 §10 に残る modules item 9「どの package type を受け入れるか」もここ。",
+      "doneWhen": "Module を1本、**コードを変えずに宣言だけで**足せることを実測する（python-demo を宣言から起動できれば済む）。",
+      "refs": [
+        "docs/specs/v4-modules.md",
+        "docs/specs/v4-architecture.md §10",
+        "docs/notes/2026-09-06-module-declaration.md"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "宣言（名前／起動＝プログラム・引数・環境変数／meta）を Configuration に置き、cli.ts の3つの直書き（vault の dist パス・shell|filesystem のリテラル union・node 固定）を廃止。閉じ込め（Landlock）の profile も宣言から決まる。未決だった「どの package type を受け入れるか」は『起動の形は1種類だけ』で決着し、仕様（v4-architecture §5.4 付近・v4-modules §4.9）に書いた。",
+      "verifiedBy": "隔離ホストで、banto のコードを変えずに宣言を1本足すだけで Python Module が繋がり、AI が echo tool を呼んで `echo: 宣言だけで繋がった` が返ることを実測。core 単体 67件（宣言の単体テスト8件を含む）・E2E 11 spec を3回連続で全通過（2026-09-06）。"
+    },
+    {
+      "id": "phase1-python-module-wired",
+      "phase": "1",
+      "title": "TypeScript でない Module を banto に繋ぐ",
+      "status": "done",
+      "dependencies": [
+        "phase1-module-contract"
+      ],
+      "why": "Phase 1 の完了条件「**TypeScript でない Module が1本、実際に動いている**」。python-demo（Python/MCP SDK）は**単体テストで契約が通ることは確認済み**（modules-integration/python-demo.test.ts が実際に走って通る）が、banto の Module としては繋がっていない——cli.ts に参照が無く、Project からは使えない。「実際に動いている」を規則13で読むなら、画面から使えるところまでが必要。",
+      "doneWhen": "実ブラウザで、Python Module の tool を AI が呼び、結果が会話に出ることを確認する。",
+      "refs": [
+        "banto/packages/core/src/modules-integration/python-demo.test.ts",
+        "docs/requirements.md C6"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "宣言（Project 上書き）を1本足すだけで繋がる。banto のコードは変えていない。",
+      "verifiedBy": "実ブラウザで確認（ユーザー確認・2026-09-06）。会話に `mcp__python-demo__echo` の呼び出しカードが出て、引数 {\"text\":\"実ブラウザから\"} と結果 {\"result\":\"echo: 実ブラウザから\"} が表示された＝**Phase 1 の完了条件「TypeScript でない Module が1本、実際に動いている」を満たす**。日本語も Module 越しに欠けずに往復している。"
+    },
+    {
+      "id": "phase1-cache-measurement",
+      "phase": "1",
+      "title": "ツールを足してもキャッシュが落ちないことを、本実装で数値確認",
+      "status": "done",
+      "dependencies": [],
+      "why": "Phase 1 の完了条件の1つ。**PoC では実測済み**（tool 0/8/40/120 で cache_read 一定、§8）だが、それは捨てる前提のコードでの計測。CLAUDE.md の「完了条件は計測が実際に走り、数値を返す」に従い、**本実装の banto で**測り直す。",
+      "doneWhen": "実banto で Module（tool）を足す前後の cache_read を並べ、落ちていないことを数値で示す。",
+      "refs": [
+        "docs/specs/v4-architecture.md §8",
+        "docs/notes/2026-09-06-cache-measurement.md"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "キャッシュの内訳（使い回し・覚え直し）を Runner の応答から拾って usage.recorded に残すようにした（今まで捨てていた）。そのうえで4つの筋書きを実測。",
+      "verifiedBy": "**Module を1本足した直後でも使い回し 3,331 を維持**（覚え直しは新しい道具の定義ぶん 875、次のターンは 115 に戻る）。固定部分（system prompt＋道具の定義）は 3,331 で、Clear しても効く。**落ちる筋書きも1つ通して測定の感度を確認**——Global Memory を足して新セッションにすると使い回し 0・覚え直し 3,827（2026-09-06）。"
+    },
+    {
+      "id": "phase1-modules-verified-in-browser",
+      "phase": "1",
+      "title": "3つの Module が仕様どおり画面から使えることの実測",
+      "status": "done",
+      "dependencies": [],
+      "why": "FileSystem は E2E で承認・拒否まで通っているが、**Shell と Vault は一度も画面から触られていない**（e2e/specs に runCommand も vault も出てこない）。Vault は可視性3層（agent/module/admin）、Shell は Landlock の許可リストという、**壊れても静かな**機構を持つ——動いていることを見ていない状態で Phase 1 を閉じない（規則1・規則13）。",
+      "doneWhen": "実ブラウザで、Shell の runCommand が承認ゲートを通って走る／Vault の agent 向け tool だけが AI から見えることを確認する。",
+      "refs": [
+        "docs/specs/v4-modules.md §2.1・§2.3",
+        "docs/specs/v4-security.md",
+        "docs/notes/2026-09-06-shell-vault-verified.md"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "E2E に2本追加（毎回の回帰で回る）：shell-confinement（Project の中は読めて外は読めない、両側から）と vault-visibility（AI が繋がる経路に tools/list を投げ、申請系だけが見えることを確認）。",
+      "verifiedBy": "**壊したら落ちることも確認済み**——閉じ込め無しで同じ Module を起動すると外のファイルが読めた（exitCode 0）／可視性フィルタを外すと resolveAlias が見えてテストが落ちた。core 単体 74件・E2E 13 spec 全通過（2026-09-06）。"
+    },
+    {
+      "id": "phase1-project-modules-ui",
+      "phase": "1以降",
+      "title": "Project 単位の Module 管理 UI",
+      "status": "backlog",
+      "dependencies": [
+        "phase1-module-contract"
+      ],
+      "why": "いま Project 設定の「接続している Module」は実バックエンドに繋がっておらず nav から外してある（feature-flags）。§10 の D 群（画面を見ないと決まらない）に分類されているので、**先に mock/ で形を見る**のが決めた進め方。Phase 1 の完了条件そのものではない。",
+      "doneWhen": "Project 設定から、その Project に繋がっている Module が実データで一覧でき、増減できることを実ブラウザで確認する。",
+      "refs": [
+        "docs/specs/v4-architecture.md §10（D群）",
+        "mock/README.md"
+      ]
+    },
+    {
+      "id": "phase1-canvas-embed-foundation",
+      "phase": "1",
+      "title": "MCP Apps の埋め込み受け皿（二重iframe＋postMessage 中継）",
+      "status": "done",
+      "dependencies": [
+        "phase1-module-contract"
+      ],
+      "why": "インライン／フルスクリーン／設定画面／ランチャーの4つは、**同じ1つの受け皿**を置き場所を変えて使う（§6.2「Canvas とは Module が ui:// で描く UI コンテンツそのもの。inline/fullscreen/pip はどこに出すかの指定」）。受け皿を4回作らない（規則3）。いまは `canvas-content.tsx`・`module-config-pane.tsx` とも**モックの見た目だけ**で、iframe も postMessage も無い。",
+      "scope": [
+        "host：ui:// 資源の一覧・読み取りの中継（relay/agent-proxy には resources/list・read が既にある。可視性フィルタも）",
+        "フロント：二重iframeのサンドボックス、postMessage のハンドシェイク、UI 起点の tool 呼び出しを承認ゲートに載せる（§6.2「host が承認を要求してよい」）",
+        "Module 側：ui:// 資源を1つ持つ Module（filesystem から始める）"
+      ],
+      "doneWhen": "実ブラウザで、Module が持つ ui:// の中身が iframe の中に描かれ、その中からの tool 呼び出しが承認ゲートを通ることを確認する。",
+      "refs": [
+        "docs/specs/v4-frontend.md §6.2",
+        "docs/specs/v4-architecture.md §5.4"
+      ],
+      "result": "サンドボックスを core が別ポート（既定4176・E2Eは4739）で配る形にした。CSP はリクエストごとに `?csp=` から組み立てて HTTP ヘッダで返す。host の3つの口（ui-tools / ui-resource / ui-tool-call）と `GET /api/ui-config` を足し、フロントは公式 App Bridge（`_client` は null）で受ける——**画面からの tools/call は必ず Inbox の承認ゲートを通る**。本番は Caddy の `sandbox.banto.tjstkm.net` で別オリジンにした。測った結果：core 単体 88件（サンドボックスの守り7件・実 Module を立てて `_meta` がSDK を通ることの確認2件を含む）、E2E 15 spec 全通過。"
+    },
+    {
+      "id": "phase1-canvas-inline",
+      "phase": "1",
+      "title": "MCP Apps：インライン（会話のカードに埋め込む）",
+      "status": "done",
+      "dependencies": [
+        "phase1-canvas-embed-foundation"
+      ],
+      "why": "§6.2 の起点「AI の tool 呼び出し」——その tool に紐づく Canvas を `inline` で会話のカードに埋め込む。いまフロントには `getInlineView()` の分岐だけがあり、中身はモックの固定データ。",
+      "doneWhen": "実ブラウザで、AI が tool を呼んだ結果として、その Module の Canvas が会話のカードの中に描かれることを確認する。",
+      "refs": [
+        "docs/specs/v4-frontend.md §6.2"
+      ],
+      "result": "FileSystem の `listDirectory` に `ui://banto-filesystem/directory` を結びつけ、会話のカード（モックが決めた枠のまま）に埋めた。E2E で、その場に実在するファイル名が Module の画面に並ぶこと・画面から banto の保存領域に手が届かないこと・画面のボタンからの呼び出しが承認を通るまで実行されないことを見ている。 実機で2つ直した（ユーザー報告）：実 Module の inline が tool グループに畳まれていた／画面からの承認が人に見えていなかった（ターン終了時に「走行中」が降りず、かつ会話のカードとして出すと画面自身が消えた）。**画面からの承認は、その画面のその場に出す**と決めた——答える口は host から見て1本のまま。 さらに実機で1つ（ユーザー報告・2026-09-07）：画面のボタンを押すと会話が組み直され、承認後に画面が消えた。根は**SSE の受信が描く側の都合で止まる**構造で、ターンの終了イベントが処理されず「走行中」が残り、文脈使用量も記録されていなかった。受信を独立させ、終了時の処理を受信時点で行う形に直した。E2E は**ターンが終わってから押す**（人と同じ順番）ように直し、直す前の状態で落ちることを確かめた。"
+    },
+    {
+      "id": "phase1-canvas-fullscreen",
+      "phase": "1",
+      "title": "MCP Apps：フルスクリーン（会話の隣に開く）",
+      "status": "done",
+      "dependencies": [
+        "phase1-canvas-embed-foundation"
+      ],
+      "why": "§6.2「`fullscreen` は会話の隣——banto が Canvas に渡せる最大の領域」。tool 側が fullscreen を要求したときと、ランチャーから開いたときの出し先。`CanvasAutoOpen` の配線はあるが、中身はモック。",
+      "doneWhen": "実ブラウザで、tool が fullscreen を要求したら会話の隣に Canvas が開き、会話が消えないことを確認する。",
+      "refs": [
+        "docs/specs/v4-frontend.md §6.2"
+      ],
+      "result": "画面が `ui/request-display-mode` で「大きく出して」と頼み、**決めるのは banto**（仕様の交渉モデルどおり）。開く先はモックが決めた会話の隣のパネルで、枠（ヘッダ・閉じる・全画面・別タブ）はそのまま。どの面かは URL に持つ（`canvas=<Module>:<ui://…>` ＋ `canvasTool=<toolCallId>`）ので、**リロードしても同じ面が開き直る**。E2E で、Canvas に本物の中身が出ること・**会話が消えないこと**・リロードで開き直ることを見ている。途中で1つ踏んだ：fullscreen 側に tool の結果を渡しておらず、枠だけ出て中身が空だった——面と一緒に結果も覚えるようにした（Canvas パネルからは会話の parts を読めない）。 追記・2026-09-07（ユーザー報告）：**別タブで開くと中身が出なかった**——`/canvas-window` がモックの固定データを描いていて、実 Module を知らなかった。**別タブは手元の記憶を持たない**ので、どの Thread の記録から引き直すかを URL で運び、host の記録（`uiToolCalls`）から画面を組み直す形にした。E2E に別タブの確認を足し、**直す前に落ちること**を先に確かめた。"
+    },
+    {
+      "id": "phase1-canvas-config",
+      "phase": "1",
+      "title": "MCP Apps：設定画面への埋め込み（ui://<id>/config）",
+      "status": "done",
+      "dependencies": [
+        "phase1-canvas-embed-foundation"
+      ],
+      "why": "§6.2「Module が ui://<id>/config を持てば、banto の設定画面がそれを埋め込む（iOS の設定アプリと同じ形）」。**banto は値を持たない**——読み書きは Module 自身の tool。いまの `module-config-pane.tsx` はモックのフィールド定義を描いているだけ。",
+      "doneWhen": "実ブラウザで、Module の設定 Canvas が設定画面の枠の中に描かれ、そこから変更した値が Module 側に残ることを確認する。",
+      "refs": [
+        "docs/specs/v4-frontend.md §6.2"
+      ],
+      "result": "Module が `dev.banto/canvas: \"config\"` と名乗った資源を、Project 設定の「Module の設定」に埋める（**投機的に `ui://<id>/config` を試さない**）。**値は Module が持つ**——FileSystem に実際に効く設定（隠しファイルを一覧に出すか）を作り、設定画面から変えると一覧の中身が変わるところまで E2E で見ている。設定は Thread ではなく Project のものなので、host に Project 単位の口を足した（ui-settings / ui-resource / ui-tool-call）。承認は**その Project の Base Thread**に載せる——答える場所を増やさない。**副産物：Module 自身の状態の置き場が無いことが分かった**（閉じ込めが Project の根しか書かせないので、設定を保存できなかった）。`${moduleDataDir}` を足し、Module ごとに1つだけ書ける場所を用意した。 改訂・2026-09-07（ユーザー指摘2件）：**画面が自分の Module を呼ぶときは承認を求めない**（設定を見るたびに人を待たせるのは承認の意味を薄める。AI からの呼び出しは今までどおり通る）。**設定の置き場は Module の scope が決める**——instance に1本（Vault）は banto 全体の設定、Project ごと（Shell・FileSystem）は Project 設定。Vault にも設定画面を持たせて、E2E で「どちらにどれが出るか」を直接見ている。 追記・2026-09-07（ユーザー指摘）：**モックの形に合わせた**——左メニューに Module ごとに並び、選ぶと右側いっぱいに出る。モックの SettingsShell が既に持っていた枠（moduleImplementations）に実 Module を流し込むだけで済んだ。以前は1つの節に全部を縦に積んでいた。"
+    },
+    {
+      "id": "phase1-canvas-launcher",
+      "phase": "1",
+      "title": "MCP Apps：ランチャー（人が AI を介さずに開く）",
+      "status": "done",
+      "dependencies": [
+        "phase1-canvas-embed-foundation"
+      ],
+      "why": "§6.2 の launcher（要件C3）——「まずファイルを見たい」は AI に頼む用事ではない。宣言は `_meta`（設定 Canvas と同じ1つの仕組み）、名前・説明・アイコンは仕様の title/description/icons をそのまま使う。**その Project に繋がっている Module の入口だけ**を出し、一覧は Module 集合から導出する（規則3）。いま `CONNECTED_FEATURES.paletteLaunchers` は false。",
+      "doneWhen": "実ブラウザで、Command Palette の「Module の入口」から Canvas が fullscreen で開くこと、繋がっていない Module の入口は出ないことを確認する。",
+      "refs": [
+        "docs/specs/v4-frontend.md §6.2",
+        "docs/requirements.md C3"
+      ],
+      "result": "Module が `dev.banto/canvas: \"launcher\"` と名乗った Canvas を、Command Palette の「Module の入口」から**人が AI を介さずに**開けるようにした（要件C3）。設定 Canvas と**同じ1つの仕組み**（増やさない）。名前と説明は仕様の name/description をそのまま使う。一覧は host が Project の Module 集合から導出する（別の索引を持たない、規則3）。**tool 起点でないときは `toolInfo` を渡さない**——画面はそれで「人が直接開いた」と分かり、自分で必要なものを取りに行く（§6.2「launcher も同じ形」）。E2E で、入口が出る／名乗っていない Module は出ない／会話の隣に開いて会話が消えない／中身が本物／リロードで開き直る、を見ている。測った結果：core 単体 105件、E2E 18件通過（既知の ui-codeblock-cjk を除く）。"
+    },
+    {
+      "id": "phase1-module-selfreport",
+      "phase": "1",
+      "title": "Module の自己申告と宣言の突き合わせを本番で走らせる",
+      "status": "done",
+      "dependencies": [
+        "phase1-module-contract"
+      ],
+      "why": "宣言と実物が食い違っていないかを確かめるコード（reconcileModuleMeta——spawn の形を左右する項目が食い違ったら再起動を要求する）は実装済みだが、**Module 側が `dev.banto/module` を自己申告していない**ので本番で一度も走っていない。今日の見直しで見つけた「有るのに動いていない」と同じ形。とくに『秘密を扱う』『閉じ込めが要る』が食い違ったまま繋がるのは危険（規則2）。",
+      "doneWhen": "Module が自己申告し、宣言と食い違ったら**繋がずに止まる**（または正しい形で起動し直す）ことを実測する。",
+      "refs": [
+        "docs/notes/2026-09-06-module-declaration.md",
+        "docs/specs/v4-modules.md §4.9"
+      ],
+      "completedAt": "2026-09-06",
+      "howFixed": "Module は resources/list の資源の _meta['dev.banto/module'] で名乗る（initialize の serverInfo は SDK が削るため使えないことを実測）。4本すべてに実装（Python 含む）。host は起動直後に読み、**厳しい方向なら Config を直して起動し直し、緩い方向なら繋がずに止める**。",
+      "verifiedBy": "両方向を隔離ホストで実測（厳しい：宣言が自動で直り tool が動く／緩い：エラーで接続しない）。Config が実際に書き換わっていることを Event Store で確認。core 単体 73件・E2E 11 spec 全通過（2026-09-06）。"
+    },
+    {
+      "id": "module-connect-failure-surface",
+      "phase": "1以降",
+      "title": "Module が繋がらないことの伝え方——毎ターン会話にエラーを出さない",
+      "status": "pending",
+      "dependencies": [
+        "phase1-module-selfreport"
+      ],
+      "why": "Module は**ターンを始める瞬間**に起動するので、宣言と自己申告が食い違う等で繋がらないと、**人が発言するたびに毎回同じエラーが会話に出る**（実測・2026-09-06）。しかも Module 一覧を組み立てる途中で例外になるため、**問題が1本でもその Project の会話が丸ごと止まる**。設定（宣言）の問題なのに、直す場所と、エラーが見える場所が離れている。AI から見ても意味の取りづらいエラー文が毎ターン混ざる。**安全側には確実に倒れている**（繋がない・黙って緩めない）ので、直すのは見せ方だけ。",
+      "scope": [
+        "繋がらなかった Module を「状態」として持つ（毎ターン投げ直さない）",
+        "人には**受信箱の判断待ち**か、Project 設定の警告で1回だけ伝える——「この Module は宣言と食い違うので繋いでいません。宣言を直しますか？」",
+        "**繋がった Module だけでターンは進める**か、止めるかを決める（止めるなら、その理由が画面に残ること）",
+        "起動失敗（実行ファイルが無い・すぐ落ちる）も同じ入口に載せる——食い違いだけの話にしない"
+      ],
+      "doneWhen": "宣言を壊した Project で会話しても、**会話にエラーが毎ターン出ない**こと、かつ人が「Module が繋がっていない」ことに気づける場所が1つあることを、実ブラウザで確認する。",
+      "refs": [
+        "docs/notes/2026-09-06-module-declaration.md",
+        "docs/specs/v4-modules.md §4.9"
+      ],
+      "note": "見せ方は Module の管理画面（phase1-project-modules-ui）と一緒に決めるのが自然。ただし**判断待ちに出すだけなら先にできる**——受信箱は実データに繋がっている。"
+    },
+    {
+      "id": "ui-codeblock-cjk",
+      "phase": "4",
+      "title": "AI の返事のコードブロックが、途中で更新を止める（日本語が消えて見える）",
+      "status": "todo",
+      "dependencies": [],
+      "why": "**切り分け済み（実測・2026-09-07）。犯人は描画側。**\nhost には全文が記録されているのに、画面のコードブロックだけが途中で止まる：\n  [HOST] \"```\\n中は読める1788745124738\\n```\"\n  [DOM]  [\"中は読める178\\n\"]\n止まる位置は毎回違う（`中` / `中は読める1` / `中は読める178`）ので**日本語固有ではない**——ストリーミング中に**そのコードブロックだけが更新を止める**。**止まった後に来た段落は正しく描けている**ので、通信で落ちているのではない。当初の報告（日本語が表示されない）は、日本語が先頭にあったためそう見えていた。\nE2E `shell-confinement` がフルスイートで**約3回に1回**これで落ちる（単体では再現しない——他の spec と一緒に走らせたときだけ）。**テストを緩めない**——本物の不具合を隠すことになる（規則6）。",
+      "scope": [
+        "犯人の候補は markdown の memo 化（`unstable_memoizeMarkdownComponents` / `memoCompareNodes` は node の properties と children だけを見る）と、`MarkdownTextPrimitive` の `defer`。まず片方ずつ外して再現率が変わるかを見る",
+        "再現は**フルスイートで約3回に1回**。直った判定には複数回の実行が要る（1回通っただけでは直った証明にならない）",
+        "回帰は e2e/specs/shell-confinement.spec.ts がそのまま使える（日本語＋数字のマーカーをコードブロックで出させている）"
+      ],
+      "doneWhen": "フルスイートを続けて5回まわして、shell-confinement が一度も落ちないこと（いまは約3回に1回落ちる）。",
+      "refs": [
+        "banto/apps/frontend/components/assistant-ui/elements/markdown-text.tsx",
+        "banto/node_modules/@assistant-ui/react-markdown/dist/memoization.js",
+        "docs/notes/2026-09-06-mcp-apps-official-bridge.md（切り分けの経緯）"
+      ]
+    },
+    {
+      "id": "composer-image-attachment",
+      "phase": "4",
+      "title": "画像を banto に送れるようにする",
+      "status": "backlog",
+      "dependencies": [],
+      "why": "いま composer から画像を渡せない。**人が「これを見て」と言えない**のは、伴走する道具としてかなり不便（スクリーンショットを見せて相談する、が一番自然な使い方の1つ）。ユーザー要望・2026-09-06。",
+      "scope": [
+        "assistant-ui 側に添付の受け皿（attachment.aui.tsx）は既にある——**繋がっていないだけ**。ここを実データ経路に載せる",
+        "host：画像をどう運ぶか（ターンのプロンプトに載せる／Event Store にどう残す／再読み込みで復元できるか）を決める",
+        "Runner：Claude Agent SDK に画像を渡す形（メッセージの content ブロック）",
+        "大きさの上限と、置き場（Event Store に生データを入れるのか、別に置いて参照するのか）"
+      ],
+      "doneWhen": "実ブラウザで画像を添付して送り、AI がその画像について答えられること、リロード後も会話に画像が残っていることを確認する。",
+      "refs": [
+        "banto/apps/frontend/components/assistant-ui/elements/attachment.aui.tsx"
+      ]
+    },
+    {
+      "id": "global-memory-mid-thread-delivery",
+      "phase": "1以降",
+      "title": "Global Memory が走行中の会話に届かない",
+      "status": "pending",
+      "dependencies": [],
+      "why": "Global Memory は system prompt に入るが、**resume 中のセッションでは system prompt が固定されている**ため、後から足しても、その Thread の会話には届かない（次に Clear するか新しい Thread を始めるまで効かない）。実測・2026-09-06（キャッシュ計測の副産物——足した直後のターンでキャッシュが落ちないことから判明）。Project の Memory には「確定より後に増えた分はターンに添えて届ける」仕組みがある（§2.3）が、**Global Memory には同じ仕組みが無い**。人の名前のような『すぐ効いてほしい』ものが、黙って効かないのは規則2に近い。",
+      "doneWhen": "走行中の Thread に Global Memory を足したら、その次のターンで AI がそれを知っていることを実測する。",
+      "refs": [
+        "docs/notes/2026-09-06-cache-measurement.md",
+        "docs/specs/v4-architecture.md §2.2・§2.3"
+      ]
+    },
+    {
+      "id": "module-declaration-overlay",
+      "phase": "1",
+      "title": "Module 宣言の上書きを「差分」で持つ（既定の改良が届くようにする）",
+      "status": "done",
+      "dependencies": [
+        "phase1-module-contract"
+      ],
+      "why": "既定を丸ごと写していたため、既定を改良しても写しを持つ Project に届かず「そこだけ動かない」が起きた（ユーザー報告・2026-09-07）。",
+      "result": "VS Code に倣って差分方式にした（既定はコードが持ち、Config には変えた項目だけ）。合成規則も VS Code と同じ——プリミティブと配列は置換、オブジェクトはキー単位でマージ。古い鍵（modules、丸ごとの写し）は読むだけにして差分へ翻訳する——形が同じでも意味が違うので鍵を分けた。「既定にあって写しに無い」は enabled:false として残す（黙って復活させない）。測った結果：core 単体 104件（合成規則9件＋事故の回帰2件を含む）、E2E は既知の ui-codeblock-cjk 以外通過。実機でも、古い写しを持つ Project で設定の読み書きができることを確認。",
+      "refs": [
+        "docs/specs/v4-architecture.md §5.4-a",
+        "https://code.visualstudio.com/docs/configure/settings"
+      ]
+    }
+  ],
+  "phase0": {
+    "closedAt": "2026-09-06",
+    "completedBy": [
+      "F2の観測：文脈サイズは毎ターンusage.recordedに記録され画面のメーターに出る／圧縮の発火回数は 200K 窓のモデルで trigger=auto の compact_boundary を実測し compactionCount=1 を Event Store で確認（phase0-compaction-count）",
+      "判断待ちが1画面に出る：受信箱に Project 名・Thread の別・本文・件数バッジ、行から Thread へ遷移、答えると host 側で決着（phase0-inbox）",
+      "承認まわりの全体見直しで見つけた20件をすべて修正（review-*、docs/notes/2026-09-06-tool-approval-review.md）"
+    ],
+    "measuredBy": "core 単体 59件・E2E 11 spec すべて通過（2026-09-06）"
+  }
+}

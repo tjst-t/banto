@@ -27,6 +27,16 @@ export interface DeriveProjectRulesetInput {
   /** host が起動時に凍結した PATH（Module の実行時 env から読み直さない）。 */
   pathEntries: string[];
   profile: ConfinementProfile;
+  /**
+   * その Module 自身の状態の置き場（決定・2026-09-07）。
+   *
+   * **Module が自分の設定を持てる場所が無かった**（実測で発見）——Project の根
+   * しか書けないので、Module 自身の設定を保存しようとすると閉じ込めに弾かれる。
+   * かといって Project の中に書くと人のリポジトリを汚す。**banto が Module ごとに
+   * 1つ用意して、そこだけ書けるようにする**。banto のデータ置き場全体ではなく、
+   * その Module の分だけ。
+   */
+  moduleDataDir?: string;
   /** 通常 process.execPath。launcher 自身が execve する対象の実行ファイル。 */
   nodeExecPath: string;
   /**
@@ -147,8 +157,14 @@ export function deriveProjectRuleset(input: DeriveProjectRulesetInput): DerivePr
     pushIfExists(rules, omitted, dir, READ_ONLY, "Module install dirが存在しない");
   }
 
-  // Project の根——ここだけ書き込み可。
+  // Project の根——ここは書き込み可。
   pushIfExists(rules, omitted, input.projectRoot, READ_WRITE, "Project根が存在しない");
+
+  // その Module 自身の状態の置き場（決定・2026-09-07）。**その Module の分だけ**
+  // ——banto のデータ置き場全体を開けない
+  if (input.moduleDataDir) {
+    pushIfExists(rules, omitted, input.moduleDataDir, READ_WRITE, "Moduleのデータ置き場が存在しない");
+  }
 
   return {
     ruleset: {

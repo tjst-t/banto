@@ -51,3 +51,39 @@ test("late answer after timeout does not resurrect liveness (timed_out wins if a
     assert.equal((after as { liveness: string }).liveness, "timed_out");
   });
 });
+
+test("起動時に、前のプロセスが抱えていた判断待ちを期限切れにする", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "banto-inbox-restart-"));
+  try {
+    const log = new EventLog(dir);
+    await log.init();
+    const store = new InboxStore(dir, log);
+    await store.load();
+    const judgment = await store.raiseJudgment({
+      threadId: "t1",
+      source: "text",
+      message: "tool呼び出しの承認: test",
+    });
+    assert.equal(store.listOpen().length, 1);
+
+    // 別プロセスとして読み直す＝host の再起動。止めていた走行はもう無い
+    const log2 = new EventLog(dir);
+    await log2.init();
+    const restarted = new InboxStore(dir, log2);
+    await restarted.load();
+    await restarted.expireOrphanedJudgments();
+
+    const still = restarted.get(judgment.id);
+    assert.equal(
+      still?.kind === "judgment" ? still.liveness : undefined,
+      "timed_out",
+      "再起動後も live のままだと、答えても何も起きない幽霊カードになる",
+    );
+    // §2.4.1 は3状態を出し分けると決めているので、記録としては残す
+    // ——画面に「答えられるもの」として出さないのは liveness で判断する側の責任
+    const listed = restarted.listOpen().filter((i) => i.kind === "judgment" && i.liveness === "live");
+    assert.equal(listed.length, 0, "live なものは残っていてはいけない");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

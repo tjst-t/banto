@@ -21,7 +21,8 @@ export type OverlayKind = "inbox" | "palette" | "settings-project" | "archive" |
 export interface PanelStackState {
   projectId: string;
   forkThreadId: string | null;
-  canvas: { moduleId: string; viewId: string } | null;
+  /** `toolCallId` があれば実 Module の面（会話の記録から引ける、決定・2026-09-07）。 */
+  canvas: { moduleId: string; viewId: string; toolCallId?: string } | null;
   /** Canvas の display mode。仕様の fullscreen を banto は「Base・Fork を隠して全幅」に割り当てる（§6.2） */
   canvasFullscreen: boolean;
   overlay: OverlayKind;
@@ -30,7 +31,7 @@ export interface PanelStackState {
 
 export interface OpenPanelInput {
   fork?: string | null;
-  canvas?: { moduleId: string; viewId: string } | null;
+  canvas?: { moduleId: string; viewId: string; toolCallId?: string } | null;
   canvasFullscreen?: boolean;
   overlay?: OverlayKind;
 }
@@ -99,10 +100,17 @@ export function usePanelStack(projectId: string): UsePanelStackResult {
 
   const forkThreadId = searchParams.get("fork");
   const canvasParam = searchParams.get("canvas"); // "<moduleId>:<viewId>"
+  // 実 Module の面は、どの tool 呼び出しのものかで決まる（決定・2026-09-07）
+  // ——URL に持たせるので、リロードしても同じ面が開き直る
+  const canvasToolParam = searchParams.get("canvasTool");
   const canvasFullscreen = searchParams.get("fullscreen") === "1";
   const overlayParam = searchParams.get("overlay") as OverlayKind;
 
-  const canvas = useMemo(() => parseCanvasParam(canvasParam), [canvasParam]);
+  const canvas = useMemo(() => {
+    const parsed = parseCanvasParam(canvasParam);
+    if (!parsed) return null;
+    return canvasToolParam ? { ...parsed, toolCallId: canvasToolParam } : parsed;
+  }, [canvasParam, canvasToolParam]);
 
   const layers = useMemo(
     () => computeLayers(forkThreadId, canvas, canvasFullscreen),
@@ -120,11 +128,14 @@ export function usePanelStack(projectId: string): UsePanelStackResult {
       if (next.canvas !== undefined) {
         if (next.canvas === null) {
           params.delete("canvas");
+          params.delete("canvasTool");
           // Canvas を閉じたら、全画面フラグも一緒に捨てる——残すと次に別の
           // Canvas を開いたときに前回の全画面状態が意図せず引き継がれる
           params.delete("fullscreen");
         } else {
           params.set("canvas", `${next.canvas.moduleId}:${next.canvas.viewId}`);
+          if (next.canvas.toolCallId) params.set("canvasTool", next.canvas.toolCallId);
+          else params.delete("canvasTool");
         }
       }
       if (next.canvasFullscreen !== undefined) {

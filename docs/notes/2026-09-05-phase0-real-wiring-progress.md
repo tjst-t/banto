@@ -30,27 +30,81 @@ Project/Thread close・reopen（A8）、文脈使用量（F2/F3）、Memory（G1
 | 1 | Thread/ProjectのA8（close/reopen） | **完了** |
 | 2 | 文脈使用量の永続化と表示（F2/F3） | **完了** |
 | 3 | Memory（G1〜G3・G5） | **完了** |
-| 4 | 判断待ちの一元化・滞留通知（A6/A7） | **未着手** |
+| 3.5 | **system promptをbanto自前に**（§2.3）＋その過程で出た **Memoryの持ち主をProjectへ**・**Global Memory新設**・**Fork のセッション分岐**（2026-09-05に追加） | **完了** |
+| 4 | 判断待ちの一元化・滞留通知（A6/A7） | 受信箱は完了。残りは `docs/tasks.json` |
 
 Phase 0の完了条件（`docs/requirements.md`）は「F2の観測が実際に走り、文脈サイズと
-圧縮の発火回数を数値で返す」＋「判断待ちが1画面に出る」。前者はStage 2で満たした。
-後者はStage 4が終わるまで未達。
+圧縮の発火回数を数値で返す」＋「判断待ちが1画面に出る」。
 
-### Stage 4（次にやること）でスコープに入れる範囲
+- **文脈サイズ**：Stage 2で満たした（実測で数値が返る）
+- **圧縮の発火回数**：`compactionCount`は記録しているが、**実測16ターンすべて0**
+  ——1M contextなので自動コンパクションが一度も起きていない。**機構が動いた
+  実績が無い**ので、意図的に長い会話で1回発火させて数える（`docs/tasks.json`）
+- **判断待ちが1画面に出る**：**満たした**（2026-09-05、受信箱を実データに接続。
+  E2E `inbox.spec.ts`）
+
+## Phase 0 の残り
+
+**一覧は `docs/tasks.json` に移した**（決定・2026-09-05）。残りを知りたければ
+そこだけを見る——ここに写しを置くと、いつか片方だけ古くなる（規則3）。
+
+このノートが持つのは**経緯**（なぜそうしたか・踏んだ罠）で、
+**いま何が残っているか**は tasks.json が持つ、という分担にした。
+
+### Stage 3.5でやったこと（2026-09-05、詳細は別ノート）
+
+`docs/notes/2026-09-05-system-prompt-and-memory-ownership.md` に経緯がある。要点：
+
+- **`claude_code`プリセットをやめ、coreがsystem promptを全文組み立てる**（§2.3）
+  ——System prompt 3,515→2,605トークン、**SDK側の記憶（`Memory files` 155）が消えた**
+- **Memoryが一度もsystem promptに入っていなかった**（記録もUIもあるのにRunnerへ
+  渡す経路が無かった）——今回の層3で解消
+- **Memoryの持ち主をProjectへ**（仕様どおりに実装を直した）。走行中に別の枝で
+  増えた分は**ターンに添えて届ける**（§2.3、`<banto-turn-context>`）
+- **Global Memory新設**（当初`Instance Memory`、同日改名）。Phase 0では人が書くだけ
+- **Fork Threadが親と同じSDKセッションで走っていた**——`forkSession`で分岐する
+  よう修正（ユーザー報告起点）
+- スナップショットに**版**を入れた（形が変わったら読まずにログから作り直す）
+
+### 受信箱を実データに繋いだときに見つけたこと（2026-09-05）
+
+- **5秒ごとのポーリングが、判断待ち中のThreadを壊した**——
+  `Duplicate key toolCallId-… in useResources`（assistant-uiのランタイムが、
+  tool呼び出し待ちの最中の再描画でresourceを二重登録する）。**間隔を10分に
+  延ばすと再現しなくなる**ことで、再描画が引き金だと確かめた。
+  → **定期ポーリングをやめ、出来事で取り直す**形にした（起動時・判断待ちの
+  発生時・答えた時・受信箱を開いた時）。判断待ちは必ずこのブラウザが
+  走らせているターンから生まれるので取りこぼさない
+
+  > **【訂正・2026-09-06】この診断は間違っていた。** ポーリングは引き金の一つを
+  > 引いていただけで、原因ではない。ポーリングを消したあとも、承認するたびに
+  > 同じ `Duplicate key toolCallId-…` で落ちる（ユーザー報告）。
+  > 真因と直し方は
+  > `docs/notes/2026-09-06-duplicate-toolcallid-on-approval.md` に書いた。
+  > 「間隔を延ばしたら再現しなくなった」は**再現しにくくなっただけ**で、
+  > 犯人の証明にはなっていなかった（規則1——測る前に犯人を決めない）。
+  > 出来事で取り直す形自体は正しいので、そのまま残す。
+- **「答えるとバッジが0になる」では見られない**——答えた直後にAIがターンを
+  続けて別の判断待ちを出しうる（実測）。E2Eは**その判断待ちのidがhost側で
+  決着したか**で見る
+- **同じ文言がThread側のカードにも出る**ので、E2Eの一覧の検証は
+  受信箱ダイアログの中に限定して引く（規則14の具体化）
+- 受信箱の行から遷移するとき、**Linkと`onOpenChange(false)`の二重push**で
+  シートが開いたままになった。開閉はURL（`?overlay=inbox`）が持っているので、
+  遷移だけに任せる（機構を1つに保つ）
+
+### Stage 4 の設計メモ（何をどう作るか。やること一覧は `docs/tasks.json`）
 
 - **F1しきい値検知**：`turn-runner.ts`でターン終了後、直近の`usage`列を見て
   「contextUsageの割合が閾値を超えた状態がKターン続いている」を判定、
-  `raiseJudgment({threadId, source:"alarm", ...})`
-- **答えをThreadへ返す経路**：alarm判断待ちに人が答えたら、次のターンで
-  「人からの指示」としてpromptに前置き
+  `raiseJudgment({threadId, source:"alarm", ...})`。答えは次のターンの
+  promptに前置きしてThreadへ返す
 - **滞留判定＋通知送出**：`InboxStore.listOpen()`のうち`createdAt`から閾値超えの
-  ものを定期チェック（`setInterval`）、`judgment.notified`イベント追加
-- **フロントエンド**：`lib/mock/inbox.ts`の`listRealInbox()`を実際に呼ぶ配線
-  （既存関数はあるが呼び出し元が無い）、`showBrowserNotification`の呼び出し元、
-  `inbox-overlay.tsx`をreal dataに差し替え
-- A6のFactory由来の判断待ちはPhase 2の対象外（Factory自体が未実装、スコープ外のまま）
-- 本物のWeb Push（Service Worker）もスコープ外（ユーザー確認済み、ブラウザ
-  Notification APIに縮小、タブが開いている間だけ）
+  ものを定期チェック、`judgment.notified`イベント追加。フロントは
+  `showBrowserNotification`の呼び出し元を作る
+- **スコープ外**：A6のFactory由来の判断待ち（Factory自体が未実装、Phase 2）。
+  本物のWeb Push（Service Worker）も——ブラウザNotification APIに縮小し、
+  タブが開いている間だけ（ユーザー確認済み）
 
 ## Stage 0〜3で実際にやったこと（要点）
 
@@ -159,9 +213,47 @@ curl -s http://127.0.0.1:4737/healthz
 レイテンシに起因すると見られ、Stage 0〜3のどの変更とも無関係（各修正の前後で
 同じ発生パターンを確認した）。待ちを延ばす・リトライを足す対処はしていない。
 
+### 訂正（2026-09-05、原因を特定して直した）
+
+**上の「実APIのレイテンシに起因すると見られ」は誤りだった。** 間欠でもなく、
+**製品の不具合でもなかった**——**テスト側の待ち条件の穴**だった。直した。
+
+> **`await expect(page.getByText(/Base Thread —/)).toBeVisible()` は、
+> 別の Project の Base Thread にも一致する。**
+
+一括実行では先行 spec が作った Project が既に表示されているので、この待ちは
+**新しい Project への遷移を待たずに即座に通る**。その状態で composer に入力すると
+**前の Project の composer に打ち込むことになり**、直後に新 Project へ遷移して
+入力ごと消える。だから「送信した形跡が core に無い」。
+
+**まさに規則14 が言っている型の穴**（「操作が通った」だけでは見たことにならない
+——画面が提示している中身まで見る）。直前に Fork の履歴で同じ失敗をして規則14 を
+足したのに、**同じ穴が別の場所に残っていた**。
+
+切り分けの記録（この結論に至るまでに測ったこと）：
+
+- スイート一括実行 **4回中4回**、`project-thread-fork` と `thread-lifecycle` が
+  同じ形で失敗（「たまに」ではない）。単独では毎回通る（7〜11秒）
+- **3 Project 目で必ず落ちる**。順序や、先行 spec が AI ターンを含むかは無関係
+- **core 側のログにターンの痕跡が無い**——`POST /api/threads/:id/messages` 自体が
+  届いていない。ここで「フロントで送信が落ちている」と分かった
+- ブラウザのコンソールに計器を入れて確定：入力の1.5秒後に
+  **ThreadRuntime が別の threadId で mount し直されていた**（前の Project の
+  Base Thread → 新 Project の Base Thread）。入力値はその瞬間に消えていた
+- 2026-09-05 の system prompt 置き換えが原因ではないことも確認済み
+  （`instanceMemory: false` に戻しても同じように落ちた）
+
+**直した内容**：`project-thread-fork` / `thread-lifecycle` / `context-usage` /
+`memory` の待ちを、**Project 名まで含む完全一致**（`Base Thread — E2E Test Project`）
+に変えた。**待ちを延ばす・リトライを足す対処はしていない**（規則6）。
+
+**教訓**：`getByText(/… —/)` のような「画面の型」で待つと、**同じ型の別のものに
+一致して素通りする**。E2E の待ちは、その操作で**新しく出るはずの中身**
+（名前・件数・値）で待つ。
+
 ## 次のセッションが最初に見るべきもの
 
-1. このファイル（進捗と直近の不具合）
-2. `banto/apps/frontend/lib/feature-flags.ts`（今どこが実データに繋がっているかの一次情報）
-3. `docs/specs/v4-architecture.md` §10（まだ決まっていないこと一覧）
-4. Stage 4から着手（上記「次にやること」）
+1. **`docs/tasks.json`**——いま何が残っているか・順序・依存はここが唯一の一覧
+2. このファイル（なぜそうしたか・踏んだ罠）
+3. `banto/apps/frontend/lib/feature-flags.ts`（今どこが実データに繋がっているかの一次情報）
+4. `docs/specs/v4-architecture.md` §10（まだ決まっていないこと一覧）

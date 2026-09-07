@@ -1,45 +1,42 @@
 "use client";
 
-// Memory（G1〜G3・G5、Stage 3）。Base Threadのremember_decision toolが
-// 記録した決定事項と、人が手で足したものを1つのリストで見せる——出所を
-// 分ける必要はない（どちらも同じappendMemoryを通る、真実は一箇所）。
-// Fork Threadへの引き継ぎはfold.tsの分岐時点コピーで担保済み——ここは
-// Base Threadの現在値を見るだけ。invalidateは無効化（取り消し線）、
-// 物理削除ではない（規則3）。
+// Memory（G1〜G3・G5、Stage 3）。**持ち主はProject**（アーキ仕様§1.1・§2.2、
+// 決定・2026-09-05）——どのThreadのremember_decisionで決まっても、人がここで
+// 直接足しても、同じ1つの列に並ぶ（真実は一箇所）。invalidateは無効化
+// （取り消し線）であって物理削除ではない（規則3）。
 import { useEffect, useState } from "react";
 import { BookMarked, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { appendRealMemory, getRealThread, invalidateRealMemory, type RealThreadMemory } from "@/lib/backend/client";
+import { appendRealMemory, invalidateRealMemory, listRealMemory, type RealProjectMemory } from "@/lib/backend/client";
 import { cn } from "@/lib/utils";
 
-export function ProjectMemoryPanel({ threadId }: { threadId: string }) {
-  const [memory, setMemory] = useState<RealThreadMemory[] | null>(null);
+export function ProjectMemoryPanel({ projectId }: { projectId: string }) {
+  const [memory, setMemory] = useState<RealProjectMemory[] | null>(null);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function refresh() {
     try {
-      const thread = await getRealThread(threadId);
-      setMemory(thread.memory);
+      setMemory(await listRealMemory(projectId));
     } catch (err) {
       toast(`Memory の取得に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- refresh()はgetRealThreadのawait後にsetStateする（外部データの初回取得、theme-toggle.tsxと同じ形）
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- refresh()はlistRealMemoryのawait後にsetStateする（外部データの初回取得、theme-toggle.tsxと同じ形）
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId]);
+  }, [projectId]);
 
   async function handleAppend() {
     const text = draft.trim();
     if (!text) return;
     setBusy(true);
     try {
-      await appendRealMemory(threadId, text);
+      await appendRealMemory(projectId, text);
       setDraft("");
       await refresh();
     } catch (err) {
@@ -52,7 +49,7 @@ export function ProjectMemoryPanel({ threadId }: { threadId: string }) {
   async function handleInvalidate(seq: number) {
     setBusy(true);
     try {
-      await invalidateRealMemory(threadId, seq);
+      await invalidateRealMemory(projectId, seq);
       await refresh();
     } catch (err) {
       toast(`取り消しに失敗しました: ${err instanceof Error ? err.message : String(err)}`);
@@ -68,9 +65,9 @@ export function ProjectMemoryPanel({ threadId }: { threadId: string }) {
         Memory
       </h1>
       <p className="mb-3 text-xs text-ink-3">
-        決まったこと（設計判断・決定事項）。AIが remember_decision tool で自動的に残すものと、
-        ここから人が直接足すものが同じ一覧に並ぶ。Fork Thread には分岐時点のものが引き継がれる
-        ——以降の変更はそのFork自身のものになる。
+        決まったこと（設計判断・決定事項）。この Project のすべての Thread が共有する
+        ——AIが remember_decision tool で残したものと、ここから人が直接足したものが同じ一覧に並ぶ。
+        走行中の Thread には、次のターンで「別の枝でこう決まった」として届く。
       </p>
 
       <div className="mb-3 flex gap-2">

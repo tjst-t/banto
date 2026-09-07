@@ -7,12 +7,10 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { ProjectThreadStore } from "../project-thread/store.js";
 
-/** systemPromptに追記する、Memory toolの使い方指示。 */
-export const MEMORY_SYSTEM_PROMPT_APPEND =
-  "決まったこと（設計判断・決定事項）は remember_decision tool で残してください。" +
-  "会話が畳まれたり、別のThreadに分岐しても、この記録は引き継がれます。";
+// 使い方の指示は`runner/system-prompt.ts`の骨格が持つ（決定・2026-09-05）
+// ——プリセットへの追記ではなくなったので、ここに別置きする理由が無くなった。
 
-export function createMemoryMcpServer(store: ProjectThreadStore, threadId: string) {
+export function createMemoryMcpServer(store: ProjectThreadStore, projectId: string, threadId: string) {
   return createSdkMcpServer({
     name: "banto-memory",
     // SDKの既定はtool searchの裏に遅延ロード——1toolだけのserverだと
@@ -22,10 +20,12 @@ export function createMemoryMcpServer(store: ProjectThreadStore, threadId: strin
     tools: [
       tool(
         "remember_decision",
-        "設計判断・決定事項をこのThreadのMemoryに残す。以降のターン・Fork Threadに引き継がれる。",
+        "設計判断・決定事項をこのProjectのMemoryに残す。以降のターン・Fork Threadに引き継がれる。",
         { text: z.string().describe("決まったことの内容") },
         async ({ text }) => {
-          await store.appendMemory(threadId, text);
+          // 出所（どのThreadで決まったか）を残す——走行中の別Threadへ
+          // 差分を届けるときに使う（アーキ仕様§2.3、決定・2026-09-05）。
+          await store.appendMemory(projectId, text, threadId);
           return { content: [{ type: "text", text: "記録した。" }] };
         },
       ),

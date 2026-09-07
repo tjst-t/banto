@@ -41,6 +41,8 @@ export class InboxStore {
     requestedSchema?: unknown;
     url?: string;
     toolCallId?: string;
+    toolInput?: unknown;
+    serverName?: string;
   }): Promise<JudgmentItem> {
     const id = randomUUID();
     const event = await this.log.append("inbox.judgment_raised", { id, ...input });
@@ -51,6 +53,23 @@ export class InboxStore {
   async answerJudgment(id: string, answer: unknown): Promise<void> {
     const event = await this.log.append("inbox.judgment_answered", { id, answer });
     this.projection.applyOne(event);
+  }
+
+  /**
+   * 起動時に、**前のプロセスが抱えていた判断待ち**を期限切れにする
+   * （決定・2026-09-06、見直し起点）。
+   *
+   * 判断待ちを止めているのは走行中のプロセス（canUseTool の hold-the-line）。
+   * host を再起動するとその走行は消えるが、記録は `live` のまま残るので、
+   * 画面には答えられるカードが出て、答えても何も起きない——「承認した」と
+   * 見えているのにターンは死んだまま（規則2）。起動時に畳んでおく。
+   */
+  async expireOrphanedJudgments(): Promise<number> {
+    const orphaned = Array.from(this.projection.current.items.values()).filter(
+      (i): i is JudgmentItem => i.kind === "judgment" && i.liveness === "live",
+    );
+    for (const item of orphaned) await this.timeoutJudgment(item.id);
+    return orphaned.length;
   }
 
   async timeoutJudgment(id: string): Promise<void> {

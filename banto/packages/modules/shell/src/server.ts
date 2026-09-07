@@ -3,16 +3,42 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { VISIBILITY_META_KEY } from "@banto/module-contract";
+import {
+  ListToolsRequestSchema,
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+import { VISIBILITY_META_KEY, MODULE_META_KEY } from "@banto/module-contract";
 import { runCommand } from "./run-command.js";
 import { HostRelayClient } from "./host-relay-client.js";
 
 export function createShellServer(deps: { projectRoot: string; relayClient: HostRelayClient }) {
   const server = new Server(
     { name: "banto-module-shell", version: "0.1.0" },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {}, resources: {} } },
   );
+
+  // **自分が何者かを名乗る**（決定・2026-09-06）。host は宣言（Config）と
+  // 突き合わせ、より厳しい方向の申告だけを採る。AI には見せない（admin）。
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: [
+      {
+        uri: "shell://module",
+        name: "この Module の申告",
+        mimeType: "application/json",
+        _meta: {
+          [VISIBILITY_META_KEY]: "admin",
+          [MODULE_META_KEY]: {
+            satisfies: ["shell"],
+            dependsOn: [{ role: "vault", required: true }],
+            isolation: "subprocess",
+            scope: "project",
+            confinement: { kind: "landlock", root: "project" },
+          },
+        },
+      },
+    ],
+  }));
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [

@@ -117,8 +117,10 @@ export function ComposerPermissionModeMenu({
               確認をすべて飛ばしますか
             </AlertDialogTitle>
             <AlertDialogDescription>
-              bypassPermissions の間は、破壊的なコマンドの実行前確認も、Module 間の
-              呼び出しの確認も出ません。この会話の中でだけ効き、いつでも戻せます。
+              bypassPermissions の間は、破壊的なコマンドの実行前確認が出ません。
+              Module 間の呼び出しの確認は、このモードでも出ます（AI への信用と、
+              Project の配線への信用は別の軸——v4-frontend.md §6.4）。
+              この Thread の中でだけ効き、いつでも戻せます。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -19,6 +19,10 @@ export interface JudgmentItem {
   requestedSchema?: unknown;
   url?: string;
   toolCallId?: string;
+  /** 承認する tool の引数（決定・2026-09-06）——何を承認するのかを人に見せるため。 */
+  toolInput?: unknown;
+  /** どのサーバが聞いているか（§2.4.1 の MUST）。 */
+  serverName?: string;
   liveness: JudgmentLiveness;
   answer?: unknown;
   createdAt: string;

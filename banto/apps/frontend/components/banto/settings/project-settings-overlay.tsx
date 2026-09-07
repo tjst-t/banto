@@ -32,6 +32,13 @@ export function ProjectSettingsOverlay({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton={false}
+        // **埋め込んだ Module の画面に焦点が移っても閉じない**（決定・2026-09-07）。
+        // Module の設定 Canvas は iframe なので、そこを触ると Radix は
+        // 「外側に焦点が出た」と見なして Dialog を閉じてしまう——設定を触ろうと
+        // した瞬間に設定画面が消える（実測・2026-09-07、E2E で捕まえた）。
+        // これは画面いっぱいの独立した画面なので、閉じるのは×ボタンか Esc でよい。
+        onFocusOutside={(event) => event.preventDefault()}
+        onInteractOutside={(event) => event.preventDefault()}
         className="top-0 left-0 h-dvh w-screen max-w-none translate-x-0 translate-y-0 gap-0 rounded-none p-0 sm:max-w-none"
       >
         <DialogTitle className="sr-only">Project 設定 — {project.name}</DialogTitle>

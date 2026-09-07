@@ -6,6 +6,16 @@
 export const VENDOR_PREFIX = "dev.banto";
 export const MODULE_META_KEY = `${VENDOR_PREFIX}/module`;
 export const VISIBILITY_META_KEY = `${VENDOR_PREFIX}/visibility`;
+/**
+ * その資源が**どの面か**（決定・2026-09-07）。いまは `"config"`（設定 Canvas）だけ。
+ *
+ * MCP Apps の仕様に「設定画面」という概念は無い（UI のライフサイクルは
+ * 完全に tool 起点）。**ここは banto が足した拡張**であると自覚して扱う。
+ * banto が全 Module に `ui://<id>/config` を投機的に読みにいく形にはしない
+ * ——「在るかもしれない」を毎回試すと、無いのか壊れているのかが曖昧になる
+ * （規則2、`docs/specs/v4-frontend.md` §6.2）。**Module が名乗る。**
+ */
+export const CANVAS_META_KEY = `${VENDOR_PREFIX}/canvas`;
 
 export type Visibility = "agent" | "module" | "admin";
 export const DEFAULT_VISIBILITY: Visibility = "agent";
@@ -123,6 +133,61 @@ export interface ReconcileResult {
   /** true なら呼び出し側は接続を切って正しい形で再spawnしなければならない。 */
   requiresRespawn: boolean;
   changedFields: string[];
+}
+
+/**
+ * 宣言（Config）と自己申告（Module）の食い違いを、**方向で**分ける
+ * （決定・2026-09-06）。
+ *
+ * **Module の申告は「より厳しくする方向にだけ効く情報」**として扱う。
+ * Module は他人が書いたものでありうるので、「私は秘密を扱いません、
+ * 閉じ込めは要りません」という自己申告を鵜呑みにして隔離を外すのは、
+ * 攻撃者にとって一番都合のいい形になる。**運用者の意図（Config）が上位**。
+ *
+ * - `stricter`：Module のほうが厳しい → Config を直して起動し直してよい（安全側）
+ * - `looser`：Module のほうが緩い → **従わない。繋がずに人に上げる**
+ * - `other`：起動の形に関わらない差分（役割名など）→ 記録して続行してよい
+ */
+export interface MetaDifference {
+  stricter: string[];
+  looser: string[];
+  other: string[];
+}
+
+/** その項目について、a は b より厳しいか。 */
+function isStricter(field: (typeof SPAWN_SHAPE_FIELDS)[number], a: BantoModuleMeta, b: BantoModuleMeta): boolean {
+  switch (field) {
+    case "scope":
+      // Project ごとに分ける方が、instance に1本より厳しい
+      return a.scope === "project" && b.scope === "instance";
+    case "isolation":
+      return a.isolation === "subprocess" && b.isolation === "in-process";
+    case "handlesSecrets":
+      // 「秘密を扱う」と申告する方が厳しい（追加の検査が掛かる）
+      return a.handlesSecrets && !b.handlesSecrets;
+    case "confinement":
+      return a.confinement !== undefined && b.confinement === undefined;
+  }
+}
+
+export function classifyMetaDifference(
+  declared: BantoModuleMeta,
+  selfReported: BantoModuleMeta,
+): MetaDifference {
+  const stricter: string[] = [];
+  const looser: string[] = [];
+  const other: string[] = [];
+
+  for (const field of SPAWN_SHAPE_FIELDS) {
+    if (JSON.stringify(declared[field]) === JSON.stringify(selfReported[field])) continue;
+    if (isStricter(field, selfReported, declared)) stricter.push(field);
+    else if (isStricter(field, declared, selfReported)) looser.push(field);
+    else other.push(field);
+  }
+  if (JSON.stringify(declared.satisfies) !== JSON.stringify(selfReported.satisfies)) other.push("satisfies");
+  if (JSON.stringify(declared.dependsOn) !== JSON.stringify(selfReported.dependsOn)) other.push("dependsOn");
+
+  return { stricter, looser, other };
 }
 
 export function reconcileModuleMeta(

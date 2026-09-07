@@ -10,10 +10,11 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { getActiveProjects, getProject } from "./projects";
-import { getThreadsForProject } from "./threads";
-import { getInboxItemHref, getInboxItems } from "./inbox";
+import { getThread, getThreadsForProject } from "./threads";
+import { getRealJudgments } from "../backend/real-inbox";
+import { getRealLaunchers } from "../backend/real-launchers";
 import { getLaunchersForProject } from "./settings";
-import { CONNECTED_FEATURES } from "../feature-flags";
+import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "../feature-flags";
 
 // Command Palette（§6.3）。「自分の索引を持たない」——出るものは全部、
 // すでにあるところ（Project/Thread・受信箱・Module集合）から導出する。
@@ -89,23 +90,54 @@ export function buildPaletteGroups(currentProjectId: string | null, query: strin
     }));
   if (threadItems.length > 0) groups.push({ kind: "thread", label: "Thread", items: threadItems });
 
-  // 受信箱——banto 全体（Project の外にある、§2.4）。listRealInboxが未配線の間は
-  // 常に空データなので出さない（規則13、CONNECTED_FEATURES.inbox）
+  // 受信箱——banto 全体（Project の外にある、§2.4）。実hostに繋がっていれば
+  // 実データの判断待ちを出す（Stage 4、決定・2026-09-05）。**索引を自分で
+  // 持たない**——受信箱の一覧と同じ`getRealJudgments()`から引く（規則3）
   if (CONNECTED_FEATURES.inbox) {
-    const inboxItems: PaletteItem[] = getInboxItems()
+    const inboxItems: PaletteItem[] = getRealJudgments()
       .filter((i) => q === "" || i.message.toLowerCase().includes(q))
-      .map((i) => {
-        const project = getProject(i.projectId);
-        return {
-          id: `inbox:${i.id}`,
-          title: i.message,
-          subtitle: `${project.name} · ${i.kind === "judgment" ? "判断待ち" : "レビュー待ち"}`,
-          icon: Inbox,
-          href: getInboxItemHref(i),
-          kind: "inbox" as const,
-        };
+      .flatMap((i) => {
+        const thread = getThread(i.threadId);
+        if (!thread) return [];
+        const project = getProject(thread.projectId);
+        return [
+          {
+            id: `inbox:${i.id}`,
+            title: i.message,
+            subtitle: `${project.name} · 判断待ち`,
+            icon: Inbox,
+            href:
+              thread.kind === "fork"
+                ? `/p/${thread.projectId}?fork=${thread.id}`
+                : `/p/${thread.projectId}`,
+            kind: "inbox" as const,
+          },
+        ];
       });
     if (inboxItems.length > 0) groups.push({ kind: "inbox", label: "受信箱", items: inboxItems });
+  }
+
+  // **実 Module の入口**（launcher、§6.2、決定・2026-09-07）。
+  // 一覧は host が Module 集合から導出したもの——ここは別の索引を持たない（規則3）
+  if (currentProjectId) {
+    const realItems: PaletteItem[] = getRealLaunchers(currentProjectId)
+      .filter((l) => q === "" || (l.name ?? l.server).toLowerCase().includes(q))
+      .map((l) => ({
+        id: `launcher:${l.server}:${l.resourceUri}`,
+        title: l.name ?? l.server,
+        subtitle: l.description ?? l.server,
+        icon: Rocket,
+        // 開くと **fullscreen**（§6.2 の banto 解釈＝**会話の隣**）
+        // ——tool の結果ではないので会話のカードには置かない。
+        // モックの入口は `fullscreen=1`（会話を隠す全画面）を付けていたが、
+        // それは banto のパネル状態であって仕様の display mode ではない
+        // ——仕様（§6.2）の「会話の隣」に合わせる（決定・2026-09-07、規則8）
+        href: `/p/${currentProjectId}?canvas=${l.server}:${l.resourceUri}`,
+        kind: "launcher" as const,
+      }));
+    if (realItems.length > 0) {
+      groups.push({ kind: "launcher", label: "Module の入口", items: realItems });
+    }
   }
 
   // Module の入口・資源——いまの Project の Module 集合に限る（§6.3）。
@@ -149,8 +181,8 @@ export function buildPaletteGroups(currentProjectId: string | null, query: strin
     "open-fork": false,
     "open-canvas": CONNECTED_FEATURES.canvas,
     "open-inbox": CONNECTED_FEATURES.inbox,
-    "open-project-settings": CONNECTED_FEATURES.settings,
-    "open-instance-settings": CONNECTED_FEATURES.settings,
+    "open-project-settings": CONNECTED_FEATURES.projectSettings,
+    "open-instance-settings": SHOW_INSTANCE_SETTINGS,
   };
   const opItems: PaletteItem[] = OPERATIONS.filter((o) => currentProjectId || !PROJECT_SCOPED_OPS.has(o.id))
     .filter((o) => OP_CONNECTED[o.id] ?? true)

@@ -11,7 +11,8 @@ import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { VISIBILITY_META_KEY, MODULE_META_KEY } from "@banto/module-contract";
+import { VISIBILITY_META_KEY, MODULE_META_KEY, CANVAS_META_KEY } from "@banto/module-contract";
+import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
 import { SopsBackend } from "./sops-backend.js";
 import { AliasRegistry, type AliasMeta } from "./alias-registry.js";
 
@@ -77,6 +78,12 @@ export function createVaultServer(dataDir: string) {
           "deleteAlias",
           "aliasを削除する（人専用）",
           { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+          "admin",
+        ),
+        tool(
+          "listAliases",
+          "登録されている alias の一覧（人専用、値は返さない）",
+          { type: "object", properties: {} },
           "admin",
         ),
         tool(
@@ -161,6 +168,11 @@ export function createVaultServer(dataDir: string) {
         await registry.delete(name);
         return { content: [{ type: "text", text: `deleted ${name}` }] };
       }
+      case "listAliases": {
+        // **値は返さない**（§2.1——人が見るのは「どれが登録されているか」まで）
+        const list = registry.list().map(({ backendPath: _drop, ...rest }) => rest);
+        return { content: [{ type: "text", text: JSON.stringify(list) }] };
+      }
       case "listGroups":
         return { content: [{ type: "text", text: JSON.stringify(await backend.listGroups()) }] };
       case "createGroup":
@@ -174,17 +186,51 @@ export function createVaultServer(dataDir: string) {
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
     await initPromise;
     return {
-      resources: registry.list().map((a) => ({
+      resources: [
+        {
+          // **設定 Canvas**（決定・2026-09-07）。Vault は instance に1本なので、
+          // banto 全体の設定画面に出る——置き場はこの Module の scope が決める
+          uri: CONFIG_APP_URI,
+          name: "Vault",
+          mimeType: "text/html;profile=mcp-app",
+          _meta: { [VISIBILITY_META_KEY]: "admin", [CANVAS_META_KEY]: "config", ui: { prefersBorder: false } },
+        },
+        // **自分が何者かを名乗る**（決定・2026-09-06、アーキ仕様 §5.4
+        // 「banto の拡張は _meta に載せる」）。host は宣言（Config）と
+        // 突き合わせ、**より厳しい方向の申告だけ**を採る。
+        // visibility は admin＝AI には見せない（host だけが読む）。
+        {
+          uri: "vault://module",
+          name: "この Module の申告",
+          mimeType: "application/json",
+          _meta: {
+            [VISIBILITY_META_KEY]: "admin",
+            [MODULE_META_KEY]: {
+              satisfies: ["vault"],
+              dependsOn: [],
+              isolation: "subprocess",
+              scope: "instance",
+              handlesSecrets: true,
+            },
+          },
+        },
+      ...registry.list().map((a) => ({
         uri: `vault://aliases/${a.name}`,
         name: a.name,
         mimeType: "application/json",
         _meta: { [VISIBILITY_META_KEY]: "agent" },
       })),
+      ],
     };
   });
 
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     await initPromise;
+    if (request.params.uri === CONFIG_APP_URI) {
+      return {
+        contents: [{ uri: CONFIG_APP_URI, mimeType: "text/html;profile=mcp-app", text: CONFIG_APP_HTML }],
+      };
+    }
     if (request.params.uri === "vault://aliases") {
       const list = registry.list().map(({ backendPath: _drop, ...rest }) => rest);
       return { contents: [{ uri: request.params.uri, mimeType: "application/json", text: JSON.stringify(list) }] };

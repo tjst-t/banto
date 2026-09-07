@@ -16,5 +16,10 @@ export const CONFIG_PATH = join(import.meta.dirname, ".tmp-config", "config.json
 export const AUTH_TOKEN = "e2e-fixed-token";
 export const PORT = CORE_PORT;
 
+// Module の画面を隔離するサンドボックス（§6.2）。**画面とは別オリジン**
+// でなければならないので、E2E でも別ポートで立てる
+export const SANDBOX_PORT = 4739;
+export const SANDBOX_BASE_URL = `http://127.0.0.1:${SANDBOX_PORT}`;
+
 export const CORE_BASE_URL = `http://127.0.0.1:${CORE_PORT}`;
 export const FRONTEND_BASE_URL = `http://127.0.0.1:${FRONTEND_PORT}`;

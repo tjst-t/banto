@@ -11,9 +11,22 @@ export interface BootstrapConfig {
   port: number;
   /** 待受の合言葉。実装時にランダム生成して保存する。 */
   authToken: string;
+  /** Module の Canvas を隔離するサンドボックスの配信口（決定・2026-09-06）。
+   *  **画面とは別オリジンでなければならない**（MCP Apps の仕様、§6.2）。 */
+  sandboxPort: number;
+  /** サンドボックスを埋め込んでよい相手（`frame-ancestors`）。
+   *  Caddy 経由・LAN 直・E2E で変わるので設定に置く。 */
+  allowedEmbedderOrigins: string[];
+  /** 画面から見たサンドボックスの住所。**画面に推測させない**（規則3）
+   *  ——Caddy 経由なら別サブドメイン、開発なら別ポートで、値が違う。 */
+  sandboxPublicUrl: string;
 }
 
 export class ConfigOverlapError extends Error {}
+
+/** サンドボックスを埋め込んでよい相手の既定。**開発と E2E で使う口だけ**——
+ *  外から見える住所（Caddy のサブドメイン等）は、その環境の config に足す。 */
+const DEFAULT_EMBEDDER_ORIGINS = ["http://127.0.0.1:4175", "http://localhost:4175"];
 
 function xdgConfigHome(): string {
   return process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
@@ -67,6 +80,9 @@ export function loadOrCreateBootstrapConfig(configPath = resolveBootstrapConfigP
       dataDir: raw.dataDir ?? defaultDataDir(),
       port: raw.port ?? 4737,
       authToken: raw.authToken ?? randomToken(),
+      sandboxPort: raw.sandboxPort ?? 4176,
+      allowedEmbedderOrigins: raw.allowedEmbedderOrigins ?? DEFAULT_EMBEDDER_ORIGINS,
+      sandboxPublicUrl: raw.sandboxPublicUrl ?? `http://127.0.0.1:${raw.sandboxPort ?? 4176}`,
     };
     assertNoOverlap(configPath, config.dataDir);
     return config;
@@ -76,6 +92,9 @@ export function loadOrCreateBootstrapConfig(configPath = resolveBootstrapConfigP
     dataDir: defaultDataDir(),
     port: 4737,
     authToken: randomToken(),
+    sandboxPort: 4176,
+    allowedEmbedderOrigins: DEFAULT_EMBEDDER_ORIGINS,
+    sandboxPublicUrl: "http://127.0.0.1:4176",
   };
   assertNoOverlap(configPath, config.dataDir);
   mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });

@@ -4,7 +4,7 @@
 // 自分の索引を持たない：出るものは Project/Thread・受信箱・Module集合から
 // 導出する（`lib/mock/palette.ts`）。banto 全体を検索する Project/Thread・
 // 受信箱と、いまの Project に限る Module の入口・資源は範囲が違う（§6.3「範囲」）。
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Command,
@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/command";
 import { buildPaletteGroups, type PaletteItem } from "@/lib/mock/palette";
 import type { UsePanelStackResult } from "@/components/banto/shell/use-panel-stack";
+import { refreshRealLaunchers, useRealLaunchersVersion } from "@/lib/backend/real-launchers";
 
 export function CommandPalette({
   projectId,
@@ -34,7 +35,19 @@ export function CommandPalette({
   const router = useRouter();
   const [query, setQuery] = useState("");
 
-  const groups = useMemo(() => buildPaletteGroups(projectId, query), [projectId, query]);
+  // **開いたときに取り直す**（§6.2 の launcher）——背景ポーリングは足さない。
+  // 繋がっている Module は Project ごとに変わるので、開くたびに聞き直す
+  const launchersVersion = useRealLaunchersVersion();
+  useEffect(() => {
+    if (open && projectId) void refreshRealLaunchers(projectId);
+  }, [open, projectId]);
+
+  const groups = useMemo(
+    () => buildPaletteGroups(projectId, query),
+    // launchersVersion は「取り直した」の合図——中身は palette.ts が読む（規則3）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [projectId, query, launchersVersion],
+  );
 
   // usePanelStack.open() は呼ぶたびに「そのレンダーの searchParams」から
   // 新しい URL を組み立てて router.push する。同じイベントハンドラの中で

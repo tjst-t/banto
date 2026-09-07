@@ -25,11 +25,12 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { NewProjectDialog } from "@/components/banto/project/new-project-dialog";
 import { getInboxItems } from "@/lib/mock/inbox";
+import { getRealJudgments, useRealInboxVersion } from "@/lib/backend/real-inbox";
 import { getActiveProjects } from "@/lib/mock/projects";
 import { getThreadsForProject } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { cn } from "@/lib/utils";
-import { CONNECTED_FEATURES } from "@/lib/feature-flags";
+import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
 import { ThemeToggle } from "./theme-toggle";
 
 const SHOW_ARCHIVE = CONNECTED_FEATURES.threadCloseReopen || CONNECTED_FEATURES.projectCloseReopen;
@@ -51,7 +52,12 @@ export function ProjectRail({
   const [showNewProject, setShowNewProject] = useState(false);
   // 判断待ちだけをバッジの件数にする——溜めてよくない（止まっている）方が
   // 急ぎだから（§2.4）。レビュー待ちは溜めてよいので件数に含めない
-  const judgmentCount = getInboxItems().filter((item) => item.kind === "judgment").length;
+  useRealInboxVersion();
+  // 実hostに繋がっていれば実データの判断待ち件数。繋がっていない間は
+  // mock（いまは常に空）——数える対象を2箇所に書かない（規則3）
+  const judgmentCount = CONNECTED_FEATURES.inbox
+    ? getRealJudgments().length
+    : getInboxItems().filter((item) => item.kind === "judgment").length;
   if (isMobile) return null;
 
   return (
@@ -205,7 +211,7 @@ export function ProjectRail({
         {/* 常設の入口（§10 item17、決定・2026-09-01）——Command Palette を知らないと
             設定に辿り着けない状態を避ける。instance 設定（階層1）は Project の
             外側にあるので、Project 一覧とは分けてここに置く */}
-        {CONNECTED_FEATURES.settings ? (
+        {SHOW_INSTANCE_SETTINGS ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <Link

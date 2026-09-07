@@ -67,10 +67,17 @@ export interface DirEntry {
   type: "file" | "directory";
 }
 
-export async function listDirectoryOp(root: string, path: string): Promise<DirEntry[]> {
+export async function listDirectoryOp(
+  root: string,
+  path: string,
+  options: { showHidden?: boolean } = {},
+): Promise<DirEntry[]> {
   const p = absPath(root, path);
   const entries = await readdir(p, { withFileTypes: true });
-  return entries.map((e) => ({ name: e.name, type: e.isDirectory() ? "directory" : "file" }));
+  const showHidden = options.showHidden !== false;
+  return entries
+    .filter((e) => showHidden || !e.name.startsWith("."))
+    .map((e) => ({ name: e.name, type: e.isDirectory() ? "directory" : "file" }));
 }
 
 export async function searchFilesOp(root: string, path: string, pattern: string): Promise<string[]> {

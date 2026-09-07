@@ -23,7 +23,6 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { Input } from "@/components/ui/input";
 import { useRovingFocus } from "@/hooks/use-roving-focus";
 import { cn } from "@/lib/utils";
-import type { MockModuleImplementation } from "@/lib/mock/types";
 
 export type SettingsSection = string;
 
@@ -60,7 +59,10 @@ export function SettingsShell({
 }: {
   categories: readonly SettingsNavItem[];
   /** 左メニュー下段にフラットに並ぶ、Module自身の設定面を持つ実装 */
-  moduleImplementations: readonly MockModuleImplementation[];
+  /** 左メニュー下段にフラットに並ぶ、Module 自身の設定面。
+   *  **実 Module でもモックでも同じ枠に流し込む**（決定・2026-09-07、ユーザー指摘）
+   *  ——ここが要るのは id と名前だけなので、それだけを受ける。 */
+  moduleImplementations: readonly { id: string; name: string }[];
   renderContent: (section: SettingsSection) => ReactNode;
   /** 右側の中身が持つ設定項目。検索でヒットさせたいものを呼び出し側が渡す */
   extraSearchEntries?: readonly SearchEntry[];

@@ -46,13 +46,23 @@ export class SnapshotProjection<S> {
   private seq = 0;
   private readonly snapshotPath: string;
 
+  /**
+   * `version` は **read model の形**の版（イベントの版ではない）。
+   * スナップショットは Event Store から導出した写しにすぎないので、形を変えたら
+   * **古い写しは読まずに捨て、ログから作り直す**のが正しい（規則3）。版を上げると
+   * ファイル名が変わり、古いファイルは読まれない——**version を上げ忘れると、
+   * 古い形のオブジェクトが新しいコードに流れ込む**（2026-09-05、Memory を
+   * Project 持ちに変えたときに踏みかけた）。
+   */
   constructor(
     private readonly dataDir: string,
     private readonly name: string,
     private readonly log: EventLog,
     private readonly fold: Fold<S>,
+    version = 1,
   ) {
-    this.snapshotPath = join(dataDir, `${name}.snapshot.json`);
+    const suffix = version === 1 ? "" : `.v${version}`;
+    this.snapshotPath = join(dataDir, `${name}${suffix}.snapshot.json`);
     this.state = fold.initial();
   }
 

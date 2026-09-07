@@ -5,6 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
+import { openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 
@@ -16,13 +17,13 @@ test.use({ viewport: { width: 390, height: 844 } });
 test("Fork Threadを畳む→履歴に出る→再度開く→会話が読み返せる", async ({ page }) => {
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-lifecycle-"));
 
-  await page.goto(`/?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
+  await openApp(page);
 
   await page.getByRole("button", { name: "新しい Project", exact: true }).click();
   await page.getByLabel("Project 名").fill("E2E Lifecycle Project");
   await page.getByLabel("Base パス").fill(projectRoot);
   await page.getByRole("button", { name: "作成する" }).click();
-  await expect(page.getByText(/Base Thread —/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("Base Thread — E2E Lifecycle Project")).toBeVisible({ timeout: 15_000 });
 
   // 会話を残す（再度開いたときに読み返せることを見るための下準備）。
   // ページ全体からgetByTextで待つと、送信直後に出るユーザー自身の発言

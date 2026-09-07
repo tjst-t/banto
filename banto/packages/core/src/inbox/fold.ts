@@ -14,6 +14,8 @@ export type InboxEvent =
         requestedSchema?: unknown;
         url?: string;
         toolCallId?: string;
+        toolInput?: unknown;
+        serverName?: string;
       };
     }
   | { type: "inbox.judgment_answered"; payload: { id: string; answer: unknown } }
@@ -39,6 +41,8 @@ export const inboxFold: Fold<InboxReadModel> = {
           requestedSchema: event.payload.requestedSchema,
           url: event.payload.url,
           toolCallId: event.payload.toolCallId,
+          toolInput: event.payload.toolInput,
+          serverName: event.payload.serverName,
           liveness: "live",
           createdAt: raw.ts,
         };

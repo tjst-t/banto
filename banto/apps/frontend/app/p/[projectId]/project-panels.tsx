@@ -7,6 +7,8 @@ import { toast } from "sonner";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useMounted } from "@/hooks/use-mounted";
 import { CanvasContent } from "@/components/banto/canvas/canvas-content";
+import { ModuleCanvas } from "@/components/banto/canvas/module-canvas";
+import { getRealInlineView } from "@/lib/backend/adapter";
 import { PanelStack } from "@/components/banto/shell/panel-stack";
 import { usePanelStack } from "@/components/banto/shell/use-panel-stack";
 import { ProjectSettingsOverlay } from "@/components/banto/settings/project-settings-overlay";
@@ -183,6 +185,14 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
     params.delete("fork");
     params.delete("overlay");
     params.delete("fullscreen");
+    // **別タブは手元の記憶を持たない**（決定・2026-09-07、ユーザー報告）
+    // ——どの Thread の記録から引き直せばよいかを一緒に運ぶ。
+    // 以前はこれが無く、別タブではモックの固定データが描かれていた
+    const realView = stack.canvas?.toolCallId ? getRealInlineView(stack.canvas.toolCallId) : undefined;
+    if (realView) params.set("thread", realView.threadId);
+    // **入口（launcher）から開いた面は Thread を持たない**——どの Project の
+    // Module かだけが要る（決定・2026-09-07、ユーザー要望で別タブ対応を広げた）
+    else params.set("project", projectId);
     window.open(`/canvas-window?${params.toString()}`, "_blank", "noopener,noreferrer");
     // 別タブへ切り出したら、元の banto 側では畳む——同じものが2箇所に開いた
     // ままだと紛らわしい
@@ -223,7 +233,10 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             <ThreadPanel
               threadId={project.baseThreadId}
               onOpenCanvas={
-                CONNECTED_FEATURES.canvas ? (moduleId, viewId) => stack.open({ canvas: { moduleId, viewId } }) : undefined
+                // **実 Module の面はいつでも開ける**（決定・2026-09-07）。
+                // `CONNECTED_FEATURES.canvas` はモックの固定データの面を出すかの旗で、
+                // 本物の Canvas はそれとは別（規則13：繋がっているものは見せてよい）
+                (moduleId, viewId, toolCallId) => stack.open({ canvas: { moduleId, viewId, toolCallId } })
               }
               markers={markersByThread[project.baseThreadId]}
             />
@@ -262,21 +275,26 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
           </div>
         );
       }}
-      renderCanvas={(moduleId, viewId) => (
+      renderCanvas={(moduleId, viewId) => {
+        // 実 Module の面（会話の記録から引ける）か、モックの面か。
+        // **入口（launcher）から開いた面は tool 呼び出しを持たない**
+        // ——`ui://` を指しているかで見分ける（決定・2026-09-07、§6.2）
+        const realView = stack.canvas?.toolCallId ? getRealInlineView(stack.canvas.toolCallId) : undefined;
+        const launcherUri = !realView && viewId.startsWith("ui://") ? viewId : undefined;
+        return (
         <div className="flex h-full min-h-0 flex-col">
           <ClosablePanelHeader
             icon={X}
             onClose={() => stack.close("canvas")}
             closeLabel="Canvas を閉じる"
-            title={`Canvas — ${moduleId}:${viewId}`}
+            title={realView || launcherUri ? `Canvas — ${moduleId}` : `Canvas — ${moduleId}:${viewId}`}
             trailing={
               <div className="flex items-center gap-1.5">
-                {stack.canvasFullscreen ? (
-                  // MCP Apps の fullscreen は「その面だけの独立した画面」という
-                  // 扱い（§6.2）——別タブでも banto のクロム無しでその Canvas
-                  // だけを表示し、元のタブ側は畳む
-                  <IconHeaderButton icon={ExternalLink} label="別タブで開く" onClick={openCanvasInNewTab} />
-                ) : null}
+                {/* **どの開き方でも別タブに出せる**（改訂・2026-09-07、ユーザー要望）。
+                    以前は全画面のときだけ出していたが、会話の隣で見ているときこそ
+                    「これは別の窓で見たい」が起きる。別タブへ切り出したら
+                    **元のタブ側は畳む**——同じものが2箇所に開いたままだと紛らわしい */}
+                <IconHeaderButton icon={ExternalLink} label="別タブで開く" onClick={openCanvasInNewTab} />
                 {isMobile ? null : (
                   <IconHeaderButton
                     icon={stack.canvasFullscreen ? Minimize2 : Maximize2}
@@ -288,10 +306,32 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             }
           />
           <div className="min-h-0 flex-1">
-            <CanvasContent moduleId={moduleId} viewId={viewId} />
+            {launcherUri ? (
+              // 人が入口から開いた面——tool の結果は無い。Canvas が自分で
+              // 必要なものを取りに行く（§6.2「launcher も同じ形」）
+              <ModuleCanvas
+                owner={{ kind: "project", id: projectId }}
+                server={moduleId}
+                resourceUri={launcherUri}
+                displayMode="fullscreen"
+              />
+            ) : realView ? (
+              <ModuleCanvas
+                owner={{ kind: "thread", id: realView.threadId }}
+                server={realView.server}
+                resourceUri={realView.resourceUri}
+                toolName={realView.toolName}
+                toolArgs={realView.toolArgs}
+                toolResult={realView.toolResult}
+                displayMode="fullscreen"
+              />
+            ) : (
+              <CanvasContent moduleId={moduleId} viewId={viewId} />
+            )}
           </div>
         </div>
-      )}
+        );
+      }}
     />
     {CONNECTED_FEATURES.projectSettings ? (
       <ProjectSettingsOverlay

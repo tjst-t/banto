@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  classifyMetaDifference,
   parseModuleMeta,
   ModuleMetaError,
   visibilityOf,
@@ -89,4 +90,57 @@ test("assertAllVisibilityExplicit rejects missing visibility", () => {
       "vault",
     ),
   );
+});
+
+// 宣言（Config）と自己申告（Module）の食い違いを、**方向で**分ける
+// （決定・2026-09-06）。Module の申告は「より厳しくする方向にだけ効く情報」で、
+// banto の隔離を緩める権限は無い——Module は他人が書いたものでありうるので、
+// 「私は秘密を扱いません、閉じ込め不要です」を鵜呑みにして起動してはいけない。
+test("Module がより厳しい形を申告したら、厳しい側として拾う", () => {
+  const declared = parseModuleMeta(
+    { satisfies: ["x"], dependsOn: [], isolation: "subprocess", scope: "instance" },
+    "declared",
+  );
+  const reported = parseModuleMeta(
+    { satisfies: ["x"], dependsOn: [], isolation: "subprocess", scope: "project", handlesSecrets: true },
+    "reported",
+  );
+  const diff = classifyMetaDifference(declared, reported);
+  assert.deepEqual(diff.stricter.sort(), ["handlesSecrets", "scope"]);
+  assert.deepEqual(diff.looser, []);
+});
+
+test("Module がより緩い形を申告したら、緩い側として拾う（自動では従わない）", () => {
+  const declared = parseModuleMeta(
+    {
+      satisfies: ["x"],
+      dependsOn: [],
+      isolation: "subprocess",
+      scope: "project",
+      confinement: { kind: "landlock", root: "project" },
+    },
+    "declared",
+  );
+  const reported = parseModuleMeta(
+    { satisfies: ["x"], dependsOn: [], isolation: "in-process", scope: "instance" },
+    "reported",
+  );
+  const diff = classifyMetaDifference(declared, reported);
+  assert.deepEqual(diff.looser.sort(), ["confinement", "isolation", "scope"]);
+  assert.deepEqual(diff.stricter, []);
+});
+
+test("起動の形に関わらない差分は、厳しい/緩いのどちらでもない", () => {
+  const declared = parseModuleMeta({ satisfies: ["x"], dependsOn: [], isolation: "subprocess" }, "d");
+  const reported = parseModuleMeta({ satisfies: ["x", "y"], dependsOn: [], isolation: "subprocess" }, "r");
+  const diff = classifyMetaDifference(declared, reported);
+  assert.deepEqual(diff.stricter, []);
+  assert.deepEqual(diff.looser, []);
+  assert.deepEqual(diff.other, ["satisfies"]);
+});
+
+test("同じなら差分なし", () => {
+  const meta = { satisfies: ["x"], dependsOn: [], isolation: "subprocess", scope: "project", confinement: { kind: "landlock", root: "project" } };
+  const diff = classifyMetaDifference(parseModuleMeta(meta, "d"), parseModuleMeta(meta, "r"));
+  assert.deepEqual(diff, { stricter: [], looser: [], other: [] });
 });

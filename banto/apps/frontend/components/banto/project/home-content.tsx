@@ -5,7 +5,7 @@
 // real-projects-bootstrap.tsx）を待ち、1件以上あれば先頭のProjectへ、
 // 0件なら新規作成を促す空状態を出す。読み込み中と「本当に0件」を区別する
 // （読み込み中に空状態を一瞬見せない）。
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FolderPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -25,11 +25,20 @@ export function HomeContent() {
 
   const projects = getActiveProjects();
 
+  // **飛ばすのは一度だけ**（修正・2026-09-06）。getActiveProjects()は毎レンダー
+  // 新しい配列を返すので、これを依存に置くと再描画のたびにrouter.replaceが
+  // 走っていた——「新しい Project」のダイアログを開いて入力している最中に
+  // Projectの読み込みやThreadの登録が入ると、そのたびに遷移が起きて
+  // **ダイアログごと入力が消える**（E2Eが「作成する」を押せずに落ちるのが
+  // これだった。実測・2026-09-06、docs/notes/2026-09-06-home-redirect-loop.md）。
+  const redirected = useRef(false);
   useEffect(() => {
-    if (hydrated && projects.length > 0) {
-      router.replace(`/p/${projects[0]!.id}`);
-    }
-  }, [hydrated, projects, router]);
+    if (!hydrated || redirected.current) return;
+    const first = getActiveProjects()[0];
+    if (!first) return;
+    redirected.current = true;
+    router.replace(`/p/${first.id}`);
+  }, [hydrated, router]);
 
   if (!hydrated || projects.length > 0) {
     // 読み込み中、または遷移が起きるまでの一瞬——何も見せない

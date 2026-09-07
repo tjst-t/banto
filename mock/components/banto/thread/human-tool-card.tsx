@@ -53,12 +53,8 @@ export const HumanToolCard: ToolCallMessagePartComponent = (props) => {
   if (props.toolName !== HUMAN_TOOL_NAME) {
     // MCP Apps の display mode "inline"（§6.2）——結果が揃ってから、
     // Module の Canvas コンテンツを会話のカードに埋め込んで見せる
-    if (props.result !== undefined) {
-      const inlineView = getInlineView(props.toolCallId);
-      if (inlineView) {
-        return <InlineModuleView moduleId={inlineView.moduleId} viewId={inlineView.viewId} props={props} />;
-      }
-    }
+    // **inline の Canvas はここには出さない**（決定・2026-09-07）
+    // ——出すのは HumanAwareToolGroup の外側（§6.2）
     return <ToolFallback {...props} />;
   }
 
@@ -90,17 +86,32 @@ export const HumanToolCard: ToolCallMessagePartComponent = (props) => {
 // なる——判断待ちは「止まっているものが先」（§2.4.1）で最優先に見えるべきもの、
 // inline はその場に埋め込んで見せることが目的（§6.2）なので、どちらも自動で開く。
 // ロジックは tool-fallback.aui.tsx の isRequiresAction 自動展開パターンを踏襲。
+/**
+ * 折りたたみの外に並べる inline の面。**部品ごとに読む**——`useAuiState` の
+ * selector が毎回新しい配列を返すと再描画が止まらず、画面ごと落ちる
+ * （実測・2026-09-07）。
+ */
+function InlineViewForPart({ index }: { index: number }) {
+  const part = useAuiState((s) => s.message.parts[index]);
+  if (!part || part.type !== "tool-call" || part.result === undefined) return null;
+  const inlineView = getInlineView(part.toolCallId);
+  if (!inlineView) return null;
+  return (
+    <InlineModuleView
+      moduleId={inlineView.moduleId}
+      viewId={inlineView.viewId}
+      toolName={part.toolName}
+    />
+  );
+}
+
 export function HumanAwareToolGroup({
   group,
   children,
 }: PropsWithChildren<{ group: ThreadGroupPart }>) {
   const isRequiresAction = group.status.type === "requires-action";
-  const hasInlineView = useAuiState((s) =>
-    group.indices.some((i) => {
-      const part = s.message.parts[i];
-      return part?.type === "tool-call" && getInlineView(part.toolCallId) !== undefined;
-    }),
-  );
+  // **inline の Canvas は、この折りたたみの外に並べる**（決定・2026-09-07）
+  // ——中に入れると、人が畳んだ瞬間に「出したはずの画面」が消える
   // permissionMode が bypassPermissions のため確認を飛ばした呼び出しも自動で開く
   // ——本来なら承認カードとして目に入っていたものが、畳まれて見えなくなるのは
   // 「何が黙って実行されたか分からない」という一番避けたい状態になる
@@ -110,7 +121,7 @@ export function HumanAwareToolGroup({
       return part?.type === "tool-call" && wasApprovalBypassed(part.toolCallId);
     }),
   );
-  const shouldAutoOpen = isRequiresAction || hasInlineView || hasBypassedApproval;
+  const shouldAutoOpen = isRequiresAction || hasBypassedApproval;
   const [open, setOpen] = useState(shouldAutoOpen);
   const [prevShouldAutoOpen, setPrevShouldAutoOpen] = useState(shouldAutoOpen);
   if (shouldAutoOpen !== prevShouldAutoOpen) {
@@ -119,12 +130,17 @@ export function HumanAwareToolGroup({
   }
 
   return (
-    <ToolGroupRoot variant="ghost" open={open} onOpenChange={setOpen}>
-      <ToolGroupTrigger
-        count={group.indices.length}
-        active={group.status.type === "running"}
-      />
-      <ToolGroupContent>{children}</ToolGroupContent>
-    </ToolGroupRoot>
+    <>
+      <ToolGroupRoot variant="ghost" open={open} onOpenChange={setOpen}>
+        <ToolGroupTrigger
+          count={group.indices.length}
+          active={group.status.type === "running"}
+        />
+        <ToolGroupContent>{children}</ToolGroupContent>
+      </ToolGroupRoot>
+      {group.indices.map((index) => (
+        <InlineViewForPart key={index} index={index} />
+      ))}
+    </>
   );
 }
