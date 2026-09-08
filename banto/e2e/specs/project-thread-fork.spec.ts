@@ -49,6 +49,22 @@ test("Project作成→Base Thread会話→Fork作成→Clear", async ({ page }) 
   await page.getByRole("button", { name: "Fork を開く" }).click();
   await expect(page.getByText(/Fork Thread —/)).toBeVisible({ timeout: 15_000 });
 
+  // **分けた場所に「この Fork を開く」が残る**（決定・2026-09-07、ユーザー要望）。
+  // Fork は横のレールからも開けるが、**会話のどこで分けたのか**はそこからは
+  // 分からない。閉じてから、会話に残ったカードで開き直せることまで見る
+  await page.getByRole("button", { name: /Base Thread に戻る$/ }).click();
+  await expect(page.getByText(/Fork Thread —/)).toBeHidden({ timeout: 15_000 });
+  const forkCard = page.locator('[data-testid="fork-open-card"]');
+  await expect(forkCard, "分岐した場所に Fork の入口が残っていない").toBeVisible({ timeout: 15_000 });
+  // リロードしても残る（記録から出している——このブラウザの覚えではない）
+  await page.reload();
+  await expect(page.getByPlaceholder(/に送る/)).toBeVisible({ timeout: 30_000 });
+  await expect(forkCard, "リロードで Fork の入口が消えた").toBeVisible({ timeout: 30_000 });
+  await forkCard.getByRole("button", { name: "開く" }).click();
+  await expect(page.getByText(/Fork Thread —/), "カードから Fork を開けない").toBeVisible({
+    timeout: 15_000,
+  });
+
   // Clear（Fork側）——モバイル幅ではBaseパネルもDOM上に残ったまま
   // Fork がoverlayとして重なる（panel-stack.tsx）ので、同じaria-labelが
   // 2つ存在する。overlayはDOM順で後に来るので.last()で前面の1枚を選ぶ

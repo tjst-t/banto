@@ -781,6 +781,21 @@
       "refs": [
         "docs/notes/2026-09-07-codeblock-freeze-and-latency.md"
       ]
+    },
+    {
+      "id": "canvas-open-card",
+      "phase": "1",
+      "title": "開いたものは会話にカードとして残る（勝手に開くのは一度だけ）",
+      "status": "done",
+      "dependencies": [
+        "phase1-canvas-fullscreen"
+      ],
+      "why": "リロードのたびに Canvas が勝手に開いていた（ユーザー報告・2026-09-07）。原因は URL ではなく、**記録から復元した画面が毎回『大きく出して』と言い直していた**こと——会話に埋め直す限り止まらない。",
+      "result": "**自動で開いてよいのは tool が呼んだその一度だけ**にした。大きく出した呼び出しは会話に埋め直さず、その場所に**入口のカード**を残す（押すと同じ引数で開き直る）。そのために『どの面に出したか』を会話の記録に足した（`UiToolCallEntry.displayMode`）——決めるのは画面なので、決まった時点で記録する。**記録が会話より先に届く**（画面が言うのはターンの途中、会話が書かれるのは終わり）ので、fold で預かってから貼る形にした（この順番で落ちる回帰テストつき）。カードは Canvas 専用にせず**汎用**にし（`openable-card.tsx`）、Fork にも同じ形で使う——親の会話の**分岐した場所**に残り、押すとその Fork が開く（位置は分岐イベント自身の seq）。測った結果：core 単体 109件、E2E で「閉じてリロードしても開かない・カードから同じ引数で開き直る・Fork のカードがリロード後も残って開ける」を確認。",
+      "refs": [
+        "docs/specs/v4-frontend.md §6.2",
+        "banto/apps/frontend/components/banto/thread/openable-card.tsx"
+      ]
     }
   ],
   "phase0": {

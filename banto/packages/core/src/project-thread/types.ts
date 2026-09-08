@@ -63,6 +63,18 @@ export interface UiToolCallEntry {
   resourceUri: string;
   args?: unknown;
   result?: unknown;
+  /**
+   * **どの面に出したか**（追加・2026-09-07、ユーザー指摘）。
+   *
+   * 「どの tool がどの画面をどの引数で呼んだか」だけでは、**リロード後に
+   * 出し直せない**——inline は会話の中に埋め、fullscreen は会話の隣に開く、
+   * という違いがここに無かった。無いために、復元した画面が毎回自分で
+   * 「大きく出して」と言い直し、**リロードのたびに Canvas が勝手に開いていた**。
+   *
+   * 決めるのは画面側（`ui/request-display-mode`）なので、決まった時点で
+   * banto が記録する。記録が無い（古い）ものは inline として扱う。
+   */
+  displayMode?: "inline" | "fullscreen";
 }
 
 /** 「Clear」——会話を畳む（v4-architecture.md §2.2「会話を畳む」）。次のRunner呼び出しで
@@ -116,6 +128,11 @@ export interface ThreadState {
   projectId: ProjectId;
   kind: ThreadKind;
   parentThreadId?: ThreadId;
+  /** この Thread が作られたイベントの seq（追加・2026-09-07）。
+   *  Fork を**親の会話のどこで分岐したか**の位置として使う——Clear の横線と
+   *  同じ仕組みで、その場所に「この Fork を開く」を置ける。
+   *  導出値の写しではなく、作成イベント自身の seq をそのまま持つ。 */
+  createdSeq: number;
   /** SDKのresume用識別子。新規Threadはundefined。 */
   resumePoint?: string;
   /** この`resumePoint`が**この Thread 自身のセッション**か（決定・2026-09-05）。
@@ -157,4 +174,12 @@ export interface ThreadState {
 export interface ProjectThreadReadModel {
   projects: Map<ProjectId, ProjectState>;
   threads: Map<ThreadId, ThreadState>;
+  /**
+   * **画面をどの面に出したかの記録が、会話より先に届く**ことがある
+   * （実測・2026-09-07）。画面が「大きく出して」と言うのはターンの**途中**、
+   * その tool 呼び出しが会話に書かれるのはターンの**終わり**——先に届いた分は
+   * 宛先がまだ無い。ここに預かっておき、会話が書かれた時点で貼る。
+   * 追記のみの世界で順番に依存しないための入れ物であって、写しではない（規則3）。
+   */
+  displayModeByToolCall: Map<string, "inline" | "fullscreen">;
 }

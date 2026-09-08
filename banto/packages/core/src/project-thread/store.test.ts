@@ -399,3 +399,78 @@ test("**正規化より前に作られた Project の root も、読むときに
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("画面つき tool の呼び出しに『どの面に出したか』を書き足せる", async () => {
+  // **記録が「どの tool をどの引数で呼んだか」だけだと、リロード後に出し直せない**
+  // （ユーザー指摘・2026-09-07）。inline は会話の中に埋め、fullscreen は入口だけ
+  // 残す——その区別がここに無かったため、復元した画面が毎回「大きく出して」と
+  // 言い直し、リロードのたびに Canvas が勝手に開いていた。
+  await withStore(async (store) => {
+    const project = await store.createProject("表示の記録", "/tmp");
+    const thread = await store.createBaseThread(project.id);
+    await store.appendMessage(thread.id, "assistant", "一覧を出しました", [
+      {
+        toolCallId: "call-1",
+        toolName: "mcp__filesystem__listDirectory",
+        server: "filesystem",
+        resourceUri: "ui://banto-filesystem/directory",
+        args: { path: "." },
+      },
+    ]);
+
+    // 記録した時点では「どの面か」はまだ決まっていない（決めるのは画面）
+    const before = store.getThread(thread.id)?.messages.at(-1)?.uiToolCalls?.[0];
+    assert.equal(before?.displayMode, undefined);
+
+    await store.recordUiToolCallDisplayMode(thread.id, "call-1", "fullscreen");
+    const after = store.getThread(thread.id)?.messages.at(-1)?.uiToolCalls?.[0];
+    assert.equal(after?.displayMode, "fullscreen");
+    // 他の項目を落としていない
+    assert.equal(after?.server, "filesystem");
+    assert.deepEqual(after?.args, { path: "." });
+  });
+});
+
+test("Fork は『親のどこで分岐したか』を持つ", async () => {
+  // Fork の入口を**親の会話のその場所**に置くために要る（決定・2026-09-07）。
+  // 新しいイベント型は足さない——分岐イベント自身の seq をそのまま持つ（規則3）。
+  await withStore(async (store) => {
+    const project = await store.createProject("分岐の位置", "/tmp");
+    const parent = await store.createBaseThread(project.id);
+    await store.appendMessage(parent.id, "user", "1つめ");
+    await store.appendMessage(parent.id, "assistant", "はい");
+    const afterFirstPair = store.getThread(parent.id)!.messages.at(-1)!.seq;
+
+    const fork = await store.forkThread(parent.id);
+    assert.ok(
+      fork.createdSeq > afterFirstPair,
+      `分岐の位置が会話より前になっている（fork=${fork.createdSeq} messages=${afterFirstPair}）`,
+    );
+    assert.equal(store.getThread(fork.id)?.parentThreadId, parent.id);
+  });
+});
+
+test("『どの面に出したか』が会話より先に届いても、取りこぼさない", async () => {
+  // **実際に踏んだ順番**（実測・2026-09-07）：画面が「大きく出して」と言うのは
+  // ターンの**途中**、その tool 呼び出しが会話に書かれるのはターンの**終わり**。
+  // 先に届いた記録は宛先がまだ無く、そのまま捨てられていた——結果、リロードすると
+  // また会話に画面が埋まり、その画面がまた「大きく出して」と言って勝手に開いた。
+  await withStore(async (store) => {
+    const project = await store.createProject("順番", "/tmp");
+    const thread = await store.createBaseThread(project.id);
+
+    // 先に「大きく出した」が届く（会話はまだ書かれていない）
+    await store.recordUiToolCallDisplayMode(thread.id, "call-early", "fullscreen");
+    await store.appendMessage(thread.id, "assistant", "出しました", [
+      {
+        toolCallId: "call-early",
+        toolName: "mcp__filesystem__listDirectory",
+        server: "filesystem",
+        resourceUri: "ui://banto-filesystem/directory",
+      },
+    ]);
+
+    const call = store.getThread(thread.id)?.messages.at(-1)?.uiToolCalls?.[0];
+    assert.equal(call?.displayMode, "fullscreen");
+  });
+});

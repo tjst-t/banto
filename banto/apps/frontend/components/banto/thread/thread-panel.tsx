@@ -7,12 +7,14 @@
 // 複数パネルの同時表示をそのまま実現する（Command Palette 等での Thread 一覧操作は
 // 別の場所で Event Store 相当のストアから作る——ここでは会話の表示・送信だけを担う）。
 import { useEffect, useMemo, type ReactNode } from "react";
+import { GitFork } from "lucide-react";
 import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { CanvasAutoOpen } from "@/components/banto/thread/canvas-auto-open";
 import { ComposerModelEffortMenu } from "@/components/banto/thread/composer-model-effort-menu";
 import { ComposerPermissionModeMenu } from "@/components/banto/thread/composer-permission-mode-menu";
 import { HumanAwareToolGroup, HumanToolCard } from "@/components/banto/thread/human-tool-card";
+import { OpenableCard } from "@/components/banto/thread/openable-card";
 import { APPROVAL_TOOL_NAMES, createMockChatModelAdapter, HUMAN_TOOL_NAME } from "@/lib/mock/adapter";
 import {
   hasLiveRealRun,
@@ -26,7 +28,7 @@ import { CanvasOpenerProvider, type CanvasOpener } from "@/components/banto/canv
 import { getProject } from "@/lib/mock/projects";
 import { mockRuntimeDefaults } from "@/lib/mock/settings";
 import { seedToInitialMessages } from "@/lib/mock/seed";
-import { getThread } from "@/lib/mock/threads";
+import { getThread, getThreadsForProject } from "@/lib/mock/threads";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 
 export interface ThreadMarker {
@@ -63,11 +65,14 @@ function ThreadMarkers({ markers }: { markers: readonly ThreadMarker[] }) {
 export function ThreadPanel({
   threadId,
   onOpenCanvas,
+  onOpenFork,
   markers,
 }: {
   threadId: string;
   /** MCP Apps の display mode "fullscreen"——tool 呼び出し自身が要求したら呼ばれる（§6.2） */
   onOpenCanvas?: CanvasOpener;
+  /** 分岐した場所に残る「この Fork を開く」（決定・2026-09-07） */
+  onOpenFork?: (threadId: string) => void;
   markers?: readonly ThreadMarker[];
 }) {
   const thread = getThread(threadId);
@@ -111,18 +116,44 @@ export function ThreadPanel({
     if (!thread?.real) return undefined;
     const msgs = thread.realMessages ?? [];
     const map = new Map<string | null, ReactNode>();
-    for (const marker of thread.realMarkers ?? []) {
+    // 起きた場所（直前の message）に紐づける。Clear の横線も Fork の入口も
+    // 物差しは同じ seq——**別の仕組みを増やさない**（規則3）
+    const anchorOf = (seq: number): string | null => {
       let anchor: string | null = null;
       for (const m of msgs) {
-        if (m.seq < marker.seq) anchor = `real-${m.seq}`;
+        if (m.seq < seq) anchor = `real-${m.seq}`;
         else break;
       }
-      const node = <MarkerDivider key={`marker-${marker.seq}`} kind={marker.kind} />;
+      return anchor;
+    };
+    const put = (anchor: string | null, node: ReactNode) => {
       const existing = map.get(anchor);
       map.set(anchor, existing ? <>{existing}{node}</> : node);
+    };
+    for (const marker of thread.realMarkers ?? []) {
+      put(anchorOf(marker.seq), <MarkerDivider key={`marker-${marker.seq}`} kind={marker.kind} />);
+    }
+    // **分岐した場所に「この Fork を開く」を置く**（決定・2026-09-07、ユーザー要望）。
+    // Fork は横のレールからも開けるが、**会話のどこで分けたのか**はそこからは
+    // 分からない——分けた場所に残っているのが、あとで辿るときの手がかりになる
+    for (const fork of getThreadsForProject(thread.projectId)) {
+      if (fork.kind !== "fork" || fork.parentThreadId !== thread.id) continue;
+      if (fork.realCreatedSeq === undefined) continue;
+      const count = fork.realMessages?.length ?? 0;
+      put(
+        anchorOf(fork.realCreatedSeq),
+        <OpenableCard
+          key={`fork-${fork.id}`}
+          icon={GitFork}
+          title={fork.title}
+          description={count > 0 ? `${count} 件のやり取り` : "まだやり取りはありません"}
+          onOpen={onOpenFork ? () => onOpenFork(fork.id) : undefined}
+          testId="fork-open-card"
+        />,
+      );
     }
     return map;
-  }, [thread]);
+  }, [thread, onOpenFork]);
 
   if (!thread || !adapter) {
     return (

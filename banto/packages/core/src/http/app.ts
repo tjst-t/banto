@@ -338,6 +338,32 @@ export function createApp(deps: AppDeps) {
         return;
       }
 
+      // **どの面に出したか**を記録する（決定・2026-09-07、ユーザー指摘）。
+      // 決めるのは画面（`ui/request-display-mode`）なので、決まってから届く
+      // ——これが記録に無いと、リロード後に「inline は埋め直す・fullscreen は
+      // 入口だけ残す」の区別ができず、**毎回 Canvas が勝手に開いていた**。
+      const displayModeMatch = url.pathname.match(
+        /^\/api\/threads\/([^/]+)\/ui-tool-calls\/([^/]+)\/display-mode$/,
+      );
+      if (displayModeMatch && req.method === "POST") {
+        const body = (await readJsonBody(req)) as { displayMode?: unknown };
+        if (body.displayMode !== "inline" && body.displayMode !== "fullscreen") {
+          return json(res, 400, { error: "displayMode must be inline or fullscreen" });
+        }
+        try {
+          await deps.projectThread.recordUiToolCallDisplayMode(
+            displayModeMatch[1]!,
+            decodeURIComponent(displayModeMatch[2]!),
+            body.displayMode,
+          );
+          json(res, 200, { ok: true });
+        } catch (err) {
+          if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
+          throw err;
+        }
+        return;
+      }
+
       // 人が選んだpermissionModeを残す（決定・2026-09-06）——UI側だけに置くと
       // リロードで消え、「いまどのモードで会話しているか」を見失う（§6.4）
       const permissionModeMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/permission-mode$/);

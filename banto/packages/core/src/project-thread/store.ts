@@ -52,8 +52,12 @@ export class ProjectThreadStore {
     // v3：ThreadにownsSession（親から借りたresume-pointか、自分のセッションか）
     // を足した（決定・2026-09-05）。v2以前には無いので読まずに作り直す。
     // v2でMemoryをProject持ちにした変更もここに含まれる。
+    // v8：「どの面に出したか」を、会話より先に届いても取りこぼさないように
+    //     read model に預かり場所を足した（実測・2026-09-07）
+    // v7：UiToolCallEntry に displayMode、ThreadState に createdSeq を足した
+    //     （決定・2026-09-07。古いスナップショットには無いので畳み直す）
     // v6：MessageEntry に uiToolCalls を足した（決定・2026-09-07）
-    this.projection = new SnapshotProjection(dataDir, "project-thread", log, projectThreadFold, 6);
+    this.projection = new SnapshotProjection(dataDir, "project-thread", log, projectThreadFold, 8);
   }
 
   async load(): Promise<void> {
@@ -256,6 +260,26 @@ export class ProjectThreadStore {
 
   /** リロード時の会話表示復元用（決定・2026-09-04）。実行再開はresumePointが担うので、
    *  ここは表示に足るテキストだけを追記する——SDKMessageの生データは持たない。 */
+  /**
+   * **どの面に出したか**を、その tool 呼び出しの記録に書き足す（決定・2026-09-07）。
+   *
+   * 決めるのは画面（`ui/request-display-mode`）なので、決まってから届く。
+   * 同じ値で二度届いても害は無い（追記のみ、最後の1つが効く）。
+   */
+  async recordUiToolCallDisplayMode(
+    threadId: ThreadId,
+    toolCallId: string,
+    displayMode: "inline" | "fullscreen",
+  ): Promise<void> {
+    if (!this.getThread(threadId)) throw new NotFoundError(`thread ${threadId} not found`);
+    const event = await this.log.append("ui-tool-call.display-mode.recorded", {
+      threadId,
+      toolCallId,
+      displayMode,
+    });
+    this.projection.applyOne(event);
+  }
+
   async appendMessage(
     threadId: ThreadId,
     role: "user" | "assistant",

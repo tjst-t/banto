@@ -97,6 +97,8 @@ export function registerRealFork(
   realMarkers?: MockThread["realMarkers"],
   status: MockThread["status"] = "open",
   realUsage?: MockThread["realUsage"],
+  /** 親の会話のどこで分岐したか（決定・2026-09-07） */
+  realCreatedSeq?: number,
 ): MockThread {
   const existing = mockThreads.find((t) => t.id === threadId);
   if (existing) return existing;
@@ -107,6 +109,7 @@ export function registerRealFork(
     kind: "fork",
     title: `Fork ${forkCount + 1}`,
     parentThreadId,
+    realCreatedSeq,
     script: { seed: [], replies: [{ match: "*", steps: [{ t: "text", text: "" }] }] },
     status,
     real: true,

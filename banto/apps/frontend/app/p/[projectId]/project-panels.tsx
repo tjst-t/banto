@@ -170,7 +170,16 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
     }
     try {
       const fork = await createRealFork(baseThreadId);
-      registerRealFork(fork.id, fork.projectId, baseThreadId, fork.messages, fork.markers, "open", fork.usage);
+      registerRealFork(
+        fork.id,
+        fork.projectId,
+        baseThreadId,
+        fork.messages,
+        fork.markers,
+        "open",
+        fork.usage,
+        fork.createdSeq,
+      );
       stack.open({ fork: fork.id });
     } catch (err) {
       toast(`Fork の作成に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
@@ -238,6 +247,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
                 // 本物の Canvas はそれとは別（規則13：繋がっているものは見せてよい）
                 (moduleId, viewId, toolCallId) => stack.open({ canvas: { moduleId, viewId, toolCallId } })
               }
+              onOpenFork={(id) => stack.open({ fork: id })}
               markers={markersByThread[project.baseThreadId]}
             />
           </div>

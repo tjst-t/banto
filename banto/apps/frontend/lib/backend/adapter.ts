@@ -234,10 +234,28 @@ export interface RealInlineView {
    *  面と一緒に覚えておく（決定・2026-09-07）——会話の外（Canvas パネル）
    *  からは会話の parts を読めない。 */
   toolResult?: unknown;
+  /**
+   * **どの面に出したか**（host の記録から。決定・2026-09-07、ユーザー指摘）。
+   * `fullscreen` なら会話には入口（カード）だけを残す——記録から画面を
+   * 組み直して埋めると、その画面がまた「大きく出して」と言い、
+   * **リロードのたびに Canvas が勝手に開く**。
+   */
+  displayMode?: "inline" | "fullscreen";
 }
 
 export function getRealInlineView(toolCallId: string): RealInlineView | undefined {
   return inlineViewByToolCallId.get(toolCallId);
+}
+
+/** 画面が「大きく出して」と言ったことを覚えておく（決定・2026-09-07）。
+ *  会話が組み直されても、その呼び出しは入口だけを残す——同じ画面が
+ *  会話の中と Canvas に二重に出ないようにする。 */
+export function markInlineViewDisplayMode(
+  toolCallId: string,
+  displayMode: "inline" | "fullscreen",
+): void {
+  const view = inlineViewByToolCallId.get(toolCallId);
+  if (view) inlineViewByToolCallId.set(toolCallId, { ...view, displayMode });
 }
 
 /**
@@ -316,8 +334,14 @@ export function realMessagesToInitial(
     // 会話の順番としてもそちらが先
     for (const call of m.uiToolCalls ?? []) {
       // 会話の外に置く inline の面は、この登録を見て描かれる
+      // **大きく出したものは、会話に埋め直さない**（決定・2026-09-07）——
+      // 埋め直すと、その画面がまた「大きく出して」と言い、リロードのたびに
+      // Canvas が勝手に開く。会話には入口（カード）だけを残す。
+      // この場で覚えた分（いま走ったターンで大きく出したもの）も残す
+      const known = inlineViewByToolCallId.get(call.toolCallId);
       inlineViewByToolCallId.set(call.toolCallId, {
         threadId: threadIdOfRestoredCall,
+        displayMode: call.displayMode ?? known?.displayMode,
         server: call.server,
         resourceUri: call.resourceUri,
         toolName: call.toolName,

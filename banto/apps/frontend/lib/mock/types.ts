@@ -31,6 +31,8 @@ export interface RealUiToolCall {
   resourceUri: string;
   args?: unknown;
   result?: unknown;
+  /** どの面に出したか（決定・2026-09-07）。無い＝inline。 */
+  displayMode?: "inline" | "fullscreen";
 }
 
 export interface MockThread {
@@ -40,6 +42,9 @@ export interface MockThread {
   title: string;
   /** Fork Thread の場合、分岐元 */
   parentThreadId: ThreadId | null;
+  /** real:trueのForkだけが持つ。**親の会話のどこで分岐したか**（host の seq、
+   *  決定・2026-09-07）——親の会話のその場所に「この Fork を開く」を置く。 */
+  realCreatedSeq?: number;
   script: MockScript;
   /**
    * Base Thread は常に "open"。Fork Thread は畳む（fold）と "closed" になる——

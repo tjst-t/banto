@@ -99,6 +99,8 @@ export interface RealUiToolCall {
   resourceUri: string;
   args?: unknown;
   result?: unknown;
+  /** どの面に出したか（決定・2026-09-07）。無い＝inline（記録が付く前のもの）。 */
+  displayMode?: "inline" | "fullscreen";
 }
 
 export interface RealThreadMarker {
@@ -129,6 +131,9 @@ export interface RealThread {
   projectId: string;
   kind: "base" | "fork";
   parentThreadId?: string;
+  /** 親の会話の**どこで分岐したか**（決定・2026-09-07）。Fork の入口を
+   *  その場所に置くのに使う——Clear の横線と同じ物差し（seq）。 */
+  createdSeq?: number;
   status: "active" | "closed";
   resumePoint?: string;
   messages: RealThreadMessage[];
@@ -455,6 +460,30 @@ export async function fetchRealUiToolCall(
     if (found) return found;
   }
   return undefined;
+}
+
+/**
+ * **どの面に出したか**を host に残す（決定・2026-09-07、ユーザー指摘）。
+ *
+ * 決めるのは Module の画面（`ui/request-display-mode`）。残さないと、
+ * リロード後に「inline は埋め直す・fullscreen は入口だけ残す」の区別ができず、
+ * 復元した画面がまた「大きく出して」と言って**毎回勝手に開く**。
+ */
+export async function recordRealUiDisplayMode(
+  threadId: string,
+  toolCallId: string,
+  displayMode: "inline" | "fullscreen",
+): Promise<void> {
+  const config = requireConfig();
+  const res = await fetch(
+    `${config.baseUrl}/api/threads/${threadId}/ui-tool-calls/${encodeURIComponent(toolCallId)}/display-mode`,
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${config.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ displayMode }),
+    },
+  );
+  if (!res.ok) throw new Error(`表示の記録に失敗しました（${res.status}）`);
 }
 
 /** 人が直接開ける入口（launcher、§6.2）。名前と説明は Module が名乗ったもの。 */

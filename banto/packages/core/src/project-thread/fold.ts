@@ -44,6 +44,10 @@ export type ProjectThreadEvent =
     }
   | { type: "thread.cleared"; payload: { threadId: string } }
   | {
+      type: "ui-tool-call.display-mode.recorded";
+      payload: { threadId: string; toolCallId: string; displayMode: "inline" | "fullscreen" };
+    }
+  | {
       type: "usage.recorded";
       payload: {
         threadId: string;
@@ -55,6 +59,7 @@ export type ProjectThreadEvent =
 
 function cloneModel(m: ProjectThreadReadModel): ProjectThreadReadModel {
   return {
+    displayModeByToolCall: new Map(m.displayModeByToolCall),
     projects: new Map(Array.from(m.projects, ([k, v]) => [k, { ...v, memory: [...v.memory] }])),
     threads: new Map(
       Array.from(m.threads, ([k, v]) => [
@@ -79,7 +84,7 @@ function resolveMemoryProjectId(
 
 
 export const projectThreadFold: Fold<ProjectThreadReadModel> = {
-  initial: () => ({ projects: new Map(), threads: new Map() }),
+  initial: () => ({ projects: new Map(), threads: new Map(), displayModeByToolCall: new Map() }),
 
   apply(state, raw: StoredEvent): ProjectThreadReadModel {
     const event = raw as unknown as ProjectThreadEvent & { ts: string };
@@ -114,6 +119,7 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           projectId: event.payload.projectId,
           kind: event.payload.kind,
           parentThreadId: event.payload.parentThreadId,
+          createdSeq: raw.seq,
           resumePoint: event.payload.resumePoint,
           // 作られた時点のresume-pointは「親から借りたもの」——自分のセッション
           // ではない（決定・2026-09-05）。最初のターンでforkSessionにより
@@ -216,9 +222,34 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
             seq: raw.seq,
             role: event.payload.role,
             text: event.payload.text,
+            // 先に届いていた「どの面に出したか」をここで貼る（上の説明）
             uiToolCalls: Array.isArray(event.payload.uiToolCalls)
-              ? (event.payload.uiToolCalls as MessageEntry["uiToolCalls"])
+              ? (event.payload.uiToolCalls as NonNullable<MessageEntry["uiToolCalls"]>).map((c) => {
+                  const known = next.displayModeByToolCall.get(c.toolCallId);
+                  return known ? { ...c, displayMode: c.displayMode ?? known } : c;
+                })
               : undefined,
+          });
+        }
+        return next;
+      }
+      // **どの面に出したか**を、その tool 呼び出しの記録に書き足す
+      // （決定・2026-09-07）。決めるのは画面側なので、決まってから届く
+      case "ui-tool-call.display-mode.recorded": {
+        // 会話がまだ書かれていないこともあるので、まず預かる
+        next.displayModeByToolCall.set(event.payload.toolCallId, event.payload.displayMode);
+        const t = next.threads.get(event.payload.threadId);
+        if (t) {
+          t.messages = t.messages.map((m) => {
+            if (!m.uiToolCalls?.some((c) => c.toolCallId === event.payload.toolCallId)) return m;
+            return {
+              ...m,
+              uiToolCalls: m.uiToolCalls.map((c) =>
+                c.toolCallId === event.payload.toolCallId
+                  ? { ...c, displayMode: event.payload.displayMode }
+                  : c,
+              ),
+            };
           });
         }
         return next;

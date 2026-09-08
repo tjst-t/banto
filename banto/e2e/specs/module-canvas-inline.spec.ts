@@ -195,7 +195,14 @@ test("Module の画面が会話の中に出て、隔離が効いている", asyn
   // Canvas が開き、その中に**本物の中身**が出ている
   await expect(page.getByText(/^Canvas — filesystem$/)).toBeVisible({ timeout: 30_000 });
   const canvasFrames = page.locator('[data-testid="module-canvas-frame"]');
-  await expect(canvasFrames).toHaveCount(2, { timeout: 30_000 });
+  // **同じ画面が2箇所に出ない**（決定・2026-09-07、ユーザー要望）。大きく出した
+  // 時点で、会話の側は入口のカードに畳む——会話に埋めたままだと、記録から
+  // 組み直すたびにその画面がまた「大きく出して」と言い、勝手に開く
+  await expect(canvasFrames).toHaveCount(1, { timeout: 30_000 });
+  await expect(
+    page.locator('[data-testid="canvas-reopen-card"][data-module="filesystem"]'),
+    "会話に入口のカードが残っていない",
+  ).toBeVisible({ timeout: 15_000 });
   await expect(
     canvasFrames.last().contentFrame().frameLocator("iframe").getByText(marker),
     "Canvas に中身が出ていない",
@@ -204,7 +211,8 @@ test("Module の画面が会話の中に出て、隔離が効いている", asyn
   // **会話は消えない**（banto の fullscreen は「会話の隣」——§6.2 の解釈）
   await expect(page.getByText(/このプロジェクトの直下/), "Canvas を開いたら会話が消えた").toBeVisible();
 
-  // URL に残るので、**リロードしても同じ面が開き直る**
+  // URL に残っているので、**リロードしても同じ面が開き直る**
+  // （閉じてから開き直さないこととは別——`勝手に開かない` は下の fullscreen の spec で見る）
   await page.reload();
   await expect(page.getByText(/^Canvas — filesystem$/)).toBeVisible({ timeout: 30_000 });
 
@@ -267,6 +275,53 @@ test("「フルスクリーンで開いて」と頼むと、最初から会話�
   await expect(
     page.locator('[data-testid="module-canvas-frame"]').last().contentFrame().frameLocator("iframe").getByText(marker),
     "Canvas に中身が出ていない",
+  ).toBeVisible({ timeout: 60_000 });
+
+  // **ターンが終わってから触る**（規則14・実測・2026-09-07）。画面が開くのは
+  // tool の結果が届いた瞬間で、そこからAIの返事が続く——終わる前にリロードすると
+  // host にはまだ発言が記録されておらず、「復元しても出ない」のはテストの手順の
+  // せいになる
+  const fsProjects = await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers: HEADERS })).json();
+  const fsProject = fsProjects.find((p: { name: string }) => p.name === "E2E Canvas Fullscreen");
+  const fsThreads = await (
+    await page.request.get(`${CORE_BASE_URL}/api/projects/${fsProject.id}/threads`, { headers: HEADERS })
+  ).json();
+  await expect
+    .poll(
+      async () => {
+        const th = await (
+          await page.request.get(`${CORE_BASE_URL}/api/threads/${fsThreads[0].id}`, { headers: HEADERS })
+        ).json();
+        return (th.messages ?? []).filter((m: { role: string }) => m.role === "assistant").length;
+      },
+      { timeout: 120_000 },
+    )
+    .toBeGreaterThan(0);
+
+  // ---- 閉じたら、会話には入口（カード）が残る -------------------------------
+  // **勝手に開いてよいのは、tool が呼んだその一度だけ**（決定・2026-09-07、
+  // ユーザー指摘）。以前は復元した画面が毎回「大きく出して」と言い直し、
+  // リロードのたびに Canvas が開いていた
+  await page.getByRole("button", { name: "Canvas を閉じる" }).click();
+  await expect(page.getByText(/^Canvas — filesystem$/)).toBeHidden();
+  const card = page.locator('[data-testid="canvas-reopen-card"][data-module="filesystem"]');
+  await expect(card, "会話に入口のカードが残っていない").toBeVisible();
+
+  // リロードしても**開かない**——カードだけが残る
+  await page.reload();
+  await expect(page.getByPlaceholder(/に送る/)).toBeVisible({ timeout: 30_000 });
+  await expect(card, "リロードで入口のカードが消えた").toBeVisible({ timeout: 30_000 });
+  await expect(
+    page.getByText(/^Canvas — filesystem$/),
+    "リロードしただけで Canvas が勝手に開いた",
+  ).toBeHidden();
+
+  // 押すと、**同じ引数で**開き直る（中身が同じであることまで見る）
+  await card.getByRole("button", { name: "開く" }).click();
+  await expect(page.getByText(/^Canvas — filesystem$/)).toBeVisible({ timeout: 30_000 });
+  await expect(
+    page.locator('[data-testid="module-canvas-frame"]').last().contentFrame().frameLocator("iframe").getByText(marker),
+    "カードから開き直した Canvas に中身が出ていない",
   ).toBeVisible({ timeout: 60_000 });
 });
 

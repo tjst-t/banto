@@ -147,6 +147,7 @@ async function hydrateRealProjectsUncached(): Promise<void> {
         fork.markers,
         fork.status === "closed" ? "closed" : "open",
         fork.usage,
+        fork.createdSeq,
       );
       seedThreadPermissionMode(fork.id, fork.permissionMode);
     }
