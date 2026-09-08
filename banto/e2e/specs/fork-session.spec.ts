@@ -32,9 +32,19 @@ test("Fork Threadの最初のターンで、親と別のセッションへ分岐
     ).json();
     const project = projects.find((p: { name: string }) => p.name === PROJECT_NAME);
     if (!project) return [];
-    return await (
+    // **一覧は目次**（改訂・2026-09-07）——resume-point のような走行の事情は
+    // 持たない。1件ずつの記録から取る
+    const summaries = (await (
       await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers: apiHeaders })
-    ).json();
+    ).json()) as { id: string }[];
+    return await Promise.all(
+      summaries.map(
+        async (t) =>
+          (await (
+            await page.request.get(`${CORE_BASE_URL}/api/threads/${t.id}`, { headers: apiHeaders })
+          ).json()) as ThreadRecord,
+      ),
+    );
   }
 
   await openApp(page);

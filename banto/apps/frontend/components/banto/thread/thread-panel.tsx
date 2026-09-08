@@ -163,6 +163,22 @@ export function ThreadPanel({
     );
   }
 
+  // **中身が揃うまで会話を組み立てない**（改訂・2026-09-07、実測）。
+  // 一覧は要約だけになったので、会話の中身は Project を開いてから届く
+  // ——先に空で組み立ててしまうと、**後から届いても入らない**
+  // （useLocalRuntime は initialMessages を作るときにしか読まない）。
+  // 中身が0件の Thread は `[]` を持つので、「まだ来ていない」と区別がつく。
+  if (thread.real && thread.realMessages === undefined) {
+    return (
+      <div
+        className="flex h-full items-center justify-center text-sm text-ink-3"
+        data-testid="thread-loading"
+      >
+        会話を読み込んでいます…
+      </div>
+    );
+  }
+
   const placeholder =
     thread.kind === "fork"
       ? "この Fork Thread に送る"

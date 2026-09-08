@@ -16,8 +16,14 @@ import { ProjectSettingsOverlay } from "@/components/banto/settings/project-sett
 import { ContextUsageMeter } from "@/components/banto/thread/context-usage-meter";
 import { ThreadActionsMenu } from "@/components/banto/thread/thread-actions-menu";
 import { ThreadPanel, type ThreadMarker } from "@/components/banto/thread/thread-panel";
-import { clearRealThread, createRealFork, getRealThread, prepareRealProjectModules } from "@/lib/backend/client";
-import { getProject } from "@/lib/mock/projects";
+import {
+  clearRealThread,
+  createRealFork,
+  getRealThread,
+  loadRealProjectThreads,
+  prepareRealProjectModules,
+} from "@/lib/backend/client";
+import { getProject, hydrateRealProjects } from "@/lib/mock/projects";
 import { closeThread, getThread, registerRealFork, updateRealThreadData } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
@@ -122,14 +128,34 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
   // （決定・2026-09-07、ユーザー）。最初のターンで待たされず、繋がらないことにも
   // 人が何か打つ前に気づける（繋がらなかったら受信箱にお知らせが出る）。
   // 返事は待たない——用意できていなくても会話は始められる
+  // **開いた Project の会話の中身は、ここで取りに行く**（改訂・2026-09-07、実測）。
+  // 一覧は要約だけになったので、開いていない Project の全会話まで受け取ることは
+  // もう無い（起動時の API 転送 2.88MB のうち 2.875MB がそれだった）。
+  //
+  // **Project がまだ手元に無い瞬間に諦めない**——直接この URL へ来たときは
+  // 一覧の読み込み（hydrate）がまだ終わっていない。先に待ってから確かめる
+  // （実測・2026-09-07：早々に return して二度と取りに行かず、会話が
+  //  「読み込んでいます…」のまま止まった）。hydrate は進行中のものを
+  // 使い回すので、二重には取りに行かない
   useEffect(() => {
-    if (!getProject(projectId)?.real) return;
-    void prepareRealProjectModules(projectId)
-      .then(() => refreshRealInbox())
+    let cancelled = false;
+    void hydrateRealProjects()
+      .then(async () => {
+        if (cancelled || !getProject(projectId)?.real) return;
+        const threads = await loadRealProjectThreads(projectId);
+        if (cancelled) return;
+        for (const t of threads) updateRealThreadData(t.id, t.messages, t.markers, t.usage);
+        // その Project の Module を用意する（決定・2026-09-07）。返事は待たない
+        // ——用意できなければ受信箱にお知らせが出る
+        await prepareRealProjectModules(projectId).then(() => refreshRealInbox());
+      })
       .catch(() => {
-        // 用意できなくても画面は使える。**黙って隠さない**ぶんは host 側の
-        // お知らせが担う（規則2）
+        // 取れなければ会話は出ない。**黙って古いものを見せない**
+        // ——開き直せば取り直す
       });
+    return () => {
+      cancelled = true;
+    };
   }, [projectId]);
 
   function addMarker(threadId: string, kind: ThreadMarker["kind"]) {

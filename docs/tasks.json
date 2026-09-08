@@ -776,7 +776,7 @@
       "id": "perf-bootstrap-overfetch",
       "phase": "1",
       "title": "起動時に、開いていない Project の Thread 一覧まで取りに行かない",
-      "status": "todo",
+      "status": "done",
       "dependencies": [
         "perf-frontend-production-build"
       ],
@@ -784,7 +784,8 @@
       "doneWhen": "初回の fetch 量と操作可能までの時間を、前後で測って並べる。Fork 件数バッジの見え方が変わるなら、その形を決めてから直す。",
       "refs": [
         "docs/notes/2026-09-07-codeblock-freeze-and-latency.md"
-      ]
+      ],
+      "result": "**一覧は目次に徹する**ようにした。`GET /api/projects/:id/threads` が会話の中身（messages/markers/usage）も走行の事情（resume-point・捨てたセッション・文脈使用量の内訳）も返していたため、画面は起動時に**開いてもいない Project の全会話**を受け取っていた。一覧は id・種類・状態・分岐位置・件数・最初と最後の発言だけを返し、中身は開いた Project の分だけ `/api/threads/:id` から取る（同じものを2つの口から返さない、規則3）。**測った結果**（稼働中の実データ・実ブラウザ・各3回）：一覧の転送 2,875KB→17.9KB（−99.4%）、API 転送合計 2,878KB→403KB（残りは開いた Project の中身＝必要な分）、操作可能まで 1.25〜1.52秒→1.00〜1.04秒。途中で2つ踏んだ：①中身は一覧の登録より先に届くと捨てられる（hydrate を待ってから取り込む）②後から届いた中身は会話に入らない（useLocalRuntime は initialMessages を作るときにしか読まない）——**中身が揃うまで会話を組み立てない**形にした。E2E 21件通過。"
     },
     {
       "id": "canvas-open-card",

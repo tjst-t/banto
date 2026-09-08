@@ -65,6 +65,10 @@ export interface MockThread {
      *  Module の画面を出し直すのに使う——無いと画面だけが消える。 */
     uiToolCalls?: readonly RealUiToolCall[];
   }[];
+  /** real:trueのときだけ意味を持つ。**中身をまだ取っていないときの概要**
+   *  （改訂・2026-09-07）——一覧は要約だけを返すので、閉じた Thread の
+   *  「何件のやり取りか」はここから出す。中身を取ったら realMessages が正。 */
+  realOverview?: { messageCount: number; firstMessage: string | null; lastMessage: string | null };
   /** real:trueのときだけ意味を持つ。「Clear」マーカーの表示復元用（決定・2026-09-04）。 */
   realMarkers?: readonly { seq: number; kind: "clear" }[];
   /** real:trueのときだけ意味を持つ。F2/F3——ターンごとの文脈使用量（決定・2026-09-04）。

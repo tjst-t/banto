@@ -218,6 +218,16 @@ export async function listRealProjects(): Promise<RealProject[]> {
  * （決定・2026-09-07、ユーザー）。返事は待たない——用意できたかは
  * 受信箱のお知らせに出る（繋がらなかったとき）。
  */
+/**
+ * **開いた Project の会話の中身を取りに行く**（改訂・2026-09-07、実測）。
+ * 一覧は要約だけなので、開いた時点でその Project の Thread だけ全文を取る
+ * ——起動時に全 Project 分を先取りしていたのをやめた代わりの経路。
+ */
+export async function loadRealProjectThreads(projectId: string): Promise<RealThread[]> {
+  const summaries = await listRealThreads(projectId);
+  return Promise.all(summaries.map((t) => getRealThread(t.id)));
+}
+
 export async function prepareRealProjectModules(projectId: string): Promise<string[]> {
   const res = await request<{ connected: string[] }>(`/api/projects/${projectId}/modules/prepare`, {
     method: "POST",
@@ -225,8 +235,29 @@ export async function prepareRealProjectModules(projectId: string): Promise<stri
   return res.connected;
 }
 
-export async function listRealThreads(projectId: string): Promise<RealThread[]> {
-  return request<RealThread[]>(`/api/projects/${projectId}/threads`);
+/**
+ * **一覧は要約だけ**（改訂・2026-09-07、実測）。会話の中身は入っていない
+ * ——起動時に開いてもいない Project の全会話まで受け取っていた
+ * （API 転送 2.88MB のうち 2.875MB がこれ）。中身は開いたときに
+ * `getRealThread` で取る。
+ */
+export interface RealThreadSummary {
+  id: string;
+  projectId: string;
+  kind: "base" | "fork";
+  parentThreadId?: string;
+  createdSeq?: number;
+  status: "active" | "closed";
+  permissionMode?: MockPermissionModeValue;
+  createdAt: string;
+  /** 閉じた Thread の概要に使う（AI 要約はしない——数えられるものだけ）。 */
+  messageCount: number;
+  firstMessage: string | null;
+  lastMessage: string | null;
+}
+
+export async function listRealThreads(projectId: string): Promise<RealThreadSummary[]> {
+  return request<RealThreadSummary[]>(`/api/projects/${projectId}/threads`);
 }
 
 export async function createRealBaseThread(projectId: string): Promise<RealThread> {

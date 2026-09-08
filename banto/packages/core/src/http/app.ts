@@ -20,6 +20,7 @@ import {
 } from "../project-thread/store.js";
 import type { GlobalMemoryStore } from "../global-memory/store.js";
 import type { InboxStore } from "../inbox/store.js";
+import type { ThreadState } from "../project-thread/types.js";
 import type { ThreadPermissionMode } from "../project-thread/types.js";
 import type { HostRelayEndpoint } from "../relay/host-relay-endpoint.js";
 import type { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
@@ -268,6 +269,33 @@ async function readUiResource(
   };
 }
 
+/** 一覧に出す分だけ（決定・2026-09-07）。**中身（messages/markers/usage）は返さない**
+ *  ——閉じた Thread の概要に要る「件数・最初と最後の発言」は、ここで数えて渡す
+ *  （画面が全文を持たずに済む。AI 要約はしない、§2.2 と同じ姿勢）。 */
+function toThreadSummary(thread: ThreadState) {
+  const texts = thread.messages.map((m) => m.text);
+  const cut = (t: string | undefined) => (t === undefined ? null : t.length > 200 ? `${t.slice(0, 200)}…` : t);
+  // **一覧に要るものだけを、名前で挙げる**（改訂・2026-09-07、実測）。
+  // 「中身以外ぜんぶ」だと、走行の内部事情（resume-point・捨てたセッション・
+  // 文脈使用量の内訳）まで一覧に乗り、要約なのに 1 Project で 166KB あった。
+  // 会話の中身も走行の事情も `/api/threads/:id` が返す——一覧は目次に徹する
+  return {
+    id: thread.id,
+    projectId: thread.projectId,
+    kind: thread.kind,
+    parentThreadId: thread.parentThreadId,
+    /** 親の会話のどこで分岐したか（Fork の入口をその場所に置くのに使う） */
+    createdSeq: thread.createdSeq,
+    status: thread.status,
+    permissionMode: thread.permissionMode,
+    createdAt: thread.createdAt,
+    /** 閉じた Thread の概要（AI 要約はしない——数えられるものだけ、§2.2 と同じ姿勢） */
+    messageCount: thread.messages.length,
+    firstMessage: cut(texts[0]),
+    lastMessage: texts.length > 1 ? cut(texts[texts.length - 1]) : null,
+  };
+}
+
 export function createApp(deps: AppDeps) {
   return createServer(async (req, res) => {
     withCors(res);
@@ -333,7 +361,12 @@ export function createApp(deps: AppDeps) {
 
       const projectThreadsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/threads$/);
       if (projectThreadsMatch && req.method === "GET") {
-        json(res, 200, deps.projectThread.listThreadsForProject(projectThreadsMatch[1]!));
+        // **一覧は要約だけ返す**（改訂・2026-09-07、実測）。会話の中身まで返して
+        // いたため、画面は起動時に**開いてもいない Project の全会話**を受け取って
+        // いた（実測：API 転送 2.88MB のうち 2.875MB がこの一覧）。
+        // 中身が要るのは開いた Thread だけで、それは `/api/threads/:id` が返す
+        // ——同じものを2つの口から返さない（規則3）
+        json(res, 200, deps.projectThread.listThreadsForProject(projectThreadsMatch[1]!).map(toThreadSummary));
         return;
       }
       if (projectThreadsMatch && req.method === "POST") {

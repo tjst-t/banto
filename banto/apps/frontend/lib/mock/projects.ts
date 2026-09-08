@@ -132,7 +132,23 @@ async function hydrateRealProjectsUncached(): Promise<void> {
       real: true,
     };
     projects = [...projects, project];
-    registerRealThread(base.id, rp.id, rp.name, base.messages, base.markers, base.usage);
+    // **中身は持たずに登録する**（改訂・2026-09-07、実測）——一覧は要約だけ。
+    // 開いた Project の中身は project-panels.tsx が取りに行く
+    const overviewOf = (t: (typeof realThreads)[number]) => ({
+      messageCount: t.messageCount,
+      firstMessage: t.firstMessage,
+      lastMessage: t.lastMessage,
+    });
+    registerRealThread(
+      base.id,
+      rp.id,
+      rp.name,
+      undefined,
+      undefined,
+      // 文脈使用量は開いたときに入る（一覧は目次に徹する）
+      undefined,
+      overviewOf(base),
+    );
     // 人が選んだpermissionModeはhostが持っている（決定・2026-09-06）——
     // リロード後もそのモードで会話を続けられるよう、ここで写す
     seedThreadPermissionMode(base.id, base.permissionMode);
@@ -143,11 +159,12 @@ async function hydrateRealProjectsUncached(): Promise<void> {
         fork.id,
         rp.id,
         fork.parentThreadId ?? base.id,
-        fork.messages,
-        fork.markers,
+        undefined,
+        undefined,
         fork.status === "closed" ? "closed" : "open",
-        fork.usage,
+        undefined,
         fork.createdSeq,
+        overviewOf(fork),
       );
       seedThreadPermissionMode(fork.id, fork.permissionMode);
     }

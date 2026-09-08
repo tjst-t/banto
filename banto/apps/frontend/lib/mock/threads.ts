@@ -24,7 +24,14 @@ export interface ThreadOverview {
  */
 export function getThreadOverview(thread: MockThread): ThreadOverview {
   if (thread.real) {
-    const messages = thread.realMessages ?? [];
+    // **中身を取っていれば中身から、まだなら一覧の要約から**（改訂・2026-09-07）。
+    // 一覧は要約だけを返すようにしたので、開いていない Thread はこちらを通る
+    const messages = thread.realMessages;
+    if (!messages) {
+      return (
+        thread.realOverview ?? { messageCount: 0, firstMessage: null, lastMessage: null }
+      );
+    }
     const texts = messages.map((m) => m.text);
     return {
       messageCount: messages.length,
@@ -65,6 +72,8 @@ export function registerRealThread(
   realMessages?: MockThread["realMessages"],
   realMarkers?: MockThread["realMarkers"],
   realUsage?: MockThread["realUsage"],
+  /** 中身をまだ取っていないときの概要（改訂・2026-09-07） */
+  realOverview?: MockThread["realOverview"],
 ): void {
   if (mockThreads.some((t) => t.id === threadId)) return;
   const thread: MockThread = {
@@ -73,6 +82,7 @@ export function registerRealThread(
     kind: "base",
     title: projectName,
     parentThreadId: null,
+    realOverview,
     script: { seed: [], replies: [{ match: "*", steps: [{ t: "text", text: "" }] }] },
     status: "open",
     real: true,
@@ -99,6 +109,8 @@ export function registerRealFork(
   realUsage?: MockThread["realUsage"],
   /** 親の会話のどこで分岐したか（決定・2026-09-07） */
   realCreatedSeq?: number,
+  /** 中身をまだ取っていないときの概要（改訂・2026-09-07） */
+  realOverview?: MockThread["realOverview"],
 ): MockThread {
   const existing = mockThreads.find((t) => t.id === threadId);
   if (existing) return existing;
@@ -110,6 +122,7 @@ export function registerRealFork(
     title: `Fork ${forkCount + 1}`,
     parentThreadId,
     realCreatedSeq,
+    realOverview,
     script: { seed: [], replies: [{ match: "*", steps: [{ t: "text", text: "" }] }] },
     status,
     real: true,
