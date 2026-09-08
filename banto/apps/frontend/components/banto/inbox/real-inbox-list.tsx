@@ -13,8 +13,9 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { FolderGit2 } from "lucide-react";
-import { getRealJudgments, refreshRealInbox, useRealInboxVersion } from "@/lib/backend/real-inbox";
+import { FolderGit2, PlugZap } from "lucide-react";
+import { getRealJudgments, getRealNotices, refreshRealInbox, useRealInboxVersion } from "@/lib/backend/real-inbox";
+import { acknowledgeRealNotice } from "@/lib/backend/client";
 import { getThread } from "@/lib/mock/threads";
 import { getProject } from "@/lib/mock/projects";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
@@ -57,13 +58,50 @@ export function RealInboxList() {
   }, []);
 
   const judgments = getRealJudgments();
+  // **お知らせ**（決定・2026-09-07）——許可/拒否ではなく「知らせるだけ」。
+  // Module が繋がらなかったことは会話に毎ターン出さず、ここに1件だけ出す
+  const notices = getRealNotices();
 
-  if (judgments.length === 0) {
+  if (judgments.length === 0 && notices.length === 0) {
     return <p className="p-3 text-xs text-ink-3">待っているものはありません</p>;
   }
 
   return (
     <div ref={containerRef} onKeyDown={onKeyDown} className="flex min-h-0 flex-1 flex-col overflow-auto p-3">
+      {notices.map((notice) => {
+        const project = notice.projectId ? getProject(notice.projectId) : null;
+        return (
+          <div
+            key={notice.id}
+            data-testid="inbox-notice"
+            className="flex items-start gap-2.5 border-b border-border py-3 last:border-b-0"
+          >
+            <PlugZap className="mt-0.5 size-4 shrink-0 text-stop" />
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-1.5 text-xs text-ink-3">
+                <FolderGit2 className="size-3" />
+                {project?.name ?? "banto 全体"}
+                <span aria-hidden>·</span>
+                {age(notice.createdAt, now)}
+              </span>
+              <span className="mt-0.5 block text-sm text-foreground">{notice.title}</span>
+              <span className="mt-0.5 block text-xs text-ink-3">{notice.detail}</span>
+            </span>
+            <button
+              type="button"
+              data-roving-item
+              onClick={() => {
+                // **見たことにする**——直したかどうかは host が次に繋ぐときに分かる
+                // （宣言が変われば、また試す）。ここで再試行の口は作らない（規則3）
+                void acknowledgeRealNotice(notice.id).then(() => refreshRealInbox());
+              }}
+              className="shrink-0 rounded-md border border-border px-2 py-0.5 text-xs text-ink-2 hover:bg-accent"
+            >
+              確認した
+            </button>
+          </div>
+        );
+      })}
       {judgments.map((item) => {
         const thread = getThread(item.threadId);
         const project = thread ? getProject(thread.projectId) : null;

@@ -21,7 +21,12 @@ export type InboxEvent =
   | { type: "inbox.judgment_answered"; payload: { id: string; answer: unknown } }
   | { type: "inbox.judgment_timed_out"; payload: { id: string } }
   | { type: "inbox.review_raised"; payload: { id: string; threadId: string; summary: string } }
-  | { type: "inbox.review_acknowledged"; payload: { id: string } };
+  | { type: "inbox.review_acknowledged"; payload: { id: string } }
+  | {
+      type: "inbox.notice_raised";
+      payload: { id: string; projectId?: string; dedupeKey: string; title: string; detail: string };
+    }
+  | { type: "inbox.notice_acknowledged"; payload: { id: string } };
 
 export const inboxFold: Fold<InboxReadModel> = {
   initial: () => ({ items: new Map() }),
@@ -79,6 +84,26 @@ export const inboxFold: Fold<InboxReadModel> = {
       case "inbox.review_acknowledged": {
         const existing = items.get(event.payload.id);
         if (existing && existing.kind === "review") {
+          items.set(existing.id, { ...existing, acknowledged: true });
+        }
+        return { items };
+      }
+      case "inbox.notice_raised": {
+        items.set(event.payload.id, {
+          kind: "notice",
+          id: event.payload.id,
+          projectId: event.payload.projectId,
+          dedupeKey: event.payload.dedupeKey,
+          title: event.payload.title,
+          detail: event.payload.detail,
+          acknowledged: false,
+          createdAt: raw.ts,
+        });
+        return { items };
+      }
+      case "inbox.notice_acknowledged": {
+        const existing = items.get(event.payload.id);
+        if (existing && existing.kind === "notice") {
           items.set(existing.id, { ...existing, acknowledged: true });
         }
         return { items };

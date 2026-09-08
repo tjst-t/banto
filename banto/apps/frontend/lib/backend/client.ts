@@ -189,7 +189,21 @@ export interface RealInboxReview {
   createdAt: string;
 }
 
-export type RealInboxItem = RealInboxJudgment | RealInboxReview;
+/** お知らせ（決定・2026-09-07）——許可/拒否を求めないが、人に伝えたいこと。
+ *  最初の用途は「Module を繋げなかった」。 */
+export interface RealInboxNotice {
+  kind: "notice";
+  id: string;
+  /** 無い＝banto 全体（instance に1本の Module） */
+  projectId?: string;
+  dedupeKey: string;
+  title: string;
+  detail: string;
+  acknowledged: boolean;
+  createdAt: string;
+}
+
+export type RealInboxItem = RealInboxJudgment | RealInboxReview | RealInboxNotice;
 
 export async function createRealProject(name: string, root: string): Promise<RealProject> {
   return request<RealProject>("/api/projects", { method: "POST", body: JSON.stringify({ name, root }) });
@@ -197,6 +211,18 @@ export async function createRealProject(name: string, root: string): Promise<Rea
 
 export async function listRealProjects(): Promise<RealProject[]> {
   return request<RealProject[]>("/api/projects");
+}
+
+/**
+ * **Project を開いたら、その Project の Module を先に用意する**
+ * （決定・2026-09-07、ユーザー）。返事は待たない——用意できたかは
+ * 受信箱のお知らせに出る（繋がらなかったとき）。
+ */
+export async function prepareRealProjectModules(projectId: string): Promise<string[]> {
+  const res = await request<{ connected: string[] }>(`/api/projects/${projectId}/modules/prepare`, {
+    method: "POST",
+  });
+  return res.connected;
 }
 
 export async function listRealThreads(projectId: string): Promise<RealThread[]> {
@@ -281,6 +307,11 @@ export async function reopenRealProject(projectId: string): Promise<void> {
 
 export async function listRealInbox(): Promise<RealInboxItem[]> {
   return request<RealInboxItem[]>("/api/inbox");
+}
+
+/** お知らせを「見た」ことにする（決定・2026-09-07）。 */
+export async function acknowledgeRealNotice(id: string): Promise<void> {
+  await request(`/api/inbox/${id}/acknowledge`, { method: "POST" });
 }
 
 export async function answerRealInboxItem(id: string, answer: unknown): Promise<void> {

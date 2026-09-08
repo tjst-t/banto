@@ -21,9 +21,15 @@
 // subscribe パターンに集める（規則3）。
 
 import { useSyncExternalStore } from "react";
-import { listRealInbox, getBackendConfig, type RealInboxJudgment } from "./client";
+import {
+  listRealInbox,
+  getBackendConfig,
+  type RealInboxJudgment,
+  type RealInboxNotice,
+} from "./client";
 
 let items: readonly RealInboxJudgment[] = [];
+let notices: readonly RealInboxNotice[] = [];
 let snapshotVersion = 0;
 const listeners = new Set<() => void>();
 function emit(): void {
@@ -37,6 +43,12 @@ export function getRealJudgments(): readonly RealInboxJudgment[] {
   return items;
 }
 
+/** いま出ているお知らせ（決定・2026-09-07）。判断待ちと違い、答えるものではない
+ *  ——「見た」と言えば消える。 */
+export function getRealNotices(): readonly RealInboxNotice[] {
+  return notices;
+}
+
 /** hostから取り直す。ポーリングの間隔を待たずに反映したいとき（ターン中に
  *  判断待ちが発生した直後など）に呼ぶ。 */
 export async function refreshRealInbox(): Promise<void> {
@@ -46,9 +58,16 @@ export async function refreshRealInbox(): Promise<void> {
     const next = all.filter(
       (i): i is RealInboxJudgment => i.kind === "judgment" && i.liveness === "live",
     );
+    const nextNotices = all.filter(
+      (i): i is RealInboxNotice => i.kind === "notice" && !i.acknowledged,
+    );
     // 同じ内容なら通知しない——毎5秒の再描画で入力中のフォーム等を揺らさない
-    if (sameIds(items, next)) return;
+    const noticesChanged =
+      nextNotices.length !== notices.length ||
+      nextNotices.some((n, i) => n.id !== notices[i]!.id);
+    if (sameIds(items, next) && !noticesChanged) return;
     items = next;
+    notices = nextNotices;
     emit();
   } catch {
     // hostが落ちている・トークンが違う等。**受信箱を空にしない**——直前に

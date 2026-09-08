@@ -129,6 +129,62 @@ async function main(): Promise<void> {
   // 待ちを延ばして誤魔化さない（規則6）——同時に来たものは同じ1本を待つ。
   const moduleSpawns = new SingleFlight<string>();
 
+  /**
+   * **繋げなかったことを覚えておく**（決定・2026-09-07、ユーザー報告）。
+   *
+   * 以前は失敗を残していなかったので、**人が発言するたびに同じ起動を試して
+   * 同じように落ち**、会話に毎ターン同じエラーが出ていた。しかも一覧を組み立てる
+   * 途中で例外になるため、**1本の設定ミスでその Project の会話が丸ごと止まった**。
+   *
+   * 覚える鍵は宣言の中身（指紋）。**宣言が変われば、また試す**——人が直したのに
+   * 「壊れている」と言い続けないため。安全側（繋がない・黙って緩めない）は
+   * そのまま：失敗した Module は**繋がない**。
+   */
+  const moduleFailures = new Map<string, { fingerprint: string; reason: string }>();
+
+  function declarationFingerprint(declaration: ParsedModuleDeclaration): string {
+    return JSON.stringify({ launch: declaration.launch, meta: declaration.meta });
+  }
+
+  /**
+   * 繋ぐ。**繋がらなくても投げない**——呼び出し側は「繋がったものだけ」で進める。
+   * 繋がらなかったことは状態に残し、人には受信箱のお知らせで1回だけ伝える。
+   */
+  async function connectDeclaredModule(
+    declaration: ParsedModuleDeclaration,
+    forProject?: { id: string; root: string },
+  ): Promise<string | undefined> {
+    const connName =
+      declaration.meta.scope === "project" && forProject
+        ? `${declaration.name}-${forProject.id}`
+        : declaration.name;
+    const fingerprint = declarationFingerprint(declaration);
+    const failed = moduleFailures.get(connName);
+    if (failed && failed.fingerprint === fingerprint) return undefined;
+    if (failed) moduleFailures.delete(connName); // 宣言が変わった——もう一度試す
+
+    try {
+      return await spawnDeclaredModule(declaration, forProject);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      moduleFailures.set(connName, { fingerprint, reason });
+      console.warn(`[host] ${connName} を繋げませんでした: ${reason}`);
+      // **人が気づける場所を1つ作る**（規則2——黙って機能を減らさない）。
+      // 会話には出さない（毎ターン混ざるのを止めるのがこの作業の目的）
+      void inbox
+        .raiseNotice({
+          projectId: declaration.meta.scope === "project" ? forProject?.id : undefined,
+          dedupeKey: `module-connect:${connName}`,
+          title: `${declaration.name} を繋げませんでした`,
+          detail: reason,
+        })
+        .catch((noticeErr: unknown) => {
+          console.warn("[host] お知らせを出せませんでした:", noticeErr);
+        });
+      return undefined;
+    }
+  }
+
   async function spawnDeclaredModule(
     declaration: ParsedModuleDeclaration,
     /** instance に1本の Module は Project がなくても起動できる（決定・2026-09-07）。 */
@@ -279,9 +335,12 @@ async function main(): Promise<void> {
     // 順番に待っており、Project で最初に Module へ触れる操作（＝最初のターン）が
     // 中央値1.5秒・最悪2.2秒かかっていた。Module 同士は起動順に依存しない
     // ——`dependsOn` は中継の宛先を決めるためのもので、起動の前後関係ではない
-    return await Promise.all(
+    const endpoints: Array<ModuleEndpoint | undefined> = await Promise.all(
       loadModuleDeclarations(runtimeConfig, project.id).map(async (declaration) => {
-        const connName = await spawnDeclaredModule(declaration, project);
+        const connName = await connectDeclaredModule(declaration, project);
+        // **繋がらなかったものは黙って落とす**のではなく、繋がったものだけで進める
+        // ——落ちた事実は moduleFailures と受信箱のお知らせに残っている
+        if (!connName) return undefined;
         // Runnerに見せる名前（mcp__<name>__...）は宣言の名前のまま——
         // どのProjectか、という区別はURL側（agent-relay内部の登録名）だけに閉じる。
         return {
@@ -291,6 +350,7 @@ async function main(): Promise<void> {
         };
       }),
     );
+    return endpoints.filter((e): e is ModuleEndpoint => e !== undefined);
   }
 
   /** Module の画面（MCP Apps）を出すための経路（決定・2026-09-06、§6.2）。
@@ -310,12 +370,16 @@ async function main(): Promise<void> {
     // ここも同時に起こす（上の resolveModulesForThread と同じ理由）
     const spawned = await Promise.all(
       loadModuleDeclarations(runtimeConfig, project.id).map(async (declaration) => {
-        const connName = await spawnDeclaredModule(declaration, project);
+        const connName = await connectDeclaredModule(declaration, project);
         // 名前は宣言のもの——画面から見える名前が Project ごとにぶれない。
         // scope も返す——**設定をどちらの画面に出すかは Module の scope が決める**
         // （instance に1本の Module の設定を Project ごとに出すのはおかしい、
         // 決定・2026-09-07、ユーザー指摘）
-        return { name: declaration.name, client: connectedModules.get(connName), scope: declaration.meta.scope };
+        return {
+          name: declaration.name,
+          client: connName ? connectedModules.get(connName) : undefined,
+          scope: declaration.meta.scope,
+        };
       }),
     );
     return spawned.filter(
@@ -337,8 +401,12 @@ async function main(): Promise<void> {
       loadModuleDeclarations(runtimeConfig, "")
         .filter((declaration) => declaration.meta.scope === "instance")
         .map(async (declaration) => {
-          const connName = await spawnDeclaredModule(declaration);
-          return { name: declaration.name, client: connectedModules.get(connName), scope: "instance" as const };
+          const connName = await connectDeclaredModule(declaration);
+          return {
+            name: declaration.name,
+            client: connName ? connectedModules.get(connName) : undefined,
+            scope: "instance" as const,
+          };
         }),
     );
     return spawned.filter(
@@ -400,6 +468,14 @@ async function main(): Promise<void> {
 
   app.listen(bootstrap.port, "0.0.0.0", () => {
     console.log(`[host] listening on http://0.0.0.0:${bootstrap.port}/ (token=${bootstrap.authToken})`);
+  });
+
+  // **banto 全体で1本の Module は、起動したときに繋ぐ**（決定・2026-09-07、ユーザー）。
+  // 以前は「最初に必要になった要求」まで待っていたので、繋がらないことに気づくのが
+  // 人が何かを打った後になっていた。口を開けてから繋ぐ——繋がらなくても host は動く
+  // （繋がった Module だけで進む・お知らせは受信箱に出る）。
+  void resolveInstanceModuleClients().catch((err: unknown) => {
+    console.warn("[host] instance の Module を用意できませんでした:", err);
   });
 }
 

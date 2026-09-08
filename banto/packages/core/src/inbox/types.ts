@@ -37,7 +37,32 @@ export interface ReviewItem {
   createdAt: string;
 }
 
-export type InboxItem = JudgmentItem | ReviewItem;
+/**
+ * **お知らせ**——人に伝えたいが、許可/拒否を求めるものではないもの
+ * （決定・2026-09-07、`module-connect-failure-surface`）。
+ *
+ * 最初の用途は「Module を繋げなかった」。判断待ち（judgment）は
+ * **止まっているものを人が動かす**ためのもの、レビュー待ち（review）は
+ * Factory の成果物を見るためのもので、どちらもここには当てはまらない
+ * ——語の意味を曲げて相乗りさせない（規則11）。
+ *
+ * **Project 単位**（Thread ではない）。Module は Project に繋がるものなので、
+ * どの会話で気づいたかは本質ではない。
+ */
+export interface NoticeItem {
+  kind: "notice";
+  id: InboxItemId;
+  /** どの Project の話か。**無い＝banto 全体**（instance に1本の Module 等）。 */
+  projectId?: string;
+  /** 同じことを何度も積まないための鍵（例：`module-connect:filesystem`）。 */
+  dedupeKey: string;
+  title: string;
+  detail: string;
+  acknowledged: boolean;
+  createdAt: string;
+}
+
+export type InboxItem = JudgmentItem | ReviewItem | NoticeItem;
 
 export interface InboxReadModel {
   items: Map<InboxItemId, InboxItem>;

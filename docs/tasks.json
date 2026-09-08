@@ -655,9 +655,9 @@
     },
     {
       "id": "module-connect-failure-surface",
-      "phase": "1以降",
+      "phase": "1",
       "title": "Module が繋がらないことの伝え方——毎ターン会話にエラーを出さない",
-      "status": "pending",
+      "status": "done",
       "dependencies": [
         "phase1-module-selfreport"
       ],
@@ -673,7 +673,8 @@
         "docs/notes/2026-09-06-module-declaration.md",
         "docs/specs/v4-modules.md §4.9"
       ],
-      "note": "見せ方は Module の管理画面（phase1-project-modules-ui）と一緒に決めるのが自然。ただし**判断待ちに出すだけなら先にできる**——受信箱は実データに繋がっている。"
+      "note": "見せ方は Module の管理画面（phase1-project-modules-ui）と一緒に決めるのが自然。ただし**判断待ちに出すだけなら先にできる**——受信箱は実データに繋がっている。",
+      "result": "**起動の時期を決めた**（未決だった）：banto 全体で1本の Module は host 起動時、Project ごとの Module は**その Project を開いたとき**（画面が `modules/prepare` を投げる）。仕組みは遅延起動＋single-flight のままで、きっかけを足しただけ。**繋がらなかったときは止めない**——繋がった Module だけでターンを進め、失敗は状態として持つ（鍵は宣言の中身。同じ宣言なら投げ直さない、宣言が変われば また試す）。**会話には出さない**。人が気づく場所は受信箱の**お知らせ（notice）**1つにした——判断待ち（答えを求める）でもレビュー待ち（成果物の確認）でもないので、語の意味を曲げず新しい種類にした（規則11）。同じ鍵のものが未確認なら積み増さない。測った結果：core 単体 111件、E2E で「filesystem だけ繋がらない Project」を作り、2ターン会話しても会話にエラーが出ない・会話は進む（shell は繋がる）・受信箱に1件だけ・確認したら消える、を確認。"
     },
     {
       "id": "ui-codeblock-cjk",
@@ -760,13 +761,14 @@
       "id": "perf-frontend-production-build",
       "phase": "1",
       "title": "画面を本番ビルドで出す（体感の最大要因を切り分ける）",
-      "status": "todo",
+      "status": "done",
       "dependencies": [],
       "why": "実測（2026-09-07、実ブラウザ）：初回の操作可能まで5.8秒・long task 合計3.4秒、Project 切り替え1.8秒、Fork を開く2.6秒。**いま稼働中の画面は `next dev`**（未 minify の JS 4.6MB・React の dev ビルド）なので、「dev だから遅い分」と「本番でも遅い分」が分けられていない。",
       "doneWhen": "本番ビルドで同じ項目を測り直し、数値を並べて記録する。残った分について次の手を決める。",
       "refs": [
         "docs/notes/2026-09-07-codeblock-freeze-and-latency.md"
-      ]
+      ],
+      "result": "同じ物差し（同じスクリプト・静かな機械・各5回）で dev と本番ビルドを並べた：初回の操作可能まで 2.39s→0.97s、リロード 1.42s→0.49s、long task 合計 1.11s→0.34s、転送量 2.8MB→1.53MB。**体感の主因は開発モードだった**。稼働中の 4175 を本番ビルド（`npm run build` + `npm run start`）に切り替えた（ユーザー判断——同じポートで起こし直せば Caddy は無変更）。**画面を直したら build して起動し直す**（E2E も同じ口を使うので `e2e/config.ts` に明記）。測り方は `e2e/perf-probe.mjs` に残した。Project 切り替えだけ本番のほうが 0.08秒 遅い（`/p/[projectId]` が都度サーバ描画のためと推測、未計測）。"
     },
     {
       "id": "perf-bootstrap-overfetch",

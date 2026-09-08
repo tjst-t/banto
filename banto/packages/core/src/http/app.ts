@@ -319,6 +319,18 @@ export function createApp(deps: AppDeps) {
         return;
       }
 
+      // **Project を開いたら、その Project の Module を先に用意する**
+      // （決定・2026-09-07、ユーザー）。返事を待たずに投げる想定の口だが、
+      // 用意できたかどうかは返す——画面が「繋がっていない」を出せるように。
+      // 仕組みは遅延起動のまま（同じものは single-flight で1本に潰れる）で、
+      // **きっかけを1つ足しただけ**（規則3——別の起動経路を作らない）
+      const prepareMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/modules\/prepare$/);
+      if (prepareMatch && req.method === "POST") {
+        const clients = (await deps.resolveModuleClientsForProject?.(prepareMatch[1]!)) ?? [];
+        json(res, 200, { connected: clients.map((c) => c.name) });
+        return;
+      }
+
       const projectThreadsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/threads$/);
       if (projectThreadsMatch && req.method === "GET") {
         json(res, 200, deps.projectThread.listThreadsForProject(projectThreadsMatch[1]!));
@@ -737,6 +749,17 @@ export function createApp(deps: AppDeps) {
         json(res, 200, deps.inbox.listOpen());
         return;
       }
+      // お知らせを「見た」ことにする（決定・2026-09-07）。答えるものではないので
+      // answer とは別の口——「決着させる」のと「読んだ」を混ぜない
+      const inboxAckMatch = url.pathname.match(/^\/api\/inbox\/([^/]+)\/acknowledge$/);
+      if (inboxAckMatch && req.method === "POST") {
+        const item = deps.inbox.get(inboxAckMatch[1]!);
+        if (!item || item.kind !== "notice") return json(res, 404, { error: "not found" });
+        await deps.inbox.acknowledgeNotice(item.id);
+        json(res, 200, { ok: true });
+        return;
+      }
+
       const inboxAnswerMatch = url.pathname.match(/^\/api\/inbox\/([^/]+)\/answer$/);
       if (inboxAnswerMatch && req.method === "POST") {
         const id = inboxAnswerMatch[1]!;

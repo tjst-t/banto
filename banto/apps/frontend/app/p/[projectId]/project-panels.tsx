@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import { ArrowLeft, Clock, ExternalLink, GitFork, GitMerge, Maximize2, Minimize2, Settings, X } from "lucide-react";
 import { toast } from "sonner";
@@ -9,13 +9,14 @@ import { useMounted } from "@/hooks/use-mounted";
 import { CanvasContent } from "@/components/banto/canvas/canvas-content";
 import { ModuleCanvas } from "@/components/banto/canvas/module-canvas";
 import { getRealInlineView } from "@/lib/backend/adapter";
+import { refreshRealInbox } from "@/lib/backend/real-inbox";
 import { PanelStack } from "@/components/banto/shell/panel-stack";
 import { usePanelStack } from "@/components/banto/shell/use-panel-stack";
 import { ProjectSettingsOverlay } from "@/components/banto/settings/project-settings-overlay";
 import { ContextUsageMeter } from "@/components/banto/thread/context-usage-meter";
 import { ThreadActionsMenu } from "@/components/banto/thread/thread-actions-menu";
 import { ThreadPanel, type ThreadMarker } from "@/components/banto/thread/thread-panel";
-import { clearRealThread, createRealFork, getRealThread } from "@/lib/backend/client";
+import { clearRealThread, createRealFork, getRealThread, prepareRealProjectModules } from "@/lib/backend/client";
 import { getProject } from "@/lib/mock/projects";
 import { closeThread, getThread, registerRealFork, updateRealThreadData } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
@@ -116,6 +117,20 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
   // クライアント側の初回マウントが済むまでは何も描画せず、SSR出力と
   // 完全に一致させることでmismatch自体を起こさない
   const mounted = useMounted();
+
+  // **Project を開いたら、その Project の Module を先に用意する**
+  // （決定・2026-09-07、ユーザー）。最初のターンで待たされず、繋がらないことにも
+  // 人が何か打つ前に気づける（繋がらなかったら受信箱にお知らせが出る）。
+  // 返事は待たない——用意できていなくても会話は始められる
+  useEffect(() => {
+    if (!getProject(projectId)?.real) return;
+    void prepareRealProjectModules(projectId)
+      .then(() => refreshRealInbox())
+      .catch(() => {
+        // 用意できなくても画面は使える。**黙って隠さない**ぶんは host 側の
+        // お知らせが担う（規則2）
+      });
+  }, [projectId]);
 
   function addMarker(threadId: string, kind: ThreadMarker["kind"]) {
     setMarkersByThread((prev) => ({

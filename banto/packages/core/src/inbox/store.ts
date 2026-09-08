@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { EventLog } from "../event-store/log.js";
 import { SnapshotProjection } from "../event-store/snapshot.js";
 import { inboxFold } from "./fold.js";
-import type { InboxItem, JudgmentItem, JudgmentSource, ReviewItem } from "./types.js";
+import type { InboxItem, JudgmentItem, JudgmentSource, NoticeItem, ReviewItem } from "./types.js";
 
 export class InboxStore {
   private readonly projection: SnapshotProjection<ReturnType<typeof inboxFold.initial>>;
@@ -25,8 +25,11 @@ export class InboxStore {
       (i): i is JudgmentItem => i.kind === "judgment" && i.liveness !== "answered",
     );
     const reviews = all.filter((i): i is ReviewItem => i.kind === "review" && !i.acknowledged);
+    // お知らせは判断待ちの次、レビューの前——**止まっているものが先**（§2.4）だが、
+    // 「Module が繋がっていない」は放っておくと静かに機能が減るので、レビューより前
+    const notices = all.filter((i): i is NoticeItem => i.kind === "notice" && !i.acknowledged);
     const byNewest = (a: InboxItem, b: InboxItem) => b.createdAt.localeCompare(a.createdAt);
-    return [...judgments.sort(byNewest), ...reviews.sort(byNewest)];
+    return [...judgments.sort(byNewest), ...notices.sort(byNewest), ...reviews.sort(byNewest)];
   }
 
   get(id: string): InboxItem | undefined {
@@ -82,6 +85,33 @@ export class InboxStore {
     const event = await this.log.append("inbox.review_raised", { id, ...input });
     this.projection.applyOne(event);
     return this.get(id) as ReviewItem;
+  }
+
+  /**
+   * お知らせを1件出す（決定・2026-09-07）。**同じ鍵のものが未確認で残っていれば
+   * 積み増さない**——「毎ターン同じことが出る」を止めるのがこの入れ物の目的。
+   * 既にあるものを返す（何も書かない）。
+   */
+  async raiseNotice(input: {
+    projectId?: string;
+    dedupeKey: string;
+    title: string;
+    detail: string;
+  }): Promise<NoticeItem> {
+    const open = this.listOpen().find(
+      (i): i is NoticeItem =>
+        i.kind === "notice" && i.projectId === input.projectId && i.dedupeKey === input.dedupeKey,
+    );
+    if (open) return open;
+    const id = randomUUID();
+    const event = await this.log.append("inbox.notice_raised", { id, ...input });
+    this.projection.applyOne(event);
+    return this.get(id) as NoticeItem;
+  }
+
+  async acknowledgeNotice(id: string): Promise<void> {
+    const event = await this.log.append("inbox.notice_acknowledged", { id });
+    this.projection.applyOne(event);
   }
 
   async acknowledgeReview(id: string): Promise<void> {
