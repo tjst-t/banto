@@ -140,3 +140,29 @@ JS 4.6MB・React の dev ビルド）で測っている。**本番ビルドで�
 - Project 切り替えだけ本番のほうが遅い。`/p/[projectId]` が「都度サーバ描画」
   （ビルド出力の `ƒ`）なので、切り替えのたびにサーバへ取りに行くためと**推測**
   ——まだ測っていない。次に触るときの手がかりとして残す
+
+---
+
+## 3. `global-memory-mid-thread-delivery`——起票が古かった（2026-09-07）
+
+起票（2026-09-06）は「Global Memory には、Project Memory のような『確定より後に
+増えた分をターンに添える』仕組みが**無い**」としていた。いまのコードは違う：
+`http/turn-runner.ts` が `splitMemory(globalMemory.list(), memoryBaselineSeq,
+memoryDeliveredSeq)` を通し、**Project Memory と同じ1つの規律**でターンに添えている
+（`project-thread/memory-split.ts`——「同じ規則を2箇所に書かない」）。
+
+**読んで「直っている」と決めず、完了条件をそのまま測った**（規則1）：
+
+- 1ターン会話して **resume-point が立っている**（＝system prompt が固定される状況）
+  ことを確かめてから、
+- **後から** Global Memory に一意な合言葉を足し、
+- 次のターンで **AI がその合言葉を答える**ことを確認した
+- あわせて `memoryDeliveredSeq` が進むこと（＝差分として届けた記録が残り、
+  毎ターン同じものを繰り返さない）も見た
+
+→ **直す変更は無し。回帰テストだけ残した**（`e2e/specs/global-memory-mid-thread.spec.ts`）。
+同じ疑いが起きたときに、また一から測り直さないため。
+
+**教訓**：起票の「why」は書いた時点の観測であって、いまの実装の説明ではない。
+**着手前に、その前提がまだ生きているかを測る**——このセッションでは
+「Module はターンを始める瞬間に起動する」でも同じ食い違いを踏んだ（規則8）。

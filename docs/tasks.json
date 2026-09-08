@@ -717,16 +717,18 @@
     },
     {
       "id": "global-memory-mid-thread-delivery",
-      "phase": "1以降",
+      "phase": "1",
       "title": "Global Memory が走行中の会話に届かない",
-      "status": "pending",
+      "status": "done",
       "dependencies": [],
       "why": "Global Memory は system prompt に入るが、**resume 中のセッションでは system prompt が固定されている**ため、後から足しても、その Thread の会話には届かない（次に Clear するか新しい Thread を始めるまで効かない）。実測・2026-09-06（キャッシュ計測の副産物——足した直後のターンでキャッシュが落ちないことから判明）。Project の Memory には「確定より後に増えた分はターンに添えて届ける」仕組みがある（§2.3）が、**Global Memory には同じ仕組みが無い**。人の名前のような『すぐ効いてほしい』ものが、黙って効かないのは規則2に近い。",
       "doneWhen": "走行中の Thread に Global Memory を足したら、その次のターンで AI がそれを知っていることを実測する。",
       "refs": [
         "docs/notes/2026-09-06-cache-measurement.md",
-        "docs/specs/v4-architecture.md §2.2・§2.3"
-      ]
+        "docs/specs/v4-architecture.md §2.2・§2.3",
+        "banto/e2e/specs/global-memory-mid-thread.spec.ts"
+      ],
+      "result": "**起票の前提が古くなっていた**（実測・2026-09-07）。起票時（2026-09-06）は「Global Memory には『確定より後に増えた分をターンに添える』仕組みが無い」としていたが、いまの `turn-runner.ts` は `splitMemory(globalMemory.list(), memoryBaselineSeq, memoryDeliveredSeq)` を通し、Project Memory と**同じ1つの規律**でターンに添えている（`memory-split.ts`）。**読んで決めず、完了条件をそのまま測った**：E2E `global-memory-mid-thread.spec.ts` で、1ターン会話して resume-point が立った Thread に**後から**Global Memory（一意な合言葉）を足し、次のターンで AI がその合言葉を答えることを確認。あわせて `memoryDeliveredSeq` が進む（＝差分として届けた記録が残り、毎ターン繰り返さない）ことも見ている。**直す変更は無し。回帰だけ残した**——同じ疑いが起きたとき、また一から測り直さないため。"
     },
     {
       "id": "module-declaration-overlay",
