@@ -39,11 +39,31 @@ export class EventLog {
   }
 
   private async readLastSeq(): Promise<number> {
+    // **最後の seq を知るためだけに、全行を JSON に戻さない**（実測・2026-09-07
+    // ——起動時、各 store が独立にログ全文を読み直しており、3.2万件で
+    // 数百 ms〜1秒が seq を数えるためだけに費やされていた）
     let last = 0;
-    for await (const ev of this.readFrom(0)) {
-      last = ev.seq;
+    for await (const line of this.readLines()) {
+      const seq = seqOfLine(line);
+      last = seq ?? (JSON.parse(line) as StoredEvent).seq;
     }
     return last;
+  }
+
+  private async *readLines(): AsyncIterable<string> {
+    if (!existsSync(this.logPath)) return;
+    const rl = createInterface({
+      input: createReadStream(this.logPath, { encoding: "utf8" }),
+      crlfDelay: Infinity,
+    });
+    try {
+      for await (const line of rl) {
+        if (line.trim() === "") continue;
+        yield line;
+      }
+    } finally {
+      rl.close();
+    }
   }
 
   /** イベントを1件追記する。返り値は実際に書き込んだ seq 付きイベント。 */
@@ -73,23 +93,25 @@ export class EventLog {
 
   /** afterSeq より後のイベントを順に読む。ファイルが無ければ何も返さない。 */
   async *readFrom(afterSeq: number): AsyncIterable<StoredEvent> {
-    if (!existsSync(this.logPath)) return;
-    const rl = createInterface({
-      input: createReadStream(this.logPath, { encoding: "utf8" }),
-      crlfDelay: Infinity,
-    });
-    try {
-      for await (const line of rl) {
-        if (line.trim() === "") continue;
-        const event = JSON.parse(line) as StoredEvent;
-        if (event.seq > afterSeq) yield event;
-      }
-    } finally {
-      rl.close();
+    for await (const line of this.readLines()) {
+      // **要らない行は JSON にしない**（改訂・2026-09-07、実測）。
+      // スナップショットがある起動では読み飛ばす行のほうが圧倒的に多く、
+      // その全部を JSON.parse してから捨てていた。seq は行の先頭に書かれて
+      // いるので、そこだけ見て判断する——形が違う行は今までどおり parse する
+      const seq = seqOfLine(line);
+      if (seq !== null && seq <= afterSeq) continue;
+      const event = JSON.parse(line) as StoredEvent;
+      if (event.seq > afterSeq) yield event;
     }
   }
 
   currentSeq(): number {
     return this.seqCounter;
   }
+}
+
+/** 1行の先頭にある `seq`。この形で書いていない行（手で足したもの等）は null。 */
+function seqOfLine(line: string): number | null {
+  const m = /^\{"seq":(\d+)/.exec(line);
+  return m ? Number(m[1]) : null;
 }

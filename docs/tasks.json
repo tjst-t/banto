@@ -21,7 +21,7 @@
     "status: pending（未着手） / in_progress / done / backlog（やると決めたが順番待ち）",
     "        / undecided（やるかどうかがまだ決まっていない——specs の未決に対応）"
   ],
-  "updatedAt": "2026-09-06",
+  "updatedAt": "2026-09-07",
   "currentPhase": "1",
   "tasks": [
     {
@@ -677,9 +677,9 @@
     },
     {
       "id": "ui-codeblock-cjk",
-      "phase": "4",
+      "phase": "1",
       "title": "AI の返事のコードブロックが、途中で更新を止める（日本語が消えて見える）",
-      "status": "todo",
+      "status": "done",
       "dependencies": [],
       "why": "**切り分け済み（実測・2026-09-07）。犯人は描画側。**\nhost には全文が記録されているのに、画面のコードブロックだけが途中で止まる：\n  [HOST] \"```\\n中は読める1788745124738\\n```\"\n  [DOM]  [\"中は読める178\\n\"]\n止まる位置は毎回違う（`中` / `中は読める1` / `中は読める178`）ので**日本語固有ではない**——ストリーミング中に**そのコードブロックだけが更新を止める**。**止まった後に来た段落は正しく描けている**ので、通信で落ちているのではない。当初の報告（日本語が表示されない）は、日本語が先頭にあったためそう見えていた。\nE2E `shell-confinement` がフルスイートで**約3回に1回**これで落ちる（単体では再現しない——他の spec と一緒に走らせたときだけ）。**テストを緩めない**——本物の不具合を隠すことになる（規則6）。",
       "scope": [
@@ -691,8 +691,10 @@
       "refs": [
         "banto/apps/frontend/components/assistant-ui/elements/markdown-text.tsx",
         "banto/node_modules/@assistant-ui/react-markdown/dist/memoization.js",
-        "docs/notes/2026-09-06-mcp-apps-official-bridge.md（切り分けの経緯）"
-      ]
+        "docs/notes/2026-09-06-mcp-apps-official-bridge.md（切り分けの経緯）",
+        "docs/notes/2026-09-07-codeblock-freeze-and-latency.md"
+      ],
+      "result": "犯人は**描画の memo 化**だった（実測・2026-09-07）。落ちた瞬間に「host の全文」「ランタイムが持っている生の文字」「コードブロックを描く component が受け取った文字」を同時に採る形にして再現させたところ、[HOST] 全文あり／[PART] len=72 status=complete（ランタイムも全文を持っている）／[CODE] shown=4「中は読\\n」——**コードブロックの部分木だけが最初の4文字のまま描き直されていなかった**。後ろの段落は正しく描けている。原因は `unstable_memoizeMarkdownComponents` の比較が `node`（構文木）しか見ないこと——**コードブロックの中身は `node` ではなく props で渡る**（CodeOverride が `<Pre><Code node>{code}</Code></Pre>` に組み替える）ため、中身が増えても「変わっていない」と判定されていた。1度に全文が届いた回は正しく出るので間欠に見えていた。直しは `markdown-text.tsx` で **pre / code / CodeHeader だけ memo 化から外す**（段落・見出しの memo 化は維持）。測った結果：**フルスイート5回連続すべて 19 passed**（以前は約3回に1回落ちていた）。外した仮説（日本語固有・rAF が止まる・SSE が途中で終わる）は notes に根拠つきで残した。"
     },
     {
       "id": "composer-image-attachment",
@@ -738,6 +740,46 @@
       "refs": [
         "docs/specs/v4-architecture.md §5.4-a",
         "https://code.visualstudio.com/docs/configure/settings"
+      ]
+    },
+    {
+      "id": "perf-module-spawn-parallel",
+      "phase": "1",
+      "title": "Module の起動を同時に行う（最初のターンの待ちを削る）",
+      "status": "done",
+      "dependencies": [],
+      "why": "実測（2026-09-07）：Project で最初に Module へ触れる操作＝最初のターンが中央値1.5秒・最悪2.2秒。cli.ts の3箇所が1本ずつ await していた。",
+      "result": "`resolveModulesForThread` / `resolveModuleClientsForProject` / `resolveInstanceModuleClients` を Promise.all にした。`dependsOn` は中継の宛先を決めるもので起動順ではない。同時起動で新たに生まれる「宣言の直しの読み書き競合」は1本に直列化（repairDeclarations）。あわせてイベントログを seq だけ見て読み飛ばすようにした（スナップショットがあっても各 store が全行を JSON.parse していた）。core 単体 106件通過。",
+      "refs": [
+        "banto/packages/core/src/cli.ts",
+        "banto/packages/core/src/event-store/log.ts",
+        "docs/notes/2026-09-07-codeblock-freeze-and-latency.md"
+      ]
+    },
+    {
+      "id": "perf-frontend-production-build",
+      "phase": "1",
+      "title": "画面を本番ビルドで出す（体感の最大要因を切り分ける）",
+      "status": "todo",
+      "dependencies": [],
+      "why": "実測（2026-09-07、実ブラウザ）：初回の操作可能まで5.8秒・long task 合計3.4秒、Project 切り替え1.8秒、Fork を開く2.6秒。**いま稼働中の画面は `next dev`**（未 minify の JS 4.6MB・React の dev ビルド）なので、「dev だから遅い分」と「本番でも遅い分」が分けられていない。",
+      "doneWhen": "本番ビルドで同じ項目を測り直し、数値を並べて記録する。残った分について次の手を決める。",
+      "refs": [
+        "docs/notes/2026-09-07-codeblock-freeze-and-latency.md"
+      ]
+    },
+    {
+      "id": "perf-bootstrap-overfetch",
+      "phase": "1",
+      "title": "起動時に、開いていない Project の Thread 一覧まで取りに行かない",
+      "status": "todo",
+      "dependencies": [
+        "perf-frontend-production-build"
+      ],
+      "why": "実測（2026-09-07）：初回表示で全 Project の `/api/projects/:id/threads` を取っており、fetch だけで 1.94MB。同一セッション内で Project を行き来しても追加取得は0件なので、取り直しではなく**先取りしすぎ**。",
+      "doneWhen": "初回の fetch 量と操作可能までの時間を、前後で測って並べる。Fork 件数バッジの見え方が変わるなら、その形を決めてから直す。",
+      "refs": [
+        "docs/notes/2026-09-07-codeblock-freeze-and-latency.md"
       ]
     }
   ],

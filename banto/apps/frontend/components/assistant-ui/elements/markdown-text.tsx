@@ -83,163 +83,183 @@ const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
   );
 };
 
-const defaultComponents = memoizeMarkdownComponents({
-  h1: ({ className, ...props }) => (
-    <h1
-      className={cn(
-        "aui-md-h1 mt-5 mb-2 scroll-m-20 text-xl font-semibold first:mt-0 last:mb-0",
-        className,
-      )}
-      {...props}
-    />
-  ),
-  h2: ({ className, ...props }) => (
-    <h2
-      className={cn(
-        "aui-md-h2 mt-5 mb-2 scroll-m-20 text-lg font-semibold first:mt-0 last:mb-0",
-        className,
-      )}
-      {...props}
-    />
-  ),
-  h3: ({ className, ...props }) => (
-    <h3
-      className={cn(
-        "aui-md-h3 mt-4 mb-1.5 scroll-m-20 text-base font-semibold first:mt-0 last:mb-0",
-        className,
-      )}
-      {...props}
-    />
-  ),
-  h4: ({ className, ...props }) => (
-    <h4
-      className={cn(
-        "aui-md-h4 mt-3.5 mb-1 scroll-m-20 text-base font-medium first:mt-0 last:mb-0",
-        className,
-      )}
-      {...props}
-    />
-  ),
-  h5: ({ className, ...props }) => (
-    <h5
-      className={cn(
-        "aui-md-h5 mt-3 mb-1 text-sm font-semibold first:mt-0 last:mb-0",
-        className,
-      )}
-      {...props}
-    />
-  ),
-  h6: ({ className, ...props }) => (
-    <h6
-      className={cn(
-        "aui-md-h6 mt-3 mb-1 text-sm font-medium first:mt-0 last:mb-0",
-        className,
-      )}
-      {...props}
-    />
-  ),
-  p: ({ className, ...props }) => (
-    <p
-      className={cn(
-        "aui-md-p my-3 leading-relaxed first:mt-0 last:mb-0",
-        className,
-      )}
-      {...props}
-    />
-  ),
-  a: ({ className, ...props }) => (
-    <a
-      className={cn(
-        "aui-md-a text-primary hover:text-primary/80 underline underline-offset-2",
-        className,
-      )}
-      {...props}
-    />
-  ),
-  blockquote: ({ className, ...props }) => (
-    <blockquote
-      className={cn(
-        "aui-md-blockquote border-muted-foreground/30 text-muted-foreground my-3 border-s-2 ps-4",
-        className,
-      )}
-      {...props}
-    />
-  ),
-  ul: ({ className, ...props }) => (
-    <ul
-      className={cn(
-        "aui-md-ul marker:text-muted-foreground my-3 ms-5 list-disc [&>li]:mt-1",
-        className,
-      )}
-      {...props}
-    />
-  ),
-  ol: ({ className, ...props }) => (
-    <ol
-      className={cn(
-        "aui-md-ol marker:text-muted-foreground my-3 ms-5 list-decimal [&>li]:mt-1",
-        className,
-      )}
-      {...props}
-    />
-  ),
-  hr: ({ className, ...props }) => (
-    <hr
-      className={cn("aui-md-hr border-muted-foreground/20 my-3", className)}
-      {...props}
-    />
-  ),
-  table: ({ className, ...props }) => (
-    <table
-      className={cn(
-        "aui-md-table my-3 w-full border-separate border-spacing-0 overflow-y-auto",
-        className,
-      )}
-      {...props}
-    />
-  ),
-  th: ({ className, ...props }) => (
-    <th
-      className={cn(
-        "aui-md-th bg-muted px-3 py-1.5 text-start font-medium first:rounded-ss-lg last:rounded-se-lg [[align=center]]:text-center [[align=right]]:text-right",
-        className,
-      )}
-      {...props}
-    />
-  ),
-  td: ({ className, ...props }) => (
-    <td
-      className={cn(
-        "aui-md-td border-muted-foreground/20 border-s border-b px-3 py-1.5 text-start last:border-e [[align=center]]:text-center [[align=right]]:text-right",
-        className,
-      )}
-      {...props}
-    />
-  ),
-  tr: ({ className, ...props }) => (
-    <tr
-      className={cn(
-        "aui-md-tr m-0 border-b p-0 first:border-t [&:last-child>td:first-child]:rounded-es-lg [&:last-child>td:last-child]:rounded-ee-lg",
-        className,
-      )}
-      {...props}
-    />
-  ),
-  li: ({ className, ...props }) => (
-    <li className={cn("aui-md-li leading-relaxed", className)} {...props} />
-  ),
-  strong: ({ className, ...props }) => (
-    <strong
-      className={cn("aui-md-strong font-semibold", className)}
-      {...props}
-    />
-  ),
-  sup: ({ className, ...props }) => (
-    <sup
-      className={cn("aui-md-sup [&>a]:text-xs [&>a]:no-underline", className)}
-      {...props}
-    />
-  ),
+/**
+ * **コードブロックを描く3つ（pre / code / CodeHeader）は memo 化しない**
+ * （修正・2026-09-07、`ui-codeblock-cjk`）。
+ *
+ * `memoizeMarkdownComponents` が付ける比較は **`node`（markdown の構文木）しか見ない**。
+ * 段落や見出しは中身が `node` に入っているのでそれで足りるが、**コードブロックの
+ * 中身は `node` ではなく props で渡ってくる**——`@assistant-ui/react-markdown` の
+ * CodeOverride が `<Pre><Code node={node}>{code}</Code></Pre>` の形に組み替えるため。
+ * その結果、ストリーミング中にコードの中身だけが増えても比較は「変わっていない」と
+ * 答え、**最初に届いた分のまま二度と描き直されなかった**。
+ *
+ * 実測（フルスイートを回して2回再現、2026-09-07）：
+ *   [HOST]  "```\n中は読める1788793037422\n```"（全文が host に届いている）
+ *   [PART]  len=72 status=complete       （ランタイムも全文を持っている）
+ *   [CODE]  shown=4 "中は読\n"            （描く側が4文字で止まったまま）
+ * **コードブロックの後ろの段落は正しく描けていた**ことが、部分木だけが取り残されて
+ * いることの証拠になった。1度に全文が届いた回は正しく出るので、間欠に見えていた。
+ */
+const defaultComponents: NonNullable<Parameters<typeof memoizeMarkdownComponents>[0]> = {
+  ...memoizeMarkdownComponents({
+    h1: ({ className, ...props }) => (
+      <h1
+        className={cn(
+          "aui-md-h1 mt-5 mb-2 scroll-m-20 text-xl font-semibold first:mt-0 last:mb-0",
+          className,
+        )}
+        {...props}
+      />
+    ),
+    h2: ({ className, ...props }) => (
+      <h2
+        className={cn(
+          "aui-md-h2 mt-5 mb-2 scroll-m-20 text-lg font-semibold first:mt-0 last:mb-0",
+          className,
+        )}
+        {...props}
+      />
+    ),
+    h3: ({ className, ...props }) => (
+      <h3
+        className={cn(
+          "aui-md-h3 mt-4 mb-1.5 scroll-m-20 text-base font-semibold first:mt-0 last:mb-0",
+          className,
+        )}
+        {...props}
+      />
+    ),
+    h4: ({ className, ...props }) => (
+      <h4
+        className={cn(
+          "aui-md-h4 mt-3.5 mb-1 scroll-m-20 text-base font-medium first:mt-0 last:mb-0",
+          className,
+        )}
+        {...props}
+      />
+    ),
+    h5: ({ className, ...props }) => (
+      <h5
+        className={cn(
+          "aui-md-h5 mt-3 mb-1 text-sm font-semibold first:mt-0 last:mb-0",
+          className,
+        )}
+        {...props}
+      />
+    ),
+    h6: ({ className, ...props }) => (
+      <h6
+        className={cn(
+          "aui-md-h6 mt-3 mb-1 text-sm font-medium first:mt-0 last:mb-0",
+          className,
+        )}
+        {...props}
+      />
+    ),
+    p: ({ className, ...props }) => (
+      <p
+        className={cn(
+          "aui-md-p my-3 leading-relaxed first:mt-0 last:mb-0",
+          className,
+        )}
+        {...props}
+      />
+    ),
+    a: ({ className, ...props }) => (
+      <a
+        className={cn(
+          "aui-md-a text-primary hover:text-primary/80 underline underline-offset-2",
+          className,
+        )}
+        {...props}
+      />
+    ),
+    blockquote: ({ className, ...props }) => (
+      <blockquote
+        className={cn(
+          "aui-md-blockquote border-muted-foreground/30 text-muted-foreground my-3 border-s-2 ps-4",
+          className,
+        )}
+        {...props}
+      />
+    ),
+    ul: ({ className, ...props }) => (
+      <ul
+        className={cn(
+          "aui-md-ul marker:text-muted-foreground my-3 ms-5 list-disc [&>li]:mt-1",
+          className,
+        )}
+        {...props}
+      />
+    ),
+    ol: ({ className, ...props }) => (
+      <ol
+        className={cn(
+          "aui-md-ol marker:text-muted-foreground my-3 ms-5 list-decimal [&>li]:mt-1",
+          className,
+        )}
+        {...props}
+      />
+    ),
+    hr: ({ className, ...props }) => (
+      <hr
+        className={cn("aui-md-hr border-muted-foreground/20 my-3", className)}
+        {...props}
+      />
+    ),
+    table: ({ className, ...props }) => (
+      <table
+        className={cn(
+          "aui-md-table my-3 w-full border-separate border-spacing-0 overflow-y-auto",
+          className,
+        )}
+        {...props}
+      />
+    ),
+    th: ({ className, ...props }) => (
+      <th
+        className={cn(
+          "aui-md-th bg-muted px-3 py-1.5 text-start font-medium first:rounded-ss-lg last:rounded-se-lg [[align=center]]:text-center [[align=right]]:text-right",
+          className,
+        )}
+        {...props}
+      />
+    ),
+    td: ({ className, ...props }) => (
+      <td
+        className={cn(
+          "aui-md-td border-muted-foreground/20 border-s border-b px-3 py-1.5 text-start last:border-e [[align=center]]:text-center [[align=right]]:text-right",
+          className,
+        )}
+        {...props}
+      />
+    ),
+    tr: ({ className, ...props }) => (
+      <tr
+        className={cn(
+          "aui-md-tr m-0 border-b p-0 first:border-t [&:last-child>td:first-child]:rounded-es-lg [&:last-child>td:last-child]:rounded-ee-lg",
+          className,
+        )}
+        {...props}
+      />
+    ),
+    li: ({ className, ...props }) => (
+      <li className={cn("aui-md-li leading-relaxed", className)} {...props} />
+    ),
+    strong: ({ className, ...props }) => (
+      <strong
+        className={cn("aui-md-strong font-semibold", className)}
+        {...props}
+      />
+    ),
+    sup: ({ className, ...props }) => (
+      <sup
+        className={cn("aui-md-sup [&>a]:text-xs [&>a]:no-underline", className)}
+        {...props}
+      />
+    ),
+  }),
   pre: ({ className, ...props }) => (
     <pre
       className={cn(
@@ -263,4 +283,4 @@ const defaultComponents = memoizeMarkdownComponents({
     );
   },
   CodeHeader,
-});
+};

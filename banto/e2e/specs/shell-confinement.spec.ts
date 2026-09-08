@@ -8,7 +8,7 @@
 //   - Project の中は**読める**   ……Shell そのものが動いていることの確認
 //   - Project の外は**読めない** ……閉じ込めが効いていることの確認
 // 中も外も失敗するなら、それは閉じ込めではなく Shell が壊れているだけ。
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,6 +34,19 @@ test("Shell は Project の中を読めて、外は読めない", async ({ page 
 
   const pageErrors: string[] = [];
   page.on("pageerror", (err) => pageErrors.push(err.message));
+
+  // **落ちたときに証拠を残す**（規則6——間欠に落ちるものは、待ちを延ばさず測る）。
+  // `ui-codeblock-cjk`：画面の文字が途中で止まる。止まったのが
+  // 「絵を描く側（rAF が回っていない）」なのか「文字が届いていない側」なのかは、
+  // 落ちた瞬間の状態を見ないと分からない
+  await page.addInitScript(() => {
+    (window as unknown as { __rafTicks: number }).__rafTicks = 0;
+    const tick = () => {
+      (window as unknown as { __rafTicks: number }).__rafTicks++;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
 
   await openApp(page);
   await page.getByRole("button", { name: "新しい Project", exact: true }).click();
@@ -63,7 +76,11 @@ test("Shell は Project の中を読めて、外は読めない", async ({ page 
     `shell の runCommand で \`cat ${join(projectRoot, "inside.txt")}\` を実行して、出力をそのまま見せて。`,
   );
   await composer.press("Enter");
-  await expect(page.getByText(insideMarker, { exact: false }).first()).toBeVisible({ timeout: 120_000 });
+  try {
+    await expect(page.getByText(insideMarker, { exact: false }).first()).toBeVisible({ timeout: 120_000 });
+  } catch (err) {
+    throw new Error(`${(err as Error).message}\n\n${await captureFreezeEvidence(page, threadId, insideMarker)}`);
+  }
 
   // --- ② Project の外は読めない ---
   await composer.fill(
@@ -98,3 +115,43 @@ test("Shell は Project の中を読めて、外は読めない", async ({ page 
 
   expect(pageErrors, `ページ例外: ${pageErrors.join(" / ")}`).toEqual([]);
 });
+
+/**
+ * 文字が途中で止まったときの証拠を集める（`ui-codeblock-cjk`）。
+ *
+ * 見たいのは「どちらが止まったか」：
+ *   - **絵を描く側**なら、rAF が進んでいない／`data-status="running"` のまま残る
+ *     （assistant-ui の typewriter は requestAnimationFrame で1文字ずつ出す）
+ *   - **文字が届いていない側**なら、host には全文があるのに画面の文字が短いまま
+ *
+ * 2026-09-07 の犯人は**どちらでもなく**、コードブロックの部分木だけが memo 化で
+ * 取り残されていた（`markdown-text.tsx` の直し、`docs/notes/2026-09-07-...`）。
+ * この採取は残す——次に同じ形で落ちたとき、また一から測り直さないため。
+ */
+async function captureFreezeEvidence(page: Page, threadId: string, marker: string): Promise<string> {
+  const thread = await (
+    await page.request.get(`${CORE_BASE_URL}/api/threads/${threadId}`, {
+      headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    })
+  ).json();
+  const hostTexts = (thread.messages as { role: string; text: string }[]).map(
+    (m) => `${m.role}: ${JSON.stringify(m.text.slice(0, 400))}`,
+  );
+  const ticksA = await page.evaluate(() => (window as unknown as { __rafTicks: number }).__rafTicks);
+  await page.waitForTimeout(1000);
+  const dom = await page.evaluate(() => ({
+    ticks: (window as unknown as { __rafTicks: number }).__rafTicks,
+    markdown: Array.from(document.querySelectorAll(".aui-md")).map((el) => ({
+      status: el.getAttribute("data-status"),
+      text: (el.textContent ?? "").slice(0, 400),
+    })),
+    body: (document.body.textContent ?? "").slice(0, 600),
+  }));
+  return [
+    `--- 止まった位置の証拠（marker=${JSON.stringify(marker)}） ---`,
+    `[HOST] ${hostTexts.join("\n       ")}`,
+    `[DOM markdown] ${JSON.stringify(dom.markdown, null, 1)}`,
+    `[rAF] 1秒間のフレーム数 = ${dom.ticks - ticksA}（0 なら描画側が止まっている）`,
+    `[BODY] ${JSON.stringify(dom.body)}`,
+  ].join("\n");
+}

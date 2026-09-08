@@ -96,6 +96,22 @@ async function main(): Promise<void> {
   const connectedModules = new Map<string, Client>();
   /** 申告に合わせて宣言を直し、起動し直した相手（無限に繰り返さないため）。 */
   const retriedAfterSelfReport = new Set<string>();
+  /**
+   * **宣言の直しは1本ずつ**（追加・2026-09-07、Module を同時に起こすようにしたため）。
+   *
+   * 申告が宣言より厳しかったときは Config を書き直す（下の spawnDeclaredModuleOnce）。
+   * 「読んで・直して・書く」なので、2本が同時にやると後の書き込みが前の直しを
+   * 消す——同時に起こす形にした以上、ここは順番に通す（規則3——写しを作らない）。
+   */
+  let configRepairChain: Promise<unknown> = Promise.resolve();
+  function repairDeclarations<T>(fn: () => Promise<T>): Promise<T> {
+    const run = configRepairChain.then(fn, fn);
+    configRepairChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
 
   /** meta のうち、指定した項目だけを取り出す。 */
   function pick(meta: Record<string, unknown>, fields: string[]): Record<string, unknown> {
@@ -215,11 +231,13 @@ async function main(): Promise<void> {
           ...declaration,
           meta: { ...declaration.meta, ...pick(reported as unknown as Record<string, unknown>, diff.stricter) },
         };
-        const current = loadModuleDeclarations(runtimeConfig, project?.id ?? "");
-        await setModuleDeclarations(
-          runtimeConfig,
-          current.map((d) => (d.name === declaration.name ? merged : d)),
-        );
+        await repairDeclarations(async () => {
+          const current = loadModuleDeclarations(runtimeConfig, project?.id ?? "");
+          await setModuleDeclarations(
+            runtimeConfig,
+            current.map((d) => (d.name === declaration.name ? merged : d)),
+          );
+        });
         console.warn(
           `[host] ${connName}: Module の申告のほうが厳しかったので宣言を直して起動し直します（${diff.stricter.join(", ")}）`,
         );
@@ -257,19 +275,22 @@ async function main(): Promise<void> {
     const project = projectThread.getProject(thread.projectId);
     if (!project) return [];
 
-    const endpoints: ModuleEndpoint[] = [];
-    for (const declaration of loadModuleDeclarations(runtimeConfig, project.id)) {
-      const connName = await spawnDeclaredModule(declaration, project);
-      // Runnerに見せる名前（mcp__<name>__...）は宣言の名前のまま——
-      // どのProjectか、という区別はURL側（agent-relay内部の登録名）だけに閉じる。
-      endpoints.push({
-        name: declaration.name,
-        url: `http://127.0.0.1:${bootstrap.port}/agent-relay/${connName}`,
-        headers: agentRelayHeaders,
-      });
-    }
-
-    return endpoints;
+    // **Module は同時に起こす**（改訂・2026-09-07、実測）。以前は1本ずつ
+    // 順番に待っており、Project で最初に Module へ触れる操作（＝最初のターン）が
+    // 中央値1.5秒・最悪2.2秒かかっていた。Module 同士は起動順に依存しない
+    // ——`dependsOn` は中継の宛先を決めるためのもので、起動の前後関係ではない
+    return await Promise.all(
+      loadModuleDeclarations(runtimeConfig, project.id).map(async (declaration) => {
+        const connName = await spawnDeclaredModule(declaration, project);
+        // Runnerに見せる名前（mcp__<name>__...）は宣言の名前のまま——
+        // どのProjectか、という区別はURL側（agent-relay内部の登録名）だけに閉じる。
+        return {
+          name: declaration.name,
+          url: `http://127.0.0.1:${bootstrap.port}/agent-relay/${connName}`,
+          headers: agentRelayHeaders,
+        };
+      }),
+    );
   }
 
   /** Module の画面（MCP Apps）を出すための経路（決定・2026-09-06、§6.2）。
@@ -286,17 +307,20 @@ async function main(): Promise<void> {
     const project = projectThread.getProject(projectId);
     if (!project) return [];
 
-    const clients: Array<{ name: string; client: Client; scope: "instance" | "project" }> = [];
-    for (const declaration of loadModuleDeclarations(runtimeConfig, project.id)) {
-      const connName = await spawnDeclaredModule(declaration, project);
-      const client = connectedModules.get(connName);
-      // 名前は宣言のもの——画面から見える名前が Project ごとにぶれない。
-      // scope も返す——**設定をどちらの画面に出すかは Module の scope が決める**
-      // （instance に1本の Module の設定を Project ごとに出すのはおかしい、
-      // 決定・2026-09-07、ユーザー指摘）
-      if (client) clients.push({ name: declaration.name, client, scope: declaration.meta.scope });
-    }
-    return clients;
+    // ここも同時に起こす（上の resolveModulesForThread と同じ理由）
+    const spawned = await Promise.all(
+      loadModuleDeclarations(runtimeConfig, project.id).map(async (declaration) => {
+        const connName = await spawnDeclaredModule(declaration, project);
+        // 名前は宣言のもの——画面から見える名前が Project ごとにぶれない。
+        // scope も返す——**設定をどちらの画面に出すかは Module の scope が決める**
+        // （instance に1本の Module の設定を Project ごとに出すのはおかしい、
+        // 決定・2026-09-07、ユーザー指摘）
+        return { name: declaration.name, client: connectedModules.get(connName), scope: declaration.meta.scope };
+      }),
+    );
+    return spawned.filter(
+      (c): c is { name: string; client: Client; scope: "instance" | "project" } => c.client !== undefined,
+    );
   }
 
   /**
@@ -308,15 +332,18 @@ async function main(): Promise<void> {
    * 別に持たず、既にある scope から導く（規則3）。
    */
   async function resolveInstanceModuleClients() {
-    const clients: Array<{ name: string; client: Client; scope: "instance" | "project" }> = [];
     // instance 既定の宣言を読む（Project 上書きは Project 側の話）
-    for (const declaration of loadModuleDeclarations(runtimeConfig, "")) {
-      if (declaration.meta.scope !== "instance") continue;
-      const connName = await spawnDeclaredModule(declaration);
-      const client = connectedModules.get(connName);
-      if (client) clients.push({ name: declaration.name, client, scope: "instance" });
-    }
-    return clients;
+    const spawned = await Promise.all(
+      loadModuleDeclarations(runtimeConfig, "")
+        .filter((declaration) => declaration.meta.scope === "instance")
+        .map(async (declaration) => {
+          const connName = await spawnDeclaredModule(declaration);
+          return { name: declaration.name, client: connectedModules.get(connName), scope: "instance" as const };
+        }),
+    );
+    return spawned.filter(
+      (c): c is { name: string; client: Client; scope: "instance" } => c.client !== undefined,
+    );
   }
 
   const relayEndpoint = new HostRelayEndpoint({

@@ -108,10 +108,18 @@ export function hydrateRealProjects(): Promise<void> {
 async function hydrateRealProjectsUncached(): Promise<void> {
   if (!getBackendConfig()) return;
   const realProjects = await listRealProjects();
+  // **Project ごとの Thread 一覧は同時に取る**（改訂・2026-09-07、実測）。
+  // 1本ずつ待っていたので、Project の数だけ往復が積み上がっていた
+  // ——起動時に一度だけとはいえ、最初の画面が出るまでの時間に直に乗る。
+  // （なお「開いていない Project の分まで取っている」ほうは別の話で、
+  //   直すと Fork 件数バッジの見え方が変わる。`perf-bootstrap-overfetch` に分けた）
+  const pending = realProjects.filter((rp) => !projects.some((p) => p.id === rp.id));
+  const fetched = await Promise.all(
+    pending.map(async (rp) => ({ rp, realThreads: await listRealThreads(rp.id) })),
+  );
   let changed = false;
-  for (const rp of realProjects) {
+  for (const { rp, realThreads } of fetched) {
     if (projects.some((p) => p.id === rp.id)) continue;
-    const realThreads = await listRealThreads(rp.id);
     const base = realThreads.find((t) => t.kind === "base");
     if (!base) continue;
     const project: MockProject = {
