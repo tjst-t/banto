@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono, Noto_Sans_JP } from "next/font/google";
 import { ThemeProvider } from "next-themes";
 import { Toaster } from "@/components/ui/sonner";
@@ -27,6 +27,24 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "banto",
   description: "banto v4 mock",
+};
+
+/**
+ * **キーボードが出たら、レイアウトを縮める**（決定・2026-09-07、ユーザー報告）。
+ *
+ * Android Chrome の既定は `interactive-widget=resizes-visual`——キーボードが出ても
+ * **レイアウトの高さは変わらない**。画面いっぱいの縦並び（ヘッダ／履歴／入力欄）は
+ * そのままなので、入力欄はキーボードの裏に入り、ブラウザが入力欄を見せようと
+ * 画面を持ち上げる。結果、**ヘッダが上に逃げ、入力欄も隠れる**
+ * （実機報告・2026-09-07）。
+ *
+ * `resizes-content` にすると、キーボードのぶんだけレイアウトの高さが縮む
+ * ——ヘッダと入力欄は画面に残り、間の履歴だけが狭くなる（あるべき形）。
+ */
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  interactiveWidget: "resizes-content",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

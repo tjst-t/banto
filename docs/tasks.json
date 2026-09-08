@@ -801,6 +801,28 @@
         "docs/specs/v4-frontend.md §6.2",
         "banto/apps/frontend/components/banto/thread/openable-card.tsx"
       ]
+    },
+    {
+      "id": "mobile-keyboard-layout",
+      "phase": "4",
+      "title": "携帯：キーボードが出てもヘッダと入力欄が消えない",
+      "status": "done",
+      "dependencies": [],
+      "why": "Android 実機の報告（2026-09-07）：キーボードを出すとヘッダが上に逃げ、入力欄も隠れる。原因は `interactive-widget` の未指定——Android Chrome の既定（resizes-visual）はキーボードでレイアウトを縮めないため、画面いっぱいの縦並びのままで入力欄がキーボードの裏に入り、ブラウザが入力欄を見せようと画面を持ち上げる。",
+      "result": "`app/layout.tsx` に `viewport` を出し、`interactiveWidget: \"resizes-content\"` を指定（キーボードのぶんだけレイアウトが縮む）。あわせて外枠を `h-svh`→`h-dvh` に——`svh` は「URL バーが出ている高さ」に固定されるので、URL バーが隠れると下に何も無い帯ができていた。回帰は `e2e/specs/mobile-layout.spec.ts`（携帯幅で、画面ごとスクロールしない・ヘッダが上端にある・入力欄が画面内に収まる・履歴の場所が残る、を高さ840と400の両方で見る。キーボードは自動では出せないので**高さを縮めて同じ形**を作る）。**実機での最終確認はユーザーに依頼**。",
+      "refs": [
+        "banto/apps/frontend/app/layout.tsx",
+        "banto/e2e/specs/mobile-layout.spec.ts"
+      ]
+    },
+    {
+      "id": "mobile-transcript-height-jump",
+      "phase": "4",
+      "title": "履歴を上へ辿ると、途中で高さが伸びる（体感の引っかかり）",
+      "status": "todo",
+      "dependencies": [],
+      "why": "携帯幅で測っていて気づいた（実測・2026-09-07）：履歴の器の scrollHeight が、上へスクロールする間に 16,970 → 27,708 と伸びた。上にある内容が後から測られて膨らむため、指で追っている位置がずれる（実機では「戻される」ように感じうる）。**まだ原因は切り分けていない**——コードブロック・Module の画面（iframe）・字送りのどれかが疑わしい。",
+      "doneWhen": "携帯幅で一番下から一番上まで辿る間、履歴の器の scrollHeight が（新しい発言が来ていないのに）増えないことを実測する。"
     }
   ],
   "phase0": {

@@ -64,7 +64,11 @@ function AppShellInner({
           "--sidebar-width-icon": "58px",
         } as React.CSSProperties
       }
-      className="h-svh flex-col overflow-hidden md:flex-row"
+      // **画面の高さそのもの**（改訂・2026-09-07、ユーザー報告）。`svh` は
+      // 「URL バーが出ている状態の高さ」に固定されるので、URL バーが隠れると
+      // 下に何も無い帯ができる。`dvh` は URL バーにもキーボードにも追従する
+      // （キーボードで縮むのは上の `interactiveWidget: "resizes-content"` があってこそ）
+      className="h-dvh flex-col overflow-hidden md:flex-row"
     >
       <ProjectRail
         activeProjectId={projectId}
