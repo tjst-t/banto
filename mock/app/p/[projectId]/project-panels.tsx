@@ -2,9 +2,11 @@
 
 import { useState, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
-import { ArrowLeft, Clock, ExternalLink, GitFork, GitMerge, Maximize2, Minimize2, Settings, X } from "lucide-react";
+import { ArrowLeft, Bell, Clock, ExternalLink, GitFork, GitMerge, Maximize2, Minimize2, Settings, X } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { CanvasContent } from "@/components/banto/canvas/canvas-content";
+import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
+import { getJudgmentCount } from "@/components/banto/shell/nav-panel";
 import { PanelStack } from "@/components/banto/shell/panel-stack";
 import { usePanelStack } from "@/components/banto/shell/use-panel-stack";
 import { ProjectSettingsOverlay } from "@/components/banto/settings/project-settings-overlay";
@@ -12,6 +14,7 @@ import { ContextUsageMeter } from "@/components/banto/thread/context-usage-meter
 import { ThreadActionsMenu } from "@/components/banto/thread/thread-actions-menu";
 import { ThreadPanel, type ThreadMarker } from "@/components/banto/thread/thread-panel";
 import { getProject } from "@/lib/mock/projects";
+import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { closeThread, getThread } from "@/lib/mock/threads";
 
 function PanelHeader({
@@ -25,7 +28,7 @@ function PanelHeader({
   children?: ReactNode;
 }) {
   return (
-    <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-border px-2 md:px-3">
+    <div className="flex h-12 shrink-0 items-center gap-1.5 border-b border-border px-2 md:h-11 md:px-3">
       {leading}
       <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{title}</p>
       <div className="flex shrink-0 items-center gap-1.5">{children}</div>
@@ -53,12 +56,12 @@ function ClosablePanelHeader({
   trailing?: ReactNode;
 }) {
   return (
-    <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-2">
+    <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-2 md:h-11">
       <button
         type="button"
         onClick={onClose}
         aria-label={closeLabel}
-        className="flex size-7 shrink-0 items-center justify-center rounded-md text-ink-2 hover:bg-accent"
+        className="flex size-9 shrink-0 items-center justify-center rounded-md text-ink-2 hover:bg-accent md:size-7"
       >
         <Icon className="size-4" />
       </button>
@@ -86,9 +89,30 @@ function IconHeaderButton({
       onClick={onClick}
       aria-label={label}
       title={label}
-      className="flex size-7 shrink-0 items-center justify-center rounded-md text-ink-2 hover:bg-accent"
+      className="flex size-9 shrink-0 items-center justify-center rounded-md text-ink-2 hover:bg-accent md:size-7"
     >
       <Icon className="size-4" />
+    </button>
+  );
+}
+
+/** 受信箱の入口（モバイルのヘッダ用）。判断待ちの件数をバッジで出す */
+function InboxHeaderButton({ onClick }: { onClick: () => void }) {
+  useMockStoreVersion();
+  const judgmentCount = getJudgmentCount();
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={judgmentCount > 0 ? `受信箱（判断待ち ${judgmentCount}件）` : "受信箱"}
+      className="relative flex size-9 shrink-0 items-center justify-center rounded-md text-ink-2 hover:bg-accent md:size-7"
+    >
+      <Bell className="size-4" />
+      {judgmentCount > 0 ? (
+        <span className="absolute -top-1 -right-1 flex size-4 items-center justify-center rounded-full bg-turn text-xs leading-none font-semibold text-on-color">
+          {judgmentCount}
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -97,7 +121,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
   const stack = usePanelStack(projectId);
   const project = getProject(projectId);
   const searchParams = useSearchParams();
-  // モバイルはすでに MobileTopBar 以外の全画面を使っているので、
+  // モバイルの Canvas はすでにヘッダ以外の全画面を使っているので、
   // 全画面トグルは無意味（押しても見た目が変わらない）——desktop だけに出す
   const isMobile = useIsMobile();
   const [markersByThread, setMarkersByThread] = useState<Record<string, ThreadMarker[]>>({});
@@ -129,16 +153,26 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
       projectId={projectId}
       renderBase={() => (
         <div className="flex h-full min-h-0 flex-col">
-          <PanelHeader title={`Base Thread — ${project.name}`}>
+          <PanelHeader
+            // モバイルはここが唯一のナビの入口（上部バーを廃止した分、段が1つ減る）
+            leading={isMobile ? <MobileNavDrawer projectId={projectId} /> : undefined}
+            title={isMobile ? project.name : `Base Thread — ${project.name}`}
+          >
             <ContextUsageMeter threadId={project.baseThreadId} />
             {/* 「Fork を開く」（固定の Fork へ飛ぶデモ用ボタン）は置かない——
                 開いている Fork はサイドバーの目次に常に出ているので、ヘッダから
                 同じ場所へ行く二重の口を持たない（規則3） */}
-            <IconHeaderButton
-              icon={Clock}
-              label="履歴"
-              onClick={() => stack.open({ overlay: "archive" })}
-            />
+            {isMobile ? (
+              // 判断待ちは「止まっている」ので、目次を開かなくても件数が見える
+              // 位置に置く。履歴は急がないので Drawer に譲る（段を1つに保つ）
+              <InboxHeaderButton onClick={() => stack.open({ overlay: "inbox" })} />
+            ) : (
+              <IconHeaderButton
+                icon={Clock}
+                label="履歴"
+                onClick={() => stack.open({ overlay: "archive" })}
+              />
+            )}
             <IconHeaderButton
               icon={Settings}
               label="Project 設定"

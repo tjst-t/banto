@@ -268,7 +268,8 @@ export function NavPanel({
             >
               <Search />
               <span className="flex-1 truncate">検索</span>
-              <span className="text-xs text-ink-3">⌘K</span>
+              {/* 打鍵の案内はキーボードがある画面だけ */}
+              <span className="hidden text-xs text-ink-3 md:inline">⌘K</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

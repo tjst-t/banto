@@ -117,11 +117,15 @@ test("携帯では、ヘッダと入力欄が常に見えて、履歴は端ま�
 });
 
 /**
- * 一番下にいるときの「位置関係」を測る。
+ * 履歴の位置関係を測る。
  *
- * **間隔の px を比べてはいけない**（実測・2026-09-07で踏んだ）——中身が画面を
- * 埋めていないときの間隔は「余白」であって位置関係ではない（高さ840では317px、
- * 縮めて中身が溢れると35px）。**約束は「一番下のまま、最後の発言が隠れない」**。
+ * **保つのは「下からの距離」**（`scrollHeight - scrollTop - clientHeight`）
+ * ——入力欄は器の下端にあるので、この距離が同じなら入力欄との位置関係も同じ。
+ * 一番下にいる場合は距離0で、それが特別な場合になる。
+ *
+ * **間隔の px（最後の発言と入力欄のあいだ）を比べてはいけない**
+ * （実測・2026-09-07で踏んだ）——中身が画面を埋めていないときの間隔は「余白」
+ * であって位置関係ではない（高さ840では317px、縮めて溢れると35px）。
  */
 async function bottomState(page: import("@playwright/test").Page) {
   return page.evaluate(() => {
@@ -133,6 +137,7 @@ async function bottomState(page: import("@playwright/test").Page) {
     if (!last || !composer || !header) return null;
     const lastRect = last.getBoundingClientRect();
     return {
+      bottomDistance: Math.max(0, Math.round(sc.scrollHeight - sc.scrollTop - sc.clientHeight)),
       atBottom: sc.scrollHeight - sc.scrollTop - sc.clientHeight <= 4,
       overflowing: sc.scrollHeight > sc.clientHeight + 4,
       scrollTop: Math.round(sc.scrollTop),
@@ -144,11 +149,11 @@ async function bottomState(page: import("@playwright/test").Page) {
   });
 }
 
-test("一番下にいるときは、キーボードが出ても一番下のまま", async ({ page }) => {
-  // **一番下にいた人が最後の発言を見失わない**（ユーザー要望・2026-09-07）。
-  // 実測（直す前）：高さを縮めると `atBottom` が false に落ち、最後の発言は
-  // 入力欄より下（bottom=703 / 入力欄 top=319）に取り残されていた。
-  // **一番下以外では位置を動かさない**（読んでいるものを奪わない）。
+test("キーボードが出ても、履歴と入力欄の位置関係が変わらない", async ({ page }) => {
+  // **どこを見ていても位置関係を保つ**（ユーザー要望・2026-09-07。最初は
+  // 「一番下のときだけ」で作り、比べたうえでどこでも保つ形に広げた）。
+  // 実測（直す前）：高さを縮めると一番下にいた人の最後の発言が入力欄より下
+  // （発言の下端703 / 入力欄の上端319）に取り残されていた。
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-mobile-kb-"));
 
   await openApp(page);
@@ -193,24 +198,32 @@ test("一番下にいるときは、キーボードが出ても一番下のま�
   ).toBeLessThanOrEqual(after!.composerTop);
   expect(after!.lastBottom, "最後の発言が画面より上に消えている").toBeGreaterThan(after!.headerBottom);
 
-  // ---- 一番下以外では動かさない -------------------------------------------
+  // ---- 途中を読んでいるときも、位置関係は同じ ------------------------------
   // **溢れている状態で**途中を読む形を作る（高さ840では中身が溢れず、
   // 「途中」を作れない——実測で踏んだ）。キーボードがさらに高くなる場合に相当
-  const middle = await page.evaluate(() => {
+  await page.evaluate(() => {
     const sc = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]');
-    if (!sc) return 0;
-    sc.scrollTo({ top: Math.round((sc.scrollHeight - sc.clientHeight) / 2), behavior: "instant" });
-    return Math.round(sc.scrollTop);
+    sc?.scrollTo({ top: Math.round((sc.scrollHeight - sc.clientHeight) / 2), behavior: "instant" });
   });
-  expect(middle, "途中の位置を作れていない").toBeGreaterThan(20);
   await page.waitForTimeout(500);
+  const middle = await bottomState(page);
+  expect(middle?.atBottom, "途中の位置を作れていない（一番下にいる）").toBe(false);
+  expect(middle!.bottomDistance, "途中の位置を作れていない（下からの距離が0）").toBeGreaterThan(20);
 
   await page.setViewportSize({ width: 412, height: 320 });
   await page.waitForTimeout(1000);
   const afterMiddle = await bottomState(page);
-  expect(afterMiddle?.atBottom, "前提が崩れている（途中のはずが一番下にいる）").toBe(false);
   expect(
-    Math.abs((afterMiddle?.scrollTop ?? 0) - middle),
-    `途中を読んでいたのに位置が動いた（${middle} → ${afterMiddle?.scrollTop}）`,
+    Math.abs(afterMiddle!.bottomDistance - middle!.bottomDistance),
+    `途中を読んでいたのに位置関係が変わった（下からの距離 ${middle!.bottomDistance} → ${afterMiddle!.bottomDistance}）`,
+  ).toBeLessThanOrEqual(8);
+
+  // 元の高さへ戻しても、位置関係は同じ（キーボードを閉じたとき）
+  await page.setViewportSize({ width: 412, height: 420 });
+  await page.waitForTimeout(1000);
+  const afterRestore = await bottomState(page);
+  expect(
+    Math.abs(afterRestore!.bottomDistance - middle!.bottomDistance),
+    `キーボードを閉じたら位置関係が変わった（下からの距離 ${middle!.bottomDistance} → ${afterRestore!.bottomDistance}）`,
   ).toBeLessThanOrEqual(8);
 });

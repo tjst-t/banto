@@ -27,7 +27,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-ic
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { KeepBottomOnResize } from "@/components/banto/thread/keep-bottom-on-resize";
+import { KeepBottomDistanceOnResize } from "@/components/banto/thread/keep-bottom-distance-on-resize";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -198,9 +198,10 @@ const ThreadRoot: FC<{
         data-slot="aui_thread-viewport"
         className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
       >
-        {/* 一番下にいたなら、キーボードや URL バーで高さが変わっても一番下のまま
-            （決定・2026-09-07、ユーザー要望）。一番下以外では何もしない */}
-        <KeepBottomOnResize />
+        {/* キーボードや URL バーで高さが変わっても、履歴と入力欄の位置関係を保つ
+            （決定・2026-09-07、ユーザー要望）——保つのは「下からの距離」で、
+            一番下にいる場合（距離0）はその特別な場合 */}
+        <KeepBottomDistanceOnResize />
         <div
           className={cn(
             "mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col px-4 pt-4",

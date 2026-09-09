@@ -28,7 +28,7 @@ export function ThreadActionsMenu({
         <button
           type="button"
           aria-label="Thread の操作"
-          className="flex size-7 shrink-0 items-center justify-center rounded-md text-ink-2 hover:bg-accent"
+          className="flex size-9 shrink-0 items-center justify-center rounded-md text-ink-2 hover:bg-accent md:size-7"
         >
           <MoreHorizontal className="size-4" />
         </button>

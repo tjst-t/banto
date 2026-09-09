@@ -21,7 +21,9 @@ const DEMO_PROMPTS: readonly { label: string; prompt: string }[] = [
 
 export function DemoHints() {
   return (
-    <div className="flex flex-wrap items-center gap-1.5 px-1 text-xs text-ink-3">
+    // モバイルは横1行のスクロールに畳む——折り返すと4行になり、狭い画面で
+    // 会話そのものを押し出していた（モックの都合が本題を邪魔しないように）
+    <div className="no-scrollbar flex flex-nowrap items-center gap-1.5 overflow-x-auto px-1 text-xs text-ink-3 md:flex-wrap md:overflow-visible">
       <span className="shrink-0">モックのデモ：</span>
       {DEMO_PROMPTS.map((d) => (
         <ThreadPrimitive.Suggestion

@@ -1,6 +1,8 @@
 "use client";
 
 import { Bell, Puzzle, SlidersHorizontal, Sparkles } from "lucide-react";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
 import { CredentialsPanel } from "@/components/banto/settings/credentials-panel";
 import { ModuleConfigPane } from "@/components/banto/settings/module-config-pane";
 import { NotificationSettingsPanel } from "@/components/banto/settings/notification-settings-panel";
@@ -162,14 +164,25 @@ export function SettingsContent() {
   // item14でModuleが増減しうるので、索引は静的定数にせずバージョンが
   // 変わるたびに組み直す（規則3——導出できる値を保存しない）
   useMockStoreVersion();
+  const isMobile = useIsMobile();
   return (
-    <div className="min-h-0 flex-1">
-      <SettingsShell
-        categories={CATEGORIES}
-        moduleImplementations={getConfigurableImplementations()}
-        renderContent={renderSection}
-        extraSearchEntries={buildSearchEntries()}
-      />
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* モバイルはサイドバーが無いので、ここにも同じナビの入口を置く
+          ——設定に入ったら Project へ戻れない、をなくす */}
+      {isMobile ? (
+        <div className="flex h-12 shrink-0 items-center gap-1.5 border-b border-border px-2">
+          <MobileNavDrawer projectId={null} />
+          <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">設定</p>
+        </div>
+      ) : null}
+      <div className="min-h-0 flex-1">
+        <SettingsShell
+          categories={CATEGORIES}
+          moduleImplementations={getConfigurableImplementations()}
+          renderContent={renderSection}
+          extraSearchEntries={buildSearchEntries()}
+        />
+      </div>
     </div>
   );
 }
