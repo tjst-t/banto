@@ -11,7 +11,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { openApp } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(240_000);
@@ -20,13 +20,13 @@ test.use({ viewport: { width: 390, height: 844 } });
 const PROJECT_A = "E2E Abandon A";
 const PROJECT_B = "E2E Abandon B";
 
-async function createProject(page: import("@playwright/test").Page, name: string): Promise<string> {
+/** この spec 用——一時ディレクトリを作ってから Project を作り、その root を返す */
+async function createProjectInTmp(
+  page: import("@playwright/test").Page,
+  name: string,
+): Promise<string> {
   const root = mkdtempSync(join(tmpdir(), "banto-e2e-abandon-"));
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
-  await page.getByLabel("Project 名").fill(name);
-  await page.getByLabel("Base パス").fill(root);
-  await page.getByRole("button", { name: "作成する" }).click();
-  await expect(page.getByText(`Base Thread — ${name}`)).toBeVisible({ timeout: 15_000 });
+  await createProject(page, name, root);
   return root;
 }
 
@@ -35,7 +35,7 @@ test("判断待ちを残したまま別 Project へ移って戻っても、答�
   page.on("pageerror", (err) => pageErrors.push(err.message));
 
   await openApp(page);
-  await createProject(page, PROJECT_A);
+  await createProjectInTmp(page, PROJECT_A);
 
   await page.getByRole("button", { name: /permissionMode/ }).click();
   await page.getByRole("menuitemradio", { name: /default/ }).click();
@@ -59,11 +59,11 @@ test("判断待ちを残したまま別 Project へ移って戻っても、答�
   const projectAUrl = page.url();
 
   // 別 Project を作る＝A のパネルはアンマウントされ、走行中のターンは画面から捨てられる
-  await createProject(page, PROJECT_B);
+  await createProjectInTmp(page, PROJECT_B);
 
   // A に戻る
   await page.goto(projectAUrl);
-  await expect(page.getByText(`Base Thread — ${PROJECT_A}`)).toBeVisible({ timeout: 30_000 });
+  await expectProjectOpen(page, PROJECT_A);
 
   // host 側では判断待ちは生きたまま
   const stillOpen = await (

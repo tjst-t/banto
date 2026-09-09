@@ -15,7 +15,7 @@ import { test, expect } from "@playwright/test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openApp } from "../helpers.js";
+import { createProject, openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -52,11 +52,7 @@ test("携帯では、ヘッダと入力欄が常に見えて、履歴は端ま�
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-mobile-"));
 
   await openApp(page);
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
-  await page.getByLabel("Project 名").fill(PROJECT_NAME);
-  await page.getByLabel("Base パス").fill(projectRoot);
-  await page.getByRole("button", { name: "作成する" }).click();
-  await expect(page.getByText(`Base Thread — ${PROJECT_NAME}`)).toBeVisible({ timeout: 15_000 });
+  await createProject(page, PROJECT_NAME, projectRoot);
 
   // **キーボードでレイアウトを縮める**指定が出ていること（これが無いと実機で崩れる）
   const viewportMeta = await page.locator('meta[name="viewport"]').getAttribute("content");
@@ -194,11 +190,7 @@ test("キーボードが出ても、履歴と入力欄の位置関係が変わ�
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-mobile-kb-"));
 
   await openApp(page);
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
-  await page.getByLabel("Project 名").fill("E2E Mobile Keyboard");
-  await page.getByLabel("Base パス").fill(projectRoot);
-  await page.getByRole("button", { name: "作成する" }).click();
-  await expect(page.getByText("Base Thread — E2E Mobile Keyboard")).toBeVisible({ timeout: 15_000 });
+  await createProject(page, "E2E Mobile Keyboard", projectRoot);
 
   // **履歴を確実に溢れさせる**——AI の返事の長さに頼らない（実測・2026-09-07：
   // 短い返事だと履歴が画面を埋めず、「位置関係」ではなく**余白の伸び縮み**を
@@ -305,13 +297,7 @@ test("返事の直後（最後のターンが上端に固定された位置）�
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-mobile-pin-"));
 
   await openApp(page);
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
-  await page.getByLabel("Project 名").fill("E2E Mobile Keyboard Pin");
-  await page.getByLabel("Base パス").fill(projectRoot);
-  await page.getByRole("button", { name: "作成する" }).click();
-  await expect(page.getByText("Base Thread — E2E Mobile Keyboard Pin")).toBeVisible({
-    timeout: 15_000,
-  });
+  await createProject(page, "E2E Mobile Keyboard Pin", projectRoot);
 
   const composer = page.getByPlaceholder(/に送る/);
 

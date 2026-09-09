@@ -8,7 +8,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { openApp } from "../helpers.js";
+import { createProject, openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.use({ viewport: { width: 390, height: 844 } });
@@ -18,11 +18,7 @@ test("Memory一覧に人が直接足す→出る→取り消す→取り消し�
 
   await openApp(page);
 
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
-  await page.getByLabel("Project 名").fill("E2E Memory Project");
-  await page.getByLabel("Base パス").fill(projectRoot);
-  await page.getByRole("button", { name: "作成する" }).click();
-  await expect(page.getByText("Base Thread — E2E Memory Project")).toBeVisible({ timeout: 15_000 });
+  await createProject(page, "E2E Memory Project", projectRoot);
 
   await page.getByRole("button", { name: "Project 設定" }).click();
   await page.getByRole("button", { name: "Memory" }).click();

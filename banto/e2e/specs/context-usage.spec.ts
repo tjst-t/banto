@@ -6,7 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { openApp } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.use({ viewport: { width: 390, height: 844 } });
@@ -16,11 +16,7 @@ test("会話を送る→文脈使用量メーターの数値が変わる→リ�
 
   await openApp(page);
 
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
-  await page.getByLabel("Project 名").fill("E2E Context Usage Project");
-  await page.getByLabel("Base パス").fill(projectRoot);
-  await page.getByRole("button", { name: "作成する" }).click();
-  await expect(page.getByText("Base Thread — E2E Context Usage Project")).toBeVisible({ timeout: 15_000 });
+  await createProject(page, "E2E Context Usage Project", projectRoot);
 
   // 会話前——まだ1ターンも走っていないので、メーターは「実データが無い」を
   // 示すダミー（windowTokens=0、resolveUsageのフォールバック）のまま。
@@ -54,7 +50,7 @@ test("会話を送る→文脈使用量メーターの数値が変わる→リ�
 
   // リロード後も直前の値が復元される（thread.usageの永続化、真実は一箇所）
   await page.reload();
-  await expect(page.getByText("Base Thread — E2E Context Usage Project")).toBeVisible({ timeout: 15_000 });
+  await expectProjectOpen(page, "E2E Context Usage Project");
   await page.getByRole("button", { name: /文脈使用量/ }).click();
   await expect(page.getByText(textAfterTurn!, { exact: true })).toBeVisible({ timeout: 15_000 });
   await page.keyboard.press("Escape");

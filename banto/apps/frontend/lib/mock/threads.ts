@@ -1,6 +1,6 @@
 import type { MockThread } from "./types";
 import { notifyMockStoreChange } from "./store-events";
-import { closeRealThread, reopenRealThread } from "../backend/client";
+import { closeRealThread, getRealThread, reopenRealThread } from "../backend/client";
 
 // デモ用の台本つきThreadは持たない（決定・2026-09-03、実機投入に伴いデモデータを撤去）。
 // 実Threadはregisterrealthread/hydrateRealProjects経由でここへ登録される
@@ -170,6 +170,21 @@ export async function closeThread(id: string): Promise<void> {
   if (thread?.real) await closeRealThread(id);
   mockThreads = mockThreads.map((t) => (t.id === id ? { ...t, status: "closed", closedAt: "たった今" } : t));
   notifyMockStoreChange();
+}
+
+/**
+ * Fork Thread を畳む（ヘッダの GitMerge と、サイドバーの目次の両方から呼ぶ）。
+ * **閉じる前に host が持っている最新の中身を手元へ写す**——閉じた Fork は
+ * 履歴から読み返せる必要があり、写さずに閉じると畳んだ時点までの発言が
+ * 手元に無いまま一覧に並ぶ。手順を2箇所に書かないためにここへ置く（規則3）
+ */
+export async function foldForkThread(id: string): Promise<void> {
+  const thread = getThread(id);
+  if (thread?.real) {
+    const updated = await getRealThread(id);
+    updateRealThreadData(id, updated.messages, updated.markers, updated.usage);
+  }
+  await closeThread(id);
 }
 
 export async function reopenThread(id: string): Promise<void> {

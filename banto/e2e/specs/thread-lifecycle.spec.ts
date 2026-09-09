@@ -5,7 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { openApp } from "../helpers.js";
+import { createProject, openApp, openNav } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 
@@ -19,11 +19,7 @@ test("Fork Threadを畳む→履歴に出る→再度開く→会話が読み返
 
   await openApp(page);
 
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
-  await page.getByLabel("Project 名").fill("E2E Lifecycle Project");
-  await page.getByLabel("Base パス").fill(projectRoot);
-  await page.getByRole("button", { name: "作成する" }).click();
-  await expect(page.getByText("Base Thread — E2E Lifecycle Project")).toBeVisible({ timeout: 15_000 });
+  await createProject(page, "E2E Lifecycle Project", projectRoot);
 
   // 会話を残す（再度開いたときに読み返せることを見るための下準備）。
   // ページ全体からgetByTextで待つと、送信直後に出るユーザー自身の発言
@@ -37,9 +33,11 @@ test("Fork Threadを畳む→履歴に出る→再度開く→会話が読み返
   await composer.press("Enter");
   await expect(assistantBubble.filter({ hasText: "めじるし123" })).toBeVisible({ timeout: 60_000 });
 
-  // Fork作成
+  // Fork作成。**開いた印はヘッダの「戻る」**——題は Fork の名前だけになり
+  // 「Fork Thread —」の接頭辞は付かない（改訂・2026-09-09）
+  const forkPanelBack = page.getByRole("button", { name: /Base Thread に戻る$/ });
   await page.getByRole("button", { name: "Fork を開く" }).click();
-  await expect(page.getByText(/Fork Thread —/)).toBeVisible({ timeout: 15_000 });
+  await expect(forkPanelBack).toBeVisible({ timeout: 15_000 });
 
   // Fork Thread自身の中でも会話する——畳む直前までの会話が概要（件数）に
   // 反映されるかを見る（指摘・2026-09-04：畳む直前の会話がArchiveの概要で
@@ -54,10 +52,12 @@ test("Fork Threadを畳む→履歴に出る→再度開く→会話が読み返
 
   // Fork Threadを畳む
   await page.getByRole("button", { name: "この Fork Thread を畳む" }).click();
-  await expect(page.getByText(/Fork Thread —/)).not.toBeVisible();
+  await expect(forkPanelBack).not.toBeVisible();
 
-  // 履歴（Archive）に出る——MobileTopBarとBaseパネルヘッダの両方に「履歴」
-  // ボタンがあるので.first()で固定する
+  // 履歴（Archive）に出る。**入口は幅で変わる**（改訂・2026-09-09）——
+  // モバイルはナビの Drawer の中、デスクトップはサイドバーとBaseパネルヘッダの
+  // 両方にあるので .first() で固定する
+  await openNav(page);
   await page.getByRole("button", { name: "履歴" }).first().click();
   await expect(page.getByText("この Project の閉じた Fork Thread")).toBeVisible({ timeout: 10_000 });
   const forkRow = page.getByText(/^Fork \d+$/).first();
@@ -72,6 +72,6 @@ test("Fork Threadを畳む→履歴に出る→再度開く→会話が読み返
   await page.getByRole("button", { name: "再度開く" }).click();
 
   // Fork Threadが開き、直前の会話（めじるし123）が読み返せる
-  await expect(page.getByText(/Fork Thread —/)).toBeVisible({ timeout: 15_000 });
+  await expect(forkPanelBack).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("めじるし123").first()).toBeVisible({ timeout: 15_000 });
 });

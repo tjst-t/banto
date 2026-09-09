@@ -12,7 +12,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { openApp } from "../helpers.js";
+import { createProject, openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 // 実AIターン＋hold-the-lineの待ち＋受信箱のポーリング（5秒間隔）が入るので、
@@ -40,11 +40,7 @@ test("判断待ちが受信箱に出る→バッジが立つ→答えると消�
 
   await openApp(page);
 
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
-  await page.getByLabel("Project 名").fill(PROJECT_NAME);
-  await page.getByLabel("Base パス").fill(projectRoot);
-  await page.getByRole("button", { name: "作成する" }).click();
-  await expect(page.getByText(`Base Thread — ${PROJECT_NAME}`)).toBeVisible({ timeout: 15_000 });
+  await createProject(page, PROJECT_NAME, projectRoot);
 
   // permissionMode を default に（auto のままだと承認を求めずに実行される）
   await page.getByRole("button", { name: /permissionMode/ }).click();

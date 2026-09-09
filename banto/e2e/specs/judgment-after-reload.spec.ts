@@ -6,7 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { openApp } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(180_000);
@@ -18,11 +18,7 @@ test("判断待ちの最中にリロードしても、承認カードは戻っ�
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-reload-"));
 
   await openApp(page);
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
-  await page.getByLabel("Project 名").fill(PROJECT_NAME);
-  await page.getByLabel("Base パス").fill(projectRoot);
-  await page.getByRole("button", { name: "作成する" }).click();
-  await expect(page.getByText(`Base Thread — ${PROJECT_NAME}`)).toBeVisible({ timeout: 15_000 });
+  await createProject(page, PROJECT_NAME, projectRoot);
 
   await page.getByRole("button", { name: /permissionMode/ }).click();
   await page.getByRole("menuitemradio", { name: /default/ }).click();
@@ -36,7 +32,7 @@ test("判断待ちの最中にリロードしても、承認カードは戻っ�
 
   // ここでリロード——host側の判断待ちは生きたまま（hold-the-line）
   await page.reload();
-  await expect(page.getByText(`Base Thread — ${PROJECT_NAME}`)).toBeVisible({ timeout: 30_000 });
+  await expectProjectOpen(page, PROJECT_NAME);
 
   const open = await (
     await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers: { authorization: `Bearer ${AUTH_TOKEN}` } })

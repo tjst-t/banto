@@ -12,7 +12,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { openApp } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(240_000);
@@ -29,11 +29,7 @@ test("permissionModeはリロードしても残り、tool呼び出しが2回で�
   page.on("pageerror", (err) => pageErrors.push(err.message));
 
   await openApp(page);
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
-  await page.getByLabel("Project 名").fill(PROJECT_NAME);
-  await page.getByLabel("Base パス").fill(projectRoot);
-  await page.getByRole("button", { name: "作成する" }).click();
-  await expect(page.getByText(`Base Thread — ${PROJECT_NAME}`)).toBeVisible({ timeout: 15_000 });
+  await createProject(page, PROJECT_NAME, projectRoot);
 
   // --- 1. permissionMode を default にして、リロードしても残ること ---
   await page.getByRole("button", { name: /permissionMode/ }).click();
@@ -42,7 +38,7 @@ test("permissionModeはリロードしても残り、tool呼び出しが2回で�
   await expect(page.getByRole("button", { name: /permissionMode（現在：default）/ })).toBeVisible();
 
   await page.reload();
-  await expect(page.getByText(`Base Thread — ${PROJECT_NAME}`)).toBeVisible({ timeout: 30_000 });
+  await expectProjectOpen(page, PROJECT_NAME);
   // **リロード後も default のまま**（以前はここで auto に戻っていた）
   await expect(page.getByRole("button", { name: /permissionMode（現在：default）/ })).toBeVisible({
     timeout: 15_000,

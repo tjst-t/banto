@@ -23,5 +23,61 @@ export async function openApp(page: Page): Promise<void> {
     page.waitForURL(/\/p\/[0-9a-f-]+/, { timeout: 30_000 }),
     page.getByText("まだ Project がありません").waitFor({ state: "visible", timeout: 30_000 }),
   ]);
-  await expect(page.getByRole("button", { name: "新しい Project", exact: true })).toBeVisible();
+  // ナビの入口があること。**幅で場所が変わる**（改訂・2026-09-09）——
+  // デスクトップはサイドバーに、モバイルはヘッダの ≡（押すと Drawer）に出る
+  await expect(
+    isMobileViewport(page)
+      ? page.getByRole("button", { name: "Project と Thread の一覧を開く" }).first()
+      : page.getByRole("button", { name: "新しい Project", exact: true }),
+  ).toBeVisible();
+}
+
+/** md 未満（携帯幅）か。ナビの出方がここで変わる */
+function isMobileViewport(page: Page): boolean {
+  return (page.viewportSize()?.width ?? 1280) < 768;
+}
+
+/**
+ * ナビ（Project 一覧・新しい Project・履歴・設定）を触れる状態にする。
+ *
+ * **入口は幅で変わる**（改訂・2026-09-09、モバイルの上部バーを廃止した）——
+ * デスクトップはサイドバーに出ているのでそのまま。モバイルはパネルのヘッダの
+ * ≡ を押して Drawer を開く。開いた Drawer は行き先を選ぶと自分で閉じる。
+ */
+export async function openNav(page: Page): Promise<void> {
+  if (!isMobileViewport(page)) return;
+  const newProject = page.getByRole("button", { name: "新しい Project", exact: true });
+  if (await newProject.isVisible().catch(() => false)) return; // すでに開いている
+  await page.getByRole("button", { name: "Project と Thread の一覧を開く" }).first().click();
+  await expect(newProject).toBeVisible({ timeout: 10_000 });
+}
+
+/**
+ * その Project の Base Thread が開いていること。**題は幅で変わる**
+ * （改訂・2026-09-09——モバイルは段が1つなので、接頭辞を落として Project 名だけ）
+ * ので、待ち条件を各 spec に写さずここ1箇所に持つ（規則3）。
+ */
+export async function expectProjectOpen(
+  page: Page,
+  projectName: string,
+  message?: string,
+): Promise<void> {
+  const title = isMobileViewport(page) ? projectName : `Base Thread — ${projectName}`;
+  await expect(page.getByText(title, { exact: true }).first(), message).toBeVisible({
+    timeout: 15_000,
+  });
+}
+
+/** Project を1つ作り、その Base Thread が開くまで待つ（どの spec も同じ手順を踏む） */
+export async function createProject(
+  page: Page,
+  projectName: string,
+  projectRoot: string,
+): Promise<void> {
+  await openNav(page);
+  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
+  await page.getByLabel("Project 名").fill(projectName);
+  await page.getByLabel("Base パス").fill(projectRoot);
+  await page.getByRole("button", { name: "作成する" }).click();
+  await expectProjectOpen(page, projectName);
 }

@@ -8,7 +8,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { openApp } from "../helpers.js";
+import { createProject, openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(240_000);
@@ -26,11 +26,7 @@ test("拒否すると tool は実行されず、その事実が画面に出る",
   page.on("pageerror", (err) => pageErrors.push(err.message));
 
   await openApp(page);
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
-  await page.getByLabel("Project 名").fill(PROJECT_NAME);
-  await page.getByLabel("Base パス").fill(projectRoot);
-  await page.getByRole("button", { name: "作成する" }).click();
-  await expect(page.getByText(`Base Thread — ${PROJECT_NAME}`)).toBeVisible({ timeout: 15_000 });
+  await createProject(page, PROJECT_NAME, projectRoot);
 
   await page.getByRole("button", { name: /permissionMode/ }).click();
   await page.getByRole("menuitemradio", { name: /default/ }).click();

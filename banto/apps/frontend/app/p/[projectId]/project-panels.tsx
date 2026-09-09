@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
-import { ArrowLeft, Clock, ExternalLink, GitFork, GitMerge, Maximize2, Minimize2, Settings, X } from "lucide-react";
+import { ArrowLeft, Bell, Clock, ExternalLink, GitFork, GitMerge, Maximize2, Minimize2, Settings, X } from "lucide-react";
 import { toast } from "sonner";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useMounted } from "@/hooks/use-mounted";
@@ -10,6 +10,8 @@ import { CanvasContent } from "@/components/banto/canvas/canvas-content";
 import { ModuleCanvas } from "@/components/banto/canvas/module-canvas";
 import { getRealInlineView } from "@/lib/backend/adapter";
 import { refreshRealInbox } from "@/lib/backend/real-inbox";
+import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
+import { useJudgmentCount } from "@/components/banto/shell/nav-panel";
 import { PanelStack } from "@/components/banto/shell/panel-stack";
 import { usePanelStack } from "@/components/banto/shell/use-panel-stack";
 import { ProjectSettingsOverlay } from "@/components/banto/settings/project-settings-overlay";
@@ -24,26 +26,42 @@ import {
   prepareRealProjectModules,
 } from "@/lib/backend/client";
 import { getProject, hydrateRealProjects } from "@/lib/mock/projects";
-import { closeThread, getThread, registerRealFork, updateRealThreadData } from "@/lib/mock/threads";
+import { foldForkThread, getThread, registerRealFork, updateRealThreadData } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 
 const SHOW_ARCHIVE = CONNECTED_FEATURES.threadCloseReopen || CONNECTED_FEATURES.projectCloseReopen;
 
-function PanelHeader({ title, children }: { title: string; children?: ReactNode }) {
+function PanelHeader({
+  leading,
+  title,
+  children,
+}: {
+  /** ヘッダの左端に置くもの（モバイルのナビの入口） */
+  leading?: ReactNode;
+  title: string;
+  children?: ReactNode;
+}) {
   return (
-    <div className="flex h-11 shrink-0 items-center justify-between border-b border-border px-3">
+    // モバイルでは専用の上部バーを廃したので、**これが画面の上段そのもの**
+    // ——`<header>` にして、位置の回帰試験（mobile-layout.spec.ts）が
+    // 見ている「上段」と実物を一致させる
+    <header className="flex h-12 shrink-0 items-center gap-1.5 border-b border-border px-2 md:h-11 md:px-3">
+      {leading}
       {/* 実Projectのhydration完了前後でtitleがサーバー/クライアントで食い違いうる
           （real-projects-bootstrap.tsx）。suppressHydrationWarningが無いと、
           Reactはミスマッチ検出時にこのテキストだけでなく祖先ツリー全体を
           クライアント側で作り直す——その巻き添えでThreadPanel（会話中の
           ストリーミング購読）ごと再マウントされ、応答が届かなくなる実害を
           実測で確認した。ここでは意図的な差分なので警告を抑止する */}
-      <p className="truncate text-sm font-medium text-foreground" suppressHydrationWarning>
+      <p
+        className="min-w-0 flex-1 truncate text-sm font-medium text-foreground"
+        suppressHydrationWarning
+      >
         {title}
       </p>
-      <div className="flex shrink-0 gap-1.5">{children}</div>
-    </div>
+      <div className="flex shrink-0 items-center gap-1.5">{children}</div>
+    </header>
   );
 }
 
@@ -53,26 +71,33 @@ function ClosablePanelHeader({
   icon: Icon,
   onClose,
   closeLabel,
+  titleIcon: TitleIcon,
   title,
   trailing,
 }: {
   icon: typeof ArrowLeft;
   onClose: () => void;
   closeLabel: string;
+  /** 何の面か（Fork Thread・Canvas）はアイコンで示す——狭い幅では文字の接頭辞が
+      題そのものを押し出してしまう（3層のときフォーク名が途中で切れていた） */
+  titleIcon?: typeof ArrowLeft;
   title: string;
   trailing?: ReactNode;
 }) {
   return (
-    <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-2">
+    <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-2 md:h-11">
       <button
         type="button"
         onClick={onClose}
         aria-label={closeLabel}
-        className="flex size-7 shrink-0 items-center justify-center rounded-md text-ink-2 hover:bg-accent"
+        className="flex size-9 shrink-0 items-center justify-center rounded-md text-ink-2 hover:bg-accent md:size-7"
       >
         <Icon className="size-4" />
       </button>
-      <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{title}</p>
+      {TitleIcon ? <TitleIcon className="size-4 shrink-0 text-ink-3" /> : null}
+      <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground" title={title}>
+        {title}
+      </p>
       {trailing}
     </div>
   );
@@ -93,9 +118,29 @@ function IconHeaderButton({
       onClick={onClick}
       aria-label={label}
       title={label}
-      className="flex size-7 shrink-0 items-center justify-center rounded-md text-ink-2 hover:bg-accent"
+      className="flex size-9 shrink-0 items-center justify-center rounded-md text-ink-2 hover:bg-accent md:size-7"
     >
       <Icon className="size-4" />
+    </button>
+  );
+}
+
+/** 受信箱の入口（モバイルのヘッダ用）。判断待ち・お知らせの件数をバッジで出す */
+function InboxHeaderButton({ onClick }: { onClick: () => void }) {
+  const judgmentCount = useJudgmentCount();
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={judgmentCount > 0 ? `受信箱（${judgmentCount}件）` : "受信箱"}
+      className="relative flex size-9 shrink-0 items-center justify-center rounded-md text-ink-2 hover:bg-accent md:size-7"
+    >
+      <Bell className="size-4" />
+      {judgmentCount > 0 ? (
+        <span className="absolute -top-1 -right-1 flex size-4 items-center justify-center rounded-full bg-turn text-xs leading-none font-semibold text-on-color">
+          {judgmentCount}
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -109,7 +154,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
   const stack = usePanelStack(projectId);
   const project = getProject(projectId);
   const searchParams = useSearchParams();
-  // モバイルはすでに MobileTopBar 以外の全画面を使っているので、
+  // モバイルの Canvas はすでにヘッダ以外の全画面を使っているので、
   // 全画面トグルは無意味（押しても見た目が変わらない）——desktop だけに出す
   const isMobile = useIsMobile();
   const [markersByThread, setMarkersByThread] = useState<Record<string, ThreadMarker[]>>({});
@@ -191,9 +236,9 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
   // 履歴（Archive）の概要が「0件のやり取り」のまま古くなる（指摘・2026-09-04）。
   async function handleCloseFork(threadId: string) {
     try {
-      const updated = await getRealThread(threadId);
-      updateRealThreadData(threadId, updated.messages, updated.markers, updated.usage);
-      await closeThread(threadId);
+      // 畳む手順そのものは lib/mock/threads.ts に1つだけ持つ——サイドバーの
+      // 目次からも同じ経路を通る（規則3）
+      await foldForkThread(threadId);
       stack.close("fork");
     } catch (err) {
       toast(`Fork を畳むのに失敗しました: ${err instanceof Error ? err.message : String(err)}`);
@@ -257,10 +302,20 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
       projectId={projectId}
       renderBase={() => (
         <div className="flex h-full min-h-0 flex-col">
-          <PanelHeader title={`Base Thread — ${project.name}`}>
+          <PanelHeader
+            // モバイルはここが唯一のナビの入口（上部バーを廃した分、段が1つ減る）
+            leading={isMobile ? <MobileNavDrawer projectId={projectId} /> : undefined}
+            title={isMobile ? project.name : `Base Thread — ${project.name}`}
+          >
             {CONNECTED_FEATURES.contextUsage ? <ContextUsageMeter threadId={project.baseThreadId} /> : null}
             <IconHeaderButton icon={GitFork} label="Fork を開く" onClick={() => handleOpenFork(project.baseThreadId)} />
-            {SHOW_ARCHIVE ? (
+            {isMobile ? (
+              // 判断待ちは「止まっている」ので、目次を開かなくても件数が見える
+              // 位置に置く。履歴は急がないので Drawer に譲る（段を1つに保つ）
+              CONNECTED_FEATURES.inbox ? (
+                <InboxHeaderButton onClick={() => stack.open({ overlay: "inbox" })} />
+              ) : null
+            ) : SHOW_ARCHIVE ? (
               <IconHeaderButton
                 icon={Clock}
                 label="履歴"
@@ -302,7 +357,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               icon={ArrowLeft}
               onClose={() => stack.close("fork")}
               closeLabel={`${project.name} の Base Thread に戻る`}
-              title={`Fork Thread — ${thread?.title ?? threadId}`}
+              titleIcon={GitFork}
+              title={thread?.title ?? threadId}
               trailing={
                 <div className="flex items-center gap-1.5">
                   {CONNECTED_FEATURES.contextUsage ? <ContextUsageMeter threadId={threadId} /> : null}

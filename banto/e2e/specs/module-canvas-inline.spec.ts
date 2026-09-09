@@ -15,7 +15,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN, SANDBOX_BASE_URL, FRONTEND_BASE_URL } from "../config.js";
-import { openApp } from "../helpers.js";
+import { createProject, openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -34,11 +34,7 @@ test("Module の画面が会話の中に出て、隔離が効いている", asyn
   page.on("pageerror", (err) => pageErrors.push(err.message));
 
   await openApp(page);
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
-  await page.getByLabel("Project 名").fill(PROJECT_NAME);
-  await page.getByLabel("Base パス").fill(projectRoot);
-  await page.getByRole("button", { name: "作成する" }).click();
-  await expect(page.getByText(`Base Thread — ${PROJECT_NAME}`)).toBeVisible({ timeout: 15_000 });
+  await createProject(page, PROJECT_NAME, projectRoot);
 
   await page.getByRole("button", { name: /permissionMode/ }).click();
   await page.getByRole("menuitemradio", { name: /default/ }).click();
@@ -258,11 +254,7 @@ test("「フルスクリーンで開いて」と頼むと、最初から会話�
   writeFileSync(join(projectRoot, marker), "大きく出るはず\n");
 
   await openApp(page);
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
-  await page.getByLabel("Project 名").fill("E2E Canvas Fullscreen");
-  await page.getByLabel("Base パス").fill(projectRoot);
-  await page.getByRole("button", { name: "作成する" }).click();
-  await expect(page.getByText("Base Thread — E2E Canvas Fullscreen")).toBeVisible({ timeout: 15_000 });
+  await createProject(page, "E2E Canvas Fullscreen", projectRoot);
 
   const composer = page.getByPlaceholder(/に送る/);
   await composer.fill("このプロジェクトの直下（.）の一覧を、フルスクリーンで開いて。");

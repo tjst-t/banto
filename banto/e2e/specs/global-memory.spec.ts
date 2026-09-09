@@ -12,7 +12,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { openApp } from "../helpers.js";
+import { createProject, openApp } from "../helpers.js";
 
 const HEADERS = { authorization: `Bearer ${AUTH_TOKEN}` };
 const PROJECT_NAME = "E2E Global Memory Mid Thread";
@@ -52,11 +52,7 @@ test("走行中の Thread に Global Memory を足すと、その次のターン
   const secret = `ゼブラ${Date.now()}`;
 
   await openApp(page);
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
-  await page.getByLabel("Project 名").fill(PROJECT_NAME);
-  await page.getByLabel("Base パス").fill(projectRoot);
-  await page.getByRole("button", { name: "作成する" }).click();
-  await expect(page.getByText(`Base Thread — ${PROJECT_NAME}`)).toBeVisible({ timeout: 15_000 });
+  await createProject(page, PROJECT_NAME, projectRoot);
 
   const projects = await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers: HEADERS })).json();
   const project = projects.find((p: { name: string }) => p.name === PROJECT_NAME);

@@ -8,7 +8,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FolderPlus } from "lucide-react";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { Button } from "@/components/ui/button";
+import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
 import { NewProjectDialog } from "@/components/banto/project/new-project-dialog";
 import { getActiveProjects, hydrateRealProjects } from "@/lib/mock/projects";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
@@ -16,6 +18,7 @@ import { useMockStoreVersion } from "@/lib/mock/store-events";
 export function HomeContent() {
   useMockStoreVersion();
   const router = useRouter();
+  const isMobile = useIsMobile();
   const [hydrated, setHydrated] = useState(false);
   const [showNewProject, setShowNewProject] = useState(false);
 
@@ -46,13 +49,23 @@ export function HomeContent() {
   }
 
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-4 px-6 text-center">
-      <FolderPlus className="size-10 text-ink-3" strokeWidth={1.5} />
-      <div className="flex flex-col gap-1">
-        <p className="text-sm font-medium text-foreground">まだ Project がありません</p>
-        <p className="text-xs text-ink-3">最初の Project を作って始めます</p>
+    <div className="flex h-full min-h-0 flex-col">
+      {/* モバイルはサイドバーが無いので、この画面にもナビの入口を置く
+          ——Project が0件でも設定・受信箱へ行けるようにする（決定・2026-09-09） */}
+      {isMobile ? (
+        <header className="flex h-12 shrink-0 items-center gap-1.5 border-b border-border px-2">
+          <MobileNavDrawer projectId={null} />
+          <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">banto</p>
+        </header>
+      ) : null}
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
+        <FolderPlus className="size-10 text-ink-3" strokeWidth={1.5} />
+        <div className="flex flex-col gap-1">
+          <p className="text-sm font-medium text-foreground">まだ Project がありません</p>
+          <p className="text-xs text-ink-3">最初の Project を作って始めます</p>
+        </div>
+        <Button onClick={() => setShowNewProject(true)}>新しい Project を作る</Button>
       </div>
-      <Button onClick={() => setShowNewProject(true)}>新しい Project を作る</Button>
       <NewProjectDialog open={showNewProject} onOpenChange={setShowNewProject} />
     </div>
   );

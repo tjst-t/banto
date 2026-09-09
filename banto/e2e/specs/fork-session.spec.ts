@@ -14,7 +14,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { openApp } from "../helpers.js";
+import { createProject, openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.use({ viewport: { width: 390, height: 844 } });
@@ -49,11 +49,7 @@ test("Fork Threadの最初のターンで、親と別のセッションへ分岐
 
   await openApp(page);
 
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
-  await page.getByLabel("Project 名").fill(PROJECT_NAME);
-  await page.getByLabel("Base パス").fill(projectRoot);
-  await page.getByRole("button", { name: "作成する" }).click();
-  await expect(page.getByText(`Base Thread — ${PROJECT_NAME}`)).toBeVisible({ timeout: 15_000 });
+  await createProject(page, PROJECT_NAME, projectRoot);
 
   // Base Threadで1ターン。**resume-pointが記録されるまで**待つ——バブルが
   // 見えた時点ではまだ生成中でありうる（記録はSSEの"done"で入る）。
@@ -70,7 +66,10 @@ test("Fork Threadの最初のターンで、親と別のセッションへ分岐
   const baseBefore = (await threads()).find((t) => t.kind === "base")!;
 
   await page.getByRole("button", { name: "Fork を開く" }).click();
-  await expect(page.getByText(/Fork Thread —/)).toBeVisible({ timeout: 15_000 });
+  // 開いた印はヘッダの「戻る」——題は Fork の名前だけ（改訂・2026-09-09）
+  await expect(page.getByRole("button", { name: /Base Thread に戻る$/ })).toBeVisible({
+    timeout: 15_000,
+  });
 
   // 作られた直後は親のresume-pointを**借りている**だけ（自分のものではない）
   const forkAtCreation = (await threads()).find((t) => t.kind === "fork")!;

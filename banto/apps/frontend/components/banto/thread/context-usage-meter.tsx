@@ -83,7 +83,10 @@ export function ContextUsageMeter({ threadId }: { threadId: ThreadId }) {
               className="flex items-center gap-1.5 rounded-md border border-border bg-surface px-2 py-1 text-xs text-ink-2 hover:bg-accent"
             >
               <Gauge className="size-3.5 shrink-0 text-ink-3" />
-              <span className="h-1.5 w-12 overflow-hidden rounded-full bg-surface-3">
+              {/* 帯はデスクトップだけ——モバイルは段が1つしかなく、ここで
+                  48px 取ると Project 名が押し出される（実測・2026-09-09）。
+                  数値は残るので、読み取れる中身は変わらない */}
+              <span className="hidden h-1.5 w-12 overflow-hidden rounded-full bg-surface-3 md:block">
                 <span
                   className={cn("block h-full rounded-full", meterFill)}
                   style={{ width: `${Math.round(usedRatio * 100)}%` }}

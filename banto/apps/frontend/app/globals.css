@@ -320,6 +320,19 @@
   }
 }
 
+/* サイドバーの幅をドラッグしている間だけ（sidebar-resize-handle.tsx が
+   `<html data-sidebar-resizing>` を立てる）：
+   - 幅の transition を止める——付いたままだと指の位置に遅れて追従する
+   - 文字が選択されるのを防ぐ・cursor を画面全体で col-resize に固定する */
+[data-sidebar-resizing] [data-slot="sidebar-gap"],
+[data-sidebar-resizing] [data-slot="sidebar-container"] {
+  transition: none !important;
+}
+[data-sidebar-resizing] {
+  cursor: col-resize;
+  user-select: none;
+}
+
 @custom-variant data-open (&:where([data-state="open"], [data-open]:not([data-open="false"])));
 
 @custom-variant data-closed (&:where([data-state="closed"], [data-closed]:not([data-closed="false"])));

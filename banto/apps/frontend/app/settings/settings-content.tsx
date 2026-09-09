@@ -1,6 +1,8 @@
 "use client";
 
 import { Bell, Globe, Puzzle, SlidersHorizontal, Sparkles } from "lucide-react";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
 import { CredentialsPanel } from "@/components/banto/settings/credentials-panel";
 import { GlobalMemoryPanel } from "@/components/banto/settings/global-memory-panel";
 import { ModuleConfigPane } from "@/components/banto/settings/module-config-pane";
@@ -201,18 +203,29 @@ export function SettingsContent() {
   // **実 Module の設定面**（MCP Apps の設定 Canvas）。左メニューにも右側にも
   // 同じ一覧を使う（規則3）
   const { canvases } = useModuleSettingsCanvases(INSTANCE_OWNER);
+  const isMobile = useIsMobile();
   const moduleItems = [
     ...canvases.map((c) => ({ id: c.server, name: c.name ?? c.server })),
     ...(CONNECTED_FEATURES.settings ? getConfigurableImplementations() : []),
   ];
   return (
-    <div className="min-h-0 flex-1">
-      <SettingsShell
-        categories={CATEGORIES}
-        moduleImplementations={moduleItems}
-        renderContent={(section) => renderSection(section, canvases)}
-        extraSearchEntries={buildSearchEntries()}
-      />
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* モバイルはサイドバーが無いので、ここにも同じナビの入口を置く
+          ——設定に入ったら Project へ戻れない、をなくす */}
+      {isMobile ? (
+        <header className="flex h-12 shrink-0 items-center gap-1.5 border-b border-border px-2">
+          <MobileNavDrawer projectId={null} />
+          <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">設定</p>
+        </header>
+      ) : null}
+      <div className="min-h-0 flex-1">
+        <SettingsShell
+          categories={CATEGORIES}
+          moduleImplementations={moduleItems}
+          renderContent={(section) => renderSection(section, canvases)}
+          extraSearchEntries={buildSearchEntries()}
+        />
+      </div>
     </div>
   );
 }

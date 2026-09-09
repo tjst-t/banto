@@ -11,7 +11,7 @@ import { test, expect } from "@playwright/test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openApp } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -27,11 +27,7 @@ test("Command Palette の「Module の入口」から、AI を介さずに画面
   page.on("pageerror", (err) => pageErrors.push(err.message));
 
   await openApp(page);
-  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
-  await page.getByLabel("Project 名").fill(PROJECT_NAME);
-  await page.getByLabel("Base パス").fill(projectRoot);
-  await page.getByRole("button", { name: "作成する" }).click();
-  await expect(page.getByText(`Base Thread — ${PROJECT_NAME}`)).toBeVisible({ timeout: 15_000 });
+  await createProject(page, PROJECT_NAME, projectRoot);
 
   // ---- 1. 入口が出る（**AI には一言も頼んでいない**）---------------------
   await page.getByRole("button", { name: "検索（Command Palette）" }).click();
@@ -50,7 +46,7 @@ test("Command Palette の「Module の入口」から、AI を介さずに画面
   await expect(page.getByText(/^Canvas — filesystem$/), "入口から Canvas が開かなかった").toBeVisible({
     timeout: 30_000,
   });
-  await expect(page.getByText(`Base Thread — ${PROJECT_NAME}`), "Canvas を開いたら会話が消えた").toBeVisible();
+  await expectProjectOpen(page, PROJECT_NAME, "Canvas を開いたら会話が消えた");
 
   // ---- 3. 中身が本物（Canvas が自分で取りに行く）------------------------
   await expect(

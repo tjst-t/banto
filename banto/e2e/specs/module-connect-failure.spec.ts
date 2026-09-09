@@ -15,7 +15,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN, DATA_DIR } from "../config.js";
-import { openApp } from "../helpers.js";
+import { expectProjectOpen, openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -54,7 +54,7 @@ test("Module が繋がらなくても、会話は進み、受信箱に1件だけ
   writeFileSync(join(DATA_DIR, "modules", `filesystem-${project.id}`), "ディレクトリではない\n");
 
   await page.goto(`/p/${project.id}`);
-  await expect(page.getByText(`Base Thread — ${PROJECT_NAME}`)).toBeVisible({ timeout: 30_000 });
+  await expectProjectOpen(page, PROJECT_NAME);
 
   const assistantCount = async () => {
     const t = await (
