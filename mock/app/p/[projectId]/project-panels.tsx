@@ -14,11 +14,21 @@ import { ThreadPanel, type ThreadMarker } from "@/components/banto/thread/thread
 import { getProject } from "@/lib/mock/projects";
 import { closeThread, getThread } from "@/lib/mock/threads";
 
-function PanelHeader({ title, children }: { title: string; children?: ReactNode }) {
+function PanelHeader({
+  leading,
+  title,
+  children,
+}: {
+  /** ヘッダの左端に置くもの（モバイルのナビの入口） */
+  leading?: ReactNode;
+  title: string;
+  children?: ReactNode;
+}) {
   return (
-    <div className="flex h-11 shrink-0 items-center justify-between border-b border-border px-3">
-      <p className="truncate text-sm font-medium text-foreground">{title}</p>
-      <div className="flex shrink-0 gap-1.5">{children}</div>
+    <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-border px-2 md:px-3">
+      {leading}
+      <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{title}</p>
+      <div className="flex shrink-0 items-center gap-1.5">{children}</div>
     </div>
   );
 }
@@ -29,12 +39,16 @@ function ClosablePanelHeader({
   icon: Icon,
   onClose,
   closeLabel,
+  titleIcon: TitleIcon,
   title,
   trailing,
 }: {
   icon: typeof ArrowLeft;
   onClose: () => void;
   closeLabel: string;
+  /** 何の面か（Fork Thread・Canvas）はアイコンで示す——狭い幅では文字の接頭辞が
+      題そのものを押し出してしまう（3層のときフォーク名が「会話UIを一か…」で切れていた） */
+  titleIcon?: typeof ArrowLeft;
   title: string;
   trailing?: ReactNode;
 }) {
@@ -48,7 +62,10 @@ function ClosablePanelHeader({
       >
         <Icon className="size-4" />
       </button>
-      <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{title}</p>
+      {TitleIcon ? <TitleIcon className="size-4 shrink-0 text-ink-3" /> : null}
+      <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground" title={title}>
+        {title}
+      </p>
       {trailing}
     </div>
   );
@@ -114,7 +131,9 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
         <div className="flex h-full min-h-0 flex-col">
           <PanelHeader title={`Base Thread — ${project.name}`}>
             <ContextUsageMeter threadId={project.baseThreadId} />
-            <IconHeaderButton icon={GitFork} label="Fork を開く" onClick={() => stack.open({ fork: "ui" })} />
+            {/* 「Fork を開く」（固定の Fork へ飛ぶデモ用ボタン）は置かない——
+                開いている Fork はサイドバーの目次に常に出ているので、ヘッダから
+                同じ場所へ行く二重の口を持たない（規則3） */}
             <IconHeaderButton
               icon={Clock}
               label="履歴"
@@ -147,7 +166,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               icon={ArrowLeft}
               onClose={() => stack.close("fork")}
               closeLabel={`${project.name} の Base Thread に戻る`}
-              title={`Fork Thread — ${thread?.title ?? threadId}`}
+              titleIcon={GitFork}
+              title={thread?.title ?? threadId}
               trailing={
                 <div className="flex items-center gap-1.5">
                   <ContextUsageMeter threadId={threadId} />

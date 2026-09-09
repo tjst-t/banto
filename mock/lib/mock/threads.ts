@@ -299,6 +299,20 @@ let mockThreads: MockThread[] = [
     status: "open",
   },
   {
+    // 別 Project にも開いている Fork を1本置く——サイドバーの目次が
+    // 「いまどの Project で何が走っているか」を出せているか見るため
+    id: "hermes-embedding",
+    projectId: "hermes",
+    kind: "fork",
+    title: "埋め込みの再計算コストを測る",
+    parentThreadId: "hermes-base",
+    script: {
+      seed: [{ t: "text", text: "この Fork では、記憶を作り直すときの再計算コストを測っています。" }],
+      replies: [{ match: "*", steps: [{ t: "delay", ms: 300 }, { t: "text", text: "（ダミー応答）" }] }],
+    },
+    status: "open",
+  },
+  {
     id: "old-migration-base",
     projectId: "old-migration",
     kind: "base",

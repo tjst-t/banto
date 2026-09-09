@@ -496,6 +496,47 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
   2回目は自動承認で待ちが出ない／中継の拒否で止まる／既存の Elicitation・承認ゲートのデモの回帰／
   **`bypassPermissions` では `runCommand` 自身の承認は飛ぶが、入れ子の承認は出る**
 
+### サイドバーを2段階の幅に、Fork Thread を目次として常に見せる（2026-09-09、提案）
+
+**発端**：ユーザー指摘「幅が狭くてアイコンしか出ないので不便。Project 名が読めたほうがよい。
+合わせて Fork Thread の表示も見直したい」。**まだ決定ではなく、画面で見て決めるための提案**
+——採るなら `docs/specs/v4-frontend.md` に書き戻す。**今回はデスクトップのみ**
+（モバイルの `MobileTopBar` は触っていない）。
+
+- **幅は2段階**（`ProjectRail`）——展開 16rem（既定）⇄ 畳んだ 58px のレール（従来の見た目）。
+  shadcn Sidebar の `collapsible="icon"` にそのまま乗る（規則12）。切り替えはヘッダの
+  `PanelLeft` ボタンか ⌘B / Ctrl-B（Sidebar 内蔵）。**畳んだかどうかは localStorage に残す**
+  ——`/settings` と `/p/[projectId]` はレイアウトが別で SidebarProvider が作り直されるため、
+  覚えていないと行き来のたびに開いてしまう（明暗切替と同じ「選択が残る」扱い）
+- **展開時は「Project ＋ その中の Thread の目次」**——Project 名の行の下に、Base Thread と
+  **開いている Fork Thread が常に一覧で見えている**。従来は Project アイコンの角に付いた
+  3px の点（ポップオーバー）だけで、Fork がそこにあることが分からなかった
+  ——Fork は「いま並行して走っている作業」なので、探しに行くものではない
+- **目次の上で畳める**——Fork の行にホバーすると `GitMerge` が出て、その場で畳める
+  （開いている Fork を畳んだら Base Thread に戻る）。閉じた Fork は
+  「閉じた Fork（N）」の行から履歴（`ArchiveDialog`）へ。**この行はいま開いている Project
+  にだけ出す**——履歴はいまの Project の閉じた Fork を見せるので、別 Project の行から
+  開くと中身が食い違う
+- **目次を開くかどうかは、いま開いている Project かどうかから導出**（規則3）。人が
+  chevron を押した Project だけ、その選択を覚える
+- **Fork パネルのヘッダから「Fork Thread — 」の接頭辞を外し、`GitFork` アイコンに置き換えた**
+  ——3層（Base の帯＋Fork＋Canvas）では幅が狭く、接頭辞が題そのものを押し出していた
+  （「会話UIを一か…」で切れていた）
+- **Base Thread ヘッダの「Fork を開く」（固定の Fork へ飛ぶボタン）は削除**——開いている
+  Fork はサイドバーに常に出ているので、同じ場所への二重の口を持たない（規則3）
+- **矢印キー**：`use-roving-focus` を Project の一覧にも適用（Archive・設定・受信箱と同じ）
+- `lib/mock/threads.ts` に**別 Project（記憶の検証）の開いている Fork を1本追加**——
+  「どの Project で何が走っているか」が目次で読めるか見るため
+- Playwright で実測（規則13・14）：展開時の幅256px・畳んだとき58px／目次の中身
+  （Base Thread・Fork 名・閉じた Fork の件数）／Fork 行→`?fork=`・Base 行→パラメータ無し・
+  選択中の行の追随／別 Project の chevron→その Fork へ遷移／目次から畳む→URL が Base に戻り
+  件数が「閉じた Fork（1）」に増える／畳んだレールでのバッジ・ポップオーバー／
+  `/settings` へ行き来しても畳んだ状態が残る／ArrowDown の移動順／受信箱・検索・
+  新しい Project・履歴・テーマの各入口／1280・1024 幅での3層表示
+- **既知の窮屈さ**：幅1024で Fork＋Canvas の3層を開くと Fork 側が約215pxになり、ヘッダの
+  題が消える（メーターと「…」だけが残る）。狭い画面ではサイドバーを畳む前提——
+  自動で畳むかどうかは、実際に使ってから決める
+
 ## まだ実装していない
 
 §10.0のD群（プロトタイプが要る項目）のうち、以下は未着手：
@@ -512,6 +553,12 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
 
 ## 実装上、次のセッションが踏みやすい罠
 
+- **新しいホスト名で開くときは`next.config.ts`の`allowedDevOrigins`に足す。**
+  無いと`/_next/*`の取得が**Originヘッダ付きのときだけ**403になり、HTMLは描かれるのに
+  JSが落ちて**画面は出るがボタンが何も効かない**という壊れ方をする（Nextのdev用
+  クロスオリジン保護）。curlで叩くと（Originを送らないので）200が返り、再現しない
+  ——切り分けるときは`-H "Origin: http://<そのホスト名>"`を付ける。
+  2026-09-09に`mock.banto.tjstkm.net`（Caddy経由）で実際に踏んだ
 - **`ChatModelAdapter`の`run()`は、`addResult`/`respondToApproval`のたびに
   「新しく呼び直される」。** 既存の`content`を再yieldすると重複キーで壊れる
   ——`lib/mock/adapter.ts`の`findAnsweredTool`パターンを参照

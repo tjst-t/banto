@@ -31,9 +31,7 @@ async function layout(page: import("@playwright/test").Page) {
       const r = el.getBoundingClientRect();
       return { top: Math.round(r.top), bottom: Math.round(r.bottom) };
     };
-    const scroller = [...document.querySelectorAll("*")].find(
-      (e) => e.scrollHeight > e.clientHeight + 4 && e.clientHeight > 100,
-    );
+    const scroller = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]');
     return {
       innerHeight: window.innerHeight,
       documentScrollHeight: document.documentElement.scrollHeight,
@@ -98,9 +96,7 @@ test("携帯では、ヘッダと入力欄が常に見えて、履歴は端ま�
   // **一番上まで辿れる**（開いた直後は一番下にいる）
   const scrollTo = async (to: "top" | "bottom") =>
     page.evaluate((to) => {
-      const el = [...document.querySelectorAll("*")].find(
-        (e) => e.scrollHeight > e.clientHeight + 4 && e.clientHeight > 100,
-      );
+      const el = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]');
       if (!el) return;
       el.scrollTo({ top: to === "top" ? 0 : el.scrollHeight, behavior: "instant" });
     }, to);
@@ -118,4 +114,103 @@ test("携帯では、ヘッダと入力欄が常に見えて、履歴は端ま�
     page.locator('[data-role="assistant"]').last(),
     "一番下まで辿っても、最後の返事が見えない",
   ).toBeVisible();
+});
+
+/**
+ * 一番下にいるときの「位置関係」を測る。
+ *
+ * **間隔の px を比べてはいけない**（実測・2026-09-07で踏んだ）——中身が画面を
+ * 埋めていないときの間隔は「余白」であって位置関係ではない（高さ840では317px、
+ * 縮めて中身が溢れると35px）。**約束は「一番下のまま、最後の発言が隠れない」**。
+ */
+async function bottomState(page: import("@playwright/test").Page) {
+  return page.evaluate(() => {
+    const sc = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]');
+    if (!sc) return null;
+    const last = [...sc.querySelectorAll("[data-role]")].at(-1);
+    const composer = document.querySelector("textarea");
+    const header = document.querySelector("header");
+    if (!last || !composer || !header) return null;
+    const lastRect = last.getBoundingClientRect();
+    return {
+      atBottom: sc.scrollHeight - sc.scrollTop - sc.clientHeight <= 4,
+      overflowing: sc.scrollHeight > sc.clientHeight + 4,
+      scrollTop: Math.round(sc.scrollTop),
+      lastBottom: Math.round(lastRect.bottom),
+      lastTop: Math.round(lastRect.top),
+      composerTop: Math.round(composer.getBoundingClientRect().top),
+      headerBottom: Math.round(header.getBoundingClientRect().bottom),
+    };
+  });
+}
+
+test("一番下にいるときは、キーボードが出ても一番下のまま", async ({ page }) => {
+  // **一番下にいた人が最後の発言を見失わない**（ユーザー要望・2026-09-07）。
+  // 実測（直す前）：高さを縮めると `atBottom` が false に落ち、最後の発言は
+  // 入力欄より下（bottom=703 / 入力欄 top=319）に取り残されていた。
+  // **一番下以外では位置を動かさない**（読んでいるものを奪わない）。
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-mobile-kb-"));
+
+  await openApp(page);
+  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
+  await page.getByLabel("Project 名").fill("E2E Mobile Keyboard");
+  await page.getByLabel("Base パス").fill(projectRoot);
+  await page.getByRole("button", { name: "作成する" }).click();
+  await expect(page.getByText("Base Thread — E2E Mobile Keyboard")).toBeVisible({ timeout: 15_000 });
+
+  const composer = page.getByPlaceholder(/に送る/);
+  await composer.fill("1 から 80 までの数字を、1行に1つずつ、番号だけ並べて出して。");
+  await composer.press("Enter");
+  await expect(page.locator('[data-role="assistant"]').filter({ hasText: "80" })).toBeVisible({
+    timeout: 120_000,
+  });
+  await page.waitForTimeout(1000);
+
+  const toBottom = async () =>
+    page.evaluate(() => {
+      const sc = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]');
+      sc?.scrollTo({ top: sc.scrollHeight, behavior: "instant" });
+    });
+
+  // **着くまで待つ**——返事の直後は中身の高さがまだ動く
+  // （`mobile-transcript-height-jump`）。待ちを延ばすのではなく、着いたことを条件にする
+  await expect
+    .poll(async () => {
+      await toBottom();
+      return (await bottomState(page))?.atBottom ?? false;
+    }, { timeout: 20_000 })
+    .toBe(true);
+
+  // キーボードが出た相当（レイアウトが縮む）
+  await page.setViewportSize({ width: 412, height: 420 });
+  await page.waitForTimeout(1000);
+  const after = await bottomState(page);
+  expect(after?.overflowing, "縮めても中身が溢れていない（この試験の意味が無い）").toBe(true);
+  expect(after?.atBottom, "キーボードで一番下から外れた").toBe(true);
+  expect(
+    after!.lastBottom,
+    `最後の発言が入力欄より下に取り残されている（発言の下端 ${after!.lastBottom} / 入力欄の上端 ${after!.composerTop}）`,
+  ).toBeLessThanOrEqual(after!.composerTop);
+  expect(after!.lastBottom, "最後の発言が画面より上に消えている").toBeGreaterThan(after!.headerBottom);
+
+  // ---- 一番下以外では動かさない -------------------------------------------
+  // **溢れている状態で**途中を読む形を作る（高さ840では中身が溢れず、
+  // 「途中」を作れない——実測で踏んだ）。キーボードがさらに高くなる場合に相当
+  const middle = await page.evaluate(() => {
+    const sc = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]');
+    if (!sc) return 0;
+    sc.scrollTo({ top: Math.round((sc.scrollHeight - sc.clientHeight) / 2), behavior: "instant" });
+    return Math.round(sc.scrollTop);
+  });
+  expect(middle, "途中の位置を作れていない").toBeGreaterThan(20);
+  await page.waitForTimeout(500);
+
+  await page.setViewportSize({ width: 412, height: 320 });
+  await page.waitForTimeout(1000);
+  const afterMiddle = await bottomState(page);
+  expect(afterMiddle?.atBottom, "前提が崩れている（途中のはずが一番下にいる）").toBe(false);
+  expect(
+    Math.abs((afterMiddle?.scrollTop ?? 0) - middle),
+    `途中を読んでいたのに位置が動いた（${middle} → ${afterMiddle?.scrollTop}）`,
+  ).toBeLessThanOrEqual(8);
 });

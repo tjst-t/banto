@@ -1,16 +1,15 @@
 "use client";
 
 // prototype の `.shell`（.rail + .rooms）に対応する外枠。
-// ≥md: ProjectRail（58px 縦レール）+ PanelStack
-// <md: MobileTopBar（上部バー）+ PanelStack
-import { Suspense, useEffect, type ReactNode } from "react";
+// ≥md: ProjectRail（サイドバー。展開 16rem ⇄ 畳んで 58px）+ PanelStack
+// <md: PanelStack だけ（ナビは各パネルのヘッダの ≡ → MobileNavDrawer）
+import { Suspense, useEffect, useState, type ReactNode } from "react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { ArchiveDialog } from "@/components/banto/archive/archive-dialog";
 import { InboxOverlay } from "@/components/banto/inbox/inbox-overlay";
 import { CommandPalette } from "@/components/banto/palette/command-palette";
 import { usePanelStack } from "./use-panel-stack";
 import { ProjectRail } from "./project-rail";
-import { MobileTopBar } from "./mobile-top-bar";
 
 // usePanelStack が useSearchParams を使う（searchParams 駆動、§3.1）ので、
 // AppShell 自身の中に Suspense 境界を持つ——呼び出し側（各 layout.tsx）に
@@ -29,6 +28,29 @@ export function AppShell(props: {
   );
 }
 
+const SIDEBAR_PREF_KEY = "banto.sidebar.open";
+
+/**
+ * サイドバーを畳んだかどうかを覚える（要件E7「選択が残る」——明暗切替と同じ扱い）。
+ * `/settings` と `/p/[projectId]` はレイアウトが別なので、行き来のたびに
+ * SidebarProvider が作り直される——ここで覚えていないと畳んだはずが毎回開く。
+ *
+ * 読み出しはマウント後の1回だけ（サーバは localStorage を知らない——初期描画で
+ * 読むとハイドレーション不一致になる。ThemeToggle と同じ形）
+ */
+function useSidebarOpenPreference() {
+  const [open, setOpenState] = useState(true);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- 上記コメント参照
+    if (window.localStorage.getItem(SIDEBAR_PREF_KEY) === "false") setOpenState(false);
+  }, []);
+  function setOpen(next: boolean) {
+    setOpenState(next);
+    window.localStorage.setItem(SIDEBAR_PREF_KEY, String(next));
+  }
+  return { open, setOpen };
+}
+
 function AppShellInner({
   projectId,
   children,
@@ -39,6 +61,7 @@ function AppShellInner({
   // 受信箱は Project 単位の MCP 接続の外側にある入れ物（§2.4.1）——
   // どの Project を見ていても、同じ overlay 状態（searchParams）で開ける
   const stack = usePanelStack(projectId ?? "");
+  const sidebar = useSidebarOpenPreference();
 
   // Ctrl-K / Cmd-K でどこからでも開く（§6.3「探すときの入口も1つ」）。
   // ブラウザ既定のショートカット（住所バーへのフォーカス等）を上書きする
@@ -55,9 +78,11 @@ function AppShellInner({
 
   return (
     <SidebarProvider
-      defaultOpen={false}
+      open={sidebar.open}
+      onOpenChange={sidebar.setOpen}
       style={
         {
+          "--sidebar-width": "16rem",
           "--sidebar-width-icon": "58px",
         } as React.CSSProperties
       }
@@ -65,16 +90,13 @@ function AppShellInner({
     >
       <ProjectRail
         activeProjectId={projectId}
+        activeForkThreadId={stack.forkThreadId}
         onOpenInbox={() => stack.open({ overlay: "inbox" })}
         onOpenPalette={() => stack.open({ overlay: "palette" })}
         onOpenArchive={() => stack.open({ overlay: "archive" })}
       />
-      <MobileTopBar
-        activeProjectId={projectId}
-        onOpenInbox={() => stack.open({ overlay: "inbox" })}
-        onOpenPalette={() => stack.open({ overlay: "palette" })}
-        onOpenArchive={() => stack.open({ overlay: "archive" })}
-      />
+      {/* モバイルは専用の上部バーを持たない（決定・2026-09-09）——ナビは各パネルの
+          ヘッダ左端の ≡（MobileNavDrawer）に寄せ、常時2段だったヘッダを1段にした */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{children}</div>
       <InboxOverlay
         open={stack.overlay === "inbox"}
