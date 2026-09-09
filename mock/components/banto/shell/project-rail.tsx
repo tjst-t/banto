@@ -40,6 +40,7 @@ import { getThreadsForProject } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { cn } from "@/lib/utils";
 import { getJudgmentCount, NavPanel, ProjectInitial } from "./nav-panel";
+import { SidebarResizeHandle } from "./sidebar-resize-handle";
 import { ThemeToggle } from "./theme-toggle";
 
 /** 畳んだ状態のレールで使う、正方形のアイコンボタン */
@@ -107,8 +108,12 @@ function CollapsedRail({
       {/* shadcn の SidebarContent は collapsible="icon" のとき自分自身に overflow-hidden
           を掛ける（テキストラベルを隠す用途）。畳んだレールは常時アイコンのみなので
           その用途は無く、逆に Fork Thread バッジ（先頭の項目だと -top-0.5 で自分の
-          外にはみ出す）の上側を切ってしまっていた——!overflow-visible で外す */}
-      <SidebarContent className="!overflow-visible items-center gap-1 px-0">
+          外にはみ出す）の上側を切ってしまっていた。
+          **かつては overflow-visible で外していたが、Project が増えると一覧が
+          下の段（履歴・設定・明暗）の上に溢れ、設定が押せなくなっていた**
+          （本実装側の E2E で実測・2026-09-09）——縦だけスクロールさせ、
+          バッジのぶんの余白（pt-1）を上に取ることで両方を満たす */}
+      <SidebarContent className="!overflow-x-hidden !overflow-y-auto items-center gap-1 px-0 pt-1">
         <SidebarMenu className="items-center gap-1 px-0">
           {getActiveProjects().map((project) => {
             const active = project.id === activeProjectId;
@@ -205,6 +210,9 @@ function CollapsedRail({
 export function ProjectRail({
   activeProjectId,
   activeForkThreadId,
+  width,
+  onResize,
+  onResizeEnd,
   onOpenInbox,
   onOpenPalette,
   onOpenArchive,
@@ -213,6 +221,10 @@ export function ProjectRail({
   activeProjectId: string | null;
   /** いま開いている Fork Thread（目次のどの行を選択中として出すか） */
   activeForkThreadId: string | null;
+  /** 展開しているときの幅（px）。持っているのは AppShell（規則3） */
+  width: number;
+  onResize: (width: number) => void;
+  onResizeEnd: (width: number) => void;
   onOpenInbox: () => void;
   onOpenPalette: () => void;
   onOpenArchive: () => void;
@@ -227,6 +239,9 @@ export function ProjectRail({
       <SidebarBody
         activeProjectId={activeProjectId}
         activeForkThreadId={activeForkThreadId}
+        width={width}
+        onResize={onResize}
+        onResizeEnd={onResizeEnd}
         onOpenInbox={onOpenInbox}
         onOpenPalette={onOpenPalette}
         onOpenArchive={onOpenArchive}
@@ -241,6 +256,9 @@ export function ProjectRail({
 function SidebarBody({
   activeProjectId,
   activeForkThreadId,
+  width,
+  onResize,
+  onResizeEnd,
   onOpenInbox,
   onOpenPalette,
   onOpenArchive,
@@ -248,6 +266,9 @@ function SidebarBody({
 }: {
   activeProjectId: string | null;
   activeForkThreadId: string | null;
+  width: number;
+  onResize: (width: number) => void;
+  onResizeEnd: (width: number) => void;
   onOpenInbox: () => void;
   onOpenPalette: () => void;
   onOpenArchive: () => void;
@@ -256,6 +277,7 @@ function SidebarBody({
   const { state, toggleSidebar } = useSidebar();
 
   if (state === "collapsed") {
+    // 畳んでいるときは幅が決め打ち（58px のレール）なので、掴む口は出さない
     return (
       <CollapsedRail
         activeProjectId={activeProjectId}
@@ -268,6 +290,8 @@ function SidebarBody({
   }
 
   return (
+    <>
+    <SidebarResizeHandle width={width} onResize={onResize} onResizeEnd={onResizeEnd} />
     <NavPanel
       activeProjectId={activeProjectId}
       activeForkThreadId={activeForkThreadId}
@@ -291,5 +315,6 @@ function SidebarBody({
         </Tooltip>
       }
     />
+    </>
   );
 }

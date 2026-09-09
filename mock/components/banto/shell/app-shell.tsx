@@ -10,6 +10,7 @@ import { InboxOverlay } from "@/components/banto/inbox/inbox-overlay";
 import { CommandPalette } from "@/components/banto/palette/command-palette";
 import { usePanelStack } from "./use-panel-stack";
 import { ProjectRail } from "./project-rail";
+import { clampSidebarWidth, SIDEBAR_WIDTH_DEFAULT } from "./sidebar-resize-handle";
 
 // usePanelStack が useSearchParams を使う（searchParams 駆動、§3.1）ので、
 // AppShell 自身の中に Suspense 境界を持つ——呼び出し側（各 layout.tsx）に
@@ -29,6 +30,7 @@ export function AppShell(props: {
 }
 
 const SIDEBAR_PREF_KEY = "banto.sidebar.open";
+const SIDEBAR_WIDTH_KEY = "banto.sidebar.width";
 
 /**
  * サイドバーを畳んだかどうかを覚える（要件E7「選択が残る」——明暗切替と同じ扱い）。
@@ -51,6 +53,30 @@ function useSidebarOpenPreference() {
   return { open, setOpen };
 }
 
+/**
+ * サイドバーの幅（ドラッグで変えられる、決定・2026-09-09）。畳んだかどうかと
+ * 同じ扱いで覚える。**幅の真実はここ1つ**——`--sidebar-width` として
+ * SidebarProvider に渡し、掴んで動かす側（SidebarResizeHandle）は
+ * 値を持たずに変更を返すだけ（規則3）
+ */
+function useSidebarWidthPreference() {
+  const [width, setWidthState] = useState(SIDEBAR_WIDTH_DEFAULT);
+  useEffect(() => {
+    const saved = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY));
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- サーバは localStorage を知らない（open と同じ理由）
+    if (Number.isFinite(saved) && saved > 0) setWidthState(clampSidebarWidth(saved));
+  }, []);
+  return {
+    width,
+    /** ドラッグ中：描画だけ更新する（1回のドラッグで何十回も保存しない） */
+    setWidth: setWidthState,
+    /** 手を離した：覚える */
+    persistWidth(next: number) {
+      window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next));
+    },
+  };
+}
+
 function AppShellInner({
   projectId,
   children,
@@ -62,6 +88,7 @@ function AppShellInner({
   // どの Project を見ていても、同じ overlay 状態（searchParams）で開ける
   const stack = usePanelStack(projectId ?? "");
   const sidebar = useSidebarOpenPreference();
+  const sidebarWidth = useSidebarWidthPreference();
 
   // Ctrl-K / Cmd-K でどこからでも開く（§6.3「探すときの入口も1つ」）。
   // ブラウザ既定のショートカット（住所バーへのフォーカス等）を上書きする
@@ -82,7 +109,7 @@ function AppShellInner({
       onOpenChange={sidebar.setOpen}
       style={
         {
-          "--sidebar-width": "16rem",
+          "--sidebar-width": `${sidebarWidth.width}px`,
           "--sidebar-width-icon": "58px",
         } as React.CSSProperties
       }
@@ -91,6 +118,9 @@ function AppShellInner({
       <ProjectRail
         activeProjectId={projectId}
         activeForkThreadId={stack.forkThreadId}
+        width={sidebarWidth.width}
+        onResize={sidebarWidth.setWidth}
+        onResizeEnd={sidebarWidth.persistWidth}
         onOpenInbox={() => stack.open({ overlay: "inbox" })}
         onOpenPalette={() => stack.open({ overlay: "palette" })}
         onOpenArchive={() => stack.open({ overlay: "archive" })}
