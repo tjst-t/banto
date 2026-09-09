@@ -109,4 +109,47 @@ test("サイドバー：Project 名と Thread の目次が読めて、畳んだ�
   // ダブルクリックで既定に戻る
   await handle.dblclick();
   await expectSidebarWidth(sidebar, 256);
+
+  // ---- 別の Project へ移っても、幅は**一瞬も**既定に戻らない ---------------
+  // （ユーザー報告・2026-09-09：一度既定の幅になってから変更した幅に直っていた。
+  //  `/p/[projectId]` はルートごとに layout を持ち、Project を移ると AppShell が
+  //  作り直される——幅を React の state に置いて effect で読み直していたため）
+  // 掴む場所は**その時点で**測り直す——幅が変わると境界も動いている
+  const movedBox = (await handle.boundingBox())!;
+  await page.mouse.move(movedBox.x + movedBox.width / 2, movedBox.y + 200);
+  await page.mouse.down();
+  await page.mouse.move(320, movedBox.y + 200, { steps: 10 });
+  await page.mouse.up();
+  await expectSidebarWidth(sidebar, 320);
+
+  const secondRoot = mkdtempSync(join(tmpdir(), "banto-e2e-"));
+  await createProject(page, `${PROJECT_NAME} 2`, secondRoot);
+
+  // 毎フレーム測り続ける見張りを仕込む（クライアント遷移では文書は同じなので残る）。
+  // 要素は毎回引き直す——遷移でサイドバーは作り直されるため
+  await page.evaluate(() => {
+    const widths: number[] = [];
+    (window as { __sidebarWidths?: number[] }).__sidebarWidths = widths;
+    const tick = () => {
+      const el = document.querySelector('[data-slot="sidebar-container"]');
+      if (el) widths.push(Math.round(el.getBoundingClientRect().width));
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+
+  // 行の読み上げ名は「頭文字 ＋ Project 名」——**末尾一致**で1つ目に絞る
+  // （前方一致だと「… 2」にも当たる）
+  await sidebar.getByRole("link", { name: new RegExp(`${PROJECT_NAME}$`) }).click();
+  await expect(page.getByText(`Base Thread — ${PROJECT_NAME}`, { exact: true })).toBeVisible({
+    timeout: 15_000,
+  });
+  const observed = await page.evaluate(
+    () => (window as { __sidebarWidths?: number[] }).__sidebarWidths ?? [],
+  );
+  expect(observed.length, "見張りが1フレームも測れていない").toBeGreaterThan(5);
+  expect(
+    [...new Set(observed)],
+    "Project を移る途中で幅が変わった（既定に戻ってから直っている）",
+  ).toEqual([320]);
 });
