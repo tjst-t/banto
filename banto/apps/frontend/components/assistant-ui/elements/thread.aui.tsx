@@ -27,7 +27,8 @@ import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-ic
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { KeepBottomDistanceOnResize } from "@/components/banto/thread/keep-bottom-distance-on-resize";
+import { KeepScrollPositionOnResize } from "@/components/banto/thread/keep-scroll-position-on-resize";
+import { KeyboardDebugOverlay } from "@/components/banto/thread/keyboard-debug-overlay";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -64,6 +65,8 @@ import {
   createContext,
   Fragment,
   useContext,
+  useEffect,
+  useState,
   type ComponentType,
   type FC,
   type PropsWithChildren,
@@ -149,6 +152,15 @@ const ThreadHistorySkeleton: FC = () => (
   </div>
 );
 
+/** `?kbdebug=1` が付いているときだけ覗き窓を出す（普段は何も描かない）。 */
+const KeyboardDebugWhenAsked: FC = () => {
+  const [asked, setAsked] = useState(false);
+  useEffect(() => {
+    setAsked(new URLSearchParams(window.location.search).get("kbdebug") === "1");
+  }, []);
+  return asked ? <KeyboardDebugOverlay /> : null;
+};
+
 export const Thread: FC<ThreadProps> = ({
   components = EMPTY_COMPONENTS,
   autoFocus = true,
@@ -198,10 +210,14 @@ const ThreadRoot: FC<{
         data-slot="aui_thread-viewport"
         className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
       >
-        {/* キーボードや URL バーで高さが変わっても、履歴と入力欄の位置関係を保つ
-            （決定・2026-09-07、ユーザー要望）——保つのは「下からの距離」で、
-            一番下にいる場合（距離0）はその特別な場合 */}
-        <KeepBottomDistanceOnResize />
+        {/* キーボードや URL バーで高さが変わっても、見えているものを保つ
+            （決定・2026-09-09、根本見直し）。実内容が入力欄の下に続いていれば
+            入力欄との間隔を保ち、下が「最後のターンの余白」だけなら動かさない
+            ——余白の伸縮は assistant-ui（turnAnchor="top" の reserve）が行う */}
+        <KeepScrollPositionOnResize />
+        {/* `?kbdebug=1` のときだけ出る覗き窓（実機で何が起きているかを測るため。
+            決定・2026-09-09——エミュレータでは実機のキーボード動作を作れない） */}
+        <KeyboardDebugWhenAsked />
         <div
           className={cn(
             "mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col px-4 pt-4",

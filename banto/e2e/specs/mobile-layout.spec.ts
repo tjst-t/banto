@@ -289,3 +289,98 @@ test("キーボードが出ても、履歴と入力欄の位置関係が変わ�
     `入力欄が伸び縮みしたら履歴が動いた（間隔 ${beforeComposerChange!.gapToComposer} → ${afterComposerChange!.gapToComposer}）`,
   ).toBeLessThanOrEqual(8);
 });
+
+test("返事の直後（最後のターンが上端に固定された位置）でキーボードを開閉しても、元の位置に戻る", async ({
+  page,
+}) => {
+  // **実機で報告された不具合そのもの**（2026-09-07：閉じたときに前のターンの
+  // あたりまで戻る）。これまでの試験は手でスクロールしてから測っていたため、
+  // **「送って、返事が来て、そのまま」**という一番よくある状態を見ていなかった。
+  //
+  // この状態では assistant-ui（turnAnchor="top"）が最後のターンを器の上端に固定し、
+  // ターンの下に reserve（余白）を置いている。reserve は器の高さに追従するが
+  // **1フレーム遅れる**ので、閉じた瞬間にブラウザが scrollTop を切り詰め、さらに
+  // 自前部品が「高さの差分」を引いて**二重に戻っていた**
+  // （実測・修正前：scrollTop 2136 → 1304、アンカーが画面の 94 → 926 に落ちた）。
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-mobile-pin-"));
+
+  await openApp(page);
+  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
+  await page.getByLabel("Project 名").fill("E2E Mobile Keyboard Pin");
+  await page.getByLabel("Base パス").fill(projectRoot);
+  await page.getByRole("button", { name: "作成する" }).click();
+  await expect(page.getByText("Base Thread — E2E Mobile Keyboard Pin")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  const composer = page.getByPlaceholder(/に送る/);
+
+  // ターン1：**「前のターン」となる中身**を作っておく（戻り先が見えるように長め）
+  const longText = Array.from({ length: 80 }, (_, i) => `前ターン行 ${i + 1}`).join("\n");
+  await composer.fill(`${longText}\n\nこの一覧は読まなくていいです。「はい」とだけ返して。`);
+  await composer.press("Enter");
+  await expect(page.locator('[data-role="assistant"]')).toHaveCount(1, { timeout: 120_000 });
+  await expect(page.locator('[data-role="assistant"]').last()).toContainText(/はい/, {
+    timeout: 120_000,
+  });
+  // **走行が終わってから次を送る**——返事の文字はストリーミング途中でも見えるので、
+  // 文字だけを待つと走行中に Enter を押してしまい、次のターンが走らないことがある
+  // （実測・2026-09-09：user発言は足されたのに返事が来ないまま120秒切れた）。
+  // 「何秒か待つ」ではなく、走行中だけ出る停止ボタンが消えたことを条件にする（規則6）
+  await expect(page.getByRole("button", { name: "Stop generating" })).toHaveCount(0, {
+    timeout: 120_000,
+  });
+
+  // ターン2：これが「最後のターン」になり、器の上端に固定される
+  await composer.fill("今度も「はい」とだけ返して。");
+  await composer.press("Enter");
+  await expect(page.locator('[data-role="assistant"]')).toHaveCount(2, { timeout: 120_000 });
+  await expect(page.locator('[data-role="assistant"]').last()).toContainText(/はい/, {
+    timeout: 120_000,
+  });
+  await expect(page.getByRole("button", { name: "Stop generating" })).toHaveCount(0, {
+    timeout: 120_000,
+  });
+  // 固定へのスクロール（smooth）と中身の測り直しが終わるのを待つ
+  await page.waitForTimeout(2500);
+  await waitForStableHeight(page);
+
+  // **手でスクロールしない**——ライブラリが置いた位置のまま測る
+  const pinState = async () =>
+    page.evaluate(() => {
+      const sc = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]');
+      const anchor = sc?.querySelector<HTMLElement>("[data-aui-top-anchor-user]");
+      const lastAssistant = [...(sc?.querySelectorAll<HTMLElement>('[data-role="assistant"]') ?? [])].at(-1);
+      const composerEl = document.querySelector("textarea");
+      if (!sc || !anchor || !lastAssistant || !composerEl) return null;
+      return {
+        scrollTop: Math.round(sc.scrollTop),
+        /** アンカー（最後のuser発言）の画面上の位置——人から見た「動いたかどうか」 */
+        anchorTop: Math.round(anchor.getBoundingClientRect().top),
+        lastAssistantTop: Math.round(lastAssistant.getBoundingClientRect().top),
+        composerTop: Math.round(composerEl.getBoundingClientRect().top),
+      };
+    });
+
+  const before = await pinState();
+  expect(before, "固定位置の測定に必要な要素が無い").not.toBeNull();
+
+  // キーボードが出た相当。**最後の返事は入力欄より上に見えたまま**であること
+  await page.setViewportSize({ width: 412, height: 420 });
+  await page.waitForTimeout(1000);
+  const open = await pinState();
+  expect(
+    open!.lastAssistantTop,
+    `キーボードで最後の返事が入力欄の下に隠れた（返事の上端 ${open!.lastAssistantTop} / 入力欄の上端 ${open!.composerTop}）`,
+  ).toBeLessThan(open!.composerTop);
+
+  // **閉じたら、開く前と同じ位置に戻る**（ここが実機で壊れていた）
+  await page.setViewportSize({ width: 412, height: 840 });
+  await page.waitForTimeout(1000);
+  const closed = await pinState();
+  expect(
+    Math.abs(closed!.anchorTop - before!.anchorTop),
+    `キーボードを閉じたら履歴の位置がずれた（アンカーの画面上の位置 ${before!.anchorTop} → ${closed!.anchorTop}` +
+      `／scrollTop ${before!.scrollTop} → ${closed!.scrollTop}）`,
+  ).toBeLessThanOrEqual(8);
+});
