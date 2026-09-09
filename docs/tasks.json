@@ -21,7 +21,7 @@
     "status: pending（未着手） / in_progress / done / backlog（やると決めたが順番待ち）",
     "        / undecided（やるかどうかがまだ決まっていない——specs の未決に対応）"
   ],
-  "updatedAt": "2026-09-07",
+  "updatedAt": "2026-09-09",
   "currentPhase": "1",
   "tasks": [
     {
@@ -823,6 +823,27 @@
       "dependencies": [],
       "why": "携帯幅で測っていて気づいた（実測・2026-09-07）：履歴の器の scrollHeight が、上へスクロールする間に 16,970 → 27,708 と伸びた。上にある内容が後から測られて膨らむため、指で追っている位置がずれる（実機では「戻される」ように感じうる）。**まだ原因は切り分けていない**——コードブロック・Module の画面（iframe）・字送りのどれかが疑わしい。",
       "doneWhen": "携帯幅で一番下から一番上まで辿る間、履歴の器の scrollHeight が（新しい発言が来ていないのに）増えないことを実測する。"
+    },
+    {
+      "id": "sidebar-and-mobile-nav",
+      "phase": "4",
+      "title": "サイドバー：名前と目次が読める・幅を変えられる・モバイルはひとつの目次に",
+      "status": "done",
+      "dependencies": [],
+      "why": "ユーザー指摘（2026-09-09）：「幅が狭くてアイコンしか出ないので不便。Project 名が読めたほうがよい」「モバイルも同じように使いにくい」。デスクトップは58pxのアイコンだけのレールで Project 名が読めず、開いている Fork Thread は3pxのバッジに隠れていた。モバイルは上部バーとパネルのヘッダで常時2段（94px）を使い、履歴・設定が両方の段にあり、しかも Fork Thread へ行く口が無かった（Command Palette で探すしかない＝規則13 の不備）。",
+      "result": "「どこへ行くか」の面を1つの部品（`NavPanel`）にまとめ、デスクトップはサイドバー、モバイルは左からの Drawer で同じものを出す（規則3）。デスクトップは展開256px（200〜480pxでドラッグ可変・ダブルクリックで既定・矢印キー可）⇄ 畳んで58px、幅と畳んだ状態は localStorage に残す。開いている Fork は常時見える目次にし、その場で畳める（畳む手順は `foldForkThread()` に一本化——ヘッダからでも同じ経路）。モバイルは上部バーを廃止して段を1つ（48px）にし、ナビはヘッダ左端の ≡ に集約、受信箱だけヘッダに残す。会話・設定・ホームのどこにも ≡ を置いて戻れない画面を作らない。**途中で既存の不具合も修正**——Project が増えると畳んだレールの一覧が下の段に溢れ、設定が押せなくなっていた（E2E で25 Project のとき実測）。**E2E はほぼ全部がモバイル幅で走っており**、「新しい Project」の場所と `Base Thread — 名前` の題に依存していたため、共有手順（`openNav`/`expectProjectOpen`/`createProject`）を `e2e/helpers.ts` に集約して17本を書き換えた。仕様は `docs/specs/v4-frontend.md` §6.7 に記録。",
+      "verifiedBy": "E2E 25件通過（新規 `e2e/specs/sidebar.spec.ts` を含む——名前と目次が読める・選択中の追随・畳む/開く・別ルートでも畳んだまま・ドラッグの上下限・リロード後も残る・矢印キー・ダブルクリック）。実機ブラウザでも確認：デスクトップは実 Project 名と目次・幅256⇄58・ドラッグ400→リロード後も400、モバイルはヘッダ1段48px・Drawer から Fork を開ける・コンソールエラー無し。ビルド→サーバ再起動→実行の順で新しいビルドに対して測った。",
+      "refs": [
+        "docs/specs/v4-frontend.md",
+        "banto/apps/frontend/components/banto/shell/nav-panel.tsx",
+        "banto/apps/frontend/components/banto/shell/project-rail.tsx",
+        "banto/apps/frontend/components/banto/shell/mobile-nav-drawer.tsx",
+        "banto/apps/frontend/components/banto/shell/sidebar-resize-handle.tsx",
+        "banto/e2e/helpers.ts",
+        "banto/e2e/specs/sidebar.spec.ts",
+        "docs/notes/2026-09-09-sidebar-and-mobile-nav.md"
+      ],
+      "completedAt": "2026-09-09"
     }
   ],
   "phase0": {
