@@ -117,15 +117,17 @@ test("携帯では、ヘッダと入力欄が常に見えて、履歴は端ま�
 });
 
 /**
- * 履歴の位置関係を測る。
+ * 履歴と入力欄の位置関係を測る。
  *
- * **保つのは「下からの距離」**（`scrollHeight - scrollTop - clientHeight`）
- * ——入力欄は器の下端にあるので、この距離が同じなら入力欄との位置関係も同じ。
- * 一番下にいる場合は距離0で、それが特別な場合になる。
+ * **見るのは「ある発言と入力欄の間隔」**（`発言の上端 − 入力欄の上端`）
+ * ——ユーザーの言う「位置関係」そのもの。画面の高さが変われば入力欄は動くが、
+ * 履歴も同じだけ動いていれば、人から見て何も動いていない。
  *
- * **間隔の px（最後の発言と入力欄のあいだ）を比べてはいけない**
- * （実測・2026-09-07で踏んだ）——中身が画面を埋めていないときの間隔は「余白」
- * であって位置関係ではない（高さ840では317px、縮めて溢れると35px）。
+ * **「下からの距離」で測ってはいけない**（実測・2026-09-07で踏んだ）——
+ * 中身の高さは大きさ変更のあとに揺れる（16,970 → 19,048）ので、
+ * 見た目が動いていなくても数値は変わる。
+ * **中身が画面を埋めていないときの余白**を位置関係と数えるのも誤り
+ * （高さ840では317px、縮めて溢れると35px）。
  */
 async function bottomState(page: import("@playwright/test").Page) {
   return page.evaluate(() => {
@@ -136,7 +138,13 @@ async function bottomState(page: import("@playwright/test").Page) {
     const header = document.querySelector("header");
     if (!last || !composer || !header) return null;
     const lastRect = last.getBoundingClientRect();
+    const composerTop = composer.getBoundingClientRect().top;
     return {
+      /** 最後の発言と入力欄の間隔＝人から見た「位置関係」 */
+      gapToComposer: Math.round(lastRect.top - composerTop),
+      /** 中身の座標での位置（上の内容が伸びれば増える——別件の切り分け用） */
+      lastOffsetTop: (last as HTMLElement).offsetTop,
+      scrollHeight: sc.scrollHeight,
       bottomDistance: Math.max(0, Math.round(sc.scrollHeight - sc.scrollTop - sc.clientHeight)),
       atBottom: sc.scrollHeight - sc.scrollTop - sc.clientHeight <= 4,
       overflowing: sc.scrollHeight > sc.clientHeight + 4,
@@ -147,6 +155,35 @@ async function bottomState(page: import("@playwright/test").Page) {
       headerBottom: Math.round(header.getBoundingClientRect().bottom),
     };
   });
+}
+
+/**
+ * **中身の高さが落ち着くまで待つ。**
+ *
+ * 返事の直後は、上のほうの内容が後から測り直されて伸びる
+ * （実測・2026-09-07：16,970 → 19,048。別件 `mobile-transcript-height-jump`）。
+ * その最中に測ると、位置関係の話とは無関係な数十 px の差が出る
+ * ——**待ちを延ばすのではなく、落ち着いたことを条件にする**（規則6）。
+ */
+async function waitForStableHeight(page: import("@playwright/test").Page) {
+  const height = async () =>
+    page.evaluate(() => {
+      const sc = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]');
+      return sc?.scrollHeight ?? 0;
+    });
+  let previous = await height();
+  await expect
+    .poll(
+      async () => {
+        await page.waitForTimeout(400);
+        const now = await height();
+        const stable = now === previous && now > 0;
+        previous = now;
+        return stable;
+      },
+      { timeout: 20_000 },
+    )
+    .toBe(true);
 }
 
 test("キーボードが出ても、履歴と入力欄の位置関係が変わらない", async ({ page }) => {
@@ -163,12 +200,14 @@ test("キーボードが出ても、履歴と入力欄の位置関係が変わ�
   await page.getByRole("button", { name: "作成する" }).click();
   await expect(page.getByText("Base Thread — E2E Mobile Keyboard")).toBeVisible({ timeout: 15_000 });
 
+  // **履歴を確実に溢れさせる**——AI の返事の長さに頼らない（実測・2026-09-07：
+  // 短い返事だと履歴が画面を埋めず、「位置関係」ではなく**余白の伸び縮み**を
+  // 測ってしまう）。自分の発言そのものを長くすれば、返事の内容に関係なく溢れる
+  const longText = Array.from({ length: 120 }, (_, i) => `行 ${i + 1}`).join("\n");
   const composer = page.getByPlaceholder(/に送る/);
-  await composer.fill("1 から 80 までの数字を、1行に1つずつ、番号だけ並べて出して。");
+  await composer.fill(`${longText}\n\nこの一覧は読まなくていいです。「はい」とだけ返して。`);
   await composer.press("Enter");
-  await expect(page.locator('[data-role="assistant"]').filter({ hasText: "80" })).toBeVisible({
-    timeout: 120_000,
-  });
+  await expect(page.locator('[data-role="assistant"]').last()).toBeVisible({ timeout: 120_000 });
   await page.waitForTimeout(1000);
 
   const toBottom = async () =>
@@ -206,6 +245,7 @@ test("キーボードが出ても、履歴と入力欄の位置関係が変わ�
     sc?.scrollTo({ top: Math.round((sc.scrollHeight - sc.clientHeight) / 2), behavior: "instant" });
   });
   await page.waitForTimeout(500);
+  await waitForStableHeight(page);
   const middle = await bottomState(page);
   expect(middle?.atBottom, "途中の位置を作れていない（一番下にいる）").toBe(false);
   expect(middle!.bottomDistance, "途中の位置を作れていない（下からの距離が0）").toBeGreaterThan(20);
@@ -214,16 +254,38 @@ test("キーボードが出ても、履歴と入力欄の位置関係が変わ�
   await page.waitForTimeout(1000);
   const afterMiddle = await bottomState(page);
   expect(
-    Math.abs(afterMiddle!.bottomDistance - middle!.bottomDistance),
-    `途中を読んでいたのに位置関係が変わった（下からの距離 ${middle!.bottomDistance} → ${afterMiddle!.bottomDistance}）`,
+    Math.abs(afterMiddle!.gapToComposer - middle!.gapToComposer),
+    `途中を読んでいたのに位置関係が変わった（発言と入力欄の間隔 ${middle!.gapToComposer} → ${afterMiddle!.gapToComposer}）`,
   ).toBeLessThanOrEqual(8);
 
-  // 元の高さへ戻しても、位置関係は同じ（キーボードを閉じたとき）
+  // **閉じたら、元の位置にぴたりと戻る**（ユーザー報告：ここで二度動いていた）
   await page.setViewportSize({ width: 412, height: 420 });
   await page.waitForTimeout(1000);
   const afterRestore = await bottomState(page);
   expect(
-    Math.abs(afterRestore!.bottomDistance - middle!.bottomDistance),
-    `キーボードを閉じたら位置関係が変わった（下からの距離 ${middle!.bottomDistance} → ${afterRestore!.bottomDistance}）`,
+    Math.abs(afterRestore!.gapToComposer - middle!.gapToComposer),
+    `キーボードを閉じたら位置関係が変わった（間隔 ${middle!.gapToComposer} → ${afterRestore!.gapToComposer}` +
+      `／中身の座標 ${middle!.lastOffsetTop} → ${afterRestore!.lastOffsetTop}` +
+      `／中身の高さ ${middle!.scrollHeight} → ${afterRestore!.scrollHeight}）`,
+  ).toBeLessThanOrEqual(8);
+
+  // **入力欄の高さが後から変わっても、履歴は動かない**（ユーザーの見立て：
+  // 「入力欄が最初小さくなって、大きくなるからカウントしているかも」）。
+  // ここが動くと「一度動いたあと、少しだけまた動く」になる
+  const beforeComposerChange = await bottomState(page);
+  await page.evaluate(() => {
+    const ta = document.querySelector("textarea");
+    if (ta) ta.style.height = "120px";
+  });
+  await page.waitForTimeout(400);
+  await page.evaluate(() => {
+    const ta = document.querySelector("textarea");
+    if (ta) ta.style.height = "";
+  });
+  await page.waitForTimeout(600);
+  const afterComposerChange = await bottomState(page);
+  expect(
+    Math.abs(afterComposerChange!.gapToComposer - beforeComposerChange!.gapToComposer),
+    `入力欄が伸び縮みしたら履歴が動いた（間隔 ${beforeComposerChange!.gapToComposer} → ${afterComposerChange!.gapToComposer}）`,
   ).toBeLessThanOrEqual(8);
 });
