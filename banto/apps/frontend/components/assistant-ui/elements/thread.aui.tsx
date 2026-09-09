@@ -193,10 +193,16 @@ const ThreadRoot: FC<{
         ["--composer-padding" as string]: "8px",
       }}
     >
+      {/* `[overflow-anchor:none]`：**ブラウザの自動アンカリングを切る**
+          （決定・2026-09-07、ユーザー報告「閉じたときにカクンと二度動く」）。
+          高さが変わったあと、Chrome は「上の内容がずれた分」を後から足して
+          スクロール位置を補正する。位置は KeepBottomDistanceOnResize が既に
+          決めているので、そこへ後追いで足されるともう一度動く
+          ——決める場所は1つにする（規則3） */}
       <ThreadPrimitive.Viewport
         turnAnchor="top"
         data-slot="aui_thread-viewport"
-        className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
+        className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth [overflow-anchor:none]"
       >
         {/* キーボードや URL バーで高さが変わっても、履歴と入力欄の位置関係を保つ
             （決定・2026-09-07、ユーザー要望）——保つのは「下からの距離」で、

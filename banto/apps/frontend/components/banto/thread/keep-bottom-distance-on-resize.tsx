@@ -32,9 +32,15 @@ export function KeepBottomDistanceOnResize() {
       Math.max(0, viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight);
 
     // **変わる前の距離**を覚えておく——高さが変わってから測っても、
-    // もう「どこを見ていたか」は分からない
+    // もう「どこを見ていたか」は分からない。
+    // **人が動かしたときだけ**更新する：大きさが変わっている最中は、自分で
+    // 戻した分や、ブラウザが詰めた分（clientHeight が伸びると scrollTop は
+    // 上限へ切り詰められる）でも scroll が飛んでくる。それを「見ていた場所」
+    // として拾うと、戻す先がずれて**二度動く**
     let lastBottomDistance = bottomDistance();
+    let settling = false;
     const onScroll = () => {
+      if (settling) return;
       lastBottomDistance = bottomDistance();
     };
     viewport.addEventListener("scroll", onScroll, { passive: true });
@@ -42,10 +48,16 @@ export function KeepBottomDistanceOnResize() {
     const restore = () => {
       const target = viewport.scrollHeight - viewport.clientHeight - lastBottomDistance;
       const clamped = Math.max(0, Math.min(target, viewport.scrollHeight - viewport.clientHeight));
-      if (Math.abs(clamped - viewport.scrollTop) <= 1) return;
-      viewport.scrollTo({ top: clamped, behavior: "instant" });
-      // 自分で動かしたぶんで「見ていた場所」を上書きしない
-      lastBottomDistance = bottomDistance();
+      // **描く前に、その場で直す**（ResizeObserver は描画の前に呼ばれる）
+      // ——次のフレームに回すと、直す前の姿が一度描かれて「カクン」と見える
+      settling = true;
+      if (Math.abs(clamped - viewport.scrollTop) > 1) {
+        viewport.scrollTo({ top: clamped, behavior: "instant" });
+      }
+      // このフレームのあいだに飛んでくる scroll は「人が動かした」と数えない
+      requestAnimationFrame(() => {
+        settling = false;
+      });
     };
 
     // 器そのものの大きさが変わったとき（キーボード・URL バー・画面回転）。
