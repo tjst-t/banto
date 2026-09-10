@@ -50,7 +50,12 @@ export class AgentRelayEndpoint {
         );
         return;
       }
-      const proxy = buildAgentProxy(conn, this.opts);
+      // **どのターンの接続か**は host 自身が Runner に渡している（cli.ts の
+      // resolveModulesForThread）。Module 間中継の承認を正しい会話に出すために
+      // 要る——推測はしない（relay/module-calls.ts）
+      const threadHeader = req.headers["x-banto-thread-id"];
+      const threadId = typeof threadHeader === "string" ? threadHeader : undefined;
+      const proxy = buildAgentProxy(conn, { ...this.opts, threadId });
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomBytes(16).toString("hex"),
         onsessioninitialized: (newSessionId) => {

@@ -3,7 +3,9 @@
 
 export type InboxItemId = string;
 
-export type JudgmentSource = "elicitation" | "text" | "factory" | "alarm";
+/** `relay`＝Module 間中継の初回承認（host 自身が発生源、docs/specs/v4-frontend.md
+ *  「Module 間中継の承認」）。**発生源が誰かであって、答え方の種類ではない。** */
+export type JudgmentSource = "elicitation" | "text" | "factory" | "alarm" | "relay";
 
 /** Elicitation由来の判断待ちの3状態（§2.4.1決定）。 */
 export type JudgmentLiveness = "live" | "answered" | "timed_out";

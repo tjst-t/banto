@@ -15,6 +15,7 @@ import type { InboxStore } from "../inbox/store.js";
 import type { JudgmentItem } from "../inbox/types.js";
 import type { ProjectThreadStore } from "../project-thread/store.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
+import type { TurnEventBus } from "./turn-events.js";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
 
 /** Runnerが`/agent-relay/<name>`へ実HTTPで繋ぐための宛先1件。 */
@@ -74,6 +75,8 @@ export async function* runThreadTurn(
     globalMemory: GlobalMemoryStore;
     inbox: InboxStore;
     pendingApprovals: PendingApprovalRegistry;
+    /** ターンの外（host の中継ゲート等）で起きた判断待ちの流し込み口。 */
+    turnEvents?: TurnEventBus;
   },
   input: RunThreadTurnInput,
 ): AsyncGenerator<TurnStreamEvent> {
@@ -124,6 +127,16 @@ export async function* runThreadTurn(
   let compactionCount = 0;
   let apiUsage: unknown;
   let deliveryRecorded = false;
+
+  // **ターンの外から来る判断待ち**（host の中継ゲート、docs/specs/v4-frontend.md
+  // 「Module 間中継の承認」）。SDK の出力を待っている最中に割り込むので、
+  // 溜めておいて、下のループで SDK の続きと**どちらが先に来ても**流せるようにする。
+  const sideEvents: TurnStreamEvent[] = [];
+  let wakeSide: (() => void) | undefined;
+  const unsubscribeSide = deps.turnEvents?.subscribe(input.threadId, (event) => {
+    sideEvents.push(event);
+    wakeSide?.();
+  });
   try {
     const gen = runTurn({
       resumeSessionId: thread.resumePoint,
@@ -147,8 +160,43 @@ export async function* runThreadTurn(
       }),
     });
 
-    let next = await gen.next();
-    while (!next.done) {
+    type Step = Awaited<ReturnType<typeof gen.next>>;
+    // **1回の gen.next() を包むのは1回だけ**——race のたびに `.then` で
+    // 包み直すと、負けた側の派生 Promise が誰にも読まれない rejection になる
+    const settle = (p: Promise<Step>): Promise<{ step: Step } | { error: unknown }> =>
+      p.then(
+        (step) => ({ step }),
+        (error: unknown) => ({ error }),
+      );
+
+    let pending = settle(gen.next());
+    let sideSignal: Promise<"side"> | undefined;
+    let result!: Extract<Step, { done: true }>["value"];
+    for (;;) {
+      if (sideEvents.length > 0) {
+        yield sideEvents.shift()!;
+        continue;
+      }
+      if (!sideSignal) {
+        sideSignal = new Promise<"side">((resolve) => {
+          wakeSide = () => {
+            wakeSide = undefined;
+            resolve("side");
+          };
+        });
+      }
+      const winner = await Promise.race([pending, sideSignal]);
+      if (winner === "side") {
+        sideSignal = undefined;
+        continue;
+      }
+      if ("error" in winner) throw winner.error;
+      const next = winner.step;
+      if (next.done) {
+        result = next.value;
+        break;
+      }
+
       const event = next.value;
       if (event.type === "message") {
         // 最初のメッセージが返ってきた＝添えたブロックがモデルに届いた。
@@ -199,16 +247,19 @@ export async function* runThreadTurn(
           message: judgment.message,
         };
       }
-      next = await gen.next();
+      pending = settle(gen.next());
     }
-    const result = next.value;
     sessionId = result.sessionId;
     contextUsage = result.contextUsage;
     compactionCount = result.compactionCount;
     apiUsage = result.apiUsage;
+    // 走行が終わった後に届いた分（人が答える前にターンが終わった等）も落とさない
+    while (sideEvents.length > 0) yield sideEvents.shift()!;
   } catch (err) {
     yield { type: "error", message: err instanceof Error ? err.message : String(err) };
     return;
+  } finally {
+    unsubscribeSide?.();
   }
 
   try {

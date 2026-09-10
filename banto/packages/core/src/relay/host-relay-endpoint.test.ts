@@ -26,7 +26,12 @@ async function fakeVaultClient(): Promise<Client> {
 
 async function startTestServer(registry: RelayRegistry) {
   const audits: unknown[] = [];
-  const endpoint = new HostRelayEndpoint({ registry, onAudit: (a) => audits.push(a) });
+  const endpoint = new HostRelayEndpoint({
+    registry,
+    onAudit: (a) => {
+      audits.push(a);
+    },
+  });
   const httpServer = createServer((req, res) => {
     void endpoint.handleRequest(req, res);
   });

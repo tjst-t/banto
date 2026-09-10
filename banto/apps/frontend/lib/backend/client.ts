@@ -163,7 +163,8 @@ export interface RealInboxJudgment {
   kind: "judgment";
   id: string;
   threadId: string;
-  source: "elicitation" | "text" | "factory" | "alarm";
+  /** `relay`＝Module 間中継の初回承認（host 自身が発生源、§「Module 間中継の承認」）。 */
+  source: "elicitation" | "text" | "factory" | "alarm" | "relay";
   message: string;
   /** Elicitationのform/urlモード（§2.4「自前で作らない」）。 */
   mode?: "form" | "url";

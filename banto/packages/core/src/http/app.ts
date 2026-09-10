@@ -26,6 +26,8 @@ import type { HostRelayEndpoint } from "../relay/host-relay-endpoint.js";
 import type { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { runThreadTurn, type ModuleEndpoint, type RunThreadTurnInput } from "./turn-runner.js";
+import type { TurnEventBus } from "./turn-events.js";
+import type { ModuleCallTracker } from "../relay/module-calls.js";
 
 /**
  * Module の画面（MCP Apps）のために host が Module へ問い合わせる分だけ
@@ -45,6 +47,11 @@ export interface AppDeps {
   globalMemory: GlobalMemoryStore;
   inbox: InboxStore;
   pendingApprovals: PendingApprovalRegistry;
+  /** ターンの外で起きた判断待ち（host の中継ゲート）を走行中の SSE へ流す口。 */
+  turnEvents?: TurnEventBus;
+  /** 画面からの tool 呼び出しも「どのターンの仕事か」を台帳に置く——その tool が
+   *  内部で他 Module を呼ぶとき、承認をどの会話に出すかがこれで決まる。 */
+  moduleCalls?: ModuleCallTracker;
   relayEndpoint: HostRelayEndpoint;
   /** Runner向け（/agent-relay/<module名>）。resolveModulesForThreadが返すModuleを実際に配信する。 */
   agentRelayEndpoint: AgentRelayEndpoint;
@@ -57,7 +64,7 @@ export interface AppDeps {
    *  こちらは**人の画面**のための経路で、Runnerは通らない。 */
   resolveModuleClientsForThread?(
     threadId: string,
-  ): Promise<Array<{ name: string; client: ModuleClientLike }>>;
+  ): Promise<Array<{ name: string; client: ModuleClientLike; connName?: string }>>;
   /** Project 単位（設定画面は Thread ではなく Project のもの、決定・2026-09-07）。
    *  `scope` は**設定をどちらの画面に出すか**を決めるのに使う。 */
   resolveModuleClientsForProject?(
@@ -693,7 +700,17 @@ export function createApp(deps: AppDeps) {
         const modules = (await deps.resolveModuleClientsForThread?.(uiCallMatch[1]!)) ?? [];
         const found = modules.find((m) => m.name === body.server);
         if (!found) return json(res, 404, { error: "unknown module", server: body.server });
-        json(res, 200, await found.client.callTool({ name: body.tool, arguments: toolArguments(body.arguments) }));
+        // 画面からの呼び出しでも、その tool が内部で他 Module を呼べば中継の承認が
+        // 要る（§「Module 間中継の承認」）。**どの会話に出すか**をここで台帳に置く
+        const endCall =
+          deps.moduleCalls && found.connName
+            ? deps.moduleCalls.begin(found.connName, uiCallMatch[1]!)
+            : undefined;
+        try {
+          json(res, 200, await found.client.callTool({ name: body.tool, arguments: toolArguments(body.arguments) }));
+        } finally {
+          endCall?.();
+        }
         return;
       }
 

@@ -14,20 +14,27 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { BantoModuleMeta } from "@banto/module-contract";
+import type { RelayApprovalGate } from "./approval-gate.js";
 
 export interface CallerIdentity {
+  /** 宣言の名前（`shell`）。**承認の粒度はこちら**——Project は別に持つ。 */
   moduleName: string;
+  /** プロセスの名前（`shell-<projectId>`）。省略時は moduleName と同じ。 */
+  connName?: string;
   projectId?: string;
   meta: BantoModuleMeta;
 }
 
 export interface RelayAuditRecord {
+  projectId?: string;
   callerModule: string;
   targetModule: string;
   kind: "tool" | "resource" | "prompt";
   name: string;
   allowed: boolean;
   reason?: string;
+  /** 実際に中継した結果。拒否されたときは付かない。 */
+  ok?: boolean;
   ts: string;
 }
 
@@ -79,7 +86,15 @@ export class RelayRegistry {
 
 export interface HostRelayServerOptions {
   registry: RelayRegistry;
-  onAudit?(record: RelayAuditRecord): void;
+  /**
+   * 初回だけ人に聞くゲート（アーキ仕様 §2.5・docs/specs/v4-frontend.md
+   * 「Module 間中継の承認」）。**渡さなければ宣言された依存だけで通す**
+   * ——ゲートの有無で中継そのものの形が変わらないようにしてある（テストと
+   * 実運用で同じ経路を通す）。host は必ず渡す（cli.ts）。
+   */
+  gate?: RelayApprovalGate;
+  /** 記録（メタデータだけ）。成否も含め、拒否された呼び出しも渡ってくる。 */
+  onAudit?(record: RelayAuditRecord): void | Promise<void>;
 }
 
 /** 呼び出し元1件ごとに、閉じ込めた identity を持つ Server+Transport を作る。 */
@@ -119,49 +134,64 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     const targetModule = String(args.targetModule ?? "");
+    const kind: RelayAuditRecord["kind"] = request.params.name === "relayReadResource" ? "resource" : "tool";
+    const name = String(args.name ?? args.uri ?? "");
+    const call = {
+      projectId: identity.projectId,
+      callerModule: identity.moduleName,
+      targetModule,
+      kind,
+      name,
+    };
 
-    const audit = (kind: RelayAuditRecord["kind"], name: string, allowed: boolean, reason?: string) => {
-      opts.onAudit?.({
-        callerModule: identity.moduleName,
-        targetModule,
-        kind,
-        name,
-        allowed,
-        reason,
-        ts: new Date().toISOString(),
-      });
+    const audit = async (allowed: boolean, reason?: string, ok?: boolean) => {
+      await opts.onAudit?.({ ...call, allowed, reason, ok, ts: new Date().toISOString() });
     };
 
     if (!opts.registry.isAllowed(identity, targetModule)) {
-      audit(
-        request.params.name === "relayReadResource" ? "resource" : "tool",
-        String(args.name ?? args.uri ?? ""),
-        false,
-        "宣言された依存に含まれない",
-      );
+      await audit(false, "宣言された依存に含まれない");
       throw new Error(`${identity.moduleName} は ${targetModule} を呼ぶ権限がありません`);
     }
 
     const target = opts.registry.getModule(targetModule);
-    if (!target) throw new Error(`target module "${targetModule}" is not connected`);
-
-    if (request.params.name === "relayCallTool") {
-      const name = String(args.name ?? "");
-      // 実データは host のプロセスメモリを一過性に通過するだけ——
-      // ディスクにもEvent Storeにも記録しない。記録するのは識別子だけ。
-      const result = await target.client.callTool({
-        name,
-        arguments: (args.arguments as Record<string, unknown>) ?? {},
-      });
-      audit("tool", name, true);
-      return result as { content: unknown[] };
+    if (!target) {
+      await audit(false, "宛先の Module が繋がっていない");
+      throw new Error(`target module "${targetModule}" is not connected`);
     }
 
-    if (request.params.name === "relayReadResource") {
-      const uri = String(args.uri ?? "");
-      const result = await target.client.readResource({ uri });
-      audit("resource", uri, true);
-      return { content: [{ type: "text", text: JSON.stringify(result) }] };
+    // **初回だけ人に聞く**（アーキ仕様 §2.5）。宣言された依存は「配線として
+    // あり得るか」で、こちらは「その配線を実際に使ってよいか」——別の問い。
+    const decision = opts.gate
+      ? await opts.gate.requestApproval({ ...call, callerConnName: identity.connName ?? identity.moduleName })
+      : { allowed: true, reason: "ゲート無し" };
+    if (!decision.allowed) {
+      await audit(false, decision.reason);
+      throw new Error(
+        `${identity.moduleName} から ${targetModule} の ${name} への中継は許可されていません：${decision.reason}`,
+      );
+    }
+
+    try {
+      if (request.params.name === "relayCallTool") {
+        // 実データは host のプロセスメモリを一過性に通過するだけ——
+        // ディスクにもEvent Storeにも記録しない。記録するのは識別子だけ。
+        const result = await target.client.callTool({
+          name,
+          arguments: (args.arguments as Record<string, unknown>) ?? {},
+        });
+        await audit(true, decision.reason, true);
+        return result as { content: unknown[] };
+      }
+
+      if (request.params.name === "relayReadResource") {
+        const result = await target.client.readResource({ uri: name });
+        await audit(true, decision.reason, true);
+        return { content: [{ type: "text", text: JSON.stringify(result) }] };
+      }
+    } catch (err) {
+      // **失敗も記録する**——監査で見たいのはむしろこちら（規則2）
+      await audit(true, err instanceof Error ? err.message : String(err), false);
+      throw err;
     }
 
     throw new Error(`unknown relay tool: ${request.params.name}`);

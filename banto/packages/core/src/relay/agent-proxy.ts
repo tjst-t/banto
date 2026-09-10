@@ -22,6 +22,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { stripBantoMeta, visibilityOf, type BantoModuleMeta } from "@banto/module-contract";
 import { makeResourceVisibilityResolver } from "./visibility.js";
+import type { ModuleCallTracker } from "./module-calls.js";
 
 export interface RelayRecord {
   direction: "list" | "call" | "read";
@@ -31,6 +32,14 @@ export interface RelayRecord {
 
 export interface AgentProxyOptions {
   onRelay?(record: RelayRecord): void;
+  /**
+   * この接続がどのターンのものか（agent-relay-endpoint.ts が
+   * `x-banto-thread-id` から取る）と、走行中の呼び出しの台帳。
+   * **Module 間中継の承認を、正しい会話に出すために要る**
+   * ——Module→host の中継接続は Thread を知らない（relay/module-calls.ts）。
+   */
+  threadId?: string;
+  moduleCalls?: ModuleCallTracker;
 }
 
 export interface AgentProxy {
@@ -84,24 +93,32 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     }
 
     const progressToken = extra._meta?.progressToken;
-    const result = await conn.client.callTool(
-      { name: request.params.name, arguments: request.params.arguments },
-      undefined,
-      {
-        signal: extra.signal,
-        resetTimeoutOnProgress: true,
-        onprogress:
-          progressToken !== undefined
-            ? (progress) => {
-                void extra.sendNotification({
-                  method: "notifications/progress",
-                  params: { ...progress, progressToken },
-                });
-              }
-            : undefined,
-      },
-    );
-    return stripBantoMeta(result as { _meta?: Record<string, unknown> }) as typeof result;
+    // **このハンドラが動いている間だけ**、この Module はこのターンの仕事をしている
+    // ——中継の承認をどの会話に出すかは、これで決まる（relay/module-calls.ts）
+    const endCall =
+      opts.threadId && opts.moduleCalls ? opts.moduleCalls.begin(conn.name, opts.threadId) : undefined;
+    try {
+      const result = await conn.client.callTool(
+        { name: request.params.name, arguments: request.params.arguments },
+        undefined,
+        {
+          signal: extra.signal,
+          resetTimeoutOnProgress: true,
+          onprogress:
+            progressToken !== undefined
+              ? (progress) => {
+                  void extra.sendNotification({
+                    method: "notifications/progress",
+                    params: { ...progress, progressToken },
+                  });
+                }
+              : undefined,
+        },
+      );
+      return stripBantoMeta(result as { _meta?: Record<string, unknown> }) as typeof result;
+    } finally {
+      endCall?.();
+    }
   });
 
   server.setRequestHandler(ListResourcesRequestSchema, async () => {

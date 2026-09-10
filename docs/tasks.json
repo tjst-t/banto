@@ -869,15 +869,23 @@
       "id": "relay-approval-gate-and-audit",
       "phase": "1",
       "title": "Module 間中継の初回承認ゲートと Event Store 監査（§2.5 の未実装分）",
-      "status": "pending",
+      "status": "done",
       "dependencies": [],
       "why": "アーキ仕様 §2.5 は「初回のみ承認ゲート → 以降 Project 内で自動許可」「メタデータだけ Event Store に記録」と決定済みだが、実装は静的 dependsOn 照合のみで、監査は console.log 止まり。resolveAlias の使用履歴が永続化されず、監査（frontend §6.0）の前提が欠けている。",
       "doneWhen": "初回の Module 間呼び出しが判断待ちとして受信箱に出る／承認後の同じ組み合わせは出ない／呼び出し元・宛先・名前・成否・時刻のメタデータイベントが Event Store に残ることを実測する（失敗した呼び出しも記録される）。",
       "refs": [
+        "banto/packages/core/src/relay/approval-gate.ts",
+        "banto/packages/core/src/relay/grants.ts",
+        "banto/packages/core/src/relay/module-calls.ts",
         "banto/packages/core/src/relay/host-relay-endpoint.ts",
+        "banto/packages/core/src/http/turn-events.ts",
+        "banto/e2e/specs/relay-approval.spec.ts",
         "docs/specs/v4-architecture.md",
-        "docs/notes/2026-09-09-repo-review.md"
-      ]
+        "docs/notes/2026-09-10-relay-approval-gate.md"
+      ],
+      "result": "中継の呼び出しに**初回だけ人に聞くゲート**を入れ、**許可も呼び出しも Event Store に残す**ようにした。許可は `relay.grant_created`（Project・呼び出し元・宛先・種別・名前の粒度）、呼び出しは `relay.call_recorded`（拒否された分・宛先で失敗した分も、成否込みで毎回）。**詰まったのは「どの会話で聞くか」の1点**——中継の接続は Module プロセス単位で Thread を知らない。Runner 向けの接続に host が `x-banto-thread-id` を付けて渡し、代理サーバが「その Module がいまどのターンの仕事をしているか」を台帳に持つ形にした（Module に自己申告させない）。走行中の呼び出しが無い／複数ターンが同時に使っていて決められないときは**通さない**（規則2）。画面からの tool 呼び出し（Thread 単位の ui-tool-call）も同じ台帳に載せた。あわせて `turn-runner` の SSE ループを、SDK の続きとターン外の判断待ちの**どちらが先に来ても流せる**形にした（`http/turn-events.ts`）——仕様は「host 自身も判断待ちの発生源になれる」と言っていたのに、SSE には SDK 由来しか流せなかった。**拒否は覚えない**（次はまた聞く）。判断待ちに引数は載せない（宛名まで——判断待ちも Event Store に積まれるため）。**積み残し**：仕様が決めている「待っている間の `notifications/progress` 定期送出」は未実装で、いまは人が60秒以内に答えないと外側の tool 呼び出しが先に失敗する（承認自体は残るのでやり直せば通る）。`shell-progress-keepalive` に寄せ、仕様にも注記した（規則8）。",
+      "verifiedBy": "単体6件（初回だけ聞く／2回目は聞かない／拒否は通さず覚えない／宛先の失敗も `ok:false` で残る／ターンを特定できないときは通さない／並行2ターンでは決められないとして通さない／再起動後も承認が残る）。E2E 1件を新規に追加（`e2e/specs/relay-approval.spec.ts`、実ブラウザ・実モデル）：`bypassPermissions` でもカードが出る・カードに呼び出し元と宛先が見える・**値は見えない**・許可すると `got=<秘密の値>` が会話に出る・2回目は聞かれない・Event Store の記録が期待どおり。**ゲートを外すとこの E2E が「カードが出ない」で落ちることを確かめた**（規則1）。E2E 26件全通過・単体155件・typecheck・build 通過。稼働中の host（4737）に反映済み。",
+      "completedAt": "2026-09-10"
     },
     {
       "id": "relay-lifecycle-and-elicitation",
@@ -957,8 +965,8 @@
       "title": "runCommand 実行中の定期 progress 送出（v4-modules §2.3 の未実装分）",
       "status": "pending",
       "dependencies": [],
-      "why": "host→Module の MCP 呼び出しは SDK 既定60秒で切れる（既知の罠）。仕様は「実行中に notifications/progress を定期送出してタイムアウトを更新させる」と決定済みだが、実装は spawn 前の秘密解決時しか送っておらず、npm install 等の60秒超コマンドが -32001 で死ぬ。",
-      "doneWhen": "60秒を超えるコマンドが中継経由で完走することを実測する（sleep 90 等）。",
+      "why": "host→Module の MCP 呼び出しは SDK 既定60秒で切れる（既知の罠）。仕様は「実行中に notifications/progress を定期送出してタイムアウトを更新させる」と決定済みだが、実装は spawn 前の秘密解決時しか送っておらず、npm install 等の60秒超コマンドが -32001 で死ぬ。 **中継の承認待ちも同じ手当てを要る**（追記・2026-09-10、relay-approval-gate-and-audit の積み残し）——人が答えるまで tool ハンドラが待つので、進捗を送らないと60秒で外側が失敗する（docs/specs/v4-frontend.md「Module 間中継の承認」の注）。",
+      "doneWhen": "60秒を超えるコマンドが中継経由で完走することを実測する（sleep 90 等）。 あわせて、中継の承認を60秒以上待っても外側の runCommand が失敗しないことを実測する。",
       "refs": [
         "banto/packages/modules/shell/src/run-command.ts",
         "docs/specs/v4-modules.md",

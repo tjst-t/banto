@@ -24,6 +24,10 @@ import { InboxStore } from "./inbox/store.js";
 import { PendingApprovalRegistry } from "./inbox/pending-approvals.js";
 import { RelayRegistry, HostRelayEndpoint } from "./relay/host-relay-endpoint.js";
 import { AgentRelayEndpoint } from "./relay/agent-relay-endpoint.js";
+import { RelayGrantStore } from "./relay/grants.js";
+import { ModuleCallTracker } from "./relay/module-calls.js";
+import { createRelayApprovalGate } from "./relay/approval-gate.js";
+import { TurnEventBus } from "./http/turn-events.js";
 import { createApp } from "./http/app.js";
 import { createSandboxServer } from "./http/sandbox-server.js";
 import type { ModuleEndpoint } from "./http/turn-runner.js";
@@ -73,11 +77,20 @@ async function main(): Promise<void> {
   const orphaned = await inbox.expireOrphanedJudgments();
   if (orphaned > 0) console.log(`[host] 前回の走行が抱えていた判断待ち ${orphaned} 件を期限切れにした`);
   const pendingApprovals = new PendingApprovalRegistry();
+  // Module 間中継の許可と記録（アーキ仕様 §2.5）。**許可は Event Store に残す**
+  // ——プロセスメモリに置くと、host を再起動するたびに人が承認し直すことになる
+  const relayGrants = new RelayGrantStore(bootstrap.dataDir, eventLog);
+  await relayGrants.load();
+  // どの Module が、いま、どのターンの仕事をしているか（承認をどの会話に出すか）
+  const moduleCalls = new ModuleCallTracker();
+  // ターンの外で起きた判断待ちを、走行中の SSE へ差し込む口
+  const turnEvents = new TurnEventBus();
 
   const registry = new RelayRegistry();
   const relayUrl = `http://127.0.0.1:${bootstrap.port}/relay`;
   const agentRelayEndpoint = new AgentRelayEndpoint(bootstrap.authToken, {
     onRelay: (r) => console.log("[agent-relay]", JSON.stringify(r)),
+    moduleCalls,
   });
   const agentRelayHeaders = { authorization: `Bearer ${bootstrap.authToken}` };
 
@@ -209,7 +222,14 @@ async function main(): Promise<void> {
     if (connectedModules.has(connName)) return connName;
 
     // 中継の合言葉は「宣言に書けない値」なので、ここで発行して差し込む
-    const token = registry.issueToken({ moduleName: connName, meta: declaration.meta });
+    // **承認の粒度は宣言の名前と Project**（アーキ仕様 §2.5）。プロセスの名前
+    // （`shell-<projectId>`）は、どのターンの仕事かを引くときにだけ使う
+    const token = registry.issueToken({
+      moduleName: declaration.name,
+      connName,
+      projectId: project?.id,
+      meta: declaration.meta,
+    });
     const context: LaunchContext = {
       ...launchContextBase,
       hostRelayToken: token,
@@ -346,7 +366,9 @@ async function main(): Promise<void> {
         return {
           name: declaration.name,
           url: `http://127.0.0.1:${bootstrap.port}/agent-relay/${connName}`,
-          headers: agentRelayHeaders,
+          // **どのターンの接続か**を host 自身が渡す（中継の承認を正しい会話に
+          // 出すため、relay/module-calls.ts）——Module に自己申告させない
+          headers: { ...agentRelayHeaders, "x-banto-thread-id": threadId },
         };
       }),
     );
@@ -377,13 +399,17 @@ async function main(): Promise<void> {
         // 決定・2026-09-07、ユーザー指摘）
         return {
           name: declaration.name,
+          // プロセスの名前も返す——画面からの呼び出しが中継を使うとき、
+          // 「どのターンの仕事か」の台帳に置くのに要る（app.ts の ui-tool-call）
+          connName: connName ?? undefined,
           client: connName ? connectedModules.get(connName) : undefined,
           scope: declaration.meta.scope,
         };
       }),
     );
     return spawned.filter(
-      (c): c is { name: string; client: Client; scope: "instance" | "project" } => c.client !== undefined,
+      (c): c is { name: string; connName: string; client: Client; scope: "instance" | "project" } =>
+        c.client !== undefined,
     );
   }
 
@@ -416,7 +442,28 @@ async function main(): Promise<void> {
 
   const relayEndpoint = new HostRelayEndpoint({
     registry,
-    onAudit: (r) => console.log("[relay-audit]", JSON.stringify(r)),
+    gate: createRelayApprovalGate({
+      grants: relayGrants,
+      inbox,
+      pendingApprovals,
+      moduleCalls,
+      onJudgmentRaised: (threadId, judgment) => {
+        turnEvents.publish(threadId, {
+          type: "judgment",
+          judgmentId: judgment.id,
+          kind: "approval",
+          serverName: judgment.serverName,
+          toolInput: judgment.toolInput,
+          message: judgment.message,
+        });
+      },
+    }),
+    onAudit: async ({ allowed, reason, ok, ts, ...call }) => {
+      // **記録は Event Store が本体**（アーキ仕様 §2.5）。console はおまけ。
+      // 時刻はイベント自身が持つので payload には入れない（規則3）
+      console.log("[relay-audit]", JSON.stringify({ ...call, allowed, reason, ok, ts }));
+      await relayGrants.recordCall(call, { allowed, reason, ok });
+    },
   });
 
   const app = createApp({
@@ -424,6 +471,8 @@ async function main(): Promise<void> {
     globalMemory,
     inbox,
     pendingApprovals,
+    turnEvents,
+    moduleCalls,
     relayEndpoint,
     agentRelayEndpoint,
     authToken: bootstrap.authToken,
@@ -442,7 +491,13 @@ async function main(): Promise<void> {
   // 起動のたびにログ全体を畳み直していた（起動時間がイベント数に比例して伸びる）。
   // 「有るのに動いていない」を残さない（規則13の精神）。
   const saveSnapshots = async (): Promise<void> => {
-    await Promise.all([projectThread.save(), globalMemory.save(), inbox.save(), runtimeConfig.save()]);
+    await Promise.all([
+      projectThread.save(),
+      globalMemory.save(),
+      inbox.save(),
+      runtimeConfig.save(),
+      relayGrants.save(),
+    ]);
   };
   const snapshotTimer = setInterval(() => {
     void saveSnapshots().catch((err) => console.error("[host] スナップショット保存に失敗:", err));
