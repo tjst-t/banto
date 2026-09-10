@@ -940,14 +940,21 @@
       "id": "relay-proc-allowlist",
       "phase": "1",
       "title": "Landlock 許可リストから /proc を外せるか",
-      "status": "undecided",
+      "status": "done",
       "dependencies": [],
       "why": "/proc の読み取り許可があると、同一ユーザーの environ から中継トークンが読める（relay-token-child-env を塞いでも Module 自身の environ は残る）。外して何が壊れるかは実測しないと分からない（docs/specs/v4-security.md の未決）。",
       "doneWhen": "外した状態で Shell/FileSystem の既存テストが通るかを実測し、結果に基づいて許可リストを決定して v4-security.md に書く。",
       "refs": [
         "banto/packages/landlock/src/derive.ts",
+        "banto/packages/landlock/src/guard.test.ts",
+        "banto/packages/modules/shell/src/landlock.integration.test.ts",
         "docs/specs/v4-security.md"
-      ]
+      ],
+      "decidedAt": "2026-09-10",
+      "decision": "外す（実測に基づく）。中継トークンの最後の漏れ口を塞ぐほうが、ps/free/uptime が使えることより重い。",
+      "result": "`/proc` を Landlock の許可リストから外した（`derive.ts`、exec/files-only の両プロファイル）。**実測で決めた**——`/proc` を許すと、AI の書いたコマンドが**親（Module）の `/proc/<pid>/environ` を読める**（子は先祖の environ を読めるので、Yama の ptrace_scope=1 でも止まらない）。子プロセスに env を渡さない対策（`relay-token-child-env`）を入れても、ここから漏れていた。**代償も測った**：`nproc`・Node の `availableParallelism()`／`totalmem()`・`npm`・`git`・`python3`・`curl`・ファイル操作は動く。使えなくなるのは `ps`・`free`・`uptime` と、Node の**古い** `os.cpus()`（0 を返す）。他プロセスの一覧は banto の境界の外側なので、見せないほうが設計と揃う。",
+      "verifiedBy": "実測（Landlock 下の実コマンド）：`/proc` あり＝子から親の environ の秘密が読めた／なし＝`Permission denied`。Module 側も両プロファイルで確認（shell 12件・filesystem 13件）。テストを2つ足した——`derive` が `/proc` を出さないこと（単体）と、**実 Landlock 下の runCommand から親の environ を読めないこと**（統合）。**`/proc` を戻すと両方落ちる**ことを確認（規則1）。E2E 34件・単体全通過。あわせて、統合テストが落ちたときに Module のプロセスが残って `node --test` が終わらなくなる問題も直した（finally で閉じる）。",
+      "completedAt": "2026-09-10"
     },
     {
       "id": "ui-tool-call-visibility-boundary",

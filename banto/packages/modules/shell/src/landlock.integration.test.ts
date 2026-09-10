@@ -24,8 +24,12 @@ const serverEntry = join(__dirname, "..", "dist", "server.js");
 test("runCommand cannot escape the Project root when the whole Shell process runs under Landlock", async () => {
   assertLauncherAvailable();
 
-  const projectRoot = await realpath(await mkdtemp(join(tmpdir(), "banto-shell-landlock-project-")));
-  const outsideDir = await mkdtemp(join(tmpdir(), "banto-shell-landlock-outside-"));
+  const projectRoot = await realpath(
+    await mkdtemp(join(tmpdir(), "banto-shell-landlock-project-")),
+  );
+  const outsideDir = await mkdtemp(
+    join(tmpdir(), "banto-shell-landlock-outside-"),
+  );
   const runDir = await mkdtemp(join(tmpdir(), "banto-shell-landlock-run-"));
   try {
     await writeFile(join(projectRoot, "inside.txt"), "inside-content");
@@ -44,8 +48,15 @@ test("runCommand cannot escape the Project root when the whole Shell process run
       nodeExecPath: process.execPath,
       moduleInstallDirs: [monorepoRoot],
     });
-    const rulesetFile = writeRulesetFile(runDir, "shell-landlock-test", ruleset);
-    const wrapped = wrapCommand(rulesetFile, { command: process.execPath, args: [serverEntry] });
+    const rulesetFile = writeRulesetFile(
+      runDir,
+      "shell-landlock-test",
+      ruleset,
+    );
+    const wrapped = wrapCommand(rulesetFile, {
+      command: process.execPath,
+      args: [serverEntry],
+    });
 
     const transport = new StdioClientTransport({
       command: wrapped.command,
@@ -59,40 +70,70 @@ test("runCommand cannot escape the Project root when the whole Shell process run
     });
     const client = new Client({ name: "test-host", version: "0.0.0" });
     await client.connect(transport);
+    // **落ちても Module のプロセスを残さない**（追加・2026-09-10）——途中で assert が
+    // 落ちると `client.close()` に届かず、spawn した Module が生きたまま残って
+    // **`node --test` が終わらなくなる**（filesystem 側で踏んだのと同じ）
+    try {
+      const insideResult = await client.callTool({
+        name: "runCommand",
+        arguments: { command: "cat inside.txt" },
+      });
+      const insideParsed = JSON.parse(
+        (insideResult.content as { text: string }[])[0]!.text,
+      );
+      assert.equal(insideParsed.stdout.trim(), "inside-content");
 
-    const insideResult = await client.callTool({
-      name: "runCommand",
-      arguments: { command: "cat inside.txt" },
-    });
-    const insideParsed = JSON.parse((insideResult.content as { text: string }[])[0]!.text);
-    assert.equal(insideParsed.stdout.trim(), "inside-content");
+      const outsideResult = await client.callTool({
+        name: "runCommand",
+        arguments: { command: `cat ${outsideDir}/secret.txt` },
+      });
+      const outsideParsed = JSON.parse(
+        (outsideResult.content as { text: string }[])[0]!.text,
+      );
+      assert.ok(
+        !outsideParsed.stdout.includes("OUTSIDE-SECRET"),
+        `Landlock did not confine the process — read outside root succeeded: ${JSON.stringify(outsideParsed)}`,
+      );
+      assert.notEqual(outsideParsed.exitCode, 0);
 
-    const outsideResult = await client.callTool({
-      name: "runCommand",
-      arguments: { command: `cat ${outsideDir}/secret.txt` },
-    });
-    const outsideParsed = JSON.parse((outsideResult.content as { text: string }[])[0]!.text);
-    assert.ok(
-      !outsideParsed.stdout.includes("OUTSIDE-SECRET"),
-      `Landlock did not confine the process — read outside root succeeded: ${JSON.stringify(outsideParsed)}`,
-    );
-    assert.notEqual(outsideParsed.exitCode, 0);
+      // hostが実際に行うspawnと同じ形（このテストはBANTO_HOST_MCP_TOKENを本当に
+      // Shellプロセスへ渡している）で、AIの書いたコマンドにトークンが継承されない
+      // ことを確かめる（決定・2026-09-10、docs/specs/v4-security.md）。
+      const envResult = await client.callTool({
+        name: "runCommand",
+        arguments: { command: "env | grep '^BANTO_'; echo exit=$?" },
+      });
+      const envParsed = JSON.parse(
+        (envResult.content as { text: string }[])[0]!.text,
+      );
+      assert.equal(
+        envParsed.stdout.trim(),
+        "exit=1",
+        `relay token or other BANTO_* leaked into the AI's command: ${envParsed.stdout}`,
+      );
 
-    // hostが実際に行うspawnと同じ形（このテストはBANTO_HOST_MCP_TOKENを本当に
-    // Shellプロセスへ渡している）で、AIの書いたコマンドにトークンが継承されない
-    // ことを確かめる（決定・2026-09-10、docs/specs/v4-security.md）。
-    const envResult = await client.callTool({
-      name: "runCommand",
-      arguments: { command: "env | grep '^BANTO_'; echo exit=$?" },
-    });
-    const envParsed = JSON.parse((envResult.content as { text: string }[])[0]!.text);
-    assert.equal(
-      envParsed.stdout.trim(),
-      "exit=1",
-      `relay token or other BANTO_* leaked into the AI's command: ${envParsed.stdout}`,
-    );
-
-    await client.close();
+      // **env を渡さなくても、`/proc` から親（Shell 本体）の environ が読めては同じこと**
+      // （決定・2026-09-10、`relay-proc-allowlist`）。Landlock の許可リストから
+      // `/proc` を外したので、ここは読めない——**読めた場合は中継トークンが漏れている**
+      const procResult = await client.callTool({
+        name: "runCommand",
+        arguments: {
+          command:
+            "for p in /proc/self /proc/$PPID /proc/1; do " +
+            "tr '\\0' '\\n' < $p/environ 2>/dev/null | grep -c '^BANTO_HOST_MCP_TOKEN=' || true; done",
+        },
+      });
+      const procParsed = JSON.parse(
+        (procResult.content as { text: string }[])[0]!.text,
+      );
+      assert.equal(
+        procParsed.stdout.replace(/[\s0]/g, ""),
+        "",
+        `/proc 越しに親の environ からトークンが読めた: ${procParsed.stdout}`,
+      );
+    } finally {
+      await client.close();
+    }
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
     await rm(outsideDir, { recursive: true, force: true });

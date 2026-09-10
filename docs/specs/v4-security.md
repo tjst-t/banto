@@ -102,7 +102,30 @@ node/npm/git は動いたが、**PATH がホームディレクトリ配下・`/o
 - **動的リンカが使うパス**（`ld.so.conf` 由来）も読み取りで追加する
 - **`/dev` は書き込みも要る**——`git` が `/dev/null` を `O_RDWR` で開くため、
   読み取りだけの許可では `git` が動かない（実測で発見）
-- `/etc`・`/proc` は既存どおり読み取りで許可し、Project の根だけ読み書きで許可する
+- `/etc` は読み取りで許可し、Project の根だけ読み書きで許可する
+- **`/proc` は許可しない**（決定・2026-09-10、実測）——下記
+
+**`/proc` を許可リストから外す**（決定・2026-09-10、`relay-proc-allowlist`）：
+
+**理由**——許すと、AI の書いたコマンドが**親（Module）の `/proc/<pid>/environ` を
+読める**。`BANTO_HOST_MCP_TOKEN` は「どの Module からの呼び出しか」の識別そのもの
+なので、子プロセスに env を渡さないようにしても（下記「子プロセスの env 継承」）
+ここから漏れる。**実測**：`/proc` あり＝子から親の environ の秘密が読めた、
+なし＝`Permission denied`。
+
+**代償も測った**（同日、Landlock 下の実コマンドで）：
+
+| | `/proc` あり | `/proc` なし |
+|---|---|---|
+| `nproc`／Node の `availableParallelism()`／`totalmem()` | 動く | **動く**（sysconf 経由） |
+| `npm`・`git`・`python3`・`curl`・ファイル操作 | 動く | **動く** |
+| `df` | 動く | 値は出る（警告つき） |
+| `ps`・`free`・`uptime` | 動く | **使えない** |
+| Node の**古い** `os.cpus()` | 4 | **0 を返す**（`availableParallelism()` は正しい） |
+
+使えなくなるのは「自分の機械の様子を見る道具」。**他プロセスの一覧は banto の
+境界の外側**の話なので、見せないほうが設計と揃う——`ps` が要る用途が出てきたら、
+そのときに Environment（`docs/specs/v4-modules.md` §4）側で考える。
 
 **残るトレードオフ（機構では消せない）**：許可した `.../bin` の**中**に
 機微なファイルを置かれると読めてしまう（`.../lib` を足すとその中も同様）。
@@ -269,7 +292,7 @@ banto が自作した機構であり、MCP にも Landlock にも守られない
 | 経路 | 何が境界を越えるか | 状態 |
 |---|---|---|
 | **子プロセスの env 継承** | Module に渡した `BANTO_HOST_MCP_TOKEN` が、Module の spawn する子（＝AI の書いたコマンド）へそのまま継承される。トークンは「どの Module からの呼び出しか」の識別そのものなので、漏れれば AI がその Module の身元で中継を呼べる | **決定（2026-09-10）：Module は子プロセスに `BANTO_*` を渡してはならない。** §2.5 の「プロセスごとに発行」の意図（プロセス＝身元）から、子はその身元ではない。**実装済み（2026-09-10、Shell の `runCommand`）**——`docs/specs/v4-modules.md` §2.3「子プロセスの環境変数」。残る漏れ口は下段の `/proc` |
-| **`/proc`** | Landlock 許可リストが `/proc` の読み取りを許しており、同一ユーザーの `environ` からトークンが読める | **未決**——許可リストから外して何が壊れるかは要実測 |
+| **`/proc`** | Landlock 許可リストが `/proc` の読み取りを許すと、AI のコマンドが**親（Module）の `environ`** からトークンを読める | **決定・実装済み（2026-09-10）：許可しない。** 実測で「あり＝読める／なし＝拒否」を確認。代償（`ps`・`free`・`uptime`・`os.cpus()`）は上記の表 |
 | **画面 API（`ui-tool-call`）** | authToken だけで `module` 可視の tool（`resolveAlias` 等）も呼べ、秘密の値がブラウザに返る。可視性の強制が frontend 頼み | **実装済み（2026-09-10）**——host が API 境界で可視性を検査する。`agent`・`admin` のみ許可、`module` 可視性は拒否。**その Module が名乗っていない tool 名も拒否**（fail closed）。3つの口（Thread／Project／instance）すべてで同じ検査を通す。「自分の Module か」の照合を host に持たせる形（Canvas ごとのトークン）は将来の強化 |
 | **初回承認ゲート・監査** | 設計は決定済み（アーキ仕様 §2.5：初回のみ承認・メタデータを Event Store に記録） | **実装済み（2026-09-10）**——初回は会話と受信箱に判断待ちが出て、許可すると `relay.grant_created`、呼び出しは成否込みで `relay.call_recorded` に残る。`bypassPermissions` でも出る。**残っているのは待っている間の進捗送出だけ**（`docs/specs/v4-frontend.md`「Module 間中継の承認」の注） |
 | **Elicitation の宛先** | 共有接続のハンドラ上書きにより、並行ターン中は別ターンへ質問が届きうる | 実装待ち（`docs/tasks.json`） |

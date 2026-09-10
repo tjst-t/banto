@@ -35,3 +35,27 @@ test("allows dataDir itself", () => {
     assertRulesetIsSafe(ruleset([{ path: opts.dataDir, access: ["read_file"] }]), opts),
   );
 });
+
+// **`/proc` は許可リストに入れない**（決定・2026-09-10、`relay-proc-allowlist`）。
+// 入れると、AI の書いたコマンドが親（Module）の `/proc/<pid>/environ` から
+// 中継トークンを読める——子プロセスに env を渡さないようにしても、ここから漏れる。
+test("derive は /proc を許可しない", async () => {
+  const { deriveProjectRuleset } = await import("./derive.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const root = mkdtempSync(join(tmpdir(), "banto-derive-proc-"));
+  for (const profile of ["exec", "files-only"] as const) {
+    const { ruleset } = deriveProjectRuleset({
+      projectRoot: root,
+      pathEntries: (process.env.PATH ?? "").split(":").filter(Boolean),
+      profile,
+      nodeExecPath: process.execPath,
+    });
+    const paths = ruleset.rules.map((r) => r.path);
+    assert.equal(paths.includes("/proc"), false, `${profile}: /proc が許可リストに入っている`);
+    // 壊していないこと——実行に要るものは残っている
+    assert.ok(paths.includes("/etc"), `${profile}: /etc まで落ちている`);
+    assert.ok(paths.some((p) => p === root), `${profile}: Project の根が入っていない`);
+  }
+});

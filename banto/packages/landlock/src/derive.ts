@@ -149,7 +149,18 @@ export function deriveProjectRuleset(input: DeriveProjectRulesetInput): DerivePr
   }
 
   pushIfExists(rules, omitted, "/etc", READ_ONLY);
-  pushIfExists(rules, omitted, "/proc", READ_ONLY);
+  // **`/proc` は許可しない**（決定・2026-09-10、`relay-proc-allowlist`）。
+  // 許すと、AI の書いたコマンドが**親（Module）の `/proc/<pid>/environ` を読める**
+  // ——`BANTO_HOST_MCP_TOKEN` は「どの Module からの呼び出しか」の識別そのものなので、
+  // 子プロセスに env を渡さないようにしても（`relay-token-child-env`）ここから漏れる。
+  // **実測（2026-09-10）**：/proc あり＝子から親の environ の秘密が読めた／
+  // なし＝`Permission denied`。
+  //
+  // 代償も測った。**壊れないもの**：`nproc`・Node の `availableParallelism()`・
+  // `totalmem()`・`npm`・`df`（警告は出るが値は出る）・普通のコマンド全般。
+  // **壊れるもの**：`ps`・`free`・`uptime`（自分の機械の様子を見る道具）と、
+  // Node の**古い** `os.cpus()`（0 を返す。`availableParallelism()` は正しい）。
+  // 他プロセスの一覧は banto の境界の外側の話なので、見せないほうが設計と揃う。
 
   // Module自身のプログラムファイル（例：dist/server.js）——Project根でも
   // システムのライブラリパスでもない第3の場所（実機テストで発見）。
