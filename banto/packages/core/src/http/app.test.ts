@@ -11,12 +11,14 @@ import { InboxStore } from "../inbox/store.js";
 import { HostRelayEndpoint, RelayRegistry } from "../relay/host-relay-endpoint.js";
 import { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
-import { createApp, resolvePermissionMode } from "./app.js";
+import { RuntimeConfigStore } from "../config/runtime.js";
+import { createApp, resolvePermissionMode, DEFAULT_PERMISSION_MODE } from "./app.js";
 
 interface TestDeps {
   inbox: InboxStore;
   pendingApprovals: PendingApprovalRegistry;
   projectThread: ProjectThreadStore;
+  runtimeConfig: RuntimeConfigStore;
 }
 
 async function withApp(fn: (base: string, token: string, dir: string, deps: TestDeps) => Promise<void>) {
@@ -35,11 +37,14 @@ async function withApp(fn: (base: string, token: string, dir: string, deps: Test
     const agentRelayEndpoint = new AgentRelayEndpoint(token);
 
     const pendingApprovals = new PendingApprovalRegistry();
+    const runtimeConfig = new RuntimeConfigStore(dir, log);
+    await runtimeConfig.load();
     const server = createApp({
       projectThread,
       globalMemory,
       inbox,
       pendingApprovals,
+      runtimeConfig,
       relayEndpoint,
       agentRelayEndpoint,
       authToken: token,
@@ -48,7 +53,7 @@ async function withApp(fn: (base: string, token: string, dir: string, deps: Test
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as AddressInfo).port;
     try {
-      await fn(`http://127.0.0.1:${port}`, token, dir, { inbox, pendingApprovals, projectThread });
+      await fn(`http://127.0.0.1:${port}`, token, dir, { inbox, pendingApprovals, projectThread, runtimeConfig });
     } finally {
       server.close();
     }
@@ -402,4 +407,82 @@ test("ターンは host が持つ permissionMode で走る——ボディに無�
       "Fork Thread が親の permissionMode を引き継いでいない",
     );
   });
+});
+
+// **何も選ばれていないときのモード**（`docs/specs/v4-frontend.md` §6.4、
+// 決定・2026-09-10）。仕様は「Configuration が defaultPermissionMode を1つ持つ。
+// 既定値は auto」と言っていたが、core に**その設定自体が無かった**。
+
+test("何も選んでいなければ auto——設定の既定・Project 上書きの順で効く", async () => {
+  await withApp(async (base, token, _dir, deps) => {
+    const h = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const project = await (
+      await fetch(`${base}/api/projects`, {
+        method: "POST",
+        headers: h,
+        body: JSON.stringify({ name: "p", root: _dir }),
+      })
+    ).json();
+
+    // 何も無ければ auto（唯一の落ち先）
+    assert.equal(resolvePermissionMode(undefined, undefined, undefined), DEFAULT_PERMISSION_MODE);
+    assert.equal(DEFAULT_PERMISSION_MODE, "auto");
+
+    // instance 既定を変える
+    let res = await fetch(`${base}/api/config/default-permission-mode`, {
+      method: "POST",
+      headers: h,
+      body: JSON.stringify({ mode: "default" }),
+    });
+    assert.equal(res.status, 200);
+    let view = await (
+      await fetch(`${base}/api/config/default-permission-mode`, { headers: h })
+    ).json();
+    assert.equal(view.effective, "default");
+    assert.equal(view.instance, "default");
+
+    // Project 上書きが勝つ
+    res = await fetch(`${base}/api/config/default-permission-mode`, {
+      method: "POST",
+      headers: h,
+      body: JSON.stringify({ mode: "plan", projectId: project.id }),
+    });
+    assert.equal(res.status, 200);
+    view = await (
+      await fetch(`${base}/api/config/default-permission-mode?projectId=${project.id}`, { headers: h })
+    ).json();
+    assert.equal(view.effective, "plan");
+    assert.equal(view.project, "plan");
+    assert.equal(view.instance, "default", "Project 上書きが instance 既定を書き換えている");
+
+    // 上書きを外すと、また instance 既定に戻る
+    await fetch(`${base}/api/config/default-permission-mode`, {
+      method: "POST",
+      headers: h,
+      body: JSON.stringify({ mode: null, projectId: project.id }),
+    });
+    view = await (
+      await fetch(`${base}/api/config/default-permission-mode?projectId=${project.id}`, { headers: h })
+    ).json();
+    assert.equal(view.effective, "default");
+
+    // **壊れた値は入れない**（規則2——黙って既定へ落とさない）
+    res = await fetch(`${base}/api/config/default-permission-mode`, {
+      method: "POST",
+      headers: h,
+      body: JSON.stringify({ mode: "こわれ" }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal(deps.runtimeConfig.resolve("defaultPermissionMode"), "default", "壊れた値で上書きされた");
+  });
+});
+
+test("解決の順番：このターンの指定 > Thread の選択 > 設定 > auto", () => {
+  const thread = { permissionMode: "acceptEdits" as const };
+  assert.equal(resolvePermissionMode("plan", thread, "default"), "plan");
+  assert.equal(resolvePermissionMode(undefined, thread, "default"), "acceptEdits");
+  assert.equal(resolvePermissionMode(undefined, undefined, "default"), "default");
+  assert.equal(resolvePermissionMode(undefined, undefined, undefined), "auto");
+  // 設定に壊れた値が入っていても、そこで止まらず既定へ
+  assert.equal(resolvePermissionMode(undefined, undefined, "こわれ"), "auto");
 });

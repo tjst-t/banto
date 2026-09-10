@@ -1238,17 +1238,21 @@
       "id": "default-permission-mode-alignment",
       "phase": "1",
       "title": "defaultPermissionMode（仕様は既定 auto）と実装の食い違い",
-      "status": "pending",
+      "status": "done",
       "decidedAt": "2026-09-10",
       "decision": "仕様どおり実装する（ユーザー決定）。core の Configuration に defaultPermissionMode（既定 auto）を持たせ、未選択の Thread が auto で走るようにする。",
       "dependencies": [],
       "why": "frontend §6.4 は「Configuration が defaultPermissionMode を1つ持つ。既定値は auto」と言うが、core に存在しない（grep 0件）。さらに frontend は auto を undefined に写して送るため、未選択 Thread は SDK の既定（default＝危険操作でプロンプト）で走り「auto（分類器）」ではない。意図的なら仕様に書き戻す、そうでなければ実装する（規則8・人の判断）。",
       "doneWhen": "どちらかに決めて、仕様と実装を一致させる。実装するなら未選択 Thread が auto で走ることを実測する。",
       "refs": [
-        "docs/specs/v4-frontend.md",
-        "banto/apps/frontend/lib/backend/adapter.ts",
-        "docs/notes/2026-09-09-repo-review.md"
-      ]
+        "banto/packages/core/src/http/app.ts",
+        "banto/packages/core/src/http/app.test.ts",
+        "banto/packages/core/src/cli.ts",
+        "docs/specs/v4-frontend.md"
+      ],
+      "result": "決定どおり実装した——core の Configuration に `defaultPermissionMode` を持たせ、解決の順を「このターンの指定 → Thread の選択 → 設定（Project 上書き → instance 既定）→ `auto`」に揃えた（`resolvePermissionMode`）。**落ち先は1箇所**（規則3）——設定に壊れた値が入っていても、そこで止まらず `auto` へ。変える口として `/api/config/default-permission-mode`（GET/POST、Project 上書きは `mode: null` で外せる）を足した。**画面には出さない**——設定画面はまだ実データに繋がっていない（規則13）。**起票時の前提を1つ訂正**：レビューは「未選択 Thread は SDK の既定（default）で走る」と書いていたが、実際は runner が `?? \"auto\"` で補っており**既に auto で走っていた**（規則1——測ってから直す）。本当に欠けていたのは「人が既定を変える層」だけだった。",
+      "verifiedBy": "単体2件を追加（instance 既定 → Project 上書き → 外すと戻る／壊れた値は 400 で入らない、および解決の順番4通り）。単体140件・typecheck 通過。",
+      "completedAt": "2026-09-10"
     },
     {
       "id": "filesystem-path-scope",

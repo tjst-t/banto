@@ -27,6 +27,7 @@ import type { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { runThreadTurn, type ModuleEndpoint, type RunThreadTurnInput } from "./turn-runner.js";
 import type { TurnEventBus } from "./turn-events.js";
+import type { RuntimeConfigStore } from "../config/runtime.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
 import { visibilityOf } from "@banto/module-contract";
 
@@ -48,6 +49,8 @@ export interface AppDeps {
   globalMemory: GlobalMemoryStore;
   inbox: InboxStore;
   pendingApprovals: PendingApprovalRegistry;
+  /** 設定（層2）。いまは `defaultPermissionMode` の解決に使う（§2.6・§6.4）。 */
+  runtimeConfig?: RuntimeConfigStore;
   /** ターンの外で起きた判断待ち（host の中継ゲート）を走行中の SSE へ流す口。 */
   turnEvents?: TurnEventBus;
   /** 画面からの tool 呼び出しも「どのターンの仕事か」を台帳に置く——その tool が
@@ -189,10 +192,22 @@ const THREAD_PERMISSION_MODES = [
 export function resolvePermissionMode(
   fromRequest: unknown,
   thread: { permissionMode?: ThreadPermissionMode } | undefined,
-): ThreadPermissionMode | undefined {
+  /** Configuration の既定（Project 上書き → instance 既定の順で解決済みの値）。 */
+  configured?: unknown,
+): ThreadPermissionMode {
   if (isThreadPermissionMode(fromRequest)) return fromRequest;
-  return thread?.permissionMode;
+  if (thread?.permissionMode) return thread.permissionMode;
+  // **設定の既定**（`docs/specs/v4-frontend.md` §6.4、実装・2026-09-10）。
+  // 壊れた値は黙って使わない——既定に落とす（設定は人が書き換えうる）
+  if (isThreadPermissionMode(configured)) return configured;
+  // **最後は auto**（同 §6.4「既定値は auto」）。ここが唯一の落ち先（規則3）
+  return DEFAULT_PERMISSION_MODE;
 }
+
+/** 何も選ばれていないときのモード（`docs/specs/v4-frontend.md` §6.4）。 */
+export const DEFAULT_PERMISSION_MODE: ThreadPermissionMode = "auto";
+/** Configuration の鍵。instance 既定・Project 上書きの両方に置ける。 */
+export const DEFAULT_PERMISSION_MODE_KEY = "defaultPermissionMode";
 
 function isThreadPermissionMode(value: unknown): value is (typeof THREAD_PERMISSION_MODES)[number] {
   return typeof value === "string" && (THREAD_PERMISSION_MODES as readonly string[]).includes(value);
@@ -530,6 +545,7 @@ export function createApp(deps: AppDeps) {
           permissionMode: resolvePermissionMode(
             body.permissionMode,
             deps.projectThread.getThread(turnMatch[1]!),
+            deps.runtimeConfig?.resolve(DEFAULT_PERMISSION_MODE_KEY, thread?.projectId),
           ),
           modules,
           cwd,
@@ -838,6 +854,43 @@ export function createApp(deps: AppDeps) {
         // 設定画面も同じ——**自分の Module を呼ぶのに承認は求めない**
         // （改訂・2026-09-07、上の Thread 版と同じ理由）
         json(res, 200, await found.client.callTool({ name: body.tool, arguments: toolArguments(body.arguments) }));
+        return;
+      }
+
+      // **何も選ばれていないときのモード**（§6.4）。instance 既定と Project 上書きの
+      // 2階層（§6.1）。**画面がまだ繋がっていない**ので、いまはこの口だけが入口
+      const permissionDefaultMatch = url.pathname.match(/^\/api\/config\/default-permission-mode$/);
+      if (permissionDefaultMatch && req.method === "GET") {
+        const projectId = url.searchParams.get("projectId") ?? undefined;
+        json(res, 200, {
+          effective: resolvePermissionMode(
+            undefined,
+            undefined,
+            deps.runtimeConfig?.resolve(DEFAULT_PERMISSION_MODE_KEY, projectId),
+          ),
+          instance: deps.runtimeConfig?.layerValue(DEFAULT_PERMISSION_MODE_KEY) ?? null,
+          project: projectId
+            ? (deps.runtimeConfig?.layerValue(DEFAULT_PERMISSION_MODE_KEY, projectId) ?? null)
+            : null,
+        });
+        return;
+      }
+      if (permissionDefaultMatch && req.method === "POST") {
+        const body = (await readJsonBody(req)) as { mode?: unknown; projectId?: unknown };
+        if (!deps.runtimeConfig) return json(res, 501, { error: "設定を保存できません" });
+        const projectId = typeof body.projectId === "string" ? body.projectId : undefined;
+        // **壊れた値は入れない**（規則2——黙って既定へ落とさない）
+        if (body.mode === null) {
+          if (!projectId) return json(res, 400, { error: "instance 既定は空にできません" });
+          await deps.runtimeConfig.unsetProjectOverride(projectId, DEFAULT_PERMISSION_MODE_KEY);
+          return json(res, 200, { ok: true });
+        }
+        if (!isThreadPermissionMode(body.mode)) {
+          return json(res, 400, { error: `permissionMode の値が不正です: ${JSON.stringify(body.mode)}` });
+        }
+        if (projectId) await deps.runtimeConfig.setProjectOverride(projectId, DEFAULT_PERMISSION_MODE_KEY, body.mode);
+        else await deps.runtimeConfig.setInstanceDefault(DEFAULT_PERMISSION_MODE_KEY, body.mode);
+        json(res, 200, { ok: true });
         return;
       }
 

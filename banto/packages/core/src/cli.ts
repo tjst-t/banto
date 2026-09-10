@@ -558,6 +558,7 @@ async function main(): Promise<void> {
     globalMemory,
     inbox,
     pendingApprovals,
+    runtimeConfig,
     turnEvents,
     moduleCalls,
     relayEndpoint,
