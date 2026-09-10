@@ -85,7 +85,14 @@ test("判断待ちの最中にリロードしても、承認カードは戻っ�
     )
     .toBe(true);
 
-  await expect(page.getByText(lastAssistantText.slice(0, 30), { exact: false })).toBeVisible({
-    timeout: 60_000,
-  });
+  // **見出しやコード片で要素が分かれても落ちない形で比べる**（改訂・2026-09-10）。
+  // 以前は「記録した本文の先頭30字が1つのテキストノードにある」ことを見ていたため、
+  // AI がその範囲に `パス` のようなコード片を書いた回だけ落ちた
+  // （実測・2026-09-10：同じ spec が通ったり落ちたりした）。見たいのは
+  // 「host が記録した返事が画面に出ていること」なので、描画後の文字列同士で比べる
+  // ——記法の文字と空白を落として突き合わせる（規則6——間欠を待ち時間で誤魔化さない）
+  const normalize = (text: string) => text.replace(/[`*_#>~-]/g, "").replace(/\s+/g, "");
+  await expect
+    .poll(async () => normalize(await page.locator("body").innerText()), { timeout: 60_000 })
+    .toContain(normalize(lastAssistantText.slice(0, 30)));
 });

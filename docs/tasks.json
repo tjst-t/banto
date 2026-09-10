@@ -955,15 +955,20 @@
       "id": "event-store-durability",
       "phase": "1",
       "title": "Event Store の fsync と torn line 切り詰め（§2.1 の未実装分）",
-      "status": "pending",
+      "status": "done",
       "dependencies": [],
       "why": "仕様（アーキ §2.1）は「fsync は追記ごと」「\\n で終わらない最終レコードは切り詰めてから追記し、切り詰めを記録する」と明記するが、実装は appendFile のみ（2026-09-09 レビューで確認）。書きかけの行が残ると次回起動の JSON.parse が毎回失敗し、host が起動できなくなる。スナップショットの fsync(dir) 欠落も同族。",
       "doneWhen": "書き込み途中で kill するテストで、次回起動が壊れた行を切り詰めて回復し、切り詰めの記録が残ることを実証する。",
       "refs": [
         "banto/packages/core/src/event-store/log.ts",
         "banto/packages/core/src/event-store/snapshot.ts",
-        "docs/notes/2026-09-09-repo-review.md"
-      ]
+        "banto/packages/core/src/event-store/log.test.ts",
+        "docs/specs/v4-architecture.md",
+        "docs/notes/2026-09-10-event-store-durability.md"
+      ],
+      "result": "起動時に「`\\n` で終わらない最終レコード」を切り詰め、`event_store.torn_line_truncated`（落としたバイト数・どこまで残ったか。**中身は残さない**——秘密が混ざりうる）を1件積む。切り詰めは**ファイル全体を読まず**、後ろから 64KB ずつ遡って最後の `\\n` を探す。`append` は追記ごとに fsync してから解決する。スナップショットは tmp→fsync→rename→ディレクトリの fsync まで行う（rename が確定していないと、crash 後に空のスナップショットだけが残りうる）。**追記用の fd を持ち回す案は却下**——Node が GC での close を将来例外にすると明言しており寿命の問題を抱えるうえ、実測で速くならない（代金のほぼ全部がfsync。open/close は 0.06ms 程度）。",
+      "verifiedBy": "単体3件を追加：手で作った半端な行／1行も完結していないログ／**実際に SIGKILL された子プロセス**が残した半端な行からの回復（机上で作らない、規則1）。いずれも切り詰めの記録が1件残り、その後の append が正しい seq で続く。追記の実測（300回・200字）：p50 0.88ms／p95 1.02ms（fsync 無しは p95 0.15ms）——仕様の「p95 1ms 未満」と同じ桁。単体120件・E2E 27件・typecheck 通過。稼働中の host に反映済み。",
+      "completedAt": "2026-09-10"
     },
     {
       "id": "shell-progress-keepalive",

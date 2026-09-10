@@ -2,7 +2,7 @@
 // 追記のみのログ＋fold で状態を作る（event sourcing、ただしCQRSまでは採らない
 // ——docs/lessons.mdの既知の答え）。ログが唯一の真実（規則3）。
 
-import { appendFile, mkdir, open, readFile } from "node:fs/promises";
+import { mkdir, open, stat } from "node:fs/promises";
 import { createReadStream, existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { join } from "node:path";
@@ -32,10 +32,71 @@ export class EventLog {
   async init(): Promise<void> {
     if (this.initialized) return;
     await mkdir(this.dataDir, { recursive: true, mode: 0o700 });
+    // **書きかけの最終行は「無い」とみなす**（アーキ仕様§2.1、crash-torn の回復）。
+    // 残したままだと、次回以降の起動で毎回 JSON.parse が同じ行で失敗し、
+    // host が二度と立ち上がらない。切り詰めは append の前に済ませる。
+    const torn = await this.truncateTornLine();
     if (existsSync(this.logPath)) {
       this.seqCounter = await this.readLastSeq();
     }
+    // ファイルの存在自体もディレクトリ側の更新なので、ここで確定させておく
+    await (await open(this.logPath, "a")).close();
+    await this.syncDir();
     this.initialized = true;
+    // **黙って捨てない**（規則2）——切り詰めたこと自体をログに残す。
+    // 中身は残さない（秘密が混ざりうる）——落とした量と、どこまで残ったか
+    if (torn) {
+      await this.append("event_store.torn_line_truncated", {
+        droppedBytes: torn.droppedBytes,
+        keptThroughSeq: this.seqCounter,
+      });
+    }
+  }
+
+  /**
+   * `\n` で終わっていない最終レコードを切り詰める。落としたバイト数を返す
+   * （何も落とさなかったら undefined）。**ファイル全体を読まない**——
+   * 後ろから塊で遡って最後の `\n` を探す（1GB のログでも起動を遅くしない）。
+   */
+  private async truncateTornLine(): Promise<{ droppedBytes: number } | undefined> {
+    if (!existsSync(this.logPath)) return undefined;
+    const { size } = await stat(this.logPath);
+    if (size === 0) return undefined;
+
+    const fh = await open(this.logPath, "r+");
+    try {
+      const lastByte = Buffer.alloc(1);
+      await fh.read(lastByte, 0, 1, size - 1);
+      if (lastByte[0] === 0x0a) return undefined;
+
+      const CHUNK = 64 * 1024;
+      let searchEnd = size;
+      let keep = -1;
+      while (searchEnd > 0 && keep < 0) {
+        const start = Math.max(0, searchEnd - CHUNK);
+        const buf = Buffer.alloc(searchEnd - start);
+        await fh.read(buf, 0, buf.length, start);
+        const idx = buf.lastIndexOf(0x0a);
+        if (idx >= 0) keep = start + idx + 1; // `\n` の直後まで残す
+        searchEnd = start;
+      }
+      const keptBytes = keep < 0 ? 0 : keep; // 1行も完結していなければ空にする
+      await fh.truncate(keptBytes);
+      await fh.sync();
+      return { droppedBytes: size - keptBytes };
+    } finally {
+      await fh.close();
+    }
+  }
+
+  /** ディレクトリ側の更新（ファイルの作成・rename）を確定させる。 */
+  private async syncDir(): Promise<void> {
+    const dh = await open(this.dataDir, "r");
+    try {
+      await dh.sync();
+    } finally {
+      await dh.close();
+    }
   }
 
   private async readLastSeq(): Promise<number> {
@@ -66,7 +127,11 @@ export class EventLog {
     }
   }
 
-  /** イベントを1件追記する。返り値は実際に書き込んだ seq 付きイベント。 */
+  /**
+   * イベントを1件追記する。返り値は実際に書き込んだ seq 付きイベント。
+   * **fsync が終わってから解決する**（アーキ仕様§2.1）——crash で消える状態を
+   * 画面や購読者に見せない。
+   */
   async append<T>(type: string, payload: T): Promise<StoredEvent<T>> {
     if (!this.initialized) throw new Error("EventLog.init() を先に呼ぶ必要があります");
 
@@ -79,7 +144,16 @@ export class EventLog {
         ts: new Date().toISOString(),
       };
       const line = JSON.stringify(event) + "\n";
-      await appendFile(this.logPath, line, "utf8");
+      // **追記ごとに開いて閉じる。** fd を持ち回すと、閉じ忘れ（GC 任せ）と
+      // 「閉じた後に追記される」という別の壊れ方を抱え込む——追記の頻度
+      // （1ターンで数件）に対して open/close の代金は fsync に埋もれる
+      const fh = await open(this.logPath, "a");
+      try {
+        await fh.write(line, null, "utf8");
+        await fh.sync();
+      } finally {
+        await fh.close();
+      }
       return event;
     });
     // 後続の書き込みが失敗した書き込みを待たずに進めるよう、チェーン自体は

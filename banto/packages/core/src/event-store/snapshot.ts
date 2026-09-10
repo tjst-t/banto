@@ -2,7 +2,7 @@
 // 各read model（Project/Thread・Configuration・Inbox等）がこれを1つずつ持つ——
 // EventLog自体はスナップショットの概念を知らない（関心の分離）。
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { EventLog, StoredEvent } from "./log.js";
@@ -95,12 +95,28 @@ export class SnapshotProjection<S> {
     return this.seq;
   }
 
-  /** アトミックに書き出す（tmpファイル→rename、途中状態を見せない）。 */
+  /**
+   * アトミックに書き出す（tmpファイル→fsync→rename→fsync(dir)、
+   * アーキ仕様§2.1）。**途中状態を見せない**うえに、rename 自体も確定させる
+   * ——さもないと、crash 後に「中身が空のスナップショットだけが残る」ことがある。
+   */
   async save(): Promise<void> {
     await mkdir(this.dataDir, { recursive: true, mode: 0o700 });
     const tmpPath = `${this.snapshotPath}.tmp`;
     const snap: SnapshotFile<S> = { seq: this.seq, state: this.state };
-    await writeFile(tmpPath, JSON.stringify(snap, snapshotReplacer), "utf8");
+    const fh = await open(tmpPath, "w");
+    try {
+      await fh.writeFile(JSON.stringify(snap, snapshotReplacer), "utf8");
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
     await rename(tmpPath, this.snapshotPath);
+    const dh = await open(this.dataDir, "r");
+    try {
+      await dh.sync();
+    } finally {
+      await dh.close();
+    }
   }
 }
