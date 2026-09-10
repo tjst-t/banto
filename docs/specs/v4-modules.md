@@ -500,6 +500,13 @@ tool 引数の形は未設計だった部分——ここで決める）：実行
 `socketPath` を `SSH_AUTH_SOCK` として子プロセスの環境変数に注入する。ソケット
 パスは秘密ではないので `envSecrets` とは別枠にした。
 
+**子プロセスの環境変数**：Shell 自身の環境変数を子に引き継ぐが、**host が渡した
+`BANTO_*` は落とす**（`BANTO_HOST_MCP_TOKEN`・`BANTO_HOST_MCP_URL`・
+`BANTO_PROJECT_ROOT`・`BANTO_MODULE_DATA_DIR`）。中継トークンは「どの Module
+からの呼び出しか」の識別そのもので、AI の書いたコマンドはその身元ではない
+（`docs/specs/v4-security.md`「中継が縛らないもの」）。`envSecrets` で
+`BANTO_` から始まる名前を指定した場合は、黙って無視せずエラーにする。
+
 **timeout と MCP の既定タイムアウト**：`npm install` 等、60秒を超えるコマンドは
 普通にある。バックグラウンド起動＋poll という状態を持つ形は採らず（Shell の
 契約を破るため）、`runCommand` は1回の呼び出しのまま、実行中に

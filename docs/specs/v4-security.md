@@ -255,7 +255,7 @@ banto が自作した機構であり、MCP にも Landlock にも守られない
 
 | 経路 | 何が境界を越えるか | 状態 |
 |---|---|---|
-| **子プロセスの env 継承** | Module に渡した `BANTO_HOST_MCP_TOKEN` が、Module の spawn する子（＝AI の書いたコマンド）へそのまま継承される。トークンは「どの Module からの呼び出しか」の識別そのものなので、漏れれば AI がその Module の身元で中継を呼べる | **決定（2026-09-10）：Module は子プロセスに `BANTO_*` を渡してはならない。** §2.5 の「プロセスごとに発行」の意図（プロセス＝身元）から、子はその身元ではない。実装は `docs/tasks.json` |
+| **子プロセスの env 継承** | Module に渡した `BANTO_HOST_MCP_TOKEN` が、Module の spawn する子（＝AI の書いたコマンド）へそのまま継承される。トークンは「どの Module からの呼び出しか」の識別そのものなので、漏れれば AI がその Module の身元で中継を呼べる | **決定（2026-09-10）：Module は子プロセスに `BANTO_*` を渡してはならない。** §2.5 の「プロセスごとに発行」の意図（プロセス＝身元）から、子はその身元ではない。**実装済み（2026-09-10、Shell の `runCommand`）**——`docs/specs/v4-modules.md` §2.3「子プロセスの環境変数」。残る漏れ口は下段の `/proc` |
 | **`/proc`** | Landlock 許可リストが `/proc` の読み取りを許しており、同一ユーザーの `environ` からトークンが読める | **未決**——許可リストから外して何が壊れるかは要実測 |
 | **画面 API（`ui-tool-call`）** | authToken だけで `module` 可視の tool（`resolveAlias` 等）も呼べ、秘密の値がブラウザに返る。可視性の強制が frontend 頼み | **決定（2026-09-10、ユーザー）**——host が API 境界で可視性を検査する。`agent`・`admin` のみ許可、`module` 可視性は拒否。「自分の Module か」の照合を host に持たせる形（Canvas ごとのトークン）は将来の強化。実装は `docs/tasks.json`（ui-tool-call-visibility-boundary）。§6.2 の「必ず承認」の消し忘れも掃除済み |
 | **初回承認ゲート・監査** | 設計は決定済み（アーキ仕様 §2.5：初回のみ承認・メタデータを Event Store に記録）だが未実装。呼び出し履歴が永続化されず、監査（`docs/specs/v4-frontend.md` §6.0）の前提が欠ける | 実装待ち（`docs/tasks.json`） |

@@ -78,6 +78,20 @@ test("runCommand cannot escape the Project root when the whole Shell process run
     );
     assert.notEqual(outsideParsed.exitCode, 0);
 
+    // hostが実際に行うspawnと同じ形（このテストはBANTO_HOST_MCP_TOKENを本当に
+    // Shellプロセスへ渡している）で、AIの書いたコマンドにトークンが継承されない
+    // ことを確かめる（決定・2026-09-10、docs/specs/v4-security.md）。
+    const envResult = await client.callTool({
+      name: "runCommand",
+      arguments: { command: "env | grep '^BANTO_'; echo exit=$?" },
+    });
+    const envParsed = JSON.parse((envResult.content as { text: string }[])[0]!.text);
+    assert.equal(
+      envParsed.stdout.trim(),
+      "exit=1",
+      `relay token or other BANTO_* leaked into the AI's command: ${envParsed.stdout}`,
+    );
+
     await client.close();
   } finally {
     await rm(projectRoot, { recursive: true, force: true });

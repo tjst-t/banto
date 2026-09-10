@@ -32,10 +32,34 @@ export interface RunCommandResult {
 
 const DEFAULT_TIMEOUT_SEC = 120;
 
+// hostがModuleに渡す変数の接頭辞。BANTO_HOST_MCP_TOKENは「どのModuleからの
+// 呼び出しか」の識別そのものなので（アーキ仕様§2.5「プロセスごとに発行」＝
+// プロセスが身元）、AIの書いたコマンドを走らせる子プロセスはこの身元ではない
+// ——渡さない（決定・2026-09-10、docs/specs/v4-security.md「中継が縛らないもの」）。
+const HOST_ENV_PREFIX = "BANTO_";
+
+/** 親（Moduleプロセス）のenvから、hostが渡した`BANTO_*`を落とした写しを作る。 */
+export function buildChildEnv(parentEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const child: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(parentEnv)) {
+    if (name.startsWith(HOST_ENV_PREFIX)) continue;
+    child[name] = value;
+  }
+  return child;
+}
+
 export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): Promise<RunCommandResult> {
   const vaultModule = deps.vaultModuleName ?? "vault";
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  const env = buildChildEnv();
   const writtenSecretFiles: string[] = [];
+
+  // 落とした名前をenvSecretsで復活させられては同じこと。黙って無視すると
+  // 「指定したのに入っていない」が見えない失敗になるので、ここで止める（規則2）。
+  for (const envName of Object.keys(input.envSecrets ?? {})) {
+    if (envName.startsWith(HOST_ENV_PREFIX)) {
+      throw new Error(`envSecretsに${HOST_ENV_PREFIX}で始まる名前は使えません: ${envName}`);
+    }
+  }
 
   try {
     for (const [envName, alias] of Object.entries(input.envSecrets ?? {})) {

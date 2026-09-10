@@ -849,16 +849,21 @@
       "id": "relay-token-child-env",
       "phase": "1",
       "title": "中継トークンを子プロセスに渡さない",
-      "status": "pending",
+      "status": "done",
       "dependencies": [],
       "why": "Shell の runCommand が `{...process.env}` を子に渡すため、`BANTO_HOST_MCP_TOKEN` が AI の書いたコマンドに継承される。トークンは「どの Module からの呼び出しか」の識別そのものなので、漏れれば AI が Shell の身元（dependsOn: vault）で中継を呼び、resolveAlias の値を stdout 経由で自分の文脈に入れられる（決定・2026-09-10、docs/specs/v4-security.md「host の中継・可視性の層」）。",
       "doneWhen": "runCommand の子プロセスから `BANTO_*` が見えないことをテストが実証する（`env | grep BANTO_` が空）。かつ既存の envSecrets/secretFiles のテストが引き続き通る。",
       "refs": [
         "banto/packages/modules/shell/src/run-command.ts",
+        "banto/packages/modules/shell/src/run-command.test.ts",
+        "banto/packages/modules/shell/src/landlock.integration.test.ts",
         "docs/specs/v4-security.md",
-        "docs/notes/2026-09-10-relay-layer-security-surface.md",
-        "docs/notes/2026-09-09-repo-review.md"
-      ]
+        "docs/specs/v4-modules.md",
+        "docs/notes/2026-09-10-relay-layer-security-surface.md"
+      ],
+      "result": "`runCommand` が子に渡す env を `buildChildEnv()` で作り直し、host が渡した `BANTO_*`（`BANTO_HOST_MCP_TOKEN`／`BANTO_HOST_MCP_URL`／`BANTO_PROJECT_ROOT`／`BANTO_MODULE_DATA_DIR`）を落とす。落とした名前を `envSecrets` で復活させられては同じことなので、`BANTO_` で始まる名前の指定は黙って無視せずエラーにする（規則2）。Module プロセス自身の env は触らない——中継クライアントがその値で動いているため。仕様は `docs/specs/v4-modules.md` §2.3「子プロセスの環境変数」に記録。**残る漏れ口は `/proc`**（同一ユーザーなら Module 自身の environ を読める、relay-proc-allowlist）。",
+      "verifiedBy": "単体3件（`env | grep \"^BANTO_\"` が空・`PATH` 等の通常の変数は届く・`envSecrets: {BANTO_*}` は reject）＋ Landlock 統合テストに同じ確認を追加（`banto-landlock-exec` → node server.js → /bin/sh の実 spawn 経路で、本当に `BANTO_HOST_MCP_TOKEN` を渡した状態で見る）。**テストが穴を検出することを確認済み**——`buildChildEnv()` を元の `{...process.env}` に戻すと新テストだけが落ちる（規則1）。ワークスペース全体の test 149件・typecheck 通過。**実機**：別データディレクトリ・別ポート（4201）の host を立てて実 Module 経由で `runCommand` を呼び、子に見える env 30件に `BANTO_` が1つも無いこと、かつ `envSecrets` の解決（Shell→中継→実 Vault）が引き続き通ることを確認。稼働中の host（4737）も再起動して反映済み。",
+      "completedAt": "2026-09-10"
     },
     {
       "id": "relay-approval-gate-and-audit",
