@@ -38,6 +38,28 @@ test("Project作成→Base Thread会話→Fork作成→Clear", async ({ page }) 
     page.locator('[data-role="assistant"]').filter({ hasText: "あいさつ完了789" }),
   ).toBeVisible({ timeout: 60_000 });
 
+  // **ターンが終わるまで待ってから分ける**（追加・2026-09-10）。返事のバブルは
+  // 流れている途中で出るので、ここで分けると**まだ resume-point が立っていない**
+  // 親から分岐することがある（この spec 自身が上で心配している「中身が空のまま
+  // 作られる」の、backend 側の姿）。host の記録で区切る
+  const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
+  const projects = await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers })).json();
+  const project = projects.find((p: { name: string }) => p.name === "E2E Test Project");
+  const baseThreadId: string = (
+    await (await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers })).json()
+  )[0].id;
+  await expect
+    .poll(
+      async () =>
+        (
+          (await (
+            await page.request.get(`${CORE_BASE_URL}/api/threads/${baseThreadId}`, { headers })
+          ).json()) as { resumePoint?: string }
+        ).resumePoint,
+      { timeout: 60_000, message: "1ターン目が終わって resume-point が立つまで" },
+    )
+    .toBeTruthy();
+
   // Fork作成。**開いた印はヘッダの「戻る」**——題は Fork の名前だけになり
   // 「Fork Thread —」の接頭辞は付かない（改訂・2026-09-09、狭い幅で題が
   // 押し出されるのをやめ、種別はアイコンで示す）
@@ -62,7 +84,40 @@ test("Project作成→Base Thread会話→Fork作成→Clear", async ({ page }) 
   // Clear（Fork側）——モバイル幅ではBaseパネルもDOM上に残ったまま
   // Fork がoverlayとして重なる（panel-stack.tsx）ので、同じaria-labelが
   // 2つ存在する。overlayはDOM順で後に来るので.last()で前面の1枚を選ぶ
+  //
+  // **「Clear という文字が見えている」で終わらせない**（改訂・2026-09-10、規則14）。
+  // 以前は `getByText("Clear").first()` を見ていたが、これは**いま押したメニュー項目の
+  // 文字**にも当たる——Clear が何もしなくても通ってしまっていた。見るのは
+  // ①会話に横線が入ったこと ②host 側で resume-point が切れたこと（次のターンが
+  // 新しいセッションで始まる、アーキ仕様 §2.2）の2つ。
+  const threads = await (
+    await page.request.get(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers })
+  ).json();
+  const fork = threads.find((t: { kind: string }) => t.kind === "fork");
+  const forkState = async () =>
+    (await (
+      await page.request.get(`${CORE_BASE_URL}/api/threads/${fork.id}`, { headers })
+    ).json()) as { resumePoint?: string; markers?: { kind: string }[] };
+
+  // Clear の前：親から借りた resume-point を持っている（＝切るものがある）
+  expect((await forkState()).resumePoint, "Clear する前から resume-point が無い（試験が壊れている）").toBeTruthy();
+
   await page.getByRole("button", { name: "Thread の操作" }).last().click();
   await page.getByRole("menuitem", { name: "Clear" }).click();
-  await expect(page.getByText("Clear").first()).toBeVisible({ timeout: 15_000 });
+
+  // ① 会話に Clear の横線が入る（メニューの文字ではなく、印そのものを指す）
+  const overlay = page.locator('[data-testid="panel-overlay"][data-layer="fork"]');
+  await expect(
+    overlay.locator('[data-testid="thread-marker"][data-kind="clear"]'),
+    "Clear の横線が会話に出ていない",
+  ).toBeVisible({ timeout: 15_000 });
+
+  // ② host 側で本当に切れた
+  await expect
+    .poll(async () => (await forkState()).resumePoint, { timeout: 15_000, message: "resume-point が切れていない" })
+    .toBeUndefined();
+  expect(
+    (await forkState()).markers?.some((m) => m.kind === "clear"),
+    "Clear が記録に残っていない",
+  ).toBe(true);
 });

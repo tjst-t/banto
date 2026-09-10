@@ -3,8 +3,8 @@
 // ホストで」と同じ原則、BANTO_CONFIG_PATHはbootstrap.tsの上書き機構）。
 // 毎回まっさらな状態から始める——前回の実行が残っているとテストが
 // 「たまたま前回のデータが残っていたから通った」になりかねない。
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
   CONFIG_PATH,
   DATA_DIR,
@@ -16,6 +16,7 @@ import {
 } from "./config.ts";
 
 export default function globalSetup(): void {
+  removeStaleRuns();
   rmSync(DATA_DIR, { recursive: true, force: true });
   rmSync(dirname(CONFIG_PATH), { recursive: true, force: true });
   mkdirSync(DATA_DIR, { recursive: true });
@@ -36,4 +37,28 @@ export default function globalSetup(): void {
       2,
     ),
   );
+}
+
+/**
+ * **前の実行の置き場を片づける**（`e2e-run-isolation`、2026-09-10）。実行ごとに
+ * 別のディレクトリを使うようにしたので、放っておくと `/tmp` に溜まり続ける。
+ * **走っているかもしれない実行には触らない**——1日より古いものだけ消す。
+ */
+function removeStaleRuns(): void {
+  const runsRoot = dirname(dirname(DATA_DIR));
+  const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+  let entries: string[];
+  try {
+    entries = readdirSync(runsRoot);
+  } catch {
+    return; // まだ1回も走っていない
+  }
+  for (const entry of entries) {
+    const path = join(runsRoot, entry);
+    try {
+      if (statSync(path).mtimeMs < dayAgo) rmSync(path, { recursive: true, force: true });
+    } catch {
+      // 消せないものは放っておく——片づけで試験を止めない
+    }
+  }
 }

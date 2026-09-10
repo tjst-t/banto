@@ -71,7 +71,18 @@ test("Fork Threadを畳む→履歴に出る→再度開く→会話が読み返
   // 再度開く
   await page.getByRole("button", { name: "再度開く" }).click();
 
-  // Fork Threadが開き、直前の会話（めじるし123）が読み返せる
+  // Fork Threadが開き、**その Fork でした会話**が読み返せる。
+  //
+  // **前面の1枚の中だけを見る**（改訂・2026-09-10、規則14）。以前は画面全体から
+  // 「めじるし123」——**Base でした会話**——を探していた。Fork は Base の上に
+  // 重なるオーバーレイで、`toBeVisible` は覆いを見ないので、**再度開いた Fork が
+  // 空でも背面の Base の文字に当たって通っていた**（規則14 の由来になった穴と同型）。
+  // 見るのは Fork でしか出ない語（フォークめじるし456）と、前面の1枚に限った探索。
   await expect(forkPanelBack).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText("めじるし123").first()).toBeVisible({ timeout: 15_000 });
+  const forkPanel = page.locator('[data-testid="panel-overlay"][data-layer="fork"]');
+  await expect(forkPanel, "Fork のパネルが前面に出ていない").toBeVisible({ timeout: 15_000 });
+  await expect(
+    forkPanel.getByText("フォークめじるし456").first(),
+    "再度開いた Fork に、その Fork でした会話が戻っていない",
+  ).toBeVisible({ timeout: 15_000 });
 });

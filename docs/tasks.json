@@ -1048,21 +1048,26 @@
       "id": "e2e-run-isolation",
       "phase": "1",
       "title": "E2E の worker 並走と実行間衝突を止める",
-      "status": "pending",
+      "status": "done",
       "dependencies": [],
       "why": "fullyParallel: false はファイル内の順序しか固定せず、ファイル単位では複数 worker が同じ core（4738）と同じ受信箱を共有して並走する——判断待ちを起こす5 spec が互いの判断待ちを掴みうる（規則6）。さらに固定ポートのため、共有ワークツリーで別セッションと同時に回すと丸ごと壊れる（2026-09-09 に実際に1回分が無効になった）。",
       "doneWhen": "workers: 1 を明示し、ポート・dataDir を実行ごとに割り当てる（か実行の相互排他を入れる）。全 spec を2回連続で通し、その結果を docs/notes/2026-09-09-repo-review.md §5 に追記する。",
       "refs": [
-        "banto/e2e/playwright.config.ts",
         "banto/e2e/config.ts",
-        "docs/notes/2026-09-09-repo-review.md"
-      ]
+        "banto/e2e/playwright.config.ts",
+        "banto/e2e/global-setup.ts",
+        "docs/notes/2026-09-09-repo-review.md",
+        "docs/notes/2026-09-10-e2e-trustworthiness.md"
+      ],
+      "result": "`workers: 1` を明示し、**実行ごとに port と置き場を割り当てる**ようにした（`BANTO_E2E_RUN_ID`——最初に読んだプロセスが決めて env に置き、webServer と worker が引き継ぐ。core/sandbox の port と `/tmp/banto-e2e/<runId>/` をここから導く）。同じ枠に当たったときは `reuseExistingServer: false` のまま**その場で止まる**（黙って相乗りしない）。置き場は1日より古いものだけ自動で片づける（走っているかもしれない実行には触らない）。**速さは 2.2分 → 3.7分に落ちたが受け入れる**——その速さは「他の spec の判断待ちを掴む」危険と引き換えのものだった（規則6）。",
+      "verifiedBy": "全 27 件を**2回連続**で通した（1回目 27 passed / 3.7分、2回目 27 passed / 3.7分）。**同時に2本走らせて**別々の port（4748/4749 と 4752/4753）を掴み、両方通ることも確認。結果は docs/notes/2026-09-09-repo-review.md §5 に追記した。",
+      "completedAt": "2026-09-10"
     },
     {
       "id": "e2e-content-assertions",
       "phase": "1",
       "title": "E2E の「中身を見ていない」検証を規則14の形に直す",
-      "status": "pending",
+      "status": "done",
       "dependencies": [],
       "why": "Clear の検証が「押したメニュー項目の文字がまだ見えている」で通る／Fork 再オープンの「読み返せる」が背面 Base パネルの同じ文字列で通る（toBeVisible は覆いを見ない）——規則14の由来になった実例と同型の穴が現存。Shell 閉じ込め②は runCommand が実際に呼ばれたことを見ておらず、AI が tool を呼ばずに断れば閉じ込めが壊れていても緑。module-canvas-inline の「承認が出ない」は最初の poll で即通る。",
       "doneWhen": "各 spec が実際の中身（会話が消えた・Fork パネル固有の文字列・tool 呼び出しの記録と拒否結果・操作完了後の受信箱件数）を検証する。機能を意図的に壊すとテストが落ちることを1件ずつ確認する。",
@@ -1071,8 +1076,13 @@
         "banto/e2e/specs/thread-lifecycle.spec.ts",
         "banto/e2e/specs/shell-confinement.spec.ts",
         "banto/e2e/specs/module-canvas-inline.spec.ts",
-        "docs/notes/2026-09-09-repo-review.md"
-      ]
+        "banto/apps/frontend/components/banto/thread/thread-panel.tsx",
+        "banto/apps/frontend/components/banto/shell/panel-stack.tsx",
+        "docs/notes/2026-09-10-e2e-trustworthiness.md"
+      ],
+      "result": "4件を規則14の形に直した。(1) Clear は「Clear という文字」ではなく**会話の横線そのもの**（`data-testid=\"thread-marker\"`）＋ host 側の resume-point が切れたこと・clear が記録に残ったことを見る。(2) Fork 再オープンは**前面の1枚**（`data-testid=\"panel-overlay\"`）に限って **Fork でしか出ない語**を探す（以前は画面全体から Base の語を探しており、`toBeVisible` は覆いを見ないので Fork が空でも通っていた）。(3) Shell 閉じ込めは**AI を挟まず、AI が通るのと同じ経路（代理サーバ）で runCommand を直接呼び**、外は失敗・中は成功を見る。(4) Canvas の「承認は出ない」は呼び出しが**終わってから**もう一度見る。画面側には印を2つ足しただけ（見た目は変えていない）。",
+      "verifiedBy": "**4件とも、機能を意図的に壊すと落ちることを1件ずつ確かめた**（規則1）：Clear を no-op に→「横線が出ていない」で落ちる／再度開いた Fork を空に→**旧アサーションは通ったまま**新アサーションだけが落ちる／Landlock の包みを外す→**会話由来の検査は緑のまま**新しい③だけが落ちる／画面からの呼び出しでも判断待ちを出す→「終わった後に増えている」で落ちる。全 27 件を2回連続で通過。",
+      "completedAt": "2026-09-10"
     },
     {
       "id": "docs-gardening-review-followup",

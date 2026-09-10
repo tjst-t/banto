@@ -41,7 +41,10 @@ export interface ThreadMarker {
  *  どこでClearしたか分からなくなる（指摘・2026-09-04で訂正）。 */
 function MarkerDivider({ kind }: { kind: ThreadMarker["kind"] }) {
   return (
-    <div className="flex items-center gap-2 text-xs text-ink-3">
+    // 印そのものを指せるようにしておく（`data-testid`）——「Clear」という文字は
+    // メニュー項目にもあるので、文字だけで探すと**押したメニューの文字**に当たって
+    // しまい、横線が出ていなくても通ってしまう（規則14、2026-09-10）
+    <div data-testid="thread-marker" data-kind={kind} className="flex items-center gap-2 text-xs text-ink-3">
       <div className="h-px flex-1 bg-border" />
       <span>{kind === "clear" ? "Clear" : "Compaction"}</span>
       <div className="h-px flex-1 bg-border" />

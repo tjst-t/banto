@@ -140,15 +140,6 @@ test("Module の画面が会話の中に出て、隔離が効いている", asyn
   // 仕事をしているだけ。**AI からの呼び出しは今までどおりゲートを通る**
   // （judgment-deny / permission-mode の spec が見ている）
   await expect(page.locator('[data-testid="canvas-approval"]')).toHaveCount(0);
-  await expect
-    .poll(
-      async () => {
-        const open = await (await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers: HEADERS })).json();
-        return open.length;
-      },
-      { timeout: 10_000 },
-    )
-    .toBe(openBefore);
 
   // 承認を待っている間も、会話も画面もそのまま生きている
   expect(
@@ -159,6 +150,19 @@ test("Module の画面が会話の中に出て、隔離が効いている", asyn
 
   // 押しただけで結果が描き直される（待たされない）
   await expect(inner.getByText(marker)).toBeVisible({ timeout: 30_000 });
+
+  // **呼び出しが終わってから、もう一度**「承認は出ていない」を見る
+  // （改訂・2026-09-10、規則14）。以前は押した直後に1回見るだけだったので、
+  // **最初の poll が即座に通り**、承認が出る実装に戻っても気づけなかった
+  // ——否定形は「起きるはずの時点を過ぎてから」確かめる
+  await expect(page.locator('[data-testid="canvas-approval"]')).toHaveCount(0);
+  const openAfter = (
+    await (await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers: HEADERS })).json()
+  ).length;
+  expect(
+    openAfter,
+    "画面からの呼び出しが終わった後に、判断待ちが増えている",
+  ).toBe(openBefore);
 
   // 呼び出しの後も、**同じ iframe が生きている**（作り直されていない）
   expect(

@@ -170,7 +170,14 @@ export function PanelStack({
         {/* MobileTopBar の下いっぱいを使う全画面オーバーレイ。Drawer は使わない
             ——「banto そのもの」を覗かせるための帯を持たない分、表示に使える面積が増える */}
         {showOverlay ? (
-          <div className="bg-background absolute inset-0 z-10 flex flex-col">
+          // **前面の1枚**を指せるようにしておく（`data-testid`）。Base はこの下に
+          // 残っているので、画面全体から文字を探すと**覆われた背面**にも当たる
+          // ——`toBeVisible` は覆いを見ない（規則14 の由来になった穴、2026-09-10）
+          <div
+            data-testid="panel-overlay"
+            data-layer={front.kind}
+            className="bg-background absolute inset-0 z-10 flex flex-col"
+          >
             {content(front)}
           </div>
         ) : null}

@@ -12,8 +12,36 @@ import { test, expect, type Page } from "@playwright/test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
 import { createProject, openApp } from "../helpers.js";
+
+/**
+ * **AI を通さずに、AI が通る経路そのもの**（代理サーバ）で runCommand を呼ぶ。
+ *
+ * 会話越しの検証だけでは「AI が tool を呼ばずに断った」場合と区別が付かず、
+ * **閉じ込めが壊れていても緑になる**（規則14、2026-09-10）。ここは AI の気まぐれを
+ * 挟まずに、**実際に呼んで、実際に断られたこと**を見る。
+ */
+async function runThroughAgentRelay(
+  projectId: string,
+  command: string,
+): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+  const client = new Client({ name: "e2e-shell-confinement", version: "0.0.0" }, { capabilities: {} });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(`${CORE_BASE_URL}/agent-relay/shell-${projectId}`), {
+      requestInit: { headers: { authorization: `Bearer ${AUTH_TOKEN}` } },
+    }),
+  );
+  try {
+    const result = await client.callTool({ name: "runCommand", arguments: { command } });
+    const text = (result.content as { type: string; text: string }[])[0]?.text ?? "{}";
+    return JSON.parse(text) as { stdout: string; stderr: string; exitCode: number | null };
+  } finally {
+    await client.close();
+  }
+}
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -52,7 +80,7 @@ test("Shell は Project の中を読めて、外は読めない", async ({ page 
   await createProject(page, PROJECT_NAME, projectRoot);
 
   const composer = page.getByPlaceholder(/に送る/);
-  const threadId = await (async () => {
+  const { threadId, projectId } = await (async () => {
     const projects = await (
       await page.request.get(`${CORE_BASE_URL}/api/projects`, {
         headers: { authorization: `Bearer ${AUTH_TOKEN}` },
@@ -64,7 +92,7 @@ test("Shell は Project の中を読めて、外は読めない", async ({ page 
         headers: { authorization: `Bearer ${AUTH_TOKEN}` },
       })
     ).json();
-    return threads[0].id as string;
+    return { threadId: threads[0].id as string, projectId: project.id as string };
   })();
 
   // --- ① Project の中は読める（Shell が動いていることの確認） ---
@@ -108,6 +136,21 @@ test("Shell は Project の中を読めて、外は読めない", async ({ page 
     (thread.messages as { text: string }[]).some((m) => m.text.includes(outsideSecret)),
     "Project の外のファイルの中身が会話に入っている＝閉じ込めが効いていない",
   ).toBe(false);
+
+  // --- ③ **実際に呼んで、実際に断られた**ことを見る（追加・2026-09-10、規則14）---
+  //
+  // ②までは「会話に外の中身が出ていない」しか見ていない——**AI が tool を呼ばずに
+  // 「できません」と答えただけ**でも通ってしまう（閉じ込めが壊れていても緑）。
+  // AI を挟まず、AI が通るのと同じ経路（代理サーバ）で runCommand を直接呼ぶ。
+  const outside = await runThroughAgentRelay(projectId, `cat ${join(outsideDir, "outside.txt")}`);
+  expect(outside.exitCode, "Project の外の読み取りが成功した＝閉じ込めが効いていない").not.toBe(0);
+  expect(outside.stdout, "外のファイルの中身が返ってきた").not.toContain(outsideSecret);
+
+  // **中は読める**（同じ経路で。中も外も失敗するなら、それは閉じ込めではなく
+  // Shell が壊れているだけ——両側を同じ道具で見る）
+  const inside = await runThroughAgentRelay(projectId, `cat ${join(projectRoot, "inside.txt")}`);
+  expect(inside.exitCode, "Project の中の読み取りまで失敗している（Shell が壊れている）").toBe(0);
+  expect(inside.stdout).toContain(insideMarker);
 
   expect(pageErrors, `ページ例外: ${pageErrors.join(" / ")}`).toEqual([]);
 });
