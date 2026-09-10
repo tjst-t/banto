@@ -935,15 +935,21 @@
       "id": "landlock-guard-wiring",
       "phase": "1",
       "title": "assertRulesetIsSafe を本番経路に配線する",
-      "status": "pending",
+      "status": "done",
       "dependencies": [],
       "why": "最後の防波堤（/ ・home・dataDir 祖先・資格情報を含むルールセットを機械的に拒否する検査）が実装・テスト済みなのに、cli.ts が呼んでいない（呼び出しは guard.test.ts のみ、grep で確認・2026-09-09）。人が Project root に home を指定すると home 全域が READ_WRITE のルールセットがそのまま書き出される。「有るのに配線されていない」。",
       "doneWhen": "Project root に home を指定すると Module の spawn が理由つきで拒否されることをテストが実証する。既存の閉じ込めテストは引き続き通る。",
       "refs": [
-        "banto/packages/landlock/src/guard.ts",
         "banto/packages/core/src/cli.ts",
-        "docs/notes/2026-09-09-repo-review.md"
-      ]
+        "banto/packages/landlock/src/guard.ts",
+        "banto/e2e/specs/landlock-guard.spec.ts",
+        "banto/e2e/config.ts",
+        "docs/specs/v4-security.md",
+        "docs/notes/2026-09-10-landlock-guard-wiring.md"
+      ],
+      "result": "ルールセットを書き出す直前に `assertRulesetIsSafe` を通すようにした（`cli.ts`）。拒否されたらその Module は起動せず、理由つきのお知らせが受信箱に1件出る（§5.4-0 の形のまま）。**繋いだら E2E が全部落ちた**——開発時のモノレポでは Module にモノレポの根を読み取り許可している（node_modules の hoist と symlink のため）のに、E2E の dataDir をそのモノレポの中（`e2e/.tmp-data`）に置いていたので、**試験環境だけ Module が banto の Event Store を読める**状態だった。検査ではなく置き場が間違っていたので、E2E の dataDir/configDir を`os.tmpdir()/banto-e2e/` へ移した（本番と同じ「リポジトリの外」）。あわせて、新しい spec が残すお知らせで `module-connect-failure` の「受信箱に1件だけ」が落ちたので、新 spec は後片づけをし、既存 spec の数えは自分の Project の分だけに絞った（根っこの共有は `e2e-run-isolation` のまま）。guard の文言に「Project の根に home や / は指定できません」を足した——受信箱にそのまま出る文章なので。",
+      "verifiedBy": "新規 E2E（`e2e/specs/landlock-guard.spec.ts`）：Project の根に home を指定すると Shell と FileSystem は繋がらず Vault は繋がる／受信箱のお知らせに `禁止パス` と当のパスが出る／画面でも読める。**検査の呼び出しを外すと「shell も filesystem も繋がってしまった」で落ちる**ことを確認（規則1）。E2E 27件・単体155件・typecheck 通過。稼働中の host に反映済み。",
+      "completedAt": "2026-09-10"
     },
     {
       "id": "event-store-durability",

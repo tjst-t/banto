@@ -13,9 +13,10 @@ import {
   writeRulesetFile,
   wrapCommand,
   assertLauncherAvailable,
+  assertRulesetIsSafe,
   type ConfinementProfile,
 } from "@banto/landlock";
-import { loadOrCreateBootstrapConfig } from "./config/bootstrap.js";
+import { loadOrCreateBootstrapConfig, resolveBootstrapConfigPath } from "./config/bootstrap.js";
 import { EventLog } from "./event-store/log.js";
 import { ProjectThreadStore } from "./project-thread/store.js";
 import { RuntimeConfigStore } from "./config/runtime.js";
@@ -261,6 +262,14 @@ async function main(): Promise<void> {
         moduleInstallDirs: [monorepoRoot],
       });
       if (omitted.length > 0) console.warn(`[host] ${connName} ruleset omitted paths:`, omitted);
+      // **書き出す前の最後の防波堤**（`@banto/landlock` の guard）。人が Project の根に
+      // home を指定した、導出が静かに広がった、といったときに**起動を止める**
+      // ——弱いまま閉じ込めたことにしない（規則2）。ここで投げると、その Module は
+      // 繋がらず、受信箱に理由つきのお知らせが1件出る（§5.4-0）
+      assertRulesetIsSafe(ruleset, {
+        dataDir: bootstrap.dataDir,
+        configDir: dirname(resolveBootstrapConfigPath()),
+      });
       const rulesetFile = writeRulesetFile(join(bootstrap.dataDir, "run"), connName, ruleset);
       const wrapped = wrapCommand(rulesetFile, { command, args });
       command = wrapped.command;

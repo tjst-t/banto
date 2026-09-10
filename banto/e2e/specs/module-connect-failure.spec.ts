@@ -103,7 +103,12 @@ test("Module が繋がらなくても、会話は進み、受信箱に1件だけ
 
   // ---- 受信箱に出ていて、確認したら消える ----------------------------------
   await page.getByRole("button", { name: "受信箱" }).click();
-  const notice = page.locator('[data-testid="inbox-notice"]');
+  // **この Project の分だけ**を見る（改訂・2026-09-10）——受信箱は banto 全体で
+  // 1つなので、他の spec が出したお知らせまで数えると、この試験が
+  // 「他人の事情で落ちる」ものになる（規則6——待ちを延ばす類の誤魔化しはしない）
+  const notice = page
+    .locator('[data-testid="inbox-notice"]')
+    .filter({ hasText: PROJECT_NAME });
   await expect(notice, "受信箱にお知らせが出ていない").toHaveCount(1, { timeout: 15_000 });
   await expect(notice).toContainText(/繋げませんでした/);
 

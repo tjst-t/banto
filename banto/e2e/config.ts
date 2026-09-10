@@ -1,5 +1,6 @@
 // E2E専用のポート・パス定数。テストとglobal-setupの両方から参照する
 // ——真実は一箇所（規則3）、同じ値をあちこちに書き写さない。
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 export const CORE_PORT = 4738;
@@ -16,9 +17,18 @@ export const CORE_PORT = 4738;
 // テストの隔離はcore側（port・dataDir）だけで足りる
 export const FRONTEND_PORT = 4175;
 // dataDirとconfig.jsonの置き場は重なってはいけない（bootstrap.tsのassertNoOverlap、
-// §9の事故対策）——なので兄弟ディレクトリに分ける
-export const DATA_DIR = join(import.meta.dirname, ".tmp-data");
-export const CONFIG_PATH = join(import.meta.dirname, ".tmp-config", "config.json");
+// §9の事故対策）——なので兄弟ディレクトリに分ける。
+//
+// **リポジトリの中には置かない**（改訂・2026-09-10、landlock-guard-wiring）。
+// 開発時のモノレポでは Module に「モノレポの根」を読み取り許可している
+// （npm workspaces が node_modules を根に hoist するため、`derive.ts` の
+// moduleInstallDirs）。ここに banto のデータ置き場があると、**Module が
+// banto 自身の Event Store を読める**——本番（`~/.local/share/banto`）には
+// 無い形で、試験環境だけが緩くなる。ルールセットの検査（assertRulesetIsSafe）が
+// これを実際に拒否したので、置き場のほうを本番と同じ関係（リポジトリの外）にした。
+const E2E_TMP = join(tmpdir(), "banto-e2e");
+export const DATA_DIR = join(E2E_TMP, "data");
+export const CONFIG_PATH = join(E2E_TMP, "config", "config.json");
 export const AUTH_TOKEN = "e2e-fixed-token";
 export const PORT = CORE_PORT;
 

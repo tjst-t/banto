@@ -40,8 +40,11 @@ export function assertRulesetIsSafe(ruleset: LandlockRulesetFile, opts: GuardOpt
   for (const rule of ruleset.rules) {
     for (const f of forbidden) {
       if (rule.path === f) {
+        // 人が読む場所（受信箱のお知らせ）にそのまま出る文言——
+        // 「何が起きたか」だけでなく「何を直せばよいか」まで書く
         throw new UnsafeRulesetError(
-          `ルールセットが禁止パスを直接許可しています: ${rule.path}`,
+          `ルールセットが禁止パスを直接許可しています: ${rule.path}` +
+            `（Project の根に home や / は指定できません——閉じ込めになりません）`,
         );
       }
     }
