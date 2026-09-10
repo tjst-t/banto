@@ -1029,15 +1029,18 @@
       "id": "vault-os-surface-hardening",
       "phase": "1",
       "title": "Vault の OS 面の穴をまとめて塞ぐ",
-      "status": "pending",
+      "status": "done",
       "dependencies": [],
       "why": "createGroup の name 無検証（../ で Vault データディレクトリ外に mkdir できる。Vault は Landlock 対象外）、putSecret ごとの平文一時ファイル（encrypt 中のクラッシュで残留）、startSshAgent が呼び出しごとに鍵を持った ssh-agent を永久に残す（kill 経路なし）、同一グループへの並行 putSecret の更新消失。いずれも 2026-09-09 レビューで確認。",
       "doneWhen": "traversal がテストで拒否される／push を繰り返しても ssh-agent プロセス数が増えないことを実測する／並行 putSecret で両方のキーが残ることをテストが実証する。",
       "refs": [
         "banto/packages/modules/vault/src/sops-backend.ts",
-        "banto/packages/modules/vault/src/server.ts",
-        "docs/notes/2026-09-09-repo-review.md"
-      ]
+        "banto/packages/modules/vault/src/vault.integration.test.ts",
+        "docs/specs/v4-modules.md"
+      ],
+      "result": "4つとも塞いだ。(1) **グループ名を素直な名前だけに限る**（英数字と `.` `_` `-`、先頭は英数字）——`createGroup` と `path` の両方から検査する（`..` でデータ置き場の外に mkdir できた）。(2) **平文をディスクに置かない**——暗号化は名前付きパイプ（FIFO）越しに sops へ渡す。**sops は標準入力を直接読めず**（`no file specified`）、`/dev/stdin` は Node の spawn が作る stdin が**ソケット対**なので `ENXIO` になる（実測——シェルからは通るのに Node からは通らない）。FIFO は中身を持たないので、平文がディスクに現れない。暗号文は tmp→rename で原子的に置く。(3) **同じグループへの書き込みを直列化**（読んで足して書く、の取りこぼし）。(4) **同じ鍵で ssh-agent を増やさない**——立っていれば使い回し、Vault が終わるときに落とす（`stopAgents`＋exit/SIGTERM/SIGINT）。",
+      "verifiedBy": "統合テスト4件を追加（実 sops/age/ssh-agent を使う）：`../` 等の名前を拒否し置き場の外に何も作らない／**書いている最中を fs.watch で見張って**平文ファイルが作られないことを見る（「終わった後に残っていない」では以前の実装も通ってしまうため）／並行 put で3つとも残る／3回呼んでも socket が同じ＝agent は1つ、畳めば socket も消える。**4つとも、直す前の実装に戻すと落ちることを確認**（規則1——`createGroup(\"../escaped\") が通ってしまった`／`暗号文以外のファイルが作られた: .plain-….json` 等）。単体9件 通過。",
+      "completedAt": "2026-09-10"
     },
     {
       "id": "declaration-repair-project-overlay",

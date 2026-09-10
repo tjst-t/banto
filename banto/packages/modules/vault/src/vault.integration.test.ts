@@ -90,3 +90,103 @@ test("AliasRegistry: metadata is readable without touching the encrypted value",
     assert.ok(registry.get("github-token")?.lastUsedAt);
   });
 });
+
+// ---- OS の面の穴（`vault-os-surface-hardening`、2026-09-10）--------------------
+//
+// **Vault は Landlock の対象外**（鍵を持つので閉じ込めの外に置いてある）。
+// つまり OS 側で止まってくれる保証が無い——この4つは Vault 自身が塞ぐしかない。
+
+test("グループ名で Vault の置き場の外に出られない（`../` を通さない）", async () => {
+  await withDir(async (dir) => {
+    const backend = new SopsBackend(dir);
+    await backend.init();
+
+    for (const bad of ["../escaped", "..", ".", "a/b", "/abs", "", "-leading"]) {
+      await assert.rejects(
+        () => backend.createGroup(bad),
+        /グループ名に使えるのは/,
+        `createGroup(${JSON.stringify(bad)}) が通ってしまった`,
+      );
+    }
+    // 秘密の置き場（path）からも同じ道が開いていない
+    await assert.rejects(() => backend.putSecret("../escaped/key", "v"), /グループ名に使えるのは/);
+    await assert.rejects(() => backend.getSecret("../escaped/key"), /グループ名に使えるのは/);
+
+    // 置き場の外に何も作られていない
+    assert.equal(existsSync(join(dir, "..", "escaped")), false, "Vault の置き場の外にディレクトリができている");
+    // 素直な名前は今までどおり通る
+    await backend.createGroup("ok-name_1.2");
+  });
+});
+
+test("暗号化の途中でも、平文はディスクに現れない（残骸ではなく、経過を見る）", async () => {
+  await withDir(async (dir) => {
+    const backend = new SopsBackend(dir);
+    await backend.init();
+    await backend.createGroup("g1");
+
+    // **「終わった後に残っていない」では足りない**——以前の実装は平文の一時ファイルを
+    // 書いて `finally` で消していたので、正常終了なら残らない（落ちたときだけ残る）。
+    // 見たいのは「そもそも作られないこと」なので、**書いている最中を見張る**
+    const { watch } = await import("node:fs");
+    const seen = new Set<string>();
+    const watcher = watch(join(dir, "groups", "g1"), (_event, name) => {
+      if (name) seen.add(name);
+    });
+    try {
+      await backend.putSecret("g1/a", "PLAINTEXT-MUST-NOT-LAND");
+      await new Promise((r) => setTimeout(r, 50)); // 見張りの取りこぼしを避ける
+    } finally {
+      watcher.close();
+    }
+
+    const unexpected = [...seen].filter((n) => n !== "secrets.sops.json" && n !== "secrets.sops.json.tmp");
+    assert.deepEqual(unexpected, [], `暗号文以外のファイルが作られた: ${unexpected.join(", ")}`);
+
+    const { readdir, readFile } = await import("node:fs/promises");
+    assert.deepEqual(await readdir(join(dir, "groups", "g1")), ["secrets.sops.json"]);
+    const raw = await readFile(join(dir, "groups", "g1", "secrets.sops.json"), "utf8");
+    assert.ok(!raw.includes("PLAINTEXT-MUST-NOT-LAND"));
+  });
+});
+
+test("同じグループへ同時に書いても、どちらの秘密も消えない", async () => {
+  await withDir(async (dir) => {
+    const backend = new SopsBackend(dir);
+    await backend.init();
+    await backend.createGroup("g1");
+
+    // 「読んで・足して・書く」が並行すると、後から書いたほうが前の追加を消す
+    await Promise.all([
+      backend.putSecret("g1/first", "value-1"),
+      backend.putSecret("g1/second", "value-2"),
+      backend.putSecret("g1/third", "value-3"),
+    ]);
+
+    assert.equal(await backend.getSecret("g1/first"), "value-1");
+    assert.equal(await backend.getSecret("g1/second"), "value-2");
+    assert.equal(await backend.getSecret("g1/third"), "value-3");
+  });
+});
+
+test("同じ鍵で ssh-agent を増やさない——使い回して、最後に落とす", async () => {
+  await withDir(async (dir) => {
+    const backend = new SopsBackend(dir);
+    await backend.init();
+    const { privateKeyRef } = await backend.generateKeypair("ssh");
+
+    const first = await backend.loadIntoAgent(privateKeyRef);
+    const second = await backend.loadIntoAgent(privateKeyRef);
+    const third = await backend.loadIntoAgent(privateKeyRef);
+
+    // 3回呼んでも agent は1つ（socket が同じ＝同じプロセス）
+    assert.equal(second.socketPath, first.socketPath, "呼ぶたびに ssh-agent が増えている");
+    assert.equal(third.socketPath, first.socketPath);
+    assert.ok(existsSync(first.socketPath), "agent の socket が無い");
+
+    // 畳めば、鍵を抱えたプロセスは残らない
+    await backend.stopAgents();
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(existsSync(first.socketPath), false, "落としたのに socket が残っている");
+  });
+});
