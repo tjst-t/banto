@@ -1236,7 +1236,7 @@
       "id": "filesystem-path-scope",
       "phase": "1",
       "title": "FileSystem の tool 引数を根からの相対に限るか",
-      "status": "pending",
+      "status": "done",
       "decidedAt": "2026-09-10",
       "decision": "相対に限る（ユーザー決定）。絶対パス・根の外に解決されるパスは引数検査で拒否。本当の壁は引き続き Landlock（二段構え）。v4-modules §2.2 に記載済み。",
       "dependencies": [],
@@ -1244,10 +1244,13 @@
       "doneWhen": "決めて v4-modules §3 に書き、決めた形をテストが実証する。",
       "refs": [
         "banto/packages/modules/filesystem/src/operations.ts",
-        "banto/packages/landlock/src/derive.ts",
-        "docs/specs/v4-modules.md",
-        "docs/notes/2026-09-09-repo-review.md"
-      ]
+        "banto/packages/modules/filesystem/src/server.test.ts",
+        "banto/packages/modules/filesystem/src/landlock.integration.test.ts",
+        "docs/specs/v4-modules.md"
+      ],
+      "result": "**決めた（2026-09-10）：FileSystem の tool 引数は「根の中を指しているか」だけで見る。**相対でも絶対でもよく、`..` や記号リンクを解いた**実体**（realpath）が根の外なら断る（まだ無いパスはいちばん近い親で見る——新規作成のため）。`~` は展開せず断る（ここはシェルではない）。**Landlock を置き換えるのではなく、その上に契約を1枚置く**——許可リストはプロセスを起動するための都合で根より広く（`/etc`・`/proc`・node のバイナリ）、OS だけに任せると `readFile(\"/etc/passwd\")` が通ってしまう（実測で通っていた）。TOCTOU が残る領域はこれまでどおり Landlock が受け持つ。**Shell はこの形にしない**——引数はパスではなくコマンドなので、アプリ層の検査は気休めにしかならない（v4-modules §3）。**「相対だけを受ける」形は実測でやめた**——最初はそう実装したが、AI は根の中のファイルを絶対パスで指してくる（`/tmp/…/one.txt`）ので E2E が2件落ちた。守りたいのは「根の外へ出さない」であって書き方ではない。",
+      "verifiedBy": "単体5件（根の外の絶対パス・`~`・`..`・記号リンクを断る／**根の中を指す絶対パスは受ける**／まだ無いパスへの新規作成は通る）＋ Landlock 統合テストに `readFile(\"/etc/passwd\")` が**tool の契約として**断られることを追加（実プロセス・実 Landlock の下で）。**契約の検査を外すと4件が落ちる**ことを確認（規則1）。E2E 28件・単体178件・typecheck 通過。あわせて、統合テストが途中で落ちると spawn した Module が残って `node --test` が終わらなくなる問題も直した（finally で閉じる）。",
+      "completedAt": "2026-09-10"
     }
   ],
   "phase1": {
