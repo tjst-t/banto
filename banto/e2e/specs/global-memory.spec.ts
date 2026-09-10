@@ -46,6 +46,33 @@ test("Global Memoryに人が足す→出る→取り消す→取り消し線に�
   await expect(page.getByRole("button", { name: "この記憶を取り消す" })).not.toBeVisible();
 });
 
+// **日本語入力の「変換確定」の Enter で足さない**（`memory-input-ime-enter`、2026-09-10）。
+// Memory は追記オンリー（取り消し線でしか消せない）ので、まだ書き終えていない文が
+// 入ると実害が残る。**変換中の Enter は「候補で確定する」という意味**でしかない。
+test("変換確定の Enter では足さない——確定した後の Enter でだけ足す", async ({ page }) => {
+  await page.goto(`/settings?bantoToken=${AUTH_TOKEN}&bantoHost=${CORE_BASE_URL}`);
+  await page.getByRole("button", { name: "Global Memory" }).click();
+
+  const draft = page.getByPlaceholder("覚えておいてほしいことを足す");
+  const text = `変換中${Date.now()}`;
+  await draft.fill(text);
+
+  // 変換中の Enter（IME が出すのはこの形——`isComposing: true`）
+  await draft.evaluate((el, key) => {
+    el.dispatchEvent(new KeyboardEvent("keydown", { key, isComposing: true, bubbles: true }));
+  }, "Enter");
+  // 入力欄の中身は消えていない（打ちかけが失われない）
+  await expect(draft).toHaveValue(text);
+
+  // **「足されていない」は、足される側の往復を待ってから数える**（規則14）。
+  // 直後に `toHaveCount(0)` を見るだけだと、**まだ届いていないだけ**でも通って
+  // しまう（実測・2026-09-10——ガードを外しても、この試験は緑のままだった）。
+  // 変換が終わってからの Enter で1件足し、**その1件しか無い**ことを見る
+  await draft.press("Enter");
+  await expect(page.getByText(text).first(), "確定後の Enter で足せない").toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(text), "変換確定の Enter でも足されている（2件になった）").toHaveCount(1);
+});
+
 test("走行中の Thread に Global Memory を足すと、その次のターンで届く", async ({ page }) => {
   const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-gmem-"));
   // 会話の中に偶然現れない印（合言葉）

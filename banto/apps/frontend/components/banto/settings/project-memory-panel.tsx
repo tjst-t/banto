@@ -9,6 +9,7 @@ import { BookMarked, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { isImeComposing } from "@/lib/ime";
 import { appendRealMemory, invalidateRealMemory, listRealMemory, type RealProjectMemory } from "@/lib/backend/client";
 import { cn } from "@/lib/utils";
 
@@ -75,6 +76,9 @@ export function ProjectMemoryPanel({ projectId }: { projectId: string }) {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
+            // **変換確定の Enter で足さない**（決定・2026-09-10）——Memory は
+            // 追記オンリーなので、間違って足すと取り消し線でしか消せない
+            if (isImeComposing(e)) return;
             if (e.key === "Enter") handleAppend();
           }}
           placeholder="決まったことを直接足す"

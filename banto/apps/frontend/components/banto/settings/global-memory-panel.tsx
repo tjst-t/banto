@@ -15,6 +15,7 @@ import {
   listRealGlobalMemory,
   type RealProjectMemory,
 } from "@/lib/backend/client";
+import { isImeComposing } from "@/lib/ime";
 import { cn } from "@/lib/utils";
 
 export function GlobalMemoryPanel() {
@@ -80,6 +81,9 @@ export function GlobalMemoryPanel() {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
+            // **変換確定の Enter で足さない**（決定・2026-09-10）——Memory は
+            // 追記オンリーなので、間違って足すと取り消し線でしか消せない
+            if (isImeComposing(e)) return;
             if (e.key === "Enter") handleAppend();
           }}
           placeholder="覚えておいてほしいことを足す"

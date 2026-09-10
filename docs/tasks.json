@@ -1149,15 +1149,19 @@
       "id": "memory-input-ime-enter",
       "phase": "4",
       "title": "Memory 追加の Enter が IME 変換確定を拾う",
-      "status": "pending",
+      "status": "done",
       "dependencies": [],
       "why": "e.key === \"Enter\" のみで isComposing を見ていないため、日本語入力の変換確定 Enter で未確定のつもりの文が host に追記される。Memory は追記オンリーなので取り消し線でしか消せない。日本語 UI の製品として実害が出やすい。",
       "doneWhen": "nativeEvent.isComposing 中の Enter で追記されないことを実ブラウザ（日本語 IME）で確認する。",
       "refs": [
+        "banto/apps/frontend/lib/ime.ts",
         "banto/apps/frontend/components/banto/settings/global-memory-panel.tsx",
         "banto/apps/frontend/components/banto/settings/project-memory-panel.tsx",
-        "docs/notes/2026-09-09-repo-review.md"
-      ]
+        "banto/e2e/specs/global-memory.spec.ts"
+      ],
+      "result": "`isImeComposing`（`lib/ime.ts`）を作り、Memory 追加の入力欄2つ（Global Memory・Project Memory）で**変換中の Enter を拾わない**ようにした。見るのは `isComposing`（DOM の標準）で、古いブラウザの `keyCode === 229` と Safari の `key === \"Process\"` も一緒に見る。Memory は追記オンリー（取り消し線でしか消せない）なので、まだ書き終えていない文が入ると実害が残る。",
+      "verifiedBy": "E2E 1件を追加（実ブラウザ）：変換中の Enter では足されず**打ちかけも消えない**／確定後の Enter で足せる／**足されたのは1件だけ**。**ガードを外すと落ちる**ことを確認（規則1）。なお**最初に書いた形は何も証明していなかった**——直後に `toHaveCount(0)` を見るだけだと「まだ届いていない」でも通る（module-canvas-inline で直したのと同型の穴）。確定 Enter で1件足してから「1件しかない」を数える形に直した。E2E 29件通過。",
+      "completedAt": "2026-09-10"
     },
     {
       "id": "core-turn-runner-unit-tests",
