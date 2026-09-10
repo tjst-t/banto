@@ -1,3 +1,11 @@
+// **履歴の項目に `content-visibility:auto` を付けない**（決定・2026-09-10、
+// `mobile-transcript-height-jump`）。付けると、まだ画面に入っていない発言は
+// `contain-intrinsic-size` の見込み（200px）で数えられ、**上へ辿って初めて
+// 実寸に置き換わる**——つまり辿っている最中に中身の高さが伸び、指で追っている
+// 位置がずれる。実測（実データ・54発言・390×844）：
+//   そのまま 15,770px → 29,742px（+13,972）／無効にすると 31,589px のまま動かない。
+// 代償も測った：開いて履歴が出るまで 652ms → 760ms（+108ms）。ただし**上まで辿る
+// 時間は 238ms → 166ms と短くなる**（辿るたびに測り直さなくなるため）。
 "use client";
 
 import {
@@ -471,7 +479,7 @@ const AssistantMessage: FC = () => {
     <MessagePrimitive.Root
       data-slot="aui_assistant-message-root"
       data-role="assistant"
-      className="fade-in slide-in-from-bottom-1 animate-in relative -mb-7.5 pb-7.5 duration-150 [contain-intrinsic-size:auto_200px] [content-visibility:auto]"
+      className="fade-in slide-in-from-bottom-1 animate-in relative -mb-7.5 pb-7.5 duration-150"
     >
       <AssistantMark />
       <div
@@ -632,7 +640,7 @@ const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
       data-slot="aui_user-message-root"
-      className="fade-in slide-in-from-bottom-1 animate-in grid auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-2 px-2 duration-150 [contain-intrinsic-size:auto_200px] [content-visibility:auto] [&:where(>*)]:col-start-2"
+      className="fade-in slide-in-from-bottom-1 animate-in grid auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-2 px-2 duration-150 [&:where(>*)]:col-start-2"
       data-role="user"
     >
       <UserMessageAttachments />
@@ -676,7 +684,7 @@ const EditComposer: FC = () => {
   return (
     <MessagePrimitive.Root
       data-slot="aui_edit-composer-wrapper"
-      className="flex flex-col px-2 [contain-intrinsic-size:auto_200px] [content-visibility:auto]"
+      className="flex flex-col px-2"
     >
       <ComposerPrimitive.Root className="aui-edit-composer-root border-border/60 dark:border-muted-foreground/15 ms-auto flex w-full max-w-[85%] cursor-text flex-col rounded-(--composer-radius) border bg-(--composer-bg)">
         <ComposerPrimitive.Input
