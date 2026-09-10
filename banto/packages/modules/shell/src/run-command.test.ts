@@ -146,6 +146,52 @@ test("PATH などの通常の環境変数は子に届く", async () => {
   }
 });
 
+// **MCP の呼び出しは既定60秒で切れる**（既知の罠）。`npm install` のような
+// 長いコマンドを通すため、実行中は進捗を送り続けて呼び出し元のタイムアウトを
+// 更新させる（docs/specs/v4-modules.md §2.3）。
+test("長いコマンドの実行中は、進捗を送り続ける（呼び出し元のタイムアウトを更新させる）", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "banto-shell-test-"));
+  const notes: string[] = [];
+  try {
+    const result = await runCommand(
+      { command: "sleep 0.4" },
+      {
+        projectRoot: dir,
+        relayClient: unusedRelayClient(),
+        onProgress: (note) => notes.push(note),
+        progressIntervalMs: 50,
+      },
+    );
+    assert.equal(result.exitCode, 0);
+    const heartbeats = notes.filter((n) => n.startsWith("実行中"));
+    assert.ok(heartbeats.length >= 3, `進捗が足りない: ${JSON.stringify(notes)}`);
+    assert.match(heartbeats[0]!, /秒経過/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("コマンドが終わったら進捗も止まる（タイマーを残さない）", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "banto-shell-test-"));
+  const notes: string[] = [];
+  try {
+    await runCommand(
+      { command: "true" },
+      {
+        projectRoot: dir,
+        relayClient: unusedRelayClient(),
+        onProgress: (note) => notes.push(note),
+        progressIntervalMs: 20,
+      },
+    );
+    const afterExit = notes.length;
+    await new Promise((r) => setTimeout(r, 120));
+    assert.equal(notes.length, afterExit, "終わった後も進捗が送られている");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("envSecrets values reach the child process env, never the command string", async () => {
   const dir = await mkdtemp(join(tmpdir(), "banto-shell-test-"));
   try {

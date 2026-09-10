@@ -21,6 +21,8 @@ export interface RunCommandDeps {
   relayClient: HostRelayClient;
   vaultModuleName?: string;
   onProgress?(note: string): void;
+  /** 進捗を送る間隔（既定 10 秒）。**試験で短くするための穴**——本番では既定のまま。 */
+  progressIntervalMs?: number;
 }
 
 export interface RunCommandResult {
@@ -31,6 +33,17 @@ export interface RunCommandResult {
 }
 
 const DEFAULT_TIMEOUT_SEC = 120;
+
+/**
+ * 実行中に進捗を送る間隔（docs/specs/v4-modules.md §2.3）。
+ *
+ * **MCP の呼び出しは既定60秒で切れる**（呼び出し元が待つ側の上限）。`npm install`
+ * のように60秒を超えるコマンドは普通にあるので、実行中に `notifications/progress`
+ * を定期送出して、呼び出し元のタイムアウトを更新させる——**新しい機構ではなく、
+ * MCP が既に持つ仕組みの使い先**（規則12）。10秒は「60秒より十分短く、
+ * 通知が煩くならない」ところ。
+ */
+const PROGRESS_INTERVAL_MS = 10_000;
 
 // hostがModuleに渡す変数の接頭辞。BANTO_HOST_MCP_TOKENは「どのModuleからの
 // 呼び出しか」の識別そのものなので（アーキ仕様§2.5「プロセスごとに発行」＝
@@ -63,18 +76,28 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
 
   try {
     for (const [envName, alias] of Object.entries(input.envSecrets ?? {})) {
-      env[envName] = await deps.relayClient.resolveAlias(vaultModule, alias);
+      // 中継の初回は host が人に承認を聞く——待っている間の合図をそのまま
+      // 上（AI のターン）へ流し、外側の tool 呼び出しが先に切れないようにする
+      env[envName] = await deps.relayClient.resolveAlias(vaultModule, alias, (note) =>
+        deps.onProgress?.(`envSecrets: ${envName}——${note}`),
+      );
       deps.onProgress?.(`envSecrets: ${envName} を解決しました`);
     }
 
     if (input.sshIdentity) {
-      const { socketPath } = await deps.relayClient.startSshAgent(vaultModule, input.sshIdentity);
+      const { socketPath } = await deps.relayClient.startSshAgent(
+        vaultModule,
+        input.sshIdentity,
+        (note) => deps.onProgress?.(`sshIdentity——${note}`),
+      );
       env.SSH_AUTH_SOCK = socketPath;
       deps.onProgress?.(`sshIdentity: ${input.sshIdentity} をssh-agentに読み込みました`);
     }
 
     for (const [relPath, alias] of Object.entries(input.secretFiles ?? {})) {
-      const value = await deps.relayClient.resolveAlias(vaultModule, alias);
+      const value = await deps.relayClient.resolveAlias(vaultModule, alias, (note) =>
+        deps.onProgress?.(`secretFiles: ${relPath}——${note}`),
+      );
       const absPath = resolve(deps.projectRoot, relPath);
       await mkdir(dirname(absPath), { recursive: true });
       await writeFile(absPath, value, { mode: 0o600 });
@@ -104,19 +127,34 @@ export async function runCommand(input: RunCommandInput, deps: RunCommandDeps): 
         stderr += chunk.toString("utf8");
       });
 
+      // 走っている間、呼び出し元のタイムアウトを更新し続ける（上記）。
+      // 経過と出力量も一緒に伝える——人が見たときに「止まっている」と
+      // 「時間が掛かっている」を区別できる
+      const startedAt = Date.now();
+      const heartbeat = setInterval(() => {
+        const sec = Math.round((Date.now() - startedAt) / 1000);
+        deps.onProgress?.(`実行中（${sec}秒経過、出力 ${stdout.length + stderr.length} 文字）`);
+      }, deps.progressIntervalMs ?? PROGRESS_INTERVAL_MS);
+      // このタイマーだけで Node を生かし続けない
+      heartbeat.unref();
+
       const onAbort = () => {
         child.kill("SIGTERM");
       };
       input.signal?.addEventListener("abort", onAbort, { once: true });
 
-      child.on("error", (err) => {
+      const settle = (fn: () => void) => {
+        clearInterval(heartbeat);
         input.signal?.removeEventListener("abort", onAbort);
-        reject(err);
+        fn();
+      };
+
+      child.on("error", (err) => {
+        settle(() => reject(err));
       });
       child.on("exit", (code, signal) => {
-        input.signal?.removeEventListener("abort", onAbort);
         if (signal === "SIGTERM" && code === null) timedOut = true;
-        resolvePromise({ stdout, stderr, exitCode: code, timedOut });
+        settle(() => resolvePromise({ stdout, stderr, exitCode: code, timedOut }));
       });
     });
   } finally {

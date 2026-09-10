@@ -84,6 +84,13 @@ export class RelayRegistry {
   }
 }
 
+/**
+ * 承認を待っている間、呼び出し元へ進捗を送る間隔。MCP の既定タイムアウト
+ * （60秒）より十分短くする——Shell の長時間コマンドと同じ手当て
+ * （docs/specs/v4-modules.md §2.3）。
+ */
+const APPROVAL_PROGRESS_INTERVAL_MS = 10_000;
+
 export interface HostRelayServerOptions {
   registry: RelayRegistry;
   /**
@@ -95,6 +102,8 @@ export interface HostRelayServerOptions {
   gate?: RelayApprovalGate;
   /** 記録（メタデータだけ）。成否も含め、拒否された呼び出しも渡ってくる。 */
   onAudit?(record: RelayAuditRecord): void | Promise<void>;
+  /** 承認待ちの進捗を送る間隔（既定 10 秒）。**試験で短くするための穴**。 */
+  approvalProgressIntervalMs?: number;
 }
 
 /** 呼び出し元1件ごとに、閉じ込めた identity を持つ Server+Transport を作る。 */
@@ -131,7 +140,7 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     ],
   }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     const targetModule = String(args.targetModule ?? "");
     const kind: RelayAuditRecord["kind"] = request.params.name === "relayReadResource" ? "resource" : "tool";
@@ -161,9 +170,28 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
 
     // **初回だけ人に聞く**（アーキ仕様 §2.5）。宣言された依存は「配線として
     // あり得るか」で、こちらは「その配線を実際に使ってよいか」——別の問い。
-    const decision = opts.gate
-      ? await opts.gate.requestApproval({ ...call, callerConnName: identity.connName ?? identity.moduleName })
-      : { allowed: true, reason: "ゲート無し" };
+    //
+    // 人はすぐには答えない。**待っている間、呼び出し元に進捗を送り続ける**
+    // （docs/specs/v4-frontend.md「Module 間中継の承認」の 2.）——さもないと
+    // MCP の既定60秒で呼び出し元が先に諦め、「承認したのに、その回の操作は
+    // 失敗している」になる。呼び出し元が progressToken を付けてこないときは
+    // 送りようがない（その場合は60秒で切れる、という今までの挙動のまま）
+    const progressToken = extra._meta?.progressToken;
+    const heartbeat =
+      opts.gate && progressToken !== undefined
+        ? setInterval(() => {
+            void extra.sendNotification({
+              method: "notifications/progress",
+              params: { progressToken, progress: 0, message: "人の承認を待っています" },
+            });
+          }, opts.approvalProgressIntervalMs ?? APPROVAL_PROGRESS_INTERVAL_MS)
+        : undefined;
+    heartbeat?.unref();
+    const decision = await (opts.gate
+      ? opts.gate
+          .requestApproval({ ...call, callerConnName: identity.connName ?? identity.moduleName })
+          .finally(() => clearInterval(heartbeat))
+      : Promise.resolve({ allowed: true, reason: "ゲート無し" }));
     if (!decision.allowed) {
       await audit(false, decision.reason);
       throw new Error(

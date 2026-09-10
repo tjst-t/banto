@@ -974,15 +974,21 @@
       "id": "shell-progress-keepalive",
       "phase": "1",
       "title": "runCommand 実行中の定期 progress 送出（v4-modules §2.3 の未実装分）",
-      "status": "pending",
+      "status": "done",
       "dependencies": [],
       "why": "host→Module の MCP 呼び出しは SDK 既定60秒で切れる（既知の罠）。仕様は「実行中に notifications/progress を定期送出してタイムアウトを更新させる」と決定済みだが、実装は spawn 前の秘密解決時しか送っておらず、npm install 等の60秒超コマンドが -32001 で死ぬ。 **中継の承認待ちも同じ手当てを要る**（追記・2026-09-10、relay-approval-gate-and-audit の積み残し）——人が答えるまで tool ハンドラが待つので、進捗を送らないと60秒で外側が失敗する（docs/specs/v4-frontend.md「Module 間中継の承認」の注）。",
       "doneWhen": "60秒を超えるコマンドが中継経由で完走することを実測する（sleep 90 等）。 あわせて、中継の承認を60秒以上待っても外側の runCommand が失敗しないことを実測する。",
       "refs": [
         "banto/packages/modules/shell/src/run-command.ts",
+        "banto/packages/modules/shell/src/host-relay-client.ts",
+        "banto/packages/core/src/relay/host-relay-endpoint.ts",
         "docs/specs/v4-modules.md",
-        "docs/notes/2026-09-09-repo-review.md"
-      ]
+        "docs/specs/v4-frontend.md",
+        "docs/notes/2026-09-10-progress-keepalive.md"
+      ],
+      "result": "**3ホップとも**進捗を送るようにした——どこか1つでも黙ると、そこが60秒で切れるため。(1) Shell が実行中10秒ごとに「実行中（N秒経過、出力 M 文字）」を送る。(2) 代理サーバは受け取った進捗を Runner へ転送（既存）——SDK は `onprogress` を渡すと `progressToken` を自動で付けるので、Runner 側も更新されていることを実測で確認。(3) 中継の承認待ちでは host が10秒ごとに「人の承認を待っています」を Shell へ送り、Shell はそれを自分の呼び出し元へそのまま流す（`HostRelayClient` に onprogress を通した）。`progressToken` が付いてこない呼び出しには送りようがない——そのときは従来どおり60秒で切れる（推測で送らない）。進捗に stdout の断片を載せる「副産物」は今回は入れていない（Canvas の受け皿と一緒に決めたい）。",
+      "verifiedBy": "**直す前に測った**（規則1）：AI に `sleep 90` を実行させると +63.4s で `MCP error -32001: Request timed out`（`timeout: 200` を渡していても関係ない）。直した後は **+93.4s で `finished-after-90s` が返る**。中継の承認を**わざと90秒**待たせる試験も実施——+94.0s に許可して +94.1s に `got=SLOW-APPROVAL-OK` が返り、外側の runCommand が生きていることを確認。単体4件を追加（実行中に進捗が続く／終わったら止まる／承認待ちに進捗が届く／答えたら止まる。間隔は試験用に短くできる形にした——本番は10秒）。単体133件・E2E 27件・typecheck 通過。稼働中の host に反映済み。",
+      "completedAt": "2026-09-10"
     },
     {
       "id": "relay-health-turn-abort",

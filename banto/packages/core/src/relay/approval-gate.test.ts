@@ -71,6 +71,8 @@ async function setup() {
 
   const endpoint = new HostRelayEndpoint({
     registry,
+    // 進捗の間隔は試験用に短くする（本番は10秒）
+    approvalProgressIntervalMs: 30,
     gate: createRelayApprovalGate({ grants, inbox, pendingApprovals, moduleCalls }),
     onAudit: async (r) => {
       await grants.recordCall(r, { allowed: r.allowed, reason: r.reason, ok: r.ok });
@@ -175,6 +177,44 @@ test("初回は人に聞き、許可すると中継が通る——2回目は聞�
       assert.equal(payload.ok, true);
       assert.equal(JSON.stringify(payload).includes("SECRET-VALUE"), false, "値は記録しない");
     }
+  } finally {
+    await t.close();
+  }
+});
+
+// **人はすぐには答えない。** 待っている間、呼び出し元へ進捗を送らないと、MCP の
+// 既定タイムアウト（60秒）で呼び出し元が先に諦め、「承認したのに、その回の操作は
+// 失敗している」になる（docs/specs/v4-frontend.md「Module 間中継の承認」の 2.）。
+test("承認を待っている間、呼び出し元へ進捗を送り続ける", async () => {
+  const t = await setup();
+  const seen = new Set<string>();
+  try {
+    const endCall = t.moduleCalls.begin("shell-project-1", THREAD);
+    const notes: string[] = [];
+    const call = t.caller.callTool(
+      { name: "relayCallTool", arguments: { targetModule: "vault", name: "resolveAlias", arguments: {} } },
+      undefined,
+      {
+        resetTimeoutOnProgress: true,
+        onprogress: (p) => notes.push(p.message ?? ""),
+      },
+    );
+
+    const judgment = await waitForJudgment(t.inbox, seen);
+    // 答えずに待つ——その間に進捗が届く
+    await new Promise((r) => setTimeout(r, 200));
+    assert.ok(notes.length >= 3, `進捗が届いていない: ${JSON.stringify(notes)}`);
+    assert.match(notes[0]!, /承認を待って/);
+
+    t.pendingApprovals.resolve(judgment.id, { behavior: "allow" });
+    await t.inbox.answerJudgment(judgment.id, { behavior: "allow" });
+    await call;
+
+    // 決着したら止まる（タイマーを残さない）
+    const afterAnswer = notes.length;
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(notes.length, afterAnswer, "答えた後も進捗が送られている");
+    endCall();
   } finally {
     await t.close();
   }
