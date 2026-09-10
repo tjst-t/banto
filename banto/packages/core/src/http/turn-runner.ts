@@ -77,6 +77,8 @@ export async function* runThreadTurn(
     pendingApprovals: PendingApprovalRegistry;
     /** ターンの外（host の中継ゲート等）で起きた判断待ちの流し込み口。 */
     turnEvents?: TurnEventBus;
+    /** Runner の差し替え口（試験用）。本番は既定の `runTurn`。 */
+    runTurn?: typeof runTurn;
   },
   input: RunThreadTurnInput,
 ): AsyncGenerator<TurnStreamEvent> {
@@ -133,12 +135,15 @@ export async function* runThreadTurn(
   // 溜めておいて、下のループで SDK の続きと**どちらが先に来ても**流せるようにする。
   const sideEvents: TurnStreamEvent[] = [];
   let wakeSide: (() => void) | undefined;
+  // 健全性検査で中断するときに、走り出した query を止めるための紐
+  const abortTurn = new AbortController();
   const unsubscribeSide = deps.turnEvents?.subscribe(input.threadId, (event) => {
     sideEvents.push(event);
     wakeSide?.();
   });
   try {
-    const gen = runTurn({
+    const gen = (deps.runTurn ?? runTurn)({
+      signal: abortTurn.signal,
       resumeSessionId: thread.resumePoint,
       // 親から借りたresume-pointのままなら、このターンで枝を分ける（§2.2）
       // ——分けないと親と同じセッションを共有し、会話が1本に混ざる。
@@ -199,6 +204,18 @@ export async function* runThreadTurn(
 
       const event = next.value;
       if (event.type === "message") {
+        // **道具が繋がっているかは、最初に届く `system/init` で分かる**
+        // （改訂・2026-09-10）。以前はターンが**終わってから**見ていたので、
+        // AI は道具なしで最後まで走り、それらしい返事を書き、resume-point まで
+        // 更新されていた——「守れていないのに動く」（規則2）。
+        // ここで止める：記録も残さず、人には理由を返す
+        const initError = relayHealthError(event.message, input.modules.map((m) => m.name));
+        if (initError) {
+          abortTurn.abort();
+          await gen.return?.(undefined as never).catch(() => undefined);
+          yield { type: "error", message: initError };
+          return;
+        }
         // 最初のメッセージが返ってきた＝添えたブロックがモデルに届いた。
         // ここで初めて「届けた」を記録する——組み立てた時点で記録すると、
         // プロセスが起動できなかったときに届いていない差分を失う（規則2）。
@@ -262,15 +279,6 @@ export async function* runThreadTurn(
     unsubscribeSide?.();
   }
 
-  try {
-    assertRelayHealthy(
-      messages as Parameters<typeof assertRelayHealthy>[0],
-      input.modules.map((m) => m.name),
-    );
-  } catch (err) {
-    yield { type: "error", message: err instanceof Error ? err.message : String(err) };
-  }
-
   if (sessionId) {
     await deps.projectThread.updateResumePoint(input.threadId, sessionId);
   }
@@ -281,6 +289,21 @@ export async function* runThreadTurn(
   }
   await deps.projectThread.recordUsage(input.threadId, contextUsage, compactionCount, apiUsage);
   yield { type: "done", sessionId, contextUsage, compactionCount, apiUsage };
+}
+
+/**
+ * `system/init` が届いた時点で、配線した代理サーバが全部繋がっているかを見る。
+ * init 以外のメッセージでは何も言わない（`undefined`）。
+ */
+function relayHealthError(message: unknown, expectedServerNames: string[]): string | undefined {
+  const m = message as { type?: string; subtype?: string };
+  if (m?.type !== "system" || m?.subtype !== "init") return undefined;
+  try {
+    assertRelayHealthy([message] as Parameters<typeof assertRelayHealthy>[0], expectedServerNames);
+    return undefined;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
 }
 
 /** リロード時の表示復元用に、assistantのテキスト応答だけを抜き出す

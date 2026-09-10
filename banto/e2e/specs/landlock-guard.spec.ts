@@ -64,10 +64,21 @@ test("Project の根に home を指定すると、閉じ込める Module は起�
   await expect(notice.getByText(/禁止パス/)).toBeVisible();
 
   // **出したものは片づける**——受信箱は banto 全体で1つなので、残すと
-  // 他の spec の「受信箱に1件だけ」を壊す（実測・2026-09-10）
-  for (const item of notices) {
-    await page.request.post(`${CORE_BASE_URL}/api/inbox/${item.id}/acknowledge`, { headers });
-  }
-  const after = await (await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers })).json();
-  expect(after.filter((i: { projectId?: string }) => i.projectId === project.id)).toHaveLength(0);
+  // 他の spec の「受信箱に1件だけ」を壊す（実測・2026-09-10）。
+  // **お知らせは Module ごとに非同期で出る**ので、1回取った一覧だけを消すと
+  // 後から出た分が残る（実測・2026-09-10——shell を消した後に filesystem が出た）。
+  // 「この Project の分が無くなるまで」消す
+  await expect
+    .poll(
+      async () => {
+        const open = await (await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers })).json();
+        const mine = open.filter((i: { projectId?: string }) => i.projectId === project.id);
+        for (const item of mine) {
+          await page.request.post(`${CORE_BASE_URL}/api/inbox/${item.id}/acknowledge`, { headers });
+        }
+        return mine.length;
+      },
+      { timeout: 20_000, message: "この Project のお知らせを片づけきれない" },
+    )
+    .toBe(0);
 });

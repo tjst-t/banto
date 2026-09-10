@@ -998,15 +998,18 @@
       "id": "relay-health-turn-abort",
       "phase": "1",
       "title": "代理サーバの健全性検査をターン冒頭に移す",
-      "status": "pending",
+      "status": "done",
       "dependencies": [],
       "why": "assertRelayHealthy がターン完了後に呼ばれ、失敗しても resume-point 更新まで続行する。health.ts 自身のコメント「名前を挙げてターンを中断する」と食い違い、AI が道具なしで完走してしまう。system/init は最初に届くので、その時点で検査できるはず。",
       "doneWhen": "§5.4-0（Module が繋がらなくても会話は進む・受信箱に1件出る）との整合を確認したうえで検査の時点を決めて実装し、既存の module-connect-failure E2E が引き続き通る。",
       "refs": [
         "banto/packages/core/src/http/turn-runner.ts",
-        "banto/packages/core/src/relay/health.ts",
-        "docs/notes/2026-09-09-repo-review.md"
-      ]
+        "banto/packages/core/src/http/turn-runner.test.ts",
+        "banto/packages/core/src/relay/health.ts"
+      ],
+      "result": "検査を**ターンの冒頭**（最初に届く `system/init`）に移し、繋がっていなければ**そのターンを中断する**——走り出した query を `AbortController` で止め、assistant の返事も resume-point も記録しない。以前はターンが終わってから見ており、AI は道具なしで最後まで走り、それらしい返事を書き、resume-point まで更新されていた（health.ts 自身のコメント「名前を挙げてターンを中断する」とも食い違っていた）。§5.4-0（Module が繋がらなくても会話は進む）との関係：**そちらは host が繋げなかったModule の話**で、繋がらなかったものは配線一覧に入らない——ここで見るのは「host は繋いだのに Runner から見えていない」という配線の失敗なので、止めるのが正しい。あわせて turn-runner に Runner の差し替え口（試験用）を足した。",
+      "verifiedBy": "単体3件を新規追加（`turn-runner.test.ts`）：繋がっていなければ error を出して止まり、**Runner を abort し、返事も resume-point も残さない**／全部繋がっていれば通る／Module を配線していないターンは引っかからない。**入口の検査を外すと1件目が「止まっていない: message,message,done」で落ちる**ことを確認（規則1）。E2E 28件（`module-connect-failure` を含む）通過。",
+      "completedAt": "2026-09-10"
     },
     {
       "id": "module-meta-strict-values",
