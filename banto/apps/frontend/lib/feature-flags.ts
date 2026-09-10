@@ -23,12 +23,15 @@ export const CONNECTED_FEATURES = {
   // （決定・2026-09-04、instance設定と同じ`settings`フラグに相乗りしていたため
   // Project終了がgearアイコンの奥に隠れて到達不能になっていた不具合の修正）。
   projectSettings: true,
-  // Module の Canvas。**inline だけが実 Module に繋がっている**（決定・2026-09-06）
-  // ——filesystem の listDirectory が `ui://` を持ち、会話のカードの中に
-  // サンドボックス越しで描かれる。fullscreen／設定画面／ランチャーはまだ
-  // モックの固定データなので、この旗は false のまま（規則13）
-  canvas: false,
-  paletteLaunchers: false, // Command Paletteの「Moduleの入口」グループ
+  // **この2つが指しているのは「モックの面を出すか」**（訂正・2026-09-10）。
+  // 実 Module の Canvas は4形態とも本実装で動いている（inline・fullscreen・
+  // 設定画面・ランチャー、2026-09-06〜07）——実の入口は旗に関係なく出る
+  // （`project-panels.tsx` の `onOpenCanvas`、`palette.ts` の `getRealLaunchers`）。
+  // ここに残っているのは**モックの固定データの面**で、それは繋がっていないので
+  // false のまま（規則13）。名前が「Canvas 全体」を指すように読めて実態と
+  // ずれていたので、名前を「モックの〜」に直した（規則3——旗の意味を1つに）
+  mockCanvasSurfaces: false,
+  mockPaletteLaunchers: false,
   composerModelEffort: false, // 選んでもreal threadには反映されない（streamRealTurnにmodel/effort引数が無い）
 } as const;
 

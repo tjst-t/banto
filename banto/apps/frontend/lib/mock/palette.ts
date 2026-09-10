@@ -142,7 +142,7 @@ export function buildPaletteGroups(currentProjectId: string | null, query: strin
 
   // Module の入口・資源——いまの Project の Module 集合に限る（§6.3）。
   // Canvasの中身が固定モックデータのため、繋がるまでは入口ごと出さない
-  if (currentProjectId && CONNECTED_FEATURES.paletteLaunchers) {
+  if (currentProjectId && CONNECTED_FEATURES.mockPaletteLaunchers) {
     const launcherItems: PaletteItem[] = getLaunchersForProject(currentProjectId)
       .filter((l) => q === "" || l.label.toLowerCase().includes(q))
       .map((l) => ({
@@ -179,7 +179,7 @@ export function buildPaletteGroups(currentProjectId: string | null, query: strin
   // 項目にも対応しない、単独の未接続（配線し直すまで出さない）
   const OP_CONNECTED: Readonly<Record<string, boolean>> = {
     "open-fork": false,
-    "open-canvas": CONNECTED_FEATURES.canvas,
+    "open-canvas": CONNECTED_FEATURES.mockCanvasSurfaces,
     "open-inbox": CONNECTED_FEATURES.inbox,
     "open-project-settings": CONNECTED_FEATURES.projectSettings,
     "open-instance-settings": SHOW_INSTANCE_SETTINGS,

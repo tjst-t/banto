@@ -18,6 +18,8 @@
     "**完了条件は「計測」で書く**——requirements.md の「要件を満たす、ではなく",
     "計測が実際に走り、数値を返す」に合わせる。「実装した」で閉じない。",
     "",
+    "completedAt は done にしたときに書く。分からない過去のものは、記録（git）から拾って埋めた（2026-09-10）。",
+    "",
     "status: pending（未着手） / in_progress / done / backlog（やると決めたが順番待ち）",
     "        / undecided（やるかどうかがまだ決まっていない——specs の未決に対応）"
   ],
@@ -572,7 +574,8 @@
         "docs/specs/v4-frontend.md §6.2",
         "docs/specs/v4-architecture.md §5.4"
       ],
-      "result": "サンドボックスを core が別ポート（既定4176・E2Eは4739）で配る形にした。CSP はリクエストごとに `?csp=` から組み立てて HTTP ヘッダで返す。host の3つの口（ui-tools / ui-resource / ui-tool-call）と `GET /api/ui-config` を足し、フロントは公式 App Bridge（`_client` は null）で受ける——**画面からの tools/call は必ず Inbox の承認ゲートを通る**。本番は Caddy の `sandbox.banto.tjstkm.net` で別オリジンにした。測った結果：core 単体 88件（サンドボックスの守り7件・実 Module を立てて `_meta` がSDK を通ることの確認2件を含む）、E2E 15 spec 全通過。"
+      "result": "サンドボックスを core が別ポート（既定4176・E2Eは4739）で配る形にした。CSP はリクエストごとに `?csp=` から組み立てて HTTP ヘッダで返す。host の3つの口（ui-tools / ui-resource / ui-tool-call）と `GET /api/ui-config` を足し、フロントは公式 App Bridge（`_client` は null）で受ける——**画面からの tools/call は必ず Inbox の承認ゲートを通る**。本番は Caddy の `sandbox.banto.tjstkm.net` で別オリジンにした。測った結果：core 単体 88件（サンドボックスの守り7件・実 Module を立てて `_meta` がSDK を通ることの確認2件を含む）、E2E 15 spec 全通過。",
+      "completedAt": "2026-09-07"
     },
     {
       "id": "phase1-canvas-inline",
@@ -587,7 +590,8 @@
       "refs": [
         "docs/specs/v4-frontend.md §6.2"
       ],
-      "result": "FileSystem の `listDirectory` に `ui://banto-filesystem/directory` を結びつけ、会話のカード（モックが決めた枠のまま）に埋めた。E2E で、その場に実在するファイル名が Module の画面に並ぶこと・画面から banto の保存領域に手が届かないこと・画面のボタンからの呼び出しが承認を通るまで実行されないことを見ている。 実機で2つ直した（ユーザー報告）：実 Module の inline が tool グループに畳まれていた／画面からの承認が人に見えていなかった（ターン終了時に「走行中」が降りず、かつ会話のカードとして出すと画面自身が消えた）。**画面からの承認は、その画面のその場に出す**と決めた——答える口は host から見て1本のまま。 さらに実機で1つ（ユーザー報告・2026-09-07）：画面のボタンを押すと会話が組み直され、承認後に画面が消えた。根は**SSE の受信が描く側の都合で止まる**構造で、ターンの終了イベントが処理されず「走行中」が残り、文脈使用量も記録されていなかった。受信を独立させ、終了時の処理を受信時点で行う形に直した。E2E は**ターンが終わってから押す**（人と同じ順番）ように直し、直す前の状態で落ちることを確かめた。"
+      "result": "FileSystem の `listDirectory` に `ui://banto-filesystem/directory` を結びつけ、会話のカード（モックが決めた枠のまま）に埋めた。E2E で、その場に実在するファイル名が Module の画面に並ぶこと・画面から banto の保存領域に手が届かないこと・画面のボタンからの呼び出しが承認を通るまで実行されないことを見ている。 実機で2つ直した（ユーザー報告）：実 Module の inline が tool グループに畳まれていた／画面からの承認が人に見えていなかった（ターン終了時に「走行中」が降りず、かつ会話のカードとして出すと画面自身が消えた）。**画面からの承認は、その画面のその場に出す**と決めた——答える口は host から見て1本のまま。 さらに実機で1つ（ユーザー報告・2026-09-07）：画面のボタンを押すと会話が組み直され、承認後に画面が消えた。根は**SSE の受信が描く側の都合で止まる**構造で、ターンの終了イベントが処理されず「走行中」が残り、文脈使用量も記録されていなかった。受信を独立させ、終了時の処理を受信時点で行う形に直した。E2E は**ターンが終わってから押す**（人と同じ順番）ように直し、直す前の状態で落ちることを確かめた。",
+      "completedAt": "2026-09-07"
     },
     {
       "id": "phase1-canvas-fullscreen",
@@ -602,7 +606,8 @@
       "refs": [
         "docs/specs/v4-frontend.md §6.2"
       ],
-      "result": "画面が `ui/request-display-mode` で「大きく出して」と頼み、**決めるのは banto**（仕様の交渉モデルどおり）。開く先はモックが決めた会話の隣のパネルで、枠（ヘッダ・閉じる・全画面・別タブ）はそのまま。どの面かは URL に持つ（`canvas=<Module>:<ui://…>` ＋ `canvasTool=<toolCallId>`）ので、**リロードしても同じ面が開き直る**。E2E で、Canvas に本物の中身が出ること・**会話が消えないこと**・リロードで開き直ることを見ている。途中で1つ踏んだ：fullscreen 側に tool の結果を渡しておらず、枠だけ出て中身が空だった——面と一緒に結果も覚えるようにした（Canvas パネルからは会話の parts を読めない）。 追記・2026-09-07（ユーザー報告）：**別タブで開くと中身が出なかった**——`/canvas-window` がモックの固定データを描いていて、実 Module を知らなかった。**別タブは手元の記憶を持たない**ので、どの Thread の記録から引き直すかを URL で運び、host の記録（`uiToolCalls`）から画面を組み直す形にした。E2E に別タブの確認を足し、**直す前に落ちること**を先に確かめた。"
+      "result": "画面が `ui/request-display-mode` で「大きく出して」と頼み、**決めるのは banto**（仕様の交渉モデルどおり）。開く先はモックが決めた会話の隣のパネルで、枠（ヘッダ・閉じる・全画面・別タブ）はそのまま。どの面かは URL に持つ（`canvas=<Module>:<ui://…>` ＋ `canvasTool=<toolCallId>`）ので、**リロードしても同じ面が開き直る**。E2E で、Canvas に本物の中身が出ること・**会話が消えないこと**・リロードで開き直ることを見ている。途中で1つ踏んだ：fullscreen 側に tool の結果を渡しておらず、枠だけ出て中身が空だった——面と一緒に結果も覚えるようにした（Canvas パネルからは会話の parts を読めない）。 追記・2026-09-07（ユーザー報告）：**別タブで開くと中身が出なかった**——`/canvas-window` がモックの固定データを描いていて、実 Module を知らなかった。**別タブは手元の記憶を持たない**ので、どの Thread の記録から引き直すかを URL で運び、host の記録（`uiToolCalls`）から画面を組み直す形にした。E2E に別タブの確認を足し、**直す前に落ちること**を先に確かめた。",
+      "completedAt": "2026-09-08"
     },
     {
       "id": "phase1-canvas-config",
@@ -617,7 +622,8 @@
       "refs": [
         "docs/specs/v4-frontend.md §6.2"
       ],
-      "result": "Module が `dev.banto/canvas: \"config\"` と名乗った資源を、Project 設定の「Module の設定」に埋める（**投機的に `ui://<id>/config` を試さない**）。**値は Module が持つ**——FileSystem に実際に効く設定（隠しファイルを一覧に出すか）を作り、設定画面から変えると一覧の中身が変わるところまで E2E で見ている。設定は Thread ではなく Project のものなので、host に Project 単位の口を足した（ui-settings / ui-resource / ui-tool-call）。承認は**その Project の Base Thread**に載せる——答える場所を増やさない。**副産物：Module 自身の状態の置き場が無いことが分かった**（閉じ込めが Project の根しか書かせないので、設定を保存できなかった）。`${moduleDataDir}` を足し、Module ごとに1つだけ書ける場所を用意した。 改訂・2026-09-07（ユーザー指摘2件）：**画面が自分の Module を呼ぶときは承認を求めない**（設定を見るたびに人を待たせるのは承認の意味を薄める。AI からの呼び出しは今までどおり通る）。**設定の置き場は Module の scope が決める**——instance に1本（Vault）は banto 全体の設定、Project ごと（Shell・FileSystem）は Project 設定。Vault にも設定画面を持たせて、E2E で「どちらにどれが出るか」を直接見ている。 追記・2026-09-07（ユーザー指摘）：**モックの形に合わせた**——左メニューに Module ごとに並び、選ぶと右側いっぱいに出る。モックの SettingsShell が既に持っていた枠（moduleImplementations）に実 Module を流し込むだけで済んだ。以前は1つの節に全部を縦に積んでいた。"
+      "result": "Module が `dev.banto/canvas: \"config\"` と名乗った資源を、Project 設定の「Module の設定」に埋める（**投機的に `ui://<id>/config` を試さない**）。**値は Module が持つ**——FileSystem に実際に効く設定（隠しファイルを一覧に出すか）を作り、設定画面から変えると一覧の中身が変わるところまで E2E で見ている。設定は Thread ではなく Project のものなので、host に Project 単位の口を足した（ui-settings / ui-resource / ui-tool-call）。承認は**その Project の Base Thread**に載せる——答える場所を増やさない。**副産物：Module 自身の状態の置き場が無いことが分かった**（閉じ込めが Project の根しか書かせないので、設定を保存できなかった）。`${moduleDataDir}` を足し、Module ごとに1つだけ書ける場所を用意した。 改訂・2026-09-07（ユーザー指摘2件）：**画面が自分の Module を呼ぶときは承認を求めない**（設定を見るたびに人を待たせるのは承認の意味を薄める。AI からの呼び出しは今までどおり通る）。**設定の置き場は Module の scope が決める**——instance に1本（Vault）は banto 全体の設定、Project ごと（Shell・FileSystem）は Project 設定。Vault にも設定画面を持たせて、E2E で「どちらにどれが出るか」を直接見ている。 追記・2026-09-07（ユーザー指摘）：**モックの形に合わせた**——左メニューに Module ごとに並び、選ぶと右側いっぱいに出る。モックの SettingsShell が既に持っていた枠（moduleImplementations）に実 Module を流し込むだけで済んだ。以前は1つの節に全部を縦に積んでいた。",
+      "completedAt": "2026-09-07"
     },
     {
       "id": "phase1-canvas-launcher",
@@ -633,7 +639,8 @@
         "docs/specs/v4-frontend.md §6.2",
         "docs/requirements.md C3"
       ],
-      "result": "Module が `dev.banto/canvas: \"launcher\"` と名乗った Canvas を、Command Palette の「Module の入口」から**人が AI を介さずに**開けるようにした（要件C3）。設定 Canvas と**同じ1つの仕組み**（増やさない）。名前と説明は仕様の name/description をそのまま使う。一覧は host が Project の Module 集合から導出する（別の索引を持たない、規則3）。**tool 起点でないときは `toolInfo` を渡さない**——画面はそれで「人が直接開いた」と分かり、自分で必要なものを取りに行く（§6.2「launcher も同じ形」）。E2E で、入口が出る／名乗っていない Module は出ない／会話の隣に開いて会話が消えない／中身が本物／リロードで開き直る、を見ている。測った結果：core 単体 105件、E2E 18件通過（既知の ui-codeblock-cjk を除く）。"
+      "result": "Module が `dev.banto/canvas: \"launcher\"` と名乗った Canvas を、Command Palette の「Module の入口」から**人が AI を介さずに**開けるようにした（要件C3）。設定 Canvas と**同じ1つの仕組み**（増やさない）。名前と説明は仕様の name/description をそのまま使う。一覧は host が Project の Module 集合から導出する（別の索引を持たない、規則3）。**tool 起点でないときは `toolInfo` を渡さない**——画面はそれで「人が直接開いた」と分かり、自分で必要なものを取りに行く（§6.2「launcher も同じ形」）。E2E で、入口が出る／名乗っていない Module は出ない／会話の隣に開いて会話が消えない／中身が本物／リロードで開き直る、を見ている。測った結果：core 単体 105件、E2E 18件通過（既知の ui-codeblock-cjk を除く）。",
+      "completedAt": "2026-09-07"
     },
     {
       "id": "phase1-module-selfreport",
@@ -674,7 +681,8 @@
         "docs/specs/v4-modules.md §4.9"
       ],
       "note": "見せ方は Module の管理画面（phase1-project-modules-ui）と一緒に決めるのが自然。ただし**判断待ちに出すだけなら先にできる**——受信箱は実データに繋がっている。",
-      "result": "**起動の時期を決めた**（未決だった）：banto 全体で1本の Module は host 起動時、Project ごとの Module は**その Project を開いたとき**（画面が `modules/prepare` を投げる）。仕組みは遅延起動＋single-flight のままで、きっかけを足しただけ。**繋がらなかったときは止めない**——繋がった Module だけでターンを進め、失敗は状態として持つ（鍵は宣言の中身。同じ宣言なら投げ直さない、宣言が変われば また試す）。**会話には出さない**。人が気づく場所は受信箱の**お知らせ（notice）**1つにした——判断待ち（答えを求める）でもレビュー待ち（成果物の確認）でもないので、語の意味を曲げず新しい種類にした（規則11）。同じ鍵のものが未確認なら積み増さない。測った結果：core 単体 111件、E2E で「filesystem だけ繋がらない Project」を作り、2ターン会話しても会話にエラーが出ない・会話は進む（shell は繋がる）・受信箱に1件だけ・確認したら消える、を確認。"
+      "result": "**起動の時期を決めた**（未決だった）：banto 全体で1本の Module は host 起動時、Project ごとの Module は**その Project を開いたとき**（画面が `modules/prepare` を投げる）。仕組みは遅延起動＋single-flight のままで、きっかけを足しただけ。**繋がらなかったときは止めない**——繋がった Module だけでターンを進め、失敗は状態として持つ（鍵は宣言の中身。同じ宣言なら投げ直さない、宣言が変われば また試す）。**会話には出さない**。人が気づく場所は受信箱の**お知らせ（notice）**1つにした——判断待ち（答えを求める）でもレビュー待ち（成果物の確認）でもないので、語の意味を曲げず新しい種類にした（規則11）。同じ鍵のものが未確認なら積み増さない。測った結果：core 単体 111件、E2E で「filesystem だけ繋がらない Project」を作り、2ターン会話しても会話にエラーが出ない・会話は進む（shell は繋がる）・受信箱に1件だけ・確認したら消える、を確認。",
+      "completedAt": "2026-09-07"
     },
     {
       "id": "ui-codeblock-cjk",
@@ -695,7 +703,8 @@
         "docs/notes/2026-09-06-mcp-apps-official-bridge.md（切り分けの経緯）",
         "docs/notes/2026-09-07-codeblock-freeze-and-latency.md"
       ],
-      "result": "犯人は**描画の memo 化**だった（実測・2026-09-07）。落ちた瞬間に「host の全文」「ランタイムが持っている生の文字」「コードブロックを描く component が受け取った文字」を同時に採る形にして再現させたところ、[HOST] 全文あり／[PART] len=72 status=complete（ランタイムも全文を持っている）／[CODE] shown=4「中は読\\n」——**コードブロックの部分木だけが最初の4文字のまま描き直されていなかった**。後ろの段落は正しく描けている。原因は `unstable_memoizeMarkdownComponents` の比較が `node`（構文木）しか見ないこと——**コードブロックの中身は `node` ではなく props で渡る**（CodeOverride が `<Pre><Code node>{code}</Code></Pre>` に組み替える）ため、中身が増えても「変わっていない」と判定されていた。1度に全文が届いた回は正しく出るので間欠に見えていた。直しは `markdown-text.tsx` で **pre / code / CodeHeader だけ memo 化から外す**（段落・見出しの memo 化は維持）。測った結果：**フルスイート5回連続すべて 19 passed**（以前は約3回に1回落ちていた）。外した仮説（日本語固有・rAF が止まる・SSE が途中で終わる）は notes に根拠つきで残した。"
+      "result": "犯人は**描画の memo 化**だった（実測・2026-09-07）。落ちた瞬間に「host の全文」「ランタイムが持っている生の文字」「コードブロックを描く component が受け取った文字」を同時に採る形にして再現させたところ、[HOST] 全文あり／[PART] len=72 status=complete（ランタイムも全文を持っている）／[CODE] shown=4「中は読\\n」——**コードブロックの部分木だけが最初の4文字のまま描き直されていなかった**。後ろの段落は正しく描けている。原因は `unstable_memoizeMarkdownComponents` の比較が `node`（構文木）しか見ないこと——**コードブロックの中身は `node` ではなく props で渡る**（CodeOverride が `<Pre><Code node>{code}</Code></Pre>` に組み替える）ため、中身が増えても「変わっていない」と判定されていた。1度に全文が届いた回は正しく出るので間欠に見えていた。直しは `markdown-text.tsx` で **pre / code / CodeHeader だけ memo 化から外す**（段落・見出しの memo 化は維持）。測った結果：**フルスイート5回連続すべて 19 passed**（以前は約3回に1回落ちていた）。外した仮説（日本語固有・rAF が止まる・SSE が途中で終わる）は notes に根拠つきで残した。",
+      "completedAt": "2026-09-07"
     },
     {
       "id": "composer-image-attachment",
@@ -728,7 +737,8 @@
         "docs/specs/v4-architecture.md §2.2・§2.3",
         "banto/e2e/specs/global-memory-mid-thread.spec.ts"
       ],
-      "result": "**起票の前提が古くなっていた**（実測・2026-09-07）。起票時（2026-09-06）は「Global Memory には『確定より後に増えた分をターンに添える』仕組みが無い」としていたが、いまの `turn-runner.ts` は `splitMemory(globalMemory.list(), memoryBaselineSeq, memoryDeliveredSeq)` を通し、Project Memory と**同じ1つの規律**でターンに添えている（`memory-split.ts`）。**読んで決めず、完了条件をそのまま測った**：E2E `global-memory-mid-thread.spec.ts` で、1ターン会話して resume-point が立った Thread に**後から**Global Memory（一意な合言葉）を足し、次のターンで AI がその合言葉を答えることを確認。あわせて `memoryDeliveredSeq` が進む（＝差分として届けた記録が残り、毎ターン繰り返さない）ことも見ている。**直す変更は無し。回帰だけ残した**——同じ疑いが起きたとき、また一から測り直さないため。"
+      "result": "**起票の前提が古くなっていた**（実測・2026-09-07）。起票時（2026-09-06）は「Global Memory には『確定より後に増えた分をターンに添える』仕組みが無い」としていたが、いまの `turn-runner.ts` は `splitMemory(globalMemory.list(), memoryBaselineSeq, memoryDeliveredSeq)` を通し、Project Memory と**同じ1つの規律**でターンに添えている（`memory-split.ts`）。**読んで決めず、完了条件をそのまま測った**：E2E `global-memory-mid-thread.spec.ts` で、1ターン会話して resume-point が立った Thread に**後から**Global Memory（一意な合言葉）を足し、次のターンで AI がその合言葉を答えることを確認。あわせて `memoryDeliveredSeq` が進む（＝差分として届けた記録が残り、毎ターン繰り返さない）ことも見ている。**直す変更は無し。回帰だけ残した**——同じ疑いが起きたとき、また一から測り直さないため。",
+      "completedAt": "2026-09-07"
     },
     {
       "id": "module-declaration-overlay",
@@ -743,7 +753,9 @@
       "refs": [
         "docs/specs/v4-architecture.md §5.4-a",
         "https://code.visualstudio.com/docs/configure/settings"
-      ]
+      ],
+      "completedAt": "2026-09-07",
+      "doneWhen": "（起票時に書き漏らした——完了の記録は result / verifiedBy を見る。追記・2026-09-10）"
     },
     {
       "id": "perf-module-spawn-parallel",
@@ -757,7 +769,9 @@
         "banto/packages/core/src/cli.ts",
         "banto/packages/core/src/event-store/log.ts",
         "docs/notes/2026-09-07-codeblock-freeze-and-latency.md"
-      ]
+      ],
+      "completedAt": "2026-09-08",
+      "doneWhen": "（起票時に書き漏らした——完了の記録は result / verifiedBy を見る。追記・2026-09-10）"
     },
     {
       "id": "perf-frontend-production-build",
@@ -770,7 +784,8 @@
       "refs": [
         "docs/notes/2026-09-07-codeblock-freeze-and-latency.md"
       ],
-      "result": "同じ物差し（同じスクリプト・静かな機械・各5回）で dev と本番ビルドを並べた：初回の操作可能まで 2.39s→0.97s、リロード 1.42s→0.49s、long task 合計 1.11s→0.34s、転送量 2.8MB→1.53MB。**体感の主因は開発モードだった**。稼働中の 4175 を本番ビルド（`npm run build` + `npm run start`）に切り替えた（ユーザー判断——同じポートで起こし直せば Caddy は無変更）。**画面を直したら build して起動し直す**（E2E も同じ口を使うので `e2e/config.ts` に明記）。測り方は `e2e/perf-probe.mjs` に残した。Project 切り替えだけ本番のほうが 0.08秒 遅い（`/p/[projectId]` が都度サーバ描画のためと推測、未計測）。"
+      "result": "同じ物差し（同じスクリプト・静かな機械・各5回）で dev と本番ビルドを並べた：初回の操作可能まで 2.39s→0.97s、リロード 1.42s→0.49s、long task 合計 1.11s→0.34s、転送量 2.8MB→1.53MB。**体感の主因は開発モードだった**。稼働中の 4175 を本番ビルド（`npm run build` + `npm run start`）に切り替えた（ユーザー判断——同じポートで起こし直せば Caddy は無変更）。**画面を直したら build して起動し直す**（E2E も同じ口を使うので `e2e/config.ts` に明記）。測り方は `e2e/perf-probe.mjs` に残した。Project 切り替えだけ本番のほうが 0.08秒 遅い（`/p/[projectId]` が都度サーバ描画のためと推測、未計測）。",
+      "completedAt": "2026-09-08"
     },
     {
       "id": "perf-bootstrap-overfetch",
@@ -785,7 +800,8 @@
       "refs": [
         "docs/notes/2026-09-07-codeblock-freeze-and-latency.md"
       ],
-      "result": "**一覧は目次に徹する**ようにした。`GET /api/projects/:id/threads` が会話の中身（messages/markers/usage）も走行の事情（resume-point・捨てたセッション・文脈使用量の内訳）も返していたため、画面は起動時に**開いてもいない Project の全会話**を受け取っていた。一覧は id・種類・状態・分岐位置・件数・最初と最後の発言だけを返し、中身は開いた Project の分だけ `/api/threads/:id` から取る（同じものを2つの口から返さない、規則3）。**測った結果**（稼働中の実データ・実ブラウザ・各3回）：一覧の転送 2,875KB→17.9KB（−99.4%）、API 転送合計 2,878KB→403KB（残りは開いた Project の中身＝必要な分）、操作可能まで 1.25〜1.52秒→1.00〜1.04秒。途中で2つ踏んだ：①中身は一覧の登録より先に届くと捨てられる（hydrate を待ってから取り込む）②後から届いた中身は会話に入らない（useLocalRuntime は initialMessages を作るときにしか読まない）——**中身が揃うまで会話を組み立てない**形にした。E2E 21件通過。"
+      "result": "**一覧は目次に徹する**ようにした。`GET /api/projects/:id/threads` が会話の中身（messages/markers/usage）も走行の事情（resume-point・捨てたセッション・文脈使用量の内訳）も返していたため、画面は起動時に**開いてもいない Project の全会話**を受け取っていた。一覧は id・種類・状態・分岐位置・件数・最初と最後の発言だけを返し、中身は開いた Project の分だけ `/api/threads/:id` から取る（同じものを2つの口から返さない、規則3）。**測った結果**（稼働中の実データ・実ブラウザ・各3回）：一覧の転送 2,875KB→17.9KB（−99.4%）、API 転送合計 2,878KB→403KB（残りは開いた Project の中身＝必要な分）、操作可能まで 1.25〜1.52秒→1.00〜1.04秒。途中で2つ踏んだ：①中身は一覧の登録より先に届くと捨てられる（hydrate を待ってから取り込む）②後から届いた中身は会話に入らない（useLocalRuntime は initialMessages を作るときにしか読まない）——**中身が揃うまで会話を組み立てない**形にした。E2E 21件通過。",
+      "completedAt": "2026-09-08"
     },
     {
       "id": "canvas-open-card",
@@ -800,7 +816,9 @@
       "refs": [
         "docs/specs/v4-frontend.md §6.2",
         "banto/apps/frontend/components/banto/thread/openable-card.tsx"
-      ]
+      ],
+      "completedAt": "2026-09-08",
+      "doneWhen": "（起票時に書き漏らした——完了の記録は result / verifiedBy を見る。追記・2026-09-10）"
     },
     {
       "id": "mobile-keyboard-layout",
@@ -813,7 +831,9 @@
       "refs": [
         "banto/apps/frontend/app/layout.tsx",
         "banto/e2e/specs/mobile-layout.spec.ts"
-      ]
+      ],
+      "completedAt": "2026-09-08",
+      "doneWhen": "（起票時に書き漏らした——完了の記録は result / verifiedBy を見る。追記・2026-09-10）"
     },
     {
       "id": "mobile-transcript-height-jump",
@@ -850,7 +870,8 @@
         "banto/e2e/specs/sidebar.spec.ts",
         "docs/notes/2026-09-09-sidebar-and-mobile-nav.md"
       ],
-      "completedAt": "2026-09-09"
+      "completedAt": "2026-09-09",
+      "doneWhen": "（起票時に書き漏らした——完了の記録は result / verifiedBy を見る。追記・2026-09-10）"
     },
     {
       "id": "relay-token-child-env",
@@ -1124,17 +1145,21 @@
       "id": "docs-gardening-review-followup",
       "phase": "1",
       "title": "レビューで見つかった文書の消し込み漏れをまとめて直す",
-      "status": "pending",
+      "status": "done",
       "dependencies": [],
       "why": "決定済みなのに未決のまま残る §10 item 16・21・§10.1①・件数、frontend §6.3「受信箱でその場で答える」（§2.4.1 の決定と食い違い）、受信箱第3種「お知らせ」の frontend 仕様未反映、CLAUDE.md「Module GUI はまだモック段」の古い記述、feature-flags の canvas/paletteLaunchers の意味のすり替わり（コメントが「inline だけ実接続」のまま）、mock/README のサイドバー節「まだ決定ではない」、v4-modules.md の最終更新ヘッダ、tasks.json のスキーマ逸脱（status: \"todo\"・completedAt 欠落等）。",
       "doneWhen": "docs/notes/2026-09-09-repo-review.md §3.4 の各項が解消される（直さない項は理由を注記して残す）。",
       "refs": [
-        "docs/notes/2026-09-09-repo-review.md",
         "docs/specs/v4-architecture.md",
         "docs/specs/v4-frontend.md",
         "CLAUDE.md",
-        "banto/apps/frontend/lib/feature-flags.ts"
-      ]
+        "mock/README.md",
+        "banto/apps/frontend/lib/feature-flags.ts",
+        "docs/tasks.json"
+      ],
+      "result": "レビュー §3.4 の消し込み漏れを片づけた。(1) §10 の未決一覧：件数を数え直し（29→30）、**item 16・21 は実装で決着**として消し込み、§10.1① の「残るのは9」を解消（マウントの記録先は 2026-08-30 に決定済み）。(2) frontend §6.3 の「受信箱でその場で答える」を **§2.4.1 の決定（答える口は Thread 側のカード1箇所）**に合わせた。(3) 受信箱の**第3種「お知らせ」**を frontend 仕様に反映（判断待ち→お知らせ→レビュー待ちの並びも）。(4) CLAUDE.md「Module GUI・設定画面はまだモック段」を訂正（Canvas 4形態は本実装済み。まだモックなのは instance 設定の一部）。(5) **feature-flags の意味のすり替わり**を直した——`canvas`／`paletteLaunchers` は実態としては「モックの面を出すか」の旗だったので、`mockCanvasSurfaces`／`mockPaletteLaunchers` に**改名**した（規則3——旗の意味を1つに。実 Module の Canvas は旗に関係なく出る）。(6) mock/README のサイドバー節「まだ決定ではない」を、決定・実装済みへ訂正。(7) tasks.json のスキーマ逸脱：`completedAt` 欠落14件を**git の記録から拾って**埋め、`doneWhen` 欠落5件を明示（書き漏らしと分かる形で）。書き方も `$comment` に1行足した。**最終更新ヘッダ**は4文書とも 2026-09-10 に更新済み（今日の作業で随時）。",
+      "verifiedBy": "改名は typecheck と E2E で確かめた（`module-launcher`／`module-canvas-inline` を含む全 34件通過）。tasks.json は機械で検算（`completedAt` 欠落0・`doneWhen` 欠落0・status の逸脱0）。単体186件・typecheck 通過。",
+      "completedAt": "2026-09-10"
     },
     {
       "id": "frontend-error-surfacing",

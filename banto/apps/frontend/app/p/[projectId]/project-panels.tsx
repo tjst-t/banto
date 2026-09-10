@@ -343,7 +343,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               threadId={project.baseThreadId}
               onOpenCanvas={
                 // **実 Module の面はいつでも開ける**（決定・2026-09-07）。
-                // `CONNECTED_FEATURES.canvas` はモックの固定データの面を出すかの旗で、
+                // `CONNECTED_FEATURES.mockCanvasSurfaces` はモックの固定データの面を出すかの旗で、
                 // 本物の Canvas はそれとは別（規則13：繋がっているものは見せてよい）
                 (moduleId, viewId, toolCallId) => stack.open({ canvas: { moduleId, viewId, toolCallId } })
               }

@@ -236,7 +236,7 @@ function ThreadRuntime({
     <AssistantRuntimeProvider runtime={runtime}>
       {/* 会話の奥（inline の Canvas）から「大きく出して」を伝える通り道（§6.2） */}
       <CanvasOpenerProvider value={onOpenCanvas ?? null}>
-      {CONNECTED_FEATURES.canvas && onOpenCanvas ? <CanvasAutoOpen onOpenCanvas={onOpenCanvas} /> : null}
+      {CONNECTED_FEATURES.mockCanvasSurfaces && onOpenCanvas ? <CanvasAutoOpen onOpenCanvas={onOpenCanvas} /> : null}
       <Thread
         placeholder={placeholder}
         composerActionSlot={
