@@ -19,12 +19,34 @@ import { buildAgentProxy, type AgentProxyOptions, type ModuleConnection } from "
 
 export class AgentRelayEndpoint {
   private readonly connections = new Map<string, ModuleConnection>();
-  private readonly sessions = new Map<string, { transport: StreamableHTTPServerTransport }>();
+  private readonly sessions = new Map<
+    string,
+    { transport: StreamableHTTPServerTransport; moduleName: string; threadId?: string }
+  >();
 
   constructor(private readonly authToken: string, private readonly opts: AgentProxyOptions = {}) {}
 
   registerModule(conn: ModuleConnection): void {
     this.connections.set(conn.name, conn);
+  }
+
+  /** その Module を畳んだ（Project を閉じた等）——**セッションも一緒に片づける**
+   *  （決定・2026-09-10）。放っておくと、死んだ Module 向けのセッションが
+   *  増える一方になる（`relay-lifecycle-and-elicitation`）。 */
+  async unregisterModule(name: string): Promise<void> {
+    this.connections.delete(name);
+    for (const [sessionId, entry] of [...this.sessions]) {
+      if (entry.moduleName !== name) continue;
+      this.sessions.delete(sessionId);
+      this.opts.elicitations?.unregister(name, entry.threadId);
+      await entry.transport.close().catch(() => undefined);
+    }
+    this.opts.elicitations?.forget(name);
+  }
+
+  /** いま抱えているセッションの数（回収できているかを測るため）。 */
+  sessionCount(): number {
+    return this.sessions.size;
   }
 
   async handleRequest(
@@ -56,14 +78,20 @@ export class AgentRelayEndpoint {
       const threadHeader = req.headers["x-banto-thread-id"];
       const threadId = typeof threadHeader === "string" ? threadHeader : undefined;
       const proxy = buildAgentProxy(conn, { ...this.opts, threadId });
-      const transport = new StreamableHTTPServerTransport({
+      const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomBytes(16).toString("hex"),
         onsessioninitialized: (newSessionId) => {
-          this.sessions.set(newSessionId, { transport });
+          this.sessions.set(newSessionId, { transport, moduleName, threadId });
+        },
+        // **閉じたセッションは覚えておかない**（決定・2026-09-10）。ターンが
+        // 終わって Runner が切れたら、その分の宛先も台帳から外す
+        onsessionclosed: (closedSessionId) => {
+          this.sessions.delete(closedSessionId);
+          this.opts.elicitations?.unregister(moduleName, threadId);
         },
       });
       await proxy.server.connect(transport);
-      entry = { transport };
+      entry = { transport, moduleName, threadId };
     }
 
     await entry.transport.handleRequest(req, res, parsedBody);

@@ -56,6 +56,21 @@ export class RelayRegistry {
     this.modules.set(mod.name, mod);
   }
 
+  /** その Module を台帳から外し、**発行済みのトークンも失効させる**
+   *  （決定・2026-09-10）。プロセスが居なくなったのに合言葉だけ生き残ると、
+   *  台帳が増える一方になるうえ、身元が宙に浮く。 */
+  unregisterModule(name: string): void {
+    this.modules.delete(name);
+    for (const [token, identity] of this.tokens) {
+      if ((identity.connName ?? identity.moduleName) === name) this.tokens.delete(token);
+    }
+  }
+
+  /** いま有効なトークンの数（回収できているかを測るため）。 */
+  tokenCount(): number {
+    return this.tokens.size;
+  }
+
   getModule(name: string): RegisteredModule | undefined {
     return this.modules.get(name);
   }

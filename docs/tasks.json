@@ -891,15 +891,22 @@
       "id": "relay-lifecycle-and-elicitation",
       "phase": "1",
       "title": "中継のセッション・トークン・プロセス回収と Elicitation の宛先分離",
-      "status": "pending",
+      "status": "done",
       "dependencies": [],
       "why": "sessions Map と発行済みトークンが増える一方（revokeToken 未使用）、Module プロセスは Project を畳んでも回収されない（寿命の設計は決定済み）。共有接続の Elicit ハンドラを最後の proxy が上書きするため、並行ターン中の Vault の質問が別ターンに届きうる（コード内 TODO）。",
       "doneWhen": "Project を畳むと Shell/FileSystem プロセスと関連セッション・トークンが回収されることを実測する。並行2ターン中の elicitation が正しいターンの受信箱に届くことをテストで実証する。",
       "refs": [
+        "banto/packages/core/src/relay/elicitation-router.ts",
+        "banto/packages/core/src/relay/elicitation-router.test.ts",
+        "banto/packages/core/src/relay/reclaim.test.ts",
         "banto/packages/core/src/relay/agent-relay-endpoint.ts",
-        "banto/packages/core/src/relay/agent-proxy.ts",
-        "docs/specs/v4-security.md"
-      ]
+        "banto/packages/core/src/cli.ts",
+        "banto/e2e/specs/project-close-release.spec.ts",
+        "docs/specs/v4-architecture.md"
+      ],
+      "result": "**回収**：Project を畳むと、その Project のために立てた Module のプロセス・中継の合言葉・代理サーバのセッションを落とす（`releaseProjectModules`）。instance に1本の Module（Vault 等）は落とさない——他の Project が使っている。開き直せば、また立つ（遅延起動のまま）。`RelayRegistry.unregisterModule` が**そのプロセスの合言葉も失効させ**、`AgentRelayEndpoint.unregisterModule` がセッションを閉じる。セッションは `onsessionclosed` でも片づける（ターンが終わって Runner が切れたとき）。**Elicitation の宛先**：代理サーバごとに Elicit のハンドラを付けていたのをやめ、**接続ごとに1つの router**（`relay/elicitation-router.ts`）に集約した。宛先は「いまその Module がどのターンの仕事をしているか」（中継の承認と同じ台帳）で引き、**決められないなら渡さない**（並行ターンで別の会話に問いを出さない）。繋がっているターンが1つだけなら、走行中の呼び出しが無くてもそこへ届ける。",
+      "verifiedBy": "単体8件（router 6件：走行中のターンへ届く／並行で決められないときは断る／唯一の宛先には届く／宛先が無ければ断る／**ハンドラは接続ごとに1回だけ**、回収2件：合言葉が失効し他 Project は巻き添えにしない／セッションが片づく）。E2E 1件を新規追加（`project-close-release.spec.ts`）——**Project を畳むとプロセスが実際に消える**（/proc の環境変数でその Project のものだけ数える）、開き直せばまた立つ。**以前の形に戻すと、router 4件と E2E が落ちる**ことを確認（規則1）。なお E2E は最初「プロセスが立っている」で待って**登録前に畳んで**偽陰性になった——待つのは host の「繋がった」であってプロセスの有無ではない、と直した。単体138件・E2E 29件・typecheck 通過。稼働中の host に反映済み。",
+      "completedAt": "2026-09-10"
     },
     {
       "id": "relay-proc-allowlist",

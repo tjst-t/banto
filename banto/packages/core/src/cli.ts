@@ -27,6 +27,7 @@ import { RelayRegistry, HostRelayEndpoint } from "./relay/host-relay-endpoint.js
 import { AgentRelayEndpoint } from "./relay/agent-relay-endpoint.js";
 import { RelayGrantStore } from "./relay/grants.js";
 import { ModuleCallTracker } from "./relay/module-calls.js";
+import { ElicitationRouter } from "./relay/elicitation-router.js";
 import { createRelayApprovalGate } from "./relay/approval-gate.js";
 import { TurnEventBus } from "./http/turn-events.js";
 import { createApp } from "./http/app.js";
@@ -108,9 +109,13 @@ async function main(): Promise<void> {
 
   const registry = new RelayRegistry();
   const relayUrl = `http://127.0.0.1:${bootstrap.port}/relay`;
+  // Module からの問い（Elicitation）を、正しいターンへ届けるための宛先表
+  // ——1本の接続にハンドラを付け替えると、並行ターンで別の会話に出る（決定・2026-09-10）
+  const elicitations = new ElicitationRouter(moduleCalls);
   const agentRelayEndpoint = new AgentRelayEndpoint(bootstrap.authToken, {
     onRelay: (r) => console.log("[agent-relay]", JSON.stringify(r)),
     moduleCalls,
+    elicitations,
   });
   const agentRelayHeaders = { authorization: `Bearer ${bootstrap.authToken}` };
 
@@ -127,6 +132,10 @@ async function main(): Promise<void> {
 
   /** 起動済みの Module。instance のものは key が名前、Project のものは `<名前>-<projectId>`。 */
   const connectedModules = new Map<string, Client>();
+  /** 回収のための台帳（決定・2026-09-10、`relay-lifecycle-and-elicitation`）
+   *  ——**Project を畳んだら、その Project のために立てたものは全部落とす**。 */
+  const moduleTokens = new Map<string, string>();
+  const projectConnections = new Map<string, Set<string>>();
   /** 申告に合わせて宣言を直し、起動し直した相手（無限に繰り返さないため）。 */
   const retriedAfterSelfReport = new Set<string>();
   /**
@@ -380,10 +389,47 @@ async function main(): Promise<void> {
     registry.registerModule(conn);
     agentRelayEndpoint.registerModule(conn);
     connectedModules.set(connName, client);
+    moduleTokens.set(connName, token);
+    if (project) {
+      const forThisProject = projectConnections.get(project.id) ?? new Set<string>();
+      forThisProject.add(connName);
+      projectConnections.set(project.id, forThisProject);
+    }
     console.log(
       `[host] ${declaration.name} connected${project ? ` for project ${project.id} (root ${project.root})` : ""}`,
     );
     return connName;
+  }
+
+  /**
+   * **Project を畳んだら、その Project のために立てたものを落とす**
+   * （決定・2026-09-10）。Module のプロセス・中継の合言葉・代理サーバの
+   * セッション——放っておくと増える一方で、鍵を持ったプロセス（Vault の
+   * ssh-agent 等）まで生き残る。**寿命の設計（§5.4-0・v4-security.md）は
+   * 決まっていたのに、畳む側が書かれていなかった。**
+   *
+   * **instance に1本の Module（Vault 等）は落とさない**——それは Project の
+   * ものではない（他の Project がまだ使っている）。
+   */
+  async function releaseProjectModules(projectId: string): Promise<string[]> {
+    const names = [...(projectConnections.get(projectId) ?? [])];
+    projectConnections.delete(projectId);
+    for (const connName of names) {
+      const client = connectedModules.get(connName);
+      connectedModules.delete(connName);
+      moduleFailures.delete(connName);
+      retriedAfterSelfReport.delete(connName);
+      registry.unregisterModule(connName); // 合言葉もここで失効する
+      moduleTokens.delete(connName);
+      await agentRelayEndpoint.unregisterModule(connName);
+      // **プロセスを落とすのは最後**（先に台帳から外しておけば、落とす途中に
+      // 来た要求が死にかけの接続を掴まない）
+      await client?.close().catch((err: unknown) => {
+        console.warn(`[host] ${connName} を畳むときに例外:`, err);
+      });
+    }
+    if (names.length > 0) console.log(`[host] project ${projectId} を畳んだ: ${names.join(", ")}`);
+    return names;
   }
 
   async function resolveModulesForThread(threadId: string): Promise<ModuleEndpoint[]> {
@@ -517,6 +563,7 @@ async function main(): Promise<void> {
     relayEndpoint,
     agentRelayEndpoint,
     authToken: bootstrap.authToken,
+    releaseProjectModules,
     resolveModulesForThread,
     resolveModuleClientsForThread,
     resolveModuleClientsForProject,

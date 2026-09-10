@@ -17,12 +17,12 @@ import {
   ListResourcesRequestSchema,
   ListResourceTemplatesRequestSchema,
   ReadResourceRequestSchema,
-  ElicitRequestSchema,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import { stripBantoMeta, visibilityOf, type BantoModuleMeta } from "@banto/module-contract";
 import { makeResourceVisibilityResolver } from "./visibility.js";
 import type { ModuleCallTracker } from "./module-calls.js";
+import type { ElicitationRouter } from "./elicitation-router.js";
 
 export interface RelayRecord {
   direction: "list" | "call" | "read";
@@ -40,6 +40,8 @@ export interface AgentProxyOptions {
    */
   threadId?: string;
   moduleCalls?: ModuleCallTracker;
+  /** Module からの問いを、正しいターンへ届けるための宛先表。 */
+  elicitations?: ElicitationRouter;
 }
 
 export interface AgentProxy {
@@ -64,16 +66,12 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
   );
   const visibilityResolver = makeResourceVisibilityResolver(conn.client);
 
-  // 実Module（conn.client の先）が elicitInput() を呼んだとき、
-  // それを受けるのはhostの持つ実Client接続——そのままではRunnerに届かない。
-  // ここでRunner向けproxy Serverのelicitiput()に転送する（決定・実装時発見、
-  // アーキ仕様§2.4「人に聞くはElicitationに乗せる」がModule起点の場合の欠落）。
-  // conn.client は他のbuildAgentProxy呼び出しと共有され得るため、最後に
-  // 登録したproxyが呼び出し元になる——同時に複数ターンが同じModuleへの
-  // elicitationを競合させる場合は未対応（TODO）。
-  conn.client.setRequestHandler(ElicitRequestSchema, async (request) => {
-    return server.elicitInput(request.params);
-  });
+  // 実Module（conn.client の先）が elicitInput() を呼んだとき、それを受けるのは
+  // hostの持つ実Client接続——そのままではRunnerに届かない。転送は要るが、
+  // **ハンドラを代理サーバごとに付けると最後の1つが上書きしてしまう**
+  // （並行ターンで問いが別の会話に出る）。**宛先の決定は router に集約する**
+  // （relay/elicitation-router.ts、決定・2026-09-10）。
+  opts.elicitations?.register(conn, opts.threadId, server);
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const real = await conn.client.listTools();

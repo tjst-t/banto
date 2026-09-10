@@ -1,0 +1,144 @@
+// **Module からの問いが、正しい会話に届くか**（`relay-lifecycle-and-elicitation`、
+// 2026-09-10）。
+//
+// host は実 Module への接続を1本だけ持つ。その1本に Elicit のハンドラを付けると、
+// **最後に作った代理サーバが上書きする**——並行して2つのターンが走っていると、
+// Vault の「この alias が無い」が**別の会話に出る**（コード内 TODO だった）。
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { parseModuleMeta } from "@banto/module-contract";
+import { ElicitationRouter, ElicitationRouteError } from "./elicitation-router.js";
+import { ModuleCallTracker } from "./module-calls.js";
+
+const META = parseModuleMeta({ satisfies: ["vault"], dependsOn: [], isolation: "subprocess" }, "vault");
+
+/** 「その会話に届いた問い」を数える、代理サーバの代わり。 */
+function fakeProxyServer(received: string[], label: string): Server {
+  return {
+    elicitInput: async (params: { message?: string }) => {
+      received.push(`${label}:${params.message ?? ""}`);
+      return { action: "decline" as const };
+    },
+  } as unknown as Server;
+}
+
+/** 実 Module 側から `elicitInput()` を呼べる、最小の偽 Module。 */
+async function fakeModule(): Promise<{ client: Client; ask(message: string): Promise<unknown> }> {
+  const server = new Server({ name: "fake-vault", version: "0.0.0" }, { capabilities: {} });
+  const [s, c] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "host", version: "0.0.0" }, { capabilities: { elicitation: {} } });
+  await Promise.all([server.connect(s), client.connect(c)]);
+  return {
+    client,
+    ask: (message: string) => server.elicitInput({ message, requestedSchema: { type: "object" as const, properties: {} } }),
+  };
+}
+
+test("走行中のターンの会話に届く——同じ Module を2つのターンが持っていても", async () => {
+  const tracker = new ModuleCallTracker();
+  const router = new ElicitationRouter(tracker);
+  const module = await fakeModule();
+  const conn = { name: "vault", client: module.client, meta: META };
+
+  const received: string[] = [];
+  router.register(conn, "thread-A", fakeProxyServer(received, "A"));
+  router.register(conn, "thread-B", fakeProxyServer(received, "B"));
+
+  // いま vault を使っているのは thread-B のターン
+  const endB = tracker.begin("vault", "thread-B");
+  await module.ask("alias が要ります");
+  endB();
+
+  assert.deepEqual(received, ["B:alias が要ります"], "走っていないほうの会話に出た");
+
+  // 次は thread-A が使っている
+  const endA = tracker.begin("vault", "thread-A");
+  await module.ask("もう一度");
+  endA();
+  assert.deepEqual(received, ["B:alias が要ります", "A:もう一度"]);
+
+  await module.client.close();
+});
+
+test("どちらのターンか決められないときは、推測せず断る", async () => {
+  const tracker = new ModuleCallTracker();
+  const router = new ElicitationRouter(tracker);
+  const module = await fakeModule();
+  const conn = { name: "vault", client: module.client, meta: META };
+
+  const received: string[] = [];
+  router.register(conn, "thread-A", fakeProxyServer(received, "A"));
+  router.register(conn, "thread-B", fakeProxyServer(received, "B"));
+
+  // 2つのターンが同時にこの Module を使っている
+  const endA = tracker.begin("vault", "thread-A");
+  const endB = tracker.begin("vault", "thread-B");
+  await assert.rejects(() => module.ask("どっち？"), /決められません|Elicit/);
+  assert.deepEqual(received, [], "決められないのに、どこかの会話へ出してしまった");
+  endA();
+  endB();
+
+  await module.client.close();
+});
+
+test("繋がっているターンが1つだけなら、走行中の呼び出しが無くてもそこへ届く", async () => {
+  const tracker = new ModuleCallTracker();
+  const router = new ElicitationRouter(tracker);
+  const module = await fakeModule();
+  const conn = { name: "vault", client: module.client, meta: META };
+
+  const received: string[] = [];
+  router.register(conn, "thread-A", fakeProxyServer(received, "A"));
+
+  await module.ask("ひとつだけ");
+  assert.deepEqual(received, ["A:ひとつだけ"]);
+
+  await module.client.close();
+});
+
+test("宛先が無くなったら断る（ターンの接続が閉じた後）", async () => {
+  const tracker = new ModuleCallTracker();
+  const router = new ElicitationRouter(tracker);
+  const module = await fakeModule();
+  const conn = { name: "vault", client: module.client, meta: META };
+
+  router.register(conn, "thread-A", fakeProxyServer([], "A"));
+  router.unregister("vault", "thread-A");
+
+  await assert.rejects(() => module.ask("誰もいない"), /会話がありません|Elicit/);
+  await module.client.close();
+});
+
+test("ハンドラは接続ごとに1回だけ付く（付け替え合戦をしない）", async () => {
+  const tracker = new ModuleCallTracker();
+  const router = new ElicitationRouter(tracker);
+  const module = await fakeModule();
+  const conn = { name: "vault", client: module.client, meta: META };
+
+  let installs = 0;
+  const original = module.client.setRequestHandler.bind(module.client);
+  module.client.setRequestHandler = ((schema: unknown, handler: unknown) => {
+    if (schema === ElicitRequestSchema) installs += 1;
+    return original(schema as never, handler as never);
+  }) as typeof module.client.setRequestHandler;
+
+  router.register(conn, "thread-A", fakeProxyServer([], "A"));
+  router.register(conn, "thread-B", fakeProxyServer([], "B"));
+  router.register(conn, "thread-C", fakeProxyServer([], "C"));
+  assert.equal(installs, 1, "代理サーバごとにハンドラを付け替えている");
+
+  await module.client.close();
+});
+
+test("ElicitationRouteError は router から直接も投げる（型で分かる）", () => {
+  const router = new ElicitationRouter(new ModuleCallTracker());
+  assert.throws(
+    () => (router as unknown as { resolve(n: string): unknown }).resolve("居ない"),
+    ElicitationRouteError,
+  );
+});
