@@ -21,8 +21,8 @@
     "status: pending（未着手） / in_progress / done / backlog（やると決めたが順番待ち）",
     "        / undecided（やるかどうかがまだ決まっていない——specs の未決に対応）"
   ],
-  "updatedAt": "2026-09-09",
-  "currentPhase": "1",
+  "updatedAt": "2026-09-10",
+  "currentPhase": "2",
   "tasks": [
     {
       "id": "phase0-inbox",
@@ -844,8 +844,373 @@
         "docs/notes/2026-09-09-sidebar-and-mobile-nav.md"
       ],
       "completedAt": "2026-09-09"
+    },
+    {
+      "id": "relay-token-child-env",
+      "phase": "1",
+      "title": "中継トークンを子プロセスに渡さない",
+      "status": "pending",
+      "dependencies": [],
+      "why": "Shell の runCommand が `{...process.env}` を子に渡すため、`BANTO_HOST_MCP_TOKEN` が AI の書いたコマンドに継承される。トークンは「どの Module からの呼び出しか」の識別そのものなので、漏れれば AI が Shell の身元（dependsOn: vault）で中継を呼び、resolveAlias の値を stdout 経由で自分の文脈に入れられる（決定・2026-09-10、docs/specs/v4-security.md「host の中継・可視性の層」）。",
+      "doneWhen": "runCommand の子プロセスから `BANTO_*` が見えないことをテストが実証する（`env | grep BANTO_` が空）。かつ既存の envSecrets/secretFiles のテストが引き続き通る。",
+      "refs": [
+        "banto/packages/modules/shell/src/run-command.ts",
+        "docs/specs/v4-security.md",
+        "docs/notes/2026-09-10-relay-layer-security-surface.md",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "relay-approval-gate-and-audit",
+      "phase": "1",
+      "title": "Module 間中継の初回承認ゲートと Event Store 監査（§2.5 の未実装分）",
+      "status": "pending",
+      "dependencies": [],
+      "why": "アーキ仕様 §2.5 は「初回のみ承認ゲート → 以降 Project 内で自動許可」「メタデータだけ Event Store に記録」と決定済みだが、実装は静的 dependsOn 照合のみで、監査は console.log 止まり。resolveAlias の使用履歴が永続化されず、監査（frontend §6.0）の前提が欠けている。",
+      "doneWhen": "初回の Module 間呼び出しが判断待ちとして受信箱に出る／承認後の同じ組み合わせは出ない／呼び出し元・宛先・名前・成否・時刻のメタデータイベントが Event Store に残ることを実測する（失敗した呼び出しも記録される）。",
+      "refs": [
+        "banto/packages/core/src/relay/host-relay-endpoint.ts",
+        "docs/specs/v4-architecture.md",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "relay-lifecycle-and-elicitation",
+      "phase": "1",
+      "title": "中継のセッション・トークン・プロセス回収と Elicitation の宛先分離",
+      "status": "pending",
+      "dependencies": [],
+      "why": "sessions Map と発行済みトークンが増える一方（revokeToken 未使用）、Module プロセスは Project を畳んでも回収されない（寿命の設計は決定済み）。共有接続の Elicit ハンドラを最後の proxy が上書きするため、並行ターン中の Vault の質問が別ターンに届きうる（コード内 TODO）。",
+      "doneWhen": "Project を畳むと Shell/FileSystem プロセスと関連セッション・トークンが回収されることを実測する。並行2ターン中の elicitation が正しいターンの受信箱に届くことをテストで実証する。",
+      "refs": [
+        "banto/packages/core/src/relay/agent-relay-endpoint.ts",
+        "banto/packages/core/src/relay/agent-proxy.ts",
+        "docs/specs/v4-security.md"
+      ]
+    },
+    {
+      "id": "relay-proc-allowlist",
+      "phase": "1",
+      "title": "Landlock 許可リストから /proc を外せるか",
+      "status": "undecided",
+      "dependencies": [],
+      "why": "/proc の読み取り許可があると、同一ユーザーの environ から中継トークンが読める（relay-token-child-env を塞いでも Module 自身の environ は残る）。外して何が壊れるかは実測しないと分からない（docs/specs/v4-security.md の未決）。",
+      "doneWhen": "外した状態で Shell/FileSystem の既存テストが通るかを実測し、結果に基づいて許可リストを決定して v4-security.md に書く。",
+      "refs": [
+        "banto/packages/landlock/src/derive.ts",
+        "docs/specs/v4-security.md"
+      ]
+    },
+    {
+      "id": "ui-tool-call-visibility-boundary",
+      "phase": "1",
+      "title": "画面 API（ui-tool-call）の可視性強制をどこに置くか",
+      "status": "pending",
+      "decidedAt": "2026-09-10",
+      "decision": "host の API 境界で可視性を検査する（ユーザー決定・案A）。agent・admin のみ許可、module 可視性は拒否。Canvas ごとの合言葉で「自分の Module のみ」まで強制する案Bは将来の強化として保留。§6.2 の「必ず承認を通る」消し忘れ2箇所は仕様側を掃除済み（2026-09-10）。",
+      "dependencies": [],
+      "why": "いまは authToken さえあれば `module` 可視の tool（resolveAlias 等）も画面 API から呼べ、秘密の値がブラウザに返る。強制は frontend 頼み。さらに v4-frontend §6.2 内で「必ず承認を通る」（330行・2026-09-06）と「承認を求めない」（124行・2026-09-07改訂）が両方残っており、決定と同時に消し忘れを直す必要がある（規則8）。",
+      "doneWhen": "強制の置き場（host API 境界か frontend か）を決めて v4-security.md と v4-frontend §6.2 に書き、矛盾記述を消す。host に置くなら、`module` 可視 tool の画面 API 呼び出しが拒否されることをテストで実証する。",
+      "refs": [
+        "banto/packages/core/src/http/app.ts",
+        "docs/specs/v4-frontend.md",
+        "docs/specs/v4-security.md",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "landlock-guard-wiring",
+      "phase": "1",
+      "title": "assertRulesetIsSafe を本番経路に配線する",
+      "status": "pending",
+      "dependencies": [],
+      "why": "最後の防波堤（/ ・home・dataDir 祖先・資格情報を含むルールセットを機械的に拒否する検査）が実装・テスト済みなのに、cli.ts が呼んでいない（呼び出しは guard.test.ts のみ、grep で確認・2026-09-09）。人が Project root に home を指定すると home 全域が READ_WRITE のルールセットがそのまま書き出される。「有るのに配線されていない」。",
+      "doneWhen": "Project root に home を指定すると Module の spawn が理由つきで拒否されることをテストが実証する。既存の閉じ込めテストは引き続き通る。",
+      "refs": [
+        "banto/packages/landlock/src/guard.ts",
+        "banto/packages/core/src/cli.ts",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "event-store-durability",
+      "phase": "1",
+      "title": "Event Store の fsync と torn line 切り詰め（§2.1 の未実装分）",
+      "status": "pending",
+      "dependencies": [],
+      "why": "仕様（アーキ §2.1）は「fsync は追記ごと」「\\n で終わらない最終レコードは切り詰めてから追記し、切り詰めを記録する」と明記するが、実装は appendFile のみ（2026-09-09 レビューで確認）。書きかけの行が残ると次回起動の JSON.parse が毎回失敗し、host が起動できなくなる。スナップショットの fsync(dir) 欠落も同族。",
+      "doneWhen": "書き込み途中で kill するテストで、次回起動が壊れた行を切り詰めて回復し、切り詰めの記録が残ることを実証する。",
+      "refs": [
+        "banto/packages/core/src/event-store/log.ts",
+        "banto/packages/core/src/event-store/snapshot.ts",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "shell-progress-keepalive",
+      "phase": "1",
+      "title": "runCommand 実行中の定期 progress 送出（v4-modules §2.3 の未実装分）",
+      "status": "pending",
+      "dependencies": [],
+      "why": "host→Module の MCP 呼び出しは SDK 既定60秒で切れる（既知の罠）。仕様は「実行中に notifications/progress を定期送出してタイムアウトを更新させる」と決定済みだが、実装は spawn 前の秘密解決時しか送っておらず、npm install 等の60秒超コマンドが -32001 で死ぬ。",
+      "doneWhen": "60秒を超えるコマンドが中継経由で完走することを実測する（sleep 90 等）。",
+      "refs": [
+        "banto/packages/modules/shell/src/run-command.ts",
+        "docs/specs/v4-modules.md",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "relay-health-turn-abort",
+      "phase": "1",
+      "title": "代理サーバの健全性検査をターン冒頭に移す",
+      "status": "pending",
+      "dependencies": [],
+      "why": "assertRelayHealthy がターン完了後に呼ばれ、失敗しても resume-point 更新まで続行する。health.ts 自身のコメント「名前を挙げてターンを中断する」と食い違い、AI が道具なしで完走してしまう。system/init は最初に届くので、その時点で検査できるはず。",
+      "doneWhen": "§5.4-0（Module が繋がらなくても会話は進む・受信箱に1件出る）との整合を確認したうえで検査の時点を決めて実装し、既存の module-connect-failure E2E が引き続き通る。",
+      "refs": [
+        "banto/packages/core/src/http/turn-runner.ts",
+        "banto/packages/core/src/relay/health.ts",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "module-meta-strict-values",
+      "phase": "1",
+      "title": "visibility 等の不正値を「最も緩い既定」に落とさない",
+      "status": "pending",
+      "dependencies": [],
+      "why": "visibility の typo（\"modle\" 等）が「無指定」と同一視され最も緩い agent に落ちる——Module 専用のつもりの tool が AI に露出する。scope・handlesSecrets の不正値も同様に緩い方向へ静かに転落（規則2）。仕様の既定 agent は「キーが無い場合」であって「値が壊れている場合」ではない。",
+      "doneWhen": "不正値を持つ宣言がテストで理由つきで拒否される（黙って agent にならない）。",
+      "refs": [
+        "banto/packages/module-contract/src/meta.ts",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "vault-os-surface-hardening",
+      "phase": "1",
+      "title": "Vault の OS 面の穴をまとめて塞ぐ",
+      "status": "pending",
+      "dependencies": [],
+      "why": "createGroup の name 無検証（../ で Vault データディレクトリ外に mkdir できる。Vault は Landlock 対象外）、putSecret ごとの平文一時ファイル（encrypt 中のクラッシュで残留）、startSshAgent が呼び出しごとに鍵を持った ssh-agent を永久に残す（kill 経路なし）、同一グループへの並行 putSecret の更新消失。いずれも 2026-09-09 レビューで確認。",
+      "doneWhen": "traversal がテストで拒否される／push を繰り返しても ssh-agent プロセス数が増えないことを実測する／並行 putSecret で両方のキーが残ることをテストが実証する。",
+      "refs": [
+        "banto/packages/modules/vault/src/sops-backend.ts",
+        "banto/packages/modules/vault/src/server.ts",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "declaration-repair-project-overlay",
+      "phase": "1",
+      "title": "自己申告に合わせた宣言修復が Project 上書きを instance 既定へ書き戻す件",
+      "status": "pending",
+      "dependencies": [],
+      "why": "cli.ts が Project 解決済みの宣言一覧を projectId 無しで setModuleDeclarations に保存している。Project 固有の上書きが全 Project の既定に漏れ、当の Project 上書きは直らないので次回も食い違い続ける（規則3——写しの汚染。要再現確認から）。",
+      "doneWhen": "Project 上書きがある状態で自己申告修復を起こすテストを書き、instance 既定が汚染されないことを実証する。",
+      "refs": [
+        "banto/packages/core/src/cli.ts",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "e2e-run-isolation",
+      "phase": "1",
+      "title": "E2E の worker 並走と実行間衝突を止める",
+      "status": "pending",
+      "dependencies": [],
+      "why": "fullyParallel: false はファイル内の順序しか固定せず、ファイル単位では複数 worker が同じ core（4738）と同じ受信箱を共有して並走する——判断待ちを起こす5 spec が互いの判断待ちを掴みうる（規則6）。さらに固定ポートのため、共有ワークツリーで別セッションと同時に回すと丸ごと壊れる（2026-09-09 に実際に1回分が無効になった）。",
+      "doneWhen": "workers: 1 を明示し、ポート・dataDir を実行ごとに割り当てる（か実行の相互排他を入れる）。全 spec を2回連続で通し、その結果を docs/notes/2026-09-09-repo-review.md §5 に追記する。",
+      "refs": [
+        "banto/e2e/playwright.config.ts",
+        "banto/e2e/config.ts",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "e2e-content-assertions",
+      "phase": "1",
+      "title": "E2E の「中身を見ていない」検証を規則14の形に直す",
+      "status": "pending",
+      "dependencies": [],
+      "why": "Clear の検証が「押したメニュー項目の文字がまだ見えている」で通る／Fork 再オープンの「読み返せる」が背面 Base パネルの同じ文字列で通る（toBeVisible は覆いを見ない）——規則14の由来になった実例と同型の穴が現存。Shell 閉じ込め②は runCommand が実際に呼ばれたことを見ておらず、AI が tool を呼ばずに断れば閉じ込めが壊れていても緑。module-canvas-inline の「承認が出ない」は最初の poll で即通る。",
+      "doneWhen": "各 spec が実際の中身（会話が消えた・Fork パネル固有の文字列・tool 呼び出しの記録と拒否結果・操作完了後の受信箱件数）を検証する。機能を意図的に壊すとテストが落ちることを1件ずつ確認する。",
+      "refs": [
+        "banto/e2e/specs/project-thread-fork.spec.ts",
+        "banto/e2e/specs/thread-lifecycle.spec.ts",
+        "banto/e2e/specs/shell-confinement.spec.ts",
+        "banto/e2e/specs/module-canvas-inline.spec.ts",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "docs-gardening-review-followup",
+      "phase": "1",
+      "title": "レビューで見つかった文書の消し込み漏れをまとめて直す",
+      "status": "pending",
+      "dependencies": [],
+      "why": "決定済みなのに未決のまま残る §10 item 16・21・§10.1①・件数、frontend §6.3「受信箱でその場で答える」（§2.4.1 の決定と食い違い）、受信箱第3種「お知らせ」の frontend 仕様未反映、CLAUDE.md「Module GUI はまだモック段」の古い記述、feature-flags の canvas/paletteLaunchers の意味のすり替わり（コメントが「inline だけ実接続」のまま）、mock/README のサイドバー節「まだ決定ではない」、v4-modules.md の最終更新ヘッダ、tasks.json のスキーマ逸脱（status: \"todo\"・completedAt 欠落等）。",
+      "doneWhen": "docs/notes/2026-09-09-repo-review.md §3.4 の各項が解消される（直さない項は理由を注記して残す）。",
+      "refs": [
+        "docs/notes/2026-09-09-repo-review.md",
+        "docs/specs/v4-architecture.md",
+        "docs/specs/v4-frontend.md",
+        "CLAUDE.md",
+        "banto/apps/frontend/lib/feature-flags.ts"
+      ]
+    },
+    {
+      "id": "frontend-error-surfacing",
+      "phase": "4",
+      "title": "無言で失敗する箇所に「失敗したら見せる＋巻き戻す」の共通の型を入れる",
+      "status": "pending",
+      "dependencies": [],
+      "why": "規則2違反が同型で複数：host に到達できないとホームが永遠に真っ白（hydrateRealProjects に catch 無し）、Project の会話読み込み失敗が「読み込んでいます…」のまま、permissionMode の host 保存失敗が console.error のみでローカル値も巻き戻らない（§6.4 の「見失わない」が崩れる）、Project 終了の失敗が無言。toast を出す操作（Clear・fold）と非対称。",
+      "doneWhen": "host を落とした状態で各操作を実ブラウザで行い、失敗が画面に見える（エラー表示か toast）＋状態が巻き戻ることを1箇所ずつ確認する。",
+      "refs": [
+        "banto/apps/frontend/components/banto/project/home-content.tsx",
+        "banto/apps/frontend/app/p/[projectId]/project-panels.tsx",
+        "banto/apps/frontend/lib/mock/permission-mode.ts",
+        "banto/apps/frontend/components/banto/settings/project-settings-content.tsx",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "memory-input-ime-enter",
+      "phase": "4",
+      "title": "Memory 追加の Enter が IME 変換確定を拾う",
+      "status": "pending",
+      "dependencies": [],
+      "why": "e.key === \"Enter\" のみで isComposing を見ていないため、日本語入力の変換確定 Enter で未確定のつもりの文が host に追記される。Memory は追記オンリーなので取り消し線でしか消せない。日本語 UI の製品として実害が出やすい。",
+      "doneWhen": "nativeEvent.isComposing 中の Enter で追記されないことを実ブラウザ（日本語 IME）で確認する。",
+      "refs": [
+        "banto/apps/frontend/components/banto/settings/global-memory-panel.tsx",
+        "banto/apps/frontend/components/banto/settings/project-memory-panel.tsx",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "core-turn-runner-unit-tests",
+      "phase": "1",
+      "title": "turn-runner / runner-adapter の単体テスト",
+      "status": "backlog",
+      "dependencies": [],
+      "why": "ターン実行・SSE 送出・判断待ち起票という中核（turn-runner.ts 303行・runner/adapter.ts 249行）が E2E 頼みで、エラー分岐・SSE 途中断はどの試験も通らない。frontend の lib/backend/adapter.ts（LiveTurn 生死管理——過去の不具合4件の現場）も同様にテストゼロ。done 済みタスクのうち review-block-send-while-pending・review-error-path-status・review-sse-error-after-headers・review-use-tooluseid は対応する検証が存在しない。",
+      "doneWhen": "エラー経路（SSE ヘッダ送出後のエラー・判断待ち中の再送拒否・エラー後もカードが残る）が単体または E2E で実証される。",
+      "refs": [
+        "banto/packages/core/src/http/turn-runner.ts",
+        "banto/packages/core/src/runner/adapter.ts",
+        "banto/apps/frontend/lib/backend/adapter.ts",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "frontend-interaction-hardening",
+      "phase": "4",
+      "title": "frontend の要確認4件（Escape 二重処理・SSE 食い合い・SandboxFrame 再接続・Reload/Edit 半接続）を検証して直す",
+      "status": "backlog",
+      "dependencies": [],
+      "why": "レビューで「要確認」のまま残った動作依存の指摘：Escape がダイアログと背面パネルを同時に閉じる／同一文面の再送で 1 本の SSE を 2 つの run が食い合う／SandboxFrame が親の再描画のたびに AppBridge を張り直し以後カード内が無反応になりうる／Reload・Edit・BranchPicker が実 Thread で半接続のまま見えている（規則13）。まず実ブラウザで再現を確かめてから直す（規則1——測る前に犯人を決めない）。",
+      "doneWhen": "4件それぞれ再現手順を実ブラウザで試し、再現したものは修正して回帰テストを書き、再現しなかったものはその記録をレビューノートに追記する。",
+      "refs": [
+        "banto/apps/frontend/components/banto/shell/panel-stack.tsx",
+        "banto/apps/frontend/lib/backend/adapter.ts",
+        "banto/apps/frontend/components/banto/canvas/module-canvas.tsx",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "phase1-closure-decision",
+      "phase": "1",
+      "title": "Phase 1 を閉じるかどうか",
+      "status": "done",
+      "dependencies": [],
+      "why": "Phase 1 の完了条件（契約確定・3 Module・キャッシュ数値確認・非 TypeScript Module・MCP Apps 4要素が実ブラウザで動く）に対応するタスクはすべて done（2026-09-06〜07、計測つき）に見えるのに、currentPhase は 1 のまま。閉じるなら phase0 と同様の閉鎖記録が要る（人の判断）。",
+      "decidedAt": "2026-09-10",
+      "decision": "閉じる（ユーザー決定）。phase1 閉鎖ブロックを記録し currentPhase を \"2\" にした。レビュー（2026-09-09）起点の修正タスクは Phase の進行と独立に消化する。",
+      "completedAt": "2026-09-10",
+      "doneWhen": "閉じるなら phase1 閉鎖ブロック（closedAt・計測）を書いて currentPhase を \"2\" へ。閉じないなら残る理由をこのタスクに書く。",
+      "refs": [
+        "docs/requirements.md",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "module-registry-install-scope",
+      "phase": "1",
+      "title": "§5.1「公式レジストリからインストール」は撤回か将来形か",
+      "status": "done",
+      "dependencies": [],
+      "why": "§5.1 の表「公式レジストリからインストール（registry.modelcontextprotocol.io）」（決定・2026-09-02）と、「パッケージ名からの解決・自動インストール・レジストリからの取得は入れない」（決定・2026-09-06）が同じ節に両方残っており、後者が前者を撤回したのかが書かれていない（人の判断）。",
+      "decidedAt": "2026-09-10",
+      "decision": "撤回として §5.1 から消す（ユーザー決定）。ただし将来は実装する意向のため、機能自体は module-registry-install として backlog に残す。それまでは、レジストリで見つけた server.json の URL を人が貼る（検索は banto の外）。",
+      "completedAt": "2026-09-10",
+      "doneWhen": "どちらかに決めて §5.1 を直す（将来形として残すなら「いまは直接記入のみ」と明記する）。",
+      "refs": [
+        "docs/specs/v4-architecture.md",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "module-registry-install",
+      "phase": "3",
+      "title": "公式レジストリからの検索・インストール",
+      "status": "backlog",
+      "dependencies": [],
+      "why": "ユーザー意向（2026-09-10）：将来的には公式レジストリ（registry.modelcontextprotocol.io）からの検索・インストールを実装する。いまの仕様からは撤回済み（§5.1 は server.json 指定と mcpServers 直接記入の2入口のみ）。着手時は「レジストリ取得を入れない」（決定・2026-09-06、規則10）を §5.1 で決め直すところから。",
+      "doneWhen": "Module 管理 UI からレジストリを検索し、選んだ server.json が mcpServers エントリに変換されて保存され、その Module が実ブラウザで繋がることを確認する。",
+      "refs": [
+        "docs/specs/v4-architecture.md",
+        "docs/tasks.json"
+      ]
+    },
+    {
+      "id": "default-permission-mode-alignment",
+      "phase": "1",
+      "title": "defaultPermissionMode（仕様は既定 auto）と実装の食い違い",
+      "status": "pending",
+      "decidedAt": "2026-09-10",
+      "decision": "仕様どおり実装する（ユーザー決定）。core の Configuration に defaultPermissionMode（既定 auto）を持たせ、未選択の Thread が auto で走るようにする。",
+      "dependencies": [],
+      "why": "frontend §6.4 は「Configuration が defaultPermissionMode を1つ持つ。既定値は auto」と言うが、core に存在しない（grep 0件）。さらに frontend は auto を undefined に写して送るため、未選択 Thread は SDK の既定（default＝危険操作でプロンプト）で走り「auto（分類器）」ではない。意図的なら仕様に書き戻す、そうでなければ実装する（規則8・人の判断）。",
+      "doneWhen": "どちらかに決めて、仕様と実装を一致させる。実装するなら未選択 Thread が auto で走ることを実測する。",
+      "refs": [
+        "docs/specs/v4-frontend.md",
+        "banto/apps/frontend/lib/backend/adapter.ts",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
+    },
+    {
+      "id": "filesystem-path-scope",
+      "phase": "1",
+      "title": "FileSystem の tool 引数を根からの相対に限るか",
+      "status": "pending",
+      "decidedAt": "2026-09-10",
+      "decision": "相対に限る（ユーザー決定）。絶対パス・根の外に解決されるパスは引数検査で拒否。本当の壁は引き続き Landlock（二段構え）。v4-modules §2.2 に記載済み。",
+      "dependencies": [],
+      "why": "仕様は「アプリ層検査は採らず Landlock に任せる」だが、Landlock の許可リストはプロセス起動の都合で Project の根より広い（/etc・/proc・monorepo root）。結果、readFile(\"/etc/passwd\") が tool として成功し、「FileSystem は根の外へ出さない」（v4-modules §3）と実態が食い違う。「引数は根からの相対に限る」等の追加決定が要る（規則8・relay-proc-allowlist とも関連）。",
+      "doneWhen": "決めて v4-modules §3 に書き、決めた形をテストが実証する。",
+      "refs": [
+        "banto/packages/modules/filesystem/src/operations.ts",
+        "banto/packages/landlock/src/derive.ts",
+        "docs/specs/v4-modules.md",
+        "docs/notes/2026-09-09-repo-review.md"
+      ]
     }
   ],
+  "phase1": {
+    "closedAt": "2026-09-10",
+    "closedBy": "ユーザー決定（2026-09-10、phase1-closure-decision）",
+    "completedBy": [
+      "Module 契約の確定：宣言は Configuration、起動の形は1種類（phase1-module-contract）。契約のままコードを変えずに Python Module を1本接続（phase1-python-module-wired——TypeScript でない Module が実際に動いている）",
+      "3 Module（Vault・Shell・FileSystem）が実装され、実ブラウザで動作確認（phase1-modules-verified-in-browser。単体・統合テスト：vault 5・shell 7・filesystem 8）",
+      "キャッシュ：tool 120個で cache_read 一定を実測（phase1-cache-measurement、docs/notes/2026-09-06-cache-measurement.md）",
+      "MCP Apps 4要素（inline・fullscreen・設定画面・launcher）が実ブラウザで動く（phase1-canvas-embed-foundation / inline / fullscreen / config / launcher、2026-09-06〜07）"
+    ],
+    "measuredBy": "各タスクの verifiedBy（E2E スイート＋実ブラウザ確認＋キャッシュ実測）。なお 2026-09-09 の全体レビューで見つかった修正はレビュー起点のタスク群として別途消化する（完了条件の計測自体は満たされている）",
+    "note": "レビュー（docs/notes/2026-09-09-repo-review.md）の[高]のうち Phase 1 の成果物に掛かるもの（承認ゲート未実装・トークン継承等）は relay-* / landlock-guard-wiring 等で追跡"
+  },
   "phase0": {
     "closedAt": "2026-09-06",
     "completedBy": [

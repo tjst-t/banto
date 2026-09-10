@@ -4,7 +4,7 @@
 > （追記ログにしない）。検討の経緯・却下した案・訂正の履歴は
 > `docs/notes/2026-08-29-v4-core-module-boundary.md` に残す。
 >
-> 最終更新：2026-09-02
+> 最終更新：2026-09-10
 
 ## banto とは何か
 
@@ -1713,8 +1713,8 @@ read model）が決まってから詰める。
 知らない語が書かれていたら**起動する前に落とす**（規則2——黙って空文字で起動しない）。
 Project の根は、`scope: "project"` の Module だけが使える。
 
-#### Module の発見元は3つ（決定・2026-09-02、`server.json`／`mcpServers` 規約に
-乗せ直して訂正）
+#### Module の発見元は2つ（決定・2026-09-02、`server.json`／`mcpServers` 規約に
+乗せ直して訂正。**2026-09-10 にレジストリ検索を撤回して3つ→2つ**）
 
 **banto 自身が Module を探すための一覧（マーケットプレイス UI）は持たない。**
 発見は既にある場所に任せ、banto は「見つけた後、繋ぐ」だけを担う——規則12
@@ -1731,11 +1731,19 @@ Claude Desktop・Claude Code・Cursor 等が共通して使う実質標準の設
 
 | 発見元 | 何をするか | 使う場面 |
 |---|---|---|
-| **公式レジストリからインストール**（`registry.modelcontextprotocol.io`） | REST API で検索し、見つけた `server.json` を `mcpServers` エントリに変換して保存 | 一般に公開されている MCP サーバーを探す |
 | **`server.json` を指定してインストール** | リモート URL で指定、または手元の `server.json` ファイルをアップロード——**どちらも同じ「`server.json` を読む」処理**。banto 自身の Module も含め、GitHub 上の `server.json` を URL で指すだけで取り込める | 公式レジストリに出ていない Module（社内限定・個人用・banto 固有の `_meta` 拡張前提のものを含む）。**新しい配布形式は作らない**——Claude Code の `/plugin marketplace add` が独自リポジトリ形式を要求するのとは違い、banto は既存の `server.json` 1枚で足りる |
 | **`mcpServers` 規約を直接記入** | `server.json` すら無い場合の最終手段——`command`/`args`/`env` または `url`/`headers` を人が直接書く | どちらの規約にも乗っていない、ごく単純な stdio/remote サーバー |
 
-**instance 単位の Module 管理 UI（item 14、§10）は、この3つを切り替える
+**「公式レジストリからインストール」（`registry.modelcontextprotocol.io` を
+REST API で検索し、見つけた `server.json` を変換して保存）は撤回**
+（決定・2026-09-10、ユーザー）——2026-09-06 の「受け入れる起動の形は1種類だけ。
+レジストリからの取得は入れない」（上記）と両立しないため、いまの仕様からは外す。
+**将来また入れる意向はある**——`docs/tasks.json` の backlog
+（`module-registry-install`）で追跡する。それまでは、公開されている Module を
+使いたいときは**レジストリで見つけた `server.json` の URL を1つ目の入口に人が
+貼る**——検索は banto の外（ブラウザ）で行う。
+
+**instance 単位の Module 管理 UI（item 14、§10）は、この2つを切り替える
 だけの薄い画面でよい**——banto 自身が検索・カタログ・レビューを持つ
 「ストア」を作る必要が無くなった。**installed の管理も同じ規約に乗る**：
 banto が保持する「instance が知っている実装」の実体は、内部的には
@@ -2458,8 +2466,9 @@ Phase 1 は「**契約が確定し、その契約で3つ書けた。ツールを
      （bootstrap config ではない——層1 は「Event Store を開くより前に要るもの」
      に限ると決めたため）。書き込む tool を AI に公開するかは **item 20（§2.10）で
      決定済み——公開してよい。承認ゲートを通る**
-   - **どの package type を受け入れるか**（npm・PyPI・OCI・remote HTTP）と、
-     公式レジストリを引くか手で指定させるか
+   - ~~どの package type を受け入れるか・公式レジストリを引くか~~ →
+     **決定（2026-09-06、§5.1）：起動の形は1種類だけ。**
+     レジストリ検索は撤回（2026-09-10、tasks.json の backlog に保持）
    - ~~`_meta` のベンダ接頭辞の文字列~~ → **決定（2026-09-02、§5.4）。** `dev.banto`
    - ~~同一性と名前空間~~ **→ §5.2 で解決**（banto が識別子を採番する。
      `serverInfo` の `name` を信じない、と仕様が明記）
@@ -2509,9 +2518,15 @@ Phase 1 は「**契約が確定し、その契約で3つ書けた。ツールを
 10. 具体的な Module 一覧・各 Module の設計 → **`docs/specs/v4-modules.md` に分離した。**
    そちらに残る大きな未決は、`Memory` を core のインターフェースにするか・Shell を Environment の
    中でだけ走らせるか・Backlog と Factory の順序
-11. **セキュリティ境界の設計**（`docs/specs/v4-security.md`）——**まだ設計していない。** 強制の層をどこに
-   置くか（アプリ層の検査／OS の閉じ込め／隔離環境）・Project の根を誰が保持するか・
-   第三者 Module に `in-process` を開くか・鍵の置き場・外部 Skill の `scripts/`
+11. **セキュリティ境界の設計**——当初の列挙は**決定済み**（§10.2、2026-09-02〜03）：
+   ~~強制の層をどこに置くか~~（Landlock、`docs/specs/v4-security.md`）・~~Project の根を
+   誰が保持するか~~（Module 起動時に確定・Project 単位でプロセスを分ける）・
+   ~~第三者 Module に `in-process` を開くか~~（開かない、item 9）・~~鍵の置き場~~
+   （Vault・SOPS）。**残っている本体は、当初ここに書かれていなかった「host の中継・
+   可視性の層」の外周**——MCP のインターフェースに乗らない経路（子プロセスの env 継承・
+   `/proc`・画面 API の可視性強制・トークンと セッションの回収）。列挙と各項の状態は
+   `docs/specs/v4-security.md`「host の中継・可視性の層も、同じ境界である」（2026-09-10）。
+   外部 Skill の `scripts/` は未決のまま残る（§5.7）
 12. Project / Thread の決定操作（畳む・やり直す・分岐・Module 追加削除）の呼び名と UI/API
 13. ~~判断待ちの「後で答える」層の設計~~ **→ 決定（2026-08-30、§2.4・§2.4.1、
    実測 `poc/02-item13-parked-elicitation/`）。** `Query.close()` で pending 中の

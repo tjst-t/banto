@@ -8,7 +8,7 @@
 > 内部の節番号（§6.0〜§6.6）は移動前のまま維持している——他文書からの
 > 参照（`v4-modules.md`・`requirements.md` 等）を壊さないため。
 >
-> 最終更新：2026-09-09
+> 最終更新：2026-09-10
 
 ## フロントエンド側の core
 
@@ -129,7 +129,11 @@ Module が自分の設定 Canvas を持てること（§6.2）。
   **AI からの tool 呼び出しは今までどおり承認ゲートを通る**（§6.0）
   ——そちらは人が見ていないところで起きるので、性質が違う。
   **他の Module は呼べない**——呼び先は画面が指定するのではなく、その画面が
-  どの Module のものかで決まる（フロントエンドが握る）。画面から banto の API を
+  どの Module のものかで決まる（フロントエンドが握る）。**加えて host も
+  API 境界で可視性を検査する**（決定・2026-09-10：`agent`・`admin` のみ許可、
+  `module` 可視性は拒否）——フロントエンドの自制を唯一の境界にしない。
+  「自分の Module か」の照合まで host に持たせる形（Canvas ごとの合言葉）は
+  将来の強化として `docs/tasks.json` に記録してある。画面から banto の API を
   直接叩くこともできない（別オリジン・合言葉を持たない）。
   **残る risk を記録する**：Module 自身の画面が、その Module の危ない tool を
   黙って呼ぶことはできる。**Module を繋ぐこと自体が信頼の線引き**で、その手前は
@@ -327,7 +331,7 @@ Module が申告できるのは**スキーム付きの素直な origin だけ**�
 |---|---|
 | `GET /api/threads/:id/ui-tools` | 画面を持つ tool（`_meta.ui.resourceUri`）の一覧 |
 | `GET /api/threads/:id/ui-resource?server=&uri=` | 画面の HTML と、Module が申告した `csp` / `permissions` |
-| `POST /api/threads/:id/ui-tool-call` | **画面からの tool 呼び出し**。必ず承認ゲートを通る |
+| `POST /api/threads/:id/ui-tool-call` | **画面からの tool 呼び出し**。呼べるのは `agent`・`admin` 可視性の tool だけ——**`module` 可視性（部品間専用）は host がこの口で拒否する**（決定・2026-09-10、ユーザー）。自分の Module を呼ぶときは承認を求めない（改訂・2026-09-07、本節冒頭） |
 
 `GET /api/ui-config` が `sandboxUrl` を返す（画面はここから住所を知る）。
 
@@ -338,9 +342,13 @@ Module が申告できるのは**スキーム付きの素直な origin だけ**�
 **画面を持つ tool だけ**が対象——実行の再現は resume-point の仕事であり、
 画面を持たない tool の結果まで会話の記録に積む理由が無い。
 
-**画面からの呼び出しは、Runner の `canUseTool` と同じ Inbox の判断待ちに載る**
-——人から見て「承認する場所」が2つに割れない（規則3）。
-承認されるまで Module には届かない。
+**画面からの呼び出しに承認ゲートは掛けない**（改訂・2026-09-07、本節冒頭の
+「画面が自分の Module を呼ぶときは承認を求めない」参照。2026-09-06 時点の
+「Inbox の判断待ちに載る」は撤回済み——この段落は消し忘れだった、訂正・2026-09-10）。
+**代わりに host がこの口で可視性を検査する**（決定・2026-09-10、ユーザー）：
+`agent`・`admin` のみ許可、`module` 可視性は拒否——「部品間専用」の tool
+（Vault の `resolveAlias` 等）が画面経由でブラウザに値を返す経路を塞ぐ
+（`docs/specs/v4-security.md`「host の中継・可視性の層」）。
 
 **tool 結果の受け渡しで踏んだこと**：`ui/notifications/tool-result` の
 `params` は **`CallToolResult` そのもの**（`params.result` ではない）。

@@ -6,7 +6,7 @@
 > 全体の構造は `docs/specs/v4-architecture.md`（以下「アーキ仕様」）。
 > **この文書は旧 `v4-architecture.md` §2.7 から分離した**（2026-09-02）。
 >
-> 最終更新：2026-09-02
+> 最終更新：2026-09-10
 
 ## 1. セキュリティ境界
 
@@ -241,6 +241,29 @@ Landlock を掛けた後のプロセスでは実現できない。
   Module は、これまでどおり banto 全体で共有される単一プロセスでよい。
   **この例外は Shell・FileSystem に限る**——両方とも Landlock で閉じ込める
   と決めた Module だから
+
+### host の中継・可視性の層も、同じ境界である——中継が縛らないもの（2026-09-10）
+
+この文書はここまで Shell/FileSystem の OS 閉じ込めを扱ってきたが、**アーキ仕様 §2.5 の
+host 層（代理サーバ・Module 間中継・bearer token・可視性・画面からの tool 呼び出し）は、
+banto が自作した機構であり、MCP にも Landlock にも守られない独自の境界面**である。
+「機能はすべて MCP の向こう」と決めた帰結として MCP に無いものを自作した場所なので、
+穴もここに集まる（実例：`docs/notes/2026-09-09-repo-review.md`）。
+
+上の「Landlock が縛らないもの」と同じ形で、**MCP のインターフェースに乗らない経路**を
+列挙しておく（把握して設計する）：
+
+| 経路 | 何が境界を越えるか | 状態 |
+|---|---|---|
+| **子プロセスの env 継承** | Module に渡した `BANTO_HOST_MCP_TOKEN` が、Module の spawn する子（＝AI の書いたコマンド）へそのまま継承される。トークンは「どの Module からの呼び出しか」の識別そのものなので、漏れれば AI がその Module の身元で中継を呼べる | **決定（2026-09-10）：Module は子プロセスに `BANTO_*` を渡してはならない。** §2.5 の「プロセスごとに発行」の意図（プロセス＝身元）から、子はその身元ではない。実装は `docs/tasks.json` |
+| **`/proc`** | Landlock 許可リストが `/proc` の読み取りを許しており、同一ユーザーの `environ` からトークンが読める | **未決**——許可リストから外して何が壊れるかは要実測 |
+| **画面 API（`ui-tool-call`）** | authToken だけで `module` 可視の tool（`resolveAlias` 等）も呼べ、秘密の値がブラウザに返る。可視性の強制が frontend 頼み | **決定（2026-09-10、ユーザー）**——host が API 境界で可視性を検査する。`agent`・`admin` のみ許可、`module` 可視性は拒否。「自分の Module か」の照合を host に持たせる形（Canvas ごとのトークン）は将来の強化。実装は `docs/tasks.json`（ui-tool-call-visibility-boundary）。§6.2 の「必ず承認」の消し忘れも掃除済み |
+| **初回承認ゲート・監査** | 設計は決定済み（アーキ仕様 §2.5：初回のみ承認・メタデータを Event Store に記録）だが未実装。呼び出し履歴が永続化されず、監査（`docs/specs/v4-frontend.md` §6.0）の前提が欠ける | 実装待ち（`docs/tasks.json`） |
+| **Elicitation の宛先** | 共有接続のハンドラ上書きにより、並行ターン中は別ターンへ質問が届きうる | 実装待ち（`docs/tasks.json`） |
+| **トークン・セッション・プロセスの回収** | revoke・回収の経路が無く増える一方。寿命の設計は決定済み（本書「Project の根は Module 起動時に確定させる」・アーキ仕様 §10 item 9） | 実装待ち（`docs/tasks.json`） |
+
+Canvas の sandbox（`docs/specs/v4-frontend.md` §6.2）はこの表に**入れない**——
+CSP の fail closed を確認済み（2026-09-09 レビュー）で、既に守られている外周。
 
 ### 詰めるときの論点
 
