@@ -82,6 +82,17 @@ export class RuntimeConfigStore {
     return this.projection.current.instance.get(key);
   }
 
+  /**
+   * **その層の値だけ**を読む（カスケードしない）。差分を重ねる設定
+   * （Module 宣言の overlay）は、instance の差分と Project の差分の**両方**を
+   * 順に重ねる必要がある——カスケードで片方を選ぶと、Project が差分を1つ持った
+   * だけで instance 側の差分が丸ごと見えなくなる（実測・2026-09-10）。
+   */
+  layerValue(key: string, projectId?: string): RuntimeConfigValue | undefined {
+    if (projectId) return this.projection.current.projectOverrides.get(projectId)?.get(key);
+    return this.projection.current.instance.get(key);
+  }
+
   async setInstanceDefault(key: string, value: RuntimeConfigValue): Promise<void> {
     const event = await this.log.append("config.instance_set", { key, value });
     this.projection.applyOne(event);

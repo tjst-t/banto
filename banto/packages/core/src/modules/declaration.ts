@@ -231,20 +231,28 @@ export function loadModuleDeclarations(
   // 差分とは形が同じでも意味が違う（差分の「書いていない」は既定のまま、
   // 写しの「載っていない」は外した）。**同じ鍵に混ぜると読み分けられない**ので、
   // 差分は別の鍵に置き、古い鍵は読むときだけ差分へ翻訳する。
-  const storedOverlays = config.resolve(MODULE_OVERLAYS_KEY, projectId);
-  const storedWhole = config.resolve(MODULE_DECLARATIONS_KEY, projectId);
-
-  let overlays: ModuleOverlay[] = [];
-  let source = "default";
-  if (Array.isArray(storedOverlays)) {
-    overlays = storedOverlays as ModuleOverlay[];
-    source = "config(moduleOverlays)";
-  } else if (Array.isArray(storedWhole)) {
-    // 古い形——**丸ごとの写しを差分に翻訳してから**重ねる
-    overlays = diffFromDefaults(DEFAULT_MODULE_DECLARATIONS, storedWhole as ModuleDeclaration[]);
-    source = "config(modules)";
+  //
+  // **層は2つとも重ねる**（改訂・2026-09-10）。差分は「変えたところだけ」なので、
+  // instance の差分と Project の差分は**足し合わせる**もの——カスケードで片方だけを
+  // 選ぶと、**Project が差分を1つ持っただけで instance 側の直しが丸ごと届かなく
+  // なる**（`declaration-repair-project-overlay` の検証中に実測）。
+  const sources: string[] = [];
+  const layers: ModuleOverlay[][] = [];
+  for (const layer of projectId ? ["", projectId] : [""]) {
+    const stored = config.layerValue(MODULE_OVERLAYS_KEY, layer || undefined);
+    const storedWhole = config.layerValue(MODULE_DECLARATIONS_KEY, layer || undefined);
+    if (Array.isArray(stored)) {
+      layers.push(stored as ModuleOverlay[]);
+      sources.push(`config(moduleOverlays${layer ? ":project" : ""})`);
+    } else if (Array.isArray(storedWhole)) {
+      // 古い形——**丸ごとの写しを差分に翻訳してから**重ねる
+      layers.push(diffFromDefaults(DEFAULT_MODULE_DECLARATIONS, storedWhole as ModuleDeclaration[]));
+      sources.push(`config(modules${layer ? ":project" : ""})`);
+    }
   }
-  const raw = applyModuleOverlay(DEFAULT_MODULE_DECLARATIONS, overlays);
+  const source = sources.length > 0 ? sources.join("+") : "default";
+  let raw: ModuleDeclaration[] = [...DEFAULT_MODULE_DECLARATIONS];
+  for (const overlays of layers) raw = applyModuleOverlay(raw, overlays);
   const parsed = raw.map((d) => parseModuleDeclaration(d, source));
   const names = new Set<string>();
   for (const d of parsed) {
@@ -270,8 +278,49 @@ export async function setModuleDeclarations(
 ): Promise<void> {
   // 入れる前に検める——壊れた宣言を Event Store に残さない（規則2）
   for (const d of declarations) parseModuleDeclaration(d, "setModuleDeclarations");
-  const overlays = diffFromDefaults(DEFAULT_MODULE_DECLARATIONS, declarations);
+  // **同じ形どうしで比べる**（改訂・2026-09-10）。渡ってくるのはたいてい
+  // `loadModuleDeclarations` の結果＝**parse で既定が埋まった形**（`handlesSecrets:
+  // false` 等）。生の既定と比べると、**既定と同じ値が「上書き」として保存され**、
+  // あとで既定を直しても、その Project にだけ古い値が貼り付いたままになる
+  // （規則3——写しの汚染。`declaration-repair-project-overlay` の検証中に発見）
+  const parsedDefaults = DEFAULT_MODULE_DECLARATIONS.map(
+    (d) => parseModuleDeclaration(d, "default") as unknown as ModuleDeclaration,
+  );
+  const overlays = diffFromDefaults(parsedDefaults, declarations);
   const value = overlays as unknown as Parameters<RuntimeConfigStore["setInstanceDefault"]>[1];
   if (projectId) await config.setProjectOverride(projectId, MODULE_OVERLAYS_KEY, value);
   else await config.setInstanceDefault(MODULE_OVERLAYS_KEY, value);
+}
+
+/**
+ * **自己申告のほうが厳しかったときに、宣言を直す**（`declaration-repair-project-overlay`、
+ * 2026-09-10）。直すのは「この Module がこう申告した」という **Module 固有の事実**で、
+ * その Project の事情ではない。
+ *
+ * 以前は Project の上書きを混ぜて解決した一覧を、**projectId 抜きで**保存していた
+ * ——つまり
+ *
+ * - **その Project の上書きが、全 Project の既定に漏れる**
+ * - 当の Project の上書きは直らないので、次に起動しても同じ食い違いが出る
+ *
+ * という二重の壊れ方をしていた（規則3——写しの汚染）。**既定は既定として読み直し、
+ * そこへ足して既定に書き戻す。** ただしその Module が既定に無い（Project の上書きで
+ * だけ足された Module）なら、直す先はその Project しかない。
+ */
+export async function repairDeclarationMeta(
+  config: RuntimeConfigStore,
+  input: { name: string; projectId?: string; stricter: Record<string, unknown> },
+): Promise<{ writtenTo: "instance" | "project" }> {
+  const base = loadModuleDeclarations(config, "");
+  const inBase = base.some((d) => d.name === input.name);
+  const target = inBase ? base : loadModuleDeclarations(config, input.projectId ?? "");
+  const next = target.map((d) =>
+    d.name === input.name ? { ...d, meta: { ...d.meta, ...input.stricter } } : d,
+  );
+  if (inBase) {
+    await setModuleDeclarations(config, next as ModuleDeclaration[]);
+    return { writtenTo: "instance" };
+  }
+  await setModuleDeclarations(config, next as ModuleDeclaration[], input.projectId);
+  return { writtenTo: "project" };
 }

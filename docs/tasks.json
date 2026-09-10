@@ -1052,14 +1052,19 @@
       "id": "declaration-repair-project-overlay",
       "phase": "1",
       "title": "自己申告に合わせた宣言修復が Project 上書きを instance 既定へ書き戻す件",
-      "status": "pending",
+      "status": "done",
       "dependencies": [],
       "why": "cli.ts が Project 解決済みの宣言一覧を projectId 無しで setModuleDeclarations に保存している。Project 固有の上書きが全 Project の既定に漏れ、当の Project 上書きは直らないので次回も食い違い続ける（規則3——写しの汚染。要再現確認から）。",
       "doneWhen": "Project 上書きがある状態で自己申告修復を起こすテストを書き、instance 既定が汚染されないことを実証する。",
       "refs": [
-        "banto/packages/core/src/cli.ts",
-        "docs/notes/2026-09-09-repo-review.md"
-      ]
+        "banto/packages/core/src/modules/declaration.ts",
+        "banto/packages/core/src/modules/repair.test.ts",
+        "banto/packages/core/src/config/runtime.ts",
+        "banto/packages/core/src/cli.ts"
+      ],
+      "result": "自己申告に合わせた宣言の直しを `repairDeclarationMeta` に切り出し、**既定は既定として読み直して書き戻す**ようにした（その Module が既定に無い＝Project の上書きでだけ足したものなら、直す先はその Project）。以前は Project の上書きを混ぜて解決した一覧を projectId 抜きで保存しており、**その Project の設定が全 Project の既定に漏れ**、当の Project は直らないまま食い違い続けていた。**検証中に同じ根の穴を2つ見つけて一緒に直した**：(1) `setModuleDeclarations` が**生の既定**と比べて差分を作っていたため、parse で埋まった既定値（`handlesSecrets: false` 等）が「上書き」として保存され、あとで既定を直してもその Project にだけ古い値が貼り付いた——**同じ形どうし（parse 済みの既定）で比べる**ように直した。(2) `loadModuleDeclarations` が instance と Project の差分を**カスケードで片方だけ**選んでいたため、**Project が差分を1つ持っただけで instance 側の直しが丸ごと届かなかった**——差分は足し合わせるものなので、両方を順に重ねる（`layerValue` を足した）。",
+      "verifiedBy": "単体3件を新規追加（`modules/repair.test.ts`）：Module 固有の直しは instance 既定へ入り**Project の上書きは巻き込まない**（別 Project にも漏れない・当の Project の上書きは消えない）／既定に無い Module はその Project に直す／**Project 上書きのある Module にも直しが届く**。**以前の形（Project 上書きを混ぜて projectId 抜きで保存）に戻すと「Project の上書きが既定に漏れた」で落ちる**ことを確認（規則1）。既存の overlay/declaration テスト（22件）も引き続き通過。単体130件・E2E 28件 通過。",
+      "completedAt": "2026-09-10"
     },
     {
       "id": "e2e-run-isolation",

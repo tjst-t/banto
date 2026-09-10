@@ -35,7 +35,7 @@ import type { ModuleEndpoint } from "./http/turn-runner.js";
 import {
   expandLaunch,
   loadModuleDeclarations,
-  setModuleDeclarations,
+  repairDeclarationMeta,
   type LaunchContext,
   type ParsedModuleDeclaration,
 } from "./modules/declaration.js";
@@ -331,19 +331,22 @@ async function main(): Promise<void> {
         // **Config を実際に直してから起動し直す**——直さずに読み替えるだけだと、
         // 「Config にはこう書いてあるのに実際は別の形で動いている」という
         // 真実が2つある状態になる（規則3）
-        const merged = {
-          ...declaration,
-          meta: { ...declaration.meta, ...pick(reported as unknown as Record<string, unknown>, diff.stricter) },
-        };
-        await repairDeclarations(async () => {
-          const current = loadModuleDeclarations(runtimeConfig, project?.id ?? "");
-          await setModuleDeclarations(
-            runtimeConfig,
-            current.map((d) => (d.name === declaration.name ? merged : d)),
-          );
-        });
+        const stricter = pick(reported as unknown as Record<string, unknown>, diff.stricter);
+        const merged = { ...declaration, meta: { ...declaration.meta, ...stricter } };
+        // **直すのは Module 固有の事実であって、その Project の事情ではない**
+        // （決定・2026-09-10）。既定は既定として読み直して書き戻す
+        // ——Project の上書きを混ぜたまま既定へ保存すると、その Project の設定が
+        // 全 Project に漏れ、当の Project は直らないまま食い違い続ける（規則3）
+        const repaired = await repairDeclarations(() =>
+          repairDeclarationMeta(runtimeConfig, {
+            name: declaration.name,
+            projectId: project?.id,
+            stricter,
+          }),
+        );
         console.warn(
-          `[host] ${connName}: Module の申告のほうが厳しかったので宣言を直して起動し直します（${diff.stricter.join(", ")}）`,
+          `[host] ${connName}: Module の申告のほうが厳しかったので宣言を直して起動し直します` +
+            `（${diff.stricter.join(", ")}／直した先: ${repaired.writtenTo}）`,
         );
         // **ここは Once を直接呼ぶ**——spawnDeclaredModule 経由だと、
         // いま自分が握っている single-flight の1本を自分で待つことになって止まる。
