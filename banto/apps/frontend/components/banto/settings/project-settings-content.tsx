@@ -41,6 +41,7 @@ import {
 } from "@/components/banto/settings/settings-shell";
 import { CascadeRow } from "@/components/banto/settings/cascade-row";
 import { DisableImpactDialog } from "@/components/banto/settings/disable-impact-dialog";
+import { reportFailure } from "@/lib/report-failure";
 import { closeProject, getActiveProjects, getProject } from "@/lib/mock/projects";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import {
@@ -100,7 +101,13 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
   }
 
   async function handleClose() {
-    await closeProject(projectId);
+    try {
+      await closeProject(projectId);
+    } catch (err) {
+      // **閉じられなかったのに、閉じた先へ飛ばさない**（改訂・2026-09-10）
+      reportFailure("Project を終了できませんでした", err);
+      return;
+    }
     setConfirmClose(false);
     const next = getActiveProjects().find((p) => p.id !== projectId);
     router.push(next ? `/p/${next.id}` : "/settings");

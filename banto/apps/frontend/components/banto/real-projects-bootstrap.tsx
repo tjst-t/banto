@@ -7,10 +7,15 @@
 // ようにする。何も描画しない。
 import { useEffect } from "react";
 import { hydrateRealProjects } from "@/lib/mock/projects";
+import { reportFailure } from "@/lib/report-failure";
 
 export function RealProjectsBootstrap() {
   useEffect(() => {
-    void hydrateRealProjects();
+    // **黙って落とさない**（改訂・2026-09-10）——以前は `void` で捨てていたので、
+    // host に届かないことが画面のどこにも出なかった（ホーム以外の画面でも起きる）
+    hydrateRealProjects().catch((err: unknown) => {
+      reportFailure("banto に繋がりません（Project 一覧を読み込めませんでした）", err);
+    });
   }, []);
   return null;
 }

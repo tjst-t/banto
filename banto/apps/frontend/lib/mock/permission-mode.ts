@@ -8,6 +8,7 @@
 // リロードで消え、「いまどのモードで会話しているか」を見失う。§6.4 が
 // インジケータを常時表示すると決めた狙い（選んだ後に忘れて事故る、を避ける）が
 // リロード1回で崩れていた。
+import { reportFailure } from "@/lib/report-failure";
 import { getProjectOverrides, mockRuntimeDefaults } from "./settings";
 import { notifyMockStoreChange } from "./store-events";
 import { getThread } from "./threads";
@@ -35,14 +36,21 @@ export function seedThreadPermissionMode(threadId: ThreadId, mode: MockPermissio
 }
 
 export function setThreadPermissionMode(threadId: ThreadId, mode: MockPermissionMode): void {
+  const before = threadOverrides.get(threadId);
   threadOverrides.set(threadId, mode);
   notifyMockStoreChange();
   // 実Threadなら host にも残す。**失敗を握りつぶさない**（規則2）——
   // 残らなかったのに残ったように見せると、次に開いたとき別のモードで
-  // 会話することになる
+  // 会話することになる。
+  // **見せるだけでなく、巻き戻す**（改訂・2026-09-10）——以前は console.error
+  // だけで、画面には「変わったまま」が残っていた。§6.4 の「選んだ値を見失わない」が
+  // そこで崩れる
   if (getThread(threadId)?.real) {
     void setRealThreadPermissionMode(threadId, mode).catch((err: unknown) => {
-      console.error("[banto] permissionMode を host に保存できなかった", err);
+      if (before) threadOverrides.set(threadId, before);
+      else threadOverrides.delete(threadId);
+      notifyMockStoreChange();
+      reportFailure("permissionMode を保存できませんでした（元に戻しました）", err);
     });
   }
 }

@@ -25,6 +25,7 @@ import {
   loadRealProjectThreads,
   prepareRealProjectModules,
 } from "@/lib/backend/client";
+import { reportFailure } from "@/lib/report-failure";
 import { getProject, hydrateRealProjects } from "@/lib/mock/projects";
 import { foldForkThread, getThread, registerRealFork, updateRealThreadData } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
@@ -194,9 +195,12 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
         // ——用意できなければ受信箱にお知らせが出る
         await prepareRealProjectModules(projectId).then(() => refreshRealInbox());
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         // 取れなければ会話は出ない。**黙って古いものを見せない**
-        // ——開き直せば取り直す
+        // ——開き直せば取り直す。**ただし黙りもしない**（改訂・2026-09-10）：
+        // 以前はここで握りつぶしていたので、会話は「読み込んでいます…」の
+        // ままで、なぜ出ないのかが誰にも分からなかった
+        if (!cancelled) reportFailure("この Project の会話を読み込めませんでした", err);
       });
     return () => {
       cancelled = true;

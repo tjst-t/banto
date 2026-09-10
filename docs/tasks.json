@@ -1133,17 +1133,21 @@
       "id": "frontend-error-surfacing",
       "phase": "4",
       "title": "無言で失敗する箇所に「失敗したら見せる＋巻き戻す」の共通の型を入れる",
-      "status": "pending",
+      "status": "done",
       "dependencies": [],
       "why": "規則2違反が同型で複数：host に到達できないとホームが永遠に真っ白（hydrateRealProjects に catch 無し）、Project の会話読み込み失敗が「読み込んでいます…」のまま、permissionMode の host 保存失敗が console.error のみでローカル値も巻き戻らない（§6.4 の「見失わない」が崩れる）、Project 終了の失敗が無言。toast を出す操作（Clear・fold）と非対称。",
       "doneWhen": "host を落とした状態で各操作を実ブラウザで行い、失敗が画面に見える（エラー表示か toast）＋状態が巻き戻ることを1箇所ずつ確認する。",
       "refs": [
+        "banto/apps/frontend/lib/report-failure.ts",
         "banto/apps/frontend/components/banto/project/home-content.tsx",
-        "banto/apps/frontend/app/p/[projectId]/project-panels.tsx",
+        "banto/apps/frontend/components/banto/real-projects-bootstrap.tsx",
         "banto/apps/frontend/lib/mock/permission-mode.ts",
         "banto/apps/frontend/components/banto/settings/project-settings-content.tsx",
-        "docs/notes/2026-09-09-repo-review.md"
-      ]
+        "banto/e2e/specs/error-surfacing.spec.ts"
+      ],
+      "result": "**形を1つ置いた**（`lib/report-failure.ts`）——起きたことを人の言葉で1行、詳細を添えて toast に出し、ログにも残す。既に toast を使っていた操作（Clear・Fork を畳む）と同じ場所で見えるので、人が「どこを見れば失敗が分かるか」を覚え直さなくて済む。これを4箇所に入れた：(1) **ホームが永遠に真っ白**（`hydrateRealProjects` に catch が無く、host に届かないと`hydrated` が false のまま）→ 理由と「もう一度読み込む」を出す。(2) 起動時の読み込み（`RealProjectsBootstrap`）が `void` で捨てていた → 見せる。(3) Project の会話読み込み失敗が「読み込んでいます…」のままだった → 見せる。(4) permissionMode の保存失敗が console.error だけで、**画面には選んだ値が残っていた** → 見せたうえで**巻き戻す**（§6.4「選んだ値を見失わない」がそこで崩れていた）。Project 終了の失敗も、見せて**閉じた先へ飛ばさない**ようにした。",
+      "verifiedBy": "E2E 3件を新規追加（実ブラウザ、`error-surfacing.spec.ts`）：保存できないときに**そう言って元に戻る**／会話を読み込めないときに黙らない／**ホームが真っ白にならず**理由とやり直す口が出る。失敗のさせ方は `page.route` で通信を止める形にした——core を落とすと他の spec の足元まで崩れるうえ、見たいのは画面の振る舞いなので。**直す前の形に戻すと、1件目と3件目が落ちる**ことを確認（規則1）。E2E 32件・typecheck 通過。",
+      "completedAt": "2026-09-10"
     },
     {
       "id": "memory-input-ime-enter",
