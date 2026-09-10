@@ -928,7 +928,8 @@
         "banto/packages/core/src/http/app.ts",
         "banto/packages/core/src/http/ui-apps.test.ts",
         "banto/e2e/specs/vault-visibility.spec.ts",
-        "docs/specs/v4-security.md"
+        "docs/specs/v4-security.md",
+        "docs/notes/2026-09-10-security-surface-A.md"
       ],
       "result": "画面 API（`ui-tool-call`）の3つの口（Thread／Project／instance）すべてで、host が**呼ぼうとしている tool の可視性を毎回ライブに確かめる**ようにした。通すのは `agent`（AI に見せている）と `admin`（人の管理操作）だけで、`module`（部品間専用——Vault の `resolveAlias` 等）は 403。**その Module が名乗っていない tool 名も 404 で拒否**（fail closed——host が代理で呼ぶ理由が無い）。仕様の矛盾（§6.2 の「必ず承認」）は2026-09-10 の docs 整理で解消済み。",
       "verifiedBy": "単体3件（`module` は Thread／Project の両方で 403・Module は呼ばれない／`admin` は 200 で通る（全部塞ぐと設定画面が動かない）／名乗っていない tool 名は 404）。E2E 1件を追加（実 Vault：`createAlias`（admin）は 200、`resolveAlias`（module）は 403 で**値が返らない**）。**検査を効かなくすると E2E が「通ってしまった」で落ちる**ことを確認（規則1）。単体124件・E2E 28件 通過。",
@@ -1019,7 +1020,8 @@
         "banto/packages/module-contract/src/meta.ts",
         "banto/packages/module-contract/src/meta.test.ts",
         "banto/packages/core/src/cli.ts",
-        "docs/specs/v4-modules.md"
+        "docs/specs/v4-modules.md",
+        "docs/notes/2026-09-10-security-surface-A.md"
       ],
       "result": "`visibility`・`scope`・`handlesSecrets` の**書き間違いを「無指定」と同じに扱わない**ようにした。(1) `parseModuleMeta` は `scope: \"projekt\"`・`handlesSecrets: \"true\"` を拒否する（既定に落とすと、Project ごとに分けるべき Module が1本で共有され、秘密を扱う Module がin-process で立つ）。(2) `visibilityOf` は壊れた値を**いちばん狭い側**（`module`——AI にも画面にも出ない）へ倒す。(3) **入口で止める**——Module を繋ぐ前に`assertVisibilityValues` で値を検査し、語彙の外なら繋がない。**ついでに `assertAllVisibilityExplicit` を配線した**（`handlesSecrets: true` の Module は全 tool/resource に明示的な visibility が要る、という v4-modules §2.1 の決定——実装済みなのに誰も呼んでいなかった。landlock-guard-wiring と同じ「有るのに配線されていない」）。",
       "verifiedBy": "単体6件（scope・handlesSecrets の不正値を拒否／無指定は今までどおり既定／壊れた visibility は module へ倒れる／壊れた値を持つ Module は繋がせない）。**配線は実機で確かめた**——実 Vault の `resolveAlias` の visibility を `\"modle\"` にすると host は繋がず、受信箱に「dev.banto/visibility の値が…（resolveAlias=\"modle\"）」と出る。`listAliases` の visibility を書き忘れさせると「handlesSecrets:true の Module は…（listAliases に無い）」で繋がらない。戻すと `vault connected`。単体165件 通過。",
@@ -1036,7 +1038,8 @@
       "refs": [
         "banto/packages/modules/vault/src/sops-backend.ts",
         "banto/packages/modules/vault/src/vault.integration.test.ts",
-        "docs/specs/v4-modules.md"
+        "docs/specs/v4-modules.md",
+        "docs/notes/2026-09-10-security-surface-A.md"
       ],
       "result": "4つとも塞いだ。(1) **グループ名を素直な名前だけに限る**（英数字と `.` `_` `-`、先頭は英数字）——`createGroup` と `path` の両方から検査する（`..` でデータ置き場の外に mkdir できた）。(2) **平文をディスクに置かない**——暗号化は名前付きパイプ（FIFO）越しに sops へ渡す。**sops は標準入力を直接読めず**（`no file specified`）、`/dev/stdin` は Node の spawn が作る stdin が**ソケット対**なので `ENXIO` になる（実測——シェルからは通るのに Node からは通らない）。FIFO は中身を持たないので、平文がディスクに現れない。暗号文は tmp→rename で原子的に置く。(3) **同じグループへの書き込みを直列化**（読んで足して書く、の取りこぼし）。(4) **同じ鍵で ssh-agent を増やさない**——立っていれば使い回し、Vault が終わるときに落とす（`stopAgents`＋exit/SIGTERM/SIGINT）。",
       "verifiedBy": "統合テスト4件を追加（実 sops/age/ssh-agent を使う）：`../` 等の名前を拒否し置き場の外に何も作らない／**書いている最中を fs.watch で見張って**平文ファイルが作られないことを見る（「終わった後に残っていない」では以前の実装も通ってしまうため）／並行 put で3つとも残る／3回呼んでも socket が同じ＝agent は1つ、畳めば socket も消える。**4つとも、直す前の実装に戻すと落ちることを確認**（規則1——`createGroup(\"../escaped\") が通ってしまった`／`暗号文以外のファイルが作られた: .plain-….json` 等）。単体9件 通過。",
@@ -1246,7 +1249,8 @@
         "banto/packages/modules/filesystem/src/operations.ts",
         "banto/packages/modules/filesystem/src/server.test.ts",
         "banto/packages/modules/filesystem/src/landlock.integration.test.ts",
-        "docs/specs/v4-modules.md"
+        "docs/specs/v4-modules.md",
+        "docs/notes/2026-09-10-security-surface-A.md"
       ],
       "result": "**決めた（2026-09-10）：FileSystem の tool 引数は「根の中を指しているか」だけで見る。**相対でも絶対でもよく、`..` や記号リンクを解いた**実体**（realpath）が根の外なら断る（まだ無いパスはいちばん近い親で見る——新規作成のため）。`~` は展開せず断る（ここはシェルではない）。**Landlock を置き換えるのではなく、その上に契約を1枚置く**——許可リストはプロセスを起動するための都合で根より広く（`/etc`・`/proc`・node のバイナリ）、OS だけに任せると `readFile(\"/etc/passwd\")` が通ってしまう（実測で通っていた）。TOCTOU が残る領域はこれまでどおり Landlock が受け持つ。**Shell はこの形にしない**——引数はパスではなくコマンドなので、アプリ層の検査は気休めにしかならない（v4-modules §3）。**「相対だけを受ける」形は実測でやめた**——最初はそう実装したが、AI は根の中のファイルを絶対パスで指してくる（`/tmp/…/one.txt`）ので E2E が2件落ちた。守りたいのは「根の外へ出さない」であって書き方ではない。",
       "verifiedBy": "単体5件（根の外の絶対パス・`~`・`..`・記号リンクを断る／**根の中を指す絶対パスは受ける**／まだ無いパスへの新規作成は通る）＋ Landlock 統合テストに `readFile(\"/etc/passwd\")` が**tool の契約として**断られることを追加（実プロセス・実 Landlock の下で）。**契約の検査を外すと4件が落ちる**ことを確認（規則1）。E2E 28件・単体178件・typecheck 通過。あわせて、統合テストが途中で落ちると spawn した Module が残って `node --test` が終わらなくなる問題も直した（finally で閉じる）。",
