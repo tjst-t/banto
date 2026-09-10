@@ -78,7 +78,22 @@ export function parseModuleMeta(raw: unknown, source: string): BantoModuleMeta {
     throw new ModuleMetaError(`${source}: isolation は必須で in-process か subprocess`);
   }
 
+  // **書き間違いを「無指定」と同じに扱わない**（決定・2026-09-10）。
+  // 既定（handlesSecrets:false / scope:"instance"）は**キーが無いとき**の話であって、
+  // 値が壊れているときの話ではない——`"handlesSecrets": "true"`（文字列）や
+  // `"scope": "projekt"` を黙って緩い側に倒すと、秘密を扱う Module が in-process で
+  // 立ち、Project ごとに分けるべき Module が1本で共有される（規則2）
+  if (obj.handlesSecrets !== undefined && typeof obj.handlesSecrets !== "boolean") {
+    throw new ModuleMetaError(
+      `${source}: handlesSecrets は true か false（${JSON.stringify(obj.handlesSecrets)} が来ました）`,
+    );
+  }
   const handlesSecrets = obj.handlesSecrets === true;
+  if (obj.scope !== undefined && obj.scope !== "instance" && obj.scope !== "project") {
+    throw new ModuleMetaError(
+      `${source}: scope は instance か project（${JSON.stringify(obj.scope)} が来ました）`,
+    );
+  }
   const scope: Scope = obj.scope === "project" ? "project" : "instance";
 
   let confinement: Confinement | undefined;
@@ -234,9 +249,43 @@ export function assertAllVisibilityExplicit(
   }
 }
 
+/**
+ * その tool/resource を誰に見せるか。
+ *
+ * **キーが無い＝既定（`agent`）**。第三者の Module は banto 独自のこのキーを
+ * 持たないので、無指定を `agent` にしないと何も動かない（`docs/specs/v4-modules.md` §2.1）。
+ *
+ * **ただし「書き間違い」は無指定ではない**（決定・2026-09-10）。`"modle"` のような
+ * 値を既定に落とすと、**Module 専用のつもりの道具がいちばん緩い側（AI に見せる）へ
+ * 転落する**。ここでは**いちばん狭い側**（`module`——AI にも画面にも出ない）へ倒し、
+ * 入口（Module を繋ぐとき）では `assertVisibilityValues` で**繋がずに止める**。
+ */
 export function visibilityOf(x: { _meta?: Record<string, unknown> }): Visibility {
   const v = x._meta?.[VISIBILITY_META_KEY];
-  return v === "agent" || v === "module" || v === "admin" ? v : DEFAULT_VISIBILITY;
+  if (v === undefined) return DEFAULT_VISIBILITY;
+  return v === "agent" || v === "module" || v === "admin" ? v : "module";
+}
+
+/**
+ * 宣言されている `visibility` の**値**が語彙の中にあることを確かめる
+ * （決定・2026-09-10）。壊れた値を持つ Module は**繋がない**——黙って
+ * 「いちばん狭い側」で動かすと、書いた人は自分の意図どおりだと思い続ける（規則2）。
+ */
+export function assertVisibilityValues(
+  entries: Array<{ name: string; meta?: Record<string, unknown> }>,
+  source: string,
+): void {
+  const broken = entries.filter((e) => {
+    const v = e.meta?.[VISIBILITY_META_KEY];
+    return v !== undefined && v !== "agent" && v !== "module" && v !== "admin";
+  });
+  if (broken.length === 0) return;
+  const detail = broken
+    .map((e) => `${e.name}=${JSON.stringify(e.meta?.[VISIBILITY_META_KEY])}`)
+    .join(", ");
+  throw new ModuleMetaError(
+    `${source}: ${VISIBILITY_META_KEY} の値が agent / module / admin のどれでもありません（${detail}）`,
+  );
 }
 
 /** dev.banto/ 接頭辞のキーだけを取り除く。他ベンダの _meta は残す。 */

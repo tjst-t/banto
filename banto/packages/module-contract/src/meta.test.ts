@@ -8,6 +8,7 @@ import {
   stripBantoMeta,
   reconcileModuleMeta,
   assertAllVisibilityExplicit,
+  assertVisibilityValues,
 } from "./meta.js";
 
 test("parses a valid module meta", () => {
@@ -143,4 +144,57 @@ test("同じなら差分なし", () => {
   const meta = { satisfies: ["x"], dependsOn: [], isolation: "subprocess", scope: "project", confinement: { kind: "landlock", root: "project" } };
   const diff = classifyMetaDifference(parseModuleMeta(meta, "d"), parseModuleMeta(meta, "r"));
   assert.deepEqual(diff, { stricter: [], looser: [], other: [] });
+});
+
+// **書き間違いを「無指定」と同じに扱わない**（決定・2026-09-10、`module-meta-strict-values`）。
+// 既定は「キーが無いとき」の話。値が壊れているときに緩い側へ落ちると、
+// Module 専用のつもりの道具が AI に見え、秘密を扱う Module が in-process で立つ。
+
+test("scope の書き間違いは instance に落とさず、拒否する", () => {
+  assert.throws(
+    () => parseModuleMeta({ satisfies: ["x"], isolation: "subprocess", scope: "projekt" }, "typo"),
+    /scope は instance か project/,
+  );
+});
+
+test("handlesSecrets の型違いは false に落とさず、拒否する", () => {
+  assert.throws(
+    () => parseModuleMeta({ satisfies: ["x"], isolation: "subprocess", handlesSecrets: "true" }, "typo"),
+    /handlesSecrets は true か false/,
+  );
+});
+
+test("無指定は今までどおり既定（instance / false）", () => {
+  const meta = parseModuleMeta({ satisfies: ["x"], isolation: "subprocess" }, "default");
+  assert.equal(meta.scope, "instance");
+  assert.equal(meta.handlesSecrets, false);
+});
+
+test("visibility の書き間違いは、いちばん緩い側ではなく狭い側へ倒れる", () => {
+  // 既定（キーが無い）は agent のまま
+  assert.equal(visibilityOf({}), "agent");
+  // 壊れた値は module（AI にも画面にも出ない）
+  assert.equal(visibilityOf({ _meta: { "dev.banto/visibility": "modle" } }), "module");
+  assert.equal(visibilityOf({ _meta: { "dev.banto/visibility": 3 } }), "module");
+});
+
+test("壊れた visibility を持つ Module は、そもそも繋がせない", () => {
+  assert.throws(
+    () =>
+      assertVisibilityValues(
+        [
+          { name: "ok", meta: { "dev.banto/visibility": "admin" } },
+          { name: "無指定でよい" },
+          { name: "こわれ", meta: { "dev.banto/visibility": "modle" } },
+        ],
+        "vault",
+      ),
+    /こわれ="modle"/,
+  );
+});
+
+test("値が正しい／無指定だけなら通る", () => {
+  assert.doesNotThrow(() =>
+    assertVisibilityValues([{ name: "a", meta: { "dev.banto/visibility": "module" } }, { name: "b" }], "x"),
+  );
 });

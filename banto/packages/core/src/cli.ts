@@ -41,10 +41,29 @@ import {
 } from "./modules/declaration.js";
 import { readSelfReportedMeta } from "./modules/selfreport.js";
 import { SingleFlight } from "./modules/single-flight.js";
-import { classifyMetaDifference } from "@banto/module-contract";
+import {
+  assertAllVisibilityExplicit,
+  assertVisibilityValues,
+  classifyMetaDifference,
+} from "@banto/module-contract";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = join(__dirname, "..", "..", "..");
+
+/** その Module が名乗っている tool・resource（可視性の検査に渡す形）。 */
+async function listVisibilityEntries(
+  client: Client,
+): Promise<Array<{ name: string; meta?: Record<string, unknown> }>> {
+  const tools = await client.listTools();
+  const resources = await client.listResources().catch(() => ({ resources: [] }));
+  return [
+    ...tools.tools.map((t) => ({ name: t.name, meta: t._meta as Record<string, unknown> | undefined })),
+    ...resources.resources.map((r) => ({
+      name: r.uri,
+      meta: r._meta as Record<string, unknown> | undefined,
+    })),
+  ];
+}
 
 async function connectStdioModule(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<Client> {
   const transport = new StdioClientTransport({ command, args, env: env as Record<string, string> });
@@ -343,6 +362,16 @@ async function main(): Promise<void> {
         console.warn(`[host] ${connName}: 申告と宣言が違う項目（起動の形には影響しない）: ${diff.other.join(", ")}`);
       }
     }
+
+    // **可視性の宣言を、繋ぐ前に検査する**（決定・2026-09-10）。
+    //  ① 値が語彙の外（`"modle"` 等）なら繋がない——黙って狭い側で動かすと、
+    //     書いた人は自分の意図どおりだと思い続ける
+    //  ② 秘密を扱うと自己申告した Module は、**全 tool/resource に明示的な
+    //     visibility が要る**（`docs/specs/v4-modules.md` §2.1 の決定。
+    //     書き忘れた1つから秘密が漏れるのを構造で防ぐ）
+    const declared = await listVisibilityEntries(client);
+    assertVisibilityValues(declared, connName);
+    if (declaration.meta.handlesSecrets) assertAllVisibilityExplicit(declared, connName);
 
     const conn = { name: connName, client, meta: declaration.meta };
     registry.registerModule(conn);

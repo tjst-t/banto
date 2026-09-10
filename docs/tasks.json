@@ -1011,14 +1011,19 @@
       "id": "module-meta-strict-values",
       "phase": "1",
       "title": "visibility 等の不正値を「最も緩い既定」に落とさない",
-      "status": "pending",
+      "status": "done",
       "dependencies": [],
       "why": "visibility の typo（\"modle\" 等）が「無指定」と同一視され最も緩い agent に落ちる——Module 専用のつもりの tool が AI に露出する。scope・handlesSecrets の不正値も同様に緩い方向へ静かに転落（規則2）。仕様の既定 agent は「キーが無い場合」であって「値が壊れている場合」ではない。",
       "doneWhen": "不正値を持つ宣言がテストで理由つきで拒否される（黙って agent にならない）。",
       "refs": [
         "banto/packages/module-contract/src/meta.ts",
-        "docs/notes/2026-09-09-repo-review.md"
-      ]
+        "banto/packages/module-contract/src/meta.test.ts",
+        "banto/packages/core/src/cli.ts",
+        "docs/specs/v4-modules.md"
+      ],
+      "result": "`visibility`・`scope`・`handlesSecrets` の**書き間違いを「無指定」と同じに扱わない**ようにした。(1) `parseModuleMeta` は `scope: \"projekt\"`・`handlesSecrets: \"true\"` を拒否する（既定に落とすと、Project ごとに分けるべき Module が1本で共有され、秘密を扱う Module がin-process で立つ）。(2) `visibilityOf` は壊れた値を**いちばん狭い側**（`module`——AI にも画面にも出ない）へ倒す。(3) **入口で止める**——Module を繋ぐ前に`assertVisibilityValues` で値を検査し、語彙の外なら繋がない。**ついでに `assertAllVisibilityExplicit` を配線した**（`handlesSecrets: true` の Module は全 tool/resource に明示的な visibility が要る、という v4-modules §2.1 の決定——実装済みなのに誰も呼んでいなかった。landlock-guard-wiring と同じ「有るのに配線されていない」）。",
+      "verifiedBy": "単体6件（scope・handlesSecrets の不正値を拒否／無指定は今までどおり既定／壊れた visibility は module へ倒れる／壊れた値を持つ Module は繋がせない）。**配線は実機で確かめた**——実 Vault の `resolveAlias` の visibility を `\"modle\"` にすると host は繋がず、受信箱に「dev.banto/visibility の値が…（resolveAlias=\"modle\"）」と出る。`listAliases` の visibility を書き忘れさせると「handlesSecrets:true の Module は…（listAliases に無い）」で繋がらない。戻すと `vault connected`。単体165件 通過。",
+      "completedAt": "2026-09-10"
     },
     {
       "id": "vault-os-surface-hardening",
