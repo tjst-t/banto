@@ -382,6 +382,36 @@ export type RealTurnEvent =
  * いまは受信を**独立した繰り返し**で回し、届いた端から `onEvent` に渡しつつ、
  * 描画用には順番に取り出せるようにしてある。**描く側の都合で受信が止まらない。**
  */
+/**
+ * **走行中のターンに、あとから繋ぎ直す**（`turn-stream-reattach`、2026-09-10）。
+ *
+ * ターンのイベント列は `POST …/messages` の応答の中にしか無いので、リロードすると
+ * **出力どころか「走っている」ことすら消える**（実測）。host が走行中のぶんを
+ * 覚えているので、`GET …/stream` で最初から流し直してもらう。
+ * 走っていなければ `{type:"idle"}` が1つ来て閉じる。
+ */
+export async function* attachRealTurn(threadId: string): AsyncGenerator<RealTurnEvent | { type: "idle" } | { type: "attached"; startedAt: string }> {
+  const config = requireConfig();
+  const res = await fetch(`${config.baseUrl}/api/threads/${threadId}/stream`, {
+    headers: { authorization: `Bearer ${config.token}` },
+  });
+  if (!res.ok || !res.body) throw new Error(`走行中のターンに繋げませんでした（${res.status}）`);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return;
+    buf += decoder.decode(value, { stream: true });
+    const parts = buf.split("\n\n");
+    buf = parts.pop() ?? "";
+    for (const part of parts) {
+      if (!part.startsWith("data: ")) continue;
+      yield JSON.parse(part.slice(6)) as RealTurnEvent;
+    }
+  }
+}
+
 export function streamRealTurn(
   threadId: string,
   prompt: string,

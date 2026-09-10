@@ -15,6 +15,7 @@ import { GlobalMemoryStore } from "../global-memory/store.js";
 import { InboxStore } from "../inbox/store.js";
 import { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { runThreadTurn, type TurnStreamEvent } from "./turn-runner.js";
+import { TurnEventBus } from "./turn-events.js";
 import type { runTurn } from "../runner/adapter.js";
 
 /** `system/init` の形（mcp_servers の状態だけがこの試験の関心事）。 */
@@ -156,5 +157,57 @@ test("Module を1つも配線していないターンは、検査に引っかか
     );
     assert.equal(events.some((e) => e.type === "error"), false);
     assert.ok(events.some((e) => e.type === "done"));
+  });
+});
+
+// **走行中のターンに、あとから繋ぎ直せる**（`turn-stream-reattach`、2026-09-10）。
+// ターンのイベント列は `POST …/messages` の応答の中にしか無く、リロードすると
+// **出力どころか「走っている」ことすら画面から消えていた**（実測）。
+
+test("走行中のイベントは覚えられ、あとから最初から流し直せる", async () => {
+  await withThread(async ({ deps, threadId }) => {
+    const turnEvents = new TurnEventBus();
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    // 途中で止まるターン（人がリロードした瞬間を作る）
+    const fake = (async function* () {
+      yield { type: "message" as const, message: initMessage([]) } as never;
+      yield { type: "message" as const, message: assistantMessage("途中まで書いた") } as never;
+      await held;
+      yield { type: "message" as const, message: assistantMessage("続き") } as never;
+      return { sessionId: "s", compactionCount: 0 } as never;
+    }) as unknown as typeof import("../runner/adapter.js").runTurn;
+
+    const gen = runThreadTurn({ ...deps, turnEvents, runTurn: fake }, { threadId, prompt: "数えて", modules: [] });
+    // 2件流れたところで、いったん手を止める（画面が切れた状況）
+    await gen.next();
+    await gen.next();
+
+    const snapshot = turnEvents.snapshot(threadId);
+    assert.ok(snapshot, "走行中なのに覚えていない");
+    assert.equal(turnEvents.isRunning(threadId), true);
+    assert.equal(snapshot!.events.length, 2, "流したぶんを覚えていない");
+
+    // **あとから繋いだ人**にも、続きが届く
+    const later: TurnStreamEvent[] = [];
+    const unsubscribe = turnEvents.subscribeStream(threadId, (e) => later.push(e));
+    release();
+    for await (const _ of gen) void _;
+    unsubscribe();
+
+    assert.ok(later.some((e) => e.type === "done"), `続きが届いていない: ${JSON.stringify(later.map((e) => e.type))}`);
+    // **終わったら覚えていない**——ここから先の真実は Event Store
+    assert.equal(turnEvents.isRunning(threadId), false);
+    assert.equal(turnEvents.snapshot(threadId), undefined);
+  });
+});
+
+test("走っていなければ、覚えているものは無い", async () => {
+  await withThread(async ({ deps, threadId }) => {
+    const turnEvents = new TurnEventBus();
+    assert.equal(turnEvents.isRunning(threadId), false);
+    const { fake } = fakeRunner([initMessage([]), assistantMessage("ひとこと")]);
+    await collect(runThreadTurn({ ...deps, turnEvents, runTurn: fake }, { threadId, prompt: "やあ", modules: [] }));
+    assert.equal(turnEvents.isRunning(threadId), false, "終わったのに走行中のまま");
   });
 });

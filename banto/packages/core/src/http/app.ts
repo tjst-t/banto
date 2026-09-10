@@ -556,6 +556,48 @@ export function createApp(deps: AppDeps) {
         return;
       }
 
+      // **走行中のターンに、あとから繋ぎ直す口**（決定・2026-09-10、
+      // `turn-stream-reattach`）。ターンのイベント列は `POST …/messages` の応答の
+      // 中にしか無く、**リロードすると出力どころか「走っている」ことすら画面から
+      // 消えていた**（実測）。走行中なら**そのターンの最初から**流し直し、続きも
+      // そのまま渡す。走行中でなければ `idle` を1つ返して閉じる
+      // ——「いま走っていない」と「繋がらない」を人にも機械にも区別させる（規則2）。
+      const streamMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/stream$/);
+      if (streamMatch && req.method === "GET") {
+        const threadId = streamMatch[1]!;
+        if (!deps.projectThread.getThread(threadId)) return json(res, 404, { error: "not found" });
+        const snapshot = deps.turnEvents?.snapshot(threadId);
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+        });
+        if (!snapshot) {
+          res.write(`data: ${JSON.stringify({ type: "idle" })}\n\n`);
+          res.end();
+          return;
+        }
+        res.write(`data: ${JSON.stringify({ type: "attached", startedAt: snapshot.startedAt })}\n\n`);
+        for (const event of snapshot.events) res.write(`data: ${JSON.stringify(event)}\n\n`);
+        await new Promise<void>((resolve) => {
+          const unsubscribe = deps.turnEvents!.subscribeStream(threadId, (event) => {
+            res.write(`data: ${JSON.stringify(event)}\n\n`);
+            // `done`／`error` でそのターンは終わり——ここで閉じる
+            if (event.type === "done" || event.type === "error") finish();
+          });
+          const finish = () => {
+            unsubscribe();
+            res.end();
+            resolve();
+          };
+          // 画面が先に切れることもある（別の画面へ移った・閉じた）
+          req.on("close", finish);
+          // 覚えている途中経過が既に終わっていた場合（競走）——取りこぼさない
+          if (!deps.turnEvents!.isRunning(threadId)) finish();
+        });
+        return;
+      }
+
       const clearMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/clear$/);
       if (clearMatch && req.method === "POST") {
         try {

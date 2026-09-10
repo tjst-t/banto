@@ -599,7 +599,9 @@ export async function sendRealAnswer(toolCallId: string, answer: string): Promis
  * ターンが本当に終わったか＝**assistantの返事が増えたか**を待ち、
  * それまでは待ち続ける（上限は5分）。
  */
-async function syncRestoredThread(threadId: string): Promise<void> {
+/** host の記録から、この Thread の表示を取り直す（走行中のターンが終わった後・
+ *  復元した判断待ちに答えた後）。**楽観的な写しを作らない**（規則3）。 */
+export async function syncRestoredThread(threadId: string): Promise<void> {
   const deadline = Date.now() + 5 * 60_000;
   const assistantCount = (messages: MockThread["realMessages"]): number =>
     (messages ?? []).filter((m) => m.role === "assistant").length;

@@ -124,14 +124,17 @@
     },
     {
       "id": "turn-stream-reattach",
-      "phase": "未定",
+      "phase": "Phase 0",
       "title": "走行中のターンに再接続できる口",
-      "status": "undecided",
+      "status": "done",
       "dependencies": [],
       "why": "ターンのイベント列は `POST /api/threads/:id/messages` の応答の中にしか無く、リロードするとその走行の出力はUIから切れる。いまは「生きている判断待ちをカードとして描き直し、答えた後はhostの記録から取り直す」ことで実用上は塞いだが、**走行中の出力そのものは戻らない**（答えるまでの間、何が起きているか見えない）。",
-      "doneWhen": "（やると決まっていない。`GET /api/threads/:id/stream?from=seq` 等の形をまず決める）",
+      "doneWhen": "`GET /api/threads/:id/stream` が走行中のターンを最初から流し直し、続きも流す。走っていなければ idle。画面は composer の上の帯として出し、終わったら host の記録から取り直す。E2E `specs/turn-reattach.spec.ts`（走行中にリロード→続きが見える）",
       "refs": [
-        "docs/notes/2026-09-06-judgment-after-reload-and-home-redirect.md"
+        "docs/notes/2026-09-06-judgment-after-reload-and-home-redirect.md",
+        "docs/specs/v4-frontend.md §6.8",
+        "banto/packages/core/src/http/turn-events.ts",
+        "banto/e2e/specs/turn-reattach.spec.ts"
       ]
     },
     {

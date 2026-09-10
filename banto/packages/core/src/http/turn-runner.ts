@@ -69,7 +69,29 @@ export interface RunThreadTurnInput {
   uiTools?: UiToolBinding[];
 }
 
+/**
+ * 1ターンを走らせ、イベントを流す。**流したものは `turnEvents` にも覚えさせる**
+ * （`turn-stream-reattach`、2026-09-10）——走行中にリロードされても
+ * `GET /api/threads/:id/stream` から**最初から流し直せる**ようにするため。
+ * 覚えるのはここ1箇所（規則3——各 yield の場所に書き足さない）。
+ */
 export async function* runThreadTurn(
+  deps: Parameters<typeof runThreadTurnInner>[0],
+  input: RunThreadTurnInput,
+): AsyncGenerator<TurnStreamEvent> {
+  deps.turnEvents?.begin(input.threadId, new Date().toISOString());
+  try {
+    for await (const event of runThreadTurnInner(deps, input)) {
+      deps.turnEvents?.record(input.threadId, event);
+      yield event;
+    }
+  } finally {
+    // **どう終わってもここを通る**——終わったターンの途中経過は残さない
+    deps.turnEvents?.end(input.threadId);
+  }
+}
+
+async function* runThreadTurnInner(
   deps: {
     projectThread: ProjectThreadStore;
     globalMemory: GlobalMemoryStore;
@@ -137,7 +159,7 @@ export async function* runThreadTurn(
   let wakeSide: (() => void) | undefined;
   // 健全性検査で中断するときに、走り出した query を止めるための紐
   const abortTurn = new AbortController();
-  const unsubscribeSide = deps.turnEvents?.subscribe(input.threadId, (event) => {
+  const unsubscribeSide = deps.turnEvents?.subscribeSide(input.threadId, (event) => {
     sideEvents.push(event);
     wakeSide?.();
   });

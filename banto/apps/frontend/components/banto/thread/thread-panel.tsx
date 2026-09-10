@@ -10,6 +10,7 @@ import { useEffect, useMemo, type ReactNode } from "react";
 import { GitFork } from "lucide-react";
 import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
+import { ReattachedTurn } from "@/components/banto/thread/reattached-turn";
 import { CanvasAutoOpen } from "@/components/banto/thread/canvas-auto-open";
 import { ComposerModelEffortMenu } from "@/components/banto/thread/composer-model-effort-menu";
 import { ComposerPermissionModeMenu } from "@/components/banto/thread/composer-permission-mode-menu";
@@ -230,7 +231,15 @@ function ThreadRuntime({
     unstable_humanToolNames: [HUMAN_TOOL_NAME, ...APPROVAL_TOOL_NAMES],
   });
 
-  const hint: ReactNode = <ThreadMarkers markers={markers} />;
+  // **走行中のターンに繋ぎ直したときの帯**（`turn-stream-reattach`、2026-09-10）。
+  // 入力欄の直上に置く——「いま何が起きているか」は、これから打つ人がいちばん
+  // 見る場所（Clear の横線と違い、**過去の場所に紐づく情報ではない**）
+  const hint: ReactNode = (
+    <>
+      <ThreadMarkers markers={markers} />
+      <ReattachedTurn threadId={threadId} />
+    </>
+  );
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -251,7 +260,7 @@ function ThreadRuntime({
           </>
         }
         components={{ ToolFallback: HumanToolCard, ToolGroup: HumanAwareToolGroup }}
-        composerHint={markers.length > 0 ? hint : undefined}
+        composerHint={hint}
         transcriptMarkers={transcriptMarkers}
       />
       </CanvasOpenerProvider>
