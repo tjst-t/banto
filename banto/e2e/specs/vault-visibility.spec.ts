@@ -77,3 +77,35 @@ test("AI に見える vault の道具は申請系だけ——値を取る道具�
   // Module 自身の申告（host だけが読む）も、AI の道具として漏れていない
   expect(names.some((n) => n.toLowerCase().includes("module"))).toBe(false);
 });
+
+// **画面 API も同じ境界を持つ**（決定・2026-09-10、docs/specs/v4-security.md）。
+// 以前は合言葉さえあれば画面から任意の tool 名を呼べたので、AI には見せていない
+// `resolveAlias` が**ブラウザ経由で呼べて、秘密の値が返っていた**
+// ——可視性の強制がフロントエンドの自制だけに乗っていた。
+test("画面 API からも、値を取る道具は呼べない——人の管理操作だけが通る", async ({ request }) => {
+  await ensureModulesConnected();
+  const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
+  const alias = `e2e-visibility-${Date.now()}`;
+  const secret = `画面からは見えないはず${Date.now()}`;
+
+  // 人の管理操作（admin）は通る——ここが通らないと設定画面が動かない
+  const created = await request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    headers,
+    data: {
+      server: "vault",
+      tool: "createAlias",
+      arguments: { name: alias, kind: "secret", scope: "project", value: secret },
+    },
+  });
+  expect(created.status(), "人の管理操作まで塞いでしまっている").toBe(200);
+
+  // **値を取る道具（module 可視性）は拒否される**
+  const resolved = await request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    headers,
+    data: { server: "vault", tool: "resolveAlias", arguments: { name: alias } },
+  });
+  expect(resolved.status(), "画面 API から resolveAlias が通ってしまった").toBe(403);
+  const body = await resolved.text();
+  expect(body, "拒否したのに値が返っている").not.toContain(secret);
+  expect(body).toContain("Module 間専用");
+});

@@ -28,6 +28,7 @@ import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { runThreadTurn, type ModuleEndpoint, type RunThreadTurnInput } from "./turn-runner.js";
 import type { TurnEventBus } from "./turn-events.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
+import { visibilityOf } from "@banto/module-contract";
 
 /**
  * Module の画面（MCP Apps）のために host が Module へ問い合わせる分だけ
@@ -75,6 +76,39 @@ export interface AppDeps {
   resolveInstanceModuleClients?(): Promise<Array<{ name: string; client: ModuleClientLike }>>;
   /** 画面から見たサンドボックスの住所（§6.2）。画面に推測させない（規則3）。 */
   sandboxPublicUrl?: string;
+}
+
+/**
+ * **画面から呼んでよい tool か**を host 自身が検査する（決定・2026-09-10、
+ * `docs/specs/v4-security.md`「中継が縛らないもの」）。
+ *
+ * 画面 API は合言葉さえあれば任意の tool 名を呼べたので、`module` 可視性
+ * （部品間専用——Vault の `resolveAlias` 等）まで届き、**秘密の値がブラウザに
+ * 返っていた**。可視性の強制がフロントエンドの自制だけに乗っていた形。
+ *
+ * 通すのは `agent`（AI に見せている）と `admin`（人の管理操作）だけ。
+ * **一覧に無い名前も通さない**（fail closed）——「その Module が名乗っている
+ * tool」以外を host が代理で呼ぶ理由が無い。
+ */
+async function checkUiCallable(
+  client: ModuleClientLike,
+  toolName: string,
+): Promise<{ status: number; body: unknown } | undefined> {
+  const { tools } = await client.listTools();
+  const tool = tools.find((t) => (t as { name?: string }).name === toolName);
+  if (!tool) return { status: 404, body: { error: "unknown tool", tool: toolName } };
+  const visibility = visibilityOf(tool as { _meta?: Record<string, unknown> });
+  if (visibility === "module") {
+    return {
+      status: 403,
+      body: {
+        error: "この tool は画面からは呼べません（Module 間専用）",
+        tool: toolName,
+        visibility,
+      },
+    };
+  }
+  return undefined;
 }
 
 /** MCP Apps が tool に付ける印（`_meta.ui.resourceUri`）を読む。 */
@@ -700,6 +734,8 @@ export function createApp(deps: AppDeps) {
         const modules = (await deps.resolveModuleClientsForThread?.(uiCallMatch[1]!)) ?? [];
         const found = modules.find((m) => m.name === body.server);
         if (!found) return json(res, 404, { error: "unknown module", server: body.server });
+        const refusal = await checkUiCallable(found.client, body.tool);
+        if (refusal) return json(res, refusal.status, refusal.body);
         // 画面からの呼び出しでも、その tool が内部で他 Module を呼べば中継の承認が
         // 要る（§「Module 間中継の承認」）。**どの会話に出すか**をここで台帳に置く
         const endCall =
@@ -764,6 +800,8 @@ export function createApp(deps: AppDeps) {
         const modules = (await deps.resolveInstanceModuleClients?.()) ?? [];
         const found = modules.find((m) => m.name === body.server);
         if (!found) return json(res, 404, { error: "unknown module", server: body.server });
+        const refusal = await checkUiCallable(found.client, body.tool);
+        if (refusal) return json(res, refusal.status, refusal.body);
         // 自分の Module を呼ぶのに承認は求めない（上の Thread 版と同じ理由）
         json(res, 200, await found.client.callTool({ name: body.tool, arguments: toolArguments(body.arguments) }));
         return;
@@ -789,6 +827,8 @@ export function createApp(deps: AppDeps) {
         const modules = (await deps.resolveModuleClientsForProject?.(projectUiCallMatch[1]!)) ?? [];
         const found = modules.find((m) => m.name === body.server);
         if (!found) return json(res, 404, { error: "unknown module", server: body.server });
+        const refusal = await checkUiCallable(found.client, body.tool);
+        if (refusal) return json(res, refusal.status, refusal.body);
         // 設定画面も同じ——**自分の Module を呼ぶのに承認は求めない**
         // （改訂・2026-09-07、上の Thread 版と同じ理由）
         json(res, 200, await found.client.callTool({ name: body.tool, arguments: toolArguments(body.arguments) }));

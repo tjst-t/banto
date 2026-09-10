@@ -33,6 +33,10 @@ class FakeModule implements ModuleClientLike {
       tools: [
         { name: "listDirectory", _meta: { ui: { resourceUri: "ui://filesystem/directory" } } },
         { name: "readFile" }, // 画面を持たない tool は出てこない
+        // **部品間専用**（Vault の resolveAlias と同じ立場）——画面からは呼べない
+        { name: "resolveAlias", _meta: { "dev.banto/visibility": "module" } },
+        // 人の管理操作は画面のためのもの——呼べる
+        { name: "createAlias", _meta: { "dev.banto/visibility": "admin" } },
       ],
     };
   }
@@ -211,6 +215,51 @@ test("設定画面（Project 単位）も同じ——自分の Module なら聞�
     assert.equal(res.status, 200);
     assert.equal(module.calls.length, 1);
     assert.deepEqual(inbox.listOpen(), []);
+  });
+});
+
+// **可視性の強制は host に置く**（決定・2026-09-10、docs/specs/v4-security.md）。
+// 以前は合言葉さえあれば任意の tool 名を呼べたので、`module` 可視性
+// （部品間専用——秘密の値を返す）まで画面から届いていた。
+test("`module` 可視性の tool は、画面からは呼べない（部品間専用）", async () => {
+  await withApp(async ({ base, headers, threadId, projectId, module }) => {
+    for (const path of [
+      `/api/threads/${threadId}/ui-tool-call`,
+      `/api/projects/${projectId}/ui-tool-call`,
+    ]) {
+      const res = await fetch(`${base}${path}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ server: "filesystem", tool: "resolveAlias", arguments: {} }),
+      });
+      assert.equal(res.status, 403, `${path} が通ってしまった`);
+      assert.match(JSON.stringify(await res.json()), /Module 間専用/);
+    }
+    assert.equal(module.calls.length, 0, "拒否したのに Module を呼んでいる");
+  });
+});
+
+test("人の管理操作（admin 可視性）は画面から呼べる——全部塞いだのでは設定画面が動かない", async () => {
+  await withApp(async ({ base, headers, threadId, module }) => {
+    const res = await fetch(`${base}/api/threads/${threadId}/ui-tool-call`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ server: "filesystem", tool: "createAlias", arguments: { name: "x" } }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(module.calls, [{ name: "createAlias", arguments: { name: "x" } }]);
+  });
+});
+
+test("その Module が名乗っていない tool 名は通さない（fail closed）", async () => {
+  await withApp(async ({ base, headers, threadId, module }) => {
+    const res = await fetch(`${base}/api/threads/${threadId}/ui-tool-call`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ server: "filesystem", tool: "存在しない", arguments: {} }),
+    });
+    assert.equal(res.status, 404);
+    assert.equal(module.calls.length, 0);
   });
 });
 

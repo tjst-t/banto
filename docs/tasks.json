@@ -918,7 +918,7 @@
       "id": "ui-tool-call-visibility-boundary",
       "phase": "1",
       "title": "画面 API（ui-tool-call）の可視性強制をどこに置くか",
-      "status": "pending",
+      "status": "done",
       "decidedAt": "2026-09-10",
       "decision": "host の API 境界で可視性を検査する（ユーザー決定・案A）。agent・admin のみ許可、module 可視性は拒否。Canvas ごとの合言葉で「自分の Module のみ」まで強制する案Bは将来の強化として保留。§6.2 の「必ず承認を通る」消し忘れ2箇所は仕様側を掃除済み（2026-09-10）。",
       "dependencies": [],
@@ -926,10 +926,13 @@
       "doneWhen": "強制の置き場（host API 境界か frontend か）を決めて v4-security.md と v4-frontend §6.2 に書き、矛盾記述を消す。host に置くなら、`module` 可視 tool の画面 API 呼び出しが拒否されることをテストで実証する。",
       "refs": [
         "banto/packages/core/src/http/app.ts",
-        "docs/specs/v4-frontend.md",
-        "docs/specs/v4-security.md",
-        "docs/notes/2026-09-09-repo-review.md"
-      ]
+        "banto/packages/core/src/http/ui-apps.test.ts",
+        "banto/e2e/specs/vault-visibility.spec.ts",
+        "docs/specs/v4-security.md"
+      ],
+      "result": "画面 API（`ui-tool-call`）の3つの口（Thread／Project／instance）すべてで、host が**呼ぼうとしている tool の可視性を毎回ライブに確かめる**ようにした。通すのは `agent`（AI に見せている）と `admin`（人の管理操作）だけで、`module`（部品間専用——Vault の `resolveAlias` 等）は 403。**その Module が名乗っていない tool 名も 404 で拒否**（fail closed——host が代理で呼ぶ理由が無い）。仕様の矛盾（§6.2 の「必ず承認」）は2026-09-10 の docs 整理で解消済み。",
+      "verifiedBy": "単体3件（`module` は Thread／Project の両方で 403・Module は呼ばれない／`admin` は 200 で通る（全部塞ぐと設定画面が動かない）／名乗っていない tool 名は 404）。E2E 1件を追加（実 Vault：`createAlias`（admin）は 200、`resolveAlias`（module）は 403 で**値が返らない**）。**検査を効かなくすると E2E が「通ってしまった」で落ちる**ことを確認（規則1）。単体124件・E2E 28件 通過。",
+      "completedAt": "2026-09-10"
     },
     {
       "id": "landlock-guard-wiring",
