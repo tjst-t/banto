@@ -75,7 +75,8 @@ export class ProjectThreadStore {
       .filter((p): p is ProjectState => p !== undefined);
     // **並べるのは読むとき**（決定・2026-09-11）——並び順は1つのイベントで
     // 持っているので、各 Project に番号を写さない（規則3）
-    return sortByExplicitOrder(projects, this.projection.current.projectOrder);
+    // 前からある snapshot には並び順の欄が無い（後から足した）——空として扱う
+    return sortByExplicitOrder(projects, this.projection.current.projectOrder ?? []);
   }
 
   /**
@@ -109,7 +110,7 @@ export class ProjectThreadStore {
     const base = threads.filter((t) => t.kind !== "fork");
     const forks = sortByExplicitOrder(
       threads.filter((t) => t.kind === "fork"),
-      this.projection.current.threadOrder.get(projectId) ?? [],
+      this.projection.current.threadOrder?.get(projectId) ?? [],
     );
     return [...base, ...forks];
   }

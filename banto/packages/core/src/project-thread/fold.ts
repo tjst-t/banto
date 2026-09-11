@@ -72,8 +72,10 @@ export type ProjectThreadEvent =
 function cloneModel(m: ProjectThreadReadModel): ProjectThreadReadModel {
   return {
     displayModeByToolCall: new Map(m.displayModeByToolCall),
-    projectOrder: [...m.projectOrder],
-    threadOrder: new Map(m.threadOrder),
+    // **前からある snapshot には、この2つが無い**（実測・2026-09-11、実機で踏んだ）
+    // ——後から足した欄は、無い状態から読み戻される。空として扱う
+    projectOrder: [...(m.projectOrder ?? [])],
+    threadOrder: new Map(m.threadOrder ?? []),
     projects: new Map(Array.from(m.projects, ([k, v]) => [k, { ...v, memory: [...v.memory] }])),
     threads: new Map(
       Array.from(m.threads, ([k, v]) => [

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { EventLog } from "../event-store/log.js";
 import { ProjectThreadStore, MemoryLimitExceededError, InvalidProjectRootError, NotFoundError } from "./store.js";
+import { projectThreadFold } from "./fold.js";
 
 async function withStore(fn: (store: ProjectThreadStore, dir: string, log: EventLog) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), "banto-pt-test-"));
@@ -552,4 +553,28 @@ test("Fork の並びは Project ごと。Base は常に先頭のまま", async (
     const other = await store.createProject("q", dir);
     await assert.rejects(() => store.setForkOrder(other.id, [f1.id]));
   });
+});
+
+// **後から足した欄は、無い状態から読み戻される**（実測・2026-09-11、実機で踏んだ）。
+// 並び順の欄（`projectOrder` / `threadOrder`）を足した日、**前からある snapshot**
+// にはその欄が無く、Project の一覧が 500 を返した（`[...undefined]`）。
+// 記録は追記だけで書き換えないので、古い形から読み戻せることは常に要る。
+
+test("並び順の欄が無い snapshot から読み戻しても落ちない", () => {
+  const legacy = {
+    projects: new Map(),
+    threads: new Map(),
+    displayModeByToolCall: new Map(),
+  } as unknown as Parameters<typeof projectThreadFold.apply>[0];
+
+  const next = projectThreadFold.apply(legacy, {
+    seq: 1,
+    ts: new Date(0).toISOString(),
+    type: "project.created",
+    payload: { id: "p1", name: "古い記録", root: "/tmp" },
+  } as unknown as Parameters<typeof projectThreadFold.apply>[1]);
+
+  assert.equal(next.projectOrder.length, 0, "無い欄を空として扱えていない");
+  assert.equal(next.threadOrder.size, 0);
+  assert.equal(next.projects.get("p1")!.name, "古い記録");
 });
