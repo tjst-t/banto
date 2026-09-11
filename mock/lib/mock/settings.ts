@@ -124,7 +124,9 @@ let implementations: MockModuleImplementation[] = [
     id: "banto.fs",
     roleId: "filesystem",
     name: "FileSystem（banto 標準）",
-    isolation: "in-process",
+    isolation: "subprocess",
+    scope: "project",
+    confinement: "landlock",
     builtin: true,
     enabled: true,
     dependsOn: [],
@@ -144,6 +146,8 @@ let implementations: MockModuleImplementation[] = [
     roleId: "shell",
     name: "Shell（banto 標準・Landlock）",
     isolation: "subprocess",
+    scope: "project",
+    confinement: "landlock",
     builtin: true,
     enabled: true,
     // envSecrets/secretFiles/sshIdentity は Vault の resolveAlias/startSshAgent
@@ -207,6 +211,7 @@ let implementations: MockModuleImplementation[] = [
   {
     id: "banto.vault-local",
     roleId: "vault",
+    scope: "instance",
     name: "Vault（組み込みローカル）",
     isolation: "subprocess",
     builtin: true,
@@ -228,6 +233,7 @@ let implementations: MockModuleImplementation[] = [
   {
     id: "hashicorp.vault",
     roleId: "vault",
+    scope: "instance",
     name: "HashiCorp Vault",
     isolation: "subprocess",
     enabled: true,
@@ -277,6 +283,7 @@ let implementations: MockModuleImplementation[] = [
   {
     id: "banto.vault-ui",
     roleId: "vault-ui",
+    scope: "instance",
     name: "VaultUI（横断管理）",
     isolation: "in-process",
     builtin: true,
@@ -630,6 +637,66 @@ let mockProjectModuleLinks: MockProjectModuleLink[] = [
   { projectId: "hermes", implementationId: "banto.repo" },
   { projectId: "hermes", implementationId: "banto.vault-ui" },
 ];
+
+/**
+ * **この Project に繋ぐ**（決定・2026-09-11、Phase 2 の入口）。
+ * 変えるのは「どれを繋ぐか」だけ——立ち上げ方（launch）は Module の宣言が持つ。
+ */
+export function linkProjectModule(projectId: ProjectId, implementationId: string): void {
+  const already = mockProjectModuleLinks.some(
+    (l) => l.projectId === projectId && l.implementationId === implementationId,
+  );
+  if (already) return;
+  mockProjectModuleLinks = [...mockProjectModuleLinks, { projectId, implementationId }];
+  notifyMockStoreChange();
+}
+
+/** この Project から外す。**Module そのものは消えない**——他の Project では動いたまま */
+export function unlinkProjectModule(projectId: ProjectId, implementationId: string): void {
+  mockProjectModuleLinks = mockProjectModuleLinks.filter(
+    (l) => !(l.projectId === projectId && l.implementationId === implementationId),
+  );
+  notifyMockStoreChange();
+}
+
+/** この Project に**繋げる**もの（まだ繋いでいない実装）。 */
+export function getLinkableModules(projectId: ProjectId): readonly MockModuleImplementation[] {
+  const linked = new Set(
+    mockProjectModuleLinks.filter((l) => l.projectId === projectId).map((l) => l.implementationId),
+  );
+  return implementations.filter((i) => !linked.has(i.id));
+}
+
+/**
+ * その Module が要る**繋がっていない依存先**（role 単位）。
+ * 繋ぐときは「一緒に繋ぐもの」、外すときは「止まるもの」の材料になる。
+ */
+export function getMissingDependencies(
+  projectId: ProjectId,
+  impl: MockModuleImplementation,
+): readonly { role: RoleId; required: boolean; candidates: readonly MockModuleImplementation[] }[] {
+  const linked = getProjectModuleLinks(projectId);
+  return impl.dependsOn
+    .filter((dep) => !linked.some((i) => i.roleId === dep.role))
+    .map((dep) => ({
+      role: dep.role,
+      required: dep.required,
+      candidates: implementations.filter((i) => i.roleId === dep.role && i.enabled),
+    }));
+}
+
+/** この Project で、その Module を外すと**動かなくなる**もの（依存している側）。 */
+export function getBreaksIfUnlinked(
+  projectId: ProjectId,
+  impl: MockModuleImplementation,
+): readonly MockModuleImplementation[] {
+  const linked = getProjectModuleLinks(projectId);
+  const stillSatisfied = linked.some((i) => i.roleId === impl.roleId && i.id !== impl.id);
+  if (stillSatisfied) return [];
+  return linked.filter(
+    (i) => i.id !== impl.id && i.dependsOn.some((d) => d.role === impl.roleId && d.required),
+  );
+}
 
 export function getProjectModuleLinks(projectId: ProjectId): readonly MockModuleImplementation[] {
   const ids = new Set(

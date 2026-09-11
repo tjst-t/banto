@@ -218,6 +218,16 @@ export interface MockModuleImplementation {
   isolation: "in-process" | "subprocess";
   /** banto が同梱するデフォルト実装（例：Vault の組み込みローカルバックエンド） */
   builtin?: boolean;
+  /**
+   * `_meta["dev.banto/module"].scope`。**banto 全体で1本**か、**Project ごとに1本**か。
+   * Project ごとのものは、その Project の根が決まってから立つ（閉じ込めのため）。
+   */
+  scope?: "instance" | "project";
+  /**
+   * `_meta["dev.banto/module"].confinement`。Project の根に閉じ込めて起動する。
+   * **一度掛けたら緩められない**ので、Project ごとに別プロセスになる。
+   */
+  confinement?: "landlock";
   enabled: boolean;
   /**
    * `_meta["dev.banto/module"].dependsOn`（§5.1）。無効化したとき何が断るかは

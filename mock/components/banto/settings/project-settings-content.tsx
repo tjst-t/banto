@@ -10,7 +10,7 @@
 // 見比べると、Project 単位の中身（Vault の alias 等）が増えているのが分かる
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Puzzle, ShieldAlert, SlidersHorizontal, Trash2, TriangleAlert } from "lucide-react";
+import { Puzzle, ShieldAlert, SlidersHorizontal, TriangleAlert } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -30,8 +30,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
 import { ModuleConfigPane } from "@/components/banto/settings/module-config-pane";
+import { ProjectModulesPanel } from "@/components/banto/settings/project-modules-panel";
 import {
   SettingsShell,
   type SearchEntry,
@@ -39,11 +39,9 @@ import {
   type SettingsSection,
 } from "@/components/banto/settings/settings-shell";
 import { CascadeRow } from "@/components/banto/settings/cascade-row";
-import { DisableImpactDialog } from "@/components/banto/settings/disable-impact-dialog";
 import { closeProject, getActiveProjects, getProject } from "@/lib/mock/projects";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import {
-  getBreaksIfDisabled,
   getImplementation,
   getProjectModuleLinks,
   getProjectOverrides,
@@ -52,10 +50,10 @@ import {
   MOCK_PERMISSION_MODES,
   mockRuntimeDefaults,
 } from "@/lib/mock/settings";
-import type { MockModuleImplementation, MockProjectOverrides } from "@/lib/mock/types";
+import type { MockProjectOverrides } from "@/lib/mock/types";
 
 const CATEGORIES: readonly SettingsNavItem[] = [
-  { section: "project-modules", label: "接続している Module", icon: Puzzle },
+  { section: "project-modules", label: "この Project の Module", icon: Puzzle },
   { section: "project-overrides", label: "既定値の上書き", icon: SlidersHorizontal },
   { section: "project-security", label: "セキュリティ境界", icon: ShieldAlert },
   { section: "project-danger", label: "危険な操作", icon: TriangleAlert },
@@ -81,7 +79,6 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
   const baseline = getProjectOverrides(projectId);
   const [overrides, setOverrides] = useState<MockProjectOverrides>(baseline);
   const links = getProjectModuleLinks(projectId);
-  const [removeTarget, setRemoveTarget] = useState<MockModuleImplementation | null>(null);
   const [confirmClose, setConfirmClose] = useState(false);
   const router = useRouter();
 
@@ -100,74 +97,7 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
 
   function renderSection(section: SettingsSection) {
     if (section === "project-modules") {
-      return (
-        <div>
-          <h1 className="mb-0.5 text-lg font-semibold text-foreground">接続している Module</h1>
-          <p className="mb-4 text-xs text-ink-3">
-            instance 全体の役割一覧（<a href="/settings" className="underline">/settings</a>）から、
-            この Project が使う実装を選ぶ。他の Module の裏方としてだけ使われる実装
-            （Vault 等）はここには出てこない——それぞれの Module 自身の設定から選ぶ。
-          </p>
-          <div className="flex flex-col gap-2">
-            {getRoles().map((role) => {
-              const active = links.filter((impl) => impl.roleId === role.id);
-              return (
-                <div
-                  key={role.id}
-                  id={`anchor-project-role-${role.id}`}
-                  className="rounded-md border border-border p-2.5"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-sm font-medium text-foreground">{role.name}</p>
-                    <button
-                      type="button"
-                      className="flex items-center gap-1 text-xs text-ink-3 hover:text-foreground"
-                    >
-                      <Plus className="size-3.5" /> 実装を足す
-                    </button>
-                  </div>
-                  {active.length === 0 ? (
-                    <p className="mt-1 text-xs text-ink-3">繋がっている実装は無い</p>
-                  ) : (
-                    <ul className="mt-1.5 flex flex-col gap-1">
-                      {active.map((impl) => (
-                        <li
-                          key={impl.id}
-                          id={`anchor-project-impl-${impl.id}`}
-                          className="flex items-center justify-between gap-2 rounded bg-surface-2 px-2 py-1 text-xs"
-                        >
-                          <span className="flex items-center gap-1.5 text-ink-2">
-                            {impl.name}
-                            <Badge variant="outline" className="text-xs">
-                              {impl.isolation}
-                            </Badge>
-                          </span>
-                          <button
-                            type="button"
-                            aria-label={`${impl.name} をこの Project から外す`}
-                            onClick={() => setRemoveTarget(impl)}
-                            className="flex size-5 items-center justify-center rounded text-ink-3 hover:bg-destructive/10 hover:text-destructive"
-                          >
-                            <Trash2 className="size-3.5" />
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-
-          <DisableImpactDialog
-            open={removeTarget !== null}
-            onOpenChange={(o) => !o && setRemoveTarget(null)}
-            targetName={removeTarget ? `${removeTarget.name}（${project.name}）` : ""}
-            breaks={removeTarget ? getBreaksIfDisabled(removeTarget) : []}
-            onConfirm={() => setRemoveTarget(null)}
-          />
-        </div>
-      );
+      return <ProjectModulesPanel projectId={projectId} />;
     }
 
     if (section === "project-overrides") {
