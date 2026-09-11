@@ -659,6 +659,27 @@ export function unlinkProjectModule(projectId: ProjectId, implementationId: stri
   notifyMockStoreChange();
 }
 
+/** banto が知っている Module の全部（画面はここから「繋がっている／いない」を分ける）。 */
+export function getAllImplementations(): readonly MockModuleImplementation[] {
+  return implementations;
+}
+
+/**
+ * **まとめて保存する**（改訂・2026-09-11、ユーザー要望）。1つ動かすたびに書かず、
+ * 画面の下書きを確定するときに一度だけ。渡すのは**この Project の並び全体**。
+ */
+export function setProjectModuleLinks(
+  projectId: ProjectId,
+  implementationIds: readonly string[],
+): void {
+  const others = mockProjectModuleLinks.filter((l) => l.projectId !== projectId);
+  mockProjectModuleLinks = [
+    ...others,
+    ...implementationIds.map((implementationId) => ({ projectId, implementationId })),
+  ];
+  notifyMockStoreChange();
+}
+
 /** この Project に**繋げる**もの（まだ繋いでいない実装）。 */
 export function getLinkableModules(projectId: ProjectId): readonly MockModuleImplementation[] {
   const linked = new Set(
