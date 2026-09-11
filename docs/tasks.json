@@ -552,10 +552,11 @@
         "phase1-module-contract"
       ],
       "why": "Phase 2（標準 Module を揃える）の入口（決定・2026-09-11、ユーザー）。宣言は instance 既定なので、Module を1本足すと**全 Project に繋がる**——本数が増えるほど、使わない Project にも tool が載り、プロセスも増える。増やす前に、Project ごとに選べるようにする。§10 の D 群（画面を見ないと決まらない）なので、先に mock/ で形を見る。",
-      "doneWhen": "Project 設定から、その Project に繋がっている Module が実データで一覧でき、増減できることを実ブラウザで確認する。",
+      "doneWhen": "実データで、Project 設定の「この Project の Module」から繋ぐ・外すができ、保存すると差分の確認が出て、次のターンからその Module の tool が増える／消えることを実ブラウザで確認する。画面の形は `docs/specs/v4-frontend.md` §6.15（モックで決定・2026-09-11）",
       "refs": [
         "docs/specs/v4-architecture.md §10（D群）",
-        "mock/README.md"
+        "mock/README.md",
+        "docs/specs/v4-frontend.md §6.15"
       ]
     },
     {
