@@ -324,3 +324,82 @@ export async function repairDeclarationMeta(
   await setModuleDeclarations(config, next as ModuleDeclaration[], input.projectId);
   return { writtenTo: "project" };
 }
+
+/**
+ * **この Project で使う Module を選ぶ**（`phase1-project-modules-ui`、
+ * 2026-09-11、Phase 2 の入口）。
+ *
+ * 渡すのは「この Project で使う名前の一覧」。**外す**は差分の `enabled: false`
+ * として残る——既定から消すのではなく、「この Project では使わない」と書く
+ * （他の Project には影響しない）。
+ *
+ * **その Project 固有の直し（launch や meta の差分）は残す**——選び直しただけで
+ * 消えてはいけない（規則3——ここで持っているのは「使うかどうか」だけ）。
+ */
+export async function setProjectModuleSelection(
+  config: RuntimeConfigStore,
+  projectId: string,
+  selectedNames: readonly string[],
+): Promise<void> {
+  // **選べるのは banto が知っているものだけ**（規則2——知らない名前を順番に置かない）
+  const available = loadModuleDeclarations(config, "");
+  for (const name of selectedNames) {
+    if (!available.some((d) => d.name === name)) {
+      throw new ModuleDeclarationError(`知らない Module です: ${name}`);
+    }
+  }
+  const selected = new Set(selectedNames);
+  const existing = (config.layerValue(MODULE_OVERLAYS_KEY, projectId) as ModuleOverlay[] | undefined) ?? [];
+
+  const byName = new Map<string, ModuleOverlay>();
+  for (const overlay of existing) {
+    // `enabled` は下で決め直す——古い「外した」印を持ち越さない
+    const { enabled: _dropped, ...rest } = overlay;
+    byName.set(overlay.name, rest as ModuleOverlay);
+  }
+  for (const declaration of available) {
+    if (selected.has(declaration.name)) continue;
+    byName.set(declaration.name, { ...(byName.get(declaration.name) ?? { name: declaration.name }), enabled: false });
+  }
+
+  // 何も言っていない差分（名前だけ）は落とす——空の印を記録に残さない
+  const overlays = [...byName.values()].filter(
+    (o) => o.enabled === false || o.launch !== undefined || o.meta !== undefined,
+  );
+  await config.setProjectOverride(
+    projectId,
+    MODULE_OVERLAYS_KEY,
+    overlays as unknown as Parameters<RuntimeConfigStore["setProjectOverride"]>[2],
+  );
+}
+
+/**
+ * **この Project の Module の一覧**（選ばれているかも含めて）。
+ * 画面はこれをそのまま並べる——別の一覧を作らない（規則3）。
+ *
+ * **繋いでみないと分からないこと（tool の数）は返さない。** 数えるには
+ * 起動して聞くしかなく、一覧を見ただけで全部を起こすのは筋が悪い（規則2——
+ * 分からないものを、分かったように見せない）。
+ */
+export function listProjectModules(
+  config: RuntimeConfigStore,
+  projectId: string,
+): Array<{
+  name: string;
+  selected: boolean;
+  satisfies: string[];
+  dependsOn: BantoModuleMeta["dependsOn"];
+  scope: BantoModuleMeta["scope"];
+  confinement?: BantoModuleMeta["confinement"];
+}> {
+  const available = loadModuleDeclarations(config, "");
+  const selected = new Set(loadModuleDeclarations(config, projectId).map((d) => d.name));
+  return available.map((d) => ({
+    name: d.name,
+    selected: selected.has(d.name),
+    satisfies: d.meta.satisfies,
+    dependsOn: d.meta.dependsOn,
+    scope: d.meta.scope,
+    ...(d.meta.confinement ? { confinement: d.meta.confinement } : {}),
+  }));
+}

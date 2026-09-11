@@ -547,12 +547,12 @@
       "id": "phase1-project-modules-ui",
       "phase": "2",
       "title": "Project 単位の Module 管理 UI",
-      "status": "next",
+      "status": "done",
       "dependencies": [
         "phase1-module-contract"
       ],
       "why": "Phase 2（標準 Module を揃える）の入口（決定・2026-09-11、ユーザー）。宣言は instance 既定なので、Module を1本足すと**全 Project に繋がる**——本数が増えるほど、使わない Project にも tool が載り、プロセスも増える。増やす前に、Project ごとに選べるようにする。§10 の D 群（画面を見ないと決まらない）なので、先に mock/ で形を見る。",
-      "doneWhen": "実データで、Project 設定の「この Project の Module」から繋ぐ・外すができ、保存すると差分の確認が出て、次のターンからその Module の tool が増える／消えることを実ブラウザで確認する。画面の形は `docs/specs/v4-frontend.md` §6.15（モックで決定・2026-09-11）",
+      "doneWhen": "Project 設定の「この Project の Module」から繋ぐ・外すができ、保存すると差分の確認が出て、**host が用意する Module から実際に消える／戻る**（`modules/prepare` で確認）。開き直しても残る。E2E `specs/project-modules.spec.ts`（外す→立たない→繋ぎ直す→立つ、依存の警告）",
       "refs": [
         "docs/specs/v4-architecture.md §10（D群）",
         "mock/README.md",

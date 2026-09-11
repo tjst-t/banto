@@ -12,6 +12,9 @@ export const CONNECTED_FEATURES = {
   compaction: false, // Compactマーカーはローカルstateのみ、host側に残らない
   threadCloseReopen: true, // Stage 1で実API接続済み
   projectCloseReopen: true, // Stage 1で実API接続済み
+  // **この Project で使う Module を選ぶ**（`phase1-project-modules-ui`、2026-09-11）。
+  // host の宣言（instance 既定＋Project 差分）に繋がっている——Phase 2 の入口
+  projectModules: true,
   settings: false, // instance設定（/settings）：Module/Vault/Role/Credential/Runtime既定、mock/settings.ts丸ごと
   // Global Memory（§2.2、決定・2026-09-05）。/settings の中で**これだけ**が
   // 実bantoホストに繋がっている——projectSettingsで入口を分離したのと同じ手で、

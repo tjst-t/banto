@@ -17,7 +17,23 @@ import {
   loadModuleDeclarations,
   parseModuleDeclaration,
   setModuleDeclarations,
+  listProjectModules,
+  setProjectModuleSelection,
 } from "./declaration.js";
+
+/** 設定だけを持つ空の置き場（この節の試験はどれも同じ形で始まる） */
+async function withConfig(fn: (config: RuntimeConfigStore) => Promise<void>): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), "banto-module-select-"));
+  try {
+    const log = new EventLog(dir);
+    await log.init();
+    const config = new RuntimeConfigStore(dir, log);
+    await config.load();
+    await fn(config);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
 
 const CONTEXT = {
   nodeExec: "/usr/bin/node",
@@ -240,4 +256,79 @@ test("**古い形（丸ごとの写し）が Config に残っていても、既�
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// **この Project で使う Module を選ぶ**（`phase1-project-modules-ui`、2026-09-11）。
+// 宣言は banto 全体の既定なので、1本足すと全 Project に繋がる——増やす前に、
+// Project ごとに選べるようにする（Phase 2 の入口）。
+
+test("外した Module は、その Project でだけ消える（他の Project は変わらない）", async () => {
+  await withConfig(async (config) => {
+    const before = listProjectModules(config, "p1");
+    assert.ok(before.length >= 3, "既定の Module が見えていない");
+    assert.equal(before.every((m) => m.selected), true, "はじめは全部使う");
+
+    const keep = before.filter((m) => m.name !== "shell").map((m) => m.name);
+    await setProjectModuleSelection(config, "p1", keep);
+
+    assert.equal(
+      loadModuleDeclarations(config, "p1").some((d) => d.name === "shell"),
+      false,
+      "外したのに、その Project で使われている",
+    );
+    assert.equal(
+      loadModuleDeclarations(config, "p2").some((d) => d.name === "shell"),
+      true,
+      "他の Project からも消えている（差分が漏れている）",
+    );
+    // 一覧には残る——**外しただけで、Module そのものは消えない**
+    const after = listProjectModules(config, "p1");
+    assert.equal(after.find((m) => m.name === "shell")?.selected, false);
+    assert.equal(after.length, before.length);
+  });
+});
+
+test("繋ぎ直すと戻る（外した印が残らない）", async () => {
+  await withConfig(async (config) => {
+    const all = listProjectModules(config, "p1").map((m) => m.name);
+    await setProjectModuleSelection(config, "p1", all.filter((n) => n !== "filesystem"));
+    assert.equal(loadModuleDeclarations(config, "p1").some((d) => d.name === "filesystem"), false);
+    await setProjectModuleSelection(config, "p1", all);
+    assert.equal(loadModuleDeclarations(config, "p1").some((d) => d.name === "filesystem"), true);
+  });
+});
+
+test("知らない Module は選べない（順番の中に幽霊を作らない）", async () => {
+  await withConfig(async (config) => {
+    await assert.rejects(() => setProjectModuleSelection(config, "p1", ["shell", "いない"]));
+    // 断られたのだから、選択は変わっていない
+    assert.equal(listProjectModules(config, "p1").every((m) => m.selected), true);
+  });
+});
+
+test("その Project 固有の直しは、選び直しても残る", async () => {
+  await withConfig(async (config) => {
+    // Project だけ env を足す（`setModuleDeclarations` が差分として残す）
+    const declarations = loadModuleDeclarations(config, "p1").map((d) =>
+      d.name === "shell"
+        ? { ...d, launch: { ...d.launch, env: { ...d.launch.env, EXTRA: "1" } } }
+        : d,
+    );
+    await setModuleDeclarations(config, declarations as never, "p1");
+    assert.equal(
+      loadModuleDeclarations(config, "p1").find((d) => d.name === "shell")?.launch.env?.EXTRA,
+      "1",
+    );
+
+    // 別の Module を外す——**shell の直しは巻き添えにならない**
+    const keep = listProjectModules(config, "p1")
+      .filter((m) => m.name !== "filesystem")
+      .map((m) => m.name);
+    await setProjectModuleSelection(config, "p1", keep);
+    assert.equal(
+      loadModuleDeclarations(config, "p1").find((d) => d.name === "shell")?.launch.env?.EXTRA,
+      "1",
+      "選び直したら、その Project 固有の直しが消えた",
+    );
+  });
 });

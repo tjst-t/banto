@@ -26,6 +26,11 @@ import type { HostRelayEndpoint } from "../relay/host-relay-endpoint.js";
 import type { AgentRelayEndpoint } from "../relay/agent-relay-endpoint.js";
 import type { PendingApprovalRegistry } from "../inbox/pending-approvals.js";
 import { runThreadTurn, type ModuleEndpoint, type RunThreadTurnInput } from "./turn-runner.js";
+import {
+  ModuleDeclarationError,
+  listProjectModules,
+  setProjectModuleSelection,
+} from "../modules/declaration.js";
 import type { TurnEventBus } from "./turn-events.js";
 import type { RuntimeConfigStore } from "../config/runtime.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
@@ -414,6 +419,38 @@ export function createApp(deps: AppDeps) {
         const body = (await readJsonBody(req)) as { name: string; root: string };
         const project = await deps.projectThread.createProject(body.name, body.root);
         json(res, 201, project);
+        return;
+      }
+
+      // **この Project で使う Module**（`phase1-project-modules-ui`、2026-09-11、
+      // Phase 2 の入口）。宣言は banto 全体の既定なので、1本足すと全 Project に
+      // 繋がる——増やす前に、Project ごとに選べるようにする
+      const projectModulesMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/modules$/);
+      if (projectModulesMatch && req.method === "GET") {
+        const projectId = projectModulesMatch[1]!;
+        if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        if (!deps.runtimeConfig) return json(res, 200, []);
+        json(res, 200, listProjectModules(deps.runtimeConfig, projectId));
+        return;
+      }
+      if (projectModulesMatch && req.method === "PUT") {
+        const projectId = projectModulesMatch[1]!;
+        if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
+        if (!deps.runtimeConfig) return json(res, 503, { error: "runtime config is not available" });
+        const body = (await readJsonBody(req)) as { names: unknown };
+        if (!Array.isArray(body.names) || body.names.some((n) => typeof n !== "string")) {
+          return json(res, 400, { error: "names must be an array of module names" });
+        }
+        try {
+          await setProjectModuleSelection(deps.runtimeConfig, projectId, body.names as string[]);
+        } catch (err) {
+          if (err instanceof ModuleDeclarationError) return json(res, 400, { error: err.message });
+          throw err;
+        }
+        // **外したものは落とす**——次のターンを待たずにプロセスを止める。
+        // 繋いだものは、次に要るときに立ち上がる（遅延起動のまま、規則3）
+        const released = (await deps.releaseProjectModules?.(projectId)) ?? [];
+        json(res, 200, { ok: true, released });
         return;
       }
 

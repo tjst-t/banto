@@ -355,6 +355,36 @@ export async function reopenRealProject(projectId: string): Promise<void> {
   await request(`/api/projects/${projectId}/reopen`, { method: "POST" });
 }
 
+/**
+ * **この Project で使う Module**（`phase1-project-modules-ui`、2026-09-11）。
+ * 宣言は banto 全体の既定なので、1本足すと全 Project に繋がる
+ * ——増やす前に、Project ごとに選べるようにする（Phase 2 の入口）。
+ */
+export interface RealProjectModule {
+  name: string;
+  /** この Project で使うか */
+  selected: boolean;
+  /** その Module が名乗る役割（`satisfies`） */
+  satisfies: string[];
+  dependsOn: { role: string; required: boolean }[];
+  /** banto 全体で1本か、Project ごとに1本か */
+  scope: "instance" | "project";
+  /** Project の根に閉じ込めて起動する */
+  confinement?: { kind: string; root: string };
+}
+
+export async function listRealProjectModules(projectId: string): Promise<RealProjectModule[]> {
+  return request<RealProjectModule[]>(`/api/projects/${projectId}/modules`);
+}
+
+/** **まとめて保存する**——画面の下書きを確定するときに一度だけ（§6.15）。 */
+export async function setRealProjectModules(projectId: string, names: string[]): Promise<void> {
+  await request(`/api/projects/${projectId}/modules`, {
+    method: "PUT",
+    body: JSON.stringify({ names }),
+  });
+}
+
 // **名前と並び順**（決定・2026-09-11、ユーザー要望）。どちらも人の意図なので
 // host が持つ——ブラウザの覚えにすると、別の端末で開いたときに元へ戻る（規則3）。
 

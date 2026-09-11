@@ -654,3 +654,61 @@ test("Fork の並び順は Project ごと——一覧は Base が先頭、その
     assert.deepEqual(threads.map((t) => t.id), [baseThread.id, f2.id, f1.id]);
   });
 });
+
+// **この Project で使う Module を選ぶ**（`phase1-project-modules-ui`、2026-09-11）。
+
+test("Project の Module を HTTP から選べる——外したものは一覧に残り、選ばれていないと分かる", async () => {
+  await withApp(async (base, token, _dir, deps) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const project = await deps.projectThread.createProject("p", "/tmp");
+
+    const before = (await (
+      await fetch(`${base}/api/projects/${project.id}/modules`, { headers })
+    ).json()) as Array<{ name: string; selected: boolean; scope: string }>;
+    assert.ok(before.length >= 3, "既定の Module が返っていない");
+    assert.equal(before.every((m) => m.selected), true, "はじめは全部使う");
+    assert.equal(before.find((m) => m.name === "vault")?.scope, "instance");
+
+    const keep = before.filter((m) => m.name !== "shell").map((m) => m.name);
+    const put = await fetch(`${base}/api/projects/${project.id}/modules`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ names: keep }),
+    });
+    assert.equal(put.status, 200);
+
+    const after = (await (
+      await fetch(`${base}/api/projects/${project.id}/modules`, { headers })
+    ).json()) as Array<{ name: string; selected: boolean }>;
+    // **外しても一覧から消えない**——選ばれていない、と分かる形で残る
+    assert.equal(after.length, before.length);
+    assert.equal(after.find((m) => m.name === "shell")?.selected, false);
+    assert.equal(after.find((m) => m.name === "filesystem")?.selected, true);
+  });
+});
+
+test("知らない Module 名は断る。断ったら選択は変わらない", async () => {
+  await withApp(async (base, token, _dir, deps) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const project = await deps.projectThread.createProject("p", "/tmp");
+    const bad = await fetch(`${base}/api/projects/${project.id}/modules`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ names: ["shell", "いない"] }),
+    });
+    assert.equal(bad.status, 400);
+    const shape = await fetch(`${base}/api/projects/${project.id}/modules`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ names: "shell" }),
+    });
+    assert.equal(shape.status, 400);
+    const after = (await (
+      await fetch(`${base}/api/projects/${project.id}/modules`, { headers })
+    ).json()) as Array<{ selected: boolean }>;
+    assert.equal(after.every((m) => m.selected), true, "断ったのに選択が変わっている");
+
+    const unknown = await fetch(`${base}/api/projects/いない/modules`, { headers });
+    assert.equal(unknown.status, 404);
+  });
+});
