@@ -54,7 +54,7 @@ export function CommandPalette({
         stack?.open({ overlay: "inbox" });
         break;
       case "open-project-settings":
-        stack?.open({ overlay: "settings-project" });
+        router.push(`/settings?project=${projectId}&section=project-modules`);
         break;
       case "open-instance-settings":
         router.push("/settings");

@@ -146,6 +146,28 @@ PCは `http://localhost:4173`、携帯は同一LAN内から `http://<LAN IP>:417
   Vault が下書きに戻る（結果として差分は「Shell を繋ぐ」1件だけになる）。
   いまは行の印が消えることでしか分からない
 
+### 設定画面を1つにまとめた（2026-09-11、ユーザー指摘）
+
+**発端**：「Global設定とProject設定が全然ちがうところに表示される。
+Global設定と同じようなデザインでProject設定を入れるほうが良くはないか」。
+
+測ると、**骨格（左メニュー＋右詳細＋検索）は既に共有**していて、違うのは**出方**だった
+——全体は普通の面（`/settings`、レールが残る）、Project は画面いっぱいのダイアログ
+（1280×868 が上に乗る）。同じものを2通りの出し方をしていた。
+
+**直した形**：**画面は1つ**（`/settings`）。左メニューを見出しで層に分ける
+——`banto 全体` / `全体の Module 設定` / `この Project — ＜名前＞` /
+`この Project の Module 設定`。VSCode の User / Workspace と同じ考え方（規則12）。
+
+- どの Project かは `?project=<id>`、開く節は `?section=<id>`
+- **入口は2つのまま**——レールの歯車は全体の先頭（Project の層も左に出る）、
+  会話ヘッダの歯車は `この Project の Module` を開いた状態で来る
+- **検索が層をまたぐ**——「Module」で引くと全体の「役割と Module」と
+  「この Project の Module」が両方出る
+- Module 自身の設定面は**層ごとに別の節**（`module:<id>` と `project-module:<id>`）。
+  Project の文脈で開いたときだけ、その Project の alias 一覧が出る（実測で確認）
+- `ProjectSettingsOverlay`（全画面 Dialog）は削除。`?overlay=settings-project` も使わない
+
 ### 階層2をSheetから`SettingsShell`共有レイアウトへ（2026-09-02）
 - **発端**：`docs/notes/2026-09-02-role-dependency-resolution.md`の議論で、
   「role に複数実装があるとき、どれを使うか」の選択は banto core が持たず、

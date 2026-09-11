@@ -187,7 +187,9 @@ function CollapsedRail({
         <Tooltip>
           <TooltipTrigger asChild>
             <Link
-              href="/settings"
+              // 設定画面は1つ——いま開いている Project があれば、その層も
+              // 左メニューに出す（決定・2026-09-11）
+              href={activeProjectId ? `/settings?project=${activeProjectId}` : "/settings"}
               aria-label="設定"
               className={cn(
                 "flex size-8 items-center justify-center rounded-md",

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, Bell, Clock, ExternalLink, GitFork, GitMerge, Maximize2, Minimize2, Settings, X } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { CanvasContent } from "@/components/banto/canvas/canvas-content";
@@ -9,7 +9,6 @@ import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
 import { getJudgmentCount } from "@/components/banto/shell/nav-panel";
 import { PanelStack } from "@/components/banto/shell/panel-stack";
 import { usePanelStack } from "@/components/banto/shell/use-panel-stack";
-import { ProjectSettingsOverlay } from "@/components/banto/settings/project-settings-overlay";
 import { ContextUsageMeter } from "@/components/banto/thread/context-usage-meter";
 import { ThreadActionsMenu } from "@/components/banto/thread/thread-actions-menu";
 import { ThreadPanel, type ThreadMarker } from "@/components/banto/thread/thread-panel";
@@ -118,6 +117,7 @@ function InboxHeaderButton({ onClick }: { onClick: () => void }) {
 }
 
 export function ProjectPanels({ projectId }: { projectId: string }) {
+  const router = useRouter();
   const stack = usePanelStack(projectId);
   const project = getProject(projectId);
   const searchParams = useSearchParams();
@@ -176,7 +176,9 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
             <IconHeaderButton
               icon={Settings}
               label="Project 設定"
-              onClick={() => stack.open({ overlay: "settings-project" })}
+              // **設定画面は1つ**（決定・2026-09-11）——ここからは「この Project」の
+              // 節を開いた状態で、全体設定と同じ面へ行く
+              onClick={() => router.push(`/settings?project=${projectId}&section=project-modules`)}
             />
             <ThreadActionsMenu
               onClear={() => addMarker(project.baseThreadId, "clear")}
@@ -256,11 +258,6 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
           </div>
         </div>
       )}
-    />
-    <ProjectSettingsOverlay
-      projectId={projectId}
-      open={stack.overlay === "settings-project"}
-      onOpenChange={(open) => (open ? stack.open({ overlay: "settings-project" }) : stack.close("overlay"))}
     />
     </>
   );

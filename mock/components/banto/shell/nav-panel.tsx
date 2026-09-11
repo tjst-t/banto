@@ -329,7 +329,10 @@ export function NavPanel({
               外側にあるので、Project 一覧とは分けてここに置く */}
           <SidebarMenuItem>
             <SidebarMenuButton asChild isActive={activeProjectId === null}>
-              <Link href="/settings" onClick={onNavigate}>
+              <Link
+                href={activeProjectId ? `/settings?project=${activeProjectId}` : "/settings"}
+                onClick={onNavigate}
+              >
                 <Settings />
                 <span className="truncate">設定</span>
               </Link>

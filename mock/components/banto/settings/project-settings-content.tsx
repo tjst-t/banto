@@ -8,7 +8,7 @@
 // メニューでは足りない」）。Module 自身の設定面には `projectId` を渡す
 // （§6.2「設定面への Project の文脈」）——instance 側の同じ Module の設定と
 // 見比べると、Project 単位の中身（Vault の alias 等）が増えているのが分かる
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { Puzzle, ShieldAlert, SlidersHorizontal, TriangleAlert } from "lucide-react";
 import {
@@ -33,7 +33,6 @@ import {
 import { ModuleConfigPane } from "@/components/banto/settings/module-config-pane";
 import { ProjectModulesPanel } from "@/components/banto/settings/project-modules-panel";
 import {
-  SettingsShell,
   type SearchEntry,
   type SettingsNavItem,
   type SettingsSection,
@@ -52,14 +51,14 @@ import {
 } from "@/lib/mock/settings";
 import type { MockProjectOverrides } from "@/lib/mock/types";
 
-const CATEGORIES: readonly SettingsNavItem[] = [
+export const PROJECT_CATEGORIES: readonly SettingsNavItem[] = [
   { section: "project-modules", label: "この Project の Module", icon: Puzzle },
   { section: "project-overrides", label: "既定値の上書き", icon: SlidersHorizontal },
   { section: "project-security", label: "セキュリティ境界", icon: ShieldAlert },
   { section: "project-danger", label: "危険な操作", icon: TriangleAlert },
 ];
 
-function buildSearchEntries(projectId: string): readonly SearchEntry[] {
+export function projectSearchEntries(projectId: string): readonly SearchEntry[] {
   const links = getProjectModuleLinks(projectId);
   const moduleEntries = getRoles().flatMap((role) =>
     role.implementations
@@ -73,12 +72,21 @@ function buildSearchEntries(projectId: string): readonly SearchEntry[] {
   return moduleEntries;
 }
 
-export function ProjectSettingsContent({ projectId }: { projectId: string }) {
+/**
+ * Project の設定の中身1つぶん。**設定画面は1つ**（決定・2026-09-11、ユーザー要望）
+ * ——骨格（SettingsShell）は `/settings` が1つだけ持ち、ここは中身を描くだけ。
+ */
+export function ProjectSettingsContent({
+  projectId,
+  section,
+}: {
+  projectId: string;
+  section: SettingsSection;
+}) {
   useMockStoreVersion();
   const project = getProject(projectId);
   const baseline = getProjectOverrides(projectId);
   const [overrides, setOverrides] = useState<MockProjectOverrides>(baseline);
-  const links = getProjectModuleLinks(projectId);
   const [confirmClose, setConfirmClose] = useState(false);
   const router = useRouter();
 
@@ -93,9 +101,7 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
     router.push(next ? `/p/${next.id}` : "/settings");
   }
 
-  const moduleImplementations = links.filter((i) => i.hasConfigSurface && i.enabled);
-
-  function renderSection(section: SettingsSection) {
+  function renderSection(section: SettingsSection): ReactNode {
     if (section === "project-modules") {
       return <ProjectModulesPanel projectId={projectId} />;
     }
@@ -286,13 +292,10 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
     );
   }
 
-  return (
-    <SettingsShell
-      categories={CATEGORIES}
-      moduleImplementations={moduleImplementations}
-      renderContent={renderSection}
-      extraSearchEntries={buildSearchEntries(projectId)}
-      defaultSection="project-modules"
-    />
-  );
+  return <>{renderSection(section)}</>;
+}
+
+/** この Project の文脈で設定面を出せる Module（左メニューの見出し下に並ぶ） */
+export function projectConfigurableModules(projectId: string) {
+  return getProjectModuleLinks(projectId).filter((i) => i.hasConfigSurface && i.enabled);
 }

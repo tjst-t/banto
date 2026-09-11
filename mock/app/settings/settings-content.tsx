@@ -11,9 +11,16 @@ import { RuntimeDefaultsPanel } from "@/components/banto/settings/runtime-defaul
 import {
   SettingsShell,
   type SearchEntry,
+  type SettingsNavGroup,
   type SettingsNavItem,
   type SettingsSection,
 } from "@/components/banto/settings/settings-shell";
+import {
+  PROJECT_CATEGORIES,
+  ProjectSettingsContent,
+  projectConfigurableModules,
+  projectSearchEntries,
+} from "@/components/banto/settings/project-settings-content";
 import {
   getConfigurableImplementations,
   getImplementation,
@@ -21,6 +28,8 @@ import {
   mockModuleConfigFields,
   getRoles,
 } from "@/lib/mock/settings";
+import { useSearchParams } from "next/navigation";
+import { getProject } from "@/lib/mock/projects";
 import { useEscapeNavigateBack } from "@/hooks/use-escape-navigate-back";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 
@@ -100,7 +109,7 @@ function SectionHeading({ title, description }: { title: string; description: st
   );
 }
 
-function renderSection(section: SettingsSection) {
+function renderInstanceSection(section: SettingsSection) {
   if (section === "roles") {
     return (
       <div>
@@ -159,28 +168,91 @@ function renderSection(section: SettingsSection) {
   );
 }
 
+/**
+ * **設定画面は1つ**（決定・2026-09-11、ユーザー要望——「全体設定と Project 設定が
+ * 全然ちがうところに表示される」）。左メニューを見出しで層に分ける：
+ * **banto 全体**と**この Project ＜名前＞**。VSCode の User / Workspace と同じ考え方
+ * （規則12）——どちらの層を触っているかが常に見えている（§6.1 の2階層）。
+ *
+ * どの Project の設定かは `?project=<id>`。会話のヘッダの歯車はここへ
+ * `?section=project-modules` 付きで来るので、押した場所に応じた節が開く。
+ */
 export function SettingsContent() {
   useEscapeNavigateBack();
   // item14でModuleが増減しうるので、索引は静的定数にせずバージョンが
   // 変わるたびに組み直す（規則3——導出できる値を保存しない）
   useMockStoreVersion();
   const isMobile = useIsMobile();
+  const searchParams = useSearchParams();
+  const projectId = searchParams.get("project");
+  const project = projectId ? getProject(projectId) : undefined;
+  const initialSection = searchParams.get("section") ?? undefined;
+
+  const instanceModules = getConfigurableImplementations();
+  const projectModules = projectId ? projectConfigurableModules(projectId) : [];
+
+  const groups: SettingsNavGroup[] = [
+    { label: "banto 全体", items: CATEGORIES },
+    {
+      label: instanceModules.length > 0 ? "全体の Module 設定" : undefined,
+      items: instanceModules.map((impl) => ({
+        section: `module:${impl.id}`,
+        label: impl.name,
+        icon: Puzzle,
+      })),
+    },
+  ];
+  if (projectId && project) {
+    groups.push({ label: `この Project — ${project.name}`, items: PROJECT_CATEGORIES });
+    groups.push({
+      label: projectModules.length > 0 ? "この Project の Module 設定" : undefined,
+      items: projectModules.map((impl) => ({
+        section: `project-module:${impl.id}`,
+        label: impl.name,
+        icon: Puzzle,
+      })),
+    });
+  }
+
+  function renderContent(section: SettingsSection) {
+    if (projectId && (section.startsWith("project-") || section.startsWith("project-module:"))) {
+      if (section.startsWith("project-module:")) {
+        const implementationId = section.slice("project-module:".length);
+        const impl = getImplementation(implementationId);
+        return (
+          <div>
+            <SectionHeading
+              title={impl?.name ?? implementationId}
+              description="この Module 自身が持ち込む設定（この Project の文脈）。"
+            />
+            <ModuleConfigPane implementationId={implementationId} projectId={projectId} />
+          </div>
+        );
+      }
+      return <ProjectSettingsContent projectId={projectId} section={section} />;
+    }
+    return renderInstanceSection(section);
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* モバイルはサイドバーが無いので、ここにも同じナビの入口を置く
           ——設定に入ったら Project へ戻れない、をなくす */}
       {isMobile ? (
         <div className="flex h-12 shrink-0 items-center gap-1.5 border-b border-border px-2">
-          <MobileNavDrawer projectId={null} />
+          <MobileNavDrawer projectId={projectId} />
           <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">設定</p>
         </div>
       ) : null}
       <div className="min-h-0 flex-1">
         <SettingsShell
-          categories={CATEGORIES}
-          moduleImplementations={getConfigurableImplementations()}
-          renderContent={renderSection}
-          extraSearchEntries={buildSearchEntries()}
+          groups={groups}
+          renderContent={renderContent}
+          extraSearchEntries={[
+            ...buildSearchEntries(),
+            ...(projectId ? projectSearchEntries(projectId) : []),
+          ]}
+          defaultSection={initialSection}
         />
       </div>
     </div>

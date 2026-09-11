@@ -23,7 +23,6 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { Input } from "@/components/ui/input";
 import { useRovingFocus } from "@/hooks/use-roving-focus";
 import { cn } from "@/lib/utils";
-import type { MockModuleImplementation } from "@/lib/mock/types";
 
 export type SettingsSection = string;
 
@@ -40,6 +39,20 @@ export interface SettingsNavItem {
   icon: typeof Puzzle;
 }
 
+/**
+ * 左メニューのひとかたまり（決定・2026-09-11、ユーザー要望——**全体設定と
+ * Project 設定を1つの画面にまとめる**）。見出しで層を分ける：
+ * 「banto 全体」と「この Project ＜名前＞」。
+ *
+ * VSCode の User / Workspace と同じ考え方（規則12）——**どちらの層を触って
+ * いるかが常に見えている**ことが要件（§6.1 の2階層）。
+ */
+export interface SettingsNavGroup {
+  /** 見出し。省略すると見出し無しで並ぶ */
+  label?: string;
+  items: readonly SettingsNavItem[];
+}
+
 const HIGHLIGHT_CLASSES = ["ring-2", "ring-accent", "ring-offset-2", "ring-offset-background"];
 
 /**
@@ -52,15 +65,13 @@ const HIGHLIGHT_CLASSES = ["ring-2", "ring-accent", "ring-offset-2", "ring-offse
  * 描ける（§6.2「設定面へのProjectの文脈」——渡す実装一覧が変わるだけ）
  */
 export function SettingsShell({
-  categories,
-  moduleImplementations,
+  groups,
   renderContent,
   extraSearchEntries = [],
   defaultSection,
 }: {
-  categories: readonly SettingsNavItem[];
-  /** 左メニュー下段にフラットに並ぶ、Module自身の設定面を持つ実装 */
-  moduleImplementations: readonly MockModuleImplementation[];
+  /** 左メニュー。**見出しで層を分ける**（banto 全体／この Project） */
+  groups: readonly SettingsNavGroup[];
   renderContent: (section: SettingsSection) => ReactNode;
   /** 右側の中身が持つ設定項目。検索でヒットさせたいものを呼び出し側が渡す */
   extraSearchEntries?: readonly SearchEntry[];
@@ -77,17 +88,7 @@ export function SettingsShell({
   const anchorNonceRef = useRef(0);
   const { containerRef: navRef, onKeyDown: onNavKeyDown } = useRovingFocus<HTMLDivElement>();
 
-  const moduleItems: readonly SettingsNavItem[] = useMemo(
-    () =>
-      moduleImplementations.map((impl) => ({
-        section: `module:${impl.id}` as SettingsSection,
-        label: impl.name,
-        icon: Puzzle,
-      })),
-    [moduleImplementations],
-  );
-
-  const allNavItems = useMemo(() => [...categories, ...moduleItems], [categories, moduleItems]);
+  const allNavItems = useMemo(() => groups.flatMap((g) => g.items), [groups]);
 
   function goTo(target: SettingsSection, anchorId?: string) {
     setSection(target);
@@ -130,7 +131,7 @@ export function SettingsShell({
   // デスクトップは常に何かを選んだ状態にする（未選択の空白ペインを避ける）。
   // モバイルは選ぶまでメニューだけを見せる——2ペインが狭い画面で成立しないので、
   // 「一覧→タップで詳細」の1カラムに畳む（iOS 設定アプリと同じ）
-  const fallbackSection = defaultSection ?? categories[0]?.section;
+  const fallbackSection = defaultSection ?? allNavItems[0]?.section;
   const activeSection = section ?? (isMobile ? null : fallbackSection);
 
   const nav = (
@@ -187,37 +188,28 @@ export function SettingsShell({
             </div>
           )
         ) : (
-          <>
-            <div className="flex flex-col gap-0.5">
-              {categories.map((c) => (
-                <NavButton
-                  key={c.section}
-                  icon={c.icon}
-                  label={c.label}
-                  active={activeSection === c.section}
-                  onClick={() => goTo(c.section)}
-                />
-              ))}
-            </div>
-            {moduleItems.length > 0 ? (
-              <>
-                <p className="mt-3 mb-1 px-2 text-xs font-medium tracking-wide text-ink-3 uppercase">
-                  Module の設定
-                </p>
-                <div className="flex flex-col gap-0.5">
-                  {moduleItems.map((m) => (
-                    <NavButton
-                      key={m.section}
-                      icon={m.icon}
-                      label={m.label}
-                      active={activeSection === m.section}
-                      onClick={() => goTo(m.section)}
-                    />
-                  ))}
+          <div className="flex flex-col gap-3">
+            {groups
+              .filter((g) => g.items.length > 0)
+              .map((g, gi) => (
+                <div key={g.label ?? `group-${gi}`}>
+                  {g.label ? (
+                    <p className="mb-1 px-2 text-xs font-medium tracking-wide text-ink-3">{g.label}</p>
+                  ) : null}
+                  <div className="flex flex-col gap-0.5">
+                    {g.items.map((c) => (
+                      <NavButton
+                        key={c.section}
+                        icon={c.icon}
+                        label={c.label}
+                        active={activeSection === c.section}
+                        onClick={() => goTo(c.section)}
+                      />
+                    ))}
+                  </div>
                 </div>
-              </>
-            ) : null}
-          </>
+              ))}
+          </div>
         )}
       </div>
     </div>
