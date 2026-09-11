@@ -81,3 +81,21 @@ export async function createProject(
   await page.getByRole("button", { name: "作成する" }).click();
   await expectProjectOpen(page, projectName);
 }
+
+/**
+ * 設定の面を開く（改訂・2026-09-11——**会話ヘッダの歯車は無くした**。
+ * 同じ機能への入口をサイドバーと2つ持たない、規則3）。
+ *
+ * 入口はサイドバーの「設定」——いま開いている Project の層も一緒に出る
+ * （`docs/specs/v4-frontend.md` §6.16）。`section` を渡すと、その節まで開く。
+ */
+export async function openProjectSettings(page: Page, section?: string): Promise<void> {
+  if (!page.url().includes("/settings")) {
+    await openNav(page);
+    await page.getByRole("link", { name: "設定", exact: true }).first().click();
+    await page.waitForURL(/\/settings/, { timeout: 20_000 });
+  }
+  if (section) {
+    await page.getByRole("button", { name: section, exact: true }).click();
+  }
+}

@@ -8,7 +8,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp } from "../helpers.js";
+import { createProject, openApp, openProjectSettings } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.use({ viewport: { width: 390, height: 844 } });
@@ -20,10 +20,9 @@ test("Memory一覧に人が直接足す→出る→取り消す→取り消し�
 
   await createProject(page, "E2E Memory Project", projectRoot);
 
-  await page.getByRole("button", { name: "Project 設定" }).click();
-  // **設定画面は1つ**（§6.16、2026-09-11）——全体の層に「Global Memory」が
-  // 並んでいるので、この Project の「Memory」は完全一致で選ぶ
-  await page.getByRole("button", { name: "Memory", exact: true }).click();
+  // **設定画面は1つ**（§6.16）。全体の層に「Global Memory」が並んでいるので、
+  // この Project の「Memory」は完全一致で選ぶ
+  await openProjectSettings(page, "Memory");
 
   await expect(page.getByText("まだ無い")).toBeVisible({ timeout: 10_000 });
 

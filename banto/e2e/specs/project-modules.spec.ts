@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "@playwright/test";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp } from "../helpers.js";
+import { createProject, openApp, openProjectSettings } from "../helpers.js";
 
 test.setTimeout(300_000);
 
@@ -29,9 +29,7 @@ test("Module をその場で外して保存すると、その Project では立�
   expect(prepared.connected, "はじめから filesystem が繋がっていない").toContain("filesystem");
 
   // ---- 設定の「この Project の Module」へ ---------------------------------
-  await page.getByRole("button", { name: "Project 設定" }).click();
-  await page.waitForURL(/\/settings\?project=/, { timeout: 20_000 });
-  await page.getByRole("button", { name: "この Project の Module" }).click();
+  await openProjectSettings(page, "この Project の Module");
 
   const fsRow = page.locator('[data-testid="module-row"][data-module="filesystem"]');
   await expect(fsRow, "Module の一覧が出ていない").toBeVisible({ timeout: 20_000 });
@@ -99,9 +97,7 @@ test("Module をその場で外して保存すると、その Project では立�
 test("要るものを外すと、その場で警告が出る（保存の差分にも出る）", async ({ page }) => {
   await openApp(page);
   await createProject(page, "依存の警告", mkdtempSync(join(tmpdir(), "banto-e2e-moddep-")));
-  await page.getByRole("button", { name: "Project 設定" }).click();
-  await page.waitForURL(/\/settings\?project=/, { timeout: 20_000 });
-  await page.getByRole("button", { name: "この Project の Module" }).click();
+  await openProjectSettings(page, "この Project の Module");
 
   // shell は vault が要る（宣言の dependsOn）——vault を外すと shell が動かない
   const shellRow = page.locator('[data-testid="module-row"][data-module="shell"]');
@@ -119,4 +115,90 @@ test("要るものを外すと、その場で警告が出る（保存の差分�
   await page.getByTestId("module-save-dialog").getByRole("button", { name: "やめる" }).click();
   // やめたのだから、何も変わっていない
   await expect(page.getByTestId("module-draft-bar")).toContainText("未保存の変更 1 件");
+});
+
+test("一般：名前と Root を直せて、危険な操作（Close）はその下にある", async ({ page }) => {
+  // 決定・2026-09-11（ユーザー要望）：Project の層のいちばん上に「一般」を置き、
+  // 名前と Root を設定できるようにする。危険な操作（Close）はその画面の下。
+  const first = mkdtempSync(join(tmpdir(), "banto-e2e-general-a-"));
+  const next = mkdtempSync(join(tmpdir(), "banto-e2e-general-b-"));
+  await openApp(page);
+  await createProject(page, "一般の spec", first);
+
+  const projects = await (await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers: HEADERS })).json();
+  const project = projects.find((p: { name: string }) => p.name === "一般の spec");
+
+  await openProjectSettings(page, "一般");
+  const panel = page.getByTestId("project-general-panel");
+  await expect(panel, "一般が開かない").toBeVisible({ timeout: 20_000 });
+  // **この Project の層のいちばん上が「一般」**（決定・2026-09-11）
+  const projectLayerItems = await page
+    .locator('p.tracking-wide:has-text("一般の spec") + div button')
+    .allTextContents()
+    .catch(() => [] as string[]);
+  const layerLabels = projectLayerItems.length
+    ? projectLayerItems
+    : await page.evaluate(() => {
+        const heads = [...document.querySelectorAll("p.tracking-wide")];
+        const target = heads.find((h) => (h.textContent ?? "").includes("一般の spec"));
+        const group = target?.parentElement;
+        return [...(group?.querySelectorAll("button") ?? [])].map((b) => (b.textContent ?? "").trim());
+      });
+  expect(layerLabels[0], "この Project の層の先頭が「一般」ではない").toBe("一般");
+  await expect(panel.getByLabel("Project 名")).toHaveValue("一般の spec");
+  await expect(panel.getByLabel("Root パス")).toHaveValue(first);
+
+  // ---- 名前と Root を、まとめて直す --------------------------------------
+  await panel.getByLabel("Project 名").fill("一般の spec（改）");
+  await panel.getByLabel("Root パス").fill(next);
+  await page.getByTestId("project-general-bar").getByRole("button", { name: "保存する" }).click();
+  await expect(page.getByTestId("project-general-bar"), "保存しても帯が残っている").toHaveCount(0, {
+    timeout: 15_000,
+  });
+
+  // **host に残っている**——画面の覚えではない
+  await expect
+    .poll(
+      async () => {
+        const list = (await (
+          await page.request.get(`${CORE_BASE_URL}/api/projects`, { headers: HEADERS })
+        ).json()) as Array<{ id: string; name: string; root: string }>;
+        return list.find((p) => p.id === project.id);
+      },
+      { timeout: 15_000, message: "名前と Root が host に残っていない" },
+    )
+    .toMatchObject({ name: "一般の spec（改）", root: next });
+
+  // **根を変えたら、その根で Module が立つ**（立て直しが効いている）
+  await expect
+    .poll(
+      async () => {
+        const res = await page.request.post(
+          `${CORE_BASE_URL}/api/projects/${project.id}/modules/prepare`,
+          { headers: HEADERS },
+        );
+        return ((await res.json()) as { connected: string[] }).connected;
+      },
+      { timeout: 30_000 },
+    )
+    .toContain("filesystem");
+
+  // ---- 危険な操作は、同じ画面の下 ----------------------------------------
+  await expect(panel.getByRole("heading", { name: "危険な操作" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "この Project を Close する" })).toBeVisible();
+  // 「危険な操作」という節は、左メニューからは無くなった（一般の中へ移した）
+  await expect(page.getByRole("button", { name: "危険な操作", exact: true })).toHaveCount(0);
+});
+
+test("会話のヘッダに、左と同じ入口（設定・履歴）を置かない", async ({ page }) => {
+  // ユーザー指摘・2026-09-11：右上の設定・履歴はサイドバーの下と同じ機能しか
+  // 無いので消す。同じ機能への入口を2つ持たない（規則3）
+  await openApp(page);
+  await createProject(page, "ヘッダの spec", mkdtempSync(join(tmpdir(), "banto-e2e-header-")));
+  const header = page.locator("header").first();
+  await expect(header.getByRole("button", { name: "Project 設定" })).toHaveCount(0);
+  await expect(header.getByRole("button", { name: "履歴" })).toHaveCount(0);
+  // 左には在る（消したのは重複だけ——行けなくなっていない）
+  await expect(page.locator('[data-slot="sidebar"]').getByRole("link", { name: "設定", exact: true })).toBeVisible();
+  await expect(page.locator('[data-slot="sidebar"]').getByRole("button", { name: "履歴" })).toBeVisible();
 });

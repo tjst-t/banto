@@ -14,6 +14,9 @@ export type ProjectThreadEvent =
   // **人が付けた名前**（決定・2026-09-11、ユーザー要望）。Project は作るときに
   // 名前を付けるが、後から直せなかった
   | { type: "project.renamed"; payload: { id: string; name: string } }
+  // **根を変える**（決定・2026-09-11、ユーザー要望）。根は閉じ込めの範囲その
+  // ものなので、変えたら Module は立て直す（`releaseProjectModules`）
+  | { type: "project.root_changed"; payload: { id: string; root: string } }
   // **人が決めた並び順**（決定・2026-09-11、ユーザー要望）。**順番そのものを1件で
   // 持つ**——各要素に番号を振ると、1つ動かすたびに全件を書き直すことになり、
   // 途中で失敗したときに番号が飛ぶ。ここに載っていないものは、載っているものの
@@ -136,6 +139,11 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       case "project.renamed": {
         const p = next.projects.get(event.payload.id);
         if (p) next.projects.set(p.id, { ...p, name: event.payload.name });
+        return next;
+      }
+      case "project.root_changed": {
+        const p = next.projects.get(event.payload.id);
+        if (p) next.projects.set(p.id, { ...p, root: event.payload.root });
         return next;
       }
       case "project.order.set": {

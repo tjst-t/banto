@@ -13,6 +13,7 @@ import {
   reopenRealProject,
   renameRealProject,
   setRealProjectOrder,
+  updateRealProjectSettings,
 } from "../backend/client";
 
 // デモ用の初期Projectは持たない（決定・2026-09-03、実機投入に伴いデモデータを撤去）。
@@ -59,6 +60,23 @@ export async function renameProject(id: string, name: string): Promise<void> {
   await renameRealProject(id, trimmed);
   projects = projects.map((p) =>
     p.id === id ? { ...p, name: trimmed, initial: trimmed.slice(0, 1) } : p,
+  );
+  notifyMockStoreChange();
+}
+
+/**
+ * **名前と根を直す**（決定・2026-09-11、ユーザー要望）。**先に host へ書いてから**
+ * 手元を直す——逆にすると、書けなかったときに画面だけ新しくなる（規則2・規則3）。
+ */
+export async function updateRealProject(
+  id: string,
+  patch: { name?: string; root?: string },
+): Promise<void> {
+  const updated = await updateRealProjectSettings(id, patch);
+  projects = projects.map((p) =>
+    p.id === id
+      ? { ...p, name: updated.name, initial: updated.name.slice(0, 1), basePath: updated.root }
+      : p,
   );
   notifyMockStoreChange();
 }

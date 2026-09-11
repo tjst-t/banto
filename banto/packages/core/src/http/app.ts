@@ -15,6 +15,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import {
   MemoryLimitExceededError,
   normalizeProjectRoot,
+  InvalidProjectRootError,
   NotFoundError,
   type ProjectThreadStore,
 } from "../project-thread/store.js";
@@ -511,14 +512,30 @@ export function createApp(deps: AppDeps) {
       // 後から直せなかった
       const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/);
       if (projectMatch && req.method === "PATCH") {
-        const body = (await readJsonBody(req)) as { name: unknown };
+        const projectId = projectMatch[1]!;
+        const body = (await readJsonBody(req)) as { name?: unknown; root?: unknown };
+        const hasName = body.name !== undefined;
+        const hasRoot = body.root !== undefined;
+        if (!hasName && !hasRoot) return json(res, 400, { error: "name or root is required" });
         const name = typeof body.name === "string" ? body.name.trim() : "";
-        if (!name) return json(res, 400, { error: "name is required" });
-        if (name.length > 120) return json(res, 400, { error: "name is too long" });
+        if (hasName && !name) return json(res, 400, { error: "name is required" });
+        if (hasName && name.length > 120) return json(res, 400, { error: "name is too long" });
+        const root = typeof body.root === "string" ? body.root.trim() : "";
+        if (hasRoot && !root) return json(res, 400, { error: "root is required" });
         try {
-          json(res, 200, await deps.projectThread.renameProject(projectMatch[1]!, name));
+          let project = deps.projectThread.getProject(projectId);
+          if (!project) return json(res, 404, { error: "not found" });
+          if (hasName) project = await deps.projectThread.renameProject(projectId, name);
+          if (hasRoot && root !== project.root) {
+            project = await deps.projectThread.setProjectRoot(projectId, root);
+            // **根は閉じ込めの範囲そのもの**——変えたら立て直す（決定・2026-09-11）。
+            // 落としておけば、次に要るときに新しい根で立ち上がる（遅延起動のまま）
+            await deps.releaseProjectModules?.(projectId);
+          }
+          json(res, 200, project);
         } catch (err) {
           if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
+          if (err instanceof InvalidProjectRootError) return json(res, 400, { error: err.message });
           throw err;
         }
         return;

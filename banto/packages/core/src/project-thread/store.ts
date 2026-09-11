@@ -126,6 +126,20 @@ export class ProjectThreadStore {
     return this.getProject(id)!;
   }
 
+  /**
+   * **Project の根を変える**（決定・2026-09-11、ユーザー要望）。
+   * 根は閉じ込めの範囲そのもの——変えたら、その Project の Module は
+   * **立て直す**必要がある（呼び出し側が `releaseProjectModules`）。
+   */
+  async setProjectRoot(id: ProjectId, root: string): Promise<ProjectState> {
+    if (!this.getProject(id)) throw new NotFoundError(`project ${id} not found`);
+    // 作るときと同じ検め方を通す（規則3——2通りの正規化を持たない）
+    const resolved = normalizeProjectRoot(root);
+    const event = await this.log.append("project.root_changed", { id, root: resolved });
+    this.projection.applyOne(event);
+    return this.getProject(id)!;
+  }
+
   async renameThread(id: ThreadId, title: string): Promise<ThreadState> {
     if (!this.getThread(id)) throw new NotFoundError(`thread ${id} not found`);
     const event = await this.log.append("thread.renamed", { id, title });

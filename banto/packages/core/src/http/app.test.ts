@@ -739,3 +739,60 @@ test("根の広さを host が答える——banto 自身の置き場を含む�
     assert.equal(bad.status, 400);
   });
 });
+
+// **Project の根を変える**（決定・2026-09-11、ユーザー要望）。根は閉じ込めの
+// 範囲そのものなので、変えたらその Project の Module は立て直す。
+
+test("Project の根を HTTP から変えられる——変えたら Module は落とす", async () => {
+  const released: string[] = [];
+  await withApp(
+    async (base, token, dir, deps) => {
+      const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      const project = await deps.projectThread.createProject("p", dir);
+
+      const res = await fetch(`${base}/api/projects/${project.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ root: "/tmp" }),
+      });
+      assert.equal(res.status, 200);
+      assert.equal(((await res.json()) as { root: string }).root, "/tmp");
+      assert.equal(deps.projectThread.getProject(project.id)!.root, "/tmp");
+      // **立て直す**——古い根のまま動いている Module を残さない
+      assert.deepEqual(released, [project.id], "根を変えたのに Module を落としていない");
+
+      // 名前と一緒に変えられる（1回の保存で済む）
+      const both = await fetch(`${base}/api/projects/${project.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ name: "変えた名前", root: dir }),
+      });
+      assert.equal(both.status, 200);
+      const after = deps.projectThread.getProject(project.id)!;
+      assert.equal(after.name, "変えた名前");
+      assert.equal(after.root, dir);
+
+      // 空は断る。断ったら変わらない
+      const empty = await fetch(`${base}/api/projects/${project.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ root: "   " }),
+      });
+      assert.equal(empty.status, 400);
+      assert.equal(deps.projectThread.getProject(project.id)!.root, dir);
+
+      const nothing = await fetch(`${base}/api/projects/${project.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({}),
+      });
+      assert.equal(nothing.status, 400);
+    },
+    {
+      releaseProjectModules: async (projectId: string) => {
+        released.push(projectId);
+        return [];
+      },
+    },
+  );
+});

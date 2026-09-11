@@ -359,27 +359,12 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
           >
             {CONNECTED_FEATURES.contextUsage ? <ContextUsageMeter threadId={project.baseThreadId} /> : null}
             <IconHeaderButton icon={ForkIcon} label="Fork を開く" onClick={() => handleOpenFork(project.baseThreadId)} />
-            {isMobile ? (
-              // 判断待ちは「止まっている」ので、目次を開かなくても件数が見える
-              // 位置に置く。履歴は急がないので Drawer に譲る（段を1つに保つ）
-              CONNECTED_FEATURES.inbox ? (
-                <InboxHeaderButton onClick={() => stack.open({ overlay: "inbox" })} />
-              ) : null
-            ) : SHOW_ARCHIVE ? (
-              <IconHeaderButton
-                icon={Clock}
-                label="履歴"
-                onClick={() => stack.open({ overlay: "archive" })}
-              />
-            ) : null}
-            {CONNECTED_FEATURES.projectSettings ? (
-              <IconHeaderButton
-                icon={Settings}
-                label="Project 設定"
-                // **設定画面は1つ**（§6.16）——ここからは、この Project の層を
-                // 開いた状態で同じ面へ行く
-                onClick={() => router.push(`/settings?project=${projectId}`)}
-              />
+            {/* **左と同じものを、右上にも置かない**（改訂・2026-09-11、ユーザー指摘）
+                ——設定と履歴はサイドバーの下にある。同じ機能への入口を2つ持つと、
+                どちらかが古くなる（規則3）。判断待ちだけはモバイルに残す
+                ——「止まっている」ので、目次を開かなくても件数が見えるべき */}
+            {isMobile && CONNECTED_FEATURES.inbox ? (
+              <InboxHeaderButton onClick={() => stack.open({ overlay: "inbox" })} />
             ) : null}
             <ThreadActionsMenu
               onClear={() => handleClear(project.baseThreadId)}

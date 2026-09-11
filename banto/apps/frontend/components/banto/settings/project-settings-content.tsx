@@ -10,7 +10,7 @@
 // 見比べると、Project 単位の中身（Vault の alias 等）が増えているのが分かる
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { BookMarked, Plus, Puzzle, ShieldAlert, SlidersHorizontal, Trash2, TriangleAlert } from "lucide-react";
+import { BookMarked, Plus, Puzzle, ShieldAlert, SlidersHorizontal, Trash2, TriangleAlert, Wrench } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -33,6 +33,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { ModuleConfigPane } from "@/components/banto/settings/module-config-pane";
 import { ProjectModulesPanel } from "@/components/banto/settings/project-modules-panel";
+import { ProjectGeneralPanel } from "@/components/banto/settings/project-general-panel";
 import { ProjectMemoryPanel } from "@/components/banto/settings/project-memory-panel";
 import {
   SettingsShell,
@@ -76,7 +77,8 @@ const MODULES_CATEGORY: SettingsNavItem = {
   icon: Puzzle,
 };
 
-const DANGER_CATEGORY: SettingsNavItem = { section: "project-danger", label: "危険な操作", icon: TriangleAlert };
+/** **この Project そのもの**（名前・根・危険な操作）。層のいちばん上（2026-09-11） */
+const GENERAL_CATEGORY: SettingsNavItem = { section: "project-general", label: "一般", icon: Wrench };
 const MEMORY_CATEGORY: SettingsNavItem = { section: "project-memory", label: "Memory", icon: BookMarked };
 
 export function projectSearchEntries(projectId: string): readonly SearchEntry[] {
@@ -144,6 +146,10 @@ export function ProjectSettingsContent({
   const showMemory = CONNECTED_FEATURES.memory && project?.real;
 
   function renderSection(section: SettingsSection) {
+    if (section === "project-general") {
+      // 名前・根・危険な操作（Close）は1つの面に——移したのは配置だけ（2026-09-11）
+      return <ProjectGeneralPanel projectId={projectId} />;
+    }
     if (section === "project-memory" && project) {
       return <ProjectMemoryPanel projectId={project.id} />;
     }
@@ -294,39 +300,6 @@ export function ProjectSettingsContent({
       );
     }
 
-    if (section === "project-danger") {
-      return (
-        <div>
-          <h1 className="mb-0.5 text-lg font-semibold text-foreground">危険な操作</h1>
-          <div className="mt-3 rounded-md border border-destructive/30 p-3">
-            <p className="mb-2 text-xs text-ink-3">
-              Close は削除ではない——閉じた Project の一覧（サイドバー下部の時計アイコン）から
-              概要を読み返し、再度開ける。
-            </p>
-            <Button type="button" variant="destructive" size="sm" onClick={() => setConfirmClose(true)}>
-              この Project を Close する
-            </Button>
-          </div>
-
-          <AlertDialog open={confirmClose} onOpenChange={setConfirmClose}>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>{project.name} を Close しますか</AlertDialogTitle>
-                <AlertDialogDescription>
-                  削除ではない——閉じた Project の一覧からいつでも再度開ける。
-                  今開いている Thread は畳まれた状態で保存される。
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>やめる</AlertDialogCancel>
-                <AlertDialogAction onClick={handleClose}>Close する</AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        </div>
-      );
-    }
-
     // 層ごとに別の節（`project-module:` と `module:`）——1つの画面に両方の層が
     // 並ぶので、id が衝突しないようにする（§6.16）
     const implementationId = section.startsWith("project-module:")
@@ -361,10 +334,11 @@ export function useProjectCategories(projectId: string): readonly SettingsNavIte
   const project = getProject(projectId);
   const showMemory = CONNECTED_FEATURES.memory && project?.real;
   return [
+    // **いちばん上は「一般」**（名前・根・Close）——この Project が何者か、が先
+    ...(project?.real ? [GENERAL_CATEGORY] : []),
     // 実 Project だけ——mock Project には対応する Project が host に無い（規則13）
     ...(CONNECTED_FEATURES.projectModules && project?.real ? [MODULES_CATEGORY] : []),
     ...(CONNECTED_FEATURES.settings ? MOCK_CATEGORIES : []),
-    DANGER_CATEGORY,
     ...(showMemory ? [MEMORY_CATEGORY] : []),
   ];
 }

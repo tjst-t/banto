@@ -14,7 +14,7 @@ import { test, expect } from "@playwright/test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createProject, expectProjectOpen, openApp } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp, openProjectSettings } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -98,10 +98,7 @@ async function openModuleSettings(page: import("@playwright/test").Page) {
   // 自体が出ないので、そこで詰む（実測・2026-09-11）
   const alreadyOpen = decodeURIComponent(page.url()).includes("section=project-module:filesystem");
   if (!alreadyOpen) {
-    if (!page.url().includes("/settings")) {
-      await page.getByRole("button", { name: "Project 設定" }).click();
-    }
-    await page.waitForURL(/\/settings/, { timeout: 30_000 });
+    await openProjectSettings(page);
     // **左メニューに Module ごとに並ぶ**（モックが決めた形、決定・2026-09-07）
     await page.getByRole("button", { name: "FileSystem", exact: true }).click();
   }

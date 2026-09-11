@@ -407,6 +407,21 @@ export async function renameRealProject(projectId: string, name: string): Promis
   await request(`/api/projects/${projectId}`, { method: "PATCH", body: JSON.stringify({ name }) });
 }
 
+/**
+ * **名前と根をまとめて直す**（決定・2026-09-11、ユーザー要望）。根は閉じ込めの
+ * 範囲そのものなので、変えると host がその Project の Module を落とす
+ * （次に要るときに新しい根で立ち上がる）。
+ */
+export async function updateRealProjectSettings(
+  projectId: string,
+  patch: { name?: string; root?: string },
+): Promise<RealProject> {
+  return request<RealProject>(`/api/projects/${projectId}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
 export async function renameRealThread(threadId: string, title: string): Promise<void> {
   await request(`/api/threads/${threadId}`, { method: "PATCH", body: JSON.stringify({ title }) });
 }

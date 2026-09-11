@@ -10,7 +10,7 @@ import { test, expect } from "@playwright/test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createProject, expectProjectOpen, openApp, openNav } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp, openNav, openProjectSettings } from "../helpers.js";
 import type { Locator } from "@playwright/test";
 
 test.describe.configure({ mode: "serial" });
@@ -166,7 +166,7 @@ test("設定は1つの面——層は線で分かれ、開いたまま Project �
   await createProject(page, "設定の層B", mkdtempSync(join(tmpdir(), "banto-e2e-layer-b-")));
 
   // 会話のヘッダの歯車から入る——**同じ面**（ダイアログではない）
-  await page.getByRole("button", { name: "Project 設定" }).click();
+  await openProjectSettings(page);
   await page.waitForURL(/\/settings\?project=/, { timeout: 20_000 });
   await expect(page.locator('[role="dialog"]'), "設定がダイアログで出ている").toHaveCount(0);
   await expect(page.locator('[data-slot="sidebar"]'), "設定を開いたらレールが消えた").toBeVisible();
