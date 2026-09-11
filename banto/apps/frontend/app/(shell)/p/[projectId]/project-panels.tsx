@@ -8,7 +8,11 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useMounted } from "@/hooks/use-mounted";
 import { CanvasContent } from "@/components/banto/canvas/canvas-content";
 import { ModuleCanvas } from "@/components/banto/canvas/module-canvas";
-import { getRealInlineView } from "@/lib/backend/adapter";
+import {
+  getRealInlineView,
+  hasLiveRealRun,
+  rebuildThreadFromRecord,
+} from "@/lib/backend/adapter";
 import { refreshRealInbox } from "@/lib/backend/real-inbox";
 import { MobileNavDrawer } from "@/components/banto/shell/mobile-nav-drawer";
 import { useJudgmentCount } from "@/components/banto/shell/nav-panel";
@@ -227,6 +231,11 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
     try {
       await clearRealThread(threadId);
       const updated = await getRealThread(threadId);
+      // **畳んだら、記録から会話を組み直す**（決定・2026-09-11）。組み直すと
+      // 各発言が host の物差し（seq）を持つ——横線が**起きた場所**に出るのも
+      // （§6.4 transcriptMarkers）、そこから枝を分けられるのも、これがあってこそ。
+      // **走行中は組み直さない**——流れている表示を壊す
+      if (!hasLiveRealRun(threadId)) rebuildThreadFromRecord(threadId);
       updateRealThreadData(threadId, updated.messages, updated.markers, updated.usage);
     } catch (err) {
       toast(`Clear に失敗しました: ${err instanceof Error ? err.message : String(err)}`);
@@ -252,14 +261,20 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
   // Fork Threadを立てる（決定・2026-09-04——旧実装はデモ用の固定id"ui"を
   // 開くだけで、実データには一切繋がっていなかった）。実際にhost側へ
   // forkThreadを叩き、その場で登録してから開く。
-  async function handleOpenFork(baseThreadId: string) {
+  /**
+   * 枝を分けて開く。**過去のメッセージからも分けられる**（決定・2026-09-11、
+   * ユーザー要望）——`fromSeq` はそのメッセージの seq。どのセッションへ戻すかは
+   * host が決める（アーキ仕様 §2.2）。口は1つ（規則3）——ヘッダの「Fork を開く」も
+   * 会話の中の「ここから Fork」も、ここを通る。
+   */
+  async function handleOpenFork(baseThreadId: string, fromSeq?: number) {
     const base = getThread(baseThreadId);
     if (!base?.real) {
       toast("この Thread は実 Project ではないため、Fork を作れません");
       return;
     }
     try {
-      const fork = await createRealFork(baseThreadId);
+      const fork = await createRealFork(baseThreadId, fromSeq);
       registerRealFork(
         fork.id,
         fork.projectId,
@@ -268,7 +283,8 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
         fork.markers,
         "open",
         fork.usage,
-        fork.createdSeq,
+        // **入口は「分けた場所」に置く**——過去から分けたならその位置
+        fork.forkedFromSeq ?? fork.createdSeq,
       );
       stack.open({ fork: fork.id });
     } catch (err) {
@@ -348,6 +364,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
                 (moduleId, viewId, toolCallId) => stack.open({ canvas: { moduleId, viewId, toolCallId } })
               }
               onOpenFork={(id) => stack.open({ fork: id })}
+              onForkFrom={(seq) => void handleOpenFork(project.baseThreadId, seq)}
               markers={markersByThread[project.baseThreadId]}
             />
           </div>
@@ -381,7 +398,11 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               }
             />
             <div className="min-h-0 flex-1">
-              <ThreadPanel threadId={threadId} markers={markersByThread[threadId]} />
+              <ThreadPanel
+                threadId={threadId}
+                onForkFrom={(seq) => void handleOpenFork(threadId, seq)}
+                markers={markersByThread[threadId]}
+              />
             </div>
           </div>
         );

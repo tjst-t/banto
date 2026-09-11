@@ -134,6 +134,8 @@ export interface RealThread {
   /** 親の会話の**どこで分岐したか**（決定・2026-09-07）。Fork の入口を
    *  その場所に置くのに使う——Clear の横線と同じ物差し（seq）。 */
   createdSeq?: number;
+  /** 過去のメッセージから分けたなら、その seq（決定・2026-09-11）。 */
+  forkedFromSeq?: number;
   status: "active" | "closed";
   resumePoint?: string;
   messages: RealThreadMessage[];
@@ -251,6 +253,9 @@ export interface RealThreadSummary {
   title?: string;
   parentThreadId?: string;
   createdSeq?: number;
+  /** 親の会話の**どのメッセージから**分けたか（決定・2026-09-11）。
+   *  「この Fork を開く」をその場所に置くのに使う。 */
+  forkedFromSeq?: number;
   status: "active" | "closed";
   permissionMode?: MockPermissionModeValue;
   createdAt: string;
@@ -274,8 +279,18 @@ export async function getRealThread(threadId: string): Promise<RealThread> {
 
 /** Fork Threadを立てる——新しい枝として親の現在のresume-pointを引き継ぐ
  *  （v4-architecture.md §2.2、host側`forkThread`の既定）。 */
-export async function createRealFork(parentThreadId: string): Promise<RealThread> {
-  return request<RealThread>(`/api/threads/${parentThreadId}/fork`, { method: "POST" });
+/**
+ * 枝を分ける。**過去のメッセージの時点からも分けられる**（決定・2026-09-11、
+ * ユーザー要望）——`fromSeq` はそのメッセージの seq。渡さなければ「いまの続き」から。
+ */
+export async function createRealFork(
+  parentThreadId: string,
+  fromSeq?: number,
+): Promise<RealThread> {
+  return request<RealThread>(`/api/threads/${parentThreadId}/fork`, {
+    method: "POST",
+    body: JSON.stringify(fromSeq === undefined ? {} : { fromSeq }),
+  });
 }
 
 /** UIの「Clear」——会話を畳む。次のターンはresume-pointなし（新規query()）で始まる。 */

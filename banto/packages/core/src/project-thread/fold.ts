@@ -28,6 +28,9 @@ export type ProjectThreadEvent =
         kind: "base" | "fork";
         parentThreadId?: string;
         resumePoint?: string;
+        /** 親の会話の**どのメッセージの時点から**分けたか（決定・2026-09-11、
+         *  ユーザー要望）。いまの続きから分けたときは持たない。 */
+        forkedFromSeq?: number;
       };
     }
   | { type: "thread.closed"; payload: { id: string } }
@@ -160,8 +163,10 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
           projectId: event.payload.projectId,
           kind: event.payload.kind,
           parentThreadId: event.payload.parentThreadId,
+          forkedFromSeq: event.payload.forkedFromSeq,
           createdSeq: raw.seq,
           resumePoint: event.payload.resumePoint,
+          resumePoints: [],
           // 作られた時点のresume-pointは「親から借りたもの」——自分のセッション
           // ではない（決定・2026-09-05）。最初のターンでforkSessionにより
           // 枝を分け、自分のsession idを受け取った時点でtrueになる。
@@ -182,12 +187,15 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
         };
         // 会話の表示（messages/markers/usage）は分岐時点の親の内容を引き継ぐ
         // ——Fork Threadは親の会話の続きとして画面に出る（決定・2026-09-04）。
+        // **過去のメッセージから分けたときは、そこまで**（改訂・2026-09-11）
+        // ——分けた後の親のやり取りが Fork の会話に混ざらない。
         if (t.kind === "fork" && t.parentThreadId) {
           const parent = next.threads.get(t.parentThreadId);
           if (parent) {
-            t.messages = [...parent.messages];
-            t.markers = [...parent.markers];
-            t.usage = [...parent.usage];
+            const upTo = event.payload.forkedFromSeq ?? Number.MAX_SAFE_INTEGER;
+            t.messages = parent.messages.filter((m) => m.seq <= upTo);
+            t.markers = parent.markers.filter((m) => m.seq <= upTo);
+            t.usage = parent.usage.filter((u) => u.seq <= upTo);
             // 人が選んだ permissionMode も引き継ぐ（決定・2026-09-06）——
             // 引き継がないと、承認ゲートを効かせていたつもりの人が
             // fork した瞬間に既定（auto）へ戻る（規則2）
@@ -215,10 +223,22 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       case "thread.resume_point_updated": {
         const t = next.threads.get(event.payload.id);
         if (!t) return next;
+        // **どの時点でどのセッションだったか**を残す（決定・2026-09-11、
+        // ユーザー要望）。過去のメッセージから分けるには、その時点の
+        // resume-point が要る——Clear で手放したものも含めて（Clear の前の
+        // やり取りから分けたい、というのが要望そのもの）。
+        // 同じものが続くときは積まない（ターンごとに1件で足りる）
+        const history = t.resumePoints ?? [];
+        if (history[history.length - 1]?.sessionId !== event.payload.resumePoint) {
+          t.resumePoints = [...history, { seq: raw.seq, sessionId: event.payload.resumePoint }];
+        }
         // **Clear で切り離したセッションは、後から来ても入れない**（決定・2026-09-06）。
         // 走行中に Clear すると、そのターンは終了時に開始時のsession idで
         // ここへ来て、Clear を取り消してしまっていた（見直し・2026-09-06）。
-        if (t.abandonedSessions.includes(event.payload.resumePoint)) return next;
+        if (t.abandonedSessions.includes(event.payload.resumePoint)) {
+          next.threads.set(t.id, { ...t });
+          return next;
+        }
         // Runnerが返したsession idを受け取った＝この Thread 自身のセッション。
         next.threads.set(t.id, { ...t, resumePoint: event.payload.resumePoint, ownsSession: true });
         return next;

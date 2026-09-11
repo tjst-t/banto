@@ -12,6 +12,7 @@ import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { ReattachedTurn } from "@/components/banto/thread/reattached-turn";
 import { ThreadIdProvider } from "@/components/banto/thread/thread-id-context";
+import type { ForkFromMessage } from "@/components/banto/thread/fork-from-message";
 import { CanvasAutoOpen } from "@/components/banto/thread/canvas-auto-open";
 import { ComposerModelEffortMenu } from "@/components/banto/thread/composer-model-effort-menu";
 import { ComposerPermissionModeMenu } from "@/components/banto/thread/composer-permission-mode-menu";
@@ -71,6 +72,7 @@ export function ThreadPanel({
   threadId,
   onOpenCanvas,
   onOpenFork,
+  onForkFrom,
   markers,
 }: {
   threadId: string;
@@ -78,6 +80,9 @@ export function ThreadPanel({
   onOpenCanvas?: CanvasOpener;
   /** 分岐した場所に残る「この Fork を開く」（決定・2026-09-07） */
   onOpenFork?: (threadId: string) => void;
+  /** **そのメッセージの時点から**枝を分ける（決定・2026-09-11、ユーザー要望）。
+   *  引数は host の物差し（seq） */
+  onForkFrom?: ForkFromMessage;
   markers?: readonly ThreadMarker[];
 }) {
   const thread = getThread(threadId);
@@ -205,6 +210,7 @@ export function ThreadPanel({
       markers={markers ?? []}
       transcriptMarkers={transcriptMarkers}
       allowBranching={!thread.real || CONNECTED_FEATURES.threadBranching}
+      onForkFrom={thread.real ? onForkFrom : undefined}
     />
   );
 }
@@ -219,6 +225,7 @@ function ThreadRuntime({
   markers,
   transcriptMarkers,
   allowBranching,
+  onForkFrom,
 }: {
   adapter: ReturnType<typeof createMockChatModelAdapter>;
   initialMessages: ReturnType<typeof seedToInitialMessages>;
@@ -229,6 +236,7 @@ function ThreadRuntime({
   markers: readonly ThreadMarker[];
   transcriptMarkers?: ReadonlyMap<string | null, ReactNode>;
   allowBranching: boolean;
+  onForkFrom?: ForkFromMessage;
 }) {
   const runtime = useLocalRuntime(adapter, {
     initialMessages,
@@ -272,6 +280,9 @@ function ThreadRuntime({
         // やり直し（Edit・Reload・BranchPicker）——実 Thread では host が分岐を
         // 持たないので出さない（規則13、`CONNECTED_FEATURES.threadBranching`）
         allowBranching={allowBranching}
+        // 「ここから Fork」——分ける位置（seq）だけを渡す。どのセッションへ
+        // 戻すかは host が決める（アーキ仕様 §2.2）
+        onForkFrom={onForkFrom}
       />
       </ThreadIdProvider>
       </CanvasOpenerProvider>

@@ -192,19 +192,47 @@ export class ProjectThreadStore {
    * 枝分かれでキャッシュを引き継げる」）。「やり直す」用に過去のresume-point
    * を明示したい場合だけ、呼び出し側が上書きする。
    */
-  async forkThread(parentThreadId: ThreadId, resumePoint?: string): Promise<ThreadState> {
+  /**
+   * 枝を分ける。**過去のメッセージの時点からも分けられる**（決定・2026-09-11、
+   * ユーザー要望）——`fromSeq` を渡すと、その時点のセッションへ戻して始める。
+   * **Clear の前のやり取りからも分けられる**：Clear は「次のターンで
+   * resume-point を渡さない」だけで、手放したセッションの id は履歴に残っている。
+   */
+  async forkThread(
+    parentThreadId: ThreadId,
+    options: { resumePoint?: string; fromSeq?: number } = {},
+  ): Promise<ThreadState> {
     const parent = this.getThread(parentThreadId);
     if (!parent) throw new NotFoundError(`thread ${parentThreadId} not found`);
+    const resumePoint =
+      options.resumePoint ??
+      (options.fromSeq === undefined
+        ? parent.resumePoint
+        : this.resumePointAsOf(parent, options.fromSeq));
     const id = randomUUID();
     const event = await this.log.append("thread.created", {
       id,
       projectId: parent.projectId,
       kind: "fork" as const,
       parentThreadId,
-      resumePoint: resumePoint ?? parent.resumePoint,
+      resumePoint,
+      forkedFromSeq: options.fromSeq,
     });
     this.projection.applyOne(event);
     return this.mustGetThread(id);
+  }
+
+  /**
+   * その seq の時点で、この Thread がどのセッションだったか。
+   * **無ければ undefined**——その時点ではまだ1度も走っていない（新しい会話として始まる）。
+   */
+  private resumePointAsOf(thread: ThreadState, seq: number): string | undefined {
+    let found: string | undefined;
+    for (const entry of thread.resumePoints ?? []) {
+      if (entry.seq <= seq) found = entry.sessionId;
+      else break;
+    }
+    return found;
   }
 
   async closeThread(id: ThreadId): Promise<void> {

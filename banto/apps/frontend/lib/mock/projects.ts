@@ -218,7 +218,9 @@ async function hydrateRealProjectsUncached(): Promise<void> {
         undefined,
         fork.status === "closed" ? "closed" : "open",
         undefined,
-        fork.createdSeq,
+        // **入口は「分けた場所」に置く**（決定・2026-09-11）——過去のメッセージ
+        // から分けた Fork は、いまの続きではなくその位置に出る
+        fork.forkedFromSeq ?? fork.createdSeq,
         overviewOf(fork),
         fork.title,
       );

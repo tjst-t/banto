@@ -648,6 +648,21 @@ export async function sendRealAnswer(toolCallId: string, answer: string): Promis
  */
 /** host の記録から、この Thread の表示を取り直す（走行中のターンが終わった後・
  *  復元した判断待ちに答えた後）。**楽観的な写しを作らない**（規則3）。 */
+/**
+ * **記録から会話を組み直す**（決定・2026-09-11）。`syncRestoredThread` はターンが
+ * 終わるのを待つ輪だが、こちらは1回だけ——Clear のように「もう走っていない
+ * ところで記録が変わった」ときに使う。
+ *
+ * 組み直すと、会話の各発言が**host の物差し（seq）を持つ**——Clear の横線が
+ * 起きた場所に出るのも、「ここから Fork」が出せるのも、これがあってこそ
+ * （どちらも `real-<seq>` を鍵にしている）。
+ *
+ * **走行中には呼ばない**——流れている表示を壊す（呼ぶ側が `hasLiveRealRun` で見る）。
+ */
+export function rebuildThreadFromRecord(threadId: string): void {
+  restoredSyncVersionByThread.set(threadId, restoredSyncVersion(threadId) + 1);
+}
+
 export async function syncRestoredThread(threadId: string): Promise<void> {
   const deadline = Date.now() + 5 * 60_000;
   const assistantCount = (messages: MockThread["realMessages"]): number =>

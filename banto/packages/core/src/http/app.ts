@@ -351,6 +351,9 @@ function toThreadSummary(thread: ThreadState) {
      *  画面側がその Project の中の連番から出す（規則3） */
     title: thread.title,
     parentThreadId: thread.parentThreadId,
+    /** 親の会話の**どのメッセージから**分けたか（決定・2026-09-11）。
+     *  「この Fork を開く」をその場所に置くのに使う */
+    forkedFromSeq: thread.forkedFromSeq,
     /** 親の会話のどこで分岐したか（Fork の入口をその場所に置くのに使う） */
     createdSeq: thread.createdSeq,
     status: thread.status,
@@ -557,8 +560,16 @@ export function createApp(deps: AppDeps) {
 
       const forkMatch = url.pathname.match(/^\/api\/threads\/([^/]+)\/fork$/);
       if (forkMatch && req.method === "POST") {
+        // **過去のメッセージの時点からも分けられる**（決定・2026-09-11、ユーザー要望）。
+        // `fromSeq` はそのメッセージの seq——無ければ「いまの続き」から分ける
+        const body = (await readJsonBody(req).catch(() => ({}))) as { fromSeq?: unknown };
+        if (body.fromSeq !== undefined && typeof body.fromSeq !== "number") {
+          return json(res, 400, { error: "fromSeq must be a number" });
+        }
         try {
-          const thread = await deps.projectThread.forkThread(forkMatch[1]!);
+          const thread = await deps.projectThread.forkThread(forkMatch[1]!, {
+            fromSeq: body.fromSeq as number | undefined,
+          });
           json(res, 201, thread);
         } catch (err) {
           if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });

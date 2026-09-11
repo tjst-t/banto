@@ -14,6 +14,12 @@ import {
   UserMessageAttachments,
 } from "@/components/assistant-ui/elements/attachment.aui";
 import { AssistantMark } from "@/components/banto/thread/assistant-mark";
+import {
+  ForkFromMessageProvider,
+  seqOfMessageId,
+  useForkFromMessage,
+  type ForkFromMessage,
+} from "@/components/banto/thread/fork-from-message";
 import { File } from "@/components/assistant-ui/elements/file";
 import { ThreadFollowupSuggestions } from "@/components/assistant-ui/elements/follow-up-suggestions.aui";
 import { Image } from "@/components/assistant-ui/elements/image";
@@ -63,6 +69,7 @@ import {
   ChevronRightIcon,
   CopyIcon,
   DownloadIcon,
+  GitForkIcon,
   MicIcon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -129,6 +136,9 @@ export type ThreadProps = {
   /** やり直し（Edit・Reload・BranchPicker）を出すか。既定は出す
    *  ——実 Thread では host が分岐を持たないので false（規則13、2026-09-10） */
   allowBranching?: boolean;
+  /** **そのメッセージの時点から**枝を分ける（決定・2026-09-11）。渡さなければ
+   *  「ここから Fork」は出ない（記録に繋がっていない会話では分けられない） */
+  onForkFrom?: ForkFromMessage;
 };
 
 const EMPTY_COMPONENTS: ThreadComponents = {};
@@ -187,12 +197,14 @@ export const Thread: FC<ThreadProps> = ({
   composerHint,
   transcriptMarkers,
   allowBranching = true,
+  onForkFrom,
 }) => {
   const isEmpty = useAuiState(isNewChatView);
 
   return (
     <ThreadComponentsContext.Provider value={components}>
       <BranchingContext.Provider value={allowBranching}>
+      <ForkFromMessageProvider value={onForkFrom ?? null}>
       <ThreadRoot
         isEmpty={isEmpty}
         autoFocus={autoFocus}
@@ -201,6 +213,7 @@ export const Thread: FC<ThreadProps> = ({
         composerHint={composerHint}
         transcriptMarkers={transcriptMarkers}
       />
+      </ForkFromMessageProvider>
       </BranchingContext.Provider>
     </ThreadComponentsContext.Provider>
   );
@@ -577,14 +590,44 @@ const AssistantMessage: FC = () => {
         <MessageError />
       </div>
 
+      {/* **本文の左端にそろえる**（決定・2026-09-11、ユーザー報告）。本文は
+          `pl-8`（32px）から始まるので、帯もそこへ——ボタンの内側の余白ぶん
+          （`-ms-1`）は下の帯が戻している */}
       <div
         data-slot="aui_assistant-message-footer"
-        className={cn("ms-2 flex items-center", ACTION_BAR_HEIGHT)}
+        className={cn("ms-8 flex items-center", ACTION_BAR_HEIGHT)}
       >
         <BranchPicker />
         <AssistantActionBar />
       </div>
     </MessagePrimitive.Root>
+  );
+};
+
+/**
+ * **ここから枝を分ける**（決定・2026-09-11、ユーザー要望）。
+ *
+ * 出すのは、**host の記録から組み直したメッセージ**だけ——分ける位置は host の
+ * 物差し（seq）で表すので、それを持たない発言（モックの台本・まだ記録に
+ * 落ちていない走行中の発言）からは分けられない。繋がっていないものは出さない（規則13）。
+ */
+const ForkFromHereButton: FC = () => {
+  const forkFrom = useForkFromMessage();
+  const seq = seqOfMessageId(useAuiState((s) => s.message.id));
+  // **いま走り終わったばかりの発言は seq を持たない**（記録から組み直す前）。
+  // それが会話の最後なら「いまの続きから」で同じ意味になるので出す——
+  // 途中の発言で位置が分からないときだけ、出さない（規則13）
+  const isLast = useAuiState((s) => s.message.isLast);
+  if (!forkFrom) return null;
+  if (seq === undefined && !isLast) return null;
+  return (
+    <TooltipIconButton
+      tooltip="ここから Fork"
+      data-testid="fork-from-message"
+      onClick={() => forkFrom(seq)}
+    >
+      <GitForkIcon />
+    </TooltipIconButton>
   );
 };
 
@@ -612,6 +655,7 @@ const AssistantActionBar: FC = () => {
           </TooltipIconButton>
         </ActionBarPrimitive.Reload>
       ) : null}
+      <ForkFromHereButton />
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild>
           <TooltipIconButton

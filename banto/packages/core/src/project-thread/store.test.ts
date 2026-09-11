@@ -175,7 +175,7 @@ test("fork thread inherits the parent's current resume-point by default (v4-arch
     assert.equal(fork.resumePoint, "sdk-session-abc");
 
     // 明示的に渡せば「やり直す」用に過去のresume-pointへ差し替えられる
-    const forkAtOldPoint = await store.forkThread(base.id, "sdk-session-older");
+    const forkAtOldPoint = await store.forkThread(base.id, { resumePoint: "sdk-session-older" });
     assert.equal(forkAtOldPoint.resumePoint, "sdk-session-older");
   });
 });
@@ -577,4 +577,83 @@ test("並び順の欄が無い snapshot から読み戻しても落ちない", (
   assert.equal(next.projectOrder.length, 0, "無い欄を空として扱えていない");
   assert.equal(next.threadOrder.size, 0);
   assert.equal(next.projects.get("p1")!.name, "古い記録");
+});
+
+/** いま入れたばかりのメッセージ（seq を知るため）。 */
+function lastMessage(store: ProjectThreadStore, threadId: string) {
+  const messages = store.getThread(threadId)!.messages;
+  return messages[messages.length - 1]!;
+}
+
+// **過去のメッセージの時点から分ける**（決定・2026-09-11、ユーザー要望）。
+// 「Clear した後でも、Clear する前のセッションの Fork を作れるように」が要望の核心。
+
+test("過去のメッセージの時点から分けると、その時点のセッションに戻る", async () => {
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("p", dir);
+    const base = await store.createBaseThread(project.id);
+
+    // 1ターン目
+    await store.appendMessage(base.id, "user", "ひとつめ");
+    await store.updateResumePoint(base.id, "session-1");
+    await store.appendMessage(base.id, "assistant", "こたえ1");
+    const first = lastMessage(store, base.id);
+    // 2ターン目
+    await store.appendMessage(base.id, "user", "ふたつめ");
+    await store.updateResumePoint(base.id, "session-2");
+    await store.appendMessage(base.id, "assistant", "こたえ2");
+
+    // いまの続きから分ければ、最新のセッション
+    const latest = await store.forkThread(base.id);
+    assert.equal(latest.resumePoint, "session-2");
+
+    // **1つめの答えの時点から分ければ、そのときのセッション**
+    const older = await store.forkThread(base.id, { fromSeq: first.seq });
+    assert.equal(older.resumePoint, "session-1", "その時点のセッションに戻っていない");
+    assert.equal(older.forkedFromSeq, first.seq);
+
+    // **分けた後の親のやり取りは混ざらない**（会話の表示もそこまで）
+    assert.deepEqual(
+      store.getThread(older.id)!.messages.map((m) => m.text),
+      ["ひとつめ", "こたえ1"],
+      "分けた場所より後のやり取りが Fork に入っている",
+    );
+    assert.deepEqual(
+      store.getThread(latest.id)!.messages.map((m) => m.text),
+      ["ひとつめ", "こたえ1", "ふたつめ", "こたえ2"],
+    );
+  });
+});
+
+test("Clear した後でも、Clear より前のやり取りから分けられる", async () => {
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("p", dir);
+    const base = await store.createBaseThread(project.id);
+    await store.appendMessage(base.id, "user", "畳む前");
+    await store.updateResumePoint(base.id, "session-before");
+    await store.appendMessage(base.id, "assistant", "畳む前のこたえ");
+    const beforeClear = lastMessage(store, base.id);
+
+    await store.clearThread(base.id);
+    // Clear の後は、いまの続き＝新しい会話（resume-point 無し）
+    assert.equal(store.getThread(base.id)!.resumePoint, undefined);
+    assert.equal((await store.forkThread(base.id)).resumePoint, undefined);
+
+    // **手放したセッションからも分けられる**——これが要望そのもの
+    const fork = await store.forkThread(base.id, { fromSeq: beforeClear.seq });
+    assert.equal(fork.resumePoint, "session-before", "Clear 前のセッションへ戻れない");
+    // 横線（Clear）はその後の出来事なので、Fork の会話には入らない
+    assert.equal(store.getThread(fork.id)!.markers.length, 0);
+  });
+});
+
+test("まだ1度も走っていない時点から分けたら、新しい会話として始まる", async () => {
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("p", dir);
+    const base = await store.createBaseThread(project.id);
+    await store.appendMessage(base.id, "user", "まだ走っていない");
+    const first = lastMessage(store, base.id);
+    const fork = await store.forkThread(base.id, { fromSeq: first.seq });
+    assert.equal(fork.resumePoint, undefined, "無いものを在るように扱っている");
+  });
 });

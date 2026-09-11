@@ -1364,6 +1364,20 @@
         "docs/specs/v4-architecture.md §2.2",
         "docs/notes/2026-09-11-sidebar-reorder-rename.md"
       ]
+    },
+    {
+      "id": "fork-from-message",
+      "phase": "0以降",
+      "title": "発言の下から、その時点の Fork を作る",
+      "status": "done",
+      "dependencies": [],
+      "why": "ユーザー要望（2026-09-11）：発言の下の帯を本文の左端にそろえ、コピーの右に Fork を置いて、その発言の時点から分岐したい。**Clear した後に、Clear する前のセッションの Fork も作れるように**。",
+      "doneWhen": "host が `resumePoints`（いつどのセッションだったか）を持ち、`POST /api/threads/:id/fork { fromSeq }` でその時点へ戻して分けられる。Clear より前の発言からも分けられる。E2E `specs/fork-from-message.spec.ts`（左端そろえ・その時点のセッション・Clear 前からの分岐）",
+      "refs": [
+        "docs/specs/v4-architecture.md §2.2",
+        "docs/specs/v4-frontend.md §6.12",
+        "docs/notes/2026-09-11-fork-from-message.md"
+      ]
     }
   ],
   "phase1": {
