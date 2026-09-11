@@ -29,6 +29,7 @@ import { reportFailure } from "@/lib/report-failure";
 import { closeProject, getActiveProjects, getProject, updateRealProject } from "@/lib/mock/projects";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { WideRootWarning, useRootScope } from "@/components/banto/settings/wide-root-warning";
+import { PathPicker } from "@/components/banto/settings/path-picker";
 
 export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
   useMockStoreVersion();
@@ -98,14 +99,9 @@ export function ProjectGeneralPanel({ projectId }: { projectId: string }) {
 
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="project-root">Root パス</Label>
-          <Input
-            id="project-root"
-            value={root}
-            onChange={(e) => setRoot(e.target.value)}
-            className="font-mono text-xs"
-          />
+          <PathPicker id="project-root" value={root} onChange={setRoot} />
           <p className="text-xs text-ink-3">
-            Shell・FileSystem をこの根に閉じ込める。
+            Shell・FileSystem などの Module は、この Root パスの中のみアクセス可能。
             {rootChanged ? "変えると、この Project の Module は立て直しになる。" : ""}
           </p>
           <WideRootWarning scope={rootScope} />

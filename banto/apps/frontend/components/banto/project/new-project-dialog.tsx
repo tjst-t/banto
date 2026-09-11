@@ -1,6 +1,6 @@
 "use client";
 
-// 新規 Project の作成（§2.2）。既定で見せるのは名前・Base パスだけ、
+// 新規 Project の作成（§2.2）。既定で見せるのは名前・Root パスだけ、
 // Advanced に開くと Configuration の上書き——§2.2「設定のカスケード」の
 // 対象になる項目は全部出す（Project 設定画面の階層2と同じ集合・同じ
 // CascadeRow）。一部だけ出すと「他の項目はここでは上書きできない」という
@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/select";
 import { CascadeRow } from "@/components/banto/settings/cascade-row";
 import { cn } from "@/lib/utils";
+import { PathPicker } from "@/components/banto/settings/path-picker";
 import {
   WideRootWarning,
   useRootScope,
@@ -114,16 +115,17 @@ export function NewProjectDialog({
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="new-project-path">Base パス</Label>
-              <Input
+              {/* **呼び名は Root にそろえる**（改訂・2026-09-11、ユーザー指摘
+                  ——作る画面と設定画面で「Base」「Root」が混ざっていた、規則11） */}
+              <Label htmlFor="new-project-path">Root パス</Label>
+              <PathPicker
                 id="new-project-path"
                 value={basePath}
-                onChange={(e) => setBasePath(e.target.value)}
+                onChange={setBasePath}
                 placeholder="~/worktrees/..."
-                className="font-mono text-xs"
               />
               <p className="text-xs text-ink-3">
-                Shell・FileSystem をこの根に閉じ込める
+                Shell・FileSystem などの Module は、この Root パスの中のみアクセス可能
               </p>
               {/* **広い根は止めない。選ぶ前に見せる**（決定・2026-09-11、ユーザー） */}
               <WideRootWarning scope={rootScope} />

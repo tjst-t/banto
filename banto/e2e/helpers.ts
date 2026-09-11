@@ -77,7 +77,7 @@ export async function createProject(
   await openNav(page);
   await page.getByRole("button", { name: "新しい Project", exact: true }).click();
   await page.getByLabel("Project 名").fill(projectName);
-  await page.getByLabel("Base パス").fill(projectRoot);
+  await page.getByLabel("Root パス").fill(projectRoot);
   await page.getByRole("button", { name: "作成する" }).click();
   await expectProjectOpen(page, projectName);
 }

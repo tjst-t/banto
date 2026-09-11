@@ -33,6 +33,7 @@ import {
   setProjectModuleSelection,
 } from "../modules/declaration.js";
 import { describeRootScope } from "../modules/root-scope.js";
+import { listDirectories } from "./directories.js";
 import type { TurnEventBus } from "./turn-events.js";
 import type { RuntimeConfigStore } from "../config/runtime.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
@@ -1057,6 +1058,18 @@ export function createApp(deps: AppDeps) {
         // 設定画面も同じ——**自分の Module を呼ぶのに承認は求めない**
         // （改訂・2026-09-07、上の Thread 版と同じ理由）
         json(res, 200, await found.client.callTool({ name: body.tool, arguments: toolArguments(body.arguments) }));
+        return;
+      }
+
+      // **フォルダを選べるようにする**（決定・2026-09-11、ユーザー要望）。
+      // 返すのはフォルダの名前だけ——人が Root を選ぶための窓（`directories.ts`）
+      if (url.pathname === "/api/fs/directories" && req.method === "GET") {
+        try {
+          json(res, 200, await listDirectories(url.searchParams.get("path") ?? undefined));
+        } catch (err) {
+          // **読めなかったことを、読めたように見せない**（規則2）
+          return json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+        }
         return;
       }
 

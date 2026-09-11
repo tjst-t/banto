@@ -104,7 +104,7 @@ function ProjectOverviewContent({ project }: { project: MockProject }) {
   return (
     <div className="flex flex-col gap-1.5 rounded-md bg-surface-2 p-2.5 text-xs text-ink-3">
       <div className="flex items-center justify-between gap-2">
-        <span>Base パス</span>
+        <span>Root パス</span>
         <span className="truncate font-mono text-ink-2">{project.basePath}</span>
       </div>
       <div className="flex items-center justify-between gap-2">

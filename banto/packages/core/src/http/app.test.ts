@@ -796,3 +796,32 @@ test("Project の根を HTTP から変えられる——変えたら Module は�
     },
   );
 });
+
+// **フォルダを選べるようにするための一覧**（決定・2026-09-11、ユーザー要望）。
+
+test("フォルダの一覧を返す——フォルダだけ、1つ上も分かる", async () => {
+  await withApp(async (base, token, dir) => {
+    const headers = { authorization: `Bearer ${token}` };
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(join(dir, "sub-a"), { recursive: true });
+    await mkdir(join(dir, "sub-b"), { recursive: true });
+    await writeFile(join(dir, "not-a-dir.txt"), "x");
+
+    const listing = (await (
+      await fetch(`${base}/api/fs/directories?path=${encodeURIComponent(dir)}`, { headers })
+    ).json()) as { path: string; parent?: string; entries: Array<{ name: string; path: string }> };
+
+    assert.equal(listing.path, dir);
+    assert.ok(listing.parent, "1つ上が分からない");
+    const names = listing.entries.map((e) => e.name);
+    assert.ok(names.includes("sub-a") && names.includes("sub-b"));
+    assert.equal(names.includes("not-a-dir.txt"), false, "ファイルまで返している");
+
+    // **読めない場所は、読めたように見せない**（規則2）
+    const missing = await fetch(
+      `${base}/api/fs/directories?path=${encodeURIComponent(join(dir, "いない"))}`,
+      { headers },
+    );
+    assert.equal(missing.status, 400);
+  });
+});

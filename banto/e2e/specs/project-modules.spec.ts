@@ -4,7 +4,7 @@
 // 見るのは「操作が通った」ではなく**効いたか**（規則14）——外したら、その Project で
 // **本当に立たない**（host が用意する Module から消える）ところまで。
 
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "@playwright/test";
@@ -201,4 +201,40 @@ test("会話のヘッダに、左と同じ入口（設定・履歴）を置か�
   // 左には在る（消したのは重複だけ——行けなくなっていない）
   await expect(page.locator('[data-slot="sidebar"]').getByRole("link", { name: "設定", exact: true })).toBeVisible();
   await expect(page.locator('[data-slot="sidebar"]').getByRole("button", { name: "履歴" })).toBeVisible();
+});
+
+test("Root パスは、打っても選んでもよい", async ({ page }) => {
+  // ユーザー要望・2026-09-11：フォルダ選択のダイアログを出して選べるように。
+  // **文字入力も残したうえで**——打つほうが速いときもある。
+  const root = mkdtempSync(join(tmpdir(), "banto-e2e-pick-"));
+  mkdirSync(join(root, "えらぶ先"), { recursive: true });
+  await openApp(page);
+  await createProject(page, "選ぶ spec", root);
+  await openProjectSettings(page, "一般");
+
+  const panel = page.getByTestId("project-general-panel");
+  const input = panel.getByLabel("Root パス");
+  await expect(input, "打てる入力欄が無い").toHaveValue(root);
+
+  // ---- 選ぶ ---------------------------------------------------------------
+  await panel.getByRole("button", { name: "選ぶ" }).click();
+  const picker = page.getByTestId("path-picker");
+  await expect(picker).toBeVisible({ timeout: 15_000 });
+  // いま入っているパスから始まる（近くから探せる）
+  await expect(picker.getByTestId("path-picker-current")).toHaveText(root);
+  // 中のフォルダが並ぶ——**その場に在るものが出る**（規則14）
+  await picker.getByTestId("path-picker-entry").filter({ hasText: "えらぶ先" }).click();
+  await expect(picker.getByTestId("path-picker-current")).toHaveText(join(root, "えらぶ先"));
+  // 1つ上へ戻れる
+  await picker.getByRole("button", { name: "上へ" }).click();
+  await expect(picker.getByTestId("path-picker-current")).toHaveText(root);
+  // もう一度入って、ここにする
+  await picker.getByTestId("path-picker-entry").filter({ hasText: "えらぶ先" }).click();
+  await picker.getByRole("button", { name: "ここにする" }).click();
+  await expect(picker).toBeHidden({ timeout: 10_000 });
+  await expect(input, "選んだのに入力欄へ入っていない").toHaveValue(join(root, "えらぶ先"));
+
+  // ---- 打つのも、そのままできる ------------------------------------------
+  await input.fill(root);
+  await expect(input).toHaveValue(root);
 });

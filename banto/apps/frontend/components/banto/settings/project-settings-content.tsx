@@ -289,7 +289,7 @@ export function ProjectSettingsContent({
             セキュリティ境界
           </h1>
           <p className="mb-3 text-xs text-ink-3">
-            Shell・FileSystem をこの根に閉じ込める。
+            Shell・FileSystem などの Module は、この Root パスの中のみアクセス可能。
           </p>
           <Input
             value={overrides.securityRoot}

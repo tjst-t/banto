@@ -366,6 +366,21 @@ export interface RealRootScope {
   includes: string[];
 }
 
+/**
+ * **フォルダを選ぶための一覧**（決定・2026-09-11、ユーザー要望）。
+ * 返るのはフォルダの名前だけ——人が Root を選ぶための窓。
+ */
+export interface RealDirectoryListing {
+  path: string;
+  parent?: string;
+  entries: Array<{ name: string; path: string }>;
+}
+
+export async function listRealDirectories(path?: string): Promise<RealDirectoryListing> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : "";
+  return request<RealDirectoryListing>(`/api/fs/directories${query}`);
+}
+
 export async function fetchRealRootScope(path: string): Promise<RealRootScope> {
   return request<RealRootScope>(`/api/config/root-scope?path=${encodeURIComponent(path)}`);
 }

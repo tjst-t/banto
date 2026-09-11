@@ -65,13 +65,13 @@ test("home を根にしても Module は動く。ただし画面が警告する"
   await page.goto("/");
   await openApp(page);
   await page.getByRole("button", { name: "新しい Project", exact: true }).click();
-  await page.getByLabel("Base パス").fill(homedir());
+  await page.getByLabel("Root パス").fill(homedir());
   await expect(
     page.getByTestId("wide-root-warning"),
     "広い根を打っているのに、作る前に何も言わない",
   ).toBeVisible({ timeout: 15_000 });
 
   // 狭い根に打ち直したら消える（いつでも出ているわけではない）
-  await page.getByLabel("Base パス").fill("/tmp/banto-e2e-narrow-root");
+  await page.getByLabel("Root パス").fill("/tmp/banto-e2e-narrow-root");
   await expect(page.getByTestId("wide-root-warning")).toHaveCount(0, { timeout: 15_000 });
 });
