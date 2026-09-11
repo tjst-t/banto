@@ -28,8 +28,9 @@ import {
   mockModuleConfigFields,
   getRoles,
 } from "@/lib/mock/settings";
-import { useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { getProject } from "@/lib/mock/projects";
+import { ProjectInitial } from "@/components/banto/shell/nav-panel";
 import { useEscapeNavigateBack } from "@/hooks/use-escape-navigate-back";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 
@@ -183,16 +184,27 @@ export function SettingsContent() {
   // 変わるたびに組み直す（規則3——導出できる値を保存しない）
   useMockStoreVersion();
   const isMobile = useIsMobile();
+  const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const projectId = searchParams.get("project");
   const project = projectId ? getProject(projectId) : undefined;
-  const initialSection = searchParams.get("section") ?? undefined;
+  // **いま開いている節は URL が持つ**（決定・2026-09-11）——サイドバーで別の
+  // Project を選んだときに、外から節を変えられるようにするため（規則3）
+  const section = searchParams.get("section");
+
+  function goToSection(next: string | null) {
+    const params = new URLSearchParams(searchParams.toString());
+    if (next) params.set("section", next);
+    else params.delete("section");
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  }
 
   const instanceModules = getConfigurableImplementations();
   const projectModules = projectId ? projectConfigurableModules(projectId) : [];
 
   const groups: SettingsNavGroup[] = [
-    { label: "banto 全体", items: CATEGORIES },
+    { label: "banto 全体", startsLayer: true, items: CATEGORIES },
     {
       label: instanceModules.length > 0 ? "全体の Module 設定" : undefined,
       items: instanceModules.map((impl) => ({
@@ -203,7 +215,14 @@ export function SettingsContent() {
     },
   ];
   if (projectId && project) {
-    groups.push({ label: `この Project — ${project.name}`, items: PROJECT_CATEGORIES });
+    // **層の変わり目**——ここで線を引く。見出しの左に頭文字を出して、
+    // サイドバーの Project と同じものだと分かるようにする
+    groups.push({
+      label: project.name,
+      labelBadge: <ProjectInitial project={project} active={false} />,
+      startsLayer: true,
+      items: PROJECT_CATEGORIES,
+    });
     groups.push({
       label: projectModules.length > 0 ? "この Project の Module 設定" : undefined,
       items: projectModules.map((impl) => ({
@@ -252,7 +271,8 @@ export function SettingsContent() {
             ...buildSearchEntries(),
             ...(projectId ? projectSearchEntries(projectId) : []),
           ]}
-          defaultSection={initialSection}
+          section={section}
+          onSectionChange={goToSection}
         />
       </div>
     </div>

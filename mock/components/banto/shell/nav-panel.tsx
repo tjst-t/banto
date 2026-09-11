@@ -10,7 +10,7 @@
 // | モバイル | 左から出る `Drawer`（`mobile-nav-drawer.tsx`） |
 import { useState, type ReactNode } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Bell,
   ChevronRight,
@@ -45,6 +45,7 @@ import { getInboxItems } from "@/lib/mock/inbox";
 import { getActiveProjects } from "@/lib/mock/projects";
 import { closeThread, getClosedForksForProject, getThreadsForProject } from "@/lib/mock/threads";
 import { cn } from "@/lib/utils";
+import { projectNavHref } from "@/lib/settings-link";
 import type { MockProject, MockThread } from "@/lib/mock/types";
 import { ThemeToggle } from "./theme-toggle";
 
@@ -103,6 +104,8 @@ function ProjectTreeItem({
   onNavigate?: () => void;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const isCurrent = project.id === activeProjectId;
   const threads = getThreadsForProject(project.id);
   const forks = threads.filter((t): t is MockThread => t.kind === "fork");
@@ -119,7 +122,10 @@ function ProjectTreeItem({
     <SidebarMenuItem>
       <SidebarMenuButton asChild isActive={isCurrent}>
         <Link
-          href={`/p/${project.id}`}
+          href={projectNavHref(project.id, pathname, {
+            project: searchParams.get("project"),
+            section: searchParams.get("section"),
+          })}
           data-roving-item
           title={project.basePath}
           onClick={onNavigate}

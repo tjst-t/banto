@@ -50,6 +50,14 @@ export interface SettingsNavItem {
 export interface SettingsNavGroup {
   /** 見出し。省略すると見出し無しで並ぶ */
   label?: string;
+  /** 見出しの左に置くもの（Project の層は頭文字を出して、どの Project かを示す） */
+  labelBadge?: ReactNode;
+  /**
+   * **層の変わり目**（決定・2026-09-11、ユーザー指摘——「全体と Project の区別が
+   * つきづらい」）。ここで線を引き、間を広く空ける。見出しを等間隔で並べるだけでは、
+   * どこで層が変わるのか分からなかった。
+   */
+  startsLayer?: boolean;
   items: readonly SettingsNavItem[];
 }
 
@@ -68,18 +76,24 @@ export function SettingsShell({
   groups,
   renderContent,
   extraSearchEntries = [],
-  defaultSection,
+  section,
+  onSectionChange,
 }: {
   /** 左メニュー。**見出しで層を分ける**（banto 全体／この Project） */
   groups: readonly SettingsNavGroup[];
   renderContent: (section: SettingsSection) => ReactNode;
   /** 右側の中身が持つ設定項目。検索でヒットさせたいものを呼び出し側が渡す */
   extraSearchEntries?: readonly SearchEntry[];
-  /** デスクトップで最初に選んだ状態にするセクション（既定：categories の先頭） */
-  defaultSection?: SettingsSection;
+  /**
+   * いま開いている節。**URL が持つ**（決定・2026-09-11）——自分の中に覚えると、
+   * 外（サイドバーで別の Project を選ぶ等）から節を変えられない。`null` は
+   * 「まだ選んでいない」＝デスクトップは先頭、モバイルは一覧。
+   */
+  section: SettingsSection | null;
+  onSectionChange: (section: SettingsSection | null) => void;
 }) {
   const isMobile = useIsMobile();
-  const [section, setSection] = useState<SettingsSection | null>(null);
+  const setSection = onSectionChange;
   const [query, setQuery] = useState("");
   // クリックのたびに更新する——同じ anchor を2回続けて押しても再スクロール
   // ＋再ハイライトが起きるように（section が変わらない場合、state 自体は
@@ -131,7 +145,7 @@ export function SettingsShell({
   // デスクトップは常に何かを選んだ状態にする（未選択の空白ペインを避ける）。
   // モバイルは選ぶまでメニューだけを見せる——2ペインが狭い画面で成立しないので、
   // 「一覧→タップで詳細」の1カラムに畳む（iOS 設定アプリと同じ）
-  const fallbackSection = defaultSection ?? allNavItems[0]?.section;
+  const fallbackSection = allNavItems[0]?.section;
   const activeSection = section ?? (isMobile ? null : fallbackSection);
 
   const nav = (
@@ -192,9 +206,20 @@ export function SettingsShell({
             {groups
               .filter((g) => g.items.length > 0)
               .map((g, gi) => (
-                <div key={g.label ?? `group-${gi}`}>
+                <div
+                  key={g.label ?? `group-${gi}`}
+                  className={cn(g.startsLayer && gi > 0 && "mt-3 border-t border-border pt-4")}
+                >
                   {g.label ? (
-                    <p className="mb-1 px-2 text-xs font-medium tracking-wide text-ink-3">{g.label}</p>
+                    <p
+                      className={cn(
+                        "mb-1 flex items-center gap-1.5 px-2 text-xs tracking-wide",
+                        g.startsLayer ? "font-semibold text-ink-2" : "font-medium text-ink-3",
+                      )}
+                    >
+                      {g.labelBadge}
+                      <span className="truncate">{g.label}</span>
+                    </p>
                   ) : null}
                   <div className="flex flex-col gap-0.5">
                     {g.items.map((c) => (

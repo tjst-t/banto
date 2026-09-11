@@ -15,6 +15,7 @@
 // `MobileNavDrawer` が同じ `NavPanel` を左からの Drawer で出す）。
 import { useState } from "react";
 import Link from "next/link";
+import { usePathname, useSearchParams } from "next/navigation";
 import { Bell, Clock, GitFork, PanelLeft, Plus, Search, Settings } from "lucide-react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Badge } from "@/components/ui/badge";
@@ -39,6 +40,7 @@ import { getActiveProjects } from "@/lib/mock/projects";
 import { getThreadsForProject } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { cn } from "@/lib/utils";
+import { projectNavHref } from "@/lib/settings-link";
 import { getJudgmentCount, NavPanel, ProjectInitial } from "./nav-panel";
 import { SidebarResizeHandle } from "./sidebar-resize-handle";
 import { ThemeToggle } from "./theme-toggle";
@@ -89,6 +91,8 @@ function CollapsedRail({
   onNewProject: () => void;
 }) {
   const { toggleSidebar } = useSidebar();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const judgmentCount = getJudgmentCount();
 
   return (
@@ -127,7 +131,12 @@ function CollapsedRail({
                       className="size-9 justify-center overflow-visible p-0"
                       isActive={active}
                     >
-                      <Link href={`/p/${project.id}`}>
+                      <Link
+                        href={projectNavHref(project.id, pathname, {
+                          project: searchParams.get("project"),
+                          section: searchParams.get("section"),
+                        })}
+                      >
                         <ProjectInitial project={project} active={active} />
                       </Link>
                     </SidebarMenuButton>

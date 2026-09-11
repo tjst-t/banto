@@ -168,6 +168,26 @@ Global設定と同じようなデザインでProject設定を入れるほうが�
   Project の文脈で開いたときだけ、その Project の alias 一覧が出る（実測で確認）
 - `ProjectSettingsOverlay`（全画面 Dialog）は削除。`?overlay=settings-project` も使わない
 
+**層の切れ目を見えるようにした**（同日、ユーザー指摘——「全体と Project の区別が
+つきづらい」）。見出しを等間隔で4つ並べるだけでは、どこで層が変わるのか分からなかった：
+
+- 層の変わり目に**横線＋広めの余白**。実測で `borderTopWidth: 1px`・
+  `marginTop: 12px`・`paddingTop: 16px`（見た目の指定は screenshot ではなく値で確かめる）
+- 層の見出しは**太く**（`font-semibold`・`text-ink-2`。中の小見出しは `font-medium`・`text-ink-3`）
+- Project の層の見出しは**頭文字チップ＋Project 名**——サイドバーの Project と
+  同じ見た目なので、「これはあの Project の設定だ」と繋がる
+
+**設定を開いたまま、サイドバーで Project を切り替えられる**（同日、ユーザー要望）：
+
+| サイドバーで押したもの | 行き先 |
+|---|---|
+| **別の** Project | **設定のまま**、その Project の層へ。Project の層の節を見ていたなら**同じ節**を保つ（見比べられる）。全体の節を見ていたなら、その Project の先頭の節へ |
+| **いま設定で見ている** Project | 設定を閉じて、その会話へ（`/p/<id>`） |
+
+判断は `lib/settings-link.ts` に1つだけ持つ（規則3）——開いたサイドバーと畳んだ
+レールが同じ答えを使う。これを成立させるために、**いま開いている節を URL へ移した**
+（`?section=`）——画面が自分の中に覚えていると、**外から節を変えられない**。
+
 ### 階層2をSheetから`SettingsShell`共有レイアウトへ（2026-09-02）
 - **発端**：`docs/notes/2026-09-02-role-dependency-resolution.md`の議論で、
   「role に複数実装があるとき、どれを使うか」の選択は banto core が持たず、
