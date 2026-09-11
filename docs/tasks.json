@@ -545,13 +545,13 @@
     },
     {
       "id": "phase1-project-modules-ui",
-      "phase": "1以降",
+      "phase": "2",
       "title": "Project 単位の Module 管理 UI",
-      "status": "backlog",
+      "status": "next",
       "dependencies": [
         "phase1-module-contract"
       ],
-      "why": "いま Project 設定の「接続している Module」は実バックエンドに繋がっておらず nav から外してある（feature-flags）。§10 の D 群（画面を見ないと決まらない）に分類されているので、**先に mock/ で形を見る**のが決めた進め方。Phase 1 の完了条件そのものではない。",
+      "why": "Phase 2（標準 Module を揃える）の入口（決定・2026-09-11、ユーザー）。宣言は instance 既定なので、Module を1本足すと**全 Project に繋がる**——本数が増えるほど、使わない Project にも tool が載り、プロセスも増える。増やす前に、Project ごとに選べるようにする。§10 の D 群（画面を見ないと決まらない）なので、先に mock/ で形を見る。",
       "doneWhen": "Project 設定から、その Project に繋がっている Module が実データで一覧でき、増減できることを実ブラウザで確認する。",
       "refs": [
         "docs/specs/v4-architecture.md §10（D群）",
@@ -1273,7 +1273,7 @@
     },
     {
       "id": "module-registry-install",
-      "phase": "3",
+      "phase": "2",
       "title": "公式レジストリからの検索・インストール",
       "status": "backlog",
       "dependencies": [],
@@ -1377,6 +1377,20 @@
         "docs/specs/v4-architecture.md §2.2",
         "docs/specs/v4-frontend.md §6.12",
         "docs/notes/2026-09-11-fork-from-message.md"
+      ]
+    },
+    {
+      "id": "module-kit-extract",
+      "phase": "2",
+      "title": "Module を書く足場（kit）と契約試験を切り出す",
+      "status": "backlog",
+      "dependencies": [
+        "phase1-project-modules-ui"
+      ],
+      "why": "3本とも `Server`＋`setRequestHandler`＋`_meta` を手書きで、設定 Canvas の HTML も 100行ずつ手書き（同型のコードが既に3回）。**ただし3本では共通部分の形が決めきれない**ので、**もう少し Module を作り込んでから共通化する**（決定・2026-09-11、ユーザー）——足場を作りすぎるほうが高い。4〜5本目で同じものが3度目に現れた時点でまとめる。あわせて「契約を満たすか」を Module 横断で確かめる試験を置く（いまは host 側の試験しか無い）。",
+      "doneWhen": "新しい Module を1本、kit の上で書けて、契約試験が通る。既存3本も kit に載せ替えても振る舞いが変わらない（E2E が通る）",
+      "refs": [
+        "docs/notes/2026-09-11-phase-reordering.md"
       ]
     }
   ],
