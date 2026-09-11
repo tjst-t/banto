@@ -294,3 +294,85 @@ test("行の「…」から、右クリックと同じ操作が出る（Fork は
   // 削除ではなく整理——閉じた Fork として数えられている
   await expect(page.getByText(/閉じた Fork（\d+）/).first()).toBeVisible({ timeout: 15_000 });
 });
+
+test("面の題は Project 名だけ——そこを右クリックすると名前を変えられる", async ({ page }) => {
+  // ユーザー要望（2026-09-11）：「Base Thread — プロジェクト名」は「プロジェクト名」に。
+  // 題のところも右クリックで名前を変えられるように。
+  await openApp(page);
+  await createProject(page, "題の spec", mkdtempSync(join(tmpdir(), "banto-e2e-title-")));
+
+  const header = page.locator("header").first();
+  await expect(header.getByText("題の spec", { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(
+    page.getByText(/^Base Thread —/),
+    "「Base Thread —」の接頭辞が残っている",
+  ).toHaveCount(0);
+
+  // ---- 題を右クリック → Project の名前を変える ---------------------------
+  await header.getByText("題の spec", { exact: true }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "名前を変える…" }).click();
+  const dialog = page.getByTestId("rename-dialog");
+  await expect(dialog).toBeVisible({ timeout: 10_000 });
+  await expect(dialog.getByLabel("名前")).toHaveValue("題の spec");
+  await dialog.getByLabel("名前").fill("題を変えた");
+  await dialog.getByRole("button", { name: "保存する" }).click();
+  await expect(dialog).toBeHidden({ timeout: 10_000 });
+
+  // 題にもサイドバーにも、変えた名前が出る（同じ真実を見ている）
+  await expect(header.getByText("題を変えた", { exact: true })).toBeVisible({ timeout: 10_000 });
+  await expect(
+    page.getByTestId("sidebar-project-name").filter({ hasText: "題を変えた" }),
+  ).toHaveCount(1);
+
+  // ---- Fork の題も同じ ----------------------------------------------------
+  await page.getByRole("button", { name: "Fork を開く" }).click();
+  const back = page.getByRole("button", { name: /Base Thread に戻る$/ });
+  await expect(back).toBeVisible({ timeout: 15_000 });
+  const forkTitle = page.getByText("Fork 1", { exact: true }).last();
+  await forkTitle.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "名前を変える…" }).click();
+  await expect(dialog).toBeVisible({ timeout: 10_000 });
+  await dialog.getByLabel("名前").fill("枝の名前");
+  await dialog.getByRole("button", { name: "保存する" }).click();
+  await expect(dialog).toBeHidden({ timeout: 10_000 });
+  await expect(page.getByTestId("sidebar-fork-name").filter({ hasText: "枝の名前" })).toHaveCount(1);
+});
+
+test("Fork と Close のアイコンは、下向き（会話が流れる向き）に出す", async ({ page }) => {
+  // ユーザー要望（2026-09-11）：会話は下に流れるので、分岐も合流も下側が直感に近い。
+  // **見た目の指定は画面から測る**（`-scale-y-100` が実際に効いているか）
+  await openApp(page);
+  await createProject(page, "向きの spec", mkdtempSync(join(tmpdir(), "banto-e2e-icon-")));
+
+  // **Tailwind v4 は `transform` ではなく `scale` に出す**（実測・2026-09-11）
+  // ——`transform` を見ていると、効いていても "none" に見える
+  const scaleYOf = async (locator: import("@playwright/test").Locator) =>
+    locator.evaluate((el) => {
+      const style = getComputedStyle(el);
+      if (style.scale && style.scale !== "none") return Number(style.scale.split(" ").at(-1));
+      return new DOMMatrixReadOnly(style.transform).d;
+    });
+
+  // ヘッダの「Fork を開く」
+  const forkButtonIcon = page.getByRole("button", { name: "Fork を開く" }).locator("svg").first();
+  expect(await scaleYOf(forkButtonIcon), "Fork のアイコンが上下反転していない").toBeCloseTo(-1, 2);
+
+  // サイドバーの Fork 行と、メニューの Close
+  await page.getByRole("button", { name: "Fork を開く" }).click();
+  const back = page.getByRole("button", { name: /Base Thread に戻る$/ });
+  await expect(back).toBeVisible({ timeout: 15_000 });
+  expect(
+    await scaleYOf(page.getByRole("button", { name: "この Fork Thread を Close" }).locator("svg").first()),
+    "Close のアイコンが上下反転していない",
+  ).toBeCloseTo(-1, 2);
+  await back.click();
+
+  const row = page
+    .getByTestId("sidebar-fork-name")
+    .first()
+    .locator('xpath=ancestor::*[@data-sortable-id][1]');
+  expect(await scaleYOf(row.locator("svg").first()), "一覧の Fork アイコンが反転していない").toBeCloseTo(
+    -1,
+    2,
+  );
+});

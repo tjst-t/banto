@@ -14,6 +14,7 @@ import {
   UserMessageAttachments,
 } from "@/components/assistant-ui/elements/attachment.aui";
 import { AssistantMark } from "@/components/banto/thread/assistant-mark";
+import { ForkIcon } from "@/components/banto/thread/thread-icons";
 import {
   ForkFromMessageProvider,
   seqOfMessageId,
@@ -69,7 +70,6 @@ import {
   ChevronRightIcon,
   CopyIcon,
   DownloadIcon,
-  GitForkIcon,
   MicIcon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -626,7 +626,7 @@ const ForkFromHereButton: FC = () => {
       data-testid="fork-from-message"
       onClick={() => forkFrom(seq)}
     >
-      <GitForkIcon />
+      <ForkIcon />
     </TooltipIconButton>
   );
 };

@@ -16,7 +16,8 @@
 // banto のモバイル意匠はそれではなく MobileTopBar なので、ここで明示的に避ける）。
 import { useState } from "react";
 import Link from "next/link";
-import { Bell, Clock, GitFork, PanelLeft, Plus, Search, Settings } from "lucide-react";
+import { Bell, Clock, PanelLeft, Plus, Search, Settings } from "lucide-react";
+import { ForkIcon } from "@/components/banto/thread/thread-icons";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -221,7 +222,7 @@ function CollapsedRail({
                             href={`/p/${project.id}?fork=${fork.id}`}
                             className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-ink-2 hover:bg-accent hover:text-foreground"
                           >
-                            <GitFork className="size-3.5 shrink-0 text-ink-3" />
+                            <ForkIcon className="size-3.5 shrink-0 text-ink-3" />
                             <span className="truncate">{fork.title}</span>
                           </Link>
                         ))}

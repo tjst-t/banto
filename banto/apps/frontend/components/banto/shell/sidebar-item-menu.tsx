@@ -13,7 +13,8 @@
 // 掴めない場面**（キーボード、細いレール、タッチ）でも並べ替えられるようにする。
 // 出ている操作が、その場の入力手段で必ず効く（規則13）。
 import { Fragment, useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, GitMerge, MoreHorizontal, Pencil, type LucideIcon } from "lucide-react";
+import { ArrowDown, ArrowUp, MoreHorizontal, Pencil } from "lucide-react";
+import { CloseIcon, type IconComponent } from "@/components/banto/thread/thread-icons";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -34,7 +35,7 @@ import { RenameDialog } from "./rename-dialog";
 
 interface MenuEntry {
   label: string;
-  icon: LucideIcon;
+  icon: IconComponent;
   onSelect?: () => void;
   /** この項目の前に区切りを引く */
   separatorBefore?: boolean;
@@ -70,7 +71,7 @@ export function SidebarItemMenu({
     { label: "名前を変える…", icon: Pencil, onSelect: () => setRenaming(true) },
     { label: "上へ移動", icon: ArrowUp, onSelect: onMoveUp, separatorBefore: true },
     { label: "下へ移動", icon: ArrowDown, onSelect: onMoveDown },
-    ...(onClose ? [{ label: "Close", icon: GitMerge, onSelect: onClose, separatorBefore: true }] : []),
+    ...(onClose ? [{ label: "Close", icon: CloseIcon, onSelect: onClose, separatorBefore: true }] : []),
   ];
 
   const more = (

@@ -12,7 +12,8 @@
 import { useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ChevronRight, Clock, FolderGit2, GitFork, RotateCcw, Search, type LucideIcon } from "lucide-react";
+import { ChevronRight, Clock, FolderGit2, RotateCcw, Search } from "lucide-react";
+import { ForkIcon, type IconComponent } from "@/components/banto/thread/thread-icons";
 import {
   Dialog,
   DialogContent,
@@ -36,7 +37,7 @@ function ArchiveRow({
   onReopen,
   children,
 }: {
-  icon: LucideIcon;
+  icon: IconComponent;
   title: string;
   subtitle: string;
   expanded: boolean;
@@ -205,7 +206,7 @@ export function ArchiveDialog({
               {closedForks.map((thread) => (
                 <ArchiveRow
                   key={thread.id}
-                  icon={GitFork}
+                  icon={ForkIcon}
                   title={thread.title}
                   subtitle={thread.closedAt ? `Close した日：${thread.closedAt}` : "Close した日：不明（再読み込み前に閉じた）"}
                   expanded={expandedId === thread.id}

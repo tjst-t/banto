@@ -141,7 +141,7 @@ test("サイドバー：Project 名と Thread の目次が読めて、畳んだ�
   // 行の読み上げ名は「頭文字 ＋ Project 名」——**末尾一致**で1つ目に絞る
   // （前方一致だと「… 2」にも当たる）
   await sidebar.getByRole("link", { name: new RegExp(`${PROJECT_NAME}$`) }).click();
-  await expect(page.getByText(`Base Thread — ${PROJECT_NAME}`, { exact: true })).toBeVisible({
+  await expect(page.getByText(PROJECT_NAME, { exact: true }).first()).toBeVisible({
     timeout: 15_000,
   });
   const observed = await page.evaluate(

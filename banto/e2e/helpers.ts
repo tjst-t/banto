@@ -53,17 +53,17 @@ export async function openNav(page: Page): Promise<void> {
 }
 
 /**
- * その Project の Base Thread が開いていること。**題は幅で変わる**
- * （改訂・2026-09-09——モバイルは段が1つなので、接頭辞を落として Project 名だけ）
- * ので、待ち条件を各 spec に写さずここ1箇所に持つ（規則3）。
+ * その Project の Base Thread が開いていること。**題は Project 名だけ**
+ * （改訂・2026-09-11、ユーザー要望——「Base Thread —」の接頭辞をやめた。
+ * その面が何かは、いま開いているもので分かる）。待ち条件は各 spec に
+ * 写さずここ1箇所に持つ（規則3）。
  */
 export async function expectProjectOpen(
   page: Page,
   projectName: string,
   message?: string,
 ): Promise<void> {
-  const title = isMobileViewport(page) ? projectName : `Base Thread — ${projectName}`;
-  await expect(page.getByText(title, { exact: true }).first(), message).toBeVisible({
+  await expect(page.getByText(projectName, { exact: true }).first(), message).toBeVisible({
     timeout: 15_000,
   });
 }

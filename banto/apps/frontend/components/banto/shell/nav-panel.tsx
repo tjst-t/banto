@@ -13,7 +13,6 @@ import {
   Bell,
   ChevronRight,
   Clock,
-  GitFork,
   MessageSquare,
   Plus,
   Search,
@@ -52,6 +51,7 @@ import type { MockProject, MockThread } from "@/lib/mock/types";
 import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
 import { SidebarItemMenu } from "./sidebar-item-menu";
 import { SortableList, SortableRow } from "./sortable-list";
+import { ForkIcon } from "@/components/banto/thread/thread-icons";
 import { ThemeToggle } from "./theme-toggle";
 
 const SHOW_ARCHIVE = CONNECTED_FEATURES.threadCloseReopen || CONNECTED_FEATURES.projectCloseReopen;
@@ -239,7 +239,7 @@ function ProjectTreeItem({
                               title={fork.title}
                               onClick={onNavigate}
                             >
-                              <GitFork />
+                              <ForkIcon />
                               <span data-testid="sidebar-fork-name">{fork.title}</span>
                             </Link>
                           </SidebarMenuSubButton>

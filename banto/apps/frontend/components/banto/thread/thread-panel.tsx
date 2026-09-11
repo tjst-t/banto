@@ -7,11 +7,11 @@
 // 複数パネルの同時表示をそのまま実現する（Command Palette 等での Thread 一覧操作は
 // 別の場所で Event Store 相当のストアから作る——ここでは会話の表示・送信だけを担う）。
 import { useEffect, useMemo, type ReactNode } from "react";
-import { GitFork } from "lucide-react";
 import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { ReattachedTurn } from "@/components/banto/thread/reattached-turn";
 import { ThreadIdProvider } from "@/components/banto/thread/thread-id-context";
+import { ForkIcon } from "@/components/banto/thread/thread-icons";
 import type { ForkFromMessage } from "@/components/banto/thread/fork-from-message";
 import { CanvasAutoOpen } from "@/components/banto/thread/canvas-auto-open";
 import { ComposerModelEffortMenu } from "@/components/banto/thread/composer-model-effort-menu";
@@ -154,7 +154,7 @@ export function ThreadPanel({
         anchorOf(fork.realCreatedSeq),
         <OpenableCard
           key={`fork-${fork.id}`}
-          icon={GitFork}
+          icon={ForkIcon}
           title={fork.title}
           description={count > 0 ? `${count} 件のやり取り` : "まだやり取りはありません"}
           onOpen={onOpenFork ? () => onOpenFork(fork.id) : undefined}

@@ -2,7 +2,12 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
-import { ArrowLeft, Bell, Clock, ExternalLink, GitFork, GitMerge, Maximize2, Minimize2, Settings, X } from "lucide-react";
+import { ArrowLeft, Bell, Clock, ExternalLink, Maximize2, Minimize2, Settings, X } from "lucide-react";
+import { CloseIcon, ForkIcon, type IconComponent } from "@/components/banto/thread/thread-icons";
+import {
+  RenameOnRightClick,
+  type RenameTarget,
+} from "@/components/banto/thread/rename-on-right-click";
 import { toast } from "sonner";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useMounted } from "@/hooks/use-mounted";
@@ -30,8 +35,14 @@ import {
   prepareRealProjectModules,
 } from "@/lib/backend/client";
 import { reportFailure } from "@/lib/report-failure";
-import { getProject, hydrateRealProjects } from "@/lib/mock/projects";
-import { foldForkThread, getThread, registerRealFork, updateRealThreadData } from "@/lib/mock/threads";
+import { getProject, hydrateRealProjects, renameProject } from "@/lib/mock/projects";
+import {
+  foldForkThread,
+  getThread,
+  registerRealFork,
+  renameForkThread,
+  updateRealThreadData,
+} from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { CONNECTED_FEATURES } from "@/lib/feature-flags";
 
@@ -40,11 +51,15 @@ const SHOW_ARCHIVE = CONNECTED_FEATURES.threadCloseReopen || CONNECTED_FEATURES.
 function PanelHeader({
   leading,
   title,
+  onRename,
   children,
 }: {
   /** ヘッダの左端に置くもの（モバイルのナビの入口） */
   leading?: ReactNode;
   title: string;
+  /** 題を右クリックしたら名前を変えられる（決定・2026-09-11、ユーザー要望）
+   *  ——サイドバーまで戻らなくても、いま見ている面から直せる */
+  onRename?: RenameTarget;
   children?: ReactNode;
 }) {
   return (
@@ -59,12 +74,14 @@ function PanelHeader({
           クライアント側で作り直す——その巻き添えでThreadPanel（会話中の
           ストリーミング購読）ごと再マウントされ、応答が届かなくなる実害を
           実測で確認した。ここでは意図的な差分なので警告を抑止する */}
-      <p
-        className="min-w-0 flex-1 truncate text-sm font-medium text-foreground"
-        suppressHydrationWarning
-      >
-        {title}
-      </p>
+      <RenameOnRightClick target={onRename}>
+        <p
+          className="min-w-0 flex-1 truncate text-sm font-medium text-foreground"
+          suppressHydrationWarning
+        >
+          {title}
+        </p>
+      </RenameOnRightClick>
       <div className="flex shrink-0 items-center gap-1.5">{children}</div>
     </header>
   );
@@ -78,15 +95,18 @@ function ClosablePanelHeader({
   closeLabel,
   titleIcon: TitleIcon,
   title,
+  onRename,
   trailing,
 }: {
-  icon: typeof ArrowLeft;
+  icon: IconComponent;
   onClose: () => void;
   closeLabel: string;
   /** 何の面か（Fork Thread・Canvas）はアイコンで示す——狭い幅では文字の接頭辞が
       題そのものを押し出してしまう（3層のときフォーク名が途中で切れていた） */
-  titleIcon?: typeof ArrowLeft;
+  titleIcon?: IconComponent;
   title: string;
+  /** 題を右クリックしたら名前を変えられる（決定・2026-09-11、ユーザー要望） */
+  onRename?: RenameTarget;
   trailing?: ReactNode;
 }) {
   return (
@@ -100,9 +120,11 @@ function ClosablePanelHeader({
         <Icon className="size-4" />
       </button>
       {TitleIcon ? <TitleIcon className="size-4 shrink-0 text-ink-3" /> : null}
-      <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground" title={title}>
-        {title}
-      </p>
+      <RenameOnRightClick target={onRename}>
+        <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground" title={title}>
+          {title}
+        </p>
+      </RenameOnRightClick>
       {trailing}
     </div>
   );
@@ -115,7 +137,7 @@ function IconHeaderButton({
 }: {
   onClick: () => void;
   label: string;
-  icon: typeof ArrowLeft;
+  icon: IconComponent;
 }) {
   return (
     <button
@@ -325,10 +347,18 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
           <PanelHeader
             // モバイルはここが唯一のナビの入口（上部バーを廃した分、段が1つ減る）
             leading={isMobile ? <MobileNavDrawer projectId={projectId} /> : undefined}
-            title={isMobile ? project.name : `Base Thread — ${project.name}`}
+            // **題は Project 名だけ**（改訂・2026-09-11、ユーザー要望）。
+            // 「Base Thread —」の接頭辞はやめた——その面が何かは、いま開いて
+            // いるもので分かる（Fork なら Fork の名前とアイコンが出る）
+            title={project.name}
+            onRename={{
+              what: "Project",
+              name: project.name,
+              onRename: (name) => renameProject(project.id, name),
+            }}
           >
             {CONNECTED_FEATURES.contextUsage ? <ContextUsageMeter threadId={project.baseThreadId} /> : null}
-            <IconHeaderButton icon={GitFork} label="Fork を開く" onClick={() => handleOpenFork(project.baseThreadId)} />
+            <IconHeaderButton icon={ForkIcon} label="Fork を開く" onClick={() => handleOpenFork(project.baseThreadId)} />
             {isMobile ? (
               // 判断待ちは「止まっている」ので、目次を開かなくても件数が見える
               // 位置に置く。履歴は急がないので Drawer に譲る（段を1つに保つ）
@@ -378,8 +408,17 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
               icon={ArrowLeft}
               onClose={() => stack.close("fork")}
               closeLabel={`${project.name} の Base Thread に戻る`}
-              titleIcon={GitFork}
+              titleIcon={ForkIcon}
               title={thread?.title ?? threadId}
+              onRename={
+                thread
+                  ? {
+                      what: "Fork Thread",
+                      name: thread.title,
+                      onRename: (title) => renameForkThread(threadId, title),
+                    }
+                  : undefined
+              }
               trailing={
                 <div className="flex items-center gap-1.5">
                   {CONNECTED_FEATURES.contextUsage ? <ContextUsageMeter threadId={threadId} /> : null}
@@ -389,7 +428,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
                   />
                   {CONNECTED_FEATURES.threadCloseReopen ? (
                     <IconHeaderButton
-                      icon={GitMerge}
+                      icon={CloseIcon}
                       label="この Fork Thread を Close"
                       onClick={() => handleCloseFork(threadId)}
                     />

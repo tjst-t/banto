@@ -10,7 +10,7 @@
 // 作ると、次に「受信箱を開く」「設定を開く」が来たときにまた増える。
 // 種類ごとに変わるのは「何のアイコンで、何と書いて、押したら何を開くか」だけ。
 
-import type { LucideIcon } from "lucide-react";
+import type { IconComponent } from "@/components/banto/thread/thread-icons";
 
 export function OpenableCard({
   icon: Icon,
@@ -22,7 +22,7 @@ export function OpenableCard({
   moduleName,
   children,
 }: {
-  icon: LucideIcon;
+  icon: IconComponent;
   title: string;
   /** 何を開くのかの手がかり（呼ばれた引数の要約・Fork のやり取り件数など） */
   description?: string;
