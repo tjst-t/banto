@@ -14,6 +14,7 @@
 import { useEffect, useId, useRef, type MouseEvent, type ReactNode } from "react";
 import {
   DndContext,
+  MeasuringStrategy,
   MouseSensor,
   TouchSensor,
   closestCenter,
@@ -70,6 +71,10 @@ export function SortableList({
       sensors={sensors}
       collisionDetection={closestCenter}
       modifiers={[restrictToVerticalAxis, restrictToParentElement]}
+      // **運んでいる間に高さが変わるので、測り直す**（実測・2026-09-11、ユーザー報告）。
+      // 子（Thread の目次）を開いている Project は背が高く、掴んだ瞬間に目次を
+      // 畳むので、掴む前に測った大きさのままだと行き先の計算が合わない
+      measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
       onDragEnd={onDragEnd}
     >
       <SortableContext items={[...ids]} strategy={verticalListSortingStrategy}>
@@ -95,7 +100,7 @@ export function SortableRow({
   /** 掴むための props（`{...handle}`）を受け取って、掴ませたい要素に付ける。
    *  **行全体ではなく「その行の見出し」に付ける**——入れ子の一覧（Project の中の
    *  Fork）があるので、親の取っ手が子の行まで覆うと掴み合いになる */
-  children: (handle: Record<string, unknown>) => ReactNode;
+  children: (handle: Record<string, unknown>, isDragging: boolean) => ReactNode;
   className?: string;
 }) {
   const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
@@ -124,14 +129,18 @@ export function SortableRow({
       data-dragging={isDragging ? "" : undefined}
       className={className}
       style={{
-        transform: CSS.Transform.toString(transform),
+        // **潰さない**（実測・2026-09-11、ユーザー報告）。`CSS.Transform` は
+        // dnd-kit が出す拡大縮小まで反映するので、背の高い行（子を開いた Project）を
+        // 掴むと**行き先の高さに合わせて `scaleY(0.33)` が掛かり、中身ごと潰れて**
+        // 見えた。運ぶのは位置だけ——大きさは変えない
+        transform: CSS.Translate.toString(transform),
         transition,
         // 掴んでいるものは上に重ね、薄くする（どれを動かしているかが見える）
         zIndex: isDragging ? 30 : undefined,
         opacity: isDragging ? 0.6 : undefined,
       }}
     >
-      {children({ ...listeners })}
+      {children({ ...listeners }, isDragging)}
     </Tag>
   );
 }

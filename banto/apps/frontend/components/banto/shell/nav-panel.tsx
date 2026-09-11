@@ -158,7 +158,7 @@ function ProjectTreeItem({
 
   return (
     <SortableRow id={project.id} as="li" className="group/menu-item relative">
-      {(drag) => (
+      {(drag, isDragging) => (
         <>
           <SidebarItemMenu
             what="Project"
@@ -193,7 +193,12 @@ function ProjectTreeItem({
             </div>
           </SidebarItemMenu>
 
-          {expanded ? (
+          {/* **運んでいる間は、目次を畳む**（実測・2026-09-11、ユーザー報告）。
+              子を開いた Project は他の行よりずっと背が高く、そのまま運ぶと
+              (1) 行き先の高さに合わせて潰れて見え、(2) 背の高いぶん**一番上まで
+              届かない**（真ん中どうしで行き先を決めるため）。運んでいる間だけ
+              高さを揃える——畳んだ／開いたという人の選択は変えない */}
+          {expanded && !isDragging ? (
             <SidebarMenuSub>
               <SidebarMenuSubItem>
                 <SidebarMenuSubButton asChild isActive={isCurrent && activeForkThreadId === null}>

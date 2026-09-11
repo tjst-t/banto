@@ -155,3 +155,71 @@ test("Fork も、メニューから名前を変えられる・並べ替えられ
     "設計の枝",
   ]);
 });
+
+test("子（Thread の目次）を開いた Project も、潰れずに一番上まで運べる", async ({ page }) => {
+  // ユーザー報告（2026-09-11）：目次を開いている Project を掴むと
+  // (1) ぎゅっと圧縮された見た目になり、(2) 一番上に移動させられない。
+  // どちらも「その行だけ背が高い」ことから来ていた。
+  await openApp(page);
+  await createProject(page, "背A", mkdtempSync(join(tmpdir(), "banto-e2e-tall-a-")));
+  await createProject(page, "背B", mkdtempSync(join(tmpdir(), "banto-e2e-tall-b-")));
+  await createProject(page, "背C", mkdtempSync(join(tmpdir(), "banto-e2e-tall-c-")));
+
+  const rowOf = (name: string) =>
+    page
+      .getByTestId("sidebar-project-name")
+      .filter({ hasText: name })
+      .first()
+      .locator('xpath=ancestor::*[@data-sortable-id][1]');
+
+  // いま開いている Project（背C）は目次が開いている＝他より背が高い
+  const tall = await rowOf("背C").boundingBox();
+  const short = await rowOf("背A").boundingBox();
+  expect(tall!.height, "この試験の前提（目次が開いて背が高い）が崩れている").toBeGreaterThan(
+    short!.height,
+  );
+
+  // **2つ上へ運ぶ**（背A の上）。直す前は**1つしか上がらなかった**
+  // ——背の高い行の中心は、上の行の中心より上に行けないため（実測・2026-09-11）。
+  // 「一覧のいちばん上」で見ないのは、前の試験が作った Project が上に積まれていて
+  // スクロールが要る＝掴む座標が変わるから（この spec の他の試験と同じ落とし穴）
+  const handle = projectHandle(page, "背C");
+  await rowOf("背A").scrollIntoViewIfNeeded();
+  await handle.scrollIntoViewIfNeeded();
+  const target = await rowOf("背A").boundingBox();
+  const from = await handle.boundingBox();
+  await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2 - 12, { steps: 5 });
+  await page.mouse.move(target!.x + target!.width / 2, target!.y + 4, { steps: 15 });
+
+  // **運んでいる間、潰れていない**——位置だけが動き、大きさは変わらない
+  const dragging = page.locator("[data-dragging]");
+  await expect(dragging, "掴めていない").toHaveCount(1);
+  const look = await dragging.first().evaluate((el) => {
+    const m = new DOMMatrixReadOnly(getComputedStyle(el).transform);
+    return { scaleX: m.a, scaleY: m.d, height: el.getBoundingClientRect().height };
+  });
+  expect(look.scaleY, "運んでいる間に縦へ潰れている").toBeCloseTo(1, 2);
+  expect(look.scaleX, "運んでいる間に横へ潰れている").toBeCloseTo(1, 2);
+  expect(look.height, "運んでいる間だけ他の行と高さが揃っていない").toBeCloseTo(short!.height, 0);
+
+  await page.mouse.up();
+
+  // **2つ上まで届く**（直す前は ["背A","背C","背B"] で止まっていた）
+  await expect
+    .poll(async () => (await projectNames(page)).filter((n) => n.startsWith("背")), {
+      timeout: 10_000,
+    })
+    .toEqual(["背C", "背A", "背B"]);
+  // 落としたら目次は開いたまま（人の選択は変えていない）
+  await expect(rowOf("背C").getByText("Base Thread")).toBeVisible();
+
+  await page.reload();
+  await expect(page.locator('[data-slot="sidebar"]')).toBeVisible({ timeout: 30_000 });
+  await expect
+    .poll(async () => (await projectNames(page)).filter((n) => n.startsWith("背")), {
+      timeout: 30_000,
+    })
+    .toEqual(["背C", "背A", "背B"]);
+});
