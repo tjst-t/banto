@@ -46,7 +46,7 @@ export function SidebarItemMenu({
   onRename,
   onMoveUp,
   onMoveDown,
-  onFold,
+  onClose,
   moreClassName,
   children,
 }: {
@@ -57,8 +57,8 @@ export function SidebarItemMenu({
   /** 並びの端なら undefined——押せない項目として出す（隠さない。端に居ることが分かる） */
   onMoveUp?: () => void;
   onMoveDown?: () => void;
-  /** 畳む（Fork だけ）。削除ではなく整理——閉じた Fork は履歴から開き直せる */
-  onFold?: () => void;
+  /** Close（Fork だけ）。削除ではなく整理——閉じた Fork は履歴から開き直せる */
+  onClose?: () => void;
   /** 「…」ボタンの位置合わせ（既定は行の右端） */
   moreClassName?: string;
   /** 行そのもの。引数の「…」ボタンを行の中の好きな場所に置く */
@@ -70,7 +70,7 @@ export function SidebarItemMenu({
     { label: "名前を変える…", icon: Pencil, onSelect: () => setRenaming(true) },
     { label: "上へ移動", icon: ArrowUp, onSelect: onMoveUp, separatorBefore: true },
     { label: "下へ移動", icon: ArrowDown, onSelect: onMoveDown },
-    ...(onFold ? [{ label: "畳む", icon: GitMerge, onSelect: onFold, separatorBefore: true }] : []),
+    ...(onClose ? [{ label: "Close", icon: GitMerge, onSelect: onClose, separatorBefore: true }] : []),
   ];
 
   const more = (

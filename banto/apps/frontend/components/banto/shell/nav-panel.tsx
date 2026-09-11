@@ -124,16 +124,16 @@ function ProjectTreeItem({
   const forks = getThreadsForProject(project.id).filter((t): t is MockThread => t.kind === "fork");
   const closedForkCount = getClosedForksForProject(project.id).length;
 
-  async function foldFork(fork: MockThread) {
+  async function closeFork(fork: MockThread) {
     try {
-      // 畳む手順そのものは1箇所（lib/mock/threads.ts）——Fork のヘッダから
-      // 畳んだときと同じ経路を通る（規則3）
+      // Close の手順そのものは1箇所（lib/mock/threads.ts）——Fork のヘッダから
+      // Close したときと同じ経路を通る（規則3）
       await foldForkThread(fork.id);
-      // いま開いている Fork を畳んだら、その Project の Base Thread に戻る
-      // ——畳んだ会話が画面に残り続けないように
+      // いま開いている Fork を Close したら、その Project の Base Thread に戻る
+      // ——閉じた会話が画面に残り続けないように
       if (isCurrent && activeForkThreadId === fork.id) router.push(`/p/${project.id}`);
     } catch (err) {
-      toast(`Fork を畳むのに失敗しました: ${err instanceof Error ? err.message : String(err)}`);
+      toast(`Fork を Close できませんでした: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -187,7 +187,7 @@ function ProjectTreeItem({
                 <SidebarMenuAction
                   onClick={onToggleExpanded}
                   aria-expanded={expanded}
-                  aria-label={`${project.name} の Thread 一覧を${expanded ? "畳む" : "開く"}`}
+                  aria-label={`${project.name} の Thread 一覧を${expanded ? "折りたたむ" : "開く"}`}
                 >
                   <ChevronRight className={cn("transition-transform", expanded && "rotate-90")} />
                 </SidebarMenuAction>
@@ -222,9 +222,9 @@ function ProjectTreeItem({
                         onRename={(title) => renameForkThread(fork.id, title)}
                         onMoveUp={index > 0 ? () => moveFork(index, -1) : undefined}
                         onMoveDown={index < forks.length - 1 ? () => moveFork(index, 1) : undefined}
-                        // 畳む口はメニューの中へ移した（改訂・2026-09-11、ユーザー要望）
+                        // Close の口はメニューの中へ移した（改訂・2026-09-11、ユーザー要望）
                         // ——行に出しっぱなしの操作を1つに減らす。削除ではなく整理
-                        onFold={CONNECTED_FEATURES.threadCloseReopen ? () => void foldFork(fork) : undefined}
+                        onClose={CONNECTED_FEATURES.threadCloseReopen ? () => void closeFork(fork) : undefined}
                       >
                         {(more) => (
                         <div className="relative" {...forkDrag}>
@@ -244,7 +244,7 @@ function ProjectTreeItem({
                             </Link>
                           </SidebarMenuSubButton>
                           {/* 操作はここ1つ（「…」）——右クリックと同じものが出る。
-                              畳む（マージのアイコンで出していたもの）もこの中 */}
+                              Close（合流のアイコンで出していたもの）もこの中 */}
                           {more}
                         </div>
                         )}

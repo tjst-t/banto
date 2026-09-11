@@ -207,7 +207,7 @@ export function ArchiveDialog({
                   key={thread.id}
                   icon={GitFork}
                   title={thread.title}
-                  subtitle={thread.closedAt ? `畳んだ日：${thread.closedAt}` : "畳んだ日：不明（再読み込み前に畳まれた）"}
+                  subtitle={thread.closedAt ? `Close した日：${thread.closedAt}` : "Close した日：不明（再読み込み前に閉じた）"}
                   expanded={expandedId === thread.id}
                   onToggle={() => toggle(thread.id)}
                   onReopen={() => handleReopenFork(thread.id)}
@@ -220,13 +220,13 @@ export function ArchiveDialog({
 
           {closedProjects.length > 0 ? (
             <div>
-              <p className="mb-1 px-1 text-xs font-medium text-ink-3">終了した Project</p>
+              <p className="mb-1 px-1 text-xs font-medium text-ink-3">閉じた Project</p>
               {closedProjects.map((project) => (
                 <ArchiveRow
                   key={project.id}
                   icon={FolderGit2}
                   title={project.name}
-                  subtitle={project.closedAt ? `終了日：${project.closedAt}` : "終了日：不明（再読み込み前に終了した）"}
+                  subtitle={project.closedAt ? `Close した日：${project.closedAt}` : "Close した日：不明（再読み込み前に閉じた）"}
                   expanded={expandedId === project.id}
                   onToggle={() => toggle(project.id)}
                   onReopen={() => handleReopenProject(project.id)}

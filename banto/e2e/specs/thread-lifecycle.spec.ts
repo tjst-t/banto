@@ -51,7 +51,7 @@ test("Fork Threadを畳む→履歴に出る→再度開く→会話が読み返
   await expect(assistantBubble.filter({ hasText: "フォークめじるし456" })).toBeVisible({ timeout: 60_000 });
 
   // Fork Threadを畳む
-  await page.getByRole("button", { name: "この Fork Thread を畳む" }).click();
+  await page.getByRole("button", { name: "この Fork Thread を Close" }).click();
   await expect(forkPanelBack).not.toBeVisible();
 
   // 履歴（Archive）に出る。**入口は幅で変わる**（改訂・2026-09-09）——

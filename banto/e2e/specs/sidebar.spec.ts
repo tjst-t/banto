@@ -59,7 +59,7 @@ test("サイドバー：Project 名と Thread の目次が読めて、畳んだ�
   );
 
   // ---- 畳む／開く ---------------------------------------------------------
-  await sidebar.getByRole("button", { name: "サイドバーを畳む" }).click();
+  await sidebar.getByRole("button", { name: "サイドバーを折りたたむ" }).click();
   await expect(sidebar.getByRole("link", { name: PROJECT_NAME })).toBeHidden({ timeout: 5_000 });
   await expectSidebarWidth(sidebar, 58);
 

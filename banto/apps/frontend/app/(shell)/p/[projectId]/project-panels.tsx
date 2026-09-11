@@ -254,7 +254,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
       await foldForkThread(threadId);
       stack.close("fork");
     } catch (err) {
-      toast(`Fork を畳むのに失敗しました: ${err instanceof Error ? err.message : String(err)}`);
+      toast(`Fork を Close できませんでした: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -390,7 +390,7 @@ export function ProjectPanels({ projectId }: { projectId: string }) {
                   {CONNECTED_FEATURES.threadCloseReopen ? (
                     <IconHeaderButton
                       icon={GitMerge}
-                      label="この Fork Thread を畳む"
+                      label="この Fork Thread を Close"
                       onClick={() => handleCloseFork(threadId)}
                     />
                   ) : null}

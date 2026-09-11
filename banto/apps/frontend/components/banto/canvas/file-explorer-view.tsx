@@ -658,8 +658,8 @@ export function FileExplorerView({
               <button
                 type="button"
                 onClick={() => setTreeCollapsed(true)}
-                title="フォルダツリーを畳む"
-                aria-label="フォルダツリーを畳む"
+                title="フォルダツリーを折りたたむ"
+                aria-label="フォルダツリーを折りたたむ"
                 className="flex size-6 shrink-0 items-center justify-center rounded-md text-ink-2 hover:bg-accent"
               >
                 <PanelLeftClose className="size-3.5" />

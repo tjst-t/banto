@@ -224,9 +224,9 @@ test("子（Thread の目次）を開いた Project も、潰れずに一番上�
     .toEqual(["背C", "背A", "背B"]);
 });
 
-test("行の「…」から、右クリックと同じ操作が出る（Fork は畳むも）", async ({ page }) => {
-  // ユーザー要望（2026-09-11）：Fork 行のマージのアイコンを「…」にして、
-  // 右クリックと同じメニューを出す。畳むもそのメニューに入れる。
+test("行の「…」から、右クリックと同じ操作が出る（Fork は Close も）", async ({ page }) => {
+  // ユーザー要望（2026-09-11）：Fork 行の合流のアイコンを「…」にして、
+  // 右クリックと同じメニューを出す。Close もそのメニューに入れる。
   // Project 行にも、たたむ（目次の開閉）の左に「…」を置く。
   await openApp(page);
   await createProject(page, "点々の spec", mkdtempSync(join(tmpdir(), "banto-e2e-dots-")));
@@ -250,7 +250,7 @@ test("行の「…」から、右クリックと同じ操作が出る（Fork は
   await expect(forkMore, "Fork 行に「…」が出ていない").toHaveCount(1);
   await forkMore.click();
   const fromMore = await page.getByRole("menuitem").allTextContents();
-  expect(fromMore).toEqual(["名前を変える…", "上へ移動", "下へ移動", "畳む"]);
+  expect(fromMore).toEqual(["名前を変える…", "上へ移動", "下へ移動", "Close"]);
   await page.keyboard.press("Escape");
   await expect(page.getByRole("menuitem")).toHaveCount(0);
 
@@ -283,13 +283,13 @@ test("行の「…」から、右クリックと同じ操作が出る（Fork は
   ]);
   await page.keyboard.press("Escape");
 
-  // ---- 畳むは、押したら本当に畳まれる（規則14） --------------------------
+  // ---- Close は、押したら本当に閉じる（規則14） --------------------------
   await rowOfFork.hover();
   await forkMore.click();
-  await page.getByRole("menuitem", { name: "畳む" }).click();
+  await page.getByRole("menuitem", { name: "Close" }).click();
   await expect(
     page.getByTestId("sidebar-fork-name").filter({ hasText: "Fork 1" }),
-    "畳んだのに一覧に残っている",
+    "Close したのに一覧に残っている",
   ).toHaveCount(0, { timeout: 15_000 });
   // 削除ではなく整理——閉じた Fork として数えられている
   await expect(page.getByText(/閉じた Fork（\d+）/).first()).toBeVisible({ timeout: 15_000 });

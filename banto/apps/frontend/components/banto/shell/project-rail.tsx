@@ -367,13 +367,13 @@ function SidebarBody({
             <button
               type="button"
               onClick={toggleSidebar}
-              aria-label="サイドバーを畳む"
+              aria-label="サイドバーを折りたたむ"
               className="flex size-8 shrink-0 items-center justify-center rounded-md text-ink-3 hover:bg-accent hover:text-foreground"
             >
               <PanelLeft className="size-4" />
             </button>
           </TooltipTrigger>
-          <TooltipContent side="right">サイドバーを畳む（⌘B / Ctrl-B）</TooltipContent>
+          <TooltipContent side="right">サイドバーを折りたたむ（⌘B / Ctrl-B）</TooltipContent>
         </Tooltip>
       }
     />

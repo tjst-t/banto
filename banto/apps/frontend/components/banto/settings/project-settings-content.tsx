@@ -105,7 +105,7 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
       await closeProject(projectId);
     } catch (err) {
       // **閉じられなかったのに、閉じた先へ飛ばさない**（改訂・2026-09-10）
-      reportFailure("Project を終了できませんでした", err);
+      reportFailure("Project を Close できませんでした", err);
       return;
     }
     setConfirmClose(false);
@@ -354,18 +354,18 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
           <h1 className="mb-0.5 text-lg font-semibold text-foreground">危険な操作</h1>
           <div className="mt-3 rounded-md border border-destructive/30 p-3">
             <p className="mb-2 text-xs text-ink-3">
-              終了は削除ではない——閉じた Project の一覧（サイドバー下部の時計アイコン）から
+              Close は削除ではない——閉じた Project の一覧（サイドバー下部の時計アイコン）から
               概要を読み返し、再度開ける。
             </p>
             <Button type="button" variant="destructive" size="sm" onClick={() => setConfirmClose(true)}>
-              この Project を終了する
+              この Project を Close する
             </Button>
           </div>
 
           <AlertDialog open={confirmClose} onOpenChange={setConfirmClose}>
             <AlertDialogContent>
               <AlertDialogHeader>
-                <AlertDialogTitle>{project.name} を終了しますか</AlertDialogTitle>
+                <AlertDialogTitle>{project.name} を Close しますか</AlertDialogTitle>
                 <AlertDialogDescription>
                   削除ではない——閉じた Project の一覧からいつでも再度開ける。
                   今開いている Thread は畳まれた状態で保存される。
@@ -373,7 +373,7 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
               </AlertDialogHeader>
               <AlertDialogFooter>
                 <AlertDialogCancel>やめる</AlertDialogCancel>
-                <AlertDialogAction onClick={handleClose}>終了する</AlertDialogAction>
+                <AlertDialogAction onClick={handleClose}>Close する</AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>

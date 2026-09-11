@@ -263,7 +263,7 @@ Thread は「Memory ＋ それ以降のメッセージ」なので、**Memory �
 
 | 操作 | Runner に渡すもの |
 |---|---|
-| 会話を畳む（同じ Thread のまま整理する） | resume-point 無し |
+| 会話を畳む（同じ Thread のまま整理する。**画面では Clear**、§6.13） | resume-point 無し |
 | やり直す | 過去の resume-point |
 | **過去の発言の時点から枝を分ける**（決定・2026-09-11、ユーザー要望） | **その時点の** resume-point（下記） |
 | Fork Thread を立てる／その中で分岐する | 引き継いだ resume-point ＋ **最初のターンで `forkSession`**（下記）。SDK の枝分かれで**キャッシュを引き継げる**——実測 §8 |
@@ -2596,6 +2596,9 @@ Phase 1 は「**契約が確定し、その契約で3つ書けた。ツールを
    `docs/specs/v4-security.md`「host の中継・可視性の層も、同じ境界である」（2026-09-10）。
    外部 Skill の `scripts/` は未決のまま残る（§5.7）
 12. Project / Thread の決定操作（畳む・やり直す・分岐・Module 追加削除）の呼び名と UI/API
+    ——**画面の言葉は決めた**（2026-09-11、`docs/specs/v4-frontend.md` §6.13）：
+    Fork / Project を閉じるのは **Close**、会話を畳むのは **Clear**、
+    表示をたたむのは **折りたたむ**。API 名は未決のまま
 13. ~~判断待ちの「後で答える」層の設計~~ **→ 決定（2026-08-30、§2.4・§2.4.1、
    実測 `poc/02-item13-parked-elicitation/`）。** `Query.close()` で pending 中の
    `elicitInput()` が即座に `cancel` として強制解決されることを確認——
