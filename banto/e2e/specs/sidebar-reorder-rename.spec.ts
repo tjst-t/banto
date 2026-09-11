@@ -223,3 +223,74 @@ test("子（Thread の目次）を開いた Project も、潰れずに一番上�
     })
     .toEqual(["背C", "背A", "背B"]);
 });
+
+test("行の「…」から、右クリックと同じ操作が出る（Fork は畳むも）", async ({ page }) => {
+  // ユーザー要望（2026-09-11）：Fork 行のマージのアイコンを「…」にして、
+  // 右クリックと同じメニューを出す。畳むもそのメニューに入れる。
+  // Project 行にも、たたむ（目次の開閉）の左に「…」を置く。
+  await openApp(page);
+  await createProject(page, "点々の spec", mkdtempSync(join(tmpdir(), "banto-e2e-dots-")));
+
+  // Fork を1つ作る
+  await page.getByRole("button", { name: "Fork を開く" }).click();
+  const back = page.getByRole("button", { name: /Base Thread に戻る$/ });
+  await expect(back).toBeVisible({ timeout: 15_000 });
+  await back.click();
+  await expect(back).toBeHidden({ timeout: 15_000 });
+
+  const rowOfFork = page
+    .getByTestId("sidebar-fork-name")
+    .filter({ hasText: "Fork 1" })
+    .first()
+    .locator('xpath=ancestor::*[@data-sortable-id][1]');
+
+  // ---- Fork：「…」→ 右クリックと同じ中身＋畳む ---------------------------
+  await rowOfFork.hover();
+  const forkMore = rowOfFork.getByTestId("sidebar-item-more");
+  await expect(forkMore, "Fork 行に「…」が出ていない").toHaveCount(1);
+  await forkMore.click();
+  const fromMore = await page.getByRole("menuitem").allTextContents();
+  expect(fromMore).toEqual(["名前を変える…", "上へ移動", "下へ移動", "畳む"]);
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menuitem")).toHaveCount(0);
+
+  // 右クリックでも同じ中身（出し方が2つ、中身は1つ）
+  await rowOfFork
+    .locator('[data-slot="context-menu-trigger"]')
+    .first()
+    .click({ button: "right" });
+  expect(await page.getByRole("menuitem").allTextContents()).toEqual(fromMore);
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menuitem")).toHaveCount(0);
+
+  // ---- Project：「…」は「たたむ」の左 ------------------------------------
+  const rowOfProject = page
+    .getByTestId("sidebar-project-name")
+    .filter({ hasText: "点々の spec" })
+    .first()
+    .locator('xpath=ancestor::*[@data-sortable-id][1]');
+  await rowOfProject.hover();
+  const projectMore = rowOfProject.getByTestId("sidebar-item-more").first();
+  await expect(projectMore, "Project 行に「…」が出ていない").toHaveCount(1);
+  const moreBox = await projectMore.boundingBox();
+  const foldBox = await rowOfProject.getByRole("button", { name: /Thread 一覧を/ }).boundingBox();
+  expect(moreBox!.x, "「…」がたたむボタンの左に無い").toBeLessThan(foldBox!.x);
+  await projectMore.click();
+  expect(await page.getByRole("menuitem").allTextContents()).toEqual([
+    "名前を変える…",
+    "上へ移動",
+    "下へ移動",
+  ]);
+  await page.keyboard.press("Escape");
+
+  // ---- 畳むは、押したら本当に畳まれる（規則14） --------------------------
+  await rowOfFork.hover();
+  await forkMore.click();
+  await page.getByRole("menuitem", { name: "畳む" }).click();
+  await expect(
+    page.getByTestId("sidebar-fork-name").filter({ hasText: "Fork 1" }),
+    "畳んだのに一覧に残っている",
+  ).toHaveCount(0, { timeout: 15_000 });
+  // 削除ではなく整理——閉じた Fork として数えられている
+  await expect(page.getByText(/閉じた Fork（\d+）/).first()).toBeVisible({ timeout: 15_000 });
+});

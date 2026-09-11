@@ -14,7 +14,6 @@ import {
   ChevronRight,
   Clock,
   GitFork,
-  GitMerge,
   MessageSquare,
   Plus,
   Search,
@@ -37,7 +36,6 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
 } from "@/components/ui/sidebar";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getInboxItems } from "@/lib/mock/inbox";
 import { getRealJudgments, getRealNotices, useRealInboxVersion } from "@/lib/backend/real-inbox";
 import { getActiveProjects, reorderProjects, renameProject } from "@/lib/mock/projects";
@@ -166,7 +164,10 @@ function ProjectTreeItem({
             onRename={(name) => renameProject(project.id, name)}
             onMoveUp={onMoveUp}
             onMoveDown={onMoveDown}
+            // 目次の開閉（chevron）がある行では、その左に置く
+            moreClassName={forks.length > 0 ? "right-7" : undefined}
           >
+            {(more) => (
             <div className="relative" {...drag}>
               <SidebarMenuButton asChild isActive={isCurrent}>
                 <Link
@@ -181,6 +182,7 @@ function ProjectTreeItem({
                   </span>
                 </Link>
               </SidebarMenuButton>
+              {more}
               {forks.length > 0 ? (
                 <SidebarMenuAction
                   onClick={onToggleExpanded}
@@ -191,6 +193,7 @@ function ProjectTreeItem({
                 </SidebarMenuAction>
               ) : null}
             </div>
+            )}
           </SidebarItemMenu>
 
           {/* **運んでいる間は、目次を畳む**（実測・2026-09-11、ユーザー報告）。
@@ -219,7 +222,11 @@ function ProjectTreeItem({
                         onRename={(title) => renameForkThread(fork.id, title)}
                         onMoveUp={index > 0 ? () => moveFork(index, -1) : undefined}
                         onMoveDown={index < forks.length - 1 ? () => moveFork(index, 1) : undefined}
+                        // 畳む口はメニューの中へ移した（改訂・2026-09-11、ユーザー要望）
+                        // ——行に出しっぱなしの操作を1つに減らす。削除ではなく整理
+                        onFold={CONNECTED_FEATURES.threadCloseReopen ? () => void foldFork(fork) : undefined}
                       >
+                        {(more) => (
                         <div className="relative" {...forkDrag}>
                           <SidebarMenuSubButton
                             asChild
@@ -236,24 +243,11 @@ function ProjectTreeItem({
                               <span data-testid="sidebar-fork-name">{fork.title}</span>
                             </Link>
                           </SidebarMenuSubButton>
-                          {/* 畳む口を目次の中にも置く——Fork を開いてヘッダのアイコンを
-                              探しに行かなくても、その場で片付けられる。削除ではない */}
-                          {CONNECTED_FEATURES.threadCloseReopen ? (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <button
-                                  type="button"
-                                  onClick={() => void foldFork(fork)}
-                                  aria-label={`「${fork.title}」を畳む`}
-                                  className="absolute top-1 right-1 flex size-5 items-center justify-center rounded-md text-ink-3 opacity-0 hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/fork:opacity-100"
-                                >
-                                  <GitMerge className="size-3.5" />
-                                </button>
-                              </TooltipTrigger>
-                              <TooltipContent side="right">畳む</TooltipContent>
-                            </Tooltip>
-                          ) : null}
+                          {/* 操作はここ1つ（「…」）——右クリックと同じものが出る。
+                              畳む（マージのアイコンで出していたもの）もこの中 */}
+                          {more}
                         </div>
+                        )}
                       </SidebarItemMenu>
                     )}
                   </SortableRow>

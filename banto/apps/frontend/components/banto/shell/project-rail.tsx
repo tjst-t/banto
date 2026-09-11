@@ -165,6 +165,11 @@ function CollapsedRail({
                   onMoveUp={index > 0 ? () => move(index, -1) : undefined}
                   onMoveDown={index < projects.length - 1 ? () => move(index, 1) : undefined}
                 >
+                  {/* **細いレールに「…」は置かない**（改訂・2026-09-11）——
+                      幅 58px にアイコンと並べる余地が無い。ここでの操作の口は
+                      右クリック（タッチは長押し）。名前が読める幅にすると
+                      行に「…」が出る（nav-panel.tsx） */}
+                  {() => (
                   <div className="relative flex justify-center" {...drag}>
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -181,6 +186,7 @@ function CollapsedRail({
                       <TooltipContent side="right">{project.name}</TooltipContent>
                     </Tooltip>
                   </div>
+                  )}
                 </SidebarItemMenu>
 
                 {/* 開いている Fork Thread の一覧・切替口。バッジは Link の外に置く
