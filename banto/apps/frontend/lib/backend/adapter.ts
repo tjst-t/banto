@@ -26,6 +26,7 @@ import {
   type RealTurnEvent,
 } from "./client";
 import { refreshRealInbox } from "./real-inbox";
+import { decideRun, type LiveTurnState } from "./live-turn-guard";
 import { getThreadPermissionMode } from "../mock/permission-mode";
 import { appendRealUsage, getThread, updateRealThreadData } from "../mock/threads";
 import type { MockThread } from "../mock/types";
@@ -140,11 +141,10 @@ export function getRealJudgmentId(toolCallId: string): string | undefined {
   return judgmentIdByToolCallId.get(toolCallId);
 }
 
-interface LiveTurn {
+interface LiveTurn extends LiveTurnState {
   iterator: AsyncGenerator<RealTurnEvent>;
   acc: PartsAccumulator;
-  /** このターンを起こしたときの発言。run() が呼び直されたとき、
-   *  「同じターンの再開」か「新しい発言」かを見分けるのに使う。 */
+  /** このターンを起こしたときの発言（表示・記録用）。 */
   prompt: string;
 }
 
@@ -156,6 +156,10 @@ interface LiveTurn {
  *  （docs/notes/2026-09-06-tool-approval-review.md）。
  *  いまは run() の finally で必ず取り除くので、**居るか居ないか**だけで表せる（規則3）。 */
 const liveTurns = new Map<string, LiveTurn>();
+
+function countUserMessages(messages: readonly ThreadMessage[]): number {
+  return messages.filter((m) => m.role === "user").length;
+}
 
 function lastUserText(messages: readonly ThreadMessage[]): string {
   const last = [...messages].reverse().find((m) => m.role === "user");
@@ -207,8 +211,12 @@ function applyMessage(acc: PartsAccumulator, raw: unknown, threadId?: string): v
         const result = block.is_error ? { error: block.content } : block.content;
         acc.finishTool(block.tool_use_id, result);
         // 画面つきなら、結果も覚えておく（Canvas パネルから引くため）
-        const view = inlineViewByToolCallId.get(block.tool_use_id);
-        if (view) inlineViewByToolCallId.set(block.tool_use_id, { ...view, toolResult: result });
+        const view = threadId
+          ? inlineViewByToolCallId.get(viewKey(threadId, block.tool_use_id))
+          : undefined;
+        if (view && threadId) {
+          inlineViewByToolCallId.set(viewKey(threadId, block.tool_use_id), { ...view, toolResult: result });
+        }
       }
     }
   }
@@ -221,11 +229,24 @@ function applyMessage(acc: PartsAccumulator, raw: unknown, threadId?: string): v
 
 /** Thread ごとの「画面を持つ tool」の一覧。host が真実で、ここは引き当て用の控え。 */
 const uiToolsByThread = new Map<string, RealUiTool[]>();
-/** toolCallId → 埋める画面。human-tool-card.tsx が引く。 */
+/**
+ * **Thread と toolCallId の組**→ 埋める画面。human-tool-card.tsx が引く。
+ *
+ * 以前は toolCallId だけを鍵にしていた。**Fork は親の履歴をそのまま持つ**ので、
+ * Fork を開いた瞬間に同じ toolCallId で上書きされ、**Base の会話に出ている画面が
+ * 「自分は Fork のものだ」と言い出す**——画面の橋が張り直され、そこからの
+ * tool 呼び出しも Fork の側に記録されていた（実測・2026-09-10、
+ * `frontend-interaction-hardening`）。**どの Thread のものかまで鍵にする**。
+ */
 const inlineViewByToolCallId = new Map<string, RealInlineView>();
+
+function viewKey(threadId: string, toolCallId: string): string {
+  return `${threadId}\u0000${toolCallId}`;
+}
 
 export interface RealInlineView {
   threadId: string;
+  toolCallId: string;
   server: string;
   resourceUri: string;
   toolName: string;
@@ -243,19 +264,33 @@ export interface RealInlineView {
   displayMode?: "inline" | "fullscreen";
 }
 
-export function getRealInlineView(toolCallId: string): RealInlineView | undefined {
-  return inlineViewByToolCallId.get(toolCallId);
+/**
+ * その Thread の、その呼び出しの画面。**どの Thread で描いているかまで渡す**
+ * ——渡さないと、同じ toolCallId を持つ Fork と取り違える（上のコメント）。
+ * Canvas のパネル（会話の外）は開いた元の Thread が分からないので、
+ * その場合だけ toolCallId だけで引き当てる。
+ */
+export function getRealInlineView(
+  toolCallId: string,
+  threadId?: string,
+): RealInlineView | undefined {
+  if (threadId) return inlineViewByToolCallId.get(viewKey(threadId, toolCallId));
+  for (const view of inlineViewByToolCallId.values()) {
+    if (view.toolCallId === toolCallId) return view;
+  }
+  return undefined;
 }
 
 /** 画面が「大きく出して」と言ったことを覚えておく（決定・2026-09-07）。
  *  会話が組み直されても、その呼び出しは入口だけを残す——同じ画面が
  *  会話の中と Canvas に二重に出ないようにする。 */
 export function markInlineViewDisplayMode(
+  threadId: string,
   toolCallId: string,
   displayMode: "inline" | "fullscreen",
 ): void {
-  const view = inlineViewByToolCallId.get(toolCallId);
-  if (view) inlineViewByToolCallId.set(toolCallId, { ...view, displayMode });
+  const view = inlineViewByToolCallId.get(viewKey(threadId, toolCallId));
+  if (view) inlineViewByToolCallId.set(viewKey(threadId, toolCallId), { ...view, displayMode });
 }
 
 /**
@@ -308,8 +343,9 @@ function rememberInlineView(threadId: string, toolCallId: string, toolName: stri
   const [, server, tool] = match;
   const found = uiToolsByThread.get(threadId)?.find((t) => t.server === server && t.tool === tool);
   if (!found) return;
-  inlineViewByToolCallId.set(toolCallId, {
+  inlineViewByToolCallId.set(viewKey(threadId, toolCallId), {
     threadId,
+    toolCallId,
     server: found.server,
     resourceUri: found.resourceUri,
     toolName,
@@ -338,9 +374,10 @@ export function realMessagesToInitial(
       // 埋め直すと、その画面がまた「大きく出して」と言い、リロードのたびに
       // Canvas が勝手に開く。会話には入口（カード）だけを残す。
       // この場で覚えた分（いま走ったターンで大きく出したもの）も残す
-      const known = inlineViewByToolCallId.get(call.toolCallId);
-      inlineViewByToolCallId.set(call.toolCallId, {
+      const known = inlineViewByToolCallId.get(viewKey(threadIdOfRestoredCall, call.toolCallId));
+      inlineViewByToolCallId.set(viewKey(threadIdOfRestoredCall, call.toolCallId), {
         threadId: threadIdOfRestoredCall,
+        toolCallId: call.toolCallId,
         displayMode: call.displayMode ?? known?.displayMode,
         server: call.server,
         resourceUri: call.resourceUri,
@@ -441,15 +478,20 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
     async *run({ messages }) {
       let live = liveTurns.get(thread.id);
 
-      // **走行中のターンがあるところへ、新しい発言を重ねない**（決定・2026-09-06）。
-      // assistant-ui の isRunning は requires-action では false なので composer から
-      // 送れてしまい、以前はここで「同じ SSE を2つの run が食い合い、送った
-      // プロンプトは host に届かないまま消える」という壊れ方をしていた。
-      // 塞ぐ場所は composer 側（ThreadPanel が判断待ち中は送信を止める）だが、
-      // 経路は1つではないので、ここでも黙って落ちない形にする（規則2）。
-      if (live && lastUserText(messages) !== live.prompt) {
+      // **走行中のターンがあるところへ、新しい発言を重ねない**（決定・2026-09-06、
+      // 見分け方を改訂・2026-09-10）。assistant-ui の isRunning は requires-action
+      // では false なので composer から送れてしまい、以前はここで「同じ SSE を
+      // 2つの run が食い合い、送ったプロンプトは host に届かないまま消える」
+      // という壊れ方をしていた。塞ぐ場所は composer 側（ThreadPanel が判断待ち中は
+      // 送信を止める）だが、経路は1つではないので、ここでも黙って落ちない形にする
+      // （規則2）。**見分けは文面ではなく発言の数と「誰かが読んでいるか」**
+      // ——同じ文面をもう一度送ると、文面では再開と区別できない
+      // （`live-turn-guard.ts`）。
+      if (live && decideRun(live, countUserMessages(messages)) === "refuse") {
         live.acc.appendText(
-          "\n\n（この発言は送っていません——いま走っているターンが人の判断を待っています。答えてから送ってください）",
+          live.acc.hasPendingHumanTool()
+            ? "\n\n（この発言は送っていません——いま走っているターンが人の判断を待っています。答えてから送ってください）"
+            : "\n\n（この発言は送っていません——この会話ではターンがまだ走っています。終わってから、もう一度送ってください）",
         );
         yield { content: live.acc.snapshot(), status: { type: "requires-action", reason: "tool-calls" } };
         return;
@@ -481,11 +523,15 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
           ),
           acc: new PartsAccumulator(),
           prompt,
+          userMessageCount: countUserMessages(messages),
+          consuming: false,
         };
         self.turn = live;
         liveTurns.set(thread.id, live);
       }
       const current = live;
+      // **このターンを読むのは、いま自分ひとり**（`live-turn-guard.ts`）
+      current.consuming = true;
 
       // 答え待ちが1つでも残っている間は requires-action のまま保つ
       const status = (): { type: "requires-action"; reason: "tool-calls" } | { type: "running" } =>
@@ -554,6 +600,7 @@ export function createRealChatModelAdapter(thread: MockThread): ChatModelAdapter
         // 「このブラウザはもう読んでいない」を必ず記録する。host 側のターンは
         // hold-the-line で生きたままなので、次に開いたときは
         // restoredJudgmentMessages が判断待ちを描き直して拾える。
+        current.consuming = false;
         if (liveTurns.get(thread.id) === current) liveTurns.delete(thread.id);
         for (const [toolCallId, turn] of liveByJudgmentToolCallId) {
           if (turn === current) liveByJudgmentToolCallId.delete(toolCallId);

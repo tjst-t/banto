@@ -532,10 +532,19 @@ banto の仕事か**を、MCP 仕様から出てきた要求（アーキ仕様 �
 | **呼ぶ前に入力を見せ、人が拒否できる**（§6.0） | **承認ゲート**（`approval` / `respondToApproval({ approved })`）＋ `status: "requires-action"` |
 | 実行中・失敗・取り消しの表示 | `status`：`running` / `incomplete`（`cancelled` \| `error`）/ `complete` |
 | 会話を止める（アーキ仕様 §8 A-2/A-3） | `incomplete` の `cancelled` |
-| やり直す（アーキ仕様 §2.2） | メッセージ位置での分岐（`switchToBranch({ position, branchId })`） |
+| やり直す（アーキ仕様 §2.2） | メッセージ位置での分岐（`switchToBranch({ position, branchId })`）。**実 Thread にはまだ出さない**——下記 |
 | Fork Thread（アーキ仕様 §1.1） | Thread（`switchToThread` / `switchToNewThread`） |
 | 汎用フォールバック表示（§6-3） | `ToolFallback` |
 | 添付 | Attachments |
+
+> **やり直し（Edit・Reload・BranchPicker）は、実 Thread にはまだ出さない**
+> （決定・2026-09-10、`CONNECTED_FEATURES.threadBranching`）。実測：Edit すると
+> 画面は分岐に見える（古い枝が隠れ、`1/2` が出る）が、**host には直列に追記される
+> だけ**で、リロードすると分岐は消えて4件が並ぶ。人は「前の失敗した指示は無かった
+> ことになった」と思うのに、それは次のターンの文脈に残る——見えているものが
+> 繋がっていない（規則13）。**本物の分岐は host 側の仕事**（会話の切り詰めと
+> resume-point の巻き戻し）で、まだ無い（`docs/tasks.json` の `thread-branching-host`）。
+> モックの台本はローカルの分岐で完結しているので、そちらには出す。
 
 > **承認ゲートは、置けば出るものではない。** ドキュメントに明記がある——
 > 「approval gate は**それを実装した runtime が必要**」（AI SDK v7 の runtime は
@@ -939,3 +948,43 @@ Command Palette で探すしかなかった（規則13 の観点で不備）。
 > 「ターンの**中から外へ**」（ターンが出したもの → あとから繋いだ画面）を
 > 別の口として持つ。1本にまとめたら、ターンが出したイベントが自分自身に
 > 戻ってきて無限に回った。
+
+
+### 6.9 重なりと Escape、そして外枠（決定・2026-09-10）
+
+**外枠（レール・トップバー）は、面をまたいでも張り替えない。** `/`・`/p/[id]`・
+`/settings` は**1つの layout**（ルートグループ）の下にあり、AppShell はそこに
+1回だけ置く。以前は面ごとに AppShell を持っていたので、面を移るたびにレールが
+**作り直され**、その中で開いていたもの（「新しい Project」のダイアログ）は
+**入力ごと消えた**（実測・2026-09-06／回帰試験 `e2e/specs/app-shell-persist.spec.ts`）。
+
+- **いま見ている Project は URL が持つ**（規則3）——外枠は `useParams()` で読む。
+  props で配ると、配る側（各面の layout）が要ることになり、外枠が分かれる
+- **Canvas の別タブ（`/canvas-window`）はこの外**——banto のクロムを持たない面
+
+**Escape は、いちばん上の1枚だけを閉じる。**
+
+| いま開いているもの | Escape が閉じるもの |
+|---|---|
+| Dialog / Sheet / Command Palette（前面） | **それだけ**。背面の層には触らない |
+| Canvas ＋ Fork | Canvas |
+| Fork だけ | Fork |
+| 設定画面（`/settings`。層ではなく面） | 1つ前の画面へ戻る |
+
+Escape を聞く場所は2つある（重なった層／設定の面）が、**「上に何か開いているか」の
+判断は1箇所**（`lib/overlay-open.ts`）。片方だけが検査していたため、Palette を
+開いたまま Escape を押すと**前面は開いたまま、背面の Fork が閉じる**という
+壊れ方をしていた（実測・2026-09-10）。
+
+### 6.10 Module の画面（Canvas）と、その持ち主（決定・2026-09-10）
+
+**画面と host を繋ぐ橋（AppBridge）は、画面が別物になったときにだけ張り直す。**
+親が再描画されるたびに張り直していた（実測：Canvas を1つ出して Fork を2回開閉
+するだけで **9回**）。張り直しの最中に飛んでいる呼び出しは行き場を失う。
+
+**画面の持ち主は「Thread と呼び出しの組」で決まる。** 呼び出し（`toolCallId`）
+だけでは決まらない——**Fork は親の履歴をそのまま持つ**ので、同じ `toolCallId` が
+2つの Thread に並ぶ。実測（2026-09-10）：Fork を開くと Base に出ている画面が
+「自分は Fork のものだ」と言い出し、そこからの tool 呼び出しも Fork の側に
+記録されていた。会話の奥で描かれるカードには、**いまどの Thread を描いているか**を
+context で渡す。

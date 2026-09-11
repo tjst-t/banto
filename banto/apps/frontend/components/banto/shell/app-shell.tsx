@@ -4,6 +4,7 @@
 // ≥md: ProjectRail（サイドバー。展開 16rem ⇄ 畳んで 58px）+ PanelStack
 // <md: PanelStack だけ（ナビは各パネルのヘッダの ≡ → MobileNavDrawer）
 import { Suspense, useEffect, useSyncExternalStore, type ReactNode } from "react";
+import { useParams } from "next/navigation";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { ArchiveDialog } from "@/components/banto/archive/archive-dialog";
 import { InboxOverlay } from "@/components/banto/inbox/inbox-overlay";
@@ -22,15 +23,11 @@ import {
 const SHOW_ARCHIVE = CONNECTED_FEATURES.threadCloseReopen || CONNECTED_FEATURES.projectCloseReopen;
 
 // usePanelStack が useSearchParams を使う（searchParams 駆動、§3.1）ので、
-// AppShell 自身の中に Suspense 境界を持つ——呼び出し側（各 layout.tsx）に
+// AppShell 自身の中に Suspense 境界を持つ——呼び出し側（`(shell)/layout.tsx`）に
 // 「Suspense で包む」を覚えさせない。これが無いと `/settings` のような
 // 静的にプリレンダーされるルートで build が失敗する
 // （"useSearchParams() should be wrapped in a suspense boundary"、実測で踏んだ）
-export function AppShell(props: {
-  /** null＝Project の外（instance 設定 `/settings` 等）。ProjectRail のアクティブ表示だけに使う */
-  projectId: string | null;
-  children: ReactNode;
-}) {
+export function AppShell(props: { children: ReactNode }) {
   return (
     <Suspense fallback={null}>
       <AppShellInner {...props} />
@@ -38,19 +35,18 @@ export function AppShell(props: {
   );
 }
 
-function AppShellInner({
-  projectId,
-  children,
-}: {
-  projectId: string | null;
-  children: ReactNode;
-}) {
+function AppShellInner({ children }: { children: ReactNode }) {
+  // **どの Project を見ているかは URL が持つ**（規則3）。以前は各 layout が
+  // props で渡していたが、面ごとに AppShell を持つことになり、面をまたぐと
+  // 外枠ごと作り直されていた（`app-shell-shared-layout`、2026-09-10）。
+  // null＝Project の外（instance 設定 `/settings`・ホーム）
+  const projectId = (useParams() as { projectId?: string }).projectId ?? null;
   // 受信箱は Project 単位の MCP 接続の外側にある入れ物（§2.4.1）——
   // どの Project を見ていても、同じ overlay 状態（searchParams）で開ける
   const stack = usePanelStack(projectId ?? "");
   // サイドバーの幅・畳んだかどうかは React の外（sidebar-preference.ts）に持つ
-  // ——Project を移ると各 layout の AppShell は作り直されるので、ここに state で
-  // 持つと**既定で1回描いてから直す**ことになり、幅が一瞬跳ねる（ユーザー報告）
+  // ——読み込み直しでは外枠も作り直されるので、ここに state で持つと
+  // **既定で1回描いてから直す**ことになり、幅が一瞬跳ねる（ユーザー報告）
   const sidebar = useSyncExternalStore(
     subscribeSidebarPreference,
     getSidebarPreference,

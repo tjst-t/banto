@@ -29,6 +29,7 @@ import {
   wasApprovalBypassed,
 } from "@/lib/mock/adapter";
 import { getRealInlineView, sendRealAnswer } from "@/lib/backend/adapter";
+import { useThreadId } from "@/components/banto/thread/thread-id-context";
 import type { MockElicitationForm, MockElicitationUrl } from "@/lib/mock/types";
 
 interface HumanToolArgs {
@@ -151,9 +152,11 @@ const HumanJudgmentCard: ToolCallMessagePartComponent = (props) => {
  */
 function InlineViewForPart({ index }: { index: number }) {
   const part = useAuiState((s) => s.message.parts[index]);
+  // **どの Thread で描いているか**まで渡す——Fork は親と同じ toolCallId を持つ
+  const threadId = useThreadId() ?? undefined;
   if (!part || part.type !== "tool-call" || part.result === undefined) return null;
 
-  const real = getRealInlineView(part.toolCallId);
+  const real = getRealInlineView(part.toolCallId, threadId);
   if (real) {
     return (
       <RealInlineModuleView

@@ -11,6 +11,7 @@ import { GitFork } from "lucide-react";
 import { AssistantRuntimeProvider, useLocalRuntime } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { ReattachedTurn } from "@/components/banto/thread/reattached-turn";
+import { ThreadIdProvider } from "@/components/banto/thread/thread-id-context";
 import { CanvasAutoOpen } from "@/components/banto/thread/canvas-auto-open";
 import { ComposerModelEffortMenu } from "@/components/banto/thread/composer-model-effort-menu";
 import { ComposerPermissionModeMenu } from "@/components/banto/thread/composer-permission-mode-menu";
@@ -203,6 +204,7 @@ export function ThreadPanel({
       onOpenCanvas={onOpenCanvas}
       markers={markers ?? []}
       transcriptMarkers={transcriptMarkers}
+      allowBranching={!thread.real || CONNECTED_FEATURES.threadBranching}
     />
   );
 }
@@ -216,6 +218,7 @@ function ThreadRuntime({
   onOpenCanvas,
   markers,
   transcriptMarkers,
+  allowBranching,
 }: {
   adapter: ReturnType<typeof createMockChatModelAdapter>;
   initialMessages: ReturnType<typeof seedToInitialMessages>;
@@ -225,6 +228,7 @@ function ThreadRuntime({
   onOpenCanvas?: CanvasOpener;
   markers: readonly ThreadMarker[];
   transcriptMarkers?: ReadonlyMap<string | null, ReactNode>;
+  allowBranching: boolean;
 }) {
   const runtime = useLocalRuntime(adapter, {
     initialMessages,
@@ -245,6 +249,9 @@ function ThreadRuntime({
     <AssistantRuntimeProvider runtime={runtime}>
       {/* 会話の奥（inline の Canvas）から「大きく出して」を伝える通り道（§6.2） */}
       <CanvasOpenerProvider value={onOpenCanvas ?? null}>
+      {/* 奥で描かれるカードに「どの Thread か」を伝える——Fork は親と同じ
+          toolCallId を持つので、これが無いと画面の持ち主を取り違える */}
+      <ThreadIdProvider value={threadId}>
       {CONNECTED_FEATURES.mockCanvasSurfaces && onOpenCanvas ? <CanvasAutoOpen onOpenCanvas={onOpenCanvas} /> : null}
       <Thread
         placeholder={placeholder}
@@ -262,7 +269,11 @@ function ThreadRuntime({
         components={{ ToolFallback: HumanToolCard, ToolGroup: HumanAwareToolGroup }}
         composerHint={hint}
         transcriptMarkers={transcriptMarkers}
+        // やり直し（Edit・Reload・BranchPicker）——実 Thread では host が分岐を
+        // 持たないので出さない（規則13、`CONNECTED_FEATURES.threadBranching`）
+        allowBranching={allowBranching}
       />
+      </ThreadIdProvider>
       </CanvasOpenerProvider>
     </AssistantRuntimeProvider>
   );

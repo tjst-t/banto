@@ -8,6 +8,7 @@
 // 起きるのを避ける。
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { isOverlayOpen } from "@/lib/overlay-open";
 
 export function useEscapeNavigateBack() {
   const router = useRouter();
@@ -15,10 +16,7 @@ export function useEscapeNavigateBack() {
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
-      const otherOverlayOpen = document.querySelector(
-        '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]',
-      );
-      if (otherOverlayOpen) return;
+      if (isOverlayOpen()) return;
       router.back();
     }
     // capture フェーズで登録する——bubble フェーズだと、Radix 側の Escape

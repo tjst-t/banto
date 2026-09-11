@@ -8,6 +8,7 @@
     "start": "next start -H 0.0.0.0 -p 4175",
     "lint": "eslint && node scripts/check-tokens.mjs",
     "typecheck": "tsc --noEmit",
+    "test": "node --test 'lib/**/*.test.ts'",
     "test:e2e": "npm run test:e2e --workspace=@banto/e2e"
   },
   "dependencies": {

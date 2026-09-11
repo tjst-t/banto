@@ -21,7 +21,11 @@ interface TestDeps {
   runtimeConfig: RuntimeConfigStore;
 }
 
-async function withApp(fn: (base: string, token: string, dir: string, deps: TestDeps) => Promise<void>) {
+async function withApp(
+  fn: (base: string, token: string, dir: string, deps: TestDeps) => Promise<void>,
+  /** 試験だけの差し替え（Runner を偽物にする等）。 */
+  extra?: Partial<Parameters<typeof createApp>[0]>,
+) {
   const dir = await mkdtemp(join(tmpdir(), "banto-app-test-"));
   try {
     const log = new EventLog(dir);
@@ -49,6 +53,7 @@ async function withApp(fn: (base: string, token: string, dir: string, deps: Test
       agentRelayEndpoint,
       authToken: token,
       resolveModulesForThread: async () => [],
+      ...extra,
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const port = (server.address() as AddressInfo).port;
@@ -485,4 +490,54 @@ test("解決の順番：このターンの指定 > Thread の選択 > 設定 > a
   assert.equal(resolvePermissionMode(undefined, undefined, undefined), "auto");
   // 設定に壊れた値が入っていても、そこで止まらず既定へ
   assert.equal(resolvePermissionMode(undefined, undefined, "こわれ"), "auto");
+});
+
+
+// **ヘッダを送った後の失敗**（`core-turn-runner-unit-tests`、2026-09-10）。
+//
+// ターンは SSE で流すので、最初のイベントを書いた時点でヘッダは出ている。
+// そこから先で例外が出ると 500 は書けない——以前はここで `writeHead` が
+// `ERR_HTTP_HEADERS_SENT` を投げ、async ハンドラだったため unhandled rejection で
+// **host プロセスごと落ちていた**（1ターンの失敗が全 Project を道連れ、規則2）。
+// 直したときに試験が無かったので、ここで固定する。
+
+test("SSE を流し始めた後に失敗しても、host は落ちず error イベントで伝える", async () => {
+  await withApp(
+    async (base, token, _dir, deps) => {
+      const project = await deps.projectThread.createProject("demo", "/tmp");
+      const thread = await deps.projectThread.createBaseThread(project.id);
+      // **記録に書けない**状況を作る（イベントを1件流した後で失敗する）
+      deps.projectThread.updateResumePoint = async () => {
+        throw new Error("記録に書けない");
+      };
+
+      const res = await fetch(`${base}/api/threads/${thread.id}/messages`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ prompt: "やあ" }),
+      });
+      assert.equal(res.status, 200, "ヘッダは既に出ているので 200 のまま");
+      const body = await res.text();
+      assert.match(body, /"type":"message"/, "流し始めていない（この試験の前提が崩れている）");
+      assert.match(body, /"type":"error"/, "失敗を伝えずに黙って閉じた（規則2）");
+      assert.match(body, /記録に書けない/);
+
+      // **host は生きている**——次の要求が通る
+      const after = await fetch(`${base}/api/projects`, { headers: { authorization: `Bearer ${token}` } });
+      assert.equal(after.status, 200, "1ターンの失敗で host が落ちている");
+    },
+    {
+      runTurn: (async function* () {
+        yield {
+          type: "message" as const,
+          message: { type: "system", subtype: "init", session_id: "s", mcp_servers: [] },
+        } as never;
+        yield {
+          type: "message" as const,
+          message: { type: "assistant", message: { content: [{ type: "text", text: "はい" }] } },
+        } as never;
+        return { sessionId: "s", compactionCount: 0 } as never;
+      }) as unknown as Parameters<typeof createApp>[0]["runTurn"],
+    },
+  );
 });

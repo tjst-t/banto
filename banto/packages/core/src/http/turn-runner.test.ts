@@ -211,3 +211,58 @@ test("走っていなければ、覚えているものは無い", async () => {
     assert.equal(turnEvents.isRunning(threadId), false, "終わったのに走行中のまま");
   });
 });
+
+// **失敗しても、人が答える口は残る**（`core-turn-runner-unit-tests`、2026-09-10）。
+//
+// 判断待ちを起票した後にターンが落ちると、そのカードごと消えては困る
+// ——止まっているものは受信箱に残り、あとから答えられるべき（§2.4）。
+
+test("判断待ちを起票した後にターンが落ちても、その判断待ちは答えられるまま残る", async () => {
+  await withThread(async ({ deps, threadId, store }) => {
+    let resolved: unknown;
+    const fake = (async function* (opts: {
+      onToolApprovalRequested?: (p: unknown) => void;
+    }) {
+      yield { type: "message" as const, message: initMessage([]) } as never;
+      const pending = {
+        toolCallId: "call-1",
+        toolName: "mcp__filesystem__listDirectory",
+        input: { path: "." },
+        resolve: (r: unknown) => {
+          resolved = r;
+        },
+      };
+      opts.onToolApprovalRequested?.(pending);
+      yield { type: "approval_requested" as const, pending } as never;
+      throw new Error("途中で落ちた");
+    }) as unknown as typeof runTurn;
+
+    const events = await collect(
+      runThreadTurn({ ...deps, runTurn: fake }, { threadId, prompt: "読んで", modules: [] }),
+    );
+
+    const judgment = events.find((e) => e.type === "judgment") as { judgmentId: string } | undefined;
+    assert.ok(judgment, "判断待ちが出ていない");
+    assert.ok(events.some((e) => e.type === "error"), "落ちたことを伝えていない（規則2）");
+
+    // **受信箱に残っていて、まだ生きている**
+    const item = deps.inbox.get(judgment!.judgmentId);
+    assert.ok(item, "落ちたら判断待ちごと消えた");
+    assert.equal(item!.kind, "judgment");
+    assert.equal(
+      (item as { liveness?: string }).liveness,
+      "live",
+      "答えられない状態になっている",
+    );
+    // **答える先も残っている**——答えれば host 側の呼び出しが動く
+    assert.equal(
+      deps.pendingApprovals.resolve(judgment!.judgmentId, { behavior: "deny", message: "やめる" }),
+      true,
+      "答え先が失われている（答えても何も起きない）",
+    );
+    assert.deepEqual(resolved, { behavior: "deny", message: "やめる" });
+
+    // 落ちたターンは resume-point を進めない（アーキ仕様 §2.2）
+    assert.equal(store.getThread(threadId)!.resumePoint, undefined);
+  });
+});

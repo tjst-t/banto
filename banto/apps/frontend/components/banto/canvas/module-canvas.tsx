@@ -136,7 +136,24 @@ function SandboxFrame({
 }: ModuleCanvasProps & { sandboxUrl: string; resource: RealUiResource }) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
 
+  // **橋は、画面が変わったときにだけ張り直す**（`frontend-interaction-hardening`、
+  // 2026-09-10）。以前は毎レンダー新しくなるもの（親が render 中に作る
+  // `onRequestFullscreen`、tool の入出力オブジェクト）を効果の依存に置いていたので、
+  // 親が再描画されるたびに **AppBridge を閉じて張り直していた**——実測（同日）：
+  // Canvas を1つ出して Fork を開いて閉じるだけで **9回**。中身は生き延びていたが、
+  // 張り直しの最中に飛んでいる呼び出しがあれば落ちる（規則2 の「黙って別の経路へ
+  // 落ちない」が保てない）。**いま要る値は ref から読む**——依存に入れない。
+  const latest = useRef({ owner, toolArgs, toolResult, onRequestFullscreen });
   useEffect(() => {
+    latest.current = { owner, toolArgs, toolResult, onRequestFullscreen };
+  });
+  // 張り直しは目に見えないので、**見えるところに出す**（規則4）——
+  // 回帰試験はこの数字が増えないことを見る
+  const generation = useRef(0);
+
+  useEffect(() => {
+    generation.current += 1;
+    frameRef.current?.setAttribute("data-bridge-generation", String(generation.current));
     const frame = frameRef.current;
     if (!frame?.contentWindow) return;
 
@@ -162,7 +179,7 @@ function SandboxFrame({
       // ——この Canvas がどの Module のものかで決まる（下の `server`）。
       // AI からの呼び出しは今までどおり承認ゲートを通る（性質が違う）。
       const result = await callRealUiTool(
-        owner,
+        latest.current.owner,
         server,
         params.name,
         params.arguments as Record<string, unknown> | undefined,
@@ -172,6 +189,7 @@ function SandboxFrame({
 
     // 画面からの「大きく出して」（§6.2 の交渉モデル。**決めるのは banto**）
     bridge.onrequestdisplaymode = async ({ mode }) => {
+      const onRequestFullscreen = latest.current.onRequestFullscreen;
       if (mode === "fullscreen" && onRequestFullscreen) {
         onRequestFullscreen();
         return { mode: "fullscreen" as const };
@@ -201,8 +219,8 @@ function SandboxFrame({
     const onInitialized = () => {
       // tool 起点でないなら、渡すものが無い——**空の入力を送らない**
       if (!toolName) return;
-      void bridge.sendToolInput({ arguments: toolArgs ?? {} });
-      const result = toCallToolResult(toolResult);
+      void bridge.sendToolInput({ arguments: latest.current.toolArgs ?? {} });
+      const result = toCallToolResult(latest.current.toolResult);
       if (result) void bridge.sendToolResult(result);
     };
     bridge.addEventListener("initialized", onInitialized);
@@ -211,19 +229,8 @@ function SandboxFrame({
     return () => {
       void bridge.close();
     };
-    // resource.html が変わったら組み直す
-  }, [
-    owner.kind,
-    ownerKey(owner),
-    server,
-    toolName,
-    toolArgs,
-    toolResult,
-    displayMode,
-    onRequestFullscreen,
-    sandboxUrl,
-    resource.html,
-  ]);
+    // **画面が別物になったときだけ**組み直す（入出力とコールバックは ref から読む）
+  }, [owner.kind, ownerKey(owner), server, toolName, displayMode, sandboxUrl, resource.html]);
 
   const csp = resource.csp ? `?csp=${encodeURIComponent(JSON.stringify(resource.csp))}` : "";
   return (

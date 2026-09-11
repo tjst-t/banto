@@ -10,6 +10,7 @@
 // <md: base を常に表示し、Fork・Canvas は Base の上に重ねた全画面（MobileTopBar の下いっぱい）
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { isOverlayOpen } from "@/lib/overlay-open";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -127,10 +128,19 @@ export function PanelStack({
 
   // Escape は前面の層だけを1枚閉じる（Canvas があれば Canvas、無ければ Fork）。
   // PC・モバイルの両方でここ1箇所だけが Escape を聞く——ヘッダ側の閉じるボタンと
-  // 二重に持つと、両方開いているときに1回で2枚とも閉じてしまう
+  // 二重に持つと、両方開いているときに1回で2枚とも閉じてしまう。
+  //
+  // **上に何か開いていたら、Escape はそちらのもの**（修正・2026-09-10）。
+  // 実測：Fork を開いた上で Command Palette を開いて Escape を押すと、
+  // **前面のパネルは開いたまま、背面の Fork が閉じた**——見ていない層が消える。
+  // `/settings` 側（`use-escape-navigate-back.ts`）は同じ検査を既にしていたので、
+  // ここだけが非対称だった（規則3——同じ判断を2通りに書かない）。
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
+      if (e.defaultPrevented) return;
+      // Dialog / Sheet / Drawer / Command Palette が開いているなら、そちらが先
+      if (isOverlayOpen()) return;
       if (canvas) close("canvas");
       else if (forkThreadId) close("fork");
     }

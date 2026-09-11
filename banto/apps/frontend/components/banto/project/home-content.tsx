@@ -28,10 +28,14 @@ export function HomeContent() {
   // `.then(setHydrated)` だけだったので、host に届かないと `hydrated` が
   // false のまま——**ホームが永遠に真っ白**で、何が起きているか分からなかった
   // （規則2・規則13）。
+  // **効果の中で同期に state を触らない**（修正・2026-09-10、lint が拾った）
+  // ——「読み込み中」の解除も失敗の消去も、読み込みが返ってから
   const load = useCallback(() => {
-    setLoadError(null);
     hydrateRealProjects()
-      .then(() => setHydrated(true))
+      .then(() => {
+        setLoadError(null);
+        setHydrated(true);
+      })
       .catch((err: unknown) => {
         setLoadError(describeFailure(err));
         setHydrated(true); // 「読み込み中」のまま止めない

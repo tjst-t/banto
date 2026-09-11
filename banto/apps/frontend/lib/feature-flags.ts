@@ -32,6 +32,13 @@ export const CONNECTED_FEATURES = {
   // ずれていたので、名前を「モックの〜」に直した（規則3——旗の意味を1つに）
   mockCanvasSurfaces: false,
   mockPaletteLaunchers: false,
+  // **やり直し（分岐）**——Edit・Reload・BranchPicker。実測（2026-09-10）：
+  // 実 Thread で Edit すると画面は分岐に見える（古い枝が隠れ、1/2 が出る）が、
+  // host には**直列に追記**されるだけで、リロードすると分岐は消えて4件が
+  // 並ぶ。人は「前の失敗した指示は無かったことになった」と思うのに、それは
+  // 次のターンの文脈に残る——見えているものが繋がっていない（規則13）。
+  // 本物の分岐は host 側（会話の切り詰めと resume-point の巻き戻し）が要る
+  threadBranching: false,
   composerModelEffort: false, // 選んでもreal threadには反映されない（streamRealTurnにmodel/effort引数が無い）
 } as const;
 

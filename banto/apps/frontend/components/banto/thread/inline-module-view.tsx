@@ -81,7 +81,7 @@ export function RealInlineModuleView({
             ? () => {
                 open();
                 setAsEntryOnly(true);
-                markInlineViewDisplayMode(toolCallId, "fullscreen");
+                markInlineViewDisplayMode(view.threadId, toolCallId, "fullscreen");
                 // どう出したかを記録に残す（次に開いたとき、入口だけを出すため）
                 void recordRealUiDisplayMode(view.threadId, toolCallId, "fullscreen").catch(() => {
                   // 記録できなくても、いま開くことは妨げない——次回また埋め直すだけ

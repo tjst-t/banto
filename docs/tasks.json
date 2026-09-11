@@ -113,10 +113,10 @@
       "id": "app-shell-shared-layout",
       "phase": "0以降",
       "title": "AppShell を共有のlayoutへ引き上げる",
-      "status": "backlog",
+      "status": "done",
       "dependencies": [],
       "why": "`/` と `/p/[id]` がそれぞれ AppShell を持っているため、ホームから Project 画面へ移るときにトップバー・レールが作り直される——開いているダイアログやオーバーレイが**入力ごと消える**（実測・2026-09-06。E2Eが後ろのspecから落ちていた原因でもある）。いまはリダイレクトを一度だけにし、E2E側で決着を待つことで回避している。",
-      "doneWhen": "ホームで「新しい Project」を入力している最中に自動リダイレクトが起きても、ダイアログと入力が残ることを実ブラウザで確認する。",
+      "doneWhen": "`/`・`/p/[id]`・`/settings` を1つの layout（ルートグループ）の下に入れ、AppShell を1回だけ置いた。回帰試験 `e2e/specs/app-shell-persist.spec.ts`——面を移ってもレールの DOM の節が生き残り、開いている「新しい Project」が入力ごと残る",
       "refs": [
         "docs/notes/2026-09-06-judgment-after-reload-and-home-redirect.md"
       ],
@@ -1213,10 +1213,10 @@
       "id": "core-turn-runner-unit-tests",
       "phase": "1",
       "title": "turn-runner / runner-adapter の単体テスト",
-      "status": "backlog",
+      "status": "done",
       "dependencies": [],
       "why": "ターン実行・SSE 送出・判断待ち起票という中核（turn-runner.ts 303行・runner/adapter.ts 249行）が E2E 頼みで、エラー分岐・SSE 途中断はどの試験も通らない。frontend の lib/backend/adapter.ts（LiveTurn 生死管理——過去の不具合4件の現場）も同様にテストゼロ。done 済みタスクのうち review-block-send-while-pending・review-error-path-status・review-sse-error-after-headers・review-use-tooluseid は対応する検証が存在しない。",
-      "doneWhen": "エラー経路（SSE ヘッダ送出後のエラー・判断待ち中の再送拒否・エラー後もカードが残る）が単体または E2E で実証される。",
+      "doneWhen": "エラー経路に試験が付いた——①SSE を流し始めた後の失敗（`app.test.ts`、直しを戻すと落ちることも確認）②判断待ちを起票した後に落ちても答えられるまま残る（`turn-runner.test.ts`）③判断待ち中の再送拒否（frontend `live-turn-guard.test.ts`）。`review-use-tooluseid` は Agent SDK の差し替えが要るため未検証（ノートに記録）",
       "refs": [
         "banto/packages/core/src/http/turn-runner.ts",
         "banto/packages/core/src/runner/adapter.ts",
@@ -1228,10 +1228,10 @@
       "id": "frontend-interaction-hardening",
       "phase": "4",
       "title": "frontend の要確認4件（Escape 二重処理・SSE 食い合い・SandboxFrame 再接続・Reload/Edit 半接続）を検証して直す",
-      "status": "backlog",
+      "status": "done",
       "dependencies": [],
       "why": "レビューで「要確認」のまま残った動作依存の指摘：Escape がダイアログと背面パネルを同時に閉じる／同一文面の再送で 1 本の SSE を 2 つの run が食い合う／SandboxFrame が親の再描画のたびに AppBridge を張り直し以後カード内が無反応になりうる／Reload・Edit・BranchPicker が実 Thread で半接続のまま見えている（規則13）。まず実ブラウザで再現を確かめてから直す（規則1——測る前に犯人を決めない）。",
-      "doneWhen": "4件それぞれ再現手順を実ブラウザで試し、再現したものは修正して回帰テストを書き、再現しなかったものはその記録をレビューノートに追記する。",
+      "doneWhen": "4件とも実ブラウザで再現を試した。①Escape ②やり直しの半接続 ③Canvas の橋の張り直し は再現して修正（`e2e/specs/frontend-interaction.spec.ts`）、④SSE の食い合いは画面から再現できなかったため見分けの判断を切り出して単体試験（`lib/backend/live-turn-guard.test.ts`）。記録は `docs/notes/2026-09-10-frontend-interaction-hardening.md`",
       "refs": [
         "banto/apps/frontend/components/banto/shell/panel-stack.tsx",
         "banto/apps/frontend/lib/backend/adapter.ts",
@@ -1324,6 +1324,32 @@
       "result": "**決めた（2026-09-10）：FileSystem の tool 引数は「根の中を指しているか」だけで見る。**相対でも絶対でもよく、`..` や記号リンクを解いた**実体**（realpath）が根の外なら断る（まだ無いパスはいちばん近い親で見る——新規作成のため）。`~` は展開せず断る（ここはシェルではない）。**Landlock を置き換えるのではなく、その上に契約を1枚置く**——許可リストはプロセスを起動するための都合で根より広く（`/etc`・`/proc`・node のバイナリ）、OS だけに任せると `readFile(\"/etc/passwd\")` が通ってしまう（実測で通っていた）。TOCTOU が残る領域はこれまでどおり Landlock が受け持つ。**Shell はこの形にしない**——引数はパスではなくコマンドなので、アプリ層の検査は気休めにしかならない（v4-modules §3）。**「相対だけを受ける」形は実測でやめた**——最初はそう実装したが、AI は根の中のファイルを絶対パスで指してくる（`/tmp/…/one.txt`）ので E2E が2件落ちた。守りたいのは「根の外へ出さない」であって書き方ではない。",
       "verifiedBy": "単体5件（根の外の絶対パス・`~`・`..`・記号リンクを断る／**根の中を指す絶対パスは受ける**／まだ無いパスへの新規作成は通る）＋ Landlock 統合テストに `readFile(\"/etc/passwd\")` が**tool の契約として**断られることを追加（実プロセス・実 Landlock の下で）。**契約の検査を外すと4件が落ちる**ことを確認（規則1）。E2E 28件・単体178件・typecheck 通過。あわせて、統合テストが途中で落ちると spawn した Module が残って `node --test` が終わらなくなる問題も直した（finally で閉じる）。",
       "completedAt": "2026-09-10"
+    },
+    {
+      "id": "thread-branching-host",
+      "phase": "未定",
+      "title": "やり直し（分岐）を host 側に持つ",
+      "status": "backlog",
+      "dependencies": [],
+      "why": "実 Thread の Edit・Reload は画面では分岐に見えるのに、host には直列に追記されるだけだった（実測・2026-09-10）。いまは入口を隠してある（`CONNECTED_FEATURES.threadBranching = false`）ので、**やり直しができない**状態。本物にするには会話の切り詰めと resume-point の巻き戻しが要る（アーキ仕様 §2.2「やり直す」）。",
+      "doneWhen": "実 Thread で Edit して送ると、古い枝が host の記録からも外れ（次のターンの文脈に入らない）、リロード後も枝の行き来ができることを実ブラウザで確認する。`CONNECTED_FEATURES.threadBranching` を true に戻す",
+      "refs": [
+        "docs/notes/2026-09-10-frontend-interaction-hardening.md",
+        "docs/specs/v4-frontend.md §6.4"
+      ]
+    },
+    {
+      "id": "host-turn-concurrency-lock",
+      "phase": "未定",
+      "title": "同じ Thread で2つのターンを同時に走らせない（host 側の錠）",
+      "status": "backlog",
+      "dependencies": [],
+      "why": "並行 POST /api/threads/:id/messages を防ぐものが host に無く、抑止はブラウザ側だけ（レビュー・2026-09-09 §3.1）。別のタブ・別の端末からは同時に走らせられる。`turn-stream-reattach` で `turnEvents.isRunning()` ができたので、実装は軽い。",
+      "doneWhen": "走行中の Thread に2本目の POST /messages を投げると、409 で断られ、走行中のターンは壊れないことを試験で示す",
+      "refs": [
+        "docs/notes/2026-09-09-repo-review.md",
+        "banto/packages/core/src/http/turn-events.ts"
+      ]
     }
   ],
   "phase1": {

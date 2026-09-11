@@ -82,6 +82,8 @@ export interface AppDeps {
   releaseProjectModules?(projectId: string): Promise<string[]>;
   /** 画面から見たサンドボックスの住所（§6.2）。画面に推測させない（規則3）。 */
   sandboxPublicUrl?: string;
+  /** Runner の差し替え口（試験用）。`runThreadTurn` がそのまま受け取る。 */
+  runTurn?: Parameters<typeof runThreadTurn>[0]["runTurn"];
 }
 
 /**

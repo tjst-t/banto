@@ -102,6 +102,13 @@ export type ThreadComponents = {
     | undefined;
 };
 
+/**
+ * **やり直し（分岐）を出してよいか**（`frontend-interaction-hardening`、2026-09-10）。
+ * 実 Thread では host が分岐を持たないので出さない（規則13）。既定は「出す」
+ * ——モックの台本はローカルの分岐で完結している。
+ */
+const BranchingContext = createContext(true);
+
 export type ThreadProps = {
   components?: ThreadComponents | undefined;
   autoFocus?: boolean | undefined;
@@ -119,6 +126,9 @@ export type ThreadProps = {
    * どこでClearしたか分からなくなる問題があった）。
    */
   transcriptMarkers?: ReadonlyMap<string | null, ReactNode>;
+  /** やり直し（Edit・Reload・BranchPicker）を出すか。既定は出す
+   *  ——実 Thread では host が分岐を持たないので false（規則13、2026-09-10） */
+  allowBranching?: boolean;
 };
 
 const EMPTY_COMPONENTS: ThreadComponents = {};
@@ -176,11 +186,13 @@ export const Thread: FC<ThreadProps> = ({
   composerActionSlot,
   composerHint,
   transcriptMarkers,
+  allowBranching = true,
 }) => {
   const isEmpty = useAuiState(isNewChatView);
 
   return (
     <ThreadComponentsContext.Provider value={components}>
+      <BranchingContext.Provider value={allowBranching}>
       <ThreadRoot
         isEmpty={isEmpty}
         autoFocus={autoFocus}
@@ -189,6 +201,7 @@ export const Thread: FC<ThreadProps> = ({
         composerHint={composerHint}
         transcriptMarkers={transcriptMarkers}
       />
+      </BranchingContext.Provider>
     </ThreadComponentsContext.Provider>
   );
 };
@@ -592,11 +605,13 @@ const AssistantActionBar: FC = () => {
           </AuiIf>
         </TooltipIconButton>
       </ActionBarPrimitive.Copy>
-      <ActionBarPrimitive.Reload asChild>
-        <TooltipIconButton tooltip="Refresh">
-          <RefreshCwIcon />
-        </TooltipIconButton>
-      </ActionBarPrimitive.Reload>
+      {useContext(BranchingContext) ? (
+        <ActionBarPrimitive.Reload asChild>
+          <TooltipIconButton tooltip="Refresh">
+            <RefreshCwIcon />
+          </TooltipIconButton>
+        </ActionBarPrimitive.Reload>
+      ) : null}
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild>
           <TooltipIconButton
@@ -665,6 +680,8 @@ const UserMessage: FC = () => {
 };
 
 const UserActionBar: FC = () => {
+  // やり直しが繋がっていないなら、入口ごと出さない（規則13）
+  if (!useContext(BranchingContext)) return null;
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning
@@ -716,6 +733,8 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
   className,
   ...rest
 }) => {
+  // 分岐が繋がっていないなら、枝の切替も出さない（規則13）
+  if (!useContext(BranchingContext)) return null;
   return (
     <BranchPickerPrimitive.Root
       hideWhenSingleBranch
