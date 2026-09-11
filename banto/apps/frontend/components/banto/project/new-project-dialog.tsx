@@ -50,7 +50,10 @@ export function NewProjectDialog({
 }) {
   const router = useRouter();
   const [name, setName] = useState("");
-  const [basePath, setBasePath] = useState("~/worktrees/");
+  // **初期値は入れない**（改訂・2026-09-11、ユーザー指摘）——`~/worktrees/` を
+  // 置いていたが、その場所を使うかどうかは人が決めること。空にしておけば、
+  // 「選ぶ」は home から始まる（host の既定、`resolveBrowsePath`）
+  const [basePath, setBasePath] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const rootScope = useRootScope(basePath);
   const [overrides, setOverrides] = useState<Overrides>(EMPTY_OVERRIDES);
@@ -61,7 +64,7 @@ export function NewProjectDialog({
 
   function reset() {
     setName("");
-    setBasePath("~/worktrees/");
+    setBasePath("");
     setShowAdvanced(false);
     setOverrides(EMPTY_OVERRIDES);
   }
@@ -110,7 +113,6 @@ export function NewProjectDialog({
                 id="new-project-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="例：決済まわりの改修"
                 autoFocus
               />
             </div>
@@ -118,12 +120,7 @@ export function NewProjectDialog({
               {/* **呼び名は Root にそろえる**（改訂・2026-09-11、ユーザー指摘
                   ——作る画面と設定画面で「Base」「Root」が混ざっていた、規則11） */}
               <Label htmlFor="new-project-path">Root パス</Label>
-              <PathPicker
-                id="new-project-path"
-                value={basePath}
-                onChange={setBasePath}
-                placeholder="~/worktrees/..."
-              />
+              <PathPicker id="new-project-path" value={basePath} onChange={setBasePath} />
               <p className="text-xs text-ink-3">
                 Shell・FileSystem などの Module は、この Root パスの中のみアクセス可能
               </p>

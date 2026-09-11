@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "@playwright/test";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
-import { createProject, openApp, openProjectSettings } from "../helpers.js";
+import { createProject, openApp, openNav, openProjectSettings } from "../helpers.js";
 
 test.setTimeout(300_000);
 
@@ -237,4 +237,28 @@ test("Root パスは、打っても選んでもよい", async ({ page }) => {
   // ---- 打つのも、そのままできる ------------------------------------------
   await input.fill(root);
   await expect(input).toHaveValue(root);
+});
+
+test("新しい Project：最初は空。選ぶと home から始まる", async ({ page }) => {
+  // ユーザー指摘・2026-09-11：名前の例（「決済まわりの改修」）は要らない。
+  // Root の初期値（`~/worktrees/`）もおかしい——**その場所を使うかは人が決める**。
+  await openApp(page);
+  await openNav(page);
+  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
+
+  const dialog = page.getByRole("dialog").first();
+  await expect(dialog.getByLabel("Project 名"), "名前に初期値が入っている").toHaveValue("");
+  // 例の文言そのものが出ていないこと（placeholder 属性は無い＝null）
+  expect(
+    await dialog.getByLabel("Project 名").getAttribute("placeholder"),
+    "名前に例が出ている",
+  ).toBeNull();
+  await expect(dialog.getByLabel("Root パス"), "Root に初期値が入っている").toHaveValue("");
+
+  // **選ぶと home から始まる**（何も入っていないので、host の既定）
+  await dialog.getByRole("button", { name: "選ぶ" }).click();
+  const picker = page.getByTestId("path-picker");
+  await expect(picker).toBeVisible({ timeout: 15_000 });
+  const home = process.env.HOME ?? "";
+  await expect(picker.getByTestId("path-picker-current")).toHaveText(home);
 });
