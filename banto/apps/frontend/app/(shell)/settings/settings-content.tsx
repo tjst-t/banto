@@ -9,9 +9,19 @@ import { ModuleConfigPane } from "@/components/banto/settings/module-config-pane
 import { NotificationSettingsPanel } from "@/components/banto/settings/notification-settings-panel";
 import { RoleList } from "@/components/banto/settings/role-list";
 import { RuntimeDefaultsPanel } from "@/components/banto/settings/runtime-defaults-panel";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { getProject } from "@/lib/mock/projects";
+import { ProjectInitial } from "@/components/banto/shell/nav-panel";
+import {
+  ProjectSettingsContent,
+  projectSearchEntries,
+  useProjectCategories,
+  useProjectModuleItems,
+} from "@/components/banto/settings/project-settings-content";
 import {
   SettingsShell,
   type SearchEntry,
+  type SettingsNavGroup,
   type SettingsNavItem,
   type SettingsSection,
 } from "@/components/banto/settings/settings-shell";
@@ -204,26 +214,85 @@ export function SettingsContent() {
   // 同じ一覧を使う（規則3）
   const { canvases } = useModuleSettingsCanvases(INSTANCE_OWNER);
   const isMobile = useIsMobile();
-  const moduleItems = [
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  // **設定画面は1つ**（§6.16）。どの Project の層を出すかは URL、開いている節も URL
+  // ——画面が自分の中に覚えていると、外（サイドバー）から節を変えられない（規則3）
+  const projectId = searchParams.get("project");
+  const project = projectId ? getProject(projectId) : undefined;
+  const section = searchParams.get("section");
+  const projectCategories = useProjectCategories(projectId ?? "");
+  const projectModuleItems = useProjectModuleItems(projectId ?? "");
+
+  function goToSection(next: string | null) {
+    const params = new URLSearchParams(searchParams.toString());
+    if (next) params.set("section", next);
+    else params.delete("section");
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  }
+
+  const instanceModuleItems = [
     ...canvases.map((c) => ({ id: c.server, name: c.name ?? c.server })),
     ...(CONNECTED_FEATURES.settings ? getConfigurableImplementations() : []),
   ];
+
+  const groups: SettingsNavGroup[] = [
+    { label: "banto 全体", startsLayer: true, items: CATEGORIES },
+    {
+      label: instanceModuleItems.length > 0 ? "全体の Module 設定" : undefined,
+      items: instanceModuleItems.map((impl) => ({
+        section: `module:${impl.id}`,
+        label: impl.name,
+        icon: Puzzle,
+      })),
+    },
+  ];
+  if (projectId && project) {
+    // **層の変わり目**——見出しの左に頭文字を出して、サイドバーの Project と繋げる
+    groups.push({
+      label: project.name,
+      labelBadge: <ProjectInitial project={project} active={false} />,
+      startsLayer: true,
+      items: projectCategories,
+    });
+    groups.push({
+      label: projectModuleItems.length > 0 ? "この Project の Module 設定" : undefined,
+      items: projectModuleItems.map((impl) => ({
+        section: `project-module:${impl.id}`,
+        label: impl.name,
+        icon: Puzzle,
+      })),
+    });
+  }
+
+  function renderContent(target: SettingsSection) {
+    if (projectId && target.startsWith("project-")) {
+      return <ProjectSettingsContent projectId={projectId} section={target} />;
+    }
+    return renderSection(target, canvases);
+  }
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* モバイルはサイドバーが無いので、ここにも同じナビの入口を置く
           ——設定に入ったら Project へ戻れない、をなくす */}
       {isMobile ? (
         <header className="flex h-12 shrink-0 items-center gap-1.5 border-b border-border px-2">
-          <MobileNavDrawer projectId={null} />
+          <MobileNavDrawer projectId={projectId} />
           <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">設定</p>
         </header>
       ) : null}
       <div className="min-h-0 flex-1">
         <SettingsShell
-          categories={CATEGORIES}
-          moduleImplementations={moduleItems}
-          renderContent={(section) => renderSection(section, canvases)}
-          extraSearchEntries={buildSearchEntries()}
+          groups={groups}
+          renderContent={renderContent}
+          extraSearchEntries={[
+            ...buildSearchEntries(),
+            ...(projectId ? projectSearchEntries(projectId) : []),
+          ]}
+          section={section}
+          onSectionChange={goToSection}
         />
       </div>
     </div>

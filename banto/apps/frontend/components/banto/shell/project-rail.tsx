@@ -36,12 +36,14 @@ import {
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { NewProjectDialog } from "@/components/banto/project/new-project-dialog";
+import { usePathname, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { getActiveProjects, renameProject, reorderProjects } from "@/lib/mock/projects";
 import { describeFailure } from "@/lib/report-failure";
 import { getThreadsForProject } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { cn } from "@/lib/utils";
+import { projectNavHref } from "@/lib/settings-link";
 import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
 import { NavPanel, ProjectInitial, useJudgmentCount } from "./nav-panel";
 import { SidebarItemMenu } from "./sidebar-item-menu";
@@ -99,6 +101,8 @@ function CollapsedRail({
   const { toggleSidebar } = useSidebar();
   const judgmentCount = useJudgmentCount();
   const projects = getActiveProjects();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
   /** 並べ替え。開いたサイドバー（nav-panel.tsx）と同じ口を通る（規則3） */
   function reorderTo(orderedIds: string[]) {
@@ -179,7 +183,17 @@ function CollapsedRail({
                           className="size-9 justify-center overflow-visible p-0"
                           isActive={active}
                         >
-                          <Link href={`/p/${project.id}`}>
+                          <Link
+                            href={projectNavHref(
+                              project.id,
+                              pathname,
+                              {
+                                project: searchParams.get("project"),
+                                section: searchParams.get("section"),
+                              },
+                              "project-danger",
+                            )}
+                          >
                             <ProjectInitial project={project} active={active} />
                           </Link>
                         </SidebarMenuButton>
@@ -249,7 +263,7 @@ function CollapsedRail({
           <Tooltip>
             <TooltipTrigger asChild>
               <Link
-                href="/settings"
+                href={activeProjectId ? `/settings?project=${activeProjectId}` : "/settings"}
                 aria-label="設定"
                 className={cn(
                   "flex size-8 items-center justify-center rounded-md",

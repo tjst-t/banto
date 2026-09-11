@@ -21,7 +21,9 @@ test("Memory一覧に人が直接足す→出る→取り消す→取り消し�
   await createProject(page, "E2E Memory Project", projectRoot);
 
   await page.getByRole("button", { name: "Project 設定" }).click();
-  await page.getByRole("button", { name: "Memory" }).click();
+  // **設定画面は1つ**（§6.16、2026-09-11）——全体の層に「Global Memory」が
+  // 並んでいるので、この Project の「Memory」は完全一致で選ぶ
+  await page.getByRole("button", { name: "Memory", exact: true }).click();
 
   await expect(page.getByText("まだ無い")).toBeVisible({ timeout: 10_000 });
 

@@ -39,6 +39,23 @@ export interface SettingsNavItem {
   icon: typeof Puzzle;
 }
 
+/**
+ * 左メニューのひとかたまり（決定・2026-09-11、モックで確認）。**設定画面は1つ**で、
+ * 層（banto 全体／この Project）は**見出しで分ける**（§6.16）。
+ */
+export interface SettingsNavGroup {
+  /** 見出し。省略すると見出し無しで並ぶ */
+  label?: string;
+  /** 見出しの左に置くもの（Project の層は頭文字を出して、どの Project かを示す） */
+  labelBadge?: ReactNode;
+  /**
+   * **層の変わり目**——ここで線を引き、間を広く空ける。見出しを等間隔で並べる
+   * だけでは、どこで層が変わるのか分からなかった（ユーザー指摘・2026-09-11）。
+   */
+  startsLayer?: boolean;
+  items: readonly SettingsNavItem[];
+}
+
 const HIGHLIGHT_CLASSES = ["ring-2", "ring-accent", "ring-offset-2", "ring-offset-background"];
 
 /**
@@ -51,26 +68,27 @@ const HIGHLIGHT_CLASSES = ["ring-2", "ring-accent", "ring-offset-2", "ring-offse
  * 描ける（§6.2「設定面へのProjectの文脈」——渡す実装一覧が変わるだけ）
  */
 export function SettingsShell({
-  categories,
-  moduleImplementations,
+  groups,
   renderContent,
   extraSearchEntries = [],
-  defaultSection,
+  section,
+  onSectionChange,
 }: {
-  categories: readonly SettingsNavItem[];
-  /** 左メニュー下段にフラットに並ぶ、Module自身の設定面を持つ実装 */
-  /** 左メニュー下段にフラットに並ぶ、Module 自身の設定面。
-   *  **実 Module でもモックでも同じ枠に流し込む**（決定・2026-09-07、ユーザー指摘）
-   *  ——ここが要るのは id と名前だけなので、それだけを受ける。 */
-  moduleImplementations: readonly { id: string; name: string }[];
+  /** 左メニュー。**見出しで層を分ける**（banto 全体／この Project、§6.16） */
+  groups: readonly SettingsNavGroup[];
   renderContent: (section: SettingsSection) => ReactNode;
   /** 右側の中身が持つ設定項目。検索でヒットさせたいものを呼び出し側が渡す */
   extraSearchEntries?: readonly SearchEntry[];
-  /** デスクトップで最初に選んだ状態にするセクション（既定：categories の先頭） */
-  defaultSection?: SettingsSection;
+  /**
+   * いま開いている節。**URL が持つ**（決定・2026-09-11）——自分の中に覚えると、
+   * 外（サイドバーで別の Project を選ぶ等）から節を変えられない（規則3）。
+   * `null` は「まだ選んでいない」＝デスクトップは先頭、モバイルは一覧。
+   */
+  section: SettingsSection | null;
+  onSectionChange: (section: SettingsSection | null) => void;
 }) {
   const isMobile = useIsMobile();
-  const [section, setSection] = useState<SettingsSection | null>(null);
+  const setSection = onSectionChange;
   const [query, setQuery] = useState("");
   // クリックのたびに更新する——同じ anchor を2回続けて押しても再スクロール
   // ＋再ハイライトが起きるように（section が変わらない場合、state 自体は
@@ -79,17 +97,7 @@ export function SettingsShell({
   const anchorNonceRef = useRef(0);
   const { containerRef: navRef, onKeyDown: onNavKeyDown } = useRovingFocus<HTMLDivElement>();
 
-  const moduleItems: readonly SettingsNavItem[] = useMemo(
-    () =>
-      moduleImplementations.map((impl) => ({
-        section: `module:${impl.id}` as SettingsSection,
-        label: impl.name,
-        icon: Puzzle,
-      })),
-    [moduleImplementations],
-  );
-
-  const allNavItems = useMemo(() => [...categories, ...moduleItems], [categories, moduleItems]);
+  const allNavItems = useMemo(() => groups.flatMap((g) => g.items), [groups]);
 
   function goTo(target: SettingsSection, anchorId?: string) {
     setSection(target);
@@ -132,7 +140,7 @@ export function SettingsShell({
   // デスクトップは常に何かを選んだ状態にする（未選択の空白ペインを避ける）。
   // モバイルは選ぶまでメニューだけを見せる——2ペインが狭い画面で成立しないので、
   // 「一覧→タップで詳細」の1カラムに畳む（iOS 設定アプリと同じ）
-  const fallbackSection = defaultSection ?? categories[0]?.section;
+  const fallbackSection = allNavItems[0]?.section;
   const activeSection = section ?? (isMobile ? null : fallbackSection);
 
   const nav = (
@@ -189,37 +197,39 @@ export function SettingsShell({
             </div>
           )
         ) : (
-          <>
-            <div className="flex flex-col gap-0.5">
-              {categories.map((c) => (
-                <NavButton
-                  key={c.section}
-                  icon={c.icon}
-                  label={c.label}
-                  active={activeSection === c.section}
-                  onClick={() => goTo(c.section)}
-                />
-              ))}
-            </div>
-            {moduleItems.length > 0 ? (
-              <>
-                <p className="mt-3 mb-1 px-2 text-xs font-medium tracking-wide text-ink-3 uppercase">
-                  Module の設定
-                </p>
-                <div className="flex flex-col gap-0.5">
-                  {moduleItems.map((m) => (
-                    <NavButton
-                      key={m.section}
-                      icon={m.icon}
-                      label={m.label}
-                      active={activeSection === m.section}
-                      onClick={() => goTo(m.section)}
-                    />
-                  ))}
+          <div className="flex flex-col gap-3">
+            {groups
+              .filter((g) => g.items.length > 0)
+              .map((g, gi) => (
+                <div
+                  key={g.label ?? `group-${gi}`}
+                  className={cn(g.startsLayer && gi > 0 && "mt-3 border-t border-border pt-4")}
+                >
+                  {g.label ? (
+                    <p
+                      className={cn(
+                        "mb-1 flex items-center gap-1.5 px-2 text-xs tracking-wide",
+                        g.startsLayer ? "font-semibold text-ink-2" : "font-medium text-ink-3",
+                      )}
+                    >
+                      {g.labelBadge}
+                      <span className="truncate">{g.label}</span>
+                    </p>
+                  ) : null}
+                  <div className="flex flex-col gap-0.5">
+                    {g.items.map((c) => (
+                      <NavButton
+                        key={c.section}
+                        icon={c.icon}
+                        label={c.label}
+                        active={activeSection === c.section}
+                        onClick={() => goTo(c.section)}
+                      />
+                    ))}
+                  </div>
                 </div>
-              </>
-            ) : null}
-          </>
+              ))}
+          </div>
         )}
       </div>
     </div>

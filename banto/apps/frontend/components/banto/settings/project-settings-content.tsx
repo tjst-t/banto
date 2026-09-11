@@ -72,7 +72,7 @@ const MOCK_CATEGORIES: readonly SettingsNavItem[] = [
 const DANGER_CATEGORY: SettingsNavItem = { section: "project-danger", label: "危険な操作", icon: TriangleAlert };
 const MEMORY_CATEGORY: SettingsNavItem = { section: "project-memory", label: "Memory", icon: BookMarked };
 
-function buildSearchEntries(projectId: string): readonly SearchEntry[] {
+export function projectSearchEntries(projectId: string): readonly SearchEntry[] {
   const links = getProjectModuleLinks(projectId);
   const moduleEntries = getRoles().flatMap((role) =>
     role.implementations
@@ -86,7 +86,17 @@ function buildSearchEntries(projectId: string): readonly SearchEntry[] {
   return moduleEntries;
 }
 
-export function ProjectSettingsContent({ projectId }: { projectId: string }) {
+/**
+ * **Project の層の、節1つぶん**（改訂・2026-09-11、モックで確認——§6.16
+ * 「設定画面は1つ」）。骨格（SettingsShell）は `/settings` が1つだけ持つ。
+ */
+export function ProjectSettingsContent({
+  projectId,
+  section,
+}: {
+  projectId: string;
+  section: SettingsSection;
+}) {
   useMockStoreVersion();
   const project = getProject(projectId);
   const baseline = getProjectOverrides(projectId);
@@ -125,11 +135,6 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
   // Memoryは実bantoホストのProjectに紐づく（決定・2026-09-05）——mock Projectには
   // 対応するProjectが無い（規則13、繋がっていないものは見せない）
   const showMemory = CONNECTED_FEATURES.memory && project?.real;
-  const categories = [
-    ...(CONNECTED_FEATURES.settings ? MOCK_CATEGORIES : []),
-    DANGER_CATEGORY,
-    ...(showMemory ? [MEMORY_CATEGORY] : []),
-  ];
 
   function renderSection(section: SettingsSection) {
     if (section === "project-memory" && project) {
@@ -381,7 +386,11 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
       );
     }
 
-    const implementationId = section.slice("module:".length);
+    // 層ごとに別の節（`project-module:` と `module:`）——1つの画面に両方の層が
+    // 並ぶので、id が衝突しないようにする（§6.16）
+    const implementationId = section.startsWith("project-module:")
+      ? section.slice("project-module:".length)
+      : section.slice("module:".length);
     // **実 Module の設定面が先**（決定・2026-09-07、ユーザー指摘）
     // ——モックが決めた枠（左メニューに Module、右側いっぱい）に本物を流し込む
     const canvas = settingsCanvases.find((c) => c.server === implementationId);
@@ -399,13 +408,34 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
     );
   }
 
-  return (
-    <SettingsShell
-      categories={categories}
-      moduleImplementations={moduleImplementations}
-      renderContent={renderSection}
-      extraSearchEntries={buildSearchEntries(projectId)}
-      defaultSection={CONNECTED_FEATURES.settings ? "project-modules" : "project-danger"}
-    />
+  return <>{renderSection(section)}</>;
+}
+
+/**
+ * この Project の層に出す節。**繋がっているものだけ**（規則13）——
+ * 実データに繋がっていない節は `CONNECTED_FEATURES` で落ちる。
+ */
+export function useProjectCategories(projectId: string): readonly SettingsNavItem[] {
+  useMockStoreVersion();
+  const project = getProject(projectId);
+  const showMemory = CONNECTED_FEATURES.memory && project?.real;
+  return [
+    ...(CONNECTED_FEATURES.settings ? MOCK_CATEGORIES : []),
+    DANGER_CATEGORY,
+    ...(showMemory ? [MEMORY_CATEGORY] : []),
+  ];
+}
+
+/** この Project の文脈で設定面を出せる Module（左メニューの見出しの下に並ぶ） */
+export function useProjectModuleItems(projectId: string): readonly { id: string; name: string }[] {
+  useMockStoreVersion();
+  const project = getProject(projectId);
+  const links = getProjectModuleLinks(projectId);
+  const { canvases } = useModuleSettingsCanvases(
+    useMemo(() => ({ kind: "project" as const, id: projectId }), [projectId]),
   );
+  return [
+    ...(project?.real ? canvases.map((c) => ({ id: c.server, name: c.name ?? c.server })) : []),
+    ...links.filter((i) => i.hasConfigSurface && i.enabled).map((i) => ({ id: i.id, name: i.name })),
+  ];
 }

@@ -67,7 +67,8 @@ export function CommandPalette({
         stack?.open({ overlay: "inbox" });
         break;
       case "open-project-settings":
-        stack?.open({ overlay: "settings-project" });
+        // 設定画面は1つ（§6.16）——この Project の層を開いた状態で行く
+        if (projectId) router.push(`/settings?project=${projectId}`);
         break;
       case "open-instance-settings":
         router.push("/settings");

@@ -59,9 +59,10 @@ test("Module の設定画面が出て、変えた値が Module に残り、実�
   await settingsInner.getByRole("button", { name: "保存する" }).click();
   await expect(settingsInner.getByText(/保存しました/)).toBeVisible({ timeout: 30_000 });
 
-  // 設定を開き直しても戻らない（＝banto が覚えているのではなく Module が持っている）
+  // 設定を開き直しても戻らない（＝banto が覚えているのではなく Module が持っている）。
+  // **リロードしても設定の面のまま**（開いているものは URL が持つ、§6.16）
   await page.reload();
-  await expectProjectOpen(page, PROJECT_NAME);
+  await page.waitForURL(/\/settings/, { timeout: 30_000 });
   const reopenedCanvas = await openModuleSettings(page);
   const reopened = reopenedCanvas.locator("iframe").contentFrame().frameLocator("iframe");
   await expect(reopened.getByRole("checkbox"), "開き直したら設定が戻ってしまった").not.toBeChecked({
@@ -69,8 +70,9 @@ test("Module の設定画面が出て、変えた値が Module に残り、実�
   });
 
   // ---- 3. その値が実際に効く ----------------------------------------------
-  await page.getByRole("button", { name: "Project 設定を閉じる" }).click();
-  await expect(page.getByText(/^Project 設定 —/).first()).not.toBeVisible({ timeout: 15_000 });
+  // **設定は面**（§6.16、2026-09-11——ダイアログをやめた）。会話へは戻るだけ
+  await page.goBack();
+  await expectProjectOpen(page, PROJECT_NAME);
   const composer2 = page.getByPlaceholder(/に送る/);
   await composer2.fill("filesystem の listDirectory をもう一度呼んで、いまの直下（.）の一覧を見せて。");
   await composer2.press("Enter");
@@ -89,16 +91,20 @@ test("Module の設定画面が出て、変えた値が Module に残り、実�
 /** Project 設定 →「Module の設定」を開いて、filesystem の設定画面が出るまで待つ。
  *  **開き切ってから次へ進む**——途中で押すと、押した先が無い（実測・2026-09-07）。 */
 async function openModuleSettings(page: import("@playwright/test").Page) {
-  // **リロードしても開いたまま**（設定の開閉は URL が持っている）。開いているのに
-  // もう一度開こうとすると、その場所にある×を押して閉じてしまう（実測・2026-09-07）
-  const title = page.getByText(/^Project 設定 —/).first();
-  if (!(await title.isVisible())) {
-    await page.getByRole("button", { name: "Project 設定" }).click();
-  }
-  await expect(title).toBeVisible({ timeout: 30_000 });
-  // **左メニューに Module ごとに並ぶ**（モックが決めた形、決定・2026-09-07）
-  await page.getByRole("button", { name: "FileSystem", exact: true }).click();
   const canvas = page.locator('[data-testid="module-settings-canvas"][data-module="filesystem"]');
+  // **開いているかは URL で見る**（§6.16、2026-09-11——開いている節は URL が持つ）。
+  // 「画面に出ているか」で見ると、**まだ描かれていないだけ**の一瞬に引っかかり、
+  // 開いているのにもう一度開こうとする——狭い画面では節を開いている間は左メニュー
+  // 自体が出ないので、そこで詰む（実測・2026-09-11）
+  const alreadyOpen = decodeURIComponent(page.url()).includes("section=project-module:filesystem");
+  if (!alreadyOpen) {
+    if (!page.url().includes("/settings")) {
+      await page.getByRole("button", { name: "Project 設定" }).click();
+    }
+    await page.waitForURL(/\/settings/, { timeout: 30_000 });
+    // **左メニューに Module ごとに並ぶ**（モックが決めた形、決定・2026-09-07）
+    await page.getByRole("button", { name: "FileSystem", exact: true }).click();
+  }
   await expect(canvas, "Module の設定画面が出ていない").toBeVisible({ timeout: 30_000 });
   return canvas;
 }

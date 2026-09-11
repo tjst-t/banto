@@ -7,7 +7,7 @@
 // 畳んだ状態（58px のレール）は `project-rail.tsx` が描く。ここは「名前が読める」側。
 import { useState, type ReactNode } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import {
   Bell,
@@ -47,6 +47,8 @@ import {
 } from "@/lib/mock/threads";
 import { describeFailure } from "@/lib/report-failure";
 import { cn } from "@/lib/utils";
+import { projectNavHref } from "@/lib/settings-link";
+import { useProjectCategories } from "@/components/banto/settings/project-settings-content";
 import type { MockProject, MockThread } from "@/lib/mock/types";
 import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
 import { SidebarItemMenu } from "./sidebar-item-menu";
@@ -120,6 +122,10 @@ function ProjectTreeItem({
   onMoveDown?: () => void;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  // その Project の層で最初に開く節（繋がっているものは Project ごとに違う）
+  const settingsEntrySection = useProjectCategories(project.id)[0]?.section ?? "project-danger";
   const isCurrent = project.id === activeProjectId;
   const forks = getThreadsForProject(project.id).filter((t): t is MockThread => t.kind === "fork");
   const closedForkCount = getClosedForksForProject(project.id).length;
@@ -171,7 +177,14 @@ function ProjectTreeItem({
             <div className="relative" {...drag}>
               <SidebarMenuButton asChild isActive={isCurrent}>
                 <Link
-                  href={`/p/${project.id}`}
+                  // **設定を開いているときは、その Project の設定へ切り替える**
+                  // （決定・2026-09-11、§6.16）——いま見ている Project なら会話へ戻る
+                  href={projectNavHref(
+                    project.id,
+                    pathname,
+                    { project: searchParams.get("project"), section: searchParams.get("section") },
+                    settingsEntrySection,
+                  )}
                   data-roving-item
                   title={project.basePath}
                   onClick={onNavigate}
@@ -439,7 +452,10 @@ export function NavPanel({
           {SHOW_INSTANCE_SETTINGS ? (
             <SidebarMenuItem>
               <SidebarMenuButton asChild isActive={activeProjectId === null}>
-                <Link href="/settings" onClick={onNavigate}>
+                <Link
+                  href={activeProjectId ? `/settings?project=${activeProjectId}` : "/settings"}
+                  onClick={onNavigate}
+                >
                   <Settings />
                   <span className="truncate">設定</span>
                 </Link>

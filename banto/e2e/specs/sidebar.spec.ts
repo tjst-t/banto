@@ -10,7 +10,7 @@ import { test, expect } from "@playwright/test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createProject, openApp } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp, openNav } from "../helpers.js";
 import type { Locator } from "@playwright/test";
 
 test.describe.configure({ mode: "serial" });
@@ -66,7 +66,9 @@ test("サイドバー：Project 名と Thread の目次が読めて、畳んだ�
   // **別のルートへ移っても畳んだまま**——/settings と /p/[id] はレイアウトが
   // 別なので、覚えていないと行き来のたびに開いてしまう（実装：localStorage）
   await sidebar.getByRole("link", { name: "設定" }).click();
-  await expect(page).toHaveURL(/\/settings$/, { timeout: 15_000 });
+  // 設定は1つの面で、いま開いている Project の層も一緒に出す（§6.16）
+  // ——歯車は `?project=` を連れていく
+  await expect(page).toHaveURL(/\/settings(\?|$)/, { timeout: 15_000 });
   await expectSidebarWidth(sidebar, 58);
 
   await sidebar.getByRole("button", { name: "サイドバーを開く（⌘B / Ctrl-B）" }).click();
@@ -152,4 +154,48 @@ test("サイドバー：Project 名と Thread の目次が読めて、畳んだ�
     [...new Set(observed)],
     "Project を移る途中で幅が変わった（既定に戻ってから直っている）",
   ).toEqual([320]);
+});
+
+test("設定は1つの面——層は線で分かれ、開いたまま Project を切り替えられる", async ({ page }) => {
+  // 決定・2026-09-11（モックで確認、`docs/specs/v4-frontend.md` §6.16）：
+  // 設定画面は1つ。左メニューを見出しで層に分け、層の変わり目に線を引く。
+  // サイドバーで**別の** Project を押したら設定のまま切り替え、**いま見ている**
+  // Project を押したら設定を閉じて会話へ戻る。
+  await openApp(page);
+  await createProject(page, "設定の層A", mkdtempSync(join(tmpdir(), "banto-e2e-layer-a-")));
+  await createProject(page, "設定の層B", mkdtempSync(join(tmpdir(), "banto-e2e-layer-b-")));
+
+  // 会話のヘッダの歯車から入る——**同じ面**（ダイアログではない）
+  await page.getByRole("button", { name: "Project 設定" }).click();
+  await page.waitForURL(/\/settings\?project=/, { timeout: 20_000 });
+  await expect(page.locator('[role="dialog"]'), "設定がダイアログで出ている").toHaveCount(0);
+  await expect(page.locator('[data-slot="sidebar"]'), "設定を開いたらレールが消えた").toBeVisible();
+
+  // 層の見出しが並び、**Project の層の前に線が入る**（見た目は値で確かめる）
+  const layers = await page.evaluate(() =>
+    [...document.querySelectorAll("p.tracking-wide")].map((el) => {
+      const box = el.closest("div")!;
+      const cs = getComputedStyle(box);
+      return { label: el.textContent!.trim(), border: cs.borderTopWidth, marginTop: cs.marginTop };
+    }),
+  );
+  expect(layers.map((l) => l.label), "層の見出しが出ていない").toContain("banto 全体");
+  const projectLayer = layers.find((l) => l.label.includes("設定の層B"));
+  expect(projectLayer, "この Project の層が出ていない").toBeTruthy();
+  expect(projectLayer!.border, "層の変わり目に線が無い").not.toBe("0px");
+
+  // **別の Project を押す**——設定は閉じず、その Project の層になる
+  await openNav(page);
+  await page.getByTestId("sidebar-project-name").filter({ hasText: "設定の層A" }).first().click();
+  await page.waitForURL(/\/settings\?project=/, { timeout: 20_000 });
+  await expect(
+    page.locator("p.tracking-wide").filter({ hasText: "設定の層A" }),
+    "別の Project を押したら、その Project の層にならなかった",
+  ).toBeVisible({ timeout: 15_000 });
+
+  // **いま見ている Project を押す**——設定を閉じて会話へ戻る
+  await openNav(page);
+  await page.getByTestId("sidebar-project-name").filter({ hasText: "設定の層A" }).first().click();
+  await page.waitForURL(/\/p\/[0-9a-f-]+$/, { timeout: 20_000 });
+  await expectProjectOpen(page, "設定の層A");
 });
