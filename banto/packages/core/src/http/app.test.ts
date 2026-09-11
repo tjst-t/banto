@@ -541,3 +541,116 @@ test("SSE を流し始めた後に失敗しても、host は落ちず error イ�
     },
   );
 });
+
+// **名前と並び順**（決定・2026-09-11、ユーザー要望）。左のサイドバーから
+// 並べ替え・名前の変更ができるようにしたぶんの口。
+
+test("Project と Fork の名前を HTTP から変えられる（空・長すぎは断る）", async () => {
+  await withApp(async (base, token, _dir, deps) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const project = await deps.projectThread.createProject("まえ", "/tmp");
+    const thread = await deps.projectThread.createBaseThread(project.id);
+    const fork = await deps.projectThread.forkThread(thread.id);
+
+    const renamed = await fetch(`${base}/api/projects/${project.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ name: "あと" }),
+    });
+    assert.equal(renamed.status, 200);
+    assert.equal(((await renamed.json()) as { name: string }).name, "あと");
+
+    const forkRenamed = await fetch(`${base}/api/threads/${fork.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ title: "設計の枝" }),
+    });
+    assert.equal(forkRenamed.status, 200);
+    assert.equal(((await forkRenamed.json()) as { title: string }).title, "設計の枝");
+    // 一覧にも出る（画面はここから読む）
+    const list = (await (
+      await fetch(`${base}/api/projects/${project.id}/threads`, { headers })
+    ).json()) as Array<{ id: string; title?: string }>;
+    assert.equal(list.find((t) => t.id === fork.id)?.title, "設計の枝");
+
+    // **空の名前は受け取らない**——名前が消えた状態を作らない（規則2）
+    const empty = await fetch(`${base}/api/projects/${project.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ name: "   " }),
+    });
+    assert.equal(empty.status, 400);
+    const tooLong = await fetch(`${base}/api/threads/${fork.id}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ title: "あ".repeat(121) }),
+    });
+    assert.equal(tooLong.status, 400);
+    assert.equal(deps.projectThread.getProject(project.id)!.name, "あと", "断ったのに変わっている");
+
+    const unknown = await fetch(`${base}/api/projects/いない`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ name: "x" }),
+    });
+    assert.equal(unknown.status, 404);
+  });
+});
+
+test("並び順を HTTP から決められる——一覧がその順で返る", async () => {
+  await withApp(async (base, token, _dir, deps) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const a = await deps.projectThread.createProject("A", "/tmp");
+    const b = await deps.projectThread.createProject("B", "/tmp");
+
+    const put = await fetch(`${base}/api/projects/order`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ ids: [b.id, a.id] }),
+    });
+    assert.equal(put.status, 200);
+    const listed = (await (await fetch(`${base}/api/projects`, { headers })).json()) as Array<{
+      name: string;
+    }>;
+    assert.deepEqual(listed.map((p) => p.name), ["B", "A"]);
+
+    // 形が違うもの・知らない id は断る（順番の中に幽霊を作らない）
+    const bad = await fetch(`${base}/api/projects/order`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ ids: "あ" }),
+    });
+    assert.equal(bad.status, 400);
+    const ghost = await fetch(`${base}/api/projects/order`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ ids: [a.id, "いない"] }),
+    });
+    assert.equal(ghost.status, 404);
+    const stillListed = (await (await fetch(`${base}/api/projects`, { headers })).json()) as Array<{
+      name: string;
+    }>;
+    assert.deepEqual(stillListed.map((p) => p.name), ["B", "A"], "断ったのに並びが変わった");
+  });
+});
+
+test("Fork の並び順は Project ごと——一覧は Base が先頭、その後ろに指定の順", async () => {
+  await withApp(async (base, token, _dir, deps) => {
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+    const project = await deps.projectThread.createProject("p", "/tmp");
+    const baseThread = await deps.projectThread.createBaseThread(project.id);
+    const f1 = await deps.projectThread.forkThread(baseThread.id);
+    const f2 = await deps.projectThread.forkThread(baseThread.id);
+
+    const put = await fetch(`${base}/api/projects/${project.id}/fork-order`, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ ids: [f2.id, f1.id] }),
+    });
+    assert.equal(put.status, 200);
+    const threads = (await (
+      await fetch(`${base}/api/projects/${project.id}/threads`, { headers })
+    ).json()) as Array<{ id: string }>;
+    assert.deepEqual(threads.map((t) => t.id), [baseThread.id, f2.id, f1.id]);
+  });
+});

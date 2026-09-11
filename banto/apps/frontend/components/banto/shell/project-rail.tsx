@@ -31,17 +31,20 @@ import {
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
-  SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { NewProjectDialog } from "@/components/banto/project/new-project-dialog";
-import { getActiveProjects } from "@/lib/mock/projects";
+import { toast } from "sonner";
+import { getActiveProjects, renameProject, reorderProjects } from "@/lib/mock/projects";
+import { describeFailure } from "@/lib/report-failure";
 import { getThreadsForProject } from "@/lib/mock/threads";
 import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { cn } from "@/lib/utils";
 import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
 import { NavPanel, ProjectInitial, useJudgmentCount } from "./nav-panel";
+import { SidebarItemMenu } from "./sidebar-item-menu";
+import { SortableList, SortableRow } from "./sortable-list";
 import { SidebarResizeHandle } from "./sidebar-resize-handle";
 import { ThemeToggle } from "./theme-toggle";
 
@@ -94,6 +97,24 @@ function CollapsedRail({
 }) {
   const { toggleSidebar } = useSidebar();
   const judgmentCount = useJudgmentCount();
+  const projects = getActiveProjects();
+
+  /** 並べ替え。開いたサイドバー（nav-panel.tsx）と同じ口を通る（規則3） */
+  function reorderTo(orderedIds: string[]) {
+    void reorderProjects(orderedIds).catch((err: unknown) => {
+      toast(`並び順を保存できませんでした: ${describeFailure(err)}`);
+    });
+  }
+
+  function move(index: number, delta: number) {
+    const ids = projects.map((p) => p.id);
+    const to = index + delta;
+    if (to < 0 || to >= ids.length) return;
+    const next = [...ids];
+    const [moved] = next.splice(index, 1);
+    next.splice(to, 0, moved!);
+    reorderTo(next);
+  }
 
   return (
     <>
@@ -122,25 +143,45 @@ function CollapsedRail({
           ぶんの余白（pt-1）を上に取ることで両方を満たす */}
       <SidebarContent className="!overflow-x-hidden !overflow-y-auto items-center gap-1 px-0 pt-1">
         <SidebarMenu className="items-center gap-1 px-0">
-          {getActiveProjects().map((project) => {
+          <SortableList ids={projects.map((p) => p.id)} onReorder={reorderTo}>
+          {projects.map((project, index) => {
             const active = project.id === activeProjectId;
             const forks = getThreadsForProject(project.id).filter((t) => t.kind === "fork");
             return (
-              <SidebarMenuItem key={project.id} className="relative flex justify-center">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <SidebarMenuButton
-                      asChild
-                      className="size-9 justify-center overflow-visible p-0"
-                      isActive={active}
-                    >
-                      <Link href={`/p/${project.id}`}>
-                        <ProjectInitial project={project} active={active} />
-                      </Link>
-                    </SidebarMenuButton>
-                  </TooltipTrigger>
-                  <TooltipContent side="right">{project.name}</TooltipContent>
-                </Tooltip>
+              <SortableRow
+                key={project.id}
+                id={project.id}
+                as="li"
+                className="group/menu-item relative flex justify-center"
+              >
+                {(drag) => (
+                  <>
+                {/* 畳んだレールでも、掴んで並べ替えられる・右クリックで名前を変えられる
+                    （決定・2026-09-11）——幅で操作が変わらないようにする（規則3） */}
+                <SidebarItemMenu
+                  what="Project"
+                  name={project.name}
+                  onRename={(name) => renameProject(project.id, name)}
+                  onMoveUp={index > 0 ? () => move(index, -1) : undefined}
+                  onMoveDown={index < projects.length - 1 ? () => move(index, 1) : undefined}
+                >
+                  <div className="relative flex justify-center" {...drag}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <SidebarMenuButton
+                          asChild
+                          className="size-9 justify-center overflow-visible p-0"
+                          isActive={active}
+                        >
+                          <Link href={`/p/${project.id}`}>
+                            <ProjectInitial project={project} active={active} />
+                          </Link>
+                        </SidebarMenuButton>
+                      </TooltipTrigger>
+                      <TooltipContent side="right">{project.name}</TooltipContent>
+                    </Tooltip>
+                  </div>
+                </SidebarItemMenu>
 
                 {/* 開いている Fork Thread の一覧・切替口。バッジは Link の外に置く
                     ——入れ子の押せるもの（Link の中に button）は無効な HTML になるし、
@@ -182,9 +223,12 @@ function CollapsedRail({
                     </PopoverContent>
                   </Popover>
                 ) : null}
-              </SidebarMenuItem>
+                  </>
+                )}
+              </SortableRow>
             );
           })}
+          </SortableList>
         </SidebarMenu>
         <RailIconButton icon={Plus} label="新しい Project" onClick={onNewProject} />
       </SidebarContent>

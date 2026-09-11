@@ -246,6 +246,9 @@ export interface RealThreadSummary {
   id: string;
   projectId: string;
   kind: "base" | "fork";
+  /** 人が付けた名前（決定・2026-09-11）。付けていなければ無い——既定の呼び名は
+   *  その Project の中の連番から出す（規則3）。 */
+  title?: string;
   parentThreadId?: string;
   createdSeq?: number;
   status: "active" | "closed";
@@ -335,6 +338,30 @@ export async function closeRealProject(projectId: string): Promise<void> {
 
 export async function reopenRealProject(projectId: string): Promise<void> {
   await request(`/api/projects/${projectId}/reopen`, { method: "POST" });
+}
+
+// **名前と並び順**（決定・2026-09-11、ユーザー要望）。どちらも人の意図なので
+// host が持つ——ブラウザの覚えにすると、別の端末で開いたときに元へ戻る（規則3）。
+
+export async function renameRealProject(projectId: string, name: string): Promise<void> {
+  await request(`/api/projects/${projectId}`, { method: "PATCH", body: JSON.stringify({ name }) });
+}
+
+export async function renameRealThread(threadId: string, title: string): Promise<void> {
+  await request(`/api/threads/${threadId}`, { method: "PATCH", body: JSON.stringify({ title }) });
+}
+
+/** Project の並び。**順番そのものを1件で送る**（要素ごとの番号は持たない）。 */
+export async function setRealProjectOrder(ids: string[]): Promise<void> {
+  await request("/api/projects/order", { method: "PUT", body: JSON.stringify({ ids }) });
+}
+
+/** その Project の Fork の並び。 */
+export async function setRealForkOrder(projectId: string, ids: string[]): Promise<void> {
+  await request(`/api/projects/${projectId}/fork-order`, {
+    method: "PUT",
+    body: JSON.stringify({ ids }),
+  });
 }
 
 export async function listRealInbox(): Promise<RealInboxItem[]> {

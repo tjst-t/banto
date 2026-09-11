@@ -33,6 +33,7 @@ test("走行中にリロードしても、そのターンに繋ぎ直して続�
   const composer = page.getByPlaceholder(/に送る/);
   await composer.fill("1 から 60 までの数字を、1行に1つずつ、番号だけ並べて出して。");
   await composer.press("Enter");
+
   await page.waitForTimeout(2500);
 
   // **走行中に開き直す**
@@ -43,10 +44,23 @@ test("走行中にリロードしても、そのターンに繋ぎ直して続�
   await expect(band, "開き直したら、走っていることが画面から消えた").toBeVisible({ timeout: 30_000 });
   await expect(band.getByText(/このターンは走っています/)).toBeVisible();
 
-  // **中身も戻る**——そのターンがここまでに出したものが見える（規則14）
+  // **中身も戻る**——そのターンがここまでに出したものが見える（規則14）。
+  //
+  // **どれだけ出ているかは数えない**（改訂・2026-09-11、規則6）。以前は
+  // 「60 文字以上」で見ていたが、**どれだけ出るかは AI 次第**——前置きだけ先に
+  // 出して本文を最後にまとめて出す走りだと、待ちが尽きるまで増えない
+  // （実測：45 文字で止まって落ちた）。見るのは「この帯がそのターンの出力を
+  // 運んでいるか」であって、量ではない。終わったあとの中身は下で見る。
+  const LABEL = "このターンは走っています";
   await expect
-    .poll(async () => (await band.innerText()).length, { timeout: 60_000, message: "出力が戻るまで" })
-    .toBeGreaterThan(60);
+    .poll(
+      async () => {
+        if ((await band.count()) === 0) return "ended"; // 先に終わった（下で中身を見る）
+        return (await band.innerText()).replace(LABEL, "").trim().length > 0 ? "shown" : "empty";
+      },
+      { timeout: 60_000, message: "そのターンの出力が帯に戻るまで" },
+    )
+    .not.toBe("empty");
 
   // ターンが終わったら帯は消え、会話の記録に置き換わる
   await expect

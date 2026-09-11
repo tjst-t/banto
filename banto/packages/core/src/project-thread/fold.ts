@@ -11,6 +11,14 @@ import type {
 export type ProjectThreadEvent =
   | { type: "project.created"; payload: { id: string; name: string; root: string } }
   | { type: "project.closed"; payload: { id: string } }
+  // **人が付けた名前**（決定・2026-09-11、ユーザー要望）。Project は作るときに
+  // 名前を付けるが、後から直せなかった
+  | { type: "project.renamed"; payload: { id: string; name: string } }
+  // **人が決めた並び順**（決定・2026-09-11、ユーザー要望）。**順番そのものを1件で
+  // 持つ**——各要素に番号を振ると、1つ動かすたびに全件を書き直すことになり、
+  // 途中で失敗したときに番号が飛ぶ。ここに載っていないものは、載っているものの
+  // 後ろに、作られた順で並ぶ（載せ忘れで消えない）
+  | { type: "project.order.set"; payload: { ids: string[] } }
   | { type: "project.reopened"; payload: { id: string } }
   | {
       type: "thread.created";
@@ -23,6 +31,10 @@ export type ProjectThreadEvent =
       };
     }
   | { type: "thread.closed"; payload: { id: string } }
+  // Fork の名前（決定・2026-09-11、ユーザー要望）。**付けていないものは持たない**
+  // ——既定の「Fork 1」は連番から導出できる（規則3）
+  | { type: "thread.renamed"; payload: { id: string; title: string } }
+  | { type: "thread.order.set"; payload: { projectId: string; ids: string[] } }
   | { type: "thread.reopened"; payload: { id: string } }
   | { type: "thread.resume_point_updated"; payload: { id: string; resumePoint: string } }
   | { type: "thread.permission_mode_set"; payload: { id: string; mode: ThreadPermissionMode } }
@@ -60,6 +72,8 @@ export type ProjectThreadEvent =
 function cloneModel(m: ProjectThreadReadModel): ProjectThreadReadModel {
   return {
     displayModeByToolCall: new Map(m.displayModeByToolCall),
+    projectOrder: [...m.projectOrder],
+    threadOrder: new Map(m.threadOrder),
     projects: new Map(Array.from(m.projects, ([k, v]) => [k, { ...v, memory: [...v.memory] }])),
     threads: new Map(
       Array.from(m.threads, ([k, v]) => [
@@ -84,7 +98,13 @@ function resolveMemoryProjectId(
 
 
 export const projectThreadFold: Fold<ProjectThreadReadModel> = {
-  initial: () => ({ projects: new Map(), threads: new Map(), displayModeByToolCall: new Map() }),
+  initial: () => ({
+    projects: new Map(),
+    threads: new Map(),
+    displayModeByToolCall: new Map(),
+    projectOrder: [],
+    threadOrder: new Map(),
+  }),
 
   apply(state, raw: StoredEvent): ProjectThreadReadModel {
     const event = raw as unknown as ProjectThreadEvent & { ts: string };
@@ -106,6 +126,25 @@ export const projectThreadFold: Fold<ProjectThreadReadModel> = {
       case "project.closed": {
         const p = next.projects.get(event.payload.id);
         if (p) next.projects.set(p.id, { ...p, status: "closed" });
+        return next;
+      }
+      case "project.renamed": {
+        const p = next.projects.get(event.payload.id);
+        if (p) next.projects.set(p.id, { ...p, name: event.payload.name });
+        return next;
+      }
+      case "project.order.set": {
+        next.projectOrder = [...event.payload.ids];
+        return next;
+      }
+      case "thread.renamed": {
+        const t = next.threads.get(event.payload.id);
+        if (t) next.threads.set(t.id, { ...t, title: event.payload.title });
+        return next;
+      }
+      case "thread.order.set": {
+        next.threadOrder = new Map(next.threadOrder);
+        next.threadOrder.set(event.payload.projectId, [...event.payload.ids]);
         return next;
       }
       case "project.reopened": {

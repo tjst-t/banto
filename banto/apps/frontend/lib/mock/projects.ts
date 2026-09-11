@@ -11,6 +11,8 @@ import {
   getBackendConfig,
   closeRealProject,
   reopenRealProject,
+  renameRealProject,
+  setRealProjectOrder,
 } from "../backend/client";
 
 // デモ用の初期Projectは持たない（決定・2026-09-03、実機投入に伴いデモデータを撤去）。
@@ -44,6 +46,59 @@ export function getProject(id: string): MockProject {
       status: "active",
     }
   );
+}
+
+/**
+ * **名前を変える**（決定・2026-09-11、ユーザー要望）。作るときに付けた名前を
+ * 後から直せなかった。**先に host へ書いてから**手元を直す——逆にすると、
+ * 書けなかったときに画面だけ新しい名前になる（規則2・規則3）。
+ */
+export async function renameProject(id: string, name: string): Promise<void> {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("名前を空にはできません");
+  await renameRealProject(id, trimmed);
+  projects = projects.map((p) =>
+    p.id === id ? { ...p, name: trimmed, initial: trimmed.slice(0, 1) } : p,
+  );
+  notifyMockStoreChange();
+}
+
+/**
+ * **並べ替える**（決定・2026-09-11、ユーザー要望）。受け取るのは画面に出ている
+ * （畳んでいない）Project の並び。host へ送るのは**一覧全体の並び**
+ * ——1件ずつ番号を振ると、途中で失敗したときに順番が飛ぶ。
+ *
+ * **見えていないものは動かさない**（実測・2026-09-11）。畳んだ Project を
+ * 並びに入れずに送ると、host 側で「並びに無いもの」として末尾へ回り、
+ * **開き直したときに知らないところへ移動している**。畳んだものが居た場所は
+ * そのままにして、見えているものだけを入れ替える。
+ */
+export async function reorderProjects(visibleOrderedIds: string[]): Promise<void> {
+  const before = projects;
+  const rank = new Map(visibleOrderedIds.map((id, i) => [id, i]));
+  const slots: number[] = [];
+  const moving: MockProject[] = [];
+  projects.forEach((p, i) => {
+    if (rank.has(p.id)) {
+      slots.push(i);
+      moving.push(p);
+    }
+  });
+  moving.sort((a, b) => rank.get(a.id)! - rank.get(b.id)!);
+  const next = [...projects];
+  slots.forEach((slot, i) => {
+    next[slot] = moving[i]!;
+  });
+  projects = next;
+  notifyMockStoreChange();
+  try {
+    await setRealProjectOrder(projects.map((p) => p.id));
+  } catch (err) {
+    // **書けなかったら戻す**——画面だけ並び替わった状態にしない（規則2）
+    projects = before;
+    notifyMockStoreChange();
+    throw err;
+  }
 }
 
 export interface NewProjectInput {
@@ -165,6 +220,7 @@ async function hydrateRealProjectsUncached(): Promise<void> {
         undefined,
         fork.createdSeq,
         overviewOf(fork),
+        fork.title,
       );
       seedThreadPermissionMode(fork.id, fork.permissionMode);
     }

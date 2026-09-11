@@ -474,3 +474,82 @@ test("『どの面に出したか』が会話より先に届いても、取り�
     assert.equal(call?.displayMode, "fullscreen");
   });
 });
+
+// **名前と並び順**（決定・2026-09-11、ユーザー要望）。
+// どちらも人の意図であって導出できないので、イベントとして残す。
+
+/** 記録（Event Store）から読み直した別の store。**覚えているのではなく、
+ *  記録から出てくる**ことを見るために使う。 */
+async function remakeFrom(dir: string, log: EventLog): Promise<ProjectThreadStore> {
+  const store = new ProjectThreadStore(dir, log);
+  await store.load();
+  return store;
+}
+
+test("Project の名前を変えられる——記録から読み直しても残る", async () => {
+  await withStore(async (store, dir, log) => {
+    const project = await store.createProject("まえの名前", dir);
+    await store.renameProject(project.id, "あとの名前");
+    assert.equal(store.getProject(project.id)!.name, "あとの名前");
+    const reloaded = await remakeFrom(dir, log);
+    assert.equal(reloaded.getProject(project.id)!.name, "あとの名前", "読み直したら元に戻った");
+  });
+});
+
+test("Fork の名前は、付けたものだけを持つ（既定の呼び名は持たない）", async () => {
+  await withStore(async (store, dir, log) => {
+    const project = await store.createProject("p", dir);
+    const base = await store.createBaseThread(project.id);
+    const fork = await store.forkThread(base.id);
+    assert.equal(fork.title, undefined, "付けていない名前を持っている（規則3）");
+    await store.renameThread(fork.id, "設計の枝");
+    const reloaded = await remakeFrom(dir, log);
+    assert.equal(reloaded.getThread(fork.id)!.title, "設計の枝");
+  });
+});
+
+test("並び順は人が決めたとおりに返る。並びに無いものは後ろへ", async () => {
+  await withStore(async (store, dir, log) => {
+    const a = await store.createProject("A", dir);
+    const b = await store.createProject("B", dir);
+    const c = await store.createProject("C", dir);
+    await store.setProjectOrder([c.id, a.id, b.id]);
+    assert.deepEqual(store.listProjects().map((p) => p.name), ["C", "A", "B"]);
+
+    // **並び替えた後に作ったもの**は、並びの後ろに出る（消えない）
+    const d = await store.createProject("D", dir);
+    assert.deepEqual(store.listProjects().map((p) => p.name), ["C", "A", "B", "D"]);
+
+    const reloaded = await remakeFrom(dir, log);
+    assert.deepEqual(reloaded.listProjects().map((p) => p.name), ["C", "A", "B", "D"]);
+    void d;
+  });
+});
+
+test("知らない id を並びに入れない——順番の中に幽霊を作らない", async () => {
+  await withStore(async (store, dir) => {
+    const a = await store.createProject("A", dir);
+    await assert.rejects(() => store.setProjectOrder([a.id, "存在しない"]));
+    // 断られたのだから、並びは変わっていない
+    assert.deepEqual(store.listProjects().map((p) => p.name), ["A"]);
+  });
+});
+
+test("Fork の並びは Project ごと。Base は常に先頭のまま", async () => {
+  await withStore(async (store, dir) => {
+    const project = await store.createProject("p", dir);
+    const base = await store.createBaseThread(project.id);
+    const f1 = await store.forkThread(base.id);
+    const f2 = await store.forkThread(base.id);
+    await store.setForkOrder(project.id, [f2.id, f1.id]);
+    const ordered = store.listThreadsForProject(project.id);
+    assert.deepEqual(
+      ordered.map((t) => t.id),
+      [base.id, f2.id, f1.id],
+      "Base が先頭でない、または Fork の並びが効いていない",
+    );
+    // 別の Project の Thread は混ぜない
+    const other = await store.createProject("q", dir);
+    await assert.rejects(() => store.setForkOrder(other.id, [f1.id]));
+  });
+});

@@ -70,9 +70,12 @@ export class ProjectThreadStore {
 
   listProjects(): ProjectState[] {
     // 一覧も1件取りと同じ姿で返す（下の getProject のコメント、規則3）
-    return Array.from(this.projection.current.projects.keys())
+    const projects = Array.from(this.projection.current.projects.keys())
       .map((id) => this.getProject(id))
       .filter((p): p is ProjectState => p !== undefined);
+    // **並べるのは読むとき**（決定・2026-09-11）——並び順は1つのイベントで
+    // 持っているので、各 Project に番号を写さない（規則3）
+    return sortByExplicitOrder(projects, this.projection.current.projectOrder);
   }
 
   /**
@@ -99,13 +102,57 @@ export class ProjectThreadStore {
   }
 
   listThreadsForProject(projectId: ProjectId): ThreadState[] {
-    return Array.from(this.projection.current.threads.values()).filter(
+    const threads = Array.from(this.projection.current.threads.values()).filter(
       (t) => t.projectId === projectId,
     );
+    // Base は常に先頭（会話の幹）。人が並べ替えられるのは Fork だけ
+    const base = threads.filter((t) => t.kind !== "fork");
+    const forks = sortByExplicitOrder(
+      threads.filter((t) => t.kind === "fork"),
+      this.projection.current.threadOrder.get(projectId) ?? [],
+    );
+    return [...base, ...forks];
   }
 
   getThread(id: ThreadId): ThreadState | undefined {
     return this.projection.current.threads.get(id);
+  }
+
+  async renameProject(id: ProjectId, name: string): Promise<ProjectState> {
+    if (!this.getProject(id)) throw new NotFoundError(`project ${id} not found`);
+    const event = await this.log.append("project.renamed", { id, name });
+    this.projection.applyOne(event);
+    return this.getProject(id)!;
+  }
+
+  async renameThread(id: ThreadId, title: string): Promise<ThreadState> {
+    if (!this.getThread(id)) throw new NotFoundError(`thread ${id} not found`);
+    const event = await this.log.append("thread.renamed", { id, title });
+    this.projection.applyOne(event);
+    return this.getThread(id)!;
+  }
+
+  /** Project の並び。**知らない id は受け取らない**——順番の中に幽霊を作らない（規則2）。 */
+  async setProjectOrder(ids: ProjectId[]): Promise<void> {
+    for (const id of ids) {
+      if (!this.getProject(id)) throw new NotFoundError(`project ${id} not found`);
+    }
+    const event = await this.log.append("project.order.set", { ids });
+    this.projection.applyOne(event);
+  }
+
+  /** その Project の Fork の並び。 */
+  async setForkOrder(projectId: ProjectId, ids: ThreadId[]): Promise<void> {
+    if (!this.getProject(projectId)) throw new NotFoundError(`project ${projectId} not found`);
+    for (const id of ids) {
+      const thread = this.getThread(id);
+      if (!thread) throw new NotFoundError(`thread ${id} not found`);
+      if (thread.projectId !== projectId) {
+        throw new NotFoundError(`thread ${id} is not in project ${projectId}`);
+      }
+    }
+    const event = await this.log.append("thread.order.set", { projectId, ids });
+    this.projection.applyOne(event);
   }
 
   async createProject(name: string, root: string): Promise<ProjectState> {
@@ -331,4 +378,23 @@ export class ProjectThreadStore {
     if (!t) throw new Error("invariant: thread.created did not produce a thread");
     return t;
   }
+}
+
+/**
+ * 人が決めた並びに合わせる（決定・2026-09-11）。
+ *
+ * **並びに無いものは後ろへ、元の順のまま**——並べ替えたことのないもの・
+ * 並べ替えた後に作られたものが、一覧から消えない（fail open）。
+ */
+function sortByExplicitOrder<T extends { id: string }>(items: T[], order: readonly string[]): T[] {
+  if (order.length === 0) return items;
+  const rank = new Map(order.map((id, i) => [id, i]));
+  return items
+    .map((item, i) => ({ item, i }))
+    .sort((a, b) => {
+      const ra = rank.get(a.item.id) ?? Number.MAX_SAFE_INTEGER;
+      const rb = rank.get(b.item.id) ?? Number.MAX_SAFE_INTEGER;
+      return ra === rb ? a.i - b.i : ra - rb;
+    })
+    .map(({ item }) => item);
 }

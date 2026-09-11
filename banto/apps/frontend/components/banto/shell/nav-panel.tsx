@@ -40,11 +40,20 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getInboxItems } from "@/lib/mock/inbox";
 import { getRealJudgments, getRealNotices, useRealInboxVersion } from "@/lib/backend/real-inbox";
-import { getActiveProjects } from "@/lib/mock/projects";
-import { foldForkThread, getClosedForksForProject, getThreadsForProject } from "@/lib/mock/threads";
+import { getActiveProjects, reorderProjects, renameProject } from "@/lib/mock/projects";
+import {
+  foldForkThread,
+  getClosedForksForProject,
+  getThreadsForProject,
+  renameForkThread,
+  reorderForks,
+} from "@/lib/mock/threads";
+import { describeFailure } from "@/lib/report-failure";
 import { cn } from "@/lib/utils";
 import type { MockProject, MockThread } from "@/lib/mock/types";
 import { CONNECTED_FEATURES, SHOW_INSTANCE_SETTINGS } from "@/lib/feature-flags";
+import { SidebarItemMenu } from "./sidebar-item-menu";
+import { SortableList, SortableRow } from "./sortable-list";
 import { ThemeToggle } from "./theme-toggle";
 
 const SHOW_ARCHIVE = CONNECTED_FEATURES.threadCloseReopen || CONNECTED_FEATURES.projectCloseReopen;
@@ -85,6 +94,10 @@ export function ProjectInitial({ project, active }: { project: MockProject; acti
  * Fork をアイコンの角のバッジ（3px の点＋ポップオーバー）に隠していたのをやめ、
  * **開いている Thread は常に見えている一覧**にした——Fork は「いま並行して
  * 走っている作業」なので、探しに行くものではない。
+ *
+ * **掴んで並べ替えられる／右クリックで名前を変えられる**（決定・2026-09-11、
+ * ユーザー要望）。掴む取っ手は Project 名の行そのもの——Fork の行は自分の
+ * 一覧の中で並べ替わるので、親の取っ手の外に置く（入れ子の掴み合いを作らない）。
  */
 function ProjectTreeItem({
   project,
@@ -94,6 +107,8 @@ function ProjectTreeItem({
   onToggleExpanded,
   onOpenArchive,
   onNavigate,
+  onMoveUp,
+  onMoveDown,
 }: {
   project: MockProject;
   activeProjectId: string | null;
@@ -102,6 +117,9 @@ function ProjectTreeItem({
   onToggleExpanded: () => void;
   onOpenArchive: () => void;
   onNavigate?: () => void;
+  /** 並びの端なら undefined（メニューの項目が押せなくなる） */
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
 }) {
   const router = useRouter();
   const isCurrent = project.id === activeProjectId;
@@ -121,100 +139,147 @@ function ProjectTreeItem({
     }
   }
 
+  /** Fork を並べ替える。渡すのは**並び全体**（`lib/mock/threads.ts`） */
+  function reorderForksTo(orderedIds: string[]) {
+    void reorderForks(project.id, orderedIds).catch((err: unknown) => {
+      toast(`並び順を保存できませんでした: ${describeFailure(err)}`);
+    });
+  }
+
+  function moveFork(index: number, delta: number) {
+    const ids = forks.map((f) => f.id);
+    const to = index + delta;
+    if (to < 0 || to >= ids.length) return;
+    const next = [...ids];
+    const [moved] = next.splice(index, 1);
+    next.splice(to, 0, moved!);
+    reorderForksTo(next);
+  }
+
   return (
-    <SidebarMenuItem>
-      <SidebarMenuButton asChild isActive={isCurrent}>
-        <Link
-          href={`/p/${project.id}`}
-          data-roving-item
-          title={project.basePath}
-          onClick={onNavigate}
-        >
-          <ProjectInitial project={project} active={isCurrent} />
-          <span className="truncate">{project.name}</span>
-        </Link>
-      </SidebarMenuButton>
-      {forks.length > 0 ? (
-        <SidebarMenuAction
-          onClick={onToggleExpanded}
-          aria-expanded={expanded}
-          aria-label={`${project.name} の Thread 一覧を${expanded ? "畳む" : "開く"}`}
-        >
-          <ChevronRight className={cn("transition-transform", expanded && "rotate-90")} />
-        </SidebarMenuAction>
-      ) : null}
-
-      {expanded ? (
-        <SidebarMenuSub>
-          <SidebarMenuSubItem>
-            <SidebarMenuSubButton asChild isActive={isCurrent && activeForkThreadId === null}>
-              <Link href={`/p/${project.id}`} data-roving-item onClick={onNavigate}>
-                <MessageSquare />
-                <span>Base Thread</span>
-              </Link>
-            </SidebarMenuSubButton>
-          </SidebarMenuSubItem>
-
-          {forks.map((fork) => (
-            <SidebarMenuSubItem key={fork.id} className="group/fork">
-              <SidebarMenuSubButton
-                asChild
-                isActive={isCurrent && activeForkThreadId === fork.id}
-                className={CONNECTED_FEATURES.threadCloseReopen ? "pr-8" : undefined}
-              >
+    <SortableRow id={project.id} as="li" className="group/menu-item relative">
+      {(drag) => (
+        <>
+          <SidebarItemMenu
+            what="Project"
+            name={project.name}
+            onRename={(name) => renameProject(project.id, name)}
+            onMoveUp={onMoveUp}
+            onMoveDown={onMoveDown}
+          >
+            <div className="relative" {...drag}>
+              <SidebarMenuButton asChild isActive={isCurrent}>
                 <Link
-                  href={`/p/${project.id}?fork=${fork.id}`}
+                  href={`/p/${project.id}`}
                   data-roving-item
-                  title={fork.title}
+                  title={project.basePath}
                   onClick={onNavigate}
                 >
-                  <GitFork />
-                  <span>{fork.title}</span>
+                  <ProjectInitial project={project} active={isCurrent} />
+                  <span data-testid="sidebar-project-name" className="truncate">
+                    {project.name}
+                  </span>
                 </Link>
-              </SidebarMenuSubButton>
-              {/* 畳む口を目次の中にも置く——Fork を開いてヘッダのアイコンを
-                  探しに行かなくても、その場で片付けられる。削除ではない */}
-              {CONNECTED_FEATURES.threadCloseReopen ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
+              </SidebarMenuButton>
+              {forks.length > 0 ? (
+                <SidebarMenuAction
+                  onClick={onToggleExpanded}
+                  aria-expanded={expanded}
+                  aria-label={`${project.name} の Thread 一覧を${expanded ? "畳む" : "開く"}`}
+                >
+                  <ChevronRight className={cn("transition-transform", expanded && "rotate-90")} />
+                </SidebarMenuAction>
+              ) : null}
+            </div>
+          </SidebarItemMenu>
+
+          {expanded ? (
+            <SidebarMenuSub>
+              <SidebarMenuSubItem>
+                <SidebarMenuSubButton asChild isActive={isCurrent && activeForkThreadId === null}>
+                  <Link href={`/p/${project.id}`} data-roving-item onClick={onNavigate}>
+                    <MessageSquare />
+                    <span>Base Thread</span>
+                  </Link>
+                </SidebarMenuSubButton>
+              </SidebarMenuSubItem>
+
+              <SortableList ids={forks.map((f) => f.id)} onReorder={reorderForksTo}>
+                {forks.map((fork, index) => (
+                  <SortableRow key={fork.id} id={fork.id} as="li" className="group/fork relative">
+                    {(forkDrag) => (
+                      <SidebarItemMenu
+                        what="Fork Thread"
+                        name={fork.title}
+                        onRename={(title) => renameForkThread(fork.id, title)}
+                        onMoveUp={index > 0 ? () => moveFork(index, -1) : undefined}
+                        onMoveDown={index < forks.length - 1 ? () => moveFork(index, 1) : undefined}
+                      >
+                        <div className="relative" {...forkDrag}>
+                          <SidebarMenuSubButton
+                            asChild
+                            isActive={isCurrent && activeForkThreadId === fork.id}
+                            className={CONNECTED_FEATURES.threadCloseReopen ? "pr-8" : undefined}
+                          >
+                            <Link
+                              href={`/p/${project.id}?fork=${fork.id}`}
+                              data-roving-item
+                              title={fork.title}
+                              onClick={onNavigate}
+                            >
+                              <GitFork />
+                              <span data-testid="sidebar-fork-name">{fork.title}</span>
+                            </Link>
+                          </SidebarMenuSubButton>
+                          {/* 畳む口を目次の中にも置く——Fork を開いてヘッダのアイコンを
+                              探しに行かなくても、その場で片付けられる。削除ではない */}
+                          {CONNECTED_FEATURES.threadCloseReopen ? (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  onClick={() => void foldFork(fork)}
+                                  aria-label={`「${fork.title}」を畳む`}
+                                  className="absolute top-1 right-1 flex size-5 items-center justify-center rounded-md text-ink-3 opacity-0 hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/fork:opacity-100"
+                                >
+                                  <GitMerge className="size-3.5" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent side="right">畳む</TooltipContent>
+                            </Tooltip>
+                          ) : null}
+                        </div>
+                      </SidebarItemMenu>
+                    )}
+                  </SortableRow>
+                ))}
+              </SortableList>
+
+              {/* 閉じた Fork の入口は、いま開いている Project にだけ出す——履歴
+                  （ArchiveDialog）はいま開いている Project の閉じた Fork を見せる
+                  ので、別 Project の行から開くと中身が食い違う */}
+              {SHOW_ARCHIVE && isCurrent && closedForkCount > 0 ? (
+                <SidebarMenuSubItem>
+                  <SidebarMenuSubButton asChild size="sm" className="text-ink-3">
                     <button
                       type="button"
-                      onClick={() => void foldFork(fork)}
-                      aria-label={`「${fork.title}」を畳む`}
-                      className="absolute top-1 right-1 flex size-5 items-center justify-center rounded-md text-ink-3 opacity-0 hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/fork:opacity-100"
+                      onClick={() => {
+                        onNavigate?.();
+                        onOpenArchive();
+                      }}
+                      data-roving-item
                     >
-                      <GitMerge className="size-3.5" />
+                      <Clock />
+                      <span>閉じた Fork（{closedForkCount}）</span>
                     </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right">畳む</TooltipContent>
-                </Tooltip>
+                  </SidebarMenuSubButton>
+                </SidebarMenuSubItem>
               ) : null}
-            </SidebarMenuSubItem>
-          ))}
-
-          {/* 閉じた Fork の入口は、いま開いている Project にだけ出す——履歴
-              （ArchiveDialog）はいま開いている Project の閉じた Fork を見せる
-              ので、別 Project の行から開くと中身が食い違う */}
-          {SHOW_ARCHIVE && isCurrent && closedForkCount > 0 ? (
-            <SidebarMenuSubItem>
-              <SidebarMenuSubButton asChild size="sm" className="text-ink-3">
-                <button
-                  type="button"
-                  onClick={() => {
-                    onNavigate?.();
-                    onOpenArchive();
-                  }}
-                  data-roving-item
-                >
-                  <Clock />
-                  <span>閉じた Fork（{closedForkCount}）</span>
-                </button>
-              </SidebarMenuSubButton>
-            </SidebarMenuSubItem>
+            </SidebarMenuSub>
           ) : null}
-        </SidebarMenuSub>
-      ) : null}
-    </SidebarMenuItem>
+        </>
+      )}
+    </SortableRow>
   );
 }
 
@@ -247,6 +312,25 @@ export function NavPanel({
   // 開いている Project の目次は既定で開く。人が畳んだ／開いたときだけ、その
   // 選択を覚える（導出できる既定値を保存しない、規則3）
   const [expandedOverride, setExpandedOverride] = useState<Record<string, boolean>>({});
+  const projects = getActiveProjects();
+
+  /** 並べ替え。渡すのは**並び全体**——1件ずつの番号は持たない（`lib/mock/projects.ts`） */
+  function reorderProjectsTo(orderedIds: string[]) {
+    void reorderProjects(orderedIds).catch((err: unknown) => {
+      toast(`並び順を保存できませんでした: ${describeFailure(err)}`);
+    });
+  }
+
+  /** メニューの「上へ／下へ」。掴めない場面でも並べ替えられるようにする */
+  function moveProject(index: number, delta: number) {
+    const ids = projects.map((p) => p.id);
+    const to = index + delta;
+    if (to < 0 || to >= ids.length) return;
+    const next = [...ids];
+    const [moved] = next.splice(index, 1);
+    next.splice(to, 0, moved!);
+    reorderProjectsTo(next);
+  }
 
   return (
     <>
@@ -309,10 +393,13 @@ export function NavPanel({
           </SidebarGroupAction>
           <SidebarGroupContent>
             <SidebarMenu ref={containerRef} onKeyDown={onKeyDown}>
-              {getActiveProjects().map((project) => (
+              <SortableList ids={projects.map((p) => p.id)} onReorder={reorderProjectsTo}>
+              {projects.map((project, index) => (
                 <ProjectTreeItem
                   key={project.id}
                   project={project}
+                  onMoveUp={index > 0 ? () => moveProject(index, -1) : undefined}
+                  onMoveDown={index < projects.length - 1 ? () => moveProject(index, 1) : undefined}
                   activeProjectId={activeProjectId}
                   activeForkThreadId={activeForkThreadId}
                   expanded={expandedOverride[project.id] ?? project.id === activeProjectId}
@@ -326,6 +413,7 @@ export function NavPanel({
                   onNavigate={onNavigate}
                 />
               ))}
+              </SortableList>
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>

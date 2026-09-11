@@ -1,6 +1,12 @@
 import type { MockThread } from "./types";
 import { notifyMockStoreChange } from "./store-events";
-import { closeRealThread, getRealThread, reopenRealThread } from "../backend/client";
+import {
+  closeRealThread,
+  getRealThread,
+  renameRealThread,
+  reopenRealThread,
+  setRealForkOrder,
+} from "../backend/client";
 
 // デモ用の台本つきThreadは持たない（決定・2026-09-03、実機投入に伴いデモデータを撤去）。
 // 実Threadはregisterrealthread/hydrateRealProjects経由でここへ登録される
@@ -111,15 +117,18 @@ export function registerRealFork(
   realCreatedSeq?: number,
   /** 中身をまだ取っていないときの概要（改訂・2026-09-07） */
   realOverview?: MockThread["realOverview"],
+  /** 人が付けた名前（決定・2026-09-11）。無ければこの Project の中の連番 */
+  title?: string,
 ): MockThread {
   const existing = mockThreads.find((t) => t.id === threadId);
   if (existing) return existing;
-  const forkCount = mockThreads.filter((t) => t.projectId === projectId && t.kind === "fork").length;
   const thread: MockThread = {
     id: threadId,
     projectId,
     kind: "fork",
-    title: `Fork ${forkCount + 1}`,
+    // 既定の呼び名は下の renumberDefaultForkTitles が入れ直す
+    title: title ?? "Fork",
+    explicitTitle: title,
     parentThreadId,
     realCreatedSeq,
     realOverview,
@@ -131,8 +140,32 @@ export function registerRealFork(
     realUsage,
   };
   mockThreads = [...mockThreads, thread];
+  renumberDefaultForkTitles(projectId);
   notifyMockStoreChange();
-  return thread;
+  return mockThreads.find((t) => t.id === threadId) ?? thread;
+}
+
+/**
+ * **既定の呼び名は「作られた順」から出す**（改訂・2026-09-11）。
+ *
+ * 以前は登録した順に `Fork 1`, `Fork 2`, … と振っていたので、**並べ替えたあとに
+ * 読み込み直すと番号が入れ替わっていた**（実測：`Fork 2` を上に動かしてリロード
+ * すると `Fork 1` になる）。名前は人が覚えているものなので、並び順で変わっては
+ * いけない。人が付けた名前（`explicitTitle`）はそのまま。
+ */
+function renumberDefaultForkTitles(projectId: string): void {
+  const forks = mockThreads
+    .filter((t) => t.projectId === projectId && t.kind === "fork")
+    .slice()
+    .sort((a, b) => (a.realCreatedSeq ?? 0) - (b.realCreatedSeq ?? 0));
+  const titleById = new Map<string, string>();
+  forks.forEach((fork, index) => {
+    titleById.set(fork.id, fork.explicitTitle ?? `Fork ${index + 1}`);
+  });
+  mockThreads = mockThreads.map((t) => {
+    const title = titleById.get(t.id);
+    return title !== undefined && title !== t.title ? { ...t, title } : t;
+  });
 }
 
 /** Clear等でbanto host側の状態が変わった後、そのThreadの表示データだけを
@@ -192,4 +225,52 @@ export async function reopenThread(id: string): Promise<void> {
   if (thread?.real) await reopenRealThread(id);
   mockThreads = mockThreads.map((t) => (t.id === id ? { ...t, status: "open", closedAt: undefined } : t));
   notifyMockStoreChange();
+}
+
+
+/**
+ * **Fork の名前を変える**（決定・2026-09-11、ユーザー要望）。付けた名前は host が
+ * 持つ——ブラウザの覚えにすると、別の端末で開いたときに「Fork 1」へ戻る（規則3）。
+ * 先に host へ書いてから手元を直す（書けなかったときに画面だけ変わらないように）。
+ */
+export async function renameForkThread(threadId: string, title: string): Promise<void> {
+  const trimmed = title.trim();
+  if (!trimmed) throw new Error("名前を空にはできません");
+  await renameRealThread(threadId, trimmed);
+  mockThreads = mockThreads.map((t) =>
+    t.id === threadId ? { ...t, title: trimmed, explicitTitle: trimmed } : t,
+  );
+  notifyMockStoreChange();
+}
+
+/** その Project の Fork の並び。渡すのは**並び全体**（projects.ts と同じ形）。 */
+export async function reorderForks(projectId: string, orderedIds: string[]): Promise<void> {
+  const before = mockThreads;
+  const rank = new Map(orderedIds.map((id, i) => [id, i]));
+  // **その Project の Fork が居た場所に、並べ替えたものを置き直す**
+  // ——配列全体を比較関数で並べ替えると、他の Project の Thread まで動く
+  const slots: number[] = [];
+  const forks: MockThread[] = [];
+  mockThreads.forEach((t, i) => {
+    if (t.projectId === projectId && t.kind === "fork") {
+      slots.push(i);
+      forks.push(t);
+    }
+  });
+  forks.sort(
+    (a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+  );
+  const next = [...mockThreads];
+  slots.forEach((slot, i) => {
+    next[slot] = forks[i]!;
+  });
+  mockThreads = next;
+  notifyMockStoreChange();
+  try {
+    await setRealForkOrder(projectId, orderedIds);
+  } catch (err) {
+    mockThreads = before;
+    notifyMockStoreChange();
+    throw err;
+  }
 }

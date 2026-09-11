@@ -128,6 +128,9 @@ export interface ThreadState {
   projectId: ProjectId;
   kind: ThreadKind;
   parentThreadId?: ThreadId;
+  /** 人が付けた名前（決定・2026-09-11、ユーザー要望）。**付けていなければ持たない**
+   *  ——既定の呼び名（「Fork 1」）はその Project の中の連番から導出できる（規則3）。 */
+  title?: string;
   /** この Thread が作られたイベントの seq（追加・2026-09-07）。
    *  Fork を**親の会話のどこで分岐したか**の位置として使う——Clear の横線と
    *  同じ仕組みで、その場所に「この Fork を開く」を置ける。
@@ -174,6 +177,13 @@ export interface ThreadState {
 export interface ProjectThreadReadModel {
   projects: Map<ProjectId, ProjectState>;
   threads: Map<ThreadId, ThreadState>;
+  /** 人が決めた Project の並び（決定・2026-09-11）。**ここに無いものは、
+   *  あるものの後ろに作られた順で並ぶ**——並び替えたことのない Project も
+   *  一覧から消えない。順番そのものを1つの値として持つ（規則3——各要素に
+   *  番号を振ると、1件動かすたびに全件の書き直しが要る）。 */
+  projectOrder: ProjectId[];
+  /** Project ごとの Fork の並び。鍵は Project の id。 */
+  threadOrder: Map<ProjectId, ThreadId[]>;
   /**
    * **画面をどの面に出したかの記録が、会話より先に届く**ことがある
    * （実測・2026-09-07）。画面が「大きく出して」と言うのはターンの**途中**、

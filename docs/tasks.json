@@ -1350,6 +1350,20 @@
         "docs/notes/2026-09-09-repo-review.md",
         "banto/packages/core/src/http/turn-events.ts"
       ]
+    },
+    {
+      "id": "sidebar-reorder-rename",
+      "phase": "0以降",
+      "title": "サイドバーで並べ替え・名前の変更",
+      "status": "done",
+      "dependencies": [],
+      "why": "ユーザー要望（2026-09-11）：Project と Fork を掴んで並べ替えたい、右クリックのメニューから名前を変えたい。名前は作るときに付けたきり直せず、並び順は作った順に固定だった。",
+      "doneWhen": "host が名前と並び順を持ち（`project.renamed`/`thread.renamed`/`project.order.set`/`thread.order.set`）、サイドバーから掴んで並べ替え・右クリックから名前変更ができ、リロードしても残る。E2E `specs/sidebar-reorder-rename.spec.ts`",
+      "refs": [
+        "docs/specs/v4-frontend.md §6.11",
+        "docs/specs/v4-architecture.md §2.2",
+        "docs/notes/2026-09-11-sidebar-reorder-rename.md"
+      ]
     }
   ],
   "phase1": {

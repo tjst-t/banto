@@ -164,7 +164,10 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 
 function withCors(res: ServerResponse): void {
   res.setHeader("access-control-allow-origin", "*");
-  res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+  // PATCH（名前を変える）・PUT（並び順）を足した（2026-09-11）——**画面から
+  // 呼べない口を足しても、何も起きない**。実測：preflight で弾かれ、画面には
+  // 「Failed to fetch」だけが出ていた
+  res.setHeader("access-control-allow-methods", "GET, POST, PATCH, PUT, OPTIONS");
   res.setHeader("access-control-allow-headers", "authorization, content-type, mcp-session-id");
 }
 
@@ -344,6 +347,9 @@ function toThreadSummary(thread: ThreadState) {
     id: thread.id,
     projectId: thread.projectId,
     kind: thread.kind,
+    /** 人が付けた名前（決定・2026-09-11）。付けていなければ無い——既定の呼び名は
+     *  画面側がその Project の中の連番から出す（規則3） */
+    title: thread.title,
     parentThreadId: thread.parentThreadId,
     /** 親の会話のどこで分岐したか（Fork の入口をその場所に置くのに使う） */
     createdSeq: thread.createdSeq,
@@ -408,6 +414,24 @@ export function createApp(deps: AppDeps) {
         return;
       }
 
+      // **人が決めた並び**（決定・2026-09-11、ユーザー要望）。順番そのものを
+      // 1件で受け取る——各 Project に番号を振ると、1つ動かすたびに全件を
+      // 書き直すことになる（規則3）
+      if (url.pathname === "/api/projects/order" && req.method === "PUT") {
+        const body = (await readJsonBody(req)) as { ids: unknown };
+        if (!Array.isArray(body.ids) || body.ids.some((id) => typeof id !== "string")) {
+          return json(res, 400, { error: "ids must be an array of project ids" });
+        }
+        try {
+          await deps.projectThread.setProjectOrder(body.ids as string[]);
+          json(res, 200, { ok: true });
+        } catch (err) {
+          if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
+          throw err;
+        }
+        return;
+      }
+
       // **Project を開いたら、その Project の Module を先に用意する**
       // （決定・2026-09-07、ユーザー）。返事を待たずに投げる想定の口だが、
       // 用意できたかどうかは返す——画面が「繋がっていない」を出せるように。
@@ -417,6 +441,40 @@ export function createApp(deps: AppDeps) {
       if (prepareMatch && req.method === "POST") {
         const clients = (await deps.resolveModuleClientsForProject?.(prepareMatch[1]!)) ?? [];
         json(res, 200, { connected: clients.map((c) => c.name) });
+        return;
+      }
+
+      // 名前を変える（決定・2026-09-11、ユーザー要望）。作るときに付けた名前を
+      // 後から直せなかった
+      const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/);
+      if (projectMatch && req.method === "PATCH") {
+        const body = (await readJsonBody(req)) as { name: unknown };
+        const name = typeof body.name === "string" ? body.name.trim() : "";
+        if (!name) return json(res, 400, { error: "name is required" });
+        if (name.length > 120) return json(res, 400, { error: "name is too long" });
+        try {
+          json(res, 200, await deps.projectThread.renameProject(projectMatch[1]!, name));
+        } catch (err) {
+          if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
+          throw err;
+        }
+        return;
+      }
+
+      // その Project の Fork の並び
+      const forkOrderMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/fork-order$/);
+      if (forkOrderMatch && req.method === "PUT") {
+        const body = (await readJsonBody(req)) as { ids: unknown };
+        if (!Array.isArray(body.ids) || body.ids.some((id) => typeof id !== "string")) {
+          return json(res, 400, { error: "ids must be an array of thread ids" });
+        }
+        try {
+          await deps.projectThread.setForkOrder(forkOrderMatch[1]!, body.ids as string[]);
+          json(res, 200, { ok: true });
+        } catch (err) {
+          if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
+          throw err;
+        }
         return;
       }
 
@@ -437,6 +495,19 @@ export function createApp(deps: AppDeps) {
       }
 
       const threadMatch = url.pathname.match(/^\/api\/threads\/([^/]+)$/);
+      if (threadMatch && req.method === "PATCH") {
+        const body = (await readJsonBody(req)) as { title: unknown };
+        const title = typeof body.title === "string" ? body.title.trim() : "";
+        if (!title) return json(res, 400, { error: "title is required" });
+        if (title.length > 120) return json(res, 400, { error: "title is too long" });
+        try {
+          json(res, 200, toThreadSummary(await deps.projectThread.renameThread(threadMatch[1]!, title)));
+        } catch (err) {
+          if (err instanceof NotFoundError) return json(res, 404, { error: "not found" });
+          throw err;
+        }
+        return;
+      }
       if (threadMatch && req.method === "GET") {
         const thread = deps.projectThread.getThread(threadMatch[1]!);
         if (!thread) return json(res, 404, { error: "not found" });

@@ -39,7 +39,12 @@ export interface MockThread {
   id: ThreadId;
   projectId: ProjectId;
   kind: ThreadKind;
+  /** 画面に出す名前。人が付けていなければ既定の呼び名（`Fork 1`）が入る */
   title: string;
+  /** **人が付けた名前**（決定・2026-09-11）。host が持っているものだけ。
+   *  既定の呼び名（連番）と混ぜない——混ぜると、どちらなのか分からなくなり、
+   *  並べ替えたときに番号を振り直してよいかが決められない（規則3）。 */
+  explicitTitle?: string;
   /** Fork Thread の場合、分岐元 */
   parentThreadId: ThreadId | null;
   /** real:trueのForkだけが持つ。**親の会話のどこで分岐したか**（host の seq、
