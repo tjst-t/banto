@@ -53,6 +53,8 @@ async function withApp(
       agentRelayEndpoint,
       authToken: token,
       resolveModulesForThread: async () => [],
+      dataDir: dir,
+      configDir: dir,
       ...extra,
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -710,5 +712,30 @@ test("知らない Module 名は断る。断ったら選択は変わらない", 
 
     const unknown = await fetch(`${base}/api/projects/いない/modules`, { headers });
     assert.equal(unknown.status, 404);
+  });
+});
+
+// **その根を選ぶと何が見えるようになるか**（決定・2026-09-11、ユーザー）。
+// 広い根を止めるのではなく、**選ぶ前に見せる**ための判断を host が持つ。
+
+test("根の広さを host が答える——banto 自身の置き場を含むなら「広い」", async () => {
+  await withApp(async (base, token, dir) => {
+    const headers = { authorization: `Bearer ${token}` };
+    // この host の置き場の**中**にある場所は、何も含まない＝広くない
+    const narrow = (await (
+      await fetch(`${base}/api/config/root-scope?path=${encodeURIComponent(`${dir}/work`)}`, { headers })
+    ).json()) as { wide: boolean; includes: string[] };
+    assert.equal(narrow.wide, false, "何も含まない根が広い扱いになっている");
+
+    // この試験の host は dataDir が `dir`——その親を根にすれば「広い」
+    const parent = dir.slice(0, dir.lastIndexOf("/"));
+    const wide = (await (
+      await fetch(`${base}/api/config/root-scope?path=${encodeURIComponent(parent)}`, { headers })
+    ).json()) as { wide: boolean; includes: string[] };
+    assert.equal(wide.wide, true, "banto の置き場を含む根が「広い」になっていない");
+    assert.ok(wide.includes.length > 0, "何が入るのかを言っていない");
+
+    const bad = await fetch(`${base}/api/config/root-scope`, { headers });
+    assert.equal(bad.status, 400);
   });
 });

@@ -9,6 +9,40 @@ function ruleset(rules: LandlockRulesetFile["rules"]): LandlockRulesetFile {
   return { version: 1, requireAbi: 4, rules };
 }
 
+// **人が選んだ根は通す**（改訂・2026-09-11、ユーザー決定）。以前は home を
+// 根にすると起動ごと止めていたが、「home で AI に色々やらせたい」を banto が
+// 止める理由は無い——伝えるのは画面の警告で行う（v4-security.md）。
+// 捕まえたいのは**導出が勝手に広がった場合**なので、そちらは変わらず弾く。
+
+test("人が選んだ根が home でも通す（選んだものは事故ではない）", () => {
+  assert.doesNotThrow(() =>
+    assertRulesetIsSafe(ruleset([{ path: "/home/x", access: ["read_file", "write_file"] }]), {
+      ...opts,
+      projectRoot: "/home/x",
+    }),
+  );
+});
+
+test("根の中のものも通す（根を選んだ時点で中は見える）", () => {
+  assert.doesNotThrow(() =>
+    assertRulesetIsSafe(ruleset([{ path: "/home/x/.claude", access: ["read_file"] }]), {
+      ...opts,
+      projectRoot: "/home/x",
+    }),
+  );
+});
+
+test("根ではないのに home が入っていたら、いまも弾く（導出が広がった）", () => {
+  assert.throws(
+    () =>
+      assertRulesetIsSafe(ruleset([{ path: "/home/x", access: ["read_file"] }]), {
+        ...opts,
+        projectRoot: "/tmp/project",
+      }),
+    UnsafeRulesetError,
+  );
+});
+
 test("safe ruleset passes", () => {
   assert.doesNotThrow(() =>
     assertRulesetIsSafe(ruleset([{ path: "/tmp/project", access: ["read_file"] }]), opts),

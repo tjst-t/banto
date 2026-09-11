@@ -23,6 +23,17 @@ function tryRealpath(p: string): string | undefined {
 export interface GuardOptions {
   dataDir: string;
   configDir: string;
+  /**
+   * **人が選んだ Project の根**（改訂・2026-09-11、ユーザー決定）。
+   *
+   * この検査は「導出が静かに広がった」事故を捕まえるためのもの（poc/07——
+   * PATH の realpath の親がまるごと紛れ込んだ）。**人が自分で指定した根は、
+   * 事故ではない**。home を根にして AI に色々やらせたい、という使い方を
+   * banto が止める理由は無い（ユーザー決定・2026-09-11）——伝えるなら
+   * 「選ばせない」ではなく「選ぶ前に、何が見えるようになるかを見せる」
+   * （画面の警告、`docs/specs/v4-security.md`）。
+   */
+  projectRoot?: string;
 }
 
 /**
@@ -35,18 +46,19 @@ export function assertRulesetIsSafe(ruleset: LandlockRulesetFile, opts: GuardOpt
   const configDir = tryRealpath(opts.configDir) ?? opts.configDir;
   const credentialsFile = tryRealpath(`${home}/.claude/.credentials.json`);
 
-  const forbidden = ["/", home];
+  const projectRoot = opts.projectRoot ? (tryRealpath(opts.projectRoot) ?? opts.projectRoot) : undefined;
 
   for (const rule of ruleset.rules) {
-    for (const f of forbidden) {
-      if (rule.path === f) {
-        // 人が読む場所（受信箱のお知らせ）にそのまま出る文言——
-        // 「何が起きたか」だけでなく「何を直せばよいか」まで書く
-        throw new UnsafeRulesetError(
-          `ルールセットが禁止パスを直接許可しています: ${rule.path}` +
-            `（Project の根に home や / は指定できません——閉じ込めになりません）`,
-        );
-      }
+    // **人が選んだ根は、そのまま通す**（改訂・2026-09-11、ユーザー決定）。
+    // 広い根（home 等）を選べば閉じ込めは効かなくなるが、それは**選ぶ前に
+    // 画面で伝える**ことにした——ここで起動ごと止めない。導出が勝手に
+    // 広がった場合（PATH の親が紛れ込む等）はこの免除に入らないので、
+    // これまでどおり捕まる
+    if (projectRoot && isAncestorOrSelf(projectRoot, rule.path)) continue;
+    if (rule.path === "/" || rule.path === home) {
+      throw new UnsafeRulesetError(
+        `ルールセットが ${rule.path} を許可しています（Project の根ではないのに、導出が広がっています）`,
+      );
     }
     if (isAncestorOrSelf(rule.path, dataDir) && rule.path !== dataDir) {
       throw new UnsafeRulesetError(

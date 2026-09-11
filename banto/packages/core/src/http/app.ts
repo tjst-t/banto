@@ -31,6 +31,7 @@ import {
   listProjectModules,
   setProjectModuleSelection,
 } from "../modules/declaration.js";
+import { describeRootScope } from "../modules/root-scope.js";
 import type { TurnEventBus } from "./turn-events.js";
 import type { RuntimeConfigStore } from "../config/runtime.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
@@ -87,6 +88,16 @@ export interface AppDeps {
   releaseProjectModules?(projectId: string): Promise<string[]>;
   /** 画面から見たサンドボックスの住所（§6.2）。画面に推測させない（規則3）。 */
   sandboxPublicUrl?: string;
+  /**
+   * **いま繋がっているか・繋げなかった理由**（追補・2026-09-11、ユーザー報告）。
+   * 設定の一覧が「使う」と言っている Module でも、立たないことがある
+   * （閉じ込めが成立しない根など）——**立っていないことと理由を画面に出す**（規則13）。
+   * **ここで起こさない**（見ただけで副作用を作らない）。
+   */
+  moduleStatusForProject?(projectId: string): Array<{ name: string; connected: boolean; error?: string }>;
+  /** banto 自身の置き場（根の広さを判断するのに使う、`/api/config/root-scope`）。 */
+  dataDir?: string;
+  configDir?: string;
   /** Runner の差し替え口（試験用）。`runThreadTurn` がそのまま受け取る。 */
   runTurn?: Parameters<typeof runThreadTurn>[0]["runTurn"];
 }
@@ -430,7 +441,19 @@ export function createApp(deps: AppDeps) {
         const projectId = projectModulesMatch[1]!;
         if (!deps.projectThread.getProject(projectId)) return json(res, 404, { error: "not found" });
         if (!deps.runtimeConfig) return json(res, 200, []);
-        json(res, 200, listProjectModules(deps.runtimeConfig, projectId));
+        const status = new Map(
+          (deps.moduleStatusForProject?.(projectId) ?? []).map((s) => [s.name, s]),
+        );
+        json(
+          res,
+          200,
+          listProjectModules(deps.runtimeConfig, projectId).map((m) => ({
+            ...m,
+            // 使うと言っていても立つとは限らない——立っているか、理由は何か
+            connected: status.get(m.name)?.connected ?? false,
+            ...(status.get(m.name)?.error ? { error: status.get(m.name)!.error } : {}),
+          })),
+        );
         return;
       }
       if (projectModulesMatch && req.method === "PUT") {
@@ -1017,6 +1040,16 @@ export function createApp(deps: AppDeps) {
         // 設定画面も同じ——**自分の Module を呼ぶのに承認は求めない**
         // （改訂・2026-09-07、上の Thread 版と同じ理由）
         json(res, 200, await found.client.callTool({ name: body.tool, arguments: toolArguments(body.arguments) }));
+        return;
+      }
+
+      // **その根を選ぶと何が見えるようになるか**（決定・2026-09-11、ユーザー）。
+      // 広い根（home 等）を選ぶこと自体は止めない——**選ぶ前に見せる**ために、
+      // 判断を host が1箇所で持つ（画面が home の場所を推測しない、規則3）
+      if (url.pathname === "/api/config/root-scope" && req.method === "GET") {
+        const path = url.searchParams.get("path");
+        if (!path) return json(res, 400, { error: "path is required" });
+        json(res, 200, describeRootScope(path, { dataDir: deps.dataDir ?? "", configDir: deps.configDir ?? "" }));
         return;
       }
 

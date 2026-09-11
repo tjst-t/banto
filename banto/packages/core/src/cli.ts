@@ -297,6 +297,9 @@ async function main(): Promise<void> {
       assertRulesetIsSafe(ruleset, {
         dataDir: bootstrap.dataDir,
         configDir: dirname(resolveBootstrapConfigPath()),
+        // **人が選んだ根は通す**（改訂・2026-09-11、ユーザー決定）——広い根を
+        // 選べば閉じ込めは効かないが、それは選ぶ前に画面で伝える
+        projectRoot: project.root,
       });
       const rulesetFile = writeRulesetFile(join(bootstrap.dataDir, "run"), connName, ruleset);
       const wrapped = wrapCommand(rulesetFile, { command, args });
@@ -430,6 +433,34 @@ async function main(): Promise<void> {
     }
     if (names.length > 0) console.log(`[host] project ${projectId} を畳んだ: ${names.join(", ")}`);
     return names;
+  }
+
+  /**
+   * **いま繋がっているか／繋げなかった理由**（`phase1-project-modules-ui` の
+   * 追補・2026-09-11、ユーザー報告）。設定の一覧は「この Project で使う」を
+   * 出していたが、**使うと言っても立たない Module がある**——閉じ込めが成立
+   * しない根（home）等。**立っていないことと、その理由を画面に出す**（規則13）。
+   *
+   * **ここでは起こさない**——一覧を見ただけで全部を起動しない（規則2の裏返しで、
+   * 「見ただけで副作用」を作らない）。分かるのは、いま持っている事実だけ。
+   */
+  function moduleStatusForProject(projectId: string): Array<{
+    name: string;
+    connected: boolean;
+    error?: string;
+  }> {
+    const project = projectThread.getProject(projectId);
+    if (!project) return [];
+    return loadModuleDeclarations(runtimeConfig, projectId).map((declaration) => {
+      const connName =
+        declaration.meta.scope === "project" ? `${declaration.name}-${projectId}` : declaration.name;
+      const failure = moduleFailures.get(connName);
+      return {
+        name: declaration.name,
+        connected: connectedModules.has(connName),
+        ...(failure ? { error: failure.reason } : {}),
+      };
+    });
   }
 
   async function resolveModulesForThread(threadId: string): Promise<ModuleEndpoint[]> {
@@ -566,6 +597,9 @@ async function main(): Promise<void> {
     authToken: bootstrap.authToken,
     releaseProjectModules,
     resolveModulesForThread,
+    moduleStatusForProject,
+    dataDir: bootstrap.dataDir,
+    configDir: dirname(resolveBootstrapConfigPath()),
     resolveModuleClientsForThread,
     resolveModuleClientsForProject,
     resolveInstanceModuleClients,

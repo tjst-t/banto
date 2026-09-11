@@ -1,84 +1,77 @@
-// 閉じ込めの最後の防波堤（`@banto/landlock` の `assertRulesetIsSafe`）が
-// **本番の経路に繋がっている**ことを見る（`landlock-guard-wiring`）。
+// **広い根は止めない。選ぶ前に見せる**（決定・2026-09-11、ユーザー）。
 //
-// 検査自体は前から実装・テスト済みだったが、host が呼んでいなかった
-// ——人が Project の根に home を指定すると、home 全域が読み書き可のルールセットで
-// Shell が起動していた。「有るのに配線されていない」を残さない（規則13の精神）。
+// 以前は「Project の根に home を指定すると、閉じ込める Module は起動しない」と
+// していた（`landlock-guard-wiring`、2026-09-10）。**やめた**——home を根にして
+// AI にいろいろやらせたい、という使い方を banto が禁じる理由が無い。
 //
-// 規則14：「起動しなかった」で終わらせず、**人に理由が見えるところまで**見る
-// ——受信箱のお知らせに、どのパスが問題かが出ていること。
+// 代わりに **2箇所で警告する**（Project を作るとき／その Project の Module を
+// 選ぶとき）。閉じ込めが効かないこと、そこに何が入っているか（banto の合言葉・
+// 記録・Claude の資格情報）を、選ぶ前に見せる。
+//
+// **検査そのものは残っている**——「導出が勝手に広がった」場合（PATH の親が
+// 紛れ込む等）はいまも起動を止める。人が選んだ根だけが免除される
+// （単体試験：`packages/landlock/src/guard.test.ts`）。
 import { test, expect } from "@playwright/test";
 import { homedir } from "node:os";
 import { CORE_BASE_URL, AUTH_TOKEN } from "../config.js";
 import { openApp } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
-test.setTimeout(120_000);
-test.use({ viewport: { width: 390, height: 844 } });
+test.setTimeout(180_000);
 
-const PROJECT_NAME = "E2E Landlock Guard Project";
+const PROJECT_NAME = "E2E Wide Root Project";
 
-test("Project の根に home を指定すると、閉じ込める Module は起動せず、理由が受信箱に出る", async ({
-  page,
-}) => {
+test("home を根にしても Module は動く。ただし画面が警告する", async ({ page }) => {
   const headers = { authorization: `Bearer ${AUTH_TOKEN}` };
 
-  // **home を根にした Project**——ここが「弱いルールセットが書き出される」入口
   const project = await (
     await page.request.post(`${CORE_BASE_URL}/api/projects`, {
       headers,
       data: { name: PROJECT_NAME, root: homedir() },
     })
   ).json();
-
-  // 画面から作った Project と同じ形にする（Base Thread が1本ある）
   await page.request.post(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { headers });
 
-  // Module を用意させる（ターンを走らせなくても、この口で起動を試みる）
+  // ---- 1. 閉じ込める Module も、ちゃんと立つ ------------------------------
   const prepared = await (
     await page.request.post(`${CORE_BASE_URL}/api/projects/${project.id}/modules/prepare`, { headers })
   ).json();
-
-  // 閉じ込めを宣言している Module（Shell・FileSystem）は**繋がっていない**
-  expect(prepared.connected).not.toContain("shell");
-  expect(prepared.connected).not.toContain("filesystem");
-  // 閉じ込めと関係ない Module（Vault）はそのまま使える——全部が止まるわけではない
+  expect(prepared.connected, "home を根にしたら shell が立たない").toContain("shell");
+  expect(prepared.connected, "home を根にしたら filesystem が立たない").toContain("filesystem");
   expect(prepared.connected).toContain("vault");
 
-  // **理由が人に見える**（§5.4-0——会話は進み、受信箱に1件出る）
+  // **「繋げませんでした」は出ない**——止めていないのだから
   const inbox = await (await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers })).json();
-  const notices = inbox.filter(
-    (i: { kind: string; projectId?: string }) => i.kind === "notice" && i.projectId === project.id,
+  const failures = inbox.filter(
+    (i: { kind: string; projectId?: string; title?: string }) =>
+      i.projectId === project.id && (i.title ?? "").includes("繋げませんでした"),
   );
-  expect(notices.length).toBeGreaterThan(0);
-  const detail = notices.map((n: { detail: string }) => n.detail).join("\n");
-  expect(detail).toContain("禁止パス");
-  expect(detail).toContain(homedir());
+  expect(failures.length, "止めていないのに、繋げなかったお知らせが出ている").toBe(0);
 
-  // 画面でも読める（受信箱のお知らせ）
+  // ---- 2. その Project の Module 設定で警告が出る --------------------------
   await openApp(page);
-  await page.getByRole("button", { name: "受信箱" }).first().click();
-  const notice = page.locator('[data-testid="inbox-notice"]').first();
-  await expect(notice).toBeVisible({ timeout: 15_000 });
-  await expect(notice.getByText(/を繋げませんでした/)).toBeVisible();
-  await expect(notice.getByText(/禁止パス/)).toBeVisible();
+  await page.goto(`/settings?project=${project.id}&section=project-modules`);
+  const warning = page.getByTestId("wide-root-warning");
+  await expect(warning, "広い根なのに、Module の設定で何も言わない").toBeVisible({
+    timeout: 30_000,
+  });
+  // **何が入るのかまで言う**（規則14——「警告が出た」で終わらせない）。
+  // 何が挙がるかは host の置き場による（この試験の host は dataDir が /tmp なので
+  // banto の設定は入らない）——**具体名が1つ以上出ていること**を見る
+  await expect(warning).toContainText("閉じ込めが効きません");
+  await expect(warning).toContainText(/資格情報|合言葉|記録/);
 
-  // **出したものは片づける**——受信箱は banto 全体で1つなので、残すと
-  // 他の spec の「受信箱に1件だけ」を壊す（実測・2026-09-10）。
-  // **お知らせは Module ごとに非同期で出る**ので、1回取った一覧だけを消すと
-  // 後から出た分が残る（実測・2026-09-10——shell を消した後に filesystem が出た）。
-  // 「この Project の分が無くなるまで」消す
-  await expect
-    .poll(
-      async () => {
-        const open = await (await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers })).json();
-        const mine = open.filter((i: { projectId?: string }) => i.projectId === project.id);
-        for (const item of mine) {
-          await page.request.post(`${CORE_BASE_URL}/api/inbox/${item.id}/acknowledge`, { headers });
-        }
-        return mine.length;
-      },
-      { timeout: 20_000, message: "この Project のお知らせを片づけきれない" },
-    )
-    .toBe(0);
+  // ---- 3. 新しい Project を作るときにも、選ぶ前に出る ----------------------
+  await page.goto("/");
+  await openApp(page);
+  await page.getByRole("button", { name: "新しい Project", exact: true }).click();
+  await page.getByLabel("Base パス").fill(homedir());
+  await expect(
+    page.getByTestId("wide-root-warning"),
+    "広い根を打っているのに、作る前に何も言わない",
+  ).toBeVisible({ timeout: 15_000 });
+
+  // 狭い根に打ち直したら消える（いつでも出ているわけではない）
+  await page.getByLabel("Base パス").fill("/tmp/banto-e2e-narrow-root");
+  await expect(page.getByTestId("wide-root-warning")).toHaveCount(0, { timeout: 15_000 });
 });

@@ -356,6 +356,21 @@ export async function reopenRealProject(projectId: string): Promise<void> {
 }
 
 /**
+ * **その根を選ぶと、何が見えるようになるか**（決定・2026-09-11、ユーザー）。
+ * 広い根（home 等）を選ぶこと自体は止めない——**選ぶ前に見せる**。
+ * 判断は host が持つ（画面は home の場所を推測しない、規則3）。
+ */
+export interface RealRootScope {
+  wide: boolean;
+  /** 広いとき、その中に入ってしまうもの（人に見せる言葉） */
+  includes: string[];
+}
+
+export async function fetchRealRootScope(path: string): Promise<RealRootScope> {
+  return request<RealRootScope>(`/api/config/root-scope?path=${encodeURIComponent(path)}`);
+}
+
+/**
  * **この Project で使う Module**（`phase1-project-modules-ui`、2026-09-11）。
  * 宣言は banto 全体の既定なので、1本足すと全 Project に繋がる
  * ——増やす前に、Project ごとに選べるようにする（Phase 2 の入口）。

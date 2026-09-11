@@ -25,6 +25,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { describeFailure, reportFailure } from "@/lib/report-failure";
+import { getProject } from "@/lib/mock/projects";
+import {
+  WideRootWarning,
+  useRootScope,
+} from "@/components/banto/settings/wide-root-warning";
 import {
   listRealProjectModules,
   setRealProjectModules,
@@ -55,6 +60,9 @@ function ScopeBadges({ module: mod }: { module: RealProjectModule }) {
 }
 
 export function ProjectModulesPanel({ projectId }: { projectId: string }) {
+  // **この Project の根が広いなら、ここでも言う**（決定・2026-09-11、ユーザー）
+  // ——閉じ込める Module（shell・filesystem）を使う場所だから
+  const rootScope = useRootScope(getProject(projectId).basePath);
   const [modules, setModules] = useState<RealProjectModule[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   // **手元の下書き**——保存するまで、繋ぎ変えはここにだけある
@@ -212,6 +220,10 @@ export function ProjectModulesPanel({ projectId }: { projectId: string }) {
         この Project の会話で AI が使える道具。繋ぐ・外すはその場で選んで、最後に保存する
         ——保存するまで会話には効かない。外しても Module は消えない（他の Project では動いたまま）。
       </p>
+
+      <div className="mb-3 empty:mb-0">
+        <WideRootWarning scope={rootScope} />
+      </div>
 
       {loadError ? (
         <div

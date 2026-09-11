@@ -28,6 +28,10 @@ import {
 } from "@/components/ui/select";
 import { CascadeRow } from "@/components/banto/settings/cascade-row";
 import { cn } from "@/lib/utils";
+import {
+  WideRootWarning,
+  useRootScope,
+} from "@/components/banto/settings/wide-root-warning";
 import { createRealProject } from "@/lib/mock/projects";
 import { getRoles, mockCredentials, mockRuntimeDefaults } from "@/lib/mock/settings";
 import type { MockProjectOverrides } from "@/lib/mock/types";
@@ -47,6 +51,7 @@ export function NewProjectDialog({
   const [name, setName] = useState("");
   const [basePath, setBasePath] = useState("~/worktrees/");
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const rootScope = useRootScope(basePath);
   const [overrides, setOverrides] = useState<Overrides>(EMPTY_OVERRIDES);
 
   function patch(next: Partial<Overrides>) {
@@ -120,6 +125,8 @@ export function NewProjectDialog({
               <p className="text-xs text-ink-3">
                 Shell・FileSystem をこの根に閉じ込める
               </p>
+              {/* **広い根は止めない。選ぶ前に見せる**（決定・2026-09-11、ユーザー） */}
+              <WideRootWarning scope={rootScope} />
             </div>
 
             <button
