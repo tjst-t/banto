@@ -4,11 +4,15 @@
 // Project はスコープが違う（Fork＝この Project の中、Project＝banto 全体）
 // ——ここは Command Palette と同じ非対称（Module の入口はいまの Project に
 // 限る、§6.3）で自然に扱える。だが「削除ではなく終わっただけ、読み返して
-// 再度開ける」という性質は同じなので、1つのモーダルにセクション分けして
-// まとめる——Chrome の「最近閉じたタブ」がタブとウィンドウを1つのリストに
-// 混在させ、アイコンで区別しているのと同じ発想（規則12）。
+// 再度開ける」という性質は同じなので、1つのモーダルにまとめる。
 // 入口は Base Thread ヘッダー・サイドバー下部の両方から、同じダイアログを
 // 開く（use-panel-stack.ts の "archive"）。
+//
+// **見るときはタブで分け、探すときは横断する**（改訂・2026-09-12、ユーザー要望）。
+// 2つを縦に積んでいたので、Project を見たいときも Fork の山を越える必要があった。
+// タブは「いま何を見ているか」を1つに決める道具——だが**探している人は、それが
+// どちらにあるか分かっていない**ので、検索中はタブを選ばず両方から出す（規則12
+// ——ブラウザの履歴も検索は横断する）。
 import { useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -27,6 +31,41 @@ import { useMockStoreVersion } from "@/lib/mock/store-events";
 import { useRovingFocus } from "@/hooks/use-roving-focus";
 import { cn } from "@/lib/utils";
 import type { MockProject, MockThread } from "@/lib/mock/types";
+
+type ArchiveTab = "forks" | "projects";
+
+/** 検索の直下のタブ。**検索中はどちらも選ばれていない**（結果が横断なので）。 */
+function ArchiveTabButton({
+  id,
+  label,
+  count,
+  selected,
+  onSelect,
+}: {
+  id: ArchiveTab;
+  label: string;
+  count: number;
+  selected: boolean;
+  onSelect: (id: ArchiveTab) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={selected}
+      data-testid={`archive-tab-${id}`}
+      data-state={selected ? "active" : "inactive"}
+      onClick={() => onSelect(id)}
+      className={cn(
+        "flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors",
+        selected ? "bg-accent text-foreground" : "text-ink-3 hover:bg-accent/60 hover:text-ink-2",
+      )}
+    >
+      {label}
+      <span className="text-ink-3 tabular-nums">{count}</span>
+    </button>
+  );
+}
 
 function ArchiveRow({
   icon: Icon,
@@ -131,6 +170,7 @@ export function ArchiveDialog({
   useMockStoreVersion();
   const router = useRouter();
   const [query, setQuery] = useState("");
+  const [tab, setTab] = useState<ArchiveTab>("forks");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const { containerRef, onKeyDown } = useRovingFocus<HTMLDivElement>();
 
@@ -139,7 +179,25 @@ export function ArchiveDialog({
     ? getClosedForksForProject(projectId).filter((t) => t.title.toLowerCase().includes(q))
     : [];
   const closedProjects = getClosedProjects().filter((p) => p.name.toLowerCase().includes(q));
-  const isEmpty = closedForks.length === 0 && closedProjects.length === 0;
+
+  // Project の外（`/settings` 等）では Fork のタブ自体が無い——分けるものが1つ
+  // しかないところにタブを出さない
+  const hasTabs = projectId !== null;
+  const searching = q.length > 0;
+  // **検索中はどちらのタブも選ばない**——結果は両方から出る
+  const shownTab: ArchiveTab | null = !hasTabs ? "projects" : searching ? null : tab;
+  const showForks = hasTabs && (shownTab === "forks" || searching);
+  const showProjects = shownTab === "projects" || searching;
+  // **空かどうかは、いま出している側だけで決める**——Fork のタブを見ているのに
+  // 「閉じた Project がある」ことを理由に空でないと判断すると、画面が白くなる
+  const isEmpty =
+    (showForks ? closedForks.length : 0) + (showProjects ? closedProjects.length : 0) === 0;
+
+  /** タブを押したら検索はやめる（検索の結果は横断なので、絞るならタブに戻る） */
+  function selectTab(next: ArchiveTab) {
+    setTab(next);
+    setQuery("");
+  }
 
   function toggle(id: string) {
     setExpandedId((prev) => (prev === id ? null : id));
@@ -193,16 +251,46 @@ export function ArchiveDialog({
             />
           </div>
         </div>
+        {hasTabs ? (
+          <div className="border-b border-border px-3 pb-2" data-testid="archive-tabs">
+            <div role="tablist" aria-label="履歴の種類" className="flex items-center gap-1">
+              <ArchiveTabButton
+                id="forks"
+                label="Fork Thread"
+                count={closedForks.length}
+                selected={shownTab === "forks"}
+                onSelect={selectTab}
+              />
+              <ArchiveTabButton
+                id="projects"
+                label="Project"
+                count={closedProjects.length}
+                selected={shownTab === "projects"}
+                onSelect={selectTab}
+              />
+              {searching ? (
+                <span className="ml-auto text-xs text-ink-3">検索は両方から</span>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
         <div
           ref={containerRef}
           onKeyDown={onKeyDown}
           className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3"
         >
-          {isEmpty ? <p className="px-2 py-6 text-center text-xs text-ink-3">見つからない</p> : null}
+          {isEmpty ? (
+            <p className="px-2 py-6 text-center text-xs text-ink-3">
+              {searching ? "見つからない" : shownTab === "projects" ? "閉じた Project はまだ無い" : "閉じた Fork Thread はまだ無い"}
+            </p>
+          ) : null}
 
-          {closedForks.length > 0 ? (
+          {showForks && closedForks.length > 0 ? (
             <div className="mb-3">
-              <p className="mb-1 px-1 text-xs font-medium text-ink-3">この Project の閉じた Fork Thread</p>
+              {/* 見出しは**検索のときだけ**——タブで見ているときは、タブの名前が見出し */}
+              {searching ? (
+                <p className="mb-1 px-1 text-xs font-medium text-ink-3">この Project の閉じた Fork Thread</p>
+              ) : null}
               {closedForks.map((thread) => (
                 <ArchiveRow
                   key={thread.id}
@@ -219,9 +307,11 @@ export function ArchiveDialog({
             </div>
           ) : null}
 
-          {closedProjects.length > 0 ? (
+          {showProjects && closedProjects.length > 0 ? (
             <div>
-              <p className="mb-1 px-1 text-xs font-medium text-ink-3">閉じた Project</p>
+              {searching ? (
+                <p className="mb-1 px-1 text-xs font-medium text-ink-3">閉じた Project</p>
+              ) : null}
               {closedProjects.map((project) => (
                 <ArchiveRow
                   key={project.id}

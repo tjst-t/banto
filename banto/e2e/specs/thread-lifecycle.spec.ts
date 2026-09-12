@@ -61,7 +61,12 @@ test("Fork Threadを畳む→履歴に出る→再度開く→会話が読み返
   // **名前は exact で取る**——部分一致だと、別の spec が作った Project 名
   // （「…履歴…」）にも当たってしまう（実測・2026-09-12）
   await page.getByRole("button", { name: "履歴", exact: true }).first().click();
-  await expect(page.getByText("この Project の閉じた Fork Thread")).toBeVisible({ timeout: 10_000 });
+  // **既定は Fork のタブ**（改訂・2026-09-12、§6.20——見出しは検索のときだけ出る）
+  await expect(page.getByTestId("archive-tab-forks"), "Fork のタブが選ばれていない").toHaveAttribute(
+    "data-state",
+    "active",
+    { timeout: 10_000 },
+  );
   const forkRow = page.getByText(/^Fork \d+$/).first();
   await expect(forkRow).toBeVisible();
 

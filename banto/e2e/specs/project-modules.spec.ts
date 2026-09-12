@@ -200,7 +200,11 @@ test("会話のヘッダに、左と同じ入口（設定・履歴）を置か�
   await expect(header.getByRole("button", { name: "履歴" })).toHaveCount(0);
   // 左には在る（消したのは重複だけ——行けなくなっていない）
   await expect(page.locator('[data-slot="sidebar"]').getByRole("link", { name: "設定", exact: true })).toBeVisible();
-  await expect(page.locator('[data-slot="sidebar"]').getByRole("button", { name: "履歴" })).toBeVisible();
+  // **exact で取る**——部分一致だと、別の spec が作った Project 名（「…履歴…」）の
+  // 「…」メニュー（aria-label に名前が入る）にも当たる（実測・2026-09-12）
+  await expect(
+    page.locator('[data-slot="sidebar"]').getByRole("button", { name: "履歴", exact: true }),
+  ).toBeVisible();
 });
 
 test("Root パスは、打っても選んでもよい", async ({ page }) => {
