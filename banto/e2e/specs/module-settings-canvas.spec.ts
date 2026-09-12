@@ -14,7 +14,7 @@ import { test, expect } from "@playwright/test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createProject, expectProjectOpen, openApp, openProjectSettings } from "../helpers.js";
+import { createProject, expectProjectOpen, openApp, openNav, openProjectSettings } from "../helpers.js";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(300_000);
@@ -70,8 +70,11 @@ test("Module の設定画面が出て、変えた値が Module に残り、実�
   });
 
   // ---- 3. その値が実際に効く ----------------------------------------------
-  // **設定は面**（§6.16、2026-09-11——ダイアログをやめた）。会話へは戻るだけ
-  await page.goBack();
+  // **設定は面**（§6.16、2026-09-11——ダイアログをやめた）。会話へは、
+  // サイドバーでその Project を押して戻る（**節の行き来は履歴に残る**ので、
+  // 「戻る」1回では設定の中を1つ戻るだけ——2026-09-11 の改訂）
+  await openNav(page);
+  await page.getByTestId("sidebar-project-name").filter({ hasText: PROJECT_NAME }).first().click();
   await expectProjectOpen(page, PROJECT_NAME);
   const composer2 = page.getByPlaceholder(/に送る/);
   await composer2.fill("filesystem の listDirectory をもう一度呼んで、いまの直下（.）の一覧を見せて。");

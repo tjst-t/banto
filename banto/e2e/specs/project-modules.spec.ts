@@ -262,3 +262,34 @@ test("新しい Project：最初は空。選ぶと home から始まる", async 
   const home = process.env.HOME ?? "";
   await expect(picker.getByTestId("path-picker-current")).toHaveText(home);
 });
+
+test("設定の節の行き来は、履歴に残る（携帯で戻れる）", async ({ page }) => {
+  // ユーザー要望・2026-09-11：節の遷移が履歴に残らず、**戻るが効かなかった**。
+  // 狭い画面では節を開くと左メニューが消えるので、特に不便だった。
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openApp(page);
+  await createProject(page, "戻るの spec", mkdtempSync(join(tmpdir(), "banto-e2e-history-")));
+  await openProjectSettings(page);
+
+  // 携帯は「一覧 → 選ぶと中身」の1カラム。まず一覧が出ている
+  const list = page.getByRole("button", { name: "一般", exact: true });
+  await expect(list).toBeVisible({ timeout: 20_000 });
+  await list.click();
+  await expect(page.getByTestId("project-general-panel")).toBeVisible({ timeout: 15_000 });
+  await expect(page).toHaveURL(/section=project-general/);
+
+  // **戻ると一覧に帰る**（履歴に残っている）
+  await page.goBack();
+  await expect(page, "節の行き来が履歴に残っていない").not.toHaveURL(/section=/);
+  await expect(list, "戻ったのに一覧が出ない").toBeVisible({ timeout: 15_000 });
+
+  // 節から節へ移っても、1つずつ戻れる
+  await list.click();
+  await expect(page).toHaveURL(/section=project-general/);
+  await page.getByRole("button", { name: "設定メニューに戻る" }).click();
+  await expect(list).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "この Project の Module" }).click();
+  await expect(page).toHaveURL(/section=project-modules/);
+  await page.goBack();
+  await expect(page).not.toHaveURL(/section=/);
+});

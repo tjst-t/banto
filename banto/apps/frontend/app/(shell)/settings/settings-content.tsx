@@ -9,6 +9,7 @@ import { ModuleConfigPane } from "@/components/banto/settings/module-config-pane
 import { NotificationSettingsPanel } from "@/components/banto/settings/notification-settings-panel";
 import { RoleList } from "@/components/banto/settings/role-list";
 import { RuntimeDefaultsPanel } from "@/components/banto/settings/runtime-defaults-panel";
+import { useRef } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { getProject } from "@/lib/mock/projects";
 import { ProjectInitial } from "@/components/banto/shell/nav-panel";
@@ -225,12 +226,35 @@ export function SettingsContent() {
   const projectCategories = useProjectCategories(projectId ?? "");
   const projectModuleItems = useProjectModuleItems(projectId ?? "");
 
+  /**
+   * 節の行き来を**履歴に残す**（改訂・2026-09-11、ユーザー要望）。
+   *
+   * 以前は `replace` で URL だけ書き換えていたので、**戻るが効かなかった**
+   * ——狭い画面では節を開くと左メニューが消えるので、戻れないのは特に不便
+   * （§6.16 の「開いている節は URL が持つ」の帰結を、履歴にも通す）。
+   *
+   * **一覧へ戻るのは `back()`。** 新しい履歴を積むと「戻る」で節に戻ってしまう
+   * ——ただし積んだ覚えが無いとき（直接その節を開いたとき）は、戻る先が
+   * banto の外なので、代わりに書き換える（規則2——行き場を失わせない）。
+   */
+  const pushedSections = useRef(0);
   function goToSection(next: string | null) {
     const params = new URLSearchParams(searchParams.toString());
     if (next) params.set("section", next);
     else params.delete("section");
     const query = params.toString();
-    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+    const href = query ? `${pathname}?${query}` : pathname;
+    if (next) {
+      pushedSections.current += 1;
+      router.push(href, { scroll: false });
+      return;
+    }
+    if (pushedSections.current > 0) {
+      pushedSections.current -= 1;
+      router.back();
+      return;
+    }
+    router.replace(href, { scroll: false });
   }
 
   const instanceModuleItems = [

@@ -58,7 +58,9 @@ test("Fork Threadを畳む→履歴に出る→再度開く→会話が読み返
   // モバイルはナビの Drawer の中、デスクトップはサイドバーとBaseパネルヘッダの
   // 両方にあるので .first() で固定する
   await openNav(page);
-  await page.getByRole("button", { name: "履歴" }).first().click();
+  // **名前は exact で取る**——部分一致だと、別の spec が作った Project 名
+  // （「…履歴…」）にも当たってしまう（実測・2026-09-12）
+  await page.getByRole("button", { name: "履歴", exact: true }).first().click();
   await expect(page.getByText("この Project の閉じた Fork Thread")).toBeVisible({ timeout: 10_000 });
   const forkRow = page.getByText(/^Fork \d+$/).first();
   await expect(forkRow).toBeVisible();
