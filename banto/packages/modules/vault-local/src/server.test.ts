@@ -131,12 +131,12 @@ test("requestAlias は、会話の中に入力欄を出す印を持っている"
     const { tools } = await client.listTools();
     const request = tools.find((t) => t.name === "requestAlias")!;
     const ui = (request._meta as { ui?: { resourceUri?: string } } | undefined)?.ui;
-    assert.equal(ui?.resourceUri, "ui://banto-vault/request", "入力欄を出す印が無い");
+    assert.equal(ui?.resourceUri, "ui://banto-vault-local/request", "入力欄を出す印が無い");
 
     // その画面は実際に読める（**在ると言っておいて読めない、を作らない**）
     const { resources } = await client.listResources();
-    assert.ok(resources.some((r) => r.uri === "ui://banto-vault/request"), "画面が一覧に無い");
-    const html = resourceText(await client.readResource({ uri: "ui://banto-vault/request" }));
+    assert.ok(resources.some((r) => r.uri === "ui://banto-vault-local/request"), "画面が一覧に無い");
+    const html = resourceText(await client.readResource({ uri: "ui://banto-vault-local/request" }));
     assert.match(html, /profile=mcp-app|<!doctype html>/i);
     // **値を取る道具を画面が呼ぼうとしていない**
     assert.equal(html.includes("resolveAlias"), false);

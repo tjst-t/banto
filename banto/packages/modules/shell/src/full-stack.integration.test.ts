@@ -16,7 +16,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { HostRelayEndpoint, RelayRegistry } from "@banto/core";
 import { parseModuleMeta } from "@banto/module-contract";
-import { createVaultServer } from "@banto/module-vault";
+import { createVaultServer } from "@banto/module-vault-local";
 import { createVaultDirectoryServer, HostRelayClient as DirectoryRelayClient } from "@banto/module-vault-directory";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";

@@ -55,14 +55,14 @@ test("Module 固有の直しは instance 既定へ——Project の上書きを�
     await givenProjectOverride(config);
 
     await repairDeclarationMeta(config, {
-      name: "vault",
+      name: "vault-local",
       projectId: PROJECT,
       stricter: { scope: "project" },
     });
 
     // 直った（既定として、全 Project に効く）
-    assert.equal(loadModuleDeclarations(config, "").find((d) => d.name === "vault")!.meta.scope, "project");
-    assert.equal(loadModuleDeclarations(config, OTHER).find((d) => d.name === "vault")!.meta.scope, "project");
+    assert.equal(loadModuleDeclarations(config, "").find((d) => d.name === "vault-local")!.meta.scope, "project");
+    assert.equal(loadModuleDeclarations(config, OTHER).find((d) => d.name === "vault-local")!.meta.scope, "project");
 
     // **その Project の事情は既定に漏れていない**
     const defaultFs = loadModuleDeclarations(config, "").find((d) => d.name === "filesystem")!;

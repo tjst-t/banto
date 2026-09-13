@@ -17,7 +17,7 @@ import { SopsBackend } from "./sops-backend.js";
 export function createVaultServer(dataDir: string) {
   const backend = new SopsBackend(dataDir);
   return createVaultModuleServer({
-    moduleName: "vault",
+    moduleName: "vault-local",
     backend,
     aliasStore: new LocalFileAliasStore(dataDir),
     dataDir,

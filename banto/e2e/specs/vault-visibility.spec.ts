@@ -22,7 +22,7 @@ test.describe.configure({ mode: "serial" });
 test.setTimeout(120_000);
 
 /** AI（Runner）に見えている vault の道具の一覧を、同じ経路で取る。 */
-async function toolsVisibleToAgent(server = "vault"): Promise<string[]> {
+async function toolsVisibleToAgent(server = "vault-local"): Promise<string[]> {
   const client = new Client({ name: "e2e-visibility", version: "0.0.0" }, { capabilities: {} });
   await client.connect(
     new StreamableHTTPClientTransport(new URL(`${CORE_BASE_URL}/agent-relay/${server}`), {
@@ -116,7 +116,7 @@ test("画面 API からも、値を取る道具は呼べない——人の管理
   const created = await request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
     headers,
     data: {
-      server: "vault",
+      server: "vault-local",
       tool: "createAlias",
       // scope は instance——この試験が見たいのは可視性の境界で、対象の割り当て
       // ではない（`scope: "project"` は projectId とセットでないと作れない）
@@ -128,7 +128,7 @@ test("画面 API からも、値を取る道具は呼べない——人の管理
   // **値を取る道具（module 可視性）は拒否される**
   const resolved = await request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
     headers,
-    data: { server: "vault", tool: "resolveAlias", arguments: { name: alias } },
+    data: { server: "vault-local", tool: "resolveAlias", arguments: { name: alias } },
   });
   expect(resolved.status(), "画面 API から resolveAlias が通ってしまった").toBe(403);
   const body = await resolved.text();
@@ -157,7 +157,7 @@ test("AI は vault://aliases を実際に読める——名前は見え、値は
     method: "POST",
     headers,
     body: JSON.stringify({
-      server: "vault",
+      server: "vault-local",
       tool: "createAlias",
       arguments: { name: alias, kind: "secret", value: secret, note: "E2E が置いた" },
     }),
@@ -222,7 +222,7 @@ test("別の Project の秘密は、AI からは名前も見えない", async ()
       method: "POST",
       headers,
       body: JSON.stringify({
-        server: "vault",
+        server: "vault-local",
         tool: "createAlias",
         arguments: { name, kind: "secret", value: "v", ...args },
       }),
@@ -259,7 +259,7 @@ test("別の Project の秘密は、AI からは名前も見えない", async ()
     await fetch(`${CORE_BASE_URL}/api/ui-tool-call`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ server: "vault", tool: "deleteAlias", arguments: { name } }),
+      body: JSON.stringify({ server: "vault-local", tool: "deleteAlias", arguments: { name } }),
     });
   }
 });
@@ -278,7 +278,7 @@ test("AI は公開鍵を読める——秘密鍵は返らない", async ({ reque
     body: JSON.stringify({
       server: "vault-directory",
       tool: "generateSecret",
-      arguments: { implementation: "vault", name: alias, kind: "ssh-identity" },
+      arguments: { implementation: "vault-local", name: alias, kind: "ssh-identity" },
     }),
   });
   expect(made.status).toBe(200);
@@ -313,6 +313,6 @@ test("AI は公開鍵を読める——秘密鍵は返らない", async ({ reque
   await fetch(`${CORE_BASE_URL}/api/ui-tool-call`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ server: "vault-directory", tool: "deleteAlias", arguments: { implementation: "vault", name: alias } }),
+    body: JSON.stringify({ server: "vault-directory", tool: "deleteAlias", arguments: { implementation: "vault-local", name: alias } }),
   });
 });

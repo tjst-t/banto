@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { InfisicalConnection, type InfisicalConfig } from "./client.js";
 import { InfisicalBackend } from "./infisical-backend.js";
 import { InfisicalAliasStore } from "./infisical-alias-store.js";
+import { InfisicalSettingsStore } from "./settings-store.js";
 import { createInfisicalVaultServer } from "./server.js";
 
 /** host が刻む「誰のための呼び出しか」。ここは人の管理面のつもり。 */
@@ -165,7 +166,10 @@ test("Module 越しに、登録 → 一覧 → 解決 → 削除が通る", { sk
   const dataDir = await mkdtemp(join(tmpdir(), "banto-vault-infisical-test-"));
   const name = `mod-${Date.now().toString(36)}`;
   try {
-    const server = createInfisicalVaultServer(config!, dataDir);
+    // **設定は画面から入れるのが本筋**（2026-09-13）。統合試験では、その
+    // 保存先に直接置いてから起こす——実運用と同じ経路（保存 → 立ち上げ）
+    await new InfisicalSettingsStore(dataDir).save(config!);
+    const server = createInfisicalVaultServer(dataDir);
     const [s, c] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "test", version: "0.0.0" });
     await Promise.all([server.connect(s), client.connect(c)]);
@@ -213,7 +217,10 @@ test("会話の中の入力欄は、Module ごとに別の URI を持つ", { ski
   // 2本並んだとき、どちらの画面かが URI から分かる必要がある
   const dataDir = await mkdtemp(join(tmpdir(), "banto-vault-infisical-uri-"));
   try {
-    const server = createInfisicalVaultServer(config!, dataDir);
+    // **設定は画面から入れるのが本筋**（2026-09-13）。統合試験では、その
+    // 保存先に直接置いてから起こす——実運用と同じ経路（保存 → 立ち上げ）
+    await new InfisicalSettingsStore(dataDir).save(config!);
+    const server = createInfisicalVaultServer(dataDir);
     const [s, c] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "test", version: "0.0.0" });
     await Promise.all([server.connect(s), client.connect(c)]);
@@ -236,7 +243,10 @@ test("鍵ペアを作っても、alias は付けた名前のまま（公開鍵�
   const dataDir = await mkdtemp(join(tmpdir(), "banto-vault-infisical-key-"));
   const name = `ssh-${Date.now().toString(36)}`;
   try {
-    const server = createInfisicalVaultServer(config!, dataDir);
+    // **設定は画面から入れるのが本筋**（2026-09-13）。統合試験では、その
+    // 保存先に直接置いてから起こす——実運用と同じ経路（保存 → 立ち上げ）
+    await new InfisicalSettingsStore(dataDir).save(config!);
+    const server = createInfisicalVaultServer(dataDir);
     const [s, c] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "test", version: "0.0.0" });
     await Promise.all([server.connect(s), client.connect(c)]);

@@ -158,10 +158,17 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
   {
     // Vault は instance に1本。Landlock は掛けない（秘密の保管庫自身は
     // Project の根に閉じ込める対象ではない、v4-security.md）。
-    name: "vault",
+    // **名前は `vault-local`**（改名・2026-09-13、ユーザー指摘）。役割は `vault`
+    // のままで、変えたのは**実装の名前**だけ——2本目（Infisical）が入って
+    // 「vault」が役割なのか実装なのか紛らわしくなったため（規則11）。
+    //
+    // **データ置き場は `${dataDir}/vault` のまま動かさない。** ここは宣言が
+    // 固定していて Module 名から導いていないので、改名しても既存の秘密は
+    // そのまま読める（移すと孤児になる）。
+    name: "vault-local",
     launch: {
       command: "${nodeExec}",
-      args: ["${monorepoRoot}/packages/modules/vault/dist/server.js"],
+      args: ["${monorepoRoot}/packages/modules/vault-local/dist/server.js"],
       env: { BANTO_VAULT_DATA_DIR: "${dataDir}/vault" },
     },
     meta: {
@@ -178,9 +185,13 @@ export const DEFAULT_MODULE_DECLARATIONS: ModuleDeclaration[] = [
     // ——A/B/C の配線は `@banto/vault-kit` が共有する。
     //
     // **資格情報は Infisical には入れられない**（金庫を開ける鍵は金庫に入らない）
-    // ——組み込み Vault の `identity.txt` と同じ category。設定として渡す。
-    // **繋がらなければ立たない**（黙って空の一覧を見せない、規則2）ので、
-    // 設定していない環境ではこの Module は繋がらず、理由が受信箱に出る。
+    // ——組み込み Vault の `identity.txt` と同じ category。
+    //
+    // **繋ぎ方は人が設定画面から入れる**（改訂・2026-09-13、ユーザー要望）。
+    // 以前は環境変数だけで、**設定していないと Module が立たなかった**
+    // ——立たないので設定画面にも辿り着けず、host は毎回「繋げませんでした」を
+    // 受信箱に出していた（毎日のノイズ）。いまは**未設定でも立つ**：設定画面を
+    // 出し、値を触る口は理由つきで断る。環境変数も引き続き読む（開発・E2E）。
     name: "vault-infisical",
     launch: {
       command: "${nodeExec}",

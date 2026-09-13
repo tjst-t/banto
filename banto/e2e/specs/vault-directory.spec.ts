@@ -48,7 +48,7 @@ test("VaultUI の入口から開いた画面が、実 Vault を横断して読�
     timeout: 60_000,
   });
   await expect(
-    canvas.locator(".chip").filter({ hasText: "vault" }).first(),
+    canvas.locator(".chip").filter({ hasText: "vault-local" }).first(),
     "vault を名乗る実装が1つも見えていない（横断の相手に届いていない）",
   ).toBeVisible({ timeout: 60_000 });
   // **空を前提にしない**——同じ実行の他の試験が、同じ instance の Vault に
@@ -73,7 +73,7 @@ test("VaultUI の入口から開いた画面が、実 Vault を横断して読�
   await expect(row, "登録したのに一覧に出てこない").toBeVisible({ timeout: 120_000 });
   await expect(row, "種別が出ていない").toContainText("汎用シークレット");
   await expect(row, "対象が Project の名前で出ていない").toContainText(PROJECT_NAME);
-  await expect(row, "どの backend のものか出ていない").toContainText("vault");
+  await expect(row, "どの backend のものか出ていない").toContainText("vault-local");
   await expect(row, "用途が出ていない").toContainText("E2E が置いた");
   // 絞り込みでも出る（画面が出している中身が、検索を通しても同じであること）
   await canvas.locator("#query").fill(ALIAS);
@@ -95,7 +95,7 @@ test("VaultUI の入口から開いた画面が、実 Vault を横断して読�
   // ---- 5. 実 Vault に届いている（画面の自己申告を信じない、規則1）--------
   const listed = await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
     headers: { authorization: `Bearer ${AUTH_TOKEN}` },
-    data: { server: "vault", tool: "listAliases", arguments: {} },
+    data: { server: "vault-local", tool: "listAliases", arguments: {} },
   });
   expect(listed.status()).toBe(200);
   const body = await listed.text();
@@ -127,7 +127,7 @@ test("VaultUI の入口から開いた画面が、実 Vault を横断して読�
 
   const after = await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
     headers: { authorization: `Bearer ${AUTH_TOKEN}` },
-    data: { server: "vault", tool: "listAliases", arguments: {} },
+    data: { server: "vault-local", tool: "listAliases", arguments: {} },
   });
   expect(await after.text(), "画面からは消えたのに、実 Vault には残っている").not.toContain(ALIAS);
 
@@ -182,7 +182,7 @@ test("窓口が AI に見せるのは2本だけ——管理操作は1つも見�
       method: "POST",
       headers: { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" },
       body: JSON.stringify({
-        server: "vault",
+        server: "vault-local",
         tool: "createAlias",
         arguments: { name: probe, kind: "secret", value: "probe-value" },
       }),
@@ -210,7 +210,7 @@ test("窓口が AI に見せるのは2本だけ——管理操作は1つも見�
         method: "POST",
         headers: { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" },
         body: JSON.stringify({
-          server: "vault",
+          server: "vault-local",
           tool: "deleteAlias",
           arguments: { name: probe },
         }),

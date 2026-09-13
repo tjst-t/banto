@@ -8,32 +8,148 @@
 // ローカルのファイルで足りるが、Infisical は「複数台のホストで同じ backend を
 // 共有する」ことが眼目なので、**メタデータもそこに無いと共有が成立しない**。
 //
-// **設定 Canvas は持たない。** 横断管理は VaultUI がやるので、backend ごとの
-// 薄い画面をもう1枚増やす理由が無い——無いものを在るふりで出さない（規則13）。
+// **繋ぎ方は人が画面から入れる**（改訂・2026-09-13、ユーザー要望）。以前は
+// 環境変数だけで、**設定していないと Module が立たなかった**——立たないので
+// 設定画面にも辿り着けず、host は毎回「繋げませんでした」を受信箱に出していた。
+// いまは**未設定でも立つ**：設定画面を出し、値を触る口は理由つきで断る。
+//
+// **資格情報は Infisical には入れられない**（金庫を開ける鍵は金庫に入らない）
+// ——この Module のデータ置き場に 0600 で置く（`settings-store.ts`）。
+// **banto の宣言には書かない**——宣言は Event Store に残るため。
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createVaultModuleServer } from "@banto/vault-kit";
+import { VISIBILITY_META_KEY, VALUE_FREE_META_KEY } from "@banto/module-contract";
 import { InfisicalConnection, readConfigFromEnv, type InfisicalConfig } from "./client.js";
 import { InfisicalBackend } from "./infisical-backend.js";
 import { InfisicalAliasStore } from "./infisical-alias-store.js";
+import { CONFIG_APP_HTML, CONFIG_APP_URI } from "./config-app.js";
+import {
+  InfisicalSettingsStore,
+  toConfig,
+  viewOf,
+  type InfisicalSettingsInput,
+} from "./settings-store.js";
 
-export function createInfisicalVaultServer(config: InfisicalConfig, dataDir: string) {
-  const conn = new InfisicalConnection(config);
-  const backend = new InfisicalBackend(conn);
+/**
+ * 設定が入るまで繋がない。**入ったら繋ぎ直す**——人が画面で直した直後から
+ * 使えないと、「保存したのに動かない」になる。
+ */
+class LazyConnection {
+  private conn?: InfisicalConnection;
+  private config?: InfisicalConfig;
+  private source: "saved" | "env" | "none" = "none";
+  private lastError?: string;
+
+  constructor(private readonly settings: InfisicalSettingsStore) {}
+
+  /** 立ち上がり。**繋がらなくても投げない**（投げると Module ごと落ちる）。 */
+  async start(): Promise<void> {
+    const saved = await this.settings.load();
+    if (saved) {
+      await this.use(saved, "saved");
+      return;
+    }
+    // 環境変数は開発・E2E の経路。**無ければ未設定のまま立つ**
+    try {
+      await this.use(readConfigFromEnv(), "env");
+    } catch (err) {
+      this.lastError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  /** その設定で実際に繋いでみる。**繋がって初めて「使える」**（規則1）。 */
+  async use(config: InfisicalConfig, source: "saved" | "env"): Promise<void> {
+    const conn = new InfisicalConnection(config);
+    await conn.connect();
+    this.conn = conn;
+    this.config = config;
+    this.source = source;
+    this.lastError = undefined;
+  }
+
+  /** 使える状態か。**理由を持って返す**——画面と受信箱がそのまま出せる形。 */
+  readiness(): { ready: boolean; reason?: string } {
+    if (this.conn) return { ready: true };
+    return { ready: false, reason: this.lastError ?? "接続先と資格情報が設定されていません" };
+  }
+
+  view() {
+    return { ...viewOf(this.config, this.config ? this.source : "none"), lastError: this.lastError };
+  }
+
+  /** backend / alias 置き場が使う。**未設定なら理由つきで断る**（黙って空を返さない）。 */
+  active(): InfisicalConnection {
+    if (!this.conn) throw new Error(this.readiness().reason ?? "未設定です");
+    return this.conn;
+  }
+}
+
+export function createInfisicalVaultServer(dataDir: string) {
+  const settings = new InfisicalSettingsStore(dataDir);
+  const lazy = new LazyConnection(settings);
+  // backend と台帳には「いま繋がっている接続」を毎回引かせる——繋ぎ直しても
+  // 古い接続を掴まない（規則3——写しを持たない）
+  const proxy = new Proxy({} as InfisicalConnection, {
+    get: (_t, prop) => Reflect.get(lazy.active() as object, prop, lazy.active()),
+  });
+  const backend = new InfisicalBackend(proxy);
+
   return createVaultModuleServer({
     moduleName: "vault-infisical",
     backend,
-    aliasStore: new InfisicalAliasStore(conn),
+    aliasStore: new InfisicalAliasStore(proxy),
     dataDir,
-    // **繋がれないなら立たない**（規則2）——空の一覧を出して
-    // 「秘密が1つも無い」ように見せない
-    init: () => conn.connect(),
+    configApp: { uri: CONFIG_APP_URI, html: CONFIG_APP_HTML, name: "Vault（Infisical）" },
+    // **未設定でも立つ**。繋がらない理由は readiness で返す
+    init: () => lazy.start(),
+    readiness: async () => lazy.readiness(),
+    extraTools: [
+      {
+        definition: {
+          name: "getConnectionSettings",
+          description:
+            "Infisical への繋ぎ方（接続先・Client ID・Project）を読む。**Client Secret は返さない**——入っているかどうかだけ",
+          inputSchema: { type: "object", properties: {} },
+          _meta: { [VISIBILITY_META_KEY]: "admin", [VALUE_FREE_META_KEY]: true },
+        },
+        handle: async () => ({ content: [{ type: "text" as const, text: JSON.stringify(lazy.view()) }] }),
+      },
+      {
+        definition: {
+          name: "setConnectionSettings",
+          description:
+            "Infisical への繋ぎ方を保存する。**実際に繋いでみて、繋がったときだけ保存する**",
+          inputSchema: {
+            type: "object",
+            properties: {
+              target: { type: "string", enum: ["us", "eu", "self"], description: "Cloud US / Cloud EU / 自前ホスト" },
+              siteUrl: { type: "string", description: "自前ホストのときの URL" },
+              clientId: { type: "string" },
+              clientSecret: { type: "string" },
+              projectId: { type: "string" },
+              environment: { type: "string", description: "dev / staging / prod など（既定 dev）" },
+            },
+            required: ["target", "clientId", "clientSecret", "projectId"],
+          },
+          _meta: { [VISIBILITY_META_KEY]: "admin" },
+        },
+        handle: async (args) => {
+          const config = toConfig(args as unknown as InfisicalSettingsInput);
+          // **繋がってから保存する**（規則1——自己申告を信頼しない）。
+          // 保存してから繋ぐと、間違った設定が残って毎回失敗する
+          await lazy.use(config, "saved");
+          await settings.save(config);
+          return { content: [{ type: "text" as const, text: JSON.stringify(lazy.view()) }] };
+        },
+      },
+    ],
   });
 }
 
 if (process.argv[1] && process.argv[1].endsWith("server.js")) {
   const dataDir =
     process.env.BANTO_VAULT_INFISICAL_DATA_DIR ?? `${process.env.HOME}/.local/share/banto/vault-infisical`;
-  const server = createInfisicalVaultServer(readConfigFromEnv(), dataDir);
+  const server = createInfisicalVaultServer(dataDir);
   await server.connect(new StdioServerTransport());
 }

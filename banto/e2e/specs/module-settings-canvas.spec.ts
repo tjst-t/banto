@@ -127,7 +127,7 @@ test("設定の置き場は Module の scope が決める——Vault は全体�
   ).toHaveCount(0);
   await vaultNav.click();
   await expect(
-    page.locator('[data-testid="module-settings-canvas"][data-module="vault"]'),
+    page.locator('[data-testid="module-settings-canvas"][data-module="vault-local"]'),
     "全体の設定に Vault が出ていない",
   ).toBeVisible({ timeout: 30_000 });
   await expect(
@@ -137,8 +137,49 @@ test("設定の置き場は Module の scope が決める——Vault は全体�
 
   // 中身も本物（Vault が名乗った画面が描かれている）
   const vaultInner = page
-    .locator('[data-testid="module-settings-canvas"][data-module="vault"] iframe')
+    .locator('[data-testid="module-settings-canvas"][data-module="vault-local"] iframe')
     .contentFrame()
     .frameLocator("iframe");
   await expect(vaultInner.getByText(/alias|件/)).toBeVisible({ timeout: 60_000 });
+});
+
+// **Infisical の繋ぎ方を、全体の設定から入れられる**（追加・2026-09-13、
+// ユーザー要望「接続先と API Token を Global の Module 設定で」）。
+//
+// ここで見たいのは2つで、**1つ目のほうが大事**：
+//   1. **未設定でも Module が立ち、設定画面に辿り着ける**
+//      （以前は未設定だと立たず、設定画面にも行けない堂々巡りだった）
+//   2. 接続先を選ぶと、聞くことが変わる（自前なら URL を聞く）
+test("Infisical の繋ぎ方を、全体の設定画面から入れられる", async ({ page }) => {
+  await openApp(page);
+  await page.goto("/settings");
+
+  const nav = page.getByRole("button", { name: "Vault（Infisical）", exact: true });
+  await expect(nav, "全体の設定に Infisical が出ていない").toBeVisible({ timeout: 30_000 });
+  await nav.click();
+
+  const pane = page.locator('[data-testid="module-settings-canvas"][data-module="vault-infisical"]');
+  await expect(pane).toBeVisible({ timeout: 30_000 });
+  const inner = pane.locator("iframe").contentFrame().frameLocator("iframe");
+
+  // **いまの状態を、推測ではなく Module に聞いて出している**
+  await expect(inner.getByText("Infisical への繋ぎ方")).toBeVisible({ timeout: 60_000 });
+  await expect(inner.locator("#state"), "繋がっているかどうかを言っていない").not.toBeEmpty();
+
+  // **秘密は画面に返っていない**（入っているかどうかだけ）
+  expect(await inner.locator("#clientSecret").inputValue(), "Client Secret が画面に返っている").toBe("");
+
+  // 接続先で聞くことが変わる——Cloud なら URL を聞かない
+  await inner.locator("#target").selectOption("us");
+  await expect(inner.locator("#site-field"), "Cloud なのに URL を聞いている").toBeHidden();
+  await inner.locator("#target").selectOption("self");
+  await expect(inner.locator("#site-field"), "自前なのに URL を聞いていない").toBeVisible();
+
+  // **繋がらない設定は保存しない**（規則1——繋いでから保存する）
+  await inner.locator("#siteUrl").fill("http://127.0.0.1:9");
+  await inner.locator("#clientId").fill("nope");
+  await inner.locator("#clientSecret").fill("nope");
+  await inner.locator("#projectId").fill("nope");
+  await inner.getByRole("button", { name: "繋いで保存する" }).click();
+  await expect(inner.locator("#error"), "繋がらないのに黙って保存している").toBeVisible({ timeout: 60_000 });
 });

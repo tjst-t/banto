@@ -19,7 +19,7 @@
   },
   "devDependencies": {
     "@banto/core": "*",
-    "@banto/module-vault": "*",
+    "@banto/module-vault-local": "*",
     "@banto/module-vault-directory": "*"
   }
 }

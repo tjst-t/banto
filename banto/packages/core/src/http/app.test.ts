@@ -669,7 +669,7 @@ test("Project の Module を HTTP から選べる——外したものは一覧�
     ).json()) as Array<{ name: string; selected: boolean; scope: string }>;
     assert.ok(before.length >= 3, "既定の Module が返っていない");
     assert.equal(before.every((m) => m.selected), true, "はじめは全部使う");
-    assert.equal(before.find((m) => m.name === "vault")?.scope, "instance");
+    assert.equal(before.find((m) => m.name === "vault-local")?.scope, "instance");
 
     const keep = before.filter((m) => m.name !== "shell").map((m) => m.name);
     const put = await fetch(`${base}/api/projects/${project.id}/modules`, {

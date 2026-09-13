@@ -107,7 +107,7 @@ test("要るものを外すと、その場で警告が出る（保存の差分�
   // **`vault` は役割で、実装は2本ある**（`vault` と `vault-infisical`、2026-09-12）。
   // 片方を外しても役割は満たされたままなので、**警告は出ないのが正しい**
   // ——ここで警告が出るなら、役割ではなく名前で見ていることになる
-  await page.locator('[data-testid="module-row"][data-module="vault"]').getByRole("button", { name: /外す/ }).click();
+  await page.locator('[data-testid="module-row"][data-module="vault-local"]').getByRole("button", { name: /外す/ }).click();
   await expect(
     shellRow.getByText(/このままでは動きません/),
     "実装がもう1本あるのに「動きません」と言っている（名前で見ている）",

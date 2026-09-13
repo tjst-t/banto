@@ -49,14 +49,14 @@ test("同梱の既定は5本（vault/vault-infisical/vault-directory/shell/files
   const parsed = DEFAULT_MODULE_DECLARATIONS.map((d) => parseModuleDeclaration(d, "default"));
   assert.deepEqual(
     parsed.map((d) => d.name).sort(),
-    ["filesystem", "shell", "vault", "vault-directory", "vault-infisical"],
+    ["filesystem", "shell", "vault-directory", "vault-infisical", "vault-local"],
   );
   // VaultUI は vault を横断するので、依存を名乗っている（中継の許可はここから出る）
   assert.deepEqual(parsed.find((d) => d.name === "vault-directory")?.meta.dependsOn, [
     { role: "vault", required: true },
   ]);
   // vault は instance に1本、shell/filesystem は Project ごと
-  assert.equal(parsed.find((d) => d.name === "vault")?.meta.scope, "instance");
+  assert.equal(parsed.find((d) => d.name === "vault-local")?.meta.scope, "instance");
   assert.equal(parsed.find((d) => d.name === "shell")?.meta.scope, "project");
 });
 
@@ -177,13 +177,13 @@ test("Project ごとに、繋ぐ Module を上書きできる", async () => {
 
     await setModuleDeclarations(
       config,
-      DEFAULT_MODULE_DECLARATIONS.filter((d) => d.name === "vault"),
+      DEFAULT_MODULE_DECLARATIONS.filter((d) => d.name === "vault-local"),
       "project-2",
     );
 
     assert.deepEqual(
       loadModuleDeclarations(config, "project-2").map((d) => d.name),
-      ["vault"],
+      ["vault-local"],
     );
     // 別の Project は既定のまま
     assert.equal(loadModuleDeclarations(config, "other").length, 5);

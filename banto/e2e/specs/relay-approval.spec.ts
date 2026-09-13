@@ -48,7 +48,7 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
   const created = await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
     headers: { authorization: `Bearer ${AUTH_TOKEN}` },
     data: {
-      server: "vault",
+      server: "vault-local",
       tool: "createAlias",
       // scope は instance——この試験が見たいのは中継の承認で、対象の割り当てではない
       arguments: { name: ALIAS, kind: "secret", value: SECRET },
@@ -94,9 +94,9 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
   //
   // ```
   // shell → vault-directory    lookupAlias    「その名前はどこ？」
-  //   vault-directory → vault           listAliases   （窓口が横断して探す）
+  //   vault-directory → vault-local     listAliases   （窓口が横断して探す）
   //   vault-directory → vault-infisical listAliases
-  // shell → vault              resolveAlias   「値をください」
+  // shell → vault-local        resolveAlias   「値をください」
   // ```
   //
   // **承認は（呼び出し元・宛先・tool）ごとに初回1回**なので、初回のターンでは
@@ -136,7 +136,7 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
 
   // **聞かれた中身が、経路のとおりであること**（規則14——押せたで終わらせない）
   const asked = await page.locator('[data-role="judgment-card"]').allInnerTexts();
-  for (const expected of ["shell が vault-directory の lookupAlias", "shell が vault の resolveAlias"]) {
+  for (const expected of ["shell が vault-directory の lookupAlias", "shell が vault-local の resolveAlias"]) {
     expect(asked.join("\n"), `「${expected}」を人に聞いていない`).toContain(expected);
   }
   // **値を返さない口は聞かない**（決定・2026-09-12、v4-security.md）。窓口が
@@ -183,7 +183,7 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
   // ホストもある）ので、**順序と件数ではなく、要る組み合わせが在ることを見る**
   const pairs = grants.map((g) => `${g.payload.callerModule}→${g.payload.targetModule}:${g.payload.name}`);
   expect(pairs).toContain("shell→vault-directory:lookupAlias");
-  expect(pairs).toContain("shell→vault:resolveAlias");
+  expect(pairs).toContain("shell→vault-local:resolveAlias");
   // 聞かなかったものに許可は生えない
   expect(pairs.join(","), "聞いていない呼び出しに許可が記録されている").not.toContain("listAliases");
   expect(new Set(pairs).size, "同じ組み合わせを2回聞いている").toBe(pairs.length);

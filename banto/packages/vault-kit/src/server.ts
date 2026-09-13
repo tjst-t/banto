@@ -106,6 +106,29 @@ export interface VaultModuleOptions {
   /** 立ち上がりにやること（鍵の用意・ログインなど）。 */
   init?(): Promise<void>;
   /**
+   * **まだ使える状態か**（追加・2026-09-13、ユーザー要望「接続先と資格情報を
+   * 画面から入れたい」）。
+   *
+   * 外の金庫を使う backend は、**人が設定するまで繋がれない**。それでも
+   * **Module 自体は立たないといけない**——立たないと設定画面に辿り着けないし、
+   * host は毎回「繋げませんでした」を受信箱に出す（実際そうなっていた）。
+   *
+   * `ready: false` のときは、値を触る口が**理由つきで断る**。黙って空の
+   * 一覧を返さない（規則2——「無い」と「まだ設定していない」は別の事実）。
+   */
+  readiness?(): Promise<{ ready: boolean; reason?: string }>;
+  /**
+   * **この Module だけが持つ口**（追加・2026-09-13）。外の金庫を使う backend は
+   * 「繋ぎ方の設定」を自分で持つので、その読み書きをここから足す。
+   *
+   * **未設定でも呼べる**（`readiness` のゲートを通さない）——通すと、
+   * 設定する口が設定されるまで使えないという堂々巡りになる。
+   */
+  extraTools?: Array<{
+    definition: Record<string, unknown>;
+    handle(args: Record<string, unknown>): Promise<{ content: { type: "text"; text: string }[] }>;
+  }>;
+  /**
    * **AI に直接見せるか**（決定・2026-09-12、窓口の導入）。
    *
    * `vault` は役割で、実装は複数ありうる。実装が2本になった瞬間、AI には
@@ -136,6 +159,20 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     await registry.load();
     await bindings.load();
   })();
+
+  /**
+   * 使える状態でなければ**理由つきで断る**。`readiness` を渡していない
+   * Module（組み込みなど）は常に使える。
+   */
+  async function assertReady(): Promise<void> {
+    if (!opts.readiness) return;
+    const state = await opts.readiness();
+    if (state.ready) return;
+    throw new Error(
+      `${opts.moduleName} はまだ使えません：${state.reason ?? "設定されていません"}` +
+        "（設定画面から接続先と資格情報を入れてください）",
+    );
+  }
 
   /**
    * その alias の値をどのグループに置くか（§2.1「Project ↔ backend グループの
@@ -389,6 +426,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           },
           "admin",
         ),
+        ...(opts.extraTools ?? []).map((t) => t.definition),
         tool(
           "setSharedGroup",
           // **共通グループも選べる**（追加・2026-09-13、ユーザー指摘）。以前は
@@ -437,6 +475,17 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
     await initPromise;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     const callMeta = request.params._meta as Record<string, unknown> | undefined;
+
+    // **この Module 固有の口は、未設定でも通す**——設定する口が設定を
+    // 要求したら堂々巡りになる
+    const ownTool = (opts.extraTools ?? []).find(
+      (t) => (t.definition as { name?: string }).name === request.params.name,
+    );
+    if (ownTool) return ownTool.handle(args);
+
+    // **使える状態でなければ、理由つきで断る**（規則2——黙って空を返さない）。
+    // `requestAlias` は人に頼むだけで backend に触らないので、ここでは止めない
+    if (request.params.name !== "requestAlias") await assertReady();
 
     switch (request.params.name) {
       case "requestAlias": {
@@ -752,6 +801,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       };
     }
     if (request.params.uri === ALIASES_URI) {
+      await assertReady();
       // **使えないものは名前も見せない**（決定・2026-09-13）——AI に
       // 「あるが使えない」を見せても、頼める先が無い
       const caller = callerOf(request.params._meta as Record<string, unknown> | undefined);

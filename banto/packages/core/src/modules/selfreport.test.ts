@@ -25,7 +25,7 @@ async function withModule(command: string, args: string[], env: Record<string, s
   }
 }
 
-for (const name of ["vault", "shell", "filesystem"] as const) {
+for (const name of ["vault-local", "shell", "filesystem"] as const) {
   test(`${name} は自分が何者かを名乗り、同梱の宣言と食い違わない`, async () => {
     const declaration = parseModuleDeclaration(
       DEFAULT_MODULE_DECLARATIONS.find((d) => d.name === name)!,

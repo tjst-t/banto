@@ -18,6 +18,6 @@
     "@banto/vault-kit": "*"
   },
   "devDependencies": {
-    "@banto/module-vault": "*"
+    "@banto/module-vault-local": "*"
   }
 }

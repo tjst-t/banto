@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createVaultServer } from "@banto/module-vault";
+import { createVaultServer } from "@banto/module-vault-local";
 import { createVaultDirectoryServer } from "./server.js";
 import { MANAGE_APP_HTML } from "./manage-app.js";
 import { MANAGE_APP_URI } from "./manage-app.js";

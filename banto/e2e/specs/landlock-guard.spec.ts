@@ -38,7 +38,7 @@ test("home を根にしても Module は動く。ただし画面が警告する"
   ).json();
   expect(prepared.connected, "home を根にしたら shell が立たない").toContain("shell");
   expect(prepared.connected, "home を根にしたら filesystem が立たない").toContain("filesystem");
-  expect(prepared.connected).toContain("vault");
+  expect(prepared.connected).toContain("vault-local");
 
   // **「繋げませんでした」は出ない**——止めていないのだから
   const inbox = await (await page.request.get(`${CORE_BASE_URL}/api/inbox`, { headers })).json();

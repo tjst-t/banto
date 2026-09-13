@@ -1529,6 +1529,22 @@
       ],
       "spec": "docs/specs/v4-modules.md §2.1、docs/specs/v4-architecture.md §2.5、docs/specs/v4-security.md",
       "notes": "docs/notes/2026-09-12-vault-directory.md の末尾"
+    },
+    {
+      "id": "vault-local-rename-and-infisical-settings",
+      "title": "vault → vault-local に改名し、Infisical の繋ぎ方を設定画面から入れられるようにする",
+      "status": "done",
+      "why": "2本目が入って「vault」が役割なのか実装なのか紛らわしくなった。Infisical は環境変数だけで設定でき、未設定だと Module ごと立たないので設定画面にも辿り着けず、受信箱に毎回ノイズが出ていた。",
+      "done": [
+        "vault → vault-local（役割 vault は変えない。データ置き場も動かさないので既存の秘密はそのまま）",
+        "vault-kit に readiness()——未設定でも立ち、値を触る口は理由つきで断る",
+        "vault-kit に extraTools——その Module だけの口。未設定でも呼べる（設定する口が設定を要求したら堂々巡り）",
+        "Infisical の設定 Canvas（instance の面）：接続先（Cloud US/EU・自前URL）・Client ID/Secret・Project・環境",
+        "繋がってから保存する。Client Secret は画面に返さない。保存先は Module の中に 0600（宣言＝Event Store には書かない）",
+        "Cloud の住所は実在を確認してから書いた（app./eu.infisical.com とも 200）"
+      ],
+      "spec": "docs/specs/v4-modules.md §2.1",
+      "notes": "docs/notes/2026-09-12-vault-directory.md の末尾"
     }
   ],
   "phase1": {

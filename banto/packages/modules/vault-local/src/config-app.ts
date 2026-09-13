@@ -8,7 +8,7 @@
 // 承認の扱いを決めてから足す（画面からの呼び出しは承認を求めない、という
 // 決定と合わせて考える必要があるため）。
 
-export const CONFIG_APP_URI = "ui://banto-vault/config";
+export const CONFIG_APP_URI = "ui://banto-vault-local/config";
 
 export const CONFIG_APP_HTML = `<!doctype html>
 <html lang="ja">

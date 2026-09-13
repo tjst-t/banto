@@ -1,11 +1,11 @@
 {
-  "name": "@banto/module-vault",
+  "name": "@banto/module-vault-local",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
   "bin": {
-    "banto-module-vault": "./dist/server.js"
+    "banto-module-vault-local": "./dist/server.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
