@@ -88,12 +88,20 @@ function parse(result: unknown): any {
   return JSON.parse((result as { content: { text: string }[] }).content[0]!.text);
 }
 
+/** JSON ではない戻り（公開鍵など）をそのまま読む。 */
+function textOf(result: unknown): string {
+  return (result as { content: { text: string }[] }).content[0]!.text;
+}
+
 test("窓口の面は3段に分かれている——AI には1本と目録だけ", async () => {
   // **窓口になった**（改訂・2026-09-12）。以前は全部 admin（人専用）だったが、
   // backend が2本になって「AI にはどちらの requestAlias？」が現実の問題に
   // なったので、**A 面は窓口が1本だけ持つ**（backend 側は module に降格）。
   const expected: Record<string, string> = {
-    requestAlias: "agent", // AI に見せるのはこれだけ
+    requestAlias: "agent", // 秘密が無いとき、人に登録を頼む
+    // **公開鍵は秘密ではない**（追加・2026-09-13）——相手方に登録するための
+    // ものなので AI が読めてよい。秘密鍵は通らない
+    getPublicKey: "agent",
     lookupAlias: "module", // 名前 → 在りか（値は返さない）
   };
   await withUi(async ({ ui }) => {
@@ -107,7 +115,7 @@ test("窓口の面は3段に分かれている——AI には1本と目録だけ
     const agentTools = tools.filter(
       (t) => (t._meta as Record<string, unknown> | undefined)?.["dev.banto/visibility"] === "agent",
     );
-    assert.deepEqual(agentTools.map((t) => t.name), ["requestAlias"]);
+    assert.deepEqual(agentTools.map((t) => t.name).sort(), ["getPublicKey", "requestAlias"]);
 
     // `handlesSecrets: true` の Module は、**全ての資源にも**明示の可視性が要る
     const { resources } = await ui.listResources();
@@ -441,4 +449,33 @@ test("管理画面も、種別ごとの規則を共有の表から引いてい�
     MANAGE_APP_HTML.includes("[hidden] { display: none !important; }"),
     "[hidden] を効かせる規則が無い（.field の display に負けて何も隠れない）",
   );
+});
+
+// **公開鍵は秘密ではない**（追加・2026-09-13、ユーザー指摘「公開鍵は AI に
+// 見せてもいいはず。その口は作らない？」）。作った直後の1回しか返して
+// いなかったので、画面を閉じたら二度と見られなかった。
+test("公開鍵は AI からも読める——秘密鍵は通らない、使えない Project には出さない", async () => {
+  await withUi(async ({ ui }) => {
+    await ui.callTool({
+      name: "generateSecret",
+      arguments: { implementation: "vault", name: "deploy-key", kind: "ssh-identity", forProject: "proj-a" },
+    });
+
+    const pub = textOf(
+      await ui.callTool({ name: "getPublicKey", arguments: { name: "deploy-key" }, _meta: forProject("proj-a") }),
+    );
+    assert.match(pub, /^ssh-ed25519 AAAA/);
+    // **何度でも読める**（作った直後の1回きりではない）
+    assert.equal(
+      textOf(await ui.callTool({ name: "getPublicKey", arguments: { name: "deploy-key" }, _meta: forProject("proj-a") })),
+      pub,
+    );
+    assert.equal(pub.includes("PRIVATE KEY"), false, "秘密鍵が混ざっている");
+
+    // 使える範囲は他の口と揃っている
+    await assert.rejects(
+      () => ui.callTool({ name: "getPublicKey", arguments: { name: "deploy-key" }, _meta: forProject("proj-b") }),
+      /どの Vault にもありません/,
+    );
+  });
 });

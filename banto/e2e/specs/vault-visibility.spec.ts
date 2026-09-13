@@ -263,3 +263,56 @@ test("別の Project の秘密は、AI からは名前も見えない", async ()
     });
   }
 });
+
+// **公開鍵は秘密ではない**（追加・2026-09-13、ユーザー指摘「公開鍵は AI に
+// 見せてもいいはず。その口は作らない？」）。相手方に登録するためのものなので、
+// AI が読めないと鍵を作った意味が薄い。**秘密鍵は通らない**ことも同時に見る。
+test("AI は公開鍵を読める——秘密鍵は返らない", async ({ request }) => {
+  const headers = { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" };
+  const alias = `e2e-pubkey-${Date.now()}`;
+
+  await ensureModulesConnected();
+  const made = await fetch(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      server: "vault-directory",
+      tool: "generateSecret",
+      arguments: { implementation: "vault", name: alias, kind: "ssh-identity" },
+    }),
+  });
+  expect(made.status).toBe(200);
+  const publicKey = (JSON.parse(JSON.parse(await made.text()).content[0].text) as { publicKey: string })
+    .publicKey;
+  expect(publicKey).toMatch(/^ssh-ed25519 AAAA/);
+
+  const project = await (
+    await fetch(`${CORE_BASE_URL}/api/projects`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "E2E Public Key", root: mkdtempSync(join(tmpdir(), "banto-e2e-pub-")) }),
+    })
+  ).json();
+  const thread = await (
+    await fetch(`${CORE_BASE_URL}/api/projects/${project.id}/threads`, { method: "POST", headers })
+  ).json();
+
+  const res = await fetch(`${CORE_BASE_URL}/api/threads/${thread.id}/messages`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      prompt: `alias "${alias}" の公開鍵を取得して、そのまま1行で書き出してください。説明は要りません。`,
+    }),
+  });
+  const transcript = await res.text();
+
+  // **本物のターンで読めること**——一覧に載せるだけでは足りない（規則13）
+  expect(transcript, "AI が公開鍵を読めていない").toContain(publicKey.split(" ")[1]!.slice(0, 40));
+  expect(transcript, "秘密鍵が AI に渡っている").not.toContain("PRIVATE KEY");
+
+  await fetch(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ server: "vault-directory", tool: "deleteAlias", arguments: { implementation: "vault", name: alias } }),
+  });
+});

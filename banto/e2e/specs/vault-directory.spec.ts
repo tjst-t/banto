@@ -134,7 +134,7 @@ test("VaultUI の入口から開いた画面が、実 Vault を横断して読�
   expect(pageErrors, `画面側で例外が出た: ${pageErrors.join(" / ")}`).toEqual([]);
 });
 
-test("窓口が AI に見せるのは requestAlias 1本だけ——管理操作は1つも見えない", async () => {
+test("窓口が AI に見せるのは2本だけ——管理操作は1つも見えない", async () => {
   // **窓口になった**（改訂・2026-09-12）。以前は人専用で A 面を持たなかったが、
   // backend が2本になって「AI にはどちらの requestAlias？」が現実の問題になった
   // ので、**A 面は窓口が1本だけ持つ**（backend 側は module へ降格）。
@@ -161,10 +161,12 @@ test("窓口が AI に見せるのは requestAlias 1本だけ——管理操作�
   const client = await connect();
   try {
     const { tools } = await client.listTools();
+    // **公開鍵は秘密ではない**ので AI が読んでよい（追加・2026-09-13）。
+    // 管理操作が混ざっていないことが要点
     expect(
-      tools.map((t) => t.name),
-      "AI に見せる道具が1本だけではない（管理操作か、2本目の入口が漏れている）",
-    ).toEqual(["requestAlias"]);
+      tools.map((t) => t.name).sort(),
+      "AI に見せる道具が想定と違う（管理操作が漏れている可能性）",
+    ).toEqual(["getPublicKey", "requestAlias"]);
 
     // **横断した目録は見える。ただし、どの金庫のものかは見せない**
     // ——見せれば、いつか AI に金庫を選ばせることになる
@@ -263,6 +265,7 @@ test("管理画面：鍵ペアを選ぶと、聞くことが変わって公開�
   const pubkey = canvas.locator("#pubkey-text");
   await expect(pubkey, "公開鍵の画面が出ない").toBeVisible({ timeout: 120_000 });
   expect(await pubkey.inputValue(), "公開鍵の欄が空のまま出ている").toMatch(/^ssh-ed25519 AAAA/);
+  const created = await pubkey.inputValue();
   await canvas.getByRole("button", { name: "閉じる" }).click();
 
   // 一覧に「鍵」として、付けた名前で出る（公開鍵に化けない）
@@ -270,6 +273,18 @@ test("管理画面：鍵ペアを選ぶと、聞くことが変わって公開�
   await expect(row, "登録したのに一覧に出てこない").toBeVisible({ timeout: 60_000 });
   await expect(row).toContainText("SSH 身元");
   await expect(row, "使える範囲が出ていない").toContainText("どこからでも");
+
+  // **あとからでも公開鍵を見られる**（追加・2026-09-13、ユーザー要望）。
+  // 以前は作った直後の1回きりで、閉じたら二度と見られなかった
+  await row.getByRole("button", { name: "公開鍵" }).click();
+  await expect(pubkey, "一覧から公開鍵を開けない").toBeVisible({ timeout: 60_000 });
+  await expect
+    .poll(() => pubkey.inputValue(), { timeout: 30_000, message: "公開鍵が出るまで" })
+    .toBe(created);
+  // コピーの口があること（押せることまで見る——押して例外が出ないこと）
+  await canvas.getByRole("button", { name: "コピーする" }).click();
+  await expect(canvas.locator("#pubkey-error"), "公開鍵の取得でエラーが出ている").toBeHidden();
+  await canvas.getByRole("button", { name: "閉じる" }).click();
 
   // 後片づけ
   await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {

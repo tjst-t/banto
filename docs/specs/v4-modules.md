@@ -236,6 +236,11 @@ tool を AI には一切見せない**こと。AI 向けは「存在を知る」
 host の画面 API 経由で Vault 自身の `admin` tool へ直接渡る**——Runner（AI）は
 この経路に一切登場しないので、A の原則（AI は値を見ない）はそのまま。
 `requestAlias` 自身は**すぐ返る**（人を待って呼び出しを止めない）。
+
+**公開鍵は AI にも見せる**（決定・2026-09-13、ユーザー指摘）。窓口の
+`getPublicKey` は `agent` 可視性——相手方に登録するためのものなので、
+**AI が読めないと鍵を作った意味が薄い**（「この鍵を GitHub に登録して」と
+頼めない）。秘密鍵は通らない。使える範囲の判定は他の口と揃える。
 **入力欄は窓口（`vault-directory`）が1枚だけ持つ**（改訂・2026-09-12）ので、
 URI は `ui://banto-vault-directory/request`。
 
@@ -344,6 +349,7 @@ alias の一覧の在りか（`vault://aliases`）／値ではなく**名前**�
 | `resolveAlias({name})` | → 値（文字列 or バイト列）。**静的保存か動的発行かは Vault 内部の実装詳細**——呼び出し側はどちらでも同じ形で受け取る | 汎用シークレット注入（Shell の alias 方式、アーキ仕様 §2.5）、ファイル内容、動的短命トークン |
 | `startSshAgent({identity})` | → `{socketPath}` のみ。**秘密鍵は返さない** | ssh-agent 経由の git 認証（D5）。**旧名 `hostSshAgent` から改名**（2026-09-02）——「host」はアーキ仕様で core の配線・解決層を指す予約語（§2.5）であり、ここで別の意味（ssh-agentプロセスを起動する）に使うのは規則11（一般的な用語を使う）に反する紛らわしさがあった |
 | `verify({alias, payload, signature})` | → true/false のみ。値は一切返さない | Webhook 署名検証など、値そのものが要らない検証 |
+| `getPublicKey({name})` | → その `ssh-identity` の**公開鍵**（秘密鍵は返らない）。**保存せず、秘密鍵から `ssh-keygen -y` で導く**（規則3） | 相手方（GitHub 等）への登録。**公開鍵は秘密ではない**ので、窓口では `agent` 可視性で AI にも見せる |
 
 > **`generateKeypair` は B から C の `generateSecret` に統合した**（訂正・2026-09-12、
 > ユーザー指摘）。当初は「Repo が新しい identity をセットアップするとき」のために

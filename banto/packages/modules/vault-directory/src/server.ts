@@ -186,6 +186,23 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         // **入力欄は1枚**（窓口が持つ）。どの Vault に入れるかは人が画面で選ぶ
         _meta: { [VISIBILITY_META_KEY]: "agent", ui: { resourceUri: REQUEST_APP_URI } },
       },
+      {
+        // **公開鍵は秘密ではない**（追加・2026-09-13、ユーザー指摘）。
+        // 相手方に登録するためのものなので、AI が読めてよい——むしろ
+        // 「この鍵を GitHub に登録して」と頼めないと、鍵を作った意味が薄い。
+        // **秘密鍵は通らない**（backend が `ssh-keygen -y` で導いて公開鍵だけ返す）
+        name: "getPublicKey",
+        description:
+          "ssh-identity の**公開鍵**を読む（秘密鍵は返らない）。" +
+          "相手方（GitHub の Settings → SSH and GPG keys など）に登録するのに使う。" +
+          "使える alias の一覧は resource `vault://aliases`",
+        inputSchema: {
+          type: "object",
+          properties: { name: { type: "string", description: "alias の名前" } },
+          required: ["name"],
+        },
+        _meta: { [VISIBILITY_META_KEY]: "agent" },
+      },
       // ---- 他の Module 向け（§2.1 B）：**名前 → 在りか。値は返さない** -------
       {
         name: "lookupAlias",
@@ -325,6 +342,19 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
             },
           ],
         };
+      }
+
+      case "getPublicKey": {
+        const name = requiredString(args.name, "name");
+        const { aliases } = await crossAliases();
+        const caller = callerOf(callMeta);
+        const found = aliases.filter((a) => a.name === name && usableBy(a, caller));
+        if (found.length === 0) throw new Error(`alias "${name}" はどの Vault にもありません`);
+        if (found.length > 1) {
+          throw new Error(`alias "${name}" が複数の Vault にあります（名前は instance 全体で一意にしてください）`);
+        }
+        const body = await deps.relay.callTool(found[0]!.implementation, "getPublicKey", { name });
+        return { content: [{ type: "text", text: body }] };
       }
 
       case "lookupAlias": {

@@ -249,6 +249,17 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           "module",
         ),
         tool(
+          "getPublicKey",
+          // **公開鍵は秘密ではない**（追加・2026-09-13、ユーザー指摘）。
+          // 相手方（GitHub 等）に登録するためのものなので、出せないと使えない
+          // ——作った直後の1回しか返しておらず、画面を閉じたら二度と見られなかった。
+          // 値を返さない口として扱う（中継の初回承認を聞かない）：秘密鍵は通らない
+          "その ssh-identity の公開鍵を返す（秘密鍵は返さない）。相手方に登録するのに使う",
+          { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+          "module",
+          { [VALUE_FREE_META_KEY]: true },
+        ),
+        tool(
           "startSshAgent",
           "ssh-agent経由でsocketPathを返す。秘密鍵は返さない",
           { type: "object", properties: { identity: { type: "string" } }, required: ["identity"] },
@@ -465,6 +476,18 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         const value = await backend.getSecret(meta.backendPath);
         await registry.markUsed(name);
         return { content: [{ type: "text", text: String(value) }] };
+      }
+      case "getPublicKey": {
+        const name = requiredString(args.name, "name");
+        const meta = await registry.get(name);
+        if (!meta) throw new Error(`alias "${name}" not found`);
+        if (meta.kind !== "ssh-identity") {
+          throw new Error(`alias "${name}" は ssh-identity ではありません（${meta.kind}）`);
+        }
+        // **公開鍵は秘密ではないが、どの鍵が在るかは使える範囲の話**
+        // ——見える範囲は他の口と同じに揃える（規則3）
+        assertUsable(meta, name, callMeta);
+        return { content: [{ type: "text", text: await backend.publicKeyOf(meta.backendPath) }] };
       }
       case "startSshAgent": {
         const identity = requiredString(args.identity, "identity");

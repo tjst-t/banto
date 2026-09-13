@@ -237,6 +237,21 @@ export class SopsBackend implements VaultBackend {
     }
   }
 
+  async publicKeyOf(privateKeyRef: string): Promise<string> {
+    const privateKey = await this.getSecret(privateKeyRef);
+    // **平文の鍵は 0700 の一時ディレクトリにだけ置き、finally で消す**
+    // （`loadIntoAgent` と同じ形——同じ危険には同じ手当て）
+    const tmpDir = await mkdtemp(join(tmpdir(), "banto-pubkey-"));
+    const keyFile = join(tmpDir, "key");
+    try {
+      await writeFile(keyFile, privateKey, { mode: 0o600 });
+      const { stdout } = await execFileP("ssh-keygen", ["-y", "-f", keyFile]);
+      return stdout.trim();
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  }
+
   /**
    * その鍵を持った ssh-agent の socket を返す。
    *

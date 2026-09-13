@@ -21,6 +21,17 @@ export interface VaultBackend {
    * （backend によっては一度もプロセスに出てこない）。
    */
   generateKeypair(kind: "ssh", path: string): Promise<{ publicKey: string; privateKeyRef: string }>;
+  /**
+   * その鍵ペアの**公開鍵**（追加・2026-09-13、ユーザー指摘）。
+   *
+   * **公開鍵は秘密ではない**——相手方に登録するためのものなので、むしろ
+   * 出せないと使えない。作った直後の1回しか返していなかったので、
+   * 画面を閉じたら二度と見られなかった。
+   *
+   * 秘密鍵からは `ssh-keygen -y` で導ける（規則12——名前のある解を使う）。
+   * **保存しない**（規則3——導出できる値を持たない）。
+   */
+  publicKeyOf(privateKeyRef: string): Promise<string>;
   loadIntoAgent(privateKeyRef: string): Promise<{ socketPath: string }>;
   listGroups(): Promise<string[]>;
   createGroup(name: string): Promise<void>;

@@ -185,12 +185,13 @@ export const MANAGE_APP_HTML = `<!doctype html>
 
 <dialog id="dlg-pubkey">
   <form method="dialog" class="dialog-body">
-    <p class="dialog-title">公開鍵ができました</p>
+    <p class="dialog-title" id="pubkey-title">公開鍵ができました</p>
     <p class="dialog-desc">
       これは<strong>秘密ではありません</strong>。GitHub などの相手方に登録してください。
       対になる秘密鍵は Vault の中にあり、誰も見られません
     </p>
     <textarea id="pubkey-text" rows="3" readonly></textarea>
+    <p class="problem" id="pubkey-error" hidden></p>
     <div class="dialog-footer">
       <button id="pubkey-copy" type="button">コピーする</button>
       <button value="ok">閉じる</button>
@@ -286,6 +287,15 @@ ${ALIAS_KIND_RULES_JS}
     if (res && res.isError) throw new Error(text || (name + " が失敗しました"));
     if (typeof text !== "string") throw new Error(name + " が中身を返しませんでした");
     try { return JSON.parse(text); } catch { throw new Error(name + " の答えを読み取れませんでした: " + text); }
+  }
+
+  /** JSON ではない答え（公開鍵など）をそのまま受け取る。 */
+  async function callToolText(name, args) {
+    const res = await request("tools/call", { name, arguments: args || {} });
+    const text = res && res.content && res.content[0] && res.content[0].text;
+    if (res && res.isError) throw new Error(text || (name + " が失敗しました"));
+    if (typeof text !== "string" || !text) throw new Error(name + " が中身を返しませんでした");
+    return text;
   }
 
   const $ = (id) => document.getElementById(id);
@@ -420,7 +430,20 @@ ${ALIAS_KIND_RULES_JS}
       del.className = "icon danger";
       del.textContent = "削除";
       del.addEventListener("click", () => openDelete(a));
-      actions.append(edit, del);
+      // **公開鍵はいつでも見られる**（追加・2026-09-13、ユーザー指摘）。
+      // 作った直後の1回しか出していなかったので、画面を閉じたら二度と
+      // 見られなかった——相手方に登録するためのものなのに
+      if (a.kind === "ssh-identity") {
+        const pub = document.createElement("button");
+        pub.type = "button";
+        pub.className = "icon";
+        pub.textContent = "公開鍵";
+        pub.title = "公開鍵を表示してコピーする（秘密鍵は出ません）";
+        pub.addEventListener("click", () => openPublicKey(a));
+        actions.append(edit, pub, del);
+      } else {
+        actions.append(edit, del);
+      }
 
       tr.append(
         kindTd,
@@ -532,9 +555,28 @@ ${ALIAS_KIND_RULES_JS}
   $("new-kind").addEventListener("change", applySource);
 
   /** 公開鍵は**秘密ではない**——むしろ出さないと使えない。 */
-  function showPublicKey(publicKey) {
+  function showPublicKey(publicKey, title) {
+    $("pubkey-title").textContent = title || "公開鍵ができました";
     $("pubkey-text").value = publicKey;
+    $("pubkey-error").hidden = true;
     $("dlg-pubkey").showModal();
+  }
+
+  /**
+   * 既にある鍵の公開鍵を読む。**保存していない**ので backend に聞く
+   * （秘密鍵から導かれる。規則3——導出できる値を持たない）。
+   */
+  async function openPublicKey(a) {
+    showPublicKey("", "公開鍵：" + a.name);
+    $("pubkey-text").value = "読み込んでいます…";
+    try {
+      // **返ってこなかったら、そう言う**（規則2——空の箱を出さない）
+      // **名前は instance 全体で一意**なので、どの金庫かは窓口が引く
+      $("pubkey-text").value = await callToolText("getPublicKey", { name: a.name });
+    } catch (err) {
+      $("pubkey-text").value = "";
+      showError($("pubkey-error"), err);
+    }
   }
   $("pubkey-copy").addEventListener("click", () => {
     $("pubkey-text").select();

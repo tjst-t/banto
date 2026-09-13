@@ -20,7 +20,7 @@
 
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -142,6 +142,21 @@ export class InfisicalBackend implements VaultBackend {
     } finally {
       // **平文の鍵をディスクに残さない**
       await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  async publicKeyOf(privateKeyRef: string): Promise<string> {
+    const privateKey = await this.getSecret(privateKeyRef);
+    // **平文の鍵は 0700 の一時ディレクトリにだけ置き、finally で消す**
+    // （`loadIntoAgent` と同じ形——同じ危険には同じ手当て）
+    const tmpDir = await mkdtemp(join(tmpdir(), "banto-pubkey-"));
+    const keyFile = join(tmpDir, "key");
+    try {
+      await writeFile(keyFile, privateKey, { mode: 0o600 });
+      const { stdout } = await execFileP("ssh-keygen", ["-y", "-f", keyFile]);
+      return stdout.trim();
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
     }
   }
 

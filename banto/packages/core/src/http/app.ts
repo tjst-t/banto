@@ -37,7 +37,7 @@ import { listDirectories } from "./directories.js";
 import type { TurnEventBus } from "./turn-events.js";
 import type { RuntimeConfigStore } from "../config/runtime.js";
 import type { ModuleCallTracker } from "../relay/module-calls.js";
-import { visibilityOf } from "@banto/module-contract";
+import { CALLER_META_KEY, visibilityOf } from "@banto/module-contract";
 
 /**
  * Module の画面（MCP Apps）のために host が Module へ問い合わせる分だけ
@@ -47,9 +47,9 @@ import { visibilityOf } from "@banto/module-contract";
 export interface ModuleClientLike {
   listTools(): Promise<{ tools: unknown[] }>;
   listResources(): Promise<{ resources: unknown[] }>;
-  readResource(params: { uri: string }): Promise<{ contents: unknown[] }>;
+  readResource(params: { uri: string; _meta?: Record<string, unknown> }): Promise<{ contents: unknown[] }>;
   callTool(
-    params: { name: string; arguments?: Record<string, unknown> },
+    params: { name: string; arguments?: Record<string, unknown>; _meta?: Record<string, unknown> },
     resultSchema?: undefined,
     options?: { timeout?: number; resetTimeoutOnProgress?: boolean },
   ): Promise<unknown>;
@@ -123,6 +123,20 @@ export interface AppDeps {
   /** Runner の差し替え口（試験用）。`runThreadTurn` がそのまま受け取る。 */
   runTurn?: Parameters<typeof runThreadTurn>[0]["runTurn"];
 }
+
+/**
+ * **人が画面から直接触っている**ことの刻印（追加・2026-09-13）。
+ *
+ * 中継（`host-relay-endpoint`）と AI の代理（`agent-proxy`）は刻んでいたのに、
+ * **画面 API だけ刻んでいなかった**——この経路は host が Module と直接話すので
+ * 中継を通らない。刻まないと、受け手（Vault）は「誰のための呼び出しか
+ * 分からない」として fail closed で止まる：実際、管理画面から公開鍵を
+ * 読もうとして「どの Vault にもありません」になった。
+ *
+ * **Project ではなく `admin`**——人の管理面は Project を跨いで見える（`unbound`
+ * のものも直せる必要がある）。
+ */
+const HUMAN_ADMIN_CALLER = { [CALLER_META_KEY]: { admin: true } };
 
 /**
  * **画面から呼んでよい tool か**を host 自身が検査する（決定・2026-09-10、
@@ -366,7 +380,8 @@ async function readUiResource(
   }
   let contents: unknown[];
   try {
-    ({ contents } = await found.client.readResource({ uri }));
+    // 画面の HTML も、人が開いたものとして刻む（経路ごとに刻み方を変えない）
+    ({ contents } = await found.client.readResource({ uri, _meta: HUMAN_ADMIN_CALLER }));
   } catch {
     return { status: 404, body: { error: "unknown ui resource", uri } };
   }
@@ -1005,7 +1020,7 @@ export function createApp(deps: AppDeps) {
             res,
             200,
             await found.client.callTool(
-              { name: body.tool, arguments: toolArguments(body.arguments) },
+              { name: body.tool, arguments: toolArguments(body.arguments), _meta: HUMAN_ADMIN_CALLER },
               undefined,
               UI_CALL_OPTIONS,
             ),
@@ -1085,7 +1100,7 @@ export function createApp(deps: AppDeps) {
             res,
             200,
             await found.client.callTool(
-              { name: body.tool, arguments: toolArguments(body.arguments) },
+              { name: body.tool, arguments: toolArguments(body.arguments), _meta: HUMAN_ADMIN_CALLER },
               undefined,
               UI_CALL_OPTIONS,
             ),
@@ -1140,7 +1155,7 @@ export function createApp(deps: AppDeps) {
             res,
             200,
             await found.client.callTool(
-              { name: body.tool, arguments: toolArguments(body.arguments) },
+              { name: body.tool, arguments: toolArguments(body.arguments), _meta: HUMAN_ADMIN_CALLER },
               undefined,
               UI_CALL_OPTIONS,
             ),

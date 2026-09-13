@@ -27,7 +27,7 @@ import { createApp, type ModuleClientLike } from "./app.js";
 
 /** 実際に呼ばれたかを数える偽 Module。**呼ばれていないこと**も見たいので数える。 */
 class FakeModule implements ModuleClientLike {
-  calls: Array<{ name: string; arguments?: Record<string, unknown> }> = [];
+  calls: Array<{ name: string; arguments?: Record<string, unknown>; _meta?: Record<string, unknown> }> = [];
   /** tool を実行している**最中**に外から覗くための穴（中継の承認はここで起きる）。 */
   onCall?: () => void;
 
@@ -211,7 +211,11 @@ test("**画面が自分の Module を呼ぶときは、承認を求めない**�
     });
 
     assert.equal(res.status, 200);
-    assert.deepEqual(module.calls, [{ name: "listDirectory", arguments: { path: "." } }]);
+    assert.deepEqual(module.calls, [
+      // **人が画面から触っていることを host が刻む**（追加・2026-09-13）
+      // ——刻まないと、受け手は「誰のための呼び出しか分からない」で止まる
+      { name: "listDirectory", arguments: { path: "." }, _meta: { "dev.banto/caller": { admin: true } } },
+    ]);
     // **人を待たせない**——判断待ちも立たない
     assert.deepEqual(inbox.listOpen(), []);
   });
@@ -260,7 +264,9 @@ test("人の管理操作（admin 可視性）は画面から呼べる——全�
       body: JSON.stringify({ server: "filesystem", tool: "createAlias", arguments: { name: "x" } }),
     });
     assert.equal(res.status, 200);
-    assert.deepEqual(module.calls, [{ name: "createAlias", arguments: { name: "x" } }]);
+    assert.deepEqual(module.calls, [
+      { name: "createAlias", arguments: { name: "x" }, _meta: { "dev.banto/caller": { admin: true } } },
+    ]);
   });
 });
 
@@ -366,6 +372,11 @@ test("instance の Canvas からの呼び出しは、会話は決まらないが
     });
     assert.equal(res.status, 200);
     assert.equal(seenOrigin, "canvas", "instance の画面からの呼び出しが台帳に載っていない");
+    // **人が画面から触っていることを刻む**（追加・2026-09-13）。中継と AI の
+    // 代理には刻んでいたのに**この経路だけ抜けていた**——host が Module と
+    // 直接話すので中継を通らない。抜けたせいで、管理画面から公開鍵を読もうと
+    // して「どの Vault にもありません」になった（受け手は fail closed で正しい）
+    assert.deepEqual(module.calls.at(-1)?._meta, { "dev.banto/caller": { admin: true } });
     // **会話は決まらない**——admin なら承認を聞かずに通り、module なら
     // 「決められないから通さない」で止まる、という正直な状態
     assert.deepEqual(seenThread, { kind: "none" });

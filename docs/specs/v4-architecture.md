@@ -997,8 +997,13 @@ fail closed で止まる**（実際にそうなった。詳細は
 
 中継のたびに `_meta["dev.banto/caller"]` を付ける——`{project: "<id>"}` か
 `{admin: true}`（人が管理画面から触っている）。**Module に自己申告させない**
-（申告なら詐称できる）。刻む場所は4つだけ：AI の代理（`agent-proxy`）の
-tool 呼び出しと resource 読み取り、Module 間中継（`host-relay-endpoint`）の同じ2つ。
+（申告なら詐称できる）。刻む場所は**3経路**：AI の代理（`agent-proxy`）、Module 間中継
+（`host-relay-endpoint`）、**画面 API（`/api/…/ui-tool-call`）**。
+最後のひとつは host が Module と**直接**話すので中継を通らない——
+**ここを忘れると、人が管理画面から触れなくなる**（実際、公開鍵を読もうとして
+「どの Vault にもありません」になった。受け手の fail closed は正しい挙動）。
+画面からの呼び出しは `{admin: true}`——Project ではない（人の管理面は
+Project を跨いで見える必要がある）。
 
 - **どの Project のターンかは host が Runner へ渡している**（`x-banto-project-id`）
   ——Thread と同じ形で、推測しない

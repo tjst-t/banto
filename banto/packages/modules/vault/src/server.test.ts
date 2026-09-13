@@ -692,3 +692,39 @@ test("鍵ペアも、言われたグループに入る（backend が置き場を
     );
   });
 });
+
+// **公開鍵は秘密ではない**（追加・2026-09-13、ユーザー指摘）。
+// 以前は `generateSecret` の戻りに1回出るだけで、**画面を閉じたら二度と
+// 見られなかった**——相手方（GitHub 等）に登録するためのものなのに。
+// 保存はしない：秘密鍵から `ssh-keygen -y` で導く（規則3・規則12）。
+test("公開鍵は、作ったあとでも何度でも読める（秘密鍵は返らない）", async () => {
+  await withServer(async ({ client }) => {
+    const made = JSON.parse(
+      textOf(
+        await client.callTool({
+          name: "generateSecret",
+          arguments: { name: "gh-key", kind: "ssh-identity", forProject: "proj-a" },
+        }),
+      ),
+    ) as { publicKey: string };
+
+    const again = textOf(
+      await client.callTool({ name: "getPublicKey", arguments: { name: "gh-key" }, _meta: forProject("proj-a") }),
+    );
+    assert.equal(again, made.publicKey, "作った直後と、あとから読んだ公開鍵が違う");
+    assert.match(again, /^ssh-ed25519 AAAA/);
+    assert.equal(again.includes("PRIVATE KEY"), false, "秘密鍵が返っている");
+
+    // 使える範囲は他の口と揃っている
+    await assert.rejects(
+      () => client.callTool({ name: "getPublicKey", arguments: { name: "gh-key" }, _meta: forProject("proj-b") }),
+      /この Project からは使えません/,
+    );
+    // 鍵でないものには使えない（黙って何か返さない）
+    await client.callTool({ name: "createAlias", arguments: { name: "plain", kind: "secret", value: "v" } });
+    await assert.rejects(
+      () => client.callTool({ name: "getPublicKey", arguments: { name: "plain" } }),
+      /ssh-identity ではありません/,
+    );
+  });
+});
