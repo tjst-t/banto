@@ -22,6 +22,8 @@ export function requestAppUri(moduleName: string): string {
   return `ui://banto-${moduleName.replace(/^banto-/, "")}/request`;
 }
 
+import { ALIAS_KIND_RULES_JS } from "./kind-rules.js";
+
 export const REQUEST_APP_HTML = `<!doctype html>
 <html lang="ja">
 <head>
@@ -131,6 +133,7 @@ export const REQUEST_APP_HTML = `<!doctype html>
 </div>
 
 <script>
+${ALIAS_KIND_RULES_JS}
 (() => {
   // --- MCP Apps の約束ごと（postMessage の JSON-RPC）だけを使う -------------
   let nextId = 1;
@@ -163,37 +166,10 @@ export const REQUEST_APP_HTML = `<!doctype html>
     });
   }
 
-  // **種類ごとの違いは、この表1枚に集める**（整理・2026-09-13、ユーザー指摘
-  // 「Secret なのか SSH 鍵ペアなのかで選べるものは変わるべきなのに変わらない」）。
-  // 以前は if (kind === …) が3箇所に散っていて、増やすたびに揃わなくなっていた。
-  const KINDS = {
-    secret: {
-      canGenerate: true,        // 乱数で作れる
-      valueLabel: "値",
-      multiline: false,
-      strength: true,           // 長さ・形式を選ぶのは、乱数のときだけ意味がある
-      note: null,
-      typedHint: "打った値は AI には渡りません",
-    },
-    "ssh-identity": {
-      canGenerate: true,
-      valueLabel: "秘密鍵（-----BEGIN OPENSSH PRIVATE KEY----- から）",
-      multiline: true,          // 1行に入らない
-      strength: false,          // **鍵の強さは鍵の種類が決める**——選ばせない
-      note: "SSH の鍵ペア（ed25519）を Vault の中で作ります。秘密鍵は誰も見ません。"
-        + "作ったあとに出る公開鍵を、GitHub などに登録してください",
-      typedHint: "持っている秘密鍵を貼るか、新しく作らせます（AI には渡りません）",
-    },
-    file: {
-      canGenerate: false,       // **ファイルの中身はランダムに作れない**
-      valueLabel: "ファイルの中身",
-      multiline: true,
-      strength: false,
-      note: null,
-      typedHint: "貼った中身は AI には渡りません",
-    },
-  };
-  const spec = () => KINDS[asked.kind] || KINDS.secret;
+  // **種別ごとの違いは1枚の表で決まる**（kind-rules.ts）。以前はここに
+  // 直書きしていたので、**管理画面（もう1枚の登録画面）と食い違った**
+  // ——入力欄では直したのに、管理画面には「作る強さ」が出たまま（規則3）
+  const spec = () => kindRule(asked.kind);
 
   function applyAsked() {
     const k = spec();

@@ -218,3 +218,62 @@ test("窓口が AI に見せるのは requestAlias 1本だけ——管理操作�
     await client.close();
   }
 });
+
+// **管理画面でも、種別で聞くことが変わる**（回帰・2026-09-13、ユーザー報告
+// 「fullscreen の Vault 管理画面で作ろうとすると、ssh key pair なのに
+// うまく選択肢が出てない」）。会話の中の入力欄では直したのに、**同じ規則を
+// 2箇所に書いていたのでこちらは直っていなかった**（規則3）。
+test("管理画面：鍵ペアを選ぶと、聞くことが変わって公開鍵まで出る", async ({ page }) => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-vd-key-"));
+  const name = `e2e-mgr-key-${Date.now()}`;
+  await openApp(page);
+  await createProject(page, "E2E Vault 管理の鍵", projectRoot);
+  await page.getByRole("button", { name: "検索（Command Palette）" }).click();
+  await page.getByRole("option", { name: /Vault を管理/ }).click();
+  await expect(page.getByText(/^Canvas — vault-directory$/)).toBeVisible({ timeout: 60_000 });
+  const canvas = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  await expect(canvas.getByText("接続している実装")).toBeVisible({ timeout: 60_000 });
+
+  await canvas.getByRole("button", { name: "＋ alias を新規登録" }).click();
+  await canvas.locator("#new-name").fill(name);
+
+  // 汎用シークレットのうちは、1行の欄で「作る強さ」を聞く
+  await canvas.locator("#new-kind").selectOption("secret");
+  await canvas.locator("#new-source").selectOption("generated");
+  await expect(canvas.locator("#new-generate-field")).toBeVisible();
+  await expect(canvas.locator("#new-value-field"), "作らせるのに値を聞いている").toBeHidden();
+
+  // **鍵ペアにすると「作る強さ」が消える**——鍵の強さは鍵の種類が決める
+  await canvas.locator("#new-kind").selectOption("ssh-identity");
+  await expect(
+    canvas.locator("#new-generate-field"),
+    "鍵ペアなのに「作る強さ（バイト数）」を聞いている",
+  ).toBeHidden();
+  await expect(canvas.locator("#new-ssh-note")).toBeVisible();
+
+  // 貼る側に戻すと、秘密鍵は**複数行**の欄で受ける
+  await canvas.locator("#new-source").selectOption("typed");
+  await expect(canvas.locator("#new-value-multiline"), "秘密鍵を1行の欄で受けようとしている").toBeVisible();
+  await expect(canvas.locator("#new-value")).toBeHidden();
+
+  // 作る → 公開鍵が出る
+  await canvas.locator("#new-source").selectOption("generated");
+  await canvas.locator("#new-scope").selectOption({ label: "どの Project からでも" });
+  await canvas.getByRole("button", { name: "登録する" }).click();
+  const pubkey = canvas.locator("#pubkey-text");
+  await expect(pubkey, "公開鍵の画面が出ない").toBeVisible({ timeout: 120_000 });
+  expect(await pubkey.inputValue(), "公開鍵の欄が空のまま出ている").toMatch(/^ssh-ed25519 AAAA/);
+  await canvas.getByRole("button", { name: "閉じる" }).click();
+
+  // 一覧に「鍵」として、付けた名前で出る（公開鍵に化けない）
+  const row = canvas.locator("tbody tr").filter({ hasText: name });
+  await expect(row, "登録したのに一覧に出てこない").toBeVisible({ timeout: 60_000 });
+  await expect(row).toContainText("SSH 身元");
+  await expect(row, "使える範囲が出ていない").toContainText("どこからでも");
+
+  // 後片づけ
+  await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    data: { server: "vault-directory", tool: "deleteAlias", arguments: { name } },
+  });
+});

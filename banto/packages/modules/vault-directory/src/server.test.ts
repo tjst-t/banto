@@ -11,6 +11,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createVaultServer } from "@banto/module-vault";
 import { createVaultDirectoryServer } from "./server.js";
+import { MANAGE_APP_HTML } from "./manage-app.js";
 import { MANAGE_APP_URI } from "./manage-app.js";
 import type { RelayLike } from "./relay-client.js";
 
@@ -424,5 +425,20 @@ test("共通グループは窓口から選べる——backend ごとに決まる
       assert.equal(other.bindings.shared, "instance");
     },
     { vaultNames: ["vault", "vault-keychain"] },
+  );
+});
+
+// **登録画面は2枚ある**（会話の中の入力欄と、この管理 Canvas）。同じ規則を
+// 2箇所に書いていたせいで片方だけ直り、**管理画面では鍵ペアなのに「作る強さ」が
+// 出たまま**だった（2026-09-13、ユーザー報告）。規則は `@banto/vault-kit` の
+// 1枚に集めたので、こちらも**それを使っていること**を押さえる（規則3）。
+test("管理画面も、種別ごとの規則を共有の表から引いている", () => {
+  assert.ok(MANAGE_APP_HTML.includes("const ALIAS_KIND_RULES ="), "共有の表が埋め込まれていない");
+  assert.ok(MANAGE_APP_HTML.includes("kindRule("), "表を使っていない（直書きに戻っている）");
+  assert.ok(MANAGE_APP_HTML.includes("generatableKinds("), "作れる種別を直書きしている");
+  // **CSS が hidden を殺していないこと**——これが元の不具合そのもの
+  assert.ok(
+    MANAGE_APP_HTML.includes("[hidden] { display: none !important; }"),
+    "[hidden] を効かせる規則が無い（.field の display に負けて何も隠れない）",
   );
 });

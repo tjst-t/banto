@@ -14,6 +14,8 @@
 export const UI_APP_MIME = "text/html;profile=mcp-app";
 export const MANAGE_APP_URI = "ui://banto-vault-directory/manage";
 
+import { ALIAS_KIND_RULES_JS } from "@banto/vault-kit";
+
 export const MANAGE_APP_HTML = `<!doctype html>
 <html lang="ja">
 <head>
@@ -72,6 +74,11 @@ export const MANAGE_APP_HTML = `<!doctype html>
   .dialog-body { padding: 16px; display: grid; gap: 10px; }
   .dialog-title { font-size: 13px; font-weight: 600; margin: 0; }
   .dialog-desc { font-size: 12px; opacity: .65; margin: 0; }
+  /* **hidden を効かせる**（訂正・2026-09-13、ユーザー指摘）。[hidden] の
+     display:none はブラウザ既定なので、.field { display: grid } のほうが強い
+     ——JS で hidden を立てても何も隠れず、鍵ペアなのに「作る強さ」が出ていた。
+     会話の中の入力欄でも同じことが起きていた（同じ形の画面が2枚ある） */
+  [hidden] { display: none !important; }
   .field { display: grid; gap: 4px; }
   .field > span { font-size: 11px; opacity: .65; }
   .dialog-footer { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
@@ -146,7 +153,12 @@ export const MANAGE_APP_HTML = `<!doctype html>
       <option value="typed">自分で入力する</option>
       <option value="generated">Vault の中でランダムに作る（値は誰も見ない）</option>
     </select></label>
-    <label class="field" id="new-value-field"><span>値</span><input id="new-value" type="password" autocomplete="off" /></label>
+    <label class="field" id="new-value-field"><span id="new-value-label">値</span>
+      <input id="new-value" type="password" autocomplete="off" />
+      <!-- **秘密鍵とファイルは1行に入らない**（訂正・2026-09-13） -->
+      <textarea id="new-value-multiline" rows="4" autocomplete="off" spellcheck="false" hidden
+        placeholder="-----BEGIN OPENSSH PRIVATE KEY----- から -----END ... ----- まで"></textarea>
+    </label>
     <div class="field" id="new-generate-field" hidden>
       <span>作る強さ</span>
       <div class="row">
@@ -245,6 +257,7 @@ export const MANAGE_APP_HTML = `<!doctype html>
 </dialog>
 
 <script>
+${ALIAS_KIND_RULES_JS}
 (() => {
   // --- MCP Apps の約束ごと（postMessage の JSON-RPC）だけを使う -------------
   let nextId = 1;
@@ -495,15 +508,25 @@ export const MANAGE_APP_HTML = `<!doctype html>
    */
   function applySource() {
     const generated = $("new-source").value === "generated";
-    const kinds = generated ? ["secret", "ssh-identity"] : Object.keys(KIND_LABEL);
+    // 作れる種別だけに絞る（選べない道を選択肢に残さない——規則13）
+    const kinds = generated ? generatableKinds() : Object.keys(KIND_LABEL);
     const was = $("new-kind").value;
     $("new-kind").replaceChildren(...kinds.map((k) => option(k, KIND_LABEL[k])));
     $("new-kind").value = kinds.includes(was) ? was : kinds[0];
 
-    const ssh = generated && $("new-kind").value === "ssh-identity";
+    // **何を聞くかは種別が決める**——規則は kind-rules.ts の1枚だけ（規則3）
+    const rule = kindRule($("new-kind").value);
+    $("new-value-label").textContent = rule.valueLabel;
     $("new-value-field").hidden = generated;
-    $("new-generate-field").hidden = !generated || ssh;  // 鍵の強さは鍵の種類が決める
-    $("new-ssh-note").hidden = !ssh;
+    $("new-value").hidden = rule.multiline;
+    $("new-value-multiline").hidden = !rule.multiline;
+    $("new-generate-field").hidden = !generated || !rule.strength;
+    $("new-ssh-note").textContent = rule.note || "";
+    $("new-ssh-note").hidden = !generated || !rule.note;
+  }
+  /** いま使っている値の入力欄（種別で1行か複数行かが変わる）。 */
+  function newValueInput() {
+    return kindRule($("new-kind").value).multiline ? $("new-value-multiline") : $("new-value");
   }
   $("new-source").addEventListener("change", applySource);
   $("new-kind").addEventListener("change", applySource);
@@ -537,13 +560,20 @@ export const MANAGE_APP_HTML = `<!doctype html>
           ? {}
           : { format: $("new-format").value, bytes: Number($("new-bytes").value) }),
       });
-      if (result && result.publicKey) showPublicKey(result.publicKey);
+      if (kindRule(kind).returnsPublicKey) {
+        // **返らなかったら、そう言う**（規則2——黙ると「作れたのか壊れたのか」
+        // が分からない。会話の中の入力欄では空の箱が出ていた）
+        if (!result || !result.publicKey) throw new Error("鍵は登録できましたが、公開鍵が返ってきませんでした");
+        showPublicKey(result.publicKey);
+      }
       return;
     }
-    if (!$("new-value").value) throw new Error("値を入力してください");
-    await callTool("createAlias", { ...common, kind: $("new-kind").value, value: $("new-value").value });
+    const input = newValueInput();
+    if (!input.value) throw new Error(kindRule($("new-kind").value).valueLabel + "を入力してください");
+    await callTool("createAlias", { ...common, kind: $("new-kind").value, value: input.value });
     // **値を画面に残さない**——閉じたあとの DOM にも置かない
     $("new-value").value = "";
+    $("new-value-multiline").value = "";
   });
 
   // 用途を書き直す
