@@ -108,7 +108,7 @@ export const MANAGE_APP_HTML = `<!doctype html>
   </div>
 
   <div class="row" style="margin-bottom:8px">
-    <input id="query" placeholder="名前・種別・対象・backend・note を横断して検索" style="flex:1 1 14em; min-width:12em" />
+    <input id="query" placeholder="名前・種別・範囲・backend・note を横断して検索" style="flex:1 1 14em; min-width:12em" />
     <select id="kind-filter" style="width:auto"></select>
     <select id="target-filter" style="width:auto"></select>
     <select id="backend-filter" style="width:auto"></select>
@@ -119,7 +119,7 @@ export const MANAGE_APP_HTML = `<!doctype html>
       <tr>
         <th style="width:8em">種別</th>
         <th>名前</th>
-        <th style="width:10em">対象</th>
+        <th style="width:12em">使える範囲</th>
         <th style="width:9em">backend</th>
         <th>用途（note）</th>
         <th style="width:9em">最終使用</th>
@@ -141,7 +141,7 @@ export const MANAGE_APP_HTML = `<!doctype html>
     <label class="field"><span>backend</span><select id="new-impl"></select></label>
     <label class="field"><span>名前</span><input id="new-name" placeholder="github-token" required /></label>
     <label class="field"><span>種別</span><select id="new-kind"></select></label>
-    <label class="field"><span>対象</span><select id="new-scope"></select></label>
+    <label class="field"><span>どこから使えるようにするか</span><select id="new-scope"></select></label>
     <label class="field"><span>値の決め方</span><select id="new-source">
       <option value="typed">自分で入力する</option>
       <option value="generated">Vault の中でランダムに作る（値は誰も見ない）</option>
@@ -216,10 +216,18 @@ export const MANAGE_APP_HTML = `<!doctype html>
 
 <dialog id="dlg-groups">
   <form method="dialog" class="dialog-body">
-    <p class="dialog-title">Project ↔ グループの紐付け</p>
+    <p class="dialog-title">グループの紐付け</p>
     <p class="dialog-desc" id="groups-target"></p>
     <div class="field"><span>いまあるグループ</span><div id="groups-list" class="row"></div></div>
     <label class="field"><span>この Project が使うグループ</span><select id="group-bind"></select></label>
+    <!-- **共通グループも選ぶ**（追加・2026-09-13、ユーザー指摘）。以前は
+         "instance" の決め打ちで、ここだけ紐付けが無かった——同じ backend を
+         指した2台目の banto が現れると、人が何も割り当てていないのに
+         共通の秘密が共有されていた -->
+    <label class="field">
+      <span>どの Project からでも使うグループ（共通）</span>
+      <select id="group-shared"></select>
+    </label>
     <div class="row">
       <input id="group-new" placeholder="新しいグループの名前" style="flex:1" />
       <button id="group-create" type="button">作る</button>
@@ -277,10 +285,16 @@ export const MANAGE_APP_HTML = `<!doctype html>
   let failures = [];           // 読めなかった backend
 
   function targetOf(a) {
-    if (a.scope === "instance") return { key: "instance", label: "instance 全体" };
-    if (!a.projectId) return { key: "unknown", label: "(Project 不明)" };
-    if (project && a.projectId === project.id) return { key: a.projectId, label: project.name };
-    return { key: a.projectId, label: "別の Project（" + a.projectId.slice(0, 8) + "）" };
+    // **使える範囲は backend が置き場から導いて返す**（改訂・2026-09-13）
+    // ——画面で計算し直さない（規則3）
+    if (a.scope === "shared") return { key: "shared", label: "どこからでも" };
+    if (a.scope === "unbound") return { key: "unbound", label: "どこにも紐付いていない" };
+    const ids = a.projects || [];
+    if (project && ids.indexOf(project.id) >= 0) {
+      return { key: project.id, label: ids.length > 1 ? project.name + " ほか" : project.name };
+    }
+    if (ids.length === 0) return { key: "unbound", label: "どこにも紐付いていない" };
+    return { key: ids[0], label: "別の Project（" + String(ids[0]).slice(0, 8) + "）" };
   }
 
   function matchesFilters(a) {
@@ -310,7 +324,7 @@ export const MANAGE_APP_HTML = `<!doctype html>
       ...Object.keys(KIND_LABEL).map((k) => option(k, KIND_LABEL[k])));
     const targets = new Map();
     for (const a of aliases) { const t = targetOf(a); targets.set(t.key, t.label); }
-    target.replaceChildren(option("all", "対象：すべて"),
+    target.replaceChildren(option("all", "使える範囲：すべて"),
       ...Array.from(targets, ([k, l]) => option(k, l)));
     backend.replaceChildren(option("all", "backend：すべて"),
       ...implementations.map((i) => option(i, i)));
@@ -460,10 +474,10 @@ export const MANAGE_APP_HTML = `<!doctype html>
     $("new-error").hidden = true;
     $("new-impl").replaceChildren(...implementations.map((i) => option(i, i)));
     $("new-kind").replaceChildren(...Object.keys(KIND_LABEL).map((k) => option(k, KIND_LABEL[k])));
-    const scopes = [option("instance", "instance 全体")];
+    const scopes = [option("instance", "どの Project からでも")];
     // **この Project を指せるのは、host がどこで開かれたか渡してくれたときだけ**
     // ——人に UUID を打たせない
-    if (project) scopes.push(option("project", project.name));
+    if (project) scopes.unshift(option("project", "この Project（" + project.name + "）だけ"));
     $("new-scope").replaceChildren(...scopes);
     $("new-name").value = "";
     $("new-value").value = "";
@@ -505,12 +519,11 @@ export const MANAGE_APP_HTML = `<!doctype html>
   });
 
   onSubmit($("dlg-new"), $("new-submit"), $("new-error"), async () => {
-    const scope = $("new-scope").value;
+    const placement = $("new-scope").value;
     const common = {
       implementation: $("new-impl").value,
       name: $("new-name").value.trim(),
-      scope,
-      projectId: scope === "project" && project ? project.id : undefined,
+      forProject: placement === "project" && project ? project.id : undefined,
       note: $("new-note").value.trim() || undefined,
     };
     if ($("new-source").value === "generated") {
@@ -576,11 +589,14 @@ export const MANAGE_APP_HTML = `<!doctype html>
   async function refreshGroups() {
     try {
       const { groups, bindings } = await callTool("listGroups", { implementation: groupsTarget });
+      const bound = bindings.projects || [];
       $("groups-list").replaceChildren(...groups.map((g) => {
         const chip = document.createElement("span");
         chip.className = "chip";
-        const bound = bindings.filter((b) => b.group === g);
-        chip.textContent = bound.length ? g + "（" + bound.length + " Project）" : g;
+        const n = bound.filter((b) => b.group === g).length;
+        // **共通グループも印を付ける**——どれが「どこからでも使える」のかは
+        // 画面で見えないと選べない（以前は決め打ちで、選ぶ口すら無かった）
+        chip.textContent = g === bindings.shared ? g + "（共通）" : n ? g + "（" + n + " Project）" : g;
         return chip;
       }));
       if (groups.length === 0) {
@@ -589,10 +605,14 @@ export const MANAGE_APP_HTML = `<!doctype html>
         none.textContent = "まだグループがありません";
         $("groups-list").replaceChildren(none);
       }
-      const current = project ? (bindings.find((b) => b.projectId === project.id) || {}).group : undefined;
+      const current = project ? (bound.find((b) => b.projectId === project.id) || {}).group : undefined;
       $("group-bind").replaceChildren(...groups.map((g) => option(g, g)));
       $("group-bind").disabled = !project || groups.length === 0;
       if (current) $("group-bind").value = current;
+      // **共通グループも選べる**（追加・2026-09-13）
+      $("group-shared").replaceChildren(...groups.map((g) => option(g, g)));
+      $("group-shared").disabled = groups.length === 0;
+      if (bindings.shared) $("group-shared").value = bindings.shared;
     } catch (err) {
       showError($("groups-error"), err);
     }
@@ -608,12 +628,17 @@ export const MANAGE_APP_HTML = `<!doctype html>
     }
   });
   onSubmit($("dlg-groups"), $("groups-submit"), $("groups-error"), async () => {
-    if (!project) throw new Error("この画面は Project の上で開かれていないので、紐付ける相手が決まりません");
+    // 共通グループだけなら、Project の上で開かれていなくても決められる
+    if (!project) {
+      await callTool("setSharedGroup", { implementation: groupsTarget, group: $("group-shared").value });
+      return;
+    }
     await callTool("setGroupBinding", {
       implementation: groupsTarget,
       projectId: project.id,
       group: $("group-bind").value,
     });
+    await callTool("setSharedGroup", { implementation: groupsTarget, group: $("group-shared").value });
   });
 
   for (const id of ["query", "kind-filter", "target-filter", "backend-filter"]) {

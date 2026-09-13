@@ -19,15 +19,18 @@ import type { AliasKind } from "./backend.js";
 export interface AliasMeta {
   name: string;
   kind: AliasKind;
-  scope: "instance" | "project";
   /**
-   * `scope: "project"` のとき、**どの Project のものか**（追加・2026-09-12）。
+   * **`scope` / `projectId` は持たない**（訂正・2026-09-13、ユーザー指摘）。
    *
-   * 以前は scope だけを持っていたので、「Project のもの」とは言えても
-   * **どの Project かが分からなかった**——横断管理の画面（VaultUI）は
-   * 対象で絞り込めず、backend のグループも決められない。
+   * 「誰が使えるか」を**2箇所**に持っていた——alias の `scope` と、実際に
+   * 置かれているグループ（`backendPath`）。すでに食い違っていた：
+   * `generateKeypair` は `scope` を無視して `ssh-identities` に置くので、
+   * `scope: "instance"` の鍵が共通グループに居ない。
+   *
+   * **グループが唯一の真実**（規則3）。`scope` は `group-bindings` から
+   * 導出する（`scopeOf`）——共通グループなら「どこからでも」、Project に
+   * 紐付いたグループならその Project、どちらでもなければ「誰も使えない」。
    */
-  projectId?: string;
   note?: string;
   /** backend内のパス（"group/key"）。値そのものではない。 */
   backendPath: string;

@@ -13,7 +13,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { isValueFree, visibilityOf, type BantoModuleMeta, type Visibility } from "@banto/module-contract";
+import { CALLER_META_KEY, isValueFree, visibilityOf, type BantoModuleMeta, type Visibility } from "@banto/module-contract";
 import type { RelayApprovalGate } from "./approval-gate.js";
 
 export interface CallerIdentity {
@@ -143,7 +143,13 @@ export interface HostRelayServerOptions {
   moduleCalls?: {
     originFor(connName: string): "turn" | "canvas" | undefined;
     threadFor(connName: string): { kind: "thread"; threadId: string } | { kind: string };
-    begin(connName: string, threadId: string | undefined, origin: "turn" | "canvas"): () => void;
+    projectFor(connName: string): string | undefined;
+    begin(
+      connName: string,
+      threadId: string | undefined,
+      origin: "turn" | "canvas",
+      projectId?: string,
+    ): () => void;
   };
   /** 記録（メタデータだけ）。成否も含め、拒否された呼び出しも渡ってくる。 */
   onAudit?(record: RelayAuditRecord): void | Promise<void>;
@@ -315,11 +321,27 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
     // 同じターン（同じ会話・同じ出所）の仕事として扱われる
     const callerConn = identity.connName ?? identity.moduleName;
     const callerThread = opts.moduleCalls?.threadFor(callerConn);
+    // **呼び出し元の Project**（追加・2026-09-13）。Project 単位で起きた Module
+    // （Shell）は自分の身元に持っている。instance 単位の Module（窓口）は
+    // 持たないので、**外側から継ぐ**——Thread と同じ形（推測しない、規則3）
+    const callerProject = identity.projectId ?? opts.moduleCalls?.projectFor(callerConn);
     const endTargetCall = opts.moduleCalls?.begin(
       targetModule,
       callerThread?.kind === "thread" ? (callerThread as { threadId: string }).threadId : undefined,
       origin ?? "turn",
+      callerProject,
     );
+
+    /**
+     * **誰のための呼び出しかを host が刻む**（決定・2026-09-13）。
+     * 人が管理画面から触っているとき（canvas 由来）は `admin`——Project では
+     * ないが、**「決められない」でもない**。刻まないと受け手が止まる。
+     */
+    const callerMeta: Record<string, unknown> = callerProject
+      ? { [CALLER_META_KEY]: { project: callerProject } }
+      : origin === "canvas"
+        ? { [CALLER_META_KEY]: { admin: true } }
+        : {};
 
     try {
       if (request.params.name === "relayCallTool") {
@@ -328,13 +350,14 @@ function buildRelayServer(identity: CallerIdentity, opts: HostRelayServerOptions
         const result = await target.client.callTool({
           name,
           arguments: (args.arguments as Record<string, unknown>) ?? {},
+          _meta: callerMeta,
         });
         await audit(true, decision.reason, true);
         return result as { content: unknown[] };
       }
 
       if (request.params.name === "relayReadResource") {
-        const result = await target.client.readResource({ uri: name });
+        const result = await target.client.readResource({ uri: name, _meta: callerMeta });
         await audit(true, decision.reason, true);
         return { content: [{ type: "text", text: JSON.stringify(result) }] };
       }

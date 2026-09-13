@@ -15,6 +15,16 @@ import { createVaultServer } from "./server.js";
 
 type TextContent = { text: string }[];
 
+/**
+ * **host が刻む「誰のための呼び出しか」**（決定・2026-09-13）。
+ *
+ * 実運用では host が `_meta` に付ける。この試験の既定は「人が管理画面から
+ * 触っている」（`admin`）——C 節の道具を見る試験がほとんどだから。
+ * Project からの見え方は、下のほうで `stamp` を明示して確かめる。
+ */
+const ADMIN = { "dev.banto/caller": { admin: true } } as const;
+const forProject = (project: string) => ({ "dev.banto/caller": { project } });
+
 /** 人の代わりに Elicitation へ答える係。`answer` を差し替えて使う。 */
 interface Harness {
   client: Client;
@@ -30,6 +40,14 @@ async function withServer(fn: (h: Harness) => Promise<void>): Promise<void> {
     const client = new Client({ name: "test", version: "0.0.0" }, { capabilities: { elicitation: {} } });
     client.setRequestHandler(ElicitRequestSchema, async () => harness.answer);
     await Promise.all([server.connect(s), client.connect(c)]);
+    // **刻印を既定で付ける**（実運用では host の仕事）。個別に変えたい試験は
+    // `_meta` を明示すれば上書きされる
+    const raw = client.callTool.bind(client);
+    client.callTool = ((params: Record<string, unknown>, ...rest: unknown[]) =>
+      raw({ _meta: ADMIN, ...params } as never, ...(rest as []))) as typeof client.callTool;
+    const rawRead = client.readResource.bind(client);
+    client.readResource = ((params: Record<string, unknown>, ...rest: unknown[]) =>
+      rawRead({ _meta: ADMIN, ...params } as never, ...(rest as []))) as typeof client.readResource;
     harness.client = client;
     await fn(harness);
     await client.close();
@@ -57,7 +75,7 @@ test("createAlias -> resolveAlias roundtrip through the actual MCP server", asyn
 
     await client.callTool({
       name: "createAlias",
-      arguments: { name: "github-token", kind: "secret", scope: "project", projectId: "p1", value: "ghp_abc123" },
+      arguments: { name: "github-token", kind: "secret", forProject: "p1", value: "ghp_abc123" },
     });
 
     const resolved = await client.callTool({ name: "resolveAlias", arguments: { name: "github-token" } });
@@ -70,7 +88,9 @@ test("createAlias -> resolveAlias roundtrip through the actual MCP server", asyn
     const meta = JSON.parse(resourceText(read));
     assert.equal(meta.kind, "secret");
     assert.equal(meta.name, "github-token");
-    assert.equal(meta.projectId, "p1");
+    // **使える範囲は alias に書かれていない**——置き場から導く（規則3）
+    assert.equal(meta.projectId, undefined);
+    assert.equal(meta.scope, undefined);
     assert.equal(meta.backendPath, undefined, "backendPath (internal detail) must not leak into the resource");
     assert.equal(meta.value, undefined, "the secret value itself must never appear in resource metadata");
   });
@@ -93,7 +113,7 @@ test("一覧そのもの（vault://aliases）が resources/list に載ってい�
 
     await client.callTool({
       name: "createAlias",
-      arguments: { name: "a1", kind: "secret", scope: "instance", value: "v1" },
+      arguments: { name: "a1", kind: "secret", value: "v1" },
     });
     const read = await client.readResource({ uri: "vault://aliases" });
     const list = JSON.parse(resourceText(read)) as Array<Record<string, unknown>>;
@@ -152,7 +172,7 @@ test("verify は正しい署名だけを通す（長さ違い・1文字違いも
   await withServer(async ({ client }) => {
     await client.callTool({
       name: "createAlias",
-      arguments: { name: "webhook-key", kind: "secret", scope: "instance", value: "s3cr3t" },
+      arguments: { name: "webhook-key", kind: "secret", value: "s3cr3t" },
     });
     const payload = "{\"event\":\"push\"}";
     const good = createHmac("sha256", "s3cr3t").update(payload).digest("hex");
@@ -197,7 +217,7 @@ test("SSH 鍵も generateSecret で作れる——公開鍵だけが返り、秘
       textOf(
         await client.callTool({
           name: "generateSecret",
-          arguments: { name: "github-id", kind: "ssh-identity", scope: "instance", note: "push 用" },
+          arguments: { name: "github-id", kind: "ssh-identity", note: "push 用" },
         }),
       ),
     );
@@ -222,7 +242,7 @@ test("SSH 鍵も generateSecret で作れる——公開鍵だけが返り、秘
       () =>
         client.callTool({
           name: "generateSecret",
-          arguments: { name: "github-id", kind: "ssh-identity", scope: "instance" },
+          arguments: { name: "github-id", kind: "ssh-identity" },
         }),
       /既にあります/,
     );
@@ -235,7 +255,7 @@ test("鍵の強さは鍵の種類が決める——SSH に format/bytes を渡�
       () =>
         client.callTool({
           name: "generateSecret",
-          arguments: { name: "k", kind: "ssh-identity", scope: "instance", bytes: 64 },
+          arguments: { name: "k", kind: "ssh-identity", bytes: 64 },
         }),
       /ssh-identity では format \/ bytes は指定できません/,
     );
@@ -248,7 +268,7 @@ test("作れない種類は作らせない（ファイルの中身をランダ�
       () =>
         client.callTool({
           name: "generateSecret",
-          arguments: { name: "k", kind: "file", scope: "instance" },
+          arguments: { name: "k", kind: "file" },
         }),
       /kind は secret \/ ssh-identity/,
     );
@@ -259,7 +279,7 @@ test("startSshAgent は ssh-identity 以外の alias を受け取らない", asy
   await withServer(async ({ client }) => {
     await client.callTool({
       name: "createAlias",
-      arguments: { name: "just-a-token", kind: "secret", scope: "instance", value: "t" },
+      arguments: { name: "just-a-token", kind: "secret", value: "t" },
     });
     await assert.rejects(
       () => client.callTool({ name: "startSshAgent", arguments: { identity: "just-a-token" } }),
@@ -270,37 +290,54 @@ test("startSshAgent は ssh-identity 以外の alias を受け取らない", asy
 
 // ---- C節：人の管理操作 ------------------------------------------------------
 
-test("語彙の外の kind / scope は拒否する——黙って既定に倒さない", async () => {
+test("語彙の外の kind は拒否する——黙って既定に倒さない", async () => {
   await withServer(async ({ client }) => {
     await assert.rejects(
       () =>
         client.callTool({
           name: "createAlias",
-          arguments: { name: "x", kind: "secrets", scope: "instance", value: "v" },
+          arguments: { name: "x", kind: "secrets", value: "v" },
         }),
       /kind は secret \/ ssh-identity \/ file/,
-    );
-    await assert.rejects(
-      () =>
-        client.callTool({
-          name: "createAlias",
-          arguments: { name: "x", kind: "secret", scope: "projekt", value: "v" },
-        }),
-      /scope は instance \/ project/,
     );
   });
 });
 
-test("どの Project のものか決まらない「Project の alias」は作らせない", async () => {
+// **使える範囲は保存しない——置き場から導く**（決定・2026-09-13、ユーザー指摘）。
+// 以前は alias が `scope` を持っていたが、置き場（グループ）と二重管理になり、
+// 実際に食い違っていた（鍵ペアは `scope` を無視して `ssh-identities` へ）。
+test("使える範囲は置き場から導く——共通グループ・紐付いた Project・どこにも紐付いていない", async () => {
   await withServer(async ({ client }) => {
-    await assert.rejects(
-      () =>
-        client.callTool({
-          name: "createAlias",
-          arguments: { name: "x", kind: "secret", scope: "project", value: "v" },
-        }),
-      /projectId が要ります/,
-    );
+    // 置き先を言わなければ共通グループ
+    await client.callTool({
+      name: "createAlias",
+      arguments: { name: "everywhere", kind: "secret", value: "v" },
+    });
+    // Project を言えば、その Project のグループ
+    await client.callTool({
+      name: "createAlias",
+      arguments: { name: "only-a", kind: "secret", forProject: "proj-a", value: "v" },
+    });
+    // どこにも紐付いていないグループを直に指定
+    await client.callTool({
+      name: "createAlias",
+      arguments: { name: "orphan", kind: "secret", group: "nobody", value: "v" },
+    });
+
+    const list = JSON.parse(textOf(await client.callTool({ name: "listAliases", arguments: {} }))) as Array<{
+      name: string;
+      scope: string;
+      group: string;
+      projects: string[];
+    }>;
+    const by = (n: string) => list.find((a) => a.name === n)!;
+    assert.equal(by("everywhere").scope, "shared");
+    assert.equal(by("only-a").scope, "project");
+    assert.deepEqual(by("only-a").projects, ["proj-a"]);
+    // **使えないものを黙って消さない**（規則2）——人の画面には出して、直せるようにする
+    assert.equal(by("orphan").scope, "unbound");
+    // **保存はしていない**（導出値なので、alias 自身は持たない）
+    assert.equal((by("everywhere") as Record<string, unknown>).projectId, undefined);
   });
 });
 
@@ -308,7 +345,7 @@ test("Project の alias は、その Project のグループに入る（紐付�
   await withServer(async ({ client }) => {
     await client.callTool({
       name: "createAlias",
-      arguments: { name: "t1", kind: "secret", scope: "project", projectId: "proj-a", value: "v1" },
+      arguments: { name: "t1", kind: "secret", forProject: "proj-a", value: "v1" },
     });
 
     // 既定は「projectId をそのままグループ名に使う」（§2.1）
@@ -318,8 +355,10 @@ test("Project の alias は、その Project のグループに入る（紐付�
     // **暗黙の既定を台帳に書き留める**——画面が見るのはこの台帳（規則3）
     const bindings = JSON.parse(
       textOf(await client.callTool({ name: "listGroupBindings", arguments: {} })),
-    ) as Array<{ projectId: string; group: string }>;
-    assert.deepEqual(bindings, [{ projectId: "proj-a", group: "proj-a" }]);
+    ) as { shared: string; projects: Array<{ projectId: string; group: string }> };
+    assert.deepEqual(bindings.projects, [{ projectId: "proj-a", group: "proj-a" }]);
+    // **共通グループも紐付けとして見える**（以前は決め打ちで、見る口が無かった）
+    assert.equal(bindings.shared, "instance");
   });
 });
 
@@ -331,7 +370,7 @@ test("紐付けを変えると、次の alias は新しいグループへ行く�
     });
     await client.callTool({
       name: "createAlias",
-      arguments: { name: "t2", kind: "secret", scope: "project", projectId: "proj-b", value: "v2" },
+      arguments: { name: "t2", kind: "secret", forProject: "proj-b", value: "v2" },
     });
     const groups = JSON.parse(textOf(await client.callTool({ name: "listGroups", arguments: {} }))) as string[];
     assert.ok(groups.includes("shared-team"));
@@ -350,27 +389,31 @@ test("グループ名の検査は紐付けにも効く（Vault の置き場の�
   });
 });
 
-test("updateAlias は覚え書きと対象を変える——値には触らない", async () => {
+test("updateAlias は覚え書きだけ——使える範囲は alias では変えられない", async () => {
   await withServer(async ({ client }) => {
     await client.callTool({
       name: "createAlias",
-      arguments: { name: "t3", kind: "secret", scope: "project", projectId: "proj-c", value: "v3", note: "最初" },
+      arguments: { name: "t3", kind: "secret", forProject: "proj-c", value: "v3", note: "最初" },
     });
 
     await client.callTool({ name: "updateAlias", arguments: { name: "t3", note: "あとで書き直した" } });
     let meta = JSON.parse(resourceText(await client.readResource({ uri: "vault://aliases/t3" })));
     assert.equal(meta.note, "あとで書き直した");
     // **触っていない項目が消えていない**（素の spread だと飛ぶ）
-    assert.equal(meta.projectId, "proj-c");
-    assert.equal(meta.scope, "project");
+    assert.equal(meta.kind, "secret");
+    // **置き場は動かせない**——以前は scope を付け替えられたが、値は元の
+    // グループに残ったままで、画面の表示だけが変わる嘘になっていた
+    await assert.rejects(
+      () => client.callTool({ name: "updateAlias", arguments: { name: "t3", scope: "instance" } }),
+      /使える範囲は alias では変えられません/,
+    );
     // 値はそのまま
     assert.equal(textOf(await client.callTool({ name: "resolveAlias", arguments: { name: "t3" } })), "v3");
 
-    // instance に戻すと、Project の紐付けは**消える**
-    await client.callTool({ name: "updateAlias", arguments: { name: "t3", scope: "instance" } });
+    // 覚え書きを消しても、置き場は動かない
+    await client.callTool({ name: "updateAlias", arguments: { name: "t3" } });
     meta = JSON.parse(resourceText(await client.readResource({ uri: "vault://aliases/t3" })));
-    assert.equal(meta.scope, "instance");
-    assert.equal(meta.projectId, undefined, "instance なのに Project を指したまま");
+    assert.equal(meta.name, "t3");
   });
 });
 
@@ -388,7 +431,7 @@ test("メタデータの書き込みは、途中で落ちても中途半端な J
       ["a", "b", "c", "d"].map((n) =>
         client.callTool({
           name: "createAlias",
-          arguments: { name: n, kind: "secret", scope: "instance", value: `value-${n}` },
+          arguments: { name: n, kind: "secret", value: `value-${n}` },
         }),
       ),
     );
@@ -413,14 +456,13 @@ test("generateSecret は値を返さない——作ったことだけを返す",
       textOf(
         await client.callTool({
           name: "generateSecret",
-          arguments: { name: "signing-key", scope: "instance", note: "webhook 署名用" },
+          arguments: { name: "signing-key", note: "webhook 署名用" },
         }),
       ),
     );
     assert.deepEqual(made, {
       name: "signing-key",
       kind: "secret",
-      scope: "instance",
       note: "webhook 署名用",
       format: "base64url",
       bytes: 32,
@@ -443,7 +485,7 @@ test("generateSecret は毎回ちがう値を作る（乱数であることを�
   await withServer(async ({ client }) => {
     const values = new Set<string>();
     for (const name of ["k1", "k2", "k3"]) {
-      await client.callTool({ name: "generateSecret", arguments: { name, scope: "instance" } });
+      await client.callTool({ name: "generateSecret", arguments: { name } });
       values.add(textOf(await client.callTool({ name: "resolveAlias", arguments: { name } })));
     }
     assert.equal(values.size, 3, "同じ値が作られている");
@@ -454,7 +496,7 @@ test("generateSecret は形式と強さを選べる——語彙と範囲の外�
   await withServer(async ({ client }) => {
     await client.callTool({
       name: "generateSecret",
-      arguments: { name: "hexkey", scope: "instance", format: "hex", bytes: 16 },
+      arguments: { name: "hexkey", format: "hex", bytes: 16 },
     });
     assert.match(
       textOf(await client.callTool({ name: "resolveAlias", arguments: { name: "hexkey" } })),
@@ -462,23 +504,19 @@ test("generateSecret は形式と強さを選べる——語彙と範囲の外�
     );
 
     await assert.rejects(
-      () => client.callTool({ name: "generateSecret", arguments: { name: "x", scope: "instance", format: "uuid" } }),
+      () => client.callTool({ name: "generateSecret", arguments: { name: "x", format: "uuid" } }),
       /format は base64url \/ hex/,
     );
     // **弱い長さを黙って受けない**（規則2）
     await assert.rejects(
-      () => client.callTool({ name: "generateSecret", arguments: { name: "x", scope: "instance", bytes: 4 } }),
+      () => client.callTool({ name: "generateSecret", arguments: { name: "x", bytes: 4 } }),
       /bytes は 16〜256/,
     );
     await assert.rejects(
-      () => client.callTool({ name: "generateSecret", arguments: { name: "x", scope: "instance", bytes: 1000 } }),
+      () => client.callTool({ name: "generateSecret", arguments: { name: "x", bytes: 1000 } }),
       /bytes は 16〜256/,
     );
-    // どの Project のものか決まらない「Project の秘密」も作らせない
-    await assert.rejects(
-      () => client.callTool({ name: "generateSecret", arguments: { name: "x", scope: "project" } }),
-      /projectId が要ります/,
-    );
+
   });
 });
 
@@ -507,5 +545,150 @@ test("AI に見える面には、使い方が書いてある", async () => {
     const { resources } = await client.listResources();
     const listing = resources.find((r) => r.uri === "vault://aliases")!;
     assert.match(listing.description ?? "", /envSecrets/, "一覧から使い方へ繋がっていない");
+  });
+});
+
+// ---- アクセス制限（決定・2026-09-13、ユーザー指摘）--------------------------
+//
+// 以前は `scope` がただの札で、**別の Project からでも普通に引けていた**
+// （規則13——画面が制約を示しているのに、実装は制約していない）。
+// 「その Project に紐付いたグループ＋共通グループ」だけ使える、にした。
+
+test("別の Project からは引けない——共通グループのものは引ける", async () => {
+  await withServer(async ({ client }) => {
+    await client.callTool({
+      name: "createAlias",
+      arguments: { name: "a-only", kind: "secret", forProject: "proj-a", value: "va" },
+    });
+    await client.callTool({
+      name: "createAlias",
+      arguments: { name: "for-all", kind: "secret", value: "vall" },
+    });
+
+    // 持ち主の Project からは引ける
+    assert.equal(
+      textOf(await client.callTool({ name: "resolveAlias", arguments: { name: "a-only" }, _meta: forProject("proj-a") })),
+      "va",
+    );
+    // **別の Project からは引けない**
+    await assert.rejects(
+      () => client.callTool({ name: "resolveAlias", arguments: { name: "a-only" }, _meta: forProject("proj-b") }),
+      /この Project からは使えません/,
+    );
+    // 共通グループのものは、どの Project からでも引ける
+    assert.equal(
+      textOf(await client.callTool({ name: "resolveAlias", arguments: { name: "for-all" }, _meta: forProject("proj-b") })),
+      "vall",
+    );
+  });
+});
+
+test("使えないものは、名前も見せない（AI の目録から消える）", async () => {
+  await withServer(async ({ client }) => {
+    await client.callTool({
+      name: "createAlias",
+      arguments: { name: "a-only", kind: "secret", forProject: "proj-a", value: "va" },
+    });
+    await client.callTool({ name: "createAlias", arguments: { name: "for-all", kind: "secret", value: "v" } });
+
+    const seenBy = async (project: string) =>
+      (JSON.parse(
+        resourceText(await client.readResource({ uri: "vault://aliases", _meta: forProject(project) })),
+      ) as Array<{ name: string }>).map((a) => a.name);
+
+    assert.deepEqual((await seenBy("proj-a")).sort(), ["a-only", "for-all"]);
+    assert.deepEqual(await seenBy("proj-b"), ["for-all"]);
+    // 人の管理画面は全部見える（使えないものも直せるように）
+    const all = JSON.parse(textOf(await client.callTool({ name: "listAliases", arguments: {} }))) as Array<{
+      name: string;
+    }>;
+    assert.deepEqual(all.map((a) => a.name).sort(), ["a-only", "for-all"]);
+  });
+});
+
+test("刻印が無い呼び出しには値を渡さない（名乗らないだけで通り抜けさせない）", async () => {
+  await withServer(async ({ client }) => {
+    await client.callTool({ name: "createAlias", arguments: { name: "x", kind: "secret", value: "v" } });
+    // **共通グループのものでも**、誰のためか分からなければ止まる（規則2）
+    await assert.rejects(
+      () => client.callTool({ name: "resolveAlias", arguments: { name: "x" }, _meta: {} }),
+      /誰のために使うのかが分かりません/,
+    );
+    await assert.rejects(
+      () => client.callTool({ name: "resolveAlias", arguments: { name: "x" }, _meta: { "dev.banto/caller": { project: "" } } }),
+      /誰のために使うのかが分かりません/,
+    );
+  });
+});
+
+test("紐付けを変えると、使える範囲もその場で変わる（写しを持っていない）", async () => {
+  await withServer(async ({ client }) => {
+    await client.callTool({
+      name: "createAlias",
+      arguments: { name: "shared-later", kind: "secret", forProject: "proj-a", value: "v" },
+    });
+    await assert.rejects(
+      () => client.callTool({ name: "resolveAlias", arguments: { name: "shared-later" }, _meta: forProject("proj-b") }),
+      /この Project からは使えません/,
+    );
+    // proj-b も同じグループを向ける＝**人の意図で共有が起きる**
+    await client.callTool({ name: "setGroupBinding", arguments: { projectId: "proj-b", group: "proj-a" } });
+    assert.equal(
+      textOf(
+        await client.callTool({ name: "resolveAlias", arguments: { name: "shared-later" }, _meta: forProject("proj-b") }),
+      ),
+      "v",
+    );
+  });
+});
+
+test("共通グループは選べる——変えると、そこに置いたものが共通になる", async () => {
+  await withServer(async ({ client }) => {
+    // 既定の共通グループに1つ置く
+    await client.callTool({ name: "createAlias", arguments: { name: "old-shared", kind: "secret", value: "v1" } });
+    // 共通グループを別のものに移す
+    await client.callTool({ name: "setSharedGroup", arguments: { group: "team-shared" } });
+    await client.callTool({ name: "createAlias", arguments: { name: "new-shared", kind: "secret", value: "v2" } });
+
+    const list = JSON.parse(textOf(await client.callTool({ name: "listAliases", arguments: {} }))) as Array<{
+      name: string;
+      scope: string;
+      group: string;
+    }>;
+    assert.equal(list.find((a) => a.name === "new-shared")!.group, "team-shared");
+    assert.equal(list.find((a) => a.name === "new-shared")!.scope, "shared");
+    // **前の共通グループは、もう共通ではない**——誰にも紐付いていない
+    assert.equal(list.find((a) => a.name === "old-shared")!.scope, "unbound");
+    await assert.rejects(
+      () => client.callTool({ name: "resolveAlias", arguments: { name: "old-shared" }, _meta: forProject("p") }),
+      /この Project からは使えません/,
+    );
+  });
+});
+
+test("鍵ペアも、言われたグループに入る（backend が置き場を決めない）", async () => {
+  await withServer(async ({ client }) => {
+    await client.callTool({
+      name: "generateSecret",
+      arguments: { name: "deploy-key", kind: "ssh-identity", forProject: "proj-a" },
+    });
+    const list = JSON.parse(textOf(await client.callTool({ name: "listAliases", arguments: {} }))) as Array<{
+      name: string;
+      group: string;
+      scope: string;
+    }>;
+    const key = list.find((a) => a.name === "deploy-key")!;
+    assert.equal(key.group, "proj-a", "鍵だけ別のグループに置かれている");
+    assert.equal(key.scope, "project");
+    // 持ち主からは ssh-agent に積める。別の Project からは積めない
+    assert.ok(
+      textOf(
+        await client.callTool({ name: "startSshAgent", arguments: { identity: "deploy-key" }, _meta: forProject("proj-a") }),
+      ).includes("socketPath"),
+    );
+    await assert.rejects(
+      () => client.callTool({ name: "startSshAgent", arguments: { identity: "deploy-key" }, _meta: forProject("proj-b") }),
+      /この Project からは使えません/,
+    );
   });
 });

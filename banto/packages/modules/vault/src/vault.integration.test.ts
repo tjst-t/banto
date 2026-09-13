@@ -60,7 +60,7 @@ test("SSH keypair generation and loading into a real ssh-agent", async () => {
   await withDir(async (dir) => {
     const backend = new SopsBackend(dir);
     await backend.init();
-    const { publicKey, privateKeyRef } = await backend.generateKeypair("ssh");
+    const { publicKey, privateKeyRef } = await backend.generateKeypair("ssh", "ssh-identities/e2e-key");
     assert.ok(publicKey.startsWith("ssh-ed25519"));
 
     const { socketPath } = await backend.loadIntoAgent(privateKeyRef);
@@ -81,7 +81,7 @@ test("alias の台帳：暗号化された値に触れずにメタデータを�
   await withDir(async (dir) => {
     const registry = new LocalFileAliasStore(dir);
     await registry.load();
-    await registry.create({ name: "github-token", kind: "secret", scope: "project", backendPath: "g1/github-token" });
+    await registry.create({ name: "github-token", kind: "secret", backendPath: "g1/github-token" });
     const meta = await registry.get("github-token");
     assert.equal(meta?.kind, "secret");
     assert.equal(meta?.lastUsedAt, undefined);
@@ -173,7 +173,7 @@ test("同じ鍵で ssh-agent を増やさない——使い回して、最後に
   await withDir(async (dir) => {
     const backend = new SopsBackend(dir);
     await backend.init();
-    const { privateKeyRef } = await backend.generateKeypair("ssh");
+    const { privateKeyRef } = await backend.generateKeypair("ssh", "ssh-identities/e2e-key");
 
     const first = await backend.loadIntoAgent(privateKeyRef);
     const second = await backend.loadIntoAgent(privateKeyRef);

@@ -217,7 +217,7 @@ export class SopsBackend implements VaultBackend {
     await mkdir(join(this.groupsDir, name), { recursive: true, mode: 0o700 });
   }
 
-  async generateKeypair(kind: "ssh"): Promise<{ publicKey: string; privateKeyRef: string }> {
+  async generateKeypair(kind: "ssh", path: string): Promise<{ publicKey: string; privateKeyRef: string }> {
     if (kind !== "ssh") throw new Error(`unsupported keypair kind: ${kind}`);
     const tmpDir = join(tmpdir(), `banto-vault-keygen-${Date.now()}`);
     await mkdir(tmpDir, { recursive: true, mode: 0o700 });
@@ -227,11 +227,11 @@ export class SopsBackend implements VaultBackend {
       const privateKey = await readFile(keyPath, "utf8");
       const publicKey = (await readFile(`${keyPath}.pub`, "utf8")).trim();
 
-      const group = "ssh-identities";
-      await this.createGroup(group);
-      const ref = `${group}/${publicKey.split(" ")[1]?.slice(0, 16) ?? Date.now()}`;
-      await this.putSecret(ref, privateKey);
-      return { publicKey, privateKeyRef: ref };
+      // **置き場は呼び出し側が決める**（改訂・2026-09-13）。以前は
+      // `ssh-identities` 決め打ちで、鍵だけがどのグループにも紐付かなかった
+      await this.createGroup(path.slice(0, path.indexOf("/")));
+      await this.putSecret(path, privateKey);
+      return { publicKey, privateKeyRef: path };
     } finally {
       await rm(tmpDir, { recursive: true, force: true });
     }

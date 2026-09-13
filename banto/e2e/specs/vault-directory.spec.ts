@@ -65,7 +65,7 @@ test("VaultUI の入口から開いた画面が、実 Vault を横断して読�
   await canvas.locator("#new-note").fill("E2E が置いた");
   // **対象に「この Project」が名前で出ている**（人に UUID を選ばせない）
   await expect(canvas.locator("#new-scope")).toContainText(PROJECT_NAME);
-  await canvas.locator("#new-scope").selectOption({ label: PROJECT_NAME });
+  await canvas.locator("#new-scope").selectOption({ label: `この Project（${PROJECT_NAME}）だけ` });
   await canvas.getByRole("button", { name: "登録する" }).click();
 
   // ---- 4. 画面が出している中身を、1つずつ見る（規則14）-------------------
@@ -143,12 +143,22 @@ test("窓口が AI に見せるのは requestAlias 1本だけ——管理操作�
   const { StreamableHTTPClientTransport } = await import(
     "@modelcontextprotocol/sdk/client/streamableHttp.js"
   );
-  const client = new Client({ name: "e2e-vault-directory-visibility", version: "0.0.0" }, { capabilities: {} });
-  await client.connect(
-    new StreamableHTTPClientTransport(new URL(`${CORE_BASE_URL}/agent-relay/vault-directory`), {
-      requestInit: { headers: { authorization: `Bearer ${AUTH_TOKEN}` } },
-    }),
-  );
+  /** AI の代理接続。**どの Project のターンかを host が渡す**（実運用と同じ形）。 */
+  const connect = async (projectId?: string) => {
+    const c = new Client({ name: "e2e-vault-directory-visibility", version: "0.0.0" }, { capabilities: {} });
+    await c.connect(
+      new StreamableHTTPClientTransport(new URL(`${CORE_BASE_URL}/agent-relay/vault-directory`), {
+        requestInit: {
+          headers: {
+            authorization: `Bearer ${AUTH_TOKEN}`,
+            ...(projectId ? { "x-banto-project-id": projectId } : {}),
+          },
+        },
+      }),
+    );
+    return c;
+  };
+  const client = await connect();
   try {
     const { tools } = await client.listTools();
     expect(
@@ -172,15 +182,27 @@ test("窓口が AI に見せるのは requestAlias 1本だけ——管理操作�
       body: JSON.stringify({
         server: "vault",
         tool: "createAlias",
-        arguments: { name: probe, kind: "secret", scope: "instance", value: "probe-value" },
+        arguments: { name: probe, kind: "secret", value: "probe-value" },
       }),
     });
     try {
-      const read = await client.readResource({ uri: "vault://aliases" });
-      const text = (read.contents as { text: string }[])[0]!.text;
-      expect(text, "窓口の目録に、実 Vault に置いた名前が出てこない（横断できていない）").toContain(probe);
-      expect(text, "横断した目録に金庫の名前が入っている").not.toContain("implementation");
-      expect(text, "目録に値が入っている").not.toContain("probe-value");
+      // **誰のためか分からない接続には、名前も見せない**（決定・2026-09-13、
+      // fail closed）。host が Project を刻まない接続はここで止まる
+      const blind = (await client.readResource({ uri: "vault://aliases" })).contents as { text: string }[];
+      expect(blind[0]!.text, "誰のためか分からないのに一覧が出ている").toBe("[]");
+
+      // **Project が分かれば、共通グループのものは見える**
+      const withProject = await connect("e2e-some-project");
+      try {
+        const read = await withProject.readResource({ uri: "vault://aliases" });
+        const text = (read.contents as { text: string }[])[0]!.text;
+        expect(text, "窓口の目録に、実 Vault に置いた名前が出てこない（横断できていない）").toContain(probe);
+        expect(text, "横断した目録に金庫の名前が入っている").not.toContain("implementation");
+        expect(text, "使える範囲の内訳まで AI に見せている").not.toContain("group");
+        expect(text, "目録に値が入っている").not.toContain("probe-value");
+      } finally {
+        await withProject.close();
+      }
     } finally {
       await fetch(`${CORE_BASE_URL}/api/ui-tool-call`, {
         method: "POST",

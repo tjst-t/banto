@@ -31,6 +31,30 @@ export const CANVAS_META_KEY = `${VENDOR_PREFIX}/canvas`;
  */
 export const VALUE_FREE_META_KEY = `${VENDOR_PREFIX}/valueFree`;
 
+/**
+ * **その呼び出しが、どの Project のためのものか**（決定・2026-09-13）。
+ *
+ * host が中継するときに刻む——**Module に自己申告させない**（申告なら詐称できる）。
+ * Vault の「この alias はどの Project から使えるか」は、これが根拠になる。
+ *
+ * 値は `{ project: "<id>" }` か `{ admin: true }`（人が管理画面から直接触っている）。
+ * **刻印が無い呼び出しは「決められない」**——受け手は fail closed で止める
+ * （規則2。既定を「全部見える」にすると、名乗らないだけで制限をすり抜けられる）。
+ */
+export const CALLER_META_KEY = `${VENDOR_PREFIX}/caller`;
+
+export type CallerStamp = { project: string } | { admin: true };
+
+/** 刻印を読む。**形が違えば `undefined`**——「たぶんこう」で通さない。 */
+export function callerOf(meta: Record<string, unknown> | undefined): CallerStamp | undefined {
+  const raw = meta?.[CALLER_META_KEY];
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const obj = raw as Record<string, unknown>;
+  if (obj.admin === true) return { admin: true };
+  if (typeof obj.project === "string" && obj.project !== "") return { project: obj.project };
+  return undefined;
+}
+
 /** その tool が「値を返さない」と名乗っているか。**`true` 以外は全部「返す」。** */
 export function isValueFree(x: { _meta?: Record<string, unknown> }): boolean {
   return x._meta?.[VALUE_FREE_META_KEY] === true;

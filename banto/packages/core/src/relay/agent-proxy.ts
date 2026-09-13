@@ -19,7 +19,7 @@ import {
   ReadResourceRequestSchema,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import { stripBantoMeta, visibilityOf, type BantoModuleMeta } from "@banto/module-contract";
+import { CALLER_META_KEY, stripBantoMeta, visibilityOf, type BantoModuleMeta } from "@banto/module-contract";
 import { makeResourceVisibilityResolver } from "./visibility.js";
 import type { ModuleCallTracker } from "./module-calls.js";
 import type { ElicitationRouter } from "./elicitation-router.js";
@@ -39,6 +39,8 @@ export interface AgentProxyOptions {
    * ——Module→host の中継接続は Thread を知らない（relay/module-calls.ts）。
    */
   threadId?: string;
+  /** そのターンがどの Project のものか。**host が渡す**（Module に聞かない）。 */
+  projectId?: string;
   moduleCalls?: ModuleCallTracker;
   /** Module からの問いを、正しいターンへ届けるための宛先表。 */
   elicitations?: ElicitationRouter;
@@ -73,6 +75,15 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
   // （relay/elicitation-router.ts、決定・2026-09-10）。
   opts.elicitations?.register(conn, opts.threadId, server);
 
+  /**
+   * **この接続が誰のためのものか**（決定・2026-09-13）。AI の代理接続は必ず
+   * ターンの中なので、Project が分かる。**分からなければ刻まない**
+   * ——受け手はそれを「決められない」として fail closed で止める（規則2）。
+   */
+  function callerStamp(): Record<string, unknown> {
+    return opts.projectId ? { [CALLER_META_KEY]: { project: opts.projectId } } : {};
+  }
+
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const real = await conn.client.listTools();
     const visible = real.tools.filter((t) => visibilityOf(t as { _meta?: Record<string, unknown> }) === "agent");
@@ -94,10 +105,17 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     // **このハンドラが動いている間だけ**、この Module はこのターンの仕事をしている
     // ——中継の承認をどの会話に出すかは、これで決まる（relay/module-calls.ts）
     const endCall =
-      opts.threadId && opts.moduleCalls ? opts.moduleCalls.begin(conn.name, opts.threadId) : undefined;
+      opts.threadId && opts.moduleCalls
+        ? opts.moduleCalls.begin(conn.name, opts.threadId, "turn", opts.projectId)
+        : undefined;
     try {
       const result = await conn.client.callTool(
-        { name: request.params.name, arguments: request.params.arguments },
+        {
+          name: request.params.name,
+          arguments: request.params.arguments,
+          // **誰のための呼び出しかを host が刻む**（追加・2026-09-13）
+          _meta: { ...callerStamp() },
+        },
         undefined,
         {
           signal: extra.signal,
@@ -152,9 +170,14 @@ export function buildAgentProxy(conn: ModuleConnection, opts: AgentProxyOptions 
     // 作る窓口など）は、承認ゲートが「どのターンからの呼び出しか特定できません」
     // で**構造的に必ず拒否される**状態だった。
     const endCall =
-      opts.threadId && opts.moduleCalls ? opts.moduleCalls.begin(conn.name, opts.threadId) : undefined;
+      opts.threadId && opts.moduleCalls
+        ? opts.moduleCalls.begin(conn.name, opts.threadId, "turn", opts.projectId)
+        : undefined;
     try {
-      const result = await conn.client.readResource({ uri: request.params.uri });
+      const result = await conn.client.readResource({
+        uri: request.params.uri,
+        _meta: { ...callerStamp() },
+      });
       return stripBantoMeta(result as { _meta?: Record<string, unknown> }) as typeof result;
     } finally {
       endCall?.();

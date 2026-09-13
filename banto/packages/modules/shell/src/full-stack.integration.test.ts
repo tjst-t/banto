@@ -26,6 +26,7 @@ import { runCommand } from "./run-command.js";
 test("Shell resolves an envSecret from the real (SOPS-backed) Vault through the real HTTP relay", async () => {
   /** 既定ではない名前。決め打ちに戻ったら、ここが届かなくなる。 */
   const VAULT_NAME = "vault-keychain";
+  const PROJECT_ID = "p-full-stack";
   const vaultDir = await mkdtemp(join(tmpdir(), "banto-fullstack-vault-"));
   const projectDir = await mkdtemp(join(tmpdir(), "banto-fullstack-project-"));
   let httpServer: ReturnType<typeof createServer> | undefined;
@@ -44,8 +45,7 @@ test("Shell resolves an envSecret from the real (SOPS-backed) Vault through the 
       arguments: {
         name: "npm-registry-token",
         kind: "secret",
-        scope: "project",
-        projectId: "p-full-stack",
+        forProject: PROJECT_ID,
         value: "npm_REALSECRET123",
       },
     });
@@ -77,7 +77,10 @@ test("Shell resolves an envSecret from the real (SOPS-backed) Vault through the 
       },
       "shell",
     );
-    const token = registry.issueToken({ moduleName: "shell", meta: shellMeta });
+    // **Shell は Project 単位で起きる**——host はその身元を持っていて、
+    // 中継のたびに「誰のための呼び出しか」を刻む（追加・2026-09-13）。
+    // ここを省くと Vault は fail closed で止まる（それが正しい）
+    const token = registry.issueToken({ moduleName: "shell", projectId: PROJECT_ID, meta: shellMeta });
 
     // 3. 実HTTPサーバーで中継エンドポイントを立てる。
     const endpoint = new HostRelayEndpoint({ registry });

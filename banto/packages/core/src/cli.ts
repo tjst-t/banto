@@ -486,7 +486,13 @@ async function main(): Promise<void> {
           url: `http://127.0.0.1:${bootstrap.port}/agent-relay/${connName}`,
           // **どのターンの接続か**を host 自身が渡す（中継の承認を正しい会話に
           // 出すため、relay/module-calls.ts）——Module に自己申告させない
-          headers: { ...agentRelayHeaders, "x-banto-thread-id": threadId },
+          // **どの Project のターンか**も渡す（追加・2026-09-13）。Vault の
+          // アクセス制限の根拠になる——Module に自己申告させない
+          headers: {
+            ...agentRelayHeaders,
+            "x-banto-thread-id": threadId,
+            "x-banto-project-id": project.id,
+          },
         };
       }),
     );

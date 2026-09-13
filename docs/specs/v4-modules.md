@@ -225,7 +225,7 @@ tool を AI には一切見せない**こと。AI 向けは「存在を知る」
 
 | 種別 | 名前 | 内容 |
 |---|---|---|
-| resource | `vault://aliases` | alias 一覧。**値は含まない**——`name` / `kind`（`secret`\|`ssh-identity`\|`file`）/ `scope`（`instance`\|`project`）/ `note`（自由記述、任意）/ `lastUsedAt` / `expiresAt`（あれば） |
+| resource | `vault://aliases` | alias 一覧。**値は含まない**——`name` / `kind`（`secret`\|`ssh-identity`\|`file`）/ `note`（自由記述、任意）/ `lastUsedAt` / `expiresAt`（あれば）。**呼び出し元の Project から使えるものだけ**（2026-09-13）。置き場も金庫の名前も載せない——AI に選ばせる材料にしない |
 | resource | `vault://aliases/{name}` | 単一 alias のメタデータ（同上、詳細版） |
 | tool | `requestAlias({name, hint, kind})` | **値を渡さない。** 「この alias が要るが無い」と人に伝え、**会話の中に入力欄を出す**（下記） |
 
@@ -255,9 +255,58 @@ URI は `ui://banto-vault-directory/request`。
 - **`generateSecret` の返しの形は、窓口でも backend でも同じ**（規則3）。
   同じ入力欄が両方に繋がるので、片方だけ包むと公開鍵が沈む
 
-**「どこから使えるようにするか」（`scope`）は人の言葉で聞く**（訂正・2026-09-13、
+**「どこから使えるようにするか」は人の言葉で聞く**（訂正・2026-09-13、
 ユーザー指摘）。`instance` は banto の内部語なので画面に出さない（規則11）：
 「この Project（〈名前〉）だけ」／「どの Project からでも」。既定はいま開いている Project。
+
+#### グループが唯一の真実——`scope` は導出値（決定・2026-09-13）
+
+以前は「誰が使えるか」を**2箇所**に持っていた——alias の `scope`/`projectId` と、
+実際に置かれているグループ（`backendPath`）。**すでに食い違っていた**：
+`generateKeypair` が `scope` を無視して `ssh-identities` に置いていたので、
+`scope: "instance"` の鍵が共通グループに居ない。しかも `scope` は**何も制限して
+いなかった**（`resolveAlias` は呼び出し元を見ていない）——画面が制約を示している
+のに実装は制約していない（規則13）。
+
+**alias は `scope`/`projectId` を持たない。** 置き場から導く（規則3）：
+
+| その alias が居るグループ | 誰が使えるか | 導出される `scope` |
+|---|---|---|
+| その backend の**共通グループ** | どの Project からでも | `shared` |
+| Project に**紐付いたグループ** | 紐付いている Project（複数可） | `project`（＋`projects[]`） |
+| どちらでもない | **誰も使えない** | `unbound` |
+
+- 1つのグループに複数の Project を向けられる——**それが「共有する」という人の意思表示**
+- `unbound` は**隠さずに人の画面へ出す**（規則2）。使えないものが黙って消えると
+  「登録したはずなのに無い」になる
+- **置き場は動かせない**（`updateAlias` で `scope` を付け替えられない）。以前は
+  付け替えられたが**値は元のグループに残ったまま**で、表示だけが変わる嘘だった。
+  変えるなら「グループの紐付けを変える」か「作り直す」
+- **置き場を決めるのは呼び出し側**。`VaultBackend.generateKeypair(kind, path)` は
+  **言われた場所に置く**——置けないなら例外（黙って別の場所に置かない、規則2）
+
+#### 共通グループも紐付け（決定・2026-09-13）
+
+以前は `"instance"` というリテラルの決め打ちで、**そこだけ選ぶ口が無かった**。
+その結果、同じ backend を指した2台目の banto が現れると**人が何も割り当てて
+いないのに共通の秘密が共有される**——「自動的な共有ではなく、人の意図で共有が
+起きる」という §2.1 の原則が、ここにだけ破れていた。
+
+**共通グループは backend ごとに1つ、人が選ぶ**（`setSharedGroup`）。既定は
+`instance`。`listGroupBindings` は `{shared, projects[]}` を返す。
+
+#### 制限は host が刻んだ呼び出し元で効かせる
+
+**Module に自己申告させない**（申告なら詐称できる）。host は中継のたびに
+`_meta["dev.banto/caller"]` を刻む——`{project}` か `{admin: true}`（人が管理
+画面から触っている）。**刻印が無ければ値を渡さない**（規則2——既定を「全部
+使える」にすると、名乗らないだけで制限をすり抜けられる）。
+
+- `resolveAlias` / `startSshAgent` / `verify`：使えないなら**断る**
+- `vault://aliases`・`lookupAlias`：使えるものだけ返す——**名前も見せない**
+- `listAliases`（admin）：**全部返す**。`unbound` も含めて人が直せるように
+- **窓口も絞る**。backend の `listAliases` は人の管理面なので全部返すので、
+  横断して AI に見せる側（`vault-directory`）が絞らないと制限は素通りになる
 
 > **Elicitation はやめた**（訂正・2026-09-12）。当初は「受信箱／Elicitation 経由で、
 > 設定 Canvas から追加してもらうよう頼む」としていたが、(1) **人を会話の外へ
@@ -357,9 +406,9 @@ Event Store 由来。C 節の管理画面は両方を並べて見せてよい。
 
   | tool | 内容 |
   |---|---|
-  | `createAlias({name, kind, scope, projectId?, value, note?, group?})` | 新規登録。**`scope: "project"` のときは `projectId` が要る**——どの Project のものか決まらない alias を作らせない。`group` 省略時は下の紐付けから決まる |
-  | `generateSecret({name, kind?, scope, projectId?, note?, format?, bytes?})` | **秘密を Vault の中で作る**（決定・2026-09-12）。**秘密の値は返さない**——人も画面も経路も、一度も値を見ない。<br>`kind: "secret"`（既定）＝暗号論的乱数。`format` は `base64url`（既定。`A-Za-z0-9_-` だけなのでシェル・URL・環境変数のどこに入れても壊れない）か `hex`、`bytes` は 16〜256（既定 32）。<br>`kind: "ssh-identity"` ＝鍵ペアを作り、**公開鍵だけ返す**（相手方に登録するのに要る）。鍵の作り方と置き方は backend（D節 `generateKeypair`）の仕事で、**秘密鍵が backend の外に出ない実装**（HSM・外部 Vault）もそのまま使える。`format`/`bytes` は**指定したら拒否**する——鍵の強さは鍵の種類が決めるので、黙って捨てない |
-  | `updateAlias({name, note?, scope?, projectId?})` | **メタデータだけ**を変える。値は変えない（差し替えは消して作る——中途半端に上書きできると「いつ何に変わったか」が追えなくなる） |
+  | `createAlias({name, kind, value, note?, group?, forProject?})` | 新規登録。**置き場を直接受ける**（改訂・2026-09-13）——`group` を指定するか、`forProject` でその Project のグループへ。**どちらも省略すると共通グループ**。使える範囲は置き場から導くので、別に `scope` を受け取らない（規則3） |
+  | `generateSecret({name, kind?, note?, group?, forProject?, format?, bytes?})` | **秘密を Vault の中で作る**（決定・2026-09-12）。**秘密の値は返さない**——人も画面も経路も、一度も値を見ない。<br>`kind: "secret"`（既定）＝暗号論的乱数。`format` は `base64url`（既定。`A-Za-z0-9_-` だけなのでシェル・URL・環境変数のどこに入れても壊れない）か `hex`、`bytes` は 16〜256（既定 32）。<br>`kind: "ssh-identity"` ＝鍵ペアを作り、**公開鍵だけ返す**（相手方に登録するのに要る）。鍵の作り方と置き方は backend（D節 `generateKeypair`）の仕事で、**秘密鍵が backend の外に出ない実装**（HSM・外部 Vault）もそのまま使える。`format`/`bytes` は**指定したら拒否**する——鍵の強さは鍵の種類が決めるので、黙って捨てない |
+  | `updateAlias({name, note?})` | **覚え書きだけ**。値も置き場も変えない（改訂・2026-09-13——以前は `scope` を付け替えられたが、**値は元のグループに残ったまま**で表示だけが変わる嘘だった）。差し替えは消して作る |
   | `deleteAlias({name})` | 削除（値も消える） |
   | `listAliases()` | 一覧（**値は含まない**。`vault://aliases` と同じ中身を tool の形で） |
   | `listGroups()` / `createGroup({name})` | backend のグループ |

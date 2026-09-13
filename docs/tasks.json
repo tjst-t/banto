@@ -23,7 +23,7 @@
     "status: pending（未着手） / in_progress / done / backlog（やると決めたが順番待ち）",
     "        / undecided（やるかどうかがまだ決まっていない——specs の未決に対応）"
   ],
-  "updatedAt": "2026-09-12",
+  "updatedAt": "2026-09-13",
   "currentPhase": "2",
   "tasks": [
     {
@@ -1510,6 +1510,24 @@
         "「無い」と「読めていない」を混ぜない——lookupAlias と vault://aliases が失敗を落として空を返していたのを直した"
       ],
       "spec": "docs/specs/v4-modules.md §2.1・§2.3、docs/specs/v4-architecture.md §2.5、docs/specs/v4-security.md",
+      "notes": "docs/notes/2026-09-12-vault-directory.md の末尾"
+    },
+    {
+      "id": "vault-scope-by-group",
+      "title": "グループを唯一の真実にする——scope を導出にし、アクセス制限を効かせる",
+      "status": "done",
+      "why": "「対象」列が何を意味するか聞かれて調べたら、scope は何も制限していなかった（別 Project からも引けた）。しかも置き場と二重管理で、鍵ペアでは既に食い違っていた。共通グループだけ紐付けが無く、2台目の banto が同じ backend を指すと人の意図なしに共有されていた。",
+      "done": [
+        "alias から scope/projectId を落とし、置き場（グループ）から導く（shared / project / unbound）",
+        "共通グループも紐付けにした（setSharedGroup）——backend ごとに人が選ぶ",
+        "generateKeypair(kind, path)——置き場を決めるのは呼び出し側。backend が勝手な場所を選ばない",
+        "host が _meta['dev.banto/caller'] を刻む（4箇所）。Module に自己申告させない",
+        "resolveAlias / startSshAgent / verify を制限。刻印が無ければ値を渡さない（fail closed）",
+        "vault://aliases と lookupAlias は使えるものだけ——名前も見せない。窓口も絞る",
+        "updateAlias で使える範囲を変えられなくした（値が動かないのに表示だけ変わる嘘だった）",
+        "画面2枚を「使える範囲」の語彙に。共通グループを選ぶ場所を管理画面に足した"
+      ],
+      "spec": "docs/specs/v4-modules.md §2.1、docs/specs/v4-architecture.md §2.5、docs/specs/v4-security.md",
       "notes": "docs/notes/2026-09-12-vault-directory.md の末尾"
     }
   ],

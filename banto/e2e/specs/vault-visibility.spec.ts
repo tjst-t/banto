@@ -120,7 +120,7 @@ test("画面 API からも、値を取る道具は呼べない——人の管理
       tool: "createAlias",
       // scope は instance——この試験が見たいのは可視性の境界で、対象の割り当て
       // ではない（`scope: "project"` は projectId とセットでないと作れない）
-      arguments: { name: alias, kind: "secret", scope: "instance", value: secret },
+      arguments: { name: alias, kind: "secret", value: secret },
     },
   });
   expect(created.status(), "人の管理操作まで塞いでしまっている").toBe(200);
@@ -159,7 +159,7 @@ test("AI は vault://aliases を実際に読める——名前は見え、値は
     body: JSON.stringify({
       server: "vault",
       tool: "createAlias",
-      arguments: { name: alias, kind: "secret", scope: "instance", value: secret, note: "E2E が置いた" },
+      arguments: { name: alias, kind: "secret", value: secret, note: "E2E が置いた" },
     }),
   });
   expect(created.status).toBe(200);
@@ -192,4 +192,74 @@ test("AI は vault://aliases を実際に読める——名前は見え、値は
   ).toContain(alias);
   // **名前は見えても、値は見えない**——A節の原則がターン越しでも保たれている
   expect(transcript, "AI の文脈に秘密の値が流れている").not.toContain(secret);
+});
+
+// **使える範囲は、置き場（グループ）が決める**（決定・2026-09-13、ユーザー指摘）。
+//
+// 以前は alias の `scope` がただの札で、**別の Project からでも普通に引けた**
+// （規則13——画面が制約を示しているのに実装は制約していない）。ここでは
+// 本物の host 越しに、**AI が別 Project の秘密を見つけられないこと**を見る。
+test("別の Project の秘密は、AI からは名前も見えない", async () => {
+  const headers = { authorization: `Bearer ${AUTH_TOKEN}`, "content-type": "application/json" };
+  const mine = `e2e-mine-${Date.now()}`;
+  const shared = `e2e-shared-${Date.now()}`;
+
+  await ensureModulesConnected();
+  const project = await (
+    await fetch(`${CORE_BASE_URL}/api/projects`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ name: "E2E Vault Scope", root: mkdtempSync(join(tmpdir(), "banto-e2e-scope-")) }),
+    })
+  ).json();
+
+  // その Project 専用のものと、共通のものを1つずつ置く
+  for (const [name, args] of [
+    [mine, { forProject: project.id }],
+    [shared, {}],
+  ] as Array<[string, Record<string, unknown>]>) {
+    const res = await fetch(`${CORE_BASE_URL}/api/ui-tool-call`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        server: "vault",
+        tool: "createAlias",
+        arguments: { name, kind: "secret", value: "v", ...args },
+      }),
+    });
+    expect(res.status).toBe(200);
+  }
+
+  const namesSeenBy = async (projectId: string) => {
+    const client = new Client({ name: "e2e-scope", version: "0.0.0" }, { capabilities: {} });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${CORE_BASE_URL}/agent-relay/vault-directory`), {
+        requestInit: {
+          headers: { authorization: `Bearer ${AUTH_TOKEN}`, "x-banto-project-id": projectId },
+        },
+      }),
+    );
+    try {
+      const read = await client.readResource({ uri: "vault://aliases" });
+      return ((read.contents as { text: string }[])[0]!.text ?? "") as string;
+    } finally {
+      await client.close();
+    }
+  };
+
+  const own = await namesSeenBy(project.id);
+  expect(own, "自分の Project の秘密が見えない").toContain(mine);
+  expect(own, "共通の秘密が見えない").toContain(shared);
+
+  const other = await namesSeenBy("e2e-some-other-project");
+  expect(other, "別の Project の秘密が名前ごと見えている").not.toContain(mine);
+  expect(other, "共通の秘密まで隠れている").toContain(shared);
+
+  for (const name of [mine, shared]) {
+    await fetch(`${CORE_BASE_URL}/api/ui-tool-call`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ server: "vault", tool: "deleteAlias", arguments: { name } }),
+    });
+  }
 });

@@ -128,7 +128,9 @@ function parseComment(comment: string | undefined): StoredMeta | undefined {
     const parsed = JSON.parse(comment) as Partial<StoredMeta>;
     if (typeof parsed !== "object" || parsed === null) return undefined;
     if (parsed.kind !== "secret" && parsed.kind !== "ssh-identity" && parsed.kind !== "file") return undefined;
-    if (parsed.scope !== "instance" && parsed.scope !== "project") return undefined;
+    // **`scope` はもう見ない**（改訂・2026-09-13）——使える範囲は置き場
+    // （グループ）から導くので、注記に書かれた古い `scope` は無視する。
+    // 消さずに無視するだけ（規則2——推測で書き換えない）
     return parsed as StoredMeta;
   } catch {
     return undefined;

@@ -77,7 +77,10 @@ export class AgentRelayEndpoint {
       // 要る——推測はしない（relay/module-calls.ts）
       const threadHeader = req.headers["x-banto-thread-id"];
       const threadId = typeof threadHeader === "string" ? threadHeader : undefined;
-      const proxy = buildAgentProxy(conn, { ...this.opts, threadId });
+      // **どの Project のターンか**（追加・2026-09-13）——Vault の制限の根拠
+      const projectHeader = req.headers["x-banto-project-id"];
+      const projectId = typeof projectHeader === "string" ? projectHeader : undefined;
+      const proxy = buildAgentProxy(conn, { ...this.opts, threadId, projectId });
       const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomBytes(16).toString("hex"),
         onsessioninitialized: (newSessionId) => {

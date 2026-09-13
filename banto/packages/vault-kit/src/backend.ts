@@ -9,7 +9,18 @@ export interface VaultBackend {
   putSecret(path: string, value: string | Buffer): Promise<void>;
   deleteSecret(path: string): Promise<void>;
   listPaths(prefix?: string): Promise<string[]>;
-  generateKeypair(kind: "ssh"): Promise<{ publicKey: string; privateKeyRef: string }>;
+  /**
+   * 鍵ペアを作って**指定された置き場**に預ける（改訂・2026-09-13）。
+   *
+   * **置き場を決めるのは呼び出し側**——以前は backend が `ssh-identities` を
+   * 決め打ちしていたので、鍵だけがどのグループにも紐付かなかった（＝誰も
+   * 使えない）うえ、Infisical では **alias 名が公開鍵の断片に化けていた**。
+   *
+   * 返す `privateKeyRef` は `path` と同じでなければならない。**置けないなら
+   * 例外**——黙って別の場所に置かない（規則2）。秘密鍵そのものは返さない
+   * （backend によっては一度もプロセスに出てこない）。
+   */
+  generateKeypair(kind: "ssh", path: string): Promise<{ publicKey: string; privateKeyRef: string }>;
   loadIntoAgent(privateKeyRef: string): Promise<{ socketPath: string }>;
   listGroups(): Promise<string[]>;
   createGroup(name: string): Promise<void>;

@@ -20,7 +20,13 @@ import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { VALUE_FREE_META_KEY, VISIBILITY_META_KEY, MODULE_META_KEY, CANVAS_META_KEY } from "@banto/module-contract";
+import {
+  callerOf,
+  VALUE_FREE_META_KEY,
+  VISIBILITY_META_KEY,
+  MODULE_META_KEY,
+  CANVAS_META_KEY,
+} from "@banto/module-contract";
 import { REQUEST_APP_HTML, requestAppUri } from "./request-app.js";
 import { toPublic, type AliasStore } from "./alias-store.js";
 import { GroupBindings } from "./group-bindings.js";
@@ -142,26 +148,51 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
    */
   async function groupForNewAlias(input: {
     explicitGroup?: string;
-    scope: "instance" | "project";
-    projectId?: string;
+    forProject?: string;
   }): Promise<string> {
     if (input.explicitGroup) {
       await backend.createGroup(input.explicitGroup); // 名前の検査もここが持つ
       return input.explicitGroup;
     }
-    if (input.scope === "instance") {
-      await backend.createGroup(INSTANCE_GROUP);
-      return INSTANCE_GROUP;
+    if (!input.forProject) {
+      const shared = bindings.sharedGroup();
+      await backend.createGroup(shared);
+      return shared;
     }
-    const projectId = input.projectId!;
-    const bound = bindings.get(projectId);
+    const bound = bindings.get(input.forProject);
     if (bound) {
       await backend.createGroup(bound);
       return bound;
     }
-    await backend.createGroup(projectId);
-    await bindings.set(projectId, projectId);
-    return projectId;
+    await backend.createGroup(input.forProject);
+    await bindings.set(input.forProject, input.forProject);
+    return input.forProject;
+  }
+
+  /**
+   * **その alias を誰が使えるか**（決定・2026-09-13）。保存せず、置き場から導く
+   * （規則3）——グループが唯一の真実。
+   *
+   * `unbound` は「どのグループにも紐付いていない」＝**誰も使えない**。
+   * 隠さずに人の画面へ出す（規則2——使えないものが黙って消えると、
+   * 「登録したはずなのに無い」になる）。
+   */
+  function scopeOf(meta: { backendPath: string }): {
+    scope: "shared" | "project" | "unbound";
+    group: string;
+    projects: string[];
+  } {
+    const group = meta.backendPath.slice(0, meta.backendPath.indexOf("/"));
+    if (group === bindings.sharedGroup()) return { scope: "shared", group, projects: [] };
+    const projects = bindings.projectsFor(group);
+    if (projects.length > 0) return { scope: "project", group, projects };
+    return { scope: "unbound", group, projects: [] };
+  }
+
+  /** その Project から使ってよいか。**共通グループか、紐付いたグループだけ**。 */
+  function usableBy(meta: { backendPath: string }, projectId: string): boolean {
+    const where = scopeOf(meta);
+    return where.scope === "shared" || where.projects.includes(projectId);
   }
 
   /** A 面の可視性。窓口だけが `agent`、backend は `module`（上記）。 */
@@ -237,15 +268,15 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
             properties: {
               name: { type: "string" },
               kind: { type: "string", enum: [...ALIAS_KINDS] },
-              scope: { type: "string", enum: [...ALIAS_SCOPES] },
-              // scope が project のときは必須——「どの Project のものか」が
-              // 決まらない alias を作らせない
-              projectId: { type: "string" },
               value: { type: "string" },
               note: { type: "string" },
-              group: { type: "string", description: "省略時は scope と紐付けから決まる" },
+              group: { type: "string", description: "置き場（グループ）を直に指定する。省略時は forProject／共通グループ" },
+              forProject: {
+                type: "string",
+                description: "この Project から使えるようにする（その Project に紐付いたグループへ置く）。省略すると共通グループ",
+              },
             },
-            required: ["name", "kind", "scope", "value"],
+            required: ["name", "kind", "value"],
           },
           "admin",
         ),
@@ -268,9 +299,12 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
                 enum: [...GENERATABLE_KINDS],
                 description: "secret＝汎用の文字列（既定）／ssh-identity＝SSH 鍵ペア",
               },
-              scope: { type: "string", enum: [...ALIAS_SCOPES] },
-              projectId: { type: "string" },
               note: { type: "string" },
+              group: { type: "string", description: "置き場（グループ）を直に指定する。省略時は forProject／共通グループ" },
+              forProject: {
+                type: "string",
+                description: "この Project から使えるようにする（その Project に紐付いたグループへ置く）。省略すると共通グループ",
+              },
               format: {
                 type: "string",
                 enum: [...SECRET_FORMATS],
@@ -280,9 +314,8 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
                 type: "number",
                 description: `kind が secret のときだけ。乱数の強さ（バイト）。既定 ${DEFAULT_SECRET_BYTES}、${MIN_SECRET_BYTES}〜${MAX_SECRET_BYTES}`,
               },
-              group: { type: "string" },
             },
-            required: ["name", "scope"],
+            required: ["name"],
           },
           "admin",
         ),
@@ -294,8 +327,6 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
             properties: {
               name: { type: "string" },
               note: { type: "string" },
-              scope: { type: "string", enum: [...ALIAS_SCOPES] },
-              projectId: { type: "string" },
             },
             required: ["name"],
           },
@@ -332,7 +363,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         ),
         tool(
           "listGroupBindings",
-          "Project ↔ グループの紐付け一覧（人専用）",
+          "紐付けの一覧（人専用）——共通グループと、Project ↔ グループ",
           { type: "object", properties: {} },
           "admin",
           { [VALUE_FREE_META_KEY]: true },
@@ -347,13 +378,54 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           },
           "admin",
         ),
+        tool(
+          "setSharedGroup",
+          // **共通グループも選べる**（追加・2026-09-13、ユーザー指摘）。以前は
+          // リテラルの決め打ちで、**そこだけ紐付けが無かった**——同じ backend を
+          // 指した2台目の banto が現れると、人が何も割り当てていないのに
+          // 共通の秘密が共有される（仕様が避けたかった「自動的な共有」）
+          "どの Project からでも使えるグループ（共通グループ）を決める（人専用）",
+          { type: "object", properties: { group: { type: "string" } }, required: ["group"] },
+          "admin",
+        ),
       ],
     };
   });
 
+  /**
+   * **その呼び出しが誰のためのものか**（決定・2026-09-13）。host が `_meta` に
+   * 刻む——Module の自己申告ではない（申告なら詐称できる）。
+   *
+   * **刻印が無ければ「決められない」**。値を返す口はそこで止める（規則2）
+   * ——既定を「全部使える」にすると、名乗らないだけで制限をすり抜けられる。
+   */
+  function callerFrom(meta: Record<string, unknown> | undefined) {
+    return callerOf(meta);
+  }
+
+  /** 値を渡してよいか。**人の管理面（admin）は通す**、Project は紐付け次第。 */
+  function assertUsable(meta: { backendPath: string }, name: string, rawMeta: Record<string, unknown> | undefined) {
+    const caller = callerFrom(rawMeta);
+    if (!caller) {
+      throw new Error(
+        `alias "${name}" を誰のために使うのかが分かりません（host が呼び出し元を刻んでいない）`,
+      );
+    }
+    if ("admin" in caller) return; // 人が管理画面から直接触っている
+    if (usableBy(meta, caller.project)) return;
+    const where = scopeOf(meta);
+    throw new Error(
+      `alias "${name}" はこの Project からは使えません` +
+        (where.scope === "unbound"
+          ? "（どのグループにも紐付いていません——管理画面で紐付けてください）"
+          : `（置き場 "${where.group}" はこの Project に紐付いていません）`),
+    );
+  }
+
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     await initPromise;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+    const callMeta = request.params._meta as Record<string, unknown> | undefined;
 
     switch (request.params.name) {
       case "requestAlias": {
@@ -389,6 +461,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         const name = requiredString(args.name, "name");
         const meta = await registry.get(name);
         if (!meta) throw new Error(`alias "${name}" not found`);
+        assertUsable(meta, name, callMeta);
         const value = await backend.getSecret(meta.backendPath);
         await registry.markUsed(name);
         return { content: [{ type: "text", text: String(value) }] };
@@ -400,6 +473,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         if (meta.kind !== "ssh-identity") {
           throw new Error(`alias "${identity}" は ssh-identity ではありません（${meta.kind}）`);
         }
+        assertUsable(meta, identity, callMeta);
         const { socketPath } = await backend.loadIntoAgent(meta.backendPath);
         return { content: [{ type: "text", text: JSON.stringify({ socketPath }) }] };
       }
@@ -407,6 +481,7 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         const alias = requiredString(args.alias, "alias");
         const meta = await registry.get(alias);
         if (!meta) throw new Error(`alias "${alias}" not found`);
+        assertUsable(meta, alias, callMeta);
         const key = await backend.getSecret(meta.backendPath);
         const expected = createHmac("sha256", String(key))
           .update(requiredString(args.payload, "payload"))
@@ -427,27 +502,18 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       case "createAlias": {
         const name = requiredString(args.name, "name");
         const kind = oneOf(args.kind, ALIAS_KINDS, "kind");
-        const scope = oneOf(args.scope, ALIAS_SCOPES, "scope");
-        const projectId = optionalString(args.projectId, "projectId");
-        // **どの Project のものか決まらない「Project の alias」を作らない**
-        // （追加・2026-09-12）。以前は scope だけ受け取って projectId を
-        // 持たなかったので、横断管理の画面が対象を出せず、グループも決まらなかった
-        if (scope === "project" && !projectId) {
-          throw new Error('scope が "project" のときは projectId が要ります');
-        }
         const value = requiredString(args.value, "value");
+        // **置き場を直接受ける**（改訂・2026-09-13）。`scope` は保存せず
+        // 置き場から導くので、入口でも「どこに置くか」だけを聞く
         const group = await groupForNewAlias({
           explicitGroup: optionalString(args.group, "group"),
-          scope,
-          projectId,
+          forProject: optionalString(args.forProject, "forProject"),
         });
         const backendPath = `${group}/${name}`;
         await backend.putSecret(backendPath, value);
         await registry.create({
           name,
           kind,
-          scope,
-          projectId: scope === "project" ? projectId : undefined,
           note: optionalString(args.note, "note"),
           backendPath,
         });
@@ -455,26 +521,34 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       }
       case "generateSecret": {
         const name = requiredString(args.name, "name");
-        const scope = oneOf(args.scope, ALIAS_SCOPES, "scope");
-        const projectId = optionalString(args.projectId, "projectId");
-        if (scope === "project" && !projectId) {
-          throw new Error('scope が "project" のときは projectId が要ります');
-        }
         const kind = args.kind === undefined ? "secret" : oneOf(args.kind, GENERATABLE_KINDS, "kind");
         if (await registry.get(name)) throw new Error(`alias "${name}" は既にあります`);
         const note = optionalString(args.note, "note");
-        const common = { name, scope, projectId: scope === "project" ? projectId : undefined, note };
+        const group = await groupForNewAlias({
+          explicitGroup: optionalString(args.group, "group"),
+          forProject: optionalString(args.forProject, "forProject"),
+        });
+        const common = { name, note };
 
         if (kind === "ssh-identity") {
-          // **秘密鍵の作り方と置き方は backend の仕事**（仕様 §2.1 D）。
-          // 返るのは公開鍵と**不透明な参照**だけ——backend によっては秘密鍵が
-          // 一度もプロセスに出てこない（HSM・外部 Vault）ので、ここで
-          // 「秘密鍵をもらって自分で置く」形にしてはいけない
+          // **秘密鍵の作り方は backend の仕事**（仕様 §2.1 D）——返るのは公開鍵と
+          // 参照だけで、backend によっては秘密鍵が一度もプロセスに出てこない。
+          // **ただし置き場は呼び出し側が決める**（改訂・2026-09-13）。以前は
+          // backend が `ssh-identities` を決め打ちしていたので、鍵だけが
+          // どのグループにも紐付かず、**alias 名が公開鍵の断片に化けてもいた**
+          // ——置き場を決める主体が2つあったのが根。
           if (args.format !== undefined || args.bytes !== undefined) {
             // 鍵の強さは鍵の種類が決める。**渡されたものを黙って捨てない**（規則2）
             throw new Error("ssh-identity では format / bytes は指定できません");
           }
-          const { publicKey, privateKeyRef } = await backend.generateKeypair("ssh");
+          const { publicKey, privateKeyRef } = await backend.generateKeypair("ssh", `${group}/${name}`);
+          if (!privateKeyRef.startsWith(`${group}/`)) {
+            // **言われた場所に置けなかったなら止まる**（規則2）——黙って別の
+            // ところに置かれると、その鍵はどの Project からも使えなくなる
+            throw new Error(
+              `backend が指定した置き場に鍵を作りませんでした（頼んだ: ${group}/${name}、返った: ${privateKeyRef}）`,
+            );
+          }
           await registry.create({ ...common, kind: "ssh-identity", backendPath: privateKeyRef });
           // **公開鍵は秘密ではない**——むしろ返さないと使えない
           // （GitHub 等に登録するのは人）
@@ -489,11 +563,6 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
           throw new Error(`bytes は ${MIN_SECRET_BYTES}〜${MAX_SECRET_BYTES} の整数です（${String(args.bytes)} が来ました）`);
         }
 
-        const group = await groupForNewAlias({
-          explicitGroup: optionalString(args.group, "group"),
-          scope,
-          projectId,
-        });
         const backendPath = `${group}/${name}`;
         // **暗号論的乱数で作る**（`Math.random` ではない、規則12——名前のある
         // 解決済みのものを使う）。値はこの行から backend へ渡るだけで、
@@ -511,20 +580,16 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         const name = requiredString(args.name, "name");
         const existing = await registry.get(name);
         if (!existing) throw new Error(`alias "${name}" not found`);
-        const scope = args.scope === undefined ? undefined : oneOf(args.scope, ALIAS_SCOPES, "scope");
-        const projectId = optionalString(args.projectId, "projectId");
-        const nextScope = scope ?? existing.scope;
-        const nextProjectId = projectId ?? existing.projectId;
-        if (nextScope === "project" && !nextProjectId) {
-          throw new Error('scope が "project" のときは projectId が要ります');
+        // **置き場は動かせない**（改訂・2026-09-13）。以前は `scope` を
+        // 付け替えられたが、**値は元のグループに残ったまま**だったので、
+        // 画面の表示だけが変わる嘘になっていた。誰が使えるかを変えるのは
+        // 「グループの紐付けを変える」か「作り直す」のどちらか
+        if (args.scope !== undefined || args.projectId !== undefined) {
+          throw new Error(
+            "使える範囲は alias では変えられません（グループの紐付けを変えるか、作り直してください）",
+          );
         }
-        await registry.update(name, {
-          note: optionalString(args.note, "note"),
-          scope,
-          // instance に戻すときは Project の紐付けを**消す**（残すと、画面には
-          // instance と出るのに中身は Project を指したままになる、規則3）
-          projectId: nextScope === "instance" ? null : nextProjectId,
-        });
+        await registry.update(name, { note: optionalString(args.note, "note") });
         return { content: [{ type: "text", text: `updated ${name}` }] };
       }
       case "deleteAlias": {
@@ -535,8 +600,14 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         return { content: [{ type: "text", text: `deleted ${name}` }] };
       }
       case "listAliases": {
-        // **値は返さない**（§2.1——人が見るのは「どれが登録されているか」まで）
-        return { content: [{ type: "text", text: JSON.stringify((await registry.list()).map(toPublic)) }] };
+        // **値は返さない**（§2.1——人が見るのは「どれが登録されているか」まで）。
+        // **使える範囲は保存せず導く**（規則3）——人の画面には「どこにも
+        // 紐付いていない」も含めて全部出す（隠すと直せない）
+        return {
+          content: [
+            { type: "text", text: JSON.stringify((await registry.list()).map((m) => ({ ...toPublic(m), ...scopeOf(m) }))) },
+          ],
+        };
       }
       case "listGroups":
         return { content: [{ type: "text", text: JSON.stringify(await backend.listGroups()) }] };
@@ -544,7 +615,17 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
         await backend.createGroup(requiredString(args.name, "name"));
         return { content: [{ type: "text", text: "ok" }] };
       case "listGroupBindings":
-        return { content: [{ type: "text", text: JSON.stringify(bindings.list()) }] };
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ shared: bindings.sharedGroup(), projects: bindings.list() }) },
+          ],
+        };
+      case "setSharedGroup": {
+        const group = requiredString(args.group, "group");
+        await backend.createGroup(group); // 名前の検査は backend が持つ（規則3）
+        await bindings.setSharedGroup(group);
+        return { content: [{ type: "text", text: JSON.stringify({ shared: group }) }] };
+      }
       case "setGroupBinding": {
         const projectId = requiredString(args.projectId, "projectId");
         const group = requiredString(args.group, "group");
@@ -648,13 +729,26 @@ export function createVaultModuleServer(opts: VaultModuleOptions) {
       };
     }
     if (request.params.uri === ALIASES_URI) {
-      const list = (await registry.list()).map(toPublic);
-      return { contents: [{ uri: request.params.uri, mimeType: "application/json", text: JSON.stringify(list) }] };
+      // **使えないものは名前も見せない**（決定・2026-09-13）——AI に
+      // 「あるが使えない」を見せても、頼める先が無い
+      const caller = callerOf(request.params._meta as Record<string, unknown> | undefined);
+      const all = await registry.list();
+      const visible = !caller
+        ? []
+        : "admin" in caller
+          ? all
+          : all.filter((m) => usableBy(m, caller.project));
+      return {
+        contents: [
+          { uri: request.params.uri, mimeType: "application/json", text: JSON.stringify(visible.map(toPublic)) },
+        ],
+      };
     }
     const match = request.params.uri.match(/^vault:\/\/aliases\/(.+)$/);
     if (match) {
       const meta = await registry.get(match[1]!);
       if (!meta) throw new Error("not found");
+      assertUsable(meta, match[1]!, request.params._meta as Record<string, unknown> | undefined);
       return {
         contents: [
           { uri: request.params.uri, mimeType: "application/json", text: JSON.stringify(toPublic(meta)) },

@@ -257,11 +257,12 @@ export const REQUEST_APP_HTML = `<!doctype html>
     $("submit").disabled = true;
     try {
       if (!asked.name) throw new Error("どの名前で登録するのかが渡ってきていません");
-      const scope = $("scope").value;
+      // **置き場を直に渡す**（改訂・2026-09-13）。使える範囲は置き場から
+      // 導かれるので、画面が別に scope を送ることはない（規則3）
+      const forProject = $("scope").value === "project" && project ? project.id : undefined;
       const common = {
         name: asked.name,
-        scope,
-        projectId: scope === "project" && project ? project.id : undefined,
+        forProject,
         // 選ばせているときだけ添える——1本しか無いなら受け手が決める
         ...($("impl-field").hidden ? {} : { implementation: $("impl").value }),
       };

@@ -26,8 +26,11 @@ export type ModuleCallThread =
 export type CallOrigin = "turn" | "canvas";
 
 export class ModuleCallTracker {
-  /** Module の接続名 → 走行中の呼び出し（連番 → Thread と出所）。 */
-  private readonly inFlight = new Map<string, Map<number, { threadId?: string; origin: CallOrigin }>>();
+  /** Module の接続名 → 走行中の呼び出し（連番 → Thread・Project・出所）。 */
+  private readonly inFlight = new Map<
+    string,
+    Map<number, { threadId?: string; projectId?: string; origin: CallOrigin }>
+  >();
   private nextCallId = 1;
 
   /**
@@ -39,14 +42,19 @@ export class ModuleCallTracker {
    * 「人の画面から来た」ことは分かるが「どの会話か」は分からない、という
    * 正直な状態になる（承認が要る中継はそこで fail closed のまま止まる）。
    */
-  begin(connName: string, threadId: string | undefined, origin: CallOrigin = "turn"): () => void {
+  begin(
+    connName: string,
+    threadId: string | undefined,
+    origin: CallOrigin = "turn",
+    projectId?: string,
+  ): () => void {
     const callId = this.nextCallId++;
     let calls = this.inFlight.get(connName);
     if (!calls) {
       calls = new Map();
       this.inFlight.set(connName, calls);
     }
-    calls.set(callId, { threadId, origin });
+    calls.set(callId, { threadId, projectId, origin });
     return () => {
       const current = this.inFlight.get(connName);
       if (!current) return;
@@ -73,5 +81,19 @@ export class ModuleCallTracker {
     const calls = this.inFlight.get(connName);
     if (!calls || calls.size === 0) return undefined;
     return [...calls.values()].some((c) => c.origin === "turn") ? "turn" : "canvas";
+  }
+
+  /**
+   * **いま走っている呼び出しの Project**（追加・2026-09-13）。
+   *
+   * Vault のアクセス制限に要る——「この alias はどの Project から使えるか」を
+   * 決めるのは host であって、Module の自己申告ではない。`threadFor` と同じ
+   * 規律で、**決められないなら `undefined`**（呼び出し先が fail closed で止まる）。
+   */
+  projectFor(connName: string): string | undefined {
+    const calls = this.inFlight.get(connName);
+    if (!calls || calls.size === 0) return undefined;
+    const ids = [...new Set([...calls.values()].map((c) => c.projectId).filter((p): p is string => !!p))];
+    return ids.length === 1 ? ids[0] : undefined;
   }
 }

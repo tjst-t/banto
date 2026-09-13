@@ -45,7 +45,6 @@ function assertSafeGroup(name: string): void {
 }
 
 /** SSH 鍵を預けるグループ。**人が作った名前と混ざらない**ように分けておく。 */
-const SSH_GROUP = "ssh-identities";
 
 export class InfisicalBackend implements VaultBackend {
   /** 立てた ssh-agent（鍵の参照 → プロセス）。**同じ鍵で増やさない**。 */
@@ -125,7 +124,7 @@ export class InfisicalBackend implements VaultBackend {
    * **Infisical は鍵ペアを作れない**ので、こちらで作って預ける。
    * 返す `privateKeyRef` は置き場を指す不透明な参照——呼び出し側は中身を知らない。
    */
-  async generateKeypair(kind: "ssh"): Promise<{ publicKey: string; privateKeyRef: string }> {
+  async generateKeypair(kind: "ssh", path: string): Promise<{ publicKey: string; privateKeyRef: string }> {
     if (kind !== "ssh") throw new Error(`unsupported keypair kind: ${kind}`);
     const dir = join(tmpdir(), `banto-infisical-keygen-${process.pid}-${Math.random().toString(36).slice(2)}`);
     await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -134,9 +133,12 @@ export class InfisicalBackend implements VaultBackend {
       await execFileP("ssh-keygen", ["-t", "ed25519", "-f", keyPath, "-N", "", "-q"]);
       const privateKey = await readFile(keyPath, "utf8");
       const publicKey = (await readFile(`${keyPath}.pub`, "utf8")).trim();
-      const ref = `${SSH_GROUP}/${publicKey.split(" ")[1]?.slice(0, 16) ?? Date.now()}`;
-      await this.putSecret(ref, privateKey);
-      return { publicKey, privateKeyRef: ref };
+      // **置き場は呼び出し側が決める**（改訂・2026-09-13）。以前は
+      // `ssh-identities` 決め打ちで、そこから **alias 名が公開鍵の断片に
+      // 化ける**不具合も出ていた（置き場を決める主体が2つあったのが根）
+      await this.createGroup(path.slice(0, path.indexOf("/")));
+      await this.putSecret(path, privateKey);
+      return { publicKey, privateKeyRef: path };
     } finally {
       // **平文の鍵をディスクに残さない**
       await rm(dir, { recursive: true, force: true });

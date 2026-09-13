@@ -34,7 +34,7 @@ import {
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { VISIBILITY_META_KEY, MODULE_META_KEY, CANVAS_META_KEY } from "@banto/module-contract";
+import { callerOf, VISIBILITY_META_KEY, MODULE_META_KEY, CANVAS_META_KEY } from "@banto/module-contract";
 import { MANAGE_APP_HTML, MANAGE_APP_URI, UI_APP_MIME } from "./manage-app.js";
 import { REQUEST_APP_HTML, requestAppUri } from "@banto/vault-kit";
 
@@ -125,6 +125,28 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
     return { aliases, failures };
   }
 
+  /**
+   * **窓口も絞る**（決定・2026-09-13）。backend の `listAliases` は人の管理面
+   * （admin）なので**全部返す**——窓口がそれをそのまま AI に渡すと、
+   * せっかくの制限を素通りする。横断した目録を出すのは窓口の仕事なので、
+   * **絞るのも窓口の仕事**。
+   *
+   * 判定の材料は backend が導出して返している（`scope` / `projects`）
+   * ——ここで紐付けを引き直さない（規則3）。
+   */
+  function usableBy(alias: Record<string, unknown>, caller: ReturnType<typeof callerOf>): boolean {
+    if (!caller) return false; // 誰のためか分からないなら見せない（規則2）
+    if ("admin" in caller) return true;
+    if (alias.scope === "shared") return true;
+    return Array.isArray(alias.projects) && (alias.projects as string[]).includes(caller.project);
+  }
+
+  /** AI に見せる形。**金庫の名前も置き場も見せない**——選ばせる材料にしない。 */
+  function forAgent(alias: Record<string, unknown>): Record<string, unknown> {
+    const { implementation: _i, group: _g, projects: _p, scope: _s, ...rest } = alias;
+    return rest;
+  }
+
   function tool(name: string, description: string, properties: Record<string, unknown>, required: string[] = []) {
     return {
       name,
@@ -187,12 +209,12 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
           ...IMPL,
           name: { type: "string" },
           kind: { type: "string", enum: ["secret", "ssh-identity", "file"] },
-          scope: { type: "string", enum: ["instance", "project"] },
-          projectId: { type: "string" },
           value: { type: "string" },
           note: { type: "string" },
+          group: { type: "string", description: "置き場（グループ）を直に指定する" },
+          forProject: { type: "string", description: "この Project から使えるようにする。省略すると共通グループ" },
         },
-        ["name", "kind", "scope", "value"],
+        ["name", "kind", "value"],
       ),
       tool(
         "generateSecret",
@@ -201,18 +223,18 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
           ...IMPL,
           name: { type: "string" },
           kind: { type: "string", enum: ["secret", "ssh-identity"] },
-          scope: { type: "string", enum: ["instance", "project"] },
-          projectId: { type: "string" },
+          group: { type: "string", description: "置き場（グループ）を直に指定する" },
+          forProject: { type: "string", description: "この Project から使えるようにする。省略すると共通グループ" },
           note: { type: "string" },
           format: { type: "string", enum: ["base64url", "hex"] },
           bytes: { type: "number" },
         },
-        ["name", "scope"],
+        ["name"],
       ),
       tool(
         "updateAlias",
         "alias の覚え書き・対象を変える（値は変えない）",
-        { ...IMPL, name: { type: "string" }, note: { type: "string" }, scope: { type: "string" }, projectId: { type: "string" } },
+        { ...IMPL, name: { type: "string" }, note: { type: "string" } },
         ["implementation", "name"],
       ),
       tool("deleteAlias", "alias を削除する", { ...IMPL, name: { type: "string" } }, ["implementation", "name"]),
@@ -227,11 +249,22 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         { ...IMPL, projectId: { type: "string" }, group: { type: "string" } },
         ["implementation", "projectId", "group"],
       ),
+      tool(
+        "setSharedGroup",
+        // **共通グループも選べる**（追加・2026-09-13）。以前は決め打ちで、
+        // そこだけ紐付けが無かった——2台目の banto が同じ backend を指すと、
+        // 人が何も割り当てていないのに共通の秘密が共有されていた
+        "どの Project からでも使えるグループ（共通グループ）を決める",
+        { ...IMPL, group: { type: "string" } },
+        ["implementation", "group"],
+      ),
     ],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+    /** host が刻んだ「誰のための呼び出しか」。**Module の自己申告ではない**。 */
+    const callMeta = request.params._meta as Record<string, unknown> | undefined;
     const text = (value: unknown) => ({ content: [{ type: "text", text: JSON.stringify(value) }] });
 
     /**
@@ -297,7 +330,10 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
       case "lookupAlias": {
         const name = requiredString(args.name, "name");
         const { aliases, failures } = await crossAliases();
-        const found = aliases.filter((a) => a.name === name);
+        // **呼び出し元から使えるものだけ**——使えない alias の在りかを
+        // 教えても、その先で backend に断られるだけ（先に、理由の分かる形で止める）
+        const caller = callerOf(callMeta);
+        const found = aliases.filter((a) => a.name === name && usableBy(a, caller));
         if (found.length === 0) {
           // **読めなかった backend があるなら、それを言う**（規則2）。
           // 「どこにもありません」と「片方が読めていません」は別の事実で、
@@ -339,8 +375,8 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         const body = await deps.relay.callTool(implementation, "createAlias", {
           name: requiredString(args.name, "name"),
           kind: requiredString(args.kind, "kind"),
-          scope: requiredString(args.scope, "scope"),
-          projectId: optionalString(args.projectId, "projectId"),
+          group: optionalString(args.group, "group"),
+          forProject: optionalString(args.forProject, "forProject"),
           value: requiredString(args.value, "value"),
           note: optionalString(args.note, "note"),
         });
@@ -354,8 +390,8 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         const body = await deps.relay.callTool(implementation, "generateSecret", {
           name: requiredString(args.name, "name"),
           kind: optionalString(args.kind, "kind"),
-          scope: requiredString(args.scope, "scope"),
-          projectId: optionalString(args.projectId, "projectId"),
+          group: optionalString(args.group, "group"),
+          forProject: optionalString(args.forProject, "forProject"),
           note: optionalString(args.note, "note"),
           format: optionalString(args.format, "format"),
           bytes: args.bytes === undefined ? undefined : Number(args.bytes),
@@ -372,8 +408,7 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         const body = await deps.relay.callTool(implementation, "updateAlias", {
           name: requiredString(args.name, "name"),
           note: optionalString(args.note, "note"),
-          scope: optionalString(args.scope, "scope"),
-          projectId: optionalString(args.projectId, "projectId"),
+
         });
         return text({ ok: true, message: body });
       }
@@ -399,6 +434,14 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
         const implementation = await target();
         await deps.relay.callTool(implementation, "createGroup", { name: requiredString(args.name, "name") });
         return text({ ok: true });
+      }
+
+      case "setSharedGroup": {
+        const implementation = await target();
+        const body = await deps.relay.callTool(implementation, "setSharedGroup", {
+          group: requiredString(args.group, "group"),
+        });
+        return text({ ok: true, shared: JSON.parse(body) });
       }
 
       case "setGroupBinding": {
@@ -478,12 +521,16 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
             failures.map((f) => `${f.implementation}（${f.error}）`).join("、"),
         );
       }
+      // **使えないものは名前も見せない**（決定・2026-09-13）。backend の
+      // `listAliases` は人の管理面なので全部返す——**絞るのは横断した側の仕事**
+      const caller = callerOf(request.params._meta as Record<string, unknown> | undefined);
+      const visible = aliases.filter((a) => usableBy(a, caller));
       return {
         contents: [
           {
             uri: request.params.uri,
             mimeType: "application/json",
-            text: JSON.stringify(aliases.map(({ implementation: _drop, ...rest }) => rest)),
+            text: JSON.stringify(visible.map(forAgent)),
           },
         ],
       };

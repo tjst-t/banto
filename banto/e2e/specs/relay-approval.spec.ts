@@ -51,7 +51,7 @@ test("Module 間の中継は初回だけ人に聞き、許可すると通る—�
       server: "vault",
       tool: "createAlias",
       // scope は instance——この試験が見たいのは中継の承認で、対象の割り当てではない
-      arguments: { name: ALIAS, kind: "secret", scope: "instance", value: SECRET },
+      arguments: { name: ALIAS, kind: "secret", value: SECRET },
     },
   });
   expect(created.ok()).toBe(true);

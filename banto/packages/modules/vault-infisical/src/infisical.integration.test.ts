@@ -23,6 +23,9 @@ import { InfisicalBackend } from "./infisical-backend.js";
 import { InfisicalAliasStore } from "./infisical-alias-store.js";
 import { createInfisicalVaultServer } from "./server.js";
 
+/** host が刻む「誰のための呼び出しか」。ここは人の管理面のつもり。 */
+const ADMIN = { "dev.banto/caller": { admin: true } } as const;
+
 const IDENTITY = join(dirname(fileURLToPath(import.meta.url)), "../dev/.identity.json");
 
 /** 開発用の Infisical が立っているか。立っていないなら**理由を言って**飛ばす。 */
@@ -84,7 +87,7 @@ test("グループ名で置き場の外を指せない（`/` も `..` も通さ�
 
 test("SSH 鍵を作って、本物の ssh-agent に積める", { skip }, async () => {
   const backend = new InfisicalBackend(await connected());
-  const { publicKey, privateKeyRef } = await backend.generateKeypair("ssh");
+  const { publicKey, privateKeyRef } = await backend.generateKeypair("ssh", "ssh-identities/e2e-key");
   assert.ok(publicKey.startsWith("ssh-ed25519"));
   try {
     const { socketPath } = await backend.loadIntoAgent(privateKeyRef);
@@ -119,8 +122,6 @@ test("メタデータは Infisical の中にある——別のホストからで
   await store.create({
     name,
     kind: "secret",
-    scope: "project",
-    projectId: "proj-x",
     note: "CI 用",
     backendPath: `${g}/${name}`,
   });
@@ -130,7 +131,7 @@ test("メタデータは Infisical の中にある——別のホストからで
   const seen = await otherHost.get(name);
   assert.ok(seen, "別のホストから alias が見えない（メタデータが手元にしか無い）");
   assert.equal(seen.kind, "secret");
-  assert.equal(seen.projectId, "proj-x");
+  assert.equal(seen.name, name, "alias 名が置き場から作り直されている");
   assert.equal(seen.note, "CI 用");
   assert.equal(seen.backendPath, `${g}/${name}`);
 
@@ -182,10 +183,10 @@ test("Module 越しに、登録 → 一覧 → 解決 → 削除が通る", { sk
       name: "createAlias",
       arguments: { name, kind: "secret", scope: "instance", value: "through-the-module", note: "統合試験" },
     });
-    const resolved = await client.callTool({ name: "resolveAlias", arguments: { name } });
+    const resolved = await client.callTool({ name: "resolveAlias", arguments: { name }, _meta: ADMIN });
     assert.equal((resolved.content as { text: string }[])[0]?.text, "through-the-module");
 
-    const read = await client.readResource({ uri: "vault://aliases" });
+    const read = await client.readResource({ uri: "vault://aliases", _meta: ADMIN });
     const list = JSON.parse((read.contents as { text: string }[])[0]!.text) as Array<Record<string, unknown>>;
     const mine = list.find((a) => a.name === name);
     assert.ok(mine, "一覧に出てこない");
@@ -194,7 +195,7 @@ test("Module 越しに、登録 → 一覧 → 解決 → 削除が通る", { sk
     assert.equal(JSON.stringify(list).includes("through-the-module"), false);
     assert.equal(mine.backendPath, undefined);
 
-    await client.callTool({ name: "deleteAlias", arguments: { name } });
+    await client.callTool({ name: "deleteAlias", arguments: { name }, _meta: ADMIN });
     const after = await client.readResource({ uri: "vault://aliases" });
     assert.equal(
       (JSON.parse((after.contents as { text: string }[])[0]!.text) as Array<{ name: string }>).some(
@@ -252,7 +253,7 @@ test("鍵ペアを作っても、alias は付けた名前のまま（公開鍵�
     // **秘密鍵は返らない**
     assert.equal(JSON.stringify(body).includes("PRIVATE KEY"), false);
 
-    const read = await client.readResource({ uri: "vault://aliases" });
+    const read = await client.readResource({ uri: "vault://aliases", _meta: ADMIN });
     const list = JSON.parse((read.contents as { text: string }[])[0]!.text) as Array<Record<string, unknown>>;
     const mine = list.find((a) => a.name === name);
     assert.ok(mine, `一覧に「${name}」が無い（出ている名前: ${list.map((a) => a.name).join(", ")}）`);
@@ -264,7 +265,7 @@ test("鍵ペアを作っても、alias は付けた名前のまま（公開鍵�
       "公開鍵の断片が alias 名になっている",
     );
 
-    await client.callTool({ name: "deleteAlias", arguments: { name } });
+    await client.callTool({ name: "deleteAlias", arguments: { name }, _meta: ADMIN });
     await client.close();
   } finally {
     await rm(dataDir, { recursive: true, force: true });

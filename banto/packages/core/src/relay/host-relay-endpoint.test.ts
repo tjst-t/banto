@@ -227,6 +227,7 @@ async function withCanvasOrigin(
     moduleCalls: {
       originFor: () => origin,
       threadFor: () => ({ kind: "none" }),
+      projectFor: () => undefined,
       begin: () => () => undefined,
     },
     // **聞かれたことが分かるゲート**。聞かれたら拒否する——「聞かずに通った」
@@ -417,6 +418,7 @@ test("値を返さない口は聞かない——名乗っていない口は今�
     moduleCalls: {
       originFor: () => "turn",
       threadFor: () => ({ kind: "none" }),
+      projectFor: () => undefined,
       begin: () => () => undefined,
     },
     gate: {
