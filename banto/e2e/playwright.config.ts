@@ -1,5 +1,11 @@
 import { defineConfig } from "@playwright/test";
-import { CORE_BASE_URL, FRONTEND_BASE_URL, CONFIG_PATH } from "./config.js";
+import {
+  CORE_BASE_URL,
+  FRONTEND_BASE_URL,
+  FRONTEND_PORT,
+  FRONTEND_DIST_DIR,
+  CONFIG_PATH,
+} from "./config.js";
 
 export default defineConfig({
   testDir: "./specs",
@@ -34,14 +40,24 @@ export default defineConfig({
       stderr: "pipe",
     },
     {
-      // frontend。Next 16はディレクトリ単位で多重起動を拒否するため、専用の
-      // 別portを新たに起こすのではなく既存の開発用devサーバ（常時起動）を
-      // 再利用する。落ちていた場合だけ、通常のdevスクリプトと同じ形で起こす
-      command: `npm run dev --workspace=@banto/frontend`,
+      // **フロントも E2E 専用に起こす**（訂正・2026-09-13、config.ts 参照）。
+      // 以前は人が使っている 4175 を借りていたので、**開発中のビルドが
+      // 人の画面を壊していた**。port も dist も実行ごとに分ける。
+      //
+      // **本番ビルドで試験する**（dev サーバではない）——4175 は 2026-09-07 から
+      // `next build` + `next start`。dev で試験すると、人が見ているものと違う
+      // ものを見ることになる（規則1）。
+      command:
+        `npm run build --workspace=@banto/frontend && ` +
+        `npm exec --workspace=@banto/frontend -- next start -H 127.0.0.1 -p ${FRONTEND_PORT}`,
       cwd: new URL("..", import.meta.url).pathname,
+      env: { BANTO_NEXT_DIST_DIR: FRONTEND_DIST_DIR },
       url: FRONTEND_BASE_URL,
-      reuseExistingServer: true,
-      timeout: 60_000,
+      // **黙って相乗りしない**（core と同じ規律）——別の実行のフロントを
+      // 掴むと、どのビルドを試験したのか分からなくなる
+      reuseExistingServer: false,
+      // ビルドを含むので長め
+      timeout: 300_000,
       stdout: "pipe",
       stderr: "pipe",
     },

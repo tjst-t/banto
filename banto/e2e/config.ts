@@ -17,9 +17,9 @@ const RUN_ID = (process.env.BANTO_E2E_RUN_ID ??= String(process.pid));
 
 /** 実行ごとに違う port を選ぶ。**衝突したら Playwright が止まる**（黙って相乗りしない）。 */
 function portForRun(offsetInRun: number): number {
-  // 4740〜4939 の 100 枠を、実行ごとに2つずつ使う（core と sandbox）
-  const slot = Number(RUN_ID) % 100;
-  return 4740 + slot * 2 + offsetInRun;
+  // 4740〜4939 の 100 枠を、実行ごとに**3つずつ**使う（core・sandbox・frontend）
+  const slot = Number(RUN_ID) % 66;
+  return 4740 + slot * 3 + offsetInRun;
 }
 
 export const CORE_PORT = portForRun(0);
@@ -27,18 +27,35 @@ export const CORE_PORT = portForRun(0);
 // でなければならないので、E2E でも別ポートで立てる
 export const SANDBOX_PORT = portForRun(1);
 
-// **4175 は 2026-09-07 から本番ビルド（`npm run build` + `npm run start`）**。
-// 開発モードのままだと初回表示 2.39s・メインスレッドの詰まり 1.11s だったのが、
-// 本番ビルドで 0.97s・0.34s になったため（実測、docs/notes/2026-09-07-...）。
-// **画面を直したら `npm run build` してから E2E を回すこと**——さもないと
-// 古いビルドを試験することになる（規則1——確かめずに通ったことにしない）。
+// **フロントも E2E 専用に起こす**（訂正・2026-09-13、ユーザー指摘
+// 「E2E のテスト環境は、私が触る環境とは別に立てるべきでは」）。
 //
-// Next 16はディレクトリごとに1つしかdevサーバを許さない（別portでも二重起動を
-// 拒否する）——なので専用portを別に起こすのではなく、既存の
-// （4175、常時起動している前提）をそのまま使う。frontend自体はブラウザの
-// localStorageに保存したhost/tokenで接続先を切り替えるだけなので、
-// テストの隔離はcore側（port・dataDir）だけで足りる
-export const FRONTEND_PORT = 4175;
+// 以前はここに「Next 16 はディレクトリごとに1つしか dev サーバを許さない
+// （別 port でも二重起動を拒否する）」と書いて、**人が使っている 4175 を
+// そのまま借りて**いた。**その前提は成り立っていない**——別 port で2つ目を
+// 起こして両方 200 で動くことを実測した（2026-09-13）。
+//
+// 借りていた実害：開発中に `npm run build` を回すと、**動いているサーバが
+// 配っているビルドとディスクの中身が食い違う**。画面はチャンクを取れず
+// ページ全体を再読み込みし、`app-shell-persist`（外枠が作り直されない）が
+// 落ちる。**人の画面を壊しながら試験していた**。
+//
+// なので **port は実行ごとに分け、ビルド成果物は人のものと分ける**。
+export const FRONTEND_PORT = portForRun(2);
+
+/**
+ * フロントのビルド成果物の置き場。**人の `.next` を書き換えない**。
+ *
+ * **相対パスの固定名**にする（訂正・2026-09-13、踏んだので）。絶対パスを
+ * `distDir` に渡すと Next は**プロジェクト相対として解釈して
+ * `apps/frontend/tmp/...` を作り**、さらに `tsconfig.json` の `include` に
+ * その置き場を**実行のたびに書き足す**——リポジトリが実行ごとに汚れていく。
+ *
+ * 実行ごとに分けないぶん、**同じワークツリーで2つの E2E を同時に回すと
+ * ビルドを奪い合う**。port とデータは分かれているので混ざりはしないが、
+ * ここは承知のうえの割り切り（そのかわりビルドキャッシュが効いて速い）。
+ */
+export const FRONTEND_DIST_DIR = ".next-e2e";
 
 // dataDirとconfig.jsonの置き場は重なってはいけない（bootstrap.tsのassertNoOverlap、
 // §9の事故対策）——なので兄弟ディレクトリに分ける。
