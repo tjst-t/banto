@@ -332,8 +332,11 @@ test("vault-directory からも SSH 鍵を作れる——公開鍵だけが返�
         arguments: { implementation: "vault", name: "gh-id", kind: "ssh-identity", scope: "instance" },
       }),
     );
-    assert.equal(made.ok, true);
-    assert.match(made.created.publicKey, /^ssh-ed25519 /);
+    assert.match(made.publicKey, /^ssh-ed25519 /);
+    // **窓口でも backend でも、同じ形で返る**（規則3——包むと、会話の中の
+    // 入力欄には公開鍵が「無い」ように見える。実際そうなっていた）
+    assert.equal(made.created, undefined, "backend の返事を包んでいる");
+    assert.equal(made.name, "gh-id");
     assert.equal(JSON.stringify(made).includes("PRIVATE KEY"), false, "秘密鍵が返っている");
 
     const { aliases } = parse(await ui.callTool({ name: "listAliases", arguments: {} }));

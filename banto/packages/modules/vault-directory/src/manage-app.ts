@@ -524,7 +524,7 @@ export const MANAGE_APP_HTML = `<!doctype html>
           ? {}
           : { format: $("new-format").value, bytes: Number($("new-bytes").value) }),
       });
-      if (result && result.created && result.created.publicKey) showPublicKey(result.created.publicKey);
+      if (result && result.publicKey) showPublicKey(result.publicKey);
       return;
     }
     if (!$("new-value").value) throw new Error("値を入力してください");

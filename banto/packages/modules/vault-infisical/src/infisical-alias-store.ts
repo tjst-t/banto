@@ -21,8 +21,17 @@
 import type { AliasMeta, AliasPatch, AliasStore } from "@banto/vault-kit";
 import type { InfisicalConnection } from "./client.js";
 
-/** 注記に書く中身。`name` と `backendPath` は置き場から導けるので**書かない**（規則3）。 */
-type StoredMeta = Omit<AliasMeta, "name" | "backendPath">;
+/**
+ * 注記に書く中身。**`backendPath` は置き場そのものなので書かない**（規則3）。
+ *
+ * **`name` は書く**（訂正・2026-09-13、ユーザー指摘）。当初は「置き場から
+ * 導ける」として省いていたが、**その前提が成り立たない**——秘密鍵は
+ * `generateKeypair` が置き場を決めるので（`ssh/<公開鍵の先頭>`）、
+ * 名前と置き場が一致しない。実際、`github-ssh` として作った鍵が
+ * **`AAAAC3NzaC1lZDI1` という名前の alias として一覧に出た**。
+ * 人が Infisical 側で鍵名を変えても、alias 名は alias 名のまま残る。
+ */
+type StoredMeta = Omit<AliasMeta, "backendPath">;
 
 export class InfisicalAliasStore implements AliasStore {
   constructor(private readonly conn: InfisicalConnection) {}
@@ -49,7 +58,13 @@ export class InfisicalAliasStore implements AliasStore {
         // 「たぶん secret だろう」で見せると、banto が管理していない秘密まで
         // 一覧に混ざる。Infisical は banto 以外からも書ける）
         if (!meta) continue;
-        out.push({ ...meta, name: s.secretKey, backendPath: `${folder.name}/${s.secretKey}` });
+        out.push({
+          ...meta,
+          // 注記に名前が無いのは、この訂正より前に書かれたもの——置き場から
+          // 読んでいた頃の形。**推測で直さず、そのまま見せる**（規則2）
+          name: meta.name ?? s.secretKey,
+          backendPath: `${folder.name}/${s.secretKey}`,
+        });
       }
     }
     return out;
@@ -102,7 +117,7 @@ export class InfisicalAliasStore implements AliasStore {
 }
 
 function stored(meta: AliasMeta): StoredMeta {
-  const { name: _n, backendPath: _b, ...rest } = meta;
+  const { backendPath: _b, ...rest } = meta;
   return rest;
 }
 
@@ -110,11 +125,11 @@ function stored(meta: AliasMeta): StoredMeta {
 function parseComment(comment: string | undefined): StoredMeta | undefined {
   if (!comment) return undefined;
   try {
-    const parsed = JSON.parse(comment) as StoredMeta;
+    const parsed = JSON.parse(comment) as Partial<StoredMeta>;
     if (typeof parsed !== "object" || parsed === null) return undefined;
     if (parsed.kind !== "secret" && parsed.kind !== "ssh-identity" && parsed.kind !== "file") return undefined;
     if (parsed.scope !== "instance" && parsed.scope !== "project") return undefined;
-    return parsed;
+    return parsed as StoredMeta;
   } catch {
     return undefined;
   }

@@ -225,3 +225,48 @@ test("会話の中の入力欄は、Module ごとに別の URI を持つ", { ski
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+// **鍵ペアを作ると、名前が公開鍵に化けていた**（回帰・2026-09-13、ユーザー報告）。
+//
+// 台帳（注記）が alias 名を持たず「置き場から導ける」としていたが、
+// **秘密鍵の置き場は backend が決める**（`ssh/<公開鍵の先頭>`）ので前提が崩れる。
+// `github-ssh` として作った鍵が `AAAAC3NzaC1lZDI1` という名前で一覧に出た。
+test("鍵ペアを作っても、alias は付けた名前のまま（公開鍵に化けない）", { skip }, async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "banto-vault-infisical-key-"));
+  const name = `ssh-${Date.now().toString(36)}`;
+  try {
+    const server = createInfisicalVaultServer(config!, dataDir);
+    const [s, c] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await Promise.all([server.connect(s), client.connect(c)]);
+
+    const made = await client.callTool({
+      name: "generateSecret",
+      arguments: { name, kind: "ssh-identity", scope: "instance" },
+    });
+    const body = JSON.parse((made.content as { text: string }[])[0]!.text) as Record<string, string>;
+
+    // **公開鍵は返る**——返らないと相手方に登録できない（画面に空の箱が出ていた）
+    assert.match(body.publicKey ?? "", /^ssh-ed25519 AAAA/, "公開鍵が返っていない");
+    assert.equal(body.name, name);
+    // **秘密鍵は返らない**
+    assert.equal(JSON.stringify(body).includes("PRIVATE KEY"), false);
+
+    const read = await client.readResource({ uri: "vault://aliases" });
+    const list = JSON.parse((read.contents as { text: string }[])[0]!.text) as Array<Record<string, unknown>>;
+    const mine = list.find((a) => a.name === name);
+    assert.ok(mine, `一覧に「${name}」が無い（出ている名前: ${list.map((a) => a.name).join(", ")}）`);
+    assert.equal(mine.kind, "ssh-identity");
+    // 公開鍵の断片が名前に混ざっていないこと
+    assert.equal(
+      list.some((a) => String(a.name).startsWith("AAAA")),
+      false,
+      "公開鍵の断片が alias 名になっている",
+    );
+
+    await client.callTool({ name: "deleteAlias", arguments: { name } });
+    await client.close();
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});

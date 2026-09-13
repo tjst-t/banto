@@ -22,6 +22,7 @@ test.setTimeout(300_000);
 
 const PROJECT_NAME = "E2E Vault Request Inline";
 const ALIAS = `e2e-inline-${Date.now()}`;
+const KEY_ALIAS = `e2e-sshkey-${Date.now()}`;
 /** 「AI に渡ってしまったら分かる」一意な値。**出ないこと**を確かめるために使う。 */
 const SECRET = `TYPED-BY-HUMAN-${Date.now()}`;
 
@@ -58,7 +59,11 @@ test("AI が秘密を求めると、会話の中の入力欄から人が登録�
 
   // ---- 2. 打った値が実 Vault に届く -----------------------------------------
   await frame.locator("#value").fill(SECRET);
-  await frame.locator("#scope").selectOption({ label: PROJECT_NAME });
+  // **「対象」ではなく「どこから使えるようにするか」**（改訂・2026-09-13）。
+  // "instance" は内部語なので画面に出さない（規則11）
+  await frame.locator("#scope").selectOption({ label: `この Project（${PROJECT_NAME}）だけ` });
+  // 秘密（`kind: "secret"`）では、鍵専用の案内を出さない——種類で画面が変わる
+  await expect(frame.locator("#ssh-note")).toBeHidden();
   await frame.getByRole("button", { name: "登録する" }).click();
   await expect(
     frame.getByText(new RegExp(`「${ALIAS}」を登録しました`)),
@@ -105,6 +110,90 @@ test("AI が秘密を求めると、会話の中の入力欄から人が登録�
       data: { server: "vault-directory", tool: "deleteAlias", arguments: { implementation: impl, name: ALIAS } },
     });
   }
+
+  expect(pageErrors, `画面側で例外が出た: ${pageErrors.join(" / ")}`).toEqual([]);
+});
+
+// **鍵ペアは「秘密」とは聞くことが違う**（回帰・2026-09-13、ユーザー報告）。
+// 報告されたのは3つで、どれも別の原因だった：
+//   1. 種類を変えても画面が変わらない（`.field { display: grid }` が
+//      `[hidden]` を打ち消していて、**hidden が全部効いていなかった**）
+//   2. 公開鍵の欄が出るのに**空**（1 のせいで、返っていなくても箱が見えていた）
+//   3. 一覧に出る名前が**公開鍵の断片**（Infisical の台帳が alias 名を
+//      「置き場から導ける」としていたが、鍵の置き場は backend が決める）
+//
+// ここでは 1 と 2——**画面が種類に応じて変わり、公開鍵が本当に出ること**を見る。
+// 3 は `vault-infisical` の統合試験（本物の Infisical）で押さえている。
+test("鍵ペアを頼まれた入力欄は、秘密のときと聞くことが違う——公開鍵まで出る", async ({ page }) => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "banto-e2e-sshkey-"));
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(err.message));
+
+  await openApp(page);
+  await createProject(page, "E2E Vault Request Key", projectRoot);
+
+  const composer = page.getByPlaceholder(/に送る/);
+  await composer.fill(
+    `requestAlias を、name に "${KEY_ALIAS}"、kind に "ssh-identity"、` +
+      `hint に "E2E の鍵の確認用" を渡して1回だけ呼んでください。説明は要りません。`,
+  );
+  await composer.press("Enter");
+
+  const frame = page.frameLocator('[data-testid="module-canvas-frame"]').frameLocator("iframe");
+  await expect(frame.getByText(`秘密を登録：${KEY_ALIAS}`)).toBeVisible({ timeout: 180_000 });
+
+  // ---- 1. 種類で聞くことが変わっている --------------------------------------
+  // 貼る側：**秘密鍵は1行に入らない**ので複数行の欄が出る
+  await expect(frame.locator("#value-multiline"), "秘密鍵を1行の欄で受けようとしている").toBeVisible();
+  await expect(frame.locator("#value")).toBeHidden();
+  await expect(frame.getByText(/BEGIN OPENSSH PRIVATE KEY/)).toBeVisible();
+
+  // 作る側：**鍵の強さは鍵の種類が決める**ので「作る強さ」は出ない
+  await frame.locator("#source").selectOption("generated");
+  await expect(
+    frame.locator("#generate-field"),
+    "鍵ペアなのに「作る強さ（バイト数）」を聞いている",
+  ).toBeHidden();
+  await expect(frame.locator("#ssh-note")).toBeVisible();
+  // 値を貼る欄も消える（Vault の中で作るので、人は値に触らない）
+  await expect(frame.locator("#value-field")).toBeHidden();
+
+  // ---- 2. 作ると、公開鍵が本当に出る ----------------------------------------
+  await frame.getByRole("button", { name: "登録する" }).click();
+  await expect(frame.getByText(new RegExp(`「${KEY_ALIAS}」を登録しました`))).toBeVisible({
+    timeout: 120_000,
+  });
+  await expect(
+    frame.locator("#pubkey-missing"),
+    "公開鍵が返らなかったのに、画面がそう言っていない",
+  ).toBeHidden();
+  const pubkey = await frame.locator("#pubkey").inputValue();
+  expect(pubkey, "公開鍵の欄が空のまま出ている").toMatch(/^ssh-ed25519 AAAA/);
+
+  // ---- 3. 一覧には、付けた名前で出る（公開鍵に化けない） --------------------
+  const listed = await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    data: { server: "vault-directory", tool: "listAliases", arguments: {} },
+  });
+  const aliases = (
+    JSON.parse(JSON.parse(await listed.text()).content[0].text) as {
+      aliases: Array<{ name: string; kind: string; implementation: string }>;
+    }
+  ).aliases;
+  const mine = aliases.find((a) => a.name === KEY_ALIAS);
+  expect(mine, `一覧に「${KEY_ALIAS}」が無い（出ている名前: ${aliases.map((a) => a.name).join(", ")}）`).toBeTruthy();
+  expect(mine!.kind).toBe("ssh-identity");
+  // **秘密鍵はどこにも出ない**
+  expect(await page.content(), "秘密鍵が画面に出ている").not.toContain("PRIVATE KEY-----\n");
+
+  await page.request.post(`${CORE_BASE_URL}/api/ui-tool-call`, {
+    headers: { authorization: `Bearer ${AUTH_TOKEN}` },
+    data: {
+      server: "vault-directory",
+      tool: "deleteAlias",
+      arguments: { implementation: mine!.implementation, name: KEY_ALIAS },
+    },
+  });
 
   expect(pageErrors, `画面側で例外が出た: ${pageErrors.join(" / ")}`).toEqual([]);
 });

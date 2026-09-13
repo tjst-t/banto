@@ -360,7 +360,12 @@ export function createVaultDirectoryServer(deps: VaultDirectoryDeps) {
           format: optionalString(args.format, "format"),
           bytes: args.bytes === undefined ? undefined : Number(args.bytes),
         });
-        return text({ ok: true, created: JSON.parse(body) });
+        // **backend の返事をそのまま返す**（訂正・2026-09-13、ユーザー報告）。
+        // 包んでいたせいで公開鍵が1段下に沈み、**会話の中の入力欄には空の箱**が
+        // 出ていた。同じ入力欄は backend にも直接繋がる（kit が配れば両方で使う）
+        // ので、**tool の返しの形は窓口でも backend でも同じでなければならない**
+        // （規則3——同じ tool に2つの形を作らない）
+        return { content: [{ type: "text", text: body }] };
       }
       case "updateAlias": {
         const implementation = await target();

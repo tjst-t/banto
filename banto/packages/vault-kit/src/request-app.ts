@@ -37,6 +37,11 @@ export const REQUEST_APP_HTML = `<!doctype html>
   }
   h1 { font-size: 13px; font-weight: 600; margin: 0 0 2px; }
   .lead { margin: 0 0 10px; opacity: .65; font-size: 12px; }
+  /* **hidden を効かせる**（訂正・2026-09-13、ユーザー指摘）。[hidden] の
+     display:none はブラウザ既定のスタイルなので、.field { display: grid } の
+     ほうが強く、**JS で hidden を立てても全部見えたまま**だった——種類を変えても
+     画面が変わらない、の正体。ここは全ての hidden より先に置く */
+  [hidden] { display: none !important; }
   .field { display: grid; gap: 4px; margin-bottom: 10px; }
   .field > span { font-size: 11px; opacity: .65; }
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -71,8 +76,12 @@ export const REQUEST_APP_HTML = `<!doctype html>
     <option value="generated" id="generated-option">Vault の中で作る（誰も値を見ない）</option>
   </select></label>
 
-  <label class="field" id="value-field"><span>値</span>
+  <label class="field" id="value-field"><span id="value-label">値</span>
     <input id="value" type="password" autocomplete="off" placeholder="ここに貼り付ける" />
+    <!-- **秘密鍵とファイルは1行に入らない**（訂正・2026-09-13）。input に
+         貼ると改行が落ちて、読めない鍵が登録される -->
+    <textarea id="value-multiline" rows="4" autocomplete="off" spellcheck="false" hidden
+      placeholder="-----BEGIN OPENSSH PRIVATE KEY----- から -----END ... ----- まで"></textarea>
   </label>
 
   <div class="field" id="generate-field" hidden>
@@ -96,7 +105,10 @@ export const REQUEST_APP_HTML = `<!doctype html>
     <select id="impl"></select>
   </label>
 
-  <label class="field"><span>対象</span><select id="scope"></select></label>
+  <!-- **「対象」では何を聞かれているか分からない**（訂正・2026-09-13、ユーザー
+       指摘）。聞いているのは「どこから使えるようにするか」で、instance は
+       banto の内部語（規則11）。既定はいま開いている Project -->
+  <label class="field"><span>どこから使えるようにするか</span><select id="scope"></select></label>
 
   <div class="row">
     <button id="submit">登録する</button>
@@ -112,6 +124,10 @@ export const REQUEST_APP_HTML = `<!doctype html>
     <textarea id="pubkey" rows="3" readonly></textarea>
     <div class="row"><button id="pubkey-copy" type="button">コピーする</button></div>
   </div>
+  <p class="problem" id="pubkey-missing" hidden>
+    鍵は登録できましたが、<strong>公開鍵が返ってきませんでした。</strong>
+    このままでは相手方に登録できません——Vault の管理画面から作り直してください
+  </p>
 </div>
 
 <script>
@@ -147,35 +163,68 @@ export const REQUEST_APP_HTML = `<!doctype html>
     });
   }
 
+  // **種類ごとの違いは、この表1枚に集める**（整理・2026-09-13、ユーザー指摘
+  // 「Secret なのか SSH 鍵ペアなのかで選べるものは変わるべきなのに変わらない」）。
+  // 以前は if (kind === …) が3箇所に散っていて、増やすたびに揃わなくなっていた。
+  const KINDS = {
+    secret: {
+      canGenerate: true,        // 乱数で作れる
+      valueLabel: "値",
+      multiline: false,
+      strength: true,           // 長さ・形式を選ぶのは、乱数のときだけ意味がある
+      note: null,
+      typedHint: "打った値は AI には渡りません",
+    },
+    "ssh-identity": {
+      canGenerate: true,
+      valueLabel: "秘密鍵（-----BEGIN OPENSSH PRIVATE KEY----- から）",
+      multiline: true,          // 1行に入らない
+      strength: false,          // **鍵の強さは鍵の種類が決める**——選ばせない
+      note: "SSH の鍵ペア（ed25519）を Vault の中で作ります。秘密鍵は誰も見ません。"
+        + "作ったあとに出る公開鍵を、GitHub などに登録してください",
+      typedHint: "持っている秘密鍵を貼るか、新しく作らせます（AI には渡りません）",
+    },
+    file: {
+      canGenerate: false,       // **ファイルの中身はランダムに作れない**
+      valueLabel: "ファイルの中身",
+      multiline: true,
+      strength: false,
+      note: null,
+      typedHint: "貼った中身は AI には渡りません",
+    },
+  };
+  const spec = () => KINDS[asked.kind] || KINDS.secret;
+
   function applyAsked() {
+    const k = spec();
     $("title").textContent = asked.name ? "秘密を登録：" + asked.name : "秘密の登録";
     $("why").textContent = asked.hint
       ? "AI がこの秘密を求めています——" + asked.hint
       : "AI がこの秘密を求めています。";
-    // **SSH 鍵も、ここで作れる**（統合・2026-09-12）——持っている鍵を貼るか、
-    // Vault の中で新しく作るかを選べる。作れば秘密鍵は誰も見ない
-    if (asked.kind === "ssh-identity") {
-      $("hint-value").textContent = "持っている秘密鍵を貼るか、新しく作らせます（AI には渡りません）";
-    }
-    // **ファイルの中身はランダムに作れない**——選べない道を選択肢に残さない（規則13）
-    const canGenerate = asked.kind === "secret" || asked.kind === "ssh-identity";
-    $("generated-option").hidden = !canGenerate;
-    $("generated-option").disabled = !canGenerate;
-    if (!canGenerate) $("source").value = "typed";
+    $("value-label").textContent = k.valueLabel;
+    $("hint-value").textContent = k.typedHint;
+    // **選べない道を選択肢に残さない**（規則13）
+    $("generated-option").hidden = !k.canGenerate;
+    $("generated-option").disabled = !k.canGenerate;
+    if (!k.canGenerate) $("source").value = "typed";
+    $("ssh-note").textContent = k.note || "";
     applySource();
-    reportHeight();
   }
 
   function applySource() {
+    const k = spec();
     const generated = $("source").value === "generated";
-    const ssh = asked.kind === "ssh-identity";
     $("value-field").hidden = generated;
-    // 鍵の強さは鍵の種類が決める——SSH では「作る強さ」を出さない
-    $("generate-field").hidden = !generated || ssh;
-    $("ssh-note").hidden = !generated || !ssh;
+    $("value").hidden = k.multiline;
+    $("value-multiline").hidden = !k.multiline;
+    $("generate-field").hidden = !generated || !k.strength;
+    $("ssh-note").hidden = !generated || !k.note;
     reportHeight();
   }
   $("source").addEventListener("change", applySource);
+
+  /** いま使っている入力欄（種類で1行か複数行かが変わる）。 */
+  const valueInput = () => (spec().multiline ? $("value-multiline") : $("value"));
 
   window.addEventListener("message", (event) => {
     const msg = event.data;
@@ -232,22 +281,30 @@ export const REQUEST_APP_HTML = `<!doctype html>
         const text = res && res.content && res.content[0] && res.content[0].text;
         try { publicKey = JSON.parse(text).publicKey; } catch { publicKey = undefined; }
       } else {
-        if (!$("value").value) throw new Error("値を入力してください");
+        const input = valueInput();
+        if (!input.value) throw new Error(spec().valueLabel + "を入力してください");
         await request("tools/call", {
           name: "createAlias",
-          arguments: { ...common, kind: asked.kind, value: $("value").value },
+          arguments: { ...common, kind: asked.kind, value: input.value },
         });
         // **打った値を画面に残さない**——閉じたあとの DOM にも置かない
         $("value").value = "";
+        $("value-multiline").value = "";
       }
       $("form-view").hidden = true;
       $("done-view").hidden = false;
       $("done-text").textContent =
         "「" + asked.name + "」を登録しました。AI からは名前だけが見えます（値は見えません）。";
-      // **公開鍵は秘密ではない**——出さないと相手方に登録できない
-      if (publicKey) {
-        $("pubkey").value = publicKey;
-        $("pubkey-field").hidden = false;
+      // **公開鍵は秘密ではない**——出さないと相手方に登録できない。
+      // 返ってこなかったときに**空の箱を見せない**（規則2——「出たが空」は
+      // 「作れたのか壊れたのか」が分からない。実際そう見えていた）
+      if (asked.kind === "ssh-identity" && $("source").value === "generated") {
+        if (publicKey) {
+          $("pubkey").value = publicKey;
+          $("pubkey-field").hidden = false;
+        } else {
+          $("pubkey-missing").hidden = false;
+        }
       }
       reportHeight();
     } catch (err) {
@@ -297,8 +354,10 @@ export const REQUEST_APP_HTML = `<!doctype html>
     // 「この Project のもの」を選べる——人に UUID を打たせない
     const ctx = host["dev.banto/project"];
     project = ctx && typeof ctx.id === "string" ? { id: ctx.id, name: String(ctx.name || ctx.id) } : null;
-    const scopes = [new Option("instance 全体", "instance")];
-    if (project) scopes.unshift(new Option(project.name, "project"));
+    // **人の言葉で書く**（訂正・2026-09-13）。"instance" は banto の内部語で、
+    // 画面に出す語ではない（規則11）。既定はいま開いている Project
+    const scopes = [new Option("どの Project からでも", "instance")];
+    if (project) scopes.unshift(new Option("この Project（" + project.name + "）だけ", "project"));
     $("scope").replaceChildren(...scopes);
 
     send({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });
